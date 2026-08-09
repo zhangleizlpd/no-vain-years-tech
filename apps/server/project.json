@@ -89,19 +89,23 @@
     },
     "typecheck": {
       "//": [
-        "🚨 这里的 `build` 是**定序**用的，不是语义依赖（typecheck 自己在空 dist 上也能从零跑通，已实测）。",
-        "根因：`build`(@nx/js:swc, skipTypeCheck:false) 与 `typecheck`(tsc --build) 是**同一批 .d.ts 的两个",
-        "生产者**，且共享 tsconfig.app.json 声明的那份 tsbuildinfo。build 还会**清空** outputPath(`dist`)",
-        "（实测：往 dist 放的标记文件被删掉）⇒ 并发时 .d.ts 被整目录端走 → tsconfig.spec.json 经 references",
-        "解析扑空 → 类型塌成 {} → 一堆 TS7006/TS2339 落在**与本次改动毫无关系的文件**上",
-        "（2026-08-02 #816 命中 src/alert/*.spec.ts；2026-08-09 PR #9 再次命中 account/security/test/**）。",
-        "本机因为快、撞不上那个窗口，怎么跑都绿 —— 别拿本地绿当证据。",
-        "⚠️ **别试图靠把 outDir/tsBuildInfoFile 挪出 `dist` 来解耦** —— 2026-08-09 实测更坏（500+ TS6305），",
-        "理由见 tsconfig.app.json 里那段注释。两个生产者只能靠**定序**分开，不能靠分目录。",
-        "⚠️ 方向不能反：让 build 等 typecheck，会变成 typecheck 先铺好 .d.ts 再被 build 清掉，实测 514 个 TS6305。",
-        "⚠️ 也不要提到 nx.json 的 targetDefaults —— 那会让 mobile:typecheck 连带依赖 mobile:build（expo export，约 3min）。"
+        "🚨 **本 target 不产出任何文件** —— 走 type-check-only 入口 tsconfig.typecheck.json（`noEmit`,",
+        "`composite:false`, 无 references）。这是 2026-08-09 的根治：它把 typecheck 从「.d.ts 的第二个",
+        "生产者」降级成纯读者，与 `build` 再无共享产物，竞态从此**结构性**不存在。",
+        "此前的形态是 `tsc --build tsconfig.json --emitDeclarationOnly`，与 build(@nx/js:swc,",
+        "skipTypeCheck:false) 争同一批 .d.ts 与同一份 tsbuildinfo，而 build 会清空 outputPath `dist`",
+        "⇒ 并发时类型塌成 {} → TS7006 落在**与改动毫无关系的文件**上（#816、PR #9 两次命中）。",
+        "当时靠 dependsOn 定序压住，代价是**每新增一个碰 dist 的 target 都得记得补一条** —— PR #9",
+        "正是这么漏的（runtime-smoke 内部会再跑一次 nx build server）。现在两条定序都已删除。",
+        "⚠️ 别把 dependsOn 加回来：它已无必要，加回去只会白白串行化、并让人误以为还有耦合。",
+        "⚠️ 别改回 `tsc --build`：`--noEmit` 与 `--build` 不兼容（TS 官方，microsoft/TypeScript#53979",
+        "至今 open），改回去就等于把第二个生产者请回来。覆盖面对比与业界依据见该 tsconfig 的注释。"
       ],
-      "dependsOn": ["^build", "build"]
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p tsconfig.typecheck.json",
+        "cwd": "apps/server"
+      }
     },
     "test": {
       "executor": "nx:run-commands",
@@ -120,15 +124,15 @@
     },
     "runtime-smoke": {
       "//": [
-        "🚨 `typecheck` 是**定序**用的，不是语义依赖 —— smoke 只吃 dist 里的 .js，跟类型无关。",
-        "但 `scripts/ci/server-boot-smoke.ts` 第 1/6 步会**内部再跑一次 `nx build server`**（'ensure fresh",
-        "dist'），而 nx.json 里本 target 原先零 dependsOn ⇒ 它是根任务、可与 typecheck 并发 ⇒ 那次内部 build",
-        "会在 typecheck 眼皮底下重写 out-tsc/app 的 .d.ts + tsbuildinfo。这正是 2026-08-09 PR #9 的 CI 红：",
-        "同一个 run 里没有 runtime-smoke 的 lint-typecheck job 绿、有它的 server-test job 红。",
-        "（typecheck 那边加的 `build` 定序只挡住了直接的 build，挡不住 smoke 内部这次。）",
-        "⚠️ 方向不能反：smoke 必须**等** typecheck 跑完；反过来会让 typecheck 等一次完整启动冒烟，白等约 1min。"
+        "🚨 `build` 是**真语义依赖**，不是定序权宜：smoke 跑的就是 `dist/**/*.js`",
+        "（`server-boot-smoke.ts` 从 dist import app.module，理由见该文件头注释）。",
+        "⚠️ **别删它**：该脚本第 1/6 步自己还会跑一次 `nx build server`（'ensure fresh dist'）。",
+        "没有这条边时它是根任务，那次内部 build 可与外层 `server:build` 并发 —— 两个进程清/写同一",
+        "个 `dist`。这是按构造推出的风险（未实测复现），但边本身按语义就该存在，故不留这个口子。",
+        "⚠️ 曾短暂挂过 `dependsOn: [\"typecheck\"]`（PR #11），那是 typecheck 还在产 .d.ts 时代的",
+        "权宜；typecheck 改 noEmit 入口后已无必要，故换成本条语义正确的 `build`。"
       ],
-      "dependsOn": ["typecheck"],
+      "dependsOn": ["build"],
       "executor": "nx:run-commands",
       "options": {
         "command": "pnpm tsx scripts/ci/server-boot-smoke.ts",

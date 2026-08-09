@@ -1,0 +1,59 @@
+{
+  // Type-check-only 入口 —— **本配置一个文件都不产出**，这是它存在的全部理由。
+  //
+  // ## 为什么不复用 tsconfig.json 的 `tsc --build`
+  //
+  // 旧做法 `tsc --build tsconfig.json --emitDeclarationOnly` 让 typecheck 成为 `.d.ts` 的
+  // **第二个生产者**（第一个是 `build`(@nx/js:swc, skipTypeCheck:false)），两者还共享
+  // tsconfig.app.json 声明的那份 tsbuildinfo，而 build 会清空 outputPath `dist` ⇒ 并发时
+  // `.d.ts` 被整目录端走 → tsconfig.spec.json 经 references 解析扑空 → 类型塌成 `{}` →
+  // 一堆 TS7006 落在**与本次改动毫无关系的文件**上（2026-08-02 #816 / 2026-08-09 PR #9
+  // 两次命中）。此前靠 `dependsOn` 定序压住，但每新增一个碰 `dist` 的 target 就要记得补
+  // 一条 —— PR #9 正是这么漏的（`runtime-smoke` 内部会再跑一次 `nx build server`）。
+  //
+  // ⚠️ **别改成挪 `outDir`**：2026-08-09 实测更坏（500+ TS6305），理由见 tsconfig.app.json。
+  //
+  // ## 为什么这个形状是对的（业界口径）
+  //
+  // - `--noEmit` 与 `--build` **不兼容**（TS 官方；`tsc --build --noEmit` 至今仍是 open
+  //   feature request microsoft/TypeScript#53979）⇒ 想「只检查不产出」就不能走 `--build`。
+  // - `noEmit` 与 `composite` **不兼容**：composite 项目必须 emit declarations ⇒ 这里显式
+  //   `composite: false`（base 里是 `true`），并关掉随之而来的 `emitDeclarationOnly` /
+  //   `declarationMap`。
+  // - **应用不该 emit declarations，只有库才该** —— 仓外没有任何东西依赖 `apps/server` 的
+  //   `.d.ts`；它之前之所以还在产 587 个，纯粹是因为 tsconfig.spec.json 用 project
+  //   reference 去引 tsconfig.app.json。
+  // - `tsc -p`（不带 `-b`）**忽略 project references**，把 include 到的文件当**一个程序**编
+  //   ⇒ 正是这里要的：spec 直接看源码，而不是隔着 `.d.ts` 看。
+  //
+  // ## 覆盖面不缩水（换法前后对比）
+  //
+  // 旧：app 项目 `src/**/*.ts` 去掉 spec + spec 项目 `src/**/*.spec.ts` `src/**/*.test.ts`
+  //     `test/**/*.ts`。新：`src/**/*.ts` ∪ `test/**/*.ts` —— **严格超集**（spec 文件本就在
+  //     `src/**/*.ts` 里）。且由「隔着 .d.ts 看」变成「直接看源码」，只会更严。
+  //
+  // 🚨 本文件**不进** tsconfig.json 的 `references` —— 它不是 composite 项目，进去会报错；
+  //    它就是一个独立入口，只被 `project.json` 的 typecheck target 用 `tsc -p` 直接跑。
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    // noEmit 三件套：base 里 composite / emitDeclarationOnly / declarationMap 都开着，
+    // 与 noEmit 互斥，必须逐个显式关掉（漏一个 tsc 直接报 TS5053 之类的选项冲突）。
+    "composite": false,
+    "emitDeclarationOnly": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["node"],
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "target": "es2021",
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["eslint.config.js", "eslint.config.cjs", "eslint.config.mjs"]
+}
