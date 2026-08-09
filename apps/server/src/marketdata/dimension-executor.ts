@@ -198,7 +198,12 @@ export interface ExecutorInput {
   mode: SyncMode;
   /** 目标日 YYYY-MM-DD (worker payload 字符串形态, 控时由调用方注入)。 */
   asOf: string;
-  /** 注入控时 (watermark / SyncRun finishedAt)。 */
+  /**
+   * 注入控时 (watermark / 业务日期换算)。
+   *
+   * 🚫 **不是 SyncRun 的 `finished_at`** —— 它是 job **起点**, 拿去当收尾时刻会让
+   * `finished_at ≈ started_at`、耗时永久不可读 (2026-08-09 修, 见 `SyncRunRecorder.finish`)。
+   */
   now: Date;
   /** backfill 模式回填天数 (CLI `--history-depth` 覆盖 SyncDimension.historyDepth)。 */
   backfillHistoryDays?: number;
@@ -839,12 +844,14 @@ export class DimensionExecutorRegistry {
     try {
       const result = await this.runDimension(key, input);
       mergeStats(stats, result.stats);
-      await this.recorder.finish(runId, deriveStatus(stats), stats, input.now);
+      // 🚨 **不传 input.now** —— 那是 job 起点, 传进去 finished_at 就等于 started_at,
+      // 一轮跑了多久永远读不出来 (见 SyncRunRecorder.finish 注释)。默认取真实收尾时刻。
+      await this.recorder.finish(runId, deriveStatus(stats), stats);
       this.alertIfDegraded(syncType, stats);
       return { stats, budgetExhausted: result.budgetExhausted };
     } catch (err) {
       // 顶层 (非 per-row) 异常: SyncRun 收为 failed, 不留 running 悬挂行 (016 范式)。
-      await this.recorder.finish(runId, 'failed', stats, input.now);
+      await this.recorder.finish(runId, 'failed', stats);
       throw err;
     }
   }

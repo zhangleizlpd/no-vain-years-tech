@@ -217,7 +217,9 @@ describe('019 T004 executor 注册表路由 (switch 退役 → Map)', () => {
       /not_registered/,
     );
     // 顶层异常路径: SyncRun 行已收 failed (worker attempts 语义源, 不崩 worker)。
-    expect(deps.recorder.finish).toHaveBeenCalledWith(1n, 'failed', expect.anything(), input.now);
+    // 🚨 **只有 3 个参数** —— 第 4 参 (finishedAt) 蓄意不传, 由 recorder 取真实收尾时刻;
+    // 这里曾断言传 `input.now`, 那正是「finished_at ≈ started_at、耗时不可读」的来源。
+    expect(deps.recorder.finish).toHaveBeenCalledWith(1n, 'failed', expect.anything());
   });
 
   it('测试维度注册 (SC-S05 机制半): registerExecutor 后 execute 路由到新 executor', async () => {
@@ -4195,12 +4197,7 @@ describe('046 T013 us_index_daily 装配 (固定 2 代码 + 不挂锚闸 + 全�
       ]);
       // 不上抛: 抛出去会让 worker 按「崩溃」重试整轮, 而这是「下次重跑即可补齐」的一档
       // (全量文件天然自愈: 明天那份文件里今天这行还在)。
-      expect(deps.recorder.finish).toHaveBeenCalledWith(
-        1n,
-        'partial',
-        expect.anything(),
-        expect.anything(),
-      );
+      expect(deps.recorder.finish).toHaveBeenCalledWith(1n, 'partial', expect.anything());
       const msgs = warn.mock.calls.map((c) => String(c[0]));
       expect(msgs.some((m) => m.includes('us_index_daily') && m.includes('VIX'))).toBe(true);
     } finally {
@@ -4218,12 +4215,7 @@ describe('046 T013 us_index_daily 装配 (固定 2 代码 + 不挂锚闸 + 全�
       // 失败发生在写之前 ⇒ 零写路径被触及 (「不破坏已落历史」的单测半边; 真 DB 半边归 T014)。
       expect(spies.indexUpsert).not.toHaveBeenCalled();
       expect(spies.indexCreateMany).not.toHaveBeenCalled();
-      expect(deps.recorder.finish).toHaveBeenCalledWith(
-        1n,
-        'failed',
-        expect.anything(),
-        expect.anything(),
-      );
+      expect(deps.recorder.finish).toHaveBeenCalledWith(1n, 'failed', expect.anything());
     } finally {
       warn.mockRestore();
     }

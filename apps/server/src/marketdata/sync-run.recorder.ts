@@ -40,8 +40,24 @@ export class SyncRunRecorder {
     return run.id;
   }
 
-  /** 收尾: 写终态 + 计数 + failedTargets(Json) + finishedAt。 */
-  async finish(id: bigint, status: SyncRunStatus, stats: SyncRunStats, now: Date): Promise<void> {
+  /**
+   * 收尾: 写终态 + 计数 + failedTargets(Json) + finishedAt。
+   *
+   * 🚨 **`finishedAt` 默认取真实收尾时刻, 不吃调用方的「逻辑 now」** —— 那正是这个参数
+   * 曾经的塌法: `DimensionExecutorRegistry` 一直传 `ExecutorInput.now` (job **起点**),
+   * 于是 `finished_at ≈ started_at`、甚至更早 (`started_at` 走 PG `now()`, 落在 JS
+   * `new Date()` 之后) ⇒ **任何一轮的耗时都读不出来**。2026-08-09 在 prod 验证限频修复时
+   * 撞到: 一轮实耗 241 秒的链发现, 表里两个时间戳只差 44 毫秒, 只能改从 CLI 日志掐时间。
+   *
+   * 仍保留可传形态是给**零工作量收尾**用的 —— {@link recordSkipped} 那条路上, 调用方的
+   * `now` 就是收尾时刻 (中间没有任何工作), 传进来比再取一次时钟更诚实。
+   */
+  async finish(
+    id: bigint,
+    status: SyncRunStatus,
+    stats: SyncRunStats,
+    finishedAt: Date = new Date(),
+  ): Promise<void> {
     await this.prisma.syncRun.update({
       where: { id },
       data: {
@@ -54,7 +70,7 @@ export class SyncRunRecorder {
           stats.failedTargets.length > 0
             ? (stats.failedTargets as Prisma.InputJsonValue)
             : Prisma.JsonNull,
-        finishedAt: now,
+        finishedAt,
       },
     });
   }
