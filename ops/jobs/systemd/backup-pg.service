@@ -12,6 +12,15 @@
 #    本任务不适用。改成 silent 就只剩「失败才响」+ 看门狗兜 no-show，会丢掉「跑了且产物合格」
 #    这个信息 —— 而它恰恰是你唯一想每天确认一次的事。
 #
+# 🚨 **以 root 跑是刻意的 —— 别加 `User=admin`**（2026-08-08 评估后明确否掉）。旧 cron 是以
+#    `admin` 跑的，照着「对齐旧行为」改回去会同时踩两个坑：
+#    ① **心跳写不进去**：`/var/lib/nvy/heartbeats` 是 `root:root 0755`，admin 无写权限；而
+#       wrapper 写心跳那行是 `|| true`，**失败完全静默** ⇒ 看门狗从此每天误报 no-show
+#       —— 正是本任务刚根治的「有调度、无信号」换个形式复活。
+#    ② **安全性倒退**：产物是**全库 dump**（含全部用户数据）。root 跑 ⇒ `root:0600`；改成
+#       admin 跑会回到旧 cron 时代的 `-rw-rw-r--`，即**世界可读**地摊在盘上。
+#    代价只有一个：**恢复时需 sudo 才读得到备份**。恢复是低频且刻意的操作，这个代价该付。
+#
 # Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
 # 手动触发验证：systemctl start backup-pg.service  （→ 应收一条飞书 report）
 # 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR；缺 webhook → 静默跳过）。
