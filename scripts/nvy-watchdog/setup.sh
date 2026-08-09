@@ -19,7 +19,7 @@ LABEL='com.nvy.watchdog'
 TIME='10:00'
 # <task>:<max-age-sec>；90000s≈25h。⚠️ 默认值必须与 ops/runbook/scheduled-tasks.md 的看门狗清单
 # 保持一致 —— 漏一项 = 裸跑本 setup 会静默摘掉该任务的 no-show 兜底，且不报错（2026-07-30 修）。
-TASKS='holdings-sync:90000 marketdata-dev-sync:90000 futu-eod:90000'
+TASKS='holdings-sync:90000 marketdata-dev-sync:90000 futu-eod:90000 nvy-private-backup:90000'
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --time) TIME="$2"; shift 2 ;;

@@ -2,8 +2,8 @@
 
 本文是 `broker-hk` 主机（券商网关：Futu OpenD + futu-shim）的运维手册。整篇移出，触发点是其中一行把 **operator 的家庭/办公出口 IP 作为 SSH `/32` 白名单条目**写在了安全组步骤里 —— 那是对自然人的物理位置信息，不属于基础设施标识符，也没法在保住安全组流程可用的前提下脱敏掉。
 
-- **本体**：`docs/private/runbook/futu-opend-hk.md`（本机私有，未公开）
-- **冻结副本**：私有归档仓 `zhangleizlpd/no-vain-years` @ tag `archive/pre-public-split`
+- **本体**：`docs/private/runbook/futu-opend-hk.md` —— 仓内那条路径如今是 symlink，真身在仓外 `~/nvy-private/`（本机私有，未公开）
+- **备份**：`~/nvy-private` 是本地 git 仓（误删 `git checkout` 即回），每日把 `git bundle` 经 age 加密推 prod 主机存异地副本
 - **判据**：[`docs/conventions/information-boundary.md`](../../docs/conventions/information-boundary.md) §「私有散文」
 
 ## 公开侧还剩什么
