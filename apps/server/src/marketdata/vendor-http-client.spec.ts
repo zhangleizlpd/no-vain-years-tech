@@ -1,3 +1,4 @@
+import { BrokenCircuitError } from 'cockatiel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EASTMONEY_PROFILE } from './eastmoney.constraint-profile.js';
 import { FUTU_SHIM_OPTION_CHAIN_PROFILE } from './futu-shim.constraint-profile.js';
@@ -265,5 +266,61 @@ describe('VendorHttpClient — 429 等待时长 (Retry-After)', () => {
     await vi.runAllTimersAsync();
     await expect(p).resolves.toEqual({ ok: 1 });
     expect(sleeps).toContain(LIXINGER_PROFILE.transientWaitMs);
+  });
+});
+
+describe('VendorHttpClient — 熔断口径: 背压 ≠ 故障', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  // 链画像 maxAttempts=2 ⇒ 单次 request 最多打 3 发; ConsecutiveBreaker 阈值 5
+  // ⇒ 两次 request 就足以越过阈值, 无需构造几十发。
+
+  /** 跑一次请求, 返回它最终抛出的错 (不抛 → null)。附 catch 防推进 timer 时 unhandled rejection。 */
+  async function failureOf(client: VendorHttpClient): Promise<unknown> {
+    const settled = client.request({ url: 'https://x' }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    await vi.runAllTimersAsync();
+    return settled;
+  }
+
+  it('🚨 连续 429 越过 ConsecutiveBreaker 阈值也不开闸 (背压不是故障)', async () => {
+    const { fetch, calls } = makeFetch([429, 429, 429, 429, 429, 429, 200]);
+    const client = new VendorHttpClient(FUTU_SHIM_OPTION_CHAIN_PROFILE, { fetch });
+
+    // 6 发连续 429 > 阈值 5, 但两次都必须照常收敛到 TransientVendorError —— **不能**是
+    // BrokenCircuitError: 后者不被 adapter 那条「429 → OptionChainBudgetExhaustedError」
+    // 映射认识, 会把一次纯限频记成该标的的 failed + 触发降级告警。
+    expect(await failureOf(client)).toBeInstanceOf(TransientVendorError);
+    expect(await failureOf(client)).toBeInstanceOf(TransientVendorError);
+
+    // 第 7 发 200: 熔断若已开, 这次会被当场拒、根本到不了 fetch。
+    const p = client.request({ url: 'https://x' });
+    await vi.runAllTimersAsync();
+    await expect(p).resolves.toEqual({ ok: 1 });
+    expect(calls).toHaveLength(7);
+  });
+
+  it('负控制: 连续 5xx 照常熔断 —— 本改动只摘掉 429, 没把熔断废掉', async () => {
+    const { fetch, calls } = makeFetch([503]);
+    const client = new VendorHttpClient(FUTU_SHIM_OPTION_CHAIN_PROFILE, { fetch });
+
+    expect(await failureOf(client)).toBeInstanceOf(TransientVendorError); // 故障 1–3
+    // 第 4、5 发把连续计数推到阈值 → 开闸, 本次即以 BrokenCircuitError 收场。
+    expect(await failureOf(client)).toBeInstanceOf(BrokenCircuitError);
+    expect(calls).toHaveLength(5); // 开闸后不再打 vendor
+  });
+
+  it('🚨 负控制: 429 对故障计数是**透明**的, 不当 success 清零 (否则 5xx 夹 429 永远熔不断)', async () => {
+    // cockatiel 对「过滤器不认」的错是原样 throw (既不 failure 也不 success)。若它改走
+    // success 分支, 下面这串里的 429 会把已累积的 4 次故障清零 ⇒ 熔断永不开。
+    const { fetch } = makeFetch([503, 503, 503, 503, 429, 503]);
+    const client = new VendorHttpClient(FUTU_SHIM_OPTION_CHAIN_PROFILE, { fetch });
+
+    expect(await failureOf(client)).toBeInstanceOf(TransientVendorError); // 故障 1–3
+    expect(await failureOf(client)).toBeInstanceOf(TransientVendorError); // 故障 4, 429, 故障 5 → 开闸
+    expect(await failureOf(client)).toBeInstanceOf(BrokenCircuitError);
   });
 });
