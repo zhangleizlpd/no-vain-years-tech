@@ -37,7 +37,7 @@ const CFG: MarketdataSyncConfig = {
   optionCoverageThreshold: 1,
 };
 
-/** 可控虚拟时钟: sleep 推进时间, 让回填自限速无需真等待即可断言 (镜像 dual-window-rate-limiter.spec)。 */
+/** 可控虚拟时钟: sleep 推进时间, 让回填自限速无需真等待即可断言 (镜像 vendor-rate-limiter.spec)。 */
 function makeClock(start = 0) {
   let t = start;
   const sleeps: number[] = [];

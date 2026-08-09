@@ -64,9 +64,9 @@ type FakeFetch = ReturnType<typeof makeCsvFetch>['fetch'];
 
 /**
  * 打真 `VendorHttpClient` + 假 fetch，并把限频排空到被测面之外（它归
- * `dual-window-rate-limiter.spec.ts` 管，不在这条通路的验证责任里）。
+ * `vendor-rate-limiter.spec.ts` 管，不在这条通路的验证责任里）。
  *
- * 🚨 **`sleep` 注 no-op 时必须同时注一个会前进的 `now`**：`DualWindowRateLimiter.acquireOne`
+ * 🚨 **`sleep` 注 no-op 时必须同时注一个会前进的 `now`**：`VendorRateLimiter.acquireOne`
  * 是 `for(;;) { refill(now()); if (ok) break; await sleep(wait) }` —— sleep 空转而虚拟时钟
  * 不动 ⇒ 令牌永远补不上 ⇒ **无限忙等**（CBOE profile `perSec:1`，第 2 个请求就撞上）。
  * 这行注释是踩出来的：只注 no-op sleep 会让整个 vitest 进程静默挂死，不报错、不超时。

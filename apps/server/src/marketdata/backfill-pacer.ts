@@ -1,7 +1,7 @@
 /**
  * 回填自限速节流器 (038 T017, US3 / INV-3 防风控)。
  *
- * 底层共享 `DualWindowRateLimiter` (perSec:36/perMin:900, `lixinger.constraint-profile.ts`)
+ * 底层共享 `VendorRateLimiter` (perSec:36/perMin:900, `lixinger.constraint-profile.ts`)
  * **不动** —— 本节流器是**叠加**在 backfill 路径之上的更保守层: 把回填期有效调用速率自限到
  * ~600/min (10/s, ≈共享桶 2/3, 对官方 1000/min 累计 ~40% buffer) + 调用间随机 jitter 打散,
  * 避免等间隔机器人特征触发 vendor 风控。**只在 backfill 模式生效** (夜间 delta 不经此路径);
@@ -9,7 +9,7 @@
  * 本层是叠加软护栏而非唯一护栏。
  *
  * 节流数学为**纯函数** (`baseIntervalMs` / `pacerWaitMs`), 单测无需真时钟/真随机; 有状态串行
- * 在 `BackfillPacer` (注入 now/sleep/random 供确定化测试, 镜像 `DualWindowRateLimiter` 范式)。
+ * 在 `BackfillPacer` (注入 now/sleep/random 供确定化测试, 镜像 `VendorRateLimiter` 范式)。
  */
 
 /** 回填节流参数: 目标速率 + jitter 上界 + 开关。 */

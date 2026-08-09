@@ -1,4 +1,4 @@
-import type { RateLimit } from './dual-window-rate-limiter.js';
+import type { RateLimit } from './vendor-rate-limiter.js';
 
 /**
  * Vendor Constraint Profile (015 T005, US5 / FR-S09)。
@@ -10,7 +10,11 @@ import type { RateLimit } from './dual-window-rate-limiter.js';
 export interface VendorConstraintProfile {
   /** 日志/熔断标识。 */
   vendor: string;
-  /** 双窗令牌桶限频 (秒 + 分)。 */
+  /**
+   * 限频声明。**两种形态, 按上游闸的真实形状选**: `{ perSec, perMin }` 双窗令牌桶 (允许冷启动
+   * 突发) / `{ maxCalls, windowMs }` 滚动窗 (零突发容忍)。判据与「为什么不可互相换算」见
+   * {@link import('./vendor-rate-limiter.js').RateLimit}。
+   */
   rateLimit: RateLimit;
   /** 每请求必需注入的 header (鉴权外的传输约束, 如 Accept-Encoding / UA / Referer)。 */
   headers: Record<string, string>;

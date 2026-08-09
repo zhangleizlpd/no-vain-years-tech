@@ -16,6 +16,14 @@ import type { VendorConstraintProfile } from './vendor-constraint-profile.js';
  *
  * `transientWaitMs` 取小值同 `TENCENT_PROFILE` 立意: 失败交
  * `CalendarSourceFallbackChain` 降级腾讯, 不值得为一个源长等。
+ *
+ * 🚨 **本画像刻意保留双窗形态, 与三个 capability 画像不同** (2026-08-09 修复时的显式决定):
+ * 那三个的 `{perSec, perMin}` 是从「N 次/30 秒」**换算**来的 (换算即 bug, 见链画像注释),
+ * 而这里的 20/min 是**自选的保守值** —— 上文第三段写明理由。且本实例被 `kline`(60/30 s) /
+ * `trading_days`(30/30 s) / `universe`(落兜底 10/30 s) 等**多个档位不同的 capability 共用**,
+ * 没有单一滚动窗可声明。⚠️ 已知残余: 20/min 的桶满突发对 `universe` 那条兜底档偏宽, 但
+ * universe 每日仅约 2 发, 结构上撞不到 —— 将来若有高频 capability 挂上来, 应先给它单起
+ * 一个滚动窗画像 (照三个 capability 画像的先例), 而不是改宽本画像。
  */
 export const FUTU_SHIM_PROFILE: VendorConstraintProfile = {
   vendor: 'futu-shim',
@@ -45,12 +53,12 @@ export const FUTU_SHIM_PROFILE: VendorConstraintProfile = {
  * 接口」。它比别的端点严 6 倍是**真的**, 与 `history_kline` 那次 (有官方 60/30 s 却被挂在最严
  * 兜底、酿成 08-01 回填事故) 是**相反方向**的事。
  *
- * **10/30 s → `{perSec, perMin}` 的换算**: `DualWindowRateLimiter` 只有秒 / 分两个窗, 表达不了
- * 30 s 滑窗 ⇒ 取**均值等价**的 20/min, 再用 `perSec: 1` 压毛刺 (同 {@link FUTU_SHIM_PROFILE}
- * 的取值立意)。⚠️ 诚实记账: 令牌桶满桶时理论上仍可在 30 s 内放出 20 发 —— 客户端侧是**第一道
- * 软闸**, 硬闸在 shim (超限返 429 + `Retry-After`), 而 429 在本片有明确出口
- * (`OptionChainBudgetExhaustedError` → 顺延重入队且不耗 attempts, plan D-SHIM 末条), 不是事故。
- * 拿更严的数字去猜反而会让一轮链发现拖过收盘后的采集窗。
+ * 🚨 **限额按滚动窗原样声明, 不做等价换算** (2026-08-09 修): 本画像曾把 10 次/30 s 写成
+ * 「均值等价」的 `{perSec: 1, perMin: 20}` —— 稳态确实是 10/30 s, 但令牌桶**初始装满 20**,
+ * 空闲后首轮会在 30 秒内放出约 30 发, 第 11 发起必吃 429。prod 实测后果: 链发现每 30 分钟
+ * 顺延一次、12 只锚永远只采到前 2 只 (`skipDuplicates` 让重跑零新增行, 纯烧预算)。
+ * 同日 PoC 直打 shim 复核: 第 11 发即 429、`Retry-After: 29`、第 33 秒恢复 —— 上游确是
+ * 30 秒**滚动窗**。⇒ 与 `ratelimit.py` 的 `LIMITS["option_chain"] = (10, 30)` 逐字同构。
  *
  * 到期日阶梯 (`expiration_date`, 官方 60/30 s) 与链走**同一个实例**: 它每票每日只 1 发
  * (12 票 = 12 发), 挂在更严的桶上零成本, 而多起一个实例只是多一份要维护的状态。
@@ -59,7 +67,7 @@ export const FUTU_SHIM_OPTION_CHAIN_PROFILE: VendorConstraintProfile = {
   ...FUTU_SHIM_PROFILE,
   // 熔断 / 日志标识必须与主画像可区分 —— 否则链发现被限频打断时, 日志里看不出是哪条通路。
   vendor: 'futu-shim:option_chain',
-  rateLimit: { perSec: 1, perMin: 20 },
+  rateLimit: { maxCalls: 10, windowMs: 30_000 },
 };
 
 /**
@@ -71,16 +79,15 @@ export const FUTU_SHIM_OPTION_CHAIN_PROFILE: VendorConstraintProfile = {
  * 快照的高频还会把链发现挤到 429。shim 侧的限频闸本就是 **per-capability** 的
  * (`ratelimit.py` 的 `LIMITS`), 客户端侧照着分桶才是同构。
  *
- * **60/30 s → `{perSec, perMin}` 的换算**: `DualWindowRateLimiter` 只有秒 / 分两个窗, 表达
- * 不了 30 s 滑窗 ⇒ 取**均值等价**的 120/min, 再用 `perSec: 2` 压毛刺 (同链画像的取值立意)。
- * ⚠️ 诚实记账: 满桶时理论上仍可在 30 s 内放出 60 发 —— 客户端侧是**第一道软闸**, 硬闸在 shim
- * (超限返 429 + `Retry-After`), 而 429 在本片有明确出口 (`OptionSnapshotBudgetExhaustedError`
- * → 顺延重入队且不耗 attempts)。
+ * 🚨 **限额按滚动窗原样声明, 不做等价换算** —— 同 {@link FUTU_SHIM_OPTION_CHAIN_PROFILE} 的
+ * 修复理由 (2026-08-09), 与 `ratelimit.py` 的 `LIMITS["snapshot"] = (60, 30)` 逐字同构。
+ * 本画像的换算比链那条宽 6 倍、离撞闸更远, 故未在 prod 显形, 但同一个「桶满突发」缺陷成立:
+ * 空闲后首轮可在 30 s 内放出约 120 发, 是上游允许值的 2 倍。
  */
 export const FUTU_SHIM_OPTION_SNAPSHOT_PROFILE: VendorConstraintProfile = {
   ...FUTU_SHIM_PROFILE,
   vendor: 'futu-shim:option_snapshot',
-  rateLimit: { perSec: 2, perMin: 120 },
+  rateLimit: { maxCalls: 60, windowMs: 30_000 },
 };
 
 /**
@@ -97,14 +104,11 @@ export const FUTU_SHIM_OPTION_SNAPSHOT_PROFILE: VendorConstraintProfile = {
  * `LIMITS` 表内、落最严兜底 10/30 s = 6x 偏严, 已由 T011a 按官方值补登 —— 本常量与它同口径,
  * 别再按兜底值猜。
  *
- * **60/30 s → `{perSec, perMin}` 的换算**: `DualWindowRateLimiter` 只有秒 / 分两个窗, 表达不了
- * 30 s 滑窗 ⇒ 取**均值等价**的 120/min, 再用 `perSec: 2` 压毛刺 (同快照画像的取值立意)。
- * ⚠️ 诚实记账: 满桶时理论上仍可在 30 s 内放出 60 发 —— 客户端侧是**第一道软闸**, 硬闸在 shim
- * (超限返 429 + `Retry-After`), 而 429 在本片有明确出口 (`EarningsCalendarBudgetExhaustedError`
- * → 顺延重入队且不耗 attempts)。
+ * 🚨 **限额按滚动窗原样声明, 不做等价换算** —— 同 {@link FUTU_SHIM_OPTION_CHAIN_PROFILE} 的
+ * 修复理由 (2026-08-09), 与 `ratelimit.py` 的 `LIMITS["earnings_calendar"] = (60, 30)` 逐字同构。
  */
 export const FUTU_SHIM_EARNINGS_CALENDAR_PROFILE: VendorConstraintProfile = {
   ...FUTU_SHIM_PROFILE,
   vendor: 'futu-shim:earnings_calendar',
-  rateLimit: { perSec: 2, perMin: 120 },
+  rateLimit: { maxCalls: 60, windowMs: 30_000 },
 };
