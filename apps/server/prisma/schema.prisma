@@ -1103,7 +1103,23 @@ model OptionDailySnapshot {
   id          BigInt   @id @default(autoincrement())
   contractId  BigInt   @map("contract_id")
   sessionDate DateTime @map("session_date") @db.Date
-  // 'eod' | 'premarket_backfill' (FR-040 / FR-046 ② 级补救)。
+  // 'eod' (收盘后正常采集) | 'premarket_backfill' (FR-040 / FR-046 ② 级补救)
+  // | 'poc_import' (一次性历史批, 见下)。
+  //
+  // 🚨 **'poc_import' 是 2026-08-09 一次性导入的历史批, 不由任何运行中的代码产生**, 且
+  // **口径比另两个窄得多** —— 拿它跟 'eod' 行做同口径统计 (覆盖率 / 分布 / 回测) 会得出错的数:
+  //
+  // · 范围: 仅 7 只标的 (AOS/CPB/LULU/PEP/PSKY/TAP/VICI) × 8 个 session
+  //   (2026-07-29 … 08-07, 无 08-02) × **DTE 1–120** × **行权价 ∈ [0.6,1.4]×spot**。
+  //   band 外与远月 LEAPS 在这批里**根本不存在**, 不是「那天没有那条腿」。
+  // · 来源是本机 futu-eod POC 的 SQLite, 其 `_num(v, default=0.0)` 把 vendor 的 None/NaN
+  //   压成了 0 ⇒ **`open_interest` / `volume` / `bid` / `ask` / `turnover` 里的 0 无法区分
+  //   「真的是 0」与「vendor 没给」**, 不可恢复。
+  // · 可恢复的那组已还原: 六列 greeks (含 iv) 全 0 的 1811 行已置 NULL + `greeks_complete=false`
+  //   (判据 = `iv` 恰为 0 不是真实市场值, 且三个计数完全相等); `net_open_interest` 整批 NULL
+  //   (本机恒 0 = vendor 没给)。
+  // · 整批可撤: `DELETE FROM marketdata.option_daily_snapshot WHERE source='poc_import'`
+  //   (连带 580 个补建的已到期合约: `option_contract` 中 id > 16062)。
   source      String   @db.VarChar(24)
   quoteAsOf   DateTime @map("quote_as_of") @db.Timestamptz(6)
   oiAsOf      DateTime @map("oi_as_of") @db.Date
