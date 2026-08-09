@@ -81,8 +81,10 @@ done
 
 echo
 echo "⑥ timer 现状（本脚本不改 enable 状态）"
+# 🚨 这个 grep 是**手写白名单**，加新任务时必须同步加进来 —— 漏一个的表现是「装完了、清单里
+#    却没有它」，看起来像没装上（backup-pg 在 2026-08-08 就这么骗过一次人）。
 systemctl list-timers --all --no-pager \
-  | grep -E 'cert-expiry|futu-shim-health|marketdata-|static-calendar|nvy-watchdog' || echo "   （一个都没 enable）"
+  | grep -E 'backup-pg|cert-expiry|futu-shim-health|marketdata-|static-calendar|nvy-watchdog' || echo "   （一个都没 enable）"
 
 if (( fail )); then
   echo

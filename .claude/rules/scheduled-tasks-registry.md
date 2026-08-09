@@ -17,7 +17,7 @@ paths:
 ## ① 飞书上报机制（每加一个调度都走，**别重写 webhook/token**）
 
 1. 脚本只「干活 + 打 stdout 汇总数字 + exit 0/非0」，**不自带飞书发送** —— webhook/签名/curl 集中在 `ops/lib/feishu-send.sh` 一处。
-2. **每日批任务** → 入口套 `ops/lib/nvy-run-reported.sh <task> -- <cmd>`（成功 + 失败都推 report + 写心跳 `~/.nvy/heartbeats/<task>.beat`）；并在本机看门狗清单加一行 —— 本地**改 `scripts/nvy-watchdog/setup.sh` 里的 `TASKS` 默认值**（⚠️ 别只靠调用时传 `--tasks`：默认值漏一项 = 任何人裸跑一次 setup 就静默摘掉该任务的 no-show 兜底且不报错，2026-07-30 futu-eod 踩过），77 改 `nvy-watchdog.service`。
+2. **每日批任务** → 入口套 `ops/lib/nvy-run-reported.sh <task> -- <cmd>`（成功 + 失败都推 report + 写心跳 `<心跳目录>/<task>.beat`。⚠️ **心跳目录本地与 prod 不同，别按本地路径去 prod 找**：本地 launchd 有 `$HOME` ⇒ `~/.nvy/heartbeats`；prod systemd **不注入 `$HOME`** ⇒ 经 `/etc/nvy-alert.env` 显式设 `NVY_HEARTBEAT_DIR=/var/lib/nvy/heartbeats`。解析规则全文见 runbook「心跳目录解析」）；并在本机看门狗清单加一行 —— 本地**改 `scripts/nvy-watchdog/setup.sh` 里的 `TASKS` 默认值**（⚠️ 别只靠调用时传 `--tasks`：默认值漏一项 = 任何人裸跑一次 setup 就静默摘掉该任务的 no-show 兜底且不报错，2026-07-30 futu-eod 踩过），77 改 `nvy-watchdog.service`。
 3. **高频监控**（≤ 分钟级，如 tick/freshness）→ **不套** wrapper（会刷屏）；保留自身告警逻辑，飞书发送换 `. feishu-send.sh; feishu_send "$msg"`；正向 liveness 走每日摘要。
 4. webhook/secret 复用本机共享文件（本地 `~/.nvy/feishu-alert.env`、prod `/etc/nvy-alert.env`，同一套 `NVY_ALERT_*`）；systemd 单元加 `EnvironmentFile=-/etc/nvy-alert.env`。**不新建** webhook/token。bot 用「签名校验」（`NVY_ALERT_FEISHU_SECRET`），不依赖关键词。
 
