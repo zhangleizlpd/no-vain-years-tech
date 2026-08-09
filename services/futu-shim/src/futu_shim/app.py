@@ -209,6 +209,18 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
     @app.errorhandler(RateLimitExceeded)
     def _on_rate_limited(exc: RateLimitExceeded):
         retry_after = max(1, int(exc.retry_after_s + 0.999))
+        # 🚨 This line is the ONLY forensic trace a 429 leaves. waitress emits no
+        # access log, and the server-side VendorHttpClient absorbs 429 silently
+        # (it sleeps Retry-After and retries) — so without it, "did that run hit
+        # the gate?" is unanswerable afterwards on both ends. Hit exactly that
+        # blind spot on 2026-08-09 while verifying the option_chain rate-limit
+        # fix: the claim "zero 429s" had to be argued from pacing arithmetic
+        # (observed 241s vs the limiter's 240s floor) instead of just read off.
+        log.warning(
+            "rate limited: capability=%s retry_after_s=%.2f",
+            exc.capability,
+            exc.retry_after_s,
+        )
         body = jsonify(
             {
                 "error": "rate_limited",

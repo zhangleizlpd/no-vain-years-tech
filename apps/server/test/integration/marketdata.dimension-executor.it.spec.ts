@@ -69,7 +69,11 @@ describe('017 T008 dimension executor registry (per-dim SyncRun)', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe('success');
     expect(runs[0]?.bullJobId).toBe('job-universe-1');
-    expect(runs[0]?.finishedAt).toEqual(NOW);
+    // 🚨 finished_at 是**真实收尾时刻**, 不是 input.now (= job 起点)。这里曾断言
+    // `toEqual(NOW)` —— 那正是缺陷本身: finished_at ≈ started_at ⇒ 一轮跑了多久永远
+    // 读不出来 (2026-08-09 prod 实测, 一轮 241 秒的链发现表里只差 44 毫秒)。
+    expect(runs[0]?.finishedAt).not.toEqual(NOW);
+    expect(runs[0]?.finishedAt?.getTime()).toBeGreaterThan(NOW.getTime());
   });
 
   it('per-dim eod_bar: DailyBar 落库 + SyncRun sync:eod_bar 行 + 计数一致', async () => {

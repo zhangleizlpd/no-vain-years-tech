@@ -1,3 +1,4 @@
+import logging
 import re
 from contextlib import contextmanager
 from pathlib import Path
@@ -416,6 +417,28 @@ def test_kline_meters_only_the_first_page_per_the_vendor_rule():
     assert refused.status_code == 429
     assert refused.json["capability"] == "history_kline"
     assert len(ctx.kline_calls) == 8  # 第三发在首页前就被拒, 零 vendor 调用
+
+
+def test_rate_limited_is_logged_because_nothing_else_records_it(caplog):
+    """🚨 A 429 must leave a trace here or it leaves none at all.
+
+    waitress emits no access log, and the server side absorbs 429 silently
+    (VendorHttpClient sleeps Retry-After and retries without logging). On
+    2026-08-09, verifying the option_chain rate-limit fix, "did that run hit the
+    gate?" could only be argued from pacing arithmetic — this assertion exists so
+    the next person can just read it.
+    """
+    gate = RateGate(limits={"history_kline": (1, 30)})
+    ctx = FakeCtx(kline_pages=[(pd.DataFrame([_bar("2026-07-30", 1.0)]), None)])
+    client, _ = build(ctx, gate)
+
+    assert client.get("/kline?code=US.PEP", headers=AUTH).status_code == 200
+    with caplog.at_level(logging.WARNING, logger="futu_shim.app"):
+        refused = client.get("/kline?code=US.PEP", headers=AUTH)
+
+    assert refused.status_code == 429
+    logged = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("rate limited" in m and "history_kline" in m for m in logged), logged
 
 
 def _overview_row(code, iv_percentile):

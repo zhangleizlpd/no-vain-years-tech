@@ -47,6 +47,23 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(done.failedTargets).toBeNull(); // 无失败 → JsonNull
   });
 
+  it('🚨 finish 不传第 4 参 → 落**真实收尾时刻** (不是调用方的逻辑 now)', async () => {
+    const id = await recorder.start('eod_bar');
+    const before = new Date();
+    await recorder.finish(id, 'success', { ...emptyStats(), scanned: 1, ok: 1 });
+    const after = new Date();
+
+    const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    const at = done.finishedAt;
+    expect(at).not.toBeNull();
+    expect(at!.getTime()).toBeGreaterThanOrEqual(before.getTime());
+    expect(at!.getTime()).toBeLessThanOrEqual(after.getTime());
+
+    // 刻意**不**拿 finished_at 跟 started_at 比: 后者是 PG `now()`, 而容器化 PG 在
+    // macOS 上跑在自带时钟的 VM 里, 跨时钟断言会变成随机红。上面两条只用 app 自己
+    // 这一个时钟, 已经把「写的是收尾时刻不是逻辑 now」钉死。
+  });
+
   it('finish(partial) → failedTargets(Json) 落库可审计', async () => {
     const id = await recorder.start('eod_bar');
     const stats: SyncRunStats = {
