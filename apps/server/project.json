@@ -90,12 +90,14 @@
     "typecheck": {
       "//": [
         "🚨 这里的 `build` 是**定序**用的，不是语义依赖（typecheck 自己在空 dist 上也能从零跑通，已实测）。",
-        "根因：本项目 tsconfig.app.json 把 outDir 与 tsBuildInfoFile 都指向 `dist`，而 build(@nx/js:swc) 的",
-        "outputPath 也是 `dist`，且**构建前会清空它**（实测：往 dist 放的标记文件被删掉）。两者原本无任何顺序",
-        "约束（nx.json 的 typecheck.dependsOn 只有 `^build`，管的是上游项目），`--parallel 3` 下会并发写/清同一",
-        "目录 → tsconfig.spec.json 经 references 解析 app 项目的 .d.ts 扑空 → 类型塌成 {} → 报出一堆 TS7006 /",
-        "TS2339，**且报错位置在与本次改动毫无关系的文件上**（2026-08-02 #816 CI 稳定命中：src/alert/*.spec.ts）。",
+        "根因：`build`(@nx/js:swc, skipTypeCheck:false) 与 `typecheck`(tsc --build) 是**同一批 .d.ts 的两个",
+        "生产者**，且共享 tsconfig.app.json 声明的那份 tsbuildinfo。build 还会**清空** outputPath(`dist`)",
+        "（实测：往 dist 放的标记文件被删掉）⇒ 并发时 .d.ts 被整目录端走 → tsconfig.spec.json 经 references",
+        "解析扑空 → 类型塌成 {} → 一堆 TS7006/TS2339 落在**与本次改动毫无关系的文件**上",
+        "（2026-08-02 #816 命中 src/alert/*.spec.ts；2026-08-09 PR #9 再次命中 account/security/test/**）。",
         "本机因为快、撞不上那个窗口，怎么跑都绿 —— 别拿本地绿当证据。",
+        "⚠️ **别试图靠把 outDir/tsBuildInfoFile 挪出 `dist` 来解耦** —— 2026-08-09 实测更坏（500+ TS6305），",
+        "理由见 tsconfig.app.json 里那段注释。两个生产者只能靠**定序**分开，不能靠分目录。",
         "⚠️ 方向不能反：让 build 等 typecheck，会变成 typecheck 先铺好 .d.ts 再被 build 清掉，实测 514 个 TS6305。",
         "⚠️ 也不要提到 nx.json 的 targetDefaults —— 那会让 mobile:typecheck 连带依赖 mobile:build（expo export，约 3min）。"
       ],
@@ -117,6 +119,16 @@
       }
     },
     "runtime-smoke": {
+      "//": [
+        "🚨 `typecheck` 是**定序**用的，不是语义依赖 —— smoke 只吃 dist 里的 .js，跟类型无关。",
+        "但 `scripts/ci/server-boot-smoke.ts` 第 1/6 步会**内部再跑一次 `nx build server`**（'ensure fresh",
+        "dist'），而 nx.json 里本 target 原先零 dependsOn ⇒ 它是根任务、可与 typecheck 并发 ⇒ 那次内部 build",
+        "会在 typecheck 眼皮底下重写 out-tsc/app 的 .d.ts + tsbuildinfo。这正是 2026-08-09 PR #9 的 CI 红：",
+        "同一个 run 里没有 runtime-smoke 的 lint-typecheck job 绿、有它的 server-test job 红。",
+        "（typecheck 那边加的 `build` 定序只挡住了直接的 build，挡不住 smoke 内部这次。）",
+        "⚠️ 方向不能反：smoke 必须**等** typecheck 跑完；反过来会让 typecheck 等一次完整启动冒烟，白等约 1min。"
+      ],
+      "dependsOn": ["typecheck"],
       "executor": "nx:run-commands",
       "options": {
         "command": "pnpm tsx scripts/ci/server-boot-smoke.ts",
