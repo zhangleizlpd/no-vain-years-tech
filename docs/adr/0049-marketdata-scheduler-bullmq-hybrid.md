@@ -64,7 +64,7 @@ sunset_trigger: |
 | graphile-worker                   | 无依赖编排，诉求直接不满足                                                                                                        |
 | per-instrument job（5400 job/天） | 限频器（进程内双窗令牌桶）封顶吞吐，细粒度 job 零收益徒增 Redis 压力；per-instrument try/catch + failedTargets + 幂等已给单标隔离 |
 | `@nestjs/bullmq` 装饰器 wrapper   | 多一层魔法，与仓库手控 provider 风格（RedisSyncLock 先例）异质                                                                    |
-| BullMQ rate limiter               | 单窗表达不了「36/s 且 1000/min」双窗约束，保留传输层 `DualWindowRateLimiter`                                                      |
+| BullMQ rate limiter               | 单窗表达不了「36/s 且 1000/min」双窗约束（也表达不了富途 shim 的滚动窗），保留传输层 `VendorRateLimiter`                          |
 | Inngest / trigger.dev 等 SaaS     | API 端点海外，国内生产不可靠                                                                                                      |
 
 ## Consequences
