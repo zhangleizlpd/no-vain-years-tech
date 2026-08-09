@@ -1,0 +1,382 @@
+extends:
+  - ./lefthook.preset-mono-orchestrator-ready.yml
+  - ./lefthook.preset-adr-governance.yml
+
+# Lefthook config — mono single-source (per docs/conventions/sdd.md).
+# 强制层 commit-time 硬拦:`tasks-md-drift` 拒"commit 含 impl 代码但 tasks.md 未 staged"。
+# `--no-verify` 仅限格式化 / typo / 紧急 hotfix 出口。
+
+# Conventional Commits enforcement at commit time.
+# Mirrors meta-repo behavior — full ruleset (header/body/footer max-length,
+# config-conventional types) shared via commitlint.config.mjs;CI runs the
+# same check via wagoid/commitlint-github-action. PR title also validated
+# by amannn/action-semantic-pull-request (load-bearing for squash merge:
+# PR title becomes commit message).
+# 🚨 `release-please-parseable` 不是 `conventional-format` 的重复 —— 两者用**不同解析器**，
+# commitlint 只看 header、body 一律放行,而 release-please 用 PEG 文法过**整条 message**,
+# 解析失败就把整条 commit 静默丢弃(workflow 仍 success,只是不起 Release PR)。实证:main 上
+# 14 条 message 过了 commitlint 却过不了 release-please,其中 3 条 feature 已真的丢过版。
+# 判据全文与实测 fixture 见 scripts/checks/check-commit-msg-parseable.ts 头部。
+commit-msg:
+  commands:
+    conventional-format:
+      run: pnpm exec commitlint --edit {1}
+    release-please-parseable:
+      run: pnpm tsx scripts/checks/check-commit-msg-parseable.ts --file {1}
+    # 🚨 commit message 是文件扫描完全盖不到的泄漏面, 且它**改不掉** —— 一旦 push,
+    # 只能全史重写。本仓历史上就有 12 条 message 直接写着 IP / 云账号 UID / 实例 ID
+    # (「修正 77 runbook —— 账号A真实ID」那类自解释标题)。判据见
+    # docs/conventions/information-boundary.md; CI 侧 gate-checks 扫文件, 但扫不到 message,
+    # 所以这一挂点没有云端镜像 —— 它是 message 面的唯一守门。
+    identifier-boundary:
+      run: pnpm tsx scripts/checks/check-identifier-boundary.ts --commit-msg {1}
+
+# Echo-only drift 提醒 (per 2026-06-22 #513/#530 教训): contract-smoke 只在 nightly
+# e2e-real-backend.yml 跑、不在 PR CI; 改 server 行为漏改对应 contract spec → drift 静默合进
+# main, 只在 nightly (软信号) 才红。push 前扫 branch diff (vs origin/main) 提醒同步契约断言。
+# **非阻断** (脚本恒 exit 0), 亚秒级 (纯 git diff + 正则解析)。pr-validation.yml 有云端镜像。
+pre-push:
+  commands:
+    contract-smoke-drift:
+      run: pnpm tsx scripts/checks/check-contract-smoke-drift.ts
+
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      tags: format
+      # Prettier 重写 staged 文件并 re-stage (stage_fixed: true)。
+      # 与其他 pre-commit 命令并行运行 — Prettier 仅改格式（空白/换行/引号），
+      # tasks-md-drift / no-bad-mocks / docs-organization-drift 都不读会变的内容。
+      glob: '*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc,md,yml,yaml}'
+      run: pnpm exec prettier --write {staged_files}
+      stage_fixed: true
+
+    gitleaks:
+      tags: security
+      # Per ADR-0037 § 1 — staged-only scan with shared .gitleaks.toml ruleset.
+      # `protect --staged` reads the git index directly (not {staged_files}),
+      # avoiding the lefthook template quote-stripping pitfall.
+      # ⚠️ CI **不是**全史扫（此处旧注释曾声称是，2026-08-08 修正）：ci.yml 用
+      # gitleaks-action@v2，push / pull_request 事件下只扫该事件的 commit 区间；
+      # 全史 detect 仅在 workflow_dispatch / schedule 事件下发生，两者都未接线。
+      # 要全史扫得手动跑：gitleaks detect --log-opts="--all" --redact
+      # Emergency exit: git commit --no-verify.
+      run: gitleaks protect --staged --no-banner --config .gitleaks.toml
+
+    check-env-sync:
+      tags: security
+      # 密文 secrets.enc.env 已从 glob 里去掉 —— 它 2026-08-08 起不入库（仓已公开），
+      # 永远不会出现在 staged 集里，留着是个骗人的触发条件。改它的传播路径是带外
+      # scp（ops/runbook/secrets-sops.md §3.3），本 hook 管不到也不该管。
+      glob: '{**/.env,**/.env.example,.env.production,apps/server/vitest.config.ts,docker-compose.tight.yml}'
+      # Per ADR-0037 § 2 — trigger on any file in the env-config contract to keep
+      # the typical commit fast (script walks apps/**/*.ts once). Algorithm:
+      # A/B: K_example == K_env per pair + process.env refs ⊆ K_example ∪ ALLOWLIST.
+      # C/D: boot-required keys (vitest test.env) declared in .env.production OR
+      #      secrets.enc.env AND mapped in docker-compose.tight.yml (else prod boot crash).
+      # E/F: boot-required secrets ∈ secrets.enc.env (ciphertext); no plaintext secret
+      #      value in tracked .env.production. G: prod non-secret keys ⊆ dev .env.example.
+      run: pnpm tsx scripts/checks/check-env-sync.ts
+
+    prisma-generate-gate:
+      tags: data
+      glob: 'apps/server/prisma/schema.prisma'
+      # Per ADR-0035 § 2 — staged schema.prisma → auto regenerate client.
+      # Generated output is gitignored (apps/server/.gitignore /src/generated/prisma),
+      # so we don't need to re-stage anything. The gate's value is: if the schema
+      # changed and `prisma generate` fails (invalid schema, dialect break), the
+      # commit aborts here instead of failing later in CI / runtime.
+      # pnpm 10: `pnpm -C <dir> prisma generate` mis-parses the dir as a command
+      # (ERR_PNPM_RECURSIVE_EXEC). Use `--dir <dir> exec` so pnpm runs the binary.
+      run: pnpm --dir apps/server exec prisma generate
+
+    migration-naming-check:
+      tags: data
+      # Per ADR-0035 § 1 — new migration directories under apps/server/prisma/migrations/
+      # MUST match `<yyyymmddhhmm>_<verb_obj>` (12-digit timestamp + underscore + slug).
+      # Existing historical names (0_init, 1_add_outbox_event, ...) are immutable;
+      # check only --diff-filter=A new additions, mirroring docs-organization-drift.
+      # Use `pnpm db:migrate "<verb obj>"` wrapper to auto-prepend timestamp.
+      run: |
+        set -eu
+        new_migs=$(git diff --cached --name-only --diff-filter=A \
+          | grep -E '^apps/server/prisma/migrations/[^/]+/migration\.sql$' \
+          | sed -E 's|^apps/server/prisma/migrations/([^/]+)/.*$|\1|' \
+          | sort -u \
+          || true)
+        if [ -z "$new_migs" ]; then
+          exit 0
+        fi
+        invalid=""
+        while IFS= read -r dir; do
+          if ! echo "$dir" | grep -qE '^[0-9]{8}_[0-9]{4}_[a-z][a-z0-9_]*$'; then
+            invalid="${invalid}${dir}\n"
+          fi
+        done <<< "$new_migs"
+        if [ -z "$invalid" ]; then
+          exit 0
+        fi
+        echo "❌ migration-naming-check: 新增 migration 目录名违反 ADR-0035 § 1"
+        echo ""
+        echo "Invalid directories:"
+        printf "$invalid" | sed 's/^/  - /'
+        echo ""
+        echo "约束: <yyyymmddhhmm>_<verb_obj>  (e.g. 20260520_1430_add_phone_to_account)"
+        echo "wrapper: pnpm db:migrate \"add phone to account\"  (auto-prepends timestamp)"
+        echo ""
+        echo "Historical names (0_init / 1_add_outbox_event / ...) 是 immutable 不追溯."
+        echo "紧急出口: git commit --no-verify"
+        exit 1
+
+    tasks-md-drift:
+      tags: sdd
+      # 四段检查 (branch-scoped — 只在 SDD feature 分支上认本 feature 的 task):
+      #  1. impl detection: apps|packages/.../*.ts(x), 排 .spec/.test/.it.spec (TDD 红测同 task,合规)
+      #  2. tasks.md staged: specs/*/tasks.md 任一 staged 即放行
+      #  3. branch gate: 仅 SDD feature 分支 `NNN-<slug>` (per git-workflow type-A,
+      #     branch↔dir↔PR 三位一体) 才是 SDD task 实现场景 → 才检查 drift。
+      #     非 SDD 分支 (refactor/docs/chore/fix/hotfix type-B) 的 impl 改动 = 治理重构 /
+      #     infra patch,不实现任何编号 task → skip,不被任一 spec 的 pending 误拦。
+      #  4. pending detection: 仅扫**本 feature 自己** specs/NNN-*/tasks.md 的 "- [ ] T<N>"
+      #     (不再扫全仓 — 无关 feature 的 pending 与本次 commit 无关)。
+      # impl && !tasks_staged && on-feature-branch && own-pending → block + 列证据
+      # 避开 lefthook {staged_files} 模板替换吞引号问题,直接 git diff --cached
+      run: |
+        set -eu
+        staged=$(git diff --cached --name-only --diff-filter=ACMR)
+        impl=$(echo "$staged" \
+          | grep -E '^(apps|packages)/.*\.(ts|tsx)$' \
+          | grep -vE '\.(spec|test|it\.spec)\.tsx?$' \
+          || true)
+        if [ -z "$impl" ]; then
+          exit 0
+        fi
+        tasks_staged=$(echo "$staged" | grep -E '^specs/.+/tasks\.md$' || true)
+        if [ -n "$tasks_staged" ]; then
+          exit 0
+        fi
+        # branch gate: 只有 NNN-<slug> SDD feature 分支才做 drift 检查
+        branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+        case "$branch" in
+          [0-9][0-9][0-9]-*) nnn=${branch%%-*} ;;
+          *) exit 0 ;;
+        esac
+        pending=$(grep -lE '^[[:space:]]*-[[:space:]]+\[ \][[:space:]]+T[0-9]+' \
+          specs/"$nnn"-*/tasks.md 2>/dev/null \
+          || true)
+        if [ -z "$pending" ]; then
+          exit 0
+        fi
+        echo "❌ tasks-md-drift: impl code 改动但本 feature ($nnn) tasks.md 未同 stage"
+        echo ""
+        echo "Staged impl files:"
+        echo "$impl" | sed 's/^/  - /'
+        echo ""
+        echo "本 feature 含 pending [ ] T<N> tasks (对应 task ship 时需 flip):"
+        echo "$pending" | sed 's/^/  - /'
+        echo ""
+        echo "请把对应 tasks.md 中 task 行 \`- [ ] T<N>\` flip \`- [X] T<N>\` 后同 stage."
+        echo "格式化 / typo / 紧急 hotfix 出口: git commit --no-verify"
+        exit 1
+
+    no-bad-mocks:
+      tags: test, quality
+      # Per ADR-0040 multi-layer test gate (门禁层 / PR-T3).
+      # 扫 staged *.{guard,interceptor,filter,pipe,repository}.spec.ts;
+      # 命中 `new \w+(Guard|Interceptor|Filter|Pipe|Repository)\b\s*\(`
+      # 但全文无 `createTestingModule` → 拒提交 (PR-79 retro Pattern B
+      # — mock-only test 掩盖 lifecycle 错误).
+      #
+      # Regex narrow 设计 (per sub-plan 3 § A): 不命中 `new SomeException(`
+      # / `new Error(` / `new Date(` 等 value-class 实例化,只命中以
+      # NestJS lifecycle 后缀结尾的 class. grep 验过现有 specs 不误伤。
+      #
+      # Known existing violation: apps/server/src/security/problem-detail.filter.spec.ts
+      # 含 `new ProblemDetailFilter(mockCls)` 不带 createTestingModule;
+      # 本 hook 阻**对该文件的未来 commit**,作者修该 spec 时必须改用
+      # createTestingModule (defensive design,不追溯既有 committed code)。
+      #
+      # 紧急出口: git commit --no-verify
+      run: |
+        set -eu
+        staged=$(git diff --cached --name-only --diff-filter=ACMR \
+          | grep -E '\.(guard|interceptor|filter|pipe|repository)\.spec\.ts$' \
+          || true)
+        if [ -z "$staged" ]; then
+          exit 0
+        fi
+        violations=""
+        for f in $staged; do
+          if [ ! -f "$f" ]; then
+            continue
+          fi
+          if grep -qE 'new[[:space:]]+[A-Za-z_][A-Za-z0-9_]*(Guard|Interceptor|Filter|Pipe|Repository)[[:space:]]*\(' "$f" \
+             && ! grep -qE 'createTestingModule[[:space:]]*\(' "$f"; then
+            violations="${violations}${f}\n"
+          fi
+        done
+        if [ -z "$violations" ]; then
+          exit 0
+        fi
+        echo "❌ no-bad-mocks: 拦截 lifecycle component 隔离实例化测试"
+        echo ""
+        echo "Violating files (含 new \\w+(Guard|Interceptor|Filter|Pipe|Repository)\\b\\s*\\("
+        echo "但全文无 createTestingModule):"
+        printf "$violations" | sed 's/^/  - /'
+        echo ""
+        echo "原因 (per ADR-0040 multi-layer test gate / PR-79 retro Pattern B):"
+        echo "  NestJS Guard / Interceptor / Filter / Pipe / Repository 子类"
+        echo "  必须用 Test.createTestingModule({ imports: [<TheModule>] }).compile()"
+        echo "  装 DI 容器测试;\`new MyGuard()\` 隔离实例化抹掉 lifecycle 顺序"
+        echo "  (PR #79 实证: CLS interceptor mode 漏 Guards/Filters 类 cascade bug)"
+        echo ""
+        echo "紧急出口: git commit --no-verify (格式化 / typo / 紧急 hotfix)"
+        exit 1
+
+    docs-organization-drift:
+      tags: docs
+      # 检查新增 (--diff-filter=A) 的 docs/{plans,experience,improvements}/*.md 是否符合
+      # YYYY-MM/MM-DD-<kebab-slug>.md 路径格式 (per docs/conventions/docs-organization.md)
+      # 存量 (M / R) 不检；status=A only。
+      run: |
+        set -eu
+        new_docs=$(git diff --cached --name-only --diff-filter=A \
+          | grep -E '^docs/(plans|experience|improvements)/.*\.md$' \
+          || true)
+        if [ -z "$new_docs" ]; then
+          exit 0
+        fi
+        invalid=$(echo "$new_docs" \
+          | grep -vE '^docs/(plans|experience|improvements)/[0-9]{4}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[a-z0-9-]+\.md$' \
+          || true)
+        if [ -z "$invalid" ]; then
+          exit 0
+        fi
+        echo "❌ docs-organization-drift: 新增 plan/experience/improvement 文件未按 convention 命名"
+        echo ""
+        echo "Invalid files:"
+        echo "$invalid" | sed 's/^/  - /'
+        echo ""
+        echo "约束（per docs/conventions/docs-organization.md）："
+        echo "  路径格式: docs/{plans,experience,improvements}/YYYY-MM/MM-DD-<kebab-slug>.md"
+        echo "  示例:     docs/private/plans/2026-05/05-21-archive-memory-bridge.md"
+        echo ""
+        echo "存量豁免: 已有文件不受约束 (hook 只查 status=A 新增)"
+        echo "紧急出口: git commit --no-verify"
+        exit 1
+
+    convention-orphan-check:
+      tags: docs governance
+      # docs/conventions/*.md 必须可达（referrer 面 = CLAUDE.md / .claude/** / 兄弟
+      # convention / ops/** / .specify/**；蓄意不含 plans/improvements——冻结历史不构成
+      # 当下路由）。全仓零引用 = 按需表/rules 都路由不到 = 等于不存在，失联 100% 静默。
+      # glob 含 checker 自身（坑：check-env-sync 的 glob 不含自己 ⇒ 改检查器不跑检查器）。
+      # 脚本忽略参数恒全扫（可达性是 holistic invariant）。CI 侧 pr-validation gate-checks
+      # 无条件镜像（--no-verify 绕不过）。
+      glob: '{docs/conventions/*.md,CLAUDE.md,.claude/rules/*.md,scripts/checks/check-convention-orphan.ts}'
+      run: pnpm tsx scripts/checks/check-convention-orphan.ts
+
+    identifier-boundary-check:
+      tags: security
+      # 本仓面向公开 → 标识符边界（docs/conventions/information-boundary.md）。
+      # 恒全扫暂存区，不设 glob —— 标识符可以出现在任何类型的文件里，按扩展名开口子
+      # 等于给自己留盲区。
+      # 本地这一跑同时带 **L2 值层**：从 ~/.nvy/fleet.env 的真值派生精确字面量，抓 L1
+      # 结构层漏掉的形态（如已被 allowlist 的形状里恰好填了真值）。仓内不留 denylist
+      # —— 把真标识符写进仓来做守门等于再发布一遍。
+      # CI 侧 pr-validation gate-checks 无条件镜像 L1（--no-verify 绕不过），L2 只在本机。
+      run: pnpm tsx scripts/checks/check-identifier-boundary.ts --staged
+
+    repo-layout-check:
+      tags: governance
+      # 顶层目录归属判据（docs/conventions/repo-layout.md）。五条全 fail-closed。
+      # glob 含 checker 自身 + pnpm-workspace.yaml（第 4 条要读它判 services/* 是否被
+      # workspace glob 命中）。脚本忽略参数恒全扫 —— 布局是 holistic invariant。
+      # 🚨 第 5 条（unit ExecStart 目标必须在仓内存在）防的是**静默失效**：systemd 不会
+      #    提前报错，要等下次 OnCalendar 才 203/EXEC，而多数探针 --on-success silent，
+      #    届时「装错了」与「探到真故障」在飞书上没法区分。
+      # CI 侧 pr-validation gate-checks 无条件镜像（--no-verify 绕不过）。
+      glob: '{ops/**,apps/*/project.json,services/**,pnpm-workspace.yaml,docs/conventions/repo-layout.md,scripts/checks/check-repo-layout.ts}'
+      run: pnpm tsx scripts/checks/check-repo-layout.ts
+
+    adr-index-check:
+      tags: adr governance docs
+      # Per ADR-0031 § ADR 修订策略 / realign-P1 PR-1 — docs/adr/README.md
+      # 「现状索引」table must stay in sync with each ADR's frontmatter `status`.
+      # Complements the preset's adr-frontmatter-check (which validates each file
+      # in isolation) with a holistic README↔frontmatter consistency gate.
+      # Lives here, not in lefthook.preset-adr-governance.yml — that preset file
+      # is auto-generated ("do not edit by hand"); this gate is mono-local.
+      # glob fires on ANY docs/adr/*.md change (new ADR, status flip, README
+      # edit); the script ignores args and always full-scans (consistency is
+      # holistic). Local-only gate like adr-frontmatter-check; --no-verify exits.
+      glob: 'docs/adr/*.md'
+      run: pnpm tsx scripts/checks/check-adr-index.ts
+
+    server-moat-check:
+      tags: server architecture
+      # Per Plan 05-24 R-6 (合并 ADR-0034 Stage C) — ts-morph AST 护城河探针。
+      # 把 ADR-0043 §5「当前仅约定」的两条边界转机器强制:
+      #   1. 跨 bounded context 的 Prisma model 访问 (写永远禁 / 读需
+      #      // CROSS-CONTEXT-READ 逃生口 per catalog Q7-B);
+      #   2. 跨业务 ctx 的构造器注入参数需 // CROSS-CONTEXT-{SYNC,ASYNC,READ} 注释
+      #      (注入点 = 行为耦合点 per ADR-0034 Stage C / R2)。
+      # boundaries ESLint 只管 import 方向、看不见 Prisma 调用 — 此探针正交补位。
+      # glob 仅决定是否跑;脚本忽略 args 始终全量扫描 (护城河是 holistic invariant,
+      # 同 adr-index-check)。CI mirror: pr-validation.yml validate-and-test 同名 step
+      # (--no-verify 绕得过 lefthook,绕不过云端门禁)。Emergency exit: git commit --no-verify.
+      glob: 'apps/server/src/**/*.ts'
+      run: pnpm tsx scripts/checks/check-server-moat.ts
+
+    api-property-nullable-check:
+      tags: server architecture
+      # Per memory reference_nullable_apiproperty_needs_type_string_else_orval_objectmap —
+      # nullable 标量 DTO 字段 (`string|null` / `number|null` / `boolean|null`) 的
+      # @ApiProperty(Optional) 必须显式写 `type:`，否则 @nestjs/swagger 反射对联合推不出
+      # 标量 → openapi.json schema 退化 → orval 生成 `{ [k]: unknown } | null`。漏写到
+      # mobile 消费才暴露 (server 单测全过)。踩过 012/023/024/025。enum|null 字段自带
+      # 类型信息，不在扫描面。glob 仅决定是否跑;脚本忽略 args 始终全量扫 (契约是 holistic
+      # invariant)。CI mirror: pr-validation.yml validate-and-test 同名 step。
+      # Emergency exit: git commit --no-verify.
+      glob: 'apps/server/src/**/*.ts'
+      run: pnpm tsx scripts/checks/check-api-property-nullable.ts
+
+    e2e-seed-auth-mock-check:
+      tags: mobile test
+      # Per docs/private/plans/2026-05/05-29-e2e-backend-boundary-hardening.md P1 — every
+      # seed-authed Expo Web e2e spec (addInitScript + nvy-auth) MUST intercept
+      # GET /me, else boot useMe leaks to a real :3000 → env-dependent flake
+      # (profile.spec.ts was the named regression). Interception counts via either
+      # a mockJson GET /me stub or a raw page.route on /me (stateful SUT). glob
+      # only decides whether to run — the script ignores args and full-scans
+      # apps/mobile/e2e (holistic invariant, same shape as server-moat-check).
+      # CI mirror: pr-validation.yml validate-and-test step (same name).
+      # Emergency exit: git commit --no-verify.
+      glob: 'apps/mobile/e2e/**/*.spec.ts'
+      run: pnpm tsx scripts/checks/check-e2e-seed-auth-mock.ts
+
+    cjk-var-fold-check:
+      tags: shell quality
+      # Per #864 / #865 — `$NAME` 紧跟非 ASCII（`echo "收到 $TIME）"`）在 CJK locale 下会被
+      # bash 把该字符首字节折进变量名: 带 set -u 当场炸并盖掉本该输出的诊断文案, 不带则静默
+      # 丢值。locale 相关而非 bash 版本相关 ⇒ 本机跑过没事不构成证据。bash -n 查不出, 只有走
+      # 到错误路径才暴露。glob 仅决定是否跑; 脚本忽略 args 始终全量扫 (holistic invariant,
+      # 同 server-moat-check)。CI mirror: pr-validation.yml gate-checks 同名 step
+      # (--no-verify 绕得过 lefthook, 绕不过云端门禁)。Emergency exit: git commit --no-verify.
+      glob: '*.sh'
+      run: pnpm tsx scripts/checks/check-cjk-var-fold.ts
+
+    markdownlint:
+      tags: lint
+      # Per memory feedback_markdownlint_preflight — pre-flight catches
+      # MD028/MD031/MD040/MD025 etc. before push 省 CI cycle.
+      # Config single source: .markdownlint-cli2.jsonc (MD032 disabled per
+      # 47-error research — markdownlint 自创防御规则 prettier preset 默认 disable).
+      # CI mirror: .github/workflows/ci.yml markdownlint job runs same config
+      # (DavidAnson/markdownlint-cli2-action@v18). Hook uses npx -y to skip
+      # devDep install + match meta-server lefthook pattern; first-run downloads
+      # ~10s, subsequent npm cache hit ~1-2s (within feedback_avoid_slow_pre_commit_or_pre_push budget).
+      # Emergency exit: git commit --no-verify (typo / 紧急 hotfix only).
+      glob: '*.md'
+      run: npx -y markdownlint-cli2 {staged_files}

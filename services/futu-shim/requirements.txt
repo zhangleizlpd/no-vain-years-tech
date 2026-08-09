@@ -1,0 +1,14 @@
+# Pinned to what is installed and smoke-tested on the HK box (2026-07-31).
+#
+# futu-api MUST equal the OpenD build running on the same host. Mixing versions
+# risks protocol drift across a private protobuf wire format, and every piece of
+# field-level evidence in p3b was gathered on 10.8.6808. Upgrading is a separate,
+# verified action — see ops/runbook/futu-opend-hk.md "why pin 10.8.6808".
+futu-api==10.8.6808
+
+# Sync WSGI stack. Chosen over FastAPI/uvicorn because OpenQuoteContext calls are
+# blocking and already serialise on the SDK's internal RLock, so async buys
+# nothing and would force run_in_executor around every call. Chosen over stdlib
+# http.server because that is explicitly not recommended for production use.
+Flask==3.1.3
+waitress==3.0.2

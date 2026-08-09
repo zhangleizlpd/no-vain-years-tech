@@ -1,0 +1,54 @@
+{
+  "$comment": [
+    "标识符守门的已知良性登记表 —— scripts/checks/check-identifier-boundary.ts 读它。",
+    "判据 SoT: docs/conventions/information-boundary.md",
+    "",
+    "🚨 两条硬纪律：",
+    "1. 登记的是「已知良性」，不是已知恶性。新出现的任何公网形状标识符默认红，直到有人",
+    "   在这里显式登记并写理由。denylist 做不到 fail-closed，而且把真标识符写进仓来做",
+    "   守门等于再发布一遍。",
+    "2. **只按值登记，永不按路径。** 按路径豁免是 gitleaks 那条教训的复现 —— 其 allowlist",
+    "   的 paths 是文件级短路（命中即整个文件跳过，发生在 regex 求值之前），等于放过该",
+    "   文件里任何 finding。故本表结构里刻意没有 path 字段。",
+    "",
+    "能用结构消掉的假阳性不进本表 —— 优先改 detector 的边界写法。已这样处理的三类：",
+    "非公网 IPv4 段（RFC1918 / loopback / link-local / CGNAT / RFC5737 文档段 / RFC2544 /",
+    "组播）按八位组数值排除；小数尾数（0.3377492957220201 的小数部分恰好 16 位）与长标识符",
+    "内嵌数字（oMOCKDEV0000000000000000abcd、git SHA 里的连续 16 位）按词边界排除。",
+    "本表只收「形状确实像标识符、但语义上不是」的那些。"
+  ],
+  "rules": {
+    "public-ipv4": [
+      {
+        "value": "8.8.8.8",
+        "reason": "Google Public DNS。测试 fixture 里当「一个公网 IP 的代表值」用，非本项目资产。"
+      },
+      {
+        "value": "114.114.114.114",
+        "reason": "114DNS 公共解析。同上，境内网络测试 fixture。"
+      },
+      {
+        "value": "223.5.5.5",
+        "reason": "阿里公共 DNS（AliDNS）。同上；它是公开解析服务，不指向本项目任何主机。"
+      },
+      {
+        "value": "1.2.3.4",
+        "reason": "业界通用文档占位 IP。"
+      },
+      {
+        "value": "172.32.0.1",
+        "reason": "刻意取在 RFC1918 上界之外一格（RFC1918 到 172.31 止）—— refresh-token.rules.spec.ts 用它验「172.32 不算私有段」这条边界。改成文档段会消掉该测试的全部意义，故按值豁免。"
+      }
+    ],
+    "cloud-account-uid": [
+      {
+        "value": "9007199254740993",
+        "reason": "Number.MAX_SAFE_INTEGER + 2。BigInt / 精度边界测试的标准取值，与云账号无关。"
+      },
+      {
+        "value": "1000000000000700",
+        "reason": "理杏仁 stockId，尾号即港股代码 0700。vendor 契约测试 fixture。同族新代码出现时会重新分诊 —— 这是刻意的（逐个过一遍比放过一个前缀安全）。"
+      }
+    ]
+  }
+}

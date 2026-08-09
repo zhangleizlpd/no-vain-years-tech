@@ -1,0 +1,65 @@
+# 访客侧 futu-shim 入口 —— **刻意独立于 prod 的 docker-compose.tight.yml**。
+#
+# 隔离理由（不是洁癖，是爆炸半径）：本服务绑 wg2 虚 IP `10.90.0.1`，而该地址
+# 只在 `wg-quick@wg2` 起来后才存在。若把它并进 prod compose，wg2 一次没起来
+# 就会让 `docker compose up -d` 报错、并可能连带影响 `api.shintongtech.com`。
+# 分开之后，最坏情况只是「访客进不来」，主站无感。
+#
+# 起停由 systemd 管（`nvy-guest-proxy.service`，`After=wg-quick@wg2.service`），
+# 不要手工 `docker compose up` 后就不管 —— 重启后靠 unit 恢复顺序。
+
+# 🚨 **project 名必须显式钉死**（per `.claude/rules/docker-rules.md`）。compose 默认从
+# **目录名**派生 project，而本配置 2026-08-07 从仓 clone 内搬到了 `/opt/nvy-guest-proxy`
+# （同日仓内位置又从 `ops/guest-access` 挪到 `services/guest-proxy`）⇒ 目录名前后动过两次。
+# 不写这行的话 project 会跟着目录改名，而 `container_name` 是写死的
+# ⇒ 新 project 创建容器时会撞上旧 project 还占着的同名容器，报 `name is already in use`。
+# 写死之后目录再怎么搬都不影响身份。（首次切换时那个遗留容器由 `deploy/install.sh` 清掉。）
+name: nvy-guest-proxy
+
+services:
+  guest-proxy:
+    image: nginx:1.27-alpine
+    container_name: nvy-guest-proxy
+    restart: unless-stopped
+
+    # host 网络：为了 ① 直接 listen 在 wg2 的 10.90.0.1（不用端口映射，也就
+    # 没有「docker 启动时绑不上该 IP 就整个失败」那个形态）② 出方向能走 wg1
+    # 到 10.89.0.1:8811。app 容器早已在打这个地址，路由本身已验证可行。
+    network_mode: host
+
+    volumes:
+      # 官方镜像会对 /etc/nginx/templates/*.template 做 envsubst 后落到 conf.d。
+      # 真 token 因此只经环境变量进来，不落盘进仓库。
+      - ./nginx:/etc/nginx/templates:ro
+      - guest-proxy-logs:/var/log/nginx
+      # 🚨 干掉镜像自带的 default.conf —— 它 `listen 80`，而本服务是 host 网络 ⇒
+      #    会跟 prod nginx 已占的 0.0.0.0:80 撞，nginx 直接
+      #    `[emerg] bind() to 0.0.0.0:80 failed (98: Address in use)` 起不来。
+      #    ⚠️ 2026-08-04 首次上线实撞：本机预演用的是 bridge 网络 + `-p 18811:8811`，
+      #    容器内的 80 谁也不碍着 ⇒ 测试全绿而真环境当场崩。**网络模式也是形状的一部分。**
+      - /dev/null:/etc/nginx/conf.d/default.conf:ro
+
+    env_file:
+      # 由 SOPS 在 host 上渲染，**不入库**。生成方式见 runbook。
+      # 内含 FUTU_SHIM_URL / FUTU_SHIM_TOKEN + 每个访客一组 GUESTn_TOKEN / GUESTn_NAME。
+      - /etc/nvy-guest-proxy.env
+
+    # envsubst 只替换我们声明的这几个；不加限制会把 nginx 自己的 $host /
+    # $arg_code / $guest_name 一并吃掉，配置当场失效且报错难懂。
+    environment:
+      # 🚨 加访客时**必须**把新键加进这条正则。漏了的形态最阴：nginx 起得来、日志正常，
+      #    但 map 里留着字面量 `${GUEST2_TOKEN}` ⇒ 那个访客永远 401，且看不出哪错了。
+      NGINX_ENVSUBST_FILTER: '^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$$'
+
+    healthcheck:
+      # 打 loopback 上那个独立的探针 server（见 nginx template 顶部）。
+      # 不打 10.90.0.1:8811 —— 那边 server 级鉴权闸会先把无 token 的探针 401 掉，
+      # 而 wget 对 401 是非零退出 ⇒ 健康检查会恒失败。
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8812/__ping']
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  guest-proxy-logs:

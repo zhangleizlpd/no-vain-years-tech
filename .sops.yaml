@@ -1,0 +1,17 @@
+# SOPS creation rules — per spike docs/private/plans/2026-06/06-15-sops-age-secrets-adoption-spike.md
+#
+# encrypted_regex: only values whose KEY name matches a sensitive suffix are
+# encrypted (partial match on key name). Non-secret config keeps plaintext so
+# PR diffs stay reviewable and non-secret edits need no private key.
+#
+# CODE_INDEX_URL is special-cased (literal key, not a suffix): the WireGuard
+# tunnel endpoint is co-located with its CODE_INDEX_SERVICE_TOKEN as one
+# SOPS-managed code-index wiring unit (kept out of the public .env.production).
+# Keep this regex MIRRORED in scripts/checks/check-env-sync.ts SECRET_KEY_RE.
+#
+# age recipient = PUBLIC key. The matching PRIVATE key (SPOF) lives ONLY in
+# ~/.config/sops/age/keys.txt on dev + prod + an offline backup — never in git.
+creation_rules:
+  - path_regex: secrets\.enc\.env$
+    encrypted_regex: '_KEY|_SECRET|_TOKEN|_PASSWORD|HMAC|CODE_INDEX_URL|FUTU_SHIM_URL'
+    age: age12zyxzvrn6e7zlyqv68dzr77xkvwjednurr7prs7mmqza4sn0vdkszlh46a

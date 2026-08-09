@@ -1,0 +1,12 @@
+# Fires nvy-watchdog.service daily at 10:00 local (after the daily jobs' 08:30/09:xx runs +
+# 1h grace). Install: see the .service header.
+[Unit]
+Description=run nvy no-show watchdog daily at 10:00
+
+[Timer]
+# Daily at 10:00 local; Persistent catches a missed run after downtime.
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

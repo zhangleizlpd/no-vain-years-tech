@@ -1,0 +1,33 @@
+# code-index query API (ideation grounding, ADR-0060 §1-2).
+# Long-running HTTP server that holds NO model; lazily forks an on-demand bge-m3
+# worker on first /search and self-exits it after idle. Install to the host:
+#   cp deploy/code-index-query.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now code-index-query
+# Secrets + config come from /etc/code-index.env (chmod 600, NOT in git).
+# Full procedure: ops/runbook/code-index-deploy.md
+[Unit]
+Description=code-index query API (ideation grounding, ADR-0060)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/code-index.env
+WorkingDirectory=/root/no-vain-years-mono/services/code-index
+# Same libuv-1.48 io_uring hazard the tick unit documents (system libuv on Ubuntu 24.04 +
+# kernel 6.8 drops fs completions). Prophylactic here: this process forks the bge-m3
+# sidecar, and a sidecar that hangs holds the query heartbeat, which makes every cron tick
+# self-skip — i.e. the same stall, entered from the query side.
+Environment=UV_USE_IO_URING=0
+ExecStart=/root/no-vain-years-mono/services/code-index/node_modules/.bin/tsx src/server.ts
+Restart=on-failure
+RestartSec=5
+# server.ts traps SIGTERM → server.close() + sidecar.stop() (reaps the bge-m3
+# worker) → exit 0. SIGTERM the main process, SIGKILL the rest only on timeout.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

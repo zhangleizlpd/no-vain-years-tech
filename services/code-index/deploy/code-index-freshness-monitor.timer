@@ -1,0 +1,13 @@
+# Fires code-index-freshness-monitor.service every 5min (window default 30min → ~6
+# evaluations of resolution before a trip). Install: see the .service header.
+[Unit]
+Description=run code-index freshness monitor every 5min
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

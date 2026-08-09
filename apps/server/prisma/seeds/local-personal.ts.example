@@ -1,0 +1,37 @@
+/**
+ * Local-personal seed (template) — your private dev accounts / test data.
+ *
+ * Per ADR-0035 § 3: the real file `local-personal.ts` is gitignored (see
+ * apps/server/.gitignore). Each dev maintains their own. Same idempotency
+ * contract as the shared seeds — runs N times → same end state.
+ *
+ * To use: copy this file to `local-personal.ts` and edit. Do NOT commit
+ * the real file.
+ *
+ * Usage:
+ *   cp apps/server/prisma/seeds/local-personal.ts.example apps/server/prisma/seeds/local-personal.ts
+ *   pnpm -C apps/server tsx prisma/seeds/local-personal.ts
+ */
+import { PrismaClient } from '../../src/generated/prisma/client.js';
+
+const prisma = new PrismaClient();
+
+async function main(): Promise<void> {
+  // Replace with your own dev accounts. Example:
+  //
+  // await prisma.account.upsert({
+  //   where: { phone: '+8613912345678' },
+  //   create: { phone: '+8613912345678', status: 'ACTIVE', displayName: 'me' },
+  //   update: { status: 'ACTIVE', displayName: 'me' },
+  // });
+  console.log('[seed:local-personal] template — edit me to add your local accounts.');
+}
+
+main()
+  .catch((err) => {
+    console.error('[seed:local-personal] failed:', err);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

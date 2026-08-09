@@ -1,0 +1,35 @@
+name: Setup workspace
+description: pnpm + Node + 依赖安装 + Prisma client 生成。pr-validation 的四个 job 共用这一份。
+
+# 🚨 这是四个 job 的**唯一**一份 setup。别在任一 job 里再手写一遍 —— 那样迟早会出现
+# 「某个 job 的 Node 版本/pnpm 版本悄悄和别的 job 不一样」，而 CI 不会告诉你。
+#
+# 各 job 自己负责的、不放这里的：
+#   · actions/checkout（fetch-depth 需求不同：要跑 `nx affected --base=origin/main`
+#     或 `git diff origin/main...HEAD` 的 job 必须 fetch-depth: 0）
+#   · Playwright 浏览器（只有 mobile-checks 需要，装它要 ~150MB + apt 依赖）
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10.33.2
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # server 源码 import 生成的 Prisma client，lint / typecheck / test 都要它先存在。
+    # CI 实测 ~3s，四个 job 各付一遍也无所谓。
+    - name: Generate Prisma client
+      shell: bash
+      working-directory: apps/server
+      run: npx prisma generate

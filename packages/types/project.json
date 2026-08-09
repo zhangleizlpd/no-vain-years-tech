@@ -1,0 +1,16 @@
+{
+  "name": "types",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/types/src",
+  "projectType": "library",
+  "tags": ["scope:pkg-types"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "cwd": "packages/types",
+        "command": "tsc --noEmit -p tsconfig.json"
+      }
+    }
+  }
+}

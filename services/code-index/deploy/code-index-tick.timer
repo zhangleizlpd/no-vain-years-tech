@@ -1,0 +1,15 @@
+# Fires code-index-tick.service ~every 2min (ADR-0060 §2: index lag ≤ cron period,
+# imperceptible at this usage). Install:
+#   cp deploy/code-index-tick.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now code-index-tick.timer
+[Unit]
+Description=run code-index incremental tick every ~2min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,22 @@
+{
+  "name": "holdings-sync",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "同花顺持仓导出 → 服务端导入 本地化同步工具（自包含，可拷到任意 Mac 跑；不入 mono workspace）",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "fetch": "tsx fetch-tzzb.ts",
+    "upload": "tsx upload-holdings.ts",
+    "sync": "tsx sync.ts",
+    "setup": "tsx setup.ts",
+    "uninstall": "tsx uninstall.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "playwright-core": "^1.48.0",
+    "tsx": "^4.22.3"
+  }
+}

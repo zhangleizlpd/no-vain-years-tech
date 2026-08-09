@@ -1,0 +1,24 @@
+{
+  "presets": {
+    "adr-governance": {
+      "enabled": true,
+      "priority": 7
+    },
+    "context7-injection": {
+      "enabled": true,
+      "priority": 5
+    },
+    "mono-orchestrator-ready": {
+      "enabled": true,
+      "priority": 4
+    },
+    "task-closure": {
+      "enabled": true,
+      "priority": 10
+    },
+    "user-journey-mermaid": {
+      "enabled": true,
+      "priority": 6
+    }
+  }
+}

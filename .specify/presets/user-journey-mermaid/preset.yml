@@ -1,0 +1,17 @@
+id: user-journey-mermaid
+version: 1.0.0
+description: |
+  Prepend a `## User Journey Diagram` section (mermaid sequenceDiagram) to
+  spec-template. The AI fills the placeholder block when authoring spec.md,
+  rendering the primary user scenario as a sequence diagram alongside the
+  textual User Scenarios & Testing section.
+applies_to: [mono]
+spec_kit_compat: ">=0.8.5,<0.10.0"
+priority: 6
+
+provides:
+  templates:
+    - name: spec-template
+      type: template
+      strategy: prepend
+      file: templates/spec-template.md

@@ -1,0 +1,9 @@
+hooks:
+  after_implement:
+  - extension: tasks-md-sync-verify
+    command: speckit.tasks-verify
+    enabled: true
+    optional: true
+    prompt: Verify tasks.md [X] state synced with this implementation run?
+    description: Verify tasks.md [X] state synced with implementation commits
+    condition: null

@@ -1,0 +1,38 @@
+# marketdata-table-health（77）：每 4h 只读探各维度**数据年龄**（docker exec psql），陈旧 / 掉队 → 飞书 🔴。
+# 判据全在 marketdata-table-health.sql（server IT 真测，含 13 条注入故障的变异用例）；.sh 零逻辑、零飞书 I/O。
+#
+# 与 marketdata-calendar-health 的分工（别混）：
+#   · calendar-health = 交易日历**填充心跳**还新鲜吗（判 liveness，数据源 = calendar_sync_health）
+#   · table-health（本任务）= 各维度**事实表里的数据**还在长吗（判数据年龄，数据源 = 事实表本身）
+#   两者互补：日历填充正常但采集停摆时，只有本任务会红（2026-08-01 事故正是这个形态）。
+#
+# Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
+#   🚨 `<unit>.sh` 与 `<unit>.sql` **必须同目录兄弟**（脚本默认按 sibling 找谓词）——
+#      拆开放 = 每 4h 一条「谓词文件缺失」假红。install.sh 把两者一起装进 /usr/local/lib/nvy/jobs/。
+# 手动触发验证：systemctl start marketdata-table-health.service
+#   → 健康时**静默不推**（见下 --on-success silent）；验证看 `systemctl status` / journalctl 的 ✅ 摘要行。
+# 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR；缺 webhook → 静默跳过）。
+#
+# 🚨 新增本任务后**必须同步 nvy-watchdog 的 TASKS 默认清单**（scripts/nvy-watchdog/setup.sh）——
+#    否则裸跑一次 setup 会静默把本任务的 no-show 兜底摘掉（F2 踩过一次，见 scheduled-tasks.md）。
+[Unit]
+Description=Marketdata table-level data freshness probe (stale dimension data -> Feishu)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# PG 连接参数（SYNC_REPORT_PG_CONTAINER / _USER / _DB）—— 与 marketdata-sync-report /
+# marketdata-calendar-health **共用同一份**：同一个 prod PG，多份配置必漂移。
+EnvironmentFile=-/etc/marketdata-sync-report.env
+# 本任务调参（TABLE_HEALTH_PREDICATE_SQL）—— 可选，一般不需要。
+EnvironmentFile=-/etc/marketdata-table-health.env
+# 套通用 wrapper：退出码驱动飞书（零新飞书基建）+ 每跑写心跳供看门狗查 no-show。
+# 🚨 --on-success silent（同 calendar-health，故意为之）：每 4h 一跑 = 6 次/日，成功也推会把飞书
+#    刷成噪音 → 训练出「反正都是 ✅，不看了」= 真告警来时被淹没。代价 = 没有正向 liveness，
+#    由看门狗兜（见上「必须同步 TASKS 清单」）。
+# --tail 5：谓词只输出单行摘要，5 行足够罩住它 + 故障时 psql 的 stderr。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh marketdata-table-health --on-success silent --tail 5 -- /usr/local/lib/nvy/jobs/marketdata-table-health.sh

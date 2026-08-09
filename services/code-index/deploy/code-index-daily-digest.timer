@@ -1,0 +1,11 @@
+# Fires code-index-daily-digest.service daily at 09:10 local. Install: see the .service header.
+[Unit]
+Description=run code-index daily health digest at 09:10
+
+[Timer]
+# Daily at 09:10 local; Persistent catches a missed run after downtime.
+OnCalendar=*-*-* 09:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "graphify": {
+      "type": "stdio",
+      "command": "/Users/butterfly/.local/share/uv/tools/graphifyy/bin/python3",
+      "args": [
+        "-m",
+        "graphify.serve",
+        "/Users/butterfly/Documents/projects/no-vain-years-mono/graphify-out/graph.json"
+      ],
+      "env": {}
+    }
+  }
+}

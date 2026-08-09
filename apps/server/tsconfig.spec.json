@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "outDir": "out-tsc/spec",
+    "tsBuildInfoFile": "out-tsc/spec/tsconfig.spec.tsbuildinfo",
+    "types": ["node"],
+    // 🚨 `.` 而非 `src` —— `src/**/*.it.spec.ts` 要 import `test/_support/isolated-db`
+    // （共享 PG fixture 住 test/ 下，T-1 把 src 的 46 个容器 spec 接了过去）。rootDir 留在
+    // `src` 会直接 TS6059「不在 rootDir 下」+ TS6307「不在 include 列表里」，已实测。
+    // 2026-08-03 T-2 服务端半闭环：include 已扩到 `test/**`（54 个存量类型错当日清零，
+    // 见矩阵 T-2）。本文件在 solution tsconfig.json 的 references 里 ⇒ `nx typecheck server`
+    // (tsc --build) 从此覆盖全部 IT —— 「恒 skip 的 vendor 块改坏两天没人发现」(P4.1 #815)
+    // 那类事故的静态防线。lint 亦已覆盖 test/（2026-08-03 `eslint src test`，见
+    // apps/server/eslint.config.mjs）—— T-2 两半边就此全闭环（矩阵 T-2）。
+    "rootDir": ".",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "target": "es2021",
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src/**/*.spec.ts", "src/**/*.test.ts", "test/**/*.ts"],
+  "references": [{ "path": "./tsconfig.app.json" }]
+}

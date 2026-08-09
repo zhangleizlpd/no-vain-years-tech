@@ -1,0 +1,26 @@
+id: task-closure
+version: 1.0.0
+description: |
+  Enforce tasks.md `[X]` state sync after /speckit.implement via spec-kit native
+  composition (templates prepend + after_implement hook + slash command).
+  Strengthens spec-kit's soft "mark off as [X]" directive into an explicit
+  per-task protocol + an after-implement verification pass that flags any task
+  whose [X] flip didn't ship in the same commit as the implementation.
+
+  NOT a SKILL fork — `.claude/skills/speckit-implement/SKILL.md` stays vanilla.
+applies_to: [mono]
+spec_kit_compat: ">=0.8.5,<0.10.0"
+priority: 10
+
+provides:
+  templates:
+    - name: tasks-template
+      type: template
+      strategy: prepend
+      file: templates/tasks-template.md
+  commands:
+    - file: commands/speckit-tasks-verify.md
+      target: .claude/commands/speckit-tasks-verify.md
+  extensions:
+    - file: extensions.yml.fragment
+      merge_into: .specify/extensions.yml

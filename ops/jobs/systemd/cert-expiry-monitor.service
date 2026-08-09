@@ -1,0 +1,17 @@
+[Unit]
+Description=TLS cert expiry monitor (api.shintongtech.com + img.shintongtech.com)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/cert-management.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_WEBHOOK_URL / _FEISHU_SECRET / 可选 NVY_MACHINE）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# 任务调参（CERT_ALERT_THRESHOLD_DAYS / CERT_MONITOR_DOMAINS）—— 可选，'-' = 缺则不报错。
+EnvironmentFile=-/etc/cert-monitor.env
+# 套通用 wrapper：跑完（健康/告警）都推飞书 report（机器+任务+逐域剩余天数）+ 写心跳供看门狗。
+# wrapper + feishu-send.sh 安装在 /usr/local/lib/nvy/（见 ops/runbook/cert-management.md）。
+# 🚨 wrapper 的任务 id 仍是 `cert-expiry`（**不是** unit 名 cert-expiry-monitor）：它同时是心跳
+#    文件名和 nvy-watchdog.service 清单里的 key，改它 = 看门狗对不上 → 假 no-show 告警。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh cert-expiry -- /usr/local/lib/nvy/jobs/cert-expiry-monitor.sh

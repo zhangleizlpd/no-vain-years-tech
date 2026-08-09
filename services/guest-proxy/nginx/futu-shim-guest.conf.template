@@ -1,0 +1,266 @@
+# 访客侧 futu-shim 入口（K 线 + 期权链三条 + 标的级 /overview，只放美股）。
+#
+# 跑在 77 (`mbw-staging`) 上、**独立于 prod compose 的 nginx**，绑 wg2 虚 IP `10.90.0.1`。
+# 为什么不复用 prod nginx：那个容器 `ports: 80:80 / 443:443`，若给它加一条
+# `10.90.0.1:...` 的映射，wg2 没起来时 docker 绑不上该地址 → 容器起不来 →
+# `api.shintongtech.com` 跟着挂。为一个访客功能给主站加这种耦合不值。
+#
+# 本文件是 **template**：官方 nginx 镜像会对 /etc/nginx/templates/*.template 做
+# envsubst 再落到 /etc/nginx/conf.d/。真 token 因此不入库、只从 host 环境注入。
+#
+# 需要的环境变量（由 docker-compose.guest.yml 的 env_file 提供）：
+#   FUTU_SHIM_URL    上游 shim，正常是 http://10.89.0.1:8811
+#   FUTU_SHIM_TOKEN  shim 的真 token（访客永远看不到它）
+#   GUEST1_TOKEN     发给访客 1 的 bearer（与 shim token 无关，可单独吊销）
+#   GUEST1_NAME      日志里的可读名字
+
+# ── 访客身份：Authorization 整串 → 名字。命不中 = 空 = 401 ───────────────────
+# 用 map 而不是 if 链，是为了加第二个访客时只加一行，且日志里能记名字。
+#
+# 🚨 **`map_hash_bucket_size` 必须显式调大**：这里的 key 是整串 `Bearer <token>`，
+#    而 render-env.sh 生成的是 `openssl rand -hex 24` = 48 字符 ⇒ key 长 55 字符，
+#    超过 nginx 默认桶宽（64，且要求 key 短于它），nginx 直接
+#    `[emerg] could not build map_hash` **起不来**。
+#    ⚠️ 2026-08-04 首次上线实撞：本机预演时用的假 token 是 `guest-secret`（12 字符），
+#    形状与生产不一致 ⇒ 测试全绿而真环境当场崩。**测试数据的长度也是形状的一部分。**
+map_hash_bucket_size 128;
+
+# 🚨 **每个 GUESTn_TOKEN 必须非空**。若某个访客的 token 渲染成了空串，这里的 key 就退化
+#    成字面量 `Bearer `，等于凭空多出一个「几乎无口令」的身份。判据不放在这里（nginx 无从
+#    校验），而是 `render-env.sh` 出包前断言每个 GUESTn_TOKEN 长度 ≥ 32 —— 那条能真失败。
+map $http_authorization $guest_name {
+    default                      "";
+    "Bearer ${GUEST1_TOKEN}"     "${GUEST1_NAME}";
+    "Bearer ${GUEST2_TOKEN}"     "${GUEST2_NAME}";
+}
+
+# ── 限频：按访客计，不按 IP ─────────────────────────────────────────────────
+# 每个 zone 的额度都是**从上游那个 capability 的官方限额里切出来的一份**，而这些池
+# **全部与 prod 的 EOD 采集共用**。切多少的判据只有一个：打满时 prod 那轮还跑不跑得完。
+#
+# ① `history_kline` 官方 60 次/30s = 120 次/分。给访客 **110 次/分**，prod 留 10 次/分。
+#
+#    🔎 **它比另两个池宽得多，是有真账的**：08-01 的 `ok=2/fail=5` 回填事故一度被当成
+#    「这个池很紧」的证据，但那次的**根因是计量 bug，不是池子紧** ——
+#      ① `/kline` 当时对**每一页**都计闸，而官方明说「分页只有首页计入限频」；
+#      ② `history_kline` 被错挂在 10/30s 的最严兜底上（官方真值 60/30s，6 倍偏严）。
+#    两条都已在 #762 修掉。修完后 prod 的实际用量小得多：日常 EOD 12 只锚 = **12 次调用**，
+#    连 10 年回填 7 只票也只有 **7 次**（分页豁免）⇒ 留 10 次/分绰绰有余。
+#
+#    ⚠️ 本值自 2026-08-05 起已在 77 上生效（当时是**手改 + reload**，08-07 才补齐注释与
+#    文档口径）。别在 77 上直接改这个文件 —— 经过与后果见 runbook 同名小节。
+limit_req_zone $guest_name zone=guest_kline:1m rate=110r/m;
+
+# ② 🔴 `option_chain` 官方只有 **10 次/30s = 20 次/分** —— 上游最紧的一个池，比
+#    `history_kline` 紧 6 倍（这是官方真值不是保守兜底，2026-08-04 直取
+#    openapi.futunn.com 复核）。照抄 ① 的 20r/m 等于**把整个池给访客一个人**。
+#
+#    **给 10 次/分 = 对半分**（2026-08-04 owner 定；此前是 5 次/分 = 25%）。
+#    🚨 **这个数踩在门上，不是留有余量的**：prod 的链发现是 12 只锚 × 约 10-14 个
+#    到期日窗 = 120-170 次调用；剩 10 次/分 ⇒ **12-17 分钟**，而 SC-009 的门是
+#    **15 分钟** —— 上界会顶出去。撑住它的是两件事，都不是配置保证的：
+#      ① **时段错开** —— 访客不会恰好在 06:00 CST 那一轮里满速打；
+#      ② **顶出去也不丢数** —— 上游 429 让 server 侧走 `budgetExhausted` 延迟重入队、
+#         不耗 attempts，所以后果是**慢**不是**失败**。
+#    ⇒ **上线后第一个交易日必须核对那轮 `SyncRun` 的墙钟**；持续贴着 15 分钟就把这个
+#      数调回去。别把「至今没红」当成余量。
+limit_req_zone $guest_name zone=guest_option_chain:1m rate=10r/m;
+
+# ③ `expiration_date` 与 `snapshot` 官方均 60 次/30s = 120 次/分，与 ① 同档，故同额度。
+limit_req_zone $guest_name zone=guest_option_meta:1m rate=20r/m;
+
+limit_req_status 429;
+
+# ── 日志里的 codes 截断 ─────────────────────────────────────────────────────
+# `/option-snapshot` 一次可带 400 个 code ≈ 8.4 KB。原样进日志 = 单行 8 KB，
+# 20 次/分打满约 230 MB/天，而 77 的可用磁盘是几个 G 量级 —— 审计价值撑不起这个代价。
+# 截到 120 字符：够看出「他在查哪只票的链」，不够把盘撑爆。
+#
+# ⚠️ 用 `${head}` 花括号形式而非 `$head` —— 变量名后若紧跟非分隔字符，nginx 会连着
+#    一起当变量名解析。这里跟的是 ASCII 括号，加括号是为了让它对后续改动也安全。
+map $arg_codes $codes_logged {
+    ""                   "-";
+    "~^(?<head>.{120})." "${head}(truncated)";
+    default              $arg_codes;
+}
+
+log_format guest_access '$time_iso8601 guest=$guest_name status=$status '
+                        'uri=$uri code=$arg_code codes=$codes_logged '
+                        'start=$arg_start end=$arg_end '
+                        'ua="$http_user_agent" rt=$request_time';
+
+# ── 容器存活探针（只监听 loopback，访客够不到）──────────────────────────────
+# 刻意不打 /healthz：那会穿到上游 shim，把「本容器是否活着」变成对外部服务的依赖，
+# shim 一抖容器就被判死重启。至于「有没有绑上 wg2 地址」不需要探针证明 ——
+# 10.90.0.1 不存在时 nginx 直接 `cannot assign requested address` 起不来，
+# 容器进重启循环，比任何探针都响。
+server {
+    listen 127.0.0.1:8812;
+    location = /__ping { return 200 '{"ok":true}'; }
+    location / { return 404; }
+}
+
+server {
+    listen 10.90.0.1:8811;
+    server_name _;
+    default_type application/json;
+
+    access_log /var/log/nginx/guest-access.log guest_access;
+    error_log  /var/log/nginx/guest-error.log warn;
+
+    # 访客不该看到上游的存在,更不该看到它的版本/路由集。
+    server_tokens off;
+
+    # 🚨 **`/option-snapshot` 一次可带 400 个 code ⇒ query string ≈ 8.4 KB，超过默认
+    #    `large_client_header_buffers` 的单个 8k 缓冲。** 官方文档明写「请求行放不进
+    #    **一个**缓冲就返 414」⇒ 必须调大**单个**尺寸，调多个数量没用。
+    #    不加这条的形态：小批快照正常、满批恒 414，且**请求根本到不了 shim**，
+    #    在上游日志里查不到任何痕迹。
+    large_client_header_buffers 4 16k;
+
+    # ── 闸 1：身份 ──────────────────────────────────────────────────────────
+    # map 没命中 ⇒ $guest_name 为空 ⇒ 401。注意这是**认证**失败,不是授权失败。
+    if ($guest_name = "") {
+        return 401 '{"error":"unauthorized"}';
+    }
+
+    # ── 闸 4：token 置换（server 级，所有 location 继承）────────────────────
+    # 访客带的是自己的 bearer;上游收到的是 shim 的真 token。访客永远拿不到它。
+    #
+    # 🚨 **放在 server 级而不是各 location 里，是为了让它漏不掉。** 这一条是本代理存在
+    #    的全部理由；留在 location 级的话，加新端点时漏抄一行就会把访客自己的 bearer
+    #    原样转上去。那不是安全洞（shim 会 401，fail-closed），但报错方向完全错 ——
+    #    看到的是「这个访客的 token 不对」，而真因是代理少了一行。
+    #
+    # 🚨 **nginx 的 `proxy_set_header` 是整组覆盖，不是逐条合并**：任何一个 location
+    #    里只要出现**一条** `proxy_set_header`，server 级这三条就**全部**对该 location
+    #    失效。⇒ 要给某个端点单加 header，必须把这三条一起抄过去。这条规则不显眼，
+    #    但踩中的形态正是上面那个「token 没置换」。
+    proxy_set_header Authorization "Bearer ${FUTU_SHIM_TOKEN}";
+    proxy_set_header Host $host;
+    proxy_set_header X-Guest $guest_name;
+
+    proxy_connect_timeout 10s;
+    # OpenD 自 2026-08-04 (#868) 改为**常驻**,正常路径不再有冷启等待。
+    # 90s 仍然保留,是给「OpenD 崩溃后被 Restart=always 拉起」这个窗口留的余量
+    # (冷启实测 15-25s) —— 读超时容不下时访客侧看到的是 504 而非慢。
+    proxy_read_timeout 90s;
+
+    # ── 闸 2：端点白名单 ───────────────────────────────────────────────────
+    # 开 /kline + 期权链三条 + 标的级 /overview。/his-vol /universe /trading-days
+    # /earnings-calendar 一律不可见。面越小越好;要放新端点是显式动作,不是默认继承。
+    location = /kline {
+        # ── 闸 3：市场白名单 ────────────────────────────────────────────────
+        # 🔴 只放 US。理由是**最小权限**，不是行情权风险 —— V10（08-04 港股早市实测）
+        #    已证伪「OpenD 抢走手机行情权」，那条旧理由已作废。访客的用途就是美股，
+        #    一个只放行实际需要的市场的白名单本身就比「怕降级所以挡」更耐久。
+        #    **要给访客开港股是一个独立决策**，改这条正则即可，别当成 V10 的连带后果。
+        #
+        # nginx 的 $arg_code 与 Flask 的 request.args.get('code') 在重复参数时
+        # **都取第一个**,所以 ?code=US.X&code=HK.Y 不构成绕过 —— 两侧看到的是
+        # 同一个值。这一点是本闸成立的前提,改动前先复核。
+        if ($arg_code !~ "^US\.") {
+            return 400 '{"error":"bad_request","detail":"code must start with US. (guest access is US-only)"}';
+        }
+
+        limit_req zone=guest_kline burst=15 nodelay;
+
+        proxy_pass ${FUTU_SHIM_URL}/kline$is_args$args;
+    }
+
+    # ── 期权面（2026-08-04 开放）───────────────────────────────────────────
+    # 三条端点对应一条链路：**有哪些到期日 → 那些到期日上有哪些合约 → 这些合约现在多少钱**。
+    # 单靠其中任意一条都用不起来，所以要开就是三条一起开。
+    #
+    # 🔴 `/earnings-calendar` **刻意不开**（不是遗漏）：它的参数是 `market=US`、
+    #    **连 code 都没有** ⇒ 闸 3 在结构上够不到它；而且它是市场级全量接口，返回的是
+    #    全市场财报日历，与「美股期权」这个用途无关。要开它得先给它设计一道自己的闸，
+    #    那是一个独立决策。
+    location = /option-expirations {
+        # 单 code 端点，与 /kline 同形态。
+        if ($arg_code !~ "^US\.") {
+            return 400 '{"error":"bad_request","detail":"code must start with US. (guest access is US-only)"}';
+        }
+
+        limit_req zone=guest_option_meta burst=5 nodelay;
+
+        proxy_pass ${FUTU_SHIM_URL}/option-expirations$is_args$args;
+    }
+
+    location = /option-chain {
+        if ($arg_code !~ "^US\.") {
+            return 400 '{"error":"bad_request","detail":"code must start with US. (guest access is US-only)"}';
+        }
+
+        # 🔴 上游最紧的池（算账见顶部 zone ②）。burst 给 3 而不是 5，是让「一只票的
+        #    整条到期日阶梯」（约 5-8 个 30 天窗）前几发能连着过，又不至于一口气把
+        #    prod 那侧的余量吃掉。
+        limit_req zone=guest_option_chain burst=3 nodelay;
+
+        proxy_pass ${FUTU_SHIM_URL}/option-chain$is_args$args;
+    }
+
+    location = /option-snapshot {
+        # ── 闸 3（复数参数版）：两步，顺序不能反 ────────────────────────────
+        # 本端点的参数是 **`codes`（复数、逗号分隔）**，`$arg_code`（单数）在这里恒为空
+        # ⇒ 上面那条单数写法**对它完全不生效**，必须单写。照抄单数版的形态 =
+        # 闸看着在、实际恒放行。
+        #
+        # 🚨 **步骤 ① 存在的唯一理由是百分号编码绕过，不是洁癖。**
+        #    nginx 的 `$arg_*` **不做 URL 解码**。`codes=US.PEP%2CHK.700` 在这里是一个
+        #    **不含字面逗号**的串 ⇒ 只写步骤 ② 的话，它会被当成单个 code、`^US\.` 匹配
+        #    通过、**放行**；而 Flask 侧 `request.args` 会把它解码成 `US.PEP,HK.700`，
+        #    shim 按逗号切开 —— 港股就这么进去了，且日志里看着像一次合法请求。
+        #    字符集白名单先把 `%` 拒掉，步骤 ② 才成立。**两步是一个整体，别拆。**
+        if ($arg_codes ~ "[^A-Za-z0-9.,\-]") {
+            return 400 '{"error":"bad_request","detail":"codes contains an illegal character (letters, digits, dot, hyphen, comma only; percent-encoding is rejected)"}';
+        }
+
+        # 步骤 ②：**每一段**都必须是 `US.`，不是「开头是 US. 就行」。
+        # `^US\.` 那种写法会放过 `US.PEP,HK.700`。
+        if ($arg_codes !~ "^US\.[^,]+(,US\.[^,]+)*$") {
+            return 400 '{"error":"bad_request","detail":"every code must start with US. (guest access is US-only)"}';
+        }
+
+        limit_req zone=guest_option_meta burst=5 nodelay;
+
+        proxy_pass ${FUTU_SHIM_URL}/option-snapshot$is_args$args;
+    }
+
+    location = /overview {
+        # 标的级期权总览：iv / iv_rank / iv_percentile + HV 梯队,一发 ≤500 个标的。
+        # 对做卖方的人,IV 分位比链本身更常用,而这条一次调用就覆盖整个自选池。
+        #
+        # ⚠️ **两步 codes 闸是从 /option-snapshot 抄过来的,两份必须同步改。**
+        #    没抽成 map 是刻意的:本文件里单数版的 `if ($arg_code !~ "^US\.")` 同样在三个
+        #    location 里各写一份,与既有风格一致;而且两步各自的诊断文案对访客侧的模型有用,
+        #    合并成一条会丢掉「别做百分号编码」这个具体指引。
+        #    **复制的安全阀是 verify-guards.sh 给本端点单配了反例断言** —— 抄漏或改漂了会红。
+        if ($arg_codes ~ "[^A-Za-z0-9.,\-]") {
+            return 400 '{"error":"bad_request","detail":"codes contains an illegal character (letters, digits, dot, hyphen, comma only; percent-encoding is rejected)"}';
+        }
+        if ($arg_codes !~ "^US\.[^,]+(,US\.[^,]+)*$") {
+            return 400 '{"error":"bad_request","detail":"every code must start with US. (guest access is US-only)"}';
+        }
+
+        # 与 /option-expirations · /option-snapshot 共用 meta 池：三者的上游官方限额同为
+        # 60 次/30s。**不给它单开 zone** —— prod 侧消费它的 `underlying_iv_daily` 维度
+        # 一天只打 1-2 发（≤500 codes 一次批完），争用可以忽略,不值得再多一个池要维护。
+        limit_req zone=guest_option_meta burst=5 nodelay;
+
+        proxy_pass ${FUTU_SHIM_URL}/overview$is_args$args;
+    }
+
+    # 存活探针。不碰 OpenD(shim 侧 /healthz 明确 never starts OpenD),
+    # 访客用它确认隧道通不通,不用去猜。
+    # ⚠️ 这里**不要**写 proxy_set_header —— 写一条就会丢掉 server 级那三条（含 token
+    #    置换），表现为 /healthz 恒 401 而 /kline 正常。
+    location = /healthz {
+        proxy_pass ${FUTU_SHIM_URL}/healthz;
+    }
+
+    # 其余一律不存在。放在最后,前面几个 = 精确匹配优先。
+    location / {
+        return 404 '{"error":"not_found"}';
+    }
+}

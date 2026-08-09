@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "plan",
+    "allow": [
+      "Bash(pnpm dlx nx *)",
+      "Bash(pnpm dlx prisma *)",
+      "Bash(pnpm dlx @nestjs/cli *)",
+      "Bash(pnpm dlx create-nx-workspace *)",
+      "Bash(pnpm nx *)",
+      "Bash(pnpm prisma *)",
+      "Bash(pnpm exec nx *)",
+      "Bash(pnpm exec prisma *)",
+      "Bash(npx nx *)",
+      "Bash(npx prisma *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/graphify-cheatsheet-hook.sh\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-gnu-flag-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-burst-destructive-guard.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-local-verify-guard.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-convention-rubric.sh\""
+          }
+        ]
+      }
+    ]
+  },
+  "plansDirectory": "./docs/private/plans",
+  "extraKnownMarketplaces": {
+    "nx-claude-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "nrwl/nx-ai-agents-config"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "nx@nx-claude-plugins": true
+  }
+}

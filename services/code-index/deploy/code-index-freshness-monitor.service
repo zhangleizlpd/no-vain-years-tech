@@ -1,0 +1,31 @@
+# code-index freshness monitor (ADR-0060): probes the true origin/main tip vs the
+# embedded index_meta.last_sha and alerts to Feishu when the index has lagged past
+# the grace window — catching the SILENT stalls the ~2min tick can't self-detect
+# (query-heartbeat starvation, builder crash-loop, git-fetch failure, dead timer),
+# all of which leave the tick exiting 0 while last_sha stays frozen.
+# Mirror of ops/jobs/systemd/cert-expiry-monitor.service. Driven by the .timer.
+# Install:
+#   cp deploy/code-index-freshness-monitor.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now code-index-freshness-monitor.timer
+# Webhook + window come from /etc/code-index-monitor.env (optional; absent → log-only).
+[Unit]
+Description=code-index freshness monitor (origin/main vs embedded last_sha)
+Documentation=file:///root/no-vain-years-mono/ops/runbook/code-index-deploy.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/code-index.env
+# 公共飞书配置（NVY_ALERT_*，全机共享，feishu-send.sh 用）—— '-' = 缺则不报错。
+EnvironmentFile=-/etc/nvy-alert.env
+EnvironmentFile=-/etc/code-index-monitor.env
+WorkingDirectory=/root/no-vain-years-mono/services/code-index
+# Same trap the tick unit hit on 2026-08-03: Type=oneshot defaults to
+# TimeoutStartSec=infinity, and this unit's timer is OnUnitActiveSec= — so one hung run
+# pins the unit in `activating` and the timer never schedules another elapse. That kills
+# the monitor SILENTLY, and this one has no wrapper heartbeat, so nvy-watchdog's no-show
+# check doesn't cover it either — nothing would be watching the watcher. Worst legit run is
+# ~90s (ls-remote 3 tries with backoff + psql), so 3min caps it well under the 5min period.
+TimeoutStartSec=3min
+ExecStart=/usr/bin/bash scripts/check-index-freshness.sh

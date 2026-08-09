@@ -1,0 +1,159 @@
+name: Release iOS Simulator Build (EAS)
+
+# Build an iOS **Simulator** app on EAS Cloud when release-please cuts a
+# `mobile-vX.Y.Z` tag (apps/mobile component), then attach the .tar.gz to that
+# tag's GitHub Release. Sibling of release-android-apk.yml + deploy-web.yml so
+# web + apk + iOS-sim all ship at the same mobile component version.
+#
+# WHY A SIMULATOR BUILD (not a device .ipa): there is no Apple Developer account
+# / signing credentials configured for this project. A real-device .ipa MUST be
+# Apple-signed (distribution cert + provisioning profile) and can only reach
+# users via TestFlight or an ad-hoc UDID profile — none of which exist yet. A
+# **simulator** build skips signing entirely, so it's the only signing-free iOS
+# artifact CI can produce today. It runs ONLY on a Mac's iOS Simulator (via
+# `xcrun simctl install` or Expo Orbit) — it CANNOT install on a physical iPhone.
+# When an Apple Developer account is set up later, switch this to a device build
+# + `eas submit` to TestFlight (and add the ASC API key as a repo secret).
+#
+# WHY THE `preview` PROFILE: it is the only standalone (non-dev-client) profile
+# with `ios.simulator: true` and the prod API base baked in — i.e. a JS-bundled
+# build that runs without a local Metro. The `production` profile's iOS is a
+# *device* build (no `simulator: true`) → would demand signing and fail here.
+#
+# Version alignment (ADR-0044 §4, appVersionSource: remote): expo.version is
+# written by release-please into app.json before the tag; EAS reads it as-is.
+# ios.buildNumber is EAS's remote counter (autoIncrement) — no git churn.
+#
+# Why CI (GHA runner) instead of a local build: the runner is outside CN, so the
+# EAS Cloud upload dodges the GFW slowness that hampers local `eas build` (per
+# memory feedback_china_network_prefer_domestic_proxy). EAS does the native build
+# on its servers; we only orchestrate.
+#
+# Manual prerequisite (one-time, owner-only): the repo secret EXPO_TOKEN — the
+# SAME robot token release-android-apk.yml uses (expo.dev → Account Settings →
+# Access Tokens). No Apple secret is needed for a simulator build.
+
+# NOTE: auto-trigger on `mobile-v*` tags is DISABLED — 聚焦 Android,EAS Free 额度
+# 有限,每个 tag 双包(内测 Android + iOS sim)会烧光月度槽。iOS sim 不受 phase gate,
+# 是唯一每 tag 必跑的包,故率先关掉自动跑。改为**仅手动**:真要出 iOS sim 包时
+# `gh workflow run release-ios-simulator.yml -f tag=mobile-vX.Y.Z`。
+# 恢复自动:把下面 `push: tags` 一段加回。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing mobile-vX.Y.Z tag to (re)build + attach the iOS sim build to'
+        required: true
+        type: string
+
+permissions:
+  contents: write # gh release upload writes the .tar.gz asset to the Release
+
+# Never cancel an in-flight EAS build (it costs a monthly build-quota slot and
+# runs ~10-20 min on EAS servers); let concurrent tags queue instead.
+concurrency:
+  group: release-ios-sim-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ios-sim:
+    name: EAS build iOS Simulator + attach to Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target tag
+        id: tag
+        # push → the tag ref; workflow_dispatch → the required `tag` input.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not resolve a mobile-v tag to build."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building iOS simulator app for tag: $TAG"
+
+      - uses: actions/checkout@v6
+        with:
+          # Build the exact released commit (the tag), not whatever main is at.
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup EAS (Expo) auth
+        # Installs eas-cli globally on the runner (NOT a project dependency, per
+        # ADR-0044 §5) and wires EXPO_TOKEN. Pinned to satisfy eas.json
+        # cli.version >=19.0.0.
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 20.0.0
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build iOS Simulator app on EAS (preview profile, blocking)
+        id: build
+        working-directory: apps/mobile
+        # --wait blocks until the cloud build finishes; --json (implies
+        # --non-interactive) prints the finished build object(s). Parse the
+        # build id defensively (array or object shape). Simulator builds need no
+        # Apple credentials, so this stays non-interactive end to end.
+        run: |
+          eas build --platform ios --profile preview --non-interactive --wait --json | tee build.json
+          BUILD_ID=$(jq -r 'if type=="array" then .[0].id else .id end' build.json)
+          if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ]; then
+            echo "::error::Could not parse EAS build id from build.json"
+            exit 1
+          fi
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "EAS build finished: $BUILD_ID"
+
+      - name: Download the iOS simulator artifact
+        id: app
+        working-directory: apps/mobile
+        # eas-cli 20.x's build:download writes to its own cache dir (NOT cwd) and
+        # prints "Build downloaded to <abs-path>" — capture that path rather than
+        # globbing. For a SIMULATOR build that path is a `.app` BUNDLE DIRECTORY
+        # (not a single file), so the old `[ ! -f ]` guard + bare `cp` rejected it
+        # ("Could not locate ..." on mobile-v0.6.0). We accept file-or-dir (`-e`)
+        # and tar+gzip the `.app` ourselves into the uploadable .tar.gz asset.
+        run: |
+          DL=$(eas build:download --build-id "${{ steps.build.outputs.build_id }}" --non-interactive 2>&1 | tee /dev/stderr)
+          ART=$(printf '%s\n' "$DL" | sed -n 's/^Build downloaded to //p' | tail -1)
+          if [ -z "$ART" ] || [ ! -e "$ART" ]; then
+            echo "::error::Could not locate the iOS simulator artifact from eas build:download output"
+            exit 1
+          fi
+          # Versioned, predictable asset name for the Release.
+          DEST="no-vain-years-${{ steps.tag.outputs.tag }}-ios-sim.tar.gz"
+          if [ -d "$ART" ]; then
+            # .app bundle dir → archive from its parent so the tar root is `<name>.app`
+            # (relative), letting a Mac do `tar -xzf <file>` → `xcrun simctl install`.
+            tar -czf "$DEST" -C "$(dirname "$ART")" "$(basename "$ART")"
+          else
+            # Older / alt CLI shape: already a single archive file → copy as-is.
+            cp "$ART" "$DEST"
+          fi
+          echo "path=apps/mobile/$DEST" >> "$GITHUB_OUTPUT"
+          echo "Packaged iOS sim build → $DEST"
+
+      - name: Attach iOS simulator build to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --clobber overwrites the asset on re-run (workflow_dispatch / rerun).
+        # Install on a Mac: `tar -xzf <file>` then `xcrun simctl install booted
+        # <*.app>` (or open with Expo Orbit). Simulator-only — not for real iPhones.
+        run: gh release upload "${{ steps.tag.outputs.tag }}" "${{ steps.app.outputs.path }}" --clobber

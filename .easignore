@@ -1,0 +1,56 @@
+# .easignore — controls what EAS Build uploads. REPLACES .gitignore when present.
+#
+# Two invariants this file must honor:
+#  1. Re-state every .gitignore exclusion — EAS ignores .gitignore once this file exists,
+#     so anything omitted here (e.g. node_modules/) would otherwise be uploaded.
+#  2. NEVER exclude a pnpm workspace package dir (apps/*, packages/*, scripts/checks)
+#     nor the root pnpm-lock.yaml / pnpm-workspace.yaml / .npmrc. EAS runs
+#     `pnpm install --frozen-lockfile`, which validates every workspace importer; a missing
+#     dir makes the lockfile look stale and breaks install. So we only trim NON-workspace,
+#     non-build-time dirs to shrink the (China-network-sensitive) upload.
+#
+# NOTE: .easignore correctness can only be confirmed by a real `eas build` upload (no
+# dry-run upload command exists). That validation lands with 子 plan 3's first preview build.
+
+# --- re-stated from .gitignore (EAS reinstalls / regenerates these) ---
+node_modules/
+dist/
+build/
+out-tsc/
+coverage/
+.env
+.env.local
+.env.*.local
+.env.production
+.envrc
+.DS_Store
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.nx/cache
+.nx/workspace-data
+.nx/polygraph
+.expo/
+playwright-report/
+playwright-test-results/
+graphify-out/
+.spec-kit/runs/
+.claude/settings.local.json
+
+# --- extra trims: non-workspace, not needed at build time ---
+.git/
+.github/
+.claude/
+.specify/
+.spikes/
+docs/
+ops/
+# services/* 刻意不入 pnpm workspace（自带工具链 / Python venv / 纯配置），故不触犯上面
+# invariant 2。2026-08-07 补：guest-proxy 从 ops/ 搬到这里，不补这行它会从「不上传」变
+# 「上传」；顺带把一直漏在外面的 code-index / futu-shim 也收进来。
+services/
+specs/

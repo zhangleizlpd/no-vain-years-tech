@@ -1,0 +1,14 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/src/generated/prisma
+
+# Local-personal seed — per ADR-0035 § 3, each dev maintains their own.
+prisma/seeds/local-personal.ts
+
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
+# 出网探针产物（NVY_OUTBOUND_PROBE=1 时生成，见 docs/improvements/2026-08/08-02-test-size-taxonomy.md）
+.outbound-probe.jsonl

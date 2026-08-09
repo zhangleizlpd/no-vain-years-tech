@@ -1,0 +1,38 @@
+**/dist/
+**/build/
+**/node_modules/
+**/.next/
+**/.expo/
+**/coverage/
+**/target/
+
+# Lockfiles / generated
+pnpm-lock.yaml
+apps/server/openapi.json
+packages/api-client/src/generated/
+
+# release-please 托管 CHANGELOG — prettier 重排 (* → - bullet / 删空行) 会与
+# release-please 输出打架,致发版 drift + 误判 project affected。markdownlint glob
+# 已同步排除 (!**/CHANGELOG.md),此处对齐 prettier 侧。
+**/CHANGELOG.md
+
+# AI 草稿 / 高频改写区
+specs/*/plan.md
+specs/*/tasks.md
+specs/*/analysis.md
+docs/private/
+docs/daily/
+docs/experience/
+
+# Upstream vendored (spec-kit + michael-speckit-presets)
+# 该目录由 spec-kit init / preset 安装管理，本地格式化会被下次同步覆盖
+# 同时混入 .cache/ 自动生成文件，绝不能 Prettier 重写。
+.specify/
+.claude/commands/speckit-*.md
+.claude/skills/speckit-*/
+
+# preset 装到 .specify/ 之外的产物（install.sh → scripts/ + repo root）：
+# prettier 单引号化会与 canonical 双引号 diverge，使 verify.sh 误报 drift
+# (per memory reference_preset_reinstall_prettier_quote_drift)。保持 as-installed。
+scripts/check-spec-frontmatters.ts
+lefthook.preset-*.yml

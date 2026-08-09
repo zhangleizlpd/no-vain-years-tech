@@ -1,0 +1,78 @@
+name: Nightly Perf
+
+# Per ADR-0039 § 5 / § 6 — perf IT runs nightly on main, soft warning only.
+# Fast PR checks (CI workflow) keep <10min; latency-sensitive specs gated by
+# RUN_PERF_IT env (per memory `feedback_env_gated_perf_it_pattern`).
+#
+# Soft signal: failure opens a GitHub issue tagged `perf` linking to the run.
+# Does NOT block merges (separate from required status checks).
+
+on:
+  schedule:
+    # 20:00 UTC = 04:00 Beijing. Shifted +1h from nightly-sweep (19:00 UTC)
+    # so the two don't contend for runners or share the same hour.
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  perf:
+    name: perf
+    runs-on: ubuntu-latest
+    env:
+      RUN_PERF_IT: 'true'
+      PERF_IT_REPS: '300'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        working-directory: apps/server
+        run: npx prisma generate
+
+      - name: Inject perf budgets from spec frontmatter
+        # Emits `export EXPECTED_P95_MS_<SLUG>=N` lines per ADR-0039 § 3 SSOT.
+        # >> $GITHUB_ENV so each `export KEY=VALUE` line is picked up by the
+        # next step (strip the leading `export ` since GITHUB_ENV expects KEY=VALUE).
+        run: |
+          pnpm tsx scripts/inject-perf-env.ts \
+            | sed -e 's/^export //' \
+            >> "$GITHUB_ENV"
+
+      - name: Run perf IT (server)
+        run: pnpm exec nx run server:test --skip-nx-cache
+
+      - name: Create Issue on Perf Regression
+        if: failure()
+        # 同名 open issue 已存在就不再开新的（防连红堆积；同 e2e-real-backend.yml 的去重）。
+        run: |
+          open_count=$(gh issue list --state open --limit 100 --json title \
+            --jq '[.[] | select(.title == "🚨 Nightly Perf Regression Detected")] | length')
+          if [ "$open_count" = "0" ]; then
+            gh issue create \
+              --title "🚨 Nightly Perf Regression Detected" \
+              --body "RUN_PERF_IT=true nightly run RED. P95 / timing-defense budget exceeded. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --label "perf,bug"
+          else
+            echo "skip: 已有 $open_count 张同名 open issue（防堆积，同一断裂一张票）"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,163 @@
+{
+  "name": "server",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/server/src",
+  "projectType": "application",
+  "tags": ["scope:server-app"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:swc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "apps/server/dist",
+        "main": "apps/server/src/main.ts",
+        "tsConfig": "apps/server/tsconfig.app.json",
+        "assets": [
+          "apps/server/src/assets",
+          {
+            "glob": "**/*.xdb",
+            "input": "apps/server/src/security/data",
+            "output": "./security/data"
+          }
+        ],
+        "swcrc": "apps/server/.swcrc",
+        "stripLeadingPaths": true
+      },
+      "configurations": {
+        "production": {
+          "skipTypeCheck": false
+        },
+        "development": {
+          "skipTypeCheck": false
+        }
+      }
+    },
+    "prune-lockfile": {
+      "dependsOn": ["build"],
+      "cache": true,
+      "executor": "@nx/js:prune-lockfile",
+      "outputs": [
+        "{workspaceRoot}/apps/server/dist/package.json",
+        "{workspaceRoot}/apps/server/dist/pnpm-lock.yaml"
+      ],
+      "options": {
+        "buildTarget": "build"
+      }
+    },
+    "copy-workspace-modules": {
+      "dependsOn": ["build"],
+      "cache": true,
+      "outputs": ["{workspaceRoot}/apps/server/dist/workspace_modules"],
+      "executor": "@nx/js:copy-workspace-modules",
+      "options": {
+        "buildTarget": "build"
+      }
+    },
+    "prune": {
+      "dependsOn": ["prune-lockfile", "copy-workspace-modules"],
+      "executor": "nx:noop"
+    },
+    "serve": {
+      "continuous": true,
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "node --watch dist/main.js",
+        "cwd": "apps/server"
+      }
+    },
+    "build:watch": {
+      "continuous": true,
+      "executor": "@nx/js:swc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "apps/server/dist",
+        "main": "apps/server/src/main.ts",
+        "tsConfig": "apps/server/tsconfig.app.json",
+        "assets": ["apps/server/src/assets"],
+        "swcrc": "apps/server/.swcrc",
+        "stripLeadingPaths": true,
+        "watch": true
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "eslint src test",
+        "cwd": "apps/server"
+      }
+    },
+    "typecheck": {
+      "//": [
+        "🚨 这里的 `build` 是**定序**用的，不是语义依赖（typecheck 自己在空 dist 上也能从零跑通，已实测）。",
+        "根因：本项目 tsconfig.app.json 把 outDir 与 tsBuildInfoFile 都指向 `dist`，而 build(@nx/js:swc) 的",
+        "outputPath 也是 `dist`，且**构建前会清空它**（实测：往 dist 放的标记文件被删掉）。两者原本无任何顺序",
+        "约束（nx.json 的 typecheck.dependsOn 只有 `^build`，管的是上游项目），`--parallel 3` 下会并发写/清同一",
+        "目录 → tsconfig.spec.json 经 references 解析 app 项目的 .d.ts 扑空 → 类型塌成 {} → 报出一堆 TS7006 /",
+        "TS2339，**且报错位置在与本次改动毫无关系的文件上**（2026-08-02 #816 CI 稳定命中：src/alert/*.spec.ts）。",
+        "本机因为快、撞不上那个窗口，怎么跑都绿 —— 别拿本地绿当证据。",
+        "⚠️ 方向不能反：让 build 等 typecheck，会变成 typecheck 先铺好 .d.ts 再被 build 清掉，实测 514 个 TS6305。",
+        "⚠️ 也不要提到 nx.json 的 targetDefaults —— 那会让 mobile:typecheck 连带依赖 mobile:build（expo export，约 3min）。"
+      ],
+      "dependsOn": ["^build", "build"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --reporter=default",
+        "cwd": "apps/server"
+      }
+    },
+    "test:watch": {
+      "continuous": true,
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest",
+        "cwd": "apps/server"
+      }
+    },
+    "runtime-smoke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm tsx scripts/ci/server-boot-smoke.ts",
+        "cwd": "{workspaceRoot}"
+      }
+    },
+    "export-openapi": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "outputs": ["{workspaceRoot}/apps/server/openapi.json"],
+      "options": {
+        "command": "PORT=3099 node dist/main.js & until curl -sf http://localhost:3099/docs-json > openapi.json 2>/dev/null; do sleep 0.5; done && lsof -tnP -i:3099 | xargs kill -9 2>/dev/null || true",
+        "cwd": "apps/server",
+        "env": {
+          "MARKETDATA_PROVIDER": "mock"
+        }
+      }
+    },
+    "marketdata-backfill": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "node dist/marketdata/marketdata-backfill.cli.js",
+        "cwd": "apps/server"
+      }
+    },
+    "marketdata-trigger": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "node dist/marketdata/marketdata-trigger.cli.js",
+        "cwd": "apps/server"
+      }
+    },
+    "alert-eval": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "options": {
+        "command": "node dist/alert/alert-eval.cli.js",
+        "cwd": "apps/server"
+      }
+    }
+  }
+}

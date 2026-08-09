@@ -1,0 +1,41 @@
+{
+  "_meta": {
+    "purpose": "Claude Design project registry for /mockup-gen — maps each bounded context to its nvy/<context> design project. Per docs/private/plans/2026-06/06-25-ideation-mockup-master.md §0 (three-layer taxonomy).",
+    "resolution": "projectId is a CACHE only. At runtime, /mockup-gen MUST re-resolve by NAME (match projects[].name === projectName) and refresh the cached id. If the named project is absent, create_project then write the new id back here. NOTE (2026-08-01): two list_projects exist and they FILTER DIFFERENTLY — DesignSync list_projects returns writable projects only, mcp__claude-design__list_projects returns all of the caller's. A project missing from the former is not proof it was deleted; cross-check with the latter before create_project, or you will make a duplicate. (An earlier note here claimed 035's per-feature project 824f360e… 'is gone'. Verified 2026-08-01: it still exists AND get_project reports canEdit=true, so the writable filter does NOT explain that observation — the real cause is unknown. Treat 'not in the listing' as inconclusive either way, and verify with get_project before concluding anything.)",
+    "contextSoT": "Context names = server-bounded-context-catalog.md + business-naming.md (frontend feature dir = module name). Do NOT invent a parallel context vocabulary. Multi-module feature → primary module; cross-cutting → _cross-cutting.",
+    "legacyProjects": "Superseded — NEVER write to these; their content already re-lives in the nvy/<context> projects above. Surveyed 2026-08-01. Per-feature era (pre per-context consolidation): 824f360e (035 Ideation Voice Input), 7af50b19 (034 ideation grounding). Mixed era: 4dfb2f5c (AI助手, holds 028/029/031/032/033 mockups + an old 53975 B support.js). All three carry a 7400 B PRE-REBASE _ds snapshot — stale but self-consistent, left as-is. Pre-DesignSync era (specs 001–025, .tsx/.jsx + tokens-shim, no _ds/<folder>/ pattern at all): 019decfd (account-center), d0bf48e4 (portfolio).",
+    "createdAt": "2026-06-25"
+  },
+  "designSystem": {
+    "name": "no-vain-years Design System",
+    "projectId": "019decdf-2281-73c8-82d1-50d62ee5ec76",
+    "type": "DESIGN_SYSTEM",
+    "note": "Account-level DS, VIRTUALLY inherited by every nvy/<context> project (reference, not copied files — a fresh project's list_files is empty). But the claude.ai preview sandbox resolves _ds/… by RELATIVE PATH, so assets must be materialised into each consuming project via mcp__claude-design__copy_files with src_project_id = THIS projectId (server-side, no context cost, no 256 KiB cap). Copy BOTH colors_and_type.css AND _ds_bundle.js (~71 KB — without it window.NoVainYearsDesignSystem_019dec components are unavailable). Never copy a sibling feature's frozen _ds/ snapshot. DS itself mirrors FROM apps/mobile/src/theme/ via /design-sync only (one-way; code is SoT)."
+  },
+  "contexts": {
+    "alert": {
+      "projectName": "nvy/alert",
+      "projectId": "23beea4c-929a-4134-bf1b-ba0682afca9c",
+      "resolvedAt": "2026-08-01",
+      "features": ["026"]
+    },
+    "ideation": {
+      "projectName": "nvy/ideation",
+      "projectId": "fccb0224-e2f0-44c5-839f-d9c3ccdff54b",
+      "resolvedAt": "2026-08-01",
+      "features": ["032", "033", "034", "035", "036", "037"]
+    },
+    "chat": {
+      "projectName": "nvy/chat",
+      "projectId": "5644cd11-42c0-4548-8532-e0d8f9ff61fd",
+      "resolvedAt": "2026-08-01",
+      "features": ["031"]
+    },
+    "optionsdesk": {
+      "projectName": "nvy/optionsdesk",
+      "projectId": "02ec895c-a2a8-4f89-8fc6-a5b050306ac8",
+      "resolvedAt": "2026-08-04",
+      "features": ["045", "046", "047"]
+    }
+  }
+}

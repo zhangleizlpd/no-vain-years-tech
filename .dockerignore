@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Node / build artifacts
+**/node_modules
+**/dist
+**/.nx
+**/.swc
+**/coverage
+**/.vitest
+**/*.tsbuildinfo
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+
+# Docs / specs / planning (not needed in image)
+docs
+specs
+*.md
+!apps/server/prisma/migrations/*.md
+
+# Local dev infra (must not leak into image)
+docker-compose.dev.yml
+.envrc
+.env
+.env.*
+!apps/server/.env.example
+
+# Test runner caches
+**/playwright-report
+**/test-results
+
+# Misc
+.github
+.claude
+.specify

@@ -1,0 +1,38 @@
+# code-index incremental tick (ADR-0060 §2): git-diff-by-SHA → spawn ONE one-shot
+# builder only when origin/main moved. Driven by code-index-tick.timer (~2min).
+# oneshot: runs to completion and exits, so RAM (the bge-m3 the builder loads) is
+# reclaimed on exit per ADR-0060 §1. cron-tick.sh self-skips if a warm query
+# session's heartbeat is fresh → ≤1 bge-m3 ever resident.
+[Unit]
+Description=code-index incremental tick (git-diff-by-SHA → one-shot builder)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/code-index.env
+WorkingDirectory=/root/no-vain-years-mono/services/code-index
+# The host's node links Ubuntu 24.04's SYSTEM libuv 1.48 (`node -p process.versions.uv`),
+# whose io_uring path drops fs completions on kernel 6.8: the builder finishes its work
+# (last_sha already advanced, "✓ incremental done" printed) but a request that never
+# completes keeps the loop alive, so the process never exits. Observed 2026-08-03: done at
+# 01:22, still parked in ep_poll 16h later at 0% CPU with 1.0G RSS. Upstream's workaround
+# for this combo is to turn io_uring off; a CPU-bound indexer gains nothing from it anyway.
+Environment=UV_USE_IO_URING=0
+# Type=oneshot defaults to TimeoutStartSec=infinity, so ONE hang pins the unit in
+# `activating` forever — and OnUnitActiveSec= only schedules the next elapse after the
+# previous activation ends, so the timer reports `active` while its Trigger goes `n/a`
+# and never fires again (2026-08-03: 17h of zero indexing). On timeout systemd SIGTERMs
+# the builder, the unit goes `failed`, and the timer immediately schedules the next tick,
+# which resumes the batch — that retry only became real on 2026-08-09, when cron-tick.sh
+# stopped gating the spawn on the checkout's HEAD (see its comment).
+#
+# Sized to outlast the largest legitimate batch, not the typical one. 90min looked like
+# "well above normal" against a 22-chunk tick, but a repo-wide sweep lands ~100 files /
+# ~1400 chunks in one commit range, and at this box's 0.2–0.5 chunk/s that is ~90min on
+# its own — 2026-08-09's batch was killed a hair short of finishing. A timeout that a
+# real batch can reach is worse than none: it turns one slow tick into an endless
+# kill-retry loop that never converges. 4h covers ~4000 chunks at the low end of the
+# throughput band; past that the answer is a fresh full build, not a longer timeout.
+TimeoutStartSec=4h
+ExecStart=/usr/bin/bash scripts/cron-tick.sh

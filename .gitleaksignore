@@ -1,0 +1,12 @@
+# gitleaks fingerprints to allowlist.
+#
+# Format: <commit-sha>:<file-path>:<rule-id>:<line>
+#
+# Each entry must reference a real finding gitleaks would otherwise flag.
+# Use this for: (a) fake/placeholder secrets inside docs/test fixtures
+# that gitleaks regex can't distinguish from real ones, (b) historical
+# leaks already rotated. Do NOT use this to bypass a real secret leak.
+
+# PR #79 plan doc — `curl -i ... -H 'Authorization: <expired-or-invalid-bearer-token>'`
+# describes the 401 smoke probe; placeholder, no real credential.
+0da19d624c3b43a16baea29ef450df1570e84b25:docs/plans/2026-05/05-22-pr5-tail-orval-stabilize.md:curl-auth-header:53

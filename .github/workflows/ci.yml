@@ -1,0 +1,203 @@
+name: CI
+
+# Per ADR-0040 multi-layer test gate (PR-T3 / 门禁层): nx-server-specific
+# build/test/lint jobs移到 pr-validation.yml 的 `validate-and-test` mega-job
+# (跑 `nx affected -t lint typecheck test build runtime-smoke`). This file
+# keeps only the workflow-level gates that operate outside nx (gitleaks scans
+# commit history, actionlint validates GH workflow YAML, pr-title validates
+# PR metadata, docker-image scans the built image on push-to-main).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    # 顶层 `permissions: contents: read` 会把其余 scope 归零 —— gitleaks-action 在
+    # pull_request 事件下要读 PR 元数据,缺此声明报 `Resource not accessible by
+    # integration`（2026-08-08 新仓首跑实证）。
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  actionlint:
+    name: Actionlint (workflow YAML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: raven-actions/actionlint@v2
+
+  pr-title:
+    name: PR title (conventional commits)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  markdownlint:
+    name: Markdownlint (docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DavidAnson/markdownlint-cli2-action@v18
+        with:
+          config: .markdownlint-cli2.jsonc
+          globs: '**/*.md'
+
+  commitlint:
+    name: Commitlint (conventional commits)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # 同 gitleaks:action 走 getPullRequestEventCommits 列 PR commits,需 PR 读权限。
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.mjs
+
+  # Per 05-22-mono-meta-frontend-gap-audit.md A1: Trivy fs scan covers the
+  # source tree + pnpm transitive deps for both apps (server + mobile) +
+  # packages/* — complementary to docker-image's base-image scan (caught on
+  # main push only). fs scan runs PR + push so dep-tree CVE land in the
+  # pre-merge gate. skip-dirs excludes generated artifacts and docs/.claude
+  # to keep signal-to-noise high; ignore-unfixed mirrors image scan
+  # (unfixed Expo / RN ecosystem CVE block PRs forever otherwise).
+  trivy-fs:
+    name: Trivy fs scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Trivy fs scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+          skip-dirs: 'docs,.claude,packages/api-client/src/generated,apps/mobile/dist,apps/server/dist,node_modules'
+
+  # V9 acceptance gate (Plan 1 § E.3): Docker build + Trivy image scan.
+  # Trigger strategy: PR skip / main push run.
+  # Rationale: image scan ~3-5min, no PR-time value (Dockerfile rarely changes
+  # per PR; native deps caught by pr-validation runtime-smoke). main push
+  # catches base-image / transitive CVE on the merged commit within revert
+  # window. Not in ruleset required_status_checks. nightly cron is follow-up.
+  docker-image:
+    name: Docker build + Trivy image scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          load: true
+          tags: nvy/server:ci
+          platforms: linux/amd64
+          cache-from: type=gha
+          # 🚨 `mode=max` 会把**每一个中间层**都写进 Actions 缓存，且每次 main 推送产生新一代。
+          # 2026-08-02 实测：仓库 Actions 缓存 **11.17 GB / 上限 10 GB**、180 个条目，绝大多数是
+          # 本步产生的 `buildkit-blob-*`（单个 261MB/237MB/131MB…）。超限后 GitHub 按 LRU 驱逐，
+          # 把**真正影响合并时长的**缓存（Playwright / pnpm store）挤掉 —— 而本 job 只在 push→main
+          # 跑、且**不是 required check**，用整个仓的缓存预算去换它的构建速度是亏的。
+          # `mode=min` 只缓存最终镜像层，够 Trivy 扫描复用，体积小一个量级。
+          cache-to: type=gha,mode=min
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: nvy/server:ci
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+
+  futu-shim:
+    name: futu-shim (pytest)
+    runs-on: ubuntu-latest
+    # 🚨 为什么这个 job 存在: `services/futu-shim/` 是**独立 python service**, 不在 Nx graph
+    # 内 ⇒ `validate-and-test` 的 `nx affected` 永远看不见它。此前它的 44 项 pytest 只在
+    # 本机 / 港机手动跑, 没有任何自动闸 —— 2026-08-01 那次限频配错 (history_kline 挂在最严
+    # 兜底且逐页计数, 导致 prod 回填 ok=2/fail=5) 正是这类回归, 当时 CI 一声不吭。
+    #
+    # **恒定跑, 靠内部 path filter 决定要不要装依赖** (不用 workflow 级 `paths:`):
+    # 那样在不相关 PR 上该 check 根本不上报, 一旦被加进 ruleset required checks 就会永远
+    # pending 挡住 auto-merge (仓内 auto-merge 依赖 required checks, 见 github-ruleset.md)。
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Did futu-shim change?
+        id: changed
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          # 拿不到 base(首个 push / force-push 后 before=0000…) → 保守当作"变了", 跑全套。
+          if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "value=true" >> "$GITHUB_OUTPUT"; echo "base 不可用 → 保守全跑"; exit 0
+          fi
+          # 🚨 先取值再判空, **不要**写成 `git diff | grep -q .` 塞进 `if`: 那样 git 自身
+          # 出错(坏 SHA / 浅克隆)会被 `if` 吞成"没改动"→ 静默跳过测试, 是"沉默=健康"反模式。
+          # 这里 git 失败 → `set -e` 直接把 job 打红。
+          changed="$(git diff --name-only "$BASE_SHA" HEAD -- services/futu-shim/ .github/workflows/ci.yml)"
+          if [ -n "$changed" ]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"; printf 'futu-shim 有改动 → 跑\n%s\n' "$changed"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"; echo "futu-shim 未改动 → 跳过测试步骤(本 job 仍报绿)"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.changed.outputs.value == 'true'
+        with:
+          # 与港机对齐 (Ubuntu 24.04 默认 3.12.3)。别用 runner 默认版本 —— futu-api 在
+          # 3.14 上要源码编译 pandas/numpy, 本机实测装到超时。
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            services/futu-shim/requirements.txt
+            services/futu-shim/requirements-dev.txt
+
+      - name: Install deps
+        if: steps.changed.outputs.value == 'true'
+        working-directory: services/futu-shim
+        run: pip install -r requirements-dev.txt
+
+      - name: pytest
+        if: steps.changed.outputs.value == 'true'
+        working-directory: services/futu-shim
+        run: python -m pytest -q

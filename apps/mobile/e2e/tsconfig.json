@@ -1,0 +1,16 @@
+{
+  // e2e 专设 tsconfig（矩阵 T-2 mobile 半边，2026-08-03 接线）。
+  // 根 tsconfig.json 蓄意 exclude e2e（Metro/Expo 面不该编译 Playwright 代码），
+  // 此前 e2e 只在运行时经 tsx/playwright 编译 —— 类型 drift 全靠运行时撞。
+  // 本文件让 `nx typecheck mobile` 第二步覆盖 e2e（见 project.json typecheck target）。
+  // 继承根配置：strict 全套 + @nvy/* path 映射（baseUrl 按声明处 apps/mobile 解析）。
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    // 测试代码档蓄意关掉（root 是 true）：e2e 断言完长度再索引是常态，逐处 `!` 只添噪
+    // 不抓 drift（drift 在测试运行时立刻可见）。先例 = server tsconfig.spec.json 对
+    // test/** 也用收窄严格集（无 noUncheckedIndexedAccess）。其余 strict 全套照继承。
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@nvy/code-index",
+  "private": true,
+  "type": "module",
+  "description": "Centralized code-index service for ideation grounding (ADR-0059/0060). tree-sitter chunk → bge-m3 embed → pgvector. Standalone: NOT in the nx/pnpm workspace, own lockfile, deploys to a dedicated host (S2 plan).",
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "index:full": "tsx src/index-full.ts",
+    "index:incremental": "tsx src/index-incremental.ts",
+    "serve": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.5.0",
+    "pg": "^8.13.1",
+    "tree-sitter-wasms": "^0.1.12",
+    "tsx": "^4.19.2",
+    "web-tree-sitter": "^0.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "pnpm": {
+    "overrides": {
+      "tar@<7.5.19": ">=7.5.19",
+      "postcss@<8.5.18": ">=8.5.18"
+    },
+    "onlyBuiltDependencies": [
+      "onnxruntime-node",
+      "sharp",
+      "esbuild",
+      "protobufjs"
+    ]
+  }
+}

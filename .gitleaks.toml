@@ -1,0 +1,35 @@
+# Gitleaks configuration for no-vain-years-mono.
+# Extends the default ruleset shipped with gitleaks.
+# https://github.com/gitleaks/gitleaks#configuration
+
+[extend]
+useDefault = true
+
+# ⚠️ 豁免**只**用 regex，刻意不带 `paths` —— 2026-08-08 在 gitleaks 8.30.1 上实测：
+# allowlist 的 `paths` 是**文件级短路**（命中即整个文件跳过，二进制内对应
+# `skipping file: rule allowlist`），发生在 regex 求值之前，所以 `condition` /
+# `matchCondition` 三种写法都无法把 path + regex 变成合取 —— 实测探针「同路径下
+# 一条不带 padding 签名的高熵 secret」在三种写法下均被放过。
+#
+# 换言之：path 那一半是纯风险（放过该路径下任意 finding），regex 那一半才承重。
+# 去掉 path 比修合取更简单也更严 —— 现在唯一的豁免判据是那个刻意编写的 padding
+# 签名，误伤面从「一整片目录」收敛到「一个字面标记」。
+#
+# 被豁免的对象：test-only HMAC/JWT secret，值里带 "-min-32-bytes-" padding 签名
+# （用于满足 ≥ 32 字节密钥长度要求），恒与 AUTH_JWT_SECRET / SMS_CODE_HMAC_SECRET
+# 这类键名同现。Prettier 把多行 `process.env.X = '...'` 折成单行会触发
+# generic-api-key 假阳性（993b6a4 实证 8 hits）。
+#
+# 覆盖面证据：2026-08-08 全史扫（830 commit，`--log-opts=--all`）在**零豁免**下
+# 命中 30 条，逐条读回真实行核验 30/30 均为 padded 测试密钥、零真凭据；换用本配置
+# 后同一全史扫命中 0。30 条里有 2 条在 apps/server/src/（colocated 单测，
+# security/refresh-token.service.rotate.spec.ts +
+# account/commit-account-anonymization.usecase.spec.ts）—— 旧配置的 path 豁免
+# `apps/server/test/.*` 本就盖不到它们，它们当时是被 regex 那一半全仓放过的。
+#
+# 🚨 本配置抓不到裸 IP / 云账号 UID / ECS 实例 ID —— 那些无熵特征，gitleaks 内置
+# 规则集里没有对应 rule。标识符边界由 scripts/checks/check-identifier-boundary.ts
+# 独立守门，见 docs/conventions/information-boundary.md。
+[[allowlists]]
+description = "Test-only HMAC/JWT secrets carrying the -min-32-bytes- padding signature"
+regexes = ['''-min-32-bytes-''']

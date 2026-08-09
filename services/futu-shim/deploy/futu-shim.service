@@ -1,0 +1,46 @@
+# futu-shim — resident HTTP front for the on-demand OpenD gateway.
+#
+# Resident on purpose: it is cheap (~30 MB), keeps /healthz answerable at all
+# times so probes do not false-alarm, and decouples the server's sync schedule
+# from any fixed collection window.
+
+[Unit]
+Description=futu-shim (HTTP front for Futu OpenD)
+# Binds the B<->C WireGuard virtual IP, so the interface must exist first.
+# Requires= (not just After=) so the shim is not left listening on nothing if
+# the tunnel is down.
+Requires=wg-quick@wg1.service
+After=wg-quick@wg1.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=futushim
+Group=futushim
+WorkingDirectory=/opt/futu-shim
+
+# The futu SDK builds a log directory under $HOME at *import* time
+# (futu/common/ft_logger.py: os.makedirs(os.environ['HOME'] + '/.com.futunn...')),
+# with no env override and no setter. A --no-create-home service account there-
+# fore cannot even import the SDK. StateDirectory= makes systemd create and own
+# /var/lib/futu-shim, and HOME points at it — which also keeps ProtectHome=true
+# usable, since $HOME is no longer under /home.
+StateDirectory=futu-shim
+Environment=HOME=/var/lib/futu-shim
+Environment=PYTHONPATH=/opt/futu-shim/src
+Environment=PYTHONUNBUFFERED=1
+# 0600 root:root — systemd reads it before dropping privileges, so the service
+# account never needs read access to the token.
+EnvironmentFile=/etc/futu-shim.env
+ExecStart=/opt/futu-shim/venv/bin/python -m futu_shim.app
+Restart=always
+RestartSec=5
+
+# NoNewPrivileges is deliberately NOT set: the shim escalates through a narrow
+# sudoers rule to start/stop exactly one unit (see install.sh).
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

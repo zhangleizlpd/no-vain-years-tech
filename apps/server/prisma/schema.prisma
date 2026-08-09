@@ -1,0 +1,1713 @@
+generator client {
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["account", "alert", "chat", "ideation", "marketdata", "optionsdesk", "portfolio", "public"]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model Account {
+  id                 BigInt       @id @default(autoincrement())
+  phone              String?      @unique(map: "uk_account_phone") @db.VarChar(20)
+  status             String       @db.VarChar(16)
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  lastLoginAt        DateTime?    @map("last_login_at") @db.Timestamptz(6)
+  displayName        String?      @map("display_name") @db.VarChar(64)
+  bio                String?      @map("bio") @db.VarChar(120)
+  gender             String?      @map("gender") @db.VarChar(16)
+  avatarUrl          String?      @map("avatar_url") @db.VarChar(512)
+  backgroundImageUrl String?      @map("background_image_url") @db.VarChar(512)
+  freezeUntil        DateTime?    @map("freeze_until") @db.Timestamptz(6)
+  previousPhoneHash  String?      @map("previous_phone_hash") @db.VarChar(64)
+  credentials        Credential[]
+
+  @@index([freezeUntil], map: "idx_account_freeze_until_active", where: raw("(((status)::text = 'FROZEN'::text) AND (freeze_until IS NOT NULL))"))
+  @@index([previousPhoneHash], map: "idx_account_previous_phone_hash", where: raw("(previous_phone_hash IS NOT NULL)"))
+  @@map("account")
+  @@schema("account")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model AccountSmsCode {
+  id        BigInt    @id @default(autoincrement())
+  accountId BigInt    @map("account_id")
+  codeHash  String    @map("code_hash") @db.VarChar(64)
+  purpose   String    @db.VarChar(32)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountId, purpose], map: "idx_account_sms_code_account_purpose_active", where: raw("(used_at IS NULL)"))
+  @@map("account_sms_code")
+  @@schema("account")
+}
+
+// 010 微信账号绑定。贫血 row + @map (ADR-0043); 无声明 FK relation (同 AccountSmsCode)。
+// openid 全局唯一 = FR-S01 冲突闸; (accountId, provider) 唯一 = O7 幂等 + R2 对称冲突闸。
+// 注: 不另设 @@index([accountId]) —— (accountId, provider) 复合唯一索引按最左前缀
+// 已覆盖所有 WHERE accountId / WHERE accountId AND provider 查询 (inspect/unbind), 独立索引冗余。
+model WechatBinding {
+  id        BigInt   @id @default(autoincrement())
+  accountId BigInt   @map("account_id")
+  provider  String   @default("WECHAT") @db.VarChar(16)
+  openid    String   @unique(map: "uk_wechat_binding_openid") @db.VarChar(64)
+  unionid   String?  @db.VarChar(64)
+  boundAt   DateTime @default(now()) @map("bound_at") @db.Timestamptz(6)
+
+  @@unique([accountId, provider], map: "uk_wechat_binding_account_provider")
+  @@map("wechat_binding")
+  @@schema("account")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model Credential {
+  id           BigInt    @id @default(autoincrement())
+  accountId    BigInt    @map("account_id")
+  type         String    @db.VarChar(16)
+  passwordHash String?   @map("password_hash") @db.VarChar(60)
+  lastUsedAt   DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  account      Account   @relation(fields: [accountId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([accountId, type], map: "uk_credential_account_type")
+  @@index([accountId], map: "idx_credential_account_id")
+  @@map("credential")
+  @@schema("account")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model RefreshToken {
+  id          BigInt    @id @default(autoincrement())
+  tokenHash   String    @unique(map: "uk_refresh_token_token_hash") @map("token_hash") @db.VarChar(64)
+  accountId   BigInt    @map("account_id")
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  deviceId    String    @map("device_id") @db.VarChar(36)
+  deviceName  String?   @map("device_name") @db.VarChar(64)
+  deviceType  String    @default("UNKNOWN") @map("device_type") @db.VarChar(16)
+  ipAddress   String?   @map("ip_address") @db.VarChar(45)
+  loginMethod String    @default("PHONE_SMS") @map("login_method") @db.VarChar(16)
+
+  @@index([accountId, deviceId], map: "idx_refresh_token_account_device_active", where: raw("(revoked_at IS NULL)"))
+  @@index([accountId], map: "idx_refresh_token_account_id_active", where: raw("(revoked_at IS NULL)"))
+  @@map("refresh_token")
+  @@schema("account")
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventType   String    @map("event_type")
+  payload     Json
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt], map: "outbox_event_unpublished_idx")
+  @@map("outbox_event")
+  @@schema("public")
+}
+
+// App→本地 agent 通用事件队列 (agent-bridge 模块; master plan 06-26-app-to-mac-openclaw-event-channel)。
+// 跨切基建表, 跟 OutboxEvent 惯例落 public schema (不绑 ideation / 不新开 schema)。贫血 row + @map (ADR-0043)。
+// 瘦事件 (claim-check): 只存 {bizType, bizId};胖数据 worker 凭委托 token 调现成业务 API 拉。委托 token **不落表** ——
+// poll claim 时即时签 (scoped account/bizId, 短时效), 避免在队列里坐等过期 (mirror IM file_id→短时 URL)。
+// 状态机 pending→claimed→done/failed;租约 (lease_expires_at 可见性超时) + FOR UPDATE SKIP LOCKED 原子 claim。
+// accountId 仅逻辑引用 (无跨 schema FK, 同 RefreshToken/WechatBinding);per-account 队列上限靠 (account_id, status) 索引计数。
+model AgentQueueEvent {
+  id            String  @id @default(uuid()) @db.Uuid
+  accountId     BigInt  @map("account_id")
+  bizType       String  @map("biz_type")
+  bizId         String  @map("biz_id")
+  status        String  @default("pending")
+  sourceEventId String? @unique(map: "uk_agent_queue_event_source_event_id") @map("source_event_id") @db.Uuid
+
+  claimedAt      DateTime? @map("claimed_at") @db.Timestamptz(6)
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.Timestamptz(6)
+  attempts       Int       @default(0)
+
+  result Json?
+  doneAt DateTime? @map("done_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt], map: "agent_queue_event_claimable_idx")
+  @@index([accountId, status], map: "agent_queue_event_account_idx")
+  @@map("agent_queue_event")
+  @@schema("public")
+}
+
+// 011 证券市场准入偏好 (portfolio 第 4 bounded context 首表)。贫血 row + @map
+// (ADR-0043); 无声明 FK relation (同 RefreshToken / WechatBinding) — accountId 仅
+// 逻辑引用 JWT sub, 无跨 schema FK。
+//
+// ADR-0046 单行聚合模型：每账号**一行**, active_markets = 当前激活的核心市场码集合
+// (text[])。min-1 跨行不变性塌缩成「单行非空」→ conditional UPDATE + affected-count
+// (无 FOR UPDATE / 无 materialize, 靠 EvalPlanQual 重检)。新用户无行 → 读侧投影
+// DEFAULT_CORE_ACTIVE {CNY:active}; 首次 PUT upsert 默认行。海外市场恒由 MARKET_CATALOG
+// 投影 inactive, 不入集合。
+model PortfolioPreference {
+  accountId     BigInt   @id @map("account_id")
+  activeMarkets String[] @map("active_markets")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("portfolio_preference")
+  @@schema("portfolio")
+}
+
+// 012 券商账户绑定 (portfolio 第 2 组 operation; ADR-0043 贫血 row + @map)。无声明 FK
+// relation (同 PortfolioPreference) — accountId 仅逻辑引用 JWT sub, 无跨 schema FK。
+//
+// 多行表 (一账号多券商多客户号), ≠ PortfolioPreference 单行 array 模型 (ADR-0046)。
+// clientNo 明文存储 (FR-S07 归属标记非凭证, 不限长)。无 updatedAt — 只增删不可编辑。
+// 唯一索引 (account_id, broker_code, client_no) = dup 兜底 + 并发同键插入串行点
+// (P2002 catch → 409, 无 FOR UPDATE; 行相互独立无跨行不变性, D1)。默认账户读侧虚拟
+// 派生 (OQ3), 不落实体行。
+model BrokerAccount {
+  id         BigInt   @id @default(autoincrement())
+  accountId  BigInt   @map("account_id")
+  brokerCode String   @map("broker_code") @db.VarChar(32)
+  clientNo   String   @map("client_no")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([accountId, brokerCode, clientNo], map: "uk_broker_account_acct_broker_client")
+  @@index([accountId], map: "ix_broker_account_account")
+  @@map("broker_account")
+  @@schema("portfolio")
+}
+
+// 013 自选列表分组 (portfolio 第 3 组 operation; ADR-0043 贫血 row + @map)。无声明跨
+// schema FK — accountId 仅逻辑引用 JWT sub。系统组「自选」「持仓」(type=system,
+// systemKind=watchlist|holdings) 随账号 materialize-on-first-write (D2); 自定义组
+// systemKind=null。@@unique(accountId, systemKind) 保证每账号每系统组 ≤1 (custom 的
+// systemKind=null 不受 PG 多 NULL 约束)。删非空自定义组走 UC 内 item 回落「自选」非
+// 级联 (FR-S02); onDelete:Cascade 仅删账号兜底。
+model Group {
+  id         BigInt          @id @default(autoincrement())
+  accountId  BigInt          @map("account_id")
+  name       String          @db.VarChar(40)
+  type       String          @db.VarChar(8) // 'system' | 'custom'
+  systemKind String?         @map("system_kind") @db.VarChar(12) // 'watchlist' | 'holdings' | null
+  visible    Boolean         @default(true)
+  order      Int // 拖拽序 (账号内)
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  items      WatchlistItem[]
+
+  @@unique([accountId, systemKind], map: "uk_group_account_systemkind")
+  @@index([accountId, order], map: "ix_group_account_order")
+  @@map("group")
+  @@schema("portfolio")
+}
+
+// 013 自选标的项 (portfolio 第 3 组 operation)。market 用 015 词表 cn|hk|us (#302 对齐,
+// 不做映射); code 逻辑指向 015 Instrument(market,code) 无跨 schema FK。固顶区 (pinned=true)
+// 与非固顶区同表, 读侧 ORDER BY pinned DESC, "order" ASC (resortWithPinPriority 保证写侧
+// order 一致, last-write-wins D1)。@@unique(groupId, market, code) = 组内同标的唯一 →
+// 重复加幂等返现有项 (EP7)。group onDelete:Cascade 仅删账号兜底; 业务删组走回落非级联。
+model WatchlistItem {
+  id        BigInt   @id @default(autoincrement())
+  groupId   BigInt   @map("group_id")
+  market    String   @db.VarChar(4) // 'cn' | 'hk' | 'us'
+  code      String   @db.VarChar(16)
+  pinned    Boolean  @default(false)
+  order     Int // 非固顶区序
+  color     String?  @db.VarChar(16)
+  noteRef   String?  @map("note_ref") @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, market, code], map: "uk_watchlistitem_group_market_code")
+  @@index([groupId, pinned, order], map: "ix_watchlistitem_group_pin_order")
+  @@map("watchlist_item")
+  @@schema("portfolio")
+}
+
+// 025 持仓快照 (portfolio 第 5 组 operation; ADR-0043 贫血 row + @map)。无声明跨
+// schema FK — accountId 仅逻辑引用 JWT sub; (market, code) 逻辑指向 015
+// Instrument 零 FK (013 同体例)。导入 = 单事务 deleteMany(accountId)+createMany
+// 整体替换 (FR-002/006) 仅留最新快照; asOf 行级冗余 (表内同批一致, plan D6)。
+// quotable = 导入时批查 instrument 可识别性落列 (plan D2, Q7-B), 读热路径零跨 ctx。
+// raw = 原始行 {列名: 原值} 全保留 (FR-003 不丢信息载体)。Decimal 禁 Float。
+model Holding {
+  id        BigInt   @id @default(autoincrement())
+  accountId BigInt   @map("account_id")
+  market    String   @db.VarChar(4) // V1 'cn'
+  code      String   @db.VarChar(16)
+  name      String   @db.VarChar(128) // 参考非权威
+  qty       Decimal  @db.Decimal(18, 4)
+  unitCost  Decimal  @map("unit_cost") @db.Decimal(18, 6)
+  weightPct Decimal? @map("weight_pct") @db.Decimal(8, 4)
+  holdDays  Int?     @map("hold_days")
+  cumPnl    Decimal? @map("cum_pnl") @db.Decimal(18, 2)
+  cumPnlPct Decimal? @map("cum_pnl_pct") @db.Decimal(10, 4)
+  quotable  Boolean
+  asOf      DateTime @map("as_of") @db.Date
+  raw       Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([accountId, market, code], map: "uk_holding_account_market_code")
+  @@map("holding")
+  @@schema("portfolio")
+}
+
+// 025 已清仓记录 (一轮完整建仓→清仓的封闭结果)。同标的多轮清仓合法 → 无唯一约束
+// (整体替换语义兜底重复); 部分盈亏字段文件内为 `--` (多次买卖无法单算) → nullable。
+model ClosedPosition {
+  id          BigInt   @id @default(autoincrement())
+  accountId   BigInt   @map("account_id")
+  market      String   @db.VarChar(4)
+  code        String   @db.VarChar(16)
+  name        String   @db.VarChar(128)
+  openDate    DateTime @map("open_date") @db.Date
+  closeDate   DateTime @map("close_date") @db.Date
+  buyAvg      Decimal  @map("buy_avg") @db.Decimal(18, 4)
+  sellAvg     Decimal  @map("sell_avg") @db.Decimal(18, 4)
+  totalPnl    Decimal  @map("total_pnl") @db.Decimal(18, 2)
+  totalPnlPct Decimal? @map("total_pnl_pct") @db.Decimal(10, 4)
+  fee         Decimal? @db.Decimal(18, 2)
+  indexPct    Decimal? @map("index_pct") @db.Decimal(10, 4) // 同期大盘
+  vsIndexPct  Decimal? @map("vs_index_pct") @db.Decimal(10, 4) // 跑赢大盘
+  raw         Json
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountId, market, code], map: "ix_closedposition_account_market_code")
+  @@map("closed_position")
+  @@schema("portfolio")
+}
+
+// 025 交易流水 (账户全量历史交易事实源)。资金转入转出行 market/code/name/tradeTime
+// 为 null (照存, 未来现金口径唯一来源, 不参与标的维度查询); category = normalized
+// enum 8 值 (buy|sell|xd|dividend_tax|repo_out|repo_back|cash|unknown), 原始中文
+// 保留 raw。索引覆盖 EP3 等值查询路径 (accountId, market, code, tradeDate)。
+model TradeRecord {
+  id        BigInt   @id @default(autoincrement())
+  accountId BigInt   @map("account_id")
+  market    String?  @db.VarChar(4)
+  code      String?  @db.VarChar(16)
+  name      String?  @db.VarChar(128) // XD 前缀保留不清洗
+  category  String   @db.VarChar(16)
+  tradeDate DateTime @map("trade_date") @db.Date
+  tradeTime String?  @map("trade_time") @db.VarChar(8) // '14:53:27'
+  qty       Decimal? @db.Decimal(18, 4)
+  price     Decimal? @db.Decimal(18, 6)
+  amount    Decimal  @db.Decimal(18, 2) // 发生金额 (signed)
+  turnover  Decimal? @db.Decimal(18, 2) // 成交金额
+  fee       Decimal? @db.Decimal(18, 2)
+  note      String?  @db.VarChar(256)
+  raw       Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([accountId, market, code, tradeDate], map: "ix_traderecord_account_market_code_date")
+  @@map("trade_record")
+  @@schema("portfolio")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// marketdata (015, 第 5 bounded context; ADR-0032 Q4 + ADR-0047 可插拔访问层)
+// 6 张事实/注册表 — 访问层真正读写的表 (clarify 2026-06-02: 仅这 6 张入 015,
+// 同步配置/审计 3 表 SyncDimension/SyncBlacklist/SyncRun 的 DDL 推迟 016)。
+// 范式 = ADR-0043 贫血 row + @map snake_case (无 Entity Mapper); 价格/比率全 Decimal
+// 禁 Float (FR-S08)。Instrument↔事实表为**同 schema intra FK** (referential integrity,
+// 非跨 ctx — 跨 ctx 引用才禁 FK)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// universe 注册表 (全量 A 股标的)。唯一 (market, code)。pinyin* 供本地搜索备援
+// (LocalInstrumentSearchAdapter pg_trgm), lixingerCompanyType 缓存 fsType 路由 (FR-S11),
+// syncTier 默认 2 (016 重算, 本 feature 仅建列不消费)。pinyin_abbr 上 GIN trgm index
+// 由 migration raw SQL 建 (Prisma 无法表达 gin_trgm_ops, 见 migration.sql)。
+model Instrument {
+  id                  BigInt    @id @default(autoincrement())
+  market              String    @db.VarChar(8)
+  code                String    @db.VarChar(16)
+  name                String    @db.VarChar(128)
+  type                String    @db.VarChar(16)
+  currency            String    @db.VarChar(8)
+  pinyinAbbr          String?   @map("pinyin_abbr") @db.VarChar(128)
+  pinyinFull          String?   @map("pinyin_full") @db.VarChar(256)
+  lixingerCompanyType String?   @map("lixinger_company_type") @db.VarChar(32)
+  syncTier            Int       @default(2) @map("sync_tier")
+  // 采集闸 (成员制): false = 该标的不进任何同步维度的工作集; universe 枚举照常入库 (供搜索 /
+  // 发现候选) —— 「全量入库」与「要不要采」彻底分开。默认 true 保持 cn/hk 全量语义; us 新标的
+  // 由 SyncUniverseUseCase.upsert 的 **create 分支**落 false (无锚不采) —— DB 列默认值无法按
+  // 市场区分, 故策略落在单一写入点而非各 universe adapter (换源富途后自动继续成立)。
+  // ⚠️ update 路径**不得覆盖本列** (与 syncTier / lixingerCompanyType 同属受保护列), 否则每轮
+  // universe 同步会重置人工配置。粒度 = 标的级一刀切 (该票所有维度同采 / 同不采); 将来 us 开
+  // 完整富化市场若需「采日线不采期权链」再加维度级细分, 现在不预造。
+  needSync            Boolean   @default(true) @map("need_sync")
+  status              String    @db.VarChar(16)
+  listingStatus       String?   @map("listing_status") @db.VarChar(32)
+  listDate            DateTime? @map("list_date") @db.Date
+  delistDate          DateTime? @map("delist_date") @db.Date
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  dailyBars               DailyBar[]
+  fundamentalSnapshots    FundamentalSnapshot[]
+  financialMetrics        FinancialMetric[]
+  corporateActions        CorporateAction[]
+  adjustmentFactors       AdjustmentFactor[]
+  // 039 港股量化高信号 5 维度反向关系 (做空/南向/所属指数/公募基金持股/基金公司持股)。
+  shortSellingDailies     ShortSellingDaily[]
+  connectHoldingDailies   ConnectHoldingDaily[]
+  indexMemberships        IndexMembership[]
+  fundHoldings            FundHolding[]
+  fundCompanyHoldings     FundCompanyHolding[]
+  // 040 港股波动率 + 热度精选 2 维度反向关系。
+  volatilityDaily         VolatilityDaily[]
+  hotSnapshots            HotSnapshot[]
+  // 041 港股事件流 4 维度反向关系 (回购/股本变动/股东权益变动/配股)。
+  buybackEvents           BuybackEvent[]
+  equityChanges           EquityChange[]
+  shareholderChanges      ShareholderChange[]
+  allotmentEvents         AllotmentEvent[]
+  // 042 港股报告期 3 维度反向关系 (营收构成/最新股东/员工)。
+  revenueSegments         RevenueSegment[]
+  shareholderSnapshots    ShareholderSnapshot[]
+  employeeSnapshots       EmployeeSnapshot[]
+  // 043 港股分类文本 2 维度反向关系 (所属行业/公告)。
+  industryClassifications IndustryClassification[]
+  announcements           Announcement[]
+  // 046 标的级 IV 2 维度反向关系 (日快照 / 历史序列; 指数日线无 instrument 关联)。
+  underlyingIvDailies     UnderlyingIvDaily[]
+  underlyingIvHistories   UnderlyingIvHistory[]
+  // 047 M2b 期权链反向关系 (合约挂标的 / 财报事件挂标的; 逐日快照挂合约不挂标的)。
+  optionContracts         OptionContract[]
+  earningsEvents          EarningsEvent[]
+
+  @@unique([market, code], map: "uk_instrument_market_code")
+  @@map("instrument")
+  @@schema("marketdata")
+}
+
+// EOD 日线事实, 三复权各一行。唯一键 (instrument_id, trade_date, adjust) — 修正 PRD 原
+// (instrument_id, trade_date), 因同日三复权值不同 (FR-S06)。(instrument_id, trade_date desc)
+// 索引服务读侧最近 N 日扫描 (报价/52 周高低/K线区间)。价格全 Decimal(18,4)。
+model DailyBar {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  tradeDate    DateTime @map("trade_date") @db.Date
+  adjust       String   @db.VarChar(16)
+  open         Decimal  @db.Decimal(18, 4)
+  high         Decimal  @db.Decimal(18, 4)
+  low          Decimal  @db.Decimal(18, 4)
+  close        Decimal  @db.Decimal(18, 4)
+  // 官方涨跌幅 (百分数, 如 -2.1500 = -2.15%), 源自理杏仁 ex_rights `change`×100 — 已含除权除息
+  // 调整 (除权日 ≠ 相邻收盘差: 茅台 2025-06-26 官方 +0.83% vs raw lag -1.10%)。复权不变量 (none/
+  // forward/backward 三口径同值, 不随 scale 变)。涨跌额由读侧 changeFromPct 反推。IPO 首日无前收 → null。
+  changePct    Decimal? @map("change_pct") @db.Decimal(10, 4)
+  // prev_close: 理杏仁 ex_rights 不下发 → 落库永远 null (官方昨收 = close/(1+changePct/100) 反推, 不
+  // 物化)。列保留供未来实时源 (下发真昨收) 回填; 读侧 changePct 缺失时回退 computeChange(close, prevClose)。
+  prevClose    Decimal? @map("prev_close") @db.Decimal(18, 4)
+  volume       Decimal? @db.Decimal(20, 0)
+  amount       Decimal? @db.Decimal(20, 2)
+  turnoverRate Decimal? @map("turnover_rate") @db.Decimal(10, 4)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, tradeDate, adjust], map: "uk_daily_bar_instrument_date_adjust")
+  @@index([instrumentId, tradeDate(sort: Desc)], map: "ix_daily_bar_instrument_date")
+  @@map("daily_bar")
+  @@schema("marketdata")
+}
+
+// 日频估值 + 历史分位 (cvpos)。唯一 (instrument_id, date)。全 Decimal; 缺失维度 null
+// (detail field coverage: 字段缺失不报错)。
+model FundamentalSnapshot {
+  id            BigInt   @id @default(autoincrement())
+  instrumentId  BigInt   @map("instrument_id")
+  date          DateTime @db.Date
+  peTtm         Decimal? @map("pe_ttm") @db.Decimal(18, 4)
+  peStatic      Decimal? @map("pe_static") @db.Decimal(18, 4)
+  peDynamic     Decimal? @map("pe_dynamic") @db.Decimal(18, 4)
+  pb            Decimal? @db.Decimal(18, 4)
+  ps            Decimal? @db.Decimal(18, 4)
+  dividendYield Decimal? @map("dividend_yield") @db.Decimal(10, 4)
+  marketCap     Decimal? @map("market_cap") @db.Decimal(24, 2)
+  circMarketCap Decimal? @map("circ_market_cap") @db.Decimal(24, 2)
+  pePctlY3      Decimal? @map("pe_pctl_y3") @db.Decimal(8, 4)
+  pePctlY5      Decimal? @map("pe_pctl_y5") @db.Decimal(8, 4)
+  pbPctlY3      Decimal? @map("pb_pctl_y3") @db.Decimal(8, 4)
+  pbPctlY5      Decimal? @map("pb_pctl_y5") @db.Decimal(8, 4)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_fundamental_snapshot_instrument_date")
+  @@map("fundamental_snapshot")
+  @@schema("marketdata")
+}
+
+// 财报衍生 (按报告期)。reportPeriod = 'YYYYQn' (如 '2025Q3')。唯一 (instrument_id, report_period)。
+model FinancialMetric {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  reportPeriod String   @map("report_period") @db.VarChar(8)
+  roe          Decimal? @db.Decimal(10, 4)
+  grossMargin  Decimal? @map("gross_margin") @db.Decimal(10, 4)
+  eps          Decimal? @db.Decimal(18, 4)
+  bps          Decimal? @db.Decimal(18, 4)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, reportPeriod], map: "uk_financial_metric_instrument_period")
+  @@map("financial_metric")
+  @@schema("marketdata")
+}
+
+// 公司行动 (分红/拆股/配股)。payload Json 存源结构化明细。唯一 (instrument_id, ex_date, type)。
+model CorporateAction {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  exDate       DateTime @map("ex_date") @db.Date
+  // 🚨 **hk 的 type 不可信, 勿据此判断股本事件**: `classifyAction` 只在理杏仁 dividend 行带
+  // `bonusSharesFromProfit`/`bonusSharesFromCapitalReserve` 时判 split, 而这两个是 **A 股字段** —
+  // 港股 payload 从不下发 ⇒ prod 实测 hk 14,063 条 corporate_action 中 `split` 恒为 **0**, 送股/
+  // 拆细/合股全部落在 `dividend` 名下 (2026-08-01)。港股股本事件的权威信号在
+  // `EquityChange.changeReason` (并股 / 供股 / 以股代息 / 股份拆細 / 發行紅股 …) + `capitalization`
+  // 比值, 复权因子计算一律以那里为准。本列保留现状 (全仓无功能消费者, 仅一处 count()) —
+  // 不再补一个必然随 vendor 文案漂移的中文文本分类器。
+  type         String   @db.VarChar(16)
+  payload      Json
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, exDate, type], map: "uk_corporate_action_instrument_exdate_type")
+  @@map("corporate_action")
+  @@schema("marketdata")
+}
+
+// 复权因子版本 (019 US1 → 020 模型改判): 标的 × 除权日 → per-event 跃变。factorBackward
+// = 单事件跃变 f_i (**非累积值**): f = [bwd(ex)/bwd(ex-1)] ÷ [none(ex)/none(ex-1)], 读时
+// 累积 B(t) = ∏ f_i 换算 forward/backward (adjusted-bars.rules)。锚定输入 = DB none 行 +
+// vendor backward transient 序列, 全链幂等可重建 (FR-S04 延续; factor_forward 已随 020
+// contract 段 drop)。
+model AdjustmentFactor {
+  id             BigInt   @id @default(autoincrement())
+  instrumentId   BigInt   @map("instrument_id")
+  exDate         DateTime @map("ex_date") @db.Date
+  factorBackward Decimal  @map("factor_backward") @db.Decimal(18, 8)
+  // 因子来源: event_terms (除权价公式, 主算法) / official_change (涨跌幅复权法, 条款不全时次优)
+  // / unresolved (两法分歧或均不可解 → factorBackward 恒 1) / legacy_vendor_anchor (已退役的
+  // vendor 序列反推口径产物, 待重算)。默认值只服务存量行回填, 写路径一律显式赋值。
+  source         String   @default("legacy_vendor_anchor") @db.VarChar(24)
+  // 质量态: verified (两法互证一致) / unverified (仅一条路径可算) / needs_review (分歧或不可解)。
+  // needs_review 计数进 sync-report —— 护栏条件必须对执行方可观测。
+  status         String   @default("unverified") @db.VarChar(16)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, exDate], map: "uk_adjustment_factor_instrument_exdate")
+  @@map("adjustment_factor")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 039 港股量化高信号 5 张 market-agnostic 事实表 (做空/南向/所属指数/公募基金持股/基金公司持股)。
+// 范式同上: ADR-0043 贫血 row + @map snake_case + instrument_id FK cascade + @@unique 自然键。
+// market 经 instrument 携带 (无 hk_* 前缀, FR-006 将来 A 股同类可无缝并入)。金融数值一律 Decimal?
+// (禁 Float): 份额 Decimal(20,0) / 金额 Decimal(24,2) / 比率 Decimal(10,4); vendor 缺字段存 null。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 做空日频 (US1 高信号): 单只港股每日做空股数/金额 (可派生做空比率)。日频, 形态同 daily_bar。
+// 唯一 (instrument_id, date)。
+model ShortSellingDaily {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  date         DateTime @db.Date
+  shares       Decimal? @db.Decimal(20, 0)
+  amount       Decimal? @db.Decimal(24, 2)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_short_selling_daily_instrument_date")
+  @@map("short_selling_daily")
+  @@schema("marketdata")
+}
+
+// 南向持股日频 (US1): 互联互通南向持股数 (可派生南向资金净流入)。仅 ~600 港股通标的有行,
+// 非港股通标的 vendor 返 0 行 → 不建行。唯一 (instrument_id, date)。
+model ConnectHoldingDaily {
+  id            BigInt   @id @default(autoincrement())
+  instrumentId  BigInt   @map("instrument_id")
+  date          DateTime @db.Date
+  shareholdings Decimal? @db.Decimal(20, 0)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_connect_holding_daily_instrument_date")
+  @@map("connect_holding_daily")
+  @@schema("marketdata")
+}
+
+// 所属指数归属 (US3): 该股当前所属指数集合 (恒生指数/港股全指等)。vendor indices 端点返当前成分
+// 快照 (无日期/无历史) → 覆盖式 upsert (每次同步 deleteMany+createMany), 仅维护当前归属, 不追踪历史
+// 成分变更。唯一 (instrument_id, index_code); index_code = vendor stockCode 字段 (指数代码)。
+model IndexMembership {
+  id           BigInt  @id @default(autoincrement())
+  instrumentId BigInt  @map("instrument_id")
+  indexCode    String  @map("index_code") @db.VarChar(32)
+  name         String? @db.VarChar(128)
+  source       String? @db.VarChar(32)
+  areaCode     String? @map("area_code") @db.VarChar(8)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, indexCode], map: "uk_index_membership_instrument_index")
+  @@map("index_membership")
+  @@schema("marketdata")
+}
+
+// 公募基金持股 (US2): 各基金对该股按报告期的持仓/市值/净值占比/市值排名。潜在大表 (单股 5 年
+// ~19500 行 = 报告期×基金), 回填深度受控近 5 年 (sync_dimension.history_depth=1825, FR-005)。
+// 唯一 (instrument_id, report_date, fund_code)。缺字段 (如 proportionOfOutstandingSharesA 名带
+// A, hk 返 null) 存 null 不因命名歧义丢弃。
+model FundHolding {
+  id                           BigInt    @id @default(autoincrement())
+  instrumentId                 BigInt    @map("instrument_id")
+  reportDate                   DateTime  @map("report_date") @db.Date
+  fundCode                     String    @map("fund_code") @db.VarChar(32)
+  name                         String?   @db.VarChar(128)
+  holdings                     Decimal?  @db.Decimal(20, 0)
+  marketCap                    Decimal?  @map("market_cap") @db.Decimal(24, 2)
+  netValueRatio                Decimal?  @map("net_value_ratio") @db.Decimal(10, 4)
+  marketCapRank                Int?      @map("market_cap_rank")
+  proportionOutstandingSharesA Decimal?  @map("proportion_outstanding_shares_a") @db.Decimal(10, 4)
+  declarationDate              DateTime? @map("declaration_date") @db.Date
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, reportDate, fundCode], map: "uk_fund_holding_instrument_report_fund")
+  @@map("fund_holding")
+  @@schema("marketdata")
+}
+
+// 基金公司持股 (US2): 各基金公司口径对该股按报告期的持仓市值/持仓。唯一
+// (instrument_id, report_date, fund_collection_code)。
+model FundCompanyHolding {
+  id                 BigInt   @id @default(autoincrement())
+  instrumentId       BigInt   @map("instrument_id")
+  reportDate         DateTime @map("report_date") @db.Date
+  fundCollectionCode String   @map("fund_collection_code") @db.VarChar(32)
+  name               String?  @db.VarChar(128)
+  holdings           Decimal? @db.Decimal(20, 0)
+  marketCap          Decimal? @map("market_cap") @db.Decimal(24, 2)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, reportDate, fundCollectionCode], map: "uk_fund_company_holding_instrument_report_collection")
+  @@map("fund_company_holding")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 040 港股波动率 + 热度精选 2 张 market-agnostic 事实表 (日频历史波动率 / 热度精选快照)。
+// 范式同上: ADR-0043 贫血 row + @map snake_case + instrument_id FK cascade + @@unique 自然键。
+// market 经 instrument 携带 (无 hk_* 前缀, FR-008 将来 A 股同类可无缝并入)。金融数值一律 Decimal
+// (禁 Float)。窗口/type 子集为 adapter 常量 (非 DB 配置, plan Decision 5) → schema 不存窗口配置。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 波动率日频历史 (US1): 单只港股按回看窗口 (volatilityDays) 的每日年化历史波动率序列。日频, 形态同
+// daily_bar, 可回填多年 (history_depth=3650)。同一 (instrument_id, date) 每窗口一行 (窗口数=行倍数)。
+// 唯一 (instrument_id, date, volatility_days)。value 缺失存 null (沿 015 端口层契约)。
+model VolatilityDaily {
+  id             BigInt   @id @default(autoincrement())
+  instrumentId   BigInt   @map("instrument_id")
+  date           DateTime @db.Date
+  volatilityDays Int      @map("volatility_days")
+  value          Decimal? @db.Decimal(12, 8)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, volatilityDays], map: "uk_volatility_daily_instrument_date_days")
+  @@map("volatility_daily")
+  @@schema("marketdata")
+}
+
+// 热度精选快照 (US2): 每精选 hot_type (ss/tr/capita/rep) 对该股按 vendor 数据日期 (last_data_date)
+// 累积的快照行。payload Json 整存 vendor 原始异构字段 (每 type 字段结构不同, FR-006 新增 type 零 schema
+// 变更; 样板 corporate_action.payload)。vendor 无历史 (快照) → 从上线日按 dataDate 前向累积, 不回填。
+// 唯一 (instrument_id, hot_type, data_date): 数据日期未变幂等覆盖同行、变则落新行。
+model HotSnapshot {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  hotType      String   @map("hot_type") @db.VarChar(16)
+  dataDate     DateTime @map("data_date") @db.Date
+  payload      Json
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, hotType, dataDate], map: "uk_hot_snapshot_instrument_type_date")
+  @@map("hot_snapshot")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 041 港股事件流 4 张 market-agnostic 事实表 (回购/股本变动/股东权益变动/配股)。
+// 范式同上: ADR-0043 贫血 row + @map snake_case + instrument_id FK cascade + @@unique 自然键。
+// market 经 instrument 携带 (无 hk_* 前缀, FR-008 将来 A 股同类可无缝并入)。金融数值一律 Decimal
+// (禁 Float): 金额 Decimal(24,2) / 价格 Decimal(18,4) / 比率 Decimal(10,6) / 股数 BigInt; vendor 缺字段存 null。
+// 回购/股本变动 = 扁平 typed 列 (字段稳定, 量化需可查, plan Decision 5); 股东权益变动 = 扁平
+// shareholderName + payload Json 存嵌套 L/S 数组 (plan Decision 4); 配股 = payload Json (零样本, 字段未知,
+// plan Decision 5)。配股独立表刻意不复用 corporate_action (避污染 019/020 复权触发流, plan Decision 3)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 回购事件 (US1, 数据最丰): 单只港股 repurchase 按区间回填多年事件流。扁平 typed 列 (num/价格/总额/
+// 累计比例/回购方式/币种/板块)。唯一 (instrument_id, date, vendor_event_id) — T018 真调实证同日多笔真实
+// 存在 (汇丰 00005 同日 GBP/turquoise + HKD/exchange 两市场回购), 单纯 (instrument_id, date) 会 skipDuplicates
+// 丢真行 → 扩键加 vendor `_id` (源头稳定唯一 24 位 hex, 全非空; spec C1 扩键定案, Kafka 幂等键范式)。
+model BuybackEvent {
+  id                            BigInt   @id @default(autoincrement())
+  instrumentId                  BigInt   @map("instrument_id")
+  date                          DateTime @db.Date
+  vendorEventId                 String   @map("vendor_event_id") @db.VarChar
+  num                           BigInt?
+  highestPrice                  Decimal? @map("highest_price") @db.Decimal(18, 4)
+  lowestPrice                   Decimal? @map("lowest_price") @db.Decimal(18, 4)
+  avgPrice                      Decimal? @map("avg_price") @db.Decimal(18, 4)
+  totalPaid                     Decimal? @map("total_paid") @db.Decimal(24, 2)
+  totalSharesForCancellation    BigInt?  @map("total_shares_for_cancellation")
+  totalSharesForTreasury        BigInt?  @map("total_shares_for_treasury")
+  ratioPurchasedSinceResolution Decimal? @map("ratio_purchased_since_resolution") @db.Decimal(20, 6)
+  methodOfPurchase              String?  @map("method_of_purchase") @db.VarChar
+  currency                      String?  @db.VarChar
+  boardType                     String?  @map("board_type") @db.VarChar
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, vendorEventId], map: "uk_buyback_event_instrument_date_vendor")
+  @@map("buyback_event")
+  @@schema("marketdata")
+}
+
+// 股本变动事件 (US2): 单只港股 issued capital 历次变动。扁平列 (capitalization/capitalizationH/
+// changeReason/declarationDate)。唯一 (instrument_id, date) — 暂定 (同日多因 impl 核, C1 护栏)。
+model EquityChange {
+  id              BigInt    @id @default(autoincrement())
+  instrumentId    BigInt    @map("instrument_id")
+  date            DateTime  @db.Date
+  capitalization  Decimal?  @db.Decimal(24, 0)
+  capitalizationH Decimal?  @map("capitalization_h") @db.Decimal(24, 0)
+  changeReason    String?   @map("change_reason") @db.VarChar
+  declarationDate DateTime? @map("declaration_date") @db.Date
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_equity_change_instrument_date")
+  @@map("equity_change")
+  @@schema("marketdata")
+}
+
+// 股东权益变动事件 (US3): 大股东持股数量/占已发行有投票权股份比例历次变动。嵌套 L/S 数组
+// (numOfSharesInterestedList[]/percentageOfIssuedVotingShares[], 每项 {value,sharesType}) 整存
+// payload Json (无损容纳 L/S 及潜在第三类如 sharesType=P, plan Decision 4)。唯一 (instrument_id, date,
+// shareholder_name, content_hash) — T018 真调实证同股东同日多笔真实存在 (JPMorgan 09988 同日 3 笔, involved
+// 不同; 汇丰同股东同日 2 笔), 三列 NK 会 skipDuplicates 丢真行 → 扩键加 content_hash (对 vendor 原始事件行
+// canonical 序列化后 sha256, Data Vault hashdiff 范式; 内容全同才折叠、任何实质差异都保留)。
+model ShareholderChange {
+  id              BigInt   @id @default(autoincrement())
+  instrumentId    BigInt   @map("instrument_id")
+  date            DateTime @db.Date
+  shareholderName String   @map("shareholder_name") @db.VarChar
+  contentHash     String   @map("content_hash") @db.VarChar
+  payload         Json
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, shareholderName, contentHash], map: "uk_shareholder_change_instrument_date_name_hash")
+  @@map("shareholder_change")
+  @@schema("marketdata")
+}
+
+// 配股事件 (US4)。独立表, 不复用 corporate_action (plan Decision 3)。唯一 (instrument_id, date)。
+//
+// 041 建表时 probe 扫 12 标的全 0 行 → 按「零样本、字段 schema 未知」整存 payload Json
+// (plan Decision 5 预留「首个真实非空样本后可 expand 提列」)。**该前提已于 2026-08-01 证伪**:
+// prod 实测 545 行真实样本, 字段固定为 date/exDate/allotmentRatio/allotmentPrice/allotmentShares/
+// currency → 本次按 Decision 5 兑现提列 (payload 保留无损兜底, 供未来字段扩张)。
+//
+// 🚨 **`date` 是公告日, 不是除权日**: 545 行实测 **510 行两者不同** (另 35 行 vendor 无 exDate)。
+// 复权因子按除权日定版本边界 ⇒ 必须走 `exDate` 关联, **不要拿自然键 `date` 去 join 除权事件**。
+// 自然键保持 `date` 不变 (公告日 per-事件唯一; exDate 可空且可改期, 不适合做键)。
+model AllotmentEvent {
+  id             BigInt    @id @default(autoincrement())
+  instrumentId   BigInt    @map("instrument_id")
+  /**
+   * vendor `date` = 公告日 (自然键)。
+   */
+  date           DateTime  @db.Date
+  /**
+   * vendor `exDate` = 除权日 (复权因子版本边界)。vendor 缺失 → null (35/545 实测)。
+   */
+  exDate         DateTime? @map("ex_date") @db.Date
+  /**
+   * 配股比率 q (每股可认购股数, 如 0.5 / 3)。除权价公式分母份额项 `1 + q`。
+   */
+  allotmentRatio Decimal?  @map("allotment_ratio") @db.Decimal(18, 8)
+  /**
+   * 配股价 P (`currency` 计价)。除权价公式分子 `n0 + P·q`。
+   */
+  allotmentPrice Decimal?  @map("allotment_price") @db.Decimal(18, 4)
+  /**
+   * 配股价计价币种 (与 Instrument.currency 不等时不可直接入公式)。
+   */
+  currency       String?   @db.VarChar(8)
+  payload        Json
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_allotment_event_instrument_date")
+  @@index([instrumentId, exDate], map: "ix_allotment_event_instrument_exdate")
+  @@map("allotment_event")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 042 港股报告期 3 张 market-agnostic 事实表 (营收构成/最新股东/员工)。范式同 041:
+// ADR-0043 贫血 row + @map snake_case + instrument_id FK cascade + @@unique 自然键。market 经
+// instrument 携带 (无 hk_* 前缀, FR-007 将来 A 股同类可无缝并入)。金融数值一律 Decimal (禁 Float);
+// vendor 缺字段存 null。营收/员工 = 扁平 typed 子行 (vendor dataList 展开, 稳定字段量化需可查,
+// plan Decision 3); 最新股东 = 扁平 shareholderName + payload Json 存嵌套 L/S/P 数组 (复用 041
+// ShareholderChange 范式, plan Decision 4)。营收/员工 NK 列全 NOT NULL, 顶层无 parentItemName 行落
+// sentinel '' (migration-rules §4: PG 视多 NULL 互异, NULL 进 NK 不去重违约束意图)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 营收构成 (US1, 报告期族数据最丰): 单只港股 operation-revenue-constitution 按区间回填多年报告期
+// 分部级营收。扁平 typed 子行 (vendor dataList 展开: 头行判别 = 无 parentItemName + 无 value 才跳,
+// 有 parentItemName 的行一律落 (value 可 null), plan Decision 3)。revenue/costs signed 可负 (probe
+// 实证 HSBC 企業中心 -1e10, max 7.5e11 → Decimal(24,2))。唯一 (instrument_id, date, parent_item_name,
+// item_name) — probe verified 22 期 0 碰撞 (含 "其他" 跨两组不撞)。
+model RevenueSegment {
+  id                BigInt    @id @default(autoincrement())
+  instrumentId      BigInt    @map("instrument_id")
+  date              DateTime  @db.Date
+  declarationDate   DateTime? @map("declaration_date") @db.Date
+  currency          String?   @db.VarChar
+  parentItemName    String    @map("parent_item_name") @db.VarChar
+  itemName          String    @map("item_name") @db.VarChar
+  revenue           Decimal?  @db.Decimal(24, 2)
+  costs             Decimal?  @db.Decimal(24, 2)
+  grossProfitMargin Decimal?  @map("gross_profit_margin") @db.Decimal(10, 6)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, parentItemName, itemName], map: "uk_revenue_segment_instrument_date_parent_item")
+  @@map("revenue_segment")
+  @@schema("marketdata")
+}
+
+// 最新股东 (US2): 报告期股东名册。vendor latest-shareholders 返嵌套 numOfSharesInterestedList[]/
+// percentageOfIssuedVotingShares[] (每项 {value,sharesType:L/S/P}) → payload Json 整存整行无损容纳
+// L/S 及第三类 P (plan Decision 4)。NK 含 content_hash (vendor 原始行 canonical sha256, Data Vault
+// hashdiff, 复用 041 ShareholderChange 范式) 应对同股东同日多笔。probe verified SERIES (00700 9 行/5
+// date), date 进 NK 可回填。与 041 shareholder_change 是不同语义独立表 (本表 = 报告期股东名册)。
+model ShareholderSnapshot {
+  id              BigInt   @id @default(autoincrement())
+  instrumentId    BigInt   @map("instrument_id")
+  date            DateTime @db.Date
+  shareholderName String   @map("shareholder_name") @db.VarChar
+  contentHash     String   @map("content_hash") @db.VarChar
+  payload         Json
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, shareholderName, contentHash], map: "uk_shareholder_snapshot_instrument_date_name_hash")
+  @@map("shareholder_snapshot")
+  @@schema("marketdata")
+}
+
+// 员工 (US3): 报告期员工数据。扁平 typed 子行 (vendor dataList 展开: itemName/parentItemName/value/
+// displayType, plan Decision 3)。displayType (number/percentage) 语义判别不可丢且进 NK — probe 实证同名
+// (parent,item) 两行 number+percentage 并存 (流失率按性别分‖男性 = {58812 number, 15.2 percentage}),
+// 6/10 期碰撞, 加 displayType 后 00700+00005 全期 0 碰撞、完全去重无需 content_hash。value Decimal(20,4)
+// 兼容 headcount 与 percentage。唯一 (instrument_id, date, parent_item_name, item_name, display_type)。
+model EmployeeSnapshot {
+  id              BigInt    @id @default(autoincrement())
+  instrumentId    BigInt    @map("instrument_id")
+  date            DateTime  @db.Date
+  declarationDate DateTime? @map("declaration_date") @db.Date
+  parentItemName  String    @map("parent_item_name") @db.VarChar
+  itemName        String    @map("item_name") @db.VarChar
+  displayType     String    @map("display_type") @db.VarChar
+  value           Decimal?  @db.Decimal(20, 4)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, parentItemName, itemName, displayType], map: "uk_employee_snapshot_instrument_date_parent_item_type")
+  @@map("employee_snapshot")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 043 港股分类文本 2 张 market-agnostic 事实表 (所属行业/公告)。范式同 041/042:
+// ADR-0043 贫血 row + @map snake_case + instrument_id FK cascade + @@unique 自然键。
+// market 经 instrument 携带 (无 hk_* 前缀, FR-008 将来 A 股同类可无缝并入)。所属行业 = 覆盖式
+// 快照 (照抄 index_membership, 无 date, deleteMany+createMany 原子替换); 公告 = range 文本流元数据
+// (照抄 buyback_event range 形态, linkUrl 天然唯一 NK, 只存元数据不存 PDF 正文)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 所属行业分类 (US1, 覆盖式快照): 单只港股在恒生行业分类 (source=hsi) 体系下归属的行业节点。vendor
+// industries 端点无 date (返当前全量归属集合快照, 非历史序列) → 覆盖式 per-instrument 单 $transaction
+// deleteMany({instrumentId})+createMany 原子替换反映最新 (照抄 index_membership)。3 级层级 3 行/股
+// 全落 (probe 00700 → H70/H7020/H702015), 层级由 industry_code 前缀天然派生 (不加 level 列)。vendor 行的
+// stockCode 字段实为行业代码 (H70) 非个股 → 落 industry_code 列 (与 IndexMembership.indexCode 平行命名,
+// 消歧)。唯一 (instrument_id, source, industry_code): 比 index_membership 多 source (行业天然多分类体系
+// GICS/申万/hsi, 今 probe 全 hsi); source/industryCode NOT NULL (probe 恒有值, 防御缺失落 sentinel '')。
+model IndustryClassification {
+  id           BigInt  @id @default(autoincrement())
+  instrumentId BigInt  @map("instrument_id")
+  source       String  @db.VarChar(32)
+  industryCode String  @map("industry_code") @db.VarChar(32)
+  name         String? @db.VarChar(128)
+  areaCode     String? @map("area_code") @db.VarChar(8)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, source, industryCode], map: "uk_industry_classification_instrument_source_code")
+  @@map("industry_classification")
+  @@schema("marketdata")
+}
+
+// 公告 (US2, range 文本流元数据): 单只港股 announcement 按区间回填多年公告流。本 feature 唯一潜在超大表
+// (~2700 股 × ~1000 行/10yr ≈ 3M 行, HK 数据集最大表) → 只存元数据 (link_url/date/link_text/link_type/
+// types) 不存 PDF 正文。types[] 用 Postgres text[] (量化 array-overlap 可查); 缺字段存 null/空数组。唯一
+// (instrument_id, date, link_url): link_url 是 HKEX 文档全局唯一 URL (probe 00700 2 年 433/433 unique,
+// maxLen 79 → VarChar(512) 留足) → 无需 vendor_event_id/content_hash (异于 buyback/shareholder)。date 为
+// +08:00 (HK-local, lixDateOnly slice 正确无 off-by-one), 照抄 buyback。(instrument_id, date desc) 时序
+// 索引护超大表最近 N 日扫描 (同 daily_bar, plan Decision 7)。
+model Announcement {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  date         DateTime @db.Date
+  linkUrl      String   @map("link_url") @db.VarChar(512)
+  linkText     String?  @map("link_text") @db.VarChar(512)
+  linkType     String?  @map("link_type") @db.VarChar(16)
+  types        String[] @db.Text
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date, linkUrl], map: "uk_announcement_instrument_date_link")
+  @@index([instrumentId, date(sort: Desc)], map: "ix_announcement_instrument_date")
+  @@map("announcement")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 046 optionsdesk M2a 标的级 IV + 指数日线 3 表 (p3b §4.5 待建表清单)。范式同上: ADR-0043
+// 贫血 row + @map snake_case + @@unique 自然键 (**唯一键即幂等语义载体** — 采集侧一律
+// upsert/skipDuplicates, 同日重跑零翻倍); 数值全 Decimal 禁 Float。前两表 instrument_id 为
+// **同 schema intra FK** cascade (market 经 instrument 携带, 无 us_ 前缀 — 将来别的市场有
+// 期权可无缝并入); 指数表无 instrument 关联 (指数级非标的级, 同 TradingDay 体例)。
+// 三表全落 marketdata schema (市场事实, p3b §4.5) — optionsdesk 只 Q7-B 只读直查, 不搬家。
+//
+// 🚨 **两张标的级表刻意分开而非合表** (plan D5, 两条理由都是硬的):
+//   ① **采集节奏不同**: 日快照走日更增量; 历史序列首次拉满 vendor 上限约 3 年 (滑动窗,
+//      今天不拉明年那段就永久没了, FR-024) 之后只做尾部增量。
+//   ② **来源性质不同**: 日快照是 **vendor 结论**, 历史序列是**原始序列**。混一张表会糊掉
+//      「直读 vs 自算」的来源边界 —— 而那正是 D4 双算对表 (富途聚合规则未文档化, 它若悄悄
+//      改规则, 这条核对是唯一能发现的信号) 要监控的东西。
+//
+// ⚠️ IV 口径 = **富途标的聚合 IV**, 非严格 30d-ATM 锁定 (p3 §9-1 采纳声明) ⇒ 列名 / DTO /
+// 文案一律 **MUST NOT** 写 iv30d (FR-035)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 标的级 IV 日快照 (FR-023): 富途 `get_option_underlying_overview` (≤500 codes 批量) 直读的
+// 当日结论, **UI 读的就是这张表** —— 显示口径单源 = 直读值 (FR-035), 自算分位只进采集侧告警
+// 面不进本表也不进响应 (FR-034 / plan D4)。唯一 (instrument_id, date)。
+// iv / hv_* 按 vendor 原样存**百分数** (实测 25.5 = 25.5%, p3 inventory §1.3), 落库不做二次
+// 换算 —— 换算一次就再也说不清库里那个数是谁的口径。各分位列值域 0-100。
+// ⚠️ iv_rank (IVR) **只落库不上屏** (FR-013): 呈现一律 IVP 优先, 采集侧照常全存留证据。
+// vendor 缺字段一律存 null (禁 0 冒充, 同 015 端口层契约)。
+model UnderlyingIvDaily {
+  id              BigInt   @id @default(autoincrement())
+  instrumentId    BigInt   @map("instrument_id")
+  date            DateTime @db.Date
+  iv              Decimal? @db.Decimal(12, 8)
+  ivRank          Decimal? @map("iv_rank") @db.Decimal(8, 4)
+  ivPercentile    Decimal? @map("iv_percentile") @db.Decimal(8, 4)
+  preIv           Decimal? @map("pre_iv") @db.Decimal(12, 8)
+  hv30            Decimal? @map("hv_30") @db.Decimal(12, 8)
+  hv30Percentile  Decimal? @map("hv_30_percentile") @db.Decimal(8, 4)
+  hv60            Decimal? @map("hv_60") @db.Decimal(12, 8)
+  hv60Percentile  Decimal? @map("hv_60_percentile") @db.Decimal(8, 4)
+  hv90            Decimal? @map("hv_90") @db.Decimal(12, 8)
+  hv90Percentile  Decimal? @map("hv_90_percentile") @db.Decimal(8, 4)
+  hv120           Decimal? @map("hv_120") @db.Decimal(12, 8)
+  hv120Percentile Decimal? @map("hv_120_percentile") @db.Decimal(8, 4)
+  hv365           Decimal? @map("hv_365") @db.Decimal(12, 8)
+  hv365Percentile Decimal? @map("hv_365_percentile") @db.Decimal(8, 4)
+  callVolume      Decimal? @map("call_volume") @db.Decimal(20, 0)
+  putVolume       Decimal? @map("put_volume") @db.Decimal(20, 0)
+  callOi          Decimal? @map("call_oi") @db.Decimal(20, 0)
+  putOi           Decimal? @map("put_oi") @db.Decimal(20, 0)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_underlying_iv_daily_instrument_date")
+  @@map("underlying_iv_daily")
+  @@schema("marketdata")
+}
+
+// 标的级 IV 历史序列 (FR-024): 富途 `get_option_underlying_his_volatility` 回填的原始序列
+// (单次跨度 ≤364 天 ⇒ 分页; 首次拉满约 3 年)。**只供 IVP 自算与双算对表** (plan D4), 不上屏。
+// 唯一 (instrument_id, date)。iv / hv 同上表口径 (百分数原样存); underlying_price 为 vendor
+// 随序列下发的标的价 (Decimal(18,4) 同 daily_bar), 缺失存 null。
+// 唯一索引 (instrument_id, date) 同时服务自算侧「按标的取整段序列」的顺序扫描, 不另建索引。
+model UnderlyingIvHistory {
+  id              BigInt   @id @default(autoincrement())
+  instrumentId    BigInt   @map("instrument_id")
+  date            DateTime @db.Date
+  iv              Decimal? @db.Decimal(12, 8)
+  hv              Decimal? @db.Decimal(12, 8)
+  underlyingPrice Decimal? @map("underlying_price") @db.Decimal(18, 4)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date], map: "uk_underlying_iv_history_instrument_date")
+  @@map("underlying_iv_history")
+  @@schema("marketdata")
+}
+
+// 美股波动率指数日线 (FR-025): VIX / VVIX, 源 = **CBOE 官方历史 CSV** (77 直连全量文件 upsert)。
+// 🚨 **MUST NOT** 接 CBOE 盘中报价端点 `delayed_quotes/quotes/*.json` —— 站点级 Terms 明文禁
+// 复制/存储进电子检索系统, 官方免费的只有历史文件 (p3b E1/E24)。「顺手加个实时值」停在这里。
+// 无 instrument 关联: 指数级非标的级, 且富途/东财均不收录这两个代码 (p3b E4/E26) ⇒ 库里根本
+// 不存在对应的 Instrument 行。**本表的采集也因此不挂锚闸** (FR-027 / plan D1): 工作集 = 两个
+// 固定代码常量, 零锚时照常跑 (表盘不依赖锚)。唯一 (index_code, date)。
+// 🚨 **VVIX 只有 CLOSE 一列** (E2 实测 `DATE,VVIX` 单值表头) ⇒ open/high/low **nullable,
+// 禁填 0** (FR-025)。填 0 会让「VVIX 开盘 0」这种假事实进库, 且下游分不出「无此列」与「真是 0」。
+model UsIndexDaily {
+  id        BigInt   @id @default(autoincrement())
+  indexCode String   @map("index_code") @db.VarChar(16)
+  date      DateTime @db.Date
+  open      Decimal? @db.Decimal(18, 4)
+  high      Decimal? @db.Decimal(18, 4)
+  low       Decimal? @db.Decimal(18, 4)
+  close     Decimal  @db.Decimal(18, 4)
+
+  @@unique([indexCode, date], map: "uk_us_index_daily_code_date")
+  @@map("us_index_daily")
+  @@schema("marketdata")
+}
+
+// 交易日历 (按市场)。唯一 (market, date)。无 instrument 关联 (市场级, TRADING_CALENDAR 端口消费)。
+model TradingDay {
+  market String   @db.VarChar(8)
+  date   DateTime @db.Date
+
+  @@id([market, date])
+  @@map("trading_day")
+  @@schema("marketdata")
+}
+
+// 交易日历填充心跳 (044, per-market 一行)。取代「per-market catch 只 WARN」的静默降级:
+// 填充成功 → 更新 lastSuccessAt + servedBy; 失败 → 更新 lastAttemptAt + lastError, 不动
+// lastSuccessAt/servedBy → 心跳陈旧 → 独立探针告警 (不经 app 进程, FR-010)。
+// 判 liveness 非 freshness: 长假填充「成功但零新增」仍算成功 → 心跳新 → 不误报 (SC-005)。
+// 无 instrument 关联 (市场级非标的级); 不复用 sync_run (日历填充不是维度, 塞非维度行会污染
+// report.sh 逐维度解析 + 全景 IT 维度计数断言, plan Decision 5)。
+model CalendarSyncHealth {
+  market        String    @id @db.VarChar(8)
+  lastSuccessAt DateTime? @map("last_success_at")
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  lastError     String?   @map("last_error") @db.Text
+  // 本次成功由链上哪层服务 ('tencent'/'static'): 非主源 → 降级运行 → 探针告警;
+  // 主源恢复 → 值变回主源 → 信号自动解除 (FR-014, 降级 ≠ 健康)。
+  servedBy      String?   @map("served_by") @db.VarChar(16)
+
+  @@map("calendar_sync_health")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 047 optionsdesk M2b 期权链 3 表 (p3b §4.5)。三表全落 **marketdata** 而非 optionsdesk:
+// 它们是 vendor 下发的**市场事实**, 与「我给这只票估过值」的自有事实 (optionsdesk.anchor)
+// 不同性质 (plan D-ARCH-1)。optionsdesk 侧只做 Q7-B 跨 ctx **只读直查**
+// (CROSS-CONTEXT-READ 注释强制), 不搬家、不写。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 期权合约静态属性 (FR-028): 链发现维度落的一行 = 一个合约。唯一 (market, code)。
+// 🚫 **MUST NOT 存合约乘数 lot_size** (FR-028 / p3b D5): 非标合约 (调整后合约) 交割的是
+//   「整股 + 零碎股现金找零 + 特别现金分配」混合物, 不是一个乘数能表达的 —— 换个乘数并不能
+//   让年化 / 有效成本变正确。落 is_standard 一个布尔即可, 排除只发生在**选约层**, 采集端
+//   照常全采落库 (证据不可回补, FR-008 / FR-033)。
+// 🚫 **MUST NOT 加「是否已到期」状态列** (FR-028a): expiry_date 本身就是权威判据, 再存一份
+//   布尔即双写必 drift。已到期合约**永久保留** (快照行指向它, M4 归因要回看已了结的腿)。
+//   ⚠️ 两处过滤判据故意不同, 别统一: 快照采集工作集 = `expiry_date >= 当前交易日`
+//   (当日到期的合约当日仍可取快照, 官方「结束日期请输入今天或未来的日期」); 选约表
+//   = `expiry_date > 当前交易日` (已到期腿不可交易)。
+// root = 合约代码里的标的词根 (`VICI` vs 调整后的 `VICI1`), 与 underlying_instrument_id
+//   并存: 前者是 vendor 字面, 后者是库内 FK; 非标识别靠 option_standard_type 或 root 后缀数字。
+// 索引: 除唯一键外只建 (underlying_instrument_id, expiry_date) —— 快照工作集与选约表**两条主
+//   读路径**都是「某标的 + 到期日区间」, 且合约永久保留 ⇒ 表随时间单调增长 (12 只锚 × 约 2150
+//   合约/票, 周期权每周新挂), seq scan 会随年份线性劣化。O(log n) B-tree 一条覆盖两条路径。
+model OptionContract {
+  id                     BigInt   @id @default(autoincrement())
+  market                 String   @db.VarChar(8)
+  code                   String   @db.VarChar(32)
+  root                   String   @db.VarChar(16)
+  underlyingInstrumentId BigInt   @map("underlying_instrument_id")
+  expiryDate             DateTime @map("expiry_date") @db.Date
+  strikePrice            Decimal  @map("strike_price") @db.Decimal(18, 4)
+  // 'PUT' | 'CALL' —— 采集端 option_type = ALL **含 CALL** (plan D-DATA-3): 「本片只含认沽」
+  // 是**呈现面**的话; 快照漏采即永久缺口, M4 的 wheel / CC 要 CALL 时买不回来。
+  optionType             String   @map("option_type") @db.VarChar(8)
+  // 到期周期 / 结算方式: vendor 缺字段一律存 null (禁默认值冒充, 同 015 端口层契约)。
+  expirationCycle        String?  @map("expiration_cycle") @db.VarChar(16)
+  settlementMode         String?  @map("settlement_mode") @db.VarChar(16)
+  isStandard             Boolean  @map("is_standard")
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  underlying Instrument           @relation(fields: [underlyingInstrumentId], references: [id], onDelete: Cascade)
+  snapshots  OptionDailySnapshot[]
+
+  @@unique([market, code], map: "uk_option_contract_market_code")
+  @@index([underlyingInstrumentId, expiryDate], map: "ix_option_contract_underlying_expiry")
+  @@map("option_contract")
+  @@schema("marketdata")
+}
+
+// 期权逐日快照 (FR-030): 一行 = 一个合约在一个交易日、由一个来源采到的全量盘口 + greeks。
+// 幂等键 = **(contract_id, session_date, source)** (FR-040 / plan D-DATA-5): 第三段**不是纯
+//   占位** —— 本片就有两个活值 `eod` (收盘后正常采集) 与 `premarket_backfill` (次日盘前兜底)。
+//   第二源 (嘉信) 到位时增加值域, 不改主键。事后加列要改主键 + 回填, 成本高得多。
+//
+// 🚨 **三个独立时点列, MUST NOT 合并** (plan D-DATA-4, 本片新发现):
+//   · session_date  = 本行归属的**交易日** (业务日期, 按 us 市场时区求值, FR-036)
+//   · quote_as_of   = 本行报价**实际采集时刻** (两条路径的墙钟不同)
+//   · oi_as_of      = **OI 的归属交易日** —— 官方文档明写「美股期权 OI 在**盘前时段**更新」
+//                     ⇒ T 日收盘后采的快照, 其 OI 其实是 **T−1 日**的持仓量。正常路径
+//                     `oi_as_of = 上一交易日`; 盘前补采路径 `oi_as_of = session_date`。
+//   🚫 **MUST NOT 为「对齐」把 OI 归到 session_date** —— 那是拿标签掩盖真实 vintage。
+//   ⇒ UI 的 OI 列取 oi_as_of 而非区块级 asOf (FR-013 要求每处读数带显式时点)。
+//
+// greeks_complete = 本行 greeks 是否齐全的显式标记: 实值区 bid 跌破内在价值 ⇒ IV 无解 ⇒
+//   greeks 缺失是**数学固有现象**不是故障 (实测 227/2150 行、99.5% 是深实值腿), 告警只在
+//   虚值区抬 (FR-047 / plan D-ARCH-3)。缺字段一律 null, **禁 0 冒充**。
+// 索引: 唯一键本身服务「某合约取某日」与「某标的的合约集 × 某日」(contract_id 前缀);
+//   另建 (session_date) 服务 FR-045 的**逐合约覆盖率**日核对 —— 那条查询以交易日为入口横扫
+//   全表, 而本表是全库增长最快的表 (约 2150 合约/票 × 12 票 × 250 交易日 ≈ 6.4M 行/年),
+//   无该索引则每日一次全表 seq scan 且随年份线性劣化。
+model OptionDailySnapshot {
+  id          BigInt   @id @default(autoincrement())
+  contractId  BigInt   @map("contract_id")
+  sessionDate DateTime @map("session_date") @db.Date
+  // 'eod' | 'premarket_backfill' (FR-040 / FR-046 ② 级补救)。
+  source      String   @db.VarChar(24)
+  quoteAsOf   DateTime @map("quote_as_of") @db.Timestamptz(6)
+  oiAsOf      DateTime @map("oi_as_of") @db.Date
+
+  bid       Decimal? @db.Decimal(18, 4)
+  ask       Decimal? @db.Decimal(18, 4)
+  bidSize   Decimal? @map("bid_size") @db.Decimal(20, 0)
+  askSize   Decimal? @map("ask_size") @db.Decimal(20, 0)
+  last      Decimal? @db.Decimal(18, 4)
+  prevClose Decimal? @map("prev_close") @db.Decimal(18, 4)
+
+  // iv 按 vendor 原样存, 落库不做二次换算 (同 underlying_iv_daily 纪律 —— 换算一次就再也
+  // 说不清库里那个数是谁的口径)。
+  iv    Decimal? @db.Decimal(12, 8)
+  delta Decimal? @db.Decimal(16, 8)
+  gamma Decimal? @db.Decimal(16, 8)
+  vega  Decimal? @db.Decimal(16, 8)
+  theta Decimal? @db.Decimal(16, 8)
+  rho   Decimal? @db.Decimal(16, 8)
+
+  openInterest    Decimal? @map("open_interest") @db.Decimal(20, 0)
+  netOpenInterest Decimal? @map("net_open_interest") @db.Decimal(20, 0)
+  volume          Decimal? @db.Decimal(20, 0)
+  turnover        Decimal? @db.Decimal(20, 2)
+  // 标的价直取 vendor 随链下发的值, **不走复权换算** (ADR-0053 绊线, plan D-ARCH-1)。
+  underlyingSpot  Decimal? @map("underlying_spot") @db.Decimal(18, 4)
+  vendorUpdateTime DateTime? @map("vendor_update_time") @db.Timestamptz(6)
+  greeksComplete   Boolean   @map("greeks_complete")
+
+  contract OptionContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, sessionDate, source], map: "uk_option_daily_snapshot_contract_session_source")
+  @@index([sessionDate], map: "ix_option_daily_snapshot_session_date")
+  @@map("option_daily_snapshot")
+  @@schema("marketdata")
+}
+
+// 财报事件 (FR-034 / FR-027 PIT)。唯一 (instrument_id, earnings_date)。
+// 🚨 **本表的采集维度 MUST NOT 挂锚闸** (FR-035a / plan D-DATA-1): `get_earnings_calendar(US)`
+//   是**市场级**接口 (单次 ≤7 天窗返全市场), 调用数只跟前向视野有关、与锚数量无关 ⇒ 锚闸零
+//   收窄作用, 挂了只会复刻「零锚时静默不采」那个坑 (046 FR-026→FR-027 已订正过一次同形状问题)。
+//   **判据是「接口是不是 per-code」, 不是「维度归属哪一片」。**
+// **全市场落库**而非只落白名单 —— PIT 语义要求连续观察: 只落白名单会让建锚前的变更史永久
+//   缺失, 且建锚后 first_seen_at 语义直接变错 (成了「建锚那天」)。遇到 Instrument 表外的标的
+//   (新上市 / OTC) → **跳过并计数**保 FK 完整, 该计数作监控信号; MUST NOT 为规避 FK 改幂等键。
+// PIT 三件套 (业界 confirmed 标记只在机构级付费源, 故自建, p3b §6.3):
+//   first_seen_at    = 本 (标的, 财报日) 首次被观察到的时刻;
+//   date_changed_at  = 财报日被 vendor 改动的时刻 (改动即进 WARN 复核名单);
+//   prev_earnings_date = 改动前的日期。⇒ 每日**重拉整个前向视野**才看得到旧窗里的改动
+//   (只拉增量窗永远发现不了「已公布的日期被改了」, FR-034 / plan D-DATA-9)。
+// 索引: 唯一键服务「某标的的财报日」查询; 另建 (earnings_date) 服务「当前覆盖窗右端」——
+//   超出该右端的到期日 MUST 落「无日期」而非「不跨财报」(FR-034 📌), 而那是**每次选约表
+//   请求都要求一次**的 max(earnings_date), 全市场表 (2–8 万行/年, 逐年累积) 上不能 seq scan。
+model EarningsEvent {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  earningsDate DateTime @map("earnings_date") @db.Date
+  // 'BEFORE' | 'AFTER' | 'REGULAR' (盘前 / 盘后 / 盘中), 富途直给 (p3b E8)。
+  pubType      String   @map("pub_type") @db.VarChar(16)
+  // 报告期文本 (如 '2026Q2'), vendor 原样存, 缺失 null。
+  periodText   String?  @map("period_text") @db.VarChar(32)
+  epsActual    Decimal? @map("eps_actual") @db.Decimal(18, 6)
+  epsPredict   Decimal? @map("eps_predict") @db.Decimal(18, 6)
+
+  firstSeenAt      DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  dateChangedAt    DateTime? @map("date_changed_at") @db.Timestamptz(6)
+  prevEarningsDate DateTime? @map("prev_earnings_date") @db.Date
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, earningsDate], map: "uk_earnings_event_instrument_date")
+  @@index([earningsDate], map: "ix_earnings_event_date")
+  @@map("earnings_event")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// marketdata 同步配置/审计 3 表 (016, 承接 015 的 6 事实/注册表增量演进)。范式同上:
+// ADR-0043 贫血 row + @map snake_case。无消费者的空表 DDL 015 推迟至此 (clarify 2026-06-02)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 配置化驱动核心 (US1): 每维度一行, 驱动同步哪些维度/哪个 vendor/何时跑/选哪些列/批量/
+// 重试/水位。dimensionKey 唯一 (universe|profile|eod_bar|fundamental|financial|corporate_action)。
+// marketScope/adjustTypes = text[]; metricsList = Json (选列, 维度形态各异)。lastWatermark =
+// 配额耗尽顺延的进度水位 (FR-S07); pausedUntil = 维度级临时停跑。
+model SyncDimension {
+  id                   BigInt    @id @default(autoincrement())
+  dimensionKey         String    @unique(map: "uk_sync_dimension_key") @map("dimension_key") @db.VarChar(32)
+  enabled              Boolean   @default(true)
+  cronExpr             String    @map("cron_expr") @db.VarChar(64)
+  // ⚠️ 语义已过期 (2026-07-30 上报): 仅记录建表时的 V1 意图, **代码从不读取本列**。运行时
+  // provider 由 DI 绑定决定 (UniverseFallbackChainAdapter([理杏仁, 东财]) 逐市场降级 →
+  // cn/hk 走理杏仁、us 走东财), 而本列停在 ADR-0047 2026-06-03 Amendment 之前的语义。
+  // 勿作路由依据 —— 仓内不存在「按维度配 provider」的路由能力, 绑新 vendor 只能靠拆维度。
+  vendor               String    @db.VarChar(32)
+  marketScope          String[]  @map("market_scope")
+  metricsList          Json?     @map("metrics_list")
+  // deprecated (020 T010, FR-A01): eod 写路径收窄后恒 {none} — 复权读时换算, 列保留语义收窄。
+  adjustTypes          String[]  @map("adjust_types")
+  batchSize            Int       @default(50) @map("batch_size")
+  historyDepth         Int?      @map("history_depth")
+  retryMax             Int       @default(3) @map("retry_max")
+  priority             Int       @default(0)
+  // transient 锚定拉取窗口上限 (天, 020 clarify ③语义收窄): corp/eod 命中触发跃变锚定时
+  // vendor backward transient 拉取的最大回溯窗口 (防老票全量回溯爆炸; admin 可调)。
+  reAdjustLookbackDays Int?      @map("re_adjust_lookback_days")
+  lastWatermark        DateTime? @map("last_watermark") @db.Timestamptz(6)
+  // delta 回看窗 (天): delta 抓 [asOf−N, asOf] 而非精确当日。NULL = 精确当日 (from=to=asOf)。
+  // 🚨 定值规则 = **N ≥ 披露滞后 + 两次 tick 的实际间隔**, 不是拍脑袋的余量:
+  //   · 日频维度 7   —— 覆盖 T+1 披露 + 周末夹缝, 留一周自愈窗。⚠️ T+0 维度 (日线) 取 7 的理由
+  //                     **不是**披露滞后 (那是 0), 而是「漏跑一轮 = 永久静默空洞」的自愈窗 ——
+  //                     misfire=fire-now 的 asOf 取自 now, 被跳过的业务日无人再问 (见 20260802_1545)
+  //   · 周更维度 10  —— 周更 cron 配精确当日窗 = 一周只采 1/7 的日子 (结构性丢 6/7);
+  //                     实测两次 tick 间隔可达 8 天 (2026-07-20 → 07-28, cron 写周一但 claim
+  //                     漂到近午夜, asOf 跟着漂) → 7 只剩 1 天余量, 取 10 留 3 天。
+  // 全程 createMany(skipDuplicates) 幂等, 重叠日零翻倍 (connect_holding 已在 prod 验证一个月+)。
+  // 沿革: 原为 executor 里的 `CONNECT_HOLDING_DELTA_LOOKBACK_DAYS` 单维度硬编码常量, 2026-08-01
+  // 查出 announcement/buyback/shareholder_change 同病后声明式化 (再复制 4 份常量即是新债)。
+  deltaLookbackDays    Int?      @map("delta_lookback_days")
+  pausedUntil          DateTime? @map("paused_until") @db.Timestamptz(6)
+  // 017 PG 真相层 (ADR-0049): NULL = 未物化哨兵 (tick 懒初始化, 不补跑); 条件 UPDATE
+  // 抢占的并发原语列 (affected-count won/lost)。
+  nextFireAt           DateTime? @map("next_fire_at") @db.Timestamptz(6)
+  // 'fire-now' (过期补一次, asOf=当天) | 'skip-to-next' (只推进)。misfire≠backfill。
+  misfirePolicy        String    @default("fire-now") @map("misfire_policy") @db.VarChar(16)
+  // 019 声明式新鲜度三列 (FR-S01/S09): 画像 'continuous-daily'|'event-calendar'|'slow-drift'
+  // 决定 tick won 后分流; slaHours NULL = 该维度不做新鲜度检查 (列级开关);
+  // calendarSource = event-calendar 维度的日历源标识 (T001 探测: 暂无 live 行, 机制留位)。
+  freshnessProfile     String    @default("continuous-daily") @map("freshness_profile") @db.VarChar(24)
+  slaHours             Int?      @map("sla_hours")
+  calendarSource       String?   @map("calendar_source") @db.VarChar(32)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("sync_dimension")
+  @@schema("marketdata")
+}
+
+// 017 维度依赖边 (ADR-0049 / FR-S02): mode='hard' 上游失败断下游 (failParentOnFailure) /
+// 'soft' 上游失败下游照跑 (ignoreDependencyOnFailure)。universe→* 必须全 soft (第一道拦截);
+// flow 装配按维度全序消解 DAG→单亲树 (D3)。
+model SyncDependency {
+  id         BigInt   @id @default(autoincrement())
+  upstream   String   @db.VarChar(32)
+  downstream String   @db.VarChar(32)
+  mode       String   @db.VarChar(8) // 'hard' | 'soft'
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([upstream, downstream], map: "uk_sync_dependency_edge")
+  @@map("sync_dependency")
+  @@schema("marketdata")
+}
+
+// 黑名单 (US3): 命中即完全不同步 (不 insert universe / 不拉事实)。唯一 (market, code)。
+model SyncBlacklist {
+  id        BigInt   @id @default(autoincrement())
+  market    String   @db.VarChar(8)
+  code      String   @db.VarChar(16)
+  reason    String   @db.VarChar(256)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([market, code], map: "uk_sync_blacklist_market_code")
+  @@map("sync_blacklist")
+  @@schema("marketdata")
+}
+
+// 执行审计 + DLQ-lite (US1/US5): 每次同步执行的 scanned/ok/skipped/failed 计数 +
+// failedTargets(Json 续跑/重试源) + status (running|success|partial|failed|skipped) + 时间窗。
+// (syncType, startedAt desc) 索引服务审计查询「某类同步最近 N 次」。
+model SyncRun {
+  id            BigInt    @id @default(autoincrement())
+  syncType      String    @map("sync_type") @db.VarChar(32)
+  startedAt     DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz(6)
+  scanned       Int       @default(0)
+  ok            Int       @default(0)
+  skipped       Int       @default(0)
+  failed        Int       @default(0)
+  failedTargets Json?     @map("failed_targets")
+  status        String    @db.VarChar(16)
+  // 017: per-dim 执行回链 BullMQ job id (worker 路径写入; 旧聚合行 NULL)。
+  bullJobId     String?   @map("bull_job_id") @db.VarChar(64)
+
+  @@index([syncType, startedAt(sort: Desc)], map: "ix_sync_run_type_started")
+  @@map("sync_run")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// alert (021, 第 6 bounded context; ADR-0052 调度自治 EOD 预警引擎)。范式 =
+// ADR-0043 贫血 row + @map snake_case。4 表自持 (moat owner=alert); accountId 仅
+// 逻辑引用 JWT sub (跨 schema 禁 FK, 对齐 portfolio.Group 体例); 标的引用业务主键
+// (market, code) 逻辑指向 marketdata.Instrument 无 FK。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 预警主体 (US1): 1..N 条 AND 条件 (同类型限 1, 见 AlertCondition)。frequency 三档
+// ONCE_DELETE|ONCE_DISABLE|DAILY; note ≤22 Unicode code point 由 rules 校验 (D10),
+// 列宽 64 容 22 字 UTF-8。@@index([enabled]) 服务评估轮 load 启用预警全扫。
+model Alert {
+  id        BigInt   @id @default(autoincrement())
+  accountId BigInt   @map("account_id")
+  market    String   @db.VarChar(4) // V1 仅 'cn'
+  code      String   @db.VarChar(16)
+  frequency String   @default("DAILY") @db.VarChar(16) // 'ONCE_DELETE' | 'ONCE_DISABLE' | 'DAILY'
+  note      String?  @db.VarChar(64)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  conditions AlertCondition[]
+
+  @@index([accountId, market, code], map: "ix_alert_account_market_code")
+  @@index([enabled], map: "ix_alert_enabled")
+  @@map("alert")
+  @@schema("alert")
+}
+
+// 预警条件 (从属 Alert, intra FK Cascade — 同 schema 非跨 ctx)。type 词表 32 类
+// (023 四类扩展, SoT=src/alert/alert-condition-meta.ts; 列宽 32 容最长 DIVIDEND_YIELD_ABOVE)。
+// param=条件参数 (MA 周期/窗口/天数/分位年限), sentinel 0=无参 — 弃 NULL 保唯一约束
+// 完整性 (PG NULLS DISTINCT, plan D3); threshold nullable (穿越/无参类条件禁带)。
+// @@unique([alertId, type, param]) = 同类型同参数限 1 的 DB 保险 (同类型不同参数共存)。
+model AlertCondition {
+  id        BigInt   @id @default(autoincrement())
+  alertId   BigInt   @map("alert_id")
+  type      String   @db.VarChar(32)
+  param     Int      @default(0)
+  threshold Decimal? @db.Decimal(18, 4)
+  alert     Alert    @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, type, param], map: "uk_alert_condition_alert_type_param")
+  @@map("alert_condition")
+  @@schema("alert")
+}
+
+// 触发流水 (US2/US3, FR-S05): 独立于 Alert 生命周期 — alertId 普通列**无 FK**
+// (仅1次·删除后流水自立, 消息渲染全走快照字段不 join 活 Alert)。
+// @@unique([alertId, tradeDate]) =「每日1次」同交易日判重键 (评估幂等 P2002 catch-skip,
+// plan D9; alertId NULL 不受 PG 多 NULL 约束)。conditionsSnapshot Json =
+// [{type, threshold, actual}]。(accountId, triggeredAt desc) 索引服务消息中心倒序分页。
+model AlertTrigger {
+  id                 BigInt   @id @default(autoincrement())
+  alertId            BigInt?  @map("alert_id")
+  accountId          BigInt   @map("account_id")
+  market             String   @db.VarChar(4)
+  code               String   @db.VarChar(16)
+  instrumentName     String   @map("instrument_name") @db.VarChar(128) // 触发时 Q7-B 快照
+  tradeDate          DateTime @map("trade_date") @db.Date
+  conditionsSnapshot Json     @map("conditions_snapshot")
+  frequencySnapshot  String   @map("frequency_snapshot") @db.VarChar(16)
+  noteSnapshot       String?  @map("note_snapshot") @db.VarChar(64)
+  triggeredAt        DateTime @default(now()) @map("triggered_at") @db.Timestamptz(6)
+
+  @@unique([alertId, tradeDate], map: "uk_alert_trigger_alert_tradedate")
+  @@index([accountId, triggeredAt(sort: Desc)], map: "ix_alert_trigger_account_triggered")
+  @@map("alert_trigger")
+  @@schema("alert")
+}
+
+// 已读水位线 (US3, plan D6 屏级置已读): 每账号一行, unread = triggeredAt > lastReadAt
+// (无行 = 全未读)。EP8 upsert 推到 now — 服务端单一真相, 多设备一致 (SC-005)。
+model AlertReadCursor {
+  accountId  BigInt   @id @map("account_id")
+  lastReadAt DateTime @map("last_read_at") @db.Timestamptz(6)
+
+  @@map("alert_read_cursor")
+  @@schema("alert")
+}
+
+// 推送绑定 (022 US3, EP9/EP10): registrationId 全局唯一 = 一设备一账号 (clarify Q1) —
+// upsert by regId 即转绑原子化 (他账号已绑 → 整体改绑当前账号)。accountId 逻辑引用
+// JWT sub (跨 schema 禁 FK, 021 体例)。@@index([accountId]) 服务 trigger fan-out 查询。
+model PushBinding {
+  id             BigInt   @id @default(autoincrement())
+  accountId      BigInt   @map("account_id")
+  registrationId String   @unique(map: "uk_push_binding_registration_id") @map("registration_id") @db.VarChar(64)
+  platform       String   @db.VarChar(16) // V1 仅 'android'
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([accountId], map: "ix_push_binding_account")
+  @@map("push_binding")
+  @@schema("alert")
+}
+
+// 推送投递 (022 US1, plan D2/D3): alert 自有 transactional outbox 兼 FR-009 留痕 ledger —
+// trigger tx 内 fan-out PENDING 行, BullMQ dispatch worker 异步消费 (split-tx)。
+// triggerId 普通列无 FK (引 alert_trigger, trigger 永不删, 文案渲染 join 读快照);
+// registrationId 为创建时快照 — dispatch 前复核绑定仍存在 (否则 SKIPPED_UNBOUND)。
+// status: PENDING|SENT|FAILED|FAILED_INVALID|SKIPPED_UNBOUND (态机见 plan §数据模型);
+// 重试 attempts ≤3, backoff 1m/5m/15m 落 nextAttemptAt (D4)。
+// @@index([status, nextAttemptAt]) 服务 dispatch sweep 扫描路径。
+model PushDelivery {
+  id             BigInt    @id @default(autoincrement())
+  triggerId      BigInt    @map("trigger_id")
+  accountId      BigInt    @map("account_id")
+  registrationId String    @map("registration_id") @db.VarChar(64)
+  status         String    @default("PENDING") @db.VarChar(16)
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime? @map("next_attempt_at") @db.Timestamptz(6)
+  lastError      String?   @map("last_error") @db.VarChar(256)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt         DateTime? @map("sent_at") @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt], map: "ix_push_delivery_status_next_attempt")
+  @@index([triggerId], map: "ix_push_delivery_trigger")
+  @@map("push_delivery")
+  @@schema("alert")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// chat (027, 第 7 bounded context; AI 对话首页主干 + 单模型流式)。叶子 ctx —
+// 不 import 任何业务 ctx (ADR-0032 7 问)。范式 = ADR-0043 贫血 row + @map snake_case
+// (无 Entity Mapper)。accountId 仅逻辑引用 JWT sub (跨 schema 禁 FK, 对齐
+// RefreshToken / WechatBinding / portfolio.Group 体例); conversationId 同 schema
+// 内逻辑引用但**亦无声明 FK** (落库走 split-tx, 流式期间不开 tx, 关系完整性由 UC 保证)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 会话 (一账号 N 会话)。accountId 归属 + 反枚举 (他人 conversationId → 404 字节级一致)。
+// title = 首条消息派生标题; model = 该会话使用的 LLM 模型标识; metadata = 二期预留位
+// (RAG / tool 上下文注入, 027 不读写)。(account_id, updated_at desc) 索引服务会话列表倒序。
+model Conversation {
+  id        BigInt   @id @default(autoincrement())
+  accountId BigInt   @map("account_id")
+  title     String
+  model     String
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([accountId, updatedAt], map: "ix_conversation_account_updated")
+  @@map("conversation")
+  @@schema("chat")
+}
+
+// 消息 (从属 Conversation, conversationId 无声明 FK)。role = user|assistant;
+// status 值域仅 completed|stopped (Clarify: 无 failed —— 用户 msg 恒 completed,
+// provider 失败的 AI msg 不落库故无 failed 占位)。content 用 @db.Text (不限长)。
+// metadata = 联网作答来源/降级标识 (030 plan D6, 加性可空; 旧消息 null = 无联网,
+// 正常渲染)。存 shape: {webSearch:boolean, degraded:boolean,
+// sources:[{index,title,url,publishedAt}]} —— 贫血 Json 列, 无 mapper class。
+// (conversation_id, id) 索引服务会话内消息按插入序读取 (id 自增即时序)。
+model Message {
+  id             BigInt   @id @default(autoincrement())
+  conversationId BigInt   @map("conversation_id")
+  role           String
+  content        String   @db.Text
+  status         String
+  metadata       Json?    @map("metadata")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([conversationId, id], map: "ix_message_conversation_id")
+  @@map("message")
+  @@schema("chat")
+}
+
+// 账号级 chat 自定义指令偏好 (031 plan D1)。chat 叶子 ctx 自有表, accountId 标量列无
+// 声明 FK relation (同 Conversation / RefreshToken 范式, R1 同 ctx)。单账号单行
+// (@unique(accountId) → upsert 锚)。customInstruction 非空 + 默认 '' (U1 null 语义收敛:
+// 「未设置」= 行不存在或空串两态等价);列用 @db.Text 不在 DB 钉 2000, 2000 字符上限只在
+// validator 层 (@MaxLength) 做, DB 不做第二道拒绝面 (避 UTF-16 vs PG 字符计数错位)。
+model ChatPreference {
+  id                BigInt   @id @default(autoincrement())
+  accountId         BigInt   @unique @map("account_id")
+  customInstruction String   @default("") @map("custom_instruction") @db.Text
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("chat_preference")
+  @@schema("chat")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ideation (032, 第 8 bounded context; ADR-0057 需求灵感澄清 — 两相剧本驱动 PRD brief)。
+// 叶子 ctx — 不 import 任何业务 ctx (尤其 chat); LLM 经 integrations/llm port 复用
+// (vendor I/O 非跨 ctx)。范式 = ADR-0043 贫血 row + @map snake_case (无 Entity Mapper)。
+// accountId 仅逻辑引用 JWT sub (跨 schema 禁 FK, 对齐 chat.Conversation / RefreshToken
+// 体例); sessionId 同 schema 内逻辑引用但**亦无声明 FK** (关系完整性由 UC 保证)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 灵感会话 (一账号 N 会话)。accountId 归属 + 反枚举 (他人 sessionId → 404 字节级一致)。
+// title = 会话标题; status 默认 'open' (open|...); repo = 接地缝 nullable (本地仓接地路径,
+// 本 feature stub 不消费, 列保留)。(account_id, updated_at desc) 索引服务会话列表倒序。
+model IdeaSession {
+  id        BigInt   @id @default(autoincrement())
+  accountId BigInt   @map("account_id")
+  title     String
+  status    String   @default("open")
+  repo      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([accountId, updatedAt], map: "ix_idea_session_account_updated")
+  @@map("idea_session")
+  @@schema("ideation")
+}
+
+// 灵感轮次 (从属 IdeaSession, sessionId 无声明 FK)。role = user|assistant; content 用
+// @db.Text (不限长)。suggestion = 本轮 chips Json (贫血 Json 列, 无 mapper class):
+// {question, options, recommended, multi_select, allow_freetext}。(session_id, id) 索引
+// 服务会话内轮次按插入序读取 (id 自增即时序)。
+model IdeaTurn {
+  id         BigInt   @id @default(autoincrement())
+  sessionId  BigInt   @map("session_id")
+  role       String
+  content    String   @db.Text
+  suggestion Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([sessionId, id], map: "ix_idea_turn_session_id")
+  @@map("idea_turn")
+  @@schema("ideation")
+}
+
+// 提示词配置 (账号无关全局, key 寻址)。content = LLM system prompt 等可运营文案 (如
+// key='interview_persona' 访谈人设), 由后续管理控制台维护——改文案不改代码 (DB 覆盖)。
+// 表空时 UC 回落代码内 DEFAULT 常量 (单一默认源, 不预 seed 防 drift)。贫血 row, 无 FK。
+model PromptConfig {
+  key         String   @id
+  content     String   @db.Text
+  description String?
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("prompt_config")
+  @@schema("ideation")
+}
+
+// 需求草稿 (1:1 IdeaSession, sessionId @unique)。briefJson = 收敛出的 PRD brief 契约
+// (贫血 Json 列, 无 mapper class)。sessionId 无声明 FK (逻辑引用, UC 保证)。
+model RequirementsDraft {
+  id        BigInt   @id @default(autoincrement())
+  sessionId BigInt   @unique @map("session_id")
+  briefJson Json     @map("brief_json")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("requirements_draft")
+  @@schema("ideation")
+}
+
+// 灵感会话附件 (036 图片标注首建)。只存**烧录图 ossKey** + 元数据,不存原图
+// (clarify 决策)。kind 固定 'image' (列保留供后续多类附件扩展)。annotationsJson =
+// 贫血 Json 列 (各编号 pin 的图片内容坐标 + 注记编号文字,无 mapper / 无 Domain Class)。
+// 归属随 session accountId;sessionId / accountId 逻辑引用但**无声明 FK** (沿 ideation
+// 体例,关系完整性由 UC 保证)。反枚举: 他人 sessionId → 404 字节级一致 (FR-013)。
+// (session_id, id) 索引服务会话内附件按插入序读取 (FR-009 重载可重展示)。
+model IdeaAttachment {
+  id              BigInt   @id @default(autoincrement())
+  sessionId       BigInt   @map("session_id")
+  accountId       BigInt   @map("account_id")
+  // 036 T018: 关联本附件所属的具体 user turn (nullable expand 增列)。带图轮落库时同 tx
+  // 写入当轮新建 user turn 的 id, 使会话重载可 per-turn 投影附件 (FR-009 读侧补全)。
+  turnId          BigInt?  @map("turn_id")
+  ossKey          String   @map("oss_key")
+  kind            String   @default("image")
+  annotationsJson Json?    @map("annotations_json")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([sessionId, id], map: "ix_idea_attachment_session_id")
+  @@index([turnId], map: "ix_idea_attachment_turn_id")
+  @@map("idea_attachment")
+  @@schema("ideation")
+}
+
+// mockup 交付记录 (037 Phase D §A 首建, expand 纯增表)。channel 据所认领任务直传
+// 产物 (text/html 烧录) → 回报落本表关联 session。**append-only**: 多版多行、新版不
+// 覆盖、无 updatedAt; version 序由 app 按 createdAt rank 派生**不落 version 列** (可派生
+// 不落列)。objectKey = OSS 烧录产物 key; screens = 贫血 Json (逐屏标签字符串数组, 无文档
+// 内锚点, 无 mapper / 无 Domain Class); note = 可选交付备注。(accountId, sessionId) 由
+// server 据 claimed agentQueueEvent 派生 (channel 不自报); 二者逻辑引用但**无声明 FK**
+// (沿 ideation / AgentQueueEvent 体例, 关系完整性由 UC 保证)。(session_id, created_at)
+// 索引服务会话内多版倒序读取 + version rank 派生; (account_id) 索引服务归属校验。
+model IdeationMockup {
+  id        BigInt   @id @default(autoincrement())
+  sessionId BigInt   @map("session_id")
+  accountId BigInt   @map("account_id")
+  objectKey String   @map("object_key")
+  screens   Json
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([sessionId, createdAt], map: "ix_idea_mockup_session_created")
+  @@index([accountId], map: "ix_idea_mockup_account")
+  @@map("ideation_mockup")
+  @@schema("ideation")
+}
+
+// ── optionsdesk (045, 第 10 bounded context; ADR-0062) ───────────────────────
+// 锚 = 「我给这只票估过值」的自有事实。落库边界按 FR-003a 判定, 判据是「**是否参与
+// SQL 筛选/排序**」与「**是否带人工状态**」, **不是**变更频次 (plan D2):
+//   ① 纯算术派生且不参与筛排 (W = 0.8V / 四区间边界 / 愿卖锚两档 / 距 W%) → **不落库**,
+//      请求时由 anchor.rules.ts 算 —— 口径仍在演进, 物化必 drift;
+//   ② 带人工状态的值 (V / L 层 / 单票上限的人工值) → 落库, 是事实不是派生;
+//   ③ 参与 SQL 筛选或排序的生效值 (生效 L 层) → 落**普通列**、应用层写入时求值。
+// 生效 V = COALESCE(v_manual, v) (同表, SQL 可直接表达); 生效 L 层不可 COALESCE 表达
+// (要跑 confidence→L 映射) 故单独落列; **MUST NOT 用 DB 生成列** —— 映射算法后续会演进,
+// 生成列改算法要 DDL 变更 (FR-033 / plan D3)。档位常量 (0.8 / 0.6 / 1.2 / L 层档 / 上限档)
+// 全部落 anchor.rules.ts 顶部具名常量, **不建配置表** (FR-030; 建表要配 CRUD 面, 不摊销)。
+// 归属: 单人自用, 锚身份即 ticker (canonical `market:code`) 全局唯一 (FR-001 「同一 ticker
+// MUST NOT 存在两条有效锚」) ⇒ **无 account_id 列** (加了会与全局唯一约束打架)。
+// 索引: 只建 ticker 唯一约束。雷达的 ORDER BY 是**表达式**距 W%
+// ((last_close − 0.8·V)/(0.8·V)), 普通 B-tree 帮不上排序, 而锚表规模上限约 1000 行
+// (spec Assumptions) ⇒ L 层 / next_review 上的过滤索引在 seq scan + sort 面前是净噪声。
+// 将来要提速的正确姿势是**表达式索引**, 不是现在预先撒 B-tree (plan D8)。
+model Anchor {
+  id     BigInt   @id @default(autoincrement())
+  ticker String   @unique(map: "uk_anchor_ticker") @db.VarChar(32) // canonical `market:code`
+  /// 模型/基准估值 V。生效 V = COALESCE(v_manual, v)。V ≤ 0 由应用层拒 (EC-3)。
+  v      Decimal  @db.Decimal(18, 4)
+  /// 估值 as-of 日 (V 的口径日期), 与 last_close_date (行情 asOf) 是两回事。
+  asof   DateTime @db.Date
+  /// 估值方法名 (策略 SoT 词表, 贫血字符串无枚举表)。
+  method String   @db.VarChar(32)
+
+  /// 10 分制置信度。Decimal 而非 Int —— 模型可产出 8.5 这类非整值; 收窄成 Int 属破坏性
+  /// 变更 (要走 expand-migrate-contract 三步), 一开始留宽更便宜。档位边界恰好 3/7/9 的
+  /// 归属由 anchor.rules.ts 单点判定 (EC-4)。
+  confidence       Decimal @db.Decimal(4, 2)
+  /// 'model' | 'manual' —— confidence 的可编辑性门控 (FR-001): model 来源写侧拒改;
+  /// 模型 import 写 confidence 时同时翻 'model' ⇒ 该锚自动转只读。
+  confidenceSource String  @map("confidence_source") @db.VarChar(8)
+
+  /// 交易意愿开关。**不参与采集闸**(FR-028: 闸的判据严格是「有没有锚」, 锚 = 采集意愿、
+  /// excluded = 交易意愿; 期权 EOD 无跨日补救, 误停采造成永久断层)。
+  excluded      Boolean @default(false)
+  excludeReason String? @map("exclude_reason") @db.VarChar(128)
+
+  /// 下次复审日 (逾期 = next_review < today, SQL 端筛)。模型 import **MUST NOT** 重置本列、
+  /// MUST NOT 解除逾期红标 —— 复审语义 = 人确认估值仍成立 (FR-035)。
+  nextReview     DateTime? @map("next_review") @db.Date
+  /// 最近一次复审完成日 —— FR-013 复核锚红标判据
+  /// `spot < W ∧ 最近复审日期 < 本轮跌破首次观测日` 的左操作数, 与 breach_started_on 成对。
+  /// 建锚即视为一次确认 ⇒ 建锚当日回填 (否则新锚在 W 下方会立刻误亮红标)。
+  lastReviewedOn DateTime? @map("last_reviewed_on") @db.Date
+
+  /// 人工位三列 —— 均为**临时**语义 (FR-035): 上游刷新即回落, 不存在「锁定」。
+  /// 人工值等于派生值时**仍须**是人工态 (非 null), 不得因值相等而静默视为未调整
+  /// (否则痕迹丢失「这个值是谁设的」, PIT 还原分不清 source)。
+  vManual           Decimal? @map("v_manual") @db.Decimal(18, 4)
+  lLevelManual      String?  @map("l_level_manual") @db.VarChar(2) // 'L1'|'L2'|'L3'|'L4'
+  /// 小数比例 (0.2500 = 25%), 与 anchor.rules.ts 的上限档同量纲。
+  positionCapManual Decimal? @map("position_cap_manual") @db.Decimal(6, 4)
+
+  /// 生效 L 层 —— 雷达筛选主维度 (FR-034 L1–L4 多选), 必须能被 WHERE 直接过滤。
+  /// 由应用层在**所有影响它的路径**上写入时求值 (建锚/改 confidence/改 L 层人工位/撤销/
+  /// import); 映射算法变更时须走批量重算路径 (FR-033)。任一时刻只有一个生效值 (FR-006)。
+  lLevelEffective String @map("l_level_effective") @db.VarChar(2)
+
+  /// last_close / last_close_date = marketdata.daily_bar 的**单向投影**, 不是事实 (FR-036)。
+  /// 唯一真相源仍是 daily_bar, 读端 MUST NOT 反写。落本表的唯一理由 = 让距 W%
+  /// 成为**同表**表达式从而 SQL 可排序 (跨表 join 排序 = 把护城河边界拖进查询计划)。
+  /// 对外呈现以 last_close_date 作 asOf, 否则「最长延迟一天」不可验证。
+  lastClose     Decimal?  @map("last_close") @db.Decimal(18, 4)
+  lastCloseDate DateTime? @map("last_close_date") @db.Date
+
+  /// 本轮跌破首次观测日 —— FR-013 状态机载体 (红标不是一次比较是个状态机):
+  /// spot 由上穿下 → 置当日; spot 回到 W 上方 → 清空; 再跌破算新一轮 (不因「本轮已复审过」
+  /// 而对新一轮失效)。建锚时 spot 已在 W 之下 → 置建锚当日。
+  breachStartedOn DateTime? @map("breach_started_on") @db.Date
+
+  /// 047 仓位水位手选值两列 (FR-017 / plan D-UI-5)。仓位水位档在本片**无数据面** (持仓规模
+  /// 属 M3/M4), 由详情页三选一控件补齐意图判定矩阵的水位输入。
+  ///
+  /// **为什么是锚表两列而不是独立表**: 它是**锚的一个属性** (按标的唯一), 不是独立生命周期
+  /// 实体 —— 建独立表要配一整套 CRUD 面, 不摊销 (Senior Engineer Test)。
+  ///
+  /// 🚫 **MUST NOT 给默认值** —— 默认任何一档 = FR-017 明禁的「替人做方向性假设」。
+  /// `null` = **未选**, 且这是**常驻分支不是过渡态**: 新建锚的票天然处于未选, 必须能正常读表
+  /// (未选时 Tab 停「全腿」+ 显式提示, MUST NOT 显 0 / MUST NOT 按最保守档静默假设)。
+  ///
+  /// 列名带 `Manual` 后缀是**数据来源的结构性表达** (plan D-UI-5 「人工输入语义 MUST 显式,
+  /// 不是靠前端记得」): M3 接真实持仓水位时新来源另落列, 靠列名即可分辨哪些是人填的。
+  /// ⚠️ 与上面「人工位三列」**语义不同**: 那三列是上游刷新即回落的**临时覆写**; 本列没有
+  /// 上游可回落, 是降级路径下的**唯一值**, 直到 M3 用真实水位取代 (同 v1「现金手工录入」形态)。
+  ///
+  /// 值域 (贫血字符串, 无枚举表, 同 lLevelManual 体例): 'lt_one_third' (<1/3) ·
+  /// 'one_to_two_thirds' (1/3–2/3) · 'gte_two_thirds' (≥2/3)。判定归 optionsdesk 的 rules 单点。
+  positionBucketManual String?   @map("position_bucket_manual") @db.VarChar(24)
+  /// 手选值的设置时刻 (与档位成对, 未选时同为 null)。M3 迁移时用它判断人填值的新鲜度。
+  positionBucketSetAt  DateTime? @map("position_bucket_set_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("anchor")
+  @@schema("optionsdesk")
+}
+
+// 锚变更痕迹 (FR-031)。**一行 = 一次变更**, 非一行一字段 —— FR-031 原文是「本次变更的
+// 字段集」。使任一历史时点的 V / W / L 层 / 单票上限 / 愿卖锚可被还原 (PIT), 且 MUST NOT
+// 被普通编辑操作覆盖或删除。不可逆性是理由: P5 接货池的「建仓折扣效率」比的是**开仓当时的
+// W**, 本片不留则 M4 永远补不回来。
+// 🚨 anchor_id 是**逻辑引用, 无声明 FK relation** —— 删锚**不级联删**痕迹 (删锚本身也是
+// 一条痕迹行)。同 AgentQueueEvent / IdeationMockup 体例, 关系完整性由 UC 保证。
+// before_values = 改前值贫血 Json (字段名 → 值), 删锚那条存整行快照; changed_fields =
+// 本次变更的字段名数组; source ('model'|'manual') 使任一历史时点可分辨值来自模型还是人工。
+model AnchorChange {
+  id            BigInt   @id @default(autoincrement())
+  anchorId      BigInt   @map("anchor_id")
+  changedAt     DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+  changedFields String[] @map("changed_fields")
+  beforeValues  Json     @map("before_values")
+  source        String   @db.VarChar(8)
+
+  @@index([anchorId, changedAt(sort: Desc)], map: "ix_anchor_change_anchor_changed_at")
+  @@map("anchor_change")
+  @@schema("optionsdesk")
+}

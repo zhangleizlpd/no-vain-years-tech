@@ -1,0 +1,20 @@
+[Unit]
+Description=Daily PostgreSQL local backup timer
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+
+[Timer]
+# 每日 08:40 本地。🚨 **这个时刻是判据的一部分，别随手改** —— 原 cron 跑在 03:00，而当日
+# 采集时间线是：22:00–22:30 理杏仁同步（昨夜）→ ~06:30 期权链 EOD 采集 → 08:00 完整性探针
+# → 09:00 日报。03:00 的 dump **不含当日 06:30 那批期权链快照**，而期权链是 fleet 里唯一
+# 「vendor 不提供历史、漏采即永久缺口」的维度（047 FR-046）⇒ 从 03:00 的 dump 恢复 = 当天
+# 的期权快照永久没了。08:40 晚于采集窗与完整性探针、早于 09:00 日报 ⇒ 每份 dump 都含完整的
+# 当日不可再生数据。往前挪之前先确认期权链采集窗有没有跟着动。
+#
+# 与同时段其它任务的关系：08:30 cert-expiry（秒级）· 09:00 marketdata-sync-report /
+# holdings-sync（只读查询）—— 本任务 ~3 分钟 pg_dump，2c2g 上晨间负载低，实测无争用。
+# Persistent 补跑宕机期间漏掉的一次。
+OnCalendar=*-*-* 08:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

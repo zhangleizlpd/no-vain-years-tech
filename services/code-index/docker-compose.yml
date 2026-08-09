@@ -1,0 +1,34 @@
+# Dedicated pgvector PG for the code-index service — isolated from the dev
+# stack (mbw-poc-postgres on 5433) and from prod PG (ADR-0059: 资源隔离).
+# shared_buffers kept small per ADR-0060 §5 (the index is only a few hundred MB).
+name: code-index
+
+services:
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: code-index-pgvector
+    restart: unless-stopped # reboot-survival: the query API + tick depend on it
+    command: ['postgres', '-c', 'shared_buffers=128MB']
+    environment:
+      POSTGRES_DB: ${CODE_INDEX_PG_DB:-codeindex}
+      POSTGRES_USER: ${CODE_INDEX_PG_USER:-codeindex}
+      POSTGRES_PASSWORD: ${CODE_INDEX_PG_PASSWORD:-codeindex}
+    ports:
+      # localhost-only: the co-located service connects via localhost; the PG is
+      # never reached cross-host (only the query API :7700 is, per S2.3 phase E).
+      # Defense-in-depth behind the cloud security group.
+      - '127.0.0.1:${CODE_INDEX_PG_PORT:-5434}:5432'
+    volumes:
+      - code-index-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${CODE_INDEX_PG_USER:-codeindex} -d ${CODE_INDEX_PG_DB:-codeindex}',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  code-index-pgdata:

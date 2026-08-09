@@ -1,0 +1,12 @@
+-- Align outbox_event.id with schema.prisma's app-side UUID intent.
+--
+-- Migration 1_add_outbox_event created the column with a DB-side default
+-- (DEFAULT gen_random_uuid()), but schema.prisma declares
+-- `id String @id @default(uuid())` — Prisma generates the UUID client-side and
+-- expects NO DB default. This long-standing inconsistency made `prisma migrate
+-- dev` perpetually emit a phantom `DROP DEFAULT` diff. The DB default was never
+-- exercised: every write goes through prisma.outboxEvent.create() which supplies
+-- the id (see outbox-event.prisma.publisher.ts). Migration 1 is immutable
+-- (ADR-0035 § 1), so the fix is this new migration that drops the redundant
+-- default, closing the schema ↔ migration-history drift.
+ALTER TABLE "outbox_event" ALTER COLUMN "id" DROP DEFAULT;

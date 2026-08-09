@@ -1,0 +1,69 @@
+{
+  "expo": {
+    "name": "美满人生",
+    "slug": "no-vain-years-mobile",
+    "scheme": "nvy",
+    "version": "0.8.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "./plugins/with-jpush.js",
+        {
+          "appKey": "584825d7430a0c2132c82212",
+          "channel": "developer-default"
+        }
+      ],
+      [
+        "./plugins/with-android-abi.js",
+        {
+          "profile": "development",
+          "archs": [
+            "arm64-v8a"
+          ]
+        }
+      ],
+      "expo-web-browser"
+    ],
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.shintongtech.novainyears",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "需要使用麦克风进行语音输入（听写转文字）"
+      }
+    },
+    "android": {
+      "package": "com.shintongtech.novainyears",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#050d37"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "8d12bcda-da3e-44ca-b362-6401e6b69ab7"
+      }
+    },
+    "owner": "xiaocaishen"
+  }
+}

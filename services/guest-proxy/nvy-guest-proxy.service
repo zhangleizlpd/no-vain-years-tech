@@ -1,0 +1,42 @@
+# 访客侧 futu-shim 入口的起停控制。装到 77 (`mbw-staging`) 的
+# /etc/systemd/system/nvy-guest-proxy.service。
+#
+# 🚨 为什么必须由 systemd 管而不是手工 `docker compose up -d`：本服务 listen 在
+# `10.90.0.1`，那个地址只在 `wg-quick@wg2` 起来之后才存在。重启后若 docker 先跑，
+# nginx 会 `cannot assign requested address` 起不来。`After=` + `Requires=` 就是
+# 把这个顺序钉死的地方。
+
+[Unit]
+Description=NVY guest proxy (futu-shim; US kline + option chain/quotes/IV) on wg2
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/futu-shim-guest-access.md
+# wg2 提供 10.90.0.1；没有它本服务无法绑定 —— 是硬依赖不是软依赖。
+Requires=wg-quick@wg2.service
+After=wg-quick@wg2.service docker.service
+Requires=docker.service
+
+# 🚨 `Requires=` 只传播 start/stop，**不传播 restart**：`systemctl restart wg-quick@wg2`
+#    会把 10.90.0.1 抽掉再加回来，nginx 绑丢了却没人叫它重来。实测靠 compose 的
+#    `restart: unless-stopped` 能自愈，但那是 docker 的退避重试，最坏要等一分钟。
+#    `PartOf=` 让 systemd 在 wg2 重启后立刻把本服务也重启，确定性地恢复。
+PartOf=wg-quick@wg2.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 🚨 **不是仓 clone 里那个目录**（2026-08-07 迁出）。原先挂 `/home/admin/no-vain-years-mono/
+#    ops/guest-access`（仓内现已挪到 `services/guest-proxy`），而 `deploy.yml` 会在那个
+#    clone 上跑 `git reset --hard origin/main`
+#    ⇒ prod 每次发版都会把新配置带到磁盘上却不 reload，留下「磁盘新、运行旧」的半态，
+#    之后任何一次容器重建都会把它静默滚上线。搬到 /opt 后配置来源与那个 clone 彻底解耦。
+#    这里由 `deploy/install.sh` 从 CI 送来的 tar 铺设，别手动往里放东西（有 sha256 清单守着）。
+WorkingDirectory=/opt/nvy-guest-proxy
+
+# --wait: 起不来就让 systemctl start 真的失败，而不是「命令返回 0、容器在后台崩」。
+ExecStart=/usr/bin/docker compose -f docker-compose.guest.yml up -d --wait
+ExecStop=/usr/bin/docker compose -f docker-compose.guest.yml down
+ExecReload=/usr/bin/docker compose -f docker-compose.guest.yml up -d --force-recreate --wait
+
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

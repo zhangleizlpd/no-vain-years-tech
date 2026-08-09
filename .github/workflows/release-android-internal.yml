@@ -1,0 +1,144 @@
+name: Internal Android APK (EAS · markets ON)
+
+# 出**内测** Android APK（markets ON：含投资/行情/预警），仅 sideload 给内测，
+# 永不上商店。与公开版（release-android-apk.yml 的 `production` profile，markets OFF，
+# 合规 per docs/adr/0044）严格分离。
+#
+# Release-phase gate (per .claude/rules/github-workflows-catalog.md):
+#   Pre-launch dev 期这是 tag 的 DEFAULT 构建。`mobile-vX.Y.Z` tag-triggered
+#   run proceeds unless repo var MOBILE_RELEASE_PHASE == 'public'（上线后翻盘:
+#   `gh variable set MOBILE_RELEASE_PHASE --body public` → tag 改出公开 markets-OFF
+#   包 + web，本 workflow 自动 skip）。workflow_dispatch 永远运行（手动 = 显式）。
+# 触发：mobile-v* tag（dev 期自动）+ workflow_dispatch（任意 ref，手动）。
+# 产物：上传为 workflow run 的 artifact（从 Actions run 下载 sideload），不进 GitHub Release。
+#
+# 前置（同 release-android-apk.yml）：repo secret EXPO_TOKEN（expo.dev robot token）。
+# 签名 keystore 由 EAS 托管。
+
+on:
+  push:
+    tags: ['mobile-v*.*.*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch / tag / SHA to build the internal (markets-on) APK from'
+        required: false
+        default: 'main'
+        type: string
+
+permissions:
+  contents: read
+
+# 不取消在途 EAS 构建（每次占月度额度槽，~10-20min）；并发排队。
+concurrency:
+  group: release-apk-internal-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-internal-apk:
+    name: EAS build Android APK (internal profile, markets ON)
+    # Phase gate: dev 期 (var unset / != 'public') tag 默认出内测包;上线后
+    # (var == 'public') tag 改走公开包,本 job skip。手动 dispatch 永远运行。
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.MOBILE_RELEASE_PHASE != 'public' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # push(tag) → github.ref_name 是 tag;workflow_dispatch → inputs.ref。
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup EAS (Expo) CLI
+        # Installs eas-cli on the runner. Auth is NOT wired here — the
+        # "Select EAS account" step below picks the token per EAS_ACCOUNT so
+        # internal builds can rotate across two free-tier accounts.
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 20.0.0
+
+      - name: Select EAS account (rotate across free-tier accounts)
+        # Picks owner+projectId+token by repo var EAS_ACCOUNT (a|b; default a)
+        # from apps/mobile/eas-accounts.json, patches app.json on the runner
+        # (NOT committed — main stays on slot a), and exports EXPO_TOKEN for the
+        # build. INTERNAL-only rotation: the public release pins to slot a
+        # (keystore + versionCode must stay single-account for in-place upgrade).
+        # Flip accounts when one runs out: `gh variable set EAS_ACCOUNT --body b`.
+        env:
+          EAS_ACCOUNT: ${{ vars.EAS_ACCOUNT }}
+          TOKEN_A: ${{ secrets.EXPO_TOKEN }}
+          TOKEN_B: ${{ secrets.EXPO_TOKEN_B }}
+        run: |
+          SLOT="${EAS_ACCOUNT:-a}"
+          CFG=apps/mobile/eas-accounts.json
+          OWNER=$(jq -r --arg s "$SLOT" '.[$s].owner // empty' "$CFG")
+          PID=$(jq -r --arg s "$SLOT" '.[$s].projectId // empty' "$CFG")
+          if [ -z "$OWNER" ] || [ "$OWNER" = "__SET_ME__" ]; then
+            echo "::error::EAS_ACCOUNT=$SLOT is not configured in $CFG"
+            exit 1
+          fi
+          case "$SLOT" in
+            a) TOKEN="$TOKEN_A" ;;
+            b) TOKEN="$TOKEN_B" ;;
+            *) echo "::error::unknown EAS_ACCOUNT slot: $SLOT"; exit 1 ;;
+          esac
+          if [ -z "$TOKEN" ]; then
+            echo "::error::token secret for slot $SLOT is empty (set EXPO_TOKEN / EXPO_TOKEN_B)"
+            exit 1
+          fi
+          tmp=$(mktemp)
+          jq --arg o "$OWNER" --arg p "$PID" \
+            '.expo.owner = $o | .expo.extra.eas.projectId = $p' \
+            apps/mobile/app.json > "$tmp" && mv "$tmp" apps/mobile/app.json
+          echo "::add-mask::$TOKEN"
+          echo "EXPO_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "EAS account: slot=$SLOT owner=$OWNER projectId=$PID"
+
+      - name: Build Android APK on EAS (internal profile, blocking)
+        id: build
+        working-directory: apps/mobile
+        # internal profile 在 eas.json 注入 EXPO_PUBLIC_FEATURE_MARKETS=true。
+        run: |
+          eas build --platform android --profile internal --non-interactive --wait --json | tee build.json
+          BUILD_ID=$(jq -r 'if type=="array" then .[0].id else .id end' build.json)
+          if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ]; then
+            echo "::error::Could not parse EAS build id from build.json"
+            exit 1
+          fi
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "EAS internal build finished: $BUILD_ID"
+
+      - name: Download the .apk artifact
+        id: apk
+        working-directory: apps/mobile
+        run: |
+          DL=$(eas build:download --build-id "${{ steps.build.outputs.build_id }}" --non-interactive 2>&1 | tee /dev/stderr)
+          APK=$(printf '%s\n' "$DL" | sed -n 's/^Build downloaded to //p' | tail -1)
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "::error::Could not locate .apk from eas build:download output"
+            exit 1
+          fi
+          DEST="no-vain-years-internal-${{ github.run_number }}.apk"
+          cp "$APK" "$DEST"
+          echo "path=apps/mobile/$DEST" >> "$GITHUB_OUTPUT"
+          echo "name=$DEST" >> "$GITHUB_OUTPUT"
+          echo "Downloaded internal APK → $DEST"
+
+      - name: Upload internal APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          retention-days: 14

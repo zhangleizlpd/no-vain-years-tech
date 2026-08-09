@@ -1,0 +1,105 @@
+name: Deploy futu-shim
+
+# 港机（账号 C）上的 futu-shim 部署。形状与 `deploy.yml` 同构（中心化入口 + 可手动
+# 触发 + 部署后自检），但**通路不同**，原因是硬约束：
+#
+#   港机安全组只放 SSH 22 给运维 Mac /32、UDP 51820 给 77 /32
+#   ⇒ GitHub runner 无法直连港机（runner IP 不固定，为它开 22 等于对公网开）
+#   ⇒ 走 77 跳板：runner --ssh--> 77 --(B↔C WireGuard 隧道)--> 港机
+#      （2026-08-01 实测 77 → 10.89.0.1:22 可达；隧道内流量不过安全组，故**不动安全组**）
+#
+# 代码经 **stdin tar 流**送达（runner → 77 → 港机），港机因此**不需要 GitHub 凭证**，
+# 且送过去的就是本次 CI 验过的那棵树。港机侧入口 = `remote-deploy.sh`，它是那把部署
+# key 的 forced command —— key 只能触发部署，拿不到 shell。
+#
+# 🚨 部署后自检由 `remote-deploy.sh` 做，判据是 **`/healthz` 的 version == 本次 SHA**。
+# 这条是 2026-08-01 事故的直接产物：当时 `install.sh` 铺的是调用者工作树、无版本闸，
+# 从落后分支装一次就把 `/kline` 静默抹掉，故障隔着好几层才以「7 只票全 404」显形。
+#
+# 退出码语义（来自 remote-deploy.sh）：2 入参非法 / 3 版本对不上 / 4 端点自检失败。
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to deploy (默认当前分支；正常只该部署 main)'
+        required: false
+        type: string
+      allow_stale:
+        description: '允许部署「不含 main 上最新 shim 改动」的树（仅用于分支实测；默认拒绝）'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'services/futu-shim/**'
+      - '.github/workflows/deploy-futu-shim.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  # 两次部署同时改 /opt/futu-shim = 半截状态。排队，不取消进行中的那次。
+  group: deploy-futu-shim
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to HK OpenD host (via 77)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          # merge-base 需要真实历史，浅克隆会误判。
+          fetch-depth: 0
+
+      # 🚨 真正的版本闸在这里，不在 /healthz 上。
+      # `/healthz` 的 version 记的是**部署方声称的 SHA** —— 从落后分支部署时它会如实
+      # 记录那个落后的 SHA 并让自检通过，只让人「看得见」，拦不住。而 2026-08-01 那次
+      # 事故的确切形状就是「从落后分支装一次，把已 ship 的 /kline 抹掉」。
+      # 所以这一步问的是那个真问题：**这棵树是否包含 main 上最新的 shim 改动？**
+      - name: Refuse to deploy a shim tree older than main's
+        if: ${{ !inputs.allow_stale }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          latest="$(git rev-list -1 origin/main -- services/futu-shim)"
+          if [ -z "$latest" ]; then
+            echo "::error::拿不到 main 上 services/futu-shim 的最新 commit —— 拒绝盲部署"; exit 1
+          fi
+          if git merge-base --is-ancestor "$latest" HEAD; then
+            echo "✓ 本次部署的树包含 main 最新 shim 改动 ($latest)"
+          else
+            echo "::error::本次要部署的树**不含** main 上最新的 shim 改动 $latest —— 部署它会静默回退已 ship 的功能（2026-08-01 实际发生过）。确要如此请用 workflow_dispatch 勾 allow_stale。"
+            exit 1
+          fi
+
+      - name: Load 77 SSH key
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          # 复用既有 prod 部署密钥（只用于登 77；港机那一跳用的是 77 上另一把、
+          # 且被 forced command 锁死的 key）。
+          ssh-private-key: ${{ secrets.APP_SSH_KEY }}
+
+      - name: Ship + install + self-check
+        env:
+          APP_HOST: ${{ secrets.APP_HOST }}
+          APP_SSH_USER: ${{ secrets.APP_SSH_USER }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "deploying futu-shim @ $SHA"
+
+          # 打包只装 service 目录本身；venv / 缓存不进流（港机自己建 venv）。
+          tar -czf /tmp/futu-shim.tgz \
+            --exclude venv --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
+            -C services/futu-shim .
+
+          # runner → 77 → 港机：外层 ssh 把 stdin 透传给远端命令，远端命令又把它管到
+          # 内层 ssh，最终喂进港机 forced command 的 stdin。两层都必须 -T（无 TTY），
+          # 否则 tty 行规会改写二进制流。
+          ssh -T -o StrictHostKeyChecking=accept-new "$APP_SSH_USER@$APP_HOST" \
+            "ssh -T -o BatchMode=yes -i ~/.ssh/futu_shim_deploy admin@10.89.0.1 $SHA" \
+            < /tmp/futu-shim.tgz

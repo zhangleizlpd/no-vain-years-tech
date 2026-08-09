@@ -1,0 +1,24 @@
+# 访客侧 —— 发给对方的 WireGuard 配置模板。
+#
+# macOS：装官方 WireGuard.app（App Store），导入本文件即可；命令行则
+# `brew install wireguard-tools` + `sudo wg-quick up ./wg2.conf`。
+# Linux：放 /etc/wireguard/wg2.conf 后 `sudo wg-quick up wg2`。
+
+[Interface]
+# 你自己生成：`wg genkey | tee wg2.key | wg pubkey > wg2.pub`
+# 把 **wg2.pub 的内容**发回给对方；wg2.key 永远留在本机、不要发给任何人。
+PrivateKey = __FILL_your_key__
+Address = 10.90.0.2/24
+# 不设 DNS：本隧道只用来访问一个固定 IP，不接管你的解析。
+
+[Peer]
+PublicKey = __FILL_77_WG2_PUBLIC_KEY__
+Endpoint = __FILL_SERVER_ENDPOINT__   # <公网地址>:<端口>，由服务端侧提供（真值不入库）
+
+# 🚨 只路由这一个地址。
+# 这不是保守，是**保护你自己**：写成 0.0.0.0/0 会把你整机流量都灌进这条隧道
+# （连你的日常上网都走对方服务器），既慢又没必要。你需要的只有那一个服务。
+AllowedIPs = 10.90.0.1/32
+
+# 家宽/移动网络多在 NAT 后，25s 心跳维持映射，否则隧道会「看着是通的、实际收不到包」。
+PersistentKeepalive = 25

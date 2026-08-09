@@ -1,0 +1,29 @@
+# Trivy ignore — 抑制「不可利用 / 无法在支持范围内安全修复」的 CVE。
+# 每条必附: 理由 + 复审日期。季度复审是否可移除(依赖升级后回收)。
+# 来源: #1 Trivy CVE 债处理 (2026-07-26, 混合修方案 — 其余 CVE 均走 pnpm overrides 真修)。
+
+# @fastify/static route-guard bypass via path (CVE-2026-15074, HIGH)。
+# 修复仅在 v10.1.1;但 @nestjs/swagger@11.4.3 peer=^8.0.0 || ^9.0.0, 不支持 v10 (强升出官方支持范围)。
+# 本仓 @fastify/static 仅经 @nestjs/swagger 服务 /docs Swagger UI 公开静态资源, 无 path guard
+# → 该「route-guard bypass」在本用法下不可利用。
+# 移除条件: @nestjs/swagger 放宽 peer 到含 v10 后, 升级 @fastify/static → ^10.1.1 并删本行。
+# 复审: 2026-10-24
+CVE-2026-15074
+
+# sharp libvips 继承漏洞 (GHSA-f88m-g3jw-g9cj — CVE-2026-33327/33328/35590/35591, HIGH)。
+# 仅存在于 services/code-index (standalone service)；修复在 sharp 0.35.0, 但其上游
+# @huggingface/transformers@3.5.0 pin sharp ^0.34.1 (排除 0.35)。code-index 做「代码」
+# 嵌入 (bge-m3), 不处理任何不可信图像 → 该图像处理 DoS 在本用法下不可利用。
+# 移除条件: @huggingface/transformers 放宽 sharp range 到含 0.35 后, 升级并删本行。
+# 复审: 2026-10-24
+GHSA-f88m-g3jw-g9cj
+
+# brace-expansion ReDoS via crafted brace pattern (CVE-2026-14257, HIGH)。
+# 唯一修复在 5.0.8 — 1.x / 2.x 线无 backport;而受影响实例是 minimatch/glob 拉的
+# build/dev 工具链 transitive (nx/eslint/vitest/prettier), 强升 1->5 / 2->5 major
+# 破坏 minimatch@3 (glob@7 全工具链依赖) 风险过高。glob pattern 均为开发者书写的
+# 配置 (非不可信输入) → 该 ReDoS 在本用法下不可利用。(CVE-2026-13149 已由 overrides
+# 顶到 1.1.16/2.1.2/5.0.8 真修, 仅本条 14257 无 in-major 修复。)
+# 移除条件: minimatch/glob 上游把 brace-expansion 升到 5.0.8+ 后删本行。
+# 复审: 2026-10-24
+CVE-2026-14257

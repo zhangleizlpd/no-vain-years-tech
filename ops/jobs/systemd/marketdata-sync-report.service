@@ -1,0 +1,33 @@
+# marketdata-sync-report（77）：每日读 prod marketdata.sync_run（只读 docker exec psql），
+# 逐维度成败 + 计数 → 飞书。套通用 wrapper 推 ✅/🔴 report + 写心跳供看门狗；脚本零飞书 I/O。
+# Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
+#   🚨 本任务的零行分支要跑 044 共享健康谓词 marketdata-calendar-health.sql 判「日历还可信吗」。
+#      扁平化后它与本脚本是**同目录兄弟**，install.sh 把 ops/jobs/*.{sh,sql} 整批装进
+#      /usr/local/lib/nvy/jobs/ ⇒ 天然满足。缺文件 → 零行时保守告警，不会静默放行。
+# 手动触发验证：systemctl start marketdata-sync-report.service  （→ 应收一条飞书 report）
+# 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR；缺 webhook → 静默跳过）。
+[Unit]
+Description=Daily marketdata sync report (per-dimension success/counts → Feishu)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# 任务调参（SYNC_REPORT_WINDOW_HOURS / SYNC_REPORT_PG_CONTAINER / _USER / _DB）—— 可选，'-' = 缺则不报错。
+# ⚠️ 本文件同时被 marketdata-calendar-health.service source（共用同一个 PG 的连接参数，两份必漂移）。
+EnvironmentFile=-/etc/marketdata-sync-report.env
+# 🚨 这里原本有一行 `Environment=CALENDAR_HEALTH_PREDICATE_SQL=…/marketdata-calendar-health/…`：
+#    扁平化前脚本用**跨目录**相对路径找谓词，装机后解析不到，只能靠这根拐杖。现在两侧都是
+#    同目录兄弟（仓 ops/jobs/ ↔ 机 /usr/local/lib/nvy/jobs/），拐杖已拆。**别把谓词挪走**。
+# 套通用 wrapper：跑完（成功/失败）都推飞书 report + 写心跳；--tail 罩住全维度逐行 + 明细行。
+# 🚨 这个数**只能宽不能紧**：wrapper 取的是末 N 行（`tail -n`），而该脚本把 failed/partial
+#    排在**最前面** ⇒ 一旦输出超过 N，最先被砍掉的正好是**问题维度那几行**，飞书上看到的是
+#    一片 ✅ 加一行合计 —— 告警静默失效，且外部无任何迹象。
+# 定容：最坏 = 每维度 1 行 + 每个问题态维度 1 行 `↳ failed_targets` 明细（该明细由 SQL 侧
+#    `regexp_replace('[\t\n\r]+',' ')` + `left(...,400)` 保证**恒为单行**）+ 1 行合计。
+#    2026-08-01 实测 `sync_dimension` 共 23 维度（含新增 us_equity_bar）⇒ 全炸上限 23×2+1 = 47。
+#    取 80 ⇒ 可容纳 (80-1)/2 = 39 维度全炸，留 16 个维度的增长余量。**加维度时同步复核此数。**
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh marketdata-sync-report --tail 80 -- /usr/local/lib/nvy/jobs/marketdata-sync-report.sh

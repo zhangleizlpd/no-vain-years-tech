@@ -1,0 +1,99 @@
+{
+  "name": "mobile",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/mobile",
+  "projectType": "application",
+  "tags": ["scope:mobile-app"],
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p e2e/tsconfig.json",
+        "cwd": "apps/mobile"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "eslint .",
+        "cwd": "apps/mobile"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --reporter=default",
+        "cwd": "apps/mobile"
+      }
+    },
+    "test:watch": {
+      "continuous": true,
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest",
+        "cwd": "apps/mobile"
+      }
+    },
+    "serve": {
+      "continuous": true,
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "EXPO_PUBLIC_FEATURE_MARKETS=true expo start",
+        "cwd": "apps/mobile"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/dist"],
+      "options": {
+        "command": "EXPO_PUBLIC_FEATURE_MARKETS=true expo export -p web",
+        "cwd": "apps/mobile"
+      }
+    },
+    "e2e": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/playwright-report", "{projectRoot}/playwright-test-results"],
+      "options": {
+        "command": "EXPO_PUBLIC_FEATURE_MARKETS=true playwright test",
+        "cwd": "apps/mobile"
+      }
+    },
+    "e2e-public": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/playwright-report", "{projectRoot}/playwright-test-results"],
+      "options": {
+        "command": "EXPO_PUBLIC_FEATURE_MARKETS=false pnpm exec playwright test -c playwright.markets-off.config.ts",
+        "cwd": "apps/mobile"
+      }
+    },
+    "runtime-smoke": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/playwright-report", "{projectRoot}/playwright-test-results"],
+      "options": {
+        "commands": [
+          "EXPO_PUBLIC_FEATURE_MARKETS=true EXPO_PUBLIC_OSS_PUBLIC_BASE_URL=https://oss-e2e.example.com expo export -p web --clear --output-dir dist-runtime-smoke",
+          "EXPO_PUBLIC_FEATURE_MARKETS=true pnpm exec playwright test -c playwright.runtime-smoke.config.ts"
+        ],
+        "parallel": false,
+        "cwd": "apps/mobile"
+      }
+    },
+    "e2e-real-backend": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/playwright-report", "{projectRoot}/playwright-test-results"],
+      "dependsOn": ["build", { "projects": ["server"], "target": "build" }],
+      "options": {
+        "command": "EXPO_PUBLIC_FEATURE_MARKETS=true pnpm exec tsx e2e/_support/real-backend-runner.ts",
+        "cwd": "apps/mobile"
+      }
+    },
+    "contract-smoke": {
+      "executor": "nx:run-commands",
+      "dependsOn": [{ "projects": ["server"], "target": "build" }],
+      "options": {
+        "command": "pnpm exec tsx e2e/contract-smoke/run.ts",
+        "cwd": "apps/mobile"
+      }
+    }
+  }
+}

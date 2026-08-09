@@ -1,0 +1,22 @@
+{
+  "name": "api-client",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/api-client/src",
+  "projectType": "library",
+  "tags": ["scope:pkg-api-client"],
+  "implicitDependencies": ["server"],
+  "targets": {
+    "generate": {
+      "executor": "nx:run-commands",
+      "outputs": ["{projectRoot}/src/generated"],
+      "options": {
+        "command": "node_modules/.bin/orval --config orval.config.ts",
+        "cwd": "packages/api-client"
+      }
+    },
+    "build": {
+      "executor": "nx:noop",
+      "dependsOn": ["generate"]
+    }
+  }
+}

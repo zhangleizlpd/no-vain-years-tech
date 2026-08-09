@@ -1,0 +1,47 @@
+name: release-please
+
+# Per ADR-0042 monorepo release strategy. 双线 (server + mobile) 各跑一套
+# 独立 config + 独立 manifest — 拆分根因:单 manifest (apps/server + apps/mobile
+# 同文件相邻两行) 下,server 发版改 main manifest → mobile 的 long-lived Release PR
+# 必然 manifest 冲突且 bot 不自愈 (内容未变 → "PR remained the same" 不 rebase)。
+# 拆成 .release-please-manifest.server.json / .mobile.json 后两边写不同文件,永不相撞。
+# 两套 label 也必须互斥 (autorelease: pending: server / : mobile),否则一边的 run
+# 会抓另一边的 pending PR (release-please 用 pending label 找在途 Release PR)。
+# pr-validation.yml 的 deploy-gate bypass 改用 startsWith('autorelease: pending') 兼容。
+#
+# Token 走 PAT-with-fallback: GITHUB_TOKEN 创建的 Release PR 不触发 required checks
+# (GH 反递归保护),ruleset required_status_checks 会 BLOCK merge — PAT 可绕过;
+# fallback 让 fork / 未配 PAT 环境仍能起 PR (虽然 CI 不绿).
+#
+# 两 step 同 job 顺序执行 (非并行) → 不会有 label/PR API race。
+# Plan 3 部署阶段可在 release_server step 后追加 deploy job,用
+#   if: ${{ steps.release_server.outputs['apps/server--release_created'] }}
+# 分支接 deploy hook;本 workflow 本期不预留.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: release-please (server)
+        id: release_server
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_PAT || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.server.json
+          manifest-file: .release-please-manifest.server.json
+
+      - name: release-please (mobile)
+        id: release_mobile
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_PAT || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.mobile.json
+          manifest-file: .release-please-manifest.mobile.json

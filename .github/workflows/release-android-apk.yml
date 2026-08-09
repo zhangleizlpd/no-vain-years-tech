@@ -1,0 +1,178 @@
+name: Release Android APK (EAS)
+
+# Build a signed Android APK on EAS Cloud when release-please cuts a
+# `mobile-vX.Y.Z` tag (apps/mobile component), then attach the .apk to that
+# tag's GitHub Release. Mirrors deploy-web.yml's trigger so web + apk ship
+# together at the same mobile component version (per ADR-0042 + ADR-0044).
+#
+# Release-phase gate (per .claude/rules/github-workflows-catalog.md):
+#   This is the PUBLIC, markets-OFF (production profile) build — 对外发布。
+#   Pre-launch dev 期 default 不出公开包:a tag-triggered run only proceeds
+#   when repo var MOBILE_RELEASE_PHASE == 'public'. Unset / 'dev' → the tag
+#   instead auto-builds the internal markets-ON APK (release-android-internal.yml).
+#   翻盘上线:`gh variable set MOBILE_RELEASE_PHASE --body public`.
+#   workflow_dispatch always bypasses the gate (显式手动 = explicit intent).
+#
+# Version alignment (ADR-0044 §4, appVersionSource: remote):
+#   - expo.version (display / versionName) is written by release-please into
+#     app.json BEFORE this tag exists → EAS reads it as-is, never mutates it.
+#   - android.versionCode is owned by EAS's remote counter (autoIncrement) →
+#     bumps server-side per build, no git churn. So web + apk share the same
+#     display version; the build number lives only on EAS.
+#
+# Why CI (GHA runner) instead of a local build: the runner is outside CN, so
+# the EAS Cloud upload is not subject to the GFW slowness that hampers local
+# `eas build` (per memory feedback_china_network_prefer_domestic_proxy). EAS
+# still does the actual native build on its servers; we only orchestrate.
+#
+# Manual prerequisite (one-time, owner-only): repo secret EXPO_TOKEN_B — a robot
+# access token for the PRODUCTION account B (caishen-ai, slot b) from expo.dev →
+# Account Settings → Access Tokens. The PUBLIC release is pinned to account B
+# (see ops/runbook/mobile-eas-release.md). The signing keystore is EAS-managed on
+# B's project; ⚠️ B's project must already have a production keystore — generate
+# it once via an interactive `eas build` (CI --non-interactive can't generate a
+# new keystore). Once first public-released on B, B's keystore is locked (Android
+# in-place upgrade requires a stable signing key) — never switch the public account.
+
+on:
+  push:
+    tags: ['mobile-v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing mobile-vX.Y.Z tag to (re)build + attach the APK to'
+        required: true
+        type: string
+
+permissions:
+  contents: write # gh release upload writes the .apk asset to the Release
+
+# Never cancel an in-flight EAS build (it costs a monthly build-quota slot and
+# runs ~10-20 min on EAS servers); let concurrent tags queue instead.
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk:
+    name: EAS build Android APK + attach to Release
+    # Phase gate: skip the public build on a tag during pre-launch dev phase.
+    # Manual dispatch always runs.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.MOBILE_RELEASE_PHASE == 'public' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target tag
+        id: tag
+        # push → the tag ref; workflow_dispatch → the required `tag` input.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not resolve a mobile-v tag to build."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building APK for tag: $TAG"
+
+      - uses: actions/checkout@v6
+        with:
+          # Build the exact released commit (the tag), not whatever main is at.
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup EAS (Expo) CLI
+        # Installs eas-cli on the runner (NOT a project dependency, per ADR-0044
+        # §5). Pinned to satisfy eas.json cli.version >=19.0.0. Auth token is wired
+        # by the next step (per the pinned production account).
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: 20.0.0
+
+      - name: Select EAS account (PINNED to slot b = production account B)
+        # The PUBLIC release is PINNED to account B (caishen-ai / slot b) — the
+        # production account (per ops/runbook/mobile-eas-release.md). Patches
+        # app.json owner+projectId to slot b on the runner (NOT committed — main
+        # stays on slot a for daily dev / internal builds) and wires EXPO_TOKEN_B.
+        # Per-project keystore + remote versionCode must stay single-account for
+        # in-place upgrades → the PUBLIC release NEVER rotates, it is pinned to B.
+        # (Internal/dev builds stay on account A — see release-android-internal.yml.)
+        env:
+          TOKEN_B: ${{ secrets.EXPO_TOKEN_B }}
+        run: |
+          SLOT=b
+          CFG=apps/mobile/eas-accounts.json
+          OWNER=$(jq -r --arg s "$SLOT" '.[$s].owner // empty' "$CFG")
+          PID=$(jq -r --arg s "$SLOT" '.[$s].projectId // empty' "$CFG")
+          if [ -z "$OWNER" ] || [ "$OWNER" = "__SET_ME__" ]; then
+            echo "::error::slot b (production account) is not configured in $CFG"
+            exit 1
+          fi
+          if [ -z "$TOKEN_B" ]; then
+            echo "::error::EXPO_TOKEN_B is empty — add account B's robot token as repo secret EXPO_TOKEN_B"
+            exit 1
+          fi
+          tmp=$(mktemp)
+          jq --arg o "$OWNER" --arg p "$PID" \
+            '.expo.owner = $o | .expo.extra.eas.projectId = $p' \
+            apps/mobile/app.json > "$tmp" && mv "$tmp" apps/mobile/app.json
+          echo "::add-mask::$TOKEN_B"
+          echo "EXPO_TOKEN=$TOKEN_B" >> "$GITHUB_ENV"
+          echo "EAS account (PUBLIC, pinned): slot=$SLOT owner=$OWNER projectId=$PID"
+
+      - name: Build Android APK on EAS (production profile, blocking)
+        id: build
+        working-directory: apps/mobile
+        # --wait blocks until the cloud build finishes; --json (implies
+        # --non-interactive) prints the finished build object(s). Parse the
+        # build id defensively (array or object shape).
+        run: |
+          eas build --platform android --profile production --non-interactive --wait --json | tee build.json
+          BUILD_ID=$(jq -r 'if type=="array" then .[0].id else .id end' build.json)
+          if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ]; then
+            echo "::error::Could not parse EAS build id from build.json"
+            exit 1
+          fi
+          echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          echo "EAS build finished: $BUILD_ID"
+
+      - name: Download the .apk artifact
+        id: apk
+        working-directory: apps/mobile
+        # eas-cli 20.x's build:download writes the application archive to its own
+        # cache dir (NOT cwd) and prints "Build downloaded to <abs-path>". Capture
+        # that path rather than globbing cwd (the old `find . -maxdepth 1` assumed
+        # the file landed in cwd and silently broke when the CLI changed behavior).
+        run: |
+          DL=$(eas build:download --build-id "${{ steps.build.outputs.build_id }}" --non-interactive 2>&1 | tee /dev/stderr)
+          APK=$(printf '%s\n' "$DL" | sed -n 's/^Build downloaded to //p' | tail -1)
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "::error::Could not locate .apk from eas build:download output"
+            exit 1
+          fi
+          # Copy to a versioned, predictable asset name for the Release.
+          DEST="no-vain-years-${{ steps.tag.outputs.tag }}.apk"
+          cp "$APK" "$DEST"
+          echo "path=apps/mobile/$DEST" >> "$GITHUB_OUTPUT"
+          echo "Downloaded APK → $DEST"
+
+      - name: Attach APK to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # --clobber overwrites the asset on re-run (workflow_dispatch / rerun).
+        run: gh release upload "${{ steps.tag.outputs.tag }}" "${{ steps.apk.outputs.path }}" --clobber

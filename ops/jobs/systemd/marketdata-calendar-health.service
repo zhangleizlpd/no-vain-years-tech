@@ -1,0 +1,29 @@
+# marketdata-calendar-health（77）：每 4h 只读探交易日历心跳（docker exec psql），陈旧 / 降级 → 飞书 🔴。
+# 判据全在 marketdata-calendar-health.sql（server IT 真测）；.sh 零逻辑、零飞书 I/O（044 US3 / FR-010 / FR-014）。
+# Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
+#   🚨 `<unit>.sh` 与 `<unit>.sql` **必须同目录兄弟**（脚本默认按 sibling 找谓词）——
+#      拆开放 = 每 4h 一条「谓词文件缺失」假红。install.sh 把两者一起装进 /usr/local/lib/nvy/jobs/。
+# 手动触发验证：systemctl start marketdata-calendar-health.service
+#   → 健康时**静默不推**（见下 --on-success silent）；验证看 `systemctl status` / journalctl 的 ✅ 摘要行。
+# 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR；缺 webhook → 静默跳过）。
+[Unit]
+Description=Trading calendar health probe (heartbeat staleness / degraded source -> Feishu)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# PG 连接参数（SYNC_REPORT_PG_CONTAINER / _USER / _DB）—— 与 marketdata-sync-report **共用同一份**：
+# 同一个 prod PG，两份配置必漂移（容器改名时只改一处）。'-' = 缺则不报错（默认值即 prod）。
+EnvironmentFile=-/etc/marketdata-sync-report.env
+# 本任务调参（CALENDAR_HEALTH_PREDICATE_SQL）—— 可选，一般不需要。
+EnvironmentFile=-/etc/marketdata-calendar-health.env
+# 套通用 wrapper：退出码驱动飞书（零新飞书基建）+ 每跑写心跳供看门狗查 no-show。
+# 🚨 --on-success silent（**偏离每日批任务的默认 report**，故意为之）：本任务每 4h 一跑 = 6 次/日，
+#    成功也推会把飞书刷成噪音 → 训练出「反正都是 ✅，不看了」= 真告警来时被淹没。
+#    代价 = 没有正向 liveness → 由看门狗兜（nvy-watchdog 查本任务心跳，见 ops/jobs/systemd/nvy-watchdog.service）。
+# --tail 5：谓词只输出单行摘要，5 行足够罩住它 + 故障时 psql 的 stderr。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh marketdata-calendar-health --on-success silent --tail 5 -- /usr/local/lib/nvy/jobs/marketdata-calendar-health.sh

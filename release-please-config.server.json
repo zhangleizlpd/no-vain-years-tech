@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "bump-minor-pre-major": true,
+  "include-component-in-tag": true,
+  "label": "autorelease: pending: server",
+  "release-label": "autorelease: tagged: server",
+  "packages": {
+    "apps/server": { "component": "server" }
+  }
+}

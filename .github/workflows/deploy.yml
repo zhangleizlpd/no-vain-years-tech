@@ -1,0 +1,311 @@
+name: Deploy
+
+# Per ADR-0026 § Cutover. Triggered when build-image.yml succeeds (auto
+# deploy after a server-vX.Y.Z release tag), or manually via
+# workflow_dispatch (hotfix path; pick a tag to deploy).
+#
+# Steps run on the production SWAS via SSH (per ADR-0026 § D6):
+#   1. git fetch + reset --hard origin/main on SWAS (default; pulls the full
+#      orchestration — compose / .env.production / nginx — atomically；
+#      密文不在其中，常驻主机 /etc/nvy/secrets.enc.env)
+#   2. export MBW_VERSION=<target tag> (compose reads shell env ahead of --env-file,
+#      so the tag wins over .env.production's MBW_VERSION fallback; no sed → the
+#      now-tracked .env.production stays pristine for the next reset --hard)
+#   3. docker login ACR → pull → PRE-DEPLOY CONFIG GATE (run the new image's Zod
+#      validators vs the resolved container env; abort before recreate if invalid)
+#      → up -d --force-recreate app
+#   4. Wait up to 120s for healthcheck; on failure AUTO-ROLLBACK to .last-good-tag
+#      (ops/bin/rollback-prod.sh) to restore uptime, then exit 1
+#   5. Final smoke via public HTTPS (api.shintongtech.com, 同 SWAS, 无备案);
+#      on success record the tag in .last-good-tag (the rollback baseline)
+#
+# Per ADR-0026 § Cutover: 首次 mono cutover 时 user 手动 drop+recreate PG/Redis
+# 数据 (zero data preservation) + 停既有 compose → 起 mono compose,
+# 不在本 workflow 内自动化 (避免 destructive op CI 触发风险)。
+#
+# Rollback: automatic to .last-good-tag on failed healthcheck; manual any-time via
+# `ops/bin/rollback-prod.sh <tag>` on the SWAS host (deploy-in-reverse).
+
+on:
+  workflow_run:
+    workflows: [Build & Push Image]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to deploy (e.g. v0.1.5; mono server-vX.Y.Z 已 strip server- prefix)'
+        required: true
+        type: string
+      skip_git_fetch:
+        # 默认 false：全 git 驱动——每次 deploy `git reset --hard origin/main` 拉全套编排
+        # (compose / .env.production / nginx；密文常驻 /etc/nvy/ 不随 git),因 .env.production 已 tracked
+        # (per PR #571),非密 config 改动必须随 git 到 prod。host `origin` 走 SSH-over-443
+        # (ssh.github.com:443,稳定,见 prod-deploy-rollback.md § 77 SSH-to-GitHub) + 3×重试。
+        # 仅当 GFW 极端抖动 + 本次为纯镜像修复(未改任何编排文件)时传 true 跳过 reset,
+        # 直接用磁盘上现有的 compose/.env.production。密文不受本开关影响 —— 它常驻
+        # /etc/nvy/secrets.enc.env,从来不经 git。
+        description: 'Skip git fetch + reset on SWAS (default FALSE = full git-driven; set true ONLY for an image-only hotfix when GFW is blocking and no orchestration file changed)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production SWAS
+    runs-on: ubuntu-latest
+    # workflow_run only deploys on success; workflow_dispatch always runs.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            # workflow_run triggered by tag push; head_branch is the tag name.
+            # For mono per ADR-0042 component-in-tag, git tag = server-vX.Y.Z;
+            # image tag in ACR = vX.Y.Z (build-image.yml stripped server-).
+            RAW="${{ github.event.workflow_run.head_branch }}"
+            TAG="${RAW#server-}"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "::error::Could not resolve tag from trigger"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying image tag: $TAG"
+
+      - name: Configure SSH agent
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.APP_SSH_KEY }}
+
+      - name: Deploy via SSH
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          # 含 ACR 实例 ID → 走 repo secret，不再硬编码在本文件里
+          # (per docs/conventions/information-boundary.md)
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          APP_HOST: ${{ secrets.APP_HOST }}
+          APP_SSH_USER: ${{ secrets.APP_SSH_USER }}
+          # 全 git 驱动是默认。workflow_run(自动 deploy after release tag)无 inputs →
+          # 左支给 'false' 走 reset --hard(拉全编排);workflow_dispatch → 透传 input
+          # (默认 false,纯镜像 hotfix 才显式传 true)。'false' 字面量避免 `&& '' ||` 空串坑。
+          SKIP_GIT_FETCH: ${{ github.event_name == 'workflow_run' && 'false' || inputs.skip_git_fetch }}
+        run: |
+          # Pass secrets as positional args to remote bash so the heredoc can be
+          # quoted (no client-side $-expansion → no SC2087, no accidental local
+          # leak). Remote bash binds $1..$5 to TAG/ACR_USERNAME/ACR_PASSWORD/
+          # SKIP_GIT_FETCH/ACR_REGISTRY.
+          ssh -o StrictHostKeyChecking=accept-new "$APP_SSH_USER@$APP_HOST" \
+              bash -s "$TAG" "$ACR_USERNAME" "$ACR_PASSWORD" "$SKIP_GIT_FETCH" "$ACR_REGISTRY" <<'REMOTE'
+          set -e
+          TAG="$1"
+          ACR_USERNAME="$2"
+          ACR_PASSWORD="$3"
+          SKIP_GIT_FETCH="$4"
+          ACR_REGISTRY="$5"
+
+          # mono SWAS clone path (per ADR-0026 § Cutover; user side prep).
+          cd /home/admin/no-vain-years-mono
+
+          # Refresh compose configs / runbook (in case main moved while build ran).
+          # SWAS → GitHub goes via international link — TLS抖 is common. Retry 3 × 5s
+          # before giving up. Pass skip_git_fetch=true via workflow_dispatch when
+          # GFW is being aggressive AND orchestration files didn't change in this
+          # release (image-only fix); the local working tree on SWAS keeps being used.
+          if [ "$SKIP_GIT_FETCH" = "true" ]; then
+            echo "::warning::git fetch skipped — using orchestration files currently on SWAS disk"
+            # 密文不再来自 git（仓已公开 → secrets.enc.env untracked，per
+            # docs/conventions/information-boundary.md）。它常驻主机 /etc/nvy/，与本分支
+            # 是否 fetch 无关 —— 原先这里的 `git checkout origin/main -- secrets.enc.env`
+            # 在 untrack 后会永久失败，故整段删除而不是留着报 warning。
+            # 轮换/新增 secret 的传播路径改为 ops/runbook/secrets-sops.md §3.3 的 scp。
+          else
+            GIT_OK=false
+            for i in 1 2 3; do
+              if git fetch --tags origin main; then
+                GIT_OK=true
+                break
+              fi
+              echo "git fetch attempt $i/3 failed (likely international link blip), retrying in 5s..."
+              sleep 5
+            done
+            if [ "$GIT_OK" != "true" ]; then
+              echo "::error::git fetch failed after 3 retries — re-trigger via workflow_dispatch with skip_git_fetch=true if orchestration files unchanged"
+              exit 1
+            fi
+            # First git-driven deploy after .env.production became tracked (PR #571):
+            # an UNTRACKED working copy at a now-tracked path blocks `git reset --hard`.
+            # Back it up (gitignored .bak-*) + drop it so reset cleanly checks out the
+            # committed (reconciled) version. Steady-state (already tracked) → noop.
+            if [ -f .env.production ] && ! git ls-files --error-unmatch .env.production >/dev/null 2>&1; then
+              cp .env.production ".env.production.bak-pre-track-$(date +%Y%m%d-%H%M%S)"
+              echo "::warning::.env.production was untracked — backed up + now sourced from git"
+              rm -f .env.production
+            fi
+            git reset --hard origin/main
+          fi
+
+          # Prod secret injection (per ops/runbook/secrets-sops.md)。密文**不在仓内**
+          # （仓已公开 → untracked），常驻 /etc/nvy/secrets.enc.env，由 sops exec-env
+          # 在内存里解密（age key 在 ~/.config/sops/age/keys.txt），不落明文到盘。
+          NVY_SECRETS_ENC="${NVY_SECRETS_ENC:-/etc/nvy/secrets.enc.env}"
+          export NVY_SECRETS_ENC
+          # 🚨 刻意 fail-closed，不再「回落明文 .env.production」：SOPS 切换完成后
+          #    .env.production 里已经没有任何 secret，回落只会让 app 带着一堆缺失配置
+          #    起来 —— 那要么被 B2 config 闸拦下（多烧一次 pull + 一轮容器），要么更糟：
+          #    某个 secret 恰好有 zod 默认值，于是**静默降级上线**。早失败一步，且把恢复
+          #    命令直接打出来，比留一条哄人的 warning 强。
+          if ! command -v sops >/dev/null 2>&1; then
+            echo "::error::sops 未安装在 prod 主机上 —— 无法注入密文"
+            exit 1
+          fi
+          if [ ! -f "$NVY_SECRETS_ENC" ]; then
+            echo "::error::密文缺失：$NVY_SECRETS_ENC"
+            echo "恢复（在 dev 机上跑，密文只在那里和本机有）："
+            echo "  scp ~/.nvy/secrets.enc.env \"\$NVY_APP_SSH\":/tmp/s.enc.env"
+            echo "  ssh \"\$NVY_APP_SSH\" 'sudo install -D -m 600 -o root -g root /tmp/s.enc.env /etc/nvy/secrets.enc.env && rm -f /tmp/s.enc.env'"
+            exit 1
+          fi
+          export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
+          echo "🔐 prod secrets via SOPS ($NVY_SECRETS_ENC)"
+          with_secrets() {
+            sops exec-env "$NVY_SECRETS_ENC" "$1"
+          }
+
+          # Pin the target ACR image tag via shell env. compose resolves the image as
+          # ${MBW_APP_IMAGE:-crpi-.../mbw_xcs/mbw-app:${MBW_VERSION:-latest}} and reads
+          # ${VAR} from the shell ahead of --env-file, so this export wins over
+          # .env.production's MBW_VERSION fallback and the subsequent pull/run/up
+          # (incl. the sops exec-env children, which inherit this env) all use $TAG.
+          # export — NOT sed .env.production — so the now-tracked file stays pristine
+          # (no working-tree drift for the next `git reset --hard`). MBW_APP_IMAGE is
+          # left unset (committed .env.production keeps it commented), so the ACR
+          # default image path applies.
+          export MBW_VERSION="$TAG"
+
+          # compose 的 image 默认值读 ${NVY_ACR_REPO}（仓内不再硬编码镜像仓地址）。
+          # rollback-prod.sh 若被下面的失败分支调起，继承本 export。
+          export NVY_ACR_REPO="$ACR_REGISTRY/mbw_xcs/mbw-app"
+
+          # Login to Aliyun ACR (intranet pull, ~5s for 180MB).
+          echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" \
+              -u "$ACR_USERNAME" --password-stdin
+
+          # Pull new image + recreate app container only (postgres / redis / nginx untouched).
+          docker compose -f docker-compose.tight.yml --env-file .env.production pull app
+
+          # Pre-deploy config gate (B2): run the NEW image's Zod validators against
+          # the RESOLVED container env (compose `run` composes DATABASE_URL/REDIS_URL
+          # + applies :-defaults, exactly what the live container sees) BEFORE
+          # recreating. Fail here = config errors printed, live container untouched
+          # (vs boot-time fail-fast which would already have recreated into a crash).
+          # --no-deps: config parse is pure env, no postgres/redis needed. exit 2.
+          # ⚠️ `docker compose run` MUST detach stdin (`-T` + `</dev/null`): this whole
+          # script is piped to `bash -s` over SSH via a heredoc, and an interactive
+          # `run` reads stdin → it would CONSUME the remaining heredoc (the up /
+          # healthcheck below) as its own stdin. Symptom when B2 PASSES: the run eats
+          # the rest of the script, bash hits EOF, the step exits 0 with NO recreate
+          # (false-success silent no-op). When B2 fails the `exit 2` is already buffered
+          # in this `if` block so it still exits correctly — which is why the bug only
+          # surfaces on a PASSING gate.
+          if ! with_secrets "docker compose -f docker-compose.tight.yml --env-file .env.production run --rm -T --no-deps --entrypoint node app dist/config/validate-config.js" </dev/null; then
+            echo "::error::Pre-deploy config validation failed (.env.production / secrets.enc.env missing/invalid keys). App NOT recreated."
+            exit 2
+          fi
+
+          with_secrets "docker compose -f docker-compose.tight.yml --env-file .env.production up -d --force-recreate app"
+
+          # Wait up to 120s for app healthcheck (mono uses /healthz/live per
+          # apps/server/Dockerfile HEALTHCHECK + ADR-0040 liveness endpoint).
+          HEALTHY=false
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            sleep 10
+            STATE=$(docker inspect nvy-tight-app-1 --format='{{.State.Health.Status}}' 2>/dev/null || echo none)
+            echo "[t+$((i*10))s] app health = $STATE"
+            if [ "$STATE" = "healthy" ]; then
+              HEALTHY=true
+              break
+            fi
+          done
+
+          if [ "$HEALTHY" != "true" ]; then
+            echo "::error::App did not become healthy within 120s — last logs:"
+            docker compose -f docker-compose.tight.yml --env-file .env.production logs --tail=80 app
+            # Auto-rollback to the last verified-healthy tag to restore uptime — the
+            # broken new container would otherwise stay up with the old one already
+            # force-recreated away. Still exit 1 so the deploy is marked failed.
+            # docker login session from above is still active (logout only on success),
+            # so rollback can re-pull the old image if it isn't cached.
+            if [ -f .last-good-tag ]; then
+              echo "::warning::Auto-rolling back to last-good $(cat .last-good-tag)..."
+              bash ops/bin/rollback-prod.sh || echo "::error::Auto-rollback also failed — manual intervention needed."
+            else
+              echo "::warning::No .last-good-tag yet (first deploy?) — skipping auto-rollback."
+            fi
+            exit 1
+          fi
+
+          # Final smoke via public HTTPS (validates nginx + Let's Encrypt + reverse-proxy + DNS).
+          # 企业域名 api.shintongtech.com (同 SWAS;无备案,旧域 xiaocaishen.me 已硬切退役).
+          curl -fsS --retry 3 https://api.shintongtech.com/healthz/live
+
+          # Record this tag as the last verified-healthy baseline — the rollback
+          # target for the next deploy's auto-rollback + rollback-prod.sh default.
+          echo "$TAG" > .last-good-tag
+
+          # ── 镜像 GC：只保留最近 KEEP_IMAGES 个 mbw-app tag ────────────────────
+          #
+          # 🚨 为什么在 deploy 里而不是单开一个 timer：**垃圾 100% 由本步骤产生**
+          # （每次发版 pull 一个 ~1GB 的新 tag，此前从不清理），而此刻恰好是唯一同时
+          # 知道「刚部署的 tag」和「.last-good-tag」的地方，能精确保护这两个。
+          #
+          # 2026-08-07 实测：26 个 tag 堆了 7 周，77 的 40G 根分区被吃到 **97%（剩 1.3G）**,
+          # 其中 25 个 CONTAINERS=0。每个 tag UNIQUE SIZE ~800MB（SHARED 仅 ~230MB ⇒
+          # 几乎不共享层，删一个实打实回收一个）。手工清到 3 个后回到 50%。
+          # 累积速率 ≈ 3.7 tag/周 ≈ 3GB/周 —— 不治会复发。
+          #
+          # 🚨 三条安全约束，改这段前逐条对：
+          #   1. **显式 tag 清单 + `docker image rm`，绝不用 `prune -a`** —— 后者会连带
+          #      删掉别的 repo（postgres / redis / nginx / alpine 都在同一个 docker 里）。
+          #   2. **绝不删 `.last-good-tag` 指向的那个** —— 它是下次自动回滚的目标。
+          #      本地没有的话 rollback-prod.sh 得从 ACR 重拉，慢且依赖当时 ACR 可达。
+          #   3. **失败不阻断部署** —— 服务已经健康且 smoke 过了，GC 是收尾优化，
+          #      让它把一次成功的发版判成失败是本末倒置。故整段 `|| true` 兜住。
+          #
+          # 盲区（已知且接受）：不发版就不清（但不发版也不产生新 tag）；手动 pull 的
+          # 镜像不收。磁盘水位的**告警**侧不在这里 —— 那条已由 047 FR-052a / T025 认领。
+          KEEP_IMAGES=3
+          {
+            APP_REPO="${ACR_REGISTRY}/mbw_xcs/mbw-app"
+            KEEP_TAGS="$(docker images "$APP_REPO" --format '{{.Tag}}' | head -n "$KEEP_IMAGES")"
+            # .last-good-tag 恒等于本次的 ${TAG}（上面刚写），但显式并进来防将来改序出错。
+            KEEP_TAGS="$(printf '%s\n%s\n' "$KEEP_TAGS" "$TAG" | sort -u)"
+            DEL=""
+            for t in $(docker images "$APP_REPO" --format '{{.Tag}}'); do
+              printf '%s\n' "$KEEP_TAGS" | grep -qx "$t" && continue
+              # 被任何容器引用的一律跳过（正常不会有，但别赌）。
+              [ "$(docker ps -a --filter "ancestor=${APP_REPO}:${t}" -q | wc -l)" -gt 0 ] && continue
+              DEL="$DEL ${APP_REPO}:${t}"
+            done
+            if [ -n "$DEL" ]; then
+              echo "🧹 image GC: 保留 $(printf '%s' "$KEEP_TAGS" | tr '\n' ' ')；删除 $(printf '%s' "$DEL" | wc -w) 个"
+              docker image rm $DEL >/dev/null 2>&1
+              df -h / | tail -1 | awk '{print "   磁盘: " $3 " used / " $4 " free / " $5}'
+            else
+              # ${} 是必须的：`$KEEP_IMAGES` 紧跟全角「）」会把首字节折进变量名（CJK locale 下）。
+              echo "🧹 image GC: 无可删（tag 数 <= ${KEEP_IMAGES}）"
+            fi
+          } || echo "::warning::image GC 失败 —— 不影响本次部署，但磁盘会持续累积，请人工看一眼"
+
+          # Cleanup: remove docker login creds from SWAS user home.
+          docker logout "$ACR_REGISTRY" >/dev/null 2>&1 || true
+
+          echo "✅ Deploy of $TAG completed."
+          REMOTE

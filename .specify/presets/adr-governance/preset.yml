@@ -1,0 +1,46 @@
+id: adr-governance
+version: 0.1.0
+description: |
+  ADR (Architecture Decision Record) frontmatter governance for mono repos.
+  Enforces 4 mandatory fields per ADR-0031 (governance):
+    - adr_id          ADR-NNNN, must match filename NNNN
+    - status          Proposed | Accepted | Deprecated | Superseded | Reserved
+    - applies_to      list of scopes (apps/<name>, packages/<name>, security,
+                      infrastructure, mono-wide)
+    - sunset_trigger  multiline string ≥ 10 chars (forces explicit thinking
+                      on when this ADR should be re-reviewed)
+
+  Provides:
+    - templates/adr-template.md (ADR scaffold; 4-field frontmatter pre-filled)
+    - schemas/adr.zod.ts (Zod schema for frontmatter; loaded by checker)
+    - scripts/check-adr-frontmatters.ts (gray-matter + zod scan; exits 1 on fail)
+    - lefthook.yml.fragment (adr-frontmatter-check hook; glob docs/adr/*.md)
+
+  Composes cleanly with mono-orchestrator-ready 0.2.0+ (independent schemas
+  + independent lefthook hooks; no shared state).
+
+  NOT a SKILL fork — uses spec-kit native composition extensions only.
+applies_to: [mono]
+spec_kit_compat: ">=0.8.5,<0.10.0"
+priority: 7
+
+provides:
+  templates:
+    - name: adr-template
+      type: template
+      strategy: replace
+      file: templates/adr-template.md
+  schemas:
+    - file: schemas/adr.zod.ts
+      description: ADR frontmatter Zod schema (4 mandatory fields)
+  scripts:
+    - file: scripts/check-adr-frontmatters.ts
+      description: scan docs/adr/*.md, validate against adr.zod, exit 1 on fail
+  lefthook:
+    - file: lefthook.yml.fragment
+      hook: pre-commit/adr-frontmatter-check
+      target_glob: "docs/adr/*.md"
+
+# Target repo runtime requires:
+#   - Node 22+ (used by tsx)
+#   - pnpm-installed root devDeps: zod ^3, gray-matter ^4, tsx ^4

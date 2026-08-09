@@ -1,0 +1,19 @@
+# code-index 每日健康摘要：每日推一条正向 liveness 到飞书（过去24h 索引提交数 + 追平状态 +
+# tick timer 活性）。高频族（tick/freshness）刻意不每跑推（刷屏），靠这条每日摘要确认它活着。
+# Mirror 编排同 code-index-freshness-monitor.service。Driven by the .timer.
+# Install:
+#   cp deploy/code-index-daily-digest.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now code-index-daily-digest.timer
+# 飞书 webhook/secret 来自 /etc/nvy-alert.env（NVY_ALERT_*；缺 → feishu-send.sh 静默跳过）。
+[Unit]
+Description=code-index daily health digest (positive liveness → Feishu)
+Documentation=file:///root/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/code-index.env
+EnvironmentFile=-/etc/nvy-alert.env
+WorkingDirectory=/root/no-vain-years-mono/services/code-index
+ExecStart=/usr/bin/bash scripts/daily-digest.sh

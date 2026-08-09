@@ -1,0 +1,131 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+out-tsc/
+
+# runtime-smoke e2e export — dedicated dir so the OSS-env `expo export` never
+# shares `dist/` with `mobile:build` (no-env) when nx runs both concurrently
+# (issue #625; see apps/mobile/playwright.runtime-smoke.config.ts webServer note).
+apps/mobile/dist-runtime-smoke/
+
+# Test
+coverage/
+
+# Environment
+.env
+.env.local
+.env.*.local
+.envrc
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
+.obsidian/
+*.swp
+.obsidian/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Claude Code local overrides
+.claude/settings.local.json
+
+
+
+.nx/cache
+.nx/workspace-data
+.nx/polygraph
+.claude/worktrees
+
+# graphify code knowledge graph
+graphify-out/
+
+# orchestrator per-task run archive (P1 debug sink; volatile per run)
+.spec-kit/runs/
+.spec-kit/runs-manual/
+
+# Expo metro cache
+.expo/
+
+# Expo CNG (prebuild) native output — regenerated from app.json + tracked
+# config plugins (apps/mobile/plugins/with-*.js) via `expo prebuild` /
+# `expo run:android|ios`. This is a CNG project: neither native dir is
+# version-controlled. Local dev-client builds land here; fully regenerable.
+apps/mobile/android/
+apps/mobile/ios/
+
+# Playwright artifacts
+playwright-report/
+playwright-test-results/
+
+# runtime-smoke 截图归档（per-feature 本地 debug 留痕，volatile，不入库）
+apps/mobile/runtime-debug/
+
+# .env.production is now TRACKED (non-secret prod config; repo is public).
+# Secrets live encrypted in secrets.enc.env (SOPS), never in .env.production —
+# check-env-sync Check F + gitleaks enforce. (Was gitignored pre-SOPS cutover.)
+# Prod deploy state (live on the SWAS host only, never committed): timestamped
+# env backups from deploy.yml / rollback-prod.sh + the last-verified-healthy
+# image tag baseline used for auto/manual rollback.
+.env.production.bak-*
+.last-good-tag
+
+# SOPS/age secrets（spike 见 docs/private/plans/2026-06/06-15-sops-age-secrets-adoption-spike.md）。
+#
+# 🔁 2026-08-08 反转：密文**不再入库**。仓转公开后，「密文一旦公开就永久公开」是不可
+# 撤销的 —— 将来 age 私钥一旦泄漏，历史上每一版密文都能被回溯解密，而那时已无从收回。
+# key 名仍留仓内（.env.production 侧 + check-env-sync 的对账契约），它本来就是明文；
+# 出仓的只有密文本体。判据见 docs/conventions/information-boundary.md。
+#
+# 密文的三处常驻：dev 机 ~/.nvy/secrets.enc.env（canonical，`sops edit` 改这份）/
+# prod /etc/nvy/secrets.enc.env（640 root:admin —— deploy 以 admin 跑，root-only 会炸）/
+# 传播路径见 ops/runbook/secrets-sops.md §3.3。
+# NEVER track 任何解密产物或 age 私钥（SPOF，在 ~/.config/sops/age/）。
+secrets.enc.env
+secrets.dec.env
+*.dec.env
+*.agekey
+keys.txt
+
+# Android signing keystores — NEVER commit (上架签名私钥). EAS manages the
+# canonical keystore on its servers; `eas credentials` downloads land here as
+# *.jks. Back up offline per ops/runbook/mobile-eas-release.md § keystore.
+*.jks
+*.keystore
+*.p12
+
+# Scratch / exploratory notes — kept locally, not tracked
+docs/explore/
+
+# Experience reports — kept locally, not tracked (2026-06-05 decision)
+docs/experience/
+
+# 拓扑 / 凭据相邻的运维散文 —— 仓已公开，这些永不入 git（2026-08-08 决定）。
+# 判据见 docs/conventions/information-boundary.md「私有散文」一层：内容本身即
+# 情报（主机清单、RAM 用户↔权限↔凭据路径映射、实盘系统脆弱窗口、自然人位置），
+# 不是靠脱敏标识符就能公开的。docs/private/plans/ 收原 docs/plans/ 全部。
+# ⚠️ 备份只有私有归档仓在 split 时点的冻结副本，此后的编辑只存在于本机一块盘上
+# —— 而 index / broker-hk / 证书续期的重建步骤只活在这些文件里。
+docs/private/
+
+# SDD mockup 留迹 —— local-only（2026-08-08 决定）。design/ 装真机截图 + claude-design
+# handoff bundle：截图里可能有真实账户 / 持仓 / 手机号，而「像素里的 PII」没有任何扫描器
+# 能抓（per docs/conventions/information-boundary.md）。留迹价值不变，只是不入库；历史
+# 副本在私有归档仓。`/mockup-gen` 照常写这里。
+# ⚠️ 少了这条，下一个 UI feature 就会把截图重新带回公开仓。
+specs/*/design/
+
+# SDD auto-impl run artifacts — per-run audit JSONL (Track 1), local-only
+.sdd-run/
+
+# Spike / PoC scratch (e.g. S1 code-index bake-off) — throwaway, not tracked
+.spikes/
+
+# Ideation headless mockup previews (per-session, regenerated each critique loop) — local-only
+.ideation-mockups/

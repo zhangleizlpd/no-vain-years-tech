@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily TLS cert expiry monitor (api + img)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/cert-management.md
+
+[Timer]
+# Daily at 08:30 local; Persistent catches a missed run after downtime.
+OnCalendar=*-*-* 08:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

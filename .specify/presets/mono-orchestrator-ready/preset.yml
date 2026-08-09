@@ -1,0 +1,164 @@
+id: mono-orchestrator-ready
+version: 0.7.1
+description: |
+  mono-repo spec-kit 治理 + impl 支持。把 spec / plan / tasks 三大 template
+  升级到 prose-only + 治理 frontmatter + impl guardrails 形态:
+
+    - spec.md: 上游 prose-only (US heading / `- **FR**:` / `- **SC**:`)
+      + YAML frontmatter (跨文档级治理元数据)
+    - plan.md: prose-only — Summary / Constitution Check / Phase 0 Research
+      Gates / Architecture Notes (含 🚨 Testing Invariants + ADR-0043 范式
+      banner + 🚨 Impl Guardrails)。数据模型真相源 = schema.prisma;API 真相源
+      = OpenAPI code-first (api-contract.md);plan 只写 prose 设计意图,不镜像 (0.7.0)
+    - tasks.md: 人读 `- [ ] T<N> [title] (FR/US trace)` 清单 + impl guardrails
+      指引注释。无 per-task 机器 marker (0.7.0)
+    - Zod schema 校验契约 (.specify/schemas/mono-orchestrator-ready/spec.zod.ts
+      管 frontmatter 治理)
+
+  0.2.0 增量 (post-A-002 retro):
+    - spec frontmatter v2 字段: web_compat / agent_friction_observed
+      / agent_friction_notes / perf_budgets[] (per ADR-0027 / ADR-0024 amend
+      / ADR-0039)
+    - schemas/spec.zod.ts (Zod schema, 校验 frontmatter v2 含 web_compat
+      条件 required 等 invariant)
+    - scripts/check-spec-frontmatters.ts (gray-matter + zod, 扫 staged
+      specs/*/spec.md, schema 不符 → exit 1)
+    - lefthook.yml.fragment (spec-frontmatter-check hook, glob
+      specs/*/spec.md)
+
+  0.2.1 增量 (post-A-002 PR-1 follow-up):
+    - plan-template 加 ## Phase 0 Research Gates 段 (4 gates):
+      · Integration Smoke Gate (server real-boot + mobile golden-path walked)
+      · Cross-stack Vendor Intersection 6Q Card (新 third-party 包决策)
+      · Legacy → Mono Delta Sweep Checklist (meta-repo 迁入代码 stale ref grep)
+      · ADR-deferred-mitigation Scan Step (Open Questions 分类 + 缓解)
+
+  0.2.2 增量 (PR-T1 / ADR-0040 multi-layer test gate strategy):
+    - spec-template: state_branches v2 字段 — 强制 spec 阶段穷举状态分支
+      (per PR #79 retro Pattern D 漏 cold-boot 状态实证)
+    - plan-template:
+      · orchestrator_config.verify_commands 加 "smoke" key (指向
+        scripts/ci/server-boot-smoke.ts)
+      · Architecture Notes 段加 🚨 Testing Invariants 3 禁令 (NO LIFECYCLE
+        MOCKING / MANDATORY INTEGRATION / EXHAUSTIVE BRANCHING),
+        orchestrator inject 进 LLM prompt 时硬性约束
+    - tasks-template: kind 枚举扩 "verification";verify_kind 扩 "smoke";
+      Server section 加 T003 Runtime Smoke 终极任务模板
+    - schemas/spec.zod.ts: state_branches optional 字段 (0.3.0 转 required)
+
+  0.3.0 增量 (PR-T3 / ADR-0040 门禁层):
+    - schemas/spec.zod.ts: state_branches optional → required (.min(1))
+    - specs/001-phone-sms-auth/spec.md + specs/002-account-profile/spec.md
+      同 PR backfill state_branches 字段 (per master plan Risk row)
+    - 配合 PR template (.github/pull_request_template.md) + lefthook
+      no-bad-mocks + .github/workflows/pr-validation.yml + nightly-sweep.yml
+      形成完整 L3 门禁体系
+
+  0.3.1 增量 (PR-T3 follow-up P5 / Cargo-cult 防火墙):
+    - plan-template.md 加 ## Dependencies & Defensive Additions 段, 强制
+      列出所有新依赖 / polyfill / defensive import + fact-check 锚点 URL,
+      防 PR #79 retro Pattern F (defensive cargo-cult, 抄过时教程的
+      polyfill / config)
+
+  0.4.0 增量 (ADR-0043 扁平+贫血范式对齐):
+    - spec-template: 删 entities 块 DDD 词汇 (aggregate_root 字段移除 + domain
+      "DDD subdomain" 改义为 owning-module 标签)
+    - plan-template:
+      · module_boundaries 注释改 eslint-plugin-boundaries (per ADR-0032 /
+        ADR-0043; ADR-0020 superseded), 去 @nx/enforce-module-boundaries
+      · orchestrator_config 路径修扁平 src/<module> (去 src/modules/<module>),
+        去不存在的 libs/db import
+      · Testing Invariants + General Architecture Notes 去 Repository / entity
+        layer 旧范式残留
+      · General Architecture Notes 加 ⚠️ CRITICAL ADR-0043 范式 banner
+        (Flat + Anemic + Moat, fierce NEVER/MUST), orchestrator inject 进
+        implement prompt
+    - tasks-template: task-meta files 路径修扁平 src/<module>
+
+  0.5.0 增量 (impl guardrails 全流程吸纳 — p3 迁移引擎精华去 Java 化):
+    - spec-template: state_branches 指引补"必列分支类型"(并发/竞态 / 反枚举字节级
+      等价 / 安全·PII 作 FR·SC) — 只 WHAT 不写 HOW
+    - plan-template: Architecture Notes 加 ### 🚨 Impl Guardrails callout
+      (并发·事务 affected-count·禁 FOR UPDATE / 反枚举·HMAC·AES-GCM / 前端 RHF·
+      Strangler·mockup), 链 mono docs/conventions/{server,mobile}-impl-playbook.md,
+      orchestrator inject 进 implement prompt
+    - tasks-template: Server 段补 per-branch IT 指引, Mobile 段补 RHF 逻辑测指引
+
+  0.6.0 增量 (双流对齐 p1 — orchestrator 消费契约 prose 化):
+    - spec-template: 回归上游 prose-only — 删 us-meta / fr-meta / cl-meta HTML
+      注释 marker + 删 Key Entities JSON 块 (entities 迁 plan)。spec 只供 prose
+      需求文本 (US heading / `- **FR**:` / `- **SC**:`);frontmatter 治理字段
+      不变 (仍由 lefthook spec-frontmatter-check 强制)
+    - plan-template:
+      · orchestrator_config 加 entities[] 块 (迁自 spec;api_contracts 本就以
+        E<n> 引用,二者同属 HOW 工件)
+      · 修 api_contracts auth enum 注释/示例 user|admin → public|bearer|api_key
+        (对齐 orchestrator EndpointSchema)
+      · 修 plan status 生命周期注释 tasks-ready|implementing → drafted|approved|
+        superseded (对齐 PlanFrontmatterSchema)
+    - tasks-template: kind 注释补全 enum (migration|docs|config);status 注释补 blocked
+    - 配套 mono schema (PR #209 + #210, 同 p1): spec frontmatter 放宽 (version
+      字段 optional, 非 strict 前向兼容) + entities 迁 OrchestratorConfig +
+      module_boundaries `_`-前缀豁免;TaskKindSchema 加 verification (schema 终于
+      跟上 0.2.2 模板) + parallel optional + verification 容空 files。钉死
+      orchestrator-parse-gate (lefthook + CI),制品漂即红
+
+  0.7.0 增量 (SDD 自动化架构选型 — nuke orchestrator 机器结构,转主-子 agent A 架构
+  per docs/private/plans/2026-06/06-13-sdd-automation-architecture-selection.md Phase 0):
+    - plan-template: 删 `orchestrator_config` + `api_contracts` JSON fenced 块
+      (仅退役中的 orchestrator parser 消费)。数据模型 → schema.prisma (SoT);
+      API → OpenAPI code-first (api-contract.md);plan 只承载 prose 设计意图 +
+      治理门禁。Constitution Check JSON → prose gate checkbox。frontmatter 去
+      orchestrator_compat
+    - tasks-template: 删每 task 的 `task-meta` HTML JSON marker (微观 DAG /
+      workspace / deps / trace_* / verify_kind / files,仅 orchestrator 消费)。
+      改人读 `- [ ] T<N> [title] (FR/US trace)` 清单。保留 T003 runtime smoke
+      指引 + impl guardrails 指引注释。frontmatter 去 orchestrator_compat
+    - 保留不动: spec-template (已 prose-only) / schemas/spec.zod.ts /
+      check-spec-frontmatters.ts / lefthook.yml.fragment (spec-frontmatter-check)
+    - mono 侧配套 (同 Phase 0,非本 preset): 删 orchestrator-parse-gate
+      (lefthook + pr-validation.yml CI) — 它 enforce 的 orchestrator-shape 已不再
+      由模板产出。scripts/orchestrator/*.ts 本体退役走后续专门 PR
+
+  0.7.1 增量 (0.7.0 follow-up): spec-template 注释修 stale ref — 0.7.0 删了 plan
+  的 orchestrator_config/api_contracts + tasks 的 task-meta 后,spec-template 仍
+  指「数据模型住 plan.md orchestrator_config」「FR/SC trace 走 task-meta.trace_*」
+  即失真。改指 schema.prisma (数据) / OpenAPI (API) / task 标题 prose trace。其余
+  orchestrator 运行时泛指 (parsers/spec.ts 等) 不动,归 orchestrator 退役专门 PR。
+
+  仅适用于 monorepo (nx workspaces)。
+
+  NOT a SKILL fork — `.claude/skills/speckit-*/SKILL.md` 保持 vanilla;
+  采用 spec-kit 0.8.7+ 原生 template `replace` 策略。
+applies_to: [mono]
+spec_kit_compat: ">=0.8.5,<0.10.0"
+priority: 4
+
+provides:
+  templates:
+    - name: spec-template
+      type: template
+      strategy: replace
+      file: templates/spec-template.md
+    - name: plan-template
+      type: template
+      strategy: replace
+      file: templates/plan-template.md
+    - name: tasks-template
+      type: template
+      strategy: replace
+      file: templates/tasks-template.md
+  schemas:
+    - file: schemas/spec.zod.ts
+      description: spec.md frontmatter Zod schema (v2 — conditional invariants)
+  scripts:
+    - file: scripts/check-spec-frontmatters.ts
+      description: scan staged spec.md, validate against spec.zod, exit 1 on fail
+  lefthook:
+    - file: lefthook.yml.fragment
+      hook: pre-commit/spec-frontmatter-check
+      target_glob: "specs/*/spec.md"
+
+# Target repo runtime requires:
+#   - Node 22+ (used by tsx / fs.readdirSync recursion)
+#   - pnpm-installed root devDeps: zod ^3, gray-matter ^4, tsx ^4

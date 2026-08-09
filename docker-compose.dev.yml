@@ -1,0 +1,44 @@
+# Local dev compose for no-vain-years-mono PoC (Plan 1 W1.4).
+#
+# Independent from meta my-beloved-server (project=mbw-dev, port 5432/6379):
+# this stack uses ports 5433/6380, project=mbw-poc, db=mbw_poc — so both can
+# run side by side during the Plan 1 PoC window without collision.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d         # start deps
+#   docker compose -f docker-compose.dev.yml down          # stop (keep volumes)
+#   docker compose -f docker-compose.dev.yml down -v       # stop + drop data
+
+name: mbw-poc
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mbw-poc-postgres
+    environment:
+      POSTGRES_DB: mbw_poc
+      POSTGRES_USER: mbw
+      POSTGRES_PASSWORD: mbw
+    ports:
+      - '5433:5432'
+    volumes:
+      - mbw-poc-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mbw -d mbw_poc']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mbw-poc-redis
+    ports:
+      - '6380:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mbw-poc-pgdata:

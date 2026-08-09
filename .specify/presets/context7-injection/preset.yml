@@ -1,0 +1,23 @@
+id: context7-injection
+version: 1.0.0
+description: |
+  Prepend mcp__context7__ grounding directive to plan-template (lib CHOICE) and
+  tasks-template (lib API USAGE). Two-phase grounding: /speckit.plan grounds the
+  library choice (name + version); /speckit.implement grounds the API usage
+  (exact method signature / config key) because impl-time API mistakes from
+  stale training data hit hardest.
+applies_to: [mono]
+spec_kit_compat: ">=0.8.5,<0.10.0"
+requires_mcp: [context7]
+priority: 5
+
+provides:
+  templates:
+    - name: plan-template
+      type: template
+      strategy: prepend
+      file: templates/plan-template.md
+    - name: tasks-template
+      type: template
+      strategy: prepend
+      file: templates/tasks-template.md

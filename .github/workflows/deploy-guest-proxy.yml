@@ -1,0 +1,96 @@
+name: Deploy guest proxy
+
+# 77 (`mbw-staging`) 上访客代理（`nvy-guest-proxy`）的部署。
+#
+# 与另两条部署通路的关系：
+#   deploy.yml            → prod app（同一台 77），按发版触发，走 `git reset --hard`
+#   deploy-futu-shim.yml  → 港机（77 跳板 + B↔C 隧道 + forced command）
+#   本文件                → 77 上的访客代理，push main 且改了 services/guest-proxy/** 即触发
+#
+# 🚨 **配置装到 `/opt/nvy-guest-proxy`，不在仓 clone 里。** 原先 compose 直接挂
+# `/home/admin/no-vain-years-mono/ops/guest-access`（2026-08-07 已搬到 services/guest-proxy，
+# 与 code-index / futu-shim 并列 —— 它是个可部署服务，不是运维产物），而 `deploy.yml` 会对那个 clone 跑
+# `git reset --hard origin/main` ⇒ prod 每次发版都把新配置带到磁盘上却不 reload，留下
+# 「磁盘新、运行旧」的半态；之后任何一次容器重建（`restart wg-quick@wg2` 经 PartOf= 连带、
+# 主机重启、容器崩溃自愈）都会把它静默滚上线，且时刻不可控。搬到 /opt 后彻底解耦。
+#
+# 🚨 **代码走 stdin tar，77 上不预装任何脚本** —— 连安装器本身（`deploy/install.sh`）都
+# 从这次的 tar 里跑，因此逻辑随仓版本化、自我更新，不存在「77 上那份脚本是哪个版本」的问题。
+# 送过去的就是本次 CI 验过的那棵树。
+#
+# 🚨 **不新建部署 key，复用 `APP_SSH_KEY`。** shim 那把 forced-command key 存在的理由是
+# 「港机在跳板后面、不想在那儿放 GitHub 凭证」；而 77 就是目标机，`APP_SSH_KEY` 本来就能
+# 在它上面拿到 admin shell（`deploy.yml` 正是这么用的）⇒ 再加一把受限 key 不缩小任何爆炸
+# 半径，只增加一处要维护的凭证。
+#
+# 退出码语义（来自 install.sh）：2 入参非法 / 3 检出手改漂移 / 4 预校验失败 / 5 自检失败。
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '覆盖 77 上的手改（默认拒绝并退 3）。仅在确认那些手改可以丢弃时用'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      # 🚨 这条与下面 `tar -C` 的路径**必须同 commit 改**。paths 过滤失配是**静默**的：
+      #    workflow 不报错、只是压根不触发 ⇒ 「改了配置但没上线」且外部零迹象。
+      - 'services/guest-proxy/**'
+      - '.github/workflows/deploy-guest-proxy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  # 两次部署同时改 /opt/nvy-guest-proxy = 半截状态。排队，不取消进行中的那次。
+  group: deploy-guest-proxy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Ship + install + self-check (77)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure SSH agent
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.APP_SSH_KEY }}
+
+      - name: Ship + install + self-check
+        env:
+          APP_HOST: ${{ secrets.APP_HOST }}
+          APP_SSH_USER: ${{ secrets.APP_SSH_USER }}
+          FORCE: ${{ inputs.force && '--force' || '' }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "deploying guest proxy @ $SHA"
+
+          # 打包整个 services/guest-proxy（约 40 KB）。交付包与 skill 也一并送 —— 它们不参与
+          # 运行，但让 77 上那棵树与仓完全同形，省掉「哪些该送哪些不该送」这类判断。
+          # 🚨 路径与上面 on.push.paths 必须一致，见那里的注释。
+          tar -czf /tmp/guest-proxy.tgz -C services/guest-proxy .
+
+          # -T 无 TTY：tty 行规会改写二进制流，tar 会坏。
+          # 解包目录用 mktemp -d，装完不清理（留作事故现场），/tmp 有 tmpfiles 兜底。
+          ssh -T -o StrictHostKeyChecking=accept-new "$APP_SSH_USER@$APP_HOST" \
+            "set -e; d=\$(mktemp -d); tar -xzf - -C \"\$d\"; sudo bash \"\$d/deploy/install.sh\" $SHA $FORCE" \
+            < /tmp/guest-proxy.tgz
+
+      - name: 失败时怎么读
+        if: failure()
+        run: |
+          cat <<'EOF'
+          退出码语义（install.sh）：
+            2 = 入参非法 / 收到的树不对（管道空了？打包目录错了？）
+            3 = 77 上有人手改过配置 —— **不是故障，是闸在干活**。
+                先把那些手改写回仓走 PR；确认可丢弃再用 workflow_dispatch 勾 force 重跑。
+            4 = 新配置没通过 nginx -t —— **真容器一个字节都没动，现网仍是旧配置**，
+                访客通路未受影响。修配置再合。
+            5 = 部署后自检失败。上一版留在 /opt/nvy-guest-proxy.prev，回滚见日志末尾那行。
+          EOF

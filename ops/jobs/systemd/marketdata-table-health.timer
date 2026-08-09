@@ -1,0 +1,16 @@
+[Unit]
+Description=Marketdata table-level data freshness probe timer (every 4h)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+
+[Timer]
+# 每 4h，**错开 calendar-health 的整点**（02/06/10/14/18/22）：两个探针都 docker exec 进同一个 PG，
+# 同时起没有好处；错开还让 journal 时间线上两者可区分。
+# 频率论证：夜间采集 @22:00 落数据，谓词阈值 = 落后 3 个交易日才红 → 采集停摆后约 2 天内告警。
+# 对照本次事故（announcement 静默 12 个交易日无人知），这个响应速度足够且不制造噪音；
+# 想更灵敏就调谓词里的 max_lag_trading_days，**不要**调本文件的频率（判据不在这）。
+# Persistent 补跑宕机期间漏掉的一次（探针本身停摆的兜底另见 nvy-watchdog）。
+OnCalendar=*-*-* 02/4:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

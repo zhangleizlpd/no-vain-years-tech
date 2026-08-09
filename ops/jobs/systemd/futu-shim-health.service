@@ -1,0 +1,26 @@
+# futu-shim-health（77）：每 4h 经 B↔C 隧道探港机 futu-shim 的 /healthz，不可达 / OpenD 不在 /
+# 登录态掉 → 飞书 🔴。判据与「显式不报的三种」全在 ops/jobs/futu-shim-health.sh 头部，改判据改那里。
+# Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
+# 手动触发验证：systemctl start futu-shim-health.service
+#   → 健康时**静默不推**（见下 --on-success silent）；验证看 journalctl 的 ✅ 摘要行。
+# 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR）。
+[Unit]
+Description=Futu shim / OpenD liveness probe (HK host via wg1 -> Feishu)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/futu-opend-hk.md
+# wg1 是到港机的唯一通路，故排在它后面 —— 但**只排序不依赖**（After= 而非 Requires=）：
+# 隧道挂了正是本探针要报的故障之一，用 Requires= 会让它跟着一起不跑 = 该报的时候沉默。
+After=network-online.target wg-quick@wg1.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# 本任务调参（FUTU_SHIM_HEALTH_URL / _TRIES / _TIMEOUT_S）—— 可选，一般不需要。
+EnvironmentFile=-/etc/futu-shim-health.env
+# 套通用 wrapper：退出码驱动飞书（零新飞书基建）+ 每跑写心跳供看门狗查 no-show。
+# 🚨 --on-success silent（**偏离每日批任务的默认 report**，故意为之）：每 4h 一跑 = 6 次/日，
+#    成功也推会把飞书刷成噪音 → 训练出「反正都是 ✅，不看了」= 真告警来时被淹没。
+#    代价 = 没有正向 liveness → 由看门狗兜（nvy-watchdog 查本任务心跳，futu-shim-health:43200）。
+# --tail 5：探针只输出单行摘要，5 行足够罩住它 + 故障时的 stderr 诊断。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh futu-shim-health --on-success silent --tail 5 -- /usr/local/lib/nvy/jobs/futu-shim-health.sh

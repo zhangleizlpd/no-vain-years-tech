@@ -1,0 +1,13 @@
+{
+  "_comment": "Maps the repo var EAS_ACCOUNT slot -> an Expo account. owner+projectId get patched into app.json at build time (CI) or by scripts/eas/switch-account.sh (local); tokenSecret names the GitHub secret holding that account's robot token. ACCOUNT ROLES (2026-06-19): slot b (caishen-ai) = PRODUCTION — the PUBLIC release (release-android-apk.yml) is PINNED to slot b; its per-project keystore becomes the locked 上架 keystore (stable signing key required for Android in-place upgrades), so the public release NEVER rotates. slot a (xiaocaishen) = internal/dev — release-android-internal.yml defaults to slot a (EAS_ACCOUNT var can still rotate internal builds to spread free-tier quota; public never does). main's app.json stays on slot a (daily-dev default); CI patches per-account at build time. Prereqs to ship public on B: add GitHub secret EXPO_TOKEN_B + generate B's production keystore once via an interactive `eas build` (CI --non-interactive cannot generate a new keystore).",
+  "a": {
+    "owner": "xiaocaishen",
+    "projectId": "8d12bcda-da3e-44ca-b362-6401e6b69ab7",
+    "tokenSecret": "EXPO_TOKEN"
+  },
+  "b": {
+    "owner": "caishen-ai",
+    "projectId": "021aa71b-8569-433e-87ec-7d7ba70cf1b6",
+    "tokenSecret": "EXPO_TOKEN_B"
+  }
+}

@@ -1,0 +1,50 @@
+# marketdata-snapshot-integrity（77）：每日采集窗结束后只读核对**期权快照逐合约覆盖率**
+# （docker exec psql），某票缺行 → 飞书 🔴。判据全在 marketdata-snapshot-integrity.sql（server IT
+# 真测，并与 TS 侧 option-snapshot-coverage.check.ts 逐票钉死）；.sh 零逻辑、零飞书 I/O。
+#
+# 🚨 **本任务是 FR-046「完整性 ERROR 的触达 MUST NOT 并入次日日报」的唯一载体** —— 与
+#    marketdata-sync-report（次晨 09:00 读 sync_run）**完全解耦**，别把两者合并 / 别把本判定
+#    改成往 SyncRun stats 里写一个数就算完（那等于又回到「晚一天 + app 挂了一起没」）。
+#
+# 与另外两个 marketdata 探针的分工（别混）：
+#   · calendar-health   = 交易日历**填充心跳**还新鲜吗（liveness）
+#   · table-health      = 各维度事实表里的数据还在长吗（**维度级**数据年龄）
+#   · snapshot-integrity（本任务）= 昨天那一场，**每一张合约**的快照都到齐了吗（**合约级**完整性）
+#   表级探针抓不到「维度在长但某票少了 48 张合约」，那正是本任务的覆盖面。
+#
+# 调度时点（**别随手改**）：北京 08:00 = ET 前一日 19:00/20:00 ⇒ 谓词里的「当日」正是刚采完的
+#   那一场 us 交易日。往后挪过北京 13:00 会跨进 ET 次日 → 每天整批假红；往前挪会撞上 06:30 起跑的
+#   快照采集窗（约 33 分钟）→ 采到一半就判 = 假红。
+#
+# Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
+#   🚨 `<unit>.sh` 与 `<unit>.sql` **必须同目录兄弟**（脚本默认按 sibling 找谓词）——
+#      拆开放 = 每天一条「谓词文件缺失」假红。install.sh 把两者一起装进 /usr/local/lib/nvy/jobs/。
+# 手动触发验证：systemctl start marketdata-snapshot-integrity.service
+#   → 完整时**静默不推**（见下 --on-success silent）；验证看 journalctl 的 ✅ 摘要行。
+# 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR）。
+#
+# 🚨 **装机时序**：本探针在**首次采集跑出过至少一轮快照之前**判「无对象」（exit 0，不假红），
+#    故可以先装。但它要判出东西需要**两天**数据（分母来自基线日）—— 上线首日 summary 会是「无对象」。
+#
+# 🚨 新增本任务后**必须同步 nvy-watchdog 的 TASKS 清单**（77 = ops/jobs/systemd/nvy-watchdog.service）
+#    —— `--on-success silent` 没有正向 liveness，探针自己停摆时唯一的兜底就是看门狗的 no-show。
+[Unit]
+Description=Marketdata option snapshot per-contract integrity probe (coverage gap -> Feishu)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# PG 连接参数（SYNC_REPORT_PG_CONTAINER / _USER / _DB）—— 与 marketdata-sync-report /
+# marketdata-table-health **共用同一份**：同一个 prod PG，多份配置必漂移。
+EnvironmentFile=-/etc/marketdata-sync-report.env
+# 本任务调参（SNAPSHOT_INTEGRITY_PREDICATE_SQL）—— 可选，一般不需要。
+EnvironmentFile=-/etc/marketdata-snapshot-integrity.env
+# 套通用 wrapper：退出码驱动飞书（零新飞书基建）+ 每跑写心跳供看门狗查 no-show。
+# 🚨 --on-success silent：完整是稳态（每天都完整），成功也推 = 每天一条「一切正常」，训练出
+#    「反正都是 ✅，不看了」⇒ 真缺口来时被淹没。代价 = 没有正向 liveness，由看门狗兜（见上）。
+# --tail 5：谓词只输出单行摘要，5 行足够罩住它 + 故障时 psql 的 stderr。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh marketdata-snapshot-integrity --on-success silent --tail 5 -- /usr/local/lib/nvy/jobs/marketdata-snapshot-integrity.sh

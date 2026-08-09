@@ -1,0 +1,20 @@
+# graphify exclude patterns (gitignore syntax)
+# Used by graphify detect — applies to hook rebuilds + manual /graphify runs
+
+# Nx workspace cache + persistence files (~2MB, pollutes graph w/ source-maps/lock-file/project-graph JSON noise)
+.nx/
+
+# graphify's own output — avoid self-indexing
+graphify-out/
+
+# Ephemeral orchestrator run logs (gitignored, machine-local, ~17% of all nodes —
+# run artifacts, never architecturally meaningful). graphify reads .graphifyignore
+# but NOT .gitignore, so this must be listed explicitly.
+.spec-kit/runs/
+
+# TS build outputs (gitignored compiled artifacts; 2026-06-05 audit found 115
+# manifest entries + 116 AST cache files from out-tsc/*.d.ts polluting the graph.
+# NOTE: ignore only blocks NEW intake — pre-existing graph.json nodes must be
+# pruned once manually (rebuild "preserves" them; same trap as update --force).
+out-tsc/
+dist/

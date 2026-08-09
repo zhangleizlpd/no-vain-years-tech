@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily marketdata sync report timer
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+
+[Timer]
+# 每日 09:00 本地（隔夜 22:00 tick + ~22:30 就位后）；Persistent 补跑宕机期间漏掉的一次。
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

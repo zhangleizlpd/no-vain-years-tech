@@ -1,0 +1,32 @@
+# static-calendar-annual-reminder（77）：每月只读查 L2 静态交易日历是否已覆盖次年，未覆盖且
+# 进入 Q4（10 月起）→ 飞书催更（升级到 12 月 🔴 / 跨年 🔴🔴）。判据 = 读 committed
+# static-calendar.data.ts 的 STATIC_CALENDAR_COVERAGE.to（77 checkout 由 deploy 的 git reset 同步）。
+# reminder.sh 零飞书 I/O（照 cert-expiry 先例：standalone probe 允许 bash 阈值判断）。
+# 背景 / 年更步骤：ops/runbook/scheduled-tasks.md#静态交易日历年更。
+#
+# Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
+# 手动触发验证：systemctl start static-calendar-annual-reminder.service
+#   → 已覆盖次年 / Q1–Q3 时**静默不推**（--on-success silent）；催更期 exit 1 → 飞书。
+#   → 本地多态验证：NVY_STATIC_CALENDAR_FILE=<fixture> NVY_FAKE_TODAY=YYYY-MM-DD \
+#     bash ops/jobs/static-calendar-annual-reminder.sh
+# 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR；缺 webhook → 静默跳过）。
+#
+# 🚨 **不入 nvy-watchdog**：本任务每月一跑（且大半年静默 exit 0），no-show 看门狗的「N 小时无心跳」
+#    窗口对这种稀疏 + 长期静默的调度无意义。漏跑的兜底 = marketdata-calendar-health 探针（它每 4h 探
+#    运行时真失败；本提醒只是提前几个月的催更，误判/漏跑成本极低）。
+[Unit]
+Description=Static trading-calendar annual-update reminder (coverage-aware -> Feishu in Q4)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
+EnvironmentFile=-/etc/nvy-alert.env
+# 本任务调参（NVY_REPO_DIR / NVY_STATIC_CALENDAR_FILE）—— 可选；默认 checkout 路径即 prod，一般不需要。
+EnvironmentFile=-/etc/static-calendar-annual-reminder.env
+# 套通用 wrapper：退出码驱动飞书（零新飞书基建）+ 每跑写心跳。
+# --on-success silent：已覆盖 / 未到期的月份 exit 0 静默，只在催更期（exit 1）推 —— 避免每月刷屏。
+# --tail 5：提醒仅 1–2 行，5 行足够罩住摘要 + 任何 stderr。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh static-calendar-annual-reminder --on-success silent --tail 5 -- /usr/local/lib/nvy/jobs/static-calendar-annual-reminder.sh

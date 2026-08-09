@@ -1,0 +1,136 @@
+name: Deploy Web (Cloudflare Pages)
+
+# Build the Expo Web bundle (markets ON) and deploy to Cloudflare Pages on every
+# `mobile-vX.Y.Z` release tag (cut by release-please for the apps/mobile
+# component, per ADR-0042). app.shintongtech.com is the OWNER's markets-ON
+# self-test surface (open it in a browser, no APK install) — it is NOT a public
+# compliance face.
+#
+# Compliance posture (decided 2026-06-22, supersedes the earlier model):
+#   Public compliant distribution is the APP STORE build ONLY
+#   (release-android-apk.yml, markets OFF, gated on MOBILE_RELEASE_PHASE==public).
+#   The web at app.shintongtech.com is deliberately markets-ON for owner
+#   self-test and is therefore NOT phase-gated — it deploys on every mobile-v*
+#   tag regardless of MOBILE_RELEASE_PHASE. (Earlier deploy-web was the public
+#   markets-OFF surface gated on phase==public; that role is retired — web no
+#   longer carries the public markets-OFF surface.)
+#
+# Why release-tag-gated (NOT every push to main):
+#   Web shares the API contract with the server, and the server only deploys
+#   on its own `server-vX.Y.Z` release tag (build-image.yml → deploy.yml). If
+#   web auto-deployed on every main push, a 三位一体 feature PR (server + web
+#   in one PR per ADR-0024) would ship the web half to prod IMMEDIATELY while
+#   the server half waits for a release → web calls endpoints the deployed
+#   server doesn't have yet → prod runtime errors. Gating web on the
+#   `mobile-v*` tag mirrors the server cadence so both release deliberately.
+#   Ad-hoc manual deploys still available via workflow_dispatch.
+#
+# Why CI-driven (not CF's native Git integration):
+#   The CF Pages project `no-vain-years-mono` is a Direct Upload project
+#   (Git Provider = No). CF cannot auto-build it, and a Direct Upload project
+#   CANNOT be converted to Git integration (CF one-way limitation) — switching
+#   would require a NEW project + re-binding the custom domain app.shintongtech.com.
+#   So we build HERE (controlled toolchain) and push the artifact via wrangler,
+#   which is exactly CF's documented recommendation for Direct Upload + CI/CD.
+#   This replaces the broken/never-wired dashboard Git integration that left the
+#   live site frozen on a stale bundle from #183 onward.
+#
+# Why the build MUST inject EXPO_PUBLIC_API_BASE_URL:
+#   babel-preset-expo statically INLINES `process.env.EXPO_PUBLIC_*` into the JS
+#   bundle at build time (there is no process.env in the browser). A build
+#   without that env bakes the code's `?? 'http://localhost:3000'` fallback →
+#   the deployed site can't reach the backend. The build + verify steps below
+#   make that failure mode impossible to ship silently.
+#
+# Manual prerequisite (one-time, owner-only): a repo secret
+# CLOUDFLARE_API_TOKEN scoped to Account → Cloudflare Pages → Edit.
+# Account ID below is non-secret (visible in dashboard URLs), so it is inlined.
+
+on:
+  push:
+    # release-please cuts mobile-vX.Y.Z when the apps/mobile component is
+    # released (include-component-in-tag, per release-please-config.json).
+    tags: ['mobile-v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize deploys; a newer push supersedes an in-flight one.
+concurrency:
+  group: deploy-web
+  cancel-in-progress: true
+
+jobs:
+  deploy-web:
+    name: Build + deploy Expo Web (markets ON) to CF Pages
+    # No phase gate: app.shintongtech.com is the owner's markets-ON self-test
+    # surface, decoupled from MOBILE_RELEASE_PHASE (which now governs only the
+    # APK internal/public split). Deploys on every mobile-v* tag + dispatch.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Expo Web (markets ON, prod API baked in)
+        env:
+          EXPO_PUBLIC_API_BASE_URL: https://api.shintongtech.com
+          # markets-ON self-test surface (per header). babel-preset-expo inlines
+          # this at build time; FEATURE_MARKETS_ENABLED = (value === 'true').
+          EXPO_PUBLIC_FEATURE_MARKETS: 'true'
+          # OSS public-read base for ideation attachment thumbnails (036 FR-009).
+          # MUST be the ICP-备案'd custom domain bound to the bucket, NOT the raw
+          # OSS endpoint — the 内地-bucket default domain force-downloads images
+          # (Content-Disposition: attachment) instead of rendering inline. Same
+          # value as the server's OSS_PUBLIC_BASE_URL; ideation objects live at
+          # <base>/ideation/<accountId>/... (bucket-level public-read verified).
+          EXPO_PUBLIC_OSS_PUBLIC_BASE_URL: https://img.shintongtech.com
+        # --skip-nx-cache: the build target's nx cache key does NOT include
+        # EXPO_PUBLIC_* env vars, so a cache hit could serve a bundle built with
+        # a different (e.g. localhost) baseURL. Skip cache → always re-run expo
+        # export with the env above. A fresh runner has no Metro transform cache,
+        # so `--clear` (the local-rebuild trap) is unnecessary here.
+        run: pnpm exec nx build mobile --skip-nx-cache
+
+      - name: Verify prod URLs are baked in (guard against localhost / un-inlined env)
+        run: |
+          bundle=$(find apps/mobile/dist/_expo/static/js/web -name 'entry-*.js' | head -1)
+          if grep -q 'http://localhost:3000' "$bundle"; then
+            echo "::error::Bundle baked localhost:3000 — EXPO_PUBLIC_API_BASE_URL failed to inline. Refusing to deploy."
+            exit 1
+          fi
+          if ! grep -q 'https://api.shintongtech.com' "$bundle"; then
+            echo "::error::Bundle missing https://api.shintongtech.com — refusing to deploy a misconfigured build."
+            exit 1
+          fi
+          if ! grep -q 'https://img.shintongtech.com' "$bundle"; then
+            echo "::error::Bundle missing https://img.shintongtech.com — EXPO_PUBLIC_OSS_PUBLIC_BASE_URL failed to inline (ideation thumbnails would break). Refusing to deploy."
+            exit 1
+          fi
+          echo "✅ Bundle points at https://api.shintongtech.com + https://img.shintongtech.com"
+
+      - name: Deploy to Cloudflare Pages (production branch → app.shintongtech.com)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # CDN 账号 ID → 走 repo secret（per docs/conventions/information-boundary.md）
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Plain `npx wrangler`, NOT cloudflare/wrangler-action: in a pnpm
+        # workspace the action auto-installs wrangler via `pnpm add` at the
+        # repo root → ERR_PNPM_ADDING_TO_ROOT (pnpm refuses root adds without
+        # -w). npx fetches wrangler into npm's own cache, sidestepping pnpm
+        # entirely. wrangler reads CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+        # from env for auth (no `wrangler login` / OAuth needed).
+        run: npx --yes wrangler@4 pages deploy apps/mobile/dist --project-name=no-vain-years-mono --branch=main

@@ -1,0 +1,95 @@
+# 77 (`mbw-staging`) 侧 —— 访客隧道 wg2。
+#
+# 🚨 **目标文件名必须正好是 `/etc/wireguard/wg2.conf`（0600 root:root）**。
+#    `wg-quick@wg2` 的接口名是**从文件名推出来的** —— 照搬本文件的名字存成
+#    `wg2-77.conf` 会让 `systemctl start wg-quick@wg2` 直接报
+#    `Unable to find configuration file`。名字里的 `-77` 只是仓库内用来区分
+#    「77 侧 / 访客侧」的，**不能带到主机上**。
+#
+# 填两处，都标了 `__FILL_`；填完用下面这条自证没漏（**应无输出**）：
+#
+#    grep -nE '^[A-Za-z0-9_]+ *= *__FILL_' /etc/wireguard/wg2.conf
+#
+# ⚠️ 只匹配**赋值行**是刻意的 —— 本文件的注释里也出现 `__FILL_` 字样，
+#    裸 `grep '__FILL_'` 会永远有输出，那种「恒报警」的检查等于没有检查。
+#
+# 🔴 **动 77 的 WireGuard 前先确认改的是哪一条**，77 上现在有三条，接口名与网段刻意错开：
+#
+#   | 接口 | 网段          | 对端                    | 77 的角色      |
+#   |------|---------------|-------------------------|----------------|
+#   | wg0  | 10.88.0.0/24  | 62 `mbw-indexer`        | 客户端（拨出） |
+#   | wg1  | 10.89.0.0/24  | 港机 `mbw-futu-hk`      | 客户端（拨出） |
+#   | wg2  | 10.90.0.0/24  | 访客（本文件）          | **服务端（被连）** |
+#
+#   接错会打断 code-index 接地检索（wg0）或整条行情管道（wg1）。
+#
+# 🚨 wg2 是 77 上**第一条需要监听入站的**隧道 —— wg0 / wg1 都是 77 主动拨出，
+#    77 至今没开过 WireGuard 入站端口。所以本条要新开安全组，见 runbook 步骤 1。
+#    端口取 51822 而不是 51820：后者是 62 与港机的监听端口，虽然方向不同不会真冲突，
+#    但「谁在哪个端口上听」必须一眼分得清，排障时省一轮困惑。
+
+[Interface]
+Address = 10.90.0.1/24
+ListenPort = 51822
+PrivateKey = __FILL_wg2_key__
+
+# 🚨 **只放 8811，其余一律 REJECT。没有这两条，「访客只能到 10.90.0.1」是假的。**
+#
+# WireGuard 把解密后的包**直接交给本机 IP 栈**，而**安全组管不到隧道内流量**
+# （B↔C 那条隧道正是靠这一点绕过港机安全组的）。⇒ 77 上凡是绑 0.0.0.0 的服务，
+# 在 10.90.0.1 上访客都打得到：**sshd 的 22**、prod nginx 的 **80 / 443**……
+# 「AllowedIPs 只有 10.90.0.1/32」限制的是**地址**，不是**端口**。
+#
+# 用 REJECT 而不是 DROP：访客打错端口时立刻拿到 connection refused，而不是卡到超时
+# —— 这个面上没有「不让对方知道端口存不存在」的需求（他本来就该知道只有一个端口），
+# 可诊断性更值钱。
+#
+# 🚨 **必须两条链都拦，只拦 INPUT 挡不住 docker 发布的端口。**
+#    2026-08-04 从访客机实测：只加 INPUT 规则时 22 被挡住了（sshd 绑宿主 → 走 INPUT），
+#    但 **80 / 443 照样通** —— prod nginx 是 bridge 容器，docker 发布端口的流量走
+#    `nat/PREROUTING` DNAT → **FORWARD**，**根本不经过 INPUT**。
+#    `DOCKER-USER` 是 docker 官方留给用户的钩子，在它自己的 FORWARD 规则之前被查。
+#    ⇒ 本服务是 `network_mode: host`（走 INPUT，不走 FORWARD），所以 DOCKER-USER 这条
+#      只会挡住 wg2 → 各 bridge 容器，不会误伤访客要用的 8811。
+#
+# ⚠️ 只作用于 wg2（%i），不碰 wg0 / wg1 / eth0，也不动 77 既有的任何规则。
+# ⚠️ ICMP 也在 REJECT 面内 ⇒ **访客 ping 10.90.0.1 不通是预期的**，别当隧道故障。
+PostUp = iptables -I INPUT -i %i -p tcp --dport 8811 -j ACCEPT; iptables -A INPUT -i %i -j REJECT; iptables -I DOCKER-USER -i %i -j REJECT
+PostDown = iptables -D INPUT -i %i -p tcp --dport 8811 -j ACCEPT; iptables -D INPUT -i %i -j REJECT; iptables -D DOCKER-USER -i %i -j REJECT
+
+# ── Peer 段：一个 peer 一段，想加几个加几个 ─────────────────────────────────
+#
+# 🚨 **每个 peer 的 AllowedIPs 必须互不相同**。WireGuard 用 AllowedIPs 做
+#    cryptokey routing —— 两个 peer 都写 10.90.0.2/32 时，发往该地址的包只会
+#    投给其中一个（后配置的赢），另一个**看着连上了却收不到回包**。这类故障
+#    不报错、只表现为「时通时不通」，极难查。分配表就写在这里，加 peer 前先看：
+#
+#      10.90.0.1  77 自己（本机）
+#      10.90.0.2  访客 1 = 运维 Mac（自测机，配 GUEST1_TOKEN）
+#      10.90.0.3  访客 2（配 GUEST2_TOKEN）
+#
+# 吊销 = 删掉对应那一段 + `systemctl restart wg-quick@wg2`。不牵连 wg0 / wg1，
+# 也不用碰 FUTU_SHIM_TOKEN（那个是「永不轮换」的，动它要连 prod 一起改）。
+
+# ── 访客 1 ──
+[Peer]
+# 访客自己 `wg genkey | tee guest.key | wg pubkey` 生成，把**公钥**发你。
+# 公钥不是秘密，明文传没问题；私钥永远留在他机器上。
+PublicKey = __FILL_GUEST1_PUBLIC_KEY__
+# /32：他只有这一个地址，且**只能到 10.90.0.1**（见访客侧 AllowedIPs）。
+# 他看不到 10.89.0.0/24，更够不到港机 —— 隧道拓扑对他不可见。
+AllowedIPs = 10.90.0.2/32
+
+# ── 访客 2 及以后：照上面那段复制，**换地址**（先看上面的分配表）──────────
+#
+# ⚠️ 这里原先是一段「运维 Mac 自测用、占 10.90.0.3」的注释预留。它是个陷阱：运维 Mac
+#    实际就是访客 1（坐 10.90.0.2），而 10.90.0.3 已分给访客 2 —— 谁把这段取消注释就
+#    造出两个 peer 抢同一地址，正是上面警告的 cryptokey routing 冲突（不报错，只表现为
+#    「时通时不通」）。2026-08-04 已从 77 的活配置里清掉，样例同步。
+#
+# 加访客的完整流程见 runbook「步骤 7」——**77 上那三步有顺序要求**（先渲染 env 再动 wg2，
+# 反了 nginx 会起不来）。
+#
+# [Peer]
+# PublicKey = <他发回的公钥>
+# AllowedIPs = 10.90.0.3/32

@@ -1,0 +1,13 @@
+[Unit]
+Description=Trading calendar health probe timer (every 4h)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+
+[Timer]
+# 每 4h（00/04/08/12/16/20 本地）。频率论证：日历填充 @21:00 → 谓词 26h 阈值最早于 D+1 23:00 翻红
+# → 00:00 那跑即告警 = 首次失败后 ~2h 内（SC-003 要求 24h 内，余量充足）。
+# Persistent 补跑宕机期间漏掉的一次（探针本身停摆的兜底另见 nvy-watchdog）。
+OnCalendar=*-*-* 00/4:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

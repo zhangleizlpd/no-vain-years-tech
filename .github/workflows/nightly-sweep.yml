@@ -1,0 +1,83 @@
+name: Nightly Sweep
+
+# Per ADR-0040 multi-layer test gate (PR-T3 / 门禁层 / 兜底扫雷).
+# Daily full-monorepo sweep with `--skip-nx-cache` to catch:
+#   - nx cache 假绿 (cache hash collision / stale cache surviving genuine
+#     break) — empirically demonstrated in PR #79 orchestrator lint regression
+#   - environment drift (Docker image / Node version / pnpm registry / etc.)
+#   - cross-project breakage missed by `nx affected` due to undeclared deps
+#
+# Runs `nx run-many --all --skip-nx-cache` (NOT affected — explicitly
+# bypasses both caching and incremental selection). Failure auto-creates
+# a GitHub issue tagged `bug` linking to the failed run.
+
+on:
+  schedule:
+    # 19:00 UTC = 03:00 Beijing (off-peak; gives 6h before next active dev day)
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sweep:
+    name: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        working-directory: apps/server
+        run: npx prisma generate
+
+      # runtime-smoke 跑 Playwright e2e，需先装 chromium，否则 browserType.launch
+      # 报 "Executable doesn't exist at .cache/ms-playwright/chromium_headless_shell"。
+      # 与 pr-validation.yml / e2e-real-backend.yml 对齐（此前漏装，nightly 长期红）。
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Full Pipeline (No Cache)
+        run: pnpm exec nx run-many -t lint typecheck test build runtime-smoke --all --skip-nx-cache
+
+      # markets-OFF 合规回归（方向 B 门控，06-14-markets-feature-gate-mechanism.md）。
+      # 单列：它是唯一一个 markets-OFF bundle 的套件（独立 dev-server + 端口 4174），
+      # 与上面 markets-ON 的 runtime-smoke 互斥，run-many 同批会撞 EXPO_PUBLIC_FEATURE_MARKETS。
+      # 放 nightly 兜底层（非 per-PR）：日频可吸收 expo start 冷启，合规破窗 24h 内必报。
+      - name: markets-OFF compliance regression
+        run: pnpm exec nx run mobile:e2e-public --skip-nx-cache
+
+      - name: Create Alert Issue on Failure
+        if: failure()
+        # 同名 open issue 已存在就不再开新的（防连红堆积；同 e2e-real-backend.yml / nightly-perf.yml，
+        # 2026-08-03 一次清掉 48 张历史堆积的教训）。
+        run: |
+          open_count=$(gh issue list --state open --limit 100 --json title \
+            --jq '[.[] | select(.title == "🚨 Nightly Sweep Failed: Environment Drift Detected")] | length')
+          if [ "$open_count" = "0" ]; then
+            gh issue create \
+              --title "🚨 Nightly Sweep Failed: Environment Drift Detected" \
+              --body "Nightly --skip-nx-cache run RED. Possible causes: nx cache shadowing real break / env drift / undeclared cross-project dep. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --label "bug"
+          else
+            echo "skip: 已有 $open_count 张同名 open issue（防堆积，同一断裂一张票）"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

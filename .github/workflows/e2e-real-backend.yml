@@ -1,0 +1,93 @@
+name: E2E Real Backend Smoke
+
+# 真后端 smoke (per docs/private/plans/2026-05/05-29-e2e-backend-boundary-hardening.md P2,
+# layer「真后端 smoke」). The bulk Playwright suite (pr-validation runtime-smoke)
+# is hermetic/stubbed; this ONE journey stands up a real throwaway backend
+# (testcontainers PG+Redis + the swc-built server on :3000) and proves the
+# client's cold-boot session-bootstrap chain works against it (real refresh +
+# GET /me + AuthGate routing). Heavy (containers + server build + browser), so
+# it runs nightly as a SOFT signal — failure opens a GitHub issue, does NOT
+# block merges (mirrors nightly-perf.yml; keeps fast PR checks <10min).
+
+on:
+  schedule:
+    # 21:00 UTC = 05:00 Beijing. +1h from nightly-perf (20:00) / +2h from
+    # nightly-sweep (19:00) so the three don't contend for runners.
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  real-backend-smoke:
+    name: real-backend-smoke
+    runs-on: ubuntu-latest
+    env:
+      RUN_REAL_BACKEND_SMOKE: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Server swc build typechecks (skipTypeCheck:false) → needs the generated
+      # Prisma client present before `nx run mobile:e2e-real-backend` cascades
+      # into server:build.
+      - name: Generate Prisma client
+        working-directory: apps/server
+        run: npx prisma generate
+
+      # The smoke drives a real Chromium against the static web build (same as
+      # runtime-smoke). --with-deps adds the Linux system libs the runner needs.
+      - name: Install Playwright Browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      # dependsOn build + server:build, then runs the orchestrator
+      # (e2e/_support/real-backend-runner.ts): testcontainers PG+Redis →
+      # prisma migrate deploy → spawn server on :3000 → programmatic login →
+      # Playwright. GitHub ubuntu runners ship Docker, so testcontainers works.
+      - name: Run real-backend smoke (browser cold-boot)
+        run: pnpm exec nx run mobile:e2e-real-backend --skip-nx-cache
+
+      # Per-feature contract smoke (node-level, no browser): the generated
+      # @nvy/api-client drives the real server (testcontainers) per feature's
+      # happy-path → asserts contract alignment + real persistence. Independent
+      # signal from the browser smoke above → if: always() so it runs even if
+      # that step failed. Shares :3000, but the prior step's runner tears down
+      # (kills server + stops containers) before this boots.
+      - name: Run contract smoke (per-feature client↔server↔DB)
+        if: always()
+        run: pnpm exec nx run mobile:contract-smoke --skip-nx-cache
+
+      - name: Create Issue on Smoke Failure
+        if: failure()
+        # 同名 open issue 已存在就不再开新的 —— 连红 N 天 = N 张同名 issue（2026-07/08 实证堆了
+        # 26+ 张，信号彻底成噪声）。同一断裂一张票，修好 close 后再红才开新的。
+        run: |
+          open_count=$(gh issue list --state open --limit 100 --json title \
+            --jq '[.[] | select(.title == "🚨 Nightly Real-Backend Suite Failed")] | length')
+          if [ "$open_count" = "0" ]; then
+            gh issue create \
+              --title "🚨 Nightly Real-Backend Suite Failed" \
+              --body "RUN_REAL_BACKEND_SMOKE=true nightly run RED — the browser cold-boot smoke (real refresh + GET /me + AuthGate) and/or a per-feature contract smoke (generated client → real server → real DB) broke against a real backend. Check which step is red: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --label "bug"
+          else
+            echo "skip: 已有 $open_count 张同名 open issue（防堆积，同一断裂一张票）"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

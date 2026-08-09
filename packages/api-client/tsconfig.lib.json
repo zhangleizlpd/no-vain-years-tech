@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/tsconfig.lib.tsbuildinfo",
+    "lib": ["es2022", "dom"],
+    "types": ["node"],
+    "declaration": true,
+    "emitDeclarationOnly": false,
+    "noEmitOnError": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["eslint.config.*", "openapi-ts.config.ts"]
+}

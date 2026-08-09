@@ -1,0 +1,272 @@
+# Production compose for M1 A-Tight v2 (per ADR-0026) — single SWAS 2c4g
+# hosting NestJS app + PostgreSQL + Redis + Nginx. Replaces meta-server
+# docker-compose.tight.yml (project name `mbw-tight`) when mono cuts over.
+#
+# Usage on the production SWAS:
+#   docker compose -f docker-compose.tight.yml --env-file .env.production up -d
+#   docker compose -f docker-compose.tight.yml --env-file .env.production ps
+#   docker compose -f docker-compose.tight.yml --env-file .env.production logs -f app
+#
+# Local dry-run with a self-built image:
+#   docker build -t nvy-server:dev -f apps/server/Dockerfile .
+#   MBW_APP_IMAGE=nvy-server:dev \
+#     docker compose -f docker-compose.tight.yml --env-file .env.production up -d
+#
+# Memory budget on 2c4g (per ADR-0026 § A-Tight v2 继承 内存预算):
+#   OS + Docker daemon                ~280 MB
+#   Node (NestJS, no -Xmx cap)        ~500MB-1GB
+#   PostgreSQL (shared_buffers=256)   ~350 MB
+#   Redis (maxmemory=256mb)           ~280 MB
+#   Nginx                             ~50  MB
+#   ------------------------------------------
+#   committed                         ~1.46 GB-1.96 GB (vs meta 2.86 GB)
+#   free for page cache + spike       ~2.04-2.54 GB (vs meta 1.14 GB)
+#
+# 不挂数据盘 (per ADR-0026): PG/Redis data 落 SWAS 系统盘 (named volume),
+# 保护机制 = pg_dump → mbw-oss daily 备份。
+
+name: nvy-tight
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Publish ONLY to host loopback so admin tooling (e.g. TablePlus) can reach
+    # PG over an SSH tunnel at a STABLE address. Without this the tunnel must
+    # target the container's docker-network IP (172.18.0.x), which Docker
+    # reassigns on every restart → saved connections silently break. The
+    # 127.0.0.1 prefix binds loopback only (NOT 0.0.0.0), so PG stays
+    # unreachable from the public IP; the sole path in is SSH onto the host then
+    # localhost:5432. App still talks to PG via the docker network (service name
+    # "postgres"). Auth is unchanged: a tunnelled connection arrives from the
+    # docker gateway, not the container's loopback, so pg_hba still enforces the
+    # scram-sha-256 password (the `127.0.0.1/32 trust` line does NOT match it).
+    # ⚠️ Must stay exactly "127.0.0.1:5432:5432" — dropping the prefix binds
+    # 0.0.0.0 and exposes PG on the public internet.
+    ports:
+      - '127.0.0.1:5432:5432'
+    environment:
+      POSTGRES_DB: mbw
+      POSTGRES_USER: ${DB_USERNAME:-mbw}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    command:
+      # Single 4GB SWAS shared with Node + Redis + nginx + OS,
+      # can't afford 384MB shared_buffers.
+      - 'postgres'
+      - '-c'
+      - 'shared_buffers=256MB'
+      - '-c'
+      - 'work_mem=4MB'
+      - '-c'
+      - 'max_connections=50'
+    volumes:
+      - nvy-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-mbw} -d mbw']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # No public port — accessible via docker network only.
+    command:
+      - 'redis-server'
+      - '--maxmemory'
+      - '256mb'
+      # noeviction: Redis 是 bullmq 执行队列, job 不可被静默驱逐 (017 FR-S12, ADR-0049);
+      # 内存有界靠全键 TTL (quote 缓存 EX / 锁 PX / auth setex+expire) + job removeOnComplete/Fail。
+      - '--maxmemory-policy'
+      - 'noeviction'
+      - '--protected-mode'
+      - 'yes'
+      - '--requirepass'
+      - '${REDIS_PASSWORD}'
+      - '--appendonly'
+      - 'yes'
+      # everysec: 宕机丢失窗口 ≤1s (执行队列持久化兜底, 017 FR-S12)。
+      - '--appendfsync'
+      - 'everysec'
+    volumes:
+      - nvy-redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD}', '--no-auth-warning', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  app:
+    # ⏱ 优雅关停宽限期（#824）。默认只有 10s，而本应用关停要等 BullMQ Worker 把 in-flight
+    # job 跑完（单个关停点 10s × 单 provider 内串行 2 次 = 20s 最坏，见 apps/server/src/main.ts
+    # 的 enableShutdownHooks 注释）—— 用默认值等于「看起来在优雅关停，实际 10s 就被 SIGKILL」。
+    # 🚨 这是**上限不是固定等待**：容器提前退出 docker 立刻继续，给足不产生日常部署代价。
+    # deploy 走 `up -d --force-recreate app`，该路径会 SIGTERM 旧容器并按本值等待。
+    stop_grace_period: 40s
+    # Default registry is Aliyun ACR (cn-shanghai) intranet pull ~5s/180MB.
+    # 复用 meta-server image location per ADR-0026 § D5 drop-in image
+    # replacement (mbw_xcs/mbw-app namespace + repo 全复用,mono push 同 repo).
+    # Override MBW_APP_IMAGE for local dry-run with self-built image.
+    # 镜像仓地址含实例 ID → 属仓外解析层（per docs/conventions/information-boundary.md）。
+    # deploy.yml 从 secrets.ACR_REGISTRY 拼出 NVY_ACR_REPO 并 export；主机侧手工跑
+    # (rollback-prod.sh) 从 /etc/nvy-fleet.env 取。`:-` 默认值是惰性求值 —— 给了
+    # MBW_APP_IMAGE 时里面的 `:?` 不触发，本地自建镜像干跑不受影响（2026-08-08 四场景实测）。
+    # ⚠️ MBW_VERSION 这个 token 必须留在本行：它在整个 compose 里只出现于此，
+    #    抹掉会让 check-env-sync Check H 判定「.env.production 声明了却 compose 零引用」。
+    image: ${MBW_APP_IMAGE:-${NVY_ACR_REPO:?set NVY_ACR_REPO (. /etc/nvy-fleet.env) 或显式给 MBW_APP_IMAGE}:${MBW_VERSION:-latest}}
+    restart: unless-stopped
+    # No public port — nginx talks to app:3000 via docker network.
+    environment:
+      # App (per apps/server/src/config/app.config.ts)
+      NODE_ENV: production
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      # Datastore — service names resolve via docker network.
+      DATABASE_URL: 'postgresql://${DB_USERNAME:-mbw}:${DB_PASSWORD}@postgres:5432/mbw'
+      REDIS_URL: 'redis://default:${REDIS_PASSWORD}@redis:6379'
+      # Auth (per apps/server/src/config/auth.config.ts)
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET}
+      SMS_CODE_HMAC_SECRET: ${SMS_CODE_HMAC_SECRET}
+      # SMS gateway (per apps/server/src/config/sms.config.ts; ADR-0013)
+      # 'mock' (default) | 'aliyun'. Aliyun requires 4 keys below.
+      SMS_GATEWAY: ${SMS_GATEWAY:-mock}
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID:-}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-}
+      ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
+      ALIYUN_SMS_TEMPLATE_CODE: ${ALIYUN_SMS_TEMPLATE_CODE:-}
+      # 注销 / 撤销码的独立模板 (004 FR-S05/S08; auth.module.ts 的 templateOverrides)。
+      # 可选: 空串经 sms.config.ts `blankAsAbsent` 折叠成「未配」→ AliyunSmsGateway 回退登录码
+      # 模板 (故 :-空 兜底安全; 不折叠的话 .min(1) 会让 SMS_GATEWAY=aliyun 的 prod 崩 boot)。
+      # 漏映射则容器读不到 → 即便在 .env.production 里填了值也被静默吞掉, 注销/撤销短信继续
+      #  用登录码模板文案发出 (不崩 boot, 同 MARKETDATA_PROVIDER 静默陷阱; 2026-08-02 补映射前即此态)。
+      ALIYUN_SMS_TEMPLATE_CODE_DELETE_ACCOUNT: ${ALIYUN_SMS_TEMPLATE_CODE_DELETE_ACCOUNT:-}
+      ALIYUN_SMS_TEMPLATE_CODE_CANCEL_DELETION: ${ALIYUN_SMS_TEMPLATE_CODE_CANCEL_DELETION:-}
+      # WECHAT_GATEWAY / WECHAT_APP_ID / WECHAT_APP_SECRET (010) **蓄意不映射** —— 别"顺手补上"。
+      # wechat.config.ts 的 union 是 'mock' (default) | 'real', 但 real 适配器属 Phase 2 (T029)
+      # 尚未实装: auth.module.ts 的 WECHAT_AUTH factory 见到 kind==='real' 直接 throw。
+      # ⇒ 映射进来只会造出「在 .env.production 填 real → prod boot crash」的脚枪, 零收益。
+      # 与上面几处"漏映射=静默吞"的情形**不同类**: 这里不映射反而是唯一安全态 (容器恒 mock)。
+      # Phase 2 T029 落地时连同 .env.production 值一起补映射。
+      # OSS 对象存储 (009 头像/背景图上传; per apps/server/src/config/oss.config.ts; ADR-0045)。
+      # all-or-nothing gate: 4 个凭证全空 → kind='unconfigured' (boot 绿, 上传功能关);
+      # 任一非空 → region/bucket/AK/secret 4 个全必填, partial 配置 boot crash。:-空 兜底默认 unconfigured。
+      # 漏映射则容器读不到 → prod 永远 unconfigured = 上传不可用 (2026-06-19 实测: 009 OSS 从未接进 prod 即缺此映射,
+      #  同 MARKETDATA_TICK / 029 chat key 的「env 在 .env 但未映射」踩坑)。账号 B mbw-server-xt key (oss:PutObject)。
+      # OSS_PUBLIC_BASE_URL = 自定义域名 img.shintongtech.com (备案 + put-cname 绑定后启用); 不设则回退默认域名
+      #  (内地 bucket 强制下载 Content-Disposition: attachment, 浏览器 <img> 内联坏)。非 gate 项, 可单独留空。
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_PUBLIC_BASE_URL: ${OSS_PUBLIC_BASE_URL:-}
+      # Marketdata vendor (per apps/server/src/config/marketdata.config.ts; 015/016)
+      # 'mock' (default) | 'live'. live 必填 LIXINGER_TOKEN (.env.production);
+      # base URL (lixinger/eastmoney/clist) 有 schema .default(),无需在此映射。
+      # 数字型 sync tuning (MARKETDATA_SYNC_*) 不映射: 空串会让 z.coerce.number 崩 boot,且有代码默认。
+      # 但 MARKETDATA_TICK_ENABLED 是 enum('true'|'false')+default, :-false 兜底永不空串 → 必须映射
+      # (017 灰度开关; 漏映射则容器读不到 env → tick 永远短路在 default false, prod 开不起灰度,
+      #  2026-06-04 prod 实测踩坑: 改 .env 后 tick 仍不跑, 根因即此处缺映射)。
+      MARKETDATA_PROVIDER: ${MARKETDATA_PROVIDER:-mock}
+      MARKETDATA_TICK_ENABLED: ${MARKETDATA_TICK_ENABLED:-false}
+      LIXINGER_TOKEN: ${LIXINGER_TOKEN:-}
+      # 富途 shim (港机 OpenD 薄壳, 经 B↔C WireGuard 隧道; sellput-viz Phase 1)。live 下
+      # 承担 US 交易日历 L1。两者无 schema .default() → live 必填, :- 兜底只保 mock 下不空串崩。
+      # 真值同属一个 SOPS 单元 (照 CODE_INDEX_URL 先例) → 由 `sops exec-env` 注入 shell env,
+      # 漏映射则容器读不到 → live boot 直接 crash (无静默降级路径, 这是刻意的)。
+      FUTU_SHIM_URL: ${FUTU_SHIM_URL:-}
+      FUTU_SHIM_TOKEN: ${FUTU_SHIM_TOKEN:-}
+      # Chat ctx LLM keys (per apps/server/src/config/{deepseek,minimax}.config.ts; 027/029)。
+      # 两者 boot 时 Zod 要求非空 (.parse min(1)),缺映射 → 容器读不到 .env.production 的值 →
+      # boot crash (同 MARKETDATA_TICK_ENABLED 2026-06-04 踩坑根因:env 在 .env 但未映射)。
+      # base URL 有 schema default 无需映射;国际站 MiniMax 账号才需额外映射 MINIMAX_BASE_URL。
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY}
+      # Chat 联网搜索 (IQS 阿里云智能搜索; per apps/server/src/config/iqs.config.ts; 030)。
+      # discriminated union: 'mock' (default) | 'aliyun'. :-mock 兜底永不空串 → 镜像
+      # SMS_GATEWAY/JPUSH_GATEWAY 范式;prod 默认 mock 安全启动 (无 key 不崩),阿里云 IQS
+      # 报价/配额就绪后只需填 .env.production 的 IQS_PROVIDER=aliyun + IQS_API_KEY (无需再改 compose)。
+      # 漏映射则容器读不到 → aliyun 模式被静默吞成 mock (同 MARKETDATA_PROVIDER 静默陷阱)。
+      # base URL 有 schema default (IQS_BASE_URL) 无需映射。
+      IQS_PROVIDER: ${IQS_PROVIDER:-mock}
+      IQS_API_KEY: ${IQS_API_KEY:-}
+      # code-index grounding client (per apps/server/src/config/codeindex.config.ts; 034)。
+      # discriminated union: 'fake' (default) | 'http'. :-fake 兜底永不空串 → 镜像 IQS 范式;
+      # prod 默认 fake 安全启动 (无 url/token 不崩)。翻真检索 (services/code-index, 62↔77 经
+      # WireGuard 隧道) 只需填 .env.production 的 CODE_INDEX_PROVIDER=http + url/token (无需改 compose)。
+      # 漏映射则容器读不到 → http 模式被静默吞成 fake (同 MARKETDATA_PROVIDER 静默陷阱)。
+      CODE_INDEX_PROVIDER: ${CODE_INDEX_PROVIDER:-fake}
+      CODE_INDEX_URL: ${CODE_INDEX_URL:-}
+      CODE_INDEX_SERVICE_TOKEN: ${CODE_INDEX_SERVICE_TOKEN:-}
+      # ASR 语音转写 (DashScope qwen3-asr realtime; per apps/server/src/config/asr.config.ts; 035)。
+      # discriminated union: 'fake' (default) | 'dashscope'. :-fake 兜底永不空串 → 镜像 IQS 范式;
+      # prod 已翻 dashscope (2026-06-28; .env.production ASR_PROVIDER=dashscope + 账号 A
+      # DASHSCOPE_API_KEY ∈ secrets.enc.env, 北京区)。:-fake 兜底仅 dev/test 无 key 时安全启动。
+      # 漏映射则容器读不到 → dashscope 模式被静默吞成 fake (同 MARKETDATA_PROVIDER 静默陷阱)。
+      # key 经 Authorization: Bearer 注入,永不入日志/不下发客户端 (FR-014)。
+      ASR_PROVIDER: ${ASR_PROVIDER:-fake}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      # Push (JPush 极光推送; per apps/server/src/config/jpush.config.ts; 022)。
+      # discriminated union: 'mock' (default) | 'jpush'. :-mock 兜底永不空串 →
+      # 镜像 SMS_GATEWAY 范式;翻真推送只需填 .env.production 三件套 (无需再改 compose)。
+      # 漏映射则容器读不到 → 推送永远静默 mock (不崩, 同 MARKETDATA_PROVIDER 静默陷阱)。
+      JPUSH_GATEWAY: ${JPUSH_GATEWAY:-mock}
+      JPUSH_APP_KEY: ${JPUSH_APP_KEY:-}
+      JPUSH_MASTER_SECRET: ${JPUSH_MASTER_SECRET:-}
+      # agent-bridge 通道层 worker token (per apps/server/src/config/agent-bridge.config.ts; 子plan1 P1.2)。
+      # 远程常驻 OpenClaw worker 出站轮询 /agent-queue/* 的长期凭证 (≥256-bit, SOPS 注入)。
+      # nullable: 未设 → null → WorkerAuthGuard fail-closed 拒一切 (镜像 code-index token 范式),
+      # 故 :-空串兜底安全 (空 → config 视作 null, 不崩 boot)。值经 secrets.enc.env sops 注入。
+      # 漏映射则容器读不到 → token 恒空 → 队列端点永远 401 (同 MARKETDATA_PROVIDER 静默陷阱)。
+      AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Per apps/server/Dockerfile HEALTHCHECK + ADR-0040 liveness endpoint.
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://127.0.0.1:3000/healthz/live',
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      # Reverse proxy config + Let's Encrypt cert dirs on SWAS host.
+      # User-side prep: copy meta-server's ops/host/nginx/conf.d/ + certbot
+      # /etc/letsencrypt/ to mono SWAS path (per ADR-0026 § A-Tight v2 继承
+      # Nginx 复用 meta nginx 配 + 证书).
+      # 🚨 bind 源路径 2026-08-07 从 ./ops/nginx/conf.d 改到这里（ops/ 重排，宿主机级配置
+      #    归 ops/host/）。docker 对不存在的 bind 源会**自动建空目录而不报错** ⇒ 路径写错
+      #    的表现是「nginx 起来了但一个 server block 都没有」，不是启动失败。改这行必须跟
+      #    目录移动同一个 commit，且下次 nginx 容器重建时才生效（deploy.yml 只 recreate app）。
+      - ./ops/host/nginx/conf.d:/etc/nginx/conf.d:ro
+      - nvy-letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost/healthz']
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  nvy-pgdata:
+  nvy-redisdata:
+  nvy-letsencrypt:
