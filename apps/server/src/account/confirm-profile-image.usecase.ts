@@ -73,6 +73,14 @@ export class ConfirmProfileImageUseCase {
 
     // HEAD 校验 (plan D3): 对象必须真存在 + content-type 合白名单, 否则拒不落库。
     const probed = await this.probe.head(publicUrl);
+    // 🚨 「查不出来」必须先于「不存在」判 —— 否则 OSS 侧一次 5xx / 网络抖动 / 桶被停用
+    // (欠费停用返回 403 而非 404) 都会变成 4xx「你上传的对象不存在」,对一个上传成功的
+    // 用户说谎,而且把可重试的上游故障报成了客户端错误。
+    if (probed.indeterminate) {
+      throw new ServiceUnavailableException(
+        'OBJECT_PROBE_UNAVAILABLE: cannot verify the uploaded object right now',
+      );
+    }
     if (!probed.exists) {
       throw new BadRequestException('OBJECT_NOT_FOUND: uploaded object does not exist');
     }
