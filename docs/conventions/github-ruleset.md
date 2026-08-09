@@ -26,7 +26,9 @@ gh api repos/<owner>/<repo>/rulesets | jq -r '.[] | select(.target=="branch") | 
 
 ## solo dev 期豁免（引第二人前必收紧）
 
-solo dev 期 `pull_request.required_approving_review_count=0` + `require_code_owner_review=false` + `require_last_push_approval=false` + `required_review_thread_resolution=false`；引入第二人协作 / 内测前一并收紧 + 启用 CODEOWNERS。
+solo dev 期 `require_code_owner_review=false` + `require_last_push_approval=false` + `required_review_thread_resolution=false`；引入第二人协作 / 内测前一并收紧 + 启用 CODEOWNERS。
+
+**`required_approving_review_count` 不在豁免之列，靠 machine account 支撑**：GitHub 不允许自批自己的 PR，所以只要 agent 用维护者本人的身份开 PR，这个值就只能是 0（否则死锁）。改由 machine account 开 PR 之后才能设 ≥ 1，让「人类批准」成为 solo dev 也有的真实卡点。两者**强绑定** —— 收紧这个值之前，必须先确认 agent 侧走的是 `gh-bot`（见 [git-workflow.md](git-workflow.md) §身份归属）。
 
 ## CI 改名硬约束
 
