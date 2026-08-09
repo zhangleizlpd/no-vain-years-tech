@@ -2,8 +2,8 @@
 
 本文原是全机队的 **代号 → 公网 IP → ECS 实例 ID → 阿里云账号 UID → VPC/SG ID** 主映射表。仓已公开 → 整篇移出：它的内容本身即情报，不是靠脱敏个别字段就能公开的。
 
-- **本体**：`docs/private/runbook/host-inventory.md`（本机私有，未公开）
-- **冻结副本**：私有归档仓 `zhangleizlpd/no-vain-years` @ tag `archive/pre-public-split`
+- **本体**：`docs/private/runbook/host-inventory.md` —— 仓内那条路径如今是 symlink，真身在仓外 `~/nvy-private/`（本机私有，未公开）
+- **备份**：`~/nvy-private` 是本地 git 仓（误删 `git checkout` 即回），每日把 `git bundle` 经 age 加密推 prod 主机存异地副本
 - **判据**：[`docs/conventions/information-boundary.md`](../../docs/conventions/information-boundary.md) §「私有散文」
 
 ## 公开侧还剩什么

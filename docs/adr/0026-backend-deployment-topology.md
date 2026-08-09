@@ -22,7 +22,7 @@ sunset_trigger: |
 > - **D4 Secrets 注入**：`--env-file` 裸注 → **SOPS（`sops exec-env` + age 私钥）**（已由 SOPS adoption 取代；`.env.production` 仅剩非密配置）。
 > - **数据保护 / 周边**：备份 `pg_dump → mbw-oss` → **`oss://mbw-pg-backup`（账号 B 私有桶，profile `mbw-oss-b`）**；证书续期（api → nginx 卷；img → OSS put-cname）+ cert 监控亦迁 77。
 >
-> 全流程 + 踩坑见 `docs/private/runbook/prod-migrate-62a-to-77b.md`（本机私有，未公开 —— 整篇是跨账号拓扑，per [`information-boundary.md`](../conventions/information-boundary.md)；冻结副本在私有归档仓 @ `archive/pre-public-split`）。
+> 全流程 + 踩坑见 `docs/private/runbook/prod-migrate-62a-to-77b.md`（本机私有，未公开 —— 整篇是跨账号拓扑，per [`information-boundary.md`](../conventions/information-boundary.md)；真身在仓外 `~/nvy-private/`，每日 age 密文 bundle 推 prod 主机存异地副本）。
 
 ## Context
 

@@ -101,18 +101,24 @@ keys.txt
 *.p12
 
 # Scratch / exploratory notes — kept locally, not tracked
-docs/explore/
+docs/explore
 
 # Experience reports — kept locally, not tracked (2026-06-05 decision)
-docs/experience/
+docs/experience
 
 # 拓扑 / 凭据相邻的运维散文 —— 仓已公开，这些永不入 git（2026-08-08 决定）。
 # 判据见 docs/conventions/information-boundary.md「私有散文」一层：内容本身即
 # 情报（主机清单、RAM 用户↔权限↔凭据路径映射、实盘系统脆弱窗口、自然人位置），
 # 不是靠脱敏标识符就能公开的。docs/private/plans/ 收原 docs/plans/ 全部。
-# ⚠️ 备份只有私有归档仓在 split 时点的冻结副本，此后的编辑只存在于本机一块盘上
-# —— 而 index / broker-hk / 证书续期的重建步骤只活在这些文件里。
-docs/private/
+#
+# 2026-08-09 起本体搬到仓外 ~/nvy-private/（本地 git 仓 + 每日 age 密文 bundle
+# 推 prod 主机存异地副本）；仓内这三条如今只是 symlink，副 worktree 的链由
+# feat-open 自动建 —— 路径不变，故仓内既有引用一处未改。
+# 🚨 三条 pattern 刻意「不带尾斜杠」：带尾斜杠只匹配目录，而 symlink 不是目录，
+# 会漏成 untracked —— 既阻塞 feat-close，又让私有内容有被误 commit 回公开仓的风险。
+# （旧注释说「备份只有归档仓 split 时点的冻结副本」是错的：tag archive/pre-public-split
+# 指向脱敏 split **之后**的提交，其树下既无 docs/plans 也无 docs/private。别去那里找。）
+docs/private
 
 # SDD mockup 留迹 —— local-only（2026-08-08 决定）。design/ 装真机截图 + claude-design
 # handoff bundle：截图里可能有真实账户 / 持仓 / 手机号，而「像素里的 PII」没有任何扫描器
