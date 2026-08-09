@@ -20,21 +20,43 @@ jobs:
   gitleaks:
     name: Gitleaks
     runs-on: ubuntu-latest
-    # 顶层 `permissions: contents: read` 会把其余 scope 归零 —— gitleaks-action 在
-    # pull_request 事件下要读 PR 元数据,缺此声明报 `Resource not accessible by
-    # integration`（2026-08-08 新仓首跑实证）。
     permissions:
       contents: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      # 🚨 刻意**不用** `gitleaks/gitleaks-action@v2`,它有两个对公开仓致命的性质:
+      #  ① **只扫本次事件的 commit**(diff-only)。仓已公开 = 机器人对抗性扫描,要的是全史。
+      #  ② **自带 gitleaks 版本,且与本机不同**(action 里是 8.24.3,dev 机是 8.30.1),
+      #     而豁免语法在版本间有差异 —— 2026-08-09 实证:`.gitleaks.toml` 的全局豁免
+      #     写成复数 `[[allowlists]]` 时 8.24.3 **静默整块忽略**(不报错不警告),于是
+      #     本机验证通过的配置在 CI 上等于零豁免,首个 commit 直接红 30 条假阳性。
+      # 自己钉版本 ⇒ 本机与 CI 是同一个二进制,「本机验过」才等于「CI 也这样」。
+      # 改这里的版本号时,先在新版本上跑一遍 .gitleaks.toml 的正例与负控制。
+      - name: Install gitleaks (pinned — must match the version used to validate .gitleaks.toml)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL --retry 3 --retry-delay 5 -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks version
+
+      # 无 --log-opts = 扫全部历史(不是 diff-only)。--exit-code=1 让命中即红。
+      - name: Scan full history
+        run: |
+          /tmp/gitleaks detect --source . --redact -v \
+            --report-format=sarif --report-path=gitleaks.sarif --exit-code=1
+
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-results.sarif
+          path: gitleaks.sarif
+          if-no-files-found: ignore
 
   actionlint:
     name: Actionlint (workflow YAML)
