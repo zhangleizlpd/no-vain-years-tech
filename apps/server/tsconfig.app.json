@@ -3,13 +3,14 @@
   "compilerOptions": {
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    // 🚨 **别把 outDir / tsBuildInfoFile 挪出 `dist` 想「解耦 build 与 typecheck」** ——
-    // 2026-08-09 实测过，会更坏：`build`(@nx/js:swc, skipTypeCheck:false) 内部那次 tsc 会写
-    // 本文件声明的 tsBuildInfoFile，但 `.d.ts` 是 SWC 按自己的 `outputPath` 发的。两者一旦
-    // 不同目录，tsc --build 读到那份「已是最新」的 tsbuildinfo 就跳过发射 → tsconfig.spec.json
-    // 经 project reference 找不到 .d.ts → **500+ 个 TS6305**。
-    // 根因是**两个生产者共享同一份 tsbuildinfo**，不是「两个目录撞在一起」；解法在定序
-    // （见 project.json 的 typecheck / runtime-smoke 两段注释），不在挪路径。
+    // 本文件现在只服务 `build`(@nx/js:swc) —— 类型检查已于 2026-08-09 迁到独立的
+    // tsconfig.typecheck.json（`noEmit`，什么都不产出）。`tsconfig.spec.json` 对本文件的
+    // project reference 保留，因为 eslint 的 type-aware lint 走 solution `tsconfig.json`
+    // （见 eslint.config.mjs 的 `project: './tsconfig.json'`），删了会让 spec/test 丢类型信息。
+    //
+    // 🚨 **别把 outDir / tsBuildInfoFile 挪出 `dist`** —— 2026-08-09 实测：SWC 的 `.d.ts` 是按
+    // 它自己的 `outputPath` 发的，而本文件声明的 tsBuildInfoFile 会被 SWC 内部那次 tsc 写成
+    // 「已是最新」。两者一旦不同目录，任何 `tsc --build` 都会据此跳过发射 → **500+ 个 TS6305**。
     "outDir": "dist",
     "types": ["node"],
     "rootDir": "src",
