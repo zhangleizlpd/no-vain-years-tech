@@ -5,10 +5,16 @@
 # 装完的形态（与 marketdata-dev-sync / watchdog 同范式）：
 #   launchd(每日 HH:MM) → ~/.nvy/nvy-private-backup/run-scheduled.sh
 #                       → ops/lib/nvy-run-reported.sh（跑完必推飞书 report + 写心跳）
-#                       → ~/.nvy/nvy-private-backup/backup.sh（bundle | age | ssh）
+#                       → ~/.nvy/nvy-private-backup/backup.sh
+#                          （rsync 主仓 → hub ~/nvy-private → git commit → bundle | age | ssh）
 #
-# 自包含：backup.sh 与共享 lib 全部拷进 ~/.nvy —— launchd agent 对 ~/Documents 无 TCC 权限，
-# 直接 exec 仓内脚本会被系统**静默拒绝**。副作用：改仓内源码后必须重跑本 setup 覆盖副本。
+# 自包含：backup.sh 与共享 lib 全部拷进 ~/.nvy，plist 只 exec ~/.nvy 下的脚本 —— launchd agent
+# 默认对 ~/Documents 无 TCC 权限，直接 exec 仓内脚本会被系统**静默拒绝**。副作用：改仓内源码
+# 后必须重跑本 setup 覆盖副本。
+#
+# ⚠️ 但备份**数据源**必然在 ~/Documents —— 私有文档的物理位置就是主 worktree。本机因 holdings
+# 早已授予 /bin/zsh 完全磁盘访问而读得通（2026-08-09 以完整调用链实测：read / find / git / rsync
+# 全 OK）。换机或授权被撤时 backup.sh 的前置检查会 fail-loud + 由 wrapper 推飞书，不会静默备份空内容。
 #
 # age 公钥在此固化：从 ~/.config/sops/age/keys.txt 派生出**公钥**写进 ~/.nvy/nvy-private-backup/
 # recipient.txt。此后备份进程只碰公钥，私钥不参与加密路径（最小权限）。
@@ -64,11 +70,16 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 UID_NUM="$(id -u)"
 AGE_KEY="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
 FLEET_ENV="$HOME/.nvy/fleet.env"
+# 备份源固定取**主** worktree —— 私有文档的物理位置只有那一处，副 worktree 里只是
+# symlink。`git worktree list` 首行恒为主 worktree，故本 setup 在任何 worktree 跑都对。
+MONO_HOME="$(git -C "$TOOL_DIR" worktree list --porcelain | head -1 | awk '{print $2}')"
 
-# ── 前置：三样缺一不可，装了也白装，不如现在就红 ────────────────────────────
+# ── 前置：缺一不可，装了也白装，不如现在就红 ────────────────────────────────
 command -v age >/dev/null || { echo '❌ age 未安装：brew install age' >&2; exit 1; }
+command -v rsync >/dev/null || { echo '❌ rsync 未安装' >&2; exit 1; }
 [[ -f "$AGE_KEY" ]] || { echo "❌ 缺 age 私钥 $AGE_KEY" >&2; exit 1; }
 [[ -f "$FLEET_ENV" ]] || { echo "❌ 缺 ${FLEET_ENV}（主机真值仓外解析，见 ops/host/fleet.env.example）" >&2; exit 1; }
+[[ -n "$MONO_HOME" && -d "$MONO_HOME/docs" ]] || { echo "❌ 推导主仓失败：${MONO_HOME:-<空>}" >&2; exit 1; }
 set -a; . "$FLEET_ENV"; set +a
 [[ -n "${!TARGET_VAR:-}" ]] || { echo "❌ $FLEET_ENV 里 $TARGET_VAR 为空 —— 代号 ${TARGET_CODENAME} 未绑定" >&2; exit 1; }
 
@@ -87,7 +98,7 @@ chmod 755 "$BACKUP_SH" "$LIB_DIR/feishu-send.sh" "$REPORTER"
 # launchd PATH 极简——固化 git/age/ssh/bash 实际所在 + 常见路径
 resolve_bin_dirs() {
   local c p dirs=()
-  for c in git age ssh bash; do
+  for c in git age ssh rsync bash; do
     p="$(command -v "$c" 2>/dev/null || true)"
     [[ -n "$p" ]] && dirs+=("$(cd "$(dirname "$p")" && pwd)")
   done
@@ -100,6 +111,7 @@ cat >"$WRAPPER" <<EOF
 #!/bin/zsh
 # 由 scripts/nvy-private-backup/setup.sh 生成——请勿手改，重跑 setup 覆盖
 export PATH="$PATH_VAL"
+export NVY_MONO_HOME="$MONO_HOME"
 export NVY_BACKUP_TARGET_VAR="$TARGET_VAR"
 export NVY_BACKUP_TARGET_CODENAME="$TARGET_CODENAME"
 export NVY_BACKUP_KEEP="$KEEP"
