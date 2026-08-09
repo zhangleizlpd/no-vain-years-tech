@@ -6,6 +6,7 @@
 # Node / build artifacts
 **/node_modules
 **/dist
+**/out-tsc
 **/.nx
 **/.swc
 **/coverage
