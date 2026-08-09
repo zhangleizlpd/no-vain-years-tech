@@ -36,6 +36,17 @@ sunset_trigger: |
 > 3. **TRADING_CALENDAR 的 us 主源改富途**（腾讯降 L2），链按市场路由；cn/hk 维持 `[腾讯 → 静态年历]`。
 > 4. **新 vendor 接入形态**：富途 OpenD 是 protobuf TCP 网关、官方 Node SDK 已弃 → 经 `services/futu-shim/`（港机上的 HTTP 薄壳）接入，对本层而言**就是又一个 vendor**，照常走 `VendorHttpClient` 的 profile / 限频 / 熔断，不开后门。
 
+<!-- 分隔两个 Amendment 引用块（markdownlint MD028：blockquote 之间不得只隔空行） -->
+
+> **⚠️ Amendment 2026-08-09 — 限频档从「双窗令牌桶」扩为「双窗 / 滚动窗二选一」**
+>
+> §3 原文写死「过**双窗令牌桶**（分窗 + 秒窗同时约束）」，那是按理杏仁（官方就是 36/s 且 1000/min 双窗）定的形状。富途 shim 的闸是**另一种形状** —— `services/futu-shim/src/futu_shim/ratelimit.py` 的 `LIMITS` 是 per-capability 的**滚动窗**（`option_chain` 10 次/30 秒、其余多为 60 次/30 秒），两者不可互相换算：
+>
+> 1. **换算即缺陷（prod 实证）**：把「10 次/30 秒」写成均值等价的 `{perSec:1, perMin:20}`，稳态确实是 10/30 s，但令牌桶**初始装满**，空闲后首轮会在 30 秒内放出约 30 发。2026-08-09 prod 后果 = 富途链发现每 30 分钟顺延一次、12 只锚永远只采到前 2 只（`skipDuplicates` 让重跑零新增行、纯烧预算）。同日直打 shim 的 PoC 复核：第 11 发即 429、`Retry-After: 29`、第 33 秒恢复。
+> 2. **`rateLimit` 升为判别式联合**：`{ perSec, perMin }`（双窗令牌桶，允许冷启动突发）｜`{ maxCalls, windowMs }`（滚动窗，零突发容忍）。理杏仁 / 腾讯 / 东财 / CBOE 四个画像**一个字符不改**、行为逐字节不变；富途三个 capability 画像改为与 shim 的 `LIMITS` 逐字同构。
+> 3. **429 改为采信 vendor 的 `Retry-After`**（RFC 9110 定义；RFC 6585 §4 的 429 原文是 **MAY** 带 ⇒ 兜底不能删），取 `max(profile.transientWaitMs, Retry-After)` —— profile 的值从「兜底」升为**下界**，理杏仁「429 = 分钟级封禁 ⇒ ≥60 s」那份保守不被 vendor 报的更短值抹掉。
+> 4. **实现改名**：`DualWindowRateLimiter` → `VendorRateLimiter`（一个类现在管两种形状，旧名会说谎）。本文件 §3 的代码草图与「过双窗令牌桶」一句按本条读。
+
 ## Context
 
 portfolio 大模块的多数特性（04 自选 / 05 详情 / 预警 / 策略实验室）依赖一个统一的股票数据层。该层要同时对接**异构外部数据源**，且各源的能力子集与访问约束差异巨大：

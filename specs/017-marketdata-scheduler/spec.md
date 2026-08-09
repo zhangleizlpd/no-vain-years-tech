@@ -4,7 +4,7 @@ modules: [marketdata]
 owners: ['@zhangleizlpd']
 status: implemented
 created_at: '2026-06-04'
-updated_at: '2026-06-04'
+updated_at: '2026-08-09'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: na
@@ -65,7 +65,7 @@ state_branches:
 - **调度正确性主防线 = PG 条件 UPDATE**：tick 用「条件 UPDATE 抢占推进 nextFireAt」（affected-count won/lost）防双 tick 重复入队，正确性不依赖 Redis 锁；queue concurrency=1 是第二道；Redis 调度锁（`EOD_SYNC_LOCK_KEY`）仅过渡期保留，随旧调度器在最后清退片下线。
 - **misfire ≠ backfill（语义切分）**：`fire-now` 只拉起「本该跑的那一次」（delta 模式拉当天）；宕机多天的历史缺口是**数据问题不是调度问题**，走 backfill CLI 手动补。理由：理杏仁真实配额未实测（短窗 ~15 调用即 429 有观察记录），自动多天 backfill 有烧爆配额风险。
 - **跨周期依赖语义**：依赖边**只约束同一 tick 内共同触发的维度**——universe（周一）不 due 的日子，`universe→eod_bar` 边自动失效，eod_bar 当 flow 根照跑；共同触发日边生效（bar 等 universe）。种子边：`universe→*` 全 **soft**（误配 hard = universe 缺席日下游全不跑，最高风险项，专项 IT 拦）；`profile→fundamental` **hard**（fsType 路由依赖）。
-- **单节点前提仍成立（ADR-0047 F4）**：vendor 双窗限频封顶吞吐 → 多节点分片零收益；queue concurrency=1 + 进程内 `DualWindowRateLimiter`（**不用** BullMQ limiter——单窗表达不了「36/s 且 1000/min」双窗约束）+ **明确拒绝 per-instrument job**（5400 job/天反模式）。前提失效条件见 ADR-0049 sunset triggers。
+- **单节点前提仍成立（ADR-0047 F4）**：vendor 限频封顶吞吐 → 多节点分片零收益；queue concurrency=1 + 进程内 `VendorRateLimiter`（**不用** BullMQ limiter——单窗既表达不了理杏仁「36/s 且 1000/min」双窗约束，也表达不了富途 shim 的 30 秒滚动窗）+ **明确拒绝 per-instrument job**（5400 job/天反模式）。前提失效条件见 ADR-0049 sunset triggers。
 - **复用既有设施**：SyncUniverse/SyncProfile 等维度 use case **零改动复用**（executor 从 4 个 fact 私有方法升格）；cron 解析复用 cron-parser + Asia/Shanghai 已验证范式（dimension-due.ts）；幂等 + per-instrument try/catch + failedTargets + pendingEodInstruments 进度锚全保留。
 - **审计/执行真相分工**：SyncRun（PG）= 业务审计真相，改 per-dimension 粒度（`syncType='sync:<dim>'` + 关联 `bullJobId`），旧 `'eod-sync'` 聚合行过渡期并存；BullMQ job（Redis）= 执行/重试真相。告警两道：processor 内 alertIfDegraded（业务降级）+ QueueEvents failed 监听（retry 耗尽硬失败）。
 
@@ -236,7 +236,7 @@ state_branches:
 - **FR-S11**: 配额/窗口耗尽 MUST self re-enqueue with delay 续跑（取代「等明晚」）；`pendingEodInstruments` 进度锚 MUST 保证续跑幂等不重复；`lastWatermark` 降级为审计字段。
 - **FR-S12**: Redis MUST 仅作执行队列（**非调度真相**）：job 丢失（驱逐/宕机）MUST 由 PG 真相层下轮 tick 发现并重新入队（自愈）。prod compose MUST 改 `maxmemory-policy noeviction` + `appendfsync everysec`；MUST 配 `removeOnComplete/removeOnFail` 限 job 留存 + 确认 quote 缓存键有 TTL（noeviction 下内存有界）。
 - **FR-S13**: 执行层接入 MUST 为裸 `bullmq` + 手动 provider（MUST NOT 用 `@nestjs/bullmq` 装饰器 wrapper，per ADR-0049 拒绝项 / ADR-0043 手控风格）；队列连接 MUST 用独立 Redis 连接 provider（`maxRetriesPerRequest: null` 与共享 client 配置冲突）。
-- **FR-S14**: 限频 MUST 保留传输层 `DualWindowRateLimiter`（进程内双窗令牌桶 36/s + 1000/min）；MUST NOT 用 BullMQ rate limiter（单窗表达不了双窗约束）。
+- **FR-S14**: 限频 MUST 保留传输层 `VendorRateLimiter`（进程内限频器；理杏仁走双窗令牌桶 36/s + 1000/min，富途 shim 走滚动窗，per [ADR-0047](../../docs/adr/0047-marketdata-pluggable-data-access.md) Amendment 2026-08-09）；MUST NOT 用 BullMQ rate limiter（单窗这两类约束都表达不了）。
 - **FR-S15**: 系统 MUST 新建 trigger CLI（与 backfill 职责分开）：`--dimension X [--cascade] [--as-of]`——入队 + `waitUntilFinished`，退出码 MUST 反映 job 终态；`--cascade` MUST 从修复点为根查传递性下游组 flow、MUST NOT 含已成功上游。既有 backfill CLI MUST 迁「入队 + waitUntilFinished」形态且参数与退出码 **0/1** 语义不变；退出码 **2 重映射为等待超时**（旧「2=锁未抢到」随锁退出 CLI 路径作废，analyze I1 2026-06-04，release note 须提）；CLI 与自动 job MUST 经同 queue concurrency=1 天然互斥。
 - **FR-S15a**: CLI MUST NOT 自起 worker——queue 全局唯一 worker MUST 在 server 进程（互斥不变量靠拓扑保证，clarify 2026-06-04）；CLI MUST 支持 `--timeout`（缺省值归 plan），server worker 不在线/超时 MUST 非 0 退出 + 可操作错误信息（不静默挂起）。backfill 的执行前提随之变为 server 在线（standalone 自跑管线语义废弃）。
 - **FR-S16**: 新调度驱动 MUST 由 env flag `MARKETDATA_TICK_ENABLED` 控制且**默认关**；旧 22:00 管线过渡期 MUST 不下线；灰度并存期数据正确性 MUST 由幂等 + 过渡期保留的 Redis 调度锁（`EOD_SYNC_LOCK_KEY`）兜底（双拉只费配额不坏数据）。

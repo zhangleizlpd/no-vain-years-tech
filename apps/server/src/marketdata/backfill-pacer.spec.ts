@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BackfillPacer, baseIntervalMs, pacerWaitMs } from './backfill-pacer.js';
 
-/** 可控虚拟时钟: sleep 推进时间, 让节流逻辑无需真等待即可断言 (镜像 dual-window-rate-limiter.spec)。 */
+/** 可控虚拟时钟: sleep 推进时间, 让节流逻辑无需真等待即可断言 (镜像 vendor-rate-limiter.spec)。 */
 function makeClock(start = 0) {
   let t = start;
   const sleeps: number[] = [];

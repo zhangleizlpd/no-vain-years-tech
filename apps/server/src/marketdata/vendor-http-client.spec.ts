@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EASTMONEY_PROFILE } from './eastmoney.constraint-profile.js';
+import { FUTU_SHIM_OPTION_CHAIN_PROFILE } from './futu-shim.constraint-profile.js';
 import { LIXINGER_PROFILE } from './lixinger.constraint-profile.js';
-import { TransientVendorError, VendorHttpClient, VendorHttpError } from './vendor-http-client.js';
+import {
+  TransientVendorError,
+  VendorHttpClient,
+  VendorHttpError,
+  parseRetryAfterMs,
+} from './vendor-http-client.js';
 
 type FetchArgs = {
   url: string;
@@ -155,5 +161,109 @@ describe('VendorHttpClient', () => {
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(new Set(signals).size).toBe(3);
     expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+});
+
+describe('parseRetryAfterMs (纯函数)', () => {
+  it('delta-seconds 形态 → ms', () => {
+    expect(parseRetryAfterMs('29', 0)).toBe(29_000);
+    expect(parseRetryAfterMs('  29  ', 0)).toBe(29_000);
+  });
+
+  it('HTTP-date 形态 → 距 now 的 ms (只解秒会静默回落兜底值, 那正是要修的那类塌法)', () => {
+    expect(parseRetryAfterMs(new Date(30_000).toUTCString(), 0)).toBe(30_000);
+  });
+
+  it('缺失 / 空 / 非法 / 非正数 → null (交调用方回落)', () => {
+    expect(parseRetryAfterMs(null, 0)).toBeNull();
+    expect(parseRetryAfterMs(undefined, 0)).toBeNull();
+    expect(parseRetryAfterMs('', 0)).toBeNull();
+    expect(parseRetryAfterMs('soon', 0)).toBeNull();
+    expect(parseRetryAfterMs('0', 0)).toBeNull();
+    expect(parseRetryAfterMs('-5', 0)).toBeNull(); // 带符号非 delta-seconds, date 分支也拒
+    expect(parseRetryAfterMs(new Date(30_000).toUTCString(), 60_000)).toBeNull(); // 已过期
+  });
+});
+
+describe('VendorHttpClient — 429 等待时长 (Retry-After)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /** 可编程 fetch, 可给响应挂 `Retry-After`。 */
+  function makeFetchWithRetryAfter(statuses: number[], retryAfter?: string) {
+    let i = 0;
+    return vi.fn(async () => {
+      const status = statuses[Math.min(i, statuses.length - 1)];
+      i++;
+      return {
+        status,
+        ok: status >= 200 && status < 300,
+        json: async () => ({ ok: true }),
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'retry-after' && retryAfter !== undefined ? retryAfter : null,
+        },
+      };
+    });
+  }
+
+  /** 跑一次「429 → 重试成功」, 返回本次记录到的所有 sleep 时长。 */
+  async function sleepsFor(
+    profile: typeof LIXINGER_PROFILE,
+    retryAfter: string | undefined,
+    random = () => 0,
+  ): Promise<number[]> {
+    const sleeps: number[] = [];
+    const client = new VendorHttpClient(profile, {
+      fetch: makeFetchWithRetryAfter([429, 200], retryAfter),
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      random,
+    });
+    const p = client.request({ url: 'https://x' });
+    await vi.runAllTimersAsync();
+    await expect(p).resolves.toEqual({ ok: true });
+    return sleeps;
+  }
+
+  it('🚨 采信 vendor 的 Retry-After, 而不是固定 transientWaitMs (2026-08-09 prod bug 的回归闸)', async () => {
+    // 富途链画像 transientWaitMs=2s, 而上游 30s 窗实测报 `Retry-After: 29`。
+    // 只等 2s ⇒ 三次重试共约 7.8s < 29s ⇒ 结构上熬不过一次限频窗, 必然升级 budgetExhausted。
+    expect(await sleepsFor(FUTU_SHIM_OPTION_CHAIN_PROFILE, '29')).toContain(29_000);
+  });
+
+  it('🚨 transientWaitMs 是**下界**不是兜底: vendor 报得更短时不抹掉 profile 的保守', async () => {
+    // 理杏仁 429 = 分钟级封禁 ⇒ profile 取 ≥60s。vendor 报 29s 也不该缩短。
+    const sleeps = await sleepsFor(LIXINGER_PROFILE, '29');
+    expect(sleeps).toContain(LIXINGER_PROFILE.transientWaitMs);
+    expect(sleeps).not.toContain(29_000);
+  });
+
+  it('Retry-After 超上限 (分钟级以上) → 不采信, 回落 transientWaitMs 让上层顺延接管', async () => {
+    expect(await sleepsFor(FUTU_SHIM_OPTION_CHAIN_PROFILE, '3600')).toContain(
+      FUTU_SHIM_OPTION_CHAIN_PROFILE.transientWaitMs,
+    );
+  });
+
+  it('jitter 只加不减 —— Retry-After 是 vendor 给的下界, 减了必然再撞一次 429', async () => {
+    const sleeps = await sleepsFor(FUTU_SHIM_OPTION_CHAIN_PROFILE, '29', () => 1);
+    const waited = sleeps.find((ms) => ms >= 29_000);
+    expect(waited).toBe(29_000 + 2_900); // base + base × 10% × random(=1)
+  });
+
+  it('负控制: 响应无 headers (仓内既有假 fetch 的形状) → 行为与本改动前逐字节一致', async () => {
+    const sleeps: number[] = [];
+    const client = new VendorHttpClient(LIXINGER_PROFILE, {
+      fetch: makeFetch([429, 200]).fetch, // 该 helper 不造 headers
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      random: () => 0,
+    });
+    const p = client.request({ url: 'https://x' });
+    await vi.runAllTimersAsync();
+    await expect(p).resolves.toEqual({ ok: 1 });
+    expect(sleeps).toContain(LIXINGER_PROFILE.transientWaitMs);
   });
 });
