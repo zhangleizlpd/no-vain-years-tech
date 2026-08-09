@@ -118,6 +118,19 @@ describe('ConfirmProfileImageUseCase — rejections (no DB write)', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  // 「查不出来」≠「对象不在」。probe 标 indeterminate（403 桶被停用 / 5xx / 网络失败）时
+  // 必须回 503 而不是 4xx —— 对一个上传成功的用户说「你上传的对象不存在」是在说谎，
+  // 而且会把可重试的上游故障报成客户端错误。
+  it('HEAD indeterminate (probe 查不出来) → ServiceUnavailable, not BadRequest, no update', async () => {
+    const { useCase, update } = build({
+      head: { exists: false, contentType: null, indeterminate: true },
+    });
+    await expect(useCase.execute(42n, 'avatar', KEY)).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('HEAD content-type not an image → BadRequest, no update', async () => {
     const { useCase, update } = build({ head: { exists: true, contentType: 'text/html' } });
     await expect(useCase.execute(42n, 'avatar', KEY)).rejects.toBeInstanceOf(BadRequestException);
