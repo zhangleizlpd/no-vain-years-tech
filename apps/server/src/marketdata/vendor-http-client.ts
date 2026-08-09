@@ -125,11 +125,32 @@ export interface VendorRequest {
  *
  * 每个外部源**一个实例** (各自持限频器 + 熔断状态, 按 profile 构造)。统一执行
  * Vendor Constraint Profile: ① 注入必需 header; ② 过限频器 (双窗令牌桶 / 滚动窗, 按
- * profile 声明的形状; 超限排队, 不抛 429 给 caller); ③ cockatiel 退避重试 + 连续熔断
- * (仅对 `TransientVendorError`); ④ 命中 429 先等 {@link VendorHttpClient.rateLimitWaitMs}
- * 再交重试 (优先采信 vendor 的 `Retry-After`)。
+ * profile 声明的形状; 超限排队, 不抛 429 给 caller); ③ cockatiel 退避重试 (对全部
+ * `TransientVendorError`) + 连续熔断 (**仅对故障, 不含 429**, 见下); ④ 命中 429 先等
+ * {@link VendorHttpClient.rateLimitWaitMs} 再交重试 (优先采信 vendor 的 `Retry-After`)。
  *
  * adapter 负责 vendor 语义 (URL / 鉴权 body / 解析); 本类只管传输纪律。
+ *
+ * ## 熔断口径: 背压 ≠ 故障
+ *
+ * `ConsecutiveBreaker` **只数 5xx / 网络错 / 超时**, 429 蓄意不计。两者是不同性质的事件:
+ * 429 是上游明说「你太快了, 等 N 秒再来」—— 它自带恢复时刻, 恰恰证明**对方是活的**;
+ * 5xx / 网络错才是「对方坏了, 不知何时好」这种熔断本该保护的情形。
+ *
+ * 🚨 **混在一个计数器里, 后果不是「多等一会儿」而是错误类型被换掉**: 熔断开启后抛的是
+ * cockatiel 的 `BrokenCircuitError`, 它**不是** `TransientVendorError` ⇒ ① 外层 retry 的
+ * 过滤器不认它, 当场放弃剩余重试; ② adapter 里「429 → `OptionChainBudgetExhaustedError`」
+ * 那条映射同样不认 ⇒ 一次**纯限频**被记成该标的的 `failed` (进 `failedTargets` + 降级告警),
+ * 而不是顺延信号。同一件事被同时误报成「vendor 故障」和「本标的失败」两次。
+ *
+ * 🚨 它还会把刚采信 `Retry-After` 等出来的那次机会吃掉: 老老实实等满 29 秒本该放行, 熔断
+ * 却在等待结束后直接拒 —— {@link VendorHttpClient.rateLimitWaitMs} 的全部收益归零。
+ *
+ * **这不削弱保护**: cockatiel 对「过滤器不认」的错误是**原样抛出**
+ * (`ExecuteWrapper.invoke`: `if (!handled) throw error`), 既不记 failure 也不记 success
+ * ⇒ 429 对连续故障计数器是**透明**的, 不会顺手把已累积的 5xx 计数**清零**。故「5xx 中间夹
+ * 几个 429」依然熔得断 —— 若它被当成 success, 那才是真的把熔断废掉 (cockatiel@3.2.1 源码
+ * 核实, 单测有负控制钉住)。
  *
  * 直 `import from 'cockatiel'` 自配 policy, **不** DI `auth/cockatiel-retry.executor.ts`
  * —— marketdata 叶子不依赖 auth, 且 vendor policy (双窗 + transientWait) 与 SMS 不同
@@ -154,12 +175,14 @@ export class VendorHttpClient {
     this.limiter = new VendorRateLimiter(profile.rateLimit, this.now, this.sleep);
 
     const handleTransient = handleType(TransientVendorError);
+    // 🚨 **熔断只认故障, 不认背压** —— 429 蓄意排除在外, 理由见类注释 § 熔断口径。
+    const handleFault = handleType(TransientVendorError, (err) => err.status !== 429);
     this.policy = wrap(
       retry(handleTransient, {
         maxAttempts: profile.retry.maxAttempts,
         backoff: new ExponentialBackoff({ initialDelay: 500, maxDelay: 8_000 }),
       }),
-      circuitBreaker(handleTransient, {
+      circuitBreaker(handleFault, {
         halfOpenAfter: 10_000,
         breaker: new ConsecutiveBreaker(5),
       }),
