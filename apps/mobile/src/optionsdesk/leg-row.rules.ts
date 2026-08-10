@@ -15,6 +15,7 @@
 import type { LegResponse, LegResponseBasis } from '@nvy/api-client';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { formatPriceText } from './price-format.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
@@ -27,7 +28,10 @@ const COPY = OPTIONSDESK_COPY.legPicker;
  */
 export const LEG_TABLE_COLUMNS = [
   { key: 'strike', width: 88 },
-  { key: 'bid', width: 68 },
+  // bid/ask 合并一列（FR-003），单元格内是 **2 行 × 2 列**：价格并排在上、挂牌量并排在下。
+  // 68 → 88px 是最宽真实内容逼出来的：价格行最宽 `10.90  13.30` = 12 字符 × 11px 等宽
+  // （≈6.6px/字）≈ 79px + 内边距。🚫 MUST NOT 回调到 68 —— 那会让深实值腿的两位数价格折行。
+  { key: 'bid', width: 88 },
   { key: 'rate', width: 56 },
   { key: 'cost', width: 56 },
   // Δ 列 08-04 mockup review 后由 34 → 42px，以容下 |Δ| 真值（表宽 688 → 696）。
@@ -43,8 +47,8 @@ export const LEG_TABLE_COLUMNS = [
 
 export type LegColumnKey = (typeof LEG_TABLE_COLUMNS)[number]['key'];
 
-/** 12 列合计。 */
-export const LEG_TABLE_WIDTH = 696;
+/** 12 列合计（bid 列 68 → 88 后由 696 抬到 716）。 */
+export const LEG_TABLE_WIDTH = 716;
 
 /** 首列宽（钉住的那一列）。 */
 export const LEG_STICKY_COL_WIDTH = 88;
@@ -90,6 +94,18 @@ function formatSignedPct(raw: string | null | undefined): string | null {
 export function formatCount(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return COPY.noValue;
   return value.toLocaleString('en-US');
+}
+
+/**
+ * 买 / 卖盘挂牌量 → `×25`（bid/ask 列下行）。`null` → 占位。O(1)。
+ *
+ * 🚫 **不加千分位**（与 `formatCount` 刻意不同）：这一行字号 8px、与价格并排挤在 88px 内，
+ * `×1,234` 的逗号在那个尺寸下只会糊成噪点。量级本身够读，精确到个位不是它的用途。
+ * 🚫 **MUST NOT 参与判档** —— 档位恒由 `bid` 价定（FR-018），量只作同屏参照，故也不上档位色。
+ */
+export function formatQuoteSize(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return COPY.noValue;
+  return `×${value}`;
 }
 
 /** 成交额 → `$39.8K` / `$110K` / `$2.4M`。📌 成交额高 ≠ 真流动。O(1)。 */
@@ -177,7 +193,7 @@ export function costCell(
   const cost = toFinite(leg.effectiveCost);
   if (cost === null) return { primary: COPY.noValue, secondary: null };
   return {
-    primary: leg.effectiveCost as string,
+    primary: formatPriceText(leg.effectiveCost as string),
     secondary: formatSignedPct(leg.effectiveCostVsWPct),
   };
 }

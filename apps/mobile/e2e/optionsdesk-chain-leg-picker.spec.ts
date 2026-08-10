@@ -221,6 +221,8 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   dteDays: 180,
   bid: '3.40',
   ask: '3.70',
+  bidSize: 25,
+  askSize: 26,
   basis: 'annualized',
   periodRate: '0.047486',
   weeklyRate: '0.001846',

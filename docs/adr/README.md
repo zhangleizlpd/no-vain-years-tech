@@ -86,6 +86,7 @@
 | 0060 | Ideation 索引服务运行时 — 单机按需自托管单模型(bge-m3 embedder)+ vector-only            | apps/server, infrastructure                      | Accepted   |
 | 0061 | Ideation 语音输入 — 听写式 + DashScope Qwen3-ASR(可换 port)+ server WS 代理实时流式     | apps/server, apps/mobile                         | Accepted   |
 | 0062 | Optionsdesk 第 10 Bounded Context — 期权台锚管理 + 击球区雷达 + 跨 ctx 双向仅 Q7-B 只读 | apps/server                                      | Accepted   |
+| 0063 | Mobile 冻结列表格横向同步 — 单 Pan 驱动共享值,弃 `scrollTo` 广播                        | apps/mobile                                      | Accepted   |
 
 (0021 历史空缺,跳过编号 — 详 commit 历史)
 

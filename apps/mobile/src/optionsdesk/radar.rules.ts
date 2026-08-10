@@ -10,6 +10,7 @@ import type { AnchorResponse, RadarResponseEmptyState } from '@nvy/api-client';
 import { formatAsOfLabel } from '~/format/as-of';
 import type { FreshnessTier } from './underlying-detail.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { formatPriceText } from './price-format.rules';
 
 const COPY = OPTIONSDESK_COPY.radar;
 
@@ -139,7 +140,7 @@ function tickerCode(ticker: string): string {
 /** spot 串。🚨 **不带「· 距 W xx%」**（标题行已有一份，plan D13 明令删的真冗余）。 */
 export function formatSpot(a: Pick<RadarRowAnchor, 'lastClose' | 'lastCloseDate'>): string {
   if (!hasQuote(a) || a.lastClose === null) return COPY.quoteUnavailable;
-  return `${COPY.spotPrefix}${a.lastClose}`;
+  return `${COPY.spotPrefix}${formatPriceText(a.lastClose)}`;
 }
 
 /** 距 W%（server 已算好的百分数串）。负号用 −（U+2212）与 mockup 一致。 */

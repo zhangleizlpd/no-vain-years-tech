@@ -1161,6 +1161,23 @@ export class LegResponse {
   ask!: string | null;
 
   @ApiProperty({
+    description:
+      '买盘挂牌量 (张); **MUST NOT 参与判档** —— 档位恒由 bid 价定 (FR-018), 量只作同屏参照',
+    type: 'number',
+    nullable: true,
+    example: 25,
+  })
+  bidSize!: number | null;
+
+  @ApiProperty({
+    description: '卖盘挂牌量 (张); 同 bidSize, 只作同屏参照',
+    type: 'number',
+    nullable: true,
+    example: 26,
+  })
+  askSize!: number | null;
+
+  @ApiProperty({
     description: '本行腿族口径 (FR-019 每行显式标注; 跨族 MUST NOT 比数值)',
     enum: [...LEG_BASES],
     example: 'annualized',
@@ -1447,6 +1464,8 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
       dteDays: leg.dteDays,
       bid: decimal4(leg.bid),
       ask: decimal4(leg.ask),
+      bidSize: leg.bidSize,
+      askSize: leg.askSize,
       basis: leg.basis,
       periodRate: leg.periodRate === null ? null : leg.periodRate.toFixed(6),
       weeklyRate: leg.weeklyRate === null ? null : leg.weeklyRate.toFixed(6),

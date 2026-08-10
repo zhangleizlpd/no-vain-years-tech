@@ -106,6 +106,15 @@ export interface LegView {
 
   bid: Prisma.Decimal | null;
   ask: Prisma.Decimal | null;
+  /**
+   * 买 / 卖盘挂牌量 (`@db.Decimal(20,0)` 的整数计数, 同 OI / Vol 走 `number` 而非 string
+   * —— 它们是**张数不是金额**, 没有精度可丢)。
+   *
+   * 🚫 **MUST NOT 参与任何判定**: 档位恒由 `bid` 价定 (FR-018), 挂牌量只作同屏参照 ——
+   * 与 `askRate` 同类。呈现侧也 MUST NOT 给它上档位色, 否则会被读成「量也参与判档」。
+   */
+  bidSize: number | null;
+  askSize: number | null;
   /** 本行口径 (FR-019: 全腿 Tab 内每行显式标注其腿族口径)。 */
   basis: LegBasis;
   /** 期间 / 周化 / 年化费率 (分母恒为准备金 `K − P`); 无 bid 或 `K − P ≤ 0` → 全 `null`。 */
@@ -440,6 +449,8 @@ export class GetLegsUseCase {
         dteDays,
         bid: snapshot.bid,
         ask: snapshot.ask,
+        bidSize: decimalToNumber(snapshot.bidSize),
+        askSize: decimalToNumber(snapshot.askSize),
         basis,
         periodRate: rates?.periodRate ?? null,
         weeklyRate: rates?.weeklyRate ?? null,
@@ -497,6 +508,8 @@ interface ChainRow {
     source: string;
     bid: Prisma.Decimal | null;
     ask: Prisma.Decimal | null;
+    bidSize: Prisma.Decimal | null;
+    askSize: Prisma.Decimal | null;
     delta: Prisma.Decimal | null;
     openInterest: Prisma.Decimal | null;
     volume: Prisma.Decimal | null;

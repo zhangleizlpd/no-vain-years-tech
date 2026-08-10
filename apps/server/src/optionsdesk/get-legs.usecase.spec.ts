@@ -110,6 +110,9 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
     oiAsOf: date('2026-07-31'),
     bid: leg.bid === null ? null : D(leg.bid),
     ask: leg.bid === null ? null : D(leg.bid).plus(D('0.10')),
+    // 挂牌量：无 bid ⇒ 无挂单 ⇒ 两侧同为 null（与价同生共死，🚫 不拿 0 冒充「没人挂」）。
+    bidSize: leg.bid === null ? null : D('25'),
+    askSize: leg.bid === null ? null : D('26'),
     delta: leg.delta === null ? null : D(leg.delta),
     openInterest: D(leg.openInterest),
     volume: D(leg.volume),

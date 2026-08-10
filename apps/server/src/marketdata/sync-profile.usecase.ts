@@ -31,6 +31,21 @@ export class SyncProfileUseCase {
     const scope = await this.profileMarketScope();
 
     // 仅缺 fsType 的活跃标的 (已缓存的不重解析 → 零外呼)。按 market 分组 → 逐市场按 fsType 路由。
+    //
+    // 🚨 **`needSync` 不是可省的筛选项, 是 schema 明文的标的级总闸** —— 那里的原话是
+    //    「`false` = 该标的**不进任何同步维度的工作集**」+「粒度 = 标的级一刀切, 该票所有维度
+    //    同采 / 同不采」。删掉它会让本维度成为**唯一无视该闸**的维度: 人工关掉采集的票, 别处
+    //    都不碰、只有这里还去解析 fsType 并回写库 —— 而且**不会红**。
+    //
+    // 📌 **它在当前配置下恒真, 故读起来像冗余 —— 别据此删**: 闸的唯一重算方
+    //    `AnchorDrivenSyncGate` 只动 us (`ANCHOR_GATED_MARKETS`), 而本维度 `marketScope`
+    //    = {cn, hk} ⇒ 两个作用域**不相交**, cn/hk 全走列默认 `true` (2026-08-10 实测
+    //    cn 5628 / hk 2782 全真)。保留是为了守上面那条不变量, 不是因为现在有筛选作用。
+    //
+    // ⚠️ **本维度刻意不走 `factExecutor`** (meta 维度, 自己管自己前置) ⇒ 这里读到的 `needSync`
+    //    是**上一次某个 fact 维度跑完时重算留下的值**, 不是本轮刚算的。今天没有后果 (见上,
+    //    作用域不相交), 但**若将来把 `us` 加进本维度 `marketScope`, MUST 先解决这个陈旧再动**
+    //    —— 那一刻该条件会从「筛掉 0 行」变成「筛掉约 1.9 万行」, 而依据是一份可能过期的闸。
     const missing = await this.prisma.instrument.findMany({
       where: { market: { in: scope }, status: 'active', needSync: true, lixingerCompanyType: null },
       select: { market: true, code: true },

@@ -24,6 +24,10 @@ export interface LegResponse {
   bid: string | null;
   /** ask (不参与判档) */
   ask: string | null;
+  /** 买盘挂牌量 (张); **MUST NOT 参与判档** —— 档位恒由 bid 价定 (FR-018), 量只作同屏参照 */
+  bidSize: number | null;
+  /** 卖盘挂牌量 (张); 同 bidSize, 只作同屏参照 */
+  askSize: number | null;
   /** 本行腿族口径 (FR-019 每行显式标注; 跨族 MUST NOT 比数值) */
   basis: LegResponseBasis;
   /** 期间费率 P/(K−P), 小数比例 */
