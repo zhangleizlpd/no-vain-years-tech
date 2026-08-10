@@ -58,6 +58,6 @@ Doc 文件组织 per [docs/conventions/docs-organization.md](docs/conventions/do
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-[specs/047-optionsdesk-chain-leg-picker/plan.md](specs/047-optionsdesk-chain-leg-picker/plan.md)
+[specs/049-optionsdesk-leg-table-scroll-filter/plan.md](specs/049-optionsdesk-leg-table-scroll-filter/plan.md)
 
 <!-- SPECKIT END -->

@@ -2,7 +2,7 @@
 feature_id: 049-optionsdesk-leg-table-scroll-filter
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: planned
 created_at: '2026-08-10'
 updated_at: '2026-08-10'
 spec_kit_version: '>=0.8.5,<0.10.0'
