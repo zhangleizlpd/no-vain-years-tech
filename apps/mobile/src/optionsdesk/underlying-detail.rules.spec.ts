@@ -686,6 +686,8 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     dteDays: 12,
     bid: '1.20',
     ask: '1.35',
+    bidSize: 25,
+    askSize: 26,
     basis: 'weekly',
     periodRate: '0.015190',
     weeklyRate: '0.008861',

@@ -4,7 +4,7 @@
 // 三条机械防线（写错了不会红、但错得很贵）：
 //   · 费率列**随行口径切换主数字**，MUST NOT 对周化族的行主显折年（FR-003）
 //   · Δ 与 σ 距**同有同无**（Guardrail 10 / plan D-UI-3 —— 同一个 `absDelta` 的两种呈现）
-//   · 12 列宽度合计 = 696，首列 88 渲在横向滚动**之外**（天然钉住，不依赖 sticky）
+//   · 12 列宽度合计 = 716，首列 88 渲在横向滚动**之外**（天然钉住，不依赖 sticky）
 import { describe, expect, it } from 'vitest';
 import type { LegResponse } from '@nvy/api-client';
 
@@ -37,6 +37,8 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     dteDays: 4,
     bid: '1.60',
     ask: '1.70',
+    bidSize: 25,
+    askSize: 26,
     basis: 'weekly',
     periodRate: '0.012169',
     weeklyRate: '0.021296',
@@ -59,10 +61,10 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
 }
 
 describe('12 列几何 —— 首列渲在横向滚动之外（不依赖 position: sticky）', () => {
-  it('恰好 12 列，宽度合计 696', () => {
+  it('恰好 12 列，宽度合计 716', () => {
     expect(LEG_TABLE_COLUMNS).toHaveLength(12);
     expect(LEG_TABLE_COLUMNS.reduce((sum, c) => sum + c.width, 0)).toBe(LEG_TABLE_WIDTH);
-    expect(LEG_TABLE_WIDTH).toBe(696);
+    expect(LEG_TABLE_WIDTH).toBe(716);
   });
 
   it('首列 = 行权价/到期 88px，且它 MUST NOT 出现在横滑列表里', () => {

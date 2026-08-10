@@ -31,6 +31,7 @@ import {
 import { ManualSlotRow } from './manual-slot-row';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { optionsdeskAnchorEditRoute } from './optionsdesk-routes';
+import { formatPriceText } from './price-format.rules';
 import { useAnchorForm } from './use-anchor-form';
 import { useDeleteAnchor, useReviewAnchor, useUpdateAnchor } from './use-anchor-mutations';
 import { TickerSearchPicker } from './ticker-search-picker';
@@ -302,7 +303,7 @@ function AnchorFormBody({ anchor }: { anchor: AnchorResponse | null }) {
               <ManualSlotRow
                 slot="v"
                 label="V"
-                effectiveText={anchor.v}
+                effectiveText={formatPriceText(anchor.v)}
                 isManual={anchor.vIsManual}
                 derivedLabel={`${COPY.derivedVLabel} ${anchor.vModel}`}
                 followsLabel={COPY.followsUpstream(COPY.derivedVLabel)}
@@ -310,10 +311,12 @@ function AnchorFormBody({ anchor }: { anchor: AnchorResponse | null }) {
                 busy={busySlot === 'v'}
                 onApply={(value) => void applyManual('v', value)}
               />
-              <ReadonlyRow label={COPY.wLabel} value={anchor.w} />
+              <ReadonlyRow label={COPY.wLabel} value={formatPriceText(anchor.w)} />
               <ReadonlyRow
                 label={COPY.zoneLabel}
-                value={`${anchor.zoneFloor} / ${anchor.w} / ${anchor.v} / ${anchor.zoneCeiling}`}
+                value={[anchor.zoneFloor, anchor.w, anchor.v, anchor.zoneCeiling]
+                  .map(formatPriceText)
+                  .join(' / ')}
               />
               <ManualSlotRow
                 slot="lLevel"

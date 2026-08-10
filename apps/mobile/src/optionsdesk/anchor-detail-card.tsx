@@ -9,6 +9,7 @@ import { Text, View } from 'react-native';
 import type { AnchorResponse } from '@nvy/api-client';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { formatPriceText } from './price-format.rules';
 import {
   anchorCardFields,
   anchorManualNotices,
@@ -44,7 +45,7 @@ export function AnchorDetailCard({
         <View className="gap-0.5">
           <Text className="text-xs text-ink-muted">{COPY.willingBuyAnchor}</Text>
           <Text className="font-mono text-2xl font-bold text-err" testID={`${testID}-w`}>
-            {anchor.w}
+            {formatPriceText(anchor.w)}
           </Text>
         </View>
         <View className="items-end gap-xs">

@@ -1,4 +1,4 @@
-// 047 T032 — 腿行（12 列 696px；FR-003/005, plan D-UI-1）。
+// 047 T032 — 腿行（12 列 716px；FR-003/005, plan D-UI-1）。
 //
 // 🚨 **首列（行权价/到期，88px）渲在横向滚动之外 ⇒ 天然钉住**；右侧 11 列进
 //    `LegColumnScroller`，与表头共享同一个 offset（横向机制的注释单源在 `leg-table-header.tsx`）。
@@ -19,6 +19,7 @@ import type { LegActivityResponse, LegResponse } from '@nvy/api-client';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { formatPriceText } from './price-format.rules';
 import {
   LEG_ACTION_TAG_CLASS,
   legActionLabel,
@@ -39,6 +40,7 @@ import {
   deltaCell,
   expiryLabel,
   formatCount,
+  formatQuoteSize,
   formatTurnover,
   sigmaCell,
   strikeLabel,
@@ -112,15 +114,28 @@ export function LegRow({ leg, offset, today, activity, showBasisBadge = true }: 
       {/* ── 右侧 11 列（与表头同 offset）──────────────────────────────── */}
       <LegColumnScroller offset={offset} testID={`optionsdesk-detail-leg-scroller-${leg.code}`}>
         {/* 🚨 bid/ask 合并一列：**档位色只着这一格**；ask 小字常显（不参与判档）。 */}
+        {/* 🚨 格内是**两个子列**（买侧 / 卖侧），各自「价上量下」并左对齐 —— 上下两行的左边缘
+            必须咬齐，否则 `0.40` 与 `×311` 宽度不同会各自飘。子列定宽而非靠 gap 撑，
+            这样整张表逐行的两侧位置也一致（行与行之间不会因数字位数不同而错位）。 */}
         <NumCell
           columnKey="bid"
           className={bidTone.container}
+          align="start"
           testID={`optionsdesk-detail-leg-bid-${leg.code}`}
         >
-          <Text className={`font-mono text-[11px] font-semibold ${bidTone.text}`}>
-            {leg.bid ?? COPY.noValue}
-          </Text>
-          <Text className="font-mono text-[8px] text-ink-muted">{leg.ask ?? COPY.noValue}</Text>
+          <View className="flex-row gap-1">
+            <QuoteSide
+              price={leg.bid === null ? COPY.noValue : formatPriceText(leg.bid)}
+              size={formatQuoteSize(leg.bidSize)}
+              // 🚨 档位色**只上买侧的价**；卖侧与两个量一律 muted，染上会被读成「它们也参与判档」。
+              priceClass={`font-semibold ${bidTone.text}`}
+            />
+            <QuoteSide
+              price={leg.ask === null ? COPY.noValue : formatPriceText(leg.ask)}
+              size={formatQuoteSize(leg.askSize)}
+              priceClass="text-ink-muted"
+            />
+          </View>
         </NumCell>
 
         {/* 🚨 费率：收租行主显年化 / 建仓行主显周化；**薄档行副标换成 `ask` 口径值**。 */}
@@ -176,21 +191,50 @@ export function LegRow({ leg, offset, today, activity, showBasisBadge = true }: 
   );
 }
 
-/** 数值列（右对齐 + 等宽字体）。`className` 是档位底色的挂点（**只有 bid 列会传**）。 */
+/**
+ * bid/ask 格内的一侧：价在上、挂牌量在下，**左对齐且定宽** —— 定宽是为了逐行两侧位置一致，
+ * 不随数字位数抖动。宽度按最宽真实内容取（价 `10.90` 5 字符、量 `×311` 4 字符 @ 11px 等宽）。
+ */
+function QuoteSide({
+  price,
+  size,
+  priceClass,
+}: {
+  price: string;
+  size: string;
+  priceClass: string;
+}) {
+  return (
+    <View className="w-9 items-start">
+      <Text className={`font-mono text-[11px] ${priceClass}`}>{price}</Text>
+      <Text className="font-mono text-[8px] text-ink-muted">{size}</Text>
+    </View>
+  );
+}
+
+/**
+ * 数值列（默认右对齐 + 等宽字体）。`className` 是档位底色的挂点（**只有 bid 列会传**）。
+ *
+ * 📌 `align="start"` 供 bid/ask 那种**格内还有子列**的单元格用：格内两侧各自「价上量下」，
+ * 只有左对齐才能让上下两行的左边缘咬齐；右对齐会让 `0.40` 与 `×311` 各自贴右、上下错开。
+ * 其余单列数值一律保持右对齐（同量纲数字比大小靠右边缘）。
+ */
 function NumCell({
   columnKey,
   className,
+  align = 'end',
   testID,
   children,
 }: {
   columnKey: Parameters<typeof legColumnWidth>[0];
   className?: string;
+  align?: 'start' | 'end';
   testID?: string;
   children: React.ReactNode;
 }) {
   return (
     <View
-      className={`items-end justify-center px-1.5 ${className ?? ''}`}
+      className={`${align === 'start' ? 'items-start' : 'items-end'} justify-center px-1.5 ${className ?? ''}`}
       style={{ width: legColumnWidth(columnKey) }}
       testID={testID}
     >

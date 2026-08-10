@@ -23,6 +23,7 @@ import {
 } from './anchor-list.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskAnchorEditRoute } from './optionsdesk-routes';
+import { formatPriceText } from './price-format.rules';
 
 const COPY = OPTIONSDESK_COPY.anchorList;
 
@@ -191,8 +192,8 @@ function AnchorCard({ anchor, today, onPress }: AnchorCardProps) {
       ) : null}
 
       <View className="flex-row flex-wrap gap-md">
-        <Field label={COPY.vLabel} value={anchor.v} />
-        <Field label={COPY.wLabel} value={anchor.w} />
+        <Field label={COPY.vLabel} value={formatPriceText(anchor.v)} />
+        <Field label={COPY.wLabel} value={formatPriceText(anchor.w)} />
         <Field label={COPY.confidenceLabel} value={anchor.confidence} />
         <Field label={COPY.nextReviewLabel} value={anchor.nextReview ?? COPY.noValue} />
       </View>

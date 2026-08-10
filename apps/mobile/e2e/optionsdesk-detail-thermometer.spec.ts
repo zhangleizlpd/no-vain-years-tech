@@ -255,6 +255,8 @@ const DEFAULT_LEGS: LegResponse[] = [
     dteDays: 180,
     bid: '3.40',
     ask: '3.70',
+    bidSize: 25,
+    askSize: 26,
     basis: 'annualized',
     periodRate: '0.047486',
     weeklyRate: '0.001846',
@@ -280,6 +282,8 @@ const DEFAULT_LEGS: LegResponse[] = [
     dteDays: 11,
     bid: '1.15',
     ask: '1.30',
+    bidSize: 12,
+    askSize: 18,
     basis: 'weekly',
     periodRate: '0.014589',
     weeklyRate: '0.009284',
@@ -861,7 +865,7 @@ test('046 T020/T021 — 切 10Y：请求粒度转月 K·起点回退 10 年，�
     timeout: 90_000,
   });
   // 四区间边界（只依赖锚）—— 切窗口前先记下 W 界线。
-  await expect(page.getByText('W 80', { exact: true })).toBeVisible();
+  await expect(page.getByText('W 80.00', { exact: true })).toBeVisible();
 
   await page.getByTestId('optionsdesk-detail-series-window-10Y').tap();
 
@@ -879,7 +883,7 @@ test('046 T020/T021 — 切 10Y：请求粒度转月 K·起点回退 10 年，�
   expect(last?.from).toBe(ymdMinusYears(TODAY, 10));
   expect(last?.to).toBe(TODAY);
   // FR-010 / state_branch #14：切窗口**不改**四区间边界。
-  await expect(page.getByText('W 80', { exact: true })).toBeVisible();
+  await expect(page.getByText('W 80.00', { exact: true })).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-series-zone-buy')).toBeVisible();
 });
 

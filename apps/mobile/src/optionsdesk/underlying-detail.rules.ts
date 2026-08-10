@@ -26,6 +26,7 @@ import type {
 import { formatAsOfLabel } from '~/format/as-of';
 import { formatPositionCap } from './anchor-form.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { formatPriceText } from './price-format.rules';
 import { barsPeriodForWindow, type TimeSeriesWindow } from './window-granularity.rules';
 import type { BandZone } from './zone-band.rules';
 
@@ -235,8 +236,8 @@ export function anchorCardFields(anchor: AnchorCardInput): AnchorCardField[] {
   const value: Record<AnchorCardFieldKey, string> = {
     lLevel: anchor.lLevelEffective,
     asof: `${COPY.anchorCard.asofPrefix}${anchor.asof}`,
-    v: anchor.v,
-    w: anchor.w,
+    v: formatPriceText(anchor.v),
+    w: formatPriceText(anchor.w),
     confidence: `${anchor.confidence}${COPY.anchorCard.confidenceSuffix}`,
     method: anchor.method || COPY.anchorCard.noValue,
     positionCap: formatPositionCap(anchor.positionCap),

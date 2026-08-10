@@ -18,6 +18,7 @@ import type { DailyBarItem } from '@nvy/api-client';
 
 import { colors } from '~/theme';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { formatPriceText } from './price-format.rules';
 import {
   type FreshnessTier,
   chartAxis,
@@ -150,14 +151,14 @@ export function PriceZoneChart({
           <>
             <AxisLine
               y={priceToY(bounds.v, axis, CHART_HEIGHT)}
-              label={`V ${bounds.v}`}
+              label={`V ${formatPriceText(bounds.v)}`}
               lineClassName="bg-line-strong"
               textClassName="text-ink-muted"
             />
             {/* W = 愿买价锚：红色加粗（与 045 色带的 W 界线同语义）。 */}
             <AxisLine
               y={priceToY(bounds.w, axis, CHART_HEIGHT)}
-              label={`W ${bounds.w}`}
+              label={`W ${formatPriceText(bounds.w)}`}
               lineClassName="bg-err"
               textClassName="text-err font-bold"
             />

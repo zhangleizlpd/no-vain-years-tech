@@ -14,6 +14,7 @@
 import { Text, View } from 'react-native';
 import type { AnchorResponse } from '@nvy/api-client';
 
+import { formatPriceText } from './price-format.rules';
 import {
   BAND_SEGMENTS,
   BAND_V_PCT,
@@ -118,8 +119,16 @@ export function ZoneBand({ anchor, testID = 'optionsdesk-zone-band' }: ZoneBandP
       ) : null}
 
       {/* 刻度文字（轴区外）：W 标值且红色加粗，V 标在真实位置。 */}
-      <TickLabel pct={BAND_W_PCT} text={anchor.w} className="text-err font-bold text-[10px]" />
-      <TickLabel pct={BAND_V_PCT} text={`V ${anchor.v}`} className="text-ink-subtle text-[9px]" />
+      <TickLabel
+        pct={BAND_W_PCT}
+        text={formatPriceText(anchor.w)}
+        className="text-err font-bold text-[10px]"
+      />
+      <TickLabel
+        pct={BAND_V_PCT}
+        text={`V ${formatPriceText(anchor.v)}`}
+        className="text-ink-subtle text-[9px]"
+      />
     </View>
   );
 }
