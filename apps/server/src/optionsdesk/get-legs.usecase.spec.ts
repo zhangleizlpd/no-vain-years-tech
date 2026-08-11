@@ -741,3 +741,89 @@ describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-0
     expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));
   });
 });
+
+/**
+ * T014 —— 契约增量过 wire (`FR-027` / `FR-019b`, plan D-API)。
+ *
+ * 🚨 **本 describe 的判据全在 `toLegTableResponse` 之后**: 上面几个 describe 断的是 view (use
+ * case 的返回值), 而客户端拿到的是 DTO 映射后的对象 —— 少接一个字段, view 层的断言**一条都不
+ * 会红**。这层是那个缺口的唯一防线。
+ */
+describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', () => {
+  const responseOf = async (legs: LegFixture[] = LEGS, overrides: Record<string, unknown> = {}) =>
+    toLegTableResponse(await makeUseCase(makePrisma(overrides, legs)).execute(SYMBOL, NOW));
+
+  it('顶层 tabOrder 三个 Tab 逐字下发 (客户端 MUST 按它呈现, MUST NOT 自行重排)', async () => {
+    const res = await responseOf();
+
+    expect(res.tabOrder).toEqual({
+      all: ['C-C', 'C-D', 'C-A', 'C-B'],
+      build: ['C-C', 'C-D'],
+      rent: ['C-A', 'C-B'],
+    });
+    // 判别性: 它与 legs[] 的 legacy 载体顺序逐行不同 ⇒ 「映射时顺手拿 legs[] 的序」会红。
+    expect(res.legs.map((l) => l.code)).not.toEqual(res.tabOrder.all);
+  });
+
+  it('🚨 顶层 gateCounts 两个数各自过 wire —— 不合并成总数, 不串台', async () => {
+    // 一分钱腿 (bid 0.05 < 0.20 门槛) 移出响应; 宽价差腿 (6.00/6.00) 留在响应只出意图 Tab。
+    const penny: LegFixture = { ...LEGS[3], code: 'W-PENNY', bid: '0.05', ask: '0.15' };
+    const wide: LegFixture = { ...LEGS[3], code: 'W-WIDE', bid: '3.00', ask: '9.00' };
+    const res = await responseOf([LEGS[3], penny, wide]);
+
+    // 两个数**不相等**才谈得上「没串台」—— 相等的话把两个字段接反也照样绿。
+    expect(res.gateCounts).toEqual({ removedByPremiumFloor: 1, excludedFromIntentTabs: 1 });
+    // 语义不对称的机械体现: 前者的腿不在 legs[] 里, 后者的仍在。
+    expect(res.legs.map((l) => l.code).sort()).toEqual(['C-D', 'W-WIDE']);
+  });
+
+  it('顶层 basisByTab 常量映射下发 —— 客户端不必硬编码 FR-023 的 Tab → 口径', async () => {
+    const res = await responseOf();
+
+    expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
+    // 它与每腿的 `tierByTab` 必须是同一套口径: 建仓走周化档界, 全腿 Tab 例外恒年化。
+    const buildLeg = res.legs.find((l) => l.code === 'C-D');
+    expect([res.basisByTab.build, buildLeg?.tierByTab.build]).toEqual(['weekly', 'acceptable']);
+    expect([res.basisByTab.all, buildLeg?.tierByTab.all]).toEqual(['annualized', 'good']);
+  });
+
+  it('每腿 isRecommended / isMonthlyChain / tierByTab 逐条过 wire', async () => {
+    const res = await responseOf();
+
+    // 收租 · 深度 ⇒ 只有 |Δ| 0.05 落 deep 带 [0.05,0.15] 的 C-B 带标 (恒 false 会红)。
+    expect(res.legs.filter((l) => l.isRecommended).map((l) => l.code)).toEqual(['C-B']);
+    // 月度链: 2026-08-21 与 2027-01-15 是各自月份的第三个周五; 2026-08-14 (C-D) 是周链。
+    expect(
+      res.legs
+        .filter((l) => l.isMonthlyChain)
+        .map((l) => l.code)
+        .sort(),
+    ).toEqual(['C-A', 'C-B', 'C-C']);
+    // 非成员格恒 null —— 不属于该 Tab 就没有该 Tab 的档位。
+    expect(res.legs.find((l) => l.code === 'C-A')?.tierByTab).toEqual({
+      all: 'acceptable',
+      build: null,
+      rent: 'acceptable',
+    });
+  });
+
+  it('🚫 FR-019b: 特征集 MUST NOT 下发 —— 顶层与每腿都零 feature 字段', async () => {
+    const res = await responseOf();
+
+    const featureish = (obj: object) => Object.keys(obj).filter((k) => /feature/i.test(k));
+    expect(featureish(res)).toEqual([]);
+    for (const leg of res.legs) expect([leg.code, featureish(leg)]).toEqual([leg.code, []]);
+  });
+
+  it('链未就绪的空壳也带齐三个新顶层字段 (客户端不必为空态特判 undefined)', async () => {
+    const res = await responseOf(LEGS, {
+      instrument: { findUnique: vi.fn().mockResolvedValue(null) },
+    });
+
+    expect(res.state).toBe('chain_not_ready');
+    expect(res.tabOrder).toEqual({ all: [], build: [], rent: [] });
+    expect(res.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+    // 常量映射与有没有链无关 —— 空态下也是这三格。
+    expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
+  });
+});

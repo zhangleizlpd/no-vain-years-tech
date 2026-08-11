@@ -250,6 +250,10 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   turnover: '21420.00',
   activityByTab: { all: null, build: null, rent: null },
   tabs: ['all', 'rent'],
+  // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
+  tierByTab: { all: 'good', build: null, rent: 'good' },
+  isRecommended: false,
+  isMonthlyChain: false,
   earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
   greeksComplete: true,
 };
@@ -283,6 +287,16 @@ function makeLegTable(
     intent: 'pending',
     rentDepth: null,
     legs,
+    // 050 契约增量（P1 只镜像形状，消费归 P2）：`tabOrder[t]` 与每腿的 `tabs` **同源派生**
+    // （真端点的 Guardrail 9）—— 写死成空数组会让这份 mock 与被 mock 的契约当场矛盾。
+    // 顺序沿用入参顺序（真端点是该 Tab 口径的费率降序）。
+    tabOrder: {
+      all: legs.filter((l) => l.tabs.includes('all')).map((l) => l.code),
+      build: legs.filter((l) => l.tabs.includes('build')).map((l) => l.code),
+      rent: legs.filter((l) => l.tabs.includes('rent')).map((l) => l.code),
+    },
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
     ...over,
   };
 }

@@ -10,6 +10,7 @@ import type { LegEarningsMarkResponse } from './legEarningsMarkResponse';
 import type { LegResponseBasis } from './legResponseBasis';
 import type { LegResponseTabsItem } from './legResponseTabsItem';
 import type { LegResponseTier } from './legResponseTier';
+import type { LegTierByTabResponse } from './legTierByTabResponse';
 
 export interface LegResponse {
   /** vendor 合约代码 */
@@ -58,6 +59,12 @@ export interface LegResponse {
   activityByTab: LegActivityByTabResponse;
   /** 本腿属于哪几个 Tab —— **客户端据此过滤**, MUST NOT 自己重算成员判据 (判据单点在 server) */
   tabs: LegResponseTabsItem[];
+  /** 每个 Tab **各自口径**下的档位 (FR-023) —— 建仓走周化档界、收租与全腿走年化。同一条腿在两个 Tab 判出不同档是**定义如此**; 不属于该 Tab 的格恒 null。上面的标量 tier 是 legacy 载体 */
+  tierByTab: LegTierByTabResponse;
+  /** 推荐标 (FR-011): 本腿 |Δ| 落**标的级意图**对应的带内。🚨 **随意图判, 不随当前 Tab 变** —— 收租意图下打开建仓 Tab 会看到全 false, 那是**正确信号**不是 bug; greeks 缺失恒 false (FR-013), 但该腿**照常在召回集里** */
+  isRecommended: boolean;
+  /** 到期日是不是该月的**月度到期日** (FR-014, 判据 = 该月第三个周五; 该日非交易日则取其前一交易日) —— 月度链流动性通常显著好于周链。🚫 呈现侧 MUST NOT 简化成「是不是周五」 */
+  isMonthlyChain: boolean;
   /** 财报标; **建仓域恒 null** (UI 显「—」) —— 与 no_date (虚线 chip) 是两个值 */
   earningsMark: LegEarningsMarkResponse | null;
   /** greeks 是否齐全 (FR-007「数据不全」标注); false 的行**照常在表内** */

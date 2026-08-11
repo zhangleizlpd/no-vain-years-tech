@@ -5,6 +5,8 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
+import type { LegBasisByTabResponse } from './legBasisByTabResponse';
+import type { LegGateCountsResponse } from './legGateCountsResponse';
 import type { LegResponse } from './legResponse';
 import type { LegTableResponseAsOfFreshnessTier } from './legTableResponseAsOfFreshnessTier';
 import type { LegTableResponseIntent } from './legTableResponseIntent';
@@ -14,6 +16,7 @@ import type { LegTableResponsePositionBucketSource } from './legTableResponsePos
 import type { LegTableResponseRentDepth } from './legTableResponseRentDepth';
 import type { LegTableResponseState } from './legTableResponseState';
 import type { LegTableResponseZone } from './legTableResponseZone';
+import type { LegTabOrderResponse } from './legTabOrderResponse';
 
 export interface LegTableResponse {
   /** canonical `market:code` */
@@ -50,4 +53,10 @@ export interface LegTableResponse {
   rentDepth: LegTableResponseRentDepth;
   /** **全量适格腿, 零分页零 top-N 截断** (FR-005) —— 已滤非标 (FR-008) 与已到期 (FR-028a)。死档行照常在内且排在末尾; greeks 缺失行照常在内且不判档 */
   legs: LegResponse[];
+  /** 每个 Tab 一份**有序的合约代码列表** (FR-021a) —— 精排在 server 完成, 客户端 MUST 按它呈现、MUST NOT 自行重排。腿本体仍只下发一份 (MUST NOT 按 Tab 复制)。🚫 它**不是** legs[] 的新排序: 后者是 legacy 载体顺序 (档位 → 到期日 → 行权价 → code), 旧客户端仍按它渲染 */
+  tabOrder: LegTabOrderResponse;
+  /** 两道门槛各自挡下多少条 (FR-008) ——「有腿消失了」必须可见且可行动。🚨 两个数**语义不对称**, 见各自字段说明 */
+  gateCounts: LegGateCountsResponse;
+  /** Tab → 档位判定口径的**常量映射** (FR-023) —— 下发一次, 免客户端硬编码这份映射 (硬编码必与 server 漂移, 且漂移时两边都算得出结果)。每腿的 tierByTab 就是按它判出来的 */
+  basisByTab: LegBasisByTabResponse;
 }
