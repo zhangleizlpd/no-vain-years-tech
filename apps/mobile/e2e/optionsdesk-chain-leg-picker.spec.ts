@@ -165,6 +165,10 @@ function asOfLabel(asOf: string): string {
 /** 腿行高（`leg-table-header.ts` 的 `LEG_ROW_HEIGHT`）—— SC-012 的滚动区长度换算基准。 */
 const LEG_ROW_HEIGHT = 48;
 
+/** 首列宽 / 右侧列区内容总宽（`leg-row.rules.ts` 的同名常量）—— 指示条长度比的换算基准。 */
+const LEG_STICKY_COL_WIDTH = 88;
+const LEG_SCROLL_REGION_WIDTH = 628;
+
 // ════════════════════════════════════════════════════════════════════════════
 // canonical 数据（= 服务端 DB 内容的镜像）
 // ════════════════════════════════════════════════════════════════════════════
@@ -494,6 +498,9 @@ function detailUrl(symbol: string): string {
 const SCROLL = 'optionsdesk-detail-scroll';
 const HEADER_SCROLLER = 'optionsdesk-detail-leg-header-scroller';
 
+const SCROLLBAR = 'optionsdesk-detail-leg-scrollbar';
+const SCROLLBAR_THUMB = 'optionsdesk-detail-leg-scrollbar-thumb';
+
 const rowId = (code: string) => `optionsdesk-detail-leg-row-${code}`;
 const rowScrollerId = (code: string) => `optionsdesk-detail-leg-scroller-${code}`;
 const markId = (code: string) => `optionsdesk-detail-leg-mark-${code}`;
@@ -558,6 +565,54 @@ async function wheelUntil(page: Page, ready: () => Promise<boolean>, steps = 30)
     await page.waitForTimeout(120);
   }
   return ready();
+}
+
+/**
+ * 横向拖拽 —— 049 起横滑由 `Gesture.Pan` 驱动，**只吃指针事件流**：
+ *   · `page.mouse.wheel(dx, 0)` **不驱动** RNGH 的 Pan（滚轮走的是另一条通路）；
+ *   · 一次到位的 `mouse.move` 可能被当成瞬移，跨不过 `.activeOffsetX([-12,12])` 的方向仲裁。
+ * ⇒ 必须 `down` → **多次** `move` → `up`。`dx < 0` = 手指往左划 = 列区左移（露出右侧列）。
+ * 起手点取目标右侧 20% 处，往左划时指针仍留在元素内。复杂度 O(steps)。
+ */
+async function dragHorizontally(
+  page: Page,
+  target: Locator,
+  dx: number,
+  steps = 12,
+): Promise<void> {
+  const box = await target.boundingBox();
+  if (box === null) throw new Error('拖拽目标不可见，取不到 boundingBox');
+  const y = box.y + box.height / 2;
+  const startX = box.x + box.width * 0.8;
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(startX + (dx * i) / steps, y);
+    await page.waitForTimeout(16);
+  }
+  await page.mouse.up();
+}
+
+/** 元素左缘 x。取不到就抛 —— 静默返回 0 会把断言变成假绿。 */
+async function boxX(target: Locator): Promise<number> {
+  const box = await target.boundingBox();
+  if (box === null) throw new Error('取不到 boundingBox');
+  return box.x;
+}
+
+/**
+ * 等 `withDecay` 惯性收敛：连续两次读到同一个 x（±0.5px）才算停。
+ * 🚨 松手后位移还在跑，不等就读 ⇒ 后续「Δx 不变」这类断言会读到还在动的中间值。
+ */
+async function settledX(page: Page, target: Locator): Promise<number> {
+  let prev = await boxX(target);
+  for (let i = 0; i < 25; i++) {
+    await page.waitForTimeout(120);
+    const now = await boxX(target);
+    if (Math.abs(now - prev) <= 0.5) return now;
+    prev = now;
+  }
+  throw new Error('位移 3s 内未收敛（松手后仍在持续写入？）');
 }
 
 /** 等选约区块出现（首发吃 Metro 冷打包 ⇒ 长超时锚在区块头）。 */
@@ -732,6 +787,115 @@ test('047 T035 — US2-AS6：横滑露出隐藏列且首列钉住，表头与行
     Math.abs(afterVertical.left - afterX.left),
     '纵向滚动把横向位移带跑了（两个方向在抢同一个响应者）',
   ).toBeLessThanOrEqual(1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ②b 049 T004 —— 横向指示条（FR-005 / FR-006 / spec Edge Case ①）
+// ════════════════════════════════════════════════════════════════════════════
+
+test('049 T004 — 横向指示条：轨道左端对齐首列右缘、thumb 长度比 = 可视宽/内容宽、随同一个 tx 右移、拖到底贴右缘（FR-005/FR-006）', async ({
+  page,
+}) => {
+  const legs = manyLegs(8);
+  const code = legs[0]?.code ?? '';
+  await installLegMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
+    legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
+  });
+  await openDetail(page, 'us:PEP');
+
+  const bar = page.getByTestId(SCROLLBAR);
+  const thumb = page.getByTestId(SCROLLBAR_THUMB);
+  const row = page.getByTestId(rowId(code));
+  // 拖拽要落在真实元素上 ⇒ 先把行滚进视口（指示条在 sticky 表头栈里，滚了也仍在）。
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+  await expect(bar, '有可滑动余量却看不到指示条（FR-005 要求常显）').toBeVisible();
+  await expect(thumb).toBeVisible();
+
+  const rowBox = await row.boundingBox();
+  const trackBox = await bar.boundingBox();
+  const thumb0 = await thumb.boundingBox();
+  if (rowBox === null || trackBox === null || thumb0 === null) throw new Error('指示条尺寸不可得');
+
+  // ① 轨道左端与首列右缘对齐 ⇒ 轨道宽 = 横滑可视宽 ⇒ 长度比即列宽比，无需二次换算。
+  expect(
+    Math.abs(trackBox.x - (rowBox.x + LEG_STICKY_COL_WIDTH)),
+    '轨道左端没对齐首列右缘 —— 长度比会跟着错',
+  ).toBeLessThanOrEqual(1);
+
+  // ② 前提自检：真的有溢出（轨道窄于内容），否则下面全套断言毫无意义。
+  expect(trackBox.width, '轨道宽 ≥ 内容宽：视口太宽，指示条验不到').toBeLessThan(
+    LEG_SCROLL_REGION_WIDTH,
+  );
+
+  // ③ 长度比 = 可视宽 / 内容宽（thumb 宽 = 轨道宽² / 内容宽）。
+  expect(
+    Math.abs(thumb0.width - (trackBox.width * trackBox.width) / LEG_SCROLL_REGION_WIDTH),
+    `thumb 宽 ${thumb0.width} 与列宽比不符（轨道 ${trackBox.width} / 内容 ${LEG_SCROLL_REGION_WIDTH}）`,
+  ).toBeLessThanOrEqual(1);
+  expect(Math.abs(thumb0.x - trackBox.x), '初始位移为 0，thumb 应贴轨道左端').toBeLessThanOrEqual(
+    1,
+  );
+
+  // ④ 拖一段 ⇒ thumb 往右走（位置由驱动表格的同一个 tx 派生，FR-006）。
+  await dragHorizontally(page, row, -120);
+  const thumbAfter = await settledX(page, thumb);
+  expect(thumbAfter, '拖了列，thumb 没跟着右移').toBeGreaterThan(thumb0.x + 1);
+
+  // ⑤ 拖到底 ⇒ thumb 右缘贴轨道右缘（多次拖到位移不再变化为止）。
+  let last = thumbAfter;
+  for (let i = 0; i < 8; i++) {
+    await dragHorizontally(page, row, -280);
+    const now = await settledX(page, thumb);
+    if (Math.abs(now - last) <= 0.5) break;
+    last = now;
+  }
+  const thumbEnd = await thumb.boundingBox();
+  if (thumbEnd === null) throw new Error('thumb 尺寸不可得');
+  expect(
+    Math.abs(thumbEnd.x + thumbEnd.width - (trackBox.x + trackBox.width)),
+    '滑到最右后 thumb 没贴右缘',
+  ).toBeLessThanOrEqual(1);
+});
+
+test('049 T004 — 无横向溢出（宽视口）⇒ 指示条整条不渲染 **且** 拖拽不产生位移（spec Edge Case ①，两件事都要验）', async ({
+  page,
+}) => {
+  // 🚨 宽到 12 列全部装得下 ⇒ 合法域退化成一个点。**只验「不渲染」会漏掉「没有余量却仍能拖动」**。
+  await page.setViewportSize({ width: 1024, height: 844 });
+  const legs = manyLegs(8);
+  const code = legs[0]?.code ?? '';
+  await installLegMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
+    legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
+  });
+  await openDetail(page, 'us:PEP');
+
+  const row = page.getByTestId(rowId(code));
+  const actionCell = page.getByTestId(actionId(code));
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+
+  // 前提自检：末列已完整露出 ⇒ 确无可滑动余量（这条不成立时下面两条都会假绿）。
+  const rowBox = await row.boundingBox();
+  const actionBox = await actionCell.boundingBox();
+  if (rowBox === null || actionBox === null) throw new Error('行 / 动作列尺寸不可得');
+  expect(
+    actionBox.x + actionBox.width,
+    '末列仍在视区外：视口不够宽，无溢出前提不成立',
+  ).toBeLessThan(rowBox.x + rowBox.width + 1);
+
+  // ① 整条不渲染。📌 这一条单独看会「元素不存在也通过」—— 它与上一条（有溢出时**必须**看得见）
+  //    成对才有意义，别只留这一条。
+  await expect(page.getByTestId(SCROLLBAR), '无可滑动余量时指示条仍在（FR-005）').toBeHidden();
+  await expect(page.getByTestId(SCROLLBAR_THUMB)).toBeHidden();
+
+  // ② 拖拽不产生位移 —— clamp 后合法域是一个点，怎么拖都回到 0。
+  const before = actionBox.x;
+  await dragHorizontally(page, row, -300);
+  const after = await settledX(page, actionCell);
+  expect(Math.abs(after - before), '没有横向余量却拖出了位移（clamp 越界）').toBeLessThanOrEqual(1);
 });
 
 // ════════════════════════════════════════════════════════════════════════════

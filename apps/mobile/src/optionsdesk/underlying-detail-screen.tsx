@@ -52,7 +52,7 @@ import { useSharedValue } from 'react-native-reanimated';
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { AnchorDetailCard } from './anchor-detail-card';
 import { IvReadoutBlock } from './iv-readout-block';
-import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
+import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
 import { legActivityForTab, rateSubForTab, showsBasisBadge } from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
@@ -206,6 +206,13 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       tx={tx}
                       rateSub={rateSubForTab(legTable.tab)}
                       oiAsOf={legTable.table?.oiAsOf ?? null}
+                    />
+                    {/* 🚨 指示条钉在 12 列表头**正下方**（不是表格底部）—— 它描述列的位置，
+                        且要跟着 sticky 栈走（FR-005）。几何读同一个 `tx`，无第二个来源。 */}
+                    <LegColumnScrollbar
+                      tx={tx}
+                      viewportW={viewportW}
+                      contentWidth={LEG_SCROLL_REGION_WIDTH}
                     />
                   </View>
                 )}

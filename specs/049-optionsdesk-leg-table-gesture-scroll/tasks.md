@@ -29,7 +29,7 @@ updated_at: '2026-08-11'
   → verify: 真机 dev console **不得出现** `Invalid prop 'collapsable' supplied to 'React.Fragment'` 或 `child may get view-flattened` 任一（🚫 MUST NOT 用 `LogBox.ignoreLogs` 压掉 —— 那两条告警是「手势没挂上」的唯一信号）；真机横竖屏各切一次后仍能滑到最右列
   → verify（承 spec Edge Case ②，**这条最容易在 impl 期被"顺手优化"掉且不会红**）: 真机在**锚卡 / 温度计 / 区间时序**区域横滑，列位移**照常发生**（那时表在屏外、视觉无感，是设计意图不是 bug）；且 `grep -nE "nativeEvent.*locationY|pageY|measure\(" apps/mobile/src/optionsdesk/underlying-detail-screen.tsx` **零命中** —— 🚫 MUST NOT 用 y 坐标判定手势归属，那是脆逻辑
 
-- [ ] T004 `LegColumnScrollbar({ tx, viewportW, contentWidth })` 落 `leg-column-pane.tsx`，渲在 **12 列表头正下方**（`.tblwrap` 内绝对定位，`top` = 表头高、`left` = 首列宽），2px 高；thumb 宽 = `max(trackW × trackW / contentWidth, 24)`，位置由**同一个** `tx` 派生；`travel ≤ 0` 时整条不渲染 (FR-005, FR-006, plan D-SCROLL-4)
+- [X] T004 `LegColumnScrollbar({ tx, viewportW, contentWidth })` 落 `leg-column-pane.tsx`，渲在 **12 列表头正下方**（`.tblwrap` 内绝对定位，`top` = 表头高、`left` = 首列宽），2px 高；thumb 宽 = `max(trackW × trackW / contentWidth, 24)`，位置由**同一个** `tx` 派生；`travel ≤ 0` 时整条不渲染 (FR-005, FR-006, plan D-SCROLL-4)
   → verify: 真机看「thumb 长度比 = 列宽比 / 拖到底贴右缘 / 表格不溢出时整条不出现」；🚫 全文件 `grep useSharedValue` 只应命中屏级那一个 `tx`（指示条 MUST NOT 另立第二个来源）
   → verify（承 spec Edge Case ① 后半）: 构造无横向溢出的场景（临时把 `contentWidth` 传成小于可视宽，或宽屏 web 视口）→ 指示条整条不渲染**且拖拽不产生位移**（`tx` 恒 0）—— 两件事都要验，只验前者会漏掉「没有余量却仍能拖动」这种越界
 
