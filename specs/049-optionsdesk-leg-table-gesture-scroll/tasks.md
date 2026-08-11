@@ -53,8 +53,10 @@ updated_at: '2026-08-11'
   → 📌 **M8 增补（承 T007 挪入）**：「未选水位两条注明时数据区仍见 **≥3 行**」这条判据 web 侧恒真（实测见 T007），**只在真机成立**，M8 逐条时**必须实数**：报可见行数 + sticky 栈净高实测 px + 占可用高度比（与 web 侧的 185px / 12.4 行 / 29.5% 对照）
   → verify: M1 自激环判定**必须靠探针计数**（净位移为零而写入/反转仍在涨 = 失败签名，静态截图此时看起来是对齐的）；M1/M3 **必须人手滑**，`adb shell input swipe` 不算数；结论 + 探针读数回写 `spec.md` 验证段；🚫 探针代码验完删除、**不入仓**
 
-- [ ] T009 回填主 plan（`docs/private/plans/2026-08/08-11-optionsdesk-leg-engine-master.md`）：本片实测的栈高值与真机反转计数、`LegColumnPane` / `useLegColumnPan` 的最终签名（P1–P3 要照着接） (plan D-DEBT)
+- [X] T009 回填主 plan（`docs/private/plans/2026-08/08-11-optionsdesk-leg-engine-master.md`）：本片实测的栈高值与真机反转计数、`LegColumnPane` / `useLegColumnPan` 的最终签名（P1–P3 要照着接） (plan D-DEBT)
   → verify: 主 plan 的四片依赖表与未决项已更新；`LegColumnPane` 签名与代码逐字一致
+  → 📌 **落地**（主 plan 为 local-only / gitignored，故本 commit 只含本文件）：四片表 P0 标 ✅ ship、退出标准记「M1–M7 全绿 + M8 栈高绿，a11y 角色播报与旋转档两项未按通过计」，新增 §2.1「P0 交付物」承载六个导出的逐字签名 + 位移语义四条 + 真机栈高/自激环实测。未决项由 4 条增至 **9** 条（#5 读屏基准 / #6 锁竖屏 / #7 dev 期权数据被每日同步清空 / #8 快照表无上限增长 / #9 深链配置债）
+  → ⚠️ **回填时修正了一处交接失真**：#7 的根因不是「`TABLE_POLICIES` 里是 `skip`」，而是**仓内 2026-08-10 已翻 `full` 但 `setup.sh` 未重跑**，09:05 实际跑的 `~/.nvy` 副本仍是旧版 ⇒ 修法是重跑 setup 部署，**不是**每次验收前手工重灌
 
 ## 依赖
 
