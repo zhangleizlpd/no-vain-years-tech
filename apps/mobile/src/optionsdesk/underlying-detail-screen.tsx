@@ -23,19 +23,41 @@
 // 📌 **FR-011 的「常驻」= 区块页脚不可折叠、不随状态消失**，不是屏幕常驻 —— 与 046
 //    `thermometer-screen.tsx` 把 FR-019 免责渲在滚动容器**之外**那个范式**不同**。
 //
+// ── 049 T003 横滑手势层（FR-001/003/004, plan D-SCROLL-2/3）──────────────────────
+// 🚨 **手势挂在包住整个 `SectionList` 的那一层** —— 它要同时覆盖表头（`renderSectionHeader`）
+//    与所有行（`renderItem`），二者是 `SectionList` 的两个不同槽位。
+// 🚨 **`GestureDetector` 的子节点必须是单个带 `collapsable={false}` 的原生 `View`**：传
+//    Fragment 或被 view-flattening 压平，手势**静默不生效**；dev console 那两条告警
+//    （`Invalid prop 'collapsable' supplied to 'React.Fragment'` / `child may get
+//    view-flattened`）是唯一信号，🚫 MUST NOT 用 `LogBox.ignoreLogs` 压掉。
+// 🚨 **屏自包裹 `GestureHandlerRootView`** —— 根 `_layout` 不全局挂，漏了是 Render Error。
+// 🚨 **可视宽走 `onLayout` 实测，不用 `useWindowDimensions()`** —— 后者假设「表宽 = 窗宽」，
+//    将来加左右 padding 或平板分栏会**静默算错 clamp 边界**（右侧列滑不到底，不会红）。
+//    变宽时顺手把 `tx` 拉回新域，否则竖→横→竖后卡在越界位置只能反向滑。
+// 📌 **手势区覆盖到 `ListHeaderComponent` 的 046 三块是设计意图不是 bug**：在锚卡 / 温度计 /
+//    区间时序上横滑也会移动列，那时表在屏外、视觉无感。🚫 MUST NOT 拿触点的 y 坐标
+//    （无论取自事件还是事后量元素位置）去「精修」手势区 —— 那是脆逻辑，spec Edge Case ②
+//    明令禁止；tasks.md T003 的 verify 用一条 `grep` 逐字列了那几个 API 名并要求本文件
+//    **零命中**，故这里蓄意不复写。
+// 🚫 **MUST NOT 在外面再包 `ScrollView`** —— `SectionList` 仍是全页唯一纵向滚动容器
+//    （同上方 047 T031 那条，RN 只打一条 dev warning，CI 会全绿）。
+//
 // 判定全在 `underlying-detail.rules.ts`（vitest 覆盖）；本文件与子件只做接线与版面，
 // 渲染 / 交互 / a11y 走 Playwright e2e（本仓测试分层：vitest=logic / Playwright=UI）。
-import { Pressable, SectionList, Text, View } from 'react-native';
+import { Pressable, SectionList, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
+import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSharedValue } from 'react-native-reanimated';
 
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { AnchorDetailCard } from './anchor-detail-card';
 import { IvReadoutBlock } from './iv-readout-block';
+import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
 import { legActivityForTab, rateSubForTab, showsBasisBadge } from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
 import { LegRow } from './leg-row';
+import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { OPTIONSDESK_ANCHOR_NEW_ROUTE } from './optionsdesk-routes';
@@ -63,132 +85,154 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
   const detail = useUnderlyingDetail(symbol);
   const legTable = useLegTable(symbol);
   const { composition } = detail;
-  // 表头与每个数据行**共享**这一个横向位移（方向正交 ⇒ 与纵向 SectionList 不争手势）。
-  const columnOffset = useSharedValue(0);
+  // 🚨 表头与每个数据行**共读**这一个横向位移，且**只有这一个来源**（FR-001）。
+  //    负值域 `[maxTx, 0]`（translateX），**不是** 047 那个正的 scroll offset。
+  const tx = useSharedValue(0);
+  // 横滑可视宽 = 容器实测宽 − 首列宽。首帧 0 ⇒ 一帧不可滑，无感。
+  const viewportW = useSharedValue(0);
+  const pan = useLegColumnPan({ tx, viewportW, contentWidth: LEG_SCROLL_REGION_WIDTH });
   // canonical `market:code` → 展示用 code（解析失败退回原串，不丢信息）。
   const code = symbol.split(':')[1] ?? symbol;
+
+  const handleTableLayout = (event: LayoutChangeEvent) => {
+    const nextViewportW = Math.max(0, event.nativeEvent.layout.width - LEG_STICKY_COL_WIDTH);
+    viewportW.value = nextViewportW;
+    // 🚨 变宽时把位移拉回新合法域（旋转 / 分屏，FR-004）。夹的判据与手势内**同一份**。
+    // 📌 JS 线程读 `tx.value` 可能比 UI 线程晚一拍，但这里夹的目标是**边界**：读到旧值只会
+    //    让位置跳一下，不会留下越界状态 —— 故不值得为它引一层 `runOnUI`。
+    tx.value = clampLegColumnTx(tx.value, nextViewportW, LEG_SCROLL_REGION_WIDTH);
+  };
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
       <Stack.Screen options={{ title: code }} />
 
-      {composition.page === 'no_anchor' ? (
-        // FR-011：显式提示 + 建锚入口。**禁空白页 / 禁报错页**。
-        <View className="flex-1 items-center justify-center gap-md px-xl">
-          <Text className="text-center text-sm text-ink" testID="optionsdesk-detail-no-anchor">
-            {COPY.noAnchor.text}
-          </Text>
-          <Pressable
-            className="rounded-full bg-brand-500 px-lg py-sm"
-            accessibilityRole="button"
-            accessibilityLabel={COPY.noAnchor.cta}
-            testID="optionsdesk-detail-create-anchor"
-            onPress={() => router.push(OPTIONSDESK_ANCHOR_NEW_ROUTE)}
-          >
-            <Text className="text-sm font-semibold text-white">{COPY.noAnchor.cta}</Text>
-          </Pressable>
-        </View>
-      ) : (
-        <SectionList
-          className="flex-1 bg-surface-sunken"
-          sections={legTable.sections}
-          keyExtractor={(leg) => leg.code}
-          // 🚨 Guardrail 9 —— 只在 iOS 默认为 true，MUST 显式传（否则 Android 表头滚走）。
-          stickySectionHeadersEnabled={true}
-          testID="optionsdesk-detail-scroll"
-          ListHeaderComponent={
-            // ── 046 三块（FR-001 版式不动，三个组件一行不改）─────────────
-            <View className="gap-sm px-md py-sm">
-              {/* ── 块 ① 锚卡 ───────────────────────────────────────── */}
-              {composition.anchorCard === 'loading' ? (
-                <BlockSkeleton testID="optionsdesk-detail-anchor-card-loading" />
-              ) : composition.anchorCard === 'failed' || detail.detail === null ? (
-                <View className="rounded-md border border-line bg-surface px-md py-sm">
-                  <ErrorRow text={COPY.anchorCard.loadFailed} />
-                </View>
-              ) : (
-                <AnchorDetailCard anchor={detail.detail.anchor} today={detail.today} />
-              )}
+      {/* 🚨 屏自包裹手势根 —— 仓内根 `_layout` 不全局挂（同 `~/ui/SwipeRow` 自包裹范式）。 */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        {composition.page === 'no_anchor' ? (
+          // FR-011：显式提示 + 建锚入口。**禁空白页 / 禁报错页**。
+          <View className="flex-1 items-center justify-center gap-md px-xl">
+            <Text className="text-center text-sm text-ink" testID="optionsdesk-detail-no-anchor">
+              {COPY.noAnchor.text}
+            </Text>
+            <Pressable
+              className="rounded-full bg-brand-500 px-lg py-sm"
+              accessibilityRole="button"
+              accessibilityLabel={COPY.noAnchor.cta}
+              testID="optionsdesk-detail-create-anchor"
+              onPress={() => router.push(OPTIONSDESK_ANCHOR_NEW_ROUTE)}
+            >
+              <Text className="text-sm font-semibold text-white">{COPY.noAnchor.cta}</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <GestureDetector gesture={pan}>
+            {/* 🚨 单个原生 `View` + `collapsable={false}`：传 Fragment 或被 view-flattening
+              压平，手势静默不生效（见文件头）。`onLayout` 在这一层测的就是表宽。 */}
+            <View className="flex-1" collapsable={false} onLayout={handleTableLayout}>
+              <SectionList
+                className="flex-1 bg-surface-sunken"
+                sections={legTable.sections}
+                keyExtractor={(leg) => leg.code}
+                // 🚨 Guardrail 9 —— 只在 iOS 默认为 true，MUST 显式传（否则 Android 表头滚走）。
+                stickySectionHeadersEnabled={true}
+                testID="optionsdesk-detail-scroll"
+                ListHeaderComponent={
+                  // ── 046 三块（FR-001 版式不动，三个组件一行不改）─────────────
+                  <View className="gap-sm px-md py-sm">
+                    {/* ── 块 ① 锚卡 ───────────────────────────────────────── */}
+                    {composition.anchorCard === 'loading' ? (
+                      <BlockSkeleton testID="optionsdesk-detail-anchor-card-loading" />
+                    ) : composition.anchorCard === 'failed' || detail.detail === null ? (
+                      <View className="rounded-md border border-line bg-surface px-md py-sm">
+                        <ErrorRow text={COPY.anchorCard.loadFailed} />
+                      </View>
+                    ) : (
+                      <AnchorDetailCard anchor={detail.detail.anchor} today={detail.today} />
+                    )}
 
-              {/* ── 块 ② 个股温度计区块 ─────────────────────────────── */}
-              {composition.anchorCard === 'loading' ? (
-                <BlockSkeleton testID="optionsdesk-detail-iv-loading" />
-              ) : detail.detail === null ? null : (
-                <IvReadoutBlock iv={detail.detail.iv} onPanorama={onPanorama} />
-              )}
+                    {/* ── 块 ② 个股温度计区块 ─────────────────────────────── */}
+                    {composition.anchorCard === 'loading' ? (
+                      <BlockSkeleton testID="optionsdesk-detail-iv-loading" />
+                    ) : detail.detail === null ? null : (
+                      <IvReadoutBlock iv={detail.detail.iv} onPanorama={onPanorama} />
+                    )}
 
-              {/* ── 块 ③ 区间时序（四区间带只依赖锚 ⇒ 序列失败时照常画） ── */}
-              <PriceZoneChart
-                bounds={detail.detail ? parseZoneBounds(detail.detail.anchor) : null}
-                items={detail.series}
-                state={composition.series}
-                window={detail.window}
-                onWindowChange={detail.setWindow}
-                onRetry={detail.retrySeries}
-                anchorAsof={detail.detail?.anchor.asof ?? null}
-                today={detail.today}
-                freshnessTier={detail.seriesFreshnessTier}
+                    {/* ── 块 ③ 区间时序（四区间带只依赖锚 ⇒ 序列失败时照常画） ── */}
+                    <PriceZoneChart
+                      bounds={detail.detail ? parseZoneBounds(detail.detail.anchor) : null}
+                      items={detail.series}
+                      state={composition.series}
+                      window={detail.window}
+                      onWindowChange={detail.setWindow}
+                      onRetry={detail.retrySeries}
+                      anchorAsof={detail.detail?.anchor.asof ?? null}
+                      today={detail.today}
+                      freshnessTier={detail.seriesFreshnessTier}
+                    />
+                  </View>
+                }
+                renderSectionHeader={() => (
+                  // sticky —— asOf + 计数条 / 意图条 + 水位 chip / Tab 栏 + 就地注明 / 12 列表头。
+                  // 🚨 四件都在**同一个** section header 里：切 Tab 只换 `section.data`，头不重建。
+                  <View>
+                    {/* 🚨 FR-021 不动区：警示注**置顶**，且腿数据照常全量（表不隐藏不折叠不置灰）。 */}
+                    {legTable.table?.intent === 'no_new_position' ? (
+                      <View
+                        className="border-b border-warn bg-warn-soft px-md py-xs"
+                        testID="optionsdesk-detail-leg-no-new-position"
+                      >
+                        <Text className="text-xs text-ink">{LEG_COPY.noNewPositionWarning}</Text>
+                      </View>
+                    ) : null}
+                    <LegBlockHeader
+                      asOf={legTable.table?.asOf ?? null}
+                      // 表还没到手就没有可判的东西 —— 显式 UNAVAILABLE，MUST NOT 默认成 CURRENT。
+                      freshnessTier={legTable.table?.asOfFreshnessTier ?? 'UNAVAILABLE'}
+                      source={legTable.table?.source ?? null}
+                      total={legTable.total}
+                    />
+                    <PositionBucketChips
+                      symbol={symbol}
+                      anchorId={detail.detail?.anchor.id ?? null}
+                      table={legTable.table}
+                    />
+                    <LegPickerTabs
+                      tab={legTable.tab}
+                      onSelect={legTable.setTab}
+                      notices={legTable.notices}
+                    />
+                    <LegTableHeader
+                      tx={tx}
+                      rateSub={rateSubForTab(legTable.tab)}
+                      oiAsOf={legTable.table?.oiAsOf ?? null}
+                    />
+                  </View>
+                )}
+                renderItem={({ item }) => (
+                  <LegRow
+                    leg={item}
+                    tx={tx}
+                    today={detail.today}
+                    // 🚨 活跃度是**当前 Tab 候选集内**的相对排名 —— 换 Tab 归属就变，故按 Tab 取。
+                    activity={legActivityForTab(item, legTable.tab)}
+                    // 全腿 Tab 混排 ⇒ 每行标腿族口径；单口径 Tab 关掉（FR-019）。
+                    showBasisBadge={showsBasisBadge(legTable.tab)}
+                  />
+                )}
+                renderSectionFooter={() => (
+                  <LegBlockNotice
+                    state={legTable.block}
+                    total={legTable.total}
+                    onRetry={legTable.retry}
+                  />
+                )}
+                ListFooterComponent={<LegBlockFooter />}
               />
             </View>
-          }
-          renderSectionHeader={() => (
-            // sticky —— asOf + 计数条 / 意图条 + 水位 chip / Tab 栏 + 就地注明 / 12 列表头。
-            // 🚨 四件都在**同一个** section header 里：切 Tab 只换 `section.data`，头不重建。
-            <View>
-              {/* 🚨 FR-021 不动区：警示注**置顶**，且腿数据照常全量（表不隐藏不折叠不置灰）。 */}
-              {legTable.table?.intent === 'no_new_position' ? (
-                <View
-                  className="border-b border-warn bg-warn-soft px-md py-xs"
-                  testID="optionsdesk-detail-leg-no-new-position"
-                >
-                  <Text className="text-xs text-ink">{LEG_COPY.noNewPositionWarning}</Text>
-                </View>
-              ) : null}
-              <LegBlockHeader
-                asOf={legTable.table?.asOf ?? null}
-                // 表还没到手就没有可判的东西 —— 显式 UNAVAILABLE，MUST NOT 默认成 CURRENT。
-                freshnessTier={legTable.table?.asOfFreshnessTier ?? 'UNAVAILABLE'}
-                source={legTable.table?.source ?? null}
-                total={legTable.total}
-              />
-              <PositionBucketChips
-                symbol={symbol}
-                anchorId={detail.detail?.anchor.id ?? null}
-                table={legTable.table}
-              />
-              <LegPickerTabs
-                tab={legTable.tab}
-                onSelect={legTable.setTab}
-                notices={legTable.notices}
-              />
-              <LegTableHeader
-                tx={columnOffset}
-                rateSub={rateSubForTab(legTable.tab)}
-                oiAsOf={legTable.table?.oiAsOf ?? null}
-              />
-            </View>
-          )}
-          renderItem={({ item }) => (
-            <LegRow
-              leg={item}
-              tx={columnOffset}
-              today={detail.today}
-              // 🚨 活跃度是**当前 Tab 候选集内**的相对排名 —— 换 Tab 归属就变，故按 Tab 取。
-              activity={legActivityForTab(item, legTable.tab)}
-              // 全腿 Tab 混排 ⇒ 每行标腿族口径；单口径 Tab 关掉（FR-019）。
-              showBasisBadge={showsBasisBadge(legTable.tab)}
-            />
-          )}
-          renderSectionFooter={() => (
-            <LegBlockNotice
-              state={legTable.block}
-              total={legTable.total}
-              onRetry={legTable.retry}
-            />
-          )}
-          ListFooterComponent={<LegBlockFooter />}
-        />
-      )}
+          </GestureDetector>
+        )}
+      </GestureHandlerRootView>
     </SafeAreaView>
   );
 }

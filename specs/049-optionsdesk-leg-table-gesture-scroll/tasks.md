@@ -25,7 +25,7 @@ updated_at: '2026-08-11'
 - [X] T002 `leg-table-header.tsx` 删 `LegColumnScroller` + `LegColumnScrollerProps`（连同那段 `scrollTo` 注释），`LegTableHeader` 改吃 `tx`；`leg-row.tsx` 的 `LegRow` 同改。**两个 testID 一字不改**（`optionsdesk-detail-leg-header-scroller` / `optionsdesk-detail-leg-scroller-${code}`）(FR-001, FR-007, plan D-SCROLL-1)
   → verify: `grep -rn LegColumnScroller apps/` **零命中**；typecheck 绿；`leg-row.rules.spec.ts` 的 12 列几何断言仍绿（列宽参数化后须复核 `LEG_SCROLL_REGION_WIDTH` 的消费点）
 
-- [ ] T003 `underlying-detail-screen.tsx` 屏级接线：外包 `GestureHandlerRootView`；`SectionList` 外再包一层 `<View className="flex-1" collapsable={false}>` 作 `GestureDetector` 的**单个原生子节点**；`onLayout` 写 `viewportW` 并顺手把 `tx` clamp 回新域；`columnOffset` 改名 `tx` (FR-001, FR-003, FR-004, plan D-SCROLL-2/3)
+- [X] T003 `underlying-detail-screen.tsx` 屏级接线：外包 `GestureHandlerRootView`；`SectionList` 外再包一层 `<View className="flex-1" collapsable={false}>` 作 `GestureDetector` 的**单个原生子节点**；`onLayout` 写 `viewportW` 并顺手把 `tx` clamp 回新域；`columnOffset` 改名 `tx` (FR-001, FR-003, FR-004, plan D-SCROLL-2/3)
   → verify: 真机 dev console **不得出现** `Invalid prop 'collapsable' supplied to 'React.Fragment'` 或 `child may get view-flattened` 任一（🚫 MUST NOT 用 `LogBox.ignoreLogs` 压掉 —— 那两条告警是「手势没挂上」的唯一信号）；真机横竖屏各切一次后仍能滑到最右列
   → verify（承 spec Edge Case ②，**这条最容易在 impl 期被"顺手优化"掉且不会红**）: 真机在**锚卡 / 温度计 / 区间时序**区域横滑，列位移**照常发生**（那时表在屏外、视觉无感，是设计意图不是 bug）；且 `grep -nE "nativeEvent.*locationY|pageY|measure\(" apps/mobile/src/optionsdesk/underlying-detail-screen.tsx` **零命中** —— 🚫 MUST NOT 用 y 坐标判定手势归属，那是脆逻辑
 
