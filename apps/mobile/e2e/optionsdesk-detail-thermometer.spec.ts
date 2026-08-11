@@ -272,6 +272,10 @@ const DEFAULT_LEGS: LegResponse[] = [
     turnover: '21420.00',
     activityByTab: { all: null, build: null, rent: null },
     tabs: ['all', 'rent'],
+    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
+    tierByTab: { all: 'good', build: null, rent: 'good' },
+    isRecommended: false,
+    isMonthlyChain: false,
     earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
     greeksComplete: true,
   },
@@ -299,6 +303,10 @@ const DEFAULT_LEGS: LegResponse[] = [
     turnover: '4715.00',
     activityByTab: { all: null, build: null, rent: null },
     tabs: ['all', 'build'],
+    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
+    tierByTab: { all: 'acceptable', build: 'acceptable', rent: null },
+    isRecommended: false,
+    isMonthlyChain: false,
     // 建仓域**恒无标**（`null` 与 `no_date` 是两个值，UI 上一个「—」一个虚线 chip）。
     earningsMark: null,
     greeksComplete: true,
@@ -328,6 +336,15 @@ function makeLegTable(symbol: string, anchor: AnchorResponse): LegTableResponse 
     intent: 'pending',
     rentDepth: null,
     legs: DEFAULT_LEGS,
+    // 050 契约增量（P1 只镜像形状，消费归 P2）：`tabOrder[t]` 与每腿的 `tabs` **同源派生**
+    // （真端点的 Guardrail 9）；顺序沿用数组顺序（真端点是该 Tab 口径的费率降序）。
+    tabOrder: {
+      all: DEFAULT_LEGS.filter((l) => l.tabs.includes('all')).map((l) => l.code),
+      build: DEFAULT_LEGS.filter((l) => l.tabs.includes('build')).map((l) => l.code),
+      rent: DEFAULT_LEGS.filter((l) => l.tabs.includes('rent')).map((l) => l.code),
+    },
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
   };
 }
 

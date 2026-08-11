@@ -48,6 +48,7 @@ import type { PositionBucketWriteResult } from './set-position-bucket.usecase';
 import { type ActivityMark } from './leg-derive.rules';
 import { LEG_BASES, LEG_TIERS } from './leg-tier.rules';
 import { LEG_TABS } from './leg-tab.rules';
+import { BASIS_BY_TAB } from './leg-rank.rules';
 import type { PointInTimeAnchorValues } from './anchor-history';
 
 /**
@@ -1108,6 +1109,32 @@ export class LegActivityByTabResponse {
   rent!: LegActivityResponse | null;
 }
 
+export class LegTierByTabResponse {
+  @ApiProperty({
+    description: '全腿 Tab 的档位 (**恒年化口径**); 不判档 (greeks 缺失 / 无 bid) → null',
+    enum: [...LEG_TIERS],
+    nullable: true,
+    example: 'good',
+  })
+  all!: string | null;
+
+  @ApiProperty({
+    description: '建仓 Tab 的档位 (**周化口径**); 不属于该 Tab → null',
+    enum: [...LEG_TIERS],
+    nullable: true,
+    example: 'acceptable',
+  })
+  build!: string | null;
+
+  @ApiProperty({
+    description: '收租 Tab 的档位 (年化口径); 不属于该 Tab → null',
+    enum: [...LEG_TIERS],
+    nullable: true,
+    example: null,
+  })
+  rent!: string | null;
+}
+
 export class LegEarningsMarkResponse {
   @ApiProperty({
     description:
@@ -1288,6 +1315,31 @@ export class LegResponse {
   tabs!: string[];
 
   @ApiProperty({
+    description:
+      '每个 Tab **各自口径**下的档位 (FR-023) —— 建仓走周化档界、收租与全腿走年化。同一条腿在两个 ' +
+      'Tab 判出不同档是**定义如此**; 不属于该 Tab 的格恒 null。上面的标量 tier 是 legacy 载体',
+    type: LegTierByTabResponse,
+  })
+  tierByTab!: LegTierByTabResponse;
+
+  @ApiProperty({
+    description:
+      '推荐标 (FR-011): 本腿 |Δ| 落**标的级意图**对应的带内。🚨 **随意图判, 不随当前 Tab 变** —— ' +
+      '收租意图下打开建仓 Tab 会看到全 false, 那是**正确信号**不是 bug; greeks 缺失恒 false ' +
+      '(FR-013), 但该腿**照常在召回集里**',
+    example: false,
+  })
+  isRecommended!: boolean;
+
+  @ApiProperty({
+    description:
+      '到期日是不是该月的**月度到期日** (FR-014, 判据 = 该月第三个周五; 该日非交易日则取其前一' +
+      '交易日) —— 月度链流动性通常显著好于周链。🚫 呈现侧 MUST NOT 简化成「是不是周五」',
+    example: true,
+  })
+  isMonthlyChain!: boolean;
+
+  @ApiProperty({
     description: '财报标; **建仓域恒 null** (UI 显「—」) —— 与 no_date (虚线 chip) 是两个值',
     type: LegEarningsMarkResponse,
     nullable: true,
@@ -1299,6 +1351,67 @@ export class LegResponse {
     example: true,
   })
   greeksComplete!: boolean;
+}
+
+export class LegTabOrderResponse {
+  @ApiProperty({
+    description: '全腿 Tab 的有序合约代码',
+    type: 'string',
+    isArray: true,
+    example: ['US.PEP260918P120000', 'US.PEP260821P115000'],
+  })
+  all!: string[];
+
+  @ApiProperty({
+    description: '建仓 Tab 的有序合约代码; 该 Tab 无成员 → 空数组 (**不是** null)',
+    type: 'string',
+    isArray: true,
+    example: ['US.PEP260821P115000'],
+  })
+  build!: string[];
+
+  @ApiProperty({
+    description: '收租 Tab 的有序合约代码; 该 Tab 无成员 → 空数组',
+    type: 'string',
+    isArray: true,
+    example: ['US.PEP260918P120000'],
+  })
+  rent!: string[];
+}
+
+export class LegGateCountsResponse {
+  @ApiProperty({
+    description:
+      '被**权利金门槛**从响应里整条移出的条数 (FR-005) —— 这些腿三个 Tab 都看不到, 是真正的' +
+      '「数据消失」。呈现侧 MUST NOT 省略: 它是「有腿不见了」这笔取舍的**唯一**补偿',
+    example: 12,
+  })
+  removedByPremiumFloor!: number;
+
+  @ApiProperty({
+    description:
+      '被**流动性门槛**排除出建仓 / 收租的条数 (FR-006) —— 这些腿**仍在响应里、仍在全腿 Tab 可见**, ' +
+      '没有消失。🚨 与上一个数语义不对称, MUST NOT 相加成总数。期限段本就不合格的腿 (如 DTE 400) ' +
+      '不计入 —— 它不是被门槛挡下的',
+    example: 3,
+  })
+  excludedFromIntentTabs!: number;
+}
+
+export class LegBasisByTabResponse {
+  @ApiProperty({
+    description:
+      '全腿 Tab 的档位判定口径 —— **恒年化** (混着 10 天与 200 天的腿, 周化档界会让整列全是死档)',
+    enum: [...LEG_BASES],
+    example: 'annualized',
+  })
+  all!: string;
+
+  @ApiProperty({ description: '建仓 Tab 的口径', enum: [...LEG_BASES], example: 'weekly' })
+  build!: string;
+
+  @ApiProperty({ description: '收租 Tab 的口径', enum: [...LEG_BASES], example: 'annualized' })
+  rent!: string;
 }
 
 export class LegTableResponse {
@@ -1430,6 +1543,31 @@ export class LegTableResponse {
     isArray: true,
   })
   legs!: LegResponse[];
+
+  @ApiProperty({
+    description:
+      '每个 Tab 一份**有序的合约代码列表** (FR-021a) —— 精排在 server 完成, 客户端 MUST 按它呈现、' +
+      'MUST NOT 自行重排。腿本体仍只下发一份 (MUST NOT 按 Tab 复制)。🚫 它**不是** legs[] 的新排序: ' +
+      '后者是 legacy 载体顺序 (档位 → 到期日 → 行权价 → code), 旧客户端仍按它渲染',
+    type: LegTabOrderResponse,
+  })
+  tabOrder!: LegTabOrderResponse;
+
+  @ApiProperty({
+    description:
+      '两道门槛各自挡下多少条 (FR-008) ——「有腿消失了」必须可见且可行动。🚨 两个数**语义不对称**, ' +
+      '见各自字段说明',
+    type: LegGateCountsResponse,
+  })
+  gateCounts!: LegGateCountsResponse;
+
+  @ApiProperty({
+    description:
+      'Tab → 档位判定口径的**常量映射** (FR-023) —— 下发一次, 免客户端硬编码这份映射 (硬编码必与' +
+      ' server 漂移, 且漂移时两边都算得出结果)。每腿的 tierByTab 就是按它判出来的',
+    type: LegBasisByTabResponse,
+  })
+  basisByTab!: LegBasisByTabResponse;
 }
 
 function toLegActivityResponse(mark: ActivityMark | null): LegActivityResponse | null {
@@ -1486,6 +1624,13 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
         rent: toLegActivityResponse(leg.activityByTab.rent),
       },
       tabs: [...leg.tabs],
+      tierByTab: {
+        all: leg.tierByTab.all,
+        build: leg.tierByTab.build,
+        rent: leg.tierByTab.rent,
+      },
+      isRecommended: leg.isRecommended,
+      isMonthlyChain: leg.isMonthlyChain,
       earningsMark:
         leg.earningsMark === null
           ? null
@@ -1496,5 +1641,18 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
             },
       greeksComplete: leg.greeksComplete,
     })),
+    tabOrder: {
+      all: [...view.tabOrder.all],
+      build: [...view.tabOrder.build],
+      rent: [...view.tabOrder.rent],
+    },
+    gateCounts: {
+      removedByPremiumFloor: view.gateCounts.removedByPremiumFloor,
+      excludedFromIntentTabs: view.gateCounts.excludedFromIntentTabs,
+    },
+    // 🚨 **取自 `leg-rank.rules.ts` 的那一份常量, 不在这里重写一遍字面量** —— 每腿的
+    // `tierByTab` 正是按它判出来的, 抄一份在此会让「口径改了但下发的还是旧的」不红任何一处。
+    // 判据在 rules、档位在 DTO 层合成: 同 `asOfFreshnessTier` 那条分工 (046 起的体例)。
+    basisByTab: { all: BASIS_BY_TAB.all, build: BASIS_BY_TAB.build, rent: BASIS_BY_TAB.rent },
   };
 }

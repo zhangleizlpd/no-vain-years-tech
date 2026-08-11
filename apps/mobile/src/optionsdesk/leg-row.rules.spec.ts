@@ -54,6 +54,10 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     turnover: '110000.00',
     activityByTab: { all: null, build: null, rent: null },
     tabs: ['all', 'build'],
+    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
+    tierByTab: { all: 'good', build: 'good', rent: null },
+    isRecommended: false,
+    isMonthlyChain: false,
     earningsMark: null,
     greeksComplete: true,
     ...overrides,

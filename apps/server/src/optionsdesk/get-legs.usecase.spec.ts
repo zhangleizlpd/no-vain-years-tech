@@ -37,6 +37,8 @@ interface LegFixture {
   strike: string;
   expiry: string;
   bid: string | null;
+  /** 缺省 = `bid + 0.10`(窄价差, 稳过流动性门槛); 显式给值才造得出宽价差反例。 */
+  ask?: string;
   delta: string | null;
   greeksComplete: boolean;
   openInterest: string;
@@ -78,7 +80,8 @@ const LEGS: LegFixture[] = [
     openInterest: '80',
     volume: '3',
   },
-  // 建仓带 (|Δ| 0.45 ∈ [0.40,0.55] ∧ DTE 10 ≤ 14) ⇒ 周化口径, 周化 1.09% ⇒ 可接受。
+  // 建仓召回集 (050: DTE 10 ∈ [1,49] ∧ 有效成本 128 < spot 132.40) ⇒ 周化口径,
+  // 周化 1.09% ⇒ 可接受。(047 下它靠 |Δ| 0.45 ∈ [0.40,0.55] ∧ DTE ≤ 14 进建仓族, 判据已换代。)
   {
     code: 'C-D',
     strike: '130',
@@ -109,7 +112,7 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
     // 🚨 OI 归属 T−1 (2026-07-31, 08-03 的上一个交易日) —— 与 sessionDate 蓄意不同天。
     oiAsOf: date('2026-07-31'),
     bid: leg.bid === null ? null : D(leg.bid),
-    ask: leg.bid === null ? null : D(leg.bid).plus(D('0.10')),
+    ask: leg.ask !== undefined ? D(leg.ask) : leg.bid === null ? null : D(leg.bid).plus(D('0.10')),
     // 挂牌量：无 bid ⇒ 无挂单 ⇒ 两侧同为 null（与价同生共死，🚫 不拿 0 冒充「没人挂」）。
     bidSize: leg.bid === null ? null : D('25'),
     askSize: leg.bid === null ? null : D('26'),
@@ -129,6 +132,14 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
  */
 const TRADING_DAYS = ['2026-07-31', '2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06'];
 
+/**
+ * 月度到期日判据 (T007) 查的是**另一段**日历: 窗口跨到链上最晚的到期日, 与上面那个「最近一个
+ * 已收盘交易日」的窗口不重叠。两个候选日 (`2026-08-21` / `2027-01-15`, 分别是 08 月与次年 01
+ * 月的第三个周五) 在这里都是**真交易日** —— 假日回退那条分支由 `leg-mark.rules.spec.ts` 承重
+ * (纯函数), IT 再打一次真日历表; 本文件只验 use case 有没有把这条线接上。
+ */
+const MONTHLY_CALENDAR = ['2026-08-20', '2026-08-21', '2027-01-14', '2027-01-15'];
+
 /** 按 `date <= cutoff` 取最大交易日 —— 与 `last-closed-session.ts` 的真查询同语义。 */
 function tradingDayFindFirst() {
   return vi.fn(async (args: { where: { market: string; date: { lte: Date } } }) => {
@@ -138,8 +149,7 @@ function tradingDayFindFirst() {
   });
 }
 
-function makePrisma(overrides: Record<string, unknown> = {}) {
-  const legs = LEGS;
+function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] = LEGS) {
   return {
     anchor: { findUnique: vi.fn().mockResolvedValue(anchorRow) },
     instrument: { findUnique: vi.fn().mockResolvedValue({ id: 42n }) },
@@ -149,7 +159,10 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
       findMany: vi.fn().mockResolvedValue(snapshotsOf(legs)),
     },
     earningsEvent: { findMany: vi.fn().mockResolvedValue([{ earningsDate: date('2026-08-12') }]) },
-    tradingDay: { findFirst: tradingDayFindFirst() },
+    tradingDay: {
+      findFirst: tradingDayFindFirst(),
+      findMany: vi.fn().mockResolvedValue(MONTHLY_CALENDAR.map((d) => ({ date: date(d) }))),
+    },
     ...overrides,
   };
 }
@@ -251,8 +264,11 @@ describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1
 
     expect(build?.tabs).toEqual(['all', 'build']);
     expect(rent?.tabs).toEqual(['all', 'rent']);
-    expect(gap?.tabs).toEqual(['all']); // 缺 Δ ⇒ 两个意图 Tab 都进不去, 但全腿 Tab 恒在
-    // 全腿 Tab 里人人有名次; 建仓 Tab 只有 C-D 一条 ⇒ 它在那一套里必是 Top。
+    // 🚨 **这条断言在 050 翻转, 而翻转本身就是 US1-AS3 / FR-009**: C-C 缺 Δ, 047 下被 Δ 带挡在
+    // 两个意图 Tab 之外; 050 下 Δ 退出召回判据 ⇒ 只看 DTE=17 ∈ [1,49] 与有效成本
+    // 145 − 13 = 132 < spot 132.40 ⇒ 进建仓召回集。全腿 Tab 恒在, 这点没变。
+    expect(gap?.tabs).toEqual(['all', 'build']);
+    // 全腿 Tab 里人人有名次; 建仓 Tab 现有 C-C / C-D 两条 (Top N = 3 ⇒ 两条都是 Top)。
     expect(view.legs.every((l) => l.activityByTab.all !== null)).toBe(true);
     expect(build?.activityByTab.build?.isTopRanked).toBe(true);
     expect(build?.activityByTab.rent).toBeNull();
@@ -261,12 +277,141 @@ describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1
     expect(rent?.activityByTab.all?.isRoundStrike).toBe(true);
   });
 
+  it('月度链标: 到期日落该月月度日的腿带标, 周链腿不带 (FR-014, T007 接线)', async () => {
+    const prisma = makePrisma();
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+
+    // C-A / C-B 到期 2027-01-15 = 次年 1 月第三个周五; C-C 到期 2026-08-21 = 8 月第三个周五。
+    expect(view.legs.find((l) => l.code === 'C-A')?.isMonthlyChain).toBe(true);
+    expect(view.legs.find((l) => l.code === 'C-C')?.isMonthlyChain).toBe(true);
+    // C-D 到期 2026-08-14 是周链 ⇒ 不带标。它证明这个标**不是恒 true**。
+    expect(view.legs.find((l) => l.code === 'C-D')?.isMonthlyChain).toBe(false);
+
+    // 🚨 Guardrail 7: 整段日历**一次查回**, 不是逐到期日查 (链上 3 个不同到期日)。
+    expect(prisma.tradingDay.findMany).toHaveBeenCalledTimes(1);
+    const where = prisma.tradingDay.findMany.mock.calls[0][0].where;
+    expect(where.market).toBe('us');
+    // 窗口下界 = 最早候选日 (2026-08-21) 往前 7 天; 上界 = 最晚候选日 (2027-01-15)。
+    expect(where.date.gte.toISOString().slice(0, 10)).toBe('2026-08-14');
+    expect(where.date.lte.toISOString().slice(0, 10)).toBe('2027-01-15');
+  });
+
   it('同一到期日的多条腿共用**同一个**财报标对象 (Guardrail 11 的结构保证)', async () => {
     const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
     const a = view.legs.find((l) => l.code === 'C-A');
     const b = view.legs.find((l) => l.code === 'C-B'); // 死档, 但同到期日
     expect(a?.earningsMark).toBe(b?.earningsMark);
     expect(a?.earningsMark?.mark).toBe('covered');
+  });
+});
+
+/**
+ * T004 —— 两道门槛的**作用面不对称** (FR-005 / FR-006 / FR-008)。
+ *
+ * 🚨 两个数描述的不是同一件事: `removedByPremiumFloor` = 「移出响应」(三个 Tab 都看不到,
+ * 真消失), `excludedFromIntentTabs` = 「仍在响应、只进全腿 Tab」(没消失)。故每条反例都
+ * **同时**断言另一个数**不动** —— 只断言自己那个数的话, 把两者串台的实现照样能绿。
+ *
+ * 🚨 两条被权利金门槛挡下的反例 (`G-PENNY` / `G-NOBID`) 蓄意**同时**是宽价差 / 无 ask:
+ * 若实现把流动性判据施加在权利金门槛**之前**(或对已移出的腿照样计数), `excludedFromIntentTabs`
+ * 会跟着 +2 —— 那正是这两条 fixture 要绊的线。
+ */
+describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不串台 (FR-005/FR-006/FR-008)', () => {
+  // spot 132.40 ⇒ 权利金门槛 = max(0.20, 132.40 × 0.0018 = 0.2383) = 0.2383 (T017 标定后)。
+  // 全部反例都用 DTE 10 (2026-08-14) 且有效成本 < spot ⇒ 期限段与有效成本都不是它们出局的原因。
+  const base = { delta: '-0.45', greeksComplete: true, openInterest: '300', volume: '120' };
+  const ok: LegFixture = {
+    code: 'G-OK',
+    strike: '130',
+    expiry: '2026-08-14',
+    bid: '2.00',
+    ...base,
+  };
+  /** 一分钱腿: bid 0.05 < 0.2383 ⇒ 移出响应。价差 0.10/0.10 = 100% 是**串台绊线**。 */
+  const penny: LegFixture = {
+    code: 'G-PENNY',
+    strike: '125',
+    expiry: '2026-08-14',
+    bid: '0.05',
+    ask: '0.15',
+    ...base,
+  };
+  /** 完全无 bid ⇒ 按「不满足权利金门槛」处置 (🚫 禁当 0)。无 ask ⇒ 流动性 fail-closed 绊线。 */
+  const noBid: LegFixture = {
+    code: 'G-NOBID',
+    strike: '128',
+    expiry: '2026-08-14',
+    bid: null,
+    ...base,
+    delta: '-0.40',
+  };
+  /** 宽价差: 6.00/6.00 = 100% > 35% ⇒ 出意图 Tab, 但**留在响应与全腿 Tab**。 */
+  const wide: LegFixture = {
+    code: 'G-WIDE',
+    strike: '126',
+    expiry: '2026-08-14',
+    bid: '3.00',
+    ask: '9.00',
+    ...base,
+  };
+  /** DTE 400 且宽价差 —— 它出意图 Tab 的原因是期限段, 不是流动性。 */
+  const longWide: LegFixture = {
+    code: 'G-LONG-WIDE',
+    strike: '110',
+    expiry: '2027-09-08',
+    bid: '3.00',
+    ask: '9.00',
+    ...base,
+  };
+
+  const tableOf = (legs: LegFixture[]) => makeUseCase(makePrisma({}, legs)).execute(SYMBOL, NOW);
+
+  it('权利金门槛挡下的腿从响应**整条移出**, 且只让 removedByPremiumFloor 动 (禁当 bid = 0)', async () => {
+    const view = await tableOf([ok, penny, noBid]);
+
+    // 三个 Tab 一律不出现 = 它压根不在 legs[] 里 (客户端按每腿的 tabs 过滤, 没有行就没有归属)。
+    expect(view.legs.map((l) => l.code)).toEqual(['G-OK']);
+    expect(view.gateCounts.removedByPremiumFloor).toBe(2);
+    // 🚨 串台绊线: 这两条同时是宽价差 / 无 ask, 但它们已经不在响应里 ⇒ 不属于「流动性排除」。
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
+  });
+
+  it('流动性门槛挡下的腿**仍在响应里**、只剩全腿 Tab, 且只让 excludedFromIntentTabs 动', async () => {
+    const view = await tableOf([ok, wide]);
+
+    const excluded = view.legs.find((l) => l.code === 'G-WIDE');
+    expect(excluded).toBeDefined();
+    expect(excluded?.tabs).toEqual(['all']);
+    // 数据没消失: 报价 / 费率 / 档位照常在, 只是不进意图候选。
+    expect(excluded?.bid?.toString()).toBe('3');
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(1);
+    expect(view.gateCounts.removedByPremiumFloor).toBe(0);
+    // 对照腿两个 Tab 都进 —— 证明宽价差那条不是被别的判据顺手挡掉的。
+    expect(view.legs.find((l) => l.code === 'G-OK')?.tabs).toEqual(['all', 'build']);
+  });
+
+  it('期限段本就不合格的腿**不计入**流动性排除 —— 那个数是流动性信号, 不是「哪儿都没进」的总数', async () => {
+    const view = await tableOf([ok, longWide]);
+
+    expect(view.legs.find((l) => l.code === 'G-LONG-WIDE')?.tabs).toEqual(['all']);
+    // DTE 400 两个意图段都够不着 ⇒ 它出局与流动性无关, 计进去会稀释掉这个数唯一的用途。
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
+    expect(view.gateCounts.removedByPremiumFloor).toBe(0);
+  });
+
+  it('两道门槛都不触发时两个数恒 0 —— 证明它们不是「恒计数」的摆设', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    expect(view.legs).toHaveLength(LEGS.length);
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+  });
+
+  it('链未就绪 → 两个数为 0 (没有链就没有腿被挡下, MUST NOT 留上一次的数)', async () => {
+    const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+
+    expect(view.state).toBe('chain_not_ready');
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
   });
 });
 
@@ -342,7 +487,12 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
 
   it('交易日历查不到 ⇒ fail-open 判 CURRENT (宁可漏报一次, 不重演「全体恒显已过时」)', async () => {
     const { res } = await tableAt('2026-08-03', NOW_CN_MORNING, {
-      tradingDay: { findFirst: vi.fn().mockResolvedValue(null) },
+      // 🚨 覆盖整个 `tradingDay` 就必须连 `findMany` 一起给 —— 少给会让月度链标那次跨 ctx 读
+      // 抛错、整屏降级成 read_failed, 而本用例验的是**新鲜度档**那条 fail-open 分支。
+      tradingDay: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
     });
     expect(res.asOfFreshnessTier).toBe('CURRENT');
   });
@@ -353,5 +503,327 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
     expect(res.asOf).toBeNull();
     expect(res.asOfFreshnessTier).toBe('UNAVAILABLE');
     expect(prisma.tradingDay.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T008 —— 打标接线 (FR-016 / FR-018, plan D-MARK-3)。
+ *
+ * 数据集蓄意让**两条建仓腿的 OI / 成交量全链最低**: 于是它们在全腿 Tab 里排不进前三、在建仓
+ * Tab 里却是全部成员 ⇒ 「每个 Tab 按自己的召回全量排名」这件事有了**可观测的差**。若排名基准
+ * 退化成全链 (或退化成筛选后的子集), 这两条腿在建仓 Tab 的 `isTopRanked` 立刻翻。
+ */
+describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回全量 (FR-016/FR-018)', () => {
+  const base = { greeksComplete: true, ask: undefined };
+  // 建仓腿 (DTE 10, 有效成本 < spot 132.40); OI / Vol 全链最低。
+  const buildA: LegFixture = {
+    code: 'M-BUILD-A',
+    strike: '130',
+    expiry: '2026-08-14',
+    bid: '2.00',
+    delta: '-0.45',
+    openInterest: '10',
+    volume: '1',
+    ...base,
+  };
+  const buildB: LegFixture = {
+    code: 'M-BUILD-B',
+    strike: '129',
+    expiry: '2026-08-14',
+    bid: '1.50',
+    delta: '-0.10',
+    openInterest: '12',
+    volume: '2',
+    ...base,
+  };
+  // 收租长腿 (DTE 164); OI / Vol 全链最高 ⇒ 它们占满全腿 Tab 的前三。
+  const rentDeep: LegFixture = {
+    code: 'M-RENT-DEEP',
+    strike: '120',
+    expiry: '2027-01-15',
+    bid: '8.00',
+    delta: '-0.10', // 落 deep 带 [0.05,0.15]
+    openInterest: '900',
+    volume: '90',
+    ...base,
+  };
+  const rentModerate: LegFixture = {
+    code: 'M-RENT-MODERATE',
+    strike: '115',
+    expiry: '2027-01-15',
+    bid: '6.00',
+    delta: '-0.25', // 落 moderate 带, **不在** deep 带内
+    openInterest: '800',
+    volume: '80',
+    ...base,
+  };
+  const rentGapless: LegFixture = {
+    code: 'M-RENT-NOGREEKS',
+    strike: '110',
+    expiry: '2027-01-15',
+    bid: '4.00',
+    delta: null,
+    greeksComplete: false,
+    openInterest: '700',
+    volume: '70',
+  };
+  const MARK_LEGS: LegFixture[] = [buildA, buildB, rentDeep, rentModerate, rentGapless];
+
+  /** 默认锚 ⇒ 卖put区 + L2 + 水位 ≥2/3 ⇒ 意图「收租 · 深度」, 带 = [0.05, 0.15]。 */
+  const tableWithBucket = (positionBucketManual: string | null) =>
+    makeUseCase(
+      makePrisma(
+        {
+          anchor: {
+            findUnique: vi.fn().mockResolvedValue({ ...anchorRow, positionBucketManual }),
+          },
+        },
+        MARK_LEGS,
+      ),
+    ).execute(SYMBOL, NOW);
+
+  it('推荐标随**标的级意图**判: 收租 · 深度 ⇒ 只有 |Δ| 落 deep 带的腿带标', async () => {
+    const view = await tableWithBucket('gte_two_thirds');
+    expect(view.intent).toBe('rent');
+    expect(view.rentDepth).toBe('deep');
+
+    const recommended = view.legs.filter((l) => l.isRecommended).map((l) => l.code);
+    // |Δ| 0.10 两条 (一条建仓腿 + 一条收租腿) 都落 deep 带 —— 🚨 标**不随 Tab 变**:
+    // 建仓 Tab 里的那条腿照样按收租的带判, 这正是 FR-011 要的（SC-005 的另一面）。
+    expect(new Set(recommended)).toEqual(new Set(['M-BUILD-B', 'M-RENT-DEEP']));
+    // moderate 带那条不带标; greeks 缺失那条恒不带标 (FR-013)。
+    expect(view.legs.find((l) => l.code === 'M-RENT-MODERATE')?.isRecommended).toBe(false);
+    expect(view.legs.find((l) => l.code === 'M-RENT-NOGREEKS')?.isRecommended).toBe(false);
+  });
+
+  it('🚨 打标零拦截: 水位从「已选」翻成「未选」⇒ 全表零推荐标, 而 Tab 成员集合**逐条不变**', async () => {
+    const selected = await tableWithBucket('gte_two_thirds');
+    const unselected = await tableWithBucket(null);
+
+    expect(unselected.intent).toBe('pending');
+    // 水位未选 ⇒ 一个推荐标都没有 (Guardrail 1: 🚫 MUST NOT 取三档并集替人做方向性假设)。
+    expect(unselected.legs.every((l) => !l.isRecommended)).toBe(true);
+    expect(selected.legs.some((l) => l.isRecommended)).toBe(true);
+    // 🚨 判据: 同一份输入, 打标的输入变了而**成员关系一行不动** —— 打标 MUST NOT 参与筛选。
+    const membership = (view: typeof selected) =>
+      view.legs.map((l) => `${l.code}:${[...l.tabs].join('+')}`);
+    expect(membership(unselected)).toEqual(membership(selected));
+    expect(unselected.gateCounts).toEqual(selected.gateCounts);
+  });
+
+  it('🚨 排名基准 = 该 Tab 的召回全量: 全链最不活跃的两条腿在建仓 Tab 里仍是 Top', async () => {
+    const view = await tableWithBucket('gte_two_thirds');
+    const leg = (code: string) => view.legs.find((l) => l.code === code)!;
+
+    // 建仓 Tab 只有两条成员 (< Top 3) ⇒ 两条都是 Top。
+    expect(leg('M-BUILD-A').tabs).toContain('build');
+    expect(leg('M-BUILD-A').activityByTab.build?.isTopRanked).toBe(true);
+    expect(leg('M-BUILD-B').activityByTab.build?.isTopRanked).toBe(true);
+    // 同两条腿在全腿 Tab (5 条成员) 里排不进前三 —— 名次是**候选集内的相对量**。
+    expect(leg('M-BUILD-A').activityByTab.all?.isTopRanked).toBe(false);
+    expect(leg('M-BUILD-B').activityByTab.all?.isTopRanked).toBe(false);
+    // 若排名基准退化成「全链」, 上面两条 build 断言会翻成 false —— 那就是 Guardrail 3 那个坑。
+
+    // 每个 Tab 拿到名次的行数 == 该 Tab 的成员数 (排名跑在成员集合上, 不多不少)。
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      const members = view.legs.filter((l) => l.tabs.includes(tab));
+      const ranked = view.legs.filter((l) => l.activityByTab[tab] !== null);
+      expect(ranked.map((l) => l.code).sort()).toEqual(members.map((l) => l.code).sort());
+    }
+  });
+});
+
+/**
+ * T012 —— 精排接线 + `tierByTab` + 三份有序列表 (FR-021a / FR-023 / FR-024, plan D-RANK-3/D-API)。
+ *
+ * 默认数据集在 050 判据下的归属与费率:
+ *
+ * | 腿    | DTE | tabs           | 周化   | 年化    |
+ * | ----- | --- | -------------- | ------ | ------- |
+ * | `C-C` | 17  | all + build    | 4.06%  | 211.5%  |
+ * | `C-D` | 10  | all + build    | 1.09%  | 57.0%   |
+ * | `C-A` | 164 | all + rent     | —      | 11.7%   |
+ * | `C-B` | 164 | all + rent     | —      | 1.1%    |
+ *
+ * 🚨 这份数据的判别性在于 **`legs[]` 的既有排序 (档位键) 与 `tabOrder.all` (费率键) 逐行不同**
+ * —— 「顺手把 legs[] 改成按费率排」(Guardrail 10) 一旦发生, 下面那条断言立刻红。
+ */
+describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-023/FR-024, T012)', () => {
+  it('🚨 Guardrail 9: `tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}` (两处同源派生)', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      const members = view.legs
+        .filter((l) => l.tabs.includes(tab))
+        .map((l) => l.code)
+        .sort();
+      expect([tab, [...view.tabOrder[tab]].sort()]).toEqual([tab, members]);
+    }
+    // 空集合不是特例: 每个 Tab 都得有一份列表 (哪怕是空的), 免得客户端拿到 undefined。
+    expect(Object.keys(view.tabOrder).sort()).toEqual(['all', 'build', 'rent']);
+  });
+
+  it('三份列表各自按**该 Tab 口径**的折算费率降序 (FR-021)', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    // 年化: C-C 211% > C-D 57% > C-A 11.7% > C-B 1.1%。
+    expect(view.tabOrder.all).toEqual(['C-C', 'C-D', 'C-A', 'C-B']);
+    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条。
+    expect(view.tabOrder.build).toEqual(['C-C', 'C-D']);
+    expect(view.tabOrder.rent).toEqual(['C-A', 'C-B']);
+  });
+
+  it('🚨 Guardrail 10: `legs[]` 的既有排序键**一行没改** —— 仍是档位 → 到期日 → 行权价 → code', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    // 旧客户端 (P2 未上) 仍按 legs[] 渲染 ⇒ 顺序不许动。
+    expect(view.legs.map((l) => l.code)).toEqual(['C-D', 'C-A', 'C-C', 'C-B']);
+    // 判别性: 它与费率键的 `tabOrder.all` **逐行不同** —— 若有人「顺手清理」把 legs[] 改成
+    // 按费率排, 上面那条会红而不是碰巧仍绿。
+    expect(view.legs.map((l) => l.code)).not.toEqual(view.tabOrder.all);
+  });
+
+  it('🚨 FR-023: `tierByTab` 跟 Tab 走, 同一条腿两个 Tab 可判出不同档; 全腿 Tab 恒年化', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const buildLeg = view.legs.find((l) => l.code === 'C-D');
+
+    // 同一条腿: 建仓 Tab 按周化 1.09% ⇒ acceptable; 全腿 Tab 按年化 57% ⇒ good。
+    expect(buildLeg?.tierByTab.build).toBe('acceptable');
+    expect(buildLeg?.tierByTab.all).toBe('good');
+    // 🚨 全腿 Tab 例外恒年化 —— 它混着 10 天与 164 天的腿, 拿周化档界判长腿会让整列全是死档。
+    const rentLeg = view.legs.find((l) => l.code === 'C-A');
+    expect(rentLeg?.tierByTab.all).toBe('acceptable');
+    expect(rentLeg?.tierByTab.rent).toBe('acceptable');
+    // 现役标量 `tier` / `basis` 一字不动 (契约只加不删): 进建仓召回集 ⇒ 周化。
+    expect(buildLeg?.basis).toBe('weekly');
+    expect(buildLeg?.tier).toBe('acceptable');
+  });
+
+  it('`tierByTab` 对**非成员**恒 null —— 不属于该 Tab 就没有该 Tab 的档位', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    for (const leg of view.legs) {
+      for (const tab of ['all', 'build', 'rent'] as const) {
+        if (leg.tabs.includes(tab)) continue;
+        expect([leg.code, tab, leg.tierByTab[tab]]).toEqual([leg.code, tab, null]);
+      }
+    }
+    // 反向: 至少有一条腿真的有非成员格, 否则上面是平凡绿。
+    expect(view.legs.some((l) => !l.tabs.includes('rent'))).toBe(true);
+  });
+
+  it('greeks 缺失的腿三格全 null —— 不判档不着色 (FR-007) 在 per-Tab 档位上同样成立', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const gap = view.legs.find((l) => l.code === 'C-C');
+
+    // 它**在**建仓召回集里 (050 下 Δ 退出召回), 但费率会骗人 ⇒ 三个 Tab 一律不判档。
+    expect(gap?.tabs).toEqual(['all', 'build']);
+    expect(gap?.tierByTab).toEqual({ all: null, build: null, rent: null });
+    expect(gap?.tier).toBeNull();
+    // 但它照常参与排序 —— 不判档不等于不排 (费率算得出来)。
+    expect(view.tabOrder.build[0]).toBe('C-C');
+  });
+
+  it('链未就绪 → 三份列表都是空数组 (不是 undefined, 客户端不必特判)', async () => {
+    const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+
+    expect(view.state).toBe('chain_not_ready');
+    expect(view.tabOrder).toEqual({ all: [], build: [], rent: [] });
+  });
+
+  it('🚨 SC-006: 同一输入连续两次调用, 三份列表逐行相同', async () => {
+    const useCase = makeUseCase(makePrisma());
+    const first = await useCase.execute(SYMBOL, NOW);
+    const second = await useCase.execute(SYMBOL, NOW);
+
+    expect(second.tabOrder).toEqual(first.tabOrder);
+    expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));
+  });
+});
+
+/**
+ * T014 —— 契约增量过 wire (`FR-027` / `FR-019b`, plan D-API)。
+ *
+ * 🚨 **本 describe 的判据全在 `toLegTableResponse` 之后**: 上面几个 describe 断的是 view (use
+ * case 的返回值), 而客户端拿到的是 DTO 映射后的对象 —— 少接一个字段, view 层的断言**一条都不
+ * 会红**。这层是那个缺口的唯一防线。
+ */
+describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', () => {
+  const responseOf = async (legs: LegFixture[] = LEGS, overrides: Record<string, unknown> = {}) =>
+    toLegTableResponse(await makeUseCase(makePrisma(overrides, legs)).execute(SYMBOL, NOW));
+
+  it('顶层 tabOrder 三个 Tab 逐字下发 (客户端 MUST 按它呈现, MUST NOT 自行重排)', async () => {
+    const res = await responseOf();
+
+    expect(res.tabOrder).toEqual({
+      all: ['C-C', 'C-D', 'C-A', 'C-B'],
+      build: ['C-C', 'C-D'],
+      rent: ['C-A', 'C-B'],
+    });
+    // 判别性: 它与 legs[] 的 legacy 载体顺序逐行不同 ⇒ 「映射时顺手拿 legs[] 的序」会红。
+    expect(res.legs.map((l) => l.code)).not.toEqual(res.tabOrder.all);
+  });
+
+  it('🚨 顶层 gateCounts 两个数各自过 wire —— 不合并成总数, 不串台', async () => {
+    // 一分钱腿 (bid 0.05 < 0.20 门槛) 移出响应; 宽价差腿 (6.00/6.00) 留在响应只出意图 Tab。
+    const penny: LegFixture = { ...LEGS[3], code: 'W-PENNY', bid: '0.05', ask: '0.15' };
+    const wide: LegFixture = { ...LEGS[3], code: 'W-WIDE', bid: '3.00', ask: '9.00' };
+    const res = await responseOf([LEGS[3], penny, wide]);
+
+    // 两个数**不相等**才谈得上「没串台」—— 相等的话把两个字段接反也照样绿。
+    expect(res.gateCounts).toEqual({ removedByPremiumFloor: 1, excludedFromIntentTabs: 1 });
+    // 语义不对称的机械体现: 前者的腿不在 legs[] 里, 后者的仍在。
+    expect(res.legs.map((l) => l.code).sort()).toEqual(['C-D', 'W-WIDE']);
+  });
+
+  it('顶层 basisByTab 常量映射下发 —— 客户端不必硬编码 FR-023 的 Tab → 口径', async () => {
+    const res = await responseOf();
+
+    expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
+    // 它与每腿的 `tierByTab` 必须是同一套口径: 建仓走周化档界, 全腿 Tab 例外恒年化。
+    const buildLeg = res.legs.find((l) => l.code === 'C-D');
+    expect([res.basisByTab.build, buildLeg?.tierByTab.build]).toEqual(['weekly', 'acceptable']);
+    expect([res.basisByTab.all, buildLeg?.tierByTab.all]).toEqual(['annualized', 'good']);
+  });
+
+  it('每腿 isRecommended / isMonthlyChain / tierByTab 逐条过 wire', async () => {
+    const res = await responseOf();
+
+    // 收租 · 深度 ⇒ 只有 |Δ| 0.05 落 deep 带 [0.05,0.15] 的 C-B 带标 (恒 false 会红)。
+    expect(res.legs.filter((l) => l.isRecommended).map((l) => l.code)).toEqual(['C-B']);
+    // 月度链: 2026-08-21 与 2027-01-15 是各自月份的第三个周五; 2026-08-14 (C-D) 是周链。
+    expect(
+      res.legs
+        .filter((l) => l.isMonthlyChain)
+        .map((l) => l.code)
+        .sort(),
+    ).toEqual(['C-A', 'C-B', 'C-C']);
+    // 非成员格恒 null —— 不属于该 Tab 就没有该 Tab 的档位。
+    expect(res.legs.find((l) => l.code === 'C-A')?.tierByTab).toEqual({
+      all: 'acceptable',
+      build: null,
+      rent: 'acceptable',
+    });
+  });
+
+  it('🚫 FR-019b: 特征集 MUST NOT 下发 —— 顶层与每腿都零 feature 字段', async () => {
+    const res = await responseOf();
+
+    const featureish = (obj: object) => Object.keys(obj).filter((k) => /feature/i.test(k));
+    expect(featureish(res)).toEqual([]);
+    for (const leg of res.legs) expect([leg.code, featureish(leg)]).toEqual([leg.code, []]);
+  });
+
+  it('链未就绪的空壳也带齐三个新顶层字段 (客户端不必为空态特判 undefined)', async () => {
+    const res = await responseOf(LEGS, {
+      instrument: { findUnique: vi.fn().mockResolvedValue(null) },
+    });
+
+    expect(res.state).toBe('chain_not_ready');
+    expect(res.tabOrder).toEqual({ all: [], build: [], rent: [] });
+    expect(res.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+    // 常量映射与有没有链无关 —— 空态下也是这三格。
+    expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
   });
 });

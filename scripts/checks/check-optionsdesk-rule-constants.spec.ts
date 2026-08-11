@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BAND_LITERAL_RE,
+  DTE_BOUND_RE,
   extractCoefficients,
+  extractRecallThresholds,
   findOffenders,
+  findShapeHits,
+  findShapeOffenders,
+  recallSelfProbe,
   selfProbe,
+  shapePatternProbe,
   stripComments,
 } from './check-optionsdesk-rule-constants';
 
@@ -90,6 +97,114 @@ describe('findOffenders', () => {
       { name: 'block-comment.ts', source: '/** 下界 0.6V。 */\nexport const x = 1;' },
     ];
     expect(findOffenders(files, FORBIDDEN)).toEqual([]);
+  });
+});
+
+/** 镜像 leg-recall.rules.ts 的三处阈值声明（只留检查关心的形状）。 */
+const RECALL_SOURCE = `
+export const PREMIUM_FLOOR: PremiumFloorParams = {
+  absolute: new Prisma.Decimal('0.20'),
+  spotRatio: new Prisma.Decimal('0.0012'),
+};
+
+export const LIQUIDITY_MAX_RELATIVE_SPREAD = new Prisma.Decimal('0.35');
+`;
+
+describe('extractRecallThresholds —— 050 不变量 #2', () => {
+  it('抽出三个阈值，顺序固定为 绝对下限 / spot 比例 / 价差上界', () => {
+    expect(extractRecallThresholds(RECALL_SOURCE)).toEqual(['0.20', '0.0012', '0.35']);
+  });
+
+  it('🚨 蓄意不过滤不去重 —— 少抽到一个要能被探针看见，而不是静默缩小扫描面', () => {
+    const renamed = RECALL_SOURCE.replace('LIQUIDITY_MAX_RELATIVE_SPREAD', 'MAX_SPREAD');
+    expect(extractRecallThresholds(renamed)).toEqual(['0.20', '0.0012']);
+    expect(recallSelfProbe(renamed, extractRecallThresholds(renamed))).toMatch(/平凡绿/);
+  });
+
+  it('只在注释里出现的阈值不被抽成常量', () => {
+    expect(
+      extractRecallThresholds(
+        "// export const LIQUIDITY_MAX_RELATIVE_SPREAD = new Prisma.Decimal('0.35')",
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('recallSelfProbe —— 整数阈值那一臂', () => {
+  it('阈值被写成整数 → 报错并给出改法（整数不可子串扫）', () => {
+    const integral = RECALL_SOURCE.replace("'0.20'", "'1'");
+    const probe = recallSelfProbe(integral, extractRecallThresholds(integral));
+    expect(probe).toMatch(/整数/);
+    expect(probe).toMatch(/MUST NOT 放宽/);
+  });
+
+  it('抽取口径与扫描口径不一致 → 报错', () => {
+    expect(recallSelfProbe(RECALL_SOURCE, ['0.20', '0.0012', '9.9'])).toMatch(/9\.9/);
+  });
+
+  it('三个阈值齐全且均在源码里 → 通过', () => {
+    expect(recallSelfProbe(RECALL_SOURCE, extractRecallThresholds(RECALL_SOURCE))).toBeNull();
+  });
+});
+
+describe('DTE 段界的比较表达式判据 —— 050 不变量 #3', () => {
+  it('🚨 正例臂：`dteDays <= 49` 这类字面量比较必被抓出', () => {
+    const files = [{ name: 'bad.ts', source: 'if (dteDays <= 49 && dteDays >= 1) return true;' }];
+    expect(findShapeOffenders(files, DTE_BOUND_RE)).toEqual([
+      { name: 'bad.ts', hits: ['dteDays <= 49', 'dteDays >= 1'] },
+    ]);
+  });
+
+  it('🚨 反例臂：`dteDays <= 0` 是合法守卫, MUST NOT 命中 —— 否则判据恒红', () => {
+    const files = [
+      {
+        name: 'leg-derive.rules.ts',
+        source: 'if (!Number.isFinite(dteDays) || dteDays <= 0) return null;',
+      },
+    ];
+    expect(findShapeOffenders(files, DTE_BOUND_RE)).toEqual([]);
+  });
+
+  it('比常量而非字面量的写法零命中（这正是要求的写法）', () => {
+    const files = [{ name: 'ok.ts', source: 'return dteDays >= band.min && dteDays <= band.max;' }];
+    expect(findShapeOffenders(files, DTE_BOUND_RE)).toEqual([]);
+  });
+
+  it('注释里写 `dteDays <= 49` 不算违规 —— 那是正确的文档', () => {
+    const files = [{ name: 'doc.ts', source: '// 047 判据是 dteDays <= 49\nconst x = 1;' }];
+    expect(findShapeOffenders(files, DTE_BOUND_RE)).toEqual([]);
+  });
+});
+
+describe('闭区间带的对象形状判据 —— 050 不变量 #4', () => {
+  it('🚨 抄了带字面量的文件必被抓出（含具体命中片段）', () => {
+    const files = [{ name: 'bad.ts', source: 'const b = { min: 0.4, max: 0.55 };' }];
+    expect(findShapeOffenders(files, BAND_LITERAL_RE)).toEqual([
+      { name: 'bad.ts', hits: ['{ min: 0.4, max: 0.55 }'] },
+    ]);
+  });
+
+  it('import 常量的文件零命中', () => {
+    const files = [
+      {
+        name: 'ok.ts',
+        source: "import { BUILD_RECOMMEND_ABS_DELTA_BAND } from './leg-mark.rules';",
+      },
+    ];
+    expect(findShapeOffenders(files, BAND_LITERAL_RE)).toEqual([]);
+  });
+});
+
+describe('findShapeHits —— `g` 标志的 lastIndex 不许跨调用残留', () => {
+  it('同一个正则连续两次调用返回相同结果', () => {
+    const src = 'const b = { min: 0.4, max: 0.55 };';
+    expect(findShapeHits(src, BAND_LITERAL_RE)).toEqual(findShapeHits(src, BAND_LITERAL_RE));
+  });
+});
+
+describe('shapePatternProbe —— 两侧探针都健在', () => {
+  it('现役正则的正例臂与反例臂均通过', () => {
+    expect(shapePatternProbe()).toBeNull();
   });
 });
 

@@ -30,6 +30,24 @@ import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 // 🚨 **造数两个坑** (T023 实撞过): 标的行的 `last` 别抄成期权价、行权价别取到「内在价值 > ask」
 // —— 两者都会被采集侧落库前硬门整批拒掉。本文件虽然绕过采集直接落库, 仍照同一形态造
 // (spot 132.40 高于全部 PUT 行权价 ⇒ 虚值侧), 免得这批数据将来被喂回采集路径时突然不合法。
+// ## 050 T015 逐条过的结论 (2026-08-11)
+//
+// 召回层换代后本文件**一条没红**。逐条核对下来这不是「判据没生效」, 而是**这份数据集对
+// 047 → 050 的四类行为变化全不判别** —— 每条腿在两套判据下的 Tab 归属逐条相同:
+//
+// | 腿                        | 047 判据                  | 050 判据                        | 归属 |
+// | ------------------------- | ------------------------- | ------------------------------- | ---- |
+// | 收租 3 条 + bulk 60 条    | `DTE∈[150,365]` ∧ `K≤W`   | `DTE∈[30,365]` ∧ 两道门槛       | 同   |
+// | 建仓 1 条 (DTE 10, K=130) | `DTE≤14` ∧ `|Δ|∈[.40,.55]` | `DTE∈[1,49]` ∧ 有效成本 < spot  | 同   |
+// | greeks 缺失 (DTE 164)     | 锚轴不看 Δ ⇒ 进收租        | 召回签名里没有 Δ ⇒ 进收租       | 同   |
+//
+// 另两类变化在本文件里**压根没有判据**: 全部 bid ≥ 0.20 且相对价差 < 35% ⇒ 两道门槛一次都没
+// 触发; `basis` 一个字都没断言过。⇒ 它们「该红却绿」的原因是**没有断言**, 不是断言失效。
+//
+// 🚨 **判别性归 050 的三个 IT** (`optionsdesk-050.recall/mark/rank.it.spec.ts`): 召回集合逐条
+// 相等、两个门槛计数、`K > W` 的腿进收租 (锚轴退役的绊线)、`basis` 按建仓召回集归属。本文件
+// 保持 047 的原始判据面**不扩写** —— 它守的是「读端过滤 / 状态分支 / Guardrail 6·7」那一层,
+// 那一层 050 一行没动。
 describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => {
   let prisma: PrismaService;
   let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
@@ -44,12 +62,12 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
   const STALE_SESSION = '2026-07-31';
 
   const SYMBOL = 'us:PEP';
-  /** V = 150 ⇒ W = 120, 内段 [90, 180); spot 132.40 落 [W, V) = 卖put区 (thin) ⇒ 收租走锚轴。 */
+  /** V = 150 ⇒ W = 120, 内段 [90, 180); spot 132.40 落 [W, V) = 卖put区 (thin)。 */
   const V = '150';
   const SPOT = '132.4000';
-  /** 收租带 DTE ∈ [150,365]: 2026-08-04 → 2027-01-15 = 164 天。 */
+  /** 2026-08-04 → 2027-01-15 = 164 天: 047 的 `[150,365]` 与 050 的 `[30,365]` **都收**。 */
   const RENT_EXPIRY = '2027-01-15';
-  /** 建仓带 DTE ≤ 14: → 2026-08-14 = 10 天。 */
+  /** → 2026-08-14 = 10 天: 047 的 `≤14` 与 050 的 `[1,49]` **都收**。 */
   const BUILD_EXPIRY = '2026-08-14';
 
   const dateOf = (isoDay: string): Date => new Date(`${isoDay}T00:00:00Z`);
@@ -200,7 +218,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
   }> {
     const instrumentId = await seedInstrument('PEP');
     const codes: Record<string, string> = {};
-    // 收租长腿 (DTE 164, K ≤ W=120 ⇒ 锚轴命中): 年化 ≈ 15.9% / 11.2% ⇒ 好 / 可接受。
+    // 收租长腿 (DTE 164 落两套判据的收租段): 年化 ≈ 15.9% / 11.2% ⇒ 好 / 可接受。
     codes.rentGood = await seedLeg(
       instrumentId,
       { root: 'PEP', expiry: RENT_EXPIRY, strike: 120, bid: '8.00', ask: '8.20', delta: '-0.30' },
@@ -217,13 +235,14 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
       { root: 'PEP', expiry: RENT_EXPIRY, strike: 100, bid: '0.50', ask: '0.60', delta: '-0.05' },
       session,
     );
-    // 建仓腿 (DTE 10, |Δ| 0.45 ∈ [0.40,0.55]) ⇒ 周化口径。
+    // 建仓腿 ⇒ 周化口径。047 靠 `DTE 10 ≤ 14 ∧ |Δ| 0.45 ∈ [0.40,0.55]`, 050 靠
+    // `DTE 10 ∈ [1,49] ∧ 有效成本 130 − 1.60 = 128.40 < spot 132.40` —— 两套都收它。
     codes.build = await seedLeg(
       instrumentId,
       { root: 'PEP', expiry: BUILD_EXPIRY, strike: 130, bid: '1.60', ask: '1.70', delta: '-0.45' },
       session,
     );
-    // greeks 缺失 (FR-007: 在表内、不判档、不进两个意图 Tab)。
+    // greeks 缺失 (FR-007: 在表内、不判档)。🚫 **不是**「不进意图 Tab」—— 见测 ⑥。
     codes.greeksMissing = await seedLeg(
       instrumentId,
       {
@@ -428,11 +447,13 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     // Guardrail 10: |Δ| 与 σ 距同源, 要么同时有值要么同时为空。
     expect(leg!.absDelta).toBeNull();
     expect(leg!.sigmaDistance).toBeNull();
-    // 🚨 缺 Δ 只挡住**以 Δ 为判据**的那一侧: 建仓带 (`|Δ| ∈ [0.40,0.55]`) 进不去。
+    // 它进不了建仓 —— 📌 **050 起原因换了**: 047 是「缺 Δ 落不进建仓的 |Δ| 带」, 050 的召回
+    // 签名里根本没有 Δ, 挡住它的是 `DTE 164 ∉ [1,49]`。两套判据同一个答案, 故本条一直是绿的。
     expect(leg!.tabs).not.toContain('build');
-    // 🚨 但收租在卖put区走的是**锚轴** `K ≤ W` —— 那条判据根本不看 Δ ⇒ 该腿照常在收租 Tab 里。
-    // 这不是漏网: FR-021/FR-025 的 Tab 归属**零拦截**语义要求缺数据只影响判档与着色,
-    // MUST NOT 拿它筛掉腿。若哪天锚轴也开始要 Δ, 本条会红 —— 那正是要提醒的时刻。
+    // 🚨 缺 Δ **不影响收租归属**: 047 走锚轴 `K ≤ W` (那条判据不看 Δ), 050 走 DTE 段 + 两道门槛
+    // (`leg-recall.rules.ts` 的入参里没有 `absDelta`, 是结构保证不是约定)。两代实现的共同语义是
+    // FR-021/FR-025 的 Tab 归属**零拦截** —— 缺数据只影响判档与着色, MUST NOT 拿它筛掉腿。
+    // 哪天有人把 Δ 塞回召回判据, 本条会红 —— 那正是要提醒的时刻。
     expect(leg!.tabs).toContain('all');
     expect(leg!.tabs).toContain('rent');
     expect(view.legs.some((l) => l.greeksComplete === false && l.tier !== null)).toBe(false);
@@ -470,7 +491,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
   it('⑧ 建仓 Tab 零适格腿 → 返空集合而非 404, 面板照常有数据 (FR-020)', async () => {
     await seedAnchor('us:VICI');
     const vici = await seedInstrument('VICI');
-    // 只有长腿 ⇒ 没有一条腿满足建仓带 (DTE ≤ 14)。
+    // 只有长腿 (DTE 164) ⇒ 047 的 `DTE ≤ 14` 与 050 的 `DTE ∈ [1,49]` 都收不到它。
     await seedLeg(
       vici,
       { root: 'VICI', expiry: RENT_EXPIRY, strike: 115, bid: '5.50', ask: '5.70', delta: '-0.25' },
