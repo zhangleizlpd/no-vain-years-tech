@@ -38,7 +38,7 @@ updated_at: '2026-08-11'
 
 ## E2E
 
-- [ ] T005 重写 `apps/mobile/e2e/optionsdesk-chain-leg-picker.spec.ts` 的横向判据：`horizontalScroll()`（读 `scrollLeft`/`scrollWidth`）与 `page.mouse.wheel(400, 0)` 在 E 范式下**双双失效**（没有 DOM 滚动容器；wheel 不驱动 RNGH 的 Pan）⇒ 换**指针分步拖拽**（多次 `mouse.move` 才能越过 `activeOffsetX(12)`）+ `boundingBox()` 位移断言 (FR-001, FR-003, SC-002, SC-003, plan D-TEST-2)
+- [X] T005 重写 `apps/mobile/e2e/optionsdesk-chain-leg-picker.spec.ts` 的横向判据：`horizontalScroll()`（读 `scrollLeft`/`scrollWidth`）与 `page.mouse.wheel(400, 0)` 在 E 范式下**双双失效**（没有 DOM 滚动容器；wheel 不驱动 RNGH 的 Pan）⇒ 换**指针分步拖拽**（多次 `mouse.move` 才能越过 `activeOffsetX(12)`）+ `boundingBox()` 位移断言 (FR-001, FR-003, SC-002, SC-003, plan D-TEST-2)
   → verify: 🚨 **先对旧实现验红再对新实现验绿**（Constitution §II 的实质，不是形式）——写完断言后 `git stash` 掉 T001–T004 的实现（或 `git checkout` 到 T001 之前那个 commit）跑一次，**新断言在 A 范式下必须红**；红不了说明这条断言测的不是它该测的东西（要么视口宽到恒真，要么指针根本没驱动手势），此时**断言作废重写**，不许拿它去验新实现。同源教训见 ADR-0063：「A 臂的职责是必须能复现失步，复现不出说明探针不可信，整轮作废」。确认红之后 restore 实现，本 task 以**绿**收尾并 commit
   → verify: 该文件全部 test 绿；断言必须含**前提自检**（拖拽前动作列确在视区外，否则视口一宽就恒真）；断言四项：动作列左移 · 表头与行 Δx ≤1px · 首列 x 不动 · 纵滚后横向 Δx 不变；🚫 若指针驱不动就退 `page.touchscreen` / CDP dispatch，**MUST NOT 把断言删成恒真**
 

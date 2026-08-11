@@ -18,8 +18,10 @@ import { mockJson } from './_support/api-mock';
 //   ① **SC-012** —— 计数条分母 = 逻辑集合长度 · 可滚到最后一行 · 滚动区长度覆盖全部逻辑行 ·
 //      全部腿行都在 DOM 里（US2-AS1「无静默截断」）
 //   ② **US2-AS6** —— 横滑露出隐藏列 + 首列钉住 + **横滑后纵向滚动仍工作、纵滚后横向位移不变**
-//      （= 手势零争用的**唯一**可验证判据：Guardrail 8 那个坑在 RN 只打 dev warning，
+//      （= 手势零争用的**唯一**可验证判据：那个坑在 RN 只打 dev warning，
 //        typecheck / lint / 单测 / CI 全绿，只有这条 e2e 能照出来）
+//      🚨 **049 T005 判据已换代**（滚轮 + `scrollLeft` → 指针分步拖拽 + `boundingBox`），
+//        换代理由与失效方式写在该 test 上方；②b 是 049 T004 新增的横向指示条两条
 //   ③ **四个状态帧** —— 陈旧 asOf（`STALE`）/ 链数据未就绪 / 零适格腿 / 不动区
 //   ④ **US3-AS2** —— 未选水位时三个 Tab **全部可进入读表**（不置灰不隐藏）
 //   ⑤ **US3-AS3** —— 水位选择被记住（重进仍在）且**可看出是人工输入**（读契约的来源标）
@@ -34,9 +36,10 @@ import { mockJson } from './_support/api-mock';
 //   一个文件。选约区块的 OFF 断言由 T036 加在那边（`nx run mobile:e2e-public`）。
 //   写在本文件里 = 在 markets-ON bundle 下跑，**永远验不到 OFF，且不会红**。
 //
-// ── ⚠️ Expo Web 下**验不到**的两件事（如实标注，不凑假断言）────────────────────
-//   1. **真机手感 / 滚动流畅度** —— spec 已明标它故意不作验收门（主观计时）。本文件只验
-//      「能滚到 / 滚得对」，不验「滚得顺」。
+// ── ⚠️ Expo Web 下**验不到**的几件事（如实标注，不凑假断言）────────────────────
+//   1. **真机手感 / 滚动流畅度 / 惯性衰减与边界回弹** —— spec 已明标手感故意不作验收门
+//      （主观计时）。本文件只验「能滚到 / 滚得对」，不验「滚得顺」；`withDecay` 的收敛点
+//      落在哪归真机验收单（049 M1/M4）。
 //   2. **大规模虚拟化窗口** —— `VirtualizedList` 默认 `windowSize=21`（≈ 21 屏 ≈ 369 行 @48px），
 //      e2e 可承受的行数（本文件 60）**够不到**那条线 ⇒ web 上全部行都会被渲染出来。故 ①
 //      在 web 下验的是「分母取逻辑集合长度 + 滚动区覆盖全部逻辑行 + 零截断」，
@@ -45,6 +48,11 @@ import { mockJson } from './_support/api-mock';
 //      但 **react-native-web 0.21 整个不认这个 prop**（dist 内零处理）⇒ web DOM 上没有
 //      `aria-selected`。选中态在本文件走「自比较的视觉态 + 功能面」两层断言（见 `textStyleOf`），
 //      **读屏器读不读得出「已选中」归真机验收**。
+//   4. 🚨 **自激环（049 `SC-001`）** —— ADR-0063 已实证：合成手势（单指、单向、无交错）下
+//      缺陷实现**完全测不出问题**，净位移看着是对的而写入 / 方向反转仍在涨。web 侧凑一条
+//      断言只会制造假绿 ⇒ 由真机数值探针独占（049 T008 M1），本文件**刻意零覆盖**。
+//   5. **sticky 栈高在真机窄屏的实际占比**（049 `SC-006`）—— web 视口比真机可用高度宽松，
+//      这里量出来的行数不能当真机结论。
 //
 // ── hermetic mock 纪律（per docs/conventions/mobile-impl-playbook.md §6）────────
 //   mock 写**依赖方（server）契约**：持一份 canonical 状态（锚表 + 逐票选约表），handler 是
@@ -99,8 +107,8 @@ const seedAuthStore = `
 `;
 
 /**
- * 🚨 **窄视口是本文件的前提，不是装饰**：12 列共 696px，其中右侧滚动区 608px。
- * Desktop Chrome 默认 1280px 下滚动区**根本不溢出** ⇒ 横滑压根发生不了，US2-AS6 会「绿得毫无
+ * 🚨 **窄视口是本文件的前提，不是装饰**：12 列共 716px，其中右侧列区 628px。
+ * Desktop Chrome 默认 1280px 下**根本没有横向余量** ⇒ 横滑压根发生不了，US2-AS6 会「绿得毫无
  * 意义」。390×844（iPhone 量级）才让隐藏列真的藏起来，也更贴近该屏的真实目标端。
  */
 test.use({ viewport: { width: 390, height: 844 } });
@@ -526,22 +534,6 @@ function verticalScroll(page: Page): Promise<{ top: number; height: number; clie
   });
 }
 
-/** 同上，横向。`max` = 可滚动余量（0 ⇒ 该容器根本没溢出，横滑无从谈起）。 */
-function horizontalScroll(locator: Locator): Promise<{ left: number; max: number }> {
-  return locator.evaluate((root) => {
-    const findScrollable = (node: Element): Element | null => {
-      if (node.scrollWidth - node.clientWidth > 1) return node;
-      for (const child of Array.from(node.children)) {
-        const hit = findScrollable(child);
-        if (hit !== null) return hit;
-      }
-      return null;
-    };
-    const el = findScrollable(root) ?? root;
-    return { left: el.scrollLeft, max: el.scrollWidth - el.clientWidth };
-  });
-}
-
 /**
  * 在目标元素中心发一次滚轮 —— **真手势**（浏览器自行决定由哪个容器消化，正是手势争用要验的）。
  * 元素不在视口内取不到 box ⇒ 显式抛错，不静默跳过。
@@ -707,9 +699,20 @@ test('047 T035 — SC-012：计数条分母 = 逻辑总行数、可滚到最后�
 
 // ════════════════════════════════════════════════════════════════════════════
 // ② US2-AS6 —— 横滑露列 + 首列钉住 + 纵向滚动仍工作（手势零争用）
+//
+// ── 🚨 049 T005 判据换代（FR-001/003, SC-002/003, plan D-TEST-2）──────────────
+//   047 版靠 `horizontalScroll()` 读 `scrollLeft` / `scrollWidth`，并用
+//   `page.mouse.wheel(400, 0)` 驱动。E 范式（单 `Gesture.Pan` → 单共享位移 → `translateX`）
+//   下**两者双双失效，且失效方式不同**：
+//     · 没有 DOM 滚动容器了 ⇒ `scrollWidth − clientWidth` 恒 0，那条「前提自检」直接判「没
+//       溢出」，测试红在前提上（不是红在被测行为上）；
+//     · 滚轮不驱动 RNGH 的 `Gesture.Pan` ⇒ 就算换个读法，也没有位移可读。
+//   ⇒ 换成**指针分步拖拽 + `boundingBox()` 位移差**。这套判据不依赖滚动容器、也不依赖
+//   `translateX` 这个特定手段 —— 它问的是「屏幕上那一列有没有挪到该在的位置」，
+//   所以换范式不脆。
 // ════════════════════════════════════════════════════════════════════════════
 
-test('047 T035 — US2-AS6：横滑露出隐藏列且首列钉住，表头与行同步；**纵向滚动仍在详情页内正常工作**（手势零争用）', async ({
+test('049 T005 — US2-AS6（判据换代）：指针拖拽露出隐藏列、表头与行同列同步、首列钉住、纵滚不带跑横向位移（手势零争用）', async ({
   page,
 }) => {
   const legs = manyLegs(24);
@@ -721,70 +724,70 @@ test('047 T035 — US2-AS6：横滑露出隐藏列且首列钉住，表头与行
   await openDetail(page, 'us:PEP');
 
   const row = page.getByTestId(rowId(code));
-  const rowScroller = page.getByTestId(rowScrollerId(code));
-  const headerScroller = page.getByTestId(HEADER_SCROLLER);
+  // 表头与数据行各自的**位移载体**（宽 628 的内容层）：它们的屏幕左缘之差就是两者的位移差。
+  const rowPane = page.getByTestId(rowScrollerId(code));
+  const headerPane = page.getByTestId(HEADER_SCROLLER);
   const stickyBadge = page.getByTestId(`optionsdesk-detail-leg-basis-${code}`);
   const actionCell = page.getByTestId(actionId(code));
 
-  // 把首行滚进视口（滚轮必须落在真实元素上）。
+  // 把首行滚进视口（拖拽必须落在真实元素上）。
   await row.scrollIntoViewIfNeeded();
   await expect(row).toBeVisible();
 
-  // 前提自检：窄视口下右侧列区**真的溢出**了 —— 不溢出的话下面全套断言毫无意义。
-  const before = await horizontalScroll(rowScroller);
-  expect(before.max, '右侧列区未溢出：视口太宽，横滑验不到').toBeGreaterThan(0);
-  expect(before.left).toBe(0);
+  const rowBox = await row.boundingBox();
+  const actionBefore = await actionCell.boundingBox();
+  if (rowBox === null || actionBefore === null) throw new Error('行 / 动作列尺寸不可得');
 
-  // 「动作」列初始在可视区之外（= 确有隐藏列）。
-  const scrollerBox = await rowScroller.boundingBox();
-  const hiddenBox = await actionCell.boundingBox();
-  if (scrollerBox === null || hiddenBox === null) throw new Error('列区 / 动作列尺寸不可得');
-  expect(hiddenBox.x, '「动作」列初始就露着，隐藏列前提不成立').toBeGreaterThan(
-    scrollerBox.x + scrollerBox.width,
+  // 🚨 **前提自检**（Guardrail 8）：拖拽前「动作」列确在视区外。视口一宽这条就不成立，
+  //    而下面「左移 / 露出来」的断言会**恒真** —— 这是这类断言最常见的假绿。
+  expect(actionBefore.x, '「动作」列初始就露着（视口太宽）：横滑判据会恒真').toBeGreaterThan(
+    rowBox.x + rowBox.width,
   );
 
-  const stickyBefore = await stickyBadge.boundingBox();
+  const paneBefore = await boxX(rowPane);
+  const headerBefore = await boxX(headerPane);
+  const stickyBefore = await boxX(stickyBadge);
   const verticalBefore = await verticalScroll(page);
-
-  // ── 横滑（真滚轮，deltaX）──────────────────────────────────────────────
-  await wheelOver(page, rowScroller, 400, 0);
-  await expect
-    .poll(async () => (await horizontalScroll(rowScroller)).left, { timeout: 5_000 })
-    .toBeGreaterThan(0);
-
-  const afterX = await horizontalScroll(rowScroller);
-  const headerX = await horizontalScroll(headerScroller);
-  // 表头与数据行共享同一个 offset ⇒ 位移必须同步（差半像素内）。
-  expect(Math.abs(headerX.left - afterX.left), '表头与数据行横向位移不同步').toBeLessThanOrEqual(1);
-
-  // 隐藏列露出来了。
-  const revealed = await actionCell.boundingBox();
-  if (revealed === null) throw new Error('动作列尺寸不可得');
-  expect(revealed.x, '横滑后「动作」列仍在可视区之外').toBeLessThan(
-    scrollerBox.x + scrollerBox.width,
+  expect(Math.abs(headerBefore - paneBefore), '零位移时表头与数据行就没对齐').toBeLessThanOrEqual(
+    1,
   );
+
+  // ── 横滑：指针**分步**拖拽（一步到位跨不过 `activeOffsetX(12)` 的方向仲裁）──────
+  await dragHorizontally(page, row, -300);
+  const paneAfter = await settledX(page, rowPane);
+
+  // ① 列区真的左移了 —— 位移只从屏幕坐标读，不读任何滚动量。
+  expect(paneAfter, '拖了但列区没动（指针没驱动 Pan / 位移没落到列区）').toBeLessThan(
+    paneBefore - 1,
+  );
+
+  // ② 表头与数据行同列左缘 ≤1px（两者共读同一个 `tx`；SC-002 的 web 侧判据）。
+  const headerAfter = await boxX(headerPane);
+  expect(Math.abs(headerAfter - paneAfter), '表头与数据行横向位移不同步').toBeLessThanOrEqual(1);
+
+  // ③ 隐藏列露出来了，且确实是那一列（文案对得上）。
+  const actionAfter = await actionCell.boundingBox();
+  if (actionAfter === null) throw new Error('动作列尺寸不可得');
+  expect(actionAfter.x, '横滑后「动作」列仍在视区外').toBeLessThan(rowBox.x + rowBox.width);
   await expect(actionCell).toHaveText(COPY.actionPlaceOco);
 
-  // 首列钉住 —— 它渲在横滑之外，横向位移**一像素都不该动**。
-  const stickyAfter = await stickyBadge.boundingBox();
-  if (stickyBefore === null || stickyAfter === null) throw new Error('首列尺寸不可得');
+  // ④ 首列钉住 —— 它渲在位移区之外，一像素都不该动（FR-002）。
   expect(
-    Math.abs(stickyAfter.x - stickyBefore.x),
+    Math.abs((await boxX(stickyBadge)) - stickyBefore),
     '首列跟着横滑跑了（没钉住）',
   ).toBeLessThanOrEqual(1);
 
-  // ── 🚨 手势零争用：在**同一个点**（行的横滑容器上）发纵向滚轮 ────────────
-  //    Guardrail 8 那个坑（SectionList 塞回同向 ScrollView）在 RN 只打 dev warning，
+  // ── 🚨 手势零争用：在**同一个点**（刚拖过的那一行）发纵向滚轮 ────────────
+  //    Guardrail 10 那个坑（`SectionList` 塞回同向 `ScrollView`）在 RN 只打 dev warning，
   //    typecheck / lint / 单测 / CI 全绿 —— 只有这条断言能照出来。
-  await wheelOver(page, rowScroller, 0, 600);
+  await wheelOver(page, row, 0, 600);
   await expect
     .poll(async () => (await verticalScroll(page)).top, { timeout: 5_000 })
     .toBeGreaterThan(verticalBefore.top);
 
-  // 方向正交：纵滚不该把横向位移带跑。
-  const afterVertical = await horizontalScroll(rowScroller);
+  // ⑤ 方向正交：纵滚不该把横向位移带跑（SC-003 的 web 侧判据）。
   expect(
-    Math.abs(afterVertical.left - afterX.left),
+    Math.abs((await boxX(rowPane)) - paneAfter),
     '纵向滚动把横向位移带跑了（两个方向在抢同一个响应者）',
   ).toBeLessThanOrEqual(1);
 });
