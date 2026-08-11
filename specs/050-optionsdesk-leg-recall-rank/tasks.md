@@ -96,7 +96,7 @@ updated_at: '2026-08-11'
 
 - [X] T017 [Server] **两道门槛阈值实测标定 + 回写 spec**（FR-007, SC-002/SC-004, 主 plan 未决 #2）：用 dev 真实链数据（期权表已由每日同步维护）跑分布统计，定 `PREMIUM_FLOOR` 双参数与 `LIQUIDITY_MAX_RELATIVE_SPREAD` 的值；把标定过程与结论回写 `spec.md` 的 Assumptions/验证段 → verify: 标定前后**召回集行数 + 两个滤除计数**实测入档；`SC-002` 找到至少 1 条「047 下进不了任何意图 Tab、050 下进建仓」的真实腿（记合约代码 + DTE + 有效成本）；`SC-004` 找到至少 1 条 greeks 缺失但进了意图 Tab 的真实腿；🚨 **标定后回看 1–3 天腿是否仍霸榜**（clarify Q2 定的「不加额外分散手段」的前提），若仍霸榜则 flag 给 user 决策**而不是自行加机制**
 
-- [ ] T018 [Docs] **回填主 plan**（plan D-RECALL-3）：更新 `docs/private/plans/2026-08/08-11-optionsdesk-leg-engine-master.md` —— ① 四片表 P1 标 ✅ ship + 退出标准逐条打勾 ② **把「费率下沉 SQL」从 P1 行移到 P3 行**，并写明否决理由三条 + P3 届时 MUST 配「SQL 结果 == 纯函数结果」等价 IT ③ 新增「P1 交付物」段：六个新契约字段的逐字签名 + 四个新 rules 文件的导出清单（P2 照着接）④ 未决 #2 标已定（填入 T017 标定值）→ verify: 主 plan 四片表与不变量段已更新；契约字段清单与 `optionsdesk.dto.ts` 逐字一致
+- [X] T018 [Docs] **回填主 plan**（plan D-RECALL-3）：更新 `docs/private/plans/2026-08/08-11-optionsdesk-leg-engine-master.md` —— ① 四片表 P1 标 ✅ ship + 退出标准逐条打勾 ② **把「费率下沉 SQL」从 P1 行移到 P3 行**，并写明否决理由三条 + P3 届时 MUST 配「SQL 结果 == 纯函数结果」等价 IT ③ 新增「P1 交付物」段：六个新契约字段的逐字签名 + 四个新 rules 文件的导出清单（P2 照着接）④ 未决 #2 标已定（填入 T017 标定值）→ verify: 主 plan 四片表与不变量段已更新；契约字段清单与 `optionsdesk.dto.ts` 逐字一致
 
 ---
 
