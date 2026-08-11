@@ -19,8 +19,8 @@ context7_verified: []
 
 ## Dependencies & Defensive Additions _(Cargo-cult 防火墙)_
 
-| 引入的依赖 / Polyfill / Defensive Import | 目的 | Fact-check 锚点 |
-| ---------------------------------------- | ---- | ---------------- |
+| 引入的依赖 / Polyfill / Defensive Import | 目的 | Fact-check 锚点                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | None                                     | N/A  | 本片零新包。金额 / 费率沿用 `Prisma.Decimal`（Decimal.js，已装）；归一化后的统计量用 `number`（沿 `leg-derive.rules.ts` 既有量纲纪律：金额 Decimal / 统计量 number）。月度到期日判定用 `Date` 原生 + 既有 `marketdata.trading_day` 表，**不引日期库**（判据只有「第三个周五」一条，`O(1)` 手写十行） |
 
 ## Constitution Check _(mandatory gate)_
@@ -50,11 +50,11 @@ context7_verified: []
 
 ### Gate 0.4 — ADR-deferred-mitigation Scan Step
 
-| ADR | Open Question / sunset trigger | Classification | Mitigation / next step |
-| --- | --- | --- | --- |
+| ADR          | Open Question / sunset trigger                                                                         | Classification   | Mitigation / next step                                                                                                                                                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------ | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **ADR-0034** | 跨 ctx 只读直查（Q7-B）是**临时路径**，sunset 到「Outbox replay 物化视图 / SecurityModule 共享读服务」 | `accepted-as-is` | 本片**新增一处**同类只读（`marketdata.trading_day`，月度到期日判定）。它与 047 已有的四处（`instrument` / `option_contract` / `option_daily_snapshot` / `earnings_event`）**同形同注释**，不新增形态、不加深耦合。sunset 到来时五处一起迁，成本不因本片增加 |
-| **ADR-0043** | §4 rules 文件持无副作用业务规则 | `accepted-as-is` | 本片新增三个 `*.rules.ts` 严格遵此：零 I/O、零 DI。**月度到期日的日历查询留在 use case**，纯函数只吃「候选日期集 + 交易日集」两个入参 —— 这是本片唯一一处「纯函数需要外部事实」的地方，处置方式已定死 |
-| **ADR-0032** | bounded context 边界 | `accepted-as-is` | 本片零新 context、零反向依赖 |
+| **ADR-0043** | §4 rules 文件持无副作用业务规则                                                                        | `accepted-as-is` | 本片新增三个 `*.rules.ts` 严格遵此：零 I/O、零 DI。**月度到期日的日历查询留在 use case**，纯函数只吃「候选日期集 + 交易日集」两个入参 —— 这是本片唯一一处「纯函数需要外部事实」的地方，处置方式已定死                                                       |
+| **ADR-0032** | bounded context 边界                                                                                   | `accepted-as-is` | 本片零新 context、零反向依赖                                                                                                                                                                                                                                |
 
 **Evidence**: 逐条读三个 ADR 的 frontmatter；ADR-0063（横滑）与本片无交集（那是 mobile 片）。
 
@@ -78,11 +78,11 @@ context7_verified: []
 
 现役 `leg-tab.rules.ts` 承担两件事，本片一件整个换代、另一件一行不改：
 
-| 现役职责 | 本片处置 |
-| --- | --- |
+| 现役职责                                                                     | 本片处置                                                                          |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | ① Tab 成员判据（`legTabs` / `isBuildLeg` / `isRentLeg` + Δ 带常量 + DTE 界） | **整块换代** → `leg-recall.rules.ts`；Δ 带常量**迁**打标层（不是删，见 D-MARK-1） |
-| ② 财报打标域划分（`earningsLegFamilyFor` / `RENT_SHORT_MAX_DTE_DAYS`） | **一行不改**（`FR-017`），留在原文件 |
-| ③ `LEG_TABS` / `LegTab` 类型 | 留在原文件 —— Tab 这个概念不随召回换代 |
+| ② 财报打标域划分（`earningsLegFamilyFor` / `RENT_SHORT_MAX_DTE_DAYS`）       | **一行不改**（`FR-017`），留在原文件                                              |
+| ③ `LEG_TABS` / `LegTab` 类型                                                 | 留在原文件 —— Tab 这个概念不随召回换代                                            |
 
 🚨 **语义翻转必须连带改名，这是本片最危险的静默坑**（同源教训：049 D-SCROLL-1 的 `offset`→`tx`，不改名则编译绿而真机方向反了）：
 
@@ -113,8 +113,20 @@ apps/server/src/optionsdesk/leg-recall.rules.ts（新）
 
 仓内已有现成模式：`scripts/checks/check-optionsdesk-rule-constants.ts` 守「档位系数只许出现在 `anchor.rules.ts`」，且**被禁字面量从源文件自身派生**（不在检查器里写死，否则检查器自己就是第二处硬编码）。
 
-⇒ **扩展该脚本**：新增一条不变量「两道门槛阈值 + 三段 DTE 界的字面量只许出现在 `leg-recall.rules.ts`」，派生方式照抄既有那条。约半个 task。
-🚫 MUST NOT 新写一个检查脚本 —— 同一类不变量分两个文件，调参时必漏一个。
+⇒ **扩展该脚本**，🚫 MUST NOT 新写一个 —— 同一类不变量分两个文件，调参时必漏一个。
+
+🚨 **但阈值与 DTE 界 MUST 走两套不同判据**（2026-08-11 analyze 定，读实现后得出，不是推测）：
+
+| 对象                                              | 判据                                                                                                   | 为什么不能用另一套                                                                                                                     |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **两道门槛阈值**（小数）                          | 沿用既有的**子串扫描**（`extractCoefficients` → `findOffenders`）                                      | —                                                                                                                                      |
+| **三段 DTE 界**（整数 `1` / `49` / `30` / `365`） | **扫比较表达式**：`dteDays\s*[<>=!]+\s*[1-9][0-9]*` 在 `leg-recall.rules.ts` 与 `*.spec.ts` 之外零命中 | 既有机制第 76–77 行**显式过滤掉不含小数点的字面量**，注释原文：「整数系数当子串扫会把行号 / 数组下标全扫成违规」。`1` 会命中几乎每一行 |
+
+📌 **比较表达式判据必须排除比较对象为 `0` 的形式** —— `leg-derive.rules.ts:81` 的 `dteDays <= 0` 是合法守卫（DTE≤0 时费率无定义），不写 `[1-9]` 会让判据**恒红**。已实测：收窄后现役零命中，收窄前 1 处命中。（同源教训：047 T039 的 `rg 'optionsdesk'` 判据也是因 1 处 pre-existing 命中而恒红，只好改扫依赖形态。）
+
+🚨 **扫描面 MUST 排除 `*.spec.ts`** —— 既有实现 `:128-129` 是 `readdirSync(ctxPath).filter(f => f.endsWith('.ts') && f !== RULES_FILE)`，**测试文件也在扫描面内**。守 anchor 系数时这没问题（那些值不出现在断言里），但**新不变量不一样**：`leg-recall.rules.spec.ts` 必须在断言里写出边界值，照抄扫描面会让它立刻违规。
+
+⚠️ **撞值风险，标定阈值时 MUST 避开**：`leg-tier.rules.ts` 已有六个档界字面量 `0.006 / 0.01 / 0.02 / 0.05 / 0.10 / 0.15`。子串扫描认的是**值不是名字** ⇒ 两道门槛的取值若与其中之一相同，检查器会把 `leg-tier.rules.ts` 报成违规。撞上时 **MUST 改阈值取值**（T017 标定阶段调整），🚫 **MUST NOT 放宽检查器** —— 那会让 `SC-009` 显示为「已机器强制」而实际没有，比不装更糟。
 
 #### D-RECALL-3 · 🚨 本片**不下沉 SQL**（显式否决主 plan P1 行的字面表述）
 
@@ -150,9 +162,9 @@ apps/server/src/optionsdesk/leg-mark.rules.ts（新）
 
 🚨 **本片最容易照抄错的一点**——现役 `rentAbsDeltaBand(null)` 在水位未选时返回**三档并集**，那在 047 是**对的**；同一个函数迁到打标层是**错的**：
 
-| 语义 | 「不替人做方向性假设」导出的行为 |
-| --- | --- |
-| **召回**（047）：Δ 带决定腿进不进来 | 未选水位 ⇒ 取**并集**（放宽收进来，别替人砍掉候选） |
+| 语义                                  | 「不替人做方向性假设」导出的行为                        |
+| ------------------------------------- | ------------------------------------------------------- |
+| **召回**（047）：Δ 带决定腿进不进来   | 未选水位 ⇒ 取**并集**（放宽收进来，别替人砍掉候选）     |
 | **打标**（050）：Δ 带决定打不打推荐标 | 未选水位 ⇒ **不打**（`FR-012`；打了就是替人指了个方向） |
 
 **同一条原则，在两个语义下导出相反的行为。** 照抄 `rentAbsDeltaBand` 会让「水位未选」时全表冒出一片推荐标，而它长得完全正常。
@@ -198,11 +210,11 @@ apps/server/src/optionsdesk/leg-rank.rules.ts（新）
 
 🚨 **除零必须先判，这是 `FR-019a` 第一条的真实动机**：`min === max` 时 `(v−min)/(max−min)` = `0/0` = `NaN`。NaN 一旦进排序，`Array.prototype.sort` 的比较结果**不可预测**（与 NaN 的任何比较恒 `false`）⇒ 顺序变成实现相关，**且不抛任何错**。三条边界：
 
-| 情形 | 取值 |
-| --- | --- |
-| 该项在候选集内全等（含候选集只有 1 条腿） | `0.5`（中性）—— 取 `0` 会把全体误报成「都最差」，取 `1` 反之；常数取值不影响任何排序 |
-| 原始量缺失（无 OI / 无成交量 / 费率无定义） | `0`，与 047 活跃度排名「缺失排末位」同口径 |
-| 布尔量 | `0` / `1`，不参与 min-max |
+| 情形                                        | 取值                                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 该项在候选集内全等（含候选集只有 1 条腿）   | `0.5`（中性）—— 取 `0` 会把全体误报成「都最差」，取 `1` 反之；常数取值不影响任何排序 |
+| 原始量缺失（无 OI / 无成交量 / 费率无定义） | `0`，与 047 活跃度排名「缺失排末位」同口径                                           |
+| 布尔量                                      | `0` / `1`，不参与 min-max                                                            |
 
 **量纲**：归一化后是 `number`（统计量），**不是** `Prisma.Decimal` —— 沿 `leg-derive.rules.ts` 的「金额 / 费率用 Decimal，统计量用 number」纪律。
 
@@ -228,11 +240,11 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 
 契约只加不删 ⇒ 现役 `tier` / `basis` **保留**，另加 per-Tab 的。现役那两个字段留什么值？
 
-| 方案 | 判定 |
-| --- | --- |
-| **(选定) 进建仓召回集 → `weekly`，否则 `annualized`** | 规则明确无歧义；是现役语义（「这条腿主要该用哪个口径看」）在新范式下最自然的延续；不需要为喂一个 legacy 字段而保留旧判据 |
-| 恒 `annualized`（= 全腿 Tab 口径） | ❌ 否决：年化 = 周化 × 52.14，而档界只差 7.5 倍 ⇒ 短腿在年化档界下**普遍显示为「好」**。P1→P2 窗口期里这是**系统性的乐观误导** |
-| 冻结 047 旧判据专供 legacy 字段 | ❌ 否决：要把刚删掉的 Δ 带成员判据再养活一份，是 dead code 的近亲，且调参时必漏 |
+| 方案                                                  | 判定                                                                                                                           |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **(选定) 进建仓召回集 → `weekly`，否则 `annualized`** | 规则明确无歧义；是现役语义（「这条腿主要该用哪个口径看」）在新范式下最自然的延续；不需要为喂一个 legacy 字段而保留旧判据       |
+| 恒 `annualized`（= 全腿 Tab 口径）                    | ❌ 否决：年化 = 周化 × 52.14，而档界只差 7.5 倍 ⇒ 短腿在年化档界下**普遍显示为「好」**。P1→P2 窗口期里这是**系统性的乐观误导** |
+| 冻结 047 旧判据专供 legacy 字段                       | ❌ 否决：要把刚删掉的 Δ 带成员判据再养活一份，是 dead code 的近亲，且调参时必漏                                                |
 
 ⚠️ 同时在两个 Tab 的腿取 `weekly`（build 优先）—— 明确规则，不是任意选择。
 
@@ -244,14 +256,14 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 
 **新增**（只加不删）：
 
-| 字段 | 位置 | 说明 |
-| --- | --- | --- |
-| `tabOrder: Record<LegTab, string[]>` | 顶层 | 三份**有序合约代码**（`FR-021a`） |
-| `filteredOut: { premiumFloor: number; liquidityGate: number }` | 顶层 | 两个滤除计数（`FR-008`），刻意不合并成总数 |
-| `basisByTab: Record<LegTab, LegBasis>` | 顶层 | Tab → 口径的**常量映射**，下发一次；免客户端硬编码 `FR-023` 的映射 |
-| `isRecommended: boolean` | 每腿 | 推荐标 |
-| `isMonthlyChain: boolean` | 每腿 | 月度链标 |
-| `tierByTab: Record<LegTab, LegTier \| null>` | 每腿 | per-Tab 档位（D-RANK-3） |
+| 字段                                                                            | 位置 | 说明                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tabOrder: Record<LegTab, string[]>`                                            | 顶层 | 三份**有序合约代码**（`FR-021a`）                                                                                                                                                                                                                  |
+| `gateCounts: { removedByPremiumFloor: number; excludedFromIntentTabs: number }` | 顶层 | 两个门槛计数（`FR-008`），刻意不合并成总数。🚨 **容器名不叫 `filteredOut`**：两个数语义不对称 —— 前者把腿**移出响应**（真消失），后者只把腿**排除出意图 Tab**（仍在全腿 Tab 可见）。用同一个暗示「滤掉」的词做容器名会让第二个数被读成「也消失了」 |
+| `basisByTab: Record<LegTab, LegBasis>`                                          | 顶层 | Tab → 口径的**常量映射**，下发一次；免客户端硬编码 `FR-023` 的映射                                                                                                                                                                                 |
+| `isRecommended: boolean`                                                        | 每腿 | 推荐标                                                                                                                                                                                                                                             |
+| `isMonthlyChain: boolean`                                                       | 每腿 | 月度链标                                                                                                                                                                                                                                           |
+| `tierByTab: Record<LegTab, LegTier \| null>`                                    | 每腿 | per-Tab 档位（D-RANK-3）                                                                                                                                                                                                                           |
 
 **保留不动**：`legs[]` 的既有全部字段、`tabs[]`、`activityByTab`、`tier`、`basis`。
 
@@ -272,11 +284,11 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 
 **本片是 049 的反面 —— 纯函数面极厚**，TDD 落点全在这层：
 
-| 文件 | 必须覆盖的边界 |
-| --- | --- |
-| `leg-recall.rules.spec.ts` | DTE 段**四个端点**（1 / 49 / 30 / 365）· 有效成本 `<` vs `≤`（恰好相等必须不进）· 无 `bid` / 无 `ask` 两条 · 重叠区 `[30,49]` 同时进两个 Tab · greeks 缺失照常进 |
-| `leg-mark.rules.spec.ts` | 推荐标四种 intent × 水位选/未选 —— **含并集陷阱那条**（水位未选恒 `false`）· `absDelta` 为 `null` 时恒不打（`FR-013` 后半）· `thirdFridayOf` 跨年跨月 · 假日回退（构造第三个周五不在交易日集内） |
-| `leg-rank.rules.spec.ts` | 归一化三条边界 —— **`min===max` 必须断言产出 `0.5` 且 `Number.isNaN` 为 `false`** · 单条候选集 · 缺失取 `0` · 排序器主键 + 身份键 tie-break 确定性 |
+| 文件                       | 必须覆盖的边界                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `leg-recall.rules.spec.ts` | DTE 段**四个端点**（1 / 49 / 30 / 365）· 有效成本 `<` vs `≤`（恰好相等必须不进）· 无 `bid` / 无 `ask` 两条 · 重叠区 `[30,49]` 同时进两个 Tab · greeks 缺失照常进                                 |
+| `leg-mark.rules.spec.ts`   | 推荐标四种 intent × 水位选/未选 —— **含并集陷阱那条**（水位未选恒 `false`）· `absDelta` 为 `null` 时恒不打（`FR-013` 后半）· `thirdFridayOf` 跨年跨月 · 假日回退（构造第三个周五不在交易日集内） |
+| `leg-rank.rules.spec.ts`   | 归一化三条边界 —— **`min===max` 必须断言产出 `0.5` 且 `Number.isNaN` 为 `false`** · 单条候选集 · 缺失取 `0` · 排序器主键 + 身份键 tie-break 确定性                                               |
 
 ❌ 覆盖不了：真实成员集合（fixture 可以精心构造到掩盖判据错）、跨 ctx 查询、契约形状。
 
@@ -303,7 +315,7 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 7. **`tabOrder` 与 `tabs` MUST 同源派生** —— 各算一份必 drift，而两边都算得出结果。（D-API）
 8. **`legs[]` 既有排序 MUST NOT 顺手清理** —— 旧客户端仍按它渲染，改了会乱且非编译期可见。（D-API）
 9. **跨 ctx 读 `trading_day` MUST 带 `CROSS-CONTEXT-READ` 注释** —— `check-server-moat.ts` 机器强制，缺注释直接拒。
-10. **两个滤除计数不是可选装饰** —— 权利金门槛作用于全 Tab ⇒ 有腿真的从 UI 上消失。计数是这笔取舍的唯一补偿。（`FR-008`）
+10. **两个门槛计数不是可选装饰，且语义不对称** —— 权利金门槛作用于全 Tab ⇒ 有腿真的从 UI 上消失，`removedByPremiumFloor` 是这笔取舍的唯一补偿；流动性门槛只把腿排除出意图 Tab，`excludedFromIntentTabs` 描述的**不是**消失。🚫 MUST NOT 用同一个暗示「滤掉」的容器名把两者混为一谈。（`FR-008`）
 11. **特征集 MUST NOT 进 DTO** —— 会被「只加不删」永久锁死。（`FR-019b`）
 12. **MUST NOT 下沉 SQL** —— 主 plan P1 行的字面表述已在 D-RECALL-3 显式否决，照做会制造第二份判据实现。
 13. **阈值 MUST 单点** —— 且要靠扩展 `check-optionsdesk-rule-constants.ts` 机器强制，`SC-009` 否则只是口号。（D-RECALL-2）
@@ -316,7 +328,7 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 - **T001 [Server]** `leg-recall.rules.ts` 新建：DTE 段 + 有效成本 + 两道门槛 + 阈值常量单点 → verify: 纯函数单测红→绿（四个 DTE 端点 / 有效成本恰好相等 / 无 bid / 无 ask 全覆盖）
 - **T002 [Server]** `leg-tab.rules.ts` 瘦身：删成员判据，Δ 带常量迁 `leg-mark.rules.ts`；`earningsLegFamilyFor` 一行不改 → verify: `grep` 八个旧符号零命中；typecheck 绿
 - **T003 [Server]** 扩展 `check-optionsdesk-rule-constants.ts` 覆盖新阈值（`SC-009`）→ verify: 故意在别处抄一个阈值字面量 → 检查器**必须红**（先证明它会红，再改回）
-- **T004 [Server]** use case 接召回 + 两个滤除计数（`SC-001` / `SC-003`）→ verify: IT 断言建仓集内**零条**有效成本 ≥ spot；召回集合**逐条相等**（🚫 不是 `length > 0`）；两个计数各自与实际滤除数相等
+- **T004 [Server]** use case 接召回 + 两个门槛计数（`SC-001` / `SC-003`）→ verify: IT 断言建仓集内**零条**有效成本 ≥ spot；召回集合**逐条相等**（🚫 不是 `length > 0`）；`removedByPremiumFloor`（移出响应）与 `excludedFromIntentTabs`（仍在响应、只进全腿）**各自**与实际条数相等且互不串台
 
 ### Phase 2 · 打标层（依赖 T002 的常量迁移）
 
@@ -332,7 +344,7 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 
 ### Phase 4 · 契约与收尾
 
-- **T011 [Contract]** DTO 新增六个字段 + swagger 装饰器 + `export-openapi` + `api-client` regen（`SC-008`）→ verify: `openapi.json` diff **只含新增、零删除零改名**（`SC-008` 的机械判据）；生成 schema 里 `grep RankingFeatures` 零命中
+- **T011 [Contract]** DTO 新增六个字段（`tabOrder` / `gateCounts` / `basisByTab` / `isRecommended` / `isMonthlyChain` / `tierByTab`）+ swagger 装饰器 + `export-openapi` + `api-client` regen（`SC-008`）→ verify: `openapi.json` diff **只含新增、零删除零改名**（`SC-008` 的机械判据）；生成 schema 里 `grep RankingFeatures` 零命中
 - **T012 [Server]** 047 既有 IT 逐条过：判「该红 / 不该红」并各自处置 → verify: 每条改动在 commit message 里写明理由，🚫 MUST NOT 批量改绿
 - **T013 [Server]** `optionsdesk-050.legs-perf.it.spec.ts`（env-gated，`SC-007`）→ verify: `RUN_PERF_IT=true` 实跑，p50 ≤ 150 / p95 ≤ 300 @ 730 行
 - **T014 [Server]** 用 dev 真实链数据**标定两道门槛阈值**，回写 `spec.md` → verify: 标定前后的召回集行数与被滤条数实测入档；`SC-002` / `SC-004` 各找到至少 1 条实证腿
@@ -343,15 +355,15 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 
 ## Out of Scope（本片明确不做）
 
-| 事项 | 去向 |
-| --- | --- |
-| 费率下沉 SQL | **P3**（D-RECALL-3 显式否决在本片做，理由三条） |
-| 每 Tab 独立请求 / 行权价筛选 / 截断 top-N / 双计数 / 预热 | **P3** |
-| 年化周化主次显示、推荐标呈现、`tier` 跟 Tab 着色、Tab 语义改「视角」 | **P2** |
-| 加权评分 / 流动性 0–100 复合分 | **不做**（`FR-026`）。特征层已备好，切换时零改动 |
-| `legs[]` 既有排序退役 | P2 切到 `tabOrder` 之后由 **P3** 评估 |
-| 045 锚派生 / 意图矩阵 / 财报打标算法 | **不动**（`FR-029` / `FR-017`） |
-| `schema.prisma` 改动 | **零** —— 本片全部派生请求时算 |
+| 事项                                                                 | 去向                                             |
+| -------------------------------------------------------------------- | ------------------------------------------------ |
+| 费率下沉 SQL                                                         | **P3**（D-RECALL-3 显式否决在本片做，理由三条）  |
+| 每 Tab 独立请求 / 行权价筛选 / 截断 top-N / 双计数 / 预热            | **P3**                                           |
+| 年化周化主次显示、推荐标呈现、`tier` 跟 Tab 着色、Tab 语义改「视角」 | **P2**                                           |
+| 加权评分 / 流动性 0–100 复合分                                       | **不做**（`FR-026`）。特征层已备好，切换时零改动 |
+| `legs[]` 既有排序退役                                                | P2 切到 `tabOrder` 之后由 **P3** 评估            |
+| 045 锚派生 / 意图矩阵 / 财报打标算法                                 | **不动**（`FR-029` / `FR-017`）                  |
+| `schema.prisma` 改动                                                 | **零** —— 本片全部派生请求时算                   |
 
 ## Complexity Tracking
 
