@@ -19,7 +19,7 @@ updated_at: '2026-08-11'
 
 ## Mobile
 
-- [ ] T001 新建 `apps/mobile/src/optionsdesk/leg-column-pane.tsx`：`LegColumnPane({ tx, contentWidth, children, testID })`（`Animated.View` + `useAnimatedStyle(translateX)`，宽度走 **prop 不写死**）+ `useLegColumnPan({ tx, viewportW, contentWidth })`（`activeOffsetX([-12,12])` / `failOffsetY([-12,12])` / `onBegin` 存起点 / `onUpdate` clamp / `onEnd` `withDecay`，clamp 每帧读 `viewportW.value`）。token 下沉 plain 子 `View`（NativeWind web 坑）(FR-001, FR-004, plan D-SCROLL-1/3)
+- [X] T001 新建 `apps/mobile/src/optionsdesk/leg-column-pane.tsx`：`LegColumnPane({ tx, contentWidth, children, testID })`（`Animated.View` + `useAnimatedStyle(translateX)`，宽度走 **prop 不写死**）+ `useLegColumnPan({ tx, viewportW, contentWidth })`（`activeOffsetX([-12,12])` / `failOffsetY([-12,12])` / `onBegin` 存起点 / `onUpdate` clamp / `onEnd` `withDecay`，clamp 每帧读 `viewportW.value`）。token 下沉 plain 子 `View`（NativeWind web 坑）(FR-001, FR-004, plan D-SCROLL-1/3)
   → verify: `nx run mobile:typecheck` 绿；`grep -nE "scrollTo|useAnimatedScrollHandler|useAnimatedReaction" apps/mobile/src/optionsdesk/leg-column-pane.tsx` **零命中**（这是「没退回 A 范式」的机械判据）
 
 - [ ] T002 `leg-table-header.tsx` 删 `LegColumnScroller` + `LegColumnScrollerProps`（连同那段 `scrollTo` 注释），`LegTableHeader` 改吃 `tx`；`leg-row.tsx` 的 `LegRow` 同改。**两个 testID 一字不改**（`optionsdesk-detail-leg-header-scroller` / `optionsdesk-detail-leg-scroller-${code}`）(FR-001, FR-007, plan D-SCROLL-1)
