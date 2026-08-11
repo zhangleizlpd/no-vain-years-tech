@@ -149,3 +149,30 @@ Android 上 `captureRef` 走**软件重绘**（`view.draw(Canvas)`，CPU 重画 
 ## 10. Maestro testID 体例（休眠）
 
 → [`maestro-testid.md`](maestro-testid.md)：原生 e2e 的 testID 命名体例。当前 hermetic e2e 走 Playwright Web（不依赖该体例），convention 休眠不强制；Plan 4 写原生 Maestro flow 时按其体例补。
+
+## 11. 真机数值取证（探针 + UI 树测量）
+
+> 🚨 与 § 9 同属「真机才暴露」家族，但维度不同：§ 9 问**功能坏没坏**，本节问**判据可不可信**。§ 5 契约冒烟 / § 6 hermetic e2e 验行为对不对；而有一类正确性（动画是否收敛、逐帧写入是否停止、逐像素是否对齐）web 侧**结构上**看不到，只能在真机上量。**量错的代价不是漏测，是拿到一个长得像「通过」的读数。**
+
+### 10bis.1 数值探针走 `TextInput.text`，且必须自带存活哨兵
+
+Reanimated 4 已把 `addWhitelistedNativeProps` 变成 **no-op**（`lib/module/ConfigHelper.js` 里是空函数体 + `@deprecated`），但 `Animated.createAnimatedComponent(TextInput)` + `animatedProps={{ text }}` 这条旁路**实测仍生效**（2026-08-11 / Mate50 / reanimated 4.1.7）。形态：
+
+```text
+useAnimatedReaction(观测 shared value) → 计数落 useSharedValue → useAnimatedProps 喂 text
+```
+
+- **三条纪律**（照抄 ADR-0063 的三次教训）：全程 UI 线程；🚫 **禁用模块级可变对象**当计数器（Fast Refresh 后 worklet 与 React 各持一份 ⇒ 读数恒 0）；🚫 **禁从 JS 线程读 `sharedValue.value`** 下结论（落后一拍）。TS 侧 `text` 不在 `TextInputProps` 里，需给 animated 组件手工放行类型。
+- 🚨 **存活哨兵是强制项**：计数类判据的通过签名往往是「**不涨**」（如「松手后写入停止增长」），而**探针管道静默失效的表现完全同形**。所以探针必须同时显示一个**交互期必然变化的量**（如当前位移）—— 先确认它跟着手指动，后面的计数才作数。少这一条，一个死掉的探针会稳定输出「通过」。
+- **驱动方式的边界**：`adb shell input swipe` **能**驱动 RNGH 的 Pan，可以用来把界面摆到指定位置做**静态**观察；但**不能**用于验手势正确性本身 —— 它是单指、单向、无交错的干净手势，ADR-0063 已实证缺陷实现在它下面完全测不出问题。
+- **实证锚**：049（#20）选约表横滑验收 —— 先验哨兵（位移数字跟手动）再验自激环，拿到「跨两个 clamp 边界静置 84 秒、写入与方向反转零增长」；对照基线是 ADR-0063 实测的缺陷实现（松手后仍 +28 写入 / 3s）。探针仅挂 `__DEV__`、**验完删除不入仓**。
+
+### 10bis.2 `uiautomator dump` 的 bounds：只有 x2 跟内容走
+
+`adb shell uiautomator dump` 是**不改一行代码**就能拿到设备像素级坐标的测量口（testID 落 `resource-id`、`accessibilityLabel` 落 `content-desc`）。但对**被 `translateX` 位移、且父层裁剪**的 RN 视图：
+
+- **x1 被裁到裁剪边界后恒定不变** —— 拿它比「表头与各行是否对齐」是一条**构造上恒真**的断言，内容怎么错位它都相等。
+- **x2 才随位移变化**（内容右缘与裁剪窗的交点），它才是可用的那一边。
+- **修法**：用之前**先改一次位移、确认该坐标真的动**，再拿它当判据 —— 即「如果反例存在，我的管道能看到吗」在 UI 测量上的具体形态。
+- **顺带**：`react-native-web` 不认 `accessibilityState`（故 web e2e 只能靠样式自比较断选中态），但 **Android 原生认** —— dump 里 `selected="true"` 可直接断，真机侧不必绕。
+- **实证锚**：049（#20）的「表头与全部可见行同列左缘 ≤1px」—— 13 个位移载体的 x1 全等于 254，差点被当成完美对齐；改看 x2、并先证明它随位移从 700 变到 270，才拿到有鉴别力的 Δ=0px。
