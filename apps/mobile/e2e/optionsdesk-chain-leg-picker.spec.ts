@@ -585,11 +585,18 @@ async function dragHorizontally(
   await page.mouse.up();
 }
 
-/** 元素左缘 x。取不到就抛 —— 静默返回 0 会把断言变成假绿。 */
-async function boxX(target: Locator): Promise<number> {
+/** 元素盒。取不到就抛 —— 静默返回 0 / null 会把断言变成假绿。 */
+async function boxOf(
+  target: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
   const box = await target.boundingBox();
   if (box === null) throw new Error('取不到 boundingBox');
-  return box.x;
+  return box;
+}
+
+/** 元素左缘 x。取不到就抛 —— 静默返回 0 会把断言变成假绿。 */
+async function boxX(target: Locator): Promise<number> {
+  return (await boxOf(target)).x;
 }
 
 /**
@@ -1178,6 +1185,103 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
   // 回到全腿：两条又都在（切 Tab 只换 `section.data`，不重建列表）。
   await page.getByTestId('optionsdesk-detail-leg-tab-all').tap();
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(2));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑦b 049 T007 —— sticky 栈高预算（最坏档：未选水位 ⇒ 同屏两条就地注明）
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * plan D-TAB-4 的净高预算：计数 26 + 意图水位 44 + Tab 40 + 列头 30 + 指示条 2 = **142**；
+ * 最坏档（未选水位 ⇒ 同屏两条就地注明，+40）= **182**。
+ * RN 侧字体度量与 padding 解析与 mockup 有 ±2px/元素的出入（`design/handoff.md` 注 6），
+ * 6 个元素 ⇒ 留 12px 余量。**余量是给度量差的，不是给「再加一行」的** —— 任一行做厚 ~13px 就红。
+ */
+const STACK_BUDGET_WORST = 182 + 12;
+
+/**
+ * 连滚到 sticky 栈钉住：栈顶 y 连续两轮不再上移即为已钉（**不依赖具体 pin 位置**，
+ * 免得写死一个 y 阈值，屏 chrome 一改就假红）。返回钉住后的栈顶 y。复杂度 O(steps)。
+ */
+async function scrollUntilStackPinned(page: Page, stackTop: Locator): Promise<number> {
+  const vp = page.viewportSize();
+  if (vp === null) throw new Error('viewport 尺寸不可得');
+  let prev = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < 30; i++) {
+    const y = (await boxOf(stackTop)).y;
+    if (y >= prev - 0.5) return y;
+    prev = y;
+    await page.mouse.move(vp.width / 2, vp.height * 0.7);
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(120);
+  }
+  throw new Error('滚了 30 屏 sticky 栈仍未钉住');
+}
+
+/**
+ * 049 T007 —— 栈高回归（`FR-011` / `SC-006`，plan D-TAB-4）。
+ *
+ * 🚨 **这条量的是 sticky 栈净高本身，不是「看得见几行」** —— 后者在本文件的 390×844 视口下
+ *    **没有鉴别力，实测数字如下**：栈顶钉在 y=64（其上是屏 chrome），栈净高 185px、栈底 249px
+ *    ⇒ 栈底至视口底剩 **595px = 12.4 行**（@48px）。要让「数据区 < 3 行」成立，栈净高需
+ *    **> 636px**（= 844 − 64 − 144），是预算的 **3.4 倍** —— 任何合理实现都到不了 ⇒ 写成
+ *    「≥3 行」就是一条恒真断言（tasks.md T007 的 🚫 明令不许凑）。
+ *    ✅ 实证（2026-08-11 本条落地时跑的对照）：把 Tab 行 `py-sm` 改厚成 `py-lg`（+32px）⇒
+ *       ④ 当场红（217 > 194），而同一轮里「可见行数」仍有 **11.7 行**、「≥3 行」照样绿 ——
+ *       这就是那条断言零鉴别力的直接证据，不是推理。
+ *    📌 **「数据区 ≥3 行」的判决挪 T008 M8（真机验收）** —— 真机可用高度比 web 视口紧
+ *       （状态栏 / 手势条 / 系统字号放大都吃高），那里才有鉴别力。web 侧量出来的行数不能
+ *       当真机结论（文件头「验不到」清单第 5 条）。
+ *
+ * 断言四项（前两项是**前提自检**，缺了后两项就会在错误的坐标系上恒真）：
+ *   ① 最坏档真的到达：两条就地注明同屏（只有 rent Tab + 未选水位才有第二条）。
+ *   ② 真的滚进腿区：栈顶较未滚时上移 > 100px（否则量的是「没滚动时的布局」）。
+ *   ③ sticky 生效：滚到底部行之后 12 列表头仍可见，且仍在栈内（`FR-011` 的前提）。
+ *   ④ 栈净高（计数条顶 → 指示条底）≤ 预算。
+ */
+test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）：纵滚到腿区后表头仍钉在顶，sticky 栈实测净高不超预算', async ({
+  page,
+}) => {
+  const legs = manyLegs(24);
+  await installLegMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
+    // 水位未选（`makeLegTable` 基线即 `positionBucket: null`）⇒ 就地注明才会渲出来。
+    legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
+  });
+  await openDetail(page, 'us:PEP');
+  // 第二条注明（Δ 档取并集）只在收租腿 Tab 出现 —— 最坏档 = 未选水位 × rent Tab。
+  await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
+
+  // ① 前提自检：最坏档真的到达（两条同屏），否则下面量的是常态档，预算白留。
+  await expect(page.getByTestId('optionsdesk-detail-leg-notice-bucket_unset')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toBeVisible();
+
+  const stackTop = page.getByTestId('optionsdesk-detail-leg-header');
+  const yBefore = (await boxOf(stackTop)).y;
+  const yPinned = await scrollUntilStackPinned(page, stackTop);
+
+  // ② 前提自检：确实滚进了腿区（046 三块已滚出去），不是在原始布局上量。
+  expect(
+    yBefore - yPinned,
+    '栈顶几乎没上移 —— 压根没滚进腿区，后面的数都是原始布局的',
+  ).toBeGreaterThan(100);
+
+  // ③ sticky 生效：滚到腿区之后 12 列表头仍可见，且仍在栈内（栈顶下方、视口内）。
+  const header = page.getByTestId('optionsdesk-detail-leg-table-header');
+  await expect(header).toBeVisible();
+  const headerBox = await boxOf(header);
+  expect(headerBox.y, '12 列表头跟着列表滚走了 —— sticky 栈没钉住').toBeGreaterThanOrEqual(yPinned);
+
+  // ④ 栈净高 = 计数条顶 → 指示条底（= plan D-TAB-4 逐项相加的那一段，不含屏 chrome）。
+  const barBox = await boxOf(page.getByTestId('optionsdesk-detail-leg-scrollbar'));
+  const stackHeight = barBox.y + barBox.height - yPinned;
+  const vp = page.viewportSize();
+  if (vp === null) throw new Error('viewport 尺寸不可得');
+  expect(
+    stackHeight,
+    `sticky 栈实测净高 ${stackHeight.toFixed(1)}px 超出最坏档预算 ${STACK_BUDGET_WORST}px` +
+      `（视口 ${vp.width}×${vp.height}，栈底至视口底剩 ${(vp.height - barBox.y - barBox.height).toFixed(1)}px）`,
+  ).toBeLessThanOrEqual(STACK_BUDGET_WORST);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
