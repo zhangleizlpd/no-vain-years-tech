@@ -2,7 +2,7 @@
 feature_id: 050-optionsdesk-leg-recall-rank
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: not-started
+status: in-progress
 created_at: '2026-08-11'
 updated_at: '2026-08-11'
 ---
@@ -56,7 +56,7 @@ updated_at: '2026-08-11'
 
 ## Phase 1: 召回层（阻塞其余全部）🎯
 
-- [ ] T001 [Server] **`leg-recall.rules.ts` 新建**（FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-009, plan D-RECALL-1, D-RECALL-2, D-RECALL-4）：新建 `apps/server/src/optionsdesk/leg-recall.rules.ts` —— ① 常量单点：`BUILD_RECALL_DTE = [1,49]` · `RENT_RECALL_DTE = [30,365]` · `PREMIUM_FLOOR`（绝对下限 + spot 百分比双参数）· `LIQUIDITY_MAX_RELATIVE_SPREAD` ② `relativeSpread(bid, ask)` = `(ask−bid)/mid`，`mid = (bid+ask)/2`；任一缺失 → `null` ③ `passesPremiumFloor(bid, spot)` —— 无 `bid` → `false`（🚫 MUST NOT 当 0） ④ `passesLiquidityGate(bid, ask)` —— 无 `ask` → `false`（fail-closed） ⑤ `recallTabs(context, leg): LegTab[]` —— **入参不含 `absDelta`**（Guardrail 6）。全部金额比较走 `Prisma.Decimal`，有效成本取**严格小于**（`K − bid < spot`）。复杂度 `O(1)`/腿 → verify: `leg-recall.rules.spec.ts`（Small）红→绿 —— DTE **四个端点**（1 / 49 / 30 / 365 各自在带内）+ **恰好 `K − bid == spot` 必须不进建仓** + 重叠区 `DTE=35` 同时进两 Tab + `DTE=400` 只进 `all` + 无 `bid` / 无 `ask` 两条 + greeks 缺失（`absDelta` 根本不在签名里，用**类型层**证明）+ 收租**不受**有效成本约束
+- [X] T001 [Server] **`leg-recall.rules.ts` 新建**（FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-009, plan D-RECALL-1, D-RECALL-2, D-RECALL-4）：新建 `apps/server/src/optionsdesk/leg-recall.rules.ts` —— ① 常量单点：`BUILD_RECALL_DTE = [1,49]` · `RENT_RECALL_DTE = [30,365]` · `PREMIUM_FLOOR`（绝对下限 + spot 百分比双参数）· `LIQUIDITY_MAX_RELATIVE_SPREAD` ② `relativeSpread(bid, ask)` = `(ask−bid)/mid`，`mid = (bid+ask)/2`；任一缺失 → `null` ③ `passesPremiumFloor(bid, spot)` —— 无 `bid` → `false`（🚫 MUST NOT 当 0） ④ `passesLiquidityGate(bid, ask)` —— 无 `ask` → `false`（fail-closed） ⑤ `recallTabs(context, leg): LegTab[]` —— **入参不含 `absDelta`**（Guardrail 6）。全部金额比较走 `Prisma.Decimal`，有效成本取**严格小于**（`K − bid < spot`）。复杂度 `O(1)`/腿 → verify: `leg-recall.rules.spec.ts`（Small）红→绿 —— DTE **四个端点**（1 / 49 / 30 / 365 各自在带内）+ **恰好 `K − bid == spot` 必须不进建仓** + 重叠区 `DTE=35` 同时进两 Tab + `DTE=400` 只进 `all` + 无 `bid` / 无 `ask` 两条 + greeks 缺失（`absDelta` 根本不在签名里，用**类型层**证明）+ 收租**不受**有效成本约束
 
 - [ ] T002 [Server] **`leg-tab.rules.ts` 瘦身 + Δ 带迁出**（FR-009, FR-017, plan D-RECALL-1/D-MARK-1）：删 `legTabs` / `isBuildLeg` / `isRentLeg` / `rentAbsDeltaBand` / `withinBand` / `BUILD_LEG_ABS_DELTA_BAND` / `BUILD_LEG_MAX_DTE_DAYS` / `RENT_LEG_MIN_DTE_DAYS` / `RENT_LEG_MAX_DTE_DAYS` / `ANCHOR_AXIS_ZONES` / `RENT_DEPTH_ABS_DELTA_BANDS` / `RENT_DEPTH_UNION_BAND` / `LegTabLegInput` / `LegTabContext`；**保留** `LEG_TABS` / `LegTab` / `earningsLegFamilyFor` / `RENT_SHORT_MAX_DTE_DAYS`（`FR-017` 财报域划分一行不改）。同 task 新建 `leg-mark.rules.ts` **仅承接两组 Δ 带常量**（`BUILD_RECOMMEND_ABS_DELTA_BAND` / `RENT_RECOMMEND_ABS_DELTA_BANDS`，**值不变**，判定逻辑在 T006）。🚫 **`RENT_DEPTH_UNION_BAND` 整条删不迁** —— 它是召回语义的产物，迁到打标层就是 Guardrail 1 那个坑的入口 → verify: `grep -rn "isBuildLeg\|isRentLeg\|legTabs\|rentAbsDeltaBand\|BUILD_LEG_ABS_DELTA_BAND\|BUILD_LEG_MAX_DTE_DAYS\|RENT_LEG_MIN_DTE_DAYS\|RENT_LEG_MAX_DTE_DAYS\|ANCHOR_AXIS_ZONES\|RENT_DEPTH_UNION_BAND" apps/` **零命中**；`leg-tab.rules.spec.ts` 删掉的用例与保留的用例逐条对应（保留的必须仍绿）；`nx typecheck server` 绿
 
