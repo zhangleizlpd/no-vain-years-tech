@@ -18,8 +18,10 @@ import { mockJson } from './_support/api-mock';
 //   ① **SC-012** —— 计数条分母 = 逻辑集合长度 · 可滚到最后一行 · 滚动区长度覆盖全部逻辑行 ·
 //      全部腿行都在 DOM 里（US2-AS1「无静默截断」）
 //   ② **US2-AS6** —— 横滑露出隐藏列 + 首列钉住 + **横滑后纵向滚动仍工作、纵滚后横向位移不变**
-//      （= 手势零争用的**唯一**可验证判据：Guardrail 8 那个坑在 RN 只打 dev warning，
+//      （= 手势零争用的**唯一**可验证判据：那个坑在 RN 只打 dev warning，
 //        typecheck / lint / 单测 / CI 全绿，只有这条 e2e 能照出来）
+//      🚨 **049 T005 判据已换代**（滚轮 + `scrollLeft` → 指针分步拖拽 + `boundingBox`），
+//        换代理由与失效方式写在该 test 上方；②b 是 049 T004 新增的横向指示条两条
 //   ③ **四个状态帧** —— 陈旧 asOf（`STALE`）/ 链数据未就绪 / 零适格腿 / 不动区
 //   ④ **US3-AS2** —— 未选水位时三个 Tab **全部可进入读表**（不置灰不隐藏）
 //   ⑤ **US3-AS3** —— 水位选择被记住（重进仍在）且**可看出是人工输入**（读契约的来源标）
@@ -34,9 +36,10 @@ import { mockJson } from './_support/api-mock';
 //   一个文件。选约区块的 OFF 断言由 T036 加在那边（`nx run mobile:e2e-public`）。
 //   写在本文件里 = 在 markets-ON bundle 下跑，**永远验不到 OFF，且不会红**。
 //
-// ── ⚠️ Expo Web 下**验不到**的两件事（如实标注，不凑假断言）────────────────────
-//   1. **真机手感 / 滚动流畅度** —— spec 已明标它故意不作验收门（主观计时）。本文件只验
-//      「能滚到 / 滚得对」，不验「滚得顺」。
+// ── ⚠️ Expo Web 下**验不到**的几件事（如实标注，不凑假断言）────────────────────
+//   1. **真机手感 / 滚动流畅度 / 惯性衰减与边界回弹** —— spec 已明标手感故意不作验收门
+//      （主观计时）。本文件只验「能滚到 / 滚得对」，不验「滚得顺」；`withDecay` 的收敛点
+//      落在哪归真机验收单（049 M1/M4）。
 //   2. **大规模虚拟化窗口** —— `VirtualizedList` 默认 `windowSize=21`（≈ 21 屏 ≈ 369 行 @48px），
 //      e2e 可承受的行数（本文件 60）**够不到**那条线 ⇒ web 上全部行都会被渲染出来。故 ①
 //      在 web 下验的是「分母取逻辑集合长度 + 滚动区覆盖全部逻辑行 + 零截断」，
@@ -45,6 +48,11 @@ import { mockJson } from './_support/api-mock';
 //      但 **react-native-web 0.21 整个不认这个 prop**（dist 内零处理）⇒ web DOM 上没有
 //      `aria-selected`。选中态在本文件走「自比较的视觉态 + 功能面」两层断言（见 `textStyleOf`），
 //      **读屏器读不读得出「已选中」归真机验收**。
+//   4. 🚨 **自激环（049 `SC-001`）** —— ADR-0063 已实证：合成手势（单指、单向、无交错）下
+//      缺陷实现**完全测不出问题**，净位移看着是对的而写入 / 方向反转仍在涨。web 侧凑一条
+//      断言只会制造假绿 ⇒ 由真机数值探针独占（049 T008 M1），本文件**刻意零覆盖**。
+//   5. **sticky 栈高在真机窄屏的实际占比**（049 `SC-006`）—— web 视口比真机可用高度宽松，
+//      这里量出来的行数不能当真机结论。
 //
 // ── hermetic mock 纪律（per docs/conventions/mobile-impl-playbook.md §6）────────
 //   mock 写**依赖方（server）契约**：持一份 canonical 状态（锚表 + 逐票选约表），handler 是
@@ -99,8 +107,8 @@ const seedAuthStore = `
 `;
 
 /**
- * 🚨 **窄视口是本文件的前提，不是装饰**：12 列共 696px，其中右侧滚动区 608px。
- * Desktop Chrome 默认 1280px 下滚动区**根本不溢出** ⇒ 横滑压根发生不了，US2-AS6 会「绿得毫无
+ * 🚨 **窄视口是本文件的前提，不是装饰**：12 列共 716px，其中右侧列区 628px。
+ * Desktop Chrome 默认 1280px 下**根本没有横向余量** ⇒ 横滑压根发生不了，US2-AS6 会「绿得毫无
  * 意义」。390×844（iPhone 量级）才让隐藏列真的藏起来，也更贴近该屏的真实目标端。
  */
 test.use({ viewport: { width: 390, height: 844 } });
@@ -164,6 +172,10 @@ function asOfLabel(asOf: string): string {
 
 /** 腿行高（`leg-table-header.ts` 的 `LEG_ROW_HEIGHT`）—— SC-012 的滚动区长度换算基准。 */
 const LEG_ROW_HEIGHT = 48;
+
+/** 首列宽 / 右侧列区内容总宽（`leg-row.rules.ts` 的同名常量）—— 指示条长度比的换算基准。 */
+const LEG_STICKY_COL_WIDTH = 88;
+const LEG_SCROLL_REGION_WIDTH = 628;
 
 // ════════════════════════════════════════════════════════════════════════════
 // canonical 数据（= 服务端 DB 内容的镜像）
@@ -494,6 +506,9 @@ function detailUrl(symbol: string): string {
 const SCROLL = 'optionsdesk-detail-scroll';
 const HEADER_SCROLLER = 'optionsdesk-detail-leg-header-scroller';
 
+const SCROLLBAR = 'optionsdesk-detail-leg-scrollbar';
+const SCROLLBAR_THUMB = 'optionsdesk-detail-leg-scrollbar-thumb';
+
 const rowId = (code: string) => `optionsdesk-detail-leg-row-${code}`;
 const rowScrollerId = (code: string) => `optionsdesk-detail-leg-scroller-${code}`;
 const markId = (code: string) => `optionsdesk-detail-leg-mark-${code}`;
@@ -516,22 +531,6 @@ function verticalScroll(page: Page): Promise<{ top: number; height: number; clie
     };
     const el = findScrollable(root) ?? root;
     return { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight };
-  });
-}
-
-/** 同上，横向。`max` = 可滚动余量（0 ⇒ 该容器根本没溢出，横滑无从谈起）。 */
-function horizontalScroll(locator: Locator): Promise<{ left: number; max: number }> {
-  return locator.evaluate((root) => {
-    const findScrollable = (node: Element): Element | null => {
-      if (node.scrollWidth - node.clientWidth > 1) return node;
-      for (const child of Array.from(node.children)) {
-        const hit = findScrollable(child);
-        if (hit !== null) return hit;
-      }
-      return null;
-    };
-    const el = findScrollable(root) ?? root;
-    return { left: el.scrollLeft, max: el.scrollWidth - el.clientWidth };
   });
 }
 
@@ -558,6 +557,61 @@ async function wheelUntil(page: Page, ready: () => Promise<boolean>, steps = 30)
     await page.waitForTimeout(120);
   }
   return ready();
+}
+
+/**
+ * 横向拖拽 —— 049 起横滑由 `Gesture.Pan` 驱动，**只吃指针事件流**：
+ *   · `page.mouse.wheel(dx, 0)` **不驱动** RNGH 的 Pan（滚轮走的是另一条通路）；
+ *   · 一次到位的 `mouse.move` 可能被当成瞬移，跨不过 `.activeOffsetX([-12,12])` 的方向仲裁。
+ * ⇒ 必须 `down` → **多次** `move` → `up`。`dx < 0` = 手指往左划 = 列区左移（露出右侧列）。
+ * 起手点取目标右侧 20% 处，往左划时指针仍留在元素内。复杂度 O(steps)。
+ */
+async function dragHorizontally(
+  page: Page,
+  target: Locator,
+  dx: number,
+  steps = 12,
+): Promise<void> {
+  const box = await target.boundingBox();
+  if (box === null) throw new Error('拖拽目标不可见，取不到 boundingBox');
+  const y = box.y + box.height / 2;
+  const startX = box.x + box.width * 0.8;
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  for (let i = 1; i <= steps; i++) {
+    await page.mouse.move(startX + (dx * i) / steps, y);
+    await page.waitForTimeout(16);
+  }
+  await page.mouse.up();
+}
+
+/** 元素盒。取不到就抛 —— 静默返回 0 / null 会把断言变成假绿。 */
+async function boxOf(
+  target: Locator,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  const box = await target.boundingBox();
+  if (box === null) throw new Error('取不到 boundingBox');
+  return box;
+}
+
+/** 元素左缘 x。取不到就抛 —— 静默返回 0 会把断言变成假绿。 */
+async function boxX(target: Locator): Promise<number> {
+  return (await boxOf(target)).x;
+}
+
+/**
+ * 等 `withDecay` 惯性收敛：连续两次读到同一个 x（±0.5px）才算停。
+ * 🚨 松手后位移还在跑，不等就读 ⇒ 后续「Δx 不变」这类断言会读到还在动的中间值。
+ */
+async function settledX(page: Page, target: Locator): Promise<number> {
+  let prev = await boxX(target);
+  for (let i = 0; i < 25; i++) {
+    await page.waitForTimeout(120);
+    const now = await boxX(target);
+    if (Math.abs(now - prev) <= 0.5) return now;
+    prev = now;
+  }
+  throw new Error('位移 3s 内未收敛（松手后仍在持续写入？）');
 }
 
 /** 等选约区块出现（首发吃 Metro 冷打包 ⇒ 长超时锚在区块头）。 */
@@ -590,19 +644,36 @@ async function textStyleOf(locator: Locator): Promise<string> {
   });
 }
 
+/**
+ * 049 T006 —— 选中态的**第二重编码**：格底色（稿 A 的 `surface-sunken`）。
+ *
+ * 🚨 双重编码（字色/字重 + 底色）是 plan D-TAB-1 的刻意决定，不是冗余：web 上唯一能断的
+ *    只有样式自比较，两条独立通道意味着任一被误删都会红。🚫 MUST NOT 因为「看起来重复」
+ *    把这条断言删掉 —— 删了之后底色回退成透明，e2e 一声不吭。
+ */
+async function tabSurfaceOf(locator: Locator): Promise<string> {
+  return locator.evaluate((el) => getComputedStyle(el).backgroundColor);
+}
+
 const TAB_KEYS = ['all', 'build', 'rent'] as const;
 
 /** 选中的那个 Tab 与另外两个**视觉可分**（不置灰 ≠ 看不出选中）。 */
 async function expectTabSelected(page: Page, selected: (typeof TAB_KEYS)[number]): Promise<void> {
-  const styles = await Promise.all(
-    TAB_KEYS.map((t) => textStyleOf(page.getByTestId(`optionsdesk-detail-leg-tab-${t}`))),
-  );
+  const tabAt = (t: (typeof TAB_KEYS)[number]) =>
+    page.getByTestId(`optionsdesk-detail-leg-tab-${t}`);
+  const styles = await Promise.all(TAB_KEYS.map((t) => textStyleOf(tabAt(t))));
+  const surfaces = await Promise.all(TAB_KEYS.map((t) => tabSurfaceOf(tabAt(t))));
   const target = styles[TAB_KEYS.indexOf(selected)];
+  const targetSurface = surfaces[TAB_KEYS.indexOf(selected)];
   for (const [i, key] of TAB_KEYS.entries()) {
     if (key === selected) continue;
     expect(styles[i], `Tab ${key} 与选中的 ${selected} 呈现一致 —— 选中态看不出来`).not.toBe(
       target,
     );
+    expect(
+      surfaces[i],
+      `Tab ${key} 与选中的 ${selected} 底色一致 —— 稿 A 的第二重编码（选中格 sunken 底）没了`,
+    ).not.toBe(targetSurface);
   }
 }
 
@@ -652,9 +723,20 @@ test('047 T035 — SC-012：计数条分母 = 逻辑总行数、可滚到最后�
 
 // ════════════════════════════════════════════════════════════════════════════
 // ② US2-AS6 —— 横滑露列 + 首列钉住 + 纵向滚动仍工作（手势零争用）
+//
+// ── 🚨 049 T005 判据换代（FR-001/003, SC-002/003, plan D-TEST-2）──────────────
+//   047 版靠 `horizontalScroll()` 读 `scrollLeft` / `scrollWidth`，并用
+//   `page.mouse.wheel(400, 0)` 驱动。E 范式（单 `Gesture.Pan` → 单共享位移 → `translateX`）
+//   下**两者双双失效，且失效方式不同**：
+//     · 没有 DOM 滚动容器了 ⇒ `scrollWidth − clientWidth` 恒 0，那条「前提自检」直接判「没
+//       溢出」，测试红在前提上（不是红在被测行为上）；
+//     · 滚轮不驱动 RNGH 的 `Gesture.Pan` ⇒ 就算换个读法，也没有位移可读。
+//   ⇒ 换成**指针分步拖拽 + `boundingBox()` 位移差**。这套判据不依赖滚动容器、也不依赖
+//   `translateX` 这个特定手段 —— 它问的是「屏幕上那一列有没有挪到该在的位置」，
+//   所以换范式不脆。
 // ════════════════════════════════════════════════════════════════════════════
 
-test('047 T035 — US2-AS6：横滑露出隐藏列且首列钉住，表头与行同步；**纵向滚动仍在详情页内正常工作**（手势零争用）', async ({
+test('049 T005 — US2-AS6（判据换代）：指针拖拽露出隐藏列、表头与行同列同步、首列钉住、纵滚不带跑横向位移（手势零争用）', async ({
   page,
 }) => {
   const legs = manyLegs(24);
@@ -666,72 +748,181 @@ test('047 T035 — US2-AS6：横滑露出隐藏列且首列钉住，表头与行
   await openDetail(page, 'us:PEP');
 
   const row = page.getByTestId(rowId(code));
-  const rowScroller = page.getByTestId(rowScrollerId(code));
-  const headerScroller = page.getByTestId(HEADER_SCROLLER);
+  // 表头与数据行各自的**位移载体**（宽 628 的内容层）：它们的屏幕左缘之差就是两者的位移差。
+  const rowPane = page.getByTestId(rowScrollerId(code));
+  const headerPane = page.getByTestId(HEADER_SCROLLER);
   const stickyBadge = page.getByTestId(`optionsdesk-detail-leg-basis-${code}`);
   const actionCell = page.getByTestId(actionId(code));
 
-  // 把首行滚进视口（滚轮必须落在真实元素上）。
+  // 把首行滚进视口（拖拽必须落在真实元素上）。
   await row.scrollIntoViewIfNeeded();
   await expect(row).toBeVisible();
 
-  // 前提自检：窄视口下右侧列区**真的溢出**了 —— 不溢出的话下面全套断言毫无意义。
-  const before = await horizontalScroll(rowScroller);
-  expect(before.max, '右侧列区未溢出：视口太宽，横滑验不到').toBeGreaterThan(0);
-  expect(before.left).toBe(0);
+  const rowBox = await row.boundingBox();
+  const actionBefore = await actionCell.boundingBox();
+  if (rowBox === null || actionBefore === null) throw new Error('行 / 动作列尺寸不可得');
 
-  // 「动作」列初始在可视区之外（= 确有隐藏列）。
-  const scrollerBox = await rowScroller.boundingBox();
-  const hiddenBox = await actionCell.boundingBox();
-  if (scrollerBox === null || hiddenBox === null) throw new Error('列区 / 动作列尺寸不可得');
-  expect(hiddenBox.x, '「动作」列初始就露着，隐藏列前提不成立').toBeGreaterThan(
-    scrollerBox.x + scrollerBox.width,
+  // 🚨 **前提自检**（Guardrail 8）：拖拽前「动作」列确在视区外。视口一宽这条就不成立，
+  //    而下面「左移 / 露出来」的断言会**恒真** —— 这是这类断言最常见的假绿。
+  expect(actionBefore.x, '「动作」列初始就露着（视口太宽）：横滑判据会恒真').toBeGreaterThan(
+    rowBox.x + rowBox.width,
   );
 
-  const stickyBefore = await stickyBadge.boundingBox();
+  const paneBefore = await boxX(rowPane);
+  const headerBefore = await boxX(headerPane);
+  const stickyBefore = await boxX(stickyBadge);
   const verticalBefore = await verticalScroll(page);
-
-  // ── 横滑（真滚轮，deltaX）──────────────────────────────────────────────
-  await wheelOver(page, rowScroller, 400, 0);
-  await expect
-    .poll(async () => (await horizontalScroll(rowScroller)).left, { timeout: 5_000 })
-    .toBeGreaterThan(0);
-
-  const afterX = await horizontalScroll(rowScroller);
-  const headerX = await horizontalScroll(headerScroller);
-  // 表头与数据行共享同一个 offset ⇒ 位移必须同步（差半像素内）。
-  expect(Math.abs(headerX.left - afterX.left), '表头与数据行横向位移不同步').toBeLessThanOrEqual(1);
-
-  // 隐藏列露出来了。
-  const revealed = await actionCell.boundingBox();
-  if (revealed === null) throw new Error('动作列尺寸不可得');
-  expect(revealed.x, '横滑后「动作」列仍在可视区之外').toBeLessThan(
-    scrollerBox.x + scrollerBox.width,
+  expect(Math.abs(headerBefore - paneBefore), '零位移时表头与数据行就没对齐').toBeLessThanOrEqual(
+    1,
   );
+
+  // ── 横滑：指针**分步**拖拽（一步到位跨不过 `activeOffsetX(12)` 的方向仲裁）──────
+  await dragHorizontally(page, row, -300);
+  const paneAfter = await settledX(page, rowPane);
+
+  // ① 列区真的左移了 —— 位移只从屏幕坐标读，不读任何滚动量。
+  expect(paneAfter, '拖了但列区没动（指针没驱动 Pan / 位移没落到列区）').toBeLessThan(
+    paneBefore - 1,
+  );
+
+  // ② 表头与数据行同列左缘 ≤1px（两者共读同一个 `tx`；SC-002 的 web 侧判据）。
+  const headerAfter = await boxX(headerPane);
+  expect(Math.abs(headerAfter - paneAfter), '表头与数据行横向位移不同步').toBeLessThanOrEqual(1);
+
+  // ③ 隐藏列露出来了，且确实是那一列（文案对得上）。
+  const actionAfter = await actionCell.boundingBox();
+  if (actionAfter === null) throw new Error('动作列尺寸不可得');
+  expect(actionAfter.x, '横滑后「动作」列仍在视区外').toBeLessThan(rowBox.x + rowBox.width);
   await expect(actionCell).toHaveText(COPY.actionPlaceOco);
 
-  // 首列钉住 —— 它渲在横滑之外，横向位移**一像素都不该动**。
-  const stickyAfter = await stickyBadge.boundingBox();
-  if (stickyBefore === null || stickyAfter === null) throw new Error('首列尺寸不可得');
+  // ④ 首列钉住 —— 它渲在位移区之外，一像素都不该动（FR-002）。
   expect(
-    Math.abs(stickyAfter.x - stickyBefore.x),
+    Math.abs((await boxX(stickyBadge)) - stickyBefore),
     '首列跟着横滑跑了（没钉住）',
   ).toBeLessThanOrEqual(1);
 
-  // ── 🚨 手势零争用：在**同一个点**（行的横滑容器上）发纵向滚轮 ────────────
-  //    Guardrail 8 那个坑（SectionList 塞回同向 ScrollView）在 RN 只打 dev warning，
+  // ── 🚨 手势零争用：在**同一个点**（刚拖过的那一行）发纵向滚轮 ────────────
+  //    Guardrail 10 那个坑（`SectionList` 塞回同向 `ScrollView`）在 RN 只打 dev warning，
   //    typecheck / lint / 单测 / CI 全绿 —— 只有这条断言能照出来。
-  await wheelOver(page, rowScroller, 0, 600);
+  await wheelOver(page, row, 0, 600);
   await expect
     .poll(async () => (await verticalScroll(page)).top, { timeout: 5_000 })
     .toBeGreaterThan(verticalBefore.top);
 
-  // 方向正交：纵滚不该把横向位移带跑。
-  const afterVertical = await horizontalScroll(rowScroller);
+  // ⑤ 方向正交：纵滚不该把横向位移带跑（SC-003 的 web 侧判据）。
   expect(
-    Math.abs(afterVertical.left - afterX.left),
+    Math.abs((await boxX(rowPane)) - paneAfter),
     '纵向滚动把横向位移带跑了（两个方向在抢同一个响应者）',
   ).toBeLessThanOrEqual(1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ②b 049 T004 —— 横向指示条（FR-005 / FR-006 / spec Edge Case ①）
+// ════════════════════════════════════════════════════════════════════════════
+
+test('049 T004 — 横向指示条：轨道左端对齐首列右缘、thumb 长度比 = 可视宽/内容宽、随同一个 tx 右移、拖到底贴右缘（FR-005/FR-006）', async ({
+  page,
+}) => {
+  const legs = manyLegs(8);
+  const code = legs[0]?.code ?? '';
+  await installLegMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
+    legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
+  });
+  await openDetail(page, 'us:PEP');
+
+  const bar = page.getByTestId(SCROLLBAR);
+  const thumb = page.getByTestId(SCROLLBAR_THUMB);
+  const row = page.getByTestId(rowId(code));
+  // 拖拽要落在真实元素上 ⇒ 先把行滚进视口（指示条在 sticky 表头栈里，滚了也仍在）。
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+  await expect(bar, '有可滑动余量却看不到指示条（FR-005 要求常显）').toBeVisible();
+  await expect(thumb).toBeVisible();
+
+  const rowBox = await row.boundingBox();
+  const trackBox = await bar.boundingBox();
+  const thumb0 = await thumb.boundingBox();
+  if (rowBox === null || trackBox === null || thumb0 === null) throw new Error('指示条尺寸不可得');
+
+  // ① 轨道左端与首列右缘对齐 ⇒ 轨道宽 = 横滑可视宽 ⇒ 长度比即列宽比，无需二次换算。
+  expect(
+    Math.abs(trackBox.x - (rowBox.x + LEG_STICKY_COL_WIDTH)),
+    '轨道左端没对齐首列右缘 —— 长度比会跟着错',
+  ).toBeLessThanOrEqual(1);
+
+  // ② 前提自检：真的有溢出（轨道窄于内容），否则下面全套断言毫无意义。
+  expect(trackBox.width, '轨道宽 ≥ 内容宽：视口太宽，指示条验不到').toBeLessThan(
+    LEG_SCROLL_REGION_WIDTH,
+  );
+
+  // ③ 长度比 = 可视宽 / 内容宽（thumb 宽 = 轨道宽² / 内容宽）。
+  expect(
+    Math.abs(thumb0.width - (trackBox.width * trackBox.width) / LEG_SCROLL_REGION_WIDTH),
+    `thumb 宽 ${thumb0.width} 与列宽比不符（轨道 ${trackBox.width} / 内容 ${LEG_SCROLL_REGION_WIDTH}）`,
+  ).toBeLessThanOrEqual(1);
+  expect(Math.abs(thumb0.x - trackBox.x), '初始位移为 0，thumb 应贴轨道左端').toBeLessThanOrEqual(
+    1,
+  );
+
+  // ④ 拖一段 ⇒ thumb 往右走（位置由驱动表格的同一个 tx 派生，FR-006）。
+  await dragHorizontally(page, row, -120);
+  const thumbAfter = await settledX(page, thumb);
+  expect(thumbAfter, '拖了列，thumb 没跟着右移').toBeGreaterThan(thumb0.x + 1);
+
+  // ⑤ 拖到底 ⇒ thumb 右缘贴轨道右缘（多次拖到位移不再变化为止）。
+  let last = thumbAfter;
+  for (let i = 0; i < 8; i++) {
+    await dragHorizontally(page, row, -280);
+    const now = await settledX(page, thumb);
+    if (Math.abs(now - last) <= 0.5) break;
+    last = now;
+  }
+  const thumbEnd = await thumb.boundingBox();
+  if (thumbEnd === null) throw new Error('thumb 尺寸不可得');
+  expect(
+    Math.abs(thumbEnd.x + thumbEnd.width - (trackBox.x + trackBox.width)),
+    '滑到最右后 thumb 没贴右缘',
+  ).toBeLessThanOrEqual(1);
+});
+
+test('049 T004 — 无横向溢出（宽视口）⇒ 指示条整条不渲染 **且** 拖拽不产生位移（spec Edge Case ①，两件事都要验）', async ({
+  page,
+}) => {
+  // 🚨 宽到 12 列全部装得下 ⇒ 合法域退化成一个点。**只验「不渲染」会漏掉「没有余量却仍能拖动」**。
+  await page.setViewportSize({ width: 1024, height: 844 });
+  const legs = manyLegs(8);
+  const code = legs[0]?.code ?? '';
+  await installLegMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
+    legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
+  });
+  await openDetail(page, 'us:PEP');
+
+  const row = page.getByTestId(rowId(code));
+  const actionCell = page.getByTestId(actionId(code));
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+
+  // 前提自检：末列已完整露出 ⇒ 确无可滑动余量（这条不成立时下面两条都会假绿）。
+  const rowBox = await row.boundingBox();
+  const actionBox = await actionCell.boundingBox();
+  if (rowBox === null || actionBox === null) throw new Error('行 / 动作列尺寸不可得');
+  expect(
+    actionBox.x + actionBox.width,
+    '末列仍在视区外：视口不够宽，无溢出前提不成立',
+  ).toBeLessThan(rowBox.x + rowBox.width + 1);
+
+  // ① 整条不渲染。📌 这一条单独看会「元素不存在也通过」—— 它与上一条（有溢出时**必须**看得见）
+  //    成对才有意义，别只留这一条。
+  await expect(page.getByTestId(SCROLLBAR), '无可滑动余量时指示条仍在（FR-005）').toBeHidden();
+  await expect(page.getByTestId(SCROLLBAR_THUMB)).toBeHidden();
+
+  // ② 拖拽不产生位移 —— clamp 后合法域是一个点，怎么拖都回到 0。
+  const before = actionBox.x;
+  await dragHorizontally(page, row, -300);
+  const after = await settledX(page, actionCell);
+  expect(Math.abs(after - before), '没有横向余量却拖出了位移（clamp 越界）').toBeLessThanOrEqual(1);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -994,6 +1185,103 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
   // 回到全腿：两条又都在（切 Tab 只换 `section.data`，不重建列表）。
   await page.getByTestId('optionsdesk-detail-leg-tab-all').tap();
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(2));
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑦b 049 T007 —— sticky 栈高预算（最坏档：未选水位 ⇒ 同屏两条就地注明）
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * plan D-TAB-4 的净高预算：计数 26 + 意图水位 44 + Tab 40 + 列头 30 + 指示条 2 = **142**；
+ * 最坏档（未选水位 ⇒ 同屏两条就地注明，+40）= **182**。
+ * RN 侧字体度量与 padding 解析与 mockup 有 ±2px/元素的出入（`design/handoff.md` 注 6），
+ * 6 个元素 ⇒ 留 12px 余量。**余量是给度量差的，不是给「再加一行」的** —— 任一行做厚 ~13px 就红。
+ */
+const STACK_BUDGET_WORST = 182 + 12;
+
+/**
+ * 连滚到 sticky 栈钉住：栈顶 y 连续两轮不再上移即为已钉（**不依赖具体 pin 位置**，
+ * 免得写死一个 y 阈值，屏 chrome 一改就假红）。返回钉住后的栈顶 y。复杂度 O(steps)。
+ */
+async function scrollUntilStackPinned(page: Page, stackTop: Locator): Promise<number> {
+  const vp = page.viewportSize();
+  if (vp === null) throw new Error('viewport 尺寸不可得');
+  let prev = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < 30; i++) {
+    const y = (await boxOf(stackTop)).y;
+    if (y >= prev - 0.5) return y;
+    prev = y;
+    await page.mouse.move(vp.width / 2, vp.height * 0.7);
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(120);
+  }
+  throw new Error('滚了 30 屏 sticky 栈仍未钉住');
+}
+
+/**
+ * 049 T007 —— 栈高回归（`FR-011` / `SC-006`，plan D-TAB-4）。
+ *
+ * 🚨 **这条量的是 sticky 栈净高本身，不是「看得见几行」** —— 后者在本文件的 390×844 视口下
+ *    **没有鉴别力，实测数字如下**：栈顶钉在 y=64（其上是屏 chrome），栈净高 185px、栈底 249px
+ *    ⇒ 栈底至视口底剩 **595px = 12.4 行**（@48px）。要让「数据区 < 3 行」成立，栈净高需
+ *    **> 636px**（= 844 − 64 − 144），是预算的 **3.4 倍** —— 任何合理实现都到不了 ⇒ 写成
+ *    「≥3 行」就是一条恒真断言（tasks.md T007 的 🚫 明令不许凑）。
+ *    ✅ 实证（2026-08-11 本条落地时跑的对照）：把 Tab 行 `py-sm` 改厚成 `py-lg`（+32px）⇒
+ *       ④ 当场红（217 > 194），而同一轮里「可见行数」仍有 **11.7 行**、「≥3 行」照样绿 ——
+ *       这就是那条断言零鉴别力的直接证据，不是推理。
+ *    📌 **「数据区 ≥3 行」的判决挪 T008 M8（真机验收）** —— 真机可用高度比 web 视口紧
+ *       （状态栏 / 手势条 / 系统字号放大都吃高），那里才有鉴别力。web 侧量出来的行数不能
+ *       当真机结论（文件头「验不到」清单第 5 条）。
+ *
+ * 断言四项（前两项是**前提自检**，缺了后两项就会在错误的坐标系上恒真）：
+ *   ① 最坏档真的到达：两条就地注明同屏（只有 rent Tab + 未选水位才有第二条）。
+ *   ② 真的滚进腿区：栈顶较未滚时上移 > 100px（否则量的是「没滚动时的布局」）。
+ *   ③ sticky 生效：滚到底部行之后 12 列表头仍可见，且仍在栈内（`FR-011` 的前提）。
+ *   ④ 栈净高（计数条顶 → 指示条底）≤ 预算。
+ */
+test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）：纵滚到腿区后表头仍钉在顶，sticky 栈实测净高不超预算', async ({
+  page,
+}) => {
+  const legs = manyLegs(24);
+  await installLegMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
+    // 水位未选（`makeLegTable` 基线即 `positionBucket: null`）⇒ 就地注明才会渲出来。
+    legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
+  });
+  await openDetail(page, 'us:PEP');
+  // 第二条注明（Δ 档取并集）只在收租腿 Tab 出现 —— 最坏档 = 未选水位 × rent Tab。
+  await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
+
+  // ① 前提自检：最坏档真的到达（两条同屏），否则下面量的是常态档，预算白留。
+  await expect(page.getByTestId('optionsdesk-detail-leg-notice-bucket_unset')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toBeVisible();
+
+  const stackTop = page.getByTestId('optionsdesk-detail-leg-header');
+  const yBefore = (await boxOf(stackTop)).y;
+  const yPinned = await scrollUntilStackPinned(page, stackTop);
+
+  // ② 前提自检：确实滚进了腿区（046 三块已滚出去），不是在原始布局上量。
+  expect(
+    yBefore - yPinned,
+    '栈顶几乎没上移 —— 压根没滚进腿区，后面的数都是原始布局的',
+  ).toBeGreaterThan(100);
+
+  // ③ sticky 生效：滚到腿区之后 12 列表头仍可见，且仍在栈内（栈顶下方、视口内）。
+  const header = page.getByTestId('optionsdesk-detail-leg-table-header');
+  await expect(header).toBeVisible();
+  const headerBox = await boxOf(header);
+  expect(headerBox.y, '12 列表头跟着列表滚走了 —— sticky 栈没钉住').toBeGreaterThanOrEqual(yPinned);
+
+  // ④ 栈净高 = 计数条顶 → 指示条底（= plan D-TAB-4 逐项相加的那一段，不含屏 chrome）。
+  const barBox = await boxOf(page.getByTestId('optionsdesk-detail-leg-scrollbar'));
+  const stackHeight = barBox.y + barBox.height - yPinned;
+  const vp = page.viewportSize();
+  if (vp === null) throw new Error('viewport 尺寸不可得');
+  expect(
+    stackHeight,
+    `sticky 栈实测净高 ${stackHeight.toFixed(1)}px 超出最坏档预算 ${STACK_BUDGET_WORST}px` +
+      `（视口 ${vp.width}×${vp.height}，栈底至视口底剩 ${(vp.height - barBox.y - barBox.height).toFixed(1)}px）`,
+  ).toBeLessThanOrEqual(STACK_BUDGET_WORST);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
