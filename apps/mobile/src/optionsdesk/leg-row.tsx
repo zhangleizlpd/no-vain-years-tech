@@ -1,7 +1,7 @@
 // 047 T032 — 腿行（12 列 716px；FR-003/005, plan D-UI-1）。
 //
-// 🚨 **首列（行权价/到期，88px）渲在横向滚动之外 ⇒ 天然钉住**；右侧 11 列进
-//    `LegColumnScroller`，与表头共享同一个 offset（横向机制的注释单源在 `leg-table-header.tsx`）。
+// 🚨 **首列（行权价/到期，88px）渲在横向位移区之外 ⇒ 天然钉住**；右侧 11 列进
+//    `LegColumnPane`，与表头共读屏级唯一的 `tx`（横向机制的注释单源在 `leg-column-pane.tsx`）。
 //
 // 🚨 **费率列随行口径切换主数字、Δ 与 σ 距同有同无** —— 判定全在 `leg-row.rules.ts`
 //    （vitest 覆盖），本文件只做接线与版面。
@@ -18,6 +18,7 @@ import { Text, View } from 'react-native';
 import type { LegActivityResponse, LegResponse } from '@nvy/api-client';
 import type { SharedValue } from 'react-native-reanimated';
 
+import { LegColumnPane } from './leg-column-pane';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 import {
@@ -29,13 +30,9 @@ import {
   legRateCell,
   legRowToneClass,
 } from './leg-picker-copy';
+import { LEG_ROW_HEIGHT, LegStickyCell, legColumnWidth } from './leg-table-header';
 import {
-  LEG_ROW_HEIGHT,
-  LegColumnScroller,
-  LegStickyCell,
-  legColumnWidth,
-} from './leg-table-header';
-import {
+  LEG_SCROLL_REGION_WIDTH,
   costCell,
   deltaCell,
   expiryLabel,
@@ -65,8 +62,8 @@ const BASIS_BADGE_BORDER: Record<LegResponse['basis'], string> = {
 
 export interface LegRowProps {
   leg: LegResponse;
-  /** 表头与所有行共享的横向位移。 */
-  offset: SharedValue<number>;
+  /** 屏级唯一的横向位移（负值域）—— 表头与全部行读同一个（FR-001）。 */
+  tx: SharedValue<number>;
   /** 设备本地日历日 —— **只用于判到期日要不要补年份**，不参与任何新鲜度判断。 */
   today: string;
   /**
@@ -79,7 +76,7 @@ export interface LegRowProps {
 }
 
 /** 单腿一行。复杂度 O(1)（列数固定）。 */
-export function LegRow({ leg, offset, today, activity, showBasisBadge = true }: LegRowProps) {
+export function LegRow({ leg, tx, today, activity, showBasisBadge = true }: LegRowProps) {
   const rate = legRateCell(leg);
   const cost = costCell(leg);
   const bidTone = legBidTone(leg);
@@ -111,8 +108,13 @@ export function LegRow({ leg, offset, today, activity, showBasisBadge = true }: 
         </Text>
       </LegStickyCell>
 
-      {/* ── 右侧 11 列（与表头同 offset）──────────────────────────────── */}
-      <LegColumnScroller offset={offset} testID={`optionsdesk-detail-leg-scroller-${leg.code}`}>
+      {/* ── 右侧 11 列（与表头同 `tx`）─────────────────────────────────── */}
+      {/* 🚨 testID 一字不改 —— "scroller" 已不准确（这里没有滚动容器了），但它是 e2e 的锚点。 */}
+      <LegColumnPane
+        tx={tx}
+        contentWidth={LEG_SCROLL_REGION_WIDTH}
+        testID={`optionsdesk-detail-leg-scroller-${leg.code}`}
+      >
         {/* 🚨 bid/ask 合并一列：**档位色只着这一格**；ask 小字常显（不参与判档）。 */}
         {/* 🚨 格内是**两个子列**（买侧 / 卖侧），各自「价上量下」并左对齐 —— 上下两行的左边缘
             必须咬齐，否则 `0.40` 与 `×311` 宽度不同会各自飘。子列定宽而非靠 gap 撑，
@@ -186,7 +188,7 @@ export function LegRow({ leg, offset, today, activity, showBasisBadge = true }: 
           textClass={legActionTextClass(leg)}
           testID={`optionsdesk-detail-leg-action-${leg.code}`}
         />
-      </LegColumnScroller>
+      </LegColumnPane>
     </View>
   );
 }

@@ -162,7 +162,7 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                 notices={legTable.notices}
               />
               <LegTableHeader
-                offset={columnOffset}
+                tx={columnOffset}
                 rateSub={rateSubForTab(legTable.tab)}
                 oiAsOf={legTable.table?.oiAsOf ?? null}
               />
@@ -171,7 +171,7 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
           renderItem={({ item }) => (
             <LegRow
               leg={item}
-              offset={columnOffset}
+              tx={columnOffset}
               today={detail.today}
               // 🚨 活跃度是**当前 Tab 候选集内**的相对排名 —— 换 Tab 归属就变，故按 Tab 取。
               activity={legActivityForTab(item, legTable.tab)}
