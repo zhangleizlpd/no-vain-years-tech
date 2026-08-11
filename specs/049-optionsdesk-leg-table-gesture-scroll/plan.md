@@ -1,5 +1,5 @@
 ---
-feature_id: 049-optionsdesk-leg-table-scroll-filter
+feature_id: 049-optionsdesk-leg-table-gesture-scroll
 spec_ref: ./spec.md
 status: drafted
 created_at: '2026-08-11'

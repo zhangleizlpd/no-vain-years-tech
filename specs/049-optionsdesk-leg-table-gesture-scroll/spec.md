@@ -1,5 +1,5 @@
 ---
-feature_id: 049-optionsdesk-leg-table-scroll-filter
+feature_id: 049-optionsdesk-leg-table-gesture-scroll
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
 status: planned
@@ -22,7 +22,7 @@ state_branches:
 
 # Feature Specification: 选约表横滑范式换代 + 意图 Tab 重设计
 
-**Feature Branch**: `049-optionsdesk-leg-table-scroll-filter`
+**Feature Branch**: `049-optionsdesk-leg-table-gesture-scroll`
 **Created**: 2026-08-10
 **Status**: Draft
 **里程碑**: sell-put 可视化决策系统 —— optionsdesk 选约引擎重构的 **P0 片**（主 plan：`docs/private/plans/2026-08/08-11-optionsdesk-leg-engine-master.md`，本机私有）
