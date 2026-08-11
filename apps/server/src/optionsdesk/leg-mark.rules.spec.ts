@@ -3,8 +3,12 @@ import type { LegIntent, RentDepth } from './intent-matrix.rules';
 import * as legMark from './leg-mark.rules';
 import {
   BUILD_RECOMMEND_ABS_DELTA_BAND,
+  MONTHLY_EXPIRY_LOOKBACK_DAYS,
   RENT_RECOMMEND_ABS_DELTA_BANDS,
   isRecommended,
+  monthlyExpiryCandidates,
+  resolveMonthlyExpiries,
+  thirdFridayOf,
 } from './leg-mark.rules';
 
 describe('leg-mark.rules — Δ 带自召回层迁入打标层, 值不变 (plan D-MARK-1)', () => {
@@ -110,5 +114,100 @@ describe('leg-mark.rules — isRecommended 完整真值表 (FR-011/FR-012/FR-013
     // 带外: deep 的下端之下 / near_atm 的上端之上。
     expect(isRecommended('rent', 'deep', 0.0499)).toBe(false);
     expect(isRecommended('rent', 'near_atm', 0.4001)).toBe(false);
+  });
+});
+
+/**
+ * T007 —— 月度链标的两个纯函数 (FR-014 / FR-015, plan D-MARK-2)。
+ *
+ * 🚨 期望值是**独立于实现算出来的日历事实**, 不是拿同一套 `Date` 运算再算一遍 —— 后者是
+ * 同义反复。锚点: 2026-01-01 是周四; 2027-01-15 与 2026-08-21 分别是那两个月的公认月度
+ * opex 日 (与 047 IT 里当 `RENT_EXPIRY` 用的那个日期对得上)。
+ */
+describe('leg-mark.rules — thirdFridayOf: 该月第三个周五 (FR-015)', () => {
+  it('逐月对照真日历 (含 1 月 / 12 月 / 跨年)', () => {
+    // 2026-01-01 周四 ⇒ 周五落 2 / 9 / 16。
+    expect(thirdFridayOf(2026, 1)).toBe('2026-01-16');
+    // 2026-02-01 周日 ⇒ 6 / 13 / 20。
+    expect(thirdFridayOf(2026, 2)).toBe('2026-02-20');
+    // 2026-09-01 周二 ⇒ 4 / 11 / 18。
+    expect(thirdFridayOf(2026, 9)).toBe('2026-09-18');
+    // 12 月 → 次年 1 月: 月份进位由调用方给 (year, month), 本函数不做跨年推算, 但两侧都要对。
+    expect(thirdFridayOf(2026, 12)).toBe('2026-12-18');
+    expect(thirdFridayOf(2027, 1)).toBe('2027-01-15');
+  });
+
+  it('两个极端: 1 号就是周五 (最早, 15 号) / 1 号是周六 (最晚, 21 号)', () => {
+    // 2026-05-01 周五 ⇒ 1 / 8 / 15 —— 第三个周五落在**上半月**。
+    expect(thirdFridayOf(2026, 5)).toBe('2026-05-15');
+    // 2026-08-01 周六 ⇒ 7 / 14 / 21 —— 21 号是第三个周五**可能取到的最大日**。
+    expect(thirdFridayOf(2026, 8)).toBe('2026-08-21');
+  });
+
+  it('输出恒为零填充的 `YYYY-MM-DD`, 月 / 日各两位', () => {
+    expect(thirdFridayOf(2026, 1)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(thirdFridayOf(2026, 5)).toMatch(/^2026-05-\d{2}$/);
+  });
+});
+
+describe('leg-mark.rules — monthlyExpiryCandidates: 链上到期日 → 候选月度日 (plan D-MARK-2)', () => {
+  it('按 (年, 月) 去重后每月一个候选日, 升序', () => {
+    expect(
+      monthlyExpiryCandidates([
+        '2026-08-14',
+        '2026-08-21', // 与上一条同月 ⇒ 只出一个候选
+        '2027-01-15',
+        '2026-09-04',
+      ]),
+    ).toEqual(['2026-08-21', '2026-09-18', '2027-01-15']);
+  });
+
+  it('空链 → 空候选集 (调用方据此跳过整次日历查询)', () => {
+    expect(monthlyExpiryCandidates([])).toEqual([]);
+  });
+});
+
+describe('leg-mark.rules — resolveMonthlyExpiries: 假日回退取前一交易日 (FR-015)', () => {
+  it('候选日本身是交易日 → 取它自己', () => {
+    const days = ['2026-09-17', '2026-09-18', '2026-09-21'];
+    expect(resolveMonthlyExpiries(['2026-09-18'], days)).toEqual(new Set(['2026-09-18']));
+  });
+
+  it('🚨 候选日非交易日 → 取 ≤ 它的**最大**交易日 (判据取自日历, 不是「是不是周五」)', () => {
+    // 构造: 第三个周五 09-18 停市 (纪念日), 前一交易日是 09-17。
+    const days = ['2026-09-16', '2026-09-17', '2026-09-21'];
+    expect(resolveMonthlyExpiries(['2026-09-18'], days)).toEqual(new Set(['2026-09-17']));
+  });
+
+  it('多个候选日各自独立回退, 结果是集合 (同一月只可能贡献一个)', () => {
+    const days = ['2026-08-20', '2026-08-24', '2027-01-15'];
+    // 08-21 停市 → 回退 08-20; 2027-01-15 是交易日 → 取自己。
+    expect(resolveMonthlyExpiries(['2026-08-21', '2027-01-15'], days)).toEqual(
+      new Set(['2026-08-20', '2027-01-15']),
+    );
+  });
+
+  it('交易日集为空 → 空集合, **不炸** (日历未填充该区间是事实, 不是故障)', () => {
+    expect(resolveMonthlyExpiries(['2026-09-18'], [])).toEqual(new Set());
+  });
+
+  it('入参交易日乱序照样正确 (内部自己排, 不依赖调用方的 orderBy)', () => {
+    const days = ['2026-09-21', '2026-09-16', '2026-09-17'];
+    expect(resolveMonthlyExpiries(['2026-09-18'], days)).toEqual(new Set(['2026-09-17']));
+  });
+
+  it(`🚨 回退距离超过 ${MONTHLY_EXPIRY_LOOKBACK_DAYS} 天 → **一个都不标**, 而不是标到一个远日子`, () => {
+    // 美股连续休市 (含周末) 从不超过 4 个日历日 ⇒ 回退超过一周只可能是**日历数据缺了一段**。
+    // 此时标出来的日期看着完全正常, 却是错的 —— 与 clarify 否决「从链自身分布反推」同一条理由:
+    // 宁可不标, 不可标错。
+    const days = ['2026-08-01', '2026-08-02'];
+    expect(resolveMonthlyExpiries(['2026-09-18'], days)).toEqual(new Set());
+    // 边界: 恰好 7 天仍取 (含端点), 8 天不取。
+    expect(resolveMonthlyExpiries(['2026-09-18'], ['2026-09-11'])).toEqual(new Set(['2026-09-11']));
+    expect(resolveMonthlyExpiries(['2026-09-18'], ['2026-09-10'])).toEqual(new Set());
+  });
+
+  it('候选日之前一个交易日都没有 → 跳过它, 不炸也不编日期', () => {
+    expect(resolveMonthlyExpiries(['2026-09-18'], ['2026-09-21', '2026-09-22'])).toEqual(new Set());
   });
 });

@@ -35,6 +35,11 @@ import {
   type ActivityMark,
 } from './leg-derive.rules';
 import {
+  MONTHLY_EXPIRY_LOOKBACK_DAYS,
+  monthlyExpiryCandidates,
+  resolveMonthlyExpiries,
+} from './leg-mark.rules';
+import {
   isExcludedFromIntentTabsByLiquidity,
   passesPremiumFloor,
   recallTabs,
@@ -144,6 +149,13 @@ export interface LegView {
 
   /** 本腿在哪几个 Tab 里 (客户端据此过滤, 判据单点在 `leg-recall.rules.ts`)。 */
   tabs: readonly LegTab[];
+  /**
+   * 到期日是不是该月的**月度到期日** (FR-014) —— 月度链的流动性通常显著好于周链。
+   *
+   * 判据是「该月第三个周五; 该日非交易日则取其前一交易日」, 取自**交易日历**
+   * (`leg-mark.rules.ts` 的两个纯函数)。🚫 MUST NOT 简化成「是不是周五」。
+   */
+  isMonthlyChain: boolean;
   /** 财报标; 建仓域恒 `null` (与「无日期」是两个值)。同一到期日的腿共用同一个对象。 */
   earningsMark: EarningsMarkVerdict | null;
   /** greeks 是否齐全 (FR-007 的「数据不全」标注)。`false` 的行**照常在表内**。 */
@@ -303,6 +315,7 @@ export class GetLegsUseCase {
       // 050: 召回上下文只要 spot —— 锚轴判据 (`K ≤ W`) 已随 `isRentLeg` 整条退役, `zone` / `w`
       // 不再参与成员判定 (它们照常出现在响应里, 归 045 锚派生那半边)。
       const recallContext: RecallContext = { spot: chain.spot };
+      const monthlyExpiries = await this.readMonthlyExpiries(parsed.market, chain);
 
       return {
         ...empty('available'),
@@ -316,7 +329,7 @@ export class GetLegsUseCase {
         intent,
         rentDepth,
         // `legs` 与 `gateCounts` 同源产出 (计数是过门槛那一步的副产品, 分两处算必 drift)。
-        ...this.deriveLegs(symbol, chain, recallContext, effective.v, intent, now),
+        ...this.deriveLegs(symbol, chain, recallContext, monthlyExpiries, effective.v, intent, now),
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -415,6 +428,39 @@ export class GetLegsUseCase {
   }
 
   /**
+   * 该链上哪些到期日是**月度到期日** (FR-014 / FR-015, plan D-MARK-2)。
+   *
+   * 🚨 **一次查回整段日历, MUST NOT 逐到期日查** (Guardrail 7): 链上到期日几十个, 逐个查是
+   * 几十次往返。窗口 = `[最早候选日 − MONTHLY_EXPIRY_LOOKBACK_DAYS, 最晚候选日]`, 下界的外扩
+   * 量与假日回退的最大距离**是同一个常量** —— 不同步的话会出现「窗口里没查到、回退逻辑却敢
+   * 用」的缝。
+   *
+   * 复杂度: 1 次范围查询 (`(market, date)` 唯一键前缀命中) + `O(m log m)` 排序。
+   */
+  private async readMonthlyExpiries(market: string, chain: ChainSnapshot): Promise<Set<string>> {
+    const candidates = monthlyExpiryCandidates(
+      chain.rows.map((r) => dateOnlyOf(r.contract.expiryDate)),
+    );
+    // 空链在 `readChain` 就已挡下, 这条是纯函数契约的兜底 —— 零候选就别白发一次查询。
+    if (candidates.length === 0) return new Set();
+
+    const from = new Date(
+      utcMidnight(candidates[0]).getTime() - MONTHLY_EXPIRY_LOOKBACK_DAYS * MS_PER_DAY,
+    );
+    // CROSS-CONTEXT-READ: marketdata.trading_day 只读直查 (catalog Q7-B) —— 月度到期日的假日
+    // 回退判据取自交易日历, 读法同 `last-closed-session.ts:39`。零写; marketdata 不知道锚表
+    // 存在 (方向铁律)。
+    const days = await this.prisma.tradingDay.findMany({
+      where: { market, date: { gte: from, lte: utcMidnight(candidates[candidates.length - 1]) } },
+      select: { date: true },
+    });
+    return resolveMonthlyExpiries(
+      candidates,
+      days.map((d) => dateOnlyOf(d.date)),
+    );
+  }
+
+  /**
    * 逐腿派生 + 分组打标 + 三套活跃度 + 统一档位排序, 外加两个门槛计数 (FR-008)。
    *
    * 顺序是语义决定的: 财报打标发生在**分档之前** (FR-006 死档照常打标, 与档位正交);
@@ -429,6 +475,7 @@ export class GetLegsUseCase {
     symbol: string,
     chain: ChainSnapshot,
     recallContext: RecallContext,
+    monthlyExpiries: ReadonlySet<string>,
     v: Prisma.Decimal,
     intent: LegIntent,
     now: Date,
@@ -526,6 +573,8 @@ export class GetLegsUseCase {
         turnover: computeTurnover(decimalToNumber(snapshot.volume), snapshot.bid),
         activityByTab: emptyActivity(),
         tabs,
+        // 月度链标是**到期日级**的属性 —— 同一到期日的腿必同标, 与财报标同一个结构保证。
+        isMonthlyChain: monthlyExpiries.has(dateOnlyOf(contract.expiryDate)),
         earningsMark: marks.get(dateOnlyOf(contract.expiryDate)) ?? null,
         greeksComplete: snapshot.greeksComplete,
       } satisfies LegView;
@@ -610,6 +659,8 @@ function emptyActivity(): Record<LegTab, ActivityMark | null> {
 function decimalToNumber(value: Prisma.Decimal | null): number | null {
   return value === null ? null : value.toNumber();
 }
+
+const MS_PER_DAY = 86_400_000;
 
 /** `@db.Date` 的 UTC 午夜 Date → `YYYY-MM-DD`。 */
 function dateOnlyOf(date: Date): string {
