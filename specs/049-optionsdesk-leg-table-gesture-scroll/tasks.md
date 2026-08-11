@@ -33,7 +33,7 @@ updated_at: '2026-08-11'
   → verify: 真机看「thumb 长度比 = 列宽比 / 拖到底贴右缘 / 表格不溢出时整条不出现」；🚫 全文件 `grep useSharedValue` 只应命中屏级那一个 `tx`（指示条 MUST NOT 另立第二个来源）
   → verify（承 spec Edge Case ① 后半）: 构造无横向溢出的场景（临时把 `contentWidth` 传成小于可视宽，或宽屏 web 视口）→ 指示条整条不渲染**且拖拽不产生位移**（`tx` 恒 0）—— 两件事都要验，只验前者会漏掉「没有余量却仍能拖动」这种越界
 
-- [ ] T006 `leg-picker-tabs.tsx` 按 mockup 稿 A 改视觉：等分三格（`flex-1`）+ 选中格 `bg-surface-sunken` + 底部 3px×28 `bg-brand-500` 短横条（未选态用等高透明占位防跳动，抄 `portfolio/detail-tabs.tsx`）(FR-008, FR-010, plan D-TAB-1/2)
+- [X] T006 `leg-picker-tabs.tsx` 按 mockup 稿 A 改视觉：等分三格（`flex-1`）+ 选中格 `bg-surface-sunken` + 底部 3px×28 `bg-brand-500` 短横条（未选态用等高透明占位防跳动，抄 `portfolio/detail-tabs.tsx`）(FR-008, FR-010, plan D-TAB-1/2)
   → verify: 既有 e2e「三 Tab 全部可进入」与选中态样式自比较断言仍绿；🚫 testID / 三件 a11y / notices 槽位 / 零 `disabled` 一律未动（`git diff` 自查）；🚫 **本 task 不碰 Tab 的语义、费率口径、档位着色**（那些属 P1/P2，混进来这次 PR 就无法单独回滚）
 
 ## E2E

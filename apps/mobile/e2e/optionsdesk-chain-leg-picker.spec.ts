@@ -637,19 +637,36 @@ async function textStyleOf(locator: Locator): Promise<string> {
   });
 }
 
+/**
+ * 049 T006 —— 选中态的**第二重编码**：格底色（稿 A 的 `surface-sunken`）。
+ *
+ * 🚨 双重编码（字色/字重 + 底色）是 plan D-TAB-1 的刻意决定，不是冗余：web 上唯一能断的
+ *    只有样式自比较，两条独立通道意味着任一被误删都会红。🚫 MUST NOT 因为「看起来重复」
+ *    把这条断言删掉 —— 删了之后底色回退成透明，e2e 一声不吭。
+ */
+async function tabSurfaceOf(locator: Locator): Promise<string> {
+  return locator.evaluate((el) => getComputedStyle(el).backgroundColor);
+}
+
 const TAB_KEYS = ['all', 'build', 'rent'] as const;
 
 /** 选中的那个 Tab 与另外两个**视觉可分**（不置灰 ≠ 看不出选中）。 */
 async function expectTabSelected(page: Page, selected: (typeof TAB_KEYS)[number]): Promise<void> {
-  const styles = await Promise.all(
-    TAB_KEYS.map((t) => textStyleOf(page.getByTestId(`optionsdesk-detail-leg-tab-${t}`))),
-  );
+  const tabAt = (t: (typeof TAB_KEYS)[number]) =>
+    page.getByTestId(`optionsdesk-detail-leg-tab-${t}`);
+  const styles = await Promise.all(TAB_KEYS.map((t) => textStyleOf(tabAt(t))));
+  const surfaces = await Promise.all(TAB_KEYS.map((t) => tabSurfaceOf(tabAt(t))));
   const target = styles[TAB_KEYS.indexOf(selected)];
+  const targetSurface = surfaces[TAB_KEYS.indexOf(selected)];
   for (const [i, key] of TAB_KEYS.entries()) {
     if (key === selected) continue;
     expect(styles[i], `Tab ${key} 与选中的 ${selected} 呈现一致 —— 选中态看不出来`).not.toBe(
       target,
     );
+    expect(
+      surfaces[i],
+      `Tab ${key} 与选中的 ${selected} 底色一致 —— 稿 A 的第二重编码（选中格 sunken 底）没了`,
+    ).not.toBe(targetSurface);
   }
 }
 
