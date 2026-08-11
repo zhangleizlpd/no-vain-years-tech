@@ -328,6 +328,32 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     expect(shortHigh?.tierByTab.all).toBe('good');
   });
 
+  /**
+   * 050 T015 的审计补口: 「`basis` 归属换代」是 T015 预期清单里的四类行为变化之一, 但**047 的
+   * IT 一个字都没断言过 `basis`** ⇒ 它换代时不可能红。判别性靠 `overlap` 这条同时进两个意图
+   * Tab 的腿: 047 按**腿族**归属 (`isBuildLeg` 要 `DTE≤14 ∧ |Δ|∈[.40,.55]`, 它 DTE 38 / Δ 0.35
+   * 都不满足) ⇒ 年化; 050 按**建仓召回集成员**归属 ⇒ 周化。两代给的是不同的值。
+   */
+  it('③c legacy 标量 `basis` / `tier` 按**建仓召回集成员**归属 (D-RANK-3, T015 补口)', async () => {
+    const codes = await seedAll();
+    const view = await useCase.execute(SYMBOL, NOW);
+
+    const overlap = legOf(view, codes.overlap);
+    // 进建仓召回集 ⇒ 周化 —— 尽管它同时也是收租成员 (047 的腿族归属会给年化)。
+    expect(overlap?.basis).toBe('weekly');
+    // 🚨 legacy `tier` 与 `basis` 同口径: 它就是 `tierByTab.build`, 不是 rent 那个 good。
+    expect([overlap?.tier, overlap?.tierByTab.build]).toEqual(['dead', 'dead']);
+
+    // 反向: 不进建仓召回集的腿走年化, 且 legacy `tier` 取 rent 那格 —— 两条一起才排除
+    // 「`basis` 被写死成某一个值」这种平凡绿。
+    const rentOnly = legOf(view, codes.rentOnly);
+    expect(rentOnly?.basis).toBe('annualized');
+    expect([rentOnly?.tier, rentOnly?.tierByTab.rent]).toEqual([
+      rentOnly?.tierByTab.rent,
+      rentOnly?.tierByTab.rent,
+    ]);
+  });
+
   it('③b `tierByTab` 对非成员恒 null —— 不属于该 Tab 就没有该 Tab 的档位', async () => {
     const codes = await seedAll();
     const view = await useCase.execute(SYMBOL, NOW);
