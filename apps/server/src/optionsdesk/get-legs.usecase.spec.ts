@@ -37,6 +37,8 @@ interface LegFixture {
   strike: string;
   expiry: string;
   bid: string | null;
+  /** 缺省 = `bid + 0.10`(窄价差, 稳过流动性门槛); 显式给值才造得出宽价差反例。 */
+  ask?: string;
   delta: string | null;
   greeksComplete: boolean;
   openInterest: string;
@@ -110,7 +112,7 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
     // 🚨 OI 归属 T−1 (2026-07-31, 08-03 的上一个交易日) —— 与 sessionDate 蓄意不同天。
     oiAsOf: date('2026-07-31'),
     bid: leg.bid === null ? null : D(leg.bid),
-    ask: leg.bid === null ? null : D(leg.bid).plus(D('0.10')),
+    ask: leg.ask !== undefined ? D(leg.ask) : leg.bid === null ? null : D(leg.bid).plus(D('0.10')),
     // 挂牌量：无 bid ⇒ 无挂单 ⇒ 两侧同为 null（与价同生共死，🚫 不拿 0 冒充「没人挂」）。
     bidSize: leg.bid === null ? null : D('25'),
     askSize: leg.bid === null ? null : D('26'),
@@ -139,8 +141,7 @@ function tradingDayFindFirst() {
   });
 }
 
-function makePrisma(overrides: Record<string, unknown> = {}) {
-  const legs = LEGS;
+function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] = LEGS) {
   return {
     anchor: { findUnique: vi.fn().mockResolvedValue(anchorRow) },
     instrument: { findUnique: vi.fn().mockResolvedValue({ id: 42n }) },
@@ -271,6 +272,116 @@ describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1
     const b = view.legs.find((l) => l.code === 'C-B'); // 死档, 但同到期日
     expect(a?.earningsMark).toBe(b?.earningsMark);
     expect(a?.earningsMark?.mark).toBe('covered');
+  });
+});
+
+/**
+ * T004 —— 两道门槛的**作用面不对称** (FR-005 / FR-006 / FR-008)。
+ *
+ * 🚨 两个数描述的不是同一件事: `removedByPremiumFloor` = 「移出响应」(三个 Tab 都看不到,
+ * 真消失), `excludedFromIntentTabs` = 「仍在响应、只进全腿 Tab」(没消失)。故每条反例都
+ * **同时**断言另一个数**不动** —— 只断言自己那个数的话, 把两者串台的实现照样能绿。
+ *
+ * 🚨 两条被权利金门槛挡下的反例 (`G-PENNY` / `G-NOBID`) 蓄意**同时**是宽价差 / 无 ask:
+ * 若实现把流动性判据施加在权利金门槛**之前**(或对已移出的腿照样计数), `excludedFromIntentTabs`
+ * 会跟着 +2 —— 那正是这两条 fixture 要绊的线。
+ */
+describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不串台 (FR-005/FR-006/FR-008)', () => {
+  // spot 132.40 ⇒ 权利金门槛 = max(0.20, 132.40 × 0.0012 = 0.1589) = 0.20。
+  // 全部反例都用 DTE 10 (2026-08-14) 且有效成本 < spot ⇒ 期限段与有效成本都不是它们出局的原因。
+  const base = { delta: '-0.45', greeksComplete: true, openInterest: '300', volume: '120' };
+  const ok: LegFixture = {
+    code: 'G-OK',
+    strike: '130',
+    expiry: '2026-08-14',
+    bid: '2.00',
+    ...base,
+  };
+  /** 一分钱腿: bid 0.05 < 0.20 ⇒ 移出响应。价差 0.10/0.10 = 100% 是**串台绊线**。 */
+  const penny: LegFixture = {
+    code: 'G-PENNY',
+    strike: '125',
+    expiry: '2026-08-14',
+    bid: '0.05',
+    ask: '0.15',
+    ...base,
+  };
+  /** 完全无 bid ⇒ 按「不满足权利金门槛」处置 (🚫 禁当 0)。无 ask ⇒ 流动性 fail-closed 绊线。 */
+  const noBid: LegFixture = {
+    code: 'G-NOBID',
+    strike: '128',
+    expiry: '2026-08-14',
+    bid: null,
+    ...base,
+    delta: '-0.40',
+  };
+  /** 宽价差: 6.00/6.00 = 100% > 35% ⇒ 出意图 Tab, 但**留在响应与全腿 Tab**。 */
+  const wide: LegFixture = {
+    code: 'G-WIDE',
+    strike: '126',
+    expiry: '2026-08-14',
+    bid: '3.00',
+    ask: '9.00',
+    ...base,
+  };
+  /** DTE 400 且宽价差 —— 它出意图 Tab 的原因是期限段, 不是流动性。 */
+  const longWide: LegFixture = {
+    code: 'G-LONG-WIDE',
+    strike: '110',
+    expiry: '2027-09-08',
+    bid: '3.00',
+    ask: '9.00',
+    ...base,
+  };
+
+  const tableOf = (legs: LegFixture[]) => makeUseCase(makePrisma({}, legs)).execute(SYMBOL, NOW);
+
+  it('权利金门槛挡下的腿从响应**整条移出**, 且只让 removedByPremiumFloor 动 (禁当 bid = 0)', async () => {
+    const view = await tableOf([ok, penny, noBid]);
+
+    // 三个 Tab 一律不出现 = 它压根不在 legs[] 里 (客户端按每腿的 tabs 过滤, 没有行就没有归属)。
+    expect(view.legs.map((l) => l.code)).toEqual(['G-OK']);
+    expect(view.gateCounts.removedByPremiumFloor).toBe(2);
+    // 🚨 串台绊线: 这两条同时是宽价差 / 无 ask, 但它们已经不在响应里 ⇒ 不属于「流动性排除」。
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
+  });
+
+  it('流动性门槛挡下的腿**仍在响应里**、只剩全腿 Tab, 且只让 excludedFromIntentTabs 动', async () => {
+    const view = await tableOf([ok, wide]);
+
+    const excluded = view.legs.find((l) => l.code === 'G-WIDE');
+    expect(excluded).toBeDefined();
+    expect(excluded?.tabs).toEqual(['all']);
+    // 数据没消失: 报价 / 费率 / 档位照常在, 只是不进意图候选。
+    expect(excluded?.bid?.toString()).toBe('3');
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(1);
+    expect(view.gateCounts.removedByPremiumFloor).toBe(0);
+    // 对照腿两个 Tab 都进 —— 证明宽价差那条不是被别的判据顺手挡掉的。
+    expect(view.legs.find((l) => l.code === 'G-OK')?.tabs).toEqual(['all', 'build']);
+  });
+
+  it('期限段本就不合格的腿**不计入**流动性排除 —— 那个数是流动性信号, 不是「哪儿都没进」的总数', async () => {
+    const view = await tableOf([ok, longWide]);
+
+    expect(view.legs.find((l) => l.code === 'G-LONG-WIDE')?.tabs).toEqual(['all']);
+    // DTE 400 两个意图段都够不着 ⇒ 它出局与流动性无关, 计进去会稀释掉这个数唯一的用途。
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
+    expect(view.gateCounts.removedByPremiumFloor).toBe(0);
+  });
+
+  it('两道门槛都不触发时两个数恒 0 —— 证明它们不是「恒计数」的摆设', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    expect(view.legs).toHaveLength(LEGS.length);
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+  });
+
+  it('链未就绪 → 两个数为 0 (没有链就没有腿被挡下, MUST NOT 留上一次的数)', async () => {
+    const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+
+    expect(view.state).toBe('chain_not_ready');
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
   });
 });
 

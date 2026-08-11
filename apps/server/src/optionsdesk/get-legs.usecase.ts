@@ -34,7 +34,13 @@ import {
   markActivity,
   type ActivityMark,
 } from './leg-derive.rules';
-import { recallTabs, type RecallContext, type RecallLegInput } from './leg-recall.rules';
+import {
+  isExcludedFromIntentTabsByLiquidity,
+  passesPremiumFloor,
+  recallTabs,
+  type RecallContext,
+  type RecallLegInput,
+} from './leg-recall.rules';
 import { classifyLegTier, type LegBasis, type LegTier } from './leg-tier.rules';
 import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
 
@@ -144,6 +150,30 @@ export interface LegView {
   greeksComplete: boolean;
 }
 
+/**
+ * 两道门槛各自挡下多少条 (FR-008) —— 「有腿消失了」必须可见且**可行动**。
+ *
+ * 🚨 **两个数语义不对称, 命名不可互换、更不可合并成一个总数**: 一分钱腿是废腿 (不用管),
+ * 价差宽是该注意的流动性信号 (该看看), 两类的处置完全不同。🚫 MUST NOT 换成 `filteredOut`
+ * 这类同时暗示两种语义的容器名 —— 用户看到「滤除 12 条」会以为那 12 条不见了。
+ */
+export interface LegGateCounts {
+  /**
+   * 被**权利金门槛**从响应里整条移出的条数 (FR-005) —— 这些腿三个 Tab 都看不到, 是真正的
+   * 「数据消失」。本项**部分推翻 047 FR-005**「任何腿至少在一个 Tab 里可见」, 而它是这笔
+   * 取舍的**唯一**补偿 ⇒ 呈现侧 MUST NOT 省略。
+   */
+  removedByPremiumFloor: number;
+  /**
+   * 被**流动性门槛**排除出建仓 / 收租的条数 (FR-006) —— 这些腿**仍在响应里、仍在全腿 Tab
+   * 可见**, 没有消失。
+   *
+   * 📌 期限段本就不合格的腿 (如 DTE=400) **不计入**: 它不是被门槛挡下的, 算进去会让这个数
+   * 失去它唯一的用途 —— 提示该注意的流动性信号。
+   */
+  excludedFromIntentTabs: number;
+}
+
 export interface LegTableView {
   symbol: string;
   state: LegTableState;
@@ -183,6 +213,8 @@ export interface LegTableView {
   rentDepth: RentDepth | null;
 
   legs: LegView[];
+  /** 两道门槛各自挡下多少条 (FR-008) —— 语义不对称, 见 {@link LegGateCounts}。 */
+  gateCounts: LegGateCounts;
 }
 
 /** 排序键: 统一**档位**键 (FR-019 禁跨族数值直比)。死档恒沉底 (FR-006)。 */
@@ -251,6 +283,8 @@ export class GetLegsUseCase {
       intent: 'pending',
       rentDepth: null,
       legs: [],
+      // 没有链就没有腿被挡下 —— 两个数取 0 而非 null: 它们是计数不是「未知」。
+      gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -281,7 +315,8 @@ export class GetLegsUseCase {
         zone,
         intent,
         rentDepth,
-        legs: this.deriveLegs(symbol, chain, recallContext, effective.v, intent, now),
+        // `legs` 与 `gateCounts` 同源产出 (计数是过门槛那一步的副产品, 分两处算必 drift)。
+        ...this.deriveLegs(symbol, chain, recallContext, effective.v, intent, now),
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -380,10 +415,15 @@ export class GetLegsUseCase {
   }
 
   /**
-   * 逐腿派生 + 分组打标 + 三套活跃度 + 统一档位排序。
+   * 逐腿派生 + 分组打标 + 三套活跃度 + 统一档位排序, 外加两个门槛计数 (FR-008)。
    *
    * 顺序是语义决定的: 财报打标发生在**分档之前** (FR-006 死档照常打标, 与档位正交);
    * 活跃度排名发生在**Tab 归属之后** (排名是候选集内的相对量, D-SOT-5)。
+   *
+   * 🚨 **两道门槛施加在两个不同的位置, 这不是可以「统一」的重复** (FR-005 / FR-006):
+   * 权利金门槛作用于三个 Tab ⇒ 在建表**之前**滤 (腿从响应整条移出); 流动性门槛只作用于两个
+   * 意图 Tab ⇒ 在 **Tab 归属**时滤 (腿仍在响应里, 只是不进意图候选)。合并到一处施加必然会把
+   * 其中一个的作用面改错, 而**两种错法都返回得出结果、都不会红**。
    */
   private deriveLegs(
     symbol: string,
@@ -392,12 +432,20 @@ export class GetLegsUseCase {
     v: Prisma.Decimal,
     intent: LegIntent,
     now: Date,
-  ): LegView[] {
+  ): Pick<LegTableView, 'legs' | 'gateCounts'> {
+    // 权利金门槛 (FR-005): 语义上属**读端过滤** —— 与「仅认沽 / 仅标准 / 到期日 > 当日」那三条
+    // (FR-010, 在 SQL 端) 同类, 只是它要 spot 与 bid 故落在这里。被它挡下的腿不进下面任何一步:
+    // 不派生、不打标、不参与三个 Tab 的活跃度排名基准。
+    const admitted = chain.rows.filter(({ snapshot }) =>
+      passesPremiumFloor(snapshot.bid, recallContext.spot),
+    );
+    const removedByPremiumFloor = chain.rows.length - admitted.length;
+
     // DTE **先整批算完再打标** —— 打标的腿族解析器要用它, 而解析器是同步回调, 拿不到还没
     // 填进去的值。合约数百行但到期日只有几十个 ⇒ 按到期日缓存, `daysToExpiry` 每个日期算一次。
-    const expiryKeys = chain.rows.map((r) => dateOnlyOf(r.contract.expiryDate));
+    const expiryKeys = admitted.map((r) => dateOnlyOf(r.contract.expiryDate));
     const dteByExpiry = new Map<string, number>();
-    for (const row of chain.rows) {
+    for (const row of admitted) {
       const key = dateOnlyOf(row.contract.expiryDate);
       if (!dteByExpiry.has(key)) {
         dteByExpiry.set(key, daysToExpiry({ expiry: row.contract.expiryDate, now }));
@@ -411,7 +459,7 @@ export class GetLegsUseCase {
       earningsLegFamilyFor(intent, dteByExpiry.get(expiryDate) ?? 0),
     );
 
-    const legs = chain.rows.map(({ contract, snapshot }) => {
+    const legs = admitted.map(({ contract, snapshot }) => {
       const dteDays = dteByExpiry.get(dateOnlyOf(contract.expiryDate)) ?? 0;
       const delta = snapshot.delta === null ? null : Math.abs(snapshot.delta.toNumber());
       const { absDelta, sigmaDistance } = deriveDeltaColumns(
@@ -483,6 +531,18 @@ export class GetLegsUseCase {
       } satisfies LegView;
     });
 
+    // 流动性门槛的计数 (FR-008) —— 判据**复用召回层同一个纯函数**, 与每腿的 `tabs` 同源
+    // ⇒ 两者不会 drift。🚨 与上面那个数**语义不对称**: 这些腿仍在 `legs[]` 里、仍在全腿 Tab
+    // 可见, 只是没进意图 Tab; 而被权利金门槛挡下的腿已经不在 `legs[]` 里, 不在本轮统计面内。
+    const excludedFromIntentTabs = legs.filter((leg) =>
+      isExcludedFromIntentTabsByLiquidity(recallContext, {
+        dteDays: leg.dteDays,
+        strike: leg.strike,
+        bid: leg.bid,
+        ask: leg.ask,
+      }),
+    ).length;
+
     // 三个 Tab **各跑一次**排名 —— 同一条腿在不同 Tab 的候选集里名次不同是**定义如此**
     // (D-SOT-5), 故 MUST NOT 只算一次全链排名再复用。
     for (const tab of LEG_TABS) {
@@ -496,13 +556,15 @@ export class GetLegsUseCase {
     // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序 ——
     // 🚫 蓄意**不**按费率排: 全腿 Tab 混着两个口径的行, 跨族比数值正是 FR-004 要防的事。
     // 每个 Tab 自己的排序键 (周化 bid 降序 / 绝对收益率降序) 归客户端 (D-API-1 / D-SOT-4)。
-    return legs.sort(
+    legs.sort(
       (a, b) =>
         tierOrder(a.tier) - tierOrder(b.tier) ||
         a.expiryDate.getTime() - b.expiryDate.getTime() ||
         b.strike.comparedTo(a.strike) ||
         a.code.localeCompare(b.code),
     );
+
+    return { legs, gateCounts: { removedByPremiumFloor, excludedFromIntentTabs } };
   }
 }
 
