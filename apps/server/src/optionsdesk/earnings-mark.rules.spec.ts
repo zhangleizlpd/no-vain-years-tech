@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EARNINGS_FORWARD_HORIZON_DAYS } from '../marketdata/sync-earnings-event.usecase';
 import {
   EARNINGS_BUFFER_MIN_DAYS,
+  crossesEarnings,
   earningsCalendarContext,
   earningsMark,
   earningsMarksByExpiry,
@@ -162,6 +163,25 @@ describe('earnings-mark.rules — 同一到期日必同标是结构保证 (Guard
       familyByExpiry,
     );
     expect([...marks.keys()]).toEqual(['2025-08-15', '2025-09-19']);
+  });
+});
+
+/** 050 T012 —— 精排层特征集要的那个布尔项 (FR-019), 判据只读已算好的标。 */
+describe('earnings-mark.rules — 跨不跨财报 (050 特征集的布尔项)', () => {
+  it('三个「跨了」的标一律 true —— `covered` 也是跨了, 只是缓冲够', () => {
+    const cal = calendar();
+    expect(crossesEarnings(earningsMark(cal, '2025-09-19', 'rent_long'))).toBe(true); // covered
+    expect(crossesEarnings(earningsMark(cal, '2025-10-17', 'rent_long'))).toBe(true); // buffer_short
+    expect(crossesEarnings(earningsMark(cal, '2025-08-15', 'rent_short'))).toBe(true);
+  });
+
+  it('确认不跨 / 不知道 / 按设计不打标 三者在特征层合流为 false', () => {
+    const cal = calendar();
+    expect(crossesEarnings(earningsMark(cal, '2025-08-08', 'rent_short'))).toBe(false); // no_cross
+    expect(crossesEarnings(earningsMark(cal, '2027-01-15', 'rent_long'))).toBe(false); // no_date
+    // 建仓域按设计不打标 —— 呈现层三态要分开 (FR-026), 但归一化到 0/1 的特征没有第三格。
+    expect(earningsMark(cal, '2025-08-15', 'build_position')).toBeNull();
+    expect(crossesEarnings(null)).toBe(false);
   });
 });
 

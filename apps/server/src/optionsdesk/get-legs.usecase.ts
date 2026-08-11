@@ -11,6 +11,7 @@ import {
   type LLevel,
 } from './anchor.rules';
 import {
+  crossesEarnings,
   earningsCalendarContext,
   earningsMarksByExpiry,
   type EarningsMarkVerdict,
@@ -41,13 +42,27 @@ import {
   resolveMonthlyExpiries,
 } from './leg-mark.rules';
 import {
+  BASIS_BY_TAB,
+  computeRankingFeatures,
+  rankLegs,
+  rateDescendingRanker,
+  type RankingContext,
+  type RankingLegInput,
+} from './leg-rank.rules';
+import {
   isExcludedFromIntentTabsByLiquidity,
   passesPremiumFloor,
   recallTabs,
+  relativeSpread,
   type RecallContext,
   type RecallLegInput,
 } from './leg-recall.rules';
-import { classifyLegTier, type LegBasis, type LegTier } from './leg-tier.rules';
+import {
+  classifyLegTier,
+  type LegBasis,
+  type LegTier,
+  type LegTierVerdict,
+} from './leg-tier.rules';
 import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
 
 /**
@@ -81,8 +96,8 @@ import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
  * ET 日期起算。决策是前瞻的, 改成快照日基准会系统性多算一天; 代价是同屏必须有显式 `asOf`。
  *
  * 复杂度: 三次跨 ctx 查询 (合约集 / 最近一期快照 / 该票财报日) + 单票 `O(n log n)`
- * (n = 该票当日快照行数, 实测上界 730; `n log n` 项 = 排序与三个 Tab 各一次活跃度排名),
- * 财报分组打标 `O(k log E)` (k = 不同到期日数)。
+ * (n = 该票当日快照行数, 实测上界 730; `n log n` 项 = legacy 档位排序, 与三个 Tab **各自**
+ * 一次活跃度排名 + 一次精排), 财报分组打标 `O(k log E)` (k = 不同到期日数)。
  */
 
 /** 选约表区块状态 (FR-013: 缺口显式化, 与「有数据但是空的」不可混为一谈)。 */
@@ -130,8 +145,19 @@ export interface LegView {
   /**
    * 四档; **greeks 缺失行恒 `null`** (FR-007: 不判档不着色) —— 它们的费率算得出来但会骗人
    * (99.5% 是深实值腿, 折年可达 307%)。无 bid 亦 `null` (没有判定值就没有档)。
+   *
+   * 📌 **050 起它是 legacy 标量**: 档位跟 Tab 走 (`FR-023`) ⇒ 真身是 {@link tierByTab}。本字段
+   * 保留是因为契约只加不删 (`FR-027`), 判据 = 「进建仓召回集 → 周化, 否则年化」(D-RANK-3)。
    */
   tier: LegTier | null;
+  /**
+   * 每个 Tab 各自口径下的档位 (`FR-023`, plan D-RANK-3) —— 建仓 Tab 走周化档界、收租与全腿走
+   * 年化。同一条腿在两个 Tab 判出不同档是**定义如此**。
+   *
+   * 🚨 **不属于该 Tab 的格恒 `null`** —— 不在那个候选集里就没有那个候选集的档位。与 `tier` 的
+   * `null` (缺 greeks / 无 bid ⇒ 不判档) 是两个原因、同一个值, 呈现侧都是「不着色」。
+   */
+  tierByTab: Readonly<Record<LegTab, LegTier | null>>;
   /** 薄档带出的 `ask` 口径费率 (D-SOT-2); 其余档恒 `null`, **不参与判定**。 */
   askRate: Prisma.Decimal | null;
 
@@ -233,6 +259,17 @@ export interface LegTableView {
   rentDepth: RentDepth | null;
 
   legs: LegView[];
+  /**
+   * 每个 Tab 一份**有序的合约代码列表** (FR-021a) —— 精排在 server 完成, 客户端 MUST 按它
+   * 呈现、MUST NOT 自行重排。腿本体仍只下发一份 (MUST NOT 按 Tab 复制)。
+   *
+   * 🚨 **与每腿的 `tabs` 同源派生** (Guardrail 9): 两处表达的是同一个成员关系, 各算一份必
+   * drift —— 而**两边都算得出结果**, 于是 drift 时没有任何一处会红。
+   *
+   * 🚫 它**不是** `legs[]` 的新排序: 后者的档位键是 legacy 载体顺序 (旧客户端仍按它渲染),
+   * 一行不许动 (Guardrail 10)。
+   */
+  tabOrder: Readonly<Record<LegTab, string[]>>;
   /** 两道门槛各自挡下多少条 (FR-008) —— 语义不对称, 见 {@link LegGateCounts}。 */
   gateCounts: LegGateCounts;
 }
@@ -303,6 +340,9 @@ export class GetLegsUseCase {
       intent: 'pending',
       rentDepth: null,
       legs: [],
+      // 三份列表恒有值 (空数组而非 undefined) —— 「这个 Tab 没有腿」与「没有这个 Tab」是两件事,
+      // 客户端不必为空态特判。
+      tabOrder: emptyTabOrder(),
       // 没有链就没有腿被挡下 —— 两个数取 0 而非 null: 它们是计数不是「未知」。
       gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
     });
@@ -497,7 +537,7 @@ export class GetLegsUseCase {
     intent: LegIntent,
     rentDepth: RentDepth | null,
     now: Date,
-  ): Pick<LegTableView, 'legs' | 'gateCounts'> {
+  ): Pick<LegTableView, 'legs' | 'gateCounts' | 'tabOrder'> {
     // 权利金门槛 (FR-005): 语义上属**读端过滤** —— 与「仅认沽 / 仅标准 / 到期日 > 当日」那三条
     // (FR-010, 在 SQL 端) 同类, 只是它要 spot 与 bid 故落在这里。被它挡下的腿不进下面任何一步:
     // 不派生、不打标、不参与三个 Tab 的活跃度排名基准。
@@ -543,24 +583,26 @@ export class GetLegsUseCase {
       // 现役标量 `basis` 的新判据 (plan D-RANK-3): 进建仓召回集 → 周化, 否则年化。
       // 🚫 MUST NOT 为喂这个 legacy 字段而把刚删掉的 Δ 带成员判据再养活一份。
       const basis: LegBasis = tabs.includes('build') ? 'weekly' : 'annualized';
-      const rateOf = (premium: Prisma.Decimal | null): Prisma.Decimal | null => {
+      const rateOf = (premium: Prisma.Decimal | null, on: LegBasis): Prisma.Decimal | null => {
         const r =
           premium === null
             ? null
             : computeLegRates({ strike: contract.strikePrice, premium, dteDays });
-        return r === null ? null : basis === 'weekly' ? r.weeklyRate : r.annualizedRate;
+        return r === null ? null : on === 'weekly' ? r.weeklyRate : r.annualizedRate;
+      };
+      // 🚫 greeks 缺失行 MUST NOT 走判档 (FR-007) —— 筛除归调用方, `classifyLegTier` 认一个数
+      // 就该给一个档, 不在纯函数里特判。
+      const verdictOn = (on: LegBasis): LegTierVerdict | null => {
+        const rate = rateOf(snapshot.bid, on);
+        return rate === null || absDelta === null
+          ? null
+          : classifyLegTier(rate, on, rateOf(snapshot.ask, on));
       };
       const rates =
         snapshot.bid === null
           ? null
           : computeLegRates({ strike: contract.strikePrice, premium: snapshot.bid, dteDays });
-      const bidRate = rateOf(snapshot.bid);
-      // 🚫 greeks 缺失行 MUST NOT 走判档 (FR-007) —— 筛除归调用方, `classifyLegTier` 认一个数
-      // 就该给一个档, 不在纯函数里特判。
-      const verdict =
-        bidRate === null || absDelta === null
-          ? null
-          : classifyLegTier(bidRate, basis, rateOf(snapshot.ask));
+      const verdict = verdictOn(basis);
 
       return {
         code: contract.code,
@@ -576,6 +618,7 @@ export class GetLegsUseCase {
         weeklyRate: rates?.weeklyRate ?? null,
         annualizedRate: rates?.annualizedRate ?? null,
         tier: verdict?.tier ?? null,
+        tierByTab: tierByTabOf(tabs, verdictOn),
         askRate: verdict?.askRate ?? null,
         // 无 bid ⇒ 有效成本无定义 —— 🚫 MUST NOT 拿 `K − 0` 冒充 (那是「白拿股票」的意思)。
         effectiveCost:
@@ -620,17 +663,32 @@ export class GetLegsUseCase {
     // 最自然的写法是「先筛再排名」(少算一些), 那样写出来照样能跑、数字照样有, **只是全错** ——
     // 名次是候选集内的相对量, 基准少了几行, 每一行的名次都变了。本片没有筛选 ⇒ 召回集 == 排名
     // 基准; P3 加筛选时 MUST NOT 把 `markActivity` 挪到筛选之后。
+    const rankingContext: RankingContext = { spot: recallContext.spot };
+    const tabOrder = emptyTabOrder();
     for (const tab of LEG_TABS) {
+      // 🚨 Guardrail 9: 成员集合在这里求值**一次**, 活跃度排名、特征集、有序列表三者共用它
+      // ⇒ `tabOrder[t]` 与每腿的 `tabs` 不可能 drift (各算一份的话两边都算得出结果)。
       const members = legs.filter((leg) => leg.tabs.includes(tab));
       const activity = markActivity(members);
       members.forEach((leg, i) => {
         (leg.activityByTab as Record<LegTab, ActivityMark | null>)[tab] = activity[i];
       });
+
+      // 🚨 顺序骨架恒为 **排名 → 筛选 → 截断** (FR-024)。本片不实装后两步 (归 P3), 但它们的
+      // 位置已经定死在这一行**之后** —— 挪到前面会让每一行的名次与特征值都变 (基准少了几行),
+      // 而**数字照样有、照样落 `[0,1]`**。
+      const features = computeRankingFeatures(
+        rankingContext,
+        members.map((leg, i) => rankingInputOf(leg, tab, activity[i])),
+      );
+      tabOrder[tab] = rankLegs(members, features, rateDescendingRanker);
     }
 
-    // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序 ——
-    // 🚫 蓄意**不**按费率排: 全腿 Tab 混着两个口径的行, 跨族比数值正是 FR-004 要防的事。
-    // 每个 Tab 自己的排序键 (周化 bid 降序 / 绝对收益率降序) 归客户端 (D-API-1 / D-SOT-4)。
+    // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序。
+    //
+    // 🚨 **050 起这是 legacy 载体顺序, 一行不许动** (Guardrail 10): 有了 `tabOrder` 之后它确实
+    // 不再承载语义, 但旧客户端 (P2 未上) 仍按它渲染 —— 改了会看起来乱, 而**这不是编译期能发现
+    // 的**。新消费方一律走 `tabOrder`; 退役时机由 P3 在 P2 切过去之后评估。
     legs.sort(
       (a, b) =>
         tierOrder(a.tier) - tierOrder(b.tier) ||
@@ -639,7 +697,7 @@ export class GetLegsUseCase {
         a.code.localeCompare(b.code),
     );
 
-    return { legs, gateCounts: { removedByPremiumFloor, excludedFromIntentTabs } };
+    return { legs, tabOrder, gateCounts: { removedByPremiumFloor, excludedFromIntentTabs } };
   }
 }
 
@@ -679,6 +737,55 @@ function tierOrder(tier: LegTier | null): number {
 
 function emptyActivity(): Record<LegTab, ActivityMark | null> {
   return { all: null, build: null, rent: null };
+}
+
+function emptyTabOrder(): Record<LegTab, string[]> {
+  return { all: [], build: [], rent: [] };
+}
+
+/**
+ * per-Tab 档位 (FR-023, plan D-RANK-3)。`O(Tab 数)` = `O(1)`。
+ *
+ * 🚨 **非成员恒 `null`** —— 不在那个候选集里就没有那个候选集的档位。
+ * 📌 判定值仍恒为 `bid` 口径费率, 换的只是**档界**所依的口径 (047 D-SOT-1 那条纪律一字不改)。
+ */
+function tierByTabOf(
+  tabs: readonly LegTab[],
+  verdictOn: (basis: LegBasis) => LegTierVerdict | null,
+): Record<LegTab, LegTier | null> {
+  const tierByTab = {} as Record<LegTab, LegTier | null>;
+  for (const tab of LEG_TABS) {
+    tierByTab[tab] = tabs.includes(tab) ? (verdictOn(BASIS_BY_TAB[tab])?.tier ?? null) : null;
+  }
+  return tierByTab;
+}
+
+/**
+ * 已派生好的腿 → 精排层的**原始量入参** (FR-019)。`O(1)`。
+ *
+ * 🚨 **费率按该 Tab 的口径取** (`BASIS_BY_TAB`) —— 顺序上两个口径同序 (单调变换), 但特征值是
+ * 要留给将来加权用的, 拿错口径会让「同一项特征在三个 Tab 语义不同」这件事悄悄成立。
+ *
+ * 📌 三个布尔项各有出处、都是**已算好的结论**: `isDeltaInIntentBand` = 推荐标 (随标的级意图,
+ * `leg-mark.rules.ts`), `isTopRanked` / `isRoundStrike` = 该 Tab 的活跃度标记 (候选集内相对量),
+ * `crossesEarnings` = 财报标读出 (FR-017: 本片 MUST NOT 改动其算法)。
+ */
+function rankingInputOf(leg: LegView, tab: LegTab, activity: ActivityMark): RankingLegInput {
+  return {
+    rate: BASIS_BY_TAB[tab] === 'weekly' ? leg.weeklyRate : leg.annualizedRate,
+    effectiveCost: leg.effectiveCost,
+    relativeSpread: relativeSpread(leg.bid, leg.ask),
+    openInterest: leg.openInterest,
+    volume: leg.volume,
+    turnover: leg.turnover,
+    absDelta: leg.absDelta,
+    dteDays: leg.dteDays,
+    isMonthlyChain: leg.isMonthlyChain,
+    isRoundStrike: activity.isRoundStrike,
+    isDeltaInIntentBand: leg.isRecommended,
+    crossesEarnings: crossesEarnings(leg.earningsMark),
+    isTopRanked: activity.isTopRanked,
+  };
 }
 
 /** `Decimal(20,0)` 的计数列 → number (OI / Vol 是计数不是金额, 排名与呈现都按 number)。 */

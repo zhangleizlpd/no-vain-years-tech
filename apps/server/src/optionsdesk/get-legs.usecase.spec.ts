@@ -632,3 +632,112 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
     }
   });
 });
+
+/**
+ * T012 —— 精排接线 + `tierByTab` + 三份有序列表 (FR-021a / FR-023 / FR-024, plan D-RANK-3/D-API)。
+ *
+ * 默认数据集在 050 判据下的归属与费率:
+ *
+ * | 腿    | DTE | tabs           | 周化   | 年化    |
+ * | ----- | --- | -------------- | ------ | ------- |
+ * | `C-C` | 17  | all + build    | 4.06%  | 211.5%  |
+ * | `C-D` | 10  | all + build    | 1.09%  | 57.0%   |
+ * | `C-A` | 164 | all + rent     | —      | 11.7%   |
+ * | `C-B` | 164 | all + rent     | —      | 1.1%    |
+ *
+ * 🚨 这份数据的判别性在于 **`legs[]` 的既有排序 (档位键) 与 `tabOrder.all` (费率键) 逐行不同**
+ * —— 「顺手把 legs[] 改成按费率排」(Guardrail 10) 一旦发生, 下面那条断言立刻红。
+ */
+describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-023/FR-024, T012)', () => {
+  it('🚨 Guardrail 9: `tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}` (两处同源派生)', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      const members = view.legs
+        .filter((l) => l.tabs.includes(tab))
+        .map((l) => l.code)
+        .sort();
+      expect([tab, [...view.tabOrder[tab]].sort()]).toEqual([tab, members]);
+    }
+    // 空集合不是特例: 每个 Tab 都得有一份列表 (哪怕是空的), 免得客户端拿到 undefined。
+    expect(Object.keys(view.tabOrder).sort()).toEqual(['all', 'build', 'rent']);
+  });
+
+  it('三份列表各自按**该 Tab 口径**的折算费率降序 (FR-021)', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    // 年化: C-C 211% > C-D 57% > C-A 11.7% > C-B 1.1%。
+    expect(view.tabOrder.all).toEqual(['C-C', 'C-D', 'C-A', 'C-B']);
+    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条。
+    expect(view.tabOrder.build).toEqual(['C-C', 'C-D']);
+    expect(view.tabOrder.rent).toEqual(['C-A', 'C-B']);
+  });
+
+  it('🚨 Guardrail 10: `legs[]` 的既有排序键**一行没改** —— 仍是档位 → 到期日 → 行权价 → code', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    // 旧客户端 (P2 未上) 仍按 legs[] 渲染 ⇒ 顺序不许动。
+    expect(view.legs.map((l) => l.code)).toEqual(['C-D', 'C-A', 'C-C', 'C-B']);
+    // 判别性: 它与费率键的 `tabOrder.all` **逐行不同** —— 若有人「顺手清理」把 legs[] 改成
+    // 按费率排, 上面那条会红而不是碰巧仍绿。
+    expect(view.legs.map((l) => l.code)).not.toEqual(view.tabOrder.all);
+  });
+
+  it('🚨 FR-023: `tierByTab` 跟 Tab 走, 同一条腿两个 Tab 可判出不同档; 全腿 Tab 恒年化', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const buildLeg = view.legs.find((l) => l.code === 'C-D');
+
+    // 同一条腿: 建仓 Tab 按周化 1.09% ⇒ acceptable; 全腿 Tab 按年化 57% ⇒ good。
+    expect(buildLeg?.tierByTab.build).toBe('acceptable');
+    expect(buildLeg?.tierByTab.all).toBe('good');
+    // 🚨 全腿 Tab 例外恒年化 —— 它混着 10 天与 164 天的腿, 拿周化档界判长腿会让整列全是死档。
+    const rentLeg = view.legs.find((l) => l.code === 'C-A');
+    expect(rentLeg?.tierByTab.all).toBe('acceptable');
+    expect(rentLeg?.tierByTab.rent).toBe('acceptable');
+    // 现役标量 `tier` / `basis` 一字不动 (契约只加不删): 进建仓召回集 ⇒ 周化。
+    expect(buildLeg?.basis).toBe('weekly');
+    expect(buildLeg?.tier).toBe('acceptable');
+  });
+
+  it('`tierByTab` 对**非成员**恒 null —— 不属于该 Tab 就没有该 Tab 的档位', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+
+    for (const leg of view.legs) {
+      for (const tab of ['all', 'build', 'rent'] as const) {
+        if (leg.tabs.includes(tab)) continue;
+        expect([leg.code, tab, leg.tierByTab[tab]]).toEqual([leg.code, tab, null]);
+      }
+    }
+    // 反向: 至少有一条腿真的有非成员格, 否则上面是平凡绿。
+    expect(view.legs.some((l) => !l.tabs.includes('rent'))).toBe(true);
+  });
+
+  it('greeks 缺失的腿三格全 null —— 不判档不着色 (FR-007) 在 per-Tab 档位上同样成立', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const gap = view.legs.find((l) => l.code === 'C-C');
+
+    // 它**在**建仓召回集里 (050 下 Δ 退出召回), 但费率会骗人 ⇒ 三个 Tab 一律不判档。
+    expect(gap?.tabs).toEqual(['all', 'build']);
+    expect(gap?.tierByTab).toEqual({ all: null, build: null, rent: null });
+    expect(gap?.tier).toBeNull();
+    // 但它照常参与排序 —— 不判档不等于不排 (费率算得出来)。
+    expect(view.tabOrder.build[0]).toBe('C-C');
+  });
+
+  it('链未就绪 → 三份列表都是空数组 (不是 undefined, 客户端不必特判)', async () => {
+    const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+
+    expect(view.state).toBe('chain_not_ready');
+    expect(view.tabOrder).toEqual({ all: [], build: [], rent: [] });
+  });
+
+  it('🚨 SC-006: 同一输入连续两次调用, 三份列表逐行相同', async () => {
+    const useCase = makeUseCase(makePrisma());
+    const first = await useCase.execute(SYMBOL, NOW);
+    const second = await useCase.execute(SYMBOL, NOW);
+
+    expect(second.tabOrder).toEqual(first.tabOrder);
+    expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));
+  });
+});

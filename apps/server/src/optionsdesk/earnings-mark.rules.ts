@@ -204,6 +204,27 @@ export function earningsMarksByExpiry(
   return marks;
 }
 
+/** 五个标里表示「该到期日**跨了**财报」的三个 —— `covered` 也是跨了, 只是缓冲够。 */
+const CROSSING_MARKS: ReadonlySet<EarningsMark> = new Set([
+  'covered',
+  'buffer_short',
+  'crosses_earnings',
+]);
+
+/**
+ * 该到期日跨不跨财报 (050 `FR-019` 特征集的布尔项)。`O(1)`。
+ *
+ * 🚨 **只读已算好的 {@link EarningsMarkVerdict.mark}, 不重算日历** —— 050 `FR-017` 明写本片
+ * MUST NOT 改动财报打标算法, 这里是把结论**读出来**而不是第二份实现。
+ *
+ * 📌 三种「不算跨」在特征层**蓄意合流为 `false`**: `no_cross` (知道且确认不跨) / `no_date`
+ * (不知道) / `null` (建仓域按设计不打标)。呈现层要分三态 (FR-026 明写不可合并), 但特征是个
+ * 归一化到 `0/1` 的量, 没有第三格能装「不知道」—— 与 `FR-019a`「缺失取 0」同一条口径。
+ */
+export function crossesEarnings(mark: EarningsMarkVerdict | null): boolean {
+  return mark !== null && CROSSING_MARKS.has(mark.mark);
+}
+
 function verdict(
   mark: EarningsMark,
   bufferShortfallDays: number | null = null,

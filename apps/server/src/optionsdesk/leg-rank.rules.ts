@@ -1,4 +1,6 @@
 import { Prisma } from '../generated/prisma/client';
+import { type LegTab } from './leg-tab.rules';
+import { type LegBasis } from './leg-tier.rules';
 
 /**
  * 050 optionsdesk **精排层**特征集 (ADR-0043 §4, plan D-RANK-1)。无 I/O、无 DI。
@@ -32,6 +34,21 @@ import { Prisma } from '../generated/prisma/client';
  * 量纲: 归一化后是 `number` (统计量) 而**不是** `Prisma.Decimal` —— 沿 `leg-derive.rules.ts`
  * 的「金额 / 费率用 Decimal, 统计量用 number」纪律。复杂度 `O(项数 × n)` = `O(n)`/候选集。
  */
+
+/**
+ * Tab → 档位判定口径 (FR-023)。**每腿一个 `tier`** 的现役标量在新范式下不够用了 —— 同一条腿
+ * 可同时在建仓与收租 Tab 且档界不同 ⇒ `tier` 是 **(腿, Tab)** 的属性。
+ *
+ * 🚨 **全腿 Tab 例外恒年化**: 它混着 10 天与 200 天的腿, 用周化档界判长腿会让整列全是死档。
+ *
+ * 📌 口径决定的是**显示与档界, 不是顺序**: 周化与年化差一个常数因子 (严格单调变换) ⇒ 两者
+ * 降序结果逐行相同 (FR-021 的 📌)。三个 Tab 共用同一个 ranker 正是因为这个。
+ */
+export const BASIS_BY_TAB: Readonly<Record<LegTab, LegBasis>> = {
+  all: 'annualized',
+  build: 'weekly',
+  rent: 'annualized',
+};
 
 /**
  * 该项在候选集内**全等**时的取值 (含候选集只有 1 条腿)。
