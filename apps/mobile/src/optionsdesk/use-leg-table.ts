@@ -5,8 +5,9 @@
 //    `asOf` 与档位口径可能不一致，正是 FR-005 / plan D-API-1 否掉的形态。
 //
 // 🚨 **Tab 成员判据 MUST NOT 在客户端重算** —— 每腿自带 `tabs: ('all'|'build'|'rent')[]`，
-//    判据单点在 server 的 `leg-tab.rules.ts`（IT 已实证：greeks 缺失腿**合法进收租 Tab**，
-//    因为卖 put 区走锚轴 `K ≤ W` 不读 Δ）。客户端重算极易漏掉那一支。
+//    判据单点在 server 的 `leg-recall.rules.ts`（050 起；047 时在 `leg-tab.rules.ts`）。
+//    IT 已实证：greeks 缺失腿**合法进意图 Tab** —— 050 起 Δ 整个退出召回判据（FR-009）。
+//    客户端重算极易漏掉那一支。
 //
 // 🚨 **死档 / 未判档的排序由 server 定死**（死档末尾、未判档在死档之前）—— 客户端**别再排一次**。
 import { useCallback, useMemo, useState } from 'react';

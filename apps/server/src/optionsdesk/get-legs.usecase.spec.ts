@@ -78,7 +78,8 @@ const LEGS: LegFixture[] = [
     openInterest: '80',
     volume: '3',
   },
-  // 建仓带 (|Δ| 0.45 ∈ [0.40,0.55] ∧ DTE 10 ≤ 14) ⇒ 周化口径, 周化 1.09% ⇒ 可接受。
+  // 建仓召回集 (050: DTE 10 ∈ [1,49] ∧ 有效成本 128 < spot 132.40) ⇒ 周化口径,
+  // 周化 1.09% ⇒ 可接受。(047 下它靠 |Δ| 0.45 ∈ [0.40,0.55] ∧ DTE ≤ 14 进建仓族, 判据已换代。)
   {
     code: 'C-D',
     strike: '130',
@@ -251,8 +252,11 @@ describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1
 
     expect(build?.tabs).toEqual(['all', 'build']);
     expect(rent?.tabs).toEqual(['all', 'rent']);
-    expect(gap?.tabs).toEqual(['all']); // 缺 Δ ⇒ 两个意图 Tab 都进不去, 但全腿 Tab 恒在
-    // 全腿 Tab 里人人有名次; 建仓 Tab 只有 C-D 一条 ⇒ 它在那一套里必是 Top。
+    // 🚨 **这条断言在 050 翻转, 而翻转本身就是 US1-AS3 / FR-009**: C-C 缺 Δ, 047 下被 Δ 带挡在
+    // 两个意图 Tab 之外; 050 下 Δ 退出召回判据 ⇒ 只看 DTE=17 ∈ [1,49] 与有效成本
+    // 145 − 13 = 132 < spot 132.40 ⇒ 进建仓召回集。全腿 Tab 恒在, 这点没变。
+    expect(gap?.tabs).toEqual(['all', 'build']);
+    // 全腿 Tab 里人人有名次; 建仓 Tab 现有 C-C / C-D 两条 (Top N = 3 ⇒ 两条都是 Top)。
     expect(view.legs.every((l) => l.activityByTab.all !== null)).toBe(true);
     expect(build?.activityByTab.build?.isTopRanked).toBe(true);
     expect(build?.activityByTab.rent).toBeNull();

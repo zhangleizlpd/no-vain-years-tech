@@ -34,15 +34,9 @@ import {
   markActivity,
   type ActivityMark,
 } from './leg-derive.rules';
+import { recallTabs, type RecallContext, type RecallLegInput } from './leg-recall.rules';
 import { classifyLegTier, type LegBasis, type LegTier } from './leg-tier.rules';
-import {
-  LEG_TABS,
-  earningsLegFamilyFor,
-  isBuildLeg,
-  legTabs,
-  type LegTab,
-  type LegTabContext,
-} from './leg-tab.rules';
+import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
 
 /**
  * 047 US2/US3/US4 — 意图 Tab 选约表读端 (FR-002/003/005/008/013/019/041/053/054,
@@ -51,7 +45,7 @@ import {
  *
  * 🚨 **一次返全量适格腿, 零分页零 top-N 截断** (FR-005): 三个 Tab 是**同一份派生结果**的三种
  * 视图 ⇒ 分三次请求会让三个 Tab 的 `asOf` 与档位口径可能不一致。客户端按每腿的 `tabs` 过滤,
- * MUST NOT 自己重算成员判据 (判据单点在 `leg-tab.rules.ts`)。
+ * MUST NOT 自己重算成员判据 (判据单点在 `leg-recall.rules.ts`)。
  *
  * 🚨 **Guardrail 7 —— 这里是 `>` 而 T021 完整性分母是 `≥`, 两处判据故意不同**: 本端点滤的是
  * 「已到期腿不可交易」(到期日 **>** 当日), 完整性分母认的是「当日到期的合约当日仍可取快照」
@@ -142,7 +136,7 @@ export interface LegView {
   /** 三个 Tab **各一套**活跃度标记 (排名是候选集内的相对量, 换 Tab 归属就变, D-SOT-5)。 */
   activityByTab: Readonly<Record<LegTab, ActivityMark | null>>;
 
-  /** 本腿在哪几个 Tab 里 (客户端据此过滤, 判据单点在 `leg-tab.rules.ts`)。 */
+  /** 本腿在哪几个 Tab 里 (客户端据此过滤, 判据单点在 `leg-recall.rules.ts`)。 */
   tabs: readonly LegTab[];
   /** 财报标; 建仓域恒 `null` (与「无日期」是两个值)。同一到期日的腿共用同一个对象。 */
   earningsMark: EarningsMarkVerdict | null;
@@ -272,7 +266,9 @@ export class GetLegsUseCase {
 
       const zone = classifyZone(effective.v, chain.spot);
       const { intent, rentDepth } = classifyIntent(zone, effective.lLevel, positionBucket);
-      const tabContext: LegTabContext = { zone, w, rentDepth };
+      // 050: 召回上下文只要 spot —— 锚轴判据 (`K ≤ W`) 已随 `isRentLeg` 整条退役, `zone` / `w`
+      // 不再参与成员判定 (它们照常出现在响应里, 归 045 锚派生那半边)。
+      const recallContext: RecallContext = { spot: chain.spot };
 
       return {
         ...empty('available'),
@@ -285,7 +281,7 @@ export class GetLegsUseCase {
         zone,
         intent,
         rentDepth,
-        legs: this.deriveLegs(symbol, chain, tabContext, effective.v, intent, now),
+        legs: this.deriveLegs(symbol, chain, recallContext, effective.v, intent, now),
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -392,7 +388,7 @@ export class GetLegsUseCase {
   private deriveLegs(
     symbol: string,
     chain: ChainSnapshot,
-    tabContext: LegTabContext,
+    recallContext: RecallContext,
     v: Prisma.Decimal,
     intent: LegIntent,
     now: Date,
@@ -421,8 +417,19 @@ export class GetLegsUseCase {
       const { absDelta, sigmaDistance } = deriveDeltaColumns(
         snapshot.greeksComplete ? delta : null,
       );
-      const tabInput = { absDelta, dteDays, strike: contract.strikePrice };
-      const basis: LegBasis = isBuildLeg(tabInput) ? 'weekly' : 'annualized';
+      // 🚨 050 召回入参里**没有** `absDelta` (FR-009): Δ 已降级为打标量, 拿不到这个量就不可能
+      // 拿它做召回判据。`absDelta` 在本函数内仍照常派生 —— 它服务判档门 (greeks 缺失不判档)
+      // 与呈现列, 那两处与召回无关。
+      const recallInput: RecallLegInput = {
+        dteDays,
+        strike: contract.strikePrice,
+        bid: snapshot.bid,
+        ask: snapshot.ask,
+      };
+      const tabs = recallTabs(recallContext, recallInput);
+      // 现役标量 `basis` 的新判据 (plan D-RANK-3): 进建仓召回集 → 周化, 否则年化。
+      // 🚫 MUST NOT 为喂这个 legacy 字段而把刚删掉的 Δ 带成员判据再养活一份。
+      const basis: LegBasis = tabs.includes('build') ? 'weekly' : 'annualized';
       const rateOf = (premium: Prisma.Decimal | null): Prisma.Decimal | null => {
         const r =
           premium === null
@@ -470,7 +477,7 @@ export class GetLegsUseCase {
         volume: decimalToNumber(snapshot.volume),
         turnover: computeTurnover(decimalToNumber(snapshot.volume), snapshot.bid),
         activityByTab: emptyActivity(),
-        tabs: legTabs(tabContext, tabInput),
+        tabs,
         earningsMark: marks.get(dateOnlyOf(contract.expiryDate)) ?? null,
         greeksComplete: snapshot.greeksComplete,
       } satisfies LegView;
