@@ -36,6 +36,7 @@ import {
 } from './leg-derive.rules';
 import {
   MONTHLY_EXPIRY_LOOKBACK_DAYS,
+  isRecommended,
   monthlyExpiryCandidates,
   resolveMonthlyExpiries,
 } from './leg-mark.rules';
@@ -149,6 +150,13 @@ export interface LegView {
 
   /** 本腿在哪几个 Tab 里 (客户端据此过滤, 判据单点在 `leg-recall.rules.ts`)。 */
   tabs: readonly LegTab[];
+  /**
+   * 推荐标 (FR-011) —— 这条腿的 `|Δ|` 落在**标的级意图**对应的带内。
+   *
+   * 🚨 **随意图判, 不随当前 Tab 变**: 收租意图下打开建仓 Tab 会看到推荐标数为 0, 那是**正确
+   * 信号**不是 bug (SC-005)。greeks 缺失恒 `false` (FR-013), 但该腿**照常在召回集里**。
+   */
+  isRecommended: boolean;
   /**
    * 到期日是不是该月的**月度到期日** (FR-014) —— 月度链的流动性通常显著好于周链。
    *
@@ -329,7 +337,16 @@ export class GetLegsUseCase {
         intent,
         rentDepth,
         // `legs` 与 `gateCounts` 同源产出 (计数是过门槛那一步的副产品, 分两处算必 drift)。
-        ...this.deriveLegs(symbol, chain, recallContext, monthlyExpiries, effective.v, intent, now),
+        ...this.deriveLegs(
+          symbol,
+          chain,
+          recallContext,
+          monthlyExpiries,
+          effective.v,
+          intent,
+          rentDepth,
+          now,
+        ),
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -478,6 +495,7 @@ export class GetLegsUseCase {
     monthlyExpiries: ReadonlySet<string>,
     v: Prisma.Decimal,
     intent: LegIntent,
+    rentDepth: RentDepth | null,
     now: Date,
   ): Pick<LegTableView, 'legs' | 'gateCounts'> {
     // 权利金门槛 (FR-005): 语义上属**读端过滤** —— 与「仅认沽 / 仅标准 / 到期日 > 当日」那三条
@@ -573,6 +591,9 @@ export class GetLegsUseCase {
         turnover: computeTurnover(decimalToNumber(snapshot.volume), snapshot.bid),
         activityByTab: emptyActivity(),
         tabs,
+        // 🚨 打标**零拦截** (FR-018): 下面两个标只是往腿上贴属性, MUST NOT 参与 `tabs` 的判定
+        // —— 上一行的 `tabs` 已经定死, 打标改不了任何 Tab 的成员集合。
+        isRecommended: isRecommended(intent, rentDepth, absDelta),
         // 月度链标是**到期日级**的属性 —— 同一到期日的腿必同标, 与财报标同一个结构保证。
         isMonthlyChain: monthlyExpiries.has(dateOnlyOf(contract.expiryDate)),
         earningsMark: marks.get(dateOnlyOf(contract.expiryDate)) ?? null,
@@ -594,6 +615,11 @@ export class GetLegsUseCase {
 
     // 三个 Tab **各跑一次**排名 —— 同一条腿在不同 Tab 的候选集里名次不同是**定义如此**
     // (D-SOT-5), 故 MUST NOT 只算一次全链排名再复用。
+    //
+    // 🚨 **排名基准 = 该 Tab 的召回全量成员, 且这一步 MUST 落在召回之后** (FR-016 / Guardrail 3):
+    // 最自然的写法是「先筛再排名」(少算一些), 那样写出来照样能跑、数字照样有, **只是全错** ——
+    // 名次是候选集内的相对量, 基准少了几行, 每一行的名次都变了。本片没有筛选 ⇒ 召回集 == 排名
+    // 基准; P3 加筛选时 MUST NOT 把 `markActivity` 挪到筛选之后。
     for (const tab of LEG_TABS) {
       const members = legs.filter((leg) => leg.tabs.includes(tab));
       const activity = markActivity(members);

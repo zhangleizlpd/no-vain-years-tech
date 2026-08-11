@@ -72,7 +72,7 @@ updated_at: '2026-08-11'
 
 - [X] T007 [Server] **月度链标：纯函数 + 日历跨 ctx 读**（FR-014, FR-015, plan D-MARK-2）：① 纯函数 `thirdFridayOf(year, month): string`（`O(1)`，零 I/O）② 纯函数 `resolveMonthlyExpiries(candidates, tradingDays): Set<string>` —— 每个候选日若在交易日集内取它，否则取 `≤ 它` 的**最大**交易日 ③ use case 侧：对链上全部到期日取不同 `(year, month)` 算候选集 `F`，**一次**查 `trading_day where market='us' and date between min(F)−7 and max(F)`，注入纯函数。🚫 MUST NOT 逐到期日查；🚫 MUST NOT 从链自身到期日分布反推（clarify 已否决：靠数据形状猜规则，**误判时看起来完全正常**）；`−7` 的依据 MUST 带注释 → verify: `leg-mark.rules.spec.ts` 补 —— `thirdFridayOf` 跨年跨月（含 1 月 / 12 月 / 第三个周五落在月末）+ **假日回退**（构造候选日不在交易日集内，断言取到前一交易日）+ 交易日集为空时不炸；`nx run server -- tsx scripts/checks/check-server-moat.ts` exit 0（`CROSS-CONTEXT-READ` 注释齐全）
 
-- [ ] T008 [Server] **use case 接打标**（FR-016, FR-018, plan D-MARK-3）：每腿挂 `isRecommended` / `isMonthlyChain`；`markActivity` 与财报打标**签名与实现一行不改**，但调用点 MUST 落在**召回之后**（`FR-016`：排名基准 = 该 Tab 召回全量）→ verify: `get-legs.usecase.spec.ts` 补 —— 打标**零拦截**（同一份输入，开关打标不改变任何 Tab 的成员集合）；`markActivity` 的入参断言为召回后的成员数组（不是全链）
+- [X] T008 [Server] **use case 接打标**（FR-016, FR-018, plan D-MARK-3）：每腿挂 `isRecommended` / `isMonthlyChain`；`markActivity` 与财报打标**签名与实现一行不改**，但调用点 MUST 落在**召回之后**（`FR-016`：排名基准 = 该 Tab 召回全量）→ verify: `get-legs.usecase.spec.ts` 补 —— 打标**零拦截**（同一份输入，开关打标不改变任何 Tab 的成员集合）；`markActivity` 的入参断言为召回后的成员数组（不是全链）
 
 - [ ] T009 [Server-IT] **打标 IT**（US3 全 6 条 AS, SC-005）：新建 `apps/server/test/integration/optionsdesk-050.mark.it.spec.ts` → verify: ① 建仓意图下 Δ 带内打标、带外不打 ② **收租意图打开建仓 Tab → 推荐标数恒为 0**（`SC-005`，正确信号不是 bug）③ 水位未选 → 全表推荐标数恒为 0 ④ 真日历表下第三个周五的到期日带月度链标 ⑤ **构造第三个周五为非交易日**（往 `trading_day` 少插一行）→ 标落在前一交易日 ⑥ 打标不改变任何集合
 

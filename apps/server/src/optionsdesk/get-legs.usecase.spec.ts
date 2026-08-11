@@ -505,3 +505,130 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
     expect(prisma.tradingDay.findFirst).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * T008 —— 打标接线 (FR-016 / FR-018, plan D-MARK-3)。
+ *
+ * 数据集蓄意让**两条建仓腿的 OI / 成交量全链最低**: 于是它们在全腿 Tab 里排不进前三、在建仓
+ * Tab 里却是全部成员 ⇒ 「每个 Tab 按自己的召回全量排名」这件事有了**可观测的差**。若排名基准
+ * 退化成全链 (或退化成筛选后的子集), 这两条腿在建仓 Tab 的 `isTopRanked` 立刻翻。
+ */
+describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回全量 (FR-016/FR-018)', () => {
+  const base = { greeksComplete: true, ask: undefined };
+  // 建仓腿 (DTE 10, 有效成本 < spot 132.40); OI / Vol 全链最低。
+  const buildA: LegFixture = {
+    code: 'M-BUILD-A',
+    strike: '130',
+    expiry: '2026-08-14',
+    bid: '2.00',
+    delta: '-0.45',
+    openInterest: '10',
+    volume: '1',
+    ...base,
+  };
+  const buildB: LegFixture = {
+    code: 'M-BUILD-B',
+    strike: '129',
+    expiry: '2026-08-14',
+    bid: '1.50',
+    delta: '-0.10',
+    openInterest: '12',
+    volume: '2',
+    ...base,
+  };
+  // 收租长腿 (DTE 164); OI / Vol 全链最高 ⇒ 它们占满全腿 Tab 的前三。
+  const rentDeep: LegFixture = {
+    code: 'M-RENT-DEEP',
+    strike: '120',
+    expiry: '2027-01-15',
+    bid: '8.00',
+    delta: '-0.10', // 落 deep 带 [0.05,0.15]
+    openInterest: '900',
+    volume: '90',
+    ...base,
+  };
+  const rentModerate: LegFixture = {
+    code: 'M-RENT-MODERATE',
+    strike: '115',
+    expiry: '2027-01-15',
+    bid: '6.00',
+    delta: '-0.25', // 落 moderate 带, **不在** deep 带内
+    openInterest: '800',
+    volume: '80',
+    ...base,
+  };
+  const rentGapless: LegFixture = {
+    code: 'M-RENT-NOGREEKS',
+    strike: '110',
+    expiry: '2027-01-15',
+    bid: '4.00',
+    delta: null,
+    greeksComplete: false,
+    openInterest: '700',
+    volume: '70',
+  };
+  const MARK_LEGS: LegFixture[] = [buildA, buildB, rentDeep, rentModerate, rentGapless];
+
+  /** 默认锚 ⇒ 卖put区 + L2 + 水位 ≥2/3 ⇒ 意图「收租 · 深度」, 带 = [0.05, 0.15]。 */
+  const tableWithBucket = (positionBucketManual: string | null) =>
+    makeUseCase(
+      makePrisma(
+        {
+          anchor: {
+            findUnique: vi.fn().mockResolvedValue({ ...anchorRow, positionBucketManual }),
+          },
+        },
+        MARK_LEGS,
+      ),
+    ).execute(SYMBOL, NOW);
+
+  it('推荐标随**标的级意图**判: 收租 · 深度 ⇒ 只有 |Δ| 落 deep 带的腿带标', async () => {
+    const view = await tableWithBucket('gte_two_thirds');
+    expect(view.intent).toBe('rent');
+    expect(view.rentDepth).toBe('deep');
+
+    const recommended = view.legs.filter((l) => l.isRecommended).map((l) => l.code);
+    // |Δ| 0.10 两条 (一条建仓腿 + 一条收租腿) 都落 deep 带 —— 🚨 标**不随 Tab 变**:
+    // 建仓 Tab 里的那条腿照样按收租的带判, 这正是 FR-011 要的（SC-005 的另一面）。
+    expect(new Set(recommended)).toEqual(new Set(['M-BUILD-B', 'M-RENT-DEEP']));
+    // moderate 带那条不带标; greeks 缺失那条恒不带标 (FR-013)。
+    expect(view.legs.find((l) => l.code === 'M-RENT-MODERATE')?.isRecommended).toBe(false);
+    expect(view.legs.find((l) => l.code === 'M-RENT-NOGREEKS')?.isRecommended).toBe(false);
+  });
+
+  it('🚨 打标零拦截: 水位从「已选」翻成「未选」⇒ 全表零推荐标, 而 Tab 成员集合**逐条不变**', async () => {
+    const selected = await tableWithBucket('gte_two_thirds');
+    const unselected = await tableWithBucket(null);
+
+    expect(unselected.intent).toBe('pending');
+    // 水位未选 ⇒ 一个推荐标都没有 (Guardrail 1: 🚫 MUST NOT 取三档并集替人做方向性假设)。
+    expect(unselected.legs.every((l) => !l.isRecommended)).toBe(true);
+    expect(selected.legs.some((l) => l.isRecommended)).toBe(true);
+    // 🚨 判据: 同一份输入, 打标的输入变了而**成员关系一行不动** —— 打标 MUST NOT 参与筛选。
+    const membership = (view: typeof selected) =>
+      view.legs.map((l) => `${l.code}:${[...l.tabs].join('+')}`);
+    expect(membership(unselected)).toEqual(membership(selected));
+    expect(unselected.gateCounts).toEqual(selected.gateCounts);
+  });
+
+  it('🚨 排名基准 = 该 Tab 的召回全量: 全链最不活跃的两条腿在建仓 Tab 里仍是 Top', async () => {
+    const view = await tableWithBucket('gte_two_thirds');
+    const leg = (code: string) => view.legs.find((l) => l.code === code)!;
+
+    // 建仓 Tab 只有两条成员 (< Top 3) ⇒ 两条都是 Top。
+    expect(leg('M-BUILD-A').tabs).toContain('build');
+    expect(leg('M-BUILD-A').activityByTab.build?.isTopRanked).toBe(true);
+    expect(leg('M-BUILD-B').activityByTab.build?.isTopRanked).toBe(true);
+    // 同两条腿在全腿 Tab (5 条成员) 里排不进前三 —— 名次是**候选集内的相对量**。
+    expect(leg('M-BUILD-A').activityByTab.all?.isTopRanked).toBe(false);
+    expect(leg('M-BUILD-B').activityByTab.all?.isTopRanked).toBe(false);
+    // 若排名基准退化成「全链」, 上面两条 build 断言会翻成 false —— 那就是 Guardrail 3 那个坑。
+
+    // 每个 Tab 拿到名次的行数 == 该 Tab 的成员数 (排名跑在成员集合上, 不多不少)。
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      const members = view.legs.filter((l) => l.tabs.includes(tab));
+      const ranked = view.legs.filter((l) => l.activityByTab[tab] !== null);
+      expect(ranked.map((l) => l.code).sort()).toEqual(members.map((l) => l.code).sort());
+    }
+  });
+});
