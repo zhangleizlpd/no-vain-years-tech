@@ -39,6 +39,7 @@ NVY_DIR="$HOME/.nvy/marketdata-dev-sync"
 SYNC_SH="$NVY_DIR/sync.sh"
 LIB_DIR="$HOME/.nvy/lib"                               # 飞书 wrapper/原语共享落点（与 holdings 同用）
 REPORTER="$LIB_DIR/nvy-run-reported.sh"
+STAMP="$NVY_DIR/deployed.meta"                         # 部署印记，供 sync.sh 运行时自检漂移
 WRAPPER="$NVY_DIR/run-scheduled.sh"
 LAUNCHD_LOG="$NVY_DIR/launchd.log"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -51,6 +52,33 @@ cp "$SRC_COMPOSE" "$NVY_DIR/docker-compose.dev.yml"   # §0 自愈用——拷�
 # 飞书共享 lib 拷到 ~/.nvy/lib（脱离 git worktree，改 lib 须重跑 setup 覆盖；与 holdings 同范式）
 cp "$SRC_LIB_DIR/feishu-send.sh" "$SRC_LIB_DIR/nvy-run-reported.sh" "$LIB_DIR/"
 chmod 755 "$LIB_DIR/feishu-send.sh" "$LIB_DIR/nvy-run-reported.sh"
+
+# ── 部署印记：把「这份副本出自仓内哪个版本」烙进 ~/.nvy，供 sync.sh 运行时自检漂移 ──────────
+# 为什么非要烙一份、而不是运行时直接读仓内源比对：launchd agent 对 ~/Documents 无 TCC，
+# 09:05 那次执行**读不到**仓库里的 sync.sh —— 唯一还留在它视野内的「仓内版长什么样」，就是
+# 部署时刻写下的这份。sync.sh 侧的两臂检法与降级顺序见其「部署漂移自检」段。
+# （2026-08-11 事故：仓内 08-10 已改，setup 没重跑，副本停在 08-09，而日志照常打 ✅ 同步完成。）
+# file_sha256 与 sync.sh 里那份同形 —— 两个脚本各自自包含（setup 只 cp 不 source），5 行重复
+# 换「零额外下发文件」，比抽 lib 划算。
+file_sha256() { # 读不到 / 无工具 → 空串且退出 0（`|| true` 是给 pipefail 的，别省）
+  if command -v shasum >/dev/null 2>&1; then
+    { shasum -a 256 "$1" 2>/dev/null || true; } | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    { sha256sum "$1" 2>/dev/null || true; } | awk '{print $1}'
+  fi
+}
+SRC_SHA="$(file_sha256 "$SRC_SYNC_SH")"
+SRC_COMMIT="$(git -C "$TOOL_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+[[ -n "$SRC_COMMIT" ]] || SRC_COMMIT='unknown'
+# 未提交的改动也要能看出来：印记里 commit 相同但内容不同才是最难查的一类
+[[ -z "$(git -C "$TOOL_DIR" status --porcelain -- "$SRC_SYNC_SH" 2>/dev/null || true)" ]] || SRC_COMMIT="${SRC_COMMIT}-dirty"
+{
+  printf 'src=%s\n' "$SRC_SYNC_SH"
+  printf 'sha256=%s\n' "$SRC_SHA"
+  printf 'commit=%s\n' "$SRC_COMMIT"
+  printf 'deployed_at_epoch=%s\n' "$(date +%s)"
+  printf 'deployed_at=%s\n' "$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
+} >"$STAMP"
 
 # launchd PATH 极简——固化 docker/psql/ssh/bash 实际所在目录 + 常见路径
 resolve_bin_dirs() {
@@ -114,6 +142,7 @@ launchctl print "gui/$UID_NUM/$LABEL" >/dev/null
 printf '\n✅ 已安装定时任务 %s：每天 %s → prod 同步到本地 dev PG\n' "$LABEL" "$TIME"
 printf '   wrapper: %s\n   plist:   %s\n   日志:    %s（结果）/ %s（原始输出）\n' \
   "$WRAPPER" "$PLIST" "$NVY_DIR/sync.log" "$LAUNCHD_LOG"
+printf '   印记:    %s（commit=%s sha256=%s）\n' "$STAMP" "$SRC_COMMIT" "${SRC_SHA:0:12}"
 WAKE_H="$(printf '%02d' "$([[ "$MIN" -ge 2 ]] && echo "$HOUR" || echo $(((HOUR + 23) % 24)))")"
 WAKE_M="$(printf '%02d' "$([[ "$MIN" -ge 2 ]] && echo "$((MIN - 2))" || echo 58)")"
 printf '\n⚠️ Mac 须在该时刻醒着。若希望睡眠时自动唤醒，用 sudo 跑一次（仅一次）：\n'

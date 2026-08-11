@@ -219,16 +219,20 @@ jobs:
         # 不依赖 nx affected — config 契约是 holistic invariant。
         run: pnpm tsx scripts/checks/check-env-sync.ts
 
-      - name: Tooling self-tests (sdd-run + local-verify guard, 矩阵 T-6 收编)
+      - name: Tooling self-tests (sdd-run + hook guards + dev-sync, 矩阵 T-6 收编)
         # 两个曾经的「孤儿套件」(不在 Nx / lefthook / CI 任何位置, 2026-08-03 T-6 判定后接线):
         #   · scripts/sdd-run/*.test.mjs —— /sdd-auto-impl 派单工具的 30 用例 (node:test, ~0.4s)
         #   · pretooluse-local-verify-guard.test.sh —— 本地验证 hook 的反例/正例对照表 (~1s);
         #     hook 拦截规则回归 = 开发体验事故 (误伤正常命令 / 放过必骗人命令), 值得 PR 门守。
-        # 两者都不在 Nx graph 里 → 放本 job (治理全扫, 不依赖 affected)。
+        # 后加: marketdata-dev-sync/sync.test.sh —— 每日 09:05 那条同步的纯函数对照表 (近窗
+        #   WHERE 生成 / 部署漂移判定 / hash 读不到时的退出码), 不连 prod、不碰任何 DB。它值得
+        #   PR 门守是因为该脚本的错法**不报错**: 窗口写错只是少同步几行、漂移判定误报只是没人再看告警。
+        # 三者都不在 Nx graph 里 → 放本 job (治理全扫, 不依赖 affected)。
         run: |
           node --test scripts/sdd-run/*.test.mjs
           bash scripts/pretooluse-local-verify-guard.test.sh scripts/pretooluse-local-verify-guard.sh
           bash scripts/pretooluse-convention-rubric.test.sh scripts/pretooluse-convention-rubric.sh
+          bash scripts/marketdata-dev-sync/sync.test.sh scripts/marketdata-dev-sync/sync.sh
 
       - name: Enforce convention reachability (orphan detection, per .claude/rules/convention-authoring.md)
         # docs/conventions/*.md 必须从 CLAUDE.md / .claude/** / 兄弟 convention / ops/**

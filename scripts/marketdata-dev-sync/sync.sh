@@ -9,8 +9,10 @@
 #     corporate_action /
 #     fundamental_snapshot /
 #     financial_metric
-#   • 美股期权面           全量搬（锚 + 链合约 + 逐日快照 + 财报日历 + IV/指数），
-#                          本地跑 045-048 期权台要真数据，见下方注册表逐条理由
+#   • 美股期权面           锚 + 链合约 + 财报日历 + IV/指数全量搬；**逐日快照只搬近窗**
+#                          （最近 OPTION_RECENT_DAYS 个自然日，按 session_date 切——它是
+#                          仓内唯一无上限增长表，见下方注册表 🔻）。本地跑 045-048 期权台
+#                          要真数据，见注册表逐条理由
 #
 # 扩展性（方案 C）：
 #   • 列：每表列清单从 prod `information_schema` 按 ordinal_position **动态派生**，
@@ -50,6 +52,21 @@ set -euo pipefail
 SAMPLE_CODES=(600519 601318 601398 600900 600036 000001 000858 000002 000651 \
               300750 300059 688981 688111 920819 601899)
 RECENT_DAYS="${RECENT_DAYS:-20}"
+
+# 期权逐日快照的近窗，单位 = **自然日**（按 session_date 直接切）。
+# 🚨 刻意不复用上面的 RECENT_DAYS：那个的单位是**交易日**（先去 daily_bar 里取 distinct
+#    trade_date 的第 N 个当 cutoff），两者量纲不同；合成一个 env 之后「调 A 股近窗」会静默
+#    改掉期权链的体量，反过来也一样 —— 而这类耦合的错法不报错，只让数字悄悄变。
+# 取 30 天的依据（消费端实测下界 + 体量上界两头夹）：
+#   • 功能下界 = **2 个 session**：get-legs.usecase.ts 只取 sessionDate desc 的最近一期
+#     （findFirst + 该期 findMany）；option-snapshot-coverage.check.ts 要「基线日 + 当日」
+#     两期；server IT 走 testcontainers 自造 fixture，压根不吃 dev 库。30 自然日 ≈ 21 个
+#     交易日，对 2 的下界有一个数量级的余量（含长假）。
+#   • 体量上界 ≈ 21 × 7000 ≈ **14.7 万行**，与 daily_bar 现有约 16 万行同量级。
+OPTION_RECENT_DAYS="${OPTION_RECENT_DAYS:-30}"
+
+# 单表体量趋势闸（只 warn 不 fail，见 §2）。默认 30 万行 —— 依据写在 §2 触发点旁。
+ROW_WARN_THRESHOLD="${ROW_WARN_THRESHOLD:-300000}"
 
 # prod 主机（代号 `app`）的真实绑定不入库 —— 从仓外 fleet.env 解析
 # (per docs/conventions/information-boundary.md)。launchd 不继承交互 shell 的 env，
@@ -93,7 +110,8 @@ SYNC_SCHEMAS=(marketdata optionsdesk)
 
 # ─── 表注册表（schema.table → 取数策略）───────────────────────────────────────
 # 策略: full=全量 / sample_or_recent=样本股全史+全股近窗(需 trade_date 列) /
-#       sample_only=仅样本股(需 instrument_id 列) / skip=不同步。
+#       sample_only=仅样本股(需 instrument_id 列) / recent_sessions=仅近窗(需 session_date 列) /
+#       skip=不同步。
 # 键**必须全限定**（`schema.table`），见文件头「扩展性 · schema」那条。
 # 顺序即重灌顺序：被 FK 引用的父表必须在子表之前 —— 实测 FK 三条：
 #   earnings_event → instrument · option_contract → instrument · option_daily_snapshot → option_contract
@@ -139,16 +157,24 @@ TABLE_POLICIES=(
   # ── 047 美股期权链 / 财报事实表（marketScope={us}）────────────────────────────────
   # 2026-08-10 由 skip 翻 full —— 起因是本地要跑 048 聚合视图，而它整片的输入就是这几张：
   # 没有 option_daily_snapshot 就一条腿都没有，三个聚合视图恒空，本地压根验不了。
-  # 这三张都**切不出 A 股样本**（SAMPLE_CODES 现全为 A 股），别改成 sample_*，只有 full/skip 两态。
-  # 🔻 翻 full 时的体量实测（2026-08-10，prod）：option_contract 7620 行 /
-  #    option_daily_snapshot 17166 行（8 个 session：07-29 → 08-07）⇒ 合计约 2.5 万行，
-  #    对照 daily_bar 单表 16 万行，当前**完全可忽略**。
-  # 🚨 但 option_daily_snapshot 是仓内第一张**无上限增长**表（约 2150 行/交易日 ⇒ 一年约
-  #    54 万行），而本脚本是「截断 → 重灌」全量语义 ⇒ 它会让同步**逐年变慢**。到那天的处置
-  #    不是改回 skip（那等于本地又没数据），而是给它一条按 session_date 收窄的近窗策略
-  #    —— 与 daily_bar 的 sample_or_recent 同形，只是窗口列换成 session_date。
-  "marketdata.option_contract:full"          # 047 期权合约静态属性（父表，被 option_daily_snapshot FK 引用）
-  "marketdata.option_daily_snapshot:full"    # 047 全链逐日快照（无上限增长，见上方 🚨）
+  # 这三张都**切不出 A 股样本**（SAMPLE_CODES 现全为 A 股），别改成 sample_*。
+  # 🔻 体量实测（prod）：option_contract 7620 行（2026-08-10）；option_daily_snapshot 的
+  #    速率**随锚数线性增长**，实测约 580 行/标的/交易日 ——
+  #      07-29 ~ 08-06   7 个标的  ≈ 2,100 行/日
+  #      08-07          12 个标的    4,789 行
+  #      08-10          12 个标的    7,039 行   ← 稳态 ≈ 7,000 行/交易日
+  #    ⇒ 全量一年 252 个交易日约 **176 万行**（此处原注释按 2150 行/日估的 54 万，是只覆盖
+  #    7 个标的那阵子的量，低估 3.3 倍）；锚涨到 30 个就是 440 万行/年。要重算换算式：
+  #    `行/年 ≈ 锚数 × 580 × 252`。
+  # 🚨 而本脚本是「截断 → 重灌」全量语义 ⇒ 全量搬会让同步**逐年变慢**。2026-08-11 按上面
+  #    那条既定方向落地：不是改回 skip（那等于本地又没数据），而是按 session_date 收窄成
+  #    近窗 —— 与 daily_bar 的 sample_or_recent 同形，只是窗口列换成 session_date、天数走
+  #    独立的 OPTION_RECENT_DAYS（默认 30 自然日 ≈ 21 交易日 ≈ 14.7 万行，与 daily_bar 现有
+  #    16 万行同量级；消费端功能下界只要 2 个 session，取值论证见顶部 OPTION_RECENT_DAYS）。
+  # 🚨 父表 option_contract **必须留 full**：近窗只裁快照，快照的 FK 指向合约；按窗口裁父表
+  #    会让子表的 FK 断（重灌整事务回滚，表现为「同步全挂」而不是「少几行」）。
+  "marketdata.option_contract:full"             # 047 期权合约静态属性（父表，被 option_daily_snapshot FK 引用）
+  "marketdata.option_daily_snapshot:recent_sessions" # 047 全链逐日快照（唯一无上限增长表，见上方 🚨）
   # ⚠️ prod 侧当前 **0 行**（2026-08-10 实测）：该维度 enabled + cron 已配 + next_fire_at 已排，
   #    但 sync_run 里 `sync:earnings_event` **一条运行记录都没有** ⇒ 从未跑过。此处翻 full 是
   #    为了「prod 有数据的那天本地自动跟上」，不代表现在能拿到财报打标数据。
@@ -184,6 +210,18 @@ notify() {
 end run'
     osascript -e "$osa" "$msg" 'marketdata 测试数据同步' >/dev/null 2>&1 || true
   fi
+}
+
+# 非致命告警（趋势 / 部署漂移这类「数据是对的，但你该处理一下」）：进日志 + 桌面通知，
+# **并在结尾汇总里重放一次**。重放不是啰嗦：飞书那条 report 由 nvy-run-reported 取合并输出的
+# 末 20 行组装，而本脚本光导出循环就打十几行 ——「中途打的那行会被顶出 tail 窗口」= 告警在
+# 飞书里看不见 = 等于没告警。
+WARN_COUNT=0
+WARN_LOG=""
+warn() {
+  WARN_COUNT=$((WARN_COUNT + 1))
+  WARN_LOG="${WARN_LOG}${WARN_LOG:+$'\n'}   · $1"
+  notify "⚠️ $1"
 }
 
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -271,13 +309,119 @@ where_for() { # 策略 → WHERE 子句（full 无 WHERE）
     full) echo "" ;;
     sample_only) echo "WHERE instrument_id IN ($SAMPLE_IDS)" ;;
     sample_or_recent) echo "WHERE instrument_id IN ($SAMPLE_IDS) OR trade_date >= '$CUTOFF'" ;;
+    # 近窗按**自然日**切，口径落在 **prod PG 会话**上（CURRENT_DATE 用 prod 的会话时区求值）：
+    # 导出与 §4 对数用的是同一条 WHERE、同一个 prod 会话 ⇒ 两侧恒一致，边界差一天也不会误报。
+    # 刻意不接交易日历（daily_bar 那种 distinct trade_date 取第 N 个）：那是给「近 N 个交易日」
+    # 用的，而这里的消费下界只有 2 个 session，30 天窗口下差一天对任何消费者都无感知，
+    # 不值得为它把 optionsdesk 的近窗绑到 marketdata.daily_bar 的交易日集合上。
+    recent_sessions) echo "WHERE session_date >= CURRENT_DATE - INTERVAL '$OPTION_RECENT_DAYS days'" ;;
     *) return 1 ;;
   esac
 }
 
+# 文件 → sha256。**读不到 / 无工具 → 空串（且退出 0）**，不是错：launchd 对 ~/Documents 无
+# TCC，读仓内源被拒是常态；这里若让它非零，ERR trap 会把「我看不见对面」升级成「同步失败」。
+# 🚨 `|| true` 不可省 —— 本脚本开着 pipefail，光靠 awk 收尾兜不住左侧的非零（读不到时 shasum
+#    退 1，pipefail 会把整条管道判成失败，于是 ERR trap 当场 fail）。
+file_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    { shasum -a 256 "$1" 2>/dev/null || true; } | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    { sha256sum "$1" 2>/dev/null || true; } | awk '{print $1}'
+  fi
+}
+
+# 部署印记取值（deployed.meta 是 `键=值` 行，值可含 `=`）。文件/键缺失 → 空串。
+# 刻意 awk 取值而非 source —— 那份文件在 ~/.nvy 下，不该拿它当可执行内容。
+stamp_get() {
+  [ -r "$DEPLOY_STAMP" ] || return 0
+  awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$DEPLOY_STAMP"
+}
+
+# 漂移判定（纯函数）：两侧 hash → same / drift / unreadable。
+# 🚨 「有一侧算不出 hash」必须判成 unreadable 而不是 drift —— 看不见对面 ≠ 对面变了，
+#    误报会让人学会忽略这条告警，而这条告警的全部价值就在于它平时不响。
+drift_verdict() {
+  if [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
+    echo unreadable
+  elif [ "$1" = "$2" ]; then
+    echo same
+  else
+    echo drift
+  fi
+}
+
+# ─── 部署漂移自检（先于一切干活：跑的这份，是不是仓内那份？）──────────────────────
+# 2026-08-11 实撞：仓内 sync.sh 08-10 已把三张美股期权表由 skip 翻 full，但**没重跑 setup.sh**
+# ⇒ 09:05 实际执行的 ~/.nvy 副本还是 08-09 的旧版。日志照常打「✅ 同步完成」、launchctl 退出码
+# 0、逐表对数全绿 —— 因为对数比的是「旧版声明要同步的那些表」。**漂移的失败形态是「静默的
+# 成功」**，少同步三张表这件事存在了两天没人发现。
+#
+# 检法按「这一侧读得到什么」分两臂 —— TCC 决定了没有单一形态能覆盖两边：
+#   • 部署态（从 ~/.nvy 跑，launchd 走这条）：与 setup 烙进 deployed.meta 的 hash 比对自身，
+#     再**尝试**读烙印里记的仓内源路径。读得到就直接比出漂移；读不到（launchd 对 ~/Documents
+#     无 TCC，这是常态）就退化成把「烙印 commit + 部署天龄」打进本轮汇总，让漂移在每日飞书
+#     report 里肉眼可见，并在天龄超 DEPLOY_STALE_DAYS 时告警 —— 天龄是无 TCC 下唯一还观测得到
+#     的**代理量**，不是真相：它只说明「很久没重新部署过」，不说明仓内确实变了。
+#   • 开发态（从仓内直跑，交互 shell 有 TCC）：拿自己与 ~/.nvy 副本比。改完脚本手动跑一次就会
+#     当场喊「副本还是旧版」—— 上面那次事故正是被这一臂正面命中的形态（改完必然会手动验一次）。
+# 🚫 一律 warn 不 fail：漂移时旧逻辑通常仍能跑出**部分**数据，硬失败等于把「少三张表」升级成
+#    「一张表都没有」，方向反了。
+DEPLOY_DIR="$HOME/.nvy/marketdata-dev-sync"
+DEPLOY_COPY="$DEPLOY_DIR/sync.sh"
+DEPLOY_STAMP="$DEPLOY_DIR/deployed.meta" # setup.sh 生成：src / sha256 / commit / deployed_at_epoch
+DEPLOY_STALE_DAYS="${DEPLOY_STALE_DAYS:-14}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF_PATH="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
+DEPLOY_NOTE=""
+self_hash="$(file_sha256 "$SELF_PATH")"
+
+if [ "$SELF_DIR" = "$DEPLOY_DIR" ]; then
+  if [ ! -r "$DEPLOY_STAMP" ]; then
+    warn "副本没有部署印记 deployed.meta（旧版 setup 装的）—— 判不出与仓内是否一致，跑一次 pnpm dev-marketdata:setup 补上"
+  else
+    stamped_hash="$(stamp_get sha256)"
+    stamped_commit="$(stamp_get commit)"
+    stamped_src="$(stamp_get src)"
+    stamped_at="$(stamp_get deployed_at_epoch)"
+    age_days=-1
+    case "$stamped_at" in
+      '' | *[!0-9]*) : ;; # 印记坏了就别算天龄，-1 天永远不触发下面的阈值
+      *) age_days=$((($(date +%s) - stamped_at) / 86400)) ;;
+    esac
+    DEPLOY_NOTE="副本 commit=${stamped_commit:-?}，部署于 ${age_days} 天前"
+    if [ "$(drift_verdict "$self_hash" "$stamped_hash")" = drift ]; then
+      warn "副本内容与自己的部署印记不符（有人手改了 ${DEPLOY_COPY}，或上次 setup 拷到一半）—— 重跑 pnpm dev-marketdata:setup"
+    fi
+    src_hash=""
+    if [ -n "$stamped_src" ] && [ -r "$stamped_src" ]; then src_hash="$(file_sha256 "$stamped_src")"; fi
+    case "$(drift_verdict "$self_hash" "$src_hash")" in
+      drift)
+        warn "副本落后于仓内 sync.sh（印记 commit=${stamped_commit:-?}，${age_days} 天前部署）—— 定时任务跑的是旧逻辑，重跑 pnpm dev-marketdata:setup" ;;
+      same) : ;;
+      *)
+        echo "  ℹ️ 读不到仓内源（${stamped_src:-印记未记路径}）—— launchd 对 ~/Documents 无 TCC，跳过与仓内比对，改看天龄"
+        if [ "$age_days" -ge "$DEPLOY_STALE_DAYS" ]; then
+          warn "副本已 ${age_days} 天没重新部署（阈值 ${DEPLOY_STALE_DAYS} 天）—— 期间仓内 sync.sh 若改过，跑的就是旧逻辑；确认一下或直接重跑 pnpm dev-marketdata:setup"
+        fi ;;
+    esac
+  fi
+else
+  copy_hash=""
+  if [ -r "$DEPLOY_COPY" ]; then copy_hash="$(file_sha256 "$DEPLOY_COPY")"; fi
+  if [ -z "$copy_hash" ]; then
+    DEPLOY_NOTE="仓内直跑（本机未装定时任务）"
+  else
+    DEPLOY_NOTE="仓内直跑"
+    if [ "$(drift_verdict "$self_hash" "$copy_hash")" = drift ]; then
+      warn "仓内 sync.sh 与部署副本 ${DEPLOY_COPY} 不一致 —— 每日定时任务跑的仍是旧版（正是 2026-08-11 那次「静默的成功」），重跑 pnpm dev-marketdata:setup"
+    fi
+  fi
+fi
+
 # ─── 0. 保险拉起本地 dev stack（晨间无人值守；日常收工 teardown 的 `compose down` 会
 #        移除容器，`docker start` 救不回被移除的容器，故优先 `compose up` 重建）──────────
-notify "▶ 开始同步（样本 ${#SAMPLE_CODES[@]} 支，近窗 ${RECENT_DAYS} 交易日）"
+notify "▶ 开始同步（样本 ${#SAMPLE_CODES[@]} 支，近窗 ${RECENT_DAYS} 交易日，期权快照近 ${OPTION_RECENT_DAYS} 天；${DEPLOY_NOTE:-部署态未知}）"
 if [[ -n "$COMPOSE_FILE" ]]; then
   docker compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1 || true
 else
@@ -312,7 +456,7 @@ prod_query "SELECT c.table_schema || '.' || c.table_name || '|' || string_agg(c.
 while IFS= read -r t; do
   [[ -n "$t" ]] || continue
   policy_for "$t" >/dev/null \
-    || fail "检测到未注册的新表 $t — 请在 TABLE_POLICIES 声明同步策略（full/sample_or_recent/sample_only/skip）"
+    || fail "检测到未注册的新表 $t — 请在 TABLE_POLICIES 声明同步策略（full/sample_or_recent/sample_only/recent_sessions/skip）"
 done < <(cut -d'|' -f1 "$TMP_DIR/_cols.tsv")
 
 # ─── 2. 导出（prod COPY TO STDOUT，SSH 流式落 $TMP_DIR；列按 information_schema 有序派生）─
@@ -330,6 +474,19 @@ for e in "${TABLE_POLICIES[@]}"; do
   exp_n="$(prod_query "SELECT count(*) FROM $t $where;")"
   [[ -n "$exp_n" ]] || fail "表 $t 的 prod 期望行数取空（prod 连通性 / 表不可见？）"
   printf '%s\t%s\n' "$t" "$exp_n" >>"$TMP_DIR/_expected.tsv"
+  # 单表体量趋势闸（2026-08-11 加）：**只 warn 不 fail** —— 表大不是正确性问题，是「截断重灌
+  # 的同步会越来越慢」的早期信号，硬失败等于本地天天没数据，代价方向反了。
+  # 阈值 30 万行的取法（两头夹）：现存最大表 daily_bar 实测约 17 万（全股近 20 交易日 + 样本股
+  # 全史），取其约 1.8 倍 ⇒ 日常零噪声、不会天天喊；而 option_daily_snapshot 在 30 天窗口下
+  # 约 24 个锚就触线（24 锚 × 21 交易日 × 580 行/锚/日 ≈ 29 万），**早于**「30 锚 ≈ 37 万行」
+  # 那个体量点，留出处置窗口（调小 OPTION_RECENT_DAYS，或给该表换增量语义）。
+  case "$exp_n" in
+    '' | *[!0-9]*) : ;; # 非数字（上面已判空，这里纯防御）→ 不判阈值
+    *)
+      if [ "$exp_n" -gt "$ROW_WARN_THRESHOLD" ]; then
+        warn "表 ${t} 单表 ${exp_n} 行，已过阈值 ${ROW_WARN_THRESHOLD}（趋势预警，本轮数据不受影响）—— 收窄它的近窗或调 ROW_WARN_THRESHOLD"
+      fi ;;
+  esac
   prod_copy "SELECT $cols FROM $t $where ORDER BY 1" "$TMP_DIR/$t.csv"
   echo "  导出 $t: $(wc -l <"$TMP_DIR/$t.csv" | tr -d ' ') 行（$(printf '%s' "$cols" | awk -F, '{print NF}') 列）"
   SYNCED_TABLES+=("$t")
@@ -371,4 +528,8 @@ for t in "${SYNCED_TABLES[@]}"; do
   [[ "$c" == "$exp" ]] || fail "表 ${t} 行数不符：prod=${exp} 本地=${c}（差 $((exp - c))）—— 疑似 COPY 流被截断，重跑；连续复现则查 ssh/容器侧"
   parts="$parts${parts:+ / }${t}=${c}"
 done
-notify "✅ 同步完成（逐表已与 prod 对数）：${parts}（样本 ${hit_count} 支全历史 + 全股近 ${RECENT_DAYS} 日）"
+# 告警重放（见 warn 的注释：中途那行会被导出日志顶出飞书 report 的 tail 窗口）
+if [ "$WARN_COUNT" -gt 0 ]; then
+  printf '⚠️ 本轮 %d 条告警（数据本身已对数通过，但需要处理）：\n%s\n' "$WARN_COUNT" "$WARN_LOG"
+fi
+notify "✅ 同步完成（逐表已与 prod 对数）：${parts}（样本 ${hit_count} 支全历史 + 全股近 ${RECENT_DAYS} 日 + 期权快照近 ${OPTION_RECENT_DAYS} 天；${DEPLOY_NOTE:-部署态未知}；告警 ${WARN_COUNT} 条）"
