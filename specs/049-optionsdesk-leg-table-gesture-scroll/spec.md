@@ -2,7 +2,7 @@
 feature_id: 049-optionsdesk-leg-table-gesture-scroll
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: planned
+status: tasks-ready
 created_at: '2026-08-10'
 updated_at: '2026-08-11'
 spec_kit_version: '>=0.8.5,<0.10.0'
