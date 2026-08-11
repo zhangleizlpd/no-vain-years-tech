@@ -92,7 +92,7 @@ updated_at: '2026-08-11'
 
 - [X] T015 [Server-IT] **047 既有 IT 逐条过**（FR-028, plan D-TEST-2）：把 `optionsdesk-047.leg-picker.it.spec.ts` 等既有 IT 全部跑一遍，对每条红的断言判「**该红 / 不该红**」并各自处置：该红 → 改断言并在 commit message 写明**为什么该红**；不该红 → 那是改坏了，回去修实现。🚨 **批量改绿是本片最大的风险动作** —— 不该红却红了 = 改坏了；该红却绿了 = 判据没生效。🚫 MUST NOT `.skip` / 弱化断言 / 删断言 → verify: 全量 `nx test server --skip-nx-cache` 绿；**每条被改的断言在 commit message 里各有一行理由**；改动条数与「预期会变的行为」条数对得上（预期清单：召回集合 / 收租锚轴退役 / 权利金门槛滤除 / `basis` 归属）
 
-- [ ] T016 [Server-IT] **perf IT（env-gated）**（SC-007, plan D-TEST-3）：新建 `apps/server/test/integration/optionsdesk-050.legs-perf.it.spec.ts`，照抄 `optionsdesk-047.legs-perf.it.spec.ts` 的 `RUN_PERF_IT` / `PERF_IT_REPS` 范式（默认 skip，CI fast suite 不变慢）→ verify: `RUN_PERF_IT=true` 实跑 730 行，**p50 ≤ 150ms / p95 ≤ 300ms**（= 047 实测档，`optionsdesk-047.legs-perf.it.spec.ts:53-54`）；读数写进 commit message
+- [X] T016 [Server-IT] **perf IT（env-gated）**（SC-007, plan D-TEST-3）：新建 `apps/server/test/integration/optionsdesk-050.legs-perf.it.spec.ts`，照抄 `optionsdesk-047.legs-perf.it.spec.ts` 的 `RUN_PERF_IT` / `PERF_IT_REPS` 范式（默认 skip，CI fast suite 不变慢）→ verify: `RUN_PERF_IT=true` 实跑 730 行，**p50 ≤ 150ms / p95 ≤ 300ms**（= 047 实测档，`optionsdesk-047.legs-perf.it.spec.ts:53-54`）；读数写进 commit message
 
 - [ ] T017 [Server] **两道门槛阈值实测标定 + 回写 spec**（FR-007, SC-002/SC-004, 主 plan 未决 #2）：用 dev 真实链数据（期权表已由每日同步维护）跑分布统计，定 `PREMIUM_FLOOR` 双参数与 `LIQUIDITY_MAX_RELATIVE_SPREAD` 的值；把标定过程与结论回写 `spec.md` 的 Assumptions/验证段 → verify: 标定前后**召回集行数 + 两个滤除计数**实测入档；`SC-002` 找到至少 1 条「047 下进不了任何意图 Tab、050 下进建仓」的真实腿（记合约代码 + DTE + 有效成本）；`SC-004` 找到至少 1 条 greeks 缺失但进了意图 Tab 的真实腿；🚨 **标定后回看 1–3 天腿是否仍霸榜**（clarify Q2 定的「不加额外分散手段」的前提），若仍霸榜则 flag 给 user 决策**而不是自行加机制**
 
