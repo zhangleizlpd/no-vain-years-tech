@@ -334,7 +334,7 @@ type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number
 
 - **T005 [Server]** `leg-mark.rules.ts` 推荐标 → verify: 单测覆盖四种 intent × 水位选/未选，**含「未选恒 false」那条**
 - **T006 [Server]** 月度链：`thirdFridayOf` + `resolveMonthlyExpiries` + 日历跨 ctx 读 → verify: 单测含假日回退；IT 走真日历表；`check-server-moat` 绿
-- **T007 [Server]** use case 接打标（推荐 / 月度链），活跃与财报签名不变（`SC-005`）→ verify: IT 断言打标零拦截（集合不因打标变化）；**收租意图下建仓 Tab 推荐标数恒为 0**、待定 / 不开新仓时全表恒为 0
+- **T007 [Server]** use case 接打标（推荐 / 月度链），活跃与财报签名不变（`SC-005`）→ verify: IT 断言打标零拦截（集合不因打标变化）；**收租意图下全表带标的腿其 `|Δ|` 无一例外落当前收租档带**（按建仓带打出的标恒为 0 条 —— 原写「建仓 Tab 推荐标数恒为 0」，2026-08-11 T009 修正，理由见 spec US3-AS2 注）、待定 / 不开新仓时全表恒为 0
 
 ### Phase 3 · 精排层
 
