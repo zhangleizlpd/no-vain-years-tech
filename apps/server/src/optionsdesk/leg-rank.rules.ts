@@ -229,3 +229,80 @@ function finiteOrNull(value: Prisma.Decimal | number | null): number | null {
   const numeric = typeof value === 'number' ? value : value.toNumber();
   return Number.isFinite(numeric) ? numeric : null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 排序 (FR-020 / FR-021 / FR-022 / FR-025, plan D-RANK-2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 腿的**身份** —— 只服务确定性次键, 🚫 **MUST NOT 进特征集** (plan D-RANK-2)。
+ *
+ * 到期日 / 行权价 / 合约代码回答的是「这是哪一条腿」而不是「这条腿好在哪」; 合约代码更没法
+ * 归一化到 `0–1`。把它们塞进特征集就等于允许排序器按身份排序, 而那是**每次都排得出结果**的错。
+ */
+export interface LegIdentity {
+  /** vendor 合约代码 (行身份, 也是三级次键)。 */
+  code: string;
+  expiryDate: Date;
+  strike: Prisma.Decimal;
+}
+
+/**
+ * 排序器 —— **只吃特征集** (FR-020)。返回值同 `Array.prototype.sort` 的比较器: 负 = `a` 在前。
+ *
+ * 🚨 签名即约束: 拿不到原始腿数据就不可能绕过特征层去读 `bid` / `tier` / 到期日。想读就必须先
+ * 改这个签名, 那一步 review 看得见 (同 `leg-recall.rules.ts` 的入参里没有 `absDelta`)。
+ */
+export type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number;
+
+/**
+ * 本片**唯一**的排序器: 折算费率降序 (FR-021)。`O(1)`。
+ *
+ * 📌 归一化是单调变换 ⇒ 「归一化后费率降序」与「原始费率降序」逐行同序; 周化 / 年化亦然
+ * (两者差一个常数因子)。⇒ 三个 Tab 共用它一个, 选 `basis` 是在选**显示口径与档界**不是选顺序。
+ *
+ * 🚫 **MUST NOT 引入加权评分** (FR-026): 判定手段限定为「硬门槛 + 单主键 + 标签」。特征层已为
+ * 将来切加权备好 13 项 (FR-019), 切换点在这里 —— 换一个 `LegRanker` 实现即可, 别在这条上加项。
+ * 🚫 **MUST NOT 提 DTE** (FR-022): 机械判据是本函数体 `grep -i dte` 零命中。
+ */
+export const rateDescendingRanker: LegRanker = (a, b) => b.rate - a.rate;
+
+/**
+ * 候选集 → **有序的合约代码列表** (FR-021a / FR-025)。`O(n log n)`。
+ *
+ * 分层 (plan D-RANK-2): `ranker` 管主键, 主键分不出时用**身份键**兜底 —— 到期日升序 → 行权价
+ * 降序 → 合约代码。三级次键各自都有判别性, 合起来在同一份候选集上是全序 ⇒ 同输入两次调用逐行
+ * 相同 (SC-006), 且**与入参次序无关**。
+ *
+ * 🚨 **`ranker` 返回非有限值时退回身份键**: NaN 进 `Array.prototype.sort` 顺序不可预测**且不抛
+ * 任何错**。确定性是本函数自己要保住的性质, 不能寄望于「特征集那边不会产 NaN」—— 两个函数各自
+ * 守住自己那一半, 中间那条缝才不存在。
+ *
+ * @throws RangeError 成员数与特征数不等。这只可能是调用方没拿同一份成员算特征, 而静默会让整列
+ *   错位 —— 每一行都拿到别人的特征, 顺序看着完全正常。
+ */
+export function rankLegs(
+  members: readonly LegIdentity[],
+  features: readonly RankingFeatures[],
+  ranker: LegRanker,
+): string[] {
+  if (members.length !== features.length) {
+    throw new RangeError(
+      `rankLegs: 成员 ${members.length} 条与特征 ${features.length} 条不等 —— ` +
+        '特征集 MUST 由同一份成员数组算出',
+    );
+  }
+
+  return members
+    .map((leg, index) => ({ leg, index }))
+    .sort((x, y) => {
+      const primary = ranker(features[x.index], features[y.index]);
+      if (Number.isFinite(primary) && primary !== 0) return primary;
+      return (
+        x.leg.expiryDate.getTime() - y.leg.expiryDate.getTime() ||
+        y.leg.strike.comparedTo(x.leg.strike) ||
+        x.leg.code.localeCompare(y.leg.code)
+      );
+    })
+    .map(({ leg }) => leg.code);
+}
