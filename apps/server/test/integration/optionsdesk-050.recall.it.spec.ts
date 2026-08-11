@@ -228,7 +228,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
       ask: '6.30',
       delta: '-0.20',
     });
-    // US2-AS1 bid 0.03 < 权利金门槛 0.20 ⇒ 三个 Tab 一律不见。
+    // US2-AS1 bid 0.03 < 权利金门槛 max(0.20, 132.40 × 0.0018) = 0.2383 ⇒ 三个 Tab 一律不见。
     // 🚨 它的价差 (0.05/0.055 ≈ 91%) 同时超流动性门槛, DTE / 有效成本却都合格 —— **串台绊线**:
     // 若实现对已移出的腿照样算流动性排除, `excludedFromIntentTabs` 会跟着多 1。
     codes.penny = await seedLeg(id, {

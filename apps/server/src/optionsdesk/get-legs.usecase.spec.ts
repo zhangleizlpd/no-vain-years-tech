@@ -317,7 +317,7 @@ describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1
  * 会跟着 +2 —— 那正是这两条 fixture 要绊的线。
  */
 describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不串台 (FR-005/FR-006/FR-008)', () => {
-  // spot 132.40 ⇒ 权利金门槛 = max(0.20, 132.40 × 0.0012 = 0.1589) = 0.20。
+  // spot 132.40 ⇒ 权利金门槛 = max(0.20, 132.40 × 0.0018 = 0.2383) = 0.2383 (T017 标定后)。
   // 全部反例都用 DTE 10 (2026-08-14) 且有效成本 < spot ⇒ 期限段与有效成本都不是它们出局的原因。
   const base = { delta: '-0.45', greeksComplete: true, openInterest: '300', volume: '120' };
   const ok: LegFixture = {
@@ -327,7 +327,7 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     bid: '2.00',
     ...base,
   };
-  /** 一分钱腿: bid 0.05 < 0.20 ⇒ 移出响应。价差 0.10/0.10 = 100% 是**串台绊线**。 */
+  /** 一分钱腿: bid 0.05 < 0.2383 ⇒ 移出响应。价差 0.10/0.10 = 100% 是**串台绊线**。 */
   const penny: LegFixture = {
     code: 'G-PENNY',
     strike: '125',
