@@ -34,7 +34,7 @@ function currencyOf(upsert: ReturnType<typeof vi.fn>, code: string): unknown {
   return (call?.[0] as { create: { currency: unknown } }).create.currency;
 }
 
-describe('SyncUniverseUseCase — 038 T004 / S2-T3 currency 按 market', () => {
+describe('SyncUniverseUseCase — 038 T004 / S2-T3 currency 按 market + B 股 code 例外', () => {
   it('hk → HKD; us → USD; cn → CNY', async () => {
     const { useCase, upsert } = buildUseCase([
       { market: 'cn', code: '600519', name: '贵州茅台' },
@@ -48,5 +48,24 @@ describe('SyncUniverseUseCase — 038 T004 / S2-T3 currency 按 market', () => {
     expect(currencyOf(upsert, '600519')).toBe('CNY');
     expect(currencyOf(upsert, '00700')).toBe('HKD');
     expect(currencyOf(upsert, 'AAPL')).toBe('USD');
+  });
+
+  // 🚨 B 股挂在 cn 却以外币交易 (库里价格就是本币)。标成 CNY 不会报错, 只会让派息被币种守卫
+  // 吞掉 → 条款法退化成 f=1 → 与见证法分歧 → 该除权日落 needs_review + 因子 1, 于是那只票
+  // 除权日之前的整段历史都没被复权。2026-08 prod 实测 13 只 B 股全中, 故补此档。
+  it('🚨 cn B 股按 code 例外: 深市 200xxx → HKD / 沪市 900xxx → USD', async () => {
+    const { useCase, upsert } = buildUseCase([
+      { market: 'cn', code: '200429', name: '粤高速B' },
+      { market: 'cn', code: '900902', name: '市北B股' },
+      { market: 'cn', code: '300692', name: '中赋科技' },
+    ]);
+
+    const stats = await useCase.run();
+
+    expect(stats.ok).toBe(3);
+    expect(currencyOf(upsert, '200429')).toBe('HKD');
+    expect(currencyOf(upsert, '900902')).toBe('USD');
+    // 同为 cn 的非 B 股不受影响 (深市创业板 300xxx) —— 防「例外」写宽把 A 股一起改了。
+    expect(currencyOf(upsert, '300692')).toBe('CNY');
   });
 });

@@ -90,7 +90,7 @@ export class SyncUniverseUseCase {
         code: entry.code,
         name: entry.name,
         type: 'stock', // universe = clist A 股板块, 均个股; ETF/index 分类由专源富化
-        currency: currencyForMarket(entry.market), // 038 T004: cn→CNY / hk→HKD (按 market)
+        currency: currencyForMarket(entry.market, entry.code), // 038 T004: 按 market + code (B 股例外)
         status,
         listingStatus,
         listDate,
@@ -117,10 +117,28 @@ export class SyncUniverseUseCase {
   }
 }
 
-/** 标的计价币种按 market (038 T004 / S2-T3): 港股 HKD / 美股 USD / 其余 (A 股) CNY。新市场接入时在此扩。 */
-export function currencyForMarket(market: string): string {
+/**
+ * 标的计价币种 (038 T004 / S2-T3): 港股 HKD / 美股 USD / 其余 (A 股) CNY。新市场接入时在此扩。
+ *
+ * 🚨 **cn 不能只看 market** —— 沪深两市的 B 股虽挂在 cn, 却以外币交易 (深市 200xxx 港币 /
+ *    沪市 900xxx 美元), 而库里 `DailyBar` 存的价格就是那个本币。判据不是推测: 沪市 B 股实测
+ *    收盘 900902=0.163 / 900903=0.185, 而沪市任何股票都不可能以 ¥0.16 交易 (低于 ¥1 即触及
+ *    退市) ⇒ 只能是 USD 计价。
+ *
+ * 🚨 **标错不会报错, 只会让复权因子静默失真**: 派息 payload 的币种 (HKD/USD, 是对的) 与本值
+ *    不符时, `buildFactorEventTerms` 的币种守卫会把派息置 null (刻意不做汇率换算), 条款法于是
+ *    退化成「无此事件」f=1, 与见证法必然分歧 → 该除权日落 `needs_review` + 因子 1
+ *    ⇒ **那只票除权日之前的整段历史都没被复权**。2026-08 实测 13 只 B 股全中此坑。
+ *
+ * `code` 刻意**必填**而非可选: 给默认值等于允许调用方漏传后静默回落 CNY —— 那正是本 bug 的形状。
+ */
+export function currencyForMarket(market: string, code: string): string {
   if (market === 'hk') return 'HKD';
   if (market === 'us') return 'USD';
+  if (market === 'cn') {
+    if (code.startsWith('200')) return 'HKD'; // 深市 B 股
+    if (code.startsWith('900')) return 'USD'; // 沪市 B 股
+  }
   return 'CNY';
 }
 

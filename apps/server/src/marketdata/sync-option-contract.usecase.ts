@@ -255,7 +255,7 @@ export class SyncOptionContractUseCase {
           code,
           name: code,
           type: 'stock',
-          currency: currencyForMarket(market),
+          currency: currencyForMarket(market, code),
           status: 'active',
           needSync: false,
         },
