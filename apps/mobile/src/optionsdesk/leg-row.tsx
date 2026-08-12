@@ -19,6 +19,7 @@ import type { LegActivityResponse, LegResponse } from '@nvy/api-client';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { LegColumnPane } from './leg-column-pane';
+import { legTierForTab, type LegPickerTab } from './leg-picker.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 import {
@@ -68,23 +69,31 @@ export interface LegRowProps {
   today: string;
   /**
    * 当前 Tab 的活跃度标记。**三 Tab 各一套**（排名是候选集内的相对量，换 Tab 归属就变）⇒
-   * 由调用方从 `activityByTab[tab]` 取好再传，行组件不自己选 Tab。
+   * 由调用方从 `activityByTab[tab]` 取好再传。
    */
   activity: LegActivityResponse | null;
+  /**
+   * 当前视角 —— **只用来取本行的档位那一格**（`tierByTab[tab]`，051 FR-015）。
+   * 📌 与 `activity` 不同，档位在本行有**四个消费点**（bid 底色 / 行底 / 动作两处 / 费率副标）⇒
+   *    在这里取一次传下去，四处共用同一个值（同源，不会 drift）。
+   */
+  tab: LegPickerTab;
   /** 全腿 Tab 每行标腿族口径徽标（FR-019）；单口径 Tab 不标。 */
   showBasisBadge?: boolean;
 }
 
 /** 单腿一行。复杂度 O(1)（列数固定）。 */
-export function LegRow({ leg, tx, today, activity, showBasisBadge = true }: LegRowProps) {
-  const rate = legRateCell(leg);
+export function LegRow({ leg, tx, today, activity, tab, showBasisBadge = true }: LegRowProps) {
+  // 🚨 本行档位**取当前视角那一格**，四个消费点共用（FR-015/FR-016）—— 全行零处读 `leg.tier`。
+  const tier = legTierForTab(leg, tab);
+  const rate = legRateCell(leg, tier);
   const cost = costCell(leg);
-  const bidTone = legBidTone(leg);
+  const bidTone = legBidTone(tier);
   const earnings = legEarningsChip(leg.earningsMark);
 
   return (
     <View
-      className={`flex-row border-b border-line-soft ${legRowToneClass(leg)}`}
+      className={`flex-row border-b border-line-soft ${legRowToneClass(tier)}`}
       style={{ height: LEG_ROW_HEIGHT }}
       testID={`optionsdesk-detail-leg-row-${leg.code}`}
     >
@@ -183,9 +192,9 @@ export function LegRow({ leg, tx, today, activity, showBasisBadge = true }: LegR
         {/* 🚫 动作：四态梯度的**建议标签**，中性 tag —— 不是按钮、无入口（FR-010/011/012）。 */}
         <TagCell
           columnKey="action"
-          label={legActionLabel(leg)}
+          label={legActionLabel(tier)}
           container={LEG_ACTION_TAG_CLASS}
-          textClass={legActionTextClass(leg)}
+          textClass={legActionTextClass(tier)}
           testID={`optionsdesk-detail-leg-action-${leg.code}`}
         />
       </LegColumnPane>

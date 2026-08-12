@@ -28,6 +28,7 @@ import type {
   SetPositionBucketRequestPositionBucket,
 } from '@nvy/api-client';
 
+import type { LegTier } from './leg-picker-copy';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { buildLegSections, type LegSection } from './underlying-detail.rules';
 
@@ -124,6 +125,21 @@ export function legActivityForTab(
   tab: LegPickerTab,
 ): LegActivityResponse | null {
   return leg.activityByTab[tab];
+}
+
+/**
+ * 当前视角下的档位（契约 `tierByTab`，051 FR-015）。复杂度 O(1)。
+ *
+ * 🚨 **MUST NOT 回落到 legacy 的 `leg.tier`**（FR-016）—— 那个标量是全表一个口径的老载体，
+ *    拿它顶上时屏幕照样渲得出四档色，只是**染的是另一个视角的判定**：不属于该视角的腿会被
+ *    染成「好档」的绿，而它在这个视角里根本没判过档。
+ * 📌 同一条腿在两个视角判出不同档是**定义如此**（建仓走周化档界、收租与全腿走年化）。
+ */
+export function legTierForTab(
+  leg: Pick<LegResponse, 'tierByTab'>,
+  tab: LegPickerTab,
+): LegTier | null {
+  return leg.tierByTab[tab];
 }
 
 /**

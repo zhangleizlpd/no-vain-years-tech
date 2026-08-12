@@ -72,7 +72,7 @@ updated_at: '2026-08-12'
 
 > 🚨 **T005 与 T006 不可并行**（2026-08-12 analyze F3）：两者都要改 `underlying-detail-screen.tsx` 的 props 调用点，且两处**相邻**（`LegTableHeader` 与 `LegRow` 前后脚）。并行的冲突表现是 merge 冲突或静默覆盖，**不是编译错误**。
 
-- [ ] T005 [Mobile] **四个档位函数改吃档位值**（FR-015, FR-016, plan D-TIER, D-TEST-1）：`leg-picker-copy.ts` 的 `legBidTone` / `legRowToneClass` / 动作文案 / 费率副标四处，签名由「吃 `leg`」改为「吃 `tier: LegTier | null`」；`leg-row.tsx` 取一次 `leg.tierByTab[tab]` 传下去（**同源，四处不会 drift**）；⚠️ `LegRow` 现役 props **没有 `tab`**，需在 `underlying-detail-screen.tsx` 的调用点补传→ verify: Small 单测覆盖四档 + `null` 缺省态；机械判据 `rg 'leg\.tier\b' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**（契约保留该字段是「只加不删」的要求，不是让客户端继续用）
+- [X] T005 [Mobile] **四个档位函数改吃档位值**（FR-015, FR-016, plan D-TIER, D-TEST-1）：`leg-picker-copy.ts` 的 `legBidTone` / `legRowToneClass` / 动作文案 / 费率副标四处，签名由「吃 `leg`」改为「吃 `tier: LegTier | null`」；`leg-row.tsx` 取一次 `leg.tierByTab[tab]` 传下去（**同源，四处不会 drift**）；⚠️ `LegRow` 现役 props **没有 `tab`**，需在 `underlying-detail-screen.tsx` 的调用点补传→ verify: Small 单测覆盖四档 + `null` 缺省态；机械判据 `rg 'leg\.tier\b' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**（契约保留该字段是「只加不删」的要求，不是让客户端继续用）
 - [ ] T006 [Mobile] **费率口径取自 `basisByTab` + 列头即口径**（FR-017, FR-017a, FR-018, plan D-BASIS, D-TEST-1）：删 `RATE_SUB_BY_TAB` 硬编码；新增 `rateHeaderFor(basisByTab, tab)` 返回 `{ main, sub }`（`weekly` → 周化 + 折年参照；`annualized` → 年化 + 无副标）；`leg-table-header.tsx` 列头**直接是口径本身**，🚫 不套「费率」这层通用标题；⚠️ `basisByTab` 来自 `legTable.table`，需在 `underlying-detail-screen.tsx` 的 `LegTableHeader` 调用点改传 → verify: Small 单测含 `Record<LegBasis, …>` 穷举 **+ 运行时未知取值兜底**（server 可能先于客户端上线新取值，类型层骗不了运行时）；12 列表头内容自然宽 ≤ 列宽（mockup 阶段实测原两行结构在 56px 下撑破）
 
 ## Phase 4: 两个标 + 徽标退役（US3）

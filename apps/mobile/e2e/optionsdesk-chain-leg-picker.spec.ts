@@ -250,7 +250,7 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   turnover: '21420.00',
   activityByTab: { all: null, build: null, rent: null },
   tabs: ['all', 'rent'],
-  // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
+  // 050 契约增量：非成员格恒 null。**由 `tier` × `tabs` 派生**，见 {@link makeLeg}。
   tierByTab: { all: 'good', build: null, rent: 'good' },
   isRecommended: false,
   isMonthlyChain: false,
@@ -258,8 +258,24 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   greeksComplete: true,
 };
 
+/**
+ * 🚨 `tierByTab` **由 `tier` × `tabs` 派生**（Guardrail 10：mock 从数据派生，不手写第二份）——
+ * 051 起呈现层读的是 `tierByTab[tab]`，写死一份就会与用例里 `tier: 'dead'` 这类覆写**当场矛盾**：
+ * 屏幕渲成好档、断言红在「文案不对」上，而真正错的是 mock 自相矛盾。
+ * 📌 派生只保证「同一条腿在其所属视角里判同一档」；**两个视角判不同档**那种数据要显式传
+ * `tierByTab`（本文件的用例都不需要，051 T011 的新 e2e 才需要）。
+ */
 function makeLeg(over: Partial<LegResponse> & Pick<LegResponse, 'code'>): LegResponse {
-  return { ...LEG_BASE, ...over };
+  const leg = { ...LEG_BASE, ...over };
+  if (over.tierByTab !== undefined) return leg;
+  return {
+    ...leg,
+    tierByTab: {
+      all: leg.tabs.includes('all') ? leg.tier : null,
+      build: leg.tabs.includes('build') ? leg.tier : null,
+      rent: leg.tabs.includes('rent') ? leg.tier : null,
+    },
+  };
 }
 
 /** 选约表基线 —— 当期快照、水位未选（⇒ 意图 `pending`，默认落位「全腿」）。 */

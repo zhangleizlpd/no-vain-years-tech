@@ -223,6 +223,8 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                     today={detail.today}
                     // 🚨 活跃度是**当前 Tab 候选集内**的相对排名 —— 换 Tab 归属就变，故按 Tab 取。
                     activity={legActivityForTab(item, legTable.tab)}
+                    // 🚨 档位同样随视角变（行内取 `tierByTab[tab]`，051 FR-015）。
+                    tab={legTable.tab}
                     // 全腿 Tab 混排 ⇒ 每行标腿族口径；单口径 Tab 关掉（FR-019）。
                     showBasisBadge={showsBasisBadge(legTable.tab)}
                   />

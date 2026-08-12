@@ -23,6 +23,7 @@ import {
   legPickerNotices,
   legPickerSections,
   legTabLabel,
+  legTierForTab,
   orderedLegsForTab,
   rateSubForTab,
   resolveLegTab,
@@ -30,6 +31,7 @@ import {
   type LegPickerTab,
   type LegTabOrder,
 } from './leg-picker.rules';
+import { LEG_TIER_UNJUDGED_TONE, legBidTone } from './leg-picker-copy';
 import { legRowTotal } from './underlying-detail.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 
@@ -278,6 +280,39 @@ describe('🚨 D-SOT-5 —— 活跃度是**当前 Tab 候选集内**的相对�
 
   it('不属于该 Tab 的位置恒 null —— MUST NOT 拿别的 Tab 的标顶上', () => {
     expect(legActivityForTab(row, 'build')).toBeNull();
+  });
+});
+
+// ═══════════════ ③a 档位随 Tab 换（051 FR-015 / FR-016） ═══════════════
+
+describe('🚨 051 FR-015/FR-016 —— 档位取当前视角那一格，MUST NOT 回落到 legacy 的 `leg.tier`', () => {
+  // 🚨 三个视角**蓄意判出三个不同结果**：建仓走周化档界、收租与全腿走年化 ⇒ 同一条腿在两
+  //    个视角判出不同档是**定义如此**。若三格同值，「读错了格子」照样绿。
+  const row = leg({
+    tier: 'good',
+    tabs: ['all', 'build', 'rent'],
+    tierByTab: { all: 'acceptable', build: 'thin', rent: 'good' },
+  });
+
+  it('同一条腿三个视角三个档 —— 且没有一格恒等于 legacy 标量', () => {
+    expect(legTierForTab(row, 'all')).toBe('acceptable');
+    expect(legTierForTab(row, 'build')).toBe('thin');
+    expect(legTierForTab(row, 'rent')).toBe('good');
+    expect(new Set(LEG_PICKER_TABS.map((tab) => legTierForTab(row, tab))).size).toBe(3);
+  });
+
+  it('🚨 不属于该视角 ⇒ null ⇒ 呈现层显**缺省态**，MUST NOT 回落到 legacy 标量的那一档', () => {
+    // legacy 标量说「好档」，而这条腿根本不在建仓视角里 —— 回落的实现会把它染成好档的绿。
+    const outsider = leg({
+      tier: 'good',
+      tabs: ['all'],
+      tierByTab: { all: 'good', build: null, rent: null },
+    });
+    expect(legTierForTab(outsider, 'build')).toBeNull();
+    expect(legBidTone(legTierForTab(outsider, 'build'))).toEqual(LEG_TIER_UNJUDGED_TONE);
+    expect(legBidTone(legTierForTab(outsider, 'build')).container).not.toBe(
+      legBidTone('good').container,
+    );
   });
 });
 
