@@ -21,6 +21,7 @@
 #   1. .env.production at the repo root with DB_USERNAME / DB_PASSWORD
 #      (single-node — same env file as the app).
 #   2. BACKUP_DIR (default /home/admin/backup) writable by the admin user.
+#   3. /etc/nvy-fleet.env with NVY_ACR_REPO —— 反直觉但必需，理由见下方 compose 调用处。
 #
 # Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
 # 手动触发验证：systemctl start backup-pg.service  （→ 应收一条飞书 report）
@@ -68,6 +69,23 @@ OUT="$BACKUP_DIR/pg-${TS}.sql.gz"
 #    删它（它是最新的），也没有任何东西会指出它是坏的。点开头 ⇒ 不被 pg-*.sql.gz 通配命中。
 TMP="$(mktemp "$BACKUP_DIR/.pg-${TS}.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
+
+# 🚨 compose 插值的是**整份文件**，哪怕本脚本只 `exec postgres` —— `services.app.image` 那行是
+#    `${MBW_APP_IMAGE:-${NVY_ACR_REPO:?…}}`，取不到值 compose 在**加载阶段**就拒跑，压根走不到
+#    postgres。⇒ 一个纯备份任务也得把**镜像仓地址**备好，这个耦合是意外的，不是设计的。
+#    2026-08-09 起连续 4 天全败正栽在这：08-08 22:03 仓库转公开，compose 里的镜像仓字面量换成
+#    `${NVY_ACR_REPO:?}`（含实例 ID ⇒ 属仓外解析层，per docs/conventions/information-boundary.md）。
+#    该 compose 有**三个**消费方，deploy.yml（CI secrets 里 export）与 rollback-prod.sh（读
+#    /etc/nvy-fleet.env）都随改补了取值，**唯独本脚本这第三个漏了** —— 而它是这台机器上唯一的
+#    数据保护机制。取值范式与 rollback-prod.sh 对齐：环境里没有就读主机侧 /etc/nvy-fleet.env。
+if [[ -z "${NVY_ACR_REPO:-}" && -z "${MBW_APP_IMAGE:-}" && -f /etc/nvy-fleet.env ]]; then
+    # shellcheck source=/dev/null
+    . /etc/nvy-fleet.env
+fi
+# 🚨 必须 export：下面的 `docker compose` 是**子进程**，插值读的是环境变量，而 `.` 只赋当前 shell
+#    的变量、不导出。漏 export 的症状具有迷惑性：脚本前面 `echo "$NVY_ACR_REPO"` 明明有值，
+#    compose 却仍报 `required variable NVY_ACR_REPO is missing a value`。
+export NVY_ACR_REPO
 
 echo "[$(date -Iseconds)] starting pg_dump → ${OUT}"
 docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
