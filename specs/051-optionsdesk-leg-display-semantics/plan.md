@@ -18,7 +18,7 @@ context7_verified: []
 
 把 P1（`050`）已下发但零消费的六个契约字段接进呈现层：按 `tabOrder` 渲染（禁客户端排序）、档位色改读 `tierByTab`、费率口径改读 `basisByTab`、加推荐标与月度链标、把两个门槛计数与空态解释落到腿列表之后的非常驻区。
 
-📌 **「纯 mobile」是起手假设，不是硬约束**（2026-08-12 owner 补充「视情况而定，不强求纯 mobile」）。若 impl 中发现某条 FR 在现有契约下**不可诚实实现**，允许改 server —— 但那一刻本片即转为**跨端片**，须补齐 §V 的全部代价（单 PR + `export-openapi` + api-client regen + 两层验证）。**已知有一处大概率会撞上，见 D-GATES-2**；其余部分仍按零 server 改动推进。
+🚨 **本片是跨端片**（2026-08-12 定，原拟纯 mobile）：mobile 呈现层 **+ 一处服务端计数增量**（`FR-006a`，见 D-GATES-2）。除该增量外服务端零改动。⇒ 单 PR 原子 merge + `export-openapi` + api-client regen + 两层验证（hermetic e2e + contract smoke），per Constitution §V v1.3.0。
 
 ## Dependencies & Defensive Additions _(Cargo-cult 防火墙)_
 
@@ -32,14 +32,14 @@ context7_verified: []
   - **§I SDD**：specify → clarify（08-11 五轮配额用满）→ **Mockup**（08-12，7 帧 + handoff，per v1.4.0「前端 UI feature 在 clarify 与 plan 之间强制插 Mockup 步」）→ plan。未跳步。
   - **§II TDD**：每 task 红→绿→typecheck/lint→`[X]`→stage→commit 六步闭环。⚠️ **本片的 TDD 落点分布不均**：顺序 / 档位 / 口径 / 空态分支四块有厚实的纯函数面（`leg-picker.rules.ts` / `leg-picker-copy.ts`），可 Small 档逐条断言；而**标与计数的呈现**是 tsx 结构，只能靠 Mobile e2e 兜。切分时按此分配验证手段，不要对 tsx 强上单测（per `reference_mono_mobile_test_layering`：mobile 单测 = logic-only，UI 归 Playwright）。
   - **§III 原子 task**：下方切分均为 30min–2h 单 commit 粒度。
-  - **§IV Module Boundary**：本片全部落在 `apps/mobile/src/optionsdesk/` 内，零跨 feature 依赖、零 server 改动。
-  - **§V 类型同步链 + PR 边界**：起手按**零契约改动**推进 ⇒ 不跑 regen。⚠️ **但这个前提可能在 impl 中被推翻**（D-GATES-2 的 per-view 计数）；一旦改契约，本片转跨端片，**必须在同一 PR 内**跑 `nx run server:export-openapi` + `packages/api-client` regen（per §V v1.3.0 单 PR 原子 merge）。按 §V 字面本片当前非跨端 feature，但 🚨 **仍必须落 `[Contract-Smoke]`** —— `050` 的 plan §V 明写「**P2 消费新字段时才是跨端片**」，把这道验证**显式推给了本片**。理由成立：六个新字段迄今只被 server IT（真 PG，但不过生成客户端）与 mobile 手写 mock 验过，**「生成的客户端 + 真 server」这条缝从未合过**。⚠️ `check-contract-smoke-drift.ts` 是 echo-only 且只在 **server** 改动时触发 ⇒ 本片它不会响，这条义务只能靠本 plan 记住。
+  - **§IV Module Boundary**：mobile 侧全部落在 `apps/mobile/src/optionsdesk/` 内；server 侧增量落在 `apps/server/src/optionsdesk/get-legs.usecase.ts` 内（扁平 + 贫血 + 直注 `PrismaService`，零新 class、零新 rules 文件）。**零跨 bounded context 新增**、零新跨 ctx 只读。
+  - **§V 类型同步链 + PR 边界**：本片**有契约增量**（`FR-006a`）⇒ **跨端 feature**，单 PR 原子 merge，同 PR 内必须跑 `nx run server:export-openapi` + `packages/api-client` regen，并落**两层验证**（hermetic UI e2e + contract smoke）。⚠️ regen 后 mobile 侧全部手写 `LegGateCountsResponse` mock 工厂会编译红（新字段 required）—— 按 `feedback_new_export_grep_mock_factories`，**改契约后先 `rg` 一次性捞全部手写工厂**（含 `e2e/`），别靠 typecheck 一层层剥（`050` 在这上面白跑了三轮 ~90s 的 typecheck）。另 🚨 **仍必须落 `[Contract-Smoke]`** —— `050` 的 plan §V 明写「**P2 消费新字段时才是跨端片**」，把这道验证**显式推给了本片**。理由成立：六个新字段迄今只被 server IT（真 PG，但不过生成客户端）与 mobile 手写 mock 验过，**「生成的客户端 + 真 server」这条缝从未合过**。⚠️ `check-contract-smoke-drift.ts` 是 echo-only 且只在 **server** 改动时触发 ⇒ 本片它不会响，这条义务只能靠本 plan 记住。
 
 ## Phase 0 Research Gates _(mandatory)_
 
 ### Gate 0.1 — Integration Smoke Gate
 
-- [x] **Server**: N/A —— 本片零 server 改动。
+- [x] **Server**: `FR-006a` 的计数增量落既有 `optionsdesk-050.recall.it.spec.ts` 的同族 IT（Testcontainers 真 PG）。🚨 判据 MUST 含**重叠区不变量**：构造一条 `DTE ∈ [30,49]` 且被流动性挡下的腿，断言 `标量 ≤ 建仓数 + 收租数` 而**非**取等号。
 - [x] **Mobile / Web**: hermetic UI e2e 落 `apps/mobile/e2e/optionsdesk-leg-display.spec.ts`（Playwright Web），覆盖三个视角的口径差异、计数可点、两种空态。
 - [x] **Contract**: 扩既有 `apps/mobile/e2e/contract-smoke/optionsdesk-chain-leg-picker.contract.ts` —— 六个新字段的**形状与取值一致性**（见 §V）。
 - [x] **Evidence**: 占屏与流畅度（`SC-009` / `SC-010`）**MUST 真机验**，网页端读数仅参考（`049` 实测 web 185 vs 真机 161dp，差 13%）。
@@ -57,7 +57,7 @@ context7_verified: []
 | ADR | Open Question / sunset trigger | Classification | Mitigation / next step |
 | --- | --- | --- | --- |
 | **ADR-0063** | 横滑范式方案 E（零滚动容器 / 单手势 / 单共享位移） | `accepted-as-is` | 本片**零几何改动**（表宽 716 与 12 列集逐项不变，`SC-011`）。两个新标塞进既有钉住列 ⇒ 内容宽与指示条长度比不变，**不触发横滑回归**。🚫 MUST NOT 为放标而改列宽 |
-| **ADR-0043** | 扁平 + 贫血范式（server 侧） | `accepted-as-is` | 本片零 server 改动。mobile 侧沿 `*.rules.ts` 纯函数 + tsx 只做呈现的既有分层 |
+| **ADR-0043** | 扁平 + 贫血范式（server 侧） | `accepted-as-is` | 服务端增量落在既有 `get-legs.usecase.ts` 内，复用召回层已算出的视角成员，**零新 rules 文件、零新 class**。mobile 侧沿 `*.rules.ts` 纯函数 + tsx 只做呈现的既有分层 |
 | **ADR-0030** | `~/theme` `~/ui` 内联，多 consumer 时 sunset 回 `packages/` | `accepted-as-is` | 本片零新 token、零新 `~/ui` 组件（标与计数都是 feature 内局部结构）⇒ 不推进也不延后该 sunset |
 
 **Evidence**: 逐条读三个 ADR 的 frontmatter；ADR-0053（复权）与本片无交集（本片不碰任何价格换算）。
@@ -139,34 +139,34 @@ line 2: [到期日 9px muted]  [月 8px 描边标]        ← 实测 60.4px
 - **空态按计数分支**（`FR-009`）：排除数 > 0 → 指向门槛 + 带入口；两数皆 0 → 指向「该期限段确实没有」+ 无入口。这是**同一个设计的两面**，MUST NOT 拆成两个 task 各做各的。
 - **为 P3 那对计数留位**（`FR-010`）：P3 的「符合条件 N / 显示前 200」与本片这对**语义完全不同**，同区追加即可，位置本片一次定好。
 
-## 🚨 D-GATES-2 · `excludedFromIntentTabs` 是**全表标量**，`FR-009` 在现有契约下不可诚实实现
+## D-GATES-2 · 服务端按视角拆排除计数（**已定案：B**，`FR-006a`）
 
-**实测**（`get-legs.usecase.ts:650`）：
+**起因**（`get-legs.usecase.ts:650`）：`excludedFromIntentTabs` 是**全表一个标量**——判据 `!passesLiquidityGate && intentTabsByTerm(...).length > 0`，build 或 rent 任一期限段合格即计入。⇒ 建仓视角空而该数 = 20 时，那 20 条可能**全是被排除出收租的**；据此说「有 20 条被挡了，去全腿看」对建仓视角**是错的，且不会红**（数字真实、文案通顺，只是指向了别的视角的腿）。
 
-```ts
-const excludedFromIntentTabs = legs.filter((leg) =>
-  isExcludedFromIntentTabsByLiquidity(recallContext, {...})).length;
+### 定案与两条否决
+
+**取 B（服务端拆计数）**。否掉的两条：
+
+- 🚫 **A 客户端措辞退让** —— 它**不是「弱化版 FR-009」，是「不做 FR-009」**：用户仍然分不清「建仓视角空」是本来就没有还是被挡了。而 `US2` 的立论是「P1 用腿会消失换候选集干净，计数是这笔交易的**唯一对价**」⇒ 退让等于只付代价不取对价，`US2` 大半白写。
+- 🚫 **C 客户端自算** —— 拿不到期限段判据（在服务端召回纯函数里），且 `FR-003` 明令 MUST NOT 重算成员判据。走这条 = 造第二份判据实现。
+
+### 契约形状（只加不删）
+
+```text
+LegGateCountsResponse {
+  removedByPremiumFloor        : number   // 保持全表 —— 该门槛对三视角一律，本就无视角之分
+  excludedFromIntentTabs       : number   // legacy 标量，保留
+  excludedFromIntentTabsByTab  : { build: number; rent: number }   // 🆕
+}
 ```
 
-而该纯函数的判据是 `!passesLiquidityGate && intentTabsByTerm(...).length > 0` —— **build 或 rent 任一期限段合格**即计入。⇒ 它是**全表一个数，不分视角**。
+- **不拆「全腿」那一档**：全腿视角不受流动性门槛约束（`FR-006` 既有约定），恒不会因它变空。
+- **权利金计数不拆视角**：被它挡下的腿已整条移出响应，三视角一律。两个计数在这一点上的不对称，与它们语义上的不对称是同一件事。
+- 🚨 **`标量 ≠ build + rent`**：`[30,49]` 是**刻意的重叠区**，一条落在其中且被挡下的腿在标量里记 1 次、在两个分视角数里各记 1 次 ⇒ 恒有 `标量 ≤ build + rent`。**判据取不等式**；写 `toBe(build + rent)` 会在重叠区红错方向，而那正是 `050` 特意保留的语义。
 
-**后果**：建仓视角为空、`excludedFromIntentTabs = 20`，而那 20 条可能**全是被排除出收租的**。此时按 `FR-009` / `US2-AS5` 说「有 20 条被门槛挡了，去全腿看」对建仓视角**是错的** —— 而它**不会红**：数字真实、文案通顺、只是指向了别的视角的腿。mockup 帧③ 画的正是这句话，同样带着这个缺陷。
+### 实现代价
 
-### 三条出路
-
-| | 做法 | 代价 | server 改动 |
-| --- | --- | --- | --- |
-| **A** | 客户端**措辞退让**到全表口径（「全表有 N 条腿因报价过宽未进任何意图视角」），不声称与当前视角相关 | `US2-AS5`「我该去看看被挡的是什么」的指向变弱：用户切到全腿也不知道该找哪些 | 零 |
-| **B** | server 把该计数**拆到每视角**（`excludedFromIntentTabs: { build, rent }` 或并列新增字段），契约**只加不删** | 本片转跨端片，补齐 §V 全部代价 | 有（小：`intentTabsByTerm` 已算出各视角成员，拆计数是同一次遍历内的事） |
-| **C** | 客户端自算 | 🚫 **否决** —— 客户端拿不到期限段判据（在 server 的 `leg-recall.rules.ts` 里），且 `FR-003` 明令 MUST NOT 在客户端重算成员判据。走这条等于造第二份判据实现 | 零 |
-
-### 处置
-
-**impl 到 T007（空态两分支）时现场定**，判据是：**A 的措辞在真实数据上读起来是否仍然有用**。
-- 若「全表有 N 条」足以驱动正确行动（用户切到全腿本来就会看到它们）⇒ 取 A，本片维持纯 mobile。
-- 若读起来含糊到无法行动 ⇒ 取 B，**同一 PR 内**改 server + regen + 补两层验证，并回写 spec 的 `FR-008` / `FR-009`。
-
-🚨 **不许在没做这个判断的情况下按 A 实现** —— 那会把一个已知的错指向静默留在产品里。T007 的 verify 必须包含「这句文案在 `excludedFromIntentTabs` 与当前视角无关时是否仍成立」的显式核对。
+服务端侧极小：`intentTabsByTerm` 在召回时**已经算出各视角成员**，拆计数是同一次遍历内的事，零新 rules 文件。真正的代价是本片**从纯 mobile 变跨端**（§V 全套）。
 
 ## D-COPY · 047 时代文案逐条复核（`FR-019` / `FR-020`）
 
@@ -226,15 +226,17 @@ const excludedFromIntentTabs = legs.filter((leg) =>
 
 ### Phase 4 · 计数与空态（`US2`）
 
-- **T006 [Mobile]** 就地说明移出常驻区 + 计数区落 `LegBlockNotice` + 流动性计数可点 → verify: e2e 点击后落全腿视角
-- **T007 [Mobile]** 空态两分支 + 计数为 0 降权 → verify: 单测判据 + e2e 两种空态文案互不相同；🚨 **先做 D-GATES-2 的 A/B 判断并把结论写进 commit message**（取 B 则本 task 连带 server 改动 + regen，本片转跨端片）
+- **T006 [Server]** `get-legs.usecase.ts` 拆出 `excludedFromIntentTabsByTab`（复用召回层已算出的视角成员，零新 rules）→ verify: 扩 `optionsdesk-050.recall.it.spec.ts` 同族 IT；🚨 **重叠区判据取不等式** `标量 ≤ build + rent`，先构造一条 `DTE ∈ [30,49]` 被挡腿证明取等号会红
+- **T007 [Contract]** DTO 加字段 + `export-openapi` + api-client regen → verify: 结构 diff **零删除零改名零改值**；🚨 regen 前先 `rg` 一次性捞全部手写 `LegGateCountsResponse` mock 工厂（含 `e2e/`），别靠 typecheck 逐层剥
+- **T008 [Mobile]** 就地说明移出常驻区 + 计数区落 `LegBlockNotice` + 流动性计数可点 → verify: e2e 点击后落全腿视角
+- **T009 [Mobile]** 空态按**该视角自己的**排除数分支 + 计数为 0 降权 → verify: 单测判据；🚨 构造「建仓排除数 0、收租排除数 > 0」的数据，断言**建仓空态仍指向「确实没有」**（`SC-013`）—— 这条正是取 B 要买的东西，不验等于没买
 
 ### Phase 5 · 文案复核与验证（`US5`）
 
-- **T008 [Mobile]** `rentDepthUnionNote` 订正 + 全量文案人工复核留痕 → verify: 人工逐条过，结论写进 commit message
-- **T009 [Mobile-E2E]** `optionsdesk-leg-display.spec.ts` 新建 → verify: `nx run mobile:e2e` 绿
-- **T010 [Contract-Smoke]** 扩 `optionsdesk-chain-leg-picker.contract.ts` 覆盖六个新字段 → verify: 生成客户端打真 server 通过
-- **T011 [Docs]** 真机验收 + 回填主 plan P2 行 → verify: 常驻区高度实测不高于基线；主 plan §2.3 打勾
+- **T010 [Mobile]** `rentDepthUnionNote` 订正 + 全量文案人工复核留痕 → verify: 人工逐条过，结论写进 commit message
+- **T011 [Mobile-E2E]** `optionsdesk-leg-display.spec.ts` 新建 → verify: `nx run mobile:e2e` 绿
+- **T012 [Contract-Smoke]** 扩 `optionsdesk-chain-leg-picker.contract.ts` 覆盖**七个**字段（P1 六个 + 本片的 per-view 计数）→ verify: 生成客户端打真 server 通过
+- **T013 [Docs]** 真机验收 + 回填主 plan P2 行（含「P2 由纯 mobile 转跨端」）→ verify: 常驻区高度实测不高于基线；主 plan §2.3 打勾
 
 ## Out of Scope（本片明确不做）
 
@@ -256,5 +258,5 @@ const excludedFromIntentTabs = legs.filter((leg) =>
 | --- | --- | --- |
 | 四个档位函数同时改签名 | 档位跟视角走是 `FR-015` 的定义，legacy 标量已不承载语义。分批改会出现「一半列变色一半不变」的中间态，比一次改完更难判对错 | 4 个函数 + 其调用点，全在 `leg-picker-copy.ts` 与 `leg-row.tsx` 两个文件内 |
 | 就地说明从常驻区搬到非常驻区 | `SC-009` 的硬约束（余量归 P3）。不搬就只能不加新说明，而 `FR-012` 要求加 | 一次搬迁，`LegPickerTabs` 的 `notices` prop 随之退役 |
-| Contract-smoke 在零 server 改动的片里出现 | `050` 显式推给本片；「生成客户端 + 真 server」这条缝从未合过 | 扩既有 contract spec，不新建 |
-| 本片可能中途转跨端（D-GATES-2） | `FR-009` 在现有契约下不可诚实实现，而该 FR 是 `US2` 的核心（P1 用「腿会消失」换候选集干净，计数是唯一对价） | 取 B 时：server 侧一次遍历内拆计数 + DTO 加字段 + regen + 两层验证。判断点前置到 T007，不拖到收尾 |
+| Contract-smoke 要覆盖**七个**字段而非本片新增的一个 | `050` 把 `[Contract-Smoke]` 显式推给本片（其 plan §V「P2 消费新字段时才是跨端片」）—— P1 那六个字段迄今只被 server IT 与手写 mock 验过，「生成客户端 + 真 server」这条缝从未合过 | 扩既有 contract spec，不新建 |
+| **本片是跨端片**（D-GATES-2 定案 B） | `FR-009` 在原契约下不可诚实实现，而它是 `US2` 的核心（P1 用「腿会消失」换候选集干净，计数是唯一对价）。A 等于不做 `FR-009` | server 一次遍历内拆计数 + DTO 加字段 + regen + 两层验证。判断在 plan 阶段做完，不留到 impl |
