@@ -26,6 +26,7 @@ import {
   EMPTY_LEG_TAB_ORDER,
   legPickerNotices,
   legPickerSections,
+  promotePick,
   resolveLegTab,
   type LegPickerNotice,
   type LegPickerTab,
@@ -81,7 +82,13 @@ export function useLegTable(symbol: string): UseLegTableResult {
   // 契约保证三份恒有值；`null` 只出现在「还没有数据」那一档，退空序（见 EMPTY_LEG_TAB_ORDER）。
   const tabOrder: LegTabOrder = table?.tabOrder ?? EMPTY_LEG_TAB_ORDER;
   const intent = table?.intent ?? null;
-  const tab = resolveLegTab(picked, intent);
+  // 🚨 契约到手时先把「点击时意图未知」的手点值升格，再解析 —— 否则 loading 期间那一下点击
+  //    会被 `resolveLegTab` 当成「意图变了」丢掉（见 promotePick 注释里的真机实证）。
+  //    render 期条件 setState 是 React 官方的 derived-state 修正范式：`promoted !== picked`
+  //    只在升格那一次成立，随即收敛，不会自激。
+  const promoted = promotePick(picked, intent);
+  if (promoted !== picked) setPicked(promoted);
+  const tab = resolveLegTab(promoted, intent);
 
   const block = useMemo(
     () =>

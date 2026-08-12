@@ -184,6 +184,30 @@ export function resolveLegTab(
   return picked !== null && picked.intent === current ? picked.tab : defaultLegTab(current);
 }
 
+/**
+ * 契约到手那一刻，把「点击时意图还未知」的手点值**升格**到当前意图。复杂度 O(1)。
+ *
+ * 🚨 **为什么需要它**：Tab 栏在 loading 期恒可点（FR-020 / `leg-picker-tabs.tsx` 文件头），
+ *    于是存在这么一个窗口 —— 人进详情页立刻点了某个 Tab，而契约还没回来、`intent` 是 `null`。
+ *    {@link resolveLegTab} 判「当时的意图 ≠ 现在的意图」就丢弃手点值，`null → rent` 恰好命中
+ *    这条，那一下点击于是被**静默丢掉**，Tab 弹回意图默认格。人看到的是「点了没反应」。
+ *    2026-08-12 真机实证：点「建仓视角」，页面停在「收租视角」。
+ *
+ * 🚨 **升格 ≠ 取消让位**：FR-016 要让位的是**人选完水位档**引起的意图变化（US3-AS1）——
+ *    那是真的换了意图。而「意图从未知变为已知」根本不是一次意图变化，是第一次知道它。
+ *    升格后 `picked.intent` 持有真实意图，后续真变化照旧让位（spec 有专门用例锁住）。
+ *
+ * 📌 未发生升格时**返回同一引用** —— 调用方靠 `!==` 判断要不要写 state，避免每帧 setState。
+ */
+export function promotePick(
+  picked: PickedLegTab | null,
+  intent: LegTableResponseIntent | null | undefined,
+): PickedLegTab | null {
+  return picked !== null && picked.intent === null && intent != null
+    ? { intent, tab: picked.tab }
+    : picked;
+}
+
 /** 意图 chip 文案。穷举 `Record` —— 矩阵加一态即编译红。 */
 const INTENT_LABEL: Readonly<Record<LegTableResponseIntent, string>> = {
   build_position: COPY.intents.build_position,
