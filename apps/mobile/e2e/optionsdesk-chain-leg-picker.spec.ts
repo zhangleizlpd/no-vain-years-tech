@@ -149,9 +149,11 @@ const COPY = {
   noNewPositionWarning: '不开新仓 —— 该标的落在不动区或 L4。以下腿数据照常全量呈现，仅供查看。',
   sourceBackfillPrefix: '来源 ',
   bucketUnsetHint: '选一次水位档以定位意图',
-  rentDepthUnionNote: '水位未选 → 展示全部 Δ 档（0.05–0.40Δ）',
+  fitBadge: '贴合',
+  rentDepthUnionNote: (badge: string) =>
+    `水位未选 → 收租视角的腿与选了水位时完全相同，差别只在于全表零「${badge}」标。`,
   bucketManual: '人工输入',
-  tabs: { all: '全腿', build: '建仓腿·周化', rent: '收租腿·年化' },
+  tabs: { all: '全腿视角', build: '建仓视角', rent: '收租视角' },
   intentPending: '意图 待定',
   intentRent: '意图 收租',
   intentNoNewPosition: '意图 不开新仓',
@@ -1155,7 +1157,7 @@ test('047 T035 — 不动区帧（FR-021）：警示注**置顶**于区块头之
 // ⑦ US3-AS2 —— 未选水位：三 Tab 全部可进入读表 + 两条就地注明
 // ════════════════════════════════════════════════════════════════════════════
 
-test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**（不置灰不隐藏），并就地注明未选与 Δ 档并集', async ({
+test('047 T035 — US3-AS2：未选水位时三个视角 **全部可进入读表**（不置灰不隐藏），并就地注明未选与「成员集合不变」', async ({
   page,
 }) => {
   const rentCode = 'PEP261218P75000';
@@ -1203,7 +1205,7 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
     ).toBeEnabled();
   }
 
-  // 建仓腿 Tab：可进入且读得到表。
+  // 建仓视角：可进入且读得到表。
   await page.getByTestId('optionsdesk-detail-leg-tab-build').tap();
   await expectTabSelected(page, 'build');
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(1));
@@ -1212,13 +1214,13 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-bucket_unset')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toHaveCount(0);
 
-  // 收租腿 Tab：可进入 + **额外**注明 Δ 档取并集（未选水位不静默取一档）。
+  // 收租视角：可进入 + **额外**注明「成员集合不变、只是零推荐标」（051 FR-020 订正了这条措辞）。
   await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
   await expectTabSelected(page, 'rent');
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(1));
   await expect(page.getByTestId(rowId(rentCode))).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toHaveText(
-    COPY.rentDepthUnionNote,
+    COPY.rentDepthUnionNote(COPY.fitBadge),
   );
 
   // 回到全腿：两条又都在（切 Tab 只换 `section.data`，不重建列表）。
@@ -1293,7 +1295,7 @@ test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
   });
   await openDetail(page, 'us:PEP');
-  // 第二条注明（Δ 档取并集）只在收租腿 Tab 出现 —— 最坏档 = 未选水位 × rent Tab。
+  // 第二条注明（成员集合不变、只是零推荐标）只在收租视角出现 —— 最坏档 = 未选水位 × rent。
   await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
 
   // ① 前提自检：两条注明确实渲出来了（未选水位 × rent 才有第二条）。

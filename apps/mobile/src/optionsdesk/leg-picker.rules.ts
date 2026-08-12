@@ -286,9 +286,9 @@ export interface LegPickerNotice {
 /**
  * 就地注明 —— 未选水位的两条（FR-017）+ 收租意图下建仓视角那条（051 FR-012）。复杂度 O(1)。
  *
- * 🚫 **收租 Tab 那条是硬要求不是装饰**：未选水位时 server 的 Δ 档取三档并集，
- *    静默取某一档才是 FR-017 否掉的「替人做方向性假设」。判据在 server —— 客户端负责
- *    **把这件事说出来**，否则用户看到的是一张没有任何说明的、口径不明的收租表。
+ * 🚫 **收租视角那条是硬要求不是装饰**：未选水位 ⇒ 意图落「待定」⇒ 全表零推荐标，而**成员集合
+ *    与选了水位时一条不差**（051 FR-020）。不说出来，用户看到的是一张一个标都没有、却看不出
+ *    为什么的收租表。📌 **050 起它说的不再是「Δ 档取三档并集」** —— 那条召回判据已整条删除。
  * 🚨 **FR-012 那条与水位无关**：它解释的是「标按什么口径打」，不是「你还没选东西」——
  *    故 MUST NOT 挂在未选水位那个 early return 后面（挂错位置时它在最常见的路径上恒不出现）。
  * 📌 `table === null`（loading / 读故障）不出提示：那时什么都还不是已知事实。
@@ -301,7 +301,8 @@ export function legPickerNotices(
   const notices: LegPickerNotice[] = [];
   if (table.positionBucket === null) {
     notices.push({ key: 'bucket_unset', text: COPY.bucketUnsetHint });
-    if (tab === 'rent') notices.push({ key: 'rent_depth_union', text: COPY.rentDepthUnionNote });
+    if (tab === 'rent')
+      notices.push({ key: 'rent_depth_union', text: COPY.rentDepthUnionNote(COPY.fitBadge) });
   }
   // 收租意图 × 建仓视角：标全按收租档带判 ⇒ 这个视角可能一个标都没有，而那是**正确信号**。
   if (table.intent === 'rent' && tab === 'build') {

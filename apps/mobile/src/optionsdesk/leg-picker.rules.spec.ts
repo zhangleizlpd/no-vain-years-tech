@@ -377,12 +377,17 @@ describe('🚨 FR-017 —— 未选水位是常驻分支：显式提示，MUST N
     expect(legPickerNotices(table(), 'all')[0]?.text).toBe(COPY.bucketUnsetHint);
   });
 
-  it('🚨 水位未选 + 收租 Tab ⇒ 追加「展示全部 Δ 档」的就地注明（含并集上下界）', () => {
+  it('🚨 051 FR-020 —— 水位未选 + 收租视角 ⇒ 追加的就地注明说的是「成员集合不变、只是零推荐标」', () => {
     const notices = legPickerNotices(table(), 'rent');
     expect(notices.map((n) => n.key)).toEqual(['bucket_unset', 'rent_depth_union']);
     const note = notices[1]?.text ?? '';
-    expect(note).toContain('0.05');
-    expect(note).toContain('0.40');
+    // 🚨 **否定式断言才有内容**：正向断言文案会自指（`toBe(COPY.x)` 改成什么都绿，Guardrail 12），
+    //    而这一条断的是 050 的事实 —— Δ 与水位已结构性地退出收租召回入参 ⇒ 这句注明 MUST NOT
+    //    再拿 Δ 档说事。它是 047 旧文案「展示全部 Δ 档（0.05–0.40Δ）」回潮的唯一机械防线，
+    //    那条旧文案不会红：数字照显、句子照通顺，只是把范围说得比实际窄。
+    expect(note).not.toMatch(/Δ|0\.05|0\.40/);
+    // 差别只在于零推荐标 ⇒ 注明必须提到标本身，且与钉住列那个标同一个落字处。
+    expect(note).toContain(COPY.fitBadge);
   });
 
   it('水位已选 ⇒ 两条**水位**提示都消失（三 Tab 均无）', () => {
