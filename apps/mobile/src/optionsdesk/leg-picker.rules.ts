@@ -9,8 +9,12 @@
 //    ② 活跃度是「**当前 Tab 候选集内**的相对排名」（D-SOT-5），server 用它自己筛出的候选集算的。
 //       客户端筛出另一个集合，排名照样显示得出来，只是**跟谁比**已经对不上了。
 //
-// 🚨 **排序原样透传** —— 死档在末尾、未判档在死档之前，全由 server 定死（统一档位键，FR-019）。
-//    客户端 `filter` 保序即可，**MUST NOT 再排一次**。
+// 🚨 **顺序取自 `tabOrder[tab]`，不是 `legs[]` 的顺序**（051 FR-001/FR-004）—— 精排 050 起在
+//    server 完成，每个 Tab 各下发一份有序合约代码列表。`legs[]` 那一份是 legacy 载体序
+//    （档位 → 到期日 → 行权价 → code），050 之后**不承载任何 Tab 的排序语义**，只作为按 code
+//    定位腿的数据源。
+//    🚨 **这条不是体验问题**：P3 要做 server 端截断，而截断必须发生在排序之后；排序若留在
+//    客户端，server 截断会砍掉本该排前面的腿 —— 而返回条数与每个数字都正常，**不会红**。
 //
 // 🚨 **切 Tab 只换 `section.data`** —— 三个 Tab 共用同一个 `SectionList` 实例（plan D-UI-1），
 //    故本文件恒返回长度 1 的 sections，空 Tab 是 `data: []` 而不是零 section。
@@ -55,24 +59,60 @@ export function legTabLabel(tab: LegPickerTab): string {
 }
 
 /**
- * 当前 Tab 的腿集合。`all` 也走同一条路径 —— server 保证 `all` 恒在每条腿的 `tabs` 里
- * （「任何腿至少在一个 Tab 里可见」），故不需要为它开特例分支。
- * 复杂度 O(n)，保序（排序是 server 的职责）。
+ * 每 Tab 一份**有序的合约代码列表**（契约 `LegTableResponse.tabOrder`）。
+ * 用本仓自己的 Tab 类型而非生成类型名 —— server 往 `tabs` 加一个成员时这里立刻编译红。
  */
-export function filterLegsByTab(
+export type LegTabOrder = Readonly<Record<LegPickerTab, readonly string[]>>;
+
+/**
+ * 契约还没到手时的取序输入（loading / 读故障）。三份恒是空数组 ——
+ * 🚫 MUST NOT 用 `null` 顶替：「这个 Tab 没有腿」与「还没有数据」在**呈现上同归**（空态），
+ * 但调用方不该为此写一条 null 分支。
+ */
+export const EMPTY_LEG_TAB_ORDER: LegTabOrder = { all: [], build: [], rent: [] };
+
+/**
+ * 当前 Tab 的腿，**按 server 下发的 `tabOrder[tab]` 取序**（FR-001/FR-003/FR-004）。
+ *
+ * 建一次 `Map<code, leg>`（`O(n)`）再按有序列表映射（`O(m)`）⇒ 总 `O(n+m)`，与被它取代的
+ * `filter` 同量级。
+ *
+ * 🚨 **签名里 MUST NOT 出现任何比较器 / 排序键入参** —— 这是「排序不在客户端」（FR-002）的
+ *    **结构保证**而非事后约定：想在客户端排就必须先改签名，那一步 review 看得见
+ *    （同 050 server 侧对 `absDelta` 退出召回入参的处置）。
+ *
+ * 🚨 **两份数据的缺口都不许崩**（spec Edge Case）：`tabOrder` 里有 code 而 `legs[]` 定位不到
+ *    → **跳过该 code**，MUST NOT 塞占位行；反之 `legs[]` 有而 `tabOrder` 无 → 该 Tab 本就
+ *    不含它，正常。一致性由 server 保证（`tabOrder[t]` 与每腿 `tabs` 同源派生），客户端
+ *    只负责撞上时不崩。
+ *
+ * 📌 `all` 也走同一条路径 —— 全腿 Tab 的有序列表照样由 server 下发，不为它开特例分支。
+ */
+export function orderedLegsForTab(
   legs: readonly LegResponse[],
+  tabOrder: LegTabOrder,
   tab: LegPickerTab,
 ): readonly LegResponse[] {
-  return legs.filter((leg) => leg.tabs.includes(tab));
+  const byCode = new Map(legs.map((leg) => [leg.code, leg]));
+  const ordered: LegResponse[] = [];
+  for (const code of tabOrder[tab]) {
+    const leg = byCode.get(code);
+    if (leg !== undefined) ordered.push(leg);
+  }
+  return ordered;
 }
 
 /**
  * 当前 Tab 的 `sections`（恒长度 1）。
- * 🚨 **空 Tab 返的是 `data: []` 而不是零 section** —— 面板要照常在（FR-020：可进入、不隐藏、不置灰）。
- * 复杂度 O(n)。
+ * 🚨 **空 Tab 返的是 `data: []` 而不是零 section** —— 面板要照常在（FR-005：可进入、不隐藏、不置灰）。
+ * 复杂度 O(n+m)。
  */
-export function legPickerSections(legs: readonly LegResponse[], tab: LegPickerTab): LegSection[] {
-  return buildLegSections(filterLegsByTab(legs, tab));
+export function legPickerSections(
+  legs: readonly LegResponse[],
+  tabOrder: LegTabOrder,
+  tab: LegPickerTab,
+): LegSection[] {
+  return buildLegSections(orderedLegsForTab(legs, tabOrder, tab));
 }
 
 /**

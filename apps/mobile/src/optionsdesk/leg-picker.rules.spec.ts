@@ -2,7 +2,8 @@
 // Tab 栏与 chip 的**渲染 / 交互 / a11y** 走 T035 Playwright e2e —— 本仓测试分层 vitest=logic。
 //
 // 四条机械防线（写错了不会红、但错得很贵）：
-//   · Tab 过滤只读 `leg.tabs`，**MUST NOT 在客户端重算 D-SOT-4 的带判据**（判据单点在 server）
+//   · 取序读 `tabOrder[tab]`（051 FR-001），成员与顺序**都**归 server —— MUST NOT 在客户端
+//     重算带判据、MUST NOT 拿 `legs[]` 的 legacy 载体序当呈现序（FR-004）
 //   · 空 Tab 返**空集合**而非「隐藏面板」（FR-020）
 //   · 活跃度**随 Tab 换**（排名是候选集内的相对量，同一条腿在两个 Tab 里不是同一个标）
 //   · 未选水位 ⇒ 停「全腿」+ 两条显式提示，**MUST NOT 静默取某一 Δ 档**（FR-017）
@@ -15,7 +16,6 @@ import {
   LEG_POSITION_BUCKETS,
   bucketLabel,
   defaultLegTab,
-  filterLegsByTab,
   intentBasisLine,
   intentLabel,
   isManualBucket,
@@ -23,9 +23,12 @@ import {
   legPickerNotices,
   legPickerSections,
   legTabLabel,
+  orderedLegsForTab,
   rateSubForTab,
   resolveLegTab,
   showsBasisBadge,
+  type LegPickerTab,
+  type LegTabOrder,
 } from './leg-picker.rules';
 import { legRowTotal } from './underlying-detail.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
@@ -103,9 +106,14 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
   };
 }
 
-// ═══════════════ ① Tab 过滤：只读 `tabs` 数组，零重算 ═══════════════
+/** 三份有序列表，未给的 Tab 取空数组（契约保证三份恒有值，不会是 undefined）。 */
+function tabOrderOf(over: Partial<Record<LegPickerTab, readonly string[]>> = {}): LegTabOrder {
+  return { all: [], build: [], rent: [], ...over };
+}
 
-describe('🚨 Tab 过滤直接用 `leg.tabs`，MUST NOT 重算 D-SOT-4 的带判据', () => {
+// ═══════════════ ① 取序：按 server 下发的 `tabOrder`，零客户端重排 ═══════════════
+
+describe('🚨 FR-001/FR-004 —— 渲染序取自 `tabOrder`，`legs[]` 的载体序 MUST NOT 当呈现序', () => {
   it('三个 Tab 的键与契约的 `tabs` 值域逐字一致（server 加 Tab 即编译红）', () => {
     expect([...LEG_PICKER_TABS]).toEqual(['all', 'build', 'rent']);
     expect(LEG_PICKER_TABS.map(legTabLabel)).toEqual([
@@ -115,22 +123,25 @@ describe('🚨 Tab 过滤直接用 `leg.tabs`，MUST NOT 重算 D-SOT-4 的带�
     ]);
   });
 
-  it('全腿 Tab 拿到全部腿 —— `all` 恒在每条腿的 `tabs` 里（server 保证）', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'B', tabs: ['all', 'rent'] })];
-    expect(filterLegsByTab(legs, 'all').map((l) => l.code)).toEqual(['A', 'B']);
+  it('🚨 渲染序与 `tabOrder` 逐行相同，且**与 `legs[]` 的载体序不同**（判别性）', () => {
+    const legs = [leg({ code: 'A' }), leg({ code: 'B' }), leg({ code: 'C' })];
+    const order = tabOrderOf({ all: ['C', 'A', 'B'] });
+
+    expect(orderedLegsForTab(legs, order, 'all').map((l) => l.code)).toEqual(['C', 'A', 'B']);
+    // 🚨 两个序蓄意不同 —— 「映射时顺手拿 legs[] 的序」这种实现会让上一行红。
+    // 相等的话本条对 FR-004 完全没有分辨力（050 server 侧同款判别性构造）。
+    expect(legs.map((l) => l.code)).not.toEqual(['C', 'A', 'B']);
   });
 
-  it('意图 Tab 只留 `tabs` 含它的腿', () => {
-    const legs = [
-      leg({ code: 'A', tabs: ['all'] }),
-      leg({ code: 'B', tabs: ['all', 'build'] }),
-      leg({ code: 'C', tabs: ['all', 'rent'] }),
-    ];
-    expect(filterLegsByTab(legs, 'build').map((l) => l.code)).toEqual(['B']);
-    expect(filterLegsByTab(legs, 'rent').map((l) => l.code)).toEqual(['C']);
+  it('意图 Tab 只出现在**该 Tab 有序列表**里的腿 —— 成员判据不在客户端重算', () => {
+    const legs = [leg({ code: 'A' }), leg({ code: 'B' }), leg({ code: 'C' })];
+    const order = tabOrderOf({ all: ['A', 'B', 'C'], build: ['B'], rent: ['C'] });
+
+    expect(orderedLegsForTab(legs, order, 'build').map((l) => l.code)).toEqual(['B']);
+    expect(orderedLegsForTab(legs, order, 'rent').map((l) => l.code)).toEqual(['C']);
   });
 
-  it('🚨 greeks 缺失腿合法进收租 Tab —— 卖put区走锚轴 `K ≤ W` 不读 Δ（客户端重算必漏掉这支）', () => {
+  it('🚨 greeks 缺失腿照常出现 —— 050 起 Δ 整个退出召回判据，客户端重算必漏掉这支', () => {
     const gap = leg({
       code: 'GAP',
       absDelta: null,
@@ -138,46 +149,84 @@ describe('🚨 Tab 过滤直接用 `leg.tabs`，MUST NOT 重算 D-SOT-4 的带�
       greeksComplete: false,
       tabs: ['all', 'rent'],
     });
-    expect(filterLegsByTab([gap], 'rent').map((l) => l.code)).toEqual(['GAP']);
+    const order = tabOrderOf({ all: ['GAP'], rent: ['GAP'] });
+    expect(orderedLegsForTab([gap], order, 'rent').map((l) => l.code)).toEqual(['GAP']);
   });
 
-  it('🚨 带外的 |Δ| 照样进建仓 Tab —— 成员判据归 server，客户端不复核', () => {
-    // |Δ| 0.90 / DTE 300 全数落在 D-SOT-4 的建仓带外；重算过滤会把它筛掉，读 `tabs` 不会。
+  it('🚨 带外的 |Δ| 照样出现在建仓 Tab —— 成员归 server，客户端不复核', () => {
+    // |Δ| 0.90 / DTE 300 全数落在旧建仓带外；重算过滤会把它筛掉，读 `tabOrder` 不会。
     const outOfBand = leg({ code: 'OOB', absDelta: 0.9, dteDays: 300, tabs: ['all', 'build'] });
-    expect(filterLegsByTab([outOfBand], 'build').map((l) => l.code)).toEqual(['OOB']);
+    const order = tabOrderOf({ all: ['OOB'], build: ['OOB'] });
+    expect(orderedLegsForTab([outOfBand], order, 'build').map((l) => l.code)).toEqual(['OOB']);
   });
 
-  it('排序原样透传 —— 死档 / 未判档的位次由 server 定死，客户端零重排', () => {
-    const legs = [
-      leg({ code: 'GOOD', tier: 'good' }),
-      leg({ code: 'GAP', tier: null, greeksComplete: false }),
-      leg({ code: 'DEAD', tier: 'dead' }),
-    ];
-    expect(filterLegsByTab(legs, 'all').map((l) => l.code)).toEqual(['GOOD', 'GAP', 'DEAD']);
+  it('🚨 `tabOrder` 里有 code 而 `legs[]` 定位不到 → 跳过且不崩，MUST NOT 塞占位行', () => {
+    const legs = [leg({ code: 'A' }), leg({ code: 'C' })];
+    const order = tabOrderOf({ all: ['A', 'MISSING', 'C'] });
+
+    const rows = orderedLegsForTab(legs, order, 'all');
+    expect(rows.map((l) => l.code)).toEqual(['A', 'C']);
+    // 「跳过」而非「留个洞」—— 数组里 MUST NOT 出现 undefined 占位。
+    expect(rows.every((l) => l !== undefined)).toBe(true);
+  });
+
+  it('`legs[]` 有而 `tabOrder` 无 → 该 Tab 不含它（反向缺口同样不崩）', () => {
+    const legs = [leg({ code: 'A' }), leg({ code: 'ORPHAN' })];
+    expect(orderedLegsForTab(legs, tabOrderOf({ all: ['A'] }), 'all').map((l) => l.code)).toEqual([
+      'A',
+    ]);
+  });
+
+  it('三视角来回切，每个 Tab 的顺序恒定（顺序不因切换而变）', () => {
+    const legs = [leg({ code: 'A' }), leg({ code: 'B' }), leg({ code: 'C' })];
+    const order = tabOrderOf({ all: ['C', 'B', 'A'], build: ['B', 'A'], rent: ['C', 'B'] });
+    const codesOf = (tab: LegPickerTab) => orderedLegsForTab(legs, order, tab).map((l) => l.code);
+
+    const first = LEG_PICKER_TABS.map(codesOf);
+    // 来回切两轮后逐 Tab 比对 —— 取序是纯函数，任何隐式状态都会在这里露出来。
+    void LEG_PICKER_TABS.map(codesOf);
+    expect(LEG_PICKER_TABS.map(codesOf)).toEqual(first);
+    expect(first).toEqual([
+      ['C', 'B', 'A'],
+      ['B', 'A'],
+      ['C', 'B'],
+    ]);
+  });
+
+  it('🚨 取序函数签名里**没有**比较器 / 排序键 —— 结构保证不是事后约定（类型层证明）', () => {
+    // @ts-expect-error 第四个入参不存在: 「排序不在客户端」(FR-002) 靠签名钉死 —— 想在客户端
+    // 排就必须先改签名, 那一步 review 看得见。若本行不再报错, 说明签名已被加回排序入口,
+    // 此时 `@ts-expect-error` 变成「未使用的抑制」而 typecheck 立刻红。
+    orderedLegsForTab([], tabOrderOf(), 'all', (a: LegResponse, b: LegResponse) =>
+      a.code.localeCompare(b.code),
+    );
   });
 });
 
 // ═══════════════ ② 空 Tab：返空集合而非隐藏面板 ═══════════════
 
-describe('🚨 FR-020 —— 空 Tab 返空集合，面板照常在（MUST NOT 隐藏 / 置灰）', () => {
-  it('零适格腿的 Tab 过滤结果是空数组，不是 undefined / null', () => {
-    expect(filterLegsByTab([leg({ tabs: ['all'] })], 'build')).toEqual([]);
+describe('🚨 FR-005 —— 空 Tab 返空集合，面板照常在（MUST NOT 隐藏 / 置灰）', () => {
+  it('该 Tab 的有序列表为空 → 取序结果是空数组，不是 undefined / null', () => {
+    expect(orderedLegsForTab([leg({ code: 'A' })], tabOrderOf({ all: ['A'] }), 'build')).toEqual(
+      [],
+    );
   });
 
   it('空 Tab 仍产出**一个** section（列表实例不消失，只是 data 为空）', () => {
-    const sections = legPickerSections([leg({ tabs: ['all'] })], 'build');
+    const sections = legPickerSections([leg({ code: 'A' })], tabOrderOf({ all: ['A'] }), 'build');
     expect(sections).toHaveLength(1);
     expect(sections[0]?.data).toEqual([]);
     expect(legRowTotal(sections)).toBe(0);
   });
 
   it('切 Tab 只换 data —— section 恒长度 1（三 Tab 共用同一个 SectionList）', () => {
-    const legs = [leg({ code: 'A', tabs: ['all', 'build'] }), leg({ code: 'B', tabs: ['all'] })];
+    const legs = [leg({ code: 'A' }), leg({ code: 'B' })];
+    const order = tabOrderOf({ all: ['A', 'B'], build: ['A'] });
     for (const tab of LEG_PICKER_TABS) {
-      expect(legPickerSections(legs, tab)).toHaveLength(1);
+      expect(legPickerSections(legs, order, tab)).toHaveLength(1);
     }
-    expect(legRowTotal(legPickerSections(legs, 'all'))).toBe(2);
-    expect(legRowTotal(legPickerSections(legs, 'build'))).toBe(1);
+    expect(legRowTotal(legPickerSections(legs, order, 'all'))).toBe(2);
+    expect(legRowTotal(legPickerSections(legs, order, 'build'))).toBe(1);
   });
 });
 
