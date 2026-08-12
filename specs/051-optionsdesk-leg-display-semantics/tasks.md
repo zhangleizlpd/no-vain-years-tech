@@ -28,7 +28,7 @@ updated_at: '2026-08-12'
 
 | 面 | 路径 |
 | --- | --- |
-| server 增量 | `apps/server/src/optionsdesk/get-legs.usecase.ts` + `optionsdesk.dto.ts`（扁平，零新 rules 文件） |
+| server 增量 | `apps/server/src/optionsdesk/get-legs.usecase.ts` + `optionsdesk.dto.ts` + `leg-recall.rules.ts`（**仅暴露已有派生**，零判据改动）；扁平，零**新** rules 文件 |
 | server IT | `apps/server/test/integration/optionsdesk-051.*.it.spec.ts` |
 | 契约 | `optionsdesk.dto.ts` → `apps/server/openapi.json` → `packages/api-client/src/` |
 | mobile 判定 | `apps/mobile/src/optionsdesk/leg-picker.rules.ts` · `leg-picker-copy.ts` · `leg-row.rules.ts` |
@@ -58,8 +58,9 @@ updated_at: '2026-08-12'
 
 ## Phase 1: 服务端计数增量 + 契约（阻塞 mobile 的空态分支）🎯
 
-- [ ] T001 [Server] **`excludedFromIntentTabsByTab` 拆计数**（FR-006a, plan D-GATES-2, D-TEST-0）：在 `get-legs.usecase.ts` 内按意图视角分别统计「期限段合格但被流动性门槛挡下」的条数。**复用召回层已算出的视角成员**（`intentTabsByTerm` 的输出），🚫 MUST NOT 新建 rules 文件、MUST NOT 复制一份判据。既有标量 `excludedFromIntentTabs` **保持不变**（契约只加不删）→ verify: `optionsdesk-051.gate-counts.it.spec.ts`（Medium，Testcontainers 真 PG）红→绿 —— ① 建仓数与实际被挡的建仓候选**逐条相等** ② 收租数同 ③ 🚨 **重叠区不变量取不等式**：构造一条 `DTE ∈ [30,49]` 且过有效成本、被流动性挡下的腿，断言 `标量 ≤ build + rent` 且**该腿使两个分视角数各 +1 而标量只 +1**；**先证明 `toBe(build + rent)` 会红**再改成不等式
-- [ ] T002 [Contract] **DTO 加字段 + OpenAPI + api-client regen**（FR-006a, FR-023, plan §V）：`optionsdesk.dto.ts` 的 `LegGateCountsResponse` 加 `excludedFromIntentTabsByTab: { build, rent }`（`@ApiProperty` 齐全）→ `nx run server:export-openapi` → `packages/api-client` regen → verify: `openapi.json` 结构 diff **零删除零改名零改值**（只新增叶子）；变异验证「删掉新字段的一处 description」→ 脚本 exit≠0 且逐条点名；🚨 **regen 前先 `rg 'excludedFromIntentTabs\|LegGateCounts' apps/mobile` 一次性捞全手写 mock 工厂**（含 `e2e/`），逐处补齐后再跑 typecheck，别逐层剥；🚨 **FR-023 的机械判据**：`git diff --stat main...HEAD -- apps/server/` 的改动面**只含 `get-legs.usecase.ts` + `optionsdesk.dto.ts`**，任何第三个 server 文件出现即越界
+- [X] T001 [Server] **`excludedFromIntentTabsByTab` 拆计数**（FR-006a, plan D-GATES-2, D-TEST-0）：在 `get-legs.usecase.ts` 内按意图视角分别统计「期限段合格但被流动性门槛挡下」的条数。**复用召回层已算出的视角成员**（`intentTabsByTerm` 的输出），🚫 MUST NOT 新建 rules 文件、MUST NOT 复制一份判据。既有标量 `excludedFromIntentTabs` **保持不变**（契约只加不删）。
+      📌 **impl 期定案**（2026-08-12）：`intentTabsByTerm` 是私有函数，且流动性挡下时 `recallTabs` 返 `['all']` ⇒ 期限段信息已被抹掉 ⇒ 只改 usecase 就只能重写一遍判据（本条自禁，且撞 `check-optionsdesk-rule-constants.ts` 的阈值单点）。⇒ `leg-recall.rules.ts` 新增导出 `intentTabsExcludedByLiquidity(ctx, leg): LegIntentTab[]`（`passesLiquidityGate ? [] : intentTabsByTerm(...)`，**零判据改动**），标量与两个分视角数在 usecase 内**同一次求值**上累加 ⇒ `标量 ≤ build + rent` 由结构保证而非测试守。布尔版 `isExcludedFromIntentTabsByLiquidity` 随之**退役**（本次改动产生的 orphan，且留着即留一条问同一问题的旁路），其 spec 改指数组版。→ verify: `optionsdesk-051.gate-counts.it.spec.ts`（Medium，Testcontainers 真 PG）红→绿 —— ① 建仓数与实际被挡的建仓候选**逐条相等** ② 收租数同 ③ 🚨 **重叠区不变量取不等式**：构造一条 `DTE ∈ [30,49]` 且过有效成本、被流动性挡下的腿，断言 `标量 ≤ build + rent` 且**该腿使两个分视角数各 +1 而标量只 +1**；**先证明 `toBe(build + rent)` 会红**再改成不等式
+- [ ] T002 [Contract] **DTO 加字段 + OpenAPI + api-client regen**（FR-006a, FR-023, plan §V）：`optionsdesk.dto.ts` 的 `LegGateCountsResponse` 加 `excludedFromIntentTabsByTab: { build, rent }`（`@ApiProperty` 齐全）→ `nx run server:export-openapi` → `packages/api-client` regen → verify: `openapi.json` 结构 diff **零删除零改名零改值**（只新增叶子）；变异验证「删掉新字段的一处 description」→ 脚本 exit≠0 且逐条点名；🚨 **regen 前先 `rg 'excludedFromIntentTabs\|LegGateCounts' apps/mobile` 一次性捞全手写 mock 工厂**（含 `e2e/`），逐处补齐后再跑 typecheck，别逐层剥；🚨 **FR-023 的机械判据**（2026-08-12 impl 期订正 —— 原判据「任何第三个 server 文件出现即越界」自相矛盾：它既够不着 plan `D-TEST-0` **强制新建**的 server IT，也让 T001 无法在不复制判据的前提下实现）：作用域取 **`apps/server/src/` 下的非 spec 文件**，允许集 = `get-legs.usecase.ts` + `optionsdesk.dto.ts` + `leg-recall.rules.ts`（后者**仅暴露已有派生**，零判据改动，见 T001）。命令 `git diff --name-only main...HEAD -- 'apps/server/src/**' | rg -v '\.spec\.ts$'`，出现第四个文件即越界；判据本身仍是 FR-023 的原话「**零判据改动**」，文件清单只是它的机械代理
 
 ## Phase 2: 顺序与成员（US1，阻塞 e2e）
 

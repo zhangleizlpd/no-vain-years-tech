@@ -399,19 +399,27 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     expect(view.gateCounts.removedByPremiumFloor).toBe(0);
   });
 
-  it('两道门槛都不触发时两个数恒 0 —— 证明它们不是「恒计数」的摆设', async () => {
+  it('两道门槛都不触发时三个数恒 0 —— 证明它们不是「恒计数」的摆设', async () => {
     const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
 
     expect(view.legs).toHaveLength(LEGS.length);
-    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+    expect(view.gateCounts).toEqual({
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    });
   });
 
-  it('链未就绪 → 两个数为 0 (没有链就没有腿被挡下, MUST NOT 留上一次的数)', async () => {
+  it('链未就绪 → 三个数为 0 (没有链就没有腿被挡下, MUST NOT 留上一次的数)', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
     const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
 
     expect(view.state).toBe('chain_not_ready');
-    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+    expect(view.gateCounts).toEqual({
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    });
   });
 });
 

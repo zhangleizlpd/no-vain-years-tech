@@ -5,7 +5,7 @@ import {
   LIQUIDITY_MAX_RELATIVE_SPREAD,
   PREMIUM_FLOOR,
   RENT_RECALL_DTE,
-  isExcludedFromIntentTabsByLiquidity,
+  intentTabsExcludedByLiquidity,
   passesEffectiveCostGate,
   passesLiquidityGate,
   passesPremiumFloor,
@@ -141,21 +141,40 @@ describe('leg-recall.rules — 相对价差与流动性门槛 (FR-006)', () => {
   });
 });
 
-describe('leg-recall.rules — excludedFromIntentTabs 的判据 (FR-008)', () => {
-  it('只数「本来进得去、被流动性门槛挡下」的腿', () => {
+describe('leg-recall.rules — 两个流动性排除数的共同判据 (FR-008 / 051 FR-006a)', () => {
+  it('只数「本来进得去、被流动性门槛挡下」的腿, 并**点名是哪几个视角**', () => {
     const wide = leg({ dteDays: 35, ask: D('20') });
     expect(recallTabs(context, wide)).toEqual(['all']);
-    expect(isExcludedFromIntentTabsByLiquidity(context, wide)).toBe(true);
+    // 🚨 DTE=35 落重叠区 ⇒ 一条腿让**两个**视角各少一条, 而全表标量只记 1 次。
+    // 这就是 051 SC-012 取不等式 (`标量 ≤ build + rent`) 而非等号的根: 断言写成
+    // `toEqual(['build'])` 或只判布尔, 重叠区的双计就没有任何一处会红。
+    expect(intentTabsExcludedByLiquidity(context, wide)).toEqual(['build', 'rent']);
+  });
+
+  it('只够一个视角的腿只让那一个视角减少 —— 两个数各自独立, 不是同一个数的两份拷贝', () => {
+    // DTE=164 只在收租段 `[30,365]` 内, 建仓段 `[1,49]` 够不着。
+    expect(intentTabsExcludedByLiquidity(context, leg({ dteDays: 164, ask: D('20') }))).toEqual([
+      'rent',
+    ]);
+    // DTE=10 反过来: 只在建仓段内。
+    expect(intentTabsExcludedByLiquidity(context, leg({ dteDays: 10, ask: D('20') }))).toEqual([
+      'build',
+    ]);
   });
 
   it('🚫 期限段本就不合格的腿 MUST NOT 计入 —— 它不是被流动性门槛挡下的', () => {
-    expect(isExcludedFromIntentTabsByLiquidity(context, leg({ dteDays: 400, ask: D('20') }))).toBe(
-      false,
-    );
+    expect(intentTabsExcludedByLiquidity(context, leg({ dteDays: 400, ask: D('20') }))).toEqual([]);
+  });
+
+  it('🚫 有效成本不过的腿 MUST NOT 计进建仓数 —— 它本来就进不了建仓, 与流动性无关', () => {
+    // 有效成本 120 − 2 = 118 **>** spot 110 ⇒ 建仓段够得着也进不去; DTE=10 又够不着收租段。
+    expect(
+      intentTabsExcludedByLiquidity(context, leg({ dteDays: 10, strike: D('120'), ask: D('20') })),
+    ).toEqual([]);
   });
 
   it('通过流动性门槛的腿恒不计入', () => {
-    expect(isExcludedFromIntentTabsByLiquidity(context, leg())).toBe(false);
+    expect(intentTabsExcludedByLiquidity(context, leg())).toEqual([]);
   });
 });
 

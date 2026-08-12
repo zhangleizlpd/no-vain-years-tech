@@ -128,6 +128,15 @@ export interface RecallContext {
 }
 
 /**
+ * **意图** Tab —— 受期限段与两道门槛约束的那两个。
+ *
+ * 📌 `all` 蓄意不在其内: 全腿 Tab 不设期限段 (FR-003)、不受流动性门槛约束 (FR-006) ⇒ 把它从
+ * 类型里排除掉, 下游按视角统计时就不必写一条恒不成立的 `all` 分支 (那种分支既盖不到测试、
+ * 又会让读的人以为「全腿也可能被挡下」)。
+ */
+export type LegIntentTab = Exclude<LegTab, 'all'>;
+
+/**
  * 相对价差 `(ask − bid) / mid`, `mid = (bid + ask) / 2` (spec Assumptions: 业内通行口径)。`O(1)`。
  *
  * 任一侧缺失 → `null`; `mid ≤ 0` → `null` (禁除零 —— 双边报价都是 0 的死合约算不出价差)。
@@ -203,24 +212,34 @@ export function recallTabs(context: RecallContext, leg: RecallLegInput): LegTab[
 }
 
 /**
- * 这条腿是否**仅因流动性门槛**被挡在意图 Tab 之外 —— `gateCounts.excludedFromIntentTabs`
- * 的判据 (FR-008)。`O(1)`。
+ * 这条腿被流动性门槛挡在**哪几个**意图 Tab 之外 —— `gateCounts` 里两个流动性数的**共同**
+ * 判据: 全表标量 `excludedFromIntentTabs` 数「返回非空的腿」(FR-008), 分视角
+ * `excludedFromIntentTabsByTab` 数「返回里出现的 Tab」(051 FR-006a)。`O(1)`。
  *
- * 🚨 期限段本就不合格的腿 (如 DTE=400) **不计入**: 它不是被门槛挡下的, 把它算进去会让
+ * 📌 **两个数由同一次求值派生, 不是两处各写一遍判据** —— 各算一份的话 drift 时两边都算得出
+ * 数、都不会红。051 起标量的判据即「本函数返空与否」, 布尔版 `isExcludedFromIntentTabsByLiquidity`
+ * 随之退役 (留着它就留了一条问同一个问题的旁路)。
+ *
+ * 🚨 期限段本就不合格的腿 (如 DTE=400) **返空数组**: 它不是被门槛挡下的, 把它算进去会让
  * 「流动性排除 N 条」这个数失去它唯一的用途 —— 提示该注意的流动性信号。
+ *
+ * 🚨 返回**多于一个**元素是正常的, 不是待「消歧」的重复: `[30,49]` 是两段刻意的重叠区
+ * ({@link RENT_RECALL_DTE}), 落其中的腿同时是建仓候选与收租候选 ⇒ 被挡下时两个视角各少一条。
+ * 这正是「全表标量 ≤ 建仓数 + 收租数」**恒成立而取等号会红**的来源 (051 SC-012)。
  *
  * 与 {@link recallTabs} **同源派生** ({@link intentTabsByTerm} 一处求值), 两者不会 drift。
  */
-export function isExcludedFromIntentTabsByLiquidity(
+export function intentTabsExcludedByLiquidity(
   context: RecallContext,
   leg: RecallLegInput,
-): boolean {
-  return !passesLiquidityGate(leg.bid, leg.ask) && intentTabsByTerm(context, leg).length > 0;
+): LegIntentTab[] {
+  if (passesLiquidityGate(leg.bid, leg.ask)) return [];
+  return intentTabsByTerm(context, leg);
 }
 
 /** 只看期限段 + 建仓的有效成本硬判据, **不含**流动性门槛 —— 上面两个导出的共同根。 */
-function intentTabsByTerm(context: RecallContext, leg: RecallLegInput): LegTab[] {
-  const tabs: LegTab[] = [];
+function intentTabsByTerm(context: RecallContext, leg: RecallLegInput): LegIntentTab[] {
+  const tabs: LegIntentTab[] = [];
   if (
     withinDteBand(leg.dteDays, BUILD_RECALL_DTE) &&
     passesEffectiveCostGate(context.spot, leg.strike, leg.bid)
