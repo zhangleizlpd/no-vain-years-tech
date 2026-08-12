@@ -161,6 +161,99 @@ describe('052 T005 召回层候选上限 K (Testcontainers PG)', () => {
     expect(first.candidates.map((c) => c.leg.strike.toString())).toEqual(['120', '119', '118']);
   });
 
+  /**
+   * T008 用的混合数据集 —— 四条腿, **每条各自被一个意图条件排除或不被排除**。
+   *
+   * 🚨 判据之间蓄意不重叠 (承 050 IT 的造数纪律): 某条断言红了能直接定位到是哪条判据坏了。
+   */
+  async function seedMixedChain(): Promise<void> {
+    const instrumentId = await seedInstrument();
+    const legs = [
+      // ① 深度实值: K=150 > spot 132.40。收租被**成色上界**挡 (上界 = 132.40×1.04 = 137.696);
+      //    建仓过得去 (有效成本 150 − 18 = 132 < spot)。年化虚高 —— 正是本片要压下去的那类。
+      { code: 'P-ITM', dte: 35, strike: '150', bid: '18.00', ask: '19.00', oi: '900', vol: '40' },
+      // ② 价差宽: rel = 3 / 4.5 = 0.667 > 0.35 ⇒ 被**流动性门槛**挡出两个意图视角。
+      { code: 'P-WIDE', dte: 35, strike: '120', bid: '3.00', ask: '6.00', oi: '900', vol: '40' },
+      // ③ DTE 400: 两个意图**期限段**都够不着。
+      { code: 'P-LONG', dte: 400, strike: '118', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
+      // ④ 对照: 各条件全过。
+      { code: 'P-OK', dte: 35, strike: '115', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
+    ];
+    for (const leg of legs) {
+      const expiry = new Date(dateOf(TODAY).getTime() + leg.dte * 86_400_000);
+      const contract = await prisma.optionContract.create({
+        data: {
+          market: 'us',
+          code: leg.code,
+          root: 'PEP',
+          underlyingInstrumentId: instrumentId,
+          expiryDate: expiry,
+          strikePrice: leg.strike,
+          optionType: 'PUT',
+          isStandard: true,
+        },
+        select: { id: true },
+      });
+      await prisma.optionDailySnapshot.create({
+        data: {
+          contractId: contract.id,
+          sessionDate: dateOf(TODAY),
+          source: 'eod',
+          quoteAsOf: new Date(`${TODAY}T20:31:07Z`),
+          oiAsOf: dateOf(PREV_SESSION),
+          bid: leg.bid,
+          ask: leg.ask,
+          delta: '-0.30',
+          openInterest: leg.oi,
+          volume: leg.vol,
+          underlyingSpot: SPOT,
+          greeksComplete: true,
+        },
+      });
+    }
+    await prisma.anchor.create({
+      data: {
+        ticker: SYMBOL,
+        v: '150',
+        asof: dateOf('2026-06-30'),
+        method: 'dcf',
+        confidence: '8',
+        confidenceSource: 'manual',
+        lLevelEffective: 'L2',
+      },
+    });
+  }
+
+  it('🚨 SC-006 全量: 被意图视角任一条件排除的腿, 100% 可在全腿视角找到 (051 入口的回归防线)', async () => {
+    await seedMixedChain();
+    const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
+      SYMBOL,
+      NOW,
+    );
+    // 三条各被一个意图条件排除, 但一条都没从全腿视角消失。
+    expect(view.tabOrder.rent).not.toContain('P-ITM'); // 成色上界
+    expect(view.tabOrder.build).not.toContain('P-WIDE'); // 流动性门槛
+    expect(view.tabOrder.rent).not.toContain('P-WIDE');
+    expect(view.tabOrder.build).not.toContain('P-LONG'); // 期限段
+    expect(view.tabOrder.rent).not.toContain('P-LONG');
+    expect([...view.tabOrder.all].sort()).toEqual(['P-ITM', 'P-LONG', 'P-OK', 'P-WIDE']);
+  });
+
+  it('🚨 T008 全腿: 深度实值腿仍在候选集内, 但排在**末段** (FR-020: 沉底不砍腿)', async () => {
+    await seedMixedChain();
+    const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
+      SYMBOL,
+      NOW,
+    );
+    // 它在表里 (`legs` 是全量载体), 也在全腿视角的有序列表里 —— 只是排最后。
+    expect(view.legs.map((leg) => leg.code)).toContain('P-ITM');
+    expect(view.tabOrder.all.at(-1)).toBe('P-ITM');
+    // 🚨 它的年化**高于**对照腿却仍排在后面 —— 沉底不是「按费率排恰好排到了末尾」。
+    const itm = view.legs.find((leg) => leg.code === 'P-ITM');
+    const ok = view.legs.find((leg) => leg.code === 'P-OK');
+    expect(Number(itm?.annualizedRate)).toBeGreaterThan(Number(ok?.annualizedRate));
+  });
+
   it('🚨 触及状态一路上浮到 use case 视图 (FR-028: 不依赖读日志)', async () => {
     await seedChain(6);
     await prisma.anchor.create({

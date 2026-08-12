@@ -685,8 +685,12 @@ describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-0
     const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
 
     // 年化: C-C 211% > C-D 57% > C-A 11.7% > C-B 1.1%。
-    expect(view.tabOrder.all).toEqual(['C-C', 'C-D', 'C-A', 'C-B']);
-    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条。
+    // 🚨 **052 FR-020 起全腿视角实值沉底**: C-C 的行权价 145 **高于** spot 132.40 ⇒ 它那 211%
+    // 年化绝大部分是内在价值 (公式退化产物), 从首位掉到末位。其余三条**逐条保持费率降序**
+    // —— 这条断言的判别性就在这里: 若沉底键失效, 它会回到 `['C-C', ...]` 而立刻红。
+    // 🚫 它**没有被移出** (FR-006 / SC-006): 四条腿一条不少, 只是序变了。
+    expect(view.tabOrder.all).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
+    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条 (且 2 < 分档降级阈值 ⇒ 纯费率降序)。
     expect(view.tabOrder.build).toEqual(['C-C', 'C-D']);
     expect(view.tabOrder.rent).toEqual(['C-A', 'C-B']);
   });
@@ -775,7 +779,8 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
     const res = await responseOf();
 
     expect(res.tabOrder).toEqual({
-      all: ['C-C', 'C-D', 'C-A', 'C-B'],
+      // 052 FR-020: 全腿视角实值沉底 (C-C 的 K=145 > spot 132.40) —— 见上方排序那条断言。
+      all: ['C-D', 'C-A', 'C-B', 'C-C'],
       build: ['C-C', 'C-D'],
       rent: ['C-A', 'C-B'],
     });

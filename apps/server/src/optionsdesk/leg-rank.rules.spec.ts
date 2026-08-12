@@ -9,6 +9,7 @@ import {
   RANKING_FEATURE_KEYS,
   RANK_TIERING_MIN_CANDIDATES,
   RATE_TIE_BAND,
+  allLegsRanker,
   computeRankingFeatures,
   layeredRanker,
   rankLegs,
@@ -54,8 +55,8 @@ function legOf(overrides: Partial<RankingLegInput> = {}): RankingLegInput {
   };
 }
 
-describe('leg-rank.rules — 特征集 15 项 (FR-019 / 052 FR-017 / FR-020)', () => {
-  it('15 项齐全且逐字点名 —— 连续 9 + 固定取值 6, 少一项就红', () => {
+describe('leg-rank.rules — 特征集 16 项 (FR-019 / 052 FR-017 / FR-020)', () => {
+  it('16 项齐全且逐字点名 —— 连续 9 + 固定取值 7, 少一项就红', () => {
     expect(CONTINUOUS_FEATURE_KEYS).toEqual([
       'rate',
       'effectiveCostDiscount',
@@ -74,8 +75,9 @@ describe('leg-rank.rules — 特征集 15 项 (FR-019 / 052 FR-017 / FR-020)', (
       'crossesEarnings',
       'isTopRanked',
       'liquidityTier',
+      'isInTheMoney',
     ]);
-    expect(RANKING_FEATURE_KEYS).toHaveLength(15);
+    expect(RANKING_FEATURE_KEYS).toHaveLength(16);
 
     const [features] = computeRankingFeatures(CONTEXT, [legOf()]);
     // 产出面与键表同源 —— 多一个 / 少一个字段都在这里红。
@@ -334,7 +336,57 @@ describe('leg-rank.rules — 分层排序 lexicographic (052 FR-017 / FR-018 / F
   });
 });
 
-describe('leg-rank.rules — SC-003a 全量核对: 15 项恒落 [0,1]', () => {
+describe('leg-rank.rules — 全腿视角: 实值沉底但不砍腿 (052 FR-020 / FR-006)', () => {
+  it('🚨 实值腿沉底 —— 费率再高也排在虚值腿之后', () => {
+    const itmRich = featuresOf({ isInTheMoney: 1, rate: 0.99 });
+    const otmPoor = featuresOf({ isInTheMoney: 0, rate: 0.01 });
+    expect(allLegsRanker(otmPoor, itmRich)).toBeLessThan(0);
+    expect(allLegsRanker(itmRich, otmPoor)).toBeGreaterThan(0);
+  });
+
+  it('非实值的那批之间**保持费率降序** (FR-020 的「保持」不是空话)', () => {
+    const rich = featuresOf({ isInTheMoney: 0, rate: 0.7 });
+    const poor = featuresOf({ isInTheMoney: 0, rate: 0.2 });
+    expect(allLegsRanker(rich, poor)).toBeLessThan(0);
+  });
+
+  it('实值腿之间也按费率降序 —— 沉底是整体后移, 不是打乱', () => {
+    const richItm = featuresOf({ isInTheMoney: 1, rate: 0.7 });
+    const poorItm = featuresOf({ isInTheMoney: 1, rate: 0.2 });
+    expect(allLegsRanker(richItm, poorItm)).toBeLessThan(0);
+  });
+
+  it('🚨 沉底 MUST NOT 靠移出实现 —— ranker 只定序, `rankLegs` 返回的条数逐条不变', () => {
+    const legs = [idOf('P-ITM', '2026-09-18', '150'), idOf('P-OTM', '2026-09-18', '90')];
+    const features = [featuresOf({ isInTheMoney: 1, rate: 0.99 }), featuresOf({ rate: 0.01 })];
+    const ordered = rankLegs(legs, features, allLegsRanker);
+    expect(ordered).toHaveLength(2); // 一条都没少 (SC-006 的结构前提)
+    expect(ordered).toEqual(['P-OTM', 'P-ITM']); // 实值那条在末位
+  });
+
+  it('🚫 全腿 ranker MUST NOT 提 DTE (050 FR-022 对本 ranker 一字有效)', () => {
+    expect(allLegsRanker.toString().toLowerCase()).not.toContain('dte');
+  });
+
+  it('成色缺失 (spot 脏数据) ⇒ 不判实值 ⇒ 不沉底 —— 拿不准时 MUST NOT 施加惩罚', () => {
+    const [unknown] = computeRankingFeatures(CONTEXT, [legOf({ strikeDiscount: null })]);
+    expect(unknown.isInTheMoney).toBe(0);
+  });
+
+  it('实值判据取折价的**符号**, 在归一化之前 —— 候选集全是实值时仍逐条判 1', () => {
+    // 三条都是 K > spot。若误拿归一化后的 strikeDiscount 判, 最虚的那条会被判成"不实值"。
+    const features = computeRankingFeatures(CONTEXT, [
+      legOf({ strikeDiscount: D('-0.30') }),
+      legOf({ strikeDiscount: D('-0.10') }),
+      legOf({ strikeDiscount: D('-0.01') }),
+    ]);
+    expect(features.map((f) => f.isInTheMoney)).toEqual([1, 1, 1]);
+    // 而连续项照常在候选集内拉开: 最实值 → 0, 最不实值 → 1。
+    expect(features.map((f) => f.strikeDiscount)).toEqual([0, expect.any(Number), 1]);
+  });
+});
+
+describe('leg-rank.rules — SC-003a 全量核对: 16 项恒落 [0,1]', () => {
   const CASES: Record<string, RankingLegInput[]> = {
     单条候选集: [legOf()],
     某项全等: [legOf({ dteDays: 30 }), legOf({ dteDays: 30 })],
@@ -358,7 +410,7 @@ describe('leg-rank.rules — SC-003a 全量核对: 15 项恒落 [0,1]', () => {
   };
 
   for (const [name, members] of Object.entries(CASES)) {
-    it(`${name} ⇒ 15 项逐条落 [0,1] 且无一 NaN`, () => {
+    it(`${name} ⇒ 16 项逐条落 [0,1] 且无一 NaN`, () => {
       for (const features of computeRankingFeatures(CONTEXT, members)) {
         for (const key of RANKING_FEATURE_KEYS) {
           const value = features[key];

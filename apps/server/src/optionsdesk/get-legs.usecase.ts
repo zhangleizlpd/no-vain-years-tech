@@ -42,10 +42,10 @@ import {
 } from './leg-mark.rules';
 import {
   BASIS_BY_TAB,
+  allLegsRanker,
   computeRankingFeatures,
   layeredRanker,
   rankLegs,
-  rateDescendingRanker,
   type RankingContext,
   type RankingLegInput,
 } from './leg-rank.rules';
@@ -631,7 +631,7 @@ export class GetLegsUseCase {
       // 上收益怎么分布」这件事遮掉。
       tabOrder[tab] =
         tab === 'all'
-          ? rankLegs(members, features, rateDescendingRanker)
+          ? rankLegs(members, features, allLegsRanker)
           : rankLegs(members, features, layeredRanker(members.length));
     }
 

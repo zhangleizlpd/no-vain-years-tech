@@ -5,8 +5,8 @@ import { type LegBasis } from './leg-tier.rules';
 /**
  * 050 optionsdesk **精排层**特征集 (ADR-0043 §4, plan D-RANK-1)。无 I/O、无 DI。
  *
- * 特征集是精排层的**唯一输入面**: 排序器只读它 (FR-020), 拿不到原始腿数据。15 项 ——
- * 连续量 9 项按**该 Tab 本次请求候选集内的 min-max** 归一化到 `[0,1]`, 固定取值量 6 项按
+ * 特征集是精排层的**唯一输入面**: 排序器只读它 (FR-020), 拿不到原始腿数据。16 项 ——
+ * 连续量 9 项按**该 Tab 本次请求候选集内的 min-max** 归一化到 `[0,1]`, 固定取值量 7 项按
  * **固定映射**取值 (布尔 `0`/`1` 是其二值特例), 不参与 min-max (FR-019 / FR-019a)。
  *
  * 🚨 **字段现在就算全, 哪怕当前排序一项都用不到** (FR-019): 050 时唯一的 ranker 只读 `rate`
@@ -127,7 +127,7 @@ export const CONTINUOUS_FEATURE_KEYS = [
   'volume',
   /** 成交额 `Vol × 权利金 × 合约乘数`。 */
   'turnover',
-  /** `|Δ|` 真值 —— 🚨 只是 15 项之一, **不参与召回** (FR-009 已在 `leg-recall.rules.ts` 封死)。 */
+  /** `|Δ|` 真值 —— 🚨 只是 16 项之一, **不参与召回** (FR-009 已在 `leg-recall.rules.ts` 封死)。 */
   'absDelta',
   /**
    * 距到期日历天数。
@@ -159,7 +159,7 @@ export const CONTINUOUS_FEATURE_KEYS = [
 ] as const;
 
 /**
- * **固定取值量** 6 项 (FR-019; 052 起由「布尔量」扩为本名)。取值在 `[0,1]` 内**固定映射**,
+ * **固定取值量** 7 项 (FR-019; 052 起由「布尔量」扩为本名)。取值在 `[0,1]` 内**固定映射**,
  * **不参与 min-max** —— 参与了会让「全 true」的候选集里每一项都变 `0.5`, 于是「是」与「不是」
  * 在下游不可区分, 而取值仍落 `[0,1]`。
  *
@@ -187,9 +187,21 @@ export const ORDINAL_FEATURE_KEYS = [
    * 等价类, 档内才轮到费率说话。
    */
   'liquidityTier',
+  /**
+   * 是否**实值** (`K > spot`, 052 FR-020) —— 全腿视角把它当沉底键。
+   *
+   * 🚨 **必须是固定取值量而不是拿归一化后的成色去判**: min-max 之后**符号信息就没了** ——
+   * 候选集里最实值的那条恒取 `0`、最虚值的恒取 `1`, 而「`0` 是深度实值还是只是本批里最不虚」
+   * 无从分辨。⇒ 实值与否在归一化**之前**判定, 判据取 {@link RankingLegInput.strikeDiscount}
+   * 的符号 (它是 `(spot − K) / spot` 的裸值)。
+   *
+   * 📌 与 `strikeDiscount` 两项并存不是冗余: 前者回答「要不要沉底」(离散、跨候选集可比),
+   * 后者回答「在没沉底的那批里成色排多少」(连续、候选集内相对)。
+   */
+  'isInTheMoney',
 ] as const;
 
-/** 15 项 = 9 + 6。**键表是唯一来源**, 产出面由它派生 ⇒ 两者不可能 drift。 */
+/** 16 项 = 9 + 7。**键表是唯一来源**, 产出面由它派生 ⇒ 两者不可能 drift。 */
 export const RANKING_FEATURE_KEYS = [...CONTINUOUS_FEATURE_KEYS, ...ORDINAL_FEATURE_KEYS] as const;
 
 export type ContinuousFeatureKey = (typeof CONTINUOUS_FEATURE_KEYS)[number];
@@ -197,7 +209,7 @@ export type OrdinalFeatureKey = (typeof ORDINAL_FEATURE_KEYS)[number];
 export type RankingFeatureKey = (typeof RANKING_FEATURE_KEYS)[number];
 
 /**
- * 特征集 —— 15 项, 每项 `∈ [0,1]` (SC-003a)。
+ * 特征集 —— 16 项, 每项 `∈ [0,1]` (SC-003a)。
  *
  * 🚨 **MUST NOT 下发** (FR-019b): 排序已在 server 完成 (FR-021a), 下发一批无人消费的字段会被
  * 「只加不删」(FR-027) 永久锁死。机械判据 = 生成的 OpenAPI schema 里 `grep RankingFeatures`
@@ -270,6 +282,9 @@ const ORDINAL_EXTRACTORS: Readonly<Record<OrdinalFeatureKey, OrdinalExtractor>> 
   crossesEarnings: (leg) => boolFeature(leg.crossesEarnings),
   isTopRanked: (leg) => boolFeature(leg.isTopRanked),
   liquidityTier: (leg) => liquidityTierFeature(leg.openInterest, leg.volume),
+  // 折价为负 ⇒ `K > spot` ⇒ 实值。缺失 (spot 脏数据) 判 `false`: 不知道就不沉底, 与
+  // 「知道它是虚值」处置同归但成因不同 —— 沉底是**惩罚**, 拿不准时 MUST NOT 施加。
+  isInTheMoney: (leg) => boolFeature(leg.strikeDiscount !== null && leg.strikeDiscount.lessThan(0)),
 };
 
 /**
@@ -291,7 +306,7 @@ function liquidityTierFeature(openInterest: number | null, volume: number | null
 }
 
 /**
- * 整个候选集的特征集 (FR-019 / FR-019a)。`O(n)` (15 项各扫一趟定长的候选集)。
+ * 整个候选集的特征集 (FR-019 / FR-019a)。`O(n)` (16 项各扫一趟定长的候选集)。
  *
  * 🚨 **只接受整个候选集** —— 见文件头。调用方 MUST 传该 Tab 的**召回全量成员** (FR-016 同款
  * 基准): 传筛选后的子集会让每一行的取值都变, 而**数字照样有、照样落 `[0,1]`**。
@@ -379,10 +394,32 @@ export type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number;
  * (两者差一个常数因子)。⇒ 三个 Tab 共用它一个, 选 `basis` 是在选**显示口径与档界**不是选顺序。
  *
  * 🚫 **MUST NOT 引入加权评分** (FR-026): 判定手段限定为「硬门槛 + 单主键 + 标签」。特征层已为
- * 将来切加权备好 15 项 (FR-019), 切换点在这里 —— 换一个 `LegRanker` 实现即可, 别在这条上加项。
+ * 将来切加权备好 16 项 (FR-019), 切换点在这里 —— 换一个 `LegRanker` 实现即可, 别在这条上加项。
  * 🚫 **MUST NOT 提 DTE** (FR-022): 机械判据是本函数体 `grep -i dte` 零命中。
  */
 export const rateDescendingRanker: LegRanker = (a, b) => b.rate - a.rate;
+
+/**
+ * **全腿视角的排序器** (052 FR-020, plan D-RANK-1)。`O(1)`/比较。
+ *
+ * 两级键: **实值沉底 → 费率降序**。非实值的那批之间**逐条保持费率降序** (FR-020 的「保持」),
+ * 实值腿整体落到末段。
+ *
+ * 🚨 **MUST NOT 靠移出候选实现沉底** (FR-006 / SC-006): 全腿是参照视角, 051 已 ship 的
+ * 「切到全腿看被排除的腿」那个入口依赖它保留全部腿。⇒ 这里只改**序**, 一条腿都不砍。
+ *
+ * 🚨 **为什么实值腿该沉底**: 认沽腿 `K > spot` 时权利金里绝大部分是**内在价值**, 折算费率会
+ * 算出三位数年化 —— 那是公式退化产物, 不是收益 (052 spec 的起因就是收租视角被这批占满)。
+ * 全腿视角不砍它们 (它们是「被排除的腿」的一部分, 用户要能查到), 但让它们不占前排。
+ *
+ * 🚫 **MUST NOT 提 DTE** —— 全腿混着 10 天与 200 天的腿, 期限先验在这里尤其危险 (050 FR-022
+ * 那条禁令对本 ranker 一字有效; `layeredRanker` 的打平带例外只在意图视角成立)。
+ */
+export const allLegsRanker: LegRanker = (a, b) => {
+  const byMoneyness = a.isInTheMoney - b.isInTheMoney;
+  if (byMoneyness !== 0) return byMoneyness;
+  return b.rate - a.rate;
+};
 
 /**
  * **意图视角的分层排序器** (052 FR-017 / FR-018 / FR-019, plan D-RANK-1)。`O(1)`/比较。
