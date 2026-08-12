@@ -193,6 +193,39 @@ describe('🚨 FR-001/FR-004 —— 渲染序取自 `tabOrder`，`legs[]` 的载
     ]);
   });
 
+  it('🚨 FR-021 —— 本片只改顺序，**成员集合与开工前逐条相同**（对同一份自洽契约）', () => {
+    // 开工前的成员判据是 `legs.filter(l => l.tabs.includes(tab))`（已退役的 `filterLegsByTab`）。
+    // server 保证 `tabOrder[t]` 与每腿 `tabs` 同源派生（050 Guardrail 9）⇒ 在一份自洽的契约上，
+    // 换成按 `tabOrder` 取序**只能改顺序、不能改成员**。本条把那个「只能」钉成机械判据。
+    const legs = [
+      leg({ code: 'A', tabs: ['all', 'build'] }),
+      leg({ code: 'B', tabs: ['all', 'rent'] }),
+      leg({ code: 'C', tabs: ['all', 'build', 'rent'] }),
+      leg({ code: 'D', tabs: ['all'] }),
+    ];
+    // 有序列表由 `tabs` 派生（契约镜像，不写死）；顺序蓄意逆着 `legs[]` 排，好让「顺序变了、
+    // 成员没变」这件事在同一条用例里同时可见。
+    const order = tabOrderOf(
+      Object.fromEntries(
+        LEG_PICKER_TABS.map((t) => [
+          t,
+          legs
+            .filter((l) => l.tabs.includes(t))
+            .map((l) => l.code)
+            .reverse(),
+        ]),
+      ),
+    );
+
+    for (const tab of LEG_PICKER_TABS) {
+      const before = legs.filter((l) => l.tabs.includes(tab)).map((l) => l.code);
+      const after = orderedLegsForTab(legs, order, tab).map((l) => l.code);
+
+      expect([...after].sort()).toEqual([...before].sort()); // 成员逐条相同
+      expect(after).not.toEqual(before); // 顺序确实变了 ⇒ 上一行不是同义反复
+    }
+  });
+
   it('🚨 取序函数签名里**没有**比较器 / 排序键 —— 结构保证不是事后约定（类型层证明）', () => {
     // @ts-expect-error 第四个入参不存在: 「排序不在客户端」(FR-002) 靠签名钉死 —— 想在客户端
     // 排就必须先改签名, 那一步 review 看得见。若本行不再报错, 说明签名已被加回排序入口,

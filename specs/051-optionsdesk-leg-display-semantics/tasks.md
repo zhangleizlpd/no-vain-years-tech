@@ -66,7 +66,7 @@ updated_at: '2026-08-12'
 ## Phase 2: 顺序与成员（US1，阻塞 e2e）
 
 - [X] T003 [Mobile] **按 `tabOrder` 取序 + `filterLegsByTab` 退役**（FR-001, FR-002, FR-003, FR-004, plan D-ORDER, D-TEST-1）：`leg-picker.rules.ts` 新增取序纯函数（建 `Map<code, leg>` 一次 → 按 `tabOrder[tab]` 映射，`O(n+m)`），🚨 **签名 MUST NOT 含任何比较器 / 排序键入参**；`filterLegsByTab` **整条删除**（含其 `leg.tabs.includes` 判据）→ verify: Small 单测红→绿 —— ① 渲染序与 `tabOrder` **逐行相同** ② `tabOrder` 有而 `legs[]` 定位不到的 code **跳过且不崩** ③ 三视角来回切顺序不变 ④ 空列表返空数组而非 null；机械判据 `rg '\.sort\(' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**，且 🚨 **先证明它会红**（故意加一次 `legs.sort(...)`，扫描必须报出该行，改回后归零）
-- [ ] T004 [Mobile] **屏级接线 + 既有行为回归**（FR-001, FR-005, FR-021, FR-022, plan D-ORDER）：`use-leg-table.ts` / `underlying-detail.rules.ts` 的 sections 改由有序列表构建；空视角仍返 `data: []` 而非零 section（FR-005 沿用既有约定）→ verify: `nx run mobile:test` 绿；既有 `optionsdesk-chain-leg-picker.spec.ts` e2e 不红（若红 → 逐条判「该红 / 不该红」，🚫 MUST NOT 批量改绿）；🚨 **两条否定式约束在此兑现** —— **FR-021**：三视角的**成员集合**与本片开工前逐条相同（本片只改顺序与呈现，不改「哪条腿出现在哪」）；**FR-022**：链未就绪 / 读取失败两个既有显式状态的行为一字不变（`legBlockState` 的分支与文案均未动）
+- [X] T004 [Mobile] **屏级接线 + 既有行为回归**（📌 接线本身随 T003 一同落地以保 typecheck 绿；本 task 实际交付 = 两条否定式约束的兑现 + 全套 e2e 回归）（FR-001, FR-005, FR-021, FR-022, plan D-ORDER）：`use-leg-table.ts` / `underlying-detail.rules.ts` 的 sections 改由有序列表构建；空视角仍返 `data: []` 而非零 section（FR-005 沿用既有约定）→ verify: `nx run mobile:test` 绿；既有 `optionsdesk-chain-leg-picker.spec.ts` e2e 不红（若红 → 逐条判「该红 / 不该红」，🚫 MUST NOT 批量改绿）；🚨 **两条否定式约束在此兑现** —— **FR-021**：三视角的**成员集合**与本片开工前逐条相同（本片只改顺序与呈现，不改「哪条腿出现在哪」）；**FR-022**：链未就绪 / 读取失败两个既有显式状态的行为一字不变（`legBlockState` 的分支与文案均未动）
 
 ## Phase 3: 档位与费率口径（US4）
 
