@@ -78,7 +78,11 @@ function buildFakes(opts: { marketScope?: string[]; deltaLookbackDays?: number }
       instrument: {
         findMany: vi.fn(async () => [{ id: 1n, market: 'cn', code: '600519' }]),
       },
-      dailyBar: { findMany: vi.fn(async () => []) },
+      // groupBy = 补洞道 (fillRecentEodGaps) 的「窗内每标的已有几个交易日」聚合。
+      dailyBar: { findMany: vi.fn(async () => []), groupBy: vi.fn(async () => []) },
+      // 补洞道的另一半判据: 窗内各市场应有的交易日数。空日历 ⇒ 判不出缺口 ⇒ 本道自然缩手,
+      // 故本 double 返空即可让既有用例保持「只走主跑」的语义 (缩手行为本身另有 IT 专测)。
+      tradingDay: { findMany: vi.fn(async () => []) },
       adjustmentFactor: { findMany: vi.fn(async () => []) }, // T010 最新因子 Map 载入。
       corporateAction: { findMany: vi.fn(async () => []) }, // T010 D2 命中检查 (水位 NULL 短路)。
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>

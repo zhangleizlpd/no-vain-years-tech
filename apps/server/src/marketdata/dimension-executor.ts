@@ -161,6 +161,24 @@ export type SyncMode = 'delta' | 'backfill';
 export const DEFAULT_RE_ADJUST_LOOKBACK_DAYS = 730;
 
 /**
+ * 补洞道回看窗 (天)。见 `fillRecentEodGaps` 的完整病灶说明。
+ *
+ * 刻意**不复用** `SyncDimension.deltaLookbackDays` —— 那个字段一旦非 NULL 会让
+ * `deltaCursorUsable()` 返 false, 从而关掉 `pendingEodInstruments` 这个**预算截断顺延续跑的
+ * 进度锚** (2026-08-12 实测: 那样改会打红 7 个 IT, 其中「① 分夜收敛」「② 下窗续跑」
+ * 「T005 截断保底 + 顺延续跑」直接锁的就是这条不变量)。补洞道是**旁路**, 主跑的游标语义
+ * 一个字不动 —— 这正是它相对「给 eod_bar 配回看窗」那条路的全部价值。
+ */
+const EOD_GAP_FILL_LOOKBACK_DAYS = 7;
+
+/**
+ * 单次补洞的标的数上限。正常量级约 500–650 (2026-08-12 prod 实测 hk 每交易日缺口), 取
+ * 1500 留 2–3× 余量。**超出必须 log 出来**: 静默截断会让「补洞跑过了」与「补洞只补了一半」
+ * 长得一模一样, 那等于把本次修的病换个地方复发。
+ */
+const EOD_GAP_FILL_MAX_INSTRUMENTS = 1500;
+
+/**
  * 🚨 delta 区间左界 —— **所有 `[from, asOf]` 区间型维度的唯一取值处**。
  *
  * `deltaLookbackDays` 为 NULL ⇒ 精确当日 `from = to = asOf` (历史默认行为)；非 NULL ⇒ 回看
@@ -982,6 +1000,12 @@ export class DimensionExecutorRegistry {
 
     // 顺延: 预算耗尽 → 剩余标的计 skipped (非失败), 下窗续跑。
     if (exhausted) stats.skipped += pending.length - processed;
+
+    // 补洞道 (delta 且预算未耗尽时): 捡回「当晚 vendor 还没出数」的那批。预算耗尽时不跑 ——
+    // 那说明本窗连主跑都没做完, 该把额度留给顺延续跑, 而不是拿去补历史。
+    if (mode === 'delta' && !exhausted) {
+      await this.fillRecentEodGaps(dim, instruments, targetDate, stats);
+    }
     // 水位推进 (本窗进度): 部分完成或全完成都记 lastWatermark = now (FR-S07/S14 续跑锚)。
     // 🚨 水位必须写回**本维度自己**的行。写死 'eod_bar' 会让 us_equity_bar 把水位写进
     // cn/hk 那一行 —— 而那个水位正是除权命中检查 (exDateHits) 的窗口起点, 串了会让 cn 的
@@ -991,6 +1015,138 @@ export class DimensionExecutorRegistry {
       data: { lastWatermark: now },
     });
     return exhausted;
+  }
+
+  /**
+   * 补洞道: 回填最近 `EOD_GAP_FILL_LOOKBACK_DAYS` 个交易日里**缺 bar** 的标的 (delta 专用旁路)。
+   *
+   * ## 病灶: 当晚 vendor 还没出数的那批, 永远没有第二次机会
+   *
+   * `syncEodBarNone` 拿到空数组时 `return` (注释写「当日无 bar (停牌等)」) ⇒ 计 ok、零落库、
+   * 无任何信号。但 22:00 CST 那一刻 vendor 对**一批 hk 标的**根本还没出数 —— 既不是停牌也不是
+   * 失败, 只是**还没到**。而 delta 窗口是精确当日 (`from = to = asOf`) ⇒ 这天过去之后,
+   * **再没有任何一次请求会问起它们**, 缺口永久且完全静默。
+   *
+   * 🚨 观测形态极具欺骗性, 三层信号会一致告诉你「健康」:
+   *   · `sync:eod_bar` 天天 `scanned=8417 ok=8417 skip=0 fail=0` (空数组计 ok);
+   *   · 表级探针判**数据年龄** —— 每天都在更新 ⇒ 恒绿;
+   *   · 日报判 **run 成败** —— 全 ok ⇒ 恒绿。
+   * 而 hk 每个交易日实际少约 18%。
+   *
+   * ## 为什么是 hk、为什么从 2026-07-14 起 (别把它当「一直如此」)
+   *
+   * prod `sync_run.scanned` 摆着变点: 07-09 及以前 = 5614 (**只有 cn**), 07-14 起 = 8399+
+   * (cn+hk) —— 那正是 038 把维度 marketScope 扩到 `{cn, hk}`、hk 并入夜间 delta 的时点。
+   * 07-13 及以前 hk 覆盖恒在 2636–2655 看着很健康, 但那是**回填**跑出来的 (宽窗 + 晚跑 ⇒ 数据
+   * 已就绪); 一并入 22:00 的精确当日窗, 立刻掉到 2126–2215 并**再没回来过**。
+   * ⇒ 病灶不是「hk 数据不好」, 是**「精确当日窗 + 空数组计 ok」这套组合撞上了披露更晚的市场**。
+   * cn 不显形只是因为它的数据 22:00 就齐了 —— 同一套代码, 换个市场就漏, 这是本方法要防的形状。
+   *
+   * 2026-08-12 prod 取证: 在采 hk 标的 2783; 对 08-06 (一个「正常成功」的采集日, 当时 2155)
+   * 重跑 delta —— `scanned=653 ok=653 failed=0`, 51 秒, hk **2155 → 2658**, 找回 503 根。
+   * 另测出 vendor 约 **1–2 天**补齐: 08-11 (昨日) 当时重取仍是 2182, 而 08-04…08-10 都补到了
+   * 2656–2660 ⇒ 7 天窗绰绰有余, 且缺口天然会「晚一两天」被这条旁路捡回。
+   *
+   * ## 为什么是旁路, 而不是给 eod_bar 配 `deltaLookbackDays`
+   *
+   * 那条路看起来更省事 (改一行 seed), 但 `deltaLookbackDays` 非 NULL ⇒ `deltaCursorUsable()`
+   * 返 false ⇒ 关掉 `pendingEodInstruments`, 而它是**预算截断后顺延续跑的进度锚**: 关掉后下一窗
+   * 会从全工作集头部重跑, 永远够不到被顺延的尾巴。2026-08-12 实测该改法打红 7 个 IT, 其中
+   * 「① 分夜收敛」「② 下窗续跑」「T005 截断保底 + 顺延续跑」锁的就是这条不变量。
+   * ⇒ 本方法走旁路, **主跑的游标语义一个字不动**。
+   *
+   * ## 判据: 分市场比「窗内应有交易日数」
+   *
+   * cn 与 hk 日历会错开 (国庆 / 重阳), 拿一个市场的日历判另一个市场必然造假缺口 ⇒ 逐市场算。
+   * `DailyBar` 有 `@@unique([instrumentId, tradeDate, adjust])` ⇒ 按 instrument 数行数即等于
+   * 去重交易日数, 无需 DISTINCT。
+   *
+   * 🚨 **日历为空 / 陈旧 ⇒ 本方法自然缩手, 不误补**: `expected` 取不到该市场就是 0, 没有标的会
+   *    被判缺口。这是刻意的降级方向 —— 拿一张**可能已坏的表**当判据时, 宁可少补也不能乱补
+   *    (乱补 = 对全工作集狂发请求)。`trading_day` 自身的陈旧由 044 日历健康探针独立看守,
+   *    不在本方法里重判 (那会变成又一处循环信任)。代价: 日历坏掉期间缺口不再自愈, 但**也不会
+   *    产生坏数据**, 且日历一恢复, 窗内的洞会在下一晚被重新看见。
+   *
+   * ⚠️ **长期停牌 / 已退市但仍在采的标的永远补不满** ⇒ 每晚都会被重问一次 (成本有界, 约等于
+   *    缺口规模)。这是「保持追问」的代价, 刻意接受: 想收敛就得引入「放弃」判据, 而那会把
+   *    「还没到」和「永远不会到」混在一起 —— 正是本病灶的形状。
+   *
+   * 复杂度: O(窗内交易日) + O(有 bar 的标的) 两次聚合查询 + O(缺口标的) 次 vendor 区间请求
+   * (区间接口 1 次/标的, 与窗宽无关)。
+   */
+  private async fillRecentEodGaps(
+    dim: ExecutorSyncDimensionRow,
+    instruments: WorkingInstrument[],
+    targetDate: string,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    if (instruments.length === 0) return;
+    const from = subtractDays(targetDate, EOD_GAP_FILL_LOOKBACK_DAYS);
+
+    // 🚨 判据查询失败 → WARN 后放弃本轮补洞, **不把整个维度判红**: 主跑 (真正的采集) 此刻
+    //    已经成功了, 拿「治疗失败」去报「采集失败」是假警报, 而假警报会训练人无视这份报告。
+    //    这不等于静默 —— 结果侧有**独立**看守: `marketdata-sync-report.sh` 的日频完整性闸判的是
+    //    「库里到底缺不缺」, 不依赖本方法是否跑过。补洞道连着几晚没补上, 那道闸会自己红。
+    let gappy: WorkingInstrument[];
+    try {
+      // 每市场在窗内应有的交易日数 (逐市场, 见上「判据」)。
+      const days = await this.prisma.tradingDay.findMany({
+        where: { date: { gte: toDateOnly(from), lte: toDateOnly(targetDate) } },
+        select: { market: true },
+      });
+      const expected = new Map<string, number>();
+      for (const d of days) expected.set(d.market, (expected.get(d.market) ?? 0) + 1);
+
+      // 窗内每标的已有的 none bar 行数 (= 去重交易日数, 见上)。不加 `instrumentId IN (…)` ——
+      // 工作集可达 8k+, 塞进 IN 会生成巨型语句; 分组结果本就只有几千行, 在 JS 侧按工作集过滤更省。
+      const have = await this.prisma.dailyBar.groupBy({
+        by: ['instrumentId'],
+        where: {
+          adjust: 'none',
+          tradeDate: { gte: toDateOnly(from), lte: toDateOnly(targetDate) },
+        },
+        _count: { _all: true },
+      });
+      const haveByInstrument = new Map(have.map((h) => [h.instrumentId, h._count._all]));
+
+      gappy = instruments.filter(
+        (inst) => (haveByInstrument.get(inst.id) ?? 0) < (expected.get(inst.market) ?? 0),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `eod 补洞道判据查询失败, 本轮跳过 (主跑不受影响; 缺口由日频完整性闸独立看守): ${String(err)}`,
+      );
+      return;
+    }
+    if (gappy.length === 0) return;
+
+    // 🚨 截断必须可见 (见 EOD_GAP_FILL_MAX_INSTRUMENTS 注释)。
+    const targets = gappy.slice(0, EOD_GAP_FILL_MAX_INSTRUMENTS);
+    if (gappy.length > targets.length) {
+      this.logger.warn(
+        `eod 补洞道命中 ${gappy.length} 只 > 上限 ${EOD_GAP_FILL_MAX_INSTRUMENTS}, ` +
+          `本窗只补前 ${targets.length} 只, 余 ${gappy.length - targets.length} 只留待下窗`,
+      );
+    }
+
+    let filled = 0;
+    for (const inst of targets) {
+      try {
+        await this.syncEodBarNone(inst, targetDate, from);
+        filled++;
+      } catch (err) {
+        // 与主跑同口径计失败: 补洞期 vendor 挂了同样值得知道 (维度转 partial → 飞书红)。
+        stats.failed++;
+        stats.failedTargets.push({
+          symbol: `${inst.market}:${inst.code}`,
+          step: `${dim.dimensionKey}:gap-fill`,
+          error: String(err),
+        });
+      }
+    }
+    this.logger.log(
+      `eod 补洞道: 窗 [${from}, ${targetDate}] 命中 ${gappy.length} 只, 已补 ${filled} 只`,
+    );
   }
 
   /**
