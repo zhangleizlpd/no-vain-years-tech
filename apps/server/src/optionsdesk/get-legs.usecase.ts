@@ -43,6 +43,7 @@ import {
 import {
   BASIS_BY_TAB,
   computeRankingFeatures,
+  layeredRanker,
   rankLegs,
   rateDescendingRanker,
   type RankingContext,
@@ -625,7 +626,13 @@ export class GetLegsUseCase {
         rankingContext,
         members.map((leg, i) => rankingInputOf(leg, tab, activity[i], rankingContext.spot)),
       );
-      tabOrder[tab] = rankLegs(members, features, rateDescendingRanker);
+      // 精排 (052 FR-017 / FR-020): 意图视角走**分层** (流动性档 → 档内费率 → 打平带内长期
+      // 优先, 候选数不足自动降级); 全腿视角保持费率降序 —— 它是参照视角, 分档会把「同一条链
+      // 上收益怎么分布」这件事遮掉。
+      tabOrder[tab] =
+        tab === 'all'
+          ? rankLegs(members, features, rateDescendingRanker)
+          : rankLegs(members, features, layeredRanker(members.length));
     }
 
     // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序。

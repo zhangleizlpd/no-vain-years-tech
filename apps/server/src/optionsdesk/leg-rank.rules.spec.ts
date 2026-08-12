@@ -4,9 +4,13 @@ import {
   CONTINUOUS_FEATURE_KEYS,
   FEATURE_VALUE_WHEN_MISSING,
   FEATURE_VALUE_WHEN_UNIFORM,
+  LIQUIDITY_TIER_BOUNDS,
   ORDINAL_FEATURE_KEYS,
   RANKING_FEATURE_KEYS,
+  RANK_TIERING_MIN_CANDIDATES,
+  RATE_TIE_BAND,
   computeRankingFeatures,
+  layeredRanker,
   rankLegs,
   rateDescendingRanker,
   type LegIdentity,
@@ -50,8 +54,8 @@ function legOf(overrides: Partial<RankingLegInput> = {}): RankingLegInput {
   };
 }
 
-describe('leg-rank.rules — 特征集 14 项 (FR-019 / 052 FR-020)', () => {
-  it('14 项齐全且逐字点名 —— 连续 9 + 布尔/序数 5, 少一项就红', () => {
+describe('leg-rank.rules — 特征集 15 项 (FR-019 / 052 FR-017 / FR-020)', () => {
+  it('15 项齐全且逐字点名 —— 连续 9 + 固定取值 6, 少一项就红', () => {
     expect(CONTINUOUS_FEATURE_KEYS).toEqual([
       'rate',
       'effectiveCostDiscount',
@@ -69,8 +73,9 @@ describe('leg-rank.rules — 特征集 14 项 (FR-019 / 052 FR-020)', () => {
       'isDeltaInIntentBand',
       'crossesEarnings',
       'isTopRanked',
+      'liquidityTier',
     ]);
-    expect(RANKING_FEATURE_KEYS).toHaveLength(14);
+    expect(RANKING_FEATURE_KEYS).toHaveLength(15);
 
     const [features] = computeRankingFeatures(CONTEXT, [legOf()]);
     // 产出面与键表同源 —— 多一个 / 少一个字段都在这里红。
@@ -177,7 +182,7 @@ describe('leg-rank.rules — 三条边界处置 (FR-019a, Guardrail 2)', () => {
     }
   });
 
-  it('🚨 候选集**只有 1 条**腿 → 8 项连续量全取 0.5, 无一 NaN', () => {
+  it('🚨 候选集**只有 1 条**腿 → 9 项连续量全取 0.5, 无一 NaN', () => {
     const [features] = computeRankingFeatures(CONTEXT, [legOf()]);
     for (const key of CONTINUOUS_FEATURE_KEYS) {
       expect([key, features[key]]).toEqual([key, FEATURE_VALUE_WHEN_UNIFORM]);
@@ -239,7 +244,97 @@ describe('leg-rank.rules — 三条边界处置 (FR-019a, Guardrail 2)', () => {
   });
 });
 
-describe('leg-rank.rules — SC-003a 全量核对: 13 项恒落 [0,1]', () => {
+describe('leg-rank.rules — 流动性分档 (052 FR-017)', () => {
+  /** 档界降序 [500, 100, 10] ⇒ 四档, 特征值 1 / 2/3 / 1/3 / 0。 */
+  const tierOf = (openInterest: number | null, volume: number | null) =>
+    computeRankingFeatures(CONTEXT, [legOf({ openInterest, volume })])[0].liquidityTier;
+
+  it('活动量 = OI + 当日成交, 逐档取值 1 → 0 (越大越好)', () => {
+    const [top, mid] = LIQUIDITY_TIER_BOUNDS;
+    expect(tierOf(top, 0)).toBe(1); // 恰等于最高档界 ⇒ 进最高档 (闭区间)
+    expect(tierOf(top - 1, 0)).toBeCloseTo(2 / 3, 10);
+    expect(tierOf(mid - 1, 0)).toBeCloseTo(1 / 3, 10);
+    expect(tierOf(0, 0)).toBe(0);
+  });
+
+  it('🚨 成交量与 OI 同量纲相加 —— OI 差一张但当日成交补上, 两条同档', () => {
+    const [, mid] = LIQUIDITY_TIER_BOUNDS;
+    expect(tierOf(mid, 0)).toBe(tierOf(mid - 5, 5));
+  });
+
+  it('🚨 分档量 MUST NOT 参与 min-max —— 候选集恰好全在同一档时取值不被拉伸', () => {
+    // 三条腿活动量不同但同属最高档: 若误走连续类, min-max 会把它们拉成 0 / 0.5 / 1。
+    const features = computeRankingFeatures(CONTEXT, [
+      legOf({ openInterest: 600, volume: 0 }),
+      legOf({ openInterest: 5000, volume: 0 }),
+      legOf({ openInterest: 70000, volume: 0 }),
+    ]);
+    expect(features.map((f) => f.liquidityTier)).toEqual([1, 1, 1]);
+  });
+
+  it('两侧缺失 ⇒ 落最差档 (fail-closed; 与召回层「null ≠ 0」不冲突, 见实现注释)', () => {
+    expect(tierOf(null, null)).toBe(0);
+  });
+});
+
+describe('leg-rank.rules — 分层排序 lexicographic (052 FR-017 / FR-018 / FR-019)', () => {
+  /** 候选数足够 ⇒ 分档生效。 */
+  const layered = layeredRanker(RANK_TIERING_MIN_CANDIDATES);
+
+  it('🚨 厚腿排在薄腿前 —— 跨档时费率再高也压不过 (Guardrail 3 的反面)', () => {
+    const thickLowRate = featuresOf({ liquidityTier: 1, rate: 0.1 });
+    const thinTopRate = featuresOf({ liquidityTier: 0, rate: 0.99 });
+    expect(layered(thickLowRate, thinTopRate)).toBeLessThan(0);
+    expect(layered(thinTopRate, thickLowRate)).toBeGreaterThan(0);
+  });
+
+  it('档内按折算费率降序', () => {
+    const rich = featuresOf({ liquidityTier: 1, rate: 0.9 });
+    const poor = featuresOf({ liquidityTier: 1, rate: 0.2 });
+    expect(layered(rich, poor)).toBeLessThan(0);
+  });
+
+  it('🚨 费率打平带内 ⇒ 长期优先 (FR-018)', () => {
+    // 两条费率差 = 带宽的一半 ⇒ 判打平, 由 DTE 决胜。
+    const half = RATE_TIE_BAND / 2;
+    const shortLeg = featuresOf({ liquidityTier: 1, rate: 0.5 + half, dteDays: 0.1 });
+    const longLeg = featuresOf({ liquidityTier: 1, rate: 0.5, dteDays: 0.9 });
+    expect(layered(longLeg, shortLeg)).toBeLessThan(0);
+  });
+
+  it('费率差**超出**带宽 ⇒ 仍按费率, 期限不介入', () => {
+    const shortRich = featuresOf({ liquidityTier: 1, rate: 0.5 + RATE_TIE_BAND * 2, dteDays: 0.1 });
+    const longPoor = featuresOf({ liquidityTier: 1, rate: 0.5, dteDays: 0.9 });
+    expect(layered(shortRich, longPoor)).toBeLessThan(0);
+  });
+
+  it('🚨 降级边界取严格小于 —— 恰好等于阈值仍分档, 少一条才退回纯费率降序', () => {
+    const thickLowRate = featuresOf({ liquidityTier: 1, rate: 0.1 });
+    const thinTopRate = featuresOf({ liquidityTier: 0, rate: 0.99 });
+    // 恰等于阈值: 分档生效 ⇒ 厚腿在前。
+    expect(layeredRanker(RANK_TIERING_MIN_CANDIDATES)(thickLowRate, thinTopRate)).toBeLessThan(0);
+    // 少一条: 降级 ⇒ 高费率在前 (档失声)。
+    expect(
+      layeredRanker(RANK_TIERING_MIN_CANDIDATES - 1)(thickLowRate, thinTopRate),
+    ).toBeGreaterThan(0);
+  });
+
+  it('降级后就是 `rateDescendingRanker` 本体 —— 不是另写一份同义实现', () => {
+    expect(layeredRanker(RANK_TIERING_MIN_CANDIDATES - 1)).toBe(rateDescendingRanker);
+  });
+
+  it('🚨 FR-022 机械判据: ranker 函数体扫不到腿的**原始**字段名', () => {
+    // 类型层已保证 ranker 的入参只有特征集 (`LegRanker` 签名); 这条扫描防的是**闭包捕获**
+    // 外部腿数据 —— 那绕得过类型。
+    // 📌 `strike` 蓄意不入表: `strikeDiscount` 是合法特征 (052 FR-020), 入表会让判据恒红。
+    const body = layered.toString().toLowerCase();
+    for (const raw of ['bid', 'ask', '.code', 'expirydate', 'greeks']) {
+      expect([raw, body.includes(raw)]).toEqual([raw, false]);
+    }
+  });
+});
+
+describe('leg-rank.rules — SC-003a 全量核对: 15 项恒落 [0,1]', () => {
   const CASES: Record<string, RankingLegInput[]> = {
     单条候选集: [legOf()],
     某项全等: [legOf({ dteDays: 30 }), legOf({ dteDays: 30 })],
@@ -263,7 +358,7 @@ describe('leg-rank.rules — SC-003a 全量核对: 13 项恒落 [0,1]', () => {
   };
 
   for (const [name, members] of Object.entries(CASES)) {
-    it(`${name} ⇒ 13 项逐条落 [0,1] 且无一 NaN`, () => {
+    it(`${name} ⇒ 15 项逐条落 [0,1] 且无一 NaN`, () => {
       for (const features of computeRankingFeatures(CONTEXT, members)) {
         for (const key of RANKING_FEATURE_KEYS) {
           const value = features[key];
