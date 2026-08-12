@@ -28,6 +28,7 @@ import {
   legTabLabel,
   legTierForTab,
   orderedLegsForTab,
+  promotePick,
   rateHeaderFor,
   resolveLegTab,
   type LegPickerTab,
@@ -368,6 +369,45 @@ describe('FR-016 —— Tab 默认停在意图对应的那个 Tab', () => {
   it('🚨 US3-AS1：选完水位意图一变，Tab 让位给新的默认落位（否则人以为水位没存上）', () => {
     // 未选水位时人手点过「全腿」；选完水位后矩阵输出 rent ⇒ 停收租腿，不被旧手点值压住。
     expect(resolveLegTab({ intent: 'pending', tab: 'all' }, 'rent')).toBe('rent');
+  });
+
+  it('🚨 契约到手前手点的 Tab MUST 留得住 —— 「意图从未知变已知」不算意图变了', () => {
+    // 进详情页那一刻契约还没到手 ⇒ intent 为 null，而 Tab 栏此时**恒可点**（FR-020）。
+    // 若把 null → rent 也当作「意图变了」，这一下点击会被静默丢弃、Tab 弹回收租腿 ——
+    // 人看到的就是「点了没反应」（2026-08-12 真机实证形态）。
+    expect(resolveLegTab(promotePick({ intent: null, tab: 'build' }, 'rent'), 'rent')).toBe(
+      'build',
+    );
+  });
+
+  it('升格之后真实意图变化仍然让位 —— 本修 MUST NOT 破坏 US3-AS1', () => {
+    // 未选水位时（intent=pending）手点建仓 → 升格为 pending；选完水位矩阵输出 rent ⇒ 照旧让位。
+    const promoted = promotePick({ intent: null, tab: 'build' }, 'pending');
+    expect(resolveLegTab(promoted, 'rent')).toBe('rent');
+  });
+});
+
+describe('promotePick —— 契约到手时把「点击时意图未知」的手点值升格', () => {
+  it('契约到手 ⇒ 升格到当前意图，tab 不变', () => {
+    expect(promotePick({ intent: null, tab: 'build' }, 'rent')).toEqual({
+      intent: 'rent',
+      tab: 'build',
+    });
+  });
+
+  it('契约仍未到手 ⇒ 原样返回同一引用（调用方据此判断要不要写 state）', () => {
+    const picked = { intent: null, tab: 'build' } as const;
+    expect(promotePick(picked, null)).toBe(picked);
+    expect(promotePick(picked, undefined)).toBe(picked);
+  });
+
+  it('点击时意图已知的手点值不动 —— 升格只针对 null 那一档', () => {
+    const picked = { intent: 'pending', tab: 'all' } as const;
+    expect(promotePick(picked, 'rent')).toBe(picked);
+  });
+
+  it('没手点过 ⇒ 恒 null', () => {
+    expect(promotePick(null, 'rent')).toBeNull();
   });
 });
 
