@@ -54,7 +54,7 @@ import { AnchorDetailCard } from './anchor-detail-card';
 import { IvReadoutBlock } from './iv-readout-block';
 import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
-import { legActivityForTab, rateHeaderFor, showsBasisBadge } from './leg-picker.rules';
+import { legActivityForTab, rateHeaderFor } from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
 import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
@@ -227,8 +227,6 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                     activity={legActivityForTab(item, legTable.tab)}
                     // 🚨 档位同样随视角变（行内取 `tierByTab[tab]`，051 FR-015）。
                     tab={legTable.tab}
-                    // 全腿 Tab 混排 ⇒ 每行标腿族口径；单口径 Tab 关掉（FR-019）。
-                    showBasisBadge={showsBasisBadge(legTable.tab)}
                   />
                 )}
                 renderSectionFooter={() => (

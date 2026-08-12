@@ -77,7 +77,7 @@ updated_at: '2026-08-12'
 
 ## Phase 4: 两个标 + 徽标退役（US3）
 
-- [ ] T007 [Mobile] **钉住列加两个标 + 撤口径徽标**（FR-011, FR-011a, FR-013, FR-014, FR-014a, FR-014b, FR-019a, plan D-MARK）：`leg-row.tsx` 钉住列 line1 加「贴合」两字描边标（`isRecommended`）、line2 加「月」描边标（`isMonthlyChain`，**贴到期日**）；删 `showsBasisBadge` / `BASIS_BADGE` / `BASIS_BADGE_BORDER` 三个符号及其 orphan。🚨 措辞 **MUST** 读作「贴合当前意图」，🚫 MUST NOT 用 success/绿系（会读成「建议买入」）；两个标 **MUST 同载体、以视觉权重区分**，🚫 MUST NOT 让其中一个退化成纯几何符号 → verify: `rg 'showsBasisBadge\|BASIS_BADGE'` 零命中；typecheck + lint 绿；表宽 `716` 与 `LEG_TABLE_COLUMNS` 逐项**未变**（SC-011）
+- [X] T007 [Mobile] **钉住列加两个标 + 撤口径徽标**（FR-011, FR-011a, FR-013, FR-014, FR-014a, FR-014b, FR-019a, plan D-MARK）：`leg-row.tsx` 钉住列 line1 加「贴合」两字描边标（`isRecommended`）、line2 加「月」描边标（`isMonthlyChain`，**贴到期日**）；删 `showsBasisBadge` / `BASIS_BADGE` / `BASIS_BADGE_BORDER` 三个符号及其 orphan。🚨 措辞 **MUST** 读作「贴合当前意图」，🚫 MUST NOT 用 success/绿系（会读成「建议买入」）；两个标 **MUST 同载体、以视觉权重区分**，🚫 MUST NOT 让其中一个退化成纯几何符号 → verify: `rg 'showsBasisBadge\|BASIS_BADGE'` 零命中；typecheck + lint 绿；表宽 `716` 与 `LEG_TABLE_COLUMNS` 逐项**未变**（SC-011）
 
 ## Phase 5: 计数与空态（US2）
 

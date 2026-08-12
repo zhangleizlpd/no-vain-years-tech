@@ -120,6 +120,27 @@ export function legRateCell(
   return ask === null ? base : { primary: base.primary, secondary: COPY.rateAskRef(ask) };
 }
 
+// ═══════════════ 钉住列的两个标：贴合（推荐）+ 月（月度链） ═══════════════
+
+/** 钉住列的两个标（051 FR-014a：推荐标随行权价、月度链标随到期日）。 */
+export type LegStickyBadge = 'fit' | 'monthly';
+
+/**
+ * 两个标的**共用载体**（FR-014b）—— 8px 描边短文字标。两者只在描边色上分权重，
+ * 🚫 MUST NOT 让其中一个退化成纯几何符号：认不认得出与视觉权重是两回事。
+ */
+export const LEG_STICKY_BADGE_BASE = 'rounded-sm border px-0.5 text-[8px] text-ink-muted';
+
+/**
+ * 描边色 = 两个标唯一的差别。
+ * 🚨 推荐标**蓄意避开 ok / success 绿系**（FR-011a）—— 绿会被读成「建议买入」，而它说的只是
+ *    「Δ 贴合当前意图」；取 tag 调色板的 purple，与四档色阶不撞。月度链标取中性描边（更弱）。
+ */
+export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> = {
+  fit: 'border-tag-purple',
+  monthly: 'border-line',
+};
+
 // ═══════════════ 财报 chip：五形态 + null，三个「无标」不许合并 ═══════════════
 
 /**
@@ -280,6 +301,7 @@ export function legPickerClassNames(): string[] {
   for (const tone of Object.values(TIER_TONE)) out.push(tone.container, tone.text);
   for (const tone of Object.values(CHIP_TONE)) out.push(tone.container, tone.text);
   out.push(LEG_TIER_UNJUDGED_TONE.container, LEG_TIER_UNJUDGED_TONE.text);
+  out.push(LEG_STICKY_BADGE_BASE, ...Object.values(LEG_STICKY_BADGE_BORDER));
   out.push(legRowToneClass('dead'));
   out.push(...Object.values(AS_OF_TONE));
   return out;

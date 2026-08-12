@@ -40,9 +40,18 @@ export function legColumnWidth(key: LegColumnKey): number {
 }
 
 /** 首列槽位（88px，横滑之外）。表头与数据行共用，保证两边逐像素对齐。 */
-export function LegStickyCell({ children, className }: { children: ReactNode; className: string }) {
+export function LegStickyCell({
+  children,
+  className,
+  testID,
+}: {
+  children: ReactNode;
+  className: string;
+  /** 数据行传 —— 这是「首列钉住」那条 e2e 判据的**无条件锚点**（表头不传）。 */
+  testID?: string;
+}) {
   return (
-    <View className={className} style={{ width: LEG_STICKY_COL_WIDTH }}>
+    <View className={className} style={{ width: LEG_STICKY_COL_WIDTH }} testID={testID}>
       {children}
     </View>
   );

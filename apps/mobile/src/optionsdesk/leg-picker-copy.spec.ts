@@ -12,6 +12,8 @@ import type { LegEarningsMarkResponse, LegResponse } from '@nvy/api-client';
 
 import {
   LEG_ACTION_TAG_CLASS,
+  LEG_STICKY_BADGE_BASE,
+  LEG_STICKY_BADGE_BORDER,
   LEG_TIER_LEGEND,
   LEG_TIER_UNJUDGED_TONE,
   legActionLabel,
@@ -294,6 +296,40 @@ describe('T027a 区块级 asOf 二分（常态 vs 陈旧，档位来自 server�
     for (const tier of ['CURRENT', 'STALE', 'UNAVAILABLE'] as const) {
       expect(names).toContain(legAsOfLabel('2026-08-04', tier).className);
     }
+  });
+});
+
+// ═══════════════ ④'' 钉住列的两个标（051 FR-011a / FR-014b） ═══════════════
+
+describe('🚨 051 FR-014b —— 推荐标与月度链标**同载体、以视觉权重区分**', () => {
+  it('两个标共用同一条载体 class，差别只在描边这一处', () => {
+    // 「同载体」不是形容词：两者的 base 逐字相同，各自只追加一个描边色。
+    expect(LEG_STICKY_BADGE_BORDER.fit).not.toBe(LEG_STICKY_BADGE_BORDER.monthly);
+    expect(LEG_STICKY_BADGE_BASE).toContain('border');
+    expect(LEG_STICKY_BADGE_BASE).toContain('text-[8px]');
+  });
+
+  it('🚨 MUST NOT 退化成纯几何符号 —— 两个标的字都是**认得出来的汉字**', () => {
+    // 判据来自 mockup 实证：月度链标初版是空心方块，spec 作者本人评审时仍需发问「这是什么」。
+    // 空串 / ■ / ◆ 这类形态在这里当场红。
+    for (const label of [COPY.fitBadge, COPY.monthlyBadge]) {
+      expect(label).toMatch(/^[一-龥]+$/u);
+    }
+    expect(COPY.fitBadge).not.toBe(COPY.monthlyBadge);
+  });
+
+  it('🚨 FR-011a —— 推荐标 MUST NOT 用 success / 绿系（会被读成「建议买入」）', () => {
+    expect(LEG_STICKY_BADGE_BORDER.fit).not.toMatch(/\b(ok|success|green|quote-up)\b/);
+    // 推荐标用 tag 调色板；月度链标取中性描边（更弱的视觉权重）。
+    expect(LEG_STICKY_BADGE_BORDER.fit).toContain('tag-');
+    expect(LEG_STICKY_BADGE_BORDER.monthly).toContain('line');
+  });
+
+  it('两个标的 class 都进 class 面清单（否则配色禁令扫不到钉住列这块）', () => {
+    const names = legPickerClassNames();
+    expect(names).toContain(LEG_STICKY_BADGE_BASE);
+    expect(names).toContain(LEG_STICKY_BADGE_BORDER.fit);
+    expect(names).toContain(LEG_STICKY_BADGE_BORDER.monthly);
   });
 });
 

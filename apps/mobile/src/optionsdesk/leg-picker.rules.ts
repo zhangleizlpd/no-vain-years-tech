@@ -227,11 +227,6 @@ export function intentBasisLine(
   return COPY.intentBasis(table.lLevel, zone, bucketLabel(table.positionBucket));
 }
 
-/** 全腿 Tab 混排 ⇒ 每行标腿族口径徽标；单口径 Tab 关掉（FR-019）。O(1)。 */
-export function showsBasisBadge(tab: LegPickerTab): boolean {
-  return tab === 'all';
-}
-
 /**
  * 每 Tab 一个**档位判定口径**（契约 `LegTableResponse.basisByTab`）。
  * 同 {@link LegTabOrder}：用本仓自己的 Tab 类型，server 往 `tabs` 加一个成员即编译红。

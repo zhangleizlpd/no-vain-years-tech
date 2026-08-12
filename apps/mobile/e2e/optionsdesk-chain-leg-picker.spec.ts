@@ -785,7 +785,9 @@ test('049 T005 — US2-AS6（判据换代）：指针拖拽露出隐藏列、表
   // 表头与数据行各自的**位移载体**（宽 628 的内容层）：它们的屏幕左缘之差就是两者的位移差。
   const rowPane = page.getByTestId(rowScrollerId(code));
   const headerPane = page.getByTestId(HEADER_SCROLLER);
-  const stickyBadge = page.getByTestId(`optionsdesk-detail-leg-basis-${code}`);
+  // 🚨 051 FR-019a 起首列的探针换成**首列槽位本身** —— 原来锚的口径徽标已整条撤除，
+  //    而且它当年就是个条件渲染（只在全腿 Tab 出），拿它测「钉住」本就多一个前提。
+  const stickyBadge = page.getByTestId(`optionsdesk-detail-leg-sticky-${code}`);
   const actionCell = page.getByTestId(actionId(code));
 
   // 把首行滚进视口（拖拽必须落在真实元素上）。
@@ -1184,11 +1186,14 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
   );
   await expect(page.getByTestId('optionsdesk-detail-position-bucket-manual')).toHaveCount(0);
 
-  // 全腿：两条都在，且每行标腿族口径徽标（FR-019 混排）。
+  // 全腿：两条都在。
   await expect(page.getByTestId(rowId(rentCode))).toBeVisible();
   await expect(page.getByTestId(rowId(buildCode))).toBeVisible();
-  await expect(page.getByTestId(`optionsdesk-detail-leg-basis-${rentCode}`)).toHaveText('年');
-  await expect(page.getByTestId(`optionsdesk-detail-leg-basis-${buildCode}`)).toHaveText('周');
+  // 🚨 051 FR-019a —— 腿族口径徽标**已不存在**（原 047 断言它标「年」/「周」）。撤除的理由与
+  //    空间无关：它的取值其实是 Tab 成员关系、却顶着口径形状的标签，而全腿视角档位恒年化。
+  for (const code of [rentCode, buildCode]) {
+    await expect(page.getByTestId(`optionsdesk-detail-leg-basis-${code}`)).toHaveCount(0);
+  }
 
   // 三个 Tab 一个都不置灰（不置灰 ≠ 有内容，两件事各断各的）。
   for (const tab of TAB_KEYS) {

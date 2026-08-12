@@ -24,6 +24,8 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 import {
   LEG_ACTION_TAG_CLASS,
+  LEG_STICKY_BADGE_BASE,
+  LEG_STICKY_BADGE_BORDER,
   legActionLabel,
   legActionTextClass,
   legBidTone,
@@ -47,20 +49,6 @@ import {
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
-const BASIS_BADGE: Record<LegResponse['basis'], string> = {
-  weekly: COPY.basisWeekly,
-  annualized: COPY.basisAnnualized,
-};
-
-/**
- * 腿族徽标的描边色（mockup 段 3）。🚨 两者**只作族别标识、不承载好坏语义** ——
- * 故蓄意避开 ok / warn / err 三档，用 tag 调色板里的 teal / purple。
- */
-const BASIS_BADGE_BORDER: Record<LegResponse['basis'], string> = {
-  weekly: 'border-tag-teal',
-  annualized: 'border-tag-purple',
-};
-
 export interface LegRowProps {
   leg: LegResponse;
   /** 屏级唯一的横向位移（负值域）—— 表头与全部行读同一个（FR-001）。 */
@@ -78,12 +66,10 @@ export interface LegRowProps {
    *    在这里取一次传下去，四处共用同一个值（同源，不会 drift）。
    */
   tab: LegPickerTab;
-  /** 全腿 Tab 每行标腿族口径徽标（FR-019）；单口径 Tab 不标。 */
-  showBasisBadge?: boolean;
 }
 
 /** 单腿一行。复杂度 O(1)（列数固定）。 */
-export function LegRow({ leg, tx, today, activity, tab, showBasisBadge = true }: LegRowProps) {
+export function LegRow({ leg, tx, today, activity, tab }: LegRowProps) {
   // 🚨 本行档位**取当前视角那一格**，四个消费点共用（FR-015/FR-016）—— 全行零处读 `leg.tier`。
   const tier = legTierForTab(leg, tab);
   const rate = legRateCell(leg, tier);
@@ -98,23 +84,42 @@ export function LegRow({ leg, tx, today, activity, tab, showBasisBadge = true }:
       testID={`optionsdesk-detail-leg-row-${leg.code}`}
     >
       {/* ── 首列：行权价 / 到期（横滑之外 ⇒ 钉住）───────────────────────── */}
-      <LegStickyCell className="justify-center border-r border-line px-1.5">
+      {/* 🚨 两个标各贴各的量（FR-014a）：「贴合」贴行权价、「月」贴到期日 —— 月度链是**到期日**
+          的属性，贴错行会读成「这个行权价是月度的」。两者同载体、只在描边色上分权重（FR-014b）。 */}
+      <LegStickyCell
+        className="justify-center border-r border-line px-1.5"
+        testID={`optionsdesk-detail-leg-sticky-${leg.code}`}
+      >
         <View className="flex-row items-center gap-1">
           <Text className="font-mono text-xs font-semibold text-ink" numberOfLines={1}>
             {strikeLabel(leg)}
           </Text>
-          {showBasisBadge ? (
+          {/* 🚨 取值一律来自服务端（FR-011）—— 同一条腿在三个视角**同值**，客户端不自判；
+              greeks 缺失恒 false，但那条腿照常在表内、照常在其所属视角内（FR-013）。 */}
+          {leg.isRecommended ? (
             <Text
-              className={`rounded-sm border px-0.5 text-[8px] text-ink-muted ${BASIS_BADGE_BORDER[leg.basis]}`}
-              testID={`optionsdesk-detail-leg-basis-${leg.code}`}
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.fit}`}
+              testID={`optionsdesk-detail-leg-fit-${leg.code}`}
             >
-              {BASIS_BADGE[leg.basis]}
+              {COPY.fitBadge}
             </Text>
           ) : null}
         </View>
-        <Text className="font-mono text-[8px] text-ink-muted" numberOfLines={1}>
-          {expiryLabel(leg, today)}
-        </Text>
+        <View className="flex-row items-center gap-1">
+          <Text className="font-mono text-[8px] text-ink-muted" numberOfLines={1}>
+            {expiryLabel(leg, today)}
+          </Text>
+          {/* 🚫 判据是 server 的「该月第三个周五（非交易日前移）」—— MUST NOT 在这里简化成
+              「是不是周五」（FR-014）。 */}
+          {leg.isMonthlyChain ? (
+            <Text
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.monthly}`}
+              testID={`optionsdesk-detail-leg-monthly-${leg.code}`}
+            >
+              {COPY.monthlyBadge}
+            </Text>
+          ) : null}
+        </View>
       </LegStickyCell>
 
       {/* ── 右侧 11 列（与表头同 `tx`）─────────────────────────────────── */}

@@ -27,7 +27,6 @@ import {
   orderedLegsForTab,
   rateHeaderFor,
   resolveLegTab,
-  showsBasisBadge,
   type LegPickerTab,
   type LegTabOrder,
 } from './leg-picker.rules';
@@ -433,15 +432,10 @@ describe('🚨 FR-017 —— 未选水位是常驻分支：显式提示，MUST N
   });
 });
 
-// ═══════════════ ⑤ 口径随 Tab 换（腿族徽标 + 费率列头） ═══════════════
-
-describe('FR-019 —— 全腿 Tab 混排标口径徽标，单口径 Tab 关掉', () => {
-  it('徽标只在全腿 Tab 出', () => {
-    expect(showsBasisBadge('all')).toBe(true);
-    expect(showsBasisBadge('build')).toBe(false);
-    expect(showsBasisBadge('rent')).toBe(false);
-  });
-});
+// ═══════════════ ⑤ 费率列头随视角口径换 ═══════════════
+//
+// 📌 原「腿族口径徽标只在全腿 Tab 出」那组用例随 `showsBasisBadge` 整条退役（051 FR-019a）——
+//    徽标的取值其实是 **Tab 成员关系**却顶着口径形状的标签，而全腿视角档位恒年化。
 
 describe('🚨 051 FR-017/FR-017a —— 费率列头取自 `basisByTab`，列头**就是口径**', () => {
   // 契约下发的映射（全腿恒年化 —— 混着 10 天与 200 天的腿，周化档界会让整列全死档）。
