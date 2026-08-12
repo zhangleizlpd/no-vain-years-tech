@@ -60,7 +60,9 @@ updated_at: '2026-08-12'
 
   📌 **impl 期两处落法偏离，均已落地**：① 「零存储侧词汇」这条**源码扫描判据落 `scripts/checks/check-optionsdesk-rule-constants.ts` 不变量 #5**（带两侧探针），不在 Small spec 里 —— Small 档禁磁盘 I/O，治理扫描归 `scripts/checks/`（同 `045` 把 `anchor.rules.spec.ts` 尾部两个源码扫描 `it()` 迁出去的先例）。判据本身按原样执行，只是换了执行面。② **检索条件与候选上限两个入参本 task 不立**：它们分别是 T010 / T005 的交付物（两条 task 各自明写「port 入参接 K」「解出六个维度」），先立空壳等于占位。本 task 落的入参是 `symbol` + `now` + `perspectives`（视角）。
 
-- [ ] T002 [Server] **粗排层恒等入口 + 五层边界断言**（`FR-001`, `FR-004`, plan `D-LAYER-1`）：新建 `leg-coarse.rules.ts` 导出恒等入口（吃候选集吐候选池）；`get-legs.usecase.ts` 串进调用链。→ verify: `leg-coarse.rules.spec.ts`（Small）—— 恒等性断言（入 == 出，含空集）+ **函数体零判据**（`rg` 扫该文件内 `if|filter|sort|>=|<=` 零命中，Guardrail 5 的机器判据）+ 五层各自入口有独立单测文件
+- [X] T002 [Server] **粗排层恒等入口 + 五层边界断言**（`FR-001`, `FR-004`, plan `D-LAYER-1`）：新建 `leg-coarse.rules.ts` 导出恒等入口（吃候选集吐候选池）；`get-legs.usecase.ts` 串进调用链。→ verify: `leg-coarse.rules.spec.ts`（Small）—— 恒等性断言（入 == 出，含空集）+ **函数体零判据**（`rg` 扫该文件内 `if|filter|sort|>=|<=` 零命中，Guardrail 5 的机器判据）+ 五层各自入口有独立单测文件
+
+  📌 **两条源码扫描判据同 T001 落 `scripts/checks` 不变量 #6**（Small 禁磁盘 I/O）：① 粗排函数体词表扫描，`<` / `>` 单字符**蓄意不入表** —— 泛型 `<T>` 会让判据恒红，收窄成 `>=` / `<=`；② 五层入口各有 colocate spec 的**文件存在**断言，表达层（`optionsdesk.dto.ts`）显式排除并写明理由（本片零改动，归 `053`），让「少一层」是读得出来的决定而非遗漏。恒等性断言取 `toBe`（同一引用）而非 `toEqual`：返回副本也算「有逻辑」，且会让下游对候选池的原地写（活跃度标记）悄悄落到副本上。
 
 ---
 

@@ -1,4 +1,9 @@
-import type { RecallContext, RecallLegInput, RecallOutcome } from './leg-recall.rules';
+import type {
+  RecallCandidate,
+  RecallContext,
+  RecallLegInput,
+  RecallOutcome,
+} from './leg-recall.rules';
 import type { LegTab } from './leg-tab.rules';
 
 /**
@@ -84,6 +89,9 @@ export interface LegChainMeta {
   /** vendor 随链下发的标的价, **未复权**; 与召回上下文同型 (十进制金额, 不降 `number`)。 */
   readonly spot: RecallContext['spot'];
 }
+
+/** 一条候选 —— 层间传递的单元 (召回吐出、粗排合并、特征加工与精排消费)。 */
+export type LegCandidate = RecallCandidate<LegChainRow>;
 
 /** 出参 = 候选集 (裸行 + 已判定的视角归属) + 两道门槛的排除计数 + 链级上下文。 */
 export interface LegRetrievalResult extends RecallOutcome<LegChainRow> {

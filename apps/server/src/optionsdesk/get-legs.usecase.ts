@@ -48,9 +48,11 @@ import {
   type RankingContext,
   type RankingLegInput,
 } from './leg-rank.rules';
+import { coarseRank } from './leg-coarse.rules';
 import { relativeSpread, type LegIntentTab } from './leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
+  type LegCandidate,
   type LegRetrievalPort,
   type LegRetrievalResult,
 } from './leg-retrieval.port';
@@ -393,8 +395,12 @@ export class GetLegsUseCase {
 
       const zone = classifyZone(effective.v, chain.spot);
       const { intent, rentDepth } = classifyIntent(zone, effective.lLevel, positionBucket);
+      // 粗排层 (FR-004): 多路召回的合并去重槽位, **当前恒等** —— 位置先占住, 由 ADR-0064
+      // sunset #1 (多路召回落地) 触发它转实体。串在这里让五层的调用链在编排面上读得出来。
+      const pool = coarseRank(retrieval.candidates);
+
       const earningsDates = await this.readEarningsDates(parsed, chain.marketDate);
-      const monthlyExpiries = await this.readMonthlyExpiries(parsed.market, retrieval);
+      const monthlyExpiries = await this.readMonthlyExpiries(parsed.market, pool);
 
       return {
         ...empty('available'),
@@ -412,6 +418,7 @@ export class GetLegsUseCase {
         ...this.deriveLegs(
           symbol,
           retrieval,
+          pool,
           earningsDates,
           monthlyExpiries,
           effective.v,
@@ -459,11 +466,9 @@ export class GetLegsUseCase {
    */
   private async readMonthlyExpiries(
     market: string,
-    retrieval: LegRetrievalResult,
+    pool: readonly LegCandidate[],
   ): Promise<Set<string>> {
-    const candidates = monthlyExpiryCandidates(
-      retrieval.candidates.map(({ leg }) => dateOnlyOf(leg.expiryDate)),
-    );
+    const candidates = monthlyExpiryCandidates(pool.map(({ leg }) => dateOnlyOf(leg.expiryDate)));
     // 空链在检索层就已挡下, 这条是纯函数契约的兜底 —— 零候选就别白发一次查询。
     if (candidates.length === 0) return new Set();
 
@@ -496,16 +501,17 @@ export class GetLegsUseCase {
   private deriveLegs(
     symbol: string,
     retrieval: LegRetrievalResult,
+    pool: readonly LegCandidate[],
     earningsDates: string[],
     monthlyExpiries: ReadonlySet<string>,
     v: Prisma.Decimal,
     intent: LegIntent,
     rentDepth: RentDepth | null,
   ): Pick<LegTableView, 'legs' | 'gateCounts' | 'tabOrder'> {
-    const expiryKeys = retrieval.candidates.map(({ leg }) => dateOnlyOf(leg.expiryDate));
+    const expiryKeys = pool.map(({ leg }) => dateOnlyOf(leg.expiryDate));
     // 打标的腿族解析器要 DTE, 而解析器是同步回调 ⇒ 先按到期日索引好 (值由检索层按注入时钟算)。
     const dteByExpiry = new Map<string, number>();
-    for (const { leg } of retrieval.candidates) {
+    for (const { leg } of pool) {
       const key = dateOnlyOf(leg.expiryDate);
       if (!dteByExpiry.has(key)) dteByExpiry.set(key, leg.dteDays);
     }
@@ -517,7 +523,7 @@ export class GetLegsUseCase {
       earningsLegFamilyFor(intent, dteByExpiry.get(expiryDate) ?? 0),
     );
 
-    const legs = retrieval.candidates.map(({ leg: row, tabs }) => {
+    const legs = pool.map(({ leg: row, tabs }) => {
       const { code, expiryDate, dteDays, strike } = row;
       const delta = row.delta === null ? null : Math.abs(row.delta);
       const { absDelta, sigmaDistance } = deriveDeltaColumns(row.greeksComplete ? delta : null);

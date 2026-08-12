@@ -11,8 +11,9 @@
  * | 3 | 三段 DTE 界只住 `leg-recall.rules.ts` | **比较表达式**扫描 | 050 SC-009 |
  * | 4 | 闭区间带字面量只住 `leg-recall` / `leg-mark` | **对象形状**扫描 | 050 SC-009 |
  * | 5 | 检索 port 接口零存储侧词汇 | **词表**扫描 | 052 FR-031 |
+ * | 6 | 粗排层恒等 + 五层入口各有 spec | **词表**扫描 + 文件存在 | 052 FR-004 / SC-010 |
  *
- * 🚨 **#5 为什么在这里而不在 `leg-retrieval.port.spec.ts`**：它要读源码，而 Small 档禁磁盘
+ * 🚨 **#5/#6 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
  * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
  * 尾部两个 `it()` 迁出来的那条路径，判据不变、只是换了执行面。
  *
@@ -62,6 +63,22 @@ const RECALL_RULES_FILE = 'leg-recall.rules.ts';
 const MARK_RULES_FILE = 'leg-mark.rules.ts';
 /** 052 检索 port：接口只暴露业务语义（FR-031）。 */
 const RETRIEVAL_PORT_FILE = 'leg-retrieval.port.ts';
+/** 052 粗排层：当前为恒等函数，函数体零判据（FR-004 / ADR-0064 决策 1）。 */
+const COARSE_RULES_FILE = 'leg-coarse.rules.ts';
+/**
+ * 052 五层入口的载体文件 —— 每个 MUST 有 colocate 的 Small spec（SC-010「五层各自有独立入口
+ * 与独立测试」）。
+ *
+ * 📌 **表达层（`optionsdesk.dto.ts`）蓄意不在表内**：052 对它零改动，覆盖归 053
+ * （tasks.md §故意零覆盖登记）。写在这里是为了让「少一层」是**读得出来的决定**而不是遗漏。
+ */
+const LAYER_ENTRY_FILES = [
+  'leg-recall.rules.ts', // 召回 · 判据
+  'leg-retrieval.port.ts', // 召回 · 数据来源接缝
+  COARSE_RULES_FILE, // 粗排
+  'leg-rank.rules.ts', // 特征加工 + 精排
+  'leg-derive.rules.ts', // 特征加工 · 活跃标
+] as const;
 /** 门槛阈值的个数（绝对下限 / spot 比例 / 相对价差上界）—— 少抽到一个就是检查变平凡绿。 */
 const RECALL_THRESHOLD_COUNT = 3;
 
@@ -290,6 +307,38 @@ export function storageVocabProbe(): string | null {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #6 —— 粗排层恒等（词表扫描）+ 五层入口各有 spec（文件存在）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 判据 / 重排词汇。粗排层一旦出现其中任何一个就不再是恒等函数，而是**第二个打分点**
+ * （ADR-0064 决策 1 的禁令）—— 与精排口径必然分叉，且分叉后两边都排得出顺序、都不会红。
+ *
+ * 🚨 `<` / `>` 单字符**不能**入表：泛型 `<T>` 会让判据恒红。收窄成 `>=` / `<=` 两个双字符
+ * 比较符 —— 恒等函数里不该出现任何比较，这两个已足够拦住实际写法。
+ */
+export const COARSE_DECISION_RE = /\bif\b|\bfilter\b|\bsort\b|>=|<=/g;
+
+/** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
+export function coarseProbe(): string | null {
+  const decision = findShapeHits(
+    'if (a.rate >= b.rate) return pool.filter(Boolean).sort(byRate);',
+    COARSE_DECISION_RE,
+  );
+  if (decision.length === 0) {
+    return '粗排判据正例臂失灵：`if` / `>=` / `filter` / `sort` 未被命中 —— 判据已变平凡绿';
+  }
+  const identity = findShapeHits(
+    'export function coarseRank<T>(candidates: readonly T[]): readonly T[] { return candidates; }',
+    COARSE_DECISION_RE,
+  );
+  if (identity.length > 0) {
+    return `粗排判据反例臂失灵：恒等实现被判违规（命中 ${identity.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
 function main(): void {
   const ctxPath = join(REPO_ROOT, CTX_DIR);
   const rulesPath = join(ctxPath, RULES_FILE);
@@ -434,12 +483,54 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 052 不变量 #6 ──────────────────────────────────────────────────────────
+  const coarsePath = join(ctxPath, COARSE_RULES_FILE);
+  if (!existsSync(coarsePath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${COARSE_RULES_FILE}`);
+    process.exit(1);
+  }
+  const coarseProbeFailure = coarseProbe();
+  if (coarseProbeFailure) {
+    console.error(`❌ check-optionsdesk-rule-constants: 粗排判据探针失败 —— ${coarseProbeFailure}`);
+    process.exit(1);
+  }
+  const coarseHits = findShapeHits(readFileSync(coarsePath, 'utf8'), COARSE_DECISION_RE);
+  if (coarseHits.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 粗排层出现判据 / 重排：\n` +
+        `  - ${CTX_DIR}/${COARSE_RULES_FILE}: ${coarseHits.join(' / ')}\n`,
+    );
+    console.error(
+      'Fix: 粗排层当前 MUST 恒等（052 FR-004 / ADR-0064 决策 1）。有判据就是第二个打分点 ——',
+    );
+    console.error(
+      '     与精排口径必然分叉，而分叉后两边都排得出顺序、都不会红。合并去重要转实体，先改 ADR。',
+    );
+    process.exit(1);
+  }
+
+  const specless = LAYER_ENTRY_FILES.filter(
+    (name) => !existsSync(join(ctxPath, `${name.replace(/\.ts$/, '')}.spec.ts`)),
+  );
+  if (specless.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 五层入口缺 colocate 的 Small spec：\n` +
+        specless.map((n) => `  - ${CTX_DIR}/${n}`).join('\n') +
+        '\n',
+    );
+    console.error(
+      'Fix: SC-010 要求五层各自有独立入口**与独立测试**。层入口没有自己的 spec，那一层的判据就',
+    );
+    console.error('     只能靠穿过全链路的测试间接盖到 —— 改坏时红的是别人，定位不到这一层。');
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
       `门槛阈值 (${[...new Set(thresholds)].join(' / ')}) 与三段 DTE 界只住 ${RECALL_RULES_FILE}；` +
       `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
-      `${RETRIEVAL_PORT_FILE} 零存储侧词汇。`,
+      `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec。`,
   );
 }
 

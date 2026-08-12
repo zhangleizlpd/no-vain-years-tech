@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BAND_LITERAL_RE,
+  COARSE_DECISION_RE,
+  coarseProbe,
   DTE_BOUND_RE,
   extractCoefficients,
   extractRecallThresholds,
@@ -242,6 +244,33 @@ describe('findStorageVocab —— 052 不变量 #5（检索 port 零存储侧词
 describe('storageVocabProbe —— 两侧探针都健在', () => {
   it('现役词表的正例臂与反例臂均通过', () => {
     expect(storageVocabProbe()).toBeNull();
+  });
+});
+
+describe('COARSE_DECISION_RE —— 052 不变量 #6（粗排层恒等）', () => {
+  it('判据 / 重排词汇命中', () => {
+    expect(
+      findShapeHits('if (a >= b) return xs.filter(Boolean).sort(cmp);', COARSE_DECISION_RE),
+    ).toEqual(['if', '>=', 'filter', 'sort']);
+  });
+
+  it('泛型恒等实现零命中 —— `<T>` 不许被 `<=` 误伤（那会让判据恒红）', () => {
+    const src = 'export function coarseRank<T>(xs: readonly T[]): readonly T[] { return xs; }';
+    expect(findShapeHits(src, COARSE_DECISION_RE)).toEqual([]);
+  });
+
+  it('注释里写 `filter` 是**正确的文档**，不是违规', () => {
+    expect(findShapeHits('// 🚫 MUST NOT filter\nreturn xs;', COARSE_DECISION_RE)).toEqual([]);
+  });
+
+  it('词内子串不误伤（`identity` 里的 `if` / `resort` 里的 `sort`）', () => {
+    expect(findShapeHits('const identity = resortable;', COARSE_DECISION_RE)).toEqual([]);
+  });
+});
+
+describe('coarseProbe —— 两侧探针都健在', () => {
+  it('现役正则的正例臂与反例臂均通过', () => {
+    expect(coarseProbe()).toBeNull();
   });
 });
 
