@@ -2,7 +2,7 @@
 feature_id: 051-optionsdesk-leg-display-semantics
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: planned
 created_at: '2026-08-11'
 updated_at: '2026-08-12'
 spec_kit_version: '>=0.8.5,<0.10.0'
