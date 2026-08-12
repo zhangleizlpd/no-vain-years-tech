@@ -300,7 +300,12 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     );
     // 落库 10 条 − 权利金移出 2 条 = 响应 8 条; 流动性排除 2 条**仍在这 8 条里**。
     expect(view.legs).toHaveLength(8);
-    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 2, excludedFromIntentTabs: 2 });
+    // 051 FR-006a: 那 2 条 (`wideSpread` / `noAsk`) DTE 均为 10 ⇒ 只够得着建仓段 ⇒ 全落 build。
+    expect(view.gateCounts).toEqual({
+      removedByPremiumFloor: 2,
+      excludedFromIntentTabs: 2,
+      excludedFromIntentTabsByTab: { build: 2, rent: 0 },
+    });
   });
 
   it('①b 🚨 SC-001: 建仓集内**零条**腿的有效成本 ≥ spot (含恰好相等那条, 判据是严格小于)', async () => {
@@ -407,7 +412,11 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     const view = await useCase.execute('us:VICI', NOW);
 
     expect(view.legs).toEqual([]);
-    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 1, excludedFromIntentTabs: 0 });
+    expect(view.gateCounts).toEqual({
+      removedByPremiumFloor: 1,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    });
   });
 
   // ── ⑥ 流动性门槛: 出意图 Tab 但**不消失** ───────────────────────────────────
@@ -460,7 +469,11 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     // 🚨 空 Tab 不是错误也不是隐藏: 全腿 Tab 照常有数据, 锚派生那半边照常在。
     expect(inTab(view, 'all')).toHaveLength(2);
     expect(view.w.toFixed(4)).toBe('120.0000');
-    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+    expect(view.gateCounts).toEqual({
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    });
   });
 
   it('⑦b 未建锚的 symbol 才是 404 —— 「Tab 空」与「没有锚」是两回事', async () => {

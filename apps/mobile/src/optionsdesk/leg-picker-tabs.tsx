@@ -14,25 +14,19 @@
 //    本文件里没有任何 `disabled`，也没有任何按条件不渲染某个 Tab 的分支。空是空态文案的事，
 //    不是禁用态的事。
 //
-// 📌 未选水位的两条就地注明由 `legPickerNotices` 给（判据在 server，客户端负责把它说出来），
-//    渲在 Tab 行下方 —— 与 Tab 同属 sticky section header，滚到哪都跟着。
+// 🚨 **就地注明已不在本组件内**（051 FR-010a）—— 它们原本渲在 Tab 行下方、随 sticky 常驻区
+//    每屏占一份高度。051 起与两个门槛计数、空态解释同落**腿列表之后的非常驻区**
+//    （`renderSectionFooter`），常驻区高度只降不升（SC-009）。判据仍由 `legPickerNotices` 给。
 import { Pressable, Text, View } from 'react-native';
 
-import {
-  LEG_PICKER_TABS,
-  legTabLabel,
-  type LegPickerNotice,
-  type LegPickerTab,
-} from './leg-picker.rules';
+import { LEG_PICKER_TABS, legTabLabel, type LegPickerTab } from './leg-picker.rules';
 
 export interface LegPickerTabsProps {
   tab: LegPickerTab;
   onSelect: (tab: LegPickerTab) => void;
-  /** 就地注明（未选水位时 1~2 条；已选时空数组）。 */
-  notices: readonly LegPickerNotice[];
 }
 
-export function LegPickerTabs({ tab, onSelect, notices }: LegPickerTabsProps) {
+export function LegPickerTabs({ tab, onSelect }: LegPickerTabsProps) {
   return (
     <View className="bg-surface" testID="optionsdesk-detail-leg-tabs">
       <View className="flex-row border-b border-line">
@@ -58,18 +52,6 @@ export function LegPickerTabs({ tab, onSelect, notices }: LegPickerTabsProps) {
           );
         })}
       </View>
-
-      {notices.map((notice) => (
-        // 数据缺口 / 口径说明体系：`surface-sunken` 底，**与红标体系区隔** —— 它不是错误。
-        <View
-          key={notice.key}
-          className="border-b border-line-soft bg-surface-sunken px-md py-xs"
-          testID={`optionsdesk-detail-leg-notice-${notice.key}`}
-        >
-          {/* ⚠️ 降级状态字禁用最淡档 `text-ink-subtle`（白底实测 2.85:1，不达标）。 */}
-          <Text className="text-[10px] text-ink-muted">{notice.text}</Text>
-        </View>
-      ))}
     </View>
   );
 }

@@ -54,7 +54,17 @@ import { AnchorDetailCard } from './anchor-detail-card';
 import { IvReadoutBlock } from './iv-readout-block';
 import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
-import { legActivityForTab, rateSubForTab, showsBasisBadge } from './leg-picker.rules';
+import {
+  legActivityForTab,
+  legEmptyState,
+  legGateCountLines,
+  legGateCountsQuiet,
+  rateHeaderFor,
+  type LegEmptyState,
+  type LegGateCountLine,
+  type LegPickerNotice,
+  type LegPickerTab,
+} from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
 import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
@@ -197,14 +207,13 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       anchorId={detail.detail?.anchor.id ?? null}
                       table={legTable.table}
                     />
-                    <LegPickerTabs
-                      tab={legTable.tab}
-                      onSelect={legTable.setTab}
-                      notices={legTable.notices}
-                    />
+                    {/* 🚨 就地注明已移出常驻区（051 FR-010a）—— 见 `renderSectionFooter`。 */}
+                    <LegPickerTabs tab={legTable.tab} onSelect={legTable.setTab} />
                     <LegTableHeader
                       tx={tx}
-                      rateSub={rateSubForTab(legTable.tab)}
+                      // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——
+                      //    契约未到手时退降级标题，MUST NOT 先猜一个口径挂上去。
+                      rateHeader={rateHeaderFor(legTable.table?.basisByTab ?? null, legTable.tab)}
                       oiAsOf={legTable.table?.oiAsOf ?? null}
                     />
                     {/* 🚨 指示条钉在 12 列表头**正下方**（不是表格底部）—— 它描述列的位置，
@@ -223,15 +232,21 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                     today={detail.today}
                     // 🚨 活跃度是**当前 Tab 候选集内**的相对排名 —— 换 Tab 归属就变，故按 Tab 取。
                     activity={legActivityForTab(item, legTable.tab)}
-                    // 全腿 Tab 混排 ⇒ 每行标腿族口径；单口径 Tab 关掉（FR-019）。
-                    showBasisBadge={showsBasisBadge(legTable.tab)}
+                    // 🚨 档位同样随视角变（行内取 `tierByTab[tab]`，051 FR-015）。
+                    tab={legTable.tab}
                   />
                 )}
                 renderSectionFooter={() => (
+                  // 🚨 三样东西同落非常驻区（051 FR-010a）：就地说明 + 两个门槛计数 + 空态解释。
                   <LegBlockNotice
                     state={legTable.block}
                     total={legTable.total}
+                    notices={legTable.notices}
+                    gates={legGateCountLines(legTable.table?.gateCounts ?? null, legTable.tab)}
+                    // 🚨 空态按**该视角自己的**排除数分支（051 FR-009 / SC-013）。
+                    empty={legEmptyState(legTable.table?.gateCounts ?? null, legTable.tab)}
                     onRetry={legTable.retry}
+                    onSelectTab={legTable.setTab}
                   />
                 )}
                 ListFooterComponent={<LegBlockFooter />}
@@ -308,12 +323,21 @@ function LegBlockHeader({
 function LegBlockNotice({
   state,
   total,
+  notices,
+  gates,
+  empty,
   onRetry,
+  onSelectTab,
 }: {
   state: LegBlockState;
   total: number;
+  notices: readonly LegPickerNotice[];
+  gates: readonly LegGateCountLine[];
+  empty: LegEmptyState;
   onRetry: () => void;
+  onSelectTab: (tab: LegPickerTab) => void;
 }) {
+  const quiet = legGateCountsQuiet(gates);
   if (state === 'loading') {
     return <BlockSkeleton testID="optionsdesk-detail-leg-loading" />;
   }
@@ -345,14 +369,102 @@ function LegBlockNotice({
       </View>
     );
   }
-  if (total === 0) {
-    return (
-      <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-empty">
-        <Text className="text-xs text-ink-muted">{LEG_COPY.empty}</Text>
+  return (
+    <View>
+      {total === 0 ? <LegEmptyBlock empty={empty} onSelectTab={onSelectTab} /> : null}
+
+      {/* 数据缺口 / 口径说明体系：`surface-alt` 底，**与红标体系区隔** —— 它不是错误。 */}
+      {notices.map((notice) => (
+        <View
+          key={notice.key}
+          className="border-b border-line-soft bg-surface-alt px-md py-xs"
+          testID={`optionsdesk-detail-leg-notice-${notice.key}`}
+        >
+          {/* ⚠️ 降级状态字禁用最淡档 `text-ink-subtle`（白底实测 2.85:1，不达标）。 */}
+          <Text className="text-[10px] text-ink-muted">{notice.text}</Text>
+        </View>
+      ))}
+
+      {/* ── 两个门槛计数（FR-006/007/007a）+ 两数皆 0 时降权（FR-008）────── */}
+      <View className="gap-[3px] bg-surface px-md py-xs" testID="optionsdesk-detail-leg-gates">
+        {gates.map((gate) => (
+          <LegGateLine key={gate.key} gate={gate} quiet={quiet} onSelectTab={onSelectTab} />
+        ))}
       </View>
+    </View>
+  );
+}
+
+/**
+ * 空态。两分支**一眼可分**（FR-009）：带入口那支是「去看被挡下的那些」，无入口那支是
+ * 「换一只票」—— 用户据此该做的事完全不同，所以入口的有无不是装饰。
+ */
+function LegEmptyBlock({
+  empty,
+  onSelectTab,
+}: {
+  empty: LegEmptyState;
+  onSelectTab: (tab: LegPickerTab) => void;
+}) {
+  const cta = empty.cta;
+  return (
+    <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-empty">
+      {empty.title === null ? null : (
+        <Text className="text-xs font-semibold text-ink">{empty.title}</Text>
+      )}
+      <Text className="text-xs text-ink-muted">{empty.text}</Text>
+      {cta === null ? null : (
+        <Pressable
+          onPress={() => onSelectTab(cta.tab)}
+          accessibilityRole="button"
+          accessibilityLabel={cta.label}
+          testID="optionsdesk-detail-leg-empty-cta"
+          className="mt-xs self-start"
+        >
+          <Text className="text-xs font-medium text-brand-500">{`${cta.label} ›`}</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+/**
+ * 计数区的一行。🚨 **可点与否由数据说了算**（`goTab`）—— 权利金那条恒无入口，
+ * 给它一个「去看看」是空承诺：那些腿根本不在响应里（FR-007a）。
+ */
+function LegGateLine({
+  gate,
+  quiet,
+  onSelectTab,
+}: {
+  gate: LegGateCountLine;
+  quiet: boolean;
+  onSelectTab: (tab: LegPickerTab) => void;
+}) {
+  const testID = `optionsdesk-detail-leg-gate-${gate.key}`;
+  // ⚠️ 降权 = **去掉主色 + 缩字号**，字色仍是 `ink-muted`（5.7:1）——
+  //    🚫 MUST NOT 换 `ink-subtle`（2.85:1）：那是「看不清」不是「不抢眼」。
+  const quietClass = 'text-[9px] text-ink-muted';
+  if (gate.goTab === null) {
+    return (
+      <Text className={quiet ? quietClass : 'text-[10px] text-ink-muted'} testID={testID}>
+        {gate.text}
+      </Text>
     );
   }
-  return null;
+  const goTab = gate.goTab;
+  return (
+    <Pressable
+      onPress={() => onSelectTab(goTab)}
+      accessibilityRole="button"
+      accessibilityLabel={gate.text}
+      testID={testID}
+    >
+      <Text
+        className={quiet ? quietClass : 'text-[10px] font-medium text-brand-500'}
+      >{`${gate.text} ›`}</Text>
+    </Pressable>
+  );
 }
 
 /** 数据缺口体系的块级样式（虚线 + 沉底底色）。⚠️ 降级字用 `text-ink-muted`，非最淡档。 */

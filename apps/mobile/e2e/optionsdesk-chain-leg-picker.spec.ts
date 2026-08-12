@@ -149,9 +149,11 @@ const COPY = {
   noNewPositionWarning: '不开新仓 —— 该标的落在不动区或 L4。以下腿数据照常全量呈现，仅供查看。',
   sourceBackfillPrefix: '来源 ',
   bucketUnsetHint: '选一次水位档以定位意图',
-  rentDepthUnionNote: '水位未选 → 展示全部 Δ 档（0.05–0.40Δ）',
+  fitBadge: '贴合',
+  rentDepthUnionNote: (badge: string) =>
+    `水位未选 → 收租视角的腿与选了水位时完全相同，差别只在于全表零「${badge}」标。`,
   bucketManual: '人工输入',
-  tabs: { all: '全腿', build: '建仓腿·周化', rent: '收租腿·年化' },
+  tabs: { all: '全腿视角', build: '建仓视角', rent: '收租视角' },
   intentPending: '意图 待定',
   intentRent: '意图 收租',
   intentNoNewPosition: '意图 不开新仓',
@@ -250,7 +252,7 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   turnover: '21420.00',
   activityByTab: { all: null, build: null, rent: null },
   tabs: ['all', 'rent'],
-  // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
+  // 050 契约增量：非成员格恒 null。**由 `tier` × `tabs` 派生**，见 {@link makeLeg}。
   tierByTab: { all: 'good', build: null, rent: 'good' },
   isRecommended: false,
   isMonthlyChain: false,
@@ -258,8 +260,24 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   greeksComplete: true,
 };
 
+/**
+ * 🚨 `tierByTab` **由 `tier` × `tabs` 派生**（Guardrail 10：mock 从数据派生，不手写第二份）——
+ * 051 起呈现层读的是 `tierByTab[tab]`，写死一份就会与用例里 `tier: 'dead'` 这类覆写**当场矛盾**：
+ * 屏幕渲成好档、断言红在「文案不对」上，而真正错的是 mock 自相矛盾。
+ * 📌 派生只保证「同一条腿在其所属视角里判同一档」；**两个视角判不同档**那种数据要显式传
+ * `tierByTab`（本文件的用例都不需要，051 T011 的新 e2e 才需要）。
+ */
 function makeLeg(over: Partial<LegResponse> & Pick<LegResponse, 'code'>): LegResponse {
-  return { ...LEG_BASE, ...over };
+  const leg = { ...LEG_BASE, ...over };
+  if (over.tierByTab !== undefined) return leg;
+  return {
+    ...leg,
+    tierByTab: {
+      all: leg.tabs.includes('all') ? leg.tier : null,
+      build: leg.tabs.includes('build') ? leg.tier : null,
+      rent: leg.tabs.includes('rent') ? leg.tier : null,
+    },
+  };
 }
 
 /** 选约表基线 —— 当期快照、水位未选（⇒ 意图 `pending`，默认落位「全腿」）。 */
@@ -295,7 +313,11 @@ function makeLegTable(
       build: legs.filter((l) => l.tabs.includes('build')).map((l) => l.code),
       rent: legs.filter((l) => l.tabs.includes('rent')).map((l) => l.code),
     },
-    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    gateCounts: {
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
     ...over,
   };
@@ -765,7 +787,9 @@ test('049 T005 — US2-AS6（判据换代）：指针拖拽露出隐藏列、表
   // 表头与数据行各自的**位移载体**（宽 628 的内容层）：它们的屏幕左缘之差就是两者的位移差。
   const rowPane = page.getByTestId(rowScrollerId(code));
   const headerPane = page.getByTestId(HEADER_SCROLLER);
-  const stickyBadge = page.getByTestId(`optionsdesk-detail-leg-basis-${code}`);
+  // 🚨 051 FR-019a 起首列的探针换成**首列槽位本身** —— 原来锚的口径徽标已整条撤除，
+  //    而且它当年就是个条件渲染（只在全腿 Tab 出），拿它测「钉住」本就多一个前提。
+  const stickyBadge = page.getByTestId(`optionsdesk-detail-leg-sticky-${code}`);
   const actionCell = page.getByTestId(actionId(code));
 
   // 把首行滚进视口（拖拽必须落在真实元素上）。
@@ -1133,7 +1157,7 @@ test('047 T035 — 不动区帧（FR-021）：警示注**置顶**于区块头之
 // ⑦ US3-AS2 —— 未选水位：三 Tab 全部可进入读表 + 两条就地注明
 // ════════════════════════════════════════════════════════════════════════════
 
-test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**（不置灰不隐藏），并就地注明未选与 Δ 档并集', async ({
+test('047 T035 — US3-AS2：未选水位时三个视角 **全部可进入读表**（不置灰不隐藏），并就地注明未选与「成员集合不变」', async ({
   page,
 }) => {
   const rentCode = 'PEP261218P75000';
@@ -1164,11 +1188,14 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
   );
   await expect(page.getByTestId('optionsdesk-detail-position-bucket-manual')).toHaveCount(0);
 
-  // 全腿：两条都在，且每行标腿族口径徽标（FR-019 混排）。
+  // 全腿：两条都在。
   await expect(page.getByTestId(rowId(rentCode))).toBeVisible();
   await expect(page.getByTestId(rowId(buildCode))).toBeVisible();
-  await expect(page.getByTestId(`optionsdesk-detail-leg-basis-${rentCode}`)).toHaveText('年');
-  await expect(page.getByTestId(`optionsdesk-detail-leg-basis-${buildCode}`)).toHaveText('周');
+  // 🚨 051 FR-019a —— 腿族口径徽标**已不存在**（原 047 断言它标「年」/「周」）。撤除的理由与
+  //    空间无关：它的取值其实是 Tab 成员关系、却顶着口径形状的标签，而全腿视角档位恒年化。
+  for (const code of [rentCode, buildCode]) {
+    await expect(page.getByTestId(`optionsdesk-detail-leg-basis-${code}`)).toHaveCount(0);
+  }
 
   // 三个 Tab 一个都不置灰（不置灰 ≠ 有内容，两件事各断各的）。
   for (const tab of TAB_KEYS) {
@@ -1178,7 +1205,7 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
     ).toBeEnabled();
   }
 
-  // 建仓腿 Tab：可进入且读得到表。
+  // 建仓视角：可进入且读得到表。
   await page.getByTestId('optionsdesk-detail-leg-tab-build').tap();
   await expectTabSelected(page, 'build');
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(1));
@@ -1187,13 +1214,13 @@ test('047 T035 — US3-AS2：未选水位时三个 Tab **全部可进入读表**
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-bucket_unset')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toHaveCount(0);
 
-  // 收租腿 Tab：可进入 + **额外**注明 Δ 档取并集（未选水位不静默取一档）。
+  // 收租视角：可进入 + **额外**注明「成员集合不变、只是零推荐标」（051 FR-020 订正了这条措辞）。
   await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
   await expectTabSelected(page, 'rent');
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(1));
   await expect(page.getByTestId(rowId(rentCode))).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toHaveText(
-    COPY.rentDepthUnionNote,
+    COPY.rentDepthUnionNote(COPY.fitBadge),
   );
 
   // 回到全腿：两条又都在（切 Tab 只换 `section.data`，不重建列表）。
@@ -1247,8 +1274,13 @@ async function scrollUntilStackPinned(page: Page, stackTop: Locator): Promise<nu
  *       （状态栏 / 手势条 / 系统字号放大都吃高），那里才有鉴别力。web 侧量出来的行数不能
  *       当真机结论（文件头「验不到」清单第 5 条）。
  *
+ * 🚨 **051 T008 起「最坏档」这个概念本身没了** —— 两条就地注明移出 sticky 栈、落到腿列表之后
+ *    的非常驻区（FR-010a）⇒ 栈高不再随注明条数变，本条量的恒是常态档，预算 `STACK_BUDGET_WORST`
+ *    从此带余量。① 因此改判：同一份数据（未选水位 × rent），断言两条注明**在栈外**。
+ *    📌 预算数字不在本片下调 —— 该由 T013 真机实测定（web 视口的读数不能当真机结论）。
+ *
  * 断言四项（前两项是**前提自检**，缺了后两项就会在错误的坐标系上恒真）：
- *   ① 最坏档真的到达：两条就地注明同屏（只有 rent Tab + 未选水位才有第二条）。
+ *   ① 两条就地注明渲出来了、且**落在 sticky 栈之外**（051 FR-010a）。
  *   ② 真的滚进腿区：栈顶较未滚时上移 > 100px（否则量的是「没滚动时的布局」）。
  *   ③ sticky 生效：滚到底部行之后 12 列表头仍可见，且仍在栈内（`FR-011` 的前提）。
  *   ④ 栈净高（计数条顶 → 指示条底）≤ 预算。
@@ -1263,10 +1295,10 @@ test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
   });
   await openDetail(page, 'us:PEP');
-  // 第二条注明（Δ 档取并集）只在收租腿 Tab 出现 —— 最坏档 = 未选水位 × rent Tab。
+  // 第二条注明（成员集合不变、只是零推荐标）只在收租视角出现 —— 最坏档 = 未选水位 × rent。
   await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
 
-  // ① 前提自检：最坏档真的到达（两条同屏），否则下面量的是常态档，预算白留。
+  // ① 前提自检：两条注明确实渲出来了（未选水位 × rent 才有第二条）。
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-bucket_unset')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toBeVisible();
 
@@ -1289,6 +1321,16 @@ test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）
   // ④ 栈净高 = 计数条顶 → 指示条底（= plan D-TAB-4 逐项相加的那一段，不含屏 chrome）。
   const barBox = await boxOf(page.getByTestId('optionsdesk-detail-leg-scrollbar'));
   const stackHeight = barBox.y + barBox.height - yPinned;
+
+  // 🚨 051 FR-010a：两条注明落在**栈底之下**（跟着内容滚，不占常驻区）。
+  //    没有这一条，「注明移出去了」就只是提交信息里的一句话 —— 栈高预算带余量后不会有人发现它搬回来。
+  for (const key of ['bucket_unset', 'rent_depth_union']) {
+    const noticeBox = await boxOf(page.getByTestId(`optionsdesk-detail-leg-notice-${key}`));
+    expect(
+      noticeBox.y,
+      `就地注明 ${key} 还在 sticky 栈内 —— FR-010a 要求它随内容滚`,
+    ).toBeGreaterThan(barBox.y + barBox.height);
+  }
   const vp = page.viewportSize();
   if (vp === null) throw new Error('viewport 尺寸不可得');
   expect(

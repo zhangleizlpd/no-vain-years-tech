@@ -12,6 +12,8 @@ import type { LegEarningsMarkResponse, LegResponse } from '@nvy/api-client';
 
 import {
   LEG_ACTION_TAG_CLASS,
+  LEG_STICKY_BADGE_BASE,
+  LEG_STICKY_BADGE_BORDER,
   LEG_TIER_LEGEND,
   LEG_TIER_UNJUDGED_TONE,
   legActionLabel,
@@ -76,23 +78,20 @@ function mark(overrides: Partial<LegEarningsMarkResponse> = {}): LegEarningsMark
 
 describe('🚨 FR-010 —— 四档 × 四态梯度穷举（少一格 = 某种腿没有动作建议）', () => {
   it('好 / 可接受合并为「挂 OCO」，靠着色区分档位', () => {
-    expect(legActionLabel(leg({ tier: 'good' }))).toBe(COPY.actionPlaceOco);
-    expect(legActionLabel(leg({ tier: 'acceptable' }))).toBe(COPY.actionPlaceOco);
+    expect(legActionLabel('good')).toBe(COPY.actionPlaceOco);
+    expect(legActionLabel('acceptable')).toBe(COPY.actionPlaceOco);
     // 合并的前提是着色分得开 —— 两档的 bid 底色 MUST NOT 相同。
-    expect(legBidTone(leg({ tier: 'good' })).container).not.toBe(
-      legBidTone(leg({ tier: 'acceptable' })).container,
-    );
+    expect(legBidTone('good').container).not.toBe(legBidTone('acceptable').container);
   });
 
   it('薄 →「暂不挂」（「暂」承时间性）· 死档 →「死档剔除」（永久性），两者 MUST NOT 同字', () => {
-    expect(legActionLabel(leg({ tier: 'thin' }))).toBe(COPY.actionHold);
-    expect(legActionLabel(leg({ tier: 'dead' }))).toBe(COPY.actionDead);
+    expect(legActionLabel('thin')).toBe(COPY.actionHold);
+    expect(legActionLabel('dead')).toBe(COPY.actionDead);
     expect(COPY.actionHold).not.toBe(COPY.actionDead);
   });
 
   it('未判档（tier = null，含 greeks 缺失与无 bid）→「无法判档」', () => {
-    expect(legActionLabel(leg({ tier: null, greeksComplete: false }))).toBe(COPY.actionUnjudgeable);
-    expect(legActionLabel(leg({ tier: null, bid: null }))).toBe(COPY.actionUnjudgeable);
+    expect(legActionLabel(null)).toBe(COPY.actionUnjudgeable);
   });
 
   it('四个动作文案两两不同（合并只发生在好 / 可接受这一处）', () => {
@@ -103,19 +102,19 @@ describe('🚨 FR-010 —— 四档 × 四态梯度穷举（少一格 = 某种�
 
   it('四档色阶两两不同底色；未判档**不着色**（容器 class 为空串）', () => {
     const tiers = (['good', 'acceptable', 'thin', 'dead'] as const).map(
-      (tier) => legBidTone(leg({ tier })).container,
+      (tier) => legBidTone(tier).container,
     );
     expect(new Set(tiers).size).toBe(4);
     expect(tiers.every((c) => c.length > 0)).toBe(true);
-    expect(legBidTone(leg({ tier: null })).container).toBe('');
-    expect(legBidTone(leg({ tier: null }))).toEqual(LEG_TIER_UNJUDGED_TONE);
+    expect(legBidTone(null).container).toBe('');
+    expect(legBidTone(null)).toEqual(LEG_TIER_UNJUDGED_TONE);
   });
 
   it('🚨 只死档整行灰底沉底 —— 其余档**不整行着色**（整行着色会糊）', () => {
-    const dead = legRowToneClass(leg({ tier: 'dead' }));
+    const dead = legRowToneClass('dead');
     for (const tier of ['good', 'acceptable', 'thin', null] as const) {
-      expect(legRowToneClass(leg({ tier }))).not.toBe(dead);
-      expect(legRowToneClass(leg({ tier }))).toBe('bg-surface');
+      expect(legRowToneClass(tier)).not.toBe(dead);
+      expect(legRowToneClass(tier)).toBe('bg-surface');
     }
     expect(dead).toContain('surface-sunken');
   });
@@ -124,9 +123,9 @@ describe('🚨 FR-010 —— 四档 × 四态梯度穷举（少一格 = 某种�
     expect(LEG_ACTION_TAG_CLASS).toContain('surface-sunken');
     expect(LEG_ACTION_TAG_CLASS).toContain('border-line-strong');
     // 「挂 OCO」是唯一用正文色的那档；其余三态一律降级字，且都不是最淡档。
-    expect(legActionTextClass(leg({ tier: 'good' }))).toBe('text-ink');
+    expect(legActionTextClass('good')).toBe('text-ink');
     for (const tier of ['thin', 'dead', null] as const) {
-      expect(legActionTextClass(leg({ tier }))).toBe('text-ink-muted');
+      expect(legActionTextClass(tier)).toBe('text-ink-muted');
     }
   });
 
@@ -134,7 +133,7 @@ describe('🚨 FR-010 —— 四档 × 四态梯度穷举（少一格 = 某种�
     expect(LEG_TIER_LEGEND.map((row) => row.tier)).toEqual(['good', 'acceptable', 'thin', 'dead']);
     for (const row of LEG_TIER_LEGEND) {
       expect(row.bounds.length).toBeGreaterThan(0);
-      expect(row.tone.container).toBe(legBidTone(leg({ tier: row.tier })).container);
+      expect(row.tone.container).toBe(legBidTone(row.tier).container);
     }
   });
 });
@@ -143,8 +142,11 @@ describe('🚨 FR-010 —— 四档 × 四态梯度穷举（少一格 = 某种�
 
 describe('🚨 D-SOT-2 —— 薄档行的费率列 MUST 同屏显出 `ask` 口径值', () => {
   it('薄档 + 有 askRate ⇒ 副标带出 ask 费率（人据此自行套用 SoT 的二分）', () => {
+    // 🚨 051 FR-016：**腿上的 legacy `tier` 蓄意设成另一档** —— 判据只能来自入参那个档位，
+    //    读回 `leg.tier` 的实现在这里当场红（两者相等时它照样绿，那才是没有分辨力的测法）。
     const cell = legRateCell(
-      leg({ tier: 'thin', basis: 'annualized', annualizedRate: '0.072000', askRate: '0.114000' }),
+      leg({ tier: 'good', basis: 'annualized', annualizedRate: '0.072000', askRate: '0.114000' }),
+      'thin',
     );
     expect(cell.primary).toBe('7.2%');
     expect(cell.secondary).toBe(COPY.rateAskRef('11.4%'));
@@ -152,7 +154,8 @@ describe('🚨 D-SOT-2 —— 薄档行的费率列 MUST 同屏显出 `ask` 口�
 
   it('薄档的周化行同样带 ask —— 🚨 此时 ask 顶掉折年参照（折年是参照，ask 是 MUST）', () => {
     const cell = legRateCell(
-      leg({ tier: 'thin', basis: 'weekly', weeklyRate: '0.008000', askRate: '0.012000' }),
+      leg({ basis: 'weekly', weeklyRate: '0.008000', askRate: '0.012000' }),
+      'thin',
     );
     expect(cell.primary).toBe('0.80%');
     expect(cell.secondary).toBe(COPY.rateAskRef('1.20%'));
@@ -160,13 +163,13 @@ describe('🚨 D-SOT-2 —— 薄档行的费率列 MUST 同屏显出 `ask` 口�
 
   it('非薄档不带 ask —— 其余档 `askRate` 契约上恒 null，带出来只会误导', () => {
     for (const tier of ['good', 'acceptable', 'dead'] as const) {
-      const cell = legRateCell(leg({ tier, basis: 'annualized', askRate: '0.114000' }));
+      const cell = legRateCell(leg({ basis: 'annualized', askRate: '0.114000' }), tier);
       expect(cell.secondary ?? '').not.toContain('ask');
     }
   });
 
   it('薄档但 askRate 缺失 ⇒ 退回基础呈现，MUST NOT 渲 `ask —`', () => {
-    const cell = legRateCell(leg({ tier: 'thin', basis: 'weekly', askRate: null }));
+    const cell = legRateCell(leg({ basis: 'weekly', askRate: null }), 'thin');
     expect(cell.secondary).toBe(COPY.rateAnnualizedRef('17.6%'));
   });
 });
@@ -177,21 +180,21 @@ describe('🚨 FR-007 —— greeks 缺失行的三处处置必须一致', () =>
   const gap = leg({ tier: null, greeksComplete: false, absDelta: null, sigmaDistance: null });
 
   it('① 费率列显缺失占位（算得出来但会骗人：深实值腿折年 307% 染绿最危险）', () => {
-    expect(legRateCell(gap).primary).toBe(NO_VALUE);
-    expect(legRateCell(gap).secondary).toBeNull();
+    expect(legRateCell(gap, null).primary).toBe(NO_VALUE);
+    expect(legRateCell(gap, null).secondary).toBeNull();
   });
 
   it('② 不判档不着色', () => {
-    expect(legBidTone(gap)).toEqual(LEG_TIER_UNJUDGED_TONE);
+    expect(legBidTone(null)).toEqual(LEG_TIER_UNJUDGED_TONE);
   });
 
   it('③ 动作标「无法判档」', () => {
-    expect(legActionLabel(gap)).toBe(COPY.actionUnjudgeable);
+    expect(legActionLabel(null)).toBe(COPY.actionUnjudgeable);
   });
 
   it('🚨 行照常在表内、不沉底 —— 沉底是死档的处置，两者不同', () => {
-    expect(legRowToneClass(gap)).toBe(legRowToneClass(leg({ tier: 'good' })));
-    expect(legRowToneClass(gap)).not.toBe(legRowToneClass(leg({ tier: 'dead' })));
+    expect(legRowToneClass(null)).toBe(legRowToneClass('good'));
+    expect(legRowToneClass(null)).not.toBe(legRowToneClass('dead'));
   });
 });
 
@@ -293,6 +296,40 @@ describe('T027a 区块级 asOf 二分（常态 vs 陈旧，档位来自 server�
     for (const tier of ['CURRENT', 'STALE', 'UNAVAILABLE'] as const) {
       expect(names).toContain(legAsOfLabel('2026-08-04', tier).className);
     }
+  });
+});
+
+// ═══════════════ ④'' 钉住列的两个标（051 FR-011a / FR-014b） ═══════════════
+
+describe('🚨 051 FR-014b —— 推荐标与月度链标**同载体、以视觉权重区分**', () => {
+  it('两个标共用同一条载体 class，差别只在描边这一处', () => {
+    // 「同载体」不是形容词：两者的 base 逐字相同，各自只追加一个描边色。
+    expect(LEG_STICKY_BADGE_BORDER.fit).not.toBe(LEG_STICKY_BADGE_BORDER.monthly);
+    expect(LEG_STICKY_BADGE_BASE).toContain('border');
+    expect(LEG_STICKY_BADGE_BASE).toContain('text-[8px]');
+  });
+
+  it('🚨 MUST NOT 退化成纯几何符号 —— 两个标的字都是**认得出来的汉字**', () => {
+    // 判据来自 mockup 实证：月度链标初版是空心方块，spec 作者本人评审时仍需发问「这是什么」。
+    // 空串 / ■ / ◆ 这类形态在这里当场红。
+    for (const label of [COPY.fitBadge, COPY.monthlyBadge]) {
+      expect(label).toMatch(/^[一-龥]+$/u);
+    }
+    expect(COPY.fitBadge).not.toBe(COPY.monthlyBadge);
+  });
+
+  it('🚨 FR-011a —— 推荐标 MUST NOT 用 success / 绿系（会被读成「建议买入」）', () => {
+    expect(LEG_STICKY_BADGE_BORDER.fit).not.toMatch(/\b(ok|success|green|quote-up)\b/);
+    // 推荐标用 tag 调色板；月度链标取中性描边（更弱的视觉权重）。
+    expect(LEG_STICKY_BADGE_BORDER.fit).toContain('tag-');
+    expect(LEG_STICKY_BADGE_BORDER.monthly).toContain('line');
+  });
+
+  it('两个标的 class 都进 class 面清单（否则配色禁令扫不到钉住列这块）', () => {
+    const names = legPickerClassNames();
+    expect(names).toContain(LEG_STICKY_BADGE_BASE);
+    expect(names).toContain(LEG_STICKY_BADGE_BORDER.fit);
+    expect(names).toContain(LEG_STICKY_BADGE_BORDER.monthly);
   });
 });
 

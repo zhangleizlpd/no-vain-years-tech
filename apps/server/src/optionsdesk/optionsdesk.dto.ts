@@ -1379,6 +1379,21 @@ export class LegTabOrderResponse {
   rent!: string[];
 }
 
+export class LegExcludedByIntentTabResponse {
+  @ApiProperty({
+    description:
+      '被流动性门槛排除出**建仓** Tab 的条数 —— 判据 = 期限段与有效成本都合格、只栽在流动性上',
+    example: 2,
+  })
+  build!: number;
+
+  @ApiProperty({
+    description: '被流动性门槛排除出**收租** Tab 的条数 —— 同上, 期限段按收租段判',
+    example: 5,
+  })
+  rent!: number;
+}
+
 export class LegGateCountsResponse {
   @ApiProperty({
     description:
@@ -1396,6 +1411,19 @@ export class LegGateCountsResponse {
     example: 3,
   })
   excludedFromIntentTabs!: number;
+
+  @ApiProperty({
+    description:
+      '上一个数**按意图视角拆开** (051 FR-006a) —— 空态文案要按「**该视角自己的**排除数」分支, ' +
+      '而标量做不到: 建仓 Tab 空而标量 = 20 时那 20 条可能全是被排除出**收租**的, 据此说' +
+      '「有 20 条被挡了」对建仓 Tab 是错的**且不会红** (数字真实、文案通顺, 只是指向了别的视角的腿)。' +
+      '🚨 与标量并存而非替换, 且 MUST NOT 断言「标量 == build + rent」—— [30,49] 是两个期限段' +
+      '刻意的重叠区, 落其中且被挡下的腿在标量记 1 次、在这两个数里各记 1 次 ⇒ 恒有' +
+      '「标量 ≤ build + rent」。📌 不拆「全腿」那一档: 全腿 Tab 不受流动性门槛约束, 恒不会因它变空。' +
+      '📌 上上个数 (权利金门槛) 不拆视角: 被它挡下的腿已整条移出响应, 三视角一律',
+    type: LegExcludedByIntentTabResponse,
+  })
+  excludedFromIntentTabsByTab!: LegExcludedByIntentTabResponse;
 }
 
 export class LegBasisByTabResponse {
@@ -1649,6 +1677,10 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     gateCounts: {
       removedByPremiumFloor: view.gateCounts.removedByPremiumFloor,
       excludedFromIntentTabs: view.gateCounts.excludedFromIntentTabs,
+      excludedFromIntentTabsByTab: {
+        build: view.gateCounts.excludedFromIntentTabsByTab.build,
+        rent: view.gateCounts.excludedFromIntentTabsByTab.rent,
+      },
     },
     // 🚨 **取自 `leg-rank.rules.ts` 的那一份常量, 不在这里重写一遍字面量** —— 每腿的
     // `tierByTab` 正是按它判出来的, 抄一份在此会让「口径改了但下发的还是旧的」不红任何一处。

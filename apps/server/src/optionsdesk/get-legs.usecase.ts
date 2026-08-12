@@ -50,10 +50,11 @@ import {
   type RankingLegInput,
 } from './leg-rank.rules';
 import {
-  isExcludedFromIntentTabsByLiquidity,
+  intentTabsExcludedByLiquidity,
   passesPremiumFloor,
   recallTabs,
   relativeSpread,
+  type LegIntentTab,
   type RecallContext,
   type RecallLegInput,
 } from './leg-recall.rules';
@@ -218,6 +219,22 @@ export interface LegGateCounts {
    * 失去它唯一的用途 —— 提示该注意的流动性信号。
    */
   excludedFromIntentTabs: number;
+  /**
+   * 上一项**按意图视角拆开**的两个数 (051 FR-006a) —— 空态文案要按「**该视角自己的**排除数」
+   * 分支 (051 FR-009), 而标量做不到这件事: 建仓视角空而标量 = 20 时, 那 20 条可能全是被排除
+   * 出**收租**的, 据此说「有 20 条被挡了, 去全腿看」对建仓视角**是错的且不会红** (数字真实、
+   * 文案通顺, 只是指向了别的视角的腿)。
+   *
+   * 🚨 **与标量并存而非替换** (契约只加不删), 且 **`标量 ≠ build + rent`**: `[30,49]` 是两段
+   * 刻意的重叠区, 一条落其中且被挡下的腿在标量记 1 次、在这两个数里**各**记 1 次 ⇒ 恒有
+   * `标量 ≤ build + rent`。判据取**不等式**, 取等号会在重叠区红错方向。
+   *
+   * 📌 **不拆「全腿」那一档**: 全腿 Tab 不受流动性门槛约束 (FR-006), 恒不会因它变空 ——
+   * 这也是 {@link LegIntentTab} 把 `all` 排除在类型之外的理由。
+   * 📌 **权利金门槛那个数不拆视角**: 被它挡下的腿已整条移出响应, 三视角一律。两个计数在这一点
+   * 上的不对称, 与它们语义上的不对称是同一件事。
+   */
+  excludedFromIntentTabsByTab: Readonly<Record<LegIntentTab, number>>;
 }
 
 export interface LegTableView {
@@ -343,8 +360,12 @@ export class GetLegsUseCase {
       // 三份列表恒有值 (空数组而非 undefined) —— 「这个 Tab 没有腿」与「没有这个 Tab」是两件事,
       // 客户端不必为空态特判。
       tabOrder: emptyTabOrder(),
-      // 没有链就没有腿被挡下 —— 两个数取 0 而非 null: 它们是计数不是「未知」。
-      gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+      // 没有链就没有腿被挡下 —— 三个数取 0 而非 null: 它们是计数不是「未知」。
+      gateCounts: {
+        removedByPremiumFloor: 0,
+        excludedFromIntentTabs: 0,
+        excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+      },
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -644,17 +665,27 @@ export class GetLegsUseCase {
       } satisfies LegView;
     });
 
-    // 流动性门槛的计数 (FR-008) —— 判据**复用召回层同一个纯函数**, 与每腿的 `tabs` 同源
-    // ⇒ 两者不会 drift。🚨 与上面那个数**语义不对称**: 这些腿仍在 `legs[]` 里、仍在全腿 Tab
-    // 可见, 只是没进意图 Tab; 而被权利金门槛挡下的腿已经不在 `legs[]` 里, 不在本轮统计面内。
-    const excludedFromIntentTabs = legs.filter((leg) =>
-      isExcludedFromIntentTabsByLiquidity(recallContext, {
+    // 流动性门槛的计数 (FR-008 + 051 FR-006a) —— 判据**复用召回层同一个纯函数**, 与每腿的
+    // `tabs` 同源 ⇒ 两者不会 drift。🚨 与上面那个数**语义不对称**: 这些腿仍在 `legs[]` 里、
+    // 仍在全腿 Tab 可见, 只是没进意图 Tab; 而被权利金门槛挡下的腿已经不在 `legs[]` 里, 不在
+    // 本轮统计面内。
+    //
+    // 🚨 标量与两个分视角数在**同一次求值**上累加 (一腿一次调用): 标量按「返回非空」加 1,
+    // 分视角按「返回里的每个 Tab」各加 1 ⇒ `标量 ≤ build + rent` 是**读得出来的结构保证**,
+    // 而不是靠测试守住的巧合。重叠区 `[30,49]` 的腿会让右边比左边多 1, 这是设计不是 bug。
+    const excludedByTab: Record<LegIntentTab, number> = { build: 0, rent: 0 };
+    let excludedFromIntentTabs = 0;
+    for (const leg of legs) {
+      const excludedTabs = intentTabsExcludedByLiquidity(recallContext, {
         dteDays: leg.dteDays,
         strike: leg.strike,
         bid: leg.bid,
         ask: leg.ask,
-      }),
-    ).length;
+      });
+      if (excludedTabs.length === 0) continue;
+      excludedFromIntentTabs += 1;
+      for (const tab of excludedTabs) excludedByTab[tab] += 1;
+    }
 
     // 三个 Tab **各跑一次**排名 —— 同一条腿在不同 Tab 的候选集里名次不同是**定义如此**
     // (D-SOT-5), 故 MUST NOT 只算一次全链排名再复用。
@@ -697,7 +728,15 @@ export class GetLegsUseCase {
         a.code.localeCompare(b.code),
     );
 
-    return { legs, tabOrder, gateCounts: { removedByPremiumFloor, excludedFromIntentTabs } };
+    return {
+      legs,
+      tabOrder,
+      gateCounts: {
+        removedByPremiumFloor,
+        excludedFromIntentTabs,
+        excludedFromIntentTabsByTab: excludedByTab,
+      },
+    };
   }
 }
 

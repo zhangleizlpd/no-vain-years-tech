@@ -30,8 +30,14 @@ import type { FreshnessTier } from './underlying-detail.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
-/** 非空的四档（契约的 `tier` 还有一个 `null` = 未判档，见 {@link LEG_TIER_UNJUDGED_TONE}）。 */
-type LegTier = NonNullable<LegResponseTier>;
+/**
+ * 非空的四档（契约的 `tier` 还有一个 `null` = 未判档，见 {@link LEG_TIER_UNJUDGED_TONE}）。
+ *
+ * 🚨 **档位随视角变**（051 FR-015）—— 本模块的四个映射函数一律**吃档位值、不吃 `leg`**：
+ *    档位这一个量就是它们全部所需，多吃一个 `leg` 只会给「回落到 legacy 的 `leg.tier`」留门
+ *    （FR-016 明禁）。当前视角那一格由调用方经 `legTierForTab(leg, tab)` 取一次后传下来。
+ */
+export type LegTier = NonNullable<LegResponseTier>;
 
 /** 单元格视觉。`container` 为空串 = **不着色**（未判档那一档蓄意留白）。 */
 export interface LegCellTone {
@@ -55,8 +61,8 @@ const TIER_TONE: Readonly<Record<LegTier, LegCellTone>> = {
 export const LEG_TIER_UNJUDGED_TONE: LegCellTone = { container: '', text: 'text-ink-muted' };
 
 /** bid 单元格的档位色。`tier === null` ⇒ 不着色（FR-007）。复杂度 O(1)。 */
-export function legBidTone(leg: Pick<LegResponse, 'tier'>): LegCellTone {
-  return leg.tier === null ? LEG_TIER_UNJUDGED_TONE : TIER_TONE[leg.tier];
+export function legBidTone(tier: LegTier | null): LegCellTone {
+  return tier === null ? LEG_TIER_UNJUDGED_TONE : TIER_TONE[tier];
 }
 
 /**
@@ -64,8 +70,8 @@ export function legBidTone(leg: Pick<LegResponse, 'tier'>): LegCellTone {
  * 其余档（含未判档）一律常规底 —— 未判档**不沉底也不灰底**，那是死档的处置，两者不同。
  * 复杂度 O(1)。
  */
-export function legRowToneClass(leg: Pick<LegResponse, 'tier'>): string {
-  return leg.tier === 'dead' ? 'bg-surface-sunken' : 'bg-surface';
+export function legRowToneClass(tier: LegTier | null): string {
+  return tier === 'dead' ? 'bg-surface-sunken' : 'bg-surface';
 }
 
 /** 四档 → 动作文案。好 / 可接受**合并**（FR-010）。 */
@@ -82,16 +88,16 @@ const ACTION_BY_TIER: Readonly<Record<LegTier, string>> = {
  *    对使用者是同一件事（这一口不知道值不值），分两句只会让窄列更难读。
  * 复杂度 O(1)。
  */
-export function legActionLabel(leg: Pick<LegResponse, 'tier'>): string {
-  return leg.tier === null ? COPY.actionUnjudgeable : ACTION_BY_TIER[leg.tier];
+export function legActionLabel(tier: LegTier | null): string {
+  return tier === null ? COPY.actionUnjudgeable : ACTION_BY_TIER[tier];
 }
 
 /** 🚫 中性 tag —— `surface-sunken` 底 + `border-strong` 描边，**刻意不做按钮观感**（FR-012）。 */
 export const LEG_ACTION_TAG_CLASS = 'rounded-sm border border-line-strong bg-surface-sunken px-1';
 
 /** 「挂 OCO」是唯一的正文色（去做）；其余三态一律降级字。⚠️ 禁用最淡档。O(1)。 */
-export function legActionTextClass(leg: Pick<LegResponse, 'tier'>): string {
-  return legActionLabel(leg) === COPY.actionPlaceOco ? 'text-ink' : 'text-ink-muted';
+export function legActionTextClass(tier: LegTier | null): string {
+  return legActionLabel(tier) === COPY.actionPlaceOco ? 'text-ink' : 'text-ink-muted';
 }
 
 /**
@@ -105,16 +111,35 @@ export function legActionTextClass(leg: Pick<LegResponse, 'tier'>): string {
  * 复杂度 O(1)。
  */
 export function legRateCell(
-  leg: Pick<
-    LegResponse,
-    'basis' | 'weeklyRate' | 'annualizedRate' | 'greeksComplete' | 'tier' | 'askRate'
-  >,
+  leg: Pick<LegResponse, 'basis' | 'weeklyRate' | 'annualizedRate' | 'greeksComplete' | 'askRate'>,
+  tier: LegTier | null,
 ): StackedCell {
   const base = rateCell(leg);
-  if (leg.tier !== 'thin') return base;
+  if (tier !== 'thin') return base;
   const ask = formatRatePct(leg.askRate, leg.basis);
   return ask === null ? base : { primary: base.primary, secondary: COPY.rateAskRef(ask) };
 }
+
+// ═══════════════ 钉住列的两个标：贴合（推荐）+ 月（月度链） ═══════════════
+
+/** 钉住列的两个标（051 FR-014a：推荐标随行权价、月度链标随到期日）。 */
+export type LegStickyBadge = 'fit' | 'monthly';
+
+/**
+ * 两个标的**共用载体**（FR-014b）—— 8px 描边短文字标。两者只在描边色上分权重，
+ * 🚫 MUST NOT 让其中一个退化成纯几何符号：认不认得出与视觉权重是两回事。
+ */
+export const LEG_STICKY_BADGE_BASE = 'rounded-sm border px-0.5 text-[8px] text-ink-muted';
+
+/**
+ * 描边色 = 两个标唯一的差别。
+ * 🚨 推荐标**蓄意避开 ok / success 绿系**（FR-011a）—— 绿会被读成「建议买入」，而它说的只是
+ *    「Δ 贴合当前意图」；取 tag 调色板的 purple，与四档色阶不撞。月度链标取中性描边（更弱）。
+ */
+export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> = {
+  fit: 'border-tag-purple',
+  monthly: 'border-line',
+};
 
 // ═══════════════ 财报 chip：五形态 + null，三个「无标」不许合并 ═══════════════
 
@@ -276,7 +301,8 @@ export function legPickerClassNames(): string[] {
   for (const tone of Object.values(TIER_TONE)) out.push(tone.container, tone.text);
   for (const tone of Object.values(CHIP_TONE)) out.push(tone.container, tone.text);
   out.push(LEG_TIER_UNJUDGED_TONE.container, LEG_TIER_UNJUDGED_TONE.text);
-  out.push(legRowToneClass({ tier: 'dead' }));
+  out.push(LEG_STICKY_BADGE_BASE, ...Object.values(LEG_STICKY_BADGE_BORDER));
+  out.push(legRowToneClass('dead'));
   out.push(...Object.values(AS_OF_TONE));
   return out;
 }

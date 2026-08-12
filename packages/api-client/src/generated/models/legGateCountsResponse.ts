@@ -5,10 +5,13 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
+import type { LegExcludedByIntentTabResponse } from './legExcludedByIntentTabResponse';
 
 export interface LegGateCountsResponse {
   /** 被**权利金门槛**从响应里整条移出的条数 (FR-005) —— 这些腿三个 Tab 都看不到, 是真正的「数据消失」。呈现侧 MUST NOT 省略: 它是「有腿不见了」这笔取舍的**唯一**补偿 */
   removedByPremiumFloor: number;
   /** 被**流动性门槛**排除出建仓 / 收租的条数 (FR-006) —— 这些腿**仍在响应里、仍在全腿 Tab 可见**, 没有消失。🚨 与上一个数语义不对称, MUST NOT 相加成总数。期限段本就不合格的腿 (如 DTE 400) 不计入 —— 它不是被门槛挡下的 */
   excludedFromIntentTabs: number;
+  /** 上一个数**按意图视角拆开** (051 FR-006a) —— 空态文案要按「**该视角自己的**排除数」分支, 而标量做不到: 建仓 Tab 空而标量 = 20 时那 20 条可能全是被排除出**收租**的, 据此说「有 20 条被挡了」对建仓 Tab 是错的**且不会红** (数字真实、文案通顺, 只是指向了别的视角的腿)。🚨 与标量并存而非替换, 且 MUST NOT 断言「标量 == build + rent」—— [30,49] 是两个期限段刻意的重叠区, 落其中且被挡下的腿在标量记 1 次、在这两个数里各记 1 次 ⇒ 恒有「标量 ≤ build + rent」。📌 不拆「全腿」那一档: 全腿 Tab 不受流动性门槛约束, 恒不会因它变空。📌 上上个数 (权利金门槛) 不拆视角: 被它挡下的腿已整条移出响应, 三视角一律 */
+  excludedFromIntentTabsByTab: LegExcludedByIntentTabResponse;
 }
