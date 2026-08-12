@@ -20,7 +20,9 @@ import {
   intentLabel,
   isManualBucket,
   legActivityForTab,
+  legEmptyState,
   legGateCountLines,
+  legGateCountsQuiet,
   legPickerNotices,
   legPickerSections,
   legTabLabel,
@@ -520,6 +522,78 @@ describe('🚨 051 FR-007/FR-007a —— 两个计数语义与交互**都**不�
 
   it('契约未到手 ⇒ 空数组（MUST NOT 渲「移出 — 条」）', () => {
     expect(legGateCountLines(null, 'build')).toEqual([]);
+  });
+
+  it('🚨 FR-008 —— 两数**皆** 0 才降权；任一非零都是要被看见的真数据', () => {
+    const zeroBuild = {
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 47,
+      excludedFromIntentTabsByTab: { build: 0, rent: 7 },
+    };
+    // 同一份数据两个视角判出不同结果 —— 降权也按视角算，不看全表。
+    expect(legGateCountsQuiet(legGateCountLines(zeroBuild, 'build'))).toBe(true);
+    expect(legGateCountsQuiet(legGateCountLines(zeroBuild, 'rent'))).toBe(false);
+    expect(legGateCountsQuiet(legGateCountLines(counts, 'build'))).toBe(false);
+  });
+});
+
+// ═══════════════ ④c 意图视角空态（051 FR-008 / FR-009 / SC-013） ═══════════════
+
+describe('🚨 051 FR-009 —— 空态按**该视角自己的**排除数分支', () => {
+  const counts = (build: number, rent: number, scalar = 99) => ({
+    removedByPremiumFloor: 25,
+    excludedFromIntentTabs: scalar,
+    excludedFromIntentTabsByTab: { build, rent },
+  });
+
+  it('该视角排除数 > 0 ⇒ 指向门槛 + 带入口（数字与入口都用该视角自己的数）', () => {
+    const state = legEmptyState(counts(20, 3), 'build');
+    expect(state.text).toContain('20');
+    expect(state.cta?.tab).toBe('all');
+    expect(state.cta?.label).toContain('20');
+  });
+
+  it('该视角排除数为 0 ⇒ 指向「确实没有」+ **无入口**（没有可去看的腿）', () => {
+    const state = legEmptyState(counts(0, 0), 'build');
+    expect(state.cta).toBeNull();
+    expect(state.text).not.toContain('20');
+  });
+
+  it('🚨 SC-013 交叉验证：建仓排除数 0、收租排除数 > 0 ⇒ **建仓空态仍指向「确实没有」**', () => {
+    // 这条正是「服务端按视角拆计数」买来的东西 —— 不验等于没买。
+    // 用全表标量的实现在这里会给建仓视角一个「有 99 条被挡了，去看看」的入口：数字真实、
+    // 文案通顺、指向的却是收租视角的腿，而且不会红。
+    const build = legEmptyState(counts(0, 31), 'build');
+    const rent = legEmptyState(counts(0, 31), 'rent');
+
+    expect(build.cta).toBeNull();
+    expect(build.text).not.toContain('31');
+    expect(build.text).not.toContain('99');
+    expect(rent.cta?.tab).toBe('all');
+    expect(rent.text).toContain('31');
+    // 两种情形的文案 MUST 互不相同（SC-013 的字面要求）。
+    expect(build.text).not.toBe(rent.text);
+  });
+
+  it('两个意图视角各说各的判据（建仓多一道有效成本门槛，收租只有期限段）', () => {
+    expect(legEmptyState(counts(0, 0), 'build').text).not.toBe(
+      legEmptyState(counts(0, 0), 'rent').text,
+    );
+    expect(legEmptyState(counts(0, 0), 'build').title).not.toBe(
+      legEmptyState(counts(0, 0), 'rent').title,
+    );
+  });
+
+  it('全腿视角沿用既有单行文案 —— 它不受流动性门槛约束，没有「被挡下」这一分支', () => {
+    const state = legEmptyState(counts(20, 31), 'all');
+    expect(state.title).toBeNull();
+    expect(state.text).toBe(COPY.empty);
+    expect(state.cta).toBeNull();
+  });
+
+  it('契约未到手 ⇒ 退同一个通用空态（MUST NOT 渲「被挡下 — 条」）', () => {
+    expect(legEmptyState(null, 'build').cta).toBeNull();
+    expect(legEmptyState(null, 'build').text).toBe(COPY.empty);
   });
 });
 

@@ -82,7 +82,7 @@ updated_at: '2026-08-12'
 ## Phase 5: 计数与空态（US2）
 
 - [X] T008 [Mobile] **就地说明移出常驻区 + 计数区落 `LegBlockNotice`**（FR-006, FR-007, FR-007a, FR-010, FR-010a, FR-012, plan D-GATES, D-TEST-1）：把既有 notices 从 `LegPickerTabs`（**在常驻区内**）搬到 `renderSectionFooter`；计数区两条**语义不对称**（权利金「三个视角都看不到」纯文字无入口 / 流动性「仍在全腿视角」可点 → `setTab('all')`）；为 P3 第二对计数留位 → verify: Small 单测覆盖两条措辞的判别性；`LegPickerTabs` 的 `notices` prop **已退役**（`rg` 零命中）
-- [ ] T009 [Mobile] **空态按该视角自己的排除数分支 + 计数为 0 降权**（FR-008, FR-009, plan D-GATES, D-GATES-2, D-TEST-1）：空态文案取 `excludedFromIntentTabsByTab[tab]`（🚫 **MUST NOT 用全表标量**）；两数皆 0 时计数区降权，🚨 靠**去掉主色 + 缩字号**，MUST NOT 压低对比度 → verify: Small 单测 —— ① 该视角排除数 > 0 → 指向门槛 + 带入口 ② 为 0 → 指向「该期限段确实没有」+ 无入口 ③ 🚨 **`SC-013` 交叉验证**：构造「建仓排除数 0、收租排除数 > 0」的数据，断言**建仓空态仍指向「确实没有」**——这条正是取 B 要买的东西，不验等于没买
+- [X] T009 [Mobile] **空态按该视角自己的排除数分支 + 计数为 0 降权**（FR-008, FR-009, plan D-GATES, D-GATES-2, D-TEST-1）：空态文案取 `excludedFromIntentTabsByTab[tab]`（🚫 **MUST NOT 用全表标量**）；两数皆 0 时计数区降权，🚨 靠**去掉主色 + 缩字号**，MUST NOT 压低对比度 → verify: Small 单测 —— ① 该视角排除数 > 0 → 指向门槛 + 带入口 ② 为 0 → 指向「该期限段确实没有」+ 无入口 ③ 🚨 **`SC-013` 交叉验证**：构造「建仓排除数 0、收租排除数 > 0」的数据，断言**建仓空态仍指向「确实没有」**——这条正是取 B 要买的东西，不验等于没买
 
 ## Phase 6: 文案复核与验证收口
 

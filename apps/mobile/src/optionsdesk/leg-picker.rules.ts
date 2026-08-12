@@ -325,6 +325,8 @@ export interface LegGateCountLine {
   key: 'premium_floor' | 'liquidity';
   text: string;
   goTab: LegPickerTab | null;
+  /** 这一行报的数本身 —— 降权判据读它（FR-008），呈现层不从文案里往回抠数字。 */
+  count: number;
 }
 
 /**
@@ -356,6 +358,7 @@ export function legGateCountLines(
         COPY.gatePremiumFloorNote,
       ),
       goTab: null,
+      count: gateCounts.removedByPremiumFloor,
     },
     {
       key: 'liquidity',
@@ -365,6 +368,7 @@ export function legGateCountLines(
         inAllTab ? COPY.gateLiquidityNoteAll : COPY.gateLiquidityNoteIntent,
       ),
       goTab: inAllTab ? null : 'all',
+      count: excluded,
     },
   ];
 }
@@ -372,4 +376,55 @@ export function legGateCountLines(
 /** 计数为 0 时只报数 —— 「移出 0 条 · 三个视角都看不到」是一句自相矛盾的话。 */
 function withNote(line: (n: number) => string, count: number, note: string): string {
   return count === 0 ? line(0) : `${line(count)}${note}`;
+}
+
+/**
+ * 计数区要不要降权（FR-008）—— **两个数皆 0** 才降，任一非零都是要被看见的真数据。O(行数)。
+ *
+ * 🚨 降权 MUST 靠**去掉主色 + 缩字号**，🚫 MUST NOT 靠压低对比度：计数是真数据（只是为 0），
+ *    不是占位符。mockup 阶段踩过 —— 用 `text-subtle` 掉到 2.85:1，那是「看不清」不是「不抢眼」。
+ * 📌 判据落在**行**上而不是 `gateCounts` 上：行已经按视角选好了数，这里不再重走一遍选数逻辑。
+ */
+export function legGateCountsQuiet(lines: readonly LegGateCountLine[]): boolean {
+  return lines.every((line) => line.count === 0);
+}
+
+// ═══════════════ 意图视角空态（051 FR-009 / SC-013） ═══════════════
+
+/** 空态。`title` 为 null ⇒ 沿用既有单行形态（全腿视角）；`cta` 非 null ⇒ 带入口。 */
+export interface LegEmptyState {
+  title: string | null;
+  text: string;
+  cta: { label: string; tab: LegPickerTab } | null;
+}
+
+/** 意图视角空态的通用兜底 —— 全腿视角与契约未到手都走它。 */
+const GENERIC_EMPTY: LegEmptyState = { title: null, text: COPY.empty, cta: null };
+
+/**
+ * 意图视角的空态，按**该视角自己的**排除数分两支（FR-009）。复杂度 O(1)。
+ *
+ * 🚨 **MUST NOT 用全表标量 `excludedFromIntentTabs`**（SC-013 / D-GATES-2）：那个数是「build 或
+ *    rent 任一期限段合格且被流动性门槛挡下」的合计 ⇒ 建仓视角空而它 = 20 时，那 20 条可能**全是
+ *    被排除出收租的**。据此对建仓视角说「有 20 条被挡了，去全腿看」是错的，而且**不会红** ——
+ *    数字真实、句子通顺，只是指向了别的视角的腿。
+ * 📌 全腿视角不受流动性门槛约束（FR-006），它没有「被挡下」这一分支 ⇒ 沿用既有单行文案。
+ */
+export function legEmptyState(
+  gateCounts: LegTableResponse['gateCounts'] | null,
+  tab: LegPickerTab,
+): LegEmptyState {
+  if (gateCounts === null || tab === 'all') return GENERIC_EMPTY;
+  const excluded = gateCounts.excludedFromIntentTabsByTab[tab];
+  const title = COPY.emptyIntentTitle[tab];
+  // > 0：本视角确有够格却被挡下的腿 ⇒ 指向门槛并给入口（那些腿在全腿视角看得到）。
+  if (excluded > 0) {
+    return {
+      title,
+      text: COPY.emptyBlockedByGate(excluded),
+      cta: { label: COPY.emptyBlockedCta(excluded), tab: 'all' },
+    };
+  }
+  // = 0：本视角是真的没有合格腿 ⇒ 指向判据本身，**不给入口**（没有可去看的腿）。
+  return { title, text: `${COPY.emptyNoneReason[tab]}${COPY.emptyNoneTail}`, cta: null };
 }

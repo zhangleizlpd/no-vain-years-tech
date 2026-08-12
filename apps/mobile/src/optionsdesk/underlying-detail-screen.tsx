@@ -56,8 +56,11 @@ import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-col
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
 import {
   legActivityForTab,
+  legEmptyState,
   legGateCountLines,
+  legGateCountsQuiet,
   rateHeaderFor,
+  type LegEmptyState,
   type LegGateCountLine,
   type LegPickerNotice,
   type LegPickerTab,
@@ -240,6 +243,8 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                     total={legTable.total}
                     notices={legTable.notices}
                     gates={legGateCountLines(legTable.table?.gateCounts ?? null, legTable.tab)}
+                    // 🚨 空态按**该视角自己的**排除数分支（051 FR-009 / SC-013）。
+                    empty={legEmptyState(legTable.table?.gateCounts ?? null, legTable.tab)}
                     onRetry={legTable.retry}
                     onSelectTab={legTable.setTab}
                   />
@@ -320,6 +325,7 @@ function LegBlockNotice({
   total,
   notices,
   gates,
+  empty,
   onRetry,
   onSelectTab,
 }: {
@@ -327,9 +333,11 @@ function LegBlockNotice({
   total: number;
   notices: readonly LegPickerNotice[];
   gates: readonly LegGateCountLine[];
+  empty: LegEmptyState;
   onRetry: () => void;
   onSelectTab: (tab: LegPickerTab) => void;
 }) {
+  const quiet = legGateCountsQuiet(gates);
   if (state === 'loading') {
     return <BlockSkeleton testID="optionsdesk-detail-leg-loading" />;
   }
@@ -363,11 +371,7 @@ function LegBlockNotice({
   }
   return (
     <View>
-      {total === 0 ? (
-        <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-empty">
-          <Text className="text-xs text-ink-muted">{LEG_COPY.empty}</Text>
-        </View>
-      ) : null}
+      {total === 0 ? <LegEmptyBlock empty={empty} onSelectTab={onSelectTab} /> : null}
 
       {/* 数据缺口 / 口径说明体系：`surface-alt` 底，**与红标体系区隔** —— 它不是错误。 */}
       {notices.map((notice) => (
@@ -381,12 +385,45 @@ function LegBlockNotice({
         </View>
       ))}
 
-      {/* ── 两个门槛计数（FR-006/007/007a）──────────────────────────────── */}
+      {/* ── 两个门槛计数（FR-006/007/007a）+ 两数皆 0 时降权（FR-008）────── */}
       <View className="gap-[3px] bg-surface px-md py-xs" testID="optionsdesk-detail-leg-gates">
         {gates.map((gate) => (
-          <LegGateLine key={gate.key} gate={gate} onSelectTab={onSelectTab} />
+          <LegGateLine key={gate.key} gate={gate} quiet={quiet} onSelectTab={onSelectTab} />
         ))}
       </View>
+    </View>
+  );
+}
+
+/**
+ * 空态。两分支**一眼可分**（FR-009）：带入口那支是「去看被挡下的那些」，无入口那支是
+ * 「换一只票」—— 用户据此该做的事完全不同，所以入口的有无不是装饰。
+ */
+function LegEmptyBlock({
+  empty,
+  onSelectTab,
+}: {
+  empty: LegEmptyState;
+  onSelectTab: (tab: LegPickerTab) => void;
+}) {
+  const cta = empty.cta;
+  return (
+    <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-empty">
+      {empty.title === null ? null : (
+        <Text className="text-xs font-semibold text-ink">{empty.title}</Text>
+      )}
+      <Text className="text-xs text-ink-muted">{empty.text}</Text>
+      {cta === null ? null : (
+        <Pressable
+          onPress={() => onSelectTab(cta.tab)}
+          accessibilityRole="button"
+          accessibilityLabel={cta.label}
+          testID="optionsdesk-detail-leg-empty-cta"
+          className="mt-xs self-start"
+        >
+          <Text className="text-xs font-medium text-brand-500">{`${cta.label} ›`}</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -397,15 +434,20 @@ function LegBlockNotice({
  */
 function LegGateLine({
   gate,
+  quiet,
   onSelectTab,
 }: {
   gate: LegGateCountLine;
+  quiet: boolean;
   onSelectTab: (tab: LegPickerTab) => void;
 }) {
   const testID = `optionsdesk-detail-leg-gate-${gate.key}`;
+  // ⚠️ 降权 = **去掉主色 + 缩字号**，字色仍是 `ink-muted`（5.7:1）——
+  //    🚫 MUST NOT 换 `ink-subtle`（2.85:1）：那是「看不清」不是「不抢眼」。
+  const quietClass = 'text-[9px] text-ink-muted';
   if (gate.goTab === null) {
     return (
-      <Text className="text-[10px] text-ink-muted" testID={testID}>
+      <Text className={quiet ? quietClass : 'text-[10px] text-ink-muted'} testID={testID}>
         {gate.text}
       </Text>
     );
@@ -418,7 +460,9 @@ function LegGateLine({
       accessibilityLabel={gate.text}
       testID={testID}
     >
-      <Text className="text-[10px] font-medium text-brand-500">{`${gate.text} ›`}</Text>
+      <Text
+        className={quiet ? quietClass : 'text-[10px] font-medium text-brand-500'}
+      >{`${gate.text} ›`}</Text>
     </Pressable>
   );
 }
