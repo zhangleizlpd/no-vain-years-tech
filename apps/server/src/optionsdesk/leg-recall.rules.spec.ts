@@ -4,11 +4,13 @@ import {
   BUILD_RECALL_DTE,
   LIQUIDITY_MAX_RELATIVE_SPREAD,
   PREMIUM_FLOOR,
+  OPEN_INTEREST_FLOOR,
   QUALITY_CEILING_SPOT_RATIO,
   RENT_RECALL_DTE,
   intentTabsExcludedByLiquidity,
   passesEffectiveCostGate,
   passesLiquidityGate,
+  passesOpenInterestGate,
   passesPremiumFloor,
   passesQualityCeiling,
   recallCandidates,
@@ -33,12 +35,14 @@ const context: RecallContext = { spot: D('110') };
  */
 const chain: RecallChainContext = { spot: context.spot, qualityCeiling: D('9999') };
 
-/** 基线腿: DTE=35 (重叠区)、有效成本 98 < spot、两道门槛均宽松通过。 */
+/** 基线腿: DTE=35 (重叠区)、有效成本 98 < spot、三道门槛均宽松通过。 */
 const leg = (over: Partial<RecallLegInput> = {}): RecallLegInput => ({
   dteDays: 35,
   strike: D('100'),
   bid: D('2'),
   ask: D('2.1'),
+  openInterest: 100,
+  volume: 10,
   ...over,
 });
 
@@ -258,6 +262,67 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
     expect(outcome.removedByPremiumFloor).toBe(1);
     expect(outcome.candidates.map((c) => c.leg.code)).toEqual(['B']);
     expect(outcome.candidates[0]?.tabs).not.toContain('rent');
+  });
+});
+
+describe('leg-recall.rules — 持仓量条件 (052 FR-008 / FR-009)', () => {
+  const allTabs = ['all', 'build', 'rent'] as const;
+  /** 只跑持仓量这一道：其余判据全宽松通过，被移出就只可能是它挡的。 */
+  const survives = (over: Partial<RecallLegInput>) =>
+    recallCandidates(context, allTabs, [leg(over)]).candidates.length === 1;
+
+  it('OI=0 且当日无成交 ⇒ 死腿, 整条移出 (三视角都看不到)', () => {
+    expect(passesOpenInterestGate(0, 0)).toBe(false);
+    expect(survives({ openInterest: 0, volume: 0 })).toBe(false);
+  });
+
+  it('🚨 OI=0 但当日有成交 ⇒ 免死条款救回 (新挂档, OI 次日盘前才更新)', () => {
+    expect(passesOpenInterestGate(0, 1)).toBe(true);
+    expect(survives({ openInterest: 0, volume: 1 })).toBe(true);
+  });
+
+  it('下限取闭区间: 恰等于下限进, 差一张出局', () => {
+    expect(passesOpenInterestGate(OPEN_INTEREST_FLOOR, 0)).toBe(true);
+    expect(passesOpenInterestGate(OPEN_INTEREST_FLOOR - 1, 0)).toBe(false);
+  });
+
+  it('🚫 成交量 null 与 0 走两条路径 —— null 是「没采到」, MUST NOT 折成 0', () => {
+    // 处置同归（都不给免死），但左边是"不知道"、右边是"知道且为零"。
+    expect(passesOpenInterestGate(0, null)).toBe(false);
+    expect(passesOpenInterestGate(0, 0)).toBe(false);
+    // OI 侧同理：缺 OI 时不拿 0 顶上再比大小，但成交量仍可救它。
+    expect(passesOpenInterestGate(null, 0)).toBe(false);
+    expect(passesOpenInterestGate(null, 5)).toBe(true);
+  });
+
+  it('三视角行为一致 —— 逐个视角单独请求, 死腿一个都进不去', () => {
+    const dead = leg({ openInterest: 0, volume: 0 });
+    for (const tab of allTabs) {
+      expect(recallCandidates(context, [tab], [dead]).candidates).toEqual([]);
+    }
+    // 活腿反过来：三个视角各自都拿得到它（DTE=35 落重叠区）。
+    for (const tab of allTabs) {
+      expect(recallCandidates(context, [tab], [leg()]).candidates).toHaveLength(1);
+    }
+  });
+
+  it('🚨 持仓量条件 MUST 排在权利金门槛之后 —— 否则 051 已 ship 的排除数会静默变小', () => {
+    // 这条腿两道都不过（bid 0.01 低于门槛、OI=0 且无成交）。它 MUST 计进权利金那个数。
+    const both = leg({ bid: D('0.01'), openInterest: 0, volume: 0 });
+    const outcome = recallCandidates(context, allTabs, [both]);
+    expect(outcome.removedByPremiumFloor).toBe(1);
+    expect(outcome.candidates).toEqual([]);
+  });
+
+  it('🚫 被持仓量条件挡下的腿 MUST NOT 计进权利金排除数 —— 两道各数各的', () => {
+    const outcome = recallCandidates(context, allTabs, [leg({ openInterest: 0, volume: 0 })]);
+    expect(outcome.removedByPremiumFloor).toBe(0);
+    expect(outcome.candidates).toEqual([]);
+  });
+
+  it('🚫 权利金门槛的两个常量本片逐字未变 (052 FR-009: 只是把它归类为可调检索条件)', () => {
+    expect(PREMIUM_FLOOR.absolute.toString()).toBe('0.2');
+    expect(PREMIUM_FLOOR.spotRatio.toString()).toBe('0.0018');
   });
 });
 

@@ -54,6 +54,9 @@ export interface LegRetrievalQuery {
  * 📌 计数列 (挂牌量 / OI / 成交量) 与 Δ 在此已是 `number`: 它们是**张数与无量纲希腊值**,
  * 没有精度可丢; 金额列 (行权价 / 双边报价) 保持十进制量纲不降级 (沿 `leg-derive.rules.ts` 纪律)。
  * 🚨 Δ 是 vendor 原始**有符号**值, 取绝对值归下游 —— 本层不做任何语义加工。
+ * 📌 **OI 与成交量不在本接口上重复声明** —— 052 起它们是持仓量条件的入参, 已由
+ * {@link RecallLegInput} 带入。在这里再写一遍等于让「判据吃的字段」与「port 给的字段」成为两份
+ * 必 drift 的镜像。
  */
 export interface LegChainRow extends RecallLegInput {
   /** vendor 合约代码 (行身份)。 */
@@ -63,8 +66,6 @@ export interface LegChainRow extends RecallLegInput {
   readonly bidSize: number | null;
   readonly askSize: number | null;
   readonly delta: number | null;
-  readonly openInterest: number | null;
-  readonly volume: number | null;
   /** greeks 是否齐全 —— `false` 的腿**照常进候选** (FR-013 / 050 FR-009)。 */
   readonly greeksComplete: boolean;
 }

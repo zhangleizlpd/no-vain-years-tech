@@ -14,6 +14,7 @@ import { type LegTab } from './leg-tab.rules';
  * | 权利金绝对门槛                  | **三个 Tab 一律**  | 005     |
  * | 流动性门槛 (相对价差上界)       | 只建仓 / 收租      | 006     |
  * | 成色上界 (052 起, 见下)         | **只**收租         | 052-005 |
+ * | 持仓量条件 (052 起, 见下)       | **三个 Tab 一律**  | 052-008 |
  *
  * 🚨 **`|Δ|` 不在本文件的任何入参里** (FR-009) —— 这是「Δ 已降级为打标量」的**结构保证**而非
  * 事后约定: 拿不到这个量就不可能拿它做召回判据。想把 Δ 塞回召回必须先改签名, 那一步 review
@@ -121,6 +122,19 @@ export const LIQUIDITY_MAX_RELATIVE_SPREAD = new Prisma.Decimal('0.35');
 export const QUALITY_CEILING_SPOT_RATIO = new Prisma.Decimal('0.04');
 
 /**
+ * 052 持仓量条件的下限 (052 FR-008), **三视角一律**。张数, 整数。
+ *
+ * ⏳ **占位值, 标定在 052 T016** —— 起手取最保守的一档: 实测过了权利金门槛的 2572 条里 `OI=0`
+ * 的有 **1014 条 (39.4%)**, 权利金门槛只看 `bid`、结构上抓不到它们。更严的档 (`10` / `50`)
+ * 需要实盘反馈才标得动 (spec Clarifications)。**MUST NOT 当已标定值引用**。
+ *
+ * 📌 **它进不了守门脚本的阈值单点扫描** —— 那条判据靠字面量子串扫, 而整数当子串扫会把行号 /
+ * 数组下标全扫成违规 (`check-optionsdesk-rule-constants.ts` 自己写明了这条限制)。⇒ 本常量的
+ * 单点性靠 review 与本文件的唯一导出守, 没有机器兜底。
+ */
+export const OPEN_INTEREST_FLOOR = 1;
+
+/**
  * 腿侧入参 —— 🚨 **MUST NOT 加 `absDelta`** (FR-009, 见文件头)。
  *
  * 也没有档位 / 费率: 召回判据一条都用不到费率, 这是 plan D-RECALL-3 否决「费率下沉 SQL」的
@@ -132,6 +146,10 @@ export interface RecallLegInput {
   strike: Prisma.Decimal;
   bid: Prisma.Decimal | null;
   ask: Prisma.Decimal | null;
+  /** 未平仓量 (张)。052 起是召回判据的入参 —— 持仓量条件的左操作数。 */
+  openInterest: number | null;
+  /** 当日成交量 (张)。持仓量条件的**免死条款**看它。 */
+  volume: number | null;
 }
 
 /** 标的级上下文 —— 每票每请求算一次, 全部腿共用。 */
@@ -221,6 +239,26 @@ export function passesEffectiveCostGate(
   // 无 bid ⇒ 有效成本无定义。🚫 MUST NOT 拿 `K − 0` 冒充 (那是「白拿股票」的意思)。
   if (bid === null) return false;
   return strike.minus(bid).lessThan(spot);
+}
+
+/**
+ * 持仓量条件 (052 FR-008), **三视角一律**: `OI ≥ 下限` **或** 当日有成交。`O(1)`。
+ *
+ * 🚨 **「或当日有成交」是新挂档的免死条款, MUST NOT 省略**: 美股期权 OI 盘前才更新, 今天新挂
+ * 出来的档当日 `OI` 必为 0。实测全池 `OI=0` 的 1014 条腿里有 **34 条当日正在交易** —— 写成纯
+ * `OI ≥ 下限` 会把它们砍掉, 而候选集照样出得来、数字照样有 (052 Guardrail 1)。
+ *
+ * 🚫 **`null` 是「没采到」不是「零」, 两者 MUST 走不同路径** (同 {@link passesPremiumFloor} 对
+ * `bid` 的纪律): 缺成交量时不给免死 (不知道 ≠ 知道有), 缺 OI 时不能拿 0 顶上再比大小 —— 处置
+ * 上同归 (都挡下), 但把 `null` 折成 0 会让「未采集」在下游看起来像「已确认为零」。
+ */
+export function passesOpenInterestGate(
+  openInterest: number | null,
+  volume: number | null,
+): boolean {
+  if (volume !== null && volume > 0) return true;
+  if (openInterest === null) return false;
+  return openInterest >= OPEN_INTEREST_FLOOR;
 }
 
 /**
@@ -366,6 +404,12 @@ export function recallCandidates<T extends RecallLegInput>(
       removedByPremiumFloor += 1;
       continue;
     }
+    // 持仓量条件 (052 FR-008): 同样是整条移出, 三视角一律。
+    // 🚨 **MUST 排在权利金门槛之后**: 提到前面会让「两道都不过」的腿不再计进
+    // `removedByPremiumFloor` —— 那个数是 051 已 ship 的展示值, 它会静默变小而没有任何一处红。
+    // 📌 本条**蓄意不产计数**: 持仓量下限是 T010 的六个检索条件之一, 其可见性走「控件默认值 +
+    // 仅收窄态出计数」那条路 (spec Clarifications「门槛可发现」), 不再往 gateCounts 加第四个数。
+    if (!passesOpenInterestGate(leg.openInterest, leg.volume)) continue;
     const tabs = recallTabs(chain, leg).filter((tab) => requested.has(tab));
     if (tabs.length > 0) candidates.push({ leg, tabs });
 
