@@ -96,7 +96,12 @@ updated_at: '2026-08-12'
 
 ## Phase 3: 特征加工 + 精排（US2 —— 排序按可成交性）
 
-- [ ] T006 [Server] **特征注册表编译期强制 + 成色特征**（`FR-025`, plan `D-FEAT-1`）：`leg-rank.rules.ts` 的特征集类型改为按键穷举的映射；新增成色特征（供全腿排序用）。→ verify: `leg-rank.rules.spec.ts`（Small）—— 归一化到 `[0,1]` + 全等 / 缺失 / 单条候选三种边界 + 🚨 **先证明它会红**：临时加一个特征键但不实现 ⇒ `nx typecheck server` 变红，删回后归绿（这是 ADR-0064 不变量 ③ 从纪律变机器拦的实证）
+- [X] T006 [Server] **特征注册表编译期强制 + 成色特征**（`FR-025`, plan `D-FEAT-1`）：`leg-rank.rules.ts` 的特征集类型改为按键穷举的映射；新增成色特征（供全腿排序用）。→ verify: `leg-rank.rules.spec.ts`（Small）—— 归一化到 `[0,1]` + 全等 / 缺失 / 单条候选三种边界 + 🚨 **先证明它会红**：临时加一个特征键但不实现 ⇒ `nx typecheck server` 变红，删回后归绿（这是 ADR-0064 不变量 ③ 从纪律变机器拦的实证）
+
+  📌 **「编译期强制」这一半在 `050` 就已成立，本 task 是确认 + 留证而非改造**：实跑探针（往 `CONTINUOUS_FEATURE_KEYS` 加 `probeUnimplemented` 不实现）⇒ `TS2741: Property 'probeUnimplemented' is missing in type ... but required in type 'Readonly<Record<..., ContinuousExtractor>>'`，删回后全量归绿。`FR-025` / ADR-0064 不变量 ③ 要的机器拦，`Record<Key, …>` 的穷举映射已经给了 —— 🚫 **不为「本片要有改动」而重写它**（Surgical Edits）。
+
+  📌 **成色特征落 `strikeDiscount = (spot − K) / spot`，派生在 use case 而非特征层**：行权价是**身份键**（`LegIdentity`），进 `RankingLegInput` 就等于允许特征层按身份算特征 —— 那正是 050 用「入参里没有 `absDelta`」立下的同一条结构保证。⇒ 与 `rate` 同构（use case 派生裸值、特征层只归一化）。
+  📌 **它与 `effectiveCostDiscount` 是两项、不可互相代替**（Guardrail 2 的连续版，有专门一条断言）：后者含 `bid`，权利金厚的深度实值腿有效成本折价能拿满分 `1`，而成色同时是最差的 `0`。
 
 - [ ] T007 [Server] **精排换 lexicographic（分层 + 降级）**（`FR-017`, `FR-018`, `FR-019`, `FR-021`, `FR-022`, plan `D-RANK-1`）：ranker 改为「流动性档（离散）→ 档内折算费率降序 → 费率打平带内长期优先」；候选数 < 阈值时不分档。档界 / 带宽 / 阈值先用占位常量，标定在 T016。→ verify: 同文件 Small —— 厚腿排在薄腿前 / 档内按费率降序 / 打平带内长者优先 / **降级边界取严格小于** / 🚨 **ranker 函数体内 `rg` 扫不到腿的原始字段名**（`FR-022` 的机器判据）
 

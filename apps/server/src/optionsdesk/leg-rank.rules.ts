@@ -5,8 +5,8 @@ import { type LegBasis } from './leg-tier.rules';
 /**
  * 050 optionsdesk **精排层**特征集 (ADR-0043 §4, plan D-RANK-1)。无 I/O、无 DI。
  *
- * 特征集是精排层的**唯一输入面**: 排序器只读它 (FR-020), 拿不到原始腿数据。13 项 ——
- * 连续量 8 项按**该 Tab 本次请求候选集内的 min-max** 归一化到 `[0,1]`, 布尔 / 序数量 5 项取
+ * 特征集是精排层的**唯一输入面**: 排序器只读它 (FR-020), 拿不到原始腿数据。14 项 ——
+ * 连续量 9 项按**该 Tab 本次请求候选集内的 min-max** 归一化到 `[0,1]`, 布尔 / 序数量 5 项取
  * `0` / `1` 不参与 min-max (FR-019 / FR-019a)。
  *
  * 🚨 **字段现在就算全, 哪怕当前排序一项都用不到** (FR-019): 本片唯一的 ranker 只读 `rate`
@@ -67,7 +67,7 @@ export const FEATURE_VALUE_WHEN_UNIFORM = 0.5;
 export const FEATURE_VALUE_WHEN_MISSING = 0;
 
 /**
- * 连续量 8 项 (FR-019), 逐项按候选集内 min-max 归一化。
+ * 连续量 9 项 (FR-019), 逐项按候选集内 min-max 归一化。
  *
  * 顺序 = spec FR-019 的字面顺序, 改动会让 `RANKING_FEATURE_KEYS` 的读者对不上 spec。
  */
@@ -84,7 +84,7 @@ export const CONTINUOUS_FEATURE_KEYS = [
   'volume',
   /** 成交额 `Vol × 权利金 × 合约乘数`。 */
   'turnover',
-  /** `|Δ|` 真值 —— 🚨 只是 13 项之一, **不参与召回** (FR-009 已在 `leg-recall.rules.ts` 封死)。 */
+  /** `|Δ|` 真值 —— 🚨 只是 14 项之一, **不参与召回** (FR-009 已在 `leg-recall.rules.ts` 封死)。 */
   'absDelta',
   /**
    * 距到期日历天数。
@@ -95,6 +95,21 @@ export const CONTINUOUS_FEATURE_KEYS = [
    * `grep -i dte` 零命中。
    */
   'dteDays',
+  /**
+   * **成色** (052 FR-020): 行权价相对 spot 的折价 `(spot − K) / spot`。越大 = 越虚值 = 成色越好;
+   * 深度实值腿为**负**。
+   *
+   * 📌 它与召回层的成色上界是**同一个概念的两种形态** —— 那边是布尔判据 (`K ≤ 上界`, 只作用
+   * 收租), 这边是连续量 (供全腿视角排序令深度实值沉底; 052 FR-006 要求全腿 MUST NOT 砍腿,
+   * 所以只能靠序把它压下去)。
+   * 🚫 **MUST NOT 拿 `effectiveCostDiscount` 代替** (052 Guardrail 2): 后者含 `bid`, 权利金厚时
+   * 深度实值腿的有效成本折价照样好看 —— 那正是「拿有效成本冒充成色」这条错的连续版。两项
+   * 各表达各的, 都留在表里。
+   *
+   * 🚨 **入参给的是已派生好的折价而不是行权价** —— 行权价是**身份键** ({@link LegIdentity}),
+   * 放进 {@link RankingLegInput} 就等于允许特征层按身份算特征 (同下方那条结构保证)。
+   */
+  'strikeDiscount',
 ] as const;
 
 /**
@@ -114,7 +129,7 @@ export const ORDINAL_FEATURE_KEYS = [
   'isTopRanked',
 ] as const;
 
-/** 13 项 = 8 + 5。**键表是唯一来源**, 产出面由它派生 ⇒ 两者不可能 drift。 */
+/** 14 项 = 9 + 5。**键表是唯一来源**, 产出面由它派生 ⇒ 两者不可能 drift。 */
 export const RANKING_FEATURE_KEYS = [...CONTINUOUS_FEATURE_KEYS, ...ORDINAL_FEATURE_KEYS] as const;
 
 export type ContinuousFeatureKey = (typeof CONTINUOUS_FEATURE_KEYS)[number];
@@ -122,7 +137,7 @@ export type OrdinalFeatureKey = (typeof ORDINAL_FEATURE_KEYS)[number];
 export type RankingFeatureKey = (typeof RANKING_FEATURE_KEYS)[number];
 
 /**
- * 特征集 —— 13 项, 每项 `∈ [0,1]` (SC-003a)。
+ * 特征集 —— 14 项, 每项 `∈ [0,1]` (SC-003a)。
  *
  * 🚨 **MUST NOT 下发** (FR-019b): 排序已在 server 完成 (FR-021a), 下发一批无人消费的字段会被
  * 「只加不删」(FR-027) 永久锁死。机械判据 = 生成的 OpenAPI schema 里 `grep RankingFeatures`
@@ -156,6 +171,8 @@ export interface RankingLegInput {
   turnover: Prisma.Decimal | null;
   absDelta: number | null;
   dteDays: number;
+  /** 成色 `(spot − K) / spot`, 由调用方派生 (见键表注释: 行权价本身是身份键, 不进本类型)。 */
+  strikeDiscount: Prisma.Decimal | null;
   isMonthlyChain: boolean;
   isRoundStrike: boolean;
   isDeltaInIntentBand: boolean;
@@ -178,6 +195,7 @@ const CONTINUOUS_EXTRACTORS: Readonly<Record<ContinuousFeatureKey, ContinuousExt
   turnover: (leg) => finiteOrNull(leg.turnover),
   absDelta: (leg) => finiteOrNull(leg.absDelta),
   dteDays: (leg) => finiteOrNull(leg.dteDays),
+  strikeDiscount: (leg) => finiteOrNull(leg.strikeDiscount),
 };
 
 const ORDINAL_EXTRACTORS: Readonly<Record<OrdinalFeatureKey, (leg: RankingLegInput) => boolean>> = {
@@ -189,7 +207,7 @@ const ORDINAL_EXTRACTORS: Readonly<Record<OrdinalFeatureKey, (leg: RankingLegInp
 };
 
 /**
- * 整个候选集的特征集 (FR-019 / FR-019a)。`O(n)` (13 项各扫一趟定长的候选集)。
+ * 整个候选集的特征集 (FR-019 / FR-019a)。`O(n)` (14 项各扫一趟定长的候选集)。
  *
  * 🚨 **只接受整个候选集** —— 见文件头。调用方 MUST 传该 Tab 的**召回全量成员** (FR-016 同款
  * 基准): 传筛选后的子集会让每一行的取值都变, 而**数字照样有、照样落 `[0,1]`**。
@@ -279,7 +297,7 @@ export type LegRanker = (a: RankingFeatures, b: RankingFeatures) => number;
  * (两者差一个常数因子)。⇒ 三个 Tab 共用它一个, 选 `basis` 是在选**显示口径与档界**不是选顺序。
  *
  * 🚫 **MUST NOT 引入加权评分** (FR-026): 判定手段限定为「硬门槛 + 单主键 + 标签」。特征层已为
- * 将来切加权备好 13 项 (FR-019), 切换点在这里 —— 换一个 `LegRanker` 实现即可, 别在这条上加项。
+ * 将来切加权备好 14 项 (FR-019), 切换点在这里 —— 换一个 `LegRanker` 实现即可, 别在这条上加项。
  * 🚫 **MUST NOT 提 DTE** (FR-022): 机械判据是本函数体 `grep -i dte` 零命中。
  */
 export const rateDescendingRanker: LegRanker = (a, b) => b.rate - a.rate;

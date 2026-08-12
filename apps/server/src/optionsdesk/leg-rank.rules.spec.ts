@@ -40,6 +40,7 @@ function legOf(overrides: Partial<RankingLegInput> = {}): RankingLegInput {
     turnover: D('1000'),
     absDelta: 0.45,
     dteDays: 30,
+    strikeDiscount: D('0.05'),
     isMonthlyChain: false,
     isRoundStrike: false,
     isDeltaInIntentBand: false,
@@ -49,8 +50,8 @@ function legOf(overrides: Partial<RankingLegInput> = {}): RankingLegInput {
   };
 }
 
-describe('leg-rank.rules — 特征集 13 项 (FR-019)', () => {
-  it('13 项齐全且逐字点名 —— 连续 8 + 布尔/序数 5, 少一项就红', () => {
+describe('leg-rank.rules — 特征集 14 项 (FR-019 / 052 FR-020)', () => {
+  it('14 项齐全且逐字点名 —— 连续 9 + 布尔/序数 5, 少一项就红', () => {
     expect(CONTINUOUS_FEATURE_KEYS).toEqual([
       'rate',
       'effectiveCostDiscount',
@@ -60,6 +61,7 @@ describe('leg-rank.rules — 特征集 13 项 (FR-019)', () => {
       'turnover',
       'absDelta',
       'dteDays',
+      'strikeDiscount',
     ]);
     expect(ORDINAL_FEATURE_KEYS).toEqual([
       'isMonthlyChain',
@@ -68,7 +70,7 @@ describe('leg-rank.rules — 特征集 13 项 (FR-019)', () => {
       'crossesEarnings',
       'isTopRanked',
     ]);
-    expect(RANKING_FEATURE_KEYS).toHaveLength(13);
+    expect(RANKING_FEATURE_KEYS).toHaveLength(14);
 
     const [features] = computeRankingFeatures(CONTEXT, [legOf()]);
     // 产出面与键表同源 —— 多一个 / 少一个字段都在这里红。
@@ -116,6 +118,37 @@ describe('leg-rank.rules — min-max 归一化基准 = 该候选集内 (FR-019a)
     expect(features[0].effectiveCostDiscount).toBe(0);
     expect(features[1].effectiveCostDiscount).toBeCloseTo(0.5, 10);
     expect(features[2].effectiveCostDiscount).toBe(1);
+  });
+
+  it('成色 (052 FR-020): 越虚值取值越高, 深度实值腿 (折价为负) 落 0', () => {
+    const features = computeRankingFeatures(CONTEXT, [
+      legOf({ strikeDiscount: D('-0.15') }), // K = 115, 深度实值
+      legOf({ strikeDiscount: D('0') }), // K = spot, 平值
+      legOf({ strikeDiscount: D('0.30') }), // K = 70, 深度虚值
+    ]);
+    expect(features[0].strikeDiscount).toBe(0);
+    expect(features[1].strikeDiscount).toBeCloseTo(1 / 3, 10);
+    expect(features[2].strikeDiscount).toBe(1);
+  });
+
+  it('🚨 成色与有效成本折价是两项, 不可互相代替 (052 Guardrail 2 的连续版)', () => {
+    // 同一条深度实值腿: 权利金厚 ⇒ 有效成本折价好看, 但成色仍是最差的那条。
+    const [thickPremium, plainOtm] = computeRankingFeatures(CONTEXT, [
+      legOf({ strikeDiscount: D('-0.15'), effectiveCost: D('90') }), // K=115 bid=25 ⇒ 折价 10%
+      legOf({ strikeDiscount: D('0.20'), effectiveCost: D('98') }), // K=80 bid=-18? 仅作对照
+    ]);
+    expect(thickPremium.effectiveCostDiscount).toBe(1); // 有效成本这一项它最好
+    expect(thickPremium.strikeDiscount).toBe(0); // 成色这一项它最差
+    expect(plainOtm.strikeDiscount).toBe(1);
+  });
+
+  it('成色缺失 (spot 脏数据) 取「缺失」值, 与「真实为 0」在特征层不可区分', () => {
+    const features = computeRankingFeatures(CONTEXT, [
+      legOf({ strikeDiscount: null }),
+      legOf({ strikeDiscount: D('0.10') }),
+    ]);
+    expect(features[0].strikeDiscount).toBe(FEATURE_VALUE_WHEN_MISSING);
+    expect(Number.isNaN(features[0].strikeDiscount)).toBe(false);
   });
 
   it('🚫 归一化**不翻转方向** —— 相对价差越宽取值越高, 方向语义归将来的加权器', () => {

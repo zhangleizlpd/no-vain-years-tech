@@ -623,7 +623,7 @@ export class GetLegsUseCase {
       // 而**数字照样有、照样落 `[0,1]`**。
       const features = computeRankingFeatures(
         rankingContext,
-        members.map((leg, i) => rankingInputOf(leg, tab, activity[i])),
+        members.map((leg, i) => rankingInputOf(leg, tab, activity[i], rankingContext.spot)),
       );
       tabOrder[tab] = rankLegs(members, features, rateDescendingRanker);
     }
@@ -694,7 +694,12 @@ function tierByTabOf(
  * `leg-mark.rules.ts`), `isTopRanked` / `isRoundStrike` = 该 Tab 的活跃度标记 (候选集内相对量),
  * `crossesEarnings` = 财报标读出 (FR-017: 本片 MUST NOT 改动其算法)。
  */
-function rankingInputOf(leg: LegView, tab: LegTab, activity: ActivityMark): RankingLegInput {
+function rankingInputOf(
+  leg: LegView,
+  tab: LegTab,
+  activity: ActivityMark,
+  spot: Prisma.Decimal,
+): RankingLegInput {
   return {
     rate: BASIS_BY_TAB[tab] === 'weekly' ? leg.weeklyRate : leg.annualizedRate,
     effectiveCost: leg.effectiveCost,
@@ -704,6 +709,10 @@ function rankingInputOf(leg: LegView, tab: LegTab, activity: ActivityMark): Rank
     turnover: leg.turnover,
     absDelta: leg.absDelta,
     dteDays: leg.dteDays,
+    // 成色 (052 FR-020): 行权价相对 spot 的折价。派生放在这里而不是特征层, 因为特征层拿不到
+    // 行权价 —— 那是身份键 (`LegIdentity`), 进了特征入参就等于允许按身份算特征。
+    // spot ≤ 0 是脏数据 ⇒ 判 `null` 走「缺失」那条路, 🚫 MUST NOT 除下去产 ±Infinity。
+    strikeDiscount: spot.lessThanOrEqualTo(0) ? null : spot.minus(leg.strike).div(spot),
     isMonthlyChain: leg.isMonthlyChain,
     isRoundStrike: activity.isRoundStrike,
     isDeltaInIntentBand: leg.isRecommended,
