@@ -88,9 +88,13 @@ context7_verified: []
 | --- | --- | --- |
 | 召回 | `leg-recall.rules.ts`（已有，本片扩） + 检索 port | 吃「视角 + 检索条件 + 候选上限」，吐候选集 |
 | 粗排 | `leg-coarse.rules.ts`（新，**no-op**） | 吃多路候选，吐合并去重后的单一候选池。**当前恒等函数** |
-| 特征加工 | `leg-rank.rules.ts` 的 `computeRankingFeatures`（已有，本片扩） | 吃候选集，吐特征集 |
+| 特征加工 | `leg-rank.rules.ts` 的 `computeRankingFeatures`（已有，本片扩） **+ `leg-derive.rules.ts` 的 `markActivity`**（活跃标也是特征，见下） | 吃候选集，吐特征集 |
 | 精排 | `leg-rank.rules.ts` 的 ranker（已有，本片换实现） | 吃特征集，吐有序候选集 |
 | 表达 | DTO + mobile（本片只动计数那一处） | — |
+
+**层外但本片要改的三个文件**（它们不属于任何一层，是编排与契约）：`get-legs.usecase.ts`（五层的编排入口）· `leg-retrieval.port.ts` + `.adapter.ts`（本片新建，召回层的数据来源）· `optionsdesk.dto.ts`（契约）。
+
+🚨 **`markActivity` 属于特征加工层，不是独立的一层** —— 它产出的 `isTopRanked` 是 13 项排序特征之一。把它当成「打标」而误置于精排之后，精排就没有该特征可用（`get-legs.usecase.ts` 现有注释已警告过一次，本片改的是它的**分组维度**不是位置）。
 
 🚨 **粗排层为什么现在就建一个恒等函数**：业界范式是「多个 candidate generator 各产子集 → 合并成单一候选池 → 统一打分」。今天单路召回没有合并可做，但**留出这个接缝的成本是一个恒等函数**，而不留的成本是将来多路召回时要把调用链拆开重接。ADR-0064 sunset #1 是它的触发条件。
 🚫 **MUST NOT 在恒等函数里塞任何判据** —— 它一旦有逻辑就变成第二个打分点（ADR-0064 决策 1 的禁令）。
