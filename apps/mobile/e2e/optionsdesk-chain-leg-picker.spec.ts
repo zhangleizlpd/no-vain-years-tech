@@ -295,7 +295,11 @@ function makeLegTable(
       build: legs.filter((l) => l.tabs.includes('build')).map((l) => l.code),
       rent: legs.filter((l) => l.tabs.includes('rent')).map((l) => l.code),
     },
-    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    gateCounts: {
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
     ...over,
   };

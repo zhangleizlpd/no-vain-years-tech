@@ -129,6 +129,7 @@ export * from './legBasisByTabResponseBuild';
 export * from './legBasisByTabResponseRent';
 export * from './legEarningsMarkResponse';
 export * from './legEarningsMarkResponseMark';
+export * from './legExcludedByIntentTabResponse';
 export * from './legGateCountsResponse';
 export * from './legResponse';
 export * from './legResponseBasis';

@@ -780,7 +780,13 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
     const res = await responseOf([LEGS[3], penny, wide]);
 
     // 两个数**不相等**才谈得上「没串台」—— 相等的话把两个字段接反也照样绿。
-    expect(res.gateCounts).toEqual({ removedByPremiumFloor: 1, excludedFromIntentTabs: 1 });
+    // 051 FR-006a: `W-WIDE` 的 DTE 10 只够得着建仓段 ⇒ 拆开后全落 build, rent 保持 0。
+    // 三个数两两不等 ⇒ 「把任意两个字段接反」都会红 (相等的话接反照样绿)。
+    expect(res.gateCounts).toEqual({
+      removedByPremiumFloor: 1,
+      excludedFromIntentTabs: 1,
+      excludedFromIntentTabsByTab: { build: 1, rent: 0 },
+    });
     // 语义不对称的机械体现: 前者的腿不在 legs[] 里, 后者的仍在。
     expect(res.legs.map((l) => l.code).sort()).toEqual(['C-D', 'W-WIDE']);
   });
@@ -830,7 +836,11 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
 
     expect(res.state).toBe('chain_not_ready');
     expect(res.tabOrder).toEqual({ all: [], build: [], rent: [] });
-    expect(res.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+    expect(res.gateCounts).toEqual({
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    });
     // 常量映射与有没有链无关 —— 空态下也是这三格。
     expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
   });

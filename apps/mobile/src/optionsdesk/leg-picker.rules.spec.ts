@@ -92,7 +92,12 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
     legs: [],
     // 050 契约增量（P1 只镜像形状，消费归 P2）：三份列表恒有值（空数组而非 undefined）。
     tabOrder: { all: [], build: [], rent: [] },
-    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    gateCounts: {
+      removedByPremiumFloor: 0,
+      excludedFromIntentTabs: 0,
+      // 051 FR-006a: 按视角拆的排除数。基线取 0；需要非零的用例走 `overrides`。
+      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+    },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
     ...overrides,
   };
