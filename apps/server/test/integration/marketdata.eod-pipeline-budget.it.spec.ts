@@ -57,6 +57,8 @@ describe('016 T012 EOD uniform sync + quota carry-over (watermark resume)', () =
     await prisma.dailyBar.deleteMany();
     await prisma.instrument.deleteMany();
     await prisma.syncRun.deleteMany();
+    // 补洞道判据吃 trading_day ⇒ 必须逐例复位, 否则 ④⑤ 埋的日历会串进 ⑥ (它要的正是「日历为空」)。
+    await prisma.tradingDay.deleteMany();
     // executor 直调天然单维度隔离; 只复位水位。
     await prisma.syncDimension.update({
       where: { dimensionKey: 'eod_bar' },
@@ -153,5 +155,92 @@ describe('016 T012 EOD uniform sync + quota carry-over (watermark resume)', () =
     expect(budgetExhausted).toBe(false);
     expect(stats.skipped).toBe(0);
     expect(await prisma.dailyBar.count()).toBe(5); // 5 × 1
+  });
+
+  // ── 补洞道 (fillRecentEodGaps): 捡回「当晚 vendor 还没出数」那批 ──────────────────────
+  //
+  // 病灶: syncEodBarNone 拿到空数组时 return + 计 ok ⇒ 那天过去后再没有任何请求会问起它,
+  // 缺口永久且静默 (2026-08-12 prod: hk 每交易日少约 18%, 而三层信号一致报绿)。
+  // 主跑窗口是精确当日, 故必须有一条旁路回头看最近几天 —— 且**不能**靠给 eod_bar 配
+  // deltaLookbackDays 来做, 那会关掉 pendingEodInstruments 这个预算续跑进度锚 (即上面 ①②)。
+
+  /** 窗内 cn 交易日 (= TARGET−7 内 3 天) ⇒ 「窗内补齐」判据 = 该标的有 3 行。 */
+  async function seedCnCalendar(): Promise<void> {
+    await prisma.tradingDay.createMany({
+      data: ['2026-05-28', '2026-06-02', TARGET].map((d) => ({
+        market: 'cn',
+        date: new Date(`${d}T00:00:00Z`),
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  /** 给某标的在指定日期埋 none bar (数值仅占位)。 */
+  async function seedBars(instrumentId: bigint, dates: string[]): Promise<void> {
+    await prisma.dailyBar.createMany({
+      data: dates.map((d) => ({
+        instrumentId,
+        tradeDate: new Date(`${d}T00:00:00Z`),
+        adjust: 'none',
+        open: '1',
+        high: '1',
+        low: '1',
+        close: '1',
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  /** 记录 query 的 eod 端口 (主跑 from===to; 补洞道 from<to ⇒ 靠这点区分两类调用)。 */
+  function recordingEod(calls: EodBarQuery[]): EodBarPort {
+    const inner = eodAt(TARGET);
+    return {
+      getBars: async (q: EodBarQuery): Promise<EodBarPoint[]> => {
+        calls.push({ ...q });
+        return inner.getBars(q);
+      },
+    };
+  }
+
+  it('④ 补洞道: 窗内仍缺交易日的标的被补发一次区间请求, 已补齐的不重问', async () => {
+    await seedCnCalendar();
+    const insts = await prisma.instrument.findMany({ orderBy: { id: 'asc' } });
+    // 前 4 只窗内已有 2 天 → 主跑补上 TARGET 那天即满 3 天; 第 5 只只有 1 天 → 主跑后仍差 1 天。
+    for (const [i, inst] of insts.entries()) {
+      await seedBars(inst.id, i < 4 ? ['2026-05-28', '2026-06-02'] : ['2026-05-28']);
+    }
+
+    const calls: EodBarQuery[] = [];
+    await runEod(recordingEod(calls), 100);
+
+    // 主跑 5 次 (精确当日, from===to) + 补洞 1 次 (区间, from<to)。
+    const ranged = calls.filter((c) => c.from !== c.to);
+    expect(ranged).toHaveLength(1);
+    expect(ranged[0]?.symbol).toBe(`cn:${insts[4]?.code}`);
+    expect(ranged[0]?.from).toBe('2026-05-27'); // TARGET − EOD_GAP_FILL_LOOKBACK_DAYS
+  });
+
+  it('⑤ 补洞道: 预算耗尽时不跑 —— 额度该留给顺延续跑, 不拿去补历史', async () => {
+    await seedCnCalendar();
+    const insts = await prisma.instrument.findMany({ orderBy: { id: 'asc' } });
+    for (const inst of insts) await seedBars(inst.id, ['2026-05-28']); // 全员都缺 2 天
+
+    const calls: EodBarQuery[] = [];
+    const { budgetExhausted } = await runEod(recordingEod(calls), 2); // 预算 2 < 5 只
+
+    expect(budgetExhausted).toBe(true);
+    expect(calls.filter((c) => c.from !== c.to)).toHaveLength(0);
+  });
+
+  it('🚨 ⑥ 日历为空 → 补洞道缩手, 一个请求都不发 (拿可能已坏的表当判据时宁可少补)', async () => {
+    // 不 seed trading_day (= 日历未填充 / 已陈旧的形态)。全员窗内只有 1 天, 若判据失灵会
+    // 对全工作集狂发区间请求 —— 那比不补更糟。
+    const insts = await prisma.instrument.findMany({ orderBy: { id: 'asc' } });
+    for (const inst of insts) await seedBars(inst.id, ['2026-05-28']);
+
+    const calls: EodBarQuery[] = [];
+    await runEod(recordingEod(calls), 100);
+
+    expect(calls.filter((c) => c.from !== c.to)).toHaveLength(0);
   });
 });
