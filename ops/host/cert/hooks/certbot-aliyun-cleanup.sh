@@ -3,6 +3,9 @@
 # certbot-aliyun-auth.sh after validation. Domain-generic (same derivation).
 # Installed on the host at /root/certbot-aliyun-cleanup.sh.
 set -e
+# 见 certbot-aliyun-auth.sh 同名行：systemd 系统服务无 HOME → aliyun CLI 找不到 profile。
+# 本脚本的表现是下游症状：aliyun 失败 stdout 为空 → python3 json.load 抛 JSONDecodeError。
+export HOME="${HOME:-/root}"
 PROFILE=shintong-dns
 DOMAIN=shintongtech.com
 RR="_acme-challenge.${CERTBOT_DOMAIN%.${DOMAIN}}"

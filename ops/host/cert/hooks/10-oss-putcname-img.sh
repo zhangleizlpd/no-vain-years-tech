@@ -6,6 +6,10 @@
 # Installed on the host at /etc/letsencrypt/renewal-hooks/deploy/10-oss-putcname-img.sh.
 set -euo pipefail
 
+# 见 certbot-aliyun-auth.sh 同名行：certbot 由 systemd 触发时无 HOME，ossutil 同样找不到
+# profile —— 表现为 "SigningContext.Credentials is null or empty"。
+export HOME="${HOME:-/root}"
+
 DOMAIN=img.shintongtech.com
 BUCKET=mbw-profile-images
 PROFILE=shintong-oss-cert
