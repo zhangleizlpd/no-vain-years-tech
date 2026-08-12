@@ -215,4 +215,100 @@ else
   problems=1
 fi
 
+# ── 日频数据完整性闸（局部塌陷）─────────────────────────────────────────────────────────
+#
+# 上面所有判据都是 **run-centric** 的：读 sync_run，判「那一次跑成没成」。这留下一个结构性
+# 盲区 —— **窗口滑过去之后，失败留下的数据窟窿就永久不可见了**。
+#
+# 🚨 2026-08-07 实证（本闸的存在理由）：那晚 vendor 网络故障触发熔断，`eod_bar` partial
+#    （ok 265 / failed 8145）+ 5 个维度全败。次晨报告确实报了红，但**没人回补**；等 18h 窗口
+#    滑过去，之后每天的报告都是「20 维度 20✅」—— 而 daily_bar 少了 96%、short_selling_daily
+#    与 volatility_daily 整天为 0，一直少到 5 天后有人因为别的告警翻库才发现。
+#    按 CLAUDE.md「如果反例存在，我的管道能看到吗」：**当时看不到**。本闸就是补这只眼睛。
+#
+# 判据 = **局部塌陷**：某交易日行数不足前后两邻日的一半。刻意不用另外三种写法：
+#   · 绝对阈值 —— 库在长（marketdata 回填期两个月涨 5.8×），写死半个月就过时，然后恒红或恒绿；
+#   · 与「最近一天」比 —— 单调增长的表里，越老的日子越小，会把正常增长报成塌陷；
+#   · 与均值/中位数比 —— 同上，对增长序列有系统性偏差。
+#   取「同时低于前后两邻日」则天然免疫单调增长：增长序列不存在局部凹陷。实测
+#   option_daily_snapshot 三日 2100→4789→7039 一路涨，本判据零告警；而 08-07 的
+#   253 夹在 5609 / 5616 中间，必被抓出。
+#
+# 按 **(表 × 市场)** 分别判，不混在一起：cn 与 hk 交易日历会错开（国庆 / 重阳等），拿一个市场
+# 的日历去判另一个市场的表，休市日会被当成塌陷 —— 假红比不报更糟，它训练人无视这份报告。
+#
+# `pairs` 从**实际数据**派生而非硬编码表×市场清单：一来零维护（新市场接入自动纳入），二来避免
+# 给天然为空的组合（short_selling 无 cn 行）造出「满窗全零」的假塌陷。
+#
+# 覆盖面（**不静默截断**，缺的这条要写出来）：纳入 6 张 `instrument_id` 形状的日频表。
+# **`option_daily_snapshot` 不在内** —— 它经 `contract_id → option_contract` 才够得到市场，
+# 是另一种 join 形状，塞进来要把这段 SQL 撑大一倍；且它正处高速增长期（实测三日
+# 2100→4789→7039），本判据对它信息量最低。要纳入就单独加一支，别硬套本形状。
+#
+# ⚠️ 窗口首尾两天**不判**（没有左/右邻居）。这意味着「昨天的洞明天才报」—— 是刻意的：当天数据
+#    可能还在写，立刻判会误报。同日失败由上面 run-centric 那套即时兜住，本闸专治**它漏掉的那
+#    一类**：失败当时报过了、但没人回补，于是悄悄留在库里。两者互补，别拿一个替另一个。
+COMPLETENESS_SQL="WITH win AS (
+  SELECT market, date FROM (
+    SELECT market, date, row_number() OVER (PARTITION BY market ORDER BY date DESC) AS rn
+    FROM marketdata.trading_day WHERE date <= CURRENT_DATE
+  ) t WHERE rn <= 15
+), lo AS (SELECT min(date) AS d FROM win), raw AS (
+  SELECT 'daily_bar' AS tbl, i.market AS mkt, x.trade_date AS dt, count(*) AS n
+    FROM marketdata.daily_bar x JOIN marketdata.instrument i ON i.id = x.instrument_id
+   WHERE x.adjust = 'none' AND x.trade_date >= (SELECT d FROM lo) GROUP BY 1, 2, 3
+  UNION ALL
+  SELECT 'short_selling_daily', i.market, x.date, count(*)
+    FROM marketdata.short_selling_daily x JOIN marketdata.instrument i ON i.id = x.instrument_id
+   WHERE x.date >= (SELECT d FROM lo) GROUP BY 1, 2, 3
+  UNION ALL
+  SELECT 'volatility_daily', i.market, x.date, count(*)
+    FROM marketdata.volatility_daily x JOIN marketdata.instrument i ON i.id = x.instrument_id
+   WHERE x.date >= (SELECT d FROM lo) GROUP BY 1, 2, 3
+  UNION ALL
+  SELECT 'connect_holding_daily', i.market, x.date, count(*)
+    FROM marketdata.connect_holding_daily x JOIN marketdata.instrument i ON i.id = x.instrument_id
+   WHERE x.date >= (SELECT d FROM lo) GROUP BY 1, 2, 3
+  UNION ALL
+  SELECT 'hot_snapshot', i.market, x.data_date, count(*)
+    FROM marketdata.hot_snapshot x JOIN marketdata.instrument i ON i.id = x.instrument_id
+   WHERE x.data_date >= (SELECT d FROM lo) GROUP BY 1, 2, 3
+  UNION ALL
+  SELECT 'underlying_iv_daily', i.market, x.date, count(*)
+    FROM marketdata.underlying_iv_daily x JOIN marketdata.instrument i ON i.id = x.instrument_id
+   WHERE x.date >= (SELECT d FROM lo) GROUP BY 1, 2, 3
+), pairs AS (SELECT DISTINCT tbl, mkt FROM raw WHERE n > 0),
+grid AS (SELECT p.tbl, p.mkt, w.date FROM pairs p JOIN win w ON w.market = p.mkt),
+filled AS (
+  SELECT g.tbl, g.mkt, g.date, COALESCE(r.n, 0) AS n
+    FROM grid g LEFT JOIN raw r ON r.tbl = g.tbl AND r.mkt = g.mkt AND r.dt = g.date
+), neighbored AS (
+  SELECT tbl, mkt, date, n,
+         lag(n) OVER (PARTITION BY tbl, mkt ORDER BY date) AS prev_n,
+         lead(n) OVER (PARTITION BY tbl, mkt ORDER BY date) AS next_n
+    FROM filled
+)
+SELECT tbl, mkt, date, n, prev_n, next_n FROM neighbored
+ WHERE prev_n IS NOT NULL AND next_n IS NOT NULL
+   AND n * 2 < prev_n AND n * 2 < next_n
+ ORDER BY date, tbl, mkt"
+
+if completeness_rows="$(psql_ro "$COMPLETENESS_SQL" 2>&1)"; then
+  if [ -n "$completeness_rows" ]; then
+    problems=1
+    printf '🔴 日频数据局部塌陷（该交易日行数不足前后两邻日的一半，且至今未回补）:\n'
+    while IFS=$'\t' read -r c_tbl c_mkt c_date c_n c_prev c_next; do
+      [ -z "$c_tbl" ] && continue
+      printf '     %s[%s] %s: %s 行 (前 %s / 后 %s)\n' \
+        "$c_tbl" "$c_mkt" "$c_date" "$c_n" "$c_prev" "$c_next"
+    done <<<"$completeness_rows"
+    printf '     ↳ 回补: app 容器内 node dist/marketdata/marketdata-trigger.cli.js --dimension <维度> --as-of <日期>\n'
+    printf '     ↳ 回补后若该日附近有除权事件，需再跑 marketdata-backfill.cli.js --factors 重锚（零 vendor 外呼）\n'
+  fi
+else
+  # 同上：闸自己坏了要看得见，别静默吞。
+  printf '❓ 日频完整性闸查询失败（闸失效，非数据健康）: %s\n' "$completeness_rows" >&2
+  problems=1
+fi
+
 exit "$problems"
