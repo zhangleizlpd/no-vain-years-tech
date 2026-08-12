@@ -31,6 +31,14 @@
  *   7. **响应键集封闭** —— `lastClosedSession` 在 `LegTableView` 里有、在 DTO 里**故意不下发**
  *      （它只是新鲜度档的中间量）。谁把它加进 `select` 这里立红。
  *
+ * 🚨 **051 T012 扩容**：050 的六个字段 + 051 的 per-view 计数（共七个）此前只被 server IT
+ *    （不经生成客户端）与手写 hermetic mock（不经真 server）验过 —— 「生成客户端 + 真 server」
+ *    这条缝从未合过。落点 = {@link assertLegEngineContract}。
+ * 🚨 **本文件的 047 语义已有三处随 050 反转**，各自就地写明「为什么该红」，🚫 MUST NOT 当成
+ *    弱化断言：① 无 bid 的腿被权利金门槛整条移出响应（那条路径在本端点已不可达）；② 无 Δ 的腿
+ *    照常按期限段进意图视角（Δ 退出召回判据）；③ 水位**不再**改变任何一腿的 Tab 归属 —— 靶心 ②
+ *    由「整体改变」反转为「一条都不变」，守的是更强的性质。
+ *
  * 边界与幂等：用**专属 ticker** `us:NVYL/P/N`（避开 045 的 `us:NVYX`、046 的 `us:NVYQ..T`、T035
  * hermetic 的 `us:PEP`/`us:AOS`），marketdata 三张事实表 + 交易日历无公开写端点 ⇒ 靠 `ctx.execSql`
  * 直插（schema=marketdata，列名 snake_case per `@map`），锚走公开写端点建 / 末尾 DELETE 自清理。
@@ -79,14 +87,29 @@ const SPOT = '70.0000';
 const RENT_DROP = 'US.NVYL.RENTDROP';
 const RENT_STAY = 'US.NVYL.RENTSTAY';
 const BUILD = 'US.NVYL.BUILD';
+/** 🚨 **050 起它整条不在响应里**：无 bid ⇒ 权利金门槛判 false ⇒ 移出响应并计入计数（见下）。 */
 const NO_BID = 'US.NVYL.NOBID';
 const NO_GREEKS = 'US.NVYL.NOGREEKS';
+/**
+ * 051 T012 新增 —— **落在 `[30,49]` 重叠区且被流动性门槛挡下**的腿。
+ *
+ * 它是本片计数不等式的唯一判别源：DTE 40 同时落建仓段 `[1,49]` 与收租段 `[30,365]`，报价宽
+ * （`rel = 0.7/0.85 = 0.82 > 0.35`）⇒ 两个意图视角各少它一条、全表标量只记它一次
+ * ⇒ `标量(1) < build(1) + rent(1)`。**取等号会在这条腿上红错方向**（051 SC-012）。
+ * 📌 它**仍在响应里**（bid 0.50 过得了权利金门槛）—— 与 {@link NO_BID} 那条「真消失」正是
+ *    两个计数语义不对称的实证：一条只是进不了意图视角，另一条整条没了。
+ */
+const LIQ_BLOCKED = 'US.NVYL.LIQBLOCK';
 const EXPIRES_TODAY = 'US.NVYL.EXPTODAY';
 const NON_STANDARD = 'US.NVYL.NONSTD';
 const CALL_LEG = 'US.NVYL.CALL';
 
-/** 统一档位键排序（FR-019）+ 同档内到期日升序的**期望全序**。 */
-const EXPECTED_ORDER = [RENT_DROP, RENT_STAY, BUILD, NO_BID, NO_GREEKS];
+/**
+ * 统一档位键排序（FR-019）+ 同档内到期日升序的**期望全序**。
+ * 📌 `NO_BID` 已不在其中（050 权利金门槛把它整条移出响应）；`LIQ_BLOCKED` 判薄档、到期日
+ *    晚于 `BUILD` ⇒ 落其后。
+ */
+const EXPECTED_ORDER = [RENT_DROP, RENT_STAY, BUILD, LIQ_BLOCKED, NO_GREEKS];
 
 /** 本批 eod 报价的采集时刻偏移（`RENT_STAY` 那条最新 ⇒ 区块级 quoteAsOf / source 取它）。 */
 const QUOTE_TIME = 'T20:10:00.000Z';
@@ -111,6 +134,7 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
     assertBlockShape(before, today);
     assertSqlSideFilters(before, today);
     assertLegDerivations(before, today);
+    assertLegEngineContract(before);
     assertActivityIsPerTab(before);
     assertUnselectedBucket(before);
 
@@ -162,6 +186,7 @@ async function seed(ctx: RealBackendCtx, today: string): Promise<void> {
        ('${MARKET}', '${BUILD}', '${CODE_CHAIN}', ${iid}, DATE '${d(10)}', 68.5000, 'PUT', true),
        ('${MARKET}', '${NO_BID}', '${CODE_CHAIN}', ${iid}, DATE '${d(160)}', 45.0000, 'PUT', true),
        ('${MARKET}', '${NO_GREEKS}', '${CODE_CHAIN}', ${iid}, DATE '${d(220)}', 55.0000, 'PUT', true),
+       ('${MARKET}', '${LIQ_BLOCKED}', '${CODE_CHAIN}', ${iid}, DATE '${d(40)}', 60.0000, 'PUT', true),
        ('${MARKET}', '${EXPIRES_TODAY}', '${CODE_CHAIN}', ${iid}, DATE '${today}', 70.0000, 'PUT', true),
        ('${MARKET}', '${NON_STANDARD}', '${CODE_CHAIN}', ${iid}, DATE '${d(190)}', 62.0000, 'PUT', false),
        ('${MARKET}', '${CALL_LEG}', '${CODE_CHAIN}', ${iid}, DATE '${d(200)}', 75.0000, 'CALL', true)`,
@@ -187,6 +212,10 @@ async function seed(ctx: RealBackendCtx, today: string): Promise<void> {
         NULL, 1.1000, -0.06000000, 100, 5, ${SPOT}, true),
        (${cid(NO_GREEKS)}, DATE '${today}', 'eod', TIMESTAMPTZ '${today}${QUOTE_TIME}', DATE '${d(-1)}',
         2.0000, 2.3000, -0.22000000, NULL, NULL, ${SPOT}, false),
+       -- 🚨 报价宽（rel = 0.70/0.85 = 0.82 > 0.35）⇒ 被流动性门槛挡在两个意图视角之外，
+       --    但 bid 0.50 ≥ 权利金门槛 0.20 ⇒ **仍在响应里**（两个计数语义不对称的实证）。
+       (${cid(LIQ_BLOCKED)}, DATE '${today}', 'eod', TIMESTAMPTZ '${today}${QUOTE_TIME}', DATE '${d(-1)}',
+        0.5000, 1.2000, -0.18000000, 300, 20, ${SPOT}, true),
        (${cid(EXPIRES_TODAY)}, DATE '${today}', 'eod', TIMESTAMPTZ '${today}${QUOTE_TIME}', DATE '${d(-1)}',
         1.0000, 1.2000, -0.50000000, 999999, 999999, ${SPOT}, true),
        (${cid(NON_STANDARD)}, DATE '${today}', 'eod', TIMESTAMPTZ '${today}${QUOTE_TIME}', DATE '${d(-1)}',
@@ -292,6 +321,9 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
     [
       'asOf',
       'asOfFreshnessTier',
+      // 050 三个顶层增量（051 T012 起在此立账）—— 契约只加不删，键集随之扩容。
+      'basisByTab',
+      'gateCounts',
       'intent',
       'lLevel',
       'legs',
@@ -305,10 +337,118 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'spot',
       'state',
       'symbol',
+      'tabOrder',
       'w',
       'zone',
     ],
     'legs: 响应键集封闭 —— 无 lastClosedSession 泄漏',
+  );
+}
+
+// ── 🎯 051 T012 —— 050 六字段 + 051 per-view 计数：生成客户端 + 真 server 下的形状与一致性 ────
+/**
+ * 这七个字段迄今只被 server IT（不经生成客户端）与手写 hermetic mock（不经真 server）验过 ——
+ * 「生成客户端 + 真 server」这条缝**从未合过**。本函数是它唯一的覆盖点。
+ *
+ * 🚨 四条一致性不变量，每条都是「两处各算一份必 drift 而两边都算得出结果」的形状：
+ *   ① `tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}`（050 plan 不变量 1）；
+ *   ② `tierByTab[t]` 对非成员恒 `null`（不变量 2）—— 反过来成员处也 MUST NOT 恒等于 legacy `tier`；
+ *   ③ `basisByTab` 取值域封闭，且 `all` **恒年化**（混着 10 天与 200 天的腿，周化档界会让整列全死档）；
+ *   ④ 计数：`标量 ≤ build + rent`，且本 fixture 里取**严格小于**（重叠区腿使两个分视角数各 +1、
+ *      标量只 +1）。🚨 取等号会在这条腿上红错方向 —— 那正是 050 特意保留的语义。
+ */
+function assertLegEngineContract(table: LegTableResponse): void {
+  const tabs = ['all', 'build', 'rent'] as const;
+
+  // ① 成员关系两处同源。
+  for (const tab of tabs) {
+    const fromLegTabs = table.legs
+      .filter((leg) => leg.tabs.includes(tab))
+      .map((leg) => leg.code)
+      .sort();
+    assert.deepEqual(
+      [...table.tabOrder[tab]].sort(),
+      fromLegTabs,
+      `legs.tabOrder.${tab} 的元素集合 MUST == { code | '${tab}' ∈ leg.tabs }（两处表达同一个成员关系）`,
+    );
+  }
+  assert.ok(
+    table.tabOrder.all.length > 0 && table.tabOrder.rent.length > 0,
+    'legs.tabOrder: 本 fixture 的全腿 / 收租视角都该非空 —— 空了的话下面的顺序判据全部退化',
+  );
+
+  // ② 非成员格恒 null；成员格给该视角口径下判出的档。
+  for (const leg of table.legs) {
+    for (const tab of tabs) {
+      if (leg.tabs.includes(tab)) continue;
+      assert.equal(
+        leg.tierByTab[tab],
+        null,
+        `legs[${leg.code}].tierByTab.${tab}: 不属于该视角就没有该视角的档位`,
+      );
+    }
+  }
+  // 建仓视角按**周化**档界判，全腿按年化 ⇒ 同一条腿两处不同档（051 SC-006 的服务端侧证据）。
+  const build = legOf(table, BUILD);
+  assert.equal(build.tierByTab.build, 'thin', 'legs: 周化 0.93% 落 [0.6%,1%) ⇒ 建仓视角判薄档');
+  assert.equal(
+    build.tierByTab.all,
+    'good',
+    'legs: 同一条腿在全腿视角按**年化**判（0.93%×52 ≈ 48%）⇒ 好档 —— 两个视角判不同档是定义如此',
+  );
+
+  // ③ 口径映射：取值域封闭 + 全腿恒年化。
+  for (const tab of tabs) {
+    assert.ok(
+      ['weekly', 'annualized'].includes(table.basisByTab[tab]),
+      `legs.basisByTab.${tab} 取值超出客户端已知值域：${table.basisByTab[tab]}`,
+    );
+  }
+  assert.equal(table.basisByTab.all, 'annualized', 'legs.basisByTab.all 恒年化');
+  assert.equal(table.basisByTab.build, 'weekly', 'legs.basisByTab.build = 周化');
+  assert.equal(table.basisByTab.rent, 'annualized', 'legs.basisByTab.rent = 年化');
+
+  // ④ 两个计数：语义不对称 + 重叠区不等式。
+  const gates = table.gateCounts;
+  assert.equal(
+    gates.removedByPremiumFloor,
+    1,
+    `legs.gateCounts.removedByPremiumFloor: ${NO_BID} 无 bid ⇒ 被权利金门槛整条移出响应，计 1 条`,
+  );
+  assert.equal(
+    table.legs.find((leg) => leg.code === NO_BID),
+    undefined,
+    'legs: 被权利金门槛挡下的腿**三个视角都看不到** —— 它不在 legs[] 里（与流动性那条的语义差别）',
+  );
+  assert.equal(gates.excludedFromIntentTabsByTab.build, 1, `legs: ${LIQ_BLOCKED} 落建仓段却被挡下`);
+  assert.equal(gates.excludedFromIntentTabsByTab.rent, 1, `legs: 同一条腿也落收租段（重叠区）`);
+  assert.equal(gates.excludedFromIntentTabs, 1, 'legs: 全表标量按**腿**去重 ⇒ 同一条腿只记一次');
+  assert.ok(
+    gates.excludedFromIntentTabs <=
+      gates.excludedFromIntentTabsByTab.build + gates.excludedFromIntentTabsByTab.rent,
+    'legs: 标量 MUST ≤ 两个分视角数之和',
+  );
+  assert.ok(
+    gates.excludedFromIntentTabs <
+      gates.excludedFromIntentTabsByTab.build + gates.excludedFromIntentTabsByTab.rent,
+    '🚨 本 fixture 含重叠区腿 ⇒ 期望**严格小于** —— 若相等说明重叠区语义没了（判据被改成取等号）',
+  );
+  // 被流动性门槛挡下的腿**仍在响应里**，只是进不了意图视角 —— 与上面那条「真消失」成对照。
+  assert.deepEqual(
+    legOf(table, LIQ_BLOCKED).tabs,
+    ['all'],
+    'legs: 流动性挡下 ⇒ 只留全腿视角（腿没消失，这是两个计数不对称的全部含义）',
+  );
+
+  // ⑤ 两个标是 boolean 不是 nullable —— 客户端据此直接分支，null 会静默渲成「无标」。
+  for (const leg of table.legs) {
+    assert.equal(typeof leg.isRecommended, 'boolean', `legs[${leg.code}].isRecommended`);
+    assert.equal(typeof leg.isMonthlyChain, 'boolean', `legs[${leg.code}].isMonthlyChain`);
+  }
+  assert.equal(
+    legOf(table, NO_GREEKS).isRecommended,
+    false,
+    'legs: greeks 缺失恒不带推荐标（Δ 算不出来就没有「贴合当前意图」可言）',
   );
 }
 
@@ -355,7 +495,7 @@ function assertLegDerivations(table: LegTableResponse, today: string): void {
   assert.equal(legOf(table, RENT_DROP).dteDays, 180);
   assert.equal(legOf(table, RENT_STAY).dteDays, 200);
   assert.equal(legOf(table, BUILD).dteDays, 10);
-  assert.equal(legOf(table, NO_BID).dteDays, 160);
+  assert.equal(legOf(table, LIQ_BLOCKED).dteDays, 40, 'legs: 40 天落 [30,49] 重叠区');
   assert.equal(legOf(table, NO_GREEKS).dteDays, 220);
 
   // ② 腿族口径按形态判（DTE ≤ 14 ∧ |Δ| ∈ [0.40,0.55] ⇒ 周化），其余年化。
@@ -405,24 +545,24 @@ function assertLegDerivations(table: LegTableResponse, today: string): void {
   );
   assert.equal(noGreeks.sigmaDistance, null);
   assert.equal(noGreeks.tier, null, 'legs: greeks 不全恒不判档（费率算得出来但会骗人）');
+  // 🚨 **050 起 Δ 整个退出召回判据**（FR-009）⇒ 无 Δ 的腿照常按期限段进意图视角。047 这条断言
+  //    写的是 `['all']`（那时 Tab 归属吃 Δ 深度档），换代后它**该红** —— 改判为 rent 段成员。
   assert.deepEqual(
     noGreeks.tabs,
-    ['all'],
-    'legs: 无 Δ 的腿两个意图 Tab 都进不去，但**照常在表内**',
+    ['all', 'rent'],
+    'legs: 无 Δ 的腿照常按期限段进收租视角（050 起 Δ 不是召回判据）',
   );
+  assert.equal(noGreeks.tierByTab.rent, null, 'legs: 进得了视角 ≠ 判得出档 —— 两件事各判各的');
   assert.ok(noGreeks.periodRate !== null, 'legs: 不判档 ≠ 不算费率 —— 费率三列照常给');
 
-  // ⑥ 无 bid ⇒ 费率 / 有效成本 / 成交额一律 null，**禁拿 K−0 冒充**。
-  const noBid = legOf(table, NO_BID);
-  assert.equal(noBid.bid, null);
-  assert.equal(noBid.periodRate, null);
-  assert.equal(noBid.weeklyRate, null);
-  assert.equal(noBid.annualizedRate, null);
-  assert.equal(noBid.tier, null, 'legs: 没有判定值就没有档');
-  assert.equal(noBid.effectiveCost, null, 'legs: 无 bid ⇒ 有效成本无定义（MUST NOT 用 K−0）');
-  assert.equal(noBid.effectiveCostVsWPct, null);
-  assert.equal(noBid.turnover, null, 'legs: 0 成交与「不知道成交多少」是两件事');
-  assert.ok(noBid.absDelta !== null, 'legs: 无 bid 不连累 greeks 列（两条链互不依赖）');
+  // ⑥ 🚨 **050 起「无 bid」这条路径在本端点已不可达**：权利金门槛先于建表施加，无 bid 判 false
+  //    ⇒ 整条移出响应（计数覆盖见 assertLegEngineContract）。047 在此验的「无 bid ⇒ 费率 / 有效
+  //    成本 / 成交额一律 null，禁拿 K−0 冒充」**不是被删掉，是没有输入能到达它了** —— 响应里
+  //    每条腿的 bid 都 ≥ 门槛。该判据的现役覆盖点是 `leg-derive.rules.spec.ts`（纯函数层）。
+  assert.ok(
+    table.legs.every((leg) => leg.bid !== null),
+    'legs: 响应内每条腿都过了权利金门槛 ⇒ 不存在 bid 为 null 的行（无 bid 那条路径已在门槛处终结）',
+  );
 
   // ⑦ 财报标按**意图分域**打；同一到期日的腿共用同一个判定。
   assert.deepEqual(
@@ -472,8 +612,10 @@ function assertUnselectedBucket(table: LegTableResponse): void {
   assert.equal(table.positionBucketSetAt, null);
   assert.equal(table.intent, 'pending', 'legs: 水位未选 ⇒ 待定（MUST NOT 静默取一档）');
   assert.equal(table.rentDepth, null);
-  // 待定 ⇒ Δ 深度取三档并集 ⇒ |Δ|=0.35 那条**在**收租 Tab 里。
-  assert.deepEqual(legOf(table, RENT_DROP).tabs, ['all', 'rent']);
+  // 🚨 **050 起水位与成员集合无关**（Δ 退出召回）—— 这条断言从「三档并集所以在」改判为
+  //    「按期限段所以在」，取值巧合相同、理由完全不同（下面 assertBucketWriteAndPersistence
+  //    那条才是判别性所在：选完水位它**仍**在）。
+  assert.deepEqual(legOf(table, RENT_DROP).tabs, ['all', 'rent'], 'legs: DTE 180 落收租段');
 }
 
 // ── 未注册进 marketdata ⇒ chain_not_ready，锚派生那半边照常返回 ───────────────────────────────
@@ -574,21 +716,30 @@ async function assertBucketWriteAndPersistence(
   assert.equal(after.positionBucketSource, 'manual');
   assert.equal(after.positionBucketSetAt, setAt, '读端与写端的手选时刻逐字节相同');
 
-  // ② 🎯 靶心 ②：意图链与**每腿 tabs** 整体改变 —— 这是正确行为。
+  // ② 🎯 靶心 ② **已随 050 反转**：047 在此验的是「水位一改每腿 tabs 整体变」（Δ 深度档收窄
+  //    ⇒ |Δ|=0.35 那条掉出收租 Tab）。050 把 Δ 整条移出召回判据（FR-009）后，**成员集合与水位
+  //    彻底无关** ⇒ 那条断言该红，且反过来的「一条都不变」才是现在要钉住的不变量。
+  //    🚨 这不是弱化断言：反转后它守的是一条**更强**的性质（水位只改意图链，不改任何一屏的
+  //    成员），而这条性质坏掉时数字照样自洽 —— 只有把前后两份响应逐条比才看得出来。
   assert.equal(after.intent, 'rent', '水位选定 ⇒ 意图从「待定」落到收租');
-  assert.equal(after.rentDepth, 'deep', '买区 + L2 + ≥2/3 ⇒ Δ 深度档收到最深一档');
+  assert.equal(after.rentDepth, 'deep', '买区 + L2 + ≥2/3 ⇒ 收租深度档收到最深一档');
+  for (const code of EXPECTED_ORDER) {
+    assert.deepEqual(
+      legOf(after, code).tabs,
+      legOf(before, code).tabs,
+      `legs[${code}].tabs: 050 起成员集合 MUST NOT 因水位而变（Δ 已不在召回入参里）`,
+    );
+  }
   assert.deepEqual(
-    legOf(after, RENT_DROP).tabs,
-    ['all'],
-    '🎯 |Δ|=0.35 落在三档并集内、却落在 deep 带外 ⇒ 掉出收租 Tab（水位一改 Tab 归属整体变）',
+    after.tabOrder,
+    before.tabOrder,
+    'legs.tabOrder: 成员不变 ⇒ 三份有序列表逐条不变（精排入参里没有水位）',
   );
-  assert.equal(
-    legOf(after, RENT_DROP).activityByTab.rent,
-    null,
-    '掉出 Tab 后该 Tab 的活跃度标随之转 null（排名是候选集内的相对量）',
+  assert.deepEqual(
+    after.gateCounts,
+    before.gateCounts,
+    'legs.gateCounts: 两道门槛都不吃水位 ⇒ 计数一个数都不动',
   );
-  assert.deepEqual(legOf(after, RENT_STAY).tabs, ['all', 'rent'], '|Δ|=0.10 仍在 deep 带内');
-  assert.deepEqual(legOf(after, BUILD).tabs, ['all', 'build'], '建仓 Tab 判形态不判水位，零变化');
 
   // ③ 零拦截语义：Tab 归属只影响某一屏出不出现，**腿一条都没少**，排序与财报标亦不受牵动。
   assert.deepEqual(
