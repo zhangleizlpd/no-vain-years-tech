@@ -2,6 +2,22 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.24.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.23.2...server-v0.24.0) (2026-08-12)
+
+
+### Features
+
+* **optionsdesk:** 050 选约引擎 server 三层重构 —— 召回 / 打标 / 精排 ([#23](https://github.com/zhangleizlpd/no-vain-years-tech/issues/23)) ([fc3b7e9](https://github.com/zhangleizlpd/no-vain-years-tech/commit/fc3b7e9aeee1b6e8548cbd024ef95a00e29ac249))
+* **optionsdesk:** 051 选约表显示口径跟进 —— 七块契约消费 + 按视角拆的排除计数 ([#29](https://github.com/zhangleizlpd/no-vain-years-tech/issues/29)) ([0d6e531](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0d6e53145d28b84473df65cec63d393346d3dc64))
+* **optionsdesk:** 选约表补挂牌量 + 价格统一 2 位 —— 顺带把横滑自激环定案成 ADR-0063 ([#18](https://github.com/zhangleizlpd/no-vain-years-tech/issues/18)) ([6686756](https://github.com/zhangleizlpd/no-vain-years-tech/commit/66867567d288b1433309e2d7c9e3dc8f96a79bda))
+
+
+### Bug Fixes
+
+* **marketdata:** B 股币种按 code 判, 不是 cn 就 CNY —— 派息被守卫吞掉, 整段历史静默不复权 ([#28](https://github.com/zhangleizlpd/no-vain-years-tech/issues/28)) ([8d7e86b](https://github.com/zhangleizlpd/no-vain-years-tech/commit/8d7e86b36d348d6c9b4c1a7a6c1ff618e81de5e4))
+* **marketdata:** eod delta 补洞道 —— 当晚 vendor 没出数的那批, 此前永远没有第二次机会 ([#30](https://github.com/zhangleizlpd/no-vain-years-tech/issues/30)) ([611b3c1](https://github.com/zhangleizlpd/no-vain-years-tech/commit/611b3c1abae844add700391b7142441bdf563a95))
+* **marketdata:** 补上 429 与耗时两条取证通道 —— 一次限频在两侧都静默, 一轮跑多久表里读不出 ([#14](https://github.com/zhangleizlpd/no-vain-years-tech/issues/14)) ([119093c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/119093cf18b54a8eb2e4fcf4789fe0386c3f9108))
+
 ## [0.23.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.23.1...server-v0.23.2) (2026-08-09)
 
 
