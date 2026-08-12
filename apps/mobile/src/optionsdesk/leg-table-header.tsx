@@ -13,6 +13,7 @@ import { Text, View } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { LegColumnPane } from './leg-column-pane';
+import type { LegRateHeader } from './leg-picker.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
   LEG_SCROLL_COLUMNS,
@@ -66,21 +67,23 @@ export interface LegTableHeaderProps {
   /** 屏级唯一的横向位移（负值域）—— 表头与全部数据行读同一个（FR-001）。 */
   tx: SharedValue<number>;
   /**
-   * 费率列副标 —— 随 Tab 口径换（收租「年化」/ 建仓「周化 / 折年·参照」/ 全腿「本行口径」）。
-   * T033 按 Tab 传；缺省是全腿口径。
+   * 费率列头 —— 🚨 **`main` 就是该视角的口径本身**（051 FR-017a：不套「费率」这层通用标题）。
+   * 取自服务端下发的 `basisByTab`，由调用方经 `rateHeaderFor` 取好再传（FR-017）。
    */
-  rateSub?: string;
+  rateHeader: LegRateHeader;
   /** 🚨 OI 的**独立归属日**（与区块级 asOf 不是同一天，FR-013）。 */
   oiAsOf: string | null;
 }
 
 /** 12 列表头（sticky section header 的下半）。复杂度 O(1)（列数固定）。 */
-export function LegTableHeader({ tx, rateSub, oiAsOf }: LegTableHeaderProps) {
+export function LegTableHeader({ tx, rateHeader, oiAsOf }: LegTableHeaderProps) {
+  // 费率列**整个列头**（主标 + 副标）都随口径换，其余 11 列取固定列名。
+  const label: Record<LegColumnKey, string> = { ...COPY.columns, rate: rateHeader.main };
   // 穷举而非 `Partial<Record>` —— 加列时漏写副标即编译红，且「哪三列有副标」一眼可审。
   const sub: Record<LegColumnKey, string | null> = {
     strike: null,
     bid: null,
-    rate: rateSub ?? COPY.columnSubRateMixed,
+    rate: rateHeader.sub,
     cost: null,
     delta: COPY.columnSubDelta,
     sigma: null,
@@ -114,7 +117,7 @@ export function LegTableHeader({ tx, rateSub, oiAsOf }: LegTableHeaderProps) {
         {LEG_SCROLL_COLUMNS.map((column) => (
           <HeaderCell
             key={column.key}
-            label={COPY.columns[column.key]}
+            label={label[column.key]}
             sub={sub[column.key]}
             width={column.width}
           />

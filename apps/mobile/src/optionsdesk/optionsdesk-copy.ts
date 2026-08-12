@@ -206,6 +206,11 @@ export const OPTIONSDESK_COPY = {
     columns: {
       strike: '行权价/到期',
       bid: 'bid/ask',
+      /**
+       * 🚨 **常态下渲不到屏幕上**（051 FR-017a）——费率列头直接是服务端下发的口径本身
+       * （「周化」/「年化」，见 {@link rateBasisWeekly}）。这一条只作口径未知 / 契约未到手
+       * 时的**降级标题**（FR-018），单点在 `leg-picker.rules.ts` 的 `RATE_HEADER_UNKNOWN`。
+       */
       rate: '费率',
       cost: '成本vsW',
       delta: 'Δ',
@@ -217,11 +222,16 @@ export const OPTIONSDESK_COPY = {
       mark: '标注',
       action: '动作',
     },
-    /** 列头副标（只有三列有）。`rate` 的那条随 Tab 口径换，默认「本行口径」。 */
+    /** 列头副标。`rate` 的那条随口径换（见下方三条），Δ 这条恒在。 */
     columnSubDelta: '带判据',
-    columnSubRateMixed: '本行口径',
-    columnSubRateWeekly: '周化 / 折年·参照',
-    columnSubRateAnnualized: '年化',
+    /**
+     * 费率列头 —— **列头即口径本身**（051 FR-017a：不在其上再套「费率」这层通用标题）。
+     * 🚨 取值域与服务端 `basisByTab` 一一对应，映射单点在 `leg-picker.rules.ts`；
+     *    客户端 MUST NOT 自带一份「Tab → 口径」的第二实现（FR-017）。
+     */
+    rateBasisWeekly: '周化',
+    rateBasisWeeklySub: '折年参照',
+    rateBasisAnnualized: '年化',
     /**
      * 🚨 OI 列的**独立归属日**（FR-013 / Guardrail 6）—— 美股期权 OI 盘前更新，收盘后采的
      * 快照其 OI 归属 T−1 日 ⇒ 它与区块级 `asOf` **不是同一天**，MUST 挂在 OI 列头上。

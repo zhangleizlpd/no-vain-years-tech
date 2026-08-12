@@ -21,6 +21,7 @@
 import type {
   LegActivityResponse,
   LegResponse,
+  LegResponseBasis,
   LegResponseTabsItem,
   LegTableResponse,
   LegTableResponseIntent,
@@ -231,16 +232,45 @@ export function showsBasisBadge(tab: LegPickerTab): boolean {
   return tab === 'all';
 }
 
-/** 费率列副标随 Tab 口径换（表头单源在 `leg-table-header.tsx`，本函数只选串）。O(1)。 */
-export function rateSubForTab(tab: LegPickerTab): string {
-  return RATE_SUB_BY_TAB[tab];
+/**
+ * 每 Tab 一个**档位判定口径**（契约 `LegTableResponse.basisByTab`）。
+ * 同 {@link LegTabOrder}：用本仓自己的 Tab 类型，server 往 `tabs` 加一个成员即编译红。
+ */
+export type LegBasisByTab = Readonly<Record<LegPickerTab, LegResponseBasis>>;
+
+/** 费率列头 —— `main` 即口径本身；`sub` 只有周化那支有（折年是参照，不作排序键）。 */
+export interface LegRateHeader {
+  main: string;
+  sub: string | null;
 }
 
-const RATE_SUB_BY_TAB: Readonly<Record<LegPickerTab, string>> = {
-  all: COPY.columnSubRateMixed,
-  build: COPY.columnSubRateWeekly,
-  rent: COPY.columnSubRateAnnualized,
+/** 两个口径的列头。穷举 `Record` —— server 的口径值域加一格即编译红。 */
+const RATE_HEADER_BY_BASIS: Readonly<Record<LegResponseBasis, LegRateHeader>> = {
+  weekly: { main: COPY.rateBasisWeekly, sub: COPY.rateBasisWeeklySub },
+  annualized: { main: COPY.rateBasisAnnualized, sub: null },
 };
+
+/**
+ * 未知口径 / 契约未到手时的**降级态**（FR-018）。退回通用标题「费率」——
+ * 🚫 MUST NOT 猜一个口径挂上去（猜错时屏幕上的每个数字都还对，只有口径是错的，不会红）；
+ * 🚫 也 MUST NOT 渲成占位符「—」，那会让这一列连是什么都认不出来。
+ */
+const RATE_HEADER_UNKNOWN: LegRateHeader = { main: COPY.columns.rate, sub: null };
+
+/**
+ * 费率列头 = **服务端下发的那个口径本身**（FR-017 / FR-017a）。复杂度 O(1)。
+ *
+ * 🚨 客户端 MUST NOT 自带一份「Tab → 口径」映射 —— 硬编码必与 server 漂移，而漂移时**两边
+ *    都算得出结果**：列头写着「周化」、数字却是年化口径判出来的档，没有任何一处会红。
+ * 🚨 穷举 `Record` 只拦得住编译期；`?? RATE_HEADER_UNKNOWN` 拦的是**运行时**那一支 ——
+ *    server 可能先于客户端上线新口径取值，那时类型层已经骗不了运行时（FR-018）。
+ */
+export function rateHeaderFor(basisByTab: LegBasisByTab | null, tab: LegPickerTab): LegRateHeader {
+  const basis: string | undefined = basisByTab?.[tab];
+  if (basis === undefined) return RATE_HEADER_UNKNOWN;
+  const known: Readonly<Record<string, LegRateHeader | undefined>> = RATE_HEADER_BY_BASIS;
+  return known[basis] ?? RATE_HEADER_UNKNOWN;
+}
 
 /** 「人工输入」角标 —— 直接读契约的来源标，**不靠前端记忆推**（FR-017）。O(1)。 */
 export function isManualBucket(source: LegTableResponsePositionBucketSource): boolean {

@@ -25,7 +25,7 @@ import {
   legTabLabel,
   legTierForTab,
   orderedLegsForTab,
-  rateSubForTab,
+  rateHeaderFor,
   resolveLegTab,
   showsBasisBadge,
   type LegPickerTab,
@@ -433,7 +433,7 @@ describe('🚨 FR-017 —— 未选水位是常驻分支：显式提示，MUST N
   });
 });
 
-// ═══════════════ ⑤ 口径随 Tab 换（列头副标 + 腿族徽标） ═══════════════
+// ═══════════════ ⑤ 口径随 Tab 换（腿族徽标 + 费率列头） ═══════════════
 
 describe('FR-019 —— 全腿 Tab 混排标口径徽标，单口径 Tab 关掉', () => {
   it('徽标只在全腿 Tab 出', () => {
@@ -441,11 +441,43 @@ describe('FR-019 —— 全腿 Tab 混排标口径徽标，单口径 Tab 关掉'
     expect(showsBasisBadge('build')).toBe(false);
     expect(showsBasisBadge('rent')).toBe(false);
   });
+});
 
-  it('费率列副标随 Tab 口径换（三个 Tab 各不相同）', () => {
-    expect(rateSubForTab('all')).toBe(COPY.columnSubRateMixed);
-    expect(rateSubForTab('build')).toBe(COPY.columnSubRateWeekly);
-    expect(rateSubForTab('rent')).toBe(COPY.columnSubRateAnnualized);
-    expect(new Set(LEG_PICKER_TABS.map(rateSubForTab)).size).toBe(3);
+describe('🚨 051 FR-017/FR-017a —— 费率列头取自 `basisByTab`，列头**就是口径**', () => {
+  // 契约下发的映射（全腿恒年化 —— 混着 10 天与 200 天的腿，周化档界会让整列全死档）。
+  const basisByTab = { all: 'annualized', build: 'weekly', rent: 'annualized' } as const;
+
+  it('两个口径取值穷举：周化带折年参照副标 · 年化单行无副标', () => {
+    expect(rateHeaderFor(basisByTab, 'build')).toEqual({
+      main: COPY.rateBasisWeekly,
+      sub: COPY.rateBasisWeeklySub,
+    });
+    expect(rateHeaderFor(basisByTab, 'rent')).toEqual({
+      main: COPY.rateBasisAnnualized,
+      sub: null,
+    });
+    expect(rateHeaderFor(basisByTab, 'all')).toEqual({ main: COPY.rateBasisAnnualized, sub: null });
+  });
+
+  it('🚨 列头 MUST NOT 是「费率」这层通用标题 —— 口径取自服务端这件事要在视觉上自明', () => {
+    for (const tab of LEG_PICKER_TABS) {
+      expect(rateHeaderFor(basisByTab, tab).main).not.toBe(COPY.columns.rate);
+    }
+    // 判别性：两个口径的列头 MUST 不同，否则「读错了 tab」照样绿。
+    expect(rateHeaderFor(basisByTab, 'build').main).not.toBe(
+      rateHeaderFor(basisByTab, 'rent').main,
+    );
+  });
+
+  it('🚨 FR-018 —— 口径取值超出客户端值域 ⇒ 降级为通用标题，不崩不猜', () => {
+    // server 可能先于客户端上线新取值（如按月口径）：类型层这时已经骗不了运行时，
+    // 故这里蓄意越过类型断言塞一个未知值 —— 穷举 `Record` 拦得住编译期，拦不住这一支。
+    const unknown = { ...basisByTab, build: 'monthly' } as unknown as typeof basisByTab;
+    expect(rateHeaderFor(unknown, 'build')).toEqual({ main: COPY.columns.rate, sub: null });
+  });
+
+  it('契约还没到手（null）⇒ 同一个降级态 —— MUST NOT 先猜一个口径挂上去', () => {
+    expect(rateHeaderFor(null, 'build')).toEqual({ main: COPY.columns.rate, sub: null });
+    expect(rateHeaderFor(null, 'rent')).toEqual(rateHeaderFor(null, 'all'));
   });
 });

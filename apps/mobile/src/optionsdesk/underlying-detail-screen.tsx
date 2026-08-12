@@ -54,7 +54,7 @@ import { AnchorDetailCard } from './anchor-detail-card';
 import { IvReadoutBlock } from './iv-readout-block';
 import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
-import { legActivityForTab, rateSubForTab, showsBasisBadge } from './leg-picker.rules';
+import { legActivityForTab, rateHeaderFor, showsBasisBadge } from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
 import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
@@ -204,7 +204,9 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                     />
                     <LegTableHeader
                       tx={tx}
-                      rateSub={rateSubForTab(legTable.tab)}
+                      // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——
+                      //    契约未到手时退降级标题，MUST NOT 先猜一个口径挂上去。
+                      rateHeader={rateHeaderFor(legTable.table?.basisByTab ?? null, legTable.tab)}
                       oiAsOf={legTable.table?.oiAsOf ?? null}
                     />
                     {/* 🚨 指示条钉在 12 列表头**正下方**（不是表格底部）—— 它描述列的位置，
