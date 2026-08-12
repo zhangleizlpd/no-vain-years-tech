@@ -4,13 +4,18 @@ import {
   BUILD_RECALL_DTE,
   LIQUIDITY_MAX_RELATIVE_SPREAD,
   PREMIUM_FLOOR,
+  QUALITY_CEILING_SPOT_RATIO,
   RENT_RECALL_DTE,
   intentTabsExcludedByLiquidity,
   passesEffectiveCostGate,
   passesLiquidityGate,
   passesPremiumFloor,
+  passesQualityCeiling,
+  recallCandidates,
   recallTabs,
   relativeSpread,
+  resolveQualityCeiling,
+  type RecallChainContext,
   type RecallContext,
   type RecallLegInput,
 } from './leg-recall.rules';
@@ -19,6 +24,14 @@ const D = (v: string) => new Prisma.Decimal(v);
 
 /** spot = 110 ⇒ 权利金门槛 = max(绝对下限, 110 × 比例)，两侧取值都由常量派生，不手抄。 */
 const context: RecallContext = { spot: D('110') };
+
+/**
+ * 期限段 / 有效成本 / 流动性三组断言用的链级上下文 —— **成色上界取足够高使其不参与判定**。
+ *
+ * 🚨 蓄意不用真实上界：那样一条断言变红时分不清是哪道判据挂的，而成色自己的边界在下面
+ * 「成色条件」那组里逐条验（含闭区间端点），不靠这里兼职。
+ */
+const chain: RecallChainContext = { spot: context.spot, qualityCeiling: D('9999') };
 
 /** 基线腿: DTE=35 (重叠区)、有效成本 98 < spot、两道门槛均宽松通过。 */
 const leg = (over: Partial<RecallLegInput> = {}): RecallLegInput => ({
@@ -31,29 +44,29 @@ const leg = (over: Partial<RecallLegInput> = {}): RecallLegInput => ({
 
 describe('leg-recall.rules — 期限段召回 (FR-001 / FR-002 / FR-003)', () => {
   it('建仓段四个端点闭合: 1 与 49 在带内, 0 与 50 出局', () => {
-    expect(recallTabs(context, leg({ dteDays: BUILD_RECALL_DTE.min }))).toContain('build');
-    expect(recallTabs(context, leg({ dteDays: BUILD_RECALL_DTE.max }))).toContain('build');
-    expect(recallTabs(context, leg({ dteDays: BUILD_RECALL_DTE.min - 1 }))).not.toContain('build');
-    expect(recallTabs(context, leg({ dteDays: BUILD_RECALL_DTE.max + 1 }))).not.toContain('build');
+    expect(recallTabs(chain, leg({ dteDays: BUILD_RECALL_DTE.min }))).toContain('build');
+    expect(recallTabs(chain, leg({ dteDays: BUILD_RECALL_DTE.max }))).toContain('build');
+    expect(recallTabs(chain, leg({ dteDays: BUILD_RECALL_DTE.min - 1 }))).not.toContain('build');
+    expect(recallTabs(chain, leg({ dteDays: BUILD_RECALL_DTE.max + 1 }))).not.toContain('build');
   });
 
   it('收租段四个端点闭合: 30 与 365 在带内, 29 与 366 出局', () => {
-    expect(recallTabs(context, leg({ dteDays: RENT_RECALL_DTE.min }))).toContain('rent');
-    expect(recallTabs(context, leg({ dteDays: RENT_RECALL_DTE.max }))).toContain('rent');
-    expect(recallTabs(context, leg({ dteDays: RENT_RECALL_DTE.min - 1 }))).not.toContain('rent');
-    expect(recallTabs(context, leg({ dteDays: RENT_RECALL_DTE.max + 1 }))).not.toContain('rent');
+    expect(recallTabs(chain, leg({ dteDays: RENT_RECALL_DTE.min }))).toContain('rent');
+    expect(recallTabs(chain, leg({ dteDays: RENT_RECALL_DTE.max }))).toContain('rent');
+    expect(recallTabs(chain, leg({ dteDays: RENT_RECALL_DTE.min - 1 }))).not.toContain('rent');
+    expect(recallTabs(chain, leg({ dteDays: RENT_RECALL_DTE.max + 1 }))).not.toContain('rent');
   });
 
   it('重叠区 [30,49] 是设计意图不是重复 —— DTE=35 同时进两个意图 Tab', () => {
-    expect(recallTabs(context, leg({ dteDays: 35 }))).toEqual(['all', 'build', 'rent']);
+    expect(recallTabs(chain, leg({ dteDays: 35 }))).toEqual(['all', 'build', 'rent']);
   });
 
   it('DTE=400 两个意图都不进, 但恒在全腿 Tab (FR-003: 全腿 Tab 不设期限段)', () => {
-    expect(recallTabs(context, leg({ dteDays: 400 }))).toEqual(['all']);
+    expect(recallTabs(chain, leg({ dteDays: 400 }))).toEqual(['all']);
   });
 
   it('全腿 Tab 恒在返回里 —— 「进不了意图 Tab」MUST NOT 变成「哪儿都看不见」', () => {
-    expect(recallTabs(context, leg({ dteDays: 0, ask: null }))).toEqual(['all']);
+    expect(recallTabs(chain, leg({ dteDays: 0, ask: null }))).toEqual(['all']);
   });
 });
 
@@ -64,19 +77,19 @@ describe('leg-recall.rules — 有效成本硬判据 (FR-004, Guardrail 5)', () 
   it('K − bid 恰好等于 spot ⇒ 不进建仓 (严格小于; 成本持平时用 put 代替直接买没有优势)', () => {
     const breakEven = leg({ dteDays: 20, strike: D('115'), bid: D('5'), ask: D('5.2') });
     expect(effectiveCostOk(breakEven)).toBe(false);
-    expect(recallTabs(context, breakEven)).not.toContain('build');
+    expect(recallTabs(chain, breakEven)).not.toContain('build');
   });
 
   it('K − bid 低于 spot 一分钱即进建仓', () => {
     const justUnder = leg({ dteDays: 20, strike: D('115'), bid: D('5.01'), ask: D('5.2') });
     expect(effectiveCostOk(justUnder)).toBe(true);
-    expect(recallTabs(context, justUnder)).toContain('build');
+    expect(recallTabs(chain, justUnder)).toContain('build');
   });
 
   it('🚨 收租 MUST NOT 受有效成本约束 —— 深虚腿有效成本远高于 spot 仍进收租', () => {
     const deepOtm = leg({ dteDays: 35, strike: D('200'), bid: D('1'), ask: D('1.1') });
     expect(effectiveCostOk(deepOtm)).toBe(false);
-    expect(recallTabs(context, deepOtm)).toEqual(['all', 'rent']);
+    expect(recallTabs(chain, deepOtm)).toEqual(['all', 'rent']);
   });
 
   it('无 bid ⇒ 有效成本无定义 ⇒ 不进建仓 (MUST NOT 拿 K − 0 冒充)', () => {
@@ -132,49 +145,119 @@ describe('leg-recall.rules — 相对价差与流动性门槛 (FR-006)', () => {
 
   it('🚨 无 ask ⇒ fail-closed (不进意图 Tab), 但腿仍在全腿 Tab 可见', () => {
     expect(passesLiquidityGate(D('2'), null)).toBe(false);
-    expect(recallTabs(context, leg({ ask: null }))).toEqual(['all']);
+    expect(recallTabs(chain, leg({ ask: null }))).toEqual(['all']);
   });
 
   it('无 bid ⇒ 同样算不出价差 ⇒ fail-closed', () => {
     expect(passesLiquidityGate(null, D('2'))).toBe(false);
-    expect(recallTabs(context, leg({ bid: null }))).toEqual(['all']);
+    expect(recallTabs(chain, leg({ bid: null }))).toEqual(['all']);
   });
 });
 
 describe('leg-recall.rules — 两个流动性排除数的共同判据 (FR-008 / 051 FR-006a)', () => {
   it('只数「本来进得去、被流动性门槛挡下」的腿, 并**点名是哪几个视角**', () => {
     const wide = leg({ dteDays: 35, ask: D('20') });
-    expect(recallTabs(context, wide)).toEqual(['all']);
+    expect(recallTabs(chain, wide)).toEqual(['all']);
     // 🚨 DTE=35 落重叠区 ⇒ 一条腿让**两个**视角各少一条, 而全表标量只记 1 次。
     // 这就是 051 SC-012 取不等式 (`标量 ≤ build + rent`) 而非等号的根: 断言写成
     // `toEqual(['build'])` 或只判布尔, 重叠区的双计就没有任何一处会红。
-    expect(intentTabsExcludedByLiquidity(context, wide)).toEqual(['build', 'rent']);
+    expect(intentTabsExcludedByLiquidity(chain, wide)).toEqual(['build', 'rent']);
   });
 
   it('只够一个视角的腿只让那一个视角减少 —— 两个数各自独立, 不是同一个数的两份拷贝', () => {
     // DTE=164 只在收租段 `[30,365]` 内, 建仓段 `[1,49]` 够不着。
-    expect(intentTabsExcludedByLiquidity(context, leg({ dteDays: 164, ask: D('20') }))).toEqual([
+    expect(intentTabsExcludedByLiquidity(chain, leg({ dteDays: 164, ask: D('20') }))).toEqual([
       'rent',
     ]);
     // DTE=10 反过来: 只在建仓段内。
-    expect(intentTabsExcludedByLiquidity(context, leg({ dteDays: 10, ask: D('20') }))).toEqual([
+    expect(intentTabsExcludedByLiquidity(chain, leg({ dteDays: 10, ask: D('20') }))).toEqual([
       'build',
     ]);
   });
 
   it('🚫 期限段本就不合格的腿 MUST NOT 计入 —— 它不是被流动性门槛挡下的', () => {
-    expect(intentTabsExcludedByLiquidity(context, leg({ dteDays: 400, ask: D('20') }))).toEqual([]);
+    expect(intentTabsExcludedByLiquidity(chain, leg({ dteDays: 400, ask: D('20') }))).toEqual([]);
   });
 
   it('🚫 有效成本不过的腿 MUST NOT 计进建仓数 —— 它本来就进不了建仓, 与流动性无关', () => {
     // 有效成本 120 − 2 = 118 **>** spot 110 ⇒ 建仓段够得着也进不去; DTE=10 又够不着收租段。
     expect(
-      intentTabsExcludedByLiquidity(context, leg({ dteDays: 10, strike: D('120'), ask: D('20') })),
+      intentTabsExcludedByLiquidity(chain, leg({ dteDays: 10, strike: D('120'), ask: D('20') })),
     ).toEqual([]);
   });
 
   it('通过流动性门槛的腿恒不计入', () => {
-    expect(intentTabsExcludedByLiquidity(context, leg())).toEqual([]);
+    expect(intentTabsExcludedByLiquidity(chain, leg())).toEqual([]);
+  });
+});
+
+describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () => {
+  /** spot = 110 的比例项上界，由常量派生不手抄。 */
+  const ratioCeiling = context.spot.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
+  const strikes = (values: string[]) => values.map((v) => leg({ strike: D(v) }));
+
+  it('结构项占优: 密网格下上界 = spot 之上最近一档 (110), 比例项 (114.4) 更松故不接管', () => {
+    const ceiling = resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120']));
+    expect(ceiling.equals(D('110'))).toBe(true);
+    expect(ceiling.lessThan(ratioCeiling)).toBe(true);
+  });
+
+  it('稀疏网格下由比例项接管 —— 最近一档 130 太远, 上界收到 spot × (1+X)', () => {
+    const ceiling = resolveQualityCeiling(context.spot, strikes(['90', '100', '130']));
+    expect(ceiling.equals(ratioCeiling)).toBe(true);
+  });
+
+  it('链上无 ≥ spot 的档 ⇒ 结构项无定义 ⇒ 退化为仅比例项 (🚫 不是"没上界故全放行")', () => {
+    const ceiling = resolveQualityCeiling(context.spot, strikes(['90', '100', '105']));
+    expect(ceiling.equals(ratioCeiling)).toBe(true);
+  });
+
+  it('恰等于 spot 的档就是「spot 之上最近一档」—— 闭区间在上界这一侧也含端点', () => {
+    const ceiling = resolveQualityCeiling(context.spot, strikes(['105', '110']));
+    expect(ceiling.equals(context.spot)).toBe(true);
+    expect(passesQualityCeiling(ceiling, ceiling)).toBe(true);
+    expect(passesQualityCeiling(ceiling.plus('0.01'), ceiling)).toBe(false);
+  });
+
+  it('高于上界不进收租, 恰等于上界进收租', () => {
+    const gridded: RecallChainContext = {
+      spot: context.spot,
+      qualityCeiling: resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120'])),
+    };
+    expect(recallTabs(gridded, leg({ dteDays: 35, strike: D('110') }))).toContain('rent');
+    expect(recallTabs(gridded, leg({ dteDays: 35, strike: D('112') }))).not.toContain('rent');
+  });
+
+  it('🚨 同一条腿高于成色上界仍进建仓、仍在全腿 (052 FR-006 / FR-007: 只收租设成色)', () => {
+    const gridded: RecallChainContext = {
+      spot: context.spot,
+      qualityCeiling: resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120'])),
+    };
+    // K=115 高于上界 110；有效成本 115 − 6 = 109 **<** spot ⇒ 建仓判据照过。
+    const overCeiling = leg({ dteDays: 35, strike: D('115'), bid: D('6'), ask: D('6.2') });
+    expect(recallTabs(gridded, overCeiling)).toEqual(['all', 'build']);
+  });
+
+  it('🚫 被成色挡下的腿 MUST NOT 计进流动性排除数 —— 它本来就进不了收租', () => {
+    const gridded: RecallChainContext = {
+      spot: context.spot,
+      qualityCeiling: resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120'])),
+    };
+    // DTE=164 只够收租段；价差宽到出局；但 K=120 已被成色挡在收租之外。
+    const wideAndRich = leg({ dteDays: 164, strike: D('120'), bid: D('2'), ask: D('20') });
+    expect(intentTabsExcludedByLiquidity(gridded, wideAndRich)).toEqual([]);
+  });
+
+  it('🚨 网格取自链上全部腿, MUST NOT 取过完权利金门槛的那批 —— 否则上界反而变松', () => {
+    // A 恰是 spot 之上最近一档, 但 bid 低于权利金门槛被整条移出。
+    const a = { ...leg({ dteDays: 35, strike: D('110') }), code: 'A', bid: D('0.01') };
+    // B 高于 A 一档。若上界在"过滤后"的集合上求, min{K ≥ spot} 会跳到 112 ⇒ B 恰等于上界而进收租。
+    const b = { ...leg({ dteDays: 35, strike: D('112') }), code: 'B' };
+    const outcome = recallCandidates(context, ['all', 'build', 'rent'], [a, b]);
+
+    expect(outcome.removedByPremiumFloor).toBe(1);
+    expect(outcome.candidates.map((c) => c.leg.code)).toEqual(['B']);
+    expect(outcome.candidates[0]?.tabs).not.toContain('rent');
   });
 });
 
@@ -184,11 +267,11 @@ describe('leg-recall.rules — Δ 已降级为标 (FR-009)', () => {
     // 判据。想把 Δ 塞回召回就必须先改签名 —— 那一步 review 看得见。若本行不再报错, 说明
     // 签名已被加回 Δ, 此时 `@ts-expect-error` 变成「未使用的抑制」而 typecheck 立刻红。
     const withDelta: RecallLegInput = { ...leg(), absDelta: 0.45 };
-    expect(recallTabs(context, withDelta)).toEqual(['all', 'build', 'rent']);
+    expect(recallTabs(chain, withDelta)).toEqual(['all', 'build', 'rent']);
   });
 
   it('greeks 缺失的腿照常进意图召回集 —— 与 047 相反', () => {
     // greeks 缺失在本层完全不可表达 (没有承载它的入参), 故「照常进」是构造上的必然。
-    expect(recallTabs(context, leg({ dteDays: 20 }))).toContain('build');
+    expect(recallTabs(chain, leg({ dteDays: 20 }))).toContain('build');
   });
 });

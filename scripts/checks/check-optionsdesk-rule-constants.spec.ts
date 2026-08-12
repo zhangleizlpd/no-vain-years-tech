@@ -104,7 +104,7 @@ describe('findOffenders', () => {
   });
 });
 
-/** 镜像 leg-recall.rules.ts 的三处阈值声明（只留检查关心的形状）。 */
+/** 镜像 leg-recall.rules.ts 的四处阈值声明（只留检查关心的形状）。 */
 const RECALL_SOURCE = `
 export const PREMIUM_FLOOR: PremiumFloorParams = {
   absolute: new Prisma.Decimal('0.20'),
@@ -112,17 +112,26 @@ export const PREMIUM_FLOOR: PremiumFloorParams = {
 };
 
 export const LIQUIDITY_MAX_RELATIVE_SPREAD = new Prisma.Decimal('0.35');
+
+export const QUALITY_CEILING_SPOT_RATIO = new Prisma.Decimal('0.04');
 `;
 
 describe('extractRecallThresholds —— 050 不变量 #2', () => {
-  it('抽出三个阈值，顺序固定为 绝对下限 / spot 比例 / 价差上界', () => {
-    expect(extractRecallThresholds(RECALL_SOURCE)).toEqual(['0.20', '0.0012', '0.35']);
+  it('抽出四个阈值，顺序固定为 绝对下限 / spot 比例 / 价差上界 / 成色兜底比例', () => {
+    expect(extractRecallThresholds(RECALL_SOURCE)).toEqual(['0.20', '0.0012', '0.35', '0.04']);
   });
 
   it('🚨 蓄意不过滤不去重 —— 少抽到一个要能被探针看见，而不是静默缩小扫描面', () => {
     const renamed = RECALL_SOURCE.replace('LIQUIDITY_MAX_RELATIVE_SPREAD', 'MAX_SPREAD');
-    expect(extractRecallThresholds(renamed)).toEqual(['0.20', '0.0012']);
+    expect(extractRecallThresholds(renamed)).toEqual(['0.20', '0.0012', '0.04']);
     expect(recallSelfProbe(renamed, extractRecallThresholds(renamed))).toMatch(/平凡绿/);
+  });
+
+  it('🚨 052 成色比例入表 —— 漏掉它就等于新阈值可被抄到别处而无人拦', () => {
+    const withoutQuality = RECALL_SOURCE.replace('QUALITY_CEILING_SPOT_RATIO', 'QUALITY_RATIO');
+    expect(recallSelfProbe(withoutQuality, extractRecallThresholds(withoutQuality))).toMatch(
+      /平凡绿/,
+    );
   });
 
   it('只在注释里出现的阈值不被抽成常量', () => {
@@ -143,10 +152,10 @@ describe('recallSelfProbe —— 整数阈值那一臂', () => {
   });
 
   it('抽取口径与扫描口径不一致 → 报错', () => {
-    expect(recallSelfProbe(RECALL_SOURCE, ['0.20', '0.0012', '9.9'])).toMatch(/9\.9/);
+    expect(recallSelfProbe(RECALL_SOURCE, ['0.20', '0.0012', '0.35', '9.9'])).toMatch(/9\.9/);
   });
 
-  it('三个阈值齐全且均在源码里 → 通过', () => {
+  it('四个阈值齐全且均在源码里 → 通过', () => {
     expect(recallSelfProbe(RECALL_SOURCE, extractRecallThresholds(RECALL_SOURCE))).toBeNull();
   });
 });

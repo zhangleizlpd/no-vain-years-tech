@@ -7,7 +7,7 @@
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
  * | 1 | 档位系数只住 `anchor.rules.ts` | 字面量**子串扫描** | 045 SC-005 |
- * | 2 | 两道门槛阈值只住 `leg-recall.rules.ts` | 字面量**子串扫描** | 050 FR-007 / SC-009 |
+ * | 2 | 召回层可调阈值只住 `leg-recall.rules.ts` | 字面量**子串扫描** | 050 FR-007 / SC-009 · 052 FR-005 |
  * | 3 | 三段 DTE 界只住 `leg-recall.rules.ts` | **比较表达式**扫描 | 050 SC-009 |
  * | 4 | 闭区间带字面量只住 `leg-recall` / `leg-mark` | **对象形状**扫描 | 050 SC-009 |
  * | 5 | 检索 port 接口零存储侧词汇 | **词表**扫描 | 052 FR-031 |
@@ -79,8 +79,16 @@ const LAYER_ENTRY_FILES = [
   'leg-rank.rules.ts', // 特征加工 + 精排
   'leg-derive.rules.ts', // 特征加工 · 活跃标
 ] as const;
-/** 门槛阈值的个数（绝对下限 / spot 比例 / 相对价差上界）—— 少抽到一个就是检查变平凡绿。 */
-const RECALL_THRESHOLD_COUNT = 3;
+/**
+ * 召回层可调阈值的个数（权利金绝对下限 / spot 比例 / 相对价差上界 / 052 成色兜底比例）
+ * —— 少抽到一个就是检查变平凡绿。
+ *
+ * 🚨 **新增可调阈值时这个数要跟着加**：漏加等于新阈值可以被抄到别处而无人拦（052 T003 起
+ * 成色比例入表，因为它同样是「T016 会调、调时必须只有一处」的策略参数）。
+ * 📌 只有**小数**阈值能入表 —— 整数走不了子串扫描（见 {@link recallSelfProbe} 那一臂），
+ * 故 052 的持仓量下限与候选上限 K 不在其内。
+ */
+const RECALL_THRESHOLD_COUNT = 4;
 
 /**
  * 剥注释后再匹配 —— 注释里写 `1.2V 上界` 是**正确的文档**，不是硬编码
@@ -161,7 +169,7 @@ export function findOffenders(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 从 `leg-recall.rules.ts` 源码里抽出两道门槛的三个阈值。
+ * 从 `leg-recall.rules.ts` 源码里抽出召回层的四个小数阈值。
  *
  * 🚨 **蓄意不过滤、不去重** —— 判断全留给 {@link recallSelfProbe}，让「少抽到一个」与「阈值被
  * 写成整数」都变成**显式报错**，而不是静默缩小扫描面（那正是「检查变平凡绿」的形态）。
@@ -172,6 +180,7 @@ export function extractRecallThresholds(recallSource: string): string[] {
     /absolute:\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
     /spotRatio:\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
     /export\s+const\s+LIQUIDITY_MAX_RELATIVE_SPREAD\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
+    /export\s+const\s+QUALITY_CEILING_SPOT_RATIO\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
   ];
   return patterns.map((re) => re.exec(code)?.[1]).filter((v): v is string => v !== undefined);
 }

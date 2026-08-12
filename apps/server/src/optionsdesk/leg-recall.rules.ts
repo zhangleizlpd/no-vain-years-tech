@@ -13,6 +13,7 @@ import { type LegTab } from './leg-tab.rules';
  * | 有效成本 `K − bid < spot`       | **只**建仓         | 004     |
  * | 权利金绝对门槛                  | **三个 Tab 一律**  | 005     |
  * | 流动性门槛 (相对价差上界)       | 只建仓 / 收租      | 006     |
+ * | 成色上界 (052 起, 见下)         | **只**收租         | 052-005 |
  *
  * 🚨 **`|Δ|` 不在本文件的任何入参里** (FR-009) —— 这是「Δ 已降级为打标量」的**结构保证**而非
  * 事后约定: 拿不到这个量就不可能拿它做召回判据。想把 Δ 塞回召回必须先改签名, 那一步 review
@@ -108,6 +109,18 @@ export const PREMIUM_FLOOR: PremiumFloorParams = {
 export const LIQUIDITY_MAX_RELATIVE_SPREAD = new Prisma.Decimal('0.35');
 
 /**
+ * 052 成色条件的**兜底比例 X** (052 FR-005): 行权价上界的第二项 `spot × (1+X)`。
+ *
+ * ⏳ **占位值, 标定在 052 T016** —— 取 `0.04` 是因为它落在实测网格距离分布的稀疏侧: dev 12 条链
+ * 的「spot 之上最近一档相对 spot 的距离」中位约 `1.25%`, 而 `us:KBR 6.50%` / `us:VICI 5.85%` /
+ * `us:ARE 3.91%` 三条是稀疏网格异常 —— 兜底比例正是为收窄这几条而设。**MUST NOT 当已标定值引用**。
+ *
+ * 🚨 改值时避开 `leg-tier.rules.ts` 的六个档界与本文件已有的三个阈值 (守门脚本认值不认名,
+ * 撞值会把那个文件报成违规) —— 同 {@link PREMIUM_FLOOR} 头上那条纪律。
+ */
+export const QUALITY_CEILING_SPOT_RATIO = new Prisma.Decimal('0.04');
+
+/**
  * 腿侧入参 —— 🚨 **MUST NOT 加 `absDelta`** (FR-009, 见文件头)。
  *
  * 也没有档位 / 费率: 召回判据一条都用不到费率, 这是 plan D-RECALL-3 否决「费率下沉 SQL」的
@@ -125,6 +138,18 @@ export interface RecallLegInput {
 export interface RecallContext {
   /** vendor 随链下发的标的价, **未复权** (沿 047 纪律)。有效成本判据的右操作数。 */
   spot: Prisma.Decimal;
+}
+
+/**
+ * 链级上下文 = {@link RecallContext} + **从该链自身派生**的量 (052 FR-005)。
+ *
+ * 🚨 **它 MUST 由层入口 {@link recallCandidates} 一处派生, MUST NOT 由 port 的实现各造一份**
+ * —— 那会让真实现与假实现的成色上界可能不同, 而两边都算得出候选集、都不会红。这正是
+ * `RecallContext` (外部给的 spot) 与本类型 (链上派生) 分成两个类型的理由。
+ */
+export interface RecallChainContext extends RecallContext {
+  /** 收租成色上界, 闭区间 (含端点视为通过)。见 {@link resolveQualityCeiling}。 */
+  readonly qualityCeiling: Prisma.Decimal;
 }
 
 /**
@@ -199,16 +224,63 @@ export function passesEffectiveCostGate(
 }
 
 /**
+ * 收租**成色上界** (052 FR-005): 「spot 之上最近一档行权价」与 `spot × (1+X)` **取严**。`O(n)`。
+ *
+ * 两项都要, 缺一不可:
+ * · 结构项 `min{K ≥ spot}` 是成色的定义 —— 收租卖的是租金, 不是折价接货, 至多轻微实值一档。
+ * · 比例项是**稀疏网格的兜底** —— 实测 `us:KBR` spot `37.56` 的最近一档是 `40` (`+6.50%`),
+ *   网格再疏 (如 `37.5 → 45`) 结构项就形同虚设, 单靠它挡不住。
+ *
+ * 🚨 **网格取自「链上全部腿」而非过完门槛的那批** (调用点在 {@link recallCandidates} 的权利金
+ * 门槛**之前**): 若那一档恰好 bid 太低被门槛滤掉, 在过滤后的集合上求就会跳到**下一档**, 上界
+ * 反而变松 —— 更实值的腿因此进了候选。行权价网格是合约的属性, 与当日报价无关。
+ *
+ * 🚨 **口径是整条链, 不是同到期日** (2026-08-12 定, 实测差 16 条腿): 远月网格更疏, 按到期日各
+ * 算会让远月上界松到 `+3.5% ~ +6.6%` (`us:PSKY` 15 个到期日里 9 个如此)。取链级还因为 T016 的
+ * X 标定分布就是按链取的 —— 两处口径 MUST 同一, 否则标出来的数配不上实装的判据。
+ *
+ * 链上无 `K ≥ spot` 的档 (spot 高于全部行权价) ⇒ 结构项无定义 ⇒ **退化为仅比例项** (spec Edge
+ * Case)。🚫 MUST NOT 在此返 `null` 让调用方"没上界就全放行": 那会让最该被挡的深度实值全进来。
+ */
+export function resolveQualityCeiling(
+  spot: Prisma.Decimal,
+  legs: readonly RecallLegInput[],
+): Prisma.Decimal {
+  const ratioCeiling = spot.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
+  let structural: Prisma.Decimal | null = null;
+  for (const leg of legs) {
+    if (leg.strike.lessThan(spot)) continue;
+    if (structural === null || leg.strike.lessThan(structural)) structural = leg.strike;
+  }
+  if (structural === null) return ratioCeiling;
+  return structural.lessThan(ratioCeiling) ? structural : ratioCeiling;
+}
+
+/**
+ * 成色条件 (052 FR-005), **只作用收租**。闭区间: 恰等于上界的腿在候选内。`O(1)`。
+ *
+ * 🚫 **MUST NOT 用有效成本 `K − bid < spot` 代替** (052 Guardrail 2): 后者更松 —— `K` 高于 spot
+ * 两档但权利金厚时照样过, 而这里要的是成色。两者不等价, 合并会静默放回一批深度实值腿。
+ */
+export function passesQualityCeiling(
+  strike: Prisma.Decimal,
+  qualityCeiling: Prisma.Decimal,
+): boolean {
+  return strike.lessThanOrEqualTo(qualityCeiling);
+}
+
+/**
  * 这条腿进哪几个召回集 (plan D-RECALL-1)。`O(1)`。
  *
- * `all` 恒在内 —— 全腿 Tab 不设期限段 (FR-003)、不受流动性门槛约束 (FR-006)。
+ * `all` 恒在内 —— 全腿 Tab 不设期限段 (FR-003)、不受流动性门槛约束 (FR-006)、**不受成色条件
+ * 约束** (052 FR-006): 它是参照视角, 051 已 ship 的「切到全腿看被排除的腿」入口依赖它保留全部腿。
  *
  * 📌 **权利金门槛不在这里** (FR-005): 它作用于三个 Tab, 被它挡下的腿是从**响应里整条移出**,
  * 而不是「没进某个 Tab」⇒ 语义上属读端过滤, 由 use case 在建表之前施加。
  */
-export function recallTabs(context: RecallContext, leg: RecallLegInput): LegTab[] {
+export function recallTabs(chain: RecallChainContext, leg: RecallLegInput): LegTab[] {
   if (!passesLiquidityGate(leg.bid, leg.ask)) return ['all'];
-  return ['all', ...intentTabsByTerm(context, leg)];
+  return ['all', ...intentTabsByTerm(chain, leg)];
 }
 
 /**
@@ -230,11 +302,11 @@ export function recallTabs(context: RecallContext, leg: RecallLegInput): LegTab[
  * 与 {@link recallTabs} **同源派生** ({@link intentTabsByTerm} 一处求值), 两者不会 drift。
  */
 export function intentTabsExcludedByLiquidity(
-  context: RecallContext,
+  chain: RecallChainContext,
   leg: RecallLegInput,
 ): LegIntentTab[] {
   if (passesLiquidityGate(leg.bid, leg.ask)) return [];
-  return intentTabsByTerm(context, leg);
+  return intentTabsByTerm(chain, leg);
 }
 
 /** 候选腿 = 裸行 + **已判定的视角归属** (052 plan D-PORT-1 的出参形态)。 */
@@ -267,7 +339,8 @@ export interface RecallOutcome<T extends RecallLegInput> {
  * `perspectives` = 本次请求要的视角。不在其内的视角**既不产候选也不计排除数** —— 今天三视角
  * 一次全要 (047 FR-005 的既定契约), 该参数恒为全集; 拆成每视角独立请求归 053。
  *
- * 复杂度 `O(n)` (每腿两次 `O(1)` 判据求值, 与 050 在 use case 里的写法同量级)。
+ * 复杂度 `O(n)`: 一遍求成色上界 (链级, 见 {@link resolveQualityCeiling}) + 一遍逐腿 `O(1)` 判据。
+ * 两遍**不可合成一遍** —— 上界要先于任何一条腿的判定成型。
  */
 export function recallCandidates<T extends RecallLegInput>(
   context: RecallContext,
@@ -280,21 +353,26 @@ export function recallCandidates<T extends RecallLegInput>(
   let removedByPremiumFloor = 0;
   let excludedFromIntentTabs = 0;
 
+  // 🚨 成色上界在**门槛之前**、对**全量腿**求一次 (052 FR-005): 行权价网格是合约属性, 与当日
+  // 报价无关。放到循环里或放到门槛之后都会让上界随报价漂移 —— 而漂移后候选集照样出得来。
+  const chain: RecallChainContext = {
+    spot: context.spot,
+    qualityCeiling: resolveQualityCeiling(context.spot, legs),
+  };
+
   for (const leg of legs) {
     // 权利金门槛 (FR-005): 挡下即整条移出 —— 它不派生、不打标、不进任何视角的排名基准。
     if (!passesPremiumFloor(leg.bid, context.spot)) {
       removedByPremiumFloor += 1;
       continue;
     }
-    const tabs = recallTabs(context, leg).filter((tab) => requested.has(tab));
+    const tabs = recallTabs(chain, leg).filter((tab) => requested.has(tab));
     if (tabs.length > 0) candidates.push({ leg, tabs });
 
     // 🚨 标量与两个分视角数在**同一次求值**上累加: 标量按「返回非空」加 1, 分视角按「返回里的
     // 每个视角」各加 1 ⇒ `标量 ≤ build + rent` 是读得出来的结构保证 (重叠区 `[30,49]` 的腿会让
     // 右边比左边多 1, 这是设计不是 bug), 而不是靠测试守住的巧合。
-    const excluded = intentTabsExcludedByLiquidity(context, leg).filter((tab) =>
-      requested.has(tab),
-    );
+    const excluded = intentTabsExcludedByLiquidity(chain, leg).filter((tab) => requested.has(tab));
     if (excluded.length === 0) continue;
     excludedFromIntentTabs += 1;
     for (const tab of excluded) excludedFromIntentTabsByTab[tab] += 1;
@@ -308,16 +386,30 @@ export function recallCandidates<T extends RecallLegInput>(
   };
 }
 
-/** 只看期限段 + 建仓的有效成本硬判据, **不含**流动性门槛 —— 上面两个导出的共同根。 */
-function intentTabsByTerm(context: RecallContext, leg: RecallLegInput): LegIntentTab[] {
+/**
+ * 只看期限段 + 各视角**专属**的硬判据 (建仓的有效成本 / 收租的成色), **不含**流动性门槛
+ * —— 上面两个导出的共同根。
+ *
+ * 📌 成色与有效成本落在这里而不是外面一层, 于是「被成色挡下的腿」自动**不计进流动性排除数**
+ * (它本来就进不了收租, 与流动性无关) —— 与建仓那条同源, 不是各写一遍。
+ *
+ * 🚨 **建仓 MUST NOT 加成色条件** (052 FR-007): 它的有效成本硬门槛 `K − bid < spot` 已等价挡住
+ * 深度实值, 再加一道会改掉 051 已 ship 的建仓候选集 (SC-005 要求本片前后逐条相同)。
+ */
+function intentTabsByTerm(chain: RecallChainContext, leg: RecallLegInput): LegIntentTab[] {
   const tabs: LegIntentTab[] = [];
   if (
     withinDteBand(leg.dteDays, BUILD_RECALL_DTE) &&
-    passesEffectiveCostGate(context.spot, leg.strike, leg.bid)
+    passesEffectiveCostGate(chain.spot, leg.strike, leg.bid)
   ) {
     tabs.push('build');
   }
-  if (withinDteBand(leg.dteDays, RENT_RECALL_DTE)) tabs.push('rent');
+  if (
+    withinDteBand(leg.dteDays, RENT_RECALL_DTE) &&
+    passesQualityCeiling(leg.strike, chain.qualityCeiling)
+  ) {
+    tabs.push('rent');
+  }
   return tabs;
 }
 
