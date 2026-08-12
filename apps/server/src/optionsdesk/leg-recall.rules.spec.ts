@@ -5,6 +5,7 @@ import {
   LIQUIDITY_MAX_RELATIVE_SPREAD,
   PREMIUM_FLOOR,
   OPEN_INTEREST_FLOOR,
+  RECALL_CANDIDATE_CAP,
   QUALITY_CEILING_SPOT_RATIO,
   RENT_RECALL_DTE,
   intentTabsExcludedByLiquidity,
@@ -257,7 +258,12 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
     const a = { ...leg({ dteDays: 35, strike: D('110') }), code: 'A', bid: D('0.01') };
     // B 高于 A 一档。若上界在"过滤后"的集合上求, min{K ≥ spot} 会跳到 112 ⇒ B 恰等于上界而进收租。
     const b = { ...leg({ dteDays: 35, strike: D('112') }), code: 'B' };
-    const outcome = recallCandidates(context, ['all', 'build', 'rent'], [a, b]);
+    const outcome = recallCandidates(
+      context,
+      ['all', 'build', 'rent'],
+      [a, b],
+      RECALL_CANDIDATE_CAP,
+    );
 
     expect(outcome.removedByPremiumFloor).toBe(1);
     expect(outcome.candidates.map((c) => c.leg.code)).toEqual(['B']);
@@ -269,7 +275,7 @@ describe('leg-recall.rules — 持仓量条件 (052 FR-008 / FR-009)', () => {
   const allTabs = ['all', 'build', 'rent'] as const;
   /** 只跑持仓量这一道：其余判据全宽松通过，被移出就只可能是它挡的。 */
   const survives = (over: Partial<RecallLegInput>) =>
-    recallCandidates(context, allTabs, [leg(over)]).candidates.length === 1;
+    recallCandidates(context, allTabs, [leg(over)], RECALL_CANDIDATE_CAP).candidates.length === 1;
 
   it('OI=0 且当日无成交 ⇒ 死腿, 整条移出 (三视角都看不到)', () => {
     expect(passesOpenInterestGate(0, 0)).toBe(false);
@@ -298,24 +304,31 @@ describe('leg-recall.rules — 持仓量条件 (052 FR-008 / FR-009)', () => {
   it('三视角行为一致 —— 逐个视角单独请求, 死腿一个都进不去', () => {
     const dead = leg({ openInterest: 0, volume: 0 });
     for (const tab of allTabs) {
-      expect(recallCandidates(context, [tab], [dead]).candidates).toEqual([]);
+      expect(recallCandidates(context, [tab], [dead], RECALL_CANDIDATE_CAP).candidates).toEqual([]);
     }
     // 活腿反过来：三个视角各自都拿得到它（DTE=35 落重叠区）。
     for (const tab of allTabs) {
-      expect(recallCandidates(context, [tab], [leg()]).candidates).toHaveLength(1);
+      expect(
+        recallCandidates(context, [tab], [leg()], RECALL_CANDIDATE_CAP).candidates,
+      ).toHaveLength(1);
     }
   });
 
   it('🚨 持仓量条件 MUST 排在权利金门槛之后 —— 否则 051 已 ship 的排除数会静默变小', () => {
     // 这条腿两道都不过（bid 0.01 低于门槛、OI=0 且无成交）。它 MUST 计进权利金那个数。
     const both = leg({ bid: D('0.01'), openInterest: 0, volume: 0 });
-    const outcome = recallCandidates(context, allTabs, [both]);
+    const outcome = recallCandidates(context, allTabs, [both], RECALL_CANDIDATE_CAP);
     expect(outcome.removedByPremiumFloor).toBe(1);
     expect(outcome.candidates).toEqual([]);
   });
 
   it('🚫 被持仓量条件挡下的腿 MUST NOT 计进权利金排除数 —— 两道各数各的', () => {
-    const outcome = recallCandidates(context, allTabs, [leg({ openInterest: 0, volume: 0 })]);
+    const outcome = recallCandidates(
+      context,
+      allTabs,
+      [leg({ openInterest: 0, volume: 0 })],
+      RECALL_CANDIDATE_CAP,
+    );
     expect(outcome.removedByPremiumFloor).toBe(0);
     expect(outcome.candidates).toEqual([]);
   });
@@ -323,6 +336,58 @@ describe('leg-recall.rules — 持仓量条件 (052 FR-008 / FR-009)', () => {
   it('🚫 权利金门槛的两个常量本片逐字未变 (052 FR-009: 只是把它归类为可调检索条件)', () => {
     expect(PREMIUM_FLOOR.absolute.toString()).toBe('0.2');
     expect(PREMIUM_FLOOR.spotRatio.toString()).toBe('0.0018');
+  });
+});
+
+describe('leg-recall.rules — 召回层候选上限 K (052 FR-027 / FR-028)', () => {
+  const allTabs = ['all', 'build', 'rent'] as const;
+  /** n 条互不相同的合格腿（DTE 与行权价都错开，使切法的定序有可判定的答案）。 */
+  const chainOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => leg({ dteDays: 30 + i, strike: D(String(90 - i)) }));
+
+  it('候选数 < K ⇒ 不截, 切掉数为 0', () => {
+    const outcome = recallCandidates(context, allTabs, chainOf(3), 5);
+    expect(outcome.candidates).toHaveLength(3);
+    expect(outcome.droppedByCandidateCap).toBe(0);
+  });
+
+  it('候选数**恰等于** K ⇒ 不截 (边界取「超过才切」)', () => {
+    const outcome = recallCandidates(context, allTabs, chainOf(5), 5);
+    expect(outcome.candidates).toHaveLength(5);
+    expect(outcome.droppedByCandidateCap).toBe(0);
+  });
+
+  it('候选数 > K ⇒ 截到 K, 且切掉多少条**可读** (🚫 不是只落日志)', () => {
+    const outcome = recallCandidates(context, allTabs, chainOf(8), 5);
+    expect(outcome.candidates).toHaveLength(5);
+    expect(outcome.droppedByCandidateCap).toBe(3);
+  });
+
+  it('🚨 切法确定: 输入顺序打乱后, 留下的成员逐条相同', () => {
+    const legs = chainOf(8);
+    const shuffled = [...legs].reverse();
+    const keptOf = (input: readonly RecallLegInput[]) =>
+      recallCandidates(context, allTabs, input, 5).candidates.map((c) => c.leg.dteDays);
+    expect(keptOf(shuffled)).toEqual(keptOf(legs));
+    // 键是「日历顺序」而非好坏：留下的是 DTE 最小的那 5 条。
+    expect(keptOf(legs)).toEqual([30, 31, 32, 33, 34]);
+  });
+
+  it('🚫 被切掉的腿 MUST NOT 改动三个门槛计数 —— 它们早已过门槛, 切它不是「被挡下」', () => {
+    // 一条权利金不过 + 一条流动性挡在意图外 + 8 条合格腿，K=2。
+    const rejected = leg({ bid: D('0.01') });
+    const wide = leg({ dteDays: 35, ask: D('20') });
+    const outcome = recallCandidates(context, allTabs, [rejected, wide, ...chainOf(8)], 2);
+    expect(outcome.candidates).toHaveLength(2);
+    expect(outcome.droppedByCandidateCap).toBe(7); // 8 条合格 + wide 也进候选（全腿）= 9 → 留 2
+    expect(outcome.removedByPremiumFloor).toBe(1);
+    expect(outcome.excludedFromIntentTabs).toBe(1);
+  });
+
+  it('🚨 K 与表达层的 N 是两个独立参数 —— 本片零处把 K 当"给用户看几条"用', () => {
+    // 053 会引入表达层的 N。这条断言守的是"别共用一个常量"：K 是保险丝，量级远高于任何
+    // 可能的 N（当前最大链 758 行）。共用会让"调给用户看几条"顺手改掉召回容量。
+    expect(RECALL_CANDIDATE_CAP).toBeGreaterThan(758);
   });
 });
 

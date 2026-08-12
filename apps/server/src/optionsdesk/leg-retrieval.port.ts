@@ -46,6 +46,14 @@ export interface LegRetrievalQuery {
    * 视角独立请求归 053 —— 该参数先立在接口上, 到时不必改签名。
    */
   readonly perspectives: readonly LegTab[];
+  /**
+   * 本次的候选上限 (052 FR-027) —— 给下游限流的保险丝, **不是**用户可见条数。
+   *
+   * 📌 由调用方传而不是实现自己去读常量: 让「上限是多少」在调用点读得出来, 也让测试能用一个
+   * 小值驱动截断路径 (真值取三千量级, 造那么多腿只为验一条分支是不划算的)。
+   * 🚨 触及时**切掉多少条**由出参如实上报 (`droppedByCandidateCap`), 🚫 MUST NOT 只落日志。
+   */
+  readonly candidateCap: number;
 }
 
 /**

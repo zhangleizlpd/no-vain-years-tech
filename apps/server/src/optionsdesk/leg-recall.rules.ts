@@ -135,6 +135,20 @@ export const QUALITY_CEILING_SPOT_RATIO = new Prisma.Decimal('0.04');
 export const OPEN_INTEREST_FLOOR = 1;
 
 /**
+ * 052 召回层**候选上限 K** (052 FR-027, ADR-0064 不变量 ①)。条数, 整数。
+ *
+ * 🚨 **它是给下游限流的保险丝, 不是用户可见条数** —— 表达层给用户看多少条 (`N`) 是另一个数,
+ * 归 `053`。ADR-0064 要求 `K ≫ N`, 两者 MUST 是两个独立参数: 共用一个常量的话, 调"给用户看
+ * 几条"就会顺手改掉召回的容量, 而候选集变小这件事**在响应里看不出来**。
+ *
+ * ⏳ **占位值, 标定在 052 T016** —— dev 当前最大链全量 758 行, 取值 MUST 显著高于它, 否则今天
+ * 就在截 (那会让本条从保险丝退化成常态路径)。**MUST NOT 当已标定值引用**。
+ *
+ * 📌 与 {@link OPEN_INTEREST_FLOOR} 同为整数 ⇒ 同样进不了守门脚本的阈值单点扫描。
+ */
+export const RECALL_CANDIDATE_CAP = 3000;
+
+/**
  * 腿侧入参 —— 🚨 **MUST NOT 加 `absDelta`** (FR-009, 见文件头)。
  *
  * 也没有档位 / 费率: 召回判据一条都用不到费率, 这是 plan D-RECALL-3 否决「费率下沉 SQL」的
@@ -360,6 +374,17 @@ export interface RecallOutcome<T extends RecallLegInput> {
   readonly removedByPremiumFloor: number;
   readonly excludedFromIntentTabs: number;
   readonly excludedFromIntentTabsByTab: Readonly<Record<LegIntentTab, number>>;
+  /**
+   * 触及候选上限时被切掉多少条 (052 FR-028)。恒有值, 未触及时为 `0`。
+   *
+   * 🚨 **这就是「触及 K 可被观测」的落点** —— 它随候选集一路上浮到响应里, 🚫 MUST NOT 退化成
+   * 一行 `logger.warn`: 日志要人去翻才看得见, 而「候选被悄悄切掉一半」的现场恰恰是没人会去翻
+   * 日志的那种 (数字都在、就是少了一批, 同 047「降级留痕必须是行状态」那条同源纪律)。
+   *
+   * 📌 **蓄意不配一个 `reached: boolean`**: 它可由 `> 0` 派生, 多存一份就多一处会 drift 的
+   * 真相 —— 而两个字段不一致时, 两边都读得出值、都不会红。
+   */
+  readonly droppedByCandidateCap: number;
 }
 
 /**
@@ -377,13 +402,18 @@ export interface RecallOutcome<T extends RecallLegInput> {
  * `perspectives` = 本次请求要的视角。不在其内的视角**既不产候选也不计排除数** —— 今天三视角
  * 一次全要 (047 FR-005 的既定契约), 该参数恒为全集; 拆成每视角独立请求归 053。
  *
- * 复杂度 `O(n)`: 一遍求成色上界 (链级, 见 {@link resolveQualityCeiling}) + 一遍逐腿 `O(1)` 判据。
- * 两遍**不可合成一遍** —— 上界要先于任何一条腿的判定成型。
+ * `candidateCap` = 本次的候选上限 (052 FR-027)。**必填而非可选** —— 给个默认值就等于「忘传时
+ * 静默无上限」, 而那正是保险丝最需要生效的那一刻 (调用方今天只有 port 的两个实现)。
+ *
+ * 复杂度 `O(n)`: 一遍求成色上界 (链级, 见 {@link resolveQualityCeiling}) + 一遍逐腿 `O(1)` 判据;
+ * **仅在触及上限时**多一次 `O(n log n)` 排序 (见 {@link capCandidates})。
+ * 前两遍**不可合成一遍** —— 上界要先于任何一条腿的判定成型。
  */
 export function recallCandidates<T extends RecallLegInput>(
   context: RecallContext,
   perspectives: readonly LegTab[],
   legs: readonly T[],
+  candidateCap: number,
 ): RecallOutcome<T> {
   const requested = new Set(perspectives);
   const candidates: RecallCandidate<T>[] = [];
@@ -422,12 +452,39 @@ export function recallCandidates<T extends RecallLegInput>(
     for (const tab of excluded) excludedFromIntentTabsByTab[tab] += 1;
   }
 
+  // 🚨 上限在**三个计数之后**施加: 那三个数是对整批腿的判定统计, 被切掉的腿早已过了门槛
+  // ⇒ 切它不该让「被门槛挡下多少条」跟着变。反过来把 cap 提到循环里会让计数依赖遍历顺序。
+  const kept = capCandidates(candidates, candidateCap);
   return {
-    candidates,
+    candidates: kept,
     removedByPremiumFloor,
     excludedFromIntentTabs,
     excludedFromIntentTabsByTab,
+    droppedByCandidateCap: candidates.length - kept.length,
   };
+}
+
+/**
+ * 候选上限的**确定性切法** (052 FR-027 / FR-028)。未触及时**原样返回** (零拷贝零排序)。
+ *
+ * 🚨 **切之前 MUST 先定序, MUST NOT 直接 `slice` 输入顺序** —— 输入顺序来自存储实现 (今天是
+ * 一条无序的批量读), 同一份数据两次请求可能给出不同的前 K 条。那种不稳定是最难查的一类:
+ * 数字都在、条数也对, 只是成员每次不一样。
+ *
+ * 🚫 **这道排序 MUST NOT 被读成「召回层在打分」** (ADR-0064 决策 1 禁第二个打分点): 键取
+ * `(DTE, 行权价)` 是**日历顺序**, 不表达任何好坏 —— 它只在触及上限那一刻生效, 且切掉多少条
+ * 由 {@link RecallOutcome.droppedByCandidateCap} 如实上报。真正的排序是精排层的事。
+ *
+ * 复杂度: 未触及 `O(1)`; 触及时 `O(n log n)`。
+ */
+function capCandidates<T extends RecallLegInput>(
+  candidates: readonly RecallCandidate<T>[],
+  candidateCap: number,
+): readonly RecallCandidate<T>[] {
+  if (candidates.length <= candidateCap) return candidates;
+  return [...candidates]
+    .sort((a, b) => a.leg.dteDays - b.leg.dteDays || a.leg.strike.comparedTo(b.leg.strike) || 0)
+    .slice(0, candidateCap);
 }
 
 /**

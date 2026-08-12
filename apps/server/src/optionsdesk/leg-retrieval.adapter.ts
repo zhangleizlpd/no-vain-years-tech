@@ -135,7 +135,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         source: newest.source,
         spot,
       },
-      ...recallCandidates(context, query.perspectives, legs),
+      ...recallCandidates(context, query.perspectives, legs, query.candidateCap),
     };
   }
 }

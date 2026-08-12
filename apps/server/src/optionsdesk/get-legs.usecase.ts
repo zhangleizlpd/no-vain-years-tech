@@ -49,7 +49,7 @@ import {
   type RankingLegInput,
 } from './leg-rank.rules';
 import { coarseRank } from './leg-coarse.rules';
-import { relativeSpread, type LegIntentTab } from './leg-recall.rules';
+import { RECALL_CANDIDATE_CAP, relativeSpread, type LegIntentTab } from './leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
   type LegCandidate,
@@ -291,6 +291,14 @@ export interface LegTableView {
   tabOrder: Readonly<Record<LegTab, string[]>>;
   /** 两道门槛各自挡下多少条 (FR-008) —— 语义不对称, 见 {@link LegGateCounts}。 */
   gateCounts: LegGateCounts;
+  /**
+   * 触及召回层候选上限时被切掉多少条 (052 FR-028)。未触及恒 `0`。
+   *
+   * 🚨 **它蓄意不进 {@link LegGateCounts}** —— 那三个数是「判据挡下了什么」, 而这一个是「保险丝
+   * 熔断了」。混进去会让「腿少了」的两种成因在一个结构里失去区分, 而它们的处置完全不同: 前者
+   * 调条件, 后者调 K 或缩范围。
+   */
+  candidateCapDropped: number;
 }
 
 /** 排序键: 统一**档位**键 (FR-019 禁跨族数值直比)。死档恒沉底 (FR-006)。 */
@@ -373,6 +381,8 @@ export class GetLegsUseCase {
         excludedFromIntentTabs: 0,
         excludedFromIntentTabsByTab: { build: 0, rent: 0 },
       },
+      // 没有链就没有候选可切 —— 取 0 而非 null (它是计数不是「未知」, 同上面三个数)。
+      candidateCapDropped: 0,
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -385,6 +395,8 @@ export class GetLegsUseCase {
         symbol,
         now,
         perspectives: LEG_TABS,
+        // 候选上限 (052 FR-027): 保险丝, 与表达层给用户看几条**是两个数** —— 后者归 053。
+        candidateCap: RECALL_CANDIDATE_CAP,
       });
       if (retrieval === null) return empty('chain_not_ready');
       const chain = retrieval.chain;
@@ -404,6 +416,8 @@ export class GetLegsUseCase {
 
       return {
         ...empty('available'),
+        // 触及候选上限的留痕 (052 FR-028): 随候选集从召回层一路上浮, 不经日志。
+        candidateCapDropped: retrieval.droppedByCandidateCap,
         asOf: chain.sessionDate,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
