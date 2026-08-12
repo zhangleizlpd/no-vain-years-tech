@@ -2,7 +2,7 @@
 feature_id: 052-optionsdesk-retrieval-layering
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: pending
+status: implementing
 created_at: '2026-08-12'
 updated_at: '2026-08-12'
 ---
@@ -56,7 +56,9 @@ updated_at: '2026-08-12'
 
 ## Phase 1: 检索 port + 层骨架（阻塞其余全部）🎯
 
-- [ ] T001 [Server] **检索 port 接口 + Prisma adapter + 假实现**（`FR-031`, `FR-032`, plan `D-PORT-1`）：新建 `leg-retrieval.port.ts`（入参 = 视角 + 已解析的检索条件 + 候选上限；出参 = 候选集）与 `leg-retrieval.adapter.ts`（`PrismaService` 直查 + `// CROSS-CONTEXT-READ` 注释）；测试用假实现同文件簇。`get-legs.usecase.ts` 改注入 port。→ verify: `leg-retrieval.port.spec.ts`（Small）—— 接口签名内 `rg` 扫 `Prisma|sql|cursor|offset|limit` **零命中**（`FR-031` 的机器判据）+ 假实现可在**不起容器**下驱动召回判据（`SC-009`）+ `nx lint server` 绿 + `check-server-moat.ts` 0 违规
+- [X] T001 [Server] **检索 port 接口 + Prisma adapter + 假实现**（`FR-031`, `FR-032`, plan `D-PORT-1`）：新建 `leg-retrieval.port.ts`（入参 = 视角 + 已解析的检索条件 + 候选上限；出参 = 候选集）与 `leg-retrieval.adapter.ts`（`PrismaService` 直查 + `// CROSS-CONTEXT-READ` 注释）；测试用假实现同文件簇。`get-legs.usecase.ts` 改注入 port。→ verify: `leg-retrieval.port.spec.ts`（Small）—— 接口签名内 `rg` 扫 `Prisma|sql|cursor|offset|limit` **零命中**（`FR-031` 的机器判据）+ 假实现可在**不起容器**下驱动召回判据（`SC-009`）+ `nx lint server` 绿 + `check-server-moat.ts` 0 违规
+
+  📌 **impl 期两处落法偏离，均已落地**：① 「零存储侧词汇」这条**源码扫描判据落 `scripts/checks/check-optionsdesk-rule-constants.ts` 不变量 #5**（带两侧探针），不在 Small spec 里 —— Small 档禁磁盘 I/O，治理扫描归 `scripts/checks/`（同 `045` 把 `anchor.rules.spec.ts` 尾部两个源码扫描 `it()` 迁出去的先例）。判据本身按原样执行，只是换了执行面。② **检索条件与候选上限两个入参本 task 不立**：它们分别是 T010 / T005 的交付物（两条 task 各自明写「port 入参接 K」「解出六个维度」），先立空壳等于占位。本 task 落的入参是 `symbol` + `now` + `perspectives`（视角）。
 
 - [ ] T002 [Server] **粗排层恒等入口 + 五层边界断言**（`FR-001`, `FR-004`, plan `D-LAYER-1`）：新建 `leg-coarse.rules.ts` 导出恒等入口（吃候选集吐候选池）；`get-legs.usecase.ts` 串进调用链。→ verify: `leg-coarse.rules.spec.ts`（Small）—— 恒等性断言（入 == 出，含空集）+ **函数体零判据**（`rg` 扫该文件内 `if|filter|sort|>=|<=` 零命中，Guardrail 5 的机器判据）+ 五层各自入口有独立单测文件
 

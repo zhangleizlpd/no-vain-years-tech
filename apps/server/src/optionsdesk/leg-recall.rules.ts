@@ -237,6 +237,77 @@ export function intentTabsExcludedByLiquidity(
   return intentTabsByTerm(context, leg);
 }
 
+/** 候选腿 = 裸行 + **已判定的视角归属** (052 plan D-PORT-1 的出参形态)。 */
+export interface RecallCandidate<T extends RecallLegInput> {
+  readonly leg: T;
+  /** 非空, 且恒为请求视角的子集。 */
+  readonly tabs: readonly LegTab[];
+}
+
+/** 召回层的产出: 候选集 + 两道门槛各自挡下多少条 (FR-008 / 051 FR-006a 两个计数的数据源)。 */
+export interface RecallOutcome<T extends RecallLegInput> {
+  readonly candidates: readonly RecallCandidate<T>[];
+  readonly removedByPremiumFloor: number;
+  readonly excludedFromIntentTabs: number;
+  readonly excludedFromIntentTabsByTab: Readonly<Record<LegIntentTab, number>>;
+}
+
+/**
+ * **召回层入口** (052 FR-001 / plan D-LAYER-1): 吃「视角 + 该链全部腿」, 吐候选集与两道门槛的
+ * 排除计数。检索 port 的两个实现 (Prisma / 假) **共用本函数** ⇒ 判据不随实现分叉, 而这正是
+ * 052 SC-009「召回判据脱离真库可测」的落点 —— 假实现驱动的是这里, 不是另一份判据。
+ *
+ * 🚨 **候选集与三个计数 MUST 同源产出** —— 它们是同一次求值的两个面。各算一份的话 drift 时
+ * 两边都算得出数、都不会红 (050 的原纪律, 本片只是把它从 use case 移到了层入口)。
+ *
+ * 🚨 **两道门槛的作用面不同, MUST NOT 合并到一处施加** (FR-005 / FR-006): 权利金门槛把腿**整条
+ * 移出候选集** (三个视角都看不见), 流动性门槛只让腿**少掉意图那几个 `tabs`** (腿仍在候选集里、
+ * 仍在全腿视角可见)。合并必然把其中一个的作用面改错, 而两种错法都返回得出结果、都不会红。
+ *
+ * `perspectives` = 本次请求要的视角。不在其内的视角**既不产候选也不计排除数** —— 今天三视角
+ * 一次全要 (047 FR-005 的既定契约), 该参数恒为全集; 拆成每视角独立请求归 053。
+ *
+ * 复杂度 `O(n)` (每腿两次 `O(1)` 判据求值, 与 050 在 use case 里的写法同量级)。
+ */
+export function recallCandidates<T extends RecallLegInput>(
+  context: RecallContext,
+  perspectives: readonly LegTab[],
+  legs: readonly T[],
+): RecallOutcome<T> {
+  const requested = new Set(perspectives);
+  const candidates: RecallCandidate<T>[] = [];
+  const excludedFromIntentTabsByTab: Record<LegIntentTab, number> = { build: 0, rent: 0 };
+  let removedByPremiumFloor = 0;
+  let excludedFromIntentTabs = 0;
+
+  for (const leg of legs) {
+    // 权利金门槛 (FR-005): 挡下即整条移出 —— 它不派生、不打标、不进任何视角的排名基准。
+    if (!passesPremiumFloor(leg.bid, context.spot)) {
+      removedByPremiumFloor += 1;
+      continue;
+    }
+    const tabs = recallTabs(context, leg).filter((tab) => requested.has(tab));
+    if (tabs.length > 0) candidates.push({ leg, tabs });
+
+    // 🚨 标量与两个分视角数在**同一次求值**上累加: 标量按「返回非空」加 1, 分视角按「返回里的
+    // 每个视角」各加 1 ⇒ `标量 ≤ build + rent` 是读得出来的结构保证 (重叠区 `[30,49]` 的腿会让
+    // 右边比左边多 1, 这是设计不是 bug), 而不是靠测试守住的巧合。
+    const excluded = intentTabsExcludedByLiquidity(context, leg).filter((tab) =>
+      requested.has(tab),
+    );
+    if (excluded.length === 0) continue;
+    excludedFromIntentTabs += 1;
+    for (const tab of excluded) excludedFromIntentTabsByTab[tab] += 1;
+  }
+
+  return {
+    candidates,
+    removedByPremiumFloor,
+    excludedFromIntentTabs,
+    excludedFromIntentTabsByTab,
+  };
+}
+
 /** 只看期限段 + 建仓的有效成本硬判据, **不含**流动性门槛 —— 上面两个导出的共同根。 */
 function intentTabsByTerm(context: RecallContext, leg: RecallLegInput): LegIntentTab[] {
   const tabs: LegIntentTab[] = [];

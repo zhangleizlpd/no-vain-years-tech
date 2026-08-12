@@ -2,7 +2,7 @@
 feature_id: 052-optionsdesk-retrieval-layering
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: draft
+status: implementing
 created_at: '2026-08-12'
 updated_at: '2026-08-12'
 spec_kit_version: '>=0.8.5,<0.10.0'

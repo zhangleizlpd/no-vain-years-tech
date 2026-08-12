@@ -1,7 +1,6 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
-import { daysToExpiry, marketDateFor } from '../marketdata/trading-day-gate';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import {
   classifyZone,
@@ -49,15 +48,12 @@ import {
   type RankingContext,
   type RankingLegInput,
 } from './leg-rank.rules';
+import { relativeSpread, type LegIntentTab } from './leg-recall.rules';
 import {
-  intentTabsExcludedByLiquidity,
-  passesPremiumFloor,
-  recallTabs,
-  relativeSpread,
-  type LegIntentTab,
-  type RecallContext,
-  type RecallLegInput,
-} from './leg-recall.rules';
+  LEG_RETRIEVAL_PORT,
+  type LegRetrievalPort,
+  type LegRetrievalResult,
+} from './leg-retrieval.port';
 import {
   classifyLegTier,
   type LegBasis,
@@ -83,22 +79,26 @@ import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
  * 时点是 `oi_as_of`** —— 美股期权 OI 在盘前更新 ⇒ 收盘后采的快照, 其 OI 归属 T−1 日。
  * ⇒ 响应把两个时点分开下发, 呈现侧 OI 列 MUST 用 `oiAsOf`。
  *
- * 🚨 **跨 ctx 只读直查** (D-ARCH-1 / catalog Q7-B): 三张 marketdata 表 (`option_contract` /
- * `option_daily_snapshot` / `earnings_event`) 全部走 `PrismaService` 直查 + `CROSS-CONTEXT-READ`
- * 注释 (`check-server-moat.ts` 机器强制), **零 `@Inject()` marketdata 的 use case** (Q7-C),
- * 跨 ctx 写永远禁。**MUST NOT import `marketdata/*.rules.ts`** (Guardrail 14, ESLint disallow):
- * spot 直接取快照行里 vendor 给的标的价, **不走复权换算**。
+ * 🚨 **052 起本文件是五层的编排入口, 不再是召回层本身** (ADR-0064 / plan D-LAYER-1): 期权链的
+ * 检索与召回判据整块移到 `leg-retrieval.port.ts` 的实现之后, 本文件经 port 拿候选集。留在这里的
+ * 跨 ctx 读只剩**打标与呈现的输入** (`earnings_event` 财报日 / `trading_day` 月度到期日与最近
+ * 已收盘 session), 它们不是召回。
+ *
+ * 🚨 **跨 ctx 只读直查** (D-ARCH-1 / catalog Q7-B): 上述读全部走 `PrismaService` 直查 +
+ * `CROSS-CONTEXT-READ` 注释 (`check-server-moat.ts` 机器强制), **零 `@Inject()` marketdata 的
+ * use case** (Q7-C), 跨 ctx 写永远禁。**MUST NOT import `marketdata/*.rules.ts`** (Guardrail 14,
+ * ESLint disallow): spot 直接取快照行里 vendor 给的标的价, **不走复权换算**。
  *
  * 🚨 **派生一律请求时算** (FR-041): W / 四区间 / L 层 / 愿卖锚**复用 045 `anchor.rules.ts`**,
  * 本文件一个区间系数都不算 (Guardrail 13); 费率 / σ 距 / 活跃度 / 成交额走 047 三个纯函数。
- * DTE 走 `marketdata/trading-day-gate.ts` 的 `daysToExpiry` —— 基准恒为**交易所的今天**。
+ * DTE 由检索层按注入时钟算 (基准恒为**交易所的今天**), 本文件直接用候选行上的值。
  *
  * 🚨 **一处有意的口径错配, 禁「修」**: 价格来自**上一场 session** 的 EOD 快照, DTE 从**当前**
  * ET 日期起算。决策是前瞻的, 改成快照日基准会系统性多算一天; 代价是同屏必须有显式 `asOf`。
  *
- * 复杂度: 三次跨 ctx 查询 (合约集 / 最近一期快照 / 该票财报日) + 单票 `O(n log n)`
- * (n = 该票当日快照行数, 实测上界 730; `n log n` 项 = legacy 档位排序, 与三个 Tab **各自**
- * 一次活跃度排名 + 一次精排), 财报分组打标 `O(k log E)` (k = 不同到期日数)。
+ * 复杂度: 一次检索 (port 内 3 次跨 ctx 查询) + 两次打标输入查询 (该票财报日 / 交易日历) +
+ * 单票 `O(n log n)` (n = 候选数, 实测上界 730; `n log n` 项 = legacy 档位排序, 与三个 Tab
+ * **各自**一次活跃度排名 + 一次精排), 财报分组打标 `O(k log E)` (k = 不同到期日数)。
  */
 
 /** 选约表区块状态 (FR-013: 缺口显式化, 与「有数据但是空的」不可混为一谈)。 */
@@ -306,7 +306,12 @@ const UNCLASSIFIED_ORDER = 3;
 export class GetLegsUseCase {
   private readonly logger = new Logger(GetLegsUseCase.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // 召回层的数据来源接缝 (ADR-0064 决策 4)。🚫 **不是**跨 ctx 注入对方 use case (Q7-C 仍成立)
+    // —— port 的实现住在本 ctx 内, 它自己直查 marketdata 表并带 `CROSS-CONTEXT-READ`。
+    @Inject(LEG_RETRIEVAL_PORT) private readonly retrieval: LegRetrievalPort,
+  ) {}
 
   /**
    * @param symbol canonical `market:code`。
@@ -372,8 +377,15 @@ export class GetLegsUseCase {
     if (parsed === null) return empty('chain_not_ready');
 
     try {
-      const chain = await this.readChain(parsed, marketDateFor(['us'], now));
-      if (chain === null) return empty('chain_not_ready');
+      // 召回经检索 port (FR-031): 三视角一次全要 —— 它们是同一份派生结果的三种视图 (047 FR-005),
+      // 分三次请求会让三个 Tab 的 `asOf` 与档位口径可能不一致。拆成每视角独立请求归 053。
+      const retrieval = await this.retrieval.retrieveCandidates({
+        symbol,
+        now,
+        perspectives: LEG_TABS,
+      });
+      if (retrieval === null) return empty('chain_not_ready');
+      const chain = retrieval.chain;
 
       // 🚫 **MUST NOT 传省略 `now`** —— 默认值会让本端点的注入时钟对新鲜度基准失效 (测试里
       // 钉住的那个「境内早晨」时刻就不再成立), 与 T006a 对 `daysToExpiry` 的同一条纪律同源。
@@ -381,10 +393,8 @@ export class GetLegsUseCase {
 
       const zone = classifyZone(effective.v, chain.spot);
       const { intent, rentDepth } = classifyIntent(zone, effective.lLevel, positionBucket);
-      // 050: 召回上下文只要 spot —— 锚轴判据 (`K ≤ W`) 已随 `isRentLeg` 整条退役, `zone` / `w`
-      // 不再参与成员判定 (它们照常出现在响应里, 归 045 锚派生那半边)。
-      const recallContext: RecallContext = { spot: chain.spot };
-      const monthlyExpiries = await this.readMonthlyExpiries(parsed.market, chain);
+      const earningsDates = await this.readEarningsDates(parsed, chain.marketDate);
+      const monthlyExpiries = await this.readMonthlyExpiries(parsed.market, retrieval);
 
       return {
         ...empty('available'),
@@ -397,16 +407,16 @@ export class GetLegsUseCase {
         zone,
         intent,
         rentDepth,
-        // `legs` 与 `gateCounts` 同源产出 (计数是过门槛那一步的副产品, 分两处算必 drift)。
+        // `legs` 与 `gateCounts` 同源产出 —— 计数是**召回层**过门槛那一步的副产品 (052 起随候选集
+        // 一并从 port 出来), 分两处算必 drift 且两边都算得出数。
         ...this.deriveLegs(
           symbol,
-          chain,
-          recallContext,
+          retrieval,
+          earningsDates,
           monthlyExpiries,
           effective.v,
           intent,
           rentDepth,
-          now,
         ),
       };
     } catch (err) {
@@ -416,93 +426,25 @@ export class GetLegsUseCase {
   }
 
   /**
-   * 三张 marketdata 表的只读直查 —— **合约集 → 最近一期快照 → 该票财报日**。
-   * 取「最近一期」而非「今天那期」: 当日尚未采到 ≠ 没有数据, 由呈现侧按 `asOf` 标陈旧。
+   * 该票前向视野内的财报日 —— **打标输入, 不是召回** (故 052 起留在本文件而非检索 port)。
+   *
+   * 📌 按 `(market, code)` 走关系过滤而不再复用检索层解析出的标的 id: 让本读与 port 无耦合
+   * (换 port 实现不牵动它), 代价是一次带子查询的等值命中 —— 唯一键前缀, 非全表扫。
    */
-  private async readChain(
+  private async readEarningsDates(
     parsed: { market: string; code: string },
-    today: string,
-  ): Promise<ChainSnapshot | null> {
-    // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 锚 ticker → 标的 id
-    // 寻址, 读法同 `get-underlying-detail.usecase.ts`。零写、零 @Inject() 对方 use case (Q7-C)。
-    const instrument = await this.prisma.instrument.findUnique({
-      where: { market_code: { market: parsed.market, code: parsed.code } },
-      select: { id: true },
-    });
-    if (instrument === null) return null;
-
-    // CROSS-CONTEXT-READ: marketdata.option_contract 只读直查 (Q7-B) —— 该标的的**适格**认沽
-    // 合约集。两个过滤都在 SQL 端: `is_standard` (FR-008 非标不进选约表, 但采集侧照常落库
-    // FR-033) + 到期日 **>** 当日 (FR-028a 已到期腿不可交易; 🚨 与 T021 完整性分母的 `≥`
-    // 故意不同, Guardrail 7)。本片呈现面只含认沽, 采集侧的 CALL 照常在库里 (plan D-DATA-3)。
-    const contracts = await this.prisma.optionContract.findMany({
-      where: {
-        underlyingInstrumentId: instrument.id,
-        optionType: 'PUT',
-        isStandard: true,
-        expiryDate: { gt: utcMidnight(today) },
-      },
-      select: { id: true, code: true, expiryDate: true, strikePrice: true },
-    });
-    if (contracts.length === 0) return null;
-
-    const contractIds = contracts.map((c) => c.id);
-    // CROSS-CONTEXT-READ: marketdata.option_daily_snapshot 只读直查 (Q7-B) —— 先定位最近一期
-    // 交易日, 再整批取该期。两步而非一次拉全史: 本表是全库增长最快的表 (约 6.4M 行/年)。
-    const latest = await this.prisma.optionDailySnapshot.findFirst({
-      where: { contractId: { in: contractIds } },
-      orderBy: { sessionDate: 'desc' },
-      select: { sessionDate: true },
-    });
-    if (latest === null) return null;
-
-    // CROSS-CONTEXT-READ: marketdata.option_daily_snapshot 只读直查 (Q7-B) —— 该期全部行。
-    // 幂等键第三段是**来源** (FR-040) ⇒ 同一合约同一交易日可能有 eod 与 premarket_backfill
-    // 两行, 按 `quote_as_of` 取新的那条 (下面 dedupe)。
-    const snapshots = await this.prisma.optionDailySnapshot.findMany({
-      where: { contractId: { in: contractIds }, sessionDate: latest.sessionDate },
-    });
-    const freshest = new Map<string, (typeof snapshots)[number]>();
-    for (const snapshot of snapshots) {
-      const key = snapshot.contractId.toString();
-      const kept = freshest.get(key);
-      if (kept === undefined || snapshot.quoteAsOf.getTime() > kept.quoteAsOf.getTime()) {
-        freshest.set(key, snapshot);
-      }
-    }
-    if (freshest.size === 0) return null;
-
-    const rows: ChainRow[] = [];
-    for (const contract of contracts) {
-      const snapshot = freshest.get(contract.id.toString());
-      if (snapshot !== undefined) rows.push({ contract, snapshot });
-    }
-    // 标的价缺失 = 这批快照本身有问题 ⇒ 显式「未就绪」。🚫 蓄意**不**拿锚表的 last_close 顶上:
-    // 那会让「链坏了」看起来像正常, 正是本仓反复吃亏的那类静默。
-    const spot = rows.map((r) => r.snapshot.underlyingSpot).find((v) => v !== null) ?? null;
-    if (rows.length === 0 || spot === null) return null;
-
-    const newest = rows.reduce((a, b) =>
-      b.snapshot.quoteAsOf.getTime() > a.snapshot.quoteAsOf.getTime() ? b : a,
-    ).snapshot;
-
+    marketDate: string,
+  ): Promise<string[]> {
     // CROSS-CONTEXT-READ: marketdata.earnings_event 只读直查 (Q7-B) —— 该标的前向视野内的财报
-    // 日, 供 T026 分组打标。全市场表按 `instrument_id` 前缀命中唯一键, 非全表扫。
+    // 日, 供 T026 分组打标。零写、零 @Inject() 对方 use case (Q7-C)。
     const earnings = await this.prisma.earningsEvent.findMany({
-      where: { instrumentId: instrument.id, earningsDate: { gte: utcMidnight(today) } },
+      where: {
+        instrument: { market: parsed.market, code: parsed.code },
+        earningsDate: { gte: utcMidnight(marketDate) },
+      },
       select: { earningsDate: true },
     });
-
-    return {
-      sessionDate: latest.sessionDate,
-      quoteAsOf: newest.quoteAsOf,
-      oiAsOf: newest.oiAsOf,
-      source: newest.source,
-      spot,
-      today,
-      rows,
-      earningsDates: earnings.map((e) => dateOnlyOf(e.earningsDate)),
-    };
+    return earnings.map((e) => dateOnlyOf(e.earningsDate));
   }
 
   /**
@@ -515,11 +457,14 @@ export class GetLegsUseCase {
    *
    * 复杂度: 1 次范围查询 (`(market, date)` 唯一键前缀命中) + `O(m log m)` 排序。
    */
-  private async readMonthlyExpiries(market: string, chain: ChainSnapshot): Promise<Set<string>> {
+  private async readMonthlyExpiries(
+    market: string,
+    retrieval: LegRetrievalResult,
+  ): Promise<Set<string>> {
     const candidates = monthlyExpiryCandidates(
-      chain.rows.map((r) => dateOnlyOf(r.contract.expiryDate)),
+      retrieval.candidates.map(({ leg }) => dateOnlyOf(leg.expiryDate)),
     );
-    // 空链在 `readChain` 就已挡下, 这条是纯函数契约的兜底 —— 零候选就别白发一次查询。
+    // 空链在检索层就已挡下, 这条是纯函数契约的兜底 —— 零候选就别白发一次查询。
     if (candidates.length === 0) return new Set();
 
     const from = new Date(
@@ -539,101 +484,74 @@ export class GetLegsUseCase {
   }
 
   /**
-   * 逐腿派生 + 分组打标 + 三套活跃度 + 统一档位排序, 外加两个门槛计数 (FR-008)。
+   * 逐腿派生 + 分组打标 + 三套活跃度 + 统一档位排序 (FR-008 的两个门槛计数随候选集从检索层带入)。
    *
    * 顺序是语义决定的: 财报打标发生在**分档之前** (FR-006 死档照常打标, 与档位正交);
    * 活跃度排名发生在**Tab 归属之后** (排名是候选集内的相对量, D-SOT-5)。
    *
-   * 🚨 **两道门槛施加在两个不同的位置, 这不是可以「统一」的重复** (FR-005 / FR-006):
-   * 权利金门槛作用于三个 Tab ⇒ 在建表**之前**滤 (腿从响应整条移出); 流动性门槛只作用于两个
-   * 意图 Tab ⇒ 在 **Tab 归属**时滤 (腿仍在响应里, 只是不进意图候选)。合并到一处施加必然会把
-   * 其中一个的作用面改错, 而**两种错法都返回得出结果、都不会红**。
+   * 🚨 **052 起本函数零成员判据** (ADR-0064 不变量: 判据单点在召回层): 进来的每条都已是候选,
+   * 每条的 `tabs` 也已判定。🚫 在这里补一条 `filter` = 给召回开第二个判据点, 而它**不会红**
+   * —— 返回的腿数量与数值全都正常, 只是少了一批。要改成员集合就改 `leg-recall.rules.ts`。
    */
   private deriveLegs(
     symbol: string,
-    chain: ChainSnapshot,
-    recallContext: RecallContext,
+    retrieval: LegRetrievalResult,
+    earningsDates: string[],
     monthlyExpiries: ReadonlySet<string>,
     v: Prisma.Decimal,
     intent: LegIntent,
     rentDepth: RentDepth | null,
-    now: Date,
   ): Pick<LegTableView, 'legs' | 'gateCounts' | 'tabOrder'> {
-    // 权利金门槛 (FR-005): 语义上属**读端过滤** —— 与「仅认沽 / 仅标准 / 到期日 > 当日」那三条
-    // (FR-010, 在 SQL 端) 同类, 只是它要 spot 与 bid 故落在这里。被它挡下的腿不进下面任何一步:
-    // 不派生、不打标、不参与三个 Tab 的活跃度排名基准。
-    const admitted = chain.rows.filter(({ snapshot }) =>
-      passesPremiumFloor(snapshot.bid, recallContext.spot),
-    );
-    const removedByPremiumFloor = chain.rows.length - admitted.length;
-
-    // DTE **先整批算完再打标** —— 打标的腿族解析器要用它, 而解析器是同步回调, 拿不到还没
-    // 填进去的值。合约数百行但到期日只有几十个 ⇒ 按到期日缓存, `daysToExpiry` 每个日期算一次。
-    const expiryKeys = admitted.map((r) => dateOnlyOf(r.contract.expiryDate));
+    const expiryKeys = retrieval.candidates.map(({ leg }) => dateOnlyOf(leg.expiryDate));
+    // 打标的腿族解析器要 DTE, 而解析器是同步回调 ⇒ 先按到期日索引好 (值由检索层按注入时钟算)。
     const dteByExpiry = new Map<string, number>();
-    for (const row of admitted) {
-      const key = dateOnlyOf(row.contract.expiryDate);
-      if (!dteByExpiry.has(key)) {
-        dteByExpiry.set(key, daysToExpiry({ expiry: row.contract.expiryDate, now }));
-      }
+    for (const { leg } of retrieval.candidates) {
+      const key = dateOnlyOf(leg.expiryDate);
+      if (!dteByExpiry.has(key)) dteByExpiry.set(key, leg.dteDays);
     }
 
     // 🚨 Guardrail 11: 财报标按 `(标的, 到期日)` 算一次再贴回, 腿族解析器只吃到期日 ⇒
     // 「同一到期日必同标」是结构保证, 逐行算这条路根本走不通。
-    const calendar = earningsCalendarContext(symbol, chain.today, chain.earningsDates);
+    const calendar = earningsCalendarContext(symbol, retrieval.chain.marketDate, earningsDates);
     const marks = earningsMarksByExpiry(calendar, expiryKeys, (expiryDate) =>
       earningsLegFamilyFor(intent, dteByExpiry.get(expiryDate) ?? 0),
     );
 
-    const legs = admitted.map(({ contract, snapshot }) => {
-      const dteDays = dteByExpiry.get(dateOnlyOf(contract.expiryDate)) ?? 0;
-      const delta = snapshot.delta === null ? null : Math.abs(snapshot.delta.toNumber());
-      const { absDelta, sigmaDistance } = deriveDeltaColumns(
-        snapshot.greeksComplete ? delta : null,
-      );
+    const legs = retrieval.candidates.map(({ leg: row, tabs }) => {
+      const { code, expiryDate, dteDays, strike } = row;
+      const delta = row.delta === null ? null : Math.abs(row.delta);
+      const { absDelta, sigmaDistance } = deriveDeltaColumns(row.greeksComplete ? delta : null);
       // 🚨 050 召回入参里**没有** `absDelta` (FR-009): Δ 已降级为打标量, 拿不到这个量就不可能
       // 拿它做召回判据。`absDelta` 在本函数内仍照常派生 —— 它服务判档门 (greeks 缺失不判档)
       // 与呈现列, 那两处与召回无关。
-      const recallInput: RecallLegInput = {
-        dteDays,
-        strike: contract.strikePrice,
-        bid: snapshot.bid,
-        ask: snapshot.ask,
-      };
-      const tabs = recallTabs(recallContext, recallInput);
       // 现役标量 `basis` 的新判据 (plan D-RANK-3): 进建仓召回集 → 周化, 否则年化。
       // 🚫 MUST NOT 为喂这个 legacy 字段而把刚删掉的 Δ 带成员判据再养活一份。
       const basis: LegBasis = tabs.includes('build') ? 'weekly' : 'annualized';
       const rateOf = (premium: Prisma.Decimal | null, on: LegBasis): Prisma.Decimal | null => {
-        const r =
-          premium === null
-            ? null
-            : computeLegRates({ strike: contract.strikePrice, premium, dteDays });
+        const r = premium === null ? null : computeLegRates({ strike, premium, dteDays });
         return r === null ? null : on === 'weekly' ? r.weeklyRate : r.annualizedRate;
       };
       // 🚫 greeks 缺失行 MUST NOT 走判档 (FR-007) —— 筛除归调用方, `classifyLegTier` 认一个数
       // 就该给一个档, 不在纯函数里特判。
       const verdictOn = (on: LegBasis): LegTierVerdict | null => {
-        const rate = rateOf(snapshot.bid, on);
+        const rate = rateOf(row.bid, on);
         return rate === null || absDelta === null
           ? null
-          : classifyLegTier(rate, on, rateOf(snapshot.ask, on));
+          : classifyLegTier(rate, on, rateOf(row.ask, on));
       };
       const rates =
-        snapshot.bid === null
-          ? null
-          : computeLegRates({ strike: contract.strikePrice, premium: snapshot.bid, dteDays });
+        row.bid === null ? null : computeLegRates({ strike, premium: row.bid, dteDays });
       const verdict = verdictOn(basis);
 
       return {
-        code: contract.code,
-        strike: contract.strikePrice,
-        expiryDate: contract.expiryDate,
+        code,
+        strike,
+        expiryDate,
         dteDays,
-        bid: snapshot.bid,
-        ask: snapshot.ask,
-        bidSize: decimalToNumber(snapshot.bidSize),
-        askSize: decimalToNumber(snapshot.askSize),
+        bid: row.bid,
+        ask: row.ask,
+        bidSize: row.bidSize,
+        askSize: row.askSize,
         basis,
         periodRate: rates?.periodRate ?? null,
         weeklyRate: rates?.weeklyRate ?? null,
@@ -642,50 +560,25 @@ export class GetLegsUseCase {
         tierByTab: tierByTabOf(tabs, verdictOn),
         askRate: verdict?.askRate ?? null,
         // 无 bid ⇒ 有效成本无定义 —— 🚫 MUST NOT 拿 `K − 0` 冒充 (那是「白拿股票」的意思)。
-        effectiveCost:
-          snapshot.bid === null ? null : computeEffectiveCost(contract.strikePrice, snapshot.bid),
+        effectiveCost: row.bid === null ? null : computeEffectiveCost(strike, row.bid),
         effectiveCostVsWPct:
-          snapshot.bid === null
-            ? null
-            : computeEffectiveCostVsWPct(v, contract.strikePrice, snapshot.bid),
+          row.bid === null ? null : computeEffectiveCostVsWPct(v, strike, row.bid),
         absDelta,
         sigmaDistance,
-        openInterest: decimalToNumber(snapshot.openInterest),
-        volume: decimalToNumber(snapshot.volume),
-        turnover: computeTurnover(decimalToNumber(snapshot.volume), snapshot.bid),
+        openInterest: row.openInterest,
+        volume: row.volume,
+        turnover: computeTurnover(row.volume, row.bid),
         activityByTab: emptyActivity(),
         tabs,
         // 🚨 打标**零拦截** (FR-018): 下面两个标只是往腿上贴属性, MUST NOT 参与 `tabs` 的判定
-        // —— 上一行的 `tabs` 已经定死, 打标改不了任何 Tab 的成员集合。
+        // —— `tabs` 在召回层已经定死, 打标改不了任何 Tab 的成员集合。
         isRecommended: isRecommended(intent, rentDepth, absDelta),
         // 月度链标是**到期日级**的属性 —— 同一到期日的腿必同标, 与财报标同一个结构保证。
-        isMonthlyChain: monthlyExpiries.has(dateOnlyOf(contract.expiryDate)),
-        earningsMark: marks.get(dateOnlyOf(contract.expiryDate)) ?? null,
-        greeksComplete: snapshot.greeksComplete,
+        isMonthlyChain: monthlyExpiries.has(dateOnlyOf(expiryDate)),
+        earningsMark: marks.get(dateOnlyOf(expiryDate)) ?? null,
+        greeksComplete: row.greeksComplete,
       } satisfies LegView;
     });
-
-    // 流动性门槛的计数 (FR-008 + 051 FR-006a) —— 判据**复用召回层同一个纯函数**, 与每腿的
-    // `tabs` 同源 ⇒ 两者不会 drift。🚨 与上面那个数**语义不对称**: 这些腿仍在 `legs[]` 里、
-    // 仍在全腿 Tab 可见, 只是没进意图 Tab; 而被权利金门槛挡下的腿已经不在 `legs[]` 里, 不在
-    // 本轮统计面内。
-    //
-    // 🚨 标量与两个分视角数在**同一次求值**上累加 (一腿一次调用): 标量按「返回非空」加 1,
-    // 分视角按「返回里的每个 Tab」各加 1 ⇒ `标量 ≤ build + rent` 是**读得出来的结构保证**,
-    // 而不是靠测试守住的巧合。重叠区 `[30,49]` 的腿会让右边比左边多 1, 这是设计不是 bug。
-    const excludedByTab: Record<LegIntentTab, number> = { build: 0, rent: 0 };
-    let excludedFromIntentTabs = 0;
-    for (const leg of legs) {
-      const excludedTabs = intentTabsExcludedByLiquidity(recallContext, {
-        dteDays: leg.dteDays,
-        strike: leg.strike,
-        bid: leg.bid,
-        ask: leg.ask,
-      });
-      if (excludedTabs.length === 0) continue;
-      excludedFromIntentTabs += 1;
-      for (const tab of excludedTabs) excludedByTab[tab] += 1;
-    }
 
     // 三个 Tab **各跑一次**排名 —— 同一条腿在不同 Tab 的候选集里名次不同是**定义如此**
     // (D-SOT-5), 故 MUST NOT 只算一次全链排名再复用。
@@ -694,7 +587,7 @@ export class GetLegsUseCase {
     // 最自然的写法是「先筛再排名」(少算一些), 那样写出来照样能跑、数字照样有, **只是全错** ——
     // 名次是候选集内的相对量, 基准少了几行, 每一行的名次都变了。本片没有筛选 ⇒ 召回集 == 排名
     // 基准; P3 加筛选时 MUST NOT 把 `markActivity` 挪到筛选之后。
-    const rankingContext: RankingContext = { spot: recallContext.spot };
+    const rankingContext: RankingContext = { spot: retrieval.chain.spot };
     const tabOrder = emptyTabOrder();
     for (const tab of LEG_TABS) {
       // 🚨 Guardrail 9: 成员集合在这里求值**一次**, 活跃度排名、特征集、有序列表三者共用它
@@ -731,43 +624,15 @@ export class GetLegsUseCase {
     return {
       legs,
       tabOrder,
+      // 三个计数随候选集从召回层一并出来 (052) —— 它们是过门槛那一步的副产品, 在这里重算
+      // 就成了第二份判据, 而两份都算得出数、drift 时都不会红。
       gateCounts: {
-        removedByPremiumFloor,
-        excludedFromIntentTabs,
-        excludedFromIntentTabsByTab: excludedByTab,
+        removedByPremiumFloor: retrieval.removedByPremiumFloor,
+        excludedFromIntentTabs: retrieval.excludedFromIntentTabs,
+        excludedFromIntentTabsByTab: retrieval.excludedFromIntentTabsByTab,
       },
     };
   }
-}
-
-interface ChainRow {
-  contract: { id: bigint; code: string; expiryDate: Date; strikePrice: Prisma.Decimal };
-  snapshot: {
-    contractId: bigint;
-    quoteAsOf: Date;
-    oiAsOf: Date;
-    source: string;
-    bid: Prisma.Decimal | null;
-    ask: Prisma.Decimal | null;
-    bidSize: Prisma.Decimal | null;
-    askSize: Prisma.Decimal | null;
-    delta: Prisma.Decimal | null;
-    openInterest: Prisma.Decimal | null;
-    volume: Prisma.Decimal | null;
-    underlyingSpot: Prisma.Decimal | null;
-    greeksComplete: boolean;
-  };
-}
-
-interface ChainSnapshot {
-  sessionDate: Date;
-  quoteAsOf: Date;
-  oiAsOf: Date;
-  source: string;
-  spot: Prisma.Decimal;
-  today: string;
-  rows: ChainRow[];
-  earningsDates: string[];
 }
 
 function tierOrder(tier: LegTier | null): number {
@@ -825,11 +690,6 @@ function rankingInputOf(leg: LegView, tab: LegTab, activity: ActivityMark): Rank
     crossesEarnings: crossesEarnings(leg.earningsMark),
     isTopRanked: activity.isTopRanked,
   };
-}
-
-/** `Decimal(20,0)` 的计数列 → number (OI / Vol 是计数不是金额, 排名与呈现都按 number)。 */
-function decimalToNumber(value: Prisma.Decimal | null): number | null {
-  return value === null ? null : value.toNumber();
 }
 
 const MS_PER_DAY = 86_400_000;

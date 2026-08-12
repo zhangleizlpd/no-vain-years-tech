@@ -2,7 +2,7 @@
 /**
  * check-optionsdesk-rule-constants.ts — optionsdesk **可调策略参数单点**的机器守门。
  *
- * 四条不变量，扫描面都是 `apps/server/src/optionsdesk/`：
+ * 五条不变量，扫描面都是 `apps/server/src/optionsdesk/`：
  *
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
@@ -10,6 +10,11 @@
  * | 2 | 两道门槛阈值只住 `leg-recall.rules.ts` | 字面量**子串扫描** | 050 FR-007 / SC-009 |
  * | 3 | 三段 DTE 界只住 `leg-recall.rules.ts` | **比较表达式**扫描 | 050 SC-009 |
  * | 4 | 闭区间带字面量只住 `leg-recall` / `leg-mark` | **对象形状**扫描 | 050 SC-009 |
+ * | 5 | 检索 port 接口零存储侧词汇 | **词表**扫描 | 052 FR-031 |
+ *
+ * 🚨 **#5 为什么在这里而不在 `leg-retrieval.port.spec.ts`**：它要读源码，而 Small 档禁磁盘
+ * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
+ * 尾部两个 `it()` 迁出来的那条路径，判据不变、只是换了执行面。
  *
  * 🚨 **三种判据形态不是花样，是被扫描对象的形状逼出来的**（2026-08-11 读实现后定）：
  * - #2 沿用 #1 的子串扫描，因为门槛阈值也是小数。
@@ -55,6 +60,8 @@ const RULES_FILE = 'anchor.rules.ts';
 const RECALL_RULES_FILE = 'leg-recall.rules.ts';
 /** 050 打标层：两组 Δ 带的唯一落点。 */
 const MARK_RULES_FILE = 'leg-mark.rules.ts';
+/** 052 检索 port：接口只暴露业务语义（FR-031）。 */
+const RETRIEVAL_PORT_FILE = 'leg-retrieval.port.ts';
 /** 门槛阈值的个数（绝对下限 / spot 比例 / 相对价差上界）—— 少抽到一个就是检查变平凡绿。 */
 const RECALL_THRESHOLD_COUNT = 3;
 
@@ -230,6 +237,59 @@ export function shapePatternProbe(): string | null {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #5 —— 检索 port 接口零存储侧词汇（词表扫描）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 存储侧词表 —— 前五个是 052 T001 逐字点名的，其余是同类查询语义的近亲。
+ *
+ * 🚨 **`prisma` 也在表内，包括 `Prisma.Decimal`**：port 要金额量纲时 MUST 经召回判据的入参
+ * 类型（`RecallLegInput` / `RecallContext`）带入，而不是自己 import 一个 ORM 命名空间。这不是
+ * 洁癖 —— 允许它就等于允许「顺手再取一个 `Prisma.XxxWhereInput`」，而那正是 FR-031 要挡的。
+ */
+export const STORAGE_VOCAB = [
+  'prisma',
+  'sql',
+  'cursor',
+  'offset',
+  'limit',
+  'take',
+  'skip',
+  'where',
+  'orderBy',
+  'findMany',
+  'findFirst',
+  'findUnique',
+] as const;
+
+/** 剥注释后按词表扫（大小写不敏感，`Prisma` / `PRISMA` 一样命中），返回去重后的命中词。 */
+export function findStorageVocab(source: string): string[] {
+  const code = stripComments(source);
+  const hits = code.match(new RegExp(`\\b(?:${STORAGE_VOCAB.join('|')})\\b`, 'gi')) ?? [];
+  return [...new Set(hits.map((h) => h.toLowerCase()))];
+}
+
+/**
+ * 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。
+ *
+ * 正例臂防「判据变平凡绿」；反例臂防「判据恒红」—— port 里合法的业务词（视角 / 候选 / 标的价）
+ * 一个都不能命中，否则总有人来放宽词表，最终退化成平凡绿。
+ */
+export function storageVocabProbe(): string | null {
+  const hit = findStorageVocab('const page = { take: 50, cursor: id, where: { code } };');
+  if (hit.length === 0) {
+    return '词表判据正例臂失灵：`take` / `cursor` / `where` 未被命中 —— 判据已变平凡绿';
+  }
+  const legit = findStorageVocab(
+    'export interface LegRetrievalQuery { readonly symbol: string; readonly perspectives: readonly LegTab[] }',
+  );
+  if (legit.length > 0) {
+    return `词表判据反例臂失灵：合法业务签名被判违规（命中 ${legit.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
 function main(): void {
   const ctxPath = join(REPO_ROOT, CTX_DIR);
   const rulesPath = join(ctxPath, RULES_FILE);
@@ -348,11 +408,38 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 052 不变量 #5 ──────────────────────────────────────────────────────────
+  const portPath = join(ctxPath, RETRIEVAL_PORT_FILE);
+  if (!existsSync(portPath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${RETRIEVAL_PORT_FILE}`);
+    process.exit(1);
+  }
+  const vocabProbeFailure = storageVocabProbe();
+  if (vocabProbeFailure) {
+    console.error(`❌ check-optionsdesk-rule-constants: 词表判据探针失败 —— ${vocabProbeFailure}`);
+    process.exit(1);
+  }
+  const portVocab = findStorageVocab(readFileSync(portPath, 'utf8'));
+  if (portVocab.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 检索 port 接口出现存储侧词汇：\n` +
+        `  - ${CTX_DIR}/${RETRIEVAL_PORT_FILE}: ${portVocab.join(' / ')}\n`,
+    );
+    console.error(
+      'Fix: 把它挪进实现（`leg-retrieval.adapter.ts`）。接口漏了存储侧概念，换实现时接口照样要',
+    );
+    console.error(
+      '     重写 —— 接缝白留（052 FR-031 / ADR-0064 决策 4）。金额量纲经召回判据的入参类型带入。',
+    );
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
       `门槛阈值 (${[...new Set(thresholds)].join(' / ')}) 与三段 DTE 界只住 ${RECALL_RULES_FILE}；` +
-      `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）。`,
+      `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
+      `${RETRIEVAL_PORT_FILE} 零存储侧词汇。`,
   );
 }
 

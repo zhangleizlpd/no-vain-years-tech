@@ -7,9 +7,11 @@ import {
   findOffenders,
   findShapeHits,
   findShapeOffenders,
+  findStorageVocab,
   recallSelfProbe,
   selfProbe,
   shapePatternProbe,
+  storageVocabProbe,
   stripComments,
 } from './check-optionsdesk-rule-constants';
 
@@ -205,6 +207,41 @@ describe('findShapeHits —— `g` 标志的 lastIndex 不许跨调用残留', (
 describe('shapePatternProbe —— 两侧探针都健在', () => {
   it('现役正则的正例臂与反例臂均通过', () => {
     expect(shapePatternProbe()).toBeNull();
+  });
+});
+
+describe('findStorageVocab —— 052 不变量 #5（检索 port 零存储侧词汇）', () => {
+  it('查询语义命中：分页 / 游标 / 查询片段', () => {
+    expect(findStorageVocab('const p = { take: 50, skip: 10, cursor: id };')).toEqual([
+      'take',
+      'skip',
+      'cursor',
+    ]);
+  });
+
+  it('ORM 命名空间命中 —— `Prisma.Decimal` 也不许进接口（金额量纲经判据入参类型带入）', () => {
+    expect(findStorageVocab('readonly spot: Prisma.Decimal;')).toEqual(['prisma']);
+  });
+
+  it('注释里写这些词是**正确的文档**，不是违规', () => {
+    const src = '// 🚫 接口 MUST NOT 出现 cursor / offset\nreadonly perspectives: LegTab[];';
+    expect(findStorageVocab(src)).toEqual([]);
+  });
+
+  it('业务词零命中 —— 视角 / 候选 / 标的价都不该被误伤', () => {
+    const src =
+      'export interface LegRetrievalResult { readonly candidates: readonly LegCandidate[]; readonly spot: number }';
+    expect(findStorageVocab(src)).toEqual([]);
+  });
+
+  it('大小写不敏感（`PRISMA` 与 `Prisma` 同判）', () => {
+    expect(findStorageVocab('type X = PRISMA.Decimal;')).toEqual(['prisma']);
+  });
+});
+
+describe('storageVocabProbe —— 两侧探针都健在', () => {
+  it('现役词表的正例臂与反例臂均通过', () => {
+    expect(storageVocabProbe()).toBeNull();
   });
 });
 

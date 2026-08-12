@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import type { PrismaService } from '../security/prisma.service';
 import { GetLegsUseCase } from './get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
 import { toLegTableResponse } from './optionsdesk.dto';
 
 // 请求时刻 = 2026-08-04 ET 16:00 (= UTC 20:00) ⇒ 交易所的今天恒为 2026-08-04。
@@ -167,8 +168,17 @@ function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] 
   };
 }
 
+/**
+ * 🚨 **052 起 use case 经检索 port 拿候选集, 但本文件蓄意注入 `PrismaLegRetrievalAdapter`
+ * 而非假实现** —— 同一个 prisma mock 照常驱动全链路, 于是「SQL 端过滤了什么 / 取的是哪一期
+ * 快照 / dedupe 取哪条」这批断言一条不用改, 仍然守着真实现。
+ *
+ * 假实现的用武之地在 `leg-retrieval.port.spec.ts` (脱离真库驱动召回判据, SC-009); 拿它替换
+ * 这里会把本文件降级成「测我刚写的那份 mock」。
+ */
 function makeUseCase(prisma: ReturnType<typeof makePrisma>) {
-  return new GetLegsUseCase(prisma as unknown as PrismaService);
+  const service = prisma as unknown as PrismaService;
+  return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service));
 }
 
 describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, Guardrail 7)', () => {

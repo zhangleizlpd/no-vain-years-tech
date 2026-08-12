@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 import {
   BUILD_RECOMMEND_ABS_DELTA_BAND,
   RENT_RECOMMEND_ABS_DELTA_BANDS,
@@ -58,7 +59,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma);
+    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
   }, 180_000);
 
   afterAll(async () => {
