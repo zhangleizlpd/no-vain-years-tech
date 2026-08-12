@@ -1272,8 +1272,13 @@ async function scrollUntilStackPinned(page: Page, stackTop: Locator): Promise<nu
  *       （状态栏 / 手势条 / 系统字号放大都吃高），那里才有鉴别力。web 侧量出来的行数不能
  *       当真机结论（文件头「验不到」清单第 5 条）。
  *
+ * 🚨 **051 T008 起「最坏档」这个概念本身没了** —— 两条就地注明移出 sticky 栈、落到腿列表之后
+ *    的非常驻区（FR-010a）⇒ 栈高不再随注明条数变，本条量的恒是常态档，预算 `STACK_BUDGET_WORST`
+ *    从此带余量。① 因此改判：同一份数据（未选水位 × rent），断言两条注明**在栈外**。
+ *    📌 预算数字不在本片下调 —— 该由 T013 真机实测定（web 视口的读数不能当真机结论）。
+ *
  * 断言四项（前两项是**前提自检**，缺了后两项就会在错误的坐标系上恒真）：
- *   ① 最坏档真的到达：两条就地注明同屏（只有 rent Tab + 未选水位才有第二条）。
+ *   ① 两条就地注明渲出来了、且**落在 sticky 栈之外**（051 FR-010a）。
  *   ② 真的滚进腿区：栈顶较未滚时上移 > 100px（否则量的是「没滚动时的布局」）。
  *   ③ sticky 生效：滚到底部行之后 12 列表头仍可见，且仍在栈内（`FR-011` 的前提）。
  *   ④ 栈净高（计数条顶 → 指示条底）≤ 预算。
@@ -1291,7 +1296,7 @@ test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）
   // 第二条注明（Δ 档取并集）只在收租腿 Tab 出现 —— 最坏档 = 未选水位 × rent Tab。
   await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
 
-  // ① 前提自检：最坏档真的到达（两条同屏），否则下面量的是常态档，预算白留。
+  // ① 前提自检：两条注明确实渲出来了（未选水位 × rent 才有第二条）。
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-bucket_unset')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-notice-rent_depth_union')).toBeVisible();
 
@@ -1314,6 +1319,16 @@ test('049 T007 — 栈高最坏档（未选水位 · 同屏两条就地注明）
   // ④ 栈净高 = 计数条顶 → 指示条底（= plan D-TAB-4 逐项相加的那一段，不含屏 chrome）。
   const barBox = await boxOf(page.getByTestId('optionsdesk-detail-leg-scrollbar'));
   const stackHeight = barBox.y + barBox.height - yPinned;
+
+  // 🚨 051 FR-010a：两条注明落在**栈底之下**（跟着内容滚，不占常驻区）。
+  //    没有这一条，「注明移出去了」就只是提交信息里的一句话 —— 栈高预算带余量后不会有人发现它搬回来。
+  for (const key of ['bucket_unset', 'rent_depth_union']) {
+    const noticeBox = await boxOf(page.getByTestId(`optionsdesk-detail-leg-notice-${key}`));
+    expect(
+      noticeBox.y,
+      `就地注明 ${key} 还在 sticky 栈内 —— FR-010a 要求它随内容滚`,
+    ).toBeGreaterThan(barBox.y + barBox.height);
+  }
   const vp = page.viewportSize();
   if (vp === null) throw new Error('viewport 尺寸不可得');
   expect(

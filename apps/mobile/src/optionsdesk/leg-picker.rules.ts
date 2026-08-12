@@ -272,26 +272,104 @@ export function isManualBucket(source: LegTableResponsePositionBucketSource): bo
   return source === 'manual';
 }
 
-/** Tab 面板内的就地注明。`key` 同时是 testID 后缀（T035 e2e 的锚）。 */
+/**
+ * 就地注明。`key` 同时是 testID 后缀（T035 e2e 的锚）。
+ *
+ * 🚨 051 FR-010a 起**渲在腿列表之后的非常驻区**（原在 Tab 栏下、属 sticky 常驻区）——
+ *    说明是「看完表之后要不要接着往下想」的东西，占常驻区等于每屏都收一次高度的税。
+ */
 export interface LegPickerNotice {
-  key: 'bucket_unset' | 'rent_depth_union';
+  key: 'bucket_unset' | 'rent_depth_union' | 'marks_follow_intent';
   text: string;
 }
 
 /**
- * 未选水位时的两条**显式**提示（FR-017）。复杂度 O(1)。
+ * 就地注明 —— 未选水位的两条（FR-017）+ 收租意图下建仓视角那条（051 FR-012）。复杂度 O(1)。
  *
  * 🚫 **收租 Tab 那条是硬要求不是装饰**：未选水位时 server 的 Δ 档取三档并集，
  *    静默取某一档才是 FR-017 否掉的「替人做方向性假设」。判据在 server —— 客户端负责
  *    **把这件事说出来**，否则用户看到的是一张没有任何说明的、口径不明的收租表。
- * 📌 `table === null`（loading / 读故障）不出提示：那时「未选」还不是已知事实。
+ * 🚨 **FR-012 那条与水位无关**：它解释的是「标按什么口径打」，不是「你还没选东西」——
+ *    故 MUST NOT 挂在未选水位那个 early return 后面（挂错位置时它在最常见的路径上恒不出现）。
+ * 📌 `table === null`（loading / 读故障）不出提示：那时什么都还不是已知事实。
  */
 export function legPickerNotices(
-  table: Pick<LegTableResponse, 'positionBucket'> | null,
+  table: Pick<LegTableResponse, 'positionBucket' | 'intent'> | null,
   tab: LegPickerTab,
 ): LegPickerNotice[] {
-  if (table === null || table.positionBucket !== null) return [];
-  const notices: LegPickerNotice[] = [{ key: 'bucket_unset', text: COPY.bucketUnsetHint }];
-  if (tab === 'rent') notices.push({ key: 'rent_depth_union', text: COPY.rentDepthUnionNote });
+  if (table === null) return [];
+  const notices: LegPickerNotice[] = [];
+  if (table.positionBucket === null) {
+    notices.push({ key: 'bucket_unset', text: COPY.bucketUnsetHint });
+    if (tab === 'rent') notices.push({ key: 'rent_depth_union', text: COPY.rentDepthUnionNote });
+  }
+  // 收租意图 × 建仓视角：标全按收租档带判 ⇒ 这个视角可能一个标都没有，而那是**正确信号**。
+  if (table.intent === 'rent' && tab === 'build') {
+    notices.push({
+      key: 'marks_follow_intent',
+      text: COPY.marksFollowIntentNote(COPY.intents.rent, COPY.fitBadge),
+    });
+  }
   return notices;
+}
+
+// ═══════════════ 两个门槛计数（051 FR-006 / FR-007 / FR-007a / FR-010） ═══════════════
+
+/**
+ * 计数区的一行。`key` 同时是 testID 后缀；`goTab` 非 null ⇒ 该行**可点**并切到那个视角。
+ *
+ * 🚨 **交互差别是语义差别的组成部分**（FR-007a）：权利金门槛挡下的腿整条移出响应，给入口
+ *    只能是空承诺 ⇒ 恒 `goTab: null`。MUST NOT 为了对称把两条做成一样。
+ */
+export interface LegGateCountLine {
+  key: 'premium_floor' | 'liquidity';
+  text: string;
+  goTab: LegPickerTab | null;
+}
+
+/**
+ * 两个门槛计数（顺序恒定：权利金在前）。复杂度 O(1)。
+ *
+ * 🚨 流动性那条**按视角取数**：意图视角取 `excludedFromIntentTabsByTab[tab]`（该视角自己的数），
+ *    全腿视角才用全表标量 —— 那是标量唯一诚实的用处，因为被流动性门槛挡下的腿**就在全腿视角内**
+ *    （契约刻意不为全腿拆计数，FR-006a）。反过来在建仓视角报标量会指向别的视角的腿：数字真实、
+ *    文案通顺，**只是说的不是这个视角的事**，而且不会红。
+ * 📌 全腿视角同时**收回入口**：人已经在全腿视角了，再给一个「去全腿视角」是死链。
+ * 📌 FR-010 的留位靠「本函数返回一个数组」实现 —— P3 的第二对计数按同一形状追加即可，
+ *    调用方的版面一行不用改。
+ */
+export function legGateCountLines(
+  gateCounts: LegTableResponse['gateCounts'] | null,
+  tab: LegPickerTab,
+): LegGateCountLine[] {
+  if (gateCounts === null) return [];
+  const inAllTab = tab === 'all';
+  const excluded = inAllTab
+    ? gateCounts.excludedFromIntentTabs
+    : gateCounts.excludedFromIntentTabsByTab[tab];
+  return [
+    {
+      key: 'premium_floor',
+      text: withNote(
+        COPY.gatePremiumFloor,
+        gateCounts.removedByPremiumFloor,
+        COPY.gatePremiumFloorNote,
+      ),
+      goTab: null,
+    },
+    {
+      key: 'liquidity',
+      text: withNote(
+        COPY.gateLiquidity,
+        excluded,
+        inAllTab ? COPY.gateLiquidityNoteAll : COPY.gateLiquidityNoteIntent,
+      ),
+      goTab: inAllTab ? null : 'all',
+    },
+  ];
+}
+
+/** 计数为 0 时只报数 —— 「移出 0 条 · 三个视角都看不到」是一句自相矛盾的话。 */
+function withNote(line: (n: number) => string, count: number, note: string): string {
+  return count === 0 ? line(0) : `${line(count)}${note}`;
 }

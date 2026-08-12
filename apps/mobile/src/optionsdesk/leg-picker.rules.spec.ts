@@ -20,6 +20,7 @@ import {
   intentLabel,
   isManualBucket,
   legActivityForTab,
+  legGateCountLines,
   legPickerNotices,
   legPickerSections,
   legTabLabel,
@@ -382,12 +383,13 @@ describe('🚨 FR-017 —— 未选水位是常驻分支：显式提示，MUST N
     expect(note).toContain('0.40');
   });
 
-  it('水位已选 ⇒ 两条提示都消失（三 Tab 均无）', () => {
+  it('水位已选 ⇒ 两条**水位**提示都消失（三 Tab 均无）', () => {
     const picked = table({
       positionBucket: 'gte_two_thirds',
       positionBucketSource: 'manual',
-      intent: 'rent',
-      rentDepth: 'deep',
+      // 意图取 build_position —— 收租意图会另外触发 FR-012 那条（与水位无关，见下一组）。
+      intent: 'build_position',
+      rentDepth: null,
     });
     for (const tab of LEG_PICKER_TABS) {
       expect(legPickerNotices(picked, tab)).toEqual([]);
@@ -429,6 +431,95 @@ describe('🚨 FR-017 —— 未选水位是常驻分支：显式提示，MUST N
 
   it('契约未到手 ⇒ 空串（调用方据此不渲染，绝不渲染半截依据）', () => {
     expect(intentBasisLine(null)).toBe('');
+  });
+});
+
+// ═══════════════ ④a 收租意图 × 建仓视角的就地说明（051 FR-012） ═══════════════
+
+describe('🚨 051 FR-012 —— 收租意图下打开建仓视角，MUST 就地说明「标按收租意图打」', () => {
+  const rentIntent = table({ intent: 'rent', positionBucket: 'lt_one_third' });
+
+  it('收租意图 + 建仓视角 ⇒ 出说明；同一意图下的其余两个视角不出', () => {
+    expect(legPickerNotices(rentIntent, 'build').map((n) => n.key)).toEqual([
+      'marks_follow_intent',
+    ]);
+    expect(legPickerNotices(rentIntent, 'rent')).toEqual([]);
+    expect(legPickerNotices(rentIntent, 'all')).toEqual([]);
+  });
+
+  it('🚨 与水位无关：已选照出（见上条）· 未选时与水位提示**并存**', () => {
+    // 挂在「未选水位」那个 early return 后面的话，本条在**最常见的路径**（水位已选）上恒不出现；
+    // 挂在它前面又会吞掉水位提示。两条互不隶属，故这里逐字钉住共存时的顺序。
+    const unset = legPickerNotices(table({ intent: 'rent', positionBucket: null }), 'build');
+    expect(unset.map((n) => n.key)).toEqual(['bucket_unset', 'marks_follow_intent']);
+  });
+
+  it('其余意图不出 —— 建仓 / 不开新仓 / 待定三态在建仓视角均无此说明', () => {
+    for (const intent of ['build_position', 'no_new_position', 'pending'] as const) {
+      expect(legPickerNotices(table({ intent, positionBucket: 'lt_one_third' }), 'build')).toEqual(
+        [],
+      );
+    }
+  });
+
+  it('🚨 口径是「按收租意图打」而不是「这个视角没有推荐」（后者会让人以为标丢了）', () => {
+    const text = legPickerNotices(rentIntent, 'build')[0]?.text ?? '';
+    expect(text).toContain(COPY.intents.rent);
+    expect(text).toContain(COPY.fitBadge);
+  });
+});
+
+// ═══════════════ ④b 两个门槛计数（051 FR-006/FR-007/FR-007a/FR-010） ═══════════════
+
+describe('🚨 051 FR-007/FR-007a —— 两个计数语义与交互**都**不对称', () => {
+  const counts = {
+    removedByPremiumFloor: 113,
+    // 🚨 标量与两个分视角数蓄意三值互不相同：任何一处取错都能被指出来。
+    excludedFromIntentTabs: 47,
+    excludedFromIntentTabsByTab: { build: 20, rent: 31 },
+  };
+
+  it('两条各自可辨识：key / 文案都不同，且顺序恒定（权利金在前）', () => {
+    const lines = legGateCountLines(counts, 'build');
+    expect(lines.map((l) => l.key)).toEqual(['premium_floor', 'liquidity']);
+    expect(lines[0]?.text).not.toBe(lines[1]?.text);
+  });
+
+  it('🚨 交互不对称：权利金那条恒无入口（腿不在响应里，给入口 = 空承诺），流动性那条可点去全腿', () => {
+    const lines = legGateCountLines(counts, 'build');
+    expect(lines[0]?.goTab).toBeNull();
+    expect(lines[1]?.goTab).toBe('all');
+  });
+
+  it('🚨 措辞不对称：一条说「三个视角都看不到」，另一条指向全腿视角（MUST NOT 用同一个「滤掉」的词）', () => {
+    const [gone, still] = legGateCountLines(counts, 'build');
+    expect(still?.text).toContain(COPY.tabs.all);
+    expect(gone?.text).not.toContain(COPY.tabs.all);
+  });
+
+  it('🚨 意图视角取**该视角自己的**数，MUST NOT 用全表标量', () => {
+    expect(legGateCountLines(counts, 'build')[1]?.text).toContain('20');
+    expect(legGateCountLines(counts, 'rent')[1]?.text).toContain('31');
+    for (const tab of ['build', 'rent'] as const) {
+      expect(legGateCountLines(counts, tab)[1]?.text).not.toContain('47');
+    }
+  });
+
+  it('全腿视角：标量是它唯一诚实的用处（那些腿就在本视角内）⇒ 措辞改口且**无入口**', () => {
+    const line = legGateCountLines(counts, 'all')[1];
+    expect(line?.text).toContain('47');
+    // 已经在全腿视角了，再给一个「去全腿视角」的入口是死链。
+    expect(line?.goTab).toBeNull();
+    expect(line?.text).not.toBe(legGateCountLines(counts, 'build')[1]?.text);
+  });
+
+  it('计数为 0 ⇒ 该行只报数、不带解释后缀（「移出 0 条 · 三个视角都看不到」自相矛盾）', () => {
+    const zero = { ...counts, removedByPremiumFloor: 0 };
+    expect(legGateCountLines(zero, 'build')[0]?.text).toBe(COPY.gatePremiumFloor(0));
+  });
+
+  it('契约未到手 ⇒ 空数组（MUST NOT 渲「移出 — 条」）', () => {
+    expect(legGateCountLines(null, 'build')).toEqual([]);
   });
 });
 
