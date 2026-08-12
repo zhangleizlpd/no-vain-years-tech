@@ -17,7 +17,7 @@ updated_at: '2026-08-12'
 
 `- [ ] TNNN [P?] [层级] **标题**（FR-xxx, plan D-xxx）：做什么 → verify: 怎么验`
 
-- `[P]` = 可与相邻 task 并行（不同文件、无未完成依赖）
+- `[P]` = 可与相邻 task 并行（不同文件、无未完成依赖）。📌 **本片零 `[P]`** —— 唯一的候选 T005/T006 经 analyze 判定同改一个文件（F3）
 - 层级：`[Server]`（use case 增量）· `[Server-IT]`（Medium，Testcontainers）· `[Contract]`（DTO + OpenAPI + api-client regen）· `[Mobile]`（rules 纯函数 / tsx）· `[Mobile-E2E]`（Playwright hermetic）· `[Contract-Smoke]`（生成客户端打真 server）· `[Docs]`
 - **层级 → size 映射**（`docs/conventions/testing.md`）：`[Mobile]` 的 verify 落 **Small** `*.spec.ts`（**logic-only，禁 vitest 渲染组件**）· `[Mobile-E2E]` = `apps/mobile/e2e/*.spec.ts`（Playwright）· `[Server-IT]` = **Medium** `*.it.spec.ts`
 - **测试不独立成 task**（per `sdd.md`），绑在每个实现 task 的 `verify:` 里；**IT / e2e / contract-smoke 例外**（跨多文件、单独成 task）
@@ -58,18 +58,20 @@ updated_at: '2026-08-12'
 
 ## Phase 1: 服务端计数增量 + 契约（阻塞 mobile 的空态分支）🎯
 
-- [ ] T001 [Server] **`excludedFromIntentTabsByTab` 拆计数**（FR-006a, plan D-GATES-2）：在 `get-legs.usecase.ts` 内按意图视角分别统计「期限段合格但被流动性门槛挡下」的条数。**复用召回层已算出的视角成员**（`intentTabsByTerm` 的输出），🚫 MUST NOT 新建 rules 文件、MUST NOT 复制一份判据。既有标量 `excludedFromIntentTabs` **保持不变**（契约只加不删）→ verify: `optionsdesk-051.gate-counts.it.spec.ts`（Medium，Testcontainers 真 PG）红→绿 —— ① 建仓数与实际被挡的建仓候选**逐条相等** ② 收租数同 ③ 🚨 **重叠区不变量取不等式**：构造一条 `DTE ∈ [30,49]` 且过有效成本、被流动性挡下的腿，断言 `标量 ≤ build + rent` 且**该腿使两个分视角数各 +1 而标量只 +1**；**先证明 `toBe(build + rent)` 会红**再改成不等式
+- [ ] T001 [Server] **`excludedFromIntentTabsByTab` 拆计数**（FR-006a, plan D-GATES-2, D-TEST-0）：在 `get-legs.usecase.ts` 内按意图视角分别统计「期限段合格但被流动性门槛挡下」的条数。**复用召回层已算出的视角成员**（`intentTabsByTerm` 的输出），🚫 MUST NOT 新建 rules 文件、MUST NOT 复制一份判据。既有标量 `excludedFromIntentTabs` **保持不变**（契约只加不删）→ verify: `optionsdesk-051.gate-counts.it.spec.ts`（Medium，Testcontainers 真 PG）红→绿 —— ① 建仓数与实际被挡的建仓候选**逐条相等** ② 收租数同 ③ 🚨 **重叠区不变量取不等式**：构造一条 `DTE ∈ [30,49]` 且过有效成本、被流动性挡下的腿，断言 `标量 ≤ build + rent` 且**该腿使两个分视角数各 +1 而标量只 +1**；**先证明 `toBe(build + rent)` 会红**再改成不等式
 - [ ] T002 [Contract] **DTO 加字段 + OpenAPI + api-client regen**（FR-006a, FR-023, plan §V）：`optionsdesk.dto.ts` 的 `LegGateCountsResponse` 加 `excludedFromIntentTabsByTab: { build, rent }`（`@ApiProperty` 齐全）→ `nx run server:export-openapi` → `packages/api-client` regen → verify: `openapi.json` 结构 diff **零删除零改名零改值**（只新增叶子）；变异验证「删掉新字段的一处 description」→ 脚本 exit≠0 且逐条点名；🚨 **regen 前先 `rg 'excludedFromIntentTabs\|LegGateCounts' apps/mobile` 一次性捞全手写 mock 工厂**（含 `e2e/`），逐处补齐后再跑 typecheck，别逐层剥；🚨 **FR-023 的机械判据**：`git diff --stat main...HEAD -- apps/server/` 的改动面**只含 `get-legs.usecase.ts` + `optionsdesk.dto.ts`**，任何第三个 server 文件出现即越界
 
 ## Phase 2: 顺序与成员（US1，阻塞 e2e）
 
-- [ ] T003 [Mobile] **按 `tabOrder` 取序 + `filterLegsByTab` 退役**（FR-001, FR-002, FR-003, FR-004, plan D-ORDER）：`leg-picker.rules.ts` 新增取序纯函数（建 `Map<code, leg>` 一次 → 按 `tabOrder[tab]` 映射，`O(n+m)`），🚨 **签名 MUST NOT 含任何比较器 / 排序键入参**；`filterLegsByTab` **整条删除**（含其 `leg.tabs.includes` 判据）→ verify: Small 单测红→绿 —— ① 渲染序与 `tabOrder` **逐行相同** ② `tabOrder` 有而 `legs[]` 定位不到的 code **跳过且不崩** ③ 三视角来回切顺序不变 ④ 空列表返空数组而非 null；机械判据 `rg '\.sort\(' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**，且 🚨 **先证明它会红**（故意加一次 `legs.sort(...)`，扫描必须报出该行，改回后归零）
+- [ ] T003 [Mobile] **按 `tabOrder` 取序 + `filterLegsByTab` 退役**（FR-001, FR-002, FR-003, FR-004, plan D-ORDER, D-TEST-1）：`leg-picker.rules.ts` 新增取序纯函数（建 `Map<code, leg>` 一次 → 按 `tabOrder[tab]` 映射，`O(n+m)`），🚨 **签名 MUST NOT 含任何比较器 / 排序键入参**；`filterLegsByTab` **整条删除**（含其 `leg.tabs.includes` 判据）→ verify: Small 单测红→绿 —— ① 渲染序与 `tabOrder` **逐行相同** ② `tabOrder` 有而 `legs[]` 定位不到的 code **跳过且不崩** ③ 三视角来回切顺序不变 ④ 空列表返空数组而非 null；机械判据 `rg '\.sort\(' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**，且 🚨 **先证明它会红**（故意加一次 `legs.sort(...)`，扫描必须报出该行，改回后归零）
 - [ ] T004 [Mobile] **屏级接线 + 既有行为回归**（FR-001, FR-005, FR-021, FR-022, plan D-ORDER）：`use-leg-table.ts` / `underlying-detail.rules.ts` 的 sections 改由有序列表构建；空视角仍返 `data: []` 而非零 section（FR-005 沿用既有约定）→ verify: `nx run mobile:test` 绿；既有 `optionsdesk-chain-leg-picker.spec.ts` e2e 不红（若红 → 逐条判「该红 / 不该红」，🚫 MUST NOT 批量改绿）；🚨 **两条否定式约束在此兑现** —— **FR-021**：三视角的**成员集合**与本片开工前逐条相同（本片只改顺序与呈现，不改「哪条腿出现在哪」）；**FR-022**：链未就绪 / 读取失败两个既有显式状态的行为一字不变（`legBlockState` 的分支与文案均未动）
 
 ## Phase 3: 档位与费率口径（US4）
 
-- [ ] T005 [P] [Mobile] **四个档位函数改吃档位值**（FR-015, FR-016, plan D-TIER）：`leg-picker-copy.ts` 的 `legBidTone` / `legRowToneClass` / 动作文案 / 费率副标四处，签名由「吃 `leg`」改为「吃 `tier: LegTier | null`」；`leg-row.tsx` 取一次 `leg.tierByTab[tab]` 传下去（**同源，四处不会 drift**）→ verify: Small 单测覆盖四档 + `null` 缺省态；机械判据 `rg 'leg\.tier\b' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**（契约保留该字段是「只加不删」的要求，不是让客户端继续用）
-- [ ] T006 [P] [Mobile] **费率口径取自 `basisByTab` + 列头即口径**（FR-017, FR-017a, FR-018, plan D-BASIS）：删 `RATE_SUB_BY_TAB` 硬编码；新增 `rateHeaderFor(basisByTab, tab)` 返回 `{ main, sub }`（`weekly` → 周化 + 折年参照；`annualized` → 年化 + 无副标）；`leg-table-header.tsx` 列头**直接是口径本身**，🚫 不套「费率」这层通用标题 → verify: Small 单测含 `Record<LegBasis, …>` 穷举 **+ 运行时未知取值兜底**（server 可能先于客户端上线新取值，类型层骗不了运行时）；12 列表头内容自然宽 ≤ 列宽（mockup 阶段实测原两行结构在 56px 下撑破）
+> 🚨 **T005 与 T006 不可并行**（2026-08-12 analyze F3）：两者都要改 `underlying-detail-screen.tsx` 的 props 调用点，且两处**相邻**（`LegTableHeader` 与 `LegRow` 前后脚）。并行的冲突表现是 merge 冲突或静默覆盖，**不是编译错误**。
+
+- [ ] T005 [Mobile] **四个档位函数改吃档位值**（FR-015, FR-016, plan D-TIER, D-TEST-1）：`leg-picker-copy.ts` 的 `legBidTone` / `legRowToneClass` / 动作文案 / 费率副标四处，签名由「吃 `leg`」改为「吃 `tier: LegTier | null`」；`leg-row.tsx` 取一次 `leg.tierByTab[tab]` 传下去（**同源，四处不会 drift**）；⚠️ `LegRow` 现役 props **没有 `tab`**，需在 `underlying-detail-screen.tsx` 的调用点补传→ verify: Small 单测覆盖四档 + `null` 缺省态；机械判据 `rg 'leg\.tier\b' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**（契约保留该字段是「只加不删」的要求，不是让客户端继续用）
+- [ ] T006 [Mobile] **费率口径取自 `basisByTab` + 列头即口径**（FR-017, FR-017a, FR-018, plan D-BASIS, D-TEST-1）：删 `RATE_SUB_BY_TAB` 硬编码；新增 `rateHeaderFor(basisByTab, tab)` 返回 `{ main, sub }`（`weekly` → 周化 + 折年参照；`annualized` → 年化 + 无副标）；`leg-table-header.tsx` 列头**直接是口径本身**，🚫 不套「费率」这层通用标题；⚠️ `basisByTab` 来自 `legTable.table`，需在 `underlying-detail-screen.tsx` 的 `LegTableHeader` 调用点改传 → verify: Small 单测含 `Record<LegBasis, …>` 穷举 **+ 运行时未知取值兜底**（server 可能先于客户端上线新取值，类型层骗不了运行时）；12 列表头内容自然宽 ≤ 列宽（mockup 阶段实测原两行结构在 56px 下撑破）
 
 ## Phase 4: 两个标 + 徽标退役（US3）
 
@@ -77,15 +79,15 @@ updated_at: '2026-08-12'
 
 ## Phase 5: 计数与空态（US2）
 
-- [ ] T008 [Mobile] **就地说明移出常驻区 + 计数区落 `LegBlockNotice`**（FR-006, FR-007, FR-007a, FR-010, FR-010a, FR-012, plan D-GATES）：把既有 notices 从 `LegPickerTabs`（**在常驻区内**）搬到 `renderSectionFooter`；计数区两条**语义不对称**（权利金「三个视角都看不到」纯文字无入口 / 流动性「仍在全腿视角」可点 → `setTab('all')`）；为 P3 第二对计数留位 → verify: Small 单测覆盖两条措辞的判别性；`LegPickerTabs` 的 `notices` prop **已退役**（`rg` 零命中）
-- [ ] T009 [Mobile] **空态按该视角自己的排除数分支 + 计数为 0 降权**（FR-008, FR-009, plan D-GATES, D-GATES-2）：空态文案取 `excludedFromIntentTabsByTab[tab]`（🚫 **MUST NOT 用全表标量**）；两数皆 0 时计数区降权，🚨 靠**去掉主色 + 缩字号**，MUST NOT 压低对比度 → verify: Small 单测 —— ① 该视角排除数 > 0 → 指向门槛 + 带入口 ② 为 0 → 指向「该期限段确实没有」+ 无入口 ③ 🚨 **`SC-013` 交叉验证**：构造「建仓排除数 0、收租排除数 > 0」的数据，断言**建仓空态仍指向「确实没有」**——这条正是取 B 要买的东西，不验等于没买
+- [ ] T008 [Mobile] **就地说明移出常驻区 + 计数区落 `LegBlockNotice`**（FR-006, FR-007, FR-007a, FR-010, FR-010a, FR-012, plan D-GATES, D-TEST-1）：把既有 notices 从 `LegPickerTabs`（**在常驻区内**）搬到 `renderSectionFooter`；计数区两条**语义不对称**（权利金「三个视角都看不到」纯文字无入口 / 流动性「仍在全腿视角」可点 → `setTab('all')`）；为 P3 第二对计数留位 → verify: Small 单测覆盖两条措辞的判别性；`LegPickerTabs` 的 `notices` prop **已退役**（`rg` 零命中）
+- [ ] T009 [Mobile] **空态按该视角自己的排除数分支 + 计数为 0 降权**（FR-008, FR-009, plan D-GATES, D-GATES-2, D-TEST-1）：空态文案取 `excludedFromIntentTabsByTab[tab]`（🚫 **MUST NOT 用全表标量**）；两数皆 0 时计数区降权，🚨 靠**去掉主色 + 缩字号**，MUST NOT 压低对比度 → verify: Small 单测 —— ① 该视角排除数 > 0 → 指向门槛 + 带入口 ② 为 0 → 指向「该期限段确实没有」+ 无入口 ③ 🚨 **`SC-013` 交叉验证**：构造「建仓排除数 0、收租排除数 > 0」的数据，断言**建仓空态仍指向「确实没有」**——这条正是取 B 要买的东西，不验等于没买
 
 ## Phase 6: 文案复核与验证收口
 
-- [ ] T010 [Mobile] **047 时代文案逐条复核**（FR-019, FR-020, plan D-COPY）：订正 `rentDepthUnionNote`（现文案「水位未选 → 展示全部 Δ 档」描述的是 047 召回行为；`050` 后 Δ 与水位**结构性地不在收租召回入参里** ⇒ 成员集合一条不变，差别只在零推荐标）；全量过一遍 `optionsdesk-copy.ts` 里描述判定逻辑的文案 → verify: 🚨 **人工逐条过**（测试对这一层结构性无效），复核结论与「共查 N 条、订正 M 条」写进 commit message
-- [ ] T011 [Mobile-E2E] **hermetic UI e2e 新建**（SC-001, SC-003, SC-005, SC-006, SC-013）：`apps/mobile/e2e/optionsdesk-leg-display.spec.ts` —— 三视角口径差异（同一条腿两处档位不同）· 顺序与 mock 的 `tabOrder` 逐行相同 · 流动性计数点击后落全腿视角 · 两种空态文案互不相同 · 推荐标处处同值 → verify: `nx run mobile:e2e` 绿；🚨 mock 的 `tabOrder` 与 `gateCounts` **从数据派生**（Guardrail 10）
-- [ ] T012 [Contract-Smoke] **契约冒烟扩到七个字段**（`050` plan §V 推给本片的义务）：扩 `apps/mobile/e2e/contract-smoke/optionsdesk-chain-leg-picker.contract.ts` —— P1 六个字段 + 本片的 per-view 计数，在**生成客户端 + 真 server**下验形状与一致性（`tabOrder[t]` 元素集合 == `{code | t ∈ leg.tabs}` · `tierByTab` 非成员恒 null · `basisByTab` 取值域 · 计数不等式）→ verify: `nx run mobile:contract-smoke` 绿。📌 这六个字段迄今只被 server IT 与手写 mock 验过，「生成客户端 + 真 server」这条缝**从未合过**
-- [ ] T013 [Docs] **真机验收 + 回填主 plan**（SC-009, SC-010）：Mate50 dev-client 实测常驻区高度（**预期下降**，因就地说明已移出）与 730 行量级的切视角 / 滚动流畅度；回填主 plan 的 P2 行 ✅ + §2.3 逐条打勾 + P2 退出标准 → verify: 常驻区高度 **严格不高于**开工前基线（网页端读数仅参考，`049` 实测 web 185 vs 真机 161dp 差 13%）；主 plan 已更新
+- [ ] T010 [Mobile] **047 时代文案逐条复核**（FR-019, FR-020, plan D-COPY）：订正 `rentDepthUnionNote`（现文案「水位未选 → 展示全部 Δ 档」描述的是 047 召回行为；`050` 后 Δ 与水位**结构性地不在收租召回入参里** ⇒ 成员集合一条不变，差别只在零推荐标）；全量过一遍 `optionsdesk-copy.ts` 里描述判定逻辑的文案 → verify: 🚨 **人工逐条过**（测试对这一层结构性无效），复核结论与「共查 N 条、订正 M 条」写进 commit message；🚨 **若发现第三处**（spec Assumptions 已预留该分支）→ 按同一判据处置**并回写 spec 的 Assumptions 与 `FR-019`**，不许只在 commit message 里提一句就过
+- [ ] T011 [Mobile-E2E] **hermetic UI e2e 新建**（SC-001, SC-003, SC-005, SC-006, SC-013, plan D-TEST-2）：`apps/mobile/e2e/optionsdesk-leg-display.spec.ts` —— 三视角口径差异（同一条腿两处档位不同）· 顺序与 mock 的 `tabOrder` 逐行相同 · 流动性计数点击后落全腿视角 · 两种空态文案互不相同 · 推荐标处处同值 → verify: `nx run mobile:e2e` 绿；🚨 mock 的 `tabOrder` 与 `gateCounts` **从数据派生**（Guardrail 10）
+- [ ] T012 [Contract-Smoke] **契约冒烟扩到七个字段**（`050` plan §V 推给本片的义务, plan D-TEST-3）：扩 `apps/mobile/e2e/contract-smoke/optionsdesk-chain-leg-picker.contract.ts` —— P1 六个字段 + 本片的 per-view 计数，在**生成客户端 + 真 server**下验形状与一致性（`tabOrder[t]` 元素集合 == `{code | t ∈ leg.tabs}` · `tierByTab` 非成员恒 null · `basisByTab` 取值域 · 计数不等式）→ verify: `nx run mobile:contract-smoke` 绿。📌 这六个字段迄今只被 server IT 与手写 mock 验过，「生成客户端 + 真 server」这条缝**从未合过**
+- [ ] T013 [Docs] **真机验收 + 回填主 plan**（SC-009, SC-010, plan D-TEST-4）：Mate50 dev-client 实测常驻区高度（**预期下降**，因就地说明已移出）与 730 行量级的切视角 / 滚动流畅度；回填主 plan 的 P2 行 ✅ + §2.3 逐条打勾 + P2 退出标准 → verify: 常驻区高度 **严格不高于**开工前基线（网页端读数仅参考，`049` 实测 web 185 vs 真机 161dp 差 13%）；主 plan 已更新
 
 ---
 
@@ -95,7 +97,7 @@ updated_at: '2026-08-12'
 T001 → T002 ─┐
              ├→ T009（空态需要 per-view 计数）
 T003 → T004 ─┴→ T011（e2e 需要顺序与成员就位）
-T005 [P] T006 [P]（互不冲突，可并行）
+T005 → T006（**串行** —— 同改 underlying-detail-screen.tsx 的相邻调用点，analyze F3）
 T007 → T011
 T008 → T009 → T011
 T010（独立，随时可做）
@@ -103,7 +105,7 @@ T011 → T012 → T013
 ```
 
 - **T001/T002 排最前**：它们阻塞 T009 的空态分支，且契约改动越早落地，mobile 侧的 mock 工厂返工越少。
-- **T005 / T006 可并行**：不同文件（`leg-picker-copy.ts` vs `leg-table-header.tsx` + `leg-row.rules.ts`）、无相互依赖。
+- **T005 / T006 串行**：初版标了 `[P]`，analyze 时发现两者都改 `underlying-detail-screen.tsx` 的 props 调用点（`LegRow` 补 `tab` / `LegTableHeader` 改 `basisByTab`），且两处相邻 ⇒ **本片无可并行的 task**。
 - **T010 独立**：文案复核不依赖任何实现。
 
 ## Clear 检查点批次

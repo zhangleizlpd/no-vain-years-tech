@@ -179,6 +179,12 @@ LegGateCountsResponse {
 
 ## D-TEST · 验证三层分工
 
+### D-TEST-0 · Server IT（`*.it.spec.ts`，Testcontainers 真 PG）
+
+📌 **本档在定案 B 之后才出现** —— D-TEST 段原写于「纯 mobile」假设下，没有服务端层。
+
+`apps/server/test/integration/optionsdesk-051.gate-counts.it.spec.ts`：per-view 计数与实际被挡条数逐条相等；🚨 **重叠区不变量取不等式**（`标量 ≤ build + rent`），先证明 `toBe(build + rent)` 会红再改。
+
 ### D-TEST-1 · vitest Small（`*.spec.ts`，纯 rules）
 
 `leg-picker.rules.spec.ts` / `leg-picker-copy.spec.ts` / `leg-row.rules.spec.ts`：顺序映射（含 `tabOrder` 有而 `legs[]` 无的跳过分支）· `tierByTab` 取值与 null 缺省 · `rateHeaderFor` 穷举 + 未知取值兜底 · 空态分支判据 · 计数为 0 的降权判据。
@@ -208,35 +214,18 @@ LegGateCountsResponse {
 8. **表宽与列集零改动**（`SC-011`）—— 为放标改列宽会触发 049 的横滑几何回归。
 9. **hermetic mock 的 `tabOrder` 同源派生** —— 写死数组会与被 mock 的服务端不变量当场矛盾。
 
-## Task 分解
+## Task 分解（**草图；编号与顺序以 `tasks.md` 为准**）
 
-### Phase 1 · 顺序与成员（`US1`，阻塞 e2e）
+> 🚨 **本节不是权威**。`tasks.md` 是 task 的单一真相源 —— 两处各存一份清单必然漂移（2026-08-12 analyze 实测：定案 B 后本节曾与 `tasks.md` 有 4/13 个 ID 指向不同工作项）。派单、引用、打勾**一律看 `tasks.md`**；本节只保留「为什么这么切」的意图。
 
-- **T001 [Mobile]** `leg-picker.rules.ts`：新增按 `tabOrder` 取序的纯函数、退役 `filterLegsByTab` → verify: Small 单测红→绿（含「`tabOrder` 有而 `legs[]` 无 → 跳过」分支）；`rg '\.sort\('` 零命中且**先证明它会红**
-- **T002 [Mobile]** `use-leg-table.ts` / `underlying-detail.rules.ts` 接线：sections 改由有序列表构建 → verify: typecheck 绿；既有 optionsdesk e2e 不红
-
-### Phase 2 · 档位与口径（`US4`）
-
-- **T003 [Mobile]** `leg-picker-copy.ts` 四个函数改吃档位值；`LegRow` 取一次 `tierByTab[tab]` 传下去 → verify: 单测覆盖四档 + null；`rg 'leg\.tier\b'` 零命中
-- **T004 [Mobile]** `rateHeaderFor` 取代 `RATE_SUB_BY_TAB`；列头改为「口径即标题」 → verify: 单测含未知取值兜底；`LegTableHeader` 快照类断言不适用 ⇒ 靠 e2e
-
-### Phase 3 · 标与徽标退役（`US3`）
-
-- **T005 [Mobile]** 钉住列加两个标 + 撤三个 basis-badge 符号（orphan 一并清） → verify: `rg 'BASIS_BADGE\|showsBasisBadge'` 零命中；typecheck 绿
-
-### Phase 4 · 计数与空态（`US2`）
-
-- **T006 [Server]** `get-legs.usecase.ts` 拆出 `excludedFromIntentTabsByTab`（复用召回层已算出的视角成员，零新 rules）→ verify: 扩 `optionsdesk-050.recall.it.spec.ts` 同族 IT；🚨 **重叠区判据取不等式** `标量 ≤ build + rent`，先构造一条 `DTE ∈ [30,49]` 被挡腿证明取等号会红
-- **T007 [Contract]** DTO 加字段 + `export-openapi` + api-client regen → verify: 结构 diff **零删除零改名零改值**；🚨 regen 前先 `rg` 一次性捞全部手写 `LegGateCountsResponse` mock 工厂（含 `e2e/`），别靠 typecheck 逐层剥
-- **T008 [Mobile]** 就地说明移出常驻区 + 计数区落 `LegBlockNotice` + 流动性计数可点 → verify: e2e 点击后落全腿视角
-- **T009 [Mobile]** 空态按**该视角自己的**排除数分支 + 计数为 0 降权 → verify: 单测判据；🚨 构造「建仓排除数 0、收租排除数 > 0」的数据，断言**建仓空态仍指向「确实没有」**（`SC-013`）—— 这条正是取 B 要买的东西，不验等于没买
-
-### Phase 5 · 文案复核与验证（`US5`）
-
-- **T010 [Mobile]** `rentDepthUnionNote` 订正 + 全量文案人工复核留痕 → verify: 人工逐条过，结论写进 commit message
-- **T011 [Mobile-E2E]** `optionsdesk-leg-display.spec.ts` 新建 → verify: `nx run mobile:e2e` 绿
-- **T012 [Contract-Smoke]** 扩 `optionsdesk-chain-leg-picker.contract.ts` 覆盖**七个**字段（P1 六个 + 本片的 per-view 计数）→ verify: 生成客户端打真 server 通过
-- **T013 [Docs]** 真机验收 + 回填主 plan P2 行（含「P2 由纯 mobile 转跨端」）→ verify: 常驻区高度实测不高于基线；主 plan §2.3 打勾
+| Phase | Task | 意图 |
+| --- | --- | --- |
+| 1 · 服务端计数 + 契约 | `T001 [Server]` 拆 `excludedFromIntentTabsByTab` · `T002 [Contract]` DTO + regen | **排最前不是因为更基础，是因为它阻塞 T009 的空态分支**，且契约越早落地 mobile 侧 mock 工厂返工越少 |
+| 2 · 顺序与成员 | `T003 [Mobile]` 按 `tabOrder` 取序 · `T004 [Mobile]` 屏级接线 + 既有行为回归 | 本片唯一带正确性含义的一块，且是 P3 服务端截断的前置 |
+| 3 · 档位与口径 | `T005 [Mobile]` 四个档位函数 · `T006 [Mobile]` 费率口径 | 两者**都改 `underlying-detail-screen.tsx` 的 props 调用点** ⇒ 不可并行（analyze F3） |
+| 4 · 标与徽标退役 | `T007 [Mobile]` 钉住列两个标 + 撤徽标 | 撤徽标腾出的宽度正是两字措辞要用的，二者是同一处改动的两面 |
+| 5 · 计数与空态 | `T008 [Mobile]` 说明移出 + 计数区 · `T009 [Mobile]` 空态按视角分支 | 空态与计数是同一个设计，拆开做必然对不齐 |
+| 6 · 文案与验证收口 | `T010 [Mobile]` 文案复核 · `T011 [Mobile-E2E]` · `T012 [Contract-Smoke]` · `T013 [Docs]` 真机 + 回填 | 三层验证 + 收口 |
 
 ## Out of Scope（本片明确不做）
 
