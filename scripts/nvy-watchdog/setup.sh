@@ -2,16 +2,16 @@
 #
 # setup.sh — 把「本地每日任务 no-show 看门狗」装成 launchd 定时任务（仅 macOS）。
 #
-# 补 in-job report 的盲区：本地每日任务（holdings 09:00 / marketdata 09:05 / futu-eod 09:15）若
+# 补 in-job report 的盲区：本地每日任务（holdings 09:00 / marketdata 09:05 / nvy-private-backup 09:30）若
 # **根本没跑**（Mac 睡死 / plist 丢 / launchd 没醒），既不推成功 report 也不推失败告警 = 静默。
 # 看门狗每日 10:00 查这些任务过去 ~25h 有没有写过心跳（nvy-run-reported 每跑必写），没写就推飞书告警。
 #
 # 自包含：把 nvy-watchdog.sh + feishu-send.sh 拷到 ~/.nvy/lib（脱离 git worktree，改 lib 须重跑）。
 #
 # 用法：
-#   bash scripts/nvy-watchdog/setup.sh                       # 默认 10:00，查 holdings + marketdata + futu-eod
+#   bash scripts/nvy-watchdog/setup.sh                       # 默认 10:00，查 holdings + marketdata + backup
 #   bash scripts/nvy-watchdog/setup.sh --time 10:00
-#   bash scripts/nvy-watchdog/setup.sh --tasks "holdings-sync:90000 futu-eod:90000"   # 覆盖默认清单
+#   bash scripts/nvy-watchdog/setup.sh --tasks "holdings-sync:90000 marketdata-dev-sync:90000"   # 覆盖默认清单
 #
 set -euo pipefail
 
@@ -19,7 +19,7 @@ LABEL='com.nvy.watchdog'
 TIME='10:00'
 # <task>:<max-age-sec>；90000s≈25h。⚠️ 默认值必须与 ops/runbook/scheduled-tasks.md 的看门狗清单
 # 保持一致 —— 漏一项 = 裸跑本 setup 会静默摘掉该任务的 no-show 兜底，且不报错（2026-07-30 修）。
-TASKS='holdings-sync:90000 marketdata-dev-sync:90000 futu-eod:90000 nvy-private-backup:90000'
+TASKS='holdings-sync:90000 marketdata-dev-sync:90000 nvy-private-backup:90000'
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --time) TIME="$2"; shift 2 ;;
