@@ -85,7 +85,7 @@ updated_at: '2026-08-13'
 
 ## Phase 4: 决策留痕与运维面（FR-007）
 
-- [ ] T006 [P] [Docs] **ADR-0047 § 2 amend + 水位线与预期日志写进 runbook**（`FR-007`, plan `D-7` / `D-8`）：`docs/adr/0047-marketdata-pluggable-data-access.md:85` 的「全部 \| `MockMarketDataAdapter`（dev/test 默认，零 env）」一行拆为「读取口 → Mock / 采集口 → Refusing」两行并记因由；`ops/runbook/scheduled-tasks.md` 补两条 —— ① **水位线**：本 feature 生效之前写入的 dev 库行一律「来源不可考」，且该集合随每日 `truncate + reload` 递减到空；② dev 下每天会出现的**「采集被拒」日志是预期行为**，不是故障。→ verify: 覆盖 state_branch 6（历史无痕行判「不可考」）+ `npx markdownlint-cli2 --config .markdownlint-cli2.jsonc` 绿 + ADR 改动被 `docs/adr/README.md` 索引一致性扫过
+- [X] T006 [P] [Docs] **ADR-0047 § 2 amend + 水位线与预期日志写进 runbook**（`FR-007`, plan `D-7` / `D-8`）：`docs/adr/0047-marketdata-pluggable-data-access.md:85` 的「全部 \| `MockMarketDataAdapter`（dev/test 默认，零 env）」一行拆为「读取口 → Mock / 采集口 → Refusing」两行并记因由；`ops/runbook/scheduled-tasks.md` 补两条 —— ① **水位线**：本 feature 生效之前写入的 dev 库行一律「来源不可考」，且该集合随每日 `truncate + reload` 递减到空；② dev 下每天会出现的**「采集被拒」日志是预期行为**，不是故障。→ verify: 覆盖 state_branch 6（历史无痕行判「不可考」）+ `npx markdownlint-cli2 --config .markdownlint-cli2.jsonc` 绿 + ADR 改动被 `docs/adr/README.md` 索引一致性扫过
 
 ---
 

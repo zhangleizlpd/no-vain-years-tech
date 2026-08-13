@@ -150,6 +150,12 @@
 
   🚨 **为什么它值得独立一条**：下游最常见的取数方式是「每票取自己最近一期」，那会让**全部标的**一起落进被污染的那期；而基于它算出来的阈值 / 分布 / 标定值**全都算得出数**，写进文档时与真标定长得一模一样，此后没有任何一处会红（2026-08-13 `052` T016 实撞，标定改用 `08-11` 那期）。⇒ 统计 / 标定类任务的第一步恒为**验数据面**，不是跑分布。根因从 `MARKETDATA_PROVIDER` 运行态与当轮同步日志入手。
 
+  📌 **上面这条自检的适用范围有水位线（`054` 起）**：`054` 之后本地进程**已不可能**再写入伪造行情 —— `MARKETDATA_PROVIDER=mock` 下 28 个采集口绑的是拒绝壳，一调即抛（见 [ADR-0047](../../docs/adr/0047-marketdata-pluggable-data-access.md) § 2 的 2026-08-13 Amendment）。故：
+  - **水位线之前**写入 dev 库的行：**一律判「来源不可考」**——行本身不带来源标识，事后无法分辨哪些是本地进程灌的。不做数据迁移、不加 schema 列，也**不需要**回删：dev 库是「截断 → 重灌」全量语义，本地写入的行在**下一轮成功同步后即归零**，这个集合是封闭且自动递减到空的。
+  - **水位线之后**：上面那段形状自检退化为「只需查水位线之前的行」——更强而非更弱。它**仍然保留**，因为它挡的不只是本地写入这一条路（prod 侧误配、vendor 返回退化数据同样会被它抓到）。
+
+- **dev 日志里每天出现的 `MockCollectionRefusedError`「采集被拒」= 预期行为，不是故障（`054` 起）**：本地 server 跑在 `MARKETDATA_PROVIDER=mock` 下时，夜间同步 tick / 两级补救 cron / 日历填充照常触发，撞到采集口即抛专属错误并被写手既有的 `try/catch` 落成日志。**这是刻意的可见信号**——「你的本地进程正在试图采集」，而 2026-08-12 那次事故当天最缺的正是这份可见性（写手一路成功，没有任何一处出声）。⇒ 看到它**不必处置**；真要跑真采集就显式设 `MARKETDATA_PROVIDER=live`。⚠️ 反过来，`kind=mock` 下**看不到**这类日志才值得看一眼：要么定时链根本没跑，要么有人把采集口绑回了 mock。
+
 - **`检测到未注册的新表 marketdata.<t>` —— 新 marketdata 表落 prod 后 fail-loud（设计如此，非 bug）**：sync.sh §1.5 拿 prod `information_schema` 全表对 `TABLE_POLICIES` 做差集，出现未注册表即硬失败（禁无声截断，逼一次显式决策）。⚠️ **报的表名随 PG 返回序变**（`GROUP BY` 无 `ORDER BY`），同批多张新表会逐次命中不同表——**别只补报的那一张**。修：`comm -23 <prod marketdata 表清单> <TABLE_POLICIES 已注册>` 拿**全量**差集，逐行加策略——**港股专属事实表**（`marketScope={hk}`）在 `SAMPLE_CODES` 全 A 股时 `sample_only` 也导 0 行 → 默认 `skip`（注释写清；将来本地联调港股再往 `SAMPLE_CODES` 加港股样本股 + 改 `sample_only` 点亮）；市场级 / 运维表（无 `instrument_id`）只能 `full` / `skip`。改完 `bash scripts/marketdata-dev-sync/setup.sh --time 09:05` 刷 `~/.nvy` 副本 → `launchctl kickstart -k gui/$(id -u)/com.nvy.marketdata-dev-sync` 验证绿。（2026-07 一次性补 039-043 港股 16 张 + 044 `calendar_sync_health` 共 17 张，全 `skip`）
 
 ### 共同前置

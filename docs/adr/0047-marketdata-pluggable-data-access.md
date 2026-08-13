@@ -82,7 +82,20 @@ canonical symbol = `${market}:${code}`（如 `CN:600519`）。
 | TRADING_CALENDAR                                      | `LixingerTradingCalendarAdapter`（指数 candlestick 派生）— 修正原表「东财 adapter」笔误，码实为理杏仁        |
 | EOD_BAR / FUNDAMENTAL / FINANCIALS / CORPORATE_ACTION | `Lixinger*Adapter`                                                                                           |
 | QUOTE                                                 | `EodBackedQuoteAdapter`（消费 EOD_BAR_PORT，非独立 vendor）                                                  |
-| 全部                                                  | `MockMarketDataAdapter`（dev/test 默认，零 env）                                                             |
+| **读取口 / 闸口**（`QUOTE` / `TRADING_CALENDAR`）     | `MockMarketDataAdapter`（dev/test 默认，零 env）                                                             |
+| **采集口**（其余 28 个 vendor port）                  | `refusingCollectionPort()` 拒绝壳 — 一调即抛 `MockCollectionRefusedError`（dev/test 默认，零 env）           |
+
+> **⚠️ Amendment 2026-08-13 — `kind=mock` 不再是「全部 → Mock」（上表末两行）**
+>
+> 原表末行是「全部 | `MockMarketDataAdapter`（dev/test 默认，零 env）」。它把**读**与**采集**混作一谈，而采集口的产出**必然被持久化** —— 于是 dev 下伪造行情与真行情同形落进真表，行数对得上、日志全绿，事后无从分辨（2026-08-12 实撞）。
+>
+> 现按「口的意图」分三类：读取口 / 闸口继续绑 Mock（它们不写库，dev 只读能力零回归）；采集口绑拒绝壳；`INSTRUMENT_SEARCH_PORT` 本就直查真 `Instrument` 表、不伪造数据，照旧。
+>
+> 兑现方式是 `marketdata.module.ts` 的 `collectionPort(token, { inject, live })` helper：**mock 分支收进 helper 内部，per-port 根本没有「mock 分支」这一行可写** ⇒ 新增采集口照抄邻居即自动继承约束。⚠️ 这条**不是**类型系统守着的：Nest 的 `provide` 是裸 `Symbol`，`FactoryProvider<T>` 的 `T` 从 `useFactory` 返回值反向推断，token 与 `T` 之间零关联；加之 TS 是结构化类型，收窄 `MockMarketDataAdapter` 的 `implements` 同样不产生任何约束（两条均 2026-08-13 探针实测）。**别照「让错的事变红」的思路去加守卫，那条路走不通。**
+>
+> 代价：dev 下每天会多出「采集被拒」日志 —— 这是刻意的可见信号（「你的本地进程正在试图采集」），不是故障。dev 失去的「写手真写库」验证面由 `option-snapshot-remediation.it.spec.ts` 顶替。
+>
+> 来源：`specs/054-marketdata-mock-write-provenance/`（spec / plan D-1~D-8 / tasks）。
 
 ### 3. 每 adapter 携 Vendor Constraint Profile，共享 `VendorHttpClient` 统一执行
 
