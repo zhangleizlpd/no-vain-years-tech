@@ -1252,6 +1252,31 @@ export class LegResponse {
 
   @ApiProperty({
     description:
+      '**单笔权利金** = `bid × 合约乘数` (053 FR-032) —— 卖出一张 put 实际收到多少钱。' +
+      '🚨 **服务端算**, 🚫 客户端 MUST NOT 自己乘一次: 合约乘数是**市场规则不是合约属性** ' +
+      '(故也不落库), 服务端已持有那一份 (成交额在用它) ⇒ 客户端再乘就是同一判据两处各算一份, ' +
+      '而两边都乘得出数。📌 口径取 bid 而非 mid/ask —— 与档位判据同一个数 (FR-018)。' +
+      '无 bid → null, MUST NOT 当 0',
+    type: 'string',
+    nullable: true,
+    example: '145.00',
+  })
+  contractPremium!: string | null;
+
+  @ApiProperty({
+    description:
+      '**相对价差** `(ask − bid) / mid`, 小数比例 (053 FR-032) —— 与召回层流动性判据**同一个** ' +
+      '派生值 (阈值就是拿它比的)。🚨 复用而非新造: 上屏的数与挡腿的数各算一份的话, ' +
+      '「这条腿为什么被挡了」在屏幕上就对不上账, 而两个数都显示得出来。' +
+      '任一侧缺报价 / mid ≤ 0 → null (双边报价都是 0 的死合约算不出价差)',
+    type: 'string',
+    nullable: true,
+    example: '0.0678',
+  })
+  relativeSpread!: string | null;
+
+  @ApiProperty({
+    description:
       '买盘挂牌量 (张); **MUST NOT 参与判档** —— 档位恒由 bid 价定 (FR-018), 量只作同屏参照',
     type: 'number',
     nullable: true,
@@ -1918,6 +1943,10 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
       dteDays: leg.dteDays,
       bid: decimal4(leg.bid),
       ask: decimal4(leg.ask),
+      // 单笔权利金是**金额** ⇒ 定标 2 位 (同 turnover, 两者共用那一个合约乘数);
+      // 相对价差是**无量纲比例** ⇒ 定标 4 位 (同 criteria 里的 relativeSpreadMax, 两处要能直接比)。
+      contractPremium: leg.contractPremium === null ? null : leg.contractPremium.toFixed(2),
+      relativeSpread: decimal4(leg.relativeSpread),
       bidSize: leg.bidSize,
       askSize: leg.askSize,
       basis: leg.basis,

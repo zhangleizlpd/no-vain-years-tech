@@ -904,6 +904,45 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
     expect(res.legs.find((l) => l.code === 'C-A')?.activity?.isRoundStrike).toBe(true);
   });
 
+  /**
+   * 053 T004 —— 两个新派生列过 wire (`FR-032`, plan D-COL-1)。
+   *
+   * 🚨 **两者都在服务端算一次并下发**, 客户端零计算 (ADR-0064 不变量 ③): 合约乘数是市场规则,
+   * `relativeSpread` 更是**召回层挡腿用的那同一个数** —— 各算一份的话「这条腿为什么被挡了」
+   * 在屏幕上再也对不上账, 而两个数都显示得出来。
+   */
+  it('🚨 FR-032: 单笔权利金 = bid × 合约乘数, 相对价差复用召回层那一份, 两者定标下发', async () => {
+    const res = await responseOf();
+    const leg = (code: string) => res.legs.find((l) => l.code === code);
+
+    // C-A: bid 6.00 ⇒ 单笔权利金 600.00 (金额定标 2 位, 同 turnover)。
+    expect(leg('C-A')?.contractPremium).toBe('600.00');
+    // C-B: bid 0.50 ⇒ 50.00。两条不等 ⇒ 「接成常量 / 接错行」都会红。
+    expect(leg('C-B')?.contractPremium).toBe('50.00');
+    // 🚨 判别性: 它 **MUST NOT** 等于 bid 本身 —— 忘了乘那一下是最容易发生的失败形态,
+    // 而屏幕上那一列照样有数、照样是个合理的价格。
+    expect(leg('C-A')?.contractPremium).not.toBe(leg('C-A')?.bid);
+
+    // 相对价差是**无量纲比例**, 定标 4 位 (与 criteria 里的 relativeSpreadMax 同口径, 两处要能直接比)。
+    // C-A: bid 6.00 / ask 6.10 (fixture 默认 +0.10) ⇒ mid 6.05 ⇒ 0.10 / 6.05 = 0.016528…
+    expect(leg('C-A')?.relativeSpread).toBe('0.0165');
+    // C-B: bid 0.50 / ask 0.60 ⇒ mid 0.55 ⇒ 0.10 / 0.55 = 0.181818…。两条不等 ⇒ 「接成常量」会红。
+    expect(leg('C-B')?.relativeSpread).toBe('0.1818');
+  });
+
+  it('🚨 FR-032: 有 ask 时相对价差 = (ask − bid) / mid, 与召回层挡腿用的是同一个数', async () => {
+    // bid 3.00 / ask 9.00 ⇒ mid 6.00 ⇒ (9 − 3) / 6 = 1.0000, 远超流动性阈值 0.35。
+    const wide: LegFixture = { ...LEGS[3], code: 'W-WIDE', bid: '3.00', ask: '9.00' };
+    const inAll = await responseOf([LEGS[3], wide], {}, 'all');
+    expect(inAll.legs.find((l) => l.code === 'W-WIDE')?.relativeSpread).toBe('1.0000');
+
+    // 🚨 同源判别性: 上屏的这个数正是把它挡出意图视角的那个数 —— 两者若各算一份, 下面这条
+    // 「屏上 > 阈值 且 它确实被挡了」的对账就不再成立, 而两个数各自都出得来。
+    const inBuild = await responseOf([LEGS[3], wide], {}, 'build');
+    expect(inBuild.legs.map((l) => l.code)).not.toContain('W-WIDE');
+    expect(inBuild.gateCounts.excludedFromIntentTabs).toBe(1);
+  });
+
   it('🚫 FR-019b: 特征集 MUST NOT 下发 —— 顶层与每腿都零 feature 字段', async () => {
     const res = await responseOf();
 

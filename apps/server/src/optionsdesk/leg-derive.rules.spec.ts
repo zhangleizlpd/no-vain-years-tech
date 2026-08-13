@@ -9,6 +9,7 @@ import {
   computeEffectiveCost,
   computeEffectiveCostVsWPct,
   computeLegRates,
+  computeContractPremium,
   computeTurnover,
   deriveDeltaColumns,
   markActivity,
@@ -387,5 +388,34 @@ describe('leg-derive.rules — 成交额 (plan D-SOT-5)', () => {
 
   it('返回 Decimal 而非 number —— 金额不进二进制浮点', () => {
     expect(Prisma.Decimal.isDecimal(computeTurnover(12, '3.5') as Prisma.Decimal)).toBe(true);
+  });
+});
+
+/**
+ * 053 T004 —— 单笔权利金 (`FR-032`, plan D-COL-1)。
+ *
+ * 🚨 本组的存在理由是 **ADR-0064 不变量 ③**: 这个乘法只许在服务端发生一次。客户端那一半由
+ * `rg` 扫「mobile 侧零处乘合约乘数」守 (T004 verify), 这里守的是「服务端这一份算得对」。
+ */
+describe('leg-derive.rules — 单笔权利金 (053 FR-032)', () => {
+  it('单笔权利金 = bid × 合约乘数, 且乘的是**同一份常量** (不新造第二份)', () => {
+    expect(computeContractPremium('1.45')?.toString()).toBe('145');
+    // 🚨 判别性: 与成交额共用同一个常量 —— 若有人在这里另写一个 100, 改乘数时只会改动一处而
+    // 两个数各自照样出得来。用「成交额 ÷ Vol == 单笔权利金」把这层共享钉成可验证的。
+    const turnover = computeTurnover(12, '1.45')!;
+    expect(turnover.div(12).toString()).toBe(computeContractPremium('1.45')!.toString());
+    expect(US_OPTION_CONTRACT_MULTIPLIER).toBe(100);
+  });
+
+  it('无 bid → null, 🚫 MUST NOT 当 0 (「没有买盘」不是「白送」)', () => {
+    expect(computeContractPremium(null)).toBeNull();
+    // 对照: bid 真的是 0 时结果是 0 —— 两者在类型上就分得开。
+    expect(computeContractPremium('0')?.toString()).toBe('0');
+  });
+
+  it('小数不进二进制浮点 —— 0.1 × 100 恒为 10 而不是 10.000000000000002', () => {
+    const premium = computeContractPremium('0.1');
+    expect(Prisma.Decimal.isDecimal(premium as Prisma.Decimal)).toBe(true);
+    expect(premium?.toString()).toBe('10');
   });
 });

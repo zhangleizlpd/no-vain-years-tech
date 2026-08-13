@@ -26,6 +26,7 @@ import {
   type RentDepth,
 } from './intent-matrix.rules';
 import {
+  computeContractPremium,
   computeEffectiveCost,
   computeEffectiveCostVsWPct,
   computeLegRates,
@@ -146,6 +147,21 @@ export interface LegView {
 
   bid: Prisma.Decimal | null;
   ask: Prisma.Decimal | null;
+  /**
+   * **单笔权利金** = `bid × 合约乘数` (053 `FR-032`) —— 卖出一张实际收到多少钱。
+   *
+   * 🚨 **服务端算并下发, 🚫 MUST NOT 由客户端乘一次** (ADR-0064 不变量 ③): 合约乘数是市场规则
+   * 不是合约属性, 服务端已持有那一份 (成交额在用它)。判据在 `leg-derive.rules.ts`。
+   */
+  contractPremium: Prisma.Decimal | null;
+  /**
+   * **相对价差** `(ask − bid) / mid` (053 `FR-032`) —— 与召回层流动性判据**同一个派生值**
+   * (`leg-recall.rules.ts` 的 `relativeSpread`, 阈值 `LIQUIDITY_MAX_RELATIVE_SPREAD` 用的就是它)。
+   *
+   * 🚨 **复用不是新造**: 上屏的数与挡腿的数各算一份的话, 「这条腿为什么被挡了」在屏幕上就再也
+   * 对不上账 —— 而两个数都显示得出来。任一侧缺报价 / `mid ≤ 0` → `null`。
+   */
+  relativeSpread: Prisma.Decimal | null;
   /**
    * 买 / 卖盘挂牌量 (`@db.Decimal(20,0)` 的整数计数, 同 OI / Vol 走 `number` 而非 string
    * —— 它们是**张数不是金额**, 没有精度可丢)。
@@ -642,6 +658,10 @@ export class GetLegsUseCase {
         dteDays,
         bid: row.bid,
         ask: row.ask,
+        // 两个派生值都在**服务端单点**算 (053 FR-032): 前者服务端已持有合约乘数, 后者直接复用
+        // 召回层那一份判据函数 —— 客户端各算一份就是同一判据两处落点 (ADR-0064 不变量 ③)。
+        contractPremium: computeContractPremium(row.bid),
+        relativeSpread: relativeSpread(row.bid, row.ask),
         bidSize: row.bidSize,
         askSize: row.askSize,
         basis,
