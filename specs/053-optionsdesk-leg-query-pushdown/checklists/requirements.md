@@ -16,15 +16,17 @@
 
 ## Requirement Completeness
 
-- [ ] **No [NEEDS CLARIFICATION] markers remain** —— ❌ **3 项待澄清，见 spec § 待澄清**：① `memberCount` 下不下发（`052` 把六维并入召回层后它不再免费）· ② `candidateCapDropped`（候选上限 `K` 的触及数）下不下发 · ③ `052` 遗留的三项真机判据在本片补验还是显式排除。⇒ **MUST 走 `/speckit-clarify` 闭合后才能进 `/speckit-tasks`**；`status` 保持 `draft`。
+- [x] **No [NEEDS CLARIFICATION] markers remain** —— ✅ **3 项已于 2026-08-13 clarify 闭合**：① `memberCount` **下发**，同一批已取回行上再判定一次（零额外 DB 往返，`FR-009`）· ② `K` 触及数**下发且按异常呈现**，与截断计数不同款（`FR-019c`）· ③ `052` 遗留三项真机判据**本片一并补验**（`FR-036` / `SC-017`）。`status` 已翻 `clarified`。
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [x] Success criteria are technology-agnostic (no implementation details)
       📌 `SC-002` / `SC-007` 含 `rg` 扫描判据 —— 它们是**可执行的验收手段**而非实现约束（同 `050` `SC-004` / `052` `SC-007` 的先例）。
-- [x] All acceptance scenarios are defined（4 个 US 共 15 条）
-- [x] Edge cases are identified（8 条）
-- [x] Scope is clearly bounded（§ Out of Scope 14 行）
+- [x] All acceptance scenarios are defined（4 个 US 共 **16** 条）
+- [x] Edge cases are identified（**8** 条）
+- [x] Scope is clearly bounded（§ Out of Scope 逐条列明去向）
 - [x] Dependencies and assumptions identified（§ 依赖与前提 7 行 + § Assumptions 7 条）
+
+> 📌 **条数一律实时 grep 得出，不抄历史数字**（per `sdd-authoring.md` 反模式）：`state_branches` **25** · FR **41**（编号有意留组间空档）· SC **17** · AS **16** · Edge **8** · Clarifications **10** 问。
 
 ## Feature Readiness
 
@@ -35,7 +37,7 @@
 
 ## 本次重写的一致性自检（`052` ship 后）
 
-- [x] **`state_branches` 与正文逐条对得上** —— 21 条，其中纯客户端分支（预热时序 / 错误态切换 / 迟到响应）已标明落 e2e 层，沿 `052` T015 对「plan 要求每条落 IT」这一冲突的裁法：**每条有一个 `it()`，落在够得到它的那一层**。
+- [x] **`state_branches` 与正文逐条对得上** —— 25 条，其中纯客户端分支（预热时序 / 错误态切换 / 迟到响应）已标明落 e2e 层，沿 `052` T015 对「plan 要求每条落 IT」这一冲突的裁法：**每条有一个 `it()`，落在够得到它的那一层**。
 - [x] **零残留已被 `052` 推翻的内容** —— 首版的「行权价筛选」US、「实时 + 防抖」clarify 定案、筛选行 sticky 栈 40dp、「筛后 0 行」空态、四段顺序里的独立「筛选」段、`200`/`800` 两个阈值，均已整条删除而非标注保留。
 - [x] **阈值零硬编码** —— 三个视角的截断阈值在 spec 与 plan 内均为「MUST 实测标定」，plan 的常量带 `⏳` 占位标记，收尾由标定 task 扫零命中（`SC-014`）。
 - [x] **两条 supersede 已显式登记** —— 047 的「no pagination, no top-N」（`FR-019a`）与「切 Tab 不重新请求」（`FR-019b`），且 `SC-011` 要求 PR body 同步登记。
@@ -44,4 +46,5 @@
 ## Notes
 
 - Items marked incomplete require spec updates before `/speckit-clarify` or `/speckit-plan`
-- 本 checklist 的两条 ❌ 是**已知且有去向**的，不是遗漏：3 项待澄清进 `/speckit-clarify`，主 plan 订正进一次 docs 改动。
+- **2026-08-13 全项通过**：原先两条 ❌（3 项待澄清 / 主 plan 订正待回写）均已闭合 —— clarify 三问三答已写回 spec `### Session 2026-08-13`，主 plan §3 不变量 #4 的订正已回写。
+- 下一步：`/speckit-plan` 已随 spec 同步更新（`D-API-1` 的 `memberCount` 算法、`D-UI-1` 的 `K` 异常位、`D-TEST-4` 的三项真机）⇒ 可直接进 `/speckit-tasks`。
