@@ -63,7 +63,7 @@ updated_at: '2026-08-13'
 
   📌 **手列清单会 stale，这是蓄意接受的**：有人加第 29 个采集口时它不会自动跟上。防再入机制是 T001 的 `collectionPort` helper —— 新采集口**照抄邻居即自动拿到拒绝壳，压根不需要清单跟上**；手列清单只是当下集合的**显式快照**，职责仅限于证明本次 28 个确实改全了。
 
-- [ ] T003 [Server] **「`kind=mock` 下写手跑完零写库」IT**（`FR-004`, plan `D-7`）：新建 `marketdata-054.mock-no-write.it.spec.ts`，起 Testcontainers PG，`MARKETDATA_PROVIDER` 取 mock 全 boot `AppModule`，直调 `OptionSnapshotRemediation.retrySameDay` / `.backfillPremarket` 与 `TradingCalendarSyncService.run`，断言目标表**行数零增长**且各写手不上抛（既有 `try/catch` 吞掉专属错误）。→ verify: 覆盖 state_branch 1（判定需采集 → 零写库）/ 2（判定无需采集 → 零写库，与 1 走不同分支但结论同）/ 3（非定时写路径同判据 —— 同一 port 层，用手工触发的同步入口再验一次）+ 该 IT 在 T001 **之前**跑必红（现状会写 3617 行）
+- [X] T003 [Server] **「`kind=mock` 下写手跑完零写库」IT**（`FR-004`, plan `D-7`）：新建 `marketdata-054.mock-no-write.it.spec.ts`，起 Testcontainers PG，`MARKETDATA_PROVIDER` 取 mock 全 boot `AppModule`，直调 `OptionSnapshotRemediation.retrySameDay` / `.backfillPremarket` 与 `TradingCalendarSyncService.run`，断言目标表**行数零增长**且各写手不上抛（既有 `try/catch` 吞掉专属错误）。→ verify: 覆盖 state_branch 1（判定需采集 → 零写库）/ 2（判定无需采集 → 零写库，与 1 走不同分支但结论同）/ 3（非定时写路径同判据 —— 同一 port 层，用手工触发的同步入口再验一次）+ 该 IT 在 T001 **之前**跑必红（现状会写 3617 行）
 
 ---
 
