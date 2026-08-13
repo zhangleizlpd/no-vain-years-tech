@@ -57,7 +57,7 @@ updated_at: '2026-08-13'
 
   📌 **28 这个数是逐 provider 判定出来的，不是估的**：`marketdata.module.ts` 共 31 个 port provider，其中 **30 个**在 `kind === 'mock'` 时绑 `MockMarketDataAdapter`（`INSTRUMENT_SEARCH_PORT` 例外 —— 它绑 `LocalInstrumentSearchAdapter` 直查真 `Instrument` 表），减去留守的 `QUOTE_PORT` / `TRADING_CALENDAR_PORT` ⇒ **28 待改**。
 
-- [ ] T002 [Server] **boot IT 的采集口清单补全到 28**（`SC-004`, plan `D-2`）：`marketdata.boot-015.it.spec.ts` 现有 `MOCK_PORTS` **只列 7 个 port**（`INSTRUMENT_UNIVERSE` / `TRADING_CALENDAR` / `EOD_BAR` / `FUNDAMENTAL` / `FINANCIALS` / `CORPORATE_ACTION` / `QUOTE`）—— T001 的分裂断言因此只覆盖 **5/28** 个采集口。把采集口清单补全到 28 个，逐个断言「解析为拒绝壳 + 调用即抛」。→ verify: 28 个采集口逐条断言通过 + 2 个读取口仍解析 `MockMarketDataAdapter`
+- [X] T002 [Server] **boot IT 的采集口清单补全到 28**（`SC-004`, plan `D-2`）：`marketdata.boot-015.it.spec.ts` 现有 `MOCK_PORTS` **只列 7 个 port**（`INSTRUMENT_UNIVERSE` / `TRADING_CALENDAR` / `EOD_BAR` / `FUNDAMENTAL` / `FINANCIALS` / `CORPORATE_ACTION` / `QUOTE`）—— T001 的分裂断言因此只覆盖 **5/28** 个采集口。把采集口清单补全到 28 个，逐个断言「解析为拒绝壳 + 调用即抛」。→ verify: 28 个采集口逐条断言通过 + 2 个读取口仍解析 `MockMarketDataAdapter`
 
   📌 **为什么必须单独一条而不是并进 T001**：`SC-004` 的原文是「已知每条走 vendor 且写库的定时路径都被覆盖，**没有**『只修了撞到的那一条』的遗留」。T001 改了 28 个绑定但只验了 5 个 —— 那正是 `SC-004` 要禁止的形态在**判据层**的复现。这条 task 存在的唯一理由就是把 `SC-004` 变成可执行的断言。
 
