@@ -26,14 +26,17 @@ import type {
   LegTableResponse,
   LegTableResponseIntent,
   LegTableResponsePositionBucketSource,
+  PerspectiveCriteriaResponse,
   SetPositionBucketRequestPositionBucket,
 } from '@nvy/api-client';
 
+import { criteriaOverrideCount } from './leg-criteria.rules';
 import type { LegTier } from './leg-picker-copy';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { buildLegSections, type LegSection } from './underlying-detail.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
+const CRITERIA_COPY = COPY.criteria;
 
 /**
  * Tab 键 = 契约 `tabs` 的值域本身（不另造一套）。
@@ -397,10 +400,17 @@ export interface LegEmptyState {
   title: string | null;
   text: string;
   cta: { label: string; tab: LegPickerTab } | null;
+  /**
+   * 052：空是**用户自己收窄出来的**时给的「复位」入口文案（`null` ⇒ 不给）。
+   * 🚨 与 {@link LegEmptyState.cta} 蓄意分成两个字段而不是一个联合：两者该做的事完全不同
+   *    （一个是「去别的视角看那些腿」，一个是「把条件放回去」），合并成一个入口就要在
+   *    渲染处再判一次它到底是哪种。
+   */
+  reset: string | null;
 }
 
 /** 意图视角空态的通用兜底 —— 全腿视角与契约未到手都走它。 */
-const GENERIC_EMPTY: LegEmptyState = { title: null, text: COPY.empty, cta: null };
+const GENERIC_EMPTY: LegEmptyState = { title: null, text: COPY.empty, cta: null, reset: null };
 
 /**
  * 意图视角的空态，按**该视角自己的**排除数分两支（FR-009）。复杂度 O(1)。
@@ -414,7 +424,18 @@ const GENERIC_EMPTY: LegEmptyState = { title: null, text: COPY.empty, cta: null 
 export function legEmptyState(
   gateCounts: LegTableResponse['gateCounts'] | null,
   tab: LegPickerTab,
+  criteria: PerspectiveCriteriaResponse | null = null,
 ): LegEmptyState {
+  // 🚨 052 第三支**排在最前** —— 用户自己收窄出来的空与「这只票本来就没有」是两件事，
+  //    而它在三个视角**都**可能发生（含全腿）。判据取服务端下发的三态回执，不靠客户端记忆。
+  if (criteriaOverrideCount(criteria) > 0) {
+    return {
+      title: CRITERIA_COPY.emptyTitle,
+      text: CRITERIA_COPY.emptyText,
+      cta: null,
+      reset: CRITERIA_COPY.emptyResetCta,
+    };
+  }
   if (gateCounts === null || tab === 'all') return GENERIC_EMPTY;
   const excluded = gateCounts.excludedFromIntentTabsByTab[tab];
   const title = COPY.emptyIntentTitle[tab];
@@ -424,8 +445,14 @@ export function legEmptyState(
       title,
       text: COPY.emptyBlockedByGate(excluded),
       cta: { label: COPY.emptyBlockedCta(excluded), tab: 'all' },
+      reset: null,
     };
   }
   // = 0：本视角是真的没有合格腿 ⇒ 指向判据本身，**不给入口**（没有可去看的腿）。
-  return { title, text: `${COPY.emptyNoneReason[tab]}${COPY.emptyNoneTail}`, cta: null };
+  return {
+    title,
+    text: `${COPY.emptyNoneReason[tab]}${COPY.emptyNoneTail}`,
+    cta: null,
+    reset: null,
+  };
 }

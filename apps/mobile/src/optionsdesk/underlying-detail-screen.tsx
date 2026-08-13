@@ -44,6 +44,7 @@
 //
 // 判定全在 `underlying-detail.rules.ts`（vitest 覆盖）；本文件与子件只做接线与版面，
 // 渲染 / 交互 / a11y 走 Playwright e2e（本仓测试分层：vitest=logic / Playwright=UI）。
+import { useMemo, useState } from 'react';
 import { Pressable, SectionList, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -53,6 +54,12 @@ import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { AnchorDetailCard } from './anchor-detail-card';
 import { IvReadoutBlock } from './iv-readout-block';
 import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
+import { LegCriteriaSheet } from './leg-criteria-sheet';
+import {
+  criteriaCountLines,
+  criteriaOverrideCount,
+  type CriteriaCountLine,
+} from './leg-criteria.rules';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
 import {
   legActivityForTab,
@@ -95,6 +102,17 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
   const detail = useUnderlyingDetail(symbol);
   const legTable = useLegTable(symbol);
   const { composition } = detail;
+  // 检索条件抽屉的开合（052 T012）。🚨 **不持久化**（FR-014）—— 与条件值一样只活在屏级 state。
+  const [criteriaOpen, setCriteriaOpen] = useState(false);
+  // 🚫 表还没到手 / 链未就绪时不给入口（`null`）：那时六维全 `null`，抽屉里只有一排空框。
+  // 📌 记忆化不是为了性能洁癖 —— 这个回调进的是 sticky section header，滚动期间每帧都会读到它。
+  const openCriteria = useMemo(
+    () =>
+      legTable.block === 'available' && legTable.criteria !== null
+        ? () => setCriteriaOpen(true)
+        : null,
+    [legTable.block, legTable.criteria],
+  );
   // 🚨 表头与每个数据行**共读**这一个横向位移，且**只有这一个来源**（FR-001）。
   //    负值域 `[maxTx, 0]`（translateX），**不是** 047 那个正的 scroll offset。
   const tx = useSharedValue(0);
@@ -208,7 +226,13 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       table={legTable.table}
                     />
                     {/* 🚨 就地注明已移出常驻区（051 FR-010a）—— 见 `renderSectionFooter`。 */}
-                    <LegPickerTabs tab={legTable.tab} onSelect={legTable.setTab} />
+                    {/* 🚨 052：检索条件入口挂在 Tab 行右端，**sticky 栈一层不加**。 */}
+                    <LegPickerTabs
+                      tab={legTable.tab}
+                      onSelect={legTable.setTab}
+                      onOpenCriteria={openCriteria}
+                      criteriaCount={criteriaOverrideCount(legTable.criteria)}
+                    />
                     <LegTableHeader
                       tx={tx}
                       // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——
@@ -238,15 +262,24 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                 )}
                 renderSectionFooter={() => (
                   // 🚨 三样东西同落非常驻区（051 FR-010a）：就地说明 + 两个门槛计数 + 空态解释。
+                  //    052 起再追加一类：**仅被用户收窄**的维度各一行计数（FR-029）。
                   <LegBlockNotice
                     state={legTable.block}
                     total={legTable.total}
                     notices={legTable.notices}
                     gates={legGateCountLines(legTable.table?.gateCounts ?? null, legTable.tab)}
-                    // 🚨 空态按**该视角自己的**排除数分支（051 FR-009 / SC-013）。
-                    empty={legEmptyState(legTable.table?.gateCounts ?? null, legTable.tab)}
+                    criteria={criteriaCountLines(legTable.criteria)}
+                    // 🚨 空态按**该视角自己的**排除数分支（051 FR-009 / SC-013）；
+                    //    条件收窄出来的空是第三支，入口是「复位」而不是换视角（052 Edge Case）。
+                    empty={legEmptyState(
+                      legTable.table?.gateCounts ?? null,
+                      legTable.tab,
+                      legTable.criteria,
+                    )}
                     onRetry={legTable.retry}
                     onSelectTab={legTable.setTab}
+                    onOpenCriteria={() => setCriteriaOpen(true)}
+                    onResetCriteria={legTable.resetCriteria}
                   />
                 )}
                 ListFooterComponent={<LegBlockFooter />}
@@ -254,6 +287,25 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
             </View>
           </GestureDetector>
         )}
+
+        {/* 🚨 抽屉渲在 RN `Modal` 里（组件内），故挂载位置只决定生命周期不决定层级 ——
+            关态不挂载 ⇒ 草稿随开关自然重建，未提交的改动丢弃是定义如此（FR-012）。 */}
+        {criteriaOpen ? (
+          <LegCriteriaSheet
+            tab={legTable.tab}
+            defaults={legTable.criteria?.defaults ?? null}
+            submitted={legTable.submittedCriteria}
+            onSubmit={(form) => {
+              legTable.submitCriteria(form);
+              setCriteriaOpen(false);
+            }}
+            onReset={() => {
+              legTable.resetCriteria();
+              setCriteriaOpen(false);
+            }}
+            onClose={() => setCriteriaOpen(false)}
+          />
+        ) : null}
       </GestureHandlerRootView>
     </SafeAreaView>
   );
@@ -325,17 +377,23 @@ function LegBlockNotice({
   total,
   notices,
   gates,
+  criteria,
   empty,
   onRetry,
   onSelectTab,
+  onOpenCriteria,
+  onResetCriteria,
 }: {
   state: LegBlockState;
   total: number;
   notices: readonly LegPickerNotice[];
   gates: readonly LegGateCountLine[];
+  criteria: readonly CriteriaCountLine[];
   empty: LegEmptyState;
   onRetry: () => void;
   onSelectTab: (tab: LegPickerTab) => void;
+  onOpenCriteria: () => void;
+  onResetCriteria: () => void;
 }) {
   const quiet = legGateCountsQuiet(gates);
   if (state === 'loading') {
@@ -371,7 +429,9 @@ function LegBlockNotice({
   }
   return (
     <View>
-      {total === 0 ? <LegEmptyBlock empty={empty} onSelectTab={onSelectTab} /> : null}
+      {total === 0 ? (
+        <LegEmptyBlock empty={empty} onSelectTab={onSelectTab} onReset={onResetCriteria} />
+      ) : null}
 
       {/* 数据缺口 / 口径说明体系：`surface-alt` 底，**与红标体系区隔** —— 它不是错误。 */}
       {notices.map((notice) => (
@@ -390,6 +450,22 @@ function LegBlockNotice({
         {gates.map((gate) => (
           <LegGateLine key={gate.key} gate={gate} quiet={quiet} onSelectTab={onSelectTab} />
         ))}
+        {/* 🚨 052：**仅被用户收窄**的维度各一行（FR-029）—— 与上面两条同体例、同结构，
+            但入口指向抽屉：这一刀是用户自己切的，能改回去的地方就是那几个控件。
+            🚫 放宽与未覆盖不出行（判据在 `criteriaCountLines`，放宽不产生排除）。 */}
+        {criteria.map((line) => (
+          <Pressable
+            key={line.key}
+            onPress={onOpenCriteria}
+            accessibilityRole="button"
+            accessibilityLabel={line.text}
+            testID={`optionsdesk-detail-leg-criteria-${line.key}`}
+          >
+            <Text className="text-[10px] font-medium text-brand-500">
+              {`${line.text}${LEG_COPY.criteria.countGoNote}`}
+            </Text>
+          </Pressable>
+        ))}
       </View>
     </View>
   );
@@ -402,9 +478,11 @@ function LegBlockNotice({
 function LegEmptyBlock({
   empty,
   onSelectTab,
+  onReset,
 }: {
   empty: LegEmptyState;
   onSelectTab: (tab: LegPickerTab) => void;
+  onReset: () => void;
 }) {
   const cta = empty.cta;
   return (
@@ -422,6 +500,18 @@ function LegEmptyBlock({
           className="mt-xs self-start"
         >
           <Text className="text-xs font-medium text-brand-500">{`${cta.label} ›`}</Text>
+        </Pressable>
+      )}
+      {/* 052 第三支：空是用户自己收窄出来的 ⇒ 给的入口是**复位**（换视角在这里帮不上忙）。 */}
+      {empty.reset === null ? null : (
+        <Pressable
+          onPress={onReset}
+          accessibilityRole="button"
+          accessibilityLabel={empty.reset}
+          testID="optionsdesk-detail-leg-empty-reset"
+          className="mt-xs self-start"
+        >
+          <Text className="text-xs font-medium text-brand-500">{`${empty.reset} ›`}</Text>
         </Pressable>
       )}
     </View>

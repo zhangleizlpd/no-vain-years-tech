@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   BAND_LITERAL_RE,
+  CLIENT_DEFAULT_COMPUTE_RE,
+  clientDefaultProbe,
   COARSE_DECISION_RE,
   coarseProbe,
   DTE_BOUND_RE,
@@ -318,6 +320,68 @@ describe('MEMBERSHIP_PREDICATE_RE —— 052 不变量 #7（成员判据只住�
 describe('membershipProbe —— 两侧探针都健在', () => {
   it('现役词表的正例臂与反例臂均通过', () => {
     expect(membershipProbe()).toBeNull();
+  });
+});
+
+describe('CLIENT_DEFAULT_COMPUTE_RE —— 052 不变量 #8（客户端零处自算默认值）', () => {
+  it('抄服务端的默认值解析 / 阈值常量名即命中', () => {
+    expect(
+      findShapeHits(
+        'const f = resolvePremiumFloor(s); const d = defaultCriteriaByTab(c);',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual(['resolvePremiumFloor', 'defaultCriteriaByTab']);
+    expect(
+      findShapeHits('if (oi >= OPEN_INTEREST_FLOOR) keep();', CLIENT_DEFAULT_COMPUTE_RE),
+    ).toEqual(['OPEN_INTEREST_FLOOR']);
+  });
+
+  it('🚨 `spot` 直接参与乘除即命中 —— 六维里两维的默认值就是 spot 的函数', () => {
+    expect(findShapeHits('const c = spot * (1 + RATIO);', CLIENT_DEFAULT_COMPUTE_RE)).toEqual([
+      'spot *',
+    ]);
+    expect(findShapeHits('const r = premium / spot;', CLIENT_DEFAULT_COMPUTE_RE)).toEqual([
+      '/ spot',
+    ]);
+  });
+
+  it('🚨 反例臂：读服务端下发的值 MUST NOT 命中 —— 那正是本条要求客户端做的事', () => {
+    expect(
+      findShapeHits('const form = criteriaFormOf(criteria.defaults);', CLIENT_DEFAULT_COMPUTE_RE),
+    ).toEqual([]);
+  });
+
+  it('🚨 反例臂：046 色带那份 `spot` 是**画图**不是判据 —— 传参与取属性都不该命中', () => {
+    expect(
+      findShapeHits(
+        'const p = bandPosition(spot, floor, ceiling); const left = `${spot.pct}%`;',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual([]);
+  });
+
+  it('注释里解释这条禁令是**正确的文档**，不是违规', () => {
+    expect(
+      findShapeHits(
+        '// 🚫 MUST NOT 写 spot * (1 + X) —— 默认值由服务端解',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual([]);
+  });
+
+  it('词内子串不误伤（`spotPosition` / `hotspots` 不是 `spot`）', () => {
+    expect(
+      findShapeHits(
+        'const p = spotPosition(a); const n = hotspots / 2;',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('clientDefaultProbe —— 两侧探针都健在', () => {
+  it('现役词表的正例臂与反例臂均通过', () => {
+    expect(clientDefaultProbe()).toBeNull();
   });
 });
 

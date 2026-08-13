@@ -430,6 +430,70 @@ export const OPTIONSDESK_COPY = {
      *    改为把 asOf 恒常醒目呈现（SC-003：零处「不知道这是哪天的数」）。
      */
     sourceBackfillPrefix: '来源 ',
+
+    // ── 检索条件抽屉（052 T012，mockup `052-criteria-sheet.dc.html` 帧 A1~A6 逐字）─────
+    /**
+     * 🚨 **控件标签与 12 列表头逐字同词**（`OI` / `Vol`）—— 同屏可直接对照。
+     *    🚫 MUST NOT 用「持仓」称合约未平仓量：本 App 里「持仓」已被 `portfolio` 占用
+     *    （持仓屏 / 持仓导入 / 持仓规模），而选约屏自己的水位 chip 就在讲持仓规模。
+     * 🚨 **活性是一个维度、两个值**（`OI ≥ x` **或** `Vol ≥ y`）—— 中缝画「或」，与区间的
+     *    `–` 蓄意不同形：前者择一、后者取交。判据本身 MUST 常驻，MUST NOT 塞进 ⓘ。
+     */
+    criteria: {
+      /** Tab 行右端入口（34px）—— 徽标数的是**已覆盖维度数**，不是排除条数。 */
+      entry: '检索条件',
+      entryBadge: (n: number) => `已改 ${n} 项`,
+      sheetTitle: (perspectiveLabel: string) => `检索条件 · ${perspectiveLabel}`,
+      subDefault: '当前为系统默认值',
+      subDirty: (n: number) => `已改 ${n} 项 · 未提交`,
+      subApplied: (n: number) => `已改 ${n} 项`,
+      /** 行标签。`≥` / `≤` 直接写进标签 —— 方向感是判据的一部分，别只靠输入框位置暗示。 */
+      labelStrike: '行权价',
+      labelDte: '期限天',
+      labelPremium: '权利金 ≥',
+      labelOi: 'OI ≥',
+      labelVol: 'Vol ≥',
+      labelSpread: '价差 ≤',
+      /** 「不限」= 空框 + 占位符。🚫 MUST NOT 写 0 或 ∞（两者都是**值**，不是「没有边界」）。 */
+      unbounded: '不限',
+      rangeDash: '–',
+      orWord: '或',
+      percentSuffix: '%',
+      /**
+       * 🚨 ⓘ 只放**口径说明**（nice-to-know），判据本身 MUST 常驻 —— tooltip 易被忽略
+       *    （NN/G），把判据放进去等于没写。移动端是 **tap 触发**的 popup tip（无 hover），
+       *    热区 44×44。
+       */
+      infoIcon: 'ⓘ',
+      premiumTipLabel: '权利金口径',
+      premiumTip:
+        '门槛判的是 bid（挂出去即可成交的那一边），不是 mid 或 ask。腿没有 bid ⇒ 判不通过——「不知道」与「知道且很低」处置同归。',
+      /** 「搜」与「复位」**并存**（不是互斥槽位）：前者显式提交，后者清回系统默认值。 */
+      submit: '搜',
+      reset: '复位',
+      close: '关闭抽屉',
+      /**
+       * 收窄维度的计数行（FR-030 措辞）。🚫 MUST NOT 说「被系统滤掉」——
+       * 这一刀是用户自己切的，系统默认值下的排除**不出计数**（默认值就摆在控件里）。
+       */
+      countLine: (label: string, n: number) => `${label}之外还有 ${n} 条`,
+      countGoNote: ' · 去改',
+      countLabels: {
+        strikeMax: '行权价上界',
+        strikeMin: '行权价下界',
+        dteBand: '期限段',
+        premiumMin: '权利金下限',
+        livenessMin: '活跃度下限',
+        relativeSpreadMax: '价差上界',
+      },
+      /**
+       * 空态第三支（spec Edge Case「条件收紧到候选为空」）—— 与「本来就没有」**一眼可分**：
+       * 这一支是用户自己切没的，故给的入口是**复位**而不是「去别的视角看」。
+       */
+      emptyTitle: '当前检索条件下没有候选',
+      emptyText: '是你收窄的这几条把它们切没了 —— 这只票本身有腿。',
+      emptyResetCta: '复位到系统默认值',
+    },
   },
 
   /**

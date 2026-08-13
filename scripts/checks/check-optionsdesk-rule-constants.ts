@@ -2,7 +2,7 @@
 /**
  * check-optionsdesk-rule-constants.ts — optionsdesk **可调策略参数单点**的机器守门。
  *
- * 七条不变量，扫描面都是 `apps/server/src/optionsdesk/`：
+ * 八条不变量。前七条的扫描面是 `apps/server/src/optionsdesk/`，**第八条扫的是客户端**：
  *
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
@@ -13,6 +13,7 @@
  * | 5 | 检索 port 接口零存储侧词汇 | **词表**扫描 | 052 FR-031 |
  * | 6 | 粗排层恒等 + 五层入口各有 spec | **词表**扫描 + 文件存在 | 052 FR-004 / SC-010 |
  * | 7 | 六维成员判据只住 `leg-recall.rules.ts` | **词表**扫描 | 052 FR-003 |
+ * | 8 | **客户端零处自算检索条件默认值** | **词表 + 算式形状**扫描 | 052 FR-011 / Guardrail 6 |
  *
  * 🚨 **#5/#6/#7 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
  * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
@@ -57,6 +58,8 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const CTX_DIR = 'apps/server/src/optionsdesk';
+/** 052 不变量 #8 的扫描面 —— 客户端侧同名 feature 目录（FR-011 的判据落在这里）。 */
+const MOBILE_CTX_DIR = 'apps/mobile/src/optionsdesk';
 const RULES_FILE = 'anchor.rules.ts';
 /** 050 召回层：两道门槛阈值 + 三段 DTE 界的唯一落点。 */
 const RECALL_RULES_FILE = 'leg-recall.rules.ts';
@@ -384,6 +387,45 @@ export function membershipProbe(): string | null {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #8 —— 客户端零处自算检索条件默认值（词表 + 算式形状，FR-011 / Guardrail 6）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 两类命中都判违规：
+ * ① **照抄服务端那份默认值判据**（函数名 / 阈值常量名）——「同一判据两处各一份」的最短路径；
+ * ② **`spot` 直接参与乘除** —— 六维里有两维（行权价上界 · 权利金下限）的默认值就是 spot 的
+ *    函数，客户端一旦自己乘一下，两边**都算得出数**，漂移只在换日那一刻才看得见。
+ *
+ * 🚨 **这条踩了不会红**：客户端算出来的默认值照样填得进控件、照样点得动「搜」，服务端也照样
+ * 按它自己那份判据召回 —— 屏幕上一切正常，只是控件里的数与真正生效的判据不是同一天的。
+ *
+ * ⚠️ **它拦的是「照抄」这一最可能的形态，不是所有可能的自算**：把 spot 先赋给别名再乘、或把
+ * 系数拆成两步，都能绕开。刻意绕开的人不是这条守门要防的对象；防的是顺手抄一段过来的那一刻。
+ */
+export const CLIENT_DEFAULT_COMPUTE_RE =
+  /\b(resolvePremiumFloor|resolveQualityCeiling|qualityCeiling|defaultCriteria(?:ByTab)?|PREMIUM_FLOOR|OPEN_INTEREST_FLOOR|VOLUME_FLOOR|LIQUIDITY_MAX_RELATIVE_SPREAD|BUILD_RECALL_DTE|RENT_RECALL_DTE)\b|\bspot\b\s*[*/]|[*/]\s*\bspot\b/g;
+
+/** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
+export function clientDefaultProbe(): string | null {
+  const positive = findShapeHits(
+    'const ceiling = spot * (1 + RATIO); const floor = resolvePremiumFloor(spot);',
+    CLIENT_DEFAULT_COMPUTE_RE,
+  );
+  if (positive.length === 0) {
+    return '客户端自算正例臂失灵：`spot *` / `resolvePremiumFloor` 未被命中 —— 判据已变平凡绿';
+  }
+  const negative = findShapeHits(
+    'const form = criteriaFormOf(criteria.defaults); const pos = spotPosition(anchor);' +
+      ' const label = `${spot.pct}%`; const p = bandPosition(spot, floor, ceiling);',
+    CLIENT_DEFAULT_COMPUTE_RE,
+  );
+  if (negative.length > 0) {
+    return `客户端自算反例臂失灵：读下发值 / 画色带被判违规（命中 ${negative.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
 function main(): void {
   const ctxPath = join(REPO_ROOT, CTX_DIR);
   const rulesPath = join(ctxPath, RULES_FILE);
@@ -598,13 +640,57 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 052 不变量 #8 ──────────────────────────────────────────────────────────
+  const clientProbeFailure = clientDefaultProbe();
+  if (clientProbeFailure) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: 客户端自算探针失败 —— ${clientProbeFailure}`,
+    );
+    process.exit(1);
+  }
+  const mobilePath = join(REPO_ROOT, MOBILE_CTX_DIR);
+  if (!existsSync(mobilePath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${MOBILE_CTX_DIR}`);
+    process.exit(1);
+  }
+  const mobileFiles = readdirSync(mobilePath).filter((f) => /\.tsx?$/.test(f));
+  if (mobileFiles.length === 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: ${MOBILE_CTX_DIR} 下没有 .ts —— 目录变了？`,
+    );
+    process.exit(1);
+  }
+  const clientComputes = mobileFiles
+    .map((name) => ({
+      name,
+      hits: findShapeHits(readFileSync(join(mobilePath, name), 'utf8'), CLIENT_DEFAULT_COMPUTE_RE),
+    }))
+    .filter(({ hits }) => hits.length > 0);
+  if (clientComputes.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 客户端在自算检索条件默认值：\n` +
+        clientComputes
+          .map(({ name, hits }) => `  - ${MOBILE_CTX_DIR}/${name}: ${hits.join(' / ')}`)
+          .join('\n') +
+        '\n',
+    );
+    console.error(
+      'Fix: 默认值 MUST 由服务端解出并下发（052 FR-011）—— 六维里有两维是 spot 的函数，而 spot',
+    );
+    console.error(
+      '     每天变。客户端自算与服务端**两边都算得出数**，屏幕上一切正常，只是控件里的数与真正',
+    );
+    console.error('     生效的判据不是同一天的。读 `criteriaByTab[tab].defaults` 就够了。');
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
       `门槛阈值 (${[...new Set(thresholds)].join(' / ')}) 与三段 DTE 界只住 ${RECALL_RULES_FILE}；` +
       `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
       `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec；` +
-      `六维成员判据零外溢。`,
+      `六维成员判据零外溢；${MOBILE_CTX_DIR} 的 ${mobileFiles.length} 个文件零处自算默认值。`,
   );
 }
 

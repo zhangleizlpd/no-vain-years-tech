@@ -235,7 +235,29 @@ updated_at: '2026-08-12'
 
 ---
 
-- [ ] T012 [Mobile] **控件默认值回填 + 「搜」/「复位」+ 收窄维度计数行**（`FR-012`, `FR-013`, `FR-015`, `FR-029`, plan `D-CRIT-1`）：**六个维度**的控件各自用服务端下发的默认值填充（维度清单见 T010 表）；⚠️ ~~若六个控件放不进现有筛选行版式 → **停下补 mockup**~~ ⇒ **绊线已触发并走完**（2026-08-13）：容器形态 = **bottom-sheet 抽屉**，Tab 行右端一个 34px 入口带「已改 N 项」徽标，sticky 栈**一层不加**。照 `design/052-criteria-sheet.dc.html`（A1–A6 六帧）实装，逐条决策见 `design/handoff.md`。🚨 抽屉 MUST 走 **RN `Modal` 渲到 root 层**，否则盖不住 Tab 栏（memory `reference_drawer_overlay_bounded_by_tab_content_use_modal`）；ⓘ 是 **tap 触发**的 popup tip（移动端无 hover），热区 **44×44**；「搜」显式提交、「复位」清回默认；计数区追加**仅收窄维度**的行（复用 `051` 的 `.gateline` 结构与措辞体例）。→ verify: `*.rules.spec.ts`（Small，logic-only）—— 🚨 **mobile 侧 `rg` 扫不到任何参与默认值计算的算式**（`FR-011` / Guardrail 6 的机器判据）+ 三态到「显不显示计数」的映射是穷举 `Record`（漏 enum 成员即编译红）+ **每视角各自持有条件状态**（`FR-015` —— 切视角不带走上一个视角的值，条件值进 query key 即天然隔离）
+- [X] T012 [Mobile] **控件默认值回填 + 「搜」/「复位」+ 收窄维度计数行**（`FR-012`, `FR-013`, `FR-015`, `FR-029`, plan `D-CRIT-1`）：**六个维度**的控件各自用服务端下发的默认值填充（维度清单见 T010 表）；⚠️ ~~若六个控件放不进现有筛选行版式 → **停下补 mockup**~~ ⇒ **绊线已触发并走完**（2026-08-13）：容器形态 = **bottom-sheet 抽屉**，Tab 行右端一个 34px 入口带「已改 N 项」徽标，sticky 栈**一层不加**。照 `design/052-criteria-sheet.dc.html`（A1–A6 六帧）实装，逐条决策见 `design/handoff.md`。🚨 抽屉 MUST 走 **RN `Modal` 渲到 root 层**，否则盖不住 Tab 栏（memory `reference_drawer_overlay_bounded_by_tab_content_use_modal`）；ⓘ 是 **tap 触发**的 popup tip（移动端无 hover），热区 **44×44**；「搜」显式提交、「复位」清回默认；计数区追加**仅收窄维度**的行（复用 `051` 的 `.gateline` 结构与措辞体例）。→ verify: `*.rules.spec.ts`（Small，logic-only）—— 🚨 **mobile 侧 `rg` 扫不到任何参与默认值计算的算式**（`FR-011` / Guardrail 6 的机器判据）+ 三态到「显不显示计数」的映射是穷举 `Record`（漏 enum 成员即编译红）+ **每视角各自持有条件状态**（`FR-015` —— 切视角不带走上一个视角的值，条件值进 query key 即天然隔离）
+
+  🚨 **`FR-015` 的第二处歧义由 user 于 2026-08-13 裁定：切视角时各视角的条件「各自留存」**（不是切走即清）。⇒ 状态是 `Record<视角, 已提交条件>`，**生效参数恒等于当前视角那一份**。代价说清楚：某视角有覆盖时切进去会换 query key ⇒ 该 key 首次要重新请求，`047`「切 Tab 不重新请求」在**有覆盖时**不再成立（无覆盖时逐字不变，参数恒 `undefined`）。🚫 另一条读法「留住值但不重发请求」被否 —— 那正是 T010 裁定否掉的「控件与数据不匹配且无法解释」，只是换了个触发路径。
+
+  🚨 **`placeholderData: keepPreviousData` 是结构必需，不是体验糖**（推演出的环，不是实测）：换 key 那一拍若 `data` 变 `undefined` ⇒ `intent` 变 `null` ⇒ `resolveLegTab` 当场退回「全腿」⇒ 参数跟着换成全腿的 ⇒ 数据回来后又切回去，**两个 key 之间无限来回**。留着它，解析出的视角在换 key 期间保持稳定。
+
+  🚨 **参数与视角的同步只能走 effect**：解析视角要 `intent`，而 `intent` 来自响应本身 ⇒ 参数必然滞后一拍。且「选完水位意图变、Tab 自动让位」那条路径**没有回调可挂**（`resolveLegTab` 自己变的），只有 effect 跟得上；跟不上就是控件显示 A 的值而表按 B 的条件召回。
+
+  🚨 **每视角的控件行集是客户端常量 + 一条兜底**：建仓无「行权价」行（`FR-007`）、全腿无「价差」行（`FR-010`）是 UI 取舍（服务端对三视角一律接受这些覆盖），故加**兜底**——服务端下发了非 `null` 默认值的维度**强制出现**。藏起一个正在生效的条件 = 表被一条看不见的判据切过，而屏幕上无从解释。
+
+  🚨 **成对维度半空归零 MUST 改回表单本身**（DTE 段 / 活性）：契约里一端为空即整维 `null`，而**活性在语义上必须如此**（OR 的任一支放到不限，整个维度就恒成立）。只在提交时悄悄归零的话，框里留着 `365` 而生效的是「不限」。
+
+  🚨 **空态第三支**（spec Edge Case「条件收紧到候选为空」）：入口是**复位**而不是「去别的视角看」——空是用户自己切出来的，换视角帮不上忙。判据取服务端三态回执（`state !== 'default'`，**放宽也算**），不靠客户端记忆；三个视角都可能撞上，故排在既有两支之前。
+
+  📌 **价差控件走百分数显示**（`35` 而非 `0.35`）：契约是无量纲比例，换算单点在 `ratioToPercent` / `percentToRatio` 两个函数。它**不产生新的判据值**（不是「自算默认值」），与定标裁剪同属量纲/显示层。徽标数同理取服务端回执而非客户端记忆。
+
+  🚨 **`FR-011` 的机器判据落守门脚本不变量 #8** —— `check-optionsdesk-rule-constants.ts` 的**扫描面首次伸到客户端**（`apps/mobile/src/optionsdesk/`）：词表（服务端默认值解析函数 / 四个阈值常量名）+ 算式形状（`spot` 直接参与乘除），两侧探针齐备。🔬 **反例探针实证**：注入 `spot * 1.05` ⇒ 退出码 **1** 并点名文件；移除 ⇒ **0**。⚠️ 限制写进脚本头：它拦的是「照抄那份判据」这一最可能形态，**不拦所有自算**（先把 spot 赋个别名再乘就能绕开）——刻意绕开的人不是这条要防的对象。📌 Small 档禁磁盘 I/O ⇒ 源码扫描归 `scripts/checks/`，同 #5/#6/#7 的处置。
+
+  ⚠️ **既有 warning 未修但被我推大了**：`UnderlyingDetailScreen` 的 `max-lines-per-function` 本就超（168 > 150），本次 JSX 增量推到 **183** —— mention 不改（拆屏是独立重构，per Surgical Edits）。本次**新引入**的 `complexity 16` 已消：把「够不够格开抽屉」的判定记忆化（它进 sticky section header，滚动期间每帧被读）。
+
+  ⚠️ **UI 层本 task 零自动化覆盖**（按仓内测试分层：vitest = logic-only）——抽屉的滑入、`Modal` 盖不盖得住 Tab 栏、输入法弹起后按钮还在不在，**全部归 T013**。mockup 那轮「六项探针全绿、看图才发现」撞过三次，这里同理：本 task 的绿只说明判据对。
+
+  ✅ verify: `nx test mobile` **102 文件 / 1500 用例绿**（本批 +41：37 条 `leg-criteria.rules.spec.ts` + 4 条空态第三支）· `nx run mobile:runtime-smoke` **175 绿**（改了共享 hook 与详情屏 ⇒ 跑全套非单 spec）· `nx typecheck mobile`（含 e2e tsconfig）/ `nx lint mobile` **0 error** · `nx test @nvy/checks` **224 绿**（本批 +7）· 五条守门脚本全过（`check-optionsdesk-rule-constants` 八不变量 / `check-test-size` / `check-repo-layout` / `check-api-property-nullable` / `check-contract-smoke-drift`）。
 
 - [ ] T013 [Mobile-E2E] **hermetic e2e**（US3 全部 AS, `FR-014`, `SC-008`）：Playwright Expo Web，`route.fulfill` 拦端点。→ verify: 进入视图控件已填默认值 / 改值不点搜结果不变 / 点搜按新值 / 点复位回默认且计数消失 / 离开再进回默认（`FR-014` 不持久化）/ 🚨 **mock 是契约镜像不是调用序**（按请求参数无条件作答，禁按测试编排标志分支）+ 跑**全套** `runtime-smoke` 非单 spec
 
