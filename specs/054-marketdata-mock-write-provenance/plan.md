@@ -61,7 +61,7 @@ context7_verified: []
 | ADR-0047 | 三条 Open Question（理杏仁配额 / 东财 ToS 限频 / 未来实时 `QUOTE_PORT` vendor 选型）**均不受本 feature 影响** | accepted-as-is | 不动 |
 | ADR-0047 | 🚨 **不是 Open Question，是 Decision § 2 的绑定表**：其中「全部 \| `MockMarketDataAdapter`（dev/test 默认，零 env）」一行在本 feature 后**不再成立** | escalated-to-amend | 本 PR 内 amend ADR-0047 § 2 —— 把「全部」拆为「读取口 → Mock / 采集口 → Refusing」，并记因由。**amend 而非新 ADR**：范围在单 module 内，且是对既有决策的**收窄**不是推翻 |
 
-- **Evidence**: `docs/adr/0047-marketdata-pluggable-data-access.md:76-82`（绑定表）、`:140-144`（Open Questions 三条）。扫描命令 `rg -il "open question" docs/adr/*.md` 命中 20 份，逐份看下来只有 0047 与本 feature 的改动面相交。
+- **Evidence**: `docs/adr/0047-marketdata-pluggable-data-access.md:76-85`（绑定表，「全部」那一行在 `:85`）、`:140-144`（Open Questions 三条）。扫描命令 `rg -il "open question" docs/adr/*.md` 命中 20 份，逐份看下来只有 0047 与本 feature 的改动面相交。
 
 ## Architecture Notes *(mandatory)*
 
@@ -102,7 +102,9 @@ context7_verified: []
 - **关键机制**：将来有人加一个采集口，照抄既有 `useFactory` 里的 `cfg.kind === 'mock' ? mock : new XAdapter(http)` 写法 —— `mock` 不再满足该 port 的类型，**`tsc` 直接红**。作者被迫改成 `? refusing :`，而这个标识符本身就在说明语义。
 - ⇒ 「新增写入路径而未接约束」这件事**在编译期走不通**，无需 `scripts/checks/` 清单、无需运行时反射。这是 spec Clarifications Q2「优先结构性」的字面兑现。
 
-🚨 **实现者注意**：不要把 `RefusingCollectionAdapter` 写成「实现全部 port 接口」的又一个万能对象 —— 那会把刚建立的类型约束当场废掉（`mock` 换成 `refusing` 后又能到处绑）。它只该实现**采集口**那一组。
+🚨 **拒绝侧用「带类型参数的工厂」，不要手写实现**：`MockMarketDataAdapter` 现有 **931 行 / 34 个方法**；照它对等手写一个实现 27 个采集口接口的拒绝类，是 senior engineer 会当场判过度的形态。改用一个泛型工厂返回按目标 port 类型标注的拒绝壳（每个属性访问都抛），**约 15 行**顶掉全部。
+
+类型守卫**不受影响** —— 守卫在「`mock` 已收窄」+「`@ts-expect-error` 负向断言」这两处，与拒绝侧怎么造无关。工厂形态引入的唯一新风险是「误把读取口也拒了」（手写类靠类型能挡，工厂挡不住）—— 由 boot IT 的读取口断言接住（T001 verify）。
 
 #### D-3 · `TRADING_CALENDAR_PORT` 保留 mock，理由是它不落库
 
@@ -159,7 +161,7 @@ D-2 之后 dev **彻底跑不了**写手写库这条路（这是 spec Edge Cases
 
 #### D-8 · ADR-0047 § 2 绑定表本 PR 内 amend
 
-`docs/adr/0047-marketdata-pluggable-data-access.md:82` 的「全部 | `MockMarketDataAdapter`（dev/test 默认，零 env）」一行改为读取口 / 采集口两行，并记本次因由。见 Gate 0.4。
+`docs/adr/0047-marketdata-pluggable-data-access.md:85` 的「全部 | `MockMarketDataAdapter`（dev/test 默认，零 env）」一行改为读取口 / 采集口两行，并记本次因由。见 Gate 0.4。
 
 #### 任务切分意图（供 `/speckit-tasks`）
 
