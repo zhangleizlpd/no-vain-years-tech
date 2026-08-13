@@ -16,7 +16,7 @@ sunset_trigger: |
 
 ## Context
 
-「不虚此生」M1 阶段后端原 stack = Java 21 + Spring Boot 3 + Spring Modulith + Spring Data JPA + Flyway + MapStruct + Bucket4j + Resilience4j + Maven 多模块,已实现部分 account / pkm use case。
+「不负光阴」M1 阶段后端原 stack = Java 21 + Spring Boot 3 + Spring Modulith + Spring Data JPA + Flyway + MapStruct + Bucket4j + Resilience4j + Maven 多模块,已实现部分 account / pkm use case。
 
 驱动 pivot 的 3 个力:
 

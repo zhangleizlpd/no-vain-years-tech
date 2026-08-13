@@ -4,7 +4,7 @@ modules: [chat]
 owners: ['@zhangleizlpd']
 status: implemented
 created_at: 2026-06-18
-updated_at: 2026-06-18
+updated_at: 2026-08-13
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
@@ -166,7 +166,7 @@ state_branches:
 
 - **架构接缝继承**：本 feature 直接复用 030 已落的可组合系统提示层接缝（`system-prompt.rules.ts` 的 `LAYERS` + `composeSystemPrompt`）；加层 = 加纯函数 + 插 `LAYERS` 对应位 +（按需）`SystemPromptContext` 加字段，零重构（030 接缝注释已预声明：平台基座 prepend 列首 / 用户自定义 append 列尾）。
 - **复用 027/028/029/030 基建**：`chat` 限界上下文、`conversation`/`message` 两表、`LlmProvider`/SSE 链路、029 会话模型路由、send-message 装配点、accountId 归属校验、003 refresh 拦截器、Orval typed hook 链路、现有 mobile 设置页范式（006）均已就位。031 不新建 bounded context。
-- **平台基座层内容**（与 user 对焦 2026-06-18）：仅助手身份/人设，草案文案「你是『不虚此生』App 的 AI 助手。回答简洁、准确、以结果为导向；不编造事实，不确定时明说。」——纯代码常量、恒生效、0 DB；最终文案可在 clarify/plan 微调。
+- **平台基座层内容**（与 user 对焦 2026-06-18）：仅助手身份/人设，草案文案「你是『不负光阴』App 的 AI 助手。回答简洁、准确、以结果为导向；不编造事实，不确定时明说。」——纯代码常量、恒生效、0 DB；最终文案可在 clarify/plan 微调。
 - **生效范围 = 所有对话**（业界确认 2026-06-18，已联网核实）：系统提示每轮恒发、与是否带工具正交（对齐 ChatGPT custom instructions 应用于所有新对话）；故平台基座 + 用户自定义层联网/非联网都注入；这主动演进 027「非联网零注入」基线，是设计而非 bug。
 - **自定义指令形态 = 单一账号级自由文本**（与 user 对焦 2026-06-18）：一个 textarea / DB 单行；不做多 persona preset、不做 per-conversation override、不做「上下文层」。
 - **DB 落点 = 新建 chat 域偏好表 + accountId FK**（与 user 对焦 2026-06-18）：具体表名/schema/迁移走 bounded-context 7 问决策于 plan 阶段定；加性安全迁移，不动 027 两表。

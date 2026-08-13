@@ -1,4 +1,4 @@
-# 「不虚此生」/ no-vain-years-mono
+# 「不负光阴」/ no-vain-years-mono
 
 跨端内容工具型应用 mono-repo，由单人开发。栈：NestJS + Fastify + Prisma + Nx + Expo。
 
