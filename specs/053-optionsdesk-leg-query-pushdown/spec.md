@@ -2,7 +2,7 @@
 feature_id: 053-optionsdesk-leg-query-pushdown
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: tasks-ready
 created_at: '2026-08-12'
 updated_at: '2026-08-13'
 spec_kit_version: '>=0.8.5,<0.10.0'
