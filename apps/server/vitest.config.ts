@@ -41,8 +41,8 @@ const sharedTestOptions = {
     DEEPSEEK_API_KEY: 'test-deepseek-placeholder-key',
     MINIMAX_API_KEY: 'test-minimax-placeholder-key',
     // 测试套件对 vendor 数据源**恒 mock**, 不看 shell 环境 (hermetic)。没有这行时
-    // `marketdataConfig` 走 `process.env.MARKETDATA_PROVIDER ?? 'mock'` — 只在**变量缺失**
-    // 时才 mock; worktree 的 .envrc 继承主仓 server .env 会把 `=live` 带进 shell, 于是
+    // `marketdataConfig` 只在 `MARKETDATA_PROVIDER` **整个变量缺失**时才落 mock
+    // (054 起非法值与空串一律 boot 抛); worktree 的 .envrc 继承主仓 server .env 会把 `=live` 带进 shell, 于是
     // config 走 live 分支、缺 LIXINGER_TOKEN 等 → 在 Nest DI 实例化阶段 ZodError, 74 个
     // boot-AppModule IT 集体红且报错点离真因很远 (2026-08-02 踩过)。
     // 🚨 真 vendor 联调不靠改这里, 走 env-gated RUN_*_IT (同 DEEPSEEK 占位的处置)。

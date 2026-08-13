@@ -69,7 +69,7 @@ updated_at: '2026-08-13'
 
 ## Phase 2: 配置层 fail-fast（US3）
 
-- [ ] T004 [P] [Server] **`provider` 非法值 boot 抛 + compose 去掉 `:-mock` 兜底**（`FR-008`, plan `D-5`）：`marketdata.config.ts:38` 改为显式枚举校验（`'mock' | 'live'` 之外一律抛，**含空串**）；`docker-compose.tight.yml:170` 把 `${MARKETDATA_PROVIDER:-mock}` 改为 `${MARKETDATA_PROVIDER}`。→ verify: config 单测覆盖 `'liv'` / `'Live'` / `''` 三形态均抛（state_branch 12）+ **缺失仍解析为 mock**（Guardrail 8 的反向断言）+ `marketdata.boot-015.it.spec.ts` 既有「`kind=live` 缺 `LIXINGER_TOKEN` 即 fail-fast」仍绿 + `npx tsx scripts/checks/check-env-sync.ts` 绿（改前基线已实测绿；Check H 仍满足 —— compose 照旧引用该键，只是不再兜底）
+- [X] T004 [P] [Server] **`provider` 非法值 boot 抛 + compose 去掉 `:-mock` 兜底**（`FR-008`, plan `D-5`）：`marketdata.config.ts:38` 改为显式枚举校验（`'mock' | 'live'` 之外一律抛，**含空串**）；`docker-compose.tight.yml:170` 把 `${MARKETDATA_PROVIDER:-mock}` 改为 `${MARKETDATA_PROVIDER}`。→ verify: config 单测覆盖 `'liv'` / `'Live'` / `''` 三形态均抛（state_branch 12）+ **缺失仍解析为 mock**（Guardrail 8 的反向断言）+ `marketdata.boot-015.it.spec.ts` 既有「`kind=live` 缺 `LIXINGER_TOKEN` 即 fail-fast」仍绿 + `npx tsx scripts/checks/check-env-sync.ts` 绿（改前基线已实测绿；Check H 仍满足 —— compose 照旧引用该键，只是不再兜底）
 
   📌 **为什么两处缺一不可**：`.env.production:59` 确实写着 `=live`，但只要 env-file 没加载，compose 的 `:-mock` 就把生产容器喂成 mock，再经 `??` 的空串盲区一路穿到底、零告警。这个仓自己在 `docker-compose.tight.yml` 内**6 处**注释里把「同 `MARKETDATA_PROVIDER` 静默陷阱」当作该类 bug 的标准范例引用 —— 范例本身从未被修，本 task 一并修掉。
 

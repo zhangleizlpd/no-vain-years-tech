@@ -167,7 +167,12 @@ services:
       # 但 MARKETDATA_TICK_ENABLED 是 enum('true'|'false')+default, :-false 兜底永不空串 → 必须映射
       # (017 灰度开关; 漏映射则容器读不到 env → tick 永远短路在 default false, prod 开不起灰度,
       #  2026-06-04 prod 实测踩坑: 改 .env 后 tick 仍不跑, 根因即此处缺映射)。
-      MARKETDATA_PROVIDER: ${MARKETDATA_PROVIDER:-mock}
+      # 🚨 **蓄意无 `:-mock` 兜底** (054 FR-008): `.env.production` 确实写着 `=live`, 但只要
+      # env-file 没加载, `:-mock` 就把**生产容器**喂成 mock —— 再经旧 `?? 'mock'` 的空串盲区
+      # 一路穿到底, 零告警地灌入伪造行情。去掉之后, 变量缺失 → 容器拿到**空串** → 撞
+      # `marketdata.config.ts` 的枚举校验 → boot 抛。**这是本行唯一的用途, 别"顺手"补回兜底。**
+      # (本文件另有 6 处注释拿「同 MARKETDATA_PROVIDER 静默陷阱」当范例引用 —— 范例本尊即此行。)
+      MARKETDATA_PROVIDER: ${MARKETDATA_PROVIDER}
       MARKETDATA_TICK_ENABLED: ${MARKETDATA_TICK_ENABLED:-false}
       LIXINGER_TOKEN: ${LIXINGER_TOKEN:-}
       # 富途 shim (港机 OpenD 薄壳, 经 B↔C WireGuard 隧道; sellput-viz Phase 1)。live 下

@@ -34,8 +34,29 @@ const MarketdataConfigSchema = z.discriminatedUnion('kind', [
 
 export type MarketdataConfig = z.infer<typeof MarketdataConfigSchema>;
 
+/** `MARKETDATA_PROVIDER` 的合法值域 —— 之外一律 boot 抛 (054 FR-008)。 */
+const PROVIDER_KINDS = ['mock', 'live'] as const;
+
 export const marketdataConfig = registerAs('marketdata', (): MarketdataConfig => {
-  const kind = process.env.MARKETDATA_PROVIDER ?? 'mock';
+  const raw = process.env.MARKETDATA_PROVIDER;
+  // 🚨 **缺失 (undefined) 仍落 mock, 但空串不是缺失** (054 FR-008 / plan D-5)。
+  //
+  // 旧实现是 `?? 'mock'`, 于是**任何**非 `'live'` 的值都被静默吞成 mock —— 拼错的 `liv` /
+  // `Live` / `production`, 以及**空串**。空串才是 prod 侧的真陷阱: `docker-compose.tight.yml`
+  // 的 `${MARKETDATA_PROVIDER}` 在变量未设时喂给容器的正是空串 (`??` 是 nullish 合并、
+  // 空串不触发) ⇒「env-file 没加载」会一路穿到底, 生产容器零告警地跑着 mock 行情。
+  //
+  // 「缺失 → mock」则是**带论证的刻意保留**: ADR-0047 的「零 env → dev/test 可跑」靠它, 而
+  // 054 之后 mock 已不能写库 (采集口绑拒绝壳) ⇒ 这个 silent default 不再危险。
+  const kind = raw === undefined ? 'mock' : raw;
+  if (!(PROVIDER_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(
+      `MARKETDATA_PROVIDER=${JSON.stringify(raw)} 不是合法值 —— 只接受 ` +
+        `${PROVIDER_KINDS.map((k) => `'${k}'`).join(' | ')}。` +
+        '空串通常意味着容器映射了该变量但 env-file 未加载 (照旧跑 mock 会让生产静默灌入伪造行情); ' +
+        '整个变量缺失才落 mock 默认。',
+    );
+  }
   if (kind === 'live') {
     return MarketdataConfigSchema.parse({
       kind,
