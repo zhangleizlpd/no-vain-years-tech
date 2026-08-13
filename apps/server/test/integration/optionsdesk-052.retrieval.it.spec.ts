@@ -180,7 +180,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
   async function seedMixedChain(): Promise<void> {
     const instrumentId = await seedInstrument();
     const legs = [
-      // ① 深度实值: K=150 > spot 132.40。收租被**成色上界**挡 (上界 = 132.40×1.04 = 137.696);
+      // ① 深度实值: K=150 > spot 132.40。收租被**成色上界**挡 (上界 = 132.40×1.03 = 136.372);
       //    建仓过得去 (有效成本 150 − 18 = 132 < spot)。年化虚高 —— 正是本片要压下去的那类。
       { code: 'P-ITM', dte: 35, strike: '150', bid: '18.00', ask: '19.00', oi: '900', vol: '40' },
       // ② 价差宽: rel = 3 / 4.5 = 0.667 > 0.35 ⇒ 被**流动性门槛**挡出两个意图视角。
@@ -294,8 +294,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
       SYMBOL,
       NOW,
     );
-    // 成色上界 = min{K ≥ spot} (150) ∧ spot × (1+X) (132.40 × 1.04 = 137.696) 取严。
-    expect(view.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('137.696');
+    // 成色上界 = min{K ≥ spot} (150) ∧ spot × (1+X) (132.40 × 1.03 = 136.372) 取严。
+    expect(view.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('136.372');
     expect(view.criteriaByTab.rent.defaults.dteBand).toEqual(RENT_RECALL_DTE);
     // 🚫 全腿不设成色与价差 (FR-006 / FR-010) —— 它是参照视角。
     expect(view.criteriaByTab.all.defaults.strikeMax).toBeNull();
@@ -442,7 +442,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
    * 门槛靶场 —— 三条通用硬门槛 + 建仓有效成本两侧 + 三条召回条件, **判据之间蓄意不重叠**
    * (承 050 造数纪律: 某条断言红了能直接定位到是哪条判据坏了)。
    *
-   * 📌 成色上界 = `min{K ≥ 132.40}` (150) ∧ `132.40 × 1.04` (137.696) 取严 ⇒ **137.696**;
+   * 📌 成色上界 = `min{K ≥ 132.40}` (150) ∧ `132.40 × 1.03` (136.372) 取严 ⇒ **136.372**;
    * 三条收租腿 (`115` / `117` / `119`) 全在其下 ⇒ 本组的收租成员由**别的**判据决定, 成色不掺和。
    */
   const GATE_LEGS: readonly SeedLeg[] = [

@@ -237,7 +237,7 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
   const ratioCeiling = context.spot.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
   const strikes = (values: string[]) => values.map((v) => leg({ strike: D(v) }));
 
-  it('结构项占优: 密网格下上界 = spot 之上最近一档 (110), 比例项 (114.4) 更松故不接管', () => {
+  it('结构项占优: 密网格下上界 = spot 之上最近一档 (110), 比例项 (113.3) 更松故不接管', () => {
     const ceiling = resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120']));
     expect(ceiling.equals(D('110'))).toBe(true);
     expect(ceiling.lessThan(ratioCeiling)).toBe(true);
@@ -557,13 +557,13 @@ describe('leg-recall.rules — 单维度判据 failedCriteria (052 FR-003: 成�
 });
 
 describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 / FR-029 / FR-030)', () => {
-  /** 五条腿全在重叠区 DTE=35, 三道默认条件均宽松通过; K 递增到 120 (成色上界 114.4 之上)。 */
+  /** 五条腿全在重叠区 DTE=35, 三道默认条件均宽松通过; K 递增到 120 (成色上界 113.3 之上)。 */
   const chainLegs = [
     { ...leg({ strike: D('90') }), code: 'K90' },
     { ...leg({ strike: D('95') }), code: 'K95' },
     { ...leg({ strike: D('100') }), code: 'K100' },
     { ...leg({ strike: D('105') }), code: 'K105' },
-    // K=120: 成色上界 (110 × 1.04 = 114.4) 之上 ⇒ 默认下不进收租; 有效成本 118 > spot ⇒ 不进建仓。
+    // K=120: 成色上界 (110 × 1.03 = 113.3) 之上 ⇒ 默认下不进收租; 有效成本 118 > spot ⇒ 不进建仓。
     { ...leg({ strike: D('120') }), code: 'K120' },
   ];
   const run = (override: RetrievalOverride | null = null) =>
@@ -631,8 +631,10 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
   });
 
   it('🚨 收窄但零排除 ⇒ 不出计数 (spec Edge Case: 收到仍在数据范围之外的值)', () => {
-    // 113 比默认上界 114.4 严, 但唯一高于它的 K120 在**默认值下就已被挡下** ⇒ 边际排除 0。
-    const outcome = run({ perspective: 'rent', criteria: { strikeMax: D('113') } });
+    // 106 比默认上界 113.3 严, 但唯一高于它的 K120 在**默认值下就已被挡下** ⇒ 边际排除 0。
+    // 📌 取 106 而非贴着上界: 它离最高存活腿 (K105) 与默认上界各留 1 / 7.3 的余量 ⇒ T016 之后
+    // 再动 X 时本条不会**静默换掉自己测的东西** (原值 113 在 X=0.03 下离上界只剩 0.3)。
+    const outcome = run({ perspective: 'rent', criteria: { strikeMax: D('106') } });
     expect(outcome.criteriaByTab.rent.outcomes.strikeMax).toEqual({
       state: 'widened',
       excludedCount: 0,
