@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 
 // 051 T001 按视角拆的流动性排除计数 IT (FR-006a, SC-012)。
 //
@@ -14,7 +15,7 @@ import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-leg
 // 正整数、只是其中一个统计错了视角」**。
 //
 // ⇒ PG 从 `test/_support/isolated-db.ts` 的 **`setupIsolatedDb()`** 取 (共享 PG 的模板克隆,
-// **禁自起 Testcontainers**)。装配 = 直接 `new GetLegsUseCase(prisma)` 打真 `PrismaService`。
+// **禁自起 Testcontainers**)。装配 = `new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma))` 打真 `PrismaService`。
 //
 // 🚨 **数据集蓄意不对称** (基线 `build 0 / rent 2`): 两个数相等的话把它们接反照样绿。
 //
@@ -55,7 +56,7 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma);
+    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
   }, 180_000);
 
   afterAll(async () => {

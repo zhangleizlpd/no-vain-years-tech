@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import { classifyLegTier } from './leg-tier.rules';
 import {
+  ACTIVITY_TOP_RANK_COUNT,
   DAYS_PER_WEEK,
   DAYS_PER_YEAR,
   US_OPTION_CONTRACT_MULTIPLIER,
@@ -159,18 +160,26 @@ describe('leg-derive.rules — Δ 与 σ 距离同源 (Guardrail 10, plan D-UI-3
   });
 });
 
-describe('leg-derive.rules — 活跃度是候选集内的相对排名 (plan D-SOT-5)', () => {
-  const rows = (specs: readonly [string, number, number][]): ActivityInput[] =>
-    specs.map(([strike, openInterest, volume]) => ({ strike, openInterest, volume }));
+describe('leg-derive.rules — 活跃度是同到期日内的相对排名 (plan D-SOT-5 / 052 D-MARK-1)', () => {
+  const EXPIRY_A = '2026-09-18';
+  const EXPIRY_B = '2026-10-16';
+  /** 第 4 项省略即落 {@link EXPIRY_A} —— 单到期日语境的既有断言写法保持不变。 */
+  const rows = (specs: readonly [string, number, number, string?][]): ActivityInput[] =>
+    specs.map(([strike, openInterest, volume, expiryKey = EXPIRY_A]) => ({
+      strike,
+      expiryKey,
+      openInterest,
+      volume,
+    }));
 
-  it('🚨 取相对排名不是绝对阈值 —— 全集 OI/Vol 都是个位数照样标出 Top 3', () => {
+  it('🚨 排名口径是组内相对量不是绝对分档 —— 同一档量级里照样只标前 3', () => {
     const marks = markActivity(
       rows([
-        ['97.5', 5, 5],
-        ['96.5', 4, 4],
-        ['95.5', 3, 3],
-        ['94.5', 2, 2],
-        ['93.5', 1, 1],
+        ['97.5', 505, 505],
+        ['96.5', 504, 504],
+        ['95.5', 503, 503],
+        ['94.5', 502, 502],
+        ['93.5', 501, 501],
       ]),
     );
     expect(marks.map((m) => m.isTopRanked)).toEqual([true, true, true, false, false]);
@@ -226,7 +235,7 @@ describe('leg-derive.rules — 活跃度是候选集内的相对排名 (plan D-S
     expect(marks[1].label).toBe('top_ranked');
     const both = markActivity(
       rows([
-        ['95', 9, 9],
+        ['95', 900, 900],
         ['94.5', 1, 1],
       ]),
     );
@@ -236,10 +245,10 @@ describe('leg-derive.rules — 活跃度是候选集内的相对排名 (plan D-S
   it('其余留空 (label 为 null), MUST NOT 伪造一个默认档', () => {
     const marks = markActivity(
       rows([
-        ['97.5', 9, 9],
-        ['96.5', 8, 8],
-        ['95.5', 7, 7],
-        ['94.5', 6, 6],
+        ['97.5', 900, 900],
+        ['96.5', 800, 800],
+        ['95.5', 700, 700],
+        ['94.5', 600, 600],
       ]),
     );
     expect(marks[3]).toEqual({ isRoundStrike: false, isTopRanked: false, label: null });
@@ -248,20 +257,116 @@ describe('leg-derive.rules — 活跃度是候选集内的相对排名 (plan D-S
   it('候选集只有 1 条 / 空集 → 不炸', () => {
     expect(() => markActivity([])).not.toThrow();
     expect(markActivity([])).toEqual([]);
-    const single = markActivity(rows([['97.5', 3, 3]]));
+    const single = markActivity(rows([['97.5', 300, 300]]));
     expect(single).toHaveLength(1);
     expect(single[0].isTopRanked).toBe(true);
   });
 
   it('OI / Vol 缺失 → 排在末位, 不当 0 也不抛', () => {
     const marks = markActivity([
-      { strike: '97.5', openInterest: null, volume: null },
-      { strike: '96.5', openInterest: 10, volume: 10 },
-      { strike: '95.5', openInterest: 9, volume: 9 },
-      { strike: '94.5', openInterest: 8, volume: 8 },
+      { strike: '97.5', expiryKey: EXPIRY_A, openInterest: null, volume: null },
+      { strike: '96.5', expiryKey: EXPIRY_A, openInterest: 100, volume: 100 },
+      { strike: '95.5', expiryKey: EXPIRY_A, openInterest: 90, volume: 90 },
+      { strike: '94.5', expiryKey: EXPIRY_A, openInterest: 80, volume: 80 },
     ]);
     expect(marks[0].isTopRanked).toBe(false);
     expect(marks[1].isTopRanked).toBe(true);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 052 FR-023 / FR-024: 分组维度改到期日 + 绝对量下限
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('🚨 分组维度是到期日不是整个候选集 —— 同一批腿标的条数超过 Top N 本身', () => {
+    const marks = markActivity(
+      rows([
+        ['97.5', 900, 900, EXPIRY_A],
+        ['96.5', 800, 800, EXPIRY_A],
+        ['95.5', 700, 700, EXPIRY_A],
+        ['94.5', 600, 600, EXPIRY_A], // A 组第 4 ⇒ 不标
+        ['93.5', 500, 500, EXPIRY_B], // 全集里排第 5, 但 B 组内是第 1
+        ['92.5', 400, 400, EXPIRY_B],
+        ['91.5', 300, 300, EXPIRY_B],
+        ['90.5', 200, 200, EXPIRY_B], // B 组第 4 ⇒ 不标
+      ]),
+    );
+    // 🚨 候选集口径 (047) 下这里只会有 3 个 `true` 且全落在 A 组; 到期日口径下是 3 + 3。
+    expect(marks.map((m) => m.isTopRanked)).toEqual([
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+    ]);
+    expect(marks.filter((m) => m.isTopRanked)).toHaveLength(2 * ACTIVITY_TOP_RANK_COUNT);
+  });
+
+  it('🚨 整体量低的到期日一个标都不发 —— 组内第一也挡在绝对线外 (plan Guardrail 4)', () => {
+    // B 组照 plan D-MARK-1 的实测死到期日: OI 合计 23, top-1 只有 OI = 4。
+    const marks = markActivity(
+      rows([
+        ['97.5', 900, 900, EXPIRY_A],
+        ['96.5', 4, 3, EXPIRY_B],
+        ['95.5', 3, 1, EXPIRY_B],
+        ['94.5', 2, 0, EXPIRY_B],
+      ]),
+    );
+    expect(marks.map((m) => m.isTopRanked)).toEqual([true, false, false, false]);
+    // 🚫 相对判据在 B 组内照样排得出第一名 —— 只有绝对线能挡住它。
+    expect(marks[1].label).toBeNull();
+  });
+
+  it('🚨 绝对线只否决不递补 —— 组内第 3 被挡下时第 4 名过线也不顶上 (FR-024「进前 N 且过线」)', () => {
+    const marks = markActivity(
+      rows([
+        ['97.5', 1000, 1000], // 名次和 1+1, 活动量 2000
+        ['96.5', 900, 900], // 2+2, 1800
+        ['95.5', 90, 5], // 3+4 = 7 (并列时 OI 大者在前) ⇒ 组内第 3; 活动量 95 < 线
+        ['94.5', 80, 30], // 4+3 = 7 ⇒ 组内第 4; 活动量 110 **过线**
+      ]),
+    );
+    expect(marks.map((m) => m.isTopRanked)).toEqual([true, true, false, false]);
+  });
+
+  it('绝对线的量 = OI + 当日成交 —— 单侧够不到但两侧合计过线即发标', () => {
+    const marks = markActivity(
+      rows([
+        ['97.5', 60, 50], // 110 ≥ 100
+        ['96.5', 60, 39], // 99 < 100
+      ]),
+    );
+    expect(marks.map((m) => m.isTopRanked)).toEqual([true, false]);
+  });
+
+  it('OI / Vol 全缺失 → 绝对线判不过, 组内唯一也不发标 (缺失不当「有量」)', () => {
+    const marks = markActivity([
+      { strike: '97.5', expiryKey: EXPIRY_A, openInterest: null, volume: null },
+    ]);
+    expect(marks[0].isTopRanked).toBe(false);
+  });
+
+  it('某到期日无候选 → 不产生空分组、不除零 (D-MARK-1)', () => {
+    expect(markActivity([])).toEqual([]);
+    const single = markActivity(rows([['97.5', 300, 300, EXPIRY_B]]));
+    expect(single.map((m) => m.isTopRanked)).toEqual([true]);
+  });
+
+  it('🚨 同分决胜稳定 —— 同一输入两次调用逐字相同 (plan Guardrail 10)', () => {
+    const input = rows([
+      ['97.5', 500, 500, EXPIRY_A],
+      ['96.5', 500, 500, EXPIRY_A],
+      ['95.5', 500, 500, EXPIRY_A],
+      ['94.5', 500, 500, EXPIRY_A],
+      ['93.5', 500, 500, EXPIRY_B],
+      ['92.5', 500, 500, EXPIRY_B],
+    ]);
+    const first = markActivity(input);
+    expect(markActivity(input)).toEqual(first);
+    // 全同分时决胜落到原序 ⇒ 每组取前 N 条, 结果确定而非随机。
+    expect(first.map((m) => m.isTopRanked)).toEqual([true, true, true, false, true, true]);
   });
 });
 

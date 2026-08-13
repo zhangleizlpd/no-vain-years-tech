@@ -12,16 +12,23 @@
 // 🚨 **顺序整条由 server 定死**（051 FR-001/FR-002）—— 每 Tab 一份有序合约代码列表，客户端
 //    按它取、**MUST NOT 再排一次**。⚠️ `legs[]` 自带的那个序是 legacy 载体序，050 之后已不
 //    承载任何 Tab 的排序语义（保留只为不惊动尚未升级的客户端）。
-import { useCallback, useMemo, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import {
   getOptionsdeskControllerLegsQueryKey,
   useOptionsdeskControllerLegs,
   useOptionsdeskControllerPositionBucket,
   type LegResponse,
   type LegTableResponse,
+  type OptionsdeskControllerLegsParams,
+  type PerspectiveCriteriaResponse,
 } from '@nvy/api-client';
 
+import {
+  criteriaQueryParams,
+  normalizeCriteriaForm,
+  type CriteriaForm,
+} from './leg-criteria.rules';
 import {
   EMPTY_LEG_TAB_ORDER,
   legPickerNotices,
@@ -52,6 +59,12 @@ function retryUnlessNoAnchor(failureCount: number, error: unknown): boolean {
   return !isNoAnchorError(error) && failureCount < 1;
 }
 
+/** 某视角**已提交**的覆盖 —— 表单（抽屉重开时回填）与它编译出的请求参数一起存。 */
+interface SubmittedCriteria {
+  readonly form: CriteriaForm;
+  readonly params: OptionsdeskControllerLegsParams;
+}
+
 export interface UseLegTableResult {
   table: LegTableResponse | null;
   /** 区块四态（loading / available / chain_not_ready / read_failed）—— 无「整页」这一档。 */
@@ -65,12 +78,46 @@ export interface UseLegTableResult {
   sections: LegSection[];
   /** 计数条分母 —— **当前 Tab 的**逻辑集合长度，不是渲染窗口大小（SC-012）。 */
   total: number;
+  /** 当前视角的条件全景（控件填 `defaults`、计数看 `outcomes`）。契约未到手 ⇒ `null`。 */
+  criteria: PerspectiveCriteriaResponse | null;
+  /** 当前视角**已提交**的覆盖值（抽屉重开时回填草稿）；未覆盖 ⇒ `null`。 */
+  submittedCriteria: CriteriaForm | null;
+  /** 「搜」—— 提交当前视角的条件（值回到默认 ⇒ 等价于复位）。 */
+  submitCriteria: (form: CriteriaForm) => void;
+  /** 「复位」—— 当前视角回系统默认值（请求不带任何条件）。 */
+  resetCriteria: () => void;
   retry: () => void;
 }
 
 export function useLegTable(symbol: string): UseLegTableResult {
-  const query = useOptionsdeskControllerLegs(symbol, {
-    query: { enabled: symbol.length > 0, retry: retryUnlessNoAnchor },
+  // 🚨 **每视角各自持有自己的条件状态**（FR-015）—— 切视角看到的是**那个视角**的值，
+  //    上一个视角的覆盖既不带走、也不丢弃（2026-08-13 user 定：各自留存）。
+  // 🚫 MUST NOT 做成一份全局条件：覆盖只作用当前视角（T010 裁定），全局一份会让「在收租设的
+  //    上界」把建仓也收窄，而建仓控件仍显示自己的默认值 —— 控件与数据不匹配且无从解释。
+  // 📌 不持久化（FR-014）：状态只活在本 hook 的 state 里，离屏卸载即回默认值。
+  const [criteriaByTab, setCriteriaByTab] = useState<
+    Partial<Record<LegPickerTab, SubmittedCriteria>>
+  >({});
+  // 生效参数 —— 由下面那条 effect 与「当前视角」同步（解析视角需要 intent，而 intent 来自
+  // 响应本身 ⇒ 参数只能滞后一拍；`keepPreviousData` 让这一拍无感）。
+  const [activeParams, setActiveParams] = useState<OptionsdeskControllerLegsParams | undefined>(
+    undefined,
+  );
+  // 第二参 = 检索条件的用户覆盖（052 FR-012）；`undefined` = 首屏 /「复位」⇒ 三视角全走默认值。
+  // 📌 条件值一进这里就自动进 query key（orval 生成的 key 含 params）⇒ 每视角各自持有状态
+  // （FR-015）是**结构保证**，不需要手写隔离；换视角就是换 key，回来时走缓存。
+  // 🚨 `keepPreviousData` **不是体验糖，摘掉它整块屏当场炸**（052 T013 反例探针实测）：
+  //    换 key 那一拍 `data` 变 undefined ⇒ `intent` 变 null ⇒ `resolveLegTab` 退回「全腿」⇒
+  //    上面那条 effect 把参数换成全腿的 ⇒ `intent` 回来 ⇒ 又换回去……这一圈**全是同步的
+  //    setState，跑赢了网络**：任何响应落地之前就撞到 React 的更新深度上限，页面被 error
+  //    boundary 接住（React error #185「Maximum update depth exceeded」，e2e 里 6 条红）。
+  //    留着它，解析出的视角在换 key 期间保持稳定，环从源头不成立。
+  const query = useOptionsdeskControllerLegs(symbol, activeParams, {
+    query: {
+      enabled: symbol.length > 0,
+      retry: retryUnlessNoAnchor,
+      placeholderData: keepPreviousData,
+    },
   });
   // 手点值连同**当时的意图**一起记 —— 判定见 `resolveLegTab`（意图变了就让位）。
   const [picked, setPicked] = useState<PickedLegTab | null>(null);
@@ -103,6 +150,41 @@ export function useLegTable(symbol: string): UseLegTableResult {
 
   const setTab = useCallback((next: LegPickerTab) => setPicked({ intent, tab: next }), [intent]);
 
+  const criteria = table?.criteriaByTab[tab] ?? null;
+  const submitted = criteriaByTab[tab] ?? null;
+
+  // 🚨 生效参数恒等于**当前视角**的那一份 —— 手点切视角、以及水位改变后意图让位那条路径
+  //    （`resolveLegTab` 自己变的，没有回调可挂）都要跟上。跟不上就是「控件显示 A 的值、
+  //    表却是按 B 的条件召回的」，而那个不一致在界面上无从解释。
+  // 📌 存的是 params **对象引用**（只在提交 / 复位时重建）⇒ 这里比引用即可，不必深比。
+  useEffect(() => {
+    const next = criteriaByTab[tab]?.params;
+    if (next !== activeParams) setActiveParams(next);
+  }, [tab, criteriaByTab, activeParams]);
+
+  const submitCriteria = useCallback(
+    (form: CriteriaForm) => {
+      const normalized = normalizeCriteriaForm(form);
+      // 🚫 未改动的维度不下发（缺键 = 未覆盖）；全部回到默认值 ⇒ 无参数 = 等价于复位。
+      const params = criteriaQueryParams(tab, normalized, criteria?.defaults ?? null);
+      setCriteriaByTab((prev) => {
+        const next = { ...prev };
+        if (params === undefined) delete next[tab];
+        else next[tab] = { form: normalized, params };
+        return next;
+      });
+    },
+    [tab, criteria],
+  );
+
+  const resetCriteria = useCallback(() => {
+    setCriteriaByTab((prev) => {
+      const next = { ...prev };
+      delete next[tab];
+      return next;
+    });
+  }, [tab]);
+
   const retry = useCallback(() => {
     void query.refetch();
   }, [query]);
@@ -115,6 +197,10 @@ export function useLegTable(symbol: string): UseLegTableResult {
     notices: legPickerNotices(table, tab),
     sections,
     total: legRowTotal(sections),
+    criteria,
+    submittedCriteria: submitted?.form ?? null,
+    submitCriteria,
+    resetCriteria,
     retry,
   };
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 import { BASIS_BY_TAB } from '../../src/optionsdesk/leg-rank.rules';
 import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 
@@ -39,7 +40,7 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma);
+    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
   }, 180_000);
 
   afterAll(async () => {

@@ -1,9 +1,12 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import type { PrismaService } from '../security/prisma.service';
 import { GetLegsUseCase } from './get-legs.usecase';
-import { toLegTableResponse } from './optionsdesk.dto';
+import { ACTIVITY_TOP_RANK_COUNT } from './leg-derive.rules';
+import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
+import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
+import { toLegTableResponse, toRetrievalOverride } from './optionsdesk.dto';
 
 // 请求时刻 = 2026-08-04 ET 16:00 (= UTC 20:00) ⇒ 交易所的今天恒为 2026-08-04。
 // 🚨 蓄意用一个「北京已是 08-05 凌晨」都不成立的时刻也无所谓 —— 基准由 marketDateFor(['us'])
@@ -167,8 +170,17 @@ function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] 
   };
 }
 
+/**
+ * 🚨 **052 起 use case 经检索 port 拿候选集, 但本文件蓄意注入 `PrismaLegRetrievalAdapter`
+ * 而非假实现** —— 同一个 prisma mock 照常驱动全链路, 于是「SQL 端过滤了什么 / 取的是哪一期
+ * 快照 / dedupe 取哪条」这批断言一条不用改, 仍然守着真实现。
+ *
+ * 假实现的用武之地在 `leg-retrieval.port.spec.ts` (脱离真库驱动召回判据, SC-009); 拿它替换
+ * 这里会把本文件降级成「测我刚写的那份 mock」。
+ */
 function makeUseCase(prisma: ReturnType<typeof makePrisma>) {
-  return new GetLegsUseCase(prisma as unknown as PrismaService);
+  const service = prisma as unknown as PrismaService;
+  return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service));
 }
 
 describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, Guardrail 7)', () => {
@@ -517,21 +529,28 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
 /**
  * T008 —— 打标接线 (FR-016 / FR-018, plan D-MARK-3)。
  *
- * 数据集蓄意让**两条建仓腿的 OI / 成交量全链最低**: 于是它们在全腿 Tab 里排不进前三、在建仓
- * Tab 里却是全部成员 ⇒ 「每个 Tab 按自己的召回全量排名」这件事有了**可观测的差**。若排名基准
- * 退化成全链 (或退化成筛选后的子集), 这两条腿在建仓 Tab 的 `isTopRanked` 立刻翻。
+ * 数据集蓄意让**两条建仓腿的 OI / 成交量全链最低**, 且它们与三条收租腿**分属两个到期日**。
+ *
+ * 🚨 **052 T009 起这份数据的判别性换了来源** (FR-023 分组维度: 候选集 → 到期日): 分组之后
+ * 「同一条腿换个 Tab 换名次」只在**同一到期日的成员数跨 Tab 不同**时可见, 而本数据的两个到期日
+ * 与两个意图 Tab 恰好一一对应 ⇒ 建仓腿在全腿 / 建仓两个 Tab 里归属相同, 这是分组语义的直接
+ * 后果, **不是**排名基准退化。Guardrail 3 (「MUST NOT 把 `markActivity` 挪到筛选之后」) 改由
+ * 本 describe 末尾那条「每个 Tab 拿到名次的行数 == 该 Tab 成员数」守 —— 挪到筛选后被筛掉的腿
+ * 会 `tabs` 含该 Tab 而 `activityByTab` 为 `null`, 那条立刻红。
+ * 📌 「换候选集就换归属」这条 047 语义在 `leg-derive.rules.spec.ts` 有专门断言, 不在此重复。
  */
 describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回全量 (FR-016/FR-018)', () => {
   const base = { greeksComplete: true, ask: undefined };
-  // 建仓腿 (DTE 10, 有效成本 < spot 132.40); OI / Vol 全链最低。
+  // 建仓腿 (DTE 10, 有效成本 < spot 132.40); OI / Vol 全链最低 —— 但**仍在活跃标绝对线之上**
+  // (052 FR-024): 线下的腿一个标都不发, 那样这份数据对「排名」这件事就没有任何分辨力了。
   const buildA: LegFixture = {
     code: 'M-BUILD-A',
     strike: '130',
     expiry: '2026-08-14',
     bid: '2.00',
     delta: '-0.45',
-    openInterest: '10',
-    volume: '1',
+    openInterest: '120',
+    volume: '5',
     ...base,
   };
   const buildB: LegFixture = {
@@ -540,8 +559,8 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
     expiry: '2026-08-14',
     bid: '1.50',
     delta: '-0.10',
-    openInterest: '12',
-    volume: '2',
+    openInterest: '130',
+    volume: '6',
     ...base,
   };
   // 收租长腿 (DTE 164); OI / Vol 全链最高 ⇒ 它们占满全腿 Tab 的前三。
@@ -627,10 +646,6 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
     expect(leg('M-BUILD-A').tabs).toContain('build');
     expect(leg('M-BUILD-A').activityByTab.build?.isTopRanked).toBe(true);
     expect(leg('M-BUILD-B').activityByTab.build?.isTopRanked).toBe(true);
-    // 同两条腿在全腿 Tab (5 条成员) 里排不进前三 —— 名次是**候选集内的相对量**。
-    expect(leg('M-BUILD-A').activityByTab.all?.isTopRanked).toBe(false);
-    expect(leg('M-BUILD-B').activityByTab.all?.isTopRanked).toBe(false);
-    // 若排名基准退化成「全链」, 上面两条 build 断言会翻成 false —— 那就是 Guardrail 3 那个坑。
 
     // 每个 Tab 拿到名次的行数 == 该 Tab 的成员数 (排名跑在成员集合上, 不多不少)。
     for (const tab of ['all', 'build', 'rent'] as const) {
@@ -638,6 +653,17 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
       const ranked = view.legs.filter((l) => l.activityByTab[tab] !== null);
       expect(ranked.map((l) => l.code).sort()).toEqual(members.map((l) => l.code).sort());
     }
+  });
+
+  it('🚨 052 FR-023: 全腿 Tab 的标**逐到期日**发, 不是全堆在流动性最好的那个到期日', async () => {
+    const view = await tableWithBucket('gte_two_thirds');
+    const marked = view.legs.filter((l) => l.activityByTab.all?.isTopRanked).map((l) => l.code);
+
+    // 047 候选集口径下全腿 Tab 的 3 个标会被三条收租腿 (OI 900/800/700) 全占,
+    // 两条 08-14 的建仓腿一个标没有 —— 抽掉分组维度这条立刻红。
+    expect(marked).toContain('M-BUILD-A');
+    expect(marked).toContain('M-BUILD-B');
+    expect(marked.length).toBeGreaterThan(ACTIVITY_TOP_RANK_COUNT);
   });
 });
 
@@ -675,8 +701,12 @@ describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-0
     const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
 
     // 年化: C-C 211% > C-D 57% > C-A 11.7% > C-B 1.1%。
-    expect(view.tabOrder.all).toEqual(['C-C', 'C-D', 'C-A', 'C-B']);
-    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条。
+    // 🚨 **052 FR-020 起全腿视角实值沉底**: C-C 的行权价 145 **高于** spot 132.40 ⇒ 它那 211%
+    // 年化绝大部分是内在价值 (公式退化产物), 从首位掉到末位。其余三条**逐条保持费率降序**
+    // —— 这条断言的判别性就在这里: 若沉底键失效, 它会回到 `['C-C', ...]` 而立刻红。
+    // 🚫 它**没有被移出** (FR-006 / SC-006): 四条腿一条不少, 只是序变了。
+    expect(view.tabOrder.all).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
+    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条 (且 2 < 分档降级阈值 ⇒ 纯费率降序)。
     expect(view.tabOrder.build).toEqual(['C-C', 'C-D']);
     expect(view.tabOrder.rent).toEqual(['C-A', 'C-B']);
   });
@@ -765,7 +795,8 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
     const res = await responseOf();
 
     expect(res.tabOrder).toEqual({
-      all: ['C-C', 'C-D', 'C-A', 'C-B'],
+      // 052 FR-020: 全腿视角实值沉底 (C-C 的 K=145 > spot 132.40) —— 见上方排序那条断言。
+      all: ['C-D', 'C-A', 'C-B', 'C-C'],
       build: ['C-C', 'C-D'],
       rent: ['C-A', 'C-B'],
     });
@@ -843,5 +874,156 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
     });
     // 常量映射与有没有链无关 —— 空态下也是这三格。
     expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
+  });
+});
+
+/**
+ * T010 —— 检索条件的系统默认值下发 + 用户覆盖 (052 `FR-011`–`FR-016` / `FR-029`, plan D-CRIT-1)。
+ *
+ * 🚨 本组守的是**接线**: 默认值由召回层从链自身解出 (成色上界要行权价网格、权利金下限要 spot),
+ * use case 只负责把 `override` 递下去、把条件全景端上来。判据本身的边界在
+ * `leg-recall.rules.spec.ts` 逐维度验，不在这里重复。
+ */
+describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
+  it('🚨 三视角的条件全景恒有三份 —— 客户端本地切视角时不发请求, 要用另两份填控件', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      expect(view.criteriaByTab[tab].defaults).toBeDefined();
+      expect(view.criteriaByTab[tab].effective).toEqual(view.criteriaByTab[tab].defaults);
+      for (const key of RETRIEVAL_CRITERION_KEYS) {
+        expect(view.criteriaByTab[tab].outcomes[key]).toEqual({
+          state: 'default',
+          excludedCount: 0,
+        });
+      }
+    }
+    // 依赖 spot 的两项确实解出来了 (FR-011: 客户端拿不到这两个数)。
+    expect(view.criteriaByTab.all.defaults.premiumMin).not.toBeNull();
+    expect(view.criteriaByTab.rent.defaults.strikeMax).not.toBeNull();
+  });
+
+  it('🚨 链未就绪 ⇒ 六维全 null, MUST NOT 猜一个默认值 (spec Edge Case「spot 缺失」)', async () => {
+    const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    expect(view.state).toBe('chain_not_ready');
+    for (const key of RETRIEVAL_CRITERION_KEYS) {
+      expect(view.criteriaByTab.rent.defaults[key]).toBeNull();
+    }
+  });
+
+  it('用户覆盖只作用于请求的那个视角, 且计数只出在被收窄的维度上 (FR-029)', async () => {
+    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    // 收租段 `[30,365]` → `[1,50]`: 上界收窄踢掉 C-A / C-B (DTE 164), 下界放宽放进 C-D (DTE 10)
+    // ⇒ 成员**有进有出**, 而三态照样唯一 (判据是「是否产生排除」, 见 `CriterionState`)。
+    const narrowed = await makeUseCase(makePrisma()).execute(SYMBOL, NOW, {
+      perspective: 'rent',
+      criteria: { dteBand: { min: 1, max: 50 } },
+    });
+
+    expect(plain.tabOrder.rent).toEqual(['C-A', 'C-B']);
+    expect(narrowed.tabOrder.rent).toEqual(['C-D']);
+    expect(narrowed.tabOrder.build).toEqual(plain.tabOrder.build);
+    expect(narrowed.criteriaByTab.rent.outcomes.dteBand).toEqual({
+      state: 'narrowed',
+      excludedCount: 2,
+    });
+    // 🚫 未被动过的维度不出计数 —— 默认值本身就摆在控件里, 第二次告知是噪音。
+    expect(narrowed.criteriaByTab.rent.outcomes.strikeMax.state).toBe('default');
+    expect(narrowed.criteriaByTab.build.outcomes.dteBand.state).toBe('default');
+  });
+
+  it('🚨 FR-026: 放宽条件使候选集变大 ⇒ 活跃标与排序按新候选集重算 (定义如此)', async () => {
+    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    // 建仓段放宽到含 DTE 164 ⇒ 两条收租长腿也进建仓候选 (有效成本 120−6 / 100−0.5 均 < spot)。
+    const widened = await makeUseCase(makePrisma()).execute(SYMBOL, NOW, {
+      perspective: 'build',
+      criteria: { dteBand: { min: 1, max: 365 } },
+    });
+    expect(widened.tabOrder.build.length).toBeGreaterThan(plain.tabOrder.build.length);
+    expect(widened.criteriaByTab.build.outcomes.dteBand).toEqual({
+      state: 'widened',
+      excludedCount: 0,
+    });
+    // 排名基准 = 当前条件下的召回集 ⇒ 活跃标的分母跟着变: 原本进建仓的腿在更大的候选集里重排。
+    const legOf = (v: typeof plain, code: string) => v.legs.find((l) => l.code === code)!;
+    expect(legOf(plain, 'C-D').activityByTab.build).not.toBeNull();
+    expect(legOf(widened, 'C-D').activityByTab.build).not.toBeNull();
+  });
+});
+
+/**
+ * T011 —— 契约层：查询串 → 覆盖，以及三组字段的下发 (052 `FR-011` / `FR-029`, plan §V)。
+ */
+describe('optionsdesk.dto — 检索条件的请求与响应契约 (052 T011)', () => {
+  it('无任何条件参数 ⇒ null (首屏 / 「复位」走的就是这条路径)', () => {
+    expect(toRetrievalOverride({})).toBeNull();
+    // 🚨 只给 perspective 不给任何条件也算无覆盖 —— 否则「复位」会被记成一次全维度覆盖。
+    expect(toRetrievalOverride({ perspective: 'rent' })).toBeNull();
+  });
+
+  it('🚨 缺键 = 未覆盖, 空串 = 覆盖为「不限」—— 两者三态不同', () => {
+    expect(toRetrievalOverride({ perspective: 'rent', strikeMax: '' })?.criteria).toEqual({
+      strikeMax: null,
+    });
+    expect(
+      toRetrievalOverride({ perspective: 'rent', strikeMax: '138' })?.criteria.strikeMax,
+    ).toBeInstanceOf(Prisma.Decimal);
+    expect(
+      'strikeMax' in (toRetrievalOverride({ perspective: 'rent', strikeMin: '' })?.criteria ?? {}),
+    ).toBe(false);
+  });
+
+  it('🚨 `0` MUST NOT 被真值判断吞成「没动过」—— 它是一个合法的下限值', () => {
+    const override = toRetrievalOverride({ perspective: 'rent', oiMin: '0', volMin: '0' });
+    expect(override?.criteria.livenessMin).toEqual({ oi: 0, volume: 0 });
+  });
+
+  it('🚨 活性两个值 MUST 成对 —— 只给一端即 400 (一个维度、一对数，同 DTE 段)', () => {
+    expect(() => toRetrievalOverride({ perspective: 'rent', oiMin: '50' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => toRetrievalOverride({ perspective: 'rent', volMin: '50' })).toThrow(
+      BadRequestException,
+    );
+    expect(
+      toRetrievalOverride({ perspective: 'rent', oiMin: '50', volMin: '5' })?.criteria.livenessMin,
+    ).toEqual({ oi: 50, volume: 5 });
+  });
+
+  it('🚨 DTE 段两端 MUST 成对 —— 只给一端即 400 (半个区间不是合法维度值)', () => {
+    expect(() => toRetrievalOverride({ perspective: 'rent', dteMin: '30' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => toRetrievalOverride({ perspective: 'rent', dteMax: '365' })).toThrow(
+      BadRequestException,
+    );
+    expect(
+      toRetrievalOverride({ perspective: 'rent', dteMin: '30', dteMax: '365' })?.criteria.dteBand,
+    ).toEqual({ min: 30, max: 365 });
+    // 两端都空 ⇒ 覆盖为不限。
+    expect(
+      toRetrievalOverride({ perspective: 'rent', dteMin: '', dteMax: '' })?.criteria.dteBand,
+    ).toBeNull();
+  });
+
+  it('🚨 给了条件却没给 perspective ⇒ 400 —— 覆盖只作用于一个视角, 没有「作用于全部」这个取值', () => {
+    expect(() => toRetrievalOverride({ strikeMax: '138' })).toThrow(BadRequestException);
+  });
+
+  it('🚨 三组字段**逐维度**下发, 六项一个不少 (T011 的验收口径是穷举不是泛指)', async () => {
+    const res = toLegTableResponse(await makeUseCase(makePrisma()).execute(SYMBOL, NOW));
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      const panel = res.criteriaByTab[tab];
+      for (const key of RETRIEVAL_CRITERION_KEYS) {
+        expect(panel.defaults).toHaveProperty(key);
+        expect(panel.effective).toHaveProperty(key);
+        expect(panel.outcomes[key]).toEqual({ state: 'default', excludedCount: 0 });
+      }
+    }
+    // Decimal 一律定标 string (与 spot / w 同口径); 计数量纲是 number。
+    expect(typeof res.criteriaByTab.rent.defaults.strikeMax).toBe('string');
+    expect(res.criteriaByTab.rent.defaults.dteBand).toEqual({ min: 30, max: 365 });
+    expect(res.criteriaByTab.all.defaults.dteBand).toBeNull();
+    expect(res.criteriaByTab.all.defaults.relativeSpreadMax).toBeNull();
   });
 });

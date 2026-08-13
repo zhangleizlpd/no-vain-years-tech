@@ -13,6 +13,8 @@ import { GetRadarUseCase } from './get-radar.usecase.js';
 import { GetUnderlyingDetailUseCase } from './get-underlying-detail.usecase.js';
 import { GetThermometerUseCase } from './get-thermometer.usecase.js';
 import { GetLegsUseCase } from './get-legs.usecase.js';
+import { LEG_RETRIEVAL_PORT } from './leg-retrieval.port.js';
+import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter.js';
 import { SyncAnchorQuoteUseCase } from './sync-anchor-quote.js';
 import { SyncAnchorQuoteScheduler } from './sync-anchor-quote.scheduler.js';
 import { OptionsdeskController } from './optionsdesk.controller.js';
@@ -54,6 +56,10 @@ import { OptionsdeskController } from './optionsdesk.controller.js';
     GetThermometerUseCase,
     // 047 T027 选约表读端 —— 跨 ctx 只读直查 marketdata 三张期权/财报表 (Q7-B), 同为零 @Inject()。
     GetLegsUseCase,
+    // 052 T001 检索 port (ADR-0064 决策 4 —— ADR-0043 §4 三分法的第四类: 跨 ctx 只读查询)。
+    // 🚨 **单实现**: 假实现 (`fake-leg-retrieval.adapter.ts`) 只服务测试, MUST NOT 注册在此;
+    // 第二个运行时实现的触发条件是 ADR-0064 sunset #3 (规模突破阈值), 今天未命中。
+    { provide: LEG_RETRIEVAL_PORT, useClass: PrismaLegRetrievalAdapter },
     SyncAnchorQuoteUseCase,
     // 上一行那个 use case 的**触发器** —— 没有它 `last_close` 投影在 prod 永不执行
     // (045 T012 只定义了怎么算、没定义谁来调), 雷达的距 W% / zone / 复核锚红标全部出不了真值。

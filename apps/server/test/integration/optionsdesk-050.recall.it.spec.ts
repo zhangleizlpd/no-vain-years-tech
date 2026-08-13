@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 import type { LegTab } from '../../src/optionsdesk/leg-tab.rules';
 
 // 050 T005 召回集合 IT (US1 全 4 条 + US2 全 5 条 AS, SC-001 / SC-003)。
@@ -19,7 +20,7 @@ import type { LegTab } from '../../src/optionsdesk/leg-tab.rules';
 //    测试自己给, 计数与实际条数「逐次相等」(SC-003) 就无从谈起。
 //
 // ⇒ PG 从 `test/_support/isolated-db.ts` 的 **`setupIsolatedDb()`** 取 (共享 PG 的模板克隆,
-// **禁自起 Testcontainers**)。装配 = 直接 `new GetLegsUseCase(prisma)` 打真 `PrismaService`
+// **禁自起 Testcontainers**)。装配 = `new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma))` 打真 `PrismaService`
 // (样板 `optionsdesk-047.leg-picker.it.spec.ts`)。
 //
 // 🚨 **断言一律是「成员集合逐条相等」, 🚫 MUST NOT 写 `length > 0`** —— 后者对本片要防的失败
@@ -61,7 +62,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma);
+    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
   }, 180_000);
 
   afterAll(async () => {

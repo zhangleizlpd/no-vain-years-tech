@@ -6,6 +6,7 @@
  * OpenAPI spec version: 1.0
  */
 import type { LegBasisByTabResponse } from './legBasisByTabResponse';
+import type { LegCriteriaByTabResponse } from './legCriteriaByTabResponse';
 import type { LegGateCountsResponse } from './legGateCountsResponse';
 import type { LegResponse } from './legResponse';
 import type { LegTableResponseAsOfFreshnessTier } from './legTableResponseAsOfFreshnessTier';
@@ -59,4 +60,6 @@ export interface LegTableResponse {
   gateCounts: LegGateCountsResponse;
   /** Tab → 档位判定口径的**常量映射** (FR-023) —— 下发一次, 免客户端硬编码这份映射 (硬编码必与 server 漂移, 且漂移时两边都算得出结果)。每腿的 tierByTab 就是按它判出来的 */
   basisByTab: LegBasisByTabResponse;
+  /** 三视角各自的**检索条件全景** (052 FR-011 / FR-029) —— 控件填 defaults, 结果按 effective, 仅 narrowed 的维度出计数。恒有三份 (客户端本地切视角时不发请求) */
+  criteriaByTab: LegCriteriaByTabResponse;
 }

@@ -8,7 +8,12 @@
 //   · 活跃度**随 Tab 换**（排名是候选集内的相对量，同一条腿在两个 Tab 里不是同一个标）
 //   · 未选水位 ⇒ 停「全腿」+ 两条显式提示，**MUST NOT 静默取某一 Δ 档**（FR-017）
 import { describe, expect, it } from 'vitest';
-import type { LegResponse, LegTableResponse } from '@nvy/api-client';
+import type {
+  LegResponse,
+  LegTableResponse,
+  PerspectiveCriteriaResponse,
+  RetrievalCriteriaResponse,
+} from '@nvy/api-client';
 
 import {
   DEFAULT_TAB_BY_INTENT,
@@ -79,6 +84,36 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
   };
 }
 
+/**
+ * 一个视角的检索条件全景（052 T011）—— 基线取「全维度不限 + 三态全 default」。
+ *
+ * 🚨 六个维度**逐个写出**而不是 `Partial`：漏一维的话，消费侧读到 `undefined` 会当成「不限」
+ * 渲染出一个空控件，而 typecheck 不报（`Partial` 把缺席合法化了）。要非默认值的用例走 overrides。
+ */
+function criteria(): PerspectiveCriteriaResponse {
+  const values: RetrievalCriteriaResponse = {
+    strikeMax: null,
+    strikeMin: null,
+    dteBand: null,
+    premiumMin: null,
+    livenessMin: null,
+    relativeSpreadMax: null,
+  };
+  const untouched = { state: 'default' as const, excludedCount: 0 };
+  return {
+    defaults: values,
+    effective: values,
+    outcomes: {
+      strikeMax: untouched,
+      strikeMin: untouched,
+      dteBand: untouched,
+      premiumMin: untouched,
+      livenessMin: untouched,
+      relativeSpreadMax: untouched,
+    },
+  };
+}
+
 function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
   return {
     symbol: 'us:PEP',
@@ -107,6 +142,8 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
       excludedFromIntentTabsByTab: { build: 0, rent: 0 },
     },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
+    // 052 契约增量（T011 只镜像形状，消费归 T012）：三视角恒有一份条件全景，六维穷举。
+    criteriaByTab: { all: criteria(), build: criteria(), rent: criteria() },
     ...overrides,
   };
 }
@@ -683,5 +720,47 @@ describe('🚨 051 FR-017/FR-017a —— 费率列头取自 `basisByTab`，列�
   it('契约还没到手（null）⇒ 同一个降级态 —— MUST NOT 先猜一个口径挂上去', () => {
     expect(rateHeaderFor(null, 'build')).toEqual({ main: COPY.columns.rate, sub: null });
     expect(rateHeaderFor(null, 'rent')).toEqual(rateHeaderFor(null, 'all'));
+  });
+});
+
+// ═══════════════ ⑥ 空态第三支：条件收窄出来的空（052 Edge Case） ═══════════════
+
+describe('🚨 052 —— 用户收窄出来的空 MUST 与「本来就没有」一眼可分', () => {
+  const CRITERIA_COPY = COPY.criteria;
+  /** 在基线条件全景上把某一维改成「已覆盖」。 */
+  const overridden = (state: 'widened' | 'narrowed'): PerspectiveCriteriaResponse => {
+    const base = criteria();
+    return { ...base, outcomes: { ...base.outcomes, strikeMax: { state, excludedCount: 8 } } };
+  };
+  const counts = {
+    removedByPremiumFloor: 0,
+    excludedFromIntentTabs: 0,
+    excludedFromIntentTabsByTab: { build: 0, rent: 0 },
+  };
+
+  it('有覆盖 + 空 ⇒ 入口是「复位」，🚫 而不是「去别的视角看」（换视角在这里帮不上忙）', () => {
+    const state = legEmptyState(counts, 'rent', overridden('narrowed'));
+    expect(state.reset).toBe(CRITERIA_COPY.emptyResetCta);
+    expect(state.cta).toBeNull();
+    expect(state.title).toBe(CRITERIA_COPY.emptyTitle);
+  });
+
+  it('🚨 放宽也算覆盖 —— 放宽到空同样是用户自己动出来的（判据是「动过没」不是「收窄没」）', () => {
+    expect(legEmptyState(counts, 'rent', overridden('widened')).reset).not.toBeNull();
+  });
+
+  it('🚨 全腿视角也走这一支 —— 它没有「被门槛挡下」那支，但照样能被条件收窄到空', () => {
+    const state = legEmptyState(counts, 'all', overridden('narrowed'));
+    expect(state.reset).not.toBeNull();
+    expect(state.text).not.toBe(COPY.empty);
+  });
+
+  it('🚫 未覆盖 ⇒ 既有两支逐字不变（051 回归）', () => {
+    const untouched = legEmptyState(counts, 'all', criteria());
+    expect(untouched.text).toBe(COPY.empty);
+    expect(untouched.reset).toBeNull();
+    // 契约未到手同理：不凭空长出一个复位入口。
+    expect(legEmptyState(counts, 'build', null).reset).toBeNull();
+    expect(legEmptyState(counts, 'build').reset).toBeNull();
   });
 });

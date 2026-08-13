@@ -2,14 +2,22 @@
 /**
  * check-optionsdesk-rule-constants.ts — optionsdesk **可调策略参数单点**的机器守门。
  *
- * 四条不变量，扫描面都是 `apps/server/src/optionsdesk/`：
+ * 八条不变量。前七条的扫描面是 `apps/server/src/optionsdesk/`，**第八条扫的是客户端**：
  *
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
  * | 1 | 档位系数只住 `anchor.rules.ts` | 字面量**子串扫描** | 045 SC-005 |
- * | 2 | 两道门槛阈值只住 `leg-recall.rules.ts` | 字面量**子串扫描** | 050 FR-007 / SC-009 |
+ * | 2 | 召回层可调阈值只住 `leg-recall.rules.ts` | 字面量**子串扫描** | 050 FR-007 / SC-009 · 052 FR-005 |
  * | 3 | 三段 DTE 界只住 `leg-recall.rules.ts` | **比较表达式**扫描 | 050 SC-009 |
  * | 4 | 闭区间带字面量只住 `leg-recall` / `leg-mark` | **对象形状**扫描 | 050 SC-009 |
+ * | 5 | 检索 port 接口零存储侧词汇 | **词表**扫描 | 052 FR-031 |
+ * | 6 | 粗排层恒等 + 五层入口各有 spec | **词表**扫描 + 文件存在 | 052 FR-004 / SC-010 |
+ * | 7 | 六维成员判据只住 `leg-recall.rules.ts` | **词表**扫描 | 052 FR-003 |
+ * | 8 | **客户端零处自算检索条件默认值** | **词表 + 算式形状**扫描 | 052 FR-011 / Guardrail 6 |
+ *
+ * 🚨 **#5/#6/#7 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
+ * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
+ * 尾部两个 `it()` 迁出来的那条路径，判据不变、只是换了执行面。
  *
  * 🚨 **三种判据形态不是花样，是被扫描对象的形状逼出来的**（2026-08-11 读实现后定）：
  * - #2 沿用 #1 的子串扫描，因为门槛阈值也是小数。
@@ -50,13 +58,41 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const CTX_DIR = 'apps/server/src/optionsdesk';
+/** 052 不变量 #8 的扫描面 —— 客户端侧同名 feature 目录（FR-011 的判据落在这里）。 */
+const MOBILE_CTX_DIR = 'apps/mobile/src/optionsdesk';
 const RULES_FILE = 'anchor.rules.ts';
 /** 050 召回层：两道门槛阈值 + 三段 DTE 界的唯一落点。 */
 const RECALL_RULES_FILE = 'leg-recall.rules.ts';
 /** 050 打标层：两组 Δ 带的唯一落点。 */
 const MARK_RULES_FILE = 'leg-mark.rules.ts';
-/** 门槛阈值的个数（绝对下限 / spot 比例 / 相对价差上界）—— 少抽到一个就是检查变平凡绿。 */
-const RECALL_THRESHOLD_COUNT = 3;
+/** 052 检索 port：接口只暴露业务语义（FR-031）。 */
+const RETRIEVAL_PORT_FILE = 'leg-retrieval.port.ts';
+/** 052 粗排层：当前为恒等函数，函数体零判据（FR-004 / ADR-0064 决策 1）。 */
+const COARSE_RULES_FILE = 'leg-coarse.rules.ts';
+/**
+ * 052 五层入口的载体文件 —— 每个 MUST 有 colocate 的 Small spec（SC-010「五层各自有独立入口
+ * 与独立测试」）。
+ *
+ * 📌 **表达层（`optionsdesk.dto.ts`）蓄意不在表内**：052 对它零改动，覆盖归 053
+ * （tasks.md §故意零覆盖登记）。写在这里是为了让「少一层」是**读得出来的决定**而不是遗漏。
+ */
+const LAYER_ENTRY_FILES = [
+  'leg-recall.rules.ts', // 召回 · 判据
+  'leg-retrieval.port.ts', // 召回 · 数据来源接缝
+  COARSE_RULES_FILE, // 粗排
+  'leg-rank.rules.ts', // 特征加工 + 精排
+  'leg-derive.rules.ts', // 特征加工 · 活跃标
+] as const;
+/**
+ * 召回层可调阈值的个数（权利金绝对下限 / spot 比例 / 相对价差上界 / 052 成色兜底比例）
+ * —— 少抽到一个就是检查变平凡绿。
+ *
+ * 🚨 **新增可调阈值时这个数要跟着加**：漏加等于新阈值可以被抄到别处而无人拦（052 T003 起
+ * 成色比例入表，因为它同样是「T016 会调、调时必须只有一处」的策略参数）。
+ * 📌 只有**小数**阈值能入表 —— 整数走不了子串扫描（见 {@link recallSelfProbe} 那一臂），
+ * 故 052 的持仓量下限与候选上限 K 不在其内。
+ */
+const RECALL_THRESHOLD_COUNT = 4;
 
 /**
  * 剥注释后再匹配 —— 注释里写 `1.2V 上界` 是**正确的文档**，不是硬编码
@@ -137,7 +173,7 @@ export function findOffenders(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 从 `leg-recall.rules.ts` 源码里抽出两道门槛的三个阈值。
+ * 从 `leg-recall.rules.ts` 源码里抽出召回层的四个小数阈值。
  *
  * 🚨 **蓄意不过滤、不去重** —— 判断全留给 {@link recallSelfProbe}，让「少抽到一个」与「阈值被
  * 写成整数」都变成**显式报错**，而不是静默缩小扫描面（那正是「检查变平凡绿」的形态）。
@@ -148,6 +184,7 @@ export function extractRecallThresholds(recallSource: string): string[] {
     /absolute:\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
     /spotRatio:\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
     /export\s+const\s+LIQUIDITY_MAX_RELATIVE_SPREAD\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
+    /export\s+const\s+QUALITY_CEILING_SPOT_RATIO\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
   ];
   return patterns.map((re) => re.exec(code)?.[1]).filter((v): v is string => v !== undefined);
 }
@@ -226,6 +263,165 @@ export function shapePatternProbe(): string | null {
   const bandHit = findShapeHits('export const B = { min: 0.4, max: 0.55 };', BAND_LITERAL_RE);
   if (bandHit.length === 0) {
     return '带判据正例臂失灵：`{ min: 0.4, max: 0.55 }` 未被命中 —— 判据已变平凡绿';
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #5 —— 检索 port 接口零存储侧词汇（词表扫描）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 存储侧词表 —— 前五个是 052 T001 逐字点名的，其余是同类查询语义的近亲。
+ *
+ * 🚨 **`prisma` 也在表内，包括 `Prisma.Decimal`**：port 要金额量纲时 MUST 经召回判据的入参
+ * 类型（`RecallLegInput` / `RecallContext`）带入，而不是自己 import 一个 ORM 命名空间。这不是
+ * 洁癖 —— 允许它就等于允许「顺手再取一个 `Prisma.XxxWhereInput`」，而那正是 FR-031 要挡的。
+ */
+export const STORAGE_VOCAB = [
+  'prisma',
+  'sql',
+  'cursor',
+  'offset',
+  'limit',
+  'take',
+  'skip',
+  'where',
+  'orderBy',
+  'findMany',
+  'findFirst',
+  'findUnique',
+] as const;
+
+/** 剥注释后按词表扫（大小写不敏感，`Prisma` / `PRISMA` 一样命中），返回去重后的命中词。 */
+export function findStorageVocab(source: string): string[] {
+  const code = stripComments(source);
+  const hits = code.match(new RegExp(`\\b(?:${STORAGE_VOCAB.join('|')})\\b`, 'gi')) ?? [];
+  return [...new Set(hits.map((h) => h.toLowerCase()))];
+}
+
+/**
+ * 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。
+ *
+ * 正例臂防「判据变平凡绿」；反例臂防「判据恒红」—— port 里合法的业务词（视角 / 候选 / 标的价）
+ * 一个都不能命中，否则总有人来放宽词表，最终退化成平凡绿。
+ */
+export function storageVocabProbe(): string | null {
+  const hit = findStorageVocab('const page = { take: 50, cursor: id, where: { code } };');
+  if (hit.length === 0) {
+    return '词表判据正例臂失灵：`take` / `cursor` / `where` 未被命中 —— 判据已变平凡绿';
+  }
+  const legit = findStorageVocab(
+    'export interface LegRetrievalQuery { readonly symbol: string; readonly perspectives: readonly LegTab[] }',
+  );
+  if (legit.length > 0) {
+    return `词表判据反例臂失灵：合法业务签名被判违规（命中 ${legit.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #6 —— 粗排层恒等（词表扫描）+ 五层入口各有 spec（文件存在）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 判据 / 重排词汇。粗排层一旦出现其中任何一个就不再是恒等函数，而是**第二个打分点**
+ * （ADR-0064 决策 1 的禁令）—— 与精排口径必然分叉，且分叉后两边都排得出顺序、都不会红。
+ *
+ * 🚨 `<` / `>` 单字符**不能**入表：泛型 `<T>` 会让判据恒红。收窄成 `>=` / `<=` 两个双字符
+ * 比较符 —— 恒等函数里不该出现任何比较，这两个已足够拦住实际写法。
+ */
+export const COARSE_DECISION_RE = /\bif\b|\bfilter\b|\bsort\b|>=|<=/g;
+
+/** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
+export function coarseProbe(): string | null {
+  const decision = findShapeHits(
+    'if (a.rate >= b.rate) return pool.filter(Boolean).sort(byRate);',
+    COARSE_DECISION_RE,
+  );
+  if (decision.length === 0) {
+    return '粗排判据正例臂失灵：`if` / `>=` / `filter` / `sort` 未被命中 —— 判据已变平凡绿';
+  }
+  const identity = findShapeHits(
+    'export function coarseRank<T>(candidates: readonly T[]): readonly T[] { return candidates; }',
+    COARSE_DECISION_RE,
+  );
+  if (identity.length > 0) {
+    return `粗排判据反例臂失灵：恒等实现被判违规（命中 ${identity.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #7 —— 成员判据只住召回层（词表扫描，FR-003「全仓只有一个 filter 概念」）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 六维检索条件的判据函数名。它们**只允许**出现在 {@link RECALL_RULES_FILE} 与其 spec 里 ——
+ * 别处调用即「排名之后再筛一次」的第二条路径（052 FR-003 的禁令）。
+ *
+ * 🚨 这条**踩了不会红**：第二处筛选照样筛得出结果，只是成员集合谁说了算变成运行时才知道的事，
+ * 而两处的口径迟早分叉（且分叉后候选数、计数、名次全都算得出来）。
+ * 📌 `resolvePremiumFloor` / `resolveQualityCeiling` **不在表内**：它们解的是**默认值**不是成员，
+ * 下发默认值本来就要在 use case 侧读得到。
+ */
+export const MEMBERSHIP_PREDICATE_RE =
+  /\b(failedCriteria|passesPremiumMin|passesOpenInterestMin|passesRelativeSpreadMax|passesQualityCeiling|passesEffectiveCostGate|passesHardGates)\s*\(/g;
+
+/** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
+export function membershipProbe(): string | null {
+  const positive = findShapeHits(
+    'const kept = legs.filter((l) => failedCriteria(c, l).length === 0 && passesHardGates(t, ch, l));',
+    MEMBERSHIP_PREDICATE_RE,
+  );
+  if (positive.length === 0) {
+    return '成员判据正例臂失灵：`failedCriteria(` / `passesHardGates(` 未被命中 —— 判据已变平凡绿';
+  }
+  const negative = findShapeHits(
+    'const defaults = defaultCriteriaByTab(chain); const floor = resolvePremiumFloor(spot);',
+    MEMBERSHIP_PREDICATE_RE,
+  );
+  if (negative.length > 0) {
+    return `成员判据反例臂失灵：默认值解析被判违规（命中 ${negative.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #8 —— 客户端零处自算检索条件默认值（词表 + 算式形状，FR-011 / Guardrail 6）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 两类命中都判违规：
+ * ① **照抄服务端那份默认值判据**（函数名 / 阈值常量名）——「同一判据两处各一份」的最短路径；
+ * ② **`spot` 直接参与乘除** —— 六维里有两维（行权价上界 · 权利金下限）的默认值就是 spot 的
+ *    函数，客户端一旦自己乘一下，两边**都算得出数**，漂移只在换日那一刻才看得见。
+ *
+ * 🚨 **这条踩了不会红**：客户端算出来的默认值照样填得进控件、照样点得动「搜」，服务端也照样
+ * 按它自己那份判据召回 —— 屏幕上一切正常，只是控件里的数与真正生效的判据不是同一天的。
+ *
+ * ⚠️ **它拦的是「照抄」这一最可能的形态，不是所有可能的自算**：把 spot 先赋给别名再乘、或把
+ * 系数拆成两步，都能绕开。刻意绕开的人不是这条守门要防的对象；防的是顺手抄一段过来的那一刻。
+ */
+export const CLIENT_DEFAULT_COMPUTE_RE =
+  /\b(resolvePremiumFloor|resolveQualityCeiling|qualityCeiling|defaultCriteria(?:ByTab)?|PREMIUM_FLOOR|OPEN_INTEREST_FLOOR|VOLUME_FLOOR|LIQUIDITY_MAX_RELATIVE_SPREAD|BUILD_RECALL_DTE|RENT_RECALL_DTE)\b|\bspot\b\s*[*/]|[*/]\s*\bspot\b/g;
+
+/** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
+export function clientDefaultProbe(): string | null {
+  const positive = findShapeHits(
+    'const ceiling = spot * (1 + RATIO); const floor = resolvePremiumFloor(spot);',
+    CLIENT_DEFAULT_COMPUTE_RE,
+  );
+  if (positive.length === 0) {
+    return '客户端自算正例臂失灵：`spot *` / `resolvePremiumFloor` 未被命中 —— 判据已变平凡绿';
+  }
+  const negative = findShapeHits(
+    'const form = criteriaFormOf(criteria.defaults); const pos = spotPosition(anchor);' +
+      ' const label = `${spot.pct}%`; const p = bandPosition(spot, floor, ceiling);',
+    CLIENT_DEFAULT_COMPUTE_RE,
+  );
+  if (negative.length > 0) {
+    return `客户端自算反例臂失灵：读下发值 / 画色带被判违规（命中 ${negative.join(' / ')}）—— 判据会恒红`;
   }
   return null;
 }
@@ -348,11 +544,153 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 052 不变量 #5 ──────────────────────────────────────────────────────────
+  const portPath = join(ctxPath, RETRIEVAL_PORT_FILE);
+  if (!existsSync(portPath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${RETRIEVAL_PORT_FILE}`);
+    process.exit(1);
+  }
+  const vocabProbeFailure = storageVocabProbe();
+  if (vocabProbeFailure) {
+    console.error(`❌ check-optionsdesk-rule-constants: 词表判据探针失败 —— ${vocabProbeFailure}`);
+    process.exit(1);
+  }
+  const portVocab = findStorageVocab(readFileSync(portPath, 'utf8'));
+  if (portVocab.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 检索 port 接口出现存储侧词汇：\n` +
+        `  - ${CTX_DIR}/${RETRIEVAL_PORT_FILE}: ${portVocab.join(' / ')}\n`,
+    );
+    console.error(
+      'Fix: 把它挪进实现（`leg-retrieval.adapter.ts`）。接口漏了存储侧概念，换实现时接口照样要',
+    );
+    console.error(
+      '     重写 —— 接缝白留（052 FR-031 / ADR-0064 决策 4）。金额量纲经召回判据的入参类型带入。',
+    );
+    process.exit(1);
+  }
+
+  // ── 052 不变量 #6 ──────────────────────────────────────────────────────────
+  const coarsePath = join(ctxPath, COARSE_RULES_FILE);
+  if (!existsSync(coarsePath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${COARSE_RULES_FILE}`);
+    process.exit(1);
+  }
+  const coarseProbeFailure = coarseProbe();
+  if (coarseProbeFailure) {
+    console.error(`❌ check-optionsdesk-rule-constants: 粗排判据探针失败 —— ${coarseProbeFailure}`);
+    process.exit(1);
+  }
+  const coarseHits = findShapeHits(readFileSync(coarsePath, 'utf8'), COARSE_DECISION_RE);
+  if (coarseHits.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 粗排层出现判据 / 重排：\n` +
+        `  - ${CTX_DIR}/${COARSE_RULES_FILE}: ${coarseHits.join(' / ')}\n`,
+    );
+    console.error(
+      'Fix: 粗排层当前 MUST 恒等（052 FR-004 / ADR-0064 决策 1）。有判据就是第二个打分点 ——',
+    );
+    console.error(
+      '     与精排口径必然分叉，而分叉后两边都排得出顺序、都不会红。合并去重要转实体，先改 ADR。',
+    );
+    process.exit(1);
+  }
+
+  const specless = LAYER_ENTRY_FILES.filter(
+    (name) => !existsSync(join(ctxPath, `${name.replace(/\.ts$/, '')}.spec.ts`)),
+  );
+  if (specless.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 五层入口缺 colocate 的 Small spec：\n` +
+        specless.map((n) => `  - ${CTX_DIR}/${n}`).join('\n') +
+        '\n',
+    );
+    console.error(
+      'Fix: SC-010 要求五层各自有独立入口**与独立测试**。层入口没有自己的 spec，那一层的判据就',
+    );
+    console.error('     只能靠穿过全链路的测试间接盖到 —— 改坏时红的是别人，定位不到这一层。');
+    process.exit(1);
+  }
+
+  // ── 052 不变量 #7 ──────────────────────────────────────────────────────────
+  const membershipProbeFailure = membershipProbe();
+  if (membershipProbeFailure) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: 成员判据探针失败 —— ${membershipProbeFailure}`,
+    );
+    process.exit(1);
+  }
+  const secondFilters = outsideRecall
+    .map(({ name, source }) => ({ name, hits: findShapeHits(source, MEMBERSHIP_PREDICATE_RE) }))
+    .filter(({ hits }) => hits.length > 0);
+  if (secondFilters.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 召回层之外出现成员判据：\n` +
+        secondFilters
+          .map(({ name, hits }) => `  - ${CTX_DIR}/${name}: ${hits.join(' / ')}`)
+          .join('\n') +
+        '\n',
+    );
+    console.error(
+      'Fix: 成员判定 MUST 单点在 leg-recall.rules.ts（052 FR-003「全仓只有一个 filter 概念」）。',
+    );
+    console.error(
+      '     别处再筛一次照样筛得出结果 —— 只是成员集合谁说了算变成运行时才知道的事，且两处口径迟早分叉。',
+    );
+    process.exit(1);
+  }
+
+  // ── 052 不变量 #8 ──────────────────────────────────────────────────────────
+  const clientProbeFailure = clientDefaultProbe();
+  if (clientProbeFailure) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: 客户端自算探针失败 —— ${clientProbeFailure}`,
+    );
+    process.exit(1);
+  }
+  const mobilePath = join(REPO_ROOT, MOBILE_CTX_DIR);
+  if (!existsSync(mobilePath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${MOBILE_CTX_DIR}`);
+    process.exit(1);
+  }
+  const mobileFiles = readdirSync(mobilePath).filter((f) => /\.tsx?$/.test(f));
+  if (mobileFiles.length === 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: ${MOBILE_CTX_DIR} 下没有 .ts —— 目录变了？`,
+    );
+    process.exit(1);
+  }
+  const clientComputes = mobileFiles
+    .map((name) => ({
+      name,
+      hits: findShapeHits(readFileSync(join(mobilePath, name), 'utf8'), CLIENT_DEFAULT_COMPUTE_RE),
+    }))
+    .filter(({ hits }) => hits.length > 0);
+  if (clientComputes.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 客户端在自算检索条件默认值：\n` +
+        clientComputes
+          .map(({ name, hits }) => `  - ${MOBILE_CTX_DIR}/${name}: ${hits.join(' / ')}`)
+          .join('\n') +
+        '\n',
+    );
+    console.error(
+      'Fix: 默认值 MUST 由服务端解出并下发（052 FR-011）—— 六维里有两维是 spot 的函数，而 spot',
+    );
+    console.error(
+      '     每天变。客户端自算与服务端**两边都算得出数**，屏幕上一切正常，只是控件里的数与真正',
+    );
+    console.error('     生效的判据不是同一天的。读 `criteriaByTab[tab].defaults` 就够了。');
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
       `门槛阈值 (${[...new Set(thresholds)].join(' / ')}) 与三段 DTE 界只住 ${RECALL_RULES_FILE}；` +
-      `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）。`,
+      `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
+      `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec；` +
+      `六维成员判据零外溢；${MOBILE_CTX_DIR} 的 ${mobileFiles.length} 个文件零处自算默认值。`,
   );
 }
 

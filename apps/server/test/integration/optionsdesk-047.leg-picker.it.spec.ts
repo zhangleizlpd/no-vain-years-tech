@@ -4,6 +4,7 @@ import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 import { PrismaService } from '../../src/security/prisma.service';
 import { OptionSnapshotCoverageCheck } from '../../src/marketdata/option-snapshot-coverage.check';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 import { toLegTableResponse } from '../../src/optionsdesk/optionsdesk.dto';
 import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 
@@ -24,7 +25,7 @@ import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 //      而不是抛异常 (测 ③)。mock 上「返回空数组」是手写的, 证明不了真库的行为。
 //
 // ⇒ PG 从 `test/_support/isolated-db.ts` 的 **`setupIsolatedDb()`** 取 (共享 PG 的模板克隆,
-// **禁自起 Testcontainers**)。装配 = 直接 `new GetLegsUseCase(prisma)` 打真 `PrismaService`
+// **禁自起 Testcontainers**)。装配 = `new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma))` 打真 `PrismaService`
 // (样板 `optionsdesk-047.chain-sync.it.spec.ts` / `optionsdesk-047.integrity.it.spec.ts`)。
 //
 // 🚨 **造数两个坑** (T023 实撞过): 标的行的 `last` 别抄成期权价、行权价别取到「内在价值 > ask」
@@ -77,7 +78,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma);
+    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
   }, 180_000);
 
   afterAll(async () => {

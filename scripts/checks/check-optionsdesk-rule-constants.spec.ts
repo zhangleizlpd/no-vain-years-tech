@@ -1,15 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import {
   BAND_LITERAL_RE,
+  CLIENT_DEFAULT_COMPUTE_RE,
+  clientDefaultProbe,
+  COARSE_DECISION_RE,
+  coarseProbe,
   DTE_BOUND_RE,
   extractCoefficients,
   extractRecallThresholds,
   findOffenders,
   findShapeHits,
   findShapeOffenders,
+  findStorageVocab,
+  MEMBERSHIP_PREDICATE_RE,
+  membershipProbe,
   recallSelfProbe,
   selfProbe,
   shapePatternProbe,
+  storageVocabProbe,
   stripComments,
 } from './check-optionsdesk-rule-constants';
 
@@ -100,7 +108,7 @@ describe('findOffenders', () => {
   });
 });
 
-/** 镜像 leg-recall.rules.ts 的三处阈值声明（只留检查关心的形状）。 */
+/** 镜像 leg-recall.rules.ts 的四处阈值声明（只留检查关心的形状）。 */
 const RECALL_SOURCE = `
 export const PREMIUM_FLOOR: PremiumFloorParams = {
   absolute: new Prisma.Decimal('0.20'),
@@ -108,17 +116,26 @@ export const PREMIUM_FLOOR: PremiumFloorParams = {
 };
 
 export const LIQUIDITY_MAX_RELATIVE_SPREAD = new Prisma.Decimal('0.35');
+
+export const QUALITY_CEILING_SPOT_RATIO = new Prisma.Decimal('0.04');
 `;
 
 describe('extractRecallThresholds —— 050 不变量 #2', () => {
-  it('抽出三个阈值，顺序固定为 绝对下限 / spot 比例 / 价差上界', () => {
-    expect(extractRecallThresholds(RECALL_SOURCE)).toEqual(['0.20', '0.0012', '0.35']);
+  it('抽出四个阈值，顺序固定为 绝对下限 / spot 比例 / 价差上界 / 成色兜底比例', () => {
+    expect(extractRecallThresholds(RECALL_SOURCE)).toEqual(['0.20', '0.0012', '0.35', '0.04']);
   });
 
   it('🚨 蓄意不过滤不去重 —— 少抽到一个要能被探针看见，而不是静默缩小扫描面', () => {
     const renamed = RECALL_SOURCE.replace('LIQUIDITY_MAX_RELATIVE_SPREAD', 'MAX_SPREAD');
-    expect(extractRecallThresholds(renamed)).toEqual(['0.20', '0.0012']);
+    expect(extractRecallThresholds(renamed)).toEqual(['0.20', '0.0012', '0.04']);
     expect(recallSelfProbe(renamed, extractRecallThresholds(renamed))).toMatch(/平凡绿/);
+  });
+
+  it('🚨 052 成色比例入表 —— 漏掉它就等于新阈值可被抄到别处而无人拦', () => {
+    const withoutQuality = RECALL_SOURCE.replace('QUALITY_CEILING_SPOT_RATIO', 'QUALITY_RATIO');
+    expect(recallSelfProbe(withoutQuality, extractRecallThresholds(withoutQuality))).toMatch(
+      /平凡绿/,
+    );
   });
 
   it('只在注释里出现的阈值不被抽成常量', () => {
@@ -139,10 +156,10 @@ describe('recallSelfProbe —— 整数阈值那一臂', () => {
   });
 
   it('抽取口径与扫描口径不一致 → 报错', () => {
-    expect(recallSelfProbe(RECALL_SOURCE, ['0.20', '0.0012', '9.9'])).toMatch(/9\.9/);
+    expect(recallSelfProbe(RECALL_SOURCE, ['0.20', '0.0012', '0.35', '9.9'])).toMatch(/9\.9/);
   });
 
-  it('三个阈值齐全且均在源码里 → 通过', () => {
+  it('四个阈值齐全且均在源码里 → 通过', () => {
     expect(recallSelfProbe(RECALL_SOURCE, extractRecallThresholds(RECALL_SOURCE))).toBeNull();
   });
 });
@@ -205,6 +222,166 @@ describe('findShapeHits —— `g` 标志的 lastIndex 不许跨调用残留', (
 describe('shapePatternProbe —— 两侧探针都健在', () => {
   it('现役正则的正例臂与反例臂均通过', () => {
     expect(shapePatternProbe()).toBeNull();
+  });
+});
+
+describe('findStorageVocab —— 052 不变量 #5（检索 port 零存储侧词汇）', () => {
+  it('查询语义命中：分页 / 游标 / 查询片段', () => {
+    expect(findStorageVocab('const p = { take: 50, skip: 10, cursor: id };')).toEqual([
+      'take',
+      'skip',
+      'cursor',
+    ]);
+  });
+
+  it('ORM 命名空间命中 —— `Prisma.Decimal` 也不许进接口（金额量纲经判据入参类型带入）', () => {
+    expect(findStorageVocab('readonly spot: Prisma.Decimal;')).toEqual(['prisma']);
+  });
+
+  it('注释里写这些词是**正确的文档**，不是违规', () => {
+    const src = '// 🚫 接口 MUST NOT 出现 cursor / offset\nreadonly perspectives: LegTab[];';
+    expect(findStorageVocab(src)).toEqual([]);
+  });
+
+  it('业务词零命中 —— 视角 / 候选 / 标的价都不该被误伤', () => {
+    const src =
+      'export interface LegRetrievalResult { readonly candidates: readonly LegCandidate[]; readonly spot: number }';
+    expect(findStorageVocab(src)).toEqual([]);
+  });
+
+  it('大小写不敏感（`PRISMA` 与 `Prisma` 同判）', () => {
+    expect(findStorageVocab('type X = PRISMA.Decimal;')).toEqual(['prisma']);
+  });
+});
+
+describe('storageVocabProbe —— 两侧探针都健在', () => {
+  it('现役词表的正例臂与反例臂均通过', () => {
+    expect(storageVocabProbe()).toBeNull();
+  });
+});
+
+describe('COARSE_DECISION_RE —— 052 不变量 #6（粗排层恒等）', () => {
+  it('判据 / 重排词汇命中', () => {
+    expect(
+      findShapeHits('if (a >= b) return xs.filter(Boolean).sort(cmp);', COARSE_DECISION_RE),
+    ).toEqual(['if', '>=', 'filter', 'sort']);
+  });
+
+  it('泛型恒等实现零命中 —— `<T>` 不许被 `<=` 误伤（那会让判据恒红）', () => {
+    const src = 'export function coarseRank<T>(xs: readonly T[]): readonly T[] { return xs; }';
+    expect(findShapeHits(src, COARSE_DECISION_RE)).toEqual([]);
+  });
+
+  it('注释里写 `filter` 是**正确的文档**，不是违规', () => {
+    expect(findShapeHits('// 🚫 MUST NOT filter\nreturn xs;', COARSE_DECISION_RE)).toEqual([]);
+  });
+
+  it('词内子串不误伤（`identity` 里的 `if` / `resort` 里的 `sort`）', () => {
+    expect(findShapeHits('const identity = resortable;', COARSE_DECISION_RE)).toEqual([]);
+  });
+});
+
+describe('coarseProbe —— 两侧探针都健在', () => {
+  it('现役正则的正例臂与反例臂均通过', () => {
+    expect(coarseProbe()).toBeNull();
+  });
+});
+
+describe('MEMBERSHIP_PREDICATE_RE —— 052 不变量 #7（成员判据只住召回层）', () => {
+  it('六维判据与硬门槛的调用命中', () => {
+    expect(
+      findShapeHits(
+        'if (failedCriteria(c, l).length === 0 && passesHardGates(t, ch, l)) keep(l);',
+        MEMBERSHIP_PREDICATE_RE,
+      ),
+    ).toEqual(['failedCriteria(', 'passesHardGates(']);
+  });
+
+  it('🚨 反例臂：默认值解析 MUST NOT 命中 —— use case 侧本来就要读得到它们', () => {
+    expect(
+      findShapeHits(
+        'const d = defaultCriteriaByTab(chain); const f = resolvePremiumFloor(spot);',
+        MEMBERSHIP_PREDICATE_RE,
+      ),
+    ).toEqual([]);
+  });
+
+  it('注释里提到判据是**正确的文档**，不是违规', () => {
+    expect(
+      findShapeHits('// 成员判定走 failedCriteria(criteria, leg)', MEMBERSHIP_PREDICATE_RE),
+    ).toEqual([]);
+  });
+
+  it('词内子串不误伤（`myFailedCriteria(` 是别的函数）', () => {
+    expect(findShapeHits('myFailedCriteria(x);', MEMBERSHIP_PREDICATE_RE)).toEqual([]);
+  });
+});
+
+describe('membershipProbe —— 两侧探针都健在', () => {
+  it('现役词表的正例臂与反例臂均通过', () => {
+    expect(membershipProbe()).toBeNull();
+  });
+});
+
+describe('CLIENT_DEFAULT_COMPUTE_RE —— 052 不变量 #8（客户端零处自算默认值）', () => {
+  it('抄服务端的默认值解析 / 阈值常量名即命中', () => {
+    expect(
+      findShapeHits(
+        'const f = resolvePremiumFloor(s); const d = defaultCriteriaByTab(c);',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual(['resolvePremiumFloor', 'defaultCriteriaByTab']);
+    expect(
+      findShapeHits('if (oi >= OPEN_INTEREST_FLOOR) keep();', CLIENT_DEFAULT_COMPUTE_RE),
+    ).toEqual(['OPEN_INTEREST_FLOOR']);
+  });
+
+  it('🚨 `spot` 直接参与乘除即命中 —— 六维里两维的默认值就是 spot 的函数', () => {
+    expect(findShapeHits('const c = spot * (1 + RATIO);', CLIENT_DEFAULT_COMPUTE_RE)).toEqual([
+      'spot *',
+    ]);
+    expect(findShapeHits('const r = premium / spot;', CLIENT_DEFAULT_COMPUTE_RE)).toEqual([
+      '/ spot',
+    ]);
+  });
+
+  it('🚨 反例臂：读服务端下发的值 MUST NOT 命中 —— 那正是本条要求客户端做的事', () => {
+    expect(
+      findShapeHits('const form = criteriaFormOf(criteria.defaults);', CLIENT_DEFAULT_COMPUTE_RE),
+    ).toEqual([]);
+  });
+
+  it('🚨 反例臂：046 色带那份 `spot` 是**画图**不是判据 —— 传参与取属性都不该命中', () => {
+    expect(
+      findShapeHits(
+        'const p = bandPosition(spot, floor, ceiling); const left = `${spot.pct}%`;',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual([]);
+  });
+
+  it('注释里解释这条禁令是**正确的文档**，不是违规', () => {
+    expect(
+      findShapeHits(
+        '// 🚫 MUST NOT 写 spot * (1 + X) —— 默认值由服务端解',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual([]);
+  });
+
+  it('词内子串不误伤（`spotPosition` / `hotspots` 不是 `spot`）', () => {
+    expect(
+      findShapeHits(
+        'const p = spotPosition(a); const n = hotspots / 2;',
+        CLIENT_DEFAULT_COMPUTE_RE,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('clientDefaultProbe —— 两侧探针都健在', () => {
+  it('现役词表的正例臂与反例臂均通过', () => {
+    expect(clientDefaultProbe()).toBeNull();
   });
 });
 

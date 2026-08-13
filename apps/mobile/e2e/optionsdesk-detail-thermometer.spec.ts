@@ -11,6 +11,7 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
+import { emptyCriteriaByTab } from './_support/optionsdesk-fixtures';
 
 // 046 T024 — 标的详情（上半）+ 波动温度计 hermetic UI e2e（Playwright Expo Web，
 // Constitution §V 两层验证之一；样板 = `optionsdesk-anchors-radar.spec.ts`）。
@@ -349,6 +350,8 @@ function makeLegTable(symbol: string, anchor: AnchorResponse): LegTableResponse 
       excludedFromIntentTabsByTab: { build: 0, rent: 0 },
     },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
+    // 052 T011 契约增量：三视角恒有一份条件全景（消费归 T012）。
+    criteriaByTab: emptyCriteriaByTab(),
   };
 }
 

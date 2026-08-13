@@ -38,6 +38,7 @@ import type {
   CreateAnchorRequest,
   LegTableResponse,
   OptionsdeskControllerAtParams,
+  OptionsdeskControllerLegsParams,
   OptionsdeskControllerListParams,
   OptionsdeskControllerRadarParams,
   PositionBucketResponse,
@@ -154,35 +155,40 @@ export function useOptionsdeskControllerUnderlyingDetail<TData = Awaited<ReturnT
  * @summary Leg picker table (ALL eligible legs, no pagination, no top-N)
  */
 export const optionsdeskControllerLegs = (
-    symbol: string, options?: AxiosRequestConfig
+    symbol: string,
+    params?: OptionsdeskControllerLegsParams, options?: AxiosRequestConfig
  ): Promise<AxiosResponse<LegTableResponse>> => {
 
 
     return axios.get(
-      `/api/v1/optionsdesk/underlyings/${symbol}/legs`,options
+      `/api/v1/optionsdesk/underlyings/${symbol}/legs`,{
+    ...options,
+        params: {...params, ...options?.params},}
     );
   }
 
 
 
 
-export const getOptionsdeskControllerLegsQueryKey = (symbol: string,) => {
+export const getOptionsdeskControllerLegsQueryKey = (symbol: string,
+    params?: OptionsdeskControllerLegsParams,) => {
     return [
-    `/api/v1/optionsdesk/underlyings/${symbol}/legs`
+    `/api/v1/optionsdesk/underlyings/${symbol}/legs`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getOptionsdeskControllerLegsQueryOptions = <TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
+export const getOptionsdeskControllerLegsQueryOptions = <TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(symbol: string,
+    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
 ) => {
 
 const {query: queryOptions, axios: axiosOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getOptionsdeskControllerLegsQueryKey(symbol);
+  const queryKey =  queryOptions?.queryKey ?? getOptionsdeskControllerLegsQueryKey(symbol,params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof optionsdeskControllerLegs>>> = ({ signal }) => optionsdeskControllerLegs(symbol, { signal, ...axiosOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof optionsdeskControllerLegs>>> = ({ signal }) => optionsdeskControllerLegs(symbol,params, { signal, ...axiosOptions });
 
 
 
@@ -196,7 +202,8 @@ export type OptionsdeskControllerLegsQueryError = AxiosError<ProblemDetailRespon
 
 
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
- symbol: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
+ symbol: string,
+    params: undefined |  OptionsdeskControllerLegsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof optionsdeskControllerLegs>>,
           TError,
@@ -206,7 +213,8 @@ export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof o
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
- symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
+ symbol: string,
+    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof optionsdeskControllerLegs>>,
           TError,
@@ -216,7 +224,8 @@ export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof o
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
- symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
+ symbol: string,
+    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
@@ -224,11 +233,12 @@ export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof o
  */
 
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
- symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
+ symbol: string,
+    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getOptionsdeskControllerLegsQueryOptions(symbol,options)
+  const queryOptions = getOptionsdeskControllerLegsQueryOptions(symbol,params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

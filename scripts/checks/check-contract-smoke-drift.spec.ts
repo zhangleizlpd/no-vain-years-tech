@@ -28,6 +28,16 @@ describe('deriveSpecCoverage — 从 controller 前缀派生覆盖 module', () =
     expect(deriveSpecCoverage('x', src).modules).toEqual(['chat']);
   });
 
+  it('🚨 类型名的首字母大写形归一到同一个 module —— 同一 operationId 生成两种标识符', () => {
+    // orval 由同一个 operationId 生成函数 `optionsdeskControllerLegs` 与其参数类型
+    // `OptionsdeskControllerLegsParams`。spec 只 `import type` 后者时不归一 ⇒ 报「未映射前缀」，
+    // 而那条警告的本意是「表过期」—— 纯拼写差引发的假信号会让人去改一张本来就对的表。
+    const src = `import type { OptionsdeskControllerLegsParams } from '@nvy/api-client';`;
+    const cov = deriveSpecCoverage('x', src);
+    expect(cov.modules).toEqual(['optionsdesk']);
+    expect(cov.unmappedPrefixes).toEqual([]);
+  });
+
   it('未映射前缀 → 进 unmappedPrefixes (表过期信号)', () => {
     const src = `fooControllerBar(); marketdataControllerQuote();`;
     const cov = deriveSpecCoverage('x', src);

@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
@@ -47,7 +48,14 @@ import {
 import type { PositionBucketWriteResult } from './set-position-bucket.usecase';
 import { type ActivityMark } from './leg-derive.rules';
 import { LEG_BASES, LEG_TIERS } from './leg-tier.rules';
-import { LEG_TABS } from './leg-tab.rules';
+import { LEG_TABS, type LegTab } from './leg-tab.rules';
+import {
+  CRITERION_STATES,
+  RETRIEVAL_CRITERION_KEYS,
+  type PerspectiveCriteria,
+  type RetrievalCriteria,
+  type RetrievalOverride,
+} from './leg-recall.rules';
 import { BASIS_BY_TAB } from './leg-rank.rules';
 import type { PointInTimeAnchorValues } from './anchor-history';
 
@@ -350,6 +358,105 @@ export class RadarQueryDto {
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()
   belowW?: boolean;
+}
+
+/**
+ * GET /api/v1/optionsdesk/underlyings/{symbol}/legs 查询串 —— **检索条件的用户覆盖**
+ * (052 FR-012, plan D-CRIT-1)。全部字段省略 = 首屏 / 「复位」, 三视角走各自系统默认值。
+ *
+ * 🚨 **系统默认值不进请求** (FR-011): 它们依赖 spot 与行权价网格, 由服务端解出后随响应下发。
+ * 让客户端回传默认值就等于让它先算一份 —— 那正是 ADR-0064 不变量 ③ 禁的「同一判据两处各算」。
+ *
+ * 🚨 **缺参 = 未覆盖, 空串 = 覆盖为「不限」** —— 两者三态不同 (`default` vs `widened`):
+ * 「用户把上界拉到不限」与「用户没动过这个维度」在计数上是两回事。
+ *
+ * 🚨 **覆盖只落在 `perspective` 那一个视角上** (2026-08-13 定): 一次请求返三视角
+ * (047 FR-005) 而 FR-015 要每视角各自持有条件状态 —— 通吃三视角会让用户在收租设的上界同时
+ * 收窄建仓, 而建仓控件仍显示自己的默认值, 控件与数据不匹配且在界面上无法解释。
+ */
+export class LegRetrievalQuery {
+  @ApiPropertyOptional({
+    description:
+      '本次覆盖作用于哪个视角。**给了任一条件就 MUST 给它**; 省略 = 无覆盖 (三视角全走默认值)',
+    enum: [...LEG_TABS],
+    example: 'rent',
+  })
+  @IsOptional()
+  @IsIn([...LEG_TABS])
+  perspective?: string;
+
+  @ApiPropertyOptional({
+    description: '行权价上界 (闭区间); 空串 = 覆盖为不限',
+    type: 'string',
+    example: '138.0000',
+  })
+  @IsOptional()
+  @IsString()
+  strikeMax?: string;
+
+  @ApiPropertyOptional({
+    description: '行权价下界 (闭区间); 空串 = 覆盖为不限',
+    type: 'string',
+    example: '100.0000',
+  })
+  @IsOptional()
+  @IsString()
+  strikeMin?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'DTE 段下界 (闭区间)。🚨 **与 dteMax MUST 成对出现** —— DTE 段是**一个**维度、值是闭区间, ' +
+      '半个区间不是合法维度值; 静默补另一端要么意外放宽 (补不限), 要么要在这里重算默认值 —— ' +
+      '而那需要 spot, 正是 FR-011 禁的第二处计算。只给一端 → 400',
+    example: 30,
+  })
+  @IsOptional()
+  @IsString()
+  dteMin?: string;
+
+  @ApiPropertyOptional({
+    description: 'DTE 段上界 (闭区间)。与 dteMin 成对, 见其说明',
+    example: 365,
+  })
+  @IsOptional()
+  @IsString()
+  dteMax?: string;
+
+  @ApiPropertyOptional({
+    description: '权利金下限; 空串 = 覆盖为不限',
+    type: 'string',
+    example: '0.2384',
+  })
+  @IsOptional()
+  @IsString()
+  premiumMin?: string;
+
+  @ApiPropertyOptional({
+    description:
+      '未平仓 (OI) 下限 (张)。🚨 **与 volMin MUST 成对出现** —— 活性是**一个**维度、值是一对数 ' +
+      '(`OI ≥ oiMin` **或** `当日成交 ≥ volMin`)，半对不是合法维度值。只给一端 → 400',
+    example: 1,
+  })
+  @IsOptional()
+  @IsString()
+  oiMin?: string;
+
+  @ApiPropertyOptional({
+    description: '当日成交 (Vol) 下限 (张)。与 oiMin 成对，见其说明',
+    example: 1,
+  })
+  @IsOptional()
+  @IsString()
+  volMin?: string;
+
+  @ApiPropertyOptional({
+    description: '相对价差上界; 空串 = 覆盖为不限。全腿视角的系统默认值本就是不限 (FR-010)',
+    type: 'string',
+    example: '0.3000',
+  })
+  @IsOptional()
+  @IsString()
+  relativeSpreadMax?: string;
 }
 
 /** GET /api/v1/optionsdesk/anchors/{id}/at 查询串 (FR-031 PIT 还原, SC-011)。 */
@@ -1394,6 +1501,174 @@ export class LegExcludedByIntentTabResponse {
   rent!: number;
 }
 
+/** DTE 段 —— 一个维度、值是闭区间 (052 T010 六维表第 3 项)。 */
+export class DteBandResponse {
+  @ApiProperty({ description: 'DTE 段下界 (含)', example: 30 })
+  min!: number;
+
+  @ApiProperty({ description: 'DTE 段上界 (含)', example: 365 })
+  max!: number;
+}
+
+/** 活性下限 —— 一个维度的两个值 (052 T012)。两支是**或**的关系。 */
+export class LivenessFloorResponse {
+  @ApiProperty({ description: '未平仓 (OI) 下限，张', example: 1 })
+  oi!: number;
+
+  @ApiProperty({ description: '当日成交 (Vol) 下限，张', example: 1 })
+  volume!: number;
+}
+
+/**
+ * 一套**检索条件**的六个维度 (052 FR-002, T010 六维表)。每维度 `null` = **不限**。
+ *
+ * 🚨 **与「硬门槛」的分界**: 硬门槛无控件、不可调、表达不成范围区间 —— 本片只有一条,
+ * 建仓的有效成本 `K − bid < spot`。它蓄意**不在这六项里**: 一旦有了控件,「被指派后成本高于
+ * 现价」这种结构性错误就成了可谈判的, 而它不是。
+ */
+export class RetrievalCriteriaResponse {
+  @ApiProperty({
+    description: '行权价上界 (闭区间)。收租的系统默认值 = 成色上界; 全腿与建仓默认不限',
+    type: 'string',
+    nullable: true,
+    example: '137.6960',
+  })
+  strikeMax!: string | null;
+
+  @ApiProperty({
+    description: '行权价下界 (闭区间)。三视角系统默认值均为不限 —— 它只为用户可覆盖而存在',
+    type: 'string',
+    nullable: true,
+    example: null,
+  })
+  strikeMin!: string | null;
+
+  @ApiProperty({
+    description: 'DTE 段 (闭区间)。三视角默认值不同, **全腿不设** (FR-003)',
+    type: DteBandResponse,
+    nullable: true,
+  })
+  dteBand!: DteBandResponse | null;
+
+  @ApiProperty({
+    description:
+      '权利金下限。系统默认值 = `max(绝对下限, spot × 比例)` —— **依赖 spot ⇒ 客户端算不出**, ' +
+      '这正是它必须由服务端下发的理由 (FR-011)',
+    type: 'string',
+    nullable: true,
+    example: '0.2384',
+  })
+  premiumMin!: string | null;
+
+  @ApiProperty({
+    description:
+      '活性下限 —— **一个维度、两个值**: `OI ≥ oi` **或** `当日成交 ≥ volume`。' +
+      '🚨 两支是「或」不是「与」: 它问的是「这张合约上有没有人活动」，存量与流量**任一**成立即算活着。' +
+      '📌 蓄意不拆成两个维度 —— 拆开后同一条腿会同时计进两个维度的边际计数（OR 下换回任一支都能救它），' +
+      '两行「当前条件之外还有 N 条」说的是同一批腿',
+    type: LivenessFloorResponse,
+    nullable: true,
+  })
+  livenessMin!: LivenessFloorResponse | null;
+
+  @ApiProperty({
+    description: '相对价差上界。**全腿的系统默认值是不限** (FR-010: 该条件只作用两个意图视角)',
+    type: 'string',
+    nullable: true,
+    example: '0.3000',
+  })
+  relativeSpreadMax!: string | null;
+}
+
+/**
+ * 一个维度的三态与计数 (052 FR-029 / FR-030)。
+ *
+ * 🚨 **三态的判据是「是否产生排除」而非值比较** —— 后者对 DTE 段这种双端维度给不出唯一答案
+ * (一端收一端放同时发生), 且计数本来就要逐腿判一遍 ⇒ 两者同源派生, 才不会出现「显示了计数
+ * 但态是放宽」。📌 `widened` 因此含「方向是收窄但一条腿都没排除掉」: 处置与放宽相同。
+ */
+export class CriterionOutcomeResponse {
+  @ApiProperty({
+    description:
+      '`default` = 用户没动过 · `widened` = 覆盖了但没产生排除 · `narrowed` = 覆盖了且排除了腿',
+    enum: [...CRITERION_STATES],
+    example: 'narrowed',
+  })
+  state!: string;
+
+  @ApiProperty({
+    description:
+      '「**当前条件之外还有 N 条**」(FR-030) —— 边际口径: 把该维度换回系统默认值、其余维度保持' +
+      '用户值时多出来的候选数。恒有值, 非 narrowed 时为 0。🚫 MUST NOT 读成「被系统滤掉 N 条」: ' +
+      '系统默认值下的排除**不出计数** (FR-029 —— 默认值本身就摆在控件里, 第二次告知是噪音)',
+    example: 2,
+  })
+  excludedCount!: number;
+}
+
+/** 六个维度各自的三态与计数 —— 与 {@link RetrievalCriteriaResponse} 的字段一一对应。 */
+export class RetrievalOutcomesResponse {
+  @ApiProperty({ type: CriterionOutcomeResponse })
+  strikeMax!: CriterionOutcomeResponse;
+
+  @ApiProperty({ type: CriterionOutcomeResponse })
+  strikeMin!: CriterionOutcomeResponse;
+
+  @ApiProperty({ type: CriterionOutcomeResponse })
+  dteBand!: CriterionOutcomeResponse;
+
+  @ApiProperty({ type: CriterionOutcomeResponse })
+  premiumMin!: CriterionOutcomeResponse;
+
+  @ApiProperty({ type: CriterionOutcomeResponse })
+  livenessMin!: CriterionOutcomeResponse;
+
+  @ApiProperty({ type: CriterionOutcomeResponse })
+  relativeSpreadMax!: CriterionOutcomeResponse;
+}
+
+/** 一个视角的条件全景 —— 控件填 `defaults`, 结果按 `effective`, 计数看 `outcomes`。 */
+export class PerspectiveCriteriaResponse {
+  @ApiProperty({
+    description:
+      '**系统默认值** (FR-011) —— 客户端进入该视角时用它填控件。🚫 MUST NOT 自行计算任何一项: ' +
+      '行权价上界与权利金下限都依赖 spot (每天变), 客户端自算就是同一判据两处各一份, ' +
+      '而两边都算得出数 ⇒ 漂移只在换日那一刻才看得见',
+    type: RetrievalCriteriaResponse,
+  })
+  defaults!: RetrievalCriteriaResponse;
+
+  @ApiProperty({
+    description: '**本次生效值** —— 未覆盖的视角逐字等于 defaults',
+    type: RetrievalCriteriaResponse,
+  })
+  effective!: RetrievalCriteriaResponse;
+
+  @ApiProperty({
+    description: '六个维度各自的三态与计数; **仅 narrowed 显示计数** (FR-029)',
+    type: RetrievalOutcomesResponse,
+  })
+  outcomes!: RetrievalOutcomesResponse;
+}
+
+/**
+ * 三视角各自的条件全景 (052 FR-011)。
+ *
+ * 🚨 **恒有三份** —— 客户端本地切视角时**不发请求**, 要用另两个视角的默认值填控件。
+ * 📌 链未就绪时六维全 `null`: 那是「没有值」不是「不限」—— MUST NOT 拿一个假 spot 现算一份,
+ * 那会让「解不出」看起来像「解出来正好是这些值」。
+ */
+export class LegCriteriaByTabResponse {
+  @ApiProperty({ type: PerspectiveCriteriaResponse })
+  all!: PerspectiveCriteriaResponse;
+
+  @ApiProperty({ type: PerspectiveCriteriaResponse })
+  build!: PerspectiveCriteriaResponse;
+
+  @ApiProperty({ type: PerspectiveCriteriaResponse })
+  rent!: PerspectiveCriteriaResponse;
+}
+
 export class LegGateCountsResponse {
   @ApiProperty({
     description:
@@ -1596,6 +1871,100 @@ export class LegTableResponse {
     type: LegBasisByTabResponse,
   })
   basisByTab!: LegBasisByTabResponse;
+
+  @ApiProperty({
+    description:
+      '三视角各自的**检索条件全景** (052 FR-011 / FR-029) —— 控件填 defaults, 结果按 effective, ' +
+      '仅 narrowed 的维度出计数。恒有三份 (客户端本地切视角时不发请求)',
+    type: LegCriteriaByTabResponse,
+  })
+  criteriaByTab!: LegCriteriaByTabResponse;
+}
+
+/**
+ * 查询串 → 召回层的用户覆盖 (052 FR-012)。
+ *
+ * 🚨 **缺键 = 未覆盖, 空串 = 覆盖为不限** —— 逐键判 `!== undefined` 而非真值判断: `''` 与 `'0'`
+ * 都是假值, 真值判断会把「覆盖为不限」和「下限设为 0」双双吞成「没动过」, 而**三态照样出得来**。
+ *
+ * 🚨 **DTE 段两端 MUST 成对** (见 {@link LegRetrievalQuery.dteMin}): 只给一端 → 400。补另一端
+ * 需要该视角的默认段, 而那要 spot —— 在这里算就是 FR-011 禁的第二处计算。
+ *
+ * @throws BadRequestException 给了条件却没给 `perspective`; 或 DTE 段只给了一端。
+ */
+export function toRetrievalOverride(query: LegRetrievalQuery): RetrievalOverride | null {
+  // 逐键赋值 ⇒ 构建期需要可变形态; 返回时收窄回只读的 `Partial<RetrievalCriteria>`。
+  const criteria: { -readonly [K in keyof RetrievalCriteria]?: RetrievalCriteria[K] } = {};
+  const decimalOf = (raw: string) => (raw === '' ? null : new Prisma.Decimal(raw));
+  const intOf = (raw: string) => (raw === '' ? null : Number.parseInt(raw, 10));
+
+  if (query.strikeMax !== undefined) criteria.strikeMax = decimalOf(query.strikeMax);
+  if (query.strikeMin !== undefined) criteria.strikeMin = decimalOf(query.strikeMin);
+  if (query.premiumMin !== undefined) criteria.premiumMin = decimalOf(query.premiumMin);
+  if (query.relativeSpreadMax !== undefined) {
+    criteria.relativeSpreadMax = decimalOf(query.relativeSpreadMax);
+  }
+
+  // 活性：两个值成对（同 DTE 段——一个维度、一对数）。
+  const hasOi = query.oiMin !== undefined;
+  const hasVol = query.volMin !== undefined;
+  if (hasOi !== hasVol) {
+    throw new BadRequestException(
+      'oiMin 与 volMin MUST 成对出现 —— 活性是一个维度、值是一对数 (OI 或 当日成交)，半对不是合法维度值',
+    );
+  }
+  if (hasOi && hasVol) {
+    const oi = intOf(query.oiMin!);
+    const volume = intOf(query.volMin!);
+    criteria.livenessMin = oi === null || volume === null ? null : { oi, volume };
+  }
+
+  const hasMin = query.dteMin !== undefined;
+  const hasMax = query.dteMax !== undefined;
+  if (hasMin !== hasMax) {
+    throw new BadRequestException(
+      'dteMin 与 dteMax MUST 成对出现 —— DTE 段是一个维度、值是闭区间, 半个区间不是合法维度值',
+    );
+  }
+  if (hasMin && hasMax) {
+    const min = intOf(query.dteMin!);
+    const max = intOf(query.dteMax!);
+    criteria.dteBand = min === null || max === null ? null : { min, max };
+  }
+
+  const touched = Object.keys(criteria).length > 0;
+  if (!touched) return null;
+  if (query.perspective === undefined) {
+    throw new BadRequestException(
+      '给了检索条件就 MUST 给 perspective —— 覆盖只作用于一个视角 (052 FR-015)',
+    );
+  }
+  return { perspective: query.perspective as LegTab, criteria };
+}
+
+function toCriteriaResponse(criteria: RetrievalCriteria): RetrievalCriteriaResponse {
+  return {
+    strikeMax: decimal4(criteria.strikeMax),
+    strikeMin: decimal4(criteria.strikeMin),
+    dteBand: criteria.dteBand === null ? null : { ...criteria.dteBand },
+    premiumMin: decimal4(criteria.premiumMin),
+    livenessMin: criteria.livenessMin === null ? null : { ...criteria.livenessMin },
+    relativeSpreadMax: decimal4(criteria.relativeSpreadMax),
+  };
+}
+
+function toPerspectiveCriteriaResponse(criteria: PerspectiveCriteria): PerspectiveCriteriaResponse {
+  const outcomes = {} as RetrievalOutcomesResponse;
+  // 🚨 按 `RETRIEVAL_CRITERION_KEYS` 展开而不是逐字段抄: 加一个维度而这里漏映射, 响应里那一维
+  // 就静默缺席 —— 而客户端照样渲染得出来 (缺的那格没有控件, 没人会发现)。
+  for (const key of RETRIEVAL_CRITERION_KEYS) {
+    outcomes[key] = { ...criteria.outcomes[key] };
+  }
+  return {
+    defaults: toCriteriaResponse(criteria.defaults),
+    effective: toCriteriaResponse(criteria.effective),
+    outcomes,
+  };
 }
 
 function toLegActivityResponse(mark: ActivityMark | null): LegActivityResponse | null {
@@ -1686,5 +2055,10 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     // `tierByTab` 正是按它判出来的, 抄一份在此会让「口径改了但下发的还是旧的」不红任何一处。
     // 判据在 rules、档位在 DTO 层合成: 同 `asOfFreshnessTier` 那条分工 (046 起的体例)。
     basisByTab: { all: BASIS_BY_TAB.all, build: BASIS_BY_TAB.build, rent: BASIS_BY_TAB.rent },
+    criteriaByTab: {
+      all: toPerspectiveCriteriaResponse(view.criteriaByTab.all),
+      build: toPerspectiveCriteriaResponse(view.criteriaByTab.build),
+      rent: toPerspectiveCriteriaResponse(view.criteriaByTab.rent),
+    },
   };
 }
