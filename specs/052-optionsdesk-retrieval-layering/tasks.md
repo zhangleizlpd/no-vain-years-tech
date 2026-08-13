@@ -193,7 +193,25 @@ updated_at: '2026-08-12'
 
   ✅ verify: `nx test server` **411 文件 / 4078 用例绿**（本批 +26，含 3 条真库 IT）· `nx test @nvy/checks` 217 绿 · `nx lint server` 绿 · `check-optionsdesk-rule-constants` 七条不变量过 · `check-server-moat` 0 违规 · `check-test-size` 七条不变量过。
 
-- [ ] T011 [Contract] **DTO + OpenAPI + api-client regen**（`FR-011`, `FR-029`, plan §V）：`optionsdesk.dto.ts` 加三组字段，**每组均覆盖上表六个维度**（非泛指）：「本次生效条件值」「系统默认值」「每维度三态（未覆盖 / 覆盖且放宽 / 覆盖且收窄）与计数」；nullable string 字段的 `@ApiProperty` 显式 `type: 'string'`；跑 `nx run server:export-openapi` + `nx affected -t generate`，修因新 required 字段编译红的手写 mock 工厂。→ verify: `openapi.json` diff 只增不删 + `nx affected -t build` 绿 + **手写 mock 工厂逐处补齐**（`050` 那次是 7 处）
+- [X] T011 [Contract] **DTO + OpenAPI + api-client regen**（`FR-011`, `FR-029`, plan §V）：`optionsdesk.dto.ts` 加三组字段，**每组均覆盖上表六个维度**（非泛指）：「本次生效条件值」「系统默认值」「每维度三态（未覆盖 / 覆盖且放宽 / 覆盖且收窄）与计数」；nullable string 字段的 `@ApiProperty` 显式 `type: 'string'`；跑 `nx run server:export-openapi` + `nx affected -t generate`，修因新 required 字段编译红的手写 mock 工厂。→ verify: `openapi.json` diff 只增不删 + `nx affected -t build` 绿 + **手写 mock 工厂逐处补齐**（`050` 那次是 7 处）
+
+  🚨 **请求侧也在本 task 落地**（tasks 原文只提响应三组字段，但没有请求参数「用户覆盖」就无从提交）：`LegRetrievalQuery` = `perspective` + 六维，controller `@Query()` 接入，`toRetrievalOverride()` 做映射。
+
+  🚨 **缺键 = 未覆盖，空串 = 覆盖为「不限」**。⇒ 映射**逐键判 `!== undefined`**，🚫 MUST NOT 用真值判断：`''` 与 `'0'` 都是假值，真值判断会把「覆盖为不限」和「下限设为 0」双双吞成「没动过」——而三态照样出得来。有断言守 `openInterestMin=0`。
+
+  🚨 **DTE 段两端 MUST 成对，只给一端 → 400**。半个闭区间不是合法维度值；静默补另一端要么意外放宽（补不限），要么要在 controller 重算默认值——**而那需要 spot**，正是 `FR-011` 禁的第二处计算。这条使「DTE 段是一个维度」在契约层也成立。
+
+  📌 **系统默认值不进请求**：客户端不回传默认值（「复位」= 不带任何参数）。让它回传就等于让它先算一份。
+
+  🔬 **`openapi.json` 逐项比对（不靠肉眼看 diff——它是单行 JSON）**：脚本解析前后两版 ⇒ schema **只增 6 个**（`RetrievalCriteriaResponse` / `RetrievalOutcomesResponse` / `CriterionOutcomeResponse` / `PerspectiveCriteriaResponse` / `LegCriteriaByTabResponse` / `DteBandResponse`）、path **零增删**、既有 schema **零字段删除**（`LegTableResponse` 只增 `criteriaByTab`）、legs 端点新增 7 个 query 参数。
+
+  ✅ **nullable 字段未被 orval 误生 objectmap**：六个 nullable 项在生成的 `RetrievalCriteriaResponse` 里逐条是 `string | null` / `number | null` / `DteBandResponse | null`（`@ApiProperty` 显式 `type` 的既有纪律照办）。
+
+  ⚠️ **手写 mock 工厂补齐 6 处**（050 那次是 7 处）：`leg-picker.rules.spec.ts` · 三个 e2e spec 的 `makeLegTable` · contract-smoke 两处调用点。**hook 签名也变了**（orval 给 `useOptionsdeskControllerLegs(symbol, params?, options?)`）⇒ `use-leg-table.ts` 恒传 `undefined` 占住第二参，真值归 T012。📌 三个 e2e 的六维 mock 抽到 `e2e/_support/optionsdesk-fixtures.ts`——各写一份就是三份必 drift 的镜像，而 drift 时 **typecheck 全绿**（形状对、值不同）。
+
+  📌 **条件值一进 query 就自动进 React Query 的 key**（orval 生成的 key 含 params）⇒ `FR-015`「每视角各自持有条件状态」是**结构保证**，T012 不需要手写隔离。
+
+  ✅ verify: `openapi.json` **只增不删**（逐项比对）· `nx affected -t build` 绿 · `nx typecheck mobile` 绿 · `nx test server` 411 文件 / **4084** 用例绿（本 task +6）· `nx test mobile` 101 文件 / 1459 绿 · `nx lint` 两端绿 · `check-api-property-nullable` / `check-contract-smoke-drift` / `check-test-size` 均过
 
 ---
 

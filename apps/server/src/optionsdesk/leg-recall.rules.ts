@@ -399,7 +399,9 @@ export interface RetrievalOverride {
  * ⇒ `widened` 含「覆盖了、方向是收窄、但一条腿都没排除掉」(如上界收到仍高于链上最大行权价):
  * 处置与放宽相同 (不显示计数), 为一个不影响行为的区分多养一个状态只会多一处 drift。
  */
-export type CriterionState = 'default' | 'widened' | 'narrowed';
+export const CRITERION_STATES = ['default', 'widened', 'narrowed'] as const;
+
+export type CriterionState = (typeof CRITERION_STATES)[number];
 
 export interface CriterionOutcome {
   readonly state: CriterionState;

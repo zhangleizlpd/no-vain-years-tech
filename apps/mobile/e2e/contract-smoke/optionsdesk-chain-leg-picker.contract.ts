@@ -281,7 +281,8 @@ async function createAnchor(cfg: Cfg, ticker: string): Promise<string> {
 }
 
 async function readLegs(cfg: Cfg, symbol: string): Promise<LegTableResponse> {
-  const res = await optionsdeskControllerLegs(symbol, cfg);
+  // 第二参 = 检索条件覆盖（052 T011）；契约冒烟走**默认值**路径 ⇒ 恒 undefined。
+  const res = await optionsdeskControllerLegs(symbol, undefined, cfg);
   assert.equal(res.status, 200, `legs(${symbol}) expected 200, got ${res.status}`);
   return res.data;
 }
@@ -645,7 +646,7 @@ async function assertChainNotReady(cfg: Cfg): Promise<void> {
 
 async function assertNoAnchorIs404(cfg: Cfg): Promise<void> {
   await assert.rejects(
-    () => optionsdeskControllerLegs(NO_ANCHOR, cfg),
+    () => optionsdeskControllerLegs(NO_ANCHOR, undefined, cfg),
     (err: unknown) => {
       const e = err as { response?: { status?: number; data?: { code?: string } } };
       assert.equal(

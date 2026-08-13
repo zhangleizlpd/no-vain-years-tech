@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import type { AnchorResponse, LegResponse, LegTableResponse } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
+import { emptyCriteriaByTab } from './_support/optionsdesk-fixtures';
 
 // 051 T011 — 选约表**显示口径**的 hermetic UI e2e（Playwright Expo Web，Constitution §V 两层
 // 验证之一；另一层是 T012 的契约冒烟）。样板 = `optionsdesk-chain-leg-picker.spec.ts`。
@@ -279,6 +280,8 @@ function makeTable(
       excludedFromIntentTabsByTab: { build: excludedIn('build'), rent: excludedIn('rent') },
     },
     basisByTab,
+    // 052 T011 契约增量：三视角恒有一份条件全景（消费归 T012）。
+    criteriaByTab: emptyCriteriaByTab(),
     ...opts.over,
   };
 }

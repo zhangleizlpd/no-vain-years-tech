@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import type { PrismaService } from '../security/prisma.service';
@@ -6,7 +6,7 @@ import { GetLegsUseCase } from './get-legs.usecase';
 import { ACTIVITY_TOP_RANK_COUNT } from './leg-derive.rules';
 import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
-import { toLegTableResponse } from './optionsdesk.dto';
+import { toLegTableResponse, toRetrievalOverride } from './optionsdesk.dto';
 
 // 请求时刻 = 2026-08-04 ET 16:00 (= UTC 20:00) ⇒ 交易所的今天恒为 2026-08-04。
 // 🚨 蓄意用一个「北京已是 08-05 凌晨」都不成立的时刻也无所谓 —— 基准由 marketDateFor(['us'])
@@ -948,5 +948,70 @@ describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
     const legOf = (v: typeof plain, code: string) => v.legs.find((l) => l.code === code)!;
     expect(legOf(plain, 'C-D').activityByTab.build).not.toBeNull();
     expect(legOf(widened, 'C-D').activityByTab.build).not.toBeNull();
+  });
+});
+
+/**
+ * T011 —— 契约层：查询串 → 覆盖，以及三组字段的下发 (052 `FR-011` / `FR-029`, plan §V)。
+ */
+describe('optionsdesk.dto — 检索条件的请求与响应契约 (052 T011)', () => {
+  it('无任何条件参数 ⇒ null (首屏 / 「复位」走的就是这条路径)', () => {
+    expect(toRetrievalOverride({})).toBeNull();
+    // 🚨 只给 perspective 不给任何条件也算无覆盖 —— 否则「复位」会被记成一次全维度覆盖。
+    expect(toRetrievalOverride({ perspective: 'rent' })).toBeNull();
+  });
+
+  it('🚨 缺键 = 未覆盖, 空串 = 覆盖为「不限」—— 两者三态不同', () => {
+    expect(toRetrievalOverride({ perspective: 'rent', strikeMax: '' })?.criteria).toEqual({
+      strikeMax: null,
+    });
+    expect(
+      toRetrievalOverride({ perspective: 'rent', strikeMax: '138' })?.criteria.strikeMax,
+    ).toBeInstanceOf(Prisma.Decimal);
+    expect(
+      'strikeMax' in (toRetrievalOverride({ perspective: 'rent', strikeMin: '' })?.criteria ?? {}),
+    ).toBe(false);
+  });
+
+  it('🚨 `0` MUST NOT 被真值判断吞成「没动过」—— 它是一个合法的下限值', () => {
+    const override = toRetrievalOverride({ perspective: 'rent', openInterestMin: '0' });
+    expect(override?.criteria.openInterestMin).toBe(0);
+  });
+
+  it('🚨 DTE 段两端 MUST 成对 —— 只给一端即 400 (半个区间不是合法维度值)', () => {
+    expect(() => toRetrievalOverride({ perspective: 'rent', dteMin: '30' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => toRetrievalOverride({ perspective: 'rent', dteMax: '365' })).toThrow(
+      BadRequestException,
+    );
+    expect(
+      toRetrievalOverride({ perspective: 'rent', dteMin: '30', dteMax: '365' })?.criteria.dteBand,
+    ).toEqual({ min: 30, max: 365 });
+    // 两端都空 ⇒ 覆盖为不限。
+    expect(
+      toRetrievalOverride({ perspective: 'rent', dteMin: '', dteMax: '' })?.criteria.dteBand,
+    ).toBeNull();
+  });
+
+  it('🚨 给了条件却没给 perspective ⇒ 400 —— 覆盖只作用于一个视角, 没有「作用于全部」这个取值', () => {
+    expect(() => toRetrievalOverride({ strikeMax: '138' })).toThrow(BadRequestException);
+  });
+
+  it('🚨 三组字段**逐维度**下发, 六项一个不少 (T011 的验收口径是穷举不是泛指)', async () => {
+    const res = toLegTableResponse(await makeUseCase(makePrisma()).execute(SYMBOL, NOW));
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      const panel = res.criteriaByTab[tab];
+      for (const key of RETRIEVAL_CRITERION_KEYS) {
+        expect(panel.defaults).toHaveProperty(key);
+        expect(panel.effective).toHaveProperty(key);
+        expect(panel.outcomes[key]).toEqual({ state: 'default', excludedCount: 0 });
+      }
+    }
+    // Decimal 一律定标 string (与 spot / w 同口径); 计数量纲是 number。
+    expect(typeof res.criteriaByTab.rent.defaults.strikeMax).toBe('string');
+    expect(res.criteriaByTab.rent.defaults.dteBand).toEqual({ min: 30, max: 365 });
+    expect(res.criteriaByTab.all.defaults.dteBand).toBeNull();
+    expect(res.criteriaByTab.all.defaults.relativeSpreadMax).toBeNull();
   });
 });

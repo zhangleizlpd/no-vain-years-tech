@@ -8,7 +8,12 @@
 //   · 活跃度**随 Tab 换**（排名是候选集内的相对量，同一条腿在两个 Tab 里不是同一个标）
 //   · 未选水位 ⇒ 停「全腿」+ 两条显式提示，**MUST NOT 静默取某一 Δ 档**（FR-017）
 import { describe, expect, it } from 'vitest';
-import type { LegResponse, LegTableResponse } from '@nvy/api-client';
+import type {
+  LegResponse,
+  LegTableResponse,
+  PerspectiveCriteriaResponse,
+  RetrievalCriteriaResponse,
+} from '@nvy/api-client';
 
 import {
   DEFAULT_TAB_BY_INTENT,
@@ -78,6 +83,36 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
   };
 }
 
+/**
+ * 一个视角的检索条件全景（052 T011）—— 基线取「全维度不限 + 三态全 default」。
+ *
+ * 🚨 六个维度**逐个写出**而不是 `Partial`：漏一维的话，消费侧读到 `undefined` 会当成「不限」
+ * 渲染出一个空控件，而 typecheck 不报（`Partial` 把缺席合法化了）。要非默认值的用例走 overrides。
+ */
+function criteria(): PerspectiveCriteriaResponse {
+  const values: RetrievalCriteriaResponse = {
+    strikeMax: null,
+    strikeMin: null,
+    dteBand: null,
+    premiumMin: null,
+    openInterestMin: null,
+    relativeSpreadMax: null,
+  };
+  const untouched = { state: 'default' as const, excludedCount: 0 };
+  return {
+    defaults: values,
+    effective: values,
+    outcomes: {
+      strikeMax: untouched,
+      strikeMin: untouched,
+      dteBand: untouched,
+      premiumMin: untouched,
+      openInterestMin: untouched,
+      relativeSpreadMax: untouched,
+    },
+  };
+}
+
 function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
   return {
     symbol: 'us:PEP',
@@ -106,6 +141,8 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
       excludedFromIntentTabsByTab: { build: 0, rent: 0 },
     },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
+    // 052 契约增量（T011 只镜像形状，消费归 T012）：三视角恒有一份条件全景，六维穷举。
+    criteriaByTab: { all: criteria(), build: criteria(), rent: criteria() },
     ...overrides,
   };
 }

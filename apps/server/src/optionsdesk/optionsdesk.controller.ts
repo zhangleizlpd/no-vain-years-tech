@@ -54,6 +54,7 @@ import {
   AnchorResponse,
   CreateAnchorRequest,
   GetAnchorAtQuery,
+  LegRetrievalQuery,
   LegTableResponse,
   ListAnchorsQuery,
   PositionBucketResponse,
@@ -66,6 +67,7 @@ import {
   UpdateAnchorRequest,
   toAnchorListResponse,
   toLegTableResponse,
+  toRetrievalOverride,
   toAnchorPointInTimeResponse,
   toAnchorResponse,
   toAnchorWriteResponse,
@@ -242,8 +244,14 @@ export class OptionsdeskController {
     type: ProblemDetailResponse,
   })
   @ApiResponse({ status: 429, description: 'Rate limit (120/60s)', type: ProblemDetailResponse })
-  async legs(@Param('symbol') symbol: string): Promise<LegTableResponse> {
-    return toLegTableResponse(await this.getLegs.execute(symbol));
+  async legs(
+    @Param('symbol') symbol: string,
+    @Query() query: LegRetrievalQuery,
+  ): Promise<LegTableResponse> {
+    // 覆盖只作用一个视角 (052 FR-015); 无参数 = 首屏 / 「复位」⇒ 三视角全走系统默认值。
+    return toLegTableResponse(
+      await this.getLegs.execute(symbol, undefined, toRetrievalOverride(query)),
+    );
   }
 
   @Get('thermometer')

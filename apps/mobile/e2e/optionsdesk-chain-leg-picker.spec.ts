@@ -10,6 +10,7 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
+import { emptyCriteriaByTab } from './_support/optionsdesk-fixtures';
 
 // 047 T035 — 选约表（US2 / US3 / US4）hermetic UI e2e（Playwright Expo Web，Constitution §V
 // 两层验证之一；样板 = `optionsdesk-detail-thermometer.spec.ts`）。
@@ -319,6 +320,8 @@ function makeLegTable(
       excludedFromIntentTabsByTab: { build: 0, rent: 0 },
     },
     basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
+    // 052 T011 契约增量：三视角恒有一份条件全景（消费归 T012）。
+    criteriaByTab: emptyCriteriaByTab(),
     ...over,
   };
 }

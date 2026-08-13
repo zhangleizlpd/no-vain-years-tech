@@ -68,7 +68,11 @@ export interface UseLegTableResult {
 }
 
 export function useLegTable(symbol: string): UseLegTableResult {
-  const query = useOptionsdeskControllerLegs(symbol, {
+  // 第二参 = 检索条件的用户覆盖（052 FR-012）。T011 只接通签名恒传 `undefined`（= 首屏 /
+  // 「复位」，三视角全走系统默认值）；把用户值接进来是 T012 的事。
+  // 📌 条件值一进这里就自动进 query key（orval 生成的 key 含 params）⇒ 每视角各自持有状态
+  // （FR-015）是**结构保证**，不需要手写隔离。
+  const query = useOptionsdeskControllerLegs(symbol, undefined, {
     query: { enabled: symbol.length > 0, retry: retryUnlessNoAnchor },
   });
   // 手点值连同**当时的意图**一起记 —— 判定见 `resolveLegTab`（意图变了就让位）。
