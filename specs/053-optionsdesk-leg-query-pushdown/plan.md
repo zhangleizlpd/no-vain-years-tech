@@ -34,7 +34,7 @@ context7_verified: []
 
 - [x] **Server**: 新端点形状（`perspective` 作答 + 响应收窄 + 截断）由 `optionsdesk-053.query.it.spec.ts` 覆盖（Testcontainers 真 PG），每条 state branch 一个 `it()`。
 - [x] **Mobile / Web**: 三条用户旅程（截断计数可见 / 单视角失败隔离 / 错峰预热时序）走 Playwright Expo Web hermetic e2e；列改版几何与切换手感走真机（web 验不到，见 spec `web_compat_notes`）。
-- [x] **绊线**：列改版若导致表头高度或列宽合计变化 ⇒ **停下补 mockup**，MUST NOT 在 impl 期即兴调版式。
+- [x] **mockup 已走完**（2026-08-13，`design/053-leg-columns.dc.html` 3 帧）—— 列改版是本片唯一有新视觉形态的一块，绊线已在 tasks 之前触发并闭合。列宽合计与首列冻结宽经渲染实测未变（`trackWidths 302` / `paneWidths 628`）。
 - **Evidence**: 待 impl 期回填（IT 文件路径 + e2e spec 路径 + 真机验收记录写回 spec § 真机验收）。
 
 ### Gate 0.2 — Cross-stack Vendor Intersection 6Q Card
@@ -233,12 +233,23 @@ DISPLAY_LIMIT_BY_PERSPECTIVE = { all: <标定>, build: <标定>, rent: <标定> 
 
 ## D-COL-1 · 列改版（`FR-030`–`FR-033`）
 
-新列序：`行权价/到期` → `bid` → `ask` → `折算费率` → **`单笔权利金`（新）** → `OI` → `相对价差` → 其余。
+**mockup 已定稿**（2026-08-13）：`design/053-leg-columns.dc.html` 3 帧 + `design/handoff.md`。渲染验证六项探测全绿，几何逐值实测。**本节只写 HOW，列集与判据的 SoT 在 spec `FR-030`–`FR-034`。**
 
-- `bid`/`ask` 由共用一格拆成两列 —— 挂许愿单要同时看两侧报价来定挂单价，共用一格时两个数字号不同、不便比对。
+`LEG_TABLE_COLUMNS` 改为（合计仍 **716**，首列仍 **88**）：
+
+```text
+strike 88 · bid 88 · rate 56 · premium 50(新) · oi 50 · spread 48(新)
+· cost 56 · delta 42 · vol 46 · activity 42 · mark 84 · action 66     = 716
+```
+
+- 🚫 **`bid`/`ask` 不拆**（`FR-031` 已订正）—— 它已是单元格内 2 行 × 2 列，88px 是最宽真实内容逼出来的。拆开只会更宽。
+- 🚫 **删 `sigma` 与 `turnover`**（`FR-034`）—— `46 + 52 = 98` 恰好填平新增两列。删 `sigma` 零信息损失（与 `delta` 由 `Φ` 构造性一一对应）。
+  📌 连带：`leg-row.rules.ts` 文件头那条「Δ 与 σ距 MUST 同时有值或同时留占位」的不变量**随 `sigma` 列退场而失去对象**，注释 MUST 同步删除或改写 —— 留着会让下一个人以为还有第二列要维护。
 - **单笔权利金服务端算**（`FR-032`）：新增契约字段。客户端乘一次 = 判据双写。
-- 🚨 **列宽合计 MUST 不变**：`049` 的横滑范式把内容总宽当作位移钳制的输入，总宽一变，指示条长度比与 `maxTx` 全跟着变，而**真机上表现为「右侧滑不到底」且不会红**。⇒ 新列的宽度 MUST 从后置列压缩吸收，首列 88 不动。
-- → verify: `LEG_TABLE_COLUMNS` 宽度合计与 `049` 一致（Small 断言）+ 真机横滑到最右端末列完整露出。
+- 🚨 **列宽合计 MUST 不变**：`049` 的横滑范式把内容总宽当作位移钳制的输入，总宽一变，指示条长度比与 `maxTx` 全跟着变，而**真机上表现为「右侧滑不到底」且不会红**。
+- ⚠️ **列宽是 mockup 估算不是实测标定**：`premium 50` / `spread 48` 按「5 字符 × 约 6.6px 等宽 + 内边距」推得，impl 期 MUST 用真机最宽真实内容复核（同 `bid` 列当年 `68 → 88` 的来路）。
+- 🚨 **表头字号会倒逼列宽**：mockup 实测表头 11px 时 `成本vsW` 在 56px 内**折行**，10px 才不折。⇒ 实装若沿用别的字号，`cost` 列宽 MUST 重算（`SC-019`）。
+- → verify: `LEG_TABLE_COLUMNS` 宽度合计断言 = 716 且首列 = 88（Small，`SC-018`）+ 表头零折行（`SC-019`）+ 真机横滑到最右端末列完整露出。
 
 ---
 
@@ -299,7 +310,7 @@ DISPLAY_LIMIT_BY_PERSPECTIVE = { all: <标定>, build: <标定>, rent: <标定> 
 | 6 | `[Contract]` | `export-openapi` + `nx affected -t generate` regen + 修手写 mock 工厂编译红 |
 | 7 | `[Mobile]` | `use-leg-table.ts` 改三 query + 错峰 + 失败隔离 + 一致性 latch + 水位失效三份 |
 | 8 | `[Mobile]` | 消费收窄后的契约（七处 `xxxByTab[tab]` 索引形态清零）+ 截断计数第 3 条 |
-| 9 | `[Mobile]` | 列改版：列序 + `bid`/`ask` 拆列 + 单笔权利金列 + 宽度合计不变 |
+| 9 | `[Mobile]` | 列改版：列序 + 删 `sigma`/`turnover` 两列（含 `leg-row.rules.ts` 头部那条随之失去对象的不变量注释）+ 加 `premium`/`spread` 两列 + 宽度合计断言 716 |
 | 10 | `[Mobile-E2E]` | hermetic e2e：截断计数 / 单视角失败 / 一致性 / 错峰时序 / 切视角保留条件 |
 | 11 | `[Contract-Smoke]` | 契约冒烟扩到新参数与新字段，并验删掉的结构确实不再出现 |
 | 12 | `[Gate]` | **三个视角截断阈值的实测标定** + 写回 spec；占位标记扫零命中 |
