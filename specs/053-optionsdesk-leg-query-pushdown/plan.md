@@ -119,7 +119,10 @@ context7_verified: []
 
 🚨 **`memberCount` 的算法（clarify 2026-08-13 定，`FR-009`）**：对**同一批已取回的链行**用 `override = null` 再跑一次 `recallCandidates`。**零额外 DB 往返** —— `leg-retrieval.adapter.ts` 的 DB 层只下结构性谓词（`optionType: 'PUT'` + 快照日 + contract ids，`:51`/`:75`），六维判据是取回后的纯函数（`:138`）⇒ 第二次判定是纯 CPU。
 
-📌 **落法建议：同一次遍历内评两套判据**，而非把 `recallCandidates` 整体跑两遍 —— 后者要把 `RecallOutcome` 的三个计数也重算一遍并丢弃，多出的是无人消费的中间结果。
+🚨 **落法（2026-08-14 owner 裁定，订正本节起草时的建议）**：由 **adapter 用同一批已在内存的 `legs` 再跑一次 `recallCandidates(override = null)`**，并在 `LegRetrievalResult` 上加 `memberCount` **一个出参字段**。
+
+> ⚠️ 起草时这里写的是「**同一次遍历内评两套判据**，而非把 `recallCandidates` 整体跑两遍」。**该建议已作废** —— 它落在 `leg-recall.rules.ts` 内，与 `FR-044` / T005 的「该文件零行 diff」判据直接冲突。而 use case 侧根本拿不到原始链行（`recallCandidates` 只 push `tabs.length > 0` 的候选，`:666`）⇒ 收窄生效后被挡下的行在 use case 里结构上取不回来。三条约束（零额外往返 / 不用边际加总 / recall 文件零改动）交集为空，裁定松 `FR-003` 的**出参**面（入参 `perspectives` 一字不动，Guardrail 9 的理由面不受影响）。代价 = 多一趟 `O(n ≤ K)` 纯 CPU 遍历并丢弃重算的三个计数，**换零判据改动**。
+
 🚫 **MUST NOT 用 `052` 的六维边际计数加总充当它** —— 边际口径下被两维同时挡下的腿两维都不计它，加总**少报**（Guardrail 12）。
 
 ---
@@ -291,7 +294,7 @@ strike 88 · bid 88 · rate 56 · premium 50(新) · oi 50 · spread 48(新)
 6. **截断计数用告警色** —— 截断是正常呈现约定，告警色会让人以为数据坏了（`D-UI-1`）。
 7. **截断分支用合成 fixture 验** —— 测的是「slice 能不能跑」，不是「真实链上截断对不对」（`D-LIMIT-1`）。
 8. **只断言截断后的条数** —— 条数对不代表截对了；必须断言**截掉的是排序尾部**（`D-ORDER-1`）。
-9. **改 port 签名** —— `052` 已把 `perspectives` 立好，改签名等于把「留好的接口」白留（`D-API-1`）。
+9. **改 port 签名** —— `052` 已把 `perspectives` 立好，改签名等于把「留好的接口」白留（`D-API-1`）。⚠️ **本条自 2026-08-14 起限于入参**：出参 `LegRetrievalResult` 加 `memberCount` 一个字段是 `FR-009` 的唯一可行落点（裁定与推导见 spec `FR-003`）。**入参 `perspectives` 仍一字不动。**
 10. **列改版顺手调列宽** —— 内容总宽一变，真机右侧滑不到底且不会红（`D-COL-1`）。
 11. **把 `D`（实际显示条数）或「其余 N−D」下发** —— 两者都可现算，下发第二份必 drift（`D-API-1`）。
 12. **拿 `052` 的六维边际计数加总充当 `memberCount`** —— 边际口径下被两维同时挡下的腿**两维都不计它**（`052` T010 有断言守）⇒ 加总**少报**，而数字照样出得来（`D-API-1`）。

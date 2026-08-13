@@ -57,20 +57,20 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 6. **截断计数用告警色** —— 截断是正常呈现约定；`K` 熔断才是异常（两者 MUST 不同款）。
 7. **截断分支用合成 fixture 验** —— 测的是「slice 能不能跑」，不是「真实链上截断对不对」⇒ 走**注入小阈值**。
 8. **只断言截断后的条数** —— 条数对不代表截对了；必须断言**截掉的是排序尾部**（前 `D` 条逐条相同）。
-9. **改 port 签名** —— `052` 已把 `perspectives` 立好，改签名等于把留好的接口白留。
+9. **改 port 入参** —— `052` 已把 `perspectives` 立好，改入参等于把留好的接口白留。⚠️ **2026-08-14 裁定：本条限入参**，出参 `LegRetrievalResult` 加 `memberCount` 一个字段（推导见 spec `FR-003`）。
 10. **列改版顺手调列宽** —— 内容总宽一变，真机右侧滑不到底**且不会红**。
 11. **把 `D`（实际显示条数）或「其余 N−D」下发** —— 两者都可现算，下发第二份必 drift。
 12. **拿 `052` 的六维边际计数加总充当 `memberCount`** —— 边际口径下被两维同时挡下的腿**两维都不计它**，加总**少报**，而数字照样出得来。
-13. **为 `memberCount` 多查一次库** —— DB 层只下结构性谓词，六维判据在取回后的纯函数里；第二次判定用同一批行即可。
+13. **为 `memberCount` 多查一次库** —— DB 层只下结构性谓词，六维判据在取回后的纯函数里；第二次判定用同一批行即可。📌 **落法已定**（2026-08-14 裁定）：第二次判定落 **adapter**（原始链行只存在于那里），`recallCandidates(override = null)` 跑同一批已在内存的 `legs`，结果经出参 `memberCount` 上浮。🚫 **MUST NOT 落 `leg-recall.rules.ts`** —— 撞 `FR-044` / T005 的零行 diff 判据。
 14. **把 `K` 的触及做成第四条常规计数** —— 它是保险丝熔断不是判据挡下，同款呈现会让「该调容量」被读成「该调展示」。
 
 ---
 
 ## Phase 1: 服务端语义翻转（阻塞其余全部）🎯
 
-- [X] T001 [Server] **`perspective` 升为「决定返回哪个视角」+ 调用点收敛**（`FR-001`, `FR-003`, `FR-004`, plan `D-API-1`）：`optionsdesk.controller.ts:253` 传入 `perspective`（缺失 → 400 或明确默认视角，二选一并写进 DTO 描述）；`get-legs.usecase.ts:430` 的 `perspectives: LEG_TABS` 改传请求的那一个；`:649` / `:733` 两处 `for (const tab of LEG_TABS)` 收敛为单视角。🚫 **`leg-retrieval.port.ts` 签名一字不改**（Guardrail 9）。→ verify: IT 三值各自只返回该视角的腿且顺序取自服务端 + 缺 `perspective` 的 400 断言 + `git diff leg-retrieval.port.ts` **零行** + `nx test server --skip-nx-cache` 全绿
+- [X] T001 [Server] **`perspective` 升为「决定返回哪个视角」+ 调用点收敛**（`FR-001`, `FR-003`, `FR-004`, plan `D-API-1`）：`optionsdesk.controller.ts:253` 传入 `perspective`（缺失 → 400 或明确默认视角，二选一并写进 DTO 描述）；`get-legs.usecase.ts:430` 的 `perspectives: LEG_TABS` 改传请求的那一个；`:649` / `:733` 两处 `for (const tab of LEG_TABS)` 收敛为单视角。🚫 **`leg-retrieval.port.ts` 签名一字不改**（Guardrail 9）。→ verify: IT 三值各自只返回该视角的腿且顺序取自服务端 + 缺 `perspective` 的 400 断言 + `git diff leg-retrieval.port.ts` **零行** + `nx test server --skip-nx-cache` 全绿。📌 **该零行判据限 T001 期**：2026-08-14 裁定后 T002 会在 `LegRetrievalResult` 加 `memberCount` 一个**出参**字段（入参仍零改动），届时本行的零行 diff 不再复现 —— 见 spec `FR-003`
 
-- [ ] T002 [Server] **截断纯函数 + 分档常量 + 三个计数**（`FR-004`, `FR-009`, `FR-010`–`FR-012`, `FR-019c`, plan `D-ORDER-1` / `D-LIMIT-1`）：`leg-rank.rules.ts` 加 `DISPLAY_LIMIT_BY_PERSPECTIVE`（三值带 `⏳` 占位标记 + 「标定在 T012」+「MUST NOT 当已标定值引用」三个标记）与截断纯函数（判据**严格大于才截**）；use case 在精排之后截断，并产出 `matchedCount`（当前条件）、`memberCount`（**同一批已取回行**上用 `override = null` 再判一次，同一次遍历内评两套判据）、`K` 触及数上浮。阈值 **MUST 可注入**（use case 签名带可选参数，默认取常量）。→ verify: Small —— 边界三态（`<` / `=` / `>`）+ 降级后返回本体 + `K` 与 `N` 不共用常量的对照断言（`052` T005 留的量级断言在此变成真对照）+ **`memberCount` 零额外 DB 往返**（断言 `retrieveCandidates` 调用次数为 1，Guardrail 13）+ 未覆盖时 `memberCount === matchedCount`
+- [ ] T002 [Server] **截断纯函数 + 分档常量 + 三个计数**（`FR-004`, `FR-009`, `FR-010`–`FR-012`, `FR-019c`, plan `D-ORDER-1` / `D-LIMIT-1`）：`leg-rank.rules.ts` 加 `DISPLAY_LIMIT_BY_PERSPECTIVE`（三值带 `⏳` 占位标记 + 「标定在 T012」+「MUST NOT 当已标定值引用」三个标记）与截断纯函数（判据**严格大于才截**）；use case 在精排之后截断，并产出 `matchedCount`（当前条件）、`memberCount`（**adapter** 对同一批已在内存的 `legs` 用 `override = null` 再跑一次 `recallCandidates`，经 `LegRetrievalResult` 的新出参字段上浮 —— 2026-08-14 裁定，🚫 **MUST NOT** 改 `leg-recall.rules.ts` 去「同一次遍历评两套」，那撞 `FR-044`）、`K` 触及数上浮。阈值 **MUST 可注入**（use case 签名带可选参数，默认取常量）。→ verify: Small —— 边界三态（`<` / `=` / `>`）+ 降级后返回本体 + `K` 与 `N` 不共用常量的对照断言（`052` T005 留的量级断言在此变成真对照）+ **`memberCount` 零额外 DB 往返**（断言 `retrieveCandidates` 调用次数为 1，Guardrail 13）+ 未覆盖时 `memberCount === matchedCount`
 
 ---
 

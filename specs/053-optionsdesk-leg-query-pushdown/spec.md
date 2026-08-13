@@ -229,7 +229,7 @@ owner 定案：截断在当前规模下不构成需求，仍按计划做，为�
 
 - **FR-001**: 每个视角 MUST 各自独立取数，请求 MUST 携带该视角标识与该视角自己的检索条件覆盖（复用 `052` 已 ship 的 `perspective` + 六维 query 参数，本片 MUST NOT 新增筛选维度）。
 - **FR-002**: 每次取数 MUST 只返回该视角的腿，MUST NOT 把三个视角的腿合并下发。呈现顺序 MUST 取自服务端下发的顺序，客户端 MUST NOT 重排（继承 `051`，本片不放松）。
-- **FR-003**: 检索 port 的签名 MUST 零改动 —— `052` 已把 `perspectives` 立在接口上。本片改的是调用方与 controller。
+- **FR-003**: 检索 port 的**入参** MUST 零改动 —— `052` 已把 `perspectives` 立在接口上。本片改的是调用方与 controller。<br>⚠️ **2026-08-14 owner 裁定：出参 `LegRetrievalResult` 加 `memberCount` 一个字段**（原条文为「签名 MUST 零改动」，此处松绑）。起因是三条约束交集为空 —— `FR-009` / Guardrail 13 要「同一批已取回行 + 零额外 DB 往返」、Guardrail 12 挡掉「边际计数加总」、`FR-044` 要 `leg-recall.rules.ts` 零行 diff；而**原始链行只存在于 adapter 内部**（`recallCandidates` 只 push `tabs.length > 0` 的候选，`leg-recall.rules.ts:666`），收窄生效后被挡下的行在 use case 里**结构上取不回来**。裁定松本条，因为 Guardrail 9 与本条的论证面**全是入参 `perspectives`**（「`052` 已把它立好，改签名等于把留好的接口白留」）—— 加一个出参不触碰该理由。落法：adapter 用**同一批已在内存的 `legs`** 再跑一次 `recallCandidates(override = null)`。代价 = 多一趟 `O(n ≤ K)` 纯 CPU 遍历并丢弃重算的三个计数，**零额外 DB 往返、零判据改动**。
 - **FR-004**: 服务端处理顺序 MUST 为 **召回（含用户覆盖 + 候选上限 `K`）→ 粗排 → 特征加工 → 精排 → 表达层截断 `N`**。截断 MUST 发生在精排之后。
 - **FR-005**: 响应 MUST 按「链级 / 视角级」收窄。这是**破坏性变更**，与 `050`/`051` 的「只加不删」不同（可行性前提见 `FR-006`）：
 
