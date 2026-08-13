@@ -11,8 +11,13 @@ import {
 } from '../../src/optionsdesk/leg-recall.rules';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 
-// 052 检索层 IT。本文件随各 task 增量补齐, T015 收口到 24 条 `state_branches` 逐条有 `it()`。
-// 当前覆盖: **T005 候选上限 K**（`FR-027` / `FR-028`）。
+// 052 检索层 IT。本文件随各 task 增量补齐, **T015 已收口** —— spec 的 24 条 `state_branches`
+// 逐条有 `it()` (逐条交叉核对表在 `specs/052-optionsdesk-retrieval-layering/tasks.md` T015 段)。
+//
+// 🚨 **24 条不全在本文件里, 这是刻意的**: `state_branches` 里有三条是**客户端行为**
+// (复位 / 离开再进 / 改值未点搜), 服务端 IT 结构上够不到它们 —— 它们归 `apps/mobile/e2e/`
+// 的 hermetic e2e (T013)。plan Testing Invariants 那句「每条在 IT 里」按此读: **每条有一个
+// `it()`, 落在够得到它的那一层**。
 //
 // ## 为什么**必须**要真 PG
 //
@@ -28,7 +33,7 @@ import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 //
 // 🚨 **上限用一个小值驱动**（`candidateCap` 是 port 入参而不是实现里读常量, 正是为此）——
 // 真值取三千量级, 造那么多腿只为验一条分支是不划算的; 而「真常量下不截」由最后一条守住。
-describe('052 T005 召回层候选上限 K (Testcontainers PG)', () => {
+describe('052 检索层 (Testcontainers PG)', () => {
   let prisma: PrismaService;
   let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
 
@@ -348,5 +353,304 @@ describe('052 T005 召回层候选上限 K (Testcontainers PG)', () => {
     expect(rentMarkOf(plain, 'P-ITM')).toBeNull();
     expect(rentMarkOf(widened, 'P-ITM')).not.toBeNull();
     expect(widened.tabOrder.rent.length).toBeGreaterThan(plain.tabOrder.rent.length);
+  });
+
+  // ── T015 收口 ───────────────────────────────────────────────────────────────
+  //
+  // 📌 **这几条为什么也要真库**: 判据本身 Small 档各自有单测 (`leg-recall.rules.spec.ts`),
+  // 这里验的是**本片把召回层换成 port 之后, 它们仍作用在真查询返回的那批行上**。三条通用硬
+  // 门槛 (仅认沽 / 仅标准 / 到期日 > 当日) 更是**只有**真库能验 —— 它们是 SQL 谓词, mock 上
+  // 「滤掉了」只说明测试自己没造那几行。
+
+  const useCaseOf = (): GetLegsUseCase =>
+    new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+
+  /** 一条种子腿的全部可变量。T015 的四组种子共用下面的 {@link seedLegs}。 */
+  interface SeedLeg {
+    readonly code: string;
+    readonly dte: number;
+    readonly strike: string;
+    readonly bid: string | null;
+    readonly ask: string | null;
+    readonly oi: string | null;
+    readonly vol: string | null;
+    readonly optionType?: 'PUT' | 'CALL';
+    readonly isStandard?: boolean;
+    readonly greeksComplete?: boolean;
+  }
+
+  /**
+   * 通用造数。
+   *
+   * 🚨 **与上面两个专用 seed 蓄意并存, 不回改它们**: 那两个的形状被 T005 / T008 各自的断言吃
+   * 住 —— 合并会让「改哪一条数据会红哪一条断言」不再一眼可判, 而那正是 T014 抓到的 047 fixture
+   * 债的来路 (一条腿同时承载两个互不相干的性质)。
+   */
+  async function seedLegs(
+    legs: readonly SeedLeg[],
+    spot: string = SPOT,
+    anchorV = '150',
+  ): Promise<void> {
+    const instrumentId = await seedInstrument();
+    for (const leg of legs) {
+      const expiry = new Date(dateOf(TODAY).getTime() + leg.dte * 86_400_000);
+      const greeksComplete = leg.greeksComplete ?? true;
+      const contract = await prisma.optionContract.create({
+        data: {
+          market: 'us',
+          code: leg.code,
+          root: 'PEP',
+          underlyingInstrumentId: instrumentId,
+          expiryDate: expiry,
+          strikePrice: leg.strike,
+          optionType: leg.optionType ?? 'PUT',
+          isStandard: leg.isStandard ?? true,
+        },
+        select: { id: true },
+      });
+      await prisma.optionDailySnapshot.create({
+        data: {
+          contractId: contract.id,
+          sessionDate: dateOf(TODAY),
+          source: 'eod',
+          quoteAsOf: new Date(`${TODAY}T20:31:07Z`),
+          oiAsOf: dateOf(PREV_SESSION),
+          bid: leg.bid,
+          ask: leg.ask,
+          delta: greeksComplete ? '-0.30' : null,
+          openInterest: leg.oi,
+          volume: leg.vol,
+          underlyingSpot: spot,
+          greeksComplete,
+        },
+      });
+    }
+    await prisma.anchor.create({
+      data: {
+        ticker: SYMBOL,
+        v: anchorV,
+        asof: dateOf('2026-06-30'),
+        method: 'dcf',
+        confidence: '8',
+        confidenceSource: 'manual',
+        lLevelEffective: 'L2',
+      },
+    });
+  }
+
+  /**
+   * 门槛靶场 —— 三条通用硬门槛 + 建仓有效成本两侧 + 三条召回条件, **判据之间蓄意不重叠**
+   * (承 050 造数纪律: 某条断言红了能直接定位到是哪条判据坏了)。
+   *
+   * 📌 成色上界 = `min{K ≥ 132.40}` (150) ∧ `132.40 × 1.04` (137.696) 取严 ⇒ **137.696**;
+   * 三条收租腿 (`115` / `117` / `119`) 全在其下 ⇒ 本组的收租成员由**别的**判据决定, 成色不掺和。
+   */
+  const GATE_LEGS: readonly SeedLeg[] = [
+    // ① 认购 —— 通用硬门槛「仅认沽」, 在读端就滤掉。
+    { code: 'H-CALL', dte: 35, strike: '126', bid: '3.00', ask: '3.20', oi: '900', vol: '40', optionType: 'CALL' }, // prettier-ignore
+    // ② 非标准合约 (调整过的合约) —— 通用硬门槛「仅标准」。
+    { code: 'H-NONSTD', dte: 35, strike: '125', bid: '3.00', ask: '3.20', oi: '900', vol: '40', isStandard: false }, // prettier-ignore
+    // ③ 到期日 == 当日 —— 通用硬门槛「到期日 > 当日」(与完整性分母的 `≥` 蓄意不同, 050 FR-010)。
+    { code: 'H-EXPIRED', dte: 0, strike: '124', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
+    // ④ 有效成本**恰等于** spot: 150 − 17.60 = 132.40 ⇒ 不进建仓 (严格小于)。DTE 20 ⇒ 够不着收租段。
+    { code: 'G-COSTTIE', dte: 20, strike: '150', bid: '17.60', ask: '18.00', oi: '900', vol: '40' }, // prettier-ignore
+    // ⑤ K 高于 spot 但有效成本仍低于它: 150.5 − 18.11 = 132.39 < 132.40 ⇒ 进建仓 (FR-007: 建仓不设行权价上界)。
+    { code: 'G-COSTOK', dte: 20, strike: '150.5', bid: '18.11', ask: '18.50', oi: '900', vol: '40' }, // prettier-ignore
+    // ⑨ 权利金低于下限 (spot 132.40 ⇒ 下限 0.2383) ⇒ **整条移出**, 三视角都看不见。
+    { code: 'G-CHEAP', dte: 35, strike: '120', bid: '0.01', ask: '0.05', oi: '900', vol: '40' },
+    // ⑩⑪ 相对价差 3 / 4.5 = 0.667 > 0.35 ⇒ 出两个意图视角, **仍在全腿**。
+    { code: 'G-WIDE', dte: 35, strike: '119', bid: '3.00', ask: '6.00', oi: '900', vol: '40' },
+    // Edge Case: greeks 缺失 ⇒ 照常进候选 (Δ 已降级为打标量, 继承 050 FR-009)。
+    { code: 'G-NOGREEKS', dte: 35, strike: '117', bid: '3.00', ask: '3.20', oi: '900', vol: '40', greeksComplete: false }, // prettier-ignore
+    // 对照: 各条件全过。
+    { code: 'G-OK', dte: 35, strike: '115', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
+  ];
+
+  it('🚨 通用硬门槛 (仅认沽 / 仅标准 / 到期日 > 当日) 在读端就滤掉 —— 成员逐条相等, 三条一条没漏', async () => {
+    await seedLegs(GATE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+    // 🚫 MUST NOT 写 `length` 比较: 「少了三条」对「滤错了哪三条」没有分辨力。
+    expect(view.legs.map((leg) => leg.code).sort()).toEqual([
+      'G-COSTOK',
+      'G-COSTTIE',
+      'G-NOGREEKS',
+      'G-OK',
+      'G-WIDE',
+    ]);
+  });
+
+  it('🚨 state_branch ④⑤ 建仓有效成本硬门槛两侧: 恰等于 spot 不进, K 高于 spot 但成本仍低则进', async () => {
+    await seedLegs(GATE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+    expect(view.tabOrder.build).not.toContain('G-COSTTIE');
+    expect(view.tabOrder.build).toContain('G-COSTOK');
+    // 🚫 两条腿的 K **都高于 spot**, 分野只在有效成本 —— 建仓 MUST NOT 有额外行权价上界 (FR-007)。
+    const strikeOf = (code: string) =>
+      view.legs.find((leg) => leg.code === code)?.strike ?? new Prisma.Decimal(0);
+    expect(strikeOf('G-COSTOK').greaterThan(view.spot ?? 0)).toBe(true);
+    expect(strikeOf('G-COSTTIE').greaterThan(view.spot ?? 0)).toBe(true);
+    expect(view.criteriaByTab.build.defaults.strikeMax).toBeNull();
+    // 被硬门槛挡下的那条仍在全腿视角 (SC-006 的同一条纪律 —— 硬门槛也不砍腿)。
+    expect(view.tabOrder.all).toContain('G-COSTTIE');
+  });
+
+  it('🚨 state_branch ⑨ 权利金低于下限 ⇒ 三视角全不见 (整条移出), 且只让 removedByPremiumFloor 动', async () => {
+    await seedLegs(GATE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+    for (const tab of LEG_TABS) expect(view.tabOrder[tab]).not.toContain('G-CHEAP');
+    expect(view.legs.map((leg) => leg.code)).not.toContain('G-CHEAP');
+    expect(view.gateCounts.removedByPremiumFloor).toBe(1);
+    // 🚫 它的价差也宽 (0.05 / 0.03), 但**不计**进流动性数 —— 它压根没走到那一道。
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(1); // 只有 G-WIDE
+  });
+
+  it('🚨 state_branch ⑩⑪ 价差超上界 ⇒ 出两个意图视角、仍在全腿; 全腿本就不设该维 (FR-010)', async () => {
+    await seedLegs(GATE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+    expect(view.tabOrder.build).not.toContain('G-WIDE');
+    expect(view.tabOrder.rent).not.toContain('G-WIDE');
+    expect(view.tabOrder.all).toContain('G-WIDE');
+    // 🚨 「全腿不受价差约束」是**默认值层面**的不设, 不是「设了但恰好没挡下谁」——
+    // 后者会在用户放宽别的维度时突然显形。
+    expect(view.criteriaByTab.all.defaults.relativeSpreadMax).toBeNull();
+    expect(view.criteriaByTab.build.defaults.relativeSpreadMax).not.toBeNull();
+    expect(view.criteriaByTab.rent.defaults.relativeSpreadMax).not.toBeNull();
+  });
+
+  it('Edge Case: greeks 缺失的腿照常进候选 —— 三个视角逐个都收它, 只是不判档不着色', async () => {
+    await seedLegs(GATE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+    const leg = view.legs.find((l) => l.code === 'G-NOGREEKS');
+    expect(leg?.absDelta).toBeNull();
+    expect(leg?.sigmaDistance).toBeNull();
+    for (const tab of LEG_TABS) expect(view.tabOrder[tab]).toContain('G-NOGREEKS');
+  });
+
+  /**
+   * `SC-005` 靶场 —— 建仓视角在本片前后的差, MUST 全部且仅由活性条件解释。
+   *
+   * 🚨 `B-HIGHK` 是**给成色条件留的探针**: 本链的成色上界 = `min{K ≥ 132.40}` = 133, 而它
+   * `K = 140` 却是合格建仓腿 (成本 131 < spot)。成色若漏进建仓, 它当场从建仓集消失 ⇒ 差集里
+   * 多出一条不是活性原因的腿, 下面两条断言都红。
+   */
+  const SC005_LEGS: readonly SeedLeg[] = [
+    // 老新都在。
+    { code: 'B-ALIVE-1', dte: 20, strike: '120', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
+    { code: 'B-ALIVE-2', dte: 20, strike: '118', bid: '2.50', ask: '2.70', oi: '5', vol: null },
+    { code: 'B-HIGHK', dte: 20, strike: '140', bid: '9.00', ask: '9.40', oi: '900', vol: '40' },
+    // 老在、新不在 —— 差集本身。形态照实测那 87 条: 深度实值、权利金厚、价差反而更窄,
+    // 唯一的毛病是 `OI = 0` 且当日零成交 (挂出去无人应答)。
+    { code: 'B-DEAD-OI', dte: 20, strike: '129', bid: '3.75', ask: '4.00', oi: '0', vol: '0' },
+    { code: 'B-DEAD-NULL', dte: 20, strike: '133', bid: '5.00', ask: '5.30', oi: null, vol: null },
+    // 老新都不在 —— 三条各被一道**本片未动**的判据挡下。
+    { code: 'B-COSTFAIL', dte: 20, strike: '150', bid: '17.00', ask: '18.00', oi: '900', vol: '40' }, // prettier-ignore
+    { code: 'B-WIDE', dte: 20, strike: '117', bid: '3.00', ask: '6.00', oi: '900', vol: '40' },
+    { code: 'B-CHEAP', dte: 20, strike: '116', bid: '0.05', ask: '0.10', oi: '900', vol: '40' },
+  ];
+
+  it('🚨 SC-005 差集断言: 建仓集的变化**全部且仅**由活性条件解释 (旧集 ∩ 过活性的腿 = 新集)', async () => {
+    /** 本片之前 (`050` 判据) 的建仓集 —— 手工推导的字面清单, 🚫 不用当前判据现算 (那是同义反复)。 */
+    const OLD_BUILD = ['B-ALIVE-1', 'B-ALIVE-2', 'B-DEAD-OI', 'B-DEAD-NULL', 'B-HIGHK'];
+    const KILLED_BY_LIVENESS = ['B-DEAD-OI', 'B-DEAD-NULL'];
+
+    await seedLegs(SC005_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+    expect([...view.tabOrder.build].sort()).toEqual(
+      OLD_BUILD.filter((code) => !KILLED_BY_LIVENESS.includes(code)).sort(),
+    );
+
+    // 🚨 差集里**零条是别的原因**的可执行形态: 把活性这一维**覆盖为不限**, 建仓集当场回到
+    // 本片之前的那一份。成色 / 精排 / 打标里若有任何一处偷偷动了建仓成员, 它不随这个覆盖变
+    // ⇒ 这里对不上。同时它也证明差集**非空** —— 否则上一条断言退化成同义反复。
+    const unbounded = await useCaseOf().execute(SYMBOL, NOW, {
+      perspective: 'build',
+      criteria: { livenessMin: null },
+    });
+    expect([...unbounded.tabOrder.build].sort()).toEqual([...OLD_BUILD].sort());
+    expect(unbounded.criteriaByTab.build.outcomes.livenessMin.state).toBe('widened');
+    for (const code of KILLED_BY_LIVENESS) {
+      expect(view.tabOrder.build).not.toContain(code);
+      expect(unbounded.tabOrder.build).toContain(code);
+    }
+  });
+
+  /**
+   * `SC-002` 靶场 —— 起草期作为缺陷证据的那条链的形态 (`us:KBR`, spot `37.56`)。
+   *
+   * `K = 105` 的深实值腿 `bid ≈ K − spot` ⇒ 准备金恒为 `39.60` 而分子随 `K` 长 ⇒ 年化 **367%**。
+   * 经济上它就是「花 39.60 买入现价 37.56 的股票」, 不是租金。
+   */
+  const KBR_SPOT = '37.5600';
+  const KBR_LEGS: readonly SeedLeg[] = [
+    { code: 'K-DEEP', dte: 164, strike: '105', bid: '65.40', ask: '66.00', oi: '900', vol: '40' },
+    { code: 'K-OTM-1', dte: 164, strike: '37', bid: '0.80', ask: '0.90', oi: '900', vol: '40' },
+    { code: 'K-OTM-2', dte: 164, strike: '36', bid: '0.60', ask: '0.70', oi: '900', vol: '40' },
+    { code: 'K-OTM-3', dte: 164, strike: '35', bid: '0.45', ask: '0.55', oi: '900', vol: '40' },
+  ];
+
+  it('🚨 SC-002: 缺陷链上收租集内**零条**三位数年化的深实值腿 —— 而它仍在全腿 (沉底不砍腿)', async () => {
+    await seedLegs(KBR_LEGS, KBR_SPOT, '45');
+    const view = await useCaseOf().execute(SYMBOL, NOW);
+
+    // 缺陷现场本身仍在数据里 —— 断言的是它**进不了收租**, 不是它不存在。
+    const deep = view.legs.find((leg) => leg.code === 'K-DEEP');
+    expect(Number(deep?.annualizedRate)).toBeGreaterThan(1);
+    expect(view.tabOrder.rent).not.toContain('K-DEEP');
+
+    // 收租集逐条 ≤ 成色上界 (SC-001) 且逐条年化 < 100% (SC-002)。
+    const ceiling = view.criteriaByTab.rent.defaults.strikeMax;
+    expect(ceiling).not.toBeNull();
+    expect([...view.tabOrder.rent].sort()).toEqual(['K-OTM-1', 'K-OTM-2', 'K-OTM-3']);
+    for (const code of view.tabOrder.rent) {
+      const leg = view.legs.find((l) => l.code === code);
+      expect(leg?.strike.lessThanOrEqualTo(ceiling ?? 0)).toBe(true);
+      expect(Number(leg?.annualizedRate)).toBeLessThan(1);
+    }
+
+    // 🚫 FR-006: 全腿是参照视角, 它在里面 —— 只是被成色排序特征压到末位。
+    expect(view.tabOrder.all).toContain('K-DEEP');
+    expect(view.tabOrder.all.at(-1)).toBe('K-DEEP');
+  });
+
+  /**
+   * `SC-010` 靶场 —— 四条**同到期日**的腿, 活动量逐条递减且都过绝对线 (`≥ 100`)。
+   *
+   * `ACTIVITY_TOP_RANK_COUNT = 3` ⇒ 默认集里 `R-D` 排第 4 拿不到标; 收窄踢掉 `R-A` 之后
+   * 分母变成 3 条, 它进前 3。
+   */
+  const ORDER_LEGS: readonly SeedLeg[] = [
+    { code: 'R-A', dte: 35, strike: '130', bid: '3.00', ask: '3.20', oi: '5000', vol: '10' },
+    { code: 'R-B', dte: 35, strike: '125', bid: '3.00', ask: '3.20', oi: '4000', vol: '10' },
+    { code: 'R-C', dte: 35, strike: '120', bid: '3.00', ask: '3.20', oi: '3000', vol: '10' },
+    { code: 'R-D', dte: 35, strike: '115', bid: '3.00', ask: '3.20', oi: '200', vol: '10' },
+  ];
+
+  it('🚨 SC-010 顺序: 收窄后活跃标按**收窄后**的召回集重算 —— 「先按默认召回排名再筛」在这里当场红', async () => {
+    await seedLegs(ORDER_LEGS);
+    const usecase = useCaseOf();
+    const plain = await usecase.execute(SYMBOL, NOW);
+    const narrowed = await usecase.execute(SYMBOL, NOW, {
+      perspective: 'rent',
+      criteria: { strikeMax: new Prisma.Decimal('128') },
+    });
+    // 📌 判的是 `isTopRanked` 而不是整个标对象是否为 `null` —— 后者对**非成员**才为 `null`,
+    // 而这四条腿全在收租里; 整数行权价标 (`isRoundStrike`) 与排名无关, 恒有值。
+    const topRankedIn = (view: typeof plain, code: string) =>
+      view.legs.find((leg) => leg.code === code)?.activityByTab.rent?.isTopRanked ?? null;
+
+    // 默认: 四条同组 ⇒ 标发给活动量前 3, R-D 第 4 拿不到。
+    expect([...plain.tabOrder.rent].sort()).toEqual(['R-A', 'R-B', 'R-C', 'R-D']);
+    expect(topRankedIn(plain, 'R-D')).toBe(false);
+    expect(topRankedIn(plain, 'R-A')).toBe(true);
+
+    // 收窄踢掉 R-A ⇒ 分母 3 条 ⇒ R-D 进前 3。它的活动量一分没变 (210), 变的是**基准**。
+    expect(narrowed.tabOrder.rent).not.toContain('R-A');
+    expect(topRankedIn(narrowed, 'R-D')).toBe(true);
+    expect(narrowed.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+      state: 'narrowed',
+      excludedCount: 1,
+    });
+    // 🚫 覆盖只作用收租 —— 建仓那份的成员与标一条没动。
+    expect(narrowed.tabOrder.build).toEqual(plain.tabOrder.build);
   });
 });

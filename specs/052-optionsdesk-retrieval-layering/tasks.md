@@ -293,7 +293,37 @@ updated_at: '2026-08-12'
 
 ## Phase 7: 覆盖收口与标定
 
-- [ ] T015 [Server] **IT 全量 state branch 扫描**（`FR-001`, `FR-010`, `FR-033`, plan Testing Invariants）：`optionsdesk-052.retrieval.it.spec.ts` 补齐前面各 task 未覆盖的分支，使 spec 的 **24 条 `state_branches` 逐条有 `it()`**。→ verify: 逐条 grep 交叉核对（**不靠通读**，per `sdd-authoring.md` 反模式）—— 24/24 命中 + `SC-005` **差集断言**（「旧候选集 ∩ 过持仓量条件的腿 = 新候选集」，差集里零条是别的原因；T004 期订正，原「逐条相同」与 `FR-008` 互斥） + **相对价差条件只作用于两个意图视角**（`FR-010`，全腿不受其约束）+ 🚫 **`045` 的锚派生与意图矩阵零改动**（`FR-033` 的否定式断言 —— `anchor.rules.ts` / `intent-matrix.rules.ts` 的 `git diff` 零命中）+ `nx test server` 全绿
+- [X] T015 [Server] **IT 全量 state branch 扫描**（`FR-001`, `FR-010`, `FR-033`, plan Testing Invariants）：`optionsdesk-052.retrieval.it.spec.ts` 补齐前面各 task 未覆盖的分支，使 spec 的 **24 条 `state_branches` 逐条有 `it()`**。→ verify: 逐条 grep 交叉核对（**不靠通读**，per `sdd-authoring.md` 反模式）—— 24/24 命中 + `SC-005` **差集断言**（「旧候选集 ∩ 过持仓量条件的腿 = 新候选集」，差集里零条是别的原因；T004 期订正，原「逐条相同」与 `FR-008` 互斥） + **相对价差条件只作用于两个意图视角**（`FR-010`，全腿不受其约束）+ 🚫 **`045` 的锚派生与意图矩阵零改动**（`FR-033` 的否定式断言 —— `anchor.rules.ts` / `intent-matrix.rules.ts` 的 `git diff` 零命中）+ `nx test server` 全绿
+
+  🚨 **交叉核对的结论：差集恰是 5 条**（`state_branch` ④⑤⑨⑩⑪），且它们**全是 `050` 已 ship 的判据** —— Small 档各自有单测，但本片把召回层整个换成 port 之后，**没有一条验过它们仍作用在真查询返回的那批行上**。⇒ 本 task 的 8 个新 `it()` = 这 5 条的真库形态 + 三条只有本层看得见的 SC 断言。逐条归属：
+
+  | # | 分支 | 覆盖它的 `it()` 落在哪 |
+  | --- | --- | --- |
+  | ①②③ | 收租成色上界三态 | `leg-recall.rules.spec.ts`「高于上界不进收租, 恰等于上界进收租」/「稀疏网格下由比例项接管」 |
+  | **④⑤** | 建仓有效成本两侧 | **本 task 新增 IT**「state_branch ④⑤ 建仓有效成本硬门槛两侧」（+ Small `:114` / `:272`） |
+  | ⑥ | 全腿不因成色被排除 | IT「SC-006 全量」（T008） |
+  | ⑦⑧ | 活性条件两侧 | `leg-recall.rules.spec.ts`「死腿, 整条移出」/「免死条款救回」 |
+  | **⑨** | 权利金低于下限 | **本 task 新增 IT**「state_branch ⑨ …三视角全不见」（+ `leg-retrieval.port.spec.ts`） |
+  | **⑩⑪** | 价差超上界 / 全腿不受约束 | **本 task 新增 IT**「state_branch ⑩⑪ …」（+ Small `:177` / `:481`） |
+  | ⑫⑬⑭ | 三态与边际计数 | `leg-recall.rules.spec.ts` 三条 + IT「排名基准 = 当前条件下的召回集」（T010） |
+  | ⑮⑯⑰ | 复位 / 离开再进 / 改值未点搜 | `apps/mobile/e2e/optionsdesk-criteria-sheet.spec.ts` US3-AS4 / AS5 / AS2（T013） |
+  | ⑱ | 超 K 截断 | IT「候选数 > K ⇒ 截到 K」（T005） |
+  | ⑲ | 降级阈值 | `leg-rank.rules.spec.ts`「降级边界取严格小于」 |
+  | ⑳㉑㉒ | 活跃标三条 | `leg-derive.rules.spec.ts` 三条（T009） |
+  | ㉓ | 深实值沉底不砍腿 | IT「T008 全腿: …排在末段」 |
+  | ㉔ | 水位变化成员集不变 | `get-legs.usecase.spec.ts`「打标零拦截: …Tab 成员集合逐条不变」 |
+
+  🚨 **一处 plan 与 tasks 的冲突，就地按 tasks 裁并写进 IT 文件头**：plan Testing Invariants 写「24 条**每条在 IT 里**有对应 `it()`」，而 ⑮⑯⑰ 是**纯客户端行为**（复位 / 离开再进 / 改值未点搜）—— 服务端 IT 结构上够不到它们。tasks.md 的分配矩阵本来就把它们派给了 T013。⇒ 该 invariant 按「**每条有一个 `it()`，落在够得到它的那一层**」执行。不写下来的话，下一个人会照 plan 字面去补三条不可能的 IT。
+
+  🚨 **`SC-005`「差集里零条是别的原因」的可执行形态 = 用本片自己的覆盖机制把活性这一维关掉**：断言「新建仓集 == 旧建仓集 ∩ 过活性的腿」（字面清单，🚫 不用当前判据现算 —— 那是同义反复），再发一次 `criteria: { livenessMin: null }` 的请求，断言建仓集**当场回到本片之前的那一份**。成色 / 精排 / 打标里若有任何一处偷偷动了建仓成员，它不随这个覆盖变 ⇒ 对不上。这一步同时证明**差集非空**，否则前一条断言退化成同义反复。<br>📌 种子里 `B-HIGHK`（`K=140` > 成色上界 133，但成本 131 < spot ⇒ 合格建仓腿）是**专给成色留的探针** —— 没有它，成色漏进建仓这个最可能的错法在本组数据上恰好不可观测。
+
+  ⚠️ **`SC-010` 的断言起手写错，被真实返回值纠正**：原写「`R-D` 的活跃标为 `null`」，实测 `ActivityMark` 是个**对象**（`isTopRanked` / `isRoundStrike` / `label`），而四条腿的行权价都是整数 ⇒ 整数档标恒非 `null`。`null` 只表示**非成员**。⇒ 改判 `isTopRanked`。📌 这条错法本身有代表性：拿「有没有标对象」冒充「有没有进前 N」，在**非整数行权价**的种子上会碰巧全绿。
+
+  📌 **不复用 `seedMixedChain` 而另起一个通用 `seedLegs`**：那两个既有 seed 的形状被 T005 / T008 各自的断言吃住，往里加腿会让「改哪条数据红哪条断言」不再一眼可判 —— 而那正是 **T014 抓到的 047 fixture 债的来路**（一条腿同时承载两个互不相干的性质）。四组新种子各自只服务一组断言。
+
+  🔬 **反例探针 3 次，全部精确命中**：成色上界漏进建仓（`defaultCriteria` 的 build 分支）⇒ **2 红**（④⑤ + `SC-005`）· 摘掉读端 `optionType: 'PUT'` 谓词 ⇒ **1 红**（通用硬门槛）· 打标基准从「该视角召回集」换成全候选集 ⇒ **1 红**（`SC-010`）。📌 探针 3 首跑挂在 **typecheck**（探针自己把 `ActivityMark` 写成可空）—— 不是真红，重写后才是。
+
+  ✅ verify: `nx test server` **411 文件 / 4095 用例绿**（本 task +8）· `nx lint server` **0 error**（206 warning 全为既有类别）· `check-test-size` / `check-optionsdesk-rule-constants` 八不变量 / `check-server-moat` 均过 · **`FR-033` 零改动核实**：`git diff main...HEAD -- anchor.rules.ts intent-matrix.rules.ts` **0 行**。<br>⚠️ **既有 warning 被我推大了**：本 IT 文件顶层 `describe` 回调的 `max-lines-per-function` 由 318 推到 **469**（阈值 150）—— 该文件形态与 `portfolio-holdings.it.spec.ts`（340）等既有 IT 一致，**mention 不改**（拆 IT 文件是独立重构，per Surgical Edits）。
 
 - [ ] T016 [Gate] **七项标定 + 写回 spec**（`SC-011`, plan `D-CALIB-1`）：用 dev 全部 12 条链，沿 `050` T017 的直方图找谷底 / 衰减终点做法，标定：成色兜底比例 X · 流动性档界（**相对与绝对价差两个口径都要评**）· 活跃标绝对下限 · 分层降级阈值 · 费率打平带宽 · 召回候选上限 K · 是否设单笔权利金下限。→ verify: 七项数字与**推导过程**写回 spec § Assumptions；代码内**零处**未标定的占位常量（`rg` 扫 `TODO|占位|placeholder` 零命中）；🚫 若某项分布无明显断点则**记为「不设该条件」**而非拍一个数
 

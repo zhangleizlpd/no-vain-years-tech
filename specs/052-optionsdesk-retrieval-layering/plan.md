@@ -67,7 +67,7 @@ context7_verified: []
 
 - **NO LIFECYCLE MOCKING**：本片不新增 lifecycle 组件；若检索条件校验落 `ValidationPipe`，其测试必须走 DI 容器。
 - **MANDATORY INTEGRATION**：`Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()`，之外的「测试」视同未测试。
-- **EXHAUSTIVE BRANCHING**：spec `state_branches` **24 条**，每条在 IT 里有对应 `it()`。100% 路径覆盖。
+- **EXHAUSTIVE BRANCHING**：spec `state_branches` **24 条**，每条在 IT 里有对应 `it()`。100% 路径覆盖。<br>⚠️ **2026-08-13 T015 收口期订正**：其中 3 条（复位 / 离开再进 / 改值未点搜）是**纯客户端行为**，服务端 IT 结构上够不到 ⇒ 该 invariant 按「**每条有一个 `it()`，落在够得到它的那一层**」执行（那 3 条落 `apps/mobile/e2e/`，per tasks.md 的分配矩阵）。逐条交叉核对表在 tasks.md T015 段。
 
 ### General Architecture Notes
 
