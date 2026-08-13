@@ -235,7 +235,7 @@ updated_at: '2026-08-12'
 
 ---
 
-- [ ] T012 [Mobile] **控件默认值回填 + 「搜」/「复位」+ 收窄维度计数行**（`FR-012`, `FR-013`, `FR-015`, `FR-029`, plan `D-CRIT-1`）：**六个维度**的控件各自用服务端下发的默认值填充（维度清单见 T010 表）；⚠️ 若六个控件放不进现有筛选行版式 → **停下补 mockup**，不临场发挥（plan Gate 0.1 的绊线）；「搜」显式提交、「复位」清回默认；计数区追加**仅收窄维度**的行（复用 `051` 的 `.gateline` 结构与措辞体例）。→ verify: `*.rules.spec.ts`（Small，logic-only）—— 🚨 **mobile 侧 `rg` 扫不到任何参与默认值计算的算式**（`FR-011` / Guardrail 6 的机器判据）+ 三态到「显不显示计数」的映射是穷举 `Record`（漏 enum 成员即编译红）+ **每视角各自持有条件状态**（`FR-015` —— 切视角不带走上一个视角的值，条件值进 query key 即天然隔离）
+- [ ] T012 [Mobile] **控件默认值回填 + 「搜」/「复位」+ 收窄维度计数行**（`FR-012`, `FR-013`, `FR-015`, `FR-029`, plan `D-CRIT-1`）：**六个维度**的控件各自用服务端下发的默认值填充（维度清单见 T010 表）；⚠️ ~~若六个控件放不进现有筛选行版式 → **停下补 mockup**~~ ⇒ **绊线已触发并走完**（2026-08-13）：容器形态 = **bottom-sheet 抽屉**，Tab 行右端一个 34px 入口带「已改 N 项」徽标，sticky 栈**一层不加**。照 `design/052-criteria-sheet.dc.html`（A1–A6 六帧）实装，逐条决策见 `design/handoff.md`。🚨 抽屉 MUST 走 **RN `Modal` 渲到 root 层**，否则盖不住 Tab 栏（memory `reference_drawer_overlay_bounded_by_tab_content_use_modal`）；ⓘ 是 **tap 触发**的 popup tip（移动端无 hover），热区 **44×44**；「搜」显式提交、「复位」清回默认；计数区追加**仅收窄维度**的行（复用 `051` 的 `.gateline` 结构与措辞体例）。→ verify: `*.rules.spec.ts`（Small，logic-only）—— 🚨 **mobile 侧 `rg` 扫不到任何参与默认值计算的算式**（`FR-011` / Guardrail 6 的机器判据）+ 三态到「显不显示计数」的映射是穷举 `Record`（漏 enum 成员即编译红）+ **每视角各自持有条件状态**（`FR-015` —— 切视角不带走上一个视角的值，条件值进 query key 即天然隔离）
 
 - [ ] T013 [Mobile-E2E] **hermetic e2e**（US3 全部 AS, `FR-014`, `SC-008`）：Playwright Expo Web，`route.fulfill` 拦端点。→ verify: 进入视图控件已填默认值 / 改值不点搜结果不变 / 点搜按新值 / 点复位回默认且计数消失 / 离开再进回默认（`FR-014` 不持久化）/ 🚨 **mock 是契约镜像不是调用序**（按请求参数无条件作答，禁按测试编排标志分支）+ 跑**全套** `runtime-smoke` 非单 spec
 

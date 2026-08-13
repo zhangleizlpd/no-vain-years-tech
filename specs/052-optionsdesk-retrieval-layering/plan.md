@@ -32,7 +32,7 @@ context7_verified: []
 
 - [x] **Server**: 三视角逐层判据由 `optionsdesk-052.retrieval.it.spec.ts` 覆盖（Testcontainers 真 PG），spec 的 24 条 `state_branches` 每条一个 `it()`。
 - [x] **Mobile / Web**: 本片 mobile 增量 = 检索条件控件的系统默认值回填 + 「搜」/「复位」+ 被收窄维度的计数行。走 Playwright Expo Web hermetic e2e。<br>📌 **不走 mockup 卡点的理由**：新增的计数行**逐字复用 `051` 已定稿的 `.gateline` 结构与措辞体例**（第 3 条追加，非新形态）；检索条件控件复用 `049` 已定稿的筛选行形态，只是把「清除」换成「搜 / 复位」。⇒ 零新视觉形态，Constitution §I 的 mockup 卡点针对的是**新 UI 形态**，本片没有。⚠️ 若 impl 期发现「四个可调维度怎么摆」需要新版式（`053` 的 `049` 遗留问题），**停下补 mockup**，不临场发挥。
-- [x] **Evidence**: 待 impl 期回填。
+- [x] **Evidence**（2026-08-13 回填）：⚠️ **上面那条「不走 mockup 卡点」的理由 impl 期被证伪，绊线触发、已走 `/mockup-gen 052` 回补**。逐条核后三处对不上：维度数 **1 → 6**（`049`/`053` 的筛选行只容行权价一个维度）· 生效方式 **实时防抖 → 显式「搜」**（`FR-012` 反转）· 排名基准 **不进 → 进**（`FR-026` 反转 `053` 起草时的 `FR-009`）。⇒ 产出 `design/052-criteria-sheet.dc.html`（**六帧** A1–A6）+ `052-criteria-inline.dc.html`（选型对照）+ `claude-design-prompt.md` + `handoff.md`；**方案 A（bottom-sheet 抽屉）经 user 选定**。渲染验证走仓内 Playwright 无头，六项探测全 0；0 新增 token。<br>📌 mockup review 连带改了**契约**（不只是文案）：`openInterestMin` → `livenessMin`（一个维度两个值，`OI ≥ x` 或 `Vol ≥ y`），详见 `tasks.md` 的「T010 / T011 修订」段。<br>📌 **Server 侧 Evidence**：`optionsdesk-052.retrieval.it.spec.ts` 现 9 个 `it()`（T005 三条 + T008 三条 + T010 三条），24 条 `state_branches` 的收口仍归 T015。
 
 ### Gate 0.2 — Cross-stack Vendor Intersection 6Q Card
 
