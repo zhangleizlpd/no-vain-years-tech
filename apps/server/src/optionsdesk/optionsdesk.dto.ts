@@ -361,8 +361,12 @@ export class RadarQueryDto {
 }
 
 /**
- * GET /api/v1/optionsdesk/underlyings/{symbol}/legs 查询串 —— **检索条件的用户覆盖**
- * (052 FR-012, plan D-CRIT-1)。全部字段省略 = 首屏 / 「复位」, 三视角走各自系统默认值。
+ * GET /api/v1/optionsdesk/underlyings/{symbol}/legs 查询串 —— **视角 + 检索条件的用户覆盖**
+ * (052 FR-012 / 053 FR-001, plan D-CRIT-1 / D-API-1)。除 `perspective` 外全部省略 = 首屏 /
+ * 「复位」, 该视角走系统默认值。
+ *
+ * 🚨 **053 起 `perspective` 必填, 且语义升级** —— 从「覆盖作用于谁」升为「**决定本次返回哪个
+ * 视角**」。052 定的是「给了条件没给视角 → 400」, 本片扩到「任何请求都必须指明视角」。
  *
  * 🚨 **系统默认值不进请求** (FR-011): 它们依赖 spot 与行权价网格, 由服务端解出后随响应下发。
  * 让客户端回传默认值就等于让它先算一份 —— 那正是 ADR-0064 不变量 ③ 禁的「同一判据两处各算」。
@@ -375,15 +379,16 @@ export class RadarQueryDto {
  * 收窄建仓, 而建仓控件仍显示自己的默认值, 控件与数据不匹配且在界面上无法解释。
  */
 export class LegRetrievalQuery {
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      '本次覆盖作用于哪个视角。**给了任一条件就 MUST 给它**; 省略 = 无覆盖 (三视角全走默认值)',
+      '🚨 **必填** (053 FR-001): 本次要**返回哪个视角**的腿 —— 每个视角各自独立取数, 一次请求只 ' +
+      '作答一个。缺参或取值不在三值内 → **400**; 服务端 MUST NOT 替你挑一个默认视角 (那时腿数、' +
+      '名次、档位全都正常, 只是答的不是问的那个视角)。它同时决定检索条件覆盖作用于谁 (052 FR-015)',
     enum: [...LEG_TABS],
     example: 'rent',
   })
-  @IsOptional()
   @IsIn([...LEG_TABS])
-  perspective?: string;
+  perspective!: string;
 
   @ApiPropertyOptional({
     description: '行权价上界 (闭区间); 空串 = 覆盖为不限',
@@ -1890,7 +1895,11 @@ export class LegTableResponse {
  * 🚨 **DTE 段两端 MUST 成对** (见 {@link LegRetrievalQuery.dteMin}): 只给一端 → 400。补另一端
  * 需要该视角的默认段, 而那要 spot —— 在这里算就是 FR-011 禁的第二处计算。
  *
- * @throws BadRequestException 给了条件却没给 `perspective`; 或 DTE 段只给了一端。
+ * 📌 **053 起本函数不再校验 `perspective` 缺失** —— 它已升为必填 (见 {@link LegRetrievalQuery}),
+ * 缺参在 `ValidationPipe` 那一层就是 400, 到不了这里。留一条够不到的分支只会让「谁在守这条」
+ * 变成两处各说各话。
+ *
+ * @throws BadRequestException DTE 段或活性下限只给了一端。
  */
 export function toRetrievalOverride(query: LegRetrievalQuery): RetrievalOverride | null {
   // 逐键赋值 ⇒ 构建期需要可变形态; 返回时收窄回只读的 `Partial<RetrievalCriteria>`。
@@ -1934,12 +1943,18 @@ export function toRetrievalOverride(query: LegRetrievalQuery): RetrievalOverride
 
   const touched = Object.keys(criteria).length > 0;
   if (!touched) return null;
-  if (query.perspective === undefined) {
-    throw new BadRequestException(
-      '给了检索条件就 MUST 给 perspective —— 覆盖只作用于一个视角 (052 FR-015)',
-    );
-  }
-  return { perspective: query.perspective as LegTab, criteria };
+  return { perspective: toRequestedPerspective(query), criteria };
+}
+
+/**
+ * 查询串 → **本次要作答的视角** (053 FR-001)。`O(1)`。
+ *
+ * 🚨 **取值域由 `@IsIn([...LEG_TABS])` 在 `ValidationPipe` 那一层守死** ⇒ 这里的断言不是「相信
+ * 客户端」而是「相信管道」。🚫 MUST NOT 在这里再写一遍三值校验: 两处各判一次, 哪一处说了算就
+ * 变成运行时才知道的事 (同 052 对「成员判据只有一个落点」的纪律)。
+ */
+export function toRequestedPerspective(query: LegRetrievalQuery): LegTab {
+  return query.perspective as LegTab;
 }
 
 function toCriteriaResponse(criteria: RetrievalCriteria): RetrievalCriteriaResponse {

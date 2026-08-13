@@ -3,6 +3,7 @@ import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
 import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
+import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 import {
   BUILD_RECOMMEND_ABS_DELTA_BAND,
   RENT_RECOMMEND_ABS_DELTA_BANDS,
@@ -237,7 +238,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     const codes = await seedDeltaLadder(id);
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.intent).toBe('build_position');
     expect(view.rentDepth).toBeNull();
@@ -263,14 +264,14 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     const codes = await seedDeltaLadder(id);
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.intent).toBe('rent');
     expect(view.rentDepth).toBe('deep');
     const band = RENT_RECOMMEND_ABS_DELTA_BANDS.deep;
 
-    // 建仓 Tab 里确实有腿 (五条全在重叠区), 否则下面的断言是平凡的。
-    const inBuildTab = view.legs.filter((l) => l.tabs.includes('build'));
+    // 建仓视角里确实有腿 (五条全在重叠区), 否则下面的断言是平凡的。
+    const inBuildTab = (await useCase.execute(SYMBOL, 'build', NOW)).legs;
     expect(inBuildTab).toHaveLength(5);
     // 🚨 建仓 Tab 内带标的那条, |Δ| 落的是**收租 deep 带**而不是建仓带。
     expect(inBuildTab.filter((l) => l.isRecommended).map((l) => l.code)).toEqual([codes.deep]);
@@ -288,8 +289,8 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
           l.absDelta >= BUILD_RECOMMEND_ABS_DELTA_BAND.min,
       ),
     ).toEqual([]);
-    // |Δ| 0.45 那条在建仓 Tab 里, 却**不带标** —— 建仓带在收租意图下整个不生效。
-    expect(legOf(view, codes.atm)?.tabs).toContain('build');
+    // |Δ| 0.45 那条在建仓视角里, 却**不带标** —— 建仓带在收租意图下整个不生效。
+    expect(inBuildTab.map((l) => l.code)).toContain(codes.atm);
     expect(legOf(view, codes.atm)?.isRecommended).toBe(false);
   });
 
@@ -299,12 +300,20 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     const codes = await seedDeltaLadder(id);
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     // 标是**每腿一个标量**, 不是 per-Tab 的 map —— 这条断言在结构上就成立, 写出来是为了让
     // 「按 Tab 拆成 map」那种改法 (option B/C) 一旦发生就有一处红。
     const deep = legOf(view, codes.deep)!;
-    expect(deep.tabs).toEqual(['all', 'build', 'rent']);
+    // 三个视角逐个都收得到它 (053 起这是三次请求各命中一次, 不再是一个 `tabs` 数组)。
+    for (const tab of LEG_TABS) {
+      const perTab = await useCase.execute(SYMBOL, tab, NOW);
+      expect([tab, perTab.legs.some((l) => l.code === codes.deep)]).toEqual([tab, true]);
+      expect([tab, perTab.legs.find((l) => l.code === codes.deep)?.isRecommended]).toEqual([
+        tab,
+        true,
+      ]);
+    }
     expect(deep.isRecommended).toBe(true);
     expect(Object.keys(deep)).not.toContain('isRecommendedByTab');
   });
@@ -316,7 +325,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     await seedDeltaLadder(id);
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.intent).toBe('pending');
     expect(view.rentDepth).toBeNull();
@@ -349,7 +358,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     });
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     const monthly = view.legs.filter((l) => l.isMonthlyChain).map((l) => l.code);
     // 逐条相等: 恰好那两条, 一条不多一条不少。
@@ -380,14 +389,14 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     // 🚨 判别性全在这一行: 把 08-21 从 `trading_day` 里抽掉 = 那天是市场假日。
     await seedTradingDays([AUG_MONTHLY_EXPIRY]);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     // 判据是「该月的月度到期日」而不是「是不是周五」⇒ 标落在提前后的那天。
     expect(legOf(view, onFallback)?.isMonthlyChain).toBe(true);
     expect(legOf(view, onHoliday)?.isMonthlyChain).toBe(false);
     // 反向对照: 日历完整时标就落回周五那天 —— 证明上面的翻转来自那一行, 不是别的原因。
     await prisma.tradingDay.create({ data: { market: 'us', date: dateOf(AUG_MONTHLY_EXPIRY) } });
-    const restored = await useCase.execute(SYMBOL, NOW);
+    const restored = await useCase.execute(SYMBOL, 'all', NOW);
     expect(legOf(restored, onHoliday)?.isMonthlyChain).toBe(true);
     expect(legOf(restored, onFallback)?.isMonthlyChain).toBe(false);
   });
@@ -398,21 +407,31 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     await seedDeltaLadder(id);
     await seedTradingDays();
 
-    const membership = (view: LegTableView) =>
-      view.legs.map((l) => `${l.code}:${[...l.tabs].join('+')}`).sort();
+    // 053: 成员关系是**跨请求**的 —— 三个视角各取一次再拼成指纹 (拼的是断言口径, 不是响应)。
+    const membership = async () => {
+      const rows: string[] = [];
+      for (const tab of LEG_TABS) {
+        const view = await useCase.execute(SYMBOL, tab, NOW);
+        for (const leg of view.legs) rows.push(`${leg.code}:${tab}`);
+      }
+      return rows.sort();
+    };
 
     await seedAnchor(SYMBOL, { positionBucket: 'gte_two_thirds' }); // 收租 · 深度
-    const rentDeep = await useCase.execute(SYMBOL, NOW);
+    const rentDeep = await useCase.execute(SYMBOL, 'all', NOW);
+    const membershipDeep = await membership();
     await prisma.anchor.update({
       where: { ticker: SYMBOL },
       data: { positionBucketManual: 'lt_one_third' },
     });
-    const rentShallow = await useCase.execute(SYMBOL, NOW); // 收租 · 贴ATM侧
+    const rentShallow = await useCase.execute(SYMBOL, 'all', NOW); // 收租 · 贴ATM侧
+    const membershipShallow = await membership();
     await prisma.anchor.update({
       where: { ticker: SYMBOL },
       data: { positionBucketManual: null, positionBucketSetAt: null },
     });
-    const pending = await useCase.execute(SYMBOL, NOW); // 待定
+    const pending = await useCase.execute(SYMBOL, 'all', NOW); // 待定
+    const membershipPending = await membership();
 
     // 三种意图下标各不相同 —— 否则下面的「集合不变」是平凡的。
     expect(marked(rentDeep)).not.toEqual(marked(rentShallow));
@@ -421,8 +440,9 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     expect(marked(rentShallow).length).toBeGreaterThan(0);
 
     // 🚨 打标零拦截: 成员关系、门槛计数、月度链标全都一行不动。
-    expect(membership(rentShallow)).toEqual(membership(rentDeep));
-    expect(membership(pending)).toEqual(membership(rentDeep));
+    expect(membershipShallow).toEqual(membershipDeep);
+    expect(membershipPending).toEqual(membershipDeep);
+    expect(membershipDeep.length).toBeGreaterThan(0);
     expect(rentShallow.gateCounts).toEqual(rentDeep.gateCounts);
     expect(pending.gateCounts).toEqual(rentDeep.gateCounts);
     // 月度链标与意图正交 —— 它只看到期日。

@@ -237,23 +237,25 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 SC-006 全量: 被意图视角任一条件排除的腿, 100% 可在全腿视角找到 (051 入口的回归防线)', async () => {
     await seedMixedChain();
-    const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
-      SYMBOL,
-      NOW,
-    );
+    // 053 FR-001: 三个视角三次请求 —— 「被排除的腿在全腿视角可达」是**跨请求**的性质。
+    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const all = await usecase.execute(SYMBOL, 'all', NOW);
+    const build = await usecase.execute(SYMBOL, 'build', NOW);
+    const rent = await usecase.execute(SYMBOL, 'rent', NOW);
     // 三条各被一个意图条件排除, 但一条都没从全腿视角消失。
-    expect(view.tabOrder.rent).not.toContain('P-ITM'); // 成色上界
-    expect(view.tabOrder.build).not.toContain('P-WIDE'); // 流动性门槛
-    expect(view.tabOrder.rent).not.toContain('P-WIDE');
-    expect(view.tabOrder.build).not.toContain('P-LONG'); // 期限段
-    expect(view.tabOrder.rent).not.toContain('P-LONG');
-    expect([...view.tabOrder.all].sort()).toEqual(['P-ITM', 'P-LONG', 'P-OK', 'P-WIDE']);
+    expect(rent.tabOrder.rent).not.toContain('P-ITM'); // 成色上界
+    expect(build.tabOrder.build).not.toContain('P-WIDE'); // 流动性门槛
+    expect(rent.tabOrder.rent).not.toContain('P-WIDE');
+    expect(build.tabOrder.build).not.toContain('P-LONG'); // 期限段
+    expect(rent.tabOrder.rent).not.toContain('P-LONG');
+    expect([...all.tabOrder.all].sort()).toEqual(['P-ITM', 'P-LONG', 'P-OK', 'P-WIDE']);
   });
 
   it('🚨 T008 全腿: 深度实值腿仍在候选集内, 但排在**末段** (FR-020: 沉底不砍腿)', async () => {
     await seedMixedChain();
     const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
       SYMBOL,
+      'all',
       NOW,
     );
     // 它在表里 (`legs` 是全量载体), 也在全腿视角的有序列表里 —— 只是排最后。
@@ -280,6 +282,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     });
     const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
       SYMBOL,
+      'all',
       NOW,
     );
     // 真常量量级远高于 6 条 ⇒ 不截。字段本身必须在视图上（断的是"接通了"，不是"切了"）。
@@ -292,6 +295,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     await seedMixedChain();
     const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
       SYMBOL,
+      'all',
       NOW,
     );
     // 成色上界 = min{K ≥ spot} (150) ∧ spot × (1+X) (132.40 × 1.03 = 136.372) 取严。
@@ -307,11 +311,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
   it('🚨 T010 真库路径: 用户放宽成色上界 ⇒ 深实值腿进收租, 且计数只出在被收窄的维度 (FR-029)', async () => {
     await seedMixedChain();
     const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
-    const plain = await usecase.execute(SYMBOL, NOW);
+    const plain = await usecase.execute(SYMBOL, 'rent', NOW);
     expect(plain.tabOrder.rent).not.toContain('P-ITM');
 
     // 放宽: 上界拉到 P-ITM 的 K=150 之上 ⇒ 它进收租; 放宽 MUST NOT 出计数 (Guardrail 7)。
-    const widened = await usecase.execute(SYMBOL, NOW, {
+    const widened = await usecase.execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { strikeMax: new Prisma.Decimal('160') },
     });
@@ -320,13 +324,13 @@ describe('052 检索层 (Testcontainers PG)', () => {
       state: 'widened',
       excludedCount: 0,
     });
-    // 🚫 另两个视角逐条不动 —— 覆盖只落在请求的那一个视角上。
-    expect(widened.tabOrder.build).toEqual(plain.tabOrder.build);
-    expect(widened.tabOrder.all).toEqual(plain.tabOrder.all);
+    // 🚫 另两个视角的条件面逐条不动 —— 覆盖只落在请求的那一个视角上 (条件全景恒有三份)。
+    expect(widened.criteriaByTab.build.outcomes.strikeMax.state).toBe('default');
+    expect(widened.criteriaByTab.all.outcomes.strikeMax.state).toBe('default');
 
     // 收窄: 上界收到 118 ⇒ 默认下进收租的 P-OK (K=115) 仍在, P-WIDE (K=120) 本就被价差挡下
     // ⇒ 不计它 (同时被两维挡下的腿一维都不计)。
-    const narrowed = await usecase.execute(SYMBOL, NOW, {
+    const narrowed = await usecase.execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { strikeMax: new Prisma.Decimal('114') },
     });
@@ -341,8 +345,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
   it('🚨 T010: 排名基准 = 当前条件下的召回集 —— 放宽后活跃标随新候选集重算 (FR-026)', async () => {
     await seedMixedChain();
     const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
-    const plain = await usecase.execute(SYMBOL, NOW);
-    const widened = await usecase.execute(SYMBOL, NOW, {
+    const plain = await usecase.execute(SYMBOL, 'rent', NOW);
+    const widened = await usecase.execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { strikeMax: new Prisma.Decimal('160') },
     });
@@ -468,7 +472,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 通用硬门槛 (仅认沽 / 仅标准 / 到期日 > 当日) 在读端就滤掉 —— 成员逐条相等, 三条一条没漏', async () => {
     await seedLegs(GATE_LEGS);
-    const view = await useCaseOf().execute(SYMBOL, NOW);
+    const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
     // 🚫 MUST NOT 写 `length` 比较: 「少了三条」对「滤错了哪三条」没有分辨力。
     expect(view.legs.map((leg) => leg.code).sort()).toEqual([
       'G-COSTOK',
@@ -481,34 +485,42 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 state_branch ④⑤ 建仓有效成本硬门槛两侧: 恰等于 spot 不进, K 高于 spot 但成本仍低则进', async () => {
     await seedLegs(GATE_LEGS);
-    const view = await useCaseOf().execute(SYMBOL, NOW);
+    const view = await useCaseOf().execute(SYMBOL, 'build', NOW);
     expect(view.tabOrder.build).not.toContain('G-COSTTIE');
     expect(view.tabOrder.build).toContain('G-COSTOK');
     // 🚫 两条腿的 K **都高于 spot**, 分野只在有效成本 —— 建仓 MUST NOT 有额外行权价上界 (FR-007)。
+    // 🚨 两条腿里有一条**不在建仓视角**(正是本测要的结论) ⇒ 行权价从全腿视角那份取。
+    const inAll = await useCaseOf().execute(SYMBOL, 'all', NOW);
     const strikeOf = (code: string) =>
-      view.legs.find((leg) => leg.code === code)?.strike ?? new Prisma.Decimal(0);
+      inAll.legs.find((leg) => leg.code === code)?.strike ?? new Prisma.Decimal(0);
     expect(strikeOf('G-COSTOK').greaterThan(view.spot ?? 0)).toBe(true);
     expect(strikeOf('G-COSTTIE').greaterThan(view.spot ?? 0)).toBe(true);
     expect(view.criteriaByTab.build.defaults.strikeMax).toBeNull();
     // 被硬门槛挡下的那条仍在全腿视角 (SC-006 的同一条纪律 —— 硬门槛也不砍腿)。
-    expect(view.tabOrder.all).toContain('G-COSTTIE');
+    expect(inAll.tabOrder.all).toContain('G-COSTTIE');
   });
 
   it('🚨 state_branch ⑨ 权利金低于下限 ⇒ 三视角全不见 (整条移出), 且只让 removedByPremiumFloor 动', async () => {
     await seedLegs(GATE_LEGS);
-    const view = await useCaseOf().execute(SYMBOL, NOW);
-    for (const tab of LEG_TABS) expect(view.tabOrder[tab]).not.toContain('G-CHEAP');
-    expect(view.legs.map((leg) => leg.code)).not.toContain('G-CHEAP');
-    expect(view.gateCounts.removedByPremiumFloor).toBe(1);
+    // 053 FR-001: 「三视角全不见」现在要三次请求各问一遍 —— 每次都不该有它。
+    for (const tab of LEG_TABS) {
+      const view = await useCaseOf().execute(SYMBOL, tab, NOW);
+      expect([tab, view.tabOrder[tab]]).toEqual([tab, expect.not.arrayContaining(['G-CHEAP'])]);
+      expect(view.legs.map((leg) => leg.code)).not.toContain('G-CHEAP');
+      expect([tab, view.gateCounts.removedByPremiumFloor]).toEqual([tab, 1]);
+    }
     // 🚫 它的价差也宽 (0.05 / 0.03), 但**不计**进流动性数 —— 它压根没走到那一道。
-    expect(view.gateCounts.excludedFromIntentTabs).toBe(1); // 只有 G-WIDE
+    const inBuild = await useCaseOf().execute(SYMBOL, 'build', NOW);
+    expect(inBuild.gateCounts.excludedFromIntentTabs).toBe(1); // 只有 G-WIDE
   });
 
   it('🚨 state_branch ⑩⑪ 价差超上界 ⇒ 出两个意图视角、仍在全腿; 全腿本就不设该维 (FR-010)', async () => {
     await seedLegs(GATE_LEGS);
-    const view = await useCaseOf().execute(SYMBOL, NOW);
-    expect(view.tabOrder.build).not.toContain('G-WIDE');
-    expect(view.tabOrder.rent).not.toContain('G-WIDE');
+    const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
+    expect((await useCaseOf().execute(SYMBOL, 'build', NOW)).tabOrder.build).not.toContain(
+      'G-WIDE',
+    );
+    expect((await useCaseOf().execute(SYMBOL, 'rent', NOW)).tabOrder.rent).not.toContain('G-WIDE');
     expect(view.tabOrder.all).toContain('G-WIDE');
     // 🚨 「全腿不受价差约束」是**默认值层面**的不设, 不是「设了但恰好没挡下谁」——
     // 后者会在用户放宽别的维度时突然显形。
@@ -519,11 +531,14 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('Edge Case: greeks 缺失的腿照常进候选 —— 三个视角逐个都收它, 只是不判档不着色', async () => {
     await seedLegs(GATE_LEGS);
-    const view = await useCaseOf().execute(SYMBOL, NOW);
+    const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
     const leg = view.legs.find((l) => l.code === 'G-NOGREEKS');
     expect(leg?.absDelta).toBeNull();
     expect(leg?.sigmaDistance).toBeNull();
-    for (const tab of LEG_TABS) expect(view.tabOrder[tab]).toContain('G-NOGREEKS');
+    for (const tab of LEG_TABS) {
+      const perTab = await useCaseOf().execute(SYMBOL, tab, NOW);
+      expect([tab, perTab.tabOrder[tab]]).toEqual([tab, expect.arrayContaining(['G-NOGREEKS'])]);
+    }
   });
 
   /**
@@ -554,7 +569,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     const KILLED_BY_LIVENESS = ['B-DEAD-OI', 'B-DEAD-NULL'];
 
     await seedLegs(SC005_LEGS);
-    const view = await useCaseOf().execute(SYMBOL, NOW);
+    const view = await useCaseOf().execute(SYMBOL, 'build', NOW);
     expect([...view.tabOrder.build].sort()).toEqual(
       OLD_BUILD.filter((code) => !KILLED_BY_LIVENESS.includes(code)).sort(),
     );
@@ -562,7 +577,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     // 🚨 差集里**零条是别的原因**的可执行形态: 把活性这一维**覆盖为不限**, 建仓集当场回到
     // 本片之前的那一份。成色 / 精排 / 打标里若有任何一处偷偷动了建仓成员, 它不随这个覆盖变
     // ⇒ 这里对不上。同时它也证明差集**非空** —— 否则上一条断言退化成同义反复。
-    const unbounded = await useCaseOf().execute(SYMBOL, NOW, {
+    const unbounded = await useCaseOf().execute(SYMBOL, 'build', NOW, {
       perspective: 'build',
       criteria: { livenessMin: null },
     });
@@ -590,10 +605,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 SC-002: 缺陷链上收租集内**零条**三位数年化的深实值腿 —— 而它仍在全腿 (沉底不砍腿)', async () => {
     await seedLegs(KBR_LEGS, KBR_SPOT, '45');
-    const view = await useCaseOf().execute(SYMBOL, NOW);
+    const view = await useCaseOf().execute(SYMBOL, 'rent', NOW);
+    const inAll = await useCaseOf().execute(SYMBOL, 'all', NOW);
 
     // 缺陷现场本身仍在数据里 —— 断言的是它**进不了收租**, 不是它不存在。
-    const deep = view.legs.find((leg) => leg.code === 'K-DEEP');
+    const deep = inAll.legs.find((leg) => leg.code === 'K-DEEP');
     expect(Number(deep?.annualizedRate)).toBeGreaterThan(1);
     expect(view.tabOrder.rent).not.toContain('K-DEEP');
 
@@ -608,8 +624,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
     }
 
     // 🚫 FR-006: 全腿是参照视角, 它在里面 —— 只是被成色排序特征压到末位。
-    expect(view.tabOrder.all).toContain('K-DEEP');
-    expect(view.tabOrder.all.at(-1)).toBe('K-DEEP');
+    expect(inAll.tabOrder.all).toContain('K-DEEP');
+    expect(inAll.tabOrder.all.at(-1)).toBe('K-DEEP');
   });
 
   /**
@@ -628,8 +644,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
   it('🚨 SC-010 顺序: 收窄后活跃标按**收窄后**的召回集重算 —— 「先按默认召回排名再筛」在这里当场红', async () => {
     await seedLegs(ORDER_LEGS);
     const usecase = useCaseOf();
-    const plain = await usecase.execute(SYMBOL, NOW);
-    const narrowed = await usecase.execute(SYMBOL, NOW, {
+    const plain = await usecase.execute(SYMBOL, 'rent', NOW);
+    const narrowed = await usecase.execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { strikeMax: new Prisma.Decimal('128') },
     });
@@ -650,7 +666,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       state: 'narrowed',
       excludedCount: 1,
     });
-    // 🚫 覆盖只作用收租 —— 建仓那份的成员与标一条没动。
-    expect(narrowed.tabOrder.build).toEqual(plain.tabOrder.build);
+    // 🚫 覆盖只作用收租 —— 建仓那份的条件面一条没动 (条件全景恒有三份)。
+    expect(narrowed.criteriaByTab.build.outcomes.strikeMax.state).toBe('default');
   });
 });

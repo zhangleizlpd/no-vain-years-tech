@@ -265,7 +265,8 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
     const t0 = performance.now();
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/optionsdesk/underlyings/${SYMBOL}/legs`,
+      // 053 FR-001: `perspective` 必填 —— 缺它是 400, 而 400 又小又快, 混进样本会把分布拉绿。
+      url: `/api/v1/optionsdesk/underlyings/${SYMBOL}/legs?perspective=all`,
       headers: { authorization: `Bearer ${token}` },
     });
     const elapsedMs = performance.now() - t0;
@@ -298,8 +299,9 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
     // 🚨 满载判据 (见文件头): 精排是 O(候选集), 召回坏成空集会让端点变快而**只测耗时的探针
     // 给绿灯**。三份列表 + 月度标一起把「量到的是满载」钉住。
     expect(parsed.tabOrder.all).toHaveLength(LEG_COUNT);
-    expect(parsed.tabOrder.build.length).toBeGreaterThan(0);
-    expect(parsed.tabOrder.rent.length).toBeGreaterThan(0);
+    // 🚨 053 起一次请求只答一个视角 ⇒ 满载判据落在**被测的那个视角**上 (本探针量的是全腿,
+    // 它恒是三者里最大的一份 —— 拿意图视角当满载会低估)。
+    expect(parsed.legs).toHaveLength(LEG_COUNT);
     // 月度链标那次跨 ctx 日历读真的查到了东西 (未来段日历没播的话这条恒 false)。
     expect(parsed.legs.some((l) => l.isMonthlyChain)).toBe(true);
 
@@ -322,13 +324,8 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
     const p99 = percentile(samples, 0.99);
     const result = {
       legs: LEG_COUNT,
-      rankedSlots:
-        parsed.tabOrder.all.length + parsed.tabOrder.build.length + parsed.tabOrder.rent.length,
-      tabOrder: {
-        all: parsed.tabOrder.all.length,
-        build: parsed.tabOrder.build.length,
-        rent: parsed.tabOrder.rent.length,
-      },
+      rankedSlots: parsed.tabOrder.all.length,
+      tabOrder: { all: parsed.tabOrder.all.length },
       gateCounts: parsed.gateCounts,
       monthlyChainLegs: parsed.legs.filter((l) => l.isMonthlyChain).length,
       warmupDiscarded: WARMUP,

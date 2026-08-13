@@ -68,7 +68,7 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 
 ## Phase 1: 服务端语义翻转（阻塞其余全部）🎯
 
-- [ ] T001 [Server] **`perspective` 升为「决定返回哪个视角」+ 调用点收敛**（`FR-001`, `FR-003`, `FR-004`, plan `D-API-1`）：`optionsdesk.controller.ts:253` 传入 `perspective`（缺失 → 400 或明确默认视角，二选一并写进 DTO 描述）；`get-legs.usecase.ts:430` 的 `perspectives: LEG_TABS` 改传请求的那一个；`:649` / `:733` 两处 `for (const tab of LEG_TABS)` 收敛为单视角。🚫 **`leg-retrieval.port.ts` 签名一字不改**（Guardrail 9）。→ verify: IT 三值各自只返回该视角的腿且顺序取自服务端 + 缺 `perspective` 的 400 断言 + `git diff leg-retrieval.port.ts` **零行** + `nx test server --skip-nx-cache` 全绿
+- [X] T001 [Server] **`perspective` 升为「决定返回哪个视角」+ 调用点收敛**（`FR-001`, `FR-003`, `FR-004`, plan `D-API-1`）：`optionsdesk.controller.ts:253` 传入 `perspective`（缺失 → 400 或明确默认视角，二选一并写进 DTO 描述）；`get-legs.usecase.ts:430` 的 `perspectives: LEG_TABS` 改传请求的那一个；`:649` / `:733` 两处 `for (const tab of LEG_TABS)` 收敛为单视角。🚫 **`leg-retrieval.port.ts` 签名一字不改**（Guardrail 9）。→ verify: IT 三值各自只返回该视角的腿且顺序取自服务端 + 缺 `perspective` 的 400 断言 + `git diff leg-retrieval.port.ts` **零行** + `nx test server --skip-nx-cache` 全绿
 
 - [ ] T002 [Server] **截断纯函数 + 分档常量 + 三个计数**（`FR-004`, `FR-009`, `FR-010`–`FR-012`, `FR-019c`, plan `D-ORDER-1` / `D-LIMIT-1`）：`leg-rank.rules.ts` 加 `DISPLAY_LIMIT_BY_PERSPECTIVE`（三值带 `⏳` 占位标记 + 「标定在 T012」+「MUST NOT 当已标定值引用」三个标记）与截断纯函数（判据**严格大于才截**）；use case 在精排之后截断，并产出 `matchedCount`（当前条件）、`memberCount`（**同一批已取回行**上用 `override = null` 再判一次，同一次遍历内评两套判据）、`K` 触及数上浮。阈值 **MUST 可注入**（use case 签名带可选参数，默认取常量）。→ verify: Small —— 边界三态（`<` / `=` / `>`）+ 降级后返回本体 + `K` 与 `N` 不共用常量的对照断言（`052` T005 留的量级断言在此变成真对照）+ **`memberCount` 零额外 DB 往返**（断言 `retrieveCandidates` 调用次数为 1，Guardrail 13）+ 未覆盖时 `memberCount === matchedCount`
 

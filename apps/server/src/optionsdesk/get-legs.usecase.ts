@@ -73,16 +73,20 @@ import {
   type LegTier,
   type LegTierVerdict,
 } from './leg-tier.rules';
-import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
+import { earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
 
 /**
  * 047 US2/US3/US4 — 意图 Tab 选约表读端 (FR-002/003/005/008/013/019/041/053/054,
  * plan D-API-1 / D-API-2 / D-ARCH-1)。范式 = ADR-0043 扁平 + 贫血: 文件平铺、数据是裸 Prisma
  * row、直注 `PrismaService` 无 repository、不变量全在四个 `*.rules.ts` 纯函数里。
  *
- * 🚨 **一次返全量适格腿, 零分页零 top-N 截断** (FR-005): 三个 Tab 是**同一份派生结果**的三种
- * 视图 ⇒ 分三次请求会让三个 Tab 的 `asOf` 与档位口径可能不一致。客户端按每腿的 `tabs` 过滤,
- * MUST NOT 自己重算成员判据 (判据单点在 `leg-recall.rules.ts`)。
+ * 🚨 **053 起一次请求只作答一个视角** (053 FR-001 / FR-002, plan D-API-1): 047 的「一次返全量、
+ * 三个 Tab 共用一份响应」整条**作废** (053 FR-019b) —— `perspective` 从「覆盖作用于谁」升为
+ * 「**决定本次返回哪个视角**」。拆请求自带的两个新问题 (跨业务日一致性 / 单视角失败隔离) 由
+ * 客户端承接 (053 FR-020 / FR-022); 服务端这边只保证**每次作答都是自洽的一份**。
+ * 📌 **端点仍是同一个, 🚫 MUST NOT 开三个**: 三视角的链级元数据 (`asOf` / `spot` / `intent` /
+ * `w` / `zone` / 水位) 逐字相同, 拆端点会让同一份派生在三处各写一遍。
+ * 📌 客户端 MUST NOT 自己重算成员判据 (判据单点在 `leg-recall.rules.ts`)。
  *
  * 🚨 **Guardrail 7 —— 这里是 `>` 而 T021 完整性分母是 `≥`, 两处判据故意不同**: 本端点滤的是
  * 「已到期腿不可交易」(到期日 **>** 当日), 完整性分母认的是「当日到期的合约当日仍可取快照」
@@ -110,8 +114,8 @@ import { LEG_TABS, earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
  * ET 日期起算。决策是前瞻的, 改成快照日基准会系统性多算一天; 代价是同屏必须有显式 `asOf`。
  *
  * 复杂度: 一次检索 (port 内 3 次跨 ctx 查询) + 两次打标输入查询 (该票财报日 / 交易日历) +
- * 单票 `O(n log n)` (n = 候选数, 实测上界 730; `n log n` 项 = legacy 档位排序, 与三个 Tab
- * **各自**一次活跃度排名 + 一次精排), 财报分组打标 `O(k log E)` (k = 不同到期日数)。
+ * 单票 `O(n log n)` (n = 候选数, 实测上界 730; `n log n` 项 = legacy 档位排序, 与**本次视角**
+ * 一次活跃度排名 + 一次精排), 财报分组打标 `O(k log E)` (k = 不同到期日数)。
  */
 
 /** 选约表区块状态 (FR-013: 缺口显式化, 与「有数据但是空的」不可混为一谈)。 */
@@ -345,14 +349,18 @@ export class GetLegsUseCase {
 
   /**
    * @param symbol canonical `market:code`。
+   * @param perspective **本次要作答的视角** (053 FR-001) —— 必填而非可选: 给默认值就等于让
+   *   「忘传视角」静默退回某一个视角, 而那时腿数、名次、档位全都正常, 只是答的不是问的那个
+   *   视角。缺参在 controller 层已被 `ValidationPipe` 挡成 400 (`optionsdesk.dto.ts`)。
    * @param now 请求时刻 (注入以便测试钉住基准)。🚫 MUST NOT 在下游改成算好的 `today` 字符串。
-   * @param override 用户对**某一个视角**检索条件的覆盖 (052 FR-012); 省略 ⇒ 三视角全走系统默认值
+   * @param override 用户对**某一个视角**检索条件的覆盖 (052 FR-012); 省略 ⇒ 全走系统默认值
    *   (这正是「复位」与首屏走的路径 —— 客户端**不回传默认值**, 那会让默认值变成两处各算一份)。
    * @throws NotFoundException 该 symbol 尚未建锚 (同 046 详情端: 回 200 空壳会让「没建锚」与
    *   「建了锚但没数据」在客户端不可区分)。
    */
   async execute(
     symbol: string,
+    perspective: LegTab,
     now: Date = new Date(),
     override: RetrievalOverride | null = null,
   ): Promise<LegTableView> {
@@ -422,12 +430,15 @@ export class GetLegsUseCase {
     if (parsed === null) return empty('chain_not_ready');
 
     try {
-      // 召回经检索 port (FR-031): 三视角一次全要 —— 它们是同一份派生结果的三种视图 (047 FR-005),
-      // 分三次请求会让三个 Tab 的 `asOf` 与档位口径可能不一致。拆成每视角独立请求归 053。
+      // 召回经检索 port (FR-031)。🚨 **053 起只要请求的那一个视角** (053 FR-001): 拆的是 HTTP
+      // 请求不是 port 调用 —— `retrieveCandidates` 每请求仍**只调 1 次**, DB 的 3x 是三个 HTTP
+      // 请求各查一遍的结果, 不是单请求内查三遍。
+      // 🚫 **port 签名一字不改** (053 FR-003): `perspectives` 是 052 就立好的入参, 本片只是第一
+      // 个真的传非全集的调用方 —— 改签名等于把当时留好的接缝白留。
       const retrieval = await this.retrieval.retrieveCandidates({
         symbol,
         now,
-        perspectives: LEG_TABS,
+        perspectives: [perspective],
         // 候选上限 (052 FR-027): 保险丝, 与表达层给用户看几条**是两个数** —— 后者归 053。
         candidateCap: RECALL_CANDIDATE_CAP,
         override,
@@ -468,6 +479,7 @@ export class GetLegsUseCase {
         // 一并从 port 出来), 分两处算必 drift 且两边都算得出数。
         ...this.deriveLegs(
           symbol,
+          perspective,
           retrieval,
           pool,
           earningsDates,
@@ -540,7 +552,8 @@ export class GetLegsUseCase {
   }
 
   /**
-   * 逐腿派生 + 分组打标 + 三套活跃度 + 统一档位排序 (FR-008 的两个门槛计数随候选集从检索层带入)。
+   * 逐腿派生 + 分组打标 + **本次视角**一套活跃度 + 统一档位排序 (FR-008 的两个门槛计数随候选集
+   * 从检索层带入)。
    *
    * 顺序是语义决定的: 财报打标发生在**分档之前** (FR-006 死档照常打标, 与档位正交);
    * 活跃度排名发生在**Tab 归属之后** (排名是候选集内的相对量, D-SOT-5)。
@@ -551,6 +564,7 @@ export class GetLegsUseCase {
    */
   private deriveLegs(
     symbol: string,
+    perspective: LegTab,
     retrieval: LegRetrievalResult,
     pool: readonly LegCandidate[],
     earningsDates: string[],
@@ -574,6 +588,10 @@ export class GetLegsUseCase {
       earningsLegFamilyFor(intent, dteByExpiry.get(expiryDate) ?? 0),
     );
 
+    // 🚨 **本次口径由视角定, 不再由 `tabs` 反推** (053 FR-041 的落地): 候选集只对
+    // `perspective` 一个视角判定过 ⇒ `tabs.includes('build')` 与 `perspective === 'build'` 逐字
+    // 等价, 而后者读得出「口径跟视角走」这件事。全腿视角恒年化的例外仍由 `BASIS_BY_TAB` 单点持有。
+    const basis: LegBasis = BASIS_BY_TAB[perspective];
     const legs = pool.map(({ leg: row, tabs }) => {
       const { code, expiryDate, dteDays, strike } = row;
       const delta = row.delta === null ? null : Math.abs(row.delta);
@@ -581,9 +599,6 @@ export class GetLegsUseCase {
       // 🚨 050 召回入参里**没有** `absDelta` (FR-009): Δ 已降级为打标量, 拿不到这个量就不可能
       // 拿它做召回判据。`absDelta` 在本函数内仍照常派生 —— 它服务判档门 (greeks 缺失不判档)
       // 与呈现列, 那两处与召回无关。
-      // 现役标量 `basis` 的新判据 (plan D-RANK-3): 进建仓召回集 → 周化, 否则年化。
-      // 🚫 MUST NOT 为喂这个 legacy 字段而把刚删掉的 Δ 带成员判据再养活一份。
-      const basis: LegBasis = tabs.includes('build') ? 'weekly' : 'annualized';
       const rateOf = (premium: Prisma.Decimal | null, on: LegBasis): Prisma.Decimal | null => {
         const r = premium === null ? null : computeLegRates({ strike, premium, dteDays });
         return r === null ? null : on === 'weekly' ? r.weeklyRate : r.annualizedRate;
@@ -614,7 +629,7 @@ export class GetLegsUseCase {
         weeklyRate: rates?.weeklyRate ?? null,
         annualizedRate: rates?.annualizedRate ?? null,
         tier: verdict?.tier ?? null,
-        tierByTab: tierByTabOf(tabs, verdictOn),
+        tierByTab: tierByTabOf(perspective, verdictOn),
         askRate: verdict?.askRate ?? null,
         // 无 bid ⇒ 有效成本无定义 —— 🚫 MUST NOT 拿 `K − 0` 冒充 (那是「白拿股票」的意思)。
         effectiveCost: row.bid === null ? null : computeEffectiveCost(strike, row.bid),
@@ -637,48 +652,45 @@ export class GetLegsUseCase {
       } satisfies LegView;
     });
 
-    // 三个 Tab **各跑一次**排名 —— 同一条腿在不同 Tab 的候选集里名次不同是**定义如此**
-    // (D-SOT-5), 故 MUST NOT 只算一次全链排名再复用。
+    // 🚨 **053 起排名只跑本次视角一遍** (053 FR-001): 原来的 `for (const tab of LEG_TABS)` 三次
+    // 循环退化为一次 —— 同一条腿在不同视角的候选集里名次不同仍是**定义如此** (D-SOT-5), 只是
+    // 那三份现在由**三次 HTTP 请求**各算各的, 而不是一次请求里算三遍。
     //
-    // 🚨 **排名基准 = 该 Tab 的召回全量成员, 且这一步 MUST 落在召回之后** (FR-016 / Guardrail 3):
+    // 🚨 **排名基准 = 该视角的召回全量成员, 且这一步 MUST 落在召回之后** (FR-016 / Guardrail 3):
     // 最自然的写法是「先筛再排名」(少算一些), 那样写出来照样能跑、数字照样有, **只是全错** ——
-    // 名次是候选集内的相对量, 基准少了几行, 每一行的名次都变了。本片没有筛选 ⇒ 召回集 == 排名
-    // 基准; P3 加筛选时 MUST NOT 把 `markActivity` 挪到筛选之后。
+    // 名次是候选集内的相对量, 基准少了几行, 每一行的名次都变了。
+    // 🚫 **MUST NOT 在这里补一个「筛选」段** (053 Guardrail 1): 六维条件已由 052 并入召回层,
+    // 排名基准就是当前条件下的召回集; 再筛一次就是第二条成员判据路径。
     const rankingContext: RankingContext = { spot: retrieval.chain.spot };
     const tabOrder = emptyTabOrder();
-    for (const tab of LEG_TABS) {
-      // 🚨 Guardrail 9: 成员集合在这里求值**一次**, 活跃度排名、特征集、有序列表三者共用它
-      // ⇒ `tabOrder[t]` 与每腿的 `tabs` 不可能 drift (各算一份的话两边都算得出结果)。
-      const members = legs.filter((leg) => leg.tabs.includes(tab));
-      // 分组键与月度链标 / 财报标同源 (052 FR-023): 三处都走 `dateOnlyOf`, 传 `Date` 或全串
-      // 会把同一到期日拆成一腿一组 —— 那时**每条腿都是组内第一**, 而结果照样有。
-      const activity = markActivity(
-        members.map((leg) => ({
-          strike: leg.strike,
-          expiryKey: dateOnlyOf(leg.expiryDate),
-          openInterest: leg.openInterest,
-          volume: leg.volume,
-        })),
-      );
-      members.forEach((leg, i) => {
-        (leg.activityByTab as Record<LegTab, ActivityMark | null>)[tab] = activity[i];
-      });
+    // 候选集只对 `perspective` 一个视角判定过 ⇒ 每条候选的 `tabs` 恒为 `[perspective]` ⇒
+    // 「按 Tab 取成员」那句 `filter` 是恒等, 随之退役 (Guardrail 9 的同源性由此结构保证)。
+    const members = legs;
+    // 分组键与月度链标 / 财报标同源 (052 FR-023): 三处都走 `dateOnlyOf`, 传 `Date` 或全串
+    // 会把同一到期日拆成一腿一组 —— 那时**每条腿都是组内第一**, 而结果照样有。
+    const activity = markActivity(
+      members.map((leg) => ({
+        strike: leg.strike,
+        expiryKey: dateOnlyOf(leg.expiryDate),
+        openInterest: leg.openInterest,
+        volume: leg.volume,
+      })),
+    );
+    members.forEach((leg, i) => {
+      (leg.activityByTab as Record<LegTab, ActivityMark | null>)[perspective] = activity[i];
+    });
 
-      // 🚨 顺序骨架恒为 **排名 → 筛选 → 截断** (FR-024)。本片不实装后两步 (归 P3), 但它们的
-      // 位置已经定死在这一行**之后** —— 挪到前面会让每一行的名次与特征值都变 (基准少了几行),
-      // 而**数字照样有、照样落 `[0,1]`**。
-      const features = computeRankingFeatures(
-        rankingContext,
-        members.map((leg, i) => rankingInputOf(leg, tab, activity[i], rankingContext.spot)),
-      );
-      // 精排 (052 FR-017 / FR-020): 意图视角走**分层** (流动性档 → 档内费率 → 打平带内长期
-      // 优先, 候选数不足自动降级); 全腿视角保持费率降序 —— 它是参照视角, 分档会把「同一条链
-      // 上收益怎么分布」这件事遮掉。
-      tabOrder[tab] =
-        tab === 'all'
-          ? rankLegs(members, features, allLegsRanker)
-          : rankLegs(members, features, layeredRanker(members.length));
-    }
+    const features = computeRankingFeatures(
+      rankingContext,
+      members.map((leg, i) => rankingInputOf(leg, perspective, activity[i], rankingContext.spot)),
+    );
+    // 精排 (052 FR-017 / FR-020): 意图视角走**分层** (流动性档 → 档内费率 → 打平带内长期
+    // 优先, 候选数不足自动降级); 全腿视角保持费率降序 —— 它是参照视角, 分档会把「同一条链
+    // 上收益怎么分布」这件事遮掉。
+    tabOrder[perspective] =
+      perspective === 'all'
+        ? rankLegs(members, features, allLegsRanker)
+        : rankLegs(members, features, layeredRanker(members.length));
 
     // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序。
     //
@@ -720,19 +732,18 @@ function emptyTabOrder(): Record<LegTab, string[]> {
 }
 
 /**
- * per-Tab 档位 (FR-023, plan D-RANK-3)。`O(Tab 数)` = `O(1)`。
+ * per-Tab 档位 (FR-023, plan D-RANK-3)。`O(1)`。
  *
- * 🚨 **非成员恒 `null`** —— 不在那个候选集里就没有那个候选集的档位。
+ * 🚨 **053 起只填本次视角那一格** —— 候选集只对它判定过, 另两格没有可判的东西 (与 `tier` 的
+ * `null` 「缺 greeks / 无 bid ⇒ 不判档」是两个原因、同一个值, 呈现侧都是「不着色」)。
  * 📌 判定值仍恒为 `bid` 口径费率, 换的只是**档界**所依的口径 (047 D-SOT-1 那条纪律一字不改)。
  */
 function tierByTabOf(
-  tabs: readonly LegTab[],
+  perspective: LegTab,
   verdictOn: (basis: LegBasis) => LegTierVerdict | null,
 ): Record<LegTab, LegTier | null> {
-  const tierByTab = {} as Record<LegTab, LegTier | null>;
-  for (const tab of LEG_TABS) {
-    tierByTab[tab] = tabs.includes(tab) ? (verdictOn(BASIS_BY_TAB[tab])?.tier ?? null) : null;
-  }
+  const tierByTab: Record<LegTab, LegTier | null> = { all: null, build: null, rent: null };
+  tierByTab[perspective] = verdictOn(BASIS_BY_TAB[perspective])?.tier ?? null;
   return tierByTab;
 }
 

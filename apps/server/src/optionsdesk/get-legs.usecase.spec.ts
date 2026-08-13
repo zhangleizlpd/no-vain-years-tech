@@ -6,7 +6,7 @@ import { GetLegsUseCase } from './get-legs.usecase';
 import { ACTIVITY_TOP_RANK_COUNT } from './leg-derive.rules';
 import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
-import { toLegTableResponse, toRetrievalOverride } from './optionsdesk.dto';
+import { toLegTableResponse, toRequestedPerspective, toRetrievalOverride } from './optionsdesk.dto';
 
 // 请求时刻 = 2026-08-04 ET 16:00 (= UTC 20:00) ⇒ 交易所的今天恒为 2026-08-04。
 // 🚨 蓄意用一个「北京已是 08-05 凌晨」都不成立的时刻也无所谓 —— 基准由 marketDateFor(['us'])
@@ -191,7 +191,7 @@ describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, 
   });
 
   it('非标与已到期在 SQL 端就滤掉 —— 判据是 `到期日 > 当日`, 与完整性分母的 `≥` 故意不同', async () => {
-    await makeUseCase(prisma).execute(SYMBOL, NOW);
+    await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     const where = prisma.optionContract.findMany.mock.calls[0][0].where;
     expect(where.isStandard).toBe(true); // FR-008 非标零出现 (采集端仍照常落库, FR-033)
     expect(where.optionType).toBe('PUT');
@@ -201,7 +201,7 @@ describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, 
   });
 
   it('落库多少条就返多少条 —— 无 take / skip / cursor 任何截断参数', async () => {
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     expect(view.legs).toHaveLength(LEGS.length);
     const args = prisma.optionContract.findMany.mock.calls[0][0];
     expect(args.take).toBeUndefined();
@@ -210,13 +210,13 @@ describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, 
   });
 
   it('死档在结果里且**排最后**; greeks 缺失行也在结果里, 排在活档之后死档之前', async () => {
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     expect(view.legs.map((l) => l.code)).toEqual(['C-D', 'C-A', 'C-C', 'C-B']);
     expect(view.legs.at(-1)?.tier).toBe('dead');
   });
 
   it('greeks 缺失行不判档不着色 —— tier / Δ / σ 距三者同时为空 (FR-007, Guardrail 10)', async () => {
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     const gap = view.legs.find((l) => l.code === 'C-C');
     expect(gap?.greeksComplete).toBe(false);
     expect(gap?.tier).toBeNull();
@@ -229,7 +229,7 @@ describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, 
 
 describe('get-legs.usecase — 派生请求时算 + 两个时点不同天 (FR-041/013, Guardrail 6)', () => {
   it('OI 的归属日与区块级 asOf 不是同一天, 两个时点都下发', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
     expect(view.asOf).toEqual(date('2026-08-03'));
     expect(view.oiAsOf).toEqual(date('2026-07-31'));
     expect(view.oiAsOf).not.toEqual(view.asOf);
@@ -238,13 +238,13 @@ describe('get-legs.usecase — 派生请求时算 + 两个时点不同天 (FR-04
   });
 
   it('DTE 基准是交易所的今天, 价格却来自上一场 session —— 这处错配是有意的, 不许「修」', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
     // 2026-08-04 → 2026-08-14 = 10 天 (整数日历日, 含周末)。若改成按 asOf (08-03) 起算会是 11。
     expect(view.legs.find((l) => l.code === 'C-D')?.dteDays).toBe(10);
   });
 
   it('045 的 W / 四区间 / L 层复用而非重算, 意图走矩阵', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
     expect(view.w.toString()).toBe('120');
     expect(view.zone).toBe('thin');
     expect(view.lLevel).toBe('L2');
@@ -254,44 +254,66 @@ describe('get-legs.usecase — 派生请求时算 + 两个时点不同天 (FR-04
     expect(view.spot?.toString()).toBe('132.4');
   });
 
-  it('每行标注自己的腿族口径, 档位按该口径判 (FR-018/019)', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
-    const build = view.legs.find((l) => l.code === 'C-D');
-    const rent = view.legs.find((l) => l.code === 'C-A');
-    expect(build?.basis).toBe('weekly');
-    expect(build?.tier).toBe('acceptable');
-    expect(rent?.basis).toBe('annualized');
-    expect(rent?.tier).toBe('acceptable');
+  it('🚨 053 FR-041: 口径跟**视角**走 —— 同一条腿在建仓视角周化、在全腿视角年化', async () => {
+    const inBuild = await makeUseCase(makePrisma()).execute(SYMBOL, 'build', NOW);
+    const inAll = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
+    const rent = (await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW)).legs.find(
+      (l) => l.code === 'C-A',
+    );
+
+    // 判别性: **同一条腿 C-D** 两个视角两个口径、两个档 —— 若口径退回「按腿族反推」,
+    // 全腿视角那条会跟着变成 weekly / acceptable 而立刻红。
+    const buildLeg = inBuild.legs.find((l) => l.code === 'C-D');
+    const allLeg = inAll.legs.find((l) => l.code === 'C-D');
+    expect([buildLeg?.basis, buildLeg?.tier]).toEqual(['weekly', 'acceptable']);
+    expect([allLeg?.basis, allLeg?.tier]).toEqual(['annualized', 'good']);
+    expect([rent?.basis, rent?.tier]).toEqual(['annualized', 'acceptable']);
     // 折年在周化行上照常给出 (参照列), 但它**不是**该行的判定值。
-    expect(build?.annualizedRate).not.toBeNull();
+    expect(buildLeg?.annualizedRate).not.toBeNull();
   });
 });
 
-describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1 的定案)', () => {
-  it('每腿带 tabs 归属; 活跃度按 Tab **各排一次**, 不属于该 Tab 的位置为 null', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
-    const build = view.legs.find((l) => l.code === 'C-D');
-    const rent = view.legs.find((l) => l.code === 'C-A');
-    const gap = view.legs.find((l) => l.code === 'C-C');
+describe('get-legs.usecase — 每次只作答一个视角 (053 FR-001/FR-002, D-API-1)', () => {
+  it('🚨 三个视角各自只返回自己的腿, 且只带自己那一套活跃度 (另两格恒 null)', async () => {
+    const viewOf = (perspective: 'all' | 'build' | 'rent') =>
+      makeUseCase(makePrisma()).execute(SYMBOL, perspective, NOW);
 
-    expect(build?.tabs).toEqual(['all', 'build']);
-    expect(rent?.tabs).toEqual(['all', 'rent']);
-    // 🚨 **这条断言在 050 翻转, 而翻转本身就是 US1-AS3 / FR-009**: C-C 缺 Δ, 047 下被 Δ 带挡在
-    // 两个意图 Tab 之外; 050 下 Δ 退出召回判据 ⇒ 只看 DTE=17 ∈ [1,49] 与有效成本
-    // 145 − 13 = 132 < spot 132.40 ⇒ 进建仓召回集。全腿 Tab 恒在, 这点没变。
-    expect(gap?.tabs).toEqual(['all', 'build']);
-    // 全腿 Tab 里人人有名次; 建仓 Tab 现有 C-C / C-D 两条 (Top N = 3 ⇒ 两条都是 Top)。
-    expect(view.legs.every((l) => l.activityByTab.all !== null)).toBe(true);
-    expect(build?.activityByTab.build?.isTopRanked).toBe(true);
-    expect(build?.activityByTab.rent).toBeNull();
-    expect(rent?.activityByTab.build).toBeNull();
-    // 整数档优先: K = 120 是整数档。
-    expect(rent?.activityByTab.all?.isRoundStrike).toBe(true);
+    const all = await viewOf('all');
+    const build = await viewOf('build');
+    const rent = await viewOf('rent');
+
+    // 成员集合逐视角不同 (三份相等的话下面的「只答一个视角」就是平凡绿)。
+    // 🚨 C-C 缺 Δ 照样进建仓召回集 (050 FR-009: Δ 已退出召回判据) —— DTE=17 ∈ [1,49] 且
+    // 有效成本 145 − 13 = 132 < spot 132.40。
+    expect(all.legs.map((l) => l.code).sort()).toEqual(['C-A', 'C-B', 'C-C', 'C-D']);
+    expect(build.legs.map((l) => l.code).sort()).toEqual(['C-C', 'C-D']);
+    expect(rent.legs.map((l) => l.code).sort()).toEqual(['C-A', 'C-B']);
+
+    for (const [perspective, view] of [
+      ['all', all],
+      ['build', build],
+      ['rent', rent],
+    ] as const) {
+      for (const leg of view.legs) {
+        // 每条腿的归属恒为**本次视角一个** —— 拆请求之后 `tabs` 再无第二种取值 (053 FR-005
+        // 据此把它整条删掉, 归 T003)。
+        expect([leg.code, leg.tabs]).toEqual([leg.code, [perspective]]);
+        expect(leg.activityByTab[perspective]).not.toBeNull();
+        for (const other of ['all', 'build', 'rent'] as const) {
+          if (other === perspective) continue;
+          expect([leg.code, other, leg.activityByTab[other]]).toEqual([leg.code, other, null]);
+        }
+      }
+    }
+    // 整数档优先: K = 120 是整数档 (证明那一格真的算过, 不是「填了个对象」)。
+    expect(rent.legs.find((l) => l.code === 'C-A')?.activityByTab.rent?.isRoundStrike).toBe(true);
+    // 建仓视角只有 C-C / C-D 两条, 各自独占一个到期日组 ⇒ 过了活跃标绝对线的那条是 Top。
+    expect(build.legs.find((l) => l.code === 'C-D')?.activityByTab.build?.isTopRanked).toBe(true);
   });
 
   it('月度链标: 到期日落该月月度日的腿带标, 周链腿不带 (FR-014, T007 接线)', async () => {
     const prisma = makePrisma();
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
 
     // C-A / C-B 到期 2027-01-15 = 次年 1 月第三个周五; C-C 到期 2026-08-21 = 8 月第三个周五。
     expect(view.legs.find((l) => l.code === 'C-A')?.isMonthlyChain).toBe(true);
@@ -309,7 +331,7 @@ describe('get-legs.usecase — 三个 Tab 各一套活跃度 (D-SOT-5 × D-API-1
   });
 
   it('同一到期日的多条腿共用**同一个**财报标对象 (Guardrail 11 的结构保证)', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
     const a = view.legs.find((l) => l.code === 'C-A');
     const b = view.legs.find((l) => l.code === 'C-B'); // 死档, 但同到期日
     expect(a?.earningsMark).toBe(b?.earningsMark);
@@ -376,43 +398,52 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     ...base,
   };
 
-  const tableOf = (legs: LegFixture[]) => makeUseCase(makePrisma({}, legs)).execute(SYMBOL, NOW);
+  const tableOf = (legs: LegFixture[], perspective: 'all' | 'build' | 'rent' = 'all') =>
+    makeUseCase(makePrisma({}, legs)).execute(SYMBOL, perspective, NOW);
 
   it('权利金门槛挡下的腿从响应**整条移出**, 且只让 removedByPremiumFloor 动 (禁当 bid = 0)', async () => {
     const view = await tableOf([ok, penny, noBid]);
 
-    // 三个 Tab 一律不出现 = 它压根不在 legs[] 里 (客户端按每腿的 tabs 过滤, 没有行就没有归属)。
+    // 它压根不在 legs[] 里 —— 「移出」是整条消失, 不是「某个视角看不到」。
     expect(view.legs.map((l) => l.code)).toEqual(['G-OK']);
     expect(view.gateCounts.removedByPremiumFloor).toBe(2);
     // 🚨 串台绊线: 这两条同时是宽价差 / 无 ask, 但它们已经不在响应里 ⇒ 不属于「流动性排除」。
     expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
   });
 
-  it('流动性门槛挡下的腿**仍在响应里**、只剩全腿 Tab, 且只让 excludedFromIntentTabs 动', async () => {
-    const view = await tableOf([ok, wide]);
+  it('🚨 SC-012: 被流动性挡出建仓视角的腿, 在**全腿视角**逐条可达 (051 那个入口的回归防线)', async () => {
+    const inBuild = await tableOf([ok, wide], 'build');
+    const inAll = await tableOf([ok, wide], 'all');
 
-    const excluded = view.legs.find((l) => l.code === 'G-WIDE');
-    expect(excluded).toBeDefined();
-    expect(excluded?.tabs).toEqual(['all']);
-    // 数据没消失: 报价 / 费率 / 档位照常在, 只是不进意图候选。
-    expect(excluded?.bid?.toString()).toBe('3');
-    expect(view.gateCounts.excludedFromIntentTabs).toBe(1);
-    expect(view.gateCounts.removedByPremiumFloor).toBe(0);
-    // 对照腿两个 Tab 都进 —— 证明宽价差那条不是被别的判据顺手挡掉的。
-    expect(view.legs.find((l) => l.code === 'G-OK')?.tabs).toEqual(['all', 'build']);
+    // 建仓视角: 它不在成员集里, 但排除数把「有腿被挡了」说出来了。
+    expect(inBuild.legs.map((l) => l.code)).toEqual(['G-OK']);
+    expect(inBuild.gateCounts.excludedFromIntentTabs).toBe(1);
+    expect(inBuild.gateCounts.excludedFromIntentTabsByTab).toEqual({ build: 1, rent: 0 });
+    expect(inBuild.gateCounts.removedByPremiumFloor).toBe(0);
+
+    // 🚨 全腿视角: 同一条腿在这里**必须找得到**, 且数据没消失 (报价 / 费率 / 档位照常在)。
+    // 051 ship 的「点流动性排除数 → 切到全腿视角看被排除的腿」整条依赖这一点。
+    const reachable = inAll.legs.find((l) => l.code === 'G-WIDE');
+    expect(reachable).toBeDefined();
+    expect(reachable?.bid?.toString()).toBe('3');
+    // 全腿视角不设价差上界 (052 FR-010) ⇒ 它在这个视角下压根不算「被排除」。
+    expect(inAll.gateCounts.excludedFromIntentTabs).toBe(0);
   });
 
   it('期限段本就不合格的腿**不计入**流动性排除 —— 那个数是流动性信号, 不是「哪儿都没进」的总数', async () => {
-    const view = await tableOf([ok, longWide]);
+    const inBuild = await tableOf([ok, longWide], 'build');
 
-    expect(view.legs.find((l) => l.code === 'G-LONG-WIDE')?.tabs).toEqual(['all']);
-    // DTE 400 两个意图段都够不着 ⇒ 它出局与流动性无关, 计进去会稀释掉这个数唯一的用途。
-    expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
-    expect(view.gateCounts.removedByPremiumFloor).toBe(0);
+    expect(inBuild.legs.map((l) => l.code)).toEqual(['G-OK']);
+    // DTE 400 够不着建仓段 ⇒ 它出局与流动性无关 (两维同时挡下 ⇒ 边际口径下哪一维都不计它),
+    // 计进去会稀释掉这个数唯一的用途。
+    expect(inBuild.gateCounts.excludedFromIntentTabs).toBe(0);
+    expect(inBuild.gateCounts.removedByPremiumFloor).toBe(0);
+    // 它在全腿视角照常可达 —— 「没进意图视角」与「消失了」始终是两件事。
+    expect((await tableOf([ok, longWide], 'all')).legs.map((l) => l.code)).toContain('G-LONG-WIDE');
   });
 
   it('两道门槛都不触发时三个数恒 0 —— 证明它们不是「恒计数」的摆设', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
 
     expect(view.legs).toHaveLength(LEGS.length);
     expect(view.gateCounts).toEqual({
@@ -424,7 +455,7 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
 
   it('链未就绪 → 三个数为 0 (没有链就没有腿被挡下, MUST NOT 留上一次的数)', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
 
     expect(view.state).toBe('chain_not_ready');
     expect(view.gateCounts).toEqual({
@@ -438,14 +469,14 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
 describe('get-legs.usecase — 缺口与故障是两件事', () => {
   it('无锚 → 404 (回 200 空壳会让「没建锚」与「建了锚但没数据」不可区分)', async () => {
     const prisma = makePrisma({ anchor: { findUnique: vi.fn().mockResolvedValue(null) } });
-    await expect(makeUseCase(prisma).execute(SYMBOL, NOW)).rejects.toBeInstanceOf(
+    await expect(makeUseCase(prisma).execute(SYMBOL, 'all', NOW)).rejects.toBeInstanceOf(
       NotFoundException,
     );
   });
 
   it('链数据未就绪 → chain_not_ready + 空腿, 锚派生的那半边照常返回', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     expect(view.state).toBe('chain_not_ready');
     expect(view.legs).toEqual([]);
     expect(view.w.toString()).toBe('120');
@@ -459,7 +490,7 @@ describe('get-legs.usecase — 缺口与故障是两件事', () => {
     const prisma = makePrisma({
       optionContract: { findMany: vi.fn().mockRejectedValue(new Error('pg down')) },
     });
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     expect(view.state).toBe('read_failed');
     expect(view.legs).toEqual([]);
     expect(view.w.toString()).toBe('120');
@@ -484,7 +515,10 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
       },
       ...prismaOverrides,
     });
-    return { res: toLegTableResponse(await makeUseCase(prisma).execute(SYMBOL, now)), prisma };
+    return {
+      res: toLegTableResponse(await makeUseCase(prisma).execute(SYMBOL, 'all', now)),
+      prisma,
+    };
   };
 
   it('🚨 境内早晨 (本地已翻页、市场当日已收盘) + 当日快照 ⇒ CURRENT, **不判陈旧**', async () => {
@@ -519,7 +553,9 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
 
   it('链未就绪 ⇒ asOf 为 null ⇒ UNAVAILABLE (不编造日期, 也不白查日历)', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
-    const res = toLegTableResponse(await makeUseCase(prisma).execute(SYMBOL, NOW_CN_MORNING));
+    const res = toLegTableResponse(
+      await makeUseCase(prisma).execute(SYMBOL, 'all', NOW_CN_MORNING),
+    );
     expect(res.asOf).toBeNull();
     expect(res.asOfFreshnessTier).toBe('UNAVAILABLE');
     expect(prisma.tradingDay.findFirst).not.toHaveBeenCalled();
@@ -597,7 +633,10 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
   const MARK_LEGS: LegFixture[] = [buildA, buildB, rentDeep, rentModerate, rentGapless];
 
   /** 默认锚 ⇒ 卖put区 + L2 + 水位 ≥2/3 ⇒ 意图「收租 · 深度」, 带 = [0.05, 0.15]。 */
-  const tableWithBucket = (positionBucketManual: string | null) =>
+  const tableWithBucket = (
+    positionBucketManual: string | null,
+    perspective: 'all' | 'build' | 'rent' = 'all',
+  ) =>
     makeUseCase(
       makePrisma(
         {
@@ -607,7 +646,7 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
         },
         MARK_LEGS,
       ),
-    ).execute(SYMBOL, NOW);
+    ).execute(SYMBOL, perspective, NOW);
 
   it('推荐标随**标的级意图**判: 收租 · 深度 ⇒ 只有 |Δ| 落 deep 带的腿带标', async () => {
     const view = await tableWithBucket('gte_two_thirds');
@@ -638,20 +677,23 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
     expect(unselected.gateCounts).toEqual(selected.gateCounts);
   });
 
-  it('🚨 排名基准 = 该 Tab 的召回全量: 全链最不活跃的两条腿在建仓 Tab 里仍是 Top', async () => {
-    const view = await tableWithBucket('gte_two_thirds');
+  it('🚨 排名基准 = 该视角的召回全量: 全链最不活跃的两条腿在建仓视角里仍是 Top', async () => {
+    const view = await tableWithBucket('gte_two_thirds', 'build');
     const leg = (code: string) => view.legs.find((l) => l.code === code)!;
 
-    // 建仓 Tab 只有两条成员 (< Top 3) ⇒ 两条都是 Top。
-    expect(leg('M-BUILD-A').tabs).toContain('build');
+    // 建仓视角只有两条成员 (< Top 3) ⇒ 两条都是 Top。它们的 OI / Vol 全链最低 ——
+    // 排名基准若退回「全链」, 这两条一个标都拿不到。
+    expect(view.legs.map((l) => l.code).sort()).toEqual(['M-BUILD-A', 'M-BUILD-B']);
     expect(leg('M-BUILD-A').activityByTab.build?.isTopRanked).toBe(true);
     expect(leg('M-BUILD-B').activityByTab.build?.isTopRanked).toBe(true);
 
-    // 每个 Tab 拿到名次的行数 == 该 Tab 的成员数 (排名跑在成员集合上, 不多不少)。
-    for (const tab of ['all', 'build', 'rent'] as const) {
-      const members = view.legs.filter((l) => l.tabs.includes(tab));
-      const ranked = view.legs.filter((l) => l.activityByTab[tab] !== null);
-      expect(ranked.map((l) => l.code).sort()).toEqual(members.map((l) => l.code).sort());
+    // 拿到名次的行数 == 成员数 (排名跑在成员集合上, 不多不少) —— 把 `markActivity` 挪到
+    // 任何一道筛选之后, 被筛掉的腿会留下 `activityByTab` 为 null 的成员而立刻红。
+    for (const perspective of ['all', 'build', 'rent'] as const) {
+      const view = await tableWithBucket('gte_two_thirds', perspective);
+      const ranked = view.legs.filter((l) => l.activityByTab[perspective] !== null);
+      expect([perspective, ranked.length]).toEqual([perspective, view.legs.length]);
+      expect(view.legs.length).toBeGreaterThan(0);
     }
   });
 
@@ -682,37 +724,38 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
  * 🚨 这份数据的判别性在于 **`legs[]` 的既有排序 (档位键) 与 `tabOrder.all` (费率键) 逐行不同**
  * —— 「顺手把 legs[] 改成按费率排」(Guardrail 10) 一旦发生, 下面那条断言立刻红。
  */
-describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-023/FR-024, T012)', () => {
-  it('🚨 Guardrail 9: `tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}` (两处同源派生)', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
-
-    for (const tab of ['all', 'build', 'rent'] as const) {
-      const members = view.legs
-        .filter((l) => l.tabs.includes(tab))
-        .map((l) => l.code)
-        .sort();
-      expect([tab, [...view.tabOrder[tab]].sort()]).toEqual([tab, members]);
+describe('get-legs.usecase — 单视角有序列表 + per-Tab 档位 (FR-021a/FR-023/FR-024, T012)', () => {
+  it('🚨 Guardrail 9: `tabOrder[视角]` 的元素集合 == 本次返回的腿, 另两格空 (同源派生)', async () => {
+    for (const perspective of ['all', 'build', 'rent'] as const) {
+      const view = await makeUseCase(makePrisma()).execute(SYMBOL, perspective, NOW);
+      const members = view.legs.map((l) => l.code).sort();
+      expect([perspective, [...view.tabOrder[perspective]].sort()]).toEqual([perspective, members]);
+      expect(members.length).toBeGreaterThan(0);
+      // 另两格恒空 —— 本次请求没有为它们判定过任何东西, 填进去就是凭空造第二份成员集合。
+      for (const other of ['all', 'build', 'rent'] as const) {
+        if (other === perspective) continue;
+        expect([perspective, other, view.tabOrder[other]]).toEqual([perspective, other, []]);
+      }
     }
-    // 空集合不是特例: 每个 Tab 都得有一份列表 (哪怕是空的), 免得客户端拿到 undefined。
-    expect(Object.keys(view.tabOrder).sort()).toEqual(['all', 'build', 'rent']);
   });
 
-  it('三份列表各自按**该 Tab 口径**的折算费率降序 (FR-021)', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+  it('每个视角按**该视角口径**的折算费率降序 (FR-021)', async () => {
+    const orderOf = async (perspective: 'all' | 'build' | 'rent') =>
+      (await makeUseCase(makePrisma()).execute(SYMBOL, perspective, NOW)).tabOrder[perspective];
 
     // 年化: C-C 211% > C-D 57% > C-A 11.7% > C-B 1.1%。
     // 🚨 **052 FR-020 起全腿视角实值沉底**: C-C 的行权价 145 **高于** spot 132.40 ⇒ 它那 211%
     // 年化绝大部分是内在价值 (公式退化产物), 从首位掉到末位。其余三条**逐条保持费率降序**
     // —— 这条断言的判别性就在这里: 若沉底键失效, 它会回到 `['C-C', ...]` 而立刻红。
     // 🚫 它**没有被移出** (FR-006 / SC-006): 四条腿一条不少, 只是序变了。
-    expect(view.tabOrder.all).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
-    // 建仓 Tab 走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条 (且 2 < 分档降级阈值 ⇒ 纯费率降序)。
-    expect(view.tabOrder.build).toEqual(['C-C', 'C-D']);
-    expect(view.tabOrder.rent).toEqual(['C-A', 'C-B']);
+    expect(await orderOf('all')).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
+    // 建仓视角走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条 (且 2 < 分档降级阈值 ⇒ 纯费率降序)。
+    expect(await orderOf('build')).toEqual(['C-C', 'C-D']);
+    expect(await orderOf('rent')).toEqual(['C-A', 'C-B']);
   });
 
   it('🚨 Guardrail 10: `legs[]` 的既有排序键**一行没改** —— 仍是档位 → 到期日 → 行权价 → code', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
 
     // 旧客户端 (P2 未上) 仍按 legs[] 渲染 ⇒ 顺序不许动。
     expect(view.legs.map((l) => l.code)).toEqual(['C-D', 'C-A', 'C-C', 'C-B']);
@@ -721,41 +764,45 @@ describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-0
     expect(view.legs.map((l) => l.code)).not.toEqual(view.tabOrder.all);
   });
 
-  it('🚨 FR-023: `tierByTab` 跟 Tab 走, 同一条腿两个 Tab 可判出不同档; 全腿 Tab 恒年化', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
-    const buildLeg = view.legs.find((l) => l.code === 'C-D');
+  it('🚨 FR-023 / 053 FR-041: 档位跟**视角**走, 同一条腿两个视角判出不同档; 全腿视角恒年化', async () => {
+    const legIn = async (perspective: 'all' | 'build' | 'rent', code: string) =>
+      (await makeUseCase(makePrisma()).execute(SYMBOL, perspective, NOW)).legs.find(
+        (l) => l.code === code,
+      );
 
-    // 同一条腿: 建仓 Tab 按周化 1.09% ⇒ acceptable; 全腿 Tab 按年化 57% ⇒ good。
+    // 同一条腿 C-D: 建仓视角按周化 1.09% ⇒ acceptable; 全腿视角按年化 57% ⇒ good。
+    const buildLeg = await legIn('build', 'C-D');
+    const allLeg = await legIn('all', 'C-D');
     expect(buildLeg?.tierByTab.build).toBe('acceptable');
-    expect(buildLeg?.tierByTab.all).toBe('good');
-    // 🚨 全腿 Tab 例外恒年化 —— 它混着 10 天与 164 天的腿, 拿周化档界判长腿会让整列全是死档。
-    const rentLeg = view.legs.find((l) => l.code === 'C-A');
-    expect(rentLeg?.tierByTab.all).toBe('acceptable');
-    expect(rentLeg?.tierByTab.rent).toBe('acceptable');
-    // 现役标量 `tier` / `basis` 一字不动 (契约只加不删): 进建仓召回集 ⇒ 周化。
-    expect(buildLeg?.basis).toBe('weekly');
-    expect(buildLeg?.tier).toBe('acceptable');
+    expect(allLeg?.tierByTab.all).toBe('good');
+    // 🚨 全腿视角例外恒年化 —— 它混着 10 天与 164 天的腿, 拿周化档界判长腿会让整列全是死档。
+    expect((await legIn('all', 'C-A'))?.tierByTab.all).toBe('acceptable');
+    expect((await legIn('rent', 'C-A'))?.tierByTab.rent).toBe('acceptable');
+    // 标量 `tier` / `basis` 与本次视角那一格同源 —— 两处不同源就会 drift 且两边都有值。
+    expect([buildLeg?.basis, buildLeg?.tier]).toEqual(['weekly', 'acceptable']);
+    expect([allLeg?.basis, allLeg?.tier]).toEqual(['annualized', 'good']);
   });
 
-  it('`tierByTab` 对**非成员**恒 null —— 不属于该 Tab 就没有该 Tab 的档位', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
-
-    for (const leg of view.legs) {
-      for (const tab of ['all', 'build', 'rent'] as const) {
-        if (leg.tabs.includes(tab)) continue;
-        expect([leg.code, tab, leg.tierByTab[tab]]).toEqual([leg.code, tab, null]);
+  it('`tierByTab` 只填本次视角那一格, 另两格恒 null (本次没为它们判定过任何东西)', async () => {
+    for (const perspective of ['all', 'build', 'rent'] as const) {
+      const view = await makeUseCase(makePrisma()).execute(SYMBOL, perspective, NOW);
+      for (const leg of view.legs) {
+        for (const other of ['all', 'build', 'rent'] as const) {
+          if (other === perspective) continue;
+          expect([leg.code, other, leg.tierByTab[other]]).toEqual([leg.code, other, null]);
+        }
       }
+      // 反向: 本次视角那一格至少有一条腿真的判出了档, 否则上面是平凡绿。
+      expect(view.legs.some((l) => l.tierByTab[perspective] !== null)).toBe(true);
     }
-    // 反向: 至少有一条腿真的有非成员格, 否则上面是平凡绿。
-    expect(view.legs.some((l) => !l.tabs.includes('rent'))).toBe(true);
   });
 
-  it('greeks 缺失的腿三格全 null —— 不判档不着色 (FR-007) 在 per-Tab 档位上同样成立', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+  it('greeks 缺失的腿不判档不着色 (FR-007) —— 但照常在成员集里、照常参与排序', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'build', NOW);
     const gap = view.legs.find((l) => l.code === 'C-C');
 
-    // 它**在**建仓召回集里 (050 下 Δ 退出召回), 但费率会骗人 ⇒ 三个 Tab 一律不判档。
-    expect(gap?.tabs).toEqual(['all', 'build']);
+    // 它**在**建仓召回集里 (050 下 Δ 退出召回), 但费率会骗人 ⇒ 不判档。
+    expect(gap).toBeDefined();
     expect(gap?.tierByTab).toEqual({ all: null, build: null, rent: null });
     expect(gap?.tier).toBeNull();
     // 但它照常参与排序 —— 不判档不等于不排 (费率算得出来)。
@@ -764,16 +811,16 @@ describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-0
 
   it('链未就绪 → 三份列表都是空数组 (不是 undefined, 客户端不必特判)', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
 
     expect(view.state).toBe('chain_not_ready');
     expect(view.tabOrder).toEqual({ all: [], build: [], rent: [] });
   });
 
-  it('🚨 SC-006: 同一输入连续两次调用, 三份列表逐行相同', async () => {
+  it('🚨 SC-006: 同一输入连续两次调用, 有序列表逐行相同', async () => {
     const useCase = makeUseCase(makePrisma());
-    const first = await useCase.execute(SYMBOL, NOW);
-    const second = await useCase.execute(SYMBOL, NOW);
+    const first = await useCase.execute(SYMBOL, 'all', NOW);
+    const second = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(second.tabOrder).toEqual(first.tabOrder);
     expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));
@@ -788,48 +835,55 @@ describe('get-legs.usecase — 三份有序列表 + per-Tab 档位 (FR-021a/FR-0
  * 会红**。这层是那个缺口的唯一防线。
  */
 describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', () => {
-  const responseOf = async (legs: LegFixture[] = LEGS, overrides: Record<string, unknown> = {}) =>
-    toLegTableResponse(await makeUseCase(makePrisma(overrides, legs)).execute(SYMBOL, NOW));
+  const responseOf = async (
+    legs: LegFixture[] = LEGS,
+    overrides: Record<string, unknown> = {},
+    perspective: 'all' | 'build' | 'rent' = 'all',
+  ) =>
+    toLegTableResponse(
+      await makeUseCase(makePrisma(overrides, legs)).execute(SYMBOL, perspective, NOW),
+    );
 
-  it('顶层 tabOrder 三个 Tab 逐字下发 (客户端 MUST 按它呈现, MUST NOT 自行重排)', async () => {
-    const res = await responseOf();
-
-    expect(res.tabOrder).toEqual({
-      // 052 FR-020: 全腿视角实值沉底 (C-C 的 K=145 > spot 132.40) —— 见上方排序那条断言。
-      all: ['C-D', 'C-A', 'C-B', 'C-C'],
-      build: ['C-C', 'C-D'],
-      rent: ['C-A', 'C-B'],
-    });
+  it('顶层 tabOrder 逐字下发本次视角那一份 (客户端 MUST 按它呈现, MUST NOT 自行重排)', async () => {
+    // 052 FR-020: 全腿视角实值沉底 (C-C 的 K=145 > spot 132.40) —— 见上方排序那条断言。
+    expect((await responseOf(LEGS, {}, 'all')).tabOrder.all).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
+    expect((await responseOf(LEGS, {}, 'build')).tabOrder.build).toEqual(['C-C', 'C-D']);
+    expect((await responseOf(LEGS, {}, 'rent')).tabOrder.rent).toEqual(['C-A', 'C-B']);
     // 判别性: 它与 legs[] 的 legacy 载体顺序逐行不同 ⇒ 「映射时顺手拿 legs[] 的序」会红。
+    const res = await responseOf();
     expect(res.legs.map((l) => l.code)).not.toEqual(res.tabOrder.all);
   });
 
   it('🚨 顶层 gateCounts 两个数各自过 wire —— 不合并成总数, 不串台', async () => {
-    // 一分钱腿 (bid 0.05 < 0.20 门槛) 移出响应; 宽价差腿 (6.00/6.00) 留在响应只出意图 Tab。
+    // 一分钱腿 (bid 0.05 < 门槛) 整条移出; 宽价差腿 (3.00/9.00) 只出意图视角、全腿仍可达。
     const penny: LegFixture = { ...LEGS[3], code: 'W-PENNY', bid: '0.05', ask: '0.15' };
     const wide: LegFixture = { ...LEGS[3], code: 'W-WIDE', bid: '3.00', ask: '9.00' };
-    const res = await responseOf([LEGS[3], penny, wide]);
+    const res = await responseOf([LEGS[3], penny, wide], {}, 'build');
 
-    // 两个数**不相等**才谈得上「没串台」—— 相等的话把两个字段接反也照样绿。
-    // 051 FR-006a: `W-WIDE` 的 DTE 10 只够得着建仓段 ⇒ 拆开后全落 build, rent 保持 0。
     // 三个数两两不等 ⇒ 「把任意两个字段接反」都会红 (相等的话接反照样绿)。
+    // 051 FR-006a: `W-WIDE` 的 DTE 10 只够得着建仓段 ⇒ 拆开后全落 build, rent 保持 0。
     expect(res.gateCounts).toEqual({
       removedByPremiumFloor: 1,
       excludedFromIntentTabs: 1,
       excludedFromIntentTabsByTab: { build: 1, rent: 0 },
     });
-    // 语义不对称的机械体现: 前者的腿不在 legs[] 里, 后者的仍在。
-    expect(res.legs.map((l) => l.code).sort()).toEqual(['C-D', 'W-WIDE']);
+    // 语义不对称的机械体现: 被权利金挡下的那条**哪个视角都没有**, 被价差挡下的只是不在
+    // 意图视角里 —— 切到全腿视角照样查得到 (SC-012)。
+    expect(res.legs.map((l) => l.code)).toEqual(['C-D']);
+    const inAll = await responseOf([LEGS[3], penny, wide], {}, 'all');
+    expect(inAll.legs.map((l) => l.code).sort()).toEqual(['C-D', 'W-WIDE']);
   });
 
   it('顶层 basisByTab 常量映射下发 —— 客户端不必硬编码 FR-023 的 Tab → 口径', async () => {
     const res = await responseOf();
 
     expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
-    // 它与每腿的 `tierByTab` 必须是同一套口径: 建仓走周化档界, 全腿 Tab 例外恒年化。
-    const buildLeg = res.legs.find((l) => l.code === 'C-D');
-    expect([res.basisByTab.build, buildLeg?.tierByTab.build]).toEqual(['weekly', 'acceptable']);
-    expect([res.basisByTab.all, buildLeg?.tierByTab.all]).toEqual(['annualized', 'good']);
+    // 它与每腿的 `tierByTab` 必须是同一套口径: 建仓走周化档界, 全腿视角例外恒年化。
+    const inBuild = await responseOf(LEGS, {}, 'build');
+    const buildLeg = inBuild.legs.find((l) => l.code === 'C-D');
+    const allLeg = res.legs.find((l) => l.code === 'C-D');
+    expect([inBuild.basisByTab.build, buildLeg?.tierByTab.build]).toEqual(['weekly', 'acceptable']);
+    expect([res.basisByTab.all, allLeg?.tierByTab.all]).toEqual(['annualized', 'good']);
   });
 
   it('每腿 isRecommended / isMonthlyChain / tierByTab 逐条过 wire', async () => {
@@ -844,11 +898,11 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
         .map((l) => l.code)
         .sort(),
     ).toEqual(['C-A', 'C-B', 'C-C']);
-    // 非成员格恒 null —— 不属于该 Tab 就没有该 Tab 的档位。
+    // 另两格恒 null —— 本次请求只为全腿视角判定过。
     expect(res.legs.find((l) => l.code === 'C-A')?.tierByTab).toEqual({
       all: 'acceptable',
       build: null,
-      rent: 'acceptable',
+      rent: null,
     });
   });
 
@@ -886,7 +940,7 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
  */
 describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
   it('🚨 三视角的条件全景恒有三份 —— 客户端本地切视角时不发请求, 要用另两份填控件', async () => {
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
     for (const tab of ['all', 'build', 'rent'] as const) {
       expect(view.criteriaByTab[tab].defaults).toBeDefined();
       expect(view.criteriaByTab[tab].effective).toEqual(view.criteriaByTab[tab].defaults);
@@ -904,7 +958,7 @@ describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
 
   it('🚨 链未就绪 ⇒ 六维全 null, MUST NOT 猜一个默认值 (spec Edge Case「spot 缺失」)', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
-    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
     expect(view.state).toBe('chain_not_ready');
     for (const key of RETRIEVAL_CRITERION_KEYS) {
       expect(view.criteriaByTab.rent.defaults[key]).toBeNull();
@@ -912,30 +966,31 @@ describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
   });
 
   it('用户覆盖只作用于请求的那个视角, 且计数只出在被收窄的维度上 (FR-029)', async () => {
-    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW);
     // 收租段 `[30,365]` → `[1,50]`: 上界收窄踢掉 C-A / C-B (DTE 164), 下界放宽放进 C-D (DTE 10)
     // ⇒ 成员**有进有出**, 而三态照样唯一 (判据是「是否产生排除」, 见 `CriterionState`)。
-    const narrowed = await makeUseCase(makePrisma()).execute(SYMBOL, NOW, {
+    const narrowed = await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { dteBand: { min: 1, max: 50 } },
     });
 
     expect(plain.tabOrder.rent).toEqual(['C-A', 'C-B']);
     expect(narrowed.tabOrder.rent).toEqual(['C-D']);
-    expect(narrowed.tabOrder.build).toEqual(plain.tabOrder.build);
     expect(narrowed.criteriaByTab.rent.outcomes.dteBand).toEqual({
       state: 'narrowed',
       excludedCount: 2,
     });
     // 🚫 未被动过的维度不出计数 —— 默认值本身就摆在控件里, 第二次告知是噪音。
     expect(narrowed.criteriaByTab.rent.outcomes.strikeMax.state).toBe('default');
+    // 🚨 条件全景恒有三份 (052 FR-011): 另两个视角照常给默认值 —— 覆盖没有渗到它们身上。
     expect(narrowed.criteriaByTab.build.outcomes.dteBand.state).toBe('default');
+    expect(narrowed.criteriaByTab.build.defaults.dteBand).toEqual({ min: 1, max: 49 });
   });
 
   it('🚨 FR-026: 放宽条件使候选集变大 ⇒ 活跃标与排序按新候选集重算 (定义如此)', async () => {
-    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, 'build', NOW);
     // 建仓段放宽到含 DTE 164 ⇒ 两条收租长腿也进建仓候选 (有效成本 120−6 / 100−0.5 均 < spot)。
-    const widened = await makeUseCase(makePrisma()).execute(SYMBOL, NOW, {
+    const widened = await makeUseCase(makePrisma()).execute(SYMBOL, 'build', NOW, {
       perspective: 'build',
       criteria: { dteBand: { min: 1, max: 365 } },
     });
@@ -956,9 +1011,16 @@ describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
  */
 describe('optionsdesk.dto — 检索条件的请求与响应契约 (052 T011)', () => {
   it('无任何条件参数 ⇒ null (首屏 / 「复位」走的就是这条路径)', () => {
-    expect(toRetrievalOverride({})).toBeNull();
-    // 🚨 只给 perspective 不给任何条件也算无覆盖 —— 否则「复位」会被记成一次全维度覆盖。
+    // 🚨 053 起 `perspective` 必填 ⇒ 「只给视角不给条件」就是首屏那一发, 它 MUST NOT 被记成
+    // 一次全维度覆盖 (否则每次切视角都会显示一排「当前条件之外还有 N 条」)。
     expect(toRetrievalOverride({ perspective: 'rent' })).toBeNull();
+    expect(toRetrievalOverride({ perspective: 'all' })).toBeNull();
+  });
+
+  it('🚨 053 FR-001: `perspective` 决定作答视角, 取值原样透出 (MUST NOT 在这里再判一次三值)', () => {
+    for (const perspective of ['all', 'build', 'rent'] as const) {
+      expect(toRequestedPerspective({ perspective })).toBe(perspective);
+    }
   });
 
   it('🚨 缺键 = 未覆盖, 空串 = 覆盖为「不限」—— 两者三态不同', () => {
@@ -1006,12 +1068,8 @@ describe('optionsdesk.dto — 检索条件的请求与响应契约 (052 T011)', 
     ).toBeNull();
   });
 
-  it('🚨 给了条件却没给 perspective ⇒ 400 —— 覆盖只作用于一个视角, 没有「作用于全部」这个取值', () => {
-    expect(() => toRetrievalOverride({ strikeMax: '138' })).toThrow(BadRequestException);
-  });
-
   it('🚨 三组字段**逐维度**下发, 六项一个不少 (T011 的验收口径是穷举不是泛指)', async () => {
-    const res = toLegTableResponse(await makeUseCase(makePrisma()).execute(SYMBOL, NOW));
+    const res = toLegTableResponse(await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW));
     for (const tab of ['all', 'build', 'rent'] as const) {
       const panel = res.criteriaByTab[tab];
       for (const key of RETRIEVAL_CRITERION_KEYS) {
