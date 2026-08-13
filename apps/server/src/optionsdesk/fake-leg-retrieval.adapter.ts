@@ -32,15 +32,23 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
     const seeded = this.chains.get(query.symbol);
     if (seeded === undefined) return Promise.resolve(null);
     const context: RecallContext = { spot: seeded.chain.spot };
+    const outcome = recallCandidates(
+      context,
+      query.perspectives,
+      seeded.legs,
+      query.candidateCap,
+      query.override,
+    );
     return Promise.resolve({
       chain: seeded.chain,
-      ...recallCandidates(
-        context,
-        query.perspectives,
-        seeded.legs,
-        query.candidateCap,
-        query.override,
-      ),
+      ...outcome,
+      // 053 FR-009: 与 Prisma 实现同一条落法 —— 对**同一批已在内存的腿**用「无覆盖」再判一次。
+      // 语义与三条禁忌见 `LegRetrievalResult.memberCount`。
+      memberCount:
+        query.override === null
+          ? outcome.candidates.length
+          : recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap)
+              .candidates.length,
     });
   }
 }

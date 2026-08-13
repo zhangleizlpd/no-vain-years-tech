@@ -113,6 +113,22 @@ export type LegCandidate = RecallCandidate<LegChainRow>;
 /** 出参 = 候选集 (裸行 + 已判定的视角归属) + 两道门槛的排除计数 + 链级上下文。 */
 export interface LegRetrievalResult extends RecallOutcome<LegChainRow> {
   readonly chain: LegChainMeta;
+  /**
+   * 053 FR-009 —— **无覆盖口径**下的成员数。与 `candidates.length` (本次条件下的成员数) 成对
+   * 使用, 让表达层的「筛后 N · 全量 M」算得出来。
+   *
+   * 🚨 **它为什么住在出参, 而不是由调用方现算**: 被当前条件挡下的链行**只存在于实现内部**
+   * (召回层只吐视角归属非空的候选) ⇒ 用户收窄之后, 那些行在调用方那里**结构上取不回来**。
+   * 📌 这是 053 FR-003 的 2026-08-14 裁定唯一松开的一处 —— **入参一字不动**, 只加这一个出参。
+   *
+   * 🚨 **MUST 由实现对同一批已取回的链行再判一次得出, 🚫 MUST NOT 为它多查一次库**: 数据层
+   * 只下结构性谓词, 六维判据是取回后的纯函数 ⇒ 第二次判定是纯 CPU 的 `O(n)`。
+   * 🚫 **MUST NOT 拿 052 的六维边际计数加总充当它** —— 边际口径下被两维同时挡下的腿两维都
+   * 不计它, 且放宽一端放进来的腿本就不在无覆盖口径的成员里 ⇒ 加总**不等于**本数, 而两个数
+   * 都出得来、都不会红。
+   * 📌 未覆盖任何条件时它恒等于 `candidates.length` (实现直接短路, 不白跑第二趟)。
+   */
+  readonly memberCount: number;
 }
 
 export interface LegRetrievalPort {

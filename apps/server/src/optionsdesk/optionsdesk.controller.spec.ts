@@ -18,6 +18,7 @@ import { ListAnchorsUseCase, toAnchorView } from './list-anchors.usecase';
 import { GetAnchorUseCase } from './get-anchor.usecase';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase';
 import { GetLegsUseCase, type LegTableView } from './get-legs.usecase';
+import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS, type PerspectiveCriteria } from './leg-recall.rules';
 
 // boot-time zod 校验的最小 env 集 (与 alert-crud.it.spec.ts 同口径)。必须在 Nest 编译前落位:
@@ -582,6 +583,9 @@ function emptyLegTable(): LegTableView {
       excludedFromIntentTabsByTab: { build: 0, rent: 0 },
     },
     candidateCapDropped: 0,
+    matchedCount: 0,
+    memberCount: 0,
+    displayLimit: DISPLAY_LIMIT_BY_PERSPECTIVE.all,
     criteriaByTab: { all: criteria(), build: criteria(), rent: criteria() },
   };
 }

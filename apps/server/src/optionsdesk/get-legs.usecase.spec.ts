@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import type { PrismaService } from '../security/prisma.service';
 import { GetLegsUseCase } from './get-legs.usecase';
 import { ACTIVITY_TOP_RANK_COUNT } from './leg-derive.rules';
+import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
 import { toLegTableResponse, toRequestedPerspective, toRetrievalOverride } from './optionsdesk.dto';
@@ -1083,5 +1084,99 @@ describe('optionsdesk.dto — 检索条件的请求与响应契约 (052 T011)', 
     expect(res.criteriaByTab.rent.defaults.dteBand).toEqual({ min: 30, max: 365 });
     expect(res.criteriaByTab.all.defaults.dteBand).toBeNull();
     expect(res.criteriaByTab.all.defaults.relativeSpreadMax).toBeNull();
+  });
+});
+
+/**
+ * 053 T002 —— 表达层截断 + 三个计数 (FR-004 / FR-009 – FR-012 / FR-015 / FR-019c,
+ * plan D-ORDER-1 / D-LIMIT-1)。
+ *
+ * 🚨 **截断分支靠注入小阈值走遍, 而不是造几百条腿** (SC-006 / Guardrail 7): 合成 fixture 测
+ * 出来的是「slice 能不能跑」, 注入小阈值测的是「真实链上截断截的是不是排序尾部」。
+ */
+describe('get-legs.usecase — 表达层截断与三个计数 (053 T002)', () => {
+  it('未触发截断: 全部腿在表内, 且 `displayLimit` 与 `matchedCount` **照常下发** (FR-015)', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
+    expect(view.legs).toHaveLength(LEGS.length);
+    expect(view.matchedCount).toBe(LEGS.length);
+    // 🚨 只在截断时下发阈值会让「链规模逼近阈值」恰恰观测不到 —— 而那正是 FR-015 要防的静默。
+    expect(view.displayLimit).toBe(DISPLAY_LIMIT_BY_PERSPECTIVE.all);
+    // K 的触及是**保险丝熔断**不是判据挡下 ⇒ 它既不进 gateCounts 也不是第四条常规计数。
+    expect(view.candidateCapDropped).toBe(0);
+  });
+
+  it('🚨 注入小阈值 → 截到阈值, 且截掉的是**排序尾部** (前 D 条逐条相同, Guardrail 8)', async () => {
+    const full = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW);
+    const cut = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW, null, 2);
+
+    expect(full.legs).toHaveLength(4);
+    expect(cut.legs).toHaveLength(2);
+    // 判别性在这一行: 条数对是任何一种截法都满足的, 「前 2 条逐条相同」才排除得掉「从中间
+    // 截 / 按别的键重排后再截」。
+    expect(cut.tabOrder.all).toEqual(full.tabOrder.all.slice(0, 2));
+    expect(cut.displayLimit).toBe(2);
+    // `matchedCount` 取**截断前**的条数 ⇒ 「其余 N−D 条未显示」算得出来 (D 与它的差都不下发)。
+    expect(cut.matchedCount).toBe(full.matchedCount);
+    // 腿本体与有序列表恒同集 —— 不同集会让客户端按 tabOrder 渲染时出现「有名次没有腿」。
+    expect(cut.legs.map((l) => l.code).sort()).toEqual([...cut.tabOrder.all].sort());
+  });
+
+  it('恰等于阈值不截, 严格大于才截 (Edge Case: 恰等于时「其余 0 条未显示」不该出现)', async () => {
+    const equal = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW, null, 4);
+    expect(equal.legs).toHaveLength(4);
+    expect(equal.matchedCount).toBe(4);
+
+    const over = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW, null, 3);
+    expect(over.legs).toHaveLength(3);
+    expect(over.matchedCount).toBe(4);
+  });
+
+  it('注入 `null` (不设该视角阈值) → 零截断, 阈值原样回显 (FR-013 的显式登记形态)', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'all', NOW, null, null);
+    expect(view.legs).toHaveLength(LEGS.length);
+    expect(view.displayLimit).toBeNull();
+  });
+
+  it('📌 未覆盖任何条件 → `memberCount === matchedCount` (三视角逐个, FR-009)', async () => {
+    for (const perspective of ['all', 'build', 'rent'] as const) {
+      const view = await makeUseCase(makePrisma()).execute(SYMBOL, perspective, NOW);
+      expect([perspective, view.memberCount]).toEqual([perspective, view.matchedCount]);
+      expect([perspective, view.matchedCount]).toEqual([perspective, view.legs.length]);
+    }
+  });
+
+  it('🚨 收窄后 `memberCount > matchedCount`, 且它**不是**边际计数加总 (Guardrail 12)', async () => {
+    // 收租段 `[30,365]` → `[1,50]`: 上界收窄踢掉 C-A / C-B, 下界放宽放进 C-D ⇒ 有进有出。
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW, {
+      perspective: 'rent',
+      criteria: { dteBand: { min: 1, max: 50 } },
+    });
+
+    expect(view.matchedCount).toBe(1);
+    // 🚨 判别性: 边际口径的加总在这里给出 `1 + 2 = 3`, 而无覆盖口径的真值是 **2** ——
+    // 放宽那一端放进来的 C-D 本来就不在默认候选集里。两个数都出得来、都不会红。
+    expect(view.criteriaByTab.rent.outcomes.dteBand.excludedCount).toBe(2);
+    expect(view.memberCount).toBe(2);
+    expect(view.memberCount).toBeGreaterThan(view.matchedCount);
+  });
+
+  it('🚨 `memberCount` 零额外 DB 往返 —— 检索只调 1 次, 三张表各查 1 次 (Guardrail 13)', async () => {
+    const prisma = makePrisma();
+    const service = prisma as unknown as PrismaService;
+    const adapter = new PrismaLegRetrievalAdapter(service);
+    const retrieveSpy = vi.spyOn(adapter, 'retrieveCandidates');
+
+    // 🚨 **必须带覆盖** —— 无覆盖时实现直接短路, 「只查一次」是平凡真; 只有第二趟判定真的
+    // 跑起来, 这条断言才在守「第二次判定用的是同一批已在内存的行」。
+    const view = await new GetLegsUseCase(service, adapter).execute(SYMBOL, 'rent', NOW, {
+      perspective: 'rent',
+      criteria: { dteBand: { min: 1, max: 50 } },
+    });
+
+    expect(view.memberCount).toBeGreaterThan(view.matchedCount);
+    expect(retrieveSpy).toHaveBeenCalledTimes(1);
+    expect(prisma.optionContract.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.optionDailySnapshot.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.optionDailySnapshot.findFirst).toHaveBeenCalledTimes(1);
   });
 });

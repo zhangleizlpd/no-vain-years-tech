@@ -42,10 +42,12 @@ import {
 } from './leg-mark.rules';
 import {
   BASIS_BY_TAB,
+  DISPLAY_LIMIT_BY_PERSPECTIVE,
   allLegsRanker,
   computeRankingFeatures,
   layeredRanker,
   rankLegs,
+  truncateToDisplayLimit,
   type RankingContext,
   type RankingLegInput,
 } from './leg-rank.rules';
@@ -315,6 +317,31 @@ export interface LegTableView {
    */
   candidateCapDropped: number;
   /**
+   * 本次条件下**该视角**的成员数 —— 表达层截断**之前**的条数 (053 FR-005 / FR-015)。
+   *
+   * 🚨 **实际显示条数 `D` 蓄意不下发** (053 Guardrail 11): 它恒等于 `legs.length`, 「其余
+   * `N − D` 条」同样可现算 —— 下发第二份必 drift, 而两个数都读得出来、都不会红。
+   * ⚠️ **触及候选上限 `K` 时本数会静默失真** (FR-019c): 它算在已被 `K` 砍过的集合上 ⇒
+   * {@link candidateCapDropped} 非零时, 表达层 MUST 说明本数可能不完整。
+   */
+  matchedCount: number;
+  /**
+   * **无覆盖口径**下该视角的成员数 (053 FR-009) —— 未覆盖任何条件时恒 `=== matchedCount`,
+   * 此时区块头 MUST NOT 并列显示两个相等的数。
+   *
+   * 📌 它由检索层对**同一批已取回的链行**再判一次得出 (零额外 DB 往返), 本文件不重算 ——
+   * 被当前条件挡下的行在这里结构上取不回来 (见 `LegRetrievalResult.memberCount`)。
+   */
+  memberCount: number;
+  /**
+   * 本次生效的表达层截断阈值 `N`; `null` = 不设该视角阈值 ⇒ 零截断 (053 FR-011 / FR-013)。
+   *
+   * 🚨 **未触发截断时也照常下发** (FR-015): 只在截断时下发会让「链规模逼近阈值」恰恰观测不到,
+   * 而那正是本字段要防的静默。逼近度 `matchedCount / displayLimit` 由此随时可算 ⇒ 🚫 MUST NOT
+   * 为它新增 `isNearLimit` 之类的派生布尔 (下发第二份必 drift)。
+   */
+  displayLimit: number | null;
+  /**
    * 三视角各自的检索条件全景 (052 FR-011 / FR-029): 控件填 `defaults`, 结果按 `effective`,
    * 仅 `narrowed` 的维度出计数。**恒有三份** —— 客户端本地切视角时不发请求, 要用另两个视角的
    * 默认值填控件。
@@ -355,6 +382,13 @@ export class GetLegsUseCase {
    * @param now 请求时刻 (注入以便测试钉住基准)。🚫 MUST NOT 在下游改成算好的 `today` 字符串。
    * @param override 用户对**某一个视角**检索条件的覆盖 (052 FR-012); 省略 ⇒ 全走系统默认值
    *   (这正是「复位」与首屏走的路径 —— 客户端**不回传默认值**, 那会让默认值变成两处各算一份)。
+   * @param displayLimit 本次的表达层截断阈值 `N` (053 FR-011), 默认取该视角的常量; `null` =
+   *   不设该视角阈值 ⇒ 零截断。
+   *   🚨 **可注入是 FR-014 / SC-006 的落地手段, 不是为了给调用方开配置口子**: 意图视角的候选
+   *   规模远小于全腿视角 ⇒ 截断分支很可能在真实数据上**结构性永不触发**; 注入一个小阈值后,
+   *   **同一批真实数据**就能走遍截断的每一条分支。🚫 MUST NOT 改用合成 fixture 造几百条腿 ——
+   *   那测的是「slice 能不能跑」而不是「真实链上截断对不对」。
+   *   📌 HTTP 面**不暴露它** (053 FR-005 的字段表里没有这一项), 它只在进程内可注入。
    * @throws NotFoundException 该 symbol 尚未建锚 (同 046 详情端: 回 200 空壳会让「没建锚」与
    *   「建了锚但没数据」在客户端不可区分)。
    */
@@ -363,6 +397,7 @@ export class GetLegsUseCase {
     perspective: LegTab,
     now: Date = new Date(),
     override: RetrievalOverride | null = null,
+    displayLimit: number | null = DISPLAY_LIMIT_BY_PERSPECTIVE[perspective],
   ): Promise<LegTableView> {
     // 🚫 蓄意**不**转成 045 的 `AnchorRow`: 那个 interface 没有 T002 新加的水位两列, 而本端点
     // 正要读它 —— 给它补字段会连带打红一批手写 AnchorRow 的 mock 工厂 (Surgical Edits)。
@@ -417,6 +452,12 @@ export class GetLegsUseCase {
       },
       // 没有链就没有候选可切 —— 取 0 而非 null (它是计数不是「未知」, 同上面三个数)。
       candidateCapDropped: 0,
+      // 没有链就没有成员 —— 同上, 两个数取 0 而非 null。
+      matchedCount: 0,
+      memberCount: 0,
+      // 🚨 阈值**与链无关**, 空态照样如实回显 (FR-015): 它是该视角的配置而不是本次的结果,
+      // 空态给 null 会让客户端把「不设阈值」与「没链」读成同一件事。
+      displayLimit,
       // 🚫 没有 spot 就**解不出**依赖它的条件, MUST NOT 猜一个默认值填进去 (spec Edge Case):
       // 六维全 `null` 表达的是「没有值」, 不是「不限」—— 这一屏本来就没有表可看 (`state` 已说明)。
       criteriaByTab: {
@@ -463,6 +504,9 @@ export class GetLegsUseCase {
         ...empty('available'),
         // 触及候选上限的留痕 (052 FR-028): 随候选集从召回层一路上浮, 不经日志。
         candidateCapDropped: retrieval.droppedByCandidateCap,
+        // 无覆盖口径的成员数 (053 FR-009): 同样随候选集上浮 —— 被当前条件挡下的链行只存在于
+        // 检索层内部, 在这里重算取不回那些行 (🚫 更不许为它多查一次库)。
+        memberCount: retrieval.memberCount,
         // 条件全景与候选集**同源** (052 FR-011): 默认值由召回层从链自身解出 (成色上界要行权价
         // 网格、权利金下限要 spot), 计数是同一次成员判定的副产品 —— 在这里重算必 drift。
         criteriaByTab: retrieval.criteriaByTab,
@@ -487,6 +531,7 @@ export class GetLegsUseCase {
           effective.v,
           intent,
           rentDepth,
+          displayLimit,
         ),
       };
     } catch (err) {
@@ -572,7 +617,8 @@ export class GetLegsUseCase {
     v: Prisma.Decimal,
     intent: LegIntent,
     rentDepth: RentDepth | null,
-  ): Pick<LegTableView, 'legs' | 'gateCounts' | 'tabOrder'> {
+    displayLimit: number | null,
+  ): Pick<LegTableView, 'legs' | 'gateCounts' | 'tabOrder' | 'matchedCount'> {
     const expiryKeys = pool.map(({ leg }) => dateOnlyOf(leg.expiryDate));
     // 打标的腿族解析器要 DTE, 而解析器是同步回调 ⇒ 先按到期日索引好 (值由检索层按注入时钟算)。
     const dteByExpiry = new Map<string, number>();
@@ -687,10 +733,20 @@ export class GetLegsUseCase {
     // 精排 (052 FR-017 / FR-020): 意图视角走**分层** (流动性档 → 档内费率 → 打平带内长期
     // 优先, 候选数不足自动降级); 全腿视角保持费率降序 —— 它是参照视角, 分档会把「同一条链
     // 上收益怎么分布」这件事遮掉。
-    tabOrder[perspective] =
+    const ordered =
       perspective === 'all'
         ? rankLegs(members, features, allLegsRanker)
         : rankLegs(members, features, layeredRanker(members.length));
+
+    // 🚨 **表达层截断落在精排之后, 顺序不可换** (053 FR-004 / FR-010, plan D-ORDER-1): 先截再
+    // 排会让「截掉的是排序尾部」这句话不成立, 而截出来的条数照样对、屏幕上照样有一张表。
+    // 🚫 **MUST NOT 在这里补一条成员判据** (053 Guardrail 1) —— 截断的判据是**名次**不是六维
+    // 条件, 后者已由 052 单点在召回层。
+    // 📌 `matchedCount` 取**截断前**的条数: 表达层要用它算「其余 N−D 条未显示」, 而 `D` 与那个
+    // 差值都不下发 (Guardrail 11, 两者都可现算)。
+    const matchedCount = ordered.length;
+    const displayed = truncateToDisplayLimit(ordered, displayLimit);
+    tabOrder[perspective] = [...displayed];
 
     // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序。
     //
@@ -705,9 +761,14 @@ export class GetLegsUseCase {
         a.code.localeCompare(b.code),
     );
 
+    // 腿本体跟着有序列表一起截 —— 两者**恒同集** (`legs.length` 即实际显示条数 `D`)。不同集会
+    // 让客户端按有序列表渲染时出现「有名次没有腿」, 而那时两份数据各自都是自洽的。`O(n)`。
+    const displayedCodes = new Set(displayed);
+
     return {
-      legs,
+      legs: legs.filter((leg) => displayedCodes.has(leg.code)),
       tabOrder,
+      matchedCount,
       // 三个计数随候选集从召回层一并出来 (052) —— 它们是过门槛那一步的副产品, 在这里重算
       // 就成了第二份判据, 而两份都算得出数、drift 时都不会红。
       gateCounts: {
