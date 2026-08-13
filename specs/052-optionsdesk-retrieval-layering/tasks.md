@@ -2,9 +2,9 @@
 feature_id: 052-optionsdesk-retrieval-layering
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: implementing
+status: implemented
 created_at: '2026-08-12'
-updated_at: '2026-08-12'
+updated_at: '2026-08-13'
 ---
 
 # Tasks: 052-optionsdesk-retrieval-layering（选约检索分层落地 + 三视角逐层判据重梳 — P3）

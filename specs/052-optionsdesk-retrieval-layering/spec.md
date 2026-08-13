@@ -2,9 +2,9 @@
 feature_id: 052-optionsdesk-retrieval-layering
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-12'
-updated_at: '2026-08-12'
+updated_at: '2026-08-13'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: stub
