@@ -270,8 +270,15 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     return codes;
   }
 
-  const inTab = (view: LegTableView, tab: LegTab): string[] =>
-    view.legs.filter((l) => l.tabs.includes(tab)).map((l) => l.code);
+  // 🚨 053 起一次请求只作答一个视角 ⇒「取该视角的成员」就是取全部腿 (每腿的 `tabs` 随之退役)。
+  // 保留 `tab` 参数是为了让「拿错视角的 view 去断言」**当场炸** —— 原来那句 `filter` 会把它
+  // 静默滤成空集, 而空集在下面几条断言里照样能绿。
+  const inTab = (view: LegTableView, tab: LegTab): string[] => {
+    if (view.perspective !== tab) {
+      throw new Error(`view 是 ${view.perspective} 视角, 断言问的却是 ${tab}`);
+    }
+    return view.legs.map((l) => l.code);
+  };
   const legOf = (view: LegTableView, code: string) => view.legs.find((l) => l.code === code);
 
   /**
@@ -322,7 +329,6 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     expect(views.build.gateCounts).toEqual({
       removedByPremiumFloor: 2,
       excludedFromIntentTabs: 2,
-      excludedFromIntentTabsByTab: { build: 2, rent: 0 },
     });
   });
 
@@ -334,7 +340,8 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     const view = views.build;
     const spot = view.spot!;
 
-    const build = view.legs.filter((l) => l.tabs.includes('build'));
+    // 053 起建仓那一发返回的就是建仓集本身 —— 「按 tabs 再滤一次」是恒等, 随之退役。
+    const build = view.legs;
     // 全量核对: 一条不漏地过一遍, 而不是抽查那两条构造出来的。
     expect(build.length).toBeGreaterThan(0); // 空集合会让下面那条平凡为真
     for (const leg of build) {
@@ -432,11 +439,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     const view = await useCase.execute('us:VICI', 'all', NOW);
 
     expect(view.legs).toEqual([]);
-    expect(view.gateCounts).toEqual({
-      removedByPremiumFloor: 1,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    });
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 1, excludedFromIntentTabs: 0 });
   });
 
   // ── ⑥ 流动性门槛: 出意图 Tab 但**不消失** ───────────────────────────────────
@@ -490,11 +493,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     // 🚨 空视角不是错误也不是隐藏: 全腿视角照常有数据, 锚派生那半边照常在。
     expect(inTab(view, 'all')).toHaveLength(2);
     expect(view.w.toFixed(4)).toBe('120.0000');
-    expect(view.gateCounts).toEqual({
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    });
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
   });
 
   it('⑦b 未建锚的 symbol 才是 404 —— 「Tab 空」与「没有锚」是两回事', async () => {

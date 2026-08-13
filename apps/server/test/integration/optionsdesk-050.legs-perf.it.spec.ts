@@ -29,9 +29,10 @@ import { lastClosedSessionCutoff, marketDateFor } from '../../src/marketdata/tra
 //
 // 精排是 `O(候选集)`: 若某天召回坏成空集, 三份列表全空、排序一次都不跑 ⇒ 端点当然很快,
 // 而**只断言耗时的探针会给绿灯**。所以首请求那次除了 200 还要验:
-//   ① `legs` 730 行 ② `tabOrder.all` 也是 730 ③ 两个意图 Tab 都非空
-//   ④ 至少一条腿 `isMonthlyChain` 为真 (⇒ 那次日历跨 ctx 读真的查到了东西)
-// 这四条一起把「量到的是满载」钉住。
+//   ① `legs` 730 行 (053 起它**就是**那份精排后的有序列表, `tabOrder` 已退役)
+//   ② `matchedCount` 也是 730 —— 截断没在这一发上生效, 量到的是全量精排
+//   ③ 至少一条腿 `isMonthlyChain` 为真 (⇒ 那次日历跨 ctx 读真的查到了东西)
+// 这三条一起把「量到的是满载」钉住。
 //
 // ## 为什么本文件不能进默认执行路径 (env-gated 默认 skip)
 //
@@ -283,7 +284,8 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
   interface PerfBody {
     state: string;
     legs: { isMonthlyChain: boolean }[];
-    tabOrder: { all: string[]; build: string[]; rent: string[] };
+    matchedCount: number;
+    displayLimit: number | null;
     gateCounts: { removedByPremiumFloor: number; excludedFromIntentTabs: number };
   }
 
@@ -294,14 +296,15 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
     expect(first.statusCode).toBe(200);
     const parsed = JSON.parse(first.body) as PerfBody;
     expect(parsed.state).toBe('available');
-    expect(parsed.legs).toHaveLength(LEG_COUNT);
 
     // 🚨 满载判据 (见文件头): 精排是 O(候选集), 召回坏成空集会让端点变快而**只测耗时的探针
-    // 给绿灯**。三份列表 + 月度标一起把「量到的是满载」钉住。
-    expect(parsed.tabOrder.all).toHaveLength(LEG_COUNT);
-    // 🚨 053 起一次请求只答一个视角 ⇒ 满载判据落在**被测的那个视角**上 (本探针量的是全腿,
+    // 给绿灯**。053 起一次请求只答一个视角 ⇒ 判据落在**被测的那个视角**上 (本探针量的是全腿,
     // 它恒是三者里最大的一份 —— 拿意图视角当满载会低估)。
-    expect(parsed.legs).toHaveLength(LEG_COUNT);
+    // 🚨 **满载看的是 `matchedCount` 而不是 `legs.length`**: 053 的表达层截断落在精排之后 ⇒
+    // 本探针量的仍是**全量**召回 + 精排, 屏幕上那段只是末尾的一次 slice。拿 `legs.length` 当
+    // 满载判据会在阈值 < 种子规模时恒红, 而端点其实是满载跑的。
+    expect(parsed.matchedCount).toBe(LEG_COUNT);
+    expect(parsed.legs).toHaveLength(Math.min(LEG_COUNT, parsed.displayLimit ?? LEG_COUNT));
     // 月度链标那次跨 ctx 日历读真的查到了东西 (未来段日历没播的话这条恒 false)。
     expect(parsed.legs.some((l) => l.isMonthlyChain)).toBe(true);
 
@@ -324,8 +327,8 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
     const p99 = percentile(samples, 0.99);
     const result = {
       legs: LEG_COUNT,
-      rankedSlots: parsed.tabOrder.all.length,
-      tabOrder: { all: parsed.tabOrder.all.length },
+      rankedSlots: parsed.matchedCount,
+      displayLimit: parsed.displayLimit,
       gateCounts: parsed.gateCounts,
       monthlyChainLegs: parsed.legs.filter((l) => l.isMonthlyChain).length,
       warmupDiscarded: WARMUP,

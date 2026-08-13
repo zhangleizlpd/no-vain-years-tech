@@ -57,7 +57,6 @@ import {
   RETRIEVAL_CRITERION_KEYS,
   relativeSpread,
   type CriterionOutcome,
-  type LegIntentTab,
   type PerspectiveCriteria,
   type RetrievalCriteria,
   type RetrievalCriterionKey,
@@ -163,21 +162,14 @@ export interface LegView {
   weeklyRate: Prisma.Decimal | null;
   annualizedRate: Prisma.Decimal | null;
   /**
-   * 四档; **greeks 缺失行恒 `null`** (FR-007: 不判档不着色) —— 它们的费率算得出来但会骗人
-   * (99.5% 是深实值腿, 折年可达 307%)。无 bid 亦 `null` (没有判定值就没有档)。
+   * 四档, **本次视角的口径下判出**(`FR-023` / 053 `FR-041`, plan D-RANK-3): 建仓走周化档界、
+   * 收租与全腿走年化。同一条腿在两个视角判出不同档是**定义如此** —— 那三份现在由三次请求各
+   * 算各的, 而不是一次响应里带三份 (053 `FR-005` 把 `tierByTab` 收窄成本字段)。
    *
-   * 📌 **050 起它是 legacy 标量**: 档位跟 Tab 走 (`FR-023`) ⇒ 真身是 {@link tierByTab}。本字段
-   * 保留是因为契约只加不删 (`FR-027`), 判据 = 「进建仓召回集 → 周化, 否则年化」(D-RANK-3)。
+   * **greeks 缺失行恒 `null`** (FR-007: 不判档不着色) —— 它们的费率算得出来但会骗人
+   * (99.5% 是深实值腿, 折年可达 307%)。无 bid 亦 `null` (没有判定值就没有档)。
    */
   tier: LegTier | null;
-  /**
-   * 每个 Tab 各自口径下的档位 (`FR-023`, plan D-RANK-3) —— 建仓 Tab 走周化档界、收租与全腿走
-   * 年化。同一条腿在两个 Tab 判出不同档是**定义如此**。
-   *
-   * 🚨 **不属于该 Tab 的格恒 `null`** —— 不在那个候选集里就没有那个候选集的档位。与 `tier` 的
-   * `null` (缺 greeks / 无 bid ⇒ 不判档) 是两个原因、同一个值, 呈现侧都是「不着色」。
-   */
-  tierByTab: Readonly<Record<LegTab, LegTier | null>>;
   /** 薄档带出的 `ask` 口径费率 (D-SOT-2); 其余档恒 `null`, **不参与判定**。 */
   askRate: Prisma.Decimal | null;
 
@@ -191,11 +183,14 @@ export interface LegView {
   openInterest: number | null;
   volume: number | null;
   turnover: Prisma.Decimal | null;
-  /** 三个 Tab **各一套**活跃度标记 (排名是候选集内的相对量, 换 Tab 归属就变, D-SOT-5)。 */
-  activityByTab: Readonly<Record<LegTab, ActivityMark | null>>;
+  /**
+   * **本次视角**候选集内的活跃度标记 (排名是候选集内的相对量, 换视角归属就变, D-SOT-5)。
+   *
+   * 📌 053 `FR-005` 把 `activityByTab` 收窄成本字段: 拆请求之后另两格结构上没有可判的东西,
+   * 下发三格里两格恒 `null` 只是把「本次答的是哪个视角」这件事重复表达了一遍。
+   */
+  activity: ActivityMark | null;
 
-  /** 本腿在哪几个 Tab 里 (客户端据此过滤, 判据单点在 `leg-recall.rules.ts`)。 */
-  tabs: readonly LegTab[];
   /**
    * 推荐标 (FR-011) —— 这条腿的 `|Δ|` 落在**标的级意图**对应的带内。
    *
@@ -231,33 +226,31 @@ export interface LegGateCounts {
    */
   removedByPremiumFloor: number;
   /**
-   * 被**流动性门槛**排除出建仓 / 收租的条数 (FR-006) —— 这些腿**仍在响应里、仍在全腿 Tab
-   * 可见**, 没有消失。
+   * 被**流动性门槛**排除出**本次视角**的条数 (FR-006 / 051 FR-006a) —— 这些腿**仍在链上、
+   * 仍在全腿视角可见**, 没有消失。空态文案按它分支 (051 FR-009)。
+   *
+   * 🚨 **053 起它就是「该视角自己的数」** (`FR-005` 把 `excludedFromIntentTabsByTab` 收窄掉):
+   * 一次请求只判定一个视角 ⇒ 051 那个「全表标量」与「该视角的数」在结构上已经是同一个数。
+   * 拆请求之前两者必须并存, 是因为一份响应要同时服务三个视角, 而在建仓视角上报全表标量
+   * **是错的且不会红** (数字真实、文案通顺, 只是指向了别的视角的腿)。
    *
    * 📌 期限段本就不合格的腿 (如 DTE=400) **不计入**: 它不是被门槛挡下的, 算进去会让这个数
    * 失去它唯一的用途 —— 提示该注意的流动性信号。
+   * 📌 **全腿视角恒 `0`**: 它不受流动性门槛约束 (FR-006), 那是召回层的 `LegIntentTab` 把
+   * `all` 排除在类型之外的同一个理由。
    */
   excludedFromIntentTabs: number;
-  /**
-   * 上一项**按意图视角拆开**的两个数 (051 FR-006a) —— 空态文案要按「**该视角自己的**排除数」
-   * 分支 (051 FR-009), 而标量做不到这件事: 建仓视角空而标量 = 20 时, 那 20 条可能全是被排除
-   * 出**收租**的, 据此说「有 20 条被挡了, 去全腿看」对建仓视角**是错的且不会红** (数字真实、
-   * 文案通顺, 只是指向了别的视角的腿)。
-   *
-   * 🚨 **与标量并存而非替换** (契约只加不删), 且 **`标量 ≠ build + rent`**: `[30,49]` 是两段
-   * 刻意的重叠区, 一条落其中且被挡下的腿在标量记 1 次、在这两个数里**各**记 1 次 ⇒ 恒有
-   * `标量 ≤ build + rent`。判据取**不等式**, 取等号会在重叠区红错方向。
-   *
-   * 📌 **不拆「全腿」那一档**: 全腿 Tab 不受流动性门槛约束 (FR-006), 恒不会因它变空 ——
-   * 这也是 {@link LegIntentTab} 把 `all` 排除在类型之外的理由。
-   * 📌 **权利金门槛那个数不拆视角**: 被它挡下的腿已整条移出响应, 三视角一律。两个计数在这一点
-   * 上的不对称, 与它们语义上的不对称是同一件事。
-   */
-  excludedFromIntentTabsByTab: Readonly<Record<LegIntentTab, number>>;
 }
 
 export interface LegTableView {
   symbol: string;
+  /**
+   * **本次作答的视角**, 原样回显 (053 `FR-005` 新增)。
+   *
+   * 🚨 回显而不是让客户端记着自己问了什么: 三个视角是三次飞行中的请求, 迟到的那一发要靠它
+   * 认领 (`FR-008`) —— 靠调用点记忆的话, 覆盖错了**照样渲染得出来一张表**。
+   */
+  perspective: LegTab;
   state: LegTableState;
   /** 区块级 `asOf` = 快照归属交易日 (FR-013)。 */
   asOf: Date | null;
@@ -294,18 +287,16 @@ export interface LegTableView {
   intent: LegIntent;
   rentDepth: RentDepth | null;
 
-  legs: LegView[];
   /**
-   * 每个 Tab 一份**有序的合约代码列表** (FR-021a) —— 精排在 server 完成, 客户端 MUST 按它
-   * 呈现、MUST NOT 自行重排。腿本体仍只下发一份 (MUST NOT 按 Tab 复制)。
+   * **该视角、已精排、已截断**的腿 (053 `FR-002` / `FR-004`, plan D-API-1)。
    *
-   * 🚨 **与每腿的 `tabs` 同源派生** (Guardrail 9): 两处表达的是同一个成员关系, 各算一份必
-   * drift —— 而**两边都算得出结果**, 于是 drift 时没有任何一处会红。
-   *
-   * 🚫 它**不是** `legs[]` 的新排序: 后者的档位键是 legacy 载体顺序 (旧客户端仍按它渲染),
-   * 一行不许动 (Guardrail 10)。
+   * 🚨 **数组顺序就是呈现顺序** —— 053 `FR-005` 据此**删掉**了 047 的 `tabOrder`: 再下发一份
+   * 有序 code 列表是同一信息的第二份表达, 必 drift 而**两边都渲染得出来**。客户端 MUST 按本
+   * 数组的下标序呈现、MUST NOT 自行重排。
+   * 🚫 **实际显示条数不另发** (Guardrail 11): 它恒等于 `legs.length`, 「其余 N−D 条」由
+   * {@link matchedCount} 减它现算。
    */
-  tabOrder: Readonly<Record<LegTab, string[]>>;
+  legs: LegView[];
   /** 两道门槛各自挡下多少条 (FR-008) —— 语义不对称, 见 {@link LegGateCounts}。 */
   gateCounts: LegGateCounts;
   /**
@@ -342,26 +333,17 @@ export interface LegTableView {
    */
   displayLimit: number | null;
   /**
-   * 三视角各自的检索条件全景 (052 FR-011 / FR-029): 控件填 `defaults`, 结果按 `effective`,
-   * 仅 `narrowed` 的维度出计数。**恒有三份** —— 客户端本地切视角时不发请求, 要用另两个视角的
-   * 默认值填控件。
+   * **本次视角**的检索条件全景 (052 FR-011 / FR-029): 控件填 `defaults`, 结果按 `effective`,
+   * 仅 `narrowed` 的维度出计数。
    *
+   * 🚨 **053 起只下发一份** (`FR-005` 把 `criteriaByTab` 收窄成本字段): 052 之所以恒发三份,
+   * 前提是「客户端本地切视角时不发请求」—— 而那条承诺已由 `FR-019b` 整条作废, 切视角就是一次
+   * 新请求, 新请求自带它那一份。
    * 🚨 **默认值 MUST 由服务端解出** (FR-011 / Guardrail 6): 行权价上界与权利金下限都依赖 spot,
    * 客户端自算就是同一判据两处各一份 —— 而两边都算得出数, 漂移只在换日那一刻才看得见。
    */
-  criteriaByTab: Readonly<Record<LegTab, PerspectiveCriteria>>;
+  criteria: PerspectiveCriteria;
 }
-
-/** 排序键: 统一**档位**键 (FR-019 禁跨族数值直比)。死档恒沉底 (FR-006)。 */
-const TIER_ORDER: Readonly<Record<LegTier, number>> = {
-  good: 0,
-  acceptable: 1,
-  thin: 2,
-  dead: 4,
-};
-
-/** 未判档 (greeks 缺失 / 无 bid) 排在三个活档之后、死档之前 —— 「不知道」不等于「已判死」。 */
-const UNCLASSIFIED_ORDER = 3;
 
 @Injectable()
 export class GetLegsUseCase {
@@ -423,6 +405,7 @@ export class GetLegsUseCase {
     const positionBucket = bucket.bucket;
     const empty = (state: LegTableState): LegTableView => ({
       symbol,
+      perspective,
       state,
       asOf: null,
       quoteAsOf: null,
@@ -440,16 +423,10 @@ export class GetLegsUseCase {
       // 无 spot 就没有区间 ⇒ 也就没有意图 (MUST NOT 猜一个档, FR-017 同款纪律)。
       intent: 'pending',
       rentDepth: null,
+      // 空数组而非 undefined ——「这个视角没有腿」与「没答这个视角」是两件事, 客户端不必特判。
       legs: [],
-      // 三份列表恒有值 (空数组而非 undefined) —— 「这个 Tab 没有腿」与「没有这个 Tab」是两件事,
-      // 客户端不必为空态特判。
-      tabOrder: emptyTabOrder(),
-      // 没有链就没有腿被挡下 —— 三个数取 0 而非 null: 它们是计数不是「未知」。
-      gateCounts: {
-        removedByPremiumFloor: 0,
-        excludedFromIntentTabs: 0,
-        excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-      },
+      // 没有链就没有腿被挡下 —— 两个数取 0 而非 null: 它们是计数不是「未知」。
+      gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
       // 没有链就没有候选可切 —— 取 0 而非 null (它是计数不是「未知」, 同上面三个数)。
       candidateCapDropped: 0,
       // 没有链就没有成员 —— 同上, 两个数取 0 而非 null。
@@ -460,11 +437,7 @@ export class GetLegsUseCase {
       displayLimit,
       // 🚫 没有 spot 就**解不出**依赖它的条件, MUST NOT 猜一个默认值填进去 (spec Edge Case):
       // 六维全 `null` 表达的是「没有值」, 不是「不限」—— 这一屏本来就没有表可看 (`state` 已说明)。
-      criteriaByTab: {
-        all: unresolvedCriteria(),
-        build: unresolvedCriteria(),
-        rent: unresolvedCriteria(),
-      },
+      criteria: unresolvedCriteria(),
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -509,7 +482,8 @@ export class GetLegsUseCase {
         memberCount: retrieval.memberCount,
         // 条件全景与候选集**同源** (052 FR-011): 默认值由召回层从链自身解出 (成色上界要行权价
         // 网格、权利金下限要 spot), 计数是同一次成员判定的副产品 —— 在这里重算必 drift。
-        criteriaByTab: retrieval.criteriaByTab,
+        // 📌 召回层照旧产三份 (它的出参形状归 052, `FR-044` 钉死零改动), 契约面只取本次那一份。
+        criteria: retrieval.criteriaByTab[perspective],
         asOf: chain.sessionDate,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
@@ -618,7 +592,7 @@ export class GetLegsUseCase {
     intent: LegIntent,
     rentDepth: RentDepth | null,
     displayLimit: number | null,
-  ): Pick<LegTableView, 'legs' | 'gateCounts' | 'tabOrder' | 'matchedCount'> {
+  ): Pick<LegTableView, 'legs' | 'gateCounts' | 'matchedCount'> {
     const expiryKeys = pool.map(({ leg }) => dateOnlyOf(leg.expiryDate));
     // 打标的腿族解析器要 DTE, 而解析器是同步回调 ⇒ 先按到期日索引好 (值由检索层按注入时钟算)。
     const dteByExpiry = new Map<string, number>();
@@ -638,7 +612,7 @@ export class GetLegsUseCase {
     // `perspective` 一个视角判定过 ⇒ `tabs.includes('build')` 与 `perspective === 'build'` 逐字
     // 等价, 而后者读得出「口径跟视角走」这件事。全腿视角恒年化的例外仍由 `BASIS_BY_TAB` 单点持有。
     const basis: LegBasis = BASIS_BY_TAB[perspective];
-    const legs = pool.map(({ leg: row, tabs }) => {
+    const legs = pool.map(({ leg: row }) => {
       const { code, expiryDate, dteDays, strike } = row;
       const delta = row.delta === null ? null : Math.abs(row.delta);
       const { absDelta, sigmaDistance } = deriveDeltaColumns(row.greeksComplete ? delta : null);
@@ -674,8 +648,8 @@ export class GetLegsUseCase {
         periodRate: rates?.periodRate ?? null,
         weeklyRate: rates?.weeklyRate ?? null,
         annualizedRate: rates?.annualizedRate ?? null,
+        // 📌 判定值恒为 `bid` 口径费率, 跟视角走的只是**档界**所依的口径 (047 D-SOT-1 一字不改)。
         tier: verdict?.tier ?? null,
-        tierByTab: tierByTabOf(perspective, verdictOn),
         askRate: verdict?.askRate ?? null,
         // 无 bid ⇒ 有效成本无定义 —— 🚫 MUST NOT 拿 `K − 0` 冒充 (那是「白拿股票」的意思)。
         effectiveCost: row.bid === null ? null : computeEffectiveCost(strike, row.bid),
@@ -686,10 +660,10 @@ export class GetLegsUseCase {
         openInterest: row.openInterest,
         volume: row.volume,
         turnover: computeTurnover(row.volume, row.bid),
-        activityByTab: emptyActivity(),
-        tabs,
-        // 🚨 打标**零拦截** (FR-018): 下面两个标只是往腿上贴属性, MUST NOT 参与 `tabs` 的判定
-        // —— `tabs` 在召回层已经定死, 打标改不了任何 Tab 的成员集合。
+        // 排名要以**整个候选集**为分母 ⇒ 逐腿这一趟只占位, 真值在下面一次性贴回。
+        activity: null as ActivityMark | null,
+        // 🚨 打标**零拦截** (FR-018): 下面两个标只是往腿上贴属性, MUST NOT 参与成员判定 ——
+        // 候选归属在召回层已经定死, 打标改不了本视角的成员集合。
         isRecommended: isRecommended(intent, rentDepth, absDelta),
         // 月度链标是**到期日级**的属性 —— 同一到期日的腿必同标, 与财报标同一个结构保证。
         isMonthlyChain: monthlyExpiries.has(dateOnlyOf(expiryDate)),
@@ -708,9 +682,8 @@ export class GetLegsUseCase {
     // 🚫 **MUST NOT 在这里补一个「筛选」段** (053 Guardrail 1): 六维条件已由 052 并入召回层,
     // 排名基准就是当前条件下的召回集; 再筛一次就是第二条成员判据路径。
     const rankingContext: RankingContext = { spot: retrieval.chain.spot };
-    const tabOrder = emptyTabOrder();
-    // 候选集只对 `perspective` 一个视角判定过 ⇒ 每条候选的 `tabs` 恒为 `[perspective]` ⇒
-    // 「按 Tab 取成员」那句 `filter` 是恒等, 随之退役 (Guardrail 9 的同源性由此结构保证)。
+    // 候选集只对 `perspective` 一个视角判定过 ⇒ 每条候选的视角归属恒为 `[perspective]` ⇒
+    // 「按 Tab 取成员」那句 `filter` 是恒等, 随之退役 (053 起每腿的 `tabs` 也不再下发)。
     const members = legs;
     // 分组键与月度链标 / 财报标同源 (052 FR-023): 三处都走 `dateOnlyOf`, 传 `Date` 或全串
     // 会把同一到期日拆成一腿一组 —— 那时**每条腿都是组内第一**, 而结果照样有。
@@ -723,7 +696,7 @@ export class GetLegsUseCase {
       })),
     );
     members.forEach((leg, i) => {
-      (leg.activityByTab as Record<LegTab, ActivityMark | null>)[perspective] = activity[i];
+      leg.activity = activity[i];
     });
 
     const features = computeRankingFeatures(
@@ -746,66 +719,24 @@ export class GetLegsUseCase {
     // 差值都不下发 (Guardrail 11, 两者都可现算)。
     const matchedCount = ordered.length;
     const displayed = truncateToDisplayLimit(ordered, displayLimit);
-    tabOrder[perspective] = [...displayed];
 
-    // 统一档位键 (FR-019), 死档沉底 (FR-006); 同档内按到期日升序 → 行权价降序。
-    //
-    // 🚨 **050 起这是 legacy 载体顺序, 一行不许动** (Guardrail 10): 有了 `tabOrder` 之后它确实
-    // 不再承载语义, 但旧客户端 (P2 未上) 仍按它渲染 —— 改了会看起来乱, 而**这不是编译期能发现
-    // 的**。新消费方一律走 `tabOrder`; 退役时机由 P3 在 P2 切过去之后评估。
-    legs.sort(
-      (a, b) =>
-        tierOrder(a.tier) - tierOrder(b.tier) ||
-        a.expiryDate.getTime() - b.expiryDate.getTime() ||
-        b.strike.comparedTo(a.strike) ||
-        a.code.localeCompare(b.code),
-    );
-
-    // 腿本体跟着有序列表一起截 —— 两者**恒同集** (`legs.length` 即实际显示条数 `D`)。不同集会
-    // 让客户端按有序列表渲染时出现「有名次没有腿」, 而那时两份数据各自都是自洽的。`O(n)`。
-    const displayedCodes = new Set(displayed);
-
+    // 🚨 **`legs[]` 就是那份有序列表** (053 FR-005): 047 的 `tabOrder` 随之退役 —— 同一个顺序
+    // 下发两份表达必 drift, 而**两份各自都渲染得出来**, 于是没有一处会红。腿本体按有序 code
+    // 逐个取回 ⇒ 顺序与截断天然同集, 不存在「有名次没有腿」的缝。`O(n)`。
+    const byCode = new Map(legs.map((leg) => [leg.code, leg]));
     return {
-      legs: legs.filter((leg) => displayedCodes.has(leg.code)),
-      tabOrder,
+      legs: displayed.map((code) => byCode.get(code)!),
       matchedCount,
-      // 三个计数随候选集从召回层一并出来 (052) —— 它们是过门槛那一步的副产品, 在这里重算
+      // 两个计数随候选集从召回层一并出来 (052) —— 它们是过门槛那一步的副产品, 在这里重算
       // 就成了第二份判据, 而两份都算得出数、drift 时都不会红。
+      // 📌 召回层照旧同时产标量与分视角两份 (`FR-044` 钉死它零改动); 一次只判一个视角之后
+      // 两者结构上恒等 ⇒ 契约面只留标量 (053 FR-005)。
       gateCounts: {
         removedByPremiumFloor: retrieval.removedByPremiumFloor,
         excludedFromIntentTabs: retrieval.excludedFromIntentTabs,
-        excludedFromIntentTabsByTab: retrieval.excludedFromIntentTabsByTab,
       },
     };
   }
-}
-
-function tierOrder(tier: LegTier | null): number {
-  return tier === null ? UNCLASSIFIED_ORDER : TIER_ORDER[tier];
-}
-
-function emptyActivity(): Record<LegTab, ActivityMark | null> {
-  return { all: null, build: null, rent: null };
-}
-
-function emptyTabOrder(): Record<LegTab, string[]> {
-  return { all: [], build: [], rent: [] };
-}
-
-/**
- * per-Tab 档位 (FR-023, plan D-RANK-3)。`O(1)`。
- *
- * 🚨 **053 起只填本次视角那一格** —— 候选集只对它判定过, 另两格没有可判的东西 (与 `tier` 的
- * `null` 「缺 greeks / 无 bid ⇒ 不判档」是两个原因、同一个值, 呈现侧都是「不着色」)。
- * 📌 判定值仍恒为 `bid` 口径费率, 换的只是**档界**所依的口径 (047 D-SOT-1 那条纪律一字不改)。
- */
-function tierByTabOf(
-  perspective: LegTab,
-  verdictOn: (basis: LegBasis) => LegTierVerdict | null,
-): Record<LegTab, LegTier | null> {
-  const tierByTab: Record<LegTab, LegTier | null> = { all: null, build: null, rent: null };
-  tierByTab[perspective] = verdictOn(BASIS_BY_TAB[perspective])?.tier ?? null;
-  return tierByTab;
 }
 
 /**

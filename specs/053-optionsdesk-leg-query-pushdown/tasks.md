@@ -76,7 +76,7 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 
 ## Phase 2: 契约收窄（US1 / US2 的共同前置）
 
-- [ ] T003 [Server] **响应按「链级 / 视角级」收窄**（`FR-002`, `FR-005`, `FR-006`, plan `D-API-1`）：`optionsdesk.dto.ts` 删 `tabOrder`、`basisByTab` → 标量 `basis`、`criteriaByTab` → `criteria`、分视角流动性排除数 → 标量、每腿 `tierByTab` → `tier` / `activityByTab` → `activity`、**删每腿 `tabs`**；新增 `perspective` 回显 + `displayLimit` + `matchedCount` + `memberCount` + `K` 触及数。🚫 **实际显示条数与「其余 N−D」MUST NOT 下发**（Guardrail 11）。→ verify: IT 断言响应形状 + **生成的 OpenAPI schema 内 `rg` 扫 `tabOrder|ByTab` 零命中**（`SC-002` 的服务端一半）+ 链级字段在三视角响应里逐字相等（`FR-020` 的检测判据来源）
+- [X] T003 [Server] **响应按「链级 / 视角级」收窄**（`FR-002`, `FR-005`, `FR-006`, plan `D-API-1`）：`optionsdesk.dto.ts` 删 `tabOrder`、`basisByTab` → 标量 `basis`、`criteriaByTab` → `criteria`、分视角流动性排除数 → 标量、每腿 `tierByTab` → `tier` / `activityByTab` → `activity`、**删每腿 `tabs`**；新增 `perspective` 回显 + `displayLimit` + `matchedCount` + `memberCount` + `K` 触及数。🚫 **实际显示条数与「其余 N−D」MUST NOT 下发**（Guardrail 11）。→ verify: IT 断言响应形状 + **生成的 OpenAPI schema 内 `rg` 扫 `tabOrder|ByTab` 零命中**（`SC-002` 的服务端一半）+ 链级字段在三视角响应里逐字相等（`FR-020` 的检测判据来源）
 
 - [ ] T004 [P] [Server] **单笔权利金 + 相对价差下发**（`FR-032`, plan `D-COL-1`）：`单笔权利金 = bid × 合约乘数` **服务端算**（服务端已持有该常量，成交额在用它）；`相对价差` 复用 `leg-recall.rules.ts` 的 `relativeSpread` 派生值下发。🚫 MUST NOT 由客户端乘一次 —— 那是同一判据两处各算一份（ADR-0064 不变量 ③）。→ verify: Small 断言两个派生值 + `rg` 扫 mobile 侧**零处**乘合约乘数 + nullable 小数字段的 `@ApiProperty` 显式 `type: 'string'`（防 orval 误生 objectmap）
 

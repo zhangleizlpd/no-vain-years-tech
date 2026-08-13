@@ -560,6 +560,7 @@ function emptyLegTable(): LegTableView {
   });
   return {
     symbol: 'us:AOS',
+    perspective: 'all',
     state: 'chain_not_ready',
     asOf: null,
     quoteAsOf: null,
@@ -576,16 +577,11 @@ function emptyLegTable(): LegTableView {
     intent: 'pending',
     rentDepth: null,
     legs: [],
-    tabOrder: { all: [], build: [], rent: [] },
-    gateCounts: {
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    },
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
     candidateCapDropped: 0,
     matchedCount: 0,
     memberCount: 0,
     displayLimit: DISPLAY_LIMIT_BY_PERSPECTIVE.all,
-    criteriaByTab: { all: criteria(), build: criteria(), rent: criteria() },
+    criteria: criteria(),
   };
 }

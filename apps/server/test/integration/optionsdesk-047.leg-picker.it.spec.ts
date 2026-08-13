@@ -304,7 +304,15 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
   }
 
   const legOf = (view: LegTableView, code: string) => view.legs.find((l) => l.code === code);
-  const inTab = (view: LegTableView, tab: LegTab) => view.legs.filter((l) => l.tabs.includes(tab));
+  // 🚨 053 起一次请求只作答一个视角 ⇒「取该视角的成员」就是取全部腿 (每腿的 `tabs` 随之退役)。
+  // 保留 `tab` 参数是为了让「拿错视角的 view 去断言」**当场炸** —— 原来那句 `filter` 会把它
+  // 静默滤成空集, 而空集在下面几条断言里照样能绿。
+  const inTab = (view: LegTableView, tab: LegTab) => {
+    if (view.perspective !== tab) {
+      throw new Error(`view 是 ${view.perspective} 视角, 断言问的却是 ${tab}`);
+    }
+    return view.legs;
+  };
 
   // ── ① 当日快照 → 全量腿在结果内、无截断 (SC-004 逐条对账) ────────────────────
   it('① 当日快照 → 全量适格腿在表内, 零截断; 落库行数 vs 可见行数逐条对得上 (SC-004)', async () => {

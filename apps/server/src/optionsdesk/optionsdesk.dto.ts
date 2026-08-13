@@ -1198,55 +1198,6 @@ export class LegActivityResponse {
   label!: string | null;
 }
 
-export class LegActivityByTabResponse {
-  @ApiProperty({
-    description: '全腿 Tab 候选集内的排名',
-    type: LegActivityResponse,
-    nullable: true,
-  })
-  all!: LegActivityResponse | null;
-
-  @ApiProperty({
-    description: '建仓腿 Tab 候选集内的排名; 不属于该 Tab → null',
-    type: LegActivityResponse,
-    nullable: true,
-  })
-  build!: LegActivityResponse | null;
-
-  @ApiProperty({
-    description: '收租腿 Tab 候选集内的排名; 不属于该 Tab → null',
-    type: LegActivityResponse,
-    nullable: true,
-  })
-  rent!: LegActivityResponse | null;
-}
-
-export class LegTierByTabResponse {
-  @ApiProperty({
-    description: '全腿 Tab 的档位 (**恒年化口径**); 不判档 (greeks 缺失 / 无 bid) → null',
-    enum: [...LEG_TIERS],
-    nullable: true,
-    example: 'good',
-  })
-  all!: string | null;
-
-  @ApiProperty({
-    description: '建仓 Tab 的档位 (**周化口径**); 不属于该 Tab → null',
-    enum: [...LEG_TIERS],
-    nullable: true,
-    example: 'acceptable',
-  })
-  build!: string | null;
-
-  @ApiProperty({
-    description: '收租 Tab 的档位 (年化口径); 不属于该 Tab → null',
-    enum: [...LEG_TIERS],
-    nullable: true,
-    example: null,
-  })
-  rent!: string | null;
-}
-
 export class LegEarningsMarkResponse {
   @ApiProperty({
     description:
@@ -1344,7 +1295,10 @@ export class LegResponse {
 
   @ApiProperty({
     description:
-      '四档 (bid 口径); **greeks 缺失行恒 null** —— 不判档不着色 (FR-007), 无 bid 亦 null',
+      '四档 (判定值恒为 bid 口径费率), **档界按本次视角的口径取** (FR-023 / 053 FR-041): 建仓走' +
+      '周化、收租与全腿走年化 —— 同一条腿在两个视角判出不同档是**定义如此**, 那三份由三次请求' +
+      '各算各的 (053 起把三份收窄成本字段)。**greeks 缺失行恒 null** —— 不判档不着色 ' +
+      '(FR-007), 无 bid 亦 null',
     enum: [...LEG_TIERS],
     nullable: true,
     example: 'acceptable',
@@ -1412,27 +1366,12 @@ export class LegResponse {
 
   @ApiProperty({
     description:
-      '三个 Tab **各一套**活跃度标记 —— 排名是候选集内的相对量, 换 Tab 归属就变 (D-SOT-5)',
-    type: LegActivityByTabResponse,
+      '**本次视角**候选集内的活跃度标记 —— 排名是候选集内的相对量, 换视角归属就变 (D-SOT-5)。' +
+      '053 起收窄成单份: 拆请求之后另两个视角结构上没有可判的东西',
+    type: LegActivityResponse,
+    nullable: true,
   })
-  activityByTab!: LegActivityByTabResponse;
-
-  @ApiProperty({
-    description:
-      '本腿属于哪几个 Tab —— **客户端据此过滤**, MUST NOT 自己重算成员判据 (判据单点在 server)',
-    enum: [...LEG_TABS],
-    isArray: true,
-    example: ['all', 'rent'],
-  })
-  tabs!: string[];
-
-  @ApiProperty({
-    description:
-      '每个 Tab **各自口径**下的档位 (FR-023) —— 建仓走周化档界、收租与全腿走年化。同一条腿在两个 ' +
-      'Tab 判出不同档是**定义如此**; 不属于该 Tab 的格恒 null。上面的标量 tier 是 legacy 载体',
-    type: LegTierByTabResponse,
-  })
-  tierByTab!: LegTierByTabResponse;
+  activity!: LegActivityResponse | null;
 
   @ApiProperty({
     description:
@@ -1463,47 +1402,6 @@ export class LegResponse {
     example: true,
   })
   greeksComplete!: boolean;
-}
-
-export class LegTabOrderResponse {
-  @ApiProperty({
-    description: '全腿 Tab 的有序合约代码',
-    type: 'string',
-    isArray: true,
-    example: ['US.PEP260918P120000', 'US.PEP260821P115000'],
-  })
-  all!: string[];
-
-  @ApiProperty({
-    description: '建仓 Tab 的有序合约代码; 该 Tab 无成员 → 空数组 (**不是** null)',
-    type: 'string',
-    isArray: true,
-    example: ['US.PEP260821P115000'],
-  })
-  build!: string[];
-
-  @ApiProperty({
-    description: '收租 Tab 的有序合约代码; 该 Tab 无成员 → 空数组',
-    type: 'string',
-    isArray: true,
-    example: ['US.PEP260918P120000'],
-  })
-  rent!: string[];
-}
-
-export class LegExcludedByIntentTabResponse {
-  @ApiProperty({
-    description:
-      '被流动性门槛排除出**建仓** Tab 的条数 —— 判据 = 期限段与有效成本都合格、只栽在流动性上',
-    example: 2,
-  })
-  build!: number;
-
-  @ApiProperty({
-    description: '被流动性门槛排除出**收租** Tab 的条数 —— 同上, 期限段按收租段判',
-    example: 5,
-  })
-  rent!: number;
 }
 
 /** DTE 段 —— 一个维度、值是闭区间 (052 T010 六维表第 3 项)。 */
@@ -1656,24 +1554,6 @@ export class PerspectiveCriteriaResponse {
   outcomes!: RetrievalOutcomesResponse;
 }
 
-/**
- * 三视角各自的条件全景 (052 FR-011)。
- *
- * 🚨 **恒有三份** —— 客户端本地切视角时**不发请求**, 要用另两个视角的默认值填控件。
- * 📌 链未就绪时六维全 `null`: 那是「没有值」不是「不限」—— MUST NOT 拿一个假 spot 现算一份,
- * 那会让「解不出」看起来像「解出来正好是这些值」。
- */
-export class LegCriteriaByTabResponse {
-  @ApiProperty({ type: PerspectiveCriteriaResponse })
-  all!: PerspectiveCriteriaResponse;
-
-  @ApiProperty({ type: PerspectiveCriteriaResponse })
-  build!: PerspectiveCriteriaResponse;
-
-  @ApiProperty({ type: PerspectiveCriteriaResponse })
-  rent!: PerspectiveCriteriaResponse;
-}
-
 export class LegGateCountsResponse {
   @ApiProperty({
     description:
@@ -1685,46 +1565,28 @@ export class LegGateCountsResponse {
 
   @ApiProperty({
     description:
-      '被**流动性门槛**排除出建仓 / 收租的条数 (FR-006) —— 这些腿**仍在响应里、仍在全腿 Tab 可见**, ' +
-      '没有消失。🚨 与上一个数语义不对称, MUST NOT 相加成总数。期限段本就不合格的腿 (如 DTE 400) ' +
-      '不计入 —— 它不是被门槛挡下的',
+      '被**流动性门槛**排除出**本次视角**的条数 (FR-006 / 051 FR-006a) —— 这些腿**仍在链上、' +
+      '仍在全腿视角可见**, 没有消失。空态文案按它分支。🚨 与上一个数语义不对称, MUST NOT 相加' +
+      '成总数。期限段本就不合格的腿 (如 DTE 400) 不计入 —— 它不是被门槛挡下的。' +
+      '📌 **全腿视角恒 0** (它不受流动性门槛约束)。📌 053 起它就是「该视角自己的数」: 一次请求' +
+      '只判定一个视角 ⇒ 051 的全表标量与分视角数结构上已是同一个数, 契约面只留一份',
     example: 3,
   })
   excludedFromIntentTabs!: number;
-
-  @ApiProperty({
-    description:
-      '上一个数**按意图视角拆开** (051 FR-006a) —— 空态文案要按「**该视角自己的**排除数」分支, ' +
-      '而标量做不到: 建仓 Tab 空而标量 = 20 时那 20 条可能全是被排除出**收租**的, 据此说' +
-      '「有 20 条被挡了」对建仓 Tab 是错的**且不会红** (数字真实、文案通顺, 只是指向了别的视角的腿)。' +
-      '🚨 与标量并存而非替换, 且 MUST NOT 断言「标量 == build + rent」—— [30,49] 是两个期限段' +
-      '刻意的重叠区, 落其中且被挡下的腿在标量记 1 次、在这两个数里各记 1 次 ⇒ 恒有' +
-      '「标量 ≤ build + rent」。📌 不拆「全腿」那一档: 全腿 Tab 不受流动性门槛约束, 恒不会因它变空。' +
-      '📌 上上个数 (权利金门槛) 不拆视角: 被它挡下的腿已整条移出响应, 三视角一律',
-    type: LegExcludedByIntentTabResponse,
-  })
-  excludedFromIntentTabsByTab!: LegExcludedByIntentTabResponse;
-}
-
-export class LegBasisByTabResponse {
-  @ApiProperty({
-    description:
-      '全腿 Tab 的档位判定口径 —— **恒年化** (混着 10 天与 200 天的腿, 周化档界会让整列全是死档)',
-    enum: [...LEG_BASES],
-    example: 'annualized',
-  })
-  all!: string;
-
-  @ApiProperty({ description: '建仓 Tab 的口径', enum: [...LEG_BASES], example: 'weekly' })
-  build!: string;
-
-  @ApiProperty({ description: '收租 Tab 的口径', enum: [...LEG_BASES], example: 'annualized' })
-  rent!: string;
 }
 
 export class LegTableResponse {
   @ApiProperty({ description: 'canonical `market:code`', example: 'us:PEP' })
   symbol!: string;
+
+  @ApiProperty({
+    description:
+      '🚨 **本次作答的视角**, 原样回显请求参数 (053 FR-005)。三视角是三次飞行中的请求, 迟到的' +
+      '那一发靠它认领 (FR-008) —— 靠调用点记忆的话, 覆盖错了**照样渲染得出来一张表**',
+    enum: [...LEG_TABS],
+    example: 'rent',
+  })
+  perspective!: string;
 
   @ApiProperty({
     description:
@@ -1845,21 +1707,16 @@ export class LegTableResponse {
 
   @ApiProperty({
     description:
-      '**全量适格腿, 零分页零 top-N 截断** (FR-005) —— 已滤非标 (FR-008) 与已到期 (FR-028a)。' +
-      '死档行照常在内且排在末尾; greeks 缺失行照常在内且不判档',
+      '**该视角、已精排、已截断**的腿 (053 FR-002 / FR-004) —— 已滤非标 (FR-008) 与已到期 ' +
+      '(FR-028a)。🚨 **数组顺序就是呈现顺序**: 客户端 MUST 按本数组的下标序渲染、MUST NOT 自行' +
+      '重排 (047 那份并行的有序 code 列表据此退役 —— 同一个顺序下发两份表达必 drift, 而两份 ' +
+      '各自都渲染得出来)。' +
+      '🚫 **实际显示条数不另发**: 它恒等于 legs.length, 「其余 N−D 条」由 matchedCount 减它现算。' +
+      '死档行与 greeks 缺失行照常在内 (后者不判档)',
     type: LegResponse,
     isArray: true,
   })
   legs!: LegResponse[];
-
-  @ApiProperty({
-    description:
-      '每个 Tab 一份**有序的合约代码列表** (FR-021a) —— 精排在 server 完成, 客户端 MUST 按它呈现、' +
-      'MUST NOT 自行重排。腿本体仍只下发一份 (MUST NOT 按 Tab 复制)。🚫 它**不是** legs[] 的新排序: ' +
-      '后者是 legacy 载体顺序 (档位 → 到期日 → 行权价 → code), 旧客户端仍按它渲染',
-    type: LegTabOrderResponse,
-  })
-  tabOrder!: LegTabOrderResponse;
 
   @ApiProperty({
     description:
@@ -1871,19 +1728,65 @@ export class LegTableResponse {
 
   @ApiProperty({
     description:
-      'Tab → 档位判定口径的**常量映射** (FR-023) —— 下发一次, 免客户端硬编码这份映射 (硬编码必与' +
-      ' server 漂移, 且漂移时两边都算得出结果)。每腿的 tierByTab 就是按它判出来的',
-    type: LegBasisByTabResponse,
+      '**本次视角**的档位判定口径 (FR-023) —— 下发而非让客户端硬编码这份映射 (硬编码必与 server ' +
+      '漂移, 且漂移时两边都算得出结果)。每腿的 tier 就是按它判出来的。全腿视角**恒年化** (混着 ' +
+      '10 天与 200 天的腿, 周化档界会让整列全是死档)',
+    enum: [...LEG_BASES],
+    example: 'annualized',
   })
-  basisByTab!: LegBasisByTabResponse;
+  basis!: string;
 
   @ApiProperty({
     description:
-      '三视角各自的**检索条件全景** (052 FR-011 / FR-029) —— 控件填 defaults, 结果按 effective, ' +
-      '仅 narrowed 的维度出计数。恒有三份 (客户端本地切视角时不发请求)',
-    type: LegCriteriaByTabResponse,
+      '**本次视角**的检索条件全景 (052 FR-011 / FR-029) —— 控件填 defaults, 结果按 effective, ' +
+      '仅 narrowed 的维度出计数。📌 053 起只发一份: 052 恒发三份的前提是' +
+      '「本地切视角不发请求」, 而那条承诺已由 FR-019b 整条作废。链未就绪时六维全 null —— 那是' +
+      '「没有值」不是「不限」',
+    type: PerspectiveCriteriaResponse,
   })
-  criteriaByTab!: LegCriteriaByTabResponse;
+  criteria!: PerspectiveCriteriaResponse;
+
+  @ApiProperty({
+    description:
+      '本次条件下**该视角**的成员数 —— 表达层截断**之前**的条数 (053 FR-005 / FR-015)。' +
+      '⚠️ **candidateCapDropped 非零时本数会静默失真** (FR-019c): 它算在已被候选上限 K 砍过的' +
+      '集合上 ⇒ 表达层 MUST 说明本数可能不完整',
+    type: 'integer',
+    example: 137,
+  })
+  matchedCount!: number;
+
+  @ApiProperty({
+    description:
+      '**无覆盖口径**下该视角的成员数 (053 FR-009) —— 未覆盖任何条件时恒 === matchedCount, ' +
+      '此时区块头 MUST NOT 并列显示两个相等的数。🚫 MUST NOT 用六维边际计数加总充当它 (边际口径' +
+      '下被两维同时挡下的腿两维都不计它, 加总少报)',
+    type: 'integer',
+    example: 212,
+  })
+  memberCount!: number;
+
+  @ApiProperty({
+    description:
+      '本次生效的表达层截断阈值 N; **null = 不设该视角阈值** ⇒ 零截断 (053 FR-011 / FR-013)。' +
+      '🚨 **未触发截断时也照常下发** (FR-015): 只在截断时下发会让「链规模逼近阈值」恰恰观测不到。' +
+      '逼近度 matchedCount / displayLimit 由此随时可算 ⇒ 🚫 MUST NOT 为它新增 isNearLimit ' +
+      '之类的派生布尔 (下发第二份必 drift)',
+    type: 'integer',
+    nullable: true,
+    example: 200,
+  })
+  displayLimit!: number | null;
+
+  @ApiProperty({
+    description:
+      '触及召回层候选上限 K 时被切掉多少条 (052 FR-028); 未触及恒 0。🚨 **它是保险丝熔断不是判据' +
+      '挡下** ⇒ 蓄意不进 gateCounts, 呈现侧 MUST 与截断计数**不同款** (053 FR-019c): 前者该调' +
+      '容量、后者该调展示。非零时 matchedCount 可能不完整, 提示 MUST 说明这一点',
+    type: 'integer',
+    example: 0,
+  })
+  candidateCapDropped!: number;
 }
 
 /**
@@ -1991,6 +1894,7 @@ function toLegActivityResponse(mark: ActivityMark | null): LegActivityResponse |
 export function toLegTableResponse(view: LegTableView): LegTableResponse {
   return {
     symbol: view.symbol,
+    perspective: view.perspective,
     state: view.state,
     asOf: dateOnly(view.asOf),
     asOfFreshnessTier: freshnessTier(dateOnly(view.asOf), view.lastClosedSession),
@@ -2030,17 +1934,7 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
       openInterest: leg.openInterest,
       volume: leg.volume,
       turnover: leg.turnover === null ? null : leg.turnover.toFixed(2),
-      activityByTab: {
-        all: toLegActivityResponse(leg.activityByTab.all),
-        build: toLegActivityResponse(leg.activityByTab.build),
-        rent: toLegActivityResponse(leg.activityByTab.rent),
-      },
-      tabs: [...leg.tabs],
-      tierByTab: {
-        all: leg.tierByTab.all,
-        build: leg.tierByTab.build,
-        rent: leg.tierByTab.rent,
-      },
+      activity: toLegActivityResponse(leg.activity),
       isRecommended: leg.isRecommended,
       isMonthlyChain: leg.isMonthlyChain,
       earningsMark:
@@ -2053,27 +1947,18 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
             },
       greeksComplete: leg.greeksComplete,
     })),
-    tabOrder: {
-      all: [...view.tabOrder.all],
-      build: [...view.tabOrder.build],
-      rent: [...view.tabOrder.rent],
-    },
     gateCounts: {
       removedByPremiumFloor: view.gateCounts.removedByPremiumFloor,
       excludedFromIntentTabs: view.gateCounts.excludedFromIntentTabs,
-      excludedFromIntentTabsByTab: {
-        build: view.gateCounts.excludedFromIntentTabsByTab.build,
-        rent: view.gateCounts.excludedFromIntentTabsByTab.rent,
-      },
     },
-    // 🚨 **取自 `leg-rank.rules.ts` 的那一份常量, 不在这里重写一遍字面量** —— 每腿的
-    // `tierByTab` 正是按它判出来的, 抄一份在此会让「口径改了但下发的还是旧的」不红任何一处。
+    // 🚨 **取自 `leg-rank.rules.ts` 的那一份常量, 不在这里重写一遍字面量** —— 每腿的 `tier`
+    // 正是按它判出来的, 抄一份在此会让「口径改了但下发的还是旧的」不红任何一处。
     // 判据在 rules、档位在 DTO 层合成: 同 `asOfFreshnessTier` 那条分工 (046 起的体例)。
-    basisByTab: { all: BASIS_BY_TAB.all, build: BASIS_BY_TAB.build, rent: BASIS_BY_TAB.rent },
-    criteriaByTab: {
-      all: toPerspectiveCriteriaResponse(view.criteriaByTab.all),
-      build: toPerspectiveCriteriaResponse(view.criteriaByTab.build),
-      rent: toPerspectiveCriteriaResponse(view.criteriaByTab.rent),
-    },
+    basis: BASIS_BY_TAB[view.perspective],
+    criteria: toPerspectiveCriteriaResponse(view.criteria),
+    matchedCount: view.matchedCount,
+    memberCount: view.memberCount,
+    displayLimit: view.displayLimit,
+    candidateCapDropped: view.candidateCapDropped,
   };
 }
