@@ -3,7 +3,7 @@ feature_id: 053-optionsdesk-leg-query-pushdown
 spec_ref: ./spec.md
 status: drafted
 created_at: '2026-08-12'
-updated_at: '2026-08-13'
+updated_at: '2026-08-14'
 adr_refs: ['0032', '0043', '0053', '0062', '0064']
 context7_verified: []
 ---
@@ -67,7 +67,7 @@ context7_verified: []
 
 - **NO LIFECYCLE MOCKING**：对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类**绝对禁止**隔离单元测试。本片虽不新增 lifecycle 组件，但**新增的查询参数校验若落 `ValidationPipe`，其测试必须走 DI 容器**。
 - **MANDATORY INTEGRATION**：`Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()`，`createTestingModule` 之外的「测试」视同未测试。
-- **EXHAUSTIVE BRANCHING**：spec `state_branches` **21 条**，每条**有一个 `it()`，落在够得到它的那一层**（服务端分支落 IT、纯客户端分支落 e2e —— 沿 `052` T015 对同一冲突的裁法）。
+- **EXHAUSTIVE BRANCHING**：spec `state_branches` **25 条**，每条**有一个 `it()`，落在够得到它的那一层**（服务端分支落 IT、纯客户端分支落 e2e —— 沿 `052` T015 对同一冲突的裁法）。
 
 ### General Architecture Notes
 

@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: not-started
 created_at: '2026-08-13'
-updated_at: '2026-08-13'
+updated_at: '2026-08-14'
 ---
 
 # Tasks: 053-optionsdesk-leg-query-pushdown（选约表查询下沉 —— 每视角独立请求 + 响应收窄 + 表达层截断 · P4）
@@ -26,7 +26,9 @@ updated_at: '2026-08-13'
 
 spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业务日重取与提示 / 水位失效三份 / 单视角失败隔离 / 错误态切换 / 迟到响应 / 错峰时序 / 预取失败与命中 / 切视角保留条件）—— **服务端 IT 结构上够不到它们**。
 
-⇒ 执行口径：**每条有一个 `it()`，落在够得到它的那一层**（服务端分支落 IT、纯客户端分支落 e2e、几何分支落真机验收）。这是 `052` T015 对同一冲突的裁法，本片沿用。
+⇒ 执行口径：**每条至少有一个 `it()`，其主落层是够得到它的那一层**（服务端分支落 IT、纯客户端分支落 e2e、几何分支落真机验收）。主落层分区 **IT 13 / e2e 11 / 真机 1 = 25**；另有 6 条在次落层加断言，不影响分区。这是 `052` T015 对同一冲突的裁法，本片沿用。
+
+📌 **矩阵值域声明**（per `sdd-authoring.md` 反模式第 4 条 —— 这一问在「逐条 grep」之前）：五张矩阵扫的是 `state_branches` / AS / Edge / SC / FR 五层。**§ 依赖与前提、§ Clarifications 定案、§ Out of Scope 的去向已逐条核回 FR/SC，无表外需求**（唯一藏着需求的是依赖表第 5 行「`K` 触及数下发并按异常呈现」，已由 `FR-019c` 吸收）。§ 背景的两段散文分别落 `SC-011`（正当性前提）与 `SC-006`（验证约束）。
 🚫 **MUST NOT** 照 plan Testing Invariants 的字面「每条在 IT 里有对应 `it()`」去补 11 条不可能的 IT。
 
 ## Path Conventions
@@ -78,9 +80,9 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 
 - [ ] T004 [P] [Server] **单笔权利金 + 相对价差下发**（`FR-032`, plan `D-COL-1`）：`单笔权利金 = bid × 合约乘数` **服务端算**（服务端已持有该常量，成交额在用它）；`相对价差` 复用 `leg-recall.rules.ts` 的 `relativeSpread` 派生值下发。🚫 MUST NOT 由客户端乘一次 —— 那是同一判据两处各算一份（ADR-0064 不变量 ③）。→ verify: Small 断言两个派生值 + `rg` 扫 mobile 侧**零处**乘合约乘数 + nullable 小数字段的 `@ApiProperty` 显式 `type: 'string'`（防 orval 误生 objectmap）
 
-- [ ] T005 [Server] **IT：服务端侧 state branch 全覆盖**（`FR-010`–`FR-015`, `SC-004`–`SC-007`, `SC-012`, `SC-015`, `SC-016`）：新建 `optionsdesk-053.query.it.spec.ts`（Testcontainers 真 PG）。覆盖 `state_branch` **1–12 / 24**（落层裁定见文件头）。→ verify: 🚨 **截断掉的必是排序尾部** —— 断言「截断前后前 `D` 条逐条相同」而非只断条数（Guardrail 8）+ **注入小阈值走遍截断分支**（`SC-006`，Guardrail 7）+ **被意图视角排除的腿在全腿视角可达**（`SC-012`，`051` 入口的回归防线）+ `K` 触及时触及数可读且 `matchedCount` 失真可被观测（`SC-016`，**先证明它会红**：`K` 注入小值时触及呈现必须出现）
+- [ ] T005 [Server] **IT：服务端侧 state branch 全覆盖**（`FR-010`–`FR-015`, `SC-004`–`SC-007`, `SC-012`, `SC-015`, `SC-016`）：新建 `optionsdesk-053.query.it.spec.ts`（Testcontainers 真 PG）。覆盖 `state_branch` **1–12 / 24**（落层裁定见文件头）。→ verify: 🚨 **截断掉的必是排序尾部** —— 断言「截断前后前 `D` 条逐条相同」而非只断条数（Guardrail 8）+ **注入小阈值走遍截断分支**（`SC-006`，Guardrail 7）+ **被意图视角排除的腿在全腿视角可达**（`SC-012`，`051` 入口的回归防线）+ `K` 触及时触及数可读且 `matchedCount` 失真可被观测（`SC-016`，**先证明它会红**：`K` 注入小值时触及呈现必须出现）+ **未触发截断时 `displayLimit` 与 `matchedCount` 仍下发**（`FR-015` 的可验证形态 —— 只在截断时下发会让「逼近」恰好观测不到）+ 🚫 **`FR-043` 零改动核实**：`git diff main...HEAD -- apps/server/src/optionsdesk/anchor.rules.ts apps/server/src/optionsdesk/intent-matrix.rules.ts` **零行** + 🚫 **`FR-044` 零改动核实**：`git diff main...HEAD -- apps/server/src/optionsdesk/leg-recall.rules.ts` **零行**
 
-- [ ] T006 [Contract] **`export-openapi` + regen + 修编译红**（plan §V）：跑 `nx run server:export-openapi` + `nx affected -t generate`；修因收窄而编译红的手写 mock 工厂（`050` 那次 7 处、`052` 那次 6 处）。→ verify: `openapi.json` 逐项比对（**本片是破坏性变更，删除项 MUST 与 `FR-005` 表逐条对上，不得有表外删除**）+ `nx affected -t build` 绿 + `nx typecheck mobile` 绿 + `check-api-property-nullable` / `check-contract-smoke-drift` 过
+- [ ] T006 [Contract] **`export-openapi` + regen + 修编译红**（plan §V）：跑 `nx run server:export-openapi` + `nx affected -t generate`；修因收窄而编译红的手写 mock 工厂（`050` 那次 7 处、`052` 那次 6 处）。→ verify: `openapi.json` 逐项比对（**本片是破坏性变更，删除项 MUST 与 `FR-005` 表逐条对上，不得有表外删除**）+ `nx affected -t build` 绿 + `nx typecheck mobile` 绿 + `check-api-property-nullable` / `check-contract-smoke-drift` 过 + 🚫 **`FR-042` 核实**：生成的 `openapi.json` 内 `rg 'RankingFeatures'` **零命中**（特征集不进契约）
 
 ---
 
@@ -94,13 +96,13 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 
 ## Phase 4: 列改版（US4）
 
-- [ ] T009 [Mobile] **12 列改版**（`FR-030`–`FR-034`, `SC-018`, `SC-019`, plan `D-COL-1`）：`leg-row.rules.ts` 的 `LEG_TABLE_COLUMNS` **删 `sigma`(46) / `turnover`(52)、加 `premium`(50) / `spread`(48)**，列序改为 `strike → bid → rate → premium → oi → spread → cost → delta → vol → activity → mark → action`；`leg-row.tsx` 与 `leg-table-header.tsx` 同步；`bid`/`ask` **保持合并**（`FR-031`，不拆）。⚠️ **连带清理我这次改动产生的 orphan**：`leg-row.rules.ts` 文件头那条「Δ 与 σ距 是同一个 `absDelta` 的两种呈现，两列 MUST 同时有值或同时留占位」的不变量**随 `sigma` 列退场而失去对象**，注释 MUST 同步删或改写 —— 留着会让下一个人以为还有第二列要维护；`leg-row.tsx:165` 那条同源注释同理。→ verify: Small —— **宽度合计 = 716 且首列 = 88**（`SC-018`，🚨 先证明它会红：临时改一列宽度，断言必须失败）+ 表头零折行（`SC-019`，判据取真实最宽内容：`成本vsW` 在 56px 内 / 深实值两位数价格在 88px 内 / 权利金四位数在 50px 内）+ `rg 'sigma|turnover' apps/mobile/src/optionsdesk/` 仅剩迁移留痕注释
+- [ ] T009 [Mobile] **12 列改版**（`FR-030`–`FR-034`, `SC-018`, `SC-019`, plan `D-COL-1`）：`leg-row.rules.ts` 的 `LEG_TABLE_COLUMNS` **删 `sigma`(46) / `turnover`(52)、加 `premium`(50) / `spread`(48)**，列序改为 `strike → bid → rate → premium → oi → spread → cost → delta → vol → activity → mark → action`；`leg-row.tsx` 与 `leg-table-header.tsx` 同步；`bid`/`ask` **保持合并**（`FR-031`，不拆）。⚠️ **连带清理我这次改动产生的 orphan**：`leg-row.rules.ts` 文件头那条「Δ 与 σ距 是同一个 `absDelta` 的两种呈现，两列 MUST 同时有值或同时留占位」的不变量**随 `sigma` 列退场而失去对象**，注释 MUST 同步删或改写 —— 留着会让下一个人以为还有第二列要维护；`leg-row.tsx:165` 那条同源注释同理。→ verify: Small —— **宽度合计 = 716 且首列 = 88**（`SC-018`，🚨 先证明它会红：临时改一列宽度，断言必须失败）+ 表头零折行（`SC-019`，判据取真实最宽内容：`成本vsW` 在 56px 内 / 深实值两位数价格在 88px 内 / 权利金四位数在 50px 内）+ `rg 'sigma|turnover' apps/mobile/src/optionsdesk/` 仅剩迁移留痕注释 + 🚫 **`FR-045` 零改动核实**：`git diff main...HEAD -- apps/mobile/src/optionsdesk/leg-criteria.rules.ts apps/mobile/src/optionsdesk/leg-criteria-sheet.tsx` **零行**
 
 ---
 
 ## Phase 5: 两层验证（Constitution §V 跨端片义务）
 
-- [ ] T010 [Mobile-E2E] **hermetic e2e**（`state_branch` 13–23, `SC-008`–`SC-010`）：新建 `optionsdesk-query-pushdown.spec.ts`（Playwright Expo Web，`route.fulfill` 拦端点）。覆盖：错峰时序（当前视角未落地时另两个**不发请求**）· 单视角失败隔离 · 切到错误态视角显错误态非空态 · 跨业务日自动重取一次 + 仍不一致给提示 · 水位改动失效三份 · 迟到响应不覆盖 · 预取命中/未命中 · 切视角保留各自条件 · 截断计数出现与消失。🚨 **mock 是契约镜像不是调用序** —— handler 按 `perspective` + 六维参数**无条件作答**，禁按测试编排标志分支（`052` T013 同一条纪律）。→ verify: 跑**全套** `nx run mobile:runtime-smoke` 非单 spec（改了共享 hook ⇒ blast radius 是整套）+ 🔬 **反例探针**：摘掉 `placeholderData: keepPreviousData`，e2e 必须红（Guardrail 3 的实证）
+- [ ] T010 [Mobile-E2E] **hermetic e2e**（`state_branch` 13–23, `SC-008`–`SC-010`）：新建 `optionsdesk-query-pushdown.spec.ts`（Playwright Expo Web，`route.fulfill` 拦端点）。覆盖：错峰时序（当前视角未落地时另两个**不发请求**）· 单视角失败隔离 · 切到错误态视角显错误态非空态 · **后台预取失败 → 当前视角零感知且 Tab 行无错误/加载角标** · 跨业务日自动重取一次 + 仍不一致给提示 · 水位改动失效三份 · 迟到响应不覆盖 · 预取命中/未命中 · 切视角保留各自条件 · 截断计数出现与消失。🚨 **mock 是契约镜像不是调用序** —— handler 按 `perspective` + 六维参数**无条件作答**，禁按测试编排标志分支（`052` T013 同一条纪律）。→ verify: 跑**全套** `nx run mobile:runtime-smoke` 非单 spec（改了共享 hook ⇒ blast radius 是整套）+ 🔬 **反例探针**：摘掉 `placeholderData: keepPreviousData`，e2e 必须红（Guardrail 3 的实证）
 
 - [ ] T011 [Contract-Smoke] **契约冒烟扩到新形状**（Constitution §V）：`apps/mobile/e2e/contract-smoke/` 用生成的 `@nvy/api-client` 打 testcontainers 真 server。→ verify: `perspective` 必填与三值往返 + 新字段解封（`displayLimit` / `matchedCount` / `memberCount` / `K` 触及数 / 单笔权利金 / 相对价差）+ **删掉的 `tabOrder` 与各 by-tab 结构确实不再出现** + nullable 小数字段的运行时类型是 string 而非 orval objectmap。📌 本地跑它要先空出 `:3000`，要停的是 `nx serve server` 那层看门进程而不是它的子进程（`052` T014 实撞）
 
@@ -110,7 +112,7 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 
 - [ ] T012 [Gate] **三视角截断阈值实测标定**（`FR-013`, `FR-014`, `SC-014`）：用 dev 全部链，沿 `050` T017 / `052` T016 的分布分析做法，看「第 `N` 名之后还有没有值得看的腿」。🚫 **无断点则记为「不设该视角阈值」，不许拍数**（同 T016 对单笔权利金下限的裁定）。🚨 **全腿视角的阈值有硬下界** —— 它必须高到让 `051` 那个「点流动性排除数 → 切到全腿视角看被排除的腿」的入口仍可达 ⇒ 标定该视角时，**「被意图视角排除的腿在排序序列里的最深位置」是阈值的下界输入**，不能只看分布断点。📌 标定判据照**认知负荷**设计而不是性能（`051` 真机实测 573 行虚拟化只挂 16–17 节点、零白屏 ⇒「跑不动」不是本片的问题）。⚠️ **动手第一件事先确认数据面没被 mock 污染**（`052` T016 撞过：12 只票共用同一个 spot）。→ verify: 三个数与**推导过程**写回 spec § 标定实测 + 代码内 `⏳` / 「标定在 T012」/「MUST NOT 当已标定值引用」三个标记**扫零命中** + `nx test server` 全绿
 
-- [ ] T013 [Verify] **真机验收 + `052` 遗留三项**（`FR-033`, `FR-036`, `SC-003`, `SC-017`, `state_branch` 25）：Mate50 dev-client。① 列改版几何 —— sticky 栈占屏比 **≤ 35%**（基线 `051` 实测 138.5dp / 27.9%）、横滑到最右端**末列完整露出**、首列冻结宽与位移语义零变化；② 视角切换与预热**手感**；③ **`052` 遗留三项** —— 抽屉是否真盖住底部 Tab 栏 / 输入法弹起后「搜」在不在屏内 / ⓘ 热区 44×44。🚨 **③ 的第一项若为否是功能缺陷不是版式问题**（说明抽屉没走 RN `Modal` 渲到 root 层，per memory `reference_drawer_overlay_bounded_by_tab_content_use_modal`）—— 撞到即**停下修**，MUST NOT 记为「已知问题」往下走。→ verify: 逐条读数写回 spec § 真机验收；**MUST 用真机读数复核，MUST NOT 用 web 那组**（`049` 实测 web 185 vs 真机 161dp，差约 13%）
+- [ ] T013 [Verify] **真机验收 + `052` 遗留三项**（`FR-033`, `FR-036`, `SC-003`, `SC-017`, `state_branch` 25）：Mate50 dev-client。① 列改版几何 —— sticky 栈占屏比 **≤ 35%**（基线 `051` 实测 138.5dp / 27.9%）、横滑到最右端**末列完整露出**、首列冻结宽与位移语义零变化；② 视角切换与预热**手感**；③ **`052` 遗留三项** —— 抽屉是否真盖住底部 Tab 栏 / 输入法弹起后「搜」在不在屏内 / ⓘ 热区 44×44。🚨 **③ 的第一项若为否是功能缺陷不是版式问题**（说明抽屉没走 RN `Modal` 渲到 root 层，per memory `reference_drawer_overlay_bounded_by_tab_content_use_modal`）—— 撞到即**停下修**，MUST NOT 记为「已知问题」往下走。→ verify: 逐条读数写回 spec § 真机验收；**MUST 用真机读数复核，MUST NOT 用 web 那组**（`049` 实测 web 185 vs 真机 161dp，差约 13%）+ 🚨 **PR body 三件事逐条写入**（`SC-011` / `FR-019a` / `FR-019b`）：① 拆请求的**正当性前提**与它的四条代价 ② 047「no pagination, no top-N」的 **supersede** ③ 047「切 Tab 不重新请求」的**作废**。⚠️ PR 在本 task 之后才开 ⇒ 这是**开 PR 前的最后一道闸**，不是事后补
 
 ---
 
@@ -160,7 +162,7 @@ T001 (语义翻转) ──> T002 (截断 + 三个计数)          [Phase 1 · �
 | 5 | 收窄使结果降到阈值以下 → 计数消失 | IT + e2e | T005 · T010 |
 | 6 | 注入小阈值走遍截断分支 | IT | T005（`SC-006`） |
 | 7 | `K` 未触及 → 异常提示不出现 | IT | T005 |
-| 8 | `K` 被触及 → 下发 + 异常呈现 | IT + e2e | T005 · T008 |
+| 8 | `K` 被触及 → 下发 + 异常呈现 | IT + Small | T005 · T008 |
 | 9 | 未覆盖 → `memberCount == matchedCount` | Small + IT | T002 · T005 |
 | 10 | 收窄 → `memberCount > matchedCount` | IT | T005 |
 | 11 | 每腿只带当前视角档位与活跃标 | IT + Small | T003 · T008（`SC-002`） |
@@ -229,7 +231,7 @@ T001 (语义翻转) ──> T002 (截断 + 三个计数)          [Phase 1 · �
 | SC-008 预取命中无可见加载态 | T010 |
 | SC-009 单视角失败其余零变化 | T010 |
 | SC-010 跨交易日一致性可复现验证 | T010 |
-| SC-011 两条 supersede 在 spec 与 PR body 登记 | T006（PR body）· 已在 spec |
+| SC-011 两条 supersede 在 spec 与 PR body 登记 | **T013**（PR body）· spec 侧已落 `FR-019a` / `FR-019b` |
 | SC-012 被排除的腿 100% 可在全腿视角找到 | T005 |
 | SC-013 水位改动后三视角推荐标口径一致 | T007 · T010 |
 | SC-014 阈值取值与推导过程写回 + 占位零命中 | T012 |
@@ -256,7 +258,7 @@ T001 (语义翻转) ──> T002 (截断 + 三个计数)          [Phase 1 · �
 
 | 事项 | 为什么故意不产 task |
 | --- | --- |
-| `FR-040` – `FR-045`（跨片不变量继承） | 本片**零改动**条款。它们的「覆盖」是**否定式核实**而非新测试：`FR-043` 走 `git diff anchor.rules.ts intent-matrix.rules.ts` 零行（并入 T005 的 verify）；`FR-044` / `FR-045` 走 `git diff leg-recall.rules.ts leg-criteria*.ts` 零行。⇒ 不产独立 task，但 T005 / T009 的 verify 各带一条 |
+| `FR-040` – `FR-045`（跨片不变量继承） | 本片**零改动**条款，覆盖是**否定式核实**而非新测试，且**判据已逐条写进对应 task 的 verify**（不是只在本表声称）：`FR-043` → T005 `git diff anchor.rules.ts intent-matrix.rules.ts` 零行 · `FR-044` → T005 `git diff leg-recall.rules.ts` 零行 · `FR-045` → T009 `git diff leg-criteria*` 零行 · `FR-042` → T006 `openapi.json` 内 `rg 'RankingFeatures'` 零命中。⚠️ **`FR-040` / `FR-041` 无「零改动文件」可锚**：`FR-040`（截断在排序之后）由 T005 的「截断掉的必是排序尾部」正面承接；`FR-041`（`tier` 跟视角走）由 T003 的收窄天然承接（`tier` 收窄成标量、值仍由服务端按视角算）—— **两者无独立断言，如实登记，不声称有** |
 | spec § Out of Scope 的「`活跃` 列装不下自己的值」 | **登记不改**（Surgical Edits）—— 属 047 期问题，与本片列改版正交（本片既不改该列宽也不改其数据源） |
 | 排序 / 截断下沉 SQL 的等价 IT | 本片**不下沉**（`D-SQL-1`）⇒ 判据只有一份实现，等价性无从谈起。`052` 的 port 守门判据使下沉方案当场撞红 |
 | 抽屉内部 / 三支空态 | `052` T012 已 ship，本片零改动 |
