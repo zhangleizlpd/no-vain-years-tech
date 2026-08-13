@@ -2,7 +2,7 @@
 feature_id: 054-marketdata-mock-write-provenance
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: drafted
+status: completed
 created_at: '2026-08-13'
 updated_at: '2026-08-13'
 ---
