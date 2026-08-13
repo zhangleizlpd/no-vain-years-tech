@@ -137,7 +137,7 @@ export default function LoginScreen() {
           <Text className="text-3xl font-bold text-ink mt-3.5 tracking-tight text-center">
             欢迎回来
           </Text>
-          <Text className="text-sm text-ink-muted text-center">把这一段日子，过得不虚此生。</Text>
+          <Text className="text-sm text-ink-muted text-center">把这一段日子，过得不负光阴。</Text>
         </View>
 
         {/* Form — single form, no tab (FR-C01); inputs via <Controller> (铁律 1) */}

@@ -231,7 +231,7 @@ describe('027 chat streaming send-message (Testcontainers PG + Redis + Fastify)'
     // (每条发送都 prepend, 主动演进 027 非联网零注入), 其后含历史 第一问/第一答/第二问。
     const [first, ...rest] = provider.lastMessages;
     expect(first.role).toBe('system');
-    expect(msgText(first.content).startsWith('你是「不虚此生」App 的 AI 助手')).toBe(true);
+    expect(msgText(first.content).startsWith('你是「不负光阴」App 的 AI 助手')).toBe(true);
     expect(rest).toEqual([
       { role: 'user', content: '第一问' },
       { role: 'assistant', content: '第一答' },

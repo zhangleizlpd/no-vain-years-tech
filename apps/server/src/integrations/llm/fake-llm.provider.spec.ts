@@ -242,7 +242,7 @@ describe('FakeLlmProvider', () => {
   describe('031 T011 content-driven 系统提示回显 (env 注入路契约冒烟: systemEchoKeyword 回显 system 段)', () => {
     const ECHO = 'SysEcho';
     const SYSTEM =
-      '你是「不虚此生」App 的 AI 助手。<<<USER_CUSTOM>>>\n请用沪语回答\n<<<END_USER_CUSTOM>>>';
+      '你是「不负光阴」App 的 AI 助手。<<<USER_CUSTOM>>>\n请用沪语回答\n<<<END_USER_CUSTOM>>>';
     const withEchoKw: Msg[] = [
       { role: 'system', content: SYSTEM },
       { role: 'user', content: 'SysEcho 帮我分析一下' },

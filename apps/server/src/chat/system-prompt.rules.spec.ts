@@ -68,7 +68,7 @@ describe('system-prompt.rules', () => {
       for (const ws of [true, false]) {
         const out = platformBaseLayer(ctx({ webSearch: ws }));
         expect(out).not.toBeNull();
-        expect(out).toContain('不虚此生');
+        expect(out).toContain('不负光阴');
         expect(out).toContain('AI 助手');
         // 注入硬化: 最高优先 + 不得覆盖 + 不执行越权/泄露/忽略指令
         expect(out).toMatch(/最高优先/);

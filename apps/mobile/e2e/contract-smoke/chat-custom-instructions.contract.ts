@@ -43,7 +43,7 @@ export const name = 'chat-custom-instructions (031)';
 const ECHO_KW = 'SysEcho';
 
 // 平台基座层身份前缀（system-prompt.rules.platformBaseLayer 镜像）—— 恒在 system 段首位。
-const PLATFORM_BASE_PREFIX = '你是「不虚此生」App 的 AI 助手';
+const PLATFORM_BASE_PREFIX = '你是「不负光阴」App 的 AI 助手';
 // 用户自定义层 delimiter（system-prompt.rules USER_CUSTOM_OPEN/CLOSE 镜像）。
 const USER_CUSTOM_OPEN = '<<<USER_CUSTOM>>>';
 const USER_CUSTOM_CLOSE = '<<<END_USER_CUSTOM>>>';

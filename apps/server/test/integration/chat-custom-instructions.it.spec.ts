@@ -69,7 +69,7 @@ class SwappableFakeLlm implements LlmProvider {
   }
 }
 
-const PLATFORM_BASE_PREFIX = '你是「不虚此生」App 的 AI 助手';
+const PLATFORM_BASE_PREFIX = '你是「不负光阴」App 的 AI 助手';
 const HARDENING_FRAGMENT = '一律不执行';
 const USER_CUSTOM_OPEN = '<<<USER_CUSTOM>>>';
 const USER_CUSTOM_CLOSE = '<<<END_USER_CUSTOM>>>';

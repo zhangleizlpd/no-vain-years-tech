@@ -244,12 +244,12 @@ describe('030 chat web search 统一 ReAct loop (AppModule 全 boot DI + Testcon
     const first = llm.lastMessages[0]!;
     const sys = msgText(first.content);
     expect(first.role).toBe('system');
-    expect(sys.startsWith('你是「不虚此生」App 的 AI 助手')).toBe(true);
+    expect(sys.startsWith('你是「不负光阴」App 的 AI 助手')).toBe(true);
     expect(sys).toContain('web_search');
     expect(sys).toContain('当前时间');
     expect(sys).toContain(String(new Date().getFullYear()));
     // 顺序: platformBase 先于联网 steering。
-    expect(sys.indexOf('不虚此生')).toBeLessThan(sys.indexOf('web_search'));
+    expect(sys.indexOf('不负光阴')).toBeLessThan(sys.indexOf('web_search'));
 
     const msgs = await messageRows(cid);
     expect(msgs.map((m) => m.role)).toEqual(['user', 'assistant']);

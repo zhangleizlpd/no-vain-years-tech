@@ -43,7 +43,7 @@ export const APP_DRAWER_COPY = {
   /** 题头汉堡 a11y 名（与 chat 顶栏同名，两处语义一致）。 */
   menu: '菜单',
   /** 品牌头。 */
-  brandName: '不虚此生',
+  brandName: '不负光阴',
   brandSubtitle: 'no-vain-years',
   /** 用户脚齿轮。 */
   settings: '设置',
