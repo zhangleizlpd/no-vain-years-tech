@@ -974,8 +974,20 @@ describe('optionsdesk.dto — 检索条件的请求与响应契约 (052 T011)', 
   });
 
   it('🚨 `0` MUST NOT 被真值判断吞成「没动过」—— 它是一个合法的下限值', () => {
-    const override = toRetrievalOverride({ perspective: 'rent', openInterestMin: '0' });
-    expect(override?.criteria.openInterestMin).toBe(0);
+    const override = toRetrievalOverride({ perspective: 'rent', oiMin: '0', volMin: '0' });
+    expect(override?.criteria.livenessMin).toEqual({ oi: 0, volume: 0 });
+  });
+
+  it('🚨 活性两个值 MUST 成对 —— 只给一端即 400 (一个维度、一对数，同 DTE 段)', () => {
+    expect(() => toRetrievalOverride({ perspective: 'rent', oiMin: '50' })).toThrow(
+      BadRequestException,
+    );
+    expect(() => toRetrievalOverride({ perspective: 'rent', volMin: '50' })).toThrow(
+      BadRequestException,
+    );
+    expect(
+      toRetrievalOverride({ perspective: 'rent', oiMin: '50', volMin: '5' })?.criteria.livenessMin,
+    ).toEqual({ oi: 50, volume: 5 });
   });
 
   it('🚨 DTE 段两端 MUST 成对 —— 只给一端即 400 (半个区间不是合法维度值)', () => {

@@ -153,6 +153,7 @@ export * from './legTierByTabResponse';
 export * from './legTierByTabResponseAll';
 export * from './legTierByTabResponseBuild';
 export * from './legTierByTabResponseRent';
+export * from './livenessFloorResponse';
 export * from './marketdataControllerBarsAdjust';
 export * from './marketdataControllerBarsParams';
 export * from './marketdataControllerBarsPeriod';

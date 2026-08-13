@@ -787,7 +787,7 @@ function unresolvedCriteria(): PerspectiveCriteria {
     strikeMin: null,
     dteBand: null,
     premiumMin: null,
-    openInterestMin: null,
+    livenessMin: null,
     relativeSpreadMax: null,
   };
   const outcomes = {} as Record<RetrievalCriterionKey, CriterionOutcome>;

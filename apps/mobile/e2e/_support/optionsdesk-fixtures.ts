@@ -20,7 +20,7 @@ export function emptyPerspectiveCriteria(): PerspectiveCriteriaResponse {
     strikeMin: null,
     dteBand: null,
     premiumMin: null,
-    openInterestMin: null,
+    livenessMin: null,
     relativeSpreadMax: null,
   };
   const untouched = { state: 'default' as const, excludedCount: 0 };
@@ -34,7 +34,7 @@ export function emptyPerspectiveCriteria(): PerspectiveCriteriaResponse {
       strikeMin: untouched,
       dteBand: untouched,
       premiumMin: untouched,
-      openInterestMin: untouched,
+      livenessMin: untouched,
       relativeSpreadMax: untouched,
     },
   };

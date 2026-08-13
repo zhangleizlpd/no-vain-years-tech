@@ -5,6 +5,7 @@ import {
   LIQUIDITY_MAX_RELATIVE_SPREAD,
   PREMIUM_FLOOR,
   OPEN_INTEREST_FLOOR,
+  VOLUME_FLOOR,
   RECALL_CANDIDATE_CAP,
   QUALITY_CEILING_SPOT_RATIO,
   RENT_RECALL_DTE,
@@ -13,7 +14,7 @@ import {
   failedCriteria,
   passesEffectiveCostGate,
   passesHardGates,
-  passesOpenInterestMin,
+  passesLivenessMin,
   passesPremiumMin,
   passesQualityCeiling,
   passesRelativeSpreadMax,
@@ -306,34 +307,50 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
   });
 });
 
-describe('leg-recall.rules — 持仓量条件 (052 FR-008 / FR-009)', () => {
+describe('leg-recall.rules — 活性条件 (052 FR-008 / FR-009)', () => {
   const allTabs = ['all', 'build', 'rent'] as const;
-  /** 只跑持仓量这一道：其余判据全宽松通过，被移出就只可能是它挡的。 */
+  /** 系统默认的活性下限 —— 两个值都取常量，不手抄。 */
+  const FLOOR = { oi: OPEN_INTEREST_FLOOR, volume: VOLUME_FLOOR };
+  /** 只跑活性这一道：其余判据全宽松通过，被移出就只可能是它挡的。 */
   const survives = (over: Partial<RecallLegInput>) =>
     recallCandidates(context, allTabs, [leg(over)], RECALL_CANDIDATE_CAP).candidates.length === 1;
 
+  it('🚨 成交那一支参数化后与改造前**逐字等价** —— 默认下限 1 ⟺ 原来的 `volume > 0`', () => {
+    // 成交量是整数张数 ⇒ `> 0` 与 `>= 1` 在值域上同一。这条守的是「参数化没改判据」。
+    expect(VOLUME_FLOOR).toBe(1);
+    expect(passesLivenessMin(0, 1, FLOOR)).toBe(true);
+    expect(passesLivenessMin(0, 0, FLOOR)).toBe(false);
+  });
+
+  it('🚨 两支是「或」不是「与」 —— 任一过线即算活着', () => {
+    const strict = { oi: 500, volume: 50 };
+    expect(passesLivenessMin(600, 0, strict)).toBe(true); // 只 OI 过
+    expect(passesLivenessMin(0, 60, strict)).toBe(true); // 只成交过
+    expect(passesLivenessMin(499, 49, strict)).toBe(false); // 两支都差一点
+  });
+
   it('OI=0 且当日无成交 ⇒ 死腿, 整条移出 (三视角都看不到)', () => {
-    expect(passesOpenInterestMin(0, 0, OPEN_INTEREST_FLOOR)).toBe(false);
+    expect(passesLivenessMin(0, 0, FLOOR)).toBe(false);
     expect(survives({ openInterest: 0, volume: 0 })).toBe(false);
   });
 
   it('🚨 OI=0 但当日有成交 ⇒ 免死条款救回 (新挂档, OI 次日盘前才更新)', () => {
-    expect(passesOpenInterestMin(0, 1, OPEN_INTEREST_FLOOR)).toBe(true);
+    expect(passesLivenessMin(0, 1, FLOOR)).toBe(true);
     expect(survives({ openInterest: 0, volume: 1 })).toBe(true);
   });
 
   it('下限取闭区间: 恰等于下限进, 差一张出局', () => {
-    expect(passesOpenInterestMin(OPEN_INTEREST_FLOOR, 0, OPEN_INTEREST_FLOOR)).toBe(true);
-    expect(passesOpenInterestMin(OPEN_INTEREST_FLOOR - 1, 0, OPEN_INTEREST_FLOOR)).toBe(false);
+    expect(passesLivenessMin(OPEN_INTEREST_FLOOR, 0, FLOOR)).toBe(true);
+    expect(passesLivenessMin(OPEN_INTEREST_FLOOR - 1, 0, FLOOR)).toBe(false);
   });
 
   it('🚫 成交量 null 与 0 走两条路径 —— null 是「没采到」, MUST NOT 折成 0', () => {
     // 处置同归（都不给免死），但左边是"不知道"、右边是"知道且为零"。
-    expect(passesOpenInterestMin(0, null, OPEN_INTEREST_FLOOR)).toBe(false);
-    expect(passesOpenInterestMin(0, 0, OPEN_INTEREST_FLOOR)).toBe(false);
+    expect(passesLivenessMin(0, null, FLOOR)).toBe(false);
+    expect(passesLivenessMin(0, 0, FLOOR)).toBe(false);
     // OI 侧同理：缺 OI 时不拿 0 顶上再比大小，但成交量仍可救它。
-    expect(passesOpenInterestMin(null, 0, OPEN_INTEREST_FLOOR)).toBe(false);
-    expect(passesOpenInterestMin(null, 5, OPEN_INTEREST_FLOOR)).toBe(true);
+    expect(passesLivenessMin(null, 0, FLOOR)).toBe(false);
+    expect(passesLivenessMin(null, 5, FLOOR)).toBe(true);
   });
 
   it('三视角行为一致 —— 逐个视角单独请求, 死腿一个都进不去', () => {
@@ -470,7 +487,7 @@ describe('leg-recall.rules — 每视角的系统默认值 (052 FR-011, T010 六
   it('权利金下限与持仓量下限三视角一律; 行权价下界三视角均不限', () => {
     for (const tab of LEG_TABS) {
       expect(defaults[tab].premiumMin?.equals(resolvePremiumFloor(gridded.spot))).toBe(true);
-      expect(defaults[tab].openInterestMin).toBe(OPEN_INTEREST_FLOOR);
+      expect(defaults[tab].livenessMin).toEqual({ oi: OPEN_INTEREST_FLOOR, volume: VOLUME_FLOOR });
       expect(defaults[tab].strikeMin).toBeNull();
     }
   });
@@ -490,7 +507,7 @@ describe('leg-recall.rules — 单维度判据 failedCriteria (052 FR-003: 成�
     strikeMin: null,
     dteBand: null,
     premiumMin: null,
-    openInterestMin: null,
+    livenessMin: null,
     relativeSpreadMax: null,
   };
 
@@ -519,19 +536,22 @@ describe('leg-recall.rules — 单维度判据 failedCriteria (052 FR-003: 成�
     expect(failedCriteria(band, leg({ dteDays: 10 }))).toEqual([]);
     expect(failedCriteria(band, leg({ dteDays: 9 }))).toEqual(['dteBand']);
     // 🚨 用户调的是「持仓多少算够」, 不是「要不要看新挂档」—— OI=0 但当日有成交仍进。
-    const strictOi = { ...blank, openInterestMin: 9999 };
-    expect(failedCriteria(strictOi, leg({ openInterest: 0, volume: 1 }))).toEqual([]);
-    expect(failedCriteria(strictOi, leg({ openInterest: 0, volume: 0 }))).toEqual([
-      'openInterestMin',
-    ]);
+    const strictOi = { ...blank, livenessMin: { oi: 9999, volume: 9999 } };
+    expect(failedCriteria(strictOi, leg({ openInterest: 0, volume: 1 }))).toEqual(['livenessMin']);
+    expect(failedCriteria(strictOi, leg({ openInterest: 0, volume: 0 }))).toEqual(['livenessMin']);
   });
 
   it('🚨 返回的是集合不是布尔 —— 「只差这一条」与「差好几条」在计数上是两件事', () => {
-    const strict = { ...blank, strikeMax: D('90'), openInterestMin: 9999, premiumMin: D('50') };
+    const strict = {
+      ...blank,
+      strikeMax: D('90'),
+      livenessMin: { oi: 9999, volume: 9999 },
+      premiumMin: D('50'),
+    };
     expect(failedCriteria(strict, leg({ strike: D('100'), openInterest: 1, volume: 0 }))).toEqual([
       'strikeMax',
       'premiumMin',
-      'openInterestMin',
+      'livenessMin',
     ]);
   });
 });
@@ -627,10 +647,13 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
       LEG_TABS,
       chainLegs.map((l) => ({ ...l, volume: 0 })),
       RECALL_CANDIDATE_CAP,
-      { perspective: 'rent', criteria: { strikeMax: D('97'), openInterestMin: 200 } },
+      {
+        perspective: 'rent',
+        criteria: { strikeMax: D('97'), livenessMin: { oi: 200, volume: 200 } },
+      },
     );
-    // K90/K95: 只 OI 不过 ⇒ 计进 openInterestMin; K100/K105: 两维都不过 ⇒ 一维都不计。
-    expect(outcome.criteriaByTab.rent.outcomes.openInterestMin.excludedCount).toBe(2);
+    // K90/K95: 只活性不过 ⇒ 计进 livenessMin; K100/K105: 两维都不过 ⇒ 一维都不计。
+    expect(outcome.criteriaByTab.rent.outcomes.livenessMin.excludedCount).toBe(2);
     expect(outcome.criteriaByTab.rent.outcomes.strikeMax.excludedCount).toBe(0);
     expect(outcome.criteriaByTab.rent.outcomes.strikeMax.state).toBe('widened');
     expect(codesIn(outcome, 'rent')).toEqual([]);

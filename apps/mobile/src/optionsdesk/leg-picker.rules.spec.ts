@@ -95,7 +95,7 @@ function criteria(): PerspectiveCriteriaResponse {
     strikeMin: null,
     dteBand: null,
     premiumMin: null,
-    openInterestMin: null,
+    livenessMin: null,
     relativeSpreadMax: null,
   };
   const untouched = { state: 'default' as const, excludedCount: 0 };
@@ -107,7 +107,7 @@ function criteria(): PerspectiveCriteriaResponse {
       strikeMin: untouched,
       dteBand: untouched,
       premiumMin: untouched,
-      openInterestMin: untouched,
+      livenessMin: untouched,
       relativeSpreadMax: untouched,
     },
   };

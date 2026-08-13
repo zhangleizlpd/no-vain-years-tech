@@ -135,6 +135,16 @@ export const QUALITY_CEILING_SPOT_RATIO = new Prisma.Decimal('0.04');
 export const OPEN_INTEREST_FLOOR = 1;
 
 /**
+ * 052 T012 **当日成交下限** —— 活性条件的另一支 (052 FR-008 的免死条款)。张数, 整数。
+ *
+ * 🚨 **取 `1` 使它与改造前逐字等价**: T010 起该支是硬编码的 `volume > 0`, 而成交量是**整数张数**
+ * ⇒ `volume > 0` ⟺ `volume >= 1`。参数化只是把这个数从代码里搬到控件上, **不是新语义**。
+ *
+ * ⏳ 标定归 052 T016（与 {@link OPEN_INTEREST_FLOOR} 同批）。**MUST NOT 当已标定值引用**。
+ */
+export const VOLUME_FLOOR = 1;
+
+/**
  * 052 召回层**候选上限 K** (052 FR-027, ADR-0064 不变量 ①)。条数, 整数。
  *
  * 🚨 **它是给下游限流的保险丝, 不是用户可见条数** —— 表达层给用户看多少条 (`N`) 是另一个数,
@@ -266,26 +276,43 @@ export function passesEffectiveCostGate(
 }
 
 /**
- * 持仓量条件 (052 FR-008), **三视角一律**: `OI ≥ 下限` **或** 当日有成交。`O(1)`。
- * 052 T010 起下限由调用方给 (检索条件, 可被用户覆盖), 系统默认值 = {@link OPEN_INTEREST_FLOOR}。
+ * 活性条件的下限 —— **一个维度、两个值** (052 T012)。
  *
- * 🚨 **「或当日有成交」是新挂档的免死条款, MUST NOT 省略**: 美股期权 OI 盘前才更新, 今天新挂
- * 出来的档当日 `OI` 必为 0。实测全池 `OI=0` 的 1014 条腿里有 **34 条当日正在交易** —— 写成纯
- * `OI ≥ 下限` 会把它们砍掉, 而候选集照样出得来、数字照样有 (052 Guardrail 1)。
- * 📌 免死条款**不随下限被覆盖而失效**: 用户调的是「持仓多少算够」, 不是「要不要看新挂档」。
+ * 🚨 **两支是「或」不是「与」** ({@link passesLivenessMin}): 它问的是「这张合约上有没有人活动」,
+ * 存量 (`OI`) 与流量 (当日成交) **任一**成立即算活着。
+ * 📌 **蓄意做成一个维度而不是两个**: 拆成两个维度后, 一条腿被挡下 ⟺ 两支都不过 ⇒ 把任一支换回
+ * 默认值都能救它 ⇒ 同一条腿会**同时**计进两个维度的边际计数, 两行「当前条件之外还有 N 条」说的是
+ * 同一批腿, 加起来双计。与 DTE 段同构 (一个维度、值是一对数、成对覆盖)。
+ */
+export interface LivenessFloor {
+  /** 未平仓合约数下限 (张)。 */
+  readonly oi: number;
+  /** 当日成交下限 (张)。 */
+  readonly volume: number;
+}
+
+/**
+ * 活性条件 (052 FR-008), **三视角一律**: `OI ≥ 下限` **或** `当日成交 ≥ 下限`。`O(1)`。
+ * 052 T010 起下限由调用方给 (检索条件, 可被用户覆盖), 系统默认值见 {@link defaultCriteria}。
+ *
+ * 🚨 **成交那一支是新挂档的免死条款, MUST NOT 省略**: 美股期权 OI 盘前才更新, 今天新挂出来的档
+ * 当日 `OI` 必为 0。实测全池 `OI=0` 的 1014 条腿里有 **34 条当日正在交易** —— 写成纯 `OI ≥ 下限`
+ * 会把它们砍掉, 而候选集照样出得来、数字照样有 (052 Guardrail 1)。
+ * 📌 T012 起该支从硬编码的 `volume > 0` 参数化成 `volume >= floor.volume`, 默认 `1` ⇒ **逐字等价**
+ * (成交量是整数张数)。参数化改的是「这个数在哪儿」, 不是判据。
  *
  * 🚫 **`null` 是「没采到」不是「零」, 两者 MUST 走不同路径** (同 {@link passesPremiumMin} 对
- * `bid` 的纪律): 缺成交量时不给免死 (不知道 ≠ 知道有), 缺 OI 时不能拿 0 顶上再比大小 —— 处置
+ * `bid` 的纪律): 缺成交量时该支不成立 (不知道 ≠ 知道有), 缺 OI 时不能拿 0 顶上再比大小 —— 处置
  * 上同归 (都挡下), 但把 `null` 折成 0 会让「未采集」在下游看起来像「已确认为零」。
  */
-export function passesOpenInterestMin(
+export function passesLivenessMin(
   openInterest: number | null,
   volume: number | null,
-  floor: number,
+  floor: LivenessFloor,
 ): boolean {
-  if (volume !== null && volume > 0) return true;
+  if (volume !== null && volume >= floor.volume) return true;
   if (openInterest === null) return false;
-  return openInterest >= floor;
+  return openInterest >= floor.oi;
 }
 
 /**
@@ -354,7 +381,7 @@ export const RETRIEVAL_CRITERION_KEYS = [
   'strikeMin',
   'dteBand',
   'premiumMin',
-  'openInterestMin',
+  'livenessMin',
   'relativeSpreadMax',
 ] as const;
 
@@ -370,8 +397,11 @@ export interface RetrievalCriteria {
   readonly dteBand: DteBand | null;
   /** 权利金下限。系统默认值依赖 spot ({@link resolvePremiumFloor}), 三视角相同。 */
   readonly premiumMin: Prisma.Decimal | null;
-  /** 持仓量下限 (免死条款恒生效, 见 {@link passesOpenInterestMin})。三视角相同。 */
-  readonly openInterestMin: number | null;
+  /**
+   * 活性下限 —— **一个维度、两个值** (`OI ≥ x` **或** `当日成交 ≥ y`)。三视角相同。
+   * 🚨 覆盖时两个值 MUST 成对给 (同 {@link RetrievalCriteria.dteBand}): 半对不是合法维度值。
+   */
+  readonly livenessMin: LivenessFloor | null;
   /** 相对价差上界。**全腿的系统默认值是不限** (FR-010)。 */
   readonly relativeSpreadMax: Prisma.Decimal | null;
 }
@@ -437,7 +467,7 @@ export function defaultCriteria(tab: LegTab, chain: RecallChainContext): Retriev
   const shared = {
     strikeMin: null,
     premiumMin: resolvePremiumFloor(chain.spot),
-    openInterestMin: OPEN_INTEREST_FLOOR,
+    livenessMin: { oi: OPEN_INTEREST_FLOOR, volume: VOLUME_FLOOR },
   };
   switch (tab) {
     case 'all':
@@ -491,10 +521,10 @@ function failsCriterion(
       return criteria.dteBand !== null && !withinDteBand(leg.dteDays, criteria.dteBand);
     case 'premiumMin':
       return criteria.premiumMin !== null && !passesPremiumMin(leg.bid, criteria.premiumMin);
-    case 'openInterestMin':
+    case 'livenessMin':
       return (
-        criteria.openInterestMin !== null &&
-        !passesOpenInterestMin(leg.openInterest, leg.volume, criteria.openInterestMin)
+        criteria.livenessMin !== null &&
+        !passesLivenessMin(leg.openInterest, leg.volume, criteria.livenessMin)
       );
     case 'relativeSpreadMax':
       return (
@@ -772,7 +802,7 @@ function zeroCriterionCounts(): Record<RetrievalCriterionKey, number> {
     strikeMin: 0,
     dteBand: 0,
     premiumMin: 0,
-    openInterestMin: 0,
+    livenessMin: 0,
     relativeSpreadMax: 0,
   };
 }

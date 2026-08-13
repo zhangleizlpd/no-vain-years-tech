@@ -425,24 +425,34 @@ export class LegRetrievalQuery {
   @ApiPropertyOptional({
     description: '权利金下限; 空串 = 覆盖为不限',
     type: 'string',
-    example: '0.2000',
+    example: '0.2384',
   })
   @IsOptional()
   @IsString()
   premiumMin?: string;
 
   @ApiPropertyOptional({
-    description: '持仓量下限 (张)。免死条款 (当日有成交) **不随它失效**; 空串 = 覆盖为不限',
+    description:
+      '未平仓 (OI) 下限 (张)。🚨 **与 volMin MUST 成对出现** —— 活性是**一个**维度、值是一对数 ' +
+      '(`OI ≥ oiMin` **或** `当日成交 ≥ volMin`)，半对不是合法维度值。只给一端 → 400',
     example: 1,
   })
   @IsOptional()
   @IsString()
-  openInterestMin?: string;
+  oiMin?: string;
+
+  @ApiPropertyOptional({
+    description: '当日成交 (Vol) 下限 (张)。与 oiMin 成对，见其说明',
+    example: 1,
+  })
+  @IsOptional()
+  @IsString()
+  volMin?: string;
 
   @ApiPropertyOptional({
     description: '相对价差上界; 空串 = 覆盖为不限。全腿视角的系统默认值本就是不限 (FR-010)',
     type: 'string',
-    example: '0.3500',
+    example: '0.3000',
   })
   @IsOptional()
   @IsString()
@@ -1500,6 +1510,15 @@ export class DteBandResponse {
   max!: number;
 }
 
+/** 活性下限 —— 一个维度的两个值 (052 T012)。两支是**或**的关系。 */
+export class LivenessFloorResponse {
+  @ApiProperty({ description: '未平仓 (OI) 下限，张', example: 1 })
+  oi!: number;
+
+  @ApiProperty({ description: '当日成交 (Vol) 下限，张', example: 1 })
+  volume!: number;
+}
+
 /**
  * 一套**检索条件**的六个维度 (052 FR-002, T010 六维表)。每维度 `null` = **不限**。
  *
@@ -1542,18 +1561,21 @@ export class RetrievalCriteriaResponse {
   premiumMin!: string | null;
 
   @ApiProperty({
-    description: '持仓量下限 (张)。免死条款 (当日有成交) 不随它被覆盖而失效',
-    type: 'number',
+    description:
+      '活性下限 —— **一个维度、两个值**: `OI ≥ oi` **或** `当日成交 ≥ volume`。' +
+      '🚨 两支是「或」不是「与」: 它问的是「这张合约上有没有人活动」，存量与流量**任一**成立即算活着。' +
+      '📌 蓄意不拆成两个维度 —— 拆开后同一条腿会同时计进两个维度的边际计数（OR 下换回任一支都能救它），' +
+      '两行「当前条件之外还有 N 条」说的是同一批腿',
+    type: LivenessFloorResponse,
     nullable: true,
-    example: 1,
   })
-  openInterestMin!: number | null;
+  livenessMin!: LivenessFloorResponse | null;
 
   @ApiProperty({
     description: '相对价差上界。**全腿的系统默认值是不限** (FR-010: 该条件只作用两个意图视角)',
     type: 'string',
     nullable: true,
-    example: '0.3500',
+    example: '0.3000',
   })
   relativeSpreadMax!: string | null;
 }
@@ -1599,7 +1621,7 @@ export class RetrievalOutcomesResponse {
   premiumMin!: CriterionOutcomeResponse;
 
   @ApiProperty({ type: CriterionOutcomeResponse })
-  openInterestMin!: CriterionOutcomeResponse;
+  livenessMin!: CriterionOutcomeResponse;
 
   @ApiProperty({ type: CriterionOutcomeResponse })
   relativeSpreadMax!: CriterionOutcomeResponse;
@@ -1879,9 +1901,22 @@ export function toRetrievalOverride(query: LegRetrievalQuery): RetrievalOverride
   if (query.strikeMax !== undefined) criteria.strikeMax = decimalOf(query.strikeMax);
   if (query.strikeMin !== undefined) criteria.strikeMin = decimalOf(query.strikeMin);
   if (query.premiumMin !== undefined) criteria.premiumMin = decimalOf(query.premiumMin);
-  if (query.openInterestMin !== undefined) criteria.openInterestMin = intOf(query.openInterestMin);
   if (query.relativeSpreadMax !== undefined) {
     criteria.relativeSpreadMax = decimalOf(query.relativeSpreadMax);
+  }
+
+  // 活性：两个值成对（同 DTE 段——一个维度、一对数）。
+  const hasOi = query.oiMin !== undefined;
+  const hasVol = query.volMin !== undefined;
+  if (hasOi !== hasVol) {
+    throw new BadRequestException(
+      'oiMin 与 volMin MUST 成对出现 —— 活性是一个维度、值是一对数 (OI 或 当日成交)，半对不是合法维度值',
+    );
+  }
+  if (hasOi && hasVol) {
+    const oi = intOf(query.oiMin!);
+    const volume = intOf(query.volMin!);
+    criteria.livenessMin = oi === null || volume === null ? null : { oi, volume };
   }
 
   const hasMin = query.dteMin !== undefined;
@@ -1913,7 +1948,7 @@ function toCriteriaResponse(criteria: RetrievalCriteria): RetrievalCriteriaRespo
     strikeMin: decimal4(criteria.strikeMin),
     dteBand: criteria.dteBand === null ? null : { ...criteria.dteBand },
     premiumMin: decimal4(criteria.premiumMin),
-    openInterestMin: criteria.openInterestMin,
+    livenessMin: criteria.livenessMin === null ? null : { ...criteria.livenessMin },
     relativeSpreadMax: decimal4(criteria.relativeSpreadMax),
   };
 }

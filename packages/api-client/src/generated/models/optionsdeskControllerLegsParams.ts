@@ -33,9 +33,13 @@ dteMax?: string;
  */
 premiumMin?: string;
 /**
- * 持仓量下限 (张)。免死条款 (当日有成交) **不随它失效**; 空串 = 覆盖为不限
+ * 未平仓 (OI) 下限 (张)。🚨 **与 volMin MUST 成对出现** —— 活性是**一个**维度、值是一对数 (`OI ≥ oiMin` **或** `当日成交 ≥ volMin`)，半对不是合法维度值。只给一端 → 400
  */
-openInterestMin?: string;
+oiMin?: string;
+/**
+ * 当日成交 (Vol) 下限 (张)。与 oiMin 成对，见其说明
+ */
+volMin?: string;
 /**
  * 相对价差上界; 空串 = 覆盖为不限。全腿视角的系统默认值本就是不限 (FR-010)
  */

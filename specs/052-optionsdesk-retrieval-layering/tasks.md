@@ -217,6 +217,24 @@ updated_at: '2026-08-12'
 
 ## Phase 6: Mobile 增量 + 两层验证
 
+### 🔁 T010 / T011 修订 —— 活性条件参数化（2026-08-13，mockup review 触发）
+
+`/mockup-gen` 期 user review 指出「持仓 ≥ 1」看不清楚，逐条核后改了**契约**，不只是文案：
+
+🚨 **`openInterestMin`（一个数）→ `livenessMin`（一个维度、两个值）**：判据从 `OI ≥ 下限 或 volume > 0` 改为 `OI ≥ oi 或 当日成交 ≥ volume`。**默认值下逐字等价** —— 成交量是整数张数 ⇒ `> 0` ⟺ `>= 1`，故 `VOLUME_FLOOR = 1` 就是原行为，参数化改的是「这个数在哪儿」不是判据。有断言直接守这条等价性。
+
+🚨 **蓄意做成一个维度而不是两个**（user 确认）：拆开后一条腿被挡 ⟺ 两支都不过 ⇒ 把**任一支**换回默认值都能救它 ⇒ 同一条腿会同时计进两个维度的边际计数，两行「当前条件之外还有 N 条」说的是同一批腿，**加起来双计**。⇒ 与 DTE 段同构：一个维度、值是一对数、覆盖时两端 MUST 成对（只给一端 → 400）。
+
+🚨 **命名同时修掉两处 misleading**：① 「持仓」在本 App 已被 `portfolio` 占用（持仓屏 / 持仓导入 / 持仓规模），而选约屏自己的水位 chip 就在讲「持仓规模」——同屏用它标合约未平仓量会被读成「我的持仓」。② 原名 `openInterestMin` 里却含 volume 判据，与用户看到的标签是同一类错。控件标签取 `OI ≥` / `Vol ≥` 是为**与 12 列表头逐字一致**（`optionsdesk-copy.ts` `oi: 'OI'` / `vol: 'Vol'`）。
+
+📌 同批修掉两处量纲/口径歧义：`价差 ≤ 0.35` → `35%`（无量纲比例，其余五项是金额或张数）；`权利金 ≥` 加后缀「按 bid 判」（控件说权利金而列头是 `bid`）。
+
+⚠️ **守门抓到一处 T011 漏跑它才没暴露的违规**：`@ApiProperty` 的 `example` 里写了真阈值 `'0.2000'` / `'0.3500'`，撞 `check-optionsdesk-rule-constants` 不变量 #2（召回层阈值只住 `leg-recall.rules.ts`，**认值不认名**，文档示例同样算硬编码）。T011 那轮只跑了 `check-api-property-nullable` / `check-contract-smoke-drift` / `check-test-size`，**漏跑了这条**。已改成示意值（`0.2384` / `0.3000`，蓄意不等于默认值）。
+
+✅ verify: `nx test server` 411 文件 / **4087** 用例绿 · `nx test mobile` 1459 绿 · 两端 typecheck / lint 绿 · **六条守门全过**（含本次补跑的 `check-optionsdesk-rule-constants` 七不变量）· `openapi.json` 仍只增不删（新增 `LivenessFloorResponse`，legs 端点参数 `openInterestMin` → `oiMin` + `volMin`）。
+
+---
+
 - [ ] T012 [Mobile] **控件默认值回填 + 「搜」/「复位」+ 收窄维度计数行**（`FR-012`, `FR-013`, `FR-015`, `FR-029`, plan `D-CRIT-1`）：**六个维度**的控件各自用服务端下发的默认值填充（维度清单见 T010 表）；⚠️ 若六个控件放不进现有筛选行版式 → **停下补 mockup**，不临场发挥（plan Gate 0.1 的绊线）；「搜」显式提交、「复位」清回默认；计数区追加**仅收窄维度**的行（复用 `051` 的 `.gateline` 结构与措辞体例）。→ verify: `*.rules.spec.ts`（Small，logic-only）—— 🚨 **mobile 侧 `rg` 扫不到任何参与默认值计算的算式**（`FR-011` / Guardrail 6 的机器判据）+ 三态到「显不显示计数」的映射是穷举 `Record`（漏 enum 成员即编译红）+ **每视角各自持有条件状态**（`FR-015` —— 切视角不带走上一个视角的值，条件值进 query key 即天然隔离）
 
 - [ ] T013 [Mobile-E2E] **hermetic e2e**（US3 全部 AS, `FR-014`, `SC-008`）：Playwright Expo Web，`route.fulfill` 拦端点。→ verify: 进入视图控件已填默认值 / 改值不点搜结果不变 / 点搜按新值 / 点复位回默认且计数消失 / 离开再进回默认（`FR-014` 不持久化）/ 🚨 **mock 是契约镜像不是调用序**（按请求参数无条件作答，禁按测试编排标志分支）+ 跑**全套** `runtime-smoke` 非单 spec

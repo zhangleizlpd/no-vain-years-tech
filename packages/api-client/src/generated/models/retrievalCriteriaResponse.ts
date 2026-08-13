@@ -6,6 +6,7 @@
  * OpenAPI spec version: 1.0
  */
 import type { DteBandResponse } from './dteBandResponse';
+import type { LivenessFloorResponse } from './livenessFloorResponse';
 
 export interface RetrievalCriteriaResponse {
   /** 行权价上界 (闭区间)。收租的系统默认值 = 成色上界; 全腿与建仓默认不限 */
@@ -16,8 +17,8 @@ export interface RetrievalCriteriaResponse {
   dteBand: DteBandResponse | null;
   /** 权利金下限。系统默认值 = `max(绝对下限, spot × 比例)` —— **依赖 spot ⇒ 客户端算不出**, 这正是它必须由服务端下发的理由 (FR-011) */
   premiumMin: string | null;
-  /** 持仓量下限 (张)。免死条款 (当日有成交) 不随它被覆盖而失效 */
-  openInterestMin: number | null;
+  /** 活性下限 —— **一个维度、两个值**: `OI ≥ oi` **或** `当日成交 ≥ volume`。🚨 两支是「或」不是「与」: 它问的是「这张合约上有没有人活动」，存量与流量**任一**成立即算活着。📌 蓄意不拆成两个维度 —— 拆开后同一条腿会同时计进两个维度的边际计数（OR 下换回任一支都能救它），两行「当前条件之外还有 N 条」说的是同一批腿 */
+  livenessMin: LivenessFloorResponse | null;
   /** 相对价差上界。**全腿的系统默认值是不限** (FR-010: 该条件只作用两个意图视角) */
   relativeSpreadMax: string | null;
 }

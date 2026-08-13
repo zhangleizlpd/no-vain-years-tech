@@ -12,6 +12,6 @@ export interface RetrievalOutcomesResponse {
   strikeMin: CriterionOutcomeResponse;
   dteBand: CriterionOutcomeResponse;
   premiumMin: CriterionOutcomeResponse;
-  openInterestMin: CriterionOutcomeResponse;
+  livenessMin: CriterionOutcomeResponse;
   relativeSpreadMax: CriterionOutcomeResponse;
 }
