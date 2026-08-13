@@ -77,7 +77,7 @@ updated_at: '2026-08-13'
 
 ## Phase 3: 验证能力补位（FR-011）
 
-- [ ] T005 [Server] **写手写库路径 IT 顶替 dev 手工验证**（`FR-011`, plan `D-6`）：新建 `option-snapshot-remediation.it.spec.ts`，起 Testcontainers PG，用**测试内的 stub 采集口**（不经 mock adapter）喂确定性数据，覆盖 ① 当日重试落 `source = eod` 与 ② 盘前兜底落 `source = premarket_backfill` 两条，并造一次批内部分失败。→ verify: 断言**落库行**的 `source` 列值与行数（不是返回值 —— Guardrail 9）+ 覆盖 state_branch 5（live 语义下来源标识零变化）/ 8（部分写：已落部分仍带正确来源标识）
+- [X] T005 [Server] **写手写库路径 IT 顶替 dev 手工验证**（`FR-011`, plan `D-6`）：新建 `option-snapshot-remediation.it.spec.ts`，起 Testcontainers PG，用**测试内的 stub 采集口**（不经 mock adapter）喂确定性数据，覆盖 ① 当日重试落 `source = eod` 与 ② 盘前兜底落 `source = premarket_backfill` 两条，并造一次批内部分失败。→ verify: 断言**落库行**的 `source` 列值与行数（不是返回值 —— Guardrail 9）+ 覆盖 state_branch 5（live 语义下来源标识零变化）/ 8（部分写：已落部分仍带正确来源标识）
 
   📌 **为什么必须新增而不是改既有单测**：`marketdata` 目录现有 IT **只有 1 个**（`eod-backed-quote.adapter.it.spec.ts`）；`option-snapshot-remediation.spec.ts` 与 `sync-option-snapshot.usecase.spec.ts` 都是 Small 档单测，不起容器、不碰真表。T001 落地后 dev 彻底跑不了这条路，这个 IT 是它唯一的替代验证面（spec Edge Cases「拆东墙补西墙」点名要补的那条）。
 
