@@ -2,7 +2,7 @@
 feature_id: 054-marketdata-mock-write-provenance
 modules: [marketdata]
 owners: ['@zhangleizlpd']
-status: planned
+status: tasks-ready
 created_at: '2026-08-13'
 updated_at: '2026-08-13'
 spec_kit_version: '>=0.8.5,<0.10.0'
