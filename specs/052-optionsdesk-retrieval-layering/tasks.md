@@ -273,7 +273,21 @@ updated_at: '2026-08-12'
 
   ✅ verify: `nx run mobile:runtime-smoke` **184 绿**（本批 +9，跑全套非单 spec）· 🔬 反例探针 **6 红**（摘 `keepPreviousData`）· `nx test mobile` 102 文件 / 1500 绿 · `nx typecheck mobile`（含 e2e tsconfig）/ `nx lint mobile` **0 error** · `check-test-size` / `check-e2e-seed-auth-mock` 均过。
 
-- [ ] T014 [Contract-Smoke] **契约冒烟扩到新字段**（Constitution §V）：`apps/mobile/e2e/contract-smoke/` 用生成的 `@nvy/api-client` 打 testcontainers 真 server。→ verify: 条件参数序列化正确 + 默认值字段解封 + 计数三态字段解封 + `nx run mobile:contract-smoke` 绿
+- [X] T014 [Contract-Smoke] **契约冒烟扩到新字段**（Constitution §V）：`apps/mobile/e2e/contract-smoke/` 用生成的 `@nvy/api-client` 打 testcontainers 真 server。→ verify: 条件参数序列化正确 + 默认值字段解封 + 计数三态字段解封 + `nx run mobile:contract-smoke` 绿
+
+  🚨 **头一跑就抓到 052 自己的债：047 的 fixture 已被本片的判据改动砍掉一条腿**（21/22，挂的**不是**新断言而是 `assertSqlSideFilters`）。`NO_GREEKS` 那条腿的 OI 与成交量都是 `NULL` ⇒ 撞上 T004 的活性条件（缺失一侧按「没观测到活动」取 0）⇒ **整条移出候选**。📌 根因是**一条 fixture 腿同时承载两个互不相干的性质**（greeks flag × 流动性），另一个性质的判据一变就把靶心 ⑤（「闸在 flag 不在 delta 列」）顺带带走了 —— 修法是给它真实的 OI / 成交量把两件事解耦，而不是把它从期望序里删掉。
+
+  ⚠️ **一条靶心随 T009 结构性失效，已就地登记为债**：原「同一条腿在两个视角的候选集里排名不同」依赖「候选集内相对排名」，而 T009 把分组维度改成**到期日**；本 fixture 每条腿各占一个到期日 ⇒ 组内恒 top-1 ⇒ 绝对线成了唯一判据。要验回排名差需要**同一到期日 ≥4 条腿**（`ACTIVITY_TOP_RANK_COUNT = 3`），那要重造整册腿并连带改计数与顺序的多条断言 ⇒ **不在 T014 内做**。改判后的断言仍有判别性：活动量 53 的腿不发标、5300 的发标，把绝对线拿掉前者当场红。
+
+  🚨 **新增的两组断言各自补一条只有本层看得见的缝**：① `assertRetrievalCriteriaShape` —— 未覆盖时 `effective` 逐字等于 `defaults`、六维三态全 `default`；nullable 小数字段的**运行时类型是 string** 而非 orval objectmap（hermetic mock 手写的 fixture 永远是对的形状，那一层看不见这个错）；收租成色上界 **> spot**（证明它是 spot 的函数 —— 本链无 ≥ spot 的档 ⇒ 结构判据退化、由比例项接管）。② `assertCriteriaOverrideRoundTrip` —— 参数**真的被吃进去**（`effective` 与 `defaults` 分叉、成员集合真变、边际计数 = 1）、**闭区间**（恰等于上界的腿留下）、**覆盖只作用当前视角**（被收租条件切掉的腿仍在全腿视角）、**空串 = 覆盖为不限**（判 `widened` 且计数 0）、三条 400（半个 DTE 段 / 半对活性 / 给了条件没给视角）。
+
+  🚫 **蓄意不断言任何阈值的具体取值**：兜底比例 X / 权利金下限 / 活性下限都是 T016 待标定的策略参数，抄进断言就是第二处硬编码 —— 标定那天这里会红，而红的原因与本片无关。一律断言结构性质（类型 / 相对 spot 的方向 / 三视角之间的异同）。
+
+  ⚠️ **顺带修掉守门自己的一处假信号**：`check-contract-smoke-drift` 把 `import type { OptionsdeskControllerLegsParams }` 的**首字母大写形**报成「未映射前缀」（同一 operationId 生成函数与类型两种标识符）。那条警告的本意是「`PREFIX_TO_MODULE` 过期了」，纯拼写差引发的假信号会让人去改一张本来就对的表 ⇒ 查表时首字母归一，附一条单测。
+
+  📌 **本地跑它要先空出 `:3000`**（harness 蓄意 fail-fast 不自动杀）。⚠️ 实撞：杀掉 `dist/main.js` 会被 `nx serve server` 的 `node --watch` **立刻补一个**，且 `contract-smoke` 的 `dependsOn: server:build` 重写 `dist/` 又会触发一次重启 —— 要停的是**看门的那层**（`nx serve server`），不是它的子进程。
+
+  ✅ verify: `RUN_REAL_BACKEND_SMOKE=true nx run mobile:contract-smoke` **22/22 绿**（真 server + testcontainers + 生成客户端）· `nx typecheck mobile` / `nx lint mobile` **0 error** · `nx test @nvy/checks` **225 绿**（本批 +1）· `check-contract-smoke-drift` 由「未映射前缀」警告转**零风险** · `check-test-size` / `check-e2e-seed-auth-mock` 均过。
 
 ---
 

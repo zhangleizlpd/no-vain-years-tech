@@ -85,7 +85,12 @@ export function deriveSpecCoverage(file: string, source: string): ContractSpec {
   const modules = new Set<string>();
   const unmapped: string[] = [];
   for (const p of prefixes) {
-    const mod = PREFIX_TO_MODULE[p];
+    // 🚨 首字母大小写归一：同一个 operationId 会生成**两种**标识符 —— 函数
+    // `optionsdeskControllerLegs` 与其参数 / 响应类型 `OptionsdeskControllerLegsParams`。
+    // spec 只要 `import type` 了后者，不归一就会把 `Optionsdesk` 报成「未映射前缀」，
+    // 而那条警告的本意是「PREFIX_TO_MODULE 过期了」—— 一个纯拼写差引发的假信号会让人
+    // 去改表，而表本来是对的（052 T014 实撞）。
+    const mod = PREFIX_TO_MODULE[p] ?? PREFIX_TO_MODULE[p.charAt(0).toLowerCase() + p.slice(1)];
     if (mod) modules.add(mod);
     else unmapped.push(p);
   }
