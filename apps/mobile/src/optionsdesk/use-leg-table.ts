@@ -105,9 +105,12 @@ export function useLegTable(symbol: string): UseLegTableResult {
   // 第二参 = 检索条件的用户覆盖（052 FR-012）；`undefined` = 首屏 /「复位」⇒ 三视角全走默认值。
   // 📌 条件值一进这里就自动进 query key（orval 生成的 key 含 params）⇒ 每视角各自持有状态
   // （FR-015）是**结构保证**，不需要手写隔离；换视角就是换 key，回来时走缓存。
-  // 🚨 `keepPreviousData` **不是体验糖**：换 key 那一拍若 `data` 变 undefined，`intent` 随之
-  //    变 null，`resolveLegTab` 会当场退回「全腿」⇒ 参数跟着换回全腿的 ⇒ 数据回来后又切回去，
-  //    两个 key 之间**无限来回**。留着它，解析出的视角在换 key 期间保持稳定。
+  // 🚨 `keepPreviousData` **不是体验糖，摘掉它整块屏当场炸**（052 T013 反例探针实测）：
+  //    换 key 那一拍 `data` 变 undefined ⇒ `intent` 变 null ⇒ `resolveLegTab` 退回「全腿」⇒
+  //    上面那条 effect 把参数换成全腿的 ⇒ `intent` 回来 ⇒ 又换回去……这一圈**全是同步的
+  //    setState，跑赢了网络**：任何响应落地之前就撞到 React 的更新深度上限，页面被 error
+  //    boundary 接住（React error #185「Maximum update depth exceeded」，e2e 里 6 条红）。
+  //    留着它，解析出的视角在换 key 期间保持稳定，环从源头不成立。
   const query = useOptionsdeskControllerLegs(symbol, activeParams, {
     query: {
       enabled: symbol.length > 0,

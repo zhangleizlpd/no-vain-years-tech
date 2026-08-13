@@ -239,7 +239,7 @@ updated_at: '2026-08-12'
 
   🚨 **`FR-015` 的第二处歧义由 user 于 2026-08-13 裁定：切视角时各视角的条件「各自留存」**（不是切走即清）。⇒ 状态是 `Record<视角, 已提交条件>`，**生效参数恒等于当前视角那一份**。代价说清楚：某视角有覆盖时切进去会换 query key ⇒ 该 key 首次要重新请求，`047`「切 Tab 不重新请求」在**有覆盖时**不再成立（无覆盖时逐字不变，参数恒 `undefined`）。🚫 另一条读法「留住值但不重发请求」被否 —— 那正是 T010 裁定否掉的「控件与数据不匹配且无法解释」，只是换了个触发路径。
 
-  🚨 **`placeholderData: keepPreviousData` 是结构必需，不是体验糖**（推演出的环，不是实测）：换 key 那一拍若 `data` 变 `undefined` ⇒ `intent` 变 `null` ⇒ `resolveLegTab` 当场退回「全腿」⇒ 参数跟着换成全腿的 ⇒ 数据回来后又切回去，**两个 key 之间无限来回**。留着它，解析出的视角在换 key 期间保持稳定。
+  🚨 **`placeholderData: keepPreviousData` 是结构必需，不是体验糖**：换 key 那一拍若 `data` 变 `undefined` ⇒ `intent` 变 `null` ⇒ `resolveLegTab` 当场退回「全腿」⇒ 参数跟着换成全腿的 ⇒ 数据回来后又切回去，**两个 key 之间无限来回**。留着它，解析出的视角在换 key 期间保持稳定。<br>📌 **2026-08-13 由 T013 反例探针实测坐实，且比原推演更硬**：这一圈全是**同步的 `setState`，跑赢了网络** —— 任何响应落地之前就撞到 React 更新深度上限，整块屏被 error boundary 接住（React error #185「Maximum update depth exceeded」，摘掉该项后 e2e **6 条红**）。原注写的「数据回来后又切回去」暗示它会自行收敛，**不会**。
 
   🚨 **参数与视角的同步只能走 effect**：解析视角要 `intent`，而 `intent` 来自响应本身 ⇒ 参数必然滞后一拍。且「选完水位意图变、Tab 自动让位」那条路径**没有回调可挂**（`resolveLegTab` 自己变的），只有 effect 跟得上；跟不上就是控件显示 A 的值而表按 B 的条件召回。
 
@@ -259,7 +259,19 @@ updated_at: '2026-08-12'
 
   ✅ verify: `nx test mobile` **102 文件 / 1500 用例绿**（本批 +41：37 条 `leg-criteria.rules.spec.ts` + 4 条空态第三支）· `nx run mobile:runtime-smoke` **175 绿**（改了共享 hook 与详情屏 ⇒ 跑全套非单 spec）· `nx typecheck mobile`（含 e2e tsconfig）/ `nx lint mobile` **0 error** · `nx test @nvy/checks` **224 绿**（本批 +7）· 五条守门脚本全过（`check-optionsdesk-rule-constants` 八不变量 / `check-test-size` / `check-repo-layout` / `check-api-property-nullable` / `check-contract-smoke-drift`）。
 
-- [ ] T013 [Mobile-E2E] **hermetic e2e**（US3 全部 AS, `FR-014`, `SC-008`）：Playwright Expo Web，`route.fulfill` 拦端点。→ verify: 进入视图控件已填默认值 / 改值不点搜结果不变 / 点搜按新值 / 点复位回默认且计数消失 / 离开再进回默认（`FR-014` 不持久化）/ 🚨 **mock 是契约镜像不是调用序**（按请求参数无条件作答，禁按测试编排标志分支）+ 跑**全套** `runtime-smoke` 非单 spec
+- [X] T013 [Mobile-E2E] **hermetic e2e**（US3 全部 AS, `FR-014`, `SC-008`）：Playwright Expo Web，`route.fulfill` 拦端点。→ verify: 进入视图控件已填默认值 / 改值不点搜结果不变 / 点搜按新值 / 点复位回默认且计数消失 / 离开再进回默认（`FR-014` 不持久化）/ 🚨 **mock 是契约镜像不是调用序**（按请求参数无条件作答，禁按测试编排标志分支）+ 跑**全套** `runtime-smoke` 非单 spec
+
+  🔬 **本 task 最大的产出不是那 9 条绿，是一条反例探针**：摘掉 T012 的 `placeholderData: keepPreviousData` 后 **6 条红**，且形态是**整块屏被 error boundary 接住**（React error #185「Maximum update depth exceeded」）—— 那一圈 setState 全是同步的，**跑赢了网络**，任何响应落地之前就撞到更新深度上限。⇒ T012 注释里「数据回来后又切回去」那个暗示它会自行收敛的说法已订正（两处：`use-leg-table.ts` 与本文件 T012 段）。
+
+  🚨 **mock 是契约镜像不是调用序**（本 task 的硬纪律）：handler 是 `(请求参数, canonical 腿册) → 响应` 的**纯函数** —— 六维判据、每维的**边际计数**（把这一维换回默认值能多看几条）在 mock 里**真的算一遍**，不是按测试编排摆好两份答案。🚫 反面写法（`callCount === 0 ? 默认表 : 收窄表`）在本文件所有断言下**照样全绿**，而客户端一旦多发一次请求（加个 `invalidateQueries`）就当场碎且 typecheck 拦不住（032 FU-1 同款）。
+
+  🚨 **`FR-014` 那条如果只验「重进回默认值」就是平凡绿** —— 仓内 e2e 纪律是深链 `page.goto`（`goBack` 被嵌套 Stack 重映射），而深链 = 整页重载，**重载什么都会清**。⇒ 补了一条**结构判据**：提交后直接扫 `localStorage` + `sessionStorage`，用户值与维度名**均零命中**。落 storage 的实现会在这一条当场红，而重进那条照样绿。
+
+  ⚠️ **一条起草时写错的断言，被真实缓存行为纠正**：原写「点复位 ⇒ 最后一个请求是无参数的」，实测复位后**根本不发请求** —— 无参数那把 key 开屏就取过、仍在 `staleTime` 内 ⇒ 直接命中缓存。改成「**全程带参数的请求有且只有用户那一维的那一条**」：既守住了 `FR-011`「默认值 MUST NOT 回传」，又不对缓存命中与否作过度承诺。
+
+  📌 **Expo Web 验不到、如实标注不凑断言的三项**：① 抽屉是否**真盖住底部 Tab 栏**（web 上 Modal 层级由 DOM 决定，与 native 的 tab content 容器约束不是一回事）② 输入法弹起后「搜」还在不在屏内（web 无软键盘）③ ⓘ 热区 44×44（量得到盒子量不到手指）——三项归真机验收。本文件对 ⓘ 只验 tap 开 / 再 tap 关。
+
+  ✅ verify: `nx run mobile:runtime-smoke` **184 绿**（本批 +9，跑全套非单 spec）· 🔬 反例探针 **6 红**（摘 `keepPreviousData`）· `nx test mobile` 102 文件 / 1500 绿 · `nx typecheck mobile`（含 e2e tsconfig）/ `nx lint mobile` **0 error** · `check-test-size` / `check-e2e-seed-auth-mock` 均过。
 
 - [ ] T014 [Contract-Smoke] **契约冒烟扩到新字段**（Constitution §V）：`apps/mobile/e2e/contract-smoke/` 用生成的 `@nvy/api-client` 打 testcontainers 真 server。→ verify: 条件参数序列化正确 + 默认值字段解封 + 计数三态字段解封 + `nx run mobile:contract-smoke` 绿
 
