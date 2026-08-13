@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "美满人生",
+    "name": "不负光阴",
     "slug": "no-vain-years-mobile",
     "scheme": "nvy",
     "version": "0.9.0",
@@ -22,9 +22,7 @@
         "./plugins/with-android-abi.js",
         {
           "profile": "development",
-          "archs": [
-            "arm64-v8a"
-          ]
+          "archs": ["arm64-v8a"]
         }
       ],
       "expo-web-browser"
@@ -49,9 +47,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "permissions": [
-        "android.permission.RECORD_AUDIO"
-      ]
+      "permissions": ["android.permission.RECORD_AUDIO"]
     },
     "web": {
       "bundler": "metro",
