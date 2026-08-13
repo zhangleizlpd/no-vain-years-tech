@@ -117,7 +117,7 @@
 
 ## 故障排查（本地每日同步）
 
-> holdings / marketdata 两个每日同步的失败模式 + 修复。每次失败 wrapper 都推飞书失败 report（成功也推），看门狗只兜「根本没跑」的 no-show，**不覆盖「跑了但失败」**——失败靠飞书 report 感知。
+> holdings / marketdata 两个每日同步的失败模式 + 修复。感知面分工见上文「跑完上报」与「no-show 看门狗」两段（本节不复述）。
 
 ### holdings 同步
 
@@ -136,7 +136,7 @@
 ### marketdata 同步
 
 - **`本地 dev PG 未就绪` / 连不上 5433 —— 共享 dev PG 被 teardown（#412 修）**：`mbw-poc-postgres` 被交互开发与 09:05 同步**共享**。收工 `docker compose down` **移除**容器（非 stop）→ 次晨原 `docker start` 救不回。修复已落 `sync.sh` §0 改 `docker compose up -d` 重建（setup 把 `docker-compose.dev.yml` 一并拷 `~/.nvy` 保自包含，顶层 `name: mbw-poc` 固定项目名，找不到 compose 兜底退回 `docker start`）；收工纪律见 [`local-dev.md`](./local-dev.md) Teardown（已拆「停 dev」vs「停共享 DB」）。⚠️ 重跑 `setup.sh` 保持默认 `--time`（`setup.sh` 默认即 `09:05`，须晚于 holdings 09:00；两者是独立 launchd label，重跑本任务动不到 holdings 的点——**若显式传别设成 ≤ 09:00**）。
-- **dev 缺某股数据（K线 / 指标 / 复权空）= 数据形态所限，非 bug**：同步只灌 instrument 全量（~5625）+ daily_bar「全股最近 20 个交易日 + ~15 支样本股全历史（~729 天）」+ 复权 / 财务 / 基本面 / 公司行动 4 表**仅样本股**。⇒ **样本股全功能**（指标 / 复权 / K线 / EOD 预警需 ≥520 根），**非样本股仅近端价**（quote / 搜索 / 列表）。样本 codes 见 `scripts/marketdata-dev-sync/sync.sh` 顶部 `SAMPLE_CODES`。每次全量截断重灌（单事务，失败回滚）；prod daily_bar 全 `adjust='none'`（复权读时算，per 020）。
+- **dev 缺某股数据（K线 / 指标 / 复权空）= 数据形态所限，非 bug**：同步只灌 instrument 全量（**~2.8 万**：us ~1.95 万 / cn ~5.7 千 / hk ~2.8 千）+ daily_bar「全股最近 20 个交易日 + ~15 支样本股全历史（~729 天）」+ 复权 / 财务 / 基本面 / 公司行动 4 表**仅样本股**。⇒ **样本股全功能**（指标 / 复权 / K线 / EOD 预警需 ≥520 根），**非样本股仅近端价**（quote / 搜索 / 列表）。样本 codes 见 `scripts/marketdata-dev-sync/sync.sh` 顶部 `SAMPLE_CODES`。每次全量截断重灌（单事务，失败回滚）；prod daily_bar 全 `adjust='none'`（复权读时算，per 020）。
 - **`⚠️ 副本落后于仓内 sync.sh` / `⚠️ 仓内 sync.sh 与部署副本不一致` / `⚠️ 副本已 N 天没重新部署` —— 部署漂移，修法一律是 `bash scripts/marketdata-dev-sync/setup.sh --time 09:05`**：定时任务跑的是 `~/.nvy` 的**冻结副本**，改仓内源不重跑 setup ⇒ 跑的仍是旧逻辑，而**失败形态是「静默的成功」**（日志照打 `✅ 同步完成`、退出码 0、逐表对数全绿——因为对数比的是「旧版声明要同步的那些表」；2026-08-11 实撞：08-10 翻 full 的三张美股期权表少同步了两天没人发现）。自检**只告警不中断**（旧逻辑通常还能跑出部分数据，硬失败等于本地一张表都没有）。⚠️ launchd 那一臂**读不到**仓内源（对 `~/Documents` 无 TCC），只能退化成「部署天龄」这个**代理量**（阈值 `DEPLOY_STALE_DAYS`，默认 14 天）+ 每轮汇总里的 `副本 commit=… 部署于 N 天前`；**正面命中靠仓内手动跑那一臂**（改完脚本手动验一次即当场喊）。印记文件 `~/.nvy/marketdata-dev-sync/deployed.meta` 由 setup 写。
 - **`⚠️ 表 X 单表 N 行，已过阈值` —— 趋势预警，不是错误**：单表导出行数超 `ROW_WARN_THRESHOLD`（默认 30 万）就喊一声，数据本身已逐表对数通过。本工具是「截断 → 重灌」全量语义，唯一无上限增长的表是 `marketdata.option_daily_snapshot`（实测约 580 行/标的/交易日，随锚数线性涨），它已按 `session_date` 收窄到近 `OPTION_RECENT_DAYS`（默认 30 自然日 ≈ 21 交易日）。触发时的处置顺序：① 调小 `OPTION_RECENT_DAYS`（消费端功能下界只要 2 个 session）→ ② 给该表换增量语义。
 - **同步「成功」但灌进来的是 mock 数据 —— 拿 dev 做统计 / 标定前必须先跑这一眼**：2026-08-12 那期实测 3617 行里 **12 只票共用同一个 `underlying_spot` `128.40`**、整条链每个行权价共用同一组 `bid` / `ask` / `open_interest` / `volume` / `delta`（3617 行只有 **2** 个不同报价元组；健康的 08-11 是 7063 行 / 12 个 spot / 7025 个元组）。日志照打成功、退出码 0、逐表对数全绿 —— **因为对数比的是行数，而行数是有的**。⚠️ 茅台 `1700` 那个 mock 判定锚**认不出这一类**（它只覆盖 A 股 quote），期权链侧要另跑数据形状自检：
@@ -163,7 +163,7 @@
 2. **飞书上报复用既有基建**（别每加一个调度就重写 webhook/token）：
    - **每日批任务** → 入口套 `ops/lib/nvy-run-reported.sh <task> -- <cmd>`（成功 + 失败都推 report + 写心跳）；并在对应机器看门狗清单加一行（本地 `scripts/nvy-watchdog/setup.sh`，77 `nvy-watchdog.service`）。⚠️ **本地必须改 `setup.sh` 里的 `TASKS` 默认值，不能只靠调用时传 `--tasks`** —— 否则将来任何人裸跑一次 setup 就会静默摘掉该任务的兜底（2026-07-30 futu-eod 踩过）。
    - **高频监控**（≤ 分钟级）→ **不套** wrapper（会刷屏）；保留自身告警逻辑，飞书发送换成 `. feishu-send.sh; feishu_send "$msg"`；正向 liveness 走每日摘要。
-   - webhook/secret 一律复用本机共享文件（本地 `~/.nvy/feishu-alert.env`、62/77 `/etc/nvy-alert.env`，`NVY_ALERT_*`）；systemd 单元加 `EnvironmentFile=-/etc/nvy-alert.env`。**不新建** webhook/token。
+   - webhook/secret 一律复用**本机共享文件**（路径与变量名见上文 host `app` 段末的飞书那条，此处不复述）；systemd 单元加 `EnvironmentFile=-/etc/nvy-alert.env`。**不新建** webhook/token。
 3. **本表登记**：归到对应 host section，补一行（任务 / 调度 / 触发器 / 执行 / 仓库锚点 / 用途）。
 4. 退役任务：删行 + 在相关 runbook 注明退役（别留 stale 行）。
 5. path rule `.claude/rules/scheduled-tasks-registry.md` 会在触及 `.timer` / `scripts/**/setup.*` 时自动加载提醒——但本地 launchd `.plist`（装在 `~/Library/LaunchAgents/`）/ crontab 在仓库外，rule 触发不到，需**手动**记得登记。
