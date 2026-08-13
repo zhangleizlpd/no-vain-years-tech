@@ -10,6 +10,8 @@ import {
   findShapeHits,
   findShapeOffenders,
   findStorageVocab,
+  MEMBERSHIP_PREDICATE_RE,
+  membershipProbe,
   recallSelfProbe,
   selfProbe,
   shapePatternProbe,
@@ -280,6 +282,42 @@ describe('COARSE_DECISION_RE —— 052 不变量 #6（粗排层恒等）', () =
 describe('coarseProbe —— 两侧探针都健在', () => {
   it('现役正则的正例臂与反例臂均通过', () => {
     expect(coarseProbe()).toBeNull();
+  });
+});
+
+describe('MEMBERSHIP_PREDICATE_RE —— 052 不变量 #7（成员判据只住召回层）', () => {
+  it('六维判据与硬门槛的调用命中', () => {
+    expect(
+      findShapeHits(
+        'if (failedCriteria(c, l).length === 0 && passesHardGates(t, ch, l)) keep(l);',
+        MEMBERSHIP_PREDICATE_RE,
+      ),
+    ).toEqual(['failedCriteria(', 'passesHardGates(']);
+  });
+
+  it('🚨 反例臂：默认值解析 MUST NOT 命中 —— use case 侧本来就要读得到它们', () => {
+    expect(
+      findShapeHits(
+        'const d = defaultCriteriaByTab(chain); const f = resolvePremiumFloor(spot);',
+        MEMBERSHIP_PREDICATE_RE,
+      ),
+    ).toEqual([]);
+  });
+
+  it('注释里提到判据是**正确的文档**，不是违规', () => {
+    expect(
+      findShapeHits('// 成员判定走 failedCriteria(criteria, leg)', MEMBERSHIP_PREDICATE_RE),
+    ).toEqual([]);
+  });
+
+  it('词内子串不误伤（`myFailedCriteria(` 是别的函数）', () => {
+    expect(findShapeHits('myFailedCriteria(x);', MEMBERSHIP_PREDICATE_RE)).toEqual([]);
+  });
+});
+
+describe('membershipProbe —— 两侧探针都健在', () => {
+  it('现役词表的正例臂与反例臂均通过', () => {
+    expect(membershipProbe()).toBeNull();
   });
 });
 

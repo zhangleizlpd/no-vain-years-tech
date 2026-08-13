@@ -50,7 +50,17 @@ import {
   type RankingLegInput,
 } from './leg-rank.rules';
 import { coarseRank } from './leg-coarse.rules';
-import { RECALL_CANDIDATE_CAP, relativeSpread, type LegIntentTab } from './leg-recall.rules';
+import {
+  RECALL_CANDIDATE_CAP,
+  RETRIEVAL_CRITERION_KEYS,
+  relativeSpread,
+  type CriterionOutcome,
+  type LegIntentTab,
+  type PerspectiveCriteria,
+  type RetrievalCriteria,
+  type RetrievalCriterionKey,
+  type RetrievalOverride,
+} from './leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
   type LegCandidate,
@@ -300,6 +310,15 @@ export interface LegTableView {
    * 调条件, 后者调 K 或缩范围。
    */
   candidateCapDropped: number;
+  /**
+   * 三视角各自的检索条件全景 (052 FR-011 / FR-029): 控件填 `defaults`, 结果按 `effective`,
+   * 仅 `narrowed` 的维度出计数。**恒有三份** —— 客户端本地切视角时不发请求, 要用另两个视角的
+   * 默认值填控件。
+   *
+   * 🚨 **默认值 MUST 由服务端解出** (FR-011 / Guardrail 6): 行权价上界与权利金下限都依赖 spot,
+   * 客户端自算就是同一判据两处各一份 —— 而两边都算得出数, 漂移只在换日那一刻才看得见。
+   */
+  criteriaByTab: Readonly<Record<LegTab, PerspectiveCriteria>>;
 }
 
 /** 排序键: 统一**档位**键 (FR-019 禁跨族数值直比)。死档恒沉底 (FR-006)。 */
@@ -327,10 +346,16 @@ export class GetLegsUseCase {
   /**
    * @param symbol canonical `market:code`。
    * @param now 请求时刻 (注入以便测试钉住基准)。🚫 MUST NOT 在下游改成算好的 `today` 字符串。
+   * @param override 用户对**某一个视角**检索条件的覆盖 (052 FR-012); 省略 ⇒ 三视角全走系统默认值
+   *   (这正是「复位」与首屏走的路径 —— 客户端**不回传默认值**, 那会让默认值变成两处各算一份)。
    * @throws NotFoundException 该 symbol 尚未建锚 (同 046 详情端: 回 200 空壳会让「没建锚」与
    *   「建了锚但没数据」在客户端不可区分)。
    */
-  async execute(symbol: string, now: Date = new Date()): Promise<LegTableView> {
+  async execute(
+    symbol: string,
+    now: Date = new Date(),
+    override: RetrievalOverride | null = null,
+  ): Promise<LegTableView> {
     // 🚫 蓄意**不**转成 045 的 `AnchorRow`: 那个 interface 没有 T002 新加的水位两列, 而本端点
     // 正要读它 —— 给它补字段会连带打红一批手写 AnchorRow 的 mock 工厂 (Surgical Edits)。
     const row = await this.prisma.anchor.findUnique({ where: { ticker: symbol } });
@@ -384,6 +409,13 @@ export class GetLegsUseCase {
       },
       // 没有链就没有候选可切 —— 取 0 而非 null (它是计数不是「未知」, 同上面三个数)。
       candidateCapDropped: 0,
+      // 🚫 没有 spot 就**解不出**依赖它的条件, MUST NOT 猜一个默认值填进去 (spec Edge Case):
+      // 六维全 `null` 表达的是「没有值」, 不是「不限」—— 这一屏本来就没有表可看 (`state` 已说明)。
+      criteriaByTab: {
+        all: unresolvedCriteria(),
+        build: unresolvedCriteria(),
+        rent: unresolvedCriteria(),
+      },
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -398,6 +430,7 @@ export class GetLegsUseCase {
         perspectives: LEG_TABS,
         // 候选上限 (052 FR-027): 保险丝, 与表达层给用户看几条**是两个数** —— 后者归 053。
         candidateCap: RECALL_CANDIDATE_CAP,
+        override,
       });
       if (retrieval === null) return empty('chain_not_ready');
       const chain = retrieval.chain;
@@ -419,6 +452,9 @@ export class GetLegsUseCase {
         ...empty('available'),
         // 触及候选上限的留痕 (052 FR-028): 随候选集从召回层一路上浮, 不经日志。
         candidateCapDropped: retrieval.droppedByCandidateCap,
+        // 条件全景与候选集**同源** (052 FR-011): 默认值由召回层从链自身解出 (成色上界要行权价
+        // 网格、权利金下限要 spot), 计数是同一次成员判定的副产品 —— 在这里重算必 drift。
+        criteriaByTab: retrieval.criteriaByTab,
         asOf: chain.sessionDate,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
@@ -738,6 +774,27 @@ function rankingInputOf(
 }
 
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * 链未就绪时的条件全景 —— 六维全 `null` + 三态全 `default` (052 spec Edge Case「spot 缺失」)。
+ *
+ * 🚫 **MUST NOT 拿一个假 spot 现算一份默认值填进去**: 那会让「解不出」看起来像「解出来正好是
+ * 这些值」, 而客户端照样能把它填进控件、照样能点搜。
+ */
+function unresolvedCriteria(): PerspectiveCriteria {
+  const blank: RetrievalCriteria = {
+    strikeMax: null,
+    strikeMin: null,
+    dteBand: null,
+    premiumMin: null,
+    openInterestMin: null,
+    relativeSpreadMax: null,
+  };
+  const outcomes = {} as Record<RetrievalCriterionKey, CriterionOutcome>;
+  for (const key of RETRIEVAL_CRITERION_KEYS)
+    outcomes[key] = { state: 'default', excludedCount: 0 };
+  return { defaults: blank, effective: blank, outcomes };
+}
 
 /** `@db.Date` 的 UTC 午夜 Date → `YYYY-MM-DD`。 */
 function dateOnlyOf(date: Date): string {

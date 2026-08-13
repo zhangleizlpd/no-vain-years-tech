@@ -1,5 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
-import { type LegTab } from './leg-tab.rules';
+import { LEG_TABS, type LegTab } from './leg-tab.rules';
 
 /**
  * 050 optionsdesk **召回层**判据纯函数 (ADR-0043 §4, plan D-RECALL-1)。无 I/O、无 DI。
@@ -209,33 +209,43 @@ export function relativeSpread(
 }
 
 /**
- * 权利金绝对门槛 (FR-005): `bid ≥ max(绝对下限, spot × 比例)`。`O(1)`。
+ * 权利金下限的**系统默认值** (FR-005): `max(绝对下限, spot × 比例)`。`O(1)`。
+ *
+ * 🚨 **它依赖 spot ⇒ MUST 由服务端解出并下发** (052 FR-011): 客户端自算即「同一判据两处各算
+ * 一份」(ADR-0064 不变量 ③), 而 spot 每天变 ⇒ 漂移只在换日那一刻才看得见。
+ */
+export function resolvePremiumFloor(spot: Prisma.Decimal): Prisma.Decimal {
+  const ratioFloor = spot.times(PREMIUM_FLOOR.spotRatio);
+  return ratioFloor.greaterThan(PREMIUM_FLOOR.absolute) ? ratioFloor : PREMIUM_FLOOR.absolute;
+}
+
+/**
+ * 权利金条件 (FR-005): `bid ≥ 下限`。`O(1)`。052 起下限由调用方给 (检索条件, 可被用户覆盖),
+ * 系统默认值见 {@link resolvePremiumFloor}。
  *
  * 🚫 **无 `bid` 判 `false`, MUST NOT 通过「把无 bid 当 0」实现** —— 那会污染费率与有效成本的
  * 所有下游计算, 而且算得出数、不会红。「不知道」与「知道且很低」在**处置上同归**(都挡下并
  * 计数), 但 MUST 是两条路径。
  */
-export function passesPremiumFloor(bid: Prisma.Decimal | null, spot: Prisma.Decimal): boolean {
+export function passesPremiumMin(bid: Prisma.Decimal | null, floor: Prisma.Decimal): boolean {
   if (bid === null) return false;
-  const ratioFloor = spot.times(PREMIUM_FLOOR.spotRatio);
-  const floor = ratioFloor.greaterThan(PREMIUM_FLOOR.absolute)
-    ? ratioFloor
-    : PREMIUM_FLOOR.absolute;
   return bid.greaterThanOrEqualTo(floor);
 }
 
 /**
- * 流动性门槛 (FR-006), 只作用建仓 / 收租。`O(1)`。
+ * 相对价差条件 (FR-006), 默认只作用建仓 / 收租 (全腿的默认值是「不设」)。`O(1)`。
+ * 052 起上界由调用方给, 系统默认值见 {@link defaultCriteria}。
  *
  * 🚨 **算不出价差 ⇒ fail-closed** (spec Assumptions): 没有卖价就无法确认这条腿挂得出去,
  * 宁可少收不可错收。该腿在**全腿 Tab 仍可见**, 信息不丢。
  */
-export function passesLiquidityGate(
+export function passesRelativeSpreadMax(
   bid: Prisma.Decimal | null,
   ask: Prisma.Decimal | null,
+  max: Prisma.Decimal,
 ): boolean {
   const spread = relativeSpread(bid, ask);
-  return spread !== null && spread.lessThanOrEqualTo(LIQUIDITY_MAX_RELATIVE_SPREAD);
+  return spread !== null && spread.lessThanOrEqualTo(max);
 }
 
 /**
@@ -257,22 +267,25 @@ export function passesEffectiveCostGate(
 
 /**
  * 持仓量条件 (052 FR-008), **三视角一律**: `OI ≥ 下限` **或** 当日有成交。`O(1)`。
+ * 052 T010 起下限由调用方给 (检索条件, 可被用户覆盖), 系统默认值 = {@link OPEN_INTEREST_FLOOR}。
  *
  * 🚨 **「或当日有成交」是新挂档的免死条款, MUST NOT 省略**: 美股期权 OI 盘前才更新, 今天新挂
  * 出来的档当日 `OI` 必为 0。实测全池 `OI=0` 的 1014 条腿里有 **34 条当日正在交易** —— 写成纯
  * `OI ≥ 下限` 会把它们砍掉, 而候选集照样出得来、数字照样有 (052 Guardrail 1)。
+ * 📌 免死条款**不随下限被覆盖而失效**: 用户调的是「持仓多少算够」, 不是「要不要看新挂档」。
  *
- * 🚫 **`null` 是「没采到」不是「零」, 两者 MUST 走不同路径** (同 {@link passesPremiumFloor} 对
+ * 🚫 **`null` 是「没采到」不是「零」, 两者 MUST 走不同路径** (同 {@link passesPremiumMin} 对
  * `bid` 的纪律): 缺成交量时不给免死 (不知道 ≠ 知道有), 缺 OI 时不能拿 0 顶上再比大小 —— 处置
  * 上同归 (都挡下), 但把 `null` 折成 0 会让「未采集」在下游看起来像「已确认为零」。
  */
-export function passesOpenInterestGate(
+export function passesOpenInterestMin(
   openInterest: number | null,
   volume: number | null,
+  floor: number,
 ): boolean {
   if (volume !== null && volume > 0) return true;
   if (openInterest === null) return false;
-  return openInterest >= OPEN_INTEREST_FLOOR;
+  return openInterest >= floor;
 }
 
 /**
@@ -321,44 +334,195 @@ export function passesQualityCeiling(
   return strike.lessThanOrEqualTo(qualityCeiling);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 T010 检索条件 (FR-002 / FR-011, plan D-CRIT-1)
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * 这条腿进哪几个召回集 (plan D-RECALL-1)。`O(1)`。
+ * 六个**检索条件**维度 (FR-002: 有控件、系统给默认值、用户可覆盖)。**穷举且有序**, 三态与
+ * 计数都按它展开 ⇒ 加一个维度而不实现它的判据 = 编译红 (同 050 特征注册表那条机制)。
  *
- * `all` 恒在内 —— 全腿 Tab 不设期限段 (FR-003)、不受流动性门槛约束 (FR-006)、**不受成色条件
- * 约束** (052 FR-006): 它是参照视角, 051 已 ship 的「切到全腿看被排除的腿」入口依赖它保留全部腿。
+ * 🚨 **与「硬门槛」的分界** (FR-002: 无控件、不可调、表达不成范围区间): 本片只有一条硬门槛 ——
+ * 建仓的有效成本 `K − bid < spot` ({@link passesEffectiveCostGate})。它 MUST NOT 混进本清单:
+ * 一旦有了控件, 「被指派后成本高于现价」这种结构性错误就成了可谈判的, 而它不是。
  *
- * 📌 **权利金门槛不在这里** (FR-005): 它作用于三个 Tab, 被它挡下的腿是从**响应里整条移出**,
- * 而不是「没进某个 Tab」⇒ 语义上属读端过滤, 由 use case 在建表之前施加。
+ * 📌 **DTE 段是一个维度不是两个**: 值是闭区间, 三态与计数按整段判 —— 一端收一端放时
+ * 「是否产生排除」照样给得出唯一答案, 而两端各判会得出互相矛盾的两个态。
  */
-export function recallTabs(chain: RecallChainContext, leg: RecallLegInput): LegTab[] {
-  if (!passesLiquidityGate(leg.bid, leg.ask)) return ['all'];
-  return ['all', ...intentTabsByTerm(chain, leg)];
+export const RETRIEVAL_CRITERION_KEYS = [
+  'strikeMax',
+  'strikeMin',
+  'dteBand',
+  'premiumMin',
+  'openInterestMin',
+  'relativeSpreadMax',
+] as const;
+
+export type RetrievalCriterionKey = (typeof RETRIEVAL_CRITERION_KEYS)[number];
+
+/** 一个视角的一套检索条件。每维度 `null` = **不限** (该维度不产生任何排除)。 */
+export interface RetrievalCriteria {
+  /** 行权价上界, 闭区间。收租的系统默认值 = 成色上界 ({@link resolveQualityCeiling})。 */
+  readonly strikeMax: Prisma.Decimal | null;
+  /** 行权价下界, 闭区间。三视角系统默认值均为不限 —— 它只为用户可覆盖而存在。 */
+  readonly strikeMin: Prisma.Decimal | null;
+  /** DTE 段, 闭区间。三视角系统默认值不同 (全腿不限)。 */
+  readonly dteBand: DteBand | null;
+  /** 权利金下限。系统默认值依赖 spot ({@link resolvePremiumFloor}), 三视角相同。 */
+  readonly premiumMin: Prisma.Decimal | null;
+  /** 持仓量下限 (免死条款恒生效, 见 {@link passesOpenInterestMin})。三视角相同。 */
+  readonly openInterestMin: number | null;
+  /** 相对价差上界。**全腿的系统默认值是不限** (FR-010)。 */
+  readonly relativeSpreadMax: Prisma.Decimal | null;
 }
 
 /**
- * 这条腿被流动性门槛挡在**哪几个**意图 Tab 之外 —— `gateCounts` 里两个流动性数的**共同**
- * 判据: 全表标量 `excludedFromIntentTabs` 数「返回非空的腿」(FR-008), 分视角
- * `excludedFromIntentTabsByTab` 数「返回里出现的 Tab」(051 FR-006a)。`O(1)`。
+ * 用户覆盖 —— **只作用一个视角** (2026-08-13 定)。
  *
- * 📌 **两个数由同一次求值派生, 不是两处各写一遍判据** —— 各算一份的话 drift 时两边都算得出
- * 数、都不会红。051 起标量的判据即「本函数返空与否」, 布尔版 `isExcludedFromIntentTabsByLiquidity`
- * 随之退役 (留着它就留了一条问同一个问题的旁路)。
+ * 🚨 一次请求返三个视角 (047 FR-005) 而 `FR-015` 要求每个视角各自持有条件状态 ⇒ 覆盖若通吃
+ * 三视角, 用户在收租设的行权价上界会同时收窄建仓, 而建仓的控件仍显示自己的默认值 —— 控件与
+ * 数据不匹配, 且这个不匹配在界面上无法解释。未指定的视角一律走各自的系统默认值。
  *
- * 🚨 期限段本就不合格的腿 (如 DTE=400) **返空数组**: 它不是被门槛挡下的, 把它算进去会让
- * 「流动性排除 N 条」这个数失去它唯一的用途 —— 提示该注意的流动性信号。
- *
- * 🚨 返回**多于一个**元素是正常的, 不是待「消歧」的重复: `[30,49]` 是两段刻意的重叠区
- * ({@link RENT_RECALL_DTE}), 落其中的腿同时是建仓候选与收租候选 ⇒ 被挡下时两个视角各少一条。
- * 这正是「全表标量 ≤ 建仓数 + 收租数」**恒成立而取等号会红**的来源 (051 SC-012)。
- *
- * 与 {@link recallTabs} **同源派生** ({@link intentTabsByTerm} 一处求值), 两者不会 drift。
+ * 📌 **缺键 = 未覆盖, 显式 `null` = 覆盖为「不限」** (判据取 `in`, 不取 `!== undefined`):
+ * 「用户把上界拉到不限」与「用户没动过这个维度」在三态上是两回事 —— 前者是覆盖且放宽。
  */
-export function intentTabsExcludedByLiquidity(
+export interface RetrievalOverride {
+  readonly perspective: LegTab;
+  readonly criteria: Partial<RetrievalCriteria>;
+}
+
+/**
+ * 一个维度的三态 (plan D-CRIT-1)。
+ *
+ * 📌 **判据是「是否产生排除」而非值比较** —— 后者对 DTE 段这种双端维度给不出唯一答案 (一端收
+ * 一端放), 且计数本来就要逐腿判一遍, 两者同源派生才不会出现「显示了计数但态是放宽」。
+ * ⇒ `widened` 含「覆盖了、方向是收窄、但一条腿都没排除掉」(如上界收到仍高于链上最大行权价):
+ * 处置与放宽相同 (不显示计数), 为一个不影响行为的区分多养一个状态只会多一处 drift。
+ */
+export type CriterionState = 'default' | 'widened' | 'narrowed';
+
+export interface CriterionOutcome {
+  readonly state: CriterionState;
+  /**
+   * 「当前条件之外还有 N 条」(FR-030) —— **边际口径**: 把该维度换回系统默认值、其余维度保持
+   * 用户值时多出来的候选数。恒有值, 非 `narrowed` 时为 `0`。
+   *
+   * 🚨 **MUST NOT 读成「被系统滤掉 N 条」** (FR-030 的措辞纪律): 它数的是用户自己这一刀切掉的,
+   * 系统默认值下的排除**不出计数** (FR-029 —— 默认值本身就摆在控件里, 第二次告知是噪音)。
+   */
+  readonly excludedCount: number;
+}
+
+/** 一个视角的条件全景 —— 控件填 `defaults`, 结果按 `effective`, 计数看 `outcomes` (FR-011)。 */
+export interface PerspectiveCriteria {
+  readonly defaults: RetrievalCriteria;
+  readonly effective: RetrievalCriteria;
+  readonly outcomes: Readonly<Record<RetrievalCriterionKey, CriterionOutcome>>;
+}
+
+/**
+ * 某视角的**系统默认值** (FR-011, T010 六维度表)。`O(1)`。
+ *
+ * 🚨 **三视角的差只在三个维度上** (其余三维三视角一律):
+ * · 行权价上界 —— 只收租设 (成色条件, FR-005/FR-006: 全腿是参照视角, 建仓由有效成本硬门槛等价挡住)
+ * · DTE 段 —— 两个意图视角各自的召回段, 全腿不设 (FR-003)
+ * · 相对价差上界 —— 只两个意图视角设 (FR-010)
+ *
+ * 🚫 **MUST NOT 在客户端重算任何一项** (FR-011 / Guardrail 6): 上界与权利金下限都依赖 spot,
+ * 客户端自算就是同一判据两处各一份, 而它们**两边都算得出数**。
+ */
+export function defaultCriteria(tab: LegTab, chain: RecallChainContext): RetrievalCriteria {
+  const shared = {
+    strikeMin: null,
+    premiumMin: resolvePremiumFloor(chain.spot),
+    openInterestMin: OPEN_INTEREST_FLOOR,
+  };
+  switch (tab) {
+    case 'all':
+      return { ...shared, strikeMax: null, dteBand: null, relativeSpreadMax: null };
+    case 'build':
+      return {
+        ...shared,
+        strikeMax: null,
+        dteBand: BUILD_RECALL_DTE,
+        relativeSpreadMax: LIQUIDITY_MAX_RELATIVE_SPREAD,
+      };
+    case 'rent':
+      return {
+        ...shared,
+        strikeMax: chain.qualityCeiling,
+        dteBand: RENT_RECALL_DTE,
+        relativeSpreadMax: LIQUIDITY_MAX_RELATIVE_SPREAD,
+      };
+  }
+}
+
+/** 三视角各自的系统默认值。`O(1)`。 */
+export function defaultCriteriaByTab(
   chain: RecallChainContext,
+): Readonly<Record<LegTab, RetrievalCriteria>> {
+  return {
+    all: defaultCriteria('all', chain),
+    build: defaultCriteria('build', chain),
+    rent: defaultCriteria('rent', chain),
+  };
+}
+
+/**
+ * 单个维度的判据 —— **全仓唯一的成员判定处** (FR-003「只有一个 filter 概念」)。`O(1)`。
+ *
+ * 🚨 `switch` 按 {@link RetrievalCriterionKey} 穷举 ⇒ 往清单里加键而不在这里实现 = 编译红。
+ * 🚫 MUST NOT 在别处再写一条「呈现层再筛一次」的路径: 那样两处都筛得出结果, 而成员集合谁说了
+ * 算变成运行时才知道的事。
+ */
+function failsCriterion(
+  key: RetrievalCriterionKey,
+  criteria: RetrievalCriteria,
   leg: RecallLegInput,
-): LegIntentTab[] {
-  if (passesLiquidityGate(leg.bid, leg.ask)) return [];
-  return intentTabsByTerm(chain, leg);
+): boolean {
+  switch (key) {
+    case 'strikeMax':
+      return criteria.strikeMax !== null && !passesQualityCeiling(leg.strike, criteria.strikeMax);
+    case 'strikeMin':
+      return criteria.strikeMin !== null && leg.strike.lessThan(criteria.strikeMin);
+    case 'dteBand':
+      return criteria.dteBand !== null && !withinDteBand(leg.dteDays, criteria.dteBand);
+    case 'premiumMin':
+      return criteria.premiumMin !== null && !passesPremiumMin(leg.bid, criteria.premiumMin);
+    case 'openInterestMin':
+      return (
+        criteria.openInterestMin !== null &&
+        !passesOpenInterestMin(leg.openInterest, leg.volume, criteria.openInterestMin)
+      );
+    case 'relativeSpreadMax':
+      return (
+        criteria.relativeSpreadMax !== null &&
+        !passesRelativeSpreadMax(leg.bid, leg.ask, criteria.relativeSpreadMax)
+      );
+  }
+}
+
+/**
+ * 这条腿在这套条件下**不过哪几个**维度 —— 空数组 = 全过。`O(6)` = `O(1)`。
+ *
+ * 🚨 **返回集合而不是布尔**: 计数要的是「仅因这一个维度出局」(边际口径), 一个布尔答不了
+ * 「是不是只差这一条」。候选集归属与六个维度的计数由它**一次求值**同源派生。
+ */
+export function failedCriteria(
+  criteria: RetrievalCriteria,
+  leg: RecallLegInput,
+): RetrievalCriterionKey[] {
+  return RETRIEVAL_CRITERION_KEYS.filter((key) => failsCriterion(key, criteria, leg));
+}
+
+/**
+ * 该视角的**硬门槛** (FR-002: 无控件、不可调)。`O(1)`。
+ *
+ * 本片只有一条: 建仓的有效成本。全腿与收租无硬门槛 —— 收租的成色是**检索条件**不是硬门槛
+ * (它表达得成范围区间, 且系统默认值正是那个区间的上界)。
+ */
+export function passesHardGates(tab: LegTab, chain: RecallContext, leg: RecallLegInput): boolean {
+  return tab !== 'build' || passesEffectiveCostGate(chain.spot, leg.strike, leg.bid);
 }
 
 /** 候选腿 = 裸行 + **已判定的视角归属** (052 plan D-PORT-1 的出参形态)。 */
@@ -385,6 +549,11 @@ export interface RecallOutcome<T extends RecallLegInput> {
    * 真相 —— 而两个字段不一致时, 两边都读得出值、都不会红。
    */
   readonly droppedByCandidateCap: number;
+  /**
+   * 三视角各自的条件全景 (052 FR-011 / FR-029)。**恒有三份** —— 客户端本地切视角时要用另两个
+   * 视角的默认值填控件, 而那时不发请求。
+   */
+  readonly criteriaByTab: Readonly<Record<LegTab, PerspectiveCriteria>>;
 }
 
 /**
@@ -414,6 +583,7 @@ export function recallCandidates<T extends RecallLegInput>(
   perspectives: readonly LegTab[],
   legs: readonly T[],
   candidateCap: number,
+  override: RetrievalOverride | null = null,
 ): RecallOutcome<T> {
   const requested = new Set(perspectives);
   const candidates: RecallCandidate<T>[] = [];
@@ -428,28 +598,32 @@ export function recallCandidates<T extends RecallLegInput>(
     qualityCeiling: resolveQualityCeiling(context.spot, legs),
   };
 
-  for (const leg of legs) {
-    // 权利金门槛 (FR-005): 挡下即整条移出 —— 它不派生、不打标、不进任何视角的排名基准。
-    if (!passesPremiumFloor(leg.bid, context.spot)) {
-      removedByPremiumFloor += 1;
-      continue;
-    }
-    // 持仓量条件 (052 FR-008): 同样是整条移出, 三视角一律。
-    // 🚨 **MUST 排在权利金门槛之后**: 提到前面会让「两道都不过」的腿不再计进
-    // `removedByPremiumFloor` —— 那个数是 051 已 ship 的展示值, 它会静默变小而没有任何一处红。
-    // 📌 本条**蓄意不产计数**: 持仓量下限是 T010 的六个检索条件之一, 其可见性走「控件默认值 +
-    // 仅收窄态出计数」那条路 (spec Clarifications「门槛可发现」), 不再往 gateCounts 加第四个数。
-    if (!passesOpenInterestGate(leg.openInterest, leg.volume)) continue;
-    const tabs = recallTabs(chain, leg).filter((tab) => requested.has(tab));
-    if (tabs.length > 0) candidates.push({ leg, tabs });
+  // 三视角的系统默认值 + 本次生效值 (052 T010)。覆盖**只落在一个视角**上, 其余恒走默认值。
+  const defaults = defaultCriteriaByTab(chain);
+  const overridden = overriddenKeysOf(override);
+  const effective: Record<LegTab, RetrievalCriteria> = {
+    all: applyOverride(defaults.all, override, 'all'),
+    build: applyOverride(defaults.build, override, 'build'),
+    rent: applyOverride(defaults.rent, override, 'rent'),
+  };
+  const excludedByCriterion: Record<LegTab, Record<RetrievalCriterionKey, number>> = {
+    all: zeroCriterionCounts(),
+    build: zeroCriterionCounts(),
+    rent: zeroCriterionCounts(),
+  };
 
-    // 🚨 标量与两个分视角数在**同一次求值**上累加: 标量按「返回非空」加 1, 分视角按「返回里的
-    // 每个视角」各加 1 ⇒ `标量 ≤ build + rent` 是读得出来的结构保证 (重叠区 `[30,49]` 的腿会让
+  const pass: RecallPass = { chain, requested, defaults, effective, overridden };
+  for (const leg of legs) {
+    const verdict = evaluateLeg(pass, leg);
+    if (verdict.tabs.length > 0) candidates.push({ leg, tabs: verdict.tabs });
+    if (verdict.premiumBlockedEverywhere) removedByPremiumFloor += 1;
+    for (const hit of verdict.marginalHits) excludedByCriterion[hit.tab][hit.key] += 1;
+    // 🚨 标量与两个分视角数在**同一次求值**上累加: 标量按「非空」加 1, 分视角按「里面的每个
+    // 视角」各加 1 ⇒ `标量 ≤ build + rent` 是读得出来的结构保证 (重叠区 `[30,49]` 的腿会让
     // 右边比左边多 1, 这是设计不是 bug), 而不是靠测试守住的巧合。
-    const excluded = intentTabsExcludedByLiquidity(chain, leg).filter((tab) => requested.has(tab));
-    if (excluded.length === 0) continue;
+    if (verdict.excludedByLiquidity.length === 0) continue;
     excludedFromIntentTabs += 1;
-    for (const tab of excluded) excludedFromIntentTabsByTab[tab] += 1;
+    for (const tab of verdict.excludedByLiquidity) excludedFromIntentTabsByTab[tab] += 1;
   }
 
   // 🚨 上限在**三个计数之后**施加: 那三个数是对整批腿的判定统计, 被切掉的腿早已过了门槛
@@ -461,7 +635,165 @@ export function recallCandidates<T extends RecallLegInput>(
     excludedFromIntentTabs,
     excludedFromIntentTabsByTab,
     droppedByCandidateCap: candidates.length - kept.length,
+    criteriaByTab: {
+      all: perspectiveCriteriaOf('all', defaults, effective, overridden, excludedByCriterion),
+      build: perspectiveCriteriaOf('build', defaults, effective, overridden, excludedByCriterion),
+      rent: perspectiveCriteriaOf('rent', defaults, effective, overridden, excludedByCriterion),
+    },
   };
+}
+
+/** 一趟召回的不变量 —— 逐腿评判要用的全部上下文, 每次 {@link recallCandidates} 求一次。 */
+interface RecallPass {
+  readonly chain: RecallChainContext;
+  readonly requested: ReadonlySet<LegTab>;
+  readonly defaults: Readonly<Record<LegTab, RetrievalCriteria>>;
+  readonly effective: Readonly<Record<LegTab, RetrievalCriteria>>;
+  readonly overridden: Readonly<Record<LegTab, ReadonlySet<RetrievalCriterionKey>>>;
+}
+
+/** 一条腿的评判结果 —— 三个计数与候选归属都从它读, 主循环只负责累加。 */
+interface LegVerdict {
+  readonly tabs: LegTab[];
+  /** 「本来进得去、只被价差挡下」的意图视角 (051 两个流动性数)。 */
+  readonly excludedByLiquidity: LegIntentTab[];
+  /** 每个请求视角都被权利金挡下 ⇒ 它是「整条移出」的那一类 (051 已 ship 的展示值)。 */
+  readonly premiumBlockedEverywhere: boolean;
+  /** 052 边际计数命中的 (视角, 维度) 对。 */
+  readonly marginalHits: readonly { readonly tab: LegTab; readonly key: RetrievalCriterionKey }[];
+}
+
+/**
+ * 逐腿逐视角评判。`O(视角数 × 6)` = `O(1)`。
+ *
+ * 🚨 **候选归属、051 的两个流动性数、052 的六维计数全部由这一趟派生** —— 各算一份的话 drift 时
+ * 三边都算得出数、都不会红。
+ */
+function evaluateLeg(pass: RecallPass, leg: RecallLegInput): LegVerdict {
+  const tabs: LegTab[] = [];
+  const excludedByLiquidity: LegIntentTab[] = [];
+  const marginalHits: { tab: LegTab; key: RetrievalCriterionKey }[] = [];
+  let evaluatedTabs = 0;
+  let premiumBlockedTabs = 0;
+
+  for (const tab of LEG_TABS) {
+    if (!pass.requested.has(tab)) continue;
+    const verdict = evaluateTab(tab, pass.chain, pass.effective[tab], leg);
+    evaluatedTabs += 1;
+    if (verdict.premiumBlocked) premiumBlockedTabs += 1;
+    if (verdict.passes) {
+      tabs.push(tab);
+      continue;
+    }
+    // `soleFailure` 为 `null` = 硬门槛不过、或不止一个维度挡它 ⇒ **不进任何一个维度的计数**:
+    // 把某一维换回默认值它照样进不来,「放宽这一条就能多看到 N 条」对它不成立。
+    const key = verdict.soleFailure;
+    if (key === null) continue;
+    // 051 的流动性数与是否被用户覆盖无关; 052 的边际计数只数**用户覆盖过**且默认值下放行的维度
+    // (否则把这一维换回默认它仍进不来 ⇒ 「当前条件之外还有它」不成立)。
+    if (key === 'relativeSpreadMax' && tab !== 'all') excludedByLiquidity.push(tab);
+    if (pass.overridden[tab].has(key) && !failsCriterion(key, pass.defaults[tab], leg)) {
+      marginalHits.push({ tab, key });
+    }
+  }
+
+  return {
+    tabs,
+    excludedByLiquidity,
+    premiumBlockedEverywhere: evaluatedTabs > 0 && premiumBlockedTabs === evaluatedTabs,
+    marginalHits,
+  };
+}
+
+/**
+ * 一条腿在一个视角下的评判 —— 候选归属、051 的流动性排除数、052 的六维计数**三者的共同根**。
+ *
+ * 🚨 每个 (腿, 视角) 只求一次值: 各算一份的话 drift 时三边都算得出数、都不会红。
+ */
+interface LegTabVerdict {
+  /** 硬门槛与六维条件全过。 */
+  readonly passes: boolean;
+  /** **唯一**挡下它的那个维度; 硬门槛不过、或不止一维挡它 ⇒ `null` (那时任何一维都不该计它)。 */
+  readonly soleFailure: RetrievalCriterionKey | null;
+  /** 是否被权利金这一维挡下 ——「整条移出」要看它在**每个**请求视角下都成立。 */
+  readonly premiumBlocked: boolean;
+}
+
+function evaluateTab(
+  tab: LegTab,
+  chain: RecallChainContext,
+  criteria: RetrievalCriteria,
+  leg: RecallLegInput,
+): LegTabVerdict {
+  const failed = failedCriteria(criteria, leg);
+  const hard = passesHardGates(tab, chain, leg);
+  return {
+    passes: hard && failed.length === 0,
+    soleFailure: hard && failed.length === 1 ? failed[0] : null,
+    premiumBlocked: failed.includes('premiumMin'),
+  };
+}
+
+/** 本次被用户覆盖的维度 —— 判据取 `in` 而非 `!== undefined` (见 {@link RetrievalOverride})。 */
+function overriddenKeysOf(
+  override: RetrievalOverride | null,
+): Readonly<Record<LegTab, ReadonlySet<RetrievalCriterionKey>>> {
+  const keys =
+    override === null ? [] : RETRIEVAL_CRITERION_KEYS.filter((key) => key in override.criteria);
+  const empty = new Set<RetrievalCriterionKey>();
+  return {
+    all: override?.perspective === 'all' ? new Set(keys) : empty,
+    build: override?.perspective === 'build' ? new Set(keys) : empty,
+    rent: override?.perspective === 'rent' ? new Set(keys) : empty,
+  };
+}
+
+/** 把用户值盖到系统默认值上 —— 只对 `override.perspective` 那一个视角生效。 */
+function applyOverride(
+  defaults: RetrievalCriteria,
+  override: RetrievalOverride | null,
+  tab: LegTab,
+): RetrievalCriteria {
+  if (override === null || override.perspective !== tab) return defaults;
+  const merged = { ...defaults };
+  for (const key of RETRIEVAL_CRITERION_KEYS) {
+    if (!(key in override.criteria)) continue;
+    // 逐键赋值而非整体展开: 展开会把「显式给了 undefined」也盖上去, 那与「缺键」是两回事。
+    Object.assign(merged, { [key]: override.criteria[key] ?? null });
+  }
+  return merged;
+}
+
+function zeroCriterionCounts(): Record<RetrievalCriterionKey, number> {
+  return {
+    strikeMax: 0,
+    strikeMin: 0,
+    dteBand: 0,
+    premiumMin: 0,
+    openInterestMin: 0,
+    relativeSpreadMax: 0,
+  };
+}
+
+/** 三态由「是否覆盖」× 「边际排除数是否为零」判定 (见 {@link CriterionState})。 */
+function perspectiveCriteriaOf(
+  tab: LegTab,
+  defaults: Readonly<Record<LegTab, RetrievalCriteria>>,
+  effective: Readonly<Record<LegTab, RetrievalCriteria>>,
+  overridden: Readonly<Record<LegTab, ReadonlySet<RetrievalCriterionKey>>>,
+  excluded: Readonly<Record<LegTab, Record<RetrievalCriterionKey, number>>>,
+): PerspectiveCriteria {
+  const outcomes = {} as Record<RetrievalCriterionKey, CriterionOutcome>;
+  for (const key of RETRIEVAL_CRITERION_KEYS) {
+    const count = excluded[tab][key];
+    const state: CriterionState = !overridden[tab].has(key)
+      ? 'default'
+      : count > 0
+        ? 'narrowed'
+        : 'widened';
+    outcomes[key] = { state, excludedCount: state === 'narrowed' ? count : 0 };
+  }
+  return { defaults: defaults[tab], effective: effective[tab], outcomes };
 }
 
 /**
@@ -485,33 +817,6 @@ function capCandidates<T extends RecallLegInput>(
   return [...candidates]
     .sort((a, b) => a.leg.dteDays - b.leg.dteDays || a.leg.strike.comparedTo(b.leg.strike) || 0)
     .slice(0, candidateCap);
-}
-
-/**
- * 只看期限段 + 各视角**专属**的硬判据 (建仓的有效成本 / 收租的成色), **不含**流动性门槛
- * —— 上面两个导出的共同根。
- *
- * 📌 成色与有效成本落在这里而不是外面一层, 于是「被成色挡下的腿」自动**不计进流动性排除数**
- * (它本来就进不了收租, 与流动性无关) —— 与建仓那条同源, 不是各写一遍。
- *
- * 🚨 **建仓 MUST NOT 加成色条件** (052 FR-007): 它的有效成本硬门槛 `K − bid < spot` 已等价挡住
- * 深度实值, 再加一道会改掉 051 已 ship 的建仓候选集 (SC-005 要求本片前后逐条相同)。
- */
-function intentTabsByTerm(chain: RecallChainContext, leg: RecallLegInput): LegIntentTab[] {
-  const tabs: LegIntentTab[] = [];
-  if (
-    withinDteBand(leg.dteDays, BUILD_RECALL_DTE) &&
-    passesEffectiveCostGate(chain.spot, leg.strike, leg.bid)
-  ) {
-    tabs.push('build');
-  }
-  if (
-    withinDteBand(leg.dteDays, RENT_RECALL_DTE) &&
-    passesQualityCeiling(leg.strike, chain.qualityCeiling)
-  ) {
-    tabs.push('rent');
-  }
-  return tabs;
 }
 
 /** 闭区间含两端。段界一律走常量, 本文件内也不写字面量比较。 */

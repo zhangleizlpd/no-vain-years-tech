@@ -34,7 +34,13 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
     const context: RecallContext = { spot: seeded.chain.spot };
     return Promise.resolve({
       chain: seeded.chain,
-      ...recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap),
+      ...recallCandidates(
+        context,
+        query.perspectives,
+        seeded.legs,
+        query.candidateCap,
+        query.override,
+      ),
     });
   }
 }

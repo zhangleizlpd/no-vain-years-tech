@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import type { PrismaService } from '../security/prisma.service';
 import { GetLegsUseCase } from './get-legs.usecase';
 import { ACTIVITY_TOP_RANK_COUNT } from './leg-derive.rules';
+import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
 import { toLegTableResponse } from './optionsdesk.dto';
 
@@ -873,5 +874,79 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
     });
     // 常量映射与有没有链无关 —— 空态下也是这三格。
     expect(res.basisByTab).toEqual({ all: 'annualized', build: 'weekly', rent: 'annualized' });
+  });
+});
+
+/**
+ * T010 —— 检索条件的系统默认值下发 + 用户覆盖 (052 `FR-011`–`FR-016` / `FR-029`, plan D-CRIT-1)。
+ *
+ * 🚨 本组守的是**接线**: 默认值由召回层从链自身解出 (成色上界要行权价网格、权利金下限要 spot),
+ * use case 只负责把 `override` 递下去、把条件全景端上来。判据本身的边界在
+ * `leg-recall.rules.spec.ts` 逐维度验，不在这里重复。
+ */
+describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
+  it('🚨 三视角的条件全景恒有三份 —— 客户端本地切视角时不发请求, 要用另两份填控件', async () => {
+    const view = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    for (const tab of ['all', 'build', 'rent'] as const) {
+      expect(view.criteriaByTab[tab].defaults).toBeDefined();
+      expect(view.criteriaByTab[tab].effective).toEqual(view.criteriaByTab[tab].defaults);
+      for (const key of RETRIEVAL_CRITERION_KEYS) {
+        expect(view.criteriaByTab[tab].outcomes[key]).toEqual({
+          state: 'default',
+          excludedCount: 0,
+        });
+      }
+    }
+    // 依赖 spot 的两项确实解出来了 (FR-011: 客户端拿不到这两个数)。
+    expect(view.criteriaByTab.all.defaults.premiumMin).not.toBeNull();
+    expect(view.criteriaByTab.rent.defaults.strikeMax).not.toBeNull();
+  });
+
+  it('🚨 链未就绪 ⇒ 六维全 null, MUST NOT 猜一个默认值 (spec Edge Case「spot 缺失」)', async () => {
+    const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const view = await makeUseCase(prisma).execute(SYMBOL, NOW);
+    expect(view.state).toBe('chain_not_ready');
+    for (const key of RETRIEVAL_CRITERION_KEYS) {
+      expect(view.criteriaByTab.rent.defaults[key]).toBeNull();
+    }
+  });
+
+  it('用户覆盖只作用于请求的那个视角, 且计数只出在被收窄的维度上 (FR-029)', async () => {
+    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    // 收租段 `[30,365]` → `[1,50]`: 上界收窄踢掉 C-A / C-B (DTE 164), 下界放宽放进 C-D (DTE 10)
+    // ⇒ 成员**有进有出**, 而三态照样唯一 (判据是「是否产生排除」, 见 `CriterionState`)。
+    const narrowed = await makeUseCase(makePrisma()).execute(SYMBOL, NOW, {
+      perspective: 'rent',
+      criteria: { dteBand: { min: 1, max: 50 } },
+    });
+
+    expect(plain.tabOrder.rent).toEqual(['C-A', 'C-B']);
+    expect(narrowed.tabOrder.rent).toEqual(['C-D']);
+    expect(narrowed.tabOrder.build).toEqual(plain.tabOrder.build);
+    expect(narrowed.criteriaByTab.rent.outcomes.dteBand).toEqual({
+      state: 'narrowed',
+      excludedCount: 2,
+    });
+    // 🚫 未被动过的维度不出计数 —— 默认值本身就摆在控件里, 第二次告知是噪音。
+    expect(narrowed.criteriaByTab.rent.outcomes.strikeMax.state).toBe('default');
+    expect(narrowed.criteriaByTab.build.outcomes.dteBand.state).toBe('default');
+  });
+
+  it('🚨 FR-026: 放宽条件使候选集变大 ⇒ 活跃标与排序按新候选集重算 (定义如此)', async () => {
+    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, NOW);
+    // 建仓段放宽到含 DTE 164 ⇒ 两条收租长腿也进建仓候选 (有效成本 120−6 / 100−0.5 均 < spot)。
+    const widened = await makeUseCase(makePrisma()).execute(SYMBOL, NOW, {
+      perspective: 'build',
+      criteria: { dteBand: { min: 1, max: 365 } },
+    });
+    expect(widened.tabOrder.build.length).toBeGreaterThan(plain.tabOrder.build.length);
+    expect(widened.criteriaByTab.build.outcomes.dteBand).toEqual({
+      state: 'widened',
+      excludedCount: 0,
+    });
+    // 排名基准 = 当前条件下的召回集 ⇒ 活跃标的分母跟着变: 原本进建仓的腿在更大的候选集里重排。
+    const legOf = (v: typeof plain, code: string) => v.legs.find((l) => l.code === code)!;
+    expect(legOf(plain, 'C-D').activityByTab.build).not.toBeNull();
+    expect(legOf(widened, 'C-D').activityByTab.build).not.toBeNull();
   });
 });

@@ -3,7 +3,12 @@ import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase } from '../../src/optionsdesk/get-legs.usecase';
 import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
-import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
+import { Prisma } from '../../src/generated/prisma/client';
+import {
+  RECALL_CANDIDATE_CAP,
+  RENT_RECALL_DTE,
+  type RetrievalOverride,
+} from '../../src/optionsdesk/leg-recall.rules';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 
 // 052 检索层 IT。本文件随各 task 增量补齐, T015 收口到 24 条 `state_branches` 逐条有 `it()`。
@@ -122,13 +127,14 @@ describe('052 T005 召回层候选上限 K (Testcontainers PG)', () => {
     return instrumentId;
   }
 
-  const retrieve = async (candidateCap: number) => {
+  const retrieve = async (candidateCap: number, override: RetrievalOverride | null = null) => {
     const port = new PrismaLegRetrievalAdapter(prisma);
     const result = await port.retrieveCandidates({
       symbol: SYMBOL,
       now: NOW,
       perspectives: LEG_TABS,
       candidateCap,
+      override,
     });
     if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
     return result;
@@ -275,5 +281,72 @@ describe('052 T005 召回层候选上限 K (Testcontainers PG)', () => {
     expect(RECALL_CANDIDATE_CAP).toBeGreaterThan(6);
     expect(view.candidateCapDropped).toBe(0);
     expect(view.legs).toHaveLength(6);
+  });
+
+  it('🚨 T010 真库路径: 系统默认值由服务端解出并下发 —— 依赖 spot 的两项都有值 (FR-011)', async () => {
+    await seedMixedChain();
+    const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
+      SYMBOL,
+      NOW,
+    );
+    // 成色上界 = min{K ≥ spot} (150) ∧ spot × (1+X) (132.40 × 1.04 = 137.696) 取严。
+    expect(view.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('137.696');
+    expect(view.criteriaByTab.rent.defaults.dteBand).toEqual(RENT_RECALL_DTE);
+    // 🚫 全腿不设成色与价差 (FR-006 / FR-010) —— 它是参照视角。
+    expect(view.criteriaByTab.all.defaults.strikeMax).toBeNull();
+    expect(view.criteriaByTab.all.defaults.relativeSpreadMax).toBeNull();
+    // 权利金下限依赖 spot ⇒ 客户端算不出, 必须下发。
+    expect(view.criteriaByTab.all.defaults.premiumMin).not.toBeNull();
+  });
+
+  it('🚨 T010 真库路径: 用户放宽成色上界 ⇒ 深实值腿进收租, 且计数只出在被收窄的维度 (FR-029)', async () => {
+    await seedMixedChain();
+    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const plain = await usecase.execute(SYMBOL, NOW);
+    expect(plain.tabOrder.rent).not.toContain('P-ITM');
+
+    // 放宽: 上界拉到 P-ITM 的 K=150 之上 ⇒ 它进收租; 放宽 MUST NOT 出计数 (Guardrail 7)。
+    const widened = await usecase.execute(SYMBOL, NOW, {
+      perspective: 'rent',
+      criteria: { strikeMax: new Prisma.Decimal('160') },
+    });
+    expect(widened.tabOrder.rent).toContain('P-ITM');
+    expect(widened.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+      state: 'widened',
+      excludedCount: 0,
+    });
+    // 🚫 另两个视角逐条不动 —— 覆盖只落在请求的那一个视角上。
+    expect(widened.tabOrder.build).toEqual(plain.tabOrder.build);
+    expect(widened.tabOrder.all).toEqual(plain.tabOrder.all);
+
+    // 收窄: 上界收到 118 ⇒ 默认下进收租的 P-OK (K=115) 仍在, P-WIDE (K=120) 本就被价差挡下
+    // ⇒ 不计它 (同时被两维挡下的腿一维都不计)。
+    const narrowed = await usecase.execute(SYMBOL, NOW, {
+      perspective: 'rent',
+      criteria: { strikeMax: new Prisma.Decimal('114') },
+    });
+    expect(narrowed.tabOrder.rent).not.toContain('P-OK');
+    expect(narrowed.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+      state: 'narrowed',
+      excludedCount: 1,
+    });
+    expect(narrowed.criteriaByTab.rent.outcomes.dteBand.state).toBe('default');
+  });
+
+  it('🚨 T010: 排名基准 = 当前条件下的召回集 —— 放宽后活跃标随新候选集重算 (FR-026)', async () => {
+    await seedMixedChain();
+    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const plain = await usecase.execute(SYMBOL, NOW);
+    const widened = await usecase.execute(SYMBOL, NOW, {
+      perspective: 'rent',
+      criteria: { strikeMax: new Prisma.Decimal('160') },
+    });
+    // 放宽前收租只有 P-OK 一条 (DTE 35 同组), 放宽后 P-ITM 也进来 —— 同到期日组的成员变了
+    // ⇒ 活跃标的分母跟着变。这是**定义如此** (spec US3-AS6), 界面上不做特殊解释。
+    const rentMarkOf = (v: typeof plain, code: string) =>
+      v.legs.find((l) => l.code === code)?.activityByTab.rent ?? null;
+    expect(rentMarkOf(plain, 'P-ITM')).toBeNull();
+    expect(rentMarkOf(widened, 'P-ITM')).not.toBeNull();
+    expect(widened.tabOrder.rent.length).toBeGreaterThan(plain.tabOrder.rent.length);
   });
 });

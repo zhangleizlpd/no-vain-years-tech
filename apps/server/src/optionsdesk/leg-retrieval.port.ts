@@ -3,6 +3,7 @@ import type {
   RecallContext,
   RecallLegInput,
   RecallOutcome,
+  RetrievalOverride,
 } from './leg-recall.rules';
 import type { LegTab } from './leg-tab.rules';
 
@@ -54,6 +55,13 @@ export interface LegRetrievalQuery {
    * 🚨 触及时**切掉多少条**由出参如实上报 (`droppedByCandidateCap`), 🚫 MUST NOT 只落日志。
    */
   readonly candidateCap: number;
+  /**
+   * 用户对**某一个视角**检索条件的覆盖 (052 FR-012); 无覆盖 ⇒ `null`, 三视角全走系统默认值。
+   *
+   * 📌 系统默认值**不进请求** —— 它们由召回层从链自身解出 (依赖 spot 与行权价网格) 并随出参
+   * 下发。让调用方传默认值就等于让它先算一份, 那正是 FR-011 禁的「同一判据两处各算一份」。
+   */
+  readonly override: RetrievalOverride | null;
 }
 
 /**

@@ -2,7 +2,7 @@
 /**
  * check-optionsdesk-rule-constants.ts — optionsdesk **可调策略参数单点**的机器守门。
  *
- * 五条不变量，扫描面都是 `apps/server/src/optionsdesk/`：
+ * 七条不变量，扫描面都是 `apps/server/src/optionsdesk/`：
  *
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
@@ -12,8 +12,9 @@
  * | 4 | 闭区间带字面量只住 `leg-recall` / `leg-mark` | **对象形状**扫描 | 050 SC-009 |
  * | 5 | 检索 port 接口零存储侧词汇 | **词表**扫描 | 052 FR-031 |
  * | 6 | 粗排层恒等 + 五层入口各有 spec | **词表**扫描 + 文件存在 | 052 FR-004 / SC-010 |
+ * | 7 | 六维成员判据只住 `leg-recall.rules.ts` | **词表**扫描 | 052 FR-003 |
  *
- * 🚨 **#5/#6 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
+ * 🚨 **#5/#6/#7 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
  * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
  * 尾部两个 `it()` 迁出来的那条路径，判据不变、只是换了执行面。
  *
@@ -348,6 +349,41 @@ export function coarseProbe(): string | null {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 052 不变量 #7 —— 成员判据只住召回层（词表扫描，FR-003「全仓只有一个 filter 概念」）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 六维检索条件的判据函数名。它们**只允许**出现在 {@link RECALL_RULES_FILE} 与其 spec 里 ——
+ * 别处调用即「排名之后再筛一次」的第二条路径（052 FR-003 的禁令）。
+ *
+ * 🚨 这条**踩了不会红**：第二处筛选照样筛得出结果，只是成员集合谁说了算变成运行时才知道的事，
+ * 而两处的口径迟早分叉（且分叉后候选数、计数、名次全都算得出来）。
+ * 📌 `resolvePremiumFloor` / `resolveQualityCeiling` **不在表内**：它们解的是**默认值**不是成员，
+ * 下发默认值本来就要在 use case 侧读得到。
+ */
+export const MEMBERSHIP_PREDICATE_RE =
+  /\b(failedCriteria|passesPremiumMin|passesOpenInterestMin|passesRelativeSpreadMax|passesQualityCeiling|passesEffectiveCostGate|passesHardGates)\s*\(/g;
+
+/** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
+export function membershipProbe(): string | null {
+  const positive = findShapeHits(
+    'const kept = legs.filter((l) => failedCriteria(c, l).length === 0 && passesHardGates(t, ch, l));',
+    MEMBERSHIP_PREDICATE_RE,
+  );
+  if (positive.length === 0) {
+    return '成员判据正例臂失灵：`failedCriteria(` / `passesHardGates(` 未被命中 —— 判据已变平凡绿';
+  }
+  const negative = findShapeHits(
+    'const defaults = defaultCriteriaByTab(chain); const floor = resolvePremiumFloor(spot);',
+    MEMBERSHIP_PREDICATE_RE,
+  );
+  if (negative.length > 0) {
+    return `成员判据反例臂失灵：默认值解析被判违规（命中 ${negative.join(' / ')}）—— 判据会恒红`;
+  }
+  return null;
+}
+
 function main(): void {
   const ctxPath = join(REPO_ROOT, CTX_DIR);
   const rulesPath = join(ctxPath, RULES_FILE);
@@ -534,12 +570,41 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 052 不变量 #7 ──────────────────────────────────────────────────────────
+  const membershipProbeFailure = membershipProbe();
+  if (membershipProbeFailure) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: 成员判据探针失败 —— ${membershipProbeFailure}`,
+    );
+    process.exit(1);
+  }
+  const secondFilters = outsideRecall
+    .map(({ name, source }) => ({ name, hits: findShapeHits(source, MEMBERSHIP_PREDICATE_RE) }))
+    .filter(({ hits }) => hits.length > 0);
+  if (secondFilters.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 召回层之外出现成员判据：\n` +
+        secondFilters
+          .map(({ name, hits }) => `  - ${CTX_DIR}/${name}: ${hits.join(' / ')}`)
+          .join('\n') +
+        '\n',
+    );
+    console.error(
+      'Fix: 成员判定 MUST 单点在 leg-recall.rules.ts（052 FR-003「全仓只有一个 filter 概念」）。',
+    );
+    console.error(
+      '     别处再筛一次照样筛得出结果 —— 只是成员集合谁说了算变成运行时才知道的事，且两处口径迟早分叉。',
+    );
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
       `门槛阈值 (${[...new Set(thresholds)].join(' / ')}) 与三段 DTE 界只住 ${RECALL_RULES_FILE}；` +
       `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
-      `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec。`,
+      `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec；` +
+      `六维成员判据零外溢。`,
   );
 }
 

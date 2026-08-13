@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import { FakeLegRetrievalAdapter, type FakeLegChain } from './fake-leg-retrieval.adapter';
-import { BUILD_RECALL_DTE, RECALL_CANDIDATE_CAP, RENT_RECALL_DTE } from './leg-recall.rules';
+import {
+  BUILD_RECALL_DTE,
+  RECALL_CANDIDATE_CAP,
+  RENT_RECALL_DTE,
+  type RetrievalOverride,
+} from './leg-recall.rules';
 import { LEG_TABS, type LegTab } from './leg-tab.rules';
 import type { LegChainMeta, LegChainRow, LegRetrievalResult } from './leg-retrieval.port';
 
@@ -55,6 +60,7 @@ async function retrieve(
   legs: readonly LegChainRow[],
   perspectives: readonly LegTab[] = LEG_TABS,
   candidateCap: number = RECALL_CANDIDATE_CAP,
+  override: RetrievalOverride | null = null,
 ): Promise<LegRetrievalResult> {
   const seed: FakeLegChain = { chain: chainMeta, legs };
   const port = new FakeLegRetrievalAdapter(new Map([[SYMBOL, seed]]));
@@ -63,6 +69,7 @@ async function retrieve(
     now: new Date('2026-08-04T20:00:00.000Z'),
     perspectives,
     candidateCap,
+    override,
   });
   if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
   return result;
@@ -146,6 +153,7 @@ describe('leg-retrieval.port — 「链未就绪」与「链在但候选为空�
       now: new Date('2026-08-04T20:00:00.000Z'),
       perspectives: [...LEG_TABS],
       candidateCap: RECALL_CANDIDATE_CAP,
+      override: null,
     });
     expect(result).toBeNull();
   });
