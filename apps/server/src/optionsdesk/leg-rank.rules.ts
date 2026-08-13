@@ -1,4 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
+import { activityVolume } from './leg-derive.rules';
 import { type LegTab } from './leg-tab.rules';
 import { type LegBasis } from './leg-tier.rules';
 
@@ -296,7 +297,8 @@ const ORDINAL_EXTRACTORS: Readonly<Record<OrdinalFeatureKey, OrdinalExtractor>> 
  * 📌 进得到这里的腿都已过持仓量条件 ⇒ 至少一侧 `> 0`, 全缺失只可能来自测试或换 vendor。
  */
 function liquidityTierFeature(openInterest: number | null, volume: number | null): number {
-  const activity = (openInterest ?? 0) + (volume ?? 0);
+  // 052: 活动量的定义单点在 `leg-derive.rules.ts` —— 档界与活跃标绝对线是同一个量的两条界。
+  const activity = activityVolume(openInterest, volume);
   const tiers = LIQUIDITY_TIER_BOUNDS.length + 1;
   // 档界降序 ⇒ 第一个够得着的就是它的档; 都够不着 = 最差档。
   const rank = LIQUIDITY_TIER_BOUNDS.findIndex((bound) => activity >= bound);

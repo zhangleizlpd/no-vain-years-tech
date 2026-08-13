@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import type { PrismaService } from '../security/prisma.service';
 import { GetLegsUseCase } from './get-legs.usecase';
+import { ACTIVITY_TOP_RANK_COUNT } from './leg-derive.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
 import { toLegTableResponse } from './optionsdesk.dto';
 
@@ -527,21 +528,28 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
 /**
  * T008 —— 打标接线 (FR-016 / FR-018, plan D-MARK-3)。
  *
- * 数据集蓄意让**两条建仓腿的 OI / 成交量全链最低**: 于是它们在全腿 Tab 里排不进前三、在建仓
- * Tab 里却是全部成员 ⇒ 「每个 Tab 按自己的召回全量排名」这件事有了**可观测的差**。若排名基准
- * 退化成全链 (或退化成筛选后的子集), 这两条腿在建仓 Tab 的 `isTopRanked` 立刻翻。
+ * 数据集蓄意让**两条建仓腿的 OI / 成交量全链最低**, 且它们与三条收租腿**分属两个到期日**。
+ *
+ * 🚨 **052 T009 起这份数据的判别性换了来源** (FR-023 分组维度: 候选集 → 到期日): 分组之后
+ * 「同一条腿换个 Tab 换名次」只在**同一到期日的成员数跨 Tab 不同**时可见, 而本数据的两个到期日
+ * 与两个意图 Tab 恰好一一对应 ⇒ 建仓腿在全腿 / 建仓两个 Tab 里归属相同, 这是分组语义的直接
+ * 后果, **不是**排名基准退化。Guardrail 3 (「MUST NOT 把 `markActivity` 挪到筛选之后」) 改由
+ * 本 describe 末尾那条「每个 Tab 拿到名次的行数 == 该 Tab 成员数」守 —— 挪到筛选后被筛掉的腿
+ * 会 `tabs` 含该 Tab 而 `activityByTab` 为 `null`, 那条立刻红。
+ * 📌 「换候选集就换归属」这条 047 语义在 `leg-derive.rules.spec.ts` 有专门断言, 不在此重复。
  */
 describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回全量 (FR-016/FR-018)', () => {
   const base = { greeksComplete: true, ask: undefined };
-  // 建仓腿 (DTE 10, 有效成本 < spot 132.40); OI / Vol 全链最低。
+  // 建仓腿 (DTE 10, 有效成本 < spot 132.40); OI / Vol 全链最低 —— 但**仍在活跃标绝对线之上**
+  // (052 FR-024): 线下的腿一个标都不发, 那样这份数据对「排名」这件事就没有任何分辨力了。
   const buildA: LegFixture = {
     code: 'M-BUILD-A',
     strike: '130',
     expiry: '2026-08-14',
     bid: '2.00',
     delta: '-0.45',
-    openInterest: '10',
-    volume: '1',
+    openInterest: '120',
+    volume: '5',
     ...base,
   };
   const buildB: LegFixture = {
@@ -550,8 +558,8 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
     expiry: '2026-08-14',
     bid: '1.50',
     delta: '-0.10',
-    openInterest: '12',
-    volume: '2',
+    openInterest: '130',
+    volume: '6',
     ...base,
   };
   // 收租长腿 (DTE 164); OI / Vol 全链最高 ⇒ 它们占满全腿 Tab 的前三。
@@ -637,10 +645,6 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
     expect(leg('M-BUILD-A').tabs).toContain('build');
     expect(leg('M-BUILD-A').activityByTab.build?.isTopRanked).toBe(true);
     expect(leg('M-BUILD-B').activityByTab.build?.isTopRanked).toBe(true);
-    // 同两条腿在全腿 Tab (5 条成员) 里排不进前三 —— 名次是**候选集内的相对量**。
-    expect(leg('M-BUILD-A').activityByTab.all?.isTopRanked).toBe(false);
-    expect(leg('M-BUILD-B').activityByTab.all?.isTopRanked).toBe(false);
-    // 若排名基准退化成「全链」, 上面两条 build 断言会翻成 false —— 那就是 Guardrail 3 那个坑。
 
     // 每个 Tab 拿到名次的行数 == 该 Tab 的成员数 (排名跑在成员集合上, 不多不少)。
     for (const tab of ['all', 'build', 'rent'] as const) {
@@ -648,6 +652,17 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
       const ranked = view.legs.filter((l) => l.activityByTab[tab] !== null);
       expect(ranked.map((l) => l.code).sort()).toEqual(members.map((l) => l.code).sort());
     }
+  });
+
+  it('🚨 052 FR-023: 全腿 Tab 的标**逐到期日**发, 不是全堆在流动性最好的那个到期日', async () => {
+    const view = await tableWithBucket('gte_two_thirds');
+    const marked = view.legs.filter((l) => l.activityByTab.all?.isTopRanked).map((l) => l.code);
+
+    // 047 候选集口径下全腿 Tab 的 3 个标会被三条收租腿 (OI 900/800/700) 全占,
+    // 两条 08-14 的建仓腿一个标没有 —— 抽掉分组维度这条立刻红。
+    expect(marked).toContain('M-BUILD-A');
+    expect(marked).toContain('M-BUILD-B');
+    expect(marked.length).toBeGreaterThan(ACTIVITY_TOP_RANK_COUNT);
   });
 });
 

@@ -614,7 +614,16 @@ export class GetLegsUseCase {
       // 🚨 Guardrail 9: 成员集合在这里求值**一次**, 活跃度排名、特征集、有序列表三者共用它
       // ⇒ `tabOrder[t]` 与每腿的 `tabs` 不可能 drift (各算一份的话两边都算得出结果)。
       const members = legs.filter((leg) => leg.tabs.includes(tab));
-      const activity = markActivity(members);
+      // 分组键与月度链标 / 财报标同源 (052 FR-023): 三处都走 `dateOnlyOf`, 传 `Date` 或全串
+      // 会把同一到期日拆成一腿一组 —— 那时**每条腿都是组内第一**, 而结果照样有。
+      const activity = markActivity(
+        members.map((leg) => ({
+          strike: leg.strike,
+          expiryKey: dateOnlyOf(leg.expiryDate),
+          openInterest: leg.openInterest,
+          volume: leg.volume,
+        })),
+      );
       members.forEach((leg, i) => {
         (leg.activityByTab as Record<LegTab, ActivityMark | null>)[tab] = activity[i];
       });

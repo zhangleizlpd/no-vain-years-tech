@@ -41,8 +41,20 @@ export const DAYS_PER_YEAR = 365;
  */
 export const US_OPTION_CONTRACT_MULTIPLIER = 100;
 
-/** 活跃度 Top N 的 N (plan D-SOT-5「取前 3」)。 */
+/** 活跃度 Top N 的 N (plan D-SOT-5「取前 3」)。052 起它是**每个到期日**内的 N (FR-023)。 */
 export const ACTIVITY_TOP_RANK_COUNT = 3;
+
+/**
+ * 052 **活跃标绝对量下限** (FR-024), 作用于**活动量** = `OI + 当日成交` (张)。
+ *
+ * ⏳ **占位值, 标定在 052 T016** —— 起手取 `leg-rank.rules.ts` `LIQUIDITY_TIER_BOUNDS` 的第二档界
+ * (dev 意图候选 325 条活动量的 `p40 = 108`) 同值: 语义是「够不着第二档的腿不配发活跃标」。
+ * **MUST NOT 当已标定值引用**。
+ *
+ * 🚨 **它是相对判据之外的第二道门, 不是替代** (plan Guardrail 4): 只用相对判据会在死到期日里
+ * 发标 —— 实测某到期日 OI 合计仅 23、其 top-1 只有 `OI = 4`, 而它在组内照样是第一名。
+ */
+export const ACTIVITY_ABSOLUTE_FLOOR = 100;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ① 三个费率 (分母恒为准备金 K − P)
@@ -199,6 +211,14 @@ export function deriveDeltaColumns(absDelta: number | null | undefined): DeltaCo
 export interface ActivityInput {
   /** 行权价 —— 整数档判据。 */
   strike: Decimalish;
+  /**
+   * 到期日分组键 (052 FR-023) —— 调用方给**已归一到「日」**的键, 与月度链标 / 财报标同源
+   * (`get-legs.usecase.ts` 的 `dateOnlyOf`), 三处分组键同一口径才不会 drift。
+   *
+   * 🚨 **MUST NOT 传含时分秒的字符串或 `Date.toISOString()` 全串**: 同一到期日会因此分裂成多组,
+   * 每组只剩一条腿 ⇒ 条条都是「组内第一」, 标满天飞 —— 而**标照常有、函数照常返回**, 不会红。
+   */
+  expiryKey: string;
   /** 未平仓合约数; 缺失 → `null` (排末位, 不当 0)。⚠️ 它归属 T−1 交易日 (Guardrail 6)。 */
   openInterest: number | null;
   /** 当日成交量; 缺失 → `null`。 */
@@ -236,36 +256,76 @@ function rankDescending(values: readonly (number | null)[]): number[] {
 }
 
 /**
- * 活跃度标记 (plan D-SOT-5)。`O(n log n)` (两次排名 + 一次取前 N)。
+ * **活动量** = `OI + 当日成交` (张)。缺失一侧按「没观测到活动」取 `0`。`O(1)`。
  *
- * 🚨 **不是绝对阈值分档, 是当前候选集内的相对排名** —— SoT 原文明确 **不用** 全链 Top-N /
+ * 🚨 **单一计算地点** (052): 流动性档界 (`leg-rank.rules.ts` `LIQUIDITY_TIER_BOUNDS`) 与活跃标
+ * 绝对线 ({@link ACTIVITY_ABSOLUTE_FLOOR}) 是同一个量的两条界, 两处各写一份表达式的话
+ * T016 标定只改一处就会静默 drift —— 而两边照样都算得出数。
+ *
+ * 📌 存量 (`OI`) 与流量 (成交) 同量纲相加是刻意的粗化: 要的是活动量的**量级**, 不是精确的
+ * 流动性模型。
+ */
+export function activityVolume(openInterest: number | null, volume: number | null): number {
+  return (openInterest ?? 0) + (volume ?? 0);
+}
+
+/**
+ * 活跃度标记 (plan D-SOT-5, 052 D-MARK-1)。`O(n log n)` (逐组两次排名 + 取前 N)。
+ *
+ * **两条判据同时成立才发标** (052 FR-024):
+ * ① 相对 —— 在**同一到期日**内 `OI` 与 `Volume` 各自排名之和进前 {@link ACTIVITY_TOP_RANK_COUNT};
+ * ② 绝对 —— 活动量 ≥ {@link ACTIVITY_ABSOLUTE_FLOOR}。
+ *
+ * 🚨 **相对判据的分母是「组」不是「全链绝对阈值」** —— SoT 原文明确 **不用** 全链 Top-N /
  * OI 中位 / V/OI。⇒ 同一条腿换一个候选集 (换 Tab / 换筛选) 归属会变, 这是**定义如此**不是 bug;
  * 故本函数**只接受整个候选集**, 不提供单行版本 —— 单行版本必然要拿全局阈值凑, 正是被否的做法。
  *
- * 并列处置: 排名和相同时依次按 `OI` 降序 → `Volume` 降序 → 原序, **取满 N 个不外溢** —— 「前 3」
- * 就是 3 行, 免得并列时列里冒出 5 个标记 (窄表里视觉噪音直接盖过信号)。
+ * 🚨 **052 起分组维度是到期日** (FR-023): 候选集口径下标会全部堆在流动性最好的那个到期日上,
+ * 其余到期日一个标没有 —— 而**标照常发得出来**, 只是看不见「每个到期日各自谁最活跃」。
+ *
+ * 🚨 **绝对线只否决、不递补** (FR-024 字面「进前 N **且**过线」): 前 N 在**全组**内定死, 组内
+ * 第 3 被绝对线挡下时第 4 名即使过线也不顶上。反过来写 (先滤过线的再取前 N) 会把「排名」的
+ * 分母悄悄换成「过线的那批」, 结果照样有、名次却是另一个口径的。
+ *
+ * 并列处置: 排名和相同时依次按 `OI` 降序 → `Volume` 降序 → 组内原序, **取满 N 个不外溢** ——
+ * 「前 3」就是 3 行, 免得并列时列里冒出 5 个标记 (窄表里视觉噪音直接盖过信号)。决胜链到原序
+ * 为止全确定 ⇒ 同一输入两次调用逐字相同 (plan Guardrail 10)。
  */
 export function markActivity(rows: readonly ActivityInput[]): ActivityMark[] {
-  const oiRanks = rankDescending(rows.map((row) => row.openInterest));
-  const volumeRanks = rankDescending(rows.map((row) => row.volume));
-  const topIndexes = new Set(
-    rows
-      .map((row, index) => ({
+  // 只装出现过的到期日 ⇒ 无候选的到期日既不成组也不参与除法 (D-MARK-1「不产生空分组」)。
+  const groups = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    const members = groups.get(row.expiryKey);
+    if (members === undefined) groups.set(row.expiryKey, [index]);
+    else members.push(index);
+  });
+
+  const topIndexes = new Set<number>();
+  for (const members of groups.values()) {
+    const oiRanks = rankDescending(members.map((index) => rows[index].openInterest));
+    const volumeRanks = rankDescending(members.map((index) => rows[index].volume));
+    members
+      .map((index, seat) => ({
         index,
-        rankSum: oiRanks[index] + volumeRanks[index],
-        openInterest: row.openInterest ?? -1,
-        volume: row.volume ?? -1,
+        seat,
+        rankSum: oiRanks[seat] + volumeRanks[seat],
+        openInterest: rows[index].openInterest ?? -1,
+        volume: rows[index].volume ?? -1,
       }))
       .sort(
         (x, y) =>
           x.rankSum - y.rankSum ||
           y.openInterest - x.openInterest ||
           y.volume - x.volume ||
-          x.index - y.index,
+          x.seat - y.seat,
       )
       .slice(0, ACTIVITY_TOP_RANK_COUNT)
-      .map((row) => row.index),
-  );
+      .filter(
+        ({ index }) =>
+          activityVolume(rows[index].openInterest, rows[index].volume) >= ACTIVITY_ABSOLUTE_FLOOR,
+      )
+      .forEach(({ index }) => topIndexes.add(index));
+  }
 
   return rows.map((row, index) => {
     const isRoundStrike = D(row.strike).isInteger();
