@@ -123,8 +123,8 @@ context7_verified: []
 
 落法：
 
-- **骨架**（`FR-005`）= `resolvePremiumFloor(spot)` + `passesPremiumMin(bid, floor)`，两个都是既有导出。
-- **四种格值各自的成员集** = `recallCandidates(context, ['all','build','rent'], legs, cap, null)` 拿三视角归属。
+- **骨架**（`FR-005`）= `recallCandidates(context, ['all'], legs, legs.length, { perspective: 'all', criteria: { livenessMin: null } })` —— **全腿视角 + 活性维度显式覆盖为「不限」**。全腿视角的系统默认值只有权利金与活性两维非空（`defaultCriteria`），把活性放开之后，候选集**恰好等于**「过权利金门槛之后的整条链」。<br>🚨 **2026-08-14 T001 实装期订正**：本行原写「= `resolvePremiumFloor(spot)` + `passesPremiumMin(bid, floor)`，两个都是既有导出」—— 那条**实装不出来**。`check-optionsdesk-rule-constants.ts` 不变量 #7（052 FR-003「全仓只有一个 filter 概念」）禁止 `passesPremiumMin(` 出现在 `leg-recall.rules.ts` 之外，`chain-report.rules.ts` 在其扫描面内 ⇒ 照原文写，CI `gate-checks` 必红。两条备选各自出局：改 `leg-recall.rules.ts` 加导出破 `FR-045` 的零改动（与 T005 的 `git diff` 零行断言直接冲突）；放宽守门脚本把一条真守门降级成装饰。<br>📌 换成覆盖法后**约束反而更紧**：骨架与三视角候选集成了**两次口径不同的召回调用**，下方那条「骨架 ≠ 候选集」从一条要靠人记住的纪律变成结构性的事实。
+- **四种格值各自的成员集** = `recallCandidates(context, ['all','build','rent'], legs, cap, null)` 拿三视角归属。<br>⇒ 报表侧共 **两次** `recallCandidates` 调用（骨架一次、三视角归属一次），各 `O(n)`。判据仍单点，管线仍独立。
 - **到此为止** —— 🚫 报表**不进**粗排 / 特征加工 / 精排 / 表达四层（ADR-0064 决策 1）。它不排序、不打分、不截断，那四层对它没有一层是有意义的。
 
 🚨 **`candidateCap` MUST 传 `legs.length`（= 本次不设上限），🚫 MUST NOT 沿用 `RECALL_CANDIDATE_CAP`**：
@@ -137,8 +137,9 @@ context7_verified: []
 
 #### D-AGG-1 · 新纯函数文件 `chain-report.rules.ts`
 
-装五件事，全部无 I/O、无 DI（ADR-0043 §4）：
+装六件事，全部无 I/O、无 DI（ADR-0043 §4）：
 
+0. **骨架与列轴** —— 骨架走 `D-RECALL-1` 那次覆盖调用（`chainReportSkeleton`）；列 = 链上实际到期日去重升序，不分箱（`FR-003`）。📌 骨架落在本文件而非 use case，是因为它是纯函数且与行列轴同属「网格总体怎么定」这一层；use case 只编排。
 1. **价外档分箱** —— 等距 10%、下界价内 10%（`FR-002`）。`档 = floor((spot − K) / spot × 10)`，下界外单独计数。
 2. **格聚合** —— 每格取最优（年化 / 活跃度取 `max`，建仓成色取 `min`，`FR-006`）+ 腿数 + 次优（`FR-027`，格内 < 2 条时显式为 `null` 而非复述最优，`FR-028`）。
 3. **三互斥计数**（`FR-034`）—— 顺序即语义：全量 → 权利金挡下 → 骨架 → 行下界外 → 行内 → 活性挡下 → 有值。⚠️ **顺序不可换**：在骨架全域上数「被活性挡下」会与「行下界外」重复计 865 条（实测全池），三个数照样都出得来、只是加不回全量。**求和恒等式 MUST 有单测**（`SC-006`）。
