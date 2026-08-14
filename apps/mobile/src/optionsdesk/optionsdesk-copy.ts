@@ -630,6 +630,17 @@ export const OPTIONSDESK_COPY = {
     stampOpenInterest: '持仓量',
     /** 报价那条恒带「收盘」后缀 —— 本片只有 EOD 快照一种来源。 */
     quoteClosedSuffix: ' 收盘',
+    // ── 网格列头与范围框（FR-009 / FR-009a） ──────────────────────
+    /** 月度到期链标（判据在 server，与选约表同一处）。 */
+    monthlyChip: '月',
+    /** 🚨 列级淡出的**主信号**（Guardrail 7）—— 灰底只是辅，🚫 别只留灰底。 */
+    outOfBandChip: '段外',
+    /**
+     * 两条召回段图例。🚫 **蓄意不写 DTE 天数** —— 那两个区间是 server 的召回常量
+     *（`leg-recall.rules.ts`），抄到客户端就是第二份阈值；哪几列归哪一段，范围框本身已经说了。
+     */
+    bandKeyBuild: '建仓段',
+    bandKeyRent: '收租段',
     /** Edge Case：锚 `excluded` ⇒ 报表照常渲染、页头带标记（用户是主动进来的）。 */
     excludedNotice: '该标的已排除出雷达 —— 报表照常，仅供查看',
     loadFailed: '链分析加载失败',

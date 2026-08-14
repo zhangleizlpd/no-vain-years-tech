@@ -100,6 +100,14 @@ export interface LegColumnScrollbarProps {
   viewportW: SharedValue<number>;
   /** 右侧列区内容总宽。 */
   contentWidth: number;
+  /**
+   * 左端留白 = 冻结列宽。默认选约表的 88px；055 链分析报表的行标列是 56px。
+   * 055 T011 加 —— **参数化而不是复制第二份**（`FR-004`：横滑复用 ADR-0063 那一套，
+   * 🚫 MUST NOT 另立第二套；本文件头「宽度走 prop、不写死成模块常量」同一条）。
+   */
+  stickyWidth?: number;
+  /** 轨道 testID（thumb 自动派生 `-thumb`）。 */
+  testID?: string;
 }
 
 /**
@@ -119,7 +127,13 @@ export interface LegColumnScrollbarProps {
  * 📌 两个 `useAnimatedStyle` 是**节点数决定的**，不是第二个数据源：整条的可见性挂在外层、
  *    thumb 的宽与位移挂在 thumb 自身，一个 style 对象没法同时喂两个节点。两者读的是同一对值。
  */
-export function LegColumnScrollbar({ tx, viewportW, contentWidth }: LegColumnScrollbarProps) {
+export function LegColumnScrollbar({
+  tx,
+  viewportW,
+  contentWidth,
+  stickyWidth = LEG_STICKY_COL_WIDTH,
+  testID = 'optionsdesk-detail-leg-scrollbar',
+}: LegColumnScrollbarProps) {
   // 无横向溢出（`travel ≤ 0`）⇒ 高度收成 0：整条既不占位也不可见（spec Edge Case ①）。
   const barStyle = useAnimatedStyle(() => ({
     height: contentWidth - viewportW.value > 0 ? SCROLLBAR_HEIGHT : 0,
@@ -151,13 +165,10 @@ export function LegColumnScrollbar({ tx, viewportW, contentWidth }: LegColumnScr
       {/* ⚠️ 坑①：token 下沉到 plain 子 View（`className` 挂 `Animated.*` 会被整串吞掉）。
           首列宽的留白用兄弟节点占位 —— RN 没有 CSS 那套 `left` 定位的等价物。 */}
       <View className="h-full flex-row bg-surface-alt">
-        <View style={{ width: LEG_STICKY_COL_WIDTH }} />
-        <View className="h-full flex-1 bg-line" testID="optionsdesk-detail-leg-scrollbar">
+        <View style={{ width: stickyWidth }} />
+        <View className="h-full flex-1 bg-line" testID={testID}>
           <Animated.View style={thumbStyle}>
-            <View
-              className="h-full w-full bg-ink-muted"
-              testID="optionsdesk-detail-leg-scrollbar-thumb"
-            />
+            <View className="h-full w-full bg-ink-muted" testID={`${testID}-thumb`} />
           </Animated.View>
         </View>
       </View>

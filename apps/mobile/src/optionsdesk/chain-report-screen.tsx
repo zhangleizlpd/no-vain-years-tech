@@ -9,22 +9,41 @@
 // 🚨 **页头的 IV 分位整份复用 046**（`FR-031`）：读数走 `chainReportHeaderView` → `ivReadoutView`，
 //    分段条直接用 `IvpSegmentBar`（复用频次 ≥ 2 的既有件），🚫 不新造读数、不新画一条。
 //
-// 📌 **本 task 只落容器 + 页头**：格值四选一与页脚三计数归 T012、网格与横滑归 T011、
-//    IV 期限结构曲线归 T013、五种降级态归 T017。下面的空位是给它们留的，不是漏了。
-// 判定全在 `chain-report-copy.ts` / `chain-report-scale.rules.ts`（vitest 覆盖）；
-// 渲染 / 交互 / a11y 走 T018 Playwright e2e（本仓测试分层：vitest=logic / Playwright=UI）。
-import { useMemo } from 'react';
-import { Pressable, Text, View } from 'react-native';
+// ── 055 T011 横滑层（`FR-004`, plan `D-UI-2`）────────────────────────────────
+// 🚨 **整套复用 ADR-0063（049 那一套）**：屏级持有唯一位移 `tx` + 唯一 `Gesture.Pan`，
+//    三个列区各自 `translateX` 读它 —— 零滚动容器、零回写路径。🚫 MUST NOT 另立第二套。
+// 🚨 **`GestureDetector` 的子节点必须是单个带 `collapsable={false}` 的原生 `View`**：传
+//    Fragment 或被 view-flattening 压平，手势**静默不生效**（049 实撞）。
+// 🚨 **屏自包裹 `GestureHandlerRootView`** —— 根 `_layout` 不全局挂，漏了是 Render Error。
+// 🚨 **可视宽走 `onLayout` 实测**，不用 `useWindowDimensions()`（后者假设「表宽 = 窗宽」，
+//    将来加边距或平板分栏会**静默算错 clamp 边界**，右侧列滑不到底且不会红）；变宽时顺手把
+//    `tx` 拉回新域，否则竖→横→竖后卡在越界位置只能反向滑。
+//
+// 📌 **本片仍缺三块**：格值四选一与页脚三计数归 T012、IV 期限结构曲线归 T013、
+//    五种降级态归 T017。下面的空位是给它们留的，不是漏了。
+// 判定全在 `chain-report-copy.ts` / `chain-report-grid.rules.ts` / `chain-report-scale.rules.ts`
+//（vitest 覆盖）；渲染 / 交互 / a11y 走 T018 Playwright e2e。
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Stack } from 'expo-router';
+import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useSharedValue } from 'react-native-reanimated';
 
 import { ErrorRow, SafeAreaView, Spinner, makeHeaderBackOrParent } from '~/ui';
 import { chainReportHeaderView, chainReportTitle } from './chain-report-copy';
+import { ChainReportGrid } from './chain-report-grid';
+import { chainReportContentWidth } from './chain-report-grid.rules';
+import type { ChainReportMetric } from './chain-report-scale.rules';
 import { IvpSegmentBar } from './ivp-segment-bar';
+import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { optionsdeskUnderlyingRoute } from './optionsdesk-routes';
 import { useChainReport } from './use-chain-report';
 
 const COPY = OPTIONSDESK_COPY.chainReport;
+
+/** 默认格值 = 收租年化（mockup 帧 ① 的默认态）。四选一切换归 T012。 */
+const DEFAULT_METRIC: ChainReportMetric = 'rentAnnualized';
 
 export interface ChainReportScreenProps {
   /** canonical `market:code`（= 锚 ticker，标的身份）。 */
@@ -34,6 +53,26 @@ export interface ChainReportScreenProps {
 export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
   const { report, isPending, isError, refetch } = useChainReport(symbol);
   const header = useMemo(() => (report === null ? null : chainReportHeaderView(report)), [report]);
+  const metric = DEFAULT_METRIC;
+
+  const columnCount = report?.columns.length ?? 0;
+  const contentWidth = chainReportContentWidth(columnCount);
+  const tx = useSharedValue(0);
+  const viewportW = useSharedValue(0);
+  const [trackWidth, setTrackWidth] = useState(0);
+
+  const onTrackLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const width = event.nativeEvent.layout.width;
+      viewportW.value = width;
+      // 变宽时把 `tx` 拉回新合法域 —— 两处夹的必须是同一套判据（049 Guardrail 5）。
+      tx.value = clampLegColumnTx(tx.value, width, contentWidth);
+      setTrackWidth((prev) => (prev === width ? prev : width));
+    },
+    [contentWidth, tx, viewportW],
+  );
+
+  const pan = useLegColumnPan({ tx, viewportW, contentWidth });
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
@@ -85,6 +124,26 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
               </Text>
             )}
           </View>
+        )}
+
+        {report === null ? null : (
+          <GestureHandlerRootView>
+            <GestureDetector gesture={pan}>
+              {/* 🚨 单个原生 `View` + `collapsable={false}`：Fragment 或被压平 ⇒ 手势静默失效。 */}
+              <View collapsable={false}>
+                <ChainReportGrid
+                  metric={metric}
+                  rows={report.rows}
+                  columns={report.columns}
+                  cells={report.cells[metric]}
+                  tx={tx}
+                  viewportW={viewportW}
+                  trackWidth={trackWidth}
+                  onTrackLayout={onTrackLayout}
+                />
+              </View>
+            </GestureDetector>
+          </GestureHandlerRootView>
         )}
 
         {isPending ? (
