@@ -5,12 +5,10 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
-import type { LegActivityByTabResponse } from './legActivityByTabResponse';
+import type { LegActivityResponse } from './legActivityResponse';
 import type { LegEarningsMarkResponse } from './legEarningsMarkResponse';
 import type { LegResponseBasis } from './legResponseBasis';
-import type { LegResponseTabsItem } from './legResponseTabsItem';
 import type { LegResponseTier } from './legResponseTier';
-import type { LegTierByTabResponse } from './legTierByTabResponse';
 
 export interface LegResponse {
   /** vendor 合约代码 */
@@ -25,6 +23,10 @@ export interface LegResponse {
   bid: string | null;
   /** ask (不参与判档) */
   ask: string | null;
+  /** **单笔权利金** = `bid × 合约乘数` (053 FR-032) —— 卖出一张 put 实际收到多少钱。🚨 **服务端算**, 🚫 客户端 MUST NOT 自己乘一次: 合约乘数是**市场规则不是合约属性** (故也不落库), 服务端已持有那一份 (成交额在用它) ⇒ 客户端再乘就是同一判据两处各算一份, 而两边都乘得出数。📌 口径取 bid 而非 mid/ask —— 与档位判据同一个数 (FR-018)。无 bid → null, MUST NOT 当 0 */
+  contractPremium: string | null;
+  /** **相对价差** `(ask − bid) / mid`, 小数比例 (053 FR-032) —— 与召回层流动性判据**同一个** 派生值 (阈值就是拿它比的)。🚨 复用而非新造: 上屏的数与挡腿的数各算一份的话, 「这条腿为什么被挡了」在屏幕上就对不上账, 而两个数都显示得出来。任一侧缺报价 / mid ≤ 0 → null (双边报价都是 0 的死合约算不出价差) */
+  relativeSpread: string | null;
   /** 买盘挂牌量 (张); **MUST NOT 参与判档** —— 档位恒由 bid 价定 (FR-018), 量只作同屏参照 */
   bidSize: number | null;
   /** 卖盘挂牌量 (张); 同 bidSize, 只作同屏参照 */
@@ -37,7 +39,7 @@ export interface LegResponse {
   weeklyRate: string | null;
   /** 年化费率, 小数比例 (落在周化族的行上它就是「折年」参照, **不作排序键**) */
   annualizedRate: string | null;
-  /** 四档 (bid 口径); **greeks 缺失行恒 null** —— 不判档不着色 (FR-007), 无 bid 亦 null */
+  /** 四档 (判定值恒为 bid 口径费率), **档界按本次视角的口径取** (FR-023 / 053 FR-041): 建仓走周化、收租与全腿走年化 —— 同一条腿在两个视角判出不同档是**定义如此**, 那三份由三次请求各算各的 (053 起把三份收窄成本字段)。**greeks 缺失行恒 null** —— 不判档不着色 (FR-007), 无 bid 亦 null */
   tier: LegResponseTier;
   /** 薄档带出的 ask 口径费率 (仅供呈现, 不参与判定); 其余档恒 null */
   askRate: string | null;
@@ -55,12 +57,8 @@ export interface LegResponse {
   volume: number | null;
   /** 成交额 = Vol × 权利金 × 100。📌 成交额高 ≠ 真流动 */
   turnover: string | null;
-  /** 三个 Tab **各一套**活跃度标记 —— 排名是候选集内的相对量, 换 Tab 归属就变 (D-SOT-5) */
-  activityByTab: LegActivityByTabResponse;
-  /** 本腿属于哪几个 Tab —— **客户端据此过滤**, MUST NOT 自己重算成员判据 (判据单点在 server) */
-  tabs: LegResponseTabsItem[];
-  /** 每个 Tab **各自口径**下的档位 (FR-023) —— 建仓走周化档界、收租与全腿走年化。同一条腿在两个 Tab 判出不同档是**定义如此**; 不属于该 Tab 的格恒 null。上面的标量 tier 是 legacy 载体 */
-  tierByTab: LegTierByTabResponse;
+  /** **本次视角**候选集内的活跃度标记 —— 排名是候选集内的相对量, 换视角归属就变 (D-SOT-5)。053 起收窄成单份: 拆请求之后另两个视角结构上没有可判的东西 */
+  activity: LegActivityResponse | null;
   /** 推荐标 (FR-011): 本腿 |Δ| 落**标的级意图**对应的带内。🚨 **随意图判, 不随当前 Tab 变** —— 收租意图下打开建仓 Tab 会看到全 false, 那是**正确信号**不是 bug; greeks 缺失恒 false (FR-013), 但该腿**照常在召回集里** */
   isRecommended: boolean;
   /** 到期日是不是该月的**月度到期日** (FR-014, 判据 = 该月第三个周五; 该日非交易日则取其前一交易日) —— 月度链流动性通常显著好于周链。🚫 呈现侧 MUST NOT 简化成「是不是周五」 */

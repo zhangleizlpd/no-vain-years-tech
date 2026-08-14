@@ -233,9 +233,12 @@ export class OptionsdeskController {
       'Two timestamps are NOT the same day and both ship: the block asOf / quoteAsOf describe the ' +
       'quotes, while oiAsOf describes open interest, which US option exchanges refresh pre-market ' +
       'and therefore belongs to the PREVIOUS session in an end-of-day snapshot. The OI column MUST ' +
-      'render oiAsOf. Activity is a RELATIVE rank inside the current tab candidate set, so the ' +
-      "server ships one set of marks per tab plus each leg's tab membership — clients filter by " +
-      'that membership instead of re-deriving the band predicates. Dead-tier legs stay in the ' +
+      "render oiAsOf. Activity is a RELATIVE rank inside THIS perspective's candidate set, so " +
+      'each leg carries ONE mark, computed for the perspective being answered — the other two ' +
+      'have nothing to rank against in this response and are not shipped. The legs array arrives ' +
+      'already ranked AND already truncated server-side at displayLimit: its order IS the display ' +
+      'order (clients MUST NOT re-sort) and matchedCount is the pre-truncation total, so ' +
+      '"showing the first D of N" stays computable without shipping D. Dead-tier legs stay in the ' +
       'list (sorted last) and legs with missing greeks stay in too, unclassified and uncoloured. ' +
       'No anchor for the symbol → 404 with code ANCHOR_NOT_FOUND_FOR_SYMBOL.',
   })

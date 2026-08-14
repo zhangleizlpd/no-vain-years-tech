@@ -9,9 +9,9 @@ import type { OptionsdeskControllerLegsPerspective } from './optionsdeskControll
 
 export type OptionsdeskControllerLegsParams = {
 /**
- * 本次覆盖作用于哪个视角。**给了任一条件就 MUST 给它**; 省略 = 无覆盖 (三视角全走默认值)
+ * 🚨 **必填** (053 FR-001): 本次要**返回哪个视角**的腿 —— 每个视角各自独立取数, 一次请求只 作答一个。缺参或取值不在三值内 → **400**; 服务端 MUST NOT 替你挑一个默认视角 (那时腿数、名次、档位全都正常, 只是答的不是问的那个视角)。它同时决定检索条件覆盖作用于谁 (052 FR-015)
  */
-perspective?: OptionsdeskControllerLegsPerspective;
+perspective: OptionsdeskControllerLegsPerspective;
 /**
  * 行权价上界 (闭区间); 空串 = 覆盖为不限
  */

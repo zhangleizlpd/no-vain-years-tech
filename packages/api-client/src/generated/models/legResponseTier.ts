@@ -7,7 +7,7 @@
  */
 
 /**
- * 四档 (bid 口径); **greeks 缺失行恒 null** —— 不判档不着色 (FR-007), 无 bid 亦 null
+ * 四档 (判定值恒为 bid 口径费率), **档界按本次视角的口径取** (FR-023 / 053 FR-041): 建仓走周化、收租与全腿走年化 —— 同一条腿在两个视角判出不同档是**定义如此**, 那三份由三次请求各算各的 (053 起把三份收窄成本字段)。**greeks 缺失行恒 null** —— 不判档不着色 (FR-007), 无 bid 亦 null
  */
 export type LegResponseTier = typeof LegResponseTier[keyof typeof LegResponseTier] | null;
 
