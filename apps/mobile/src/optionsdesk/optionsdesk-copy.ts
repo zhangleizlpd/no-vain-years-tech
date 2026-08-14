@@ -509,7 +509,6 @@ export const OPTIONSDESK_COPY = {
       /** 「不限」= 空框 + 占位符。🚫 MUST NOT 写 0 或 ∞（两者都是**值**，不是「没有边界」）。 */
       unbounded: '不限',
       rangeDash: '–',
-      orWord: '或',
       percentSuffix: '%',
       /**
        * 活跃度分组块的标签（056 `FR-034`）。

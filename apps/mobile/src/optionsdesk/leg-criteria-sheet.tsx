@@ -48,9 +48,12 @@ const COPY = OPTIONSDESK_COPY.legPicker.criteria;
 const TIP_TOP = 36;
 
 /**
- * 每行画哪几个框，**按渲染序**（`CriteriaRow` 的 switch 逐行同序）—— 键盘的初始落点从它取。
+ * 每行画哪几个框 —— **键盘的初始落点**从它取（`firstFieldOf`）。
  * 📌 与 `leg-criteria.rules.ts` 里那份「维度 → 框」不是同一张表：那张按**维度**分组
- *    （活性一维两框、行权价两维两框），这张是**版面顺序**，只服务于「先落在哪个框上」。
+ *    （活性一维两框、行权价两维两框），这张按**行**。
+ * 📌 056 T005 起本表**不再是版面序** —— 屏上从上到下的顺序归 `SHEET_BLOCKS`（表达层独立
+ *    常量，含合并行 `premiumSpread`）。两者恰好都以 `strike` 起手 ⇒ 初始落点仍是 `strikeMin`，
+ *    但这是巧合而非约束：**改 `SHEET_BLOCKS` 的首块时要一并想清楚键盘该落在哪。**
  */
 const ROW_FIELDS: Readonly<Record<CriteriaRowKey, readonly (keyof CriteriaForm)[]>> = {
   strike: ['strikeMin', 'strikeMax'],
@@ -176,10 +179,10 @@ export function LegCriteriaSheet({
           {/* 🚨 **三视角同一份行集**（056 FR-012）—— 不再按 tab 裁行：某一维默认值为空 ⇒ 该行
               照常出现并呈「不限」，那是一个**用户可用的旋钮**，不是「没有这个旋钮」。
               📌 行为惰性：被藏的两行默认值本来就都是 `null`（判据不生效）⇒ 默认候选集零变化。 */}
-          {CRITERIA_ROWS.map((row) => (
-            <CriteriaRow
-              key={row}
-              row={row}
+          {SHEET_BLOCKS.map((blockKey) => (
+            <CriteriaBlock
+              key={blockKey}
+              blockKey={blockKey}
               draft={draft}
               changed={changed}
               active={active}
@@ -226,11 +229,35 @@ function sheetSubtitle(changedCount: number, pending: boolean): string {
 }
 
 /**
- * 一行控件。**一行 ≠ 一维**：行权价一行两个独立维度、DTE 与活性一行一个维度（值是一对数），
- * 判据见 `leg-criteria.rules.ts` 文件头。
+ * 抽屉的**版面序** —— 表达层独立常量。
+ *
+ * 🚨 **MUST NOT 用 `CRITERIA_ROWS` 的键序代劳**：那份序是**计数语义序**（`ROW_CRITERIA`
+ *    「每行管哪几维」的键序），边际计数行的展示面跟着它走。为了排版面去动它，会静默改掉
+ *    计数行的呈现顺序 —— 屏上不会红，只是数字换了位置。两者从此各自独立：本常量只管
+ *    「屏上从上到下长什么样」。
+ * 📌 `premiumSpread` 是把权利金与价差两维**并成一行等分两半**（`FR-011`）⇒ 块数从 5 降到 4，
+ *    而**维度数一个没变**（`CRITERION_KEYS` 仍是六维）。
  */
-function CriteriaRow({
-  row,
+const SHEET_BLOCKS = ['strike', 'dte', 'premiumSpread', 'liveness'] as const;
+type SheetBlockKey = (typeof SHEET_BLOCKS)[number];
+
+/**
+ * 规则位槽宽 —— 预留到容得下未来的规则选择器（所需 124，`FR-031`）⇒ 将来升级**只换槽内内容**，
+ * 块高与字段区版式不变。📌 用 `style` 而非 class 与本文件 `PremiumTip` 的既有写法一致。
+ */
+const RULE_SLOT_WIDTH = 130;
+
+/**
+ * 一个版面块。**一块 ≠ 一维**：行权价一块两个独立维度、期限与活跃度各一块一个维度（值是一对数）、
+ * 权利金+价差一块两个维度。判据见 `leg-criteria.rules.ts` 文件头。
+ *
+ * 🚨 值区**一律齐右边界**（`FR-010` / `FR-013`）—— 靠框上的 `flex-1` 吃掉剩余宽度，而不是
+ *    `min-w` 挤在左侧、右侧留一大片空白（那正是 owner 提的四条起因之一）。
+ * 📌 这里的 `flex-1` 是**横向**的（父块 `h-8` 定高、框自带 `h-7`）—— 与 mobile-impl-playbook
+ *    那条「无确定高度父容器内禁裸 `flex-1`」不冲突，那条说的是纵向塌缩。
+ */
+function CriteriaBlock({
+  blockKey,
   draft,
   changed,
   active,
@@ -238,7 +265,7 @@ function CriteriaRow({
   onToggleTip,
   onSelect,
 }: {
-  row: CriteriaRowKey;
+  blockKey: SheetBlockKey;
   draft: CriteriaForm;
   changed: readonly string[];
   active: keyof CriteriaForm;
@@ -247,110 +274,154 @@ function CriteriaRow({
   onSelect: (field: keyof CriteriaForm) => void;
 }) {
   const dirty = (...keys: readonly string[]) => keys.some((key) => changed.includes(key));
-  switch (row) {
+  const slot = { draft, active, onSelect };
+  switch (blockKey) {
     case 'strike':
       return (
-        <View className="h-8 flex-row items-center gap-xs">
+        <View
+          testID="optionsdesk-detail-criteria-block-strike"
+          className="h-8 flex-row items-center gap-xs"
+        >
           <RowLabel text={COPY.labelStrike} dirty={dirty('strikeMin', 'strikeMax')} />
-          <CriteriaInput
-            field="strikeMin"
-            label={COPY.labelStrike}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
-          <Text className="text-xs text-ink-muted">{COPY.rangeDash}</Text>
-          <CriteriaInput
-            field="strikeMax"
-            label={COPY.labelStrike}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
+          <RangeValues min="strikeMin" max="strikeMax" label={COPY.labelStrike} {...slot} />
         </View>
       );
     case 'dte':
       return (
-        <View className="h-8 flex-row items-center gap-xs">
+        <View
+          testID="optionsdesk-detail-criteria-block-dte"
+          className="h-8 flex-row items-center gap-xs"
+        >
           <RowLabel text={COPY.labelDte} dirty={dirty('dteBand')} />
-          <CriteriaInput
-            field="dteMin"
-            label={COPY.labelDte}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
-          <Text className="text-xs text-ink-muted">{COPY.rangeDash}</Text>
-          <CriteriaInput
-            field="dteMax"
-            label={COPY.labelDte}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
+          <RangeValues min="dteMin" max="dteMax" label={COPY.labelDte} {...slot} />
         </View>
       );
-    case 'premium':
+    case 'premiumSpread':
+      // ⚠️ **知情代价**（owner 已定）：本块右边界从一条变两条 —— 权利金齐中缝、价差齐外缘，
+      //    全屏只有这一块带两条对齐线（`FR-011`）。换来的是行数 5→4 与两维各自的值区变宽。
       return (
-        <View className="h-8 flex-row items-center gap-xs">
-          <RowLabel text={COPY.labelPremium} dirty={dirty('premiumMin')} />
-          <CriteriaInput
-            field="premiumMin"
-            label={COPY.labelPremium}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
-          <PremiumTip open={tipOpen} onToggle={onToggleTip} />
+        <View
+          testID="optionsdesk-detail-criteria-block-premiumSpread"
+          className="h-8 flex-row items-center gap-sm"
+        >
+          <View className="flex-1 flex-row items-center gap-xs">
+            <RowLabel text={COPY.labelPremium} dirty={dirty('premiumMin')} />
+            <CriteriaInput field="premiumMin" label={COPY.labelPremium} grow {...slot} />
+            <PremiumTip open={tipOpen} onToggle={onToggleTip} />
+          </View>
+          <View className="flex-1 flex-row items-center gap-xs">
+            <RowLabel text={COPY.labelSpread} dirty={dirty('relativeSpreadMax')} />
+            <CriteriaInput field="relativeSpreadMax" label={COPY.labelSpread} grow {...slot} />
+            {/* 无量纲比例 ⇒ 必须带 `%`：同一 sheet 里其余四项全是金额或张数。单位跟在值区
+                右端（`FR-013`）—— 知情代价是它离数字最远，取的是「右边界齐」那一头。 */}
+            <Text className="text-xs text-ink-muted">{COPY.percentSuffix}</Text>
+          </View>
         </View>
       );
     case 'liveness':
-      // 🚨 中缝是「或」不是区间的 `–`：前者择一、后者取交。两支是**一个维度**（拆开会让同一条腿
-      //    同时计进两行边际计数），故整行只有一个「已改」蓝点。
+      // 🚨 「任一满足」MUST 由**带框分组块 + 分组标签**表达（`FR-030`），MUST NOT 退回夹在两框
+      //    之间的「或」字 —— 主流期权筛选器一律把这两项做成独立 AND 项，用户带来的预期与本仓
+      //    判据**相反**，而邻近性暗示不足以纠正它（GitLab DS / NN-g 共识）。
+      // 🚨 整块仍是**一个维度**（`FR-033`）：只出一个「已改」蓝点、只出一份边际计数。分了组就
+      //    把两框拆成两维的话，同一条腿会同时计进两行边际计数（`052` T010 有断言守）。
       return (
-        <View className="h-8 flex-row items-center gap-xs">
-          <RowLabel text={COPY.labelOi} dirty={dirty('livenessMin')} />
-          <CriteriaInput
-            field="oiMin"
-            label={COPY.labelOi}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
-          <Text className="text-xs text-ink-muted">{COPY.orWord}</Text>
-          <Text className="text-xs text-ink-muted">{COPY.labelVol}</Text>
-          <CriteriaInput
-            field="volMin"
-            label={COPY.labelVol}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
-        </View>
-      );
-    case 'spread':
-      return (
-        <View className="h-8 flex-row items-center gap-xs">
-          <RowLabel text={COPY.labelSpread} dirty={dirty('relativeSpreadMax')} />
-          <CriteriaInput
-            field="relativeSpreadMax"
-            label={COPY.labelSpread}
-            draft={draft}
-            active={active}
-            onSelect={onSelect}
-          />
-          {/* 无量纲比例 ⇒ 必须带 `%`：同一 sheet 里其余四项全是金额或张数。 */}
-          <Text className="text-xs text-ink-muted">{COPY.percentSuffix}</Text>
+        <View
+          testID="optionsdesk-detail-criteria-block-liveness"
+          className="gap-xs rounded-md border border-line px-xs py-1.5"
+        >
+          <View className="flex-row items-center gap-xs">
+            <GroupLabel text={COPY.livenessGroupLabel} dirty={dirty('livenessMin')} />
+            {/* 🚫 只做一行**只读**说明：MUST NOT 实装可切换的 AND/OR，**禁用态的 segmented
+                一并禁止** —— 禁用态说的是「暂时不能改」，而这里是「压根没有这个旋钮」，
+                画一个点不动的选择器等于承诺一个不存在的能力（`FR-032`）。 */}
+            <Text
+              className="text-[10px] text-ink-muted"
+              style={{ width: RULE_SLOT_WIDTH }}
+              testID="optionsdesk-detail-criteria-liveness-rule"
+            >
+              {COPY.livenessRule}
+            </Text>
+          </View>
+          <View className="h-7 flex-row items-center gap-xs">
+            <Text className="w-10 text-xs text-ink-muted">{COPY.labelOi}</Text>
+            <CriteriaInput field="oiMin" label={COPY.labelOi} grow {...slot} />
+            <Text className="w-10 text-xs text-ink-muted">{COPY.labelVol}</Text>
+            <CriteriaInput field="volMin" label={COPY.labelVol} grow {...slot} />
+          </View>
         </View>
       );
   }
+}
+
+/**
+ * 区间行的值区：`[框] – [框]`，两框等分并把值区撑到右边界。
+ *
+ * 🚫 MUST NOT 拆成显式的 `≥` / `≤`（`FR-035`）—— 拆开要多一份标签宽度，直接吃掉 `FR-010`
+ *    争取来的值区宽度；且 `–`（区间取交）与活跃度块的分组语义已是两种可区分的表达。
+ */
+function RangeValues({
+  min,
+  max,
+  label,
+  draft,
+  active,
+  onSelect,
+}: {
+  min: keyof CriteriaForm;
+  max: keyof CriteriaForm;
+  label: string;
+  draft: CriteriaForm;
+  active: keyof CriteriaForm;
+  onSelect: (field: keyof CriteriaForm) => void;
+}) {
+  return (
+    <View className="flex-1 flex-row items-center gap-xs">
+      <CriteriaInput
+        field={min}
+        label={label}
+        draft={draft}
+        active={active}
+        onSelect={onSelect}
+        grow
+      />
+      <Text className="text-xs text-ink-muted">{COPY.rangeDash}</Text>
+      <CriteriaInput
+        field={max}
+        label={label}
+        draft={draft}
+        active={active}
+        onSelect={onSelect}
+        grow
+      />
+    </View>
+  );
+}
+
+/** 分组块标签 —— 品牌浅底。改过的维度沿用与 `RowLabel` 同一套双通道语汇（转常规色 + 前置蓝点）。 */
+function GroupLabel({ text, dirty }: { text: string; dirty: boolean }) {
+  return (
+    <View className="flex-row items-center gap-1 rounded bg-brand-soft px-xs py-0.5">
+      {dirty ? (
+        <View
+          testID="optionsdesk-detail-criteria-dirty-dot"
+          className="h-1.5 w-1.5 rounded-full bg-brand-500"
+        />
+      ) : null}
+      <Text className={dirty ? 'text-[10px] text-ink' : 'text-[10px] text-ink-muted'}>{text}</Text>
+    </View>
+  );
 }
 
 /** 行标签。改过的维度：标签转常规色 + 前置蓝点（双通道，别只靠颜色）。 */
 function RowLabel({ text, dirty }: { text: string; dirty: boolean }) {
   return (
     <View className="w-20 flex-row items-center gap-1">
-      {dirty ? <View className="h-1.5 w-1.5 rounded-full bg-brand-500" /> : null}
+      {dirty ? (
+        <View
+          testID="optionsdesk-detail-criteria-dirty-dot"
+          className="h-1.5 w-1.5 rounded-full bg-brand-500"
+        />
+      ) : null}
       <Text className={dirty ? 'text-xs text-ink' : 'text-xs text-ink-muted'}>{text}</Text>
     </View>
   );
@@ -378,12 +449,15 @@ function CriteriaInput({
   draft,
   active,
   onSelect,
+  grow = false,
 }: {
   field: keyof CriteriaForm;
   label: string;
   draft: CriteriaForm;
   active: keyof CriteriaForm;
   onSelect: (field: keyof CriteriaForm) => void;
+  /** 让框吃掉值区剩余宽度（`FR-010` 齐右边界）。省略 = 只占内容宽，保持既有行为。 */
+  grow?: boolean;
 }) {
   const value = draft[field];
   const on = active === field;
@@ -394,7 +468,7 @@ function CriteriaInput({
       accessibilityLabel={`${label} ${value === '' ? COPY.unbounded : value}`}
       accessibilityState={{ selected: on }}
       testID={`optionsdesk-detail-criteria-input-${field}`}
-      className={`h-7 min-w-14 flex-row items-center border-b-2 px-xs ${
+      className={`h-7 min-w-14 flex-row items-center border-b-2 px-xs ${grow ? 'flex-1' : ''} ${
         on ? 'border-brand-500 bg-brand-soft' : 'border-line bg-surface-sunken'
       }`}
     >

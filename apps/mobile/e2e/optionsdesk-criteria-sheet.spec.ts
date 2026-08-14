@@ -123,6 +123,11 @@ const COPY = {
   emptyTitle: '当前检索条件下没有候选',
   emptyResetCta: '复位到系统默认值',
   premiumTip: '门槛判的是 bid',
+  percentSuffix: '%',
+  /** 056 FR-034：**沿用** `countLabels.livenessMin`（「活跃度下限」）的既有叫法，不造新词。 */
+  livenessGroupLabel: '活跃度',
+  /** 056 FR-032：规则位只做这一行**只读**说明 —— 不是可切换的 AND/OR，也不是禁用态 segmented。 */
+  livenessRule: '满足任一',
   rowTotal: (total: number) => `共 ${total} 行`,
   /**
    * 053 FR-016：区块头报的是**符合条件的总数**（`matchedCount`）。有覆盖生效时并列「全量」
@@ -522,7 +527,10 @@ const INFO = 'optionsdesk-detail-criteria-info';
 const TIP = 'optionsdesk-detail-criteria-tip';
 const EMPTY_RESET = 'optionsdesk-detail-leg-empty-reset';
 const CARET = 'optionsdesk-detail-criteria-caret';
+const RULE = 'optionsdesk-detail-criteria-liveness-rule';
+const DIRTY_DOT = 'optionsdesk-detail-criteria-dirty-dot';
 const input = (field: string) => `optionsdesk-detail-criteria-input-${field}`;
+const block = (key: string) => `optionsdesk-detail-criteria-block-${key}`;
 const countLine = (key: CriterionKey) => `optionsdesk-detail-leg-criteria-${key}`;
 
 async function openDetail(page: Page): Promise<void> {
@@ -980,7 +988,70 @@ test('056 T004 — FR-001/FR-003：值框是下划线式输入位、值左对齐
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑩ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
+// ⑩ 版面 —— 四块、权利金与价差并行、活跃度是带框分组块
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 屏上**实际渲染出来的**版面块（DOM 顺序 = 版面顺序）。 */
+function renderedBlocks(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const prefix = 'optionsdesk-detail-criteria-block-';
+    return Array.from(document.querySelectorAll(`[data-testid^="${prefix}"]`)).map((el) =>
+      (el.getAttribute('data-testid') ?? '').slice(prefix.length),
+    );
+  });
+}
+
+test('056 T005 — FR-010/FR-011/FR-030：版面是**四块**且序固定，权利金与价差并成一行，活跃度是带框分组块；块内两框仍只算**一维**（SC-012）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'rent');
+  await openSheet(page);
+
+  // ① 四块 + 顺序。🚨 版面序来自**表达层独立常量**，MUST NOT 由 `ROW_CRITERIA` 的键序代劳
+  //    —— 后者是计数语义序，改它会连带改掉计数行的展示面（Guardrail 3）。
+  expect(await renderedBlocks(page)).toEqual(['strike', 'dte', 'premiumSpread', 'liveness']);
+
+  // ② 权利金与价差**同块**（FR-011 合并行、等分两半），不再各占一行。
+  const merged = page.getByTestId(block('premiumSpread'));
+  await expect(merged.getByTestId(input('premiumMin'))).toHaveCount(1);
+  await expect(merged.getByTestId(input('relativeSpreadMax'))).toHaveCount(1);
+  // 单位跟在值区右端（FR-013）；六维里只有价差带单位 ⇒ 它必在这一块内。
+  await expect(merged).toContainText(COPY.percentSuffix);
+
+  // ③ 活跃度分组块（FR-030）：分组标签 + 只读规则说明 + 两个框都在块内。
+  const liveness = page.getByTestId(block('liveness'));
+  await expect(liveness).toContainText(COPY.livenessGroupLabel);
+  await expect(liveness).toContainText(COPY.livenessRule);
+  await expect(liveness.getByTestId(input('oiMin'))).toHaveCount(1);
+  await expect(liveness.getByTestId(input('volMin'))).toHaveCount(1);
+
+  // ④ 🚨 规则位**只读**（FR-032）——「满足任一」既不可切换，也 MUST NOT 是一个点不动的
+  //    禁用态 segmented（画出来等于承诺一个不存在的能力）。判据 = 槽内无任何可点元素。
+  await expect(page.getByTestId(RULE).getByRole('button')).toHaveCount(0);
+
+  // ⑤ FR-031：槽宽预留到容得下未来的规则选择器（所需 124）⇒ 将来升级只换槽内内容，
+  //    块高与字段区版式不变。📌 真机读数在 T009 ⑥；这里守的是「槽没塌」这个结构面。
+  const ruleWidth = await page.getByTestId(RULE).evaluate((el) => el.getBoundingClientRect().width);
+  expect(ruleWidth).toBeGreaterThanOrEqual(124);
+
+  // ⑥ FR-030 的否定半边：分组块接手表达后，夹在两框之间的「或」字 MUST 退场
+  //    —— 邻近性暗示不够，这正是 GitLab DS / NN-g 的共识。
+  await expect(liveness).not.toContainText('或');
+
+  // ⑦ SC-012 / FR-033：块内改任一框，「已改」都只算**一维**；两框都改仍是一维。
+  //    🚨 守的是「分了组就把两框拆成两维」—— 拆开会让同一条腿同时计进两行边际计数。
+  await setCriteria(page, 'oiMin', '5');
+  await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
+  await expect(page.getByTestId(DIRTY_DOT)).toHaveCount(1);
+  await setCriteria(page, 'volMin', '7');
+  await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
+  await expect(page.getByTestId(DIRTY_DOT)).toHaveCount(1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑪ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
 // ════════════════════════════════════════════════════════════════════════════
 
 test('052 T013 — ⓘ 是 **tap 触发**的 popup tip：默认收起、tap 开、再 tap 关', async ({ page }) => {
