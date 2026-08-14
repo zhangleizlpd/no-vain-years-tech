@@ -398,6 +398,11 @@ test('026 alert-condition-ux — 值类自绘键盘：行情头 + 参考占位 +
   await expect(page.getByText('最新价 1688.00', { exact: true })).toBeVisible({ timeout: 10_000 });
   // 0 系统键盘：无 textbox（FR-003 自绘键盘只读显示）。
   await expect(page.getByRole('textbox', { name: '股价涨到', exact: true })).toHaveCount(0);
+  // 🚨 056 FR-023 / SC-006 —— 共用键盘（`~/ui/numeric-keypad.tsx`）的次级键 MUST 是**加法**：
+  //    本屏没给 `secondaryLabel` ⇒ 右整列仍是**单一确定键**。
+  //    📌 这条否定断言是 056 补的：把右列改成「恒两键」时，本文件其余断言（只看「确定」的
+  //       可点 / 禁用态）与 typecheck **全都不会红** —— 本屏会多出一个它没有语义的按钮而无人发觉。
+  await expect(page.getByTestId('numeric-keypad-actions').getByRole('button')).toHaveCount(1);
   // 空值「确定」禁用 → 非法值 0（price>0）仍禁用 → 合法值 1700 启用（FR-004）。
   await expect(page.getByRole('button', { name: '确定' })).toBeDisabled();
   await keypadType(page, '0');
