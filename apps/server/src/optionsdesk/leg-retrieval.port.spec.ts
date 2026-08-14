@@ -49,6 +49,7 @@ function row(over: Partial<LegChainRow> = {}): LegChainRow {
     bidSize: 25,
     askSize: 26,
     delta: -0.3,
+    iv: 28.4,
     openInterest: 900,
     volume: 40,
     greeksComplete: true,

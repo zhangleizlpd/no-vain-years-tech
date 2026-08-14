@@ -1,7 +1,9 @@
 import { recallCandidates, type RecallContext } from './leg-recall.rules';
 import type {
   LegChainMeta,
+  LegChainQuery,
   LegChainRow,
+  LegChainSnapshot,
   LegRetrievalPort,
   LegRetrievalQuery,
   LegRetrievalResult,
@@ -27,6 +29,14 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
    *   未登记的标的 ⇒ `null` (链未就绪), 与「链在但候选为空」是两条分支。
    */
   constructor(private readonly chains: ReadonlyMap<string, FakeLegChain>) {}
+
+  /** 整条链 —— 种子原样回放。判据一条不跑, 与 Prisma 实现同形 (那边也只是不喂进召回)。 */
+  retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
+    const seeded = this.chains.get(query.symbol);
+    return Promise.resolve(
+      seeded === undefined ? null : { chain: seeded.chain, legs: seeded.legs },
+    );
+  }
 
   retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
     const seeded = this.chains.get(query.symbol);

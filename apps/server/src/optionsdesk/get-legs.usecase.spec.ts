@@ -121,6 +121,10 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
     bidSize: leg.bid === null ? null : D('25'),
     askSize: leg.bid === null ? null : D('26'),
     delta: leg.delta === null ? null : D(leg.delta),
+    // 055 起检索 port 也带出 iv (平值 IV 曲线的输入)。本 spec 不断言它, 但**必须给** ——
+    // 快照 mock 少一列会让适配器在取值时炸, 而 use case 的降级 try/catch 会把它兜成
+    // `read_failed` + 空表: 一屏正常的空, 排查起来完全不像「mock 少了一列」。
+    iv: D('28.5'),
     openInterest: D(leg.openInterest),
     volume: D(leg.volume),
     underlyingSpot: D('132.40'),

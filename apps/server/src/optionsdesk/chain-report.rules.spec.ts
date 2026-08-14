@@ -17,7 +17,13 @@ import {
   classifyOtmBand,
   type ChainReportLegVerdict,
 } from './chain-report.rules';
-import { recallCandidates, type RecallContext, type RecallLegInput } from './leg-recall.rules';
+import {
+  RETRIEVAL_CRITERION_KEYS,
+  defaultCriteria,
+  recallCandidates,
+  type RecallContext,
+  type RecallLegInput,
+} from './leg-recall.rules';
 
 // 价外幅度量纲一律**小数比例** (0.10 = 10%)，同 leg-tier.rules.ts 的档界口径。
 // 📌 现价取 100 是蓄意的：行权价区间与幅度区间的换算 (K = spot × (1 − 幅度)) 一眼可验，
@@ -146,6 +152,16 @@ describe('chain-report.rules — 骨架 (FR-005, 🚨 Guardrail 2)', () => {
   const tooCheap = leg({ bid: new Prisma.Decimal('0.05') });
 
   const legs = [untouched, healthy, tooCheap];
+
+  it('🚨 骨架覆盖法的前提：全腿视角的系统默认值**只有权利金与活性两维**非空', () => {
+    // 骨架 = 全腿视角 + 活性覆盖为「不限」⇒ 只剩权利金一维在挡腿。这条成立骨架才等于
+    // 「过权利金门槛之后的整条链」(FR-005)；同一条前提也撑着 use case 里
+    // 「进得了全腿 ⇔ 过了两道一律门槛」那句推断。
+    // 🚨 将来给全腿加第七维检索条件而不回来改这里 ⇒ 骨架会**静默变小**，网格照常渲染。
+    const defaults = defaultCriteria('all', { spot: SPOT, qualityCeiling: SPOT });
+    const constrained = RETRIEVAL_CRITERION_KEYS.filter((key) => defaults[key] !== null);
+    expect([...constrained].sort()).toEqual(['livenessMin', 'premiumMin']);
+  });
 
   it('骨架 = 过权利金门槛之后的整条链 —— 太便宜的整条移出', () => {
     const skeleton = chainReportSkeleton(context, legs);

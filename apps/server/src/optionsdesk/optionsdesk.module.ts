@@ -13,6 +13,7 @@ import { GetRadarUseCase } from './get-radar.usecase.js';
 import { GetUnderlyingDetailUseCase } from './get-underlying-detail.usecase.js';
 import { GetThermometerUseCase } from './get-thermometer.usecase.js';
 import { GetLegsUseCase } from './get-legs.usecase.js';
+import { GetChainReportUseCase } from './get-chain-report.usecase.js';
 import { LEG_RETRIEVAL_PORT } from './leg-retrieval.port.js';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter.js';
 import { SyncAnchorQuoteUseCase } from './sync-anchor-quote.js';
@@ -56,6 +57,9 @@ import { OptionsdeskController } from './optionsdesk.controller.js';
     GetThermometerUseCase,
     // 047 T027 选约表读端 —— 跨 ctx 只读直查 marketdata 三张期权/财报表 (Q7-B), 同为零 @Inject()。
     GetLegsUseCase,
+    // 055 T005 标的链分析报表读端 —— 独立聚合读端点 (plan D-API-1)。跨 ctx 读**零新增**:
+    // 链走检索 port、IV 分位复用 046 详情读端 (同 ctx 组合, plan D-CTX-1)。
+    GetChainReportUseCase,
     // 052 T001 检索 port (ADR-0064 决策 4 —— ADR-0043 §4 三分法的第四类: 跨 ctx 只读查询)。
     // 🚨 **单实现**: 假实现 (`fake-leg-retrieval.adapter.ts`) 只服务测试, MUST NOT 注册在此;
     // 第二个运行时实现的触发条件是 ADR-0064 sunset #3 (规模突破阈值), 今天未命中。
