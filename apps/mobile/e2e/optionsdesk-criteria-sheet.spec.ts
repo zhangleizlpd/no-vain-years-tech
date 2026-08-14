@@ -120,9 +120,18 @@ const COPY = {
   subApplied: (n: number) => `已改 ${n} 项`,
   countLine: (label: string, n: number) => `${label}之外还有 ${n} 条`,
   countLabelStrikeMax: '行权价上界',
+  countLabelRelativeSpreadMax: '价差上界',
   emptyTitle: '当前检索条件下没有候选',
   emptyResetCta: '复位到系统默认值',
   premiumTip: '门槛判的是 bid',
+  /** 🚨 与空态 CTA「复位到系统默认值」是两个按钮 —— 按名数个数时 `exact` 必须开。 */
+  reset: '复位',
+  submit: '搜',
+  percentSuffix: '%',
+  /** 056 FR-034：**沿用** `countLabels.livenessMin`（「活跃度下限」）的既有叫法，不造新词。 */
+  livenessGroupLabel: '活跃度',
+  /** 056 FR-032：规则位只做这一行**只读**说明 —— 不是可切换的 AND/OR，也不是禁用态 segmented。 */
+  livenessRule: '满足任一',
   rowTotal: (total: number) => `共 ${total} 行`,
   /**
    * 053 FR-016：区块头报的是**符合条件的总数**（`matchedCount`）。有覆盖生效时并列「全量」
@@ -411,8 +420,21 @@ function makeTable(params: URLSearchParams, perspective: LegTab): LegTableRespon
 /** 本轮发到 `…/legs` 的查询串（含空串 = 无参数）—— 供「不点搜就不发请求」那条断言读。 */
 type LegRequestLog = string[];
 
-async function installMock(page: Page): Promise<LegRequestLog> {
+/**
+ * 服务端的 canonical 状态变体。
+ *
+ * 🚨 这是**另一种服务端状态**，不是「按测试编排的调用序标志」—— mock 纪律禁的是后者
+ *    （`callCount === 0 ? A : B`）。`criteria: 'missing'` 描述的是「判据契约还没到手」这一
+ *    真实存在的服务端形态（`LegTableResponse.criteria` 为 `null`），handler 对它仍是
+ *    `(请求参数, 该状态) → 响应` 的纯函数：同一组参数问几次答几次一样。
+ */
+interface MockState {
+  criteria?: 'available' | 'missing';
+}
+
+async function installMock(page: Page, state: MockState = {}): Promise<LegRequestLog> {
   const log: LegRequestLog = [];
+  const criteriaMissing = state.criteria === 'missing';
 
   await page.route(OPTIONSDESK_RE, async (route: Route) => {
     const req = route.request();
@@ -437,7 +459,8 @@ async function installMock(page: Page): Promise<LegRequestLog> {
       //       那个视角，而屏幕上什么都不会红。
       const perspective = perspectiveOf(url);
       if (perspective === null) return void (await json(400, PERSPECTIVE_REQUIRED_400));
-      return void (await json(200, makeTable(url.searchParams, perspective)));
+      const table = makeTable(url.searchParams, perspective);
+      return void (await json(200, criteriaMissing ? { ...table, criteria: null } : table));
     }
 
     if (/\/optionsdesk\/underlyings\/(.+)$/.test(url.pathname)) {
@@ -521,7 +544,16 @@ const BACKDROP = 'optionsdesk-detail-criteria-backdrop';
 const INFO = 'optionsdesk-detail-criteria-info';
 const TIP = 'optionsdesk-detail-criteria-tip';
 const EMPTY_RESET = 'optionsdesk-detail-leg-empty-reset';
+const CARET = 'optionsdesk-detail-criteria-caret';
+const RULE = 'optionsdesk-detail-criteria-liveness-rule';
+/** 键盘右整列的操作区（`~/ui/numeric-keypad.tsx` 逐字）—— 「复位」自 056 T006 起住在这里面。 */
+const KEYPAD_ACTIONS = 'numeric-keypad-actions';
+const ROW_LABEL = 'optionsdesk-detail-criteria-row-label';
+const STRIKE_INFO = 'optionsdesk-detail-criteria-strike-info';
+const STRIKE_TIP = 'optionsdesk-detail-criteria-strike-tip';
+const DIRTY_DOT = 'optionsdesk-detail-criteria-dirty-dot';
 const input = (field: string) => `optionsdesk-detail-criteria-input-${field}`;
+const block = (key: string) => `optionsdesk-detail-criteria-block-${key}`;
 const countLine = (key: CriterionKey) => `optionsdesk-detail-leg-criteria-${key}`;
 
 async function openDetail(page: Page): Promise<void> {
@@ -846,36 +878,454 @@ test('052 T013 — Edge Case：收紧到候选为空 ⇒ 空态**带复位入口
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑧ FR-007 / FR-010 —— 每视角的控件集不同
+// ⑧ 056 FR-012 —— 三视角**同一份行集**（supersede 052 FR-007 / FR-010）
 // ════════════════════════════════════════════════════════════════════════════
 
-test('052 T013 — FR-007 / FR-010：建仓**无行权价行**、全腿**无价差行**，且「不限」≠「没有这个控件」', async ({
+/** 抽屉里的八个框 —— 056 起**三视角逐个都在**（`SC-011` 的可验证形态）。 */
+const ALL_FIELDS = [
+  'strikeMin',
+  'strikeMax',
+  'dteMin',
+  'dteMax',
+  'premiumMin',
+  'oiMin',
+  'volMin',
+  'relativeSpreadMax',
+] as const;
+
+test('056 T002 — FR-012：三视角行集**一致**，八个框逐视角都在；默认为空的维度呈「不限」而不是整行消失', async ({
   page,
 }) => {
   await installMock(page);
   await openDetail(page);
 
-  // 建仓：有效成本硬门槛已等价挡住深度实值 ⇒ 行权价整行不出现（不是画成禁用态）。
+  // 🚨 本条 **supersede** 052 的 FR-007（建仓无行权价行）与 FR-010（全腿无价差行）。
+  //    正当性是**行为惰性**：那两行的默认值本来就是 `null`（服务端各维守卫一律 `!== null`
+  //    ⇒ 判据不生效）—— 露出旋钮不改变任一视角的默认候选集，只是让用户能表达它。
+  //    ⇒ 判据落在「框在不在 + 默认呈什么」，🚫 MUST NOT 退回按 tab 数框。
+  for (const tab of ['all', 'build', 'rent'] as const) {
+    await selectTab(page, tab);
+    await openSheet(page);
+    await expect(page.getByTestId(SHEET)).toContainText(COPY.sheetTitle(COPY.tabs[tab]));
+    for (const field of ALL_FIELDS) {
+      await expect(page.getByTestId(input(field))).toHaveCount(1);
+    }
+    await page.getByTestId(BACKDROP).tap();
+    await expect(page.getByTestId(SHEET)).toHaveCount(0);
+  }
+
+  // 建仓：新露出的行权价两个框呈「不限」——🚫 MUST NOT 预填一个值（那会静默改掉候选集）。
   await selectTab(page, 'build');
   await openSheet(page);
-  await expect(page.getByTestId(SHEET)).toContainText(COPY.sheetTitle(COPY.tabs.build));
-  await expect(page.getByTestId(input('strikeMax'))).toHaveCount(0);
-  await expect(page.getByTestId(input('strikeMin'))).toHaveCount(0);
+  await expect(page.getByTestId(input('strikeMin'))).toHaveText(CRITERIA_UNBOUNDED);
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
+  // 本视角原有的两维照常回填服务端下发值（新露出的行没把它们挤掉）。
   await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText('35');
   await expect(page.getByTestId(input('dteMin'))).toHaveText('1');
   await page.getByTestId(BACKDROP).tap();
 
-  // 全腿：参照视角不受流动性门槛约束 ⇒ 价差整行不出现；而行权价与期限**照常有控件**，
-  // 只是空框（「不限」不等于「没有这个控件」，用户仍可主动收窄）。
+  // 全腿：新露出的价差框默认「不限」（FR-017 —— 051 那个「点排除数切过来看被排除的腿」
+  // 的入口在**默认态**下因此不受影响）；行权价与期限段也照常是空框。
   await selectTab(page, 'all');
   await openSheet(page);
-  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveCount(0);
+  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText(CRITERIA_UNBOUNDED);
   await expect(page.getByTestId(input('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
   await expect(page.getByTestId(input('dteMin'))).toHaveText(CRITERIA_UNBOUNDED);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑨ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
+// ⑨ 值控件形态 —— 读成「可编辑的输入位」，但底下仍是只读 + 自绘键盘
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 一个框的形态读数。**取 computed style 而非 class 串** —— NativeWind 编译后 class 名不稳定，
+ * 而形态判据（是不是下划线、两个通道有没有一起变）本来就该问渲染结果。
+ */
+async function inputShape(
+  page: Page,
+  field: string,
+): Promise<{
+  borderBottomWidth: string;
+  borderTopWidth: string;
+  borderBottomColor: string;
+  backgroundColor: string;
+  textAlign: string;
+}> {
+  return page.getByTestId(input(field)).evaluate((el) => {
+    const box = getComputedStyle(el);
+    // 值是 Pressable 里那个 Text —— 对齐读它，别读容器（容器的 textAlign 不代表值的排布）。
+    const valueEl = el.querySelector('div,span') ?? el;
+    return {
+      borderBottomWidth: box.borderBottomWidth,
+      borderTopWidth: box.borderTopWidth,
+      borderBottomColor: box.borderBottomColor,
+      backgroundColor: box.backgroundColor,
+      textAlign: getComputedStyle(valueEl).textAlign,
+    };
+  });
+}
+
+test('056 T004 — FR-001/FR-003：值框是下划线式输入位、值左对齐；选中态**双通道**（下划线 + 底色同时变）带 2px 光标；FR-002 全屏仍无 textbox', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  // 视角显式钉死：本条断言「空值呈不限」，而 `strikeMin` 只在这几个视角下才是 null
+  // （`rent` 的 `strikeMax` 有值，正好当同行对照项）。靠默认 tab 会让判据随默认值漂。
+  await selectTab(page, 'rent');
+  await openSheet(page);
+
+  // 🚨 选中/未选中 **互相对照**，不硬编码色值 —— `react-native-web` 不渲染 `accessibilityState`
+  //    (无 `aria-selected` 可断)，而写死 `rgb(...)` 会随 token 调整碎掉。
+  //    对照对象取同一行的两个框，排除「行与行本来就长得不一样」这个混淆项。
+  await page.getByTestId(input('strikeMin')).tap();
+  const on = await inputShape(page, 'strikeMin');
+  const off = await inputShape(page, 'strikeMax');
+
+  // ① 形态：下划线，不是四边盒。两个态都要成立（选中不改变「它是个下划线」这件事）。
+  for (const shape of [on, off]) {
+    expect(shape.borderBottomWidth).toBe('2px');
+    expect(shape.borderTopWidth).toBe('0px');
+    // ② 值左对齐（原先是 text-center，读起来像标签不像输入位）。
+    expect(shape.textAlign).toBe('left');
+  }
+
+  // ③ 双通道：下划线颜色**与**底色都必须变。任一相同即退化成单通道（FR-003 明禁只靠颜色）。
+  expect(on.borderBottomColor).not.toBe(off.borderBottomColor);
+  expect(on.backgroundColor).not.toBe(off.backgroundColor);
+
+  // ④ 2px 光标只在选中的那个框里，且全屏恰一个（它是「落点在哪」的唯一视觉指认）。
+  await expect(page.getByTestId(CARET)).toHaveCount(1);
+  await expect(page.getByTestId(input('strikeMin')).getByTestId(CARET)).toHaveCount(1);
+  await page.getByTestId(input('dteMin')).tap();
+  await expect(page.getByTestId(input('strikeMin')).getByTestId(CARET)).toHaveCount(0);
+  await expect(page.getByTestId(input('dteMin')).getByTestId(CARET)).toHaveCount(1);
+
+  // ⑤ 🚨 FR-002 回归防线：全屏无 textbox ⇒ 系统键盘没有唤起路径。
+  //    这条**有判别力、不是恒真** —— 真把值改回 `TextInput`，`react-native-web` 会渲染成
+  //    `<input>`（隐式 textbox 角色），这里立刻红。它守的正是 053 T015 那次范式改造。
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+
+  // ⑥ 空值仍是「不限」，🚫 不是 `0`（两者在契约里是两件事，屏幕上却只差一个字）。
+  await expect(page.getByTestId(input('strikeMin'))).toHaveText(CRITERIA_UNBOUNDED);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑩ 版面 —— 四块、权利金与价差并行、活跃度是带框分组块
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 屏上**实际渲染出来的**版面块（DOM 顺序 = 版面顺序）。 */
+function renderedBlocks(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const prefix = 'optionsdesk-detail-criteria-block-';
+    return Array.from(document.querySelectorAll(`[data-testid^="${prefix}"]`)).map((el) =>
+      (el.getAttribute('data-testid') ?? '').slice(prefix.length),
+    );
+  });
+}
+
+test('056 T005 — FR-010/FR-011/FR-030：版面是**四块**且序固定，权利金与价差并成一行，活跃度是带框分组块；块内两框仍只算**一维**（SC-012）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'rent');
+  await openSheet(page);
+
+  // ① 四块 + 顺序。🚨 版面序来自**表达层独立常量**，MUST NOT 由 `ROW_CRITERIA` 的键序代劳
+  //    —— 后者是计数语义序，改它会连带改掉计数行的展示面（Guardrail 3）。
+  expect(await renderedBlocks(page)).toEqual(['strike', 'dte', 'premiumSpread', 'liveness']);
+
+  // ② 权利金与价差**同块**（FR-011 合并行、等分两半），不再各占一行。
+  const merged = page.getByTestId(block('premiumSpread'));
+  await expect(merged.getByTestId(input('premiumMin'))).toHaveCount(1);
+  await expect(merged.getByTestId(input('relativeSpreadMax'))).toHaveCount(1);
+  // 单位跟在值区右端（FR-013）；六维里只有价差带单位 ⇒ 它必在这一块内。
+  await expect(merged).toContainText(COPY.percentSuffix);
+
+  // ②a 🚨 FR-011 的**容量**判据：合并行最紧处值区内宽 ≥ 52（装 6 位小数所需）。
+  //     本文件跑在 390×844 窄视口（文件头 `test.use`）≈ 真机宽度 ⇒ **这条在 web 就量得到**。
+  //     📌 下界取 52 而不是某个余量数字：spec 原记的「76px / 余 24」是 **mockup 槽位**读数，
+  //     实装实测 71px / 余 19（2026-08-14 订正，理由同 analyze A1 对 130px 的判定）——
+  //     🚫 MUST NOT 把余量数字写成断言，那会让每次微调版面都红一次而并没有守住任何东西。
+  const innerWidth = (field: string) =>
+    page.getByTestId(input(field)).evaluate((el) => {
+      const box = getComputedStyle(el);
+      return (
+        el.getBoundingClientRect().width -
+        parseFloat(box.paddingLeft) -
+        parseFloat(box.paddingRight)
+      );
+    });
+  expect(await innerWidth('premiumMin')).toBeGreaterThanOrEqual(52);
+  expect(await innerWidth('relativeSpreadMax')).toBeGreaterThanOrEqual(52);
+
+  // ③ 活跃度分组块（FR-030）：分组标签 + 只读规则说明 + 两个框都在块内。
+  const liveness = page.getByTestId(block('liveness'));
+  await expect(liveness).toContainText(COPY.livenessGroupLabel);
+  await expect(liveness).toContainText(COPY.livenessRule);
+  await expect(liveness.getByTestId(input('oiMin'))).toHaveCount(1);
+  await expect(liveness.getByTestId(input('volMin'))).toHaveCount(1);
+
+  // ④ 🚨 规则位**只读**（FR-032）——「满足任一」既不可切换，也 MUST NOT 是一个点不动的
+  //    禁用态 segmented（画出来等于承诺一个不存在的能力）。判据 = 槽内无任何可点元素。
+  await expect(page.getByTestId(RULE).getByRole('button')).toHaveCount(0);
+
+  // ⑤ FR-031：槽宽预留到容得下未来的规则选择器（所需 124）⇒ 将来升级只换槽内内容，
+  //    块高与字段区版式不变。📌 真机读数在 T009 ⑥；这里守的是「槽没塌」这个结构面。
+  const ruleWidth = await page.getByTestId(RULE).evaluate((el) => el.getBoundingClientRect().width);
+  expect(ruleWidth).toBeGreaterThanOrEqual(124);
+
+  // ⑥ FR-030 的否定半边：分组块接手表达后，夹在两框之间的「或」字 MUST 退场
+  //    —— 邻近性暗示不够，这正是 GitLab DS / NN-g 的共识。
+  await expect(liveness).not.toContainText('或');
+
+  // ⑦ SC-012 / FR-033：块内改任一框，「已改」都只算**一维**；两框都改仍是一维。
+  //    🚨 守的是「分了组就把两框拆成两维」—— 拆开会让同一条腿同时计进两行边际计数。
+  await setCriteria(page, 'oiMin', '5');
+  await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
+  await expect(page.getByTestId(DIRTY_DOT)).toHaveCount(1);
+  await setCriteria(page, 'volMin', '7');
+  await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
+  await expect(page.getByTestId(DIRTY_DOT)).toHaveCount(1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑪ 操作区 —— 「复位」并入键盘右整列，同屏不出现两个同名按钮
+// ════════════════════════════════════════════════════════════════════════════
+
+test('056 T006 — FR-020/FR-024：「复位」并入键盘右整列、不再独占字段区一行；全屏「搜」与「复位」**各恰一个**（SC-009）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  await openSheet(page);
+
+  // ① SC-009 / FR-024：同名按钮各恰一个。🚨 判据取 **a11y 名**而不是 testID —— 重复的
+  //    按钮多半是「又画了一个」，那个新画的不会恰好带同一个 testID，按 testID 数会漏掉。
+  //    `exact` 必须开：空态那个 CTA 叫「复位到系统默认值」，模糊匹配会把它算进来。
+  await expect(page.getByLabel(COPY.reset, { exact: true })).toHaveCount(1);
+  await expect(page.getByLabel(COPY.submit, { exact: true })).toHaveCount(1);
+
+  // ② FR-020：那一个「复位」必须**在键盘的操作列内**，不是字段区里独占一行的那个。
+  //    只数个数不够 —— 把字段区那行留着、改成不渲染键盘上的次级键，个数一样是 1。
+  await expect(page.getByTestId(KEYPAD_ACTIONS).getByTestId(RESET)).toHaveCount(1);
+
+  // ③ FR-021：右整列**复位在上、搜在下**（主操作贴近拇指，破坏性操作让开右下角）。
+  //    🚨 两个 top MUST 在**同一次** evaluate 里取 —— 抽屉是 `animationType="slide"`，分两次
+  //    取会横跨动画的两帧：后取的那个 top 更小，机器一忙顺序就翻。本条曾因此假红一次
+  //    （非回归，是这条断言自己的竞态）。
+  const order = await page.evaluate(
+    ([resetId, submitId]) => {
+      const top = (id: string) =>
+        document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect().top ?? NaN;
+      return { reset: top(resetId), submit: top(submitId) };
+    },
+    [RESET, SUBMIT],
+  );
+  expect(order.reset).toBeLessThan(order.submit);
+
+  // ④ 挪了位置，接线没断：键盘上这个「复位」点下去仍然触发 `onReset`（抽屉随之关闭）。
+  //    📌 复位的**完整行为面**（回默认值 / 重召回 / 计数行与徽标同时消失 / 不带默认值回请求）
+  //    由 US3-AS4 覆盖，这里只钉「按钮换了家还连着」，🚫 不重复造一遍那条。
+  await setCriteria(page, 'strikeMax', '128');
+  await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
+  await page.getByTestId(RESET).tap();
+  await expect(page.getByTestId(SHEET)).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑫ 行权价的硬门槛口径 ⓘ —— 只在建仓，且必须落在**行标签内**
+// ════════════════════════════════════════════════════════════════════════════
+
+test('056 T007 — FR-016/FR-016a：建仓的行权价行带硬门槛口径 ⓘ、tap 开再 tap 关；ⓘ 落在**定宽行标签内** ⇒ 该行值区右缘与其余行逐像素一致', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+
+  // ① 只在建仓（FR-016）—— 硬门槛 `K − bid < spot` 是建仓侧的判据，其余视角挂它是噪音。
+  await selectTab(page, 'rent');
+  await openSheet(page);
+  await expect(page.getByTestId(STRIKE_INFO)).toHaveCount(0);
+  await page.getByTestId(BACKDROP).tap();
+
+  await selectTab(page, 'build');
+  await openSheet(page);
+  await expect(page.getByTestId(STRIKE_INFO)).toHaveCount(1);
+
+  // ② 🚨 FR-016a：ⓘ 在**行标签内**。这不是观感偏好 —— 落值区右侧会让该行值区右缘短 32px
+  //    （直接破 FR-010），落值区内部则把两个框各挤掉 15px。
+  await expect(
+    page.getByTestId(block('strike')).getByTestId(ROW_LABEL).getByTestId(STRIKE_INFO),
+  ).toHaveCount(1);
+
+  // ③ FR-010 的**结构保证**：行标签定宽 `flex: none` ⇒ 值区起点与宽度一个像素都不被碰
+  //    ⇒ 带 ⓘ 那行的值区右缘与不带 ⓘ 的行**逐像素一致**（不是「量出来正好齐」）。
+  const right = (field: string) =>
+    page.getByTestId(input(field)).evaluate((el) => el.getBoundingClientRect().right);
+  expect(await right('strikeMax')).toBeCloseTo(await right('dteMax'), 1);
+
+  // ④ tap 开 / 再 tap 关（移动端没有 hover），形态沿用既有那个 ⓘ。
+  await expect(page.getByTestId(STRIKE_TIP)).toHaveCount(0);
+  await page.getByTestId(STRIKE_INFO).tap();
+  await expect(page.getByTestId(STRIKE_TIP)).toBeVisible();
+  await page.getByTestId(STRIKE_INFO).tap();
+  await expect(page.getByTestId(STRIKE_TIP)).toHaveCount(0);
+
+  // ⑤ 两个 ⓘ 各开各的：开权利金那个不会把行权价那个一起点亮（单一 boolean 会在这里红）。
+  await page.getByTestId(INFO).tap();
+  await expect(page.getByTestId(TIP)).toBeVisible();
+  await expect(page.getByTestId(STRIKE_TIP)).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑬ 056 T008 —— 主落层的分支补齐
+// ════════════════════════════════════════════════════════════════════════════
+
+const SHEET_BLOCK_ORDER = ['strike', 'dte', 'premiumSpread', 'liveness'] as const;
+
+/**
+ * 一个**真的会挡下腿**的相对价差（12%）与它的百分数显示。
+ *
+ * 🚨 MUST NOT 拿其余视角的默认 35% 当这个阈值 —— 本 fixture 五条腿的相对价差最大 0.16
+ *    （P140 = 0.40/2.50），35% 一条都挡不下 ⇒ 「默认不筛」与「默认筛」给出同一屏，
+ *    相关断言全部**恒真**。12% 挡下 P137(0.143) 与 P140(0.16)，且避开 P128 那个
+ *    正好 0.10 的浮点边界。
+ */
+const BINDING_SPREAD = '0.1200';
+const BINDING_SPREAD_PCT = '12';
+
+test('056 T008 — SC-011：四块版面**逐视角完全相同**，各行位置不跳（行集统一的可验证形态）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+
+  // 🚨 判据是「三份读数**互相**相等」而不是「各自等于某个期望值」—— 后者在三视角共用同一段
+  //    渲染代码时是三条重复断言，而这条钉的正是 FR-012 要的那件事：**逐视角相同**。
+  const perTab: Record<string, string[]> = {};
+  for (const tab of ['all', 'build', 'rent'] as const) {
+    await selectTab(page, tab);
+    await openSheet(page);
+    perTab[tab] = await renderedBlocks(page);
+    // 八个框逐视角都在（T002 已覆盖，这里只取块序）——两条合看才是「行集 + 位置」都不跳。
+    await page.getByTestId(BACKDROP).tap();
+    await expect(page.getByTestId(SHEET)).toHaveCount(0);
+  }
+  expect(perTab['all']).toEqual([...SHEET_BLOCK_ORDER]);
+  expect(perTab['build']).toEqual(perTab['all']);
+  expect(perTab['rent']).toEqual(perTab['all']);
+});
+
+test('056 T008 — FR-017/SC-014：全腿价差默认「不限」⇒ 那些**会被价差挡下**的腿在默认态下逐条仍在表上（051 入口不失效）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'all');
+
+  // 前提自检：**存在**一个会真的挡下腿的价差值 —— 否则本条失去判别性（「默认不筛」与
+  // 「默认筛」给出同一屏，断言恒真）。
+  // 📌 阈值取 12% 而不是其余视角的默认 35%：本 fixture 五条腿的相对价差最大 0.16，35% 一条
+  //    都挡不下 ⇒ 拿 35% 做前提会让这条断言**恒真**（首轮实撞，前提自检当场报 0）。
+  const boundCodes = recall({ ...DEFAULTS.all, relativeSpreadMax: BINDING_SPREAD }).map(
+    (l) => l.code,
+  );
+  const wouldBeExcluded = ALL_DEFAULT_CODES.filter((code) => !boundCodes.includes(code));
+  expect(wouldBeExcluded.length).toBeGreaterThan(0);
+
+  // 🚨 SC-014 的实质：默认态下这些腿**逐条**仍在表上 —— 051 那个「点流动性排除数切到全腿
+  //    看被排除的腿」的入口，指向的就是这张表。价差若在全腿默认收紧，那个入口会指向一张
+  //    **不含目标腿**的表，而屏上只是「少了几行」，不会红。
+  const shown = await renderedCodes(page);
+  for (const code of wouldBeExcluded) expect(shown).toContain(code);
+  await openSheet(page);
+  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText(CRITERIA_UNBOUNDED);
+});
+
+test('056 T008 — FR-017 另一半：全腿**手动**设价差导致腿减少 ⇒ 052 的边际计数报出「价差上界之外还有 N 条」，不静默消失', async ({
+  page,
+}) => {
+  const log = await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'all');
+  await openSheet(page);
+
+  // 百分数显示 ↔ 无量纲比例的换算在 `leg-criteria.rules.ts`，本文件不自算。
+  await setCriteria(page, 'relativeSpreadMax', BINDING_SPREAD_PCT);
+  await page.getByTestId(SUBMIT).tap();
+
+  const narrowedCodes = recall({ ...DEFAULTS.all, relativeSpreadMax: BINDING_SPREAD }).map(
+    (l) => l.code,
+  );
+  const gain = ALL_DEFAULT_CODES.length - narrowedCodes.length;
+  expect(gain).toBeGreaterThan(0);
+
+  // 🚨 先跑一条**会自动重试**的断言等重取落地 —— `renderedCodes` / `criteriaRequests` 都是
+  //    一次性 `page.evaluate`，没有重试，直接读会读到提交前那一屏（首轮实撞：多出 2 条）。
+  await expectRowCount(page, narrowedCodes.length, ALL_DEFAULT_CODES.length);
+  expect(await renderedCodes(page)).toEqual(narrowedCodes);
+  // 📌 用 RegExp 而不是精确串（同 AS3 那条）—— 计数行尾部还挂着「· 去改」的 CTA，
+  //    精确匹配会把那个 CTA 当成 drift 报红。
+  await expect(page.getByTestId(countLine('relativeSpreadMax'))).toHaveText(
+    new RegExp(COPY.countLine(COPY.countLabelRelativeSpreadMax, gain)),
+  );
+  // 用户那一维确实下发了（而不是客户端自己筛的）。
+  expect(criteriaKeysIn(criteriaRequests(log)[0] ?? '')).toContain('relativeSpreadMax');
+});
+
+test('056 T008 — 契约未到手（`criteria` 为 null）⇒ 抽屉**入口整个不渲染**（下游那条「八格全不限」因此不可达）', async ({
+  page,
+}) => {
+  await installMock(page, { criteria: 'missing' });
+  await openDetail(page);
+
+  // 🚨 **如实登记一条覆盖不到的**：spec Edge Case 写的是「契约未到手 ⇒ 八格全空、全呈
+  //    「不限」，版式仍须成立」。实装把入口闸在 `criteria !== null` 上
+  //    （`underlying-detail-screen.tsx` 的 `openCriteria` useMemo）⇒ 那一屏**没有任何路径
+  //    能走到**：`criteriaFormOf(null)` 的全空分支在组件里存在，但用户点不开抽屉。
+  //    ⇒ 这里断言**可达的那个真相**（入口不出现），🚫 MUST NOT 为了凑覆盖去绕过闸门打开
+  //    抽屉 —— 那测的是一条产品里不存在的路径，是一条会冒充覆盖的恒真断言。
+  //    📌 「该不该让它可达」是产品判断，不在本 task 边界内，已在 T008 commit 里登记。
+  await expect(page.getByTestId('optionsdesk-detail-leg-header')).toBeVisible();
+  await expect(page.getByTestId(ENTRY)).toHaveCount(0);
+  await expect(page.getByTestId(SHEET)).toHaveCount(0);
+});
+
+test('056 T008 — US5-AS1 后半（analyze A2）：建仓**新露出**的行权价行，其值真的到得了请求，且结果按它收窄', async ({
+  page,
+}) => {
+  const log = await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'build');
+  await openSheet(page);
+
+  // 🚨 这条守的是一种**屏上完全看不出**的失败：行渲染出来了、能编辑、能提交，而值没接到
+  //    请求上 —— 表照样刷新（因为别的参数变了或缓存命中），只是没按这一维筛。
+  //    ⇒ 判据必须落在**请求串**与**结果集**两处，只看屏上有没有这一行是不够的。
+  // 📌 阈值取 119 是被 fixture 逼出来的：建仓默认 `dteBand {1,49}` 只召回 P120 一条
+  //    （dte 40），任何**不挡下它**的上界都不会改变结果集 ⇒ 那样的断言分不出「值接上了」
+  //    与「值被丢了」。119 挡下 strike 120 ⇒ 表转空，收窄是可观测的。
+  await setCriteria(page, 'strikeMax', '119');
+  await page.getByTestId(SUBMIT).tap();
+
+  const narrowed = recall({ ...DEFAULTS.build, strikeMax: '119.0000' }).map((l) => l.code);
+  expect(narrowed.length).toBeLessThan(recall(DEFAULTS.build).length);
+
+  // 🚨 先等**会自动重试**的空态出现，再读 log 与表 —— 后两者都是一次性 `page.evaluate`，
+  //    抢在重取落地前读会拿到空数组（首轮实撞：`criteriaRequests` 读出 `[]`）。
+  await expect(page.getByTestId(EMPTY_RESET)).toBeVisible();
+
+  // 两处判据缺一不可：**请求串**证明值到得了服务端，**结果集**证明它真的作用在召回上。
+  const sent = criteriaRequests(log);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContain('strikeMax=119');
+  expect(await renderedCodes(page)).toEqual(narrowed);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑭ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
 // ════════════════════════════════════════════════════════════════════════════
 
 test('052 T013 — ⓘ 是 **tap 触发**的 popup tip：默认收起、tap 开、再 tap 关', async ({ page }) => {

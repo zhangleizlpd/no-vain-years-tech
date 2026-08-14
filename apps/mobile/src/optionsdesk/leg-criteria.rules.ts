@@ -142,51 +142,18 @@ export function criteriaFormOf(defaults: RetrievalCriteriaResponse | null): Crit
   };
 }
 
-// ═══════════════════ ② 每视角的控件集（差异来自判据，不是版式） ═══════════════════
-
-/**
- * 每视角有哪几行控件（mockup A2 / A5 / A6）。
- *
- * 🚫 **建仓无「行权价」行**（FR-007）：有效成本硬门槛 `K − bid < spot` 已等价挡住深度实值，
- *    再加一道会改掉 `051` 已 ship 的建仓候选集。硬门槛无控件、不可调 ⇒ **整行不出现**
- *    而不是画成禁用态（禁用态是「暂时不能改」，这里是「压根没有这个旋钮」）。
- * 🚫 **全腿无「价差」行**（FR-010）：参照视角不受流动性门槛约束。
- * 📌 「不限」≠「没有这个控件」—— 全腿的行权价与期限照常有框，只是空的，用户仍可主动收窄。
- */
-const ROWS_BY_TAB: Readonly<Record<LegPickerTab, readonly CriteriaRowKey[]>> = {
-  all: ['strike', 'dte', 'premium', 'liveness'],
-  build: ['dte', 'premium', 'liveness', 'spread'],
-  rent: ['strike', 'dte', 'premium', 'liveness', 'spread'],
-};
-
-/** 该维度在这份默认值里有没有值（`null` = 不限）。穷举 `Record` ⇒ 加一维即编译红。 */
-const HAS_DEFAULT: Readonly<Record<CriterionKey, (d: RetrievalCriteriaResponse) => boolean>> = {
-  strikeMax: (d) => d.strikeMax !== null,
-  strikeMin: (d) => d.strikeMin !== null,
-  dteBand: (d) => d.dteBand !== null,
-  premiumMin: (d) => d.premiumMin !== null,
-  livenessMin: (d) => d.livenessMin !== null,
-  relativeSpreadMax: (d) => d.relativeSpreadMax !== null,
-};
-
-/**
- * 当前视角要画哪几行。复杂度 O(1)。
- *
- * 🚨 **兜底：服务端下发了非 `null` 默认值的维度一律出现**，即使本视角的行集里没有它 ——
- *    藏起一个**正在生效**的条件，等于表被一条看不见的判据切过，而屏幕上无从解释。
- *    ⇒ 行集是 UI 取舍，判据是服务端的事；两者冲突时以「有值必可见」为准。
- */
-export function criteriaRowsFor(
-  tab: LegPickerTab,
-  defaults: RetrievalCriteriaResponse | null,
-): readonly CriteriaRowKey[] {
-  const rows = ROWS_BY_TAB[tab];
-  return CRITERIA_ROWS.filter(
-    (row) =>
-      rows.includes(row) ||
-      (defaults !== null && ROW_CRITERIA[row].some((key) => HAS_DEFAULT[key](defaults))),
-  );
-}
+// ═════════ ② 每视角的控件集 —— 056 起**没有这一层**（行集统一到全部 5 行） ═════════
+//
+// 🚨 **别默默加回一张 per-视角行集表。** `052` 的 `ROWS_BY_TAB` / `HAS_DEFAULT` /
+//    `criteriaRowsFor` 已随 `056` `FR-012` 整体删除：三视角一律显示全部 5 行，**哪几行怎么排
+//    是表达层的事**（`leg-criteria-sheet.tsx` 自己的版面常量），本文件只留「维度 → 框」。
+// 📌 **删干净而不是留个恒返全集的函数**：`criteriaRowsFor` 的第二分支（「有值必可见」）在固定
+//    行集下**结构上不可达**（`||` 左支恒真），而一个「两个入参都不看、恒返全集」的函数比删掉更坏。
+// 📌 **行为惰性已实证**（`FR-019`）：被藏的两行（全腿价差 / 建仓行权价）默认值**都是 `null`**，
+//    服务端 `matchesCriterion` 各支一律 `!== null` 守卫，且 `applyOverride` 无 per-视角白名单
+//    ⇒ 默认候选集逐视角零变化，服务端零改动。
+// ⚠️ 将来若某个视角要重新收起某一行，先回看 spec `FR-012`：加回 per-视角行集表会同时复活
+//    「任意子集」的版式复杂度与 A′ ③（权利金与价差并成一行）在全腿的无定义缺口。
 
 // ═══════════════════ ③ 用户动过哪几维 ═══════════════════
 
