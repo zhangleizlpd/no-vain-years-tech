@@ -533,6 +533,9 @@ const CARET = 'optionsdesk-detail-criteria-caret';
 const RULE = 'optionsdesk-detail-criteria-liveness-rule';
 /** 键盘右整列的操作区（`~/ui/numeric-keypad.tsx` 逐字）—— 「复位」自 056 T006 起住在这里面。 */
 const KEYPAD_ACTIONS = 'numeric-keypad-actions';
+const ROW_LABEL = 'optionsdesk-detail-criteria-row-label';
+const STRIKE_INFO = 'optionsdesk-detail-criteria-strike-info';
+const STRIKE_TIP = 'optionsdesk-detail-criteria-strike-tip';
 const DIRTY_DOT = 'optionsdesk-detail-criteria-dirty-dot';
 const input = (field: string) => `optionsdesk-detail-criteria-input-${field}`;
 const block = (key: string) => `optionsdesk-detail-criteria-block-${key}`;
@@ -1091,7 +1094,52 @@ test('056 T006 — FR-020/FR-024：「复位」并入键盘右整列、不再独
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑫ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
+// ⑫ 行权价的硬门槛口径 ⓘ —— 只在建仓，且必须落在**行标签内**
+// ════════════════════════════════════════════════════════════════════════════
+
+test('056 T007 — FR-016/FR-016a：建仓的行权价行带硬门槛口径 ⓘ、tap 开再 tap 关；ⓘ 落在**定宽行标签内** ⇒ 该行值区右缘与其余行逐像素一致', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+
+  // ① 只在建仓（FR-016）—— 硬门槛 `K − bid < spot` 是建仓侧的判据，其余视角挂它是噪音。
+  await selectTab(page, 'rent');
+  await openSheet(page);
+  await expect(page.getByTestId(STRIKE_INFO)).toHaveCount(0);
+  await page.getByTestId(BACKDROP).tap();
+
+  await selectTab(page, 'build');
+  await openSheet(page);
+  await expect(page.getByTestId(STRIKE_INFO)).toHaveCount(1);
+
+  // ② 🚨 FR-016a：ⓘ 在**行标签内**。这不是观感偏好 —— 落值区右侧会让该行值区右缘短 32px
+  //    （直接破 FR-010），落值区内部则把两个框各挤掉 15px。
+  await expect(
+    page.getByTestId(block('strike')).getByTestId(ROW_LABEL).getByTestId(STRIKE_INFO),
+  ).toHaveCount(1);
+
+  // ③ FR-010 的**结构保证**：行标签定宽 `flex: none` ⇒ 值区起点与宽度一个像素都不被碰
+  //    ⇒ 带 ⓘ 那行的值区右缘与不带 ⓘ 的行**逐像素一致**（不是「量出来正好齐」）。
+  const right = (field: string) =>
+    page.getByTestId(input(field)).evaluate((el) => el.getBoundingClientRect().right);
+  expect(await right('strikeMax')).toBeCloseTo(await right('dteMax'), 1);
+
+  // ④ tap 开 / 再 tap 关（移动端没有 hover），形态沿用既有那个 ⓘ。
+  await expect(page.getByTestId(STRIKE_TIP)).toHaveCount(0);
+  await page.getByTestId(STRIKE_INFO).tap();
+  await expect(page.getByTestId(STRIKE_TIP)).toBeVisible();
+  await page.getByTestId(STRIKE_INFO).tap();
+  await expect(page.getByTestId(STRIKE_TIP)).toHaveCount(0);
+
+  // ⑤ 两个 ⓘ 各开各的：开权利金那个不会把行权价那个一起点亮（单一 boolean 会在这里红）。
+  await page.getByTestId(INFO).tap();
+  await expect(page.getByTestId(TIP)).toBeVisible();
+  await expect(page.getByTestId(STRIKE_TIP)).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑬ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
 // ════════════════════════════════════════════════════════════════════════════
 
 test('052 T013 — ⓘ 是 **tap 触发**的 popup tip：默认收起、tap 开、再 tap 关', async ({ page }) => {

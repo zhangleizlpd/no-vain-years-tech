@@ -25,7 +25,7 @@
 //    （键盘已上提 `~/ui`）。🚫 仓内另两条 keyboard-controller 路线只解 ①、不解 ②，已否。
 //
 // 渲染 / 交互 / a11y 走 T013 Playwright e2e（本仓测试分层：vitest=logic / Playwright=UI）。
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Modal, Pressable, Text, View } from 'react-native';
 
 import { BACKSPACE, NumericKeypad, SafeAreaView } from '~/ui';
@@ -118,7 +118,12 @@ export function LegCriteriaSheet({
 }: LegCriteriaSheetProps) {
   const base = criteriaFormOf(defaults);
   const [draft, setDraft] = useState<CriteriaForm>(submitted ?? base);
-  const [tipOpen, setTipOpen] = useState(false);
+  /**
+   * 哪个 ⓘ 展开着。**MUST 是「哪一个」而不是单个 boolean**（056 T007 起同屏有两个 ⓘ）——
+   * 共用一个 boolean 会让点权利金那个把行权价那个一起点亮，且屏上看着像「提示乱跳」。
+   * 📌 同时只开一个是刻意的：两个浮层都 260px 宽、都绝对定位，同开会叠在一起。
+   */
+  const [openTip, setOpenTip] = useState<TipKey | null>(null);
   /** 键盘编辑的是**哪一个框** —— 键盘常驻，故没有「谁都没选中」这一态（起手落在第一个框）。 */
   const [active, setActive] = useState<keyof CriteriaForm>(() => firstFieldOf(CRITERIA_ROWS));
 
@@ -183,11 +188,12 @@ export function LegCriteriaSheet({
             <CriteriaBlock
               key={blockKey}
               blockKey={blockKey}
+              tab={tab}
               draft={draft}
               changed={changed}
               active={active}
-              tipOpen={tipOpen}
-              onToggleTip={() => setTipOpen((prev) => !prev)}
+              openTip={openTip}
+              onToggleTip={(key) => setOpenTip((prev) => (prev === key ? null : key))}
               onSelect={setActive}
             />
           ))}
@@ -233,6 +239,9 @@ function sheetSubtitle(changedCount: number, pending: boolean): string {
 const SHEET_BLOCKS = ['strike', 'dte', 'premiumSpread', 'liveness'] as const;
 type SheetBlockKey = (typeof SHEET_BLOCKS)[number];
 
+/** 同屏两个 ⓘ 各自的身份 —— 展开态记的是「哪一个」，不是一个共用的 boolean（`FR-016`）。 */
+type TipKey = 'premium' | 'strike';
+
 /**
  * 规则位槽宽 —— 预留到容得下未来的规则选择器（所需 124，`FR-031`）⇒ 将来升级**只换槽内内容**，
  * 块高与字段区版式不变。📌 用 `style` 而非 class 与本文件 `PremiumTip` 的既有写法一致。
@@ -250,19 +259,21 @@ const RULE_SLOT_WIDTH = 130;
  */
 function CriteriaBlock({
   blockKey,
+  tab,
   draft,
   changed,
   active,
-  tipOpen,
+  openTip,
   onToggleTip,
   onSelect,
 }: {
   blockKey: SheetBlockKey;
+  tab: LegPickerTab;
   draft: CriteriaForm;
   changed: readonly string[];
   active: keyof CriteriaForm;
-  tipOpen: boolean;
-  onToggleTip: () => void;
+  openTip: TipKey | null;
+  onToggleTip: (key: TipKey) => void;
   onSelect: (field: keyof CriteriaForm) => void;
 }) {
   const dirty = (...keys: readonly string[]) => keys.some((key) => changed.includes(key));
@@ -274,7 +285,26 @@ function CriteriaBlock({
           testID="optionsdesk-detail-criteria-block-strike"
           className="h-8 flex-row items-center gap-xs"
         >
-          <RowLabel text={COPY.labelStrike} dirty={dirty('strikeMin', 'strikeMax')} />
+          {/* 🚨 ⓘ **只挂建仓**（`FR-016`）—— `K − bid < spot` 这道有效成本硬门槛无控件、不可调，
+              **且不进边际计数**（`soleFailure === null` 那支明写「硬门槛不过 ⇒ 不进任何一维的
+              计数」）⇒ 用户设了行权价却看到腿更少时，少掉的那部分可能是它切的，而屏上不解释。
+              其余视角挂它是噪音。 */}
+          <RowLabel
+            text={COPY.labelStrike}
+            dirty={dirty('strikeMin', 'strikeMax')}
+            tip={
+              tab === 'build' ? (
+                <CriteriaTip
+                  open={openTip === 'strike'}
+                  onToggle={() => onToggleTip('strike')}
+                  label={COPY.strikeTipLabel}
+                  body={COPY.strikeTip}
+                  testID="optionsdesk-detail-criteria-strike-info"
+                  tipTestID="optionsdesk-detail-criteria-strike-tip"
+                />
+              ) : undefined
+            }
+          />
           <RangeValues min="strikeMin" max="strikeMax" label={COPY.labelStrike} {...slot} />
         </View>
       );
@@ -299,7 +329,17 @@ function CriteriaBlock({
           <View className="flex-1 flex-row items-center gap-xs">
             <RowLabel text={COPY.labelPremium} dirty={dirty('premiumMin')} />
             <CriteriaInput field="premiumMin" label={COPY.labelPremium} grow {...slot} />
-            <PremiumTip open={tipOpen} onToggle={onToggleTip} />
+            {/* 📌 权利金这个 ⓘ **留在值区**（`FR-016a` 管的是行权价那个）—— 它与右半边的
+                `%` 单位对称：`FR-013` 本就把「单位跟在值区右端」算进值区，两半各带一个尾随
+                元素，右缘反而是齐的。 */}
+            <CriteriaTip
+              open={openTip === 'premium'}
+              onToggle={() => onToggleTip('premium')}
+              label={COPY.premiumTipLabel}
+              body={COPY.premiumTip}
+              testID="optionsdesk-detail-criteria-info"
+              tipTestID="optionsdesk-detail-criteria-tip"
+            />
           </View>
           <View className="flex-1 flex-row items-center gap-xs">
             <RowLabel text={COPY.labelSpread} dirty={dirty('relativeSpreadMax')} />
@@ -404,10 +444,20 @@ function GroupLabel({ text, dirty }: { text: string; dirty: boolean }) {
   );
 }
 
-/** 行标签。改过的维度：标签转常规色 + 前置蓝点（双通道，别只靠颜色）。 */
-function RowLabel({ text, dirty }: { text: string; dirty: boolean }) {
+/**
+ * 行标签。改过的维度：标签转常规色 + 前置蓝点（双通道，别只靠颜色）。
+ *
+ * 🚨 `w-20` **定宽不变**（`flex: none`）—— `FR-010` 的「各行值区右缘对齐」是靠这条**结构保证**
+ *    的，不是「量出来正好齐」：标签定宽 ⇒ 值区的起点与宽度一个像素都不被 `tip` 碰到。
+ * 🚨 `tip` MUST 落在这里面（`FR-016a`，mockup 三候选同帧实测定案）—— 落值区右侧会让该行值区
+ *    右缘短 32px（直接破 `FR-010`）；落值区内部虽保住右缘，但两个框各被挤掉 15px（125 → 110）。
+ */
+function RowLabel({ text, dirty, tip }: { text: string; dirty: boolean; tip?: ReactNode }) {
   return (
-    <View className="w-20 flex-row items-center gap-1">
+    <View
+      className="w-20 flex-row items-center gap-1"
+      testID="optionsdesk-detail-criteria-row-label"
+    >
       {dirty ? (
         <View
           testID="optionsdesk-detail-criteria-dirty-dot"
@@ -415,6 +465,7 @@ function RowLabel({ text, dirty }: { text: string; dirty: boolean }) {
         />
       ) : null}
       <Text className={dirty ? 'text-xs text-ink' : 'text-xs text-ink-muted'}>{text}</Text>
+      {tip}
     </View>
   );
 }
@@ -504,10 +555,26 @@ function sanitizeNumeric(text: string, integer: boolean): string {
 }
 
 /**
- * 权利金口径的 popup tip。**tap 开 / 再 tap 关**（移动端无 hover）。
+ * 口径 popup tip。**tap 开 / 再 tap 关**（移动端无 hover）。
  * 🚨 热区 44×44（图标视觉 13px）—— 别按图标尺寸做点击区。
+ * 🚨 判据本身 MUST NOT 放进来，这里只放**口径说明** —— tooltip 易被忽略，把判据塞进去
+ *    等于没写（NN/G）。056 T007 起两处复用同一形态，🚫 MUST NOT 新造第二种提示形态（`FR-016`）。
  */
-function PremiumTip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+function CriteriaTip({
+  open,
+  onToggle,
+  label,
+  body,
+  testID,
+  tipTestID,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  label: string;
+  body: string;
+  testID: string;
+  tipTestID: string;
+}) {
   return (
     <View className="justify-center">
       <Pressable
@@ -515,8 +582,8 @@ function PremiumTip({ open, onToggle }: { open: boolean; onToggle: () => void })
         hitSlop={16}
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={COPY.premiumTipLabel}
-        testID="optionsdesk-detail-criteria-info"
+        accessibilityLabel={label}
+        testID={testID}
         className="h-6 w-6 items-center justify-center"
       >
         {/* ⚠️ 图标（非文本内容）的对比度门槛是 3:1 —— `ink-subtle` 白底实测 2.85 不达标。 */}
@@ -526,9 +593,9 @@ function PremiumTip({ open, onToggle }: { open: boolean; onToggle: () => void })
         <View
           className="absolute left-0 right-0 z-10 rounded-md border border-line bg-surface-alt px-sm py-xs"
           style={{ top: TIP_TOP, width: 260 }}
-          testID="optionsdesk-detail-criteria-tip"
+          testID={tipTestID}
         >
-          <Text className="text-[10px] text-ink">{COPY.premiumTip}</Text>
+          <Text className="text-[10px] text-ink">{body}</Text>
         </View>
       ) : null}
     </View>
