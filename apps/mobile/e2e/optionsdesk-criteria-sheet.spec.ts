@@ -120,6 +120,7 @@ const COPY = {
   subApplied: (n: number) => `已改 ${n} 项`,
   countLine: (label: string, n: number) => `${label}之外还有 ${n} 条`,
   countLabelStrikeMax: '行权价上界',
+  countLabelRelativeSpreadMax: '价差上界',
   emptyTitle: '当前检索条件下没有候选',
   emptyResetCta: '复位到系统默认值',
   premiumTip: '门槛判的是 bid',
@@ -419,8 +420,21 @@ function makeTable(params: URLSearchParams, perspective: LegTab): LegTableRespon
 /** 本轮发到 `…/legs` 的查询串（含空串 = 无参数）—— 供「不点搜就不发请求」那条断言读。 */
 type LegRequestLog = string[];
 
-async function installMock(page: Page): Promise<LegRequestLog> {
+/**
+ * 服务端的 canonical 状态变体。
+ *
+ * 🚨 这是**另一种服务端状态**，不是「按测试编排的调用序标志」—— mock 纪律禁的是后者
+ *    （`callCount === 0 ? A : B`）。`criteria: 'missing'` 描述的是「判据契约还没到手」这一
+ *    真实存在的服务端形态（`LegTableResponse.criteria` 为 `null`），handler 对它仍是
+ *    `(请求参数, 该状态) → 响应` 的纯函数：同一组参数问几次答几次一样。
+ */
+interface MockState {
+  criteria?: 'available' | 'missing';
+}
+
+async function installMock(page: Page, state: MockState = {}): Promise<LegRequestLog> {
   const log: LegRequestLog = [];
+  const criteriaMissing = state.criteria === 'missing';
 
   await page.route(OPTIONSDESK_RE, async (route: Route) => {
     const req = route.request();
@@ -445,7 +459,8 @@ async function installMock(page: Page): Promise<LegRequestLog> {
       //       那个视角，而屏幕上什么都不会红。
       const perspective = perspectiveOf(url);
       if (perspective === null) return void (await json(400, PERSPECTIVE_REQUIRED_400));
-      return void (await json(200, makeTable(url.searchParams, perspective)));
+      const table = makeTable(url.searchParams, perspective);
+      return void (await json(200, criteriaMissing ? { ...table, criteria: null } : table));
     }
 
     if (/\/optionsdesk\/underlyings\/(.+)$/.test(url.pathname)) {
@@ -1097,9 +1112,18 @@ test('056 T006 — FR-020/FR-024：「复位」并入键盘右整列、不再独
   await expect(page.getByTestId(KEYPAD_ACTIONS).getByTestId(RESET)).toHaveCount(1);
 
   // ③ FR-021：右整列**复位在上、搜在下**（主操作贴近拇指，破坏性操作让开右下角）。
-  const resetTop = await page.getByTestId(RESET).evaluate((el) => el.getBoundingClientRect().top);
-  const submitTop = await page.getByTestId(SUBMIT).evaluate((el) => el.getBoundingClientRect().top);
-  expect(resetTop).toBeLessThan(submitTop);
+  //    🚨 两个 top MUST 在**同一次** evaluate 里取 —— 抽屉是 `animationType="slide"`，分两次
+  //    取会横跨动画的两帧：后取的那个 top 更小，机器一忙顺序就翻。本条曾因此假红一次
+  //    （非回归，是这条断言自己的竞态）。
+  const order = await page.evaluate(
+    ([resetId, submitId]) => {
+      const top = (id: string) =>
+        document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect().top ?? NaN;
+      return { reset: top(resetId), submit: top(submitId) };
+    },
+    [RESET, SUBMIT],
+  );
+  expect(order.reset).toBeLessThan(order.submit);
 
   // ④ 挪了位置，接线没断：键盘上这个「复位」点下去仍然触发 `onReset`（抽屉随之关闭）。
   //    📌 复位的**完整行为面**（回默认值 / 重召回 / 计数行与徽标同时消失 / 不带默认值回请求）
@@ -1156,7 +1180,152 @@ test('056 T007 — FR-016/FR-016a：建仓的行权价行带硬门槛口径 ⓘ�
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑬ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
+// ⑬ 056 T008 —— 主落层的分支补齐
+// ════════════════════════════════════════════════════════════════════════════
+
+const SHEET_BLOCK_ORDER = ['strike', 'dte', 'premiumSpread', 'liveness'] as const;
+
+/**
+ * 一个**真的会挡下腿**的相对价差（12%）与它的百分数显示。
+ *
+ * 🚨 MUST NOT 拿其余视角的默认 35% 当这个阈值 —— 本 fixture 五条腿的相对价差最大 0.16
+ *    （P140 = 0.40/2.50），35% 一条都挡不下 ⇒ 「默认不筛」与「默认筛」给出同一屏，
+ *    相关断言全部**恒真**。12% 挡下 P137(0.143) 与 P140(0.16)，且避开 P128 那个
+ *    正好 0.10 的浮点边界。
+ */
+const BINDING_SPREAD = '0.1200';
+const BINDING_SPREAD_PCT = '12';
+
+test('056 T008 — SC-011：四块版面**逐视角完全相同**，各行位置不跳（行集统一的可验证形态）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+
+  // 🚨 判据是「三份读数**互相**相等」而不是「各自等于某个期望值」—— 后者在三视角共用同一段
+  //    渲染代码时是三条重复断言，而这条钉的正是 FR-012 要的那件事：**逐视角相同**。
+  const perTab: Record<string, string[]> = {};
+  for (const tab of ['all', 'build', 'rent'] as const) {
+    await selectTab(page, tab);
+    await openSheet(page);
+    perTab[tab] = await renderedBlocks(page);
+    // 八个框逐视角都在（T002 已覆盖，这里只取块序）——两条合看才是「行集 + 位置」都不跳。
+    await page.getByTestId(BACKDROP).tap();
+    await expect(page.getByTestId(SHEET)).toHaveCount(0);
+  }
+  expect(perTab['all']).toEqual([...SHEET_BLOCK_ORDER]);
+  expect(perTab['build']).toEqual(perTab['all']);
+  expect(perTab['rent']).toEqual(perTab['all']);
+});
+
+test('056 T008 — FR-017/SC-014：全腿价差默认「不限」⇒ 那些**会被价差挡下**的腿在默认态下逐条仍在表上（051 入口不失效）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'all');
+
+  // 前提自检：**存在**一个会真的挡下腿的价差值 —— 否则本条失去判别性（「默认不筛」与
+  // 「默认筛」给出同一屏，断言恒真）。
+  // 📌 阈值取 12% 而不是其余视角的默认 35%：本 fixture 五条腿的相对价差最大 0.16，35% 一条
+  //    都挡不下 ⇒ 拿 35% 做前提会让这条断言**恒真**（首轮实撞，前提自检当场报 0）。
+  const boundCodes = recall({ ...DEFAULTS.all, relativeSpreadMax: BINDING_SPREAD }).map(
+    (l) => l.code,
+  );
+  const wouldBeExcluded = ALL_DEFAULT_CODES.filter((code) => !boundCodes.includes(code));
+  expect(wouldBeExcluded.length).toBeGreaterThan(0);
+
+  // 🚨 SC-014 的实质：默认态下这些腿**逐条**仍在表上 —— 051 那个「点流动性排除数切到全腿
+  //    看被排除的腿」的入口，指向的就是这张表。价差若在全腿默认收紧，那个入口会指向一张
+  //    **不含目标腿**的表，而屏上只是「少了几行」，不会红。
+  const shown = await renderedCodes(page);
+  for (const code of wouldBeExcluded) expect(shown).toContain(code);
+  await openSheet(page);
+  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText(CRITERIA_UNBOUNDED);
+});
+
+test('056 T008 — FR-017 另一半：全腿**手动**设价差导致腿减少 ⇒ 052 的边际计数报出「价差上界之外还有 N 条」，不静默消失', async ({
+  page,
+}) => {
+  const log = await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'all');
+  await openSheet(page);
+
+  // 百分数显示 ↔ 无量纲比例的换算在 `leg-criteria.rules.ts`，本文件不自算。
+  await setCriteria(page, 'relativeSpreadMax', BINDING_SPREAD_PCT);
+  await page.getByTestId(SUBMIT).tap();
+
+  const narrowedCodes = recall({ ...DEFAULTS.all, relativeSpreadMax: BINDING_SPREAD }).map(
+    (l) => l.code,
+  );
+  const gain = ALL_DEFAULT_CODES.length - narrowedCodes.length;
+  expect(gain).toBeGreaterThan(0);
+
+  // 🚨 先跑一条**会自动重试**的断言等重取落地 —— `renderedCodes` / `criteriaRequests` 都是
+  //    一次性 `page.evaluate`，没有重试，直接读会读到提交前那一屏（首轮实撞：多出 2 条）。
+  await expectRowCount(page, narrowedCodes.length, ALL_DEFAULT_CODES.length);
+  expect(await renderedCodes(page)).toEqual(narrowedCodes);
+  // 📌 用 RegExp 而不是精确串（同 AS3 那条）—— 计数行尾部还挂着「· 去改」的 CTA，
+  //    精确匹配会把那个 CTA 当成 drift 报红。
+  await expect(page.getByTestId(countLine('relativeSpreadMax'))).toHaveText(
+    new RegExp(COPY.countLine(COPY.countLabelRelativeSpreadMax, gain)),
+  );
+  // 用户那一维确实下发了（而不是客户端自己筛的）。
+  expect(criteriaKeysIn(criteriaRequests(log)[0] ?? '')).toContain('relativeSpreadMax');
+});
+
+test('056 T008 — 契约未到手（`criteria` 为 null）⇒ 抽屉**入口整个不渲染**（下游那条「八格全不限」因此不可达）', async ({
+  page,
+}) => {
+  await installMock(page, { criteria: 'missing' });
+  await openDetail(page);
+
+  // 🚨 **如实登记一条覆盖不到的**：spec Edge Case 写的是「契约未到手 ⇒ 八格全空、全呈
+  //    「不限」，版式仍须成立」。实装把入口闸在 `criteria !== null` 上
+  //    （`underlying-detail-screen.tsx` 的 `openCriteria` useMemo）⇒ 那一屏**没有任何路径
+  //    能走到**：`criteriaFormOf(null)` 的全空分支在组件里存在，但用户点不开抽屉。
+  //    ⇒ 这里断言**可达的那个真相**（入口不出现），🚫 MUST NOT 为了凑覆盖去绕过闸门打开
+  //    抽屉 —— 那测的是一条产品里不存在的路径，是一条会冒充覆盖的恒真断言。
+  //    📌 「该不该让它可达」是产品判断，不在本 task 边界内，已在 T008 commit 里登记。
+  await expect(page.getByTestId('optionsdesk-detail-leg-header')).toBeVisible();
+  await expect(page.getByTestId(ENTRY)).toHaveCount(0);
+  await expect(page.getByTestId(SHEET)).toHaveCount(0);
+});
+
+test('056 T008 — US5-AS1 后半（analyze A2）：建仓**新露出**的行权价行，其值真的到得了请求，且结果按它收窄', async ({
+  page,
+}) => {
+  const log = await installMock(page);
+  await openDetail(page);
+  await selectTab(page, 'build');
+  await openSheet(page);
+
+  // 🚨 这条守的是一种**屏上完全看不出**的失败：行渲染出来了、能编辑、能提交，而值没接到
+  //    请求上 —— 表照样刷新（因为别的参数变了或缓存命中），只是没按这一维筛。
+  //    ⇒ 判据必须落在**请求串**与**结果集**两处，只看屏上有没有这一行是不够的。
+  // 📌 阈值取 119 是被 fixture 逼出来的：建仓默认 `dteBand {1,49}` 只召回 P120 一条
+  //    （dte 40），任何**不挡下它**的上界都不会改变结果集 ⇒ 那样的断言分不出「值接上了」
+  //    与「值被丢了」。119 挡下 strike 120 ⇒ 表转空，收窄是可观测的。
+  await setCriteria(page, 'strikeMax', '119');
+  await page.getByTestId(SUBMIT).tap();
+
+  const narrowed = recall({ ...DEFAULTS.build, strikeMax: '119.0000' }).map((l) => l.code);
+  expect(narrowed.length).toBeLessThan(recall(DEFAULTS.build).length);
+
+  // 🚨 先等**会自动重试**的空态出现，再读 log 与表 —— 后两者都是一次性 `page.evaluate`，
+  //    抢在重取落地前读会拿到空数组（首轮实撞：`criteriaRequests` 读出 `[]`）。
+  await expect(page.getByTestId(EMPTY_RESET)).toBeVisible();
+
+  // 两处判据缺一不可：**请求串**证明值到得了服务端，**结果集**证明它真的作用在召回上。
+  const sent = criteriaRequests(log);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContain('strikeMax=119');
+  expect(await renderedCodes(page)).toEqual(narrowed);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑭ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
 // ════════════════════════════════════════════════════════════════════════════
 
 test('052 T013 — ⓘ 是 **tap 触发**的 popup tip：默认收起、tap 开、再 tap 关', async ({ page }) => {
