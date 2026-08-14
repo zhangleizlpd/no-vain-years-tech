@@ -13,8 +13,9 @@ import { mockJson } from './_support/api-mock';
 //   1. 入口隐藏：投资 + 期权台 Tab 不在 tab bar / 设置页无投资 Card（证券市场 + 券商账户）。
 //   2. deep-link 守卫：MARKETS_SURFACES 全部 11 受控面里的 8 个可路由面，直达 URL 全被
 //      MarketsRouteGuard 弹回安全屏（投资/行情/预警/期权台 → /profile；设置子页 → /settings）。
-//      面数 8 但深链 10 条 —— optionsdesk 二级页栈是**一个** route-stack 面，栈内三条路由
-//      （锚管理 / 温度计 / 标的详情）各戳一次，验的是「栈内新增路由自动继承那道守卫」。
+//      面数 8 但深链 11 条 —— optionsdesk 二级页栈是**一个** route-stack 面，栈内四条路由
+//      （锚管理 / 温度计 / 标的详情 / 链分析报表）各戳一次，验的是「栈内新增路由自动继承那道
+//      守卫」。新增栈内路由时**必须**在这里追一条：那是它继承关系唯一的机械载体。
 //   3. 合规核心（最硬）：整个 walkthrough 内**零** marketdata-family 网络请求 —— 公开版
 //      绝不向后端拉任何交易所行情/持仓/预警数据（方向 B 的法务底线：避「行情来源授权书」墙）。
 //   4. （047 T036 / FR-015）选约区块随期权台一并不可达：判据是**详情屏根本没挂载**，
@@ -127,6 +128,14 @@ const GATED_DEEPLINKS: { path: string; redirectsTo: RegExp; note: string }[] = [
     redirectsTo: /\/profile$/,
     note: '标的详情深链（栈内新增路由，046 T023）',
   },
+  // 055 T018 / SC-009：链分析报表同样只靠继承那道 MarketsRouteGuard（屏内**不另写**判定）。
+  // 它是报表可达性在 OFF bundle 下唯一的机械载体 —— 写进 055 自己的 e2e = 在 ON 下跑，
+  // 永远验不到 OFF 且不会红。
+  {
+    path: '/optionsdesk/chain-report/us%3AAAPL',
+    redirectsTo: /\/profile$/,
+    note: '链分析报表深链（栈内新增路由，055 T010）',
+  },
   { path: '/settings/stock-market', redirectsTo: /\/settings$/, note: '证券市场（route）' },
   { path: '/settings/broker-accounts', redirectsTo: /\/settings$/, note: '券商账户（route）' },
   { path: '/settings/broker-accounts/bind', redirectsTo: /\/settings$/, note: '券商绑定（route）' },
@@ -177,7 +186,7 @@ test('markets-OFF — 投资 Tab 隐藏 + 设置无投资 Card，且零 markets 
 
 // ─── 2. deep-link 守卫：全部受控面直达被弹回 ─────────────────────────────────
 
-test('markets-OFF — 10 条 markets 深链全部 MarketsRouteGuard 弹回安全屏', async ({ page }) => {
+test('markets-OFF — 11 条 markets 深链全部 MarketsRouteGuard 弹回安全屏', async ({ page }) => {
   const leaked = trackMarketsRequests(page);
 
   for (const { path, redirectsTo, note } of GATED_DEEPLINKS) {

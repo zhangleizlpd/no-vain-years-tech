@@ -82,6 +82,14 @@ export interface LegChainRow extends RecallLegInput {
   readonly bidSize: number | null;
   readonly askSize: number | null;
   readonly delta: number | null;
+  /**
+   * 隐含波动率, vendor 原样的**百分数** (`25.5` = 25.5%)。055 平值 IV 期限结构曲线的输入。
+   *
+   * 🚨 **🚫 MUST NOT 在任何一层再 ×100** —— 落库时就不做二次换算 (`schema.prisma`:「换算一次
+   * 就再也说不清库里那个数是谁的口径」)。多乘一次会让曲线纵轴差两个数量级, 而**图照样画得出来**。
+   * 📌 与 Δ 同为 `number`: 无量纲希腊值没有精度可丢, 且它只喂一条呈现用的曲线。
+   */
+  readonly iv: number | null;
   /** greeks 是否齐全 —— `false` 的腿**照常进候选** (FR-013 / 050 FR-009)。 */
   readonly greeksComplete: boolean;
 }
@@ -131,6 +139,29 @@ export interface LegRetrievalResult extends RecallOutcome<LegChainRow> {
   readonly memberCount: number;
 }
 
+/**
+ * 整链检索入参 (055) —— **蓄意比 {@link LegRetrievalQuery} 窄三项**。
+ *
+ * 视角 / 候选上限 / 用户覆盖一个都不在: 它们全是**召回**的入参, 而这个口子要的是召回**之前**
+ * 的那批行。把它们留在签名上等于让调用方以为可以在这里筛, 而筛出来的东西正是本方法不能给的。
+ */
+export interface LegChainQuery {
+  readonly symbol: string;
+  /** 请求时刻。DTE 基准恒为**交易所的今天**, 由实现按它算 (同 {@link LegRetrievalQuery.now})。 */
+  readonly now: Date;
+}
+
+/** 该标的当前的**整条链** —— 未经召回、未排序、未截断。 */
+export interface LegChainSnapshot {
+  readonly chain: LegChainMeta;
+  /**
+   * 该期**全部**适格认沽腿的裸行, 含会被任何门槛挡下的那些。
+   *
+   * 🚨 **顺序无语义**, 🚫 MUST NOT 依赖它 —— 本方法不排序 (排序是召回下游的事)。
+   */
+  readonly legs: readonly LegChainRow[];
+}
+
 export interface LegRetrievalPort {
   /**
    * 取该标的当前的候选集。
@@ -140,4 +171,22 @@ export interface LegRetrievalPort {
    * 值会让「缺口」看起来像「正常的空」, 正是本仓反复吃亏的那类静默。
    */
   retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null>;
+
+  /**
+   * 取该标的当前的**整条链** (055 T005)。链未就绪返 `null`, 判据与上一个方法逐字相同。
+   *
+   * 🚨 **为什么它不能由 {@link retrieveCandidates} 顶替**: 候选集的成员判据是「至少进一个视角」
+   * ⇒ 被权利金或活性门槛挡下的腿**结构上不在其中**。而 055 报表要在整条链上回答两个问题:
+   * ① 网格总体是「过权利金门槛之后的整条链」(FR-005) —— 被**活性**挡下的腿 MUST 留在图上;
+   * ② 一个格是「无合约」还是「有腿但全部太便宜」(FR-016) —— 后者的腿一条都不在候选集里,
+   *    拿候选集数会把它们渲染成「该位置无合约」, 即 US2 反对的「给出错误信息而不是缺失信息」。
+   * 两种错法**都渲染得出一张完整的网格**。
+   *
+   * 🚨 **本方法不做召回** —— 报表拿到裸行后在进程内自己跑 `leg-recall.rules.ts` 的层入口
+   * (骨架一次、三视角归属一次, 均为纯 CPU)。🚫 MUST NOT 在这里补任何判据: 那就是给召回开第二个
+   * 判据点, 而它**不会红**。
+   * 📌 **不是第二条读链路** (plan D-CTX-1): 同一个 port、同一个实现、同一批查询, 只是不再把
+   * 结果喂进召回就直接返回。
+   */
+  retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null>;
 }

@@ -35,6 +35,7 @@ import type {
   AnchorListResponse,
   AnchorPointInTimeResponse,
   AnchorResponse,
+  ChainReportResponse,
   CreateAnchorRequest,
   LegTableResponse,
   OptionsdeskControllerAtParams,
@@ -239,6 +240,97 @@ export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof o
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getOptionsdeskControllerLegsQueryOptions(symbol,params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * Aggregates the WHOLE chain into a moneyness-band × expiry grid so one screen answers "which tenor, how far out of the money, where is anyone bidding, and is this chain expensive overall". This is a SEPARATE endpoint from the leg picker on purpose: the picker answers ONE perspective, ranked and truncated, while this one answers the whole chain, unranked and untruncated — putting both behind one endpoint would mean two contracts behind one shape. The grid skeleton is the chain AFTER the premium-floor gate only. Legs held back by the liveness gate deliberately STAY on the grid in the "gated" state: they have a contract, nobody has traded it — dropping them would render as "no contract here", which is wrong information rather than missing information. All FOUR cell metrics ship in ONE response, over ONE skeleton. Switching metric therefore issues no request and cannot move a single cell. Note that cell STATE does change with the metric: the four metrics run over different recall sets, so a cell holding a value under one metric and empty under another is correct behaviour, not a defect. The footer ships THREE mutually exclusive exclusion counts, each with its own denominator; together with the valued count they sum exactly to the chain total. Columns carry the at-the-money implied volatility interpolated between the strikes straddling spot; an expiry with no strike on one side ships null and the curve MUST break there rather than fall back to the nearest strike. The IV percentile block degrades on its own four-state enum and is NOT affected by a grid failure. No anchor for the symbol → 404 with code ANCHOR_NOT_FOUND_FOR_SYMBOL: the report is unreachable until the underlying has been anchored, because one of the four metrics is derived from that anchor and a report missing one corner reads as "this chain has no entry opportunities" rather than "you have not valued it yet".
+ * @summary Chain report grid (moneyness band × expiry) + IV term structure
+ */
+export const optionsdeskControllerChainReport = (
+    symbol: string, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<ChainReportResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/underlyings/${symbol}/chain-report`,options
+    );
+  }
+
+
+
+
+export const getOptionsdeskControllerChainReportQueryKey = (symbol: string,) => {
+    return [
+    `/api/v1/optionsdesk/underlyings/${symbol}/chain-report`
+    ] as const;
+    }
+
+
+export const getOptionsdeskControllerChainReportQueryOptions = <TData = Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError = AxiosError<ProblemDetailResponse>>(symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getOptionsdeskControllerChainReportQueryKey(symbol);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>> = ({ signal }) => optionsdeskControllerChainReport(symbol, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: symbol !== null && symbol !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type OptionsdeskControllerChainReportQueryResult = NonNullable<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>>
+export type OptionsdeskControllerChainReportQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useOptionsdeskControllerChainReport<TData = Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError = AxiosError<ProblemDetailResponse>>(
+ symbol: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof optionsdeskControllerChainReport>>,
+          TError,
+          Awaited<ReturnType<typeof optionsdeskControllerChainReport>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useOptionsdeskControllerChainReport<TData = Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError = AxiosError<ProblemDetailResponse>>(
+ symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof optionsdeskControllerChainReport>>,
+          TError,
+          Awaited<ReturnType<typeof optionsdeskControllerChainReport>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useOptionsdeskControllerChainReport<TData = Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError = AxiosError<ProblemDetailResponse>>(
+ symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Chain report grid (moneyness band × expiry) + IV term structure
+ */
+
+export function useOptionsdeskControllerChainReport<TData = Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError = AxiosError<ProblemDetailResponse>>(
+ symbol: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerChainReport>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getOptionsdeskControllerChainReportQueryOptions(symbol,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

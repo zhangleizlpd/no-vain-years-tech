@@ -44,14 +44,21 @@
 //
 // 判定全在 `underlying-detail.rules.ts`（vitest 覆盖）；本文件与子件只做接线与版面，
 // 渲染 / 交互 / a11y 走 Playwright e2e（本仓测试分层：vitest=logic / Playwright=UI）。
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, SectionList, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSharedValue } from 'react-native-reanimated';
+import type { LegResponse } from '@nvy/api-client';
 
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { AnchorDetailCard } from './anchor-detail-card';
+import {
+  chainReportDrilldownAsOfNotice,
+  chainReportPrefillForm,
+  type ChainReportPrefill,
+} from './chain-report-drilldown.rules';
+import { chainReportAnchorPresence, chainReportEntryVisible } from './chain-report-entry.rules';
 import { IvReadoutBlock } from './iv-readout-block';
 import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LegCriteriaSheet } from './leg-criteria-sheet';
@@ -81,10 +88,15 @@ import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { OPTIONSDESK_ANCHOR_NEW_ROUTE } from './optionsdesk-routes';
+import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskChainReportRoute } from './optionsdesk-routes';
 import { PositionBucketChips } from './position-bucket-chips';
 import { PriceZoneChart } from './price-zone-chart';
-import { parseZoneBounds, type FreshnessTier, type LegBlockState } from './underlying-detail.rules';
+import {
+  parseZoneBounds,
+  type FreshnessTier,
+  type LegBlockState,
+  type LegSection,
+} from './underlying-detail.rules';
 import { useLegTable } from './use-leg-table';
 import { useUnderlyingDetail } from './use-underlying-detail';
 
@@ -99,9 +111,18 @@ export interface UnderlyingDetailScreenProps {
    * ⚠️ **由路由层注入** —— 温度计路由常量归 T023 建，本屏不自造路由字符串。
    */
   onPanorama: () => void;
+  /**
+   * 055 T016 —— 从报表某格下钻带进来的预填（`FR-038` / `FR-039`）；不是下钻 ⇒ `null`。
+   * ⚠️ 由**路由层**解析（同 `onPanorama` 的分工）：屏不认识 query 参数长什么样。
+   */
+  prefill?: ChainReportPrefill | null;
 }
 
-export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailScreenProps) {
+export function UnderlyingDetailScreen({
+  symbol,
+  onPanorama,
+  prefill = null,
+}: UnderlyingDetailScreenProps) {
   const router = useRouter();
   const detail = useUnderlyingDetail(symbol);
   const legTable = useLegTable(symbol);
@@ -117,6 +138,64 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
         : null,
     [legTable.block, legTable.criteria],
   );
+  // 🚨 055 FR-037a：报表入口的可见性与报表屏那道深链闸**共读同一份判据**
+  //    （`chain-report-entry.rules.ts`）—— 两处各判一次，改一处另一处照样渲染得出来。
+  //    ⚠️ 判据必须在这里算：JSX 里那个 `no_anchor` 三元已经把 `page` 收窄成 `'ready'`，
+  //    在分支内部再问一次「是不是 no_anchor」是恒假的（tsc 会红，且读起来像做了判定）。
+  const chainReportEntry = chainReportEntryVisible(
+    chainReportAnchorPresence({
+      anchorMissing: composition.page === 'no_anchor',
+      anchorLoaded: composition.anchorCard === 'ready',
+    }),
+  );
+  // ── 055 T016 下钻预填（FR-038 / FR-039）───────────────────────────────────
+  //
+  // 🚨 预填是**挂载时**的一次性输入 ⇒ 定格在 ref 里：`prefill` 由路由层每帧新建一个对象，
+  //    放进 effect 依赖会让下面三个 effect 每帧重跑（有闩不出错，但读起来像在轮询）。
+  const prefillRef = useRef(prefill);
+  const initialPrefill = prefillRef.current;
+  const prefillTabDone = useRef(false);
+  const prefillFormDone = useRef(false);
+  const prefillScrollDone = useRef(false);
+  const listRef = useRef<SectionList<LegResponse, LegSection>>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const { setTab: setLegTab, submitCriteria } = legTable;
+
+  // ① 先落位视角（`FR-039`）。挂载时 `intent` 还未知，`promotePick` 会在契约到手时把它升格 ——
+  //    这正是那条机制存在的场景，🚫 别在这里等 `intent`。
+  useEffect(() => {
+    if (initialPrefill === null || prefillTabDone.current) return;
+    prefillTabDone.current = true;
+    setLegTab(initialPrefill.tab);
+  }, [initialPrefill, setLegTab]);
+
+  // ② 该视角的**系统默认值到手之后**再压条件（🚨 顺序不可换）——
+  //    `CriteriaForm` 里空串的契约含义是「覆盖为不限」，拿空表单去提交会把权利金 / 活性 /
+  //    价差一并放开，选约表里多出报表那一格根本没数进去的腿，**而表照常渲染**。
+  useEffect(() => {
+    if (initialPrefill === null || prefillFormDone.current) return;
+    if (legTable.tab !== initialPrefill.tab || legTable.criteria === null) return;
+    prefillFormDone.current = true;
+    submitCriteria(chainReportPrefillForm(legTable.criteria.defaults, initialPrefill));
+  }, [initialPrefill, legTable.tab, legTable.criteria, submitCriteria]);
+
+  // ③ 滚到选约区块（`FR-038`「落到该标的选约区块」）—— 预填了却停在锚卡上，用户看不到它。
+  //    🚨 等两块都不在 loading 再滚：046 三块的高度随内容落定而变，早滚会停在半空。
+  useEffect(() => {
+    if (initialPrefill === null || prefillScrollDone.current) return;
+    if (headerHeight <= 0) return;
+    if (composition.anchorCard === 'loading' || legTable.block === 'loading') return;
+    prefillScrollDone.current = true;
+    listRef.current?.getScrollResponder()?.scrollTo({ y: headerHeight, animated: false });
+  }, [initialPrefill, headerHeight, composition.anchorCard, legTable.block]);
+
+  // 🚨 FR-039a：报表侧与选约侧的业务日不一致 ⇒ 两个时点**各自可见**。零新增契约字段 ——
+  //    两边比的都是各自响应里已有的 `asOf`。
+  const drilldownAsOf = chainReportDrilldownAsOfNotice(
+    initialPrefill?.reportAsOf ?? null,
+    legTable.chain?.asOf ?? null,
+  );
+
   // 🚨 表头与每个数据行**共读**这一个横向位移，且**只有这一个来源**（FR-001）。
   //    负值域 `[maxTx, 0]`（translateX），**不是** 047 那个正的 scroll offset。
   const tx = useSharedValue(0);
@@ -163,6 +242,7 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
               压平，手势静默不生效（见文件头）。`onLayout` 在这一层测的就是表宽。 */}
             <View className="flex-1" collapsable={false} onLayout={handleTableLayout}>
               <SectionList
+                ref={listRef}
                 className="flex-1 bg-surface-sunken"
                 sections={legTable.sections}
                 keyExtractor={(leg) => leg.code}
@@ -171,7 +251,14 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                 testID="optionsdesk-detail-scroll"
                 ListHeaderComponent={
                   // ── 046 三块（FR-001 版式不动，三个组件一行不改）─────────────
-                  <View className="gap-sm px-md py-sm">
+                  //    实测高度供 T016 的下钻滚动用（滚到它的下边缘 = 选约区块顶）。
+                  <View
+                    className="gap-sm px-md py-sm"
+                    onLayout={(event) => {
+                      const next = event.nativeEvent.layout.height;
+                      setHeaderHeight((prev) => (prev === next ? prev : next));
+                    }}
+                  >
                     {/* ── 块 ① 锚卡 ───────────────────────────────────────── */}
                     {composition.anchorCard === 'loading' ? (
                       <BlockSkeleton testID="optionsdesk-detail-anchor-card-loading" />
@@ -202,6 +289,19 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       today={detail.today}
                       freshnessTier={detail.seriesFreshnessTier}
                     />
+
+                    {/* ── 055 报表入口行（FR-035/036/037a）─────────────────────
+                        🚨 位置是判据的一部分：在 046 三块**之后**、选约区块**之前**
+                        （报表是选约的上游，入口出现在用户看到选约表之后就失去意义），
+                        且落在 `ListHeaderComponent` 里 ⇒ **随页滚走、不进吸顶区**
+                        （FR-036；sticky 那一层是 `renderSectionHeader`，别搬过去）。
+                        🚨 未建锚时整行不出现（FR-037a）—— 判据与报表屏那道深链闸
+                        **同一份**（`chain-report-entry.rules.ts`）。 */}
+                    {chainReportEntry ? (
+                      <ChainReportEntryRow
+                        onPress={() => router.push(optionsdeskChainReportRoute(symbol))}
+                      />
+                    ) : null}
                   </View>
                 }
                 renderSectionHeader={() => (
@@ -288,6 +388,10 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                     onRetry={legTable.retry}
                     // 🚨 053 FR-020：自动重取一次之后三份的业务日仍不一致 ⇒ 显式提示 + 手动刷新。
                     asOfMismatch={legTable.asOfMismatch}
+                    // 🚨 055 FR-039a：报表与选约跨了业务日 ⇒ 两个时点各自可见。与上面那条
+                    //    （三视角之间不一致）**分开**：一条说的是「表内三份对不齐」、
+                    //    另一条说的是「你从报表带过来的那一格是另一天的」。
+                    drilldownAsOf={drilldownAsOf}
                     onRefreshAll={legTable.refreshAll}
                     onSelectTab={legTable.setTab}
                     onOpenCriteria={() => setCriteriaOpen(true)}
@@ -320,6 +424,30 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
         ) : null}
       </GestureHandlerRootView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * 055 报表入口行（`FR-035`–`FR-037`）。版式随 046 三块**同款卡片**，与它们并列在同一个
+ * `ListHeaderComponent` 容器里 —— 入口是「上游的一块」不是浮在表上的按钮。
+ * 🚨 措辞取 `chainReport.entryTitle`，🚫 MUST NOT 复用温度计那句「全景 ›」（`FR-037`）。
+ */
+function ChainReportEntryRow({ onPress }: { onPress: () => void }) {
+  const copy = OPTIONSDESK_COPY.chainReport;
+  return (
+    <Pressable
+      className="flex-row items-center rounded-md border border-line bg-surface px-md py-sm"
+      accessibilityRole="button"
+      accessibilityLabel={copy.entryTitle}
+      testID="optionsdesk-detail-chain-report-entry"
+      onPress={onPress}
+    >
+      <View className="flex-1 gap-0.5">
+        <Text className="text-sm font-semibold text-ink">{copy.entryTitle}</Text>
+        <Text className="text-[11px] text-ink-muted">{copy.entrySubtitle}</Text>
+      </View>
+      <Text className="text-base text-ink-muted">›</Text>
+    </Pressable>
   );
 }
 
@@ -398,6 +526,7 @@ function LegBlockNotice({
   empty,
   onRetry,
   asOfMismatch,
+  drilldownAsOf,
   onRefreshAll,
   onSelectTab,
   onOpenCriteria,
@@ -415,6 +544,8 @@ function LegBlockNotice({
   empty: LegEmptyState;
   onRetry: () => void;
   asOfMismatch: boolean;
+  /** 055 FR-039a：报表侧与本表业务日不一致时的那一句（含**两个**时点）；一致 / 非下钻 ⇒ `null`。 */
+  drilldownAsOf: string | null;
   onRefreshAll: () => void;
   onSelectTab: (tab: LegPickerTab) => void;
   onOpenCriteria: () => void;
@@ -472,6 +603,15 @@ function LegBlockNotice({
           </Pressable>
         </View>
       ) : null}
+
+      {/* 🚨 055 FR-039a：从报表某格下钻过来、而两侧业务日不同 ⇒ **两个时点都说出来**。
+          那时「报表说 5 条、进去只有 3 条」是**数据真的变了**不是缺陷，但一个字都不说它就
+          变成了缺陷。同走数据缺口体系（虚线 + 沉底底色）—— 它不是错误。 */}
+      {drilldownAsOf === null ? null : (
+        <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-drilldown-asof">
+          <Text className="text-xs text-ink-muted">{drilldownAsOf}</Text>
+        </View>
+      )}
 
       {total === 0 ? (
         <LegEmptyBlock empty={empty} onSelectTab={onSelectTab} onReset={onResetCriteria} />

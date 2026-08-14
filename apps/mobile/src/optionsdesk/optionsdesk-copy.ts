@@ -645,6 +645,144 @@ export const OPTIONSDESK_COPY = {
     },
   },
 
+  /**
+   * 标的链分析报表屏（055，mockup `055-chain-report-states.dc.html`）。
+   *
+   * 🚨 **三个时点各自成句、🚫 禁合并成一个「数据截至」**（FR-033）—— 报价与持仓量常态下
+   *    就不是同一天（美股期权 OI 盘前更新），合成一句会让「活跃度是哪天的」永远说不清。
+   *    机械防线在 `chain-report-copy.spec.ts`：三条标注恒为三条、标签互异。
+   */
+  chainReport: {
+    /** 题头 = `<code> · 链分析`（`titleSuffix` 是那半截固定的）。 */
+    titleSuffix: ' · 链分析',
+
+    // ── 详情屏入口行（FR-035–FR-037；mockup `055-chain-report-panels.dc.html` 帧 ⑧） ──
+    /**
+     * 🚨 **FR-037：措辞 MUST NOT 与温度计入口重复** —— 046 已把「全景 ›」给了
+     * `ivBlock.panorama`；两个入口文案相同、目的地不同是本片明禁的形态。
+     * 机械防线在 `chain-report-entry.rules.spec.ts`（不含「全景」+ 两串互异）。
+     */
+    entryTitle: '链分析 · 机会分布',
+    entrySubtitle: '按价外深度 × 到期日看整条链',
+    /**
+     * 🚨 **FR-039a：两个时点都要说出来**。报表与选约是两个屏、两次取数，中间可能跨换日或
+     * 换批报价 ⇒ 条数不符时那**不是缺陷**（数据真的变了），但一个字都不说它就变成了缺陷。
+     */
+    drilldownAsOfMismatch: (report: string, leg: string) =>
+      `报表读的是 ${report} 的数据，这张表是 ${leg} 的 —— 条数与报表不符是数据真的变了`,
+    ivpLabel: '本链 IV 分位',
+    ivpUnit: '/ 100 · 近一年',
+    /** 三个时点的标签（FR-033）。⚠️ 顺序即语义：交易所今天 → 报价 → 持仓量。 */
+    stampMarketDate: '交易日',
+    stampQuote: '报价',
+    stampOpenInterest: '持仓量',
+    /** 报价那条恒带「收盘」后缀 —— 本片只有 EOD 快照一种来源。 */
+    quoteClosedSuffix: ' 收盘',
+    // ── IV 期限结构曲线（FR-020 / FR-021） ────────────────────────
+    curveTitle: '隐含波动率 · 期限结构',
+    /** 🚨 `FR-021` 的可见交代 —— 横轴是**列序**不是时间轴，读图的人有权知道。 */
+    curveAxisNote: '列序等距 · 非时间轴',
+
+    // ── 网格列头与范围框（FR-009 / FR-009a） ──────────────────────
+    /** 月度到期链标（判据在 server，与选约表同一处）。 */
+    monthlyChip: '月',
+    /** 🚨 列级淡出的**主信号**（Guardrail 7）—— 灰底只是辅，🚫 别只留灰底。 */
+    outOfBandChip: '段外',
+    /**
+     * 两条召回段图例。🚫 **蓄意不写 DTE 天数** —— 那两个区间是 server 的召回常量
+     *（`leg-recall.rules.ts`），抄到客户端就是第二份阈值；哪几列归哪一段，范围框本身已经说了。
+     */
+    bandKeyBuild: '建仓段',
+    bandKeyRent: '收租段',
+    /** Edge Case：锚 `excluded` ⇒ 报表照常渲染、页头带标记（用户是主动进来的）。 */
+    excludedNotice: '该标的已排除出雷达 —— 报表照常，仅供查看',
+    retry: '重试',
+
+    /**
+     * 五种降级态的说明（055 T017，mockup `055-chain-report-panels.dc.html` 帧 ⑦）。
+     *
+     * 🚨 **三句两两不同、🚫 不合并成一句「暂不可用」** —— 未就绪（等就有）/ 无现价（行轴无从
+     *    定义）/ 读失败（可重试）对用户是三件完全不同的事，合并之后每一种的处置都说不清。
+     * 📌 「全被门槛挡下」那句压在**网格下方**（网格照画），与上面三句不是一个槽位。
+     */
+    degraded: {
+      chainNotReady: {
+        title: '链数据未就绪',
+        text: '该标的还没有任何期权链快照 —— 与「有链但全被门槛挡下」是两回事。',
+      },
+      noSpot: {
+        title: '标的现价暂不可用',
+        text: '价外幅度以现价为分母，现价缺失时行轴无从定义。',
+      },
+      readFailed: {
+        title: '链数据读取失败',
+        text: '稍后重试，或返回详情页。页头的 IV 分位不受本次失败影响。',
+      },
+      allGated: {
+        title: '这条链上没有过门槛的腿',
+        text: '链上有合约，但没有一条落到图上 —— 各自挡在哪一步见下方三行。',
+      },
+    },
+    /** 缺失一律「—」，🚫 不裸 0（同 046 `ivBlock.noValue`）。 */
+    noValue: '—',
+
+    // ── 四种格值（FR-010；`Record` 而非 `Partial<Record>`，漏一个编译红） ──────
+    metricTabs: {
+      buildQuality: '建仓',
+      rentAnnualized: '收租',
+      allAnnualized: '全腿',
+      activity: '活跃度',
+    },
+    /**
+     * 每种格值的读法一行（mockup `.best`）。🚨 **活跃度那条的时点跟 `oiAsOf`**（FR-014）——
+     * 与报价常态不同日，用区块级 asOf 会把「没人碰过」说成今天的事。
+     */
+    metricCaptions: {
+      buildQuality: '有效成本相对愿买价 W 的位置，越低越好',
+      rentAnnualized: '年化费率 —— 每格取该位置最好的一条',
+      allAnnualized: '带 † 的行不参与色阶 —— 权利金里那一段是内在价值，不是租金',
+      activity: '持仓量 + 当日成交（张）',
+    },
+    /** 活跃度时点：与报价同日只说一句，不同日两个时点都说出来（`state_branch` 19）。 */
+    asOfPrefix: ' · 截至 ',
+    quoteDiffDay: (quote: string) => `，与报价的 ${quote} 不同日`,
+
+    // ── 十字线读数面板（FR-027 / FR-028 / FR-029 / SC-004） ───────────────────
+    readoutDteSuffix: ' 天',
+    readoutMonthly: '月度',
+    readoutStrikePrefix: 'K ',
+    readoutLegCount: '格内腿数',
+    readoutIv: '本列 IV',
+    /** 读数标签随格值变 —— 成色 / 年化 / 活跃度不是一个东西，共用一套标签会读串。 */
+    readoutMetricLabels: {
+      buildQuality: { best: '最优成色', runnerUp: '次优成色' },
+      rentAnnualized: { best: '最优年化', runnerUp: '次优年化' },
+      allAnnualized: { best: '最优年化', runnerUp: '次优年化' },
+      activity: { best: '最活跃', runnerUp: '次活跃' },
+    },
+    /** 🚨 `FR-028`：次优为空**显式呈「无」**，🚫 MUST NOT 复述最优值充数。 */
+    readoutNoneSingle: '无（仅 1 条）',
+    readoutNone: '无',
+    /** 🚨 `FR-029`：空格三种成因**各自成句**，🚫 不停留在上一格的读数。 */
+    readoutReasonVoid: '该位置链上无合约',
+    readoutReasonBlocked: '有腿，但被门槛挡下',
+    readoutReasonOutOfBand: '本列不在当前格值的召回段内',
+    readoutTip: '竖线同时落在网格这一列与曲线这一点上 · 松手退出',
+
+    // ── 页脚三个互斥计数（FR-034；🚫 MUST NOT 合并成一个总数） ────────────────
+    gatePremium: '权利金门槛移出',
+    gateRowFloor: '深实值行下界外',
+    gateLiveness: '无任何活动',
+    /** 每条**各带自己的分母** —— 分母不同是这三条不能相加成一个数的原因。 */
+    gateDenominatorTotal: '全量',
+    gateDenominatorSkeleton: '骨架',
+    gateDenominatorWithinRows: '行内',
+    gateUnit: '条',
+    /** `SC-006` 的求和恒等式；🚨 对不上账时**整行不显示**，🚫 不说一句错话。 */
+    gateHint: (valued: number, total: number) =>
+      `三者互斥，与图上 ${valued} 条相加 = 全链 ${total} 条`,
+  },
+
   /** 锚管理列表屏（T022，mockup 帧 ⑤）。 */
   anchorList: {
     title: '锚管理',

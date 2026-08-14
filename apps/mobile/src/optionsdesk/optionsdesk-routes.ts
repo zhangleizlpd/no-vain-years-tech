@@ -35,3 +35,23 @@ export const OPTIONSDESK_THERMOMETER_ROUTE = '/(app)/optionsdesk/thermometer' as
 export function optionsdeskUnderlyingRoute(symbol: string) {
   return `/(app)/optionsdesk/underlying/${encodeURIComponent(symbol)}` as const;
 }
+
+/**
+ * 标的详情的**动态段模板** —— 只给 055 T016 的下钻用（`router.push({ pathname, params })`）。
+ *
+ * 🚨 带 query 参数时 MUST 走模板而不是上面那个拼好的串：`params` 里同时有 `symbol` 与几个
+ *    预填值，交给 router 一起编码才不会把已编码的 `%3A` 再编一次（`us%253AACN` 解出来是
+ *    `us%3AACN`，那是一个查不到的标的，**而屏照样渲染得出来**，只是无锚引导）。
+ */
+export const OPTIONSDESK_UNDERLYING_PATHNAME = '/(app)/optionsdesk/underlying/[symbol]' as const;
+
+// ── 055 T010：标的链分析报表（FR-040 / plan D-UI-1） ─────────────────────────
+//
+// 🚨 同样长在 `/(app)/optionsdesk/` 下 —— 独立屏而非详情屏内嵌折叠块（`FR-040`：详情屏的
+//    横滑手势覆盖其列表头部，报表自身也要横滑，同一手势树两个横滑消费者会相争），
+//    合规门控随二级页栈继承（`SC-009`，🚫 屏内不另写判定）。
+
+/** 链分析报表（标的详情入口进入；`symbol` 同上须转义）。 */
+export function optionsdeskChainReportRoute(symbol: string) {
+  return `/(app)/optionsdesk/chain-report/${encodeURIComponent(symbol)}` as const;
+}

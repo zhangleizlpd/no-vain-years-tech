@@ -5,7 +5,9 @@ import { daysToExpiry, marketDateFor } from '../marketdata/trading-day-gate';
 import { parseAnchorTicker } from './anchor.rules';
 import { recallCandidates, type RecallContext } from './leg-recall.rules';
 import type {
+  LegChainQuery,
   LegChainRow,
+  LegChainSnapshot,
   LegRetrievalPort,
   LegRetrievalQuery,
   LegRetrievalResult,
@@ -33,6 +35,47 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   constructor(private readonly prisma: PrismaService) {}
 
   async retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
+    const snapshot = await this.loadChain(query);
+    if (snapshot === null) return null;
+    const { chain, legs } = snapshot;
+
+    const context: RecallContext = { spot: chain.spot };
+    const outcome = recallCandidates(
+      context,
+      query.perspectives,
+      legs,
+      query.candidateCap,
+      query.override,
+    );
+    return {
+      chain,
+      ...outcome,
+      // 053 FR-009: 无覆盖口径的成员数 —— 对**同一批已在内存的 `legs`** 再判一次, 零额外 DB
+      // 往返 (上面三次查询与它无关)。语义与三条禁忌见 `LegRetrievalResult.memberCount`。
+      memberCount:
+        query.override === null
+          ? outcome.candidates.length
+          : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
+              .length,
+    };
+  }
+
+  /**
+   * 055 T005 —— 整条链, **不进召回**。查询与 {@link retrieveCandidates} 完全同一批
+   * ({@link loadChain} 单点), 差别只在这里不把结果喂进 `recallCandidates`。
+   */
+  retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
+    return this.loadChain(query);
+  }
+
+  /**
+   * 三张 marketdata 表的只读直查 + 逐腿 DTE —— **两个 port 方法的共同根**。
+   *
+   * 🚨 抽出来是为了让「候选集与整条链读的是同一批行」成为结构保证: 各查一份的话, 两边照样都
+   * 查得出数据, 只是可能落在不同的快照期上 —— 而那时报表的骨架与选约表的候选集会对不上, 且
+   * 界面上一切正常。
+   */
+  private async loadChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
     const marketDate = marketDateFor(['us'], query.now);
@@ -120,20 +163,14 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         bidSize: numberOf(snapshot.bidSize),
         askSize: numberOf(snapshot.askSize),
         delta: numberOf(snapshot.delta),
+        // 🚫 原样带出, 不换算 —— 见 `LegChainRow.iv`。
+        iv: numberOf(snapshot.iv),
         openInterest: numberOf(snapshot.openInterest),
         volume: numberOf(snapshot.volume),
         greeksComplete: snapshot.greeksComplete,
       };
     });
 
-    const context: RecallContext = { spot };
-    const outcome = recallCandidates(
-      context,
-      query.perspectives,
-      legs,
-      query.candidateCap,
-      query.override,
-    );
     return {
       chain: {
         marketDate,
@@ -143,14 +180,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         source: newest.source,
         spot,
       },
-      ...outcome,
-      // 053 FR-009: 无覆盖口径的成员数 —— 对**同一批已在内存的 `legs`** 再判一次, 零额外 DB
-      // 往返 (上面三次查询与它无关)。语义与三条禁忌见 `LegRetrievalResult.memberCount`。
-      memberCount:
-        query.override === null
-          ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
-              .length,
+      legs,
     };
   }
 }

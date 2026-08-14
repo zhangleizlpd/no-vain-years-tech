@@ -35,12 +35,8 @@ import {
   markActivity,
   type ActivityMark,
 } from './leg-derive.rules';
-import {
-  MONTHLY_EXPIRY_LOOKBACK_DAYS,
-  isRecommended,
-  monthlyExpiryCandidates,
-  resolveMonthlyExpiries,
-} from './leg-mark.rules';
+import { isRecommended } from './leg-mark.rules';
+import { dateOnlyOf, readMonthlyExpiries, utcMidnight } from './monthly-expiry-lookup';
 import {
   BASIS_BY_TAB,
   DISPLAY_LIMIT_BY_PERSPECTIVE,
@@ -555,34 +551,14 @@ export class GetLegsUseCase {
   /**
    * 该链上哪些到期日是**月度到期日** (FR-014 / FR-015, plan D-MARK-2)。
    *
-   * 🚨 **一次查回整段日历, MUST NOT 逐到期日查** (Guardrail 7): 链上到期日几十个, 逐个查是
-   * 几十次往返。窗口 = `[最早候选日 − MONTHLY_EXPIRY_LOOKBACK_DAYS, 最晚候选日]`, 下界的外扩
-   * 量与假日回退的最大距离**是同一个常量** —— 不同步的话会出现「窗口里没查到、回退逻辑却敢
-   * 用」的缝。
-   *
-   * 复杂度: 1 次范围查询 (`(market, date)` 唯一键前缀命中) + `O(m log m)` 排序。
+   * 📌 055 起查询本身住 `monthly-expiry-lookup.ts` (报表逐列打标是第二个消费方) —— 判据仍是
+   * `leg-mark.rules.ts` 那两个纯函数, 一字未动。
    */
-  private async readMonthlyExpiries(
-    market: string,
-    pool: readonly LegCandidate[],
-  ): Promise<Set<string>> {
-    const candidates = monthlyExpiryCandidates(pool.map(({ leg }) => dateOnlyOf(leg.expiryDate)));
-    // 空链在检索层就已挡下, 这条是纯函数契约的兜底 —— 零候选就别白发一次查询。
-    if (candidates.length === 0) return new Set();
-
-    const from = new Date(
-      utcMidnight(candidates[0]).getTime() - MONTHLY_EXPIRY_LOOKBACK_DAYS * MS_PER_DAY,
-    );
-    // CROSS-CONTEXT-READ: marketdata.trading_day 只读直查 (catalog Q7-B) —— 月度到期日的假日
-    // 回退判据取自交易日历, 读法同 `last-closed-session.ts:39`。零写; marketdata 不知道锚表
-    // 存在 (方向铁律)。
-    const days = await this.prisma.tradingDay.findMany({
-      where: { market, date: { gte: from, lte: utcMidnight(candidates[candidates.length - 1]) } },
-      select: { date: true },
-    });
-    return resolveMonthlyExpiries(
-      candidates,
-      days.map((d) => dateOnlyOf(d.date)),
+  private readMonthlyExpiries(market: string, pool: readonly LegCandidate[]): Promise<Set<string>> {
+    return readMonthlyExpiries(
+      this.prisma,
+      market,
+      pool.map(({ leg }) => leg.expiryDate),
     );
   }
 
@@ -796,8 +772,6 @@ function rankingInputOf(
   };
 }
 
-const MS_PER_DAY = 86_400_000;
-
 /**
  * 链未就绪时的条件全景 —— 六维全 `null` + 三态全 `default` (052 spec Edge Case「spot 缺失」)。
  *
@@ -817,14 +791,4 @@ function unresolvedCriteria(): PerspectiveCriteria {
   for (const key of RETRIEVAL_CRITERION_KEYS)
     outcomes[key] = { state: 'default', excludedCount: 0 };
   return { defaults: blank, effective: blank, outcomes };
-}
-
-/** `@db.Date` 的 UTC 午夜 Date → `YYYY-MM-DD`。 */
-function dateOnlyOf(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-/** `YYYY-MM-DD` → `@db.Date` 比较用的 UTC 午夜 Date。 */
-function utcMidnight(dateOnly: string): Date {
-  return new Date(`${dateOnly}T00:00:00.000Z`);
 }

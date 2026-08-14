@@ -35,6 +35,7 @@ import * as ideationMockup from './ideation-mockup.contract';
 import * as marketdata from './marketdata.contract';
 import * as optionsdesk from './optionsdesk.contract';
 import * as optionsdeskChainLegPicker from './optionsdesk-chain-leg-picker.contract';
+import * as optionsdeskChainReport from './optionsdesk-chain-report.contract';
 import * as optionsdeskDetailThermometer from './optionsdesk-detail-thermometer.contract';
 import * as portfolioHoldings from './portfolio-holdings.contract';
 import * as stockDetail from './stock-detail.contract';
@@ -69,6 +70,7 @@ const SPECS: readonly ContractSpec[] = [
   optionsdesk,
   optionsdeskDetailThermometer,
   optionsdeskChainLegPicker,
+  optionsdeskChainReport,
   portfolioHoldings,
 ];
 

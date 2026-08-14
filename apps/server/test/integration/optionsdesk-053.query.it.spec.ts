@@ -9,6 +9,8 @@ import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
 import { BASIS_BY_TAB, DISPLAY_LIMIT_BY_PERSPECTIVE } from '../../src/optionsdesk/leg-rank.rules';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 import type {
+  LegChainQuery,
+  LegChainSnapshot,
   LegRetrievalPort,
   LegRetrievalQuery,
   LegRetrievalResult,
@@ -127,6 +129,12 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
 
     retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
       return this.inner.retrieveCandidates({ ...query, candidateCap: this.cap });
+    }
+
+    // 055 起 port 多一个整链方法。本包装只改候选上限那一个入参 ⇒ 这里原样透传, 🚫 别在这
+    // 加任何加工 (它不在本 IT 的验收面内, 加工了会让「换的只是保险丝」这句话不再成立)。
+    retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
+      return this.inner.retrieveChain(query);
     }
   }
 
@@ -521,6 +529,9 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
     await seedLegs(LADDER_LEGS);
     const exploding: LegRetrievalPort = {
       retrieveCandidates: () => Promise.reject(new Error('marketdata read blew up')),
+      // 选约表走不到这个方法 (它是 055 报表的入口), 但 port 契约要求实现 —— 同样炸, 免得
+      // 「哪个方法炸了」变成本分支的隐含前提。
+      retrieveChain: () => Promise.reject(new Error('marketdata read blew up')),
     };
     const view = await new GetLegsUseCase(prisma, exploding).execute(SYMBOL, 'build', NOW);
     // 🚨 两个状态**不可合并**: 前者是事实 (采集还没轮到), 后者是故障 —— 混成一个值会让「缺口」
