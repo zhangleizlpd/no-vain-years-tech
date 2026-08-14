@@ -38,6 +38,9 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     dteDays: 11,
     bid: '1.60',
     ask: '1.70',
+    // 053 契约增量（T004）：两者**服务端算**，客户端零处再乘一次合约乘数。
+    contractPremium: '160.00',
+    relativeSpread: '0.060606',
     bidSize: 25,
     askSize: 26,
     basis: 'annualized',
@@ -53,10 +56,9 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     openInterest: 1865,
     volume: 240,
     turnover: '39800',
-    activityByTab: { all: null, build: null, rent: null },
-    tabs: ['all'],
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
-    tierByTab: { all: 'good', build: null, rent: null },
+    // 053 契约收窄：一次请求只作答一个视角 ⇒ 档位与活跃标都是**本次视角**的标量
+    //（`tierByTab` / `activityByTab` / 每腿 `tabs` 三者同批退役）。
+    activity: null,
     isRecommended: false,
     isMonthlyChain: false,
     earningsMark: null,

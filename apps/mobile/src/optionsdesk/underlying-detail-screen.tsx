@@ -62,15 +62,19 @@ import {
 } from './leg-criteria.rules';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
 import {
-  legActivityForTab,
+  legCandidateCapLine,
   legEmptyState,
   legGateCountLines,
   legGateCountsQuiet,
+  legRowCountLine,
+  legTruncationLine,
   rateHeaderFor,
+  type LegCandidateCapLine,
   type LegEmptyState,
   type LegGateCountLine,
   type LegPickerNotice,
   type LegPickerTab,
+  type LegTruncationLine,
 } from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
 import { LegRow } from './leg-row';
@@ -221,7 +225,9 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       // 表还没到手就没有可判的东西 —— 显式 UNAVAILABLE，MUST NOT 默认成 CURRENT。
                       freshnessTier={legTable.chain?.asOfFreshnessTier ?? 'UNAVAILABLE'}
                       source={legTable.chain?.source ?? null}
-                      total={legTable.total}
+                      // 🚨 053 FR-016：报的是**符合条件的总数**（视角级 ⇒ 读 `table` 不读 `chain`），
+                      //    不是渲染出来的行数 —— 后者由非常驻区的截断计数承担（SC-005）。
+                      countLine={legRowCountLine(legTable.table)}
                     />
                     <PositionBucketChips
                       symbol={symbol}
@@ -240,7 +246,7 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       tx={tx}
                       // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——
                       //    契约未到手时退降级标题，MUST NOT 先猜一个口径挂上去。
-                      rateHeader={rateHeaderFor(legTable.table?.basisByTab ?? null, legTable.tab)}
+                      rateHeader={rateHeaderFor(legTable.table?.basis ?? null)}
                       oiAsOf={legTable.chain?.oiAsOf ?? null}
                     />
                     {/* 🚨 指示条钉在 12 列表头**正下方**（不是表格底部）—— 它描述列的位置，
@@ -253,25 +259,25 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                   </View>
                 )}
                 renderItem={({ item }) => (
-                  <LegRow
-                    leg={item}
-                    tx={tx}
-                    today={detail.today}
-                    // 🚨 活跃度是**当前 Tab 候选集内**的相对排名 —— 换 Tab 归属就变，故按 Tab 取。
-                    activity={legActivityForTab(item, legTable.tab)}
-                    // 🚨 档位同样随视角变（行内取 `tierByTab[tab]`，051 FR-015）。
-                    tab={legTable.tab}
-                  />
+                  // 🚨 053 起档位与活跃标都在 `item` 自己身上（契约按视角收窄成标量）——
+                  //    这里再也没有「取哪一格」这一步，故也传不错。
+                  <LegRow leg={item} tx={tx} today={detail.today} />
                 )}
                 renderSectionFooter={() => (
                   // 🚨 三样东西同落非常驻区（051 FR-010a）：就地说明 + 两个门槛计数 + 空态解释。
                   //    052 起再追加一类：**仅被用户收窄**的维度各一行计数（FR-029）。
+                  //    053 起再追加两类：**截断计数第 3 条**（FR-016）与**候选上限 `K` 的异常位**
+                  //    （FR-019c）—— 两者刻意不同款，见各自 rules 函数的注释。
                   <LegBlockNotice
                     state={legTable.block}
                     total={legTable.total}
                     notices={legTable.notices}
                     gates={legGateCountLines(legTable.table?.gateCounts ?? null, legTable.tab)}
                     criteria={criteriaCountLines(legTable.criteria)}
+                    // 🚨 两者都读**当前视角自己的**响应（`table`），MUST NOT 读回退到别的视角的
+                    //    `chain` —— 截断阈值与 `K` 触及都是视角级的量。
+                    truncation={legTruncationLine(legTable.table)}
+                    candidateCap={legCandidateCapLine(legTable.table)}
                     // 🚨 空态按**该视角自己的**排除数分支（051 FR-009 / SC-013）；
                     //    条件收窄出来的空是第三支，入口是「复位」而不是换视角（052 Edge Case）。
                     empty={legEmptyState(
@@ -329,8 +335,11 @@ function BlockSkeleton({ testID }: { testID: string }) {
 /**
  * 选约区块头（sticky）—— 区块级 `asOf` + 来源 + 计数条。
  *
- * 🚨 计数条分母恒取**逻辑集合**长度（`section.data.length`），**MUST NOT 取渲染窗口大小** ——
- *    这是 SC-012「滚动条长度 = 逻辑总行数」的可读判据（plan D-UI-2 ③）。
+ * 🚨 **计数条 053 起报的是「符合条件的总数」`matchedCount`**（FR-016，判定在 `legRowCountLine`）
+ *    —— 表达层截断之后它与渲染出来的行数不再相等，而「已显示前 D 条」由**非常驻区**的截断计数
+ *    承担；两处报同一个数会被读成两个不同的量（`SC-005` 明禁）。
+ *    📌 047 那条「分母取 `section.data.length`、MUST NOT 取渲染窗口大小」随之作废 —— 它当年防的是
+ *    「拿虚拟化窗口大小冒充总数」，而现在总数由服务端下发，窗口与逻辑集合都不再是它的来源。
  *
  * 🚨 **`asOf` 按 server 下发的 `asOfFreshnessTier` 二分**（T027a，`state_branches` 第 3 条）：
  *    常态平铺、陈旧转醒目。判据 MUST 留在 server —— 「asOf 是不是当期」要查交易日历，客户端
@@ -342,12 +351,12 @@ function LegBlockHeader({
   asOf,
   freshnessTier,
   source,
-  total,
+  countLine,
 }: {
   asOf: string | null;
   freshnessTier: FreshnessTier;
   source: string | null;
-  total: number;
+  countLine: string;
 }) {
   const asOfLabel = legAsOfLabel(asOf, freshnessTier);
   return (
@@ -366,7 +375,7 @@ function LegBlockHeader({
         ) : null}
       </View>
       <Text className="font-mono text-[10px] text-ink-muted" testID="optionsdesk-detail-leg-count">
-        {LEG_COPY.rowTotal(total)}
+        {countLine}
       </Text>
     </View>
   );
@@ -384,6 +393,8 @@ function LegBlockNotice({
   notices,
   gates,
   criteria,
+  truncation,
+  candidateCap,
   empty,
   onRetry,
   asOfMismatch,
@@ -397,6 +408,10 @@ function LegBlockNotice({
   notices: readonly LegPickerNotice[];
   gates: readonly LegGateCountLine[];
   criteria: readonly CriteriaCountLine[];
+  /** 截断计数第 3 条（053 FR-016）。`null` ⇒ **未触发截断，整条不渲染**（FR-018）。 */
+  truncation: LegTruncationLine | null;
+  /** 候选上限 `K` 的异常位（053 FR-019c）。`null` ⇒ 未触及，**整块不出现**（SC-016）。 */
+  candidateCap: LegCandidateCapLine | null;
   empty: LegEmptyState;
   onRetry: () => void;
   asOfMismatch: boolean;
@@ -495,7 +510,26 @@ function LegBlockNotice({
             </Text>
           </Pressable>
         ))}
+        {/* 🚨 053 FR-016 第 3 条：**与「权利金移出」同款** —— `text-ink-muted` 纯文字、无雪佛龙。
+            🚫 MUST NOT 用告警色（Guardrail 6）：截断是**正常的呈现约定**不是异常，告警色会让人
+               以为数据坏了；真正的异常位是下面那块 `K` 熔断提示，两者刻意不同款。
+            🚫 MUST NOT 在这里再报一次「符合条件 N 条」—— 那个数在 sticky 区块头（SC-005）。 */}
+        {truncation === null ? null : (
+          <Text className="text-[10px] text-ink-muted" testID="optionsdesk-detail-leg-truncated">
+            {truncation.text}
+          </Text>
+        )}
       </View>
+
+      {/* 🚨 053 FR-019c：候选上限 `K` 触及 ⇒ **另起异常位**（Guardrail 14）。走数据缺口体系
+          （虚线 + 沉底底色）而非上面那排纯文字计数 —— `K` 是给下游限流的保险丝，处置是**调容量**；
+          截断是正常呈现约定，处置是**调展示**。同款呈现会让前者被读成后者。
+          🚫 也不走红标体系：读没挂，只是「上面的数可能少报」。 */}
+      {candidateCap === null ? null : (
+        <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-candidate-cap">
+          <Text className="text-xs text-ink-muted">{candidateCap.text}</Text>
+        </View>
+      )}
     </View>
   );
 }

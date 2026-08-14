@@ -15,11 +15,10 @@
 // 🚨 **四档是费率质量档不是涨跌** ⇒ 本文件零处 `quote-*`。
 // 🚫 **动作列是建议标签不是按钮** —— 中性 tag，无 `onPress`、无选中态（见上方 FR-012 段）。
 import { Text, View } from 'react-native';
-import type { LegActivityResponse, LegResponse } from '@nvy/api-client';
+import type { LegResponse } from '@nvy/api-client';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { LegColumnPane } from './leg-column-pane';
-import { legTierForTab, type LegPickerTab } from './leg-picker.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 import {
@@ -55,23 +54,21 @@ export interface LegRowProps {
   tx: SharedValue<number>;
   /** 设备本地日历日 —— **只用于判到期日要不要补年份**，不参与任何新鲜度判断。 */
   today: string;
-  /**
-   * 当前 Tab 的活跃度标记。**三 Tab 各一套**（排名是候选集内的相对量，换 Tab 归属就变）⇒
-   * 由调用方从 `activityByTab[tab]` 取好再传。
-   */
-  activity: LegActivityResponse | null;
-  /**
-   * 当前视角 —— **只用来取本行的档位那一格**（`tierByTab[tab]`，051 FR-015）。
-   * 📌 与 `activity` 不同，档位在本行有**四个消费点**（bid 底色 / 行底 / 动作两处 / 费率副标）⇒
-   *    在这里取一次传下去，四处共用同一个值（同源，不会 drift）。
-   */
-  tab: LegPickerTab;
 }
 
-/** 单腿一行。复杂度 O(1)（列数固定）。 */
-export function LegRow({ leg, tx, today, activity, tab }: LegRowProps) {
-  // 🚨 本行档位**取当前视角那一格**，四个消费点共用（FR-015/FR-016）—— 全行零处读 `leg.tier`。
-  const tier = legTierForTab(leg, tab);
+/**
+ * 单腿一行。复杂度 O(1)（列数固定）。
+ *
+ * 🚨 **053 起档位与活跃标直接读 `leg` 自己的字段** —— 一次请求只作答一个视角，契约把这两个
+ *    量从 by-tab 映射收窄成**本次视角**的标量 ⇒ 原本靠 `tab` prop「取哪一格」的两个入参随之
+ *    退役，调用方少两个可以传错的东西。
+ */
+export function LegRow({ leg, tx, today }: LegRowProps) {
+  // 🚨 档位在本行有**四个消费点**（bid 底色 / 行底 / 动作两处 / 费率副标）⇒ 这里取一次，
+  //    四处共用同一个值（同源，不会 drift）。
+  const tier = leg.tier;
+  // 活跃度是**该视角候选集内**的相对排名（D-SOT-5）—— 换视角就是换一份响应，标随之而变。
+  const activity = leg.activity;
   const rate = legRateCell(leg, tier);
   const cost = costCell(leg);
   const bidTone = legBidTone(tier);
@@ -181,7 +178,7 @@ export function LegRow({ leg, tx, today, activity, tab }: LegRowProps) {
           <Text className="font-mono text-[11px] text-ink">{formatTurnover(leg.turnover)}</Text>
         </NumCell>
 
-        {/* 活跃度：server 下发的相对档标签（换 Tab 归属就变），无标 ⇒ 占位，不伪造默认档。 */}
+        {/* 活跃度：server 下发的相对档标签（换视角归属就变），无标 ⇒ 占位，不伪造默认档。 */}
         <TextCell columnKey="activity" testID={`optionsdesk-detail-leg-activity-${leg.code}`}>
           {activity?.label ?? COPY.noValue}
         </TextCell>

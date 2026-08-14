@@ -1,52 +1,49 @@
 // 047 T033 — 三 Tab / 意图落位 / 水位提示的纯函数（FR-002/016/017/019/020, plan D-SOT-3/D-SOT-4）。
 // Tab 栏与 chip 组件只做接线与版面；渲染 / 交互 / a11y 走 T035 Playwright e2e。
 //
-// 🚨 **Tab 成员判据 MUST NOT 在客户端重算** —— 每腿自带 `tabs: ('all'|'build'|'rent')[]`，
-//    判据单点在 server 的 `leg-recall.rules.ts`（050 起；047 时在 `leg-tab.rules.ts`）。
-//    重算至少有两条必踩的坑：
-//    ① IT 已实证 **greeks 缺失腿合法进意图 Tab** —— 050 起 Δ 整个退出召回判据（FR-009），
+// 🚨 **Tab 成员判据 MUST NOT 在客户端重算** —— 判据单点在 server 的 `leg-recall.rules.ts`。
+//    053 起一次请求只作答一个视角 ⇒ `legs[]` **就是**该视角的成员集合，客户端连「筛哪些」
+//    这个动作都不再存在。重算至少有两条必踩的坑：
+//    ① IT 已实证 **greeks 缺失腿合法进意图视角** —— 050 起 Δ 整个退出召回判据（FR-009），
 //       客户端拿 `|Δ| ∈ 档带` 重算必把这支筛没，而且**不会红**；
-//    ② 活跃度是「**当前 Tab 候选集内**的相对排名」（D-SOT-5），server 用它自己筛出的候选集算的。
+//    ② 活跃度是「**该视角候选集内**的相对排名」（D-SOT-5），server 用它自己筛出的候选集算的。
 //       客户端筛出另一个集合，排名照样显示得出来，只是**跟谁比**已经对不上了。
 //
-// 🚨 **顺序取自 `tabOrder[tab]`，不是 `legs[]` 的顺序**（051 FR-001/FR-004）—— 精排 050 起在
-//    server 完成，每个 Tab 各下发一份有序合约代码列表。`legs[]` 那一份是 legacy 载体序
-//    （档位 → 到期日 → 行权价 → code），050 之后**不承载任何 Tab 的排序语义**，只作为按 code
-//    定位腿的数据源。
-//    🚨 **这条不是体验问题**：P3 要做 server 端截断，而截断必须发生在排序之后；排序若留在
-//    客户端，server 截断会砍掉本该排前面的腿 —— 而返回条数与每个数字都正常，**不会红**。
+// 🚨 **顺序就是 `legs[]` 的数组序**（053 FR-002）—— 精排与表达层截断都在 server 完成，
+//    下发的是**该视角、已排序、已截断**的腿。047/051 那份与 `legs[]` 并行下发的有序 code 列表
+//    随本片退役：同一个顺序下发两份表达必 drift，而两份**各自都渲染得出来**。
+//    🚨 **这条不是体验问题**：截断必须发生在排序之后；排序若留在客户端，server 截断会砍掉
+//    本该排前面的腿 —— 而返回条数与每个数字都正常，**不会红**。
 //
-// 🚨 **切 Tab 只换 `section.data`** —— 三个 Tab 共用同一个 `SectionList` 实例（plan D-UI-1），
-//    故本文件恒返回长度 1 的 sections，空 Tab 是 `data: []` 而不是零 section。
+// 🚨 **切视角只换 `section.data`** —— 三个视角共用同一个 `SectionList` 实例（plan D-UI-1）。
+//    053 起换的是**哪一份响应的 `legs[]`**（三个视角三份 query），组装仍恒长度 1 个 section。
 import type {
-  LegActivityResponse,
-  LegResponse,
-  LegResponseBasis,
-  LegResponseTabsItem,
   LegTableResponse,
+  LegTableResponseBasis,
   LegTableResponseIntent,
+  LegTableResponsePerspective,
   LegTableResponsePositionBucketSource,
   PerspectiveCriteriaResponse,
   SetPositionBucketRequestPositionBucket,
 } from '@nvy/api-client';
 
 import { criteriaOverrideCount } from './leg-criteria.rules';
-import type { LegTier } from './leg-picker-copy';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { buildLegSections, type LegSection } from './underlying-detail.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 const CRITERIA_COPY = COPY.criteria;
 
 /**
- * Tab 键 = 契约 `tabs` 的值域本身（不另造一套）。
+ * Tab 键 = 契约 `perspective`（请求参数与响应回显的那一个）的值域本身，不另造一套。
+ * 🚨 053 起底是 `LegTableResponsePerspective` —— 每腿的 `tabs` 随响应收窄一并删除
+ *    （拆请求之后它恒等于当前视角，零信息量），值域改由**视角**这一维承担。
  * ⚠️ **本文件只 `import type`** —— `*.rules.ts` 跑在 vitest 里，而 `@nvy/api-client` 的运行时
  *    入口要先 `nx build api-client` 才解析得到。值导入会让纯逻辑单测在未构建时直接炸。
  */
-export type LegPickerTab = LegResponseTabsItem;
+export type LegPickerTab = LegTableResponsePerspective;
 
 /**
- * Tab 展示序 + 标签。🚨 **`Record` 而非 `Partial<Record>`** —— server 往 `tabs` 加一个成员，
+ * Tab 展示序 + 标签。🚨 **`Record` 而非 `Partial<Record>`** —— server 往视角值域加一个成员，
  * 这里立刻编译红（而不是静默少一个 Tab）。{@link LEG_PICKER_TABS} 从本表派生，不手抄第二份。
  */
 const TAB_LABEL: Readonly<Record<LegPickerTab, string>> = {
@@ -63,88 +60,11 @@ export function legTabLabel(tab: LegPickerTab): string {
   return TAB_LABEL[tab];
 }
 
-/**
- * 每 Tab 一份**有序的合约代码列表**（契约 `LegTableResponse.tabOrder`）。
- * 用本仓自己的 Tab 类型而非生成类型名 —— server 往 `tabs` 加一个成员时这里立刻编译红。
- */
-export type LegTabOrder = Readonly<Record<LegPickerTab, readonly string[]>>;
-
-/**
- * 契约还没到手时的取序输入（loading / 读故障）。三份恒是空数组 ——
- * 🚫 MUST NOT 用 `null` 顶替：「这个 Tab 没有腿」与「还没有数据」在**呈现上同归**（空态），
- * 但调用方不该为此写一条 null 分支。
- */
-export const EMPTY_LEG_TAB_ORDER: LegTabOrder = { all: [], build: [], rent: [] };
-
-/**
- * 当前 Tab 的腿，**按 server 下发的 `tabOrder[tab]` 取序**（FR-001/FR-003/FR-004）。
- *
- * 建一次 `Map<code, leg>`（`O(n)`）再按有序列表映射（`O(m)`）⇒ 总 `O(n+m)`，与被它取代的
- * `filter` 同量级。
- *
- * 🚨 **签名里 MUST NOT 出现任何比较器 / 排序键入参** —— 这是「排序不在客户端」（FR-002）的
- *    **结构保证**而非事后约定：想在客户端排就必须先改签名，那一步 review 看得见
- *    （同 050 server 侧对 `absDelta` 退出召回入参的处置）。
- *
- * 🚨 **两份数据的缺口都不许崩**（spec Edge Case）：`tabOrder` 里有 code 而 `legs[]` 定位不到
- *    → **跳过该 code**，MUST NOT 塞占位行；反之 `legs[]` 有而 `tabOrder` 无 → 该 Tab 本就
- *    不含它，正常。一致性由 server 保证（`tabOrder[t]` 与每腿 `tabs` 同源派生），客户端
- *    只负责撞上时不崩。
- *
- * 📌 `all` 也走同一条路径 —— 全腿 Tab 的有序列表照样由 server 下发，不为它开特例分支。
- */
-export function orderedLegsForTab(
-  legs: readonly LegResponse[],
-  tabOrder: LegTabOrder,
-  tab: LegPickerTab,
-): readonly LegResponse[] {
-  const byCode = new Map(legs.map((leg) => [leg.code, leg]));
-  const ordered: LegResponse[] = [];
-  for (const code of tabOrder[tab]) {
-    const leg = byCode.get(code);
-    if (leg !== undefined) ordered.push(leg);
-  }
-  return ordered;
-}
-
-/**
- * 当前 Tab 的 `sections`（恒长度 1）。
- * 🚨 **空 Tab 返的是 `data: []` 而不是零 section** —— 面板要照常在（FR-005：可进入、不隐藏、不置灰）。
- * 复杂度 O(n+m)。
- */
-export function legPickerSections(
-  legs: readonly LegResponse[],
-  tabOrder: LegTabOrder,
-  tab: LegPickerTab,
-): LegSection[] {
-  return buildLegSections(orderedLegsForTab(legs, tabOrder, tab));
-}
-
-/**
- * 该腿在**当前 Tab** 的活跃度标（D-SOT-5）。不属于该 Tab 的位置恒 `null` ——
- * 🚫 MUST NOT 拿别的 Tab 的标顶上（那是另一个候选集里的排名）。复杂度 O(1)。
- */
-export function legActivityForTab(
-  leg: Pick<LegResponse, 'activityByTab'>,
-  tab: LegPickerTab,
-): LegActivityResponse | null {
-  return leg.activityByTab[tab];
-}
-
-/**
- * 当前视角下的档位（契约 `tierByTab`，051 FR-015）。复杂度 O(1)。
- *
- * 🚨 **MUST NOT 回落到 legacy 的 `leg.tier`**（FR-016）—— 那个标量是全表一个口径的老载体，
- *    拿它顶上时屏幕照样渲得出四档色，只是**染的是另一个视角的判定**：不属于该视角的腿会被
- *    染成「好档」的绿，而它在这个视角里根本没判过档。
- * 📌 同一条腿在两个视角判出不同档是**定义如此**（建仓走周化档界、收租与全腿走年化）。
- */
-export function legTierForTab(
-  leg: Pick<LegResponse, 'tierByTab'>,
-  tab: LegPickerTab,
-): LegTier | null {
-  return leg.tierByTab[tab];
-}
+// 🚨 **053 起本文件没有「取序 / 取该视角那一格」这类函数了**：`legs[]` 已是该视角、已排序、
+//    已截断的腿（数组序就是呈现序），每腿的 `tier` / `activity` 已收窄成**本次视角**的标量
+//    ⇒ 调用点直接读字段。`orderedLegsForTab` / `legPickerSections` / `legActivityForTab` /
+//    `legTierForTab` 四个函数随三个 by-tab 契约结构（有序 code 列表 / 分视角活跃标 /
+//    分视角档位）一并退役 —— 那三个结构在收窄后的契约里已不存在，故这里连名字都不复述。
 
 /**
  * 意图 → 默认落位 Tab（FR-016）。穷举而非 `Partial<Record>`：矩阵加一态即编译红。
@@ -254,12 +174,6 @@ export function intentBasisLine(
   return COPY.intentBasis(table.lLevel, zone, bucketLabel(table.positionBucket));
 }
 
-/**
- * 每 Tab 一个**档位判定口径**（契约 `LegTableResponse.basisByTab`）。
- * 同 {@link LegTabOrder}：用本仓自己的 Tab 类型，server 往 `tabs` 加一个成员即编译红。
- */
-export type LegBasisByTab = Readonly<Record<LegPickerTab, LegResponseBasis>>;
-
 /** 费率列头 —— `main` 即口径本身；`sub` 只有周化那支有（折年是参照，不作排序键）。 */
 export interface LegRateHeader {
   main: string;
@@ -267,7 +181,7 @@ export interface LegRateHeader {
 }
 
 /** 两个口径的列头。穷举 `Record` —— server 的口径值域加一格即编译红。 */
-const RATE_HEADER_BY_BASIS: Readonly<Record<LegResponseBasis, LegRateHeader>> = {
+const RATE_HEADER_BY_BASIS: Readonly<Record<LegTableResponseBasis, LegRateHeader>> = {
   weekly: { main: COPY.rateBasisWeekly, sub: COPY.rateBasisWeeklySub },
   annualized: { main: COPY.rateBasisAnnualized, sub: null },
 };
@@ -282,14 +196,14 @@ const RATE_HEADER_UNKNOWN: LegRateHeader = { main: COPY.columns.rate, sub: null 
 /**
  * 费率列头 = **服务端下发的那个口径本身**（FR-017 / FR-017a）。复杂度 O(1)。
  *
- * 🚨 客户端 MUST NOT 自带一份「Tab → 口径」映射 —— 硬编码必与 server 漂移，而漂移时**两边
+ * 🚨 客户端 MUST NOT 自带一份「视角 → 口径」映射 —— 硬编码必与 server 漂移，而漂移时**两边
  *    都算得出结果**：列头写着「周化」、数字却是年化口径判出来的档，没有任何一处会红。
+ *    053 起契约只发**本次视角**那一份口径（`basis` 标量），连「取哪一格」都不再是客户端的事。
  * 🚨 穷举 `Record` 只拦得住编译期；`?? RATE_HEADER_UNKNOWN` 拦的是**运行时**那一支 ——
  *    server 可能先于客户端上线新口径取值，那时类型层已经骗不了运行时（FR-018）。
  */
-export function rateHeaderFor(basisByTab: LegBasisByTab | null, tab: LegPickerTab): LegRateHeader {
-  const basis: string | undefined = basisByTab?.[tab];
-  if (basis === undefined) return RATE_HEADER_UNKNOWN;
+export function rateHeaderFor(basis: LegTableResponseBasis | null): LegRateHeader {
+  if (basis === null) return RATE_HEADER_UNKNOWN;
   const known: Readonly<Record<string, LegRateHeader | undefined>> = RATE_HEADER_BY_BASIS;
   return known[basis] ?? RATE_HEADER_UNKNOWN;
 }
@@ -360,13 +274,12 @@ export interface LegGateCountLine {
 /**
  * 两个门槛计数（顺序恒定：权利金在前）。复杂度 O(1)。
  *
- * 🚨 流动性那条**按视角取数**：意图视角取 `excludedFromIntentTabsByTab[tab]`（该视角自己的数），
- *    全腿视角才用全表标量 —— 那是标量唯一诚实的用处，因为被流动性门槛挡下的腿**就在全腿视角内**
- *    （契约刻意不为全腿拆计数，FR-006a）。反过来在建仓视角报标量会指向别的视角的腿：数字真实、
- *    文案通顺，**只是说的不是这个视角的事**，而且不会红。
- * 📌 全腿视角同时**收回入口**：人已经在全腿视角了，再给一个「去全腿视角」是死链。
- * 📌 FR-010 的留位靠「本函数返回一个数组」实现 —— P3 的第二对计数按同一形状追加即可，
- *    调用方的版面一行不用改。
+ * 🚨 **053 起排除数就是「该视角自己的数」** —— 一次请求只判定一个视角，051 那个「全表标量 vs
+ *    分视角数」的二选一结构上已消失，契约面只留一份（全腿视角恒 0，它不受流动性门槛约束）。
+ *    ⇒ 本函数不再按视角取数，`tab` 只决定**措辞与入口**。
+ * 📌 全腿视角**收回入口**：人已经在全腿视角了，再给一个「去全腿视角」是死链。
+ * 📌 FR-010 的留位靠「本函数返回一个数组」实现 —— 053 的截断计数按同一形状追加
+ *    （见 {@link legTruncationLine}），调用方的版面一行不用改。
  */
 export function legGateCountLines(
   gateCounts: LegTableResponse['gateCounts'] | null,
@@ -374,9 +287,7 @@ export function legGateCountLines(
 ): LegGateCountLine[] {
   if (gateCounts === null) return [];
   const inAllTab = tab === 'all';
-  const excluded = inAllTab
-    ? gateCounts.excludedFromIntentTabs
-    : gateCounts.excludedFromIntentTabsByTab[tab];
+  const excluded = gateCounts.excludedFromIntentTabs;
   return [
     {
       key: 'premium_floor',
@@ -417,6 +328,90 @@ export function legGateCountsQuiet(lines: readonly LegGateCountLine[]): boolean 
   return lines.every((line) => line.count === 0);
 }
 
+// ═══════════════ 计数三处分工（053 FR-016 / FR-018 / FR-019c，plan D-API-1 / D-UI-1） ═══════════════
+//
+// 🚨 **三处各报各的数，MUST NOT 有两处报同一个**（`SC-005`）：
+//    · sticky 区块头 → 符合条件的总数（覆盖生效时并列「全量」基准）
+//    · 非常驻区第 3 条 → 已显示的条数 D 与被截掉的条数 N−D
+//    · 非常驻区异常位 → 候选上限 `K` 的触及数（**仅触及时**，与截断计数不同款）
+// 🚨 **`D` 与「其余 N−D」都是现算的**（Guardrail 11）：`D === legs.length`、
+//    `N−D === matchedCount − legs.length` ⇒ 服务端 MUST NOT 下发第二份（下发必 drift）。
+
+/**
+ * sticky 区块头的计数（FR-009 / FR-016）。复杂度 O(1)。
+ *
+ * 🚨 **报的是 `matchedCount` 不是渲染出来的行数** —— 截断之后两者不再相等，而「已显示前 D 条」
+ *    由 {@link legTruncationLine} 承担；区块头再报 D 就是同一个数一屏两处（`SC-005` 明禁）。
+ * 🚨 **未覆盖时 MUST NOT 并列显示两个相等的数**（FR-009 📌）—— 那时 `memberCount === matchedCount`，
+ *    并列出来的「筛后 40 · 全量 40」只会让人去找它们为什么不同。
+ * 📌 契约未到手 ⇒ 退「共 0 行」，与 loading 期的空表同形（不渲半截依据）。
+ */
+export function legRowCountLine(
+  table: Pick<LegTableResponse, 'matchedCount' | 'memberCount'> | null,
+): string {
+  if (table === null) return COPY.rowTotal(0);
+  return table.memberCount === table.matchedCount
+    ? COPY.rowTotal(table.matchedCount)
+    : COPY.rowTotalNarrowed(table.matchedCount, table.memberCount);
+}
+
+/** 截断计数（第 3 条）。`shown` / `hidden` 供断言与 e2e 读数，呈现层不从文案里往回抠数字。 */
+export interface LegTruncationLine {
+  shown: number;
+  hidden: number;
+  text: string;
+}
+
+/**
+ * 表达层截断的计数（FR-016 / FR-017 / FR-018）。**未触发截断恒 `null`**。复杂度 O(1)。
+ *
+ * 🚨 **未触发时整条不渲染**（FR-018）—— 🚫 MUST NOT 显示刺眼的空值，也 MUST NOT 显示两个恒等的数。
+ * 🚨 **视觉与「权利金移出」同款**（plan D-UI-1）：`text-ink-muted` 纯文字、**无雪佛龙** ——
+ *    🚫 MUST NOT 用告警色（Guardrail 6）：截断是**正常的呈现约定**不是异常，告警色会让人以为
+ *    数据坏了。真正的异常位是 {@link legCandidateCapLine}，两者刻意不同款。
+ * 🚨 **收窄指引是硬要求不是装饰**（FR-017）：分页 / 「加载更多」/ 被截断腿的下钻在本片**都不存在**
+ *    （FR-019），不给指引等于告诉用户「还有 N 条，但你够不到」。
+ * 📌 `shown === 0` 时同样不渲染 —— 那时列表本就是空的，空态自己会说话，再叠一句「已显示前 0 条」
+ *    只是自相矛盾（且 `hidden` 会恰好等于 `matchedCount`，撞 `SC-005`）。
+ */
+export function legTruncationLine(
+  table: Pick<LegTableResponse, 'legs' | 'matchedCount'> | null,
+): LegTruncationLine | null {
+  if (table === null) return null;
+  const shown = table.legs.length;
+  const hidden = table.matchedCount - shown;
+  if (shown <= 0 || hidden <= 0) return null;
+  return {
+    shown,
+    hidden,
+    text: `${COPY.truncated(shown, hidden)}${COPY.truncatedGuide(CRITERIA_COPY.entry)}`,
+  };
+}
+
+/** 候选上限 `K` 的异常位。`dropped` 供断言读数；**未触及恒 `null`**。 */
+export interface LegCandidateCapLine {
+  dropped: number;
+  text: string;
+}
+
+/**
+ * 候选上限 `K` 触及时的**异常**提示（FR-019c）。复杂度 O(1)。
+ *
+ * 🚨 **与截断计数不同款是硬要求**（Guardrail 14）：`K` 是给下游限流的保险丝（触及即系统异常，
+ *    处置是**调容量**），`N` 是用户可见条数（触及是正常约定，处置是**调展示**）。做成第四条
+ *    常规计数会让「该调容量」被读成「该调展示」。
+ * 🚨 **提示 MUST 说明「上面的数可能不完整」** —— `K` 触及会让 `matchedCount` **静默失真**：
+ *    它算在已被 `K` 砍过的集合上，于是 {@link legTruncationLine} 的「其余 N−D 条」**少报**，
+ *    而条数与数值全都正常、**不会红**。
+ * 📌 未触及（`0`）⇒ `null` ⇒ 整块不渲染（`SC-016`：未触及时该呈现 100% 不出现）。
+ */
+export function legCandidateCapLine(
+  table: Pick<LegTableResponse, 'candidateCapDropped'> | null,
+): LegCandidateCapLine | null {
+  if (table === null || table.candidateCapDropped <= 0) return null;
+  return { dropped: table.candidateCapDropped, text: COPY.candidateCap(table.candidateCapDropped) };
+}
+
 // ═══════════════ 意图视角空态（051 FR-009 / SC-013） ═══════════════
 
 /** 空态。`title` 为 null ⇒ 沿用既有单行形态（全腿视角）；`cta` 非 null ⇒ 带入口。 */
@@ -439,10 +434,10 @@ const GENERIC_EMPTY: LegEmptyState = { title: null, text: COPY.empty, cta: null,
 /**
  * 意图视角的空态，按**该视角自己的**排除数分两支（FR-009）。复杂度 O(1)。
  *
- * 🚨 **MUST NOT 用全表标量 `excludedFromIntentTabs`**（SC-013 / D-GATES-2）：那个数是「build 或
- *    rent 任一期限段合格且被流动性门槛挡下」的合计 ⇒ 建仓视角空而它 = 20 时，那 20 条可能**全是
- *    被排除出收租的**。据此对建仓视角说「有 20 条被挡了，去全腿看」是错的，而且**不会红** ——
- *    数字真实、句子通顺，只是指向了别的视角的腿。
+ * 🚨 051 期这里 MUST 取分视角数而非全表标量（SC-013 / D-GATES-2）—— 后者是「build 或 rent
+ *    任一期限段合格且被挡下」的合计，据此对建仓视角说「有 20 条被挡了，去全腿看」会指向别的
+ *    视角的腿，而且**不会红**。053 起该风险由**契约**消掉：一次请求只判定一个视角，下发的
+ *    `excludedFromIntentTabs` 就是本视角自己的数，两个口径结构上已是同一个数。
  * 📌 全腿视角不受流动性门槛约束（FR-006），它没有「被挡下」这一分支 ⇒ 沿用既有单行文案。
  */
 export function legEmptyState(
@@ -461,7 +456,7 @@ export function legEmptyState(
     };
   }
   if (gateCounts === null || tab === 'all') return GENERIC_EMPTY;
-  const excluded = gateCounts.excludedFromIntentTabsByTab[tab];
+  const excluded = gateCounts.excludedFromIntentTabs;
   const title = COPY.emptyIntentTitle[tab];
   // > 0：本视角确有够格却被挡下的腿 ⇒ 指向门槛并给入口（那些腿在全腿视角看得到）。
   if (excluded > 0) {

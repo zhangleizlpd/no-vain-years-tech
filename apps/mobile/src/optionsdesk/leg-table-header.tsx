@@ -77,7 +77,7 @@ export interface LegTableHeaderProps {
   tx: SharedValue<number>;
   /**
    * 费率列头 —— 🚨 **`main` 就是该视角的口径本身**（051 FR-017a：不套「费率」这层通用标题）。
-   * 取自服务端下发的 `basisByTab`，由调用方经 `rateHeaderFor` 取好再传（FR-017）。
+   * 取自服务端下发的 `basis`（053 起只发**本次视角**那一份），由调用方经 `rateHeaderFor` 映射（FR-017）。
    */
   rateHeader: LegRateHeader;
   /** 🚨 OI 的**独立归属日**（与区块级 asOf 不是同一天，FR-013）。 */
