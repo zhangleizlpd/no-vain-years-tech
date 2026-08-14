@@ -1,7 +1,7 @@
 ---
 feature_id: 053-optionsdesk-leg-query-pushdown
 spec_ref: ./spec.md
-status: drafted
+status: implemented
 created_at: '2026-08-12'
 updated_at: '2026-08-14'
 adr_refs: ['0032', '0043', '0053', '0062', '0064']

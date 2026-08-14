@@ -2,7 +2,7 @@
 feature_id: 053-optionsdesk-leg-query-pushdown
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: not-started
+status: implemented
 created_at: '2026-08-13'
 updated_at: '2026-08-14'
 ---
