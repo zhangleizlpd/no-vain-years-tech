@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 import { mockJson } from './_support/api-mock';
-import { keypadBackspace, keypadConfirm, keypadType } from './_support/alert-sheet';
+import { keypadBackspace, keypadConfirm, keypadType } from './_support/keypad';
 
 // 023-alert-eod-indicators PR-3 §V 第一层 UI 交互验证（Playwright hermetic mock）。
 // 021 alert.spec.ts 验既有 4 type 全流；本套验 023 扩出的 32 词表 / 4 分类 / 参数变体族。

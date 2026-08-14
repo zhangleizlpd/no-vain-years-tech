@@ -36,7 +36,7 @@
 
 ## `~/ui` 可复用原语（mobile，复用频次 ≥2 必抽此处，**别重造**）
 
-`AlphaIndex` / `BrokerPickerSheet` / `Button` / `ConfirmModal` / `DisplayNameInput` / `DraggableList` / `ErrorRow` / `HeaderBackOrParent` / `LogoMark` / `LongPressMenu` / `MarketBadge`（+ `market-badge.rules.ts`） / `PhoneInput` / `SafeAreaView` / `SearchBar` / `SmsInput` / `Spinner` / `SuccessCheck` / `SwipeRow` / `Switch` / `TabBarIcon` / `Tabs`。
+`AlphaIndex` / `BrokerPickerSheet` / `Button` / `ConfirmModal` / `DisplayNameInput` / `DraggableList` / `ErrorRow` / `HeaderBackOrParent` / `LogoMark` / `LongPressMenu` / `MarketBadge`（+ `market-badge.rules.ts`） / `NumericKeypad`（+ `keypad.rules.ts`） / `PhoneInput` / `SafeAreaView` / `SearchBar` / `SmsInput` / `Spinner` / `SuccessCheck` / `SwipeRow` / `Switch` / `TabBarIcon` / `Tabs`。
 
 新 UI 先查上表；design-token 走 `~/theme` 直搬**不重设计**（per [nativewind-mapping](../../.claude/rules/nativewind-mapping.md) + [mobile-impl-playbook](../../.claude/rules/mobile-impl-playbook.md)）。
 

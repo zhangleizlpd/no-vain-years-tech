@@ -9,6 +9,7 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
+import { CRITERIA_UNBOUNDED, setCriteria } from './_support/optionsdesk-criteria';
 import {
   BASIS_BY_PERSPECTIVE,
   PERSPECTIVE_REQUIRED_400,
@@ -41,10 +42,17 @@ import {
 //   「把这一维换回系统默认值、其余维保持用户值，能多看到几条」——本文件直接按定义算
 //   （`recall(放宽该维).length − recall(生效值).length`），不是抄一个数。
 //
+// ── 053 T015：控件从 `TextInput` 改成**只读显示 + 自绘键盘** ────────────────────────
+//   六个条件值不再是输入框（`.fill()` / `toHaveValue()` 对它们既点不着也读不出）——
+//   改值走 {@link setCriteria}（选中框 → 退格清空 → 逐键录入），空值显示「不限」占位符
+//   而不是空串。判据仍是本屏自己的 `sanitizeNumeric`（`~/ui` 的 `applyKey` 另有一套上限，
+//   见 `leg-criteria-sheet.tsx` 里的裁定注释）。
+//
 // ── Expo Web 下**验不到**的（如实标注，不凑假断言）───────────────────────────────
 //   · 抽屉是否**真的盖住了底部 Tab 栏**（RN `Modal` 渲 root 层那条）—— web 上 Modal 的层级由
 //     DOM 决定，与 native 的 tab content 容器约束不是同一回事 ⇒ 归真机验收。
-//   · 输入法弹起后「搜」还在不在屏内 —— web 无软键盘。
+//   · 键盘（自绘）末行 `0/./⌫` 在真机上到不到得着 —— web 视口够高，塌缩型布局缺陷照样全绿
+//     （`numeric-keypad.tsx` 文件头那条固定键高的由来）⇒ 归真机验收。
 //   · ⓘ 浮层的热区 44×44 —— 量得到盒子，量不到手指；本文件只验 tap 开 / 再 tap 关。
 //
 // ── Expo web e2e 三坑（memory expo_web_e2e_and_router_footguns）────────────────
@@ -605,16 +613,18 @@ test('052 T013 — US3-AS1：进入视图打开抽屉，六个控件已填**服�
   await expect(page.getByTestId(SUB)).toHaveText(COPY.subDefault);
 
   // 🚨 判别性来自「不圆」的取值：客户端自己算一份默认值，算不出 `137.7` / `0.2384`。
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('137.7');
-  await expect(page.getByTestId(input('premiumMin'))).toHaveValue('0.2384');
-  await expect(page.getByTestId(input('dteMin'))).toHaveValue('30');
-  await expect(page.getByTestId(input('dteMax'))).toHaveValue('365');
-  await expect(page.getByTestId(input('oiMin'))).toHaveValue('1');
-  await expect(page.getByTestId(input('volMin'))).toHaveValue('1');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText('137.7');
+  // 📌 权利金默认值有**四位小数** —— 它同时是「本屏不能改用 `~/ui` 的 `applyKey`」的判据
+  //    （那份把小数位截到 2 位，这个值会打不回来）。
+  await expect(page.getByTestId(input('premiumMin'))).toHaveText('0.2384');
+  await expect(page.getByTestId(input('dteMin'))).toHaveText('30');
+  await expect(page.getByTestId(input('dteMax'))).toHaveText('365');
+  await expect(page.getByTestId(input('oiMin'))).toHaveText('1');
+  await expect(page.getByTestId(input('volMin'))).toHaveText('1');
   // 相对价差是**无量纲比例**，控件按百分数显示（同屏其余四项是金额或张数）。
-  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveValue('35');
-  // 「不限」= 空框 + 占位符，🚫 不是 0 也不是 ∞。
-  await expect(page.getByTestId(input('strikeMin'))).toHaveValue('');
+  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText('35');
+  // 「不限」= 占位符，🚫 不是 0 也不是 ∞（053 T015 起是只读显示，故读到的是占位符本身）。
+  await expect(page.getByTestId(input('strikeMin'))).toHaveText(CRITERIA_UNBOUNDED);
 
   // 未覆盖 ⇒ 入口无徽标、计数区无收窄行。
   await expect(page.getByTestId(BADGE)).toHaveCount(0);
@@ -632,7 +642,7 @@ test('052 T013 — US3-AS2：改了值**不点搜**⇒ 结果逐行不变、零�
   await openDetail(page);
   await openSheet(page);
 
-  await page.getByTestId(input('strikeMax')).fill('128');
+  await setCriteria(page, 'strikeMax', '128');
   await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
 
   // 关掉抽屉（未提交）—— 结果面 MUST 一行不变。
@@ -648,7 +658,7 @@ test('052 T013 — US3-AS2：改了值**不点搜**⇒ 结果逐行不变、零�
 
   // 未提交的草稿在关掉后丢弃 —— 没点「搜」就等于没提交（重开回默认值）。
   await openSheet(page);
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('137.7');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText('137.7');
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -665,7 +675,7 @@ test('052 T013 — US3-AS3：点「搜」后按新值召回，**仅被收窄的�
   await openDetail(page);
   await openSheet(page);
 
-  await page.getByTestId(input('strikeMax')).fill('128');
+  await setCriteria(page, 'strikeMax', '128');
   await page.getByTestId(SUBMIT).tap();
 
   // 提交即收起（结果在抽屉底下，盖着看不见）。
@@ -697,7 +707,7 @@ test('052 T013 — US3-AS3：点「搜」后按新值召回，**仅被收窄的�
 
   // 重开抽屉：已提交的值回填（不是又跳回默认值），副标题转「已改 1 项」且不带「未提交」。
   await openSheet(page);
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('128');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText('128');
   await expect(page.getByTestId(SUB)).toHaveText(COPY.subApplied(1));
 });
 
@@ -711,7 +721,7 @@ test('052 T013 — US3-AS4：点「复位」⇒ 回系统默认值并重召回�
   const log = await installMock(page);
   await openDetail(page);
   await openSheet(page);
-  await page.getByTestId(input('strikeMax')).fill('128');
+  await setCriteria(page, 'strikeMax', '128');
   await page.getByTestId(SUBMIT).tap();
   await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
 
@@ -731,7 +741,7 @@ test('052 T013 — US3-AS4：点「复位」⇒ 回系统默认值并重召回�
   expect(criteriaRequests(log)).toEqual(['?perspective=rent&strikeMax=128']);
 
   await openSheet(page);
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('137.7');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText('137.7');
   await expect(page.getByTestId(SUB)).toHaveText(COPY.subDefault);
 });
 
@@ -745,7 +755,7 @@ test('052 T013 — US3-AS5：离开视图再进入回到默认值，且**任何 
   const log = await installMock(page);
   await openDetail(page);
   await openSheet(page);
-  await page.getByTestId(input('strikeMax')).fill('128');
+  await setCriteria(page, 'strikeMax', '128');
   await page.getByTestId(SUBMIT).tap();
   await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
 
@@ -770,7 +780,7 @@ test('052 T013 — US3-AS5：离开视图再进入回到默认值，且**任何 
   expect(criteriaRequests(log.slice(beforeReenter))).toEqual([]);
 
   await openSheet(page);
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('137.7');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText('137.7');
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -783,7 +793,7 @@ test('052 T013 — FR-015：在收租设的条件**不跟着**切到全腿，切
   const log = await installMock(page);
   await openDetail(page);
   await openSheet(page);
-  await page.getByTestId(input('strikeMax')).fill('128');
+  await setCriteria(page, 'strikeMax', '128');
   await page.getByTestId(SUBMIT).tap();
   await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
 
@@ -794,7 +804,7 @@ test('052 T013 — FR-015：在收租设的条件**不跟着**切到全腿，切
   await expect(page.getByTestId(BADGE)).toHaveCount(0);
   // 🚫 收租的 `128` MUST NOT 出现在全腿的控件里。
   await openSheet(page);
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
   await page.getByTestId(BACKDROP).tap();
 
   // 切回收租：条件还在（既没被切走时清空，也没被全腿那次请求冲掉）。
@@ -821,7 +831,7 @@ test('052 T013 — Edge Case：收紧到候选为空 ⇒ 空态**带复位入口
   await installMock(page);
   await openDetail(page);
   await openSheet(page);
-  await page.getByTestId(input('strikeMax')).fill('110');
+  await setCriteria(page, 'strikeMax', '110');
   await page.getByTestId(SUBMIT).tap();
 
   await expectRowCount(page, 0, RENT_DEFAULT_CODES.length);
@@ -851,8 +861,8 @@ test('052 T013 — FR-007 / FR-010：建仓**无行权价行**、全腿**无价�
   await expect(page.getByTestId(SHEET)).toContainText(COPY.sheetTitle(COPY.tabs.build));
   await expect(page.getByTestId(input('strikeMax'))).toHaveCount(0);
   await expect(page.getByTestId(input('strikeMin'))).toHaveCount(0);
-  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveValue('35');
-  await expect(page.getByTestId(input('dteMin'))).toHaveValue('1');
+  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText('35');
+  await expect(page.getByTestId(input('dteMin'))).toHaveText('1');
   await page.getByTestId(BACKDROP).tap();
 
   // 全腿：参照视角不受流动性门槛约束 ⇒ 价差整行不出现；而行权价与期限**照常有控件**，
@@ -860,8 +870,8 @@ test('052 T013 — FR-007 / FR-010：建仓**无行权价行**、全腿**无价�
   await selectTab(page, 'all');
   await openSheet(page);
   await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveCount(0);
-  await expect(page.getByTestId(input('strikeMax'))).toHaveValue('');
-  await expect(page.getByTestId(input('dteMin'))).toHaveValue('');
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
+  await expect(page.getByTestId(input('dteMin'))).toHaveText(CRITERIA_UNBOUNDED);
 });
 
 // ════════════════════════════════════════════════════════════════════════════

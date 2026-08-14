@@ -1,5 +1,11 @@
 // 自定义数字键盘输入规范化纯函数（026 US1 / FR-003）。组件层（numeric-keypad.tsx）只
 // 渲染键 + 转发 onKey，所有合法性收敛在此：交互/渲染走 Playwright，规范化走 vitest。
+//
+// 🚨 **规范化是调用屏的事，不是键盘的事** —— 本函数是 026 那一屏（alert 阈值）的判据，
+//    **不是** `NumericKeypad` 的隐含契约。053 T015 起 optionsdesk 检索条件抽屉也用这块键盘，
+//    但它沿用自己那份 `sanitizeNumeric`（无位数上限：服务端下发的权利金默认值有四位小数，
+//    下面的 `MAX_FRACTION_DIGITS` 会让它打不回来）。⇒ 新接一屏时**先看它自己的判据**，
+//    别默认 `applyKey` 通用。
 
 /** 退格键字符（与设计基线 .key ⌫ 同字面，组件透传）。 */
 export const BACKSPACE = '⌫';

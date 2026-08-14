@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 import { mockJson } from './_support/api-mock';
-import { keypadBackspace, keypadConfirm, keypadType } from './_support/alert-sheet';
+import { keypadBackspace, keypadConfirm, keypadType } from './_support/keypad';
 
 // 021-alert-management — Expo Web e2e（hermetic mock，PR-3 §V 第一层 UI 交互验证）。
 //

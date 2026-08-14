@@ -4,7 +4,7 @@ import type { AlertConditionItemType } from '@nvy/api-client';
 
 import { formatPrice, useQuoteMerge } from '~/portfolio/use-quote-merge';
 import { colors } from '~/theme';
-import { Button, SafeAreaView } from '~/ui';
+import { applyKey, Button, NumericKeypad, SafeAreaView } from '~/ui';
 import {
   ALERT_COPY,
   conditionName,
@@ -15,8 +15,6 @@ import {
   referencePlaceholder,
 } from './alert-copy';
 import { AlertIcon } from './alert-icon';
-import { applyKey } from './keypad.rules';
-import { NumericKeypad } from './numeric-keypad';
 import { QuoteStrip } from './quote-strip';
 import { thresholdValid } from './use-alert-draft';
 

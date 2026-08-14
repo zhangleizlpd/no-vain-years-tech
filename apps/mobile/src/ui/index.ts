@@ -37,3 +37,7 @@ export { LongPressMenu, type LongPressMenuProps } from './LongPressMenu';
 // 045 左侧抽屉通用容器（骨架自 chat-drawer 抽出，内容由调用方以 children 传入）。
 export { AppDrawer, type AppDrawerProps } from './app-drawer';
 export { DraggableList, type DraggableListProps } from './DraggableList';
+// 自绘数字键盘（026 自 alert 起，053 T015 上提）——「底部 sheet + 纯数字域」两处复用；
+// `applyKey` 是 026 那一屏的规范化判据，新接一屏前先读 `keypad.rules.ts` 文件头。
+export { NumericKeypad, type NumericKeypadProps } from './numeric-keypad';
+export { applyKey, BACKSPACE } from './keypad.rules';

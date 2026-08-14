@@ -12,6 +12,7 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
+import { CRITERIA_UNBOUNDED, setCriteria } from './_support/optionsdesk-criteria';
 import {
   BASIS_BY_PERSPECTIVE,
   PERSPECTIVE_REQUIRED_400,
@@ -1079,7 +1080,7 @@ test('053 T010 — sb5：截断计数**出现**（且与区块头不报同一个
 
   // ── 收窄到阈值以下 ────────────────────────────────────────────────────────
   await openSheet(page);
-  await page.getByTestId(criteriaInput('strikeMax')).fill('126');
+  await setCriteria(page, 'strikeMax', '126');
   await page.getByTestId(SUBMIT).tap();
 
   // 🔬 **换 key 那一拍表 MUST NOT 闪空**（`FR-026` / Guardrail 3 的可观测形态）——
@@ -1118,7 +1119,7 @@ test('053 T010 — sb23：在收租设的条件**不跟着**切到全腿（全�
   await expectRowCount(page, wide);
 
   await openSheet(page);
-  await page.getByTestId(criteriaInput('strikeMax')).fill('126');
+  await setCriteria(page, 'strikeMax', '126');
   await page.getByTestId(SUBMIT).tap();
   await expectRowCount(page, narrow);
   await expect(page.getByTestId(BADGE)).toHaveText('1');
@@ -1131,7 +1132,7 @@ test('053 T010 — sb23：在收租设的条件**不跟着**切到全腿（全�
   expect(await page.getByTestId(criteriaCountLine('strikeMax')).count()).toBe(0);
   // 🚫 收租的 `126` MUST NOT 出现在全腿的控件里。
   await openSheet(page);
-  await expect(page.getByTestId(criteriaInput('strikeMax'))).toHaveValue('');
+  await expect(page.getByTestId(criteriaInput('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
   await page.getByTestId('optionsdesk-detail-criteria-backdrop').tap();
 
   // 切回收租：覆盖还在（既没被切走时清空，也没被全腿那次请求冲掉）。
