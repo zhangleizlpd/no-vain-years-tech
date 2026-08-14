@@ -2,7 +2,7 @@
 feature_id: 056-optionsdesk-criteria-drawer-layout
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: tasks-ready
+status: implemented
 created_at: '2026-08-14'
 updated_at: '2026-08-14'
 ---
@@ -96,7 +96,7 @@ spec 的 **14 条 `state_branches` 里没有一条落得到服务端 IT** ——
 
 - [X] T009 [Verify] **真机验收**（`FR-014`, `FR-015`, `FR-050`, `SC-001`–`SC-005`, `SC-015`）：Mate50 dev-client 走三视角各一屏 —— ① 行数一致、零折行零截字、单位未被挤走 ② sheet 高度**不劣于改版前同视角** + 未触 `max-h-[92%]` + 键盘末行三键**实测可点** ③ 任一格上系统键盘 100% 不弹 ④ 值与标签同深可读 ⑤ ⓘ 热区（**叠加 `hitSlop` 判，🚫 别用 view bounds**）⑥ **分组块规则位的实装宽度**（`SC-010`, `FR-031`；analyze A1 补）。<br>🚨 **⑥ 的判据必须两个量都在实装上取**：量「规则位槽宽」与「两个规则选项文案在同字号下的排版宽度」，比的是这两者。🚫 **MUST NOT 拿 mockup 那对数（130 / 124）当判据** —— 那是 mockup 里那个槽位的宽度，不是实装组件的；`FR-031` 承诺的「将来升级只换槽内内容、块高与字段区行数不变」若在实装上不成立，**不会红、也没人会发现**，直到升级那一片。<br>📌 这是**一次性读数、不是常驻守卫** —— 常驻守卫要求把 segmented 真建出来，而 `FR-032` 已裁定本片不做。该局限如实登记在验收单里。→ verify: 逐项读数**写回 spec**（含未达标项与误判登记）；口径沿 `053` T013：几何用滚动差分锁边界、颜色用 `screencap` 原始 RGBA 采样。
 
-- [ ] T010 [Gate] **supersede 登记与 PR body**（`FR-018`, `SC-017`）：在 PR body 显式登记本片对 `052` `FR-007`（建仓无行权价行）与 `FR-010`（全腿无价差行）的 supersede，并复述「行集统一是行为惰性的、默认候选集逐视角零变化」这一正当性前提。→ verify: PR body 含该段 + 仓库模板的部署存活前置确认 3-checkbox（CI 硬扫）；三份产物 frontmatter `status` 翻 `implemented`。
+- [X] T010 [Gate] **supersede 登记与 PR body**（`FR-018`, `SC-017`）：在 PR body 显式登记本片对 `052` `FR-007`（建仓无行权价行）与 `FR-010`（全腿无价差行）的 supersede，并复述「行集统一是行为惰性的、默认候选集逐视角零变化」这一正当性前提。→ verify: PR body 含该段 + 仓库模板的部署存活前置确认 3-checkbox（CI 硬扫）；三份产物 frontmatter `status` 翻 `implemented`。
 
 ## Dependencies
 
