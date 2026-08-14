@@ -8,8 +8,9 @@
 //    「活跃度那一格是哪天的」就永远说不清了，**而页头照样渲染得出来**。
 // 🚫 **本屏不碰本地时钟** —— 三个业务日全由 server 下发（`FR-033`），`todayYmd()` 在此无
 //    合法用途（跨时区语义见 `docs/conventions/cross-timezone-date-semantics.md`）。
-import type { ChainReportResponse } from '@nvy/api-client';
+import type { ChainReportGateCountsResponse, ChainReportResponse } from '@nvy/api-client';
 
+import type { ChainReportMetric } from './chain-report-scale.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 import { ivReadoutView, type IvReadoutView } from './underlying-detail.rules';
@@ -71,4 +72,104 @@ export function chainReportHeaderView(report: ChainReportResponse): ChainReportH
     ],
     excludedNotice: report.anchorExcluded ? COPY.excludedNotice : null,
   };
+}
+
+// ═══════════════════ ② 当前格值的读法一行（FR-010 / FR-014） ═══════════════════
+
+/**
+ * 格值 → 读法一行（含它自己的时点）。`O(1)`。
+ *
+ * 🚨 **活跃度的时点跟 `oiAsOf` 而不是区块级 `asOf`**（`FR-014` / `state_branch` 19）——
+ * 美股期权 OI 盘前更新，两者常态**不同日**；用 `asOf` 会把「没人碰过」说成今天的事，
+ * **而那一行照样印得出来**。两者不同日时把两个时点都说出来，🚫 不藏。
+ */
+export function chainReportMetricCaption(
+  metric: ChainReportMetric,
+  report: Pick<ChainReportResponse, 'asOf' | 'oiAsOf'>,
+): string {
+  const base = COPY.metricCaptions[metric];
+  if (metric !== 'activity') return base;
+  const oiDay = monthDay(report.oiAsOf);
+  if (oiDay === null) return base;
+  const quoteDay = monthDay(report.asOf);
+  const diff = quoteDay !== null && quoteDay !== oiDay ? COPY.quoteDiffDay(quoteDay) : '';
+  return `${base}${COPY.asOfPrefix}${oiDay}${diff}`;
+}
+
+// ═══════════════════ ③ 页脚三个互斥计数（FR-034 / SC-006） ═══════════════════
+
+export type ChainReportGateKey = 'premium' | 'row_floor' | 'liveness';
+
+export interface ChainReportGateLine {
+  readonly key: ChainReportGateKey;
+  readonly label: string;
+  readonly count: number;
+  /** 🚨 **每条各带自己的分母** —— 分母不同正是这三条不能相加成一个数的原因（`FR-034`）。 */
+  readonly denominatorText: string;
+}
+
+/** `n / d` 的整数百分比；分母 ≤ 0 ⇒ `null`（🚫 不印 `NaN%`，也不兜 0%）。`O(1)`。 */
+function sharePct(count: number, denominator: number): number | null {
+  return denominator > 0 ? Math.round((count / denominator) * 100) : null;
+}
+
+function gateLine(
+  key: ChainReportGateKey,
+  label: string,
+  count: number,
+  denominator: number,
+  denominatorLabel: string,
+): ChainReportGateLine {
+  const pct = sharePct(count, denominator);
+  return {
+    key,
+    label,
+    count,
+    denominatorText:
+      pct === null ? COPY.gateUnit : `${COPY.gateUnit} · ${pct}% ${denominatorLabel}`,
+  };
+}
+
+/**
+ * 三个互斥计数 → 页脚三行。顺序即语义（权利金 → 行下界 → 活性），🚫 MUST NOT 合并。`O(1)`。
+ */
+export function chainReportGateLines(
+  counts: ChainReportGateCountsResponse,
+): readonly [ChainReportGateLine, ChainReportGateLine, ChainReportGateLine] {
+  return [
+    gateLine(
+      'premium',
+      COPY.gatePremium,
+      counts.removedByPremium,
+      counts.total,
+      COPY.gateDenominatorTotal,
+    ),
+    gateLine(
+      'row_floor',
+      COPY.gateRowFloor,
+      counts.outsideRowFloor,
+      counts.skeleton,
+      COPY.gateDenominatorSkeleton,
+    ),
+    gateLine(
+      'liveness',
+      COPY.gateLiveness,
+      counts.blockedByLiveness,
+      counts.withinRows,
+      COPY.gateDenominatorWithinRows,
+    ),
+  ];
+}
+
+/**
+ * 求和恒等式那一句（`SC-006` 的客户端一半）。`O(1)`。
+ *
+ * 🚨 **对不上账时返回 `null`（整句不显示）** —— 这句话断言的是一条不变量，而不变量一旦破了，
+ * 照原样印出来就是**用界面替错数背书**。三个数照样各自显示，少的只是这一句总结。
+ */
+export function chainReportGateHint(counts: ChainReportGateCountsResponse): string | null {
+  const sum =
+    counts.removedByPremium + counts.outsideRowFloor + counts.blockedByLiveness + counts.valued;
+  if (sum !== counts.total) return null;
+  return COPY.gateHint(counts.valued, counts.total);
 }

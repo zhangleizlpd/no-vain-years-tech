@@ -9,6 +9,7 @@ import {
   chainReportCellView,
   chainReportColumnView,
   chainReportContentWidth,
+  chainReportGridView,
   chainReportHasColumnOverflow,
   chainReportRowLabel,
   chainReportValueText,
@@ -278,5 +279,73 @@ describe('chain-report-grid.rules', () => {
       );
       expect(view.code).toBe('blocked');
     });
+  });
+});
+
+// ═══════════════════ T012 —— 切换格值（FR-010 / SC-002 / Guardrail 6） ═══════════════════
+
+describe('切换格值（FR-010 / SC-002）', () => {
+  const ROWS = [row('-0.100000', '0.000000'), row('0.000000', '0.100000')].map((r, index) => ({
+    ...r,
+    index,
+  }));
+  const COLUMNS = [
+    column({ expiryDate: '2026-08-22', dteDays: 8 }),
+    column({ expiryDate: '2026-09-18', dteDays: 31 }),
+  ];
+  /** 同一份骨架、两种格值 —— 成员集不同（这正是 FR-010 说的「格态随之重算」）。 */
+  const CELLS = {
+    rentAnnualized: [
+      [
+        { state: 'gated', best: null, legCount: 0 },
+        { state: 'valued', best: '0.430000', legCount: 3 },
+      ],
+      [
+        { state: 'absent', best: null, legCount: 0 },
+        { state: 'valued', best: '0.054000', legCount: 1 },
+      ],
+    ],
+    buildQuality: [
+      [
+        { state: 'valued', best: '-27.000000', legCount: 2 },
+        { state: 'gated', best: null, legCount: 0 },
+      ],
+      [
+        { state: 'absent', best: null, legCount: 0 },
+        { state: 'gated', best: null, legCount: 0 },
+      ],
+    ],
+  } as const;
+
+  function gridOf(metric: ChainReportMetric) {
+    const columnViews = COLUMNS.map((c) => chainReportColumnView(c, metric));
+    return chainReportGridView(
+      metric,
+      ROWS,
+      columnViews,
+      CELLS[metric === 'buildQuality' ? 'buildQuality' : 'rentAnnualized'],
+    );
+  }
+
+  // 🚨 SC-002 的客户端一半 —— 「位置不变」与「格态不变」**不是一回事**：
+  // 把格态缓存成格的静态属性，网格照样画得出来，只是切换时数字变了颜色没变。
+  it('🚨 切换前后行列位置逐格不变，而格态集合**不等**', () => {
+    const rent = gridOf('rentAnnualized');
+    const build = gridOf('buildQuality');
+
+    expect(build).toHaveLength(rent.length);
+    rent.forEach((line, index) => expect(build[index]).toHaveLength(line.length));
+
+    const codesOf = (grid: ReturnType<typeof gridOf>) =>
+      grid.map((line) => line.map((c) => c.code));
+    expect(codesOf(build)).not.toEqual(codesOf(rent));
+  });
+
+  it('维度与行列轴恒等（cells 缺格按「无合约」兜，🚫 不崩也不错位）', () => {
+    const columnViews = COLUMNS.map((c) => chainReportColumnView(c, 'activity'));
+    const grid = chainReportGridView('activity', ROWS, columnViews, [[]]);
+    expect(grid).toHaveLength(ROWS.length);
+    expect(grid[0]).toHaveLength(COLUMNS.length);
+    expect(grid[0]?.[0]?.code).toBe('void');
   });
 });

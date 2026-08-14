@@ -27,9 +27,9 @@ import {
   CHAIN_REPORT_CELL_HEIGHT,
   CHAIN_REPORT_COLUMN_WIDTH,
   CHAIN_REPORT_LABEL_WIDTH,
-  chainReportCellView,
   chainReportColumnView,
   chainReportContentWidth,
+  chainReportGridView,
   chainReportHasColumnOverflow,
   chainReportRowLabel,
   type ChainReportColumnView,
@@ -68,6 +68,12 @@ export function ChainReportGrid({
   const columnViews = useMemo(
     () => columns.map((column) => chainReportColumnView(column, metric)),
     [columns, metric],
+  );
+  // 🚨 逐格呈现走**同一个**纯函数入口（`chainReportGridView`）—— 组件不再自己排一遍，
+  //    `SC-002`「切换只换格态、不换位置」的断言才验的是屏上真渲染的那份。
+  const cellViews = useMemo(
+    () => chainReportGridView(metric, rows, columnViews, cells),
+    [metric, rows, columnViews, cells],
   );
   const contentWidth = chainReportContentWidth(columns.length);
   const hasOverflow = chainReportHasColumnOverflow(columns.length, trackWidth);
@@ -130,13 +136,8 @@ export function ChainReportGrid({
             {rows.map((row, rowIndex) => (
               <View key={row.index} className="flex-row">
                 {columns.map((column, colIndex) => {
-                  const cell = cells[rowIndex]?.[colIndex];
-                  const view = chainReportCellView(
-                    metric,
-                    row,
-                    cell ?? { state: 'absent', best: null, legCount: 0 },
-                    columnViews[colIndex]?.isOutOfBand ?? false,
-                  );
+                  const view = cellViews[rowIndex]?.[colIndex];
+                  if (view === undefined) return null;
                   return (
                     <View
                       key={column.expiryDate}

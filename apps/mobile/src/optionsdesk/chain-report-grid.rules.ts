@@ -242,3 +242,37 @@ export function chainReportCellView(
     glyph: BLOCKED_GLYPH,
   };
 }
+
+/** 契约上不该出现的空位（`cells` 维度与行列轴不符）—— 按「无合约」渲染，🚫 不崩。 */
+const MISSING_CELL: Pick<ChainReportCellResponse, 'state' | 'best' | 'legCount'> = {
+  state: 'absent',
+  best: null,
+  legCount: 0,
+};
+
+/**
+ * 整张网格 → 逐格呈现。`O(rows × columns)`。
+ *
+ * 🚨 **切换格值时行列位置逐格不变、格态随之重算**（`FR-010` / `SC-002` / Guardrail 6）——
+ * 两件事不是一回事：位置不变是**骨架**的性质（四种格值同一份 `rows` / `columns`），
+ * 格态变是**成员集**的性质（四种格值跑在不同召回集上，实测填充率 建仓 6.3% / 收租 13.6% /
+ * 全腿 41.6%）。把格态缓存成格的静态属性，网格照样画得出来，只是切换时**数字变了颜色没变**。
+ * 组件与单测都走这一个入口，🚫 呈现侧不再重排一遍。
+ */
+export function chainReportGridView(
+  metric: ChainReportMetric,
+  rows: readonly ChainReportRowResponse[],
+  columnViews: readonly ChainReportColumnView[],
+  cells: readonly (readonly Pick<ChainReportCellResponse, 'state' | 'best' | 'legCount'>[])[],
+): ChainReportCellView[][] {
+  return rows.map((row, rowIndex) =>
+    columnViews.map((column, colIndex) =>
+      chainReportCellView(
+        metric,
+        row,
+        cells[rowIndex]?.[colIndex] ?? MISSING_CELL,
+        column.isOutOfBand,
+      ),
+    ),
+  );
+}

@@ -30,9 +30,16 @@ import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-ha
 import { useSharedValue } from 'react-native-reanimated';
 
 import { ErrorRow, SafeAreaView, Spinner, makeHeaderBackOrParent } from '~/ui';
-import { chainReportHeaderView, chainReportTitle } from './chain-report-copy';
+import {
+  chainReportGateHint,
+  chainReportGateLines,
+  chainReportHeaderView,
+  chainReportMetricCaption,
+  chainReportTitle,
+} from './chain-report-copy';
 import { ChainReportGrid } from './chain-report-grid';
 import { chainReportContentWidth } from './chain-report-grid.rules';
+import { ChainReportMetricTabs } from './chain-report-metric-tabs';
 import type { ChainReportMetric } from './chain-report-scale.rules';
 import { IvpSegmentBar } from './ivp-segment-bar';
 import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
@@ -53,7 +60,8 @@ export interface ChainReportScreenProps {
 export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
   const { report, isPending, isError, refetch } = useChainReport(symbol);
   const header = useMemo(() => (report === null ? null : chainReportHeaderView(report)), [report]);
-  const metric = DEFAULT_METRIC;
+  // 🚨 切换只换「读哪一张网格」—— 四张一次返齐，🚫 不为切换再发请求（`SC-002`）。
+  const [metric, setMetric] = useState<ChainReportMetric>(DEFAULT_METRIC);
 
   const columnCount = report?.columns.length ?? 0;
   const contentWidth = chainReportContentWidth(columnCount);
@@ -127,23 +135,56 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
         )}
 
         {report === null ? null : (
-          <GestureHandlerRootView>
-            <GestureDetector gesture={pan}>
-              {/* 🚨 单个原生 `View` + `collapsable={false}`：Fragment 或被压平 ⇒ 手势静默失效。 */}
-              <View collapsable={false}>
-                <ChainReportGrid
-                  metric={metric}
-                  rows={report.rows}
-                  columns={report.columns}
-                  cells={report.cells[metric]}
-                  tx={tx}
-                  viewportW={viewportW}
-                  trackWidth={trackWidth}
-                  onTrackLayout={onTrackLayout}
-                />
-              </View>
-            </GestureDetector>
-          </GestureHandlerRootView>
+          <>
+            <ChainReportMetricTabs metric={metric} onSelect={setMetric} />
+
+            <GestureHandlerRootView>
+              <GestureDetector gesture={pan}>
+                {/* 🚨 单个原生 `View` + `collapsable={false}`：Fragment 或被压平 ⇒ 手势静默失效。 */}
+                <View collapsable={false}>
+                  <ChainReportGrid
+                    metric={metric}
+                    rows={report.rows}
+                    columns={report.columns}
+                    cells={report.cells[metric]}
+                    tx={tx}
+                    viewportW={viewportW}
+                    trackWidth={trackWidth}
+                    onTrackLayout={onTrackLayout}
+                  />
+                </View>
+              </GestureDetector>
+            </GestureHandlerRootView>
+
+            {/* 当前格值的读法一行 —— 活跃度那条的时点跟 `oiAsOf`（FR-014）。 */}
+            <Text className="px-md pt-0.5 text-[9px] text-ink-muted" testID="chain-report-caption">
+              {chainReportMetricCaption(metric, report)}
+            </Text>
+
+            {/* 🚨 FR-034 页脚三个互斥计数，各带各的分母，🚫 不合并成一个总数。 */}
+            <View
+              className="mt-auto gap-0.5 border-t border-line-soft px-md pb-md pt-sm"
+              testID="chain-report-footer"
+            >
+              {chainReportGateLines(report.gateCounts).map((line) => (
+                <View
+                  key={line.key}
+                  className="flex-row items-baseline gap-1"
+                  testID={`chain-report-gate-${line.key}`}
+                >
+                  <Text className="w-24 text-[11px] text-ink-muted">{line.label}</Text>
+                  <Text className="text-[11px] text-ink">{line.count}</Text>
+                  <Text className="text-[11px] text-ink-muted">{line.denominatorText}</Text>
+                </View>
+              ))}
+              {/* 恒等式对不上账时整句不显示 —— 🚫 不用界面替错数背书（`SC-006`）。 */}
+              {chainReportGateHint(report.gateCounts) === null ? null : (
+                <Text className="text-[10px] text-ink-subtle" testID="chain-report-gate-hint">
+                  {chainReportGateHint(report.gateCounts)}
+                </Text>
+              )}
+            </View>
+          </>
         )}
 
         {isPending ? (

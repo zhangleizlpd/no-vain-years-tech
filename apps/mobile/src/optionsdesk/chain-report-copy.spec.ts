@@ -10,7 +10,13 @@ import type {
   UnderlyingIvReadoutResponseState,
 } from '@nvy/api-client';
 
-import { chainReportHeaderView, chainReportTitle } from './chain-report-copy';
+import {
+  chainReportGateHint,
+  chainReportGateLines,
+  chainReportHeaderView,
+  chainReportMetricCaption,
+  chainReportTitle,
+} from './chain-report-copy';
 
 const IV_AVAILABLE: UnderlyingIvReadoutResponse = {
   state: 'available',
@@ -150,6 +156,73 @@ describe('chain-report-copy · 页头合成', () => {
     it('锚 excluded ⇒ 页头带标记（报表照常渲染）', () => {
       expect(chainReportHeaderView(report({ anchorExcluded: true })).excludedNotice).toBeTruthy();
       expect(chainReportHeaderView(report()).excludedNotice).toBeNull();
+    });
+  });
+});
+
+// ═══════════ T012 —— 页脚三计数 + 当前格值读法（FR-014 / FR-034 / SC-006） ═══════════
+
+describe('chain-report-copy · 页脚与格值读法', () => {
+  describe('三个互斥计数（FR-034）', () => {
+    it('恒三行、各带**自己的**分母（三个分母互不相同）', () => {
+      const lines = chainReportGateLines(report().gateCounts);
+      expect(lines).toHaveLength(3);
+      expect(new Set(lines.map((l) => l.key)).size).toBe(3);
+      expect(lines.map((l) => l.count)).toEqual([252, 261, 38]);
+      // 252/825 = 31% 全量 · 261/573 = 46% 骨架 · 38/312 = 12% 行内
+      expect(lines[0]?.denominatorText).toBe('条 · 31% 全量');
+      expect(lines[1]?.denominatorText).toBe('条 · 46% 骨架');
+      expect(lines[2]?.denominatorText).toBe('条 · 12% 行内');
+    });
+
+    it('分母为 0 时只给单位，🚫 不印 NaN%', () => {
+      const empty = chainReportGateLines({
+        total: 0,
+        removedByPremium: 0,
+        skeleton: 0,
+        outsideRowFloor: 0,
+        withinRows: 0,
+        blockedByLiveness: 0,
+        valued: 0,
+      });
+      expect(empty[0]?.denominatorText).toBe('条');
+    });
+  });
+
+  describe('求和恒等式（SC-006 的客户端一半）', () => {
+    it('三计数与有值相加 = 全量 ⇒ 出总结句', () => {
+      const counts = report().gateCounts;
+      expect(
+        counts.removedByPremium + counts.outsideRowFloor + counts.blockedByLiveness + counts.valued,
+      ).toBe(counts.total);
+      expect(chainReportGateHint(counts)).toContain('825');
+    });
+
+    // 🚨 恒等式一破，这句话就是**用界面替错数背书** —— 三个数照样各自显示，少的只是总结句。
+    it('🚨 对不上账时整句不显示（返回 null）', () => {
+      const broken = { ...report().gateCounts, valued: 275 };
+      expect(chainReportGateHint(broken)).toBeNull();
+    });
+  });
+
+  describe('当前格值的读法一行（FR-014 / state_branch 19）', () => {
+    // 🚨 活跃度的时点跟 `oiAsOf`：用区块级 asOf 会把「没人碰过」说成今天的事，而那行照样印得出来。
+    it('🚨 活跃度跟 oiAsOf，不同日时两个时点都说出来', () => {
+      const caption = chainReportMetricCaption('activity', report());
+      expect(caption).toContain('08-08');
+      expect(caption).toContain('08-11');
+    });
+
+    it('同日时只说一个时点', () => {
+      const caption = chainReportMetricCaption('activity', report({ oiAsOf: '2026-08-11' }));
+      expect(caption).toContain('08-11');
+      expect(caption).not.toContain('不同日');
+    });
+
+    it('其余三种格值的读法不带活跃度那套时点', () => {
+      for (const metric of ['buildQuality', 'rentAnnualized', 'allAnnualized'] as const) {
+        expect(chainReportMetricCaption(metric, report())).not.toContain('08-08');
+      }
     });
   });
 });

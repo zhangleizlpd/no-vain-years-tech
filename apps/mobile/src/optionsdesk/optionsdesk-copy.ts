@@ -647,6 +647,40 @@ export const OPTIONSDESK_COPY = {
     retry: '重试',
     /** 缺失一律「—」，🚫 不裸 0（同 046 `ivBlock.noValue`）。 */
     noValue: '—',
+
+    // ── 四种格值（FR-010；`Record` 而非 `Partial<Record>`，漏一个编译红） ──────
+    metricTabs: {
+      buildQuality: '建仓',
+      rentAnnualized: '收租',
+      allAnnualized: '全腿',
+      activity: '活跃度',
+    },
+    /**
+     * 每种格值的读法一行（mockup `.best`）。🚨 **活跃度那条的时点跟 `oiAsOf`**（FR-014）——
+     * 与报价常态不同日，用区块级 asOf 会把「没人碰过」说成今天的事。
+     */
+    metricCaptions: {
+      buildQuality: '有效成本相对愿买价 W 的位置，越低越好',
+      rentAnnualized: '年化费率 —— 每格取该位置最好的一条',
+      allAnnualized: '带 † 的行不参与色阶 —— 权利金里那一段是内在价值，不是租金',
+      activity: '持仓量 + 当日成交（张）',
+    },
+    /** 活跃度时点：与报价同日只说一句，不同日两个时点都说出来（`state_branch` 19）。 */
+    asOfPrefix: ' · 截至 ',
+    quoteDiffDay: (quote: string) => `，与报价的 ${quote} 不同日`,
+
+    // ── 页脚三个互斥计数（FR-034；🚫 MUST NOT 合并成一个总数） ────────────────
+    gatePremium: '权利金门槛移出',
+    gateRowFloor: '深实值行下界外',
+    gateLiveness: '无任何活动',
+    /** 每条**各带自己的分母** —— 分母不同是这三条不能相加成一个数的原因。 */
+    gateDenominatorTotal: '全量',
+    gateDenominatorSkeleton: '骨架',
+    gateDenominatorWithinRows: '行内',
+    gateUnit: '条',
+    /** `SC-006` 的求和恒等式；🚨 对不上账时**整行不显示**，🚫 不说一句错话。 */
+    gateHint: (valued: number, total: number) =>
+      `三者互斥，与图上 ${valued} 条相加 = 全链 ${total} 条`,
   },
 
   /** 锚管理列表屏（T022，mockup 帧 ⑤）。 */
