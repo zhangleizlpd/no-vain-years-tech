@@ -83,7 +83,6 @@ describe('055 标的链分析报表 · 服务端侧 state branch (Testcontainers
 
   const useCaseOf = (): GetChainReportUseCase =>
     new GetChainReportUseCase(
-      prisma,
       new GetUnderlyingDetailUseCase(prisma),
       new PrismaLegRetrievalAdapter(prisma),
     );

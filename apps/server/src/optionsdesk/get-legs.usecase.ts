@@ -35,8 +35,8 @@ import {
   markActivity,
   type ActivityMark,
 } from './leg-derive.rules';
-import { isRecommended } from './leg-mark.rules';
-import { dateOnlyOf, readMonthlyExpiries, utcMidnight } from './monthly-expiry-lookup';
+import { dateOnlyOf, utcMidnight } from './date-only';
+import { isRecommended, monthlyChainExpiries } from './leg-mark.rules';
 import {
   BASIS_BY_TAB,
   DISPLAY_LIMIT_BY_PERSPECTIVE,
@@ -483,7 +483,8 @@ export class GetLegsUseCase {
       const pool = coarseRank(retrieval.candidates);
 
       const earningsDates = await this.readEarningsDates(parsed, chain.marketDate);
-      const monthlyExpiries = await this.readMonthlyExpiries(parsed.market, pool);
+      // 月度链标零 I/O (#45): 判据读的是随合约行一并出来的 vendor 到期周期, 不再查交易日历。
+      const monthlyExpiries = monthlyChainExpiries(pool.map(({ leg }) => leg));
 
       return {
         ...empty('available'),
@@ -546,20 +547,6 @@ export class GetLegsUseCase {
       select: { earningsDate: true },
     });
     return earnings.map((e) => dateOnlyOf(e.earningsDate));
-  }
-
-  /**
-   * 该链上哪些到期日是**月度到期日** (FR-014 / FR-015, plan D-MARK-2)。
-   *
-   * 📌 055 起查询本身住 `monthly-expiry-lookup.ts` (报表逐列打标是第二个消费方) —— 判据仍是
-   * `leg-mark.rules.ts` 那两个纯函数, 一字未动。
-   */
-  private readMonthlyExpiries(market: string, pool: readonly LegCandidate[]): Promise<Set<string>> {
-    return readMonthlyExpiries(
-      this.prisma,
-      market,
-      pool.map(({ leg }) => leg.expiryDate),
-    );
   }
 
   /**

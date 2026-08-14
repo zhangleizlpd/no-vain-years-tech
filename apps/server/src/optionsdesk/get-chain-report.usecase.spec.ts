@@ -12,10 +12,8 @@ import {
   type UnderlyingIvReadout,
 } from './get-underlying-detail.usecase';
 import { activityVolume, computeEffectiveCostVsWPct, computeLegRates } from './leg-derive.rules';
-import { thirdFridayOf } from './leg-mark.rules';
 import { RECALL_CANDIDATE_CAP } from './leg-recall.rules';
 import type { LegChainMeta, LegChainRow } from './leg-retrieval.port';
-import type { PrismaService } from '../security/prisma.service';
 
 // 现价取 100 ⇒ 落档一眼可验: 价内档 K ∈ (100, 110] · 价外首档 (90, 100] · 第二档 (80, 90]。
 const SPOT = new Prisma.Decimal('100');
@@ -143,10 +141,25 @@ const LEGS: Fixture[] = [
   },
 ];
 
+/**
+ * vendor 到期周期 (`marketdata.option_contract.expiration_cycle`) —— 月度链标的唯一判据输入。
+ *
+ * 📌 **按到期日给而不是逐条腿给**: 现实里它就是到期日级属性 (同一到期日的合约同值), 这样写让
+ * fixture 结构上说不出「同一到期日两条腿标不一样」这种链上不存在的形态。
+ * 📌 2026-08-21 是当月月度到期日, 另两个到期日不是 —— 三列各一种取值, 「只有一列带标」于是是
+ * 判据的结果而不是巧合。
+ */
+const CYCLE_BY_EXPIRY: Readonly<Record<string, string>> = {
+  '2026-08-21': 'MONTH',
+  '2026-09-15': 'WEEK',
+  '2027-02-26': 'WEEK',
+};
+
 function rowOf(fixture: Fixture): LegChainRow {
   return {
     code: fixture.code,
     expiryDate: day(fixture.expiry),
+    expirationCycle: CYCLE_BY_EXPIRY[fixture.expiry] ?? null,
     dteDays: fixture.dteDays,
     strike: D(fixture.strike),
     bid: D(fixture.bid),
@@ -187,20 +200,6 @@ function detailStub(
   } as unknown as GetUnderlyingDetailUseCase;
 }
 
-/**
- * 交易日历替身 —— 默认把三个候选月度日本身当成交易日 (无假日回退)。
- * 📌 候选由 `thirdFridayOf` 算, 🚫 不在 spec 里手抄日期: 抄错会让「只有一列带标」变成巧合。
- */
-const MONTHLY_CANDIDATES = [thirdFridayOf(2026, 8), thirdFridayOf(2026, 9), thirdFridayOf(2027, 2)];
-
-function prismaStub(tradingDays: readonly string[] = MONTHLY_CANDIDATES): PrismaService {
-  return {
-    tradingDay: {
-      findMany: () => Promise.resolve(tradingDays.map((d) => ({ date: day(d) }))),
-    },
-  } as unknown as PrismaService;
-}
-
 function useCaseOf(
   legs: readonly LegChainRow[],
   detailOver: Parameters<typeof detailStub>[0] = {},
@@ -208,11 +207,7 @@ function useCaseOf(
 ): GetChainReportUseCase {
   const chains = new Map<string, FakeLegChain>();
   if (registered) chains.set(SYMBOL, { chain: CHAIN, legs });
-  return new GetChainReportUseCase(
-    prismaStub(),
-    detailStub(detailOver),
-    new FakeLegRetrievalAdapter(chains),
-  );
+  return new GetChainReportUseCase(detailStub(detailOver), new FakeLegRetrievalAdapter(chains));
 }
 
 const view = (over: Parameters<typeof detailStub>[0] = {}): Promise<ChainReportView> =>
@@ -372,21 +367,22 @@ describe('get-chain-report.usecase — 列的召回段覆盖 (FR-009 / FR-009a, 
     }
   });
 
-  it('月度链标逐列判 —— 到期日恰是当月月度日的那列带标，其余不带', async () => {
+  it('月度链标逐列判 —— vendor 标 `MONTH` 的那列带标，标 `WEEK` 的不带', async () => {
     const report = await view();
-    // 三个到期日只有 08-21 落在当月月度日上 (09-15 与 02-26 都不是当月第三个周五)。
+    // 列序 08-21 / 09-15 / 2027-02-26, 取值见 `CYCLE_BY_EXPIRY`。
     expect(report.columns.map((c) => c.isMonthlyChain)).toEqual([true, false, false]);
-    expect(MONTHLY_CANDIDATES[0]).toBe('2026-08-21');
   });
 
-  it('交易日历查不到 ⇒ 一列都不带标，🚫 不炸也不猜 (承 leg-mark 的三种取不到一律跳过)', async () => {
-    const chains = new Map<string, FakeLegChain>([
-      [SYMBOL, { chain: CHAIN, legs: LEGS.map(rowOf) }],
-    ]);
+  it('🚨 vendor 缺到期周期 (`null`) ⇒ 一列都不带标，不炸也不推定 (#45 判据换源后的取不到态)', async () => {
+    // 换源前这里测的是「交易日历查不到」。那条判据在生产**恒**走这一支 —— 日历结构上不含未来
+    // 交易日, 而到期日全在未来 ⇒ 线上一列都标不出, 而这条用例当时是绿的。判据换成 vendor
+    // 到期周期后, 「取不到」缩回它本来的样子: vendor 那一列真的是空。
+    const legs = LEGS.map(rowOf).map((leg) => ({ ...leg, expirationCycle: null }));
     const report = await new GetChainReportUseCase(
-      prismaStub([]),
       detailStub(),
-      new FakeLegRetrievalAdapter(chains),
+      new FakeLegRetrievalAdapter(
+        new Map<string, FakeLegChain>([[SYMBOL, { chain: CHAIN, legs }]]),
+      ),
     ).execute(SYMBOL, NOW);
     expect(report.columns.every((c) => !c.isMonthlyChain)).toBe(true);
     expect(report.state).toBe('available');

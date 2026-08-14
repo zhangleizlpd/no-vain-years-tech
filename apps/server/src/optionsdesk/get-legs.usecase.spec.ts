@@ -98,12 +98,19 @@ const LEGS: LegFixture[] = [
   },
 ];
 
+/**
+ * vendor 到期周期 (`marketdata.option_contract.expiration_cycle`) —— 月度链标的唯一判据输入。
+ * 按**到期日**给: 它现实中就是到期日级属性, 这样写让 fixture 造不出「同一到期日两条腿标不一样」。
+ */
+const MONTHLY_EXPIRIES = new Set(['2026-08-21', '2027-01-15']);
+
 function contractsOf(legs: LegFixture[]) {
   return legs.map((leg, i) => ({
     id: BigInt(i + 1),
     code: leg.code,
     expiryDate: date(leg.expiry),
     strikePrice: D(leg.strike),
+    expirationCycle: MONTHLY_EXPIRIES.has(leg.expiry) ? 'MONTH' : 'WEEK',
   }));
 }
 
@@ -140,14 +147,6 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
  */
 const TRADING_DAYS = ['2026-07-31', '2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06'];
 
-/**
- * 月度到期日判据 (T007) 查的是**另一段**日历: 窗口跨到链上最晚的到期日, 与上面那个「最近一个
- * 已收盘交易日」的窗口不重叠。两个候选日 (`2026-08-21` / `2027-01-15`, 分别是 08 月与次年 01
- * 月的第三个周五) 在这里都是**真交易日** —— 假日回退那条分支由 `leg-mark.rules.spec.ts` 承重
- * (纯函数), IT 再打一次真日历表; 本文件只验 use case 有没有把这条线接上。
- */
-const MONTHLY_CALENDAR = ['2026-08-20', '2026-08-21', '2027-01-14', '2027-01-15'];
-
 /** 按 `date <= cutoff` 取最大交易日 —— 与 `last-closed-session.ts` 的真查询同语义。 */
 function tradingDayFindFirst() {
   return vi.fn(async (args: { where: { market: string; date: { lte: Date } } }) => {
@@ -167,10 +166,9 @@ function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] 
       findMany: vi.fn().mockResolvedValue(snapshotsOf(legs)),
     },
     earningsEvent: { findMany: vi.fn().mockResolvedValue([{ earningsDate: date('2026-08-12') }]) },
-    tradingDay: {
-      findFirst: tradingDayFindFirst(),
-      findMany: vi.fn().mockResolvedValue(MONTHLY_CALENDAR.map((d) => ({ date: date(d) }))),
-    },
+    // 📌 只剩 `findFirst` (最近一个已收盘交易日)。月度链标那次 `findMany` 于 #45 整条撤销 ——
+    //    判据改读随合约行出来的 vendor 到期周期, 本 use case 对交易日历只剩这一处读。
+    tradingDay: { findFirst: tradingDayFindFirst() },
     ...overrides,
   };
 }
@@ -316,23 +314,20 @@ describe('get-legs.usecase — 每次只作答一个视角 (053 FR-001/FR-002, D
     expect(build.legs.find((l) => l.code === 'C-D')?.activity?.isTopRanked).toBe(true);
   });
 
-  it('月度链标: 到期日落该月月度日的腿带标, 周链腿不带 (FR-014, T007 接线)', async () => {
+  it('月度链标: vendor 标 `MONTH` 的腿带标, 周链腿不带 (FR-014, #45 换源后接线)', async () => {
     const prisma = makePrisma();
     const view = await makeUseCase(prisma).execute(SYMBOL, 'all', NOW);
 
-    // C-A / C-B 到期 2027-01-15 = 次年 1 月第三个周五; C-C 到期 2026-08-21 = 8 月第三个周五。
+    // C-A / C-B 到期 2027-01-15、C-C 到期 2026-08-21, vendor 均标 `MONTH`。
     expect(view.legs.find((l) => l.code === 'C-A')?.isMonthlyChain).toBe(true);
     expect(view.legs.find((l) => l.code === 'C-C')?.isMonthlyChain).toBe(true);
-    // C-D 到期 2026-08-14 是周链 ⇒ 不带标。它证明这个标**不是恒 true**。
+    // C-D 到期 2026-08-14 标 `WEEK` ⇒ 不带标。它证明这个标**不是恒 true**。
     expect(view.legs.find((l) => l.code === 'C-D')?.isMonthlyChain).toBe(false);
 
-    // 🚨 Guardrail 7: 整段日历**一次查回**, 不是逐到期日查 (链上 3 个不同到期日)。
-    expect(prisma.tradingDay.findMany).toHaveBeenCalledTimes(1);
-    const where = prisma.tradingDay.findMany.mock.calls[0][0].where;
-    expect(where.market).toBe('us');
-    // 窗口下界 = 最早候选日 (2026-08-21) 往前 7 天; 上界 = 最晚候选日 (2027-01-15)。
-    expect(where.date.gte.toISOString().slice(0, 10)).toBe('2026-08-14');
-    expect(where.date.lte.toISOString().slice(0, 10)).toBe('2027-01-15');
+    // 🚨 **零额外往返** (#45): 判据的输入随合约集那一次查询一并出来, 交易日历只被
+    // 「最近一个已收盘交易日」用一次 —— 换源前这里还有一次 `tradingDay.findMany`。
+    expect(prisma.tradingDay).not.toHaveProperty('findMany');
+    expect(prisma.optionContract.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('同一到期日的多条腿共用**同一个**财报标对象 (Guardrail 11 的结构保证)', async () => {
@@ -537,12 +532,9 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
 
   it('交易日历查不到 ⇒ fail-open 判 CURRENT (宁可漏报一次, 不重演「全体恒显已过时」)', async () => {
     const { res } = await tableAt('2026-08-03', NOW_CN_MORNING, {
-      // 🚨 覆盖整个 `tradingDay` 就必须连 `findMany` 一起给 —— 少给会让月度链标那次跨 ctx 读
-      // 抛错、整屏降级成 read_failed, 而本用例验的是**新鲜度档**那条 fail-open 分支。
-      tradingDay: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        findMany: vi.fn().mockResolvedValue([]),
-      },
+      // 📌 覆盖整个 `tradingDay` 只需给 `findFirst` —— #45 之后本 use case 对交易日历只剩这一处
+      // 读 (月度链标那次 `findMany` 已撤销), 少给一个方法不会再把整屏兜成 read_failed。
+      tradingDay: { findFirst: vi.fn().mockResolvedValue(null) },
     });
     expect(res.asOfFreshnessTier).toBe('CURRENT');
   });
@@ -896,7 +888,7 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
 
     // 收租 · 深度 ⇒ 只有 |Δ| 0.05 落 deep 带 [0.05,0.15] 的 C-B 带标 (恒 false 会红)。
     expect(res.legs.filter((l) => l.isRecommended).map((l) => l.code)).toEqual(['C-B']);
-    // 月度链: 2026-08-21 与 2027-01-15 是各自月份的第三个周五; 2026-08-14 (C-D) 是周链。
+    // 月度链: 2026-08-21 与 2027-01-15 由 vendor 标 `MONTH`; 2026-08-14 (C-D) 标 `WEEK`。
     expect(
       res.legs
         .filter((l) => l.isMonthlyChain)

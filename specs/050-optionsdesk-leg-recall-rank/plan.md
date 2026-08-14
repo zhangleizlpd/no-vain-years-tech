@@ -172,6 +172,12 @@ apps/server/src/optionsdesk/leg-mark.rules.ts（新）
 
 #### D-MARK-2 · 月度链标：日历查询的形状（`FR-014` / `FR-015`）
 
+> 🚨 **本节整节已于 2026-08-15 作废（issue #45）**，保留为决策留痕。
+>
+> 下面这套「候选第三个周五 → 查一段交易日历 → 假日回退」在**生产从未生效过**：`marketdata.trading_day` 的填充判据是「某代表性指数当日有 bar」⇒ 结构上不含未来交易日，而月度到期日按定义全在未来 ⇒ 第 4 步恒取不到、标一个都不出。步骤 1–5、`−7` 窗口、`MUST NOT 逐到期日查` 那条 Guardrail 与那处 `CROSS-CONTEXT-READ` **全部随之删除**。
+>
+> 现判据：读 `marketdata.option_contract.expiration_cycle`（vendor 逐条声明的到期周期，白名单比对 `MONTH`），它本就随合约行一并取回 ⇒ **零额外往返、零跨 ctx 读**。落点 = `leg-mark.rules.ts` 的 `monthlyChainExpiries`，两个消费方共用。理由与实据见 050 spec `FR-015` 的改判注。
+
 判据需要外部事实（哪天是交易日）⇒ 纯函数算不了。分工定死：
 
 1. **纯函数** `thirdFridayOf(year, month)` —— `O(1)`，零 I/O。

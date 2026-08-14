@@ -99,7 +99,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         isStandard: true,
         expiryDate: { gt: utcMidnight(marketDate) },
       },
-      select: { id: true, code: true, expiryDate: true, strikePrice: true },
+      // `expirationCycle` 是月度链标的判据输入 (#45) —— **同一次查询多带一列**, 零额外往返。
+      select: { id: true, code: true, expiryDate: true, strikePrice: true, expirationCycle: true },
     });
     if (contracts.length === 0) return null;
 
@@ -168,6 +169,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         openInterest: numberOf(snapshot.openInterest),
         volume: numberOf(snapshot.volume),
         greeksComplete: snapshot.greeksComplete,
+        // 🚫 vendor 原样带出, 不归一化大小写、不回落默认值 —— 判据是白名单 `=== 'MONTH'`,
+        // 在这里「顺手」规整会让「vendor 换了取值」这件事在打标层看不出来 (`leg-mark.rules.ts`)。
+        expirationCycle: contract.expirationCycle,
       };
     });
 

@@ -13,10 +13,12 @@ import {
 //
 // ## 为什么**必须**要真 PG
 //
-// ① **月度链标的判据是一次真的日历范围查询** —— 「该月第三个周五; 该日非交易日则取其前一交易日」
-//    读的是 `marketdata.trading_day`。测 ④⑤ 的判别性全在**表里有没有那一行**上: 假日回退那条
-//    分支只有真的往表里**少插一行**才走得到 (测 ⑤), mock 上「返回哪几天」由测试自己给, 等于把
-//    答案当入参喂进去。
+// ① **月度链标读的是合约行上 vendor 声明的到期周期** —— 测 ④⑤ 的判别性全在
+//    `marketdata.option_contract.expiration_cycle` 那一列上, 要真的把它写进库再整条链路读回来。
+//    🚨 **判据于 2026-08-15 (#45) 换源**: 原先是「该月第三个周五; 该日非交易日则取前一交易日」,
+//    读 `marketdata.trading_day`。那条判据在生产**从未生效** —— 交易日历结构上不含未来交易日,
+//    而到期日全在未来。这个 IT 当时是绿的, 因为 `seedTradingDays()` 往表里插了候选日本身;
+//    **喂进去的正是要验的那个答案**, 于是它测的是 fixture 而不是生产前置条件。留作教训。
 // ② **标与集合的正交性要在同一份真数据上验** (测 ⑥) —— 打标零拦截说的是「同一份输入, 打标的
 //    输入变了而成员关系一行不动」。两侧各自 mock 就永远不动, 断言退化成平凡绿。
 // ③ 意图 (`zone` × `L` 层 × 水位) 由锚表真行派生, 打标又挂在意图上 ⇒ 这条链要整条走一遍。
@@ -30,7 +32,7 @@ import {
 // 整条短端虚值链, `|Δ|` 从 0.01 铺到 0.99, 收租档带正好从中间切过 ⇒ 建仓 Tab 里**会有**带标的
 // 腿。⇒ 判据改成**机制层**: 带标的腿其 `|Δ|` 无一例外落当前收租档带, 按建仓带打出的标恒 0 条。
 // 保 `FR-011`「标随标的级意图、MUST NOT 随 Tab 变」。理由全文见 spec US3-AS2 的修正注。
-describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
+describe('050 T009 打标层 (Testcontainers PG, 真 vendor 到期周期列)', () => {
   let prisma: PrismaService;
   let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
   let useCase: GetLegsUseCase;
@@ -48,10 +50,14 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
   const OVERLAP_EXPIRY = '2026-09-11';
   /** 2026-09 的第三个周五 (DTE 45) —— 月度链标的正例, 也落重叠区。 */
   const MONTHLY_EXPIRY = '2026-09-18';
-  /** 2026-08 的第三个周五 (DTE 17) —— 测 ⑤ 把它**从日历里抽掉**造假日。 */
-  const AUG_MONTHLY_EXPIRY = '2026-08-21';
-  /** 抽掉之后应当接住标的那一天 (前一交易日)。 */
-  const AUG_MONTHLY_FALLBACK = '2026-08-20';
+  /**
+   * 测 ⑤ 的**前挪对照**: vendor 把月度标给了周四 09-17, 而第三个周五 09-18 那天标 `WEEK`。
+   *
+   * 📌 这是真实形态的近端镜像 —— 2027-06-19 Juneteenth 落周六 ⇒ NYSE 提前到周五 2027-06-18
+   * 休市 ⇒ 该月月度到期日前挪到**周四 2027-06-17** (dev 库该日 298 条合约全标 `MONTH`)。
+   * 用近端日期是为了稳落在召回段内, 判别性与真日期完全同构。
+   */
+  const SHIFTED_MONTHLY_EXPIRY = '2026-09-17';
 
   const dateOf = (isoDay: string): Date => new Date(`${isoDay}T00:00:00Z`);
 
@@ -106,32 +112,6 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     });
   }
 
-  /**
-   * 交易日历。🚨 **不 seed 就没有月度链标** —— `resolveMonthlyExpiries` 拿不到任何交易日会
-   * 返回空集合 (那是「日历没覆盖到」的事实, 不是故障), 测 ④ 会退化成平凡绿。
-   *
-   * @param skip 从日历里**抽掉**的日子 —— 测 ⑤ 用它造「第三个周五是市场假日」。
-   */
-  async function seedTradingDays(skip: readonly string[] = []): Promise<void> {
-    // 覆盖 [最早候选日 − 7, 最晚候选日] 那个窗口: 08 月与 09 月两个候选日各自的前后。
-    const days = [
-      '2026-08-13',
-      '2026-08-14',
-      '2026-08-17',
-      '2026-08-18',
-      '2026-08-19',
-      AUG_MONTHLY_FALLBACK,
-      AUG_MONTHLY_EXPIRY,
-      '2026-09-10',
-      OVERLAP_EXPIRY,
-      '2026-09-17',
-      MONTHLY_EXPIRY,
-    ].filter((d) => !skip.includes(d));
-    await prisma.tradingDay.createMany({
-      data: days.map((d) => ({ market: 'us', date: dateOf(d) })),
-    });
-  }
-
   async function seedInstrument(code: string): Promise<bigint> {
     const row = await prisma.instrument.create({
       data: {
@@ -155,6 +135,11 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     ask: string;
     delta: string | null;
     greeksComplete?: boolean;
+    /**
+     * vendor 到期周期 —— 月度链标的唯一判据输入。缺省 `WEEK` = 周链。
+     * 🚫 缺省**不给 `MONTH`**: 那会让「这个标不是恒 true」的反例造不出来。
+     */
+    expirationCycle?: string | null;
   }
 
   async function seedLeg(instrumentId: bigint, fixture: LegFixture): Promise<string> {
@@ -170,6 +155,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
         strikePrice: fixture.strike,
         optionType: 'PUT',
         isStandard: true,
+        expirationCycle: fixture.expirationCycle ?? 'WEEK',
       },
       select: { id: true, code: true },
     });
@@ -236,7 +222,6 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     await seedAnchor(SYMBOL, { v: '300', positionBucket: 'lt_one_third' });
     const id = await seedInstrument('PEP');
     const codes = await seedDeltaLadder(id);
-    await seedTradingDays();
 
     const view = await useCase.execute(SYMBOL, 'all', NOW);
 
@@ -262,7 +247,6 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     await seedAnchor(SYMBOL, { positionBucket: 'gte_two_thirds' }); // ⇒ 收租 · 深度
     const id = await seedInstrument('PEP');
     const codes = await seedDeltaLadder(id);
-    await seedTradingDays();
 
     const view = await useCase.execute(SYMBOL, 'all', NOW);
 
@@ -298,7 +282,6 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     await seedAnchor(SYMBOL, { positionBucket: 'gte_two_thirds' });
     const id = await seedInstrument('PEP');
     const codes = await seedDeltaLadder(id);
-    await seedTradingDays();
 
     const view = await useCase.execute(SYMBOL, 'all', NOW);
 
@@ -323,7 +306,6 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     await seedAnchor(SYMBOL, { positionBucket: null });
     const id = await seedInstrument('PEP');
     await seedDeltaLadder(id);
-    await seedTradingDays();
 
     const view = await useCase.execute(SYMBOL, 'all', NOW);
 
@@ -336,11 +318,11 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     expect(view.legs).toHaveLength(5);
   });
 
-  // ── ④ 月度链标: 真日历表 (US3-AS4) ──────────────────────────────────────────
-  it('④ US3-AS4: 到期日 = 该月第三个周五 → 该到期日下**全部**腿带月度链标', async () => {
+  // ── ④ 月度链标: 真 vendor 到期周期列 (US3-AS4) ──────────────────────────────
+  it('④ US3-AS4: vendor 标 `MONTH` 的到期日 → 该到期日下**全部**腿带月度链标', async () => {
     await seedAnchor(SYMBOL);
     const id = await seedInstrument('PEP');
-    await seedDeltaLadder(id); // 五条都在 09-11 (非月度日)
+    await seedDeltaLadder(id); // 五条都在 09-11, 缺省 `WEEK`
     // 同一到期日两条腿 —— 「该到期日下全部腿都带标」要 ≥2 条才验得出。
     const monthlyA = await seedLeg(id, {
       expiry: MONTHLY_EXPIRY,
@@ -348,6 +330,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
       bid: '2.00',
       ask: '2.10',
       delta: '-0.30',
+      expirationCycle: 'MONTH',
     });
     const monthlyB = await seedLeg(id, {
       expiry: MONTHLY_EXPIRY,
@@ -355,57 +338,84 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
       bid: '1.70',
       ask: '1.80',
       delta: '-0.26',
+      expirationCycle: 'MONTH',
     });
-    await seedTradingDays();
 
     const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     const monthly = view.legs.filter((l) => l.isMonthlyChain).map((l) => l.code);
     // 逐条相等: 恰好那两条, 一条不多一条不少。
     expect(new Set(monthly)).toEqual(new Set([monthlyA, monthlyB]));
-    // 09-11 那批是周链 ⇒ 不带标。它证明这个标不是恒 true。
+    // 09-11 那批标 `WEEK` ⇒ 不带标。它证明这个标不是恒 true。
     expect(view.legs.filter((l) => !l.isMonthlyChain)).toHaveLength(5);
+    // 🚨 **判据不看日历**: 全程一行 `trading_day` 都没 seed, 标照常出得来 —— 这正是 #45 修的
+    // 那件事 (生产的日历恒无未来交易日, 旧判据在这一步就返空集了)。
+    expect(await prisma.tradingDay.count()).toBe(0);
   });
 
-  // ── ⑤ 第三个周五是假日 → 标落前一交易日 (US3-AS5) ───────────────────────────
-  it('⑤ US3-AS5: 🚨 第三个周五**从日历里抽掉** → 月度标落到前一交易日, 而不是没有标', async () => {
+  // ── ⑤ 月度到期日前挪 → 标跟着 vendor 走, 不跟着「是不是周五」走 (US3-AS5) ─────
+  it('⑤ US3-AS5: 🚨 月度日前挪到周四 → 标落周四那天, 第三个周五那天**不带标**', async () => {
     await seedAnchor(SYMBOL);
     const id = await seedInstrument('PEP');
-    // 08 月: 第三个周五 (08-21) 与它的前一交易日 (08-20) 各造一条腿。
-    const onHoliday = await seedLeg(id, {
-      expiry: AUG_MONTHLY_EXPIRY,
+    // 09 月的两天各造一条腿。真实形态见 `SHIFTED_MONTHLY_EXPIRY` 的注释 (2027-06 Juneteenth)。
+    const onThirdFriday = await seedLeg(id, {
+      expiry: MONTHLY_EXPIRY, // 2026-09-18, **是**当月第三个周五
       strike: '128',
       bid: '1.20',
       ask: '1.30',
       delta: '-0.28',
+      expirationCycle: 'WEEK', // …但 vendor 说它是周链
     });
-    const onFallback = await seedLeg(id, {
-      expiry: AUG_MONTHLY_FALLBACK,
+    const onShifted = await seedLeg(id, {
+      expiry: SHIFTED_MONTHLY_EXPIRY, // 2026-09-17, 周四
       strike: '128',
       bid: '1.10',
       ask: '1.20',
       delta: '-0.27',
+      expirationCycle: 'MONTH', // …vendor 说月度日在这天
     });
-    // 🚨 判别性全在这一行: 把 08-21 从 `trading_day` 里抽掉 = 那天是市场假日。
-    await seedTradingDays([AUG_MONTHLY_EXPIRY]);
 
     const view = await useCase.execute(SYMBOL, 'all', NOW);
 
-    // 判据是「该月的月度到期日」而不是「是不是周五」⇒ 标落在提前后的那天。
-    expect(legOf(view, onFallback)?.isMonthlyChain).toBe(true);
-    expect(legOf(view, onHoliday)?.isMonthlyChain).toBe(false);
-    // 反向对照: 日历完整时标就落回周五那天 —— 证明上面的翻转来自那一行, 不是别的原因。
-    await prisma.tradingDay.create({ data: { market: 'us', date: dateOf(AUG_MONTHLY_EXPIRY) } });
-    const restored = await useCase.execute(SYMBOL, 'all', NOW);
-    expect(legOf(restored, onHoliday)?.isMonthlyChain).toBe(true);
-    expect(legOf(restored, onFallback)?.isMonthlyChain).toBe(false);
+    // 🚨 **两个方向都要断**: 只断周四带标, 「恒 true」也能过; 只断周五不带标, 「恒 false」也能过。
+    expect(legOf(view, onShifted)?.isMonthlyChain).toBe(true);
+    expect(legOf(view, onThirdFriday)?.isMonthlyChain).toBe(false);
+  });
+
+  // ── ⑤b vendor 缺字段 → 不打标, 不推定 ────────────────────────────────────────
+  it('⑤b 🚨 `expiration_cycle` 为 NULL ⇒ 该到期日不带标 (缺字段不推定, 同 FR-013)', async () => {
+    await seedAnchor(SYMBOL);
+    const id = await seedInstrument('PEP');
+    const unknown = await seedLeg(id, {
+      expiry: MONTHLY_EXPIRY, // 第三个周五 —— 靠日期猜的判据会在这里标上
+      strike: '126',
+      bid: '2.00',
+      ask: '2.10',
+      delta: '-0.30',
+      expirationCycle: null,
+    });
+
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
+
+    expect(legOf(view, unknown)?.isMonthlyChain).toBe(false);
+    // 整屏照常可用 —— 缺一列 vendor 字段不是故障。
+    expect(view.state).toBe('available');
   });
 
   // ── ⑥ 打标零拦截 (US3-AS6) ──────────────────────────────────────────────────
   it('⑥ US3-AS6: 切换意图与水位 ⇒ 标全变, 而三个 Tab 的成员集合与两个计数**一行不动**', async () => {
     const id = await seedInstrument('PEP');
     await seedDeltaLadder(id);
-    await seedTradingDays();
+    // 🚨 额外一条月度腿 —— 没有它, 下面「月度标与意图正交」两侧恒为空数组, 断言平凡绿。
+    // (梯子五条全是 `WEEK`; 这条是本用例唯一带标的腿。)
+    await seedLeg(id, {
+      expiry: MONTHLY_EXPIRY,
+      strike: '126',
+      bid: '2.00',
+      ask: '2.10',
+      delta: '-0.30',
+      expirationCycle: 'MONTH',
+    });
 
     // 053: 成员关系是**跨请求**的 —— 三个视角各取一次再拼成指纹 (拼的是断言口径, 不是响应)。
     const membership = async () => {
@@ -445,9 +455,10 @@ describe('050 T009 打标层 (Testcontainers PG, 真交易日历)', () => {
     expect(membershipDeep.length).toBeGreaterThan(0);
     expect(rentShallow.gateCounts).toEqual(rentDeep.gateCounts);
     expect(pending.gateCounts).toEqual(rentDeep.gateCounts);
-    // 月度链标与意图正交 —— 它只看到期日。
+    // 月度链标与意图正交 —— 它只看 vendor 的到期周期。
     const monthlyOf = (v: LegTableView) =>
       v.legs.filter((l) => l.isMonthlyChain).map((l) => l.code);
     expect(monthlyOf(pending)).toEqual(monthlyOf(rentDeep));
+    expect(monthlyOf(rentDeep)).toHaveLength(1); // 非空 ⇒ 上面那条不是平凡绿
   });
 });

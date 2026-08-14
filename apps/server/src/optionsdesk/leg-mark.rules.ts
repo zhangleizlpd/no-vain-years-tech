@@ -1,3 +1,4 @@
+import { dateOnlyOf } from './date-only';
 import { type LegIntent, type RentDepth } from './intent-matrix.rules';
 
 /**
@@ -94,98 +95,50 @@ function withinAbsDeltaBand(absDelta: number, band: AbsDeltaBand): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 假日回退的**最大距离**, 同时也是调用方那次日历查询的下界外扩量 (两处必须是同一个数,
- * 否则窗口取不到的日子回退逻辑却敢用)。
+ * vendor 声明「标准月度」用的到期周期取值 —— 落在
+ * `marketdata.option_contract.expiration_cycle` (富途原样落库, 不换算)。
  *
- * 取 7 的依据: **美股连续休市 (含周末) 从不超过 4 个日历日** —— 周五收盘后遇周一假日是
- * 3 天, 圣诞 / 元旦那种双假日最多 4 天。留到 7 是一倍余量。
- *
- * 🚨 **它同时是一条 fail-closed 判据**: 回退超过一周只可能是**日历数据缺了一段**, 而不是
- * 真有那么长的休市。那时宁可一个都不标 —— 标错的月度日看着完全正常 (标还在, 只是落错了
- * 到期日), 与 clarify 否决「从链自身到期日分布反推」是同一条理由。
+ * 🚨 **判据是白名单 `=== MONTHLY_EXPIRATION_CYCLE`, 🚫 MUST NOT 写成「不等于 WEEK」**:
+ * 富途未公开 `ExpirationCycle` 的完整值域 (官方字段表只给了枚举链接, 那一页并未列出取值),
+ * 我方实证只见过 `MONTH` / `WEEK`。将来冒出第三个值时, 白名单只会**漏标**、黑名单会**错标**
+ * —— 漏标是少一个 chip, 错标是把一条周链说成月链。两者代价不对称。
  */
-export const MONTHLY_EXPIRY_LOOKBACK_DAYS = 7;
-
-const MS_PER_DAY = 86_400_000;
+export const MONTHLY_EXPIRATION_CYCLE = 'MONTH';
 
 /**
- * 该月**第三个周五**的日历日 (FR-015 判据的前半段), `YYYY-MM-DD`。`O(1)`, 零 I/O。
- *
- * 🚨 一律走 UTC (`Date.UTC` + `getUTCDay`) —— 用本地时区会让宿主在 UTC−N 的机器上把 1 号
- * 算成上个月的最后一天, 整个月的标随之错位一周, 而**测试在 UTC+8 的开发机上照样绿**。
- *
- * @param month 1–12 (自然月份, 不是 `Date` 的 0-based)。
+ * 月度链标的腿侧入参。**结构定义, 蓄意不 import 检索 port** —— 同 `leg-recall.rules.ts` 的
+ * `RecallLegInput` 体例: rules 文件不认识存储层, 由 `LegChainRow` 结构上满足它。
  */
-export function thirdFridayOf(year: number, month: number): string {
-  const FRIDAY = 5;
-  const firstDayOfWeek = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
-  const firstFriday = 1 + ((FRIDAY - firstDayOfWeek + 7) % 7);
-  return `${year}-${pad2(month)}-${pad2(firstFriday + 14)}`;
+export interface MonthlyChainLegInput {
+  readonly expiryDate: Date;
+  /** vendor 到期周期, 原样; 缺字段为 `null` (禁默认值冒充, 同 015 端口层契约)。 */
+  readonly expirationCycle: string | null;
 }
 
 /**
- * 链上到期日 → 逐 (年, 月) 去重后的**候选**月度日, 升序 (plan D-MARK-2)。
- * `O(n + k log k)`, n = 到期日数, k = 不同月份数 (实测 ≤ 20)。
+ * 这批腿里哪些**到期日**是月度到期日 (FR-014 / FR-015)。`O(n)`, 零 I/O。
  *
- * 📌 「候选」而非「结论」: 假日回退要查交易日历, 那一步在 {@link resolveMonthlyExpiries}。
- * 本函数与调用方之间的分工是**先算出要查哪一段日历**, 好让那次查询只发一次 (Guardrail 7)。
+ * 🚨 **判据于 2026-08-15 (#45) 整条换源: 交易日历 → vendor 到期周期。** 原判据是「该月第三个
+ * 周五, 该日非交易日则取前一交易日, 取自 `marketdata.trading_day`」, 它在生产**从未生效过**:
+ * 交易日历的填充判据是「某代表指数当日**有 bar**」⇒ 结构上不含未来交易日, 而期权到期日按定义
+ * 全在未来 ⇒ 回退目标恒取不到 ⇒ 标一个都不出。而单测喂的日历**含候选日本身**, 于是全绿。
+ *
+ * 🚨 **也 MUST NOT 退回「是不是第三个周五」这个简化**: `2027-06-19` Juneteenth 落周六 ⇒ NYSE
+ * 提前到周五 `2027-06-18` 休市 ⇒ 该月月度到期日前挪到**周四 `2027-06-17`** (实据: dev 库 us 链
+ * 上该日 298 条合约的 `expiration_cycle` 全为 `MONTH`)。周五判据在那一列会整月漏标, 而漏标
+ * 看起来完全正常。这类前挪并不罕见 —— Juneteenth 逢周六即触发 (2027 / 2032 / 2038…),
+ * 耶稣受难日撞第三个周五亦然 (2014 / 2030…)。
+ *
+ * 📌 **这不是 050 clarify 否决的「从链自身到期日分布反推」** —— 那条否的是靠数据**形状**猜
+ * 规则 (链不全时会误判且看着正常); 本判据读的是 vendor 对每张合约**逐条声明**的属性。
+ *
+ * 📌 **结果是到期日级集合而非逐腿布尔**: 「同一到期日的腿必同标」于是是结构保证, 与财报标
+ * 同一个形状; 两个消费方 (选约表逐腿 / 报表逐列) 吃同一个集合, 结构上没有第二处判据可写。
  */
-export function monthlyExpiryCandidates(expiryDates: readonly string[]): string[] {
-  const months = new Set(expiryDates.map((date) => date.slice(0, 7)));
-  return [...months]
-    .map((ym) => thirdFridayOf(Number(ym.slice(0, 4)), Number(ym.slice(5, 7))))
-    .sort();
-}
-
-/**
- * 候选月度日 + 交易日历切片 → **实际**月度到期日集合 (FR-015)。
- * `O(m log m + k log m)`, m = 日历行数, k = 候选数。
- *
- * 每个候选取「≤ 它的最大交易日」—— 候选本身是交易日时该式就取到它自己, 故**不需要**先判一次
- * 命中再走回退, 两种情形是同一条路径 (少一条分支就少一处能漂的地方)。
- *
- * 三种取不到的情形一律**跳过该候选、不炸**: 日历为空 / 候选之前一个交易日都没有 / 回退距离
- * 超过 {@link MONTHLY_EXPIRY_LOOKBACK_DAYS}。都是「日历没覆盖到」的事实, 不是故障。
- *
- * @param tradingDays 顺序不限 —— 内部自己排, 不依赖调用方记得写 `orderBy`。
- */
-export function resolveMonthlyExpiries(
-  candidates: readonly string[],
-  tradingDays: readonly string[],
-): Set<string> {
-  const sorted = [...tradingDays].sort();
-  const resolved = new Set<string>();
-  for (const candidate of candidates) {
-    const fallback = latestOnOrBefore(sorted, candidate);
-    if (fallback === null) continue;
-    if (daysBetween(fallback, candidate) > MONTHLY_EXPIRY_LOOKBACK_DAYS) continue;
-    resolved.add(fallback);
+export function monthlyChainExpiries(legs: readonly MonthlyChainLegInput[]): Set<string> {
+  const monthly = new Set<string>();
+  for (const leg of legs) {
+    if (leg.expirationCycle === MONTHLY_EXPIRATION_CYCLE) monthly.add(dateOnlyOf(leg.expiryDate));
   }
-  return resolved;
-}
-
-/** 二分取 ≤ `target` 的最大元素 (`YYYY-MM-DD` 的字典序 == 时序); 没有则 `null`。`O(log m)`。 */
-function latestOnOrBefore(sortedDays: readonly string[], target: string): string | null {
-  let low = 0;
-  let high = sortedDays.length - 1;
-  let best: string | null = null;
-  while (low <= high) {
-    const mid = (low + high) >> 1;
-    if (sortedDays[mid] <= target) {
-      best = sortedDays[mid];
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-  return best;
-}
-
-/** 两个 `YYYY-MM-DD` 相差几个日历日 (两侧都按 UTC 午夜解析 ⇒ 无夏令时误差)。 */
-function daysBetween(from: string, to: string): number {
-  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / MS_PER_DAY);
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, '0');
+  return monthly;
 }
