@@ -44,10 +44,13 @@ export interface ChainReportBandScale {
 export const CHAIN_REPORT_BAND_SCALES: Readonly<Record<ChainReportMetric, ChainReportBandScale>> = {
   // 建仓成色：有效成本相对愿买价的位置，**百分数**，越低越好（FR-011）。
   // 形态 `linear` —— 实测线性等距下最淡档仅 7.0%，本就近均分，没有换形态的理由。
+  // ⚠️ **值域跨零**：建仓视角的硬门槛是「有效成本 `K − bid` < spot」而不是「< W」⇒ 上界 =
+  //    `(spot − W) / W`（mockup 的 ACN：spot 179.82 / W 140 ⇒ +28%，格值实测正是 +27 / +21 / +3）。
+  //    把档界全压在负半轴会让**整片建仓格塌进最淡档**，而网格照样画得出来。
   buildQuality: {
     form: 'linear',
     direction: 'lower_is_better',
-    cuts: [-40, -30, -20, -10], // 🚧 PLACEHOLDER(T020)
+    cuts: [-42, -25, -7, 10], // 🚧 PLACEHOLDER(T020)
   },
   // 收租年化：**小数比例**，越高越好。实测值域 `[0.022, 0.714]` 右偏 ⇒ 线性等距最淡档 52.4% ⚠️ ⇒ 分位。
   rentAnnualized: {

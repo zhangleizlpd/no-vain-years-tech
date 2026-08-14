@@ -32,9 +32,11 @@ function triangular(p: number): number {
 }
 
 const SAMPLES: Readonly<Record<ChainReportMetric, readonly number[]>> = {
-  // 建仓成色（百分数，越低越好）：对称三角分布 over [-50, 0]。
-  // 依据 = 线性等距下最淡档（值最差那一端）实测 7.0%，三角分布给 8.8%，形状对得上。
-  buildQuality: PROBES.map((p) => -50 + 50 * triangular(p)),
+  // 建仓成色（百分数，越低越好）：对称三角分布 over [-60, +28]。
+  // 依据两条 —— ① 形状：线性等距下最淡档（值最差那一端）实测 7.0%，三角分布给 8.4%；
+  // ② 值域**跨零**：建仓硬门槛是「有效成本 < spot」而非「< W」⇒ 上界 = `(spot − W) / W`
+  //   （mockup 的 ACN = +28%，格值实测 +27 / +21 / +3），下界取深价外腿那一端。
+  buildQuality: PROBES.map((p) => -60 + 88 * triangular(p)),
   // 收租年化（小数比例）：实测值域 [0.022, 0.714]，右偏。`u^2.5` 让线性等距最淡档落 52.5%
   // —— 实测 52.4%。
   rentAnnualized: PROBES.map((p) => 0.022 + 0.692 * Math.pow(p, 2.5)),
@@ -103,9 +105,10 @@ describe('chain-report-scale.rules', () => {
       expect(chainReportBand('rentAnnualized', 0.7)).toBe(5);
     });
 
-    it('🚨 建仓成色越低越好：−45% MUST 强于 −5%（方向踩反这条当场红）', () => {
+    // 值域跨零：−45% = 有效成本远低于愿买价（最好），+25% = 贴着「< spot」那道硬门槛（最差）。
+    it('🚨 建仓成色越低越好：−45% MUST 强于 +25%（方向踩反这条当场红）', () => {
       expect(chainReportBand('buildQuality', -45)).toBe(5);
-      expect(chainReportBand('buildQuality', -5)).toBe(1);
+      expect(chainReportBand('buildQuality', 25)).toBe(1);
     });
 
     it('切点闭在下档', () => {
