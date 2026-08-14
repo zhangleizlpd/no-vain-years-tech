@@ -215,14 +215,25 @@ export function useLegTable(symbol: string): UseLegTableResult {
     rent: rentQuery,
   };
 
-  // 🚨 链级读取源 —— 当前视角（闸持有的那个）优先，回退任一已到手的视角。见 `chain` 的注释：
-  //    没有这个回退，「视角 → intent → 视角」在切视角那一拍会来回震荡。
-  const chainSource =
-    queries[gate.current].data?.data ??
-    allQuery.data?.data ??
-    buildQuery.data?.data ??
-    rentQuery.data?.data ??
-    null;
+  // 🚨 链级读取源 —— 回退任一已到手的视角，**固定序**：全腿（= 首屏唯一开着的那份）→ 建仓 → 收租。
+  //    没有这个回退，「视角 → intent → 视角」在切视角那一拍会来回震荡（052 T013 的 #185）。
+  //
+  // 🚨 **顺序 MUST NOT 由 `gate.current`（或任何本 hook 自己回写的 state）打头**（T016）——
+  //    那会把「读哪一份 `intent`」这件事交给上一拍解析出的视角，于是
+  //    `gate.current → chainSource → intent → tab → gate.current` 闭成一个环。它在三份缓存
+  //    对 `intent` **各执一词**时**没有不动点**：闸在全腿 ⇒ 读到新意图 `rent` ⇒ 落位收租 ⇒
+  //    闸切收租 ⇒ 读到那份还没重取完的旧意图 `pending` ⇒ 落位全腿 ⇒ 闸切回…… 而 render 期
+  //    回写让这一圈**同步跑满**，React 25 次重入后抛 `Too many re-renders`（生产构建 = #301），
+  //    整块屏被 ErrorBoundary 接住 = **真机白屏**。
+  //    ⚠️ 「三份各执一词」不是罕见时序，**是选水位这条主路径本身**：写成功 ⇒ 三份 key 一起失效
+  //    ⇒ 三份在不同 tick 落地 ⇒ 中间那个窗口必然存在。2026-08-14 变异实验（只把这一行改回去、
+  //    重新 export 后跑同一条 `US3-AS3 --repeat-each=5`）：**3 failed + #301 复现；改回来 10 passed
+  //    + #301 零命中**。判据同时钉在单测里（本文件 spec 的「视角解析收敛性」两条）。
+  // 📌 **去掉「当前视角优先」零损失**：`chain` 是 `table ?? chainSource`，而 `table` 就是当前
+  //    视角自己那一份 ⇒ 它到手时本就轮不到 `chainSource`。收敛态下 `gate.current === tab`，
+  //    那个首选项恒等于 `table`、恒是死键；它**只在 `gate.current !== tab` 的那一拍起作用**，
+  //    而那一拍正是上面这个环。⇒ 删掉的是环，不是回退链。
+  const chainSource = allQuery.data?.data ?? buildQuery.data?.data ?? rentQuery.data?.data ?? null;
   const intent = chainSource?.intent ?? null;
   // 🚨 契约到手时先把「点击时意图未知」的手点值升格，再解析 —— 否则 loading 期间那一下点击
   //    会被 `resolveLegTab` 当成「意图变了」丢掉（见 promotePick 注释里的真机实证）。
@@ -237,8 +248,11 @@ export function useLegTable(symbol: string): UseLegTableResult {
   const chain = table ?? chainSource;
 
   // 错峰闸同步（与上面的升格同一范式：render 期条件 setState，一拍内收敛）。
-  // 📌 收敛靠的是上面那条回退链：闸切到尚未落地的视角时 `chainSource` 仍取得到 `intent`，
-  //    解析出的视角不会跟着塌回「全腿」⇒ 下一拍闸与视角相等，写入停止。
+  // 🚨 **收敛是可证的，靠的是「闸只出不进」**（T016）：`gate` 唯一的去处是 `legQueryEnabled`
+  //    的 `enabled`，而 `enabled` 改不动同一拍的 `data` / `isSuccess`（React Query 里被关掉的
+  //    query 照常吐缓存），⇒ 回写后重跑这一段，`tab` 与 `primed` **逐字不变**、条件转假、写入停止。
+  //    ⇒ 恒 ≤ 1 次额外 render。🚫 **MUST NOT 让 `gate` 反向喂回 `tab` 的任何上游**（`chainSource`
+  //    / `intent` / `picked`）—— 那会把这里变回一个无不动点的迭代，见 `chainSource` 处的长注。
   const primed = currentQuery.isSuccess;
   if (gate.current !== tab || gate.primed !== primed) setGate({ current: tab, primed });
 
