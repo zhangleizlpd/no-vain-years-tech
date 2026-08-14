@@ -25,14 +25,21 @@ const COPY = OPTIONSDESK_COPY.chainReport;
 
 const STROKE_WIDTH = 1.5;
 const POINT_RADIUS = 2.5;
+/** 十字线所在那一点加粗（`FR-026` 的曲线那一半）。 */
+const ACTIVE_POINT_RADIUS = 4;
 
 export interface ChainReportCurveProps {
   columns: ChainReportColumnResponse[];
   /** 与网格**同一个**位移（横滑时逐列跟随）。 */
   tx: SharedValue<number>;
+  /**
+   * 十字线当前所在列（`null` = 未激活）。🚨 `FR-026`「竖线同时落在网格某列与曲线某点」的
+   * 曲线那一半 —— 该点加粗成实心环，让「哪一点」在图上直接看得见。
+   */
+  activeColumnIndex?: number | null;
 }
 
-export function ChainReportCurve({ columns, tx }: ChainReportCurveProps) {
+export function ChainReportCurve({ columns, tx, activeColumnIndex = null }: ChainReportCurveProps) {
   const view = useMemo(() => chainReportCurveView(columns), [columns]);
 
   return (
@@ -64,7 +71,7 @@ export function ChainReportCurve({ columns, tx }: ChainReportCurveProps) {
                   key={`pt-${point.columnIndex}`}
                   cx={point.x}
                   cy={point.y}
-                  r={POINT_RADIUS}
+                  r={point.columnIndex === activeColumnIndex ? ACTIVE_POINT_RADIUS : POINT_RADIUS}
                   fill={colors.brand[500]}
                 />
               ),

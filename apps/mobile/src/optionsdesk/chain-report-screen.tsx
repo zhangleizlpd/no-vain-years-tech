@@ -19,14 +19,22 @@
 //    将来加边距或平板分栏会**静默算错 clamp 边界**，右侧列滑不到底且不会红）；变宽时顺手把
 //    `tx` 拉回新域，否则竖→横→竖后卡在越界位置只能反向滑。
 //
-// 📌 **本片仍缺两块**：十字线 + 读数面板归 T014、五种降级态归 T017。
+// ── 055 T014 十字线（`FR-025`/`FR-026`/`FR-030`, Guardrail 8）──────────────────
+// 🚨 **长按与横滑的分界是「有没有先按住」，不是触点在哪** —— 落法是
+//    `Gesture.Pan().activateAfterLongPress(...)` 与横滑 Pan 组成 `Gesture.Exclusive`：
+//    判据是**时间**，🚫 MUST NOT 依据坐标分流（`FR-030`，与选约表横滑同一条纪律）。
+// 🚨 **触点 → 行列的换算要两个偏移**：x 减「外边距 + 冻结列 + 横滑位移」，y 减「网格体首行
+//    顶缘」。后者由 `onLayout` **实测两级**（曲线高度 / 列头行高都会变），🚫 别拿常量凑。
+// ⚠️ **手势竞争的真实手感只有真机能判**（Expo Web 下 `Pan` 需走原始指针事件）⇒ 归 T021。
+//
+// 📌 **本片仍缺一块**：五种降级态归 T017。
 // 判定全在 `chain-report-copy.ts` / `chain-report-grid.rules.ts` / `chain-report-scale.rules.ts`
 //（vitest 覆盖）；渲染 / 交互 / a11y 走 T018 Playwright e2e。
 import { useCallback, useMemo, useState } from 'react';
 import { Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Stack } from 'expo-router';
-import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
-import { useSharedValue } from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { runOnJS, useSharedValue } from 'react-native-reanimated';
 
 import { ErrorRow, SafeAreaView, Spinner, makeHeaderBackOrParent } from '~/ui';
 import {
@@ -36,10 +44,17 @@ import {
   chainReportMetricCaption,
   chainReportTitle,
 } from './chain-report-copy';
+import {
+  CHAIN_REPORT_CROSSHAIR_LONG_PRESS_MS,
+  chainReportColumnIndexAt,
+  chainReportReadout,
+  chainReportRowIndexAt,
+} from './chain-report-crosshair.rules';
 import { ChainReportCurve } from './chain-report-curve';
 import { ChainReportGrid } from './chain-report-grid';
 import { chainReportContentWidth } from './chain-report-grid.rules';
 import { ChainReportMetricTabs } from './chain-report-metric-tabs';
+import { ChainReportReadout } from './chain-report-readout';
 import type { ChainReportMetric } from './chain-report-scale.rules';
 import { IvpSegmentBar } from './ivp-segment-bar';
 import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
@@ -80,7 +95,68 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
     [contentWidth, tx, viewportW],
   );
 
-  const pan = useLegColumnPan({ tx, viewportW, contentWidth });
+  const columnPan = useLegColumnPan({ tx, viewportW, contentWidth });
+
+  // ── 十字线：落点 + 两级纵向偏移（曲线高度与列头行高都会变，故实测不凑常量） ──
+  const [crosshair, setCrosshair] = useState<{ columnIndex: number; rowIndex: number } | null>(
+    null,
+  );
+  const [gridTop, setGridTop] = useState(0);
+  const [bodyTop, setBodyTop] = useState(0);
+  const rowCount = report?.rows.length ?? 0;
+
+  const moveCrosshair = useCallback(
+    (x: number, y: number, txValue: number) => {
+      const columnIndex = chainReportColumnIndexAt(x, txValue, columnCount);
+      const rowIndex = chainReportRowIndexAt(y - gridTop - bodyTop, rowCount);
+      setCrosshair((prev) =>
+        prev?.columnIndex === columnIndex && prev.rowIndex === rowIndex
+          ? prev
+          : { columnIndex, rowIndex },
+      );
+    },
+    [bodyTop, columnCount, gridTop, rowCount],
+  );
+
+  const clearCrosshair = useCallback(() => setCrosshair(null), []);
+
+  const crosshairPan = useMemo(
+    () =>
+      Gesture.Pan()
+        // 🚨 唯一的分界：**按住够久**才归十字线（`FR-030`，🚫 不看坐标）。
+        .activateAfterLongPress(CHAIN_REPORT_CROSSHAIR_LONG_PRESS_MS)
+        .onStart((event) => {
+          runOnJS(moveCrosshair)(event.x, event.y, tx.value);
+        })
+        .onUpdate((event) => {
+          runOnJS(moveCrosshair)(event.x, event.y, tx.value);
+        })
+        // 松手退出（`FR-025`）—— 取消 / 打断也走这里，🚫 不留一条画在屏上的孤线。
+        .onFinalize(() => {
+          runOnJS(clearCrosshair)();
+        }),
+    [clearCrosshair, moveCrosshair, tx],
+  );
+
+  // 🚨 `Exclusive` 而不是 `Simultaneous`：同一根手指要么在移列、要么在读格，两者不并存。
+  const gesture = useMemo(
+    () => Gesture.Exclusive(crosshairPan, columnPan),
+    [columnPan, crosshairPan],
+  );
+
+  const readout = useMemo(() => {
+    if (report === null || crosshair === null) return null;
+    const row = report.rows[crosshair.rowIndex];
+    const column = report.columns[crosshair.columnIndex];
+    if (row === undefined || column === undefined) return null;
+    const cell = report.cells[metric][crosshair.rowIndex]?.[crosshair.columnIndex] ?? {
+      state: 'absent' as const,
+      best: null,
+      runnerUp: null,
+      legCount: 0,
+    };
+    return chainReportReadout(metric, row, column, cell, !column.inRecallBand[metric]);
+  }, [crosshair, metric, report]);
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
@@ -139,29 +215,44 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
             <ChainReportMetricTabs metric={metric} onSelect={setMetric} />
 
             <GestureHandlerRootView>
-              <GestureDetector gesture={pan}>
+              <GestureDetector gesture={gesture}>
                 {/* 🚨 单个原生 `View` + `collapsable={false}`：Fragment 或被压平 ⇒ 手势静默失效。
                     曲线与网格**同在这一层之下** —— 同一个 `tx`、同一个手势区（Guardrail 9）。 */}
                 <View collapsable={false}>
-                  <ChainReportCurve columns={report.columns} tx={tx} />
-                  <ChainReportGrid
-                    metric={metric}
-                    rows={report.rows}
+                  <ChainReportCurve
                     columns={report.columns}
-                    cells={report.cells[metric]}
                     tx={tx}
-                    viewportW={viewportW}
-                    trackWidth={trackWidth}
-                    onTrackLayout={onTrackLayout}
+                    activeColumnIndex={crosshair?.columnIndex ?? null}
                   />
+                  <View onLayout={(event) => setGridTop(event.nativeEvent.layout.y)}>
+                    <ChainReportGrid
+                      metric={metric}
+                      rows={report.rows}
+                      columns={report.columns}
+                      cells={report.cells[metric]}
+                      tx={tx}
+                      viewportW={viewportW}
+                      trackWidth={trackWidth}
+                      onTrackLayout={onTrackLayout}
+                      crosshair={crosshair}
+                      onBodyLayout={setBodyTop}
+                    />
+                  </View>
                 </View>
               </GestureDetector>
             </GestureHandlerRootView>
 
-            {/* 当前格值的读法一行 —— 活跃度那条的时点跟 `oiAsOf`（FR-014）。 */}
-            <Text className="px-md pt-0.5 text-[9px] text-ink-muted" testID="chain-report-caption">
-              {chainReportMetricCaption(metric, report)}
-            </Text>
+            {/* 十字线激活时读法行与恒等式让位给读数面板（mockup 帧 ⑤；`FR-041` 一屏预算）。 */}
+            {readout === null ? (
+              <Text
+                className="px-md pt-0.5 text-[9px] text-ink-muted"
+                testID="chain-report-caption"
+              >
+                {chainReportMetricCaption(metric, report)}
+              </Text>
+            ) : (
+              <ChainReportReadout view={readout} />
+            )}
 
             {/* 🚨 FR-034 页脚三个互斥计数，各带各的分母，🚫 不合并成一个总数。 */}
             <View
@@ -180,7 +271,7 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
                 </View>
               ))}
               {/* 恒等式对不上账时整句不显示 —— 🚫 不用界面替错数背书（`SC-006`）。 */}
-              {chainReportGateHint(report.gateCounts) === null ? null : (
+              {readout !== null || chainReportGateHint(report.gateCounts) === null ? null : (
                 <Text className="text-[10px] text-ink-subtle" testID="chain-report-gate-hint">
                   {chainReportGateHint(report.gateCounts)}
                 </Text>

@@ -23,6 +23,7 @@ import type {
   ChainReportRowResponse,
 } from '@nvy/api-client';
 
+import { chainReportColumnCenterX } from './chain-report-curve.rules';
 import {
   CHAIN_REPORT_CELL_HEIGHT,
   CHAIN_REPORT_COLUMN_WIDTH,
@@ -53,6 +54,10 @@ export interface ChainReportGridProps {
   /** 同一个可视宽的 JS 侧副本 —— 只用来决定**指示条渲不渲染**（worklet 读不回 JS）。 */
   trackWidth: number;
   onTrackLayout: (event: LayoutChangeEvent) => void;
+  /** 十字线落点（`null` = 未激活）。T014。 */
+  crosshair: { columnIndex: number; rowIndex: number } | null;
+  /** 网格体首行顶缘相对**本组件**顶部的偏移 —— 屏级据此把触点 y 换算成行。 */
+  onBodyLayout: (topWithinGrid: number) => void;
 }
 
 export function ChainReportGrid({
@@ -64,6 +69,8 @@ export function ChainReportGrid({
   viewportW,
   trackWidth,
   onTrackLayout,
+  crosshair,
+  onBodyLayout,
 }: ChainReportGridProps) {
   const columnViews = useMemo(
     () => columns.map((column) => chainReportColumnView(column, metric)),
@@ -86,7 +93,11 @@ export function ChainReportGrid({
         <View className="flex-1" onLayout={onTrackLayout}>
           <LegColumnPane tx={tx} contentWidth={contentWidth} testID="chain-report-colhead">
             {columnViews.map((view, index) => (
-              <ColumnHead key={columns[index]?.expiryDate ?? index} view={view} />
+              <ColumnHead
+                key={columns[index]?.expiryDate ?? index}
+                view={view}
+                active={crosshair?.columnIndex === index}
+              />
             ))}
           </LegColumnPane>
         </View>
@@ -118,7 +129,7 @@ export function ChainReportGrid({
       </View>
 
       {/* ── 网格体：冻结行标列 + 横滑列区 ───────────────────────── */}
-      <View className="flex-row">
+      <View className="flex-row" onLayout={(event) => onBodyLayout(event.nativeEvent.layout.y)}>
         <View className="border-r border-line" style={{ width: CHAIN_REPORT_LABEL_WIDTH }}>
           {rows.map((row) => (
             <View
@@ -133,6 +144,28 @@ export function ChainReportGrid({
 
         <LegColumnPane tx={tx} contentWidth={contentWidth} testID="chain-report-cells">
           <View style={{ width: contentWidth }}>
+            {/* 🚨 十字线两条线画在**列区之内** ⇒ 与列同一位移、与曲线同一原点（FR-026）。 */}
+            {crosshair === null ? null : (
+              <>
+                <View
+                  className="absolute bottom-0 top-0 w-0.5 bg-brand-500"
+                  style={{ left: chainReportColumnCenterX(crosshair.columnIndex) - 1 }}
+                  testID="chain-report-crosshair-v"
+                />
+                <View
+                  className="absolute h-0.5 bg-brand-500"
+                  style={{
+                    top:
+                      crosshair.rowIndex * CHAIN_REPORT_CELL_HEIGHT +
+                      CHAIN_REPORT_CELL_HEIGHT / 2 -
+                      1,
+                    left: 0,
+                    width: contentWidth,
+                  }}
+                  testID="chain-report-crosshair-h"
+                />
+              </>
+            )}
             {rows.map((row, rowIndex) => (
               <View key={row.index} className="flex-row">
                 {columns.map((column, colIndex) => {
@@ -185,9 +218,12 @@ export function ChainReportGrid({
   );
 }
 
-function ColumnHead({ view }: { view: ChainReportColumnView }) {
+function ColumnHead({ view, active }: { view: ChainReportColumnView; active: boolean }) {
   return (
-    <View className="items-center py-0.5" style={{ width: CHAIN_REPORT_COLUMN_WIDTH }}>
+    <View
+      className={`items-center py-0.5 ${active ? 'bg-brand-soft' : ''}`}
+      style={{ width: CHAIN_REPORT_COLUMN_WIDTH }}
+    >
       <Text className={`text-[9px] ${view.isOutOfBand ? 'text-ink-muted' : 'text-ink'}`}>
         {view.expiryText}
       </Text>

@@ -674,6 +674,28 @@ export const OPTIONSDESK_COPY = {
     asOfPrefix: ' · 截至 ',
     quoteDiffDay: (quote: string) => `，与报价的 ${quote} 不同日`,
 
+    // ── 十字线读数面板（FR-027 / FR-028 / FR-029 / SC-004） ───────────────────
+    readoutDteSuffix: ' 天',
+    readoutMonthly: '月度',
+    readoutStrikePrefix: 'K ',
+    readoutLegCount: '格内腿数',
+    readoutIv: '本列 IV',
+    /** 读数标签随格值变 —— 成色 / 年化 / 活跃度不是一个东西，共用一套标签会读串。 */
+    readoutMetricLabels: {
+      buildQuality: { best: '最优成色', runnerUp: '次优成色' },
+      rentAnnualized: { best: '最优年化', runnerUp: '次优年化' },
+      allAnnualized: { best: '最优年化', runnerUp: '次优年化' },
+      activity: { best: '最活跃', runnerUp: '次活跃' },
+    },
+    /** 🚨 `FR-028`：次优为空**显式呈「无」**，🚫 MUST NOT 复述最优值充数。 */
+    readoutNoneSingle: '无（仅 1 条）',
+    readoutNone: '无',
+    /** 🚨 `FR-029`：空格三种成因**各自成句**，🚫 不停留在上一格的读数。 */
+    readoutReasonVoid: '该位置链上无合约',
+    readoutReasonBlocked: '有腿，但被门槛挡下',
+    readoutReasonOutOfBand: '本列不在当前格值的召回段内',
+    readoutTip: '竖线同时落在网格这一列与曲线这一点上 · 松手退出',
+
     // ── 页脚三个互斥计数（FR-034；🚫 MUST NOT 合并成一个总数） ────────────────
     gatePremium: '权利金门槛移出',
     gateRowFloor: '深实值行下界外',
