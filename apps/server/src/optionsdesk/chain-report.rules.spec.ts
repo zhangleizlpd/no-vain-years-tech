@@ -9,6 +9,7 @@ import {
   OTM_BAND_TOP_INDEX,
   OTM_BAND_WIDTH,
   aggregateCell,
+  atmImpliedVolatility,
   chainReportColumns,
   chainReportGateCounts,
   chainReportRows,
@@ -371,5 +372,68 @@ describe('chain-report.rules — 三互斥计数 (FR-034, SC-006, state_branch 9
       band: OTM_BAND_TOP_INDEX,
     };
     expect(chainReportGateCounts(chain([[farOtm, 4]])).valued).toBe(4);
+  });
+});
+
+describe('chain-report.rules — ATM IV 插值 (FR-020 – FR-024, state_branch 12/13)', () => {
+  const at = (strike: string, iv: number | null) => ({ strike: new Prisma.Decimal(strike), iv });
+  const atm = (points: readonly { strike: Prisma.Decimal; iv: number | null }[]) =>
+    atmImpliedVolatility(SPOT, points);
+
+  it('跨现价两侧线性插值 —— 现价居中时取两侧均值', () => {
+    expect(atm([at('95', 20), at('105', 30)])).toBe(25);
+  });
+
+  it('权重按现价在两档之间的位置走，不是简单平均', () => {
+    // 现价 100 落在 90 与 110 的正中：(100 − 90) / (110 − 90) = 一半
+    expect(atm([at('90', 20), at('110', 40)])).toBe(30);
+    // 现价 100 落在 90 与 130 之间的四分之一处
+    expect(atm([at('90', 20), at('130', 60)])).toBe(30);
+  });
+
+  it('🚨 插值 ≠ 取最近档 —— 最坏情形差出小半个量程，而曲线照样画得出来 (FR-022)', () => {
+    // 两侧最近档分别在 81 / 120：「取最近档」会给 20（81 更近），插值给约 37。
+    const interpolated = atm([at('81', 20), at('120', 55)]);
+    expect(interpolated).not.toBeNull();
+    expect(interpolated).toBeGreaterThan(20);
+    expect(interpolated).toBeLessThan(55);
+    // 判据来源：实测最大差 17.21 点，而典型波动率水平仅 20–40 点。
+    expect((interpolated as number) - 20).toBeGreaterThan(15);
+  });
+
+  it('🚨 只有一侧有档 ⇒ 断点，🚫 MUST NOT 回落成那一侧的值 (FR-023)', () => {
+    expect(atm([at('90', 20), at('80', 22)])).toBeNull();
+    expect(atm([at('110', 30), at('130', 35)])).toBeNull();
+  });
+
+  it('行权价恰落在现价上 ⇒ 精确解，非「回落最近档」', () => {
+    expect(atm([at('100', 27), at('130', 55)])).toBe(27);
+    expect(atm([at('100', 27)])).toBe(27);
+  });
+
+  it('iv 缺失的腿整条不参与 —— 跳过它去找更外侧那一档 (FR-024)', () => {
+    // 99 是离现价最近的下侧档，但它没有 iv ⇒ 下侧应落到 95。
+    expect(atm([at('99', null), at('95', 20), at('105', 30)])).toBe(25);
+  });
+
+  it('🚨 iv 是 vendor 原样百分数，🚫 MUST NOT 再 ×100', () => {
+    expect(atm([at('95', 25.5), at('105', 25.5)])).toBe(25.5);
+  });
+
+  it('该列一条腿都没有 / iv 全缺 ⇒ 断点', () => {
+    expect(atm([])).toBeNull();
+    expect(atm([at('95', null), at('105', null)])).toBeNull();
+  });
+
+  it('🚨 greeks 全缺只让曲线断开，四种格值照常算得出 (state_branch 13)', () => {
+    const points = [at('95', null), at('105', null)];
+    expect(atm(points)).toBeNull();
+    // 同一批腿的读数与 iv 无关 —— 费率 / 活跃度都不吃 greeks。
+    const values = [new Prisma.Decimal('18'), new Prisma.Decimal('31')];
+    for (const metric of CHAIN_REPORT_METRICS) {
+      const cell = aggregateCell(values, metric, points.length);
+      expect(cell.state).toBe('valued');
+      expect(cell.best).not.toBeNull();
+    }
   });
 });

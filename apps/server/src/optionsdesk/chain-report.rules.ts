@@ -341,6 +341,73 @@ export function chainReportGateCounts(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ATM 隐含波动率 (FR-020 – FR-024) —— 曲线每一列的取值
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 插值入参 —— 某到期日上的一条腿。 */
+export interface AtmIvPoint {
+  readonly strike: Prisma.Decimal;
+  /**
+   * vendor 原样的隐含波动率, **百分数** (`25.5` = 25.5%)。greeks 缺失 ⇒ `null`。
+   *
+   * 🚨 **🚫 MUST NOT 再 ×100**: `option_quote_daily.iv` 落库时就不做二次换算
+   * (`schema.prisma` 明写「换算一次就再也说不清库里那个数是谁的口径」), 与
+   * `underlying_iv_daily` 同纪律 ⇒ 这里再乘一次会让曲线纵轴悄悄差两个数量级, 而**图照样画得出来**。
+   * 📌 类型取 `number` 而非 `Prisma.Decimal`, 沿 port 上 `delta` 的先例: 无量纲希腊值没有精度可丢,
+   * 且它只喂一条呈现用的曲线。
+   */
+  readonly iv: number | null;
+}
+
+/** 已知 iv 的点 —— 插值只在这个子集上做。 */
+type KnownIvPoint = { readonly strike: Prisma.Decimal; readonly iv: number };
+
+/**
+ * 该到期日的**平值**隐含波动率 (FR-022)。`O(n)` 单趟, 无排序。
+ *
+ * 取跨现价**两侧最近**的两个行权价线性插值。两侧任缺其一 ⇒ 返 `null` ⇒ 曲线该点断开 (FR-023)。
+ *
+ * 🚨 **🚫 MUST NOT 回落成「离现价最近的那一档」** (FR-022): 实测两种取法的中位差可忽略
+ * (0.26 个波动率点) 但**最大差 17.21 点**, 而典型波动率水平仅 20–40 点 —— 也就是说最坏情况下
+ * 差出小半个量程, 而**曲线照样画得出来、形状照样合理**。
+ *
+ * 🚨 **断点 MUST 是断点, 🚫 MUST NOT 以任何形式填充** (FR-023 / SC-005): 补一个值进去,
+ * 用户读到的就是一条连续的期限结构, 而它有一段是编的。
+ *
+ * 📌 **行权价恰好落在现价上 ⇒ 直接返回该腿的 iv**, 不算「回落最近档」: 那是插值的精确解
+ * (权重为 0 或 1 的退化情形), 不是拿一个近处的值冒充。同一行权价上有多条腿时同此处置。
+ * 📌 iv 为 `null` 的腿**整条不参与**——它不是「两侧之一」, 跳过它去找更外侧那一档才是对的
+ * (FR-024: 单条腿的希腊字母缺失只影响曲线, 且只影响到「这一列能不能定出平值」这一步)。
+ */
+export function atmImpliedVolatility(
+  spot: Prisma.Decimal,
+  points: readonly AtmIvPoint[],
+): number | null {
+  let lower: KnownIvPoint | null = null;
+  let upper: KnownIvPoint | null = null;
+
+  for (const point of points) {
+    if (point.iv === null) continue;
+    const known: KnownIvPoint = { strike: point.strike, iv: point.iv };
+    if (known.strike.lessThanOrEqualTo(spot)) {
+      if (lower === null || known.strike.greaterThan(lower.strike)) lower = known;
+    }
+    if (known.strike.greaterThanOrEqualTo(spot)) {
+      if (upper === null || known.strike.lessThan(upper.strike)) upper = known;
+    }
+  }
+
+  if (lower === null || upper === null) return null;
+
+  const span = upper.strike.minus(lower.strike);
+  // 跨度为 0 = 有一档恰落在现价上 (或同一行权价上多条腿) ⇒ 精确解, 顺带守住除零。
+  if (span.isZero()) return lower.iv;
+
+  const weight = spot.minus(lower.strike).div(span).toNumber();
+  return lower.iv + (upper.iv - lower.iv) * weight;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 骨架 (FR-005) —— 网格的总体
 // ─────────────────────────────────────────────────────────────────────────────
 
