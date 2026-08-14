@@ -233,9 +233,15 @@ function ColumnHead({ view, active }: { view: ChainReportColumnView; active: boo
         {view.expiryText}
       </Text>
       <Text className="text-[9px] text-ink-muted">{view.dteText}</Text>
-      <View className="h-2.5 flex-row items-center gap-0.5">
+      {/* 🚨 固定高**不能省**（各列等高，列头基线才齐），但 `h-2.5`(10px) 卡不下 chip：
+          `text-[8px]` 的 CJK 行盒约 10–11px，再加上下各 1px 边框 ≈ 13px ⇒ 字被父容器裁掉，
+          真机上看着就是「chip 太窄、月字挤扁」（2026-08-15 真机实测）。给到 14px 留出余量。 */}
+      <View className="h-3.5 flex-row items-center gap-0.5">
         {view.isMonthly ? (
-          <Text className="rounded-sm border border-brand-500 px-0.5 text-[8px] text-brand-500">
+          <Text
+            className="rounded-sm border border-brand-500 px-0.5 text-[8px] text-brand-500"
+            testID="chain-report-monthly-chip"
+          >
             {COPY.monthlyChip}
           </Text>
         ) : null}

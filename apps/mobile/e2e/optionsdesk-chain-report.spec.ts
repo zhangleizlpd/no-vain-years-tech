@@ -99,6 +99,7 @@ const COPY = {
   reasonVoid: '该位置链上无合约',
   reasonBlocked: '有腿，但被门槛挡下',
   outOfBandChip: '段外',
+  monthlyChip: '月',
 } as const;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -786,6 +787,60 @@ test('055 T011 — 段外列整列淡出且列仍在：主信号是列头「段�
   await page.waitForTimeout(200);
   await expect(page.getByTestId('chain-report-out-of-band-chip')).toHaveCount(0);
   expect((await cellIds(page)).length).toBe(ROW_COUNT * COL_COUNT);
+});
+
+/**
+ * 🚧 **补测（#45）**：055 T021 真机验收时列头四元素只验到三个 —— `月` chip 在**任何环境下都
+ * 产不出来**，因为 server 侧判据 `isMonthlyChain` 恒 `false`（交易日历结构上不含未来交易日）。
+ * 判据换源到 vendor 到期周期之后这一跳才验得了，本条把那个缺口补上。
+ *
+ * ⚠️ **本条能守什么、守不住什么**（别把它当真机验收的替代）：
+ * - ✅ 守得住「条件接错 / chip 恒 true / 恒 false / 随格值乱变」这几类**逻辑**错法。
+ * - 🚫 守不住**原生布局塌陷** —— 同容器的 `段外` chip 在 T021 真机上就整片高度塌成 0 而
+ *   `chain-report-out-of-band-chip` 的 web 断言照常绿（成因见 `chain-report-grid.tsx` 列头那段
+ *   `flex-row` 的注释：CSS 下 auto 高的 flex 容器按 max-content 参与父高计算，Yoga 直接得 0）。
+ *   ⇒ 真机复看仍是必须的，这条不构成它的证据。
+ */
+test('055 T021 补 — 列头「月」chip：只在月度链列出现，且**与格值切换正交**（#45）', async ({
+  page,
+}) => {
+  await installChainReportMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: SYMBOL })],
+    reports: { [SYMBOL]: makeReport() },
+  });
+  await page.goto(reportUrl(SYMBOL));
+  await waitForGrid(page);
+
+  // 固定列集里 6 列有 3 列 `isMonthlyChain`（09-18 / 12-18 / 2027-03-19）。
+  await expect(page.getByTestId('chain-report-monthly-chip').first()).toBeVisible();
+  await expect(page.getByTestId('chain-report-monthly-chip')).toHaveCount(3);
+  await expect(page.getByText(COPY.monthlyChip).first()).toBeVisible();
+
+  // 🚨 **与同容器的兄弟 chip 正交**：段外随格值变（收租 2 个 → 全腿 0 个），月度标恒 3 个。
+  //    月度是到期日的属性、段外是「这一列归不归当前视角」—— 两级不同码（Guardrail 7）。
+  //    只断月度数目不够: 若两个 chip 一起消失, 那是容器塌了而不是判据错, 故两条一起断。
+  await expect(page.getByTestId('chain-report-out-of-band-chip')).toHaveCount(2);
+  await page.getByTestId('chain-report-metric-allAnnualized').tap();
+  await page.waitForTimeout(200);
+  await expect(page.getByTestId('chain-report-out-of-band-chip')).toHaveCount(0);
+  await expect(page.getByTestId('chain-report-monthly-chip')).toHaveCount(3);
+});
+
+test('055 T021 补 — 一列都不是月度链 ⇒ 一个「月」chip 都不出（防恒 true，#45）', async ({
+  page,
+}) => {
+  await installChainReportMock(page, {
+    anchors: [makeAnchor({ id: '1', ticker: SYMBOL })],
+    reports: {
+      [SYMBOL]: makeReport({ columns: COLUMNS.map((c) => ({ ...c, isMonthlyChain: false })) }),
+    },
+  });
+  await page.goto(reportUrl(SYMBOL));
+  await waitForGrid(page);
+
+  await expect(page.getByTestId('chain-report-monthly-chip')).toHaveCount(0);
+  // 🚨 判别性: 列头本身照常渲染（否则「0 个」可能只是整块没画出来）。
+  await expect(page.getByTestId('chain-report-out-of-band-chip')).toHaveCount(2);
 });
 
 // ════════════════════════════════════════════════════════════════════════════

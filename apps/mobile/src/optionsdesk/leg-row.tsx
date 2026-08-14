@@ -106,8 +106,10 @@ export function LegRow({ leg, tx, today }: LegRowProps) {
           <Text className="font-mono text-[8px] text-ink-muted" numberOfLines={1}>
             {expiryLabel(leg, today)}
           </Text>
-          {/* 🚫 判据是 server 的「该月第三个周五（非交易日前移）」—— MUST NOT 在这里简化成
-              「是不是周五」（FR-014）。 */}
+          {/* 🚫 判据一律取 server 下发的这个布尔 —— MUST NOT 在这里按「是不是周五」自行推断
+              （050 FR-014/FR-015 · 051 FR-014）。server 侧判据 = vendor 声明的到期周期
+              （`expiration_cycle === 'MONTH'`，#45 换源；旧的「第三个周五 + 交易日历回退」已废，
+              它在生产从未生效过）。**换源对本处零影响**，正是「客户端不自己推断」保住的。 */}
           {leg.isMonthlyChain ? (
             <Text
               className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.monthly}`}
