@@ -19,8 +19,7 @@
 //    将来加边距或平板分栏会**静默算错 clamp 边界**，右侧列滑不到底且不会红）；变宽时顺手把
 //    `tx` 拉回新域，否则竖→横→竖后卡在越界位置只能反向滑。
 //
-// 📌 **本片仍缺三块**：格值四选一与页脚三计数归 T012、IV 期限结构曲线归 T013、
-//    五种降级态归 T017。下面的空位是给它们留的，不是漏了。
+// 📌 **本片仍缺两块**：十字线 + 读数面板归 T014、五种降级态归 T017。
 // 判定全在 `chain-report-copy.ts` / `chain-report-grid.rules.ts` / `chain-report-scale.rules.ts`
 //（vitest 覆盖）；渲染 / 交互 / a11y 走 T018 Playwright e2e。
 import { useCallback, useMemo, useState } from 'react';
@@ -37,6 +36,7 @@ import {
   chainReportMetricCaption,
   chainReportTitle,
 } from './chain-report-copy';
+import { ChainReportCurve } from './chain-report-curve';
 import { ChainReportGrid } from './chain-report-grid';
 import { chainReportContentWidth } from './chain-report-grid.rules';
 import { ChainReportMetricTabs } from './chain-report-metric-tabs';
@@ -140,8 +140,10 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
 
             <GestureHandlerRootView>
               <GestureDetector gesture={pan}>
-                {/* 🚨 单个原生 `View` + `collapsable={false}`：Fragment 或被压平 ⇒ 手势静默失效。 */}
+                {/* 🚨 单个原生 `View` + `collapsable={false}`：Fragment 或被压平 ⇒ 手势静默失效。
+                    曲线与网格**同在这一层之下** —— 同一个 `tx`、同一个手势区（Guardrail 9）。 */}
                 <View collapsable={false}>
+                  <ChainReportCurve columns={report.columns} tx={tx} />
                   <ChainReportGrid
                     metric={metric}
                     rows={report.rows}

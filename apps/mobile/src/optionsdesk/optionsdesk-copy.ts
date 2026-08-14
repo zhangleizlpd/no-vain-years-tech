@@ -630,6 +630,11 @@ export const OPTIONSDESK_COPY = {
     stampOpenInterest: '持仓量',
     /** 报价那条恒带「收盘」后缀 —— 本片只有 EOD 快照一种来源。 */
     quoteClosedSuffix: ' 收盘',
+    // ── IV 期限结构曲线（FR-020 / FR-021） ────────────────────────
+    curveTitle: '隐含波动率 · 期限结构',
+    /** 🚨 `FR-021` 的可见交代 —— 横轴是**列序**不是时间轴，读图的人有权知道。 */
+    curveAxisNote: '列序等距 · 非时间轴',
+
     // ── 网格列头与范围框（FR-009 / FR-009a） ──────────────────────
     /** 月度到期链标（判据在 server，与选约表同一处）。 */
     monthlyChip: '月',
