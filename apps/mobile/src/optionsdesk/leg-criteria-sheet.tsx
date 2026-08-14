@@ -363,7 +363,14 @@ function RowLabel({ text, dirty }: { text: string; dirty: boolean }) {
  * 而屏幕上它们看起来一模一样。
  * 🚨 值走**普通 `Text` 的 token 颜色**（`text-ink`，与行标签同深）——「值比标签淡到读不出」
  *    正是真机 FAIL ②；占位符才用 `ink-subtle`（它说的是「这里没有值」，不是一个值）。
- * 📌 选中态双通道：边框转 `brand-500` **且**底色转 `brand-soft`（别只靠一种）。
+ * 📌 选中态双通道：**下划线**转 `brand-500` **且**底色转 `brand-soft`（别只靠一种）。
+ *
+ * 🚨 形态是**下划线 + 值左对齐**，MUST NOT 退回圆角边框盒 + 居中文字（`FR-001`）——后者读成
+ *    标签 / 胶囊，用户认不出这里可以改。左对齐同时给光标一个稳定的落点：值从左端长出去，
+ *    光标始终跟在值尾，而居中排布会让光标随字数左右横跳。
+ * 🚨 光标只是 2px 的 `View`，**MUST NOT 为了拿原生光标把值改回 `TextInput`**（`FR-002`）——
+ *    `053` T015 正是为此改掉范式的（该机数字键盘占约 60% 屏高，弹起后抽屉被顶出屏外），
+ *    而这条回退**在 web e2e 上永远不会红**（web 没有输入法）。守它的是「全屏无 textbox」那条断言。
  */
 function CriteriaInput({
   field,
@@ -387,15 +394,22 @@ function CriteriaInput({
       accessibilityLabel={`${label} ${value === '' ? COPY.unbounded : value}`}
       accessibilityState={{ selected: on }}
       testID={`optionsdesk-detail-criteria-input-${field}`}
-      className={`h-7 min-w-14 justify-center rounded-md border px-sm ${
+      className={`h-7 min-w-14 flex-row items-center border-b-2 px-xs ${
         on ? 'border-brand-500 bg-brand-soft' : 'border-line bg-surface-sunken'
       }`}
     >
       <Text
-        className={`text-center font-mono text-xs ${value === '' ? 'text-ink-subtle' : 'text-ink'}`}
+        className={`text-left font-mono text-xs ${value === '' ? 'text-ink-subtle' : 'text-ink'}`}
       >
         {value === '' ? COPY.unbounded : value}
       </Text>
+      {/* 光标跟在值尾 —— 它是「键盘这一按会落到哪个框」的唯一视觉指认，故全屏恒只有一个。 */}
+      {on ? (
+        <View
+          testID="optionsdesk-detail-criteria-caret"
+          className="ml-0.5 h-3.5 w-0.5 bg-brand-500"
+        />
+      ) : null}
     </Pressable>
   );
 }

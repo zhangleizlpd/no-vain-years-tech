@@ -521,6 +521,7 @@ const BACKDROP = 'optionsdesk-detail-criteria-backdrop';
 const INFO = 'optionsdesk-detail-criteria-info';
 const TIP = 'optionsdesk-detail-criteria-tip';
 const EMPTY_RESET = 'optionsdesk-detail-leg-empty-reset';
+const CARET = 'optionsdesk-detail-criteria-caret';
 const input = (field: string) => `optionsdesk-detail-criteria-input-${field}`;
 const countLine = (key: CriterionKey) => `optionsdesk-detail-leg-criteria-${key}`;
 
@@ -902,7 +903,84 @@ test('056 T002 — FR-012：三视角行集**一致**，八个框逐视角都在
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑨ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
+// ⑨ 值控件形态 —— 读成「可编辑的输入位」，但底下仍是只读 + 自绘键盘
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 一个框的形态读数。**取 computed style 而非 class 串** —— NativeWind 编译后 class 名不稳定，
+ * 而形态判据（是不是下划线、两个通道有没有一起变）本来就该问渲染结果。
+ */
+async function inputShape(
+  page: Page,
+  field: string,
+): Promise<{
+  borderBottomWidth: string;
+  borderTopWidth: string;
+  borderBottomColor: string;
+  backgroundColor: string;
+  textAlign: string;
+}> {
+  return page.getByTestId(input(field)).evaluate((el) => {
+    const box = getComputedStyle(el);
+    // 值是 Pressable 里那个 Text —— 对齐读它，别读容器（容器的 textAlign 不代表值的排布）。
+    const valueEl = el.querySelector('div,span') ?? el;
+    return {
+      borderBottomWidth: box.borderBottomWidth,
+      borderTopWidth: box.borderTopWidth,
+      borderBottomColor: box.borderBottomColor,
+      backgroundColor: box.backgroundColor,
+      textAlign: getComputedStyle(valueEl).textAlign,
+    };
+  });
+}
+
+test('056 T004 — FR-001/FR-003：值框是下划线式输入位、值左对齐；选中态**双通道**（下划线 + 底色同时变）带 2px 光标；FR-002 全屏仍无 textbox', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  // 视角显式钉死：本条断言「空值呈不限」，而 `strikeMin` 只在这几个视角下才是 null
+  // （`rent` 的 `strikeMax` 有值，正好当同行对照项）。靠默认 tab 会让判据随默认值漂。
+  await selectTab(page, 'rent');
+  await openSheet(page);
+
+  // 🚨 选中/未选中 **互相对照**，不硬编码色值 —— `react-native-web` 不渲染 `accessibilityState`
+  //    (无 `aria-selected` 可断)，而写死 `rgb(...)` 会随 token 调整碎掉。
+  //    对照对象取同一行的两个框，排除「行与行本来就长得不一样」这个混淆项。
+  await page.getByTestId(input('strikeMin')).tap();
+  const on = await inputShape(page, 'strikeMin');
+  const off = await inputShape(page, 'strikeMax');
+
+  // ① 形态：下划线，不是四边盒。两个态都要成立（选中不改变「它是个下划线」这件事）。
+  for (const shape of [on, off]) {
+    expect(shape.borderBottomWidth).toBe('2px');
+    expect(shape.borderTopWidth).toBe('0px');
+    // ② 值左对齐（原先是 text-center，读起来像标签不像输入位）。
+    expect(shape.textAlign).toBe('left');
+  }
+
+  // ③ 双通道：下划线颜色**与**底色都必须变。任一相同即退化成单通道（FR-003 明禁只靠颜色）。
+  expect(on.borderBottomColor).not.toBe(off.borderBottomColor);
+  expect(on.backgroundColor).not.toBe(off.backgroundColor);
+
+  // ④ 2px 光标只在选中的那个框里，且全屏恰一个（它是「落点在哪」的唯一视觉指认）。
+  await expect(page.getByTestId(CARET)).toHaveCount(1);
+  await expect(page.getByTestId(input('strikeMin')).getByTestId(CARET)).toHaveCount(1);
+  await page.getByTestId(input('dteMin')).tap();
+  await expect(page.getByTestId(input('strikeMin')).getByTestId(CARET)).toHaveCount(0);
+  await expect(page.getByTestId(input('dteMin')).getByTestId(CARET)).toHaveCount(1);
+
+  // ⑤ 🚨 FR-002 回归防线：全屏无 textbox ⇒ 系统键盘没有唤起路径。
+  //    这条**有判别力、不是恒真** —— 真把值改回 `TextInput`，`react-native-web` 会渲染成
+  //    `<input>`（隐式 textbox 角色），这里立刻红。它守的正是 053 T015 那次范式改造。
+  await expect(page.getByRole('textbox')).toHaveCount(0);
+
+  // ⑥ 空值仍是「不限」，🚫 不是 `0`（两者在契约里是两件事，屏幕上却只差一个字）。
+  await expect(page.getByTestId(input('strikeMin'))).toHaveText(CRITERIA_UNBOUNDED);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑩ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
 // ════════════════════════════════════════════════════════════════════════════
 
 test('052 T013 — ⓘ 是 **tap 触发**的 popup tip：默认收起、tap 开、再 tap 关', async ({ page }) => {
