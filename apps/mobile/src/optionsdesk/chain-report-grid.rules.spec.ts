@@ -234,9 +234,11 @@ describe('chain-report-grid.rules', () => {
     // 🚨 FR-007：角标与值**同色**，只靠字号分主次（角标用最淡档在 brand-300 上实测 1.12）。
     it('🚨 腿数角标与格值同色且恒可见', () => {
       // 值与角标读**同一个** `ink`（类型层就没有第二个色源）—— 组件侧照它上色即可。
-      const cell = chainReportCellView('rentAnnualized', OTM_ROW, valuedCell('0.050000', 3), false);
+      // ⚠️ 取值落在 T020 标定后的第 2 档内（`0.065 < 0.10 ≤ 0.12`）—— 本条验的是**上色**，
+      //    但它必须挑一个确定落档的值，故档界一改这里要跟着挪。
+      const cell = chainReportCellView('rentAnnualized', OTM_ROW, valuedCell('0.100000', 3), false);
       expect(cell.band).toBe(2);
-      expect(cell.valueText).toBe('5.0%');
+      expect(cell.valueText).toBe('10%');
       expect(cell.countText).toBe('3');
       expect(cell.ink).toBe('text-ink');
     });
