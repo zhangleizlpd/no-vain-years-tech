@@ -55,6 +55,8 @@ spec 的 **14 条 `state_branches` 里没有一条落得到服务端 IT** ——
 
 🚫 **零 diff 的两处**：`apps/mobile/src/theme/`（`SC-008`）· `apps/server/`（本片纯 mobile）。
 
+🚨 **e2e 跑哪条路径**（2026-08-14 impl 期实证订正，T001 撞到）：下文 `→ verify` 里写的 `nx run mobile:e2e`（Metro dev server）在本机 **boot 即崩** —— `[page-error] Cannot read properties of undefined (reading 'default')`，`git stash` 后**干净树上同样红** ⇒ 与本片无关的既有故障，本片**只登记不修**。canonical 路径是 **`nx run mobile:runtime-smoke`**（静态 `expo export` + `serve`）：它是 CI 实跑的那条（`pr-validation.yml` / `nightly-sweep.yml`），也是 `local-verification.md` §2 唯一列出的那条，干净树上 191 passed / 38.8s。<br>📌 迭代时拆成两步（改一次源码只需重跑 export 一次）：<br>① `EXPO_PUBLIC_FEATURE_MARKETS=true EXPO_PUBLIC_OSS_PUBLIC_BASE_URL=https://oss-e2e.example.com pnpm exec expo export -p web --clear --output-dir dist-runtime-smoke`<br>② `pnpm exec playwright test -c playwright.runtime-smoke.config.ts <spec> --reporter=list`（cwd 均为 `apps/mobile`）
+
 ## 🚨 Impl Guardrails（每条都是盲写会踩、且踩了不会红）
 
 1. **把值改回 `TextInput`** 去拿原生光标 —— `053` T013 两条 FAIL 同源于此，回退即复发；而 **web e2e 永远不会红**（web 没有输入法）。光标只能是 2px 的 `View`。
@@ -70,7 +72,7 @@ spec 的 **14 条 `state_branches` 里没有一条落得到服务端 IT** ——
 
 ## Phase 1 · 独立基座（可并行）
 
-- [ ] T001 [P] [Mobile] **`~/ui` 键盘的加法式次级键**（`FR-023`, `FR-020`–`FR-022`, `FR-042`）：`apps/mobile/src/ui/numeric-keypad.tsx` 新增三个**可选**入参（次级键文案 / 回调 / testID），省略即今日行为；右整列布局改为「次级键固定高在上 + 确定键 `flex-1` 在下」。🚫 **左侧 4×3 数字网格与固定键高一格不动**（`FR-042`）。→ verify: 先在 `apps/mobile/e2e/alert-condition-ux.spec.ts` 补一条否定断言「`alert` 参数屏键盘右整列**不存在**次级键」，把次级键写成恒显以证明它**会红**，再改成可选入参转绿；`nx run mobile:e2e` 该 spec 全绿（`SC-006`）。
+- [X] T001 [P] [Mobile] **`~/ui` 键盘的加法式次级键**（`FR-023`, `FR-020`–`FR-022`, `FR-042`）：`apps/mobile/src/ui/numeric-keypad.tsx` 新增三个**可选**入参（次级键文案 / 回调 / testID），省略即今日行为；右整列布局改为「次级键固定高在上 + 确定键 `flex-1` 在下」。🚫 **左侧 4×3 数字网格与固定键高一格不动**（`FR-042`）。→ verify: 先在 `apps/mobile/e2e/alert-condition-ux.spec.ts` 补一条否定断言「`alert` 参数屏键盘右整列**不存在**次级键」，把次级键写成恒显以证明它**会红**，再改成可选入参转绿；`nx run mobile:e2e` 该 spec 全绿（`SC-006`）。
 
 - [ ] T002 [P] [Mobile] **行集统一 + 判据文件净减**（`FR-012`, `FR-019`, `FR-040`, `FR-044`）：`leg-criteria.rules.ts` 删 `ROWS_BY_TAB` / `HAS_DEFAULT` / `criteriaRowsFor`；抽屉改为直接渲 `CRITERIA_ROWS` 全集。同 commit 删 `leg-criteria.rules.spec.ts` 里针对 `criteriaRowsFor` 的用例（**测试删除必须在 commit message 点名**，不夹带）。→ verify: 新增 vitest 断言「未触碰任何一格时 `normalizeCriteriaForm(criteriaFormOf(defaults))` 逐字段等于默认值投影」，用一次**故意的预填**证明它会红（`SC-013`）；`git diff` 该文件为**净减**且判定与换算面零行改动（`SC-007`）。<br>📌 **`FR-044`（提交语义零改动）的落点在这条**：`052` 已 ship 的 `normalizeCriteriaForm` / `sameCriteriaForm` / `changedCriteria` 单测**一条不改、必须保持全绿** —— 这是「显式提交 + 成对维度半空归零」的回归防线（`sb` 第 11 条的主落层）。🚫 删用例仅限 `criteriaRowsFor` 那几条，**碰到其余任何一条即越界**。
 
