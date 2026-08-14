@@ -3,7 +3,7 @@
 // 🚨 **首列（行权价/到期，88px）渲在横向位移区之外 ⇒ 天然钉住**；右侧 11 列进
 //    `LegColumnPane`，与表头共读屏级唯一的 `tx`（横向机制的注释单源在 `leg-column-pane.tsx`）。
 //
-// 🚨 **费率列随行口径切换主数字、Δ 与 σ 距同有同无** —— 判定全在 `leg-row.rules.ts`
+// 🚨 **费率列随行口径切换主数字、Δ 恒读 `absDelta`** —— 判定全在 `leg-row.rules.ts`
 //    （vitest 覆盖），本文件只做接线与版面。
 //
 // 🚫 **FR-012：本片无「选腿 → 创建许愿单」入口** —— 行**不可点**：本组件树内零 `Pressable`、
@@ -38,10 +38,10 @@ import {
   costCell,
   deltaCell,
   expiryLabel,
+  formatContractPremium,
   formatCount,
   formatQuoteSize,
-  formatTurnover,
-  sigmaCell,
+  formatRelativeSpread,
   strikeLabel,
   type StackedCell,
 } from './leg-row.rules';
@@ -157,25 +157,31 @@ export function LegRow({ leg, tx, today }: LegRowProps) {
           cell={rate}
           testID={`optionsdesk-detail-leg-rate-${leg.code}`}
         />
-        <StackedNumCell columnKey="cost" cell={cost} />
-
-        {/* 🚨 Δ 与 σ 距同源同有同无（列头副标「带判据」）。 */}
-        <NumCell columnKey="delta" testID={`optionsdesk-detail-leg-delta-${leg.code}`}>
-          <Text className="font-mono text-[11px] text-ink">{deltaCell(leg)}</Text>
-        </NumCell>
-        <NumCell columnKey="sigma" testID={`optionsdesk-detail-leg-sigma-${leg.code}`}>
-          <Text className="font-mono text-[11px] text-ink">{sigmaCell(leg)}</Text>
+        {/* 🚫 权利金与价差**都读服务端下发的字段**（FR-032）——本文件零处乘合约乘数、
+            零处由 bid/ask 现算价差；客户端再算一遍就是同一判据两处各写一份。 */}
+        <NumCell columnKey="premium" testID={`optionsdesk-detail-leg-premium-${leg.code}`}>
+          <Text className="font-mono text-[11px] text-ink">
+            {formatContractPremium(leg.contractPremium)}
+          </Text>
         </NumCell>
 
         {/* 🚨 OI 归属 oiAsOf 那一天（列头已标），与本行其余读数不同天。 */}
         <NumCell columnKey="oi">
           <Text className="font-mono text-[11px] text-ink">{formatCount(leg.openInterest)}</Text>
         </NumCell>
+        <NumCell columnKey="spread" testID={`optionsdesk-detail-leg-spread-${leg.code}`}>
+          <Text className="font-mono text-[11px] text-ink">
+            {formatRelativeSpread(leg.relativeSpread)}
+          </Text>
+        </NumCell>
+        <StackedNumCell columnKey="cost" cell={cost} />
+
+        {/* 🚨 Δ 恒读 `absDelta`（列头副标「带判据」）—— σ 距列已随 053 列改版退场。 */}
+        <NumCell columnKey="delta" testID={`optionsdesk-detail-leg-delta-${leg.code}`}>
+          <Text className="font-mono text-[11px] text-ink">{deltaCell(leg)}</Text>
+        </NumCell>
         <NumCell columnKey="vol">
           <Text className="font-mono text-[11px] text-ink">{formatCount(leg.volume)}</Text>
-        </NumCell>
-        <NumCell columnKey="turnover">
-          <Text className="font-mono text-[11px] text-ink">{formatTurnover(leg.turnover)}</Text>
         </NumCell>
 
         {/* 活跃度：server 下发的相对档标签（换视角归属就变），无标 ⇒ 占位，不伪造默认档。 */}

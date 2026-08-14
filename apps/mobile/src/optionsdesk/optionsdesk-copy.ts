@@ -295,12 +295,16 @@ export const OPTIONSDESK_COPY = {
        * 时的**降级标题**（FR-018），单点在 `leg-picker.rules.ts` 的 `RATE_HEADER_UNKNOWN`。
        */
       rate: '费率',
+      /**
+       * 053 新增两列（FR-032）。措辞取**短形**：50 / 48px 的列宽下，「单笔权利金」「相对价差」
+       * 五字 / 三字在 10px 表头里都装不下 —— 完整口径由 spec 与页脚承担，列头只求认得出。
+       */
+      premium: '权利金',
+      spread: '价差',
       cost: '成本vsW',
       delta: 'Δ',
-      sigma: 'σ距',
       oi: 'OI',
       vol: 'Vol',
-      turnover: '成交额',
       activity: '活跃',
       mark: '标注',
       action: '动作',
