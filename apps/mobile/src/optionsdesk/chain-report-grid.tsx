@@ -90,7 +90,12 @@ export function ChainReportGrid({
       {/* ── 列头 ────────────────────────────────────────────────── */}
       <View className="flex-row">
         <View style={{ width: CHAIN_REPORT_LABEL_WIDTH }} />
-        <View className="flex-1" onLayout={onTrackLayout}>
+        {/* 🚨 `flex-row` MUST NOT 省：这层只为拿 `onTrackLayout` 而存在, 但它一旦是 column 方向,
+            `LegColumnPane` 自带的 `flex-1` 就从宽轴翻到高轴 ⇒ `flexBasis:0` 把列头行高塌成 0,
+            再被 pane 自己的 `overflow-hidden` 裁干净。**web e2e 看不见这件事** —— CSS 下 auto 高的
+            flex 容器仍按 max-content 参与父高计算, Yoga 直接得 0（T021 真机实撞, 段外 chip 主信号
+            全灭而 `chain-report-out-of-band-chip` 的 web 断言照常绿）。下面范围框行是正确形态的对照。 */}
+        <View className="flex-1 flex-row" onLayout={onTrackLayout}>
           <LegColumnPane tx={tx} contentWidth={contentWidth} testID="chain-report-colhead">
             {columnViews.map((view, index) => (
               <ColumnHead
