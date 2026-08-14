@@ -36,10 +36,13 @@ export {
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
+  OPTIONSDESK_UNDERLYING_PATHNAME,
   optionsdeskAnchorEditRoute,
   optionsdeskChainReportRoute,
   optionsdeskUnderlyingRoute,
 } from './optionsdesk-routes';
+// 055 T016 — 报表下钻的预填解析（route 层调，屏不认识 query 参数长什么样）。
+export { chainReportPrefillOf, type ChainReportPrefill } from './chain-report-drilldown.rules';
 // 055 T010 — 标的链分析报表屏（期权台二级页栈，入口在标的详情，T015 接线）。
 export { ChainReportScreen, type ChainReportScreenProps } from './chain-report-screen';
 export {

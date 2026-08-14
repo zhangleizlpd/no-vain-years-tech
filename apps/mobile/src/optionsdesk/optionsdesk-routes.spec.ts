@@ -15,6 +15,7 @@ import {
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_RADAR_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
+  OPTIONSDESK_UNDERLYING_PATHNAME,
   optionsdeskAnchorEditRoute,
   optionsdeskChainReportRoute,
   optionsdeskUnderlyingRoute,
@@ -33,6 +34,7 @@ const ALL_ROUTES = [
   optionsdeskAnchorEditRoute('anchor-1'),
   optionsdeskUnderlyingRoute('us:AAPL'),
   optionsdeskChainReportRoute('us:AAPL'),
+  OPTIONSDESK_UNDERLYING_PATHNAME,
 ];
 
 describe('046 T023 —— 两个新屏的路由常量', () => {
@@ -61,6 +63,16 @@ describe('055 T010 —— 链分析报表的路由常量', () => {
   // 会把它挂回详情那棵手势树下，而两个横滑消费者相争在 web 上未必看得出来。
   it('🚨 报表不是详情屏的子路径', () => {
     expect(optionsdeskChainReportRoute('us:ACN')).not.toContain('/underlying/');
+  });
+});
+
+describe('055 T016 —— 下钻落点的动态段模板', () => {
+  // 🚨 带 query 参数下钻时走的是**模板**：`symbol` 与预填值一起交给 router 编码。
+  //    拿上面那个已编码好的串当 `pathname` 会把 `%3A` 再编一次（`us%253AACN`），
+  //    解出来是一个查不到的标的 —— 屏照样渲染，只是变成了无锚引导。
+  it('模板留着动态段本身，🚫 不是拼好的具体路径', () => {
+    expect(OPTIONSDESK_UNDERLYING_PATHNAME).toContain('[symbol]');
+    expect(OPTIONSDESK_UNDERLYING_PATHNAME).not.toContain('%');
   });
 });
 

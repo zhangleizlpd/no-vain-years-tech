@@ -51,6 +51,7 @@ import {
   chainReportRowIndexAt,
 } from './chain-report-crosshair.rules';
 import { ChainReportCurve } from './chain-report-curve';
+import { chainReportCellHitAt, chainReportDrilldownParams } from './chain-report-drilldown.rules';
 import { chainReportAnchorPresence, chainReportBlocksReport } from './chain-report-entry.rules';
 import { ChainReportGrid } from './chain-report-grid';
 import { chainReportContentWidth } from './chain-report-grid.rules';
@@ -60,7 +61,11 @@ import type { ChainReportMetric } from './chain-report-scale.rules';
 import { IvpSegmentBar } from './ivp-segment-bar';
 import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskUnderlyingRoute } from './optionsdesk-routes';
+import {
+  OPTIONSDESK_ANCHOR_NEW_ROUTE,
+  OPTIONSDESK_UNDERLYING_PATHNAME,
+  optionsdeskUnderlyingRoute,
+} from './optionsdesk-routes';
 import { useChainReport } from './use-chain-report';
 
 const COPY = OPTIONSDESK_COPY.chainReport;
@@ -147,10 +152,51 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
     [clearCrosshair, moveCrosshair, tx],
   );
 
+  // ── 下钻：点有值的格 → 落该标的选约区块（`FR-038` / `FR-039`, T016）────────────
+  //
+  // 🚨 **命中换算与十字线共用同两个函数** —— 「十字线读的是这一格」与「点下去跳的是这一格」
+  //    必须是同一格；各算一份就会出现读 A 跳 B，而两边都跳得出去。
+  // 🚨 **点空格 MUST NOT 跳转**（`FR-038`）—— 判据在 `chainReportDrilldownParams`（它问的是
+  //    格的呈现码，与「格子上看起来有没有值」同源），这里只负责「返 `null` 就什么都不做」。
+  const pressCell = useCallback(
+    (x: number, y: number, txValue: number) => {
+      if (report === null) return;
+      // 🚨 落在网格体之外（曲线 / 列头 / 行标列 / 右侧空白）⇒ 什么都不做。十字线那两个函数
+      //    会把界外触点**钳到边界格**，拿它去跳转就是「点在曲线上跳进了第一行的格」。
+      const hit = chainReportCellHitAt(x, y - gridTop - bodyTop, txValue, columnCount, rowCount);
+      if (hit === null) return;
+      const { rowIndex, columnIndex } = hit;
+      const row = report.rows[rowIndex];
+      const column = report.columns[columnIndex];
+      const cell = report.cells[metric][rowIndex]?.[columnIndex];
+      if (row === undefined || column === undefined || cell === undefined) return;
+      const params = chainReportDrilldownParams({
+        metric,
+        row,
+        column,
+        cell,
+        isOutOfBand: !column.inRecallBand[metric],
+        reportAsOf: report.asOf ?? '',
+      });
+      if (params === null) return;
+      router.push({ pathname: OPTIONSDESK_UNDERLYING_PATHNAME, params: { symbol, ...params } });
+    },
+    [bodyTop, columnCount, gridTop, metric, report, rowCount, router, symbol],
+  );
+
+  const cellTap = useMemo(
+    () =>
+      Gesture.Tap().onEnd((event, success) => {
+        if (success) runOnJS(pressCell)(event.x, event.y, tx.value);
+      }),
+    [pressCell, tx],
+  );
+
   // 🚨 `Exclusive` 而不是 `Simultaneous`：同一根手指要么在移列、要么在读格，两者不并存。
+  //    轻点排在最后 —— 前两者一个要**按住够久**、一个要**移动够远**，都不会被一次轻点激活。
   const gesture = useMemo(
-    () => Gesture.Exclusive(crosshairPan, columnPan),
-    [columnPan, crosshairPan],
+    () => Gesture.Exclusive(crosshairPan, columnPan, cellTap),
+    [cellTap, columnPan, crosshairPan],
   );
 
   const readout = useMemo(() => {

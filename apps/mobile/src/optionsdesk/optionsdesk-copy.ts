@@ -664,6 +664,12 @@ export const OPTIONSDESK_COPY = {
      */
     entryTitle: '链分析 · 机会分布',
     entrySubtitle: '按价外深度 × 到期日看整条链',
+    /**
+     * 🚨 **FR-039a：两个时点都要说出来**。报表与选约是两个屏、两次取数，中间可能跨换日或
+     * 换批报价 ⇒ 条数不符时那**不是缺陷**（数据真的变了），但一个字都不说它就变成了缺陷。
+     */
+    drilldownAsOfMismatch: (report: string, leg: string) =>
+      `报表读的是 ${report} 的数据，这张表是 ${leg} 的 —— 条数与报表不符是数据真的变了`,
     ivpLabel: '本链 IV 分位',
     ivpUnit: '/ 100 · 近一年',
     /** 三个时点的标签（FR-033）。⚠️ 顺序即语义：交易所今天 → 报价 → 持仓量。 */
