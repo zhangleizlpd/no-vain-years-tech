@@ -53,6 +53,7 @@ import {
 import { ChainReportCurve } from './chain-report-curve';
 import { chainReportCellHitAt, chainReportDrilldownParams } from './chain-report-drilldown.rules';
 import { chainReportAnchorPresence, chainReportBlocksReport } from './chain-report-entry.rules';
+import { composeChainReport } from './chain-report-page.rules';
 import { ChainReportGrid } from './chain-report-grid';
 import { chainReportContentWidth } from './chain-report-grid.rules';
 import { ChainReportMetricTabs } from './chain-report-metric-tabs';
@@ -87,6 +88,13 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
   //    且只在**确知**无锚时拦（还在飞 / 读挂了照常走下面的 loading / 失败两支）。
   const blocked = chainReportBlocksReport(
     chainReportAnchorPresence({ anchorMissing: isNoAnchor, anchorLoaded: report !== null }),
+  );
+  // 🚨 T017：五种降级态 + 常态由**一个合成函数**说了算（`chain-report-page.rules.ts`）——
+  //    🚫 屏内不再逐个 `isPending` / `isError` 分支：那样「链未就绪」与「全被门槛挡下」
+  //    很容易塌进同一支，而两者的处置完全相反。
+  const composition = useMemo(
+    () => composeChainReport({ isPending, isError, report }),
+    [isError, isPending, report],
   );
   const header = useMemo(() => (report === null ? null : chainReportHeaderView(report)), [report]);
   // 🚨 切换只换「读哪一张网格」—— 四张一次返齐，🚫 不为切换再发请求（`SC-002`）。
@@ -243,7 +251,9 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
           </View>
         ) : null}
 
-        {header === null ? null : (
+        {/* 🚨 页头按**自己的**四态独立降级 —— 只看响应到没到手（`composition.header`），
+            🚫 MUST NOT 跟着网格一起藏：网格挂了 IV 分位明明读得到，藏掉是多丢一块能用的信息。 */}
+        {header === null || blocked || !composition.header ? null : (
           <View className="gap-1 bg-surface px-md py-sm" testID="chain-report-header">
             <View className="flex-row items-baseline gap-1.5">
               <Text className="text-xs text-ink-muted">{COPY.ivpLabel}</Text>
@@ -284,7 +294,7 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
           </View>
         )}
 
-        {report === null ? null : (
+        {report === null || !composition.grid ? null : (
           <>
             <ChainReportMetricTabs metric={metric} onSelect={setMetric} />
 
@@ -315,6 +325,17 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
                 </View>
               </GestureDetector>
             </GestureHandlerRootView>
+
+            {/* 🚨 T017「全被门槛挡下」：说明句压在网格**下方**，🚫 不取代网格 —— 只留一句话
+                的话，用户看不到「哪一档哪一列有腿被挡」，而三个计数还挂在页脚上。 */}
+            {composition.gatedBanner === null ? null : (
+              <View className="gap-0.5 px-md pt-xs" testID="chain-report-all-gated">
+                <Text className="text-sm font-semibold text-ink">
+                  {composition.gatedBanner.title}
+                </Text>
+                <Text className="text-[11px] text-ink-muted">{composition.gatedBanner.text}</Text>
+              </View>
+            )}
 
             {/* 十字线激活时读法行与恒等式让位给读数面板（mockup 帧 ⑤；`FR-041` 一屏预算）。 */}
             {readout === null ? (
@@ -354,28 +375,41 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
           </>
         )}
 
-        {isPending ? (
+        {/* 🚫 加载期不画骨架网格 —— 列数取决于链上实际到期日，加载前未知（画了必跳变）。 */}
+        {composition.page === 'loading' && !blocked ? (
           <View className="items-center py-lg" testID="chain-report-loading">
             <Spinner size={16} tone="muted" />
           </View>
         ) : null}
 
-        {/* 🚨 未建锚是**预期分支不是故障** ⇒ 拦下时不再叠一句「加载失败」（那会让用户去点重试，
-            而重试一百次也还是 404）。 */}
-        {isError && !blocked ? (
-          <View className="gap-sm px-md py-sm" testID="chain-report-error">
-            <ErrorRow text={COPY.loadFailed} />
-            <Pressable
-              onPress={refetch}
-              accessibilityRole="button"
-              accessibilityLabel={COPY.retry}
-              testID="chain-report-retry"
-              className="self-center rounded-full border border-line px-md py-0.5"
-            >
-              <Text className="text-xs text-brand-500">{COPY.retry}</Text>
-            </Pressable>
+        {/* 🚨 三种「网格画不出来」的说明句走**同一个槽位、不同的判据**（未就绪 / 无现价 /
+            读失败），🚫 不合并成一句「暂不可用」：三者的处置完全不同，只有读失败给重试。
+            🚨 未建锚是**预期分支不是故障** ⇒ 拦下时整块不出（🚫 不叠一句「加载失败」，
+            那会让用户去点重试，而重试一百次也还是 404）。 */}
+        {composition.notice === null || blocked ? null : (
+          <View
+            className="flex-1 items-center justify-center gap-xs px-xl"
+            testID={`chain-report-degraded-${composition.page}`}
+          >
+            {composition.notice.retry ? (
+              <ErrorRow text={composition.notice.title} />
+            ) : (
+              <Text className="text-sm font-semibold text-ink">{composition.notice.title}</Text>
+            )}
+            <Text className="text-center text-xs text-ink-muted">{composition.notice.text}</Text>
+            {composition.notice.retry ? (
+              <Pressable
+                onPress={refetch}
+                accessibilityRole="button"
+                accessibilityLabel={COPY.retry}
+                testID="chain-report-retry"
+                className="mt-xs rounded-full border border-line px-md py-0.5"
+              >
+                <Text className="text-xs text-brand-500">{COPY.retry}</Text>
+              </Pressable>
+            ) : null}
           </View>
-        ) : null}
+        )}
       </View>
     </SafeAreaView>
   );
