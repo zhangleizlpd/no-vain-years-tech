@@ -34,8 +34,9 @@ const COPY = OPTIONSDESK_COPY.legPicker;
  * 非空的四档（契约的 `tier` 还有一个 `null` = 未判档，见 {@link LEG_TIER_UNJUDGED_TONE}）。
  *
  * 🚨 **档位随视角变**（051 FR-015）—— 本模块的四个映射函数一律**吃档位值、不吃 `leg`**：
- *    档位这一个量就是它们全部所需，多吃一个 `leg` 只会给「回落到 legacy 的 `leg.tier`」留门
- *    （FR-016 明禁）。当前视角那一格由调用方经 `legTierForTab(leg, tab)` 取一次后传下来。
+ *    档位这一个量就是它们全部所需，多吃一个 `leg` 只会让调用点有第二个地方去取它。
+ *    053 起 `leg.tier` **就是本次视角判出来的那一档**（契约把分视角档位映射收窄成标量），
+ *    由调用方取一次后传下来。
  */
 export type LegTier = NonNullable<LegResponseTier>;
 

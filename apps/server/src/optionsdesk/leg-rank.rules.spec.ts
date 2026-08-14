@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import {
   CONTINUOUS_FEATURE_KEYS,
+  DISPLAY_LIMIT_BY_PERSPECTIVE,
   FEATURE_VALUE_WHEN_MISSING,
   FEATURE_VALUE_WHEN_UNIFORM,
   LIQUIDITY_TIER_BOUNDS,
@@ -14,6 +15,7 @@ import {
   layeredRanker,
   rankLegs,
   rateDescendingRanker,
+  truncateToDisplayLimit,
   type LegIdentity,
   type LegRanker,
   type RankingContext,
@@ -21,6 +23,8 @@ import {
   type RankingFeatures,
   type RankingLegInput,
 } from './leg-rank.rules';
+import { RECALL_CANDIDATE_CAP } from './leg-recall.rules';
+import { LEG_TABS } from './leg-tab.rules';
 
 /**
  * 050 T010 —— 特征集与归一化 (FR-019 / FR-019a, SC-003a, plan D-RANK-1)。
@@ -546,5 +550,61 @@ describe('leg-rank.rules — rankLegs: 主键 + 身份键 tie-break (FR-025, SC-
 
   it('成员数与特征数不等 → 抛 (只可能是调用方没用同一份成员算特征, 静默会让整列错位)', () => {
     expect(() => rankLegs([A, B], [featuresOf()], rateDescendingRanker)).toThrow(RangeError);
+  });
+});
+
+/**
+ * 053 T002 —— 表达层截断 `N` (FR-010 – FR-012, plan D-ORDER-1 / D-LIMIT-1)。
+ *
+ * 🚨 **本段的判别性用例是「截掉的是排序尾部」而不是「截后条数对」** (Guardrail 8): 条数对
+ * 是任何一种截法都满足的性质 —— 从中间截、从头截、按别的键重排后再截, 条数全都对得上。
+ */
+describe('leg-rank.rules — 表达层截断 N (053 FR-010 – FR-012)', () => {
+  const ranked = ['P-1', 'P-2', 'P-3', 'P-4', 'P-5'];
+
+  it('🚨 边界三态: 少于 / 恰等于阈值都不截, **严格大于**才截', () => {
+    expect(truncateToDisplayLimit(ranked.slice(0, 4), 5)).toHaveLength(4);
+    // 恰等于阈值不截 —— 那时「其余 0 条未显示」这句话不该出现 (spec Edge Case)。
+    expect(truncateToDisplayLimit(ranked, 5)).toHaveLength(5);
+    expect(truncateToDisplayLimit(ranked, 4)).toHaveLength(4);
+  });
+
+  it('未触发截断 → 返回**入参本体**而不是拷贝 (「这次没截」是可判定的事实, 不靠比长度推断)', () => {
+    expect(truncateToDisplayLimit(ranked, ranked.length)).toBe(ranked);
+    expect(truncateToDisplayLimit(ranked, ranked.length + 1)).toBe(ranked);
+  });
+
+  it('🚨 截掉的恒是排序**尾部** —— 前 D 条逐条相同 (只断条数抓不到「截错了哪一段」)', () => {
+    const kept = truncateToDisplayLimit(ranked, 3);
+    expect(kept).toEqual(['P-1', 'P-2', 'P-3']);
+    expect([...kept]).toEqual(ranked.slice(0, kept.length));
+  });
+
+  it('阈值 `null` = 不设该视角阈值 ⇒ 零截断且返回本体 (FR-013「无断点则不拍数」的落点)', () => {
+    expect(truncateToDisplayLimit(ranked, null)).toBe(ranked);
+  });
+
+  it('空序列 / 阈值 0 都是合法边界, 不特判成「不截」', () => {
+    expect(truncateToDisplayLimit([], 3)).toEqual([]);
+    expect(truncateToDisplayLimit(ranked, 0)).toEqual([]);
+  });
+
+  it('🚨 按视角分档 (FR-012): 三视角各有自己的阈值, 全腿与意图档 MUST NOT 取同一个数', () => {
+    expect(Object.keys(DISPLAY_LIMIT_BY_PERSPECTIVE).sort()).toEqual([...LEG_TABS].sort());
+    // 全腿与两个意图视角的成员规模差一个量级 —— 一律同一个数会让其中一档要么形同虚设、
+    // 要么砍掉不该砍的 (FR-012 的存在理由)。
+    expect(DISPLAY_LIMIT_BY_PERSPECTIVE.all).not.toBe(DISPLAY_LIMIT_BY_PERSPECTIVE.build);
+  });
+
+  it('🚨 K (召回容量) 与 N (展示条数) 是两个独立常量 —— 共用会顺手改掉召回容量', () => {
+    for (const tab of LEG_TABS) {
+      const limit = DISPLAY_LIMIT_BY_PERSPECTIVE[tab];
+      if (limit === null) continue;
+      // 052 T005 当时没有 N, 只能写量级断言占位; 本片起这是**真对照**。
+      expect(limit).not.toBe(RECALL_CANDIDATE_CAP);
+      // ADR-0064 不变量 ①「K ≫ N」的机器读法。T012 若标出大到过不了这条的 N, 该重估的是
+      // **K**(召回容量不够) 而不是本断言 —— 🚫 MUST NOT 放宽它。
+      expect(limit * 5).toBeLessThanOrEqual(RECALL_CANDIDATE_CAP);
+    }
   });
 });

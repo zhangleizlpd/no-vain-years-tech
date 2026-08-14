@@ -26,6 +26,7 @@ import type {
  *
  * 复杂度: 3 次跨 ctx 查询 (合约集 / 最近一期 / 该期全量) + `O(n)` 逐腿判据 (n = 该票当日快照
  * 行数, 实测上界 730)。DTE 按到期日缓存 —— 合约数百行但到期日只有几十个。
+ * 📌 **有覆盖时多一趟 `O(n)` 纯 CPU 判定** (053 FR-009 的 `memberCount`): 查询次数不变。
  */
 @Injectable()
 export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
@@ -126,6 +127,13 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     });
 
     const context: RecallContext = { spot };
+    const outcome = recallCandidates(
+      context,
+      query.perspectives,
+      legs,
+      query.candidateCap,
+      query.override,
+    );
     return {
       chain: {
         marketDate,
@@ -135,7 +143,14 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         source: newest.source,
         spot,
       },
-      ...recallCandidates(context, query.perspectives, legs, query.candidateCap, query.override),
+      ...outcome,
+      // 053 FR-009: 无覆盖口径的成员数 —— 对**同一批已在内存的 `legs`** 再判一次, 零额外 DB
+      // 往返 (上面三次查询与它无关)。语义与三条禁忌见 `LegRetrievalResult.memberCount`。
+      memberCount:
+        query.override === null
+          ? outcome.candidates.length
+          : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
+              .length,
     };
   }
 }

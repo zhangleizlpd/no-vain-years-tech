@@ -1,12 +1,17 @@
-// 047 T033 — 三 Tab / 水位 chip / 意图落位的纯函数单测（logic-only）。
+// 047 T033 — 三视角 / 水位 chip / 意图落位的纯函数单测（logic-only）。
 // Tab 栏与 chip 的**渲染 / 交互 / a11y** 走 T035 Playwright e2e —— 本仓测试分层 vitest=logic。
 //
 // 四条机械防线（写错了不会红、但错得很贵）：
-//   · 取序读 `tabOrder[tab]`（051 FR-001），成员与顺序**都**归 server —— MUST NOT 在客户端
-//     重算带判据、MUST NOT 拿 `legs[]` 的 legacy 载体序当呈现序（FR-004）
-//   · 空 Tab 返**空集合**而非「隐藏面板」（FR-020）
-//   · 活跃度**随 Tab 换**（排名是候选集内的相对量，同一条腿在两个 Tab 里不是同一个标）
 //   · 未选水位 ⇒ 停「全腿」+ 两条显式提示，**MUST NOT 静默取某一 Δ 档**（FR-017）
+//   · 两个门槛计数的**语义与交互都不对称**（051 FR-007/FR-007a）
+//   · 空态三支一眼可分（051 FR-009 + 052 条件收窄那支）
+//   · 053 计数三处分工：区块头报 `matchedCount`、非常驻区报 `D` 与 `N−D`、`K` 熔断另起异常位
+//     —— 三处 **MUST NOT 报同一个数**（SC-005），截断与熔断 **MUST NOT 同款**（Guardrail 14）
+//
+// 🚨 **053 起本文件不再测「取序」** —— `tabOrder` / `activityByTab` / `tierByTab` / 每腿 `tabs`
+//    随响应收窄一并删除，`legs[]` 就是该视角已排序已截断的腿，客户端连「取哪一格」都没有了
+//    ⇒ `orderedLegsForTab` / `legPickerSections` / `legActivityForTab` / `legTierForTab`
+//    四个函数与它们的用例同批退役（成员与顺序的判据全部落回 server IT，见 053 T005）。
 import { describe, expect, it } from 'vitest';
 import type {
   LegResponse,
@@ -24,30 +29,21 @@ import {
   intentBasisLine,
   intentLabel,
   isManualBucket,
-  legActivityForTab,
+  legCandidateCapLine,
   legEmptyState,
   legGateCountLines,
   legGateCountsQuiet,
   legPickerNotices,
-  legPickerSections,
+  legRowCountLine,
   legTabLabel,
-  legTierForTab,
-  orderedLegsForTab,
+  legTruncationLine,
   promotePick,
   rateHeaderFor,
   resolveLegTab,
-  type LegPickerTab,
-  type LegTabOrder,
 } from './leg-picker.rules';
-import { LEG_TIER_UNJUDGED_TONE, legBidTone } from './leg-picker-copy';
-import { legRowTotal } from './underlying-detail.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
-
-function activity(label: string | null) {
-  return { isRoundStrike: label !== null, isTopRanked: false, label };
-}
 
 function leg(overrides: Partial<LegResponse> = {}): LegResponse {
   return {
@@ -57,6 +53,9 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     dteDays: 11,
     bid: '1.60',
     ask: '1.70',
+    // 053 契约增量（T004）：两者**服务端算**，客户端零处再乘一次合约乘数。
+    contractPremium: '160.00',
+    relativeSpread: '0.060606',
     bidSize: 25,
     askSize: 26,
     basis: 'weekly',
@@ -72,10 +71,9 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     openInterest: 1865,
     volume: 240,
     turnover: '39800',
-    activityByTab: { all: null, build: null, rent: null },
-    tabs: ['all'],
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
-    tierByTab: { all: 'good', build: null, rent: null },
+    // 053 契约收窄：一次请求只作答一个视角 ⇒ 档位与活跃标都是**本次视角**的标量
+    //（`tierByTab` / `activityByTab` / 每腿 `tabs` 三者同批退役）。
+    activity: null,
     isRecommended: false,
     isMonthlyChain: false,
     earningsMark: null,
@@ -117,6 +115,8 @@ function criteria(): PerspectiveCriteriaResponse {
 function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
   return {
     symbol: 'us:PEP',
+    // 053 契约增量：本次作答的视角，原样回显请求参数（迟到的那一发靠它认领，FR-008）。
+    perspective: 'all',
     state: 'available',
     asOf: '2026-08-04',
     asOfFreshnessTier: 'CURRENT',
@@ -133,226 +133,33 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
     intent: 'pending',
     rentDepth: null,
     legs: [],
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：三份列表恒有值（空数组而非 undefined）。
-    tabOrder: { all: [], build: [], rent: [] },
     gateCounts: {
       removedByPremiumFloor: 0,
+      // 053 起它就是「该视角自己的数」—— 一次请求只判定一个视角，051 的分视角映射随之退役。
       excludedFromIntentTabs: 0,
-      // 051 FR-006a: 按视角拆的排除数。基线取 0；需要非零的用例走 `overrides`。
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
     },
-    basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
-    // 052 契约增量（T011 只镜像形状，消费归 T012）：三视角恒有一份条件全景，六维穷举。
-    criteriaByTab: { all: criteria(), build: criteria(), rent: criteria() },
+    // 053 收窄：**本次视角**那一份口径 / 条件全景（`basisByTab` / `criteriaByTab` 同批退役）。
+    basis: 'annualized',
+    criteria: criteria(),
+    // 053 契约增量：截断相关三数 + K 触及数。基线取「零截断、零覆盖、未触及」。
+    matchedCount: 0,
+    memberCount: 0,
+    displayLimit: null,
+    candidateCapDropped: 0,
     ...overrides,
   };
 }
 
-/** 三份有序列表，未给的 Tab 取空数组（契约保证三份恒有值，不会是 undefined）。 */
-function tabOrderOf(over: Partial<Record<LegPickerTab, readonly string[]>> = {}): LegTabOrder {
-  return { all: [], build: [], rent: [], ...over };
-}
+// ═══════════════ ① 三个视角的键与标签 ═══════════════
 
-// ═══════════════ ① 取序：按 server 下发的 `tabOrder`，零客户端重排 ═══════════════
-
-describe('🚨 FR-001/FR-004 —— 渲染序取自 `tabOrder`，`legs[]` 的载体序 MUST NOT 当呈现序', () => {
-  it('三个 Tab 的键与契约的 `tabs` 值域逐字一致（server 加 Tab 即编译红）', () => {
+describe('三视角值域 —— 键取自契约 `perspective`，server 加一格即编译红', () => {
+  it('三个视角的键与展示序逐字一致', () => {
     expect([...LEG_PICKER_TABS]).toEqual(['all', 'build', 'rent']);
     expect(LEG_PICKER_TABS.map(legTabLabel)).toEqual([
       COPY.tabs.all,
       COPY.tabs.build,
       COPY.tabs.rent,
     ]);
-  });
-
-  it('🚨 渲染序与 `tabOrder` 逐行相同，且**与 `legs[]` 的载体序不同**（判别性）', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'B' }), leg({ code: 'C' })];
-    const order = tabOrderOf({ all: ['C', 'A', 'B'] });
-
-    expect(orderedLegsForTab(legs, order, 'all').map((l) => l.code)).toEqual(['C', 'A', 'B']);
-    // 🚨 两个序蓄意不同 —— 「映射时顺手拿 legs[] 的序」这种实现会让上一行红。
-    // 相等的话本条对 FR-004 完全没有分辨力（050 server 侧同款判别性构造）。
-    expect(legs.map((l) => l.code)).not.toEqual(['C', 'A', 'B']);
-  });
-
-  it('意图 Tab 只出现在**该 Tab 有序列表**里的腿 —— 成员判据不在客户端重算', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'B' }), leg({ code: 'C' })];
-    const order = tabOrderOf({ all: ['A', 'B', 'C'], build: ['B'], rent: ['C'] });
-
-    expect(orderedLegsForTab(legs, order, 'build').map((l) => l.code)).toEqual(['B']);
-    expect(orderedLegsForTab(legs, order, 'rent').map((l) => l.code)).toEqual(['C']);
-  });
-
-  it('🚨 greeks 缺失腿照常出现 —— 050 起 Δ 整个退出召回判据，客户端重算必漏掉这支', () => {
-    const gap = leg({
-      code: 'GAP',
-      absDelta: null,
-      sigmaDistance: null,
-      greeksComplete: false,
-      tabs: ['all', 'rent'],
-    });
-    const order = tabOrderOf({ all: ['GAP'], rent: ['GAP'] });
-    expect(orderedLegsForTab([gap], order, 'rent').map((l) => l.code)).toEqual(['GAP']);
-  });
-
-  it('🚨 带外的 |Δ| 照样出现在建仓 Tab —— 成员归 server，客户端不复核', () => {
-    // |Δ| 0.90 / DTE 300 全数落在旧建仓带外；重算过滤会把它筛掉，读 `tabOrder` 不会。
-    const outOfBand = leg({ code: 'OOB', absDelta: 0.9, dteDays: 300, tabs: ['all', 'build'] });
-    const order = tabOrderOf({ all: ['OOB'], build: ['OOB'] });
-    expect(orderedLegsForTab([outOfBand], order, 'build').map((l) => l.code)).toEqual(['OOB']);
-  });
-
-  it('🚨 `tabOrder` 里有 code 而 `legs[]` 定位不到 → 跳过且不崩，MUST NOT 塞占位行', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'C' })];
-    const order = tabOrderOf({ all: ['A', 'MISSING', 'C'] });
-
-    const rows = orderedLegsForTab(legs, order, 'all');
-    expect(rows.map((l) => l.code)).toEqual(['A', 'C']);
-    // 「跳过」而非「留个洞」—— 数组里 MUST NOT 出现 undefined 占位。
-    expect(rows.every((l) => l !== undefined)).toBe(true);
-  });
-
-  it('`legs[]` 有而 `tabOrder` 无 → 该 Tab 不含它（反向缺口同样不崩）', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'ORPHAN' })];
-    expect(orderedLegsForTab(legs, tabOrderOf({ all: ['A'] }), 'all').map((l) => l.code)).toEqual([
-      'A',
-    ]);
-  });
-
-  it('三视角来回切，每个 Tab 的顺序恒定（顺序不因切换而变）', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'B' }), leg({ code: 'C' })];
-    const order = tabOrderOf({ all: ['C', 'B', 'A'], build: ['B', 'A'], rent: ['C', 'B'] });
-    const codesOf = (tab: LegPickerTab) => orderedLegsForTab(legs, order, tab).map((l) => l.code);
-
-    const first = LEG_PICKER_TABS.map(codesOf);
-    // 来回切两轮后逐 Tab 比对 —— 取序是纯函数，任何隐式状态都会在这里露出来。
-    void LEG_PICKER_TABS.map(codesOf);
-    expect(LEG_PICKER_TABS.map(codesOf)).toEqual(first);
-    expect(first).toEqual([
-      ['C', 'B', 'A'],
-      ['B', 'A'],
-      ['C', 'B'],
-    ]);
-  });
-
-  it('🚨 FR-021 —— 本片只改顺序，**成员集合与开工前逐条相同**（对同一份自洽契约）', () => {
-    // 开工前的成员判据是 `legs.filter(l => l.tabs.includes(tab))`（已退役的 `filterLegsByTab`）。
-    // server 保证 `tabOrder[t]` 与每腿 `tabs` 同源派生（050 Guardrail 9）⇒ 在一份自洽的契约上，
-    // 换成按 `tabOrder` 取序**只能改顺序、不能改成员**。本条把那个「只能」钉成机械判据。
-    const legs = [
-      leg({ code: 'A', tabs: ['all', 'build'] }),
-      leg({ code: 'B', tabs: ['all', 'rent'] }),
-      leg({ code: 'C', tabs: ['all', 'build', 'rent'] }),
-      leg({ code: 'D', tabs: ['all'] }),
-    ];
-    // 有序列表由 `tabs` 派生（契约镜像，不写死）；顺序蓄意逆着 `legs[]` 排，好让「顺序变了、
-    // 成员没变」这件事在同一条用例里同时可见。
-    const order = tabOrderOf(
-      Object.fromEntries(
-        LEG_PICKER_TABS.map((t) => [
-          t,
-          legs
-            .filter((l) => l.tabs.includes(t))
-            .map((l) => l.code)
-            .reverse(),
-        ]),
-      ),
-    );
-
-    for (const tab of LEG_PICKER_TABS) {
-      const before = legs.filter((l) => l.tabs.includes(tab)).map((l) => l.code);
-      const after = orderedLegsForTab(legs, order, tab).map((l) => l.code);
-
-      expect([...after].sort()).toEqual([...before].sort()); // 成员逐条相同
-      expect(after).not.toEqual(before); // 顺序确实变了 ⇒ 上一行不是同义反复
-    }
-  });
-
-  it('🚨 取序函数签名里**没有**比较器 / 排序键 —— 结构保证不是事后约定（类型层证明）', () => {
-    // @ts-expect-error 第四个入参不存在: 「排序不在客户端」(FR-002) 靠签名钉死 —— 想在客户端
-    // 排就必须先改签名, 那一步 review 看得见。若本行不再报错, 说明签名已被加回排序入口,
-    // 此时 `@ts-expect-error` 变成「未使用的抑制」而 typecheck 立刻红。
-    orderedLegsForTab([], tabOrderOf(), 'all', (a: LegResponse, b: LegResponse) =>
-      a.code.localeCompare(b.code),
-    );
-  });
-});
-
-// ═══════════════ ② 空 Tab：返空集合而非隐藏面板 ═══════════════
-
-describe('🚨 FR-005 —— 空 Tab 返空集合，面板照常在（MUST NOT 隐藏 / 置灰）', () => {
-  it('该 Tab 的有序列表为空 → 取序结果是空数组，不是 undefined / null', () => {
-    expect(orderedLegsForTab([leg({ code: 'A' })], tabOrderOf({ all: ['A'] }), 'build')).toEqual(
-      [],
-    );
-  });
-
-  it('空 Tab 仍产出**一个** section（列表实例不消失，只是 data 为空）', () => {
-    const sections = legPickerSections([leg({ code: 'A' })], tabOrderOf({ all: ['A'] }), 'build');
-    expect(sections).toHaveLength(1);
-    expect(sections[0]?.data).toEqual([]);
-    expect(legRowTotal(sections)).toBe(0);
-  });
-
-  it('切 Tab 只换 data —— section 恒长度 1（三 Tab 共用同一个 SectionList）', () => {
-    const legs = [leg({ code: 'A' }), leg({ code: 'B' })];
-    const order = tabOrderOf({ all: ['A', 'B'], build: ['A'] });
-    for (const tab of LEG_PICKER_TABS) {
-      expect(legPickerSections(legs, order, tab)).toHaveLength(1);
-    }
-    expect(legRowTotal(legPickerSections(legs, order, 'all'))).toBe(2);
-    expect(legRowTotal(legPickerSections(legs, order, 'build'))).toBe(1);
-  });
-});
-
-// ═══════════════ ③ 活跃度随 Tab 换 ═══════════════
-
-describe('🚨 D-SOT-5 —— 活跃度是**当前 Tab 候选集内**的相对排名，换 Tab 归属就变', () => {
-  const row = leg({
-    tabs: ['all', 'rent'],
-    activityByTab: { all: activity('整数档'), build: null, rent: activity('Top 3') },
-  });
-
-  it('同一条腿在两个 Tab 里拿到的不是同一个标', () => {
-    expect(legActivityForTab(row, 'all')?.label).toBe('整数档');
-    expect(legActivityForTab(row, 'rent')?.label).toBe('Top 3');
-  });
-
-  it('不属于该 Tab 的位置恒 null —— MUST NOT 拿别的 Tab 的标顶上', () => {
-    expect(legActivityForTab(row, 'build')).toBeNull();
-  });
-});
-
-// ═══════════════ ③a 档位随 Tab 换（051 FR-015 / FR-016） ═══════════════
-
-describe('🚨 051 FR-015/FR-016 —— 档位取当前视角那一格，MUST NOT 回落到 legacy 的 `leg.tier`', () => {
-  // 🚨 三个视角**蓄意判出三个不同结果**：建仓走周化档界、收租与全腿走年化 ⇒ 同一条腿在两
-  //    个视角判出不同档是**定义如此**。若三格同值，「读错了格子」照样绿。
-  const row = leg({
-    tier: 'good',
-    tabs: ['all', 'build', 'rent'],
-    tierByTab: { all: 'acceptable', build: 'thin', rent: 'good' },
-  });
-
-  it('同一条腿三个视角三个档 —— 且没有一格恒等于 legacy 标量', () => {
-    expect(legTierForTab(row, 'all')).toBe('acceptable');
-    expect(legTierForTab(row, 'build')).toBe('thin');
-    expect(legTierForTab(row, 'rent')).toBe('good');
-    expect(new Set(LEG_PICKER_TABS.map((tab) => legTierForTab(row, tab))).size).toBe(3);
-  });
-
-  it('🚨 不属于该视角 ⇒ null ⇒ 呈现层显**缺省态**，MUST NOT 回落到 legacy 标量的那一档', () => {
-    // legacy 标量说「好档」，而这条腿根本不在建仓视角里 —— 回落的实现会把它染成好档的绿。
-    const outsider = leg({
-      tier: 'good',
-      tabs: ['all'],
-      tierByTab: { all: 'good', build: null, rent: null },
-    });
-    expect(legTierForTab(outsider, 'build')).toBeNull();
-    expect(legBidTone(legTierForTab(outsider, 'build'))).toEqual(LEG_TIER_UNJUDGED_TONE);
-    expect(legBidTone(legTierForTab(outsider, 'build')).container).not.toBe(
-      legBidTone('good').container,
-    );
   });
 });
 
@@ -556,12 +363,10 @@ describe('🚨 051 FR-012 —— 收租意图下打开建仓视角，MUST 就地
 // ═══════════════ ④b 两个门槛计数（051 FR-006/FR-007/FR-007a/FR-010） ═══════════════
 
 describe('🚨 051 FR-007/FR-007a —— 两个计数语义与交互**都**不对称', () => {
-  const counts = {
-    removedByPremiumFloor: 113,
-    // 🚨 标量与两个分视角数蓄意三值互不相同：任何一处取错都能被指出来。
-    excludedFromIntentTabs: 47,
-    excludedFromIntentTabsByTab: { build: 20, rent: 31 },
-  };
+  // 🚨 两个数蓄意不同：任何一处取错都能被指出来。
+  // 📌 053 起排除数只有**一份**（该视角自己的数）—— 051 那个「全表标量 vs 分视角数」的取数
+  //    分支随契约收窄消失，故这里不再构造三值。
+  const counts = { removedByPremiumFloor: 113, excludedFromIntentTabs: 20 };
 
   it('两条各自可辨识：key / 文案都不同，且顺序恒定（权利金在前）', () => {
     const lines = legGateCountLines(counts, 'build');
@@ -581,18 +386,16 @@ describe('🚨 051 FR-007/FR-007a —— 两个计数语义与交互**都**不�
     expect(gone?.text).not.toContain(COPY.tabs.all);
   });
 
-  it('🚨 意图视角取**该视角自己的**数，MUST NOT 用全表标量', () => {
+  it('🚨 053 —— 排除数就是**该视角自己的数**，两个意图视角报的是各自响应里的那一个', () => {
+    // 一次请求只判定一个视角 ⇒ 同一份 gateCounts 不可能同时属于两个视角；这里验的是
+    // 「本函数不再对数做任何按视角的挑选」，取数分支消失后**没有取错的余地**。
+    expect(legGateCountLines(counts, 'build')[1]?.count).toBe(20);
+    expect(legGateCountLines(counts, 'rent')[1]?.count).toBe(20);
     expect(legGateCountLines(counts, 'build')[1]?.text).toContain('20');
-    expect(legGateCountLines(counts, 'rent')[1]?.text).toContain('31');
-    for (const tab of ['build', 'rent'] as const) {
-      expect(legGateCountLines(counts, tab)[1]?.text).not.toContain('47');
-    }
   });
 
-  it('全腿视角：标量是它唯一诚实的用处（那些腿就在本视角内）⇒ 措辞改口且**无入口**', () => {
+  it('全腿视角：措辞改口且**无入口**（已经在全腿视角，再给「去全腿视角」是死链）', () => {
     const line = legGateCountLines(counts, 'all')[1];
-    expect(line?.text).toContain('47');
-    // 已经在全腿视角了，再给一个「去全腿视角」的入口是死链。
     expect(line?.goTab).toBeNull();
     expect(line?.text).not.toBe(legGateCountLines(counts, 'build')[1]?.text);
   });
@@ -607,14 +410,10 @@ describe('🚨 051 FR-007/FR-007a —— 两个计数语义与交互**都**不�
   });
 
   it('🚨 FR-008 —— 两数**皆** 0 才降权；任一非零都是要被看见的真数据', () => {
-    const zeroBuild = {
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 47,
-      excludedFromIntentTabsByTab: { build: 0, rent: 7 },
-    };
-    // 同一份数据两个视角判出不同结果 —— 降权也按视角算，不看全表。
-    expect(legGateCountsQuiet(legGateCountLines(zeroBuild, 'build'))).toBe(true);
-    expect(legGateCountsQuiet(legGateCountLines(zeroBuild, 'rent'))).toBe(false);
+    const bothZero = { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 };
+    const onlyLiquidity = { removedByPremiumFloor: 0, excludedFromIntentTabs: 7 };
+    expect(legGateCountsQuiet(legGateCountLines(bothZero, 'build'))).toBe(true);
+    expect(legGateCountsQuiet(legGateCountLines(onlyLiquidity, 'build'))).toBe(false);
     expect(legGateCountsQuiet(legGateCountLines(counts, 'build'))).toBe(false);
   });
 });
@@ -622,52 +421,37 @@ describe('🚨 051 FR-007/FR-007a —— 两个计数语义与交互**都**不�
 // ═══════════════ ④c 意图视角空态（051 FR-008 / FR-009 / SC-013） ═══════════════
 
 describe('🚨 051 FR-009 —— 空态按**该视角自己的**排除数分支', () => {
-  const counts = (build: number, rent: number, scalar = 99) => ({
+  // 📌 053 起契约只发一份排除数（本视角自己的）⇒ 「取错视角那一格」这条风险由契约消掉，
+  //    本组用例改为验分支本身：> 0 指向门槛并给入口、= 0 指向判据且不给入口。
+  const counts = (excluded: number) => ({
     removedByPremiumFloor: 25,
-    excludedFromIntentTabs: scalar,
-    excludedFromIntentTabsByTab: { build, rent },
+    excludedFromIntentTabs: excluded,
   });
 
   it('该视角排除数 > 0 ⇒ 指向门槛 + 带入口（数字与入口都用该视角自己的数）', () => {
-    const state = legEmptyState(counts(20, 3), 'build');
+    const state = legEmptyState(counts(20), 'build');
     expect(state.text).toContain('20');
     expect(state.cta?.tab).toBe('all');
     expect(state.cta?.label).toContain('20');
   });
 
   it('该视角排除数为 0 ⇒ 指向「确实没有」+ **无入口**（没有可去看的腿）', () => {
-    const state = legEmptyState(counts(0, 0), 'build');
+    const state = legEmptyState(counts(0), 'build');
     expect(state.cta).toBeNull();
     expect(state.text).not.toContain('20');
-  });
-
-  it('🚨 SC-013 交叉验证：建仓排除数 0、收租排除数 > 0 ⇒ **建仓空态仍指向「确实没有」**', () => {
-    // 这条正是「服务端按视角拆计数」买来的东西 —— 不验等于没买。
-    // 用全表标量的实现在这里会给建仓视角一个「有 99 条被挡了，去看看」的入口：数字真实、
-    // 文案通顺、指向的却是收租视角的腿，而且不会红。
-    const build = legEmptyState(counts(0, 31), 'build');
-    const rent = legEmptyState(counts(0, 31), 'rent');
-
-    expect(build.cta).toBeNull();
-    expect(build.text).not.toContain('31');
-    expect(build.text).not.toContain('99');
-    expect(rent.cta?.tab).toBe('all');
-    expect(rent.text).toContain('31');
-    // 两种情形的文案 MUST 互不相同（SC-013 的字面要求）。
-    expect(build.text).not.toBe(rent.text);
+    // 🚨 判别性：MUST NOT 借用权利金那条的 25 —— 两个数语义不同，混用不会红。
+    expect(state.text).not.toContain('25');
   });
 
   it('两个意图视角各说各的判据（建仓多一道有效成本门槛，收租只有期限段）', () => {
-    expect(legEmptyState(counts(0, 0), 'build').text).not.toBe(
-      legEmptyState(counts(0, 0), 'rent').text,
-    );
-    expect(legEmptyState(counts(0, 0), 'build').title).not.toBe(
-      legEmptyState(counts(0, 0), 'rent').title,
+    expect(legEmptyState(counts(0), 'build').text).not.toBe(legEmptyState(counts(0), 'rent').text);
+    expect(legEmptyState(counts(0), 'build').title).not.toBe(
+      legEmptyState(counts(0), 'rent').title,
     );
   });
 
   it('全腿视角沿用既有单行文案 —— 它不受流动性门槛约束，没有「被挡下」这一分支', () => {
-    const state = legEmptyState(counts(20, 31), 'all');
+    const state = legEmptyState(counts(20), 'all');
     expect(state.title).toBeNull();
     expect(state.text).toBe(COPY.empty);
     expect(state.cta).toBeNull();
@@ -684,42 +468,39 @@ describe('🚨 051 FR-009 —— 空态按**该视角自己的**排除数分支'
 // 📌 原「腿族口径徽标只在全腿 Tab 出」那组用例随 `showsBasisBadge` 整条退役（051 FR-019a）——
 //    徽标的取值其实是 **Tab 成员关系**却顶着口径形状的标签，而全腿视角档位恒年化。
 
-describe('🚨 051 FR-017/FR-017a —— 费率列头取自 `basisByTab`，列头**就是口径**', () => {
-  // 契约下发的映射（全腿恒年化 —— 混着 10 天与 200 天的腿，周化档界会让整列全死档）。
-  const basisByTab = { all: 'annualized', build: 'weekly', rent: 'annualized' } as const;
-
+describe('🚨 051 FR-017/FR-017a —— 费率列头取自服务端下发的 `basis`，列头**就是口径**', () => {
   it('两个口径取值穷举：周化带折年参照副标 · 年化单行无副标', () => {
-    expect(rateHeaderFor(basisByTab, 'build')).toEqual({
+    expect(rateHeaderFor('weekly')).toEqual({
       main: COPY.rateBasisWeekly,
       sub: COPY.rateBasisWeeklySub,
     });
-    expect(rateHeaderFor(basisByTab, 'rent')).toEqual({
-      main: COPY.rateBasisAnnualized,
-      sub: null,
-    });
-    expect(rateHeaderFor(basisByTab, 'all')).toEqual({ main: COPY.rateBasisAnnualized, sub: null });
+    expect(rateHeaderFor('annualized')).toEqual({ main: COPY.rateBasisAnnualized, sub: null });
   });
 
   it('🚨 列头 MUST NOT 是「费率」这层通用标题 —— 口径取自服务端这件事要在视觉上自明', () => {
-    for (const tab of LEG_PICKER_TABS) {
-      expect(rateHeaderFor(basisByTab, tab).main).not.toBe(COPY.columns.rate);
+    for (const basis of ['weekly', 'annualized'] as const) {
+      expect(rateHeaderFor(basis).main).not.toBe(COPY.columns.rate);
     }
-    // 判别性：两个口径的列头 MUST 不同，否则「读错了 tab」照样绿。
-    expect(rateHeaderFor(basisByTab, 'build').main).not.toBe(
-      rateHeaderFor(basisByTab, 'rent').main,
-    );
+    // 判别性：两个口径的列头 MUST 不同，否则「读错了口径」照样绿。
+    expect(rateHeaderFor('weekly').main).not.toBe(rateHeaderFor('annualized').main);
+  });
+
+  it('🚨 053 —— 签名里**没有视角入参**：客户端 MUST NOT 自带一份「视角 → 口径」映射（FR-017）', () => {
+    // @ts-expect-error 第二个入参不存在: 硬编码一份映射必与 server 漂移, 而漂移时**两边都算得出
+    // 结果**（列头写「周化」、数字却是年化判出来的档，没有任何一处会红）⇒ 靠签名钉死。
+    // 若本行不再报错, 说明视角入参已被加回, 此时 `@ts-expect-error` 变成「未使用的抑制」而 typecheck 立刻红。
+    rateHeaderFor('weekly', 'build');
   });
 
   it('🚨 FR-018 —— 口径取值超出客户端值域 ⇒ 降级为通用标题，不崩不猜', () => {
     // server 可能先于客户端上线新取值（如按月口径）：类型层这时已经骗不了运行时，
     // 故这里蓄意越过类型断言塞一个未知值 —— 穷举 `Record` 拦得住编译期，拦不住这一支。
-    const unknown = { ...basisByTab, build: 'monthly' } as unknown as typeof basisByTab;
-    expect(rateHeaderFor(unknown, 'build')).toEqual({ main: COPY.columns.rate, sub: null });
+    const unknown = 'monthly' as unknown as 'weekly';
+    expect(rateHeaderFor(unknown)).toEqual({ main: COPY.columns.rate, sub: null });
   });
 
   it('契约还没到手（null）⇒ 同一个降级态 —— MUST NOT 先猜一个口径挂上去', () => {
-    expect(rateHeaderFor(null, 'build')).toEqual({ main: COPY.columns.rate, sub: null });
-    expect(rateHeaderFor(null, 'rent')).toEqual(rateHeaderFor(null, 'all'));
+    expect(rateHeaderFor(null)).toEqual({ main: COPY.columns.rate, sub: null });
   });
 });
 
@@ -732,11 +513,7 @@ describe('🚨 052 —— 用户收窄出来的空 MUST 与「本来就没有」
     const base = criteria();
     return { ...base, outcomes: { ...base.outcomes, strikeMax: { state, excludedCount: 8 } } };
   };
-  const counts = {
-    removedByPremiumFloor: 0,
-    excludedFromIntentTabs: 0,
-    excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-  };
+  const counts = { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 };
 
   it('有覆盖 + 空 ⇒ 入口是「复位」，🚫 而不是「去别的视角看」（换视角在这里帮不上忙）', () => {
     const state = legEmptyState(counts, 'rent', overridden('narrowed'));
@@ -762,5 +539,137 @@ describe('🚨 052 —— 用户收窄出来的空 MUST 与「本来就没有」
     // 契约未到手同理：不凭空长出一个复位入口。
     expect(legEmptyState(counts, 'build', null).reset).toBeNull();
     expect(legEmptyState(counts, 'build').reset).toBeNull();
+  });
+});
+
+// ═══════════════ ⑦ 053 计数三处分工（FR-016 / FR-017 / FR-018 / FR-019c） ═══════════════
+
+/** 一段文案里出现的所有整数（`SC-005` 的机械判据 —— 「同一个数值」按数字本身比，不按措辞比）。 */
+function numbersIn(text: string): string[] {
+  return text.match(/\d+/g) ?? [];
+}
+
+/** 一张被截断的表：符合条件 153 条、下发 40 条 ⇒ 其余 113 条未显示。 */
+const TRUNCATED = table({
+  legs: Array.from({ length: 40 }, (_, i) => leg({ code: `L${i}` })),
+  matchedCount: 153,
+  memberCount: 153,
+  displayLimit: 40,
+});
+
+describe('🚨 053 FR-016 —— 区块头报「符合条件的总数」，MUST NOT 报渲染出来的行数', () => {
+  it('未覆盖（memberCount === matchedCount）⇒ 单数形态，MUST NOT 并列两个相等的数（FR-009）', () => {
+    const line = legRowCountLine(table({ matchedCount: 153, memberCount: 153 }));
+    expect(line).toBe(COPY.rowTotal(153));
+    expect(numbersIn(line)).toEqual(['153']);
+  });
+
+  it('🚨 覆盖生效（memberCount > matchedCount）⇒ 并列「筛后 · 全量」，两个数都在', () => {
+    const line = legRowCountLine(table({ matchedCount: 153, memberCount: 200 }));
+    expect(numbersIn(line).sort()).toEqual(['153', '200']);
+    // 判别性：两种形态 MUST 不同，否则「没接上 memberCount」照样绿。
+    expect(line).not.toBe(legRowCountLine(table({ matchedCount: 153, memberCount: 153 })));
+  });
+
+  it('🚨 报的是 `matchedCount` 而不是 `legs.length` —— 截断之后两者不再相等', () => {
+    // 接错的实现在这里会报 40（渲染出来的行数）：数字真实、句子通顺，只是答的不是「符合条件几条」。
+    expect(numbersIn(legRowCountLine(TRUNCATED))).toEqual(['153']);
+  });
+
+  it('契约未到手 ⇒ 退「共 0 行」，MUST NOT 渲半截依据', () => {
+    expect(legRowCountLine(null)).toBe(COPY.rowTotal(0));
+  });
+});
+
+describe('🚨 053 FR-016/FR-017/FR-018 —— 截断计数第 3 条', () => {
+  it('触发截断 ⇒ 报「已显示 D」与「未显示 N−D」，两数之和恒等于 matchedCount（SC-004）', () => {
+    const line = legTruncationLine(TRUNCATED);
+    expect(line).not.toBeNull();
+    expect(line?.shown).toBe(40);
+    expect(line?.hidden).toBe(113);
+    expect((line?.shown ?? 0) + (line?.hidden ?? 0)).toBe(TRUNCATED.matchedCount);
+  });
+
+  it('🚨 FR-018 —— 未触发截断 ⇒ **整条不渲染**（null），MUST NOT 显空值或两个恒等的数', () => {
+    // 恰等于阈值（边界取「严格大于才截」）与远小于阈值两支都不出。
+    const atLimit = table({ legs: [leg()], matchedCount: 1, memberCount: 1, displayLimit: 1 });
+    const under = table({ legs: [leg()], matchedCount: 1, memberCount: 1, displayLimit: 40 });
+    expect(legTruncationLine(atLimit)).toBeNull();
+    expect(legTruncationLine(under)).toBeNull();
+    expect(legTruncationLine(null)).toBeNull();
+  });
+
+  it('🚨 收窄到阈值以下那一刻 ⇒ 计数消失，MUST NOT 停在旧值', () => {
+    // 同一屏、同一个视角，条件收窄后 matchedCount 落回 D ⇒ 本函数是纯函数，无处存旧值。
+    const narrowed = table({ ...TRUNCATED, matchedCount: 40, memberCount: 153 });
+    expect(legTruncationLine(narrowed)).toBeNull();
+  });
+
+  it('🚨 SC-005 —— 计数区与 sticky 区块头**不出现同一个数值**', () => {
+    const header = numbersIn(legRowCountLine(TRUNCATED));
+    const footer = numbersIn(legTruncationLine(TRUNCATED)?.text ?? '');
+    expect(footer.length).toBeGreaterThan(0);
+    expect(footer.filter((n) => header.includes(n))).toEqual([]);
+    // 覆盖生效那一支同样成立（区块头此时有**两个**数）。
+    const overridden = table({ ...TRUNCATED, memberCount: 200 });
+    const header2 = numbersIn(legRowCountLine(overridden));
+    const footer2 = numbersIn(legTruncationLine(overridden)?.text ?? '');
+    expect(footer2.filter((n) => header2.includes(n))).toEqual([]);
+  });
+
+  it('🚨 FR-016 —— MUST NOT 复述「符合条件 N 条」（那个数已由区块头承担）', () => {
+    expect(legTruncationLine(TRUNCATED)?.text).not.toContain(String(TRUNCATED.matchedCount));
+  });
+
+  it('🚨 FR-018 —— 与 051 两条门槛计数**措辞不混用同一个词**（被条件挡下 ≠ 被截断）', () => {
+    const truncated = legTruncationLine(TRUNCATED)?.text ?? '';
+    const gates = legGateCountLines(
+      { removedByPremiumFloor: 9, excludedFromIntentTabs: 7 },
+      'rent',
+    );
+    // 门槛说「移出 / 排除」（腿不合格或不进本视角），截断说「未显示」（腿合格，只是排在阈值之后）。
+    expect(truncated).not.toMatch(/移出|排除/);
+    for (const gate of gates) expect(gate.text).not.toContain('未显示');
+  });
+
+  it('🚨 FR-017 —— 附收窄指引且指向**抽屉入口的那个措辞**（分页与「加载更多」都不存在）', () => {
+    const truncated = legTruncationLine(TRUNCATED)?.text ?? '';
+    expect(truncated).toContain(COPY.criteria.entry);
+    // 🚫 FR-019 / US1-AS5：文案 MUST NOT 暗示存在分页或增量加载这条路。
+    expect(truncated).not.toMatch(/加载更多|下一页|翻页|上拉|下拉/);
+  });
+
+  it('🚨 `shown === 0` 不渲染 —— 空表由空态说话，且那时 hidden 会恰好等于 matchedCount（撞 SC-005）', () => {
+    const empty = table({ legs: [], matchedCount: 5, memberCount: 5, displayLimit: 40 });
+    expect(legTruncationLine(empty)).toBeNull();
+  });
+});
+
+describe('🚨 053 FR-019c —— 候选上限 `K` 的异常位（与截断计数不同款）', () => {
+  it('未触及（0）⇒ null ⇒ 整块 100% 不出现（SC-016）', () => {
+    expect(legCandidateCapLine(table({ candidateCapDropped: 0 }))).toBeNull();
+    expect(legCandidateCapLine(null)).toBeNull();
+  });
+
+  it('触及 ⇒ 报出触及数，且说明**上面的数可能少报**（matchedCount 静默失真）', () => {
+    const line = legCandidateCapLine(table({ candidateCapDropped: 812 }));
+    expect(line?.dropped).toBe(812);
+    expect(line?.text).toContain('812');
+    // K 触及会让 matchedCount 算在已被砍过的集合上 ⇒「其余 N−D 条」少报，而条数与数值全都正常。
+    expect(line?.text).toMatch(/少报|不完整/);
+  });
+
+  it('🚨 Guardrail 14 —— 与截断计数**不同款**：不借用截断的措辞，也不是第四条常规计数', () => {
+    const cap = legCandidateCapLine(table({ ...TRUNCATED, candidateCapDropped: 812 }))?.text ?? '';
+    const truncated = legTruncationLine(TRUNCATED)?.text ?? '';
+    expect(cap).not.toBe(truncated);
+    // 「未显示」是截断的词；`K` 熔断说的是「召回阶段就没进来」—— 混用会让「该调容量」被读成「该调展示」。
+    expect(cap).not.toContain('未显示');
+    // 它也不混进两条门槛计数（那三个数是「判据挡下了什么」，这一个是「保险丝熔断了」）。
+    const gateKeys = legGateCountLines(
+      { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+      'all',
+    ).map((g) => g.key);
+    expect(gateKeys).toEqual(['premium_floor', 'liquidity']);
   });
 });

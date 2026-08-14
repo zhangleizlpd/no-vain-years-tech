@@ -5,23 +5,25 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
-import type { LegBasisByTabResponse } from './legBasisByTabResponse';
-import type { LegCriteriaByTabResponse } from './legCriteriaByTabResponse';
 import type { LegGateCountsResponse } from './legGateCountsResponse';
 import type { LegResponse } from './legResponse';
 import type { LegTableResponseAsOfFreshnessTier } from './legTableResponseAsOfFreshnessTier';
+import type { LegTableResponseBasis } from './legTableResponseBasis';
 import type { LegTableResponseIntent } from './legTableResponseIntent';
 import type { LegTableResponseLLevel } from './legTableResponseLLevel';
+import type { LegTableResponsePerspective } from './legTableResponsePerspective';
 import type { LegTableResponsePositionBucket } from './legTableResponsePositionBucket';
 import type { LegTableResponsePositionBucketSource } from './legTableResponsePositionBucketSource';
 import type { LegTableResponseRentDepth } from './legTableResponseRentDepth';
 import type { LegTableResponseState } from './legTableResponseState';
 import type { LegTableResponseZone } from './legTableResponseZone';
-import type { LegTabOrderResponse } from './legTabOrderResponse';
+import type { PerspectiveCriteriaResponse } from './perspectiveCriteriaResponse';
 
 export interface LegTableResponse {
   /** canonical `market:code` */
   symbol: string;
+  /** 🚨 **本次作答的视角**, 原样回显请求参数 (053 FR-005)。三视角是三次飞行中的请求, 迟到的那一发靠它认领 (FR-008) —— 靠调用点记忆的话, 覆盖错了**照样渲染得出来一张表** */
+  perspective: LegTableResponsePerspective;
   /** 区块状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开 */
   state: LegTableResponseState;
   /** 区块级 asOf = 快照归属交易日 (YYYY-MM-DD) */
@@ -52,14 +54,20 @@ export interface LegTableResponse {
   intent: LegTableResponseIntent;
   /** 收租意图的 Δ 深度档; 其余三态恒 null */
   rentDepth: LegTableResponseRentDepth;
-  /** **全量适格腿, 零分页零 top-N 截断** (FR-005) —— 已滤非标 (FR-008) 与已到期 (FR-028a)。死档行照常在内且排在末尾; greeks 缺失行照常在内且不判档 */
+  /** **该视角、已精排、已截断**的腿 (053 FR-002 / FR-004) —— 已滤非标 (FR-008) 与已到期 (FR-028a)。🚨 **数组顺序就是呈现顺序**: 客户端 MUST 按本数组的下标序渲染、MUST NOT 自行重排 (047 那份并行的有序 code 列表据此退役 —— 同一个顺序下发两份表达必 drift, 而两份 各自都渲染得出来)。🚫 **实际显示条数不另发**: 它恒等于 legs.length, 「其余 N−D 条」由 matchedCount 减它现算。死档行与 greeks 缺失行照常在内 (后者不判档) */
   legs: LegResponse[];
-  /** 每个 Tab 一份**有序的合约代码列表** (FR-021a) —— 精排在 server 完成, 客户端 MUST 按它呈现、MUST NOT 自行重排。腿本体仍只下发一份 (MUST NOT 按 Tab 复制)。🚫 它**不是** legs[] 的新排序: 后者是 legacy 载体顺序 (档位 → 到期日 → 行权价 → code), 旧客户端仍按它渲染 */
-  tabOrder: LegTabOrderResponse;
   /** 两道门槛各自挡下多少条 (FR-008) ——「有腿消失了」必须可见且可行动。🚨 两个数**语义不对称**, 见各自字段说明 */
   gateCounts: LegGateCountsResponse;
-  /** Tab → 档位判定口径的**常量映射** (FR-023) —— 下发一次, 免客户端硬编码这份映射 (硬编码必与 server 漂移, 且漂移时两边都算得出结果)。每腿的 tierByTab 就是按它判出来的 */
-  basisByTab: LegBasisByTabResponse;
-  /** 三视角各自的**检索条件全景** (052 FR-011 / FR-029) —— 控件填 defaults, 结果按 effective, 仅 narrowed 的维度出计数。恒有三份 (客户端本地切视角时不发请求) */
-  criteriaByTab: LegCriteriaByTabResponse;
+  /** **本次视角**的档位判定口径 (FR-023) —— 下发而非让客户端硬编码这份映射 (硬编码必与 server 漂移, 且漂移时两边都算得出结果)。每腿的 tier 就是按它判出来的。全腿视角**恒年化** (混着 10 天与 200 天的腿, 周化档界会让整列全是死档) */
+  basis: LegTableResponseBasis;
+  /** **本次视角**的检索条件全景 (052 FR-011 / FR-029) —— 控件填 defaults, 结果按 effective, 仅 narrowed 的维度出计数。📌 053 起只发一份: 052 恒发三份的前提是「本地切视角不发请求」, 而那条承诺已由 FR-019b 整条作废。链未就绪时六维全 null —— 那是「没有值」不是「不限」 */
+  criteria: PerspectiveCriteriaResponse;
+  /** 本次条件下**该视角**的成员数 —— 表达层截断**之前**的条数 (053 FR-005 / FR-015)。⚠️ **candidateCapDropped 非零时本数会静默失真** (FR-019c): 它算在已被候选上限 K 砍过的集合上 ⇒ 表达层 MUST 说明本数可能不完整 */
+  matchedCount: number;
+  /** **无覆盖口径**下该视角的成员数 (053 FR-009) —— 未覆盖任何条件时恒 === matchedCount, 此时区块头 MUST NOT 并列显示两个相等的数。🚫 MUST NOT 用六维边际计数加总充当它 (边际口径下被两维同时挡下的腿两维都不计它, 加总少报) */
+  memberCount: number;
+  /** 本次生效的表达层截断阈值 N; **null = 不设该视角阈值** ⇒ 零截断 (053 FR-011 / FR-013)。🚨 **未触发截断时也照常下发** (FR-015): 只在截断时下发会让「链规模逼近阈值」恰恰观测不到。逼近度 matchedCount / displayLimit 由此随时可算 ⇒ 🚫 MUST NOT 为它新增 isNearLimit 之类的派生布尔 (下发第二份必 drift) */
+  displayLimit: number | null;
+  /** 触及召回层候选上限 K 时被切掉多少条 (052 FR-028); 未触及恒 0。🚨 **它是保险丝熔断不是判据挡下** ⇒ 蓄意不进 gateCounts, 呈现侧 MUST 与截断计数**不同款** (053 FR-019c): 前者该调容量、后者该调展示。非零时 matchedCount 可能不完整, 提示 MUST 说明这一点 */
+  candidateCapDropped: number;
 }

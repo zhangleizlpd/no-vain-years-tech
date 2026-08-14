@@ -2,7 +2,10 @@ import { Pressable, Text, View } from 'react-native';
 
 import { BACKSPACE } from './keypad.rules';
 
-// 同花顺式自绘数字键盘（026 US1 / FR-003，mockup .keypad/.key/.ok 翻 RN）：
+// 同花顺式自绘数字键盘（026 US1 / FR-003，mockup .keypad/.key/.ok 翻 RN）。
+// 📌 053 T015 自 `alert/` 上提 `~/ui`（复用频次 ≥2：alert 参数 sheet + optionsdesk 检索条件
+//    抽屉；两处都是「底部 sheet + 纯数字域」，系统键盘会把 sheet 顶出屏外）。
+//
 // 4×4 布局 = 左侧 3 列数字格（1-9 + 「.」/0/⌫）+ 右整列竖排「确定」。RN 无 CSS grid，
 // 用 flexbox：键宽走 flex-1（行内三等分），**键高用固定 h-16（intrinsic 高度）**——
 // 不能用 flex-1 撑行高：bottom-sheet 里键盘父容器无确定高度，flex-1(=flexBasis:0)会塌缩、
@@ -37,6 +40,8 @@ export interface NumericKeypadProps {
   confirmDisabled: boolean;
   /** 确定键文案（值类「确定」/ 组合类「确定」；纯周期类走 sheet「选好了」不用本键）。 */
   confirmLabel: string;
+  /** 确定键的 testID（省略 = 不打标；e2e 按 `confirmLabel` 的 a11y 名定位亦可）。 */
+  confirmTestID?: string;
 }
 
 export function NumericKeypad({
@@ -44,6 +49,7 @@ export function NumericKeypad({
   onConfirm,
   confirmDisabled,
   confirmLabel,
+  confirmTestID,
 }: NumericKeypadProps) {
   return (
     <View className="flex-row gap-sm bg-surface-sunken rounded-lg p-sm mt-md">
@@ -77,6 +83,7 @@ export function NumericKeypad({
         accessibilityRole="button"
         accessibilityLabel={confirmLabel}
         accessibilityState={{ disabled: confirmDisabled }}
+        testID={confirmTestID}
         className={`w-3xl items-center justify-center bg-brand-500 rounded-md ${
           confirmDisabled ? 'opacity-40' : ''
         }`}

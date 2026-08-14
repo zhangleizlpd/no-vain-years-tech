@@ -67,6 +67,7 @@ import {
   UpdateAnchorRequest,
   toAnchorListResponse,
   toLegTableResponse,
+  toRequestedPerspective,
   toRetrievalOverride,
   toAnchorPointInTimeResponse,
   toAnchorResponse,
@@ -211,10 +212,16 @@ export class OptionsdeskController {
   @Throttle({ 'optionsdesk-read-account': { limit: 120, ttl: 60_000 } })
   @ApiParam({ name: 'symbol', description: 'canonical `market:code`', example: 'us:PEP' })
   @ApiOperation({
-    summary: 'Leg picker table (ALL eligible legs, no pagination, no top-N)',
+    summary: 'Leg picker table for ONE perspective (no pagination)',
     description:
-      'Returns EVERY eligible put leg for the underlying in one shot — no pagination, no top-N ' +
-      'truncation. Two filters are already applied server-side: non-standard (adjusted-root) ' +
+      'Returns the eligible put legs for ONE perspective — `perspective` is REQUIRED and decides ' +
+      'which perspective is answered; a missing or out-of-enum value is a 400, never a silently ' +
+      'defaulted perspective (leg count, ranks and tiers would all look normal while answering a ' +
+      'question nobody asked). Each perspective is fetched independently, so the three of them are ' +
+      'three separate requests: this SUPERSEDES the earlier "one shot, all tabs, switching tabs ' +
+      'issues no request" contract. Pagination and "load more" remain absent — narrowing is done ' +
+      'through the retrieval criteria, not by paging. Two filters are already applied ' +
+      'server-side: non-standard (adjusted-root) ' +
       'contracts never reach this table (they ARE collected and stored — the exclusion happens ' +
       'here, not at ingestion), and expired legs are dropped on "expiry > today". That "today" is ' +
       "the EXCHANGE's today, not the host's, and the DTE it feeds is an integer calendar-day " +
@@ -226,13 +233,21 @@ export class OptionsdeskController {
       'Two timestamps are NOT the same day and both ship: the block asOf / quoteAsOf describe the ' +
       'quotes, while oiAsOf describes open interest, which US option exchanges refresh pre-market ' +
       'and therefore belongs to the PREVIOUS session in an end-of-day snapshot. The OI column MUST ' +
-      'render oiAsOf. Activity is a RELATIVE rank inside the current tab candidate set, so the ' +
-      "server ships one set of marks per tab plus each leg's tab membership — clients filter by " +
-      'that membership instead of re-deriving the band predicates. Dead-tier legs stay in the ' +
+      "render oiAsOf. Activity is a RELATIVE rank inside THIS perspective's candidate set, so " +
+      'each leg carries ONE mark, computed for the perspective being answered — the other two ' +
+      'have nothing to rank against in this response and are not shipped. The legs array arrives ' +
+      'already ranked AND already truncated server-side at displayLimit: its order IS the display ' +
+      'order (clients MUST NOT re-sort) and matchedCount is the pre-truncation total, so ' +
+      '"showing the first D of N" stays computable without shipping D. Dead-tier legs stay in the ' +
       'list (sorted last) and legs with missing greeks stay in too, unclassified and uncoloured. ' +
       'No anchor for the symbol → 404 with code ANCHOR_NOT_FOUND_FOR_SYMBOL.',
   })
   @ApiResponse({ status: 200, description: 'Leg picker table', type: LegTableResponse })
+  @ApiResponse({
+    status: 400,
+    description: 'Missing / unknown perspective, or a half-given paired criterion (053 FR-001)',
+    type: ProblemDetailResponse,
+  })
   @ApiResponse({
     status: 401,
     description: 'Unauthenticated / account not ACTIVE',
@@ -248,9 +263,15 @@ export class OptionsdeskController {
     @Param('symbol') symbol: string,
     @Query() query: LegRetrievalQuery,
   ): Promise<LegTableResponse> {
-    // 覆盖只作用一个视角 (052 FR-015); 无参数 = 首屏 / 「复位」⇒ 三视角全走系统默认值。
+    // 053 FR-001: `perspective` 决定**返回哪个视角**, 必填 (缺参 / 非三值由 ValidationPipe 判
+    // 400)。除它以外无参数 = 该视角的首屏 / 「复位」⇒ 走系统默认值。
     return toLegTableResponse(
-      await this.getLegs.execute(symbol, undefined, toRetrievalOverride(query)),
+      await this.getLegs.execute(
+        symbol,
+        toRequestedPerspective(query),
+        undefined,
+        toRetrievalOverride(query),
+      ),
     );
   }
 

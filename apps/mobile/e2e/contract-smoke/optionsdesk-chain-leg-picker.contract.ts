@@ -7,25 +7,25 @@
  *
  * 补的是**另两层各自看不见的缝**：
  *   ① hermetic e2e（T035）把响应 mock 掉了 —— 它验的是「拿到这形状后 UI 怎么画」，且**蓄意不重算**
- *      `tabs` / `activityByTab`（成员判据属 server 单点 `leg-tab.rules.ts`）⇒ fixture 里那两列是手写的，
- *      server 改判据它照样绿。本片这两列全部由**真 server 算出**，断言即钉在那上面。
+ *      成员归属与活跃度标（判据属 server 单点 `leg-tab.rules.ts`）⇒ fixture 里那两样是手写的，
+ *      server 改判据它照样绿。本片这两样全部由**真 server 算出**，断言即钉在那上面。
  *   ② `get-legs.usecase.spec.ts` **整个 Prisma 是 vi.fn() mock**（`optionContract.findMany` 直接返数组）
  *      ⇒ 三条 SQL 侧判据 —— `option_type='PUT'` / `is_standard` / **到期日 `>` 当日** —— 以及
  *      「先定位最近一期 sessionDate 再整批取」的两步查询与同期多来源 dedupe，**从未跑过一次真 SQL**。
  *      本片是它们唯一的真库覆盖（server 侧无 legs 的 `*.it.spec.ts`）。
  *
  * 🚨 本片七条「只有端到端 + 真库才验得到」的靶心：
- *   1. **`activityByTab` 是逐 Tab 各排一次名**（D-SOT-5）—— 同一条腿在 `all` 里**不进前三**、在
- *      `build` 里**进前三**。合成一次全链排名再复用在任何单侧断言里都看不出错。
- *   2. **`tabs` 随水位档整体改变**（正确行为，不是 bug）—— 设 `gte_two_thirds` 后 Δ 深度档从
- *      「三档并集」收到 `deep`，`|Δ|=0.35` 那条腿**掉出** `rent`，且其 `activityByTab.rent` 转 `null`。
+ *   1. **活跃度标是逐视角各排一次名**（D-SOT-5）—— 同一条腿在全腿那份响应里**不进前三**、在
+ *      建仓那份里**进前三**。合成一次全链排名再复用在任何单侧断言里都看不出错。
+ *   2. **成员归属随水位档整体改变**（047 语义；已随 050 反转，见下）—— 设 `gte_two_thirds` 后
+ *      Δ 深度档从「三档并集」收到 `deep`，`|Δ|=0.35` 那条腿**掉出**收租视角。
  *   3. **两处量纲故意不同** —— 费率三列 `toFixed(6)` 是**小数比例**，`effectiveCostVsWPct`
  *      `toFixed(2)` 是**百分数**。统一成一个不会红，只会让人把 0.2 当成 0.2%。
  *   4. **三个时点互不相等** —— `asOf`(快照归属交易日) / `quoteAsOf`(采集时刻 ISO) /
  *      **`oiAsOf`(T−1 归属日)**，外加 T027a 的 `asOfFreshnessTier`：同一批数据只改 `session_date`
  *      一列即 `CURRENT → STALE`，而腿数据**一行不少**（陈旧 ≠ 减配）。
  *   5. **`greeksComplete=false` 的闸在 flag 不在 delta 列** —— 该腿库里**有** delta 值，响应仍须
- *      `absDelta/sigmaDistance/tier` 全 `null` 且只在 `all` 里。mock 数据永远看不到这个区别。
+ *      `absDelta/sigmaDistance/tier` 全 `null`。mock 数据永远看不到这个区别。
  *   6. **写端点无「清空」动作** —— body 只有 `positionBucket`，`null` / 非枚举 / 缺字段一律 400；
  *      重复设同一档也**推进** `positionBucketSetAt`（真时钟，注入时钟的单测证不了）。
  *   7. **响应键集封闭** —— `lastClosedSession` 在 `LegTableView` 里有、在 DTO 里**故意不下发**
@@ -36,8 +36,32 @@
  *    这条缝从未合过。落点 = {@link assertLegEngineContract}。
  * 🚨 **本文件的 047 语义已有三处随 050 反转**，各自就地写明「为什么该红」，🚫 MUST NOT 当成
  *    弱化断言：① 无 bid 的腿被权利金门槛整条移出响应（那条路径在本端点已不可达）；② 无 Δ 的腿
- *    照常按期限段进意图视角（Δ 退出召回判据）；③ 水位**不再**改变任何一腿的 Tab 归属 —— 靶心 ②
+ *    照常按期限段进意图视角（Δ 退出召回判据）；③ 水位**不再**改变任何一腿的视角归属 —— 靶心 ②
  *    由「整体改变」反转为「一条都不变」，守的是更强的性质。
+ *
+ * 🚨 **053 T014：契约按视角收窄，本片改成「三次请求各取一份再对照」**（`FR-005`）。
+ *    `perspective` **必填且决定返回哪个视角**（`FR-001`）；每腿 `tabs` / `tierByTab` /
+ *    `activityByTab`、顶层 `tabOrder` / `basisByTab` / `criteriaByTab` / 分视角排除数**全部退出契约**。
+ *    受影响的既有断言逐条**在原地**写明是「搬家」还是「结构性消失」（见 {@link assertLegEngineContract}
+ *    的头注、{@link assertActivityIsPerPerspective}、{@link assertCriteriaOverrideRoundTrip}）——
+ *    🚫 MUST NOT 机械套形状把判别力改没：改成一条恒真断言比删掉它更坏，它会冒充覆盖。
+ *    📌 五个新字段（`displayLimit` / `matchedCount` / `memberCount` / `candidateCapDropped` /
+ *       单笔权利金 · 相对价差）的**值往返归 T011** —— 本次只把既有镜像搬到新形状上，
+ *       新字段止于 {@link assertBlockShape} 的键集断言。
+ *
+ * 🚨 **053 T011：新字段解封 + 键集闭包补到腿这一层**。落点三处：
+ *    ① {@link assertNewFieldsRoundTrip} —— 六个新字段的**真 server 值**（T014 只钉了键集）；
+ *    ② {@link assertLegKeySetClosed} —— 每腿的键集闭包，`tabs` / `tierByTab` / `activityByTab`
+ *       是**腿级**结构，顶层那份键集断言看不见它们（逐个 `toBeUndefined` 对**新冒出来的**字段
+ *       同样是盲的，故一律用闭包）；
+ *    ③ {@link assertNullableStringShape} 纳入两个新的 nullable 小数列。
+ *
+ * 🚨 **T011 首次真跑本片时撞到两处 T014 遗漏的「值层」drift**（`nx typecheck` 结构上看不见 ——
+ *    它们的类型一字未变，只是**取值**换了语义；只有真打一次 server 才撞得到，这正是本层存在的
+ *    理由）。两处均**逐条裁定后就地订正**，判据写在原地：
+ *      ① {@link EXPECTED_ORDER} —— `legs[]` 从 047 的「legacy 载体顺序」变成**精排结果本身**
+ *         （`FR-002` / `FR-005` 删 `tabOrder`）；
+ *      ② 每腿 `basis` —— 从「按腿的**形态**判」变成「按**视角**定」（`FR-041`）。
  *
  * 边界与幂等：用**专属 ticker** `us:NVYL/P/N`（避开 045 的 `us:NVYX`、046 的 `us:NVYQ..T`、T035
  * hermetic 的 `us:PEP`/`us:AOS`），marketdata 三张事实表 + 交易日历无公开写端点 ⇒ 靠 `ctx.execSql`
@@ -111,11 +135,24 @@ const NON_STANDARD = 'US.NVYL.NONSTD';
 const CALL_LEG = 'US.NVYL.CALL';
 
 /**
- * 统一档位键排序（FR-019）+ 同档内到期日升序的**期望全序**。
- * 📌 `NO_BID` 已不在其中（050 权利金门槛把它整条移出响应）；`LIQ_BLOCKED` 判薄档、到期日
- *    晚于 `BUILD` ⇒ 落其后。
+ * 全腿视角 `legs[]` 的**期望全序** —— 🚨 **053 起它就是精排结果本身**（`FR-002` / `FR-005`：
+ * `tabOrder` 退役，数组顺序**就是**呈现顺序）。
+ *
+ * 🚨 **本常量在 T011 期实撞 stale，就地订正**（原值 `[RENT_DROP, RENT_STAY, BUILD, …]`）：
+ * 它编码的是 047 的「统一档位键排序（死档沉底 / 未判档居后）」—— 那是 `tabOrder` 还在、
+ * `legs[]` 只是条**legacy 载体顺序**的年代（052 版 `get-legs.usecase.ts` 逐字写着「一行不许动，
+ * 新消费方一律走 `tabOrder`」）。052 给全腿视角换上 `allLegsRanker`（实值沉底 → **费率降序**）
+ * 时，序落在 `tabOrder` 上、`legs[]` 不受影响 ⇒ 本常量一直没红；`FR-005` 把两者合并成一份之后，
+ * 它才第一次成为 `legs[]` 的判据。
+ * ⇒ 这是**值层** drift，`nx typecheck` 结构上看不见（T014 清的那 53 处红全在类型面），只有真
+ *   跑一次契约冒烟才撞得到 —— 也正是本层存在的理由。
+ *
+ * 期望值由 fixture 自身的**年化**费率手算（全腿视角恒年化，`BASIS_BY_TAB.all`）：
+ *   `BUILD` 48.6% > `RENT_DROP` 20.6% > `RENT_STAY` 16.6% > `LIQ_BLOCKED` 7.7% > `NO_GREEKS` 6.3%
+ * 📌 本链全是**虚值**认沽（K 一律低于 spot 70）⇒ 实值沉底那一级恒不触发，单主键即定全序。
+ * 📌 `NO_BID` 已不在其中（050 权利金门槛把它整条移出响应）。
  */
-const EXPECTED_ORDER = [RENT_DROP, RENT_STAY, BUILD, LIQ_BLOCKED, NO_GREEKS];
+const EXPECTED_ORDER = [BUILD, RENT_DROP, RENT_STAY, LIQ_BLOCKED, NO_GREEKS];
 
 /** 本批 eod 报价的采集时刻偏移（`RENT_STAY` 那条最新 ⇒ 区块级 quoteAsOf / source 取它）。 */
 const QUOTE_TIME = 'T20:10:00.000Z';
@@ -136,23 +173,30 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
     anchorIds.push(await createAnchor(cfg, CHAIN));
     anchorIds.push(await createAnchor(cfg, NO_CHAIN));
 
-    const before = await readLegs(cfg, CHAIN);
+    // 🚨 **053 FR-005：一次请求只作答一个视角** —— 047/050/051 那批「同一份响应里三格互相
+    //    对照」的断言随之改成**三次请求各取一份再对照**。守的性质一条没少（同一条腿在两个
+    //    视角判不同档、口径映射、分视角排除数…），只是判据从「一份响应的三格」搬到了
+    //    「三份响应的同一格」。
+    const views = await readAllPerspectives(cfg, CHAIN);
+    const before = views.all;
+
     assertBlockShape(before, today);
     assertSqlSideFilters(before, today);
-    assertLegDerivations(before, today);
-    assertLegEngineContract(before);
-    assertRetrievalCriteriaShape(before);
-    assertActivityIsPerTab(before);
-    assertUnselectedBucket(before);
+    assertLegDerivations(views, today);
+    assertLegEngineContract(views);
+    assertNewFieldsRoundTrip(views);
+    assertRetrievalCriteriaShape(views);
+    assertActivityIsPerPerspective(views);
+    assertUnselectedBucket(views);
 
-    await assertChainNotReady(cfg);
+    await assertChainNotReady(cfg, before);
     await assertNoAnchorIs404(cfg);
     await assertBucketWriteRejectsNonEnum(cfg, anchorIds[0]);
     // 🚨 排在水位写入**之前** —— 水位改变会重算意图链，把它挪到之后就得先想清楚
     //    「这批断言里的成员集合是哪个意图下的」，那是白白多出来的一层耦合。
-    await assertCriteriaOverrideRoundTrip(cfg, before);
+    await assertCriteriaOverrideRoundTrip(cfg, views);
 
-    const setAt = await assertBucketWriteAndPersistence(cfg, anchorIds[0], before);
+    const setAt = await assertBucketWriteAndPersistence(cfg, anchorIds[0], views);
     await assertRepeatedPickAdvancesSetAt(cfg, anchorIds[0], setAt);
     await assertStaleTierKeepsEveryLeg(ctx, cfg, today);
   } finally {
@@ -294,12 +338,35 @@ async function createAnchor(cfg: Cfg, ticker: string): Promise<string> {
   return created.data.id;
 }
 
-async function readLegs(cfg: Cfg, symbol: string): Promise<LegTableResponse> {
-  // 第二参 = 检索条件覆盖（052）；本函数走**默认值**路径 ⇒ 恒 undefined。
-  // 带覆盖的那条路径走 {@link readLegsWith} —— 参数序列化本身就是 052 T014 的靶心之一。
-  const res = await optionsdeskControllerLegs(symbol, undefined, cfg);
-  assert.equal(res.status, 200, `legs(${symbol}) expected 200, got ${res.status}`);
+/** 三视角各一份 —— 053 起它们是三次独立请求（`FR-005`）。 */
+type PerspectiveViews = Readonly<Record<Perspective, LegTableResponse>>;
+type Perspective = 'all' | 'build' | 'rent';
+const PERSPECTIVES: readonly Perspective[] = ['all', 'build', 'rent'];
+
+async function readLegs(
+  cfg: Cfg,
+  symbol: string,
+  perspective: Perspective,
+): Promise<LegTableResponse> {
+  // 🚨 053 FR-001：`perspective` **必填**，且决定返回哪个视角。缺参 → 400（见 rejects 那组）。
+  // 检索条件覆盖走 {@link readLegsWith} —— 参数序列化本身就是 052 T014 的靶心之一。
+  const res = await optionsdeskControllerLegs(symbol, { perspective }, cfg);
+  assert.equal(res.status, 200, `legs(${symbol}, ${perspective}) expected 200, got ${res.status}`);
+  assert.equal(
+    res.data.perspective,
+    perspective,
+    `legs(${perspective}): 响应 MUST 原样回显请求的视角 —— 靠调用点记忆的话, 覆盖错了照样渲染得出来一张表`,
+  );
   return res.data;
+}
+
+/** 三次请求，各取一个视角。**顺序无关** —— 服务端对每次请求无条件作答，无跨请求状态。 */
+async function readAllPerspectives(cfg: Cfg, symbol: string): Promise<PerspectiveViews> {
+  const [all, build, rent] = await Promise.all(
+    PERSPECTIVES.map((perspective) => readLegs(cfg, symbol, perspective)),
+  );
+  assert.ok(all !== undefined && build !== undefined && rent !== undefined);
+  return { all, build, rent };
 }
 
 /**
@@ -349,20 +416,33 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
   assert.equal(table.lLevel, 'L2', 'legs.lLevel: confidence 8.0 → L2');
 
   // 🎯 靶心 ⑦：键集封闭 —— `lastClosedSession` 是新鲜度档的中间量，**MUST NOT 下发**。
+  // 🚨 **053 起本表是破坏性变更的账本**（`FR-005`）：`tabOrder` 整条删（数组顺序就是顺序）、
+  //    `basisByTab` / `criteriaByTab` 收窄成标量 `basis` / `criteria`，另加五个新键。
+  //    键集断言因此同时兼任 `SC-002` 的「by-tab 残留为零」—— 谁把它们加回来这里立红。
+  //    📌 五个新键的**值**往返归 T011（本函数只钉键集，不预支那一面）。
   assert.deepEqual(
     Object.keys(table).sort(),
     [
       'asOf',
       'asOfFreshnessTier',
-      // 050 三个顶层增量（051 T012 起在此立账）—— 契约只加不删，键集随之扩容。
-      'basisByTab',
-      // 052 T011 的顶层增量（T014 起在此立账）—— 三视角各一份「条件全景」。
-      'criteriaByTab',
+      // 050 的顶层增量（051 T012 起在此立账）；053 起收窄成标量。
+      'basis',
+      // 053 FR-019c：候选上限 K 的触及数（异常位，与截断计数不同款）。
+      'candidateCapDropped',
+      // 052 T011 的顶层增量（T014 起在此立账）；053 起只发本视角那一份。
+      'criteria',
+      // 053 FR-011/FR-015：本视角的截断阈值 —— **未触发截断时也照常下发**。
+      'displayLimit',
       'gateCounts',
       'intent',
       'lLevel',
       'legs',
+      // 053 FR-005/FR-015：截断之前的条数 / 无覆盖口径下的候选数。
+      'matchedCount',
+      'memberCount',
       'oiAsOf',
+      // 053 FR-005：本次作答的视角，原样回显。
+      'perspective',
       'positionBucket',
       'positionBucketSetAt',
       'positionBucketSource',
@@ -372,11 +452,19 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'spot',
       'state',
       'symbol',
-      'tabOrder',
       'w',
       'zone',
     ],
-    'legs: 响应键集封闭 —— 无 lastClosedSession 泄漏',
+    'legs: 响应键集封闭 —— 无 lastClosedSession 泄漏, 且 by-tab 结构确实不再出现（SC-002）',
+  );
+
+  // 🚨 **053 T011：门槛计数也收窄成两个标量** —— 051 那份「分视角流动性排除数」随
+  //    `FR-005` 结构性消失（一次请求只判定一个视角 ⇒ 标量就是该视角自己的数）。
+  //    闭包而非逐个 `toBeUndefined()`：后者对**新冒出来的**分视角格子是盲的。
+  assert.deepEqual(
+    Object.keys(table.gateCounts).sort(),
+    ['excludedFromIntentTabs', 'removedByPremiumFloor'],
+    'legs.gateCounts: 键集封闭 —— 分视角排除数确实不再出现（SC-002）',
   );
 }
 
@@ -385,106 +473,234 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
  * 这七个字段迄今只被 server IT（不经生成客户端）与手写 hermetic mock（不经真 server）验过 ——
  * 「生成客户端 + 真 server」这条缝**从未合过**。本函数是它唯一的覆盖点。
  *
- * 🚨 四条一致性不变量，每条都是「两处各算一份必 drift 而两边都算得出结果」的形状：
- *   ① `tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}`（050 plan 不变量 1）；
- *   ② `tierByTab[t]` 对非成员恒 `null`（不变量 2）—— 反过来成员处也 MUST NOT 恒等于 legacy `tier`；
- *   ③ `basisByTab` 取值域封闭，且 `all` **恒年化**（混着 10 天与 200 天的腿，周化档界会让整列全死档）；
- *   ④ 计数：`标量 ≤ build + rent`，且本 fixture 里取**严格小于**（重叠区腿使两个分视角数各 +1、
- *      标量只 +1）。🚨 取等号会在这条腿上红错方向 —— 那正是 050 特意保留的语义。
+ * 🚨 **053 T014 随 `FR-005` 收窄重排了判据来源**，逐条登记（🚫 不是弱化，是搬家或结构性消失）：
+ *   ① 原「`tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}`」（050 plan 不变量 1）——
+ *      **结构性消失**：两个表达都被删了。`tabOrder` 删的理由恰恰就是这条不变量存在的理由
+ *      （同一个成员关系下发两份必 drift）；`FR-002` 起数组顺序**就是**顺序，只剩一份表达 ⇒
+ *      没有第二份可以与之对照。留位：下面那条「非空自检」照常，它守的是顺序判据不退化。
+ *   ② 原「`tierByTab[t]` 对非成员恒 `null`」—— **结构性消失**：不属于该视角的腿压根不在那份
+ *      响应里，没有「非成员格」这个位置了。它守的「进得了视角 ≠ 判得出档」由
+ *      {@link assertLegDerivations} 里 `NO_GREEKS` 在收租视角 `tier === null` 那条原样承担。
+ *   ③ 原「同一条腿两个视角判不同档」—— **搬家**：从一份响应的两格搬到两份响应的同一格。
+ *   ④ 原「`basisByTab` 取值域封闭 + `all` 恒年化」—— **搬家**：三份响应各自的标量 `basis`。
+ *   ⑤ 原「计数 `标量 ≤ build + rent` 且严格小于」—— **结构性消失 + 搬家**：一次请求只判定
+ *      一个视角 ⇒ 051 的「全表标量」与「分视角数」已是同一个数，不等式两侧塌成一侧。它守的
+ *      **实质**（重叠区那条腿让 build 与 rent **各自**的计数都 +1）改由两份响应各断一次 —— 这
+ *      与本片 T001 对同一条不等式的裁法同源。全腿那份恒 0（不受流动性门槛约束）。
  */
-function assertLegEngineContract(table: LegTableResponse): void {
-  const tabs = ['all', 'build', 'rent'] as const;
-
-  // ① 成员关系两处同源。
-  for (const tab of tabs) {
-    const fromLegTabs = table.legs
-      .filter((leg) => leg.tabs.includes(tab))
-      .map((leg) => leg.code)
-      .sort();
-    assert.deepEqual(
-      [...table.tabOrder[tab]].sort(),
-      fromLegTabs,
-      `legs.tabOrder.${tab} 的元素集合 MUST == { code | '${tab}' ∈ leg.tabs }（两处表达同一个成员关系）`,
-    );
-  }
+function assertLegEngineContract(views: PerspectiveViews): void {
+  // ① 顺序判据的非空自检（成员关系的两处同源已随 tabOrder 一并退役，见上）。
   assert.ok(
-    table.tabOrder.all.length > 0 && table.tabOrder.rent.length > 0,
-    'legs.tabOrder: 本 fixture 的全腿 / 收租视角都该非空 —— 空了的话下面的顺序判据全部退化',
+    views.all.legs.length > 0 && views.rent.legs.length > 0,
+    'legs: 本 fixture 的全腿 / 收租视角都该非空 —— 空了的话下面的顺序判据全部退化',
   );
 
-  // ② 非成员格恒 null；成员格给该视角口径下判出的档。
-  for (const leg of table.legs) {
-    for (const tab of tabs) {
-      if (leg.tabs.includes(tab)) continue;
-      assert.equal(
-        leg.tierByTab[tab],
-        null,
-        `legs[${leg.code}].tierByTab.${tab}: 不属于该视角就没有该视角的档位`,
-      );
-    }
-  }
-  // 建仓视角按**周化**档界判，全腿按年化 ⇒ 同一条腿两处不同档（051 SC-006 的服务端侧证据）。
-  const build = legOf(table, BUILD);
-  assert.equal(build.tierByTab.build, 'thin', 'legs: 周化 0.93% 落 [0.6%,1%) ⇒ 建仓视角判薄档');
+  // ③ 建仓视角按**周化**档界判，全腿按年化 ⇒ 同一条腿两份响应不同档（051 SC-006 的服务端侧证据）。
   assert.equal(
-    build.tierByTab.all,
+    legOf(views.build, BUILD).tier,
+    'thin',
+    'legs: 周化 0.93% 落 [0.6%,1%) ⇒ 建仓视角判薄档',
+  );
+  assert.equal(
+    legOf(views.all, BUILD).tier,
     'good',
     'legs: 同一条腿在全腿视角按**年化**判（0.93%×52 ≈ 48%）⇒ 好档 —— 两个视角判不同档是定义如此',
   );
 
-  // ③ 口径映射：取值域封闭 + 全腿恒年化。
-  for (const tab of tabs) {
+  // ④ 口径映射：取值域封闭 + 全腿恒年化。
+  for (const perspective of PERSPECTIVES) {
     assert.ok(
-      ['weekly', 'annualized'].includes(table.basisByTab[tab]),
-      `legs.basisByTab.${tab} 取值超出客户端已知值域：${table.basisByTab[tab]}`,
+      ['weekly', 'annualized'].includes(views[perspective].basis),
+      `legs(${perspective}).basis 取值超出客户端已知值域：${views[perspective].basis}`,
     );
   }
-  assert.equal(table.basisByTab.all, 'annualized', 'legs.basisByTab.all 恒年化');
-  assert.equal(table.basisByTab.build, 'weekly', 'legs.basisByTab.build = 周化');
-  assert.equal(table.basisByTab.rent, 'annualized', 'legs.basisByTab.rent = 年化');
+  assert.equal(views.all.basis, 'annualized', 'legs(all).basis 恒年化');
+  assert.equal(views.build.basis, 'weekly', 'legs(build).basis = 周化');
+  assert.equal(views.rent.basis, 'annualized', 'legs(rent).basis = 年化');
 
-  // ④ 两个计数：语义不对称 + 重叠区不等式。
-  const gates = table.gateCounts;
+  // ⑤ 两个计数：语义不对称 + 重叠区（改由两份响应各断一次）。
   assert.equal(
-    gates.removedByPremiumFloor,
+    views.all.gateCounts.removedByPremiumFloor,
     1,
     `legs.gateCounts.removedByPremiumFloor: ${NO_BID} 无 bid ⇒ 被权利金门槛整条移出响应，计 1 条`,
   );
+  for (const perspective of PERSPECTIVES) {
+    assert.equal(
+      views[perspective].legs.find((leg) => leg.code === NO_BID),
+      undefined,
+      `legs(${perspective}): 被权利金门槛挡下的腿**三个视角都看不到** —— 它不在 legs[] 里（与流动性那条的语义差别）`,
+    );
+  }
   assert.equal(
-    table.legs.find((leg) => leg.code === NO_BID),
-    undefined,
-    'legs: 被权利金门槛挡下的腿**三个视角都看不到** —— 它不在 legs[] 里（与流动性那条的语义差别）',
+    views.build.gateCounts.excludedFromIntentTabs,
+    1,
+    `legs(build): ${LIQ_BLOCKED} 落建仓段却被挡下`,
   );
-  assert.equal(gates.excludedFromIntentTabsByTab.build, 1, `legs: ${LIQ_BLOCKED} 落建仓段却被挡下`);
-  assert.equal(gates.excludedFromIntentTabsByTab.rent, 1, `legs: 同一条腿也落收租段（重叠区）`);
-  assert.equal(gates.excludedFromIntentTabs, 1, 'legs: 全表标量按**腿**去重 ⇒ 同一条腿只记一次');
-  assert.ok(
-    gates.excludedFromIntentTabs <=
-      gates.excludedFromIntentTabsByTab.build + gates.excludedFromIntentTabsByTab.rent,
-    'legs: 标量 MUST ≤ 两个分视角数之和',
+  assert.equal(
+    views.rent.gateCounts.excludedFromIntentTabs,
+    1,
+    'legs(rent): 🚨 同一条腿也落收租段（重叠区）—— 重叠带的腿让**两份**请求的计数各 +1，' +
+      '这就是 051 那条「标量 < build + rent」不等式的实质（拆请求后不等式两侧塌成同一个数）',
   );
-  assert.ok(
-    gates.excludedFromIntentTabs <
-      gates.excludedFromIntentTabsByTab.build + gates.excludedFromIntentTabsByTab.rent,
-    '🚨 本 fixture 含重叠区腿 ⇒ 期望**严格小于** —— 若相等说明重叠区语义没了（判据被改成取等号）',
+  assert.equal(
+    views.all.gateCounts.excludedFromIntentTabs,
+    0,
+    'legs(all): 全腿视角恒 0 —— 它不受流动性门槛约束（两个计数语义不对称的另一半）',
   );
   // 被流动性门槛挡下的腿**仍在响应里**，只是进不了意图视角 —— 与上面那条「真消失」成对照。
-  assert.deepEqual(
-    legOf(table, LIQ_BLOCKED).tabs,
-    ['all'],
-    'legs: 流动性挡下 ⇒ 只留全腿视角（腿没消失，这是两个计数不对称的全部含义）',
+  assert.ok(
+    views.all.legs.some((leg) => leg.code === LIQ_BLOCKED),
+    `legs(all): ${LIQ_BLOCKED} 仍在全腿视角（腿没消失，这是两个计数不对称的全部含义）`,
   );
+  for (const perspective of ['build', 'rent'] as const) {
+    assert.equal(
+      views[perspective].legs.find((leg) => leg.code === LIQ_BLOCKED),
+      undefined,
+      `legs(${perspective}): 被流动性门槛挡下 ⇒ 不进意图视角`,
+    );
+  }
 
-  // ⑤ 两个标是 boolean 不是 nullable —— 客户端据此直接分支，null 会静默渲成「无标」。
-  for (const leg of table.legs) {
+  // ⑥ 两个标是 boolean 不是 nullable —— 客户端据此直接分支，null 会静默渲成「无标」。
+  for (const leg of views.all.legs) {
     assert.equal(typeof leg.isRecommended, 'boolean', `legs[${leg.code}].isRecommended`);
     assert.equal(typeof leg.isMonthlyChain, 'boolean', `legs[${leg.code}].isMonthlyChain`);
   }
   assert.equal(
-    legOf(table, NO_GREEKS).isRecommended,
+    legOf(views.all, NO_GREEKS).isRecommended,
     false,
     'legs: greeks 缺失恒不带推荐标（Δ 算不出来就没有「贴合当前意图」可言）',
   );
+}
+
+// ── 🎯 053 T011 —— 六个新字段的**真 server 值往返**（T014 只让它们进了键集）────────────────
+/**
+ * `FR-005` / `FR-015` / `FR-019c` / `FR-032` 的六个新字段迄今只被 server 单测（不经 HTTP、
+ * 不经序列化）与手写 hermetic mock（不经真 server）验过 —— 「生成客户端 + 真 server」这条缝
+ * 只在 {@link assertBlockShape} 的**键集**上合过，**值**从未走过一遍真链路。
+ *
+ * 🚨 只有这一层才验得到的四条：
+ *   ① **两个新列的量纲故意不同** —— `contractPremium` 是**金额** `toFixed(2)`、`relativeSpread`
+ *      是**无量纲比例** `toFixed(4)`（后者与 `criteria.relativeSpreadMax` 同标度，两处要能直接
+ *      比）。hermetic 那份 fixture 里两列都是手填字符串，标度写错照样渲染得出来一张表。
+ *   ② **合约乘数只有一份** —— `contractPremium × volume === turnover`。两列共用服务端持有的
+ *      那**一个**乘数，这正是 `FR-032` 禁客户端自己乘一次的全部理由；乘错时两列会一起错，
+ *      但**这条账对不上**。
+ *   ③ **相对价差与召回层判据同源** —— 被流动性门槛挡出意图视角的那条腿，它上屏的价差 MUST
+ *      高于同一次响应里下发的 `relativeSpreadMax`；留在视角里的腿 MUST NOT。「这条腿为什么
+ *      被挡了」于是在屏幕上对得上账 —— 各算一份的话两个数都显示得出来、且都不会红。
+ *   ④ **`FR-015` 的可验证形态** —— **未触发截断时 `displayLimit` 与 `matchedCount` 仍下发**。
+ *      只在截断时下发会让「链规模逼近阈值」恰恰观测不到，而那正是该条要防的静默。
+ *
+ * 🚫 **蓄意不断言 `displayLimit` 的具体取值**：那三个数是 T012 待实测标定的策略参数，抄进断言
+ *    就是第二处硬编码 —— 标定那天这里会红，而红的原因与本片无关。⇒ 只断言**结构性质**（正整数
+ *    或 null / 与 `matchedCount` 的关系 / 跨请求恒等，后者落在 {@link assertChainNotReady}）。
+ */
+function assertNewFieldsRoundTrip(views: PerspectiveViews): void {
+  // ① 两个新列的真值 + 量纲。期望值是 seed 里 bid/ask 的手算结果（乘数 100 / mid 口径），
+  //    🚫 MUST NOT 改写成「拿响应里的 bid 再算一遍」—— 那是把被验对象搬进期望，恒真。
+  for (const [code, premium, spread] of [
+    // bid 6.0000 → 600.00; mid 6.25, (6.5−6.0)/6.25 = 0.08
+    [RENT_DROP, '600.00', '0.0800'],
+    // bid 5.0000 → 500.00; mid 5.2, 0.4/5.2 = 0.076923…
+    [RENT_STAY, '500.00', '0.0769'],
+    // bid 0.9000 → 90.00; mid 0.975, 0.15/0.975 = 0.153846…
+    [BUILD, '90.00', '0.1538'],
+    // bid 0.5000 → 50.00; mid 0.85, 0.7/0.85 = 0.823529… ⇒ 就是它被流动性门槛挡下的那个数
+    [LIQ_BLOCKED, '50.00', '0.8235'],
+    // bid 2.0000 → 200.00; mid 2.15, 0.3/2.15 = 0.139534…
+    [NO_GREEKS, '200.00', '0.1395'],
+  ] as const) {
+    const leg = legOf(views.all, code);
+    assert.ok(
+      leg.contractPremium !== null && leg.relativeSpread !== null,
+      `legs[${code}]: 响应内的腿双边报价齐全 ⇒ 两个新列都该有值（null 在此即算错）`,
+    );
+    assert.equal(
+      leg.contractPremium,
+      premium,
+      `legs[${code}].contractPremium = bid × 合约乘数（**金额**, toFixed(2)）—— 🚨 字段名不是 premium`,
+    );
+    assert.equal(
+      leg.relativeSpread,
+      spread,
+      `legs[${code}].relativeSpread = (ask − bid) / mid（**无量纲比例**, toFixed(4)）`,
+    );
+    assert.match(
+      leg.contractPremium,
+      /^\d+\.\d{2}$/,
+      `legs[${code}].contractPremium: 金额定标 2 位（与相对价差的 4 位 MUST NOT 统一）`,
+    );
+    assert.match(
+      leg.relativeSpread,
+      /^\d+\.\d{4}$/,
+      `legs[${code}].relativeSpread: 比例定标 4 位（同 criteria.relativeSpreadMax, 两处要能直接比）`,
+    );
+  }
+
+  // ② 合约乘数只有一份：单笔权利金 × 成交量 === 成交额。
+  const rentDrop = legOf(views.all, RENT_DROP);
+  assert.ok(
+    rentDrop.contractPremium !== null && rentDrop.volume !== null && rentDrop.turnover !== null,
+    `legs[${RENT_DROP}]: 本条三列都该有值（对账的前提）`,
+  );
+  assert.equal(
+    Number(rentDrop.contractPremium) * rentDrop.volume,
+    Number(rentDrop.turnover),
+    '🚨 单笔权利金 × 成交量 === 成交额 —— 两列共用服务端那**一个**合约乘数（FR-032 禁客户端' +
+      '再乘一次的全部理由）。乘错时两列一起错、数值各自自洽, 只有这条账对不上',
+  );
+
+  // ③ 相对价差与召回层流动性判据**同一个**派生值（阈值就是拿它比的）。
+  //    🚫 不硬编码 0.35：上界由同一次响应下发, 拿它作判据 ⇒ 阈值改了这里不会红错方向。
+  const spreadMax = views.rent.criteria.defaults.relativeSpreadMax;
+  assert.ok(spreadMax !== null, 'criteria(rent).defaults.relativeSpreadMax: 意图视角设价差上界');
+  assert.ok(
+    Number(legOf(views.all, LIQ_BLOCKED).relativeSpread) > Number(spreadMax),
+    `🚨 ${LIQ_BLOCKED} 上屏的相对价差 MUST 高于同一响应下发的 relativeSpreadMax(${spreadMax}) ——` +
+      ' 它正是这条腿被挡出两个意图视角的原因。上屏的数与挡腿的数各算一份的话,' +
+      '「这条腿为什么被挡了」在屏幕上就对不上账, 而两个数都显示得出来',
+  );
+  assert.ok(
+    Number(legOf(views.rent, RENT_DROP).relativeSpread) <= Number(spreadMax),
+    `${RENT_DROP} 留在收租视角 ⇒ 它上屏的价差 MUST NOT 超过上界（反向那半边）`,
+  );
+
+  // ④ 四个计数 / 阈值字段：三视角逐份验（一次请求只作答一个视角 ⇒ 没有「另两格」可比）。
+  for (const perspective of PERSPECTIVES) {
+    const view = views[perspective];
+    assert.ok(
+      view.displayLimit === null || (Number.isInteger(view.displayLimit) && view.displayLimit > 0),
+      `legs(${perspective}).displayLimit MUST 为正整数或 null（null = 该视角不设阈值）, ` +
+        `实得 ${String(view.displayLimit)} —— 🚫 蓄意不断言它等于多少（T012 标定）`,
+    );
+    // 🎯 FR-015：本 fixture 只有个位数条腿 ⇒ 恒不触发截断, 而这正是该条要覆盖的那一半 ——
+    //    **没截也照常下发**, 否则「链规模逼近阈值」在屏幕上永远观测不到。
+    assert.equal(
+      view.matchedCount,
+      view.legs.length,
+      `legs(${perspective}).matchedCount: 未触发截断 ⇒ 等于实际条数（它取的是截断**之前**的数）`,
+    );
+    if (view.displayLimit !== null) {
+      assert.ok(
+        view.matchedCount <= view.displayLimit,
+        `legs(${perspective}): 本 fixture MUST NOT 触发截断（触发了则上一条的判别力已失效）`,
+      );
+    }
+    // FR-009：未覆盖任何条件 ⇒ 无覆盖口径的成员数与本次成员数是同一个（收窄后的分叉见
+    // assertCriteriaOverrideRoundTrip —— 相等与不等两侧都要有证据）。
+    assert.equal(
+      view.memberCount,
+      view.matchedCount,
+      `legs(${perspective}).memberCount: 未覆盖 ⇒ 恒等于 matchedCount（此时区块头 MUST NOT 并列显示两个相等的数）`,
+    );
+    // FR-019c：K 触及是**异常位**（保险丝熔断），本链 9 条合约离 K 差三个数量级 ⇒ 恒 0；
+    // 且它是**数**不是 null —— 计数与「未知」是两件事。
+    assert.equal(
+      view.candidateCapDropped,
+      0,
+      `legs(${perspective}).candidateCapDropped: 未触及候选上限 ⇒ 0（它是计数不是「未知」）`,
+    );
+  }
 }
 
 // ── 🎯 052 T014 —— 检索条件：默认值下发 / 覆盖生效 / 三态计数 的真 server 侧证据 ─────────────
@@ -518,50 +734,46 @@ const CRITERION_KEYS = [
  *    策略参数，抄进断言就是第二处硬编码 —— 标定那天这里会红，而红的原因与本片无关。
  *    ⇒ 一律断言**结构性质**（类型 / 相对 spot 的方向 / 三视角之间的异同）。
  */
-function assertRetrievalCriteriaShape(table: LegTableResponse): void {
-  const tabs = ['all', 'build', 'rent'] as const;
-
-  for (const tab of tabs) {
-    const c: PerspectiveCriteriaResponse = table.criteriaByTab[tab];
+function assertRetrievalCriteriaShape(views: PerspectiveViews): void {
+  for (const perspective of PERSPECTIVES) {
+    // 🚨 053 起「三视角的条件全景」不再是一份响应里的三格，而是**三份响应各自那一份**
+    //    （`criteriaByTab` → `criteria`）—— 052 恒发三份的前提「本地切视角不发请求」已整条作废。
+    const c: PerspectiveCriteriaResponse = views[perspective].criteria;
     // 未覆盖 ⇒ 生效值**逐字**等于系统默认值（客户端首屏据此把控件填成「当前就是这样召回的」）。
     assert.deepEqual(
       c.effective,
       c.defaults,
-      `criteriaByTab.${tab}: 未覆盖时 effective MUST 逐字等于 defaults`,
+      `criteria(${perspective}): 未覆盖时 effective MUST 逐字等于 defaults`,
     );
     for (const key of CRITERION_KEYS) {
       assert.equal(
         c.outcomes[key].state,
         'default',
-        `criteriaByTab.${tab}.outcomes.${key}.state: 没动过 ⇒ default`,
+        `criteria(${perspective}).outcomes.${key}.state: 没动过 ⇒ default`,
       );
       assert.equal(
         c.outcomes[key].excludedCount,
         0,
-        `criteriaByTab.${tab}.outcomes.${key}.excludedCount: 非 narrowed 恒 0`,
+        `criteria(${perspective}).outcomes.${key}.excludedCount: 非 narrowed 恒 0`,
       );
     }
   }
 
-  const all = table.criteriaByTab.all.defaults;
-  const build = table.criteriaByTab.build.defaults;
-  const rent = table.criteriaByTab.rent.defaults;
+  const all = views.all.criteria.defaults;
+  const build = views.build.criteria.defaults;
+  const rent = views.rent.criteria.defaults;
 
   // ① 靶心：nullable 小数字段的**运行时类型**（orval objectmap 陷阱的唯一真实证据）。
-  assert.equal(
-    typeof rent.strikeMax,
-    'string',
-    'criteriaByTab.rent.defaults.strikeMax 是定标 string',
-  );
+  assert.equal(typeof rent.strikeMax, 'string', 'criteria(rent).defaults.strikeMax 是定标 string');
   assert.equal(
     typeof rent.premiumMin,
     'string',
-    'criteriaByTab.rent.defaults.premiumMin 是定标 string',
+    'criteria(rent).defaults.premiumMin 是定标 string',
   );
   assert.equal(
     typeof rent.relativeSpreadMax,
     'string',
-    'criteriaByTab.rent.defaults.relativeSpreadMax 是定标 string',
+    'criteria(rent).defaults.relativeSpreadMax 是定标 string',
   );
   assert.equal(typeof rent.livenessMin?.oi, 'number', 'livenessMin.oi 是张数（整数），不是 string');
   assert.equal(typeof rent.dteBand?.min, 'number', 'dteBand 两端是天数（整数）');
@@ -570,40 +782,32 @@ function assertRetrievalCriteriaShape(table: LegTableResponse): void {
   //    ⇒ 结构判据退化、由比例项接管 ⇒ 上界必**严格高于** spot。
   //    🚫 不断言具体数值（X 待 T016 标定）；断言方向即可证明「它是 spot 的函数」。
   assert.ok(
-    Number(rent.strikeMax) > Number(table.spot),
-    `criteriaByTab.rent.defaults.strikeMax(${rent.strikeMax}) MUST > spot(${table.spot}) —— ` +
+    Number(rent.strikeMax) > Number(views.rent.spot),
+    `criteria(rent).defaults.strikeMax(${rent.strikeMax}) MUST > spot(${views.rent.spot}) —— ` +
       '否则每条虚值认沽都被自己的成色上界挡住',
   );
 
   // ③ 三视角的差**只在三个维度上**（其余三维一律相同）。
-  assert.equal(all.strikeMax, null, 'criteriaByTab.all: 全腿是参照视角，不设成色上界（FR-006）');
-  assert.equal(
-    build.strikeMax,
-    null,
-    'criteriaByTab.build: 建仓由有效成本硬门槛等价挡住（FR-007）',
-  );
-  assert.equal(all.dteBand, null, 'criteriaByTab.all: 全腿不设期限段（FR-003）');
-  assert.equal(
-    all.relativeSpreadMax,
-    null,
-    'criteriaByTab.all: 流动性门槛只作用意图视角（FR-010）',
-  );
+  assert.equal(all.strikeMax, null, 'criteria(all): 全腿是参照视角，不设成色上界（FR-006）');
+  assert.equal(build.strikeMax, null, 'criteria(build): 建仓由有效成本硬门槛等价挡住（FR-007）');
+  assert.equal(all.dteBand, null, 'criteria(all): 全腿不设期限段（FR-003）');
+  assert.equal(all.relativeSpreadMax, null, 'criteria(all): 流动性门槛只作用意图视角（FR-010）');
   assert.notDeepEqual(
     build.dteBand,
     rent.dteBand,
-    'criteriaByTab: 建仓与收租的期限段 MUST 不同（两个意图各自的召回段）',
+    'criteria: 建仓与收租的期限段 MUST 不同（两个意图各自的召回段）',
   );
   for (const [label, a, b] of [
     ['premiumMin', all.premiumMin, rent.premiumMin],
     ['premiumMin(build)', build.premiumMin, rent.premiumMin],
   ] as const) {
-    assert.deepEqual(a, b, `criteriaByTab: ${label} 三视角一律相同（FR-009 未改）`);
+    assert.deepEqual(a, b, `criteria: ${label} 三视角一律相同（FR-009 未改）`);
   }
-  assert.deepEqual(all.livenessMin, rent.livenessMin, 'criteriaByTab: 活性下限三视角一律相同');
+  assert.deepEqual(all.livenessMin, rent.livenessMin, 'criteria: 活性下限三视角一律相同');
   assert.deepEqual(
     build.relativeSpreadMax,
     rent.relativeSpreadMax,
-    'criteriaByTab: 两个意图视角同一道价差上界',
+    'criteria: 两个意图视角同一道价差上界',
   );
 }
 
@@ -614,11 +818,12 @@ function assertRetrievalCriteriaShape(table: LegTableResponse): void {
  *    `effective` 仍等于 `defaults` —— 屏幕上一切正常，只是「搜」这个动作什么也没做。
  *    ⇒ 每条断言都钉在「那一刀真的切下去了」的可观察后果上（成员集合 + 计数 + effective）。
  */
-async function assertCriteriaOverrideRoundTrip(cfg: Cfg, before: LegTableResponse): Promise<void> {
+async function assertCriteriaOverrideRoundTrip(cfg: Cfg, views: PerspectiveViews): Promise<void> {
   // 收租视角的行权价：RENT_DROP 65 / RENT_STAY 60 / NO_GREEKS 55（见 seed）。
   // 把上界压到 60 ⇒ 只有 RENT_DROP 掉出去，且**恰等于上界**的 RENT_STAY MUST 留下（闭区间）。
   const narrowed = await readLegsWith(cfg, CHAIN, { perspective: 'rent', strikeMax: '60.0000' });
-  const rc = narrowed.criteriaByTab.rent;
+  const rc = narrowed.criteria;
+  const narrowedCodes = narrowed.legs.map((leg) => leg.code);
 
   assert.equal(
     rc.effective.strikeMax,
@@ -636,33 +841,48 @@ async function assertCriteriaOverrideRoundTrip(cfg: Cfg, before: LegTableRespons
     1,
     '边际口径：把这一维换回系统默认值能多看到 RENT_DROP 一条（其余维保持用户值）',
   );
+  // 📌 「成员集合」的判据从 `tabOrder.rent` 换成响应的 `legs[]` 本身 —— 数组顺序就是顺序，
+  //    那份并行的有序 code 列表已随 FR-005 退役（同一个信息的第二份表达必 drift）。
+  assert.ok(!narrowedCodes.includes(RENT_DROP), `legs?strikeMax: ${RENT_DROP}(65) 掉出收租视角`);
   assert.ok(
-    !narrowed.tabOrder.rent.includes(RENT_DROP),
-    `legs?strikeMax: ${RENT_DROP}(65) 掉出收租视角`,
-  );
-  assert.ok(
-    narrowed.tabOrder.rent.includes(RENT_STAY),
+    narrowedCodes.includes(RENT_STAY),
     `🚨 闭区间：${RENT_STAY} 行权价恰等于上界 60 ⇒ MUST 留下（取开区间会在这里红）`,
   );
 
-  // 🚨 覆盖**只作用当前视角**（T010 裁定）：另两个视角照常走各自默认值。
-  for (const other of ['all', 'build'] as const) {
-    assert.deepEqual(
-      narrowed.criteriaByTab[other].effective,
-      narrowed.criteriaByTab[other].defaults,
-      `legs?perspective=rent: ${other} 视角 MUST 不受影响（覆盖只作用一个视角）`,
-    );
-    for (const key of CRITERION_KEYS) {
-      assert.equal(
-        narrowed.criteriaByTab[other].outcomes[key].state,
-        'default',
-        `legs?perspective=rent: ${other}.outcomes.${key} MUST 仍是 default`,
-      );
-    }
-  }
+  // 🚨 **053 T011 —— 两个计数在此分叉**（`FR-009`）：这是它们分成两个数的全部理由，也是区块头
+  //    「筛后 N · 全量 M」的数据源。🚫 `memberCount` MUST NOT 用六维边际计数加总充当（Guardrail
+  //    12：那个口径下被两维同时挡下的腿两维都不计它 ⇒ 加总少报）—— 此处的独立判据是**另一次
+  //    不带条件的请求**返回的成员数，与边际口径无关。
+  assert.equal(
+    narrowed.matchedCount,
+    narrowed.legs.length,
+    'legs?strikeMax.matchedCount: 本次条件下的成员数（未触发截断 ⇒ 等于实际条数）',
+  );
+  assert.equal(
+    narrowed.memberCount,
+    views.rent.legs.length,
+    'legs?strikeMax.memberCount: **无覆盖口径**的成员数 —— 与不带条件那次请求的条数逐个相同',
+  );
   assert.ok(
-    narrowed.tabOrder.all.includes(RENT_DROP),
-    `legs?perspective=rent: 被收租条件切掉的 ${RENT_DROP} **仍在全腿视角** —— 这就是「只作用一个视角」的可观察后果`,
+    narrowed.memberCount > narrowed.matchedCount,
+    `legs?strikeMax: 收窄 ⇒ memberCount(${narrowed.memberCount}) MUST > matchedCount(${narrowed.matchedCount})；` +
+      '相等即 memberCount 跟着覆盖一起被收窄了（那样它就只是 matchedCount 的第二份表达）',
+  );
+  // 阈值不吃条件：它是**该视角的配置**，与本次召回到几条无关。
+  assert.equal(
+    narrowed.displayLimit,
+    views.rent.displayLimit,
+    'legs?strikeMax.displayLimit: 截断阈值 MUST NOT 随检索条件变（它是视角的配置不是本次的结果）',
+  );
+
+  // 🚨 **052 那三条「覆盖不串味到另两个视角」随 FR-005 结构性消失** —— 一次请求只作答一个
+  //    视角，本响应里压根没有另两个视角的格子可比；跨请求也无从串味：条件是 query 参数，服务端
+  //    对每次请求无条件作答、零跨请求状态 ⇒ 断言恒真 = 假绿。本片 T005 对同型的 3 条已如此裁定，
+  //    此处沿用。**留下的是它守的可观察后果**：被收租条件切掉的那条**仍在全腿视角**，而全腿那份
+  //    是另一次不带条件的请求 —— 下面这条正是它。
+  assert.ok(
+    views.all.legs.some((leg) => leg.code === RENT_DROP),
+    `legs?perspective=rent: 被收租条件切掉的 ${RENT_DROP} **仍在全腿视角那次请求里**`,
   );
   for (const key of CRITERION_KEYS) {
     if (key === 'strikeMax') continue;
@@ -675,7 +895,7 @@ async function assertCriteriaOverrideRoundTrip(cfg: Cfg, before: LegTableRespons
 
   // 空串 = 覆盖为「不限」（缺键才是「没动过」）。本链无高于成色上界的腿 ⇒ 放宽后一条不多。
   const widened = await readLegsWith(cfg, CHAIN, { perspective: 'rent', strikeMax: '' });
-  const wc = widened.criteriaByTab.rent;
+  const wc = widened.criteria;
   assert.equal(
     wc.effective.strikeMax,
     null,
@@ -692,9 +912,16 @@ async function assertCriteriaOverrideRoundTrip(cfg: Cfg, before: LegTableRespons
     '放宽不产生排除 ⇒ 计数恒 0（客户端据此不显示）',
   );
   assert.deepEqual(
-    widened.tabOrder.rent,
-    before.tabOrder.rent,
-    'legs?strikeMax=（空串）：本链无高于默认上界的腿 ⇒ 放宽后成员集合一条不变',
+    widened.legs.map((leg) => leg.code),
+    views.rent.legs.map((leg) => leg.code),
+    'legs?strikeMax=（空串）：本链无高于默认上界的腿 ⇒ 放宽后成员集合与顺序逐条不变',
+  );
+  // 📌 **覆盖了但没产生排除 ⇒ 两个计数仍相等** —— 分叉的触发条件是「排除真的发生了」而不是
+  //    「有没有覆盖」。少了这条，上面那条 `>` 有可能是「一有覆盖就分叉」的错实现照样满足。
+  assert.equal(
+    widened.memberCount,
+    widened.matchedCount,
+    'legs?strikeMax=（空串）：放宽不产生排除 ⇒ memberCount 与 matchedCount 仍相等（分叉吃的是排除, 不是覆盖）',
   );
 
   // 契约级拒绝三条 —— 只有真 server 会拒（hermetic mock 想拒也是自己编的）。
@@ -704,9 +931,17 @@ async function assertCriteriaOverrideRoundTrip(cfg: Cfg, before: LegTableRespons
       '只给活性一支（半对不是合法维度值，OR 的另一支缺了整维就没定义）',
       { perspective: 'rent', oiMin: '10' },
     ],
+    // 🚨 **053 FR-001 把这条从「给了条件才必填」升成「恒必填」** —— 它现在决定的是**返回哪个
+    //    视角**，不只是覆盖落在谁身上。故用**只带条件、不带视角**的那组仍然 400，且缺参本身
+    //    （连条件都不带）也 400：服务端 MUST NOT 替你挑一个默认视角。
+    //    📌 参数类型上 `perspective` 已是必填 ⇒ 这里的断言只能造一个越过类型的入参。
     [
-      '给了条件却没给 perspective（覆盖只作用一个视角，不说是哪个就无从落位）',
-      { strikeMax: '60.0000' },
+      '给了条件却没给 perspective（它决定返回哪个视角，不说是哪个就无从作答）',
+      { strikeMax: '60.0000' } as unknown as OptionsdeskControllerLegsParams,
+    ],
+    [
+      '连视角都不带的裸请求（🚫 服务端 MUST NOT 默认一个视角：腿数、名次、档位全都正常，只是答的不是问的那个）',
+      {} as unknown as OptionsdeskControllerLegsParams,
     ],
   ];
   for (const [label, params] of rejects) {
@@ -727,7 +962,7 @@ function assertSqlSideFilters(table: LegTableResponse, today: string): void {
   assert.deepEqual(
     codes,
     EXPECTED_ORDER,
-    'legs: 全量适格腿 + 统一档位键排序（死档沉底 / 未判档居后）',
+    'legs: 全量适格腿 + **精排结果本身**（053 FR-002：数组顺序就是呈现顺序；全腿视角 = 实值沉底 → 费率降序）',
   );
 
   for (const excluded of [CALL_LEG, NON_STANDARD, EXPIRES_TODAY]) {
@@ -749,8 +984,10 @@ function assertSqlSideFilters(table: LegTableResponse, today: string): void {
 }
 
 // ── 逐腿派生：量纲 / nullable 真值 / greeks 闸 / 财报域 ───────────────────────────────────────
-function assertLegDerivations(table: LegTableResponse, today: string): void {
+function assertLegDerivations(views: PerspectiveViews, today: string): void {
+  const table = views.all;
   for (const leg of table.legs) {
+    assertLegKeySetClosed(leg);
     assertNullableStringShape(leg);
     // Guardrail 10：`|Δ|` 与 σ 距同源 —— 要么同时有值要么同时为空。
     assert.equal(
@@ -767,15 +1004,45 @@ function assertLegDerivations(table: LegTableResponse, today: string): void {
   assert.equal(legOf(table, LIQ_BLOCKED).dteDays, 40, 'legs: 40 天落 [30,49] 重叠区');
   assert.equal(legOf(table, NO_GREEKS).dteDays, 220);
 
-  // ② 腿族口径按形态判（DTE ≤ 14 ∧ |Δ| ∈ [0.40,0.55] ⇒ 周化），其余年化。
-  assert.equal(legOf(table, BUILD).basis, 'weekly', 'legs: 建仓形态的腿按周化口径');
-  assert.equal(legOf(table, RENT_DROP).basis, 'annualized');
+  // ② 🚨 **T011 期实撞的第二处值层 drift** —— 原断言「腿族口径按**形态**判（DTE ≤ 14 ∧
+  //    |Δ| ∈ [0.40,0.55] ⇒ 周化）」随 `FR-041` **结构性消失**：每腿的 `basis` 现在恒等于
+  //    `BASIS_BY_TAB[perspective]`（server `get-legs.usecase.ts` 逐字写着「本次口径由视角定，
+  //    不再由 `tabs` 反推」）⇒「形态」已不进这个判定，原断言在全腿那份上**该红**。
+  //    🚫 换上的两条不是弱化，各自更强：
+  //    (a) **搬家** —— 同一条腿在两份响应里 basis 不同，即「口径由视角定」的直接证据。
+  assert.equal(
+    legOf(views.build, BUILD).basis,
+    'weekly',
+    'legs(build): 建仓视角周化 —— 口径跟**视角**走',
+  );
+  assert.equal(
+    legOf(table, BUILD).basis,
+    'annualized',
+    '🚨 legs(all): **同一条腿**在全腿那份里是年化（原「按形态判」正是在此该红）',
+  );
+  //    (b) **新判据** —— 一份响应内**每行同族**：这是 FR-019「跨族 MUST NOT 比数值」在收窄后
+  //        的落点（同屏数值从此可比）。它跨两条代码路径对账：区块级 basis 由 DTO 层取、每腿
+  //        那份由 use case 取，两处 drift 时每行照样有个合法值、不会红。
+  for (const perspective of PERSPECTIVES) {
+    const view = views[perspective];
+    for (const leg of view.legs) {
+      assert.equal(
+        leg.basis,
+        view.basis,
+        `legs(${perspective})[${leg.code}].basis MUST 与区块级 basis 逐行相同（一份响应内每行同族）`,
+      );
+    }
+  }
 
-  // ③ 档位按 bid 口径 + 本行口径判；薄档**带出** ask 口径费率，其余档恒 null。
+  // ③ 档位按 bid 口径 + **本次视角**的口径判（053 FR-041）；薄档**带出** ask 口径费率。
+  //    🚨 053 起 `tier` 是视角级的：BUILD 这条腿在**建仓**那份响应里才判薄档（周化档界），
+  //       在全腿那份按年化判好档 —— 故薄档相关的两条断言取自 `views.build`，🚫 MUST NOT 留在
+  //       全腿那份上（那会在「档界跟视角走」正确实现时红错方向）。
   assert.equal(legOf(table, RENT_DROP).tier, 'good');
   assert.equal(legOf(table, RENT_STAY).tier, 'good');
-  assert.equal(legOf(table, BUILD).tier, 'thin', 'legs: 周化 0.93% 落 [0.6%,1%) ⇒ 薄档');
-  assert.ok(legOf(table, BUILD).askRate !== null, 'legs: 薄档 MUST 带出 ask 口径费率');
+  const buildInBuildView = legOf(views.build, BUILD);
+  assert.equal(buildInBuildView.tier, 'thin', 'legs(build): 周化 0.93% 落 [0.6%,1%) ⇒ 薄档');
+  assert.ok(buildInBuildView.askRate !== null, 'legs(build): 薄档 MUST 带出 ask 口径费率');
   assert.equal(legOf(table, RENT_DROP).askRate, null, 'legs: 非薄档 askRate 恒 null');
 
   // ④ 🎯 靶心 ③ —— 两处量纲故意不同，同一行上对照着验。
@@ -816,12 +1083,22 @@ function assertLegDerivations(table: LegTableResponse, today: string): void {
   assert.equal(noGreeks.tier, null, 'legs: greeks 不全恒不判档（费率算得出来但会骗人）');
   // 🚨 **050 起 Δ 整个退出召回判据**（FR-009）⇒ 无 Δ 的腿照常按期限段进意图视角。047 这条断言
   //    写的是 `['all']`（那时 Tab 归属吃 Δ 深度档），换代后它**该红** —— 改判为 rent 段成员。
-  assert.deepEqual(
-    noGreeks.tabs,
-    ['all', 'rent'],
-    'legs: 无 Δ 的腿照常按期限段进收租视角（050 起 Δ 不是召回判据）',
+  // 📌 053：每腿 `tabs` 已删 ⇒ 判据从「这条腿自称属于哪些视角」改成「它在不在那个视角那次
+  //    请求的 `legs[]` 里」—— 同一个成员关系，改由唯一那份表达作证。
+  assert.ok(
+    views.rent.legs.some((leg) => leg.code === NO_GREEKS),
+    'legs(rent): 无 Δ 的腿照常按期限段进收租视角（050 起 Δ 不是召回判据）',
   );
-  assert.equal(noGreeks.tierByTab.rent, null, 'legs: 进得了视角 ≠ 判得出档 —— 两件事各判各的');
+  assert.equal(
+    views.build.legs.find((leg) => leg.code === NO_GREEKS),
+    undefined,
+    'legs(build): DTE 220 不落建仓段 ⇒ 不在建仓那份里（成员关系仍分得开，不是「哪都在」）',
+  );
+  assert.equal(
+    legOf(views.rent, NO_GREEKS).tier,
+    null,
+    'legs(rent): 进得了视角 ≠ 判得出档 —— 两件事各判各的（原 tierByTab.rent 那条的现役落点）',
+  );
   assert.ok(noGreeks.periodRate !== null, 'legs: 不判档 ≠ 不算费率 —— 费率三列照常给');
 
   // ⑥ 🚨 **050 起「无 bid」这条路径在本端点已不可达**：权利金门槛先于建表施加，无 bid 判 false
@@ -851,27 +1128,32 @@ function assertLegDerivations(table: LegTableResponse, today: string): void {
   );
 }
 
-// ── 🎯 靶心 ① 活跃度逐 Tab 各排一次名（hermetic fixture 里这两列是手写的，验不到）──────────────
-function assertActivityIsPerTab(table: LegTableResponse): void {
-  const build = legOf(table, BUILD);
-  assert.deepEqual(build.tabs, ['all', 'build'], 'legs: DTE 10 + |Δ| 0.45 ⇒ 全腿 + 建仓两个 Tab');
+// ── 🎯 靶心 ① 活跃度**逐视角**各排一次名（hermetic fixture 里这列是手写的，验不到）────────────
+// 🚨 053 FR-005：`activityByTab` 收窄成每腿一份 `activity`（拆请求之后另两个视角结构上没有可判
+//    的东西）⇒ 「逐视角各排一次名」的判据从「一份响应里的三格」搬到「三份响应的同一格」。
+function assertActivityIsPerPerspective(views: PerspectiveViews): void {
+  const build = legOf(views.all, BUILD);
+  assert.ok(
+    views.build.legs.some((leg) => leg.code === BUILD),
+    'legs(build): DTE 10 + |Δ| 0.45 ⇒ 该腿在建仓那份里',
+  );
   assert.equal(
-    build.activityByTab.all?.isTopRanked,
+    build.activity?.isTopRanked,
     false,
-    'legs: 该腿在**全腿**候选集里 OI/Vol 排名之和第 4 ⇒ 不进前三',
+    'legs(all): 该腿在**全腿**候选集里 OI/Vol 排名之和第 4 ⇒ 不进前三',
   );
   // 🚨 **052 T009 起判据换了口径，本条随之改判**（不是弱化，是被换掉的那个量）：活跃标 =
   //    「**同到期日**组内 top-3」∧「活动量（OI + 当日成交）过绝对线」。本 fixture 每条腿**各占
   //    一个到期日** ⇒ 组内恒 top-1 ⇒ 绝对线成了唯一判据 ⇒ 活动量 50+3=53 的这条**两个视角都
   //    不发标**。判别性仍在：把绝对线拿掉，它在组内是第一名，这条当场红。
   assert.equal(
-    build.activityByTab.build?.isTopRanked,
+    legOf(views.build, BUILD).activity?.isTopRanked,
     false,
     '052 FR-024：活动量 53 够不着绝对线 ⇒ 不发标（只用相对判据会在死到期日里发标，Guardrail 4）',
   );
   // 对照组：同样独占一个到期日、但活动量 5300 的那条**发标** —— 两条一起才说明「线」真的在那儿。
   assert.equal(
-    legOf(table, RENT_STAY).activityByTab.rent?.isTopRanked,
+    legOf(views.rent, RENT_STAY).activity?.isTopRanked,
     true,
     '052 FR-024：活动量过线 + 组内 top-3 ⇒ 发标',
   );
@@ -879,17 +1161,27 @@ function assertActivityIsPerTab(table: LegTableResponse): void {
   //    到期日之后，要造出排名差需要**同一到期日 ≥4 条腿**（N=3），而那要重造整册腿并连带改动
   //    计数与顺序的多条断言 ⇒ 登记为债，不在 T014 内做。per-tab **计算路径**仍被守着：
   //    非成员格恒 null（下一条）+ 每个视角各取自己那格。
-  assert.equal(build.activityByTab.rent, null, 'legs: 不属于某 Tab ⇒ 该 Tab 的活跃度标恒 null');
-  assert.equal(build.activityByTab.all?.isRoundStrike, false, 'legs: 68.5 非整数档');
+  // 🚨 原「不属于某 Tab ⇒ 该 Tab 的活跃度标恒 null」**结构性消失**：不属于那个视角的腿压根不
+  //    在那份响应里，没有「非成员格」这个位置了。它守的「per-视角各算各的」由上面两条
+  //    （同一条腿的标取自各自那份响应）承担；成员关系本身由下面这条守。
+  assert.equal(
+    views.rent.legs.find((leg) => leg.code === BUILD),
+    undefined,
+    'legs(rent): DTE 10 不落收租段 ⇒ 该腿不在收租那份里',
+  );
+  assert.equal(build.activity?.isRoundStrike, false, 'legs: 68.5 非整数档');
 
-  const rentStay = legOf(table, RENT_STAY);
-  assert.equal(rentStay.activityByTab.all?.isRoundStrike, true, 'legs: 60 是整数档');
-  assert.equal(rentStay.activityByTab.all?.label, 'round_strike', 'legs: 标签整数档优先');
-  assert.ok(rentStay.activityByTab.rent !== null, 'legs: 收租 Tab 成员带该 Tab 的活跃度标');
+  assert.equal(legOf(views.all, RENT_STAY).activity?.isRoundStrike, true, 'legs: 60 是整数档');
+  assert.equal(legOf(views.all, RENT_STAY).activity?.label, 'round_strike', 'legs: 标签整数档优先');
+  assert.ok(
+    legOf(views.rent, RENT_STAY).activity !== null,
+    'legs(rent): 收租视角的成员带**该视角**算出的活跃度标',
+  );
 }
 
 // ── 未选态是常驻分支：意图「待定」，三个 Tab 照常可取数 ───────────────────────────────────────
-function assertUnselectedBucket(table: LegTableResponse): void {
+function assertUnselectedBucket(views: PerspectiveViews): void {
+  const table = views.all;
   assert.equal(table.positionBucket, null, 'legs: 新建锚天然未选水位档（**无默认值**）');
   assert.equal(table.positionBucketSource, null, 'legs: 档位与来源标严格成对，同时为 null');
   assert.equal(table.positionBucketSetAt, null);
@@ -898,12 +1190,15 @@ function assertUnselectedBucket(table: LegTableResponse): void {
   // 🚨 **050 起水位与成员集合无关**（Δ 退出召回）—— 这条断言从「三档并集所以在」改判为
   //    「按期限段所以在」，取值巧合相同、理由完全不同（下面 assertBucketWriteAndPersistence
   //    那条才是判别性所在：选完水位它**仍**在）。
-  assert.deepEqual(legOf(table, RENT_DROP).tabs, ['all', 'rent'], 'legs: DTE 180 落收租段');
+  assert.ok(
+    views.rent.legs.some((leg) => leg.code === RENT_DROP),
+    'legs(rent): DTE 180 落收租段（原每腿 `tabs` 那条的现役落点 —— 成员关系只剩这一份表达）',
+  );
 }
 
 // ── 未注册进 marketdata ⇒ chain_not_ready，锚派生那半边照常返回 ───────────────────────────────
-async function assertChainNotReady(cfg: Cfg): Promise<void> {
-  const table = await readLegs(cfg, NO_CHAIN);
+async function assertChainNotReady(cfg: Cfg, all: LegTableResponse): Promise<void> {
+  const table = await readLegs(cfg, NO_CHAIN, 'all');
   assert.equal(
     table.state,
     'chain_not_ready',
@@ -924,11 +1219,28 @@ async function assertChainNotReady(cfg: Cfg): Promise<void> {
   // 锚派生照常出 —— 「链没数据」不该让整屏塌掉。
   assert.equal(table.w, W);
   assert.equal(table.lLevel, 'L2');
+
+  // 🚨 **053 T011 —— 空态是 `displayLimit` 唯一验得到真值的形态**（其取值 T012 才标定，🚫 不许
+  //    抄进断言）：阈值是**该视角的配置**而不是本次的结果 ⇒ 链没就绪也照常如实回显，且与有链
+  //    那次请求**逐字相同**。空态给 null 会让客户端把「不设该视角阈值」与「没链」读成同一件事。
+  assert.equal(
+    table.displayLimit,
+    all.displayLimit,
+    'legs(chain_not_ready).displayLimit MUST 与有链那次逐字相同 —— 它是视角的配置, 与链有没有数据无关（FR-015）',
+  );
+  // 三个计数取 0 而非 null：它们是**计数**不是「未知」（客户端不必为空态特判一种类型）。
+  assert.equal(table.matchedCount, 0, 'legs(chain_not_ready).matchedCount: 没有链就没有成员 ⇒ 0');
+  assert.equal(table.memberCount, 0, 'legs(chain_not_ready).memberCount: 同上 ⇒ 0');
+  assert.equal(
+    table.candidateCapDropped,
+    0,
+    'legs(chain_not_ready).candidateCapDropped: 没有链就没有候选可切 ⇒ 0',
+  );
 }
 
 async function assertNoAnchorIs404(cfg: Cfg): Promise<void> {
   await assert.rejects(
-    () => optionsdeskControllerLegs(NO_ANCHOR, undefined, cfg),
+    () => optionsdeskControllerLegs(NO_ANCHOR, { perspective: 'all' }, cfg),
     (err: unknown) => {
       const e = err as { response?: { status?: number; data?: { code?: string } } };
       assert.equal(
@@ -969,11 +1281,11 @@ async function assertBucketWriteRejectsNonEnum(cfg: Cfg, anchorId: string): Prom
   }
 }
 
-/** 设档 → 复取，验真落库 + 意图链与 Tab 归属整体改变。返回写端点回的手选时刻。 */
+/** 设档 → 复取，验真落库 + 意图链与成员归属**一条都不变**。返回写端点回的手选时刻。 */
 async function assertBucketWriteAndPersistence(
   cfg: Cfg,
   anchorId: string,
-  before: LegTableResponse,
+  before: PerspectiveViews,
 ): Promise<string> {
   const res = await optionsdeskControllerPositionBucket(
     anchorId,
@@ -992,7 +1304,10 @@ async function assertBucketWriteAndPersistence(
   const setAt = res.data.positionBucketSetAt;
   assert.ok(typeof setAt === 'string' && !Number.isNaN(Date.parse(setAt)), '写端回 ISO 手选时刻');
 
-  const after = await readLegs(cfg, CHAIN);
+  // 🚨 **三个视角各复取一次** —— 收窄之后「成员集合不因水位而变」这条不变量本就分散在三份
+  //    响应里；只复取一份的话，另两个视角的成员一旦跟着水位动，这里照样绿。
+  const afterViews = await readAllPerspectives(cfg, CHAIN);
+  const after = afterViews.all;
 
   // ① 三项档位字段**同步**变，且读端回的时刻与写端**逐字节相同**（两侧共用同一个投影函数）。
   assert.equal(after.positionBucket, 'gte_two_thirds', '真落库：复取拿到手选档');
@@ -1006,33 +1321,26 @@ async function assertBucketWriteAndPersistence(
   //    成员），而这条性质坏掉时数字照样自洽 —— 只有把前后两份响应逐条比才看得出来。
   assert.equal(after.intent, 'rent', '水位选定 ⇒ 意图从「待定」落到收租');
   assert.equal(after.rentDepth, 'deep', '买区 + L2 + ≥2/3 ⇒ 收租深度档收到最深一档');
-  for (const code of EXPECTED_ORDER) {
+  // 📌 053：每腿 `tabs` 与那份 `tabOrder` 都已删 ⇒ 「成员集合不变」的唯一表达就是**每个视角
+  //    那份 `legs[]` 逐条不变**（顺序也在内 —— 精排入参里没有水位）。原来的两条断言在此合成一条，
+  //    覆盖面反而更全：它连「另两个视角的成员」也一并钉住了。
+  for (const perspective of PERSPECTIVES) {
     assert.deepEqual(
-      legOf(after, code).tabs,
-      legOf(before, code).tabs,
-      `legs[${code}].tabs: 050 起成员集合 MUST NOT 因水位而变（Δ 已不在召回入参里）`,
+      afterViews[perspective].legs.map((leg) => leg.code),
+      before[perspective].legs.map((leg) => leg.code),
+      `legs(${perspective}): 050 起成员集合与顺序 MUST NOT 因水位而变（Δ 已不在召回入参里）`,
+    );
+    assert.deepEqual(
+      afterViews[perspective].gateCounts,
+      before[perspective].gateCounts,
+      `legs(${perspective}).gateCounts: 两道门槛都不吃水位 ⇒ 计数一个数都不动`,
     );
   }
-  assert.deepEqual(
-    after.tabOrder,
-    before.tabOrder,
-    'legs.tabOrder: 成员不变 ⇒ 三份有序列表逐条不变（精排入参里没有水位）',
-  );
-  assert.deepEqual(
-    after.gateCounts,
-    before.gateCounts,
-    'legs.gateCounts: 两道门槛都不吃水位 ⇒ 计数一个数都不动',
-  );
 
-  // ③ 零拦截语义：Tab 归属只影响某一屏出不出现，**腿一条都没少**，排序与财报标亦不受牵动。
-  assert.deepEqual(
-    after.legs.map((leg) => leg.code),
-    before.legs.map((leg) => leg.code),
-    '水位改的是 Tab 归属，MUST NOT 筛掉任何腿（FR-005 全量呈现）',
-  );
+  // ③ 零拦截语义：视角归属只影响某一屏出不出现，**腿一条都没少**，财报标亦不受牵动。
   assert.deepEqual(
     after.legs.map((leg) => leg.earningsMark?.mark ?? null),
-    before.legs.map((leg) => leg.earningsMark?.mark ?? null),
+    before.all.legs.map((leg) => leg.earningsMark?.mark ?? null),
     '财报标按意图**域**打，收租两态之间切换不改域 ⇒ 整列不动',
   );
 
@@ -1058,7 +1366,7 @@ async function assertRepeatedPickAdvancesSetAt(
     Date.parse(setAt) > Date.parse(previousSetAt),
     '重复设同一档 MUST 推进手选时刻 —— 时刻不前进等于把 M3 要用的新鲜度判据变成谎话',
   );
-  const table = await readLegs(cfg, CHAIN);
+  const table = await readLegs(cfg, CHAIN, 'all');
   assert.equal(table.positionBucketSetAt, setAt, '推进后的时刻真落库');
 }
 
@@ -1082,7 +1390,7 @@ async function assertStaleTierKeepsEveryLeg(
      )`,
   );
 
-  const table = await readLegs(cfg, CHAIN);
+  const table = await readLegs(cfg, CHAIN, 'all');
   assert.equal(table.asOf, staleSession, 'legs.asOf 跟着快照归属日走');
   assert.equal(
     table.asOfFreshnessTier,
@@ -1107,13 +1415,69 @@ function legOf(table: LegTableResponse, code: string): LegResponse {
 }
 
 /**
+ * 🎯 **053 T011 —— 腿级键集闭包**。
+ *
+ * 顶层那份（{@link assertBlockShape}）看不见腿里的东西，而 `FR-005` 删掉的三样 —— 每腿 `tabs` /
+ * `tierByTab` / `activityByTab` —— 全是**腿级**结构。
+ *
+ * 🚨 **MUST 用闭包而非逐个 `!== undefined`**：后者只对**点过名的**字段有判别力，对「新冒出来
+ * 一个 `xxxByTab`」是盲的 —— 而收窄这类改动的失败形态恰恰是「删了一处、另一处又长回来」。
+ * 顺带它也是 `FR-032` 两个新列**存在性**的钉子（`contractPremium` 🚫 不叫 `premium`）。
+ */
+function assertLegKeySetClosed(leg: LegResponse): void {
+  assert.deepEqual(
+    Object.keys(leg).sort(),
+    [
+      'absDelta',
+      // 053 FR-005：收窄成单份（原 activityByTab —— 拆请求后另两个视角结构上没有可判的东西）。
+      'activity',
+      'annualizedRate',
+      'ask',
+      'askRate',
+      'askSize',
+      'basis',
+      'bid',
+      'bidSize',
+      'code',
+      // 053 FR-032：单笔权利金。🚨 **不叫 premium** —— 那个名字在本模块指的是判档口径那个数。
+      'contractPremium',
+      'dteDays',
+      'earningsMark',
+      'effectiveCost',
+      'effectiveCostVsWPct',
+      'expiryDate',
+      'greeksComplete',
+      'isMonthlyChain',
+      'isRecommended',
+      'openInterest',
+      'periodRate',
+      // 053 FR-032：相对价差（召回层流动性判据在用的同一个派生值）。
+      'relativeSpread',
+      'sigmaDistance',
+      'strike',
+      // 053 FR-005：收窄成单份（原 tierByTab；档界按本次视角的口径取）。
+      'tier',
+      'turnover',
+      'volume',
+      'weeklyRate',
+    ],
+    `legs[${leg.code}]: 腿级键集封闭 —— 每腿 tabs / tierByTab / activityByTab 确实不再出现（SC-002）`,
+  );
+}
+
+/**
  * 生成的类型把 nullable 金额列声明成 `string | null`（而非 orval 误生的 objectmap）——
  * T030 验的是生成物，这里验**运行时真值**：任何一列变成 `{}` 立红。
+ *
+ * 📌 053 T011 把两个新的 nullable 小数列纳入 —— 它们是新写的 `@ApiProperty`，正是最可能漏
+ *    `type: 'string'` 的那一批（012 踩过，已成仓内纪律）。
  */
 function assertNullableStringShape(leg: LegResponse): void {
   const nullableStrings: readonly (keyof LegResponse)[] = [
     'bid',
     'ask',
+    'contractPremium',
+    'relativeSpread',
     'periodRate',
     'weeklyRate',
     'annualizedRate',

@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 import { mockJson } from './_support/api-mock';
-import { keypadBackspace, keypadConfirm, keypadType } from './_support/alert-sheet';
+import { keypadBackspace, keypadConfirm, keypadType } from './_support/keypad';
 
 // 024-alert-realtime PR-3 §V 第一层 UI 交互验证（Playwright hermetic mock）。
 // 023 alert-indicators.spec.ts 验 32 词表 / 4 分类 / 参数变体族；本套验 024 扩出的盘中 5min

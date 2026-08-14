@@ -77,7 +77,7 @@ export interface LegTableHeaderProps {
   tx: SharedValue<number>;
   /**
    * 费率列头 —— 🚨 **`main` 就是该视角的口径本身**（051 FR-017a：不套「费率」这层通用标题）。
-   * 取自服务端下发的 `basisByTab`，由调用方经 `rateHeaderFor` 取好再传（FR-017）。
+   * 取自服务端下发的 `basis`（053 起只发**本次视角**那一份），由调用方经 `rateHeaderFor` 映射（FR-017）。
    */
   rateHeader: LegRateHeader;
   /** 🚨 OI 的**独立归属日**（与区块级 asOf 不是同一天，FR-013）。 */
@@ -93,13 +93,13 @@ export function LegTableHeader({ tx, rateHeader, oiAsOf }: LegTableHeaderProps) 
     strike: null,
     bid: null,
     rate: rateHeader.sub,
-    cost: null,
-    delta: COPY.columnSubDelta,
-    sigma: null,
+    premium: null,
     // 🚨 OI 的归属日与区块级 asOf 不同天 —— 挂在列头上，别只挂区块头（SC-003）。
     oi: COPY.oiAsOfSub(oiAsOf === null ? COPY.noValue : oiAsOf.slice(5)),
+    spread: null,
+    cost: null,
+    delta: COPY.columnSubDelta,
     vol: null,
-    turnover: null,
     activity: null,
     mark: null,
     action: null,

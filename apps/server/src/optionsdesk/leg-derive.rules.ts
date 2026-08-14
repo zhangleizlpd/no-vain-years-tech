@@ -361,3 +361,19 @@ export function computeTurnover(
   if (volume === null || !Number.isFinite(volume) || premium === null) return null;
   return D(premium).times(volume).times(US_OPTION_CONTRACT_MULTIPLIER);
 }
+
+/**
+ * **单笔权利金** = `bid × 合约乘数` —— 卖出一张 put 实际收到多少钱 (053 FR-032)。`O(1)`。
+ *
+ * 🚨 **MUST 由服务端算并下发, 🚫 MUST NOT 由客户端乘一次** (ADR-0064 不变量 ③): 合约乘数是
+ * **市场规则不是合约属性** (故它也蓄意不落库, 见 {@link US_OPTION_CONTRACT_MULTIPLIER}) ——
+ * 服务端已持有这一份 (成交额在用它), 客户端再乘就是同一判据两处各算一份, 而**两边都乘得出数**:
+ * 将来接入乘数非 100 的市场时, 漂移只在那一刻才看得见。
+ *
+ * 📌 口径取 `bid` 而非 mid/ask —— 与档位判据同一个数 (FR-018: 档位恒由 `bid` 价定)。用 mid 会
+ * 让「屏幕上这条腿能收多少钱」比「它凭什么判成这个档」乐观一档, 而两个数都是真的。
+ * 无 `bid` → `null`, 🚫 MUST NOT 当 0 (那是「白送」的意思, 与「没有买盘」是两件事)。
+ */
+export function computeContractPremium(bid: Decimalish | null): Prisma.Decimal | null {
+  return bid === null ? null : D(bid).times(US_OPTION_CONTRACT_MULTIPLIER);
+}

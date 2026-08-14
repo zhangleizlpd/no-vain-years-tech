@@ -17,6 +17,9 @@ import { ReviewAnchorUseCase } from './review-anchor.usecase';
 import { ListAnchorsUseCase, toAnchorView } from './list-anchors.usecase';
 import { GetAnchorUseCase } from './get-anchor.usecase';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase';
+import { GetLegsUseCase, type LegTableView } from './get-legs.usecase';
+import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
+import { RETRIEVAL_CRITERION_KEYS, type PerspectiveCriteria } from './leg-recall.rules';
 
 // boot-time zod 校验的最小 env 集 (与 alert-crud.it.spec.ts 同口径)。必须在 Nest 编译前落位:
 // SecurityModule 的 ConfigModule.forRoot 在模块实例化时 .parse()。DB / Redis 均不真连 ——
@@ -84,6 +87,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
   const listExecute = vi.fn();
   const getExecute = vi.fn();
   const atExecute = vi.fn();
+  const legsExecute = vi.fn();
 
   beforeAll(async () => {
     const prismaStub = {
@@ -126,6 +130,8 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       .useValue({ execute: getExecute })
       .overrideProvider(GetAnchorAtUseCase)
       .useValue({ execute: atExecute })
+      .overrideProvider(GetLegsUseCase)
+      .useValue({ execute: legsExecute })
       .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
@@ -154,6 +160,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
     reviewExecute.mockResolvedValue(writeResult);
     deleteExecute.mockResolvedValue(undefined);
     atExecute.mockResolvedValue(null);
+    legsExecute.mockResolvedValue(emptyLegTable());
   });
 
   const authed = (extra: Record<string, string> = {}) => ({
@@ -415,6 +422,63 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
     });
   });
 
+  /**
+   * 053 T001 —— `perspective` 升为「决定返回哪个视角」(FR-001, plan D-API-1)。
+   *
+   * 🚨 **必须走真 DI 容器**: 判 400 的是 `ValidationPipe` + `@IsIn`, 不是 controller 里的一行
+   * `if` —— 隔离单测那个管道压根不跑, 断言会绿在一条从未执行的路径上 (plan Testing Invariants
+   * 「新增的查询参数校验若落 ValidationPipe, 其测试必须走 DI 容器」)。
+   */
+  describe('GET /underlyings/{symbol}/legs — perspective 必填 (053 FR-001)', () => {
+    const legsUrl = (query = '') =>
+      `/api/v1/optionsdesk/underlyings/us:AOS/legs${query === '' ? '' : `?${query}`}`;
+
+    it('🚨 缺 perspective → 400, usecase **不被调用** (服务端 MUST NOT 替你挑一个默认视角)', async () => {
+      const res = await app.inject({ method: 'GET', url: legsUrl(), headers: authed() });
+      expect(res.statusCode).toBe(400);
+      expect(legsExecute).not.toHaveBeenCalled();
+    });
+
+    it('取值不在三视角内 → 400 (枚举由 @IsIn 守, controller 里不再判第二遍)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: legsUrl('perspective=everything'),
+        headers: authed(),
+      });
+      expect(res.statusCode).toBe(400);
+      expect(legsExecute).not.toHaveBeenCalled();
+    });
+
+    it('三个取值各自透传给 usecase —— 第二个入参就是本次要作答的视角', async () => {
+      for (const perspective of ['all', 'build', 'rent'] as const) {
+        legsExecute.mockClear();
+        const res = await app.inject({
+          method: 'GET',
+          url: legsUrl(`perspective=${perspective}`),
+          headers: authed(),
+        });
+        expect([perspective, res.statusCode]).toEqual([perspective, 200]);
+        expect(legsExecute).toHaveBeenCalledWith('us:AOS', perspective, undefined, null);
+      }
+    });
+
+    it('🚨 只给 perspective 不给条件 ⇒ 覆盖为 null (首屏 / 「复位」走的就是这条)', async () => {
+      await app.inject({ method: 'GET', url: legsUrl('perspective=rent'), headers: authed() });
+      expect(legsExecute).toHaveBeenCalledWith('us:AOS', 'rent', undefined, null);
+    });
+
+    it('给了条件 ⇒ 覆盖落在**同一个**视角上 (052 FR-015 一字不改)', async () => {
+      await app.inject({
+        method: 'GET',
+        url: legsUrl('perspective=rent&strikeMax=138'),
+        headers: authed(),
+      });
+      const override = legsExecute.mock.calls[0][3];
+      expect(override.perspective).toBe('rent');
+      expect(override.criteria.strikeMax.toString()).toBe('138');
+    });
+  });
+
   describe('OpenAPI 文档 (swagger 装饰器 = API 唯一 SoT)', () => {
     it('7 个端点全部出现在文档里', () => {
       expect(Object.keys(document.paths)).toEqual(
@@ -476,3 +540,48 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
     });
   });
 });
+
+/** `GetLegsUseCase` 的「链未就绪」空壳 —— 本 spec 只验通道层, 业务形态归 use case 自己的 spec。 */
+function emptyLegTable(): LegTableView {
+  const blank = {
+    strikeMax: null,
+    strikeMin: null,
+    dteBand: null,
+    premiumMin: null,
+    livenessMin: null,
+    relativeSpreadMax: null,
+  };
+  const criteria = (): PerspectiveCriteria => ({
+    defaults: blank,
+    effective: blank,
+    outcomes: Object.fromEntries(
+      RETRIEVAL_CRITERION_KEYS.map((key) => [key, { state: 'default', excludedCount: 0 }]),
+    ) as PerspectiveCriteria['outcomes'],
+  });
+  return {
+    symbol: 'us:AOS',
+    perspective: 'all',
+    state: 'chain_not_ready',
+    asOf: null,
+    quoteAsOf: null,
+    oiAsOf: null,
+    lastClosedSession: null,
+    source: null,
+    spot: null,
+    w: new Prisma.Decimal('40'),
+    zone: null,
+    lLevel: 'L2',
+    positionBucket: null,
+    positionBucketSource: null,
+    positionBucketSetAt: null,
+    intent: 'pending',
+    rentDepth: null,
+    legs: [],
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    candidateCapDropped: 0,
+    matchedCount: 0,
+    memberCount: 0,
+    displayLimit: DISPLAY_LIMIT_BY_PERSPECTIVE.all,
+    criteria: criteria(),
+  };
+}

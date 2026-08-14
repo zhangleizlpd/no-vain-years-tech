@@ -10,9 +10,8 @@ import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 //
 // ## 为什么**必须**要真 PG
 //
-// ① **两处一致性不变量说的是「同一次响应内两个字段对得上」** —— `tabOrder[t]` 的元素集合 ==
-//    `{code | t ∈ leg.tabs}`。判据的价值全在「它们真的是同一次派生的产物」上; mock 掉数据源
-//    等于把两边都写成常量, 断言退化成平凡绿。
+// ① **三份有序列表各按自己的口径排** —— 判据的价值全在「每份都是那次请求真的派生出来的产物」
+//    上; mock 掉数据源等于把顺序写成常量, 断言退化成平凡绿。
 // ② **确定性 (SC-006) 要跨两次真请求验** —— 同一份库数据连打两次, 顺序逐行相同。单测里两次
 //    调用同一个 stub 是同一条内存数组, 验不到「重新查库 → 重新派生」这条路径。
 // ③ 档位口径跟 Tab 走 (FR-023) 是**费率 → 档界**整条链的产物, 而费率的分母来自真的合约行。
@@ -155,7 +154,7 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
   /**
    * 主数据集 —— 五条腿蓄意让**三个 Tab 的顺序各不相同**, 且周化 / 年化两个口径判出不同档:
    *
-   * | 腿          | DTE | tabs             | 周化    | 年化   | build 档   | rent/all 档 |
+   * | 腿          | DTE | 视角归属         | 周化    | 年化   | build 档   | rent/all 档 |
    * | ----------- | --- | ---------------- | ------- | ------ | ---------- | ----------- |
    * | `shortHigh` | 10  | all + build      | 1.373%  | 71.6%  | acceptable | good        |
    * | `longHigh`  | 45  | all + build+rent | 0.399%  | 20.8%  | dead       | good        |
@@ -167,8 +166,8 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
    * - `longHigh` (DTE 45) 的费率高于 `shortLow` (DTE 10) ⇒ **US4-AS3**「DTE 高而费率高的腿排在
    *   DTE 低而费率低之前」不是碰巧, 而是这份数据构造出来的 —— 任何「离理想 DTE 越近越靠前」的
    *   实现都会把这两条对调 (FR-022)。
-   * - `overlap` 在 build 判 `dead`、在 rent / all 判 `good` ⇒ **US4-AS4** 有了同一条腿两格不同的
-   *   实例, 也顺带证明「全腿 Tab 用周化档界会让长腿整列死档」那条否决理由 (FR-023)。
+   * - `overlap` 在 build 判 `dead`、在 rent / all 判 `good` ⇒ **US4-AS4** 有了同一条腿在两个视角
+   *   判出不同档的实例, 也顺带证明「全腿 Tab 用周化档界会让长腿整列死档」那条否决理由 (FR-023)。
    */
   async function seedLadder(instrumentId: bigint): Promise<Record<string, string>> {
     const codes: Record<string, string> = {};
@@ -226,10 +225,22 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     return rate === null || rate === undefined ? Number.NEGATIVE_INFINITY : rate.toNumber();
   };
 
+  /**
+   * 053 FR-001 起三个视角是**三次独立请求** —— 本文件的判据 (三份列表各按自己的口径排) 一字
+   * 不变, 变的只是取数次数。🚫 MUST NOT 把三份拼回一个 view: 那会把「每次只答一个视角」这条
+   * 抹掉, 而拼出来的东西照样断言得动。
+   */
+  const viewsOf = async () => ({
+    all: await useCase.execute(SYMBOL, 'all', NOW),
+    build: await useCase.execute(SYMBOL, 'build', NOW),
+    rent: await useCase.execute(SYMBOL, 'rent', NOW),
+  });
+
   // ── ① 三份有序列表各自按折算费率降序 (US4-AS1) ──────────────────────────────
   it('① US4-AS1: 三份有序列表各自按该 Tab 口径的折算费率**降序**, client 不必重排', async () => {
     const codes = await seedAll();
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
+    const view = views.all;
 
     // fixture 自证: DTE 是手算的, 错了下面全部推导都不成立。
     expect(legOf(view, codes.shortHigh)?.dteDays).toBe(10);
@@ -238,14 +249,19 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     expect(legOf(view, codes.rentOnly)?.dteDays).toBe(164);
 
     // 逐条相等而不是「非空」—— 精排的失败形态是「返回了腿、数量也对、只是次序错了」。
-    expect(view.tabOrder.build).toEqual([
+    // 📌 053 FR-005 起 `legs` **就是**那份有序列表 (`tabOrder` 随之退役)。
+    expect(views.build.legs.map((l) => l.code)).toEqual([
       codes.shortHigh,
       codes.longHigh,
       codes.overlap,
       codes.shortLow,
     ]);
-    expect(view.tabOrder.rent).toEqual([codes.longHigh, codes.overlap, codes.rentOnly]);
-    expect(view.tabOrder.all).toEqual([
+    expect(views.rent.legs.map((l) => l.code)).toEqual([
+      codes.longHigh,
+      codes.overlap,
+      codes.rentOnly,
+    ]);
+    expect(view.legs.map((l) => l.code)).toEqual([
       codes.shortHigh,
       codes.longHigh,
       codes.overlap,
@@ -253,12 +269,13 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
       codes.rentOnly,
     ]);
     // 三份列表**互不相同** ⇒ 上面三条不是同一个顺序被抄了三遍。
-    expect(view.tabOrder.build).not.toEqual(view.tabOrder.all);
-    expect(view.tabOrder.rent).not.toEqual(view.tabOrder.all);
+    expect(views.build.legs.map((l) => l.code)).not.toEqual(view.legs.map((l) => l.code));
+    expect(views.rent.legs.map((l) => l.code)).not.toEqual(view.legs.map((l) => l.code));
 
     // 全量核对: 每份列表相邻两行的费率单调不增。
     for (const tab of LEG_TABS) {
-      const rates = view.tabOrder[tab].map((code) => rateOf(view, code, tab));
+      const perTab = views[tab];
+      const rates = perTab.legs.map((leg) => rateOf(perTab, leg.code, tab));
       for (let i = 1; i < rates.length; i += 1) {
         expect([tab, i, rates[i - 1] >= rates[i]]).toEqual([tab, i, true]);
       }
@@ -269,12 +286,16 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
   it('② US4-AS2 / SC-006: 同一输入连续两次请求, 三个 Tab 的顺序逐行相同', async () => {
     await seedAll();
 
-    const first = await useCase.execute(SYMBOL, NOW);
-    const second = await useCase.execute(SYMBOL, NOW);
+    // 053 FR-001 起三份顺序由三次请求各自产出 ⇒ 「两次请求逐行相同」要三个视角各打两遍。
+    const first = await viewsOf();
+    const second = await viewsOf();
 
-    expect(second.tabOrder).toEqual(first.tabOrder);
-    // legacy 载体顺序也一样确定 (它的次键里同样有 code 兜底)。
-    expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));
+    for (const tab of LEG_TABS) {
+      expect([tab, second[tab].legs.map((l) => l.code)]).toEqual([
+        tab,
+        first[tab].legs.map((l) => l.code),
+      ]);
+    }
   });
 
   it('②b 费率**完全相同**的两条腿 → 身份键定序, 且两次请求仍逐行相同', async () => {
@@ -298,35 +319,36 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     });
     await seedTradingDays();
 
-    const first = await useCase.execute(SYMBOL, NOW);
-    const second = await useCase.execute(SYMBOL, NOW);
+    const first = await useCase.execute(SYMBOL, 'rent', NOW);
+    const second = await useCase.execute(SYMBOL, 'rent', NOW);
 
     expect(legOf(first, high)?.annualizedRate?.toString()).toBe(
       legOf(first, low)?.annualizedRate?.toString(),
     );
     // 主键分不出 → 身份键: 同到期日 ⇒ 行权价降序 ⇒ K=120 在前。
-    expect(first.tabOrder.rent).toEqual([high, low]);
-    expect(second.tabOrder.rent).toEqual(first.tabOrder.rent);
+    expect(first.legs.map((l) => l.code)).toEqual([high, low]);
+    expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));
   });
 
   // ── ③ 同腿两 Tab 档位可不同、all 恒年化 (US4-AS4) ───────────────────────────
   it('③ US4-AS4: 同一条腿在两个 Tab 的档位可不同; 全腿 Tab **恒年化**', async () => {
     const codes = await seedAll();
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
-    const overlap = legOf(view, codes.overlap);
-    expect(overlap?.tabs).toEqual(['all', 'build', 'rent']);
+    // 同一条腿三个视角都收得到它 (053 起这是**三次请求各命中一次**, 不再是一个 `tabs` 数组)。
+    for (const tab of LEG_TABS) {
+      expect([tab, views[tab].legs.some((l) => l.code === codes.overlap)]).toEqual([tab, true]);
+    }
     // 同一条腿: 周化 0.299% ⇒ 死档; 年化 15.6% ⇒ 好。档界之差是**口径之差**不是数据之差。
-    expect(overlap?.tierByTab.build).toBe('dead');
-    expect(overlap?.tierByTab.rent).toBe('good');
-    // 🚨 全腿 Tab 恒年化 —— 它与 rent 同值, 而与 build 不同。若 all 被改成跟着「腿主要属于哪个
-    // Tab」走, 这一条会翻成 dead。
-    expect(overlap?.tierByTab.all).toBe('good');
+    expect(legOf(views.build, codes.overlap)?.tier).toBe('dead');
+    expect(legOf(views.rent, codes.overlap)?.tier).toBe('good');
+    // 🚨 全腿视角恒年化 —— 它与 rent 同值, 而与 build 不同。若 all 被改成跟着「腿主要属于哪个
+    // 视角」走, 这一条会翻成 dead。
+    expect(legOf(views.all, codes.overlap)?.tier).toBe('good');
 
     // 周化档界不是「一律死档」: 短高腿在 build 判 acceptable ⇒ 上面的 dead 是费率低不是口径坏。
-    const shortHigh = legOf(view, codes.shortHigh);
-    expect(shortHigh?.tierByTab.build).toBe('acceptable');
-    expect(shortHigh?.tierByTab.all).toBe('good');
+    expect(legOf(views.build, codes.shortHigh)?.tier).toBe('acceptable');
+    expect(legOf(views.all, codes.shortHigh)?.tier).toBe('good');
   });
 
   /**
@@ -335,81 +357,36 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
    * Tab 的腿: 047 按**腿族**归属 (`isBuildLeg` 要 `DTE≤14 ∧ |Δ|∈[.40,.55]`, 它 DTE 38 / Δ 0.35
    * 都不满足) ⇒ 年化; 050 按**建仓召回集成员**归属 ⇒ 周化。两代给的是不同的值。
    */
-  it('③c legacy 标量 `basis` / `tier` 按**建仓召回集成员**归属 (D-RANK-3, T015 补口)', async () => {
+  it('③c 标量 `basis` 按**本次视角**归属 (D-RANK-3 / 053 FR-041, T015 补口)', async () => {
     const codes = await seedAll();
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
-    const overlap = legOf(view, codes.overlap);
-    // 进建仓召回集 ⇒ 周化 —— 尽管它同时也是收租成员 (047 的腿族归属会给年化)。
+    // 同一条腿在建仓视角走周化 —— 尽管它同时也是收租成员 (047 的腿族归属会给年化)。
+    const overlap = legOf(views.build, codes.overlap);
     expect(overlap?.basis).toBe('weekly');
-    // 🚨 legacy `tier` 与 `basis` 同口径: 它就是 `tierByTab.build`, 不是 rent 那个 good。
-    expect([overlap?.tier, overlap?.tierByTab.build]).toEqual(['dead', 'dead']);
 
-    // 反向: 不进建仓召回集的腿走年化, 且 legacy `tier` 取 rent 那格 —— 两条一起才排除
-    // 「`basis` 被写死成某一个值」这种平凡绿。
-    const rentOnly = legOf(view, codes.rentOnly);
+    // 反向: 收租视角同一条腿走年化 —— 两条一起才排除「`basis` 被写死成某一个值」这种平凡绿。
+    const rentOnly = legOf(views.rent, codes.rentOnly);
     expect(rentOnly?.basis).toBe('annualized');
-    expect([rentOnly?.tier, rentOnly?.tierByTab.rent]).toEqual([
-      rentOnly?.tierByTab.rent,
-      rentOnly?.tierByTab.rent,
-    ]);
-  });
-
-  it('③b `tierByTab` 对非成员恒 null —— 不属于该 Tab 就没有该 Tab 的档位', async () => {
-    const codes = await seedAll();
-    const view = await useCase.execute(SYMBOL, NOW);
-
-    expect(legOf(view, codes.rentOnly)?.tierByTab.build).toBeNull();
-    expect(legOf(view, codes.shortHigh)?.tierByTab.rent).toBeNull();
-    // 全量核对 (含反向: 成员格必有值, 本数据集 greeks 全齐 ⇒ 不会因不判档而为 null)。
-    for (const leg of view.legs) {
-      for (const tab of LEG_TABS) {
-        const expected = leg.tabs.includes(tab) ? 'tier' : null;
-        expect([leg.code, tab, leg.tierByTab[tab] === null ? null : 'tier']).toEqual([
-          leg.code,
-          tab,
-          expected,
-        ]);
-      }
-    }
-  });
-
-  // ── ④ tabOrder ↔ tabs 一致性 (US4-AS4 的另一半, Guardrail 9) ─────────────────
-  it('④ Guardrail 9: `tabOrder[t]` 的元素集合 == `{code | t ∈ leg.tabs}` (逐 Tab 全量)', async () => {
-    await seedAll();
-    const view = await useCase.execute(SYMBOL, NOW);
-
-    for (const tab of LEG_TABS) {
-      const members = view.legs
-        .filter((l) => l.tabs.includes(tab))
-        .map((l) => l.code)
-        .sort();
-      expect([tab, [...view.tabOrder[tab]].sort()]).toEqual([tab, members]);
-      // 不多不少: 列表里没有重复项 (成员集合被 concat 两次也会让上面那条 sort 后仍相等)。
-      expect([tab, new Set(view.tabOrder[tab]).size]).toEqual([tab, view.tabOrder[tab].length]);
-    }
-    // 三个 Tab 的成员数各不相同 ⇒ 上面不是在同一份集合上比了三遍。
-    expect(view.tabOrder.all.length).toBeGreaterThan(view.tabOrder.build.length);
-    expect(view.tabOrder.build.length).toBeGreaterThan(view.tabOrder.rent.length);
   });
 
   // ── ⑤ DTE 高而费率高的腿排在前 (US4-AS3, FR-022) ────────────────────────────
   it('⑤ US4-AS3: DTE 45 而费率高的腿排在 DTE 10 而费率低的腿**之前** (DTE 不是排序主键)', async () => {
     const codes = await seedAll();
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
+    const view = views.all;
 
-    const build = view.tabOrder.build;
+    const build = views.build.legs.map((l) => l.code);
     expect(build.indexOf(codes.longHigh)).toBeLessThan(build.indexOf(codes.shortLow));
     // 判别性: 两条腿的 DTE 差 35 天而费率只差 0.12 个百分点 —— 任何把 DTE 拉进主键的实现
     // (「越短越靠前」/「离理想 DTE 越近越靠前」) 都会把它们对调。
     expect(legOf(view, codes.longHigh)?.dteDays).toBe(45);
     expect(legOf(view, codes.shortLow)?.dteDays).toBe(10);
-    expect(rateOf(view, codes.longHigh, 'build')).toBeGreaterThan(
-      rateOf(view, codes.shortLow, 'build'),
+    expect(rateOf(views.build, codes.longHigh, 'build')).toBeGreaterThan(
+      rateOf(views.build, codes.shortLow, 'build'),
     );
     // 全腿 Tab 同样 (年化口径下差距更大)。
-    expect(view.tabOrder.all.indexOf(codes.longHigh)).toBeLessThan(
-      view.tabOrder.all.indexOf(codes.shortLow),
-    );
+    const all = view.legs.map((l) => l.code);
+    expect(all.indexOf(codes.longHigh)).toBeLessThan(all.indexOf(codes.shortLow));
   });
 });

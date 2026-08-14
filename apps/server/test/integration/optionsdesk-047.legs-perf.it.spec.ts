@@ -254,7 +254,8 @@ describe.skipIf(!RUN_PERF)('047 T038 选约表读端 perf 档位实测 (真 HTTP
     const t0 = performance.now();
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/optionsdesk/underlyings/${SYMBOL}/legs`,
+      // 053 FR-001: `perspective` 必填 —— 缺它是 400, 而 400 又小又快, 混进样本会把分布拉绿。
+      url: `/api/v1/optionsdesk/underlyings/${SYMBOL}/legs?perspective=all`,
       headers: { authorization: `Bearer ${token}` },
     });
     const elapsedMs = performance.now() - t0;

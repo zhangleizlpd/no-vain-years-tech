@@ -249,15 +249,25 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
     });
   }
 
-  const inTab = (view: LegTableView, tab: 'all' | 'build' | 'rent'): string[] =>
-    view.legs.filter((l) => l.tabs.includes(tab)).map((l) => l.code);
+  // 🚨 053 起一次请求只作答一个视角 ⇒「取该视角的成员」就是取全部腿 (每腿的 `tabs` 随之退役)。
+  // 保留 `tab` 参数是为了让「拿错视角的 view 去断言」**当场炸** —— 原来那句 `filter` 会把它
+  // 静默滤成空集, 而空集在下面几条断言里照样能绿。
+  const inTab = (view: LegTableView, tab: 'all' | 'build' | 'rent'): string[] => {
+    if (view.perspective !== tab) {
+      throw new Error(`view 是 ${view.perspective} 视角, 断言问的却是 ${tab}`);
+    }
+    return view.legs.map((l) => l.code);
+  };
 
   // ── ① / ② 两个分视角数与实际被挡的候选**逐条相等** ────────────────────────────
   it('① 建仓数 ② 收租数各自与该视角实际被挡的候选逐条相等 (蓄意不对称: 0 / 2)', async () => {
     await seedAnchor(SYMBOL);
     const codes = await seedBaseline();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    // 🚨 053 FR-001: 每个视角自己问自己那一份 —— 「该视角被挡了几条」现在是那一次请求的回答。
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
+    const buildCounts = (await useCase.execute(SYMBOL, 'build', NOW)).gateCounts;
+    const rentCounts = (await useCase.execute(SYMBOL, 'rent', NOW)).gateCounts;
 
     expect(view.state).toBe('available');
 
@@ -266,25 +276,32 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
     const expectedExcludedFromBuild: string[] = [];
     const expectedExcludedFromRent = [codes.rentOnlyWide, codes.rentOnlyNoAsk];
 
-    expect(view.gateCounts.excludedFromIntentTabsByTab).toEqual({
-      build: expectedExcludedFromBuild.length,
-      rent: expectedExcludedFromRent.length,
-    });
+    // 🚨 053 T003 起契约面只有这一个标量, 它就是「**该视角自己的**排除数」。
+    expect(buildCounts.excludedFromIntentTabs).toBe(expectedExcludedFromBuild.length);
+    expect(rentCounts.excludedFromIntentTabs).toBe(expectedExcludedFromRent.length);
+    // 🚨 两个数**蓄意不等** (0 / 2): 标量若退回 051 那个「两个意图视角合计」的口径, 建仓那条
+    // 当场红 —— 而它的数字照样真实、文案照样通顺, 只是指向了别的视角的腿。
+    expect(buildCounts.excludedFromIntentTabs).not.toBe(rentCounts.excludedFromIntentTabs);
+    // 全腿视角不受流动性门槛约束 (FR-006) ⇒ 它那份恒 0。
+    expect(view.gateCounts.excludedFromIntentTabs).toBe(0);
 
-    // 计数对应的腿**仍在响应里、仍在全腿 Tab 可见** —— 这是它与权利金门槛那个数的语义分界。
+    // 计数对应的腿**仍在全腿视角可达** —— 这是它与权利金门槛那个数的语义分界 (053 起要两次请求)。
+    const inAll = await useCase.execute(SYMBOL, 'all', NOW);
+    const inRent = await useCase.execute(SYMBOL, 'rent', NOW);
     for (const code of expectedExcludedFromRent) {
-      expect(inTab(view, 'all')).toContain(code);
-      expect(inTab(view, 'rent')).not.toContain(code);
+      expect(inTab(inAll, 'all')).toContain(code);
+      expect(inTab(inRent, 'rent')).not.toContain(code);
     }
     // 三条绊线各自不该出现在任何一个意图 Tab 的排除计数里, 逐条钉死它们的去向:
     // 被权利金门槛移出的腿**不在响应里** (故也不可能被计数)。
-    expect(inTab(view, 'all')).not.toContain(codes.penny);
+    expect(inTab(inAll, 'all')).not.toContain(codes.penny);
     // 期限段本就不合格的两条留在响应, 但两个数都不因它们而动 (已由上面的 toEqual 覆盖)。
-    expect(inTab(view, 'all')).toEqual(
+    expect(inTab(inAll, 'all')).toEqual(
       expect.arrayContaining([codes.buildCostFailWide, codes.tooLongWide]),
     );
-    // 对照组照常进建仓 Tab ⇒ 「build 计数为 0」不是因为根本没有建仓候选。
-    expect(inTab(view, 'build')).toEqual([codes.cleanBuild]);
+    // 对照组照常进建仓视角 ⇒ 「build 计数为 0」不是因为根本没有建仓候选。
+    const inBuild = await useCase.execute(SYMBOL, 'build', NOW);
+    expect(inTab(inBuild, 'build')).toEqual([codes.cleanBuild]);
   });
 
   // ── ③ 重叠区不变量: 标量 ≤ build + rent (🚨 MUST NOT 取等号) ──────────────────
@@ -292,43 +309,41 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
     await seedAnchor(SYMBOL);
     await seedBaseline();
 
-    const before = (await useCase.execute(SYMBOL, NOW)).gateCounts;
-    // 基线里没有重叠区腿 ⇒ 此时等号成立。先钉死这一点, 下面的不等式才不是空判据
-    // (若两侧恒不等, 「≤」对任何实现都成立, 测了等于没测)。
-    expect(before.excludedFromIntentTabs).toBe(
-      before.excludedFromIntentTabsByTab.build + before.excludedFromIntentTabsByTab.rent,
-    );
+    // 🚨 053 FR-001 起「双计」换了形态: 一次请求只答一个视角 ⇒ 同一条重叠区腿在**两次请求里
+    // 各计一次**, 而每一次请求内部标量与该视角那一格恒相等 ⇒ 052 那条「标量 ≤ build + rent」
+    // 的不等式随拆请求整条消失 (spec Clarifications 逐字)。本条改守它的实质: 重叠区腿让**两个
+    // 意图视角各自**的排除数都 +1。
+    const excludedIn = async (perspective: 'all' | 'build' | 'rent') =>
+      (await useCase.execute(SYMBOL, perspective, NOW)).gateCounts.excludedFromIntentTabs;
+    const beforeBuild = await excludedIn('build');
+    const beforeRent = await excludedIn('rent');
+    const beforeAll = await excludedIn('all');
 
     await seedOverlapExcluded();
-    const after = (await useCase.execute(SYMBOL, NOW)).gateCounts;
+    const afterBuild = await excludedIn('build');
+    const afterRent = await excludedIn('rent');
 
-    // 一条腿, 三个数各自的增量: 标量 +1, build +1, rent +1。
-    expect(after.excludedFromIntentTabs - before.excludedFromIntentTabs).toBe(1);
-    expect(after.excludedFromIntentTabsByTab.build - before.excludedFromIntentTabsByTab.build).toBe(
-      1,
-    );
-    expect(after.excludedFromIntentTabsByTab.rent - before.excludedFromIntentTabsByTab.rent).toBe(
-      1,
-    );
-
-    const sum = after.excludedFromIntentTabsByTab.build + after.excludedFromIntentTabsByTab.rent;
-    // 🚨 判据取不等式。此处 `标量 3 < 和 4` ⇒ 把这行写成 `toBe(sum)` **必红**,
-    // 而红的是测试不是代码 —— 见文件头。
-    expect(after.excludedFromIntentTabs).toBeLessThanOrEqual(sum);
-    expect(after.excludedFromIntentTabs).toBeLessThan(sum);
+    // 一条腿, 两次请求各 +1 —— 重叠区 `[30,49]` 是刻意的, 它同时被两个意图视角挡下。
+    // 🚨 052 那条「标量 < build + rent」的严格不等式**已随拆请求 + 契约收窄整条失去对象**:
+    // 响应里只剩一个数, 且它只说本次视角的事。本条改守那件事的实质 —— 同一条腿在两个意图
+    // 视角**各被数一次**, 谁也没替谁作答。
+    expect(afterBuild - beforeBuild).toBe(1);
+    expect(afterRent - beforeRent).toBe(1);
+    // 上面两条不是「两边都是 0」的平凡绿。
+    expect(afterBuild).toBeGreaterThan(0);
+    expect(afterRent).toBeGreaterThan(0);
+    // 🚨 全腿视角**一动不动**且恒 0 (FR-006 不受流动性门槛约束) —— 若哪天有人把别的视角的
+    // 计数混回单次响应, 这条当场红。
+    expect([beforeAll, await excludedIn('all')]).toEqual([0, 0]);
   });
 
   // ── 空态: 没有链就没有腿被挡下 ────────────────────────────────────────────────
   it('链未就绪 → 三个数全 0 (新字段与既有两个数同口径: 是计数不是「未知」)', async () => {
     await seedAnchor(SYMBOL);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.state).toBe('chain_not_ready');
-    expect(view.gateCounts).toEqual({
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    });
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
   });
 });

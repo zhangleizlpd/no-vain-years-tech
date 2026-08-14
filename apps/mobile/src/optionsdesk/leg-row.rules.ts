@@ -6,9 +6,9 @@
 //    并排同标「好」，正是 FR-004 要防的跨 DTE 直比；更要命的是**屏幕上的数就不是判档用的
 //    那个数**（档位是拿周化 2.13% 判的）。
 //
-// 🚨 **Δ 与 σ 距是同一个 `absDelta` 的两种呈现**（Guardrail 10 / plan D-UI-3）：
-//    `|Δ| = Φ(−σ距)` ⇒ 两列 MUST 同时有值或同时留占位，**不允许一列有一列无**。
-//    server 已保证二者同源；本文件再钉一道 —— 判据一律看 `absDelta`，不看 `sigmaDistance`。
+// 🚨 **Δ 是 `absDelta` 的唯一呈现**（053 FR-034）：σ 距列已随列改版退场 —— 它与 Δ 由
+//    `|Δ| = Φ(−σ距)` 构造性一一对应，删其一零信息损失。契约仍下发 `sigmaDistance`，
+//    但**判据只看 `absDelta`**：它没有就留占位，`sigmaDistance` 单独有值也顶不上。
 //
 // 🚨 **量纲故意不同，别统一**：三个费率是**小数比例**（`toFixed(6)`），
 //    `effectiveCostVsWPct` 是**百分数**（`toFixed(2)`）。
@@ -19,27 +19,31 @@ import { formatPriceText } from './price-format.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
-// ═══════════════════ ① 12 列几何（mockup `047-leg-picker.dc.html` 逐值） ═══════════════════
+// ═══════════════════ ① 12 列几何（mockup `053-leg-columns.dc.html` 逐值） ═══════════════════
 
 /**
- * 列键 —— 与 FR-003 的列集逐项对应。
+ * 列键 —— 与 FR-030 的列集逐项对应，**数组顺序就是屏幕上的列序**。
  * 🚨 `strike` 是**首列**，渲在横向滚动**之外** ⇒ 天然钉住，**不依赖 `position: sticky`**
  *    （RN 无 sticky；web 侧 mockup 那套 sticky 与本实现不等价，见 plan D-UI-1 末条）。
+ * 📌 `bid/ask → rate → premium` 刻意相邻（FR-030）——「这单值不值得挂、挂不挂得出去」的
+ *    完整判据集，此前散在表的两端，用户要横滑两次才凑得齐一次判断。
  */
 export const LEG_TABLE_COLUMNS = [
   { key: 'strike', width: 88 },
-  // bid/ask 合并一列（FR-003），单元格内是 **2 行 × 2 列**：价格并排在上、挂牌量并排在下。
+  // bid/ask 合并一列（FR-031，053 订正后**仍不拆**），单元格内是 **2 行 × 2 列**：价格并排在
+  // 上、挂牌量并排在下 ⇒ 并排比对早已实现，拆成两列只会各自更宽。
   // 68 → 88px 是最宽真实内容逼出来的：价格行最宽 `10.90  13.30` = 12 字符 × 11px 等宽
   // （≈6.6px/字）≈ 79px + 内边距。🚫 MUST NOT 回调到 68 —— 那会让深实值腿的两位数价格折行。
   { key: 'bid', width: 88 },
   { key: 'rate', width: 56 },
+  // 053 新增两列（FR-032）：两个数都**服务端算**，客户端零计算。
+  { key: 'premium', width: 50 },
+  { key: 'oi', width: 50 },
+  { key: 'spread', width: 48 },
   { key: 'cost', width: 56 },
   // Δ 列 08-04 mockup review 后由 34 → 42px，以容下 |Δ| 真值（表宽 688 → 696）。
   { key: 'delta', width: 42 },
-  { key: 'sigma', width: 46 },
-  { key: 'oi', width: 50 },
   { key: 'vol', width: 46 },
-  { key: 'turnover', width: 52 },
   { key: 'activity', width: 42 },
   { key: 'mark', width: 84 },
   { key: 'action', width: 66 },
@@ -47,7 +51,12 @@ export const LEG_TABLE_COLUMNS = [
 
 export type LegColumnKey = (typeof LEG_TABLE_COLUMNS)[number]['key'];
 
-/** 12 列合计（bid 列 68 → 88 后由 696 抬到 716）。 */
+/**
+ * 12 列合计（bid 列 68 → 88 后由 696 抬到 716）。
+ * 🚨 **053 列改版后仍是 716**：删的 `σ距 46 + 成交额 52` 恰好填平新增的 `权利金 50 + 价差 48`
+ *    （FR-033/FR-034）。049 的横滑范式把**内容总宽当作位移钳制的输入** ⇒ 总宽一变，指示条
+ *    长度比与 `maxTx` 全跟着变，真机上表现为「右侧滑不到底」**且不会红**。
+ */
 export const LEG_TABLE_WIDTH = 716;
 
 /** 首列宽（钉住的那一列）。 */
@@ -108,16 +117,31 @@ export function formatQuoteSize(value: number | null | undefined): string {
   return `×${value}`;
 }
 
-/** 成交额 → `$39.8K` / `$110K` / `$2.4M`。📌 成交额高 ≠ 真流动。O(1)。 */
-export function formatTurnover(raw: string | null | undefined): string {
+/**
+ * 单笔权利金（卖出一张 put 实际收到多少钱）→ 千分位整数（`1,290` / `160`）。O(1)。
+ *
+ * 🚫 **MUST NOT 由 `bid` 乘一次合约乘数**（FR-032 / ADR-0064 不变量 ③）—— 合约乘数是市场
+ * 规则不是合约属性，服务端已持有那一份，客户端再乘就是同一判据两处各算一份，而两边都乘得出数。
+ * 缺 bid ⇒ 服务端给 `null` ⇒ 占位（**禁拿 0 冒充**「白挂一张不收钱」）。
+ */
+export function formatContractPremium(raw: string | null | undefined): string {
   const value = toFinite(raw);
   if (value === null) return COPY.noValue;
-  if (Math.abs(value) >= 1_000_000) {
-    const m = value / 1_000_000;
-    return `$${m.toFixed(Math.abs(m) >= 100 ? 0 : 1)}M`;
-  }
-  const k = value / 1000;
-  return `$${k.toFixed(Math.abs(k) >= 100 ? 0 : 1)}K`;
+  return Math.round(value).toLocaleString('en-US');
+}
+
+/**
+ * 相对价差 `(ask − bid) / mid`，**小数比例** → 百分数。O(1)。
+ *
+ * 精度随量级走（48px 列里 `45.2%` 已占满）：`< 100%` 收 1 位、`≥ 100%` 收整数。
+ * 📌 与召回层流动性判据是**同一个**派生值（服务端算），故「这条腿为什么被挡了」在屏上对得上账。
+ * 任一侧缺报价 / mid ≤ 0 ⇒ 服务端给 `null` ⇒ 占位。
+ */
+export function formatRelativeSpread(raw: string | null | undefined): string {
+  const ratio = toFinite(raw);
+  if (ratio === null) return COPY.noValue;
+  const pct = ratio * 100;
+  return `${pct.toFixed(Math.abs(pct) >= 100 ? 0 : 1)}%`;
 }
 
 /** 尾零收干净（`133.00` → `133`；`117.50` → `117.5`）。 */
@@ -134,7 +158,7 @@ export interface StackedCell {
 }
 
 /**
- * greeks 缺失行的统一处置（FR-007）：**不判档不着色、费率 / Δ / σ 三列留占位**，
+ * greeks 缺失行的统一处置（FR-007）：**不判档不着色、费率与 Δ 两列留占位**，
  * 但**行照常在表内**（MUST NOT 隐藏 / 折叠 / 沉底 —— 沉底是死档的处置，两者不同）。
  */
 function isGapRow(leg: Pick<LegResponse, 'greeksComplete'>): boolean {
@@ -199,23 +223,10 @@ export function costCell(
 }
 
 /**
- * 🚨 Δ 列显 **|Δ| 真值**（列头副标「带判据」以抑制跨期限横比 —— 可比坐标是 σ 距不是 Δ）。
- * 判据一律看 `absDelta`：它没有，两列就都没有。复杂度 O(1)。
+ * 🚨 Δ 列显 **|Δ| 真值**（列头副标「带判据」以抑制跨期限横比 —— 可比坐标是 σ 距不是 Δ，
+ * 而 σ 距列已随 053 列改版退场）。判据只有 `absDelta` 一个：它没有就留占位。复杂度 O(1)。
  */
 export function deltaCell(leg: Pick<LegResponse, 'absDelta' | 'greeksComplete'>): string {
   if (isGapRow(leg) || leg.absDelta === null) return COPY.noValue;
   return leg.absDelta.toFixed(2);
-}
-
-/**
- * 🚨 σ 距列 —— 与 {@link deltaCell} **同有同无**：判据同样是 `absDelta`，
- * 即便契约意外只给了 `sigmaDistance` 也照「不全」处置（一列有一列无是本片明禁的形态）。
- * `≥ 1` 收 1 位、`< 1` 收 2 位。复杂度 O(1)。
- */
-export function sigmaCell(
-  leg: Pick<LegResponse, 'absDelta' | 'sigmaDistance' | 'greeksComplete'>,
-): string {
-  if (isGapRow(leg) || leg.absDelta === null || leg.sigmaDistance === null) return COPY.noValue;
-  const sigma = leg.sigmaDistance;
-  return `${sigma.toFixed(Math.abs(sigma) >= 1 ? 1 : 2)}σ`;
 }

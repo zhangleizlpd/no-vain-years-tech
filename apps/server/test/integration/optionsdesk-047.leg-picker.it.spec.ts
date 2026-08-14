@@ -304,14 +304,22 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
   }
 
   const legOf = (view: LegTableView, code: string) => view.legs.find((l) => l.code === code);
-  const inTab = (view: LegTableView, tab: LegTab) => view.legs.filter((l) => l.tabs.includes(tab));
+  // 🚨 053 起一次请求只作答一个视角 ⇒「取该视角的成员」就是取全部腿 (每腿的 `tabs` 随之退役)。
+  // 保留 `tab` 参数是为了让「拿错视角的 view 去断言」**当场炸** —— 原来那句 `filter` 会把它
+  // 静默滤成空集, 而空集在下面几条断言里照样能绿。
+  const inTab = (view: LegTableView, tab: LegTab) => {
+    if (view.perspective !== tab) {
+      throw new Error(`view 是 ${view.perspective} 视角, 断言问的却是 ${tab}`);
+    }
+    return view.legs;
+  };
 
   // ── ① 当日快照 → 全量腿在结果内、无截断 (SC-004 逐条对账) ────────────────────
   it('① 当日快照 → 全量适格腿在表内, 零截断; 落库行数 vs 可见行数逐条对得上 (SC-004)', async () => {
     await seedAnchor(SYMBOL);
     const { instrumentId, codes, bulkCount } = await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.state).toBe('available');
     // 逐条对账: 落库总数 − 非标 − 已到期 − 当日到期 = 可见数。三个扣减项都点名, 不留「差几行」。
@@ -340,7 +348,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await seedMainDataset(TODAY);
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.asOf?.toISOString().slice(0, 10)).toBe(TODAY);
     expect(view.oiAsOf?.toISOString().slice(0, 10)).toBe(PREV_SESSION);
@@ -357,7 +365,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     const { codes, bulkCount } = await seedMainDataset(STALE_SESSION);
     await seedTradingDays();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.state).toBe('available');
     expect(view.asOf?.toISOString().slice(0, 10)).toBe(STALE_SESSION);
@@ -388,7 +396,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
       },
     });
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.state).toBe('chain_not_ready');
     // 🚨 与 read_failed 蓄意分开 —— 两者混成一个 state 就分不清「还没到」与「坏了」。
@@ -406,7 +414,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await seedAnchor(SYMBOL);
     const { instrumentId, codes } = await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     // 先证明它**确实落库了** —— 否则这条断言可能只是「压根没造出来」。
     const stored = await prisma.optionContract.findUnique({
@@ -423,7 +431,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await seedAnchor(SYMBOL);
     const { codes } = await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     const dead = legOf(view, codes.dead);
     expect(dead?.tier).toBe('dead');
@@ -439,7 +447,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await seedAnchor(SYMBOL);
     const { codes } = await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     const leg = legOf(view, codes.greeksMissing);
     expect(leg).toBeDefined();
@@ -450,13 +458,14 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     expect(leg!.sigmaDistance).toBeNull();
     // 它进不了建仓 —— 📌 **050 起原因换了**: 047 是「缺 Δ 落不进建仓的 |Δ| 带」, 050 的召回
     // 签名里根本没有 Δ, 挡住它的是 `DTE 164 ∉ [1,49]`。两套判据同一个答案, 故本条一直是绿的。
-    expect(leg!.tabs).not.toContain('build');
+    const inBuild = await useCase.execute(SYMBOL, 'build', NOW);
+    expect(inBuild.legs.map((l) => l.code)).not.toContain(leg!.code);
     // 🚨 缺 Δ **不影响收租归属**: 047 走锚轴 `K ≤ W` (那条判据不看 Δ), 050 走 DTE 段 + 两道门槛
     // (`leg-recall.rules.ts` 的入参里没有 `absDelta`, 是结构保证不是约定)。两代实现的共同语义是
     // FR-021/FR-025 的 Tab 归属**零拦截** —— 缺数据只影响判档与着色, MUST NOT 拿它筛掉腿。
     // 哪天有人把 Δ 塞回召回判据, 本条会红 —— 那正是要提醒的时刻。
-    expect(leg!.tabs).toContain('all');
-    expect(leg!.tabs).toContain('rent');
+    const inRent = await useCase.execute(SYMBOL, 'rent', NOW);
+    expect(inRent.legs.map((l) => l.code)).toContain(leg!.code);
     expect(view.legs.some((l) => l.greeksComplete === false && l.tier !== null)).toBe(false);
   });
 
@@ -467,7 +476,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     // spot 抬到 1.2V = 180 上方 ⇒ 不动区。只改标的价, 合约集不动。
     await prisma.optionDailySnapshot.updateMany({ data: { underlyingSpot: '200.0000' } });
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.zone).toBe('overvalued');
     expect(view.intent).toBe('no_new_position');
@@ -479,7 +488,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await seedAnchor(SYMBOL, { confidence: '2' });
     const { bulkCount } = await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.lLevel).toBe('L4');
     // spot 132.40 仍在卖put区 —— 不开新仓不是因为区间, 而是因为 L4。
@@ -504,17 +513,20 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
       TODAY,
     );
 
-    const view = await useCase.execute('us:VICI', NOW);
+    // 053 FR-001: 每个视角各问一次 —— 「建仓视角空」现在是那一次请求自己的回答。
+    const inAll = await useCase.execute('us:VICI', 'all', NOW);
+    const inBuild = await useCase.execute('us:VICI', 'build', NOW);
+    const inRent = await useCase.execute('us:VICI', 'rent', NOW);
 
-    expect(view.state).toBe('available');
-    expect(inTab(view, 'build')).toEqual([]);
-    // 🚨 空 Tab 不是错误也不是隐藏: 全腿 Tab 与收租 Tab 照常有数据, 区块状态仍是 available。
-    expect(inTab(view, 'all').length).toBe(2);
-    expect(inTab(view, 'rent').length).toBe(2);
+    expect(inBuild.state).toBe('available');
+    expect(inTab(inBuild, 'build')).toEqual([]);
+    // 🚨 空视角不是错误也不是隐藏: 全腿与收租视角照常有数据, 区块状态仍是 available。
+    expect(inTab(inAll, 'all').length).toBe(2);
+    expect(inTab(inRent, 'rent').length).toBe(2);
   });
 
   it('⑧ 未建锚的 symbol 才是 404 —— 「Tab 空」与「没有锚」是两回事', async () => {
-    await expect(useCase.execute('us:NOPE', NOW)).rejects.toMatchObject({
+    await expect(useCase.execute('us:NOPE', 'all', NOW)).rejects.toMatchObject({
       status: 404,
     });
   });
@@ -524,7 +536,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await seedAnchor(SYMBOL, { positionBucket: null });
     const { bulkCount } = await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.positionBucket).toBeNull();
     expect(view.positionBucketSource).toBeNull();
@@ -533,19 +545,20 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     expect(view.rentDepth).toBeNull();
     // 🚨 三个 Tab 都取得出数 —— 未选水位不拦任何一屏 (面板不隐藏不置灰)。
     expect(view.legs.length).toBe(bulkCount + 8 - 1 - 2);
+    // 🚨 三个视角逐个都取得出数 —— 未选水位不拦任何一屏 (面板不隐藏不置灰)。
     for (const tab of LEG_TABS) {
-      expect(Array.isArray(inTab(view, tab))).toBe(true);
+      const perTab = await useCase.execute(SYMBOL, tab, NOW);
+      expect([tab, inTab(perTab, tab).length]).toEqual([tab, perTab.legs.length]);
+      expect([tab, perTab.legs.length > 0]).toEqual([tab, true]);
     }
     expect(inTab(view, 'all').length).toBe(view.legs.length);
-    expect(inTab(view, 'build').length).toBeGreaterThan(0);
-    expect(inTab(view, 'rent').length).toBeGreaterThan(0);
   });
 
   it('⑨ 已选水位 → 意图落矩阵输出, 且带「人工输入」来源标 (T028 写端同口径)', async () => {
     await seedAnchor(SYMBOL);
     await seedMainDataset(TODAY);
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const view = await useCase.execute(SYMBOL, 'all', NOW);
 
     expect(view.positionBucket).toBe('gte_two_thirds');
     expect(view.positionBucketSource).toBe('manual');
@@ -581,7 +594,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
       data: [PREV_SESSION, TODAY].map((d) => ({ market: 'us', date: dateOf(d) })),
     });
 
-    const view = await useCase.execute('us:VICI', NOW);
+    const view = await useCase.execute('us:VICI', 'all', NOW);
     // `evaluate` 而非 `check`: 纯判定不告警 —— 本测量的是分母口径, 不是告警行为。
     const report = await new OptionSnapshotCoverageCheck(prisma, {
       optionCoverageThreshold: 1,

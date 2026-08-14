@@ -11,6 +11,27 @@ seed-authed e2e（`addInitScript` 注 `nvy-auth` 假 session）必须把后端�
 
 2. **refresh-token 端点必 mock（本规则约束，CI 不强制）**：任何会触发 **authed 业务 401** 的 spec —— 401 命中 003-tokens refresh 拦截器的 retry-once；不 mock refresh 端点 → refresh 失败 → clearSession 误登出跳 `/login`（per memory `reference_authed_business_401_triggers_refresh_interceptor`）。该触发条件非静态可判（取决于 spec 是否打到 authed 业务 401），故无 CI gate，写 e2e 时自查。public 流不触发，无需。
 
+## Mock 是契约镜像，不是调用序
+
+🚨 **handler MUST 是 `(请求参数, canonical 数据集) → 响应` 的纯函数** —— 判据在 mock 里**真的算一遍**，不是按测试编排摆好两份答案。
+
+🚫 **反面写法**：`callCount === 0 ? 默认表 : 收窄表`。它在**当时那个文件的所有断言下照样全绿**，而客户端一旦改变请求次数（加个 `invalidateQueries`、加个预取），mock 就静默返回错误的那一份 —— **typecheck 拦不住、断言照样绿**。
+
+📌 **「纯函数」不等于「恒定答案」**。允许按入参给不同出参，禁的是把**调用次序**当入参：
+
+| 形态                                                      | 判定          |
+| --------------------------------------------------------- | ------------- |
+| `perspective === 'rent' → 500`（单视角失败）              | ✅ 参数驱动   |
+| `perspective → 不同 asOf`（跨业务日不一致）               | ✅ 参数驱动   |
+| `(params) → (response, delay)`（迟到响应 / 预取命中与否） | ✅ 仍是纯函数 |
+| `callCount === 2 → 换一份表`                              | 🚫 调用序     |
+
+📌 **恒定答案常常是更严的测法**：验「最多重取一次」时让 handler 恒答不一致，「无限重取」就直接表现为**请求数爆炸**；`callCount` 版本反而会在第二次「自己修好」，把 bug 藏起来。
+
+📌 **撞到「同一组参数、前后要给不同答案」的分支，先想能不能改由参数表达** —— 如「重取后恢复一致」可由「用户改了条件 ⇒ 换了 query key ⇒ 换了参数」承载。真表达不了 ⇒ **如实登记一条覆盖不到，MUST NOT 塞调用序标志冒充覆盖**（一条恒真断言比缺一条更坏，它会冒充覆盖）。
+
+实证：`052` T013 立此纪律（原文在其 `tasks.md`，2026-08-14 提进本 rule 使其随路径自动装载）；`053` 把选约表请求数**从 1 变成 3** 并加了错峰预取 —— 正是它预言的那类改动。`053` T014 期实撞：`052` 遗留的请求日志断言必须重定成只看**非 `perspective` 参数**，才免疫请求数变化。
+
 ## 断言可用性：`react-native-web` 不认 `accessibilityState`
 
 🚨 **`react-native-web@0.21` 完全不处理 `accessibilityState`**（dist 内零处理）⇒ web DOM 上**永远不会出现** `aria-selected` / `aria-checked` 这类属性，即便源码写了。

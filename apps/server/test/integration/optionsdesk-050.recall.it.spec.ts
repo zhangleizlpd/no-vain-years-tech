@@ -3,7 +3,7 @@ import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-legs.usecase';
 import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
-import type { LegTab } from '../../src/optionsdesk/leg-tab.rules';
+import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 
 // 050 T005 召回集合 IT (US1 全 4 条 + US2 全 5 条 AS, SC-001 / SC-003)。
 //
@@ -270,16 +270,37 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     return codes;
   }
 
-  const inTab = (view: LegTableView, tab: LegTab): string[] =>
-    view.legs.filter((l) => l.tabs.includes(tab)).map((l) => l.code);
+  // 🚨 053 起一次请求只作答一个视角 ⇒「取该视角的成员」就是取全部腿 (每腿的 `tabs` 随之退役)。
+  // 保留 `tab` 参数是为了让「拿错视角的 view 去断言」**当场炸** —— 原来那句 `filter` 会把它
+  // 静默滤成空集, 而空集在下面几条断言里照样能绿。
+  const inTab = (view: LegTableView, tab: LegTab): string[] => {
+    if (view.perspective !== tab) {
+      throw new Error(`view 是 ${view.perspective} 视角, 断言问的却是 ${tab}`);
+    }
+    return view.legs.map((l) => l.code);
+  };
   const legOf = (view: LegTableView, code: string) => view.legs.find((l) => l.code === code);
+
+  /**
+   * 053 FR-001 起三个视角是**三次独立请求** —— 召回判据一字不改, 变的只是取数次数。
+   * 🚫 MUST NOT 拼回一个 view: 「每次只答一个视角」正是本片要立的性质。
+   */
+  const viewsOf = async () => ({
+    all: await useCase.execute(SYMBOL, 'all', NOW),
+    build: await useCase.execute(SYMBOL, 'build', NOW),
+    rent: await useCase.execute(SYMBOL, 'rent', NOW),
+  });
+  /** 这条腿进了哪几个视角 —— 拆请求之后它是**跨请求**的性质 (原来是每腿一个 `tabs` 数组)。 */
+  const tabsOf = (views: Record<LegTab, LegTableView>, code: string): LegTab[] =>
+    LEG_TABS.filter((tab) => views[tab].legs.some((l) => l.code === code));
 
   // ── ① 三个 Tab 的成员集合逐条相等 + 两个计数 (SC-001 / SC-003) ────────────────
   it('① 三个 Tab 的成员**逐条相等**, 两个门槛计数各自与实际条数相等 (SC-003)', async () => {
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
+    const view = views.all;
 
     expect(view.state).toBe('available');
     // 🚨 集合相等而非 `length > 0`: 召回换代的失败形态是「返回了腿、数量也合理、只是成员错了」。
@@ -295,17 +316,19 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
         codes.noAsk,
       ]),
     );
-    expect(new Set(inTab(view, 'build'))).toEqual(new Set([codes.overlap, codes.greeksMissing]));
-    expect(new Set(inTab(view, 'rent'))).toEqual(
+    expect(new Set(inTab(views.build, 'build'))).toEqual(
+      new Set([codes.overlap, codes.greeksMissing]),
+    );
+    expect(new Set(inTab(views.rent, 'rent'))).toEqual(
       new Set([codes.overlap, codes.greeksMissing, codes.rentOnly]),
     );
     // 落库 10 条 − 权利金移出 2 条 = 响应 8 条; 流动性排除 2 条**仍在这 8 条里**。
     expect(view.legs).toHaveLength(8);
     // 051 FR-006a: 那 2 条 (`wideSpread` / `noAsk`) DTE 均为 10 ⇒ 只够得着建仓段 ⇒ 全落 build。
-    expect(view.gateCounts).toEqual({
+    // 🚨 053: 流动性排除是**该视角自己的**回答 ⇒ 从建仓那次请求读 (全腿视角不设价差上界)。
+    expect(views.build.gateCounts).toEqual({
       removedByPremiumFloor: 2,
       excludedFromIntentTabs: 2,
-      excludedFromIntentTabsByTab: { build: 2, rent: 0 },
     });
   });
 
@@ -313,10 +336,12 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
+    const view = views.build;
     const spot = view.spot!;
 
-    const build = view.legs.filter((l) => l.tabs.includes('build'));
+    // 053 起建仓那一发返回的就是建仓集本身 —— 「按 tabs 再滤一次」是恒等, 随之退役。
+    const build = view.legs;
     // 全量核对: 一条不漏地过一遍, 而不是抽查那两条构造出来的。
     expect(build.length).toBeGreaterThan(0); // 空集合会让下面那条平凡为真
     for (const leg of build) {
@@ -326,9 +351,9 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     // 两条构造腿点名不在建仓集内 —— 133.00 > 132.40 与 132.40 == 132.40。
     expect(inTab(view, 'build')).not.toContain(codes.costFail);
     expect(inTab(view, 'build')).not.toContain(codes.costTie);
-    // 🚨 它们**没有消失**: 有效成本判据只作用建仓, 全腿 Tab 照常收 (Edge Case「误加到收租不会红」)。
-    expect(legOf(view, codes.costTie)?.tabs).toEqual(['all']);
-    expect(legOf(view, codes.costTie)?.effectiveCost?.toFixed(2)).toBe('132.40');
+    // 🚨 它们**没有消失**: 有效成本判据只作用建仓, 全腿视角照常收 (Edge Case「误加到收租不会红」)。
+    expect(tabsOf(views, codes.costTie)).toEqual(['all']);
+    expect(legOf(views.all, codes.costTie)?.effectiveCost?.toFixed(2)).toBe('132.40');
   });
 
   // ── ② 重叠区: 同一张合约进两个意图 ──────────────────────────────────────────
@@ -336,13 +361,13 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
-    const leg = legOf(view, codes.overlap);
+    const leg = legOf(views.all, codes.overlap);
     expect(leg?.dteDays).toBe(38);
-    expect(leg?.tabs).toEqual(['all', 'build', 'rent']);
+    expect(tabsOf(views, codes.overlap)).toEqual(['all', 'build', 'rent']);
     // 对照: DTE 164 只进收租, DTE 10 的那批一条都进不了收租 —— 重叠是**段界的产物**不是巧合。
-    expect(legOf(view, codes.rentOnly)?.tabs).toEqual(['all', 'rent']);
+    expect(tabsOf(views, codes.rentOnly)).toEqual(['all', 'rent']);
   });
 
   // ── ③ greeks 缺失照常进意图召回集 (与 047 相反) ─────────────────────────────
@@ -350,13 +375,13 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
-    const leg = legOf(view, codes.greeksMissing);
+    const leg = legOf(views.all, codes.greeksMissing);
     expect(leg?.greeksComplete).toBe(false);
     expect(leg?.absDelta).toBeNull();
-    // 🚨 这条断言在 047 下是反的 (缺 Δ ⇒ 两个意图 Tab 都进不去)。翻转本身就是 US1-AS3。
-    expect(leg?.tabs).toEqual(['all', 'build', 'rent']);
+    // 🚨 这条断言在 047 下是反的 (缺 Δ ⇒ 两个意图视角都进不去)。翻转本身就是 US1-AS3。
+    expect(tabsOf(views, codes.greeksMissing)).toEqual(['all', 'build', 'rent']);
     // 不判档仍成立 —— 召回收它与判档不判它是两件正交的事 (047 FR-007 一行不改)。
     expect(leg?.tier).toBeNull();
   });
@@ -366,14 +391,14 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
-    const leg = legOf(view, codes.tooLong);
+    const leg = legOf(views.all, codes.tooLong);
     expect(leg?.dteDays).toBe(400);
-    expect(leg?.tabs).toEqual(['all']);
+    expect(tabsOf(views, codes.tooLong)).toEqual(['all']);
     // 🚨 它的价差合格 ⇒ 出局的原因是期限段, 与流动性无关 ⇒ **不计入** excludedFromIntentTabs。
     // 把它算进去会让「流动性排除 N 条」失去它唯一的用途 (提示该注意的流动性信号)。
-    expect(view.gateCounts.excludedFromIntentTabs).toBe(2);
+    expect(views.build.gateCounts.excludedFromIntentTabs).toBe(2);
   });
 
   // ── ⑤ 权利金门槛: 移出响应 (真消失) ─────────────────────────────────────────
@@ -381,19 +406,20 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
     // 先证明它们**确实落库了** —— 否则「不出现」可能只是压根没造出来。
     const stored = await prisma.optionContract.count({ where: { market: 'us' } });
     expect(stored).toBe(10);
     for (const code of [codes.penny, codes.noBid]) {
-      expect(legOf(view, code)).toBeUndefined();
-      expect(inTab(view, 'all')).not.toContain(code);
+      // 「整条移出」= 三个视角逐个都没有它 (053 起这要三次请求各问一遍)。
+      expect(tabsOf(views, code)).toEqual([]);
+      expect(legOf(views.all, code)).toBeUndefined();
     }
-    expect(view.gateCounts.removedByPremiumFloor).toBe(2);
+    expect(views.all.gateCounts.removedByPremiumFloor).toBe(2);
     // 🚨 串台绊线: 这两条同时是宽价差 / 无 ask, 但它们已不在响应里 ⇒ 不属于「流动性排除」。
     // 计成 4 就说明流动性判据被施加在权利金门槛之前 (或对已移出的腿照样统计)。
-    expect(view.gateCounts.excludedFromIntentTabs).toBe(2);
+    expect(views.build.gateCounts.excludedFromIntentTabs).toBe(2);
   });
 
   it('⑤b 无 bid **不是** bid = 0: 它走的是权利金门槛那条路, 不是「白拿股票」的有效成本', async () => {
@@ -410,14 +436,10 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
       delta: '-0.40',
     });
 
-    const view = await useCase.execute('us:VICI', NOW);
+    const view = await useCase.execute('us:VICI', 'all', NOW);
 
     expect(view.legs).toEqual([]);
-    expect(view.gateCounts).toEqual({
-      removedByPremiumFloor: 1,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    });
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 1, excludedFromIntentTabs: 0 });
   });
 
   // ── ⑥ 流动性门槛: 出意图 Tab 但**不消失** ───────────────────────────────────
@@ -425,19 +447,19 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await seedAnchor(SYMBOL);
     const codes = await seedMainDataset();
 
-    const view = await useCase.execute(SYMBOL, NOW);
+    const views = await viewsOf();
 
     for (const code of [codes.wideSpread, codes.noAsk]) {
-      const leg = legOf(view, code);
+      const leg = legOf(views.all, code);
       expect(leg).toBeDefined();
-      // 🚨 「排除出意图 Tab」不等于「消失」—— 报价与派生列照常在, 客户端仍看得到这条腿。
-      expect(leg?.tabs).toEqual(['all']);
+      // 🚨 「排除出意图视角」不等于「消失」—— 报价与派生列照常在, 客户端仍看得到这条腿。
+      expect(tabsOf(views, code)).toEqual(['all']);
       expect(leg?.bid).not.toBeNull();
     }
     // 无 ask ⇒ 算不出相对价差 ⇒ fail-closed (不是 fail-open 放行)。
-    expect(legOf(view, codes.noAsk)?.ask).toBeNull();
-    expect(view.gateCounts.excludedFromIntentTabs).toBe(2);
-    expect(view.gateCounts.removedByPremiumFloor).toBe(2); // 与它俩无关, 由 ⑤ 那两条贡献
+    expect(legOf(views.all, codes.noAsk)?.ask).toBeNull();
+    expect(views.build.gateCounts.excludedFromIntentTabs).toBe(2);
+    expect(views.build.gateCounts.removedByPremiumFloor).toBe(2); // 与它俩无关, 由 ⑤ 那两条贡献
   });
 
   // ── ⑦ 某 Tab 被清空 → 空集合而非 404 ────────────────────────────────────────
@@ -462,22 +484,19 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
       delta: '-0.18',
     });
 
-    const view = await useCase.execute('us:VICI', NOW);
+    // 053 FR-001: 每个视角各问一次 —— 「意图视角空」现在是那两次请求各自的回答。
+    const view = await useCase.execute('us:VICI', 'all', NOW);
 
     expect(view.state).toBe('available');
-    expect(inTab(view, 'build')).toEqual([]);
-    expect(inTab(view, 'rent')).toEqual([]);
-    // 🚨 空 Tab 不是错误也不是隐藏: 全腿 Tab 照常有数据, 锚派生那半边照常在。
+    expect(inTab(await useCase.execute('us:VICI', 'build', NOW), 'build')).toEqual([]);
+    expect(inTab(await useCase.execute('us:VICI', 'rent', NOW), 'rent')).toEqual([]);
+    // 🚨 空视角不是错误也不是隐藏: 全腿视角照常有数据, 锚派生那半边照常在。
     expect(inTab(view, 'all')).toHaveLength(2);
     expect(view.w.toFixed(4)).toBe('120.0000');
-    expect(view.gateCounts).toEqual({
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    });
+    expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
   });
 
   it('⑦b 未建锚的 symbol 才是 404 —— 「Tab 空」与「没有锚」是两回事', async () => {
-    await expect(useCase.execute('us:NOPE', NOW)).rejects.toMatchObject({ status: 404 });
+    await expect(useCase.execute('us:NOPE', 'all', NOW)).rejects.toMatchObject({ status: 404 });
   });
 });

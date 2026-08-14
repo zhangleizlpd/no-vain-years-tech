@@ -58,6 +58,6 @@ Doc 文件组织 per [docs/conventions/docs-organization.md](docs/conventions/do
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-[specs/054-marketdata-mock-write-provenance/plan.md](specs/054-marketdata-mock-write-provenance/plan.md)
+[specs/053-optionsdesk-leg-query-pushdown/plan.md](specs/053-optionsdesk-leg-query-pushdown/plan.md)
 
 <!-- SPECKIT END -->

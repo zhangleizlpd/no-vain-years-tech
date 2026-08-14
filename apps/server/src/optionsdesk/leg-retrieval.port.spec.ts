@@ -165,3 +165,41 @@ describe('leg-retrieval.port — 「链未就绪」与「链在但候选为空�
     expect(result.chain.spot).toBe(SPOT);
   });
 });
+
+/**
+ * 053 T002 —— 出参 `memberCount`: **无覆盖口径**下的成员数 (FR-009 / SC-015)。
+ *
+ * 🚨 **它为什么住在出参而不是由调用方现算** (053 FR-003 的 2026-08-14 裁定): 被当前条件挡下的
+ * 链行只存在于实现内部 —— 召回层只吐 `tabs` 非空的候选 ⇒ 收窄生效后, 那些行在 use case 里
+ * **结构上取不回来**。入参 `perspectives` 仍一字不动, 松的只是出参面。
+ */
+describe('leg-retrieval.port — memberCount 是无覆盖口径的成员数 (053 FR-009)', () => {
+  const legs = [
+    row({ code: 'C-RICH', bid: D('6'), ask: D('6.1') }),
+    row({ code: 'C-THIN', bid: D('1'), ask: D('1.02') }),
+  ];
+
+  it('未覆盖任何条件 → memberCount === 候选数 (区块头 MUST NOT 并列两个相等的数)', async () => {
+    const result = await retrieve(legs);
+    expect(result.candidates).toHaveLength(2);
+    expect(result.memberCount).toBe(result.candidates.length);
+  });
+
+  it('🚨 收窄后 memberCount > 候选数 —— 被挡下的行由实现对**同一批已在内存的腿**再判一次', async () => {
+    const narrowed = await retrieve(legs, ['rent'], RECALL_CANDIDATE_CAP, {
+      perspective: 'rent',
+      criteria: { premiumMin: D('5') },
+    });
+    expect(narrowed.candidates.map(({ leg }) => leg.code)).toEqual(['C-RICH']);
+    expect(narrowed.memberCount).toBe(2);
+    expect(narrowed.memberCount).toBeGreaterThan(narrowed.candidates.length);
+  });
+
+  it('覆盖落在**别的视角**上 ⇒ 本视角两数仍相等 (覆盖只作用一个视角)', async () => {
+    const result = await retrieve(legs, ['rent'], RECALL_CANDIDATE_CAP, {
+      perspective: 'build',
+      criteria: { premiumMin: D('5') },
+    });
+    expect(result.memberCount).toBe(result.candidates.length);
+  });
+});

@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 import { mockJson } from './_support/api-mock';
-import { keypadBackspace, keypadConfirm, keypadType } from './_support/alert-sheet';
+import { keypadBackspace, keypadConfirm, keypadType } from './_support/keypad';
 
 // 026-alert-condition-ux — Expo Web e2e（hermetic mock，§V 第一层 UI 交互验证）。
 // 021/023/024 已验词表/分类/建流全貌；本套专验 026 重构出的交互：自绘数字键盘（值/RSI/组合类）、

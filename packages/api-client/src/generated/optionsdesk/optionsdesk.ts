@@ -151,12 +151,12 @@ export function useOptionsdeskControllerUnderlyingDetail<TData = Awaited<ReturnT
 
 
 /**
- * Returns EVERY eligible put leg for the underlying in one shot — no pagination, no top-N truncation. Two filters are already applied server-side: non-standard (adjusted-root) contracts never reach this table (they ARE collected and stored — the exclusion happens here, not at ingestion), and expired legs are dropped on "expiry > today". That "today" is the EXCHANGE's today, not the host's, and the DTE it feeds is an integer calendar-day count with the expiry day itself as 0. Note the boundary is deliberately strict here while the ingestion-completeness denominator uses >= : a contract expiring today can still be snapshotted today, but it can no longer be traded. Every leg carries its own basis (weekly / annualized), tier, intent-domain earnings mark, completeness flag and the full set of request-time derivations — nothing is materialised in the database. Two timestamps are NOT the same day and both ship: the block asOf / quoteAsOf describe the quotes, while oiAsOf describes open interest, which US option exchanges refresh pre-market and therefore belongs to the PREVIOUS session in an end-of-day snapshot. The OI column MUST render oiAsOf. Activity is a RELATIVE rank inside the current tab candidate set, so the server ships one set of marks per tab plus each leg's tab membership — clients filter by that membership instead of re-deriving the band predicates. Dead-tier legs stay in the list (sorted last) and legs with missing greeks stay in too, unclassified and uncoloured. No anchor for the symbol → 404 with code ANCHOR_NOT_FOUND_FOR_SYMBOL.
- * @summary Leg picker table (ALL eligible legs, no pagination, no top-N)
+ * Returns the eligible put legs for ONE perspective — `perspective` is REQUIRED and decides which perspective is answered; a missing or out-of-enum value is a 400, never a silently defaulted perspective (leg count, ranks and tiers would all look normal while answering a question nobody asked). Each perspective is fetched independently, so the three of them are three separate requests: this SUPERSEDES the earlier "one shot, all tabs, switching tabs issues no request" contract. Pagination and "load more" remain absent — narrowing is done through the retrieval criteria, not by paging. Two filters are already applied server-side: non-standard (adjusted-root) contracts never reach this table (they ARE collected and stored — the exclusion happens here, not at ingestion), and expired legs are dropped on "expiry > today". That "today" is the EXCHANGE's today, not the host's, and the DTE it feeds is an integer calendar-day count with the expiry day itself as 0. Note the boundary is deliberately strict here while the ingestion-completeness denominator uses >= : a contract expiring today can still be snapshotted today, but it can no longer be traded. Every leg carries its own basis (weekly / annualized), tier, intent-domain earnings mark, completeness flag and the full set of request-time derivations — nothing is materialised in the database. Two timestamps are NOT the same day and both ship: the block asOf / quoteAsOf describe the quotes, while oiAsOf describes open interest, which US option exchanges refresh pre-market and therefore belongs to the PREVIOUS session in an end-of-day snapshot. The OI column MUST render oiAsOf. Activity is a RELATIVE rank inside THIS perspective's candidate set, so each leg carries ONE mark, computed for the perspective being answered — the other two have nothing to rank against in this response and are not shipped. The legs array arrives already ranked AND already truncated server-side at displayLimit: its order IS the display order (clients MUST NOT re-sort) and matchedCount is the pre-truncation total, so "showing the first D of N" stays computable without shipping D. Dead-tier legs stay in the list (sorted last) and legs with missing greeks stay in too, unclassified and uncoloured. No anchor for the symbol → 404 with code ANCHOR_NOT_FOUND_FOR_SYMBOL.
+ * @summary Leg picker table for ONE perspective (no pagination)
  */
 export const optionsdeskControllerLegs = (
     symbol: string,
-    params?: OptionsdeskControllerLegsParams, options?: AxiosRequestConfig
+    params: OptionsdeskControllerLegsParams, options?: AxiosRequestConfig
  ): Promise<AxiosResponse<LegTableResponse>> => {
 
 
@@ -179,7 +179,7 @@ export const getOptionsdeskControllerLegsQueryKey = (symbol: string,
 
 
 export const getOptionsdeskControllerLegsQueryOptions = <TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(symbol: string,
-    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
+    params: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
 ) => {
 
 const {query: queryOptions, axios: axiosOptions} = options ?? {};
@@ -203,7 +203,7 @@ export type OptionsdeskControllerLegsQueryError = AxiosError<ProblemDetailRespon
 
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
  symbol: string,
-    params: undefined |  OptionsdeskControllerLegsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
+    params: OptionsdeskControllerLegsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
           Awaited<ReturnType<typeof optionsdeskControllerLegs>>,
           TError,
@@ -214,7 +214,7 @@ export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof o
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
  symbol: string,
-    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
+    params: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
           Awaited<ReturnType<typeof optionsdeskControllerLegs>>,
           TError,
@@ -225,16 +225,16 @@ export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof o
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
  symbol: string,
-    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
+    params: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
- * @summary Leg picker table (ALL eligible legs, no pagination, no top-N)
+ * @summary Leg picker table for ONE perspective (no pagination)
  */
 
 export function useOptionsdeskControllerLegs<TData = Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError = AxiosError<ProblemDetailResponse>>(
  symbol: string,
-    params?: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
+    params: OptionsdeskControllerLegsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerLegs>>, TError, TData>>, axios?: AxiosRequestConfig}
  , queryClient?: QueryClient
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
