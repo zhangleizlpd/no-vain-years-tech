@@ -9,6 +9,12 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
+import {
+  BASIS_BY_PERSPECTIVE,
+  PERSPECTIVE_REQUIRED_400,
+  perspectiveOf,
+  quoted,
+} from './_support/optionsdesk-fixtures';
 
 // 052 T013 — 检索条件抽屉的 hermetic UI e2e（Playwright Expo Web，Constitution §V 两层验证
 // 之一；另一层是 T014 的契约冒烟）。样板 = `optionsdesk-leg-display.spec.ts`。
@@ -110,6 +116,11 @@ const COPY = {
   emptyResetCta: '复位到系统默认值',
   premiumTip: '门槛判的是 bid',
   rowTotal: (total: number) => `共 ${total} 行`,
+  /**
+   * 053 FR-016：区块头报的是**符合条件的总数**（`matchedCount`）。有覆盖生效时并列「全量」
+   * （`memberCount` = 无覆盖口径下的候选数）—— 没有它，用户在表上看不到「我筛掉了多少」的基准。
+   */
+  rowTotalNarrowed: (matched: number, member: number) => `筛后 ${matched} · 全量 ${member}`,
 } as const;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -118,7 +129,6 @@ const COPY = {
 
 type LegTab = 'all' | 'build' | 'rent';
 
-const TAB_KEYS = ['all', 'build', 'rent'] as const;
 const CRITERION_KEYS = [
   'strikeMax',
   'strikeMin',
@@ -204,7 +214,15 @@ const ANCHOR: AnchorResponse = {
   updatedAt: '2026-07-01T00:00:00.000Z',
 };
 
-const LEG_BASE: Omit<LegResponse, 'code' | 'strike' | 'dteDays' | 'bid' | 'ask'> = {
+/**
+ * 🚨 053 FR-005 起**每腿只有一份** `tier` / `activity`（收窄前是 `tierByTab` / `activityByTab`）——
+ *    一次请求只作答一个视角。本文件的腿在三视角同档，故 `tier` 直接摆在基线上；
+ *    报价四件套走 {@link quoted}（单笔权利金与相对价差是 bid/ask 的派生，手填第二份必漂移）。
+ */
+const LEG_BASE: Omit<
+  LegResponse,
+  'code' | 'strike' | 'dteDays' | 'bid' | 'ask' | 'contractPremium' | 'relativeSpread'
+> = {
   expiryDate: '2026-12-18',
   bidSize: 25,
   askSize: 26,
@@ -221,9 +239,7 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike' | 'dteDays' | 'bid' | 'ask'>
   openInterest: 400,
   volume: 5,
   turnover: '21420.00',
-  activityByTab: { all: null, build: null, rent: null },
-  tabs: ['all'],
-  tierByTab: { all: 'good', build: null, rent: null },
+  activity: null,
   isRecommended: false,
   isMonthlyChain: false,
   earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
@@ -245,11 +261,11 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike' | 'dteDays' | 'bid' | 'ask'>
  * ⇒ 收到 `110` ⇒ 0 行（空态第三支）。
  */
 const LEGS: readonly LegResponse[] = [
-  { ...LEG_BASE, code: 'PEP261218P120', strike: '120.00', dteDays: 40, bid: '1.20', ask: '1.30' },
-  { ...LEG_BASE, code: 'PEP261218P128', strike: '128.00', dteDays: 90, bid: '1.50', ask: '1.65' },
-  { ...LEG_BASE, code: 'PEP261218P132', strike: '132.00', dteDays: 120, bid: '1.80', ask: '2.00' },
-  { ...LEG_BASE, code: 'PEP261218P137', strike: '137.00', dteDays: 200, bid: '2.10', ask: '2.40' },
-  { ...LEG_BASE, code: 'PEP261218P140', strike: '140.00', dteDays: 300, bid: '2.50', ask: '2.90' },
+  { ...LEG_BASE, code: 'PEP261218P120', strike: '120.00', dteDays: 40, ...quoted('1.20', '1.30') },
+  { ...LEG_BASE, code: 'PEP261218P128', strike: '128.00', dteDays: 90, ...quoted('1.50', '1.65') },
+  { ...LEG_BASE, code: 'PEP261218P132', strike: '132.00', dteDays: 120, ...quoted('1.80', '2.00') },
+  { ...LEG_BASE, code: 'PEP261218P137', strike: '137.00', dteDays: 200, ...quoted('2.10', '2.40') },
+  { ...LEG_BASE, code: 'PEP261218P140', strike: '140.00', dteDays: 300, ...quoted('2.50', '2.90') },
 ];
 
 const SYMBOL = 'us:PEP';
@@ -334,38 +350,20 @@ function parseOverrides(params: URLSearchParams): Partial<RetrievalCriteriaRespo
 }
 
 /**
- * 请求参数 → 选约表。**纯函数** —— 同一组参数问几次答几次一样（契约镜像纪律）。
+ * 请求参数 → **该视角那一份**选约表。**纯函数** —— 同一组参数问几次答几次一样（契约镜像纪律）。
  *
- * 🚨 覆盖只作用于 `perspective` 那**一个**视角（T010 裁定），另两个视角照常走各自默认值 ——
- *    这正是客户端「每视角各自持有条件状态」能被验到的前提。
+ * 🚨 **053 FR-005 起一次请求只作答一个视角**：覆盖落在 `perspective` 那一个上，而另两个视角
+ *    压根不在这份响应里 —— 它们各自是另一次请求（052 那三份并列的 `criteriaByTab` 随之退役）。
+ *    ⇒ 「覆盖不串味到另一个视角」这条不再靠本响应里的另两格作证，而是靠另一次请求各带各的参数。
  */
-function makeTable(params: URLSearchParams): LegTableResponse {
-  const perspective = params.get('perspective') as LegTab | null;
-  const overrides = perspective === null ? {} : parseOverrides(params);
-  const criteriaByTab = {
-    all: perspectiveCriteria('all', perspective === 'all' ? overrides : {}),
-    build: perspectiveCriteria('build', perspective === 'build' ? overrides : {}),
-    rent: perspectiveCriteria('rent', perspective === 'rent' ? overrides : {}),
-  };
-  const keptBy = {
-    all: recall(criteriaByTab.all.effective),
-    build: recall(criteriaByTab.build.effective),
-    rent: recall(criteriaByTab.rent.effective),
-  };
-  const memberTabs = (leg: LegResponse): LegTab[] =>
-    TAB_KEYS.filter((t) => keptBy[t].some((l) => l.code === leg.code));
-  const legs = LEGS.filter((l) => memberTabs(l).length > 0).map((l) => ({
-    ...l,
-    tabs: memberTabs(l),
-    tierByTab: {
-      all: memberTabs(l).includes('all') ? ('good' as const) : null,
-      build: memberTabs(l).includes('build') ? ('good' as const) : null,
-      rent: memberTabs(l).includes('rent') ? ('good' as const) : null,
-    },
-  }));
+function makeTable(params: URLSearchParams, perspective: LegTab): LegTableResponse {
+  const criteria = perspectiveCriteria(perspective, parseOverrides(params));
+  const legs = recall(criteria.effective);
 
   return {
     symbol: SYMBOL,
+    // 053 FR-005：原样回显请求参数 —— 迟到的那一发靠它认领。
+    perspective,
     state: 'available',
     asOf: TODAY,
     asOfFreshnessTier: 'CURRENT',
@@ -384,19 +382,17 @@ function makeTable(params: URLSearchParams): LegTableResponse {
     intent: 'rent',
     rentDepth: 'deep',
     legs,
-    tabOrder: {
-      all: keptBy.all.map((l) => l.code),
-      build: keptBy.build.map((l) => l.code),
-      rent: keptBy.rent.map((l) => l.code),
-    },
     // 051 的两个门槛计数不是本片的断言面 —— 取 0（两数皆 0 ⇒ 计数区降权，收窄计数行照常在）。
-    gateCounts: {
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    },
-    basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
-    criteriaByTab,
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    basis: BASIS_BY_PERSPECTIVE[perspective],
+    criteria,
+    // 🚨 两个数**都从判据现算**（053 FR-009）：`matchedCount` 用生效值、`memberCount` 用系统
+    //    默认值跑同一条召回 —— 摆常量的话「筛后 N · 全量 M」那句话在收窄时也照样渲染得出来。
+    matchedCount: legs.length,
+    memberCount: recall(DEFAULTS[perspective]).length,
+    // 本文件不验截断（归 T010）：不设阈值 ⇒ 零截断；候选上限亦未触及。
+    displayLimit: null,
+    candidateCapDropped: 0,
   };
 }
 
@@ -428,7 +424,12 @@ async function installMock(page: Page): Promise<LegRequestLog> {
     //    整段吃成 symbol（047 实撞过，症状是选约区块恒「未就绪」而锚卡正常）。
     if (/\/optionsdesk\/underlyings\/(.+)\/legs$/.test(url.pathname)) {
       log.push(url.search);
-      return void (await json(200, makeTable(url.searchParams)));
+      // 🚨 053 FR-001：`perspective` 必填，缺参 / 非三值 → 400。
+      //    🚫 MUST NOT 在这里默认一个视角 —— 那时腿数、名次、档位全都正常，只是答的不是问的
+      //       那个视角，而屏幕上什么都不会红。
+      const perspective = perspectiveOf(url);
+      if (perspective === null) return void (await json(400, PERSPECTIVE_REQUIRED_400));
+      return void (await json(200, makeTable(url.searchParams, perspective)));
     }
 
     if (/\/optionsdesk\/underlyings\/(.+)$/.test(url.pathname)) {
@@ -539,8 +540,36 @@ function renderedCodes(page: Page): Promise<string[]> {
   });
 }
 
-async function expectRowCount(page: Page, total: number): Promise<void> {
-  await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(total));
+/**
+ * 区块头计数。
+ *
+ * 🚨 **053 起它报的是 `matchedCount` 而不是渲染出来的行数**（FR-016）—— 两者在截断之后不再
+ *    相等，「已显示前 D 条」由非常驻区的截断计数承担（同一个数一屏两处，`SC-005` 明禁）。
+ *    本文件不设截断阈值 ⇒ 两数恒相等，但期望值 MUST 从 `matchedCount` 那一侧取。
+ * 📌 `member` 省略 = 未覆盖（`memberCount === matchedCount`）⇒ 单数形态；给了就是双数形态。
+ */
+async function expectRowCount(page: Page, matched: number, member?: number): Promise<void> {
+  await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(
+    member === undefined || member === matched
+      ? COPY.rowTotal(matched)
+      : COPY.rowTotalNarrowed(matched, member),
+  );
+}
+
+/**
+ * 一条请求串里除 `perspective` 之外的参数名。
+ *
+ * 🚨 **053 起 `perspective` 恒在每一条请求里**（FR-001 必填）⇒ 「有没有下发条件」不能再用
+ *    「查询串是不是空的」来判。断言改看这一层：它对错峰 / 预取带来的**请求条数**免疫
+ *    （那是 T010 的断言面），只钉住本文件真正要守的「条件维度有没有被下发」。
+ */
+function criteriaKeysIn(query: string): string[] {
+  return [...new URLSearchParams(query).keys()].filter((key) => key !== 'perspective').sort();
+}
+
+/** 带了条件维度的请求（= 用户点过「搜」的那些）。 */
+function criteriaRequests(log: LegRequestLog): string[] {
+  return log.filter((query) => criteriaKeysIn(query).length > 0);
 }
 
 /** 期望值一律**从 fixture 派生**，不在 test 里手抄（手抄那份与 mock 漂移时两边都不会红）。 */
@@ -566,7 +595,10 @@ test('052 T013 — US3-AS1：进入视图打开抽屉，六个控件已填**服�
   await expectRowCount(page, RENT_DEFAULT_CODES.length);
 
   // 首屏**不带任何条件参数** —— 系统默认值 MUST NOT 由客户端回传（回传就等于它先算了一份）。
-  expect(log).toEqual(['']);
+  // 📌 053 起「不带条件」≠「查询串为空」：`perspective` 恒在（FR-001 必填）。
+  expect(criteriaRequests(log)).toEqual([]);
+  // 落地视角那一发确实打出去了（否则上面那条对着一个空 log 也成立）。
+  expect(log).toContain('?perspective=rent');
 
   await openSheet(page);
   await expect(page.getByTestId(SHEET)).toContainText(COPY.sheetTitle(COPY.tabs.rent));
@@ -609,8 +641,10 @@ test('052 T013 — US3-AS2：改了值**不点搜**⇒ 结果逐行不变、零�
 
   expect(await renderedCodes(page)).toEqual(RENT_DEFAULT_CODES);
   await expect(page.getByTestId(countLine('strikeMax'))).toHaveCount(0);
-  // 🚨 最硬的那条：**一个请求都没发**。防抖式实现会在这里多出一条带 `strikeMax` 的查询串。
-  expect(log).toEqual(['']);
+  // 🚨 最硬的那条：**一条带条件的请求都没发**。防抖式实现会在这里多出一条带 `strikeMax` 的
+  //    查询串。📌 053 起判据从「log 恒等于 ['']」改成「零条带条件的请求」—— 错峰预取会往 log 里
+  //    加 `?perspective=build` 之类的条目，那是 T010 的断言面，本条不该被它牵动。
+  expect(criteriaRequests(log)).toEqual([]);
 
   // 未提交的草稿在关掉后丢弃 —— 没点「搜」就等于没提交（重开回默认值）。
   await openSheet(page);
@@ -636,7 +670,7 @@ test('052 T013 — US3-AS3：点「搜」后按新值召回，**仅被收窄的�
 
   // 提交即收起（结果在抽屉底下，盖着看不见）。
   await expect(page.getByTestId(SHEET)).toHaveCount(0);
-  await expectRowCount(page, RENT_NARROWED_CODES.length);
+  await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
   expect(await renderedCodes(page)).toEqual(RENT_NARROWED_CODES);
 
   // 🚨 措辞是「当前条件之外还有 N 条」，🚫 不是「被系统滤掉」。
@@ -652,8 +686,11 @@ test('052 T013 — US3-AS3：点「搜」后按新值召回，**仅被收窄的�
   await expect(page.getByTestId(BADGE)).toHaveText('1');
 
   // 请求里只带改过的那一维 + 视角，MUST NOT 回传其余五维的默认值。
-  expect(log).toHaveLength(2);
-  const sent = new URLSearchParams(log[1] ?? '');
+  // 📌 053 起用「带条件的那些请求」定位而不是 `log[1]` —— 错峰预取会往 log 里插入其余视角的
+  //    无条件请求，而它们的条数与次序归 T010 断。
+  const withCriteria = criteriaRequests(log);
+  expect(withCriteria).toHaveLength(1);
+  const sent = new URLSearchParams(withCriteria[0] ?? '');
   expect(sent.get('perspective')).toBe('rent');
   expect(sent.get('strikeMax')).toBe('128');
   expect([...sent.keys()].sort()).toEqual(['perspective', 'strikeMax']);
@@ -676,7 +713,7 @@ test('052 T013 — US3-AS4：点「复位」⇒ 回系统默认值并重召回�
   await openSheet(page);
   await page.getByTestId(input('strikeMax')).fill('128');
   await page.getByTestId(SUBMIT).tap();
-  await expectRowCount(page, RENT_NARROWED_CODES.length);
+  await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
 
   await openSheet(page);
   await page.getByTestId(RESET).tap();
@@ -691,7 +728,7 @@ test('052 T013 — US3-AS4：点「复位」⇒ 回系统默认值并重召回�
   //    一份）。⇒ 全程带参数的请求**有且只有**用户那一维的那一条。
   // 📌 复位后**不再发请求**是正确行为、也是这条断言的形状依据：无参数那把 key 开屏就取过，
   //    仍在 `staleTime` 内 ⇒ 直接命中缓存。「没发请求」本身就说明它退回的是同一把 key。
-  expect(log.filter((q) => q !== '')).toEqual(['?perspective=rent&strikeMax=128']);
+  expect(criteriaRequests(log)).toEqual(['?perspective=rent&strikeMax=128']);
 
   await openSheet(page);
   await expect(page.getByTestId(input('strikeMax'))).toHaveValue('137.7');
@@ -710,7 +747,7 @@ test('052 T013 — US3-AS5：离开视图再进入回到默认值，且**任何 
   await openSheet(page);
   await page.getByTestId(input('strikeMax')).fill('128');
   await page.getByTestId(SUBMIT).tap();
-  await expectRowCount(page, RENT_NARROWED_CODES.length);
+  await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
 
   // 🚨 **结构判据先行**：重进那条是深链（= 整页重载，per e2e 三坑「不驱 goBack」），它自己
   //    对「有没有落 storage」是**平凡绿** —— 重载什么都会清。故先直接扫 storage：用户值
@@ -725,11 +762,12 @@ test('052 T013 — US3-AS5：离开视图再进入回到默认值，且**任何 
   expect(persisted).not.toContain('128');
   expect(persisted).not.toContain('strikeMax');
 
-  // 行为面：重新进入 ⇒ 默认值那张表，且请求不带条件。
+  // 行为面：重新进入 ⇒ 默认值那张表，且重进之后发出去的请求**一条都不带条件**。
+  const beforeReenter = log.length;
   await openDetail(page);
   await expectRowCount(page, RENT_DEFAULT_CODES.length);
   await expect(page.getByTestId(countLine('strikeMax'))).toHaveCount(0);
-  expect(log[log.length - 1]).toBe('');
+  expect(criteriaRequests(log.slice(beforeReenter))).toEqual([]);
 
   await openSheet(page);
   await expect(page.getByTestId(input('strikeMax'))).toHaveValue('137.7');
@@ -747,7 +785,7 @@ test('052 T013 — FR-015：在收租设的条件**不跟着**切到全腿，切
   await openSheet(page);
   await page.getByTestId(input('strikeMax')).fill('128');
   await page.getByTestId(SUBMIT).tap();
-  await expectRowCount(page, RENT_NARROWED_CODES.length);
+  await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
 
   // 切到全腿：它有自己的一份状态（未覆盖）⇒ 行数是全腿默认值那份，计数与徽标都不在。
   await selectTab(page, 'all');
@@ -761,7 +799,7 @@ test('052 T013 — FR-015：在收租设的条件**不跟着**切到全腿，切
 
   // 切回收租：条件还在（既没被切走时清空，也没被全腿那次请求冲掉）。
   await selectTab(page, 'rent');
-  await expectRowCount(page, RENT_NARROWED_CODES.length);
+  await expectRowCount(page, RENT_NARROWED_CODES.length, RENT_DEFAULT_CODES.length);
   await expect(page.getByTestId(BADGE)).toHaveText('1');
   await expect(page.getByTestId(countLine('strikeMax'))).toBeVisible();
 
@@ -786,7 +824,7 @@ test('052 T013 — Edge Case：收紧到候选为空 ⇒ 空态**带复位入口
   await page.getByTestId(input('strikeMax')).fill('110');
   await page.getByTestId(SUBMIT).tap();
 
-  await expectRowCount(page, 0);
+  await expectRowCount(page, 0, RENT_DEFAULT_CODES.length);
   // 🚨 与「这只票本来就没有」一眼可分：标题指向**条件**，入口是**复位**而不是换视角。
   await expect(page.getByTestId('optionsdesk-detail-leg-empty')).toContainText(COPY.emptyTitle);
   await expect(page.getByTestId(EMPTY_RESET)).toContainText(COPY.emptyResetCta);

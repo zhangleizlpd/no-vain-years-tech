@@ -2,7 +2,6 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import type {
   AnchorResponse,
   DailyBarItem,
-  LegResponse,
   LegTableResponse,
   ThermometerUnderlyingRowResponse,
   UnderlyingIvReadoutResponse,
@@ -11,7 +10,16 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
-import { emptyCriteriaByTab } from './_support/optionsdesk-fixtures';
+import {
+  BASIS_BY_PERSPECTIVE,
+  emptyPerspectiveCriteria,
+  PERSPECTIVE_REQUIRED_400,
+  perspectiveOf,
+  projectLegs,
+  quoted,
+  type CanonicalLeg,
+  type LegPerspective,
+} from './_support/optionsdesk-fixtures';
 
 // 046 T024 — 标的详情（上半）+ 波动温度计 hermetic UI e2e（Playwright Expo Web，
 // Constitution §V 两层验证之一；样板 = `optionsdesk-anchors-radar.spec.ts`）。
@@ -234,90 +242,106 @@ interface DeskFixture {
   /** 逐票上市首日（bars 按它裁剪）；缺键 = 10 年历史。晚于 today ⇒ 该票无日线。 */
   listedFrom?: Record<string, string>;
   /**
-   * 047 T031 —— 逐票选约表（详情屏下半的 `section.data` 来源）。缺键 = 该票有当日快照
-   * 且两条腿（{@link DEFAULT_LEGS}）。选约表的**全量态 / 空态 / 未就绪态**由 047 自己的
+   * 047 T031 —— 逐票的 canonical 腿册（详情屏下半的 `section.data` 来源）。缺键 = 该票有当日
+   * 快照且两条腿（{@link DEFAULT_BOOK}）。选约表的**全量态 / 空态 / 未就绪态**由 047 自己的
    * e2e（T035）逐帧覆盖；本文件只保证 046 三块无回归 + 选约区块确实渲染出来了。
+   * 📌 053 起持有的是**跨视角**腿册而非一张表 —— 一次请求只作答一个视角，投影在 handler 里。
    */
-  legs?: Record<string, LegTableResponse>;
+  legs?: Record<string, readonly CanonicalLeg[]>;
   /** 上游故障 —— 服务端**状态**（真的 5xx），不是「按测试名分叉」的编排标志。 */
   outage?: { detail?: boolean; thermometer?: boolean; bars?: boolean };
 }
 
 /**
  * 047 选约表的默认两条腿 —— 一条收租（年化口径）、一条建仓（周化口径）。
- * 🚨 **`tabs` 是 server 下发的成员标**，客户端据此过滤，MUST NOT 在此重算带判据。
+ *
+ * 🚨 **053 FR-005 起「这条腿属于哪些视角」不在契约里**（每腿 `tabs` 已删，一次请求只作答一个
+ *    视角）—— 但 fixture 仍要持有它：被 mock 的那个服务端正是按请求参数投影出一份来答的。
+ *    落点改成 {@link CanonicalLeg}，投影走 {@link projectLegs}。
+ * 🚨 每腿 `tierByTab` 同理收窄成一份 `tier`；这两条腿在其所属视角同档，故走 `tierBy` 显式给。
  * 🚨 **`oiAsOf` 与区块级 `asOf` 故意不是同一天**（OI 盘前更新 ⇒ 归属 T−1）。
  */
-const DEFAULT_LEGS: LegResponse[] = [
+const DEFAULT_BOOK: readonly CanonicalLeg[] = [
   {
-    code: 'AOS261218P75000',
-    strike: '75.00',
-    expiryDate: '2026-12-18',
-    dteDays: 180,
-    bid: '3.40',
-    ask: '3.70',
-    bidSize: 25,
-    askSize: 26,
-    basis: 'annualized',
-    periodRate: '0.047486',
-    weeklyRate: '0.001846',
-    annualizedRate: '0.096291',
-    tier: 'good',
-    askRate: null,
-    effectiveCost: '71.60',
-    effectiveCostVsWPct: '-10.50',
-    absDelta: 0.22,
-    sigmaDistance: 0.77,
-    openInterest: 4210,
-    volume: 63,
-    turnover: '21420.00',
-    activityByTab: { all: null, build: null, rent: null },
-    tabs: ['all', 'rent'],
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
-    tierByTab: { all: 'good', build: null, rent: 'good' },
-    isRecommended: false,
-    isMonthlyChain: false,
-    earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
-    greeksComplete: true,
+    perspectives: ['all', 'rent'],
+    tierBy: { all: 'good', rent: 'good' },
+    leg: {
+      code: 'AOS261218P75000',
+      strike: '75.00',
+      expiryDate: '2026-12-18',
+      dteDays: 180,
+      ...quoted('3.40', '3.70'),
+      bidSize: 25,
+      askSize: 26,
+      basis: 'annualized',
+      periodRate: '0.047486',
+      weeklyRate: '0.001846',
+      annualizedRate: '0.096291',
+      tier: 'good',
+      askRate: null,
+      effectiveCost: '71.60',
+      effectiveCostVsWPct: '-10.50',
+      absDelta: 0.22,
+      sigmaDistance: 0.77,
+      openInterest: 4210,
+      volume: 63,
+      turnover: '21420.00',
+      activity: null,
+      isRecommended: false,
+      isMonthlyChain: false,
+      earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
+      greeksComplete: true,
+    },
   },
   {
-    code: 'AOS260814P80000',
-    strike: '80.00',
-    expiryDate: '2026-08-14',
-    dteDays: 11,
-    bid: '1.15',
-    ask: '1.30',
-    bidSize: 12,
-    askSize: 18,
-    basis: 'weekly',
-    periodRate: '0.014589',
-    weeklyRate: '0.009284',
-    annualizedRate: '0.484067',
-    tier: 'acceptable',
-    askRate: null,
-    effectiveCost: '78.85',
-    effectiveCostVsWPct: '-1.44',
-    absDelta: 0.45,
-    sigmaDistance: 0.13,
-    openInterest: 880,
-    volume: 41,
-    turnover: '4715.00',
-    activityByTab: { all: null, build: null, rent: null },
-    tabs: ['all', 'build'],
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：非成员格恒 null。
-    tierByTab: { all: 'acceptable', build: 'acceptable', rent: null },
-    isRecommended: false,
-    isMonthlyChain: false,
-    // 建仓域**恒无标**（`null` 与 `no_date` 是两个值，UI 上一个「—」一个虚线 chip）。
-    earningsMark: null,
-    greeksComplete: true,
+    perspectives: ['all', 'build'],
+    tierBy: { all: 'acceptable', build: 'acceptable' },
+    leg: {
+      code: 'AOS260814P80000',
+      strike: '80.00',
+      expiryDate: '2026-08-14',
+      dteDays: 11,
+      ...quoted('1.15', '1.30'),
+      bidSize: 12,
+      askSize: 18,
+      basis: 'weekly',
+      periodRate: '0.014589',
+      weeklyRate: '0.009284',
+      annualizedRate: '0.484067',
+      tier: 'acceptable',
+      askRate: null,
+      effectiveCost: '78.85',
+      effectiveCostVsWPct: '-1.44',
+      absDelta: 0.45,
+      sigmaDistance: 0.13,
+      openInterest: 880,
+      volume: 41,
+      turnover: '4715.00',
+      activity: null,
+      isRecommended: false,
+      isMonthlyChain: false,
+      // 建仓域**恒无标**（`null` 与 `no_date` 是两个值，UI 上一个「—」一个虚线 chip）。
+      earningsMark: null,
+      greeksComplete: true,
+    },
   },
 ];
 
-/** 该票的选约表 —— 缺省 = 有当日快照 + 两条腿。 */
-function makeLegTable(symbol: string, anchor: AnchorResponse): LegTableResponse {
+/**
+ * 该票**某一个视角**的选约表 —— 缺省腿册 = 有当日快照 + 两条腿。
+ * 🚨 053 FR-005：一次请求只作答一个视角 ⇒ `legs` / `tier` / `basis` / `criteria` / 三个计数
+ *    全部按 `perspective` 投影，🚫 MUST NOT 把三份并列下发。
+ */
+function makeLegTable(
+  symbol: string,
+  anchor: AnchorResponse,
+  perspective: LegPerspective,
+  book: readonly CanonicalLeg[],
+): LegTableResponse {
+  const legs = projectLegs(book, perspective);
   return {
     symbol,
+    perspective,
     state: 'available',
     asOf: TODAY,
     // 档位由 **server** 判（T027a）；这里给当期态。「陈旧」那一档的帧归 T035。
@@ -336,22 +360,44 @@ function makeLegTable(symbol: string, anchor: AnchorResponse): LegTableResponse 
     // 水位未选 ⇒ 意图 `pending`（**MUST NOT 静默取一档**）。
     intent: 'pending',
     rentDepth: null,
-    legs: DEFAULT_LEGS,
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：`tabOrder[t]` 与每腿的 `tabs` **同源派生**
-    // （真端点的 Guardrail 9）；顺序沿用数组顺序（真端点是该 Tab 口径的费率降序）。
-    tabOrder: {
-      all: DEFAULT_LEGS.filter((l) => l.tabs.includes('all')).map((l) => l.code),
-      build: DEFAULT_LEGS.filter((l) => l.tabs.includes('build')).map((l) => l.code),
-      rent: DEFAULT_LEGS.filter((l) => l.tabs.includes('rent')).map((l) => l.code),
-    },
-    gateCounts: {
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    },
-    basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
-    // 052 T011 契约增量：三视角恒有一份条件全景（消费归 T012）。
-    criteriaByTab: emptyCriteriaByTab(),
+    // 🚨 数组顺序**就是**呈现顺序（053 FR-002）—— 047 那份并行的有序 code 列表 `tabOrder`
+    //    已随之退役：同一个顺序下发两份表达必 drift，而两份各自都渲染得出来。
+    legs,
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    basis: BASIS_BY_PERSPECTIVE[perspective],
+    // 052 T011 契约增量；053 起只发**本视角**那一份（消费归 052 T013）。
+    criteria: emptyPerspectiveCriteria(),
+    // 未覆盖条件 ⇒ 两数相等（区块头走单数形态）；本文件不设截断阈值、候选上限未触及。
+    matchedCount: legs.length,
+    memberCount: legs.length,
+    displayLimit: null,
+    candidateCapDropped: 0,
+  };
+}
+
+/**
+ * `…/legs` 一次请求的作答 —— **纯函数**（`(路径 symbol, 请求参数, canonical 状态) → 响应`）。
+ * 🚨 053 FR-001：`perspective` 必填，缺参 / 非三值 → 400。🚫 MUST NOT 默认一个视角 —— 那时腿数、
+ *    名次、档位全都正常，只是答的不是问的那个视角，而屏幕上什么都不会红。
+ */
+function answerLegs(
+  symbol: string,
+  url: URL,
+  anchors: readonly AnchorResponse[],
+  legBook: Record<string, readonly CanonicalLeg[]>,
+): { status: number; body: unknown } {
+  const anchor = anchors.find((a) => a.ticker === symbol);
+  if (!anchor) {
+    return {
+      status: 404,
+      body: { status: 404, code: 'ANCHOR_NOT_FOUND_FOR_SYMBOL', title: 'anchor not found' },
+    };
+  }
+  const perspective = perspectiveOf(url);
+  if (perspective === null) return { status: 400, body: PERSPECTIVE_REQUIRED_400 };
+  return {
+    status: 200,
+    body: makeLegTable(symbol, anchor, perspective, legBook[symbol] ?? DEFAULT_BOOK),
   };
 }
 
@@ -541,16 +587,8 @@ async function installDeskMock(page: Page, fixture: DeskFixture): Promise<DeskMo
     //    🚨 MUST 排在下面那条之前 —— `underlyings/(.+)$` 会把 `…/legs` 整段吃成 symbol。
     const legsMatch = /\/optionsdesk\/underlyings\/(.+)\/legs$/.exec(path);
     if (legsMatch) {
-      const symbol = decodeURIComponent(legsMatch[1] ?? '');
-      const anchor = anchors.find((a) => a.ticker === symbol);
-      if (!anchor) {
-        return void (await json(404, {
-          status: 404,
-          code: 'ANCHOR_NOT_FOUND_FOR_SYMBOL',
-          title: 'anchor not found',
-        }));
-      }
-      return void (await json(200, legBook[symbol] ?? makeLegTable(symbol, anchor)));
+      const answer = answerLegs(decodeURIComponent(legsMatch[1] ?? ''), url, anchors, legBook);
+      return void (await json(answer.status, answer.body));
     }
 
     // ── GET /optionsdesk/underlyings/:symbol ────────────────────────────────

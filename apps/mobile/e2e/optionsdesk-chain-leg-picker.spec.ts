@@ -10,7 +10,16 @@ import type {
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
-import { emptyCriteriaByTab } from './_support/optionsdesk-fixtures';
+import {
+  BASIS_BY_PERSPECTIVE,
+  emptyPerspectiveCriteria,
+  PERSPECTIVE_REQUIRED_400,
+  perspectiveOf,
+  projectLegs,
+  quoted,
+  type CanonicalLeg,
+  type LegPerspective,
+} from './_support/optionsdesk-fixtures';
 
 // 047 T035 — 选约表（US2 / US3 / US4）hermetic UI e2e（Playwright Expo Web，Constitution §V
 // 两层验证之一；样板 = `optionsdesk-detail-thermometer.spec.ts`）。
@@ -234,8 +243,7 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   strike: '75.00',
   expiryDate: '2026-12-18',
   dteDays: 180,
-  bid: '3.40',
-  ask: '3.70',
+  ...quoted('3.40', '3.70'),
   bidSize: 25,
   askSize: 26,
   basis: 'annualized',
@@ -251,42 +259,74 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   openInterest: 4210,
   volume: 63,
   turnover: '21420.00',
-  activityByTab: { all: null, build: null, rent: null },
-  tabs: ['all', 'rent'],
-  // 050 契约增量：非成员格恒 null。**由 `tier` × `tabs` 派生**，见 {@link makeLeg}。
-  tierByTab: { all: 'good', build: null, rent: 'good' },
+  activity: null,
   isRecommended: false,
   isMonthlyChain: false,
   earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
   greeksComplete: true,
 };
 
+/** 缺省成员视角（= 收租腿基线的归属）。 */
+const DEFAULT_PERSPECTIVES: readonly LegPerspective[] = ['all', 'rent'];
+
 /**
- * 🚨 `tierByTab` **由 `tier` × `tabs` 派生**（Guardrail 10：mock 从数据派生，不手写第二份）——
- * 051 起呈现层读的是 `tierByTab[tab]`，写死一份就会与用例里 `tier: 'dead'` 这类覆写**当场矛盾**：
- * 屏幕渲成好档、断言红在「文案不对」上，而真正错的是 mock 自相矛盾。
+ * 造一条 canonical 腿。
+ *
+ * 🚨 **053 FR-005 起「属于哪些视角」与「各视角判什么档」都不在契约里**（每腿 `tabs` /
+ *    `tierByTab` 已删，一次请求只作答一个视角）—— 它们移到 fixture 侧的 {@link CanonicalLeg}，
+ *    由 mock 按请求的 `perspective` 投影。入参 `tabs` 随之改名 `perspectives`。
+ * 🚨 各视角的档**由 `tier` × `perspectives` 派生**（Guardrail 10：mock 从数据派生，不手写第二
+ *    份）—— 写死一份就会与用例里 `tier: 'dead'` 这类覆写当场矛盾：屏幕渲成好档、断言红在
+ *    「文案不对」上，而真正错的是 mock 自相矛盾。
  * 📌 派生只保证「同一条腿在其所属视角里判同一档」；**两个视角判不同档**那种数据要显式传
- * `tierByTab`（本文件的用例都不需要，051 T011 的新 e2e 才需要）。
+ *    `tierBy`（本文件的用例都不需要，051 T011 的那份 e2e 才需要）。
  */
-function makeLeg(over: Partial<LegResponse> & Pick<LegResponse, 'code'>): LegResponse {
-  const leg = { ...LEG_BASE, ...over };
-  if (over.tierByTab !== undefined) return leg;
-  return {
-    ...leg,
-    tierByTab: {
-      all: leg.tabs.includes('all') ? leg.tier : null,
-      build: leg.tabs.includes('build') ? leg.tier : null,
-      rent: leg.tabs.includes('rent') ? leg.tier : null,
+function makeLeg(
+  over: Partial<LegResponse> &
+    Pick<LegResponse, 'code'> & {
+      perspectives?: readonly LegPerspective[];
+      tierBy?: CanonicalLeg['tierBy'];
     },
+): CanonicalLeg {
+  const { perspectives = DEFAULT_PERSPECTIVES, tierBy, ...legOver } = over;
+  const leg: LegResponse = { ...LEG_BASE, ...legOver };
+  return {
+    leg,
+    perspectives,
+    tierBy:
+      tierBy ??
+      (Object.fromEntries(perspectives.map((p) => [p, leg.tier])) satisfies CanonicalLeg['tierBy']),
   };
+}
+
+/**
+ * 一票的 canonical 选约表状态 —— **链级字段照契约摆，视角级的留在 `book` 里**。
+ *
+ * 🚨 053 FR-005 把响应按「链级 / 视角级」切了一刀：链级（`state` / `asOf` / `spot` / `w` /
+ *    `intent` / 水位三件套…）每次请求照传且三份逐字相等；视角级（成员集合、每腿档位、口径、
+ *    条件全景、三个计数）**只发本次那一份**。fixture 于是也照这一刀切：这里存链级 + 腿册，
+ *    {@link projectTable} 按请求参数合成一份响应。
+ */
+interface CanonicalTable extends Omit<
+  LegTableResponse,
+  | 'perspective'
+  | 'legs'
+  | 'basis'
+  | 'criteria'
+  | 'matchedCount'
+  | 'memberCount'
+  | 'displayLimit'
+  | 'candidateCapDropped'
+> {
+  book: readonly CanonicalLeg[];
 }
 
 /** 选约表基线 —— 当期快照、水位未选（⇒ 意图 `pending`，默认落位「全腿」）。 */
 function makeLegTable(
   symbol: string,
-  legs: LegResponse[],
-  over: Partial<LegTableResponse> = {},
-): LegTableResponse {
+  book: readonly CanonicalLeg[],
+  over: Partial<CanonicalTable> = {},
+): CanonicalTable {
   return {
     symbol,
     state: 'available',
@@ -305,29 +345,39 @@ function makeLegTable(
     positionBucketSetAt: null,
     intent: 'pending',
     rentDepth: null,
-    legs,
-    // 050 契约增量（P1 只镜像形状，消费归 P2）：`tabOrder[t]` 与每腿的 `tabs` **同源派生**
-    // （真端点的 Guardrail 9）—— 写死成空数组会让这份 mock 与被 mock 的契约当场矛盾。
-    // 顺序沿用入参顺序（真端点是该 Tab 口径的费率降序）。
-    tabOrder: {
-      all: legs.filter((l) => l.tabs.includes('all')).map((l) => l.code),
-      build: legs.filter((l) => l.tabs.includes('build')).map((l) => l.code),
-      rent: legs.filter((l) => l.tabs.includes('rent')).map((l) => l.code),
-    },
-    gateCounts: {
-      removedByPremiumFloor: 0,
-      excludedFromIntentTabs: 0,
-      excludedFromIntentTabsByTab: { build: 0, rent: 0 },
-    },
-    basisByTab: { all: 'annualized', build: 'weekly', rent: 'annualized' },
-    // 052 T011 契约增量：三视角恒有一份条件全景（消费归 T012）。
-    criteriaByTab: emptyCriteriaByTab(),
+    // 本文件不验两个门槛计数（归 051 T011 那份）—— 取 0。
+    gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+    book,
     ...over,
   };
 }
 
-/** SC-012 的大表：N 条同 Tab 腿，行权价逐档下移（code 唯一 ⇒ 行 testID 唯一）。O(n)。 */
-function manyLegs(count: number): LegResponse[] {
+/**
+ * canonical 状态 + 请求的视角 → **一份**契约响应（053 FR-005）。复杂度 O(n)。
+ *
+ * 🚨 顺序沿用入册顺序 —— 数组顺序**就是**呈现顺序（FR-002），047 那份并行的有序 code 列表
+ *    `tabOrder` 随之退役：同一个顺序下发两份表达必 drift，而两份各自都渲染得出来。
+ */
+function projectTable(canonical: CanonicalTable, perspective: LegPerspective): LegTableResponse {
+  const { book, ...chain } = canonical;
+  const legs = projectLegs(book, perspective);
+  return {
+    ...chain,
+    perspective,
+    legs,
+    basis: BASIS_BY_PERSPECTIVE[perspective],
+    // 六维条件不是本文件的断言面（归 052 T013）—— 恒发默认值那一份。
+    criteria: emptyPerspectiveCriteria(),
+    // 未覆盖条件 ⇒ 两数相等（区块头走单数形态）；本文件不设截断阈值、候选上限未触及。
+    matchedCount: legs.length,
+    memberCount: legs.length,
+    displayLimit: null,
+    candidateCapDropped: 0,
+  };
+}
+
+/** SC-012 的大表：N 条同视角腿，行权价逐档下移（code 唯一 ⇒ 行 testID 唯一）。O(n)。 */
+function manyLegs(count: number): CanonicalLeg[] {
   return Array.from({ length: count }, (_, i) =>
     makeLeg({
       code: `PEP261218P${String(60_000 + i * 500).padStart(6, '0')}`,
@@ -378,8 +428,8 @@ function deriveIntent(
 
 interface LegFixture {
   anchors: AnchorResponse[];
-  /** 逐票选约表；缺键 = 该票有当期快照 + 一条基线腿。 */
-  legs?: Record<string, LegTableResponse>;
+  /** 逐票的 canonical 选约表状态；缺键 = 该票有当期快照 + 一条基线腿。 */
+  legs?: Record<string, CanonicalTable>;
 }
 
 interface LegMock {
@@ -401,10 +451,10 @@ interface LegMock {
 async function installLegMock(page: Page, fixture: LegFixture): Promise<LegMock> {
   const anchors = fixture.anchors.map((a) => ({ ...a }));
   // canonical 选约表：预先物化，写端点直接改这一份（⇒ 重取自然读到新值）。
-  const book = new Map<string, LegTableResponse>();
+  const tables = new Map<string, CanonicalTable>();
   for (const anchor of anchors) {
     const given = fixture.legs?.[anchor.ticker];
-    book.set(
+    tables.set(
       anchor.ticker,
       given ? { ...given } : makeLegTable(anchor.ticker, [makeLeg({ code: 'PEP261218P75000' })]),
     );
@@ -433,7 +483,7 @@ async function installLegMock(page: Page, fixture: LegFixture): Promise<LegMock>
     const bucketMatch = /\/optionsdesk\/anchors\/([^/]+)\/position-bucket$/.exec(path);
     if (bucketMatch && req.method() === 'POST') {
       const anchor = anchors.find((a) => a.id === bucketMatch[1]);
-      const table = anchor ? book.get(anchor.ticker) : undefined;
+      const table = anchor ? tables.get(anchor.ticker) : undefined;
       if (!anchor || !table) return void (await notFound());
       const body = req.postDataJSON() as { positionBucket: LegTableResponsePositionBucket };
       // 🚨 档位 / 来源标 / 时刻**严格成对**落地（server 同不变量）——「人工输入」是契约事实，
@@ -456,8 +506,13 @@ async function installLegMock(page: Page, fixture: LegFixture): Promise<LegMock>
     // ── GET /optionsdesk/underlyings/:symbol/legs（MUST 在下面那条之前）────────
     const legsMatch = /\/optionsdesk\/underlyings\/(.+)\/legs$/.exec(path);
     if (legsMatch) {
-      const table = book.get(decodeURIComponent(legsMatch[1] ?? ''));
-      return void (table ? await json(200, table) : await notFound());
+      const table = tables.get(decodeURIComponent(legsMatch[1] ?? ''));
+      if (!table) return void (await notFound());
+      // 🚨 053 FR-001：`perspective` 必填 —— 缺参 / 非三值 → 400。
+      //    🚫 MUST NOT 默认一个视角：那时腿数、名次、档位全都正常，只是答的不是问的那个视角。
+      const perspective = perspectiveOf(url);
+      if (perspective === null) return void (await json(400, PERSPECTIVE_REQUIRED_400));
+      return void (await json(200, projectTable(table, perspective)));
     }
 
     // ── GET /optionsdesk/underlyings/:symbol ────────────────────────────────
@@ -725,7 +780,7 @@ test('047 T035 — SC-012：计数条分母 = 逻辑总行数、可滚到最后�
 }) => {
   const ROWS = 60;
   const legs = manyLegs(ROWS);
-  const lastCode = legs[ROWS - 1]?.code ?? '';
+  const lastCode = legs[ROWS - 1]?.leg.code ?? '';
   await installLegMock(page, {
     anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
@@ -779,7 +834,7 @@ test('049 T005 — US2-AS6（判据换代）：指针拖拽露出隐藏列、表
   page,
 }) => {
   const legs = manyLegs(24);
-  const code = legs[0]?.code ?? '';
+  const code = legs[0]?.leg.code ?? '';
   await installLegMock(page, {
     anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
@@ -865,7 +920,7 @@ test('049 T004 — 横向指示条：轨道左端对齐首列右缘、thumb 长�
   page,
 }) => {
   const legs = manyLegs(8);
-  const code = legs[0]?.code ?? '';
+  const code = legs[0]?.leg.code ?? '';
   await installLegMock(page, {
     anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
@@ -933,7 +988,7 @@ test('049 T004 — 无横向溢出（宽视口）⇒ 指示条整条不渲染 **
   // 🚨 宽到 12 列全部装得下 ⇒ 合法域退化成一个点。**只验「不渲染」会漏掉「没有余量却仍能拖动」**。
   await page.setViewportSize({ width: 1024, height: 844 });
   const legs = manyLegs(8);
-  const code = legs[0]?.code ?? '';
+  const code = legs[0]?.leg.code ?? '';
   await installLegMock(page, {
     anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
@@ -1169,14 +1224,14 @@ test('047 T035 — US3-AS2：未选水位时三个视角 **全部可进入读表
     anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
     legs: {
       'us:PEP': makeLegTable('us:PEP', [
-        makeLeg({ code: rentCode, tabs: ['all', 'rent'] }),
+        makeLeg({ code: rentCode, perspectives: ['all', 'rent'] }),
         makeLeg({
           code: buildCode,
           strike: '80.00',
           expiryDate: '2026-08-14',
           basis: 'weekly',
           tier: 'acceptable',
-          tabs: ['all', 'build'],
+          perspectives: ['all', 'build'],
           earningsMark: null,
         }),
       ]),
@@ -1457,7 +1512,7 @@ test('047 T035 — US4：五种财报标同屏可辨（「无日期」虚线 chi
           expiryDate: '2026-08-14',
           basis: 'weekly',
           tier: 'acceptable',
-          tabs: ['all', 'build'],
+          perspectives: ['all', 'build'],
           earningsMark: null,
         }),
         // 🚨 死档**照常打标**（判据是 mark 不是档位）；server 已把它排到末尾。
@@ -1506,7 +1561,7 @@ test('047 T035 — FR-012 运行时：腿行与动作标签**点不动** —— 
   page,
 }) => {
   const legs = manyLegs(6);
-  const code = legs[0]?.code ?? '';
+  const code = legs[0]?.leg.code ?? '';
   const mock = await installLegMock(page, {
     anchors: [makeAnchor({ id: '1', ticker: 'us:PEP' })],
     legs: { 'us:PEP': makeLegTable('us:PEP', legs) },
