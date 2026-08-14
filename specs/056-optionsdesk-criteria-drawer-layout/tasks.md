@@ -76,7 +76,7 @@ spec 的 **14 条 `state_branches` 里没有一条落得到服务端 IT** ——
 
 - [X] T002 [P] [Mobile] **行集统一 + 判据文件净减**（`FR-012`, `FR-019`, `FR-040`, `FR-044`）：`leg-criteria.rules.ts` 删 `ROWS_BY_TAB` / `HAS_DEFAULT` / `criteriaRowsFor`；抽屉改为直接渲 `CRITERIA_ROWS` 全集。同 commit 删 `leg-criteria.rules.spec.ts` 里针对 `criteriaRowsFor` 的用例（**测试删除必须在 commit message 点名**，不夹带）。→ verify: 新增 vitest 断言「未触碰任何一格时 `normalizeCriteriaForm(criteriaFormOf(defaults))` 逐字段等于默认值投影」，用一次**故意的预填**证明它会红（`SC-013`）；`git diff` 该文件为**净减**且判定与换算面零行改动（`SC-007`）。<br>📌 **`FR-044`（提交语义零改动）的落点在这条**：`052` 已 ship 的 `normalizeCriteriaForm` / `sameCriteriaForm` / `changedCriteria` 单测**一条不改、必须保持全绿** —— 这是「显式提交 + 成对维度半空归零」的回归防线（`sb` 第 11 条的主落层）。🚫 删用例仅限 `criteriaRowsFor` 那几条，**碰到其余任何一条即越界**。
 
-- [ ] T003 [P] [Mobile] **文案新增**（`FR-034`, `FR-016`, `FR-030`）：`optionsdesk-copy.ts` 加活跃度分组标签（**「活跃度」，沿用 `countLabels.livenessMin` 的既有叫法**）· 「满足任一」规则说明 · 行权价硬门槛口径提示正文与其 a11y label。🚫 `countLabels` 零改动。→ verify: `rg '活性' apps/mobile/src/` 在**用户可见文案**中零命中（`SC-016`）；`rg` 确认「活跃度」与 `countLabels.livenessMin` 逐字一致。
+- [X] T003 [P] [Mobile] **文案新增**（`FR-034`, `FR-016`, `FR-030`）：`optionsdesk-copy.ts` 加活跃度分组标签（**「活跃度」，沿用 `countLabels.livenessMin` 的既有叫法**）· 「满足任一」规则说明 · 行权价硬门槛口径提示正文与其 a11y label。🚫 `countLabels` 零改动。→ verify: `rg '活性' apps/mobile/src/` 在**用户可见文案**中零命中（`SC-016`）；`rg` 确认「活跃度」与 `countLabels.livenessMin` 逐字一致。
 
 ## Phase 2 · 抽屉版面（同一文件，逐条串行）
 
