@@ -97,6 +97,27 @@ jobs:
           # Single architecture — SWAS is amd64. Multi-arch later if we
           # need ARM-based SWAS or local Apple Silicon dev push.
           platforms: linux/amd64
+          # 🚨 **关掉 attestation，否则 ACR 拒收整次 push**（2026-08-14 实撞，v0.25.0 发版当场）：
+          #   `denied: unknown manifest class for application/vnd.oci.empty.v1+json`
+          # buildx 带 attestation(provenance/SBOM) 时会额外推一个 manifest，其空配置描述符用
+          # `application/vnd.oci.empty.v1+json`，**阿里云 ACR 不认这个 media type** ⇒ 镜像层全推
+          # 完了才在 `pushing manifest` 那一步倒下，`Deploy`(workflow_run) 随之 skip、prod 停在上
+          # 一版。已知 registry 兼容问题，官方 workaround 即本两行：
+          #   https://github.com/docker/buildx/issues/1964
+          #   https://github.com/docker/build-push-action/issues/851
+          #
+          # 🚨 **这不是我们改坏的，是 runner 侧工具链被动升级** —— 本文件自 initial public
+          # snapshot 起一行未改，而两次构建的工具链是：
+          #   v0.24.0 (08-12 ✅) buildx v0.35.0 / BuildKit v0.31.2
+          #   v0.25.0 (08-14 ❌) buildx v0.36.1 / BuildKit v0.32.2
+          # `setup-buildx-action@v4` 不钉具体版本 ⇒ 跟随最新。
+          #
+          # 🚫 **MUST NOT 改成「把 buildx 版本钉死」** —— 那只是把同一个坑推迟到下次手动升级，
+          # 且会静默腐烂；真正的事实是「我方不消费 attestation + ACR 不支持它」，所以关掉它。
+          # 📌 `sbom` 当前默认本就是 false，仍显式钉上：本次事故的形状正是**上游默认值漂移**，
+          # 依赖一个没写出来的默认值等于给下一次同款事故留门。
+          provenance: false
+          sbom: false
 
       - name: Image pushed
         run: |
