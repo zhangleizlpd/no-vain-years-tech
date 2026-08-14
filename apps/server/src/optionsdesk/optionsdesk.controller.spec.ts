@@ -18,6 +18,8 @@ import { ListAnchorsUseCase, toAnchorView } from './list-anchors.usecase';
 import { GetAnchorUseCase } from './get-anchor.usecase';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase';
 import { GetLegsUseCase, type LegTableView } from './get-legs.usecase';
+import { GetChainReportUseCase, type ChainReportView } from './get-chain-report.usecase';
+import { aggregateCell, chainReportGateCounts, chainReportRows } from './chain-report.rules';
 import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS, type PerspectiveCriteria } from './leg-recall.rules';
 
@@ -88,6 +90,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
   const getExecute = vi.fn();
   const atExecute = vi.fn();
   const legsExecute = vi.fn();
+  const chainReportExecute = vi.fn();
 
   beforeAll(async () => {
     const prismaStub = {
@@ -132,6 +135,8 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       .useValue({ execute: atExecute })
       .overrideProvider(GetLegsUseCase)
       .useValue({ execute: legsExecute })
+      .overrideProvider(GetChainReportUseCase)
+      .useValue({ execute: chainReportExecute })
       .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
@@ -161,6 +166,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
     deleteExecute.mockResolvedValue(undefined);
     atExecute.mockResolvedValue(null);
     legsExecute.mockResolvedValue(emptyLegTable());
+    chainReportExecute.mockResolvedValue(chainReport());
   });
 
   const authed = (extra: Record<string, string> = {}) => ({
@@ -539,6 +545,98 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       expect(schema.properties.items!.items!.$ref).toContain('AnchorResponse');
     });
   });
+
+  describe('OptionsdeskController — 055 标的链分析报表契约 (T006)', () => {
+    it('鉴权沿用同一道闸 —— 无 Bearer → 401 且 usecase 不被调用', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/underlyings/us:PEP/chain-report',
+      });
+      expect(res.statusCode).toBe(401);
+      expect(chainReportExecute).not.toHaveBeenCalled();
+    });
+
+    it('🚨 四段逐段过 wire —— 每格 / 每列 / 每行 / **链级读数** (Key Entities 四项)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/underlyings/us:PEP/chain-report',
+        headers: authed(),
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+
+      // ① 每格
+      expect(body.cells.allAnnualized[1][0]).toEqual({
+        state: 'valued',
+        legCount: 1,
+        best: '0.240000',
+        runnerUp: null,
+      });
+      // ② 每列
+      expect(body.columns[0]).toMatchObject({
+        expiryDate: '2026-09-18',
+        dteDays: 38,
+        isMonthlyChain: true,
+        atmIv: 26.31,
+      });
+      expect(body.columns[0].inRecallBand.buildQuality).toBe(true);
+      // ③ 每行 —— 8 行, 行权价区间随现价
+      expect(body.rows).toHaveLength(rowsLength());
+      expect(body.rows[0].strikeCeiling).toBe('110.0000');
+      expect(body.rows[body.rows.length - 1].otmCeiling).toBeNull();
+      // ④ 🚨 链级读数 —— **最容易漏的一段**: 它不属于任何格 / 列 / 行
+      expect(body.spot).toBe('100.0000');
+      expect([body.marketDate, body.asOf, body.oiAsOf]).toEqual([
+        '2026-08-11',
+        '2026-08-11',
+        '2026-08-10',
+      ]);
+      expect(body.iv.state).toBe('available');
+      expect(body.gateCounts.total).toBe(3);
+      expect(body.anchorExcluded).toBe(false);
+    });
+
+    it('🚨 四张网格维度逐格相等 —— 切换格值不可能移动任何一格 (SC-002 的契约面)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/underlyings/us:PEP/chain-report',
+        headers: authed(),
+      });
+      const { cells, rows, columns } = res.json();
+      for (const grid of [
+        cells.buildQuality,
+        cells.rentAnnualized,
+        cells.allAnnualized,
+        cells.activity,
+      ]) {
+        expect(grid).toHaveLength(rows.length);
+        for (const row of grid) expect(row).toHaveLength(columns.length);
+      }
+    });
+
+    it('🚨 响应内零 `band` 字段 —— 色阶档界住 client, 服务端只下发裸值 (plan D-BAND-1)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/underlyings/us:PEP/chain-report',
+        headers: authed(),
+      });
+      const flat = JSON.stringify(res.json());
+      // `inRecallBand` 是**召回段覆盖**不是色阶档 —— 判据只认小写 `"band"` 这个独立键名。
+      expect(flat).not.toContain('"band"');
+      expect(flat).not.toContain('"bands"');
+    });
+
+    it('OpenAPI: 端点已登记, 且 nullable 标量显式标 type (Guardrail 10 的契约面)', () => {
+      const path = document.paths['/api/v1/optionsdesk/underlyings/{symbol}/chain-report'];
+      expect(path?.get).toBeDefined();
+      const schema = document.components?.schemas?.ChainReportResponse;
+      const props = (schema as { properties: Record<string, { type?: string }> }).properties;
+      // 🚨 漏 type 会让 orval 生成 `{ [k]: unknown } | null` —— 而客户端照样编译得过 (012 实证)。
+      for (const key of ['spot', 'marketDate', 'asOf', 'quoteAsOf', 'oiAsOf', 'source']) {
+        expect(props[key].type).toBe('string');
+      }
+    });
+  });
 });
 
 /** `GetLegsUseCase` 的「链未就绪」空壳 —— 本 spec 只验通道层, 业务形态归 use case 自己的 spec。 */
@@ -584,4 +682,65 @@ function emptyLegTable(): LegTableView {
     displayLimit: DISPLAY_LIMIT_BY_PERSPECTIVE.all,
     criteria: criteria(),
   };
+}
+
+/** 055 报表 fixture —— 单列单值, 行轴走真纯函数 (🚫 不手抄 8 行档界)。 */
+function chainReport(): ChainReportView {
+  const spot = new Prisma.Decimal('100');
+  const rows = chainReportRows(spot);
+  const cellsOf = (value: string | null) =>
+    rows.map((_row, i) => [
+      i === 1
+        ? aggregateCell(value === null ? [] : [new Prisma.Decimal(value)], 'all_annualized', 2)
+        : aggregateCell([], 'all_annualized', 0),
+    ]);
+  return {
+    symbol: 'us:PEP',
+    state: 'available',
+    spot,
+    marketDate: '2026-08-11',
+    asOf: new Date('2026-08-11T00:00:00.000Z'),
+    quoteAsOf: new Date('2026-08-11T20:15:00.000Z'),
+    oiAsOf: new Date('2026-08-10T00:00:00.000Z'),
+    source: 'eod',
+    lastClosedSession: '2026-08-11',
+    iv: {
+      state: 'available',
+      iv: new Prisma.Decimal('28'),
+      ivPercentile: new Prisma.Decimal('62'),
+      asOf: new Date('2026-08-11T00:00:00.000Z'),
+    },
+    anchorExcluded: false,
+    gateCounts: chainReportGateCounts([
+      { inSkeleton: true, live: true, band: 1 },
+      { inSkeleton: true, live: true, band: 1 },
+      { inSkeleton: false, live: false, band: null },
+    ]),
+    rows,
+    columns: [
+      {
+        expiryDate: new Date('2026-09-18T00:00:00.000Z'),
+        dteDays: 38,
+        isMonthlyChain: true,
+        atmIv: 26.31,
+        inRecallBand: {
+          build_quality: true,
+          rent_annualized: true,
+          all_annualized: true,
+          activity: true,
+        },
+      },
+    ],
+    cells: {
+      build_quality: cellsOf(null),
+      rent_annualized: cellsOf('0.24'),
+      all_annualized: cellsOf('0.24'),
+      activity: cellsOf('940'),
+    },
+  };
+}
+
+/** 行数取自真纯函数, 🚫 不在断言里写死 8。 */
+function rowsLength(): number {
+  return chainReportRows(new Prisma.Decimal('100')).length;
 }

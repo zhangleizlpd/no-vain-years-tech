@@ -48,10 +48,12 @@ import { GetRadarUseCase } from './get-radar.usecase';
 import { GetUnderlyingDetailUseCase } from './get-underlying-detail.usecase';
 import { GetThermometerUseCase } from './get-thermometer.usecase';
 import { GetLegsUseCase } from './get-legs.usecase';
+import { GetChainReportUseCase } from './get-chain-report.usecase';
 import {
   AnchorListResponse,
   AnchorPointInTimeResponse,
   AnchorResponse,
+  ChainReportResponse,
   CreateAnchorRequest,
   GetAnchorAtQuery,
   LegRetrievalQuery,
@@ -66,6 +68,7 @@ import {
   UnderlyingDetailResponse,
   UpdateAnchorRequest,
   toAnchorListResponse,
+  toChainReportResponse,
   toLegTableResponse,
   toRequestedPerspective,
   toRetrievalOverride,
@@ -170,6 +173,7 @@ export class OptionsdeskController {
     private readonly getUnderlyingDetail: GetUnderlyingDetailUseCase,
     private readonly getThermometer: GetThermometerUseCase,
     private readonly getLegs: GetLegsUseCase,
+    private readonly getChainReport: GetChainReportUseCase,
   ) {}
 
   @Get('underlyings/:symbol')
@@ -273,6 +277,57 @@ export class OptionsdeskController {
         toRetrievalOverride(query),
       ),
     );
+  }
+
+  @Get('underlyings/:symbol/chain-report')
+  @HttpCode(200)
+  @SkipThrottle(skipExcept(OPTIONSDESK_READ_BUCKET))
+  @Throttle({ 'optionsdesk-read-account': { limit: 120, ttl: 60_000 } })
+  @ApiParam({ name: 'symbol', description: 'canonical `market:code`', example: 'us:PEP' })
+  @ApiOperation({
+    summary: 'Chain report grid (moneyness band × expiry) + IV term structure',
+    description:
+      'Aggregates the WHOLE chain into a moneyness-band × expiry grid so one screen answers ' +
+      '"which tenor, how far out of the money, where is anyone bidding, and is this chain ' +
+      'expensive overall". This is a SEPARATE endpoint from the leg picker on purpose: the ' +
+      'picker answers ONE perspective, ranked and truncated, while this one answers the whole ' +
+      'chain, unranked and untruncated — putting both behind one endpoint would mean two ' +
+      'contracts behind one shape. ' +
+      'The grid skeleton is the chain AFTER the premium-floor gate only. Legs held back by the ' +
+      'liveness gate deliberately STAY on the grid in the "gated" state: they have a contract, ' +
+      'nobody has traded it — dropping them would render as "no contract here", which is wrong ' +
+      'information rather than missing information. ' +
+      'All FOUR cell metrics ship in ONE response, over ONE skeleton. Switching metric therefore ' +
+      'issues no request and cannot move a single cell. Note that cell STATE does change with the ' +
+      'metric: the four metrics run over different recall sets, so a cell holding a value under ' +
+      'one metric and empty under another is correct behaviour, not a defect. ' +
+      'The footer ships THREE mutually exclusive exclusion counts, each with its own denominator; ' +
+      'together with the valued count they sum exactly to the chain total. ' +
+      'Columns carry the at-the-money implied volatility interpolated between the strikes ' +
+      'straddling spot; an expiry with no strike on one side ships null and the curve MUST break ' +
+      'there rather than fall back to the nearest strike. ' +
+      'The IV percentile block degrades on its own four-state enum and is NOT affected by a grid ' +
+      'failure. No anchor for the symbol → 404 with code ANCHOR_NOT_FOUND_FOR_SYMBOL: the report ' +
+      'is unreachable until the underlying has been anchored, because one of the four metrics is ' +
+      'derived from that anchor and a report missing one corner reads as "this chain has no ' +
+      'entry opportunities" rather than "you have not valued it yet".',
+  })
+  @ApiResponse({ status: 200, description: 'Chain report', type: ChainReportResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthenticated / account not ACTIVE',
+    type: ProblemDetailResponse,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'No anchor for this symbol (FR-037a)',
+    type: ProblemDetailResponse,
+  })
+  @ApiResponse({ status: 429, description: 'Rate limit (120/60s)', type: ProblemDetailResponse })
+  async chainReport(@Param('symbol') symbol: string): Promise<ChainReportResponse> {
+    // 🚫 **零查询参数**: 报表不排序、不截断、无可调条件, 四种格值一次全返 (plan D-API-2)。
+    // 加一个「只要某种格值」的参数就等于把 SC-002 的「切换不发请求」交回给调用方自觉。
+    return toChainReportResponse(await this.getChainReport.execute(symbol));
   }
 
   @Get('thermometer')

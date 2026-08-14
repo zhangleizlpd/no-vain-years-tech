@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiExtraModels, ApiProperty, ApiPropertyOptional, getSchemaPath } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
@@ -38,6 +38,12 @@ import {
 import { RADAR_PAGE_SIZE_DEFAULT, RADAR_PAGE_SIZE_MAX } from './radar-cursor';
 import { EARNINGS_MARKS } from './earnings-mark.rules';
 import { LEG_TABLE_STATES, type LegTableView } from './get-legs.usecase';
+import { CHAIN_REPORT_CELL_STATES } from './chain-report.rules';
+import {
+  CHAIN_REPORT_STATES,
+  type ChainReportGrid,
+  type ChainReportView,
+} from './get-chain-report.usecase';
 import {
   LEG_INTENTS,
   POSITION_BUCKETS,
@@ -1989,5 +1995,388 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     memberCount: view.memberCount,
     displayLimit: view.displayLimit,
     candidateCapDropped: view.candidateCapDropped,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 055 标的链分析报表 (plan D-API-1 / D-API-2) —— 四段: 每格 / 每列 / 每行 / 链级读数
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class ChainReportCellResponse {
+  @ApiProperty({
+    description:
+      '格态。valued 有值 / gated **有腿但被门槛挡下** / absent 该位置无合约。' +
+      '🚨 后两者 MUST 视觉可分且**不依赖图例** (FR-017): 「有腿但太便宜」与「压根没这张合约」' +
+      '是两条完全不同的处置路径。📌 `gated` 归并了三类成因 (权利金门槛 / 当前格值视角不召回 / ' +
+      '该口径算不出值), 段内不再细分 —— 那属于选约表那一层 (FR-016a 显式接受的代价)',
+    enum: [...CHAIN_REPORT_CELL_STATES],
+    example: 'valued',
+  })
+  state!: string;
+
+  @ApiProperty({
+    description:
+      '格内腿数 (FR-007) —— **当前格值下算得出值的成员条数**, 非 valued 恒 0。' +
+      '🚨 它与格态同为**当前格值的函数**, 🚫 MUST NOT 缓存成格的静态属性 (实测全网格填充率 ' +
+      '建仓 6.3% / 收租 13.6% / 全腿 41.6%)',
+    example: 3,
+  })
+  legCount!: number;
+
+  @ApiProperty({
+    description:
+      '该格**最优**值 (FR-006: 取最优不取均值); 非 valued 恒 null。' +
+      '🚨 **量纲随格值变**, 见所属网格的说明: 建仓成色是百分数 / 两种年化是小数比例 / ' +
+      '活跃度是张数。定标一律 6 位, 客户端按格值决定怎么显示',
+    type: 'string',
+    nullable: true,
+    example: '0.237012',
+  })
+  best!: string | null;
+
+  @ApiProperty({
+    description:
+      '该格**次优**值 (FR-027 读数面板要)。🚨 **格内只有一条腿时显式 null** (FR-028), ' +
+      '🚫 MUST NOT 复述最优值充数 —— 次优存在的意义正是回答「这一格是一条腿撑起来的、还是' +
+      '一片腿都不错」。📌 两条腿取值**相等**时它 = 那个值而**不是** null: 判据是腿数不是取值互异',
+    type: 'string',
+    nullable: true,
+    example: '0.185004',
+  })
+  runnerUp!: string | null;
+}
+
+export class ChainReportBandCoverageResponse {
+  @ApiProperty({ description: '建仓成色格值下本列是否落在建仓召回段内', example: true })
+  buildQuality!: boolean;
+
+  @ApiProperty({ description: '收租年化格值下本列是否落在收租召回段内', example: true })
+  rentAnnualized!: boolean;
+
+  @ApiProperty({ description: '全腿年化 —— 全腿视角不设期限段 ⇒ **恒 true**', example: true })
+  allAnnualized!: boolean;
+
+  @ApiProperty({ description: '活跃度 —— 同上, **恒 true**', example: true })
+  activity!: boolean;
+}
+
+export class ChainReportColumnResponse {
+  @ApiProperty({ description: '到期日 (YYYY-MM-DD)', example: '2026-09-18' })
+  expiryDate!: string;
+
+  @ApiProperty({ description: '期限天数 (整数日历日, 到期日当天 = 0)', example: 38 })
+  dteDays!: number;
+
+  @ApiProperty({
+    description:
+      '是否月度到期链 —— 判据与选约表**同一处** (该月第三个周五, 非交易日则取其前一交易日)。' +
+      '📌 **「是否跨财报」蓄意不在本响应内** (2026-08-14 定): mockup 未画、零 FR 要求, 且列头多' +
+      '一个 chip 要吃掉 FR-041 已经很紧的一屏高度预算',
+    example: true,
+  })
+  isMonthlyChain!: boolean;
+
+  @ApiProperty({
+    description:
+      '该到期日的**平值**隐含波动率, vendor 原样**百分数** (25.5 = 25.5%), 由跨现价两侧的相邻' +
+      '行权价线性插值得出 (FR-022)。🚨 **插值不可得 ⇒ null ⇒ 曲线该点断开** (FR-023), ' +
+      '🚫 MUST NOT 以任何形式填充 —— 补一个值进去, 用户读到的就是一条连续的期限结构, 而它有' +
+      '一段是编的。🚫 客户端 MUST NOT 再 ×100',
+    type: 'number',
+    nullable: true,
+    example: 26.31,
+  })
+  atmIv!: number | null;
+
+  @ApiProperty({
+    description:
+      '**每种格值**下本列是否落在其对应视角的召回段内。一个字段同时服务两处呈现, 蓄意不拆: ' +
+      'FR-009 的两条召回段范围框取前两项 (重叠列两框并存, 🚫 不归给其中一段); FR-009a 的整列' +
+      '淡出看**当前格值**那一项。🚨 客户端 MUST NOT 自己做「格值 → 视角」的映射 —— 两处各写' +
+      '一份会出现「格有值但整列淡出」这种自相矛盾, 而两边都渲染得出来',
+    type: ChainReportBandCoverageResponse,
+  })
+  inRecallBand!: ChainReportBandCoverageResponse;
+}
+
+export class ChainReportRowResponse {
+  // 📌 本类的示例取「价外 30–40%」那一档而非更直观的 10–20%: 后者的上界示例串会是 `0.2000`,
+  //    与召回层的权利金绝对下限**撞子串**, 被 `check-optionsdesk-rule-constants` 判成阈值外溢
+  //    (那道守门认值不认名)。撞的是示例不是语义, 故改示例而不是放宽守门。
+  @ApiProperty({ description: '行序, 0 = 价内那一档, 自上而下', example: 4 })
+  index!: number;
+
+  @ApiProperty({
+    description:
+      '价外幅度下界 (**闭**), 小数比例; 负值 = 价内。档宽等距 10%、下界为价内 10% (FR-002)',
+    example: '0.3000',
+  })
+  otmFloor!: string;
+
+  @ApiProperty({
+    description:
+      '价外幅度上界 (**开**); null = **顶档无上界**。🚨 顶档开口吸收其上全部腿 —— 掉出网格的腿' +
+      '既不在图上又不在三个互斥计数的任何一个里, SC-006 的求和恒等式会静默对不上账',
+    type: 'string',
+    nullable: true,
+    example: '0.4000',
+  })
+  otmCeiling!: string | null;
+
+  @ApiProperty({
+    description: '对应行权价下界 (**开**), 随现价变; null = 顶档无下界',
+    type: 'string',
+    nullable: true,
+    example: '107.8800',
+  })
+  strikeFloor!: string | null;
+
+  @ApiProperty({ description: '对应行权价上界 (**闭**), 随现价变', example: '125.8600' })
+  strikeCeiling!: string;
+}
+
+export class ChainReportGateCountsResponse {
+  @ApiProperty({ description: '该链全量腿数 —— ① 的分母, 也是求和恒等式的右端', example: 825 })
+  total!: number;
+
+  @ApiProperty({
+    description:
+      '① 被**权利金门槛**移出 (分母 = total)。语义「太便宜」, **整条不在图上**。实测 27.0%',
+    example: 252,
+  })
+  removedByPremium!: number;
+
+  @ApiProperty({
+    description: '骨架 = 过权利金门槛之后的整条链 (FR-005) —— ② 的分母',
+    example: 573,
+  })
+  skeleton!: number;
+
+  @ApiProperty({
+    description: '② 被**行下界**排除 (分母 = skeleton)。语义「太深的价内」, 在行轴之外。实测 57.6%',
+    example: 261,
+  })
+  outsideRowFloor!: number;
+
+  @ApiProperty({ description: '行下界内 —— ③ 的分母', example: 312 })
+  withinRows!: number;
+
+  @ApiProperty({
+    description:
+      '③ 被**活性门槛**挡下 (分母 = withinRows)。语义「没人碰过」, **在图上**呈 gated。实测 11.0%。' +
+      '🚨 它的必要性不是量级而是**唯一性**: 全腿格值下活性门槛是「被门槛挡下」格的唯一成因, ' +
+      '不给量级用户就只知道有灰格、不知道那是多少条腿',
+    example: 38,
+  })
+  blockedByLiveness!: number;
+
+  @ApiProperty({
+    description:
+      '④ 有值 —— 过两道一律门槛且落在行轴内的腿数。🚨 **腿级、与当前格值无关**, ' +
+      '🚫 MUST NOT 与格态的 valued 混读 (后者是格的态、随格值重算)。' +
+      '📌 三个计数与它相加**恒等于 total** (SC-006), 且该恒等式在切换格值时不变',
+    example: 274,
+  })
+  valued!: number;
+}
+
+@ApiExtraModels(ChainReportCellResponse)
+export class ChainReportGridsResponse {
+  @ApiProperty({
+    description:
+      '建仓成色网格 —— 值 = 有效成本相对愿买价的位置, **百分数**, 越低越好 (FR-011)。' +
+      '成员集 = 建仓视角召回集',
+    type: 'array',
+    items: { type: 'array', items: { $ref: getSchemaPath(ChainReportCellResponse) } },
+  })
+  buildQuality!: ChainReportCellResponse[][];
+
+  @ApiProperty({
+    description: '收租年化网格 —— 值 = 年化费率, **小数比例**, 越高越好。成员集 = 收租视角召回集',
+    type: 'array',
+    items: { type: 'array', items: { $ref: getSchemaPath(ChainReportCellResponse) } },
+  })
+  rentAnnualized!: ChainReportCellResponse[][];
+
+  @ApiProperty({
+    description:
+      '全腿年化网格 —— 与上一格同一个年化数, **差别只在成员集** (全腿视角)。' +
+      '🚨 客户端 MUST 让**价内那一行不参与色阶** (FR-019c): 该行的高年化是内在价值造成的算术' +
+      '假象 (实测 max 948.3%), 读数 / 腿数 / 下钻照常可用',
+    type: 'array',
+    items: { type: 'array', items: { $ref: getSchemaPath(ChainReportCellResponse) } },
+  })
+  allAnnualized!: ChainReportCellResponse[][];
+
+  @ApiProperty({
+    description:
+      '活跃度网格 —— 值 = 活动量 (OI + 当日成交, **张数**), 越高越好 (FR-013)。' +
+      '🚨 本格值的时点标注 MUST 跟 `oiAsOf` 而非 `asOf` (FR-014): 二者常态下不是同一天',
+    type: 'array',
+    items: { type: 'array', items: { $ref: getSchemaPath(ChainReportCellResponse) } },
+  })
+  activity!: ChainReportCellResponse[][];
+}
+
+export class ChainReportResponse {
+  @ApiProperty({ description: 'canonical `market:code`', example: 'us:PEP' })
+  symbol!: string;
+
+  @ApiProperty({
+    description:
+      '屏级状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开',
+    enum: [...CHAIN_REPORT_STATES],
+    example: 'available',
+  })
+  state!: string;
+
+  @ApiProperty({
+    description: 'vendor 随链下发的标的价, **未复权** —— 页头显示, 也是行轴换算行权价区间的分母',
+    type: 'string',
+    nullable: true,
+    example: '179.8000',
+  })
+  spot!: string | null;
+
+  @ApiProperty({
+    description: '本次检索所用的**交易所的今天** (FR-033 ①)',
+    type: 'string',
+    nullable: true,
+    example: '2026-08-11',
+  })
+  marketDate!: string | null;
+
+  @ApiProperty({
+    description: '快照归属交易日 (FR-033 ②)',
+    type: 'string',
+    nullable: true,
+    example: '2026-08-11',
+  })
+  asOf!: string | null;
+
+  @ApiProperty({
+    description: '本批报价的实际采集时刻 (ISO-8601)',
+    type: 'string',
+    nullable: true,
+    example: '2026-08-11T20:15:00.000Z',
+  })
+  quoteAsOf!: string | null;
+
+  @ApiProperty({
+    description:
+      '🚨 **OI 的归属交易日** (FR-033 ③) —— 与 asOf **不是同一天**。三个时点 MUST 各自成句, ' +
+      '🚫 MUST NOT 合并成一个「数据截至」',
+    type: 'string',
+    nullable: true,
+    example: '2026-08-10',
+  })
+  oiAsOf!: string | null;
+
+  @ApiProperty({
+    description: '快照来源 (eod / premarket_backfill)',
+    type: 'string',
+    nullable: true,
+    example: 'eod',
+  })
+  source!: string | null;
+
+  @ApiProperty({
+    description:
+      '链级 IV 分位读数 —— **复用详情读端那一份**四态与形状 (FR-031), 无第二套词汇。' +
+      '🚨 它按**自己的**四态独立降级, **不被网格失败波及**: 网格挂了 IV 明明读得到',
+    type: UnderlyingIvReadoutResponse,
+  })
+  iv!: UnderlyingIvReadoutResponse;
+
+  @ApiProperty({
+    description: '锚被排除 (excluded) ⇒ 报表照常渲染, 页头带标记 (spec Assumptions)',
+    example: false,
+  })
+  anchorExcluded!: boolean;
+
+  @ApiProperty({
+    description: '页脚三个互斥计数 + 有值条数, 每个带自己的分母 (FR-034)',
+    type: ChainReportGateCountsResponse,
+  })
+  gateCounts!: ChainReportGateCountsResponse;
+
+  @ApiProperty({
+    description: '行轴 (价外幅度档) —— 恒 8 行, 与链无关; 行权价区间随现价变',
+    type: [ChainReportRowResponse],
+  })
+  rows!: ChainReportRowResponse[];
+
+  @ApiProperty({
+    description:
+      '列轴 = 链上**实际存在**的到期日, 升序, 🚫 不分箱 (FR-003)。' +
+      '🚨 曲线的点数与本数组长度**恒等**且逐列对齐 (FR-020 / SC-005)',
+    type: [ChainReportColumnResponse],
+  })
+  columns!: ChainReportColumnResponse[];
+
+  @ApiProperty({
+    description:
+      '四种格值**一次返齐**, 同一个骨架 (plan D-API-2)。四张网格的维度均为 `rows × columns` 且' +
+      '逐格对应, 🚫 客户端 MUST NOT 为切换格值再发请求 —— 拆请求会让切换时先空后填、四发的 ' +
+      'spot / asOf 可能落在不同批报价上, **骨架会跳**, 而那正是本片唯一不能出错的东西 (SC-002)。' +
+      '⚠️ 「位置不变」MUST NOT 被读成「格态不变」: 四种格值跑在**不同的召回集**上, 同一格在一种' +
+      '格值下有值、在另一种下呈空是**正确行为**',
+    type: ChainReportGridsResponse,
+  })
+  cells!: ChainReportGridsResponse;
+}
+
+/** `[行][列]` 网格 → DTO。定标 6 位, 量纲随格值变 (见 {@link ChainReportGridsResponse})。 */
+function toChainReportGrid(grid: ChainReportGrid): ChainReportCellResponse[][] {
+  return grid.map((row) =>
+    row.map((cell) => ({
+      state: cell.state,
+      legCount: cell.legCount,
+      best: cell.best === null ? null : cell.best.toFixed(6),
+      runnerUp: cell.runnerUp === null ? null : cell.runnerUp.toFixed(6),
+    })),
+  );
+}
+
+export function toChainReportResponse(view: ChainReportView): ChainReportResponse {
+  return {
+    symbol: view.symbol,
+    state: view.state,
+    spot: decimal4(view.spot),
+    marketDate: view.marketDate,
+    asOf: dateOnly(view.asOf),
+    quoteAsOf: view.quoteAsOf === null ? null : view.quoteAsOf.toISOString(),
+    oiAsOf: dateOnly(view.oiAsOf),
+    source: view.source,
+    // 🚨 与详情读端 / 温度计**同一个投影函数** —— 三处的降级读数必须逐字节同形, 各写各的就会
+    // 出现「详情说 missing、报表说 unavailable」这种同一事实两种说法。
+    iv: toUnderlyingIvReadoutResponse(view.iv, view.lastClosedSession),
+    anchorExcluded: view.anchorExcluded,
+    gateCounts: { ...view.gateCounts },
+    rows: view.rows.map((row) => ({
+      index: row.index,
+      otmFloor: row.otmFloor.toFixed(4),
+      otmCeiling: row.otmCeiling === null ? null : row.otmCeiling.toFixed(4),
+      strikeFloor: decimal4(row.strikeFloor),
+      strikeCeiling: row.strikeCeiling.toFixed(4),
+    })),
+    columns: view.columns.map((column) => ({
+      expiryDate: dateOnly(column.expiryDate)!,
+      dteDays: column.dteDays,
+      isMonthlyChain: column.isMonthlyChain,
+      atmIv: column.atmIv,
+      inRecallBand: {
+        buildQuality: column.inRecallBand.build_quality,
+        rentAnnualized: column.inRecallBand.rent_annualized,
+        allAnnualized: column.inRecallBand.all_annualized,
+        activity: column.inRecallBand.activity,
+      },
+    })),
+    cells: {
+      buildQuality: toChainReportGrid(view.cells.build_quality),
+      rentAnnualized: toChainReportGrid(view.cells.rent_annualized),
+      allAnnualized: toChainReportGrid(view.cells.all_annualized),
+      activity: toChainReportGrid(view.cells.activity),
+    },
   };
 }
