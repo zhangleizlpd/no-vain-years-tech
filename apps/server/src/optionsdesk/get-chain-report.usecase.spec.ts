@@ -1,7 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
-import { CHAIN_REPORT_METRICS } from './chain-report.rules';
+import { CHAIN_REPORT_METRICS, OTM_BAND_COUNT } from './chain-report.rules';
 import { FakeLegRetrievalAdapter, type FakeLegChain } from './fake-leg-retrieval.adapter';
 import { GetChainReportUseCase, type ChainReportView } from './get-chain-report.usecase';
 import {
@@ -228,7 +228,7 @@ const ROW_NEAR = 1;
 const ROW_FAR = 2;
 
 describe('get-chain-report.usecase — 骨架与轴 (FR-005, plan D-RECALL-1)', () => {
-  it('列轴取自骨架、按到期日升序，不分箱 (FR-003)', async () => {
+  it('列轴 = 链上实际存在的到期日，升序，不分箱 (FR-001 / FR-003)', async () => {
     const report = await view();
     expect(report.state).toBe('available');
     expect(report.columns.map((c) => c.dteDays)).toEqual([10, 35, 200]);
@@ -267,6 +267,40 @@ describe('get-chain-report.usecase — 骨架与轴 (FR-005, plan D-RECALL-1)', 
   it('真正无合约的位置才是 absent', async () => {
     const report = await view();
     expect(report.cells.all_annualized[ROW_ITM][COL_SHORT].state).toBe('absent');
+  });
+
+  it('🚨 整条到期日全被权利金挡下时**该列仍在** —— 列轴取整条链而非骨架 (state_branch 8)', async () => {
+    // 造一个到期日, 其上只有一条太便宜的腿 ⇒ 它一条都不进骨架。
+    const cheapOnly = rowOf({
+      ...LEGS[0],
+      code: 'L-CHEAP',
+      strike: '90',
+      dteDays: 20,
+      expiry: '2026-08-31',
+      bid: '0.05',
+      ask: '0.15',
+    });
+    const report = await useCaseOf([...LEGS.map(rowOf), cheapOnly]).execute(SYMBOL, NOW);
+    // 🚨 列轴若取骨架, 这一列直接消失 —— 而「链上有合约、只是全都太便宜」这条信息随之丢掉。
+    const column = report.columns.findIndex((c) => c.dteDays === 20);
+    expect(column).toBeGreaterThanOrEqual(0);
+    for (const metric of CHAIN_REPORT_METRICS) {
+      expect(report.cells[metric][ROW_FAR][column].state).toBe('gated');
+    }
+  });
+
+  it('🚨 整条链全被权利金挡下 ⇒ 网格照常渲染、每格 gated + 页脚计数，🚫 不是空白页', async () => {
+    const allCheap = LEGS.map((leg) => rowOf({ ...leg, bid: '0.05', ask: '0.15' }));
+    const report = await useCaseOf(allCheap).execute(SYMBOL, NOW);
+    expect(report.state).toBe('available');
+    expect(report.rows).toHaveLength(OTM_BAND_COUNT);
+    expect(report.columns.length).toBeGreaterThan(0);
+    expect(report.gateCounts.skeleton).toBe(0);
+    expect(report.gateCounts.removedByPremium).toBe(allCheap.length);
+    // 有合约的位置呈 gated, 没合约的位置仍是 absent —— 两者 MUST 可分 (FR-016)。
+    const states = new Set(report.cells.all_annualized.flat().map((cell) => cell.state));
+    expect(states.has('gated')).toBe(true);
+    expect(states.has('valued')).toBe(false);
   });
 });
 

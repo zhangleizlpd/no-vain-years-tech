@@ -241,9 +241,16 @@ export class GetChainReportUseCase {
     for (const candidate of outcome.candidates) tabsByLeg.set(candidate.leg, candidate.tabs);
     const inSkeleton = new Set(skeleton);
 
-    // 列轴取自**骨架** (FR-005: 网格总体), 行轴是 spot 的函数。
+    // 行轴是 spot 的函数; 列轴取**整条链上实际存在的到期日** (FR-001 逐字), 🚫 **不是骨架**。
+    //
+    // 🚨 **这一条踩反了会让「全被门槛挡下」那一屏消失**: 若列轴取骨架, 一条腿全部低于权利金
+    // 门槛的链骨架为空 ⇒ 零列 ⇒ 什么都渲染不出来; 而 `state_branch` 8 与 mockup 降级第二帧
+    // 明确要求那时**整张网格照常渲染、每格呈「被门槛挡下」态**, 再配页脚三计数——
+    // 「全是斜线」比「一片空白」多告诉用户一件事: 链是有的, 只是没有一条挂得出去。
+    // 📌 与 FR-005 不冲突: 那条管的是**哪些腿算总体**(不按视角期限段裁、不套条数截断),
+    // 不是列轴取谁。格的「无合约 vs 有腿但太便宜」同样要整条链才分得出 (Guardrail 13)。
     const rows = chainReportRows(context.spot);
-    const columns = chainReportColumns(skeleton);
+    const columns = chainReportColumns(legs);
     const columnIndex = new Map<number, number>();
     columns.forEach((expiry, index) => columnIndex.set(expiry.getTime(), index));
 
