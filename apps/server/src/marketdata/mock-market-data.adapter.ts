@@ -97,10 +97,18 @@ import type {
  * Mock 市场数据 adapter — 零 env (dev/test) 默认的事实端口实现 (FR-S03)。
  *
  * 返**确定性** fixtures (无随机, 无外呼), 让全套 IT 无需真 vendor 凭证即可跑。
- * 单实例覆盖 8 个端口 interface → MarketdataModule 端口工厂在 kind=mock 时
- * 解析到此单例 (ADR-0047: 消费者只依赖端口 Symbol, 不感知背后是 Mock)。
+ *
+ * 🚨 **054 起它不再是 kind=mock 的通吃实现**。DI 只在两个口上绑它:
+ * `QUOTE_PORT` (读取口) 与 `TRADING_CALENDAR_PORT` (闸口) —— 二者都不写库。**28 个采集口
+ * 在 kind=mock 下绑 `refusing-collection.adapter.ts` 的拒绝壳**, 因为采集口的产出必然被
+ * 持久化, 而 mock 行情与真行情同形, 落进真表后无从分辨 (2026-08-12 实撞)。
  * 例外: SEARCH 端口 kind=mock 走 `LocalInstrumentSearchAdapter` 直查已 seed 的
  * Instrument 表 (与 live 备援同 adapter), 不在此造搜索 fixture。
+ *
+ * 📌 **`implements` 列表蓄意保持全量、不随之收窄**: 它对采集口接口的实现自 054 起只服务
+ * **测试内的 stub 用途** (数十个 IT 拿它当「其余端口」的 no-data 桩), 而 `implements` 仍在
+ * 保证这些方法的签名不与端口接口漂移。收窄它零强制力 (TS 是结构化类型, 且 Nest 的端口
+ * token 与工厂返回类型零关联 —— 054 探针实测), 只会白丢这道签名检查。
  *
  * fixture 标的: cn:600519 (贵州茅台) — 详情/报价/K线有数据; 其余 symbol 视为 no-data。
  */

@@ -2,7 +2,7 @@
 feature_id: 054-marketdata-mock-write-provenance
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: drafted
+status: completed
 created_at: '2026-08-13'
 updated_at: '2026-08-13'
 ---
@@ -26,7 +26,7 @@ updated_at: '2026-08-13'
 | 用途                              | 路径                                                                   |
 | --------------------------------- | ---------------------------------------------------------------------- |
 | 拒绝式采集 adapter（本片新建）    | `apps/server/src/marketdata/refusing-collection.adapter.ts`            |
-| mock adapter（收窄 `implements`） | `apps/server/src/marketdata/mock-market-data.adapter.ts`               |
+| mock adapter（仅改类文档注释）    | `apps/server/src/marketdata/mock-market-data.adapter.ts`               |
 | DI 绑定（31 个 `useFactory`）     | `apps/server/src/marketdata/marketdata.module.ts`                      |
 | provider 配置                     | `apps/server/src/config/marketdata.config.ts`                          |
 | 容器 env 映射                     | `docker-compose.tight.yml`（`:170`）                                   |
@@ -38,8 +38,9 @@ updated_at: '2026-08-13'
 
 ## 🚨 Impl Guardrails（每条都是盲写会踩、且踩了不会红的坑）
 
-1. **照着 `MockMarketDataAdapter` 手写一个对等的拒绝类** —— 它现有 **931 行 / 34 个方法**；手写 27 个采集口接口的实现是 senior engineer 会当场判过度的形态。用**带类型参数的工厂**（每个属性访问都抛，约 15 行）顶掉全部（plan `D-2`）。类型守卫不在这里 —— 它在「`mock` 已收窄」+「`@ts-expect-error` 负向断言」两处，与拒绝侧怎么造无关。
-2. **拒绝壳对 `then` 也返回函数** —— 若用 `Proxy` 实现工厂，`get` 陷阱必须对 `then` / `Symbol.toStringTag` / `constructor` 这类**返回 `undefined`**。否则 JS 会把这个对象当 thenable，`await` 它的代码会**挂住而不是报错** —— 挂住不会红，是本清单里唯一一条连红都不给的坑。
+1. **照着 `MockMarketDataAdapter` 手写一个对等的拒绝类** —— 它现有 **931 行 / 34 个方法**；手写 27 个采集口接口的实现是 senior engineer 会当场判过度的形态。用**带类型参数的工厂**（属性访问返一个「一调即抛」的函数，约 15 行）顶掉全部（plan `D-2`）。
+2. **拒绝壳的 `get` 陷阱漏了 infra key** —— 必须对下列 key 返 `undefined`，否则**不是红，是崩 / 挂**（plan `D-4`，2026-08-13 读 Nest 源码核出）：① 5 个 Nest lifecycle hook（`onModuleInit` / `onModuleDestroy` / `onApplicationBootstrap` / `onApplicationShutdown` / `beforeApplicationShutdown`）—— `@nestjs/core/hooks/on-module-init.hook.js:13` 对**每个 provider 实例**做 `isFunction(instance.onModuleInit)`，漏了会让 Nest 在 boot 时**真调用**它 ⇒ `kind=mock` 下全 boot 当场崩；② `then` —— 漏了 JS 会把它当 thenable，`await` 的代码**挂住而不是报错**，全清单里唯一连红都不给的坑；③ `constructor` / `toJSON` / `toString` / `valueOf` / `inspect` 与**全部 symbol key**。
+   🚨 **不要指望类型系统兜底**：plan `D-2` 原写的「`mock` 收窄 `implements` ⇒ 采集口绑定编译期红」经探针实测**不成立**（TS 结构化类型 + Nest `provide` 是裸 Symbol，`FactoryProvider<T>` 的 `T` 从返回值反推，token 与 `T` 零关联）。机制已换成 `collectionPort` helper 的**缺省正确**，证据表见 plan `D-2`。
 3. **顺手把 `TRADING_CALENDAR_PORT` 也拒了** —— 它是**闸口不是采集口**，三个消费方里 `freshness-sla.check` 是只读检查；拒了它 dev 下这类检查全起不来，违 `FR-009`。它留 mock（plan `D-3`），写手会在下一步撞上采集口，结果相同。⚠️ 工厂形态下类型挡不住这个误用，靠 T001 的读取口断言接住。
 4. **改 `?? 'mock'` 时只处理 `undefined`、不处理空串** —— compose 去掉 `:-mock` 之后，变量缺失会被 compose 喂成**空串**，而 `??` 是 nullish 合并、**空串不触发**。只加 `undefined` 判断 = 白改，且 prod 静默跑 mock 的路径原封不动（plan `D-5`）。
 5. **为「日志好看」去逐个写手加 `catch` 分支判断错误类型** —— 那是清单式方案的复活，正是 `FR-010` 要消灭的东西。既有写手都已整轮 `try/catch` 且不上抛，让专属错误走既有路径即可（plan `D-4`）。
@@ -52,23 +53,23 @@ updated_at: '2026-08-13'
 
 ## Phase 1: 结构性阻断（US1 + US3 主体，阻塞其余）🎯
 
-- [ ] T001 [Server] **采集口 / 读取口分类落地 + 拒绝式工厂 + mock 收窄**（`FR-003`, `FR-004`, `FR-009`, `FR-010`, plan `D-1` / `D-2` / `D-3`）：新建 `refusing-collection.adapter.ts`，导出一个**带类型参数的工厂**（返回按目标 port 类型标注的拒绝壳，任何属性访问抛专属 `MockCollectionRefusedError`，消息写明「`MARKETDATA_PROVIDER=mock` 使然，不是故障」；`then` / `Symbol.toStringTag` / `constructor` 必须返 `undefined` —— Guardrail 2）；`marketdata.module.ts` 把 **28 个** `useFactory` 的 `cfg.kind === 'mock' ? mock : …` 改为拒绝壳；`mock-market-data.adapter.ts` 的 `implements` 收窄到 `QuotePort` + `TradingCalendarPort`。→ verify: **红点是现成的** —— `marketdata.boot-015.it.spec.ts:62` 现断言 `MOCK_PORTS` 全 `toBeInstanceOf(MockMarketDataAdapter)`、`:76` 调 `bars.getBars(…)` 期望 fixture，改绑定第一刻即红；把它**分裂**为「读取口 → `MockMarketDataAdapter`」+「采集口 → 调用即抛 `MockCollectionRefusedError`」两组断言（state_branch 4 / 5）+ 同文件加 **`@ts-expect-error` 负向类型断言**：把 `mock` 绑到任一采集口的代码若**能**通过类型检查，`@ts-expect-error` 会以「unused」反向报红 —— `FR-010`「结构上走不通」的机器判据（state_branch 11）+ `nx test server --skip-nx-cache` 全绿
+- [X] T001 [Server] **采集口 / 读取口分类落地 + 拒绝式工厂 + `collectionPort` helper**（`FR-003`, `FR-004`, `FR-009`, `FR-010`, plan `D-1` / `D-2` / `D-3`）：新建 `refusing-collection.adapter.ts`，导出一个**带类型参数的工厂**（返回按目标 port 类型标注的拒绝壳，业务方法一调即抛专属 `MockCollectionRefusedError`，消息写明「`MARKETDATA_PROVIDER=mock` 使然，不是故障」；infra key denylist 见 Guardrail 2）；`marketdata.module.ts` 新增 `collectionPort(token, { inject, live })` helper 并把 **28 个** 采集口 provider 改由它产出 —— **mock 分支收进 helper 内部，per-port 不再有可写的 mock 分支**；两个读取口 + `INSTRUMENT_SEARCH_PORT` 保留裸字面量并各带一行「为什么可以留 mock」的判据注释。`mock-market-data.adapter.ts` **只改类文档注释、不动 `implements`**（plan `D-2` 末段：收窄零强制力，且会丢掉现存的签名检查 —— 46 个测试文件拿它当其余端口的 no-data stub）。→ verify: **红点是现成的** —— `marketdata.boot-015.it.spec.ts:62` 现断言 `MOCK_PORTS` 全 `toBeInstanceOf(MockMarketDataAdapter)`、`:76` 调 `bars.getBars(…)` 期望 fixture，改绑定第一刻即红；把它**分裂**为「读取口 → `MockMarketDataAdapter`」+「采集口 → 调用即抛 `MockCollectionRefusedError`」两组断言（state_branch 4 / 5）+ `nx test server --skip-nx-cache` 全绿（46 个用 mock 当 stub 的既有测试是本改动的回归面，全绿即证「只改了 DI 绑定、没动 mock 的能力」）
 
   📌 **28 这个数是逐 provider 判定出来的，不是估的**：`marketdata.module.ts` 共 31 个 port provider，其中 **30 个**在 `kind === 'mock'` 时绑 `MockMarketDataAdapter`（`INSTRUMENT_SEARCH_PORT` 例外 —— 它绑 `LocalInstrumentSearchAdapter` 直查真 `Instrument` 表），减去留守的 `QUOTE_PORT` / `TRADING_CALENDAR_PORT` ⇒ **28 待改**。
 
-- [ ] T002 [Server] **boot IT 的采集口清单补全到 28**（`SC-004`, plan `D-2`）：`marketdata.boot-015.it.spec.ts` 现有 `MOCK_PORTS` **只列 7 个 port**（`INSTRUMENT_UNIVERSE` / `TRADING_CALENDAR` / `EOD_BAR` / `FUNDAMENTAL` / `FINANCIALS` / `CORPORATE_ACTION` / `QUOTE`）—— T001 的分裂断言因此只覆盖 **5/28** 个采集口。把采集口清单补全到 28 个，逐个断言「解析为拒绝壳 + 调用即抛」。→ verify: 28 个采集口逐条断言通过 + 2 个读取口仍解析 `MockMarketDataAdapter`
+- [X] T002 [Server] **boot IT 的采集口清单补全到 28**（`SC-004`, plan `D-2`）：`marketdata.boot-015.it.spec.ts` 现有 `MOCK_PORTS` **只列 7 个 port**（`INSTRUMENT_UNIVERSE` / `TRADING_CALENDAR` / `EOD_BAR` / `FUNDAMENTAL` / `FINANCIALS` / `CORPORATE_ACTION` / `QUOTE`）—— T001 的分裂断言因此只覆盖 **5/28** 个采集口。把采集口清单补全到 28 个，逐个断言「解析为拒绝壳 + 调用即抛」。→ verify: 28 个采集口逐条断言通过 + 2 个读取口仍解析 `MockMarketDataAdapter`
 
   📌 **为什么必须单独一条而不是并进 T001**：`SC-004` 的原文是「已知每条走 vendor 且写库的定时路径都被覆盖，**没有**『只修了撞到的那一条』的遗留」。T001 改了 28 个绑定但只验了 5 个 —— 那正是 `SC-004` 要禁止的形态在**判据层**的复现。这条 task 存在的唯一理由就是把 `SC-004` 变成可执行的断言。
 
-  📌 **手列清单会 stale，这是蓄意接受的**：有人加第 29 个采集口时它不会自动跟上。防再入机制是 T001 的 `@ts-expect-error`（守在编译期），手列清单只是当下集合的**显式快照**。
+  📌 **手列清单会 stale，这是蓄意接受的**：有人加第 29 个采集口时它不会自动跟上。防再入机制是 T001 的 `collectionPort` helper —— 新采集口**照抄邻居即自动拿到拒绝壳，压根不需要清单跟上**；手列清单只是当下集合的**显式快照**，职责仅限于证明本次 28 个确实改全了。
 
-- [ ] T003 [Server] **「`kind=mock` 下写手跑完零写库」IT**（`FR-004`, plan `D-7`）：新建 `marketdata-054.mock-no-write.it.spec.ts`，起 Testcontainers PG，`MARKETDATA_PROVIDER` 取 mock 全 boot `AppModule`，直调 `OptionSnapshotRemediation.retrySameDay` / `.backfillPremarket` 与 `TradingCalendarSyncService.run`，断言目标表**行数零增长**且各写手不上抛（既有 `try/catch` 吞掉专属错误）。→ verify: 覆盖 state_branch 1（判定需采集 → 零写库）/ 2（判定无需采集 → 零写库，与 1 走不同分支但结论同）/ 3（非定时写路径同判据 —— 同一 port 层，用手工触发的同步入口再验一次）+ 该 IT 在 T001 **之前**跑必红（现状会写 3617 行）
+- [X] T003 [Server] **「`kind=mock` 下写手跑完零写库」IT**（`FR-004`, plan `D-7`）：新建 `marketdata-054.mock-no-write.it.spec.ts`，起 Testcontainers PG，`MARKETDATA_PROVIDER` 取 mock 全 boot `AppModule`，直调 `OptionSnapshotRemediation.retrySameDay` / `.backfillPremarket` 与 `TradingCalendarSyncService.run`，断言目标表**行数零增长**且各写手不上抛（既有 `try/catch` 吞掉专属错误）。→ verify: 覆盖 state_branch 1（判定需采集 → 零写库）/ 2（判定无需采集 → 零写库，与 1 走不同分支但结论同）/ 3（非定时写路径同判据 —— 同一 port 层，用手工触发的同步入口再验一次）+ 该 IT 在 T001 **之前**跑必红（现状会写 3617 行）
 
 ---
 
 ## Phase 2: 配置层 fail-fast（US3）
 
-- [ ] T004 [P] [Server] **`provider` 非法值 boot 抛 + compose 去掉 `:-mock` 兜底**（`FR-008`, plan `D-5`）：`marketdata.config.ts:38` 改为显式枚举校验（`'mock' | 'live'` 之外一律抛，**含空串**）；`docker-compose.tight.yml:170` 把 `${MARKETDATA_PROVIDER:-mock}` 改为 `${MARKETDATA_PROVIDER}`。→ verify: config 单测覆盖 `'liv'` / `'Live'` / `''` 三形态均抛（state_branch 12）+ **缺失仍解析为 mock**（Guardrail 8 的反向断言）+ `marketdata.boot-015.it.spec.ts` 既有「`kind=live` 缺 `LIXINGER_TOKEN` 即 fail-fast」仍绿 + `npx tsx scripts/checks/check-env-sync.ts` 绿（改前基线已实测绿；Check H 仍满足 —— compose 照旧引用该键，只是不再兜底）
+- [X] T004 [P] [Server] **`provider` 非法值 boot 抛 + compose 去掉 `:-mock` 兜底**（`FR-008`, plan `D-5`）：`marketdata.config.ts:38` 改为显式枚举校验（`'mock' | 'live'` 之外一律抛，**含空串**）；`docker-compose.tight.yml:170` 把 `${MARKETDATA_PROVIDER:-mock}` 改为 `${MARKETDATA_PROVIDER}`。→ verify: config 单测覆盖 `'liv'` / `'Live'` / `''` 三形态均抛（state_branch 12）+ **缺失仍解析为 mock**（Guardrail 8 的反向断言）+ `marketdata.boot-015.it.spec.ts` 既有「`kind=live` 缺 `LIXINGER_TOKEN` 即 fail-fast」仍绿 + `npx tsx scripts/checks/check-env-sync.ts` 绿（改前基线已实测绿；Check H 仍满足 —— compose 照旧引用该键，只是不再兜底）
 
   📌 **为什么两处缺一不可**：`.env.production:59` 确实写着 `=live`，但只要 env-file 没加载，compose 的 `:-mock` 就把生产容器喂成 mock，再经 `??` 的空串盲区一路穿到底、零告警。这个仓自己在 `docker-compose.tight.yml` 内**6 处**注释里把「同 `MARKETDATA_PROVIDER` 静默陷阱」当作该类 bug 的标准范例引用 —— 范例本身从未被修，本 task 一并修掉。
 
@@ -76,7 +77,7 @@ updated_at: '2026-08-13'
 
 ## Phase 3: 验证能力补位（FR-011）
 
-- [ ] T005 [Server] **写手写库路径 IT 顶替 dev 手工验证**（`FR-011`, plan `D-6`）：新建 `option-snapshot-remediation.it.spec.ts`，起 Testcontainers PG，用**测试内的 stub 采集口**（不经 mock adapter）喂确定性数据，覆盖 ① 当日重试落 `source = eod` 与 ② 盘前兜底落 `source = premarket_backfill` 两条，并造一次批内部分失败。→ verify: 断言**落库行**的 `source` 列值与行数（不是返回值 —— Guardrail 9）+ 覆盖 state_branch 5（live 语义下来源标识零变化）/ 8（部分写：已落部分仍带正确来源标识）
+- [X] T005 [Server] **写手写库路径 IT 顶替 dev 手工验证**（`FR-011`, plan `D-6`）：新建 `option-snapshot-remediation.it.spec.ts`，起 Testcontainers PG，用**测试内的 stub 采集口**（不经 mock adapter）喂确定性数据，覆盖 ① 当日重试落 `source = eod` 与 ② 盘前兜底落 `source = premarket_backfill` 两条，并造一次批内部分失败。→ verify: 断言**落库行**的 `source` 列值与行数（不是返回值 —— Guardrail 9）+ 覆盖 state_branch 5（live 语义下来源标识零变化）/ 8（部分写：已落部分仍带正确来源标识）
 
   📌 **为什么必须新增而不是改既有单测**：`marketdata` 目录现有 IT **只有 1 个**（`eod-backed-quote.adapter.it.spec.ts`）；`option-snapshot-remediation.spec.ts` 与 `sync-option-snapshot.usecase.spec.ts` 都是 Small 档单测，不起容器、不碰真表。T001 落地后 dev 彻底跑不了这条路，这个 IT 是它唯一的替代验证面（spec Edge Cases「拆东墙补西墙」点名要补的那条）。
 
@@ -84,7 +85,7 @@ updated_at: '2026-08-13'
 
 ## Phase 4: 决策留痕与运维面（FR-007）
 
-- [ ] T006 [P] [Docs] **ADR-0047 § 2 amend + 水位线与预期日志写进 runbook**（`FR-007`, plan `D-7` / `D-8`）：`docs/adr/0047-marketdata-pluggable-data-access.md:85` 的「全部 \| `MockMarketDataAdapter`（dev/test 默认，零 env）」一行拆为「读取口 → Mock / 采集口 → Refusing」两行并记因由；`ops/runbook/scheduled-tasks.md` 补两条 —— ① **水位线**：本 feature 生效之前写入的 dev 库行一律「来源不可考」，且该集合随每日 `truncate + reload` 递减到空；② dev 下每天会出现的**「采集被拒」日志是预期行为**，不是故障。→ verify: 覆盖 state_branch 6（历史无痕行判「不可考」）+ `npx markdownlint-cli2 --config .markdownlint-cli2.jsonc` 绿 + ADR 改动被 `docs/adr/README.md` 索引一致性扫过
+- [X] T006 [P] [Docs] **ADR-0047 § 2 amend + 水位线与预期日志写进 runbook**（`FR-007`, plan `D-7` / `D-8`）：`docs/adr/0047-marketdata-pluggable-data-access.md:85` 的「全部 \| `MockMarketDataAdapter`（dev/test 默认，零 env）」一行拆为「读取口 → Mock / 采集口 → Refusing」两行并记因由；`ops/runbook/scheduled-tasks.md` 补两条 —— ① **水位线**：本 feature 生效之前写入的 dev 库行一律「来源不可考」，且该集合随每日 `truncate + reload` 递减到空；② dev 下每天会出现的**「采集被拒」日志是预期行为**，不是故障。→ verify: 覆盖 state_branch 6（历史无痕行判「不可考」）+ `npx markdownlint-cli2 --config .markdownlint-cli2.jsonc` 绿 + ADR 改动被 `docs/adr/README.md` 索引一致性扫过
 
 ---
 
@@ -114,7 +115,7 @@ MVP 与并行：**T001 + T002 + T003** 是完整的 MVP —— T001 落机制、
 | 8   | 部分写 → 已落部分仍带正确来源标识             | T005                                    |
 | 9   | dev 同步成功 → 伪造行被冲掉                   | **故意零覆盖**（见下表）                |
 | 10  | dev 同步失败 → 伪造行留存且状态可感知         | **故意零覆盖**（见下表）                |
-| 11  | 新增写入路径、作者什么都没多做 → 自动继承约束 | T001（`@ts-expect-error` 负向类型断言） |
+| 11  | 新增写入路径、作者什么都没多做 → 自动继承约束 | T001（`collectionPort` helper：mock 分支不可写） |
 | 12  | provider 配置缺失 / 拼错 → 不得静默落 mock    | T004                                    |
 
 ## 自审：spec 有哪几层 / 扫了哪几层（per `sdd-authoring.md` 规则 ④）
@@ -140,7 +141,7 @@ MVP 与并行：**T001 + T002 + T003** 是完整的 MVP —— T001 落机制、
 | US1-AS1/2/3 | 判定查询对「纯伪造 / 纯真实 / 两者并存」三种数据的结果 | **空满足**（T001 后不再产生新伪造行）；历史部分归 T006 |
 | US1-AS4     | 本 feature 之前的无痕行 → 判「来源不可考」             | T006                                                   |
 | US2-AS1/2   | 覆盖率探针不判达标 · 读路径不与真行情无差别            | **空满足**（同上）                                     |
-| US3-AS1     | 新增写入路径未接约束 → 检查明确指出                    | T001（`@ts-expect-error` 负向类型断言）                |
+| US3-AS1     | 新增写入路径未接约束 → 检查明确指出                    | T001（`collectionPort` helper：mock 分支不可写）       |
 | US3-AS2     | provider 缺失或拼错 → 不得静默落 mock 后继续写库       | T004                                                   |
 
 ### Edge Case 覆盖（6 条）
@@ -161,7 +162,7 @@ MVP 与并行：**T001 + T002 + T003** 是完整的 MVP —— T001 落机制、
 | state_branch 7（真行与伪造行并存时读取侧取哪条）                  | T001 之后**不可能产生新的伪造行** ⇒ 该组合只存在于历史数据里，归 T006 的水位线处置。为一个封闭且递减到空的集合写读取侧取数规则是净负收益                                                                                |
 | state_branch 9 / 10（dev 同步成功 / 失败）                        | spec Clarifications Q1 **明确排除** —— 它落在 host 定时任务 + 通知链上，与本片的 server 代码面不正交。另开                                                                                                              |
 | `FR-001` / `FR-002` / `FR-003` / `FR-005` / `FR-006` 的正向实现   | 条件句前件在本方案下恒假（plan `D-7`）。**唯一**需要的是 T003 把「前件恒假」本身验掉，不是为每条补实现                                                                                                                  |
-| `SC-003`（覆盖率判定与「缺数」等价）                              | 同上族的空满足：`FR-005` 无伪造行可判 ⇒ 覆盖率探针不存在「被骗」的输入。**若将来 T001 的类型约束被绕开**，这条会立刻从空满足退回真需求 —— 那也正是 T001 的 `@ts-expect-error` 守着的东西                                |
+| `SC-003`（覆盖率判定与「缺数」等价）                              | 同上族的空满足：`FR-005` 无伪造行可判 ⇒ 覆盖率探针不存在「被骗」的输入。**若将来有人绕开 `collectionPort` helper 手写裸 provider 字面量把 `mock` 绑回采集口**，这条会立刻从空满足退回真需求 —— T002 的 28 条断言是它的哨兵 |
 | 让 mock fixture 数据「一眼假」（RFC 2606 / Stripe 4242 式自识别） | plan `D-7b` 已裁定**知道且蓄意不做**：T001 之后 mock 产出已不可能落库，这层只剩纵深防御价值，而成本落在一批与本片无关的 fixture 断言上。**残余风险已知** —— 它挡不住「有人拿 dev 的**读**数据下结论」，若再撞一次即单开 |
 | mobile / 契约冒烟 / 真机验收                                      | 本片零 endpoint、零 DTO、零 UI ⇒ 无 `export-openapi` regen、无 `packages/api-client` 重生成、无 mobile 消费面                                                                                                           |
 

@@ -176,8 +176,8 @@ export async function bootRealBackend(opts?: { displayName?: string }): Promise<
     REDIS_URL: redis.getConnectionUrl(),
     AUTH_JWT_SECRET: 'real-backend-smoke-jwt-secret-min-32-bytes-pad-abcdef',
     SMS_CODE_HMAC_SECRET: 'real-backend-smoke-hmac-secret-min-32-bytes-pad-zzz',
-    // 🚨 恒钉 mock，**不看 shell 环境**（hermetic）。marketdataConfig 走
-    // `process.env.MARKETDATA_PROVIDER ?? 'mock'` —— 只在**变量缺失**时才 mock；而
+    // 🚨 恒钉 mock，**不看 shell 环境**（hermetic）。marketdataConfig 只在
+    // `MARKETDATA_PROVIDER` **整个变量缺失**时才落 mock（054 起非法值与空串一律 boot 抛）；而
     // `apps/server/.env` 里写的就是 `=live` 且零 FUTU_SHIM_* 真值，本地跑时它会经 shell
     // 继承进来 → boot 死在 futuShimUrl/futuShimToken 的 ZodError，且错误点离真因很远。
     // 与 `apps/server/vitest.config.ts` 的 test.env、`scripts/ci/server-boot-smoke.ts`

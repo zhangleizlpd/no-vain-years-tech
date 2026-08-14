@@ -29,7 +29,7 @@ set -euo pipefail
 
 LABEL='com.nvy.nvy-private-backup'
 TASK='nvy-private-backup'
-TIME='09:30'          # 晚于 holdings 09:00 / marketdata 09:05 / futu-eod 09:15，错开抢网络
+TIME='09:30'          # 晚于 holdings 09:00 / marketdata 09:05，错开抢网络
 TARGET_CODENAME='app'
 KEEP='30'
 

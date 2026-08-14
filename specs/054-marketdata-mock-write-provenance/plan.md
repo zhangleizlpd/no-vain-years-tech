@@ -95,16 +95,29 @@ context7_verified: []
 
 📌 **`TRADING_CALENDAR_PORT` 是事故的使能者，不是旁观者**：2026-08-12 是周三，08:00 补救 cron 的交易日闸正是被这个假日历放过去的。它的处置见 D-3。
 
-#### D-2 · mock 侧只满足读取口，靠**类型系统**而非清单强制（FR-010 的兑现）
+#### D-2 · mock 侧「采集口不给数据」靠**缺省结构**强制，不靠类型（FR-010 的兑现）
 
-- `MockMarketDataAdapter` 的 `implements` 列表**收窄**到它在 mock 下真正被绑上的那两个：`QuotePort` + `TradingCalendarPort`（闸口，见 D-3）。它从「实现约 30 个接口的万能对象」变成一个只有两个职责的小对象 —— 这个收窄幅度本身就是「原设计把读写混作一谈」的度量。
-- 采集口在 `cfg.kind === 'mock'` 时绑新增的 `RefusingCollectionAdapter`。
-- **关键机制**：将来有人加一个采集口，照抄既有 `useFactory` 里的 `cfg.kind === 'mock' ? mock : new XAdapter(http)` 写法 —— `mock` 不再满足该 port 的类型，**`tsc` 直接红**。作者被迫改成 `? refusing :`，而这个标识符本身就在说明语义。
-- ⇒ 「新增写入路径而未接约束」这件事**在编译期走不通**，无需 `scripts/checks/` 清单、无需运行时反射。这是 spec Clarifications Q2「优先结构性」的字面兑现。
+🚨 **本节 2026-08-13 于 impl 起手时重写**。原方案押在「`MockMarketDataAdapter` 收窄 `implements` ⇒ 采集口绑定编译期红」，动手前探针实测**两条链都断**（证据见下），故换机制。
 
-🚨 **拒绝侧用「带类型参数的工厂」，不要手写实现**：`MockMarketDataAdapter` 现有 **931 行 / 34 个方法**；照它对等手写一个实现 27 个采集口接口的拒绝类，是 senior engineer 会当场判过度的形态。改用一个泛型工厂返回按目标 port 类型标注的拒绝壳（每个属性访问都抛），**约 15 行**顶掉全部。
+- 28 个采集口的 provider 改由 `collectionPort(token, { inject, live })` helper 产出：**mock 分支收进 helper 内部恒给拒绝壳，per-port 根本没有「mock 分支」这一行可写。**
+- 读取口（`QUOTE_PORT` / `TRADING_CALENDAR_PORT`）与 `INSTRUMENT_SEARCH_PORT` 保留裸 provider 字面量 + 显式 `cfg.kind === 'mock' ? mock : …`，并各带一行「为什么它可以留 mock」的判据注释 —— 让偏离**看得见**，而不是混在 28 个同形块里看不出来。
+- **关键机制 = 缺省正确**：将来有人加一个采集口，照抄邻居就是 `collectionPort(...)`，**自动**拿到拒绝壳 —— 作者确实什么都没多做。FR-010 的兑现方式从「让错的事变红」改成「让对的事成为唯一能写的事」。后者更强：它不依赖任何守门物**存在**，也就没有守门物可被绕开或忘记更新。
+- `MockMarketDataAdapter` 的 `implements` 列表**保持原样，不收窄**（理由见下）。
 
-类型守卫**不受影响** —— 守卫在「`mock` 已收窄」+「`@ts-expect-error` 负向断言」这两处，与拒绝侧怎么造无关。工厂形态引入的唯一新风险是「误把读取口也拒了」（手写类靠类型能挡，工厂挡不住）—— 由 boot IT 的读取口断言接住（T001 verify）。
+🚨 **拒绝侧用「带类型参数的工厂」，不要手写实现**：`MockMarketDataAdapter` 现有 **931 行 / 34 个方法**；照它对等手写一个实现 27 个采集口接口的拒绝类，是 senior engineer 会当场判过度的形态。改用一个泛型工厂返回按目标 port 类型标注的拒绝壳（属性访问返一个「一调即抛」的函数），**约 15 行**顶掉全部。
+
+工厂形态引入的唯一新风险是「误把读取口也拒了」—— 由 boot IT 的读取口断言接住（T001 verify）。
+
+**实测证据**（探针落 `apps/server/src/marketdata/`，走仓内 `tsconfig.typecheck.json`；两处 `@ts-expect-error` **全部报 TS2578 "Unused"** ⇒ 两处都不产生类型错误）：
+
+| 探针 | 模拟形态                                              | 原 D-2 预期                | 实测                                                                                                                                                     |
+| ---- | ----------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A    | `implements` 收窄了、方法体还在                       | 不能再当 `EodBarPort` 用   | 照样通过 —— TS 是**结构化**类型，`implements` 只是一次 check，不是 nominal 约束                                                                          |
+| B    | 方法体也删光的对象绑进 `EOD_BAR_PORT` 的 `useFactory` | `tsc` 直接红               | 零报错 —— Nest 的 `provide` 是裸 `Symbol`（`InjectionToken`），`FactoryProvider<T>` 的 `T` 从 `useFactory` **返回值反向推断**，token 与 `T` 之间零关联 |
+
+⇒ 「把 `mock` 绑到采集口会红」这件事**在收窄前的今天就已经不红**，收窄之后也不会红。原 T001 verify 里那条 `@ts-expect-error` 负向断言按原写法会因 unused 而**自己变红**。
+
+**为什么连 `implements` 收窄也一并撤掉**：探针 A 证明它零强制力；而 `implements` 当下**仍在干一件实事** —— 保证 mock 的 34 个方法签名与各 port 接口不漂移，而**46 个测试文件**正是拿它当「其余端口」的 no-data stub。撤掉 = 零收益 + 丢掉一道现存的签名检查。改为**只更新类文档注释**：写明自 054 起 DI 只在两个读取口绑它，采集口在 mock 下绑拒绝壳，它对其余 port 的实现自此只服务测试内的 stub 用途。
 
 #### D-3 · `TRADING_CALENDAR_PORT` 保留 mock，理由是它不落库
 
@@ -117,6 +130,8 @@ context7_verified: []
 `RefusingCollectionAdapter` 每个方法抛专属错误类型（如 `MockCollectionRefusedError`），消息里写清「这是 `MARKETDATA_PROVIDER=mock` 使然，不是故障」。
 
 写手侧**不改** catch 结构 —— 既有写手已各自整轮 try/catch 且不上抛（`sync-anchor-quote.scheduler.ts` / `trading-calendar-sync.service.ts` 皆 `logger.error` 不上抛，`option-snapshot-remediation.ts` 逐票独立）。让专属错误走既有路径落日志即可。**不要**为了「日志好看」去逐个写手加分支判断 —— 那正是清单式方案的复活。
+
+🚨 **拒绝壳的 `get` 陷阱必须对一批 infra key 返 `undefined`，否则 `kind=mock` 下全 boot 当场崩**（2026-08-13 读源码核出，非推测）：`@nestjs/core/hooks/on-module-init.hook.js:13` 对**每个 provider 实例**做 `isFunction(instance.onModuleInit)` —— 拒绝壳若对任意 key 都返「一调即抛的函数」，Nest 会认定它有生命周期钩子并**在 boot 时调用**。denylist 至少含：5 个 Nest lifecycle hook（`onModuleInit` / `onModuleDestroy` / `onApplicationBootstrap` / `onApplicationShutdown` / `beforeApplicationShutdown`）+ `then`（否则 `await` 会**挂住而不是抛** —— 全清单里唯一连红都不给的坑）+ 序列化 / 调试类（`constructor` / `toJSON` / `toString` / `valueOf` / `inspect`）+ **全部 symbol key**。
 
 #### D-5 · 配置层：`kind` 未知值必须 boot 抛，且 compose 的 `:-mock` 兜底必须去掉（FR-008）
 
@@ -165,7 +180,7 @@ D-2 之后 dev **彻底跑不了**写手写库这条路（这是 spec Edge Cases
 
 #### 任务切分意图（供 `/speckit-tasks`）
 
-1. `[Server]` 采集口 / 读取口分类落地 + `RefusingCollectionAdapter` + `MockMarketDataAdapter` 收窄 + `marketdata.module.ts` 绑定改写 —— 红点是 `marketdata.boot-015.it.spec.ts:60,76`
+1. `[Server]` 采集口 / 读取口分类落地 + 拒绝式工厂 + `marketdata.module.ts` 28 个绑定经 `collectionPort` helper 改写 —— 红点是 `marketdata.boot-015.it.spec.ts:60,76`
 2. `[Server]` `marketdata.config.ts` `kind` 枚举校验 **+** `docker-compose.tight.yml:170` 去掉 `:-mock` 兜底（FR-008，D-5 两处缺一不可）。⚠️ 动 compose 映射属 `config-env-sync` 纪律 9 位置之一 ⇒ 收尾必跑 `check-env-sync`
 3. `[Server]` remediation 写库路径 IT（FR-011，D-6）
 4. `[Server]` 「`kind=mock` 下写手跑完零写库」IT 断言（D-7 的前件恒假验证，覆盖 `state_branches` 前 5 条）

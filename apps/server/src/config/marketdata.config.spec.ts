@@ -46,6 +46,26 @@ describe('marketdataConfig discriminated union', () => {
     expect(marketdataConfig()).toEqual({ kind: 'mock' });
   });
 
+  // 054 T004 (FR-008, state_branch 12): 非法值 MUST NOT 被静默吞成 mock。
+  //
+  // 🚨 空串是这里的**主角**, 不是陪跑: `docker-compose.tight.yml` 的 `${MARKETDATA_PROVIDER}`
+  // 在变量未设时喂给容器的正是**空串**, 而 `??` 是 nullish 合并、空串不触发 —— 旧实现于是
+  // 让「prod env-file 没加载」一路穿到底、零告警地跑 mock。
+  it.each([['liv'], ['Live'], ['production'], ['MOCK'], ['']])(
+    '🚨 boot fail-fast: MARKETDATA_PROVIDER=%j (非法值) → throws, 不静默落 mock',
+    (raw) => {
+      process.env.MARKETDATA_PROVIDER = raw;
+      expect(() => marketdataConfig()).toThrow(/MARKETDATA_PROVIDER/);
+    },
+  );
+
+  it('🚨 反向断言: 变量**缺失**仍解析为 mock (带论证的刻意保留, 非疏漏)', () => {
+    // 与上一条的区别是 undefined vs 空串。ADR-0047 的「零 env → dev/test 可跑」靠这条;
+    // 而 054 之后 mock 已不能写库, silent default 在本例中不再危险 (plan D-5)。
+    delete process.env.MARKETDATA_PROVIDER;
+    expect(marketdataConfig()).toEqual({ kind: 'mock' });
+  });
+
   it('boot fail-fast: kind=live 缺 LIXINGER_TOKEN → throws (不静默降级)', () => {
     setLiveRequired();
     delete process.env.LIXINGER_TOKEN;
