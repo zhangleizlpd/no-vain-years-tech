@@ -103,6 +103,24 @@ Playwright hermetic e2e（`route.fulfill` 拦截 server 端点）的 mock **必�
 - **配套键盘（chat 输入条三端范式）**：用 `KeyboardStickyView`（react-native-keyboard-controller）**而非** `KeyboardAvoidingView`——后者在 Android edge-to-edge 顶不动；前者 iOS/Android 帧同步、web 无键盘事件即静态由浏览器处理，**三端统一无 `Platform` 分支**。`offset.opened = insets.bottom` 收掉父 `SafeAreaView edges={['bottom']}` 的底部安全区使输入条贴键盘顶沿。
 - **实证锚**：PR #555（外脑→灵感 tab：ideation 列表+详情从兄弟 stack 收进 tab 嵌套 stack）。033 T012 曾把此崩误判为「旧 embedded bundle 现象」——实为 fresh code 真 bug，只因当时漏验外脑 tab 跨 stack 路径。screens 正式发版修后可考虑退役本重构或并存。
 
+### 7a. 键盘遮挡：**先按输入域选路线**，仓内已有三条（别重造，也别默认挑 chat 那条）
+
+同一个「键盘把内容顶走 / 遮住」的症状，仓内已有多条已 ship 的解，选谁**取决于输入域与容器形态**（下表随代码演进，**代码是真相源**，drift 不算 bug —— 加新路线时顺手补一行）：
+
+| 形态                        | 路线                                                                                                            | 样板                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **底部 sheet + 纯数字输入** | 🚨 **自绘键盘**（`~/ui` 的 `NumericKeypad` + `keypad.rules`），值用**只读 `<Text>`** 显示、**系统键盘根本不弹** | `alert/value-input-sheet.tsx` · `optionsdesk/leg-criteria-sheet.tsx` |
+| **全屏聊天输入条**          | `KeyboardStickyView`（见上条）                                                                                  | `ideation/ClarifyChatScreen.tsx`                                     |
+| **普通表单/列表底部输入**   | 该库的 `KeyboardAvoidingView`（**是 `react-native-keyboard-controller` 的，不是 RN 内置那个**）                 | `chat/chat-home-screen.tsx`                                          |
+
+🚨 **数字域优先自绘键盘，不是「顶起来就行」**：顶起方案只解「看不看得见」，而自绘键盘让问题**结构性消失**（没有系统键盘就没有顶不顶得起）。判据是**屏占比**——2026-08-14 Mate50（`CET-AL00`）实测：系统数字键盘占约 **60% 屏高**，一个 5–6 行的 sheet 顶起来后 sheet + 键盘几乎吃满整屏，字段仍然难用。⇒ **选路线前先在目标机型上量一次键盘屏占比**，别照搬本条读数。
+
+🚨 **自绘键盘的键高 MUST 固定（`h-16`），🚫 不能用 `flex-1` 撑行高** —— bottom-sheet 里键盘父容器无确定高度，`flex-1`(=`flexBasis:0`) 会塌缩、底部 `0/./⌫` 行被挤出屏幕**不可点**。**真机实证，web 视口够高漏测。**
+
+📌 **副产品**：值从 `TextInput` 换成只读 `<Text>` 会顺带解掉「`TextInput` 上挂 `className` 颜色未如期生效」这类渲染问题（`053` T013 真机实撞：条件值淡到读不出，与键盘遮挡**同一个修法一起解**）。
+
+**实证锚**：`052` T012 交付抽屉 → `053` T013 真机验收撞出「输入法弹起把整个抽屉顶出屏外，连正在编辑的框都看不见」→ `053` T015 照 `alert` 既有解修（`NumericKeypad` 同期上提 `~/ui`）。
+
 ## 8. React Query 缓存失效纪律（mutation 必失效 list key）
 
 > 🚨 真机才暴露家族（同 § 7「web e2e 全绿真机崩」）——但这是 **数据缓存维度**：列表正确渲染、只是数据陈旧。
