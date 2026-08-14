@@ -24,16 +24,26 @@ Get-ChildItem C:\Windows -Directory -Force -EA SilentlyContinue | ForEach-Object
   ForEach-Object { Write-Output ("  {0,10:N1} MB  {1}" -f $_.MB,$_.N) }
 
 Write-Output "`n===== BIG SINGLE FILES (>300MB) - these ARE real (per-file size) ====="
-Get-ChildItem C:\ -Recurse -File -Force -EA SilentlyContinue |
-  Where-Object { $_.Length -gt 300MB } | Sort-Object Length -Descending | Select-Object -First 20 |
+$big = Get-ChildItem C:\ -Recurse -File -Force -EA SilentlyContinue |
+       Where-Object { $_.Length -gt 300MB } | Sort-Object Length -Descending
+$big | Select-Object -First 20 |
   ForEach-Object { Write-Output ("  {0,10:N0} MB  {1}  (mtime {2})" -f ($_.Length/1MB),$_.FullName,$_.LastWriteTime) }
 
-Write-Output "`n===== HARDLINK PROBE on the largest files (mandatory before any size claim) ====="
-Get-ChildItem C:\ -Recurse -File -Force -EA SilentlyContinue |
-  Where-Object { $_.Length -gt 300MB } | Sort-Object Length -Descending | Select-Object -First 5 |
-  ForEach-Object {
-    Write-Output ("  [{0:N0} MB] {1}" -f ($_.Length/1MB),$_.FullName)
-    fsutil hardlink list $_.FullName 2>&1 | ForEach-Object { Write-Output ("      {0}" -f $_) } }
+Write-Output "`n===== HARDLINK PROBE (mandatory before any size claim) ====="
+# Probe set = (a) every same-Name+same-Length duplicate group -- that is the classic hardlink-farm
+#             signature -- plus (b) the top 5 by size.
+# WARNING: Do NOT shrink this to "top N by size". 2026-08-15: the four 326MB msedge.dll copies (Edge /
+#    EdgeCore / EdgeCore\Optimized / EdgeWebView) ranked 6-9, so a top-5 probe missed the exact
+#    case that motivated this whole section.
+$probe = @()
+$big | Group-Object { "{0}|{1}" -f $_.Name, $_.Length } | Where-Object { $_.Count -gt 1 } |
+  ForEach-Object { Write-Output ("  [DUP x{0}] {1}" -f $_.Count, $_.Group[0].Name); $probe += $_.Group[0] }
+$probe += ($big | Select-Object -First 5)
+$probe | Sort-Object FullName -Unique | ForEach-Object {
+  Write-Output ("  [{0:N0} MB] {1}" -f ($_.Length/1MB),$_.FullName)
+  fsutil hardlink list $_.FullName 2>&1 | ForEach-Object { Write-Output ("      {0}" -f $_) } }
+Write-Output "  NOTE: a file locked by a running process (e.g. pagefile.sys) returns"
+Write-Output "        'error 32 / in use' here. That is expected, not a probe failure."
 
 Write-Output "`n===== COMPONENT STORE - THE authoritative WinSxS number ====="
 Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore 2>&1 |

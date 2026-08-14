@@ -178,7 +178,9 @@ Write-Output "`n===== KNOWN RECLAIMABLE BUCKETS (cheap, no recursion of C:) ====
 function DirMB($p){ $b=(Get-ChildItem $p -Recurse -File -Force -EA SilentlyContinue | Measure-Object Length -Sum).Sum; if($null -eq $b){0} else {[math]::Round($b/1MB,1)} }
 foreach($b in @(
   'C:\Windows\SoftwareDistribution\Download','C:\Windows\Temp','C:\Windows\Logs',
-  'C:\Windows\Installer','C:\Windows\Prefetch','C:\Windows\Minidump','C:\$Recycle.Bin')){
+  'C:\Windows\Installer','C:\Windows\Prefetch','C:\Windows\Minidump','C:\$Recycle.Bin',
+  # Added 2026-08-15 after a deep scan surfaced a single 300MB .evtx that stage 1 was blind to.
+  'C:\Windows\System32\winevt\Logs')){
   if(Test-Path $b){ Write-Output ("  {0,9:N1} MB  {1}" -f (DirMB $b),$b) } else { Write-Output ("     absent  {0}" -f $b) }
 }
 Get-ChildItem 'C:\Windows\Logs\CBS' -File -Force -EA SilentlyContinue |
@@ -242,7 +244,9 @@ else { Write-Output "  no CloudMonitor agent (expected; monitoring lives off-box
 **硬规则**：目录体积一旦用于下结论，必须先验硬链接，否则不许下结论。
 
 ```powershell
-fsutil hardlink list <biggest-file>                      # lists every path sharing that data
+# NOTE: quote the placeholder. Bare <...> makes PowerShell choke ("< is reserved"),
+#       so an unquoted placeholder turns this snippet into a copy-paste trap.
+fsutil hardlink list '<biggest-file>'                    # lists every path sharing that data
 Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore   # the only authoritative WinSxS number
 ```
 
@@ -287,6 +291,17 @@ Output = <空>                 StartTime → FinishedTime 仅 1 秒（根本没�
 非 ASCII 标点，也别用中文做 `Select-String` 的匹配词（本地化输出要匹配就整段打印，在分析端过滤）。
 
 **别靠记性 —— 阶段 1 那段 bash 里的自检是强制的**，发送前跑，非 ASCII 或 BOM 直接拦下。
+
+🚨 **PowerShell 的 `Parser::ParseInput` 抓不到这个 bug** —— 用它做「只解析不执行」的语法校验时，
+含 emoji 的脚本照样报 `PARSE-OK`，因为那条路径是在内存里按 UTF-8 解码的。**失败只发生在云助手的
+投递路径上**（base64 → 落文件 → PowerShell 按本机编码读）。⇒ 两道检查管的不是同一件事：
+
+| 检查                      | 抓得到                               | 抓不到          |
+| ------------------------- | ------------------------------------ | --------------- |
+| 发送前 ASCII/BOM 自检     | emoji · BOM · 控制字符               | 语法错误        |
+| `Parser::ParseInput` 校验 | 语法错误 · 保留字（如裸 `<占位符>`） | **emoji / BOM** |
+
+**缺一不可。** 2026-08-15 我在修本文件时又写进一个 `🚨`，`PARSE-OK` 照过，是 ASCII 自检拦下的。
 
 > 这条是被真实咬到才发现的：SKILL.md 初版的采集脚本注释里有一个 `⚠️`，第一次真机试跑
 > **完全无输出而一切指标显示成功**。同期能跑通的 6 个脚本纯属「碰巧全用英文写」。
