@@ -846,30 +846,57 @@ test('052 T013 — Edge Case：收紧到候选为空 ⇒ 空态**带复位入口
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑧ FR-007 / FR-010 —— 每视角的控件集不同
+// ⑧ 056 FR-012 —— 三视角**同一份行集**（supersede 052 FR-007 / FR-010）
 // ════════════════════════════════════════════════════════════════════════════
 
-test('052 T013 — FR-007 / FR-010：建仓**无行权价行**、全腿**无价差行**，且「不限」≠「没有这个控件」', async ({
+/** 抽屉里的八个框 —— 056 起**三视角逐个都在**（`SC-011` 的可验证形态）。 */
+const ALL_FIELDS = [
+  'strikeMin',
+  'strikeMax',
+  'dteMin',
+  'dteMax',
+  'premiumMin',
+  'oiMin',
+  'volMin',
+  'relativeSpreadMax',
+] as const;
+
+test('056 T002 — FR-012：三视角行集**一致**，八个框逐视角都在；默认为空的维度呈「不限」而不是整行消失', async ({
   page,
 }) => {
   await installMock(page);
   await openDetail(page);
 
-  // 建仓：有效成本硬门槛已等价挡住深度实值 ⇒ 行权价整行不出现（不是画成禁用态）。
+  // 🚨 本条 **supersede** 052 的 FR-007（建仓无行权价行）与 FR-010（全腿无价差行）。
+  //    正当性是**行为惰性**：那两行的默认值本来就是 `null`（服务端各维守卫一律 `!== null`
+  //    ⇒ 判据不生效）—— 露出旋钮不改变任一视角的默认候选集，只是让用户能表达它。
+  //    ⇒ 判据落在「框在不在 + 默认呈什么」，🚫 MUST NOT 退回按 tab 数框。
+  for (const tab of ['all', 'build', 'rent'] as const) {
+    await selectTab(page, tab);
+    await openSheet(page);
+    await expect(page.getByTestId(SHEET)).toContainText(COPY.sheetTitle(COPY.tabs[tab]));
+    for (const field of ALL_FIELDS) {
+      await expect(page.getByTestId(input(field))).toHaveCount(1);
+    }
+    await page.getByTestId(BACKDROP).tap();
+    await expect(page.getByTestId(SHEET)).toHaveCount(0);
+  }
+
+  // 建仓：新露出的行权价两个框呈「不限」——🚫 MUST NOT 预填一个值（那会静默改掉候选集）。
   await selectTab(page, 'build');
   await openSheet(page);
-  await expect(page.getByTestId(SHEET)).toContainText(COPY.sheetTitle(COPY.tabs.build));
-  await expect(page.getByTestId(input('strikeMax'))).toHaveCount(0);
-  await expect(page.getByTestId(input('strikeMin'))).toHaveCount(0);
+  await expect(page.getByTestId(input('strikeMin'))).toHaveText(CRITERIA_UNBOUNDED);
+  await expect(page.getByTestId(input('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
+  // 本视角原有的两维照常回填服务端下发值（新露出的行没把它们挤掉）。
   await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText('35');
   await expect(page.getByTestId(input('dteMin'))).toHaveText('1');
   await page.getByTestId(BACKDROP).tap();
 
-  // 全腿：参照视角不受流动性门槛约束 ⇒ 价差整行不出现；而行权价与期限**照常有控件**，
-  // 只是空框（「不限」不等于「没有这个控件」，用户仍可主动收窄）。
+  // 全腿：新露出的价差框默认「不限」（FR-017 —— 051 那个「点排除数切过来看被排除的腿」
+  // 的入口在**默认态**下因此不受影响）；行权价与期限段也照常是空框。
   await selectTab(page, 'all');
   await openSheet(page);
-  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveCount(0);
+  await expect(page.getByTestId(input('relativeSpreadMax'))).toHaveText(CRITERIA_UNBOUNDED);
   await expect(page.getByTestId(input('strikeMax'))).toHaveText(CRITERIA_UNBOUNDED);
   await expect(page.getByTestId(input('dteMin'))).toHaveText(CRITERIA_UNBOUNDED);
 });

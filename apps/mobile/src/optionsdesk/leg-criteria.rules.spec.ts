@@ -18,7 +18,6 @@ import {
   criteriaOverrideCount,
   criteriaCountLines,
   criteriaQueryParams,
-  criteriaRowsFor,
   normalizeCriteriaForm,
   type CriteriaForm,
 } from './leg-criteria.rules';
@@ -96,37 +95,45 @@ describe('🚨 FR-011 —— 控件值全部来自服务端下发的 defaults', 
   });
 });
 
-// ═══════════ ② 每视角的控件集不同，且差异来自判据本身 ═══════════
+// ═══════════ ② 行集统一（056）：新露出的行 MUST NOT 带上任何预填 ═══════════
 
-describe('🚨 FR-007 / FR-010 —— 每视角控件集（A2 / A5 / A6 三帧）', () => {
-  it('收租视角五行俱全', () => {
-    expect(criteriaRowsFor('rent', defaults())).toEqual([
-      'strike',
-      'dte',
-      'premium',
-      'liveness',
-      'spread',
-    ]);
+describe('🚨 056 SC-013 —— 行集统一 MUST NOT 改变任一视角的默认候选集', () => {
+  // 🚨 **本片最危险的一条**：某个新露出的行若意外带上一个非空值，候选集会静默变少 ——
+  //    条数与数值全都正常、**屏幕上什么都不会红**（同 053 那一类失败）。
+  //    ⇒ 判据是「一格未动时，表单逐字段 = 服务端默认值投影」，且提交出去**一维都不带**
+  //    （缺键 = 未覆盖 ⇒ 服务端走它自己的默认值 ⇒ 与改版前逐条一致）。
+  //    📌 052 的 `criteriaRowsFor` / `ROWS_BY_TAB` / `HAS_DEFAULT` 随本片删除（FR-012），
+  //       其四条用例一并删 —— 它们断言的正是被 supersede 掉的 per-视角行集。
+
+  /** 建仓：`052` 藏起来的是行权价两维，服务端下发的就是 `null`。 */
+  const buildDefaults = defaults({ strikeMin: null, strikeMax: null });
+  /** 全腿：`052` 藏起来的是价差，且期限段在全腿也是 `null`。 */
+  const allDefaults = defaults({
+    strikeMin: null,
+    strikeMax: null,
+    dteBand: null,
+    relativeSpreadMax: null,
   });
 
-  it('🚫 建仓视角**没有**行权价行 —— 有效成本硬门槛已等价挡住深度实值，硬门槛无控件不可调', () => {
-    const rows = criteriaRowsFor('build', defaults({ strikeMax: null }));
-    expect(rows).not.toContain('strike');
-    expect(rows).toContain('spread');
+  it('🚨 建仓：新露出的行权价两个框呈空（= 不限），提交时一维都不下发', () => {
+    const untouched = normalizeCriteriaForm(criteriaFormOf(buildDefaults));
+    expect(untouched).toEqual(criteriaFormOf(buildDefaults));
+    expect([untouched.strikeMin, untouched.strikeMax]).toEqual(['', '']);
+    expect(criteriaQueryParams('build', untouched, buildDefaults)).toBeUndefined();
   });
 
-  it('🚫 全腿视角**没有**价差行 —— 参照视角不受流动性门槛约束（FR-010）', () => {
-    const rows = criteriaRowsFor('all', defaults({ strikeMax: null, relativeSpreadMax: null }));
-    expect(rows).not.toContain('spread');
-    // 「不限」≠「没有这个控件」：行权价与期限在全腿仍有控件，只是画成空框。
-    expect(rows).toContain('strike');
-    expect(rows).toContain('dte');
+  it('🚨 全腿：新露出的价差框呈空，且期限段两端也空 —— 提交时一维都不下发', () => {
+    const untouched = normalizeCriteriaForm(criteriaFormOf(allDefaults));
+    expect(untouched).toEqual(criteriaFormOf(allDefaults));
+    expect(untouched.relativeSpreadMax).toBe('');
+    expect([untouched.dteMin, untouched.dteMax]).toEqual(['', '']);
+    expect(criteriaQueryParams('all', untouched, allDefaults)).toBeUndefined();
   });
 
-  it('🚨 兜底：服务端给了某维非 null 默认值 ⇒ 该行强制出现，即使本视角的行集里没有它', () => {
-    // 藏起一个**正在生效**的条件 = 表被一条看不见的判据切过，而屏幕上无从解释。
-    expect(criteriaRowsFor('build', defaults({ strikeMax: '128.0000' }))).toContain('strike');
-    expect(criteriaRowsFor('all', defaults({ relativeSpreadMax: '0.3500' }))).toContain('spread');
+  it('收租（五行本来就全在）同样零变化 —— 一格未动 ⇒ 逐字段等于默认值投影', () => {
+    const untouched = normalizeCriteriaForm(criteriaFormOf(defaults()));
+    expect(untouched).toEqual(criteriaFormOf(defaults()));
+    expect(criteriaQueryParams('rent', untouched, defaults())).toBeUndefined();
   });
 });
 

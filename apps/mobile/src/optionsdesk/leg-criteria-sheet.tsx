@@ -32,7 +32,7 @@ import { BACKSPACE, NumericKeypad, SafeAreaView } from '~/ui';
 import {
   changedCriteria,
   criteriaFormOf,
-  criteriaRowsFor,
+  CRITERIA_ROWS,
   normalizeCriteriaForm,
   sameCriteriaForm,
   type CriteriaForm,
@@ -76,7 +76,11 @@ const INTEGER_FIELD: Readonly<Record<keyof CriteriaForm, boolean>> = {
   relativeSpreadMax: false,
 };
 
-/** 键盘的初始落点 = 第一行的第一个框（行集恒非空；兜底取权利金 —— 它在三视角都在）。 */
+/**
+ * 键盘的初始落点 = 第一行的第一个框（行集恒非空；兜底取权利金 —— 它在三视角都在）。
+ * 📌 056 行集统一的**行为副作用**：建仓此前第一行是 `期限天` ⇒ 落 `dteMin`，现在第一行是
+ *    `行权价` ⇒ 落 `strikeMin`。这是行集统一的直接推论，不是 bug。
+ */
 function firstFieldOf(rows: readonly CriteriaRowKey[]): keyof CriteriaForm {
   const row = rows[0];
   return (row === undefined ? undefined : ROW_FIELDS[row][0]) ?? 'premiumMin';
@@ -110,11 +114,10 @@ export function LegCriteriaSheet({
   onClose,
 }: LegCriteriaSheetProps) {
   const base = criteriaFormOf(defaults);
-  const rows = criteriaRowsFor(tab, defaults);
   const [draft, setDraft] = useState<CriteriaForm>(submitted ?? base);
   const [tipOpen, setTipOpen] = useState(false);
   /** 键盘编辑的是**哪一个框** —— 键盘常驻，故没有「谁都没选中」这一态（起手落在第一个框）。 */
-  const [active, setActive] = useState<keyof CriteriaForm>(() => firstFieldOf(rows));
+  const [active, setActive] = useState<keyof CriteriaForm>(() => firstFieldOf(CRITERIA_ROWS));
 
   const changed = changedCriteria(draft, defaults);
   const pending = !sameCriteriaForm(draft, submitted ?? base);
@@ -170,7 +173,10 @@ export function LegCriteriaSheet({
             </Text>
           </View>
 
-          {rows.map((row) => (
+          {/* 🚨 **三视角同一份行集**（056 FR-012）—— 不再按 tab 裁行：某一维默认值为空 ⇒ 该行
+              照常出现并呈「不限」，那是一个**用户可用的旋钮**，不是「没有这个旋钮」。
+              📌 行为惰性：被藏的两行默认值本来就都是 `null`（判据不生效）⇒ 默认候选集零变化。 */}
+          {CRITERIA_ROWS.map((row) => (
             <CriteriaRow
               key={row}
               row={row}
