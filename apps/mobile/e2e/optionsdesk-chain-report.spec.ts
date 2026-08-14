@@ -557,14 +557,25 @@ async function installChainReportMock(page: Page, fixture: ReportFixture): Promi
     });
   });
 
-  await mockJson(page, ME_URL, 200, {
-    id: SEED_ACCOUNT_ID,
-    phone: SEED_PHONE,
-    displayName: SEED_DISPLAY_NAME,
-    gender: null,
-    avatarUrl: null,
-    createdAt: '2026-01-01T00:00:00.000Z',
-  });
+  // 🚨 `'GET'` MUST NOT 省：省了行为上照样拦得住（`mockJson` 的 method 可选, 不传则任何方法
+  //    都 fulfill）, 但 `check-e2e-seed-auth-mock` 只认「显式 GET stub」或裸 `page.route`
+  //    两种形状 ⇒ 省了 CI 的 gate-checks 红, 而**本地 `nx affected` 那套门看不到它**
+  //    （该守门是 CI 侧 scripts/checks 步骤, 不在 lint/typecheck/test/build/runtime-smoke 内）。
+  //    显式 GET 本身也更严: 非 GET 的 /me 会走 fallback 而不是被这条 stub 顺带吞掉。
+  await mockJson(
+    page,
+    ME_URL,
+    200,
+    {
+      id: SEED_ACCOUNT_ID,
+      phone: SEED_PHONE,
+      displayName: SEED_DISPLAY_NAME,
+      gender: null,
+      avatarUrl: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    },
+    'GET',
+  );
   await mockJson(page, REFRESH_URL, 200, {
     accessToken: SEED_ACCESS_TOKEN,
     refreshToken: SEED_REFRESH_TOKEN,
