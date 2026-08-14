@@ -52,6 +52,7 @@ import { useSharedValue } from 'react-native-reanimated';
 
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { AnchorDetailCard } from './anchor-detail-card';
+import { chainReportAnchorPresence, chainReportEntryVisible } from './chain-report-entry.rules';
 import { IvReadoutBlock } from './iv-readout-block';
 import { LegColumnScrollbar, clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { LegCriteriaSheet } from './leg-criteria-sheet';
@@ -81,7 +82,7 @@ import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { OPTIONSDESK_ANCHOR_NEW_ROUTE } from './optionsdesk-routes';
+import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskChainReportRoute } from './optionsdesk-routes';
 import { PositionBucketChips } from './position-bucket-chips';
 import { PriceZoneChart } from './price-zone-chart';
 import { parseZoneBounds, type FreshnessTier, type LegBlockState } from './underlying-detail.rules';
@@ -116,6 +117,16 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
         ? () => setCriteriaOpen(true)
         : null,
     [legTable.block, legTable.criteria],
+  );
+  // 🚨 055 FR-037a：报表入口的可见性与报表屏那道深链闸**共读同一份判据**
+  //    （`chain-report-entry.rules.ts`）—— 两处各判一次，改一处另一处照样渲染得出来。
+  //    ⚠️ 判据必须在这里算：JSX 里那个 `no_anchor` 三元已经把 `page` 收窄成 `'ready'`，
+  //    在分支内部再问一次「是不是 no_anchor」是恒假的（tsc 会红，且读起来像做了判定）。
+  const chainReportEntry = chainReportEntryVisible(
+    chainReportAnchorPresence({
+      anchorMissing: composition.page === 'no_anchor',
+      anchorLoaded: composition.anchorCard === 'ready',
+    }),
   );
   // 🚨 表头与每个数据行**共读**这一个横向位移，且**只有这一个来源**（FR-001）。
   //    负值域 `[maxTx, 0]`（translateX），**不是** 047 那个正的 scroll offset。
@@ -202,6 +213,19 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       today={detail.today}
                       freshnessTier={detail.seriesFreshnessTier}
                     />
+
+                    {/* ── 055 报表入口行（FR-035/036/037a）─────────────────────
+                        🚨 位置是判据的一部分：在 046 三块**之后**、选约区块**之前**
+                        （报表是选约的上游，入口出现在用户看到选约表之后就失去意义），
+                        且落在 `ListHeaderComponent` 里 ⇒ **随页滚走、不进吸顶区**
+                        （FR-036；sticky 那一层是 `renderSectionHeader`，别搬过去）。
+                        🚨 未建锚时整行不出现（FR-037a）—— 判据与报表屏那道深链闸
+                        **同一份**（`chain-report-entry.rules.ts`）。 */}
+                    {chainReportEntry ? (
+                      <ChainReportEntryRow
+                        onPress={() => router.push(optionsdeskChainReportRoute(symbol))}
+                      />
+                    ) : null}
                   </View>
                 }
                 renderSectionHeader={() => (
@@ -320,6 +344,30 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
         ) : null}
       </GestureHandlerRootView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * 055 报表入口行（`FR-035`–`FR-037`）。版式随 046 三块**同款卡片**，与它们并列在同一个
+ * `ListHeaderComponent` 容器里 —— 入口是「上游的一块」不是浮在表上的按钮。
+ * 🚨 措辞取 `chainReport.entryTitle`，🚫 MUST NOT 复用温度计那句「全景 ›」（`FR-037`）。
+ */
+function ChainReportEntryRow({ onPress }: { onPress: () => void }) {
+  const copy = OPTIONSDESK_COPY.chainReport;
+  return (
+    <Pressable
+      className="flex-row items-center rounded-md border border-line bg-surface px-md py-sm"
+      accessibilityRole="button"
+      accessibilityLabel={copy.entryTitle}
+      testID="optionsdesk-detail-chain-report-entry"
+      onPress={onPress}
+    >
+      <View className="flex-1 gap-0.5">
+        <Text className="text-sm font-semibold text-ink">{copy.entryTitle}</Text>
+        <Text className="text-[11px] text-ink-muted">{copy.entrySubtitle}</Text>
+      </View>
+      <Text className="text-base text-ink-muted">›</Text>
+    </Pressable>
   );
 }
 

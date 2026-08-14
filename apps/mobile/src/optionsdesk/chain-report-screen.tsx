@@ -32,7 +32,7 @@
 //（vitest 覆盖）；渲染 / 交互 / a11y 走 T018 Playwright e2e。
 import { useCallback, useMemo, useState } from 'react';
 import { Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
 
@@ -51,6 +51,7 @@ import {
   chainReportRowIndexAt,
 } from './chain-report-crosshair.rules';
 import { ChainReportCurve } from './chain-report-curve';
+import { chainReportAnchorPresence, chainReportBlocksReport } from './chain-report-entry.rules';
 import { ChainReportGrid } from './chain-report-grid';
 import { chainReportContentWidth } from './chain-report-grid.rules';
 import { ChainReportMetricTabs } from './chain-report-metric-tabs';
@@ -59,10 +60,12 @@ import type { ChainReportMetric } from './chain-report-scale.rules';
 import { IvpSegmentBar } from './ivp-segment-bar';
 import { clampLegColumnTx, useLegColumnPan } from './leg-column-pane';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { optionsdeskUnderlyingRoute } from './optionsdesk-routes';
+import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskUnderlyingRoute } from './optionsdesk-routes';
 import { useChainReport } from './use-chain-report';
 
 const COPY = OPTIONSDESK_COPY.chainReport;
+/** 🚨 建锚引导文案**复用 046 那一份**（`FR-037a` 与它同源）—— 🚫 不在本片另写一份同义串。 */
+const NO_ANCHOR_COPY = OPTIONSDESK_COPY.underlyingDetail.noAnchor;
 
 /** 默认格值 = 收租年化（mockup 帧 ① 的默认态）。四选一切换归 T012。 */
 const DEFAULT_METRIC: ChainReportMetric = 'rentAnnualized';
@@ -73,7 +76,13 @@ export interface ChainReportScreenProps {
 }
 
 export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
-  const { report, isPending, isError, refetch } = useChainReport(symbol);
+  const router = useRouter();
+  const { report, isPending, isError, isNoAnchor, refetch } = useChainReport(symbol);
+  // 🚨 FR-037a 后半：未建锚 ⇒ 拦下、改呈建锚引导。判据与详情屏那道入口闸**同一份**，
+  //    且只在**确知**无锚时拦（还在飞 / 读挂了照常走下面的 loading / 失败两支）。
+  const blocked = chainReportBlocksReport(
+    chainReportAnchorPresence({ anchorMissing: isNoAnchor, anchorLoaded: report !== null }),
+  );
   const header = useMemo(() => (report === null ? null : chainReportHeaderView(report)), [report]);
   // 🚨 切换只换「读哪一张网格」—— 四张一次返齐，🚫 不为切换再发请求（`SC-002`）。
   const [metric, setMetric] = useState<ChainReportMetric>(DEFAULT_METRIC);
@@ -169,6 +178,25 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
       />
 
       <View className="flex-1 bg-surface-sunken">
+        {/* 🚨 FR-037a：未建锚 ⇒ **建锚引导**，🚫 MUST NOT 渲染一张缺一角的报表、也不是报错页
+            （与 046 详情屏「未建锚 → 整页引导」同源取舍）。文案复用 046 那一份，不另写。 */}
+        {blocked ? (
+          <View className="flex-1 items-center justify-center gap-md px-xl">
+            <Text className="text-center text-sm text-ink" testID="chain-report-no-anchor">
+              {NO_ANCHOR_COPY.text}
+            </Text>
+            <Pressable
+              className="rounded-full bg-brand-500 px-lg py-sm"
+              accessibilityRole="button"
+              accessibilityLabel={NO_ANCHOR_COPY.cta}
+              testID="chain-report-create-anchor"
+              onPress={() => router.push(OPTIONSDESK_ANCHOR_NEW_ROUTE)}
+            >
+              <Text className="text-sm font-semibold text-white">{NO_ANCHOR_COPY.cta}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         {header === null ? null : (
           <View className="gap-1 bg-surface px-md py-sm" testID="chain-report-header">
             <View className="flex-row items-baseline gap-1.5">
@@ -286,7 +314,9 @@ export function ChainReportScreen({ symbol }: ChainReportScreenProps) {
           </View>
         ) : null}
 
-        {isError ? (
+        {/* 🚨 未建锚是**预期分支不是故障** ⇒ 拦下时不再叠一句「加载失败」（那会让用户去点重试，
+            而重试一百次也还是 404）。 */}
+        {isError && !blocked ? (
           <View className="gap-sm px-md py-sm" testID="chain-report-error">
             <ErrorRow text={COPY.loadFailed} />
             <Pressable

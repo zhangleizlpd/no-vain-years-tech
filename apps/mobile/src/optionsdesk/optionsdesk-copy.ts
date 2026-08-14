@@ -655,6 +655,15 @@ export const OPTIONSDESK_COPY = {
   chainReport: {
     /** 题头 = `<code> · 链分析`（`titleSuffix` 是那半截固定的）。 */
     titleSuffix: ' · 链分析',
+
+    // ── 详情屏入口行（FR-035–FR-037；mockup `055-chain-report-panels.dc.html` 帧 ⑧） ──
+    /**
+     * 🚨 **FR-037：措辞 MUST NOT 与温度计入口重复** —— 046 已把「全景 ›」给了
+     * `ivBlock.panorama`；两个入口文案相同、目的地不同是本片明禁的形态。
+     * 机械防线在 `chain-report-entry.rules.spec.ts`（不含「全景」+ 两串互异）。
+     */
+    entryTitle: '链分析 · 机会分布',
+    entrySubtitle: '按价外深度 × 到期日看整条链',
     ivpLabel: '本链 IV 分位',
     ivpUnit: '/ 100 · 近一年',
     /** 三个时点的标签（FR-033）。⚠️ 顺序即语义：交易所今天 → 报价 → 持仓量。 */
