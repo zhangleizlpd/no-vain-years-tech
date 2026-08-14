@@ -91,8 +91,9 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 
 - [X] T007 [Mobile] **三 query + 错峰 + 失败隔离 + 一致性 latch + 水位失效三份**（`FR-001`, `FR-007`, `FR-008`, `FR-020`–`FR-022`, `FR-025`–`FR-027`, plan `D-ASYNC-1` / `D-CONSIST-1`）：`use-leg-table.ts` 改三个独立 query（key 由 orval 生成，含 `perspective` 与六维条件）；**错峰** = 当前视角无条件 enabled、其余两个 `enabled: currentQuery.isSuccess`；一致性检测三份 `asOf` 不全等 → 重取全部一次 + 置 **latch**（布尔闩不是计数器，Guardrail 4）；`useSetPositionBucket` 的 `onSuccess` 改用**不含 `perspective` 的前缀 key** 失效三份。🚨 **`placeholderData: keepPreviousData` MUST 保留**（Guardrail 3）。→ verify: Small（logic-only）—— latch 只重取一次 + 错峰 `enabled` 判据 + 失效 key 覆盖三份的断言（🚨 **先证明它会红**：改回带 `perspective` 的 key，该断言必须失败）
 
-- [ ] T008 [Mobile] **消费收窄契约 + 截断计数第 3 条 + `K` 异常位**（`FR-002`, `FR-016`–`FR-019`, `FR-019c`, plan `D-UI-1`）：七处 `xxxByTab[tab]` 索引形态清零（`leg-picker.rules.ts:103/131/146/291/379` + `leg-row.tsx:60,64`），这些函数签名里的 `tab` 参数**消失**，调用点编译期逐个点名；`051` 已留位的 `renderSectionFooter` 追加第 3 条「已显示前 D 条 · 其余 N−D 条未显示」+ 指向抽屉的收窄指引；`K` 触及时**另起异常位**（与截断计数不同款，Guardrail 6/14）。→ verify: Small —— `rg 'tabOrder|basisByTab|criteriaByTab|tierByTab|activityByTab|ByTab\[' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**（`SC-002` 的客户端一半）+ 未触发截断时整条不渲染 + 计数区与 sticky 区块头**不出现同一个数值**（`SC-005`）+ 🚨 **`nx affected -t build` 绿 + `nx typecheck mobile` 绿**（2026-08-14 自 T006 移入 —— 本 task 是 mobile 消费面的收口处，T006 之后到此为止 mobile typecheck 恒红是结构性的；理由见 T006 行的裁定注）
-  <br>🛑 **2026-08-14 impl 期发现，`nx typecheck mobile` 这一条闸 T008 关不上，`[X]` 暂不翻**：该 target 是 `tsc -p tsconfig.json && tsc -p e2e/tsconfig.json` 两段串联，`&&` 短路 ⇒ **src 那 44 处红一直遮着 e2e 那半边**。T008 把 src 半边清到零之后，e2e 半边露出**约 96 处**同源的收窄红，分布在 6 个文件、合计 5508 行：`e2e/_support/optionsdesk-fixtures.ts` · `e2e/contract-smoke/optionsdesk-chain-leg-picker.contract.ts`（**T011 的文件**）· `optionsdesk-chain-leg-picker.spec.ts` · `optionsdesk-leg-display.spec.ts` · `optionsdesk-criteria-sheet.spec.ts` · `optionsdesk-detail-thermometer.spec.ts`（**T010 的 blast radius**）。<br>🚨 **它不是机械改形状**：相当一部分红是**断言本身**打在被删字段上（有序 code 列表与每腿 `tabs` 同源派生 / 三格口径互不相同 / 分视角排除数），改它 = 逐条裁定「删 / 改写 / 换判据」，那正是 T011 verify 里逐字写的「验删掉的结构确实不再出现」与 T010 的「跑全套 `runtime-smoke`」。<br>📌 连带事实：`mobile:test` 的 `dependsOn` 里有 `mobile:typecheck` ⇒ **`nx test mobile` 也被同一条闸挡着**（T007 期同样挡着，当时被 src 红掩盖）。T008 期改跑 `apps/mobile` 内 `vitest run` 直取证据：**104 文件 / 1521 例全绿**，其中 `leg-picker.rules.spec.ts` 66 例。<br>⇒ **待 owner 裁定**（三选一）：① 照 T006 那次的同款理由把这两条闸再移给 T010 / T011（谁拥有那些文件谁关闸）② 扩 T008 到 e2e 契约镜像 ③ 在 T008 与 T009 之间新开一条 `[Mobile-E2E]` task 专做「e2e + contract-smoke 契约镜像随收窄同步」。**T008 其余判据已全绿**：`tsc -p tsconfig.json` 绿 · `nx affected -t build` 绿 · `nx lint mobile` 绿 · `rg` by-tab 零命中 · `FR-045` 两文件零行 diff。
+- [X] T008 [Mobile] **消费收窄契约 + 截断计数第 3 条 + `K` 异常位**（`FR-002`, `FR-016`–`FR-019`, `FR-019c`, plan `D-UI-1`）：七处 `xxxByTab[tab]` 索引形态清零（`leg-picker.rules.ts:103/131/146/291/379` + `leg-row.tsx:60,64`），这些函数签名里的 `tab` 参数**消失**，调用点编译期逐个点名；`051` 已留位的 `renderSectionFooter` 追加第 3 条「已显示前 D 条 · 其余 N−D 条未显示」+ 指向抽屉的收窄指引；`K` 触及时**另起异常位**（与截断计数不同款，Guardrail 6/14）。→ verify: Small —— `rg 'tabOrder|basisByTab|criteriaByTab|tierByTab|activityByTab|ByTab\[' apps/mobile/src/optionsdesk/ -g '!*.spec.*'` **零命中**（`SC-002` 的客户端一半）+ 未触发截断时整条不渲染 + 计数区与 sticky 区块头**不出现同一个数值**（`SC-005`）+ `nx affected -t build` 绿 + **`tsc --noEmit -p tsconfig.json`（src 半边）零红** + `nx lint mobile` 绿 + `apps/mobile` 内 `vitest run` 全绿
+  <br>📌 **本 task 连带改了一处任务文本未点名的东西，如实登记**：sticky 区块头原先报 `legs.length`，而 footer 一旦说「已显示前 `D` 条」，同一个 `D` 就在一屏出现两次 —— **直接违反 `SC-005`**。故区块头改报 `matchedCount`（`memberCount > matchedCount` 时显「筛后 N · 全量 M」），依据是 plan `D-API-1` 的计数分工表本就把区块头定为这两个数。⚠️ **副作用**：既有 e2e 里 8 处 `共 N 行` 断言语义失效 —— 归 **T014**。
+  <br>✅ **2026-08-14 裁定：`nx typecheck mobile` 绿 与 `nx test mobile` 绿 两条闸移往新增的 T014**（本行不再背它们）。起因是 impl 期实测发现该 target 是 `tsc --noEmit -p tsconfig.json && tsc --noEmit -p e2e/tsconfig.json` 两段串联，**`&&` 短路让 src 那 44 处红一直遮着 e2e 那半边**。T008 把 src 半边清零后，e2e 半边露出 **99 处**同源收窄红，分布 6 文件：`contract-smoke/optionsdesk-chain-leg-picker.contract.ts` **53**（T011 的文件）· `optionsdesk-leg-display.spec.ts` **24** · `optionsdesk-chain-leg-picker.spec.ts` **13** · `optionsdesk-detail-thermometer.spec.ts` **6** · `optionsdesk-criteria-sheet.spec.ts` **2** · `_support/optionsdesk-fixtures.ts` **1**。<br>🚨 **它不是机械改形状**：相当一部分红是**断言本身**打在被删字段上（有序 code 列表与每腿 `tabs` 同源派生 / 三格口径互不相同 / 分视角排除数），改它 = 逐条裁定「删 / 改写 / 换判据」。<br>📌 连带事实：`nx.json` 的 `targetDefaults.test.dependsOn = ["typecheck"]` ⇒ **`nx test mobile` 被同一条闸挡着**（T007 期同样挡着，当时被 src 红掩盖）。取证改跑 `apps/mobile` 内 `vitest run`：**104 文件 / 1521 例全绿**。
 
 ---
 
@@ -103,6 +104,9 @@ spec 的 **25 条 `state_branches` 里有 11 条是纯客户端行为**（跨业
 ---
 
 ## Phase 5: 两层验证（Constitution §V 跨端片义务）
+
+- [ ] T014 [Mobile-E2E] **e2e + contract-smoke 契约镜像随收窄与列改版同步**（`FR-002`, `FR-005`, `SC-002`，2026-08-14 impl 期新增）：把既有 6 个 e2e / contract-smoke 文件的 **99 处收窄红**改到新契约形状。🚨 **位置刻意在 T009 之后** —— T009 删 `sigma`/`turnover`、加 `premium`/`spread`，既有 e2e 断言了那些列，放 T009 之前修就要修两遍。三件事：<br>① **99 处收窄红**（`contract-smoke/optionsdesk-chain-leg-picker.contract.ts` 53 · `optionsdesk-leg-display.spec.ts` 24 · `optionsdesk-chain-leg-picker.spec.ts` 13 · `optionsdesk-detail-thermometer.spec.ts` 6 · `optionsdesk-criteria-sheet.spec.ts` 2 · `_support/optionsdesk-fixtures.ts` 1）。🚨 **相当一部分是断言本身打在被删字段上**（有序 code 列表与每腿 `tabs` 同源派生 / 三格口径互不相同 / 分视角排除数）⇒ 逐条裁定「删 / 改写 / 换判据」，**MUST NOT** 机械套形状把判别力改没；每条删掉的断言 MUST 在 commit body 里说明它守的不变量是**结构性消失**了还是**移到了别处**。<br>② **8 处 `共 N 行` 断言重定** —— T008 依 `SC-005` 把 sticky 区块头从 `legs.length` 改报 `matchedCount`（`memberCount > matchedCount` 时显「筛后 N · 全量 M」）。<br>③ **T009 删/加四列的断言同步**。<br>→ verify: 🚨 **`nx typecheck mobile` 绿**（自 T008 移入 —— 该 target 两段 `&&` 串联，本 task 是 e2e 半边的收口处）+ 🚨 **`nx test mobile` 绿**（`targetDefaults.test.dependsOn = ["typecheck"]`，被同一条闸挡着）+ `nx affected -t build` 绿 + 🚫 **`FR-045` 零改动核实**：`git diff main...HEAD -- apps/mobile/src/optionsdesk/leg-criteria.rules.ts apps/mobile/src/optionsdesk/leg-criteria-sheet.tsx` **零行**
+  <br>📌 **本 task 只做「既有镜像随契约同步」** —— 新 e2e 场景归 T010、契约冒烟的**新字段解封**归 T011，两者的交付面 MUST NOT 被本 task 预支。
 
 - [ ] T010 [Mobile-E2E] **hermetic e2e**（`state_branch` 13–23, `SC-008`–`SC-010`）：新建 `optionsdesk-query-pushdown.spec.ts`（Playwright Expo Web，`route.fulfill` 拦端点）。覆盖：错峰时序（当前视角未落地时另两个**不发请求**）· 单视角失败隔离 · 切到错误态视角显错误态非空态 · **后台预取失败 → 当前视角零感知且 Tab 行无错误/加载角标** · 跨业务日自动重取一次 + 仍不一致给提示 · 水位改动失效三份 · 迟到响应不覆盖 · 预取命中/未命中 · 切视角保留各自条件 · 截断计数出现与消失。🚨 **mock 是契约镜像不是调用序** —— handler 按 `perspective` + 六维参数**无条件作答**，禁按测试编排标志分支（`052` T013 同一条纪律）。→ verify: 跑**全套** `nx run mobile:runtime-smoke` 非单 spec（改了共享 hook ⇒ blast radius 是整套）+ 🔬 **反例探针**：摘掉 `placeholderData: keepPreviousData`，e2e 必须红（Guardrail 3 的实证）
 
@@ -129,8 +133,10 @@ T001 (语义翻转) ──> T002 (截断 + 三个计数)          [Phase 1 · �
                       │                                                             │
                       └──> T005 (server IT)                                         │
                                                                                     │
-                                          T010 (e2e) <───────────────────────────────┤
-                                          T011 (contract-smoke) <────────────────────┘
+                              T014 (e2e/契约镜像随收窄+列改版同步) <──────────────────┘
+                                        │       [两条 mobile 闸挂它]
+                                        ├──> T010 (e2e 新场景)
+                                        └──> T011 (contract-smoke 新字段)
                                                         │
                                           T012 (标定) ──> T013 (真机)   [收口，需前面全绿]
 ```
@@ -138,6 +144,7 @@ T001 (语义翻转) ──> T002 (截断 + 三个计数)          [Phase 1 · �
 - **T004 是本片唯一的 `[P]`** —— 它加两个派生值，与 T003 的形状收窄不同关注点，可并行。
 - T001/T002 同改 `get-legs.usecase.ts` ⇒ **不可并行**。
 - T006 之后**禁止**再往 PR push 前遗漏 regen —— `api-client:generate` 无 `dependsOn`，单跑它是拿 stale `openapi.json`。
+- 🚨 **T014 MUST 在 T009 之后** —— T009 删 `sigma`/`turnover`、加 `premium`/`spread`，既有 e2e 断言了那些列；放 T009 之前修就要**修两遍**。它也 MUST 在 T010/T011 之前：那两个 task 各自要写新场景，而 `nx typecheck mobile` / `nx test mobile` 在 T014 之前是恒红的（`&&` 短路 + `test.dependsOn=["typecheck"]`），没有绿基线就分不清「我写的新场景红」还是「旧镜像还没修」。
 - T012 必须在 T005 / T010 之后 —— 标定要在**真实链上跑通全链路**才有意义。
 
 ## Clear 检查点批次
@@ -148,6 +155,7 @@ T001 (语义翻转) ──> T002 (截断 + 三个计数)          [Phase 1 · �
 | 2 | T003 · T004 · T005 | ✅ 契约与 IT 完成，server 侧可独立验 |
 | 3 | T006 · T007 | ✅ regen + 取数层落定 |
 | 4 | T008 · T009 | ✅ 呈现层与列改版落定 |
+| 4.5 | T014 | ✅ 契约镜像同步 —— **`nx typecheck mobile` / `nx test mobile` 自此恢复可跑** |
 | 5 | T010 · T011 | ✅ 两层验证 |
 | 6 | T012 · T013 | — |
 
