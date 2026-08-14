@@ -1028,6 +1028,23 @@ test('056 T005 — FR-010/FR-011/FR-030：版面是**四块**且序固定，权�
   // 单位跟在值区右端（FR-013）；六维里只有价差带单位 ⇒ 它必在这一块内。
   await expect(merged).toContainText(COPY.percentSuffix);
 
+  // ②a 🚨 FR-011 的**容量**判据：合并行最紧处值区内宽 ≥ 52（装 6 位小数所需）。
+  //     本文件跑在 390×844 窄视口（文件头 `test.use`）≈ 真机宽度 ⇒ **这条在 web 就量得到**。
+  //     📌 下界取 52 而不是某个余量数字：spec 原记的「76px / 余 24」是 **mockup 槽位**读数，
+  //     实装实测 71px / 余 19（2026-08-14 订正，理由同 analyze A1 对 130px 的判定）——
+  //     🚫 MUST NOT 把余量数字写成断言，那会让每次微调版面都红一次而并没有守住任何东西。
+  const innerWidth = (field: string) =>
+    page.getByTestId(input(field)).evaluate((el) => {
+      const box = getComputedStyle(el);
+      return (
+        el.getBoundingClientRect().width -
+        parseFloat(box.paddingLeft) -
+        parseFloat(box.paddingRight)
+      );
+    });
+  expect(await innerWidth('premiumMin')).toBeGreaterThanOrEqual(52);
+  expect(await innerWidth('relativeSpreadMax')).toBeGreaterThanOrEqual(52);
+
   // ③ 活跃度分组块（FR-030）：分组标签 + 只读规则说明 + 两个框都在块内。
   const liveness = page.getByTestId(block('liveness'));
   await expect(liveness).toContainText(COPY.livenessGroupLabel);
