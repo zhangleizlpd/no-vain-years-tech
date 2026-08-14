@@ -1,17 +1,18 @@
-// 047 T031 — 选约表数据源：**单端点一次取回全量腿**（plan D-API-1）。
+// 053 T007 — 选约表数据源：**每个视角一个独立 query**（plan D-ASYNC-1 / D-CONSIST-1）。
 //
-// 🚨 **零请求分页、零 top-N** —— 端点一次返回该票全部适格腿（730 行量级），三个 Tab 是
-//    同一份数据的三种**取序**（051 起：按 `tabOrder[tab]` 取，切 Tab 不重新请求）。分三次
-//    请求会让三个 Tab 的 `asOf` 与档位口径可能不一致，正是 FR-005 / plan D-API-1 否掉的形态。
+// 🚨 **047 的「一次请求取回三视角、切 Tab 零请求」整条作废**（FR-019b）—— 服务端一次只作答
+//    一个视角（`perspective` 必填），三个视角是三份各自的 key、各自的缓存、各自的失败态。
 //
-// 🚨 **Tab 成员判据 MUST NOT 在客户端重算** —— 每腿自带 `tabs: ('all'|'build'|'rent')[]`，
-//    判据单点在 server 的 `leg-recall.rules.ts`（050 起；047 时在 `leg-tab.rules.ts`）。
-//    IT 已实证：greeks 缺失腿**合法进意图 Tab** —— 050 起 Δ 整个退出召回判据（FR-009）。
-//    客户端重算极易漏掉那一支。
+// 🚨 **错峰不是优化是硬要求**（FR-025）：进详情页只取当前视角，落地后才在后台补其余两个。
+//    三份并发约 670 kB，弱网下拖慢首屏，且其中两份用户可能永远不看。判据在
+//    `leg-query.rules.ts` 的 `legQueryEnabled`。
 //
-// 🚨 **顺序整条由 server 定死**（051 FR-001/FR-002）—— 每 Tab 一份有序合约代码列表，客户端
-//    按它取、**MUST NOT 再排一次**。⚠️ `legs[]` 自带的那个序是 legacy 载体序，050 之后已不
-//    承载任何 Tab 的排序语义（保留只为不惊动尚未升级的客户端）。
+// 🚨 **迟到响应不覆盖是结构性质不是手写逻辑**（FR-008）：query key 含 `perspective` 与六维
+//    条件值 ⇒ 切视角 / 改条件就是**换 key**，旧 key 的响应写不进新 key。🚫 不需要手写 abort。
+//
+// 🚨 **拆成三份自带两个新问题**，都在本文件闭环：
+//    ① 一致性（FR-020）—— 三次请求可能跨过业务日切换点，各自报着不同的 `asOf`；
+//    ② 水位失效（FR-021）—— key 含 `perspective` 之后，失效必须走**不含它的前缀 key**。
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import {
@@ -30,17 +31,21 @@ import {
   type CriteriaForm,
 } from './leg-criteria.rules';
 import {
-  EMPTY_LEG_TAB_ORDER,
+  legConsistencyStep,
+  legQueryEnabled,
+  type LegPerspectiveAsOf,
+  type LegPerspectiveGate,
+} from './leg-query.rules';
+import {
   legPickerNotices,
-  legPickerSections,
   promotePick,
   resolveLegTab,
   type LegPickerNotice,
   type LegPickerTab,
-  type LegTabOrder,
   type PickedLegTab,
 } from './leg-picker.rules';
 import {
+  buildLegSections,
   isNoAnchorError,
   legBlockState,
   legRowTotal,
@@ -50,6 +55,23 @@ import {
 
 /** 选约表 query key 稳定前缀（水位手选写端点成功后须失效 —— 意图落位会随之变，T033 接线）。 */
 export const LEG_TABLE_QUERY_KEY = ['optionsdesk', 'legs'] as const;
+
+/**
+ * 三个视角的**共同前缀** key（orval 生成的 key 是 `[url, params]`，省掉 params 即前缀）。
+ *
+ * 🚨 **失效 MUST 走它，MUST NOT 走带 `perspective` 的那一份**（FR-021, Guardrail 2）——
+ *    带上视角只会命中一个（甚至一个都不命中），而**屏幕上什么都不会红**：水位 chip 亮了、
+ *    意图变了，另外两个视角还在用旧口径打推荐标（推荐标是**标的级、不随视角变**）。
+ */
+export function legTableQueryPrefix(symbol: string): readonly unknown[] {
+  return getOptionsdeskControllerLegsQueryKey(symbol);
+}
+
+/** 契约未到手时的空腿集 —— 常量引用，避免每次 render 造新数组把 `useMemo` 打穿。 */
+const EMPTY_LEGS: readonly LegResponse[] = [];
+
+/** 视角未知时的落位（与 `defaultLegTab(null)` 同值）—— 首屏只有它一份 query 是开的。 */
+const BOOTSTRAP_PERSPECTIVE: LegPickerTab = 'all';
 
 /**
  * 无锚是**预期分支**不是故障（FR-011，该端点对无锚票 404 带机器可读 code）⇒ 不重试。
@@ -65,8 +87,65 @@ interface SubmittedCriteria {
   readonly params: OptionsdeskControllerLegsParams;
 }
 
+/**
+ * 单个视角的 query。
+ *
+ * 🚨 `placeholderData: keepPreviousData` **不是体验糖，摘掉它整块屏当场炸**（052 T013 反例
+ *    探针实测，6 条 e2e 红）：换 key 那一拍 `data` 变 undefined ⇒ `intent` 变 null ⇒
+ *    `resolveLegTab` 退回「全腿」⇒ 参数跟着换 ⇒ `intent` 回来 ⇒ 又换回去……这一圈**全是同步的
+ *    setState，跑赢了网络**：任何响应落地之前就撞到 React 的更新深度上限，页面被 error
+ *    boundary 接住（React error #185），**且它不会自行收敛**。053 把请求拆成三份后换 key
+ *    **更频繁**，这条只会更关键。
+ */
+function useLegPerspectiveQuery(
+  symbol: string,
+  perspective: LegPickerTab,
+  submitted: OptionsdeskControllerLegsParams | undefined,
+  gate: LegPerspectiveGate,
+) {
+  // 未覆盖 ⇒ 只带视角本身（`perspective` 必填，缺了服务端 400）；有覆盖时它已随参数同行。
+  const params = useMemo<OptionsdeskControllerLegsParams>(
+    () => submitted ?? { perspective },
+    [submitted, perspective],
+  );
+  return useOptionsdeskControllerLegs(symbol, params, {
+    query: {
+      enabled: legQueryEnabled(perspective, gate, symbol.length > 0),
+      retry: retryUnlessNoAnchor,
+      placeholderData: keepPreviousData,
+    },
+  });
+}
+
+type LegPerspectiveQuery = ReturnType<typeof useLegPerspectiveQuery>;
+
+/**
+ * 一致性检测的单视角输入（FR-020）。`asOf` **只在成功时给** —— 失败的视角没有可比的业务日。
+ * 📌 `isFetching` 期间恒 `settled: false`：`keepPreviousData` 让换 key 那一拍 `isSuccess`
+ *    仍为真而 `data` 是上一份，拿它去比会把「正在换条件」误判成「跨了业务日」。
+ */
+function asOfView(query: LegPerspectiveQuery): LegPerspectiveAsOf {
+  const settled = !query.isFetching && (query.isSuccess || query.isError);
+  return query.isSuccess ? { settled, asOf: query.data?.data.asOf ?? null } : { settled };
+}
+
 export interface UseLegTableResult {
+  /**
+   * **当前视角自己的**响应 —— 视角级字段（`legs` / `criteria` / `gateCounts` / `basis` /
+   * `matchedCount` / `memberCount` / `displayLimit` / `candidateCapDropped`）的唯一来源。
+   */
   table: LegTableResponse | null;
+  /**
+   * **链级**字段（`state` / `asOf` / `asOfFreshnessTier` / `quoteAsOf` / `oiAsOf` / `source` /
+   * `spot` / `w` / `zone` / `lLevel` / `positionBucket*` / `intent` / `rentDepth`）的读取源：
+   * 当前视角优先，其未落地时回退到**任一**已到手的视角（三份链级字段逐字相等，FR-006）。
+   *
+   * 🚫 **MUST NOT 从这里读视角级字段** —— 回退期它可能来自另一个视角，而那时腿数、档位、
+   *    计数全都渲染得出来，只是答的不是当前视角。
+   * 📌 它同时是「解析当前视角」的**结构前提**：视角由 `intent` 定，而 `intent` 只能来自响应 ——
+   *    只认当前视角那一份的话，切视角那一拍 `intent` 变 `null`、视角退回全腿、又切回来。
+   */
+  chain: LegTableResponse | null;
   /** 区块四态（loading / available / chain_not_ready / read_failed）—— 无「整页」这一档。 */
   block: LegBlockState;
   /** 当前生效 Tab（手点值优先，意图一变让位给新的默认落位，见 `resolveLegTab`）。 */
@@ -86,49 +165,65 @@ export interface UseLegTableResult {
   submitCriteria: (form: CriteriaForm) => void;
   /** 「复位」—— 当前视角回系统默认值（请求不带任何条件）。 */
   resetCriteria: () => void;
+  /** 当前视角的重试入口（FR-022：失败隔离 ⇒ 只重这一份）。 */
   retry: () => void;
+  /**
+   * 三份的业务日不一致，**且自动重取一次之后仍不一致**（FR-020）⇒ 显式提示 + 手动刷新。
+   * 🚫 MUST NOT 静默把来自不同业务日的数据并排呈现，也 MUST NOT 无限重取。
+   */
+  asOfMismatch: boolean;
+  /** 手动重取三份 —— `asOfMismatch` 的唯一出口。 */
+  refreshAll: () => void;
 }
 
 export function useLegTable(symbol: string): UseLegTableResult {
-  // 🚨 **每视角各自持有自己的条件状态**（FR-015）—— 切视角看到的是**那个视角**的值，
+  // 🚨 **每视角各自持有自己的条件状态**（FR-007）—— 切视角看到的是**那个视角**的值，
   //    上一个视角的覆盖既不带走、也不丢弃（2026-08-13 user 定：各自留存）。
-  // 🚫 MUST NOT 做成一份全局条件：覆盖只作用当前视角（T010 裁定），全局一份会让「在收租设的
+  // 🚫 MUST NOT 做成一份全局条件：覆盖只作用当前视角（052 T010 裁定），全局一份会让「在收租设的
   //    上界」把建仓也收窄，而建仓控件仍显示自己的默认值 —— 控件与数据不匹配且无从解释。
   // 📌 不持久化（FR-014）：状态只活在本 hook 的 state 里，离屏卸载即回默认值。
-  const [criteriaByTab, setCriteriaByTab] = useState<
+  // 📌 053 起它**天然落进 query key**（条件值就是请求参数）⇒ 各视角各自缓存是结构保证。
+  const [criteriaByPerspective, setCriteriaByPerspective] = useState<
     Partial<Record<LegPickerTab, SubmittedCriteria>>
   >({});
-  // 生效参数 —— 由下面那条 effect 与「当前视角」同步（解析视角需要 intent，而 intent 来自
-  // 响应本身 ⇒ 参数只能滞后一拍；`keepPreviousData` 让这一拍无感）。
-  const [activeParams, setActiveParams] = useState<OptionsdeskControllerLegsParams | undefined>(
-    undefined,
-  );
-  // 第二参 = 检索条件的用户覆盖（052 FR-012）；`undefined` = 首屏 /「复位」⇒ 三视角全走默认值。
-  // 📌 条件值一进这里就自动进 query key（orval 生成的 key 含 params）⇒ 每视角各自持有状态
-  // （FR-015）是**结构保证**，不需要手写隔离；换视角就是换 key，回来时走缓存。
-  // 🚨 `keepPreviousData` **不是体验糖，摘掉它整块屏当场炸**（052 T013 反例探针实测）：
-  //    换 key 那一拍 `data` 变 undefined ⇒ `intent` 变 null ⇒ `resolveLegTab` 退回「全腿」⇒
-  //    上面那条 effect 把参数换成全腿的 ⇒ `intent` 回来 ⇒ 又换回去……这一圈**全是同步的
-  //    setState，跑赢了网络**：任何响应落地之前就撞到 React 的更新深度上限，页面被 error
-  //    boundary 接住（React error #185「Maximum update depth exceeded」，e2e 里 6 条红）。
-  //    留着它，解析出的视角在换 key 期间保持稳定，环从源头不成立。
-  const query = useOptionsdeskControllerLegs(symbol, activeParams, {
-    query: {
-      enabled: symbol.length > 0,
-      retry: retryUnlessNoAnchor,
-      placeholderData: keepPreviousData,
-    },
-  });
   // 手点值连同**当时的意图**一起记 —— 判定见 `resolveLegTab`（意图变了就让位）。
   const [picked, setPicked] = useState<PickedLegTab | null>(null);
+  // 错峰闸（FR-025）。滞后一拍是结构使然，见 `LegPerspectiveGate` 的注释。
+  const [gate, setGate] = useState<LegPerspectiveGate>({
+    current: BOOTSTRAP_PERSPECTIVE,
+    primed: false,
+  });
+  // 一致性布尔闩（FR-020）—— 🚫 **MUST NOT 换成计数器**（写错方向即死循环，Guardrail 4）。
+  const [latched, setLatched] = useState(false);
 
-  const table = query.data?.data ?? null;
-  // 🚨 全量腿 —— 这里**不 slice、不排序**（两者都是 server 的职责）。它只是**按 code 定位腿的
-  //    数据源**：哪些腿出现、以什么顺序出现，全看下面那份 `tabOrder`（051 FR-004）。
-  const legs: readonly LegResponse[] = table?.legs ?? [];
-  // 契约保证三份恒有值；`null` 只出现在「还没有数据」那一档，退空序（见 EMPTY_LEG_TAB_ORDER）。
-  const tabOrder: LegTabOrder = table?.tabOrder ?? EMPTY_LEG_TAB_ORDER;
-  const intent = table?.intent ?? null;
+  const allQuery = useLegPerspectiveQuery(symbol, 'all', criteriaByPerspective.all?.params, gate);
+  const buildQuery = useLegPerspectiveQuery(
+    symbol,
+    'build',
+    criteriaByPerspective.build?.params,
+    gate,
+  );
+  const rentQuery = useLegPerspectiveQuery(
+    symbol,
+    'rent',
+    criteriaByPerspective.rent?.params,
+    gate,
+  );
+  const queries: Readonly<Record<LegPickerTab, LegPerspectiveQuery>> = {
+    all: allQuery,
+    build: buildQuery,
+    rent: rentQuery,
+  };
+
+  // 🚨 链级读取源 —— 当前视角（闸持有的那个）优先，回退任一已到手的视角。见 `chain` 的注释：
+  //    没有这个回退，「视角 → intent → 视角」在切视角那一拍会来回震荡。
+  const chainSource =
+    queries[gate.current].data?.data ??
+    allQuery.data?.data ??
+    buildQuery.data?.data ??
+    rentQuery.data?.data ??
+    null;
+  const intent = chainSource?.intent ?? null;
   // 🚨 契约到手时先把「点击时意图未知」的手点值升格，再解析 —— 否则 loading 期间那一下点击
   //    会被 `resolveLegTab` 当成「意图变了」丢掉（见 promotePick 注释里的真机实证）。
   //    render 期条件 setState 是 React 官方的 derived-state 修正范式：`promoted !== picked`
@@ -137,37 +232,69 @@ export function useLegTable(symbol: string): UseLegTableResult {
   if (promoted !== picked) setPicked(promoted);
   const tab = resolveLegTab(promoted, intent);
 
+  const currentQuery = queries[tab];
+  const table = currentQuery.data?.data ?? null;
+  const chain = table ?? chainSource;
+
+  // 错峰闸同步（与上面的升格同一范式：render 期条件 setState，一拍内收敛）。
+  // 📌 收敛靠的是上面那条回退链：闸切到尚未落地的视角时 `chainSource` 仍取得到 `intent`，
+  //    解析出的视角不会跟着塌回「全腿」⇒ 下一拍闸与视角相等，写入停止。
+  const primed = currentQuery.isSuccess;
+  if (gate.current !== tab || gate.primed !== primed) setGate({ current: tab, primed });
+
+  // 🚨 一致性只看三份**已落地**的 `asOf`（FR-020）；处置是布尔闩状态机，见 `legConsistencyStep`。
+  const consistency = legConsistencyStep(
+    [asOfView(allQuery), asOfView(buildQuery), asOfView(rentQuery)],
+    latched,
+  );
+  const { refetch: refetchAll } = allQuery;
+  const { refetch: refetchBuild } = buildQuery;
+  const { refetch: refetchRent } = rentQuery;
+  // 🚨 依赖里放的是**解构出来的 `refetch`**（QueryObserver 构造期绑定，引用稳定），
+  //    🚫 MUST NOT 放整个 query 对象 —— 它每次 render 都是新引用，effect 会每帧重跑成重取风暴。
+  const refreshAll = useCallback(() => {
+    void refetchAll();
+    void refetchBuild();
+    void refetchRent();
+  }, [refetchAll, refetchBuild, refetchRent]);
+
+  const consistencyAction = consistency.action;
+  const nextLatched = consistency.latched;
+  useEffect(() => {
+    if (nextLatched !== latched) setLatched(nextLatched);
+    // 闩已在同一步置上 ⇒ 重取后仍不一致时走的是 `warn` 那一支，**不会再进这里**（FR-020）。
+    if (consistencyAction === 'refetch') refreshAll();
+  }, [consistencyAction, nextLatched, latched, refreshAll]);
+
   const block = useMemo(
     () =>
       legBlockState(
-        { isPending: query.isPending, isError: query.isError, error: query.error },
+        {
+          isPending: currentQuery.isPending,
+          isError: currentQuery.isError,
+          error: currentQuery.error,
+        },
         table?.state,
       ),
-    [query.isPending, query.isError, query.error, table?.state],
+    [currentQuery.isPending, currentQuery.isError, currentQuery.error, table?.state],
   );
 
-  const sections = useMemo(() => legPickerSections(legs, tabOrder, tab), [legs, tabOrder, tab]);
+  // 🚨 `legs[]` 已是**该视角、已精排、已截断**的腿（FR-002）—— 数组序**就是**呈现序：
+  //    这里零 `slice`、零 `sort`（两者都是 server 的职责，客户端重排会让截断砍错腿）。
+  const legs: readonly LegResponse[] = table?.legs ?? EMPTY_LEGS;
+  const sections = useMemo(() => buildLegSections(legs), [legs]);
 
   const setTab = useCallback((next: LegPickerTab) => setPicked({ intent, tab: next }), [intent]);
 
-  const criteria = table?.criteriaByTab[tab] ?? null;
-  const submitted = criteriaByTab[tab] ?? null;
-
-  // 🚨 生效参数恒等于**当前视角**的那一份 —— 手点切视角、以及水位改变后意图让位那条路径
-  //    （`resolveLegTab` 自己变的，没有回调可挂）都要跟上。跟不上就是「控件显示 A 的值、
-  //    表却是按 B 的条件召回的」，而那个不一致在界面上无从解释。
-  // 📌 存的是 params **对象引用**（只在提交 / 复位时重建）⇒ 这里比引用即可，不必深比。
-  useEffect(() => {
-    const next = criteriaByTab[tab]?.params;
-    if (next !== activeParams) setActiveParams(next);
-  }, [tab, criteriaByTab, activeParams]);
+  const criteria = table?.criteria ?? null;
+  const submitted = criteriaByPerspective[tab] ?? null;
 
   const submitCriteria = useCallback(
     (form: CriteriaForm) => {
       const normalized = normalizeCriteriaForm(form);
       // 🚫 未改动的维度不下发（缺键 = 未覆盖）；全部回到默认值 ⇒ 无参数 = 等价于复位。
       const params = criteriaQueryParams(tab, normalized, criteria?.defaults ?? null);
-      setCriteriaByTab((prev) => {
+      setCriteriaByPerspective((prev) => {
         const next = { ...prev };
         if (params === undefined) delete next[tab];
         else next[tab] = { form: normalized, params };
@@ -178,23 +305,26 @@ export function useLegTable(symbol: string): UseLegTableResult {
   );
 
   const resetCriteria = useCallback(() => {
-    setCriteriaByTab((prev) => {
+    setCriteriaByPerspective((prev) => {
       const next = { ...prev };
       delete next[tab];
       return next;
     });
   }, [tab]);
 
+  // 🚨 只重当前视角这一份（FR-022 失败隔离）—— 其余两个已取得的数据 MUST NOT 被连坐清空。
   const retry = useCallback(() => {
-    void query.refetch();
-  }, [query]);
+    const refetch = { all: refetchAll, build: refetchBuild, rent: refetchRent }[tab];
+    void refetch();
+  }, [tab, refetchAll, refetchBuild, refetchRent]);
 
   return {
     table,
+    chain,
     block,
     tab,
     setTab,
-    notices: legPickerNotices(table, tab),
+    notices: legPickerNotices(chain, tab),
     sections,
     total: legRowTotal(sections),
     criteria,
@@ -202,16 +332,21 @@ export function useLegTable(symbol: string): UseLegTableResult {
     submitCriteria,
     resetCriteria,
     retry,
+    asOfMismatch: consistencyAction === 'warn',
+    refreshAll,
   };
 }
 
 /**
  * 水位手选写端点（FR-017, plan D-UI-5）。**成功即失效选约表** —— 水位是意图矩阵的一维输入，
- * 它一变，`intent` / `rentDepth` / 每腿的 `tabs` 与 `activityByTab` 全跟着变。
+ * 它一变，`intent` / `rentDepth` / 每腿的推荐标全跟着变。
  *
  * 🚨 漏了这次失效，屏幕上会出现最难查的那种不一致：「人工输入」角标亮了、chip 也选中了，
  *    但表还是旧那张（全局 `staleTime 30s` + 详情屏常驻挂载 ⇒ **没有任何触发器**自动重取）。
  *    typecheck 与单测都拦不住它（形状没变，只是数据陈旧）。
+ * 🚨 **053 起必须失效三份**（FR-021）：key 含 `perspective` 之后，带视角的那一份只命中一个 ——
+ *    而推荐标是**标的级、不随视角变**，只重取收租视角会让另外两个继续用旧口径打标，
+ *    **数字与标都在、只是口径不对，且不会红**。⇒ 走 `legTableQueryPrefix` 这个前缀 key。
  * 📌 只失效选约表 —— 锚列表 / 雷达的可见字段与水位无关，连坐失效是白跑一趟网络。
  */
 export function useSetPositionBucket(symbol: string) {
@@ -219,9 +354,7 @@ export function useSetPositionBucket(symbol: string) {
   return useOptionsdeskControllerPositionBucket({
     mutation: {
       onSuccess: () => {
-        void queryClient.invalidateQueries({
-          queryKey: getOptionsdeskControllerLegsQueryKey(symbol),
-        });
+        void queryClient.invalidateQueries({ queryKey: legTableQueryPrefix(symbol) });
       },
     },
   });

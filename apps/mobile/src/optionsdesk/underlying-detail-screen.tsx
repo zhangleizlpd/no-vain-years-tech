@@ -205,7 +205,7 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                   // 🚨 四件都在**同一个** section header 里：切 Tab 只换 `section.data`，头不重建。
                   <View>
                     {/* 🚨 FR-021 不动区：警示注**置顶**，且腿数据照常全量（表不隐藏不折叠不置灰）。 */}
-                    {legTable.table?.intent === 'no_new_position' ? (
+                    {legTable.chain?.intent === 'no_new_position' ? (
                       <View
                         className="border-b border-warn bg-warn-soft px-md py-xs"
                         testID="optionsdesk-detail-leg-no-new-position"
@@ -213,17 +213,20 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                         <Text className="text-xs text-ink">{LEG_COPY.noNewPositionWarning}</Text>
                       </View>
                     ) : null}
+                    {/* 🚨 区块头四个字段全是**链级**的（三视角逐字相等，053 FR-006）⇒ 读
+                        `legTable.chain`：当前视角那一份还在飞时它回退到已到手的任一视角，
+                        MUST NOT 因为换了个视角就把时点条闪成「无数据时点」。 */}
                     <LegBlockHeader
-                      asOf={legTable.table?.asOf ?? null}
+                      asOf={legTable.chain?.asOf ?? null}
                       // 表还没到手就没有可判的东西 —— 显式 UNAVAILABLE，MUST NOT 默认成 CURRENT。
-                      freshnessTier={legTable.table?.asOfFreshnessTier ?? 'UNAVAILABLE'}
-                      source={legTable.table?.source ?? null}
+                      freshnessTier={legTable.chain?.asOfFreshnessTier ?? 'UNAVAILABLE'}
+                      source={legTable.chain?.source ?? null}
                       total={legTable.total}
                     />
                     <PositionBucketChips
                       symbol={symbol}
                       anchorId={detail.detail?.anchor.id ?? null}
-                      table={legTable.table}
+                      table={legTable.chain}
                     />
                     {/* 🚨 就地注明已移出常驻区（051 FR-010a）—— 见 `renderSectionFooter`。 */}
                     {/* 🚨 052：检索条件入口挂在 Tab 行右端，**sticky 栈一层不加**。 */}
@@ -238,7 +241,7 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——
                       //    契约未到手时退降级标题，MUST NOT 先猜一个口径挂上去。
                       rateHeader={rateHeaderFor(legTable.table?.basisByTab ?? null, legTable.tab)}
-                      oiAsOf={legTable.table?.oiAsOf ?? null}
+                      oiAsOf={legTable.chain?.oiAsOf ?? null}
                     />
                     {/* 🚨 指示条钉在 12 列表头**正下方**（不是表格底部）—— 它描述列的位置，
                         且要跟着 sticky 栈走（FR-005）。几何读同一个 `tx`，无第二个来源。 */}
@@ -277,6 +280,9 @@ export function UnderlyingDetailScreen({ symbol, onPanorama }: UnderlyingDetailS
                       legTable.criteria,
                     )}
                     onRetry={legTable.retry}
+                    // 🚨 053 FR-020：自动重取一次之后三份的业务日仍不一致 ⇒ 显式提示 + 手动刷新。
+                    asOfMismatch={legTable.asOfMismatch}
+                    onRefreshAll={legTable.refreshAll}
                     onSelectTab={legTable.setTab}
                     onOpenCriteria={() => setCriteriaOpen(true)}
                     onResetCriteria={legTable.resetCriteria}
@@ -380,6 +386,8 @@ function LegBlockNotice({
   criteria,
   empty,
   onRetry,
+  asOfMismatch,
+  onRefreshAll,
   onSelectTab,
   onOpenCriteria,
   onResetCriteria,
@@ -391,6 +399,8 @@ function LegBlockNotice({
   criteria: readonly CriteriaCountLine[];
   empty: LegEmptyState;
   onRetry: () => void;
+  asOfMismatch: boolean;
+  onRefreshAll: () => void;
   onSelectTab: (tab: LegPickerTab) => void;
   onOpenCriteria: () => void;
   onResetCriteria: () => void;
@@ -429,6 +439,25 @@ function LegBlockNotice({
   }
   return (
     <View>
+      {/* 🚨 053 FR-020：三个视角是三次独立请求 —— 自动重取一次之后业务日仍不一致时**说出来**。
+          🚫 MUST NOT 静默并排呈现来自不同交易日的读数（每个数字都对，只是不属于同一天）；
+          🚫 也 MUST NOT 继续重取（布尔闩已置，处置权交回用户 ⇒ 这里给的是手动入口）。
+          📌 走数据缺口体系（虚线 + 沉底底色）而非红标：它是「口径可能对不齐」不是读挂了。 */}
+      {asOfMismatch ? (
+        <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-asof-mismatch">
+          <Text className="text-xs text-ink-muted">{LEG_COPY.asOfMismatch}</Text>
+          <Pressable
+            onPress={onRefreshAll}
+            accessibilityRole="button"
+            accessibilityLabel={LEG_COPY.asOfMismatchCta}
+            testID="optionsdesk-detail-leg-asof-mismatch-refresh"
+            className="mt-xs self-start"
+          >
+            <Text className="text-xs font-medium text-brand-500">{`${LEG_COPY.asOfMismatchCta} ›`}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {total === 0 ? (
         <LegEmptyBlock empty={empty} onSelectTab={onSelectTab} onReset={onResetCriteria} />
       ) : null}
