@@ -241,6 +241,106 @@ export function aggregateCell(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 三互斥计数 (FR-034 / SC-006) —— 页脚那三个数
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 一条腿在三道「三视角一律」判定上的落点 —— 计数的唯一入参形态。 */
+export interface ChainReportLegVerdict {
+  /** 过权利金门槛 ⇒ 在骨架内 (FR-005)。 */
+  readonly inSkeleton: boolean;
+  /**
+   * 过权利金门槛**且**过活性门槛。语义上恒蕴含 {@link inSkeleton}。
+   * 📌 两者不一致时以 `inSkeleton` 为准 (求值顺序决定, 见 {@link chainReportGateCounts})。
+   */
+  readonly live: boolean;
+  /** 落在行轴哪一档; `null` = **行下界外** (比首档更深的价内)。见 {@link classifyOtmBand}。 */
+  readonly band: number | null;
+}
+
+/**
+ * 页脚三个互斥计数 + 有值条数, **每个带自己的分母** (FR-034)。
+ *
+ * 🚫 **MUST NOT 合并成一个总数** —— 三条各有各的必须显式的理由: ② 是**量级** (一半以上的腿在
+ * 行轴之外); ③ 不是量级而是**唯一性** (全腿格值下活性门槛是「被门槛挡下」格的唯一成因,
+ * 不给量级用户就只知道有灰格、不知道那是多少条腿)。
+ */
+export interface ChainReportGateCounts {
+  /** 该链全量腿数 —— ① 的分母, 也是求和恒等式的右端。 */
+  readonly total: number;
+  /** ① 被权利金门槛移出 (分母 = {@link total})。语义「太便宜」, **整条不在图上**。实测 27.0%。 */
+  readonly removedByPremium: number;
+  /** 骨架 = 过权利金门槛之后的整条链 (FR-005) —— ② 的分母。 */
+  readonly skeleton: number;
+  /** ② 被行下界排除 (分母 = {@link skeleton})。语义「太深的价内」, 在行轴之外。实测 57.6%。 */
+  readonly outsideRowFloor: number;
+  /** 行下界内 —— ③ 的分母。 */
+  readonly withinRows: number;
+  /** ③ 被活性门槛挡下 (分母 = {@link withinRows})。语义「没人碰过」, **在图上**呈 `gated`。实测 11.0%。 */
+  readonly blockedByLiveness: number;
+  /**
+   * ④ 有值 —— 过两道一律门槛且落在行轴内的腿数。
+   *
+   * 🚨 **腿级、且与当前格值无关**, 🚫 MUST NOT 与 {@link ChainReportCellState} 的 `valued` 混读:
+   * 后者是**格**的态、随格值重算。本数若做成随格值变的, `SC-006` 的求和恒等式会在切换格值时
+   * 时对时错 —— 而 ①②③ 三个数都不随格值变。
+   */
+  readonly valued: number;
+}
+
+/**
+ * 三互斥计数 (FR-034 / SC-006 / `state_branch` 9)。`O(n)` 单趟。
+ *
+ * 🚨 **求值顺序即语义, MUST NOT 换**: 全量 → 权利金挡下 → 骨架 → 行下界外 → 行内 → 活性挡下 →
+ * 有值。每条腿沿这条链**只落一个桶** (`continue` 逐级短路) ⇒ 互斥性是结构性的, 不靠测试守。
+ *
+ * 🚨 **③ MUST 数在「行下界内」上, 🚫 MUST NOT 数在骨架全域上** —— 后者会与 ② **重复计 865 条**
+ * (实测全池)。那时三个数照样都出得来、界面照样正常, **只是加起来对不上账**。
+ * 这正是 spec 自己点名「最容易被写错」的那一处, 故求和恒等式 MUST 有断言 (SC-006)。
+ *
+ * ⚠️ **求和恒等式对本实现是结构性恒真, 判别力不在它身上** (2026-08-14 T003 探针实测): 逐级
+ * `continue` 让每条腿只落一个桶 ⇒ 把 ③ 与 ② 的判定**对调**, 恒等式**照样成立**, 红的只有
+ * 「归属」断言 (深价内 ∧ 无人碰过 的腿该计入 ② 而非 ③)。⇒ 🚨 恒等式是**防未来重写**的回归网
+ * (谁改成四个独立 `filter().length` 就会破), **不是**本实现的主判据; 主判据 MUST 是归属断言,
+ * 下游 IT (T007) 同此纪律 —— 只复现恒等式会得到一个恒绿的假证据。
+ */
+export function chainReportGateCounts(
+  verdicts: readonly ChainReportLegVerdict[],
+): ChainReportGateCounts {
+  let removedByPremium = 0;
+  let outsideRowFloor = 0;
+  let blockedByLiveness = 0;
+  let valued = 0;
+
+  for (const verdict of verdicts) {
+    if (!verdict.inSkeleton) {
+      removedByPremium += 1;
+      continue;
+    }
+    if (verdict.band === null) {
+      outsideRowFloor += 1;
+      continue;
+    }
+    if (!verdict.live) {
+      blockedByLiveness += 1;
+      continue;
+    }
+    valued += 1;
+  }
+
+  const total = verdicts.length;
+  const skeleton = total - removedByPremium;
+  return {
+    total,
+    removedByPremium,
+    skeleton,
+    outsideRowFloor,
+    withinRows: skeleton - outsideRowFloor,
+    blockedByLiveness,
+    valued,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 骨架 (FR-005) —— 网格的总体
 // ─────────────────────────────────────────────────────────────────────────────
 

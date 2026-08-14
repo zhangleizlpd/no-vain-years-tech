@@ -10,9 +10,11 @@ import {
   OTM_BAND_WIDTH,
   aggregateCell,
   chainReportColumns,
+  chainReportGateCounts,
   chainReportRows,
   chainReportSkeleton,
   classifyOtmBand,
+  type ChainReportLegVerdict,
 } from './chain-report.rules';
 import { recallCandidates, type RecallContext, type RecallLegInput } from './leg-recall.rules';
 
@@ -279,5 +281,95 @@ describe('chain-report.rules — 格态 (FR-016 / FR-016a, plan D-STATE-1)', () 
       expect(cell.best).toBeNull();
       expect(cell.runnerUp).toBeNull();
     }
+  });
+});
+
+describe('chain-report.rules — 三互斥计数 (FR-034, SC-006, state_branch 9)', () => {
+  /** 四类腿的原型 —— 每一类沿求值链只落一个桶。 */
+  const tooCheap: ChainReportLegVerdict = { inSkeleton: false, live: false, band: null };
+  const deepItm: ChainReportLegVerdict = { inSkeleton: true, live: true, band: null };
+  const untouched: ChainReportLegVerdict = { inSkeleton: true, live: false, band: 3 };
+  const admitted: ChainReportLegVerdict = { inSkeleton: true, live: true, band: 3 };
+
+  const chain = (spec: readonly [ChainReportLegVerdict, number][]): ChainReportLegVerdict[] =>
+    spec.flatMap(([verdict, count]) => Array.from({ length: count }, () => verdict));
+
+  // 实测锚：`us:ACN` **单链** 825 条认沽腿（⚠️ SC-006 里那组 3531 是全池 12 链，两组口径不同）。
+  const acn = chain([
+    [tooCheap, 252],
+    [deepItm, 261],
+    [untouched, 38],
+    [admitted, 274],
+  ]);
+
+  it('🚨 求和恒等式：三计数 + 有值 ≡ 该链全量 (实测锚 252 + 261 + 38 + 274 = 825)', () => {
+    const counts = chainReportGateCounts(acn);
+    expect(counts.total).toBe(825);
+    expect(counts.removedByPremium).toBe(252);
+    expect(counts.outsideRowFloor).toBe(261);
+    expect(counts.blockedByLiveness).toBe(38);
+    expect(counts.valued).toBe(274);
+    expect(
+      counts.removedByPremium + counts.outsideRowFloor + counts.blockedByLiveness + counts.valued,
+    ).toBe(counts.total);
+  });
+
+  it('每个计数带自己的分母 —— 骨架 = 全量 − ①，行内 = 骨架 − ② (FR-034)', () => {
+    const counts = chainReportGateCounts(acn);
+    expect(counts.skeleton).toBe(counts.total - counts.removedByPremium);
+    expect(counts.withinRows).toBe(counts.skeleton - counts.outsideRowFloor);
+    expect(counts.withinRows).toBe(counts.blockedByLiveness + counts.valued);
+  });
+
+  it('🚨 互斥是结构性的 —— 每条腿只落一个桶，四类各自单独成链都只点亮自己那一个', () => {
+    const buckets = [
+      [tooCheap, 'removedByPremium'],
+      [deepItm, 'outsideRowFloor'],
+      [untouched, 'blockedByLiveness'],
+      [admitted, 'valued'],
+    ] as const;
+    for (const [verdict, field] of buckets) {
+      const counts = chainReportGateCounts(chain([[verdict, 7]]));
+      expect(counts[field]).toBe(7);
+      for (const [, other] of buckets) {
+        if (other !== field) expect(counts[other]).toBe(0);
+      }
+    }
+  });
+
+  it('🔬 反例探针：被活性挡下的深价内腿 MUST 计入 ②，🚫 不计入 ③ —— 否则两桶重复计', () => {
+    // 这条腿同时满足「行下界外」与「活性不过」。求值顺序决定它只算一次，且算在 ② 上。
+    const both: ChainReportLegVerdict = { inSkeleton: true, live: false, band: null };
+    const counts = chainReportGateCounts(chain([[both, 865]]));
+    expect(counts.outsideRowFloor).toBe(865);
+    expect(counts.blockedByLiveness).toBe(0);
+    expect(
+      counts.removedByPremium + counts.outsideRowFloor + counts.blockedByLiveness + counts.valued,
+    ).toBe(counts.total);
+  });
+
+  it('`inSkeleton` 为假时其余判定不参与 —— 太便宜的腿整条不在图上 (FR-034 ①)', () => {
+    const contradictory: ChainReportLegVerdict = { inSkeleton: false, live: true, band: 2 };
+    const counts = chainReportGateCounts(chain([[contradictory, 5]]));
+    expect(counts.removedByPremium).toBe(5);
+    expect(counts.skeleton).toBe(0);
+    expect(counts.valued).toBe(0);
+  });
+
+  it('空链 ⇒ 四个数全 0 且恒等式仍成立', () => {
+    const counts = chainReportGateCounts([]);
+    expect(counts.total).toBe(0);
+    expect(counts.skeleton).toBe(0);
+    expect(counts.withinRows).toBe(0);
+    expect(counts.valued).toBe(0);
+  });
+
+  it('顶档腿计入有值 —— 极深价外不是「行下界外」(承 T001 的顶档开口)', () => {
+    const farOtm: ChainReportLegVerdict = {
+      inSkeleton: true,
+      live: true,
+      band: OTM_BAND_TOP_INDEX,
+    };
+    expect(chainReportGateCounts(chain([[farOtm, 4]])).valued).toBe(4);
   });
 });
