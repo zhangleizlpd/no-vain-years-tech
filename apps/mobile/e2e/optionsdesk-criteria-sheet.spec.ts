@@ -123,6 +123,9 @@ const COPY = {
   emptyTitle: '当前检索条件下没有候选',
   emptyResetCta: '复位到系统默认值',
   premiumTip: '门槛判的是 bid',
+  /** 🚨 与空态 CTA「复位到系统默认值」是两个按钮 —— 按名数个数时 `exact` 必须开。 */
+  reset: '复位',
+  submit: '搜',
   percentSuffix: '%',
   /** 056 FR-034：**沿用** `countLabels.livenessMin`（「活跃度下限」）的既有叫法，不造新词。 */
   livenessGroupLabel: '活跃度',
@@ -528,6 +531,8 @@ const TIP = 'optionsdesk-detail-criteria-tip';
 const EMPTY_RESET = 'optionsdesk-detail-leg-empty-reset';
 const CARET = 'optionsdesk-detail-criteria-caret';
 const RULE = 'optionsdesk-detail-criteria-liveness-rule';
+/** 键盘右整列的操作区（`~/ui/numeric-keypad.tsx` 逐字）—— 「复位」自 056 T006 起住在这里面。 */
+const KEYPAD_ACTIONS = 'numeric-keypad-actions';
 const DIRTY_DOT = 'optionsdesk-detail-criteria-dirty-dot';
 const input = (field: string) => `optionsdesk-detail-criteria-input-${field}`;
 const block = (key: string) => `optionsdesk-detail-criteria-block-${key}`;
@@ -1051,7 +1056,42 @@ test('056 T005 — FR-010/FR-011/FR-030：版面是**四块**且序固定，权�
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ⑪ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
+// ⑪ 操作区 —— 「复位」并入键盘右整列，同屏不出现两个同名按钮
+// ════════════════════════════════════════════════════════════════════════════
+
+test('056 T006 — FR-020/FR-024：「复位」并入键盘右整列、不再独占字段区一行；全屏「搜」与「复位」**各恰一个**（SC-009）', async ({
+  page,
+}) => {
+  await installMock(page);
+  await openDetail(page);
+  await openSheet(page);
+
+  // ① SC-009 / FR-024：同名按钮各恰一个。🚨 判据取 **a11y 名**而不是 testID —— 重复的
+  //    按钮多半是「又画了一个」，那个新画的不会恰好带同一个 testID，按 testID 数会漏掉。
+  //    `exact` 必须开：空态那个 CTA 叫「复位到系统默认值」，模糊匹配会把它算进来。
+  await expect(page.getByLabel(COPY.reset, { exact: true })).toHaveCount(1);
+  await expect(page.getByLabel(COPY.submit, { exact: true })).toHaveCount(1);
+
+  // ② FR-020：那一个「复位」必须**在键盘的操作列内**，不是字段区里独占一行的那个。
+  //    只数个数不够 —— 把字段区那行留着、改成不渲染键盘上的次级键，个数一样是 1。
+  await expect(page.getByTestId(KEYPAD_ACTIONS).getByTestId(RESET)).toHaveCount(1);
+
+  // ③ FR-021：右整列**复位在上、搜在下**（主操作贴近拇指，破坏性操作让开右下角）。
+  const resetTop = await page.getByTestId(RESET).evaluate((el) => el.getBoundingClientRect().top);
+  const submitTop = await page.getByTestId(SUBMIT).evaluate((el) => el.getBoundingClientRect().top);
+  expect(resetTop).toBeLessThan(submitTop);
+
+  // ④ 挪了位置，接线没断：键盘上这个「复位」点下去仍然触发 `onReset`（抽屉随之关闭）。
+  //    📌 复位的**完整行为面**（回默认值 / 重召回 / 计数行与徽标同时消失 / 不带默认值回请求）
+  //    由 US3-AS4 覆盖，这里只钉「按钮换了家还连着」，🚫 不重复造一遍那条。
+  await setCriteria(page, 'strikeMax', '128');
+  await expect(page.getByTestId(SUB)).toHaveText(COPY.subDirty(1));
+  await page.getByTestId(RESET).tap();
+  await expect(page.getByTestId(SHEET)).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑫ ⓘ —— tap 触发的 popup tip（移动端没有 hover）
 // ════════════════════════════════════════════════════════════════════════════
 
 test('052 T013 — ⓘ 是 **tap 触发**的 popup tip：默认收起、tap 开、再 tap 关', async ({ page }) => {

@@ -192,29 +192,21 @@ export function LegCriteriaSheet({
             />
           ))}
 
-          {/* 「搜」与「复位」**并存** —— 不是 049 那种互斥槽位（FR-012 + FR-013 是两件事）。
-              「搜」= 键盘右整列（自绘键盘的确定位，同 `alert/value-input-sheet.tsx`）⇒ 它随键盘
-              常驻在屏内，🚫 MUST NOT 再在这一行复制一个「搜」（同屏两个同名按钮）。 */}
-          <View className="flex-row justify-end pt-sm">
-            <Pressable
-              onPress={onReset}
-              accessibilityRole="button"
-              accessibilityLabel={COPY.reset}
-              testID="optionsdesk-detail-criteria-reset"
-              className="rounded-full border border-line px-lg py-1.5"
-            >
-              <Text className="text-xs text-ink">{COPY.reset}</Text>
-            </Pressable>
-          </View>
-
           {/* 🚨 键高固定（`h-16`）那条坑在 `~/ui/numeric-keypad.tsx` 文件头 —— 别在这里给它
-              套一层无确定高度的 `flex-1` 容器。「搜」恒可点：条件一维没改也是合法提交。 */}
+              套一层无确定高度的 `flex-1` 容器。「搜」恒可点：条件一维没改也是合法提交。
+              🚨 **「复位」并入右整列**（056 FR-020）—— 字段区那一行独占的复位已删。两键都随
+              键盘常驻在屏内 ⇒ 🚫 MUST NOT 再在字段区复制任何一个（同屏两个同名按钮，FR-024）。
+              📌 顺序（复位在上、搜在下，FR-021）与视觉双通道（搜 = brand 实心 flex-1 /
+              复位 = 次级描边固定高，FR-022）都由键盘本体保证，本文件只递入参。 */}
           <NumericKeypad
             onKey={press}
             onConfirm={submit}
             confirmDisabled={false}
             confirmLabel={COPY.submit}
             confirmTestID="optionsdesk-detail-criteria-submit"
+            secondaryLabel={COPY.reset}
+            onSecondary={onReset}
+            secondaryTestID="optionsdesk-detail-criteria-reset"
           />
         </SafeAreaView>
       </View>
