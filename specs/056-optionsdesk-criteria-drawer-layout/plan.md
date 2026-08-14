@@ -1,7 +1,7 @@
 ---
 feature_id: 056-optionsdesk-criteria-drawer-layout
 spec_ref: ./spec.md
-status: drafted
+status: approved
 created_at: '2026-08-14'
 updated_at: '2026-08-14'
 adr_refs: ['0030', '0062', '0064']
