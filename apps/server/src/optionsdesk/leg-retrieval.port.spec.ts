@@ -53,6 +53,7 @@ function row(over: Partial<LegChainRow> = {}): LegChainRow {
     openInterest: 900,
     volume: 40,
     greeksComplete: true,
+    expirationCycle: 'WEEK',
     ...over,
   };
 }

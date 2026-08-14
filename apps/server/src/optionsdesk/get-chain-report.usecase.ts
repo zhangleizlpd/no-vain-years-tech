@@ -1,8 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
-import { PrismaService } from '../security/prisma.service';
-import { parseAnchorTicker } from './anchor.rules';
-import { dateOnlyOf, readMonthlyExpiries } from './monthly-expiry-lookup';
+import { dateOnlyOf } from './date-only';
+import { monthlyChainExpiries } from './leg-mark.rules';
 import {
   CHAIN_REPORT_METRICS,
   aggregateCell,
@@ -79,8 +78,8 @@ export interface ChainReportColumn {
   readonly expiryDate: Date;
   readonly dteDays: number;
   /**
-   * 是否月度到期链 (spec Key Entities「列」)。判据与选约表**同一处**
-   * (`monthly-expiry-lookup.ts` + `leg-mark.rules.ts` 两个纯函数)。
+   * 是否月度到期链 (spec Key Entities「列」)。判据与选约表**同一个纯函数**
+   * (`leg-mark.rules.ts` 的 `monthlyChainExpiries`, 读 vendor 到期周期)。
    *
    * 📌 **「是否跨财报」蓄意不在本片呈现面内**（2026-08-14 定，见 tasks 故意零覆盖登记）:
    * mockup 未画、零 FR 要求, 且列头多一个 chip 要吃掉 FR-041 已经很紧的一屏高度预算。
@@ -134,9 +133,9 @@ export interface ChainReportView {
 export class GetChainReportUseCase {
   private readonly logger = new Logger(GetChainReportUseCase.name);
 
+  // 📌 **本 use case 已无任何 prisma 直查** (#45): 唯一那处是月度到期日的交易日历只读直查,
+  // 判据换成随腿走的 vendor 到期周期之后整条撤销 ⇒ `PrismaService` 一并去掉, 不留没人用的注入。
   constructor(
-    // 月度到期日的交易日历只读直查 (Q7-B) 走它 —— 本 ctx 无自有表要读。
-    private readonly prisma: PrismaService,
     // 046 详情读端 —— 锚 + IV 四态 + 最近已收盘交易日**一次拿全**。
     // 🚨 同 ctx 内组合, 不是跨 ctx 注入 (护城河判据看的是 ctx 边界)。走它而不是自己再读一遍
     // marketdata 的 IV 快照, 是 plan D-CTX-1 的硬约束: 同一个读数有两个来源时**两边都读得出值**。
@@ -189,17 +188,11 @@ export class GetChainReportUseCase {
       const { chain, legs } = snapshot;
       const context: RecallContext = { spot: chain.spot };
 
-      // 月度链标 —— 查询与选约表**同一处** (`monthly-expiry-lookup.ts`), 🚫 不各查一份:
-      // 窗口计算两处不同步时**两边都标得出月度链**, 只是同一个到期日在两屏上标得不一样。
-      const parsed = parseAnchorTicker(symbol);
-      const monthlyExpiries =
-        parsed === null
-          ? new Set<string>()
-          : await readMonthlyExpiries(
-              this.prisma,
-              parsed.market,
-              legs.map((leg) => leg.expiryDate),
-            );
+      // 月度链标 —— 判据与选约表**同一个纯函数** (`leg-mark.rules.ts`), 零 I/O (#45)。
+      // 📌 原先这里要跨 ctx 查一次交易日历, 于是有一条「两个消费方 MUST NOT 各查一份」的纪律
+      // (窗口不同步会让同一到期日在两屏上标得不一样)。判据换成随腿走的 vendor 到期周期之后,
+      // **结构上没有第二处查询可写**, 那条纪律不再需要有人记得。
+      const monthlyExpiries = monthlyChainExpiries(legs);
 
       return {
         ...empty('available'),

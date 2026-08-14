@@ -179,9 +179,21 @@ TABLE_POLICIES=(
   #    但 sync_run 里 `sync:earnings_event` **一条运行记录都没有** ⇒ 从未跑过。此处翻 full 是
   #    为了「prod 有数据的那天本地自动跟上」，不代表现在能拿到财报打标数据。
   "marketdata.earnings_event:full"           # 047 财报事件日历
+  # ── 业务参考数据（非标的级，但有真消费方）────────────────────────────────────────
+  # 2026-08-15 由 skip 翻 full（issue #45 附带项）—— 它**不是**运维表，原先跟 sync_run /
+  # sync_dimension 归在同一组是分类错了：那几张描述「同步这件事本身」，而交易日历是**业务
+  # 参考数据**，仓内至少三处读它 ——
+  #   · alert 的交易日闸（`trading-day-gate.ts`：今天非交易日 ⇒ 整条夜间管线 skip）
+  #   · optionsdesk 的「最近一个已收盘交易日」（`last-closed-session.ts` ⇒ 陈旧度档）
+  #   · marketdata 的 bar 查询
+  # 合理推测是写这份注册表时这些消费方还不存在。skip 的代价是**静默失真**而非报错：本地
+  # `us` 日历停在 2026-07-15（实测，比当天落后一个月），陈旧度与交易日闸在 dev 上给的都是
+  # 另一套答案，而两屏都照常渲染。
+  # 🔻 体量约 8.6k 行（cn+hk+us 各约 2.9k，2015 至今），full 的成本可忽略。
+  # 📌 与 #45 主修**无依赖**：月度链标已换源到 `option_contract.expiration_cycle`，不再读本表。
+  "marketdata.trading_day:full"        # 044 交易日历（三市场 × 2015 至今）
   # ── 运维 / 配置表（非标的级，dev 不需要）──────────────────────────────────────────
   "marketdata.calendar_sync_health:skip"     # 044 交易日历填充心跳（市场级 PK，无 instrument_id）
-  "marketdata.trading_day:skip"        # 交易日历，dev 暂不需要（如需：改 full）
   "marketdata.sync_run:skip"           # 同步运行态，运维表
   "marketdata.sync_dimension:skip"     # 同步维度配置
   "marketdata.sync_dependency:skip"    # 同步依赖拓扑
@@ -494,7 +506,7 @@ done
 
 # ─── 3. 截断 → 重灌 → 重置序列（单事务原子；失败回滚保旧数据）─────────────────
 # SQL 动态生成：TRUNCATE 全部同步表（RESTART IDENTITY CASCADE）→ 逐表 \copy（显式有序列名，
-# 按名对齐）→ 逐表 setval（pg_get_serial_sequence 为 null 的表[如无 id 列]自动跳过）。
+# 按名对齐）→ 逐表 setval（**无 `id` 列的表整条不生成**，见下方循环里的判据）。
 trunc_list=""
 for t in "${SYNCED_TABLES[@]}"; do trunc_list="$trunc_list${trunc_list:+, }$t"; done
 
@@ -508,6 +520,16 @@ for t in "${SYNCED_TABLES[@]}"; do
 "
 done
 for t in "${SYNCED_TABLES[@]}"; do
+  # 🚨 **无 `id` 列的表整条 setval 不生成**，🚫 不能只靠 `WHERE s.seq IS NOT NULL` 兜：
+  #    `(SELECT max(id) FROM $t)` 这个子查询在**解析期**就要解析 `id`，表里没这一列 ⇒ 整条
+  #    语句 parse error ⇒ 事务回滚 ⇒ 整轮同步失败。外层 WHERE 是运行期的，救不了解析期。
+  #    2026-08-15 实撞：`marketdata.trading_day` 翻 full 当轮即 `ERROR: column "id" does not
+  #    exist`（它的主键是复合 `(market, date)`，没有 `id`）。
+  #    判据走 prod 派生的列清单（与 \copy 用的是同一份），不另查一次 information_schema。
+  case ",$(cols_for "$t")," in
+    *,id,*) ;;
+    *) continue ;;
+  esac
   reload_sql="${reload_sql}SELECT setval(s.seq, GREATEST(s.mx, 1)) FROM (SELECT pg_get_serial_sequence('$t', 'id') AS seq, (SELECT max(id) FROM $t) AS mx) s WHERE s.seq IS NOT NULL;
 "
 done

@@ -24,8 +24,10 @@ import type { LegTab } from './leg-tab.rules';
  * 📌 金额量纲经 {@link RecallLegInput} / {@link RecallContext} 带入 —— 它们是**召回判据的入参
  * 类型**, 让「port 的腿侧字段」与「判据吃的字段」同型, 而不是各写一份必 drift 的镜像。
  *
- * 📌 本 port 只管**候选集检索**。财报日 / 交易日历 / 最近已收盘 session 那三处跨 ctx 读是**打标
- * 与呈现的输入**, 不是召回, 仍留在 use case 侧直查 (同为 Q7-B 只读 + `CROSS-CONTEXT-READ`)。
+ * 📌 本 port 只管**候选集检索**。财报日 / 最近已收盘 session 那两处跨 ctx 读是**打标与呈现的
+ * 输入**, 不是召回, 仍留在 use case 侧直查 (同为 Q7-B 只读 + `CROSS-CONTEXT-READ`)。
+ * 📌 交易日历那第三处**已于 #45 撤销** —— 月度链标改读 vendor 到期周期, 它随合约行一并出来
+ * (见 {@link LegChainRow.expirationCycle}), 不再是一次独立的跨 ctx 读。
  */
 
 /** DI token (沿 `volatility.port.ts` 等既有 port 的 `Symbol` 体例)。 */
@@ -92,6 +94,15 @@ export interface LegChainRow extends RecallLegInput {
   readonly iv: number | null;
   /** greeks 是否齐全 —— `false` 的腿**照常进候选** (FR-013 / 050 FR-009)。 */
   readonly greeksComplete: boolean;
+  /**
+   * vendor 声明的到期周期 (`MONTH` / `WEEK`, 原样不换算); 缺字段 `null`。月度链标的**唯一**
+   * 判据输入 (`leg-mark.rules.ts` 的 `monthlyChainExpiries`)。
+   *
+   * 🚨 **它随腿走, 不再另查一次** (#45): 判据原先跨 ctx 直查 `marketdata.trading_day` 反推
+   * 「该月第三个周五」, 那条路在生产从未生效 —— 日历结构上不含未来交易日。换源之后合约集
+   * 那次查询多带一列即可, 于是「两个消费方各查一份会 drift」这条纪律**结构上消失**。
+   */
+  readonly expirationCycle: string | null;
 }
 
 /** 链级上下文 —— 候选集之外、每票每请求算一次的那几项。 */
