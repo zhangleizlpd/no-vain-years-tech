@@ -35,3 +35,14 @@ export const OPTIONSDESK_THERMOMETER_ROUTE = '/(app)/optionsdesk/thermometer' as
 export function optionsdeskUnderlyingRoute(symbol: string) {
   return `/(app)/optionsdesk/underlying/${encodeURIComponent(symbol)}` as const;
 }
+
+// ── 055 T010：标的链分析报表（FR-040 / plan D-UI-1） ─────────────────────────
+//
+// 🚨 同样长在 `/(app)/optionsdesk/` 下 —— 独立屏而非详情屏内嵌折叠块（`FR-040`：详情屏的
+//    横滑手势覆盖其列表头部，报表自身也要横滑，同一手势树两个横滑消费者会相争），
+//    合规门控随二级页栈继承（`SC-009`，🚫 屏内不另写判定）。
+
+/** 链分析报表（标的详情入口进入；`symbol` 同上须转义）。 */
+export function optionsdeskChainReportRoute(symbol: string) {
+  return `/(app)/optionsdesk/chain-report/${encodeURIComponent(symbol)}` as const;
+}

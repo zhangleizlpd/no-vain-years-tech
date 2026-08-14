@@ -16,6 +16,7 @@ import {
   OPTIONSDESK_RADAR_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
   optionsdeskAnchorEditRoute,
+  optionsdeskChainReportRoute,
   optionsdeskUnderlyingRoute,
 } from './optionsdesk-routes';
 
@@ -31,6 +32,7 @@ const ALL_ROUTES = [
   OPTIONSDESK_THERMOMETER_ROUTE,
   optionsdeskAnchorEditRoute('anchor-1'),
   optionsdeskUnderlyingRoute('us:AAPL'),
+  optionsdeskChainReportRoute('us:AAPL'),
 ];
 
 describe('046 T023 —— 两个新屏的路由常量', () => {
@@ -50,6 +52,18 @@ describe('046 T023 —— 两个新屏的路由常量', () => {
   });
 });
 
+describe('055 T010 —— 链分析报表的路由常量', () => {
+  it('报表挂在期权台二级页栈下（⇒ 继承 _layout 的 route-stack 门，SC-009）', () => {
+    expect(optionsdeskChainReportRoute('us:ACN')).toBe('/(app)/optionsdesk/chain-report/us%3AACN');
+  });
+
+  // 🚨 FR-040：报表是**独立屏**，不是详情屏的子路径 —— 做成 `underlying/<sym>/chain-report`
+  // 会把它挂回详情那棵手势树下，而两个横滑消费者相争在 web 上未必看得出来。
+  it('🚨 报表不是详情屏的子路径', () => {
+    expect(optionsdeskChainReportRoute('us:ACN')).not.toContain('/underlying/');
+  });
+});
+
 describe('🚨 FR-022 —— 全部 optionsdesk 路由都落在 markets 受控前缀下', () => {
   it('每条路由要么是 tab 落地屏、要么在二级页栈里（没有第三种落点）', () => {
     const escaped = ALL_ROUTES.filter(
@@ -59,7 +73,7 @@ describe('🚨 FR-022 —— 全部 optionsdesk 路由都落在 markets 受控�
   });
 
   it('路由表非空且无重复（防「扫了个空表所以全绿」+ 防复制粘贴撞车）', () => {
-    expect(ALL_ROUTES.length).toBeGreaterThanOrEqual(6);
+    expect(ALL_ROUTES.length).toBeGreaterThanOrEqual(7);
     expect(new Set(ALL_ROUTES).size).toBe(ALL_ROUTES.length);
   });
 });

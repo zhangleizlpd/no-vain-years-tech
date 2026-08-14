@@ -37,5 +37,13 @@ export {
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
   optionsdeskAnchorEditRoute,
+  optionsdeskChainReportRoute,
   optionsdeskUnderlyingRoute,
 } from './optionsdesk-routes';
+// 055 T010 — 标的链分析报表屏（期权台二级页栈，入口在标的详情，T015 接线）。
+export { ChainReportScreen, type ChainReportScreenProps } from './chain-report-screen';
+export {
+  useChainReport,
+  CHAIN_REPORT_QUERY_KEY,
+  type UseChainReportResult,
+} from './use-chain-report';

@@ -612,6 +612,32 @@ export const OPTIONSDESK_COPY = {
     },
   },
 
+  /**
+   * 标的链分析报表屏（055，mockup `055-chain-report-states.dc.html`）。
+   *
+   * 🚨 **三个时点各自成句、🚫 禁合并成一个「数据截至」**（FR-033）—— 报价与持仓量常态下
+   *    就不是同一天（美股期权 OI 盘前更新），合成一句会让「活跃度是哪天的」永远说不清。
+   *    机械防线在 `chain-report-copy.spec.ts`：三条标注恒为三条、标签互异。
+   */
+  chainReport: {
+    /** 题头 = `<code> · 链分析`（`titleSuffix` 是那半截固定的）。 */
+    titleSuffix: ' · 链分析',
+    ivpLabel: '本链 IV 分位',
+    ivpUnit: '/ 100 · 近一年',
+    /** 三个时点的标签（FR-033）。⚠️ 顺序即语义：交易所今天 → 报价 → 持仓量。 */
+    stampMarketDate: '交易日',
+    stampQuote: '报价',
+    stampOpenInterest: '持仓量',
+    /** 报价那条恒带「收盘」后缀 —— 本片只有 EOD 快照一种来源。 */
+    quoteClosedSuffix: ' 收盘',
+    /** Edge Case：锚 `excluded` ⇒ 报表照常渲染、页头带标记（用户是主动进来的）。 */
+    excludedNotice: '该标的已排除出雷达 —— 报表照常，仅供查看',
+    loadFailed: '链分析加载失败',
+    retry: '重试',
+    /** 缺失一律「—」，🚫 不裸 0（同 046 `ivBlock.noValue`）。 */
+    noValue: '—',
+  },
+
   /** 锚管理列表屏（T022，mockup 帧 ⑤）。 */
   anchorList: {
     title: '锚管理',
