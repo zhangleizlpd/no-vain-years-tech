@@ -127,6 +127,120 @@ export function chainReportColumns(legs: readonly ChainReportExpiry[]): readonly
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 格聚合 (FR-006 – FR-008 / FR-027 / FR-028) + 格态 (FR-016 / FR-016a)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 四种格值 (FR-010)。同一时刻只生效一种, 🚫 MUST NOT 提供「以年化为唯一格值」的形态
+ * (FR-015: 年化随期限缩短系统性升高是时间折算的算术性质, 单一年化会把它呈现成机会梯度)。
+ */
+export const CHAIN_REPORT_METRICS = [
+  'build_quality',
+  'rent_annualized',
+  'all_annualized',
+  'activity',
+] as const;
+
+export type ChainReportMetric = (typeof CHAIN_REPORT_METRICS)[number];
+
+/**
+ * 取优方向 —— **建仓成色越低越好**, 其余三种越高越好。
+ *
+ * 🚨 **这张表踩反了不会红**: 建仓成色是「有效成本相对愿买价的位置」(FR-011), 负值 = 成本落在
+ * 愿买价下方 ⇒ 取 `max` 会把最贵的那条腿选成该格代表, 而**网格照常渲染、数字照常有**,
+ * 只是每一格都在推荐反向的腿。故方向与格值绑成一张显式的表, 🚫 别在聚合函数里写 `if`。
+ */
+export const CHAIN_REPORT_METRIC_BETTER: Readonly<Record<ChainReportMetric, 'lower' | 'higher'>> = {
+  build_quality: 'lower',
+  rent_annualized: 'higher',
+  all_annualized: 'higher',
+  activity: 'higher',
+};
+
+/** 格态三值 (FR-016)。🚫 MUST NOT 加第四值 —— FR-016a 明令不为第四种成因单开格级色码。 */
+export const CHAIN_REPORT_CELL_STATES = ['valued', 'gated', 'absent'] as const;
+
+export type ChainReportCellState = (typeof CHAIN_REPORT_CELL_STATES)[number];
+
+/** 一个「价外档 × 到期日」的交点 (spec Key Entities「格」)。 */
+export interface ChainReportCell {
+  readonly state: ChainReportCellState;
+  /**
+   * 格内腿数 (FR-007) —— **当前格值下算得出值的成员条数**, 非 `valued` 恒 `0`。
+   *
+   * 🚨 它与格态同为**当前格值的函数**, 🚫 MUST NOT 缓存成格的静态属性 (FR-016a 末段;
+   * 实测全网格填充率 建仓 6.3% / 收租 13.6% / 全腿 41.6%, 三者差得很远)。
+   * 📌 口径刻意与「有值」对齐: 读数面板同时给腿数与最优 / 次优 (FR-027), 若腿数含算不出值的腿,
+   * 「腿数 3 · 最优只有一个数」在面板上就自相矛盾。
+   */
+  readonly legCount: number;
+  /** 该格最优值 (FR-006: 取最优, 🚫 MUST NOT 取均值); 非 `valued` 恒 `null`。 */
+  readonly best: Prisma.Decimal | null;
+  /**
+   * 该格**次优**值 (FR-027 读数面板要)。
+   *
+   * 🚨 **格内只有一条腿时显式 `null`** (FR-028, `state_branch` 14): 🚫 MUST NOT 复述最优值充数
+   * —— 次优存在的意义正是回答「这一格是一条腿撑起来的、还是一片腿都不错」。
+   * 📌 两条腿**取值相等**时次优 = 那个相等的值, **不是** `null`: 判据是**腿数**不是取值互异,
+   * 那确实是第二条挂得出去的腿。
+   */
+  readonly runnerUp: Prisma.Decimal | null;
+}
+
+/**
+ * 聚合一个格 (FR-006 / FR-007 / FR-016 / FR-016a)。`O(n)` 单趟、`O(1)` 额外空间, `n` = 该格成员数;
+ * 整张网格合计 `O(骨架腿数)` —— 格把腿分了区, 不重复扫。
+ *
+ * @param values 该格在当前格值下**算得出值**的成员读数。空数组 ⇒ 该格无值。
+ * @param metric 当前格值 —— 决定取优方向 ({@link CHAIN_REPORT_METRIC_BETTER})。
+ * @param chainLegCount 该格位置**链上**的腿数。
+ *
+ * 🚨 **`chainLegCount` MUST 数在整条链上, 🚫 MUST NOT 数在骨架上**: 骨架已经把低于权利金门槛的
+ * 腿排除了 (FR-005), 拿骨架计数会让「有腿但全部太便宜」的格渲染成「该位置无合约」—— 那正是
+ * US2 反对的「给出错误信息而不是缺失信息」, 而**两种数法都渲染得出一张完整的网格**。
+ *
+ * 🚨 **`gated` 归并三类成因** (FR-016a 显式接受的代价 —— 段内不再分辨是哪一道门槛):
+ * ① 该格的腿全部低于权利金门槛 (不在骨架内);
+ * ② 在骨架内、但不在当前格值对应视角的召回集内 (流动性 / 成色上界 / 有效成本硬门槛 / 活性门槛);
+ * ③ 在召回集内、但该口径**算不出值** —— `computeLegRates` 在 `DTE ≤ 0` 或 `K − P ≤ 0` 时返
+ *    `null` (0DTE 腿在全腿视角是进得来的)。归 `gated` 而非 `absent`: 合约确实存在,
+ *    报成「无合约」是**错误信息**; 而 FR-016a 🚫 明令不为它单开第四种格级色码。
+ */
+export function aggregateCell(
+  values: readonly Prisma.Decimal[],
+  metric: ChainReportMetric,
+  chainLegCount: number,
+): ChainReportCell {
+  if (values.length === 0) {
+    return {
+      state: chainLegCount > 0 ? 'gated' : 'absent',
+      legCount: 0,
+      best: null,
+      runnerUp: null,
+    };
+  }
+
+  const preferLower = CHAIN_REPORT_METRIC_BETTER[metric] === 'lower';
+  const isBetter = (challenger: Prisma.Decimal, incumbent: Prisma.Decimal): boolean =>
+    preferLower ? challenger.lessThan(incumbent) : challenger.greaterThan(incumbent);
+
+  let best = values[0];
+  let runnerUp: Prisma.Decimal | null = null;
+  for (let i = 1; i < values.length; i += 1) {
+    const value = values[i];
+    if (isBetter(value, best)) {
+      runnerUp = best;
+      best = value;
+      continue;
+    }
+    // 🚨 `runnerUp === null` 这一支不可省: 首个非最优值无论与最优差多少都是第二条腿。
+    if (runnerUp === null || isBetter(value, runnerUp)) runnerUp = value;
+  }
+
+  return { state: 'valued', legCount: values.length, best, runnerUp };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 骨架 (FR-005) —— 网格的总体
 // ─────────────────────────────────────────────────────────────────────────────
 

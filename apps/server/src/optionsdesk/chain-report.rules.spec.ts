@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import {
+  CHAIN_REPORT_CELL_STATES,
+  CHAIN_REPORT_METRICS,
+  CHAIN_REPORT_METRIC_BETTER,
   OTM_BAND_COUNT,
   OTM_BAND_ITM_INDEX,
   OTM_BAND_TOP_INDEX,
   OTM_BAND_WIDTH,
+  aggregateCell,
   chainReportColumns,
   chainReportRows,
   chainReportSkeleton,
@@ -172,5 +176,108 @@ describe('chain-report.rules — 骨架 (FR-005, 🚨 Guardrail 2)', () => {
   it('骨架不排序不截断 —— 输入顺序原样保留 (FR-005 🚫 不套选约表的条数截断)', () => {
     const skeleton = chainReportSkeleton(context, [healthy, untouched]);
     expect(skeleton).toEqual([healthy, untouched]);
+  });
+});
+
+describe('chain-report.rules — 取优方向 (FR-006 / FR-011 – FR-013, plan D-AGG-1)', () => {
+  it('四种格值各有一个方向 —— 加了格值忘配方向即编译红以外的第二道拦', () => {
+    expect(Object.keys(CHAIN_REPORT_METRIC_BETTER).sort()).toEqual(
+      [...CHAIN_REPORT_METRICS].sort(),
+    );
+  });
+
+  it('🚨 建仓成色越低越好，其余三种越高越好', () => {
+    expect(CHAIN_REPORT_METRIC_BETTER.build_quality).toBe('lower');
+    expect(CHAIN_REPORT_METRIC_BETTER.rent_annualized).toBe('higher');
+    expect(CHAIN_REPORT_METRIC_BETTER.all_annualized).toBe('higher');
+    expect(CHAIN_REPORT_METRIC_BETTER.activity).toBe('higher');
+  });
+});
+
+describe('chain-report.rules — 格聚合 (FR-006 – FR-008, FR-027, FR-028)', () => {
+  const d = (v: string) => new Prisma.Decimal(v);
+  const rates = ['10', '25', '60'].map(d);
+
+  it('🚨 取该格最优，🚫 不取均值 —— 均值会被格内边缘腿拉低', () => {
+    const mean = rates.reduce((sum, v) => sum.plus(v), new Prisma.Decimal(0)).div(rates.length);
+    const cell = aggregateCell(rates, 'all_annualized', rates.length);
+    expect(cell.best?.toString()).toBe('60');
+    expect(cell.best?.equals(mean)).toBe(false);
+  });
+
+  it('🚨 建仓成色取最小 —— 方向踩反时网格照常渲染，只是每格都在推荐反向的腿', () => {
+    const quality = ['-5', '-12', '2'].map(d);
+    const cell = aggregateCell(quality, 'build_quality', quality.length);
+    expect(cell.best?.toString()).toBe('-12');
+    expect(cell.runnerUp?.toString()).toBe('-5');
+  });
+
+  it('最优 / 次优与输入顺序无关', () => {
+    const orders = [
+      [rates[0], rates[1], rates[2]],
+      [rates[2], rates[1], rates[0]],
+      [rates[1], rates[2], rates[0]],
+    ];
+    for (const order of orders) {
+      const cell = aggregateCell(order, 'rent_annualized', order.length);
+      expect(cell.best?.toString()).toBe('60');
+      expect(cell.runnerUp?.toString()).toBe('25');
+    }
+  });
+
+  it('🚨 格内只有一条腿 ⇒ 次优显式为 null，🚫 MUST NOT 复述最优 (state_branch 14)', () => {
+    const cell = aggregateCell([d('25')], 'rent_annualized', 1);
+    expect(cell.best?.toString()).toBe('25');
+    expect(cell.runnerUp).toBeNull();
+    expect(cell.legCount).toBe(1);
+  });
+
+  it('🚨 两条腿取值相等 ⇒ 次优 = 那个值，🚫 不是 null —— 判据是腿数不是取值互异', () => {
+    const cell = aggregateCell([d('25'), d('25')], 'rent_annualized', 2);
+    expect(cell.runnerUp?.toString()).toBe('25');
+    expect(cell.legCount).toBe(2);
+  });
+
+  it('腿数 = 算得出值的成员条数，与最优 / 次优同口径 (FR-007 + FR-027)', () => {
+    expect(aggregateCell(rates, 'activity', 9).legCount).toBe(rates.length);
+  });
+});
+
+describe('chain-report.rules — 格态 (FR-016 / FR-016a, plan D-STATE-1)', () => {
+  const d = (v: string) => new Prisma.Decimal(v);
+
+  it('恰三态，🚫 MUST NOT 为第四种成因单开格级色码 (FR-016a)', () => {
+    expect(CHAIN_REPORT_CELL_STATES).toHaveLength(3);
+  });
+
+  it('三态各自可判 —— 有值 / 被门槛挡下 / 无合约', () => {
+    expect(aggregateCell([d('25')], 'rent_annualized', 3).state).toBe('valued');
+    expect(aggregateCell([], 'rent_annualized', 3).state).toBe('gated');
+    expect(aggregateCell([], 'rent_annualized', 0).state).toBe('absent');
+  });
+
+  it('🚨 有腿但一条都不成员 ⇒ gated 而非 absent —— 报成「无合约」是给错误信息不是缺失信息', () => {
+    const cell = aggregateCell([], 'build_quality', 7);
+    expect(cell.state).toBe('gated');
+    expect(cell.state).not.toBe('absent');
+  });
+
+  it('🚨 格态随格值重算 —— 同一格在两种格值下判出不同态 (state_branch 2 数据面, Guardrail 6)', () => {
+    const chainLegCount = 4;
+    // 同一个格位置：收租视角召回到 2 条，建仓视角一条都没召回（成色上界 / 有效成本硬门槛）。
+    const asRent = aggregateCell([d('25'), d('10')], 'rent_annualized', chainLegCount);
+    const asBuild = aggregateCell([], 'build_quality', chainLegCount);
+    expect(asRent.state).toBe('valued');
+    expect(asBuild.state).toBe('gated');
+    expect(asRent.state).not.toBe(asBuild.state);
+  });
+
+  it('非有值态 ⇒ 腿数 0 且读数为 null，🚫 禁伪造 0 (承 046「禁显 0、显未知」)', () => {
+    for (const chainLegCount of [0, 5]) {
+      const cell = aggregateCell([], 'all_annualized', chainLegCount);
+      expect(cell.legCount).toBe(0);
+      expect(cell.best).toBeNull();
+      expect(cell.runnerUp).toBeNull();
+    }
   });
 });
