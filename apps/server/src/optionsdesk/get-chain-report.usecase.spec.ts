@@ -12,8 +12,10 @@ import {
   type UnderlyingIvReadout,
 } from './get-underlying-detail.usecase';
 import { activityVolume, computeEffectiveCostVsWPct, computeLegRates } from './leg-derive.rules';
+import { thirdFridayOf } from './leg-mark.rules';
 import { RECALL_CANDIDATE_CAP } from './leg-recall.rules';
 import type { LegChainMeta, LegChainRow } from './leg-retrieval.port';
+import type { PrismaService } from '../security/prisma.service';
 
 // 现价取 100 ⇒ 落档一眼可验: 价内档 K ∈ (100, 110] · 价外首档 (90, 100] · 第二档 (80, 90]。
 const SPOT = new Prisma.Decimal('100');
@@ -185,6 +187,20 @@ function detailStub(
   } as unknown as GetUnderlyingDetailUseCase;
 }
 
+/**
+ * 交易日历替身 —— 默认把三个候选月度日本身当成交易日 (无假日回退)。
+ * 📌 候选由 `thirdFridayOf` 算, 🚫 不在 spec 里手抄日期: 抄错会让「只有一列带标」变成巧合。
+ */
+const MONTHLY_CANDIDATES = [thirdFridayOf(2026, 8), thirdFridayOf(2026, 9), thirdFridayOf(2027, 2)];
+
+function prismaStub(tradingDays: readonly string[] = MONTHLY_CANDIDATES): PrismaService {
+  return {
+    tradingDay: {
+      findMany: () => Promise.resolve(tradingDays.map((d) => ({ date: day(d) }))),
+    },
+  } as unknown as PrismaService;
+}
+
 function useCaseOf(
   legs: readonly LegChainRow[],
   detailOver: Parameters<typeof detailStub>[0] = {},
@@ -192,7 +208,11 @@ function useCaseOf(
 ): GetChainReportUseCase {
   const chains = new Map<string, FakeLegChain>();
   if (registered) chains.set(SYMBOL, { chain: CHAIN, legs });
-  return new GetChainReportUseCase(detailStub(detailOver), new FakeLegRetrievalAdapter(chains));
+  return new GetChainReportUseCase(
+    prismaStub(),
+    detailStub(detailOver),
+    new FakeLegRetrievalAdapter(chains),
+  );
 }
 
 const view = (over: Parameters<typeof detailStub>[0] = {}): Promise<ChainReportView> =>
@@ -316,6 +336,26 @@ describe('get-chain-report.usecase — 列的召回段覆盖 (FR-009 / FR-009a, 
       expect(column.inRecallBand.all_annualized).toBe(true);
       expect(column.inRecallBand.activity).toBe(true);
     }
+  });
+
+  it('月度链标逐列判 —— 到期日恰是当月月度日的那列带标，其余不带', async () => {
+    const report = await view();
+    // 三个到期日只有 08-21 落在当月月度日上 (09-15 与 02-26 都不是当月第三个周五)。
+    expect(report.columns.map((c) => c.isMonthlyChain)).toEqual([true, false, false]);
+    expect(MONTHLY_CANDIDATES[0]).toBe('2026-08-21');
+  });
+
+  it('交易日历查不到 ⇒ 一列都不带标，🚫 不炸也不猜 (承 leg-mark 的三种取不到一律跳过)', async () => {
+    const chains = new Map<string, FakeLegChain>([
+      [SYMBOL, { chain: CHAIN, legs: LEGS.map(rowOf) }],
+    ]);
+    const report = await new GetChainReportUseCase(
+      prismaStub([]),
+      detailStub(),
+      new FakeLegRetrievalAdapter(chains),
+    ).execute(SYMBOL, NOW);
+    expect(report.columns.every((c) => !c.isMonthlyChain)).toBe(true);
+    expect(report.state).toBe('available');
   });
 });
 

@@ -1,5 +1,8 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
+import { PrismaService } from '../security/prisma.service';
+import { parseAnchorTicker } from './anchor.rules';
+import { dateOnlyOf, readMonthlyExpiries } from './monthly-expiry-lookup';
 import {
   CHAIN_REPORT_METRICS,
   aggregateCell,
@@ -76,6 +79,14 @@ export interface ChainReportColumn {
   readonly expiryDate: Date;
   readonly dteDays: number;
   /**
+   * 是否月度到期链 (spec Key Entities「列」)。判据与选约表**同一处**
+   * (`monthly-expiry-lookup.ts` + `leg-mark.rules.ts` 两个纯函数)。
+   *
+   * 📌 **「是否跨财报」蓄意不在本片呈现面内**（2026-08-14 定，见 tasks 故意零覆盖登记）:
+   * mockup 未画、零 FR 要求, 且列头多一个 chip 要吃掉 FR-041 已经很紧的一屏高度预算。
+   */
+  readonly isMonthlyChain: boolean;
+  /**
    * 该到期日的平值隐含波动率, vendor 原样百分数; 插值不可得 ⇒ `null` ⇒ 曲线该点**断开**
    * (FR-023, 🚫 MUST NOT 以任何形式填充)。
    */
@@ -124,6 +135,8 @@ export class GetChainReportUseCase {
   private readonly logger = new Logger(GetChainReportUseCase.name);
 
   constructor(
+    // 月度到期日的交易日历只读直查 (Q7-B) 走它 —— 本 ctx 无自有表要读。
+    private readonly prisma: PrismaService,
     // 046 详情读端 —— 锚 + IV 四态 + 最近已收盘交易日**一次拿全**。
     // 🚨 同 ctx 内组合, 不是跨 ctx 注入 (护城河判据看的是 ctx 边界)。走它而不是自己再读一遍
     // marketdata 的 IV 快照, 是 plan D-CTX-1 的硬约束: 同一个读数有两个来源时**两边都读得出值**。
@@ -176,6 +189,18 @@ export class GetChainReportUseCase {
       const { chain, legs } = snapshot;
       const context: RecallContext = { spot: chain.spot };
 
+      // 月度链标 —— 查询与选约表**同一处** (`monthly-expiry-lookup.ts`), 🚫 不各查一份:
+      // 窗口计算两处不同步时**两边都标得出月度链**, 只是同一个到期日在两屏上标得不一样。
+      const parsed = parseAnchorTicker(symbol);
+      const monthlyExpiries =
+        parsed === null
+          ? new Set<string>()
+          : await readMonthlyExpiries(
+              this.prisma,
+              parsed.market,
+              legs.map((leg) => leg.expiryDate),
+            );
+
       return {
         ...empty('available'),
         spot: chain.spot,
@@ -184,7 +209,7 @@ export class GetChainReportUseCase {
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
         source: chain.source,
-        ...this.buildGrid(context, legs, detail.anchor.effective.v),
+        ...this.buildGrid(context, legs, detail.anchor.effective.v, monthlyExpiries),
       };
     } catch (err) {
       this.logger.warn(`标的链报表跨 ctx 读降级 (${symbol}, 页头照常返回): ${String(err)}`);
@@ -205,6 +230,7 @@ export class GetChainReportUseCase {
     context: RecallContext,
     legs: readonly LegChainRow[],
     v: Prisma.Decimal,
+    monthlyExpiries: ReadonlySet<string>,
   ): Pick<ChainReportView, 'rows' | 'columns' | 'cells' | 'gateCounts'> {
     const skeleton = chainReportSkeleton(context, legs);
     // 🚨 `candidateCap` 传 `legs.length` = **本次显式不设上限** (Guardrail 1): `RECALL_CANDIDATE_CAP`
@@ -269,6 +295,7 @@ export class GetChainReportUseCase {
       columns: columns.map((expiryDate, index) => ({
         expiryDate,
         dteDays: dteByColumn[index],
+        isMonthlyChain: monthlyExpiries.has(dateOnlyOf(expiryDate)),
         // 平值 IV 取**整条链**上该到期日的腿 —— 隐含波动率是合约属性, 与挂不挂得出去无关,
         // 🚫 别拿骨架去插值 (被权利金挡下的档同样是定平值的两侧之一)。
         atmIv: atmImpliedVolatility(
