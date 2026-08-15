@@ -29,4 +29,17 @@ gh pr create --title "<conventional-commits-title>" --body-file /tmp/pr-body-<br
 gh pr edit <N> --body-file <fixed.md>
 ```
 
-完事。`.github/workflows/pr-validation.yml` 已配 `types: [..., edited]` → `gh pr edit` 自动唤醒新 workflow run;`Enforce PR Checkboxes` step 用 `github.rest.pulls.get` **live fetch** 当前 PR body 而非 webhook 快照 → 新 run 读到刚修好的 body → 绿。
+完事。
+
+> 🚨 **agent 身份（`gh-bot`）走不了上面这条** —— `gh pr edit` 的 GraphQL mutation 会连带查 reviewer / assignee 的 `login` / `name` / `slug`，那几个字段要 `read:org`，而 machine account 的 token 按最小权限只给了 `repo` + `workflow`，必然报 `Your token has not been granted the required scopes`。而 [git-workflow](git-workflow.md) 又规定 `gh pr edit` 必须走 bot ⇒ **这是 agent 路径上的默认形态，不是意外**。
+>
+> 改走 REST（同样触发 `pull_request.edited`，`Enforce PR Checkboxes` 的 live fetch 照常重跑，与上面等效）：
+>
+> ```bash
+> gh-bot api -X PATCH repos/<owner>/<repo>/pulls/<N> \
+>   -f "title=<新标题>" -F "body=@<fixed.md>" --jq '.title'
+> ```
+>
+> `-F body=@<file>` 读文件内容（`-f` 只吃字面量）。
+>
+> ⚠️ **改 body 会让上一轮 `PR Validation` 被并发组取消**，而 `gh pr checks` 把 `cancelled` 显示成 `fail`。别据此判失败 —— 按 head sha + workflow 名锚定**最新那轮**再看。`.github/workflows/pr-validation.yml` 已配 `types: [..., edited]` → `gh pr edit` 自动唤醒新 workflow run;`Enforce PR Checkboxes` step 用 `github.rest.pulls.get` **live fetch** 当前 PR body 而非 webhook 快照 → 新 run 读到刚修好的 body → 绿。
