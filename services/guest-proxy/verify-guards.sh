@@ -99,6 +99,60 @@ else
   printf '  ✅ %-46s\n' "响应不回显凭证"; pass=$((pass+1))
 fi
 
+echo "== 闸 6 研报投递（057；本代理唯一的写端点，且不打 shim）=="
+RESEARCH="$BASE/research-report"
+RQ_OK="symbol=us:PEP&reportDate=2026-08-01&title=probe"
+
+# ── 6a. 只放 POST ─────────────────────────────────────────────────────────
+# `limit_except POST { deny all; }`。读取动作在服务端本就没实装，这条验的是**通道层
+# 也独立拒了一次** —— 两层各拒一次，不依赖对方（FR-013）。
+#
+# ── 6b/6c. 市场闸 ─────────────────────────────────────────────────────────
+# 这几条由 nginx 的 `if` 在 **rewrite 阶段**直接 return，早于 limit_req 所在的
+# preaccess 阶段 ⇒ **不进限频桶**（与闸 3 同理），可以随便跑。
+check "研报 symbol 缺市场前缀被拒" 400 "$(code -X POST "${AUTH[@]}" "$RESEARCH?symbol=PEP&reportDate=2026-08-01&title=x")"
+check "研报 symbol 非归一 us.PEP 被拒" 400 "$(code -X POST "${AUTH[@]}" "$RESEARCH?symbol=us.PEP&reportDate=2026-08-01&title=x")"
+# 🚨 `$arg_*` 不解码 ⇒ 投递方把冒号写成 %3A 时，nginx 看到的就是字面量 `hk%3A01698`，
+#    撞不上 `^(cn|hk|us):` 而 400。方向 fail-closed（安全），错误文案里写了「不要编码」。
+check "研报 symbol %3A 编码被拒" 400 "$(code -X POST "${AUTH[@]}" "$RESEARCH?symbol=hk%3A01698&reportDate=2026-08-01&title=x")"
+check "研报无 token 被拒" 401 "$(code -X POST "$RESEARCH?$RQ_OK")"
+
+# ── 6d. 过得了 nginx 那几道闸的探针 ───────────────────────────────────────
+# 🚨 下面这些**会进限频桶**（guest_upload 2r/m + burst 1）。连着跑就会撞上自己的脚印，
+#    与 guest_option_meta 那几条同款形态。撞到 429 时等一个漏桶周期再重试一次 ——
+#    **不是把 429 当通过**，最终仍按真实期望值判定。
+upload_check() { # upload_check <说明> <期望码> <curl 参数...>
+  local first
+  first="$(code "${@:3}")"
+  if [[ "$first" != "429" ]]; then check "$1" "$2" "$first"; return; fi
+  printf '     ↻ %s 撞限频 429 → 等 35s 重试一次\n' "$1"
+  sleep 35
+  check "$1（重试后）" "$2" "$(code "${@:3}")"
+}
+
+# 405 也走限频桶：`limit_except` 在 access 阶段，而 limit_req 在它**之前**的 preaccess。
+upload_check "研报 GET 被拒（limit_except 生效）" 405 -X GET "${AUTH[@]}" "$RESEARCH?$RQ_OK"
+
+# 非 PDF → 422。🚨 **这条的价值不在「非 PDF 被拒」，在于证明请求真的到了 app** ——
+# 上面所有 4xx 都是 nginx 自己 return 的，只有它们的话，`proxy_pass` 的路径写错
+# （`/api/v1/research/report` 少个 s 之类）也会全绿，直到真投递才炸。
+notpdf="$(mktemp)"; printf 'this is definitely not a pdf' > "$notpdf"
+upload_check "研报非 PDF 被拒（说明到了 app）" 422 -X POST "${AUTH[@]}" \
+  -F "file=@$notpdf;filename=probe.pdf;type=application/pdf" "$RESEARCH?$RQ_OK"
+rm -f "$notpdf"
+
+# 超上限 → 413，且**必须是 app 那层返的**。四层天花板刻意让 multipart（16MB）先于
+# nginx（20m）跳闸，因为只有它能给干净的 ProblemDetail；nginx 那层跳闸给的是 HTML 页、
+# 且 server 日志里什么都没有。⇒ 这里连**谁返的**一起验：JSON 体 = app，HTML = nginx。
+big="$(mktemp)"; { printf '%%PDF-1.4\n'; dd if=/dev/zero bs=1048576 count=17 2>/dev/null; } > "$big"
+big_body="$(curl -s -m 300 -X POST "${AUTH[@]}" -F "file=@$big;filename=big.pdf;type=application/pdf" "$RESEARCH?$RQ_OK")"
+rm -f "$big"
+if grep -q '"status":413\|"status": 413' <<<"$big_body"; then
+  printf '  ✅ %-46s\n' "研报超上限 413 由 app 返（非 nginx）"; pass=$((pass+1))
+else
+  printf '  ❌ %-46s 实得 %s\n' "研报超上限 413 由 app 返（非 nginx）" "${big_body:0:100}"; fail=$((fail+1))
+fi
+
 if [[ " $* " == *" --from-guest "* ]]; then
   # ── 闸 0：接口级包过滤（只有从访客机跑才有意义）─────────────────────────
   # WireGuard 把包直接交给 77 的 IP 栈，且**安全组管不到隧道内流量** ⇒ 若 wg2 上
@@ -107,7 +161,13 @@ if [[ " $* " == *" --from-guest "* ]]; then
   # ⚠️ 在 77 本机跑这几条会假红（那些端口在本机本来就通），故只在 --from-guest 下测。
   echo "== 闸 0 接口级包过滤（除 8811 外应全部不可达）=="
   host="$(printf '%s' "$BASE" | sed -E 's#^https?://##; s#[:/].*$##')"
-  for port in 22 80 443; do
+  # 🚨 **3001 是 057 给 mono app 开的 loopback 端口**，它必须从 wg2 这一侧够不到。
+  #    推理是三条：DNAT 规则带 `-d 127.0.0.1` 匹配 ⇒ 访客打 10.90.0.1:3001 落 INPUT 被
+  #    wg2 catch-all REJECT；即便日后误绑 0.0.0.0，`DOCKER-USER -i wg2 -j REJECT` 仍在
+  #    FORWARD 前拦；而 guest-proxy 连 loopback 是**本机发起、无 input interface**，
+  #    不匹配 `-i wg2` 故不受影响。**这条断言就是那三条推理的落地护栏** ——
+  #    没有它，将来有人把 3001 加进 ACCEPT 规则时不会有任何东西红。
+  for port in 22 80 443 3001; do
     # -w 3 连不上就退非零;通了才是问题。
     if nc -z -w 3 "$host" "$port" 2>/dev/null; then
       printf '  ❌ %-46s 端口 %s **通了**——PostUp 规则没生效\n' "$host:$port 应不可达" "$port"; fail=$((fail+1))
