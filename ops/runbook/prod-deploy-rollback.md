@@ -15,6 +15,21 @@
    - **healthy** → 公网 smoke（`https://api.shintongtech.com/healthz/live`）→ 把本次 tag 写入 `.last-good-tag`（回滚基线）。
    - **不 healthy** → 抓最后 80 行日志 → **自动回滚**到 `.last-good-tag`（调 `rollback-prod.sh`）恢复在线 → `exit 1`（部署标记失败、通知你）。
 
+### 步 2 的 `<tag>` 从哪来
+
+`build-image` 把**它自己解析出的镜像 tag**（已 strip `server-` 前缀）写成 `image-tag` artifact；`deploy` 经 `workflow_run.id` 取回。**不从触发方的 ref 名推断** —— 那个老判据隐含「build-image 恒由 tag push 触发」，一旦走 dispatch，`head_branch` 是分支名（如 `main`），deploy 会去 pull 一个不存在的 `...:main`（issue #53，2026-08-14 实撞）。artifact 取不到时**硬失败**并打印补救命令，**不回落**。
+
+手动 `workflow_dispatch` 触发 `deploy.yml` 时走 `inputs.tag`，与上面无关。
+
+### hotfix：重建某个已有 tag 的镜像
+
+发版流程自身出问题（如 #52：buildx attestation 被 ACR 拒收）导致某 tag 的镜像没构出来时，**从 `main` dispatch `build-image.yml`，`tag` 填那个 git tag**：
+
+- workflow 文件恒来自 dispatch 所选的 ref ⇒ 选 `main` 才拿得到**已修好**的 workflow（选那个旧 tag 会把坏 workflow 再跑一遍）；
+- `checkout` 的 `ref:` 认 `inputs.tag` ⇒ 构建的**代码树是那个 tag 的**，镜像内容与它的标签一致。
+
+两者刻意分离，缺一不可。⚠️ `tag` 必须是**真实存在的 git ref**，不能是凭空标签；分支名含 `/`（本仓 `fix/xxx` 规范）不能用 —— docker tag 不允许 `/`，会在 push 时红。
+
 > 「容器只读到 compose `environment:` 块里显式映射的变量」+「新配置项的 9 连 boot-path」见 [`.claude/rules/config-env-sync.md`](../../.claude/rules/config-env-sync.md)。**新增 config key 时**：非密真值进 committed `.env.production`（随全 git 驱动 deploy 自动到 prod）；secret 进**仓外**密文（`sops edit ~/.nvy/secrets.enc.env`）并**手动 scp** 到 prod `/etc/nvy/`（§3.3）—— 这一步不自动，漏了会被 B2 闸拦下。
 
 **密钥值**的注入：deploy + rollback 已接 `sops exec-env`（守卫式，prod 没 sops/`secrets.enc.env` 时 fallback 明文老路）—— 私钥纳管 / cutover / 新增密钥流程见 [`secrets-sops.md`](secrets-sops.md)（cutover 未执行前仍是明文 `.env.production` 老路）。

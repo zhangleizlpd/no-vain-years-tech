@@ -1,8 +1,12 @@
 name: Deploy
 
 # Per ADR-0026 § Cutover. Triggered when build-image.yml succeeds (auto
-# deploy after a server-vX.Y.Z release tag), or manually via
-# workflow_dispatch (hotfix path; pick a tag to deploy).
+# deploy after a server-vX.Y.Z release tag **or after a hotfix dispatch**),
+# or manually via workflow_dispatch (pick a tag to deploy).
+#
+# 部署哪个镜像 tag，由 build-image 经 `image-tag` artifact 显式告知，**不再从触发方的
+# ref 名推断**（issue #53：dispatch 时 head_branch 是分支名，deploy 会去 pull 一个
+# 不存在的 `...:main`）。手动 dispatch 走 inputs.tag。
 #
 # Steps run on the production SWAS via SSH (per ADR-0026 § D6):
 #   1. git fetch + reset --hard origin/main on SWAS (default; pulls the full
@@ -51,6 +55,9 @@ on:
 
 permissions:
   contents: read
+  # 跨 run 取 build-image 上传的 `image-tag` artifact 需要（download-artifact 带
+  # run-id + github-token 时走 Actions API，默认 scope 只够取本 run 的 artifact）。
+  actions: read
 
 jobs:
   deploy:
@@ -64,17 +71,37 @@ jobs:
     # workflow_run only deploys on success; workflow_dispatch always runs.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
+      # 取 build-image 那次 run 产出的镜像 tag。**不要用 head_branch 推断** —— 见下一步
+      # 的注释。continue-on-error：artifact 缺失不在这里死，交给下一步打出可操作的错误。
+      - name: Fetch image tag from the triggering build-image run
+        if: ${{ github.event_name == 'workflow_run' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tag
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Resolve image tag
         id: tag
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TAG="${{ inputs.tag }}"
+          elif [[ -f image-tag.txt ]]; then
+            # build-image 把它**自己解析出来的** image tag 写进了 artifact（已 strip
+            # `server-` 前缀 per ADR-0042 component-in-tag）。这样触发方式与镜像 tag
+            # 彻底解耦：tag push 与 workflow_dispatch 两条路径读同一个值。
+            TAG="$(tr -d '[:space:]' < image-tag.txt)"
           else
-            # workflow_run triggered by tag push; head_branch is the tag name.
-            # For mono per ADR-0042 component-in-tag, git tag = server-vX.Y.Z;
-            # image tag in ACR = vX.Y.Z (build-image.yml stripped server-).
-            RAW="${{ github.event.workflow_run.head_branch }}"
-            TAG="${RAW#server-}"
+            # 🚨 **刻意不回落 `workflow_run.head_branch`。**
+            # 那个旧判据的隐含前提是「build-image 恒由 tag push 触发」：dispatch 时
+            # head_branch 是 dispatch 所在的分支名（如 main），于是 deploy 会去 pull
+            # `...:main` —— 必然 not found，而且失败信息完全误导人（看起来像镜像没推上去，
+            # 实际推得好好的）。2026-08-14 实撞，见 issue #53。回落 = 把这个坑留着。
+            echo "::error::拿不到 build-image 的 image-tag artifact（run ${{ github.event.workflow_run.id }}）"
+            echo "可能原因：该 run 早于本机制落地 / upload 步骤失败 / artifact 已过期。"
+            echo "补救：手动 dispatch 本 workflow 并显式传 tag=<ACR 里的镜像 tag，如 v0.25.0>"
+            exit 1
           fi
           if [[ -z "$TAG" ]]; then
             echo "::error::Could not resolve tag from trigger"

@@ -23,7 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag to build (e.g. server-v0.1.5 or hotfix-x)'
+        # 🚨 必须是一个**真实存在的 git ref**（tag 或分支），不能是凭空标签 ——
+        # 下面 checkout 用它做 `ref:`（内容跟着标签走，见那一步的注释）。
+        description: 'Git ref to build — 真实 tag 或分支名 (e.g. server-v0.25.0)；镜像 tag = 去掉 server- 前缀后的它本身'
         required: true
         type: string
 
@@ -43,6 +45,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # 🚨 **必须显式带 ref，否则 dispatch 时「镜像内容」与「镜像标签」可以不一致**：
+          # 不带 ref 检出的是 dispatch 所在的 ref（如 main），而 `inputs.tag` 只用来给镜像
+          # 起名 ⇒ 在 main 上 dispatch 传 tag=v0.26.0，产出的镜像**内容是 main 的树、标签
+          # 却是 v0.26.0**，且推送成功 / 部署成功 / healthcheck 全绿，只有版本号是假的。
+          #
+          # 📌 这里刻意**只管代码树**：workflow 文件本身恒来自 dispatch 所选的 ref，与本行
+          # 无关。两者分离正是 hotfix 需要的形状 —— 2026-08-14 补发 v0.25.0 时，#52 的
+          # `provenance: false` 修在 main 上，而要构建的树是 server-v0.25.0：从 main
+          # dispatch 拿到修好的 workflow，`ref:` 拿到正确的树，缺一不可。
+          #
+          # tag push 路径 `inputs` 上下文为空 ⇒ 回落 github.ref (refs/tags/server-vX.Y.Z)，
+          # 行为与本行加入前完全一致。
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Resolve image tag
         id: tag
@@ -118,6 +134,31 @@ jobs:
           # 依赖一个没写出来的默认值等于给下一次同款事故留门。
           provenance: false
           sbom: false
+
+      # 🚨 **把「本次产出的镜像 tag」交给 deploy —— 唯一可靠的传递通道。**
+      #
+      # `workflow_run` 的 event payload **没有触发方的 dispatch inputs**（只有
+      # head_branch / head_sha / event / id），所以 deploy 原先只能拿 `head_branch`
+      # 当镜像 tag —— 那个判据的隐含前提是「build-image 恒由 tag push 触发」。一旦走
+      # workflow_dispatch，head_branch 是 dispatch 所在的分支名（如 main），deploy 就
+      # 去 pull 一个 `...:main` 的镜像，必然 not found（2026-08-14 实撞，见 issue #53）。
+      #
+      # 反向让 build-image 主动 `gh workflow run deploy.yml` 也走不通：GITHUB_TOKEN
+      # 触发的 workflow_dispatch 不会创建新 run（GH 防递归），得引 PAT，比 artifact 差。
+      #
+      # 📌 刻意放在 push 成功**之后**：artifact 存在 ⇔ ACR 里确实有这个 tag。
+      - name: Export image tag for deploy
+        run: echo "${{ steps.tag.outputs.tag }}" > image-tag.txt
+
+      - name: Upload image tag artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-tag
+          path: image-tag.txt
+          # 🚫 **不要缩短 retention** —— 直觉上「deploy 秒级就取走了，留 1 天足够」是错的：
+          # deploy 的 job 挂着 `environment: production`（required reviewers），可以**无上限
+          # 地停在等人批准**。artifact 先过期 ⇒ 一次本来只是「等批」的部署会变成硬失败。
+          # 一个十几字节的指针文件，留默认（仓库设置，通常 90 天）的代价可以忽略。
 
       - name: Image pushed
         run: |
