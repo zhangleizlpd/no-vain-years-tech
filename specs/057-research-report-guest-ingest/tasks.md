@@ -60,7 +60,7 @@ updated_at: '2026-08-15'
 
 ## Phase 1: 平台层（阻塞其余）🎯
 
-- [ ] T001 [Server] **`buildPostObjectCredential` 加可选 key leaf 参数**（`FR-001`, plan `D-2`）：`oss-policy.ts:126` 现硬编码 `` `${keyPrefix}${uuid}/img` ``（Phase 0 实测 key 确为 `research/<uuid>/img`）。加可选入参（默认 `'img'`），使研报可传 `'report.pdf'` 之类语义化 leaf。→ verify: `oss-policy.spec.ts` **既有断言逐字节不变**（三个既有 caller 的行为回归护栏）+ 新增一条显式 leaf 的用例 + 一条省略 leaf 时仍为 `/img` 的用例
+- [X] T001 [Server] **`buildPostObjectCredential` 加可选 key leaf 参数**（`FR-001`, plan `D-2`）：`oss-policy.ts:126` 现硬编码 `` `${keyPrefix}${uuid}/img` ``（Phase 0 实测 key 确为 `research/<uuid>/img`）。加可选入参（默认 `'img'`），使研报可传 `'report.pdf'` 之类语义化 leaf。→ verify: `oss-policy.spec.ts` **既有断言逐字节不变**（三个既有 caller 的行为回归护栏）+ 新增一条显式 leaf 的用例 + 一条省略 leaf 时仍为 `/img` 的用例
 
 - [ ] T002 [Server] **`ObjectStoragePort` + fetch 适配器 + fake，并把 Phase 0 PoC 提升为 vendor spec**（`FR-007`, `FR-008`, plan `D-2`）：新建 `object-storage.port.ts`（interface + `Symbol` DI token）/ `oss-post-object.adapter.ts`（组 FormData + POST，照 `account/object-exists.probe.ts` 的 interface+Symbol+fetch 范式）/ `fake-object-storage.adapter.ts`（测试专用，**MUST NOT 注册进 `app.module`**）。适配器返回**三态**结局：确认成功 / 确认被拒 / 无法确定（超时、连接中断、5xx），**不得**把「无法确定」压成「被拒」。同步改 `oss.module.ts` 那句「仅 re-export 签名函数 + DTO 类型」的注释。Phase 0 的 scratchpad PoC 落为 `research-oss.vendor.spec.ts` + `describe.skipIf(!RUN_RESEARCH_OSS_IT)`，env 名登记进 `scripts/checks/check-env-sync.ts` 的 `ALLOWLIST`。→ verify: 单测四条且**每条都能真失败** —— ① 解析 multipart boundary 断言最后一段是 `name="file"`（Guardrail 3；mobile 侧同款先例 `use-profile-image-upload.spec.ts:81`）② part 的 Content-Type 为 `application/pdf` ③ 非 200 映射为具名异常且不吞原因 ④ 日志与异常消息**不含** `x-oss-signature`。vendor spec 默认 skip，`RUN_RESEARCH_OSS_IT=1` 时三条断言（写 `research/` 200 / 写前缀外 403 / 超 range 400）复现 Phase 0 结果
 
