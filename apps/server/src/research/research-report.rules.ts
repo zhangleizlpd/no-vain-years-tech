@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * 研报投递的纯函数规则（057）。无 I/O、无 DI —— 归一 / 判型 / 兜底 / 定位四件事。
  *
@@ -171,4 +173,46 @@ export function titleFromFilename(filename: string): string {
  */
 export function buildObjectKey(contentHash: string): string {
   return `${RESEARCH_KEY_PREFIX}${contentHash}/${RESEARCH_KEY_LEAF}`;
+}
+
+/** 内容指纹 = 文件字节的 sha256 hex。归档位置与幂等判据都从它导出。 */
+export function contentHashOf(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+/**
+ * 单份上限 16MB。两份真实样例分别约 2.02MB / 2.15MB，留出约 8 倍余量。
+ *
+ * 🚨 **四层体积天花板必须显式排序**（由外到内）：nginx `client_max_body_size`（20MB，
+ * 413 + HTML 页，server 日志什么都没有，最难诊断）> **multipart `fileSize`（= 本常量，
+ * 唯一能给干净 ProblemDetail 的那层）** < OSS `content-length-range` 上界（本常量 + slack）。
+ * 让中间那层先跳闸 —— 外面两层各留 slack，本常量取准值。
+ */
+export const RESEARCH_MAX_BYTES = 16 * 1024 * 1024;
+
+/** OSS policy 的 `content-length-range` 上界。留 slack 让 multipart 那层先跳闸。 */
+export const RESEARCH_OSS_MAX_BYTES = RESEARCH_MAX_BYTES + 1024 * 1024;
+
+/**
+ * 单投递方配额 8GB（按样例约 2MB/份估算约 4000 份/人，两人合计仍远低于 40G 总容量）。
+ *
+ * 落成常量而非 env：这个值在有人真的撞到它之前不会有人调，而多一个 env 就要多过一遍
+ * 九位置同步闸。要调就改这里 + 部署（spec Assumptions 说的「可配置」是这个意思）。
+ */
+export const RESEARCH_QUOTA_BYTES = 8 * 1024 * 1024 * 1024;
+
+/**
+ * 研报日期：只认 `YYYY-MM-DD`，按 **UTC** 落成日历日。
+ *
+ * 🚨 不用 `new Date(raw)` 的本地时区解析 —— 那会让「2026-08-01」在 UTC+8 的进程里存成
+ * 前一天，而这类偏差**不报错**，只让数字悄悄差一天
+ * （per `docs/conventions/cross-timezone-date-semantics.md`）。研报日期取投递方声明值，
+ * 系统不从 PDF 内容反推、也不与投递时刻做一致性校验。
+ */
+export function parseReportDate(raw: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const d = new Date(`${raw}T00:00:00.000Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  // `2026-02-31` 这类会被 Date 静默滚到 3 月 —— 回读比对挡掉。
+  return d.toISOString().slice(0, 10) === raw ? d : null;
 }
