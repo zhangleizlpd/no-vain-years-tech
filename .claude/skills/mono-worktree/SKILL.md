@@ -37,10 +37,11 @@ regex 校验：`^[a-z0-9][a-z0-9/-]*[a-z0-9]$`。**首尾必须字母/数字，�
 启动时 `feat-open` 写副 worktree 根 `.envrc`，注入 4 个 override 字段，覆盖主仓 `apps/server/.env` 默认值。**`DATABASE_URL` 恒指共享 `mbw_poc`**（含 marketdata 种子）；隔离仅 PORT/Metro/Redis db 三维：
 
 ```bash
+# 首个副 worktree 的实际取值；后续 worktree 三个维度各自递增
 export DATABASE_URL="postgresql://mbw:mbw@localhost:5433/mbw_poc"  # 共享，所有 worktree 同库
-export REDIS_URL="redis://localhost:6380/<redis_db>"
-export PORT=<server_port>          # 3001 起递增
-export EXPO_METRO_PORT=<metro_port> # 8082 起递增
+export REDIS_URL="redis://localhost:6380/1"  # Redis db，1 起递增
+export PORT=3001                             # server，3001 起递增
+export EXPO_METRO_PORT=8082                  # Metro，8082 起递增
 ```
 
 **双信号源分配**（每次 `feat-open` 都跑）：

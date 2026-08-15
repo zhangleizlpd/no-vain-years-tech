@@ -241,6 +241,18 @@ jobs:
         # 历史不构成当下路由）。Full-scan, 不依赖 nx affected — 可达性是 holistic invariant。
         run: pnpm tsx scripts/checks/check-convention-orphan.ts
 
+      - name: Enforce skill snippet runnability (per .claude/rules/convention-authoring.md)
+        # .claude/skills 下的代码块是「照抄即跑」的契约。三条判据均来自真机踩坑:
+        #   1. bash/sh 块必须 bash -n 通过 —— 裸 <占位符> 被解析成重定向, 照抄即语法错误
+        #   2. powershell 块必须纯 ASCII 且无 BOM —— 云助手投递路径(base64 → 落文件 →
+        #      按本机编码读)上非 ASCII 会**静默**失败: InvocationStatus=Success /
+        #      ExitCode=0 / ErrorCode 空 / Output 空, 三项全报成功。PowerShell 自己的
+        #      Parser::ParseInput 抓不到这条(它在内存里按 UTF-8 解码) ⇒ 两道检查管的不是
+        #      同一件事, 不可互相替代。
+        #   3. 可执行块内不得有裸 <占位符> —— 引号包住才算合法
+        # Full-scan, 不依赖 nx affected — 片段可跑性是 holistic invariant。
+        run: pnpm tsx scripts/checks/check-skill-snippets.ts
+
       - name: Enforce top-level layout ownership (per docs/conventions/repo-layout.md)
         # 顶层目录归属判据的机器强制，五条全 fail-closed（目标目录缺失 = 红，不是 skip）:
         #   1. ops/ 顶层 ⊆ {bin, host, jobs, lib, runbook}  ← 防 ops/ 再次沙化成一堆同类目录
