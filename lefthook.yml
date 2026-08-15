@@ -277,6 +277,17 @@ pre-commit:
       glob: '{docs/conventions/*.md,CLAUDE.md,.claude/rules/*.md,scripts/checks/check-convention-orphan.ts}'
       run: pnpm tsx scripts/checks/check-convention-orphan.ts
 
+    skill-snippets-check:
+      tags: docs governance
+      # .claude/skills 下的代码块是「照抄即跑」的契约 —— skill 正文对执行方说的就是
+      # 「直接照抄」，所以跑不起来的片段不会显性报错，只会把它带进错误诊断（真机上
+      # 空 Output 被误当编码失败查了一轮）。三条判据全部来自真机踩坑，per
+      # .claude/rules/convention-authoring.md「新增 hook 拦截规则前必须先有 🟢 实证」。
+      # glob 含 checker 自身（同 convention-orphan-check：改检查器必须跑检查器）。
+      # 脚本忽略参数恒全扫。CI 侧 pr-validation gate-checks 无条件镜像。
+      glob: '{.claude/skills/**/*.md,scripts/checks/check-skill-snippets.ts}'
+      run: pnpm tsx scripts/checks/check-skill-snippets.ts
+
     identifier-boundary-check:
       tags: security
       # 本仓面向公开 → 标识符边界（docs/conventions/information-boundary.md）。
