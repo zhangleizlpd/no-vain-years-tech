@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -14,6 +14,7 @@ import { guestUploadConfig, researchOssConfig, type ResearchOssConfig } from '..
 import {
   RESEARCH_MAX_BYTES,
   RESEARCH_OSS_MAX_BYTES,
+  RESEARCH_QUOTA_BYTES,
 } from '../../src/research/research-report.rules';
 
 /**
@@ -298,6 +299,195 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
       const row = await prisma.researchReport.findFirst();
       expect(row?.symbol).toBe('hk:01698');
     });
+  });
+
+  // ── 存储侧的三种结局（state_branch 5 / 8 / 10）─────────────────────────────
+  describe('存储侧失败', () => {
+    it('对象写入被明确拒绝 → 502 REJECTED，库里留 PENDING、MUST NOT 留 COMMITTED', async () => {
+      storage.enqueue('rejected');
+      const res = await post({});
+      expect(res.statusCode).toBe(502);
+      expect((res.json() as { code: string }).code).toBe('RESEARCH_STORAGE_REJECTED');
+
+      const rows = await prisma.researchReport.findMany();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe('PENDING');
+    });
+
+    it('可达性不确定 → 502 INDETERMINATE，与「被拒」用不同 code（决定要不要重投）', async () => {
+      storage.enqueue('indeterminate');
+      const res = await post({});
+      expect(res.statusCode).toBe(502);
+      expect((res.json() as { code: string }).code).toBe('RESEARCH_STORAGE_INDETERMINATE');
+      expect((await prisma.researchReport.findFirst())?.status).toBe('PENDING');
+    });
+
+    it('对象已写入但元数据落库失败 → 留下可被扫出的 PENDING 记录（不静默丢弃）', async () => {
+      // 注入一次 DB 故障：建行是真 PG、对象写入走 fake、只有「翻 COMMITTED」那一步失败。
+      // 这是本文件里唯一一处故障注入 —— HTTP / guard / controller / usecase 全是真的。
+      const spy = vi
+        .spyOn(prisma.researchReport, 'update')
+        .mockRejectedValueOnce(new Error('模拟元数据落库失败'));
+      try {
+        const res = await post({});
+        expect(res.statusCode).toBe(500); // 未预期异常，不伪装成业务拒绝
+        expect(storage.calls).toHaveLength(1); // 对象确实写进去了
+        const rows = await prisma.researchReport.findMany();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].status).toBe('PENDING'); // 扫 PENDING 即可发现这条孤儿
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  // ── 幂等的另一半：就地续做（state_branch 6 / 7）+ 同标的同日期不同字节（4）────
+  describe('就地续做与多版本', () => {
+    it('重投撞自己名下的 PENDING → 就地续做，不新增行、不报冲突', async () => {
+      storage.enqueue('indeterminate');
+      expect((await post({})).statusCode).toBe(502);
+      expect((await prisma.researchReport.findFirst())?.status).toBe('PENDING');
+
+      // 重投同一份：对象上次可能已传成，同字节写同位置是幂等重写，仍判成功。
+      const again = await post({});
+      expect(again.statusCode).toBe(201);
+      expect((again.json() as { deduplicated: boolean }).deduplicated).toBe(false);
+
+      const rows = await prisma.researchReport.findMany();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe('COMMITTED');
+      expect(storage.calls).toHaveLength(2); // 重传了一次
+    });
+
+    it('同标的同日期但字节不同 → 各自独立归档（是不同版本，不是重复）', async () => {
+      await post({
+        file: { filename: 'a.pdf', mime: 'application/pdf', data: pdfOfSize(4096, 'a') },
+      });
+      await post({
+        file: { filename: 'b.pdf', mime: 'application/pdf', data: pdfOfSize(4096, 'b') },
+      });
+
+      const rows = await prisma.researchReport.findMany({ orderBy: { id: 'asc' } });
+      expect(rows).toHaveLength(2);
+      expect(rows[0].objectKey).not.toBe(rows[1].objectKey);
+      expect(rows.every((r) => r.status === 'COMMITTED')).toBe(true);
+    });
+  });
+
+  // ── 配额（state_branch 18 / 19）────────────────────────────────────────────
+  describe('配额', () => {
+    /**
+     * 把某个投递方的用量填到配额之上。
+     *
+     * 🚨 **必须多行填，不能一行填满** —— `size_bytes` 是 `INTEGER`（上限约 2.1GB），而配额
+     * 是 8GB：一行根本存不下配额值。这不是缺陷（单份上限 16MB，一行永远塞不满 Int），
+     * 但它意味着**配额之和必然跨过 Int32 边界**，而 `SUM(integer)` 在 PG 侧返回的是
+     * `bigint` ⇒ 这条路径能不能正常跑，是本组断言真正要证的事。第一版用一行 seed 直接被
+     * Prisma 拒（`value out of range for type integer`），那次红就是这条实证的来源。
+     */
+    const CHUNK = 2_000_000_000; // < Int32 上限，5 份 = 10GB > 8GB 配额
+    async function seedQuotaFilled(uploaderRef: string): Promise<void> {
+      const chunks = Math.ceil(RESEARCH_QUOTA_BYTES / CHUNK);
+      await prisma.researchReport.createMany({
+        data: Array.from({ length: chunks }, (_, i) => ({
+          symbol: 'hk:00700',
+          reportDate: new Date('2026-07-01T00:00:00.000Z'),
+          title: '旧研报',
+          contentHash: `${i}`.padStart(64, 'z'),
+          sizeBytes: CHUNK,
+          originalFilename: 'old.pdf',
+          objectKey: `research/zzz${i}/report.pdf`,
+          status: 'COMMITTED',
+          uploaderKind: 'guest',
+          uploaderRef,
+        })),
+      });
+    }
+
+    it('累计用量已达配额 → 507，本身完全合规的一份也被拒且不碰 OSS', async () => {
+      await seedQuotaFilled('friend1');
+      const seeded = await prisma.researchReport.count();
+
+      const res = await post({ guest: 'friend1' });
+      expect(res.statusCode).toBe(507);
+      expect((res.json() as { code: string }).code).toBe('RESEARCH_QUOTA_EXCEEDED');
+      expect(storage.calls).toHaveLength(0);
+      expect(await prisma.researchReport.count()).toBe(seeded); // 没新增行
+
+      // 顺带钉住上面那条注释：跨过 Int32 的和确实算得出来，不是靠溢出侥幸过闸。
+      const agg = await prisma.researchReport.aggregate({
+        _sum: { sizeBytes: true },
+        where: { uploaderKind: 'guest', uploaderRef: 'friend1' },
+      });
+      expect(agg._sum.sizeBytes).toBeGreaterThan(2 ** 31);
+      expect(agg._sum.sizeBytes).toBeGreaterThan(RESEARCH_QUOTA_BYTES);
+    });
+
+    it('别人名下的用量不计入我的配额', async () => {
+      await seedQuotaFilled('friend2');
+      expect((await post({ guest: 'friend1' })).statusCode).toBe(201);
+    });
+
+    it('共享同一对象的两个投递方，各自全额计一次（口径蓄意高估）', async () => {
+      await post({ guest: 'friend1' });
+      await post({ guest: 'friend2' });
+
+      const sums = await prisma.researchReport.groupBy({
+        by: ['uploaderRef'],
+        _sum: { sizeBytes: true },
+        orderBy: { uploaderRef: 'asc' },
+      });
+      expect(sums).toHaveLength(2);
+      // 两人指向同一个 objectKey，但字节数在各自名下都全额计入 —— 不因共享而减半。
+      expect(sums[0]._sum.sizeBytes).toBe(sums[1]._sum.sizeBytes);
+      expect(sums[0]._sum.sizeBytes).toBeGreaterThan(0);
+    });
+  });
+
+  // ── 存储未配置（state_branch 9）────────────────────────────────────────────
+  describe('存储未配置', () => {
+    it('unconfigured → 503「该能力未启用」，不是服务故障，且不落库', async () => {
+      // 单独 boot 一个把 researchOssConfig 换成 unconfigured 的实例 —— 其余接线不变。
+      const ref = await Test.createTestingModule({
+        imports: narrowTestModule([ResearchModule]),
+      })
+        .overrideProvider(REDIS_CLIENT)
+        .useValue({ call: () => undefined, quit: () => undefined, on: () => undefined })
+        .overrideProvider(OBJECT_STORAGE_PORT)
+        .useValue(storage)
+        .overrideProvider(researchOssConfig.KEY)
+        .useValue({ kind: 'unconfigured' })
+        .overrideProvider(guestUploadConfig.KEY)
+        .useValue({ token: TOKEN })
+        .compile();
+
+      const off = ref.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+      await off.register(fastifyMultipart, { limits: { fileSize: 2 * 1024 * 1024, files: 1 } });
+      off.setGlobalPrefix('api');
+      await off.init();
+      await off.getHttpAdapter().getInstance().ready();
+      try {
+        const res = await off.inject({
+          method: 'POST',
+          url: `/api/v1/research/reports?${QUERY}`,
+          headers: {
+            'content-type': `multipart/form-data; boundary=${BOUNDARY}`,
+            authorization: `Bearer ${TOKEN}`,
+            'x-guest': 'friend1',
+          },
+          payload: multipartBody({
+            filename: 'report.pdf',
+            mime: 'application/pdf',
+            data: pdfOfSize(4096),
+          }),
+        });
+        expect(res.statusCode).toBe(503);
+        expect(storage.calls).toHaveLength(0);
+        expect(await prisma.researchReport.count()).toBe(0);
+      } finally {
+        await off.close();
+      }
+    }, 60_000);
   });
 
   // ── 单向收集箱：服务端不实装任何读取动作（state_branch 20 / 21）───────────────
