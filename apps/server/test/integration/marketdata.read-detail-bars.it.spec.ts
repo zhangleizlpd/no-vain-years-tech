@@ -164,6 +164,48 @@ describe('015 marketdata 详情 + K线读端点 (Testcontainers PG + Redis + Fas
     expect(body.corporateActions[0].payload).toEqual({ perShare: '30.00' });
   });
 
+  // 理杏仁 ex_rights 不下发昨收 (lixinger-eod-bar.adapter) → A 股 DailyBar.prevClose 恒 NULL。
+  // adapter 侧的契约是「官方昨收由读侧 close+changePct 反推」, 但两个 day 级读侧投影 (详情
+  // quote / K线序列) 原先直透 stored 列 → 昨收恒 '--', 而同屏涨跌额/涨跌幅 (走 changeFromPct)
+  // 却有值。真机 Mate50 实测锚: 600519 close=1341.99 / changePct=-0.98 → 涨跌额 -13.28 在场、
+  // 昨收缺失。此处钉的是**接线**不是纯函数 (officialPrevClose 的算术由 unit spec 覆盖)。
+  it('详情昨收: stored prevClose 为 NULL 时由官方 changePct 反推 (不再吐 null)', async () => {
+    const inst = await seedInstrument('600036');
+    await noneBar(inst.id, '2026-06-02', '1341.9900', { changePct: '-0.9800' }); // prevClose 不种 → NULL
+
+    const res = await auth('/api/v1/marketdata/instruments/cn:600036');
+    expect(res.statusCode).toBe(200);
+    expect(res.json().quote).toMatchObject({
+      price: '1341.9900',
+      prevClose: '1355.2717', // = 1341.99 / (1 - 0.0098)
+      change: '-13.2817', // changeFromPct 口径不变 (回归哨兵)
+      changePct: '-0.9800',
+    });
+  });
+
+  it('K线昨收: day 级序列同样反推 (与详情同源, 不留第二个漏点)', async () => {
+    const inst = await seedInstrument('600037');
+    await noneBar(inst.id, '2026-06-02', '1341.9900', { changePct: '-0.9800' });
+
+    const res = await auth('/api/v1/marketdata/instruments/cn:600037/bars?adjust=none&period=day');
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ close: '1341.9900', prevClose: '1355.2717' });
+  });
+
+  it('stored prevClose 在场 → 直用, 不被反推覆盖 (富途 us last_close 路径)', async () => {
+    const inst = await seedInstrument('600038');
+    await noneBar(inst.id, '2026-06-02', '1700.0000', {
+      prevClose: '1690.0000',
+      changePct: '0.5917',
+    });
+
+    const res = await auth('/api/v1/marketdata/instruments/cn:600038');
+    expect(res.statusCode).toBe(200);
+    expect(res.json().quote).toMatchObject({ prevClose: '1690.0000' });
+  });
+
   it('缺失维度 null: 仅身份 (无任何 DailyBar/估值/财报/公司行动)', async () => {
     await seedInstrument('000001');
     const res = await auth('/api/v1/marketdata/instruments/cn:000001');

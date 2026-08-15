@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service.js';
-import { aggregateBars, decimalToString, parseCanonicalSymbol } from './marketdata.rules.js';
+import {
+  aggregateBars,
+  decimalToString,
+  officialPrevClose,
+  parseCanonicalSymbol,
+} from './marketdata.rules.js';
 import { deriveAdjustedBars, type AdjustableBarRow } from './adjusted-bars.rules.js';
 import { InstrumentNotFoundException } from './instrument-not-found.exception.js';
 import { freshnessTier } from './freshness-tier.js';
@@ -94,7 +99,9 @@ export class GetInstrumentBarsUseCase {
       close: decimalToString(b.close),
       // changePct 百分数 (复权不变量, 不走 4dp 价格量纲): null 透传, 非 null 保 4 位。
       changePct: b.changePct === null ? null : b.changePct.toFixed(4),
-      prevClose: decimalToString(b.prevClose),
+      // stored 优先, 缺则由官方 changePct 反推 (与详情 quote 同源)。在 aggregateBars 之前
+      // 落定: day 原样透传本值, week/month 桶首取本值 (与其内部同一 officialPrevClose 口径)。
+      prevClose: decimalToString(officialPrevClose(b.close, b.prevClose, b.changePct)),
       volume: b.volume === null ? null : b.volume.toString(),
       amount: b.amount === null ? null : b.amount.toString(),
       turnoverRate: decimalToString(b.turnoverRate),

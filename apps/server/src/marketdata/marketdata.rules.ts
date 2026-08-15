@@ -70,10 +70,28 @@ export function changeFromPct(
 }
 
 /** 官方昨收 = close/(1+changePct/100) (changePct 百分数)。changePct 缺 / 分母 0 → null。 */
-function impliedPrevClose(close: Decimalish, changePct: string | null): Prisma.Decimal | null {
+function impliedPrevClose(close: Decimalish, changePct: Decimalish | null): Prisma.Decimal | null {
   if (changePct === null) return null;
   const denom = D('1').plus(D(changePct).div(100));
   return denom.isZero() ? null : D(close).div(denom);
+}
+
+/**
+ * 官方昨收 —— **所有读侧投影的单一入口**: stored 列优先 (真实时源下发真昨收, 如富途 us
+ * `last_close`), 缺则由官方 changePct 反推 (理杏仁 ex_rights 不下发昨收, 见
+ * `lixinger-eod-bar.adapter` 的「官方昨收由读侧反推」契约)。两者皆缺 → null (不伪造)。
+ *
+ * 复权安全: `changePct` 是复权不变量 (`deriveAdjustedBars` 只换算 OHLC/prevClose、原样透传
+ * changePct), `close` 已按目标口径换算 → 反推值自动落在同一复权基准, 无需再乘因子。
+ */
+export function officialPrevClose(
+  close: Decimalish | null,
+  prevClose: Decimalish | null,
+  changePct: Decimalish | null,
+): Prisma.Decimal | null {
+  if (prevClose !== null) return D(prevClose);
+  if (close === null) return null;
+  return impliedPrevClose(close, changePct);
 }
 
 /** 52 周高低只需 close + tradeDate; 兼容端口 DTO (string) 与 PG row (Decimal)。 */
@@ -155,10 +173,7 @@ export function aggregateBars(bars: readonly EodBarPoint[], period: BarPeriod): 
     if (!acc) {
       buckets.set(key, { ...bar });
       // 桶首日昨收: stored 优先 (未来实时源真昨收), 缺则由官方 changePct 反推。
-      firstPrev.set(
-        key,
-        bar.prevClose !== null ? D(bar.prevClose) : impliedPrevClose(bar.close, bar.changePct),
-      );
+      firstPrev.set(key, officialPrevClose(bar.close, bar.prevClose, bar.changePct));
       continue;
     }
     // bars 升序 → 后到的是更晚交易日: 更新末收/末日, 累计区间高低与量。
