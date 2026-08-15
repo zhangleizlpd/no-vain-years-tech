@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.26.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.25.0...server-v0.26.0) (2026-08-15)
+
+
+### Features
+
+* **research:** 研报库 guest 投递入口 —— 第 11 个 bounded context + 私有桶只写归档 ([#59](https://github.com/zhangleizlpd/no-vain-years-tech/issues/59)) ([5b46e2b](https://github.com/zhangleizlpd/no-vain-years-tech/commit/5b46e2b0c3d05e1c28795d2d0d7b9c52146c01a4))
+
+
+### Bug Fixes
+
+* **marketdata:** 昨收读侧补官方反推 —— 理杏仁不下发 prevClose,详情/日K 直透 stored 列致恒 '--' ([#56](https://github.com/zhangleizlpd/no-vain-years-tech/issues/56)) ([dfb50c2](https://github.com/zhangleizlpd/no-vain-years-tech/commit/dfb50c2a19f5075e5ce5068e1a069865f32f72b0))
+* **security:** 开 trustProxy 取真实客户端 IP —— prod 恒在 nginx 后,socket 地址是私网致 IP 全丢 ([#57](https://github.com/zhangleizlpd/no-vain-years-tech/issues/57)) ([9252678](https://github.com/zhangleizlpd/no-vain-years-tech/commit/92526781e6377950074dc65633d7b74cd849eceb))
+
 ## [0.25.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.24.0...server-v0.25.0) (2026-08-14)
 
 
