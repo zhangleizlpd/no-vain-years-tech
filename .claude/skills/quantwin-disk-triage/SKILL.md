@@ -60,7 +60,7 @@ model: inherit
 
 ```bash
 . ~/.nvy/fleet.env; . ~/.nvy/quantwin-health.env
-PS=<script.ps1>
+PS=./stage1.ps1   # 你的载荷文件；别写成裸 <占位符>，bash 会当成重定向直接语法错误
 
 # ── 发送前强制自检（见下方陷阱 4；跳过它 = 可能拿到「成功但空输出」而毫无察觉）──
 LC_ALL=C grep -n $'[^\t -~]' "$PS" && { echo "🔴 载荷含非 ASCII —— PowerShell 会静默解析失败。改成纯 ASCII 再发。"; exit 1; }
@@ -72,12 +72,16 @@ INV=$(aliyun ecs RunCommand --profile "${NVY_QUANTWIN_ALIYUN_PROFILE:-mbw-server
   --Type RunPowerShellScript --Name nvy-triage --ContentEncoding Base64 \
   --Timeout 900 --CommandContent "$B64" | sed -n 's/.*"InvokeId": *"\([^"]*\)".*/\1/p')
 # 轮询：>2min 的脚本用 run_in_background，别前台干等
+# 判据写成「还在进行中就继续」，不要写成「是 Running 才继续」—— 下发后最初几秒是 Pending,
+# `grep Running || break` 会首轮就退出并空手而归（鉴别见陷阱 4）。非进行中的状态一律 break,
+# 未知状态也 break（fail-closed），靠下面那行把它打出来。
 for i in $(seq 1 60); do
   R=$(aliyun ecs DescribeInvocationResults --profile "${NVY_QUANTWIN_ALIYUN_PROFILE:-mbw-server}" \
       --region "${NVY_QUANTWIN_REGION:-cn-shanghai}" --InvokeId "$INV" --InstanceId "$NVY_QUANT_WIN_ECS_ID")
-  echo "$R" | grep -q '"InvocationStatus": "Running"' || break
-  sleep 10
+  S=$(echo "$R" | sed -n 's/.*"InvocationStatus": *"\([^"]*\)".*/\1/p' | head -1)
+  case "$S" in Running|Pending) sleep 10 ;; *) break ;; esac
 done
+echo "status=$S"   # 强制打印：空输出时这是区分「没跑完」与「编码失败」的唯一依据
 echo "$R" | sed -n 's/.*"Output": *"\([^"]*\)".*/\1/p' | head -1 | base64 -D
 ```
 
@@ -246,6 +250,9 @@ else { Write-Output "  no CloudMonitor agent (expected; monitoring lives off-box
 ```powershell
 # NOTE: quote the placeholder. Bare <...> makes PowerShell choke ("< is reserved"),
 #       so an unquoted placeholder turns this snippet into a copy-paste trap.
+#       Same trap in bash, different mechanism: it parses <x> as redirections and dies
+#       with "syntax error near unexpected token newline". Every snippet in this skill
+#       says "copy verbatim" -- so a placeholder must be copy-runnable, not a metavariable.
 fsutil hardlink list '<biggest-file>'                    # lists every path sharing that data
 Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore   # the only authoritative WinSxS number
 ```
@@ -286,6 +293,22 @@ Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore   # the only authoritativ
 InvocationStatus = Success    ExitCode = 0    ErrorCode = ''    ErrorInfo = ''
 Output = <空>                 StartTime → FinishedTime 仅 1 秒（根本没执行，解析就挂了）
 ```
+
+🚨 **「空输出」有第二个成因，别一上来就查编码。** 命令下发后最初几秒 `InvocationStatus` 是
+**`Pending`**（不是 `Running`），轮询若写成 `grep -q '"InvocationStatus": "Running"' || break`
+会**首轮就 break**、拿到空 Output —— 外观和编码失败一模一样：
+
+| 观测                                      | 成因         | 处置                 |
+| ----------------------------------------- | ------------ | -------------------- |
+| `status=Success` + 空 Output + 起止仅 ~1s | **编码失败** | 查 ASCII / BOM       |
+| `status=Pending` 或 `Running` + 空 Output | **还没跑完** | 继续轮询，这不是 bug |
+
+⇒ **打印 `InvocationStatus` 是强制的**。不打这一行，两种成因在终端上无法区分。
+2026-08-15 真机复现：第一次取数就撞上 `Pending`，而第一反应是去查编码 —— 白查。
+
+> `scripts/quantwin-health/probe.sh` 没有这个 bug，但**不是因为状态判断写对了**（它同样只认
+> `Running`），而是靠后面一行 `[ -n "$out_b64" ] || continue` 兜住：`Pending` 时 Output 为空
+> 就继续轮询。改那个循环时别把这道兜底顺手删了。
 
 **⇒ 本 skill 所有 PowerShell 载荷一律纯 ASCII。** 注释写英文，别用 emoji，别用 `—` / `→` 之类的
 非 ASCII 标点，也别用中文做 `Select-String` 的匹配词（本地化输出要匹配就整段打印，在分析端过滤）。
