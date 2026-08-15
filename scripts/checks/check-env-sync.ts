@@ -119,6 +119,9 @@ const ALLOWLIST = new Set([
   'RUN_OSS_IT',
   'RUN_M3_VISION_IT',
   'M3_VISION_IT_IMAGE_URL',
+  // env-gated 真桶写入 IT 的开关 (research-oss.vendor.spec.ts; 057 T002)。vitest gate,
+  // 非 application config。RESEARCH_OSS_* 四个凭证本身已在 .env.example。
+  'RUN_RESEARCH_OSS_IT',
   // Optional server config WITH a schema .default() in apps/server/src/config/*.config.ts —
   // the default (and its rationale) is the single source of truth in the .config.ts itself,
   // so these are NOT duplicated in .env.example. Set via env only to override. Adding a NEW
