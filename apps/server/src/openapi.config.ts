@@ -26,6 +26,17 @@ export function buildOpenApiConfig() {
         },
         'worker-token',
       )
+      // 057 guest 投递通道 token: 隧道内的 guest-proxy 转发研报投递时覆写的常量凭证。
+      // 与用户 JWT、与 worker-token 三者互不相干; 端点用 @ApiBearerAuth('guest-upload-token')
+      // 引用。投递方本人从不持有它 —— 他打的是代理, 代理才持有 (FR-015)。
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          description: 'guest 投递通道 token (GUEST_UPLOAD_TOKEN)',
+        },
+        'guest-upload-token',
+      )
       .build()
   );
 }
