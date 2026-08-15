@@ -84,7 +84,7 @@ updated_at: '2026-08-15'
 
 ## Phase 4: 契约与决策留痕
 
-- [ ] T010 [P] [Docs] **ADR-0065**（plan Gate 0.4）：新建 `docs/adr/0065-research-report-private-object-storage.md` —— 立第 11 个 bounded context `research`（依据 = PRD §3.8 与 §3.5→`alert` 先例）+ **amend ADR-0045 两条被否决项**（`:83` 后端代理上传 / `:84` private bucket）+ 正向 `sunset_trigger`（单文件 > 100MB 或需断点续传 → 重审 header 签名 / SDK）。**必须写明**：ADR-0045 那条 trigger 原文限定「私密化的**图片**资产」而本片是 PDF，属**类比命中非字面命中**。🚫 **不写反向 sunset_trigger**（「12 个月无第二个 use case 就折叠 ctx」建立在「研报只是一张表」的错误前提上，已被 PRD §3.8 证伪）。→ verify: ADR governance checklist 过 + `pnpm tsx scripts/checks/check-convention-orphan.ts` 无孤儿 + ADR-0045 正文加一行指向 0065 的 Superseded-in-part 注记
+- [X] T010 [P] [Docs] **ADR-0065**（plan Gate 0.4）：新建 `docs/adr/0065-research-report-private-object-storage.md` —— 立第 11 个 bounded context `research`（依据 = PRD §3.8 与 §3.5→`alert` 先例）+ **amend ADR-0045 两条被否决项**（`:83` 后端代理上传 / `:84` private bucket）+ 正向 `sunset_trigger`（单文件 > 100MB 或需断点续传 → 重审 header 签名 / SDK）。**必须写明**：ADR-0045 那条 trigger 原文限定「私密化的**图片**资产」而本片是 PDF，属**类比命中非字面命中**。🚫 **不写反向 sunset_trigger**（「12 个月无第二个 use case 就折叠 ctx」建立在「研报只是一张表」的错误前提上，已被 PRD §3.8 证伪）。→ verify: ADR governance checklist 过 + `pnpm tsx scripts/checks/check-convention-orphan.ts` 无孤儿 + ADR-0045 正文加一行指向 0065 的 Superseded-in-part 注记
 
 - [X] T011 [Contract] **OpenAPI 导出 + api-client 重生成**（Constitution §V）：`nx run server:export-openapi` → `nx affected -t generate`。**两步都要跑，无一行覆盖** —— 漏第一步完全静默（`api-client:generate` 无 `dependsOn`，orval 拿上一版 json regen，`git status` 干净、lint/typecheck/test/build 全绿、CI 无一处会红）。→ verify: `git status` 显示 `apps/server/openapi.json` 有变更且含新路径；`packages/api-client` 产物同步；`pnpm tsx scripts/checks/check-api-property-nullable.ts` 绿（nullable 标量的 `@ApiProperty` 必须显式 `type: 'string'`）
 

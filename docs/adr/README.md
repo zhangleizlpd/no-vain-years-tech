@@ -88,6 +88,7 @@
 | 0062 | Optionsdesk 第 10 Bounded Context — 期权台锚管理 + 击球区雷达 + 跨 ctx 双向仅 Q7-B 只读 | apps/server                                      | Accepted   |
 | 0063 | Mobile 冻结列表格横向同步 — 单 Pan 驱动共享值,弃 `scrollTo` 广播                        | apps/mobile                                      | Accepted   |
 | 0064 | Optionsdesk 选约检索五层架构 — 召回/粗排/特征加工/精排/表达,可插拔精排,不设重排层       | apps/server, apps/mobile                         | Accepted   |
+| 0065 | 研报库第 11 Bounded Context — 私有桶 + server 代理上传,amend ADR-0045 两条被否决项      | apps/server                                      | Accepted   |
 
 (0021 历史空缺,跳过编号 — 详 commit 历史)
 

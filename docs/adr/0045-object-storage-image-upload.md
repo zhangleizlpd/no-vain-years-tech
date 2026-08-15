@@ -17,6 +17,8 @@ sunset_trigger: |
 - Deciders: @zhangleizlpd
 - Tags: storage / infra / mobile / image-upload
 
+> ⚠️ **Superseded-in-part by [ADR-0065](0065-research-report-private-object-storage.md)（2026-08-15）**：本 ADR「Alternatives Considered」里被否决的**后端代理上传**与 **private bucket** 两项，在 057 研报库的驱动用例下**被采纳**（上传方是隧道内的第三方而非系统账号用户，且资产含持仓与主观判断）。**本 ADR 对 profile 图片的结论不变** —— 直传 + public-read 仍是那个用例的正解。详见 ADR-0065 § 对 ADR-0045 的 amend。
+
 ## Context
 
 [007 账号与安全页级重构](../../specs/007-account-security-refactor/spec.md) 把「头像 / 主页背景图」渲染为占位行,其**上传 / 更换能力**显式移出 007、留独立 feature spec(007 Out of Scope)。该独立 spec 落地前,需先锁定**对象存储选型 + 图片上传架构**这一**平台级、跨模块、近不可逆**决策 —— 它是本 mono **首次引入 blob / 对象存储**,且决策可被后续 blob 需求(PKM 附件 / 用户上传内容等)复用,不该埋在单个 feature 的 plan.md 里。
