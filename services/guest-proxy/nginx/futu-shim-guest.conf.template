@@ -69,6 +69,16 @@ limit_req_zone $guest_name zone=guest_option_chain:1m rate=10r/m;
 # ③ `expiration_date` 与 `snapshot` 官方均 60 次/30s = 120 次/分，与 ① 同档，故同额度。
 limit_req_zone $guest_name zone=guest_option_meta:1m rate=20r/m;
 
+# ④ 研报投递（057）。🚨 **它与上面三个不是同一类账**，别照抄它们的推理：
+#    ①②③ 护的是**上游 vendor 的官方限额**（额度是从富途那边切来的，给访客多少 prod 就少多少）；
+#    本 zone 护的是**本机磁盘** —— `proxy_request_buffering` 默认 on，请求 body 会**整份先落盘**
+#    再转发，而本机可用磁盘是几个 G 量级（同顶部 codes 截断那段的理由）。
+#
+#    算账：2r/m × 16MB × burst 1 ⇒ 峰值驻留约 48MB，安全。
+#    研报是人工产出物、一天几份，2r/m 对真实用法**毫无束缚**；真正兜住滥用的是每投递方
+#    8GB 的配额闸（在 server 侧），本 zone 只负责挡住「循环打」这一种形态。
+limit_req_zone $guest_name zone=guest_upload:1m rate=2r/m;
+
 limit_req_status 429;
 
 # ── 日志里的 codes 截断 ─────────────────────────────────────────────────────
@@ -257,6 +267,54 @@ server {
     #    置换），表现为 /healthz 恒 401 而 /kline 正常。
     location = /healthz {
         proxy_pass ${FUTU_SHIM_URL}/healthz;
+    }
+
+    # ── 研报投递（057）—— 本代理上唯一一条**写**端点，也是唯一一条不打 shim 的 ────
+    #
+    # 它转给**本机的 mono app**（compose 给 app 开的 loopback-only 端口 127.0.0.1:3001），
+    # 不是港机的 shim。上面所有端点都是「读行情」，这条是「往收集箱里放东西」。
+    location = /research-report {
+        # ── 闸 A：只放 POST ────────────────────────────────────────────────
+        # 服务端本就没实装任何读取动作，但**这条不能省**：那是会被未来某个 PR 悄悄打破的
+        # 状态（有人加了内部 list 端点、路径前缀一样，就直接对访客开放了）。两层各拒一次，
+        # 不依赖对方（FR-013）。
+        limit_except POST { deny all; }
+
+        # ── 闸 B：市场白名单 ────────────────────────────────────────────────
+        # 🔴 **与上面行情端点的 US-only 刻意不同**，别当成不一致改齐：行情那条只放 US 是
+        #    「访客的用途就是美股」的最小权限；而研报库按 PRD 覆盖 A股/港股/美股三个市场，
+        #    收窄到 US 会让这条通道对一半标的不可用。两处的判据本来就不是同一个。
+        #
+        # ⚠️ `$arg_*` **不解码** ⇒ 投递方若把冒号写成 `%3A`，这里撞不上、直接 400。
+        #    方向是 fail-closed（安全），但错误文案必须写明「不要编码」，否则 agent 会
+        #    反复试错烧限频（skill 文案 T014 同步写明）。
+        if ($arg_symbol !~ "^(cn|hk|us):") {
+            return 400 '{"error":"bad_request","detail":"symbol must start with cn:/hk:/us: (do NOT percent-encode the colon)"}';
+        }
+
+        # ── 闸 C：体积 ─────────────────────────────────────────────────────
+        # 四层天花板由外到内：**本行 20m** > OSS content-length-range 17MB >
+        # multipart fileSize 16MB。刻意让**中间那层先跳闸** —— 只有 multipart 那层能给出
+        # 干净的 ProblemDetail；本行跳闸给的是 413 + HTML 页，且 server 日志里什么都没有，
+        # 是三层里最难诊断的一个。全仓此前零处设置本指令，默认 1m ⇒ 不加这行必然恒 413。
+        client_max_body_size 20m;
+
+        limit_req zone=guest_upload burst=1 nodelay;
+
+        # ── 闸 D：token 置换（整组三条）───────────────────────────────────
+        # 🚨 `proxy_set_header` 是**整组覆盖**：这里只要出现一条，server 级那三条就全部
+        #    对本 location 失效 ⇒ 必须整组抄。Authorization 换成 **mono 侧的**
+        #    `GUEST_UPLOAD_TOKEN`（不是 shim 的那把）—— 照抄 FUTU_SHIM_TOKEN 不是安全洞
+        #    （app 侧 401 fail-closed）但排障方向完全错：看到的是「这个 guest token 不对」，
+        #    真因是代理少改了一行。
+        proxy_set_header Authorization "Bearer ${GUEST_UPLOAD_TOKEN}";
+        proxy_set_header Host $host;
+        proxy_set_header X-Guest $guest_name;
+
+        # 上传比读行情慢得多（2MB 走隧道 + server 再转 OSS），读超时给足。
+        proxy_read_timeout 120s;
+
+        proxy_pass http://127.0.0.1:3001/api/v1/research/reports$is_args$args;
     }
 
     # 其余一律不存在。放在最后,前面几个 = 精确匹配优先。

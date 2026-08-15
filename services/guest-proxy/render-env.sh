@@ -27,6 +27,10 @@ ROTATE="${ROTATE:-}"
 # sops 注入。缺了就停 —— 渲染出一个带占位符的 env 比报错危险得多:
 # nginx 会拿字面量 __FILL_FUTU_SHIM_TOKEN__ 当 bearer 去打上游,401 且难查。
 : "${FUTU_SHIM_TOKEN:?未拿到 FUTU_SHIM_TOKEN —— 忘了用 sops exec-env 包起来?}"
+# 研报投递（057）转发给本机 mono app 的 bearer。走与 shim token 同一条路径而**不是**
+# __FILL_GUESTn_TOKEN__ 那条自动发现路径：那条会现生成随机值，而这个值必须与 mono 侧
+# SOPS 里的逐字节一致 —— 现生成就永远对不上，表现是投递恒 401 且 401 按设计不泄露原因。
+: "${GUEST_UPLOAD_TOKEN:?未拿到 GUEST_UPLOAD_TOKEN —— 忘了用 sops exec-env 包起来?}"
 
 [[ -f "$TEMPLATE" ]] || { echo "模板不存在: $TEMPLATE" >&2; exit 2; }
 
@@ -60,6 +64,9 @@ cp "$TEMPLATE" "$tmp"
 
 FUTU_SHIM_TOKEN="$FUTU_SHIM_TOKEN" \
   perl -pi -e 's|__FILL_FUTU_SHIM_TOKEN__|$ENV{FUTU_SHIM_TOKEN}|' "$tmp"
+
+GUEST_UPLOAD_TOKEN="$GUEST_UPLOAD_TOKEN" \
+  perl -pi -e 's|__FILL_GUEST_UPLOAD_TOKEN__|$ENV{GUEST_UPLOAD_TOKEN}|' "$tmp"
 
 # 两个清单在循环里直接攒出来 —— 别到最后再用正则从文件里反推谁新谁旧（试过，
 # fresh 为空/非空两种形态下的分支正则很容易写出空子表达式，grep 直接报错）。

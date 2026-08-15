@@ -49,7 +49,10 @@ services:
     environment:
       # 🚨 加访客时**必须**把新键加进这条正则。漏了的形态最阴：nginx 起得来、日志正常，
       #    但 map 里留着字面量 `${GUEST2_TOKEN}` ⇒ 那个访客永远 401，且看不出哪错了。
-      NGINX_ENVSUBST_FILTER: '^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$$'
+      # ⚠️ `GUEST_UPLOAD_TOKEN` 必须**单独列出** —— 它不匹配 `GUEST[0-9]+_TOKEN`（中间没有
+      #    数字），而它漏掉的形态与漏访客键完全一样：nginx 起得来、日志正常，但研报 location
+      #    里留着字面量 `${GUEST_UPLOAD_TOKEN}` 当 bearer ⇒ 投递恒 401 且看不出哪错。
+      NGINX_ENVSUBST_FILTER: '^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$$'
 
     healthcheck:
       # 打 loopback 上那个独立的探针 server（见 nginx template 顶部）。
