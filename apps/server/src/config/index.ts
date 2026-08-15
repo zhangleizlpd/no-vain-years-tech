@@ -11,6 +11,12 @@ export { codeIndexConfig, type CodeIndexConfig } from './codeindex.config.js';
 export { asrConfig, type AsrConfig } from './asr.config.js';
 export { agentBridgeConfig, type AgentBridgeConfig } from './agent-bridge.config.js';
 export { ossConfig, ossPublicBaseUrl, type OssConfig, type OssAliyunConfig } from './oss.config.js';
+export {
+  researchOssConfig,
+  type ResearchOssConfig,
+  type ResearchOssAliyunConfig,
+} from './research-oss.config.js';
+export { guestUploadConfig, type GuestUploadConfig } from './guest-upload.config.js';
 export { wechatConfig, type WechatConfig } from './wechat.config.js';
 export {
   marketdataConfig,

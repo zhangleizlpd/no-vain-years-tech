@@ -224,6 +224,22 @@ services:
       # 故 :-空串兜底安全 (空 → config 视作 null, 不崩 boot)。值经 secrets.enc.env sops 注入。
       # 漏映射则容器读不到 → token 恒空 → 队列端点永远 401 (同 MARKETDATA_PROVIDER 静默陷阱)。
       AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN:-}
+      # 研报归档 OSS (per apps/server/src/config/research-oss.config.ts; 057)。
+      # 账号 C 的**私有**桶，与上面 OSS_* (账号 B, public-read 图片) 是两把 AK、两种 ACL,
+      # 权限交集为空 —— 刻意分成两组映射，混用会让「哪把 AK 写哪个桶」变成运行时才发现的错。
+      # all-or-nothing gate 同 OSS_*: 4 个全空 → unconfigured (boot 绿, 投递端点回「未启用」);
+      # 任一非空 → 4 个全必填, partial 配置 boot crash。:-空 兜底默认 unconfigured。
+      # AK/SK 值经 secrets.enc.env sops 注入; region/bucket 明文在 .env.production。
+      RESEARCH_OSS_REGION: ${RESEARCH_OSS_REGION:-}
+      RESEARCH_OSS_BUCKET: ${RESEARCH_OSS_BUCKET:-}
+      RESEARCH_OSS_ACCESS_KEY_ID: ${RESEARCH_OSS_ACCESS_KEY_ID:-}
+      RESEARCH_OSS_ACCESS_KEY_SECRET: ${RESEARCH_OSS_ACCESS_KEY_SECRET:-}
+      # guest 投递通道 token (per apps/server/src/config/guest-upload.config.ts; 057)。
+      # guest-proxy (隧道内 nginx) 覆写进 Authorization 的常量 token, 值经 SOPS 注入,
+      # 必须与 guest 机 render-env.sh 渲染的值逐字节一致 (不一致 = 恒 401 且不泄露原因)。
+      # nullable: 未设 → null → GuestUploadAuthGuard fail-closed 拒一切, 故 :-空串兜底安全。
+      # 漏映射则容器读不到 → token 恒空 → 投递端点永远 401 (同 AGENT_WORKER_TOKEN 静默陷阱)。
+      GUEST_UPLOAD_TOKEN: ${GUEST_UPLOAD_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
