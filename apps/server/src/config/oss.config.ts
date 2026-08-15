@@ -10,11 +10,17 @@ import { z } from 'zod';
  * required — boot-time `.parse()` rejects partial config, surfacing
  * misconfiguration before the first credential issuance.
  *
- * Credentials = Aliyun *account B* (`mbw-server-xt`), scoped to minimal
- * `oss:PutObject` on the `avatar/` + `background/` prefixes (per the OSS
- * provisioning runbook / ADR-0037). Secret is never logged; injected via
- * deploy env only. Note these are a *different* Aliyun account than the SMS
- * `ALIYUN_*` creds (account A) — the two coexist.
+ * Credentials = Aliyun *account C* (`nvy-profile-uploader`), scoped to minimal
+ * `oss:PutObject` on the `avatar/` / `background/` / `ideation/` /
+ * `ideation-mockup/` prefixes (per the OSS provisioning runbook / ADR-0037).
+ * Secret is never logged; injected via deploy env only.
+ *
+ * 三组 Aliyun 凭证并存且刻意互不相干:
+ *   - `ALIYUN_*`      账号 A — SMS
+ *   - `RESEARCH_OSS_*` 账号 C 的另一把 AK — 研报**私有**桶, 只能写 `research/`
+ *   - `OSS_*`（本组）  账号 C — 图片**公共读**桶, 只能写上述 4 个前缀
+ * 后两把同属账号 C 但权限交集为空: 任一泄漏都碰不到对方的桶。账号 B 那把
+ * (`mbw-server-xt`) 已随该账号 OSS 欠费停服退役, 不再出现在任何配置里。
  */
 const OssAliyunSchema = z.object({
   kind: z.literal('aliyun'),

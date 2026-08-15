@@ -49,7 +49,7 @@ export class AccountProfileResponse {
 
   @ApiProperty({
     description: 'Avatar image URL (OSS public-read); null when unset (009 FR-S04)',
-    example: 'https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com/avatar/42/uuid/img',
+    example: 'https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com/avatar/42/uuid/img',
     nullable: true,
     type: 'string',
   })
@@ -57,7 +57,7 @@ export class AccountProfileResponse {
 
   @ApiProperty({
     description: 'Home background image URL (OSS public-read); null when unset (009 FR-S04)',
-    example: 'https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com/background/42/uuid/img',
+    example: 'https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com/background/42/uuid/img',
     nullable: true,
     type: 'string',
   })
