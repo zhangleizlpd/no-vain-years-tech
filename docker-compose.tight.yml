@@ -115,7 +115,17 @@ services:
     #    抹掉会让 check-env-sync Check H 判定「.env.production 声明了却 compose 零引用」。
     image: ${MBW_APP_IMAGE:-${NVY_ACR_REPO:?set NVY_ACR_REPO (. /etc/nvy-fleet.env) 或显式给 MBW_APP_IMAGE}:${MBW_VERSION:-latest}}
     restart: unless-stopped
-    # No public port — nginx talks to app:3000 via docker network.
+    # 无公开端口 —— nginx 经 docker 网络访问 app:3000。
+    # 唯一的例外是下面这条 **loopback-only** 映射: guest-proxy 是 `network_mode: host`,
+    # 够不到 docker 网络里的 app:3000, 而它需要把研报投递转给本机的 app (057 plan D-6)。
+    # ⚠️ 必须原样保留 `127.0.0.1:` 前缀 —— 去掉即绑 0.0.0.0 把 app 暴露到公网 (同 postgres
+    #    那条的强调)。3001 取「紧邻容器内 3000」, 与 postgres 的 5432:5432 就近风格一致。
+    # 安全性由既有 iptables 兜住: wg2 的 DNAT 规则带 `-d 127.0.0.1` 匹配, guest 打
+    #    10.90.0.1:3001 落 INPUT 被 wg2 catch-all REJECT; 而 guest-proxy 连 loopback 是
+    #    **本机发起、无 input interface**, 不匹配 `-i wg2`。这三条推理在
+    #    `services/guest-proxy/verify-guards.sh --from-guest` 里有对应的反例断言 (T013)。
+    ports:
+      - '127.0.0.1:3001:3000'
     environment:
       # App (per apps/server/src/config/app.config.ts)
       NODE_ENV: production

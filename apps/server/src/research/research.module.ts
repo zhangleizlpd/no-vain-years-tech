@@ -1,4 +1,9 @@
 import { Module } from '@nestjs/common';
+import { SecurityModule } from '../security/security.module.js';
+import { OBJECT_STORAGE_PORT, OssPostObjectAdapter } from '../integrations/oss/oss.module.js';
+import { GuestUploadAuthGuard } from '../security/guest-upload-auth.guard.js';
+import { IngestResearchReportUseCase } from './ingest-research-report.usecase.js';
+import { ResearchController } from './research.controller.js';
 
 /**
  * research — 第 11 个 bounded context（057 研报库；ADR-0065）。
@@ -25,7 +30,17 @@ import { Module } from '@nestjs/common';
  * 限频由通道层 nginx 的 `limit_req_zone`（按 `$guest_name` 分，天然 per-guest）承担。
  * 范式同 `agent-bridge`（同为机器对机器 + 自有 token guard，亦零 throttler 接线）。
  *
- * 本 module 当前是 ctx 的注册锚；controller / usecase / port 绑定在 T009 接入。
+ * `OBJECT_STORAGE_PORT` 的绑定放在**本 module** 而不是 `OssModule` —— 那边保持「零 provider
+ * 的 re-export 锚」形状（与 llm/asr.module 一致），而各消费 ctx 自己绑定，IT 才能按 ctx
+ * 各自 `useValue` 换成 fake 而不互相干扰。
  */
-@Module({})
+@Module({
+  imports: [SecurityModule],
+  controllers: [ResearchController],
+  providers: [
+    IngestResearchReportUseCase,
+    GuestUploadAuthGuard,
+    { provide: OBJECT_STORAGE_PORT, useClass: OssPostObjectAdapter },
+  ],
+})
 export class ResearchModule {}
