@@ -2,6 +2,24 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.10.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.9.0...mobile-v0.10.0) (2026-08-14)
+
+
+### Features
+
+* **marketdata:** 054 mock 下 28 个采集口拒绝写库 + provider 非法值 boot 抛 ([#39](https://github.com/zhangleizlpd/no-vain-years-tech/issues/39)) ([b2455da](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b2455daf507890522aa5a5cb44c853f853a3dbc9))
+* **optionsdesk:** 052 选约检索分层落地 + 三视角逐层判据重梳 ([#34](https://github.com/zhangleizlpd/no-vain-years-tech/issues/34)) ([90e8b74](https://github.com/zhangleizlpd/no-vain-years-tech/commit/90e8b743bf76cce65d1f7eef51ddd1ae827f84e9))
+* **optionsdesk:** 053 选约表查询下沉 —— 每视角独立请求 + 响应收窄 + 表达层截断 ([#41](https://github.com/zhangleizlpd/no-vain-years-tech/issues/41)) ([b17b4d6](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b17b4d6d8cc9d73278ce6b4705d448f769ab8676))
+* **optionsdesk:** 055 标的链分析报表 —— 打开选约表之前先看清整条链的机会分布 ([#46](https://github.com/zhangleizlpd/no-vain-years-tech/issues/46)) ([0312c0f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0312c0f0b3af365d8d39e2a8f4eb52afbb92d0ff))
+* **optionsdesk:** 056 检索条件抽屉版式重构 —— 输入位可辨识 + 右边界对齐 + OR 显式化 + 行集统一 ([#43](https://github.com/zhangleizlpd/no-vain-years-tech/issues/43)) ([e5f7554](https://github.com/zhangleizlpd/no-vain-years-tech/commit/e5f7554001910f3ee20f57b1c27236fe97e10604))
+
+
+### Bug Fixes
+
+* **mobile:** 把 pretty-format 钉回 CJS 入口 —— 修 dev bundle 整屏白 ([#42](https://github.com/zhangleizlpd/no-vain-years-tech/issues/42)) ([5399547](https://github.com/zhangleizlpd/no-vain-years-tech/commit/539954787dacc5f00524b892159e8e4d2da380b2))
+* **optionsdesk:** 契约到手前点的那一下 Tab 被静默丢弃 —— 三个 Tab 恒可点, 却有一个窗口点了不作数 ([#31](https://github.com/zhangleizlpd/no-vain-years-tech/issues/31)) ([6c2ac79](https://github.com/zhangleizlpd/no-vain-years-tech/commit/6c2ac793278a75e24e7fa2f48c3f986a4d0d85a6))
+* **optionsdesk:** 月度链 chip 被固定高裁字 + 补可见性断言 —— 真机复看列头收口 ([#51](https://github.com/zhangleizlpd/no-vain-years-tech/issues/51)) ([0fd7afe](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0fd7afe42d0a87b462b965563157a8422bbbc8cf))
+
 ## [0.9.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.8.0...mobile-v0.9.0) (2026-08-12)
 
 
