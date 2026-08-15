@@ -12,6 +12,7 @@ import {
   FormValidationException,
   type InvalidAttribute,
 } from './security/form-validation.exception';
+import { HTTP_ADAPTER_OPTIONS } from './security/http-adapter.options';
 
 // Flatten class-validator ValidationError[] into ProblemDetail
 // invalidAttributes shape (per ADR-0038). Nested object errors use
@@ -28,9 +29,13 @@ function flattenValidationErrors(errors: ValidationError[], parentPath = ''): In
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), {
-    bufferLogs: true,
-  });
+  // trustProxy 跳数走 HTTP_ADAPTER_OPTIONS（prod 恒在 nginx 之后；理由 + 取证 + 「为什么是 1
+  // 不是 true」全在该常量的文档注释，行为契约由 http-adapter.options.spec.ts 钉住）。
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    new FastifyAdapter(HTTP_ADAPTER_OPTIONS),
+    { bufferLogs: true },
+  );
   app.useLogger(app.get(Logger));
 
   // CORS must register before any route mounts (Fastify plugin order).

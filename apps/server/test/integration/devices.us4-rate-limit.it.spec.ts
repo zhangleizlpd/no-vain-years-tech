@@ -15,8 +15,12 @@ import { REDIS_CLIENT } from '../../src/security/redis.token';
 // Retry-After 头由 RetryAfterThrottlerGuard (security/) 透出 —— 覆写 throwThrottlingException
 // 抛 RateLimitExceededException(retryAfterSeconds) → ProblemDetailFilter 设 canonical 头,
 // 取代 @nestjs/throttler v6 默认带桶名后缀的 Retry-After-<bucket>。
-// IP 桶按 socket IP 入桶 (trustProxy 未启用,直连部署恒见真实公网 IP;spec 已澄清"无公网 IP"
-// 分支在当前部署不可达,loopback 仅测试环境),故不另测跳过。
+// IP 桶按 `req.ip` 入桶。⚠️ 旧注释在此写「trustProxy 未启用,直连部署恒见真实公网 IP」——
+// 该前提**已被证伪**: prod 的 app 不发布公网端口、恒在 nginx 之后, socket 源地址是网桥私网
+// 地址(2026-08-15 取证 refresh_token 150/150 行 ip_address IS NULL) ⇒ 全体用户曾共用一个 IP 桶。
+// 现由 `security/http-adapter.options.ts` 的 `trustProxy: 1` 取 XFF 末项还原真实客户端地址,
+// 跳数契约与伪造 XFF 负例见 `http-adapter.options.spec.ts`。本 spec 用 loopback 走 inject,
+// 不经 nginx、不带 XFF ⇒ req.ip 退回 socket 地址, 桶行为与改前一致, 故此处断言无需调整。
 describe('US4 设备端点限流 429 (Testcontainers PG + Redis + Fastify)', () => {
   let app: NestFastifyApplication;
   let jwt: JwtTokenService;
