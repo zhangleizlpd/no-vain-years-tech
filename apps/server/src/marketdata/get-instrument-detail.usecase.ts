@@ -5,6 +5,7 @@ import {
   computeChange,
   decimalToString,
   fiftyTwoWeekHighLow,
+  officialPrevClose,
   parseCanonicalSymbol,
 } from './marketdata.rules.js';
 import { InstrumentNotFoundException } from './instrument-not-found.exception.js';
@@ -92,7 +93,13 @@ export class GetInstrumentDetailUseCase {
         price: latestBar ? decimalToString(latestBar.close) : null,
         change,
         changePct,
-        prevClose: latestBar ? decimalToString(latestBar.prevClose) : null,
+        // stored 优先, 缺则由官方 changePct 反推 —— 理杏仁源 prevClose 恒 NULL, 直透会让
+        // 昨收恒 '--' 而同 quote 的 change/changePct (走 changeFromPct) 却有值。
+        prevClose: latestBar
+          ? decimalToString(
+              officialPrevClose(latestBar.close, latestBar.prevClose, latestBar.changePct),
+            )
+          : null,
         asOf: latestBar ? dateOnly(latestBar.tradeDate) : null,
         priceKind: 'eod_close',
         hasData: latestBar !== null,

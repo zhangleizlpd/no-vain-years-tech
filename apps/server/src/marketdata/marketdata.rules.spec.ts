@@ -5,6 +5,7 @@ import {
   computeChange,
   decimalToString,
   fiftyTwoWeekHighLow,
+  officialPrevClose,
 } from './marketdata.rules.js';
 import type { EodBarPoint } from './marketdata.types.js';
 
@@ -82,6 +83,33 @@ describe('marketdata.rules — changeFromPct (官方涨跌幅反推涨跌额, 3b
 
   it('changePct=0 → 涨跌额 0 (平盘, 昨收=今收)', () => {
     expect(changeFromPct('13.2200', '0')).toEqual({ change: '0.0000', changePct: '0.0000' });
+  });
+});
+
+describe('marketdata.rules — officialPrevClose (官方昨收: stored 优先, 缺则反推)', () => {
+  it('stored 非 null → 直用 (真实时源下发的真昨收, 如富途 us last_close)', () => {
+    expect(decimalToString(officialPrevClose('1700', '1690', '0.5917'))).toBe('1690.0000');
+  });
+
+  it('stored 缺 + 官方 changePct 在场 → 反推 close/(1+pct/100) (理杏仁不下发昨收)', () => {
+    // 真机实测锚: 600519 详情屏 close=1341.99 / changePct=-0.98 → 昨收 1355.2717, 涨跌额 -13.28。
+    expect(decimalToString(officialPrevClose('1341.99', null, '-0.98'))).toBe('1355.2717');
+  });
+
+  it('stored 与 changePct 皆缺 → null (无官方值不伪造)', () => {
+    expect(officialPrevClose('1700', null, null)).toBeNull();
+  });
+
+  it('close 缺 → null (无 bar 可推)', () => {
+    expect(officialPrevClose(null, null, '0.5917')).toBeNull();
+  });
+
+  it('changePct=-100% (分母 0, 退市归零) → null 而非除零', () => {
+    expect(officialPrevClose('1700', null, '-100')).toBeNull();
+  });
+
+  it('changePct=0 → 昨收 = 今收 (平盘)', () => {
+    expect(decimalToString(officialPrevClose('1700', null, '0'))).toBe('1700.0000');
   });
 });
 
