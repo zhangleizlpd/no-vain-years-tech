@@ -115,7 +115,17 @@ services:
     #    抹掉会让 check-env-sync Check H 判定「.env.production 声明了却 compose 零引用」。
     image: ${MBW_APP_IMAGE:-${NVY_ACR_REPO:?set NVY_ACR_REPO (. /etc/nvy-fleet.env) 或显式给 MBW_APP_IMAGE}:${MBW_VERSION:-latest}}
     restart: unless-stopped
-    # No public port — nginx talks to app:3000 via docker network.
+    # 无公开端口 —— nginx 经 docker 网络访问 app:3000。
+    # 唯一的例外是下面这条 **loopback-only** 映射: guest-proxy 是 `network_mode: host`,
+    # 够不到 docker 网络里的 app:3000, 而它需要把研报投递转给本机的 app (057 plan D-6)。
+    # ⚠️ 必须原样保留 `127.0.0.1:` 前缀 —— 去掉即绑 0.0.0.0 把 app 暴露到公网 (同 postgres
+    #    那条的强调)。3001 取「紧邻容器内 3000」, 与 postgres 的 5432:5432 就近风格一致。
+    # 安全性由既有 iptables 兜住: wg2 的 DNAT 规则带 `-d 127.0.0.1` 匹配, guest 打
+    #    10.90.0.1:3001 落 INPUT 被 wg2 catch-all REJECT; 而 guest-proxy 连 loopback 是
+    #    **本机发起、无 input interface**, 不匹配 `-i wg2`。这三条推理在
+    #    `services/guest-proxy/verify-guards.sh --from-guest` 里有对应的反例断言 (T013)。
+    ports:
+      - '127.0.0.1:3001:3000'
     environment:
       # App (per apps/server/src/config/app.config.ts)
       NODE_ENV: production
@@ -224,6 +234,22 @@ services:
       # 故 :-空串兜底安全 (空 → config 视作 null, 不崩 boot)。值经 secrets.enc.env sops 注入。
       # 漏映射则容器读不到 → token 恒空 → 队列端点永远 401 (同 MARKETDATA_PROVIDER 静默陷阱)。
       AGENT_WORKER_TOKEN: ${AGENT_WORKER_TOKEN:-}
+      # 研报归档 OSS (per apps/server/src/config/research-oss.config.ts; 057)。
+      # 账号 C 的**私有**桶，与上面 OSS_* (账号 B, public-read 图片) 是两把 AK、两种 ACL,
+      # 权限交集为空 —— 刻意分成两组映射，混用会让「哪把 AK 写哪个桶」变成运行时才发现的错。
+      # all-or-nothing gate 同 OSS_*: 4 个全空 → unconfigured (boot 绿, 投递端点回「未启用」);
+      # 任一非空 → 4 个全必填, partial 配置 boot crash。:-空 兜底默认 unconfigured。
+      # AK/SK 值经 secrets.enc.env sops 注入; region/bucket 明文在 .env.production。
+      RESEARCH_OSS_REGION: ${RESEARCH_OSS_REGION:-}
+      RESEARCH_OSS_BUCKET: ${RESEARCH_OSS_BUCKET:-}
+      RESEARCH_OSS_ACCESS_KEY_ID: ${RESEARCH_OSS_ACCESS_KEY_ID:-}
+      RESEARCH_OSS_ACCESS_KEY_SECRET: ${RESEARCH_OSS_ACCESS_KEY_SECRET:-}
+      # guest 投递通道 token (per apps/server/src/config/guest-upload.config.ts; 057)。
+      # guest-proxy (隧道内 nginx) 覆写进 Authorization 的常量 token, 值经 SOPS 注入,
+      # 必须与 guest 机 render-env.sh 渲染的值逐字节一致 (不一致 = 恒 401 且不泄露原因)。
+      # nullable: 未设 → null → GuestUploadAuthGuard fail-closed 拒一切, 故 :-空串兜底安全。
+      # 漏映射则容器读不到 → token 恒空 → 投递端点永远 401 (同 AGENT_WORKER_TOKEN 静默陷阱)。
+      GUEST_UPLOAD_TOKEN: ${GUEST_UPLOAD_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

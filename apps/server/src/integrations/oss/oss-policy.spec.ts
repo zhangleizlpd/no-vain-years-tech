@@ -44,6 +44,34 @@ describe('buildPostObjectCredential — object key (anti-enumeration, parameteri
   });
 });
 
+describe('buildPostObjectCredential — object key leaf (parameterized, 057)', () => {
+  it('explicit keyLeaf replaces the img leaf', () => {
+    const cred = buildPostObjectCredential({
+      ...BASE,
+      keyPrefix: 'research/',
+      keyLeaf: 'report.pdf',
+    });
+    expect(cred.objectKey).toBe('research/11111111-2222-3333-4444-555555555555/report.pdf');
+    expect(cred.fields.key).toBe(cred.objectKey);
+  });
+
+  it('omitting keyLeaf → /img (backward compatible: the three image callers stay byte-identical)', () => {
+    const cred = buildPostObjectCredential(BASE);
+    expect(cred.objectKey).toBe('avatar/42/11111111-2222-3333-4444-555555555555/img');
+  });
+
+  it('keyLeaf is NOT signed — the policy constrains the prefix only, so the leaf is free', () => {
+    const img = buildPostObjectCredential(BASE);
+    const pdf = buildPostObjectCredential({ ...BASE, keyLeaf: 'report.pdf' });
+    expect(img.fields['x-oss-signature']).toBe(pdf.fields['x-oss-signature']);
+    expect(decodePolicy(pdf.fields.policy).conditions).toContainEqual([
+      'starts-with',
+      '$key',
+      'avatar/42/',
+    ]);
+  });
+});
+
 describe('buildPostObjectCredential — region double-form', () => {
   it('host endpoint keeps the oss- prefix', () => {
     const cred = buildPostObjectCredential(BASE);

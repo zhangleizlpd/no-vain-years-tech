@@ -55,6 +55,9 @@ export default [
         { type: 'chat', pattern: 'src/chat/**' },
         { type: 'ideation', pattern: 'src/ideation/**' },
         { type: 'agent-bridge', pattern: 'src/agent-bridge/**' },
+        // research (057, 第 11 ctx; ADR-0065 研报库) — 叶子, 声明序位置无所谓 (路径不与
+        // 任何既有元素前缀重叠, 不存在被通配抢匹配的问题)。
+        { type: 'research', pattern: 'src/research/**' },
         { type: 'app', pattern: 'src/{app,main}.ts' },
         { type: 'app', pattern: 'src/app/**' },
         { type: 'generated', pattern: 'src/generated/**' },
@@ -89,6 +92,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -112,6 +116,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -131,6 +136,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -149,6 +155,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -168,6 +175,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -187,6 +195,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -205,6 +214,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -226,6 +236,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -247,6 +258,7 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -270,6 +282,7 @@ export default [
                     'chat',
                     'agent-bridge',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -294,6 +307,7 @@ export default [
                     'chat',
                     'ideation',
                     'optionsdesk',
+                    'research',
                   ],
                 },
               },
@@ -325,6 +339,35 @@ export default [
                     'ideation',
                     'agent-bridge',
                     'marketdata-rules',
+                    'research',
+                  ],
+                },
+              },
+            },
+            // research (057, 第 11 ctx; ADR-0065 研报库) 是叶子, 且与 agent-bridge 一样精简 ——
+            // 仅依赖 security 平台基座 (PrismaService 直查自有研报表 + ProblemDetailFilter +
+            // 自有 GuestUploadAuthGuard) + integrations (对象写入 port, ADR-0058 平台层)。
+            // 🚨 **禁 account**: guest 面走通道层常量 token, 零用户 principal, 不碰 JwtAuthGuard。
+            // 这条禁令是**刻意的绊线** —— PRD §3.8 已规划 app 侧投递入口, 那个 feature 接入时
+            // 需要 JwtAuthGuard, lint 会在这里红; 那次改 allowlist 的动作就是「鉴权入口分叉」
+            // 从一条变两条的显式时刻 (plan D-3), 不该悄悄发生。
+            // 跨 ctx 面为 0: symbol 存 `market:code` 裸串, 不建到 marketdata.instrument 的外键、
+            // 不做存在性校验 (校验会拒绝合法新标的, 且引入本可避免的 Q7-B 依赖)。
+            {
+              from: { type: 'research' },
+              disallow: {
+                to: {
+                  type: [
+                    'account',
+                    'auth',
+                    'portfolio',
+                    'marketdata',
+                    'marketdata-rules',
+                    'alert',
+                    'chat',
+                    'ideation',
+                    'agent-bridge',
+                    'optionsdesk',
                   ],
                 },
               },

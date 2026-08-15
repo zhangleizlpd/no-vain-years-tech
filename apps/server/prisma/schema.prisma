@@ -6,7 +6,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  schemas  = ["account", "alert", "chat", "ideation", "marketdata", "optionsdesk", "portfolio", "public"]
+  schemas  = ["account", "alert", "chat", "ideation", "marketdata", "optionsdesk", "portfolio", "public", "research"]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -1710,4 +1710,48 @@ model AnchorChange {
   @@index([anchorId, changedAt(sort: Desc)], map: "ix_anchor_change_anchor_changed_at")
   @@map("anchor_change")
   @@schema("optionsdesk")
+}
+
+// 研报归档记录 (057, 第 11 个 bounded context research; ADR-0065)。一行 = 一次投递,
+// 而不是「一份研报」—— 同一字节被两个投递方各投一次是**两行**(US5 归属完整性), 但它们
+// 指向**同一个 object_key**(位置由 content_hash 单独导出, 与投递方无关) ⇒ 对象只存一份。
+//
+// 🚨 symbol 是归一后的 `market:code` **裸字符串, 无 FK relation** —— 不建到
+// marketdata.instrument 的外键、不做存在性校验。校验会拒绝合法的新标的(研报常常先于
+// 标的入库), 且会引入本片刻意避免的跨 ctx 依赖 (对齐 014「仅共享 market:code 逻辑键」)。
+//
+// status 两态 'PENDING' | 'COMMITTED' 是**写序的产物不是状态机**: DB 写 PENDING → OSS put
+// → 翻 COMMITTED。server 对该桶**无 DeleteObject 权限**(FR-018) ⇒ 孤儿对象清不掉,
+// 「查得到」(status='PENDING' 可扫出) 是唯一的补救前提。
+//
+// uploader 两列承 discriminated union: {kind:'guest', guestName} | {kind:'account', accountId}。
+// 本片只写 'guest'; app 侧投递入口 (PRD §3.8 后续) 接入时**不需要 migration**。
+// version 本片恒初值 —— 留列不实装规则,「同标的多版本 Version+1」属后续 feature。
+//
+// 索引: 只建那条唯一约束。它的前缀 (uploader_kind, uploader_ref) 恰好也是配额 SUM 的
+// 过滤列 ⇒ 幂等查与配额查共用同一棵树。**不预先给 symbol 撒 B-tree**: 本片零读取面
+// (投递方读不到, 本人走 DB 直连), 按标的检索属 PRD §3.8 后续 feature 的事, 那时按真实
+// 查询形状建才对 (同 optionsdesk.anchor 的取舍)。
+model ResearchReport {
+  id               BigInt   @id @default(autoincrement())
+  symbol           String   @db.VarChar(32)
+  reportDate       DateTime @map("report_date") @db.Date
+  title            String   @db.VarChar(256)
+  /// 自由文本来源。默认「自研」—— 当前样例均为用户自有工具链产出; 将来混入券商研报无需改结构。
+  source           String   @default("自研") @db.VarChar(64)
+  version          Int      @default(1)
+  /// 文件字节的 sha256 hex (64 字符)。归档位置由它单独导出 ⇒ 同字节跨投递方复用同一对象。
+  contentHash      String   @map("content_hash") @db.VarChar(64)
+  /// 单份上限 16MB, Int 绰绰有余; 配额是该投递方名下本列之和 (PG 的 SUM(int) 返回 bigint)。
+  sizeBytes        Int      @map("size_bytes")
+  originalFilename String   @map("original_filename") @db.VarChar(256)
+  objectKey        String   @map("object_key") @db.VarChar(256)
+  status           String   @db.VarChar(16)
+  uploaderKind     String   @map("uploader_kind") @db.VarChar(16)
+  uploaderRef      String   @map("uploader_ref") @db.VarChar(64)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([uploaderKind, uploaderRef, contentHash], map: "uk_research_report_uploader_content")
+  @@map("research_report")
+  @@schema("research")
 }

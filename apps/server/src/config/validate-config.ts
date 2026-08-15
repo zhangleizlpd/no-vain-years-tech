@@ -36,6 +36,8 @@ import {
   marketdataSyncConfig,
   asrConfig,
   agentBridgeConfig,
+  researchOssConfig,
+  guestUploadConfig,
 } from './index.js';
 
 // @nestjs/config registerAs returns a callable factory; invoking it runs the
@@ -65,6 +67,8 @@ const FACTORIES: ReadonlyArray<readonly [string, () => unknown]> = [
   ['marketdataSync', marketdataSyncConfig],
   ['asr', asrConfig],
   ['agentBridge', agentBridgeConfig],
+  ['researchOss', researchOssConfig],
+  ['guestUpload', guestUploadConfig],
 ];
 
 function main(): void {

@@ -65,6 +65,14 @@ export interface PostObjectCredentialInput {
    * (backward compatible: existing callers stay byte-identical).
    */
   contentTypeWhitelist?: readonly string[];
+  /**
+   * Trailing object-key segment appended after the per-upload uuid, e.g.
+   * `report.pdf`. Caller-supplied so non-image payloads get a semantic leaf;
+   * the signed policy constrains the *prefix* only, so the leaf is free.
+   * Optional → defaults to `img` (backward compatible: the three image callers
+   * stay byte-identical).
+   */
+  keyLeaf?: string;
   /** Credential validity window in ms (e.g. 15min). */
   ttlMs: number;
   /** Injected signing instant (determinism). */
@@ -115,6 +123,7 @@ export function buildPostObjectCredential(input: PostObjectCredentialInput): Pos
     keyPrefix,
     maxSizeBytes,
     contentTypeWhitelist = IMAGE_WHITELIST,
+    keyLeaf = 'img',
     ttlMs,
     now,
     uuid,
@@ -123,7 +132,7 @@ export function buildPostObjectCredential(input: PostObjectCredentialInput): Pos
   const bareRegion = region.replace(/^oss-/, '');
   const host = `https://${bucket}.${region}.aliyuncs.com`;
 
-  const objectKey = `${keyPrefix}${uuid}/img`;
+  const objectKey = `${keyPrefix}${uuid}/${keyLeaf}`;
 
   // expiration: floor to whole seconds so the JSON carries `.000Z` (OSS V4 expects
   // millis zeroed); x-oss-date is the signing instant (now), not the expiration.

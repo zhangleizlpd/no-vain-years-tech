@@ -10,6 +10,7 @@ import { ChatModule } from '../chat/chat.module.js';
 import { IdeationModule } from '../ideation/ideation.module.js';
 import { AgentBridgeModule } from '../agent-bridge/agent-bridge.module.js';
 import { OptionsdeskModule } from '../optionsdesk/optionsdesk.module.js';
+import { ResearchModule } from '../research/research.module.js';
 import { appConfig, type AppConfig } from '../config/index.js';
 import { HealthModule } from '../observability/health.module.js';
 import { MetricsModule } from '../observability/metrics.module.js';
@@ -51,6 +52,7 @@ import { AppService } from './app.service.js';
     IdeationModule,
     AgentBridgeModule,
     OptionsdeskModule,
+    ResearchModule,
     HealthModule,
     MetricsModule,
     LoggerModule.forRootAsync({
