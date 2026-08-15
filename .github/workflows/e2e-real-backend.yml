@@ -74,20 +74,48 @@ jobs:
         if: always()
         run: pnpm exec nx run mobile:contract-smoke --skip-nx-cache
 
-      - name: Create Issue on Smoke Failure
+      - name: Create or Update Issue on Smoke Failure
         if: failure()
         # 同名 open issue 已存在就不再开新的 —— 连红 N 天 = N 张同名 issue（2026-07/08 实证堆了
         # 26+ 张，信号彻底成噪声）。同一断裂一张票，修好 close 后再红才开新的。
+        # 🚨 但「已存在就只 echo skip」曾把告警整段静音：票里的链接永远停在**首红**那次，
+        #    后续每一轮红都不留痕（#24 实证 —— 首红 08-11，修于 08-12，人工关票 08-15，
+        #    中间三天这条 nightly 事实上无告警能力）。⇒ 命中已有票时改为**贴一条评论**：
+        #    仍是一张票，但每红一次留一条时间线，看票的人拿得到最新那次的证据。
         run: |
-          open_count=$(gh issue list --state open --limit 100 --json title \
-            --jq '[.[] | select(.title == "🚨 Nightly Real-Backend Suite Failed")] | length')
-          if [ "$open_count" = "0" ]; then
+          set -euo pipefail
+          existing=$(gh issue list --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)] | first | .number // empty')
+          if [ -z "$existing" ]; then
             gh issue create \
-              --title "🚨 Nightly Real-Backend Suite Failed" \
-              --body "RUN_REAL_BACKEND_SMOKE=true nightly run RED — the browser cold-boot smoke (real refresh + GET /me + AuthGate) and/or a per-feature contract smoke (generated client → real server → real DB) broke against a real backend. Check which step is red: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --title "$TITLE" \
+              --body "RUN_REAL_BACKEND_SMOKE=true nightly run RED — the browser cold-boot smoke (real refresh + GET /me + AuthGate) and/or a per-feature contract smoke (generated client → real server → real DB) broke against a real backend. Check which step is red: ${RUN_URL}" \
               --label "bug"
           else
-            echo "skip: 已有 $open_count 张同名 open issue（防堆积，同一断裂一张票）"
+            gh issue comment "$existing" \
+              --body "🔴 又红一次（$(date -u '+%Y-%m-%d %H:%M') UTC）：${RUN_URL}"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: '🚨 Nightly Real-Backend Suite Failed'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # 恢复即销警 —— 票的状态不许撒谎。上面那条去重（同一断裂一张票）**假设修好后有人关票**，
+      # 而它自己不产生关票的力：没有这一步，「静音」就只是从「堆 26 张」换成了「哑 3 天」。
+      # 🚨 `success()` 的语义是「之前没有任何步骤失败或被取消」（skipped 不算失败）⇒ 它在
+      #    本 job 全绿时才为真，不会在上面刚开完票的同一轮里回头把票关掉。
+      - name: Close Issue on Recovery
+        if: success()
+        run: |
+          set -euo pipefail
+          gh issue list --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)] | .[].number' |
+            while read -r num; do
+              gh issue close "$num" \
+                --reason completed \
+                --comment "✅ 本轮 nightly 两步全绿，自动销警：${RUN_URL}"
+            done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: '🚨 Nightly Real-Backend Suite Failed'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
