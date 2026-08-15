@@ -1,6 +1,6 @@
 ---
 name: nvy-futu-kline
-description: Fetch US-equity daily K-line (OHLC) and US option data (expiry ladder, contract chain, live quotes with greeks/IV/OI, and per-underlying IV rank/percentile) from the NVY futu-shim guest endpoint over the wg2 WireGuard tunnel. Use when asked for US stock historical bars/candles or US options chains/quotes; US-only, six endpoints, rate-limited and shared with the owner's production collector.
+description: Two capabilities over the NVY wg2 WireGuard tunnel. (1) READ market data — US-equity daily K-line (OHLC) and US option data (expiry ladder, contract chain, live quotes with greeks/IV/OI, per-underlying IV rank/percentile); US-only, rate-limited, shared with the owner's production collector. (2) SUBMIT research reports — upload a research-report PDF for a CN/HK/US stock into the owner's archive; write-only, you can never list or read back what was archived. Use when asked for US stock historical bars/candles or US options chains/quotes, or when asked to file/submit/upload a research report PDF for any stock.
 metadata:
   {
     'openclaw':
@@ -21,14 +21,19 @@ metadata:
   }
 ---
 
-# NVY futu US 行情（guest access）
+# NVY guest access（行情读取 + 研报投递）
 
-取**美股日线历史**与**美股期权**（到期日阶梯 / 合约链 / 实时报价含 greeks / 标的级 IV 分位）。经 wg2 隧道打
-NVY 的受限代理，代理背后是港机上的 futu-shim → 富途 OpenD。**只放美股、只有六个端点**，
-别把它当通用行情 API。
+经 wg2 隧道打 NVY 的受限代理。**两件互不相干的事**：
 
-> ℹ️ slug 里的 `kline` 是历史名 —— 本 skill 现在也覆盖期权面。不改名是为了让
-> `FORCE=1 ./setup.sh install-skill` 能**原地升级**，避免新旧两份同时装着让你选错。
+1. **读行情** —— 美股日线历史 + 美股期权（到期日阶梯 / 合约链 / 实时报价含 greeks / 标的级 IV
+   分位）。代理背后是港机上的 futu-shim → 富途 OpenD。**只放美股**，别当通用行情 API。
+2. **投研报** —— 把一份研报 PDF 交给对方归档（A股 / 港股 / 美股都收）。代理背后是 NVY 的
+   服务端。**只写不读**：你放得进去，但**永远看不到库里有什么**，包括你自己刚放的那份。
+
+一共**七个端点**，见下表。
+
+> ℹ️ slug 里的 `kline` 是历史名 —— 本 skill 早已覆盖期权面，现在又加了研报投递。不改名是
+> 为了让 `FORCE=1 ./setup.sh install-skill` 能**原地升级**，避免新旧两份同时装着让你选错。
 
 ## 先决条件（每次会话第一次调用前检查一次即可）
 
@@ -57,7 +62,7 @@ curl -sS -m 10 -o /dev/null -w '%{http_code}\n' \
 > 不带 sudo 只会得到 `Unable to access interface`，**必然误报「隧道没起」**。
 > `/healthz` 既不需要提权、也直接测的是你真正关心的那条路。
 
-## 端点一览（只有这六个）
+## 端点一览（只有这七个）
 
 | 端点                  | 干什么                                                                 | 关键参数                           |
 | --------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
@@ -67,6 +72,7 @@ curl -sS -m 10 -o /dev/null -w '%{http_code}\n' \
 | `/option-chain`       | 某到期日窗上**有哪些合约**（静态属性，无报价）                         | `code` `start` `end` `option_type` |
 | `/option-snapshot`    | 一批合约**现在多少钱**（报价 + greeks + OI）                           | `codes`（复数，逗号分隔）          |
 | `/overview`           | 一批**标的**的 IV 分位（`iv` / `iv_rank` / `iv_percentile` + HV 梯队） | `codes`（复数，≤500）              |
+| `/research-report`    | **投递**一份研报 PDF（唯一的写端点，只收 POST）                        | `symbol` `reportDate` `title`      |
 
 ## 日线
 
@@ -132,6 +138,71 @@ curl -sS -m 90 -H "Authorization: Bearer $TOKEN" \
 
 ⚠️ `codes` 的规则与 `/option-snapshot` 完全一样：**每一段都必须 `US.` 前缀**，混一个港股整发被拒。
 
+## 投递研报（`/research-report`）—— 唯一的写端点
+
+把一份 PDF 交给对方归档。**一条命令搞定**，不需要先申请凭证再上传再确认：
+
+```bash
+PDF=./reports/pepsico-2026h1.pdf # 换成你要投的那份
+
+curl -sS -m 300 -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@$PDF;type=application/pdf" \
+  "http://10.90.0.1:8811/research-report?symbol=us:PEP&reportDate=2026-08-01&title=PepsiCo%20H1%20review"
+```
+
+成功返回 `201` + `{"reportId": …, "symbol": …, "objectKey": …, "deduplicated": false}`。
+
+| 参数         | 必填 | 说明                                                                                   |
+| ------------ | ---- | -------------------------------------------------------------------------------------- |
+| `symbol`     | ✅   | 标的。`cn:600519` / `hk:00700` / `us:PEP`。后缀式 `00700.HK` 也认，会归一后落库        |
+| `reportDate` | ✅   | 研报日期 `YYYY-MM-DD`。取你声明的值，系统不会去 PDF 里反推，也不与投递时刻做一致性校验 |
+| `title`      | ✅   | 标题                                                                                   |
+| `source`     | —    | 来源，不填按「自研」记                                                                 |
+| `file`       | ✅   | multipart 字段名固定叫 `file`，必须是真 PDF                                            |
+
+### 三件会让你白跑的事
+
+🚨 **`symbol` 里的冒号绝对不要做 percent-encode。** 写 `symbol=us:PEP`，**不要**写
+`symbol=us%3APEP` —— 代理这一层不解码，编码过的值撞不上市场白名单，你会拿到 400 且怎么改
+参数都没用。反过来，**`title` 和 `source` 里的空格 / 中文必须编码**（空格写 `%20`）。
+这两条规则方向相反，是这个端点最容易踩的地方。
+
+🚨 **判据是文件内容不是扩展名。** 把 PNG 改名成 `.pdf` 会被 422 拒。
+
+🚨 **重投同一份文件是安全的，不要因为超时就换个标题重传。** 系统按「你 + 文件内容指纹」
+去重：同一份重投返回**首次那条记录**（`deduplicated: true`），不会产生第二份。上传超时后
+**原样重投**就是正确做法 —— 换标题反而会让它变成"新的一份"。
+
+### 限额
+
+- **每分钟 2 次。** 研报是人工产出物，这个额度对正常用法毫无束缚；它挡的是"循环打"。
+- **单份 16MB。** 超了返回 413。
+- 你名下累计有配额上限，撞到会返回 507 —— 那不是你这份有问题，是总量到顶了，找用户。
+
+### 你**看不到**库里有什么
+
+这条通道对研报是**单向**的：`GET` / `DELETE` 这个路径会被 405 拒，服务端也没有任何列表 /
+下载 / 预览接口。用户问"我之前投过哪些"时，**直说这个通道查不了**，别去试别的路径。
+
+### 研报专用错误码
+
+| 码  | `code`                               | 怎么办                                                                 |
+| --- | ------------------------------------ | ---------------------------------------------------------------------- |
+| 400 | —（代理层直接拒）                    | `symbol` 不是 `cn:`/`hk:`/`us:` 开头，或你把冒号编码了。改参数重发     |
+| 401 | —                                    | token 不对。找用户要，别重试                                           |
+| 405 | —                                    | 你用了 POST 以外的方法。这个端点**只收 POST**                          |
+| 413 | —                                    | 文件超过 16MB。别切片重传，这个端点不支持分片                          |
+| 422 | `RESEARCH_FILE_NOT_PDF`              | 内容不是 PDF（判据是文件头，不是扩展名）                               |
+| 422 | `RESEARCH_SYMBOL_ENCODED`            | 你把 `symbol` 的冒号编码了。直接写 `us:PEP`                            |
+| 422 | `RESEARCH_SYMBOL_MARKET_UNSUPPORTED` | 只收 `cn` / `hk` / `us` 三个市场                                       |
+| 422 | `RESEARCH_REPORT_DATE_INVALID`       | 日期要 `YYYY-MM-DD`                                                    |
+| 429 | —                                    | 超了每分钟 2 次。等一分钟再投，别并发                                  |
+| 502 | `RESEARCH_STORAGE_REJECTED`          | 归档存储明确拒绝了。**重投同一份不会改变结果**，如实告诉用户并停手     |
+| 502 | `RESEARCH_STORAGE_INDETERMINATE`     | 结果未知（可能已经存进去了）。**重投是安全的**，会就地续做不产生第二份 |
+| 503 | `RESEARCH_STORAGE_NOT_CONFIGURED`    | 对方还没接通归档存储。停手，告诉用户                                   |
+| 507 | `RESEARCH_QUOTA_EXCEEDED`            | 你名下累计用量到顶了。停手，找用户                                     |
+
 ## 错误对照（照着判，别猜）
 
 | 码      | 含义                                                                                                         | 怎么办                                                                                          |
@@ -139,7 +210,7 @@ curl -sS -m 90 -H "Authorization: Bearer $TOKEN" \
 | **502** | 上游行情网关暂时不可用（多半正在重启）。**注意：这不是「冷启，等等就好」** —— 网关是常驻的，正常首发就该 200 | **隔 30 秒重打一次**。仍 502 就**如实告诉用户上游有问题**并停手 —— 别连续重试、别当正常现象吞掉 |
 | 400     | `code` / `codes` 不是 `US.` 前缀；或到期日窗 > 30 天；或 `codes` 超过 400 个；或参数格式不对                 | 看返回体的 `detail`，它说得很具体。**港股/A 股本通道一律不可用**，直说做不到，别换端点试        |
 | 401     | token 不对，或缺 `Bearer` scheme（`Bearer` 与 token 之间要有一个空格）                                       | 找用户要 token，别重试                                                                          |
-| 404     | 你打了白名单外的端点                                                                                         | **只有上面那六个**，别探别的。财报日历、IV 历史一类的端点上游有、但**没对访客开**               |
+| 404     | 你打了白名单外的端点                                                                                         | **只有上面那七个**，别探别的。财报日历、IV 历史一类的端点上游有、但**没对访客开**               |
 | 429     | 超了限频（**期权链那条只有 10 次/分，见下**）                                                                | 退避后重试。**别并发刷**                                                                        |
 
 ## 硬约束（违反会给对方造成真实成本）
@@ -156,7 +227,9 @@ curl -sS -m 90 -H "Authorization: Bearer $TOKEN" \
 - 🚨 **不要批量扫标的。** 历史 K 线额度按**证券**计、7 天滚动窗；**同一只票反复查免费，
   查一只新票就占一个槽位、七天才释放**。一个 loop 扫几百只票 = 把对方的额度吃掉。
   用户明确要多只时，逐只确认清单，不要自作主张扩展。
-- 🚨 **只有美股。** 港股 / A 股不在此通道 —— 这条通道按**最小权限**开，只放行实际需要的
-  市场。做不到就直说，不要换端点或改参数试探。
+- 🚨 **行情读取只有美股。** 港股 / A 股的**行情**不在此通道 —— 按**最小权限**开，只放行实际
+  需要的市场。做不到就直说，不要换端点或改参数试探。
+  ⚠️ **这条只管上面那六个读端点。** `/research-report` 收 `cn` / `hk` / `us` 三个市场 ——
+  两处判据本来就不是同一个，别因为这条就拒绝投递港股 / A 股的研报。
 - 🚨 **`ping 10.90.0.1` 不通是设计如此**（隧道只放 8811/tcp），别用它判断连通性 ——
   用 `/healthz`。
