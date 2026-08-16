@@ -36,7 +36,7 @@ updated_at: '2026-08-16'
 | IT（新建 1 个 / 改 2 个） | `apps/server/test/integration/research-058.versioning.it.spec.ts` · `research-057.{schema,report-ingest}.it.spec.ts` |
 | 契约产物 | `apps/server/openapi.json` · `packages/api-client/src/` |
 | 决策留痕 | `docs/adr/0065-research-report-private-object-storage.md` |
-| guest skill | `services/guest-proxy/openclaw-skill/SKILL.md` |
+| guest 能力目录（改：投递研报那节） | `services/guest-proxy/capabilities/capabilities.md` |
 
 🚨 **文件平铺**（ADR-0043）—— `apps/server/src/research/` 下 **MUST NOT** 建任何子目录；本片不新建文件，全是改既有的。
 ⚠️ `research-ingest-rejected.exception.ts` **本片不动** —— 不新增任何对外错误码（plan A2）。
@@ -55,7 +55,7 @@ updated_at: '2026-08-16'
 10. **改了 response DTO 必须跑两步**：`nx run server:export-openapi` → `nx affected -t generate`。只跑第二步是拿 stale `openapi.json` regen，且 `git status` 干净、CI 全绿（`api-client:generate` 无 `dependsOn`）。
 11. **057 既有 IT 先原样跑拿真实红点，再逐条判该改还是该留** —— 幂等键加了 `symbol` 维度，凡「同投递方 + 同字节」的断言都可能隐含旧语义。**不要凭读代码预判要改哪几条**；改过的断言必须在 commit message 里写明「057 的哪条语义被 058 有意改写」，否则日后会被当成回归。
 12. **migration 目录名走 `YYYYMMDD_HHMM_snake_case` 体例**（同 `20260815_2226_create_research_report_table`）。机器闸是 **lefthook 的 `migration-naming-check` job**（`lefthook.yml:94`，inline shell，正则 `^[0-9]{8}_[0-9]{4}_[a-z][a-z0-9_]*$`，权威是 ADR-0035 §1）—— **`scripts/checks/` 下没有同名脚本，别去那里找**。省事的做法是用 wrapper `pnpm db:migrate "<verb obj>"`，它自动前置时间戳。
-13. **`SKILL.md` 里去重那条现在有一半是错的** —— 原文（`SKILL.md:192`）写「`symbol` / `title` / `reportDate` 都不在键里」，本片起 `symbol` **进键了**。不改就是该文件第四例「想当然写错」（前三例：envsubst 三份拷贝 / 403 不是 405 / 换标题会变新的一份）。
+13. **`capabilities.md` 里去重那条现在有一半是错的** —— 原文（「投递研报」→「四件会让你白跑的事」那节）写「`symbol` / `title` / `reportDate` 都不在键里」，本片起 `symbol` **进键了**。不改就是该文件第四例「想当然写错」（前三例：envsubst 三份拷贝 / 403 不是 405 / 换标题会变新的一份）。🚨 **落点是 `capabilities.md` 不是 `SKILL.md`** —— main #75 已把端点清单整段搬过去、改由 `/capabilities` 运行时下发，skill 退化为薄壳；`make-guest-bundle.sh` 的 Gate C 会拦住任何写回 skill / README 的端点名。
 
 > 第二轮删掉的两条 guardrail：**「latest 查询时点必须在翻 `COMMITTED` 之后」**（判定本身没了）与 **「503 撞码」**（不新增错误码了）。它们是本片原先最难写对的两处 —— 随需求一起消失，不是靠纪律扛住的。
 
@@ -87,7 +87,8 @@ updated_at: '2026-08-16'
 
 - [X] T009 [P] [Docs] **ADR-0065 复审段**（plan `Gate 0.4`, `A9`）：追加 `## 复审记录 — 2026-08-16`（体例照 [ADR-0048](../../docs/adr/0048-marketdata-portfolio-cross-layer-dependency.md) 的复审段）：**跨 ctx 面 0 → 1**。必须写明三点 —— ① 原 §1 的两条理由**只有第二条被放宽**：「会拒绝合法的新标的」对**只读回显**完全不适用（查不到只回空、不拒绝），被放宽的只有「引入 Q7-B 依赖」；② 选 Q7-B 而非 Q7-A 的依据 = 同表同字段先例（`alert/evaluate-alerts.usecase.ts:168`，ADR-0052 §3）+ 摊销判据（读频率 = 每次投递一次且被 2 次/分限频卡死、读时计算 = 一次索引单行查找 ⇒ **无摊销对象**，判据同 ADR-0048 复审）；③ 升 A 的 trigger。**原 §1 正文冻结不回改**（仓内惯例：历史决策留痕，只加复审段）。→ verify: ADR governance checklist 过 + `pnpm tsx scripts/checks/check-convention-orphan.ts` 无孤儿；`apps/server/eslint.config.mjs:58` 那句把 research 标为「叶子」的注释同步加一行注明「import 意义上仍是叶子；数据面有一条 Q7-B 只读，见 ADR-0065 复审」
 
-- [X] T010 [Ops] **`SKILL.md` 四处**（`FR-004`, `FR-012`~`FR-018`, `SC-008`, plan `A8`）：① **去重那条的键变了** —— 现在是「你 + **标的** + 文件字节」，原文「`symbol` / `title` / `reportDate` 都不在键里」有一半是错的（Guardrail 13）；② **「`symbol` 投错在本通道内不可逆」整段改写** —— 本片起「用正确 symbol 重投同一份文件」即可补救，这是 US3 的用户可见价值，不写进 skill 等于没交付；③ 响应体新字段 + 两句规则：**「版本号最大的那份就是最新，而你刚投的这份就是最大的那份」**（`FR-004` 的唯一落点 —— 服务端不回这个信息，规则只活在这份文档里）与「拿到 `deduplicated: true` 时回显的是**库里那条**的值」；④ 🚨 **`instrumentName` 盲区告警** —— 名称对上**只证明**「不是投成了另一家公司」，**不证明市场选对了**：两地上市的 A/H 在目录里同名（`cn:601318` 与 `hk:02318` 都叫「中国平安」，prod 已查证）。不写死这条，回显会制造虚假的安全感，**比没有回显更危险**。**错误码表不动**（本片零新错误码）。→ verify: `openclaw skills install <repo path> --as nvy-futu-kline --force` 后 `diff` 与仓内逐字节一致 + `openclaw skills info nvy-futu-kline` 显示 `✓ Ready`；`make-guest-bundle.sh` 跑通（出包自证会 `grep -qE '__FILL_|TODO|FIXME'`，新文案别撞这三个串）
+- [X] T010 [Ops] **`capabilities.md` 四处**（`FR-004`, `FR-012`~`FR-018`, `SC-008`, plan `A8`）：① **去重那条的键变了** —— 现在是「你 + **标的** + 文件字节」，原文「`symbol` / `title` / `reportDate` 都不在键里」有一半是错的（Guardrail 13）；② **「`symbol` 投错在本通道内不可逆」整段改写** —— 本片起「用正确 symbol 重投同一份文件」即可补救，这是 US3 的用户可见价值，不写进目录等于没交付；③ 响应体新字段 + 两句规则：**「版本号最大的那份就是最新，而你刚投的这份就是最大的那份」**（`FR-004` 的唯一落点 —— 服务端不回这个信息，规则只活在这份文档里）与「拿到 `deduplicated: true` 时回显的是**库里那条**的值」；④ 🚨 **`instrumentName` 盲区告警** —— 名称对上**只证明**「不是投成了另一家公司」，**不证明市场选对了**：两地上市的 A/H 在目录里同名（`cn:601318` 与 `hk:02318` 都叫「中国平安」，prod 已查证）。不写死这条，回显会制造虚假的安全感，**比没有回显更危险**；⑤ **「投之前：`symbol` 必须有据」那节补一致性指针** —— 该节原话「这条链上一层校验都没有」与新增的名称回显自相矛盾，补几行说明回显是**事后弱信号**、不替代取值纪律，且抓不出市场选错（同 ④）。**错误码表不动**（本片零新错误码），**零新端点路径**。→ verify: `services/guest-proxy/make-guest-bundle.sh` 出包绿（出包自证会 `grep -qE '__FILL_|TODO|FIXME'`，新文案别撞这三个串；Gate C 会拦端点名写回 skill / README）；只读比对 `nginx/futu-shim-guest.conf.template` 的 `location =` 集合与 `capabilities.md` 端点表集合相等（= `install.sh` Gate A 的判据，**本机不跑 `install.sh`**，它是宿主上的部署脚本）；`npx prettier --check` + `npx markdownlint-cli2` 绿
+  > 📌 **落点搬迁（2026-08-16，随 main #75 并入）**：本条原先改的是 `services/guest-proxy/openclaw-skill/SKILL.md`（commit `fd7c983d`）。#75 把端点清单整段搬进 `capabilities/capabilities.md` 并改由 `/capabilities` 运行时下发，skill 退化为薄壳 ⇒ 合并时 SKILL.md 整体取 main 版本，四处文案已按新归属重新落地在 `capabilities.md`。**内容照交不误，只是换了文件** —— 故本条保持 `[X]`。
 
 - [X] T011 [Server] **五层判据覆盖自审 + 补漏**（plan `Testing Invariants` EXHAUSTIVE BRANCHING）：对 `research-058.versioning.it.spec.ts` 做**逐条 grep 交叉核对**，不靠通读（per `sdd-authoring.md` 反模式 ④）：17 条 `state_branches` 各自在 IT 里有对应 `it()`；FR(28) / SC(7) / Acceptance Scenario(12) / Edge Case(5) 四层各跑一次零命中扫描。⚠️ **矩阵的值域够不到 AS 层** —— 本片有 **2 条**需求只写在 US2 的 Acceptance Scenario 里（**AS-4** = 名称对不上时投递方当场发现；**AS-5** = 新标的无名称不应被当作错误信号），不在 `state_branches` 中，扫描必须显式覆盖 AS 层（046 实证：写在 AS 里的需求会零覆盖**且零告警**）。
 ⚠️ **五层判据都是「按需求」切的，切不出「同一条需求 × 两条响应路径」** —— 已知一处：`FR-012`（找得到就回显名称）无条件适用于新建与幂等命中两条路径，但十七条 `state_branches` 里描述幂等回显的第 11 条只枚举了 标题 / 日期 / 版本号。⇒ 扫描时对**每一个回显字段**都问一遍「幂等命中那条路上有没有断言」，别只扫需求编号（该断言已落 T006）。→ verify: 下方覆盖矩阵每行都有 task 号且 IT 里能 grep 到；`nx test server --skip-nx-cache` 全绿
@@ -242,8 +243,8 @@ SC-001 → T004（三次应答可判第几版）｜ SC-003 → T003（投错自�
 
 ## 单 PR
 
-本片全部改动落**同一个 PR**（server + 契约 + ADR + skill 文案）。与 057 不同，本片**不涉及 guest-proxy 通道侧改动**（nginx / compose / render-env 全不动）⇒ **无第二条部署链、无上线顺序问题**：server 走 `deploy.yml` 单链，skill 文案随仓发布、访客机 `FORCE=1 ./setup.sh install-skill` 自取。
+本片全部改动落**同一个 PR**（server + 契约 + ADR + 投递方文案）。nginx / compose / render-env **全不动**，端点集合零变化 ⇒ 通道行为本身不变。但 T010 改的 `capabilities.md` 落在 `services/guest-proxy/**` 下，**会触发第二条部署链**：`deploy-guest-proxy.yml`（push main 且改了该目录即触发，走 `deploy/install.sh` 铺到 `/opt/nvy-guest-proxy` 并 reload nginx）。
 
-⚠️ **唯一的顺序要求**：skill 文案（T010）描述的是新行为，**server 未上线前它是错的**。⇒ PR 合入后先确认 server 部署完成，再通知访客机升级 skill。
+⚠️ **唯一的顺序要求**：新文案（T010）描述的是新行为，**server 未上线前它是错的**；而两条链是**同一个 push 并发触发、且顺序恰好是反的** —— `deploy-guest-proxy.yml` 在 push 上直接起跑，`deploy.yml` 要等 `Build & Push Image` 完成才起（`workflow_run`）⇒ **能力目录几乎必然先于 server 上线**。⇒ 合入后盯着 `deploy.yml` 走绿；这段窗口内访客拉到的 `/capabilities` 描述的是尚未上线的行为（会看到旧的 4 字段应答、`symbol` 重投也补救不了）。窗口只有一次构建 + 部署的时长，且投递方是人工触发的低频动作，**可接受，不为它加编排**。
 
-> 这一步**故意不建 task**，登记为**PR 描述里的人工动作**：它发生在 merge 之后，而 task 的完成标记（`[X]`）与代码同 commit 落在 merge 之前 —— 建成 task 只会得到一个永远无法在本 PR 内翻绿的条目。访客机走 `setup.sh` **拉模式**自取（不是推送），超前拿到新文案的窗口仅限「有人在 server 部署完成前手动跑 `FORCE=1 ./setup.sh install-skill`」，可接受。
+> 这一步**故意不建 task**，登记为**PR 描述里的人工动作**：它发生在 merge 之后，而 task 的完成标记（`[X]`）与代码同 commit 落在 merge 之前 —— 建成 task 只会得到一个永远无法在本 PR 内翻绿的条目。**访客机什么都不用做** —— 他手里那份 skill 是薄壳、不含任何端点清单（main #75），新文案由通道在运行时下发，不存在「通知访客升级」这一步。

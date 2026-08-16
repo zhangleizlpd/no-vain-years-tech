@@ -151,16 +151,22 @@ nx affected -t generate        # ② orval regen packages/api-client
 
 只跑 ② 是拿 stale `openapi.json` regen，且 **`git status` 干净、CI 全绿、无一处会红**。mobile 不消费该端点（guest 面），所以这步是纯 types 同步，不产生 mobile 改动。
 
-#### A8 — skill 文案（属本片交付物，不是「顺便」）
+#### A8 — 投递方文案（属本片交付物，不是「顺便」）
 
-`services/guest-proxy/openclaw-skill/SKILL.md` 必须同 PR 更新，四处：
+落点是 `services/guest-proxy/capabilities/capabilities.md` 的「投递研报（`/research-report`）」一节，必须同 PR 更新。
 
-1. **去重那条的键变了** —— 现在是「你 + **标的** + 文件字节」。原文（`SKILL.md:192`，已 grep 验真）写的「`symbol` / `title` / `reportDate` 都不在键里」**从本片起有一半是错的**，不改就是 skill 里第四例「想当然写错」。
-2. **「`symbol` 投错在本通道内不可逆」这条要改写** —— 本片起，用正确 symbol 重投同一份文件即可补救。这是 US3 的用户可见价值，不写进 skill 等于没交付。
+> 🚨 **落点变了**：main 的 #75 把端点清单整段从 `openclaw-skill/SKILL.md` 搬进 `capabilities/capabilities.md`，改由 nginx 从 `/etc/nvy-guest-capabilities/capabilities.md` **运行时下发**（`GET /capabilities`）；访客手里那份 skill 已退化成**不含任何端点清单的薄壳**，装一次就不动。⇒ 本节四处**全部改 `capabilities.md`，一个字都不要写回 SKILL.md** —— `make-guest-bundle.sh` 的 Gate C 会把重新出现在 skill / README 里的端点名当违规拦掉。
+
+四处：
+
+1. **去重那条的键变了** —— 现在是「你 + **标的** + 文件字节」。原文（capabilities.md「四件会让你白跑的事」那节，已 grep 验真）写的「`symbol` / `title` / `reportDate` 都不在键里」**从本片起有一半是错的**，不改就是这份文档里第四例「想当然写错」。
+2. **「`symbol` 投错在本通道内不可逆」这条要改写** —— 本片起，用正确 symbol 重投同一份文件即可补救。这是 US3 的用户可见价值，不写进目录等于没交付。
 3. **响应体新字段**（`version` / `title` / `reportDate` / `instrumentName`）+ 两句规则：① 「**版本号最大的那份就是最新**，而你刚投的这份就是最大的那份」—— 这是「最新」在本片唯一的表达面，服务端不回该信息；② 「拿到 `deduplicated: true` 时回显的是**库里那条**的值」。
 4. 🚨 **`instrumentName` 的盲区告警**：名称对上**只证明**「不是投成了另一家公司」，**不证明市场选对了** —— 两地上市的 A/H 在目录里同名（`cn:601318` 与 `hk:02318` 都叫「中国平安」，prod 已查证）。不写死这条，回显会制造虚假的安全感，比没有回显更危险（SC-008 把该盲区写进验收条款本身，就是为了逼出这段文案）。
 
-**错误码表不动** —— 本片不新增任何对外错误码（A2）。
+外加一处一致性收口：「投之前：`symbol` 必须有据」那节原话「这条链上一层校验都没有」与新增的名称回显自相矛盾 ⇒ 补一句指针，说明回显是**事后弱信号**、不替代取值纪律，且它抓不出市场选错（同第 4 条）。
+
+**错误码表不动** —— 本片不新增任何对外错误码（A2）。**不得引入任何新端点路径** —— `deploy/install.sh` 的 Gate A 强制「目录声明的端点集 == nginx 放行的端点集」，本片零新端点，照实写即不会踩。
 
 #### A9 — ADR-0065 回改
 
