@@ -201,6 +201,8 @@ canonical = `services/guest-proxy/openclaw-skill/SKILL.md`。
 > **为何不拆两个 PR**：拆分唯一能买到的是消除这段不可见窗口，代价却是违反 §V 的字面规范 + 把「端口 3001」这个值跨 PR 传递（T009 设值 / T012 引用，分在两个 PR 里就成了记忆负担）。收益为零而代价真实。
 >
 > ⚠️ 本节曾写「两条部署链由 paths 各自触发、无编排」并据此拆两个 PR —— **那是事实错误**（`deploy.yml` 根本没有 paths 触发），2026-08-15 `/speckit-analyze` 逐 workflow 核出并纠正。
+>
+> ⚠️ **归因仍不完整（2026-08-16 上线后补记）**：本节把「guest-proxy 必然先上」归因于「push 立即触发 vs 等镜像构建」，**漏了占主导的那一半** —— app 侧还要过**两道人工闸**（Release PR 由维护者手合 + `Deploy` job 的 `environment: production` reviewer 审批）。差别不是文字：按前者归因会以为「调触发就能改顺序」，按后者才看得出顺序的下界由人点鼠标的时机决定。跨服务上线顺序的现行 SoT 已移至 [`ops/runbook/deploy-topology.md`](../../ops/runbook/deploy-topology.md)，本节作冻结记录保留。
 
 ### 改动面清单
 

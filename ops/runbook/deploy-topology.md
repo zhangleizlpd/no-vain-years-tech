@@ -7,13 +7,13 @@
 
 ## 1. 部署单元全景
 
-| 单元            | 宿主                                           | 部署链                   | 触发                                                                                              | **人工闸**                                                                                                   | 细节                                                              |
-| --------------- | ---------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| **mono app**    | `app`                                          | `deploy.yml`             | `workflow_run`（跟在 `Build & Push Image` 之后）+ `workflow_dispatch`。**没有 push / paths 触发** | **两道** ① Release PR 由维护者手动合 ② `Deploy` job 声明 `environment: production`，卡该环境的 reviewer 审批 | [prod-deploy-rollback.md](prod-deploy-rollback.md)                |
-| **guest-proxy** | `app`（**与 app 同机**，`network_mode: host`） | `deploy-guest-proxy.yml` | `push: main` + `paths: services/guest-proxy/**`                                                   | **无** —— 合入即部署                                                                                         | [prod-deploy-rollback.md § 第二条部署链](prod-deploy-rollback.md) |
-| **futu-shim**   | `broker-hk`                                    | `deploy-futu-shim.yml`   | `push: main` + `paths: services/futu-shim/**`                                                     | **无**                                                                                                       | 两跳：runner → `app` → 港机（走 wg1 隧道内 SSH）                  |
-| **mobile web**  | Cloudflare Pages                               | `deploy-web.yml`         | `push: tags mobile-v*.*.*` + `workflow_dispatch`                                                  | 发版 tag 由 release-please 的 Release PR 驱动（维护者手合）                                                  | [mobile-eas-release.md](mobile-eas-release.md)                    |
-| **code-index**  | `index`                                        | **无 workflow**          | —                                                                                                 | **全手工**                                                                                                   | [code-index-deploy.md](code-index-deploy.md)                      |
+| 单元            | 宿主                                           | 部署链                   | 触发                                                                                              | **人工闸**                                                                                                   | 细节                                                                                            |
+| --------------- | ---------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| **mono app**    | `app`                                          | `deploy.yml`             | `workflow_run`（跟在 `Build & Push Image` 之后）+ `workflow_dispatch`。**没有 push / paths 触发** | **两道** ① Release PR 由维护者手动合 ② `Deploy` job 声明 `environment: production`，卡该环境的 reviewer 审批 | [prod-deploy-rollback.md](prod-deploy-rollback.md)                                              |
+| **guest-proxy** | `app`（**与 app 同机**，`network_mode: host`） | `deploy-guest-proxy.yml` | `push: main` + `paths: services/guest-proxy/**`                                                   | **无** —— 合入即部署                                                                                         | [prod-deploy-rollback.md § 第二条部署链](prod-deploy-rollback.md)                               |
+| **futu-shim**   | `broker-hk`                                    | `deploy-futu-shim.yml`   | `push: main` + `paths: services/futu-shim/**`                                                     | **无**                                                                                                       | 两跳：runner → `app` → 港机（走 wg1 隧道内 SSH）；宿主侧见 [futu-opend-hk.md](futu-opend-hk.md) |
+| **mobile web**  | Cloudflare Pages                               | `deploy-web.yml`         | `push: tags mobile-v*.*.*` + `workflow_dispatch`                                                  | 发版 tag 由 release-please 的 Release PR 驱动（维护者手合）                                                  | [mobile-eas-release.md](mobile-eas-release.md)                                                  |
+| **code-index**  | `index`                                        | **无 workflow**          | —                                                                                                 | **全手工**                                                                                                   | [code-index-deploy.md](code-index-deploy.md)                                                    |
 
 ### 🚨 「谁先上」由**人工闸的数量**决定，不是由触发方式
 
@@ -44,7 +44,16 @@ rg -l 'secrets.enc.env' ops/ services/
 
 1. **有没有新增 SOPS 密钥？** → 先带外推密钥到宿主（[secrets-sops.md](secrets-sops.md) §3.3），再问第 2 问。
 2. **有没有派生消费者需要重渲染？** → 有则在宿主上先渲染（§2 那张表）。⚠️ 首次引入新键时这一步有**先有鸡还是先有蛋**，见 [prod-deploy-rollback.md § 首次给 guest-proxy 引入新 env 键](prod-deploy-rollback.md)。
-3. **被依赖方先上。** 谁 `proxy_pass` / HTTP 调谁，谁就是依赖方 —— 依赖方后上，中间那段时间它打过去是 502。当前唯一这种关系是 **guest-proxy → app（loopback 端口）**。
+3. **被依赖方先上**，但先看清**缺了会怎样** —— 跨单元的运行时依赖不止一条，后果分两档：
+
+   | 依赖                                                            | 缺了对方时                                                 | 档     |
+   | --------------------------------------------------------------- | ---------------------------------------------------------- | ------ |
+   | guest-proxy → app（loopback 端口）                              | 该 location 直接 **502**                                   | **硬** |
+   | mono app → futu-shim（wg1 隧道，`MARKETDATA_PROVIDER=live` 时） | live 行情调用失败（boot 不受影响，config 只校验 URL 形态） | 软     |
+   | mono app → code-index（HTTP `/search`）                         | ideation chat **优雅降级**（该服务设计上就允许手动停）     | 软     |
+
+   **硬档必须严格排序**；软档排错只是功能短暂不可用，可接受但要知情。
+
 4. **人工闸多的那条要留出时间。** app 侧两道闸意味着它**不会**自己上线；若第 3 问要求它先上，就必须先把两道闸点完，再让通道侧那条链跑。
 
 > **验收永远验运行态，不看 workflow 的 conclusion**（部署 `success` 与「新镜像真的在跑」是两件事，本仓已因此踩过）：
