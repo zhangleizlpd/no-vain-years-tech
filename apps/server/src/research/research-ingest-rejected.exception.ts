@@ -13,6 +13,13 @@ import { HttpException, HttpStatus } from '@nestjs/common';
  *   否则 agent 分不清「这份太大」和「你没额度了」。
  * - **502** 对象存储侧的两种结局 —— 都不是投递方的错。**确认被拒**与**无法确定**用不同
  *   `code`：前者重投无意义，后者重投是安全的（同字节会就地续做，不会产生第二份）。
+ * - **503** 归档存储未接通 —— 能力未启用，不是服务故障。
+ *
+ * 🚨 **这条也必须走本类**，不能图省事写成 `new ServiceUnavailableException('CODE_STRING')`：
+ * NestJS 对**字符串入参**组装的 body 是 `{statusCode, message, error}`，**没有 `code` 键**，
+ * 而 `ProblemDetailFilter` 只在 `typeof body['code'] === 'string'` 时才输出 `code` ⇒ 那个标识符
+ * 会落在 `detail` 里、应答体根本没有 `code` 字段。对照表上八行里唯独这一行读不出来，agent 的
+ * `if (body.code === …)` 恒 false ⇒ 掉进「未知错误」分支反复重试，而这条的正确动作恰是**停手**。
  */
 export class ResearchIngestRejectedException extends HttpException {
   private constructor(code: string, message: string, status: HttpStatus) {
@@ -80,6 +87,14 @@ export class ResearchIngestRejectedException extends HttpException {
       'RESEARCH_STORAGE_INDETERMINATE',
       '归档存储可达性不确定，这次投递的结果未知。重投同一份是安全的：系统会就地续做，不会产生第二份',
       HttpStatus.BAD_GATEWAY,
+    );
+  }
+
+  static storageNotConfigured(): ResearchIngestRejectedException {
+    return new ResearchIngestRejectedException(
+      'RESEARCH_STORAGE_NOT_CONFIGURED',
+      '归档存储尚未接通，该能力未启用（不是服务故障）。重投不会改变结果',
+      HttpStatus.SERVICE_UNAVAILABLE,
     );
   }
 }
