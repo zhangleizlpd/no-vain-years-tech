@@ -108,7 +108,12 @@ export class IngestResearchReportUseCase {
 
     const existing = await this.prisma.researchReport.findUnique({
       where: {
-        uploaderKind_uploaderRef_contentHash: { uploaderKind, uploaderRef, contentHash },
+        uploaderKind_uploaderRef_symbol_contentHash: {
+          uploaderKind,
+          uploaderRef,
+          symbol,
+          contentHash,
+        },
       },
     });
 
