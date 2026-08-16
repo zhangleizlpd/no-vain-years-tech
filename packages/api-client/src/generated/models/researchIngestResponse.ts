@@ -15,4 +15,12 @@ export interface ResearchIngestResponse {
   objectKey: string;
   /** true = 这份之前已归档过，本次未新增任何对象或记录（重复投递是安全的） */
   deduplicated: boolean;
+  /** **落库**的标题（不是把请求参数原样回吐）。投递方声明的元数据没有任何一层会校验，回显落库值是他唯一的自查手段 */
+  title: string;
+  /** **落库**的研报日期，`YYYY-MM-DD`（与请求参数同形，不出 ISO datetime） */
+  reportDate: string;
+  /** 你在（该投递方, 该标的）这条版本线上的第几次投递，从 1 起。**版本号最大的那份就是最新的**，而你刚投的这份就是最大的那份 */
+  version: number;
+  /** 该标的**现在**在行情目录里叫什么。查不到（研报常常先于标的入库）或查询本身失败 → null，两者不可区分且都不影响投递成功。⚠️ 名称对上只证明「不是投成了另一家公司」，**不证明市场选对了** —— 两地上市的 A/H 在目录里同名 */
+  instrumentName: string | null;
 }

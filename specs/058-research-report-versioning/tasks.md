@@ -81,7 +81,7 @@ updated_at: '2026-08-16'
 
 - [X] T007 [Server] **响应 DTO 4 → 8 字段 + `@ApiResponse` 描述**（`FR-008`~`FR-011`, plan `A5`）：`research-ingest.response.ts` 在既有 4 个字段（`reportId` / `symbol` / `objectKey` / `deduplicated`）之上加 `title` / `reportDate` / `version` / `instrumentName`(nullable)。🚨 **`instrumentName` 的 `@ApiProperty` 必须显式 `type: 'string'`**（Guardrail 6）。`research.controller.ts` 的 201 `@ApiResponse` description 同步说明新语义（尤其「幂等命中时回显的是库中那条」这句 —— 它是 `FR-010` 对外的唯一说明面）。**不动 503 那条描述** —— 本片不新增错误码。→ verify: `pnpm tsx scripts/checks/check-api-property-nullable.ts` 绿；**故意去掉那个 `type: 'string'` 确认它真的红**，加回后复绿
 
-- [ ] T008 [Contract] **OpenAPI 导出 + api-client 重生成**（Constitution §V, plan `A7`）：`nx run server:export-openapi` → `nx affected -t generate`。**两步都要跑，无一行覆盖**（Guardrail 10）。mobile 不消费该端点 ⇒ 本步是纯 types 同步，不应产生任何 mobile 改动。→ verify: `git status` 显示 `apps/server/openapi.json` 的 `ResearchIngestResponse` schema 含 4 个新字段且 `instrumentName` 是 `string | null` 而非 objectmap；`packages/api-client` 产物同步；`apps/mobile` 零改动
+- [X] T008 [Contract] **OpenAPI 导出 + api-client 重生成**（Constitution §V, plan `A7`）：`nx run server:export-openapi` → `nx affected -t generate`。**两步都要跑，无一行覆盖**（Guardrail 10）。mobile 不消费该端点 ⇒ 本步是纯 types 同步，不应产生任何 mobile 改动。→ verify: `git status` 显示 `apps/server/openapi.json` 的 `ResearchIngestResponse` schema 含 4 个新字段且 `instrumentName` 是 `string | null` 而非 objectmap；`packages/api-client` 产物同步；`apps/mobile` 零改动
 
 ## Phase 5: 决策留痕与投递方文档
 
