@@ -147,8 +147,20 @@ rm -f "$notpdf"
 # 超上限 → 413，且**必须是 app 那层返的**。四层天花板刻意让 multipart（16MB）先于
 # nginx（20m）跳闸，因为只有它能给干净的 ProblemDetail；nginx 那层跳闸给的是 HTML 页、
 # 且 server 日志里什么都没有。⇒ 这里连**谁返的**一起验：JSON 体 = app，HTML = nginx。
+#
+# 🚨 **它是本组第三发进限频桶的请求，而桶只有 `2r/m + burst 1`** —— 前面 GET(403) 与
+#    非 PDF(422) 已经把两格用掉，这一发**必然**撞 429。2026-08-16 首跑实测：本条是 39/1
+#    里唯一那个 ❌，实得 `<html>…429 Too Many Requests`。
+#    前两发用的 `upload_check` 自带 429 重试，这一发因为要读**响应体**（判 413 是谁返的）
+#    走的是裸 curl —— 当时漏了给它同样的处理。⇒ 这里显式重试一次，与 `upload_check` 同款。
 big="$(mktemp)"; { printf '%%PDF-1.4\n'; dd if=/dev/zero bs=1048576 count=17 2>/dev/null; } > "$big"
-big_body="$(curl -s -m 300 -X POST "${AUTH[@]}" -F "file=@$big;filename=big.pdf;type=application/pdf" "$RESEARCH?$RQ_OK")"
+oversize_probe() { curl -s -m 300 -X POST "${AUTH[@]}" -F "file=@$big;filename=big.pdf;type=application/pdf" "$RESEARCH?$RQ_OK"; }
+big_body="$(oversize_probe)"
+if grep -q '429 Too Many Requests' <<<"$big_body"; then
+  printf '     ↻ %s 撞限频 429 → 等 35s 重试一次\n' "研报超上限"
+  sleep 35
+  big_body="$(oversize_probe)"
+fi
 rm -f "$big"
 if grep -q '"status":413\|"status": 413' <<<"$big_body"; then
   printf '  ✅ %-46s\n' "研报超上限 413 由 app 返（非 nginx）"; pass=$((pass+1))
