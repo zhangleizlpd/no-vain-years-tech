@@ -93,6 +93,17 @@ sops -d ~/.nvy/secrets.enc.env | grep '^DEEPSEEK_API_KEY='
      → verify：`check-env-sync` 绿（Check D 映射 + Check E 在 `secrets.enc.env`）
 3. 仓内改动（compose 映射 / vitest test.env）commit → PR → 合入；**密文本体不在这条链上**，
    单独走 §3.3 推 prod
+4. 🚨 **问一句：这个键在宿主上有没有「派生消费者」？** —— `secrets.enc.env` 不只被 app 直接读，
+   宿主上还有**从它派生出来的别的文件**。密钥进了 SOPS **不等于**进了那些文件，因为派生那一步
+   **没有任何自动化**。
+
+   当前唯一的派生消费者是 **guest-proxy**：`/etc/nvy-guest-proxy.env` 由
+   `services/guest-proxy/render-env.sh` 从 `secrets.enc.env` 渲染而来。新键要被它用到，必须在
+   宿主上**重跑一次渲染**，否则 guest-proxy 的部署会红在 `nginx -t`（形态与打破循环的做法见
+   [`prod-deploy-rollback.md`](prod-deploy-rollback.md) § 首次给 guest-proxy 引入新 env 键）。
+
+   判据不是「记住有几个」，是**加键时按这个问题扫一遍**：`rg -l 'secrets.enc.env' ops/ services/`
+   能列出所有从它读值的地方。
 
 ### 3.3 让新值到 prod（带外 scp —— git 这条路已不存在）
 
