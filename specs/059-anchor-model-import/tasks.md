@@ -28,7 +28,9 @@ updated_at: '2026-08-16'
 | 模型 import patch（改：键集 7→9） | `apps/server/src/optionsdesk/anchor-cascade.ts` |
 | 导入校验纯函数（新建） | `apps/server/src/optionsdesk/anchor-import.rules.ts` |
 | 导入 use case（新建） | `apps/server/src/optionsdesk/import-anchor-from-model.usecase.ts` |
-| 端点 / DTO / module（改） | `apps/server/src/optionsdesk/{optionsdesk.controller,optionsdesk.dto,optionsdesk.module}.ts` |
+| guest 端点（**新建**，见文末偏离登记 ①） | `apps/server/src/optionsdesk/optionsdesk-guest.controller.ts` |
+| 待审提交 use case（新建） | `apps/server/src/optionsdesk/submit-anchor-from-guest.usecase.ts` |
+| DTO / module（改） | `apps/server/src/optionsdesk/{optionsdesk.dto,optionsdesk.module}.ts` + `apps/server/src/openapi.config.ts`（第三个 bearer scheme） |
 | guest 鉴权（改：参数化认哪把 token + 类注释订正） | `apps/server/src/security/{guest-upload-auth.guard,guest-upload-auth.rules}.ts` |
 | 配置（改：加第二把 token） | `apps/server/src/config/guest-upload.config.ts` |
 | 边界注册 | `scripts/checks/check-server-moat.ts`（`MODEL_OWNERSHIP`） |
@@ -215,3 +217,10 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
 漏了会怎样：`deploy/install.sh` 的预校验 `nginx -t` **照样过**（未设变量 envsubst 不替换，留下的字面量在语法上合法），但自检 (d) 的残留扫描会看见 `${ANCHOR_IMPORT_TOKEN}` ⇒ **exit 5 自检失败**，配置回滚到上一版。不是静默坏，但会让一次本可以顺的部署红一轮。
 
 ⚠️ 那条 envsubst 过滤正则**仓里有三份拷贝**（`docker-compose.guest.yml` / `install.sh` 的 `ENVSUBST_FILTER` / `install.sh` 自检 (d) 的残留扫描），本片三处已同步 —— 057 当年只改了 compose 那份，deploy 当场红在预校验上。
+
+## impl 期偏离登记（与 plan / tasks 原文不一致的两处，都是实现时才暴露的）
+
+1. **guest 端点另起 `optionsdesk-guest.controller.ts`，没有加进 `optionsdesk.controller.ts`**（tasks 原文写的是后者）。理由：那个 controller 是**类级** `@UseGuards(JwtAuthGuard, AccountIdThrottlerGuard)`，类级 guard 对每条路由生效且**方法上摘不掉**。要塞进去只能把 13 个既有端点的鉴权逐个下放到方法级 —— 为了少建一个文件而动整个 App 的鉴权面，风险与收益不成比例。体例同 `research.controller.ts`（同为 guest 面、同为只写）。
+2. **`ticker` 走 query string，其余四个字段走 JSON body**（原设计是整个请求体 JSON）。理由：nginx 的 `$arg_*` **只读得到 query**，T009 那道通道层市场闸（`$arg_ticker !~ "^(us|hk):"`）只有在 ticker 位于 query 时才成立；放进 body 的话 nginx 看不见它，闸退化成摆设。与 057 研报把三项必填元数据放 query 是同一个理由。⚠️ 这处改动是在 T009 写 nginx 时才发现的 —— T006/T008 已经按 body 形状落过一版，随 T009 一并改回并重跑 export-openapi + regen。
+
+另有一处**实现细节**在 spec / plan 里没写死、由实现选定并已落成断言：**`noop` 判据把 `confidence_source` 一并算进去**（四个模型事实全等 **且**来源已是 `model` 才算 noop）。理由：手工锚的数字恰好与模型一致时，这次导入**确实改了东西** —— 它把 provenance 翻成 `model`（FR-002 的 MUST）。判成 noop 会让那只锚继续显示「人工来源、可编辑」，与实际写入路径不符。
