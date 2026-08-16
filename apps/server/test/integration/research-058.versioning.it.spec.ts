@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -11,7 +11,7 @@ import {
   type IngestResearchReportInput,
 } from '../../src/research/ingest-research-report.usecase';
 import { ResearchIngestRejectedException } from '../../src/research/research-ingest-rejected.exception';
-import { RESEARCH_QUOTA_BYTES } from '../../src/research/research-report.rules';
+import { RESEARCH_QUOTA_BYTES, titleFromFilename } from '../../src/research/research-report.rules';
 
 const SERVER_DIR = process.cwd();
 const MIGRATIONS_DIR = resolve(SERVER_DIR, 'prisma/migrations');
@@ -205,7 +205,8 @@ function inputOf(
     guest?: string;
     /** 变它就是「另一份文件」—— 内容指纹随之变。 */
     marker?: string;
-    title?: string;
+    /** 显式传 `undefined` = 请求里**不带**标题（走文件名兜底）；不传这个键才用默认标题。 */
+    title?: string | undefined;
     reportDate?: string;
     filename?: string;
   } = {},
@@ -214,7 +215,7 @@ function inputOf(
     uploader: { kind: 'guest', guestName: over.guest ?? 'friend1' },
     symbol: over.symbol ?? 'hk:01698',
     reportDate: over.reportDate ?? '2026-08-01',
-    title: over.title ?? '某公司深度研报',
+    title: 'title' in over ? over.title : '某公司深度研报',
     file: {
       bytes: pdfOfSize(4096, over.marker ?? 'x'),
       filename: over.filename ?? 'report.pdf',
@@ -359,5 +360,239 @@ describe('058 T003 幂等键放宽 =（投递方, 标的, 文件字节）(Testco
     );
     expect(storage.calls).toHaveLength(0);
     expect(await prisma.researchReport.count()).toBe(versions);
+  });
+});
+
+describe('058 T004 版本号取号 + 并发 + 元数据回声 (Testcontainers PG + 真 usecase)', () => {
+  let prisma: PrismaService;
+  let storage: FakeObjectStorage;
+  let ingest: IngestResearchReportUseCase;
+  let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
+
+  beforeAll(async () => {
+    db = await setupIsolatedDb();
+    prisma = new PrismaService(db.databaseUrl);
+    await prisma.$connect();
+    storage = new FakeObjectStorage();
+    ingest = new IngestResearchReportUseCase(prisma, storage, ALIYUN_OSS);
+  }, 180_000);
+
+  afterAll(async () => {
+    await prisma?.$disconnect();
+    await db.drop();
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe('TRUNCATE research.research_report RESTART IDENTITY CASCADE');
+    storage.calls.length = 0;
+  });
+
+  const versionsOf = (uploaderRef: string, symbol: string) =>
+    prisma.researchReport
+      .findMany({
+        where: { uploaderKind: 'guest', uploaderRef, symbol },
+        orderBy: { version: 'asc' },
+        select: { version: true },
+      })
+      .then((rows) => rows.map((r) => r.version));
+
+  it('state_branch 1 / FR-001 / FR-009: 该（投递方, 标的）线上首次投递 → 版本号为 1', async () => {
+    const first = await ingest.execute(inputOf({}));
+    expect(first.version).toBe(1);
+    expect(
+      (
+        await prisma.researchReport.findUniqueOrThrow({
+          where: { id: BigInt(first.reportId) },
+          select: { version: true },
+        })
+      ).version,
+    ).toBe(1);
+  });
+
+  it('state_branch 2 / FR-006 / SC-001: 同线投不同文件 → 都被接受且照常 +1；研报日期不参与任何判定', async () => {
+    // 🚨 两份**日期倒序**：先投 08-10 再投 07-01。若日期参与了接受 / 排序判定，第二份要么被拒、
+    // 要么排在前面 —— 它是投递方单方声明、无任何一层校验的值，不该承担任何判定职责。
+    const newer = await ingest.execute(inputOf({ marker: 'a', reportDate: '2026-08-10' }));
+    const older = await ingest.execute(inputOf({ marker: 'b', reportDate: '2026-07-01' }));
+
+    expect(newer.version).toBe(1);
+    expect(older.version).toBe(2); // 后投的就是更大的号，与日期无关
+    expect(older.reportDate).toBe('2026-07-01');
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2]);
+  });
+
+  it('state_branch 6 / FR-003 / FR-011: 投递方 A 已有 3 版，B 首投同标的 → B 拿 version 1', async () => {
+    for (const marker of ['a', 'b', 'c']) {
+      await ingest.execute(inputOf({ guest: 'friendA', marker }));
+    }
+    expect(await versionsOf('friendA', 'hk:01698')).toEqual([1, 2, 3]);
+
+    // 同一份字节（marker 'a'）—— 归属不同 ⇒ 不是重复投递，且版本线不串。
+    const b = await ingest.execute(inputOf({ guest: 'friendB', marker: 'a' }));
+    expect(b.deduplicated).toBe(false);
+    expect(b.version).toBe(1); // 既不透露 A 投过几份，也不建立在 A 的线之上
+    expect(await versionsOf('friendB', 'hk:01698')).toEqual([1]);
+  });
+
+  it('state_branch 7 / FR-025 / SC-005: 同线**真并发**两份不同文件 → 版本号不重复、不空洞', async () => {
+    // 🚨 必须是 Promise.all 同时两发，不是串行两次 —— 串行永远走不到 P2002 那条分支，
+    // 「靠唯一键挡并发」这句话就一个字都没被验证。
+    const seeded = await ingest.execute(inputOf({ marker: 'seed' }));
+    expect(seeded.version).toBe(1);
+
+    const [x, y] = await Promise.all([
+      ingest.execute(inputOf({ marker: 'x' })),
+      ingest.execute(inputOf({ marker: 'y' })),
+    ]);
+
+    expect(x.version).not.toBe(y.version);
+    expect(new Set([x.version, y.version])).toEqual(new Set([2, 3])); // 恰为 {n+1, n+2}
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2, 3]);
+    expect(await prisma.researchReport.count()).toBe(3);
+  });
+
+  it('state_branch 8 / FR-024: 对象写入失败留下的未完成行占住号，后续投递 MUST NOT 重用', async () => {
+    expect((await ingest.execute(inputOf({ marker: 'a' }))).version).toBe(1);
+
+    storage.enqueue('rejected');
+    await expectRejectedWithCode(
+      ingest.execute(inputOf({ marker: 'b' })),
+      'RESEARCH_STORAGE_REJECTED',
+    );
+    const stuck = await prisma.researchReport.findFirstOrThrow({ where: { status: 'PENDING' } });
+    expect(stuck.version).toBe(2); // 号在建行时就取了（FR-023）
+
+    // 第三份：`MAX(version)` 不过滤 status ⇒ 看得见那条 PENDING，取 3 而不是复用被占的 2。
+    const third = await ingest.execute(inputOf({ marker: 'c' }));
+    expect(third.version).toBe(3);
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2, 3]);
+
+    // ⇒ 只看**成功**记录时序列是 1、3（不连续），这不是缺陷。
+    const committed = await prisma.researchReport.findMany({
+      where: { status: 'COMMITTED' },
+      orderBy: { version: 'asc' },
+      select: { version: true },
+    });
+    expect(committed.map((r) => r.version)).toEqual([1, 3]);
+  });
+
+  it('state_branch 9 / FR-024: 对未完成的记录就地续做 → 保留原号，MUST NOT 重新取号', async () => {
+    await ingest.execute(inputOf({ marker: 'a' }));
+
+    storage.enqueue('indeterminate');
+    await expectRejectedWithCode(
+      ingest.execute(inputOf({ marker: 'b' })),
+      'RESEARCH_STORAGE_INDETERMINATE',
+    );
+
+    const resumed = await ingest.execute(inputOf({ marker: 'b' }));
+    expect(resumed.version).toBe(2); // 原号，不是新取的 3
+    expect(resumed.deduplicated).toBe(false);
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2]);
+    expect(await prisma.researchReport.count()).toBe(2); // 没新增行
+  });
+
+  it('state_branch 10 / FR-008 / SC-004: 应答回显**落库**的标题与研报日期，不是把请求参数原样回吐', async () => {
+    // 不给 title ⇒ 由文件名兜底。请求参数里的 title 是 `undefined`，而应答必须给出落库的那个值
+    // —— 这条是「回显的不可能是请求参数」最直接的证明（口径取自 rules，不在本文件复写字面量）。
+    const res = await ingest.execute(
+      inputOf({ title: undefined, filename: '某公司-中报点评.pdf' }),
+    );
+    expect(res.title).toBe(titleFromFilename('某公司-中报点评.pdf'));
+
+    const row = await prisma.researchReport.findUniqueOrThrow({
+      where: { id: BigInt(res.reportId) },
+    });
+    expect(res.title).toBe(row.title);
+    // `report_date` 是 @db.Date ⇒ Prisma 取回 UTC 零点；回显必须是 YYYY-MM-DD 而非 ISO datetime。
+    expect(row.reportDate.toISOString()).toBe('2026-08-01T00:00:00.000Z');
+    expect(res.reportDate).toBe('2026-08-01');
+    expect(res.symbol).toBe(row.symbol);
+  });
+
+  it('state_branch 11 / FR-010 / US2-AS-3: 幂等命中 → 回显**库中那条**的标题 / 日期 / 版本号', async () => {
+    const first = await ingest.execute(
+      inputOf({ title: '第一次写对的标题', reportDate: '2026-08-01' }),
+    );
+    expect(first.version).toBe(1);
+
+    // 同字节 + 同标的 + 同投递方，但带着**不同**的标题与日期重投 —— 参数改不掉库里那条，
+    // 而应答如实回显库中值 ⇒「重投改不掉」这件事对投递方显式可见，不是静默。
+    const again = await ingest.execute(
+      inputOf({ title: '第二次改的标题', reportDate: '2026-08-15' }),
+    );
+    expect(again.deduplicated).toBe(true);
+    expect(again.reportId).toBe(first.reportId);
+    expect(again.title).toBe('第一次写对的标题');
+    expect(again.reportDate).toBe('2026-08-01');
+    expect(again.version).toBe(1);
+    expect(await prisma.researchReport.count()).toBe(1);
+  });
+
+  // ── P2002 两条分支的**确定性**覆盖 ────────────────────────────────────────
+  //
+  // 上面 state_branch 7 那条是真并发，但并发本身不保证每次都真撞上（两次投递被连接池串起来时
+  // 就走不到 P2002）。⇒ 用注入式故障把「撞了之后怎么判、判完怎么走」钉死（手法同
+  // research-057.report-ingest.it.spec.ts:329 的仓内先例）。
+
+  it('plan A2: create 撞 P2002 而幂等键查不到 → 判为取号争用，重算 MAX+1 重试', async () => {
+    await ingest.execute(inputOf({ marker: 'a' })); // 该线已有 v1
+
+    const contention = Object.assign(new Error('模拟取号撞车'), { code: 'P2002' });
+    const spy = vi.spyOn(prisma.researchReport, 'create').mockRejectedValueOnce(contention);
+    try {
+      const res = await ingest.execute(inputOf({ marker: 'b' }));
+      expect(spy).toHaveBeenCalledTimes(2); // 第一次撞、第二次成
+      expect(res.version).toBe(2);
+      expect(res.deduplicated).toBe(false); // 争用不是重复投递
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2]);
+  });
+
+  it('plan A2: 取号连撞 3 次 → 原样抛出，MUST NOT 新增对外错误码（落既有 500 兜底）', async () => {
+    const contention = Object.assign(new Error('模拟取号撞车'), { code: 'P2002' });
+    const spy = vi.spyOn(prisma.researchReport, 'create').mockRejectedValue(contention);
+    try {
+      const err: unknown = await ingest.execute(inputOf({})).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(spy).toHaveBeenCalledTimes(3); // 上限 3 次，不是无限重试
+      expect(err).toBe(contention); // 原样抛：既不包装成业务拒绝，也不撞 057 的 503
+      expect(err).not.toBeInstanceOf(ResearchIngestRejectedException);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(storage.calls).toHaveLength(0); // 号都没取到，对象一步都没走
+  });
+
+  it('state_branch 17 / FR-026 / FR-027: 既有记录所在的版本线上新投 → 建立在既有之上（得 2 而非 1）', async () => {
+    // 057 形态的既有行：version 刻意不显式给，走 DB 默认值（同 prod 上线前那 3 行）。
+    await prisma.researchReport.create({
+      data: {
+        symbol: 'hk:01698',
+        reportDate: new Date('2026-07-01T00:00:00.000Z'),
+        title: '上线前投的那份',
+        contentHash: 'a'.repeat(64),
+        sizeBytes: 2_020_387,
+        originalFilename: 'legacy.pdf',
+        objectKey: 'research/aaaaaaaa/report.pdf',
+        status: 'COMMITTED',
+        uploaderKind: 'guest',
+        uploaderRef: 'friend1',
+      },
+    });
+
+    const next = await ingest.execute(inputOf({ marker: 'new' }));
+    expect(next.version).toBe(2); // MUST NOT 从 1 重新开始
+
+    const rows = await prisma.researchReport.findMany({
+      orderBy: { version: 'asc' },
+      select: { version: true, title: true },
+    });
+    expect(rows.map((r) => r.version)).toEqual([1, 2]);
+    expect(rows[0].title).toBe('上线前投的那份'); // 既有记录的号没被重排 / 改写（SC-007）
   });
 });

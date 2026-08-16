@@ -48,10 +48,31 @@ export interface IngestResearchReportResult {
   objectKey: string;
   /** true = 这份之前就已经归档过，本次未新增任何东西。 */
   deduplicated: boolean;
+  /**
+   * **落库**的标题（FR-008）。不是把请求参数原样回吐 —— 投递方声明的元数据没有任何一层会
+   * 校验，回显落库值是他唯一的自查手段（2026-08-16 实测：标题被编坏一个字节，无人发现）。
+   */
+  title: string;
+  /** **落库**的研报日期，`YYYY-MM-DD`（FR-008）。与请求参数同形，不出 ISO datetime。 */
+  reportDate: string;
+  /** 该（投递方, 标的）版本线上的第几次投递（FR-009）。 */
+  version: number;
 }
 
 const STATUS_PENDING = 'PENDING';
 const STATUS_COMMITTED = 'COMMITTED';
+
+/**
+ * 取号撞车后的重试上限（plan A2）。**耗尽直接抛**，落既有 `ProblemDetailFilter` 的 500 兜底
+ * —— 刻意不新增对外错误码：端点被 2 次/分限频卡死、投递方是单个 CLI agent，同线三次连撞在
+ * 物理上近乎不可能；而 057 的 503 已被 `RESEARCH_STORAGE_NOT_CONFIGURED` 占用，那条的正确
+ * 动作是「停手」、新码的正确动作是「重投」，两条相反语义共用一个状态码本身就是坑。
+ */
+const VERSION_CLAIM_MAX_ATTEMPTS = 3;
+
+/** P2002 结构化判定（`optionsdesk/create-anchor.usecase.ts:96` 同式；Prisma 7 兼容）。 */
+const isP2002 = (e: unknown): boolean =>
+  typeof e === 'object' && e !== null && 'code' in e && (e as { code?: unknown }).code === 'P2002';
 
 /**
  * 投递一份研报（057 唯一的写入口）。
@@ -88,6 +109,33 @@ const STATUS_COMMITTED = 'COMMITTED';
  *
  * 058 未改这条口径：同一条版本线上的多个版本、以及同一份字节被归到多个标的下产生的多行，
  * **各自全额计入**，不因同线或共享同一归档对象而合并（FR-022 / state_branch 15）。
+ *
+ * ## 版本号：建 PENDING 行时取 `MAX + 1`，靠唯一键挡并发
+ *
+ * 身份是（投递方, 标的）——每条这样的线各自从 1 起、互不影响、互不可见（FR-001~FR-003）。
+ * 取号发生在**建行时**（FR-023），不是投递完成时：
+ *
+ * - 过滤列必须是 `(uploaderKind, uploaderRef, symbol)` **三列齐全**。少 uploader 两列 = 版本线
+ *   串到别的投递方头上（FR-011 泄露他人投过几份）；少 `symbol` = 同一投递方的不同标的共用一
+ *   条线。
+ * - **不过滤 `status`**：未完成行照常占号（FR-024）。过滤掉它们等于把一个被占的号重新发出
+ *   去，下一步必然撞取号唯一键。⇒ 只看**成功**记录时序列可以不连续（1、3），这不是缺陷。
+ * - 续做既有行时**不重新取号**，保留原号（FR-024 / state_branch 9）。
+ *
+ * 并发保护 = 取号唯一键 `uk_research_report_version_line` + catch `P2002` 有界重试。
+ * **NEVER Serializable、NEVER `FOR UPDATE`**（004 实证偏索引 SSI 72/100 假冲突）——
+ * READ COMMITTED + 唯一约束足够；也不涉及 `P2034`（那是 Serializable 场景专属）。
+ *
+ * 🚨 撞了 `P2002` 之后**必须分辨撞的是哪个键**：表上两个唯一键含义相反 —— 幂等键撞了是重复
+ * 投递（该走幂等分支），取号键撞了是并发争用（该重试）。**判别方式 = 重查一次幂等键**：查到
+ * 行 = 重复投递，查不到 = 取号争用。**不用 `meta.target`** —— 该字段在 PG 连接器下常返回约束
+ * 名而非列名数组，且随 Prisma 版本 / adapter 变形；重查法与它的形态完全无关。
+ *
+ * ## 元数据回声：一律取自 `row`
+ *
+ * 应答里的 `title` / `reportDate` / `version` 全部读**落库那一行**，不是请求参数（FR-008）；
+ * 幂等命中时读的是**库中那条**，于是「参数写错重投改不掉」这件事对投递方显式可见而非静默
+ * （FR-010 / state_branch 11）。
  */
 @Injectable()
 export class IngestResearchReportUseCase {
@@ -117,25 +165,10 @@ export class IngestResearchReportUseCase {
     const sizeBytes = bytes.length;
     const { uploaderKind, uploaderRef } = splitUploader(input.uploader);
 
-    const existing = await this.prisma.researchReport.findUnique({
-      where: {
-        uploaderKind_uploaderRef_symbol_contentHash: {
-          uploaderKind,
-          uploaderRef,
-          symbol,
-          contentHash,
-        },
-      },
-    });
+    const identity = { uploaderKind, uploaderRef, symbol, contentHash };
+    const existing = await this.findByIdempotencyKey(identity);
 
-    if (existing?.status === STATUS_COMMITTED) {
-      return {
-        reportId: existing.id.toString(),
-        symbol: existing.symbol,
-        objectKey: existing.objectKey,
-        deduplicated: true,
-      };
-    }
+    if (existing?.status === STATUS_COMMITTED) return toResult(existing, true);
 
     // 配额闸放在建行之前：被拒的投递不计入（FR-010）。续做既有 PENDING 行时它已在和里，
     // 不再叠加本次字节，否则卡在配额线上的那条永远续不动。
@@ -157,21 +190,18 @@ export class IngestResearchReportUseCase {
 
     const row =
       existing ??
-      (await this.prisma.researchReport.create({
-        data: {
-          symbol,
-          reportDate,
-          title: input.title?.trim() || titleFromFilename(input.file.filename),
-          source: input.source?.trim() || undefined,
-          contentHash,
-          sizeBytes,
-          originalFilename: input.file.filename,
-          objectKey: credential.objectKey,
-          status: STATUS_PENDING,
-          uploaderKind,
-          uploaderRef,
-        },
+      (await this.claimVersionedRow({
+        ...identity,
+        reportDate,
+        title: input.title?.trim() || titleFromFilename(input.file.filename),
+        source: input.source?.trim() || undefined,
+        sizeBytes,
+        originalFilename: input.file.filename,
+        objectKey: credential.objectKey,
       }));
+
+    // 取号期间撞上了**并发的重复投递**、而那一条已经走完：与幂等命中同一条出口，不碰 OSS。
+    if (row.status === STATUS_COMMITTED) return toResult(row, true);
 
     try {
       await this.storage.putObject({
@@ -195,13 +225,106 @@ export class IngestResearchReportUseCase {
       data: { status: STATUS_COMMITTED },
     });
 
-    return {
-      reportId: row.id.toString(),
-      symbol: row.symbol,
-      objectKey: row.objectKey,
-      deduplicated: false,
-    };
+    return toResult(row, false);
   }
+
+  private findByIdempotencyKey(identity: IdempotencyIdentity) {
+    return this.prisma.researchReport.findUnique({
+      where: { uploaderKind_uploaderRef_symbol_contentHash: identity },
+    });
+  }
+
+  /**
+   * 取号 + 建 PENDING 行，撞车有界重试。
+   *
+   * 返回值有两种可能，调用方靠 `status` 区分：
+   * - **新建的 PENDING 行** —— 正常路径。
+   * - **别人刚建的同幂等键行** —— 并发的重复投递。它可能已完成（调用方走幂等出口）也可能仍
+   *   未完成（调用方就地续做）；两种都不该再建第二行。
+   */
+  private async claimVersionedRow(
+    fields: IdempotencyIdentity & {
+      reportDate: Date;
+      title: string;
+      source: string | undefined;
+      sizeBytes: number;
+      originalFilename: string;
+      objectKey: string;
+    },
+  ) {
+    const { uploaderKind, uploaderRef, symbol, contentHash } = fields;
+    for (let attempt = 1; ; attempt++) {
+      // 🚨 三列齐全、且**不过滤 status**（FR-024）—— 判据见类注释「版本号」段。
+      const agg = await this.prisma.researchReport.aggregate({
+        _max: { version: true },
+        where: { uploaderKind, uploaderRef, symbol },
+      });
+
+      try {
+        return await this.prisma.researchReport.create({
+          data: { ...fields, version: (agg._max.version ?? 0) + 1, status: STATUS_PENDING },
+        });
+      } catch (err) {
+        if (!isP2002(err)) throw err;
+
+        // 表上两个唯一键含义相反 ⇒ 重查幂等键判别撞的是哪个（Guardrail 2，不用 meta.target）。
+        const duplicate = await this.findByIdempotencyKey({
+          uploaderKind,
+          uploaderRef,
+          symbol,
+          contentHash,
+        });
+        if (duplicate !== null) return duplicate; // 查到 = 重复投递
+
+        // 查不到 = 取号争用：号被同线的另一次投递抢走了，重算 MAX+1 再试。
+        if (attempt >= VERSION_CLAIM_MAX_ATTEMPTS) throw err;
+      }
+    }
+  }
+}
+
+/** 幂等键的四列（放宽后：投递方两列 + 标的 + 内容指纹）。 */
+interface IdempotencyIdentity {
+  uploaderKind: string;
+  uploaderRef: string;
+  symbol: string;
+  contentHash: string;
+}
+
+/**
+ * 应答一律由**落库的那一行**导出（FR-008 / FR-010）—— 幂等命中与新建共用这一个出口，
+ * 是「回显的不可能是请求参数」在结构上的保证。
+ */
+function toResult(
+  row: {
+    id: bigint;
+    symbol: string;
+    objectKey: string;
+    title: string;
+    reportDate: Date;
+    version: number;
+  },
+  deduplicated: boolean,
+): IngestResearchReportResult {
+  return {
+    reportId: row.id.toString(),
+    symbol: row.symbol,
+    objectKey: row.objectKey,
+    deduplicated,
+    title: row.title,
+    reportDate: toReportDateString(row.reportDate),
+    version: row.version,
+  };
+}
+
+/**
+ * `report_date` 是 `@db.Date`，Prisma 取回的是 **UTC 零点**的 `Date` ⇒ 必须走
+ * `toISOString().slice(0, 10)`。`toLocaleDateString()` 出的是 `2026/8/16`（形态就不对）；
+ * 本地 getter 拼串在 UTC+8 下侥幸不差天、换个负偏移时区就差一天
+ * （判据同 `docs/conventions/cross-timezone-date-semantics.md`）。
+ */
+function toReportDateString(reportDate: Date): string {
+  return reportDate.toISOString().slice(0, 10);
 }
 
 /** `InvalidSymbolError` 的三种 reason 各映射一个独立 code（SC-004 可区分）。 */

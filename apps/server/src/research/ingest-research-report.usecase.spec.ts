@@ -56,40 +56,55 @@ function buildPrismaFake(seed: Row[] = []): {
           where,
         }: {
           where: {
-            uploaderKind_uploaderRef_contentHash: {
+            // 058 起 `symbol` 进幂等键（FR-019）—— 少这一维，「同字节换标的」会被误判为重复投递。
+            uploaderKind_uploaderRef_symbol_contentHash: {
               uploaderKind: string;
               uploaderRef: string;
+              symbol: string;
               contentHash: string;
             };
           };
         }) => {
-          const k = where.uploaderKind_uploaderRef_contentHash;
+          const k = where.uploaderKind_uploaderRef_symbol_contentHash;
           return (
             rows.find(
               (r) =>
                 r.uploaderKind === k.uploaderKind &&
                 r.uploaderRef === k.uploaderRef &&
+                r.symbol === k.symbol &&
                 r.contentHash === k.contentHash,
             ) ?? null
           );
         },
       ),
+      // 两种用法共用一个假实现：配额按（投递方）求 `_sum.sizeBytes`、取号按（投递方, 标的）求
+      // `_max.version`。`where` 里带不带 `symbol` 就是二者的分界，与真 Prisma 侧一致。
       aggregate: vi.fn(
-        async ({ where }: { where: { uploaderKind: string; uploaderRef: string } }) => ({
-          _sum: {
-            sizeBytes: rows
-              .filter(
-                (r) => r.uploaderKind === where.uploaderKind && r.uploaderRef === where.uploaderRef,
-              )
-              .reduce((acc, r) => acc + r.sizeBytes, 0),
-          },
-        }),
+        async ({
+          where,
+        }: {
+          where: { uploaderKind: string; uploaderRef: string; symbol?: string };
+        }) => {
+          const scoped = rows.filter(
+            (r) =>
+              r.uploaderKind === where.uploaderKind &&
+              r.uploaderRef === where.uploaderRef &&
+              (where.symbol === undefined || r.symbol === where.symbol),
+          );
+          return {
+            _sum: { sizeBytes: scoped.reduce((acc, r) => acc + r.sizeBytes, 0) },
+            // 🚨 空集时 PG 的 `MAX` 返回 NULL（Prisma 给 `null`），**不是 0** —— 取号逻辑正是靠
+            // 这个 null 判「本线首投」。写成 0 会把「首投」和「已有 v0」混为一谈。
+            _max: {
+              version: scoped.length === 0 ? null : Math.max(...scoped.map((r) => r.version)),
+            },
+          };
+        },
       ),
-      create: vi.fn(async ({ data }: { data: Omit<Row, 'id' | 'createdAt' | 'version'> }) => {
+      create: vi.fn(async ({ data }: { data: Omit<Row, 'id' | 'createdAt'> }) => {
         const row: Row = {
-          ...data,
+          ...data, // 058 起 `version` 由 usecase 取号后显式带进来，不再是假表写死的 1
           id: nextId++,
-          version: 1,
           source: data.source ?? '自研',
           createdAt: new Date('2026-08-15T12:00:00.000Z'),
         };
@@ -323,9 +338,17 @@ describe('IngestResearchReportUseCase — 配额 (state_branch 18 / 19)', () => 
 
   it('续做既有 PENDING 行时不重复计入自己（否则重试会把自己顶出配额）', async () => {
     // 名下已有一条正好等于配额的 PENDING 行 —— 它就是本次要续做的那条。
+    //
+    // 🚨 `symbol` 必须与本次投递归一后的值一致（058 起它在幂等键里）。057 时 seedRow 默认的
+    // `hk:00700` 也照样命中 —— 那正是 058 要修的错：同字节被归到另一个标的下仍被判为重复。
     const hash = contentHashOf(PDF_A);
     const s = build([
-      seedRow({ contentHash: hash, status: 'PENDING', objectKey: buildObjectKey(hash) }),
+      seedRow({
+        symbol: 'hk:01698',
+        contentHash: hash,
+        status: 'PENDING',
+        objectKey: buildObjectKey(hash),
+      }),
     ]);
     await expect(s.useCase.execute(input())).resolves.toMatchObject({ deduplicated: false });
     expect(s.rows).toHaveLength(1);
@@ -406,11 +429,14 @@ describe('IngestResearchReportUseCase — 输入不合规 (state_branch 9 / 13 /
 describe('IngestResearchReportUseCase — 同标的同日期不同字节 (state_branch 4)', () => {
   it('各自独立归档（它们是同一标的的不同版本，不是重复）', async () => {
     const s = build();
-    await s.useCase.execute(input({ file: { bytes: PDF_A, filename: 'a.pdf' } }));
-    await s.useCase.execute(input({ file: { bytes: PDF_B, filename: 'b.pdf' } }));
+    const first = await s.useCase.execute(input({ file: { bytes: PDF_A, filename: 'a.pdf' } }));
+    const second = await s.useCase.execute(input({ file: { bytes: PDF_B, filename: 'b.pdf' } }));
 
     expect(s.rows).toHaveLength(2);
     expect(s.rows[0].objectKey).not.toBe(s.rows[1].objectKey);
+    // 058 起「同一标的的不同版本」这句话在数据上成立：同一条版本线，号是 1、2（此前恒为 1）。
+    expect([first.version, second.version]).toEqual([1, 2]);
+    expect(s.rows.map((r) => r.version)).toEqual([1, 2]);
   });
 });
 
