@@ -57,6 +57,9 @@ export default [
         { type: 'agent-bridge', pattern: 'src/agent-bridge/**' },
         // research (057, 第 11 ctx; ADR-0065 研报库) — 叶子, 声明序位置无所谓 (路径不与
         // 任何既有元素前缀重叠, 不存在被通配抢匹配的问题)。
+        // 058 起: import 意义上仍是叶子; 数据面有一条 Q7-B 只读 (marketdata.instrument
+        // 的 name), 见 ADR-0065 复审记录 — boundaries 看不见 Prisma 调用, 那条由
+        // check-server-moat 的 CROSS-CONTEXT-READ 注释闸正交把守。
         { type: 'research', pattern: 'src/research/**' },
         { type: 'app', pattern: 'src/{app,main}.ts' },
         { type: 'app', pattern: 'src/app/**' },
