@@ -42,7 +42,7 @@ export class ResearchController {
   constructor(private readonly ingest: IngestResearchReportUseCase) {}
 
   @Post('reports')
-  @UseGuards(GuestUploadAuthGuard)
+  @UseGuards(GuestUploadAuthGuard('upload'))
   @ApiBearerAuth('guest-upload-token')
   @ApiConsumes('multipart/form-data')
   @ApiOperation({

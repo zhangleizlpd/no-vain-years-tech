@@ -61,7 +61,7 @@ updated_at: '2026-08-16'
 
 ## Phase 2: 鉴权与配置
 
-- [ ] T003 [P] [Server] **第二把 token + guard 参数化 + 类注释订正**（`FR-010`, `FR-015`, plan §2）：`guest-upload.config.ts` 加 `ANCHOR_IMPORT_TOKEN`（同 `.min(32).nullable()` 形状），过 `/config-add` 落九位置（`.env.example` / `.env.production` / sops / `docker-compose.tight.yml` / `vitest.config.ts` `test.env` 等）。`GuestUploadAuthGuard` 改为**参数化认哪把 token**（保持 constant-time 比对 / fail-closed / 零 user principal / 裸 401 不泄原因四条不变），**不复制第二份 guard**。🚨 **类注释必须同步改** —— 现写「投递方只有『往收集箱里放东西』这一个权限」，本片后不再准确（注释与实际能力不符比没有注释更危险，plan Gate 0.4 记）。→ verify: `pnpm tsx scripts/checks/check-env-sync.ts` 全 Check 绿；`guest-upload-auth.guard.it.spec.ts` 扩为**两把 token 各三态**（对 / 错 / 缺）—— 走**真 DI 容器** `Test.createTestingModule(...)`，**MUST NOT** `new GuestUploadAuthGuard()`（Testing Invariants 第一条）；断言「缺失」与「不符」响应体**逐字节相同**（`state_branch` 15 / 16）；再断言**拿提交 token 打直写 guard 必须失败**（Guardrail 6 的回归钉）
+- [X] T003 [P] [Server] **第二把 token + guard 参数化 + 类注释订正**（`FR-010`, `FR-015`, plan §2）：`guest-upload.config.ts` 加 `ANCHOR_IMPORT_TOKEN`（同 `.min(32).nullable()` 形状），过 `/config-add` 落九位置（`.env.example` / `.env.production` / sops / `docker-compose.tight.yml` / `vitest.config.ts` `test.env` 等）。`GuestUploadAuthGuard` 改为**参数化认哪把 token**（保持 constant-time 比对 / fail-closed / 零 user principal / 裸 401 不泄原因四条不变），**不复制第二份 guard**。🚨 **类注释必须同步改** —— 现写「投递方只有『往收集箱里放东西』这一个权限」，本片后不再准确（注释与实际能力不符比没有注释更危险，plan Gate 0.4 记）。→ verify: `pnpm tsx scripts/checks/check-env-sync.ts` 全 Check 绿；`guest-upload-auth.guard.it.spec.ts` 扩为**两把 token 各三态**（对 / 错 / 缺）—— 走**真 DI 容器** `Test.createTestingModule(...)`，**MUST NOT** `new GuestUploadAuthGuard()`（Testing Invariants 第一条）；断言「缺失」与「不符」响应体**逐字节相同**（`state_branch` 15 / 16）；再断言**拿提交 token 打直写 guard 必须失败**（Guardrail 6 的回归钉）
 
 ## Phase 3: 数据面
 
