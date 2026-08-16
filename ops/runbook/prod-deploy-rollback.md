@@ -49,6 +49,54 @@ sops exec-env secrets.enc.env "docker compose -f docker-compose.tight.yml --env-
 
 **admin 连 prod PG（TablePlus 等）**：PG 已发布 host loopback `127.0.0.1:5432`（仅本机可达、非公网；rationale 见 `docker-compose.tight.yml` postgres `ports` 内联注释，PR #684）。SSH 隧道（`"$NVY_APP_SSH"`，真值见 `~/.nvy/fleet.env`）→ DB Host 填 `127.0.0.1` / User `mbw` / DB `mbw` / 密码 = `DB_PASSWORD`（scram：`127.0.0.1/32 trust` 只对容器内 loopback 生效，隧道来自 docker 网关命中 `host all all all scram-sha-256`）。此前隧道指容器内网 IP（`172.18.0.x`），整栈重启 Docker 重排 → 连接静默失效，故改用固定 loopback。
 
+## guest-proxy：与 app **同机、但另一条部署链**
+
+guest-proxy 跑在同一台宿主上（`network_mode: host`），但走 `deploy-guest-proxy.yml` 那条独立的链 —— **触发与人工闸都与 app 不同**，同一个 PR 动两侧时它必然先上，通道侧若 `proxy_pass` 指向 app 才有的端口，这段时间它返 502。
+
+> **全景（五条部署链各自的触发 / 人工闸 / 密钥来源）与跨服务改动的排序决策 → [`deploy-topology.md`](deploy-topology.md)。** 本节只管 guest-proxy 自己那几个**机制性**的坑。
+
+### 🚨 首次给 guest-proxy 引入新 env 键：先有鸡还是先有蛋
+
+`deploy/install.sh` 的预校验拿**宿主当前的** `/etc/nvy-guest-proxy.env` 起一次性容器跑 `nginx -t`。模板里引用了该文件里还不存在的键时，envsubst 不会替换它，nginx 把 `${FOO}` 当成自己的运行时变量：
+
+```text
+nginx: [emerg] unknown "foo" variable
+❌ 新配置没通过 nginx -t —— 真容器一个字节都没动，现网仍是旧配置
+```
+
+**闸是对的**（fail-closed，现网不受影响），但它构成一个循环：能生成新 env 的 `render-env.sh` 与 `nvy-guest-proxy.env.example` **只能靠那次部署送上宿主**，而那次部署又被这道闸挡住。
+
+⇒ **首次引入新键必须手工打破循环**：
+
+```bash
+. ~/.nvy/fleet.env
+ssh "$NVY_APP_SSH" 'mkdir -p /tmp/gp'
+scp services/guest-proxy/render-env.sh services/guest-proxy/nvy-guest-proxy.env.example "$NVY_APP_SSH":/tmp/gp/
+# AGE_KEY 在 sudo **之前**取 —— sudo 下 $HOME 会变成 root 的家，解不到那把私钥。
+ssh "$NVY_APP_SSH" 'AGE_KEY="$HOME/.config/sops/age/keys.txt"
+  chmod +x /tmp/gp/render-env.sh
+  sudo SOPS_AGE_KEY_FILE="$AGE_KEY" \
+    sops exec-env /etc/nvy/secrets.enc.env \
+    "FORCE=1 TEMPLATE=/tmp/gp/nvy-guest-proxy.env.example /tmp/gp/render-env.sh"'
+```
+
+- `FORCE=1` 必带（目标文件已存在）；**既有访客 token 默认沿用**，不会把人踢下线 —— 渲染前后各取一次 `GUESTn_TOKEN` 的哈希比对即可证明。
+- 之后再触发 `Deploy guest proxy`，预校验就过得去了。
+
+### 加一个 guest-proxy env 键要同步几处
+
+同一条 envsubst 白名单正则在仓里**有三份拷贝**，且**漏改哪一份的表现完全不同**：
+
+| 位置                                                  | 谁用                       | 漏改的表现                                              |
+| ----------------------------------------------------- | -------------------------- | ------------------------------------------------------- |
+| `docker-compose.guest.yml` 的 `NGINX_ENVSUBST_FILTER` | **真容器**                 | 配置里留字面量 `${FOO}` ⇒ 恒 401 / 恒 403，且看不出哪错 |
+| `deploy/install.sh` 的 `ENVSUBST_FILTER`              | 预校验的一次性容器         | **部署恒红**在预校验 —— 至少它红了                      |
+| `deploy/install.sh` (d) 的残留扫描                    | 反向确认无 `${VAR}` 漏替换 | **不红** —— 断言对该键失明，配置已经坏了也判绿          |
+
+第三份最危险：它是**证伪断言自己有洞**。改完三处后，最省事的自证是拿宿主真 env 跑一次与预校验等价的容器（`install.sh` 里那段 `docker run … nginx -t`，把 `listen` 换成容器内可 bind 的地址）。
+
+> ⚠️ **本机 `nginx -t` 绿不代表线上绿。** envsubst 只替换**环境里真实存在**的变量 —— 本机预演时你手上有那个变量，宿主上没有，于是同一份模板本机绿、线上 emerg。这与 `docker-compose.guest.yml` 里记的另一次（bridge 网络预演 vs host 网络真环境）是同一类错误：**网络模式、env 集合都是「形状」的一部分**，预演环境与真环境形状不一致时，绿是没有意义的。
+
 ## 回滚
 
 ### 自动（无需你操作）

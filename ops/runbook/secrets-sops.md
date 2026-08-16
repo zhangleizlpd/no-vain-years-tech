@@ -93,6 +93,12 @@ sops -d ~/.nvy/secrets.enc.env | grep '^DEEPSEEK_API_KEY='
      → verify：`check-env-sync` 绿（Check D 映射 + Check E 在 `secrets.enc.env`）
 3. 仓内改动（compose 映射 / vitest test.env）commit → PR → 合入；**密文本体不在这条链上**，
    单独走 §3.3 推 prod
+4. 🚨 **问一句：这个键在宿主上有没有「派生消费者」？** —— `secrets.enc.env` 不只被 app 直接读，
+   宿主上还有**从它派生出来的别的文件**，而派生那一步**没有任何自动化**：密钥进了 SOPS
+   **不等于**进了那些文件，两侧的失败时机还完全错开（app 一切正常、另一侧部署红在别处）。
+
+   消费者清单与「直接读 vs 派生」的区别见 [`deploy-topology.md`](deploy-topology.md) § 2；
+   判据不要背清单，按需扫：`rg -l 'secrets.enc.env' ops/ services/`。
 
 ### 3.3 让新值到 prod（带外 scp —— git 这条路已不存在）
 
