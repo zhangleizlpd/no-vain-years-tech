@@ -35,7 +35,7 @@ state_branches:
 
 **Feature Branch**: `058-research-report-versioning`
 **Created**: 2026-08-16
-**Status**: Draft
+**Status**: 以 frontmatter `status` 为准（ADR-0024 定 frontmatter 为 lifecycle 单一来源）—— 本行不单独维护
 **Input**: 承接 057 已 ship 的投递通道。057 刻意把「同标的多版本」留作后续 feature（`version` 列已建但恒为初值、不实装规则）。2026-08-16 两次真实 agent 投递暴露出：投递方对自己声明的元数据零反馈、且声明错了在本通道内不可逆。本片实装版本规则 + 元数据回声。
 
 > **编号留有空洞**：FR-005 / FR-007 / SC-002 于 2026-08-16 第二轮澄清中删除（见下方 Clarifications）。**幸存条目的编号一律不重排** —— plan / tasks / 既有 analyze 报告全部按原号引用，重排的代价远大于几个空号的观感。

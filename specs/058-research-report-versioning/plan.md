@@ -12,7 +12,7 @@ context7_verified: []
 
 ## Summary *(mandatory)*
 
-在 057 已 ship 的投递通道上实装版本规则与元数据回声：幂等键从「投递方 + 内容指纹」放宽为「投递方 + 标的 + 内容指纹」，`version` 列由恒 1 变为「该(投递方,标的)线上的投递序号」，201 应答从 4 个字段扩到 7 个。
+在 057 已 ship 的投递通道上实装版本规则与元数据回声：幂等键从「投递方 + 内容指纹」放宽为「投递方 + 标的 + 内容指纹」，`version` 列由恒 1 变为「该(投递方,标的)线上的投递序号」，201 应答从 4 个字段扩到 8 个。
 
 两条主线：① **版本号在建行时取、靠新增唯一键挡并发**（`MAX+1` insert 撞 P2002 有界重试，不上 Serializable）；② **标的名称走 Q7-B 只读直查 + fail-open**，research 由此从「跨 ctx 面 = 0」变为 1，需回改 ADR-0065。
 
@@ -116,9 +116,9 @@ context7_verified: []
 - `symbol` 是归一后的 `market:code` 单字符串，查询前要拆成 `market` / `code` 两段 —— 在 `research-report.rules.ts` 加一个纯函数（如 `splitSymbol`）并配单测，**不要**在 usecase 里 inline 一个 `split(':')`（rules 层是本模块业务不变量的落点，per ADR-0043）。
 - 名称按**归一后并最终落库的 symbol** 查（FR-016）：即 `row.symbol`，不是 `input.symbol` 那个原始写法。幂等命中时二者归一后必然相同（symbol 自本片起在幂等键内），但**写法**可能不同（`00700.HK` vs `hk:00700`）⇒ 取 `row.symbol` 才对。
 
-#### A5 — 响应 DTO：4 字段 → 7 字段
+#### A5 — 响应 DTO：4 字段 → 8 字段
 
-`research-ingest.response.ts` 新增 `title` / `reportDate` / `version` / `instrumentName`(nullable)。
+`research-ingest.response.ts` 在既有 4 个字段（`reportId` / `symbol` / `objectKey` / `deduplicated`）之上新增 `title` / `reportDate` / `version` / `instrumentName`(nullable)。
 
 🚨 **唯一那个 nullable 字段的 `@ApiProperty` 必须显式写 `type: 'string'`**：
 
@@ -127,7 +127,7 @@ context7_verified: []
 instrumentName!: string | null;
 ```
 
-不写 `type` 时 orval 会把它生成成 objectmap（`{ [key: string]: unknown }`）而不是 `string | null`——**typecheck 全绿、CI 不报**，只在 mobile 侧用到时才发现类型是错的（仓内已踩过，012）。`reportDate` 用 `YYYY-MM-DD` 字符串回（与请求参数同形），不回 ISO datetime。
+不写 `type` 时 orval 会把它生成成 objectmap（`{ [key: string]: unknown }`）而不是 `string | null`——**typecheck 全绿、CI 不报**，只在 mobile 侧用到时才发现类型是错的（仓内已踩过，012）。`reportDate` 用 `YYYY-MM-DD` 字符串回（与请求参数同形），不回 ISO datetime。转换**必须走 `row.reportDate.toISOString().slice(0, 10)`** —— 该列是 `@db.Date`，Prisma 取回的是 UTC 零点的 `Date`；用 `toLocaleDateString()` 出的是 `2026/8/16`（形态就不对），用本地 getter 拼串在 UTC+8 下侥幸不差天、换个负偏移时区就差一天（判据同 [`cross-timezone-date-semantics.md`](../../docs/conventions/cross-timezone-date-semantics.md)）。⚠️ 这条**不属于「踩了不会红」那一档** —— state_branch 10 的回显断言会红，故不进 tasks 的 Guardrail 清单。
 
 > 第二轮砍掉的两个字段：`latest`（恒真）与 `currentLatestReportDate`（依附于已删除的最新判定）。nullable 字段因此从 2 个降到 1 个。
 
@@ -135,7 +135,7 @@ instrumentName!: string | null;
 
 幂等键加了 `symbol` 维度 ⇒ `research-057.report-ingest.it.spec.ts` 里凡是「同一投递方 + 同字节」的断言都可能隐含了「不管 symbol」的旧语义。**动手顺序**：先原样跑一遍 057 IT 拿到真实红点，再按 058 的 FR 逐条判「这条断言是该改还是该保留」——**不要**凭读代码预判要改哪几条。改动过的断言必须在 commit message 里写明「057 的哪条语义被 058 有意改写」，避免日后被当成回归。
 
-`research-057.schema.it.spec.ts` 若断言了唯一键的具体列集合，同理。
+`research-057.schema.it.spec.ts` **已 grep 验真：不受影响** —— 该文件对 `uk_research_report` / `pg_indexes` / `indexname` 零命中，没有断言唯一键的列集合。⇒ A6 的连带面**只在 `research-057.report-ingest.it.spec.ts` 一个文件里**，不必再探第二处。
 
 #### A7 — 契约同步链（Constitution §V，不能只跑一半）
 
