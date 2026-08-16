@@ -130,8 +130,11 @@ upload_check() { # upload_check <说明> <期望码> <curl 参数...>
   check "$1（重试后）" "$2" "$(code "${@:3}")"
 }
 
-# 405 也走限频桶：`limit_except` 在 access 阶段，而 limit_req 在它**之前**的 preaccess。
-upload_check "研报 GET 被拒（limit_except 生效）" 405 -X GET "${AUTH[@]}" "$RESEARCH?$RQ_OK"
+# 🚨 期望是 **403 不是 405** —— `limit_except POST { deny all; }` 里干活的是 `deny`，它返回
+#    403 Forbidden。写成 405 是想当然（"method not allowed" 的直觉），2026-08-16 首次真跑
+#    当场证伪。nginx 不为这个场景发 405，也不会带 `Allow` 头。
+# 它同样走限频桶：`limit_except` 在 access 阶段，而 limit_req 在它**之前**的 preaccess。
+upload_check "研报 GET 被拒（limit_except 生效）" 403 -X GET "${AUTH[@]}" "$RESEARCH?$RQ_OK"
 
 # 非 PDF → 422。🚨 **这条的价值不在「非 PDF 被拒」，在于证明请求真的到了 app** ——
 # 上面所有 4xx 都是 nginx 自己 return 的，只有它们的话，`proxy_pass` 的路径写错
