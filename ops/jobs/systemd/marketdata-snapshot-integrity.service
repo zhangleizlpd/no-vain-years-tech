@@ -16,6 +16,12 @@
 #   那一场 us 交易日。往后挪过北京 13:00 会跨进 ET 次日 → 每天整批假红；往前挪会撞上 06:30 起跑的
 #   快照采集窗（约 33 分钟）→ 采到一半就判 = 假红。
 #
+# 🚨 timer 是**每日**跑（含周末），北京周日早 = ET 周六、北京周一早 = ET 周日 —— 那两天 us 不开盘、
+#   当日本就无快照。**谓词自带 ET 周末闸**：exit 0 + summary 写「非交易日不判」⇒ 配合下面的
+#   `--on-success silent` 不推飞书，而心跳照写、看门狗不受影响。为什么闸在谓词里而不是 timer 的
+#   OnCalendar 上，见 .timer 头部；为什么它不算「用交易日历打补丁」、以及**美股节假日为何蓄意
+#   保留假红**，见 marketdata-snapshot-integrity.sql 文件头。
+#
 # Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
 #   🚨 `<unit>.sh` 与 `<unit>.sql` **必须同目录兄弟**（脚本默认按 sibling 找谓词）——
 #      拆开放 = 每天一条「谓词文件缺失」假红。install.sh 把两者一起装进 /usr/local/lib/nvy/jobs/。
