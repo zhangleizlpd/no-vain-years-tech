@@ -49,7 +49,8 @@ export class ResearchController {
     summary: '投递一份研报 PDF（隧道内投递方专用，单向只写）',
     description:
       '三项必填元数据走 query string（通道层的市场闸只读得到 query）；文件走 multipart 的 `file` 字段，单份上限 16MB。' +
-      '同一投递方重复投递同一份文件是安全的：返回首次那条记录，不新增对象也不新增元数据。',
+      '同一投递方以**同一标的**重复投递同一份文件是安全的：返回首次那条记录，不新增对象也不新增元数据；' +
+      '换一个标的投同一份文件则各自成为独立记录（标的投错可用正确标的重投同一份文件补救）。',
   })
   @ApiQuery({
     name: 'symbol',
@@ -73,7 +74,15 @@ export class ResearchController {
       properties: { file: { type: 'string', format: 'binary', description: 'PDF 文件' } },
     },
   })
-  @ApiResponse({ status: 201, description: '已归档', type: ResearchIngestResponse })
+  @ApiResponse({
+    status: 201,
+    description:
+      '已归档。应答回显的元数据（`title` / `reportDate` / `version`）一律取自**落库的那一行**，不是把请求参数原样回吐；' +
+      '`deduplicated: true` 时回显的是**库中那条**的值 —— 重投改不掉已归档的元数据，这件事对投递方显式可见而非静默。' +
+      '`version` 是（该投递方, 该标的）版本线上的序号，各条线互不影响、互不可见。' +
+      '`instrumentName` 为实时读取的标的名称，查不到或查询失败时为 null，不影响投递成功。',
+    type: ResearchIngestResponse,
+  })
   @ApiResponse({
     status: 401,
     description: '通道凭证缺失或不符（两者对外不可区分）',
