@@ -183,6 +183,10 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // CROSS-CONTEXT-READ 注释。anchorChange.anchorId 无 FK relation (删锚不级联删痕迹, FR-031)。
   anchor: 'optionsdesk',
   anchorChange: 'optionsdesk',
+  // anchorSubmission 归 optionsdesk (059 锚待审收件箱, FR-011)。提交端点独占写 (R1 自有表),
+  // **零读取面**: 审阅走 DB 直连, 采纳 = 本人经导入口重放一次 ⇒ 本表到锚表**没有代码路径**,
+  // 那正是 FR-012「系统 MUST NOT 存在第二条写锚路径」的结构性保证。跨 ctx 面 = 0。
+  anchorSubmission: 'optionsdesk',
   // researchReport 归 research (057, 第 11 bounded context; ADR-0065 研报库)。投递 UC 独占
   // 读写 (R1 自有表)。**跨 ctx 面 = 0**: symbol 存归一后的 `market:code` 裸字符串, 不建到
   // marketdata.instrument 的外键、不做存在性校验 —— 校验会拒绝合法新标的, 且会引入本可

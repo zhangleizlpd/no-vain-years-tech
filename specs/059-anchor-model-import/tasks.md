@@ -65,7 +65,7 @@ updated_at: '2026-08-16'
 
 ## Phase 3: 数据面
 
-- [ ] T004 [Server] **`AnchorSubmission` model + migration + moat 登记**（`FR-011`, plan §6）：`optionsdesk` schema 加表（**不动 `schemas` 数组**，Guardrail 12）：`submitter` / `ticker` / `v` / `asof` / `method` / `confidence` / `note?` / `status`（三态 `PENDING` \| `CONSUMED` \| `REJECTED`）/ `createdAt` / `updatedAt`。贫血 row + `@map` snake_case。**索引只建 PK** —— 日均个位数，`status` 上撒 B-tree 是 cargo cult（同 `research_report` migration 自己写的「按真实查询形状建才对」），把这条判据写进 migration 注释。`check-server-moat.ts` 的 `MODEL_OWNERSHIP` 加 `anchorSubmission: 'optionsdesk'`（Guardrail 7）。migration 纯 expand（`CREATE TABLE`）⇒ 单 PR 合规。→ verify: `pnpm db:migrate` 绿；`pnpm tsx scripts/checks/check-server-moat.ts` 绿，**再故意把 `MODEL_OWNERSHIP` 那行注释掉，确认探针真的红**，恢复后复绿（反例，别留恒真闸）；IT 断言表与三态约束真实存在
+- [X] T004 [Server] **`AnchorSubmission` model + migration + moat 登记**（`FR-011`, plan §6）：`optionsdesk` schema 加表（**不动 `schemas` 数组**，Guardrail 12）：`submitter` / `ticker` / `v` / `asof` / `method` / `confidence` / `note?` / `status`（三态 `PENDING` \| `CONSUMED` \| `REJECTED`）/ `createdAt` / `updatedAt`。贫血 row + `@map` snake_case。**索引只建 PK** —— 日均个位数，`status` 上撒 B-tree 是 cargo cult（同 `research_report` migration 自己写的「按真实查询形状建才对」），把这条判据写进 migration 注释。`check-server-moat.ts` 的 `MODEL_OWNERSHIP` 加 `anchorSubmission: 'optionsdesk'`（Guardrail 7）。migration 纯 expand（`CREATE TABLE`）⇒ 单 PR 合规。→ verify: `pnpm db:migrate` 绿；`pnpm tsx scripts/checks/check-server-moat.ts` 绿，**再故意把 `MODEL_OWNERSHIP` 那行注释掉，确认探针真的红**，恢复后复绿（反例，别留恒真闸）；IT 断言表与三态约束真实存在
 
 ## Phase 4: 业务与端点
 

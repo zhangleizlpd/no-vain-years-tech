@@ -1715,6 +1715,47 @@ model AnchorChange {
   @@schema("optionsdesk")
 }
 
+// 锚的待审收件箱 (059 FR-011)。**其他访客**送进来的估值只落这里, 锚表零变化 —— 直写锚是
+// 本人一个人的权限, 判据在通道层 (nginx 按访客名分流), 服务端再按第二把 token 独立拒一次。
+//
+// 🚨 一行 = 一次提交, **不是**一只标的的当前待审值: 同一访客同一标的提交两次是两行 (归属与
+// 时序完整), 采纳与否由人逐行判断。故**无唯一键** —— 幂等在这里是错的语义。
+//
+// 🚨 **零审阅面**是刻意的 (plan §6): 不做审核 UI / 审批端点 / 转正 CLI。审阅 = DB 直连看,
+// 采纳 = 本人用自己的凭证把同样的值经导入口**重放一次** ⇒ FR-012「系统 MUST NOT 存在第二条
+// 写锚路径」由「本表根本没有通向锚表的代码路径」在结构上保证, 而不是靠纪律。
+//
+// status 三态 'PENDING' | 'CONSUMED' | 'REJECTED' 是**人工处置的留痕**, 不是状态机: 本片
+// 只写 PENDING, 另两态由本人处置后手工置 (贫血字符串无枚举表, 同 research_report.status 体例)。
+//
+// **索引只建 PK**: 日均个位数条目, 在 status 上撒 B-tree 是 cargo cult —— 全表扫十几行比走
+// 索引还快, 而每条索引都要在写路径上维护。按真实查询形状建才对 (同 research_report 那条判据),
+// 真到每天十几条要按标的/状态检索时再说。
+model AnchorSubmission {
+  id BigInt @id @default(autoincrement())
+  /// 提交方 = guest-proxy 无条件覆写的 `X-Guest` 头值。**仅作归属, 绝不作授权**
+  /// (授权是两把 token 那一层的事, 两者正交)。
+  submitter String @db.VarChar(64)
+
+  /// 以下五列与 `anchor` 同量纲同宽度 —— 采纳时是**原样重放**, 宽度不一致会让「库里存得下、
+  /// 重放时 400」这种只在采纳那一刻才暴露的偏差成为可能。
+  ticker     String   @db.VarChar(32)
+  v          Decimal  @db.Decimal(18, 4)
+  asof       DateTime @db.Date
+  method     String   @db.VarChar(32)
+  confidence Decimal  @db.Decimal(4, 2)
+
+  /// 提交方的自由附言 (可空) —— 估值理由 / 数据来源之类, 系统不解析。
+  note   String? @db.VarChar(512)
+  status String  @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("anchor_submission")
+  @@schema("optionsdesk")
+}
+
 // 研报归档记录 (057, 第 11 个 bounded context research; ADR-0065)。一行 = 一次投递,
 // 而不是「一份研报」—— 同一字节被两个投递方各投一次是**两行**(US5 归属完整性), 但它们
 // 指向**同一个 object_key**(位置由 content_hash 单独导出, 与投递方无关) ⇒ 对象只存一份。
