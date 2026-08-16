@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.26.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.26.0...server-v0.26.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **core:** 图片对象存储迁往账号 C —— 账号 B 的 OSS 欠费停服,顺带结掉「存绝对 URL」的老账 ([#66](https://github.com/zhangleizlpd/no-vain-years-tech/issues/66)) ([b08e4c4](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b08e4c4a5835eaf2741a722de0e826446dff8746))
+
 ## [0.26.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.25.0...server-v0.26.0) (2026-08-15)
 
 
