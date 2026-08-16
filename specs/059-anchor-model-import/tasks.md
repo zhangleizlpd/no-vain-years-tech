@@ -204,3 +204,14 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
 2. mono app 部署链后跑
 
 ⇒ 存在一段窗口：nginx 已放行新 location 但 server 端点尚未上线 ⇒ 打新端点会 404 / 502。**这是已知且自愈的**（同 057 的先例），不需要额外协调；但 T011 的端到端实证**必须等两条链都完成**再跑。
+
+### 🚨 合入前必须先做的一件事（impl 期实测发现，不是自愈的）
+
+**先在两侧把两个新 env 备齐，再合 PR**：
+
+1. mono 侧 SOPS（`~/.nvy/secrets.enc.env`）加 `ANCHOR_IMPORT_TOKEN`（`randomBytes(32).toString('base64url')`，**与 `GUEST_UPLOAD_TOKEN` 取不同值**）
+2. 77 上重跑 `render-env.sh`（`FORCE=1`），把 `ANCHOR_IMPORT_TOKEN` 与 `ANCHOR_OWNER_NAME` 渲进 `/etc/nvy-guest-proxy.env`
+
+漏了会怎样：`deploy/install.sh` 的预校验 `nginx -t` **照样过**（未设变量 envsubst 不替换，留下的字面量在语法上合法），但自检 (d) 的残留扫描会看见 `${ANCHOR_IMPORT_TOKEN}` ⇒ **exit 5 自检失败**，配置回滚到上一版。不是静默坏，但会让一次本可以顺的部署红一轮。
+
+⚠️ 那条 envsubst 过滤正则**仓里有三份拷贝**（`docker-compose.guest.yml` / `install.sh` 的 `ENVSUBST_FILTER` / `install.sh` 自检 (d) 的残留扫描），本片三处已同步 —— 057 当年只改了 compose 那份，deploy 当场红在预校验上。
