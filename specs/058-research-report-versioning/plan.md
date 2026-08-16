@@ -135,7 +135,10 @@ instrumentName!: string | null;
 
 幂等键加了 `symbol` 维度 ⇒ `research-057.report-ingest.it.spec.ts` 里凡是「同一投递方 + 同字节」的断言都可能隐含了「不管 symbol」的旧语义。**动手顺序**：先原样跑一遍 057 IT 拿到真实红点，再按 058 的 FR 逐条判「这条断言是该改还是该保留」——**不要**凭读代码预判要改哪几条。改动过的断言必须在 commit message 里写明「057 的哪条语义被 058 有意改写」，避免日后被当成回归。
 
-`research-057.schema.it.spec.ts` **已 grep 验真：不受影响** —— 该文件对 `uk_research_report` / `pg_indexes` / `indexname` 零命中，没有断言唯一键的列集合。⇒ A6 的连带面**只在 `research-057.report-ingest.it.spec.ts` 一个文件里**，不必再探第二处。
+🚨 **原判「`research-057.schema.it.spec.ts` 不受影响」已被 T001 实跑证伪（2026-08-16）**。当时的依据是「该文件对 `uk_research_report` / `pg_indexes` / `indexname` 零命中，没有断言唯一键的列集合」—— 依据本身没错，**探针问错了问题**：连带不是来自断言，是来自**插入数据**。T001 落地后 057 全套 **5 红 / 31 绿**，五条全部报 `Unique constraint failed on (uploader_kind, uploader_ref, symbol, version)`：它们往同一条 `(投递方, 标的)` 线上插多行、而 `version` 还恒取 DB 默认值 1，撞的是**新增的取号键**。分布 = schema IT 2 条（`反例：同字节换一个投递方…` / `同投递方不同字节各自独立成行`）+ report-ingest IT 3 条（`同标的同日期但字节不同…` + 两条 `配额`）。
+
+⇒ **A6 的连带面是两个文件，不是一个**。其中 report-ingest 那 3 条**要到 T004 实装 `MAX(version)+1` 之后才可能绿** —— T001→T003 之间树是红的，这是预期，不是回归。
+⚠️ 留给下次的判据：**改唯一键的连带面永远要问「谁往这张表插数据」，而不是「谁断言了这个索引」**（判据同 CLAUDE.md「如果反例存在，我的管道能看到吗」）。
 
 #### A7 — 契约同步链（Constitution §V，不能只跑一半）
 
