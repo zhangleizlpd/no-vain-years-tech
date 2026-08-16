@@ -1,6 +1,6 @@
 ---
 name: nvy-futu-kline
-description: NVY guest channel over the wg2 WireGuard tunnel — the single entry point for every request served by the owner's NVY side (market data of any kind, options, research-report submission, and any other capability the owner exposes). This skill carries NO endpoint list of its own; the live capability catalog is fetched at runtime from the channel. Use it whenever the user asks for anything that could plausibly be served by the NVY channel, and ALWAYS consult the catalog before telling the user something is unavailable.
+description: NVY guest channel — the single entry point for every data request served by the owner's NVY side (market data of any kind, quotes, options, calendars, research-report submission, and any other capability the owner exposes). This skill carries NO endpoint list of its own; the live capability catalog is fetched at runtime from the channel. Use it whenever the user asks for market or financial data that could plausibly be served by the NVY channel, and ALWAYS consult the catalog before answering from your own knowledge or telling the user something is unavailable.
 metadata:
   {
     'openclaw':
