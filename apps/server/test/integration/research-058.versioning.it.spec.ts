@@ -596,3 +596,146 @@ describe('058 T004 版本号取号 + 并发 + 元数据回声 (Testcontainers PG
     expect(rows[0].title).toBe('上线前投的那份'); // 既有记录的号没被重排 / 改写（SC-007）
   });
 });
+
+describe('058 T006 标的名称 Q7-B 只读回显 + fail-open (Testcontainers PG + 真 usecase)', () => {
+  let prisma: PrismaService;
+  let storage: FakeObjectStorage;
+  let ingest: IngestResearchReportUseCase;
+  let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
+
+  beforeAll(async () => {
+    db = await setupIsolatedDb();
+    prisma = new PrismaService(db.databaseUrl);
+    await prisma.$connect();
+    storage = new FakeObjectStorage();
+    ingest = new IngestResearchReportUseCase(prisma, storage, ALIYUN_OSS);
+  }, 180_000);
+
+  afterAll(async () => {
+    await prisma?.$disconnect();
+    await db.drop();
+  });
+
+  // 名称读的是 marketdata 的表（Q7-B 只读）⇒ 两张表都要复位，否则上一条 it 灌的标的会让
+  // 「找不到」那几条静默变成「找得到」。
+  const TRUNCATE_BOTH =
+    'TRUNCATE research.research_report, marketdata.instrument RESTART IDENTITY CASCADE';
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(TRUNCATE_BOTH);
+    storage.calls.length = 0;
+  });
+
+  /** 行情目录里的一条标的。给了 `delistDate` 即为**已退市**（FR-018 的被测形态）。 */
+  const seedInstrument = (
+    market: string,
+    code: string,
+    name: string,
+    over: { delistDate?: Date; status?: string; listingStatus?: string } = {},
+  ) =>
+    prisma.instrument.create({
+      data: {
+        market,
+        code,
+        name,
+        type: 'stock',
+        currency: market === 'hk' ? 'HKD' : 'CNY',
+        status: over.status ?? 'active',
+        listingStatus: over.listingStatus,
+        delistDate: over.delistDate,
+      },
+    });
+
+  it('state_branch 12 / FR-012 / FR-018 / FR-029: 目录里找得到 → 回显名称；已退市标的照常回显', async () => {
+    await seedInstrument('hk', '01698', '天工国际');
+    await seedInstrument('cn', '601318', '已退市的那只', {
+      delistDate: new Date('2025-12-31T00:00:00.000Z'),
+      status: 'delisted',
+      listingStatus: 'delisted',
+    });
+
+    const live = await ingest.execute(inputOf({ symbol: 'hk:01698' }));
+    expect(live.instrumentName).toBe('天工国际');
+
+    // 🚨 退市标的**照常**回显 —— 研报常常正是为已退市 / 停牌标的写的，按上市状态过滤等于
+    // 把这类投递的唯一自查手段拿掉（FR-018）。
+    const delisted = await ingest.execute(inputOf({ symbol: 'cn:601318' }));
+    expect(delisted.instrumentName).toBe('已退市的那只');
+
+    // FR-029: 只给事实、不给判断 —— 应答里 MUST NOT 出现任何「投对了 / 投错了」的结论字段。
+    expect(Object.keys(live).sort()).toEqual([
+      'deduplicated',
+      'instrumentName',
+      'objectKey',
+      'reportDate',
+      'reportId',
+      'symbol',
+      'title',
+      'version',
+    ]);
+  });
+
+  it('FR-016: 名称按**落库的归一 symbol** 查，不是请求里的原始写法', async () => {
+    await seedInstrument('hk', '01698', '天工国际');
+
+    // 请求写的是后缀式 `01698.HK`。拿它直接拆会得到 `{ market: '01698', code: 'HK' }` 这种
+    // 半成品并静默查不到 —— 而名称是 fail-open 的，「查不到」与「拆错了」对外无从区分 ⇒
+    // 这条断言是那个错误唯一会红的地方。
+    const res = await ingest.execute(inputOf({ symbol: '01698.HK' }));
+    expect(res.symbol).toBe('hk:01698');
+    expect(res.instrumentName).toBe('天工国际');
+  });
+
+  it('state_branch 13 / FR-013 / FR-028 / US2-AS-5: 目录里找不到 → 无名称、不拒绝', async () => {
+    // 研报常常先于标的入库 ⇒「找不到」是正常态，不是错误信号，更不是准入校验的依据。
+    const res = await ingest.execute(inputOf({ symbol: 'hk:09999' }));
+
+    expect(res.instrumentName).toBeNull(); // 显式「无名称」，不是把该项省掉
+    expect('instrumentName' in res).toBe(true);
+    expect(res.deduplicated).toBe(false);
+    expect(storage.calls).toHaveLength(1);
+    expect(await prisma.researchReport.count()).toBe(1);
+  });
+
+  it('state_branch 14 / FR-014 / FR-015: 名称查询本身失败 → 与「找不到」逐字节相同，投递照常成功', async () => {
+    const notFound = await ingest.execute(inputOf({ symbol: 'hk:09999' }));
+
+    // 复位到与上一次**完全相同**的初态（`RESTART IDENTITY` ⇒ 连自增 id 都一样）——
+    // 这样两条应答的每一个字段都可逐字节比，而不是只比 instrumentName 那一项。
+    await prisma.$executeRawUnsafe(TRUNCATE_BOTH);
+    storage.calls.length = 0;
+
+    const spy = vi
+      .spyOn(prisma.instrument, 'findUnique')
+      .mockRejectedValue(new Error('标的目录不可达（模拟）'));
+    try {
+      const failed = await ingest.execute(inputOf({ symbol: 'hk:09999' }));
+      expect(spy).toHaveBeenCalledTimes(1);
+      // 键序都比进去：多一个「为什么没有名称」的字段、或 null 变成 undefined，都会红。
+      expect(JSON.stringify(failed)).toBe(JSON.stringify(notFound));
+      expect(failed.instrumentName).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+
+    // 归档记录与对象都已写成 ⇒ MUST NOT 因名称环节把这一次判为失败（FR-015）。
+    expect(storage.calls).toHaveLength(1);
+    expect(await prisma.researchReport.findFirstOrThrow()).toMatchObject({ status: 'COMMITTED' });
+  });
+
+  it('FR-012 × 幂等命中路径（五层判据切不出的交叉盲区）: 重投 → 名称与首投逐字节相同', async () => {
+    // 🚨 十七条 state_branch 里描述幂等回显的第 11 条只枚举了 标题 / 日期 / 版本号 ⇒ 把名称
+    // 查询只接在 create 分支、dedup 分支回 undefined 的写法，**其余判据一条都照不到**。
+    await seedInstrument('hk', '01698', '天工国际');
+
+    const first = await ingest.execute(inputOf({ symbol: 'hk:01698' }));
+    const again = await ingest.execute(inputOf({ symbol: 'hk:01698' }));
+
+    expect(again.deduplicated).toBe(true);
+    expect(again.reportId).toBe(first.reportId);
+    expect(again.instrumentName).toBe('天工国际');
+    expect(again.instrumentName).toBe(first.instrumentName);
+    expect(again.instrumentName).not.toBeUndefined();
+    expect(storage.calls).toHaveLength(1); // 幂等命中仍然完全不碰对象存储
+  });
+});

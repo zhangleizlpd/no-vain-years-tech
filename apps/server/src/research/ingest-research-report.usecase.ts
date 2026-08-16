@@ -1,4 +1,4 @@
-import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { researchOssConfig, type ResearchOssConfig } from '../config/index.js';
 import {
   OBJECT_STORAGE_PORT,
@@ -18,6 +18,7 @@ import {
   looksLikePdf,
   normalizeSymbol,
   parseReportDate,
+  splitSymbol,
   titleFromFilename,
 } from './research-report.rules.js';
 
@@ -57,6 +58,14 @@ export interface IngestResearchReportResult {
   reportDate: string;
   /** 该（投递方, 标的）版本线上的第几次投递（FR-009）。 */
   version: number;
+  /**
+   * 该标的**现在**在行情标的目录里叫什么（FR-012）。查不到、或查询本身失败 → `null`
+   * （两者对外不可区分，FR-013 / FR-014）。**不落库**，每次实时读（FR-017）。
+   *
+   * ⚠️ 名称对上只证明「不是投成了另一家公司」，**不证明市场选对了** —— 两地上市的 A/H 在
+   * 目录里同名。服务端不据此给任何「投对了」的判断（FR-029）。
+   */
+  instrumentName: string | null;
 }
 
 const STATUS_PENDING = 'PENDING';
@@ -136,9 +145,28 @@ const isP2002 = (e: unknown): boolean =>
  * 应答里的 `title` / `reportDate` / `version` 全部读**落库那一行**，不是请求参数（FR-008）；
  * 幂等命中时读的是**库中那条**，于是「参数写错重投改不掉」这件事对投递方显式可见而非静默
  * （FR-010 / state_branch 11）。
+ *
+ * ## 标的名称：跨 ctx 只读 + fail-open（058 起 research 的跨 ctx 面 0 → 1）
+ *
+ * 投递方对自己声明的标的**零反馈**是 2026-08-16 实测两类错误的共同根因，而这条通道没有任何
+ * 读取面可供自查 ⇒ 回显名称是唯一可能的自查手段（FR-012）。落法是 catalog **Q7-B 只读直查**
+ * `marketdata.instrument`（`// CROSS-CONTEXT-READ:` 注释 + `check-server-moat` 硬拦），
+ * **不 DI marketdata 的任何 use case**（Q7-C 禁列）、**绝不写**、也不为一条查询包一层共享读
+ * 服务（仓内两处同形态先例都是 usecase 内直查：`alert/evaluate-alerts.usecase.ts`、
+ * `marketdata/sync-option-contract.usecase.ts`）。
+ *
+ * - **新建与幂等命中两条路径都查** —— FR-012 无条件。故名称补在 `respond()` 这一个出口上，
+ *   「漏掉某条返回路径」在结构上不可能。
+ * - **fail-open**：整段 `try/catch`，任何异常 → 名称按 `null` 走、投递照常成功（FR-015）。
+ *   漏了 catch 的表现是**一次已经写进 OSS 的成功投递被判失败**，而投递方没有 `GET` 可自查、
+ *   只会重投。查不到与查失败对外**完全一样**（FR-014），区分只落服务端日志。
+ * - **不按上市状态过滤**（FR-018）：研报常常正是为已退市 / 停牌标的写的。
+ * - **不做任何比对、不给「投对了」的判断**（FR-029）—— 判断权在投递方，服务端只给事实。
  */
 @Injectable()
 export class IngestResearchReportUseCase {
+  private readonly logger = new Logger(IngestResearchReportUseCase.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(OBJECT_STORAGE_PORT) private readonly storage: ObjectStoragePort,
@@ -168,7 +196,7 @@ export class IngestResearchReportUseCase {
     const identity = { uploaderKind, uploaderRef, symbol, contentHash };
     const existing = await this.findByIdempotencyKey(identity);
 
-    if (existing?.status === STATUS_COMMITTED) return toResult(existing, true);
+    if (existing?.status === STATUS_COMMITTED) return this.respond(existing, true);
 
     // 配额闸放在建行之前：被拒的投递不计入（FR-010）。续做既有 PENDING 行时它已在和里，
     // 不再叠加本次字节，否则卡在配额线上的那条永远续不动。
@@ -201,7 +229,7 @@ export class IngestResearchReportUseCase {
       }));
 
     // 取号期间撞上了**并发的重复投递**、而那一条已经走完：与幂等命中同一条出口，不碰 OSS。
-    if (row.status === STATUS_COMMITTED) return toResult(row, true);
+    if (row.status === STATUS_COMMITTED) return this.respond(row, true);
 
     try {
       await this.storage.putObject({
@@ -225,7 +253,48 @@ export class IngestResearchReportUseCase {
       data: { status: STATUS_COMMITTED },
     });
 
-    return toResult(row, false);
+    return this.respond(row, false);
+  }
+
+  /**
+   * 应答的**唯一出口**：落库那一行 + 实时读到的标的名称。
+   *
+   * 名称补在这里而不是各返回点，是「新建与幂等命中两条路径都有名称」（FR-012 无条件）在结构
+   * 上的保证 —— 接在 create 分支上的写法，现有五层判据一条都照不到。
+   */
+  private async respond(
+    row: Parameters<typeof toResult>[0],
+    deduplicated: boolean,
+  ): Promise<IngestResearchReportResult> {
+    return toResult(row, deduplicated, await this.lookupInstrumentName(row.symbol));
+  }
+
+  /**
+   * 标的名称：跨 ctx 只读 + fail-open（FR-012 ~ FR-018）。
+   *
+   * 入参必须是 **`row.symbol`**（归一后并最终落库的那个），不是 `input.symbol` 那个原始写法
+   * —— 幂等命中时二者归一后必然相同，但**写法**可能不同（`00700.HK` vs `hk:00700`）。
+   *
+   * 🚨 整段 `try/catch`（含 `splitSymbol` 的抛出）：名称回显**不是投递的失败点**（FR-015）。
+   */
+  private async lookupInstrumentName(symbol: string): Promise<string | null> {
+    try {
+      const { market, code } = splitSymbol(symbol);
+      // 🚨 复合唯一键的访问器是 `market_code`（`@@unique([market, code], map:
+      // "uk_instrument_market_code")`）。写成 `findFirst({ where: { market, code } })` 不红，
+      // 但走不上唯一索引。**不按上市状态过滤**（FR-018）。
+      // CROSS-CONTEXT-READ: 投递应答回显标的名称需 marketdata.instrument 的 name (只读, Q7-B per ADR-0065 复审)
+      const instrument = await this.prisma.instrument.findUnique({
+        where: { market_code: { market, code } },
+        select: { name: true },
+      });
+      return instrument?.name ?? null;
+    } catch (err) {
+      // 「查不到」与「查失败」对外不可区分（FR-014）⇒ 排障所需的区分只落这里。
+      const summary = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      this.logger.warn(`标的名称回显失败，按「无名称」继续: symbol=${symbol} err=${summary}`);
+      return null;
+    }
   }
 
   private findByIdempotencyKey(identity: IdempotencyIdentity) {
@@ -294,6 +363,8 @@ interface IdempotencyIdentity {
 /**
  * 应答一律由**落库的那一行**导出（FR-008 / FR-010）—— 幂等命中与新建共用这一个出口，
  * 是「回显的不可能是请求参数」在结构上的保证。
+ *
+ * 唯一的例外是 `instrumentName`：它**不落库**（FR-017 实时读），由 `respond()` 查好后传进来。
  */
 function toResult(
   row: {
@@ -305,6 +376,7 @@ function toResult(
     version: number;
   },
   deduplicated: boolean,
+  instrumentName: string | null,
 ): IngestResearchReportResult {
   return {
     reportId: row.id.toString(),
@@ -314,6 +386,7 @@ function toResult(
     title: row.title,
     reportDate: toReportDateString(row.reportDate),
     version: row.version,
+    instrumentName,
   };
 }
 

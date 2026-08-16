@@ -36,20 +36,43 @@ interface Row {
   createdAt: Date;
 }
 
+/** 行情标的目录里的一条（058 名称回显只读这两列）。 */
+interface InstrumentRow {
+  market: string;
+  code: string;
+  name: string;
+}
+
 /**
  * 内存假表而不是逐方法 vi.fn —— 本 task 要验的是 **行的状态**（留没留 PENDING / 有没有多出
  * 第二行 / 配额之和），用调用次数断言只能验到「调了几次」，验不到「库里剩下什么」。
  */
-function buildPrismaFake(seed: Row[] = []): {
+function buildPrismaFake(
+  seed: Row[] = [],
+  instruments: InstrumentRow[] = [],
+): {
   prisma: PrismaService;
   rows: Row[];
   failUpdate: () => void;
+  failInstrumentLookup: () => void;
 } {
   const rows: Row[] = [...seed];
   let nextId = BigInt(rows.length + 1);
   let updateShouldFail = false;
+  let instrumentLookupShouldFail = false;
 
   const prisma = {
+    // 058 起的跨 ctx 只读面（Q7-B）。真 Prisma 侧走复合唯一键访问器 `market_code`，
+    // 假表用同一个形状 —— 换成 `findFirst({ where: { market, code } })` 这里就对不上。
+    instrument: {
+      findUnique: vi.fn(
+        async ({ where }: { where: { market_code: { market: string; code: string } } }) => {
+          if (instrumentLookupShouldFail) throw new Error('标的目录不可达（模拟）');
+          const k = where.market_code;
+          return instruments.find((i) => i.market === k.market && i.code === k.code) ?? null;
+        },
+      ),
+    },
     researchReport: {
       findUnique: vi.fn(
         async ({
@@ -123,7 +146,12 @@ function buildPrismaFake(seed: Row[] = []): {
     },
   } as unknown as PrismaService;
 
-  return { prisma, rows, failUpdate: () => (updateShouldFail = true) };
+  return {
+    prisma,
+    rows,
+    failUpdate: () => (updateShouldFail = true),
+    failInstrumentLookup: () => (instrumentLookupShouldFail = true),
+  };
 }
 
 const GUEST1 = { kind: 'guest', guestName: 'friend1' } as const;
@@ -140,11 +168,11 @@ function input(overrides: Partial<Parameters<IngestResearchReportUseCase['execut
   } as Parameters<IngestResearchReportUseCase['execute']>[0];
 }
 
-function build(seed: Row[] = [], cfg: ResearchOssConfig = OSS) {
-  const { prisma, rows, failUpdate } = buildPrismaFake(seed);
+function build(seed: Row[] = [], cfg: ResearchOssConfig = OSS, instruments: InstrumentRow[] = []) {
+  const { prisma, rows, failUpdate, failInstrumentLookup } = buildPrismaFake(seed, instruments);
   const storage = new FakeObjectStorage();
   const useCase = new IngestResearchReportUseCase(prisma, storage, cfg);
-  return { useCase, storage, rows, failUpdate };
+  return { useCase, storage, rows, failUpdate, failInstrumentLookup };
 }
 
 describe('IngestResearchReportUseCase — 首次投递 (state_branch 1)', () => {
@@ -437,6 +465,43 @@ describe('IngestResearchReportUseCase — 同标的同日期不同字节 (state_
     // 058 起「同一标的的不同版本」这句话在数据上成立：同一条版本线，号是 1、2（此前恒为 1）。
     expect([first.version, second.version]).toEqual([1, 2]);
     expect(s.rows.map((r) => r.version)).toEqual([1, 2]);
+  });
+});
+
+describe('IngestResearchReportUseCase — 标的名称回显 (058 state_branch 12 / 13 / 14)', () => {
+  const TIANGONG: InstrumentRow = { market: 'hk', code: '01698', name: '天工国际' };
+
+  it('目录里找得到 → 回显名称，且按**归一后**的 symbol 查（请求写的是 `1698.HK`）', async () => {
+    const s = build([], OSS, [TIANGONG]);
+    const res = await s.useCase.execute(input());
+    expect(res.symbol).toBe('hk:01698');
+    expect(res.instrumentName).toBe('天工国际');
+  });
+
+  it('目录里找不到 → instrumentName 为 null，投递照常成功（MUST NOT 当作准入校验）', async () => {
+    const s = build([], OSS, []);
+    const res = await s.useCase.execute(input());
+    expect(res.instrumentName).toBeNull();
+    expect(res.deduplicated).toBe(false);
+    expect(s.rows[0].status).toBe('COMMITTED');
+  });
+
+  it('名称查询本身抛 → fail-open：与「找不到」同样回 null，已写成的投递 MUST NOT 被判失败', async () => {
+    const s = build([], OSS, [TIANGONG]);
+    s.failInstrumentLookup();
+    const res = await s.useCase.execute(input());
+    expect(res.instrumentName).toBeNull();
+    expect(s.storage.calls).toHaveLength(1);
+    expect(s.rows[0].status).toBe('COMMITTED');
+  });
+
+  it('幂等命中路径同样带名称（FR-012 无条件，不只在新建路径上）', async () => {
+    const s = build([], OSS, [TIANGONG]);
+    const first = await s.useCase.execute(input());
+    const again = await s.useCase.execute(input());
+    expect(again.deduplicated).toBe(true);
+    expect(again.instrumentName).toBe(first.instrumentName);
+    expect(again.instrumentName).toBe('天工国际');
   });
 });
 
