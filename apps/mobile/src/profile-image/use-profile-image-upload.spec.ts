@@ -62,7 +62,7 @@ const WEB_IMAGE: ProcessedImage = {
 };
 
 const credentialResponse = {
-  host: 'https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com',
+  host: 'https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com',
   objectKey: 'avatar/1/uuid/img',
   expiresAt: '2026-06-01T00:15:00.000Z',
   fields: FIELDS,

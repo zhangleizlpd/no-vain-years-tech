@@ -16,7 +16,7 @@ type Fn = ReturnType<typeof vi.fn>;
 const ALIYUN_CFG: OssConfig = {
   kind: 'aliyun',
   region: 'oss-cn-shanghai',
-  bucket: 'mbw-profile-images',
+  bucket: 'nvy-profile-images',
   accessKeyId: 'LTAI-test-ak',
   accessKeySecret: 'test-sk',
 };
@@ -56,7 +56,7 @@ describe('IssueUploadCredentialUseCase — happy path (ACTIVE, whitelisted type)
     const cred = await useCase.execute(42n, 'avatar', 'image/jpeg');
     expect(cred.objectKey).toMatch(/^avatar\/42\/[0-9a-f-]+\/img$/);
     expect(cred.fields.key).toBe(cred.objectKey);
-    expect(cred.host).toBe('https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com');
+    expect(cred.host).toBe('https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com');
   });
 
   it('background target → background/ prefix + larger size ceiling in policy', async () => {

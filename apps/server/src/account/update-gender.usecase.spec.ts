@@ -23,8 +23,8 @@ const activeRow = {
   displayName: '张三',
   bio: '美股研究员',
   gender: null,
-  avatarUrl: null,
-  backgroundImageUrl: null,
+  avatarObjectKey: null,
+  backgroundObjectKey: null,
   freezeUntil: null,
   previousPhoneHash: null,
 };
@@ -48,8 +48,8 @@ describe('UpdateGenderUseCase — happy path (ACTIVE, valid enum)', () => {
     expect(Object.keys(result).sort()).toEqual(
       [
         'accountId',
-        'avatarUrl',
-        'backgroundImageUrl',
+        'avatarObjectKey',
+        'backgroundObjectKey',
         'bio',
         'createdAt',
         'displayName',

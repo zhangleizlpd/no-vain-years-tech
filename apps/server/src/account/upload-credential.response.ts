@@ -36,7 +36,7 @@ export class UploadCredentialFieldsResponse {
 export class UploadCredentialResponse {
   @ApiProperty({
     description: 'Bucket root URL to POST the multipart form to',
-    example: 'https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com',
+    example: 'https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com',
   })
   host!: string;
 

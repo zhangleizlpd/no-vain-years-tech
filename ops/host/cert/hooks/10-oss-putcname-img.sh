@@ -10,9 +10,14 @@ set -euo pipefail
 # profile —— 表现为 "SigningContext.Credentials is null or empty"。
 export HOME="${HOME:-/root}"
 
+# 🚨 一次续期横跨两个阿里云账号，别把两边混在一起：
+#   - 签发阶段（certbot-aliyun-auth.sh）走 `shintong-dns` profile = **账号 B**，
+#     因为域名 shintongtech.com 的云解析仍在 B，DNS-01 的 TXT 必须写到 B 去；
+#   - 推送阶段（本脚本）走 **账号 C**，因为桶迁到了 C。
+# 把签发那半边也一起换到 C 的话，TXT 写不进去、证书根本签不出来。
 DOMAIN=img.shintongtech.com
-BUCKET=mbw-profile-images
-PROFILE=shintong-oss-cert
+BUCKET=nvy-profile-images
+PROFILE=nvy-oss-cert
 REGION=cn-shanghai
 
 # only act when THIS cert (img) was renewed; otherwise silently no-op

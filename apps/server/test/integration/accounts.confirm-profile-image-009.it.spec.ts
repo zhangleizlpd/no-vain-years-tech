@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { PrismaService } from '../../src/security/prisma.service';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { ValidationPipe } from '@nestjs/common';
@@ -24,7 +25,7 @@ import { ossConfig, type OssConfig } from '../../src/config';
 const ALIYUN_OSS: OssConfig = {
   kind: 'aliyun',
   region: 'oss-cn-shanghai',
-  bucket: 'mbw-profile-images',
+  bucket: 'nvy-profile-images',
   accessKeyId: 'LTAI-it-fake-ak',
   accessKeySecret: 'it-fake-sk',
 };
@@ -47,6 +48,7 @@ const stubProbe: ObjectExistsProbe = {
 describe('009 confirm-profile-image IT — EP2 + GET /me (SC-002, FR-S03/S04/S05)', () => {
   let app: NestFastifyApplication;
   let mockSms: MockSmsGateway;
+  let prisma: PrismaService;
 
   let stores: Awaited<ReturnType<typeof setupIsolatedStores>>;
 
@@ -75,6 +77,7 @@ describe('009 confirm-profile-image IT — EP2 + GET /me (SC-002, FR-S03/S04/S05
     await app.getHttpAdapter().getInstance().ready();
 
     mockSms = moduleRef.get<MockSmsGateway>(SMS_GATEWAY);
+    prisma = moduleRef.get<PrismaService>(PrismaService);
   }, 180_000);
 
   afterAll(async () => {
@@ -113,7 +116,7 @@ describe('009 confirm-profile-image IT — EP2 + GET /me (SC-002, FR-S03/S04/S05
   }
 
   it('full flow: issue → confirm avatar → 200 + persisted + GET /me reads back', async () => {
-    const { token } = await acquireToken('+8613800191001');
+    const { token, accountId } = await acquireToken('+8613800191001');
     const objectKey = await issueKey(token, 'avatar');
 
     const confirmRes = await app.inject({
@@ -128,7 +131,7 @@ describe('009 confirm-profile-image IT — EP2 + GET /me (SC-002, FR-S03/S04/S05
       backgroundImageUrl: string | null;
     };
     expect(confirmBody.avatarUrl).toBe(
-      `https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com/${objectKey}`,
+      `https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com/${objectKey}`,
     );
     expect(confirmBody.backgroundImageUrl).toBeNull();
 
@@ -140,6 +143,13 @@ describe('009 confirm-profile-image IT — EP2 + GET /me (SC-002, FR-S03/S04/S05
     expect(getRes.statusCode).toBe(200);
     const getBody = getRes.json() as { avatarUrl: string | null };
     expect(getBody.avatarUrl).toContain(objectKey);
+
+    // 🚨 直接读库。上面两条只看 API 响应，而「存 key 读时拼」与「存整条 URL」在响应上
+    // **完全同形** —— 它们对「列里到底存了什么」零判定力，回退到存 URL 也照样全绿。
+    // 只有这一条能证明这次重构真的落到了存储层。
+    const row = await prisma.account.findUnique({ where: { id: BigInt(accountId) } });
+    expect(row?.avatarObjectKey).toBe(objectKey);
+    expect(row?.avatarObjectKey).not.toContain('https://');
   });
 
   it('confirm background writes backgroundImageUrl, avatar stays null', async () => {

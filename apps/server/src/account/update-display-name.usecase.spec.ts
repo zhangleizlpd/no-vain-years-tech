@@ -46,8 +46,8 @@ describe('UpdateDisplayNameUseCase — happy path (ACTIVE, valid displayName)', 
     expect(Object.keys(result).sort()).toEqual(
       [
         'accountId',
-        'avatarUrl',
-        'backgroundImageUrl',
+        'avatarObjectKey',
+        'backgroundObjectKey',
         'bio',
         'createdAt',
         'displayName',

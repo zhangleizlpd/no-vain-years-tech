@@ -4,7 +4,8 @@ modules: [account]
 owners: ['@zhangleizlpd']
 status: implemented
 created_at: '2026-05-30'
-updated_at: '2026-06-01'
+updated_at: '2026-08-16'
+migration_refs: [20260816_0035_rename_profile_image_url_to_object_key]
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: full
@@ -14,7 +15,7 @@ state_branches:
   - 'request-credential: authed 用户发起换图 → 后端签发 scope 到本账号 key 前缀 / content-type / size / 短时效的一次性上传凭证（凭证原语 STS vs signed-PUT vs PostObject 留 plan）；缺 / 失效 token → 401；超限 → 429'
   - 'pick-divergence: 选图层 web/app 分叉（per ADR-0045）—— app=`expo-image-picker`（相册 / 相机 + 原生裁剪，`aspect` 仅 Android、iOS 裁剪恒方形）；web=`<input type=file accept=image/*>`（无相机 / 无原生裁剪）+ JS 裁剪（如 `react-easy-crop`）；头像 1:1、背景图宽幅；web 不显示「拍照」、权限请求 native-only、cancel 不可靠不挂 UI'
   - 'direct-upload: 选图 → client resize/compress → 直传 OSS（web/app 统一）→ 用 object key 通知后端；后端不代理图片字节'
-  - 'confirm-persist: 后端校验 object key 属本账号 key 前缀 + content-type / size → 落 `avatarUrl` / `backgroundImageUrl`（覆盖旧 URL）；GET me 回读'
+  - 'confirm-persist: 后端校验 object key 属本账号 key 前缀 + content-type / size → 落 `avatarObjectKey` / `backgroundObjectKey`（存 objectKey 而非绝对 URL，覆盖旧值）；GET me 回读时由展示域现拼完整 URL，对外字段名仍是 `avatarUrl` / `backgroundImageUrl`'
   - 'display: profile hero（002 `Hero`/`AvatarPlaceholder`，现 onAvatarPress/onBackgroundPress 接 noop）+ 007 资料卡头像 / 主页背景图行经 OSS public-read URL 显示真实图（翻 noop / 占位为 active）；缩略图走 OSS 原生 IMG 派生'
   - 'view-fullscreen: action sheet「查看头像 / 背景图」→ 全屏查看当前原图'
   - 'failure: 凭证签发 / 直传 / 网络失败 → 友好错误提示，profile 不脏写（落库仅在直传成功 + 后端校验通过后）'

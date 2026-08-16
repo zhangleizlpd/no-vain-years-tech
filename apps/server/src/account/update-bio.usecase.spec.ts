@@ -46,8 +46,8 @@ describe('UpdateBioUseCase — happy path (ACTIVE, valid bio)', () => {
     expect(Object.keys(result).sort()).toEqual(
       [
         'accountId',
-        'avatarUrl',
-        'backgroundImageUrl',
+        'avatarObjectKey',
+        'backgroundObjectKey',
         'bio',
         'createdAt',
         'displayName',
