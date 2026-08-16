@@ -24,7 +24,7 @@
 # **不经 app 进程**（结构性要求，FR-051）：通路同 marketdata-table-health 只读取证 ——
 # docker exec -i <pg> psql（纯 SELECT，无写路径）。
 #
-# 退出码：0 = 完整（谓词给的，非本脚本判的）/ **非零 = 需要人看**，两类合流且有意不区分：
+# 退出码：0 = 完整 / ET 周末不判（都是谓词给的，非本脚本判的）/ **非零 = 需要人看**，两类合流且有意不区分：
 #   · 1        = 谓词判某票覆盖率跌破阈值
 #   · 任意非零 = 探针自身故障（psql 连不上 / 谓词 SQL 报错 / 谓词文件缺失；均由 `set -e` 非零
 #                终止，psql/docker 的 stderr 直接进 journal 供定位）
@@ -51,8 +51,11 @@ PG_DB="${SYNC_REPORT_PG_DB:-mbw}"
 # 仓 ops/jobs/ ↔ 机 /usr/local/lib/nvy/jobs/。拆开放 = 每日一条「谓词文件缺失」假红。
 PREDICATE_SQL="${SNAPSHOT_INTEGRITY_PREDICATE_SQL:-$(dirname "${BASH_SOURCE[0]}")/marketdata-snapshot-integrity.sql}"
 
-# 谓词自包含无参数（阈值 / 「当日」的时区 / 到期判据全写死在 SQL 内）→ 这里无任何 -v 传参：
-# 传参 = 把判断挪回 bash = 前功尽弃。
+# 谓词自包含无参数（阈值 / 「当日」的时区 / ET 周末闸 / 到期判据全写死在 SQL 内）→ 这里无任何
+# -v 传参、也不设任何 GUC：传参 = 把判断挪回 bash = 前功尽弃。
+#   ⚠️ 谓词里那个 `current_setting('nvy.current_day', true)` **只给 IT 钉死日期用**，本脚本恒不设
+#     它 ⇒ 生产恒走 `now() AT TIME ZONE 'America/New_York'`。**别把它接成 EnvironmentFile 里的
+#     开关** —— 那等于给探针装了个静音钮（论证见 .sql 文件头）。
 # 契约（由 IT 断言锁死）：恒返单行两列 `exit_code<TAB>summary`，summary 无 tab/换行。
 verdict_row="$(docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
   -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -f - < "$PREDICATE_SQL")"
