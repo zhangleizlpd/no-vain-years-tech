@@ -27,7 +27,15 @@ ENV_FILE=/etc/nvy-guest-proxy.env
 UNIT=/etc/systemd/system/nvy-guest-proxy.service
 MANIFEST_NAME=.deployed.manifest
 IMAGE=nginx:1.27-alpine
-ENVSUBST_FILTER='^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$'
+# 🚨 **这条正则在仓里有三份拷贝，加新键时必须三处一起改**（2026-08-15 实撞：057 只改了
+#    compose 那份，deploy 当场以 `unknown "guest_upload_token" variable` 红在下面的预校验上）：
+#      ① 本行 —— 预校验 (a) 的一次性容器用它
+#      ② `docker-compose.guest.yml` 的 `NGINX_ENVSUBST_FILTER` —— **真容器**用它
+#      ③ 本文件 (d) 的残留扫描 —— 用它反向确认没有 `${VAR}` 漏替换
+#    ①③ 漏改的表现不同、都很阴：① 让部署恒红在预校验（**至少它红了**）；③ 让残留检不出来，
+#    自检在配置已经坏掉的情况下判绿。三处不合并成一份是因为 ② 在 YAML 里、①③ 在 shell 里，
+#    没有干净的共享点；代价就是这条注释。
+ENVSUBST_FILTER='^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$'
 
 log() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\n❌ %s\n' "$*" >&2; exit "${2:-1}"; }
@@ -185,7 +193,9 @@ fi
 if [[ -z "$running_conf" ]]; then
   printf '  ❌ %-38s 运行侧配置读不到，无从判定\n' "敏感占位残留"; fail=1
 else
-  residue="$(grep -cE '\$\{(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST[0-9]+_(TOKEN|NAME))\}' <<<"$running_conf" || true)"
+  # 🚨 第三份拷贝，见文件头 ENVSUBST_FILTER 处的三处同步说明。漏一个键在**这里**不会让
+  #    部署红 —— 只会让这条断言对那个键失明，配置坏了也判绿。
+  residue="$(grep -cE '\$\{(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|GUEST[0-9]+_(TOKEN|NAME))\}' <<<"$running_conf" || true)"
   ck "敏感占位残留" 0 "$residue"
 fi
 
