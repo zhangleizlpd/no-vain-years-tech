@@ -31,6 +31,11 @@ services:
       # 官方镜像会对 /etc/nginx/templates/*.template 做 envsubst 后落到 conf.d。
       # 真 token 因此只经环境变量进来，不落盘进仓库。
       - ./nginx:/etc/nginx/templates:ro
+      # 能力目录正文。**只读挂载、不走 envsubst** —— 它是发给访客看的散文，里面的
+      # `$TOKEN` 之类是要原样保留的 shell 变量示例，被 envsubst 吃掉就成了空串。
+      # 放 /etc 而不是镜像默认的 /usr/share/nginx/html：那个目录属于「静态站点」语义，
+      # 而本服务不是站点，只是恰好有一个文件要发出去。
+      - ./capabilities:/etc/nvy-guest-capabilities:ro
       - guest-proxy-logs:/var/log/nginx
       # 🚨 干掉镜像自带的 default.conf —— 它 `listen 80`，而本服务是 host 网络 ⇒
       #    会跟 prod nginx 已占的 0.0.0.0:80 撞，nginx 直接
