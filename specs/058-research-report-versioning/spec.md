@@ -2,9 +2,10 @@
 feature_id: 058-research-report-versioning
 modules: [research]
 owners: ['@zhangleizlpd']
-status: tasks-ready
+status: implemented
 created_at: '2026-08-16'
 updated_at: '2026-08-16'
+migration_refs: ['20260816_1631_widen_research_idempotency_key_add_version_line']
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: na
