@@ -21,7 +21,7 @@ import { ossConfig, type OssConfig } from '../../src/config';
 const ALIYUN_OSS: OssConfig = {
   kind: 'aliyun',
   region: 'oss-cn-shanghai',
-  bucket: 'mbw-profile-images',
+  bucket: 'nvy-profile-images',
   accessKeyId: 'LTAI-it-fake-ak',
   accessKeySecret: 'it-fake-sk',
 };
@@ -105,7 +105,7 @@ describe('009 upload-credential IT — EP1 (SC-001, FR-S02/S05/S06)', () => {
       fields: Record<string, string>;
     };
 
-    expect(body.host).toBe('https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com');
+    expect(body.host).toBe('https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com');
     expect(body.objectKey).toMatch(new RegExp(`^avatar/${accountId}/[0-9a-f-]+/img$`));
     expect(body.fields.key).toBe(body.objectKey);
     expect(body.fields['x-oss-signature-version']).toBe('OSS4-HMAC-SHA256');

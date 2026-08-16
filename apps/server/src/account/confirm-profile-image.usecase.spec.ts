@@ -14,7 +14,7 @@ type Fn = ReturnType<typeof vi.fn>;
 const ALIYUN_CFG: OssConfig = {
   kind: 'aliyun',
   region: 'oss-cn-shanghai',
-  bucket: 'mbw-profile-images',
+  bucket: 'nvy-profile-images',
   accessKeyId: 'AK',
   accessKeySecret: 'SK',
 };
@@ -29,8 +29,8 @@ const activeRow = {
   displayName: '张三',
   bio: null,
   gender: null,
-  avatarUrl: null,
-  backgroundImageUrl: null,
+  avatarObjectKey: null,
+  backgroundObjectKey: null,
   freezeUntil: null,
   previousPhoneHash: null,
 };
@@ -55,43 +55,49 @@ function build(opts?: { row?: unknown; head?: ObjectHeadResult; cfg?: OssConfig 
 const KEY = 'avatar/42/uuid-1/img';
 
 describe('ConfirmProfileImageUseCase — happy path', () => {
-  it('valid own-prefix key + HEAD hit → persists publicUrl + returns it', async () => {
-    const { useCase, update } = build();
+  it('valid own-prefix key + HEAD hit → 落库存 objectKey，探测打完整 URL', async () => {
+    const { useCase, update, head } = build();
     const result = await useCase.execute(42n, 'avatar', KEY);
-    const expectedUrl = `https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com/${KEY}`;
-    expect(update).toHaveBeenCalledWith({ where: { id: 42n }, data: { avatarUrl: expectedUrl } });
-    expect(result.avatarUrl).toBe(expectedUrl);
-    expect(result.backgroundImageUrl).toBeNull();
+    expect(update).toHaveBeenCalledWith({ where: { id: 42n }, data: { avatarObjectKey: KEY } });
+    expect(result.avatarObjectKey).toBe(KEY);
+    expect(result.backgroundObjectKey).toBeNull();
+    // 写进去的是 key、探测出去的是 URL —— 两者从此分家，这条钉住这个分界。
+    expect(head).toHaveBeenCalledWith(
+      `https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com/${KEY}`,
+    );
   });
 
-  it('background target writes backgroundImageUrl', async () => {
+  it('background target writes backgroundObjectKey', async () => {
     const { useCase, update } = build();
     const key = 'background/42/uuid-2/img';
     const result = await useCase.execute(42n, 'background', key);
     expect(update).toHaveBeenCalledWith({
       where: { id: 42n },
-      data: { backgroundImageUrl: expect.stringContaining(key) },
+      data: { backgroundObjectKey: key },
     });
-    expect(result.backgroundImageUrl).toContain(key);
+    expect(result.backgroundObjectKey).toBe(key);
   });
 
-  it('overwrites an existing avatarUrl', async () => {
+  it('overwrites an existing avatarObjectKey', async () => {
     const { useCase, update } = build({
-      row: { ...activeRow, avatarUrl: 'https://old/url' },
+      row: { ...activeRow, avatarObjectKey: 'avatar/42/old-uuid/img' },
     });
     const result = await useCase.execute(42n, 'avatar', KEY);
-    expect(result.avatarUrl).toContain(KEY);
+    expect(result.avatarObjectKey).toBe(KEY);
     expect(update).toHaveBeenCalledOnce();
   });
 
-  it('publicBaseUrl set → persists the custom-domain URL, not the OSS endpoint', async () => {
-    const { useCase, update } = build({
+  // 展示域切换**只**影响探测目标，不影响落库内容 —— 这正是「存 key 而非存 URL」买到的
+  // 东西: 换域名不需要重写任何一行。旧版这条断言的是「落库落自定义域名 URL」,
+  // 换域名就得跑一次 UPDATE; 现在换域名对这张表是零操作。
+  it('publicBaseUrl set → 探测打自定义域名，落库仍只存 key', async () => {
+    const { useCase, update, head } = build({
       cfg: { ...ALIYUN_CFG, publicBaseUrl: 'https://img.shintongtech.com' },
     });
     const result = await useCase.execute(42n, 'avatar', KEY);
-    const expectedUrl = `https://img.shintongtech.com/${KEY}`;
-    expect(update).toHaveBeenCalledWith({ where: { id: 42n }, data: { avatarUrl: expectedUrl } });
-    expect(result.avatarUrl).toBe(expectedUrl);
+    expect(head).toHaveBeenCalledWith(`https://img.shintongtech.com/${KEY}`);
+    expect(update).toHaveBeenCalledWith({ where: { id: 42n }, data: { avatarObjectKey: KEY } });
+    expect(result.avatarObjectKey).toBe(KEY);
   });
 });
 

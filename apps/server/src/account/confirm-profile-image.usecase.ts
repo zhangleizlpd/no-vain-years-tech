@@ -5,11 +5,11 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ossConfig, ossPublicBaseUrl, type OssConfig } from '../config/oss.config';
+import { ossConfig, type OssConfig } from '../config/oss.config';
 import { IMAGE_WHITELIST } from '../integrations/oss/oss.module';
 import { PrismaService } from '../security/prisma.service';
 import { AccountStatus, Gender, isActive } from './account.rules';
-import { type ProfileImageTarget } from './oss-policy';
+import { profileImagePublicUrl, type ProfileImageTarget } from './oss-policy';
 import { OBJECT_EXISTS_PROBE, type ObjectExistsProbe } from './object-exists.probe';
 
 export interface ConfirmProfileImageResult {
@@ -18,8 +18,8 @@ export interface ConfirmProfileImageResult {
   displayName: string | null;
   bio: string | null;
   gender: Gender | null;
-  avatarUrl: string | null;
-  backgroundImageUrl: string | null;
+  avatarObjectKey: string | null;
+  backgroundObjectKey: string | null;
   status: AccountStatus;
   createdAt: Date;
 }
@@ -29,7 +29,8 @@ export interface ConfirmProfileImageResult {
  * per ADR-0043). Validates the objectKey belongs to this account's prefix
  * (anti cross-account write, FR-S03), HEAD-probes the public URL to confirm the
  * object truly exists + is an allowed image type (plan D3), then persists the
- * public URL onto the account (overwrite semantics; old object not deleted —
+ * **objectKey** onto the account (展示 URL 由读侧 `profileImagePublicUrl()` 现拼,
+ * 使换展示域 / 换云账号不再需要重写存量行) (overwrite semantics; old object not deleted —
  * FR-S08). Image bytes never touch the backend (SC-007).
  */
 @Injectable()
@@ -65,11 +66,14 @@ export class ConfirmProfileImageUseCase {
       throw new BadRequestException(`INVALID_OBJECT_KEY: must start with ${prefix}`);
     }
 
-    if (this.ossCfg.kind !== 'aliyun') {
+    // HEAD 探测打的是**公共 URL**(桶公共读, 匿名 HEAD 无需签名), 所以这里仍要拼一次
+    // 完整 URL —— 但落库存的是 objectKey, 两者从本次起不再是同一个东西。
+    // objectKey 在此必非空(是入参), 故 null 只可能来自 OSS unconfigured ⇒ 这一个
+    // 判空同时替掉了原来那道单独的 `kind !== 'aliyun'` 守卫。
+    const publicUrl = profileImagePublicUrl(this.ossCfg, objectKey);
+    if (publicUrl === null) {
       throw new ServiceUnavailableException('OSS_NOT_CONFIGURED');
     }
-
-    const publicUrl = `${ossPublicBaseUrl(this.ossCfg.region, this.ossCfg.bucket, this.ossCfg.publicBaseUrl)}/${objectKey}`;
 
     // HEAD 校验 (plan D3): 对象必须真存在 + content-type 合白名单, 否则拒不落库。
     const probed = await this.probe.head(publicUrl);
@@ -93,8 +97,8 @@ export class ConfirmProfileImageUseCase {
       );
     }
 
-    const field = target === 'avatar' ? 'avatarUrl' : 'backgroundImageUrl';
-    await this.prisma.account.update({ where: { id: accountId }, data: { [field]: publicUrl } });
+    const field = target === 'avatar' ? 'avatarObjectKey' : 'backgroundObjectKey';
+    await this.prisma.account.update({ where: { id: accountId }, data: { [field]: objectKey } });
 
     return {
       accountId: account.id,
@@ -102,8 +106,8 @@ export class ConfirmProfileImageUseCase {
       displayName: account.displayName,
       bio: account.bio,
       gender: account.gender as Gender | null,
-      avatarUrl: target === 'avatar' ? publicUrl : account.avatarUrl,
-      backgroundImageUrl: target === 'background' ? publicUrl : account.backgroundImageUrl,
+      avatarObjectKey: target === 'avatar' ? objectKey : account.avatarObjectKey,
+      backgroundObjectKey: target === 'background' ? objectKey : account.backgroundObjectKey,
       status: account.status as AccountStatus,
       createdAt: account.createdAt,
     };

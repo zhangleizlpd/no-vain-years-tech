@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ossThumbCacheKey, ossThumbUrl } from './oss-image';
 
-const BASE = 'https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com/avatar/1/uuid/img';
+const BASE = 'https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com/avatar/1/uuid/img';
 
 describe('ossThumbUrl', () => {
   it('append x-oss-process resize + webp + quality（无 query 用 ?）', () => {

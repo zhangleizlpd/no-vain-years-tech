@@ -12,20 +12,23 @@ datasource db {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model Account {
-  id                 BigInt       @id @default(autoincrement())
-  phone              String?      @unique(map: "uk_account_phone") @db.VarChar(20)
-  status             String       @db.VarChar(16)
-  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
-  lastLoginAt        DateTime?    @map("last_login_at") @db.Timestamptz(6)
-  displayName        String?      @map("display_name") @db.VarChar(64)
-  bio                String?      @map("bio") @db.VarChar(120)
-  gender             String?      @map("gender") @db.VarChar(16)
-  avatarUrl          String?      @map("avatar_url") @db.VarChar(512)
-  backgroundImageUrl String?      @map("background_image_url") @db.VarChar(512)
-  freezeUntil        DateTime?    @map("freeze_until") @db.Timestamptz(6)
-  previousPhoneHash  String?      @map("previous_phone_hash") @db.VarChar(64)
-  credentials        Credential[]
+  id                  BigInt       @id @default(autoincrement())
+  phone               String?      @unique(map: "uk_account_phone") @db.VarChar(20)
+  status              String       @db.VarChar(16)
+  createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime     @default(now()) @map("updated_at") @db.Timestamptz(6)
+  lastLoginAt         DateTime?    @map("last_login_at") @db.Timestamptz(6)
+  displayName         String?      @map("display_name") @db.VarChar(64)
+  bio                 String?      @map("bio") @db.VarChar(120)
+  gender              String?      @map("gender") @db.VarChar(16)
+  // 存的是 OSS **objectKey**(如 `avatar/42/<uuid>/img`),不是完整 URL ——
+  // 展示 URL 在读侧由 ossPublicBaseUrl() 拼。存绝对 URL 会让「换展示域 / 换云账号」
+  // 变成一次数据迁移,而那件事已经发生过两次(2026-06 绑备案域、2026-08 迁账号 C)。
+  avatarObjectKey     String?      @map("avatar_object_key") @db.VarChar(512)
+  backgroundObjectKey String?      @map("background_object_key") @db.VarChar(512)
+  freezeUntil         DateTime?    @map("freeze_until") @db.Timestamptz(6)
+  previousPhoneHash   String?      @map("previous_phone_hash") @db.VarChar(64)
+  credentials         Credential[]
 
   @@index([freezeUntil], map: "idx_account_freeze_until_active", where: raw("(((status)::text = 'FROZEN'::text) AND (freeze_until IS NOT NULL))"))
   @@index([previousPhoneHash], map: "idx_account_previous_phone_hash", where: raw("(previous_phone_hash IS NOT NULL)"))
@@ -1069,7 +1072,7 @@ model OptionContract {
   createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  underlying Instrument           @relation(fields: [underlyingInstrumentId], references: [id], onDelete: Cascade)
+  underlying Instrument            @relation(fields: [underlyingInstrumentId], references: [id], onDelete: Cascade)
   snapshots  OptionDailySnapshot[]
 
   @@unique([market, code], map: "uk_option_contract_market_code")
@@ -1124,12 +1127,12 @@ model OptionDailySnapshot {
   theta Decimal? @db.Decimal(16, 8)
   rho   Decimal? @db.Decimal(16, 8)
 
-  openInterest    Decimal? @map("open_interest") @db.Decimal(20, 0)
-  netOpenInterest Decimal? @map("net_open_interest") @db.Decimal(20, 0)
-  volume          Decimal? @db.Decimal(20, 0)
-  turnover        Decimal? @db.Decimal(20, 2)
+  openInterest     Decimal?  @map("open_interest") @db.Decimal(20, 0)
+  netOpenInterest  Decimal?  @map("net_open_interest") @db.Decimal(20, 0)
+  volume           Decimal?  @db.Decimal(20, 0)
+  turnover         Decimal?  @db.Decimal(20, 2)
   // 标的价直取 vendor 随链下发的值, **不走复权换算** (ADR-0053 绊线, plan D-ARCH-1)。
-  underlyingSpot  Decimal? @map("underlying_spot") @db.Decimal(18, 4)
+  underlyingSpot   Decimal?  @map("underlying_spot") @db.Decimal(18, 4)
   vendorUpdateTime DateTime? @map("vendor_update_time") @db.Timestamptz(6)
   greeksComplete   Boolean   @map("greeks_complete")
 

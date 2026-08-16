@@ -68,8 +68,8 @@ describe('GetAccountProfileUseCase US1 — new user, displayName null', () => {
     expect(Object.keys(result).sort()).toEqual(
       [
         'accountId',
-        'avatarUrl',
-        'backgroundImageUrl',
+        'avatarObjectKey',
+        'backgroundObjectKey',
         'bio',
         'createdAt',
         'displayName',

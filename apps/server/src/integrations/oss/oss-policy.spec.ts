@@ -7,7 +7,7 @@ import {
 
 const BASE: PostObjectCredentialInput = {
   region: 'oss-cn-shanghai',
-  bucket: 'mbw-profile-images',
+  bucket: 'nvy-profile-images',
   accessKeyId: 'LTAI-test-ak',
   accessKeySecret: 'test-sk',
   keyPrefix: 'avatar/42/',
@@ -75,7 +75,7 @@ describe('buildPostObjectCredential — object key leaf (parameterized, 057)', (
 describe('buildPostObjectCredential — region double-form', () => {
   it('host endpoint keeps the oss- prefix', () => {
     const cred = buildPostObjectCredential(BASE);
-    expect(cred.host).toBe('https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com');
+    expect(cred.host).toBe('https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com');
   });
 
   it('x-oss-credential scope uses the bare region (no oss- prefix)', () => {
@@ -91,7 +91,7 @@ describe('buildPostObjectCredential — policy conditions', () => {
     const cred = buildPostObjectCredential(BASE);
     const policy = decodePolicy(cred.fields.policy);
     expect(policy.conditions).toEqual([
-      { bucket: 'mbw-profile-images' },
+      { bucket: 'nvy-profile-images' },
       { 'x-oss-signature-version': 'OSS4-HMAC-SHA256' },
       { 'x-oss-credential': 'LTAI-test-ak/20260601/cn-shanghai/oss/aliyun_v4_request' },
       { 'x-oss-date': '20260601T120000Z' },

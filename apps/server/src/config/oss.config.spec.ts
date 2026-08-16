@@ -35,7 +35,7 @@ describe('ossConfig presence gate', () => {
 
   it('throws when OSS partially configured (bucket set, secret missing)', () => {
     process.env.OSS_REGION = 'oss-cn-shanghai';
-    process.env.OSS_BUCKET = 'mbw-profile-images';
+    process.env.OSS_BUCKET = 'nvy-profile-images';
     process.env.OSS_ACCESS_KEY_ID = 'AK';
     // OSS_ACCESS_KEY_SECRET left unset
     expect(() => ossConfig()).toThrow();
@@ -43,13 +43,13 @@ describe('ossConfig presence gate', () => {
 
   it('parses full aliyun config when all four set', () => {
     process.env.OSS_REGION = 'oss-cn-shanghai';
-    process.env.OSS_BUCKET = 'mbw-profile-images';
+    process.env.OSS_BUCKET = 'nvy-profile-images';
     process.env.OSS_ACCESS_KEY_ID = 'AK';
     process.env.OSS_ACCESS_KEY_SECRET = 'SK';
     expect(ossConfig()).toEqual({
       kind: 'aliyun',
       region: 'oss-cn-shanghai',
-      bucket: 'mbw-profile-images',
+      bucket: 'nvy-profile-images',
       accessKeyId: 'AK',
       accessKeySecret: 'SK',
     });
@@ -57,7 +57,7 @@ describe('ossConfig presence gate', () => {
 
   it('carries OSS_PUBLIC_BASE_URL into the aliyun config when set', () => {
     process.env.OSS_REGION = 'oss-cn-shanghai';
-    process.env.OSS_BUCKET = 'mbw-profile-images';
+    process.env.OSS_BUCKET = 'nvy-profile-images';
     process.env.OSS_ACCESS_KEY_ID = 'AK';
     process.env.OSS_ACCESS_KEY_SECRET = 'SK';
     process.env.OSS_PUBLIC_BASE_URL = 'https://img.shintongtech.com';
@@ -67,7 +67,7 @@ describe('ossConfig presence gate', () => {
 
   it('empty OSS_PUBLIC_BASE_URL is treated as unset (no url() failure)', () => {
     process.env.OSS_REGION = 'oss-cn-shanghai';
-    process.env.OSS_BUCKET = 'mbw-profile-images';
+    process.env.OSS_BUCKET = 'nvy-profile-images';
     process.env.OSS_ACCESS_KEY_ID = 'AK';
     process.env.OSS_ACCESS_KEY_SECRET = 'SK';
     process.env.OSS_PUBLIC_BASE_URL = '';
@@ -79,20 +79,20 @@ describe('ossConfig presence gate', () => {
 
 describe('ossPublicBaseUrl', () => {
   it('composes the public-read endpoint URL with no trailing slash', () => {
-    expect(ossPublicBaseUrl('oss-cn-shanghai', 'mbw-profile-images')).toBe(
-      'https://mbw-profile-images.oss-cn-shanghai.aliyuncs.com',
+    expect(ossPublicBaseUrl('oss-cn-shanghai', 'nvy-profile-images')).toBe(
+      'https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com',
     );
   });
 
   it('returns the custom publicBaseUrl verbatim when provided', () => {
     expect(
-      ossPublicBaseUrl('oss-cn-shanghai', 'mbw-profile-images', 'https://img.shintongtech.com'),
+      ossPublicBaseUrl('oss-cn-shanghai', 'nvy-profile-images', 'https://img.shintongtech.com'),
     ).toBe('https://img.shintongtech.com');
   });
 
   it('strips trailing slashes from a custom publicBaseUrl', () => {
     expect(
-      ossPublicBaseUrl('oss-cn-shanghai', 'mbw-profile-images', 'https://img.shintongtech.com/'),
+      ossPublicBaseUrl('oss-cn-shanghai', 'nvy-profile-images', 'https://img.shintongtech.com/'),
     ).toBe('https://img.shintongtech.com');
   });
 });

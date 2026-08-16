@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Inject,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { AccountIdThrottlerGuard } from './account-id-throttler.guard';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
@@ -32,6 +42,8 @@ import { UploadCredentialResponse } from './upload-credential.response';
 import { ConfirmProfileImageUseCase } from './confirm-profile-image.usecase';
 import { ConfirmProfileImageRequest } from './confirm-profile-image.request';
 import { InspectWechatBindingUseCase } from './inspect-wechat-binding.usecase';
+import { ossConfig, type OssConfig } from '../config/oss.config';
+import { profileImagePublicUrl } from './oss-policy';
 
 /**
  * GET /api/v1/accounts/me
@@ -54,7 +66,15 @@ export class AccountProfileController {
     private readonly confirmProfileImageUseCase: ConfirmProfileImageUseCase,
     // 010 FR-S07: /me + PATCH 响应统一带 wechatBound (account 内 ctx 读, 无 cross-ctx 注释)。
     private readonly inspectWechatBinding: InspectWechatBindingUseCase,
+    // 图片列存 objectKey, 展示 URL 在此层现拼。派生放 controller 而非 5 个 usecase 各自
+    // 注入一次 config —— 那会把同一段拼装抄 5 遍, 且让「读一行账号」凭空依赖对象存储配置。
+    @Inject(ossConfig.KEY) private readonly ossCfg: OssConfig,
   ) {}
+
+  /** objectKey → 展示 URL；未设 / OSS 未配置均为 null（语义见 oss-policy.ts）。 */
+  private toPublicUrl(objectKey: string | null): string | null {
+    return profileImagePublicUrl(this.ossCfg, objectKey);
+  }
 
   @Get('me')
   @HttpCode(200)
@@ -110,8 +130,8 @@ export class AccountProfileController {
       displayName: result.displayName,
       bio: result.bio,
       gender: result.gender,
-      avatarUrl: result.avatarUrl,
-      backgroundImageUrl: result.backgroundImageUrl,
+      avatarUrl: this.toPublicUrl(result.avatarObjectKey),
+      backgroundImageUrl: this.toPublicUrl(result.backgroundObjectKey),
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
@@ -183,8 +203,8 @@ export class AccountProfileController {
       displayName: result.displayName,
       bio: result.bio,
       gender: result.gender,
-      avatarUrl: result.avatarUrl,
-      backgroundImageUrl: result.backgroundImageUrl,
+      avatarUrl: this.toPublicUrl(result.avatarObjectKey),
+      backgroundImageUrl: this.toPublicUrl(result.backgroundObjectKey),
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
@@ -253,8 +273,8 @@ export class AccountProfileController {
       displayName: result.displayName,
       bio: result.bio,
       gender: result.gender,
-      avatarUrl: result.avatarUrl,
-      backgroundImageUrl: result.backgroundImageUrl,
+      avatarUrl: this.toPublicUrl(result.avatarObjectKey),
+      backgroundImageUrl: this.toPublicUrl(result.backgroundObjectKey),
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
@@ -323,8 +343,8 @@ export class AccountProfileController {
       displayName: result.displayName,
       bio: result.bio,
       gender: result.gender,
-      avatarUrl: result.avatarUrl,
-      backgroundImageUrl: result.backgroundImageUrl,
+      avatarUrl: this.toPublicUrl(result.avatarObjectKey),
+      backgroundImageUrl: this.toPublicUrl(result.backgroundObjectKey),
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
@@ -459,8 +479,8 @@ export class AccountProfileController {
       displayName: result.displayName,
       bio: result.bio,
       gender: result.gender,
-      avatarUrl: result.avatarUrl,
-      backgroundImageUrl: result.backgroundImageUrl,
+      avatarUrl: this.toPublicUrl(result.avatarObjectKey),
+      backgroundImageUrl: this.toPublicUrl(result.backgroundObjectKey),
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
