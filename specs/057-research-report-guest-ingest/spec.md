@@ -2,9 +2,9 @@
 feature_id: 057-research-report-guest-ingest
 modules: [research]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-15'
-updated_at: '2026-08-15'
+updated_at: '2026-08-16'
 migration_refs: ['20260815_2226_create_research_report_table']
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
