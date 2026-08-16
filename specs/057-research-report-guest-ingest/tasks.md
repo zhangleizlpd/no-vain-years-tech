@@ -207,6 +207,15 @@ US1-AS1/2 → T008/T009；**US1-AS3（后缀式写法落库为归一形式）→
 
 **该窗口可接受，因为它不可见**：新端点在 guest 机人工 `FORCE=1 ./setup.sh install-skill`（T014）之前无人可用，而那是上线后的手工步骤；既有 6 条行情端点走 `${FUTU_SHIM_URL}`，完全不受影响。
 
-**上线顺序**：合入 → 等 mono deploy 完成（T009 的 3001 端口生效）→ guest 机装 skill（T014）→ 端到端实证（T015）。
+**上线顺序**（2026-08-15 合入后按实际踩到的坑修正 —— 原版漏了第 1、3 步，`Deploy guest proxy` 因此当场红在预校验上）：
+
+1. **带外把新密钥推到 prod**（`GUEST_UPLOAD_TOKEN` + `RESEARCH_OSS_*`；密文不随 git，per [`secrets-sops.md`](../../ops/runbook/secrets-sops.md) §3.3）。
+2. **发版**（合 release-please 的 Release PR）→ `Build & Push Image` → `Deploy` → app 带 `127.0.0.1:3001` 上线。
+3. **在宿主上重渲染 `/etc/nvy-guest-proxy.env`**（`FORCE=1 sops exec-env <secrets> render-env.sh`；`FORCE=1` 必带，既有访客 token 默认沿用不会踢人）。
+   🚨 **这一步必须在 `Deploy guest proxy` 之前** —— 该 workflow 的预校验拿**宿主当前的 env** 跑 `nginx -t`，模板里引用了 env 里还不存在的键就直接 `[emerg] unknown "..." variable` 退 4。而新版 `render-env.sh` 本身又只能靠那次 deploy 送上去 ⇒ **先有鸡还是先有蛋**，首次上线必须手工把 `render-env.sh` + `nvy-guest-proxy.env.example` 送到宿主渲染一次。
+4. **触发 `Deploy guest proxy`**（`workflow_dispatch`）→ 通道侧上线。
+5. guest 机 `FORCE=1 ./setup.sh install-skill`（T014）→ 端到端实证（T015）。
+
+> 按 1→2→3→4 这个序，plan `D-9` 预留的那段「guest-proxy 先上、502 自愈窗口」**根本不会出现** —— app 先就位。原 plan 假设 guest-proxy 必然先上，是因为它没料到通道侧会被预校验挡住。
 
 > ⚠️ 本片一度按「两条部署链由 paths 各自触发」拆成两个 PR —— **那是事实错误**（`deploy.yml` 根本没有 paths 触发），2026-08-15 `/speckit-analyze` 逐 workflow 核出并纠正为单 PR。
