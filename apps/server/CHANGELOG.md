@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.27.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.26.1...server-v0.27.0) (2026-08-16)
+
+
+### Features
+
+* **research:** 058 研报归档同标的多版本与元数据回声 ([#76](https://github.com/zhangleizlpd/no-vain-years-tech/issues/76)) ([0a1feda](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0a1feda42449e75b832fda1d49e314264306be8e))
+
+
+### Bug Fixes
+
+* **marketdata:** 期权完整性探针加 ET 周末闸 —— 周六周日 us 不开盘,判它就是每周两条固定假红 ([#73](https://github.com/zhangleizlpd/no-vain-years-tech/issues/73)) ([8cb5be3](https://github.com/zhangleizlpd/no-vain-years-tech/commit/8cb5be34fbaa8e1c58635a94fb2f0267a0b22133))
+* **server:** vitest 补 testTimeout 默认值 —— 24 条串行打真栈的 it 一直吃 5s 默认值,满载即假红 ([#77](https://github.com/zhangleizlpd/no-vain-years-tech/issues/77)) ([a4100bc](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a4100bc1d0c832b238b531dfc1dac187aab4f9cb))
+
 ## [0.26.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.26.0...server-v0.26.1) (2026-08-16)
 
 
