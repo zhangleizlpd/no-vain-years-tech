@@ -79,7 +79,7 @@ updated_at: '2026-08-16'
 
 ## Phase 5: 契约
 
-- [ ] T008 [Contract] **OpenAPI 导出 + api-client 重生成**（Constitution §V, plan §10）：`nx run server:export-openapi` → `nx affected -t generate`。**两步都要跑**（Guardrail 10）。→ verify: `git status` 显示 `apps/server/openapi.json` 有变更且含两条新路径；`packages/api-client` 产物同步；`pnpm tsx scripts/checks/check-api-property-nullable.ts` 绿
+- [X] T008 [Contract] **OpenAPI 导出 + api-client 重生成**（Constitution §V, plan §10）：`nx run server:export-openapi` → `nx affected -t generate`。**两步都要跑**（Guardrail 10）。→ verify: `git status` 显示 `apps/server/openapi.json` 有变更且含两条新路径；`packages/api-client` 产物同步；`pnpm tsx scripts/checks/check-api-property-nullable.ts` 绿
 
 ---
 
