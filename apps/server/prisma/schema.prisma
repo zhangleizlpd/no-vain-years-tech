@@ -1729,12 +1729,22 @@ model AnchorChange {
 //
 // uploader 两列承 discriminated union: {kind:'guest', guestName} | {kind:'account', accountId}。
 // 本片只写 'guest'; app 侧投递入口 (PRD §3.8 后续) 接入时**不需要 migration**。
-// version 本片恒初值 —— 留列不实装规则,「同标的多版本 Version+1」属后续 feature。
 //
-// 索引: 只建那条唯一约束。它的前缀 (uploader_kind, uploader_ref) 恰好也是配额 SUM 的
-// 过滤列 ⇒ 幂等查与配额查共用同一棵树。**不预先给 symbol 撒 B-tree**: 本片零读取面
-// (投递方读不到, 本人走 DB 直连), 按标的检索属 PRD §3.8 后续 feature 的事, 那时按真实
-// 查询形状建才对 (同 optionsdesk.anchor 的取舍)。
+// 🆕 058: version = 该 (投递方, 标的) 版本线上的投递序号, 建 PENDING 行时取 MAX+1。057 那句
+// 「本片恒初值 —— 留列不实装规则」**自 058 起作废**。并发靠下面的取号键挡 (撞 P2002 → 重算
+// 重试, 不上 Serializable / FOR UPDATE); 未完成的行照常占号 ⇒ 成功记录的序列允许出现空洞。
+//
+// 索引 (058 后共两条唯一键, 含义相反 —— catch P2002 时必须分辨撞的是哪一条):
+//   · uk_research_report_uploader_symbol_content = 幂等键。057 的 (uploader_kind, uploader_ref,
+//     content_hash) 在 058 **放宽**为含 symbol 的四列 (FR-019) ⇒ 同一份字节归到不同标的各自
+//     成行, 而 object_key 仍由 content_hash 单独导出 ⇒ 对象只存一份。撞它 = 重复投递。
+//   · uk_research_report_version_line = 取号键 (FR-025)。**不是给查询用的**, 是并发取号的机器
+//     保证; 撞它 = 取号争用。取号的 MAX(version) 过滤列 (uploader_kind, uploader_ref, symbol)
+//     恰是它的最左前缀 ⇒ **不另建查询索引**。
+//   两条的 map: 都不能省 —— prisma 默认名 66 字符, 超 PG 标识符 63 上限, schema 校验期就红。
+//   配额 SUM 的过滤列 (uploader_kind, uploader_ref) 仍是二者共同的最左前缀 ⇒ 幂等查、取号查、
+//   配额查共用同一棵树。**仍不预先给 symbol 单独撒 B-tree**: 本片依旧零读取面 (投递方读不到,
+//   本人走 DB 直连), 按标的检索属 PRD §3.8 后续 feature 的事, 那时按真实查询形状建才对。
 model ResearchReport {
   id               BigInt   @id @default(autoincrement())
   symbol           String   @db.VarChar(32)
@@ -1754,7 +1764,8 @@ model ResearchReport {
   uploaderRef      String   @map("uploader_ref") @db.VarChar(64)
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  @@unique([uploaderKind, uploaderRef, contentHash], map: "uk_research_report_uploader_content")
+  @@unique([uploaderKind, uploaderRef, symbol, contentHash], map: "uk_research_report_uploader_symbol_content")
+  @@unique([uploaderKind, uploaderRef, symbol, version], map: "uk_research_report_version_line")
   @@map("research_report")
   @@schema("research")
 }

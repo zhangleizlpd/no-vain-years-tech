@@ -38,7 +38,7 @@ type AwaitedInput<T> = PromiseLike<T> | T;
 
 
 /**
- * 三项必填元数据走 query string（通道层的市场闸只读得到 query）；文件走 multipart 的 `file` 字段，单份上限 16MB。同一投递方重复投递同一份文件是安全的：返回首次那条记录，不新增对象也不新增元数据。
+ * 三项必填元数据走 query string（通道层的市场闸只读得到 query）；文件走 multipart 的 `file` 字段，单份上限 16MB。同一投递方以**同一标的**重复投递同一份文件是安全的：返回首次那条记录，不新增对象也不新增元数据；换一个标的投同一份文件则各自成为独立记录（标的投错可用正确标的重投同一份文件补救）。
  * @summary 投递一份研报 PDF（隧道内投递方专用，单向只写）
  */
 export const researchControllerIngestReport = (

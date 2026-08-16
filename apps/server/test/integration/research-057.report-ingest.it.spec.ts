@@ -384,6 +384,11 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
      * 但它意味着**配额之和必然跨过 Int32 边界**，而 `SUM(integer)` 在 PG 侧返回的是
      * `bigint` ⇒ 这条路径能不能正常跑，是本组断言真正要证的事。第一版用一行 seed 直接被
      * Prisma 拒（`value out of range for type integer`），那次红就是这条实证的来源。
+     *
+     * 🚨 **058 有意改写的造数**（058 T003）：这几行同投递方、同标的，058 起它们就是同一条版本线
+     * 上的第 1..N 版，而取号键 (uploader_kind, uploader_ref, symbol, version) 要求号互不相同
+     * ⇒ 显式给 `version: i + 1`（057 时全部走 DB 默认值 1）。**配额口径本身未变**：每一版各自
+     * 全额计入，不因同线或共享对象而合并（058 FR-022 与 057「蓄意高估」同一条）。
      */
     const CHUNK = 2_000_000_000; // < Int32 上限，5 份 = 10GB > 8GB 配额
     async function seedQuotaFilled(uploaderRef: string): Promise<void> {
@@ -393,6 +398,7 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
           symbol: 'hk:00700',
           reportDate: new Date('2026-07-01T00:00:00.000Z'),
           title: '旧研报',
+          version: i + 1,
           contentHash: `${i}`.padStart(64, 'z'),
           sizeBytes: CHUNK,
           originalFilename: 'old.pdf',

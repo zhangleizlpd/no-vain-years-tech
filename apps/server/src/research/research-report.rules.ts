@@ -10,7 +10,8 @@ import { createHash } from 'node:crypto';
 
 /** 支持的市场，与 spec FR-005 一致。 */
 const MARKETS = ['cn', 'hk', 'us'] as const;
-type Market = (typeof MARKETS)[number];
+/** 导出是因为它是 `splitSymbol` 返回值的一部分（058）。 */
+export type Market = (typeof MARKETS)[number];
 
 /** 归档对象的 key 前缀 —— RAM 策略的作用域恰好卡在它上面（Phase 0 反例实证）。 */
 export const RESEARCH_KEY_PREFIX = 'research/';
@@ -134,6 +135,40 @@ export function normalizeSymbol(raw: string): string {
     throw new InvalidSymbolError('format', `${market} 市场的代码形态不认: ${code}`);
   }
   return `${market}:${rule.normalize(bare)}`;
+}
+
+/**
+ * 把**已归一**的 canonical `market:code` 拆回两段（058 FR-016）。
+ *
+ * 输入必须是 `normalizeSymbol` 的产物，即**最终落库的 `row.symbol`**，不是投递方的原始写法
+ * （幂等命中时二者归一后必然相同，但写法可能不同：`00700.HK` vs `hk:00700`）。
+ *
+ * 🚨 **对未归一的写法抛错，而不是尽力而为地拆** —— 尽力而为会把 `00700.HK` 拆成
+ * `{ market: '00700', code: 'HK' }` 这种半成品，拿它去查标的目录只会静默查不到；而名称回显
+ * 是 fail-open 的（FR-014 / FR-015），「查不到」与「拆错了」对外完全不可区分 ⇒ 一个本可以在
+ * 这里红掉的错误会一路静默到线上。要归一请先走 `normalizeSymbol`。
+ *
+ * @throws {InvalidSymbolError} 不是 canonical `market:code` 形态，或市场段越界。
+ */
+export function splitSymbol(symbol: string): { market: Market; code: string } {
+  const colon = symbol.indexOf(':');
+  // canonical 形态的全部结构要求：恰好一个冒号，且两侧都非空。
+  if (colon <= 0 || colon === symbol.length - 1 || symbol.includes(':', colon + 1)) {
+    throw new InvalidSymbolError(
+      'format',
+      `不是归一后的 market:code 形态: ${symbol}（应为 normalizeSymbol 的产物，如 hk:00700）`,
+    );
+  }
+
+  const market = symbol.slice(0, colon);
+  if (!isMarket(market)) {
+    throw new InvalidSymbolError(
+      'market',
+      `市场段不在支持范围: ${symbol}（仅支持 ${MARKETS.join(' / ')}）`,
+    );
+  }
+  // 代码段不再按 CODE_RULES 复验：那是归一时的事，此处重复一遍只会与 normalizeSymbol 双头维护。
+  return { market, code: symbol.slice(colon + 1) };
 }
 
 /** PDF 魔数。判据**基于内容**，与文件名和调用方声明的类型无关（FR-003）。 */
