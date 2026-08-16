@@ -168,6 +168,50 @@ else
   printf '  ❌ %-46s 实得 %s\n' "研报超上限 413 由 app 返（非 nginx）" "${big_body:0:100}"; fail=$((fail+1))
 fi
 
+echo "== 闸 7 能力目录（薄壳 skill 的端点清单唯一来源）=="
+# 访客手里的 skill 不含端点清单,全靠 `/capabilities` 下发 ⇒ 这份目录取不到、或它列的端点
+# 打不通,访客侧就**整体不可用**,而症状会表现成「agent 说这个通道没这个能力」——
+# 一个看着像业务判断、实际是基础设施坏了的形态。所以它要有自己的闸。
+#
+# 🚨 **本闸只验一个方向：目录说有的,通道上真的有。** 反方向(通道上有、目录没列 = 新能力
+#    访客永远看不到)**黑盒验不了** —— 访客侧看不到 nginx 的 location 集。那一半由
+#    `deploy/install.sh` 的 Gate A 在部署时把住。两条合起来才是集合相等,
+#    **单看任何一条都只是一半**,别把其中一条当成全部。
+#
+# 🚨 **刻意放在闸 6 之后。** 下面的循环会打 `/research-report`,它进 `guest_upload` 桶
+#    (2r/m + burst 1)。放在闸 6 之前会偷走闸 6 那三发精心排过序的探针的槽位;放在之后,
+#    本闸拿到 429 反而**照样通过** —— 因为判据是「不是 404」,而 429 只可能来自白名单内的
+#    location(未注册路径走 `location /` 直接 return 404,根本到不了 limit_req 所在的
+#    preaccess 阶段)。⇒ 429 本身就是「这条路由存在」的证据。
+cap_code="$(code "${AUTH[@]}" "$BASE/capabilities")"
+check "/capabilities 可取" 200 "$cap_code"
+cap_body="$(curl -s -m 20 "${AUTH[@]}" "$BASE/capabilities")"
+
+# 解析规则与 install.sh 的 Gate A 逐字同源(POSIX ERE,不用 -oP —— 本脚本随包发到访客机上,
+# 那里的 grep 实现不可控)。研报参数表里的 `symbol` 之类同样带反引号,靠 `/` 这一位排除。
+cap_eps="$(grep -oE '^\| `/[a-z-]+`' <<<"$cap_body" | sed -E 's/^\| `//; s/`$//' | sort -u)"
+
+# 🚨 反空转闸:目录取到了但解析出 0 条时,下面的 for 循环一次都不跑、整段静默全绿 ——
+#    正是本脚本文件头反对的那种病。
+if [[ -z "$cap_eps" ]]; then
+  printf '  ❌ %-46s 取到了正文但解析出 0 个端点\n' "目录端点解析（本闸自己坏了）"; fail=$((fail+1))
+else
+  printf '  ✅ %-46s %s 个\n' "目录端点解析" "$(wc -l <<<"$cap_eps")"; pass=$((pass+1))
+  while read -r ep; do
+    [[ -n "$ep" ]] || continue
+    st="$(code "${AUTH[@]}" "$BASE$ep")"
+    # 判据只有「不是 404 / 不是 000」。**刻意不断言具体码** —— 不带参数打各端点时,
+    # 期望值各不相同(/healthz 200、行情几条被闸 3 拒成 400、/research-report 被
+    # limit_except 拒成 403 或撞限频 429),写死一张期望表等于把闸 3 的实现细节抄进这里,
+    # 那张表会漂。而本闸要问的只有一件事：**这条路由存在吗**。
+    if [[ "$st" == "404" || "$st" == "000" ]]; then
+      printf '  ❌ %-46s %s\n' "目录声明的 $ep 确实存在" "$st"; fail=$((fail+1))
+    else
+      printf '  ✅ %-46s %s\n' "目录声明的 $ep 确实存在" "$st"; pass=$((pass+1))
+    fi
+  done <<<"$cap_eps"
+fi
+
 if [[ " $* " == *" --from-guest "* ]]; then
   # ── 闸 0：接口级包过滤（只有从访客机跑才有意义）─────────────────────────
   # WireGuard 把包直接交给 77 的 IP 栈，且**安全组管不到隧道内流量** ⇒ 若 wg2 上

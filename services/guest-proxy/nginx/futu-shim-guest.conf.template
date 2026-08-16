@@ -157,8 +157,48 @@ server {
     proxy_read_timeout 90s;
 
     # ── 闸 2：端点白名单 ───────────────────────────────────────────────────
-    # 开 /kline + 期权链三条 + 标的级 /overview。/his-vol /universe /trading-days
-    # /earnings-calendar 一律不可见。面越小越好;要放新端点是显式动作,不是默认继承。
+    # 开 /capabilities + /kline + 期权链三条 + 标的级 /overview。/his-vol /universe
+    # /trading-days /earnings-calendar 一律不可见。面越小越好;要放新端点是显式动作,
+    # 不是默认继承。
+    #
+    # 🚨 **加 location 就必须同步 capabilities/capabilities.md** —— 两侧集合相等由
+    #    `deploy/install.sh` 的 Gate A 机器强制,写漏一个部署直接红。这不是提醒,是闸。
+
+    # ── 能力目录:访客手里的 skill 是薄壳,端点清单在这里下发 ─────────────────
+    # 它存在的全部理由:以前加一个端点要重新打包 skill 并线下发给访客,访客手里那份
+    # 必然滞后。现在端点清单随部署走网络,访客的 skill 装一次就不用再动。
+    #
+    # 🚨 **不挂 limit_req zone,这是刻意的。** 上面四个 zone 护的是两种真成本:
+    #    ①②③ 护上游 vendor 的官方限额(给访客多少 prod 就少多少)、④ 护本机磁盘
+    #    (请求 body 整份落盘)。本端点读的是本地一个几 KB 的静态文件,不打上游、
+    #    不落盘、不耗任何配额 —— 两种成本一条都不沾。多一个 zone 就是多一份要维护的
+    #    东西,收益为零。
+    #
+    # ⚠️ **`default_type` 必须在这里覆盖。** server 级钉的是 `application/json`(那是给
+    #    所有 proxy_pass 端点的),不覆盖的话本文会带着 JSON 的 Content-Type 发出去。
+    #
+    # 🚨 **`charset utf-8` 单写是个 no-op,必须配 `charset_types`。** nginx 的 `charset`
+    #    只对 `charset_types` 名单里的 MIME 生效,而该名单默认是
+    #    `text/html text/xml text/plain text/vnd.wap.wml application/javascript
+    #    application/rss+xml` —— **不含 `text/markdown`**。2026-08-16 本机实测:只写
+    #    `charset utf-8` 时响应头是光秃秃的 `Content-Type: text/markdown`,一个 charset
+    #    参数都没有。正文大量中文,发给不默认按 UTF-8 解的客户端就是乱码,而**字节本身是对的**
+    #    ⇒ 这种坏法在服务端侧完全看不出来。
+    #
+    # ⚠️ **这里绝对不要写 proxy_set_header** —— 同 /healthz 那条的理由。本 location 根本
+    #    不 proxy,写了没用;但真正的风险是有人照抄时把它带进别处,那会整组覆盖掉 server
+    #    级那三条(含 token 置换)。
+    #
+    # ℹ️ ETag / Last-Modified 由 nginx 对静态文件自动生成(`etag` 默认 on),访客侧的条件
+    #    请求因此免费可用。**刻意不在正文里手写版本号** —— 那是典型的「改内容忘了改号」
+    #    漂移源,而 77 上的 /opt/nvy-guest-proxy/VERSION 已经记着本次部署的 SHA。
+    location = /capabilities {
+        default_type text/markdown;
+        charset_types text/markdown;
+        charset utf-8;
+        alias /etc/nvy-guest-capabilities/capabilities.md;
+    }
+
     location = /kline {
         # ── 闸 3：市场白名单 ────────────────────────────────────────────────
         # 🔴 只放 US。理由是**最小权限**，不是行情权风险 —— V10（08-04 港股早市实测）

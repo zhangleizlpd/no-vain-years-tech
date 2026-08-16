@@ -101,6 +101,48 @@ if ! ip -4 -o addr show | grep -qF " ${listen_line%%:*}/"; then
 fi
 echo "  ✅ 地址在 $(ip -4 -o addr show | grep -F " ${listen_line%%:*}/" | awk '{print $2}') 上"
 
+# (c) 🚨 **Gate A：能力目录声明的端点集 == nginx 实际放行的端点集。**
+#     访客手里的 skill 是薄壳、不含端点清单,清单只在 `capabilities/capabilities.md` 里,
+#     由 `/capabilities` 下发。⇒ 目录一旦与白名单不一致,访客侧的坏法有两种,**都不会
+#     有任何东西报错**：
+#       ① 目录列了 nginx 没放的 → agent 照着打,恒 404,它会以为是自己参数写错反复试;
+#       ② nginx 放了目录没列的 → 新能力上线了但访客永远不知道,**这正是本次改造要消灭的
+#          那个问题原样复活**,而且比原来更隐蔽(原来至少还有「发包」这个动作提醒你)。
+#     所以它必须是闸,不是约定。
+#
+#     🚨 **放在预校验而不是部署后自检**:两侧都是本次送来的树里的静态文件,不需要容器就能
+#     判 ⇒ 按本文件的原则,坏配置一个字节都不该碰到真容器。
+#
+#     🚨 **`/__ping` 必须豁免**:它在文件顶部那个 `listen 127.0.0.1:8812` 的独立探针 server
+#     里,访客根本够不到,不属于对外能力。不豁免的话本闸恒红。
+#
+#     🚨 **新解析一律 POSIX ERE(`-oE`),不用 `-oP`**:本文件别处的 `-oP` 都跑在 77 的 GNU grep
+#     上没问题,但这段逻辑要能在开发机上被反例测试,而 macOS 侧的 `grep` 可能是 BSD grep /
+#     ugrep(实测本仓开发机是 ugrep 7.5.0)。同名工具跨环境实现不同 ⇒ 能不依赖就不依赖。
+log "② 预校验 (c) Gate A：能力目录 ↔ 端点白名单"
+CATALOG="$SRC/capabilities/capabilities.md"
+[[ -f "$CATALOG" ]] || die "找不到 $CATALOG —— 薄壳 skill 靠它下发端点清单,缺了访客侧就没有任何能力说明" 4
+
+nginx_set="$(grep -oE 'location = [^ {]+' "$SRC/nginx/futu-shim-guest.conf.template" \
+             | sed 's|location = ||' | grep -v '^/__ping$' | sort -u)"
+# 目录侧只认「端点一览」表里那种以反引号路径开头的行。研报参数表的 `symbol` 之类同样带
+# 反引号,靠 `/` 这一位把它们排除掉。
+catalog_set="$(grep -oE '^\| `/[a-z-]+`' "$CATALOG" | sed -E 's/^\| `//; s/`$//' | sort -u)"
+
+# 🚨 反空转闸:任一侧为空则 `comm` 的差集恒空、本闸恒绿 —— 那正是本文件反复在打的那种病。
+if [[ -z "$nginx_set" || -z "$catalog_set" ]]; then
+  die "Gate A 自己坏了：nginx 侧解析出 $(wc -w <<<"$nginx_set") 条 / 目录侧 $(wc -w <<<"$catalog_set") 条，有一侧为空" 4
+fi
+
+only_nginx="$(comm -23 <(echo "$nginx_set") <(echo "$catalog_set") | tr '\n' ' ')"
+only_catalog="$(comm -13 <(echo "$nginx_set") <(echo "$catalog_set") | tr '\n' ' ')"
+if [[ -n "$only_nginx" || -n "$only_catalog" ]]; then
+  [[ -n "$only_nginx"  ]] && echo "  ❌ nginx 放行但目录没列（访客看不到这些新能力）：$only_nginx" >&2
+  [[ -n "$only_catalog" ]] && echo "  ❌ 目录列了但 nginx 没放（访客照着打会恒 404）：$only_catalog" >&2
+  die "Gate A 不通过 —— 改 nginx 的 location 就必须同步 capabilities/capabilities.md。真容器一个字节都没动" 4
+fi
+echo "  ✅ 两侧一致，$(wc -l <<<"$nginx_set") 个对外端点"
+
 # ── ③ 落盘 ────────────────────────────────────────────────────────────────────
 # 先铺到 .new 再 mv，避免「铺一半被 reload 撞上」。运行中的容器是 bind mount，
 # 跟的是 inode，mv 目录不会把它打断 —— 它继续用旧的，直到 ④ 重建。
