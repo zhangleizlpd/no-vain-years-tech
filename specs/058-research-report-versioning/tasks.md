@@ -67,7 +67,7 @@ updated_at: '2026-08-16'
 
 ## Phase 2: 规则纯函数
 
-- [ ] T002 [P] [Server] **`splitSymbol` 纯函数**（`FR-016`, plan `A4`）：`research-report.rules.ts` 加 `splitSymbol(symbol) → { market, code }`（归一后的 `market:code` 拆两段，供 T006 查 `instrument` 用；**不要**在 usecase 里 inline 一个 `split(':')`，rules 层才是本模块业务不变量的落点 per ADR-0043）。无 I/O 无 DI。→ verify: colocate 单测，含**反例** —— 对未归一输入（`00700.HK`）的行为要与 `normalizeSymbol` 的契约对齐、不得静默返回半成品；`market` / `code` 各自的边界（空段、多个 `:`）有断言
+- [X] T002 [P] [Server] **`splitSymbol` 纯函数**（`FR-016`, plan `A4`）：`research-report.rules.ts` 加 `splitSymbol(symbol) → { market, code }`（归一后的 `market:code` 拆两段，供 T006 查 `instrument` 用；**不要**在 usecase 里 inline 一个 `split(':')`，rules 层才是本模块业务不变量的落点 per ADR-0043）。无 I/O 无 DI。→ verify: colocate 单测，含**反例** —— 对未归一输入（`00700.HK`）的行为要与 `normalizeSymbol` 的契约对齐、不得静默返回半成品；`market` / `code` 各自的边界（空段、多个 `:`）有断言
 
 ## Phase 3: 业务（同一文件，顺序执行）
 

@@ -7,6 +7,7 @@ import {
   buildObjectKey,
   looksLikePdf,
   normalizeSymbol,
+  splitSymbol,
   titleFromFilename,
 } from './research-report.rules.js';
 
@@ -82,6 +83,58 @@ describe('normalizeSymbol — 归一到 canonical market:code', () => {
   it('归一是幂等的（再归一一次结果不变）', () => {
     const once = normalizeSymbol('1698.HK');
     expect(normalizeSymbol(once)).toBe(once);
+  });
+});
+
+describe('splitSymbol — 把已归一的 market:code 拆回两段（058 FR-016）', () => {
+  it.each([
+    ['hk:01698', 'hk', '01698'],
+    ['cn:600519', 'cn', '600519'],
+    ['us:PEP', 'us', 'PEP'],
+    // 美股 ticker 自身带点，拆分只认冒号 ⇒ 点不参与切段。
+    ['us:BRK.B', 'us', 'BRK.B'],
+  ])('%s → market=%s code=%s', (symbol, market, code) => {
+    expect(splitSymbol(symbol)).toEqual({ market, code });
+  });
+
+  it('与 normalizeSymbol 的契约对齐：拆回再拼即原串', () => {
+    for (const raw of ['1698.HK', 'hk:1698', '600519.SH', 'BRK.B.US', 'us:pep']) {
+      const canonical = normalizeSymbol(raw);
+      const { market, code } = splitSymbol(canonical);
+      expect(`${market}:${code}`).toBe(canonical);
+    }
+  });
+
+  it.each(['00700.HK', 'HK.00700', '600519.SH', 'BRK.B.US'])(
+    '反例：未归一的写法 %s 被拒，MUST NOT 静默返回半成品',
+    (raw) => {
+      // 尽力而为地拆会得到 `{ market: "00700", code: "HK" }` 这种半成品，拿它查标的目录只会
+      // 静默查不到 —— 而名称回显是 fail-open 的（FR-014/FR-015），「查不到」与「拆错了」对外
+      // 完全一样 ⇒ 本可在此处红掉的错误会一路静默到线上。
+      expect(() => splitSymbol(raw)).toThrow(InvalidSymbolError);
+    },
+  );
+
+  it.each(['', '   ', 'hk:', ':01698', 'hk', ':', '::', 'hk:00700:1', 'cn:600519:'])(
+    '反例：形态非法 %j 被拒（空段 / 缺段 / 多个冒号）',
+    (raw) => {
+      expect(() => splitSymbol(raw)).toThrow(InvalidSymbolError);
+    },
+  );
+
+  it('反例：市场段不在 cn|hk|us 白名单 → reason 可区分为 market', () => {
+    expect(() => splitSymbol('jp:7203')).toThrow(InvalidSymbolError);
+    try {
+      splitSymbol('jp:7203');
+    } catch (err) {
+      expect((err as InvalidSymbolError).reason).toBe('market');
+    }
+    // 形态类拒绝走另一个 reason —— 两类不可混（同 normalizeSymbol 的 SC-004 口径）。
+    try {
+      splitSymbol('00700.HK');
+    } catch (err) {
+      expect((err as InvalidSymbolError).reason).toBe('format');
+    }
   });
 });
 
