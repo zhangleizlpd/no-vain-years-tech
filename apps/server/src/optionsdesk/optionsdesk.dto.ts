@@ -2400,18 +2400,12 @@ export function toChainReportResponse(view: ChainReportView): ChainReportRespons
  *
  * `confidenceSource` **不在本 DTO 里**: 来源是系统对写入路径的判断, 不是调方的声明
  * (FR-008) —— 可声明即可伪造, 「来自模型」这个信号就失去意义。
+ *
+ * 🚨 **`ticker` 走 query string 而不是 body**: nginx 的 `$arg_*` **只读得到 query**, 通道层那道
+ * 市场闸 (`$arg_ticker !~ "^(us|hk):"`) 才成立。放进 body 的话 nginx 看不见它, 闸退化成摆设
+ * —— 与 057 研报三项元数据走 query 是同一个理由。
  */
 export class ModelImportAnchorRequest {
-  @ApiProperty({
-    description: 'canonical `market:code` (市场 ∈ us / hk; 大小写与前后缀式一律拒, 不归一)',
-    example: 'us:AOS',
-    maxLength: 32,
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(32)
-  ticker!: string;
-
   @ApiProperty({ description: '估值 V (数值串; V ≤ 0 拒绝)', example: '50.0000' })
   @IsNumberString()
   v!: string;

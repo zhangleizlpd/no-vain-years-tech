@@ -184,6 +184,8 @@ export * from './optionsdeskControllerLegsParams';
 export * from './optionsdeskControllerLegsPerspective';
 export * from './optionsdeskControllerListParams';
 export * from './optionsdeskControllerRadarParams';
+export * from './optionsdeskGuestControllerModelImportParams';
+export * from './optionsdeskGuestControllerSubmitParams';
 export * from './perspectiveCriteriaResponse';
 export * from './phoneSmsAuthRequest';
 export * from './phoneSmsAuthResponse';

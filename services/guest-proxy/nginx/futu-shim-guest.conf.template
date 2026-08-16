@@ -13,6 +13,9 @@
 #   FUTU_SHIM_TOKEN  shim 的真 token（访客永远看不到它）
 #   GUEST1_TOKEN     发给访客 1 的 bearer（与 shim token 无关，可单独吊销）
 #   GUEST1_NAME      日志里的可读名字
+#   GUEST_UPLOAD_TOKEN  转发给本机 mono app 的 bearer（研报投递 + 锚估值提交，057/059）
+#   ANCHOR_IMPORT_TOKEN 转发给本机 mono app 的**第二把** bearer（锚直写，059）
+#   ANCHOR_OWNER_NAME   有权直写锚的访客名（= 某个 GUESTn_NAME 的值，059）
 
 # ── 访客身份：Authorization 整串 → 名字。命不中 = 空 = 401 ───────────────────
 # 用 map 而不是 if 链，是为了加第二个访客时只加一行，且日志里能记名字。
@@ -32,6 +35,22 @@ map $http_authorization $guest_name {
     default                      "";
     "Bearer ${GUEST1_TOKEN}"     "${GUEST1_NAME}";
     "Bearer ${GUEST2_TOKEN}"     "${GUEST2_NAME}";
+}
+
+# ── 锚直写授权（059）—— 认证之外的**授权**：上面那个 map 回答「你是谁」，本 map 回答
+#    「你能不能直接改业务数据」。两件事分开，加访客时不必动这里。
+#
+# 🚨 **判据必须 env 化，不得硬编码访客名**：本仓面向公开，把「谁是本人」写死在配置里就是
+#    把身份冻进仓；而且它会脱离 render-env.sh 那条管道，改名字要改两处。
+#
+# 🚨 用 map 而不是 `if` 链，理由同上面那句原话：加第二个有权者时只加一行，且日志里能记名字。
+#
+# ⚠️ `ANCHOR_OWNER_NAME` 渲染成空串时，key 退化成 `""`，而 `$guest_name` 为空的请求在
+#    server 级闸 1 就已 401 ⇒ 效果是「谁都不许直写」。方向 fail-closed、可接受，但要能一眼
+#    看出来 —— render-env.sh 为此断言它非空（那条能真失败）。
+map $guest_name $anchor_write_allowed {
+    default                "0";
+    "${ANCHOR_OWNER_NAME}" "1";
 }
 
 # ── 限频：按访客计，不按 IP ─────────────────────────────────────────────────
@@ -78,6 +97,19 @@ limit_req_zone $guest_name zone=guest_option_meta:1m rate=20r/m;
 #    研报是人工产出物、一天几份，2r/m 对真实用法**毫无束缚**；真正兜住滥用的是每投递方
 #    8GB 的配额闸（在 server 侧），本 zone 只负责挡住「循环打」这一种形态。
 limit_req_zone $guest_name zone=guest_upload:1m rate=2r/m;
+
+# ⑤⑥ 锚导入（059）。**两个口各自独立的 zone**（FR-017：一方触顶不影响另一方）——
+#    直写是本人的日常流水线（一天十几只锚，一只一发），提交是他人的偶发动作，
+#    把它们塞进同一个池等于让谁先打满谁就把对方一起卡住。
+#
+#    这两条护的**既不是** vendor 限额（不打上游）**也不是**磁盘（body 只有几百字节，
+#    见各自 location 的 `client_max_body_size 4k`），护的是**锚表的写入速率** ——
+#    每次导入都可能冲掉人工位并写一行痕迹，循环打会把痕迹表刷成噪声、把人工判断反复抹掉。
+#    ⇒ 额度按「真实用法绰绰有余、循环打立刻 429」取：
+#      · 直写 6r/m：一天十几只锚、单只一发，峰值也就几发连打；burst 2 容一次小批。
+#      · 提交 2r/m：与研报同档（他人的偶发动作，没有任何流水线在这条路上）。
+limit_req_zone $guest_name zone=guest_anchor:1m rate=6r/m;
+limit_req_zone $guest_name zone=guest_anchor_submit:1m rate=2r/m;
 
 limit_req_status 429;
 
@@ -355,6 +387,80 @@ server {
         proxy_read_timeout 120s;
 
         proxy_pass http://127.0.0.1:3001/api/v1/research/reports$is_args$args;
+    }
+
+    # ── 锚模型导入（059）—— 本代理上**唯一一条能改业务数据**的端点 ─────────────
+    #
+    # 上面那条研报是「往收集箱里放东西」，这条是**直接改库里的估值锚**。差别不在实现上，
+    # 而在于：它必须多一道**授权**闸 —— 认证（你是谁）在 server 级已经做了，这里判的是
+    # 「你能不能干这件事」。两者别混：认证过了不等于有权直写。
+    location = /anchor-import {
+        # ── 闸 A：只放 POST ────────────────────────────────────────────────
+        # 服务端同样没实装任何读取动作，但两层各拒一次、不依赖对方（FR-013）。
+        # ⚠️ 干活的是 `deny` ⇒ 返回 **403 不是 405**（057 真跑证伪过 405 这个直觉）。
+        limit_except POST { deny all; }
+
+        # ── 闸 B：授权（本片新增，FR-010）───────────────────────────────────
+        # 🚨 **只有本人可以直接写锚**。其他访客认证得过（他们有自己的 bearer），但到这里
+        #    被 403 —— 他们的路径是下面那条 /anchor-submit，落待审表、锚表零变化。
+        #    判据取自 http 级的 `$anchor_write_allowed` map（env 化，不硬编码名字）。
+        if ($anchor_write_allowed = "0") {
+            return 403 '{"error":"forbidden","detail":"direct anchor writes are owner-only; use /anchor-submit instead"}';
+        }
+
+        # ── 闸 C：市场白名单 ────────────────────────────────────────────────
+        # 🚨 **与 server 侧 DTO 同源，改一处必改另一处**：服务端那份的单点在
+        #    `apps/server/src/optionsdesk/anchor-import.rules.ts`（`IMPORTABLE_MARKETS`）。
+        #    两份文本会漂，钉住它的是 server IT 里对 `cn:` 的 400 断言 + 本目录
+        #    `verify-guards.sh` 的同名反例 —— 谁改单边，那两条里必有一条红。
+        # ⚠️ `$arg_*` **不解码** ⇒ 冒号写成 `%3A` 会撞不上、直接 400（fail-closed），
+        #    错误文案必须写明「不要编码」，否则 agent 会反复试错烧限频。
+        if ($arg_ticker !~ "^(us|hk):") {
+            return 400 '{"error":"bad_request","detail":"ticker must start with us:/hk: and live in the query string (do NOT percent-encode the colon)"}';
+        }
+
+        # ── 闸 D：体积 ─────────────────────────────────────────────────────
+        # body 是五个短标量的 JSON，几百字节；4k 已是宽松上界。写这行不是防大文件，
+        # 是把「拿这个口传大 body」这条路直接堵死（默认值 1m 对本端点毫无意义）。
+        client_max_body_size 4k;
+
+        limit_req zone=guest_anchor burst=2 nodelay;
+
+        # ── 闸 E：token 置换（整组三条）───────────────────────────────────
+        # 🚨 `proxy_set_header` 是**整组覆盖**：这里出现一条，server 级那三条就全部对本
+        #    location 失效 ⇒ 必须整组抄。
+        # 🚨 Authorization 换成 **`ANCHOR_IMPORT_TOKEN`**（不是研报那把 GUEST_UPLOAD_TOKEN）。
+        #    抄错的表现**不是 401**（那还好查），而是**授权分流形同虚设**：服务端那层再也
+        #    分不出直写与提交，整条闸只剩本文件这一处。
+        proxy_set_header Authorization "Bearer ${ANCHOR_IMPORT_TOKEN}";
+        proxy_set_header Host $host;
+        proxy_set_header X-Guest $guest_name;
+
+        proxy_pass http://127.0.0.1:3001/api/v1/optionsdesk/anchors/model-import$is_args$args;
+    }
+
+    # ── 锚估值提交（059）—— 他人的入口：只进待审收件箱，锚表零变化 ─────────────
+    # 与上面同形，**去掉授权闸**（谁都能提交）、独立限频、换回 `GUEST_UPLOAD_TOKEN`。
+    location = /anchor-submit {
+        limit_except POST { deny all; }
+
+        # 市场闸与上面同源同文本 —— 两条 location 各写一份，与本文件既有风格一致
+        # （`/kline` 与 `/overview` 的 US-only 也是各写各的）。
+        if ($arg_ticker !~ "^(us|hk):") {
+            return 400 '{"error":"bad_request","detail":"ticker must start with us:/hk: and live in the query string (do NOT percent-encode the colon)"}';
+        }
+
+        # 比直写口宽一点：附言是自由文本。仍然是「堵死大 body」这一个目的。
+        client_max_body_size 8k;
+
+        limit_req zone=guest_anchor_submit burst=1 nodelay;
+
+        # 🚨 这里是 **GUEST_UPLOAD_TOKEN**（提交口那把），与上面那条刻意不同。
+        proxy_set_header Authorization "Bearer ${GUEST_UPLOAD_TOKEN}";
+        proxy_set_header Host $host;
+        proxy_set_header X-Guest $guest_name;
+
+        proxy_pass http://127.0.0.1:3001/api/v1/optionsdesk/anchors/submissions$is_args$args;
     }
 
     # 其余一律不存在。放在最后,前面几个 = 精确匹配优先。

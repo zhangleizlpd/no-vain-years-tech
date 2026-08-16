@@ -56,22 +56,32 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
     status: 'PENDING',
   };
 
-  const importBody = {
-    ticker: 'us:AOS',
-    v: '50.0000',
-    asof: '2026-06-30',
-    method: 'dcf',
-    confidence: '8.00',
-  };
+  /** body 里**没有** ticker —— 它走 query，通道层的市场闸才读得到（见 controller 文件头）。 */
+  const importBody = { v: '50.0000', asof: '2026-06-30', method: 'dcf', confidence: '8.00' };
+  const TICKER = 'us:AOS';
 
   const post = (url: string, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
     app.inject({ method: 'POST', url, payload: body, headers });
 
-  const importAs = (body: Record<string, unknown>, token = ANCHOR_TOKEN) =>
-    post(IMPORT_PATH, body, { authorization: `Bearer ${token}` });
+  const withTicker = (url: string, ticker: string | null) =>
+    ticker === null ? url : `${url}?ticker=${encodeURIComponent(ticker)}`;
 
-  const submitAs = (body: Record<string, unknown>, token = UPLOAD_TOKEN, guest = 'guest-a') =>
-    post(SUBMIT_PATH, body, { authorization: `Bearer ${token}`, 'x-guest': guest });
+  const importAs = (
+    body: Record<string, unknown>,
+    token = ANCHOR_TOKEN,
+    ticker: string | null = TICKER,
+  ) => post(withTicker(IMPORT_PATH, ticker), body, { authorization: `Bearer ${token}` });
+
+  const submitAs = (
+    body: Record<string, unknown>,
+    token = UPLOAD_TOKEN,
+    guest = 'guest-a',
+    ticker: string | null = TICKER,
+  ) =>
+    post(withTicker(SUBMIT_PATH, ticker), body, {
+      authorization: `Bearer ${token}`,
+      'x-guest': guest,
+    });
 
   beforeAll(async () => {
     db = await setupIsolatedDb();
@@ -228,10 +238,10 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
   // `services/guest-proxy/verify-guards.sh`，两层各拒一次、互不依赖。
   describe('18 条 state_branch 穷举', () => {
     /** 建一只已在库里的锚（经导入口，走的就是被测那条路径）。 */
-    const seedAnchor = async (body: Record<string, unknown> = importBody) => {
-      const res = await importAs(body);
+    const seedAnchor = async (ticker = TICKER, body: Record<string, unknown> = importBody) => {
+      const res = await importAs(body, ANCHOR_TOKEN, ticker);
       expect(res.statusCode).toBe(201);
-      return prisma.anchor.findUniqueOrThrow({ where: { ticker: String(body.ticker) } });
+      return prisma.anchor.findUniqueOrThrow({ where: { ticker } });
     };
 
     it('① 标的尚无锚 → 建锚, 且立即具备「模型来源」身份', async () => {
@@ -364,13 +374,13 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       ['代码段小写', 'us:pep'],
       ['市场段大写', 'US:PEP'],
     ])('⑧ 标的写法非规范（%s）→ 400, 且不建出无行情的锚', async (_label, ticker) => {
-      const res = await importAs({ ...importBody, ticker });
+      const res = await importAs(importBody, ANCHOR_TOKEN, ticker);
       expect(res.statusCode).toBe(400);
       expect(await prisma.anchor.count()).toBe(0);
     });
 
     it('⑨ 市场不在白名单（cn:）→ 400 且不落库, 原因与写法不合规可区分', async () => {
-      const res = await importAs({ ...importBody, ticker: 'cn:600519' });
+      const res = await importAs(importBody, ANCHOR_TOKEN, 'cn:600519');
       expect(res.statusCode).toBe(400);
       expect(JSON.stringify(res.json())).toContain('INVALID_IMPORT_MARKET');
       expect(await prisma.anchor.count()).toBe(0);
@@ -409,12 +419,17 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
     });
 
     it('⑭ 待审被采纳 → 经与本人导入**完全相同**的路径落锚（提交本身落不了锚）', async () => {
-      const submitted = await submitAs({ ...importBody, ticker: 'hk:00700', v: '400.0000' });
+      const submitted = await submitAs(
+        { ...importBody, v: '400.0000' },
+        UPLOAD_TOKEN,
+        'guest-a',
+        'hk:00700',
+      );
       expect(submitted.statusCode).toBe(201);
       expect(await prisma.anchor.count()).toBe(0); // 提交这一步落不了锚
 
       // 采纳 = 本人用**自己的**凭证把同样的值重放一次（系统里不存在第二条写锚路径）。
-      const adopted = await importAs({ ...importBody, ticker: 'hk:00700', v: '400.0000' });
+      const adopted = await importAs({ ...importBody, v: '400.0000' }, ANCHOR_TOKEN, 'hk:00700');
       expect((adopted.json() as { action: string }).action).toBe('create');
 
       const row = await prisma.anchor.findUniqueOrThrow({ where: { ticker: 'hk:00700' } });
@@ -427,7 +442,9 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
     });
 
     it('⑮/⑯ 凭证缺失 与 凭证不符 → 响应**逐字节相同**（对外不可区分）', async () => {
-      const missing = await post(IMPORT_PATH, importBody);
+      // 两发**同一个 URL**，只差 Authorization —— `instance` 回显请求路径，URL 不同会
+      // 让这条断言拿不同的路径去比，测的就不是「缺失 vs 不符」了。
+      const missing = await post(withTicker(IMPORT_PATH, TICKER), importBody);
       const wrong = await importAs(importBody, 'x'.repeat(43));
       expect(missing.statusCode).toBe(wrong.statusCode);
       // 剥 traceId 后深等（它按请求生成、本就该不同；仓内反枚举断言的既有口径）。

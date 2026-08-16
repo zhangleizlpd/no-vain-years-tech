@@ -7,11 +7,6 @@
  */
 
 export interface SubmitAnchorRequest {
-  /**
-     * canonical `market:code` (市场 ∈ us / hk; 大小写与前后缀式一律拒, 不归一)
-     * @maxLength 32
-     */
-  ticker: string;
   /** 估值 V (数值串; V ≤ 0 拒绝) */
   v: string;
   /** 估值 as-of 日 (YYYY-MM-DD) —— 服务端不回落「今天」 */

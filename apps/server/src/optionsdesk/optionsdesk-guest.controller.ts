@@ -1,5 +1,5 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { GuestUploadAuthGuard } from '../security/guest-upload-auth.guard';
 import { ProblemDetailResponse } from '../security/problem-detail.response';
@@ -44,6 +44,14 @@ import {
  * 🚨 提交端点**绝不调导入 use case、绝不碰锚表** —— 那是 FR-012「系统 MUST NOT 存在第二条
  * 写锚路径」的实现级保证。采纳 = 本人用自己的凭证把同样的值经导入口重放一次。
  *
+ * ## `ticker` 走 query string，其余走 body
+ *
+ * nginx 的 `$arg_*` **只读得到 query** ⇒ 通道层那道市场闸（`$arg_ticker !~ "^(us|hk):"`）只有
+ * 在 ticker 位于 query 时才成立；放进 body 的话 nginx 看不见它，闸退化成摆设。理由与 057 研报
+ * 把三项必填元数据放 query 完全相同。⚠️ 通道与服务两处的市场判据是**两份独立文本，会漂** ——
+ * 服务端那份的单点在 `anchor-import.rules.ts`，nginx 那份旁边写了「改一处必改另一处」，
+ * 而钉住它的是 IT 里对 `cn:` 的 400 断言 + `verify-guards.sh` 里的同名反例。
+ *
  * ## 无 server 侧 throttler 桶（同 research，刻意）
  *
  * guest-proxy 与 app 同机、其 `proxy_set_header` 组不带 XFF ⇒ server 侧只能按 `req.ip` 计而它
@@ -69,6 +77,14 @@ export class OptionsdeskGuestController {
       '导入**不重置复审日期、不解除逾期标记** —— 复审语义是「人确认估值仍成立」，模型出新值不构成确认。' +
       '⚠️ 运维约束（非代码约束）：导入须早于当日锚驱动采集轮，当日新增的锚才会被**当轮**纳入工作集。',
   })
+  @ApiQuery({
+    name: 'ticker',
+    required: true,
+    example: 'us:AOS',
+    description:
+      'canonical `market:code`（市场 ∈ us / hk；大小写与前后缀式一律拒，不归一）。' +
+      '冒号**不要**做百分号编码 —— 通道层的市场闸读的是未解码的 query。',
+  })
   @ApiResponse({ status: 201, description: '导入完成', type: AnchorImportResponse })
   @ApiResponse({
     status: 400,
@@ -85,10 +101,15 @@ export class OptionsdeskGuestController {
     description: '读写窗内该锚被并发删除（以不存在收敛）',
     type: ProblemDetailResponse,
   })
-  async modelImport(@Body() body: ModelImportAnchorRequest): Promise<AnchorImportResponse> {
+  async modelImport(
+    @Query('ticker') ticker: string,
+    @Body() body: ModelImportAnchorRequest,
+  ): Promise<AnchorImportResponse> {
     return toAnchorImportResponse(
       await this.importAnchor.execute({
-        ticker: body.ticker,
+        // 缺 ticker 时是 undefined —— 不在这里特判：值域判定单点在 rules，那边对任何不合
+        // canonical 形态的输入都给同一族可区分的 400（少一处特判就少一处会漂的判据）。
+        ticker: String(ticker ?? ''),
         v: body.v,
         asof: new Date(body.asof),
         method: body.method,
@@ -107,6 +128,12 @@ export class OptionsdeskGuestController {
       '采纳动作由本人在系统外完成：用自己的凭证把同样的值经导入口重放一次 —— 系统**不存在**' +
       '第二条写锚路径。提交方身份取自通道无条件覆写的 `X-Guest` 头，**仅作归属、不作授权**。',
   })
+  @ApiQuery({
+    name: 'ticker',
+    required: true,
+    example: 'us:AOS',
+    description: 'canonical `market:code`（与导入口同一套判据）',
+  })
   @ApiResponse({ status: 201, description: '已收件（待审）', type: AnchorSubmissionResponse })
   @ApiResponse({
     status: 400,
@@ -119,6 +146,7 @@ export class OptionsdeskGuestController {
     type: ProblemDetailResponse,
   })
   async submit(
+    @Query('ticker') ticker: string,
     @Body() body: SubmitAnchorRequest,
     @Req() request: FastifyRequest,
   ): Promise<AnchorSubmissionResponse> {
@@ -127,7 +155,7 @@ export class OptionsdeskGuestController {
         // `X-Guest` 由 guest-proxy 无条件覆写 ⇒ 可信作归属、绝不可作授权（授权是上面那把
         // token 的事，两者正交）。通道未覆写（本地直连）时落 'unknown'，不猜也不拒。
         submitter: String(request.headers['x-guest'] ?? 'unknown'),
-        ticker: body.ticker,
+        ticker: String(ticker ?? ''),
         v: body.v,
         asof: new Date(body.asof),
         method: body.method,

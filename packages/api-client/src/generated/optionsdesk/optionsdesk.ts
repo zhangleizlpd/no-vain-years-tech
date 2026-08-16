@@ -45,6 +45,8 @@ import type {
   OptionsdeskControllerLegsParams,
   OptionsdeskControllerListParams,
   OptionsdeskControllerRadarParams,
+  OptionsdeskGuestControllerModelImportParams,
+  OptionsdeskGuestControllerSubmitParams,
   PositionBucketResponse,
   ProblemDetailResponse,
   RadarResponse,
@@ -1126,21 +1128,24 @@ export function useOptionsdeskControllerAt<TData = Awaited<ReturnType<typeof opt
  * @summary 按标的导入模型估值（隧道内本人专用，无锚则建、有锚则刷新）
  */
 export const optionsdeskGuestControllerModelImport = (
-    modelImportAnchorRequest: ModelImportAnchorRequest, options?: AxiosRequestConfig
+    modelImportAnchorRequest: ModelImportAnchorRequest,
+    params: OptionsdeskGuestControllerModelImportParams, options?: AxiosRequestConfig
  ): Promise<AxiosResponse<AnchorImportResponse>> => {
 
 
     return axios.post(
       `/api/v1/optionsdesk/anchors/model-import`,
-      modelImportAnchorRequest,options
+      modelImportAnchorRequest,{
+    ...options,
+        params: {...params, ...options?.params},}
     );
   }
 
 
 
 export const getOptionsdeskGuestControllerModelImportMutationOptions = <TError = AxiosError<ProblemDetailResponse>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest}, TContext>, axios?: AxiosRequestConfig}
-): UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}, TContext>, axios?: AxiosRequestConfig}
+): UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}, TContext> => {
 
 const mutationKey = ['optionsdeskGuestControllerModelImport'];
 const {mutation: mutationOptions, axios: axiosOptions} = options ?
@@ -1152,10 +1157,10 @@ const {mutation: mutationOptions, axios: axiosOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, {data: ModelImportAnchorRequest}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, {data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}> = (props) => {
+          const {data,params} = props ?? {};
 
-          return  optionsdeskGuestControllerModelImport(data,axiosOptions)
+          return  optionsdeskGuestControllerModelImport(data,params,axiosOptions)
         }
 
 
@@ -1173,11 +1178,11 @@ const {mutation: mutationOptions, axios: axiosOptions} = options ?
  * @summary 按标的导入模型估值（隧道内本人专用，无锚则建、有锚则刷新）
  */
 export const useOptionsdeskGuestControllerModelImport = <TError = AxiosError<ProblemDetailResponse>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest}, TContext>, axios?: AxiosRequestConfig}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}, TContext>, axios?: AxiosRequestConfig}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>,
         TError,
-        {data: ModelImportAnchorRequest},
+        {data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams},
         TContext
       > => {
       return useMutation(getOptionsdeskGuestControllerModelImportMutationOptions(options), queryClient);
@@ -1187,21 +1192,24 @@ export const useOptionsdeskGuestControllerModelImport = <TError = AxiosError<Pro
  * @summary 提交一条待审估值（其他访客用；只落收件箱，锚表零变化）
  */
 export const optionsdeskGuestControllerSubmit = (
-    submitAnchorRequest: SubmitAnchorRequest, options?: AxiosRequestConfig
+    submitAnchorRequest: SubmitAnchorRequest,
+    params: OptionsdeskGuestControllerSubmitParams, options?: AxiosRequestConfig
  ): Promise<AxiosResponse<AnchorSubmissionResponse>> => {
 
 
     return axios.post(
       `/api/v1/optionsdesk/anchors/submissions`,
-      submitAnchorRequest,options
+      submitAnchorRequest,{
+    ...options,
+        params: {...params, ...options?.params},}
     );
   }
 
 
 
 export const getOptionsdeskGuestControllerSubmitMutationOptions = <TError = AxiosError<ProblemDetailResponse>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest}, TContext>, axios?: AxiosRequestConfig}
-): UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest}, TContext> => {
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}, TContext>, axios?: AxiosRequestConfig}
+): UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}, TContext> => {
 
 const mutationKey = ['optionsdeskGuestControllerSubmit'];
 const {mutation: mutationOptions, axios: axiosOptions} = options ?
@@ -1213,10 +1221,10 @@ const {mutation: mutationOptions, axios: axiosOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, {data: SubmitAnchorRequest}> = (props) => {
-          const {data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, {data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}> = (props) => {
+          const {data,params} = props ?? {};
 
-          return  optionsdeskGuestControllerSubmit(data,axiosOptions)
+          return  optionsdeskGuestControllerSubmit(data,params,axiosOptions)
         }
 
 
@@ -1234,11 +1242,11 @@ const {mutation: mutationOptions, axios: axiosOptions} = options ?
  * @summary 提交一条待审估值（其他访客用；只落收件箱，锚表零变化）
  */
 export const useOptionsdeskGuestControllerSubmit = <TError = AxiosError<ProblemDetailResponse>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest}, TContext>, axios?: AxiosRequestConfig}
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}, TContext>, axios?: AxiosRequestConfig}
  , queryClient?: QueryClient): UseMutationResult<
         Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>,
         TError,
-        {data: SubmitAnchorRequest},
+        {data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams},
         TContext
       > => {
       return useMutation(getOptionsdeskGuestControllerSubmitMutationOptions(options), queryClient);
