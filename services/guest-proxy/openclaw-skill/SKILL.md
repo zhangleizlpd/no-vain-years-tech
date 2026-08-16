@@ -180,12 +180,41 @@ pdftotext -layout -f 1 -l 2 "$PDF" - | head -40
 ⚠️ **用户说的市场与 PDF 里写的对不上时，停下来指出分歧、让用户裁决**，不要自己选一个 ——
 用户顺口说的「A 股」撞上研报封面的 `02318.HK`，是这里最常见的形态（2026-08-16 实际踩过）。
 
-### 三件会让你白跑的事
+### 四件会让你白跑的事
 
 🚨 **`symbol` 里的冒号绝对不要做 percent-encode。** 写 `symbol=us:PEP`，**不要**写
 `symbol=us%3APEP` —— 代理这一层不解码，编码过的值撞不上市场白名单，你会拿到 400 且怎么改
-参数都没用。反过来，**`title` 和 `source` 里的空格 / 中文必须编码**（空格写 `%20`）。
-这两条规则方向相反，是这个端点最容易踩的地方。
+参数都没用。
+
+🚨 **`title` / `source` 的编码交给 curl 算，你不要自己拼百分号转义。** 它们含空格 / 中文时
+确实必须编码，但**手搓 UTF-8 字节是本端点已经实测翻车过的一条**（2026-08-16：`深度研报`
+被编成 `%E6%B7%B1%E5%BA%A6%E7%A0%94%E7%BA%A2`，前三个字全对、末字错一个字节 ⇒ 落库成了
+「深度研**红**」）。用 `--url-query`，让 curl 去编：
+
+```bash
+curl -sS -m 300 -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@$PDF;type=application/pdf" \
+  --url-query "title=PDD 深度研报" \
+  --url-query "source=自研" \
+  "http://10.90.0.1:8811/research-report?symbol=us:PDD&reportDate=2026-08-11"
+```
+
+- **`symbol` / `reportDate` 留在 URL 里原样写**，别塞进 `--url-query` —— 它会把冒号一起编掉，
+  正好撞上上一条。只有 `title` / `source` 走 `--url-query`。
+- 空格会被编成 `+` 而不是 `%20`，**服务端照样还原成空格**（2026-08-16 实测），不用担心。
+- `--url-query` 要 curl ≥ 7.87（2022-12）。`curl --version` 比这老就用下面这个兜底，
+  **仍然不要手算**：
+
+  ```bash
+  enc() { python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$1"; }
+  curl … "http://10.90.0.1:8811/research-report?symbol=us:PDD&reportDate=2026-08-11&title=$(enc 'PDD 深度研报')"
+  ```
+
+⚠️ **201 的返回体里没有 `title`。** `reportId` / `symbol` / `objectKey` / `deduplicated` 都有，
+唯独标题**没有回声** —— 编错了不会有任何东西告诉你，而 `title` 又不在去重键里（见下一条），
+**改了重投也覆盖不掉**。⇒ 向用户汇报标题时，报你**实际发出去**的那个（把自己拼的 URL 解码
+回来看一眼），不要报你脑子里想的那个。
 
 🚨 **判据是文件内容不是扩展名。** 把 PNG 改名成 `.pdf` 会被 422 拒。
 
