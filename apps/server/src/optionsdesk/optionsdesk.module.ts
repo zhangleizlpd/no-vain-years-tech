@@ -19,6 +19,9 @@ import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter.js';
 import { SyncAnchorQuoteUseCase } from './sync-anchor-quote.js';
 import { SyncAnchorQuoteScheduler } from './sync-anchor-quote.scheduler.js';
 import { OptionsdeskController } from './optionsdesk.controller.js';
+import { OptionsdeskGuestController } from './optionsdesk-guest.controller.js';
+import { ImportAnchorFromModelUseCase } from './import-anchor-from-model.usecase.js';
+import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -39,7 +42,8 @@ import { OptionsdeskController } from './optionsdesk.controller.js';
  */
 @Module({
   imports: [SecurityModule, AccountModule],
-  controllers: [OptionsdeskController],
+  // 059 guest 面**另起一个 controller**: 上面那个是类级 JwtAuthGuard, 类级 guard 摘不掉。
+  controllers: [OptionsdeskController, OptionsdeskGuestController],
   providers: [
     CreateAnchorUseCase,
     UpdateAnchorUseCase,
@@ -64,6 +68,12 @@ import { OptionsdeskController } from './optionsdesk.controller.js';
     // 🚨 **单实现**: 假实现 (`fake-leg-retrieval.adapter.ts`) 只服务测试, MUST NOT 注册在此;
     // 第二个运行时实现的触发条件是 ADR-0064 sunset #3 (规模突破阈值), 今天未命中。
     { provide: LEG_RETRIEVAL_PORT, useClass: PrismaLegRetrievalAdapter },
+    // 059 T005/T006 模型导入 —— 无锚则建 (复用 CreateAnchorUseCase)、有锚则按模型语义刷新。
+    // 🚨 **不复用 UpdateAnchorUseCase**: 它对 confidence_source='model' 的锚拒改 confidence,
+    // 复用的表现是首日全绿、次日静默停止更新已有锚 (见该 use case 文件头三个雷)。
+    ImportAnchorFromModelUseCase,
+    // 059 待审收件箱写端 —— **不 import 任何锚写侧 use case**, 结构上保证「不存在第二条写锚路径」。
+    SubmitAnchorFromGuestUseCase,
     SyncAnchorQuoteUseCase,
     // 上一行那个 use case 的**触发器** —— 没有它 `last_close` 投影在 prod 永不执行
     // (045 T012 只定义了怎么算、没定义谁来调), 雷达的距 W% / zone / 复核锚红标全部出不了真值。

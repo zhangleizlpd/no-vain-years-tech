@@ -37,6 +37,17 @@ export function buildOpenApiConfig() {
         },
         'guest-upload-token',
       )
+      // 059 锚导入 token: 同一条 guest 通道上的**第二把**钥匙, 只给直写锚的导入口。
+      // 与 guest-upload-token 取不同值 —— 同值等于服务端再也分不出「直写锚」与「往待审箱里
+      // 放」两条路径 (那时整条授权闸的唯一支点就只剩 nginx 配置一处)。
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          description: '锚模型导入通道 token (ANCHOR_IMPORT_TOKEN)',
+        },
+        'anchor-import-token',
+      )
       .build()
   );
 }

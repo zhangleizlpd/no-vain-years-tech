@@ -38,6 +38,14 @@ export const INVALID_IMPORT_TICKER_CODE = `${ANCHOR_IMPORT_INVALID_PREFIX}TICKER
 export const INVALID_IMPORT_MARKET_CODE = `${ANCHOR_IMPORT_INVALID_PREFIX}MARKET`;
 export const INVALID_IMPORT_CONFIDENCE_CODE = `${ANCHOR_IMPORT_INVALID_PREFIX}CONFIDENCE`;
 
+/**
+ * 待审收件箱三态 (059 FR-011)。**人工处置的留痕, 不是状态机**: 系统只写 `PENDING`,
+ * 另两态由本人在 DB 直连处置后手工置 —— 本片刻意零审阅面 (plan §6)。
+ */
+export const ANCHOR_SUBMISSION_STATUSES = ['PENDING', 'CONSUMED', 'REJECTED'] as const;
+
+export type AnchorSubmissionStatus = (typeof ANCHOR_SUBMISSION_STATUSES)[number];
+
 /** 代码段形态: 首位字母数字, 其后允许 `.` (`us:BRK.B`)。**大写**是 canonical 的一部分。 */
 const IMPORTABLE_CODE_PATTERN = /^[A-Z0-9][A-Z0-9.]*$/;
 
