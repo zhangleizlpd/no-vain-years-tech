@@ -49,33 +49,11 @@ sops exec-env secrets.enc.env "docker compose -f docker-compose.tight.yml --env-
 
 **admin 连 prod PG（TablePlus 等）**：PG 已发布 host loopback `127.0.0.1:5432`（仅本机可达、非公网；rationale 见 `docker-compose.tight.yml` postgres `ports` 内联注释，PR #684）。SSH 隧道（`"$NVY_APP_SSH"`，真值见 `~/.nvy/fleet.env`）→ DB Host 填 `127.0.0.1` / User `mbw` / DB `mbw` / 密码 = `DB_PASSWORD`（scram：`127.0.0.1/32 trust` 只对容器内 loopback 生效，隧道来自 docker 网关命中 `host all all all scram-sha-256`）。此前隧道指容器内网 IP（`172.18.0.x`），整栈重启 Docker 重排 → 连接静默失效，故改用固定 loopback。
 
-## 第二条部署链：guest-proxy（与 app 那条**不对称**）
+## guest-proxy：与 app **同机、但另一条部署链**
 
-宿主上跑着两条互相独立的部署链。**它们的触发条件与人工闸都不一样**，同一个 PR 同时改了两侧时，这个不对称决定了谁先上：
+guest-proxy 跑在同一台宿主上（`network_mode: host`），但走 `deploy-guest-proxy.yml` 那条独立的链 —— **触发与人工闸都与 app 不同**，同一个 PR 动两侧时它必然先上，通道侧若 `proxy_pass` 指向 app 才有的端口，这段时间它返 502。
 
-| 链                      | 触发                                                                                                | 人工闸                                                                                                                                                                                 |
-| ----------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **app**（本文上半部分） | `Build & Push Image` 完成后经 `workflow_run` 触发 + `workflow_dispatch`。**没有 push / paths 触发** | **两道**：① Release PR 由维护者手动合（per [ADR-0042](../../docs/adr/0042-monorepo-release-strategy.md)）② `Deploy` job 声明了 `environment: production`，卡在该环境的 reviewer 审批上 |
-| **guest-proxy**         | `push: main` + `paths: services/guest-proxy/**`                                                     | 无 —— **合入即部署**                                                                                                                                                                   |
-
-⇒ **默认情况下 guest-proxy 必然先上**，而 app 侧要你点两次。若通道侧新加的 location `proxy_pass` 指向 app 才有的端口，这段时间它返 502。
-
-> 该窗口可不可接受，取决于**新端点在那段时间有没有人用**。访客侧要重装 skill 才知道新端点存在，所以「合入 → 装 skill」之间天然有个缓冲；但别把它当保证 —— 老访客手上的旧 skill 不会突然发现新路径，**新访客拿到的包却是最新的**。
-
-### 顺序：密钥 → app → 渲染 → 通道
-
-同时动了「新 SOPS 密钥 + app + guest-proxy」时，按这个序做，上面那段 502 窗口根本不会出现：
-
-1. **带外把新密钥推到宿主**（§ [secrets-sops.md](secrets-sops.md) §3.3）。
-2. **发版并批准 app 部署** —— Release PR 合入 → 等 `Build & Push Image` → 到 Actions 里 **Review deployments → 批 `production`**。验运行态而不是看 conclusion：
-
-   ```bash
-   . ~/.nvy/fleet.env
-   ssh "$NVY_APP_SSH" 'sudo docker ps --format "{{.Names}}\t{{.Image}}"; sudo ss -lntp | grep ":<新端口>"'
-   ```
-
-3. **在宿主上重渲染 guest-proxy 的 env**（见下节，**这一步没有任何自动化**）。
-4. **触发 `Deploy guest proxy`**（合入时若已自动跑过且失败，用 `workflow_dispatch` 重跑）。
+> **全景（五条部署链各自的触发 / 人工闸 / 密钥来源）与跨服务改动的排序决策 → [`deploy-topology.md`](deploy-topology.md)。** 本节只管 guest-proxy 自己那几个**机制性**的坑。
 
 ### 🚨 首次给 guest-proxy 引入新 env 键：先有鸡还是先有蛋
 
