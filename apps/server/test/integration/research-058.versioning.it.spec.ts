@@ -119,6 +119,21 @@ describe('058 T001 research_report 两个唯一键 (Testcontainers PG migrate de
     );
   });
 
+  it('FR-017 结构保证: research_report 上没有任何标的名称副本列（名称只实时读、不落库）', async () => {
+    // FR-017 的后半句「MUST NOT 随归档记录一并存储」在**结构上**钉死：表里根本没有可存的地方。
+    // 前半句「MUST 为实时读取」由 T006 那条「目录改名后重投回显新名」的行为断言承担。
+    const cols = await prisma.$queryRawUnsafe<{ column_name: string }[]>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'research' AND table_name = 'research_report'
+        ORDER BY column_name`,
+    );
+    const names = cols.map((c) => c.column_name);
+
+    // 唯一允许含 `name` 的列是 `original_filename`（**文件名**，不是标的名）。
+    // 有人日后加一列 `instrument_name` 缓存名称 → 这里立刻红。
+    expect(names.filter((n) => n.includes('name'))).toEqual(['original_filename']);
+  });
+
   it('FR-026 / SC-007 state_branch 16: 上线前形态的既有记录照常落库，version 保持 1', async () => {
     for (const row of LEGACY_ROWS) {
       // version 刻意不显式给 —— 走 DB 默认值，与 057 已落库的既有行同一条路径。
@@ -409,7 +424,7 @@ describe('058 T004 版本号取号 + 并发 + 元数据回声 (Testcontainers PG
     ).toBe(1);
   });
 
-  it('state_branch 2 / FR-006 / SC-001: 同线投不同文件 → 都被接受且照常 +1；研报日期不参与任何判定', async () => {
+  it('state_branch 2 / FR-002 / FR-006 / SC-001: 同线投不同文件 → 都被接受且照常 +1；研报日期不参与任何判定', async () => {
     // 🚨 两份**日期倒序**：先投 08-10 再投 07-01。若日期参与了接受 / 排序判定，第二份要么被拒、
     // 要么排在前面 —— 它是投递方单方声明、无任何一层校验的值，不该承担任何判定职责。
     const newer = await ingest.execute(inputOf({ marker: 'a', reportDate: '2026-08-10' }));
@@ -451,7 +466,23 @@ describe('058 T004 版本号取号 + 并发 + 元数据回声 (Testcontainers PG
     expect(await prisma.researchReport.count()).toBe(3);
   });
 
-  it('state_branch 8 / FR-024: 对象写入失败留下的未完成行占住号，后续投递 MUST NOT 重用', async () => {
+  it('US1-AS-3 / FR-003（跨标的半）: 同一投递方在标的 A 已 2 版 → 首投标的 B 从 1 起算', async () => {
+    // 🚨 state_branch 6 只覆盖 FR-003 的**跨投递方**那半；FR-003 还有「同一投递方的不同标的」
+    // 这半，它只写在 US1-AS-3 里、不在十七条 state_branch 中（AS 层是矩阵值域够不到的地方）。
+    // 漏法很具体：`MAX(version)` 的 WHERE 漏掉 `symbol` ⇒ B 会拿到 3 而不是 1，而上面那条
+    // 跨投递方的断言照样绿（uploader 两列还在）。
+    for (const marker of ['a', 'b']) {
+      await ingest.execute(inputOf({ symbol: 'hk:01698', marker }));
+    }
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2]);
+
+    const b = await ingest.execute(inputOf({ symbol: 'cn:601318', marker: 'c' }));
+    expect(b.version).toBe(1); // 与标的 A 的线互不影响
+    expect(await versionsOf('friend1', 'cn:601318')).toEqual([1]);
+    expect(await versionsOf('friend1', 'hk:01698')).toEqual([1, 2]); // A 的线也没被动过
+  });
+
+  it('state_branch 8 / FR-002 / FR-024: 对象写入失败留下的未完成行占住号，后续投递 MUST NOT 重用', async () => {
     expect((await ingest.execute(inputOf({ marker: 'a' }))).version).toBe(1);
 
     storage.enqueue('rejected');
@@ -646,7 +677,7 @@ describe('058 T006 标的名称 Q7-B 只读回显 + fail-open (Testcontainers PG
       },
     });
 
-  it('state_branch 12 / FR-012 / FR-018 / FR-029: 目录里找得到 → 回显名称；已退市标的照常回显', async () => {
+  it('state_branch 12 / FR-004 / FR-012 / FR-018 / FR-029: 目录里找得到 → 回显名称；已退市标的照常回显', async () => {
     await seedInstrument('hk', '01698', '天工国际');
     await seedInstrument('cn', '601318', '已退市的那只', {
       delistDate: new Date('2025-12-31T00:00:00.000Z'),
@@ -663,6 +694,8 @@ describe('058 T006 标的名称 Q7-B 只读回显 + fail-open (Testcontainers PG
     expect(delisted.instrumentName).toBe('已退市的那只');
 
     // FR-029: 只给事实、不给判断 —— 应答里 MUST NOT 出现任何「投对了 / 投错了」的结论字段。
+    // FR-004 的服务端半句同址：字段全等 ⇒ 应答里也 MUST NOT 出现 `latest` 之类「本次是否最新」
+    // 的回显（第二轮澄清删掉的那两个字段若被谁加回来，这条立刻红）。
     expect(Object.keys(live).sort()).toEqual([
       'deduplicated',
       'instrumentName',
@@ -673,6 +706,51 @@ describe('058 T006 标的名称 Q7-B 只读回显 + fail-open (Testcontainers PG
       'title',
       'version',
     ]);
+  });
+
+  it('SC-008 / US2-AS-4: 归到另一家公司代码下 → 回显名称与研报所述公司不符（当场可发现）；两地上市同名是已知盲区', async () => {
+    // 🚨 SC-008 与 US2-AS-4 是同一件事的两种写法，**只写在 SC / AS 两层**，不在十七条
+    // state_branch 里 ⇒ 只扫 state_branch 的矩阵照不到它（046 实证的那类「零覆盖且零告警」）。
+    await seedInstrument('hk', '01698', '天工国际');
+    await seedInstrument('cn', '601318', '中国平安');
+    await seedInstrument('hk', '02318', '中国平安'); // 同一家公司的港股代码，目录里**同名**
+
+    // 手上是「中国平安」的研报，却归到了另一家公司的代码下 —— 应答回显的名称与研报所述公司
+    // 对不上 ⇒ 投递方仅凭应答即可当场发现（这正是 SC-008 声称能抓住的那类错）。
+    const misfiled = await ingest.execute(inputOf({ symbol: 'hk:01698', marker: 'm' }));
+    expect(misfiled.instrumentName).toBe('天工国际');
+    expect(misfiled.instrumentName).not.toBe('中国平安');
+
+    // 🚨 已知盲区（SC-008 后半句）：2026-08-16 实际发生的那类错是**两地上市选错市场**，
+    // 而 A/H 两个代码在目录里同名 ⇒ 回显对二者**不可区分**。这条断言把盲区钉成机器可见的
+    // 事实：它红了说明目录侧命名变了，SC-008 的盲区表述与 SKILL.md 的告警都要跟着改。
+    const aShare = await ingest.execute(inputOf({ symbol: 'cn:601318', marker: 'p' }));
+    const hShare = await ingest.execute(inputOf({ symbol: 'hk:02318', marker: 'p' }));
+    // 🚨 逐个钉到字面量，**不能只写 `a === h`** —— 两边都 null（比如种子没灌上）时那种写法
+    // 恒真，盲区反而被一条假绿掩盖。
+    expect(aShare.instrumentName).toBe('中国平安');
+    expect(hShare.instrumentName).toBe('中国平安');
+    expect(aShare.symbol).not.toBe(hShare.symbol); // 标的不同，名称却一样 ⇒ 名称抓不到这类错
+    // ⇒ 名称对上 MUST NOT 被解读为「标的一定投对了」；该告警落投递方文档（T010）。
+  });
+
+  it('FR-017: 名称是**实时读取**、不随记录存储 —— 目录改名后重投，回显的是改名后的值', async () => {
+    // FR-017 表达的是「这只票**现在**叫什么」，不具时点语义。若名称在首投时被存进归档记录，
+    // 这里第二次拿到的会是旧名 —— 而由于名称是 fail-open 的，存了副本这件事没有任何其他
+    // 判据会红。（结构上「表里没地方存」由 T001 那条列断言兜底，两条一起才是 FR-017 全貌。）
+    await seedInstrument('hk', '01698', '改名前的旧名');
+    const first = await ingest.execute(inputOf({ symbol: 'hk:01698' }));
+    expect(first.instrumentName).toBe('改名前的旧名');
+
+    await prisma.instrument.update({
+      where: { market_code: { market: 'hk', code: '01698' } },
+      data: { name: '改名后的新名' },
+    });
+
+    const again = await ingest.execute(inputOf({ symbol: 'hk:01698' }));
+    expect(again.deduplicated).toBe(true);
+    expect(again.reportId).toBe(first.reportId); // 同一条归档记录，一个字节都没重写
+    expect(again.instrumentName).toBe('改名后的新名'); // 名称随目录走，不是投递时点的快照
   });
 
   it('FR-016: 名称按**落库的归一 symbol** 查，不是请求里的原始写法', async () => {
