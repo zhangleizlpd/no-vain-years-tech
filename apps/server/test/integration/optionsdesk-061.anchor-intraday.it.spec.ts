@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { ThrottlerModule } from '@nestjs/throttler';
 import type { Redis } from 'ioredis';
@@ -20,8 +20,16 @@ import {
 } from '../../src/marketdata/market-state.port';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { CreateAnchorUseCase } from '../../src/optionsdesk/create-anchor.usecase';
+import { computeDistanceToWPct } from '../../src/optionsdesk/anchor.rules';
+import { GetRadarUseCase, type RadarPage } from '../../src/optionsdesk/get-radar.usecase';
+import {
+  INTRADAY_CIRCUIT_THRESHOLD,
+  INTRADAY_FRESHNESS_SECONDS,
+} from '../../src/optionsdesk/intraday-spot.rules';
 import {
   SyncAnchorIntradayScheduler,
+  INTRADAY_CIRCUIT_KEY,
+  INTRADAY_FAILSTREAK_KEY,
   INTRADAY_LAST_SESSIONS_KEY,
   type AnchorIntradayTickOutcome,
 } from '../../src/optionsdesk/sync-anchor-intraday.scheduler';
@@ -72,6 +80,22 @@ import type {
 /** ET 16:00（2026-08-12 周三）⇒ us 业务日恒为 08-12，与宿主时区无关。 */
 const NOW = new Date('2026-08-12T20:00:00Z');
 const US_DATE = marketDateFor(['us'], NOW);
+const HK_DATE = marketDateFor(['hk'], NOW);
+
+/**
+ * 🚨 读端断言用**真实墙钟**（`GetRadarUseCase` 自己取 `new Date()`，无注入口），故盘中价的
+ * 新鲜/陈旧一律由 {@link INTRADAY_FRESHNESS_SECONDS} 派生，**MUST NOT 在本文件手写 90**。
+ */
+const FRESHNESS_MS = INTRADAY_FRESHNESS_SECONDS * 1000;
+
+/** 一个**已越过新鲜度闸**的采集时刻 —— 也正是「连续 3 轮失败」之后的真实处境。 */
+const staleInstant = (): Date => new Date(Date.now() - FRESHNESS_MS - 60_000);
+
+/** 某时刻所属的 UTC 日（`@db.Date` 列的存法）。 */
+const dayOf = (at: Date): Date =>
+  new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
+
+const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
 
 /** V=50 ⇒ W 由 rules 派生（本文件零档位字面量）。 */
 const V = '50';
@@ -114,6 +138,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
   let redis: Redis;
   let scheduler: SyncAnchorIntradayScheduler;
   let createAnchor: CreateAnchorUseCase;
+  let getRadar: GetRadarUseCase;
 
   /** 市场时段假源 —— 三态由用例直接摆布；`shouldFail` 造「状态不可得」。 */
   const marketStatePort: MarketStateFake = {
@@ -185,6 +210,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
     redis = moduleRef.get<Redis>(REDIS_CLIENT);
     scheduler = moduleRef.get(SyncAnchorIntradayScheduler);
     createAnchor = moduleRef.get(CreateAnchorUseCase);
+    getRadar = moduleRef.get(GetRadarUseCase);
   }, 180_000);
 
   afterAll(async () => {
@@ -260,6 +286,24 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
   async function givenUsRegularTradingDay(): Promise<void> {
     marketStatePort.sessions = [{ market: 'us', session: 'regular' }];
     await seedTradingDay('us', US_DATE);
+  }
+
+  const tickersOf = (page: RadarPage): string[] => page.items.map((i) => i.row.ticker);
+
+  function viewOf(page: RadarPage, ticker: string): RadarPage['items'][number] {
+    const found = page.items.find((i) => i.row.ticker === ticker);
+    if (found === undefined) {
+      throw new Error(`雷达页里没有 ${ticker}: ${JSON.stringify(tickersOf(page))}`);
+    }
+    return found;
+  }
+
+  /** 把源打到「连续 {@link INTRADAY_CIRCUIT_THRESHOLD} 轮全失败」⇒ circuit open。 */
+  async function tripCircuit(): Promise<void> {
+    realtimeQuotePort.failWith = new Error('mock realtime source down');
+    for (let round = 0; round < INTRADAY_CIRCUIT_THRESHOLD; round += 1) {
+      expect(ticked(await scheduler.run(NOW)).verdict).toBe('failure');
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -488,6 +532,240 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       const failed = await rowOf('us:TAP');
       expect(failed.intradayPrice?.toString()).toBe('28.5');
       expect(failed.intradayAt?.toISOString()).toBe(keptAt.toISOString());
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // T010 · 熔断、降级与读端裁决（`state_branches` 9–15）
+  //
+  // 11–15 打的是**雷达读端**（`GetRadarUseCase`）—— 排序表达式与空态计数都是 SQL
+  // （`COALESCE(CASE WHEN intraday_at >= $cutoff …)` + `COUNT(*) FILTER`），在真库上跑之前
+  // 「实时价新鲜」那一支是零覆盖。
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  describe('熔断、降级与读端裁决', () => {
+    it('连续 3 轮采集全部失败 → 熔断并显式降级为收盘档, 且不清空既有实时价', async () => {
+      // 最后一次成功采集的时刻已越过新鲜度闸 —— 这不是巧合而是判据: 熔断窗口 = 3 × T =
+      // 新鲜度闸 ⇒「熔断打开」与「数据被判陈旧」同刻发生。
+      const capturedAt = staleInstant();
+      await seedAnchor('us:AOS', {
+        intradayPrice: '30',
+        intradayAt: capturedAt,
+        lastClose: '45',
+        lastCloseDate: dayOf(capturedAt),
+      });
+      await givenUsRegularTradingDay();
+      realtimeQuotePort.failWith = new Error('mock realtime source down');
+
+      const streaks: number[] = [];
+      const circuits: string[] = [];
+      for (let round = 0; round < INTRADAY_CIRCUIT_THRESHOLD; round += 1) {
+        const outcome = ticked(await scheduler.run(NOW));
+        expect(outcome.verdict).toBe('failure');
+        streaks.push(outcome.failstreak);
+        circuits.push(outcome.circuit);
+      }
+
+      expect(streaks).toEqual(Array.from({ length: INTRADAY_CIRCUIT_THRESHOLD }, (_, i) => i + 1));
+      // 阈值之前**不**跳闸, 到第 3 轮才 open（少一轮就熔断 = 一次网络抖动即降级）。
+      expect(circuits.slice(0, -1).every((c) => c === 'closed')).toBe(true);
+      expect(circuits.at(-1)).toBe('open');
+      expect(await redis.get(INTRADAY_CIRCUIT_KEY)).toBe('open');
+
+      // 🚨 熔断是**降级**不是**清除**: 两列原样保留（清空会把「陈旧但可用」误降成「不可用」）。
+      const row = await rowOf('us:AOS');
+      expect(row.intradayPrice?.toString()).toBe('30');
+      expect(row.intradayAt?.toISOString()).toBe(capturedAt.toISOString());
+
+      // 「显式降级为收盘档」在读端兑现: 距 W% 由收盘价算出, 不是 0、不是空。
+      const view = viewOf(await getRadar.execute(), 'us:AOS');
+      expect(view.spot.priceKind).toBe('eod_close');
+      expect(view.spot.price?.toString()).toBe('45');
+      expect(view.distanceToWPct?.toFixed(4)).toBe(computeDistanceToWPct(V, '45')?.toFixed(4));
+    });
+
+    it('熔断后首次采集成功 → 自动恢复实时档, 不需要人工介入', async () => {
+      await seedAnchor('us:AOS', {
+        lastClose: '45',
+        lastCloseDate: dayOf(new Date()),
+      });
+      await givenUsRegularTradingDay();
+      await tripCircuit();
+      expect(await redis.get(INTRADAY_CIRCUIT_KEY)).toBe('open');
+
+      // open 态**不另设跳闸** —— 每拍仍探一次源, 成功即回升（无人工干预入口）。
+      realtimeQuotePort.failWith = null;
+      const recoveredAt = new Date();
+      realtimeQuotePort.quotes.set('us:AOS', { price: '33', capturedAt: recoveredAt });
+      const recovered = ticked(await scheduler.run(NOW));
+
+      expect(recovered.verdict).toBe('success');
+      expect(recovered.failstreak).toBe(0);
+      expect(recovered.circuit).toBe('closed');
+      expect(await redis.get(INTRADAY_CIRCUIT_KEY)).toBe('closed');
+      expect(await redis.get(INTRADAY_FAILSTREAK_KEY)).toBe('0');
+
+      const view = viewOf(await getRadar.execute(), 'us:AOS');
+      expect(view.spot.priceKind).toBe('realtime');
+      expect(view.spot.price?.toString()).toBe('33');
+      expect(view.spot.asOf).toBe(recoveredAt.toISOString());
+    });
+
+    it('实时价存在 且 采集时刻在新鲜度闸内 → 排序与呈现用实时价并标实时档', async () => {
+      const freshAt = new Date();
+      const closeDate = dayOf(freshAt);
+      // 前提写成断言: 两只锚的**收盘价**都在 W 上方（收盘口径下会判成「全体不动区」），
+      // 而 FLIP 的盘中价已跌破 W ⇒ 两个口径给出相反的次序与相反的空态。
+      expect(computeDistanceToWPct(V, '45')?.isPositive()).toBe(true);
+      expect(computeDistanceToWPct(V, '41')?.isPositive()).toBe(true);
+      expect(computeDistanceToWPct(V, '30')?.isNegative()).toBe(true);
+      await seedAnchor('us:FLIP', {
+        intradayPrice: '30',
+        intradayAt: freshAt,
+        lastClose: '45',
+        lastCloseDate: closeDate,
+      });
+      await seedAnchor('us:HOLD', {
+        intradayPrice: '44',
+        intradayAt: freshAt,
+        lastClose: '41',
+        lastCloseDate: closeDate,
+      });
+
+      const page = await getRadar.execute();
+
+      // 按收盘价排会是 HOLD(+2.5) 在前、FLIP(+12.5) 在后 —— 实际次序与它**相反**。
+      expect(tickersOf(page)).toEqual(['us:FLIP', 'us:HOLD']);
+      for (const item of page.items) {
+        expect(item.spot.priceKind).toBe('realtime');
+        // 档位不上屏, 由 `asOf` 的**粒度**表达: 实时档是时刻。
+        expect(item.spot.asOf).toBe(freshAt.toISOString());
+      }
+      const flip = viewOf(page, 'us:FLIP');
+      expect(flip.spot.price?.toString()).toBe('30');
+      expect(flip.distanceToWPct?.toFixed(4)).toBe(computeDistanceToWPct(V, '30')?.toFixed(4));
+      // 🚨 空态计数走同一条 spot 口径: 收盘口径下这里会是 `all_idle`（横幅说「一个都没有」,
+      // 底下的行却是红色负距 W%）—— 同一份响应里两个口径回答同一个问题。
+      expect(page.emptyState).toBeNull();
+    });
+
+    it('实时价存在 但 采集时刻超出新鲜度闸 → 回落收盘价并标收盘档, 不用陈旧实时价', async () => {
+      const staleAt = staleInstant();
+      const closeDate = dayOf(staleAt);
+      await seedAnchor('us:STALE', {
+        intradayPrice: '30',
+        intradayAt: staleAt,
+        lastClose: '45',
+        lastCloseDate: closeDate,
+      });
+
+      const page = await getRadar.execute();
+      const view = viewOf(page, 'us:STALE');
+      expect(view.spot.priceKind).toBe('eod_close');
+      expect(view.spot.price?.toString()).toBe('45');
+      // 收盘档的 `asOf` 是**交易日**（不含时刻）—— 界面靠这个粒度差表达档位。
+      expect(view.spot.asOf).toBe(isoDay(closeDate));
+      expect(view.spot.asOf).not.toContain('T');
+      expect(view.distanceToWPct?.toFixed(4)).toBe(computeDistanceToWPct(V, '45')?.toFixed(4));
+
+      // 陈旧的 30 若被采信, 这只锚会被判「跌破 W」—— 筛选 / 排序 / 空态是同一条 SQL 口径。
+      const below = await getRadar.execute({ filter: { belowW: true } });
+      expect(tickersOf(below)).toEqual([]);
+      expect(page.emptyState).toBe('all_idle');
+    });
+
+    it('锚既无实时价也无收盘价（刚建成、尚未经历任何采集）→ 距 W% 显式为空, 不为 0, 且不因空值被排到榜首或榜尾造成误读', async () => {
+      const freshAt = new Date();
+      await seedAnchor('us:BELOW', { intradayPrice: '30', intradayAt: freshAt });
+      await seedAnchor('us:ABOVE', { lastClose: '45', lastCloseDate: dayOf(freshAt) });
+      await seedAnchor('us:NEW'); // 两价皆无
+
+      const page = await getRadar.execute();
+
+      const fresh = viewOf(page, 'us:NEW');
+      // `null` 而非 `0`: 0 在距 W% 里是「正好在带上」这个有意义的强信号。
+      expect(fresh.distanceToWPct).toBeNull();
+      expect(fresh.spot.price).toBeNull();
+      expect(fresh.spot.asOf).toBeNull();
+      expect(fresh.zone).toBeNull();
+      // `NULLS LAST`: 空值排在两只有价锚之后, 既没被当成 0 顶到榜首, 也没被整行剔除。
+      expect(tickersOf(page)).toEqual(['us:BELOW', 'us:ABOVE', 'us:NEW']);
+    });
+
+    it('锚所属市场不在实时支持范围内（港股 / A 股）→ 该锚恒为收盘档, 不表现为故障、不静默返回空', async () => {
+      const closeDate = dayOf(new Date());
+      await seedAnchor('hk:00700', { lastClose: '45', lastCloseDate: closeDate });
+      marketStatePort.sessions = [{ market: 'hk', session: 'regular' }];
+      await seedTradingDay('hk', HK_DATE);
+
+      const incrSpy = vi.spyOn(redis, 'incr');
+      try {
+        // 连跑到**超过**熔断阈值：「只要库里存在一只 hk 锚, 90 秒后 circuit open 把 us 一起
+        // 降级」是今天就会发生的故障（hk 锚合法且随时可建）。
+        for (let round = 0; round <= INTRADAY_CIRCUIT_THRESHOLD; round += 1) {
+          const outcome = ticked(await scheduler.run(NOW));
+          expect(outcome.verdict).toBe('no-attempt');
+          expect(outcome.circuit).toBe('closed');
+          expect(outcome.failstreak).toBe(0);
+          expect(marketOf(outcome.report, 'hk')).toEqual({
+            market: 'hk',
+            status: 'unsupported-market',
+            registeredMarkets: ['us'],
+          });
+          expect(outcome.report.unsupportedMarkets).toEqual(['hk']);
+        }
+        // 🚨 比「circuit 保持 closed」更强的回归钉: 失败计数键**一次都没被碰过** ——
+        // 「该市场没接实时源」是配置事实, 与「接了但调不通」是两件事。
+        expect(incrSpy).not.toHaveBeenCalled();
+      } finally {
+        incrSpy.mockRestore();
+      }
+      expect(await redis.get(INTRADAY_FAILSTREAK_KEY)).toBeNull();
+      expect(await redis.get(INTRADAY_CIRCUIT_KEY)).toBeNull();
+
+      // 不静默返回空: 它照常在雷达上与其他锚**并列可比**（收盘档 + 可用的距 W%）。
+      await seedAnchor('us:AOS', { lastClose: '41', lastCloseDate: closeDate });
+      const page = await getRadar.execute();
+      expect([...tickersOf(page)].sort()).toEqual(['hk:00700', 'us:AOS']);
+      const hk = viewOf(page, 'hk:00700');
+      expect(hk.spot.priceKind).toBe('eod_close');
+      expect(hk.spot.price?.toString()).toBe('45');
+      expect(hk.distanceToWPct).not.toBeNull();
+    });
+
+    it('收盘后一段时间内实时价与收盘价同时「都是今天的」→ 由新鲜度闸单点裁决用哪个, 不在两值之间抖动', async () => {
+      const staleAt = staleInstant();
+      const closeDate = dayOf(staleAt);
+      // 本分支的前提写成断言: 两个价确实「都是今天的」—— 日粒度分不出胜负, 只有闸能裁决。
+      expect(isoDay(staleAt)).toBe(isoDay(closeDate));
+      await seedAnchor('us:AOS', {
+        intradayPrice: '44',
+        intradayAt: staleAt,
+        lastClose: '45',
+        lastCloseDate: closeDate,
+      });
+
+      const pick = (page: RadarPage) => {
+        const view = viewOf(page, 'us:AOS');
+        return {
+          priceKind: view.spot.priceKind,
+          price: view.spot.price?.toString() ?? null,
+          asOf: view.spot.asOf,
+          distance: view.distanceToWPct?.toFixed(4) ?? null,
+          order: tickersOf(page),
+        };
+      };
+
+      const first = pick(await getRadar.execute());
+      const second = pick(await getRadar.execute());
+
+      // 单点裁决 ⇒ 同一批数据连查两次必得同一结果（不在两个来源之间抖）。
+      expect(first).toEqual(second);
+      expect(first).toMatchObject({
+        priceKind: 'eod_close',
+        price: '45',
+        asOf: isoDay(closeDate),
+      });
     });
   });
 });

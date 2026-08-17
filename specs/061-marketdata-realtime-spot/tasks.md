@@ -94,7 +94,7 @@ updated_at: '2026-08-17'
 
 - [X] T009 [Server] **IT ①：时段闸与采集路径**（`state_branches` 1–8，plan Testing Invariants）：新建 `optionsdesk-061.anchor-intraday.it.spec.ts`。走**真 DI 容器**（`Test.createTestingModule({ imports: [OptionsdeskModule] })`），真 PG + Redis，vendor 侧用 fake port 注入。覆盖：常规时段 + 交易日 → 落两列；白名单外已知状态 → 不采且不清空；未知状态 → 按闭市 + 留痕；状态不可得 → fail-closed；状态开市但非交易日 → 不采；常规刚结束 → 补一拍；响应缺某标的 → 保留旧值；部分失败 → 不整批回滚。🚨 **每个 `it()` 的名字引用该分支的判据原文关键短语**（如 `'白名单外的已知状态'`），**MUST NOT** 用「第 N 条」这类序号锚定 —— spec 里重排分支时序号会静默失配且无任何检查会红。→ verify: 8 个 `it()` 全绿；**MUST NOT** `new SyncAnchorIntradayScheduler()` 手搓实例（Testing Invariants 第一条）；跑 `pnpm nx test server <file>`
 
-- [ ] T010 [Server] **IT ②：熔断、降级与读端裁决**（`state_branches` 9–15，plan Testing Invariants）：在 T009 的同一文件内补第二组。覆盖：连续 3 轮失败 → 熔断且**不清空**既有实时价；熔断后首次成功 → 自动回升；实时价新鲜 → 用实时价 + 标实时档；实时价陈旧 → 回落收盘 + 标收盘档；两价皆无 → 距 W% 显式空、不为 0、`NULLS LAST` 位置正确；市场不支持 → 恒收盘档且**不表现为故障**（circuit 保持 closed）；收盘后两价「都是今天的」→ 闸单点裁决、连查两次结果一致不抖。`it()` 命名同 T009 规矩（判据短语，非序号）。→ verify: 7 个 `it()` 全绿；与 T009 合计 15 个 `it()` 对齐 `state_branches` 前 15 条（后 2 条归 T012）
+- [X] T010 [Server] **IT ②：熔断、降级与读端裁决**（`state_branches` 9–15，plan Testing Invariants）：在 T009 的同一文件内补第二组。覆盖：连续 3 轮失败 → 熔断且**不清空**既有实时价；熔断后首次成功 → 自动回升；实时价新鲜 → 用实时价 + 标实时档；实时价陈旧 → 回落收盘 + 标收盘档；两价皆无 → 距 W% 显式空、不为 0、`NULLS LAST` 位置正确；市场不支持 → 恒收盘档且**不表现为故障**（circuit 保持 closed）；收盘后两价「都是今天的」→ 闸单点裁决、连查两次结果一致不抖。`it()` 命名同 T009 规矩（判据短语，非序号）。→ verify: 7 个 `it()` 全绿；与 T009 合计 15 个 `it()` 对齐 `state_branches` 前 15 条（后 2 条归 T012）
 
 ## Phase 5: 雷达读端
 
