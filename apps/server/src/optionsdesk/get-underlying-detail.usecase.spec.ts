@@ -46,6 +46,9 @@ const anchorRow = (overrides: Record<string, unknown> = {}) => ({
   lLevelEffective: 'L2',
   lastClose: new Prisma.Decimal('36'),
   lastCloseDate: day('2026-07-31'),
+  // 061: 盘中两列空 = 还没经历过任何盘中采集 ⇒ 恒收盘档 (本文件验的是四态与新鲜度, 不验档位)。
+  intradayPrice: null,
+  intradayAt: null,
   breachStartedOn: null,
   createdAt: day('2026-05-01'),
   updatedAt: day('2026-07-31'),

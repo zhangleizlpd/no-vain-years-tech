@@ -10,6 +10,7 @@ import {
   resolveRadarEmptyState,
 } from './get-radar.usecase';
 import { encodeRadarCursor } from './radar-cursor';
+import { INTRADAY_FRESHNESS_SECONDS } from './intraday-spot.rules';
 import type { PrismaService } from '../security/prisma.service';
 
 type Fn = ReturnType<typeof vi.fn>;
@@ -37,11 +38,17 @@ const anchorRow = (overrides: Record<string, unknown> = {}) => ({
   lLevelEffective: 'L2',
   lastClose: new Prisma.Decimal('36'),
   lastCloseDate: day('2026-07-31'),
+  // 061: 盘中两列默认空 = 「还没经历过任何盘中采集」⇒ 恒收盘档 (state_branch 13)。
+  intradayPrice: null,
+  intradayAt: null,
   breachStartedOn: null,
   createdAt: day('2026-05-01'),
   updatedAt: day('2026-07-31'),
   ...overrides,
 });
+
+/** `now` 之前 n 秒 —— 闸内 / 闸外一律由 {@link INTRADAY_FRESHNESS_SECONDS} 派生, 不写 90。 */
+const secondsAgo = (n: number) => new Date(Date.now() - n * 1000);
 
 describe('resolveBreachTransition — FR-013 复核锚状态机四条转移', () => {
   const base = {
@@ -265,7 +272,8 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     const { sql, values } = lastSql();
     expect(sql).toContain('l_level_effective IN');
     expect(sql).toContain('next_review <');
-    expect(sql).toContain('last_close <');
+    // 061: 跌破判据的左操作数从裸 last_close 换成 spot 表达式 (与排序键同源, 见下方专测)。
+    expect(sql).toContain('last_close) <');
     expect(values).toContain('L1');
     expect(values).toContain('L3');
   });
@@ -367,6 +375,106 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     const page = await useCase.execute();
 
     expect(page.items.map((i) => i.row.id)).toEqual([8n, 7n]);
+  });
+
+  // ── 061 盘中价接入 (FR-008 / FR-009 / FR-014 / FR-015) ─────────────────────
+
+  it('🚨 排序键走 spot 表达式: 新鲜实时价否则收盘价, cutoff **参数绑定**', async () => {
+    await useCase.execute();
+    const { sql, values } = lastSql();
+    expect(sql).toContain('COALESCE(CASE WHEN intraday_at >=');
+    expect(sql).toContain('THEN intraday_price END, last_close)');
+    // cutoff 不拼进 SQL 文本 (值一律绑定, 同 keyset 谓词的纪律)。
+    expect(values.some((v) => v instanceof Date)).toBe(true);
+  });
+
+  it('🚨 cutoff = now − 闸, 由 rules 常量**派生** (在此手写 90 秒时本条红)', async () => {
+    const before = Date.now();
+    await useCase.execute();
+    const cutoff = lastSql().values.find((v): v is Date => v instanceof Date)!;
+    const expected = before - INTRADAY_FRESHNESS_SECONDS * 1000;
+    // 判据与 T001 同源: 闸的取值改了这里自动跟着改; 手写常数则会在闸变动时静默失配。
+    expect(Math.abs(cutoff.getTime() - expected)).toBeLessThan(5_000);
+  });
+
+  it('🚨 跌破筛选与排序键**同一个** spot 表达式 (禁一个按实时一个按收盘)', async () => {
+    await useCase.execute({ filter: { belowW: true } });
+    const { sql } = lastSql();
+    // 两处若各写各的, 「筛出跌破的」与「距 W% 显示跌破」会在盘中互相矛盾, 且不会红。
+    const occurrences = sql.split('COALESCE(CASE WHEN intraday_at >=').length - 1;
+    expect(occurrences).toBe(2);
+  });
+
+  it('🚨 Guardrail 5: 不新增输出列别名 (::text 同名会让 ORDER BY 落到字典序)', async () => {
+    await useCase.execute();
+    const { sql } = lastSql();
+    // 内层子查询的 `AS distance_to_w_pct` 是**合法且必需**的 (ORDER BY 要解析到那个 numeric 原列);
+    // 被禁的是**外层**把 `::text` 转换后的列取同名 —— 那才会让排序落到字典序上。
+    expect(sql).toContain('id::text AS anchor_id');
+    expect(sql).toContain('distance_to_w_pct::text AS distance_text');
+    expect(sql).not.toContain('::text AS distance_to_w_pct');
+    expect(sql).not.toContain('::text AS id');
+  });
+
+  it('实时价新鲜 → 距 W% 由实时价算 + 档位 realtime + asOf 呈**时刻** (state_branch 11)', async () => {
+    const at = secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5);
+    m = buildPrismaMock([anchorRow({ intradayPrice: new Prisma.Decimal('44'), intradayAt: at })]);
+    useCase = new GetRadarUseCase(m.prisma);
+
+    const page = await useCase.execute();
+
+    const view = page.items[0]!;
+    expect(view.spot.priceKind).toBe('realtime');
+    expect(view.spot.asOf).toBe(at.toISOString()); // 时刻, 不是 YYYY-MM-DD
+    // V=50 ⇒ W=40; spot 44 ⇒ (44−40)/40×100 = +10 (若仍按 lastClose 36 算则是 −10)
+    expect(view.distanceToWPct?.toFixed(2)).toBe('10.00');
+  });
+
+  it('实时价陈旧 → **回落收盘价** + 档位 eod_close + asOf 呈交易日 (state_branch 12)', async () => {
+    m = buildPrismaMock([
+      anchorRow({
+        intradayPrice: new Prisma.Decimal('44'),
+        intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS + 5),
+      }),
+    ]);
+    useCase = new GetRadarUseCase(m.prisma);
+
+    const view = (await useCase.execute()).items[0]!;
+    expect(view.spot.priceKind).toBe('eod_close');
+    expect(view.spot.asOf).toBe('2026-07-31');
+    expect(view.distanceToWPct?.toFixed(2)).toBe('-10.00'); // 陈旧实时价 MUST NOT 被用
+  });
+
+  it('两价皆无 → 距 W% 显式 null **不是 0**, 档位仍显式给出 (state_branch 13 / FR-014)', async () => {
+    m = buildPrismaMock([anchorRow({ lastClose: null, lastCloseDate: null })]);
+    m.queryRaw.mockResolvedValue([{ anchor_id: '7', distance_text: null }]);
+    useCase = new GetRadarUseCase(m.prisma);
+
+    const view = (await useCase.execute()).items[0]!;
+    expect(view.distanceToWPct).toBeNull();
+    expect(view.spot.price).toBeNull();
+    expect(view.spot.priceKind).toBe('eod_close');
+    expect(view.spot.asOf).toBeNull();
+  });
+
+  it('🚨 Guardrail 3 回归钉: 实时价穿到 W 下方 MUST NOT 推进 breach_started_on', async () => {
+    // 收盘价在 W 上方、实时价在 W 下方 —— 若有人「顺手统一」两个 spot 口径, 状态机就会在
+    // 一天内随 spot 反复置位/清空, 而清空是**破坏性**的 (最近复审 < 本轮起点 的比较就此失效)。
+    m = buildPrismaMock([
+      anchorRow({
+        lastClose: new Prisma.Decimal('45'), // > W(40) ⇒ 状态机判「未跌破」
+        intradayPrice: new Prisma.Decimal('36'), // < W ⇒ 排序按它, 状态机 MUST 不看
+        intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5),
+      }),
+    ]);
+    useCase = new GetRadarUseCase(m.prisma);
+
+    const page = await useCase.execute();
+
+    expect(m.updateMany).not.toHaveBeenCalled();
+    // 但排序/呈现确实用了实时价 —— 两个口径并存是刻意的, 不是漂移。
+    expect(page.items[0]!.spot.priceKind).toBe('realtime');
+    expect(page.items[0]!.distanceToWPct?.toFixed(2)).toBe('-10.00');
   });
 
   it('空态随页一起返回 (含文案): 有可动标的 → null; 全部在 W 上方 → all_idle', async () => {

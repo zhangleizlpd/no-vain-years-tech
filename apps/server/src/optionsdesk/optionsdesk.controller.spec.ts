@@ -69,6 +69,9 @@ const anchorRow = {
   lLevelEffective: 'L2',
   lastClose: new Prisma.Decimal('36'),
   lastCloseDate: new Date('2026-08-01T00:00:00Z'),
+  // 061: 盘中两列空 = 还没经历过任何盘中采集 ⇒ 恒收盘档 (本文件只验通道层契约, 不验档位判据)。
+  intradayPrice: null,
+  intradayAt: null,
   breachStartedOn: null,
   createdAt: new Date('2026-05-01T00:00:00Z'),
   updatedAt: new Date('2026-07-20T00:00:00Z'),

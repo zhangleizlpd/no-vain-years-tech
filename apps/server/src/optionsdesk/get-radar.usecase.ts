@@ -4,6 +4,7 @@ import { PrismaService } from '../security/prisma.service';
 import { W_COEFFICIENT, isBelowW, type LLevel } from './anchor.rules';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import { shanghaiDateOnly, toUtcDateOnly, type AnchorRow } from './create-anchor.usecase';
+import { intradayFreshnessCutoff } from './intraday-spot.rules';
 import { sessionOf, toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { marketsOfTickers, resolveLastClosedSessions } from './last-closed-session';
 import {
@@ -224,15 +225,18 @@ export class GetRadarUseCase {
       throw new BadRequestException('INVALID_RADAR_CURSOR');
     }
     const firstPage = cursor === null;
+    // 一次请求取**一个** `now`: SQL 的新鲜度 cutoff 与读侧档位判定必须落在同一时点, 各取各的
+    // 会在闸的边界那一拍产生「排序用了实时价、档位却说收盘」——而那种漂移不会红 (061 D4)。
+    const now = new Date();
 
     // 状态机只在首页推进: 一次「打开雷达」= 一次可判定时点; 续页重跑会让同一次滚动中判据漂移,
     // 而且每页重扫全表纯属浪费。
     const scan = firstPage ? await this.advanceBreachState() : { baseTotal: 0, actionableTotal: 0 };
 
-    const keys = await this.selectPageKeys(cursor, query.filter ?? {}, limit);
+    const keys = await this.selectPageKeys(cursor, query.filter ?? {}, limit, now);
     const hasMore = keys.length > limit;
     const pageKeys = hasMore ? keys.slice(0, limit) : keys;
-    const items = await this.hydrate(pageKeys);
+    const items = await this.hydrate(pageKeys, now);
     const last = pageKeys.at(-1);
 
     return {
@@ -261,6 +265,20 @@ export class GetRadarUseCase {
    *
    * ⚠️ 扫描面是**全部**锚 (含 `excluded`): 状态**维护**与**展示**正交 —— excluded 的锚不进
    * 雷达 (Guardrail 12), 但它在锚管理列表仍要显示正确的复核锚红标, 状态冻结会让那边读到陈旧值。
+   *
+   * 🚨🚨 **本方法恒用 `last_close`, MUST NOT 改用盘中实时价** (061 plan D5)。061 之后本 use case
+   * 里**两个 spot 口径并存是刻意的**: 排序与呈现用「新鲜实时否则收盘」({@link selectPageKeys} +
+   * `toAnchorView`), 状态机恒用收盘。三条理由, 按分量:
+   *  1. `breach_started_on` 是 `@db.Date`, 判据是「本轮跌破的**首次观测日**」。用分钟级价驱动
+   *     日粒度状态机 ⇒ 红标在同一天内随 spot 反复穿越 W 而反复置位/清空, 而**清空是破坏性的**
+   *     (`last_reviewed_on < breach_started_on` 的比较就此失去意义)。
+   *  2. 红标问的是「你确认过这个估值在跌破后仍成立吗」—— 那是人的动作节奏, 不是分钟节奏。
+   *  3. `last_close` 是**修订后**的权威值 (拆股/分红调整、错单撤销), 盘中最后一笔不是。
+   * ⇒ 别「顺手统一」这两个口径。回归钉在 `get-radar.usecase.spec.ts`「Guardrail 3 回归钉」。
+   *
+   * ⚠️ 同理 `actionableTotal` (空态 `all_idle` 的判据) 也恒用收盘价 —— 它与状态机同一次扫描、
+   * 同一个日粒度语义。它与 `belowW` 筛选 (盘中口径) 在盘中可能短暂不一致, 这是上面那条取舍的
+   * 已知代价, 不是遗漏。
    *
    * O(n) 扫 + O(变更行) 次 UPDATE (n = 锚数, 上限约 1000; 常态下 0 次写)。
    */
@@ -324,13 +342,20 @@ export class GetRadarUseCase {
    *
    * 内层子查询算出 `distance_to_w_pct`, 外层才引用它 —— PG 的 `WHERE` 不能引用同层输出列别名,
    * 分两层可让 keyset 谓词与 `ORDER BY` 都只写一次表达式 (写三遍必然改漏一处)。
+   *
+   * 🚨 **061 spot 表达式**: 排序键的分子不再是裸 `last_close`, 而是「闸内的盘中价, 否则收盘价」。
+   * `cutoff` **走参数绑定**且由 `intraday-spot.rules.ts` 的常量派生 —— **MUST NOT 在此手写 90**。
+   * 该片段在本查询里被用两处 (距 W% 表达式 + `belowW` 筛选), 但**只声明一次**: 两处各写各的会让
+   * 「筛出跌破的」与「距 W% 显示跌破」在盘中互相矛盾, 而两边都算得出结果、都不会红。
    */
   private async selectPageKeys(
     cursor: RadarCursor | null,
     filter: RadarFilter,
     limit: number,
+    now: Date,
   ): Promise<RadarKeyRow[]> {
     const w = Prisma.sql`(COALESCE(v_manual, v) * ${W_COEFFICIENT.toString()}::numeric)`;
+    const spot = Prisma.sql`COALESCE(CASE WHEN intraday_at >= ${intradayFreshnessCutoff(now)} THEN intraday_price END, last_close)`;
     const conditions: Prisma.Sql[] = [Prisma.sql`excluded = false`]; // Guardrail 12 基础条件
     if (filter.lLevels !== undefined && filter.lLevels.length > 0) {
       conditions.push(Prisma.sql`l_level_effective IN (${Prisma.join([...filter.lLevels])})`);
@@ -341,8 +366,8 @@ export class GetRadarUseCase {
       conditions.push(Prisma.sql`next_review < ${today}::date`);
     }
     if (filter.belowW === true) {
-      // 行情不可用 (last_close IS NULL) 天然不满足 ⇒ 不会被当成「跌破」(禁伪造)。
-      conditions.push(Prisma.sql`last_close < ${w}`);
+      // 两价皆无 (spot IS NULL) 天然不满足 ⇒ 不会被当成「跌破」(禁伪造)。
+      conditions.push(Prisma.sql`${spot} < ${w}`);
     }
     const keyset =
       cursor === null ? Prisma.empty : Prisma.sql`WHERE ${radarKeysetPredicate(cursor)}`;
@@ -350,7 +375,7 @@ export class GetRadarUseCase {
     return this.prisma.$queryRaw<RadarKeyRow[]>(Prisma.sql`
       SELECT id::text AS anchor_id, distance_to_w_pct::text AS distance_text
       FROM (
-        SELECT id, ((last_close - ${w}) / NULLIF(${w}, 0) * 100) AS distance_to_w_pct
+        SELECT id, ((${spot} - ${w}) / NULLIF(${w}, 0) * 100) AS distance_to_w_pct
         FROM optionsdesk.anchor
         WHERE ${Prisma.join(conditions, ' AND ')}
       ) ranked
@@ -361,7 +386,7 @@ export class GetRadarUseCase {
   }
 
   /** 按键序水合整行 → {@link AnchorView} (派生口径与锚列表同源)。 */
-  private async hydrate(keys: readonly RadarKeyRow[]): Promise<AnchorView[]> {
+  private async hydrate(keys: readonly RadarKeyRow[], now: Date): Promise<AnchorView[]> {
     if (keys.length === 0) return [];
     const rows = (await this.prisma.anchor.findMany({
       where: { id: { in: keys.map((k) => BigInt(k.anchor_id)) } },
@@ -374,9 +399,12 @@ export class GetRadarUseCase {
       marketsOfTickers(rows.map((r) => r.ticker)),
     );
     // 键查询与水合之间被并发删除的行直接跳过 (整页照常返回, 不 500)。
-    return keys
-      .map((key) => byId.get(key.anchor_id))
-      .filter((row): row is AnchorRow => row !== undefined)
-      .map((row) => toAnchorView(row, sessionOf(sessions, row.ticker), today));
+    return (
+      keys
+        .map((key) => byId.get(key.anchor_id))
+        .filter((row): row is AnchorRow => row !== undefined)
+        // `now` 由 execute 一次性取: 与 SQL 的 cutoff 同一时点 ⇒ 排序与档位不会在闸的边界分叉。
+        .map((row) => toAnchorView(row, sessionOf(sessions, row.ticker), today, now))
+    );
   }
 }

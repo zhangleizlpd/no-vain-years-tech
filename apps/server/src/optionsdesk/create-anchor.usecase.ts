@@ -50,6 +50,12 @@ export interface AnchorRow {
   lLevelEffective: string;
   lastClose: Prisma.Decimal | null;
   lastCloseDate: Date | null;
+  /**
+   * 061 盘中实时价 + 其**采集墙钟** —— 与上面收盘两列是**并列的第二个价源**, 不是替代
+   * (FR-015)。读侧的生效 spot 由 `intraday-spot.rules.ts` 单点裁决, MUST NOT 在别处再判一次。
+   */
+  intradayPrice: Prisma.Decimal | null;
+  intradayAt: Date | null;
   breachStartedOn: Date | null;
   createdAt: Date;
   updatedAt: Date;
