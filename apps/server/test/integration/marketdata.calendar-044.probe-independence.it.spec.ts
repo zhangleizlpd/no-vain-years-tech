@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { runMigrateDeploy } from '../_support/run-migrate';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -43,11 +44,7 @@ describe('044 T016 探针独立性 (真跑 marketdata-calendar-health.sh, 全程
       .withPassword('test')
       .start();
     const url = container.getConnectionUri();
-    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: SERVER_DIR,
-      env: { ...process.env, DATABASE_URL: url },
-      stdio: 'inherit',
-    });
+    runMigrateDeploy(url);
     prisma = new PrismaService(url);
   }, 120_000);
 

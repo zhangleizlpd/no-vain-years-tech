@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import { setupEmptyDb } from '../_support/isolated-db';
+import { runMigrateDeploy } from '../_support/run-migrate';
 import { PrismaService } from '../../src/security/prisma.service';
-
-const SERVER_DIR = process.cwd();
 
 // 057 T005 schema IT: 第 11 个 bounded context research 的存储地基 (expand-only, ADR-0035)。
 //
@@ -49,11 +47,7 @@ describe('057 research schema expand (Testcontainers PG migrate deploy)', () => 
     db = await setupEmptyDb();
     process.env.DATABASE_URL = db.databaseUrl;
 
-    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: SERVER_DIR,
-      env: process.env,
-      stdio: 'inherit',
-    });
+    runMigrateDeploy();
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();

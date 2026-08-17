@@ -222,6 +222,14 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
 
 ⚠️ 那条 envsubst 过滤正则**仓里有三份拷贝**（`docker-compose.guest.yml` / `install.sh` 的 `ENVSUBST_FILTER` / `install.sh` 自检 (d) 的残留扫描），本片三处已同步 —— 057 当年只改了 compose 那份，deploy 当场红在预校验上。
 
+## 本 PR 夹带的两处工具面修复（不是 059 的 task，但必须记）
+
+按 git-workflow「改动溢出本 feature 要先确认是否拆独立改动」，这两处**刻意不拆** —— 它们各自是本 PR 能不能走完流程的前置，拆出去意味着 059 得等它们先合：
+
+1. **`eslint.config.mjs` 补 playwright 输出目录的 ignore**。PR 模板要求的物理验证命令把 `lint` 与 `runtime-smoke` 放进同一个 nx invocation，playwright 边跑边增删 `playwright-test-results`，eslint 的目录遍历撞上去 ⇒ `ENOENT scandir`，**eslint 进程自己崩**（不是报 lint 错）。表现成随机红、单跑又绿。⇒ 不修就没法诚实地勾第一个 checkbox。
+2. **IT 日志降级**（`vitest.config.ts` 加 `LOG_LEVEL=error` + 抽 `test/_support/run-migrate.ts`）。本地一轮 373KB → 161KB。起因是 `server-test` 在 CI 上连续两次红、本地两次全绿，而**失败文本从 CI 侧取不到** —— GitHub 的 job log 端点只回有限窗口（对照过一次成功的跑，同样取不到 ⇒ 端点固有行为）。⇒ 不降噪就没有诊断窗口。
+   ⚠️ 残留的 134 行 migrate 树 + 30 行 pino 全在 `runtime-smoke` 段，源头 `scripts/ci/server-boot-smoke.ts` 在 vitest 之外、`test.env` 管不到。**刻意不动**：那个脚本的意义就是「真 app 能不能起来」，日志即证据。要压它是另一笔取舍。
+
 ## impl 期偏离登记（与 plan / tasks 原文不一致的三处）
 
 1. **guest 端点另起 `optionsdesk-guest.controller.ts`，没有加进 `optionsdesk.controller.ts`**（tasks 原文写的是后者）。理由：那个 controller 是**类级** `@UseGuards(JwtAuthGuard, AccountIdThrottlerGuard)`，类级 guard 对每条路由生效且**方法上摘不掉**。要塞进去只能把 13 个既有端点的鉴权逐个下放到方法级 —— 为了少建一个文件而动整个 App 的鉴权面，风险与收益不成比例。体例同 `research.controller.ts`（同为 guest 面、同为只写）。

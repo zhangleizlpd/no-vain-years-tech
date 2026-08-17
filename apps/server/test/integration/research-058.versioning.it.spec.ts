@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setupEmptyDb, setupIsolatedDb } from '../_support/isolated-db';
+import { runMigrateDeploy } from '../_support/run-migrate';
 import { PrismaService } from '../../src/security/prisma.service';
 import { FakeObjectStorage } from '../../src/integrations/oss/fake-object-storage.adapter';
 import { type ResearchOssConfig } from '../../src/config';
@@ -76,11 +77,7 @@ describe('058 T001 research_report 两个唯一键 (Testcontainers PG migrate de
     db = await setupEmptyDb();
     process.env.DATABASE_URL = db.databaseUrl;
 
-    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: SERVER_DIR,
-      env: process.env,
-      stdio: 'inherit',
-    });
+    runMigrateDeploy();
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();

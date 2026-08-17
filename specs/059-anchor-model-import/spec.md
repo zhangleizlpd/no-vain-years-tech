@@ -4,7 +4,7 @@ modules: [optionsdesk]
 owners: ['@zhangleizlpd']
 status: implementing
 created_at: '2026-08-16'
-updated_at: '2026-08-16'
+updated_at: '2026-08-17'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: na

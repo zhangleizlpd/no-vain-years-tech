@@ -64,6 +64,16 @@ const sharedTestOptions = {
     // boot-AppModule IT 集体红且报错点离真因很远 (2026-08-02 踩过)。
     // 🚨 真 vendor 联调不靠改这里, 走 env-gated RUN_*_IT (同 DEEPSEEK 占位的处置)。
     MARKETDATA_PROVIDER: 'mock',
+    // 🚨 测试里把 pino 压到 error —— **这不是「少打点日志」的洁癖，是可诊断性**。
+    // 默认 info 下 pino-http 对每个请求打一条整条 req/res JSON(单条可达 3.7KB),
+    // 一轮 IT 就是 ~200 条 / 140KB, 占整份输出的近四成。而 GitHub 的 job log 端点
+    // 只回一个**有限窗口**, 噪声挤掉的正是失败时真要看的东西 ——
+    // 2026-08-17 实撞: server-test 在 CI 上连续两次红, 而日志里连 vitest 的汇总行
+    // 都取不到(对照过一次**成功**的跑, 同样取不到 ⇒ 是端点行为不是本次异常)。
+    // ⚠️ 取 `error` 而不是 `fatal`/`silent`: 实测本地一轮里 pino 全部 202 行都是
+    // level 30(info), 40/50/60 各零行 ⇒ 压到 error **一条现有信号都不损失**,
+    // 而将来真出 5xx 时那条 error 照打。`silent` 还得动 app.config 的 zod 值域, 不值。
+    LOG_LEVEL: 'error',
   },
 };
 

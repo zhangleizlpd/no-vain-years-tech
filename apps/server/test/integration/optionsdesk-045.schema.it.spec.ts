@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupEmptyDb } from '../_support/isolated-db';
+import { runMigrateDeploy } from '../_support/run-migrate';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -30,11 +31,7 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
     db = await setupEmptyDb();
     process.env.DATABASE_URL = db.databaseUrl;
 
-    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: SERVER_DIR,
-      env: process.env,
-      stdio: 'inherit',
-    });
+    runMigrateDeploy();
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
