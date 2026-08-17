@@ -84,26 +84,54 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       'x-guest': guest,
     });
 
+  /**
+   * 🚨 **整个 body 包 try/catch 只为把错误打在「当场」，不是防御性编程** —— catch 里
+   * 原样 rethrow，行为一个字不变。
+   *
+   * 理由（2026-08-17 实撞，不是假设）：本文件在 CI 上连续四次 `beforeAll` 失败，而
+   * **错误文本从 CI 侧完全取不到**。链路上两层各丢一半：
+   *   · vitest 把 hook 失败放在**末尾**的失败块里（33 个 test 全 skipped ⇒ 0 个失败
+   *     test ⇒ `github-actions` reporter 也没东西可标注）；
+   *   · 而 nx 在 CI 上只转发**行内**输出、丢尾部，且 `--output-style` 在 CI 被直接忽略
+   *     （nrwl/nx#15570，closed as not planned）。
+   * ⇒ 行内 `console.error` 是这条链上唯一还活着的通路。本地四轮全绿、复现不出来，
+   *   只能让它在 CI 上自己说话。
+   *
+   * 定位完就删；留着不影响正确性，但它是脚手架不是资产。
+   */
   beforeAll(async () => {
-    db = await setupIsolatedDb();
-    process.env.DATABASE_URL = db.databaseUrl;
+    try {
+      db = await setupIsolatedDb();
+      process.env.DATABASE_URL = db.databaseUrl;
 
-    moduleRef = await Test.createTestingModule({
-      imports: narrowTestModule([OptionsdeskModule]),
-    })
-      .overrideProvider(REDIS_CLIENT)
-      .useValue({ call: () => undefined, quit: () => undefined, on: () => undefined })
-      .overrideProvider(guestUploadConfig.KEY)
-      .useValue({ token: UPLOAD_TOKEN })
-      .compile();
+      moduleRef = await Test.createTestingModule({
+        imports: narrowTestModule([OptionsdeskModule]),
+      })
+        .overrideProvider(REDIS_CLIENT)
+        .useValue({ call: () => undefined, quit: () => undefined, on: () => undefined })
+        .overrideProvider(guestUploadConfig.KEY)
+        .useValue({ token: UPLOAD_TOKEN })
+        .compile();
 
-    app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
-    app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
-    app.setGlobalPrefix('api');
-    await app.init();
-    await app.getHttpAdapter().getInstance().ready();
+      app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+      app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
+      app.setGlobalPrefix('api');
+      await app.init();
+      await app.getHttpAdapter().getInstance().ready();
 
-    prisma = moduleRef.get(PrismaService);
+      prisma = moduleRef.get(PrismaService);
+    } catch (err) {
+      // eslint-disable-next-line no-console -- 见上：CI 侧唯一还能把 hook 错误带出来的通路
+      console.error(
+        '\n===== 059 beforeAll FAILED (inline diag) =====\n' +
+          `name=${(err as Error)?.name}\n` +
+          `message=${(err as Error)?.message}\n` +
+          `stack=${(err as Error)?.stack}\n` +
+          `POC_PG_ADMIN_URI set=${Boolean(process.env.POC_PG_ADMIN_URI)}\n` +
+          '=============================================\n',
+      );
+      throw err;
+    }
   }, 180_000);
 
   afterAll(async () => {
