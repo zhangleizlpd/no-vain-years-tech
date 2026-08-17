@@ -7,7 +7,7 @@ import {
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import type { DimensionKey } from './dimension-executor.js';
-import { MARKETDATA_SYNC_QUEUE } from './marketdata-sync.worker.js';
+import { MARKETDATA_SYNC_QUEUE } from './marketdata-sync.queue.js';
 
 /** seed 6 边 (017 T005): universe→* 全 soft ×5 + profile→fundamental hard。 */
 const SEED_EDGES: SyncDependencyEdge[] = [

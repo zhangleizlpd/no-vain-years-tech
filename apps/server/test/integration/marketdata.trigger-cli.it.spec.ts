@@ -14,8 +14,8 @@ import {
   MARKETDATA_SYNC_QUEUE,
   MARKETDATA_WORKER_DISABLED,
   MarketdataSyncQueue,
-  MarketdataSyncWorker,
-} from '../../src/marketdata/marketdata-sync.worker';
+} from '../../src/marketdata/marketdata-sync.queue';
+import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { executeTrigger, type TriggerDeps } from '../../src/marketdata/marketdata-trigger.cli';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 

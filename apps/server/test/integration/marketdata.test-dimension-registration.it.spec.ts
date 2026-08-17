@@ -16,8 +16,8 @@ import { QueueRedisLifecycle } from '../../src/marketdata/marketdata-queue-conne
 import {
   MARKETDATA_SYNC_QUEUE,
   MarketdataSyncQueue,
-  MarketdataSyncWorker,
-} from '../../src/marketdata/marketdata-sync.worker';
+} from '../../src/marketdata/marketdata-sync.queue';
+import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { SyncTickDriver } from '../../src/marketdata/sync-tick-driver';
 import { CalendarHitCheck } from '../../src/marketdata/calendar-hit-check';
 import type { TradingCalendarPort } from '../../src/marketdata/trading-calendar.port';

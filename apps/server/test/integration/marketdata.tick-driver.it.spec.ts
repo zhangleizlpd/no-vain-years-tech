@@ -6,7 +6,7 @@ import { SyncTickDriver } from '../../src/marketdata/sync-tick-driver';
 import { CalendarHitCheck } from '../../src/marketdata/calendar-hit-check';
 import { SyncRunRecorder } from '../../src/marketdata/sync-run.recorder';
 import { QueueRedisLifecycle } from '../../src/marketdata/marketdata-queue-connection';
-import { MarketdataSyncQueue } from '../../src/marketdata/marketdata-sync.worker';
+import { MarketdataSyncQueue } from '../../src/marketdata/marketdata-sync.queue';
 import { DIMENSION_KEYS } from '../../src/marketdata/dimension-executor';
 import type { TradingCalendarPort } from '../../src/marketdata/trading-calendar.port';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';

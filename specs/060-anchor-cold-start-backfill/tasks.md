@@ -92,6 +92,14 @@ updated_at: '2026-08-17'
   >
   > 连带：`market-session.rules.ts` 多导出一个 `isSessionRegistered(market)`。FR-022 要求未登记市场**显式跳过并留下可判读记录**，调用方得先问「登记了吗」才能落那条记录；而 `marketNow` / `isSessionUnderway` 对未登记一律抛 —— 拿它们的异常当控制流，就是把 fail-closed 的守卫改造成分支，那条守卫从此不守任何东西。
 
+  > 🧱 **T006 的结构前置（2026-08-17，user 定夺后单独一个 refactor commit）—— `marketdata-sync` 生产者面拆出 `marketdata-sync.queue.ts`**：`marketdata-sync.worker.ts` 此前同时住着生产者（`MarketdataSyncQueue` + 队列名 / job 名 / payload 契约）与消费者（`MarketdataSyncWorker`）。而 T006 要 use case **组 flow 入队**、T007 要 worker **按 job.name 路由该 use case** ⇒ 循环 file import。
+  >
+  > **它的失败形态不是某个测试红**：use case 把 `MarketdataSyncQueue` 当构造器参数类型 ⇒ `emitDecoratorMetadata` 在**类装饰期**就要读它 ⇒ 后加载的一侧拿到 TDZ ⇒ `ReferenceError: Cannot access 'MarketdataSyncQueue' before initialization`，**boot 直接炸**。
+  >
+  > 修法取业内通行解而非 `forwardRef`（已联网查证三源）：NestJS 官方文档写明 `forwardRef` 令互相依赖的 provider **实例化顺序不确定**；官方 FAQ 区分 circular **file** import 与 circular provider dependency 并建议「常量单独成文件」；Trilon 定性 `forwardRef` 为 last resort、正解是抽出共享单元；BullMQ 的 NestJS 指南与社区共识本就是 producer / consumer 分属不同单元。⇒ 根因是**生产者与消费者同文件**，修根因。两个文件头各留了「别搬回去」的判据。
+  >
+  > 行为零变化的机器证据：`nx test server` 433 files / 4556 tests 与拆分前**逐项一致**；另跑 `scripts/ci/server-boot-smoke.ts` exit 0（DI 接线是本次唯一风险面，单测覆盖不到）。
+
 - [ ] T006 [Server] **分档执行接线**（FR-010, FR-011, FR-012, FR-012a, FR-014, FR-018, plan §D8）：补齐 §D3 的第 6-7 步。非敏感档：`MarketdataSyncQueue.enqueueFlow` 组树入队 `sync:option_contract` + `sync:us_equity_bar`（普通 delta，**不传 `asOf`**），flow 保证链 → 快照次序。敏感档：**`isSessionUnderway` 判「该场进行中」（含午休）** ⇒ 结局 `intraday_skipped` 直接返回（🚨 **MUST NOT 用 `isWithinTradingSession`** —— 它在午休返 `false` ⇒ 放行写快照，理由见 T001 的 impl 期修正注）；否则 ⇒ 用 T003 的 `resolveSnapshotSpec` 算 spec，调 `SyncOptionSnapshotUseCase.collect(instruments, spec, stats)`。配额耗尽的两个具名错误（`OptionChainBudgetExhaustedError` / `OptionSnapshotBudgetExhaustedError`）**原样上抛给 job 层顺延**，不在此 catch 成失败。→ verify: 同文件 spec 加：盘中分支断言 `collect` 零调用且结局 `intraday_skipped`；**午休分支（取一个有午休的市场代号）同样断言 `collect` 零调用** —— 那是两个谓词唯一分道的一格；非盘中分支断言 `collect` 收到的 `spec` 与 T003 纯函数算出的**同一对象**（防有人在这里又算一遍）；配额耗尽分支断言错误被原样抛出、**未**写入 `outcome='retry_exhausted'`
 
 ## Phase 4: 事件链

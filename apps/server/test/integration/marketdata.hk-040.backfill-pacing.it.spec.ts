@@ -15,8 +15,8 @@ import { QueueRedisLifecycle } from '../../src/marketdata/marketdata-queue-conne
 import {
   MARKETDATA_SYNC_QUEUE,
   MarketdataSyncQueue,
-  MarketdataSyncWorker,
-} from '../../src/marketdata/marketdata-sync.worker';
+} from '../../src/marketdata/marketdata-sync.queue';
+import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { executeBackfill, type BackfillDeps } from '../../src/marketdata/marketdata-backfill.cli';
 import type { EodBarPort } from '../../src/marketdata/eod-bar.port';
 import type { VolatilityPort } from '../../src/marketdata/volatility.port';

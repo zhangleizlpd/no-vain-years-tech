@@ -11,7 +11,7 @@ import {
   MARKETDATA_SYNC_QUEUE,
   MARKETDATA_WORKER_DISABLED,
   MarketdataSyncQueue,
-} from './marketdata-sync.worker.js';
+} from './marketdata-sync.queue.js';
 import {
   assembleSyncFlow,
   deriveExecutionOrder,
