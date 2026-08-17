@@ -139,7 +139,13 @@ updated_at: '2026-08-17'
   >
   > **⑤ 反恒真已跑三条**：`isColdStartJob` 恒假 ⇒ 4 条红；retry 出口去掉 `job.name` 守卫 ⇒ 1 条红；`phase` 写死 ⇒ 1 条红。**并且修掉了两条自己写出来的恒真断言**——retry 出口那两条早退用例，即使把守卫删光也照样绿（无守卫版本会撞 `BigInt(undefined)` 抛错被 catch 吞掉，可观测面同样是「零调用」）。修法：给维度 job 喂一个**长得像冷启动**的 payload，并断言降级 WARN 未被调用（区分「守卫早退」与「撞异常被兜住」）。
 
-- [ ] T008 [Server] **outbox 消费方**（FR-004, FR-005, plan §D2）：新建 `marketdata/anchor-cold-start.subscriber.ts`，`implements OutboxSubscriber, OnModuleInit`，`eventType = 'optionsdesk.anchor-created'`（**字面量，禁 import optionsdesk**），`onModuleInit` 自注册进 `OutboxSubscriberRegistry`，`handle()` 只做「校验 payload → `enqueueColdStart()` → 返回」。🚨 抛 / 不抛按 Guardrail 5。`marketdata.module.ts` 注册。→ verify: `anchor-cold-start.subscriber.spec.ts` —— payload 缺字段 / 类型不符 ⇒ **不抛**且入队零调用且 `logger.error` 被调用；入队 reject ⇒ **抛**（用 `rejects.toThrow` 钉住方向，这是全片最容易写反的一处）
+- [X] T008 [Server] **outbox 消费方**（FR-004, FR-005, plan §D2）：新建 `marketdata/anchor-cold-start.subscriber.ts`，`implements OutboxSubscriber, OnModuleInit`，`eventType = 'optionsdesk.anchor-created'`（**字面量，禁 import optionsdesk**），`onModuleInit` 自注册进 `OutboxSubscriberRegistry`，`handle()` 只做「校验 payload → `enqueueColdStart()` → 返回」。🚨 抛 / 不抛按 Guardrail 5。`marketdata.module.ts` 注册。→ verify: `anchor-cold-start.subscriber.spec.ts` —— payload 缺字段 / 类型不符 ⇒ **不抛**且入队零调用且 `logger.error` 被调用；入队 reject ⇒ **抛**（用 `rejects.toThrow` 钉住方向，这是全片最容易写反的一处）
+
+  > 📌 **impl 期记录（2026-08-17）**
+  >
+  > **多校验一格：`anchorId` 必须是十进制串，收到 JSON 数字也判毒丸。** 生产侧是 `bigint`，过 outbox 的 JSON 信封只能是串；放行数字的话精度丢在 `Number` 上，而 PK 错行属于**不报错**的那类坏（与 T007 worker 侧的 payload 校验同一判据，两处一致才不会出现「subscriber 放行、worker 才炸」的错位）。
+  >
+  > **反恒真已跑三条，两条方向断言都真的会咬**：① 把入队失败 catch 掉（吞事件）⇒ 1 条红；② 毒丸分支改成抛 ⇒ 6 条红；③ 把 `anchorId` 的串校验换成 `String(anchorId)` 强转（能编过的那种写法）⇒ 1 条红。第 ③ 条的裸删版本连 typecheck 都过不去（`unknown` 到不了 `enqueueColdStart`），所以类型系统在断言之前先挡了一道。
 
 - [ ] T009 [Server] **事件生产：建锚事务内 publish**（FR-001, FR-002, FR-003, FR-004, plan §D1）：`optionsdesk/create-anchor.usecase.ts` 注入 `OUTBOX_PUBLISHER`，在既有 `$transaction` 内（写完锚行与 `anchor_change` 之后）`publish(tx, 'optionsdesk.anchor-created', { anchorId, ticker }, 'optionsdesk')`，上方标 `// CROSS-CONTEXT-ASYNC:`。`optionsdesk.module.ts` 确认可注入。**`import-anchor-from-model.usecase.ts` 一行不改**（Guardrail 11）。→ verify: `create-anchor.usecase.spec.ts` 加：建锚成功 ⇒ `publish` 被调用一次且四个实参逐个断言（尤其 `producerContext === 'optionsdesk'`）；建锚 409 冲突 ⇒ `publish` 零调用。`update-anchor.usecase.spec.ts` 全绿不改（FR-003 的回归）
 
