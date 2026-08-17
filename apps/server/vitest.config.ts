@@ -21,7 +21,10 @@ const outboundProbe = process.env.NVY_OUTBOUND_PROBE ? ['./test/_support/outboun
 
 const sharedTestOptions = {
   globals: true,
-  setupFiles: outboundProbe,
+  // 🚨 `quiet-logger` 与下面 `env.LOG_LEVEL` 是**同一件事的两半**，缺一半等于没做：
+  // 前者管 `new Logger()`（Nest 内建 ConsoleLogger），后者管 pino。生产靠 main.ts 的
+  // `useLogger` 把两套合一，测试里不合一 —— 详见 quiet-logger.ts 顶部那张表。
+  setupFiles: [...outboundProbe, './test/_support/quiet-logger.ts'],
   environment: 'node' as const,
   exclude: ['node_modules', 'dist'],
   // 🚨 teardown 的超时预算。**这是一整类「随机 flake」的系统性根因**（2026-08-02 量化）：
