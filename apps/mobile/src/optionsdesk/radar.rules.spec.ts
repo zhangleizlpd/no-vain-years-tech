@@ -7,6 +7,7 @@ import {
   RADAR_BADGE_ORDER,
   RADAR_FILTER_KEYS,
   RADAR_ROW_FIELD_KEYS,
+  distanceToWTone,
   formatDistanceToW,
   formatSpot,
   getRadarNextCursor,
@@ -38,10 +39,24 @@ function row(over: Partial<RadarRowAnchor> = {}): RadarRowAnchor {
     zoneCeiling: '57.60',
     lastClose: '37.20',
     lastCloseDate: '2026-07-28',
+    // 061：默认收盘档 ⇒ 生效 spot 三元组与 lastClose / lastCloseDate 同值同粒度。
+    spot: '37.20',
+    priceKind: 'eod_close',
+    spotAsOf: '2026-07-28',
     distanceToWPct: '-3.10',
     ...over,
   };
 }
+
+/** 061 降级态（既无实时价也无收盘价）—— 三元组与两个收盘字段一起全空。 */
+const NO_QUOTE = {
+  lastClose: null,
+  lastCloseDate: null,
+  spot: null,
+  spotAsOf: null,
+  distanceToWPct: null,
+  zone: null,
+} satisfies Partial<RadarRowAnchor>;
 
 function page(over: Partial<RadarPageLike> = {}): RadarPageLike {
   return { items: [row()], nextCursor: null, hasMore: false, emptyState: null, ...over };
@@ -69,19 +84,12 @@ describe('radarViewState — 五态（FR-015 + FR-034）', () => {
   });
 
   it('全部行无行情 → quotes_degraded（**压过** all_idle：没数据不等于今日无解）', () => {
-    const p = page({
-      items: [row({ lastClose: null, lastCloseDate: null, distanceToWPct: null, zone: null })],
-      emptyState: 'all_idle',
-    });
+    const p = page({ items: [row(NO_QUOTE)], emptyState: 'all_idle' });
     expect(radarViewState(p)).toBe('quotes_degraded');
   });
 
   it('部分行有行情 → 仍是常态（单票缺失走行内标记，不升级成整页降级）', () => {
-    expect(
-      radarViewState(
-        page({ items: [row(), row({ id: '2', lastClose: null, lastCloseDate: null })] }),
-      ),
-    ).toBe('normal');
+    expect(radarViewState(page({ items: [row(), row({ id: '2', ...NO_QUOTE })] }))).toBe('normal');
   });
 });
 
@@ -100,7 +108,7 @@ describe('radarBadges — 顺序纪律 + 禁衍生徽标（FR-014）', () => {
   });
 
   it('行情不可用 → 区间徽标缺位，改挂显式「行情不可用」（提醒类，排最后）', () => {
-    const badges = radarBadges(row({ zone: null, lastCloseDate: null, reviewFlagOn: true }));
+    const badges = radarBadges(row({ ...NO_QUOTE, reviewFlagOn: true }));
     expect(badges.map((b) => b.kind)).toEqual(['l_level', 'review_flag', 'quote_unavailable']);
   });
 
@@ -128,9 +136,7 @@ describe('radarRowFields — 每行恰好 5 字段（SC-002 / plan D13）', () =
   });
 
   it('行情不可用的行仍产出全部 5 字段（行不被剔除，FR-017）', () => {
-    const fields = radarRowFields(
-      row({ lastClose: null, lastCloseDate: null, distanceToWPct: null, zone: null }),
-    );
+    const fields = radarRowFields(row(NO_QUOTE));
     expect(Object.keys(fields)).toHaveLength(5);
     expect(fields.spot).toBe(COPY.quoteUnavailable);
     expect(fields.distanceToW).toBe(`${COPY.distancePrefix}${COPY.noValue}`);
@@ -138,20 +144,20 @@ describe('radarRowFields — 每行恰好 5 字段（SC-002 / plan D13）', () =
 });
 
 describe('SC-004 —— 不存在无标注的数值（数值与 asOf 同生共死）', () => {
-  it('lastClose 有值但 lastCloseDate 为 null → **不渲染数值**，退成显式不可用', () => {
-    const a = row({ lastClose: '37.20', lastCloseDate: null });
+  it('spot 有值但 spotAsOf 为 null → **不渲染数值**，退成显式不可用', () => {
+    const a = row({ spot: '37.20', spotAsOf: null });
     expect(formatSpot(a)).toBe(COPY.quoteUnavailable);
     expect(formatSpot(a)).not.toContain('37.20');
   });
 
   it('距 W% 同理：没有 asOf 就不给数值', () => {
-    const a = row({ distanceToWPct: '-3.10', lastCloseDate: null });
+    const a = row({ distanceToWPct: '-3.10', spotAsOf: null });
     expect(formatDistanceToW(a)).toBe(`${COPY.distancePrefix}${COPY.noValue}`);
     expect(formatDistanceToW(a)).not.toContain('3.1');
   });
 
   it('色带也不画 spot 点（几何位置同样是「数值」）', () => {
-    expect(radarRowFields(row({ lastCloseDate: null })).band.lastClose).toBeNull();
+    expect(radarRowFields(row({ spotAsOf: null })).band.lastClose).toBeNull();
   });
 
   it('asOf 齐备 → 数值照常，符号与量级正确', () => {
@@ -163,19 +169,19 @@ describe('SC-004 —— 不存在无标注的数值（数值与 asOf 同生共�
 
 describe('radarFreshness — asOf 新鲜度档（FR-016）', () => {
   it('server 判 CURRENT → 「数据截至 X · 收盘」', () => {
-    const f = radarFreshness([row({ lastCloseDate: '2026-07-30' })]);
+    const f = radarFreshness([row({ spotAsOf: '2026-07-30' })]);
     expect(f.tier).toBe('CURRENT');
     expect(f.text).toBe('数据截至 2026-07-30 · 收盘');
   });
 
   it('server 判 STALE → 同一句 + 陈旧后缀（禁静默当实时）', () => {
-    const f = radarFreshness([row({ lastCloseDate: '2026-07-28', quoteFreshnessTier: 'STALE' })]);
+    const f = radarFreshness([row({ spotAsOf: '2026-07-28', quoteFreshnessTier: 'STALE' })]);
     expect(f.tier).toBe('STALE');
     expect(f.text).toBe(`数据截至 2026-07-28 · 收盘${COPY.freshStaleSuffix}`);
   });
 
   it('全无行情 → 显式不可用，asOf = null（不编造日期）', () => {
-    const f = radarFreshness([row({ lastCloseDate: null, quoteFreshnessTier: 'UNAVAILABLE' })]);
+    const f = radarFreshness([row({ ...NO_QUOTE, quoteFreshnessTier: 'UNAVAILABLE' })]);
     expect(f.tier).toBe('UNAVAILABLE');
     expect(f.asOf).toBeNull();
     expect(f.text).toBe(COPY.freshUnavailable);
@@ -187,12 +193,139 @@ describe('radarFreshness — asOf 新鲜度档（FR-016）', () => {
    */
   it('🚨 取最新那一行的 asOf 与它自己的档，不与本地日期比', () => {
     const f = radarFreshness([
-      row({ lastCloseDate: '2026-07-27', quoteFreshnessTier: 'STALE' }),
-      row({ lastCloseDate: '2026-07-29', quoteFreshnessTier: 'CURRENT' }),
+      row({ spotAsOf: '2026-07-27', quoteFreshnessTier: 'STALE' }),
+      row({ spotAsOf: '2026-07-29', quoteFreshnessTier: 'CURRENT' }),
     ]);
     expect(f.asOf).toBe('2026-07-29');
     expect(f.tier).toBe('CURRENT');
     expect(f.text).toContain('2026-07-29');
+  });
+});
+
+// ═══════ 061 T014 —— 生效 spot 的呈现（FR-009 / FR-014，plan D10） ═══════
+//
+// 本片给雷达行换了**取数口径**：价 / 距 W% / 色带点全部改吃 `spot`（生效 spot），
+// 而不再各吃各的。只给档位不给价 ⇒ 「价说昨收、距 W% 说实时」，那正是 T011 把
+// 三个字段一起下发的理由。
+
+describe('061 —— 行内数值一律取生效 spot（禁两个口径同屏）', () => {
+  /** 盘中实时档：spot 与 lastClose 是两个数（前者分钟级、后者昨收）。 */
+  const REALTIME = {
+    lastClose: '37.20',
+    lastCloseDate: '2026-08-16',
+    spot: '35.90',
+    priceKind: 'realtime',
+    spotAsOf: '2026-08-17T13:22:31',
+    distanceToWPct: '-6.51',
+  } satisfies Partial<RadarRowAnchor>;
+
+  it('spot 串取 `spot` 而非 `lastClose` —— 两者不同值时渲染的是前者', () => {
+    expect(formatSpot(row(REALTIME))).toBe('S 35.90');
+    expect(formatSpot(row(REALTIME))).not.toContain('37.20');
+  });
+
+  it('色带黑点也落在生效 spot 上（点与距 W% 必须同源，否则同屏两个口径）', () => {
+    expect(radarRowFields(row(REALTIME)).band.lastClose).toBe('35.90');
+  });
+
+  it('可呈现闸看 `spotAsOf`：lastCloseDate 缺席但实时价新鲜 → 照常出数', () => {
+    const a = row({ ...REALTIME, lastClose: null, lastCloseDate: null });
+    expect(formatSpot(a)).toBe('S 35.90');
+    expect(formatDistanceToW(a)).toBe('距 W −6.5%');
+    expect(radarBadges(a).map((b) => b.kind)).not.toContain('quote_unavailable');
+  });
+});
+
+describe('061 —— asOf 粒度即档位（FR-009，档位本身不上屏）', () => {
+  it('实时档 → 顶条呈**时刻**，不出现交易日、不出现「收盘」', () => {
+    const f = radarFreshness([row({ priceKind: 'realtime', spotAsOf: '2026-08-17T13:22:31' })]);
+    expect(f.text).toBe('数据截至 13:22');
+    expect(f.text).not.toContain('2026-08-17');
+    expect(f.text).not.toContain('收盘');
+  });
+
+  it('收盘档 → 顶条呈**交易日**（粒度不含时刻）', () => {
+    const f = radarFreshness([row({ priceKind: 'eod_close', spotAsOf: '2026-08-14' })]);
+    expect(f.text).toBe('数据截至 2026-08-14 · 收盘');
+    expect(f.text).not.toMatch(/\d{2}:\d{2}/);
+  });
+
+  it('实时档在闸内 ⇒ 恒 CURRENT —— 90 秒内的价说「已过时」是自相矛盾', () => {
+    const f = radarFreshness([
+      row({ priceKind: 'realtime', spotAsOf: '2026-08-17T13:22:31', quoteFreshnessTier: 'STALE' }),
+    ]);
+    expect(f.tier).toBe('CURRENT');
+    expect(f.text).not.toContain(COPY.freshStaleSuffix);
+  });
+
+  it('时刻串与日期串混排时仍取最新那行（`YYYY-MM-DD` 是 ISO 的前缀 ⇒ 字典序可比）', () => {
+    const f = radarFreshness([
+      row({ priceKind: 'eod_close', spotAsOf: '2026-08-17' }),
+      row({ priceKind: 'realtime', spotAsOf: '2026-08-17T13:22:31' }),
+    ]);
+    expect(f.text).toBe('数据截至 13:22');
+  });
+});
+
+describe('061 —— 降级时距 W% 呈空，MUST NOT 呈 0（FR-014）', () => {
+  it('两价皆无 → 距 W% 是「—」而不是 0.0%（0 是「正好在带上」的强信号）', () => {
+    const text = formatDistanceToW(row(NO_QUOTE));
+    expect(text).toBe(`${COPY.distancePrefix}${COPY.noValue}`);
+    expect(text).not.toContain('0');
+    expect(text).not.toContain('%');
+  });
+
+  it('色调也退成中性（不借跌破 W 的危险色表达「没数据」）', () => {
+    expect(distanceToWTone(row(NO_QUOTE))).toBe('none');
+  });
+
+  it('真的 0.0% 仍照常呈现 —— 空与 0 是两件事，别把有效值一起吞了', () => {
+    expect(formatDistanceToW(row({ distanceToWPct: '0.00' }))).toBe('距 W 0.0%');
+    expect(distanceToWTone(row({ distanceToWPct: '0.00' }))).toBe('above');
+  });
+});
+
+// ═══════ 🚨 Guardrail 18 护栏 —— 档位不上屏，不新增任何视觉元素 ═══════
+//
+// tasks.md 原文建议「雷达行的渲染树节点数与改动前一致」。节点数断言只能落在 e2e，且对
+// 无关的版式微调过敏（挪一个 wrapper 就红，但那不是本条要防的事）。这里换成**等价强度**
+// 的值面断言：雷达行的渲染树由 `RADAR_ROW_FIELD_KEYS` 与 `RADAR_BADGE_ORDER` 两份白名单
+// 完全决定（`radar-screen.tsx` 的 `RadarRow` 逐字段渲染 + `badges.map`）⇒ 只要这两份白名单
+// 不变、且**档位翻转不改变任一字段的存在性**，就没有任何新节点能被生出来。
+// 它比节点数更强的地方：节点数相等也可能是「加了一个徽标、删了一个字段」；这里逐键比对。
+
+describe('🚨 Guardrail 18 —— 档位不产出任何新视觉元素', () => {
+  const eod = row({ priceKind: 'eod_close', spotAsOf: '2026-07-28' });
+  const realtime = row({ priceKind: 'realtime', spotAsOf: '2026-07-28T13:22:31' });
+
+  it('行字段白名单恒为 5 项且键序不变（新增一个视觉维度会让它变长）', () => {
+    expect(RADAR_ROW_FIELD_KEYS).toEqual(['identity', 'distanceToW', 'band', 'spot', 'badges']);
+  });
+
+  it('徽标白名单恒为 5 项 —— 没有 price_kind / realtime 一类的新 kind', () => {
+    expect(RADAR_BADGE_ORDER).toEqual([
+      'l_level',
+      'zone',
+      'overdue',
+      'review_flag',
+      'quote_unavailable',
+    ]);
+  });
+
+  it('同一行只翻档位：字段键集合逐键相同（不多不少、不换序）', () => {
+    expect(Object.keys(radarRowFields(realtime))).toEqual(Object.keys(radarRowFields(eod)));
+  });
+
+  it('同一行只翻档位：徽标序列**完全相同**（档位不生徽标、不改徽标文案）', () => {
+    expect(radarBadges(realtime)).toEqual(radarBadges(eod));
+  });
+
+  it('行内任何一段文本都不含档位字样（realtime / 实时 / eod_close）', () => {
+    const fields = radarRowFields(realtime);
+    const texts = [fields.spot, fields.distanceToW, ...fields.badges.map((b) => b.text)];
+    for (const t of texts) {
+      expect(t).not.toMatch(/realtime|eod_close|实时/);
+    }
   });
 });
 

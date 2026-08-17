@@ -3,7 +3,11 @@
 // 🚨 **三空态文案不在前端**：server 随 `emptyState` 下发 `emptyStateMessage`（判定与措辞同源），
 //    这里只做「渲染哪一态」的判定，不拼文案。
 // 🚨 **SC-004 数值与 asOf 同生共死**：任何行情数值（spot / 距 W% / 色带上的点）在
-//    `lastCloseDate` 缺失时一律降级为显式「行情不可用」—— 杜绝裸数值。
+//    `spotAsOf` 缺失时一律降级为显式「行情不可用」—— 杜绝裸数值。
+// 🚨 **061 一行一个口径**：价 / 距 W% / 色带点全部取 server 裁决出的**生效 spot**
+//    （`spot` + `priceKind` + `spotAsOf` 三元组），不再各吃各的。只换档位不换价 ⇒
+//    「价说昨收、距 W% 说实时」。`lastClose` / `lastCloseDate` 语义未变（仍是当日收盘的
+//    权威值，FR-015），但它们不再是行内呈现的取数口径。
 // 🚨 **FR-014 徽标只能取自 `RADAR_BADGE_ORDER` 白名单**，衍生徽标（达标腿数 / 直接买主案）无处可生。
 import type { AnchorResponse, RadarResponseEmptyState } from '@nvy/api-client';
 
@@ -30,6 +34,9 @@ export type RadarRowAnchor = Pick<
   | 'lastClose'
   | 'lastCloseDate'
   | 'quoteFreshnessTier'
+  | 'spot'
+  | 'priceKind'
+  | 'spotAsOf'
   | 'distanceToWPct'
 >;
 
@@ -66,7 +73,7 @@ export function radarViewState(page: Pick<RadarPageLike, 'items' | 'emptyState'>
   if (page.emptyState === 'filtered_empty') return 'filtered_empty';
   // 防御：基础集合非空却一行不返，只可能是筛选滤空（server 首页会给 emptyState，这里兜底）。
   if (page.items.length === 0) return 'filtered_empty';
-  if (page.items.every((a) => a.lastCloseDate === null)) return 'quotes_degraded';
+  if (page.items.every((a) => a.spotAsOf === null)) return 'quotes_degraded';
   if (page.emptyState === 'all_idle') return 'all_idle';
   return 'normal';
 }
@@ -91,7 +98,7 @@ export interface RadarBadge {
 
 type BadgeInput = Pick<
   RadarRowAnchor,
-  'lLevelEffective' | 'zone' | 'overdue' | 'reviewFlagOn' | 'lastCloseDate'
+  'lLevelEffective' | 'zone' | 'overdue' | 'reviewFlagOn' | 'spotAsOf'
 >;
 
 /** 复杂度 O(1)（固定 ≤ 5 个徽标）。 */
@@ -104,7 +111,7 @@ export function radarBadges(anchor: BadgeInput): RadarBadge[] {
   if (anchor.overdue) badges.push({ kind: 'overdue', text: COPY.badgeOverdue });
   if (anchor.reviewFlagOn) badges.push({ kind: 'review_flag', text: COPY.badgeReviewFlag });
   // FR-017：行情缺失 = 行内显式标记（行仍在列表、禁 0 值）。
-  if (anchor.lastCloseDate === null) {
+  if (anchor.spotAsOf === null) {
     badges.push({ kind: 'quote_unavailable', text: COPY.quoteUnavailable });
   }
   return badges;
@@ -127,9 +134,15 @@ export interface RadarRowFields {
   badges: RadarBadge[];
 }
 
-/** 行情数值是否可呈现：值与 asOf 必须同时在（SC-004 杜绝裸数值）。 */
-function hasQuote(a: Pick<RadarRowAnchor, 'lastCloseDate'>): boolean {
-  return a.lastCloseDate !== null;
+/**
+ * 行情数值是否可呈现：值与 asOf 必须同时在（SC-004 杜绝裸数值）。
+ *
+ * 🚨 闸看 **`spotAsOf`** 而非 `lastCloseDate` —— 生效 spot 才是行内一切数值的来源。
+ * 二者并非同生同灭：盘中新建的锚可能已有实时价、但当日收盘投影尚未跑过 ⇒ 用收盘的
+ * asOf 当闸会把一个有价可看的行判成「行情不可用」。
+ */
+function hasQuote(a: Pick<RadarRowAnchor, 'spotAsOf'>): boolean {
+  return a.spotAsOf !== null;
 }
 
 /** canonical `market:code` → 展示用 code（解析失败退回原串，不丢信息）。 */
@@ -137,16 +150,17 @@ function tickerCode(ticker: string): string {
   return ticker.split(':')[1] ?? ticker;
 }
 
-/** spot 串。🚨 **不带「· 距 W xx%」**（标题行已有一份，plan D13 明令删的真冗余）。 */
-export function formatSpot(a: Pick<RadarRowAnchor, 'lastClose' | 'lastCloseDate'>): string {
-  if (!hasQuote(a) || a.lastClose === null) return COPY.quoteUnavailable;
-  return `${COPY.spotPrefix}${formatPriceText(a.lastClose)}`;
+/**
+ * spot 串 = **生效 spot**（实时 / 收盘由 server 裁决，本层不重判）。
+ * 🚨 **不带「· 距 W xx%」**（标题行已有一份，plan D13 明令删的真冗余）。
+ */
+export function formatSpot(a: Pick<RadarRowAnchor, 'spot' | 'spotAsOf'>): string {
+  if (!hasQuote(a) || a.spot === null) return COPY.quoteUnavailable;
+  return `${COPY.spotPrefix}${formatPriceText(a.spot)}`;
 }
 
-/** 距 W%（server 已算好的百分数串）。负号用 −（U+2212）与 mockup 一致。 */
-export function formatDistanceToW(
-  a: Pick<RadarRowAnchor, 'distanceToWPct' | 'lastCloseDate'>,
-): string {
+/** 距 W%（server 由生效 spot 算好的百分数串）。负号用 −（U+2212）与 mockup 一致。 */
+export function formatDistanceToW(a: Pick<RadarRowAnchor, 'distanceToWPct' | 'spotAsOf'>): string {
   if (!hasQuote(a) || a.distanceToWPct === null) {
     return `${COPY.distancePrefix}${COPY.noValue}`;
   }
@@ -158,7 +172,7 @@ export function formatDistanceToW(
 
 /** 距 W 的色调（涨跌语义外的中性三分：跌破 W = 危险色，无行情 = 灰）。 */
 export function distanceToWTone(
-  a: Pick<RadarRowAnchor, 'distanceToWPct' | 'lastCloseDate'>,
+  a: Pick<RadarRowAnchor, 'distanceToWPct' | 'spotAsOf'>,
 ): 'below' | 'above' | 'none' {
   if (!hasQuote(a) || a.distanceToWPct === null) return 'none';
   const n = Number.parseFloat(a.distanceToWPct);
@@ -176,7 +190,10 @@ export function radarRowFields(anchor: RadarRowAnchor): RadarRowFields {
       zoneFloor: anchor.zoneFloor,
       zoneCeiling: anchor.zoneCeiling,
       // 没有 asOf 就没有点 —— 几何位置同样是「数值」（SC-004）。
-      lastClose: hasQuote(anchor) ? anchor.lastClose : null,
+      // ⚠️ `ZoneBandAnchor` 的字段名仍叫 `lastClose`（045 命名，色带把它当「点画在哪个价上」），
+      //    但 061 起喂进去的是**生效 spot** —— 点与距 W% / 区间徽标必须同源，否则同一行里
+      //    黑点停在昨收、徽标却按实时价判区间，两者会当场打架。
+      lastClose: hasQuote(anchor) ? anchor.spot : null,
     },
     spot: formatSpot(anchor),
     badges: radarBadges(anchor),
@@ -195,23 +212,32 @@ export interface RadarFreshness {
 }
 
 /**
- * 顶部新鲜度条。asOf 取**数据自身**最新的 `last_close_date`（FR-036：它才是 asOf），
- * 档位取**该行自己的** `quoteFreshnessTier` —— 判据在 server（要查交易日历），客户端拿本地
- * 日历日比会对美股恒判陈旧。复杂度 O(n)，n = 本页行数。
+ * 顶部新鲜度条 —— **061 起它就是档位的唯一呈现出口**（FR-009：档位不上屏，只以 asOf 的
+ * 粒度表达；实时档呈时刻、收盘档呈交易日，粒度差异全部落在 `formatAsOfLabel` 里）。
+ *
+ * asOf 取**数据自身**最新的 `spotAsOf`（生效 spot 的时间事实），档位取**该行自己的**
+ * `priceKind`；`quoteFreshnessTier` 判据在 server（要查交易日历），客户端拿本地日历日比会
+ * 对美股恒判陈旧。复杂度 O(n)，n = 本页行数。
+ *
+ * 🚨 **实时档恒 CURRENT**：`priceKind === 'realtime'` 意味着 server 已判定这个价在新鲜度闸
+ * （90 秒）内 —— 对一个至多 90 秒前的价挂「已过时」是自相矛盾。`quoteFreshnessTier` 说的是
+ * **收盘价**落没落在最近一个已收盘交易日（FR-020），与实时价的新鲜与否是两个问题。
  */
 export function radarFreshness(
-  items: readonly Pick<RadarRowAnchor, 'lastCloseDate' | 'quoteFreshnessTier'>[],
+  items: readonly Pick<RadarRowAnchor, 'spotAsOf' | 'priceKind' | 'quoteFreshnessTier'>[],
 ): RadarFreshness {
-  let latest: { asOf: string; tier: FreshnessTier } | null = null;
+  let latest: { asOf: string; priceKind: string; tier: FreshnessTier } | null = null;
   for (const it of items) {
-    // `YYYY-MM-DD` 字典序 = 时间序。
-    if (it.lastCloseDate !== null && (latest === null || it.lastCloseDate > latest.asOf)) {
-      latest = { asOf: it.lastCloseDate, tier: it.quoteFreshnessTier };
+    // 字典序 = 时间序：`YYYY-MM-DD` 是完整 ISO 串的前缀，两种粒度可直接比。
+    if (it.spotAsOf !== null && (latest === null || it.spotAsOf > latest.asOf)) {
+      latest = { asOf: it.spotAsOf, priceKind: it.priceKind, tier: it.quoteFreshnessTier };
     }
   }
   if (latest === null) return { tier: 'UNAVAILABLE', asOf: null, text: COPY.freshUnavailable };
-  const label = formatAsOfLabel(latest.asOf, 'eod_close');
-  if (latest.tier === 'CURRENT') return { tier: 'CURRENT', asOf: latest.asOf, text: label };
+  const label = formatAsOfLabel(latest.asOf, latest.priceKind);
+  if (latest.priceKind === 'realtime' || latest.tier === 'CURRENT') {
+    return { tier: 'CURRENT', asOf: latest.asOf, text: label };
+  }
   return { tier: 'STALE', asOf: latest.asOf, text: `${label}${COPY.freshStaleSuffix}` };
 }
 

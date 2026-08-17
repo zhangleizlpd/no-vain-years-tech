@@ -511,6 +511,9 @@ test('045 雷达 — 常态同屏承载「单票行情缺失」与「锚逾期�
       ticker: 'us:TAP',
       lastClose: null,
       lastCloseDate: null,
+      // 061：两价皆无 ⇒ 生效 spot 三元组一起空（行内一切数值的闸看 spotAsOf）。
+      spot: null,
+      spotAsOf: null,
       zone: null,
       distanceToWPct: null,
     }),
@@ -608,6 +611,9 @@ test('045 雷达 — 行情整体不可得：新鲜度条转「行情不可用�
       ticker: 'us:AOS',
       lastClose: null,
       lastCloseDate: null,
+      // 061：两价皆无 ⇒ 生效 spot 三元组一起空（行内一切数值的闸看 spotAsOf）。
+      spot: null,
+      spotAsOf: null,
       zone: null,
       distanceToWPct: null,
     }),
@@ -616,6 +622,9 @@ test('045 雷达 — 行情整体不可得：新鲜度条转「行情不可用�
       ticker: 'us:PEP',
       lastClose: null,
       lastCloseDate: null,
+      // 061：两价皆无 ⇒ 生效 spot 三元组一起空（行内一切数值的闸看 spotAsOf）。
+      spot: null,
+      spotAsOf: null,
       zone: null,
       distanceToWPct: null,
     }),
