@@ -74,7 +74,7 @@ updated_at: '2026-08-17'
   >
   > 连带：该 `it()` 的标题「复用本通路做美股必须先登记时段」已失准（us 现已登记），改为「登记了 us 不代表这条通路会跑它」—— 支不支持美股取决于 `INTRADAY_MARKET` 与 tick 拓扑，不取决于时段表。`INTRADAY_MARKET` 的 JSDoc 同步去掉了「给该市场登记时段」这半句。
 
-- [ ] T003 [P] [Server] **三元组决策 + 市场能力登记**（FR-006, FR-008, FR-014, FR-023, FR-024, plan §D4）：新建 `marketdata/anchor-cold-start.rules.ts`。① `resolveSnapshotSpec(...)` 纯函数（入参形状由实现定，**硬约束只有两条：零 I/O**「日历查询由调用方做完喂进来」、且**必须显式收 market**，禁带默认值的可选入参 —— 同 `trading-day-gate.ts:173` `OPTION_EXCHANGE_SCOPE` 上方那条禁令），按 plan §D4 那张四行表返 `{ sessionDate, source, oiAsOf }` 或「放弃」；② `COLD_START_CAPABILITY: Record<string, {...}>` 市场能力登记表（`us` 登记链 + 日线 + 快照三档，`hk` 空表项）；③ 结局值域常量（八种，FR-027）。**零 I/O** —— 日历查询由调用方做完喂进来。→ verify: `anchor-cold-start.rules.spec.ts` —— plan §D4 逐条对表的四行各一个 `it()`（周六 10:00 / 周一 10:00 / 周一 18:00 / 周二 10:00 北京）；**外加与 `option-snapshot-remediation` 的等值回归**：喂北京 08:00 与 18:00 两个时刻，断言算出的三元组与既有 ①/② 级（`option-snapshot-remediation.ts:113` / `:159`）逐字相同 —— 那两个时点是这条规则的锚，谁改坏了立刻红
+- [X] T003 [P] [Server] **三元组决策 + 市场能力登记**（FR-006, FR-008, FR-014, FR-023, FR-024, plan §D4）：新建 `marketdata/anchor-cold-start.rules.ts`。① `resolveSnapshotSpec(...)` 纯函数（入参形状由实现定，**硬约束只有两条：零 I/O**「日历查询由调用方做完喂进来」、且**必须显式收 market**，禁带默认值的可选入参 —— 同 `trading-day-gate.ts:173` `OPTION_EXCHANGE_SCOPE` 上方那条禁令），按 plan §D4 那张四行表返 `{ sessionDate, source, oiAsOf }` 或「放弃」；② `COLD_START_CAPABILITY: Record<string, {...}>` 市场能力登记表（`us` 登记链 + 日线 + 快照三档，`hk` 空表项）；③ 结局值域常量（八种，FR-027）。**零 I/O** —— 日历查询由调用方做完喂进来。→ verify: `anchor-cold-start.rules.spec.ts` —— plan §D4 逐条对表的四行各一个 `it()`（周六 10:00 / 周一 10:00 / 周一 18:00 / 周二 10:00 北京）；**外加与 `option-snapshot-remediation` 的等值回归**：喂北京 08:00 与 18:00 两个时刻，断言算出的三元组与既有 ①/② 级（`option-snapshot-remediation.ts:113` / `:159`）逐字相同 —— 那两个时点是这条规则的锚，谁改坏了立刻红
 
 ## Phase 2: 数据面
 
