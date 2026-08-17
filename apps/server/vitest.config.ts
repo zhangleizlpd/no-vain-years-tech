@@ -67,6 +67,19 @@ const sharedTestOptions = {
     // boot-AppModule IT 集体红且报错点离真因很远 (2026-08-02 踩过)。
     // 🚨 真 vendor 联调不靠改这里, 走 env-gated RUN_*_IT (同 DEEPSEEK 占位的处置)。
     MARKETDATA_PROVIDER: 'mock',
+    // 🚨 **boot-required 占位，缺了不是「少个变量」而是整文件 33 个 test 全 skipped。**
+    // `redis.config.ts` 的 `url` 是必填 `.url()`；而**把 `REDIS_CLIENT` stub 掉并不能
+    // 阻止 `redisConfig` 被实例化** —— 模块图里仍有别的 provider 注入它 ⇒ 缺值就在 DI 期
+    // ZodError，`beforeAll` 秒炸。
+    // ⚠️ 而这个坑**本地永远看不见**：dev shell 里有真 `REDIS_URL`，把缺失盖得死死的。
+    // 2026-08-17 实撞：059 的 IT 因此本地四轮全绿 / CI 四轮全红，查了四轮 CI 才定位
+    // （CI 侧还取不到失败文本，见下方 reporters 那段）。
+    // 📌 放这里而不是各 spec 自己写一行：原先 7 个文件各抄一份
+    // `process.env.REDIS_URL = 'redis://127.0.0.1:6399'`，第 8 个人忘写就再炸一次 ——
+    // 那不是纪律问题，是缺省值缺席。真要连 Redis 的 spec 照旧在 beforeAll 里赋
+    // `stores.redisUrl`，赋值在 boot 之前，覆盖得掉本默认值。
+    // 恒不连（6399 无人监听）是刻意的：真需要 Redis 的走 `setupIsolatedStores()`。
+    REDIS_URL: 'redis://127.0.0.1:6399',
     // 🚨 测试里把 pino 压到 error —— **这不是「少打点日志」的洁癖，是可诊断性**。
     // 默认 info 下 pino-http 对每个请求打一条整条 req/res JSON(单条可达 3.7KB),
     // 一轮 IT 就是 ~200 条 / 140KB, 占整份输出的近四成。而 GitHub 的 job log 端点
