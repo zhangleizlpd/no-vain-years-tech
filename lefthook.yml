@@ -40,6 +40,42 @@ pre-push:
     contract-smoke-drift:
       run: pnpm tsx scripts/checks/check-contract-smoke-drift.ts
 
+# `git pull` 之后按需重生成 Prisma client —— 补上「**别人**改了 schema、我 pull 下来」这一格。
+#
+# 病灶: `apps/server/src/generated/prisma/` 是 gitignored 构建产物, `git pull` 不更新它。而
+# generate 此前只有两个触发点: ① 下面 pre-commit 的 `prisma-generate-gate` (glob 打在 **staged**
+# 的 schema.prisma 上 ⇒ 只覆盖「**我**改了 schema」) ② CI / 镜像构建里显式跑 (故 CI 恒新鲜、
+# 永远看不到这个 bug)。拉别人的 schema 变更时**一个都不响**, 本地 client 就此停在旧版。
+# 🚨 失败形态与原因完全不像 (同 .claude/rules/migration-rules.md §0 那个坑): 大批「无关」测试
+# 同时红、形态是**查询/工作集为空**而非断言值不符, 且**切哪个 commit 都红** (污染在构建产物里,
+# 对代码版本免疫)。2026-08-17 实撞: pull 到 #81 的 `anchor_submission` 建表后, 本地生成物停在
+# 前一天, `AnchorSubmission` 根本不在里面。
+#
+# 🚨 **判断必须写在 `run` 里, 不能用 `glob`** (2026-08-17 隔离仓实测): lefthook 的 `glob` 在
+# post-merge 上**不按本次 merge 的 diff 过滤** —— 探针 job 在「merge 只动了无关文件」那轮照样跑。
+# 用 glob 的写法 = 每次 pull 都无条件跑一遍 generate (~830ms), 且与声称的意图不符。
+# `ORIG_HEAD` 是 git merge 设的 pre-merge HEAD, **快进 pull / `--ff-only` / `--rebase` 同样设置**
+# (三种都实测触发过本 hook)。
+#
+# 🚨 **蓄意只挂 post-merge, 不挂 post-checkout**: `.git/hooks/post-checkout` 与 `post-commit` 归
+# graphify (`graphify hook install` 装的, 非 lefthook 托管)。实测 lefthook 装同名 hook 会把既有
+# 文件改名成 `.old` 且**从不调用它** ⇒ 加 post-checkout 会静默废掉 graphify 的切分支重建。
+#
+# 首次生效: lefthook 在任一**已装** hook 触发时自动 sync 新 hook 类型 (实测打印
+# `sync hooks: ✔️(post-merge)`), 故本改动合入后的下一次 commit / push 即自动装上; 带来这份配置
+# 的那一次 pull 自身不覆盖 (彼时 hook 文件还不存在) —— 一次性缺口, 不必额外处置。
+post-merge:
+  commands:
+    prisma-generate-after-merge:
+      tags: data
+      # pnpm 10: `pnpm -C <dir> …` 会把目录误解析成命令 (ERR_PNPM_RECURSIVE_EXEC),
+      # 用 `--dir <dir> exec` —— 与下面 prisma-generate-gate 同一写法。
+      run: |
+        git rev-parse --verify -q ORIG_HEAD >/dev/null || exit 0
+        if git diff --name-only ORIG_HEAD HEAD | grep -qx 'apps/server/prisma/schema.prisma'; then
+          pnpm --dir apps/server exec prisma generate
+        fi
+
 pre-commit:
   parallel: true
   commands:
