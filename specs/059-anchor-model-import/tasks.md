@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: drafted
 created_at: '2026-08-16'
-updated_at: '2026-08-16'
+updated_at: '2026-08-17'
 ---
 
 # Tasks: 059-anchor-model-import（锚的模型导入通道 —— 给 045「模型 import」补上调用方与 API 面）
@@ -96,7 +96,27 @@ updated_at: '2026-08-16'
 
 - [X] T010 [Ops] **`verify-guards.sh` 反例断言**（`FR-010`, `FR-013`, `SC-005`）：新增断言，**每条配反例**：无 token 打两个口 → 401 / **他人 token 打 `/anchor-import` → 403**（授权分流的核心护栏）/ 他人 token 打 `/anchor-submit` → 2xx / `GET /anchor-import` → 403（`limit_except` 里干活的是 `deny`，返 403 不是 405 —— 057 真跑证伪过 405）/ `ticker=cn:600519` → 400 / `ticker=AOS` → 400 / 超限频 → 429。⚠️ `check()` 用 `%-46s` 对齐，标签别超 46 字符。→ verify: 本机 `./verify-guards.sh` 全绿；prod 上 `--from-guest` 全绿；**先把新断言跑红再实现**
 
-- [ ] T011 [Ops] **端到端实证**（`SC-001` ~ `SC-007`, `FR-014`）：从调用侧真跑一轮 —— ① 一条 curl 完成一只标的的导入（`SC-001`）② 同参重放 → `action='noop'`、库内零变化（`SC-003`）③ 带人工 L 层的锚导入有变化的估值 → 返回 `fallbackEntries` 逐条列出被冲项（`SC-004`）④ 他人 token 打直写口 403、打提交口落待审且锚表零变化（`SC-005`）⑤ 坏 ticker / 越界 confidence / cn 市场 各自 400 且原因可区分（`SC-006`）⑥ 既有 App 锚管理能力回归（`SC-007`）⑦ 🚨 **`FR-014` / `SC-002` 的真实证**：在当日锚驱动采集轮**开始之前**导入一只全新 us 标的 → 当轮 `sync_run` 的 `us_equity_bar` / `option_contract` 工作集**含它** → 采集后 `anchor.last_close` 非空。→ verify: 逐条记录实测值（`action` / 耗时 / 库内行数 / 工作集命中）填回本 task
+- [X] T011 [Ops] **端到端实证**（`SC-001` ~ `SC-007`, `FR-014`）：从调用侧真跑一轮 —— ① 一条 curl 完成一只标的的导入（`SC-001`）② 同参重放 → `action='noop'`、库内零变化（`SC-003`）③ 带人工 L 层的锚导入有变化的估值 → 返回 `fallbackEntries` 逐条列出被冲项（`SC-004`）④ 他人 token 打直写口 403、打提交口落待审且锚表零变化（`SC-005`）⑤ 坏 ticker / 越界 confidence / cn 市场 各自 400 且原因可区分（`SC-006`）⑥ 既有 App 锚管理能力回归（`SC-007`）⑦ 🚨 **`FR-014` / `SC-002` 的真实证**：在当日锚驱动采集轮**开始之前**导入一只全新 us 标的 → 当轮 `sync_run` 的 `us_equity_bar` / `option_contract` 工作集**含它** → 采集后 `anchor.last_close` 非空。→ verify: 逐条记录实测值（`action` / 耗时 / 库内行数 / 工作集命中）填回本 task
+
+  **实测记录**（2026-08-17，prod 真流量，隧道内两个访客身份各打各的口；标的 = 一次性锚 `us:KO`，⑦ 验完即删）：
+
+  | # | 判据 | 实测 |
+  | --- | --- | --- |
+  | ① | 一次调用完成导入（`SC-001`） | `action='create'` / **83 ms** / `anchor` 12→13 行 / `anchor_change` +1（`source='model'`、`before_values={}`） |
+  | ② | 同参重放（`SC-003`） | `action='noop'` / **23 ms** / `anchor_change` 停在 13 行、`updated_at` 不变 ⇒ **库内零变化** |
+  | ③ | 差异报告（`SC-004`） | 两个人工位在位（`l_level_manual='L2'` + `position_cap_manual=0.0200`）时导入 V 50→52 → `action='update'` / **31 ms** / `fallbackEntries` **2 条**：`lLevel L2→L3`、`positionCap 0.02→0.02`（**人工值等于派生值仍照列**，正是 schema 那条不变式）。与痕迹行的 `before_values`（`{v:50, lLevelManual:L2, lLevelEffective:L2, positionCapManual:0.02}`）**逐条对得上**。`next_review` / `last_reviewed_on` 未被触碰（`FR-035`） |
+  | ④ | 授权分流两侧（`SC-005`） | 他人打直写口 **403**（同日早前一轮实测）；他人打提交口 **201**，落 `anchor_submission` 首行（`submitter` 取自 `X-Guest`、`status='PENDING'`），而**锚表整表 `md5` 前后一致**（13 行不变、`anchor_change` 不增） |
+  | ⑤ | 拒绝原因可区分（`SC-006`） | `ticker=us:ko` → 400 `INVALID_IMPORT_TICKER`；`confidence=11` → 400 `INVALID_IMPORT_CONFIDENCE`（两者均为 app 的 ProblemDetail，带真 `traceId`）；`ticker=cn:600519` → 400 **通道层裸 JSON、够不到 app** ⇒ 三者按「错误码 + 谁返的」双重可分 |
+  | ⑥ | App 锚管理回归（`SC-007`） | 同一只锚上在 App 侧改 L 层 / 改单票上限 / 撤销人工位全部正常，痕迹逐行落库且 `source='manual'`；导入后 App 侧读到 V=52 / L3 / 三处人工位已清 |
+  | ⑦ | **`FR-014` / `SC-002`** | **纳入工作集已证**（手动触发 `marketdata-trigger` CLI，走与 cron 同一条 worker 路径）：建锚前基线 = 该标的 `daily_bar` **0** 行 / `option_contract` **0** 行 / `need_sync='f'`，上一轮两维度均 `scanned=12 / ok=12`；建锚后当轮 → `us_equity_bar` **`scanned=13 / ok=13`**（23 s）、`option_contract` **`scanned=13 / ok=13`**（4 min 32 s），该标的 `daily_bar` 得 **5** 行、`option_contract` 得 **1014** 行 / **17** 个到期日，`need_sync` **`f`→`t`**。`anchor.last_close` **已落**：`87.7100` / `last_close_date=2026-08-14`，与 `daily_bar` 该日收盘**逐字相同** ⇒ 投影无失真。⚠️ 但它**不由采集轮写**，落的时点与接力关系见下方注 |
+
+  ⚠️ **不要拿既有锚跑这组实证**：导入会把 `confidence_source` 由 `manual` 翻成 `model`，而 `update-anchor.usecase.ts` 对 `model` 来源**拒改 confidence**、且 `UpdateAnchorPatch` 根本没有 `confidenceSource` 字段（能指定它的只有建锚，而同 ticker 建锚蓄意 409）⇒ **App 侧没有回头路**，只能直连 DB 改列。用一次性新锚跑，顺带把 ⑦ 要的「全新 us 标的」一并满足。
+
+  🚨 **⑦ 的判据横跨两个调度器，本 task 行的措辞把它缩写成一句了** —— 「采集后 `anchor.last_close` 非空」读起来像一轮的事，实际是接力：① marketdata 的 `us_equity_bar` 维度（BullMQ job，`0 0 6 * * *`，**可用 `marketdata-trigger` CLI 手动触发**，且该 CLI 刻意绕开交易日闸 =「运维显式意图」）把 bar 采进 `daily_bar`；② optionsdesk 侧的 `SyncAnchorQuoteScheduler`（**进程内 `@Cron`，无 CLI、无端点、无法手动触发**）才把 `daily_bar` 投影成 `anchor.last_close`。⇒ 手动触发只能证到 ①。⚠️ **实证当时 prod 跑的是 `v0.28.0`，那个镜像里投影仍是固定 `0 30 6 * * *`** ⇒ `last_close` 要等次日 06:30 才填；`main` 上已改成每小时 `:30`（`0 30 * * * *`，理由 = 上游按市场分裂，固定时点排不到两个市场之后），随下一次发版上线后这一格会在**一小时内**自然补上。
+
+  ✅ **该预测当日即被实测兑现**：`server-v0.28.1`（含该改动）于 **13:56** 起容器，锚建于 13:17；投影落在**上线后第一个 `:30` tick = 14:30**（`anchor.updated_at = 2026-08-17T06:30:00.234Z`）—— 距上线 34 分钟。⇒ 同一只锚上，`0 30 6 * * *` 会拖到次日、每小时 `:30` 只拖 34 分钟，两种时点策略的差别**在这条实证里直接可见**。**且 ② 属 045 的投影职责，与 059 的导入通道无因果** —— `FR-014` / `SC-002` 的实质（当日新建的锚被**当轮**采集纳入工作集）由 ① 独立证死。
+
+  📌 **顺带兑现了一条挂账的运维核对**：`futu-shim-guest.conf.template` 的 `guest_option_chain` 池注释要求「上线后第一个交易日必须核对那轮 `sync_run` 的墙钟」（该处估算 12–17 分钟、担心顶出 15 分钟的门）。实测：12 只锚那轮 **3 min 38 s**（`id=555`）、13 只锚那轮 **4 min 32 s**（`id=562`）—— 比估算乐观约 3 倍，离门很远。⚠️ 但两轮都**没有访客并发打链**，这个数不能当作「访客满速时也安全」的证据。
 
 ## Dependencies
 

@@ -2,7 +2,7 @@
 feature_id: 059-anchor-model-import
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-16'
 updated_at: '2026-08-17'
 spec_kit_version: '>=0.8.5,<0.10.0'
