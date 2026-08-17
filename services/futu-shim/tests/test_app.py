@@ -1,3 +1,5 @@
+import gzip
+import json
 import logging
 import re
 from contextlib import contextmanager
@@ -7,7 +9,7 @@ import pandas as pd
 import pytest
 from futu import RET_OK
 
-from futu_shim.app import create_app
+from futu_shim.app import GZIP_MIN_BYTES, create_app
 from futu_shim.ratelimit import RateGate
 
 TOKEN = "test-token"
@@ -1124,3 +1126,69 @@ def test_version_missing_reads_unknown_not_crash(tmp_path):
     empty = tmp_path / "VERSION"
     empty.write_text("   \n", encoding="utf-8")
     assert app_module.read_version(empty) == "unknown"
+
+
+def _bulky_snapshot(rows: int = 200) -> pd.DataFrame:
+    """形状照着真快照来: 列多、且绝大多数是同一个 `N/A` 哨兵。
+
+    真行是 143 列 / 约 3.7 KB, 其中只有约 54 列非空 —— 重复键叠重复哨兵正是 DEFLATE
+    的理想形态 (真实 285 行响应实测 976 KB → 34.5 KB)。这里只要越过 `GZIP_MIN_BYTES`
+    并保住那个形状即可, 不必复刻全部 143 列。
+    """
+    return pd.DataFrame(
+        [
+            {
+                "code": f"US.PEP260821P{i:06d}",
+                "option_valid": True,
+                "last_price": 1.23,
+                **{f"wrt_{n}": "N/A" for n in range(20)},
+            }
+            for i in range(rows)
+        ]
+    )
+
+
+def test_responses_are_untouched_without_accept_encoding():
+    """压缩是**协商**出来的, 不是强加的 —— 这条是「纯加法」这个说法的兑现处。
+
+    不声明 gzip 的客户端拿到的字节必须与本 hook 存在之前一模一样。它守的是既有 EOD
+    采集路径: 那条路径一旦被静默改变编码, 症状会出现在下游解析而不是这里。
+    """
+    client, _ = build(FakeCtx(snapshot=_bulky_snapshot()))
+    resp = client.get("/option-snapshot?codes=US.AAA", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert "Content-Encoding" not in resp.headers
+    assert len(resp.data) > GZIP_MIN_BYTES, "样本没越过阈值, 这条测试会恒真"
+    # Vary 无条件带上 —— 没压也要带, 否则共享缓存会把压过的体喂给没要过的客户端。
+    assert "Accept-Encoding" in resp.headers["Vary"]
+
+
+def test_large_responses_are_gzipped_when_the_client_asks():
+    """协商命中时压, 且解压回来与不压时**逐行等价**。
+
+    比 `rows` 而不比整个 body: envelope 的 `as_of` 是采集时刻, 两次请求本就不同 ——
+    拿它比会得到一条为了绿而绿的断言。
+    """
+    client, _ = build(FakeCtx(snapshot=_bulky_snapshot()))
+    plain = client.get("/option-snapshot?codes=US.AAA", headers=AUTH).data
+    resp = client.get(
+        "/option-snapshot?codes=US.AAA", headers={**AUTH, "Accept-Encoding": "gzip"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["Content-Encoding"] == "gzip"
+    assert resp.headers["Content-Length"] == str(len(resp.data))
+    assert json.loads(gzip.decompress(resp.data))["rows"] == json.loads(plain)["rows"]
+    assert len(resp.data) < len(plain)
+
+
+def test_small_responses_stay_uncompressed_even_when_asked():
+    """一个 MTU 以内的体压了也是一个来回, 白费 CPU 且可能变大。/healthz (约 430 B)
+    是探针路径, 每次部署自检都要打, 更没有理由为它做无用功。"""
+    client, _ = build(FakeCtx())
+    resp = client.get("/healthz", headers={"Accept-Encoding": "gzip"})
+
+    assert resp.status_code == 200
+    assert len(resp.data) < GZIP_MIN_BYTES
+    assert "Content-Encoding" not in resp.headers
