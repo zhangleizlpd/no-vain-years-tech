@@ -112,7 +112,7 @@ updated_at: '2026-08-17'
 
 - [X] T015 [Mobile-E2E] **Playwright 结构面冒烟**（`SC-003`, `SC-007`, US2）：雷达在实时档 / 收盘档 / 降级三态下的结构断言（`asOf` 粒度正确、距 W% 空而非 0、排序成立）。⚠️ 档位**不上屏**，故 web 侧无档位标记可断言（spec `web_compat_notes` 已同步）。→ verify: `pnpm nx run mobile:e2e` 绿；三类**验不到**的项（真实时段跳动 / 收盘当刻切换 / 真断源熔断链路）归 T018 真机
 
-- [ ] T016 [P] [Contract-Smoke] **契约冒烟**（Constitution §V 第二层）：用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条雷达 happy path，验档位字段的序列化 / 反序列化对齐。落 `apps/mobile/e2e/contract-smoke/`。→ verify: `pnpm nx run mobile:contract-smoke` 绿
+- [ ] T016 [P] [Contract-Smoke] **契约冒烟**（Constitution §V 第二层）：用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条雷达 happy path，验档位字段的序列化 / 反序列化对齐。落 `apps/mobile/e2e/contract-smoke/`。→ verify: `RUN_REAL_BACKEND_SMOKE=true pnpm nx run mobile:contract-smoke` 绿。🚨 **前提三件**：docker 可用（testcontainers 起 PG + Redis）／`:3000` 空闲（web build bake 了这个 API base，harness 探到占用即 fail fast）／env gate 打开 —— **不带 gate 跑会 exit 0 且一条断言都不执行**，那个「绿」不构成任何证据。⏸ **2026-08-18 本机未跑**：docker 引擎无响应（socket 可连但 `/_ping` 10 秒超时，`orb status` 却报 Running），需重启引擎后补跑再翻 `[X]`；已落地的是 spec 文件 + `run.ts` 注册 + `mobile:typecheck`/`lint` 绿（后者非空断言 —— 它证的是那三个字段与 `AnchorResponsePriceKind` 真在生成客户端类型上）
 
 ## Phase 7: ADR amendment 与端到端实证
 
