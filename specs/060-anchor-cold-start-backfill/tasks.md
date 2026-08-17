@@ -121,6 +121,10 @@ updated_at: '2026-08-17'
   > **连带**：① T007 的 payload 多一个 `phase?: 'snapshot'`，worker 路由要分别处理两种 deferral（`awaiting_chain` 什么都不做、`vendor_budget` 延时重入队）；② `DimensionJobPayload.triggeredBy` 加一个取值 `'anchor-cold-start'`（**纯审计、无人对它分支**，不是加字段）；③ T010/T011 的 IT 要驱动两相 flow 而非单次调用。
   >
   > **反恒真已跑**：把闸换成 T006 明禁的 `isWithinTradingSession` ⇒ 午休那条 `it()` 立刻红（13:30 HKT 那条仍绿是对的 —— 它在连续竞价段内，两个谓词同值，只有午休正中才分道）。
+  >
+  > 🚨 **T006 的闸后来又补了一格（2026-08-17，铺 T010 时点用例时发现，user 定夺当场修）**：`isSessionUnderway` 是**纯时钟**谓词，不看星期也不看日历 ⇒ 周六 ET 12:00 它照样返 `true`。原写法 `if (isSessionUnderway(...))` 于是让 **北京周六 21:30 – 周日 04:00 建的锚落 `intraday_skipped`**，而那是终态不重试、常规轮周一晚写的又是周一的数据 ⇒ 目标日快照**永久**缺失（SC-001 要的正是它）。境内用户周末夜里做研究建锚恰是高发时段；美股节假日在 ET 09:30–16:00 之间同理。
+  >
+  > 这是 plan 自己跟自己打架：**§D4 第四行**（`today > target` 且今天非交易日 ⇒ `eod`）本就是为周末这一档写的，而 §D8 的闸让它在 ET 场内钟点上够不到。⇒ 闸改为 `isSessionUnderway(...) && todayIsTradingDay`；`todayIsTradingDay` use case 里本就在查（喂 `resolveSnapshotSpec` 那一格），提到闸之前**一次查两处用**，不新增 I/O。方向安全：日历 fail-open 返 `true` ⇒ 闸仍收紧 ⇒ 写库 fail-closed。反恒真：去掉 `&& todayIsTradingDay` ⇒ 1 红；`&&` 改 `||` ⇒ 3 红。
 
 - [X] T007 [Server] **新 named job：入队面 + worker 路由**（FR-005, FR-017, FR-019a, FR-019b, plan §D3 §D10）：`marketdata-sync.worker.ts` 加 `ANCHOR_COLD_START_JOB = 'sync:anchor-cold-start'` 与其 payload 类型 `{ ticker: string; anchorId: string }`（**独立类型，`DimensionJobPayload` 一个字段不加**），`MarketdataSyncQueue` 加一个 `enqueueColdStart()`，worker 的 `job.name` 路由加一条分支指向 `AnchorColdStartUseCase`。`attempts` + 指数退避沿用 `jobOpts` 既有语义。`marketdata.module.ts` 注册新 use case。→ verify: `nx test server marketdata/marketdata-sync.worker.spec.ts`（若无则新建）断言：`sync:anchor-cold-start` 被路由到冷启动而**不**进 `DimensionExecutorRegistry`；既有 `sync:<dim>` 路由行为逐条不变（回归）；入队用的 queue 名等于 `MARKETDATA_SYNC_QUEUE`（防有人另起队列，Guardrail 6）
 

@@ -161,11 +161,30 @@ export class AnchorColdStartUseCase {
       return this.finish(input, COLD_START_OUTCOME.BACKFILLED, { targetSession });
     }
 
-    // 🚨 闸用 `isSessionUnderway`「该场进行中」(**含午休**), MUST NOT 用
-    //    `isWithinTradingSession` —— 后者午休返 false ⇒ 放行, 而此刻 D4 算出的目标日是**上一
-    //    个交易日** ⇒ 把午休盘口贴上「上一场收盘」的标签写进库。那种错行不报错、按唯一键占位、
-    //    当晚正确的行反被挡掉 ⇒ 永久缺口 (FR-011)。今天潜伏 (us 无午休), 接 hk 期权即显形。
-    if (isSessionUnderway(market, marketNow(market, now).minutesOfDay)) {
+    // 「今天是不是交易日」**一次查、两处用**: 盘中闸与 §D4 的三元组决策问的是同一件事,
+    // 查两遍就是两处判据。端口对未 populate 的日历 fail-open, 但走到这里 `targetSession`
+    // 已定到 ⇒ 日历必已 populate ⇒ fail-open 够不着 (定位目标日那一步为何不用它, 见
+    // {@link lastClosedTradingDay})。
+    const todayIsTradingDay = await this.calendar.isTradingDay(
+      market,
+      marketDateFor([market], now),
+    );
+
+    // 🚨 闸 = 「该场进行中」**且**「今天真有这一场」, 两个条件缺一不可:
+    //
+    // ① `isSessionUnderway`「该场进行中」(**含午休**) MUST NOT 换成 `isWithinTradingSession`
+    //    —— 后者午休返 false ⇒ 放行, 而此刻 D4 算出的目标日是**上一个交易日** ⇒ 把午休盘口
+    //    贴上「上一场收盘」的标签写进库。今天潜伏 (us 无午休), 接 hk 期权即显形 (FR-011)。
+    // ② `todayIsTradingDay` 这一格是 T010 铺时点用例时补上的 (impl 期修正, 2026-08-17):
+    //    `isSessionUnderway` 是**纯时钟**谓词, 不看星期也不看日历 ⇒ 周六 ET 12:00 它照样返
+    //    true。少了这一格, **北京周六 21:30 – 周日 04:00 建的锚会落 `intraday_skipped`**,
+    //    而那是终态不重试、常规轮周一晚写的又是周一的数据 ⇒ 目标日快照**永久**缺失
+    //    (SC-001 要的正是它)。境内用户周末夜里建锚恰是高发时段, 美股节假日同理。
+    //    📌 §D4 第四行 (`today > target` 且今天非交易日 ⇒ eod) 本就是为周末这一档写的 ——
+    //    没有这个 `&&`, 那一行在 ET 场内钟点上**够不到**。
+    //
+    // 方向也是安全的: 日历 fail-open 返 true ⇒ 闸仍然收紧 ⇒ 写库 fail-closed。
+    if (isSessionUnderway(market, marketNow(market, now).minutesOfDay) && todayIsTradingDay) {
       return this.finish(input, COLD_START_OUTCOME.INTRADAY_SKIPPED, { targetSession });
     }
 
@@ -173,10 +192,7 @@ export class AnchorColdStartUseCase {
       market,
       now,
       lastClosedTradingDay: targetSession,
-      // 端口的原生问法就是这一格; 它对未 populate 的日历 fail-open, 但走到这里 `targetSession`
-      // 已定到 ⇒ 日历必已 populate ⇒ fail-open 够不着 (定位目标日那一步为何不用它, 见
-      // {@link lastClosedTradingDay})。
-      todayIsTradingDay: await this.calendar.isTradingDay(market, marketDateFor([market], now)),
+      todayIsTradingDay,
       tradingDayBeforeTarget: await this.tradingDayBefore(market, targetSession),
     });
     if (decision.decision === 'abandon') {

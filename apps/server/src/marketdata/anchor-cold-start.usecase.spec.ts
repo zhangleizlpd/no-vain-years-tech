@@ -33,6 +33,8 @@ interface Overrides {
   snapshotRows?: number;
   /** `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
+  /** `TRADING_CALENDAR_PORT.isTradingDay` 对**今天**的答案 (周末 / 节假日 = false)。 */
+  todayIsTradingDay?: boolean;
 }
 
 function build(overrides: Overrides = {}) {
@@ -102,7 +104,8 @@ function build(overrides: Overrides = {}) {
   });
   const snapshot = { collect } as unknown as SyncOptionSnapshotUseCase;
 
-  const calendar = { isTradingDay: vi.fn(async () => true) } as unknown as TradingCalendarPort;
+  const isTradingDay = vi.fn(async () => overrides.todayIsTradingDay ?? true);
+  const calendar = { isTradingDay } as unknown as TradingCalendarPort;
 
   return {
     usecase: new AnchorColdStartUseCase(prisma, gate, syncQueue, snapshot, calendar),
@@ -118,6 +121,7 @@ function build(overrides: Overrides = {}) {
     enqueueFlow,
     jobOpts,
     collect,
+    isTradingDay,
   };
 }
 
@@ -381,6 +385,30 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
     expect(ctx.collect).not.toHaveBeenCalled();
     expect(recordedRow(ctx.runUpsert).outcome).toBe(COLD_START_OUTCOME.INTRADAY_SKIPPED);
+  });
+
+  it('🚨 周末白天 (ET 场内钟点 + 当天非交易日) ⇒ **仍写快照**, MUST NOT 判 intraday_skipped', async () => {
+    // 北京周日 00:00 = ET 周六 12:00 —— 钟点落在 09:30–16:00 内, 但那天根本没有场。
+    // 境内用户周末夜里做研究建锚正是这个时段, 判成盘中会让快照**永久**缺失
+    // (intraday_skipped 是终态不重试; 常规轮周一晚写的是周一的数据, 不回补周五)。
+    const ctx = build({ todayIsTradingDay: false });
+    const result = await ctx.usecase.run({
+      ...SNAPSHOT_PHASE,
+      now: new Date('2026-08-15T16:00:00Z'),
+    });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
+    expect(ctx.collect).toHaveBeenCalledTimes(1);
+    // 归属口径按 §D4 第四行: 周末 ⇒ 仍是 eod, MUST NOT 误判成盘前兜底。
+    expect((ctx.collect.mock.calls[0][1] as { mode: string }).mode).toBe('eod');
+  });
+
+  it('交易日的场内钟点仍判进行中 (回归: 修周末档 MUST NOT 顺手把真盘中放行)', async () => {
+    const ctx = build({ todayIsTradingDay: true });
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
+    expect(ctx.collect).not.toHaveBeenCalled();
   });
 
   it('配额耗尽 ⇒ 交回 vendor_budget 顺延, **不**落 retry_exhausted、也不落 backfilled', async () => {
