@@ -51,14 +51,52 @@ export interface DimensionJobPayload {
   markets?: string[];
   /** backfill force-refetch (CLI `--no-skip-complete` 透传 → 绕过 fundamental skip-complete 游标)。 */
   noSkipComplete?: boolean;
-  /** 触发源审计: tick 自动 / cli 手动 / cascade 级联 / requeue 配额顺延。 */
-  triggeredBy: 'tick' | 'cli' | 'cascade' | 'requeue';
+  /**
+   * 触发源审计: tick 自动 / cli 手动 / cascade 级联 / requeue 配额顺延 /
+   * anchor-cold-start 锚首建冷启动 (060)。
+   *
+   * ⚠️ **纯审计, 无人对它分支** —— 加值不改行为, 但别把它当开关用。
+   */
+  triggeredBy: 'tick' | 'cli' | 'cascade' | 'requeue' | 'anchor-cold-start';
 }
 
 /** named job 形态: `sync:<dim>` (worker 路由键 + SyncRun.syncType 同形)。 */
 export function dimensionJobName(key: DimensionKey): string {
   return `sync:${key}`;
 }
+
+/**
+ * 锚首建冷启动 job (060 plan §D3)。**走同一条 `marketdata-sync` 队列** —— 另起队列 =
+ * 冷启动与夜间批并发打 vendor, 直接撞限频; 那条 `concurrency=1` 是限频的支柱 (FR-017 / SC-004)。
+ */
+export const ANCHOR_COLD_START_JOB = 'sync:anchor-cold-start';
+
+/**
+ * 冷启动 job 的**自有** payload —— 与 {@link DimensionJobPayload} 无继承无共用
+ * (🚫 那边一个字段都不加: 给「工作集选择」开第二个口子正是 `anchor-driven-sync-gate.ts`
+ * 那条绊线注释警告的形态)。
+ */
+export interface AnchorColdStartJobPayload {
+  ticker: string;
+  /** `Anchor.id`。BigInt 过不了 job payload 的 JSON 序列化, 故走字符串。 */
+  anchorId: string;
+  /**
+   * 缺省 = **第一相**(定日历 → seed → 开闸 → 复判 → 组 flow 入队链/日线);
+   * `'snapshot'` = **第二相**, 由第一相组的 flow 以 **parent** 身份挂在链/日线两个 child 之上。
+   *
+   * 🚨 两相是**必须**的, 不是优化: worker `concurrency=1` 且冷启动 job 自己就跑在这条 worker
+   * 上 ⇒ 它入队的 flow 在它返回之前一个都跑不了。若在同一次调用里 inline 抓快照, 对一只全新
+   * 锚 `option_contract` 恰好 0 行 ⇒ `SyncOptionSnapshotUseCase` 判「无未到期合约」直接
+   * WARN + 零外呼返回 ⇒ **目标交易日的快照永远不写, 而整条路径全绿**。SC-001 要的正是那份快照。
+   */
+  phase?: 'snapshot';
+}
+
+/**
+ * 冷启动 job 的 `attempts` —— 取 `SyncDimension.retryMax` 的 schema 默认值 (3) 同档。
+ * 冷启动没有自己的 `sync_dimension` 行 (它不是维度), 故取常量而非查表。
+ */
+export const ANCHOR_COLD_START_RETRY_MAX = 3;
 
 /**
  * 队列入队面 (017 T009): Queue 实例 + `enqueueDimensionJob` helper。

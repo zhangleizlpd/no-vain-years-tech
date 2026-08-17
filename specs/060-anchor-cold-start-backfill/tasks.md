@@ -100,9 +100,27 @@ updated_at: '2026-08-17'
   >
   > 行为零变化的机器证据：`nx test server` 433 files / 4556 tests 与拆分前**逐项一致**；另跑 `scripts/ci/server-boot-smoke.ts` exit 0（DI 接线是本次唯一风险面，单测覆盖不到）。
 
-- [ ] T006 [Server] **分档执行接线**（FR-010, FR-011, FR-012, FR-012a, FR-014, FR-018, plan §D8）：补齐 §D3 的第 6-7 步。非敏感档：`MarketdataSyncQueue.enqueueFlow` 组树入队 `sync:option_contract` + `sync:us_equity_bar`（普通 delta，**不传 `asOf`**），flow 保证链 → 快照次序。敏感档：**`isSessionUnderway` 判「该场进行中」（含午休）** ⇒ 结局 `intraday_skipped` 直接返回（🚨 **MUST NOT 用 `isWithinTradingSession`** —— 它在午休返 `false` ⇒ 放行写快照，理由见 T001 的 impl 期修正注）；否则 ⇒ 用 T003 的 `resolveSnapshotSpec` 算 spec，调 `SyncOptionSnapshotUseCase.collect(instruments, spec, stats)`。配额耗尽的两个具名错误（`OptionChainBudgetExhaustedError` / `OptionSnapshotBudgetExhaustedError`）**原样上抛给 job 层顺延**，不在此 catch 成失败。→ verify: 同文件 spec 加：盘中分支断言 `collect` 零调用且结局 `intraday_skipped`；**午休分支（取一个有午休的市场代号）同样断言 `collect` 零调用** —— 那是两个谓词唯一分道的一格；非盘中分支断言 `collect` 收到的 `spec` 与 T003 纯函数算出的**同一对象**（防有人在这里又算一遍）；配额耗尽分支断言错误被原样抛出、**未**写入 `outcome='retry_exhausted'`
+- [X] T006 [Server] **分档执行接线**（FR-010, FR-011, FR-012, FR-012a, FR-014, FR-018, plan §D8）：补齐 §D3 的第 6-7 步。非敏感档：`MarketdataSyncQueue.enqueueFlow` 组树入队 `sync:option_contract` + `sync:us_equity_bar`（普通 delta，**不传 `asOf`**），flow 保证链 → 快照次序。敏感档：**`isSessionUnderway` 判「该场进行中」（含午休）** ⇒ 结局 `intraday_skipped` 直接返回（🚨 **MUST NOT 用 `isWithinTradingSession`** —— 它在午休返 `false` ⇒ 放行写快照，理由见 T001 的 impl 期修正注）；否则 ⇒ 用 T003 的 `resolveSnapshotSpec` 算 spec，调 `SyncOptionSnapshotUseCase.collect(instruments, spec, stats)`。配额耗尽的两个具名错误（`OptionChainBudgetExhaustedError` / `OptionSnapshotBudgetExhaustedError`）**原样上抛给 job 层顺延**，不在此 catch 成失败。→ verify: 同文件 spec 加：盘中分支断言 `collect` 零调用且结局 `intraday_skipped`；**午休分支（取一个有午休的市场代号）同样断言 `collect` 零调用** —— 那是两个谓词唯一分道的一格；非盘中分支断言 `collect` 收到的 `spec` 与 T003 纯函数算出的**同一对象**（防有人在这里又算一遍）；配额耗尽分支断言错误被原样抛出、**未**写入 `outcome='retry_exhausted'`
 
 ## Phase 4: 事件链
+
+  > 🚨 **impl 期定案（2026-08-17，user 定夺）—— 第 6/7 步拆成 flow 的两相，原写法必产生「绿着的永久缺口」**
+  >
+  > **原设计站不住的机械理由**：worker `concurrency=1`（`marketdata-sync.worker.ts`），而冷启动 job 自己就跑在这条 worker 上 ⇒ 它 `enqueueFlow` 出去的链/日线 job **在它返回之前一个都跑不了**（确定性，不是竞态）。若在同一次调用里 inline 调 `collect`，对一只**全新锚** `option_contract` 恰好 0 行 ⇒ `sync-option-snapshot.usecase.ts` 判「无未到期合约」直接 WARN + 零外呼返回 ⇒ **目标交易日的快照永远不写，而 `collect` 返回 false、结局照落 `backfilled`**。SC-001 要的正是那份快照，SC-006 也随之无从谈起。
+  >
+  > **改法**：第一相（payload 无 `phase`）走到第 6 步组 flow —— children = `COLD_START_CAPABILITY` 里的 delta 维度，**parent = 本 job 自己**（`phase: 'snapshot'`）。BullMQ 的 parent 语义保证「children 全终态才跑 parent」，plan §D8 那句「flow 保证链 → 快照次序」由此才真正落地。第二相重跑步 1-5（起手复判此时会看到链已在、快照仍缺）后只做敏感档。
+  >
+  > **顺带更正确的一点**：盘中闸因此落在**真正要写的那一刻**而非入队那一刻，更贴 FR-010/011 的字面。
+  >
+  > **边的软硬必须显式给**（裸 child 会让 parent 永久卡 `waiting-children`，`sync-flow-assembler.ts` 已实证过一次）：`option_contract` → **hard** `failParentOnFailure`（没有链，第二相跑起来只会零外呼然后落一个 `backfilled` 的谎；让 parent 一起失败，结局交给 T007 的 retry-exhausted 出口落 `retry_exhausted`，那才是真相）；`us_equity_bar` → **soft** `ignoreDependencyOnFailure`。
+  >
+  > 📌 **「配额耗尽的两个具名错误原样上抛」这条按现状不成立**：`SyncOptionSnapshotUseCase.collect` 自己 catch 掉 `OptionSnapshotBudgetExhaustedError` 并折成**返回值** `budgetExhausted: true`（既有机制，与 `ExecutorResult.budgetExhausted` 同源）；而 `OptionChainBudgetExhaustedError` 属链发现，两相拆分后它已落在**被入队的维度 job** 里，结构上到不了本 use case。⇒ 实现按既有机制走：`collect` 返 true ⇒ 交回 `{ settled: false, deferral: 'vendor_budget' }`，**不**落 `retry_exhausted`（那是「做了但失败」）、**不**落 `backfilled`，由 job 层延时重入队且不耗 attempts（FR-018 / FR-019b）。
+  >
+  > **`run()` 返回类型随之改为 `ColdStartResult`**（`{settled:true,outcome}` | `{settled:false,deferral}`）。未终结时**不落运行记录** —— 那张表记的是「最近一次冷启动的**结局**」（FR-026），而两相加起来才是一次冷启动；中途写一行会让「最近一次的结局」在窗口期内是错的，且八种结局里本就没有「进行中」，硬塞第九个会直接破 SC-009 的零折叠。
+  >
+  > **连带**：① T007 的 payload 多一个 `phase?: 'snapshot'`，worker 路由要分别处理两种 deferral（`awaiting_chain` 什么都不做、`vendor_budget` 延时重入队）；② `DimensionJobPayload.triggeredBy` 加一个取值 `'anchor-cold-start'`（**纯审计、无人对它分支**，不是加字段）；③ T010/T011 的 IT 要驱动两相 flow 而非单次调用。
+  >
+  > **反恒真已跑**：把闸换成 T006 明禁的 `isWithinTradingSession` ⇒ 午休那条 `it()` 立刻红（13:30 HKT 那条仍绿是对的 —— 它在连续竞价段内，两个谓词同值，只有午休正中才分道）。
 
 - [ ] T007 [Server] **新 named job：入队面 + worker 路由**（FR-005, FR-017, FR-019a, FR-019b, plan §D3 §D10）：`marketdata-sync.worker.ts` 加 `ANCHOR_COLD_START_JOB = 'sync:anchor-cold-start'` 与其 payload 类型 `{ ticker: string; anchorId: string }`（**独立类型，`DimensionJobPayload` 一个字段不加**），`MarketdataSyncQueue` 加一个 `enqueueColdStart()`，worker 的 `job.name` 路由加一条分支指向 `AnchorColdStartUseCase`。`attempts` + 指数退避沿用 `jobOpts` 既有语义。`marketdata.module.ts` 注册新 use case。→ verify: `nx test server marketdata/marketdata-sync.worker.spec.ts`（若无则新建）断言：`sync:anchor-cold-start` 被路由到冷启动而**不**进 `DimensionExecutorRegistry`；既有 `sync:<dim>` 路由行为逐条不变（回归）；入队用的 queue 名等于 `MARKETDATA_SYNC_QUEUE`（防有人另起队列，Guardrail 6）
 
