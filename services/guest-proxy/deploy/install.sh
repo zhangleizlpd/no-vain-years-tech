@@ -27,15 +27,22 @@ ENV_FILE=/etc/nvy-guest-proxy.env
 UNIT=/etc/systemd/system/nvy-guest-proxy.service
 MANIFEST_NAME=.deployed.manifest
 IMAGE=nginx:1.27-alpine
-# 🚨 **这条正则在仓里有三份拷贝，加新键时必须三处一起改**（2026-08-15 实撞：057 只改了
-#    compose 那份，deploy 当场以 `unknown "guest_upload_token" variable` 红在下面的预校验上）：
-#      ① 本行 —— 预校验 (a) 的一次性容器用它
-#      ② `docker-compose.guest.yml` 的 `NGINX_ENVSUBST_FILTER` —— **真容器**用它
-#      ③ 本文件 (d) 的残留扫描 —— 用它反向确认没有 `${VAR}` 漏替换
-#    ①③ 漏改的表现不同、都很阴：① 让部署恒红在预校验（**至少它红了**）；③ 让残留检不出来，
-#    自检在配置已经坏掉的情况下判绿。三处不合并成一份是因为 ② 在 YAML 里、①③ 在 shell 里，
-#    没有干净的共享点；代价就是这条注释。
-ENVSUBST_FILTER='^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$'
+# 📌 **这里曾有一条 `ENVSUBST_FILTER` 白名单正则，2026-08-17 整套删除。** 留这段是因为
+#    「加新键要不要同步某个正则」是后来者一定会重新问的问题 —— 答案是：**不用了，也别加回来**。
+#
+#    它当时在仓里有三份拷贝（本文件一份、compose 一份、下面 (d) 的残留扫描一份），057 与 059
+#    各漏改过一次，而漏改是**静默**的：nginx 起得来、日志正常，只是那个键恒 401/403。
+#
+#    删除的依据不是嫌麻烦，是实测它**没在干活**：官方 entrypoint 把显式 `${VAR}` 列表传给
+#    envsubst（列表 = 环境里存在的变量名）⇒ 一个 `$xxx` 只有在存在**同名且大小写相同**的
+#    env var 时才会被替换；而容器 env 名全大写、模板里 nginx 自己的变量全小写 ⇒ 交集为空。
+#    带 filter 与空 filter 渲染出的配置**逐字节相同**（477 行 vs 477 行）。
+#    ⇒ 它防的是一个按约定不会发生的方向（过宽），而它自己「过窄」的失效模式真炸过两次。
+#
+#    取代它的是两条**自动派生、无需维护清单**的判据：
+#      · 预校验 (a2)：容器 env 名 ∩ 模板里 nginx 变量名 == ∅ —— 直接断言上面那个前提
+#      · 自检 (d)：渲染产物里不得有**任何**大写 `${...}` 残留 —— 不看键名，因此能抓到
+#        「加了新键、谁都没登记」这一类（旧的白名单式扫描对它结构性失明）
 
 log() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\n❌ %s\n' "$*" >&2; exit "${2:-1}"; }
@@ -86,11 +93,33 @@ listen_line="$(grep -oP '^\s*listen \K10\.\d+\.\d+\.\d+:\d+(?=;)' "$SRC/nginx/fu
 sed -i "s|listen ${listen_line};|listen 127.0.0.1:18811;|" "$stage/nginx/futu-shim-guest.conf.template"
 docker run --rm \
   --env-file "$ENV_FILE" \
-  -e NGINX_ENVSUBST_FILTER="$ENVSUBST_FILTER" \
   -v "$stage/nginx:/etc/nginx/templates:ro" \
   -v /dev/null:/etc/nginx/conf.d/default.conf:ro \
   "$IMAGE" nginx -t \
   || die "新配置没通过 nginx -t —— 真容器一个字节都没动，现网仍是旧配置" 4
+
+# (a2) 🚨 **不设 NGINX_ENVSUBST_FILTER 的安全前提，在这里被断言、而不是被假设。**
+#
+#      官方 entrypoint 把**显式 ${VAR} 列表**传给 envsubst，列表 = 环境里存在的变量名 ⇒
+#      一个 `$xxx` 只有在**存在同名（区分大小写）env var** 时才会被替换。而容器 env 名按
+#      约定全大写、模板里 nginx 自己的变量全小写（$host / $arg_ticker / $guest_name /
+#      ${head}）⇒ 交集为空，过滤器无事可做。
+#      2026-08-17 实测：带 filter 与空 filter 渲染出的配置**逐字节相同**。
+#
+#      ⇒ 与其维护一份「该替换哪些键」的手工白名单（它在仓里曾有三份拷贝、057 与 059 各漏改
+#      过一次，而漏改是**静默**的：nginx 起得来、日志正常，只是那个键恒 401/403），不如
+#      直接断言那个前提本身。判据两侧都自动派生，加任何新键都不用动这里。
+log "② 预校验 (a2) env 名 ∩ 模板里 nginx 变量名 == ∅"
+env_names="$(docker run --rm --env-file "$ENV_FILE" "$IMAGE" env | cut -d= -f1 | sort -u)"
+# 模板里 nginx 自己的变量：`$name` 与 `${name}` 两种写法都要收 —— envsubst 两种都认。
+tpl_lower="$(grep -oE '\$\{?[a-z_][a-z0-9_]*\}?' "$SRC/nginx/futu-shim-guest.conf.template" \
+             | tr -d '${}' | sort -u)"
+clash="$(comm -12 <(echo "$env_names") <(echo "$tpl_lower"))"
+if [[ -n "$clash" ]]; then
+  printf '  撞名: %s\n' "$(tr '\n' ' ' <<<"$clash")" >&2
+  die "有 env var 与模板里的 nginx 变量同名 —— envsubst 会把它吃掉。改名，或给该键恢复 NGINX_ENVSUBST_FILTER" 4
+fi
+echo "  ✅ 无撞名"
 
 # (b) 真实 listen 地址**在本机存在** —— 这是 (a) 结构上盖不到的那一半，也是「容器起不来
 #     进重启循环」最现实的成因（改错地址 / wg2 没起）。判据是派生的：模板里那个地址必须
@@ -235,9 +264,12 @@ fi
 if [[ -z "$running_conf" ]]; then
   printf '  ❌ %-38s 运行侧配置读不到，无从判定\n' "敏感占位残留"; fail=1
 else
-  # 🚨 第三份拷贝，见文件头 ENVSUBST_FILTER 处的三处同步说明。漏一个键在**这里**不会让
-  #    部署红 —— 只会让这条断言对那个键失明，配置坏了也判绿。
-  residue="$(grep -cE '\$\{(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_(TOKEN|NAME))\}' <<<"$running_conf" || true)"
+  # 🚨 **不看键名**（2026-08-17 从白名单式改成通用式，见文件头）：判据是「渲染产物里不得有
+  #    任何大写 `${...}`」。旧写法逐个列键，因此对「加了新键、谁都没登记」这一类**结构性
+  #    失明** —— 而那恰恰是真实故障模式。
+  # ⚠️ 只扫大写：模板里唯一的小写花括号变量是 `${head}`（nginx 具名捕获，见模板内注释），
+  #    它本来就该原样保留。nginx 内建变量全小写，故大小写就是这里的分界。
+  residue="$(grep -cE '\$\{[A-Z_][A-Z0-9_]*\}' <<<"$running_conf" || true)"
   ck "敏感占位残留" 0 "$residue"
 fi
 

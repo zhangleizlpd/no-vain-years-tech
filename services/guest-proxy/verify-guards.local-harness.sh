@@ -53,31 +53,9 @@ command -v docker >/dev/null 2>&1 || die "需要 docker（本 harness 在容器�
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
   || die "本机没有 $IMAGE —— 先 docker pull（国内网络可能静默卡住，见 CN 网络那几条缓解）" 2
 
-# ── 前置：envsubst 过滤正则的三份拷贝必须一致 ───────────────────────────────
-# 🚨 **本脚本刻意不再抄第四份** —— `deploy/install.sh` 顶部那段注释已经写明这条正则
-#    在仓里有三份、057 与 059 各漏改过一次。加第四份就是亲手挖它警告的那个坑。
-#    ⇒ 直接取 install.sh 里 deploy 时真用的那份，并顺手断言三份等价。
-#    比较的是**键名集合**而不是字面量：残留扫描那份的形状本来就不同
-#    （`\$\{(…|GUEST[0-9]+_(TOKEN|NAME))\}`），字面量比会恒红、等于没有检查。
-canon_keys() { # canon_keys <正则字面量> → 每行一个键名，已排序去重
-  local s="$1"
-  s="${s//GUEST\[0-9\]+_(TOKEN|NAME)/GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME}"  # 展开合并写法
-  printf '%s' "$s" | tr -d '\\^$(){}' | tr '|' '\n' | sed '/^$/d' | sort -u
-}
-f_install="$(sed -n "s/^ENVSUBST_FILTER='\(.*\)'\$/\1/p" "$SRC/deploy/install.sh" | head -1)"
-f_compose="$(sed -n "s/.*NGINX_ENVSUBST_FILTER: '\(.*\)'.*/\1/p" "$SRC/docker-compose.guest.yml" | head -1)"
-f_residue="$(sed -n "s/.*grep -cE '\(.*\)' <<<\"\$running_conf\".*/\1/p" "$SRC/deploy/install.sh" | head -1)"
-[[ -n "$f_install" && -n "$f_compose" && -n "$f_residue" ]] \
-  || die "取不全那三份 envsubst 正则（install.sh / compose / 残留扫描）—— 它们的写法变了，本 harness 需同步" 2
-if [[ "$(canon_keys "$f_install")" != "$(canon_keys "$f_compose")" ]]; then
-  printf '  install.sh:\n%s\n  compose:\n%s\n' "$(canon_keys "$f_install")" "$(canon_keys "$f_compose")" >&2
-  die "envsubst 正则：install.sh 与 docker-compose.guest.yml 的键集不一致" 2
-fi
-if [[ "$(canon_keys "$f_install")" != "$(canon_keys "$f_residue")" ]]; then
-  printf '  install.sh:\n%s\n  残留扫描:\n%s\n' "$(canon_keys "$f_install")" "$(canon_keys "$f_residue")" >&2
-  die "envsubst 正则：install.sh 与它自己 (d) 的残留扫描键集不一致" 2
-fi
-echo "✅ 前置：envsubst 正则三份拷贝键集一致（$(canon_keys "$f_install" | tr '\n' ' '))"
+# 📌 这里曾有一段「envsubst 过滤正则三份拷贝必须一致」的前置。那三份白名单已于 2026-08-17
+#    整套删除（理由见 `deploy/install.sh` 文件头），一致性断言随之失去对象，一并删掉 ——
+#    留着一条永远为真的检查，比没有检查更坏。
 
 stage="$(mktemp -d)"
 cleanup() { docker rm -f "$CNAME" >/dev/null 2>&1; rm -rf "$stage"; }
@@ -150,7 +128,7 @@ OWNER_TOKEN="$(sed -n 's/^GUEST1_TOKEN=//p' "$env_file" | head -1)"
 OTHER_TOKEN="$(sed -n 's/^GUEST2_TOKEN=//p' "$env_file" | head -1)"
 
 docker run -d --name "$CNAME" -p "$HOSTPORT:8811" \
-  --env-file "$env_file" -e NGINX_ENVSUBST_FILTER="$f_install" \
+  --env-file "$env_file" \
   -v "$stage/nginx:/etc/nginx/templates:ro" \
   -v /dev/null:/etc/nginx/conf.d/default.conf:ro \
   "$IMAGE" >/dev/null || die "容器起不来（$HOSTPORT 被占？HOSTPORT=xxxxx 换一个）" 2

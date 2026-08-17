@@ -49,18 +49,18 @@ services:
       # 内含 FUTU_SHIM_URL / FUTU_SHIM_TOKEN + 每个访客一组 GUESTn_TOKEN / GUESTn_NAME。
       - /etc/nvy-guest-proxy.env
 
-    # envsubst 只替换我们声明的这几个；不加限制会把 nginx 自己的 $host /
-    # $arg_code / $guest_name 一并吃掉，配置当场失效且报错难懂。
-    environment:
-      # 🚨 加访客时**必须**把新键加进这条正则。漏了的形态最阴：nginx 起得来、日志正常，
-      #    但 map 里留着字面量 `${GUEST2_TOKEN}` ⇒ 那个访客永远 401，且看不出哪错了。
-      # ⚠️ `GUEST_UPLOAD_TOKEN` 必须**单独列出** —— 它不匹配 `GUEST[0-9]+_TOKEN`（中间没有
-      #    数字），而它漏掉的形态与漏访客键完全一样：nginx 起得来、日志正常，但研报 location
-      #    里留着字面量 `${GUEST_UPLOAD_TOKEN}` 当 bearer ⇒ 投递恒 401 且看不出哪错。
-      # ⚠️ `ANCHOR_OWNER_NAME`（059）同样必须**单独列出** —— 它也不匹配 `GUEST[0-9]+_*`。
-      #    漏掉它的形态同样阴：nginx 起得来、日志正常，但 map 里留着字面量
-      #    `${ANCHOR_OWNER_NAME}` 当 key ⇒ 谁都不匹配 ⇒ 直写恒 403。
-      NGINX_ENVSUBST_FILTER: '^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$$'
+    # 📌 **这里曾有一条 `NGINX_ENVSUBST_FILTER` 白名单，2026-08-17 删除；加新键不用再动这里。**
+    #
+    # 旧注释说「不加限制会把 nginx 自己的 $host / $arg_code / $guest_name 一并吃掉」——
+    # **那句是错的**。官方 entrypoint 把显式 ${VAR} 列表传给 envsubst（列表 = 环境里存在的
+    # 变量名）⇒ 一个 $xxx 只有在存在**同名且大小写相同**的 env var 时才会被替换；而容器
+    # env 名全大写、模板里 nginx 自己的变量全小写 ⇒ 交集为空。实测带 filter 与空 filter
+    # 渲染出的配置逐字节相同。
+    #
+    # 那条白名单在仓里曾有三份拷贝，057 与 059 各漏改过一次，漏改**静默**（nginx 起得来、
+    # 日志正常，只是那个键恒 401/403）。取代它的是 deploy/install.sh 里两条自动派生的判据：
+    # 预校验 (a2)「env 名 ∩ 模板 nginx 变量名 == ∅」+ 自检 (d)「渲染产物无任何大写 ${...} 残留」。
+    # 理由全文在 install.sh 文件头。
 
     healthcheck:
       # 打 loopback 上那个独立的探针 server（见 nginx template 顶部）。
