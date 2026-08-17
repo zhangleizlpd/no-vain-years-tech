@@ -58,7 +58,15 @@ updated_at: '2026-08-17'
 
 ## Phase 1: 纯函数（阻塞其余）🎯
 
-- [ ] T001 [P] [Server] **per-market 连续竞价时段表**（FR-010, FR-011, FR-022, plan §D6）：新建 `marketdata/market-session.rules.ts`，把 `alert/intraday-eval.processor.ts:39-88` 的 `MARKET_SESSION` / `marketNow` / `isWithinTradingSession` 三个导出**原样搬来**，并补登记 `us`（09:30–16:00 ET）与 `hk`（09:30–12:00 + 13:00–16:00 HKT，午休分两段）。走 `Intl` 不手工偏移；未登记市场 `marketNow` 仍 **throw**。**顺带**在 `trading-day-gate.ts` 的 `MARKET_CLOSE_MINUTES` 注释旁加一行指向本文件（那条注释现写「盘中时段表是另一件事，归各消费方」—— 现在有了唯一落点，不指过去下一个人还会再造第三份）。→ verify: 新建 `market-session.rules.spec.ts` —— cn 原有断言逐条搬过来全绿（回归）；新增 us 开收盘边界各一（含 DST 前后两个时刻，断言同一本地分钟数在夏令/冬令都判对）；hk 午休 12:00 判 `false`、13:00 判 `true`；一个仍未登记的市场代号（用 `sg`）`marketNow` 抛 `/未登记盘中时段/`
+- [X] T001 [P] [Server] **per-market 连续竞价时段表**（FR-010, FR-011, FR-022, plan §D6）：新建 `marketdata/market-session.rules.ts`，把 `alert/intraday-eval.processor.ts:39-88` 的 `MARKET_SESSION` / `marketNow` / `isWithinTradingSession` 三个导出**原样搬来**，并补登记 `us`（09:30–16:00 ET）与 `hk`（09:30–12:00 + 13:00–16:00 HKT，午休分两段）。走 `Intl` 不手工偏移；未登记市场 `marketNow` 仍 **throw**。**顺带**在 `trading-day-gate.ts` 的 `MARKET_CLOSE_MINUTES` 注释旁加一行指向本文件（那条注释现写「盘中时段表是另一件事，归各消费方」—— 现在有了唯一落点，不指过去下一个人还会再造第三份）。→ verify: 新建 `market-session.rules.spec.ts` —— cn 原有断言逐条搬过来全绿（回归）；新增 us 开收盘边界各一（含 DST 前后两个时刻，断言同一本地分钟数在夏令/冬令都判对）；hk 两段闭区间（12:00 上午收判 `true` —— 同 cn 的 11:30；**12:30 午休正中**判 `false`；13:00 判 `true`）；一个仍未登记的市场代号（用 `sg`）`marketNow` 抛 `/未登记盘中时段/`
+
+  > 🚨 **impl 期修正（2026-08-17，user 定案）—— 本 task 在原三个导出之外多加一个 `isSessionUnderway(market, minutesOfDay)`**：判据是「**该场进行中**」（自首段开盘至末段收盘，**含**午休），未登记市场**抛**（fail-closed —— 它每返一个 `false` 都意味着「可以写快照」，未知即抛）。`isWithinTradingSession` 的字面语义与未登记返 `false` 的行为**原样不动**（alert 侧零影响）。
+  >
+  > **起因是个真缺口，不是风格调整**：`isWithinTradingSession` 在午休返 `false`，而 T006 原文拿它当敏感档的闸 ⇒ **午休时放行**；此刻 `lastClosedSessionCutoff`（未过收盘）给出的目标日又是**上一个交易日** ⇒ 走 plan §D4 表第三行 `premarket_backfill`，把午休时刻的盘口贴上「上一场收盘」的标签写进库。正是 FR-011 与 `state_branches` ③ 要防的那条错行：**不报错**、按唯一键占位、当晚正确的行反被挡掉 ⇒ 永久缺口。
+  >
+  > **今天它是潜伏的**：唯一开通期权采集的市场是 `us`，而 us 无午休 ⇒ 两个谓词在它身上逐点等价。spec 里有一条**逐分钟等价断言**把「为什么潜伏」钉住，接 hk 期权那片时它会第一个红。⇒ 闸的改动落在 T006。
+  >
+  > 原 verify 写的「hk 午休 12:00 判 `false`」与本 task 自己要求的「cn 断言原样搬」相冲突（cn 的 11:30 上午收在闭区间下判 `true`，hk 的 12:00 同理），故例子改取 12:30 —— 修这个笔误时才牵出上面的缺口。
 
 - [ ] T002 [Server] **alert 改 import，删本地副本**（plan §D6）：`alert/intraday-eval.processor.ts` 删掉那三个导出，改从 `../marketdata/market-session.rules.js` re-export 或直接 import；`INTRADAY_MARKET = 'cn'` **留在 alert**（那是 alert 的策略不是时段表的事）。→ verify: `nx test server alert/intraday-eval.processor.it.spec.ts` 绿。🚨 **该文件 `:67-69` 会红且是真实语义变更** —— 它拿 `us` 当「未登记市场」的例子断言 `toThrow(/未登记盘中时段/)` 与 `isWithinTradingSession('us', 600) === false`，而 `us` 现在已登记。**把例子换成仍未登记的 `sg`，不要删断言**（那条断言守的是「禁静默套用别人的时窗」，仍然要守）。另跑 `nx lint server` 确认 boundaries 放行（`from: alert` 的 disallow 未列 `marketdata-rules`，应当零告警 —— 若红说明 `market-session.rules.ts` 的文件名没落进 `src/marketdata/*.rules.ts` 这个 `mode:'full'` 元素）
 
@@ -72,7 +80,7 @@ updated_at: '2026-08-17'
 
 - [ ] T005 [Server] **冷启动编排骨架**（FR-006, FR-007, FR-009, FR-016, FR-016a, FR-020, FR-021, FR-022, FR-023, FR-025, plan §D3 §D5 §D9）：新建 `marketdata/anchor-cold-start.usecase.ts`。按 plan §D3 的 8 步走到第 5 步为止（**先不接采集**）：解析 market → 查能力登记表 → 定位目标交易日（走 `TRADING_CALENDAR_PORT` **查日历**，禁时区推导）→ Instrument 缺行则 seed → `AnchorDrivenSyncGate.recalcSafely()` → **起手复判**（查 `optionDailySnapshot` / `dailyBar` 本身，🚨 **不读 `anchorColdStartRun`**）→ 落运行记录。→ verify: `anchor-cold-start.usecase.spec.ts`（纯单测，stub 日历与 Prisma）覆盖：ticker 不可解析 / 市场未登记时段 / 市场未开通采集 / 日历缺行 四条早退分支各自的结局值；且**每条早退都断言 vendor port 零调用**
 
-- [ ] T006 [Server] **分档执行接线**（FR-010, FR-011, FR-012, FR-012a, FR-014, FR-018, plan §D8）：补齐 §D3 的第 6-7 步。非敏感档：`MarketdataSyncQueue.enqueueFlow` 组树入队 `sync:option_contract` + `sync:us_equity_bar`（普通 delta，**不传 `asOf`**），flow 保证链 → 快照次序。敏感档：`isWithinTradingSession` 判盘中 ⇒ 结局 `intraday_skipped` 直接返回；非盘中 ⇒ 用 T003 的 `resolveSnapshotSpec` 算 spec，调 `SyncOptionSnapshotUseCase.collect(instruments, spec, stats)`。配额耗尽的两个具名错误（`OptionChainBudgetExhaustedError` / `OptionSnapshotBudgetExhaustedError`）**原样上抛给 job 层顺延**，不在此 catch 成失败。→ verify: 同文件 spec 加：盘中分支断言 `collect` 零调用且结局 `intraday_skipped`；非盘中分支断言 `collect` 收到的 `spec` 与 T003 纯函数算出的**同一对象**（防有人在这里又算一遍）；配额耗尽分支断言错误被原样抛出、**未**写入 `outcome='retry_exhausted'`
+- [ ] T006 [Server] **分档执行接线**（FR-010, FR-011, FR-012, FR-012a, FR-014, FR-018, plan §D8）：补齐 §D3 的第 6-7 步。非敏感档：`MarketdataSyncQueue.enqueueFlow` 组树入队 `sync:option_contract` + `sync:us_equity_bar`（普通 delta，**不传 `asOf`**），flow 保证链 → 快照次序。敏感档：**`isSessionUnderway` 判「该场进行中」（含午休）** ⇒ 结局 `intraday_skipped` 直接返回（🚨 **MUST NOT 用 `isWithinTradingSession`** —— 它在午休返 `false` ⇒ 放行写快照，理由见 T001 的 impl 期修正注）；否则 ⇒ 用 T003 的 `resolveSnapshotSpec` 算 spec，调 `SyncOptionSnapshotUseCase.collect(instruments, spec, stats)`。配额耗尽的两个具名错误（`OptionChainBudgetExhaustedError` / `OptionSnapshotBudgetExhaustedError`）**原样上抛给 job 层顺延**，不在此 catch 成失败。→ verify: 同文件 spec 加：盘中分支断言 `collect` 零调用且结局 `intraday_skipped`；**午休分支（取一个有午休的市场代号）同样断言 `collect` 零调用** —— 那是两个谓词唯一分道的一格；非盘中分支断言 `collect` 收到的 `spec` 与 T003 纯函数算出的**同一对象**（防有人在这里又算一遍）；配额耗尽分支断言错误被原样抛出、**未**写入 `outcome='retry_exhausted'`
 
 ## Phase 4: 事件链
 
@@ -84,7 +92,7 @@ updated_at: '2026-08-17'
 
 ## Phase 5: 端到端验证
 
-- [ ] T010 [Server] **IT 上半：触发 / 时点归属 / 幂等**（FR-013, FR-015, FR-015a, SC-002, SC-003, `state_branches` ①②③⑥⑦⑧⑨⑩⑲㉓，plan Gate 0.1）：新建 `apps/server/test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts`（Testcontainers 真 PG，`Test.createTestingModule({ imports: [MarketdataModule] })` 装真 DI 容器，vendor port 用 stub 计调用次数）。注入固定 `now` 覆盖休市 / 盘中 / 午休三档与 §D4 的三种时点归属。→ verify: `nx test server test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts --skip-nx-cache`（新文件首跑必加）。🚨 **两条硬断言**：① 盘中分支 `optionDailySnapshot.count()` **零变化**；② **「数据已在、`anchor_cold_start_run` 为空」⇒ vendor port 零调用**（直接插目标交易日的快照 / 日线行，不写任何运行记录，再触发）—— 谁把复判写成读运行记录，这条立刻红。🚨 **反恒真**：每条 `it()` 落地后**逐条注掉对应实现确认它真的变红**，再恢复 —— 恒真断言会让覆盖矩阵显示 24/24 而实际零保护（体例同 059 T007）
+- [ ] T010 [Server] **IT 上半：触发 / 时点归属 / 幂等**（FR-013, FR-015, FR-015a, SC-002, SC-003, `state_branches` ①②③⑥⑦⑧⑨⑩⑲㉓，plan Gate 0.1）：新建 `apps/server/test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts`（Testcontainers 真 PG，`Test.createTestingModule({ imports: [MarketdataModule] })` 装真 DI 容器，vendor port 用 stub 计调用次数）。注入固定 `now` 覆盖休市 / 盘中两档与 §D4 的三种时点归属。⚠️ **午休档蓄意不在这一层**：唯一开通期权采集的市场是 `us` 而 us 无午休，`hk` 在 `COLD_START_CAPABILITY` 里是空表项（走到就 `market_not_enabled` 提前返回，够不到快照分支）⇒ **午休分支端到端今天不可达**，在这里写它只会得到一个恒真 IT。它由 T001（谓词层）+ T006（use case 层）覆盖，接 hk 期权采集那片时再上提到本层。→ verify: `nx test server test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts --skip-nx-cache`（新文件首跑必加）。🚨 **两条硬断言**：① 盘中分支 `optionDailySnapshot.count()` **零变化**；② **「数据已在、`anchor_cold_start_run` 为空」⇒ vendor port 零调用**（直接插目标交易日的快照 / 日线行，不写任何运行记录，再触发）—— 谁把复判写成读运行记录，这条立刻红。🚨 **反恒真**：每条 `it()` 落地后**逐条注掉对应实现确认它真的变红**，再恢复 —— 恒真断言会让覆盖矩阵显示 24/24 而实际零保护（体例同 059 T007）
 
 - [ ] T011 [Server] **IT 下半：市场参数化 / 失败重试 / 结局可区分**（SC-005, SC-007, SC-009, SC-010, `state_branches` ④⑤⑪⑫⑬⑭⑮⑯⑰⑱⑳㉑㉒㉔）：新建 `apps/server/test/integration/marketdata.cold-start-060.market-outcome.it.spec.ts`。覆盖：既有锚更新不触发、建锚回滚不留 outbox 行、日历缺行、Instrument 缺行 seed、hk 锚显式 no-op、未登记市场、ticker 不可解析、配额耗尽顺延、整体失败不回滚锚、八种结局各有唯一取值。→ verify: 同上命令。🚨 **一条硬断言**：**删锚后以同一 ticker 重建 ⇒ `anchorColdStartRun` 两行**（新 `anchorId` ⇒ 新行）—— 谁把 PK 写成 ticker，只会有一行，立刻红。🚨 **反恒真同 T010**：逐条注掉实现确认变红再恢复。⚠️ **不要写「两只锚指向同一标的」的用例**：`anchor.ticker` 是 `@unique`，今天在库里插不进去
 
@@ -94,7 +102,7 @@ updated_at: '2026-08-17'
 
 ```
 T001 ──┬─→ T002（alert 改 import 必须等新文件存在）
-       └─→ T006（盘中判定要 isWithinTradingSession）
+       └─→ T006（敏感档的闸要 isSessionUnderway）
 T003 ──────→ T006（分档要 resolveSnapshotSpec）
 T004 ──────→ T005（编排要落运行记录）
 T005 ──────→ T006 ──→ T007 ──→ T008 ──→ T009
@@ -111,7 +119,7 @@ T010 + T011 → T012（boot smoke 收尾）
 | --- | ----------------------------------------------- | ------------------ |
 | ①   | 首建 + 休市 → 补三样、快照归属日正确            | T010               |
 | ②   | 首建 + 连续竞价 → 补链+日线、不写快照           | T006 / T010        |
-| ③   | 首建 + 午休段 → 同盘中                          | T001 / T010        |
+| ③   | 首建 + 午休段 → 同盘中                          | T001 / T006 ※      |
 | ④   | 既有锚更新 → 不触发                             | T009 / T011        |
 | ⑤   | 建锚事务回滚 → 不发起                           | T009 / T011        |
 | ⑥   | 同一次建锚重复投递 → 第二次零外呼零新增         | T010               |
@@ -135,6 +143,8 @@ T010 + T011 → T012（boot smoke 收尾）
 | ㉔  | 删锚后重建 → 运行记录两行                       | T004 / T011        |
 
 **24/24 覆盖，零缺口。**
+
+※ **③ 蓄意停在谓词层 + use case 层，不上 IT**（impl 期修正，2026-08-17）：唯一开通期权采集的市场 `us` **无午休**，而带午休的 `hk` 在 `COLD_START_CAPABILITY` 里是空表项、走到就提前返回 ⇒ 午休分支**端到端不可达**，在 T010 写它只会得到一个恒真 IT（正是 059 T007 立的反恒真纪律要防的）。同一条修正还给 T001 加了 `isSessionUnderway` 谓词、把 T006 的闸从 `isWithinTradingSession` 换掉 —— 详见 T001 下方的修正注。
 
 ## 自审：spec 有哪几层 / 扫了哪几层（per `sdd-authoring.md` 规则 ④）
 

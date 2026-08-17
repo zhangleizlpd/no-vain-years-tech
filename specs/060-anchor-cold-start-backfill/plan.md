@@ -212,6 +212,8 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 
 **做法**：把 `MARKET_SESSION` / `marketNow` / `isWithinTradingSession` 三个导出搬进新文件，登记 **cn（原样搬）+ us + hk**（hk 含午休两段 09:30–12:00 / 13:00–16:00），alert 改 import。走 `Intl` 而非手工偏移（DST）；未登记市场 **throw**（照抄 `marketNow` 现有纪律：静默套用别的市场的时段正是要根除的失败形态）。`INTRADAY_MARKET = 'cn'` **留在 alert**（那是 alert 的策略，不是时段表的事）。
 
+🚨 **impl 期补一个导出（2026-08-17，user 定案）**：新文件除上述三个外还导出 `isSessionUnderway(market, minutesOfDay)` —— 「该场进行中」（首段开盘 → 末段收盘，**含**午休），未登记市场**抛**。D3 第 7 步与 D8 的敏感档闸用**它**，不用 `isWithinTradingSession`：后者在午休返 `false` ⇒ 放行，而此刻 D4 算出的目标日是**上一个交易日** ⇒ 把午休盘口标成「上一场收盘」，正是 FR-011 与 `state_branches` ③ 要防的错行。今天潜伏（us 无午休 ⇒ 两谓词等价），接 hk 期权即显形。
+
 ⚠️ **一处必须注意的连带**：合并后 `us` / `hk` 从「未登记」变成「已登记」，`marketNow('us', …)` 不再 throw。alert 侧唯一调用点是 `INTRADAY_MARKET='cn'`，**运行时行为零变化**；但 alert 现有 spec 里若有「未登记市场 throw」的断言用了 `us`/`hk` 当例子，会红 —— 那是**真实的语义变更**，改断言时要换一个仍未登记的市场代号，不要把断言删掉。
 
 ### D7 新表 `anchor_cold_start_run` —— 只记结局，不驱动重做
