@@ -22,6 +22,9 @@ name: Deploy
 #      (ops/bin/rollback-prod.sh) to restore uptime, then exit 1
 #   5. Final smoke via public HTTPS (api.shintongtech.com, 同 SWAS, 无备案);
 #      on success record the tag in .last-good-tag (the rollback baseline)
+#   6. `sudo -n bash ops/jobs/install.sh` —— 把宿主定时任务（探针 / 备份 / 看门狗）同步到
+#      本次 reset 下来的代码树。幂等、无条件跑，排在最后所以失败不碰回滚基线。
+#      2026-08-17 假红事故的直接产物：**仓里改了 ops/jobs ≠ 机器上生效**（详见该步注释）
 #
 # Per ADR-0026 § Cutover: 首次 mono cutover 时 user 手动 drop+recreate PG/Redis
 # 数据 (zero data preservation) + 停既有 compose → 起 mono compose,
@@ -340,4 +343,37 @@ jobs:
           docker logout "$ACR_REGISTRY" >/dev/null 2>&1 || true
 
           echo "✅ Deploy of $TAG completed."
+
+          # ── ops/jobs 装机：把宿主定时任务同步到本次部署的代码树 ────────────────────
+          #
+          # 🚨 2026-08-17 假红事故的直接产物。#73 给期权完整性探针加了 ET 周末闸并合进
+          #    main，本 workflow 的 `git reset --hard` 也把 77 上的 checkout 更新了 ——
+          #    但 timer **真正跑的那份**在 /usr/local/lib/nvy/jobs/，由 install.sh 手动铺，
+          #    没人跑它 ⇒ 探针继续跑 08-15 那份没有周末闸的旧谓词，次晨照常推假红。
+          #    **仓里改了 ≠ 机器上生效**，而这两者之间原本没有任何机器强制。
+          #
+          # 无条件跑，**不判「这次改没改 ops/」**：install.sh 幂等（`install -m` 覆盖写、
+          # legacy 清理是写死清单、**不动任何 timer 的 enable 状态**），白跑的代价是几百 ms；
+          # 而那个判断算错一次就静默退化回手动，且它自己没有测试覆盖。
+          #
+          # 🚨 **位置是判据的一部分**：此刻 .last-good-tag 已写、镜像 GC 已跑、ACR 凭据已
+          #    登出 ⇒ 装机失败只让本次 run 变红，不污染回滚基线、不把凭据留在盘上。代价是
+          #    「run 红了」从此有两种含义，由下面那条 error 文案区分（app 健康与否已在上面
+          #    那行 ✅ 里说清）。
+          #
+          # 🚨 **刻意不加 `|| true`** —— 旁边镜像 GC 那段是 fail-soft（收尾优化，失败不该
+          #    把一次成功发版判成失败），这段不是：装机失败被吞掉 = 回到「仓里改了、机器上
+          #    没生效、没人知道」，正是本段要堵的那个洞。
+          if [ "$SKIP_GIT_FETCH" = "true" ]; then
+            # 这支下工作树是磁盘上的旧副本（步 1 的 reset 被跳过）⇒ 装它等于把**旧版** ops
+            # 装回去，是倒退不是保护。故这支只 warn 不装。
+            echo "::warning::ops/jobs 装机已跳过（skip_git_fetch=true ⇒ 工作树可能陈旧，装它会把旧版 ops 装回去）。本次若改了 ops/，部署后手动补：sudo bash ops/jobs/install.sh"
+          else
+            echo "⚙️  同步 ops/jobs → /usr/local/lib/nvy/ ..."
+            # `sudo -n`：无 TTY 且万一没有 NOPASSWD 时立刻失败，而不是挂在密码提示上。
+            if ! sudo -n bash ops/jobs/install.sh; then
+              echo "::error::ops/jobs 装机失败 —— app 已部署且健康（见上面那行 ✅），红的是宿主定时任务同步。机器上跑的仍是上一版 ops/jobs（探针 / 备份 / 看门狗可能是旧判据，且它们的告警看不出这一点）。人工补：ssh 到 prod 跑 sudo bash ops/jobs/install.sh —— 退出码 2 = 非 root/源树不完整，5 = 装完但 ExecStart 自检失败。"
+              exit 1
+            fi
+          fi
           REMOTE

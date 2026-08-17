@@ -14,6 +14,13 @@
 6. 等 120s healthcheck（`/healthz/live`）。
    - **healthy** → 公网 smoke（`https://api.shintongtech.com/healthz/live`）→ 把本次 tag 写入 `.last-good-tag`（回滚基线）。
    - **不 healthy** → 抓最后 80 行日志 → **自动回滚**到 `.last-good-tag`（调 `rollback-prod.sh`）恢复在线 → `exit 1`（部署标记失败、通知你）。
+7. **`sudo -n bash ops/jobs/install.sh`** —— 把步 1 拉下来的 `ops/jobs/` + `ops/lib/` 同步到 `/usr/local/lib/nvy/`（宿主定时任务：探针 / 备份 / 看门狗）。幂等、**无条件跑**（不判「这次改没改 ops/」）、**不动任何 timer 的 enable 状态**。`skip_git_fetch=true` 那支**只 warn 不装**——工作树可能陈旧，装它等于把旧版 ops 装回去。
+
+> 🚨 **步 7 排在最后是判据，不是随手**：`.last-good-tag` 已写、镜像 GC 已跑、ACR 凭据已登出，所以它失败**只让 run 变红**，不污染回滚基线、不留凭据在盘上。代价 = **「deploy run 红了」从此有两种含义**：先看日志里有没有 `✅ Deploy of <tag> completed.` —— 有，就是 app 已健康上线、红的只是宿主定时任务同步（机器上跑的仍是上一版 ops/jobs，而那些探针的告警**看不出**这一点）；补跑 `sudo bash ops/jobs/install.sh`，退出码 `2` = 非 root/源树不完整、`5` = 装完但 ExecStart 自检失败。**别因为这种红去回滚 app。**
+>
+> 它为什么存在：2026-08-17 假红事故 —— #73 的 ET 周末闸合进 main、77 的 checkout 也被步 1 更新了，但 `/usr/local/lib/nvy/jobs/` 下真正被 timer 跑的那份是 `install.sh` 手动铺的，没人跑它 ⇒ 探针继续跑旧谓词、次晨照常推假红。**仓里改了 ≠ 机器上生效。**
+>
+> ⚠️ **残余缺口（已知，未堵）**：本步由**发版**驱动，而 `ops/jobs/` 改动与 server 发版没有因果关系 ⇒ 「改了 ops 但一直不发版」时它仍不装，只是延迟从「无限期」压成「下次发版」。要闭环得再加一个检测器（每日比对 `/usr/local/lib/nvy/` 与 `origin/main` 的 checksum），尚未做。
 
 ### 步 2 的 `<tag>` 从哪来
 

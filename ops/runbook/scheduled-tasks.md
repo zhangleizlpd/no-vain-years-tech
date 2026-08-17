@@ -177,8 +177,12 @@
    - **高频监控**（≤ 分钟级）→ **不套** wrapper（会刷屏）；保留自身告警逻辑，飞书发送换成 `. feishu-send.sh; feishu_send "$msg"`；正向 liveness 走每日摘要。
    - webhook/secret 一律复用**本机共享文件**（路径与变量名见上文 host `app` 段末的飞书那条，此处不复述）；systemd 单元加 `EnvironmentFile=-/etc/nvy-alert.env`。**不新建** webhook/token。
 3. **本表登记**：归到对应 host section，补一行（任务 / 调度 / 触发器 / 执行 / 仓库锚点 / 用途）。
-4. 退役任务：删行 + 在相关 runbook 注明退役（别留 stale 行）。
-5. path rule `.claude/rules/scheduled-tasks-registry.md` 会在触及 `.timer` / `scripts/**/setup.*` 时自动加载提醒——但本地 launchd `.plist`（装在 `~/Library/LaunchAgents/`）/ crontab 在仓库外，rule 触发不到，需**手动**记得登记。
+4. 🚨 **改动怎么到机器上**（`.timer`/`.service`/脚本/谓词改完不会自己生效——**仓里改了 ≠ 机器上跑的那份变了**）：
+   - **77（systemd）** → 由 `deploy.yml` 最后一步无条件 `sudo -n bash ops/jobs/install.sh` 自动铺（见 [`prod-deploy-rollback.md` § 部署流程 步 7](prod-deploy-rollback.md#部署流程deployymlssh-进-ecs-跑)）。⚠️ 它由**发版**驱动 —— 改了 ops 但近期不发版就还没生效，急用手动跑同一条命令。
+   - **本地（launchd）** → 跑对应 `scripts/<name>/setup.*` 覆盖 `~/.nvy` 下的冻结副本（见上文「自包含副本」注 + 「故障排查」段的部署漂移条）。
+   - 这类漏装的失败形态是**静默的**（旧逻辑照跑、退出码 0、告警看不出自己是旧判据），2026-08-17 期权探针假红即此形（#73 合了但没装）。
+5. 退役任务：删行 + 在相关 runbook 注明退役（别留 stale 行）。
+6. path rule `.claude/rules/scheduled-tasks-registry.md` 会在触及 `.timer` / `scripts/**/setup.*` 时自动加载提醒——但本地 launchd `.plist`（装在 `~/Library/LaunchAgents/`）/ crontab 在仓库外，rule 触发不到，需**手动**记得登记。
 
 ## 不在范围（不登记）
 
