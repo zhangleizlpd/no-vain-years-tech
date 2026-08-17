@@ -17,6 +17,9 @@ import {
 } from 'class-validator';
 import { Prisma } from '../generated/prisma/client';
 import { ANCHOR_ZONES, L_LEVELS, type LLevel } from './anchor.rules';
+import { ANCHOR_MANUAL_SLOTS } from './anchor-cascade';
+import { ANCHOR_SUBMISSION_STATUSES } from './anchor-import.rules';
+import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
 import { ANCHOR_CONFIDENCE_SOURCES } from './create-anchor.usecase';
 import type { AnchorWriteResult } from './create-anchor.usecase';
@@ -2378,5 +2381,161 @@ export function toChainReportResponse(view: ChainReportView): ChainReportRespons
       allAnnualized: toChainReportGrid(view.cells.all_annualized),
       activity: toChainReportGrid(view.cells.activity),
     },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 059 guest 面: 模型导入 + 待审提交
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/optionsdesk/anchors/model-import —— 本人的模型估值导入 (059 FR-001)。
+ *
+ * 🚨 **DTO 只管形状, 不复写语义判据**: canonical 写法 / 市场白名单 / 置信度量表的判定单点在
+ * `anchor-import.rules.ts`, 由写侧调用。两处各写一份必漂, 而漂的表现是「通道放行、服务端
+ * 400」或反过来 —— 排障时要对两份正则才看得出来。
+ *
+ * 🚨 **既有 `CreateAnchorRequest` / `UpdateAnchorRequest` 一字不动** (Guardrail 11; spec 契约:
+ * 045 与 mobile 零变化)。手滑给既有 DTO 补 `@Min/@Max` 会让 App 侧既有请求开始 400。
+ *
+ * `confidenceSource` **不在本 DTO 里**: 来源是系统对写入路径的判断, 不是调方的声明
+ * (FR-008) —— 可声明即可伪造, 「来自模型」这个信号就失去意义。
+ *
+ * 🚨 **`ticker` 走 query string 而不是 body**: nginx 的 `$arg_*` **只读得到 query**, 通道层那道
+ * 市场闸 (`$arg_ticker !~ "^(us|hk):"`) 才成立。放进 body 的话 nginx 看不见它, 闸退化成摆设
+ * —— 与 057 研报三项元数据走 query 是同一个理由。
+ */
+export class ModelImportAnchorRequest {
+  @ApiProperty({ description: '估值 V (数值串; V ≤ 0 拒绝)', example: '50.0000' })
+  @IsNumberString()
+  v!: string;
+
+  @ApiProperty({
+    description: '估值 as-of 日 (YYYY-MM-DD) —— 服务端不回落「今天」',
+    example: '2026-06-30',
+  })
+  @IsDateString()
+  asof!: string;
+
+  @ApiProperty({ description: '估值方法名 (策略 SoT 词表)', example: 'dcf', maxLength: 32 })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(32)
+  method!: string;
+
+  @ApiProperty({ description: '置信度 (10 分制数值串, 越界拒)', example: '9.50' })
+  @IsNumberString()
+  confidence!: string;
+}
+
+/**
+ * POST /api/v1/optionsdesk/anchors/submissions —— 其他访客的估值提交 (059 FR-011)。
+ * 字段与导入口同形 (采纳 = 原样重放) + 一个自由附言。
+ */
+export class SubmitAnchorRequest extends ModelImportAnchorRequest {
+  @ApiPropertyOptional({
+    description: '附言 (估值理由 / 数据来源等; 系统不解析)',
+    type: 'string',
+    maxLength: 512,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  note?: string;
+}
+
+/** 差异报告一条 = 一个被本次导入冲掉的人工位 (FR-007「逐条回报」)。 */
+export class AnchorFallbackEntryResponse {
+  @ApiProperty({ description: 'canonical `market:code`', example: 'us:AOS' })
+  ticker!: string;
+
+  @ApiProperty({
+    description: '被冲掉的人工位',
+    enum: [...ANCHOR_MANUAL_SLOTS],
+    example: 'lLevel',
+  })
+  slot!: string;
+
+  @ApiProperty({ description: '被冲掉的人工值', example: 'L3' })
+  manualValue!: string;
+
+  @ApiProperty({
+    description: '回落后的模型值 / 派生值; L4 档无上限口径 ⇒ null (禁自造)',
+    type: 'string',
+    nullable: true,
+    example: 'L1',
+  })
+  fallbackValue!: string | null;
+}
+
+/** 导入结果 —— `action` 是 FR-016 的载体, `fallbackEntries` 是 FR-007 的载体。 */
+export class AnchorImportResponse {
+  @ApiProperty({
+    description:
+      '本次是新建 / 更新 / 值未变未写入。新建锚会让当日采集多做一整轮历史回填与全链发现, ' +
+      '该事实必须对调方可见, 否则「某日采集突然变慢」事后无从归因 (FR-016)。',
+    enum: ['create', 'update', 'noop'],
+    example: 'update',
+  })
+  action!: string;
+
+  @ApiProperty({ description: '写入后的锚 (noop 时为现值)', type: AnchorResponse })
+  anchor!: AnchorResponse;
+
+  @ApiProperty({
+    description: '被本次导入冲掉的人工调整, 逐条列出 (禁静默回落); 无人工调整时为空数组',
+    type: [AnchorFallbackEntryResponse],
+  })
+  fallbackEntries!: AnchorFallbackEntryResponse[];
+}
+
+/** 提交回执 —— **只回执, 不回读**: 提交方看不到锚, 也看不到自己此前提交过什么 (FR-013)。 */
+export class AnchorSubmissionResponse {
+  @ApiProperty({ description: '待审条目 id (数字串)', example: '3' })
+  id!: string;
+
+  @ApiProperty({ description: '提交方 (由通道无条件覆写的 X-Guest 头得来)', example: 'guest-a' })
+  submitter!: string;
+
+  @ApiProperty({ description: 'canonical `market:code`', example: 'us:AOS' })
+  ticker!: string;
+
+  @ApiProperty({
+    description: '处置状态 (系统只写 PENDING)',
+    enum: [...ANCHOR_SUBMISSION_STATUSES],
+    example: 'PENDING',
+  })
+  status!: string;
+
+  @ApiProperty({ description: '收件时刻 (ISO-8601)', example: '2026-08-16T12:00:00.000Z' })
+  createdAt!: string;
+}
+
+export function toAnchorImportResponse(result: ImportAnchorFromModelResult): AnchorImportResponse {
+  return {
+    action: result.action,
+    anchor: toAnchorWriteResponse(result.anchor),
+    fallbackEntries: result.fallbackEntries.map((entry) => ({
+      ticker: entry.ticker,
+      slot: entry.slot,
+      manualValue: entry.manualValue,
+      fallbackValue: entry.fallbackValue,
+    })),
+  };
+}
+
+export function toAnchorSubmissionResponse(row: {
+  id: bigint;
+  submitter: string;
+  ticker: string;
+  status: string;
+  createdAt: Date;
+}): AnchorSubmissionResponse {
+  return {
+    id: row.id.toString(),
+    submitter: row.submitter,
+    ticker: row.ticker,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
   };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupEmptyDb } from '../_support/isolated-db';
+import { runMigrateDeploy } from '../_support/run-migrate';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -30,11 +31,7 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
     db = await setupEmptyDb();
     process.env.DATABASE_URL = db.databaseUrl;
 
-    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: SERVER_DIR,
-      env: process.env,
-      stdio: 'inherit',
-    });
+    runMigrateDeploy();
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
@@ -45,13 +42,14 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
     await db.drop();
   });
 
-  it('anchor + anchor_change 两表落 optionsdesk schema', async () => {
+  it('anchor + anchor_change + anchor_submission 三表落 optionsdesk schema', async () => {
     const rows = await prisma.$queryRawUnsafe<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'optionsdesk'
         ORDER BY table_name`,
     );
-    expect(rows.map((r) => r.table_name)).toEqual(['anchor', 'anchor_change']);
+    // anchor_submission 是 059 加的待审收件箱（同 schema，不新建 namespace）。
+    expect(rows.map((r) => r.table_name)).toEqual(['anchor', 'anchor_change', 'anchor_submission']);
   });
 
   it('FR-001 ticker 唯一约束: 重复插撞 P2002 且库内仍只一行', async () => {

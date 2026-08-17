@@ -9,6 +9,10 @@
 #   在 77 上：  ./verify-guards.sh                       # 默认打 10.90.0.1:8811
 #   在访客机：  BASE=http://10.90.0.1:8811 GUEST_TOKEN=xxx ./verify-guards.sh
 #   带限频用例：./verify-guards.sh --include-429         # 见下方说明，默认不跑
+#   本人跑（059 直写授权那组）：ANCHOR_ROLE=owner ./verify-guards.sh
+#   在**开发机**上（无 77 / 无 wg2 / 无真上游）：./verify-guards.local-harness.sh
+#     └ 真模板 + 桩上游把闸 8 两种角色都跑掉，并带两个变异自证它不是恒真探针。
+#       改闸 8 之前先读那个文件的头。
 set -uo pipefail
 
 BASE="${BASE:-http://10.90.0.1:8811}"
@@ -16,6 +20,11 @@ GUEST_TOKEN="${GUEST_TOKEN:-}"
 # PEP 是既有 12 只锚之一 ⇒ 已占着 history_kline 的配额槽（per security / 7 天滚动）。
 # 拿它做正例**不额外消耗配额**（E38 实证：同票窗内重复查免费）。别改成随便一只票。
 PROBE_CODE="${PROBE_CODE:-US.PEP}"
+# 059 锚导入的直写授权闸按**访客身份**分流 ⇒ 期望值取决于手里这把 token 是谁的。
+# `other`（默认）= 其他访客：直写口应当 403；`owner` = 本人：直写口应当过闸打到 app。
+# 🚨 默认取 other 是刻意的：**弱期望不该是默认** —— 本人跑时忘了带 ANCHOR_ROLE=owner，
+#    结果是「期望 403 实得 400」当场红，而不是悄悄放过一条本该验的分流。
+ANCHOR_ROLE="${ANCHOR_ROLE:-other}"
 
 [[ -n "$GUEST_TOKEN" ]] || { echo "需要 GUEST_TOKEN 环境变量" >&2; exit 2; }
 
@@ -168,6 +177,74 @@ else
   printf '  ❌ %-46s 实得 %s\n' "研报超上限 413 由 app 返（非 nginx）" "${big_body:0:100}"; fail=$((fail+1))
 fi
 
+echo "== 闸 8 锚导入（059；本代理上唯一能改业务数据的端点）=="
+IMPORT="$BASE/anchor-import"
+SUBMIT="$BASE/anchor-submit"
+# 过得了通道所有闸、但 app 侧一定会拒的 body（缺 v/asof/method/confidence）——
+# 用它当探针就不会在对方的待审箱 / 锚表里留下任何东西。
+PROBE_BODY='{}'
+JSON=(-H 'Content-Type: application/json')
+
+# ── 8a. 无凭证：两个口各拒一次 ────────────────────────────────────────────
+check "锚直写无 token 被拒" 401 "$(code -X POST "${JSON[@]}" -d "$PROBE_BODY" "$IMPORT?ticker=us:PEP")"
+check "锚提交无 token 被拒" 401 "$(code -X POST "${JSON[@]}" -d "$PROBE_BODY" "$SUBMIT?ticker=us:PEP")"
+
+# ── 8b. 只放 POST（两个口各写一份 —— 闸是逐 location 写的）─────────────────
+# 🚨 期望 **403 不是 405**：`limit_except` 里干活的是 `deny`（同闸 6 那条，057 真跑证伪过 405）。
+check "锚直写 GET 被拒" 403 "$(code -X GET "${AUTH[@]}" "$IMPORT?ticker=us:PEP")"
+check "锚提交 GET 被拒" 403 "$(code -X GET "${AUTH[@]}" "$SUBMIT?ticker=us:PEP")"
+
+# ── 8c. 市场闸 ────────────────────────────────────────────────────────────
+# 🚨 与 server 侧 `anchor-import.rules.ts` 的白名单是**两份独立文本**。这几条是通道那一半
+#    的护栏；服务端那一半由 optionsdesk-059 IT 里对 `cn:` 的 400 断言钉住。
+#
+# 🚨 **直写口上，非本人永远观察不到市场闸** —— 授权闸与市场闸都在 rewrite 阶段、按书写
+#    顺序跑，授权在前 ⇒ 他人无论 ticker 写成什么都是 403。这是**刻意的顺序**：对一个根本
+#    不能用这个口的人，回「你的 ticker 格式不对」会把他引向错误的修法。
+#    ⇒ 直写口那组只在 `ANCHOR_ROLE=owner` 时跑；他人侧改验「坏 ticker 也仍是 403」。
+#    （2026-08-16 本地 harness 首跑实测：这四条最初写成无条件 400，当场四红。）
+market_gate() { # market_gate <端点> <标签前缀>
+  check "$2 ticker 缺市场前缀被拒" 400 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$1?ticker=AOS")"
+  check "$2 ticker cn 市场被拒"    400 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$1?ticker=cn:600519")"
+  # $arg_* 不解码 ⇒ 冒号写成 %3A 撞不上 `^(us|hk):`，fail-closed 成 400（同研报那条）。
+  check "$2 ticker %3A 编码被拒"   400 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$1?ticker=us%3AAOS")"
+  # ticker 写进 body 而不是 query —— 通道看不见它 ⇒ 同样 400（这条钉的是「参数位置」本身）。
+  check "$2 ticker 放 body 被拒"   400 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d '{"ticker":"us:AOS"}' "$1")"
+}
+
+market_gate "$SUBMIT" "锚提交"
+if [[ "$ANCHOR_ROLE" == "owner" ]]; then
+  market_gate "$IMPORT" "锚直写"
+else
+  check "他人打直写口坏 ticker 仍 403" 403 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$IMPORT?ticker=cn:600519")"
+fi
+
+# ── 8d. 🚨 授权分流（本组的核心，也是整条链上唯一验它的地方）─────────────────
+# 直写是**本人独有**的能力：其他访客认证得过（他们有自己的 bearer），到直写口被 403，
+# 而提交口对他们照常可用。漏了 `$anchor_write_allowed` 闸时，这条会红 —— 而那种错
+# **不会表现成 401**，只会表现成「谁都能改锚」。
+# 🚨 059 收口把 mono 侧两把 token 合成一把之后，服务端对直写 / 提交**没有可判之据**
+#    ⇒ 「只有本人可直写」这条需求在**别处一律测不出来**，本组是它唯一的回归钉。
+#    ⚠️ 因此这两条**必须两种角色都真跑过**（ANCHOR_ROLE 默认 other，本人那侧要显式带
+#    `ANCHOR_ROLE=owner` 再跑一遍）—— 只跑一侧等于只验了半条判据。
+if [[ "$ANCHOR_ROLE" == "owner" ]]; then
+  # 本人：过得了授权闸 ⇒ 落到 app，被 DTO 校验拒成 400。**不是 403** 才是这条要证的。
+  check "本人打直写口不被 403（过授权闸）" 400 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$IMPORT?ticker=us:PEP")"
+else
+  check "他人打直写口 403（授权分流）" 403 "$(code -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$IMPORT?ticker=us:PEP")"
+fi
+
+# ── 8e. 提交口对谁都开，且**请求真的到了 app** ────────────────────────────
+# 🚨 价值不在「空 body 被拒」，在于证明 `proxy_pass` 的路径没写错：上面所有 4xx 都是
+#    nginx 自己 return 的，只有它们的话，路径写成 `/anchors/submission`（少个 s）也全绿，
+#    直到有人真提交才炸。⇒ 连**谁返的**一起验：JSON 体 = app，HTML = nginx。
+submit_body="$(curl -s -m 60 -X POST "${AUTH[@]}" "${JSON[@]}" -d "$PROBE_BODY" "$SUBMIT?ticker=us:PEP")"
+if grep -q '"status":400\|"status": 400' <<<"$submit_body"; then
+  printf '  ✅ %-46s\n' "锚提交 400 由 app 返（非 nginx）"; pass=$((pass+1))
+else
+  printf '  ❌ %-46s 实得 %s\n' "锚提交 400 由 app 返（非 nginx）" "${submit_body:0:100}"; fail=$((fail+1))
+fi
+
 echo "== 闸 7 能力目录（薄壳 skill 的端点清单唯一来源）=="
 # 访客手里的 skill 不含端点清单,全靠 `/capabilities` 下发 ⇒ 这份目录取不到、或它列的端点
 # 打不通,访客侧就**整体不可用**,而症状会表现成「agent 说这个通道没这个能力」——
@@ -316,6 +393,21 @@ if [[ "${1:-}" == "--include-429" ]]; then
   last=""
   for _ in $(seq 1 26); do last=$(code "${AUTH[@]}" "$BASE/kline?code=$PROBE_CODE&ktype=K_DAY"); done
   check "突发后触发限频" 429 "$last"
+
+  # 059 锚直写口：6r/m + burst 2 ⇒ 连打 10 发必见 429。
+  # 🚨 **必须用合法 ticker + 坏 body**：市场闸的 `if` 在 rewrite 阶段、早于 limit_req 所在的
+  #    preaccess ⇒ 被 400 拒掉的请求**根本不进桶**（同本闸开头那句），拿坏 ticker 打一万发
+  #    也永远见不到 429。合法 ticker + 空 body 则：过得了通道所有闸、进得了桶，而 app 侧
+  #    400 ⇒ **不会写任何数据**。
+  last_anchor=""
+  for _ in $(seq 1 10); do
+    last_anchor=$(code -X POST "${AUTH[@]}" -H 'Content-Type: application/json' -d '{}' "$BASE/anchor-import?ticker=us:PEP")
+  done
+  check "锚直写突发后触发限频" 429 "$last_anchor"
+
+  # 🚨 **两个口各自独立的 zone（FR-017）**：直写口刚打满，提交口**仍应放行**（到 app 被
+  #    400）。共用一个 zone 时这条会拿到 429 —— 这是「独立限频」唯一的黑盒判据。
+  check "直写打满不牵连提交口" 400 "$(code -X POST "${AUTH[@]}" -H 'Content-Type: application/json' -d '{}' "$BASE/anchor-submit?ticker=us:PEP")"
 
   # 🚫 **这里刻意没有「/option-chain 走的是更紧的那个池」这条断言 —— 别加。**
   #

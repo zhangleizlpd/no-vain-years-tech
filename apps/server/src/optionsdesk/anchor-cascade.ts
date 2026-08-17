@@ -87,19 +87,30 @@ export interface AnchorEffectiveValues {
   };
 }
 
-/** 模型 import 的单条输入 (V + confidence 是 import 唯一写的两个模型事实)。 */
+/**
+ * 模型 import 的单条输入 = import 写的四个模型事实: V / confidence 与其口径 (估值 as-of 日 +
+ * 估值方法名)。后两者 059 补入 —— 估值换了口径日或换了方法而 `asof` / `method` 停在旧值,
+ * 库里的锚就成了「说不清是哪一版估值」的行。
+ */
 export interface AnchorModelImportInput {
   v: Prisma.Decimal | string;
   confidence: Prisma.Decimal | string;
+  asof: Date;
+  method: string;
 }
 
 /**
- * import 写侧 patch。键集**刻意封闭**: 除这 7 列外一律不碰 —— 尤其 `nextReview` /
+ * import 写侧 patch。键集**刻意封闭**: 除这 9 列外一律不碰 —— 尤其 `nextReview` /
  * `lastReviewedOn` / `breachStartedOn` (Guardrail 11)。
+ *
+ * 🚨 要加列**加进本函数**, MUST NOT 在调用侧 `{ ...patch, 新列 }` —— 那把列放到封闭键集
+ * **之外**, 下一个人照抄那个位置, 单点就此失效 (059 plan §3)。
  */
 export interface AnchorModelImportPatch {
   v: Prisma.Decimal | string;
   confidence: Prisma.Decimal | string;
+  asof: Date;
+  method: string;
   confidenceSource: 'model';
   vManual: null;
   lLevelManual: null;
@@ -208,6 +219,8 @@ export function buildModelImportPatch(input: AnchorModelImportInput): AnchorMode
   return {
     v: input.v,
     confidence: input.confidence,
+    asof: input.asof,
+    method: input.method,
     confidenceSource: 'model',
     vManual: null,
     lLevelManual: null,
@@ -221,7 +234,12 @@ export function buildModelImportPatch(input: AnchorModelImportInput): AnchorMode
  * 报告文件的排版归 import 脚本, 本函数只产出结构化条目。
  */
 export function buildImportFallbackReport(
-  anchors: readonly { ticker: string; manual: AnchorManualState; next: AnchorModelImportInput }[],
+  anchors: readonly {
+    ticker: string;
+    manual: AnchorManualState;
+    // 回落值只由估值两列派生 ⇒ 只收这两列, 不逼调用方为一份报告编 `asof` / `method`。
+    next: Pick<AnchorModelImportInput, 'v' | 'confidence'>;
+  }[],
 ): AnchorFallbackReportEntry[] {
   const entries: AnchorFallbackReportEntry[] = [];
   for (const anchor of anchors) {

@@ -1,38 +1,46 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { guestUploadConfig } from './guest-upload.config.js';
 
-const KEY = 'GUEST_UPLOAD_TOKEN';
+const KEYS = ['GUEST_UPLOAD_TOKEN'] as const;
 const VALID = 'a'.repeat(43); // randomBytes(32).toString('base64url') 的长度
 
 describe('guestUploadConfig', () => {
-  let saved: string | undefined;
+  const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
-    saved = process.env[KEY];
-    delete process.env[KEY];
+    for (const key of KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    if (saved === undefined) delete process.env[KEY];
-    else process.env[KEY] = saved;
+    for (const key of KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
   });
 
-  it('unset → token=null (app boots; the guard fail-closes on its own)', () => {
+  it('unset → null (app boots; the guard fail-closes on its own)', () => {
     expect(guestUploadConfig()).toEqual({ token: null });
   });
 
   it('empty string → token=null (compose ${VAR:-} feeds "" not undefined)', () => {
-    process.env[KEY] = '';
+    process.env.GUEST_UPLOAD_TOKEN = '';
     expect(guestUploadConfig()).toEqual({ token: null });
   });
 
-  it('a configured token flows through verbatim', () => {
-    process.env[KEY] = VALID;
+  /**
+   * `toEqual` 是精确匹配 ⇒ 本条同时钉住**键集只有一个** —— 将来谁再加第二把 token 会在
+   * 这里红一次, 那正是读 config 顶部「要开第二把先证明不共命」那段的时机。
+   */
+  it('已配 → 原样流经, 且 config 键集只有 token 一个', () => {
+    process.env.GUEST_UPLOAD_TOKEN = VALID;
     expect(guestUploadConfig()).toEqual({ token: VALID });
   });
 
-  it('throws at boot when the token is shorter than 32 chars (弱 token 早暴露)', () => {
-    process.env[KEY] = 'short-token';
+  it.each(KEYS)('%s 短于 32 字符 → boot 时抛 (弱 token 早暴露)', (key) => {
+    process.env[key] = 'short-token';
     expect(() => guestUploadConfig()).toThrow();
   });
 });

@@ -27,10 +27,14 @@ ROTATE="${ROTATE:-}"
 # sops 注入。缺了就停 —— 渲染出一个带占位符的 env 比报错危险得多:
 # nginx 会拿字面量 __FILL_FUTU_SHIM_TOKEN__ 当 bearer 去打上游,401 且难查。
 : "${FUTU_SHIM_TOKEN:?未拿到 FUTU_SHIM_TOKEN —— 忘了用 sops exec-env 包起来?}"
-# 研报投递（057）转发给本机 mono app 的 bearer。走与 shim token 同一条路径而**不是**
-# __FILL_GUESTn_TOKEN__ 那条自动发现路径：那条会现生成随机值，而这个值必须与 mono 侧
-# SOPS 里的逐字节一致 —— 现生成就永远对不上，表现是投递恒 401 且 401 按设计不泄露原因。
+# 转发给本机 mono app 的 bearer（057 研报投递 + 059 锚待审提交 / 锚直写共用这一把）。
+# 走与 shim token 同一条路径而**不是** __FILL_GUESTn_TOKEN__ 那条自动发现路径：那条会现
+# 生成随机值，而这个值必须与 mono 侧 SOPS 里的逐字节一致 —— 现生成就永远对不上，表现是
+# 投递恒 401 且 401 按设计不泄露原因。
 : "${GUEST_UPLOAD_TOKEN:?未拿到 GUEST_UPLOAD_TOKEN —— 忘了用 sops exec-env 包起来?}"
+# 有权直写锚的访客名（059）。它**不是秘密**（nginx map 的 key，access log 里本就打印），
+# 但空值会让直写口恒 403 ⇒ 同样要求显式提供，别让它悄悄渲染成空。
+: "${ANCHOR_OWNER_NAME:?未拿到 ANCHOR_OWNER_NAME —— 它是某个 GUESTn_NAME 的值, 从 sops 或显式 env 给}"
 
 [[ -f "$TEMPLATE" ]] || { echo "模板不存在: $TEMPLATE" >&2; exit 2; }
 
@@ -67,6 +71,9 @@ FUTU_SHIM_TOKEN="$FUTU_SHIM_TOKEN" \
 
 GUEST_UPLOAD_TOKEN="$GUEST_UPLOAD_TOKEN" \
   perl -pi -e 's|__FILL_GUEST_UPLOAD_TOKEN__|$ENV{GUEST_UPLOAD_TOKEN}|' "$tmp"
+
+ANCHOR_OWNER_NAME="$ANCHOR_OWNER_NAME" \
+  perl -pi -e 's|__FILL_ANCHOR_OWNER_NAME__|$ENV{ANCHOR_OWNER_NAME}|' "$tmp"
 
 # 两个清单在循环里直接攒出来 —— 别到最后再用正则从文件里反推谁新谁旧（试过，
 # fresh 为空/非空两种形态下的分支正则很容易写出空子表达式，grep 直接报错）。
@@ -113,6 +120,24 @@ fi
 while IFS='=' read -r k v; do
   [[ ${#v} -ge 32 ]] || fail "❌ $k 长度 ${#v} < 32 —— 空/过短的访客 token 会在 nginx map 里退化成 'Bearer '" 5
 done < <(grep -E '^GUEST[0-9]+_TOKEN=' "$DEST")
+
+# 自证 ③：转发给 mono app 的那把 token 够长。它能真失败（显式传一个短值即触发）。
+# 📌 059 期间这里曾多一条「与 ANCHOR_IMPORT_TOKEN 互不相同」的判据，随第二把 token 一起
+#    删除：锚直写与待审提交现在持**同一把**，服务端分不出它俩 ⇒ 「谁能直写锚」的判据
+#    整个落在下面的自证 ④ 上。
+mono_upload="$(sed -n 's/^GUEST_UPLOAD_TOKEN=//p' "$DEST" | head -1)"
+[[ ${#mono_upload} -ge 32 ]] || fail "❌ GUEST_UPLOAD_TOKEN 长度 ${#mono_upload} < 32" 5
+
+# 自证 ④：直写授权的访客名非空，**且真的是某个访客的名字**（059）。
+# 🚨 **这是「只有本人可直写锚」整条链上唯一的授权闸**（服务端那半随第二把 token 一起没了）
+#    —— 别把它当可选项删了。
+# 空值 → 直写口恒 403（fail-closed，可接受但要能一眼看出）；填了个不存在的名字 → 同样恒 403，
+# 而那种错更隐蔽：值看着「有」，只是永远匹配不上任何 $guest_name。
+owner="$(sed -n 's/^ANCHOR_OWNER_NAME=//p' "$DEST" | head -1)"
+[[ -n "$owner" ]] || fail "❌ ANCHOR_OWNER_NAME 为空 —— 直写口会恒 403（谁都不许写）" 5
+if ! grep -qE "^GUEST[0-9]+_NAME=${owner}$" "$DEST"; then
+  fail "❌ ANCHOR_OWNER_NAME=$owner 不是任何 GUESTn_NAME 的值 —— 直写口会恒 403 且看不出哪错" 5
+fi
 
 echo "✅ 已渲染 $DEST (0600)"
 echo

@@ -21,7 +21,10 @@ const outboundProbe = process.env.NVY_OUTBOUND_PROBE ? ['./test/_support/outboun
 
 const sharedTestOptions = {
   globals: true,
-  setupFiles: outboundProbe,
+  // 🚨 `quiet-logger` 与下面 `env.LOG_LEVEL` 是**同一件事的两半**，缺一半等于没做：
+  // 前者管 `new Logger()`（Nest 内建 ConsoleLogger），后者管 pino。生产靠 main.ts 的
+  // `useLogger` 把两套合一，测试里不合一 —— 详见 quiet-logger.ts 顶部那张表。
+  setupFiles: [...outboundProbe, './test/_support/quiet-logger.ts'],
   environment: 'node' as const,
   exclude: ['node_modules', 'dist'],
   // 🚨 teardown 的超时预算。**这是一整类「随机 flake」的系统性根因**（2026-08-02 量化）：
@@ -64,11 +67,37 @@ const sharedTestOptions = {
     // boot-AppModule IT 集体红且报错点离真因很远 (2026-08-02 踩过)。
     // 🚨 真 vendor 联调不靠改这里, 走 env-gated RUN_*_IT (同 DEEPSEEK 占位的处置)。
     MARKETDATA_PROVIDER: 'mock',
+    // 🚨 测试里把 pino 压到 error —— **这不是「少打点日志」的洁癖，是可诊断性**。
+    // 默认 info 下 pino-http 对每个请求打一条整条 req/res JSON(单条可达 3.7KB),
+    // 一轮 IT 就是 ~200 条 / 140KB, 占整份输出的近四成。而 GitHub 的 job log 端点
+    // 只回一个**有限窗口**, 噪声挤掉的正是失败时真要看的东西 ——
+    // 2026-08-17 实撞: server-test 在 CI 上连续两次红, 而日志里连 vitest 的汇总行
+    // 都取不到(对照过一次**成功**的跑, 同样取不到 ⇒ 是端点行为不是本次异常)。
+    // ⚠️ 取 `error` 而不是 `fatal`/`silent`: 实测本地一轮里 pino 全部 202 行都是
+    // level 30(info), 40/50/60 各零行 ⇒ 压到 error **一条现有信号都不损失**,
+    // 而将来真出 5xx 时那条 error 照打。`silent` 还得动 app.config 的 zod 值域, 不值。
+    LOG_LEVEL: 'error',
   },
 };
 
 export default defineConfig({
   test: {
+    // 🚨 **CI 上必须显式带 `github-actions`，否则 CI 失败在 GitHub 侧不可见。**
+    //
+    // vitest 的 `github-actions` reporter（annotations + Job Summary + 行内标注）**只在
+    // 「没有显式配置 reporters」时才自动启用**（官方文档原话：configure reporters 之后
+    // 需要自己把它加回来）。而本仓原先在 `project.json` 写死 `vitest run --reporter=default`
+    // —— 那一句正好把它关掉了。
+    //
+    // 后果不是「少点好看的标注」，是**失败根本取不回来**：nx 在 CI 上不转发完整 task 输出，
+    // 且 `--output-style` 在 CI 被直接忽略（nrwl/nx#15570，`if (isCI()) return false`，
+    // closed as not planned）⇒ job log 里既没有 vitest 汇总也没有失败块。
+    // 2026-08-17 实撞：server-test 连续三次红，失败文本从 CI 侧完全取不到，
+    // 靠逐行滤噪才在正文里找出是哪个文件。annotations 是绕开 nx 输出层的唯一通路。
+    //
+    // ⚠️ 只在 GitHub Actions 上加：本地跑时它会打 `::error` 这类 workflow 命令行，是噪声。
+    reporters: process.env.GITHUB_ACTIONS ? ['default', 'github-actions'] : ['default'],
+
     // 🚨 拆两个 project **不是为了归类好看**，是为了保住快速内环。
     // vitest 只为「本轮真有 spec 命中」的 project 初始化 globalSetup（root project 除外，
     // 而 root 这里蓄意不挂 globalSetup）。于是：

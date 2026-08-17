@@ -8,7 +8,21 @@ export default [
   {
     // '**/dist-runtime-smoke': runtime-smoke 的 expo export 输出目录（自定义名，`**/dist` glob 命中不到）
     // —— 不忽略则本地跑过 runtime-smoke 后 mobile:lint 会误扫其 minified bundle（万级 no-var/no-unused-expressions）。
-    ignores: ['**/dist', '**/dist-runtime-smoke', '**/out-tsc'],
+    //
+    // 🚨 playwright 那两个输出目录（`outputDir` / reporter 产物，见 apps/mobile/playwright*.config.ts）
+    //    必须忽略，坏法不是「多扫几个文件」而是**并发竞态**：PR 模板要求的
+    //    `nx affected -t lint typecheck test build runtime-smoke` 把 lint 与 playwright 放进同一个
+    //    invocation，playwright 边跑边增删 playwright-test-results，eslint 的目录遍历正好走进去 ⇒
+    //    `ENOENT: scandir …/playwright-test-results`，**整个 lint target 崩掉**（不是报几条 lint 错，
+    //    是 eslint 自己异常退出）。表现成随机红、重跑又绿，最容易被当成 flaky 放过去。
+    //    2026-08-17 实撞：单跑 mobile:lint 绿，与 runtime-smoke 同轮跑就红。
+    ignores: [
+      '**/dist',
+      '**/dist-runtime-smoke',
+      '**/out-tsc',
+      '**/playwright-report',
+      '**/playwright-test-results',
+    ],
   },
   {
     files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],

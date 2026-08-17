@@ -196,7 +196,12 @@ describe('045 optionsdesk US1 锚管理集成 IT (Testcontainers PG)', () => {
       });
       const before = await prisma.anchor.findUniqueOrThrow({ where: { id: created.id } });
       // import 脚本形态: 用封闭键集 patch 落库 (键集本身就是 Guardrail 11 的载体)。
-      const patch = buildModelImportPatch({ v: '60', confidence: '9.5' });
+      const patch = buildModelImportPatch({
+        v: '60',
+        confidence: '9.5',
+        asof: new Date('2026-07-31T00:00:00Z'),
+        method: 'dcf',
+      });
       await prisma.anchor.update({ where: { id: created.id }, data: patch });
       const after = await prisma.anchor.findUniqueOrThrow({ where: { id: created.id } });
       expect([after.vManual, after.lLevelManual, after.positionCapManual]).toEqual([
@@ -213,7 +218,12 @@ describe('045 optionsdesk US1 锚管理集成 IT (Testcontainers PG)', () => {
       const created = await createAnchor.execute(baseInput);
       await prisma.anchor.update({
         where: { id: created.id },
-        data: buildModelImportPatch({ v: '60', confidence: '9.5' }),
+        data: buildModelImportPatch({
+          v: '60',
+          confidence: '9.5',
+          asof: new Date('2026-07-31T00:00:00Z'),
+          method: 'dcf',
+        }),
       });
       await expect(updateAnchor.execute(created.id, { confidence: '3' })).rejects.toBeInstanceOf(
         BadRequestException,
@@ -225,7 +235,12 @@ describe('045 optionsdesk US1 锚管理集成 IT (Testcontainers PG)', () => {
       const before = await prisma.anchor.findUniqueOrThrow({ where: { id: created.id } });
       await prisma.anchor.update({
         where: { id: created.id },
-        data: buildModelImportPatch({ v: '60', confidence: '9.5' }),
+        data: buildModelImportPatch({
+          v: '60',
+          confidence: '9.5',
+          asof: new Date('2026-07-31T00:00:00Z'),
+          method: 'dcf',
+        }),
       });
       const after = await prisma.anchor.findUniqueOrThrow({ where: { id: created.id } });
       expect(after.nextReview).toEqual(before.nextReview);
@@ -340,7 +355,12 @@ describe('045 optionsdesk US1 锚管理集成 IT (Testcontainers PG)', () => {
       const created = await createAnchor.execute(baseInput);
       await updateAnchor.execute(created.id, { lLevelManual: 'L3' });
       const before = await prisma.anchor.findUniqueOrThrow({ where: { id: created.id } });
-      const patch = buildModelImportPatch({ v: '60', confidence: '9.5' });
+      const patch = buildModelImportPatch({
+        v: '60',
+        confidence: '9.5',
+        asof: new Date('2026-07-31T00:00:00Z'),
+        method: 'dcf',
+      });
       // interface 无隐式 index signature (TS 已知限制) → 经 unknown 转 Record 喂 buildAnchorChange。
       const change = buildAnchorChange(
         toAnchorSnapshot(before),

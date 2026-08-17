@@ -53,10 +53,20 @@ describe('anchor-cascade — 路径 ① 模型 import 回落三处人工值', ()
 });
 
 describe('anchor-cascade — 模型 import 写侧 patch (Guardrail 11)', () => {
-  const patch = buildModelImportPatch({ v: '60', confidence: '9.2' });
+  const patch = buildModelImportPatch({
+    v: '60',
+    confidence: '9.2',
+    asof: new Date('2026-08-16T00:00:00.000Z'),
+    method: 'DCF',
+  });
 
   it('confidence_source 翻 model ⇒ 该锚自动转只读, 无需人工干预 (FR-001)', () => {
     expect(patch.confidenceSource).toBe('model');
+  });
+
+  it('估值口径日与方法名透传 (059 FR-002: import 写的模型事实共 9 列)', () => {
+    expect(patch.asof).toEqual(new Date('2026-08-16T00:00:00.000Z'));
+    expect(patch.method).toBe('DCF');
   });
 
   it('三处人工位一并置 null (临时语义, 不存在锁定)', () => {
@@ -77,6 +87,22 @@ describe('anchor-cascade — 模型 import 写侧 patch (Guardrail 11)', () => {
 
   it('MUST NOT 碰复核锚状态机载体 breach_started_on', () => {
     expect(Object.keys(patch)).not.toContain('breachStartedOn');
+  });
+
+  it('🚨 键集封闭 = 恰好这 9 列 —— 上面三条只防已知坏键, 防不住「又加了第 10 个键」', () => {
+    expect(Object.keys(patch).sort()).toEqual(
+      [
+        'v',
+        'confidence',
+        'asof',
+        'method',
+        'confidenceSource',
+        'vManual',
+        'lLevelManual',
+        'positionCapManual',
+        'lLevelEffective',
+      ].sort(),
+    );
   });
 });
 

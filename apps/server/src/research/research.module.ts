@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { SecurityModule } from '../security/security.module.js';
 import { OBJECT_STORAGE_PORT, OssPostObjectAdapter } from '../integrations/oss/oss.module.js';
-import { GuestUploadAuthGuard } from '../security/guest-upload-auth.guard.js';
 import { IngestResearchReportUseCase } from './ingest-research-report.usecase.js';
 import { ResearchController } from './research.controller.js';
 
@@ -39,7 +38,6 @@ import { ResearchController } from './research.controller.js';
   controllers: [ResearchController],
   providers: [
     IngestResearchReportUseCase,
-    GuestUploadAuthGuard,
     { provide: OBJECT_STORAGE_PORT, useClass: OssPostObjectAdapter },
   ],
 })

@@ -32,21 +32,27 @@ import type {
 } from 'axios';
 
 import type {
+  AnchorImportResponse,
   AnchorListResponse,
   AnchorPointInTimeResponse,
   AnchorResponse,
+  AnchorSubmissionResponse,
   ChainReportResponse,
   CreateAnchorRequest,
   LegTableResponse,
+  ModelImportAnchorRequest,
   OptionsdeskControllerAtParams,
   OptionsdeskControllerLegsParams,
   OptionsdeskControllerListParams,
   OptionsdeskControllerRadarParams,
+  OptionsdeskGuestControllerModelImportParams,
+  OptionsdeskGuestControllerSubmitParams,
   PositionBucketResponse,
   ProblemDetailResponse,
   RadarResponse,
   ReviewAnchorRequest,
   SetPositionBucketRequest,
+  SubmitAnchorRequest,
   ThermometerResponse,
   UnderlyingDetailResponse,
   UpdateAnchorRequest
@@ -1117,3 +1123,131 @@ export function useOptionsdeskControllerAt<TData = Awaited<ReturnType<typeof opt
 
 
 
+/**
+ * 调方不必知道任何系统内部标识：按 canonical `market:code` 寻址。响应的 `action` 标明本次是 新建 / 更新 / 值未变未写入；`fallbackEntries` 逐条列出被本次导入冲掉的人工调整（禁静默回落）。导入**不重置复审日期、不解除逾期标记** —— 复审语义是「人确认估值仍成立」，模型出新值不构成确认。⚠️ 运维约束（非代码约束）：导入须早于当日锚驱动采集轮，当日新增的锚才会被**当轮**纳入工作集。
+ * @summary 按标的导入模型估值（隧道内本人专用，无锚则建、有锚则刷新）
+ */
+export const optionsdeskGuestControllerModelImport = (
+    modelImportAnchorRequest: ModelImportAnchorRequest,
+    params: OptionsdeskGuestControllerModelImportParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<AnchorImportResponse>> => {
+
+
+    return axios.post(
+      `/api/v1/optionsdesk/anchors/model-import`,
+      modelImportAnchorRequest,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+export const getOptionsdeskGuestControllerModelImportMutationOptions = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}, TContext>, axios?: AxiosRequestConfig}
+): UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}, TContext> => {
+
+const mutationKey = ['optionsdeskGuestControllerModelImport'];
+const {mutation: mutationOptions, axios: axiosOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, axios: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, {data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}> = (props) => {
+          const {data,params} = props ?? {};
+
+          return  optionsdeskGuestControllerModelImport(data,params,axiosOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type OptionsdeskGuestControllerModelImportMutationResult = NonNullable<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>>
+    export type OptionsdeskGuestControllerModelImportMutationBody = ModelImportAnchorRequest
+    export type OptionsdeskGuestControllerModelImportMutationError = AxiosError<ProblemDetailResponse>
+
+    /**
+ * @summary 按标的导入模型估值（隧道内本人专用，无锚则建、有锚则刷新）
+ */
+export const useOptionsdeskGuestControllerModelImport = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>, TError,{data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams}, TContext>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof optionsdeskGuestControllerModelImport>>,
+        TError,
+        {data: ModelImportAnchorRequest;params: OptionsdeskGuestControllerModelImportParams},
+        TContext
+      > => {
+      return useMutation(getOptionsdeskGuestControllerModelImportMutationOptions(options), queryClient);
+    }
+    /**
+ * 提交方能往收件箱里放东西，但看不到库里有什么，包括他自己刚放的（无读取面）。采纳动作由本人在系统外完成：用自己的凭证把同样的值经导入口重放一次 —— 系统**不存在**第二条写锚路径。提交方身份取自通道无条件覆写的 `X-Guest` 头，**仅作归属、不作授权**。
+ * @summary 提交一条待审估值（其他访客用；只落收件箱，锚表零变化）
+ */
+export const optionsdeskGuestControllerSubmit = (
+    submitAnchorRequest: SubmitAnchorRequest,
+    params: OptionsdeskGuestControllerSubmitParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<AnchorSubmissionResponse>> => {
+
+
+    return axios.post(
+      `/api/v1/optionsdesk/anchors/submissions`,
+      submitAnchorRequest,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+export const getOptionsdeskGuestControllerSubmitMutationOptions = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}, TContext>, axios?: AxiosRequestConfig}
+): UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}, TContext> => {
+
+const mutationKey = ['optionsdeskGuestControllerSubmit'];
+const {mutation: mutationOptions, axios: axiosOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, axios: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, {data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}> = (props) => {
+          const {data,params} = props ?? {};
+
+          return  optionsdeskGuestControllerSubmit(data,params,axiosOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type OptionsdeskGuestControllerSubmitMutationResult = NonNullable<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>>
+    export type OptionsdeskGuestControllerSubmitMutationBody = SubmitAnchorRequest
+    export type OptionsdeskGuestControllerSubmitMutationError = AxiosError<ProblemDetailResponse>
+
+    /**
+ * @summary 提交一条待审估值（其他访客用；只落收件箱，锚表零变化）
+ */
+export const useOptionsdeskGuestControllerSubmit = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>, TError,{data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams}, TContext>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof optionsdeskGuestControllerSubmit>>,
+        TError,
+        {data: SubmitAnchorRequest;params: OptionsdeskGuestControllerSubmitParams},
+        TContext
+      > => {
+      return useMutation(getOptionsdeskGuestControllerSubmitMutationOptions(options), queryClient);
+    }
