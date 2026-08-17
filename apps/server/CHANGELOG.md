@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.28.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.28.0...server-v0.28.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* **optionsdesk:** 锚 close 投影改每小时 —— 固定时点绑不住按市场分裂的上游 ([#85](https://github.com/zhangleizlpd/no-vain-years-tech/issues/85)) ([88ff4d3](https://github.com/zhangleizlpd/no-vain-years-tech/commit/88ff4d3d653743b9d562319f0338cd917cbe001e))
+
 ## [0.28.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.27.0...server-v0.28.0) (2026-08-17)
 
 
