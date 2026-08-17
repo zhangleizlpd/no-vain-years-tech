@@ -11,6 +11,7 @@ import { EASTMONEY_PROFILE } from './eastmoney.constraint-profile.js';
 import { TENCENT_PROFILE } from './tencent.constraint-profile.js';
 import {
   FUTU_SHIM_EARNINGS_CALENDAR_PROFILE,
+  FUTU_SHIM_MARKET_STATE_PROFILE,
   FUTU_SHIM_OPTION_CHAIN_PROFILE,
   FUTU_SHIM_OPTION_SNAPSHOT_PROFILE,
   FUTU_SHIM_PROFILE,
@@ -127,6 +128,11 @@ import { OPTION_SNAPSHOT_PORT, type OptionSnapshotPort } from './option-snapshot
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import { EARNINGS_CALENDAR_PORT, type EarningsCalendarPort } from './earnings-calendar.port.js';
 import { FutuEarningsCalendarAdapter } from './futu-earnings-calendar.adapter.js';
+import { REALTIME_QUOTE_PORT, type RealtimeQuotePort } from './realtime-quote.port.js';
+import { FutuRealtimeQuoteAdapter } from './futu-realtime-quote.adapter.js';
+import { MarketRoutedRealtimeQuoteAdapter } from './market-routed-realtime-quote.adapter.js';
+import { MARKET_STATE_PORT, type MarketStatePort } from './market-state.port.js';
+import { FutuMarketStateAdapter } from './futu-market-state.adapter.js';
 
 /** 全 Lixinger adapter 共一个 VendorHttpClient 实例 (共享双窗限频器 + 熔断配额)。 */
 const LIXINGER_HTTP_CLIENT = Symbol('LIXINGER_HTTP_CLIENT');
@@ -156,6 +162,16 @@ const FUTU_OPTION_SNAPSHOT_HTTP_CLIENT = Symbol('FUTU_OPTION_SNAPSHOT_HTTP_CLIEN
  * 上会让约 26 窗的财报采集白排队 (且不会红); 与主画像共用则会把日线 / IV 的令牌吃光。
  */
 const FUTU_EARNINGS_CALENDAR_HTTP_CLIENT = Symbol('FUTU_EARNINGS_CALENDAR_HTTP_CLIENT');
+/**
+ * 市场时段专用 VendorHttpClient 实例 (061 T004/T005)。**第四个自己的桶** —— `global_state`
+ * 在 shim 的 `LIMITS` 里是自己一条 (兜底 10/30 s), 挂进快照那个桶会在夜间采集窗里跟批量快照
+ * 抢令牌; 挂进链那个更严的桶, 白天每半分钟一发也能把链发现挤到排队。
+ *
+ * ⚠️ 与紧邻的**实时报价**口方向相反 —— 那个口 **MUST 复用** `FUTU_OPTION_SNAPSHOT_HTTP_CLIENT`
+ * (见下方绑定处)。判据是**同不同 capability**, 不是「同不同 feature」: 同 capability 复用同一个
+ * client (服务端是单一桶), 异 capability 各起各的。
+ */
+const FUTU_MARKET_STATE_HTTP_CLIENT = Symbol('FUTU_MARKET_STATE_HTTP_CLIENT');
 
 /** `kind=live` 下 config 的收窄形态 —— `collectionPort` 的 `live` 回调只在这一支被调。 */
 type LiveMarketdataConfig = Extract<MarketdataConfig, { kind: 'live' }>;
@@ -249,6 +265,10 @@ function collectionPort<T extends object>(
       provide: FUTU_EARNINGS_CALENDAR_HTTP_CLIENT,
       useFactory: () => new VendorHttpClient(FUTU_SHIM_EARNINGS_CALENDAR_PROFILE),
     },
+    {
+      provide: FUTU_MARKET_STATE_HTTP_CLIENT,
+      useFactory: () => new VendorHttpClient(FUTU_SHIM_MARKET_STATE_PROFILE),
+    },
 
     // ── 理杏仁事实端口 (kind=live → 真 adapter; kind=mock → 拒绝壳, 054) ──
     //
@@ -318,6 +338,43 @@ function collectionPort<T extends object>(
       inject: [FUTU_EARNINGS_CALENDAR_HTTP_CLIENT],
       live: (cfg, earningsHttp: VendorHttpClient) =>
         new FutuEarningsCalendarAdapter(earningsHttp, cfg.futuShimUrl, cfg.futuShimToken),
+    }),
+
+    // ── 实时报价端口 (061 T003/T005, FR-001/010/020): kind=live → 富途 shim `/option-snapshot`
+    // 的正股行, **按市场路由** ──
+    //
+    // 🚨🚨 **复用 `FUTU_OPTION_SNAPSHOT_HTTP_CLIENT`, MUST NOT 新起一个** (Guardrail 1):
+    // 它与 `OPTION_SNAPSHOT_PORT` 打的是**同一个 shim capability**, 而 shim 侧的限频闸是
+    // 服务端**单一桶** (`ratelimit.py` 的 `LIMITS["snapshot"] = (60, 30)`), 客户端每个
+    // `VendorHttpClient` 实例却各持一个独立令牌桶 ⇒ 起两个 = 合计 120 次/30 s = 上游允许值的
+    // 2 倍。两条通路在时间上真的相邻: 本片 tick 跑到美股收盘后 (北京 04:15 前后), 而美股 EOD
+    // 快照采集就在那之后。同一个「桶满突发」病灶已在 prod 上让链发现每 30 分钟顺延一次
+    // (`futu-shim.constraint-profile.ts` 的 08-09 事故段)。
+    // ⚠️ 复用的是 **client 实例**, 不是 `FutuOptionSnapshotAdapter` 这个类。
+    //
+    // 🚨 **`hk` / `cn` 槽刻意留空** = 未登记市场 fail-closed 抛
+    // `RealtimeQuoteMarketUnsupportedError` (专属类型, 供上游把「配置事实」与「源故障」分开;
+    // hk 锚今天就合法可建, 混淆两者会让 90 秒后整条链降级)。cn 的现役实时源仍在 `alert` 里,
+    // 收编是后续 feature 的事且被账号权限挡着 (富途无 A 股权限) —— 本片 `alert/` 一行不动。
+    collectionPort<RealtimeQuotePort>(REALTIME_QUOTE_PORT, {
+      inject: [FUTU_OPTION_SNAPSHOT_HTTP_CLIENT],
+      live: (cfg, snapshotHttp: VendorHttpClient) =>
+        new MarketRoutedRealtimeQuoteAdapter({
+          us: new FutuRealtimeQuoteAdapter(snapshotHttp, cfg.futuShimUrl, cfg.futuShimToken),
+        }),
+    }),
+
+    // ── 市场时段端口 (061 T004/T005, FR-002/003): kind=live → 富途 shim `/market-state`
+    // (走自己的桶) ──
+    //
+    // 🚨 **市场级**端口: 一次调用返回**全部**已登记市场的当前时段, 入参为空 ⇒ **不套
+    // MarketRouted***。套一层按市场路由只会把一发变成 N 发, 打的还是同一个端点、同一个桶
+    // (照 `EARNINGS_CALENDAR_PORT` 的市场级先例)。白名单归一化在 adapter 内做完, vendor 原始
+    // 状态串不出 `marketdata` (Guardrail 2)。
+    collectionPort<MarketStatePort>(MARKET_STATE_PORT, {
+      inject: [FUTU_MARKET_STATE_HTTP_CLIENT],
+      live: (cfg, marketStateHttp: VendorHttpClient) =>
+        new FutuMarketStateAdapter(marketStateHttp, cfg.futuShimUrl, cfg.futuShimToken),
     }),
 
     collectionPort<UsIndexPort>(US_INDEX_PORT, {
@@ -628,5 +685,10 @@ function collectionPort<T extends object>(
         new LixingerCompanyProfileAdapter(http, cfg.lixingerToken, cfg.lixingerBaseUrl, prisma),
     }),
   ],
+  // 🚨 **本模块首次向外 export** (061 T005) —— `optionsdesk` 的盘中投影 tick 要跨 ctx 注入这
+  // 两个 token (plan D1: 强一致同步读, ADR-0062 sunset trigger 自己规定的升格方向)。
+  // 🚨 **只开这两个口子**: 不要顺手把其余 30 个采集口也 export 出去 —— 每多一个都是一条新的
+  // 跨 ctx 边, 而 `marketdata` 是叶子 ctx 的这条设计正靠「谁都拿不到它的 provider」撑着。
+  exports: [REALTIME_QUOTE_PORT, MARKET_STATE_PORT],
 })
 export class MarketdataModule {}

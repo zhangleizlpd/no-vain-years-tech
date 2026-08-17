@@ -7,6 +7,12 @@ import { PrismaService } from '../../src/security/prisma.service';
 import { OptionSnapshotRemediation } from '../../src/marketdata/option-snapshot-remediation';
 import { TradingCalendarSyncService } from '../../src/marketdata/trading-calendar-sync.service';
 import { marketDateFor } from '../../src/marketdata/trading-day-gate';
+import { MockCollectionRefusedError } from '../../src/marketdata/refusing-collection.adapter';
+import {
+  REALTIME_QUOTE_PORT,
+  type RealtimeQuotePort,
+} from '../../src/marketdata/realtime-quote.port';
+import { MARKET_STATE_PORT, type MarketStatePort } from '../../src/marketdata/market-state.port';
 
 /**
  * 054 T003 — **`MARKETDATA_PROVIDER=mock` 下三个写手跑完, 行情表零写库** (FR-004)。
@@ -172,5 +178,18 @@ describe('054 kind=mock 下写手零写库 (Testcontainers PG + Redis, 全 boot 
     expect(health?.lastSuccessAt).toBeNull();
     expect(health?.lastError).toContain('MockCollectionRefusedError');
     expect(health?.lastError).toContain('TRADING_CALENDAR_SOURCE');
+  });
+
+  // 061 T005: 新增的两个采集口 (实时报价 / 市场时段) 继承同一条约束 —— 它们的产出会落进
+  // `anchor` 的盘中两列, 与真行情同形 ⇒ mock 档下必须拒绝而不是给 fixture。这里断言的是
+  // **真 DI 容器解析出来的绑定物**, 不是 `collectionPort` 工厂的返回值 (后者已由
+  // `market-routed-realtime-quote.adapter.spec.ts` 单测覆盖)。
+  it('061 两个新采集口在 mock 档下一调即抛, 零伪造报价', () => {
+    const realtime = moduleRef.get<RealtimeQuotePort>(REALTIME_QUOTE_PORT);
+    const marketState = moduleRef.get<MarketStatePort>(MARKET_STATE_PORT);
+
+    // 拒绝壳抛在**调用点**而非属性访问点 ⇒ 同步 throw, 不是 rejected promise。
+    expect(() => realtime.fetchQuotes(['us:PEP'])).toThrow(MockCollectionRefusedError);
+    expect(() => marketState.getMarketSessions()).toThrow(MockCollectionRefusedError);
   });
 });

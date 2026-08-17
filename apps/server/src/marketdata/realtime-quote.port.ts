@@ -39,6 +39,35 @@ export const REALTIME_QUOTE_PORT = Symbol('REALTIME_QUOTE_PORT');
  */
 export const REALTIME_QUOTE_MAX_SYMBOLS = 400;
 
+/**
+ * 该市场**没有登记实时源** —— 是**配置事实**, 不是源故障 (FR-010, spec `state_branch` 14)。
+ *
+ * 🚨🚨 **专属类型不是洁癖, 它是上游区分两件事的唯一依据** (Guardrail 16): 上游 (盘中投影 tick
+ * + 熔断) 必须把「这个市场我们没接实时源」与「已接的源真调不通」分开计数。
+ *
+ * 为什么这是**今天就会发生**的故障而不是防御性小心眼: `optionsdesk/anchor-import.rules.ts` 的
+ * `IMPORTABLE_MARKETS = ['us', 'hk']` ⇒ **hk 锚合法且随时可建**。若把本错误当源故障计数,
+ * **只要库里存在一只 hk 锚, failstreak 每 30 秒 +1, 90 秒后 circuit open, 把 us 那半边一起
+ * 降级** —— 而 us 的行情源一切正常。裸 `Error` 在 catch 处与「隧道断了」不可区分, 于是这条
+ * 判据只能靠人眼守, 守不住也不会红。
+ */
+export class RealtimeQuoteMarketUnsupportedError extends Error {
+  constructor(
+    /** 无路由的 canonical market（symbol 不成形时为空串）。 */
+    readonly market: string,
+    /** 此刻已登记实时源的市场，供日志与排查用。 */
+    readonly registeredMarkets: readonly string[],
+  ) {
+    super(
+      `[realtime-quote] 市场 "${market}" 未登记实时源 ` +
+        `(已登记: ${registeredMarkets.join('/') || '无'}); ` +
+        '这是配置事实不是故障 —— 该市场的锚恒为收盘档, MUST NOT 计入熔断失败计数。' +
+        '加市场须在 marketdata.module.ts 显式指定其 vendor, 禁默认落链。',
+    );
+    this.name = 'RealtimeQuoteMarketUnsupportedError';
+  }
+}
+
 /** 一个标的此刻的报价。 */
 export interface RealtimeQuote {
   /** 最新成交价, Decimal-safe `string` (见文件头)。 */
