@@ -2,6 +2,18 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.28.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.27.0...server-v0.28.0) (2026-08-17)
+
+
+### Features
+
+* **optionsdesk:** 059 锚的模型导入通道 —— 隧道内直写 + 他人待审收件箱 ([#81](https://github.com/zhangleizlpd/no-vain-years-tech/issues/81)) ([967e209](https://github.com/zhangleizlpd/no-vain-years-tech/commit/967e2099c53db449a9df0e19ba932d9b9dbb769e))
+
+
+### Bug Fixes
+
+* **research:** 503 补 code，能力目录 8 条漂移归零 ([#78](https://github.com/zhangleizlpd/no-vain-years-tech/issues/78)) ([9e7b2d6](https://github.com/zhangleizlpd/no-vain-years-tech/commit/9e7b2d6e3d2634b7e259ed9284ec3976c2bc6256))
+
 ## [0.27.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.26.1...server-v0.27.0) (2026-08-16)
 
 
