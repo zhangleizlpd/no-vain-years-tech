@@ -5,6 +5,13 @@
 # 用法（仓根，需 root）：
 #   sudo bash ops/jobs/install.sh
 #
+# 🚨 **常态是自动的**：`deploy.yml` 每次部署在最后一步无条件跑本脚本（77 的 checkout 已由
+#    同一次部署 `git reset --hard origin/main`）。上面那条手动命令只用于**急用**（改了
+#    ops/jobs 但近期不发版）或**部署里这一步红了**时补跑。
+#    为什么必须有这一步：2026-08-17 假红事故 —— #73 的 ET 周末闸合进了 main、77 的 checkout
+#    也更新了，但 /usr/local/lib/nvy/jobs/ 下**真正被 timer 跑的那份**没人来铺，探针继续跑
+#    旧谓词，次晨照常推假红。**仓里改了 ≠ 机器上生效。**
+#
 # 落点：
 #   ops/lib/*.sh         → /usr/local/lib/nvy/        共享件（wrapper / 飞书 / 看门狗）
 #   ops/jobs/*.sh|*.sql  → /usr/local/lib/nvy/jobs/   任务本体，`<unit>.sh` 与 `<unit>.sql` 同目录兄弟
