@@ -10,6 +10,9 @@
 #   在访客机：  BASE=http://10.90.0.1:8811 GUEST_TOKEN=xxx ./verify-guards.sh
 #   带限频用例：./verify-guards.sh --include-429         # 见下方说明，默认不跑
 #   本人跑（059 直写授权那组）：ANCHOR_ROLE=owner ./verify-guards.sh
+#   在**开发机**上（无 77 / 无 wg2 / 无真上游）：./verify-guards.local-harness.sh
+#     └ 真模板 + 桩上游把闸 8 两种角色都跑掉，并带两个变异自证它不是恒真探针。
+#       改闸 8 之前先读那个文件的头。
 set -uo pipefail
 
 BASE="${BASE:-http://10.90.0.1:8811}"

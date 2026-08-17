@@ -230,5 +230,6 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
 3. 🚨 **通道 token 由两把回退成一把**（2026-08-17，user 决策；plan §2 记全过程与驳回理由）。T003 已按「第二把 `ANCHOR_IMPORT_TOKEN` + guard 参数化」实装并测绿，收口时整体回退：两把同出一个 SOPS blob、渲进 guest 机同一个 env 文件、落进同一份 nginx conf ⇒ **共命，不构成独立的第二层**；而它唯一防的「绕过代理直连 loopback」位置，因 guest compose 是 `network_mode: host`，恰恰就是那台 guest 机本机。
    **随之改动**：`ANCHOR_IMPORT_TOKEN` 从九位置全部撤除（含 envsubst 三份正则）· guard 回到普通 `@Injectable()`（mixin 工厂删）· `openapi.config.ts` 撤掉第三个 bearer scheme 并重跑 export-openapi + regen · `render-env.sh` 自证 ③ 的「两把互不相同」判据删除 · guard IT 的交叉反例删除（一把之后它在服务端**不可能成立**，留着是假保证）。
    **代价与其唯一护栏**：spec `state_branches` ⑫ 由「两层各拒一次」改为「判据落在通道层，MUST NOT 依赖服务层再拒一次」；server IT 的 ⑫ 改成钉住「服务层不可判」这件事本身（同一 bearer 打两口都 201），谁把 token 重新拆开它就红；**唯一验「只有本人可直写」的地方是 `verify-guards.sh` 闸 8d**，owner / other 两侧都必须真跑。要加回第二把的门槛（「先证明它与第一把不共命」）单点记在 `guest-upload.config.ts` 顶部。
+   **配套入库**：`services/guest-proxy/verify-guards.local-harness.sh` —— 唯一的护栏不能只在「有人想起来手搭环境」时才跑得动。开发机上真模板 + 桩上游（桩 app 逐字节校验 bearer）跑掉闸 8 两种角色，并带 `MUTATE=1|2` 两个互补变异自证它不是恒真探针。它同时把「envsubst 正则三份拷贝键集一致」做成了起手前置 —— 那正是 057 与 059 各漏改过一次的地方。
 
 另有一处**实现细节**在 spec / plan 里没写死、由实现选定并已落成断言：**`noop` 判据把 `confidence_source` 一并算进去**（四个模型事实全等 **且**来源已是 `model` 才算 noop）。理由：手工锚的数字恰好与模型一致时，这次导入**确实改了东西** —— 它把 provenance 翻成 `model`（FR-002 的 MUST）。判成 noop 会让那只锚继续显示「人工来源、可编辑」，与实际写入路径不符。
