@@ -167,7 +167,31 @@ updated_at: '2026-08-17'
   >
   > ⏭️ **欠给 T010/T011 的一条**：plan §D1 要求「两端事件类型字面量相等**靠 IT 钉住、不靠人眼**」—— 即 subscriber 的 `eventType` 必须等于生产侧实际写进 `outbox_event.event_type` 的值。单测两侧各自断言自己的常量，钉不住二者相等；这条只有真 DB + 真容器能验，落在 IT 层。
 
-- [ ] T010 [Server] **IT 上半：触发 / 时点归属 / 幂等**（FR-013, FR-015, FR-015a, SC-002, SC-003, `state_branches` ①②③⑥⑦⑧⑨⑩⑲㉓，plan Gate 0.1）：新建 `apps/server/test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts`（Testcontainers 真 PG，`Test.createTestingModule({ imports: [MarketdataModule] })` 装真 DI 容器，vendor port 用 stub 计调用次数）。注入固定 `now` 覆盖休市 / 盘中两档与 §D4 的三种时点归属。⚠️ **午休档蓄意不在这一层**：唯一开通期权采集的市场是 `us` 而 us 无午休，`hk` 在 `COLD_START_CAPABILITY` 里是空表项（走到就 `market_not_enabled` 提前返回，够不到快照分支）⇒ **午休分支端到端今天不可达**，在这里写它只会得到一个恒真 IT。它由 T001（谓词层）+ T006（use case 层）覆盖，接 hk 期权采集那片时再上提到本层。→ verify: `nx test server test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts --skip-nx-cache`（新文件首跑必加）。🚨 **两条硬断言**：① 盘中分支 `optionDailySnapshot.count()` **零变化**；② **「数据已在、`anchor_cold_start_run` 为空」⇒ vendor port 零调用**（直接插目标交易日的快照 / 日线行，不写任何运行记录，再触发）—— 谁把复判写成读运行记录，这条立刻红。🚨 **反恒真**：每条 `it()` 落地后**逐条注掉对应实现确认它真的变红**，再恢复 —— 恒真断言会让覆盖矩阵显示 24/24 而实际零保护（体例同 059 T007）
+- [X] T010 [Server] **IT 上半：触发 / 时点归属 / 幂等**（FR-013, FR-015, FR-015a, SC-002, SC-003, `state_branches` ①②③⑥⑦⑧⑨⑩⑲㉓，plan Gate 0.1）：新建 `apps/server/test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts`（Testcontainers 真 PG，`Test.createTestingModule({ imports: [MarketdataModule] })` 装真 DI 容器，vendor port 用 stub 计调用次数）。注入固定 `now` 覆盖休市 / 盘中两档与 §D4 的三种时点归属。⚠️ **午休档蓄意不在这一层**：唯一开通期权采集的市场是 `us` 而 us 无午休，`hk` 在 `COLD_START_CAPABILITY` 里是空表项（走到就 `market_not_enabled` 提前返回，够不到快照分支）⇒ **午休分支端到端今天不可达**，在这里写它只会得到一个恒真 IT。它由 T001（谓词层）+ T006（use case 层）覆盖，接 hk 期权采集那片时再上提到本层。→ verify: `nx test server test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts --skip-nx-cache`（新文件首跑必加）。🚨 **两条硬断言**：① 盘中分支 `optionDailySnapshot.count()` **零变化**；② **「数据已在、`anchor_cold_start_run` 为空」⇒ vendor port 零调用**（直接插目标交易日的快照 / 日线行，不写任何运行记录，再触发）—— 谁把复判写成读运行记录，这条立刻红。🚨 **反恒真**：每条 `it()` 落地后**逐条注掉对应实现确认它真的变红**，再恢复 —— 恒真断言会让覆盖矩阵显示 24/24 而实际零保护（体例同 059 T007）
+
+  > 📌 **impl 期记录（2026-08-17）** —— 11 个 `it()`，含 plan §D1 欠的那条两端字面量相等。
+  >
+  > **两处刻意的「非端到端」**（写在文件头，免得下一个人以为是偷懒）：① `MARKETDATA_WORKER_DISABLED` 置位 —— 本文件验的是编排判据不是 BullMQ 调度，worker 一起来就会去真跑链发现/日线维度；第一相组的 flow 停在队列里供断言，第二相由测试**显式**以 `phase: 'snapshot'` 驱动（正是 flow parent 的语义）。② 「链/日线 child 已跑完」靠 `seedTargetDayData()` 手工造数据形态，同因。
+  >
+  > **两端事件类型字面量相等**（plan §D1 欠的）已还：让真事件穿过 `outbox_event.event_type`，再拿消费侧 `subscriber.eventType` 去对。单测两边各自断言自己的常量，钉不住二者相等。
+  >
+  > 🚨 **反恒真跑了 9 条变异，覆盖矩阵闭合**（每个 `it()` 至少被一条弄红）：
+  >
+  > | 变异 | 红的用例 |
+  > |---|---|
+  > | M1 `oiRefreshed` 恒假（杀盘前档） | ⑨ |
+  > | M2 `oiRefreshed` 丢掉 `todayIsTradingDay` | ①⑩ |
+  > | M3 盘中闸丢掉日历一格（回到修前） | ⑩ |
+  > | M4 盘中闸恒不触发 | ② |
+  > | M5 起手复判恒判「不具备」 | ⑦㉓⑥⑲ |
+  > | M6 起手复判改读 `anchor_cold_start_run` | ⑦㉓⑲ |
+  > | M7 事件类型字面量改一个字 | 两条触发链 |
+  > | M8 flow 不挂 children | ① |
+  > | M9 `oi_as_of` 两条路径对调 | ⑧⑨⑩ |
+  >
+  > **过程中的两条方法论教训**：① 第一版变异用 `&& false` 造恒假条件，TS 在**静态不可达块**里丢掉类型窄化 ⇒ 报的是 TS2322/TS2345 而不是测试红，看起来像「探针有效」实则根本没跑到断言。改用运行期恒假的比较（`market === 'zz'`）才验到。② 自查时发现 ⑧ **一条变异都咬不到**，补了 M9 才闭合 —— 「11 个 it 全绿」和「11 个 it 都有保护」是两件事，不逐条对一遍就会把后者当成前者。
+  >
+  > **⑧⑨⑩ 三档取的判别性时刻**（EDT = UTC-4，交易日历只登记工作日）：ET 周五 17:00 收盘后（`today === target`）/ ET 周一 06:00 盘前（`today > target` 且今天是交易日）/ ET 周六 12:00（`today > target` 且今天非交易日）。第三个同时是周末缺口那条修复的端到端证据。
 
 - [ ] T011 [Server] **IT 下半：市场参数化 / 失败重试 / 结局可区分**（SC-005, SC-007, SC-009, SC-010, `state_branches` ④⑤⑪⑫⑬⑭⑮⑯⑰⑱⑳㉑㉒㉔）：新建 `apps/server/test/integration/marketdata.cold-start-060.market-outcome.it.spec.ts`。覆盖：既有锚更新不触发、建锚回滚不留 outbox 行、日历缺行、Instrument 缺行 seed、hk 锚显式 no-op、未登记市场、ticker 不可解析、配额耗尽顺延、整体失败不回滚锚、八种结局各有唯一取值。→ verify: 同上命令。🚨 **一条硬断言**：**删锚后以同一 ticker 重建 ⇒ `anchorColdStartRun` 两行**（新 `anchorId` ⇒ 新行）—— 谁把 PK 写成 ticker，只会有一行，立刻红。🚨 **反恒真同 T010**：逐条注掉实现确认变红再恢复。⚠️ **不要写「两只锚指向同一标的」的用例**：`anchor.ticker` 是 `@unique`，今天在库里插不进去
 
