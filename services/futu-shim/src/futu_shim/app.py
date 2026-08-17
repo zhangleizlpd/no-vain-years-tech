@@ -20,6 +20,7 @@ Field names inside `rows` are passed through exactly as the SDK reports them
 
 from __future__ import annotations
 
+import gzip
 import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -36,6 +37,37 @@ from .ratelimit import RateGate, RateLimitExceeded
 log = logging.getLogger(__name__)
 
 PUBLIC_PATHS = frozenset({"/healthz"})
+
+# The link from the server to this shim is the account's egress, capped at
+# 1 Mbps — measured end-to-end at ~150 KB/s from the server side on 2026-08-17.
+# That cap, not OpenD and not this process, is what makes big batches slow:
+# a 285-contract /option-snapshot answers in 0.30 s (time-to-first-byte) and
+# then spends **6.5 s** pushing 976 KB down the pipe.
+#
+# Snapshot rows are 143 fields wide with ~54 non-null — every option row carries
+# the full `wrt_* / index_* / plate_* / future_* / trust_* / pre_* / after_* /
+# overnight_*` scaffolding as "N/A". Repeated keys plus repeated sentinels is a
+# near-ideal shape for DEFLATE: that same 976 KB body compresses to **34.5 KB**
+# at level 6 (28.3x), turning the 6.5 s transfer into 0.22 s.
+#
+# 🚨 Compression is negotiated, never imposed: a client that does not advertise
+# gzip gets the exact bytes it would have got before this hook existed. That is
+# what keeps this a pure addition — see `test_responses_are_untouched_without_
+# accept_encoding`. Node's global `fetch` (undici, the server's transport) sends
+# `accept-encoding: gzip, deflate` on its own and inflates transparently, so the
+# server side needs no change; verified on node v22 for both dev and the prod
+# image on 2026-08-17.
+#
+# Level 6 is zlib's default. Measured on that same 976 KB body: level 1 gives
+# 16.4x for 4 ms of CPU, level 6 gives 28.3x for 8 ms, level 9 gives 29.0x for
+# 12 ms. Past 6 the curve is flat — 9 shaves 2.4% more off the body for 50% more
+# CPU on every batch of a nightly job that already runs 21 of them, while 8 ms
+# against a 6.5 s transfer is noise.
+GZIP_LEVEL = 6
+# Below roughly one MTU's worth of payload the transfer is a single round trip
+# either way, so compressing buys nothing and can even grow the body. /healthz
+# (427 B) and small `rows` answers therefore stay untouched.
+GZIP_MIN_BYTES = 1024
 
 # `request_history_kline` pages at `max_count` rows and hands back a
 # `page_req_key` when more remain. Ignoring that key is a silent truncation, so
@@ -205,6 +237,32 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
         # No detail in the body: a caller that cannot authenticate gets no help
         # distinguishing "no token configured" from "wrong token".
         return jsonify({"error": "unauthorized"}), 401
+
+    @app.after_request
+    def _compress(response):
+        """Negotiated gzip. See `GZIP_LEVEL` for why this exists and what it buys.
+
+        `Vary` goes on **every** response, compressed or not: it tells any cache
+        between here and the server that the body depends on the request's
+        `Accept-Encoding`. Setting it only on the compressed branch is the classic
+        way to poison a shared cache with a gzipped body served to a client that
+        never asked for one.
+        """
+        if "Accept-Encoding" not in response.headers.get("Vary", ""):
+            response.headers.add("Vary", "Accept-Encoding")
+        if response.direct_passthrough or response.status_code != 200:
+            return response
+        if "gzip" not in (request.headers.get("Accept-Encoding") or ""):
+            return response
+        if response.headers.get("Content-Encoding"):
+            return response
+        body = response.get_data()
+        if len(body) < GZIP_MIN_BYTES:
+            return response
+        response.set_data(gzip.compress(body, GZIP_LEVEL))
+        response.headers["Content-Encoding"] = "gzip"
+        response.headers["Content-Length"] = str(len(response.get_data()))
+        return response
 
     @app.errorhandler(RateLimitExceeded)
     def _on_rate_limited(exc: RateLimitExceeded):
