@@ -122,7 +122,22 @@ updated_at: '2026-08-17'
   >
   > **反恒真已跑**：把闸换成 T006 明禁的 `isWithinTradingSession` ⇒ 午休那条 `it()` 立刻红（13:30 HKT 那条仍绿是对的 —— 它在连续竞价段内，两个谓词同值，只有午休正中才分道）。
 
-- [ ] T007 [Server] **新 named job：入队面 + worker 路由**（FR-005, FR-017, FR-019a, FR-019b, plan §D3 §D10）：`marketdata-sync.worker.ts` 加 `ANCHOR_COLD_START_JOB = 'sync:anchor-cold-start'` 与其 payload 类型 `{ ticker: string; anchorId: string }`（**独立类型，`DimensionJobPayload` 一个字段不加**），`MarketdataSyncQueue` 加一个 `enqueueColdStart()`，worker 的 `job.name` 路由加一条分支指向 `AnchorColdStartUseCase`。`attempts` + 指数退避沿用 `jobOpts` 既有语义。`marketdata.module.ts` 注册新 use case。→ verify: `nx test server marketdata/marketdata-sync.worker.spec.ts`（若无则新建）断言：`sync:anchor-cold-start` 被路由到冷启动而**不**进 `DimensionExecutorRegistry`；既有 `sync:<dim>` 路由行为逐条不变（回归）；入队用的 queue 名等于 `MARKETDATA_SYNC_QUEUE`（防有人另起队列，Guardrail 6）
+- [X] T007 [Server] **新 named job：入队面 + worker 路由**（FR-005, FR-017, FR-019a, FR-019b, plan §D3 §D10）：`marketdata-sync.worker.ts` 加 `ANCHOR_COLD_START_JOB = 'sync:anchor-cold-start'` 与其 payload 类型 `{ ticker: string; anchorId: string }`（**独立类型，`DimensionJobPayload` 一个字段不加**），`MarketdataSyncQueue` 加一个 `enqueueColdStart()`，worker 的 `job.name` 路由加一条分支指向 `AnchorColdStartUseCase`。`attempts` + 指数退避沿用 `jobOpts` 既有语义。`marketdata.module.ts` 注册新 use case。→ verify: `nx test server marketdata/marketdata-sync.worker.spec.ts`（若无则新建）断言：`sync:anchor-cold-start` 被路由到冷启动而**不**进 `DimensionExecutorRegistry`；既有 `sync:<dim>` 路由行为逐条不变（回归）；入队用的 queue 名等于 `MARKETDATA_SYNC_QUEUE`（防有人另起队列，Guardrail 6）
+
+  > 📌 **impl 期记录（2026-08-17）**
+  >
+  > **① `ANCHOR_COLD_START_JOB` / payload 类型已在 T006 落地**（两相 flow 需要 `phase` 字段），本 task 实际做的是 `enqueueColdStart()` + worker 路由分支 + `marketdata.module.ts` 注册 + **retry-exhausted 出口**。另加一个 `MarketdataSyncJobPayload` 联合类型（两支无继承无共用字段，路由键恒为 `job.name`）。
+  >
+  > **② retry-exhausted 出口的落法（plan §D10 第二层，T006 那条注把它指名给了 T007）**：新增 `AnchorColdStartUseCase.recordRetryExhausted()`，由 worker 的 `onJobFailed()` 经 `queue.getJob(jobId)` 认出 `job.name` 后调用；维度 job 不碰那张表。判据留在 job 层——「还能不能再试」是 BullMQ 的账（`attemptsMade` / `opts.attempts`），use case 看不见也不该看见。
+  >
+  > **③ 两条 BullMQ 语义已从装好的 `node_modules/bullmq` 源码实证**（不是文档、不是记忆）：
+  >
+  > - `QueueEvents('failed')` **只在 attempts 耗尽后触发**——`classes/job.js` 的 `moveToFailed` 里 `shouldRetryJob` 为真时走 `moveToDelayed`/`retryJob`（发 `delayed`/`waiting`），只有为假才走发本事件的 `moveToFinished(target='failed')`。既有那条「retry 耗尽硬失败」注释成立，出口可以直接挂上去。
+  > - `failParentOnFailure` 的 parent **会先被跑一遍**：lua `moveChildFromDependenciesIfNeeded` 把 parent 移到 **wait**（不是直接 failed），parent 跑完收尾时才被 `-9` 拒绝 complete，`classes/scripts.js` 把它折成 `UnrecoverableError` ⇒ 不重试、直落 failed。⇒ 链硬失败那一路，第二相**已经写过一行 `backfilled` 的谎**（零合约 ⇒ 零外呼 ⇒ 也算「跑完了」），随后 retry 出口的 `retry_exhausted` 覆盖它。**覆盖是要的行为，不是竞态**——已写进 `recordRetryExhausted` 的文档注。
+  >
+  > **④ 连带扫了 14 个 IT 文件 / 27 处手工 `new MarketdataSyncWorker(...)`**（构造器多一个必填依赖）。**蓄意不用 `@Optional()`** 换取零改动：那样缺注册时 Nest 会注 `undefined` 而 boot 照常绿 ⇒ **T012 的 boot smoke 对这条新接线就失去了牙齿**，而 T012 存在的全部理由正是「DI 接错的表现是 boot 失败而不是任何单测红」。新增 `apps/server/test/_support/cold-start-stub.ts`，桩**被调到就抛**（那些 IT 全是维度路由用例，调到它就说明路由串了；返回空结果会把事故变成一条绿测试）。
+  >
+  > **⑤ 反恒真已跑三条**：`isColdStartJob` 恒假 ⇒ 4 条红；retry 出口去掉 `job.name` 守卫 ⇒ 1 条红；`phase` 写死 ⇒ 1 条红。**并且修掉了两条自己写出来的恒真断言**——retry 出口那两条早退用例，即使把守卫删光也照样绿（无守卫版本会撞 `BigInt(undefined)` 抛错被 catch 吞掉，可观测面同样是「零调用」）。修法：给维度 job 喂一个**长得像冷启动**的 payload，并断言降级 WARN 未被调用（区分「守卫早退」与「撞异常被兜住」）。
 
 - [ ] T008 [Server] **outbox 消费方**（FR-004, FR-005, plan §D2）：新建 `marketdata/anchor-cold-start.subscriber.ts`，`implements OutboxSubscriber, OnModuleInit`，`eventType = 'optionsdesk.anchor-created'`（**字面量，禁 import optionsdesk**），`onModuleInit` 自注册进 `OutboxSubscriberRegistry`，`handle()` 只做「校验 payload → `enqueueColdStart()` → 返回」。🚨 抛 / 不抛按 Guardrail 5。`marketdata.module.ts` 注册。→ verify: `anchor-cold-start.subscriber.spec.ts` —— payload 缺字段 / 类型不符 ⇒ **不抛**且入队零调用且 `logger.error` 被调用；入队 reject ⇒ **抛**（用 `rejects.toThrow` 钉住方向，这是全片最容易写反的一处）
 

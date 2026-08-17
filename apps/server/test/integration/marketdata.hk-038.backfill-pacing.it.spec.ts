@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { Logger } from '@nestjs/common';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -320,6 +321,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
       lifecycle.client,
       buildRegistry({ eodBar: trackingEod }),
       queue,
+      coldStartUnused(),
       CFG,
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
@@ -377,6 +379,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
       lifecycle.client,
       buildRegistry({ eodBar: new ServedEodMock(served) }),
       queue,
+      coldStartUnused(),
       CFG,
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });

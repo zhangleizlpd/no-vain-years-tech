@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { Logger } from '@nestjs/common';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -88,7 +89,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
   it('① 入队 universe job → worker 路由 executor → instrument 落库 + SyncRun sync:universe (bullJobId=job.id) + attempts 注入', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -118,7 +125,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
   it('② sentinel 置位 → onModuleInit 不起 worker, 队列积压不消费 (D6 CLI 进程形态)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
     process.env[MARKETDATA_WORKER_DISABLED] = '1';
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     try {
       worker.onModuleInit();
       expect(worker.running).toBe(false);
@@ -139,7 +152,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
   it('④ 配额耗尽 → standalone delayed re-enqueue (deferral ≠ failure) + 已同步标的续跑不重复 (D5)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -193,7 +212,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
   it('⑤ 双 job 失败不连坐: 维度 A 顶层抛错, 维度 B job 照常成功 (FR-S03)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -235,7 +260,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
   it('⑥ retryMax 耗尽 → QueueEvents failed 告警 (结构化 ERROR) + 每 attempt 一行 SyncRun=failed', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -283,7 +314,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
   it('⑦ fact job 前置重算 (018 T002): seed watchlist → eod_bar job → 命中标的 syncTier=0 + DailyBar 落库', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -331,6 +368,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       lifecycle.client,
       buildRegistry(tierRecalc),
       queue,
+      coldStartUnused(),
       CFG,
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
@@ -353,7 +391,13 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
   it('③ name/payload 漂移 job → processor 拒 (不路由错维度)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();

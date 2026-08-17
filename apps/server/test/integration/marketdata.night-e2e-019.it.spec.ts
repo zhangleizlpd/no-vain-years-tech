@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { QueueEvents } from 'bullmq';
 import { Prisma } from '../../src/generated/prisma/client';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -199,7 +200,13 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
     registry: DimensionExecutorRegistry,
     run: (events: QueueEvents) => Promise<void>,
   ): Promise<void> {
-    const worker = new MarketdataSyncWorker(lifecycle.client, registry, queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      registry,
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();

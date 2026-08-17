@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
 import { MockMarketDataAdapter } from '../../src/marketdata/mock-market-data.adapter';
@@ -202,7 +203,13 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
     registry: DimensionExecutorRegistry,
     run: (events: QueueEvents) => Promise<void>,
   ): Promise<void> {
-    const worker = new MarketdataSyncWorker(lifecycle.client, registry, queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      registry,
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();

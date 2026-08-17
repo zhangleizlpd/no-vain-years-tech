@@ -205,6 +205,30 @@ export class AnchorColdStartUseCase {
   }
 
   /**
+   * **retry 耗尽出口** (FR-019a, plan §D10 第二层): job 层在 BullMQ `attempts` 用尽后调本方法
+   * 落 `retry_exhausted` —— 「做了但失败」, 与「今天本就不该做」两两互异 (FR-027 零折叠)。
+   *
+   * 🚨 **判据留在 job 层, 不在这里复判**: 「还能不能再试」是 BullMQ 的账 (`attemptsMade` /
+   * `opts.attempts`), use case 看不见也不该看见。本方法只负责把结论落库。
+   *
+   * ⚠️ 它可能**覆盖**同一次冷启动刚写下的 `backfilled`: 链 child 带 `failParentOnFailure`
+   * 硬失败时, BullMQ 仍会**先跑一遍** parent (第二相), 待其收尾时才以「有失败 child」
+   * 拒绝 complete (bullmq `scripts.js` 把 lua 的 `-9` 折成 `UnrecoverableError`) ⇒ 那一遍
+   * 可能已写过一个 `backfilled` 的谎 (零合约 ⇒ 零外呼 ⇒ 也算"跑完了")。后写的这一行才是真相,
+   * 覆盖是**要的行为**, 不是竞态。
+   */
+  async recordRetryExhausted(input: {
+    anchorId: bigint;
+    ticker: string;
+    now: Date;
+    failedReason?: string;
+  }): Promise<void> {
+    await this.finish(input, COLD_START_OUTCOME.RETRY_EXHAUSTED, {
+      reason: `BullMQ attempts 耗尽: ${input.failedReason ?? '(无 failedReason)'}`,
+    });
+  }
+
+  /**
    * 组 flow 入队: children = 能力登记表里的 delta 维度, parent = **本 job 的第二相**。
    *
    * 边的软硬**不同**, 且都必须显式给 —— 裸 child 会让 parent 永久卡在 `waiting-children`

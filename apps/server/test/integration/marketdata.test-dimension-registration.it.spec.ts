@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
 import { MockMarketDataAdapter } from '../../src/marketdata/mock-market-data.adapter';
@@ -108,7 +109,13 @@ describe('019 T006 SC-S05 测试维度注册演练 (tick→flow→worker 全链)
     registry.registerExecutor(TEST_KEY, testExecutor);
 
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, registry, queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      registry,
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();

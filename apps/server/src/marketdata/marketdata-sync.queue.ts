@@ -99,6 +99,12 @@ export interface AnchorColdStartJobPayload {
 export const ANCHOR_COLD_START_RETRY_MAX = 3;
 
 /**
+ * 本队列消费的**全部** payload 形态 —— 路由键是 `job.name`, 判据住消费者面
+ * (`marketdata-sync.worker.ts`)。两支**无继承无共用字段**, 联合而非交叉是刻意的。
+ */
+export type MarketdataSyncJobPayload = DimensionJobPayload | AnchorColdStartJobPayload;
+
+/**
  * 队列入队面 (017 T009): Queue 实例 + `enqueueDimensionJob` helper。
  *
  * job opts 统一在此注入 (tick / trigger CLI / backfill CLI / 顺延 re-enqueue 共用):
@@ -123,6 +129,29 @@ export class MarketdataSyncQueue implements OnModuleDestroy {
     opts: { retryMax: number; delayMs?: number },
   ): Promise<Job<DimensionJobPayload>> {
     return this.queue.add(dimensionJobName(payload.dimensionKey), payload, this.jobOpts(opts));
+  }
+
+  /**
+   * 入队锚冷启动 job (060 T007)。两个调用点: outbox subscriber 首次触发 / worker 配额顺延重投。
+   *
+   * 🚨 **走的是构造器绑定的那一个 `this.queue` (`marketdata-sync`)** —— 另起队列 = 冷启动与
+   * 夜间批**并发**打 vendor, 直接撞限频; 那条 `concurrency=1` 是限频的支柱 (plan §D3)。
+   *
+   * `retryMax` 默认取 {@link ANCHOR_COLD_START_RETRY_MAX}: 冷启动不是维度、没有自己的
+   * `sync_dimension` 行, 故取常量而非查表。
+   */
+  async enqueueColdStart(
+    payload: AnchorColdStartJobPayload,
+    opts: { retryMax?: number; delayMs?: number } = {},
+  ): Promise<Job<AnchorColdStartJobPayload>> {
+    return this.queue.add(
+      ANCHOR_COLD_START_JOB,
+      payload,
+      this.jobOpts({
+        retryMax: opts.retryMax ?? ANCHOR_COLD_START_RETRY_MAX,
+        ...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
+      }),
+    );
   }
 
   /** job opts 装配 (FlowProducer 组树时复用同语义, T014)。 */
