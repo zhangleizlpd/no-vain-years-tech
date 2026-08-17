@@ -258,16 +258,25 @@ describe('COLD_START_CAPABILITY —— FR-024 一处显式登记', () => {
   });
 });
 
-describe('COLD_START_OUTCOME —— FR-027 八种结局零折叠 (SC-009)', () => {
-  it('恰好八种且取值两两互异', () => {
+describe('COLD_START_OUTCOME —— FR-027 九种结局零折叠 (SC-009)', () => {
+  it('恰好九种且取值两两互异', () => {
     const values = Object.values(COLD_START_OUTCOME);
-    expect(values).toHaveLength(8);
-    expect(new Set(values).size).toBe(8);
+    expect(values).toHaveLength(9);
+    expect(new Set(values).size).toBe(9);
   });
 
   it('「没做」与「做了但失败」不共用取值', () => {
     expect(COLD_START_OUTCOME.INTRADAY_SKIPPED).not.toBe(COLD_START_OUTCOME.RETRY_EXHAUSTED);
     expect(COLD_START_OUTCOME.MARKET_NOT_ENABLED).not.toBe(COLD_START_OUTCOME.RETRY_EXHAUSTED);
     expect(COLD_START_OUTCOME.ALREADY_PRESENT).not.toBe(COLD_START_OUTCOME.BACKFILLED);
+  });
+
+  it('🚨 「已补齐」与「做了但没补上」MUST NOT 共用取值 (FR-027a)', () => {
+    // 折叠这两个 = 唯一能发现永久缺口的那条按结局分组的查询失明。
+    expect(COLD_START_OUTCOME.BACKFILLED).not.toBe(COLD_START_OUTCOME.BACKFILL_INCOMPLETE);
+    // 也 MUST NOT 与「重试耗尽」混为一谈: 后者还有重试语义, 前者是终态、只等人工。
+    expect(COLD_START_OUTCOME.BACKFILL_INCOMPLETE).not.toBe(COLD_START_OUTCOME.RETRY_EXHAUSTED);
+    // VarChar(32) 列宽兜底。
+    for (const v of Object.values(COLD_START_OUTCOME)) expect(v.length).toBeLessThanOrEqual(32);
   });
 });

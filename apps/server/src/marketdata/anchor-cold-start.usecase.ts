@@ -217,6 +217,32 @@ export class AnchorColdStartUseCase {
       );
       return { settled: false, deferral: 'vendor_budget' };
     }
+
+    // 🚨 落库复判 (FR-027a): **`collect` 返回 ≠ 那份快照真的落了库**。
+    //
+    // `collect` 只交回「配额耗没耗尽」一个布尔; 「该票零未到期合约」在它内部只是
+    // `stats.skipped++` + 一条 WARN, 而 stats 到不了这里。于是最该被发现的那条路径 ——
+    // 链 child **成功完成但零结果** (per-target 失败不让 job 失败 ⇒ `failParentOnFailure`
+    // 够不着) —— 会一路走到下面那行落 `backfilled`, 而目标日的快照一行都没有。
+    // 期权 EOD 无跨日补救 ⇒ 那是**永久缺口**, 却记成了「已补齐」。
+    //
+    // 判据蓄意**不看 stats 而看库**: 一来它与起手复判**同源** (同一个「标的+交易日的数据
+    // 在不在」, 见 {@link snapshotPresent} 的两个调用点), 不新造第二套口径; 二来 stats 的
+    // `ok=1` 只说明「有合约、走完了采集路径」, 整批被落库前硬门拒掉时它照样是 1。
+    //
+    // 🚫 **只看快照, 不看日线**: 日线那条边是 soft (`ignoreDependencyOnFailure`) 且可重拉,
+    // 让它左右结局会把「日线没补上」也翻成失败。
+    if (!(await this.snapshotPresent(instrumentId, targetSession))) {
+      // ERROR 级 = 需人工介入, 与 `calendar_missing` 同档 (两者都是「放弃 + 留可判读记录」)。
+      this.logger.error(
+        `[anchor-cold-start] 采集跑完但 ${targetSession} 的快照仍不在库 ⇒ 本次补数未完成 ` +
+          `(anchorId=${anchorId} ticker=${ticker}; 常见成因: 链发现未覆盖该标的 / 整批被落库前硬门拒)`,
+      );
+      return this.finish(input, COLD_START_OUTCOME.BACKFILL_INCOMPLETE, {
+        targetSession,
+        reason: `采集已执行但 ${targetSession} 快照未落库 (零未到期合约, 或整批未过落库前硬门)`,
+      });
+    }
     return this.finish(input, COLD_START_OUTCOME.BACKFILLED, { targetSession });
   }
 
@@ -396,10 +422,26 @@ export class AnchorColdStartUseCase {
       })) > 0;
     if (!barPresent) return false;
 
+    return !capability.optionSnapshot || (await this.snapshotPresent(instrumentId, targetSession));
+  }
+
+  /**
+   * 「该标的在该交易日的**期权快照**在不在库」—— 起手复判 (第 5 步) 与采集后的落库复判
+   * (第 7 步末) 问的是同一个问题, 故只有这一处定义。
+   *
+   * 🚨 拆出来不是为了少写几行, 是为了**不让两处判据漂**: 一处答「不在 ⇒ 去采」、另一处答
+   * 「还是不在 ⇒ 没补上」, 二者若用不同口径, 会出现「复判说不在、采完又说在」的自相矛盾结局。
+   *
+   * 复杂度: 1 次 `option_daily_snapshot ⋈ option_contract` 上按 `underlying_instrument_id`
+   * 的 count。
+   */
+  private async snapshotPresent(instrumentId: bigint, targetSession: string): Promise<boolean> {
     return (
-      !capability.optionSnapshot ||
       (await this.prisma.optionDailySnapshot.count({
-        where: { sessionDate, contract: { underlyingInstrumentId: instrumentId } },
+        where: {
+          sessionDate: new Date(`${targetSession}T00:00:00Z`),
+          contract: { underlyingInstrumentId: instrumentId },
+        },
       })) > 0
     );
   }

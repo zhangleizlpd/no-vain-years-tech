@@ -31,6 +31,11 @@ interface Overrides {
   instrumentExists?: boolean;
   barRows?: number;
   snapshotRows?: number;
+  /**
+   * `collect` **之后**快照表的行数 (FR-027a 落库复判读的就是它)。缺省 = 与 {@link snapshotRows}
+   * 同值, 即「采集没让库里多出任何东西」—— 那正是链零结果时的真实形态。
+   */
+  snapshotRowsAfterCollect?: number;
   /** `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
   /** `TRADING_CALENDAR_PORT.isTradingDay` 对**今天**的答案 (周末 / 节假日 = false)。 */
@@ -67,8 +72,12 @@ function build(overrides: Overrides = {}) {
     calls.push('dailyBar.count');
     return overrides.barRows ?? 0;
   });
+  // collect 跑没跑过, 决定 snapshotCount 该答「起手复判」还是「落库复判」那一问 ——
+  // 同一个 prisma 方法被前后各调一次, 两次的正确答案本就可以不同 (采集写了行)。
+  let collected = false;
   const snapshotCount = vi.fn(async (_args: unknown) => {
     calls.push('optionDailySnapshot.count');
+    if (collected) return overrides.snapshotRowsAfterCollect ?? overrides.snapshotRows ?? 0;
     return overrides.snapshotRows ?? 0;
   });
   const syncDimensionFindMany = vi.fn(async (_args: unknown) => {
@@ -100,6 +109,7 @@ function build(overrides: Overrides = {}) {
 
   const collect = vi.fn(async (_instruments: unknown, _spec: unknown, _stats: unknown) => {
     calls.push('snapshot.collect');
+    collected = true;
     return overrides.budgetExhausted === true;
   });
   const snapshot = { collect } as unknown as SyncOptionSnapshotUseCase;
@@ -357,7 +367,9 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
   const SNAPSHOT_PHASE = { anchorId: ANCHOR_ID, ticker: 'us:PEP', phase: 'snapshot' } as const;
 
   it('非盘中 ⇒ collect 收到的 spec **原样**来自 T003 纯函数 (不在这里重算, FR-014)', async () => {
-    const ctx = build();
+    // `snapshotRowsAfterCollect: 1` = 采集真落了行 ⇒ 落库复判过 (FR-027a); 缺省的「零行」
+    // 会落 backfill_incomplete, 那是另一条用例。
+    const ctx = build({ snapshotRowsAfterCollect: 1 });
     const now = SATURDAY_1000_BEIJING;
     const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now });
 
@@ -391,7 +403,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 北京周日 00:00 = ET 周六 12:00 —— 钟点落在 09:30–16:00 内, 但那天根本没有场。
     // 境内用户周末夜里做研究建锚正是这个时段, 判成盘中会让快照**永久**缺失
     // (intraday_skipped 是终态不重试; 常规轮周一晚写的是周一的数据, 不回补周五)。
-    const ctx = build({ todayIsTradingDay: false });
+    const ctx = build({ todayIsTradingDay: false, snapshotRowsAfterCollect: 1 });
     const result = await ctx.usecase.run({
       ...SNAPSHOT_PHASE,
       now: new Date('2026-08-15T16:00:00Z'),
@@ -409,6 +421,53 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
     expect(ctx.collect).not.toHaveBeenCalled();
+  });
+
+  it('🚨 采集跑完但快照仍不在库 ⇒ backfill_incomplete, MUST NOT 记成 backfilled (FR-027a)', async () => {
+    // 链 child **成功完成但零结果** 时的真实形态: collect 照常返回 (非配额耗尽), 而库里
+    // 一行都没多出来。2026-08-17 本地真跑实撞 —— 13 只票链全失败、job 却 completed。
+    const ctx = build({ snapshotRowsAfterCollect: 0 });
+
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE });
+    expect(ctx.collect).toHaveBeenCalledTimes(1);
+    const row = recordedRow(ctx.runUpsert);
+    expect(row.outcome).toBe(COLD_START_OUTCOME.BACKFILL_INCOMPLETE);
+    // 目标日仍要落 —— 「补哪一天没补上」是人工介入的第一手信息。
+    expect(row.targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
+    expect(row.reason).toContain(TARGET);
+  });
+
+  it('🚨 落库复判与起手复判问的是**同一个问题** (同一处判据, 两个调用点)', async () => {
+    // ⚠️ `barRows: 1` 是必需的: 起手复判先问日线, 缺日线就**短路**在那一格、根本问不到快照
+    //    (于是只剩落库复判一次调用)。要看到「同一个问题被问两遍」, 得让它走完整条。
+    const ctx = build({ barRows: 1, snapshotRows: 0, snapshotRowsAfterCollect: 3 });
+
+    await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+
+    // 第二相里 optionDailySnapshot.count 被调两次: 采集前 (起手复判) + 采集后 (落库复判),
+    // 且两次的 where 逐字相同 —— 口径漂了这条立刻红。
+    const snapshotWheres = ctx.snapshotCount.mock.calls.map((c) => c[0]);
+    expect(snapshotWheres.length).toBe(2);
+    expect(snapshotWheres[0]).toEqual(snapshotWheres[1]);
+    expect(snapshotWheres[0]).toMatchObject({
+      where: {
+        sessionDate: new Date(`${TARGET}T00:00:00Z`),
+        contract: { underlyingInstrumentId: INSTRUMENT_ID },
+      },
+    });
+  });
+
+  it('配额耗尽走顺延, MUST NOT 被落库复判改判成 backfill_incomplete (顺延 ≠ 没补上)', async () => {
+    // 配额耗尽时库里同样没有新行, 但那是「还没做完」不是「做了没成」—— 两者处置相反
+    // (前者重入队, 后者要人工看)。谁把落库复判放到配额分支之前, 这条立刻红。
+    const ctx = build({ budgetExhausted: true, snapshotRowsAfterCollect: 0 });
+
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+
+    expect(result).toEqual({ settled: false, deferral: 'vendor_budget' });
+    expect(ctx.runUpsert).not.toHaveBeenCalled();
   });
 
   it('配额耗尽 ⇒ 交回 vendor_budget 顺延, **不**落 retry_exhausted、也不落 backfilled', async () => {

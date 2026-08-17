@@ -41,6 +41,22 @@ export const COLD_START_OUTCOME = {
   CALENDAR_MISSING: 'calendar_missing',
   /** BullMQ `attempts` 耗尽后仍失败 (FR-019a) —— **做了但失败**。 */
   RETRY_EXHAUSTED: 'retry_exhausted',
+  /**
+   * 采集跑完了, 但目标交易日的快照**仍不在库** (FR-027a) —— **做了但没补上**。
+   *
+   * 🚨 它与 {@link BACKFILLED} 的差别不是程度而是事实: 后者宣称「那份快照现在在库里」,
+   * 而这条说的是「跑完之后它仍然不在」。两条最常见的到达路径:
+   * ① 链 child **成功完成但零结果** (per-target 失败不让 job 失败 ⇒ `failParentOnFailure`
+   *    够不着), 第二相于是拿着空工作集跑 —— `SyncOptionSnapshotUseCase` 判「无未到期合约」
+   *    WARN + 零外呼返回, 一切"正常";
+   * ② 有合约, 但整批被落库前硬门拒掉。
+   *
+   * 期权 EOD **无跨日补救** ⇒ 这两种情形盖住的都是**永久缺口**, 记成 `backfilled` 会让
+   * 唯一能发现它的那条按结局分组的查询失明 (2026-08-17 本地真跑实撞: 链 13 只票全失败、
+   * job 却 completed)。处置对齐 {@link CALENDAR_MISSING}: ERROR 级留痕 + 人工介入, 不重试
+   * —— 链是**第一相**跑的, 第二相重试只会拿着同一个空工作集再问一遍。
+   */
+  BACKFILL_INCOMPLETE: 'backfill_incomplete',
 } as const;
 
 export type ColdStartOutcome = (typeof COLD_START_OUTCOME)[keyof typeof COLD_START_OUTCOME];

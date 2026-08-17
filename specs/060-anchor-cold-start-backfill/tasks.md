@@ -223,7 +223,23 @@ updated_at: '2026-08-17'
 
 - [X] T012 [Server] **Verify Backend Physics — 真 app 启动冒烟**（ADR-0040 多层测试门）：跑 `scripts/ci/server-boot-smoke.ts`（Testcontainers PG + Redis 起真 Nest、发真 HTTP 探针）。本片新增一个自注册 subscriber + 一条 worker 路由 + 一个 use case，**DI 接错的表现是 boot 失败而不是任何单测红**。→ verify: 脚本退出码 0。🚨 **不许跳过、不许拆**（模板原文）；红了说明模块接线塌了，回滚 impl 而不是改断言
 
-  > ✅ **落地（2026-08-17）**：`pnpm tsx scripts/ci/server-boot-smoke.ts` 退出码 0，`✅ ALL ASSERTIONS PASSED`。真 `nx build server` 产物 + 真 PG/Redis 容器 + 真 HTTP 探针，本片新增的三处接线（`AnchorColdStartSubscriber` 的 `OnModuleInit` 自注册 / worker 的 `sync:anchor-cold-start` 路由 / `AnchorColdStartUseCase` 的五个构造器依赖）在**完整 AppModule**（非收窄 boot）里全部立得起来。顺带真跑了一次 `migrate deploy`，`20260817_1729_add_anchor_cold_start_run` 在空库上可应用。
+  > ✅ **T012 落地（2026-08-17）**：`pnpm tsx scripts/ci/server-boot-smoke.ts` 退出码 0，`✅ ALL ASSERTIONS PASSED`。真 `nx build server` 产物 + 真 PG/Redis 容器 + 真 HTTP 探针，本片新增的三处接线（`AnchorColdStartSubscriber` 的 `OnModuleInit` 自注册 / worker 的 `sync:anchor-cold-start` 路由 / `AnchorColdStartUseCase` 的五个构造器依赖）在**完整 AppModule**（非收窄 boot）里全部立得起来。顺带真跑了一次 `migrate deploy`，`20260817_1729_add_anchor_cold_start_run` 在空库上可应用。
+
+- [X] T013 [Server] **落库复判：堵住「做了但没补上」被记成 `backfilled`**（FR-027, **FR-027a**, SC-009, `state_branches` ㉕；本地真跑实撞后追加，2026-08-17）：`anchor-cold-start.rules.ts` 加第九个结局 `backfill_incomplete`；`anchor-cold-start.usecase.ts` 第二相 `collect` 之后**复判目标日快照是否真的在库**，不在 ⇒ ERROR + 落该结局（不重试）；抽出 `snapshotPresent()` 供起手复判与落库复判**共用一处判据**。→ verify: 单测 3 条（新分支 / 两处判据同源 / 配额顺延 MUST NOT 被改判）+ IT 1 条（零合约 ⇒ `backfill_incomplete`）+ ㉒ 扩到九种
+
+  > 🔍 **它是怎么被发现的**：T012 之后在本机跑了一次**真机 → 真 HTTP → 真 relay → 真 worker** 的端到端（mock 行情，美股盘中）。建锚 `us:KO` 后 `outcome=intraday_skipped`、快照零新增，全部符合预期；但顺带看到两个链 child 的 `sync_run` 是 `ok=0 / failed=13`（`MockCollectionRefusedError` —— 054 让采集口在 mock 下 fail-closed），**而 BullMQ job 本身 completed**。
+  >
+  > 顺着这个形态推下去：per-target 失败不让 job 失败 ⇒ `failParentOnFailure` **够不着** ⇒ 第二相照常跑 ⇒ 拿着**空工作集**调 `collect` ⇒ `SyncOptionSnapshotUseCase` 判「无未到期合约」WARN + 零外呼返回 ⇒ `collect` 只交回 `budgetExhausted=false` ⇒ 一路落 `backfilled`。**今晚被盘中闸挡住了所以没显形，收盘后同样的情形会走到底。**
+  >
+  > 两相设计解决的是**次序**（链先于快照），没解决**空结果**。而期权 EOD 无跨日补救 ⇒ 这个谎盖住的是**永久缺口**，且恰好让运维最想抓的那条「新锚没补上」的查询失明。
+  >
+  > **判据为什么看库不看 stats**：① 与起手复判**同源**（同一个「标的+交易日的数据在不在」，`snapshotPresent()` 一处定义两个调用点），不新造第二套「采集流程自认为做了什么」的口径；② `collect` 内部的 `stats.ok=1` 只说明「有合约、走完了采集路径」，**整批被落库前硬门拒掉时它照样是 1**，用 stats 判会漏掉那一档。
+  >
+  > **只看快照不看日线**（user 定夺）：日线那条边是 soft（`ignoreDependencyOnFailure`）且可重拉，让它左右结局会把「日线没补上」也翻成失败。
+  >
+  > **不重试**：链是**第一相**跑的，第二相重试只会拿着同一个空工作集再问一遍；且「该票没挂牌期权」是永久事实。处置对齐 `calendar_missing`（ERROR 级 + 留可判读记录 + 人工介入）。
+  >
+  > **反恒真**：把复判改成运行期恒不触发（`ticker === 'zz-probe' &&`）⇒ 精确红 4 条（2 条新单测 + 新 IT + ㉒），无溢出。
 
 ## Dependencies
 
@@ -268,6 +284,7 @@ T010 + T011 → T012（boot smoke 收尾）
 | ㉒  | 八种结局各有唯一取值、零折叠                    | T004 / T011        |
 | ㉓  | 数据已在、运行记录为空 → 零外呼                 | T010               |
 | ㉔  | 删锚后重建 → 运行记录两行                       | T004 / T011        |
+| ㉕  | 链跑完但零合约 → 落「做了但没补上」不落已补齐   | T013               |
 
 **24/24 覆盖，零缺口。**
 

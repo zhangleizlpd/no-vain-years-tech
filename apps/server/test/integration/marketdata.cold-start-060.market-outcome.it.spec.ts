@@ -43,7 +43,7 @@ import {
 //   ① **建锚事件的事务边界** —— ⑤ 要的是「建锚回滚 ⇒ outbox 行一起没」。publish 是否真的与
 //      锚行同生共死, 只有让一次**真回滚**发生在真事务里才验得到; mock 的 publisher 无论挂在
 //      tx 里还是 tx 外, 被调次数都一样。
-//   ② **结局的零折叠 (㉒)** —— 判据是「同一张表里八种取值同时在场且两两互异」。单测里各分支
+//   ② **结局的零折叠 (㉒)** —— 判据是「同一张表里九种取值同时在场且两两互异」。单测里各分支
 //      各自断言自己那个常量, 断不出「两个分支落了同一个值」。
 //   ③ **顺延重入队 (㉑) 是真 Redis 的账** —— `attempts` 有没有被顺延吃掉、`phase` 有没有被
 //      丢掉、delay 是不是配额窗, 都记在 BullMQ 的 job 上, 不在被测代码的返回值里。
@@ -212,7 +212,10 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
    * 标的 + 一条未到期合约。到期日**远**在所有用例之后 —— 本文件有一例走真实钟点
    * (㉑ 的 worker 出口), 到期日贴着今天会让它某天突然采不到合约。
    */
-  async function seedUnderlying(ticker: string): Promise<{ instrumentId: bigint; code: string }> {
+  async function seedUnderlying(
+    ticker: string,
+    opts: { withContract?: boolean } = {},
+  ): Promise<{ instrumentId: bigint; code: string }> {
     const code = ticker.split(':')[1]!;
     const inst = await prisma.instrument.create({
       data: {
@@ -226,6 +229,8 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       },
       select: { id: true },
     });
+    // `withContract: false` = 链发现**跑完了但这只票零合约** —— 第二相于是拿着空工作集跑。
+    if (opts.withContract === false) return { instrumentId: inst.id, code };
     await prisma.optionContract.create({
       data: {
         market: 'us',
@@ -594,7 +599,35 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   // 结局面 (FR-026 / FR-027, SC-009)
   // ───────────────────────────────────────────────────────────────────────────
 
-  it('🚨 ㉒ 八种结局在同一张表里同时在场、两两互异, 且**恰好**是值域全集 (零折叠)', async () => {
+  it('🚨 FR-027a 链跑完但该票零合约 ⇒ backfill_incomplete, MUST NOT 记成 backfilled', async () => {
+    // 2026-08-17 本地真跑实撞的形态: 链 job **completed** (per-target 失败不让 job 失败,
+    // 故 `failParentOnFailure` 够不着), 但该标的一个合约都没落 ⇒ 第二相拿着空工作集跑,
+    // `SyncOptionSnapshotUseCase` 判「无未到期合约」WARN + 零外呼返回, 一切"正常"。
+    const { instrumentId } = await seedUnderlying(TICKER, { withContract: false });
+    const anchorId = await createAnchorFor(TICKER);
+    await seedTargetDayData(instrumentId); // 日线在, 只缺合约
+
+    const result = await coldStart.run({
+      anchorId,
+      ticker: TICKER,
+      now: SAT_NIGHT,
+      phase: 'snapshot',
+    });
+
+    // 🚨 期权 EOD 无跨日补救 ⇒ 这是**永久缺口**。记成 backfilled 会让唯一能发现它的那条
+    //    按结局分组的查询失明 —— 而运维最想抓的恰恰是「新锚没补上」。
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE });
+    expect(await prisma.optionDailySnapshot.count()).toBe(0);
+    // 零合约 ⇒ 连一次外呼都不该有 (WARN 早退在打 vendor 之前)。
+    expect(port.calls).toHaveLength(0);
+    const run = await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } });
+    expect(run.outcome).toBe(COLD_START_OUTCOME.BACKFILL_INCOMPLETE);
+    // 「补哪一天没补上」是人工介入的第一手信息, 故 target_session 仍要落。
+    expect(run.targetSession).not.toBeNull();
+    expect(run.reason).toContain(TARGET);
+  });
+
+  it('🚨 ㉒ 九种结局在同一张表里同时在场、两两互异, 且**恰好**是值域全集 (零折叠)', async () => {
     const outcomeOf = async (anchorId: bigint): Promise<string> =>
       (await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } })).outcome;
 
@@ -640,7 +673,18 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     });
     await worker.onJobFailed(failedJob.id!, 'boom');
 
-    // ⑧ calendar_missing: 放最后 —— 它要把日历删空。
+    // ⑧ backfill_incomplete: 链跑完但该票零合约。
+    const empty = await seedUnderlying('us:PM', { withContract: false });
+    const anchorEmpty = await createAnchorFor('us:PM');
+    await seedTargetDayData(empty.instrumentId);
+    await coldStart.run({
+      anchorId: anchorEmpty,
+      ticker: 'us:PM',
+      now: SAT_NIGHT,
+      phase: 'snapshot',
+    });
+
+    // ⑨ calendar_missing: 放最后 —— 它要把日历删空。
     const anchorNoCal = await createAnchorFor('us:CVX');
     await prisma.tradingDay.deleteMany({ where: { market: 'us' } });
     await coldStart.run({ anchorId: anchorNoCal, ticker: 'us:CVX', now: SAT_NIGHT });
@@ -653,6 +697,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       await outcomeOf(anchorJp),
       await outcomeOf(anchorBare),
       await outcomeOf(anchorFailed),
+      await outcomeOf(anchorEmpty),
       await outcomeOf(anchorNoCal),
     ];
 
@@ -661,7 +706,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     //    再也分不出「今天本就不该做」与「今天该做没做成」, 而这两件事的处置完全相反。
     expect(new Set(observed).size).toBe(observed.length);
     expect(new Set(observed)).toEqual(new Set(Object.values(COLD_START_OUTCOME)));
-    expect(await prisma.anchorColdStartRun.count()).toBe(8);
+    expect(await prisma.anchorColdStartRun.count()).toBe(9);
   });
 
   it('🚨 ㉔ 删锚后以同一 ticker 重建 ⇒ 运行记录**两行** (PK 是 anchorId, 不是 ticker)', async () => {
