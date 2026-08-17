@@ -38,9 +38,13 @@ context7_verified: []
 
 ### Gate 0.1 — Integration Smoke Gate
 
-- [x] **Server**: Testcontainers 真 PG 下走通 —— 建锚 → `outbox_event` 落行（含回滚场景断言两者都不在）→ subscriber 入队 → 编排 use case 的各分支。spec 的 22 条 `state_branches` **逐条**对应 `it()` 块（Testing Invariants 第 3 条 EXHAUSTIVE BRANCHING）。
+- [x] **Server**: Testcontainers 真 PG 下走通 —— 建锚 → `outbox_event` 落行（含回滚场景断言两者都不在）→ subscriber 入队 → 编排 use case 的各分支。spec 的 24 条 `state_branches` **逐条**对应 `it()` 块（Testing Invariants 第 3 条 EXHAUSTIVE BRANCHING）。
 - [x] **Mobile / Web**: **N/A** —— 本片零前端面（spec `web_compat: na`），无 user-facing 屏可走。
-- [x] **Evidence**: 待 impl 阶段填 IT commit。**验收硬条件两条**：① 盘中分支下 `optionDailySnapshot.count()` 零变化；② 「同市场连建 3 只锚 → 对 vendor port 的调用只发生在第一轮」必须有独立 `it()`（那是 SC-009 唯一的机器证据）。
+- [x] **Evidence**: 待 impl 阶段填 IT commit。**验收硬条件三条**：
+  1. 盘中分支下 `optionDailySnapshot.count()` **零变化**（US2 的全部价值）。
+  2. **「数据已在、运行记录表为空」⇒ 零外呼**（FR-016a 的机器证据）。构造法：直接插入目标交易日的快照 / 日线行，**不**写任何运行记录，再触发冷启动 → 断言 vendor port 零调用。谁把复判实现成「读运行记录判这只锚做过没有」，这条立刻红。
+  3. **删锚后重建 ⇒ 运行记录表两行**（FR-026a 的机器证据）。重建得到新 `anchor_id` ⇒ 新行；若有人把 PK 写成 ticker，就只会有一行，这条立刻红。
+  ⚠️ **不要写「两只锚指向同一标的」的用例** —— `anchor.ticker` 是 `@unique`，今天在库里插不进去。多用户场景本身不可测，可测的是上面两条**判据维度**。
 
 ### Gate 0.2 — Cross-stack Vendor Intersection 6Q Card
 
@@ -71,7 +75,7 @@ context7_verified: []
 
 - **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，**绝对禁止** `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。这些组件依赖 NestJS DI lifecycle 顺序 (Guards→Interceptors→Pipes→Filters)，mock 隔离 = 抹掉 PR-79 类 cascade bug 的唯一信号。
 - **MANDATORY INTEGRATION**: 必须用 `Test.createTestingModule({ imports: [<TheModule>] }).compile()` 装一个微型 DI 容器，让被测组件在真实 lifecycle 中触发。`createTestingModule` 之外的"测试" 视同未测试。
-- **EXHAUSTIVE BRANCHING**: spec.md `state_branches` 列出的每条分支（本片 **22 条**），**必须**在 integration test 文件中有对应 `it()` 块。100% 路径覆盖 — 不允许漏 cold-boot / 路由根 `/` 等非 happy-path 状态（PR #79 实证 4 层 cascade 始于一个未列状态分支）。
+- **EXHAUSTIVE BRANCHING**: spec.md `state_branches` 列出的每条分支（本片 **24 条**），**必须**在 integration test 文件中有对应 `it()` 块。100% 路径覆盖 — 不允许漏 cold-boot / 路由根 `/` 等非 happy-path 状态（PR #79 实证 4 层 cascade 始于一个未列状态分支）。
 
 ### General Architecture Notes
 
@@ -119,7 +123,7 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 | payload 形状不符（毒丸） | `logger.error` + **return，不抛** | 抛了 relay 每 10s 重投同一条，永久卡死且挡住后面所有事件（`enqueue-requirement.subscriber.ts:49-54` 明写的教训） |
 | 入队失败（Redis 不可达等基建故障） | **抛** | 那不是毒丸，下轮重投正是正确处置；吞掉会把事件标成 published 而冷启动永远丢失 |
 
-- 幂等：relay 是 at-least-once，`sourceEventId` 可用于去重 —— 但本片**不用**它（见 D5：合流做在 job 内，重复投递由 job 起手复判吸收）。
+- 幂等：relay 是 at-least-once，`sourceEventId` 可用于去重 —— 但本片**不用**它。重复投递由 job 的起手复判吸收（判据是「该标的该交易日的数据在不在」，见 D5），一处判据同时管住重复投递与常规轮已采两种情形。
 
 **方向铁律的处置**：outbox 两侧无 import 边（D1 已述），marketdata 只多知道一个字符串。运行时上 marketdata 早已知道锚存在（`anchor-driven-sync-gate.ts:109` 的 `CROSS-CONTEXT-READ`）。subscriber 落 marketdata 侧的理由是**工作在哪、消费方就在哪**（本片全部写面都是 marketdata 自有表），与 `agent-bridge` 消费 `ideation.*` 同构。
 
@@ -138,7 +142,7 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 2. 目标交易日定位（查日历，见 D4）；查不到 ⇒ 结局 blocked + ERROR，不猜日期
 3. Instrument 行缺失 ⇒ seed
 4. AnchorDrivenSyncGate.recalcSafely()（幂等开闸）
-5. 起手复判：该市场缺目标交易日数据的锚集；为空 ⇒ 结局 already_covered，零外呼
+5. 起手复判：**本锚的标的**在目标交易日的数据是否已具备；已具备 ⇒ 结局 already_covered，零外呼
 6. 非敏感档：组 flow 入队 sync:us_equity_bar + sync:option_contract（普通 delta，不指定 asOf）
 7. 敏感档：盘中 ⇒ 结局 intraday_skipped；非盘中 ⇒ 按 D4 算 spec → SyncOptionSnapshotUseCase.collect(spec)
 8. 落运行记录
@@ -174,13 +178,28 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 
 📌 **一个继承来的口径，不要当成本片的疏漏去「修」**：北京 06:30 的常规快照轮 = ET 17:30/18:30，本就落在美股盘后延长时段（16:00–20:00 ET）内。所以「非连续竞价时段即可抓」这条闸与既有实现同口径，本片沿用而非新引入；成立前提是期权盘后基本无成交、`last` 仍是收盘态。
 
-### D5 合流 —— 做在 job 内，**不是**队列去重
+### D5 **无合流机制** —— 幂等键取标的 + 交易日，不取锚 / 用户
 
-冷启动 job 拿到 market 后，处理**该市场全部缺目标交易日数据的锚**，不只事件里那一只。N 个事件 → N 个 job，但 job 2..N 起手复判即「已具备」⇒ 零外呼。SC-009（完整补数轮次数 = 1）因此成立。
+**一条建锚 = 一条消息 = 一个 job，各自执行，零去重逻辑**（FR-019c）。合流在当前系统里没有对应场景：`ImportAnchorFromModelUseCase` 是 by-ticker 的单只接口，App 建锚也是单只 —— 批量路径根本不存在。将来真有批量入口，收敛做在**消息形态**上（一条消息带多只锚），不在消费侧加去重。
 
-🚫 **否决 BullMQ `jobId` 去重**（看起来最直接，但有一个静默吞事件的坑）：`jobOpts` 的 `removeOnComplete: { count: N }` 会**保留**已完成 job，同 `jobId` 再入队会被静默忽略并返回那个旧 job。⇒ 「先建 A（冷启动跑完并保留）→ 再建 B」时，B 的冷启动被吞、B 永远没数据，且**队列与日志都不会红**。合流真正要覆盖的窗口只有 waiting / delayed，`jobId` 覆盖不到这个语义。
+丢掉合流**不损失任何东西**：非敏感档本就跑全量工作集，所以 B 锚若在 A 的那一轮还排队 / 执行时创建，B 的 job 起手复判就会判「已具备」⇒ 零外呼；只有 B 在 A 那轮跑完之后才建，才会真跑第二轮 —— 而那时 B 确实需要。合流想要的效果由既有的「起手复判 + 全量工作集」顺带给出。
 
-顺带：这也守住了仓内既有纪律 —— 「幂等一律靠 DB 唯一键，不靠队列去重」（全仓未用 BullMQ deduplication / jobId）。
+🚫 **顺带记下不要去够 BullMQ `jobId` 去重**（下一个人想做合流时第一反应就是它）：`jobOpts` 的 `removeOnComplete: { count: N }` 会**保留**已完成 job，同 `jobId` 再入队被静默忽略并返回旧 job ⇒「先建 A（跑完并保留）→ 再建 B」时 B 的冷启动被吞、B 永远没数据，**队列与日志都不会红**。这也是仓内「幂等靠 DB 唯一键、不靠队列去重」那条纪律的具体成因。
+
+#### 🚨 幂等键的维度 —— 今天与将来都必须是「标的 + 交易日」
+
+锚现在不区分用户（`anchor.ticker @unique`，一个标的至多一只锚），**将来一旦区分，同一标的会有 N 只锚**。而期权链 / 快照 / 日线是**跨锚、跨用户共享的标的级事实**，不属于任何一只锚。
+
+落库层天然安全 —— 三张表的唯一键本就是标的级的：`option_daily_snapshot(contract_id, session_date, source)` / `option_contract(market, code)` / `daily_bar(instrument_id, trade_date, adjust)`。**会出事的只有两处，都在本片新写的代码里**：
+
+| 位置 | 错的写法 | 后果（多用户下） | 正确写法 |
+|---|---|---|---|
+| 起手复判（FR-016a） | 「这只**锚**冷启动过没有」（去读运行记录表） | 同标的的 N 只锚各判「没做过」⇒ 同一份共享数据被拉 N 遍 | 「**该标的在目标交易日**的数据是否已具备」—— 查 `option_daily_snapshot` / `daily_bar` 本身 |
+| 运行记录主键（FR-026a） | PK = ticker | 两只锚**撞同一行、互相覆盖结局**（先建的「已补齐」被后建的「已具备零外呼」盖掉） | PK = `anchor_id` |
+
+两条今天与「按锚判」**完全等价、零额外成本**，所以现在就按正确的写 —— 不是给未来加设计，是别现在就写错。
+
+⚠️ 复判 **MUST NOT 反过来读运行记录表**来决定要不要跑：那张表是审计面（D7），不是数据存在性的真相源；把它当判据就正好落进上表左列。
 
 ### D6 盘中时段表 —— 新建 `marketdata/market-session.rules.ts`，并把 alert 那份下沉合并
 
@@ -198,7 +217,8 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 ### D7 新表 `anchor_cold_start_run` —— 只记结局，不驱动重做
 
 - **落 `marketdata` schema**（写方在 marketdata）。🚨 `scripts/checks/check-server-moat.ts` 的 `MODEL_OWNERSHIP` **必须登记** `anchorColdStartRun: 'marketdata'`，否则 `moat-unmapped` 硬拒（ADR-0062 Consequences 已写明这条）。
-- **每只锚一行**，PK = 锚的 canonical ticker（`market:code`）。字段：最近一次运行时刻 / 结局 / 原因文本 / 目标交易日。写入走**单行 upsert**（覆盖式，只保留最近一次 —— FR-026 只要求「最近一次」）。
+- **每只锚一行，PK = `anchor_id`**（不是 ticker —— 见 D5 的幂等键表：ticker 作主键在锚按用户区分后会让两只锚撞同一行、互相覆盖结局）。`ticker` 作普通列留着，纯为排障可读。其余字段：最近一次运行时刻 / 结局 / 原因文本 / 目标交易日。写入走**单行 upsert**（覆盖式，只保留最近一次 —— FR-026 只要求「最近一次」）。
+- `anchor_id` 是**逻辑引用、不建 FK**（跨 schema，且体例同 `anchor_change` 的 `anchor_id`：删锚不级联）。删锚后重建会得到新 id ⇒ 新行，语义正确。
 - **结局值域 = FR-027 的八种，贫血字符串列**，不建 PG enum（照 `anchor_submission` 三态的先例）。八种取值必须在 IT 里被逐个断言到（SC-010）。
 - **索引只建 PK** —— 日均个位数、查询形状就是按 ticker 点查，撒 B-tree 是 cargo cult（同 059 §6 的判据）。
 - 🚫 **不复用 `sync_run`** —— `schema.prisma:1020` 明写「塞非维度行会污染 `report.sh` 逐维度解析 + 全景 IT 维度计数断言」。这与 044 的 `CalendarSyncHealth` 做的是同一个判断，本片是第二次。
