@@ -78,7 +78,7 @@ updated_at: '2026-08-17'
 
 ## Phase 2: 数据面
 
-- [ ] T004 [Server] **`anchor_cold_start_run` 表 + migration + 边界登记**（FR-026, FR-026a, FR-027, FR-028, plan §D7）：`schema.prisma` 的 `marketdata` schema 加 `model AnchorColdStartRun`：**PK = `anchorId BigInt`**（逻辑引用不建 FK，体例同 `AnchorChange`），`ticker` / `lastRunAt` / `outcome`（贫血 `VarChar`，不建 PG enum）/ `reason`（`Text?`）/ `targetSession`（`Date?`）。**索引只建 PK**（日均个位数、查询形状就是按 anchorId 点查）。migration 走 `pnpm db:migrate "add anchor cold start run"`。`scripts/checks/check-server-moat.ts` 的 `MODEL_OWNERSHIP` 加 `anchorColdStartRun: 'marketdata'`。→ verify: `pnpm --dir apps/server exec prisma generate` 过；`pnpm tsx scripts/checks/check-server-moat.ts` 绿（**先故意不登记跑一次，确认 `moat-unmapped` 会红**，再补上 —— 不然这道闸是否真生效无从得知）；migration 目录名过 lefthook 正则
+- [X] T004 [Server] **`anchor_cold_start_run` 表 + migration + 边界登记**（FR-026, FR-026a, FR-027, FR-028, plan §D7）：`schema.prisma` 的 `marketdata` schema 加 `model AnchorColdStartRun`：**PK = `anchorId BigInt`**（逻辑引用不建 FK，体例同 `AnchorChange`），`ticker` / `lastRunAt` / `outcome`（贫血 `VarChar`，不建 PG enum）/ `reason`（`Text?`）/ `targetSession`（`Date?`）。**索引只建 PK**（日均个位数、查询形状就是按 anchorId 点查）。migration 走 `pnpm db:migrate "add anchor cold start run"`。`scripts/checks/check-server-moat.ts` 的 `MODEL_OWNERSHIP` 加 `anchorColdStartRun: 'marketdata'`。→ verify: `pnpm --dir apps/server exec prisma generate` 过；`pnpm tsx scripts/checks/check-server-moat.ts` 绿（**先故意不登记跑一次，确认 `moat-unmapped` 会红**，再补上 —— 不然这道闸是否真生效无从得知）；migration 目录名过 lefthook 正则
 
 ## Phase 3: 编排
 

@@ -1295,6 +1295,46 @@ model SyncRun {
   @@schema("marketdata")
 }
 
+// 锚首建冷启动的运行记录 (060 FR-026/026a/027/028, plan D7)。每只锚**一行**, 覆盖式
+// upsert 只留最近一次。
+//
+// 🚨 **这张表不是待办队列**: 没有任何代码读它来决定「要不要重做」—— 起手复判查的是
+// option_daily_snapshot / daily_bar **本身** (FR-016a)。把它当判据就等于建了第二套补偿
+// 机制, 且在锚按用户区分之后同标的的 N 只锚会各判「没做过」⇒ 同一份共享数据拉 N 遍。
+// 盘中未做的部分仍由当晚常规轮补齐 (FR-013)。
+//
+// 🚨 **PK = anchor_id 不是 ticker** (plan D5 幂等键表): anchor.ticker 今天 @unique, 但锚
+// 一旦按用户区分, 同一标的会有 N 只锚 —— ticker 作主键会让它们撞同一行互相覆盖结局
+// (先建的「已补齐」被后建的「已具备零外呼」盖掉)。今天两种写法完全等价、零额外成本,
+// 所以现在就按正确的写。ticker 作普通列留着, 纯为排障可读。
+//
+// anchor_id 是**逻辑引用不建 FK** (跨 schema, 体例同 optionsdesk.anchor_change): 删锚不
+// 级联, 删后重建得到新 id ⇒ 新行, 语义正确。
+//
+// outcome 八种取值 (FR-027) 是**贫血字符串无枚举表** (同 anchor_submission.status 三态
+// 体例); 值域权威在 marketdata/anchor-cold-start.rules.ts 的 COLD_START_OUTCOME。
+//
+// **索引只建 PK**: 日均个位数条目, 查询形状就是按 anchor_id 点查, 撒 B-tree 是 cargo
+// cult (同 anchor_submission / research_report 那条判据)。
+//
+// 不复用 sync_run: 塞非维度行会污染 report.sh 逐维度解析 + 全景 IT 维度计数断言
+// (schema 上方那条已写死), 与 044 的 calendar_sync_health 做的是同一个判断。
+model AnchorColdStartRun {
+  anchorId BigInt @id @map("anchor_id")
+  // canonical `market:code`, 与 optionsdesk.anchor.ticker 同宽同量纲。
+  ticker   String @db.VarChar(32)
+
+  lastRunAt DateTime @default(now()) @map("last_run_at") @db.Timestamptz(6)
+  outcome   String   @db.VarChar(32)
+  // 结局的自由文本补充 (失败原因 / 跳过依据), 系统不解析。
+  reason    String?  @db.Text
+  // 本次冷启动瞄准的交易日; 早退分支 (市场未开通 / 日历缺行等) 定位不到 ⇒ NULL。
+  targetSession DateTime? @map("target_session") @db.Date
+
+  @@map("anchor_cold_start_run")
+  @@schema("marketdata")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // alert (021, 第 6 bounded context; ADR-0052 调度自治 EOD 预警引擎)。范式 =
 // ADR-0043 贫血 row + @map snake_case。4 表自持 (moat owner=alert); accountId 仅
