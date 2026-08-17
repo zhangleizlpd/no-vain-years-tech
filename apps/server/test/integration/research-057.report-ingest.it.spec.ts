@@ -488,6 +488,13 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
           }),
         });
         expect(res.statusCode).toBe(503);
+        // 🚨 **状态码之外必须断言 `code`。** 这条曾是裸 `ServiceUnavailableException('CODE')`：
+        //    NestJS 对字符串入参组装的 body 是 `{statusCode, message, error}`、没有 `code` 键，
+        //    而 `ProblemDetailFilter` 只在 `typeof body['code'] === 'string'` 时才输出 `code`
+        //    ⇒ 应答体里根本没有 `code`，标识符落在 `detail` 里。能力目录那张八行错误码表里
+        //    唯独这行读不出来，agent 的 `if (body.code === …)` 恒 false、掉进「未知错误」分支
+        //    反复重试，而这条的正确动作恰是**停手**。只断言 503 捞不到这个缺陷。
+        expect((res.json() as { code: string }).code).toBe('RESEARCH_STORAGE_NOT_CONFIGURED');
         expect(storage.calls).toHaveLength(0);
         expect(await prisma.researchReport.count()).toBe(0);
       } finally {

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { researchOssConfig, type ResearchOssConfig } from '../config/index.js';
 import {
   OBJECT_STORAGE_PORT,
@@ -176,7 +176,7 @@ export class IngestResearchReportUseCase {
   async execute(input: IngestResearchReportInput): Promise<IngestResearchReportResult> {
     if (this.oss.kind === 'unconfigured') {
       // 「未接通存储」与「服务坏了」是两回事 —— 明确报未启用，不表现为故障（state_branch 9）。
-      throw new ServiceUnavailableException('RESEARCH_STORAGE_NOT_CONFIGURED');
+      throw ResearchIngestRejectedException.storageNotConfigured();
     }
 
     const symbol = normalizeSymbolOrReject(input.symbol);

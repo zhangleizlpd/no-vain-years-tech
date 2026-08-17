@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ServiceUnavailableException } from '@nestjs/common';
 import type { PrismaService } from '../security/prisma.service';
 import { FakeObjectStorage } from '../integrations/oss/fake-object-storage.adapter';
 import type { ResearchOssConfig } from '../config/index';
@@ -385,9 +384,18 @@ describe('IngestResearchReportUseCase — 配额 (state_branch 18 / 19)', () => 
 });
 
 describe('IngestResearchReportUseCase — 输入不合规 (state_branch 9 / 13 / 16)', () => {
-  it('对象存储未配置 → 503「该能力未启用」，不是服务故障', async () => {
+  it('对象存储未配置 → 503「该能力未启用」，不是服务故障，且带 code', async () => {
     const s = build([], { kind: 'unconfigured' });
-    await expect(s.useCase.execute(input())).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(s.useCase.execute(input())).rejects.toBeInstanceOf(
+      ResearchIngestRejectedException,
+    );
+    // 🚨 状态码之外必须钉 `code` —— 裸 `ServiceUnavailableException('CODE')` 的 body 没有
+    //    `code` 键，只断言 503 的话那个回归捞不到（对照表八行里唯独这行读不出来）。
+    const err = await s.useCase.execute(input()).catch((e: unknown) => e);
+    expect((err as ResearchIngestRejectedException).getStatus()).toBe(503);
+    expect((err as ResearchIngestRejectedException).getResponse()).toMatchObject({
+      code: 'RESEARCH_STORAGE_NOT_CONFIGURED',
+    });
     expect(s.rows).toHaveLength(0);
   });
 
