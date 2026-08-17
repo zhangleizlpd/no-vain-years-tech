@@ -49,6 +49,7 @@ updated_at: '2026-08-17'
 1. 🚨 **实时报价 adapter MUST 复用既有的 `FUTU_OPTION_SNAPSHOT_HTTP_CLIENT` 实例，不要 `new VendorHttpClient(...)` 起第二个** —— 它打的是同一个 shim capability（`ratelimit.py` 的 `LIMITS["snapshot"] = (60, 30)` 是**服务端单一桶**），而每个客户端实例各持独立令牌桶。起两个 = 合计 120 次/30 s = 上游允许值的 2 倍。同一个「桶满突发」病灶在 prod 上让链发现每 30 分钟顺延一次（`futu-shim.constraint-profile.ts:56-61`）。**复用 client 实例，但不要复用 `FutuOptionSnapshotAdapter` 这个类**（它对空 `contractCodes` 前置拒绝）。
 2. 🚨 **市场状态的白名单归一化 MUST 在 `marketdata` 的 adapter 内做完，port 只回归一后的语义** —— 判白名单的纯函数若落 `marketdata/*.rules.ts`，`optionsdesk` import 它会被 ESLint boundaries 硬拒（`eslint.config.mjs` 的 `from: optionsdesk` `disallow` 明列 `marketdata-rules`）。那是 **ADR-0053 sunset trigger #2 的绊线**，旁边注释原文「别把 lint 红当成噪音顺手加进 allowlist」。撞红了要把归一化**推回 adapter**，不是改 allowlist —— 改了会让本片 Gate 0.4 对 ADR-0053 的「未命中」判定当场失效。
 3. 🚨 **`advanceBreachState()` 一行不动** —— 它读 `lastClose` 驱动 `breach_started_on`（日粒度 `@db.Date`）。改用实时价 ⇒ 红标一天内随 spot 反复穿越 W 反复置位/清空，而清空是破坏性的（`last_reviewed_on < breach_started_on` 的比较就此失去意义）。本片之后同一个 use case 里**两个 spot 口径并存是刻意的**，注释必须写死，否则下一个人会「顺手统一」。
+   ⚠️ **射程订正（2026-08-17，T011 实装后发现）**：「一行不动」管的是它的**写库判据与 `breach_started_on` 转换**，**不含**它顺带返回的两个纯展示计数（`baseTotal` / `actionableTotal`）—— 那两个数不写库、不进 DTO，唯一去向是空态判定。让它们继续用收盘口径，会让**同一份响应里两个口径回答同一个问题**「有没有锚跌破 W」，正是下一条 Guardrail 4 点名要防的形态。修法见 T019：在**调用方**另算，函数体仍零行改动。
 4. 🚨 **档位判定与 SQL 表达式必须同源** —— 禁在 SQL 里判一次新鲜度、在 TS 里再判一次。两处必漂移，且漂移表现是「排序按实时、显示说收盘」，**没有任何断言会红**。
 5. 🚨 **`$queryRaw` 的输出列别名不要取成 `distance_to_w_pct` / `id`** —— PG 的 `ORDER BY` 优先解析输出列别名，`::text` 转换后同名会让排序落到字典序（`'-10' < '-15' < '-5'`），分页直接错乱。`get-radar.usecase.ts:186-189` 记着 045 的 T014 IT 实测撞过（⚠️ 那是**另一个 feature** 的 task 号，别与本文件的 T014 混）。本片不新增别名，照抄现状。
 6. 🚨 **mock 档要两层防线** —— 只绑 `refusingCollectionPort` 拒绝壳的话，dev 机上 tick 每 30 秒抛一次、每 90 秒熔断一次，054 想要的那份「你的本地进程正在试图采集」的可见性**反而被噪声淹没**。tick 起手判 provider kind → mock 直接 return、0 次 port 调用；拒绝壳退为兜底。
@@ -101,6 +102,8 @@ updated_at: '2026-08-17'
 
 - [X] T012 [P] [Server] **分页 tripwire**（`FR-016`, plan D4）：不改分页语义（`radar-cursor.ts` diff 为空）；加一条断言：锚数达到 **`RADAR_PAGE_SIZE_DEFAULT` 的 80%**（= 16）时该断言红，提示回 spec FR-016 重评。用**默认页大小**而非 `RADAR_PAGE_SIZE_MAX`，因为 mobile 实际传的就是默认值（`apps/mobile/src/optionsdesk/use-radar.ts:34` 的 `PAGE_SIZE = 20`）。放 colocate 单测（不是运行期告警 —— 运行期告警没人看，红的测试才拦得住）。⚠️ 当前 13 只锚 = 65%，**离触发只差 3 只**，别写成「遥远的将来」。→ verify: 单测在锚数 16 时红、15 时绿；`radar-cursor.ts` **diff 为空**
 
+- [ ] T019 [Server] **空态计数改 spot 口径**（`FR-008`, plan D5 射程订正；**impl 期新增**，T011 落地后由只读复核发现）：`get-radar.usecase.ts` 的 `actionableTotal` 判 `belowW` 用的是裸 `row.lastClose`，而同一份响应里的筛选 / 排序 / 距 W% 已由 T011 改用 spot 表达式 ⇒ 盘中一旦出现「新鲜实时价跌破 W、收盘价未跌破」的锚，`all_idle` 横幅会说「一个都没有」而底下的行赫然是红色负距 W%。⚠️ 这**不是**「列表为空才显示所以撞不上」—— `all_idle` 是压在**非空列表**头上的 `ListHeaderComponent`（列表为空时先被判成 `filtered_empty`），横幅与行必然同屏。🚨 **`advanceBreachState()` 函数体仍零行改动**（Guardrail 3 射程订正见上）：在 `execute()` 的首页分支另发一条 `COUNT(*) FILTER (WHERE <spot> < <w>)` 覆盖 `actionableTotal`。🚨 **`spot` / `w` 两个 `Prisma.sql` 片段必须提成单点 helper** —— 否则筛选 / 排序 / 计数三处各写一遍，等于修掉一个缝又开一个同形态的新缝（Guardrail 4 同理）。→ verify: 扩 `get-radar.usecase.spec.ts` —— `intraday_price` 跌破 W 而 `last_close` 未跌破 → `emptyState` **MUST NOT** 为 `all_idle`；反向（收盘跌破、盘中回到 W 上方）→ 仍为 `all_idle`；`git diff` 对 `advanceBreachState()` 函数体为空；既有 IT `optionsdesk-045.radar.it.spec.ts` 的 `all_idle` 用例仍绿
+
 ## Phase 6: 契约与 mobile
 
 - [ ] T013 [Contract] **OpenAPI 导出 + api-client regen**（`FR-009`, Constitution §V）：🚨 **两步，漏第一步完全静默**（Guardrail 11）：`pnpm nx run server:export-openapi` → `pnpm nx affected -t generate`。→ verify: `apps/server/openapi.json` 的雷达响应含新字段；`packages/api-client/` regen 后 `git status` 有 diff（**没 diff 说明漏了第一步**）；`pnpm nx run-many -t typecheck` 全绿
@@ -128,8 +131,9 @@ T003 ───────────┘              ↑
                                │
 T006 ──────────────────────────┘
 
-T011 ─→ T013 ─┬─→ T014 ─→ T015
-              └─→ T016
+T011 ─┬─→ T013 ─┬─→ T014 ─→ T015
+      │         └─→ T016
+      └─→ T019
 
 T017 [P] 全程可并行
 
@@ -144,6 +148,7 @@ T018
 - **T008 依赖 T007**；**T009 依赖 T008**（在真容器里跑完整 tick）；**T010 依赖 T009**（同一个 IT 文件的第二组）。
 - **T011 依赖 T001**（判据单点）+ **T006**（列存在），与 T007/T008 无依赖 ⇒ 读端可先于写端落地（读到的全是 `null` ⇒ 恒收盘档，正是 `state_branch` 13）。
 - **T013 依赖 T011**（DTO 定型才能导 OpenAPI）。
+- **T019 依赖 T011**（impl 期新增；与 T013 无先后，不改 DTO ⇒ 不触发重新导 OpenAPI）。
 - **T018 必须等 shim 与 mono 两条部署链都完成**。
 
 ## 判据覆盖矩阵（`state_branches` 17 条 → task）
@@ -185,7 +190,7 @@ spec 共 **5 层**判据：`state_branches`(17) · FR(20) · SC(7) · Acceptance
 | FR-005 | T008 · T009                               | FR-015 | T006（列注释）· T011         |
 | FR-006 | T001 · T003（采集墙钟取信封 `as_of`）     | FR-016 | **T012**                     |
 | FR-007 | T001（倍数定死 + 与熔断窗口相等的双断言） | FR-017 | T007 · T009                  |
-| FR-008 | T001 · T011                               | FR-018 | **T005（diff 断言）** · T018 |
+| FR-008 | T001 · T011 · **T019（空态计数同口径）**  | FR-018 | **T005（diff 断言）** · T018 |
 | FR-009 | T011 · T013 · T014                        | FR-019 | T006（无新表即保证）· T007   |
 | FR-010 | T005 · T007                               | FR-020 | T003 · T004                  |
 
