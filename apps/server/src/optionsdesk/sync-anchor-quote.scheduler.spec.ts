@@ -105,6 +105,57 @@ describe('SyncAnchorQuoteScheduler — 投影触发器 (补 045 T012 漏定义�
     expect(msg).not.toContain('us:T12');
   });
 
+  it('🚨 名单不变 → 第二轮不重复 warn (每小时跑的承重前提: 同一条假警报重复 24 次 = 训练人无视它)', async () => {
+    const { scheduler } = build({
+      scanned: 2,
+      updated: 0,
+      projections: [withData('us:AOS'), noData('us:ACN')],
+    });
+
+    await scheduler.run();
+    await scheduler.run();
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('名单变化 → 重新 warn (去重按**内容**, 不是「只报一次」)', async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ scanned: 1, updated: 0, projections: [noData('us:ACN')] })
+      .mockResolvedValueOnce({
+        scanned: 2,
+        updated: 0,
+        projections: [noData('us:ACN'), noData('us:KBR')],
+      });
+    const scheduler = new SyncAnchorQuoteScheduler({
+      execute,
+    } as unknown as SyncAnchorQuoteUseCase);
+
+    await scheduler.run();
+    await scheduler.run();
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(String(warnSpy.mock.calls[1]?.[0])).toContain('us:KBR');
+  });
+
+  it('名单清空后又出现 → 重新 warn (指纹跟着回落, 不会永久静音)', async () => {
+    const back = { scanned: 1, updated: 0, projections: [noData('us:ACN')] };
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce(back)
+      .mockResolvedValueOnce({ scanned: 1, updated: 1, projections: [withData('us:ACN')] })
+      .mockResolvedValueOnce(back);
+    const scheduler = new SyncAnchorQuoteScheduler({
+      execute,
+    } as unknown as SyncAnchorQuoteUseCase);
+
+    await scheduler.run();
+    await scheduler.run();
+    await scheduler.run();
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('🚨 use case 抛异常 → 只 ERROR log 返 null, **不上抛** (scheduler 抛 = 进程级 unhandledRejection)', async () => {
     const { scheduler } = build(new Error('db down'));
 
