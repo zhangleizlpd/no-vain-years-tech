@@ -129,6 +129,10 @@ const ANCHOR_BASE: Omit<AnchorResponse, 'id' | 'ticker'> = {
   lastCloseDate: TODAY,
   // 🚨 新鲜度档由 **server** 下发 (FR-020) —— hermetic mock 是契约镜像, 必须照带。
   quoteFreshnessTier: 'CURRENT',
+  // 061 生效 spot 三元组：本片 fixture 默认收盘档 ⇒ 与 lastClose / lastCloseDate 同值同粒度。
+  spot: '88.00',
+  priceKind: 'eod_close',
+  spotAsOf: TODAY,
   distanceToWPct: '10.0',
   breachStartedOn: null,
   reviewFlagOn: false,

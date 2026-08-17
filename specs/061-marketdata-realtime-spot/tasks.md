@@ -106,7 +106,7 @@ updated_at: '2026-08-17'
 
 ## Phase 6: 契约与 mobile
 
-- [ ] T013 [Contract] **OpenAPI 导出 + api-client regen**（`FR-009`, Constitution §V）：🚨 **两步，漏第一步完全静默**（Guardrail 11）：`pnpm nx run server:export-openapi` → `pnpm nx affected -t generate`。→ verify: `apps/server/openapi.json` 的雷达响应含新字段；`packages/api-client/` regen 后 `git status` 有 diff（**没 diff 说明漏了第一步**）；`pnpm nx run-many -t typecheck` 全绿
+- [X] T013 [Contract] **OpenAPI 导出 + api-client regen**（`FR-009`, Constitution §V）：🚨 **两步，漏第一步完全静默**（Guardrail 11）：`pnpm nx run server:export-openapi` → `pnpm nx affected -t generate`。→ verify: `apps/server/openapi.json` 的雷达响应含新字段；`packages/api-client/` regen 后 `git status` 有 diff（**没 diff 说明漏了第一步**）；`pnpm nx run-many -t typecheck` 全绿
 
 - [ ] T014 [Mobile] **雷达行 `asOf` 粒度**（`FR-009`, `FR-014`, US1-AS3, plan D10）：实时档 `asOf` 呈**时刻**、收盘档呈**交易日**；降级时距 W% 呈空**不呈 0**。🚨 **Guardrail 18：不新增任何视觉元素** —— 不加档位徽标 / 圆点 / 配色，本片的 mockup 豁免正是靠这条换来的。复用 `~/theme` + `~/ui` 既有原子，不新增屏、不改版式。→ verify: vitest 逻辑测（格式化函数：时刻 / 日期 / 空值三态）；**再加一条护栏测或 review 检查：雷达行的渲染树节点数与改动前一致**（新增元素会让它变）
 

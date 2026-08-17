@@ -154,6 +154,9 @@ const ANCHOR_BASE: Omit<AnchorResponse, 'id' | 'ticker'> = {
   // 🚨 新鲜度档由 **server** 下发 (FR-020, 判据要查交易日历) —— hermetic mock 是契约镜像,
   // 必须照带。客户端不再拿设备本地日期自判, 所以这个值与 `lastCloseDate` 是否等于今天无关。
   quoteFreshnessTier: 'CURRENT',
+  spot: '88.00',
+  priceKind: 'eod_close',
+  spotAsOf: TODAY,
   distanceToWPct: '10.0',
   breachStartedOn: null,
   reviewFlagOn: false,
