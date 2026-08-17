@@ -127,7 +127,7 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
       .overrideProvider(researchOssConfig.KEY)
       .useValue(ALIYUN_OSS)
       .overrideProvider(guestUploadConfig.KEY)
-      .useValue({ token: TOKEN, anchorImportToken: null })
+      .useValue({ token: TOKEN })
       .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
@@ -464,7 +464,7 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
         .overrideProvider(researchOssConfig.KEY)
         .useValue({ kind: 'unconfigured' })
         .overrideProvider(guestUploadConfig.KEY)
-        .useValue({ token: TOKEN, anchorImportToken: null })
+        .useValue({ token: TOKEN })
         .compile();
 
       const off = ref.createNestApplication<NestFastifyApplication>(new FastifyAdapter());

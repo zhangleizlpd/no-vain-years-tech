@@ -11,11 +11,26 @@ import { z } from 'zod';
  * 头 (可信作归属, 绝不可作授权)。投递方本人从不持有本 token, 也无从获知 (FR-015):
  * 他在隧道内打的是代理, 代理才持有它。
  *
- * 🚨 **059 起是两把, 不是一把** (`ANCHOR_IMPORT_TOKEN` 给直写锚的导入口)。单把时整条授权闸的
- * **唯一支点是 nginx 配置** —— 服务端对「直写锚」与「往待审箱里放」两个端点无法区分, 谁绕过
- * 代理直连 app 的 loopback 端口就能直写锚。ADR-0065 §4 的原则是「通道与服务**两层各自独立**
- * 拒绝」, 单把 token 让第二层根本没有可判之据。成本仅一个 env var。
- * ⚠️ 两把 MUST 取不同值: 取同值等于回到单把, 而**看上去**是两把 (更坏)。
+ * **一把 token 守三条 location**: 研报投递 / 锚待审提交 / **锚直写**。
+ *
+ * 🚨 **「直写锚要不要第二把 token」曾按两把实装过 (059 T003), 059 收口时回退成一把** ——
+ * 后来者别照 ADR-0065 §4「通道与服务两层各自独立拒绝」的字面把它加回来, 先读完这段:
+ *
+ * - 两把**共命**: 同一个 SOPS blob → 同一台 guest 机的同一个 `/etc/nvy/nvy-guest-proxy.env`
+ *   → 同一份渲染出来的 nginx conf。读得到其中一把的位置基本都读得到另一把。
+ * - 而「绕过 nginx 直连 app loopback」这个第二把唯一防的位置, `docker-compose.guest.yml` 是
+ *   `network_mode: host` ⇒ 恰恰就是那台 guest 机本机。攻击位置与密钥存放地重合。
+ * - 剩下的边际价值只有两个窄场景: 同机上够得到 loopback 但读不到那个 env 的东西 (非特权
+ *   进程 / 另一个容器), 以及本 token 的单独泄漏 (日志回显 / 误贴)。
+ *
+ * ⚠️ **由此接受的代价, 写明在这里而不是让人自己发现**: 直写锚的授权判据现在**只在通道层**
+ * (nginx `/anchor-import` 的 `$anchor_write_allowed`, 按 `ANCHOR_OWNER_NAME` 分流)。服务端
+ * 这一层对「直写」与「提交待审」**没有可判之据** —— 拿到本 token 且够得到 loopback 的人,
+ * 能直写锚表。
+ *
+ * 🚨 **要开第二把 token, 门槛是先证明它与本把不共命** (另一台宿主 / 另一个 secret store /
+ * 另一个渲染管道)。共命的第二把只是「看上去是两把」, 那比诚实的一把更坏。
+ * 分法按**权限层**、不按端点数 —— 加多少条 guest location 都不改变这个数。
  *
  * **可选** (nullable): 未配 → null, app 正常 boot (dev/test 不跑 guest 通道), 而
  * `GuestUploadAuthGuard` fail-closed **拒一切请求** —— 未配 token 不等于放行, 等于
@@ -33,11 +48,6 @@ const GuestUploadConfigSchema = z.object({
     .string()
     .min(32, 'GUEST_UPLOAD_TOKEN 应 ≥256-bit (建议 randomBytes(32).toString(base64url) = 43 字符)')
     .nullable(),
-  /** 059: 直写锚导入口的第二把 token。未配 → 该端点 fail-closed 拒一切 (同上)。 */
-  anchorImportToken: z
-    .string()
-    .min(32, 'ANCHOR_IMPORT_TOKEN 应 ≥256-bit (建议 randomBytes(32).toString(base64url) = 43 字符)')
-    .nullable(),
 });
 
 export type GuestUploadConfig = z.infer<typeof GuestUploadConfigSchema>;
@@ -48,6 +58,5 @@ const orNull = (raw: string | undefined): string | null => (raw && raw.length > 
 export const guestUploadConfig = registerAs('guestUpload', (): GuestUploadConfig => {
   return GuestUploadConfigSchema.parse({
     token: orNull(process.env.GUEST_UPLOAD_TOKEN),
-    anchorImportToken: orNull(process.env.ANCHOR_IMPORT_TOKEN),
   });
 });

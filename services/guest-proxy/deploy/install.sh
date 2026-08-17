@@ -35,7 +35,7 @@ IMAGE=nginx:1.27-alpine
 #    ①③ 漏改的表现不同、都很阴：① 让部署恒红在预校验（**至少它红了**）；③ 让残留检不出来，
 #    自检在配置已经坏掉的情况下判绿。三处不合并成一份是因为 ② 在 YAML 里、①③ 在 shell 里，
 #    没有干净的共享点；代价就是这条注释。
-ENVSUBST_FILTER='^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_IMPORT_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$'
+ENVSUBST_FILTER='^(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_TOKEN|GUEST[0-9]+_NAME)$'
 
 log() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 die() { printf '\n❌ %s\n' "$*" >&2; exit "${2:-1}"; }
@@ -237,7 +237,7 @@ if [[ -z "$running_conf" ]]; then
 else
   # 🚨 第三份拷贝，见文件头 ENVSUBST_FILTER 处的三处同步说明。漏一个键在**这里**不会让
   #    部署红 —— 只会让这条断言对那个键失明，配置坏了也判绿。
-  residue="$(grep -cE '\$\{(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_IMPORT_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_(TOKEN|NAME))\}' <<<"$running_conf" || true)"
+  residue="$(grep -cE '\$\{(FUTU_SHIM_URL|FUTU_SHIM_TOKEN|GUEST_UPLOAD_TOKEN|ANCHOR_OWNER_NAME|GUEST[0-9]+_(TOKEN|NAME))\}' <<<"$running_conf" || true)"
   ck "敏感占位残留" 0 "$residue"
 fi
 

@@ -13,8 +13,8 @@
 #   FUTU_SHIM_TOKEN  shim 的真 token（访客永远看不到它）
 #   GUEST1_TOKEN     发给访客 1 的 bearer（与 shim token 无关，可单独吊销）
 #   GUEST1_NAME      日志里的可读名字
-#   GUEST_UPLOAD_TOKEN  转发给本机 mono app 的 bearer（研报投递 + 锚估值提交，057/059）
-#   ANCHOR_IMPORT_TOKEN 转发给本机 mono app 的**第二把** bearer（锚直写，059）
+#   GUEST_UPLOAD_TOKEN  转发给本机 mono app 的 bearer（研报投递 + 锚估值提交 + 锚直写，
+#                       057/059 —— 三条 location 同一把，见 /anchor-import 的闸 E）
 #   ANCHOR_OWNER_NAME   有权直写锚的访客名（= 某个 GUESTn_NAME 的值，059）
 
 # ── 访客身份：Authorization 整串 → 名字。命不中 = 空 = 401 ───────────────────
@@ -404,6 +404,10 @@ server {
         # 🚨 **只有本人可以直接写锚**。其他访客认证得过（他们有自己的 bearer），但到这里
         #    被 403 —— 他们的路径是下面那条 /anchor-submit，落待审表、锚表零变化。
         #    判据取自 http 级的 `$anchor_write_allowed` map（env 化，不硬编码名字）。
+        # 🚨 **这一行是整条链上唯一的授权判据**：本口与 /anchor-submit 转发同一把 bearer
+        #    （见下面闸 E）⇒ 服务端收到后无法区分它俩。删掉 / 改错这三行 = 任何访客都能
+        #    直写锚，而且**服务端不会红、日志也不会响** —— 唯一的回归钉是
+        #    `verify-guards.sh` 的锚导入闸（他人 → 403 那条）。
         if ($anchor_write_allowed = "0") {
             return 403 '{"error":"forbidden","detail":"direct anchor writes are owner-only; use /anchor-submit instead"}';
         }
@@ -429,10 +433,12 @@ server {
         # ── 闸 E：token 置换（整组三条）───────────────────────────────────
         # 🚨 `proxy_set_header` 是**整组覆盖**：这里出现一条，server 级那三条就全部对本
         #    location 失效 ⇒ 必须整组抄。
-        # 🚨 Authorization 换成 **`ANCHOR_IMPORT_TOKEN`**（不是研报那把 GUEST_UPLOAD_TOKEN）。
-        #    抄错的表现**不是 401**（那还好查），而是**授权分流形同虚设**：服务端那层再也
-        #    分不出直写与提交，整条闸只剩本文件这一处。
-        proxy_set_header Authorization "Bearer ${ANCHOR_IMPORT_TOKEN}";
+        # 🚨 Authorization 换成 **mono 侧的** `GUEST_UPLOAD_TOKEN`（不是 shim 的那把）。
+        #    与 /research-report、/anchor-submit 是**同一把** —— 059 曾给本口单独发过第二把
+        #    token，收口时回退（理由在 mono 的 config/guest-upload.config.ts 顶部）。
+        # 🚨 后果就在上面的闸 B：服务端收到本口与 /anchor-submit 的请求**无法区分**，
+        #    「只有本人可直写」整条判据只剩闸 B 这一处。删闸 B = 任何访客都能直写锚。
+        proxy_set_header Authorization "Bearer ${GUEST_UPLOAD_TOKEN}";
         proxy_set_header Host $host;
         proxy_set_header X-Guest $guest_name;
 
@@ -440,7 +446,7 @@ server {
     }
 
     # ── 锚估值提交（059）—— 他人的入口：只进待审收件箱，锚表零变化 ─────────────
-    # 与上面同形，**去掉授权闸**（谁都能提交）、独立限频、换回 `GUEST_UPLOAD_TOKEN`。
+    # 与上面同形，**去掉授权闸**（谁都能提交）、独立限频；bearer 与上面同一把。
     location = /anchor-submit {
         limit_except POST { deny all; }
 
@@ -455,7 +461,8 @@ server {
 
         limit_req zone=guest_anchor_submit burst=1 nodelay;
 
-        # 🚨 这里是 **GUEST_UPLOAD_TOKEN**（提交口那把），与上面那条刻意不同。
+        # 🚨 与 /anchor-import 是**同一把** —— 服务端因此分不出这两条路径，别以为这里
+        #    还有第二道保险。
         proxy_set_header Authorization "Bearer ${GUEST_UPLOAD_TOKEN}";
         proxy_set_header Host $host;
         proxy_set_header X-Guest $guest_name;

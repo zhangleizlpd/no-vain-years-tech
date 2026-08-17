@@ -31,18 +31,22 @@ import {
  * 是会被未来某个 PR 悄悄打破的状态：某天有人在这个前缀下加了个 list 端点，就直接对 guest
  * 开放了。
  *
- * ## 两个端点、两把 token、两条语义
+ * ## 两个端点、一把 token、两条语义
  *
- * | 端点 | token | 干什么 |
+ * | 端点 | 干什么 | 谁能到 |
  * | --- | --- | --- |
- * | `anchors/model-import` | `ANCHOR_IMPORT_TOKEN` | **直写锚**（无则建、有则按模型语义刷新）|
- * | `anchors/submissions` | `GUEST_UPLOAD_TOKEN` | **只写待审表**，锚表零变化 |
+ * | `anchors/model-import` | **直写锚**（无则建、有则按模型语义刷新）| 通道层按访客名 403 分流后**只剩本人** |
+ * | `anchors/submissions` | **只写待审表**，锚表零变化 | 所有访客 |
  *
- * 🚨 抄错 token 的表现**不是 401**（那还好查），而是**授权分流形同虚设**：他人持有的提交
- * token 也能打直写口，服务端那层就再也拒不住，只剩 nginx 一层（Guardrail 6）。
+ * 🚨 两个端点持**同一把** `GUEST_UPLOAD_TOKEN` ⇒ **服务端这一层不区分它俩**。「谁能直写」
+ * 的判据单点在通道层 nginx 的 `$anchor_write_allowed`（`/anchor-import` location，按
+ * `ANCHOR_OWNER_NAME`）—— 那一处配置错、或谁绕过代理直连 loopback，锚表就没有第二道闸。
+ * 这是 059 明知并接受的取舍（曾按两把 token 实装、收口时回退），完整理由与「要加回第二把
+ * 的门槛」单点写在 `config/guest-upload.config.ts` 顶部。
  *
- * 🚨 提交端点**绝不调导入 use case、绝不碰锚表** —— 那是 FR-012「系统 MUST NOT 存在第二条
- * 写锚路径」的实现级保证。采纳 = 本人用自己的凭证把同样的值经导入口重放一次。
+ * 🚨 因此**分流的实现级保证只剩这一条**：提交端点**绝不调导入 use case、绝不碰锚表** ——
+ * FR-012「系统 MUST NOT 存在第二条写锚路径」。采纳 = 本人用自己的凭证把同样的值经导入口
+ * 重放一次。改这个 controller 时这条比什么都重。
  *
  * ## `ticker` 走 query string，其余走 body
  *
@@ -67,8 +71,8 @@ export class OptionsdeskGuestController {
   ) {}
 
   @Post('anchors/model-import')
-  @UseGuards(GuestUploadAuthGuard('anchorImport'))
-  @ApiBearerAuth('anchor-import-token')
+  @UseGuards(GuestUploadAuthGuard)
+  @ApiBearerAuth('guest-upload-token')
   @ApiOperation({
     summary: '按标的导入模型估值（隧道内本人专用，无锚则建、有锚则刷新）',
     description:
@@ -119,7 +123,7 @@ export class OptionsdeskGuestController {
   }
 
   @Post('anchors/submissions')
-  @UseGuards(GuestUploadAuthGuard('upload'))
+  @UseGuards(GuestUploadAuthGuard)
   @ApiBearerAuth('guest-upload-token')
   @ApiOperation({
     summary: '提交一条待审估值（其他访客用；只落收件箱，锚表零变化）',

@@ -244,15 +244,13 @@ services:
       RESEARCH_OSS_BUCKET: ${RESEARCH_OSS_BUCKET:-}
       RESEARCH_OSS_ACCESS_KEY_ID: ${RESEARCH_OSS_ACCESS_KEY_ID:-}
       RESEARCH_OSS_ACCESS_KEY_SECRET: ${RESEARCH_OSS_ACCESS_KEY_SECRET:-}
-      # guest 投递通道 token (per apps/server/src/config/guest-upload.config.ts; 057)。
+      # guest 投递通道 token (per apps/server/src/config/guest-upload.config.ts; 057 + 059)。
       # guest-proxy (隧道内 nginx) 覆写进 Authorization 的常量 token, 值经 SOPS 注入,
       # 必须与 guest 机 render-env.sh 渲染的值逐字节一致 (不一致 = 恒 401 且不泄露原因)。
+      # 059 起同一把覆盖研报投递 / 锚待审提交 / 锚直写三条 location (刻意一把)。
       # nullable: 未设 → null → GuestUploadAuthGuard fail-closed 拒一切, 故 :-空串兜底安全。
       # 漏映射则容器读不到 → token 恒空 → 投递端点永远 401 (同 AGENT_WORKER_TOKEN 静默陷阱)。
       GUEST_UPLOAD_TOKEN: ${GUEST_UPLOAD_TOKEN:-}
-      # 059 直写锚导入口的第二把 token, 同上经 SOPS 注入、同上必须与 guest 机渲染值一致。
-      # 漏映射的表现与上面一样: 容器读不到 → 恒 401 且不泄露原因。
-      ANCHOR_IMPORT_TOKEN: ${ANCHOR_IMPORT_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

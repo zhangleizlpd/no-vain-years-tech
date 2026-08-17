@@ -23,19 +23,20 @@ for (const key of Object.keys(process.env)) {
  *
  * ## 为什么必须真 HTTP 而不是直接调 use case
  *
- * 本片验的东西有一半只存在于通道层：两个端点**各认各的 token**（抄错的表现不是 401 而是
- * 授权分流形同虚设）、提交口**结构上够不到锚表**、DTO 形状与 400 的可区分性。直接 new
- * use case 一条都测不到。
+ * 本片验的东西有一半只存在于通道层：两个端点的鉴权三态、提交口**结构上够不到锚表**、
+ * DTO 形状与 400 的可区分性。直接 new use case 一条都测不到。
+ *
+ * ⚠️ 两个端点持**同一把** token（059 收口的取舍，理由在 `guest-upload.config.ts` 顶部）⇒
+ * 「谁能直写锚」在本文件里**无法验**，那道闸整个落在通道层，归 `verify-guards.sh`。
  *
  * 🚨 **NO LIFECYCLE MOCKING**：整个 `OptionsdeskModule` 经 `Test.createTestingModule` 装进真
- * DI 容器，两个 guard 在真实 lifecycle 里跑；只有 `guestUploadConfig`（两把 token 的值）与
+ * DI 容器，两个 guard 在真实 lifecycle 里跑；只有 `guestUploadConfig`（token 的值）与
  * Redis 被 `useValue` 换掉。
  *
  * T004 段 = 待审收件箱的数据面形态；T006 段 = 两个端点接线通了（happy path + 鉴权失败）。
  * 18 条 `state_branch` 的穷举归 T007，同文件续写。
  */
 const UPLOAD_TOKEN = 'g'.repeat(43);
-const ANCHOR_TOKEN = 'a'.repeat(43);
 
 const IMPORT_PATH = '/api/v1/optionsdesk/anchors/model-import';
 const SUBMIT_PATH = '/api/v1/optionsdesk/anchors/submissions';
@@ -68,7 +69,7 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
 
   const importAs = (
     body: Record<string, unknown>,
-    token = ANCHOR_TOKEN,
+    token = UPLOAD_TOKEN,
     ticker: string | null = TICKER,
   ) => post(withTicker(IMPORT_PATH, ticker), body, { authorization: `Bearer ${token}` });
 
@@ -93,7 +94,7 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       .overrideProvider(REDIS_CLIENT)
       .useValue({ call: () => undefined, quit: () => undefined, on: () => undefined })
       .overrideProvider(guestUploadConfig.KEY)
-      .useValue({ token: UPLOAD_TOKEN, anchorImportToken: ANCHOR_TOKEN })
+      .useValue({ token: UPLOAD_TOKEN })
       .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
@@ -218,15 +219,13 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       expect(await prisma.anchorSubmission.count()).toBe(0);
     });
 
-    it('🚨 拿提交口的 token 打导入口 → 401（授权分流的服务端那一层，Guardrail 6）', async () => {
-      const res = await importAs(importBody, UPLOAD_TOKEN);
+    it.each([
+      ['导入口', IMPORT_PATH],
+      ['提交口', SUBMIT_PATH],
+    ])('%s：凭证不符 → 401 且不落任何行', async (_label, url) => {
+      const res = await post(url, importBody, { authorization: `Bearer ${'x'.repeat(43)}` });
       expect(res.statusCode).toBe(401);
       expect(await prisma.anchor.count()).toBe(0);
-    });
-
-    it('🚨 拿导入口的 token 打提交口 → 401（反向同样拒，两把不是「一把的两个别名」）', async () => {
-      const res = await submitAs(importBody, ANCHOR_TOKEN);
-      expect(res.statusCode).toBe(401);
       expect(await prisma.anchorSubmission.count()).toBe(0);
     });
   });
@@ -239,7 +238,7 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
   describe('18 条 state_branch 穷举', () => {
     /** 建一只已在库里的锚（经导入口，走的就是被测那条路径）。 */
     const seedAnchor = async (ticker = TICKER, body: Record<string, unknown> = importBody) => {
-      const res = await importAs(body, ANCHOR_TOKEN, ticker);
+      const res = await importAs(body, UPLOAD_TOKEN, ticker);
       expect(res.statusCode).toBe(201);
       return prisma.anchor.findUniqueOrThrow({ where: { ticker } });
     };
@@ -374,13 +373,13 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       ['代码段小写', 'us:pep'],
       ['市场段大写', 'US:PEP'],
     ])('⑧ 标的写法非规范（%s）→ 400, 且不建出无行情的锚', async (_label, ticker) => {
-      const res = await importAs(importBody, ANCHOR_TOKEN, ticker);
+      const res = await importAs(importBody, UPLOAD_TOKEN, ticker);
       expect(res.statusCode).toBe(400);
       expect(await prisma.anchor.count()).toBe(0);
     });
 
     it('⑨ 市场不在白名单（cn:）→ 400 且不落库, 原因与写法不合规可区分', async () => {
-      const res = await importAs(importBody, ANCHOR_TOKEN, 'cn:600519');
+      const res = await importAs(importBody, UPLOAD_TOKEN, 'cn:600519');
       expect(res.statusCode).toBe(400);
       expect(JSON.stringify(res.json())).toContain('INVALID_IMPORT_MARKET');
       expect(await prisma.anchor.count()).toBe(0);
@@ -399,10 +398,20 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       expect(await prisma.anchor.count()).toBe(0);
     });
 
-    it('⑫ 本人以外的调用方直接写锚 → 服务层这一半拒（通道层那一半在 verify-guards.sh）', async () => {
-      const res = await importAs(importBody, UPLOAD_TOKEN);
-      expect(res.statusCode).toBe(401);
-      expect(await prisma.anchor.count()).toBe(0);
+    /**
+     * 🚨 **本分支在服务层不可判, 这条钉的就是「不可判」这件事本身** —— 不是漏写的反例。
+     * 059 收口把两把 token 回退成一把 ⇒ 服务端拿不到「调用方是谁」的任何可判之据,
+     * 同一个 bearer 打两个口都放行。「只有本人可直写」的判据**单点落在通道层**
+     * （nginx `/anchor-import` 的 `$anchor_write_allowed`, 反例在
+     * `services/guest-proxy/verify-guards.sh` 的锚导入闸）—— 这与 FR-010「判据 MUST 在
+     * 通道层完成」一致, 不是缺口。取舍理由在 `guest-upload.config.ts` 顶部。
+     *
+     * 谁将来把 token 重新拆成两把, 本条会红。那时该做的是同步改 config 顶部那段决策 +
+     * spec 的 state_branch ⑫, 而不是顺手把本条删掉。
+     */
+    it('⑫ 本人以外的调用方直接写锚 → 服务层无可判之据, 判据单点在通道层（FR-010）', async () => {
+      expect((await importAs(importBody)).statusCode).toBe(201);
+      expect((await submitAs(importBody)).statusCode).toBe(201);
     });
 
     it('⑬ 他人提交 → 只落待审, 锚表**逐字段零变化**', async () => {
@@ -429,7 +438,7 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       expect(await prisma.anchor.count()).toBe(0); // 提交这一步落不了锚
 
       // 采纳 = 本人用**自己的**凭证把同样的值重放一次（系统里不存在第二条写锚路径）。
-      const adopted = await importAs({ ...importBody, v: '400.0000' }, ANCHOR_TOKEN, 'hk:00700');
+      const adopted = await importAs({ ...importBody, v: '400.0000' }, UPLOAD_TOKEN, 'hk:00700');
       expect((adopted.json() as { action: string }).action).toBe('create');
 
       const row = await prisma.anchor.findUniqueOrThrow({ where: { ticker: 'hk:00700' } });
@@ -460,12 +469,12 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
         app.inject({
           method: 'GET',
           url: '/api/v1/optionsdesk/anchors',
-          headers: { authorization: `Bearer ${ANCHOR_TOKEN}` },
+          headers: { authorization: `Bearer ${UPLOAD_TOKEN}` },
         }),
         app.inject({
           method: 'GET',
           url: IMPORT_PATH,
-          headers: { authorization: `Bearer ${ANCHOR_TOKEN}` },
+          headers: { authorization: `Bearer ${UPLOAD_TOKEN}` },
         }),
         app.inject({
           method: 'GET',
@@ -475,10 +484,10 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
         app.inject({
           method: 'DELETE',
           url: '/api/v1/optionsdesk/anchors/1',
-          headers: { authorization: `Bearer ${ANCHOR_TOKEN}` },
+          headers: { authorization: `Bearer ${UPLOAD_TOKEN}` },
         }),
       ]);
-      // guest 那两把 token 过不了 JwtAuthGuard；且这两个前缀下**没有**任何 guest 面的
+      // guest 那把 token 过不了 JwtAuthGuard；且这两个前缀下**没有**任何 guest 面的
       // GET / DELETE 实现 —— 「恰好没实现」不算护栏，故这条断言钉的是「以后也不许有」。
       for (const res of probes) {
         expect(res.statusCode).toBeGreaterThanOrEqual(400);

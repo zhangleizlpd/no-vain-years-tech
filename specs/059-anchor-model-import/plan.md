@@ -60,7 +60,7 @@ context7_verified: []
 |---|---|---|---|
 | **ADR-0062** | sunset_trigger #5：「锚的估值口径从人工录入转为模型批量产出**且需自建估值管线** → 重审是否拆 `valuation` 子 ctx（**本 ADR 把「模型 import」按外部输入处理，不建管线**）」 | **accepted-as-is** | **判据的排除条款正好覆盖本片**：估值管线在本机（仓外），本片只做「外部输入」的接收面，一行估值计算都不落 server。这正是 ADR 作者预见并已定性的形态 ⇒ 不触发拆 ctx。⚠️ 若将来把估值计算搬进 server，该 trigger 即刻成立 |
 | **ADR-0062** | sunset_trigger #3：「出现第二个消费锚表的 ctx」 | **accepted-as-is** | 不触发 —— 新端点与新 use case 仍在 optionsdesk 内，锚表消费方数量不变（本 ctx + marketdata 采集闸那条反向 Q7-B） |
-| **ADR-0065** | 「已否决方案」表：「给投递方发系统账号 token 走标准口子 → `JwtAuthGuard` 是全站鉴权面…= 把持仓 / 交易记录 / 自选 / **期权锚** / chat 会话全部给他」 | **mitigated** | 见下方专段 —— 本片**不违反**该决策（我们恰恰不用 `JwtAuthGuard`），但改变了它的一条前提（「通道 = 纯单向收集箱」）。缓解 = 通道按认证结果分流 + **服务端两把独立 token**（见 Architecture Notes §2） |
+| **ADR-0065** | 「已否决方案」表：「给投递方发系统账号 token 走标准口子 → `JwtAuthGuard` 是全站鉴权面…= 把持仓 / 交易记录 / 自选 / **期权锚** / chat 会话全部给他」 | **mitigated** | 见下方专段 —— 本片**不违反**该决策（我们恰恰不用 `JwtAuthGuard`），但改变了它的一条前提（「通道 = 纯单向收集箱」）。缓解 = 通道按认证结果分流（**单层**；服务端第二把 token 曾作为第二道缓解实装、收口时驳回，理由与代价见 Architecture Notes §2） |
 | **ADR-0046** | 「是否把『单行 conditional UPDATE 谓词不得碰他行』做成机械 check？暂留 CR 人工把关」 | **accepted-as-is** | 本片的更新走 `updateMany where {id}` + affected-count，谓词只碰目标行，落在该 ADR 已覆盖的范式内。不新增触发升机械层的信号 |
 | **ADR-0035** | 「`db:migrate` wrapper 的 graceful rollback」/「`local-personal.ts` 分散 vs 集中」 | **accepted-as-is** | 与本片无关：本片 migration 是纯 expand（单条 `CREATE TABLE`），无破坏性变更、无回滚需求；不涉及 seed 策略 |
 
@@ -73,7 +73,7 @@ ADR-0065 反对的是**给投递方一个能过 `JwtAuthGuard` 的宽口子**，
 但有一条前提确实变了：`guest-upload-auth.guard.ts` 的注释写着「投递方只有『往收集箱里放东西』这一个权限」。本片之后，**经该 guard 的请求里出现了能改业务数据的一类**。处理：
 
 1. **对其他访客而言，「单向收集箱」性质原样成立** —— 他们的请求被通道分流到提交端点，落的是待审表，锚表零变化。ADR-0065 §4 对投递方仍然完整。
-2. **服务端必须能独立拒绝**（见 Architecture Notes §2 的两把 token 决策）—— 否则整条授权闸的唯一支点是 nginx 配置，与 §4「通道与服务两层各自独立拒绝」的精神相悖。
+2. **服务端能否独立拒绝** —— 曾按「第二把 token」实装以满足 §4「通道与服务两层各自独立拒绝」，**收口时驳回**（见 Architecture Notes §2）：那第二把与第一把同宿主同文件同 SOPS blob，是共命的假第二层。⇒ 明示接受**授权闸的唯一支点是 nginx 配置**这一状态，代价与唯一的回归钉同段列明。
 3. **`guest-upload-auth.guard.ts` 的类注释需同步更新**，把「只有放东西这一个权限」改成准确表述，并指向本片。**注释与实际能力不符比没有注释更危险。**
 
 ## Architecture Notes *(mandatory)*
@@ -114,15 +114,30 @@ ADR-0065 反对的是**给投递方一个能过 `JwtAuthGuard` 的宽口子**，
 
 **「无 by-ticker 写端点」这个摩擦不存在** —— 那是 HTTP 面限制；进程内先按 ticker 查自有表拿 id 即可。**不新增 by-ticker 的 REST 写端点**（会扩大对外写面）。
 
-### §2 两把独立 token —— 本 plan 相对子 plan 的一处升级
+### §2 通道 token 数量 —— 升级到两把、又在收口时回退成一把
 
-P1 子 plan 原设计是「两个端点共用 `GUEST_UPLOAD_TOKEN`，靠 nginx 选 upstream 路径分流」。**本 plan 改为两把**：直写端点验 `ANCHOR_IMPORT_TOKEN`，提交端点验既有 `GUEST_UPLOAD_TOKEN`。
+**最终状态：一把。** 直写口与提交口都验既有 `GUEST_UPLOAD_TOKEN`；「只有本人可直写」的判据**只在通道层**（nginx `/anchor-import` 的 `$anchor_write_allowed`）。
 
-理由（Gate 0.4 那条 ADR 张力的直接产物）：单把 token 时，整条授权闸的**唯一支点是 nginx 配置**——服务端对两个端点无法区分，一旦有人绕过代理直连 app 的 loopback 端口就能直写锚。虽然绕过需要先拿到宿主 shell（届时已全线失守），但 ADR-0065 §4 的原则是「通道与服务**两层各自独立**拒绝」，而单把 token 让第二层根本没有可判之据。两把 token 让服务端有能力独立拒绝，成本仅一个 env var。
+这条走过一轮完整往返，三段都留在这里 —— 「为什么不是两把」是后来者一定会重新问一遍的问题：
 
-实现：`GuestUploadAuthGuard` 现在读固定的 `guestUploadConfig.token`。做法是**参数化 guard 认哪把 token**（保持零用户 principal、constant-time 比对、裸 401 不泄原因这三条不变），而不是复制一份 guard。新 env 走 `/config-add` 落九位置，收尾跑 `check-env-sync`。
+1. **P1 子 plan 原设计**：两个端点共用 `GUEST_UPLOAD_TOKEN`，靠 nginx 选 upstream 路径分流。
+2. **本 plan 升级为两把**（T003 已按此实装并测绿）：理由是 ADR-0065 §4「通道与服务**两层各自独立**拒绝」—— 单把时服务端对两个端点无可判之据，谁绕过代理直连 app 的 loopback 端口就能直写锚。
+3. **收口回退成一把**（2026-08-17，user 决策）：驳回理由是**第二把与第一把共命，不构成独立的第二层** ——
+   - 两把同出一个 SOPS blob、渲进 guest 机同一个 `/etc/nvy-guest-proxy.env`、落进同一份 nginx conf；读得到其一的位置基本都读得到另一把。
+   - 而 (2) 里那个「绕过代理直连 loopback」的位置，因 `docker-compose.guest.yml` 是 `network_mode: host`，恰恰**就是那台 guest 机本机** —— 攻击位置与密钥存放地重合。
+   - 残余价值只剩两个窄场景：同机上够得到 loopback 但读不到那个 env 的东西（非特权进程 / 另一个容器），以及本 token 的单独泄漏（日志回显 / 误贴）。不足以抵住「每加一个权限层就多一把 token」在配置面的扩散。
 
-🚨 **`guest-upload-auth.guard.ts` 的类注释必须同步改**：现注释称「投递方只有『往收集箱里放东西』这一个权限」，本片后不再准确。**注释与实际能力不符比没有注释更危险。**
+**接受的代价（写明，不留给人自己撞上）**：服务端对「直写」与「提交待审」**没有可判之据**，FR-010 的判据是单层的。这与 FR-010 原文并不冲突（它本就只要求「判据 MUST 在通道层完成」），但比 (2) 弱。连带三处已同步：
+
+- spec `state_branches` ⑫ 由「通道与服务两层各拒一次」改为「判据落在通道层，MUST NOT 依赖服务层再拒一次」；
+- server IT 的 ⑫ 改成钉住「不可判」这件事本身（同一 bearer 打两个口都 201），谁把 token 重新拆开它就红；
+- **唯一验「只有本人可直写」的地方是 `verify-guards.sh` 闸 8d**，且 owner / other 两种角色都必须真跑（只跑一侧 = 只验半条）。
+
+**要加回第二把的门槛**（单点记在 `apps/server/src/config/guest-upload.config.ts` 顶部）：先证明它与第一把**不共命** —— 另一台宿主 / 另一个 secret store / 另一个渲染管道。共命的第二把只是「看上去两把」，比诚实的一把更坏。token 按**权限层**分、不按端点数分。
+
+实现：`GuestUploadAuthGuard` 是普通 `@Injectable()` guard，读固定的 `guestUploadConfig.token`（T003 那个「参数化认哪把 token」的 mixin 工厂随第二把 token 一并删除）；零用户 principal、constant-time 比对、裸 401 不泄原因三条不变。
+
+🚨 **`guest-upload-auth.guard.ts` 的类注释必须同步改**：原注释称「投递方只有『往收集箱里放东西』这一个权限」，本片后不再准确 —— 而且回退成一把之后**更不准确**（同一把 token 现在也守着直写口）。**注释与实际能力不符比没有注释更危险。**
 
 ### §3 `buildModelImportPatch` 键集 7 → 9
 

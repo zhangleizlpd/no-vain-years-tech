@@ -30,9 +30,9 @@ updated_at: '2026-08-16'
 | 导入 use case（新建） | `apps/server/src/optionsdesk/import-anchor-from-model.usecase.ts` |
 | guest 端点（**新建**，见文末偏离登记 ①） | `apps/server/src/optionsdesk/optionsdesk-guest.controller.ts` |
 | 待审提交 use case（新建） | `apps/server/src/optionsdesk/submit-anchor-from-guest.usecase.ts` |
-| DTO / module（改） | `apps/server/src/optionsdesk/{optionsdesk.dto,optionsdesk.module}.ts` + `apps/server/src/openapi.config.ts`（第三个 bearer scheme） |
-| guest 鉴权（改：参数化认哪把 token + 类注释订正） | `apps/server/src/security/{guest-upload-auth.guard,guest-upload-auth.rules}.ts` |
-| 配置（改：加第二把 token） | `apps/server/src/config/guest-upload.config.ts` |
+| DTO / module（改） | `apps/server/src/optionsdesk/{optionsdesk.dto,optionsdesk.module}.ts` + `apps/server/src/openapi.config.ts`（沿用既有 `guest-upload-token` scheme，见偏离 ③） |
+| guest 鉴权（改：类注释订正） | `apps/server/src/security/{guest-upload-auth.guard,guest-upload-auth.rules}.ts` |
+| 配置（改：token 归属与「为什么只有一把」的决策注释） | `apps/server/src/config/guest-upload.config.ts` |
 | 边界注册 | `scripts/checks/check-server-moat.ts`（`MODEL_OWNERSHIP`） |
 | DB | `apps/server/prisma/schema.prisma`（`optionsdesk` schema 已存在，**不加 namespace**） |
 | IT | `apps/server/test/integration/optionsdesk-059.anchor-import.it.spec.ts` |
@@ -47,7 +47,7 @@ updated_at: '2026-08-16'
 3. **`CreateAnchorUseCase` 的 `source` 参数默认是 `'manual'`** —— 建锚路径必须**显式传 `'model'`**（`confidenceSource` 与 `source` 是两个独立参数，都要传）。漏传的表现是锚建出来了、痕迹却记成人工，而没有任何断言会红。
 4. **noop 短路必须在算差异报告之前** —— 顺序反了会先 `buildImportFallbackReport` 再发现不用写，白算一遍且日志里出现「回落了」的假信号。
 5. **`proxy_set_header` 是整组覆盖** —— nginx 新 location 里只要出现一条，server 级那三条对本 location **全部失效**，必须整组抄（`/research-report` 旁边的原文注释就是这个坑）。
-6. **两把 token 不能混** —— 直写 location 注入 `ANCHOR_IMPORT_TOKEN`，提交 location 注入 `GUEST_UPLOAD_TOKEN`。抄错的表现不是 401（那还好查），而是**授权分流形同虚设**：他人 token 打直写口也能过 server 那关，只剩 nginx 一层。
+6. ~~**两把 token 不能混**~~ → **收口改为一把**（偏离 ③）：三条 mono location 都注入 `GUEST_UPLOAD_TOKEN`。⚠️ 由此**服务端对直写 / 提交无可判之据**，「只有本人可直写」整条判据只剩 nginx `/anchor-import` 的 `$anchor_write_allowed` 那三行 —— 删了 / 改错它，任何访客都能直写锚，而**服务端不会红、日志也不会响**。唯一的回归钉是 `verify-guards.sh` 闸 8d，且 owner / other 两侧都要真跑。
 7. **新表不登记 `MODEL_OWNERSHIP` 会被 `moat-unmapped` 硬拒** —— 且报错信息指向探针不指向你的表，第一次撞会以为探针坏了。
 8. **`check-optionsdesk-rule-constants.ts` 对整个 `optionsdesk/` 扫小数字面量** —— 新建的 `anchor-import.rules.ts` 里若要写阈值，先确认该值不在从 `anchor.rules.ts` 派生的禁用集内；能用整数表达就别写小数。
 9. **`deploy/install.sh` 的 Gate A 机器校验「capabilities 目录声明的端点集 ↔ nginx 实际放行集」相等** —— 只改一边会在部署时才炸。`openclaw-skill/SKILL.md` **不动**（薄壳，能力清单运行时拉）；`guest-bundle/README.md` 按 Gate C **不得**写入新端点。
@@ -64,6 +64,7 @@ updated_at: '2026-08-16'
 ## Phase 2: 鉴权与配置
 
 - [X] T003 [P] [Server] **第二把 token + guard 参数化 + 类注释订正**（`FR-010`, `FR-015`, plan §2）：`guest-upload.config.ts` 加 `ANCHOR_IMPORT_TOKEN`（同 `.min(32).nullable()` 形状），过 `/config-add` 落九位置（`.env.example` / `.env.production` / sops / `docker-compose.tight.yml` / `vitest.config.ts` `test.env` 等）。`GuestUploadAuthGuard` 改为**参数化认哪把 token**（保持 constant-time 比对 / fail-closed / 零 user principal / 裸 401 不泄原因四条不变），**不复制第二份 guard**。🚨 **类注释必须同步改** —— 现写「投递方只有『往收集箱里放东西』这一个权限」，本片后不再准确（注释与实际能力不符比没有注释更危险，plan Gate 0.4 记）。→ verify: `pnpm tsx scripts/checks/check-env-sync.ts` 全 Check 绿；`guest-upload-auth.guard.it.spec.ts` 扩为**两把 token 各三态**（对 / 错 / 缺）—— 走**真 DI 容器** `Test.createTestingModule(...)`，**MUST NOT** `new GuestUploadAuthGuard()`（Testing Invariants 第一条）；断言「缺失」与「不符」响应体**逐字节相同**（`state_branch` 15 / 16）；再断言**拿提交 token 打直写 guard 必须失败**（Guardrail 6 的回归钉）
+  > ⚠️ **本 task 的 token 部分已在收口时整体回退（偏离 ③）**：现状 = 一把 token + 普通 `@Injectable()` guard，`ANCHOR_IMPORT_TOKEN` 与交叉反例均已删除。留下来的是「类注释订正」这一半。
 
 ## Phase 3: 数据面
 
@@ -74,6 +75,7 @@ updated_at: '2026-08-16'
 - [X] T005 [Server] **`import-anchor-from-model.usecase.ts`**（`FR-001`, `FR-002`, `FR-006`, `FR-007`, `FR-008`, `FR-009`, `FR-016`, `SC-003`, `SC-004`, plan §1 / §4 / §5）：按 ticker 查自有表 → **无锚**走 `CreateAnchorUseCase({ …, confidenceSource:'model', source:'model' })`（两个参数都要显式传，Guardrail 3），返 `action='create'` 且 `fallbackEntries=[]`；**有锚**则 ① 先判 `v`/`confidence`/`asof`/`method` 与现值**全等 → `action='noop'`，不写不留痕**（Guardrail 4：这一步必须在算差异报告之前）② `buildImportFallbackReport` ③ `buildModelImportPatch` ④ `buildAnchorChange(..., 'model')` ⑤ 单事务 `updateMany({where:{id}})` + affected-count（`count===0` ⇒ 404，并发删除收敛）+ 痕迹写入。V≤0 复用既有 `assertUsableV`。**禁 `FOR UPDATE` / Serializable**（server-impl-playbook）。→ verify: 单测（fake prisma）覆盖 `state_branch` 1 / 2 / 3 / 5 / 6 / 7 / 11 / 18；**其中「连续两日各导入一次，第二日仍成功」必须有独立 `it()`** —— 那是 Guardrail 1 第 ③ 条的回归钉，也是本片最容易漏且后果最重的一条（首日全绿、次日静默停摆）；另断言 `anchor_change.source === 'model'`、以及 noop 分支下 `anchorChange.create` **零调用**
 
 - [X] T006 [Server] **两个端点 + DTO + module 接线**（`FR-001`, `FR-003`, `FR-004`, `FR-005`, `FR-008`, `FR-011`, `FR-012`, `FR-016`, plan §1 / §6 / §7）：`optionsdesk.controller.ts` 加两个 guest 面端点 —— `POST anchors/model-import`（调 T005 的 use case，`@UseGuards` 认 `ANCHOR_IMPORT_TOKEN`）+ `POST anchors/submissions`（**只写待审表，绝不调 use case、绝不碰锚表** —— 这是 `FR-012`「不存在第二条写锚路径」的实现级保证）。DTO 走 T002 的校验（**只加新 DTO，既有两个一字不动**，Guardrail 11）。`source: 'model'` 在 controller 内**写死**，不从请求体取（`FR-008`：防伪造 provenance）。响应含 `action` 与 `fallbackEntries`（`FR-016`）。`@nestjs/swagger` 装饰器齐（`@ApiBearerAuth` 具名 scheme 照 `guest-upload-token` 先例）。→ verify: 新建 `optionsdesk-059.anchor-import.it.spec.ts` 并**先只落 happy path**（`setupIsolatedDb()`）：两个端点各一条 2xx + 一条鉴权失败，证明接线通了；typecheck / lint 绿（新文件首跑加 `--skip-nx-cache`）。**分支穷举归 T007** —— 见下条为何拆开
+  > ⚠️ 两处随后被改：`ticker` 移到 query（偏离 ②）；直写口的 `@UseGuards` 改认 `GUEST_UPLOAD_TOKEN`、`@ApiBearerAuth` 沿用 `guest-upload-token`（偏离 ③）。
 
 - [X] T007 [Server] **18 条 `state_branches` 穷举 IT**（`FR-006`, `FR-007`, `FR-013`, `SC-003`, `SC-004`, `SC-007`, plan §1 / §4 / §5）：把 T006 建好的 `optionsdesk-059.anchor-import.it.spec.ts` 补齐到**每条 `state_branch` 对应一个 `it()`**（Testing Invariants 第三条 EXHAUSTIVE BRANCHING，逐条映射见下方覆盖矩阵）。三条硬断言：① 提交端点跑完 `anchor.count()` 与全部锚字段**零变化**（`state_branch` 13）② 同参重放第二次**零数据变化 + 零 `anchor_change` 行**（`SC-003`）③ 带人工位的锚被导入后，响应 `fallbackEntries` 与 `anchor_change.beforeValues` **逐条对得上**（`SC-004` 的「无一遗漏、无一编造」）。收尾跑既有 optionsdesk IT 全套确认仍绿（`SC-007`）。→ verify: 18/18 分支各有 `it()` 且**每条都能真失败**（逐条注掉对应实现确认变红，别留恒真断言）
 
@@ -90,6 +92,7 @@ updated_at: '2026-08-16'
 ## Phase 6: guest 通道
 
 - [X] T009 [Ops] **guest-proxy 两个 location + env 管道 + 能力目录**（`FR-005`, `FR-010`, `FR-013`, `FR-017`, plan §9）：`futu-shim-guest.conf.template` 加 `location = /anchor-import` 与 `= /anchor-submit`。直写口五闸：`limit_except POST { deny all; }` / **授权闸**（本片新增，`FR-010`）—— 🚨 **判据必须 env 化，不得硬编码访客名**：`$guest_name` 的取值在既有 `map` 块里全部来自 envsubst 变量（`"${GUEST1_NAME}"` / `"${GUEST2_NAME}"`），硬写一个名字既脱离配置管道、又把「谁是本人」冻进仓内。⇒ 新增 `map $guest_name $anchor_write_allowed { default 0; "${ANCHOR_OWNER_NAME}" 1; }` + location 内 `if ($anchor_write_allowed = 0) { return 403; }`。**用 `map` 而非 `if` 链**是照 template 顶部那句原话「用 map 而不是 if 链，是为了加第二个访客时只加一行，且日志里能记名字」/ `$arg_ticker !~ "^(us|hk):"` → 400（注释写明「**与 server DTO 同源，改一处必改另一处**」，`FR-005`）/ `client_max_body_size 4k` / **新开** `limit_req_zone guest_anchor rate=6r/m`。提交口同形但去掉授权闸、限频 `2r/m`（与研报同档）、独立 zone（`FR-017`：一方触顶不影响另一方）。**整组三条 `proxy_set_header`**，两个 location 各注入**不同的** token（Guardrail 5 + 6）。配套 —— **两个新变量都要走完整管道，漏一个就在渲染时静默留下 `${...}` 字面量**：`docker-compose.guest.yml` 的 `NGINX_ENVSUBST_FILTER` 加 `ANCHOR_IMPORT_TOKEN` **与 `ANCHOR_OWNER_NAME`** 两个键、`nvy-guest-proxy.env.example` 各加一行 `__FILL_...__` 占位、`render-env.sh` 照 `FUTU_SHIM_TOKEN` 那套加 `: "${ANCHOR_IMPORT_TOKEN:?}"` 与 `: "${ANCHOR_OWNER_NAME:?}"` + 替换。⚠️ token 那个照既有纪律断言长度 ≥ 32；**`ANCHOR_OWNER_NAME` 只需断言非空** —— 它不是秘密（是 `map` 的 key，同 `GUESTn_NAME`），但空值会让授权闸退化成「谁都不许写」，那是 fail-closed 方向、可接受但要能一眼看出。`capabilities/capabilities.md` 加两个端点条目 + 字段说明 + 错误码表 + **「导入须早于当日采集轮」这条运维约束**（plan §8：它是运维事实不是代码约束，故只写在调用说明里）。→ verify: `nginx -t` 过；`render-env.sh` dry-run 产物无 `__FILL_` 与 `${` 残留；**`deploy/install.sh` 的 Gate A 绿**（目录声明的端点集 ↔ nginx 放行集相等，Guardrail 9）
+  > ⚠️ **收口后 `ANCHOR_IMPORT_TOKEN` 那一路全部撤除（偏离 ③）**：两个 location 注入**同一把** `GUEST_UPLOAD_TOKEN`；本 task 剩下的新变量只有 `ANCHOR_OWNER_NAME` 一个 —— 它同时也成了「只有本人可直写」的**唯一**判据。
 
 - [X] T010 [Ops] **`verify-guards.sh` 反例断言**（`FR-010`, `FR-013`, `SC-005`）：新增断言，**每条配反例**：无 token 打两个口 → 401 / **他人 token 打 `/anchor-import` → 403**（授权分流的核心护栏）/ 他人 token 打 `/anchor-submit` → 2xx / `GET /anchor-import` → 403（`limit_except` 里干活的是 `deny`，返 403 不是 405 —— 057 真跑证伪过 405）/ `ticker=cn:600519` → 400 / `ticker=AOS` → 400 / 超限频 → 429。⚠️ `check()` 用 `%-46s` 对齐，标签别超 46 字符。→ verify: 本机 `./verify-guards.sh` 全绿；prod 上 `--from-guest` 全绿；**先把新断言跑红再实现**
 
@@ -130,7 +133,7 @@ T009 ─→ T010 ─→ T011
 | 9 | 市场不在白名单 → 拒 | T002 · T006 · T007 · T009（通道那层）|
 | 10 | 置信度越界 → 拒 | T002 · T006 · T007 |
 | 11 | 估值零或负 → 拒 | T005 · T007 |
-| 12 | 他人直接写锚 → 两层各拒一次 | T003（服务层）· T009（通道层）· T010 |
+| 12 | 他人直接写锚 → 判据**单层**落在通道层（偏离 ③）| T009（通道层，唯一判据）· T010（唯一回归钉，owner / other 两侧都要跑）· T007（服务层「不可判」的登记断言）|
 | 13 | 他人提交 → 只落待审，锚表零变化 | T004 · T006（实现）· T007（硬断言 ①）|
 | 14 | 待审被采纳 → 同一路径落锚 | T006（提交端点不调 use case = 实现级保证）|
 | 15 | 凭证缺失 → 拒不泄区别 | T003 |
@@ -209,18 +212,23 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
 
 ### 🚨 合入前必须先做的一件事（impl 期实测发现，不是自愈的）
 
-**先在两侧把两个新 env 备齐，再合 PR**：
+**先在 guest 机上把新 env 备齐，再合 PR** —— 只剩一步（偏离 ③ 把 mono 侧那步消掉了：`GUEST_UPLOAD_TOKEN` 057 就已在 SOPS 里，本片不新增任何 secret）：
 
-1. mono 侧 SOPS（`~/.nvy/secrets.enc.env`）加 `ANCHOR_IMPORT_TOKEN`（`randomBytes(32).toString('base64url')`，**与 `GUEST_UPLOAD_TOKEN` 取不同值**）
-2. 77 上重跑 `render-env.sh`（`FORCE=1`），把 `ANCHOR_IMPORT_TOKEN` 与 `ANCHOR_OWNER_NAME` 渲进 `/etc/nvy-guest-proxy.env`
+1. 77 上重跑 `render-env.sh`（`FORCE=1`，带上 `ANCHOR_OWNER_NAME=<本人的访客名>`），把它渲进 `/etc/nvy-guest-proxy.env`
 
-漏了会怎样：`deploy/install.sh` 的预校验 `nginx -t` **照样过**（未设变量 envsubst 不替换，留下的字面量在语法上合法），但自检 (d) 的残留扫描会看见 `${ANCHOR_IMPORT_TOKEN}` ⇒ **exit 5 自检失败**，配置回滚到上一版。不是静默坏，但会让一次本可以顺的部署红一轮。
+漏了会怎样：`deploy/install.sh` 的预校验 `nginx -t` **照样过**（未设变量 envsubst 不替换，留下的字面量在语法上合法），但自检 (d) 的残留扫描会看见 `${ANCHOR_OWNER_NAME}` ⇒ **exit 5 自检失败**，配置回滚到上一版。不是静默坏，但会让一次本可以顺的部署红一轮。
+
+⚠️ 而 `ANCHOR_OWNER_NAME` 这个值本身现在**是「只有本人可直写锚」唯一的判据**（偏离 ③）—— 渲错成一个不存在的访客名不会红在部署上，只会让直写口恒 403；渲成某个别人的名字则是反向的静默事故。`render-env.sh` 的自证 ④ 断言它必须等于某个 `GUESTn_NAME`，但断不出「是不是**你**那个」。
 
 ⚠️ 那条 envsubst 过滤正则**仓里有三份拷贝**（`docker-compose.guest.yml` / `install.sh` 的 `ENVSUBST_FILTER` / `install.sh` 自检 (d) 的残留扫描），本片三处已同步 —— 057 当年只改了 compose 那份，deploy 当场红在预校验上。
 
-## impl 期偏离登记（与 plan / tasks 原文不一致的两处，都是实现时才暴露的）
+## impl 期偏离登记（与 plan / tasks 原文不一致的三处）
 
 1. **guest 端点另起 `optionsdesk-guest.controller.ts`，没有加进 `optionsdesk.controller.ts`**（tasks 原文写的是后者）。理由：那个 controller 是**类级** `@UseGuards(JwtAuthGuard, AccountIdThrottlerGuard)`，类级 guard 对每条路由生效且**方法上摘不掉**。要塞进去只能把 13 个既有端点的鉴权逐个下放到方法级 —— 为了少建一个文件而动整个 App 的鉴权面，风险与收益不成比例。体例同 `research.controller.ts`（同为 guest 面、同为只写）。
 2. **`ticker` 走 query string，其余四个字段走 JSON body**（原设计是整个请求体 JSON）。理由：nginx 的 `$arg_*` **只读得到 query**，T009 那道通道层市场闸（`$arg_ticker !~ "^(us|hk):"`）只有在 ticker 位于 query 时才成立；放进 body 的话 nginx 看不见它，闸退化成摆设。与 057 研报把三项必填元数据放 query 是同一个理由。⚠️ 这处改动是在 T009 写 nginx 时才发现的 —— T006/T008 已经按 body 形状落过一版，随 T009 一并改回并重跑 export-openapi + regen。
+
+3. 🚨 **通道 token 由两把回退成一把**（2026-08-17，user 决策；plan §2 记全过程与驳回理由）。T003 已按「第二把 `ANCHOR_IMPORT_TOKEN` + guard 参数化」实装并测绿，收口时整体回退：两把同出一个 SOPS blob、渲进 guest 机同一个 env 文件、落进同一份 nginx conf ⇒ **共命，不构成独立的第二层**；而它唯一防的「绕过代理直连 loopback」位置，因 guest compose 是 `network_mode: host`，恰恰就是那台 guest 机本机。
+   **随之改动**：`ANCHOR_IMPORT_TOKEN` 从九位置全部撤除（含 envsubst 三份正则）· guard 回到普通 `@Injectable()`（mixin 工厂删）· `openapi.config.ts` 撤掉第三个 bearer scheme 并重跑 export-openapi + regen · `render-env.sh` 自证 ③ 的「两把互不相同」判据删除 · guard IT 的交叉反例删除（一把之后它在服务端**不可能成立**，留着是假保证）。
+   **代价与其唯一护栏**：spec `state_branches` ⑫ 由「两层各拒一次」改为「判据落在通道层，MUST NOT 依赖服务层再拒一次」；server IT 的 ⑫ 改成钉住「服务层不可判」这件事本身（同一 bearer 打两口都 201），谁把 token 重新拆开它就红；**唯一验「只有本人可直写」的地方是 `verify-guards.sh` 闸 8d**，owner / other 两侧都必须真跑。要加回第二把的门槛（「先证明它与第一把不共命」）单点记在 `guest-upload.config.ts` 顶部。
 
 另有一处**实现细节**在 spec / plan 里没写死、由实现选定并已落成断言：**`noop` 判据把 `confidence_source` 一并算进去**（四个模型事实全等 **且**来源已是 `model` 才算 noop）。理由：手工锚的数字恰好与模型一致时，这次导入**确实改了东西** —— 它把 provenance 翻成 `model`（FR-002 的 MUST）。判成 noop 会让那只锚继续显示「人工来源、可编辑」，与实际写入路径不符。
