@@ -5,6 +5,7 @@ applies_to: [apps/server, apps/mobile]
 sunset_trigger: |
   - 重要度分级 feature 实装时：本 ADR 只钉「方向 + Q7 机制选型」，分级的具体投影表 / Outbox event schema / 消费者落地归该 feature plan，届时回填实装细节并复审 Q7-A vs Q7-B 取舍（⚠️ 复审已于 2026-06-04 规划期完成，选 Q7-B，见 § 复审记录；剩余动作 = 018 实装细节回填）
   - 出现 portfolio 必须「server 端强一致同步读 marketdata」的场景（如下单校验需实时价、不能容忍 client-side merge 的最终一致）→ 跨层方向假设失效，重审是否引入 server 端只读跨 ctx 路径
+    ✅ **FIRED 2026-08-18（061）· mitigated** —— 场景出现（消费方是 `optionsdesk` 而非原文假设的 `portfolio`，但判据是**形态**不是**哪个 ctx**）；引入的是**只读同步调用**（DI port 方法）不是跨 ctx 写，方向仍单向无环（详见 §复审记录 2026-08-18）
   - marketdata 因分级 ship 不再是叶子 context 后，其作为 callee 被 portfolio 反向读的契约稳定性 + 是否需把投影抽为共享 read model 复审
 ---
 
@@ -86,3 +87,21 @@ portfolio 特性消费 marketdata 数据**一律由 mobile client 直调 015 读
 2. portfolio schema 语义变更**实际咬过一次** marketdata 查询（如加软删列未同步过滤致 T0 污染——耦合债从账面变现实）。
 
 **实装细节归 018 feature plan**：查询形态 / `// CROSS-CONTEXT-READ:` 注释文本 / syncTier 重算触发时点，届时回填本 ADR。
+
+## 复审记录 — 2026-08-18（061 盘中实时 spot；`sunset_trigger` #2 `fired`）
+
+> 执行 frontmatter `sunset_trigger` 第 2 条。触发源 = [061-marketdata-realtime-spot](../../specs/061-marketdata-realtime-spot/spec.md)（plan Gate 0.4 / D1）。同轮的另两份 amend：[ADR-0054](0054-alert-self-hosted-external-io-adapter.md)（实时面升格落点）/ [ADR-0062](0062-optionsdesk-bounded-context.md)（跨 ctx 面 +1 条）。
+
+**trigger 原文** = 「出现 portfolio 必须**server 端强一致同步读 marketdata** 的场景（如下单校验需实时价、不能容忍 client-side merge 的最终一致）→ 跨层方向假设失效，重审是否引入 server 端只读跨 ctx 路径」。
+
+**判定：命中（`fired`），已缓解。** 消费方是 **`optionsdesk`** 而不是原文假设的 `portfolio` —— 但**判据是「形态」不是「哪个 ctx」**：本 ADR 钉的是「数据层 ↔ 应用层的跨层方向 + 反向走 Q7」，061 出现的正是原文描述的那个形态 —— 一个应用层 ctx 必须在 **server 端同步读到实时价**，client-side merge 的最终一致**不够用**：雷达要按 spot **排序 + keyset 分页**，排序表达式的操作数必须在服务端同表可得，客户端 merge 排不了序也翻不了页。⚠️ [ADR-0062 §复审记录 2026-08-01](0062-optionsdesk-bounded-context.md) 登记的两条绊线里的第 ②「盘中实时 spot 上线」就是这一条。
+
+**引入了什么（precise，别读宽）**：
+
+1. **只读同步调用，不是跨 ctx 写** —— `optionsdesk` DI 注入 `marketdata` `exports` 的 port token（`REALTIME_QUOTE_PORT` / `MARKET_STATE_PORT`），调的是 port 方法。`marketdata` 的任何表在这条路径上**零写入**；tick 写库落的是 **optionsdesk 自有列**（锚表 `intraday_price` / `intraday_at`）。
+2. **方向仍单向无环** —— `marketdata → optionsdesk` 的运行时依赖**不存在**：没有任何 marketdata 代码 import `optionsdesk`，`MarketdataModule` 只是 `exports` 两个 token（export 不产生对消费方的依赖）。本 ADR §3「server 层依赖单向、无环」的净效果**保持成立**。
+3. **`portfolio` 一行未改** —— §1「portfolio → marketdata 一律 client-side merge、禁 server 端跨 ctx DI」**照旧有效**。本次放行的是 `optionsdesk → marketdata` 这一条**具名边**，不是给「应用层可以 server-DI marketdata」发通行证。🚨 谁要复用这条先例，先过 [catalog](../conventions/server-bounded-context-catalog.md) 7Q **加上**本条的三个限定：注入的是 **port 非 use case** / **零跨 ctx 写** / **被注入方零感知**。任一不满足 → 回本 ADR 重评。
+
+**`sunset_trigger` #3（marketdata 不再是叶子后的契约稳定性 + 是否抽共享 read model）：前半句成立，后半句未触发。** marketdata 其实早就不是叶子（045 起有一条反向 Q7-B 读锚表，见 [ADR-0062](0062-optionsdesk-bounded-context.md) §3 第 2 行）；061 新增的是它作为**被注入方**的角色。但「抽共享 read model」**无对象** —— 本片的读**不经投影**（明确否掉「marketdata 落表 → optionsdesk 读表」的两跳，实时面无历史需求，历史归 `daily_bar`）。契约稳定性由 port interface 承担：`marketdata` 侧改 port 签名 = **编译期红**，不是运行期静默漂移。
+
+**§2 表格与 2026-06-04 的 Q7-B 选型不受影响。** 分级同步（`marketdata → portfolio`）仍是夜间 cron 的独立只读，读频率没变、摊销判据没变。2026-06-04 记的两个「升 A」trigger 均**未命中**：① 「盘中实时**分级**把读频率拉到分钟级」—— 061 分钟级的是**行情价读取**，不是**分级读**，两者读的不是同一批表，`sync-plan` 的节奏一次没动；② portfolio schema 语义咬过一次 —— 未发生。

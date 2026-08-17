@@ -116,7 +116,7 @@ updated_at: '2026-08-17'
 
 ## Phase 7: ADR amendment 与端到端实证
 
-- [ ] T017 [P] [Docs] **三份 ADR amendment**（plan Gate 0.4）：`ADR-0054` #1 标 fired（实时面升格 marketdata，**不升 `packages/`** 及其理由）+ **#2 标 fired 但缓解物推迟**（futu 无 A 股权限，缓解期内 cn 槽 fail-closed 留空）；`ADR-0062` #1 标 fired（§3 跨 ctx 面加一条强一致同步读边，Consequences 的「最长延迟一天」取舍作废改写）；`ADR-0048` #2 标 fired（引入的是只读同步调用不是跨 ctx 写，方向仍单向无环）。三份各追加一节 `## 复审记录`。🚨 **两个过渡态必须写进去**，否则半年后看像设计漂移：① 两套 failstreak 并存 ② 进程内 `@Cron` 多实例会重复触发（与既有 scheduler 同一前提）。→ verify: `pnpm tsx scripts/check-adr-frontmatters.ts` 全绿；`rg -n 'ADR-0053' docs/adr/0062-*.md` 确认那条**未命中**的判定与 `eslint.config.mjs` 的 allowlist **都没被动过**
+- [X] T017 [P] [Docs] **三份 ADR amendment**（plan Gate 0.4）：`ADR-0054` #1 标 fired（实时面升格 marketdata，**不升 `packages/`** 及其理由）+ **#2 标 fired 但缓解物推迟**（futu 无 A 股权限，缓解期内 cn 槽 fail-closed 留空）；`ADR-0062` #1 标 fired（§3 跨 ctx 面加一条强一致同步读边，Consequences 的「最长延迟一天」取舍作废改写）；`ADR-0048` #2 标 fired（引入的是只读同步调用不是跨 ctx 写，方向仍单向无环）。三份各追加一节 `## 复审记录`。🚨 **两个过渡态必须写进去**，否则半年后看像设计漂移：① 两套 failstreak 并存 ② 进程内 `@Cron` 多实例会重复触发（与既有 scheduler 同一前提）。→ verify: `pnpm tsx scripts/check-adr-frontmatters.ts` 全绿；`rg -n 'ADR-0053' docs/adr/0062-*.md` 确认那条**未命中**的判定与 `eslint.config.mjs` 的 allowlist **都没被动过**
 
 - [ ] T018 [Ops] **端到端实证**（`SC-001` ~ `SC-007`，**唯一载体**）：美股盘中真机（Mate50 dev-client）逐条实测并把数字填回本 task —— ① 距 W% 分钟级跳动，端到端 P95 按 `intraday_at` 与页面读数时刻实测（`SC-001`）② 收盘后 2 分钟内的价 == 当日官方收盘价，且此时 `sync-anchor-quote` 的每小时投影尚未跑过（`SC-002`）③ 人为断源 → 三轮后全部回落收盘档、**0 个锚显示 0**（`SC-003`、`SC-007`）④ 恢复源 → 自动回升，无人工介入 ⑤ 一个交易时段内的实际调用量占配额比（`SC-005`）⑥ 连续 3 个美股交易日无人工干预，失败轮次从留痕逐条可查（`SC-006`）。→ verify: 逐条记录实测值（数字 / 截图路径 / `failstreak` 留痕）填回本 task；`SC-004`（alert 零变化）由 T005 的 diff 断言 + 024 既有 IT 全绿承担，不在本 task 重复
 
