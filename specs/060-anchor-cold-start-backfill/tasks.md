@@ -221,7 +221,9 @@ updated_at: '2026-08-17'
   >
   > ⚠️ **一处刻意保留的弱断言（诚实标注）**：⑳ 里「同一出口对**维度 job** 零副作用」这条反例，在当前实现下是**结构性成立**的 —— 维度 payload 没有 `anchorId`，去掉 `job.name` 判断只会让 `BigInt(undefined)` 抛进 catch 落 WARN，表照样不动。只有把它连同「缺字段给兜底默认」一起变异才咬得到（B 批就是这么造的）。**留着它是记录意图，不是它自己撑住了什么。**
 
-- [ ] T012 [Server] **Verify Backend Physics — 真 app 启动冒烟**（ADR-0040 多层测试门）：跑 `scripts/ci/server-boot-smoke.ts`（Testcontainers PG + Redis 起真 Nest、发真 HTTP 探针）。本片新增一个自注册 subscriber + 一条 worker 路由 + 一个 use case，**DI 接错的表现是 boot 失败而不是任何单测红**。→ verify: 脚本退出码 0。🚨 **不许跳过、不许拆**（模板原文）；红了说明模块接线塌了，回滚 impl 而不是改断言
+- [X] T012 [Server] **Verify Backend Physics — 真 app 启动冒烟**（ADR-0040 多层测试门）：跑 `scripts/ci/server-boot-smoke.ts`（Testcontainers PG + Redis 起真 Nest、发真 HTTP 探针）。本片新增一个自注册 subscriber + 一条 worker 路由 + 一个 use case，**DI 接错的表现是 boot 失败而不是任何单测红**。→ verify: 脚本退出码 0。🚨 **不许跳过、不许拆**（模板原文）；红了说明模块接线塌了，回滚 impl 而不是改断言
+
+  > ✅ **落地（2026-08-17）**：`pnpm tsx scripts/ci/server-boot-smoke.ts` 退出码 0，`✅ ALL ASSERTIONS PASSED`。真 `nx build server` 产物 + 真 PG/Redis 容器 + 真 HTTP 探针，本片新增的三处接线（`AnchorColdStartSubscriber` 的 `OnModuleInit` 自注册 / worker 的 `sync:anchor-cold-start` 路由 / `AnchorColdStartUseCase` 的五个构造器依赖）在**完整 AppModule**（非收窄 boot）里全部立得起来。顺带真跑了一次 `migrate deploy`，`20260817_1729_add_anchor_cold_start_run` 在空库上可应用。
 
 ## Dependencies
 
