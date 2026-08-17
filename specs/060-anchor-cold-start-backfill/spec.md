@@ -2,7 +2,7 @@
 feature_id: 060-anchor-cold-start-backfill
 modules: [optionsdesk, marketdata]
 owners: ['@zhangleizlpd']
-status: clarified
+status: tasks-ready
 created_at: '2026-08-17'
 updated_at: '2026-08-17'
 spec_kit_version: '>=0.8.5,<0.10.0'
@@ -41,7 +41,7 @@ state_branches:
 
 **Feature Branch**: `060-anchor-cold-start-backfill`
 **Created**: 2026-08-17
-**Status**: Clarified
+**Status**: Tasks Ready
 **Input**: 锚首次创建后以异步事件触发一次冷启动补数：把「最近一个已收盘交易日」的期权链、期权快照、正股日线补齐；该市场盘中则跳过 session 敏感的期权快照，交给当晚常规轮。整条路径按 market 参数化，为后续接港股期权留结构位（本片不开 hk 采集行为）。
 
 ## Clarifications

@@ -219,7 +219,7 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 - **落 `marketdata` schema**（写方在 marketdata）。🚨 `scripts/checks/check-server-moat.ts` 的 `MODEL_OWNERSHIP` **必须登记** `anchorColdStartRun: 'marketdata'`，否则 `moat-unmapped` 硬拒（ADR-0062 Consequences 已写明这条）。
 - **每只锚一行，PK = `anchor_id`**（不是 ticker —— 见 D5 的幂等键表：ticker 作主键在锚按用户区分后会让两只锚撞同一行、互相覆盖结局）。`ticker` 作普通列留着，纯为排障可读。其余字段：最近一次运行时刻 / 结局 / 原因文本 / 目标交易日。写入走**单行 upsert**（覆盖式，只保留最近一次 —— FR-026 只要求「最近一次」）。
 - `anchor_id` 是**逻辑引用、不建 FK**（跨 schema，且体例同 `anchor_change` 的 `anchor_id`：删锚不级联）。删锚后重建会得到新 id ⇒ 新行，语义正确。
-- **结局值域 = FR-027 的八种，贫血字符串列**，不建 PG enum（照 `anchor_submission` 三态的先例）。八种取值必须在 IT 里被逐个断言到（SC-010）。
+- **结局值域 = FR-027 的八种，贫血字符串列**，不建 PG enum（照 `anchor_submission` 三态的先例）。八种取值必须在 IT 里被逐个断言到（SC-009）。
 - **索引只建 PK** —— 日均个位数、查询形状就是按 ticker 点查，撒 B-tree 是 cargo cult（同 059 §6 的判据）。
 - 🚫 **不复用 `sync_run`** —— `schema.prisma:1020` 明写「塞非维度行会污染 `report.sh` 逐维度解析 + 全景 IT 维度计数断言」。这与 044 的 `CalendarSyncHealth` 做的是同一个判断，本片是第二次。
 - migration 纯 expand（单条 `CREATE TABLE`）⇒ 单 PR 合规（ADR-0035 + `.claude/rules/migration-rules.md §2`）。目录名走 `pnpm db:migrate "add anchor cold start run"` wrapper 自动生成 `<yyyymmdd>_<hhmm>_add_anchor_cold_start_run`（lefthook `migration-naming-check` 正则 `^[0-9]{8}_[0-9]{4}_[a-z][a-z0-9_]*$` 硬拦）。
