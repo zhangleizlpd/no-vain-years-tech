@@ -193,7 +193,33 @@ updated_at: '2026-08-17'
   >
   > **⑧⑨⑩ 三档取的判别性时刻**（EDT = UTC-4，交易日历只登记工作日）：ET 周五 17:00 收盘后（`today === target`）/ ET 周一 06:00 盘前（`today > target` 且今天是交易日）/ ET 周六 12:00（`today > target` 且今天非交易日）。第三个同时是周末缺口那条修复的端到端证据。
 
-- [ ] T011 [Server] **IT 下半：市场参数化 / 失败重试 / 结局可区分**（SC-005, SC-007, SC-009, SC-010, `state_branches` ④⑤⑪⑫⑬⑭⑮⑯⑰⑱⑳㉑㉒㉔）：新建 `apps/server/test/integration/marketdata.cold-start-060.market-outcome.it.spec.ts`。覆盖：既有锚更新不触发、建锚回滚不留 outbox 行、日历缺行、Instrument 缺行 seed、hk 锚显式 no-op、未登记市场、ticker 不可解析、配额耗尽顺延、整体失败不回滚锚、八种结局各有唯一取值。→ verify: 同上命令。🚨 **一条硬断言**：**删锚后以同一 ticker 重建 ⇒ `anchorColdStartRun` 两行**（新 `anchorId` ⇒ 新行）—— 谁把 PK 写成 ticker，只会有一行，立刻红。🚨 **反恒真同 T010**：逐条注掉实现确认变红再恢复。⚠️ **不要写「两只锚指向同一标的」的用例**：`anchor.ticker` 是 `@unique`，今天在库里插不进去
+- [X] T011 [Server] **IT 下半：市场参数化 / 失败重试 / 结局可区分**（SC-005, SC-007, SC-009, SC-010, `state_branches` ④⑤⑪⑫⑬⑭⑮⑯⑰⑱⑳㉑㉒㉔）：新建 `apps/server/test/integration/marketdata.cold-start-060.market-outcome.it.spec.ts`。覆盖：既有锚更新不触发、建锚回滚不留 outbox 行、日历缺行、Instrument 缺行 seed、hk 锚显式 no-op、未登记市场、ticker 不可解析、配额耗尽顺延、整体失败不回滚锚、八种结局各有唯一取值。→ verify: 同上命令。🚨 **一条硬断言**：**删锚后以同一 ticker 重建 ⇒ `anchorColdStartRun` 两行**（新 `anchorId` ⇒ 新行）—— 谁把 PK 写成 ticker，只会有一行，立刻红。🚨 **反恒真同 T010**：逐条注掉实现确认变红再恢复。⚠️ **不要写「两只锚指向同一标的」的用例**：`anchor.ticker` 是 `@unique`，今天在库里插不进去
+
+  > ✅ **落地（2026-08-17）**：15 个 `it()`，脚手架（`RecordingSnapshotPort` / 时刻常量 / seed helper）从 T010 原样复用，多一个 `failNextWith` 用来造 vendor 429。三条 T010 没有的观测面：① **真事务回滚**（⑤）；② **真 BullMQ job 上的 `attempts` / `delay` / payload**（㉑⑳）；③ **真表上的 `need_sync`**（⑫）。
+  >
+  > **三处构造上的定案**：
+  >
+  > - **⑤ 怎么造「写到一半失败」**：`anchor.method` 是 `@db.VarChar(32)` ⇒ 传 40 字符在 tx 内 `create` 那一步炸 P2000，回滚整个事务。断言是**锚行与 outbox 行都为 0**（同生共死）—— 把 publish 挪出 `$transaction` 的那一刻，这里会留下一条指向**不存在的锚**的事件。
+  > - **⑬ 用 `jp:7203`**：`cn` 已在 `MARKET_SESSION` 登记（只是没进 `COLD_START_CAPABILITY`）⇒ 它落的是 `market_not_enabled` 而不是 `session_unregistered`。今天唯一够得到后者的形态是「parse 得出、但时段未登记」的第三方市场。⑭ 顺带把 `hk`（空表项 = 已知未开通）与 `cn`（压根没登记能力）**一起**跑，钉住「同结局但都留痕」。
+  > - **㉑ 必须 fake `Date`**：worker 的 `processColdStart` 用的是 `new Date()`（真时钟），而本片全部判据都落在具体时刻上。用 `vi.useFakeTimers({ toFake: ['Date'] })` 只冻 Date、**不冻定时器** —— 冻了定时器会把 ioredis / PG 的 I/O 一起挂住。
+  >
+  > **㉒ 做成了「八种结局同时在库」**：8 只锚各跑出一种结局，断言 `new Set(outcomes)` 的**基数 = 8** 且**恰好等于 `COLD_START_OUTCOME` 的值域全集**。各分支各自断言自己那个常量是断不出折叠的 —— 两个常量取同一个字面量时，两条单测照样各自绿（D 批的变异实证）。
+  >
+  > **反恒真：5 批 13 条变异，15 个 `it()` 每个至少被一条弄红。**
+  >
+  > | 批 | 变异 | 红的用例 |
+  > |---|---|---|
+  > | A | 未登记时段闸恒不触发 / 能力闸恒不触发 / `parseGateTicker` 落回 us / 日历缺行时猜 cutoff | ⑬⑭⑮⑪㉒ |
+  > | B | 配额耗尽改落 `backfilled` / retry 出口不按 `job.name` 分流 | ⑯㉑⑳ |
+  > | C | seed 与开闸次序对调 / 顺延重入队丢 `phase` / 运行记录按 ticker 归一 / retry 出口什么都不落 | ⑫㉑㉔⑰⑳㉒ |
+  > | D | publish 挪到 `$transaction` 之前 / 两条 update 路径各加一行 outbox 写 / 两个结局常量折叠成同值 | ④×2 ⑤㉒ |
+  > | E | 冷启动另起一条队列 | ⑱㉑⑳⑰㉒ |
+  >
+  > **方法上比 T010 省的那一刀**：变异**按「预期红集互不相交」分批**，5 轮容器跑完 13 条（T010 是 9 轮 × 1 条）。批内每条各咬各的用例，跑完拿**实测红集与预期红集逐条对**——相等才算这一批有效，不等就说明某条变异有溢出的副作用、要拆开重跑。
+  >
+  > **沿用 T010 的坑，另加一条新的**：恒假条件仍写成运行期比较（`market === 'zz-m1'`）而非 `&& false`（后者让 TS 在静态不可达块里丢窄化，报的是编译错不是断言红）。**新踩的一格**：把整个早退条件**换掉**会让 `isSessionRegistered` / `isColdStartEnabled` 变成 unused import ⇒ `TS6133` —— 又是一次「编译红冒充断言红」。写成 `!isSessionRegistered(market) && market === 'zz-m1'` 保住引用才验到。
+  >
+  > ⚠️ **一处刻意保留的弱断言（诚实标注）**：⑳ 里「同一出口对**维度 job** 零副作用」这条反例，在当前实现下是**结构性成立**的 —— 维度 payload 没有 `anchorId`，去掉 `job.name` 判断只会让 `BigInt(undefined)` 抛进 catch 落 WARN，表照样不动。只有把它连同「缺字段给兜底默认」一起变异才咬得到（B 批就是这么造的）。**留着它是记录意图，不是它自己撑住了什么。**
 
 - [ ] T012 [Server] **Verify Backend Physics — 真 app 启动冒烟**（ADR-0040 多层测试门）：跑 `scripts/ci/server-boot-smoke.ts`（Testcontainers PG + Redis 起真 Nest、发真 HTTP 探针）。本片新增一个自注册 subscriber + 一条 worker 路由 + 一个 use case，**DI 接错的表现是 boot 失败而不是任何单测红**。→ verify: 脚本退出码 0。🚨 **不许跳过、不许拆**（模板原文）；红了说明模块接线塌了，回滚 impl 而不是改断言
 
