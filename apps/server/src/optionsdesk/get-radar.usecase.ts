@@ -160,7 +160,7 @@ export interface RadarFilter {
   lLevels?: readonly LLevel[];
   /** `next_review` 逾期 (待复审)。 */
   pendingReview?: boolean;
-  /** 跌破 W (`last_close < W`)。 */
+  /** 跌破 W (`生效 spot < W`; spot = 新鲜的盘中价否则收盘价, 与排序键同一表达式)。 */
   belowW?: boolean;
 }
 
