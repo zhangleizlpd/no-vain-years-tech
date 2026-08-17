@@ -92,6 +92,24 @@ const TODAY = (() => {
   return `${d.getFullYear()}-${mm}-${dd}`;
 })();
 
+/**
+ * 061 实时档夹具的采集时刻。**从设备本地墙钟反推 ISO**（`setHours` 后 `toISOString`）——
+ * `formatAsOfLabel` 按本地时区渲 `HH:mm`，直接写死一个 UTC 串会让断言随跑测机器的时区漂移
+ * （本机 +08、CI UTC）。这样两边都恒渲 `13:22`。
+ */
+const REALTIME_AT = (() => {
+  const d = new Date();
+  d.setHours(13, 22, 0, 0);
+  return { iso: d.toISOString(), hm: '13:22' };
+})();
+
+/**
+ * 061 收盘档夹具的 session 日 —— **固定的过去日期**，让断言逐字可写。
+ * 用固定日不影响新鲜度：`quoteFreshnessTier` 由 **server** 判（要查交易日历，FR-020），
+ * 客户端不拿本地日历日比对（那对美股恒判陈旧）。
+ */
+const EOD_DATE = '2026-08-14';
+
 // ════════════════════════════════════════════════════════════════════════════
 // canonical 锚集合（= 服务端 DB 内容的镜像）
 // ════════════════════════════════════════════════════════════════════════════
@@ -154,9 +172,16 @@ function makeAnchor(
   return { ...ANCHOR_BASE, ...over };
 }
 
-/** 跌破 W（行情不可用的行**不计入**，与 server `belowW` 判据一致）。 */
+/**
+ * 跌破 W（行情不可用的行**不计入**，与 server `belowW` 判据一致）。
+ *
+ * 🚨 **061 起闸看 `spotAsOf`**：server 的 `belowW` 筛选与空态计数都改吃**生效 spot**
+ * （`get-radar.usecase.ts` 的 `COALESCE(CASE WHEN intraday_at >= $cutoff …, last_close)`），
+ * 故镜像也必须跟着换 —— 否则「有实时价、当日收盘投影还没跑」的锚在 mock 里恒不计入
+ * actionable，顶部横幅会说「今日无解」而底下那行赫然是红色负距 W%（正是 T019 订正的那类不一致）。
+ */
 function isBelowW(a: AnchorResponse): boolean {
-  if (a.lastCloseDate === null || a.distanceToWPct === null) return false;
+  if (a.spotAsOf === null || a.distanceToWPct === null) return false;
   return Number.parseFloat(a.distanceToWPct) < 0;
 }
 
@@ -888,4 +913,297 @@ test('045 灵感零回归 — 抽屉入口 → 列表 → 详情 → 中央 FAB 
   await expect(fab).toBeVisible();
   await fab.tap();
   await expect(page.getByRole('button', { name: 'PRD灵感' })).toBeVisible({ timeout: 15_000 });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑦ 061 生效 spot 三态：实时档 / 收盘档 / 降级（T015，SC-003 / SC-007 / US2）
+//
+// 本层能验的**只有结构面**（spec `web_compat_notes` 已同步）：
+//   · `asOf` 粒度即档位 —— 实时呈**时刻且无任何后缀**、收盘呈**交易日 + 「· 收盘」**；
+//   · 行内的价 / 距 W% / 色带黑点吃**生效 spot**（不是 `lastClose`）；
+//   · 距 W% 缺数呈「—」**而非 0**（0 是「正好在带上」的真值，拿它表达没数据 = 强信号误读）；
+//   · 排序在两态下**各自**成立（同一批锚，实时档与收盘档的次序刻意造成相反）。
+//
+// 🚨 **档位不上屏（Guardrail 18 / FR-009）⇒ 本层没有档位标记可断言** —— 别去找不存在的徽标，
+//    也别为了「有东西可断」给 UI 加标记。取而代之的机械判据是**两档的不对称**：收盘档带
+//    「· 收盘」后缀、实时档**一个后缀都没有**，加上「行内任何文本不含 realtime / eod_close /
+//    实时 字样」。
+//
+// ⚠️ 三类**验不到**的归 T018 真机，故意不在这里造夹具冒充：
+//    ① 真实时段内的跳动（固定夹具看不到「距 W% 每 30 秒真的在动」）
+//    ② 收盘当刻的切换时机（依赖真实市场状态翻转）
+//    ③ 断源熔断到恢复的**真实链路**（夹具能摆出熔断后的样子，但与真源的行为一致性验不到 ——
+//       下面那条降级测断的是「回落后屏幕上不许出现 0 / 空白」，不是熔断本身）。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 行在屏上的纵坐标（= 视觉次序）。用几何而非 DOM 次序，列表反向布局也骗不过它。 */
+async function rowTop(page: Page, ticker: string): Promise<number> {
+  const box = await page.getByTestId(`optionsdesk-radar-row-${ticker}`).boundingBox();
+  if (!box) throw new Error(`${ticker} 行不可见`);
+  return box.y;
+}
+
+test('061 雷达 — 实时档：asOf 呈时刻且不带任何后缀，行内三处数值吃生效 spot，排序按实时价成立', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    // 实时价 70 远低于昨收 95 ⇒ 按生效 spot 是跌破 W 的那只，按 lastClose 却是最贵的一只。
+    makeAnchor({
+      id: '1',
+      ticker: 'us:AOS',
+      lastClose: '95.00',
+      lastCloseDate: TODAY,
+      spot: '70.00',
+      priceKind: 'realtime',
+      spotAsOf: REALTIME_AT.iso,
+      distanceToWPct: '-12.5',
+      zone: 'deep_buy',
+    }),
+    makeAnchor({
+      id: '2',
+      ticker: 'us:PEP',
+      lastClose: '76.00',
+      lastCloseDate: TODAY,
+      spot: '88.00',
+      priceKind: 'realtime',
+      spotAsOf: REALTIME_AT.iso,
+      distanceToWPct: '10.0',
+    }),
+    // 盘中新建的锚：**已有实时价、当日收盘投影尚未跑过** ⇒ 可呈现闸必须看 `spotAsOf`。
+    // 若闸还看 `lastCloseDate`，这一行会被判成「行情不可用」而它明明有价可看。
+    makeAnchor({
+      id: '3',
+      ticker: 'us:TAP',
+      lastClose: null,
+      lastCloseDate: null,
+      spot: '84.00',
+      priceKind: 'realtime',
+      spotAsOf: REALTIME_AT.iso,
+      distanceToWPct: '5.0',
+    }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-list')).toBeVisible({ timeout: 30_000 });
+
+  // ① asOf 粒度即档位：呈**时刻**，且**一个后缀都没有**（加「· 实时」就是新视觉元素，Guardrail 18）。
+  const bar = page.getByTestId('optionsdesk-radar-freshness-CURRENT');
+  await expect(bar).toBeVisible();
+  await expect(bar).toContainText(`数据截至 ${REALTIME_AT.hm}`);
+  await expect(bar).not.toContainText('收盘');
+  await expect(bar).not.toContainText('非当日');
+  await expect(bar).not.toContainText('实时');
+
+  // ② 行内价 = 生效 spot，**不是** lastClose（两者刻意取不同数，渲错哪个都当场看得出来）。
+  const aos = page.getByTestId('optionsdesk-radar-row-us:AOS');
+  await expect(aos).toContainText('S 70.00');
+  await expect(aos).not.toContainText('95.00');
+  const pep = page.getByTestId('optionsdesk-radar-row-us:PEP');
+  await expect(pep).toContainText('S 88.00');
+  await expect(pep).not.toContainText('76.00');
+
+  // ③ 距 W% 与价同源（负号是 U+2212，与 mockup 一致）。
+  await expect(aos).toContainText('距 W −12.5%');
+  await expect(pep).toContainText('距 W +10.0%');
+
+  // ④ 可呈现闸看 `spotAsOf`：无收盘投影的行照常出价、出距 W%，且**不挂**「行情不可用」。
+  const tap = page.getByTestId('optionsdesk-radar-row-us:TAP');
+  await expect(tap).toContainText('S 84.00');
+  await expect(tap).toContainText('距 W +5.0%');
+  await expect(tap.getByText('行情不可用')).toHaveCount(0);
+  // 色带黑点同吃生效 spot ⇒ 有 spot 就有点（点停在昨收 / 缺席都是回归）。
+  await expect(page.getByTestId('optionsdesk-radar-band-us:TAP-spot')).toBeVisible();
+
+  // ⑤ 排序按实时价成立：AOS(−12.5) → TAP(+5.0) → PEP(+10.0)。
+  //    按 lastClose 算会是 PEP(−5.0) → AOS(+18.75) → TAP(不可用排尾) —— 次序完全不同，
+  //    故这条同时钉住「客户端不自己按昨收重排」。
+  const [yAos, yTap, yPep] = [
+    await rowTop(page, 'us:AOS'),
+    await rowTop(page, 'us:TAP'),
+    await rowTop(page, 'us:PEP'),
+  ];
+  expect(yAos).toBeLessThan(yTap);
+  expect(yTap).toBeLessThan(yPep);
+
+  // ⑥ Guardrail 18 的机械判据：档位只进接口，行内任何文本都不含它的名字。
+  const list = page.getByTestId('optionsdesk-radar-list');
+  await expect(list).not.toContainText('realtime');
+  await expect(list).not.toContainText('eod_close');
+  await expect(list).not.toContainText('实时');
+});
+
+test('061 雷达 — 收盘档：asOf 呈交易日 + 「· 收盘」后缀，同一批锚按收盘价重排（与实时档相反）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    // 与上一条同一批锚，只是全体落收盘档 ⇒ 生效 spot = lastClose，次序随之翻转。
+    makeAnchor({
+      id: '1',
+      ticker: 'us:AOS',
+      lastClose: '95.00',
+      lastCloseDate: EOD_DATE,
+      spot: '95.00',
+      priceKind: 'eod_close',
+      spotAsOf: EOD_DATE,
+      distanceToWPct: '18.75',
+    }),
+    makeAnchor({
+      id: '2',
+      ticker: 'us:PEP',
+      lastClose: '76.00',
+      lastCloseDate: EOD_DATE,
+      spot: '76.00',
+      priceKind: 'eod_close',
+      spotAsOf: EOD_DATE,
+      distanceToWPct: '-5.0',
+      zone: 'deep_buy',
+    }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-list')).toBeVisible({ timeout: 30_000 });
+
+  // ① 粒度回到**交易日**，且带「· 收盘」—— 与实时档那条的「无后缀」构成本片唯一的档位判据。
+  const bar = page.getByTestId('optionsdesk-radar-freshness-CURRENT');
+  await expect(bar).toBeVisible();
+  await expect(bar).toContainText(`数据截至 ${EOD_DATE} · 收盘`);
+  await expect(bar).not.toContainText(REALTIME_AT.hm);
+
+  // ② 行内价 = 收盘价（此档下 lastClose 与生效 spot 同值，故只验数）。
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toContainText('S 95.00');
+  await expect(page.getByTestId('optionsdesk-radar-row-us:PEP')).toContainText('S 76.00');
+  await expect(page.getByTestId('optionsdesk-radar-row-us:PEP')).toContainText('距 W −5.0%');
+
+  // ③ 排序在本档同样成立，且**与实时档相反**（PEP 在前）。
+  const [yPep, yAos] = [await rowTop(page, 'us:PEP'), await rowTop(page, 'us:AOS')];
+  expect(yPep).toBeLessThan(yAos);
+
+  // ④ 档位仍不上屏。
+  const list = page.getByTestId('optionsdesk-radar-list');
+  await expect(list).not.toContainText('eod_close');
+  await expect(list).not.toContainText('实时');
+});
+
+test('061 雷达 — 降级回落收盘档：距 W% 仍是收盘价算出的数，0 个锚显示 0 或空白（SC-003 / SC-007）', async ({
+  page,
+}) => {
+  // 熔断（或非交易时段 / 市场不支持实时）之后 server 给的样子：全体 eod_close，**实时价没被清空**
+  // 但一律不再生效。屏幕上要求：每行都有价、都有距 W%，没有一行退化成「—」或「行情不可用」。
+  await installOptionsdeskMock(page, [
+    makeAnchor({
+      id: '1',
+      ticker: 'us:AOS',
+      lastClose: '77.60',
+      lastCloseDate: EOD_DATE,
+      spot: '77.60',
+      priceKind: 'eod_close',
+      spotAsOf: EOD_DATE,
+      distanceToWPct: '-3.0',
+      zone: 'deep_buy',
+    }),
+    // 距 W% 恰好 0 —— **0 是一个有意义的距离值**（正好在带上）。它必须照常显示，
+    // 才反衬出「缺数 ⇒ —」不是拿 0 兜的（FR-014）。
+    makeAnchor({
+      id: '2',
+      ticker: 'us:PEP',
+      lastClose: '80.00',
+      lastCloseDate: EOD_DATE,
+      spot: '80.00',
+      priceKind: 'eod_close',
+      spotAsOf: EOD_DATE,
+      distanceToWPct: '0.0',
+    }),
+    makeAnchor({
+      id: '3',
+      ticker: 'us:TAP',
+      lastClose: '86.00',
+      lastCloseDate: EOD_DATE,
+      spot: '86.00',
+      priceKind: 'eod_close',
+      spotAsOf: EOD_DATE,
+      distanceToWPct: '7.5',
+    }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-list')).toBeVisible({ timeout: 30_000 });
+
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toContainText('距 W −3.0%');
+  await expect(page.getByTestId('optionsdesk-radar-row-us:PEP')).toContainText('距 W 0.0%');
+  await expect(page.getByTestId('optionsdesk-radar-row-us:TAP')).toContainText('距 W +7.5%');
+
+  // 「无一刻显示 0 或空白」的机械判据：列表里既没有缺数占位「—」，也没有任何一行标行情不可用。
+  const list = page.getByTestId('optionsdesk-radar-list');
+  await expect(list).not.toContainText('距 W —');
+  await expect(list).not.toContainText('行情不可用');
+  // 三行的色带黑点都在（点也是「数值」，缺一个就是有行退化了）。
+  for (const ticker of ['us:AOS', 'us:PEP', 'us:TAP']) {
+    await expect(page.getByTestId(`optionsdesk-radar-band-${ticker}-spot`)).toBeVisible();
+  }
+  // 顶部条回到交易日粒度，且不是「行情不可用」那一档（降级 ≠ 没数据）。
+  await expect(page.getByTestId('optionsdesk-radar-freshness-CURRENT')).toContainText(
+    `数据截至 ${EOD_DATE} · 收盘`,
+  );
+  await expect(page.getByTestId('optionsdesk-radar-freshness-UNAVAILABLE')).toHaveCount(0);
+});
+
+test('061 雷达 — 两价皆无的锚：距 W% 呈「—」而非 0，且不被空值排到榜首（FR-014）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({
+      id: '1',
+      ticker: 'us:AOS',
+      lastClose: '95.00',
+      lastCloseDate: TODAY,
+      spot: '70.00',
+      priceKind: 'realtime',
+      spotAsOf: REALTIME_AT.iso,
+      distanceToWPct: '-12.5',
+      zone: 'deep_buy',
+    }),
+    makeAnchor({
+      id: '2',
+      ticker: 'us:PEP',
+      lastClose: '76.00',
+      lastCloseDate: EOD_DATE,
+      spot: '76.00',
+      priceKind: 'eod_close',
+      spotAsOf: EOD_DATE,
+      distanceToWPct: '-5.0',
+    }),
+    // 刚建成、还没经历过任何采集：两价皆无 ⇒ 三元组一起空。
+    makeAnchor({
+      id: '3',
+      ticker: 'us:TAP',
+      lastClose: null,
+      lastCloseDate: null,
+      spot: null,
+      priceKind: 'eod_close',
+      spotAsOf: null,
+      zone: null,
+      distanceToWPct: null,
+    }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-list')).toBeVisible({ timeout: 30_000 });
+
+  // ① 缺数呈「—」，**禁 0**：0 会被读成「正好在带上」这个强信号。
+  const tap = page.getByTestId('optionsdesk-radar-row-us:TAP');
+  await expect(tap).toContainText('距 W —');
+  await expect(tap).not.toContainText('0.0%');
+  await expect(tap.getByText('行情不可用').first()).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-radar-band-us:TAP-spot')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-radar-band-us:TAP-spot-clamped')).toHaveCount(0);
+
+  // ② 空值不占榜首（也不冒充「最该看的一只」）——真正跌破 W 的两行在它上面。
+  const [yAos, yPep, yTap] = [
+    await rowTop(page, 'us:AOS'),
+    await rowTop(page, 'us:PEP'),
+    await rowTop(page, 'us:TAP'),
+  ];
+  expect(yAos).toBeLessThan(yPep);
+  expect(yPep).toBeLessThan(yTap);
+
+  // ③ 混档同屏时顶部条跟**最新的那个时间事实**走（这里是实时档那行）⇒ 呈时刻、无后缀。
+  const bar = page.getByTestId('optionsdesk-radar-freshness-CURRENT');
+  await expect(bar).toContainText(`数据截至 ${REALTIME_AT.hm}`);
+  await expect(bar).not.toContainText('收盘');
 });

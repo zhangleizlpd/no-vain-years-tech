@@ -110,7 +110,7 @@ updated_at: '2026-08-17'
 
 - [X] T014 [Mobile] **雷达行 `asOf` 粒度**（`FR-009`, `FR-014`, US1-AS3, plan D10）：实时档 `asOf` 呈**时刻**、收盘档呈**交易日**；降级时距 W% 呈空**不呈 0**。🚨 **Guardrail 18：不新增任何视觉元素** —— 不加档位徽标 / 圆点 / 配色，本片的 mockup 豁免正是靠这条换来的。复用 `~/theme` + `~/ui` 既有原子，不新增屏、不改版式。→ verify: vitest 逻辑测（格式化函数：时刻 / 日期 / 空值三态）；**再加一条护栏测或 review 检查：雷达行的渲染树节点数与改动前一致**（新增元素会让它变）
 
-- [ ] T015 [Mobile-E2E] **Playwright 结构面冒烟**（`SC-003`, `SC-007`, US2）：雷达在实时档 / 收盘档 / 降级三态下的结构断言（`asOf` 粒度正确、距 W% 空而非 0、排序成立）。⚠️ 档位**不上屏**，故 web 侧无档位标记可断言（spec `web_compat_notes` 已同步）。→ verify: `pnpm nx run mobile:e2e` 绿；三类**验不到**的项（真实时段跳动 / 收盘当刻切换 / 真断源熔断链路）归 T018 真机
+- [X] T015 [Mobile-E2E] **Playwright 结构面冒烟**（`SC-003`, `SC-007`, US2）：雷达在实时档 / 收盘档 / 降级三态下的结构断言（`asOf` 粒度正确、距 W% 空而非 0、排序成立）。⚠️ 档位**不上屏**，故 web 侧无档位标记可断言（spec `web_compat_notes` 已同步）。→ verify: `pnpm nx run mobile:e2e` 绿；三类**验不到**的项（真实时段跳动 / 收盘当刻切换 / 真断源熔断链路）归 T018 真机
 
 - [ ] T016 [P] [Contract-Smoke] **契约冒烟**（Constitution §V 第二层）：用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条雷达 happy path，验档位字段的序列化 / 反序列化对齐。落 `apps/mobile/e2e/contract-smoke/`。→ verify: `pnpm nx run mobile:contract-smoke` 绿
 
