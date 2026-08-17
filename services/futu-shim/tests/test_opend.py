@@ -77,8 +77,8 @@ class _HangingCtx:
 
 
 class _LiveCtx:
-    def __init__(self, qot=True, trd=False):
-        self._payload = {"qot_logined": qot, "trd_logined": trd}
+    def __init__(self, qot=True, trd=False, **extra):
+        self._payload = {"qot_logined": qot, "trd_logined": trd, **extra}
         self.calls = 0
 
     def get_global_state(self):
@@ -159,6 +159,32 @@ def test_ensure_ready_does_not_probe_a_context_whose_unit_is_dead(monkeypatch):
     assert hanging.calls == 0
     assert isinstance(ctx, _LiveCtx)
     assert calls == ["start"]  # 走了重建, 而不是把死 handle 递出去
+
+
+def test_global_state_takes_the_data_path_and_brings_opend_up(monkeypatch):
+    """🚨 与 `status()` **刻意相反**: 判据端必须拿到确定答案。
+
+    同样的前置条件 (单元不 active) 下, `status()` 一个 systemctl 都不发、市场状态报
+    `None` (见 `test_status_never_starts_opend`); 而本方法走 `session()` →
+    `_ensure_ready()`, 该起就起。差别是承重的: 上游把「状态不可得」当 fail-closed 信号
+    停采, 若这里也返回含糊的 `None`, 盘中投影会在 OpenD 空闲后**永久**停在停采态,
+    而看上去像是"行情源坏了"。
+
+    并且 payload **整块**带出 —— `status()` 只取 `qot_logined` / `trd_logined` 就把
+    `market_us` / `market_hk` 扔了, 那恰恰是这个端点唯一要的东西。
+    """
+    supervisor = OpenDSupervisor()
+    calls = _instrument(monkeypatch, supervisor, unit_active=False)
+    live = _LiveCtx(market_us="MORNING", market_hk="CLOSED")
+    monkeypatch.setattr(supervisor, "_connect_when_ready", lambda deadline: live)
+
+    ret, data = _run_with_deadline(supervisor.global_state, 5.0)
+
+    assert calls == ["start"]  # status() 在同样条件下是 []
+    assert ret == RET_OK
+    assert data["market_us"] == "MORNING"
+    assert data["market_hk"] == "CLOSED"
+    assert data["qot_logined"] is True  # 原有字段一个不少
 
 
 def test_drop_ctx_never_blocks_the_caller(monkeypatch):

@@ -162,6 +162,28 @@ class OpenDSupervisor:
             "idle_stop_seconds": config.opend_idle_stop_s(),
         }
 
+    def global_state(self) -> tuple[int, object]:
+        """`get_global_state()` 的**完整** payload, 走**数据路径** (`session()` →
+        `_ensure_ready()`)。撑起 `/market-state`。
+
+        🚨 **为什么不复用 `status()` 那条路**: `status()` 蓄意不建 `OpenQuoteContext`
+        (见它自己的 side-effect-free 契约), 所以没有活 context 时它对市场状态只能报
+        `None`。那对健康探针是诚实的, 对**判据**却是灾难: 上游把「状态不可得」当
+        fail-closed 信号 —— 不采、留痕、计失败 —— 于是 OpenD 一空闲, 盘中投影就永久
+        停在停采态, 而现场看上去像"行情源坏了"。两条路各自成立, 不能互相顶替。
+
+        🚨 **payload 整块返回, 一个字段都不挑**: `status()` 只取 `qot_logined` /
+        `trd_logined` 就把 `market_us` / `market_hk` 扔了, 而那恰是消费端唯一要的东西。
+        「哪些状态算常规交易时段」是**白名单**判断, 属于消费端 (server 侧 marketdata
+        adapter) —— 在这里判一次、那边再判一次, 两处必漂移。
+
+        返回 SDK 原样的 `(ret, data)` 而不是抛错: 非 `RET_OK` 是 vendor 错 (路由映射
+        502), 而 OpenD 起不来是 `session()` 自己抛的 `OpenDUnavailable` (503) ——
+        两个不同的事实, 压成一个下游就分不出"源坏了"和"网关没起来"。
+        """
+        with self.session() as ctx:
+            return ctx.get_global_state()
+
     def shutdown(self) -> None:
         self._stopping.set()
         self._stop_opend()

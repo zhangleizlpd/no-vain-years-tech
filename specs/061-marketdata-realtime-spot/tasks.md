@@ -73,7 +73,7 @@ updated_at: '2026-08-17'
 
 ## Phase 2: shim 市场状态端点（**另一条部署链，可与 Phase 3 并行开发**）
 
-- [ ] T002 [P] [Shim] **`GET /market-state` 只读端点**（`FR-002`, `FR-003`, plan D7）：`opend.py` 加一个走 `session()` 的方法返回 `get_global_state()` 的**完整** payload（现有 `_probe_global_state` 只取 `qot_logined` / `trd_logined` 就把 `market_us` / `market_hk` 扔了）；`app.py` 加路由（Bearer 鉴权沿用 `_authenticate`，信封带 `as_of`）；`ratelimit.py` 的 `LIMITS` 登记一条（Guardrail 12：先查官方值，查不到落兜底并写明理由）。🚨 **不要改 `status()` / `/healthz`** —— 它的 side-effect-free 契约是部署闸的基础。→ verify: `tests/test_app.py` 加 ①无 token → 401 ②有 token 且 OpenD 可用 → 返回含 `market_us` / `market_hk` ③OpenD 不可用 → 明确错误而非空信封；`tests/test_ratelimit.py` 断言新 capability 落在自己的桶上、**不吃 `snapshot` 的令牌**；`/healthz` 的 `routes` 数组多出 `/market-state`（部署后这就是「跑的是不是那棵树」的硬证据）
+- [X] T002 [P] [Shim] **`GET /market-state` 只读端点**（`FR-002`, `FR-003`, plan D7）：`opend.py` 加一个走 `session()` 的方法返回 `get_global_state()` 的**完整** payload（现有 `_probe_global_state` 只取 `qot_logined` / `trd_logined` 就把 `market_us` / `market_hk` 扔了）；`app.py` 加路由（Bearer 鉴权沿用 `_authenticate`，信封带 `as_of`）；`ratelimit.py` 的 `LIMITS` 登记一条（Guardrail 12：先查官方值，查不到落兜底并写明理由）。🚨 **不要改 `status()` / `/healthz`** —— 它的 side-effect-free 契约是部署闸的基础。→ verify: `tests/test_app.py` 加 ①无 token → 401 ②有 token 且 OpenD 可用 → 返回含 `market_us` / `market_hk` ③OpenD 不可用 → 明确错误而非空信封；`tests/test_ratelimit.py` 断言新 capability 落在自己的桶上、**不吃 `snapshot` 的令牌**；`/healthz` 的 `routes` 数组多出 `/market-state`（部署后这就是「跑的是不是那棵树」的硬证据）
 
 ## Phase 3: marketdata 实时面（**零消费方，合入即静默待命**）
 
