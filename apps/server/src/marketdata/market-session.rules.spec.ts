@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { isSessionUnderway, isWithinTradingSession, marketNow } from './market-session.rules.js';
+import {
+  isSessionRegistered,
+  isSessionUnderway,
+  isWithinTradingSession,
+  marketNow,
+} from './market-session.rules.js';
 
 /** 当地当日分钟数字面量（与实现同口径，避免测试里再算一遍时区）。 */
 const at = (hour: number, minute = 0) => hour * 60 + minute;
@@ -130,6 +135,11 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
 
     it('isWithinTradingSession 保持既有的返 false 语义 (alert 侧行为原样)', () => {
       expect(isWithinTradingSession('sg', 600)).toBe(false);
+    });
+
+    it('isSessionRegistered 是唯一「未登记也不抛」的入口 (060 T005, FR-022 的显式跳过要它)', () => {
+      expect(isSessionRegistered('sg')).toBe(false);
+      for (const market of ['cn', 'us', 'hk']) expect(isSessionRegistered(market)).toBe(true);
     });
   });
 });

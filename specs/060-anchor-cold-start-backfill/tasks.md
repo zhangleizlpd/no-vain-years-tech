@@ -82,7 +82,15 @@ updated_at: '2026-08-17'
 
 ## Phase 3: 编排
 
-- [ ] T005 [Server] **冷启动编排骨架**（FR-006, FR-007, FR-009, FR-016, FR-016a, FR-020, FR-021, FR-022, FR-023, FR-025, plan §D3 §D5 §D9）：新建 `marketdata/anchor-cold-start.usecase.ts`。按 plan §D3 的 8 步走到第 5 步为止（**先不接采集**）：解析 market → 查能力登记表 → 定位目标交易日（走 `TRADING_CALENDAR_PORT` **查日历**，禁时区推导）→ Instrument 缺行则 seed → `AnchorDrivenSyncGate.recalcSafely()` → **起手复判**（查 `optionDailySnapshot` / `dailyBar` 本身，🚨 **不读 `anchorColdStartRun`**）→ 落运行记录。→ verify: `anchor-cold-start.usecase.spec.ts`（纯单测，stub 日历与 Prisma）覆盖：ticker 不可解析 / 市场未登记时段 / 市场未开通采集 / 日历缺行 四条早退分支各自的结局值；且**每条早退都断言 vendor port 零调用**
+- [X] T005 [Server] **冷启动编排骨架**（FR-006, FR-007, FR-009, FR-016, FR-016a, FR-020, FR-021, FR-022, FR-023, FR-025, plan §D3 §D5 §D9）：新建 `marketdata/anchor-cold-start.usecase.ts`。按 plan §D3 的 8 步走到第 5 步为止（**先不接采集**）：解析 market → 查能力登记表 → 定位目标交易日（走 `TRADING_CALENDAR_PORT` **查日历**，禁时区推导）→ Instrument 缺行则 seed → `AnchorDrivenSyncGate.recalcSafely()` → **起手复判**（查 `optionDailySnapshot` / `dailyBar` 本身，🚨 **不读 `anchorColdStartRun`**）→ 落运行记录。→ verify: `anchor-cold-start.usecase.spec.ts`（纯单测，stub 日历与 Prisma）覆盖：ticker 不可解析 / 市场未登记时段 / 市场未开通采集 / 日历缺行 四条早退分支各自的结局值；且**每条早退都断言 vendor port 零调用**
+
+  > 🚨 **impl 期偏离（2026-08-17）—— 目标交易日定位不走 `TRADING_CALENDAR_PORT`，直查 `trading_day`**：本 task 原文写「走 `TRADING_CALENDAR_PORT` 查日历」，但该端口只有 `isTradingDay(market, date)` 一个方法，拿它找「最近一个已收盘交易日」只能逐日回退着问 —— 而 `DbTradingCalendarAdapter` 对**未 populate 的日历 fail-open 返 `true`**（那是它为「空表别让整条管线停摆」刻意选的方向，见该文件类注释判定三态之 (3)）。⇒ 日历真缺行时它会**编出**一个交易日，正是 FR-009「MUST NOT 猜测日期」禁的那件事。
+  >
+  > 本查询要的恰恰是 fail-closed，故直查 marketdata 自有的 `trading_day` 表（非跨 ctx，无 moat 注释要求），形态与 `option-snapshot-remediation.resolvePreviousTradingDay` / `sync-option-snapshot.resolveOiSessionDate` **逐字同构** —— 那两处做同一个查询时也都绕开了端口，本片是第三次，判据一致。**FR-007「MUST 通过查交易日历确定该日、MUST NOT 由时区换算推导」仍然满足**：查的就是日历表本身。
+  >
+  > 端口仍会在 T006 用到 —— `resolveSnapshotSpec` 需要的 `todayIsTradingDay` 正是 `isTradingDay` 的原生问法，且那一格 fail-open 无害（走到那一步说明 `target` 已定到，日历必已 populate）。
+  >
+  > 连带：`market-session.rules.ts` 多导出一个 `isSessionRegistered(market)`。FR-022 要求未登记市场**显式跳过并留下可判读记录**，调用方得先问「登记了吗」才能落那条记录；而 `marketNow` / `isSessionUnderway` 对未登记一律抛 —— 拿它们的异常当控制流，就是把 fail-closed 的守卫改造成分支，那条守卫从此不守任何东西。
 
 - [ ] T006 [Server] **分档执行接线**（FR-010, FR-011, FR-012, FR-012a, FR-014, FR-018, plan §D8）：补齐 §D3 的第 6-7 步。非敏感档：`MarketdataSyncQueue.enqueueFlow` 组树入队 `sync:option_contract` + `sync:us_equity_bar`（普通 delta，**不传 `asOf`**），flow 保证链 → 快照次序。敏感档：**`isSessionUnderway` 判「该场进行中」（含午休）** ⇒ 结局 `intraday_skipped` 直接返回（🚨 **MUST NOT 用 `isWithinTradingSession`** —— 它在午休返 `false` ⇒ 放行写快照，理由见 T001 的 impl 期修正注）；否则 ⇒ 用 T003 的 `resolveSnapshotSpec` 算 spec，调 `SyncOptionSnapshotUseCase.collect(instruments, spec, stats)`。配额耗尽的两个具名错误（`OptionChainBudgetExhaustedError` / `OptionSnapshotBudgetExhaustedError`）**原样上抛给 job 层顺延**，不在此 catch 成失败。→ verify: 同文件 spec 加：盘中分支断言 `collect` 零调用且结局 `intraday_skipped`；**午休分支（取一个有午休的市场代号）同样断言 `collect` 零调用** —— 那是两个谓词唯一分道的一格；非盘中分支断言 `collect` 收到的 `spec` 与 T003 纯函数算出的**同一对象**（防有人在这里又算一遍）；配额耗尽分支断言错误被原样抛出、**未**写入 `outcome='retry_exhausted'`
 

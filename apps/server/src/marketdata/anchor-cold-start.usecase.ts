@@ -1,0 +1,225 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../security/prisma.service.js';
+import {
+  COLD_START_CAPABILITY,
+  COLD_START_OUTCOME,
+  isColdStartEnabled,
+  type ColdStartOutcome,
+} from './anchor-cold-start.rules.js';
+import { AnchorDrivenSyncGate, parseGateTicker } from './anchor-driven-sync-gate.js';
+import { isSessionRegistered } from './market-session.rules.js';
+import { currencyForMarket } from './sync-universe.usecase.js';
+import { lastClosedSessionCutoff } from './trading-day-gate.js';
+
+/**
+ * 锚首建冷启动的**编排体** (060 T005, plan §D3 / §D5 / §D9)。
+ *
+ * 一条建锚事件 = 一个 `sync:anchor-cold-start` job = 一次本 use case 调用, **零合流、零去重**
+ * (FR-019c)。收敛靠的是起手复判 —— 排队中的后续请求走到第 5 步会判「已具备」而零外呼。
+ *
+ * 顺序有**硬依赖** (plan §D9), 不是风格问题:
+ * ```
+ * 1. 解析 market；不可解析 / 未登记时段 / 未开通采集 ⇒ 记结局后返回 (零外呼)
+ * 2. 目标交易日定位 (查日历)；查不到 ⇒ calendar_missing + ERROR, 不猜日期
+ * 3. Instrument 行缺失 ⇒ seed
+ * 4. AnchorDrivenSyncGate.recalcSafely() 幂等开闸
+ * 5. 起手复判：本锚**标的**在目标交易日的数据是否已具备；已具备 ⇒ already_present
+ * 6-7. 分档执行 (060 T006 接线)
+ * 8. 落运行记录
+ * ```
+ * 3 → 4 → 载工作集这个次序反了会**静默拿到空工作集**: 闸只认已存在的 Instrument 行, 而新锚
+ * 在 universe 轮到它之前可能一行都没有。
+ */
+@Injectable()
+export class AnchorColdStartUseCase {
+  private readonly logger = new Logger(AnchorColdStartUseCase.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly gate: AnchorDrivenSyncGate,
+  ) {}
+
+  /**
+   * 复杂度: O(1) 次日历查询 + O(1) 次标的查询 + 开闸的 O(市场数) 次 updateMany +
+   * ≤2 次复判 count + 1 次运行记录 upsert。
+   */
+  async run(input: { anchorId: bigint; ticker: string; now: Date }): Promise<ColdStartOutcome> {
+    const { anchorId, ticker, now } = input;
+
+    // ── 1. 市场归属只从 ticker 解析, 不假定默认市场 (FR-020 / FR-021) ──
+    const parsed = parseGateTicker(ticker);
+    if (parsed === null) {
+      return this.finish(input, COLD_START_OUTCOME.TICKER_UNRESOLVED, {
+        reason: `ticker "${ticker}" 解析不出 market:code`,
+      });
+    }
+    const { market, code } = parsed;
+
+    // 未登记盘中时段 ⇒ 判不了「该场进行中」⇒ fail-closed 跳过 (FR-022)。**先于**能力检查,
+    // 因为它是更靠前的前提: 时段没登记的话, 就算开通了采集也无从判断此刻能不能写快照。
+    if (!isSessionRegistered(market)) {
+      return this.finish(input, COLD_START_OUTCOME.SESSION_UNREGISTERED, {
+        reason: `市场 "${market}" 未登记盘中时段 (market-session.rules.ts)`,
+      });
+    }
+    // 未开通期权采集 ⇒ **显式 no-op, 非错误** (FR-023): hk 是空表项、cn 压根没登记, 两者
+    // 同落一个结局但都留痕, 不静默。
+    if (!isColdStartEnabled(market)) {
+      return this.finish(input, COLD_START_OUTCOME.MARKET_NOT_ENABLED, {
+        reason: `市场 "${market}" 未开通冷启动补数 (COLD_START_CAPABILITY)`,
+      });
+    }
+
+    // ── 2. 目标交易日 = 最近一个已收盘交易日 (FR-006 / FR-007) ──
+    const targetSession = await this.lastClosedTradingDay(market, now);
+    if (targetSession === null) {
+      // 🚫 不猜日子 (FR-009): 猜错就是一批 session_date 标错的脏行, 比不补更难发现且要人工
+      //    回删。照抄 option-snapshot-remediation 的 blocked 纪律。ERROR 级 = 需人工介入。
+      this.logger.error(
+        `[anchor-cold-start] 交易日历缺 ${market} 的行, 定位不到目标交易日 ⇒ 放弃冷启动 ` +
+          `(anchorId=${anchorId} ticker=${ticker}; 请补交易日历)`,
+      );
+      return this.finish(input, COLD_START_OUTCOME.CALENDAR_MISSING, {
+        reason: `交易日历缺 ${market} 在 ${lastClosedSessionCutoff(market, now)} 及之前的行`,
+      });
+    }
+
+    // ── 3. 有锚必有 Instrument 行 (FR-025); 缺行不让整体失败, 补上继续 ──
+    const instrumentId = await this.seedInstrument(market, code);
+
+    // ── 4. 幂等开闸: 把新锚的 needSync 翻 true。失败自降级返 null, 不上抛 ──
+    await this.gate.recalcSafely();
+
+    // ── 5. 起手复判 (FR-016 / FR-016a) ──
+    if (await this.dataAlreadyPresent(market, instrumentId, targetSession)) {
+      return this.finish(input, COLD_START_OUTCOME.ALREADY_PRESENT, { targetSession });
+    }
+
+    // ── 6-7. 分档执行 —— 060 T006 在此接线 (plan §D3 第 6-7 步) ──
+    // 🚨 走到这里意味着「该补」。本 task 蓄意不接采集, 而此刻**没有任何诚实的结局可落**:
+    //    落 backfilled 是谎 (一个字节都没采), 落 already_present 会让 T010 那条复判硬断言
+    //    恒真。故显式抛 —— 响得早、响得吵, 好过留一个会骗人的结局值。
+    throw new Error(
+      `[anchor-cold-start] 分档执行尚未接线 (060 T006): ${ticker} 需补 ${targetSession}`,
+    );
+  }
+
+  /**
+   * `trading_day` 中 ≤ 「已收盘 session 日期上界」的**最大交易日**。缺行返 `null`。
+   *
+   * ⚠️ **蓄意不走 `TRADING_CALENDAR_PORT`**, 尽管它就是交易日历的读端口 —— 它只有
+   * `isTradingDay(market, date)` 一个方法, 拿它找「最近一个已收盘交易日」只能逐日回退着问,
+   * 而 `DbTradingCalendarAdapter` 对**未 populate 的日历 fail-open 返 true** (那是它为「空表
+   * 别让整条管线停摆」刻意选的方向)。⇒ 日历真缺行时它会**编出**一个交易日, 正是 FR-009
+   * 「MUST NOT 猜测日期」禁的那件事。本查询要的是 fail-closed, 故直查自有表 —— 形态与
+   * `option-snapshot-remediation.resolvePreviousTradingDay` /
+   * `sync-option-snapshot.resolveOiSessionDate` 逐字同构 (marketdata 自有表, 非跨 ctx)。
+   *
+   * 复杂度: 1 次 (market, date) 主键索引上的倒序 limit-1 查询。
+   */
+  private async lastClosedTradingDay(market: string, now: Date): Promise<string | null> {
+    const cutoff = lastClosedSessionCutoff(market, now);
+    const row = await this.prisma.tradingDay.findFirst({
+      where: { market, date: { lte: new Date(`${cutoff}T00:00:00Z`) } },
+      orderBy: { date: 'desc' },
+      select: { date: true },
+    });
+    return row === null ? null : row.date.toISOString().slice(0, 10);
+  }
+
+  /**
+   * 兜底 seed 标的行, 返回其 id。判据**逐条照抄** `SyncOptionContractUseCase.
+   * seedAnchoredInstruments`: `needSync` 落 **false** (受保护列, 重算的唯一权威是
+   * `anchor-driven-sync-gate.ts`; 这里写 true 等于给它开第三个写入点), `name` 落 code 占位
+   * (列 NOT NULL, universe 轮到该票时其 update 分支覆盖成真名)。
+   *
+   * 空 `update` 是纯兜底: 已有行的 name / syncTier / needSync 一个都不许被 seed 冲掉。
+   */
+  private async seedInstrument(market: string, code: string): Promise<bigint> {
+    const existing = await this.prisma.instrument.findUnique({
+      where: { market_code: { market, code } },
+      select: { id: true },
+    });
+    if (existing !== null) return existing.id;
+
+    const seeded = await this.prisma.instrument.upsert({
+      where: { market_code: { market, code } },
+      create: {
+        market,
+        code,
+        name: code,
+        type: 'stock',
+        currency: currencyForMarket(market, code),
+        status: 'active',
+        needSync: false,
+      },
+      update: {},
+      select: { id: true },
+    });
+    this.logger.warn(
+      `[anchor-cold-start] 兜底 seed 标的行 (有锚但 Instrument 缺行, universe 未轮到?): ${market}:${code}`,
+    );
+    return seeded.id;
+  }
+
+  /**
+   * 起手复判 (FR-016a): 判据是「**该标的在目标交易日**的数据是否已具备」, 查的是
+   * `daily_bar` / `option_daily_snapshot` **本身**。
+   *
+   * 🚫 **MUST NOT 反过来读 `anchor_cold_start_run`**: 那张表是审计面 (plan §D7), 不是数据
+   * 存在性的真相源。按「这只**锚**冷启动过没有」判, 今天与本判据等价, 但锚一旦按用户区分,
+   * 同一标的的 N 只锚会各判「没做过」⇒ 同一份**标的级共享数据**被拉 N 遍。
+   *
+   * 逐档按能力登记表问, 不写死 us: 只在该市场真的会补那一档时才要求它在场。
+   * 复杂度: ≤2 次 count (短路 —— 日线缺就不必再问快照)。
+   */
+  private async dataAlreadyPresent(
+    market: string,
+    instrumentId: bigint,
+    targetSession: string,
+  ): Promise<boolean> {
+    const capability = COLD_START_CAPABILITY[market];
+    const sessionDate = new Date(`${targetSession}T00:00:00Z`);
+
+    const barPresent =
+      capability.deltaDimensions.length === 0 ||
+      (await this.prisma.dailyBar.count({
+        where: { instrumentId, tradeDate: sessionDate },
+      })) > 0;
+    if (!barPresent) return false;
+
+    return (
+      !capability.optionSnapshot ||
+      (await this.prisma.optionDailySnapshot.count({
+        where: { sessionDate, contract: { underlyingInstrumentId: instrumentId } },
+      })) > 0
+    );
+  }
+
+  /**
+   * 落运行记录并交回结局 (FR-026 / FR-026a / FR-027)。**每一条出口都过这里** —— 早退分支
+   * 不留痕的话, 「未支持」与「故障」事后就再也分不开了。
+   *
+   * 覆盖式单行 upsert: FR-026 只要求保留**最近一次**。PK = `anchorId` 而非 ticker (plan §D5)。
+   */
+  private async finish(
+    input: { anchorId: bigint; ticker: string; now: Date },
+    outcome: ColdStartOutcome,
+    extra: { reason?: string; targetSession?: string } = {},
+  ): Promise<ColdStartOutcome> {
+    const row = {
+      ticker: input.ticker,
+      lastRunAt: input.now,
+      outcome,
+      reason: extra.reason ?? null,
+      targetSession:
+        extra.targetSession === undefined ? null : new Date(`${extra.targetSession}T00:00:00Z`),
+    };
+    await this.prisma.anchorColdStartRun.upsert({
+      where: { anchorId: input.anchorId },
+      create: { anchorId: input.anchorId, ...row },
+      update: row,
+    });
+    return outcome;
+  }
+}

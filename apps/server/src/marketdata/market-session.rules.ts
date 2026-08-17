@@ -52,6 +52,18 @@ function unregisteredMarketError(market: string): Error {
 }
 
 /**
+ * 该市场的盘中时段**登记了没有** —— 唯一一个「未登记也不抛」的入口 (060 T005)。
+ *
+ * {@link marketNow} 与 {@link isSessionUnderway} 对未登记市场一律抛, 那是对的: 它们的返回值
+ * 会被当成判据用, 静默套用别的市场的时段正是要根除的失败形态。但 FR-022 要求未登记市场
+ * **显式跳过并留下可判读记录**, 调用方得先问一句「登记了吗」才能落那条记录 —— 拿上面两个
+ * 函数的异常当控制流是把 fail-closed 的守卫改造成分支, 那条守卫就不再守任何东西了。
+ */
+export function isSessionRegistered(market: string): boolean {
+  return MARKET_SESSION[market] !== undefined;
+}
+
+/**
  * 某市场当地的日期串 + 当日分钟数。
  *
  * 🚨 **走 Intl 而非手工时区偏移** —— 原实现是 `now + 8h` 再取 UTC 字段, 对 `Asia/Shanghai`
