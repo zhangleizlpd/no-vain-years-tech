@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
-import { classifyZone, computeW } from './anchor.rules';
+import { classifyZone, computeW, isBelowW } from './anchor.rules';
 import { isAnchorReviewFlagOn } from './review-anchor.usecase';
 import {
   GetRadarUseCase,
@@ -10,7 +10,7 @@ import {
   resolveRadarEmptyState,
 } from './get-radar.usecase';
 import { encodeRadarCursor } from './radar-cursor';
-import { INTRADAY_FRESHNESS_SECONDS } from './intraday-spot.rules';
+import { INTRADAY_FRESHNESS_SECONDS, resolveAnchorSpot } from './intraday-spot.rules';
 import type { PrismaService } from '../security/prisma.service';
 
 type Fn = ReturnType<typeof vi.fn>;
@@ -200,20 +200,55 @@ describe('resolveRadarEmptyState — 三空态 (FR-015 + FR-034)', () => {
   });
 });
 
+interface RadarKeyRowFixture {
+  anchor_id: string;
+  distance_text: string | null;
+}
+
 interface PrismaMock {
   prisma: PrismaService;
   tradingDayFindFirst: Fn;
   queryRaw: Fn;
   findMany: Fn;
   updateMany: Fn;
+  /**
+   * 覆盖「取一页键」那条查询的返回。061 T019 起 `$queryRaw` 服务**两条**查询 (空态计数 +
+   * 取页键), 直接 `queryRaw.mockResolvedValue(...)` 会把计数查询一并顶掉 ⇒ 改走这个入口。
+   */
+  setPageKeys: (keys: RadarKeyRowFixture[]) => void;
+}
+
+/**
+ * 空态计数查询的 fixture 侧求值 —— 与 SQL 的 `COUNT(*) FILTER (WHERE spot < W)` 同语义:
+ * 只数 `excluded = false` 的行, spot 走 rules 单点 {@link resolveAnchorSpot}。真 SQL 与它的
+ * 等价性由 IT (`optionsdesk-045.radar.it.spec.ts`) 覆盖, 本文件只钉「计数吃的是哪个口径」。
+ */
+function countBaseSet(rows: readonly ReturnType<typeof anchorRow>[], now: Date) {
+  const base = rows.filter((r) => r.excluded === false);
+  const actionable = base.filter((r) => {
+    const { price } = resolveAnchorSpot(
+      {
+        intradayPrice: r.intradayPrice,
+        intradayAt: r.intradayAt,
+        lastClose: r.lastClose,
+        lastCloseDate: r.lastCloseDate,
+      },
+      now,
+    );
+    return price !== null && isBelowW(r.vManual ?? r.v, price);
+  });
+  return [{ base_total: base.length, actionable_total: actionable.length }];
 }
 
 function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
-  const queryRaw = vi
-    .fn()
-    .mockResolvedValue(
-      rows.map((r) => ({ anchor_id: r.id.toString(), distance_text: '-10.0000' })),
-    );
+  let pageKeys: RadarKeyRowFixture[] = rows.map((r) => ({
+    anchor_id: r.id.toString(),
+    distance_text: '-10.0000',
+  }));
+  // `$queryRaw` 服务两条查询 ⇒ 按 SQL 文本分派 (计数查询先发, 取页键后发)。
+  const queryRaw = vi.fn(async (arg: { sql: string }) =>
+    arg.sql.includes('actionable_total') ? countBaseSet(rows, new Date()) : pageKeys,
+  );
   const findMany = vi.fn(async (args: { where?: unknown }) =>
     args.where === undefined ? rows : rows.filter((r) => r.excluded === false),
   );
@@ -226,7 +261,16 @@ function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
     anchor: { findMany, updateMany },
     $queryRaw: queryRaw,
   } as unknown as PrismaService;
-  return { prisma, queryRaw, findMany, updateMany, tradingDayFindFirst };
+  return {
+    prisma,
+    queryRaw,
+    findMany,
+    updateMany,
+    tradingDayFindFirst,
+    setPageKeys: (keys) => {
+      pageKeys = keys;
+    },
+  };
 }
 
 describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/034)', () => {
@@ -238,10 +282,15 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     useCase = new GetRadarUseCase(m.prisma);
   });
 
-  const lastSql = (): { sql: string; values: unknown[] } => {
-    const arg = m.queryRaw.mock.calls.at(-1)![0] as { sql: string; values: unknown[] };
-    return arg;
-  };
+  const sqlCalls = (): { sql: string; values: unknown[] }[] =>
+    m.queryRaw.mock.calls.map((c) => c[0] as { sql: string; values: unknown[] });
+
+  /** 取页键那条 —— 计数查询先发, 故它恒是最后一条。 */
+  const lastSql = (): { sql: string; values: unknown[] } => sqlCalls().at(-1)!;
+
+  /** 空态计数那条 (061 T019); 未发出时为 `undefined`。 */
+  const countSql = (): { sql: string; values: unknown[] } | undefined =>
+    sqlCalls().find((a) => a.sql.includes('actionable_total'));
 
   it('🚨 Guardrail 12: 基础 WHERE 排除 excluded (锚列表相反, 不共用查询)', async () => {
     await useCase.execute();
@@ -296,7 +345,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
   });
 
   it('多取一条探测 hasMore, 返回页长仍为 limit, nextCursor 取末行键', async () => {
-    m.queryRaw.mockResolvedValue([
+    m.setPageKeys([
       { anchor_id: '7', distance_text: '-10.0000' },
       { anchor_id: '8', distance_text: '-9.0000' },
     ]);
@@ -349,7 +398,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
 
   it('行情不可用的行仍进结果且 zone/距 W% 为 null (EC-15 禁隐藏行 / 禁 0 值)', async () => {
     m = buildPrismaMock([anchorRow({ lastClose: null, lastCloseDate: null })]);
-    m.queryRaw.mockResolvedValue([{ anchor_id: '7', distance_text: null }]);
+    m.setPageKeys([{ anchor_id: '7', distance_text: null }]);
     useCase = new GetRadarUseCase(m.prisma);
 
     const page = await useCase.execute();
@@ -363,7 +412,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
   it('页内行序严格按 SQL 返回的键序 (不在内存里二次排序)', async () => {
     const rows = [anchorRow({ id: 7n }), anchorRow({ id: 8n, ticker: 'us:PEP' })];
     m = buildPrismaMock(rows);
-    m.queryRaw.mockResolvedValue([
+    m.setPageKeys([
       { anchor_id: '8', distance_text: '-20' },
       { anchor_id: '7', distance_text: '-10' },
     ]);
@@ -447,7 +496,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
 
   it('两价皆无 → 距 W% 显式 null **不是 0**, 档位仍显式给出 (state_branch 13 / FR-014)', async () => {
     m = buildPrismaMock([anchorRow({ lastClose: null, lastCloseDate: null })]);
-    m.queryRaw.mockResolvedValue([{ anchor_id: '7', distance_text: null }]);
+    m.setPageKeys([{ anchor_id: '7', distance_text: null }]);
     useCase = new GetRadarUseCase(m.prisma);
 
     const view = (await useCase.execute()).items[0]!;
@@ -475,6 +524,64 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     // 但排序/呈现确实用了实时价 —— 两个口径并存是刻意的, 不是漂移。
     expect(page.items[0]!.spot.priceKind).toBe('realtime');
     expect(page.items[0]!.distanceToWPct?.toFixed(2)).toBe('-10.00');
+  });
+
+  it('🚨 T019 空态计数走 spot 口径: 实时价跌破 W 而收盘价未跌破 → MUST NOT 报 all_idle', async () => {
+    // 与上面那条 Guardrail 3 回归钉**同一份数据**: 状态机照旧不动 (它恒用收盘), 但顶部横幅
+    // 必须跟着盘中口径走 —— `all_idle` 是压在**非空列表**头上的提示 (列表为空时先被判成
+    // `filtered_empty`), 它与那条红色负距 W% 的行必然同屏。用收盘口径数 = 横幅说「一个都
+    // 没有」而底下就摆着一只, 且**没有任何断言会红**。
+    m = buildPrismaMock([
+      anchorRow({
+        lastClose: new Prisma.Decimal('45'), // > W(40) ⇒ 收盘口径数出 0 只可动
+        intradayPrice: new Prisma.Decimal('36'), // < W ⇒ 盘中口径数出 1 只可动
+        intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5),
+      }),
+    ]);
+    useCase = new GetRadarUseCase(m.prisma);
+
+    const page = await useCase.execute();
+
+    expect(page.items).toHaveLength(1);
+    expect(page.emptyState).toBeNull();
+    expect(page.emptyStateMessage).toBeNull();
+    // 射程订正的另一半: 禁令管的是**写库**, 计数改口径 MUST NOT 顺带推进状态机。
+    expect(m.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('🚨 T019 反向: 收盘价跌破而新鲜实时价回到 W 上方 → 仍 all_idle (行照常渲染)', async () => {
+    m = buildPrismaMock([
+      anchorRow({
+        lastClose: new Prisma.Decimal('36'), // < W ⇒ 收盘口径会数出 1 只
+        intradayPrice: new Prisma.Decimal('45'), // > W ⇒ 盘中口径数出 0 只
+        intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5),
+      }),
+    ]);
+    useCase = new GetRadarUseCase(m.prisma);
+
+    const page = await useCase.execute();
+
+    expect(page.items).toHaveLength(1); // 不动区不隐藏行, 只在顶部加提示
+    expect(page.emptyState).toBe('all_idle');
+    expect(page.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.all_idle);
+  });
+
+  it('🚨 T019 计数查询与排序/筛选**同一个** spot 片段, 且是基础集合口径 (不叠用户筛选)', async () => {
+    await useCase.execute({ filter: { lLevels: ['L1'], belowW: true } });
+
+    const count = countSql()!;
+    expect(count.sql).toContain('COUNT(*) FILTER (WHERE');
+    expect(count.sql).toContain('COALESCE(CASE WHEN intraday_at >='); // 与排序键同一片段
+    expect(count.sql).toContain('excluded = false');
+    // 空态问的是「基础集合里有没有可动的」, 不是「筛完还剩几个」—— 叠上筛选会把
+    // `filtered_empty` 与 `all_idle` 搅成一团。
+    expect(count.sql).not.toContain('l_level_effective IN');
+    expect(count.values.some((v) => v instanceof Date)).toBe(true); // cutoff 仍走参数绑定
+  });
+
+  it('🚨 T019 续页不发计数查询 (空态是「打开雷达」这一刻的语义)', async () => {
+    await useCase.execute({ cursor: encodeRadarCursor({ distanceToWPct: '-5', anchorId: '3' }) });
+    expect(countSql()).toBeUndefined();
   });
 
   it('空态随页一起返回 (含文案): 有可动标的 → null; 全部在 W 上方 → all_idle', async () => {

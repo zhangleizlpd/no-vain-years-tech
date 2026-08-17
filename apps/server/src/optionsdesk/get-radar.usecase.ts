@@ -209,9 +209,47 @@ interface BreachScanRow {
   breachStartedOn: Date | null;
 }
 
+/**
+ * ⚠️ **两个计数已是死字段** (061 T019): 空态计数改由 {@link GetRadarUseCase.countBaseSet} 按
+ * spot 口径另查。留着不删是为了让 {@link GetRadarUseCase.advanceBreachState} 的函数体
+ * **零行改动** —— 那是 Guardrail 3 守着的写库判据, 动它的收益远小于风险。
+ */
 interface BreachScanResult {
   baseTotal: number;
   actionableTotal: number;
+}
+
+/** 空态判定所需的两个基础集合计数 (SQL 端一次查出)。 */
+type RadarBaseSetCounts = Pick<RadarEmptyStateInput, 'baseTotal' | 'actionableTotal'>;
+
+/** 空态计数查询的输出行 —— PG 的 `COUNT` 原生是 bigint, `::int` 转换后才是 number。 */
+interface RadarCountRow {
+  base_total: number;
+  actionable_total: number;
+}
+
+/**
+ * 🚨 **W 与 spot 两个 SQL 片段的单点声明** —— 距 W% 排序键、`belowW` 筛选、空态计数
+ * **三处共用**。
+ *
+ * 三处各写各的会让「筛出跌破的」「距 W% 显示跌破」「顶部横幅说一个都没有」在盘中互相矛盾,
+ * 而三边都算得出结果、**都不会红** (061 Guardrail 4)。加第四处用法时继续从这里取, 别复制。
+ *
+ * W = 生效 V × 系数; 系数从 `anchor.rules.ts` 常量取并**走参数绑定**, MUST NOT 在此复写
+ * 字面量 (SC-005)。
+ */
+function radarWSql(): Prisma.Sql {
+  return Prisma.sql`(COALESCE(v_manual, v) * ${W_COEFFICIENT.toString()}::numeric)`;
+}
+
+/**
+ * spot = 「闸内的盘中价, 否则收盘价」(061 FR-008)。`cutoff` **走参数绑定**且由
+ * `intraday-spot.rules.ts` 的常量派生 —— **MUST NOT 在此手写 90**。
+ * 与读端档位判定 (`resolveAnchorSpot`) 同源: 两处各判一次必漂移, 而漂移的表现是
+ * 「排序按实时、显示说收盘」, 没有任何断言会红。
+ */
+function radarSpotSql(now: Date): Prisma.Sql {
+  return Prisma.sql`COALESCE(CASE WHEN intraday_at >= ${intradayFreshnessCutoff(now)} THEN intraday_price END, last_close)`;
 }
 
 @Injectable()
@@ -230,8 +268,10 @@ export class GetRadarUseCase {
     const now = new Date();
 
     // 状态机只在首页推进: 一次「打开雷达」= 一次可判定时点; 续页重跑会让同一次滚动中判据漂移,
-    // 而且每页重扫全表纯属浪费。
-    const scan = firstPage ? await this.advanceBreachState() : { baseTotal: 0, actionableTotal: 0 };
+    // 而且每页重扫全表纯属浪费。⚠️ 它顺带返回的两个计数**已不再被消费** (061 T019, 见下)。
+    if (firstPage) await this.advanceBreachState();
+    // 空态计数按 spot 口径**另查一条** —— 同样只在首页需要 (续页不判空态)。
+    const counts = firstPage ? await this.countBaseSet(now) : { baseTotal: 0, actionableTotal: 0 };
 
     const keys = await this.selectPageKeys(cursor, query.filter ?? {}, limit, now);
     const hasMore = keys.length > limit;
@@ -246,7 +286,7 @@ export class GetRadarUseCase {
         hasMore && last !== undefined
           ? encodeRadarCursor({ distanceToWPct: last.distance_text, anchorId: last.anchor_id })
           : null,
-      ...this.emptyState({ ...scan, pageItems: items.length, firstPage }),
+      ...this.emptyState({ ...counts, pageItems: items.length, firstPage }),
     };
   }
 
@@ -261,7 +301,7 @@ export class GetRadarUseCase {
   }
 
   /**
-   * 推进全部锚的复核锚状态机, 顺带数出空态判定所需的两个计数。
+   * 推进全部锚的复核锚状态机。
    *
    * ⚠️ 扫描面是**全部**锚 (含 `excluded`): 状态**维护**与**展示**正交 —— excluded 的锚不进
    * 雷达 (Guardrail 12), 但它在锚管理列表仍要显示正确的复核锚红标, 状态冻结会让那边读到陈旧值。
@@ -276,9 +316,9 @@ export class GetRadarUseCase {
    *  3. `last_close` 是**修订后**的权威值 (拆股/分红调整、错单撤销), 盘中最后一笔不是。
    * ⇒ 别「顺手统一」这两个口径。回归钉在 `get-radar.usecase.spec.ts`「Guardrail 3 回归钉」。
    *
-   * ⚠️ 同理 `actionableTotal` (空态 `all_idle` 的判据) 也恒用收盘价 —— 它与状态机同一次扫描、
-   * 同一个日粒度语义。它与 `belowW` 筛选 (盘中口径) 在盘中可能短暂不一致, 这是上面那条取舍的
-   * 已知代价, 不是遗漏。
+   * ⚠️ **返回的两个计数已无人消费** (061 T019): 空态计数改走 {@link countBaseSet} 的 spot 口径。
+   * 「一行不动」管的是**写库判据与状态转换**, 不含这两个纯展示数 —— 让它们继续用收盘口径, 会让
+   * 同一份响应里两个口径回答同一个问题「有没有锚跌破 W」。此处保留它们只为让本方法体保持零改动。
    *
    * O(n) 扫 + O(变更行) 次 UPDATE (n = 锚数, 上限约 1000; 常态下 0 次写)。
    */
@@ -334,19 +374,44 @@ export class GetRadarUseCase {
   }
 
   /**
+   * 空态判定的两个计数 (`baseTotal` / `actionableTotal`), 一条查询取回 (`FILTER` 子句)。
+   *
+   * 🚨 **为什么不复用 {@link advanceBreachState} 顺带数出的那两个数**: 它恒用 `last_close`
+   * (状态机的日粒度口径, 刻意不动)。用收盘口径回答「有没有锚跌破 W」, 而同一份响应里的排序 /
+   * 筛选 / 距 W% 走盘中口径 ⇒ 盘中一旦出现「新鲜实时价跌破 W、收盘价未跌破」的锚, 顶部横幅会说
+   * 「今日无解」而底下的行赫然是红色负距 W%。⚠️ 这**不是**「列表为空才显示所以撞不上」——
+   * `all_idle` 是压在**非空列表**头上的提示 (列表为空时先被判成 `filtered_empty`), 两者必然同屏,
+   * 且**没有任何断言会红** (061 T019 / plan D5 射程订正)。
+   *
+   * 口径与 {@link selectPageKeys} 的基础 `WHERE` 一致: 只数 `excluded = false` 的行,
+   * **不叠用户筛选** —— 空态问的是「基础集合里有没有可动的」, 不是「筛完还剩几个」(后者是
+   * `filtered_empty` 的语义, 两者搅在一起会让两态互相顶掉)。
+   *
+   * O(n) 单次全表扫 (n = 锚数, 上限约 1000), 只在首页发。
+   */
+  private async countBaseSet(now: Date): Promise<RadarBaseSetCounts> {
+    const rows = await this.prisma.$queryRaw<RadarCountRow[]>(Prisma.sql`
+      SELECT COUNT(*)::int AS base_total,
+             (COUNT(*) FILTER (WHERE ${radarSpotSql(now)} < ${radarWSql()}))::int AS actionable_total
+      FROM optionsdesk.anchor
+      WHERE excluded = false
+    `);
+    // 聚合查询恒回一行; 防御性兜底避免空数组时 NaN 顺流进空态判定。
+    const row = rows.at(0);
+    return { baseTotal: row?.base_total ?? 0, actionableTotal: row?.actionable_total ?? 0 };
+  }
+
+  /**
    * SQL 端排序 + 筛选 + keyset 取一页键 (多取 1 条探测 `hasMore`)。
    *
-   * 距 W% 是**跨列表达式** (`(last_close − W) / W × 100`, W = 生效 V × 系数), Prisma 查询 API
-   * 无法 `orderBy` 表达式 ⇒ 走 `$queryRaw`。系数从 `anchor.rules.ts` 常量取并**走参数绑定**,
-   * MUST NOT 在此复写字面量 (SC-005)。
+   * 距 W% 是**跨列表达式** (`(spot − W) / W × 100`, W = 生效 V × 系数), Prisma 查询 API
+   * 无法 `orderBy` 表达式 ⇒ 走 `$queryRaw`。
    *
    * 内层子查询算出 `distance_to_w_pct`, 外层才引用它 —— PG 的 `WHERE` 不能引用同层输出列别名,
    * 分两层可让 keyset 谓词与 `ORDER BY` 都只写一次表达式 (写三遍必然改漏一处)。
    *
-   * 🚨 **061 spot 表达式**: 排序键的分子不再是裸 `last_close`, 而是「闸内的盘中价, 否则收盘价」。
-   * `cutoff` **走参数绑定**且由 `intraday-spot.rules.ts` 的常量派生 —— **MUST NOT 在此手写 90**。
-   * 该片段在本查询里被用两处 (距 W% 表达式 + `belowW` 筛选), 但**只声明一次**: 两处各写各的会让
-   * 「筛出跌破的」与「距 W% 显示跌破」在盘中互相矛盾, 而两边都算得出结果、都不会红。
+   * 🚨 **061 spot 表达式**: 排序键的分子不再是裸 `last_close`。两个片段一律从
+   * {@link radarSpotSql} / {@link radarWSql} 取 —— 单点声明的理由见那里。
    */
   private async selectPageKeys(
     cursor: RadarCursor | null,
@@ -354,8 +419,8 @@ export class GetRadarUseCase {
     limit: number,
     now: Date,
   ): Promise<RadarKeyRow[]> {
-    const w = Prisma.sql`(COALESCE(v_manual, v) * ${W_COEFFICIENT.toString()}::numeric)`;
-    const spot = Prisma.sql`COALESCE(CASE WHEN intraday_at >= ${intradayFreshnessCutoff(now)} THEN intraday_price END, last_close)`;
+    const w = radarWSql();
+    const spot = radarSpotSql(now);
     const conditions: Prisma.Sql[] = [Prisma.sql`excluded = false`]; // Guardrail 12 基础条件
     if (filter.lLevels !== undefined && filter.lLevels.length > 0) {
       conditions.push(Prisma.sql`l_level_effective IN (${Prisma.join([...filter.lLevels])})`);
