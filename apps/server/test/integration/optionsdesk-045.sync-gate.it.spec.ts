@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
+import { recordingOutboxPublisher } from '../_support/outbox-stub';
 import { PrismaService } from '../../src/security/prisma.service';
 import { AnchorDrivenSyncGate } from '../../src/marketdata/anchor-driven-sync-gate';
 import { MockMarketDataAdapter } from '../../src/marketdata/mock-market-data.adapter';
@@ -50,7 +51,7 @@ describe('045 optionsdesk US4 采集闸集成 IT (Testcontainers PG)', () => {
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
     gate = new AnchorDrivenSyncGate(prisma);
-    createAnchor = new CreateAnchorUseCase(prisma);
+    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher());
     deleteAnchor = new DeleteAnchorUseCase(prisma);
   }, 180_000);
 

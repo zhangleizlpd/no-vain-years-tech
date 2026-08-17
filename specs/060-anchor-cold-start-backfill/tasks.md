@@ -147,9 +147,21 @@ updated_at: '2026-08-17'
   >
   > **反恒真已跑三条，两条方向断言都真的会咬**：① 把入队失败 catch 掉（吞事件）⇒ 1 条红；② 毒丸分支改成抛 ⇒ 6 条红；③ 把 `anchorId` 的串校验换成 `String(anchorId)` 强转（能编过的那种写法）⇒ 1 条红。第 ③ 条的裸删版本连 typecheck 都过不去（`unknown` 到不了 `enqueueColdStart`），所以类型系统在断言之前先挡了一道。
 
-- [ ] T009 [Server] **事件生产：建锚事务内 publish**（FR-001, FR-002, FR-003, FR-004, plan §D1）：`optionsdesk/create-anchor.usecase.ts` 注入 `OUTBOX_PUBLISHER`，在既有 `$transaction` 内（写完锚行与 `anchor_change` 之后）`publish(tx, 'optionsdesk.anchor-created', { anchorId, ticker }, 'optionsdesk')`，上方标 `// CROSS-CONTEXT-ASYNC:`。`optionsdesk.module.ts` 确认可注入。**`import-anchor-from-model.usecase.ts` 一行不改**（Guardrail 11）。→ verify: `create-anchor.usecase.spec.ts` 加：建锚成功 ⇒ `publish` 被调用一次且四个实参逐个断言（尤其 `producerContext === 'optionsdesk'`）；建锚 409 冲突 ⇒ `publish` 零调用。`update-anchor.usecase.spec.ts` 全绿不改（FR-003 的回归）
+- [X] T009 [Server] **事件生产：建锚事务内 publish**（FR-001, FR-002, FR-003, FR-004, plan §D1）：`optionsdesk/create-anchor.usecase.ts` 注入 `OUTBOX_PUBLISHER`，在既有 `$transaction` 内（写完锚行与 `anchor_change` 之后）`publish(tx, 'optionsdesk.anchor-created', { anchorId, ticker }, 'optionsdesk')`，上方标 `// CROSS-CONTEXT-ASYNC:`。`optionsdesk.module.ts` 确认可注入。**`import-anchor-from-model.usecase.ts` 一行不改**（Guardrail 11）。→ verify: `create-anchor.usecase.spec.ts` 加：建锚成功 ⇒ `publish` 被调用一次且四个实参逐个断言（尤其 `producerContext === 'optionsdesk'`）；建锚 409 冲突 ⇒ `publish` 零调用。`update-anchor.usecase.spec.ts` 全绿不改（FR-003 的回归）
 
 ## Phase 5: 端到端验证
+
+  > 📌 **impl 期记录（2026-08-17）**
+  >
+  > **两处「确认」结果都是零改动**：① `optionsdesk.module.ts` 不用动 —— 它已 `imports: [SecurityModule]`，而 `OUTBOX_PUBLISHER` 在 `security.module.ts:199` 已 export；② `import-anchor-from-model.usecase.ts` 一行不改（Guardrail 11）—— 它注入的是 `CreateAnchorUseCase` 本身，新依赖由 DI 自动带进去。
+  >
+  > **`anchorId` 转十进制串是硬要求，不是风格**：BigInt 过不了 JSON 信封，且 T008 的 subscriber 按串校验 ⇒ 直传 bigint 会被判毒丸**静默丢掉**（事件发了、冷启动永不发生、没有任何一处报错）。生产侧与消费侧的校验形态因此必须对齐，两边各有一条测试钉住。
+  >
+  > **连带**：`create-anchor.usecase.spec.ts` 6 处 + 3 个 optionsdesk IT 手工构造点（构造器多一个必填依赖）。新增 `apps/server/test/_support/outbox-stub.ts` —— 记录式桩而非哑桩，那几个 IT 验的是锚自身的 CRUD/雷达/采集闸、不装 DI 容器。
+  >
+  > **反恒真已跑三条**：publish 传 `this.prisma` 而非 `tx` ⇒ 1 红（这条守的是 FR-004 的同生共死：传错了锚回滚而 outbox 行还在，于是给一只不存在的锚跑采集）；`anchorId` 直传 bigint ⇒ 2 红；省掉 `producerContext` ⇒ 1 红（默认值是 `'auth'`，省了就把本事件记成 auth 产的）。
+  >
+  > ⏭️ **欠给 T010/T011 的一条**：plan §D1 要求「两端事件类型字面量相等**靠 IT 钉住、不靠人眼**」—— 即 subscriber 的 `eventType` 必须等于生产侧实际写进 `outbox_event.event_type` 的值。单测两侧各自断言自己的常量，钉不住二者相等；这条只有真 DB + 真容器能验，落在 IT 层。
 
 - [ ] T010 [Server] **IT 上半：触发 / 时点归属 / 幂等**（FR-013, FR-015, FR-015a, SC-002, SC-003, `state_branches` ①②③⑥⑦⑧⑨⑩⑲㉓，plan Gate 0.1）：新建 `apps/server/test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts`（Testcontainers 真 PG，`Test.createTestingModule({ imports: [MarketdataModule] })` 装真 DI 容器，vendor port 用 stub 计调用次数）。注入固定 `now` 覆盖休市 / 盘中两档与 §D4 的三种时点归属。⚠️ **午休档蓄意不在这一层**：唯一开通期权采集的市场是 `us` 而 us 无午休，`hk` 在 `COLD_START_CAPABILITY` 里是空表项（走到就 `market_not_enabled` 提前返回，够不到快照分支）⇒ **午休分支端到端今天不可达**，在这里写它只会得到一个恒真 IT。它由 T001（谓词层）+ T006（use case 层）覆盖，接 hk 期权采集那片时再上提到本层。→ verify: `nx test server test/integration/marketdata.cold-start-060.trigger-timing.it.spec.ts --skip-nx-cache`（新文件首跑必加）。🚨 **两条硬断言**：① 盘中分支 `optionDailySnapshot.count()` **零变化**；② **「数据已在、`anchor_cold_start_run` 为空」⇒ vendor port 零调用**（直接插目标交易日的快照 / 日线行，不写任何运行记录，再触发）—— 谁把复判写成读运行记录，这条立刻红。🚨 **反恒真**：每条 `it()` 落地后**逐条注掉对应实现确认它真的变红**，再恢复 —— 恒真断言会让覆盖矩阵显示 24/24 而实际零保护（体例同 059 T007）
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
+import { recordingOutboxPublisher } from '../_support/outbox-stub';
 import { PrismaService } from '../../src/security/prisma.service';
 import { classifyZone, computeDistanceToWPct, computeW } from '../../src/optionsdesk/anchor.rules';
 import { CreateAnchorUseCase } from '../../src/optionsdesk/create-anchor.usecase';
@@ -47,7 +48,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    createAnchor = new CreateAnchorUseCase(prisma);
+    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher());
     reviewAnchor = new ReviewAnchorUseCase(prisma);
     listAnchors = new ListAnchorsUseCase(prisma);
     syncQuote = new SyncAnchorQuoteUseCase(prisma);
