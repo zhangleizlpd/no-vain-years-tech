@@ -82,6 +82,22 @@ const sharedTestOptions = {
 
 export default defineConfig({
   test: {
+    // 🚨 **CI 上必须显式带 `github-actions`，否则 CI 失败在 GitHub 侧不可见。**
+    //
+    // vitest 的 `github-actions` reporter（annotations + Job Summary + 行内标注）**只在
+    // 「没有显式配置 reporters」时才自动启用**（官方文档原话：configure reporters 之后
+    // 需要自己把它加回来）。而本仓原先在 `project.json` 写死 `vitest run --reporter=default`
+    // —— 那一句正好把它关掉了。
+    //
+    // 后果不是「少点好看的标注」，是**失败根本取不回来**：nx 在 CI 上不转发完整 task 输出，
+    // 且 `--output-style` 在 CI 被直接忽略（nrwl/nx#15570，`if (isCI()) return false`，
+    // closed as not planned）⇒ job log 里既没有 vitest 汇总也没有失败块。
+    // 2026-08-17 实撞：server-test 连续三次红，失败文本从 CI 侧完全取不到，
+    // 靠逐行滤噪才在正文里找出是哪个文件。annotations 是绕开 nx 输出层的唯一通路。
+    //
+    // ⚠️ 只在 GitHub Actions 上加：本地跑时它会打 `::error` 这类 workflow 命令行，是噪声。
+    reporters: process.env.GITHUB_ACTIONS ? ['default', 'github-actions'] : ['default'],
+
     // 🚨 拆两个 project **不是为了归类好看**，是为了保住快速内环。
     // vitest 只为「本轮真有 spec 命中」的 project 初始化 globalSetup（root project 除外，
     // 而 root 这里蓄意不挂 globalSetup）。于是：

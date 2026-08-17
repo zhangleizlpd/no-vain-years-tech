@@ -224,7 +224,9 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
 
 ## 本 PR 夹带的两处工具面修复（不是 059 的 task，但必须记）
 
-按 git-workflow「改动溢出本 feature 要先确认是否拆独立改动」，这两处**刻意不拆** —— 它们各自是本 PR 能不能走完流程的前置，拆出去意味着 059 得等它们先合：
+按 git-workflow「改动溢出本 feature 要先确认是否拆独立改动」，这几处**刻意不拆** —— 它们各自是本 PR 能不能走完流程的前置，拆出去意味着 059 得等它们先合：
+
+0. **CI 失败可见性**（`vitest.config.ts` 的 `reporters` + `project.json` 去掉 `--reporter=default`）。vitest 的 `github-actions` reporter **只在没有显式配置 reporters 时才自动启用**（[官方文档](https://vitest.dev/guide/reporters)），而本仓 `project.json` 写死 `vitest run --reporter=default`，正好把它关掉了。后果不是「少点标注」而是**失败取不回来**：nx 在 CI 上不转发完整 task 输出、且 `--output-style` 在 CI 被直接忽略（[nrwl/nx#15570](https://github.com/nrwl/nx/issues/15570)，`if (isCI()) return false`，closed as not planned）⇒ job log 里既无 vitest 汇总也无失败块。2026-08-17 实撞：server-test 连红三次、失败文本从 CI 侧完全取不到。annotations 是绕开 nx 输出层的唯一通路。已实测：本地零 workflow 命令噪声，`GITHUB_ACTIONS=true` 下真失败会发出带文件/行号的 `::error`。
 
 1. **`eslint.config.mjs` 补 playwright 输出目录的 ignore**。PR 模板要求的物理验证命令把 `lint` 与 `runtime-smoke` 放进同一个 nx invocation，playwright 边跑边增删 `playwright-test-results`，eslint 的目录遍历撞上去 ⇒ `ENOENT scandir`，**eslint 进程自己崩**（不是报 lint 错）。表现成随机红、单跑又绿。⇒ 不修就没法诚实地勾第一个 checkbox。
 2. **IT 日志降级**（`vitest.config.ts` 加 `LOG_LEVEL=error` + `test/_support/quiet-logger.ts` + 抽 `test/_support/run-migrate.ts`）。本地一轮 373KB → **115KB（−69%）**，430 files / 4514 passed 逐项不变。
