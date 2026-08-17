@@ -106,7 +106,6 @@ describe('057 T009 研报投递端点 (共享 PG + 收窄 boot + 真 HTTP)', () 
   beforeAll(async () => {
     db = await setupIsolatedDb();
     process.env.DATABASE_URL = db.databaseUrl;
-    process.env.REDIS_URL = 'redis://127.0.0.1:6399'; // 恒不连（REDIS_CLIENT 被 stub 覆盖）
     process.env.AUTH_JWT_SECRET = 'research-057-t009-jwt-secret-min-32-bytes-long';
     process.env.SMS_CODE_HMAC_SECRET = 'research-057-t009-hmac-secret-min-32-bytes-x';
     process.env.MARKETDATA_PROVIDER = 'mock';

@@ -74,7 +74,6 @@ describe('046 T016 标的详情读端 (共享 PG + 收窄 boot + 真 HTTP)', () 
   beforeAll(async () => {
     db = await setupIsolatedDb();
     process.env.DATABASE_URL = db.databaseUrl;
-    process.env.REDIS_URL = 'redis://127.0.0.1:6399'; // 恒不连 (REDIS_CLIENT 被 stub 覆盖)
     process.env.AUTH_JWT_SECRET = 'optionsdesk-046-t016-jwt-secret-min-32-bytes';
     process.env.SMS_CODE_HMAC_SECRET = 'optionsdesk-046-t016-hmac-secret-min-32-bytes';
     // 本地 shell 常泄漏 MARKETDATA_PROVIDER=live 与 OSS_* 部署凭据 → 两者的 config 分支要求

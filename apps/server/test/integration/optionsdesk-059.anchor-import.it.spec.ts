@@ -87,14 +87,6 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
   beforeAll(async () => {
     db = await setupIsolatedDb();
     process.env.DATABASE_URL = db.databaseUrl;
-    // 🚨 **stub 掉 `REDIS_CLIENT` 不等于 `redisConfig` 不被实例化** —— 模块图里仍有别的
-    //    provider 注入它, 而 `redis.config.ts` 的 `url` 是必填 `.url()`, 缺了就在 DI 期
-    //    ZodError, 整个文件 33 个 test 全 skipped。恒不连的占位即可 (同 046.detail /
-    //    050.legs-perf 的既有做法)。
-    // ⚠️ 漏这一行**本地不会红** —— dev shell 里有真 `REDIS_URL`, 它把缺失盖住了;
-    //    CI 环境干净, 于是「本地四轮全绿 / CI 四轮全红」(2026-08-17 实撞, 本地
-    //    `env -u REDIS_URL` 才复现出来)。
-    process.env.REDIS_URL = 'redis://127.0.0.1:6399'; // 恒不连 (REDIS_CLIENT 被 stub 覆盖)
 
     moduleRef = await Test.createTestingModule({
       imports: narrowTestModule([OptionsdeskModule]),

@@ -27,7 +27,6 @@ import { RETRIEVAL_CRITERION_KEYS, type PerspectiveCriteria } from './leg-recall
 // SecurityModule 的 ConfigModule.forRoot 在模块实例化时 .parse()。DB / Redis 均不真连 ——
 // PrismaService 懒连接; ioredis 连不上只在后台重试 (silentEmit), 不影响本 spec。
 process.env.DATABASE_URL ??= 'postgresql://test:test@127.0.0.1:5432/test_optionsdesk';
-process.env.REDIS_URL ??= 'redis://127.0.0.1:6399';
 process.env.AUTH_JWT_SECRET ??= 'optionsdesk-045-t010-jwt-secret-min-32-bytes';
 process.env.SMS_CODE_HMAC_SECRET ??= 'optionsdesk-045-t010-hmac-secret-min-32-bytes';
 // 本地 shell 常泄漏 MARKETDATA_PROVIDER=live (dev 行情) 与 OSS_* 部署凭据 → 两者的 config

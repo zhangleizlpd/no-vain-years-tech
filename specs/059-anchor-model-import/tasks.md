@@ -233,6 +233,10 @@ server 侧（T001–T008）与通道侧（T009–T011）**同一个 PR**，但�
    🚨 **仓里两套 logger，只有一套听 `LOG_LEVEL`** —— 这是第一版只砍掉一半的原因，记下来免得下次再踩：pino 归 `LoggerModule` 的 `pinoHttp.level`（听 env），而业务代码里 `new Logger(Xxx.name)` 归 Nest 静态 logLevels（不听）。生产靠 `main.ts` 的 `useLogger` 合一，**测试里不合一**（`narrow-boot` 蓄意不注册 `LoggerModule`、无人调 `useLogger`）⇒ 必须两边各压一次。判据表在 `quiet-logger.ts` 顶部。起因是 `server-test` 在 CI 上连续两次红、本地两次全绿，而**失败文本从 CI 侧取不到** —— GitHub 的 job log 端点只回有限窗口（对照过一次成功的跑，同样取不到 ⇒ 端点固有行为）。⇒ 不降噪就没有诊断窗口。
    ⚠️ 残留的 134 行 migrate 树 + 30 行 pino 全在 `runtime-smoke` 段，源头 `scripts/ci/server-boot-smoke.ts` 在 vitest 之外、`test.env` 管不到。**刻意不动**：那个脚本的意义就是「真 app 能不能起来」，日志即证据。要压它是另一笔取舍。
 
+3. **CI 连红四次的真因与两笔连带治理**（2026-08-17）。真因不在 059 的业务代码：本 feature 的 IT 漏了 `REDIS_URL` 占位，而 `redis.config.ts` 的 `url` 是必填 —— **stub 掉 `REDIS_CLIENT` 并不能阻止 `redisConfig` 被实例化** ⇒ DI 期 ZodError ⇒ 整文件 33 个 test 全 skipped。本地四轮全绿是因为 dev shell 里有真 `REDIS_URL` 把缺失盖住了。连带做了两件：
+   - **7 处 `process.env.REDIS_URL = 'redis://127.0.0.1:6399'` 收敛成 0** —— 提到 `vitest.config.ts` 的 `test.env`。原先每个 spec 靠作者记得抄一行，第 8 个人忘写就再炸一次；那不是纪律问题，是缺省值缺席。它同时补上了 `config-env-sync` 位置 #4 本就该有的 boot-required 登记。
+   - **`scripts/local-verify-as-ci.sh`** —— 按 `.env.example` 的键集把本机泄漏的 server env 全 unset 再跑，判据写进 [`local-verification.md`](../../docs/conventions/local-verification.md) §2/§3。「本地 env 泄漏 → 本地绿 CI 红」这个类会复发，而这次烧了四轮 CI 才定位。
+
 ## impl 期偏离登记（与 plan / tasks 原文不一致的三处）
 
 1. **guest 端点另起 `optionsdesk-guest.controller.ts`，没有加进 `optionsdesk.controller.ts`**（tasks 原文写的是后者）。理由：那个 controller 是**类级** `@UseGuards(JwtAuthGuard, AccountIdThrottlerGuard)`，类级 guard 对每条路由生效且**方法上摘不掉**。要塞进去只能把 13 个既有端点的鉴权逐个下放到方法级 —— 为了少建一个文件而动整个 App 的鉴权面，风险与收益不成比例。体例同 `research.controller.ts`（同为 guest 面、同为只写）。
