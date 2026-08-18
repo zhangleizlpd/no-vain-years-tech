@@ -2,7 +2,7 @@
 feature_id: 062-trading-calendar-horizon
 modules: [marketdata, alert, optionsdesk]
 owners: ['@zhangleizlpd']
-status: draft
+status: implementing
 created_at: '2026-08-18'
 updated_at: '2026-08-18'
 spec_kit_version: '>=0.8.5,<0.10.0'
@@ -33,7 +33,7 @@ state_branches:
 
 **Feature Branch**: `062-trading-calendar-horizon`
 **Created**: 2026-08-18
-**Status**: Draft
+**Status**: Implementing
 **Input**: 交易日历表只向后填充（每日 21:00 北京填 `[今天-30, 今天]`，前瞻 0 天），而读侧把「无记录」读成「不是交易日」。于是「今天那一行」落库之前，所有问「今天是不是交易日」的消费方都拿到静默的错误答案 —— 已导致盘中预警全天不求值、期权快照二级兜底从不执行、建锚补数在美东凌晨标错来源与 OI 归属日。要一劳永逸地解决：让日历有前瞻视野、让「还没到」与「不是交易日」在语义上分开、并让下一个消费方不可能再踩。
 
 ## Clarifications
