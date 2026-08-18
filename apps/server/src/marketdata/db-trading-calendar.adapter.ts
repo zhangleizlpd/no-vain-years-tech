@@ -3,9 +3,11 @@ import { PrismaService } from '../security/prisma.service.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
 import {
   classifyTradingDay,
+  isWithinCoverage,
   type CalendarCoverageRange,
   type TradingDayStatus,
 } from './trading-day.rules.js';
+import { lastClosedSessionCutoff } from './trading-day-gate.js';
 
 /**
  * 表驱动交易日历 adapter (sync-1 S1-T3, TRADING_CALENDAR_PORT live 实现)。**去理杏仁化**:
@@ -50,5 +52,37 @@ export class DbTradingCalendarAdapter implements TradingCalendarPort {
             to: row.coveredTo.toISOString().slice(0, 10),
           };
     return classifyTradingDay({ hasExactRow: exact > 0, coverage, date });
+  }
+
+  /**
+   * 最近一场已收盘交易日（062 T010, `state_branch` 9）。收盘上界由纯函数
+   * {@link lastClosedSessionCutoff} 按**交易所时区**求，本方法只负责取数与可信度闸。
+   *
+   * 🚨 **上界落在覆盖声明之外 ⇒ 返 `null`，MUST NOT 交回那个「最大交易日」**：那一段根本
+   * 没填全，库里的最大值只是「填到哪儿」而不是「最近一场是哪天」。交回它 = 拿一个不可信的
+   * 基准日去判陈旧 —— 表现是档位悄悄错一档（数据其实是新的却被判陈旧，或反之），**不报错**。
+   * 这正是 062 之前 cn/hk 在北京 15:00–21:00 窗口内陈旧度偏乐观的同构成因。
+   *
+   * 复杂度: 2 次索引查询（并发发出；一次唯一索引点查 + 一次 `(market,date)` 上的倒序 limit-1）。
+   */
+  async lastClosedSession(market: string, now: Date): Promise<string | null> {
+    const cutoff = lastClosedSessionCutoff(market, now);
+    const [coverageRow, dayRow] = await Promise.all([
+      this.prisma.calendarCoverage.findUnique({ where: { market } }),
+      this.prisma.tradingDay.findFirst({
+        where: { market, date: { lte: new Date(`${cutoff}T00:00:00Z`) } },
+        orderBy: { date: 'desc' },
+        select: { date: true },
+      }),
+    ]);
+    const coverage: CalendarCoverageRange | null =
+      coverageRow === null
+        ? null
+        : {
+            from: coverageRow.coveredFrom.toISOString().slice(0, 10),
+            to: coverageRow.coveredTo.toISOString().slice(0, 10),
+          };
+    if (!isWithinCoverage(coverage, cutoff)) return null;
+    return dayRow === null ? null : dayRow.date.toISOString().slice(0, 10);
   }
 }

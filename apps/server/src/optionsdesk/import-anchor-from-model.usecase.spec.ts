@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import { ImportAnchorFromModelUseCase } from './import-anchor-from-model.usecase';
 import type { CreateAnchorUseCase } from './create-anchor.usecase';
 import type { PrismaService } from '../security/prisma.service';
+import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
 type Fn = ReturnType<typeof vi.fn>;
 
@@ -56,7 +57,6 @@ function buildPrismaMock(): PrismaMock {
   };
   const prisma = {
     // FR-020 新鲜度基准: 日历无行 ⇒ fail-open，本文件的断言与它无关。
-    tradingDay: { findFirst: vi.fn(async () => null) },
     anchor: { findUnique, updateMany, findUniqueOrThrow },
     anchorChange: { create: changeCreate },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
@@ -93,7 +93,7 @@ function setup(): {
   const m = buildPrismaMock();
   const stub = buildCreateAnchorStub();
   return {
-    useCase: new ImportAnchorFromModelUseCase(m.prisma, stub.useCase),
+    useCase: new ImportAnchorFromModelUseCase(m.prisma, stub.useCase, stubTradingCalendar()),
     m,
     create: stub.execute,
   };

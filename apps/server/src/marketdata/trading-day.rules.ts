@@ -84,6 +84,23 @@ export function classifyTradingDay({
   }
 
   if (hasExactRow) return 'trading';
-  if (coverage === null) return 'unknown';
-  return date >= coverage.from && date <= coverage.to ? 'non-trading' : 'unknown';
+  return isWithinCoverage(coverage, date) ? 'non-trading' : 'unknown';
+}
+
+/**
+ * 该日期是否落在覆盖声明的**闭区间**内（`coverage === null` ⇒ 恒 `false`）。
+ *
+ * 单独导出是因为它有**第二个**问法: 「陈旧度基准日（最近一场已收盘交易日的上界）可不可信」
+ * （062 T010, `state_branch` 9）—— 基准日落在覆盖之外时, 库里那个「≤ 上界的最大交易日」是
+ * 一个**没填全的区间**里的最大值, 拿它判陈旧就是拿一个不可信的基准日下结论。
+ * 两处问的是同一件事 ⇒ 只有这一份判据（各写一份必漂移, 且漂了只让档位悄悄错一档）。
+ *
+ * 复杂度 O(1)（两次字典序比较）。
+ */
+export function isWithinCoverage(coverage: CalendarCoverageRange | null, date: string): boolean {
+  assertIsoDate(date, 'date');
+  if (coverage === null) return false;
+  assertIsoDate(coverage.from, 'coverage.from');
+  assertIsoDate(coverage.to, 'coverage.to');
+  return date >= coverage.from && date <= coverage.to;
 }

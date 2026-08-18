@@ -23,6 +23,7 @@ import { ReviewAnchorUseCase } from '../../src/optionsdesk/review-anchor.usecase
 import { ListAnchorsUseCase } from '../../src/optionsdesk/list-anchors.usecase';
 import { GetAnchorUseCase } from '../../src/optionsdesk/get-anchor.usecase';
 import { GetAnchorAtUseCase } from '../../src/optionsdesk/get-anchor-at.usecase';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 045 T011 US1 集成 IT (**SC-011**) —— 真 PG 落库口径验证: 建锚派生值 / 两级链联动 /
 // 三条回落路径 / 撤销 / 痕迹逐条 / 删锚后痕迹保留 / PIT 还原逐项一致 / 逾期筛出 /
@@ -62,12 +63,17 @@ describe('045 optionsdesk US1 锚管理集成 IT (Testcontainers PG)', () => {
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher(), noEodSeed());
-    updateAnchor = new UpdateAnchorUseCase(prisma);
+    createAnchor = new CreateAnchorUseCase(
+      prisma,
+      recordingOutboxPublisher(),
+      noEodSeed(),
+      stubTradingCalendar(),
+    );
+    updateAnchor = new UpdateAnchorUseCase(prisma, stubTradingCalendar());
     deleteAnchor = new DeleteAnchorUseCase(prisma);
-    reviewAnchor = new ReviewAnchorUseCase(prisma);
-    listAnchors = new ListAnchorsUseCase(prisma);
-    getAnchor = new GetAnchorUseCase(prisma);
+    reviewAnchor = new ReviewAnchorUseCase(prisma, stubTradingCalendar());
+    listAnchors = new ListAnchorsUseCase(prisma, stubTradingCalendar());
+    getAnchor = new GetAnchorUseCase(prisma, stubTradingCalendar());
     getAnchorAt = new GetAnchorAtUseCase(prisma);
   }, 180_000);
 

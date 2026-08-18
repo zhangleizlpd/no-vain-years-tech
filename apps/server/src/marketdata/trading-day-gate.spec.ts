@@ -20,7 +20,7 @@ describe('isTradingDayGateOpen', () => {
     spy: ReturnType<typeof vi.fn>;
   } {
     const spy = vi.fn(async () => result);
-    return { port: { classify: spy }, spy };
+    return { port: { classify: spy, lastClosedSession: async () => null }, spy };
   }
 
   it('交易日 → gate open true, 透传 market/date 给 calendar', async () => {

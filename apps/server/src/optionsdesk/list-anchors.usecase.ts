@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import {
@@ -18,6 +18,10 @@ import { resolveAnchorSpot, type AnchorSpot } from './intraday-spot.rules';
 import { shanghaiDateOnly, type AnchorRow } from './create-anchor.usecase';
 import { marketsOfTickers, resolveLastClosedSessions } from './last-closed-session';
 import { isAnchorOverdue, isAnchorReviewFlagOn } from './review-anchor.usecase';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 045 US1 — 锚列表读端 (FR-001 / FR-004 / FR-005, plan D6)。
@@ -139,7 +143,13 @@ export function toAnchorView(
 
 @Injectable()
 export class ListAnchorsUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   async execute(filter: ListAnchorsFilter = {}): Promise<AnchorView[]> {
     // 「今天」跟**用户所在地**走 (锚是人工复核节奏, 与市场无关) —— 同一个值同时供
@@ -160,7 +170,7 @@ export class ListAnchorsUseCase {
     })) as AnchorRow[];
     // 逐市场取一次新鲜度基准 (锚表跨市场时 ≤ 3 次单行索引查询), 全页共用。
     const sessions = await resolveLastClosedSessions(
-      this.prisma,
+      this.calendar,
       marketsOfTickers(rows.map((r) => r.ticker)),
     );
     return rows.map((row) => toAnchorView(row, sessionOf(sessions, row.ticker), today));

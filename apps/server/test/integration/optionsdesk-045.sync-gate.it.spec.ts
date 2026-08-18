@@ -12,6 +12,7 @@ import { SyncProfileUseCase } from '../../src/marketdata/sync-profile.usecase';
 import { DIMENSION_KEYS, DimensionExecutorRegistry } from '../../src/marketdata/dimension-executor';
 import { CreateAnchorUseCase } from '../../src/optionsdesk/create-anchor.usecase';
 import { DeleteAnchorUseCase } from '../../src/optionsdesk/delete-anchor.usecase';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 const NOW = new Date('2026-06-03T12:00:00Z'); // 周三 (Asia/Shanghai 交易日)
 const AS_OF = '2026-06-03';
@@ -52,7 +53,12 @@ describe('045 optionsdesk US4 采集闸集成 IT (Testcontainers PG)', () => {
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
     gate = new AnchorDrivenSyncGate(prisma);
-    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher(), noEodSeed());
+    createAnchor = new CreateAnchorUseCase(
+      prisma,
+      recordingOutboxPublisher(),
+      noEodSeed(),
+      stubTradingCalendar(),
+    );
     deleteAnchor = new DeleteAnchorUseCase(prisma);
   }, 180_000);
 

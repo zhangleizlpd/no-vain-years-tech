@@ -15,6 +15,7 @@ import type {
   LegRetrievalQuery,
   LegRetrievalResult,
 } from '../../src/optionsdesk/leg-retrieval.port';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 053 T005 —— 查询下沉的服务端侧 IT (Testcontainers 真 PG)。
 //
@@ -111,7 +112,7 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
   // ── 装配 ──────────────────────────────────────────────────────────────────
 
   const useCaseOf = (): GetLegsUseCase =>
-    new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma), stubTradingCalendar());
 
   /**
    * 只换 `candidateCap` 一个入参的 port 包装 —— `K` 触及分支的驱动手段 (`SC-016`)。
@@ -139,7 +140,11 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
   }
 
   const cappedUseCaseOf = (cap: number): GetLegsUseCase =>
-    new GetLegsUseCase(prisma, new CappedRetrieval(new PrismaLegRetrievalAdapter(prisma), cap));
+    new GetLegsUseCase(
+      prisma,
+      new CappedRetrieval(new PrismaLegRetrievalAdapter(prisma), cap),
+      stubTradingCalendar(),
+    );
 
   const codesOf = (view: LegTableView): string[] => view.legs.map((leg) => leg.code);
 
@@ -533,7 +538,11 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
       // 「哪个方法炸了」变成本分支的隐含前提。
       retrieveChain: () => Promise.reject(new Error('marketdata read blew up')),
     };
-    const view = await new GetLegsUseCase(prisma, exploding).execute(SYMBOL, 'build', NOW);
+    const view = await new GetLegsUseCase(prisma, exploding, stubTradingCalendar()).execute(
+      SYMBOL,
+      'build',
+      NOW,
+    );
     // 🚨 两个状态**不可合并**: 前者是事实 (采集还没轮到), 后者是故障 —— 混成一个值会让「缺口」
     // 看起来像「正常的空」。本片新增的字段一个都不许改这条分支的行为。
     expect(view.state).toBe('read_failed');

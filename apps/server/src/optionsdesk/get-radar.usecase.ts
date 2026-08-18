@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { W_COEFFICIENT, isBelowW, type LLevel } from './anchor.rules';
@@ -14,6 +14,10 @@ import {
   radarKeysetPredicate,
   type RadarCursor,
 } from './radar-cursor';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 045 US2 — 击球区雷达读端 (FR-010 / FR-013 / FR-015 / FR-033 / FR-034, plan D8/D14a)。
@@ -254,7 +258,13 @@ function radarSpotSql(now: Date): Prisma.Sql {
 
 @Injectable()
 export class GetRadarUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   async execute(query: RadarQuery = {}): Promise<RadarPage> {
     const limit = normalizeRadarLimit(query.limit);
@@ -460,7 +470,7 @@ export class GetRadarUseCase {
     const today = shanghaiDateOnly(new Date());
     // 逐市场取一次新鲜度基准 (本页涉及的市场, ≤ 3 次单行索引查询), 全页共用。
     const sessions = await resolveLastClosedSessions(
-      this.prisma,
+      this.calendar,
       marketsOfTickers(rows.map((r) => r.ticker)),
     );
     // 键查询与水合之间被并发删除的行直接跳过 (整页照常返回, 不 500)。

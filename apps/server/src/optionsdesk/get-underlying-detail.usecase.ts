@@ -1,10 +1,14 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { parseAnchorTicker } from './anchor.rules';
 import type { AnchorRow } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 046 US1 — 标的详情读端 (FR-002/FR-003/FR-004/FR-005/FR-011/FR-012/FR-013/FR-014/FR-020/
@@ -105,7 +109,13 @@ export function noIv(state: UnderlyingIvState): UnderlyingIvReadout {
 export class GetUnderlyingDetailUseCase {
   private readonly logger = new Logger(GetUnderlyingDetailUseCase.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   /**
    * @param symbol canonical `market:code` (锚 ticker 全局唯一, 即标的身份)。
@@ -124,7 +134,7 @@ export class GetUnderlyingDetailUseCase {
         message: `${ANCHOR_NOT_FOUND_FOR_SYMBOL}: ${symbol} 尚未建锚`,
       });
     }
-    const lastClosedSession = await resolveLastClosedSessionForTicker(this.prisma, symbol);
+    const lastClosedSession = await resolveLastClosedSessionForTicker(this.calendar, symbol);
     return {
       symbol,
       anchor: toAnchorView(row, lastClosedSession),

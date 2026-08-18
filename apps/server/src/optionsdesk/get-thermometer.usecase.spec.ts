@@ -11,6 +11,10 @@ import {
 import { UNDERLYING_IV_STATES } from './get-underlying-detail.usecase';
 import { toThermometerResponse } from './optionsdesk.dto';
 import type { PrismaService } from '../security/prisma.service';
+import {
+  stubTradingCalendar,
+  type TradingCalendarStub,
+} from '../../test/_support/trading-calendar-stub';
 
 /**
  * 046 T017 — 温度计读端单测 (FR-015/FR-016/FR-017/FR-018/FR-027/FR-032/FR-035)。
@@ -72,7 +76,8 @@ type Fn = ReturnType<typeof vi.fn>;
 
 interface PrismaMock {
   prisma: PrismaService;
-  tradingDayFindFirst: Fn;
+  /** 062 T010: 陈旧度基准改走 `TRADING_CALENDAR_PORT`，不再是 `tradingDay.findFirst`。 */
+  calendar: TradingCalendarStub;
   anchorFindMany: Fn;
   instrumentFindMany: Fn;
   ivGroupBy: Fn;
@@ -134,9 +139,8 @@ function buildPrismaMock(
 
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
-  const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
+  const calendar = stubTradingCalendar();
   const prisma = {
-    tradingDay: { findFirst: tradingDayFindFirst },
     anchor: { findMany: anchorFindMany },
     instrument: { findMany: instrumentFindMany },
     underlyingIvDaily: { groupBy: ivGroupBy, findMany: ivFindMany },
@@ -150,13 +154,13 @@ function buildPrismaMock(
     ivGroupBy,
     ivFindMany,
     indexFindFirst,
-    tradingDayFindFirst,
+    calendar,
   };
 }
 
 const run = (opts: Parameters<typeof buildPrismaMock>[0] = {}) => {
   const m = buildPrismaMock(opts);
-  return { m, exec: () => new GetThermometerUseCase(m.prisma).execute() };
+  return { m, exec: () => new GetThermometerUseCase(m.prisma, m.calendar).execute() };
 };
 
 describe('GetThermometerUseCase — 指数表盘 (FR-015 / FR-016 / FR-017)', () => {

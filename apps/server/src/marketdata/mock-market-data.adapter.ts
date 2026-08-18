@@ -7,6 +7,7 @@ import type {
 import type { InstrumentUniversePort } from './instrument-universe.port.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
 import type { TradingDayStatus } from './trading-day.rules.js';
+import { lastClosedSessionCutoff } from './trading-day-gate.js';
 import type { EodBarPort } from './eod-bar.port.js';
 import type { FundamentalPort } from './fundamental.port.js';
 import type { FinancialsPort } from './financials.port.js';
@@ -176,6 +177,21 @@ export class MockMarketDataAdapter
     // 三态在 dev/test 下退化成两态, 与改动前的布尔逐点等价 (零行为变更)。
     const day = new Date(`${date}T00:00:00Z`).getUTCDay();
     return day >= 1 && day <= 5 ? 'trading' : 'non-trading';
+  }
+
+  /**
+   * 062 T010: mock 日历**自身就是判据** —— 从收盘上界起向前找最近的周一~周五。
+   * 恒不返 `null`（不存在「还没填到」这回事），与改动前 optionsdesk/marketdata 两处
+   * 直查在 dev/test 下逐点等价。
+   */
+  async lastClosedSession(market: string, now: Date): Promise<string | null> {
+    let cursor = new Date(`${lastClosedSessionCutoff(market, now)}T00:00:00Z`);
+    for (let i = 0; i < 7; i++) {
+      const day = cursor.getUTCDay();
+      if (day >= 1 && day <= 5) return cursor.toISOString().slice(0, 10);
+      cursor = new Date(cursor.getTime() - 86_400_000);
+    }
+    return null;
   }
 
   async fetchTradingDates(

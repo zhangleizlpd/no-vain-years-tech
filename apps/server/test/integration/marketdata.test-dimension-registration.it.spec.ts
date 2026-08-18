@@ -37,7 +37,10 @@ const CFG: MarketdataSyncConfig = {
   optionCoverageThreshold: 1,
 };
 
-const calendarStub: TradingCalendarPort = { classify: async () => 'trading' };
+const calendarStub: TradingCalendarPort = {
+  classify: async () => 'trading',
+  lastClosedSession: async () => null,
+};
 
 // 019 T006 SC-S05 配置化门 (US3/FR-S07): 注册一个测试维度 = registerExecutor + 一行
 // sync_dimension seed (IT 内临时行, 不进 seed migration) → tick claim → 派生序组 flow →

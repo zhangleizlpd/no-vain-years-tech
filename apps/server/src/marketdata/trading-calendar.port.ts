@@ -21,4 +21,21 @@ export interface TradingCalendarPort {
    * 不存在通用默认值)。判据本体在 `trading-day.rules.ts` 的 {@link classifyTradingDay}。
    */
   classify(market: string, date: string): Promise<TradingDayStatus>;
+
+  /**
+   * 该市场**最近一场已收盘交易日**（`YYYY-MM-DD`），即数据陈旧度判定的基准（062 T010,
+   * FR-012 / `state_branch` 9）。`null` = **不可判定**，调用方按既有 fail-open 判当期档。
+   *
+   * 🚨 **两种 `null` 蓄意合流成一个值**：日历真的没有更早的行、以及「收盘上界落在覆盖声明
+   * 之外」（= 这一段根本没填全，库里那个最大值不是真的最近一场）。对调用方而言两者是同一件
+   * 事 —— **基准不可信**，而 MUST NOT 拿一个不可信的基准日去判陈旧（那会把「同步停了」悄悄
+   * 判成「数据是新的」，或反过来把正常数据判成陈旧）。
+   *
+   * 🚨 **为什么落在端口而不是各消费方自己查**：它此前有**两份**同款实现（marketdata 的
+   * `get-instrument-bars.usecase.ts` 与 optionsdesk 的 `last-closed-session.ts`），而 062 起
+   * 判据多了「覆盖声明」这一维 —— 两份实现必然漂移，且漂移的表现只是档位悄悄错一档、不报错。
+   *
+   * @param now 绝对时刻（收盘上界按**交易所时区**求，见 `lastClosedSessionCutoff`）。
+   */
+  lastClosedSession(market: string, now: Date): Promise<string | null>;
 }

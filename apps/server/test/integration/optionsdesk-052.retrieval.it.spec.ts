@@ -10,6 +10,7 @@ import {
   type RetrievalOverride,
 } from '../../src/optionsdesk/leg-recall.rules';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 052 检索层 IT。本文件随各 task 增量补齐, **T015 已收口** —— spec 的 24 条 `state_branches`
 // 逐条有 `it()` (逐条交叉核对表在 `specs/052-optionsdesk-retrieval-layering/tasks.md` T015 段)。
@@ -238,7 +239,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
   it('🚨 SC-006 全量: 被意图视角任一条件排除的腿, 100% 可在全腿视角找到 (051 入口的回归防线)', async () => {
     await seedMixedChain();
     // 053 FR-001: 三个视角三次请求 —— 「被排除的腿在全腿视角可达」是**跨请求**的性质。
-    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const usecase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    );
     const all = await usecase.execute(SYMBOL, 'all', NOW);
     const build = await usecase.execute(SYMBOL, 'build', NOW);
     const rent = await usecase.execute(SYMBOL, 'rent', NOW);
@@ -253,11 +258,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 T008 全腿: 深度实值腿仍在候选集内, 但排在**末段** (FR-020: 沉底不砍腿)', async () => {
     await seedMixedChain();
-    const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
-      SYMBOL,
-      'all',
-      NOW,
-    );
+    const view = await new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    ).execute(SYMBOL, 'all', NOW);
     // 它在表里 (`legs` 就是全腿视角那份精排序) —— 只是排最后。
     expect(view.legs.at(-1)?.code).toBe('P-ITM');
     // 🚨 它的年化**高于**对照腿却仍排在后面 —— 沉底不是「按费率排恰好排到了末尾」。
@@ -279,11 +284,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
         lLevelEffective: 'L2',
       },
     });
-    const view = await new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma)).execute(
-      SYMBOL,
-      'all',
-      NOW,
-    );
+    const view = await new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    ).execute(SYMBOL, 'all', NOW);
     // 真常量量级远高于 6 条 ⇒ 不截。字段本身必须在视图上（断的是"接通了"，不是"切了"）。
     expect(RECALL_CANDIDATE_CAP).toBeGreaterThan(6);
     expect(view.candidateCapDropped).toBe(0);
@@ -293,7 +298,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
   it('🚨 T010 真库路径: 系统默认值由服务端解出并下发 —— 依赖 spot 的两项都有值 (FR-011)', async () => {
     await seedMixedChain();
     // 053 FR-005: 条件全景只下发本次视角那一份 ⇒ 收租与全腿各问一次。
-    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const usecase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    );
     const rent = await usecase.execute(SYMBOL, 'rent', NOW);
     const all = await usecase.execute(SYMBOL, 'all', NOW);
     // 成色上界 = min{K ≥ spot} (150) ∧ spot × (1+X) (132.40 × 1.03 = 136.372) 取严。
@@ -308,7 +317,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 T010 真库路径: 用户放宽成色上界 ⇒ 深实值腿进收租, 且计数只出在被收窄的维度 (FR-029)', async () => {
     await seedMixedChain();
-    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const usecase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    );
     const plain = await usecase.execute(SYMBOL, 'rent', NOW);
     expect(plain.legs.map((leg) => leg.code)).not.toContain('P-ITM');
 
@@ -339,7 +352,11 @@ describe('052 检索层 (Testcontainers PG)', () => {
 
   it('🚨 T010: 排名基准 = 当前条件下的召回集 —— 放宽后活跃标随新候选集重算 (FR-026)', async () => {
     await seedMixedChain();
-    const usecase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    const usecase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    );
     const plain = await usecase.execute(SYMBOL, 'rent', NOW);
     const widened = await usecase.execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
@@ -362,7 +379,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
   // 「滤掉了」只说明测试自己没造那几行。
 
   const useCaseOf = (): GetLegsUseCase =>
-    new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma), stubTradingCalendar());
 
   /** 一条种子腿的全部可变量。T015 的四组种子共用下面的 {@link seedLegs}。 */
   interface SeedLeg {

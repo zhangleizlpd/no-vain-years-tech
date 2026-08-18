@@ -3,12 +3,17 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { UpdateAnchorUseCase } from './update-anchor.usecase';
 import type { PrismaService } from '../security/prisma.service';
+import {
+  stubTradingCalendar,
+  type TradingCalendarStub,
+} from '../../test/_support/trading-calendar-stub';
 
 type Fn = ReturnType<typeof vi.fn>;
 
 interface PrismaMock {
   prisma: PrismaService;
-  tradingDayFindFirst: Fn;
+  /** 062 T010: 陈旧度基准改走 `TRADING_CALENDAR_PORT`，不再是 `tradingDay.findFirst`。 */
+  calendar: TradingCalendarStub;
   findUnique: Fn;
   updateMany: Fn;
   findUniqueOrThrow: Fn;
@@ -54,14 +59,13 @@ function buildPrismaMock(): PrismaMock {
   };
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
-  const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
+  const calendar = stubTradingCalendar();
   const prisma = {
-    tradingDay: { findFirst: tradingDayFindFirst },
     anchor: { findUnique, updateMany, findUniqueOrThrow },
     anchorChange: { create: changeCreate },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
   } as unknown as PrismaService;
-  return { prisma, findUnique, updateMany, findUniqueOrThrow, changeCreate, tradingDayFindFirst };
+  return { prisma, findUnique, updateMany, findUniqueOrThrow, changeCreate, calendar };
 }
 
 function writtenData(m: PrismaMock): Record<string, unknown> {
@@ -74,7 +78,7 @@ describe('UpdateAnchorUseCase — 锚不存在', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new UpdateAnchorUseCase(m.prisma);
+    useCase = new UpdateAnchorUseCase(m.prisma, m.calendar);
   });
 
   it('findUnique 无命中 → NotFoundException ANCHOR_NOT_FOUND', async () => {
@@ -99,7 +103,7 @@ describe('UpdateAnchorUseCase — FR-001 confidence 来源门控', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new UpdateAnchorUseCase(m.prisma);
+    useCase = new UpdateAnchorUseCase(m.prisma, m.calendar);
   });
 
   it('confidence_source = model 时改 confidence → 400 ANCHOR_CONFIDENCE_READONLY', async () => {
@@ -135,7 +139,7 @@ describe('UpdateAnchorUseCase — 生效 L 层写入求值', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new UpdateAnchorUseCase(m.prisma);
+    useCase = new UpdateAnchorUseCase(m.prisma, m.calendar);
     m.findUnique.mockResolvedValue(anchorRow());
   });
 
@@ -176,7 +180,7 @@ describe('UpdateAnchorUseCase — 字段 patch 语义与 EC-3', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new UpdateAnchorUseCase(m.prisma);
+    useCase = new UpdateAnchorUseCase(m.prisma, m.calendar);
     m.findUnique.mockResolvedValue(anchorRow());
   });
 
@@ -227,7 +231,7 @@ describe('UpdateAnchorUseCase — 两级链回落接线 (T007)', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new UpdateAnchorUseCase(m.prisma);
+    useCase = new UpdateAnchorUseCase(m.prisma, m.calendar);
   });
 
   it('路径 ③ 手工锚改 confidence → L 层与上限人工值一并落 null, 生效 L 层取新映射档', async () => {
@@ -306,7 +310,7 @@ describe('UpdateAnchorUseCase — 变更痕迹 (FR-031)', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new UpdateAnchorUseCase(m.prisma);
+    useCase = new UpdateAnchorUseCase(m.prisma, m.calendar);
     m.findUnique.mockResolvedValue(
       anchorRow({
         lLevelManual: 'L3',

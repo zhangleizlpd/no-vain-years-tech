@@ -127,6 +127,10 @@ const alwaysTradingCalendar: TradingCalendarPort = {
   async classify(): Promise<TradingDayStatus> {
     return 'trading';
   },
+  // 062 T010: 本文件不验陈旧度基准。
+  async lastClosedSession(): Promise<string | null> {
+    return null;
+  },
 };
 
 describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集口)', () => {

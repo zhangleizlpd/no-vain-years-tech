@@ -56,7 +56,10 @@ describe('016 PR1 sync schema + trading-day gate (Testcontainers PG)', () => {
 
   it('非交易日 → SyncRun=skipped + 下游 vendor 零调用', async () => {
     const vendorWork = vi.fn();
-    const calendar: TradingCalendarPort = { classify: vi.fn(async () => 'non-trading' as const) };
+    const calendar: TradingCalendarPort = {
+      classify: vi.fn(async () => 'non-trading' as const),
+      lastClosedSession: async () => null,
+    };
     const id = await runGated(calendar, vendorWork);
 
     expect(vendorWork).not.toHaveBeenCalled(); // 整管线短路, 不打 vendor
@@ -67,7 +70,10 @@ describe('016 PR1 sync schema + trading-day gate (Testcontainers PG)', () => {
 
   it('交易日 → gate open → 下游执行 + SyncRun=success', async () => {
     const vendorWork = vi.fn();
-    const calendar: TradingCalendarPort = { classify: vi.fn(async () => 'trading' as const) };
+    const calendar: TradingCalendarPort = {
+      classify: vi.fn(async () => 'trading' as const),
+      lastClosedSession: async () => null,
+    };
     const id = await runGated(calendar, vendorWork);
 
     expect(vendorWork).toHaveBeenCalledOnce();

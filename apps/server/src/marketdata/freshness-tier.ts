@@ -23,8 +23,9 @@ export type FreshnessTier = (typeof FRESHNESS_TIERS)[number];
  * @param asOf 数据**自身**的业务日; 无数据 ⇒ `null` ⇒ `UNAVAILABLE` (不编造日期)。
  * @param lastClosedSession 最近一个已收盘交易日; 交易日历查不到 ⇒ `null`。
  *
- * 🚨 **日历查不到 ⇒ fail-open 判 `CURRENT`**, 与 `marketdata/db-trading-calendar.adapter.ts`
- *    近窗零行时 fail-open 同向。宁可漏报一次陈旧, 也不能重演「全体恒显已过时」—— 后者会让
+ * 🚨 **基准不可判定 ⇒ fail-open 判 `CURRENT`**。062 T010 起「不可判定」有两种到达路径, 端口
+ *    (`TradingCalendarPort.lastClosedSession`) 蓄意把它们合流成同一个 `null`: 日历真的没有更早
+ *    的行, 以及**收盘上界落在覆盖声明之外**(那一段根本没填全, 库里的最大值不是真的最近一场)。宁可漏报一次陈旧, 也不能重演「全体恒显已过时」—— 后者会让
  *    这个信号被用户整体忽略, 那时真陈旧也没人看。日历自身是否停更由 `calendar_sync_health`
  *    心跳盯着, 不靠这里兜。
  */

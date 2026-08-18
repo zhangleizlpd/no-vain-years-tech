@@ -33,7 +33,10 @@ const CFG: MarketdataSyncConfig = {
   optionCoverageThreshold: 1,
 };
 
-const calendarOpen: TradingCalendarPort = { classify: async () => 'trading' };
+const calendarOpen: TradingCalendarPort = {
+  classify: async () => 'trading',
+  lastClosedSession: async () => null,
+};
 
 // 017 T016 编排端到端 IT (SC-S04/S05/S07, Testcontainers PG+Redis, mock adapters):
 // tick → D3 flow → worker 消费全链路。周一全 flow 顺序 / 周二 universe 缺席当根照跑

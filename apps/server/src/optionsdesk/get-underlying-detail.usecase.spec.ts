@@ -15,6 +15,10 @@ import {
 } from './get-underlying-detail.usecase';
 import { toUnderlyingDetailResponse } from './optionsdesk.dto';
 import type { PrismaService } from '../security/prisma.service';
+import {
+  stubTradingCalendar,
+  type TradingCalendarStub,
+} from '../../test/_support/trading-calendar-stub';
 
 type Fn = ReturnType<typeof vi.fn>;
 
@@ -65,7 +69,8 @@ const ivRow = (overrides: Record<string, unknown> = {}) => ({
 
 interface PrismaMock {
   prisma: PrismaService;
-  tradingDayFindFirst: Fn;
+  /** 062 T010: 陈旧度基准改走 `TRADING_CALENDAR_PORT`，不再是 `tradingDay.findFirst`。 */
+  calendar: TradingCalendarStub;
   anchorFindUnique: Fn;
   instrumentFindUnique: Fn;
   ivFindFirst: Fn;
@@ -89,14 +94,13 @@ function buildPrismaMock(
   const ivFindFirst = vi.fn().mockResolvedValue(opts.iv === undefined ? ivRow() : opts.iv);
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
-  const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
+  const calendar = stubTradingCalendar();
   const prisma = {
-    tradingDay: { findFirst: tradingDayFindFirst },
     anchor: { findUnique: anchorFindUnique },
     instrument: { findUnique: instrumentFindUnique },
     underlyingIvDaily: { findFirst: ivFindFirst },
   } as unknown as PrismaService;
-  return { prisma, anchorFindUnique, instrumentFindUnique, ivFindFirst, tradingDayFindFirst };
+  return { prisma, anchorFindUnique, instrumentFindUnique, ivFindFirst, calendar };
 }
 
 describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
@@ -105,7 +109,7 @@ describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
   });
 
   it('① 锚在 + IV 在 → 锚派生值全部走 rules 单点口径 + IV 读数带自己的 asOf', async () => {
@@ -134,7 +138,7 @@ describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
 
   it('② 锚在 + IV 从未采到 → missing, 三值 null 且不抛 (区块仍渲染, 禁 0 冒充)', async () => {
     m = buildPrismaMock({ iv: null });
-    useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
 
     const detail = await useCase.execute('us:PEP');
 
@@ -144,7 +148,7 @@ describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
 
   it('②′ 标的未注册进 marketdata → 同样是 missing 而非报错 (跨 ctx 缺行不是故障)', async () => {
     m = buildPrismaMock({ instrument: null });
-    useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
 
     const detail = await useCase.execute('us:PEP');
 
@@ -154,7 +158,7 @@ describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
 
   it('③ 锚在 + IV 窗口不足 (分位为空) → percentile_unavailable, 聚合 IV 与 asOf 仍呈现', async () => {
     m = buildPrismaMock({ iv: ivRow({ ivPercentile: null }) });
-    useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
 
     const detail = await useCase.execute('us:PEP');
 
@@ -166,7 +170,7 @@ describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
 
   it('④ 无锚 → 404 且带机器可读 code (前端据此渲染「尚未建锚」而非报错页, FR-011)', async () => {
     m = buildPrismaMock({ anchor: null });
-    useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
 
     await expect(useCase.execute('us:NOPE')).rejects.toBeInstanceOf(NotFoundException);
     await expect(useCase.execute('us:NOPE')).rejects.toMatchObject({
@@ -179,7 +183,7 @@ describe('GetUnderlyingDetailUseCase — 四态 (FR-011 / FR-014)', () => {
 
   it('非 canonical `market:code` → 折叠成 404 (与「没建锚」不可区分, 无第二套校验面)', async () => {
     m = buildPrismaMock({ anchor: null });
-    useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
     await expect(useCase.execute('PEP')).rejects.toBeInstanceOf(NotFoundException);
   });
 });
@@ -188,7 +192,7 @@ describe('GetUnderlyingDetailUseCase — 跨 ctx 只读直查纪律 (FR-032, Q7-
   it('🚨 跨 ctx 读失败 → 只降级不整体失败 (锚侧照常返回, 形态同 anchor-driven-sync-gate)', async () => {
     const m = buildPrismaMock();
     m.ivFindFirst.mockRejectedValue(new Error('connection reset'));
-    const useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    const useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
 
     const detail = await useCase.execute('us:PEP');
 
@@ -198,7 +202,7 @@ describe('GetUnderlyingDetailUseCase — 跨 ctx 只读直查纪律 (FR-032, Q7-
 
   it('IV 日快照取**最近一期** (date desc 首行) —— 当日未采到不等于没有数据', async () => {
     const m = buildPrismaMock();
-    const useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    const useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
 
     await useCase.execute('us:PEP');
 
@@ -215,7 +219,7 @@ describe('GetUnderlyingDetailUseCase — 跨 ctx 只读直查纪律 (FR-032, Q7-
 
   it('读端零写: 三次调用全是 find*, 无任何 update / upsert / create', async () => {
     const m = buildPrismaMock();
-    const useCase = new GetUnderlyingDetailUseCase(m.prisma);
+    const useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
     await useCase.execute('us:PEP');
     // mock 上只挂了 find* —— 若实现里出现任何写调用会立刻 TypeError
     expect(m.anchorFindUnique).toHaveBeenCalledTimes(1);
@@ -236,7 +240,7 @@ describe('GetUnderlyingDetailUseCase — 跨 ctx 只读直查纪律 (FR-032, Q7-
 describe('toUnderlyingDetailResponse — 契约面禁字段 (FR-013 / FR-034 / FR-035)', () => {
   const detailOf = async (iv?: unknown) => {
     const m = buildPrismaMock(iv === undefined ? {} : { iv });
-    return new GetUnderlyingDetailUseCase(m.prisma).execute('us:PEP');
+    return new GetUnderlyingDetailUseCase(m.prisma, m.calendar).execute('us:PEP');
   };
 
   it('IV 读数字段封闭 —— 不含 iv_rank、不含 T010 的双算自算值', async () => {
@@ -269,9 +273,9 @@ describe('toUnderlyingDetailResponse — 契约面禁字段 (FR-013 / FR-034 / F
   describe('FR-020 新鲜度档 (判据 = 最近一个已收盘交易日)', () => {
     const withSession = async (session: string, ivDate: string) => {
       const m = buildPrismaMock({ iv: ivRow({ date: day(ivDate) }) });
-      m.tradingDayFindFirst.mockResolvedValue({ date: day(session) });
+      m.calendar.setLastClosed(session);
       return toUnderlyingDetailResponse(
-        await new GetUnderlyingDetailUseCase(m.prisma).execute('us:PEP'),
+        await new GetUnderlyingDetailUseCase(m.prisma, m.calendar).execute('us:PEP'),
       );
     };
 

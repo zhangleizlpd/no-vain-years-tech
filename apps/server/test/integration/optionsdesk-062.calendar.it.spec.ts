@@ -17,6 +17,12 @@ import {
 } from '../../src/marketdata/market-state.port';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { CreateAnchorUseCase } from '../../src/optionsdesk/create-anchor.usecase';
+import { ListAnchorsUseCase } from '../../src/optionsdesk/list-anchors.usecase';
+import { freshnessTier } from '../../src/marketdata/freshness-tier';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../../src/marketdata/trading-calendar.port';
 import {
   SyncAnchorIntradayUseCase,
   type MarketIntradayOutcome,
@@ -96,6 +102,7 @@ describe('062 T008 optionsdesk 盘中交易日闸三态 (Testcontainers PG + Red
   let prisma: PrismaService;
   let syncIntraday: SyncAnchorIntradayUseCase;
   let createAnchor: CreateAnchorUseCase;
+  let listAnchors: ListAnchorsUseCase;
 
   const marketStatePort: MarketStateFake = {
     sessions: [],
@@ -145,6 +152,7 @@ describe('062 T008 optionsdesk 盘中交易日闸三态 (Testcontainers PG + Red
     prisma = moduleRef.get(PrismaService);
     syncIntraday = moduleRef.get(SyncAnchorIntradayUseCase);
     createAnchor = moduleRef.get(CreateAnchorUseCase);
+    listAnchors = moduleRef.get(ListAnchorsUseCase);
   }, 180_000);
 
   afterAll(async () => {
@@ -299,5 +307,58 @@ describe('062 T008 optionsdesk 盘中交易日闸三态 (Testcontainers PG + Red
 
     expect(marketOf(report, 'us')).toMatchObject({ status: 'collected', calendar: 'unknown' });
     expect(realtimeQuotePort.calls).toBe(1);
+  });
+
+  // ── T010 陈旧度基准收编端口（state_branch 9 · FR-012 · FR-019） ──────────────
+
+  /**
+   * 062 T010 —— `optionsdesk` 的「最近一场已收盘交易日」由 `PrismaService` 直查改注入
+   * `TRADING_CALENDAR_PORT`（构造器参数上方挂 `CROSS-CONTEXT-SYNC`）。
+   *
+   * 🚨 判据多了**一维**：收盘上界落在覆盖声明之外时，库里那个「≤ 上界的最大交易日」不是真的
+   * 最近一场（那一段根本没填全）⇒ 端口返 `null` ⇒ 既有 `freshnessTier` fail-open 判当期档。
+   * 改造前这里会原样交回那个过期的最大值，把「数据其实是新的」判成陈旧（或反之），**不报错**。
+   */
+  describe('T010 陈旧度基准（lastClosedSession）', () => {
+    /** ET 2026-08-12 12:00 尚未收盘 ⇒ 上界 = 前一日历日 08-11。 */
+    const CUTOFF_DAY = '2026-08-11';
+
+    it('④ 基准日在覆盖声明内 → 返该交易日, 档位判定与改前逐一相同 (零回归)', async () => {
+      await seedTradingDay('us', CUTOFF_DAY);
+      await seedCoverage('us', '2026-01-01', '2026-12-31');
+
+      const calendar = moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT);
+      expect(await calendar.lastClosedSession('us', NOW)).toBe(CUTOFF_DAY);
+
+      // 端到端: 锚视图上的基准与端口同值（消费 use case 真的走了注入的端口）。
+      await seedAnchor('us:AOS');
+      const anchor = (await listAnchors.execute())[0];
+      expect(anchor.lastClosedSession).toBe(CUTOFF_DAY);
+      // 基准可信 ⇒ 档位真的分得出来（锚 asof 停在 06-30, 远早于基准日）。
+      expect(freshnessTier('2026-06-30', anchor.lastClosedSession)).toBe('STALE');
+    });
+
+    it('⑤ 基准日落在覆盖声明之外 → 返 null ⇒ fail-open 判当期档 (state_branch 9)', async () => {
+      await seedTradingDay('us', CUTOFF_DAY);
+      // 声明只到 08-05 ⇒ 上界 08-11 那一段根本没填全, 库里的 08-11 不可信。
+      await seedCoverage('us', '2026-01-01', '2026-08-05');
+
+      const calendar = moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT);
+      // 🚨 MUST NOT 交回 CUTOFF_DAY —— 拿一个不可信的基准日去判陈旧, 档位会悄悄错一档。
+      expect(await calendar.lastClosedSession('us', NOW)).toBeNull();
+
+      await seedAnchor('us:AOS');
+      const anchor = (await listAnchors.execute())[0];
+      expect(anchor.lastClosedSession).toBeNull();
+      // 同一份 asof, 基准不可信 ⇒ fail-open 当期档（与上一条对照, 证明这不是平凡绿）。
+      expect(freshnessTier('2026-06-30', anchor.lastClosedSession)).toBe('CURRENT');
+    });
+
+    it('⑤ 反例: 覆盖声明整体缺失 → 同样返 null (首次上线的形态)', async () => {
+      await seedTradingDay('us', CUTOFF_DAY);
+
+      const calendar = moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT);
+      expect(await calendar.lastClosedSession('us', NOW)).toBeNull();
+    });
   });
 });
