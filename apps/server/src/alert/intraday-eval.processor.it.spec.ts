@@ -73,10 +73,28 @@ describe('intraday-eval processor — 交易时段 gate + 熔断 (024 T008)', ()
     return { uc, calls: () => n };
   }
 
-  /** prisma 替身: trading_day count (交易日=1, 节假日=0)。 */
-  function prismaStub(tradingDay: boolean): PrismaService {
+  /**
+   * prisma 替身: `trading_day` 有无该日的行 + `calendar_coverage` 覆盖声明 (两个事实)。
+   *
+   * ⚠️ **062 T007 起「无行」不再等于「非交易日」** —— 想断言 `skipped-holiday` 就必须把
+   * 「这一段已经填过了」显式说出来 (默认覆盖含 `IN_SESSION` 当日); 不说 ⇒ 判据给 `unknown`
+   * ⇒ 闸放行照常求值, 而那正是本 feature 修好的行为, 不是回归。
+   */
+  function prismaStub(
+    tradingDay: boolean,
+    coverage: { from: string; to: string } | null = { from: '2026-05-01', to: '2026-06-30' },
+  ): PrismaService {
     return {
       tradingDay: { count: async () => (tradingDay ? 1 : 0) },
+      calendarCoverage: {
+        findUnique: async () =>
+          coverage === null
+            ? null
+            : {
+                coveredFrom: new Date(`${coverage.from}T00:00:00.000Z`),
+                coveredTo: new Date(`${coverage.to}T00:00:00.000Z`),
+              },
+      },
     } as unknown as PrismaService;
   }
 

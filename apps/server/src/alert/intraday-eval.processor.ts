@@ -7,6 +7,9 @@ import { PrismaService } from '../security/prisma.service.js';
 // 了 cn)。ADR-0053 的细分边 `marketdata-rules` 放行 alert → `src/marketdata/*.rules.ts` 的
 // 编译期复用, 故这里是 import 而不是各持一份。
 import { isWithinTradingSession, marketNow } from '../marketdata/market-session.rules.js';
+// 交易日三态判据同样落在 marketdata 的 `*.rules.ts` (062 T001), 走 ADR-0053 那条同一细分边。
+// 🚫 判据本体 MUST NOT 复制到本 ctx: 两处各写一份必漂移, 而漂移的形态恰是「差一天」这类不报错的静默失真。
+import { classifyTradingDay, type CalendarCoverageRange } from '../marketdata/trading-day.rules.js';
 import {
   EvaluateIntradayAlertsUseCase,
   type IntradayEvalSummary,
@@ -41,12 +44,21 @@ export const INTRADAY_CIRCUIT_KEY = 'alert:intraday:circuit';
  */
 export const INTRADAY_MARKET = 'cn';
 
+/**
+ * 本拍**为什么**过了交易日闸 (062 T007, FR-013)。
+ *
+ * 🚨 `confirmed` 与 `unknown` **必须可分辨**: 「今天跑是因为确认了是交易日」与「今天跑是因为
+ * 还不知道」若在 bullmq `returnvalue` 里长得一样, 下次同类故障照样查不出 —— 等于没修。
+ * 2026-08-18 那次 43/43 静默跳过之所以拖了几个月, 正是因为「跳过」与「跑了」之外没有第三种痕。
+ */
+export type IntradayCalendarBasis = 'confirmed' | 'unknown';
+
 /** 一 tick 处置结果 (bullmq returnvalue 供排障 + IT 断言点)。 */
 export type IntradayTickOutcome =
   | { status: 'skipped-session' }
   | { status: 'skipped-holiday' }
-  | { status: 'source-failed' }
-  | { status: 'evaluated'; summary: IntradayEvalSummary };
+  | { status: 'source-failed'; calendar: IntradayCalendarBasis }
+  | { status: 'evaluated'; calendar: IntradayCalendarBasis; summary: IntradayEvalSummary };
 
 /**
  * 024 T008 — 盘中 tick 处理器 (US1/US3; `alert-eval` queue `intraday-cron` payload 由
@@ -54,7 +66,11 @@ export type IntradayTickOutcome =
  *
  * 1. **交易时段 gate** (FR-002, SC-003): 起手判 `INTRADAY_MARKET` 的连续竞价时段 (纯时窗,
  *    按该市场当地时区) → 非时段直接 return,
- *    `0` 源调用; 在时段再 CROSS-CONTEXT-READ `trading_day` 判当日是否交易日 → 节假日 return。
+ *    `0` 源调用; 在时段再 CROSS-CONTEXT-READ `trading_day` + `calendar_coverage` **两个事实**,
+ *    喂 marketdata 的三态判据 (062 T007, FR-012): `non-trading` → return; `trading` / `unknown`
+ *    **都求值**, 后者额外留痕。
+ *    🚨 **两个闸是独立的**: 时段闸答「现在是不是连续竞价」, 日历闸答「今天是不是交易日」——
+ *    量纲不同, 谁也替不了谁。
  * 2. **委托求值**: 交易日内调 `EvaluateIntradayAlertsUseCase` (源全断 → 抛)。
  * 3. **熔断** (FR-006, plan D4): 求值成功 → failstreak reset + circuit close (曾 open 则 warn 回升);
  *    抛错 → failstreak++; 累计 ≥ `CIRCUIT_THRESHOLD` → circuit open + warn 降级 EOD-only。
@@ -79,21 +95,50 @@ export class IntradayEvalProcessor {
     if (!isWithinTradingSession(INTRADAY_MARKET, minutesOfDay)) {
       return { status: 'skipped-session' }; // 午休/盘前/盘后: 0 源调用 (SC-003)
     }
-    // CROSS-CONTEXT-READ: 盘中 gate 读 marketdata.trading_day 判当日是否交易日 (只读, Q7-B per ADR-0052)
+    // CROSS-CONTEXT-READ: 盘中 gate 读 marketdata.trading_day 判当日有无交易日记录 (只读, Q7-B per ADR-0052)
     const tradingDays = await this.prisma.tradingDay.count({
       where: { market: INTRADAY_MARKET, date: new Date(dateOnly) },
     });
-    if (tradingDays === 0) {
-      return { status: 'skipped-holiday' }; // 节假日/周末: 0 源调用
+    // CROSS-CONTEXT-READ: 盘中 gate 读 marketdata.calendar_coverage 取该市场日历覆盖声明 (只读, Q7-B per ADR-0052)
+    const coverageRow = await this.prisma.calendarCoverage.findUnique({
+      where: { market: INTRADAY_MARKET },
+    });
+    const coverage: CalendarCoverageRange | null =
+      coverageRow === null
+        ? null
+        : {
+            from: coverageRow.coveredFrom.toISOString().slice(0, 10),
+            to: coverageRow.coveredTo.toISOString().slice(0, 10),
+          };
+    // 🚨 判 `=== 'non-trading'` 而**不是** `!== 'trading'` (Impl Guardrail 1 的同一枚硬币):
+    // 「还没填到这儿」(unknown) 必须落到放行侧 —— 那正是 2026-08-18 那 43/43 静默跳过的病根。
+    const status = classifyTradingDay({
+      hasExactRow: tradingDays > 0,
+      coverage,
+      date: dateOnly,
+    });
+    if (status === 'non-trading') {
+      return { status: 'skipped-holiday' }; // 已填过这一段、当日确实非交易日: 0 源调用
+    }
+
+    // FR-012: 盘中采集闸对「未知」的处置 = **继续跑** —— 另有独立时段闸兜着, 且真节假日多跑
+    // 一轮的代价 (一次外呼、零触发) 远小于永久静默。FR-013: 留痕落在 outcome 上, 不只在日志里
+    // (日志会滚掉; `returnvalue` 是 T013 生产取证的唯一硬证据)。
+    const calendar: IntradayCalendarBasis = status === 'trading' ? 'confirmed' : 'unknown';
+    if (calendar === 'unknown') {
+      this.logger.warn(
+        `交易日历视野未覆盖 ${INTRADAY_MARKET} ${dateOnly} — 本拍按「未知」放行照常求值 ` +
+          `(coverage=${coverage === null ? '无声明' : `${coverage.from}..${coverage.to}`})`,
+      );
     }
 
     try {
       const summary = await this.evaluateIntraday.execute(dateOnly);
       await this.onSourceSuccess();
-      return { status: 'evaluated', summary };
+      return { status: 'evaluated', calendar, summary };
     } catch (e) {
       await this.onSourceFailure(e);
-      return { status: 'source-failed' };
+      return { status: 'source-failed', calendar };
     }
   }
 
