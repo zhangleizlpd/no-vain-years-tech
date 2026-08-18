@@ -48,3 +48,28 @@ export class MarketRoutedCalendarSource implements TradingCalendarSource {
     return route.fetchTradingDates(market, from, to);
   }
 }
+
+/**
+ * **前瞻路由**工厂 (062 T003, plan §D4)。同一个 {@link MarketRoutedCalendarSource} 类的
+ * **第二个实例** —— 差别只在 routes map, 故 fail-closed / 原样透传 / per-market 隔离三条语义
+ * 全部原样继承, **零新抽象**。
+ *
+ * 与 `TRADING_CALENDAR_SOURCE` (历史段) 的分工: 历史段问的是 `[今天-30, 今天]` (**永远是过去**),
+ * 走活源链; 前瞻段问的是 `[明天, 当年 12-31]` (**永远是未来**), 只能走**权威年历**。两条路径
+ * 互为交叉校验 (FR-009), 且一段失败 MUST NOT 让另一段的覆盖声明失真。
+ *
+ * 🚨 **腾讯 MUST NOT 进本路由** (Impl Guardrail 5, plan §D4): 它是「某指数当日有 bar ⟺ 当日
+ * 开市」的**反推**源 —— 未来的 bar 不存在, 结构上答不了。把它排进链首只会让 cn/hk 每天各多
+ * 一条恒定的假失败 WARN, 044 已论证过这种告警疲劳的代价 (且会把「链首 = 该市场主源」这个
+ * 探针读法搅浑)。
+ *
+ * 🚨 **us 只有富途一层, cn/hk 只有静态一层 —— 蓄意无兜底**: 前瞻段整段失败的后果是「视野不
+ * 前进」, 由 T011 的视野探针接住; 而**给前瞻段配一个答不了未来的兜底**才是真正的毒饵 (它会
+ * 让缺失日被当成非交易日落库)。静态层在年末整段 `throw` (其 Guardrail 7) 同理是设计不是 bug。
+ */
+export function createForwardCalendarSource(
+  futu: TradingCalendarSource,
+  staticCalendar: TradingCalendarSource,
+): MarketRoutedCalendarSource {
+  return new MarketRoutedCalendarSource({ cn: staticCalendar, hk: staticCalendar, us: futu });
+}

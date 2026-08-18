@@ -50,7 +50,10 @@ import { FutuEodBarAdapter } from './futu-eod-bar.adapter.js';
 import { FutuUnderlyingIvAdapter } from './futu-underlying-iv.adapter.js';
 import { CboeUsIndexAdapter } from './cboe-us-index.adapter.js';
 import { MarketRoutedEodBarAdapter } from './market-routed-eod-bar.adapter.js';
-import { MarketRoutedCalendarSource } from './market-routed-calendar-source.adapter.js';
+import {
+  createForwardCalendarSource,
+  MarketRoutedCalendarSource,
+} from './market-routed-calendar-source.adapter.js';
 import { LixingerUniverseAdapter } from './lixinger-universe.adapter.js';
 import { LocalInstrumentSearchAdapter } from './local-instrument-search.adapter.js';
 import { FallbackChainAdapter } from './fallback-chain.adapter.js';
@@ -89,6 +92,7 @@ import {
 import { COMPANY_PROFILE_PORT, type CompanyProfilePort } from './company-profile.port.js';
 import { TRADING_CALENDAR_PORT } from './trading-calendar.port.js';
 import {
+  TRADING_CALENDAR_FORWARD_SOURCE,
   TRADING_CALENDAR_SOURCE,
   type TradingCalendarSource,
 } from './trading-calendar-source.port.js';
@@ -658,6 +662,26 @@ function collectionPort<T extends object>(
         ]);
         return new MarketRoutedCalendarSource({ cn: cnHkChain, hk: cnHkChain, us: usChain });
       },
+    }),
+
+    // ── 交易日历**前瞻**源 (062 T003, plan §D4): 同一个 MarketRoutedCalendarSource 类的第二个
+    //    实例, 只是 routes map 不同 —— `us → 富途` / `cn,hk → 静态年历`。**零新抽象**。
+    //
+    //    上面那个 token 服务的是历史段 `[今天-30, 今天]` (永远是过去), 本 token 服务的是前瞻段
+    //    `[明天, 当年 12-31]` (永远是未来)。分开的理由不是洁癖:
+    //    🚨 **腾讯 MUST NOT 进本路由** —— 它的判据是「某指数当日有 bar ⟺ 当日开市」的**反推**,
+    //       未来的 bar 不存在, 结构上答不了; 排进链首只会让 cn/hk 每天各多一条恒定假失败 WARN
+    //       (044 论证过的告警疲劳), 并搅浑探针「链首 = 该市场主源」的读法。
+    //    🚨 **两条链各只有一层, 蓄意无兜底** —— 前瞻段整段失败的后果是「视野不前进」, 由视野
+    //       探针接住; 而给前瞻段配一个答不了未来的兜底才是毒饵 (缺失日会被当成非交易日落库)。
+    //       静态层在年末因 Guardrail 7 整段 throw 同理是**设计**: 视野停在当年末 → 年末豁免接住。──
+    collectionPort<TradingCalendarSource>(TRADING_CALENDAR_FORWARD_SOURCE, {
+      inject: [FUTU_HTTP_CLIENT],
+      live: (cfg, futuHttp: VendorHttpClient) =>
+        createForwardCalendarSource(
+          new FutuCalendarAdapter(futuHttp, cfg.futuShimUrl, cfg.futuShimToken),
+          new StaticCalendarAdapter(),
+        ),
     }),
 
     // ── universe 枚举端口 (016 T007 + ADR-0047 Amendment 2026-06-03 + sellput-viz Phase 1 #4):

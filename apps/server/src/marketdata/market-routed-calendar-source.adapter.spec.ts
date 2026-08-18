@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { MarketRoutedCalendarSource } from './market-routed-calendar-source.adapter.js';
+import {
+  createForwardCalendarSource,
+  MarketRoutedCalendarSource,
+} from './market-routed-calendar-source.adapter.js';
 import type { TradingCalendarSource } from './trading-calendar-source.port.js';
 
 /**
@@ -64,6 +67,62 @@ describe('MarketRoutedCalendarSource', () => {
     const routed = new MarketRoutedCalendarSource({ us: boom });
     await expect(routed.fetchTradingDates('us', '2026-07-01', '2026-07-31')).rejects.toThrow(
       /全链耗尽/,
+    );
+  });
+});
+
+/**
+ * **前瞻路由**单测 (062 T003, `state_branch` 12, plan §D4)。与上面那组是同一个类的两个实例
+ * —— 差别只在 routes map, 故断言面也只需盯住「谁被路由到哪条源」这一件事。
+ *
+ * 🚨 **腾讯 MUST NOT 出现在前瞻路由里** (Impl Guardrail 5): 它是「某指数当日有 bar ⟺ 当日
+ * 开市」的**反推**源, 结构上答不了未来与当天。放进链首只会让 cn/hk 每天各多一条恒定的假失败
+ * WARN —— 044 已论证过这种告警疲劳的代价。故前瞻路由只有两条: `us → 富途` / `cn,hk → 静态`。
+ */
+describe('createForwardCalendarSource (062 T003 — 前瞻路由)', () => {
+  it('cn → 静态年历源 (腾讯不在链上)', async () => {
+    const futu = makeSource('futu');
+    const staticCal = makeSource('static');
+    const forward = createForwardCalendarSource(futu, staticCal);
+
+    expect(await forward.fetchTradingDates('cn', '2026-08-19', '2026-12-31')).toEqual({
+      dates: ['2026-08-19'],
+      servedBy: 'static',
+    });
+    expect(staticCal.calls).toEqual(['cn 2026-08-19..2026-12-31']);
+    expect(futu.calls).toHaveLength(0);
+  });
+
+  it('hk → 静态年历源 (与 cn 共用同一实例)', async () => {
+    const futu = makeSource('futu');
+    const staticCal = makeSource('static');
+    const forward = createForwardCalendarSource(futu, staticCal);
+
+    expect(await forward.fetchTradingDates('hk', '2026-08-19', '2026-12-31')).toEqual({
+      dates: ['2026-08-19'],
+      servedBy: 'static',
+    });
+    expect(staticCal.calls).toEqual(['hk 2026-08-19..2026-12-31']);
+    expect(futu.calls).toHaveLength(0);
+  });
+
+  it('us → 富途源 (静态表蓄意不覆盖 us, 见 static adapter 绊线)', async () => {
+    const futu = makeSource('futu');
+    const staticCal = makeSource('static');
+    const forward = createForwardCalendarSource(futu, staticCal);
+
+    expect(await forward.fetchTradingDates('us', '2026-08-19', '2026-12-31')).toEqual({
+      dates: ['2026-08-19'],
+      servedBy: 'futu',
+    });
+    expect(futu.calls).toEqual(['us 2026-08-19..2026-12-31']);
+    expect(staticCal.calls).toHaveLength(0);
+  });
+
+  it('未登记市场 → throw 且消息里列出已登记市场 (fail-closed, state_branch 12)', async () => {
+    const forward = createForwardCalendarSource(makeSource('futu'), makeSource('static'));
+    await expect(forward.fetchTradingDates('jp', '2026-08-19', '2026-12-31')).rejects.toThrow(
+      /未登记日历源路由.*cn\/hk\/us/s,
     );
   });
 });

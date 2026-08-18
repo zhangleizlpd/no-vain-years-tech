@@ -73,10 +73,29 @@ export class TradingCalendarSyncService {
    * 复杂度 O(市场数 × 区间交易日数)。
    */
   async syncRange(markets: string[], from: string, to: string): Promise<CalendarSyncResult[]> {
+    return this.syncRangeWith(this.source, markets, from, to);
+  }
+
+  /**
+   * `syncRange` 的**源参数化**形态 (062 T003, plan §D4)。同一段填充逻辑要被两个源各跑一遍
+   * —— 历史段走 `TRADING_CALENDAR_SOURCE` (活源链, 问过去), 前瞻段走
+   * `TRADING_CALENDAR_FORWARD_SOURCE` (权威年历, 问未来) —— 而 per-market 隔离 / 心跳留痕 /
+   * 幂等落库三条语义两段完全一致, 故抽参数而**不是**复制一份。
+   *
+   * ⚠️ 心跳是 **per-market 一行**, 两段共用: 后跑的那段会覆盖同市场的心跳。这是刻意的 ——
+   * 心跳答的是「填充这件事还活着吗」(liveness), 分段的成败区分由**覆盖声明**承担 (062 T004),
+   * 别为了分段再去把心跳表按段拆列。
+   */
+  async syncRangeWith(
+    source: TradingCalendarSource,
+    markets: string[],
+    from: string,
+    to: string,
+  ): Promise<CalendarSyncResult[]> {
     const results: CalendarSyncResult[] = [];
     for (const market of markets) {
       try {
-        const { dates, servedBy } = await this.source.fetchTradingDates(market, from, to);
+        const { dates, servedBy } = await source.fetchTradingDates(market, from, to);
         const { count } = await this.prisma.tradingDay.createMany({
           data: dates.map((d) => ({ market, date: new Date(`${d}T00:00:00Z`) })),
           skipDuplicates: true,
