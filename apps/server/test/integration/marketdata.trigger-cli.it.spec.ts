@@ -22,6 +22,15 @@ import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 
 const NOW = new Date('2026-06-03T12:00:00Z'); // 周三 (Asia/Shanghai 交易日)
 
+/**
+ * 夜间轮时刻: 周四 06:30 Asia/Shanghai = 周三 18:30 ET —— **us 已收盘**。
+ *
+ * 🚨 凡是把 `option_daily_snapshot` 一并入队的用例必须用它, 不能用文件级 `NOW`(ET 08:00 盘前):
+ * 手动补采时点闸会拒绝入队 (2026-08-17 prod 实撞, 见 manual-sync-session-guard.ts)。
+ * 「盘前跑全维度」在生产里本就是一条不该成立的命令 —— 那正是本闸要拦的东西。
+ */
+const NOW_AFTER_US_CLOSE = new Date('2026-06-03T22:30:00Z');
+
 const CFG: MarketdataSyncConfig = {
   backfillDefaultHistoryDays: 365,
   requeueDelayMs: 1_800_000,
@@ -174,7 +183,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       const code = await executeTrigger(
         buildDeps(queue, events),
         { dimension: 'universe', cascade: true },
-        NOW,
+        NOW_AFTER_US_CLOSE,
       );
       expect(code).toBe(0);
       // 闭包 = universe + 全 26 下游 (seed 28 边传递闭包, 含 039 5 + 040 2 + 041 4 + 042 3 + 043 2 港股维度
@@ -352,6 +361,34 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       errorSpy.mockRestore();
       await events.close();
       await queue.onModuleDestroy();
+    }
+  });
+
+  /**
+   * 时点闸的**接线**断言 (2026-08-17 prod 实撞)。纯函数判据在
+   * `manual-sync-session-guard.spec.ts` 里逐格钉过了; 这里只钉一件事: **CLI 真的接上了它**,
+   * 而且拦在**入队之前** —— 入队之后再拦, 错行已经有一半机会落库。
+   */
+  it('🚨 盘前跑 option_daily_snapshot ⇒ 拒绝入队, 队列零 job (2026-08-17 事故)', async () => {
+    const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
+    const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
+    await events.waitUntilReady();
+    try {
+      // NOW = ET 08:00, 距 16:00 收盘还有 8 小时 —— 与事故时刻同形。
+      await expect(
+        executeTrigger(
+          buildDeps(queue, events),
+          { dimension: 'option_daily_snapshot', cascade: false },
+          NOW,
+        ),
+      ).rejects.toThrow(/尚未收盘/);
+
+      // 判据不是"抛了就行": 一个 job 都不许进队列, 否则 worker 那侧照样会跑。
+      expect(await queue.queue.getJobCountByTypes('waiting', 'active', 'delayed')).toBe(0);
+      expect(await prisma.syncRun.count()).toBe(0);
+    } finally {
+      await events.close();
+      await queue.queue.close();
     }
   });
 });
