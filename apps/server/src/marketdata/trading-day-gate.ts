@@ -150,6 +150,33 @@ export function lastClosedSessionCutoff(market: string, now: Date): string {
   return previousCalendarDay(date);
 }
 
+/**
+ * `sessionDate` 那一场**收盘了吗** —— 「此刻能不能以收盘口径 (`source='eod'`) 往这一天落库」。
+ *
+ * 算式就是 {@link lastClosedSessionCutoff} 的一次比较 (`YYYY-MM-DD` 字典序 = 时序)。单独起名
+ * 是因为**它是一条前置条件而不是一个日期**: 调用点要问的是「现在能写这一天吗」, 不是「最近收了
+ * 哪一天」。同一个算式、两种语义, 混用会让调用点读起来像在取日期。
+ *
+ * 🚨 **为什么需要它 (2026-08-17 prod 实撞)**: 采集维度的业务日走 {@link marketDateFor} ——
+ * 市场时区的**日历日**, 里面不含「这一场收没收」。三条定时入口 (夜间轮 06:30 / 当日重试 08:00 /
+ * 盘前兜底 18:00, 均 Asia/Shanghai) 的正确性**全寄存在 cron 时刻里, 代码从未断言过**; 而 CLI
+ * (`marketdata-trigger` / `marketdata-backfill`) 是第四个入口, 时刻由敲命令的人决定。开盘前跑
+ * `option_daily_snapshot` ⇒ 行盖当日日戳、装的却是上一场的价; 又因该表落库是
+ * `createMany(skipDuplicates)` (键 `(contract_id, session_date, source)`) ⇒ **当晚真收盘那轮
+ * 被静默挡掉**, 而完整性探针只核逐合约覆盖率 (行在 = 覆盖满) **照样绿**。
+ * ⇒ 把那条隐式前提变成一句显式断言。
+ *
+ * 🚫 **MUST NOT 拿它当「是不是交易日」用** —— 它只回答「过没过收盘时刻」: 周六 ET 18:30 判周六
+ * 同样返 `true`, 而周六根本没有 session。交易日判定归 `trading_day` / {@link isTradingDayGateOpen},
+ * 两件事分开。本函数也**刻意不碰日历** —— 那张表停摆过 (044), 让它参与判断等于把「日历坏了」
+ * 升级成「连补采都做不了」。
+ *
+ * 复杂度 O(1)。
+ */
+export function isSessionClosed(market: string, sessionDate: string, now: Date): boolean {
+  return sessionDate <= lastClosedSessionCutoff(market, now);
+}
+
 /** `YYYY-MM-DD` 减一个**日历日** (纯字符串日期运算, 与任何时区无关)。 */
 function previousCalendarDay(date: string): string {
   const t = Date.parse(`${date}T00:00:00Z`) - 24 * 60 * 60 * 1000;

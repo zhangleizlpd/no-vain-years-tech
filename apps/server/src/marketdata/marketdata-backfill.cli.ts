@@ -21,6 +21,7 @@ import {
   deriveExecutionOrder,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
+import { assertClosedSessionForManualSync } from './manual-sync-session-guard.js';
 import { shanghaiToday } from './trading-day-gate.js';
 
 /**
@@ -138,13 +139,20 @@ export async function executeBackfill(
   const keys = args.dimension ? [args.dimension] : [...DIMENSION_KEYS];
   const rows = await deps.prisma.syncDimension.findMany({
     where: { dimensionKey: { in: keys } },
-    select: { dimensionKey: true, retryMax: true },
+    select: { dimensionKey: true, retryMax: true, marketScope: true },
   });
   const retryByKey = new Map(rows.map((r) => [r.dimensionKey, r.retryMax]));
   const missing = keys.filter((k) => !retryByKey.has(k));
   if (missing.length > 0) {
     throw new Error(`sync_dimension 缺行: ${missing.join(',')} (seed 残缺或维度未登记)`);
   }
+
+  // 🚨 时点闸 (2026-08-17 prod 实撞), 排在入队之前。理由与维度集见
+  // manual-sync-session-guard.ts 的文件头。
+  // 📌 **backfill 模式同样受约束**: `option_daily_snapshot` 的采集路径**无 mode 分支** ——
+  // backfill 下落的仍是 `source='eod'` 的**当日**行 (vendor 不提供历史交易日的期权快照),
+  // 所以「回填」这个词在这个维度上不构成豁免理由。
+  assertClosedSessionForManualSync(rows, now);
 
   const payload = (key: DimensionKey) => ({
     dimensionKey: key,

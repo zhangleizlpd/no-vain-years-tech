@@ -174,7 +174,11 @@ export class AnchorColdStartUseCase {
     //
     // ① `isSessionUnderway`「该场进行中」(**含午休**) MUST NOT 换成 `isWithinTradingSession`
     //    —— 后者午休返 false ⇒ 放行, 而此刻 D4 算出的目标日是**上一个交易日** ⇒ 把午休盘口
-    //    贴上「上一场收盘」的标签写进库。今天潜伏 (us 无午休), 接 hk 期权即显形 (FR-011)。
+    //    贴上「上一场收盘」的标签写进库 (FR-011)。
+    //    📌 **2026-08-18 起这条差异在本片够不到任何市场**: hk 已合并成单段登记 (午休算场内),
+    //    us 真的无午休, 而 cn 不在 `COLD_START_CAPABILITY` 里 ⇒ 两谓词在能走到这里的市场上
+    //    逐点等价。仍然用 `isSessionUnderway` 不是形式主义: 哪天给一个有午休的市场开通期权
+    //    采集, 用错的那个当场就是永久缺口, 而它**不报错**。
     // ② `todayIsTradingDay` 这一格是 T010 铺时点用例时补上的 (impl 期修正, 2026-08-17):
     //    `isSessionUnderway` 是**纯时钟**谓词, 不看星期也不看日历 ⇒ 周六 ET 12:00 它照样返
     //    true。少了这一格, **北京周六 21:30 – 周日 04:00 建的锚会落 `intraday_skipped`**,

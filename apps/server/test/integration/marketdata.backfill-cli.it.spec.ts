@@ -21,6 +21,15 @@ import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 
 const NOW = new Date('2026-06-03T12:00:00Z'); // 周三
 
+/**
+ * 夜间轮时刻: 周四 06:30 Asia/Shanghai = 周三 18:30 ET —— **us 已收盘**。
+ *
+ * 🚨 凡是把 `option_daily_snapshot` 一并入队的用例必须用它, 不能用文件级 `NOW`(ET 08:00 盘前):
+ * 手动补采时点闸会拒绝入队 (2026-08-17 prod 实撞, 见 manual-sync-session-guard.ts)。
+ * 「盘前跑全维度」在生产里本就是一条不该成立的命令 —— 那正是本闸要拦的东西。
+ */
+const NOW_AFTER_US_CLOSE = new Date('2026-06-03T22:30:00Z');
+
 const CFG: MarketdataSyncConfig = {
   backfillDefaultHistoryDays: 365,
   requeueDelayMs: 1_800_000,
@@ -229,7 +238,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
       const code = await executeBackfill(
         buildDeps(queue, events),
         { dryRun: false, historyDepth: 30, markets: ['cn'] },
-        NOW,
+        NOW_AFTER_US_CLOSE,
       );
       expect(code).toBe(0);
       expect(await prisma.instrument.count()).toBe(3); // universe 灌入 (旧语义保持)

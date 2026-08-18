@@ -17,6 +17,7 @@ import {
   deriveExecutionOrder,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
+import { assertClosedSessionForManualSync } from './manual-sync-session-guard.js';
 import { shanghaiToday } from './trading-day-gate.js';
 import type { SyncRunStats } from './sync-run.recorder.js';
 
@@ -168,13 +169,18 @@ export async function executeTrigger(
   // retryMax 从真相层载 (attempts 注入语义与 tick 同源); 缺行 = seed 残缺, fail-fast。
   const rows = await deps.prisma.syncDimension.findMany({
     where: { dimensionKey: { in: keys } },
-    select: { dimensionKey: true, retryMax: true },
+    select: { dimensionKey: true, retryMax: true, marketScope: true },
   });
   const retryByKey = new Map(rows.map((r) => [r.dimensionKey, r.retryMax]));
   const missing = keys.filter((k) => !retryByKey.has(k));
   if (missing.length > 0) {
     throw new Error(`sync_dimension 缺行: ${missing.join(',')} (seed 残缺或维度未登记)`);
   }
+
+  // 🚨 时点闸 (2026-08-17 prod 实撞): 收盘口径的维度必须在该市场收盘后跑。**排在入队之前** ——
+  // 入队之后再拦, 错行已经有一半机会落库了; 而这条命令的错误形态恰恰是「跑完了、还成功了」。
+  // 判据与采集本体同源 (同一个 marketDateFor), 理由见 manual-sync-session-guard.ts 的文件头。
+  assertClosedSessionForManualSync(rows, now);
 
   const triggeredBy = args.cascade ? ('cascade' as const) : ('cli' as const);
   let job: Job;

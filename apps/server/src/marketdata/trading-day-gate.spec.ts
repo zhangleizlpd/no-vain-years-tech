@@ -3,6 +3,7 @@ import type { TradingCalendarPort } from './trading-calendar.port.js';
 import {
   daysToExpiry,
   isTradingDayGateOpen,
+  isSessionClosed,
   lastClosedSessionCutoff,
   marketDateFor,
   shanghaiToday,
@@ -230,5 +231,38 @@ describe('daysToExpiry (请求时 DTE, 基准 = 交易所的今天)', () => {
     const now = etNoon('2026-08-21T16:00:00Z');
     expect(() => daysToExpiry({ expiry: '2026/08/24', now })).toThrow(/YYYY-MM-DD/);
     expect(() => daysToExpiry({ expiry: '2026-02-30', now })).toThrow(/YYYY-MM-DD/);
+  });
+});
+
+/**
+ * 2026-08-17 prod 实撞的那条前置条件 (开盘前跑 `option_daily_snapshot` ⇒ 盘前价盖当日日戳,
+ * 且 `skipDuplicates` 把当晚真收盘那轮静默挡掉)。这里钉的是**判据本身**, 落点断言在
+ * `sync-option-snapshot.usecase.spec.ts`。
+ */
+describe('isSessionClosed (能不能以 eod 口径写这一天)', () => {
+  it('🚨 事故时刻复现: 北京 21:07 = ET 09:07 周一 (盘前) ⇒ 当日**未**收盘', () => {
+    // 2026-08-17 周一, EDT = UTC-4 ⇒ 北京 21:07 = 13:07Z = ET 09:07, 距 16:00 收盘还有近 7 小时。
+    const preOpen = new Date('2026-08-17T13:07:00Z');
+    expect(isSessionClosed('us', '2026-08-17', preOpen)).toBe(false);
+    // 而上一交易日 (周五) 早已收盘 —— 这正是那一刻**唯一**能合法落库的 session。
+    expect(isSessionClosed('us', '2026-08-14', preOpen)).toBe(true);
+  });
+
+  it('收盘瞬间是闭区间: ET 15:59 判 false / 16:00 判 true', () => {
+    expect(isSessionClosed('us', '2026-08-17', new Date('2026-08-17T19:59:00Z'))).toBe(false);
+    expect(isSessionClosed('us', '2026-08-17', new Date('2026-08-17T20:00:00Z'))).toBe(true);
+  });
+
+  it('夜间轮时刻 (北京次日 06:30 = ET 18:30 盘后) ⇒ 当日已收盘, 正常路径不受本闸影响', () => {
+    expect(isSessionClosed('us', '2026-08-17', new Date('2026-08-17T22:30:00Z'))).toBe(true);
+  });
+
+  it('🚫 它不回答「是不是交易日」: 周六 ET 18:30 判周六同样 true (那天根本没有 session)', () => {
+    // 2026-08-15 周六 ET 18:30 = 22:30Z。交易日判定归 trading_day / isTradingDayGateOpen。
+    expect(isSessionClosed('us', '2026-08-15', new Date('2026-08-15T22:30:00Z'))).toBe(true);
+  });
+
+  it('未来的 session 一律未收盘', () => {
+    expect(isSessionClosed('us', '2026-08-18', new Date('2026-08-17T22:30:00Z'))).toBe(false);
   });
 });

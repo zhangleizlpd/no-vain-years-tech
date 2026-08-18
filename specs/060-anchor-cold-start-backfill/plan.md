@@ -214,6 +214,13 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 
 🚨 **impl 期补一个导出（2026-08-17，user 定案）**：新文件除上述三个外还导出 `isSessionUnderway(market, minutesOfDay)` —— 「该场进行中」（首段开盘 → 末段收盘，**含**午休），未登记市场**抛**。D3 第 7 步与 D8 的敏感档闸用**它**，不用 `isWithinTradingSession`：后者在午休返 `false` ⇒ 放行，而此刻 D4 算出的目标日是**上一个交易日** ⇒ 把午休盘口标成「上一场收盘」，正是 FR-011 与 `state_branches` ③ 要防的错行。今天潜伏（us 无午休 ⇒ 两谓词等价），接 hk 期权即显形。
 
+🔄 **ship 后修正（2026-08-18，user 定案）—— `hk` 改登记为单段 `[09:30,16:00]` HKT，午休不再建模**。上面两段里「hk 含午休两段」「接 hk 期权即显形」自此不再成立，保留原文是留痕，判据以本注为准。
+
+- **为什么现在可以改**：`isWithinTradingSession` 唯一的生产调用方是 `alert/intraday-eval.processor.ts`，参数写死 `INTRADAY_MARKET = 'cn'`；而 hk 在冷启动里于能力检查处即以 `market_not_enabled` 出局，够不到时段闸 ⇒ hk 那两段登记当时是**纯死数据**，改它零行为变更。
+- **补数语义不变**：`isSessionUnderway` 取 `min(开盘)/max(收盘)`，两段与单段同为 09:30/16:00 ⇒ 午休仍算「场内」，冷启动在午休照样 `intraday_skipped`，FR-011 原样成立。
+- 🚨 **代价落在预警侧，必须记住**：`isWithinTradingSession` 语义是「此刻能不能成交」，单段化后它对 hk 午休答 `true` —— **对预警是错的**。**将来给 hk 接盘中告警时 MUST NOT 直接用它**；首选把 hk 恢复成两段（对补数闸零影响，退路免费），或给预警侧单独登记一份带午休的 hk 时段。canonical 说明写在 `market-session.rules.ts` 的 hk 登记处。
+- **连带**：两谓词的分道自此只剩 `cn`，而 cn 不在 `COLD_START_CAPABILITY` 里 ⇒ 差异当前无生产落点；单测里那条「逐分钟等价」断言已从只覆盖 us 扩到 us + hk，谁把 hk 改回两段会第一个红。
+
 ⚠️ **一处必须注意的连带**：合并后 `us` / `hk` 从「未登记」变成「已登记」，`marketNow('us', …)` 不再 throw。alert 侧唯一调用点是 `INTRADAY_MARKET='cn'`，**运行时行为零变化**；但 alert 现有 spec 里若有「未登记市场 throw」的断言用了 `us`/`hk` 当例子，会红 —— 那是**真实的语义变更**，改断言时要换一个仍未登记的市场代号，不要把断言删掉。
 
 ### D7 新表 `anchor_cold_start_run` —— 只记结局，不驱动重做
