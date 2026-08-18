@@ -10,7 +10,9 @@ name: Internal Android APK (EAS · markets ON)
 #   `gh variable set MOBILE_RELEASE_PHASE --body public` → tag 改出公开 markets-OFF
 #   包 + web，本 workflow 自动 skip）。workflow_dispatch 永远运行（手动 = 显式）。
 # 触发：mobile-v* tag（dev 期自动）+ workflow_dispatch（任意 ref，手动）。
-# 产物：上传为 workflow run 的 artifact（从 Actions run 下载 sideload），不进 GitHub Release。
+# 产物两条出口，都不进 GitHub Release：
+#   ① **EAS 安装直链**（写进 job summary）—— 无需登录，手机浏览器打开即下，sideload 走这条；
+#   ② workflow artifact（retention 14 天）—— 要登录 GitHub 且是 zip，作归档与兜底。
 #
 # 前置（同 release-android-apk.yml）：repo secret EXPO_TOKEN（expo.dev robot token）。
 # 签名 keystore 由 EAS 托管。
@@ -119,6 +121,35 @@ jobs:
           fi
           echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
           echo "EAS internal build finished: $BUILD_ID"
+
+      - name: 安装直链写进 job summary
+        working-directory: apps/mobile
+        # EAS 托管的 `applicationArchiveUrl` **无需登录即可下载**（307 → 每次现签的 S3 直链），
+        # 手机浏览器打开就能装;而下一步那个 upload-artifact 出的是**要登录 GitHub 才能下、
+        # 下来还得解压**的 zip —— sideload 给真机时前者才是能用的形态。
+        # 两个都留:artifact 归档 14 天(可追溯),直链给人当场装。
+        # 🚨 URL 本来就在构建日志的 build.json 里,只是没人把它捞到显眼处 —— 这一步不产生
+        #   任何新东西,只是把已有事实放到看得见的地方。
+        # ⚠️ 捞不到 URL **不让整条链红**:包已经构建成功了,artifact 兜底路径仍然成立,
+        #   为一条便利链接把一次成功的发版判成失败是本末倒置(同 deploy.yml 镜像 GC 的取舍)。
+        run: |
+          URL=$(jq -r 'if type=="array" then .[0] else . end
+                       | .artifacts.applicationArchiveUrl // .artifacts.buildUrl // empty' build.json)
+          if [ -z "$URL" ]; then
+            echo "::warning::build.json 里没有 applicationArchiveUrl —— 本次无直链,走下面的 artifact 兜底"
+            exit 0
+          fi
+          {
+            echo "## 内测包安装直链（手机浏览器打开即下）"
+            echo
+            echo '```'
+            echo "$URL"
+            echo '```'
+            echo
+            echo "- markets **ON** · 打 \`api.shintongtech.com\`"
+            echo "- 无需登录 expo / GitHub;同 package 同 keystore ⇒ 覆盖升级不必卸载"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "install link: $URL"
 
       - name: Download the .apk artifact
         id: apk
