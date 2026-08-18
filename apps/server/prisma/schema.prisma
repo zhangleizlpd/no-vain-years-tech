@@ -1032,6 +1032,34 @@ model CalendarSyncHealth {
   @@schema("marketdata")
 }
 
+// 交易日历**覆盖声明** (062, per-market 一行)。「该市场的日历已完备覆盖到哪一段」的显式承诺,
+// 是判定「未知」(trading-day.rules.ts 的第三态) 的**唯一**依据。
+//
+// 🚨 **与 calendar_sync_health 是两件事, MUST NOT 合表**: 心跳答「填充还活着吗」(liveness),
+// 本表答「视野覆盖到哪儿了」(coverage)。044 已把 liveness 与 freshness 分清并写进上面那段注释;
+// 混一张表 = 两个语义重新焊死, 探针再也分不出「填充挂了」与「填充活着但视野不动」这两种故障。
+//
+// 🚫 **MUST NOT 用 max(trading_day.date) 派生覆盖终点** (FR-003): 那是又一次「库里没有的即为
+// 假」推断 —— 区间中间的空洞在最大值里看不出来, 正是本 feature 要根治的病。声明必须是**写进来
+// 的承诺**, 不是从数据反推的猜测。机器强制在 scripts/checks/check-trading-day-read.ts Check B。
+//
+// 推进规则 (calendar-coverage.rules.ts 的 advanceCoverage): 某段整段填充成功后, 仅当它与既有
+// 区间**相邻或重叠**才扩展; 有缺口 → **不推进** + 留痕。⇒ 声明区间内不产生空洞。
+// 🚨 填充失败的 catch 分支**绝不碰本表** —— 声明一旦在填充失败时照样前进, 三态判定全线失真。
+//
+// 无 instrument 关联 (市场级非标的级); 不复用 sync_run (同 calendar_sync_health 的判断)。
+model CalendarCoverage {
+  market      String   @id @db.VarChar(8)
+  coveredFrom DateTime @map("covered_from") @db.Date
+  coveredTo   DateTime @map("covered_to") @db.Date
+  // 本段覆盖由链上哪层服务 ('futu'/'static'/'tencent'): 体例同 calendar_sync_health.servedBy。
+  servedBy    String?  @map("served_by") @db.VarChar(16)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("calendar_coverage")
+  @@schema("marketdata")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 047 optionsdesk M2b 期权链 3 表 (p3b §4.5)。三表全落 **marketdata** 而非 optionsdesk:
 // 它们是 vendor 下发的**市场事实**, 与「我给这只票估过值」的自有事实 (optionsdesk.anchor)
