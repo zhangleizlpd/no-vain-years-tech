@@ -137,7 +137,8 @@ describe('062 T004 交易日历前瞻视野 — populate 两段 + coverage 推�
       { market: 'us', from: FWD_FROM, to: FWD_TO },
     ]);
 
-    // ② 两段相邻 ⇒ 合并成一条连续声明; servedBy = 最后写入的那段的胜出层 (前瞻段)。
+    // ② 两段相邻 ⇒ 合并成一条连续声明; servedBy = **把 `to` 端推到当前终点的那一段**的胜出层
+    //    (此处是前瞻段) —— 它答的是「视野终点是谁给的」, 不是「最后谁写过这一行」。
     for (const market of ['cn', 'hk', 'us']) {
       expect(await coverageOf(market)).toEqual({
         from: HIST_FROM,
@@ -145,6 +146,41 @@ describe('062 T004 交易日历前瞻视野 — populate 两段 + coverage 推�
         servedBy: 'static',
       });
     }
+  });
+
+  it('🚨 两段都成功 → 心跳 servedBy 记**活源链**的胜出层, 前瞻段 MUST NOT 覆写 (FR-014 载体归位)', async () => {
+    const hist = healthy('tencent'); // 活源链 L1 命中 = 未降级
+    const fwd = healthy('static'); // cn/hk 前瞻链的唯一层就叫 static —— 与活源链 L2 同名, 坑在此
+    await serviceWith(hist.source, fwd.source).populate(NOW);
+
+    for (const market of ['cn', 'hk', 'us']) {
+      // 修前: 前瞻段后跑并覆写 ⇒ 这里是 'static' ⇒ 探针判「降级运行」每日恒红; 更要命的是
+      // 真降级 (腾讯挂 → 活源链 L2 static 接住) 与之**同值**, 主源之死从此不可分辨。
+      expect((await healthOf(market))?.servedBy).toBe('tencent');
+    }
+  });
+
+  it('🚨 活源链真降级 + 前瞻段走主源 → 心跳必须留住降级值, MUST NOT 被洗成主源 (us 形态)', async () => {
+    // us 活源链 = [futu → tencent], 前瞻链 = [futu]。L1 富途失效 ⇒ 活源链落到腾讯 = **真降级**,
+    // 而前瞻段仍由富途 (= us 主源) 服务。两段值不同 ⇒ 覆写会把降级洗成「主源在服务、健康」。
+    const hist = healthy('tencent');
+    const fwd = healthy('futu');
+    await serviceWith(hist.source, fwd.source).populate(NOW);
+
+    expect((await healthOf('us'))?.servedBy).toBe('tencent');
+  });
+
+  it('🚨 只扩 from 端 (seed CLI 回灌历史) → coverage.servedBy 纹丝不动', async () => {
+    await seedCoverage('cn', HIST_FROM, FWD_TO); // 声明已抵年末, servedBy='seed'
+    const hist = healthy('tencent');
+    const svc = serviceWith(hist.source, healthy('static').source);
+
+    await svc.syncRange(['cn'], '2015-01-01', HIST_TO);
+
+    // to 端没动 ⇒ servedBy 保持「给出视野终点」的那一段留下的值, 不被活源链改写。
+    expect(await coverageOf('cn')).toEqual({ from: '2015-01-01', to: FWD_TO, servedBy: 'seed' });
+    // 反向: 心跳的 servedBy **应当**被 seed 更新 —— seed 走的就是活源链, 它有资格答那个问题。
+    expect((await healthOf('cn'))?.servedBy).toBe('tencent');
   });
 
   it('🚨 源抛错 → covered_to 一天都不动 (state_branch 11 · Impl Guardrail 2 的机器化)', async () => {
@@ -229,6 +265,11 @@ describe('062 T004 交易日历前瞻视野 — populate 两段 + coverage 推�
       .map((c) => String(c[0]))
       .find((m) => m.includes('历史段 vendor down') && m.includes(`"from":"${HIST_FROM}"`));
     expect(histWarn).toBeDefined(); // 失败痕带着**自己那段**的窗口 → 分得清是哪段坏了
+
+    // 🚨 首次上线 + 活源链从未成功过 ⇒ 心跳行由前瞻段建, 而它无权写 servedBy ⇒ **留 null**。
+    // 探针的 `IS DISTINCT FROM 主源` 对 NULL 判降级而告警, 这是**对的**: 活源链状态本就未知,
+    // 静默放行才是病。修前此处是 'static' —— 前瞻段的值冒充了活源链的答案。
+    expect((await healthOf('cn'))?.servedBy).toBeNull();
   });
 
   it('历史段失败 + 已有声明 (稳态) → 前瞻段与声明之间出现缺口 ⇒ 视野原地不动 (state_branch 16)', async () => {
