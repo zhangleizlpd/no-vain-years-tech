@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { recordingOutboxPublisher } from '../_support/outbox-stub';
+import { noEodSeed } from '../_support/eod-seed-stub';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../src/security/prisma.service';
 import {
@@ -61,7 +62,7 @@ describe('045 optionsdesk US1 锚管理集成 IT (Testcontainers PG)', () => {
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher());
+    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher(), noEodSeed());
     updateAnchor = new UpdateAnchorUseCase(prisma);
     deleteAnchor = new DeleteAnchorUseCase(prisma);
     reviewAnchor = new ReviewAnchorUseCase(prisma);

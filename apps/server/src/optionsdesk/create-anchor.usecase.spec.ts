@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import { CreateAnchorUseCase, shanghaiDateOnly, toUtcDateOnly } from './create-anchor.usecase';
 import type { PrismaService } from '../security/prisma.service';
 import type { OutboxPublisher } from '../security/outbox/outbox-publisher.port';
+import type { EnsureLatestEodBarUseCase } from '../marketdata/ensure-latest-eod-bar.usecase';
 
 type Fn = ReturnType<typeof vi.fn>;
 
@@ -18,6 +19,10 @@ interface PrismaMock {
   tx: unknown;
   outbox: OutboxPublisher;
   publish: Fn;
+  /** 建锚同步取价: 默认返 `null` (= vendor 无数据) ⇒ 既有用例行为逐条不变。 */
+  ensureBar: EnsureLatestEodBarUseCase;
+  ensureBarExecute: Fn;
+  anchorUpdate: Fn;
 }
 
 function buildPrismaMock(): PrismaMock {
@@ -31,9 +36,12 @@ function buildPrismaMock(): PrismaMock {
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
   const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
+  const anchorUpdate = vi.fn();
+  const ensureBarExecute = vi.fn().mockResolvedValue(null);
+  const ensureBar = { execute: ensureBarExecute } as unknown as EnsureLatestEodBarUseCase;
   const prisma = {
     tradingDay: { findFirst: tradingDayFindFirst },
-    anchor: { findUnique, create, updateMany },
+    anchor: { findUnique, create, updateMany, update: anchorUpdate },
     anchorChange: { create: changeCreate },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
   } as unknown as PrismaService;
@@ -47,6 +55,9 @@ function buildPrismaMock(): PrismaMock {
     tx,
     outbox,
     publish,
+    ensureBar,
+    ensureBarExecute,
+    anchorUpdate,
   };
 }
 
@@ -94,7 +105,7 @@ describe('CreateAnchorUseCase — 生效 L 层写入求值 (FR-033, plan D3)', (
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -151,7 +162,7 @@ describe('CreateAnchorUseCase — 建锚即一次确认', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-02T13:30:00Z'));
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -182,7 +193,7 @@ describe('CreateAnchorUseCase — EC-10 建锚即逾期', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -223,7 +234,7 @@ describe('CreateAnchorUseCase — EC-7 同 ticker 重复建锚', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
   });
 
   it('预检命中既有锚 → ConflictException (409)', async () => {
@@ -270,7 +281,7 @@ describe('CreateAnchorUseCase — EC-3 V ≤ 0 拒绝保存', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
     m.findUnique.mockResolvedValue(null);
   });
 
@@ -295,7 +306,7 @@ describe('CreateAnchorUseCase — 变更痕迹 (FR-031)', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -341,7 +352,7 @@ describe('CreateAnchorUseCase — 建锚事件 (060 FR-001/002/004, plan §D1)',
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -438,5 +449,79 @@ describe('日期基准 — 「今天」跟用户所在地走, 不是 UTC', () =>
   it('shanghaiDateOnly 对已归一的 @db.Date 值幂等 (可安全复用于比较链)', () => {
     const dbDate = new Date('2026-08-04T00:00:00.000Z');
     expect(shanghaiDateOnly(dbDate).toISOString()).toBe('2026-08-04T00:00:00.000Z');
+  });
+});
+
+/**
+ * 建锚同步取价 (2026-08-18)。三条分支各一格 —— 判据是「**建锚这件事永远成功**」:
+ * 取到价 ⇒ 顺带写列; 取不到 / 打不通 ⇒ 静默退回每小时投影, 而不是把一次成功的建锚
+ * 包装成失败 (往外抛会让调用方重试, 重试撞 uk_anchor_ticker 只会收到 409)。
+ */
+describe('CreateAnchorUseCase — 建锚即取最近收盘 (best-effort)', () => {
+  let m: PrismaMock;
+  let useCase: CreateAnchorUseCase;
+
+  beforeEach(() => {
+    m = buildPrismaMock();
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar);
+    m.findUnique.mockResolvedValue(null);
+    m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      anchorRow(data),
+    );
+    // 目标交易日: 让 resolveLastClosedSessionForTicker 拿得到一行, 否则本档直接短路。
+    m.tradingDayFindFirst.mockResolvedValue({ date: new Date('2026-08-17T00:00:00Z') });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('vendor 有数据 ⇒ 写 last_close / last_close_date, 且值进创建响应', async () => {
+    m.ensureBarExecute.mockResolvedValue({
+      tradeDate: '2026-08-17',
+      adjust: 'none',
+      open: '86.00',
+      high: '87.50',
+      low: '85.80',
+      close: '86.94',
+      changePct: null,
+      prevClose: null,
+      volume: null,
+      amount: null,
+      turnoverRate: null,
+    });
+    m.anchorUpdate.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      anchorRow(data),
+    );
+
+    const result = await useCase.execute(validInput);
+
+    expect(m.ensureBarExecute).toHaveBeenCalledWith('us:AOS', '2026-08-17');
+    expect(m.anchorUpdate).toHaveBeenCalledTimes(1);
+    const written = m.anchorUpdate.mock.calls[0][0] as { data: Record<string, unknown> };
+    expect(written.data.lastClose).toBe('86.94');
+    // 交易日按 UTC 零点存 —— 与 sync-anchor-quote 同口径, 免时区漂。
+    expect(written.data.lastCloseDate).toEqual(new Date('2026-08-17T00:00:00.000Z'));
+    expect(result.lastClose).toBe('86.94');
+  });
+
+  it('vendor 无数据 (停牌 / 新股) ⇒ 不写列、不报错, 建锚照样成功', async () => {
+    m.ensureBarExecute.mockResolvedValue(null);
+
+    const result = await useCase.execute(validInput);
+
+    expect(m.anchorUpdate).not.toHaveBeenCalled();
+    expect(result.lastClose).toBeNull();
+    expect(result.ticker).toBe('us:AOS');
+  });
+
+  it('🚨 vendor 抛错 ⇒ 吞掉并退回每小时投影, MUST NOT 让建锚失败', async () => {
+    m.ensureBarExecute.mockRejectedValue(new Error('futu shim 504'));
+
+    const result = await useCase.execute(validInput);
+
+    expect(m.anchorUpdate).not.toHaveBeenCalled();
+    expect(result.lastClose).toBeNull();
+    expect(result.ticker).toBe('us:AOS');
+    // 事件照发 —— 冷启动那条链与取价成败无关 (060 FR-002)。
+    expect(m.publish).toHaveBeenCalledTimes(1);
   });
 });

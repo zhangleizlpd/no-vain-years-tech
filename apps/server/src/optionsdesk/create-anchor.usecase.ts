@@ -1,10 +1,11 @@
-import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { OUTBOX_PUBLISHER, type OutboxPublisher } from '../security/outbox/outbox-publisher.port';
 import { computeW, mapConfidenceToLLevel, type LLevel } from './anchor.rules';
 import { buildCreationChange, type AnchorChangeSource } from './anchor-history';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
+import { EnsureLatestEodBarUseCase } from '../marketdata/ensure-latest-eod-bar.usecase';
 
 /**
  * 045 US1 — 建锚 (FR-001 / FR-003a / FR-033, plan D3)。
@@ -197,9 +198,16 @@ const ANCHOR_CREATED_EVENT = 'optionsdesk.anchor-created';
 
 @Injectable()
 export class CreateAnchorUseCase {
+  private readonly logger = new Logger(CreateAnchorUseCase.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(OUTBOX_PUBLISHER) private readonly outboxPublisher: OutboxPublisher,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 建锚即取一次最近收盘。注入的是**为这件事
+    // 造的窄 use case**, 不是裸 `EOD_BAR_PORT` —— 按市场路由 vendor 与落库口径都留在 marketdata,
+    // 本 ctx 只问「这只票最近一根收盘是多少」。同步是刻意的 (产出要进本次创建响应), 但**失败
+    // 不回滚建锚**, 故不与主 tx 共事务, 见 {@link CreateAnchorUseCase.seedLastClose}。
+    private readonly ensureLatestEodBar: EnsureLatestEodBarUseCase,
   ) {}
 
   async execute(input: CreateAnchorInput): Promise<AnchorWriteResult> {
@@ -265,9 +273,10 @@ export class CreateAnchorUseCase {
         return created;
       });
       // 新鲜度基准在 tx 外取 (只读、与本次写无因果) —— 别把跨 ctx 读拖进写事务。
+      const lastClosedSession = await resolveLastClosedSessionForTicker(this.prisma, row.ticker);
       return toAnchorWriteResult(
-        row,
-        await resolveLastClosedSessionForTicker(this.prisma, row.ticker),
+        await this.seedLastClose(row, lastClosedSession),
+        lastClosedSession,
       );
     } catch (err) {
       if (isP2002(err)) {
@@ -279,6 +288,44 @@ export class CreateAnchorUseCase {
         throw duplicateTickerConflict(input.ticker, winner?.id ?? null);
       }
       throw err;
+    }
+  }
+  /**
+   * 建锚即取一次最近收盘 —— 让新锚**不经过**「行情不可用」那段窗口 (2026-08-18)。
+   *
+   * ## 为什么不能只「投影 `daily_bar`」
+   *
+   * EOD 采集的工作集由**已有的锚**派生 ⇒ 全新标的在成为锚之前根本没被采过, 建锚那一刻库里一根
+   * 日线都没有, 投影只会投出 `null`。锚要有价得先有 EOD, EOD 要被采得先有锚 —— 是个死循环。
+   * 只有真去打一次数据源才剪得断, 见 {@link EnsureLatestEodBarUseCase}。
+   *
+   * ## 🚨 best-effort —— 失败**绝不**影响建锚这件事
+   *
+   * 锚已经在上面的 tx 里提交了。这一步失败 (vendor 挂 / 超时 / 该标的没数据) 只是退回旧行为:
+   * 等 `SyncAnchorQuoteUseCase` 每小时 `:30` 那轮补上。往外抛会让调用方以为建锚失败而重试,
+   * 而重试撞 `uk_anchor_ticker` 只会收到 409 —— 一次真实成功被包装成两次失败。
+   */
+  private async seedLastClose(
+    row: AnchorRow,
+    lastClosedSession: string | null,
+  ): Promise<AnchorRow> {
+    if (lastClosedSession === null) return row; // 无目标交易日可问 (市场未登记 / ticker 不可解析)。
+    try {
+      const bar = await this.ensureLatestEodBar.execute(row.ticker, lastClosedSession);
+      if (bar === null) return row; // vendor 无数据 (停牌 / 新股) —— 非错误, 保持 null 投影。
+      return (await this.prisma.anchor.update({
+        where: { id: row.id },
+        data: {
+          lastClose: bar.close,
+          // 与 `sync-anchor-quote.ts` 同口径: 交易日按 UTC 零点存, 免时区漂。
+          lastCloseDate: new Date(`${bar.tradeDate}T00:00:00.000Z`),
+        },
+      })) as AnchorRow;
+    } catch (err) {
+      this.logger.warn(
+        `[create-anchor] ${row.ticker} 建锚同步取价失败, 退回每小时 :30 投影补: ${String(err)}`,
+      );
+      return row;
     }
   }
 }

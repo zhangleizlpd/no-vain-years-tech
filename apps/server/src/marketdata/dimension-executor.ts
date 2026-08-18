@@ -321,7 +321,10 @@ function fundamentalUpsertData(d: FundamentalSnapshotDto) {
 }
 
 /** EodBarPoint → DailyBar createMany row (string→Decimal 由 Prisma 接收)。 */
-function toDailyBarRow(instrumentId: bigint, b: EodBarPoint): Prisma.DailyBarCreateManyInput {
+export function toDailyBarRow(
+  instrumentId: bigint,
+  b: EodBarPoint,
+): Prisma.DailyBarCreateManyInput {
   return {
     instrumentId,
     tradeDate: toDateOnly(b.tradeDate),

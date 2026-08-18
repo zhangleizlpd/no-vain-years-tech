@@ -94,6 +94,7 @@ import {
 } from './trading-calendar-source.port.js';
 import { TradingCalendarSyncService } from './trading-calendar-sync.service.js';
 import { EOD_BAR_PORT, type EodBarPort } from './eod-bar.port.js';
+import { EnsureLatestEodBarUseCase } from './ensure-latest-eod-bar.usecase.js';
 import { UNDERLYING_IV_PORT, type UnderlyingIvPort } from './underlying-iv.port.js';
 import { US_INDEX_PORT, type UsIndexPort } from './us-index.port.js';
 import { FUNDAMENTAL_PORT, type FundamentalPort } from './fundamental.port.js';
@@ -693,11 +694,18 @@ function collectionPort<T extends object>(
       live: (cfg, http: VendorHttpClient, prisma: PrismaService) =>
         new LixingerCompanyProfileAdapter(http, cfg.lixingerToken, cfg.lixingerBaseUrl, prisma),
     }),
+    // 建锚同步取价的窄入口 (2026-08-18)。见该文件头注: 它是**旁路**, 不推水位、不走预算核算。
+    EnsureLatestEodBarUseCase,
   ],
   // 🚨 **本模块首次向外 export** (061 T005) —— `optionsdesk` 的盘中投影 tick 要跨 ctx 注入这
   // 两个 token (plan D1: 强一致同步读, ADR-0062 sunset trigger 自己规定的升格方向)。
-  // 🚨 **只开这两个口子**: 不要顺手把其余 30 个采集口也 export 出去 —— 每多一个都是一条新的
+  // 🚨 **只开这几个口子**: 不要顺手把其余 30 个采集口也 export 出去 —— 每多一个都是一条新的
   // 跨 ctx 边, 而 `marketdata` 是叶子 ctx 的这条设计正靠「谁都拿不到它的 provider」撑着。
-  exports: [REALTIME_QUOTE_PORT, MARKET_STATE_PORT],
+  //
+  // 📌 **第三个口子 (2026-08-18)**: `EnsureLatestEodBarUseCase`。开它的判据与前两个不同 ——
+  // 前两个是**端口 token**, 这个是**为一件事造的 use case**。刻意不 export `EOD_BAR_PORT`
+  // 本身: 那等于把「按市场路由 vendor + 落库口径」这套策略搬到 optionsdesk 去, 而调用方真正
+  // 需要的只是「给我这只票最近一根收盘」。边越窄, 将来换 vendor 时要动的地方越少。
+  exports: [REALTIME_QUOTE_PORT, MARKET_STATE_PORT, EnsureLatestEodBarUseCase],
 })
 export class MarketdataModule {}
