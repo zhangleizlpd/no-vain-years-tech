@@ -1,6 +1,7 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
+import { OUTBOX_PUBLISHER, type OutboxPublisher } from '../security/outbox/outbox-publisher.port';
 import { computeW, mapConfidenceToLLevel, type LLevel } from './anchor.rules';
 import { buildCreationChange, type AnchorChangeSource } from './anchor-history';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
@@ -191,9 +192,15 @@ export function isOverdueAgainstAsof(nextReview: Date | null, asof: Date): boole
   return nextReview !== null && nextReview.getTime() < asof.getTime();
 }
 
+/** 060 FR-004: 建锚事件类型。marketdata 侧持**同一份字面量副本**, 两 ctx 互不 import。 */
+const ANCHOR_CREATED_EVENT = 'optionsdesk.anchor-created';
+
 @Injectable()
 export class CreateAnchorUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(OUTBOX_PUBLISHER) private readonly outboxPublisher: OutboxPublisher,
+  ) {}
 
   async execute(input: CreateAnchorInput): Promise<AnchorWriteResult> {
     assertUsableV(input.v);
@@ -239,6 +246,22 @@ export class CreateAnchorUseCase {
             source: change.source,
           },
         });
+        // CROSS-CONTEXT-ASYNC: optionsdesk.anchor-created → marketdata 起冷启动补数 (060 §D1)。
+        //
+        // **同 tx** (FR-004): 建锚回滚 ⇒ outbox 行一起没, 否则会给一只根本不存在的锚跑采集。
+        // payload 只带这两格 —— market 由消费侧从 ticker 前缀解析 (FR-020), 生产侧预解析等于
+        // 把市场知识复制到第二处; `anchorId` 转串是因为 BigInt 过不了 JSON 信封, 且消费侧按
+        // 十进制串校验 (给 bigint 会被判毒丸静默丢掉)。
+        //
+        // 🚫 **只在这里发一次。** `import-anchor-from-model.usecase.ts` 的 create 分支是**委托**
+        // 本 use case, App 手工建锚走 controller 也是它 ⇒ 两条入口自动覆盖 (FR-002);
+        // 在 import 那侧再发一遍就是双发。update 分支一行不发 (FR-003)。
+        await this.outboxPublisher.publish(
+          tx,
+          ANCHOR_CREATED_EVENT,
+          { anchorId: String(created.id), ticker: created.ticker },
+          'optionsdesk',
+        );
         return created;
       });
       // 新鲜度基准在 tx 外取 (只读、与本次写无因果) —— 别把跨 ctx 读拖进写事务。

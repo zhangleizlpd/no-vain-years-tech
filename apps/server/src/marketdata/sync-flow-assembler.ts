@@ -3,7 +3,7 @@ import {
   dimensionJobName,
   MARKETDATA_SYNC_QUEUE,
   type DimensionJobPayload,
-} from './marketdata-sync.worker.js';
+} from './marketdata-sync.queue.js';
 
 /** `sync_dependency` 边 (PG 真相层投影; seed 6 边, 未来 admin 可增)。 */
 export interface SyncDependencyEdge {

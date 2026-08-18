@@ -3,11 +3,10 @@ import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redi
 import { Redis } from 'ioredis';
 import type { PrismaService } from '../security/prisma.service';
 import type { EvaluateIntradayAlertsUseCase } from './evaluate-intraday-alerts.usecase';
+import { isWithinTradingSession, marketNow } from '../marketdata/market-session.rules';
 import {
   IntradayEvalProcessor,
   INTRADAY_MARKET,
-  isWithinTradingSession,
-  marketNow,
   CIRCUIT_THRESHOLD,
   INTRADAY_FAILSTREAK_KEY,
   INTRADAY_CIRCUIT_KEY,
@@ -35,41 +34,22 @@ describe('intraday-eval processor — 交易时段 gate + 熔断 (024 T008)', ()
     await redis.flushall();
   });
 
-  describe('纯时窗 helpers (按市场登记的时区与时段)', () => {
-    it('marketNow(cn): UTC 02:00 → 上海 10:00 (date + 当日分钟)', () => {
-      const { dateOnly, minutesOfDay } = marketNow('cn', new Date('2026-06-09T02:00:00Z'));
-      expect(dateOnly).toBe('2026-06-09');
-      expect(minutesOfDay).toBe(600); // 10:00
-    });
-
-    it('marketNow(cn): UTC 16:00 → 跨日到上海次日 00:00', () => {
-      const { dateOnly, minutesOfDay } = marketNow('cn', new Date('2026-06-09T16:00:00Z'));
-      expect(dateOnly).toBe('2026-06-10');
-      expect(minutesOfDay).toBe(0);
-    });
-
-    it('isWithinTradingSession(cn): 上午 [09:30,11:30] / 下午 [13:00,15:00] 含端点, 午休/盘后 false', () => {
-      expect(isWithinTradingSession('cn', 570)).toBe(true); // 09:30 开盘
-      expect(isWithinTradingSession('cn', 600)).toBe(true); // 10:00
-      expect(isWithinTradingSession('cn', 690)).toBe(true); // 11:30 午收
-      expect(isWithinTradingSession('cn', 720)).toBe(false); // 12:00 午休
-      expect(isWithinTradingSession('cn', 780)).toBe(true); // 13:00 午开
-      expect(isWithinTradingSession('cn', 900)).toBe(true); // 15:00 收盘
-      expect(isWithinTradingSession('cn', 901)).toBe(false); // 15:01 盘后
-      expect(isWithinTradingSession('cn', 569)).toBe(false); // 09:29 盘前
-    });
-
+  /**
+   * ⚠️ **时段表本身的断言已移出本文件** (060 T002): cn 的时窗逐点断言 / `marketNow` 的
+   * Intl 与跨日行为 / 「未登记市场直接抛」那条纪律, 现在都归
+   * `marketdata/market-session.rules.spec.ts` —— 表在哪, 表的测试就在哪, 免得两处各测一半。
+   * ⚠️ 其中「未登记市场」那条原先拿 `us` 当例子, 而 060 T001 已把 us 登记上了; 断言没删,
+   * 是换了一个仍未登记的代号 (`sg`) 留在 rules 的 spec 里。
+   *
+   * 留在本文件的只有一条 —— 它测的不是时段表, 是 **alert 自己的策略** (`INTRADAY_MARKET`)。
+   */
+  describe('本通路的市场策略 (INTRADAY_MARKET)', () => {
     /**
      * 🚨 **本通路只服务 A 股, 且这件事必须是显式的。** 美股盘中 = 北京 21:30–04:00, 与 A 股
      * 时窗零重叠 —— 旧实现把「上海时段」当成全局的盘中判据, 接美股时会**一次都不触发且不报错**。
-     * 现在时段按市场登记: 未登记市场 `marketNow` 直接抛, 不会静默套用别人的时窗。
+     * 时段表现已登记 us, 但**那不等于本通路支持美股**: 支持与否取决于本常量与 tick 拓扑。
      */
-    it('🚨 未登记市场 → marketNow 抛 (禁静默套用 A 股时窗)', () => {
-      expect(() => marketNow('us', new Date('2026-06-09T02:00:00Z'))).toThrow(/未登记盘中时段/);
-      expect(isWithinTradingSession('us', 600)).toBe(false);
-    });
-
-    it('🚨 美东 10:00 (= 北京 22:00) 不在 A 股时段内 —— 复用本通路做美股必须先登记时段', () => {
+    it('🚨 美东 10:00 (= 北京 22:00) 不在本通路的时段内 —— 登记了 us 不代表这条通路会跑它', () => {
       // 2026-06-09 EDT: 美股盘中 10:00 ET = 14:00Z = 北京 22:00。
       const { minutesOfDay } = marketNow(INTRADAY_MARKET, new Date('2026-06-09T14:00:00Z'));
       expect(minutesOfDay).toBe(22 * 60);

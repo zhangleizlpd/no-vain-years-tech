@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { Logger } from '@nestjs/common';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -13,8 +14,8 @@ import { QueueRedisLifecycle } from '../../src/marketdata/marketdata-queue-conne
 import {
   MARKETDATA_SYNC_QUEUE,
   MarketdataSyncQueue,
-  MarketdataSyncWorker,
-} from '../../src/marketdata/marketdata-sync.worker';
+} from '../../src/marketdata/marketdata-sync.queue';
+import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { executeBackfill, type BackfillDeps } from '../../src/marketdata/marketdata-backfill.cli';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 
@@ -214,7 +215,13 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
 
   it('② 缺省全维度 → 组 flow 跑全 28 维度 (6 核心 + 039 5 + 040 2 + 041 4 + 042 3 + 043 2 港股维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event, 贴旧全管线) + 退出码 0 + per-dim SyncRun', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -275,7 +282,13 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
 
   it('③ --dimension eod_bar → 仅单维度 job (functional, 配额分批回填场景)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();

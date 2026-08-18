@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { Logger } from '@nestjs/common';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -14,8 +15,8 @@ import {
   MARKETDATA_SYNC_QUEUE,
   MARKETDATA_WORKER_DISABLED,
   MarketdataSyncQueue,
-  MarketdataSyncWorker,
-} from '../../src/marketdata/marketdata-sync.worker';
+} from '../../src/marketdata/marketdata-sync.queue';
+import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { executeTrigger, type TriggerDeps } from '../../src/marketdata/marketdata-trigger.cli';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 
@@ -90,7 +91,13 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
 
   it('① 成功: trigger universe → job 完成 → 退出码 0 + SyncRun sync:universe success', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -117,7 +124,13 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     const broken = {
       run: () => Promise.reject(new Error('boom')),
     } as unknown as SyncProfileUseCase;
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(broken), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(broken),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -147,7 +160,13 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
 
   it('④ cascade universe 根 → flow 含全部传递性下游 (26 维度全链执行, FR-S15)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -207,7 +226,13 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
 
   it('⑤ cascade profile 根 → 仅 fundamental 下游, 不含上游 universe (FR-S15)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();
@@ -246,6 +271,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       lifecycle.client,
       buildRegistry(slowProfile),
       queue,
+      coldStartUnused(),
       CFG,
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
@@ -274,7 +300,13 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
   it('⑦ sentinel 置位 (CLI 进程形态) → worker 不启动, trigger 超时积压不消费 (D6)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
     process.env[MARKETDATA_WORKER_DISABLED] = '1';
-    const worker = new MarketdataSyncWorker(lifecycle.client, buildRegistry(), queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      buildRegistry(),
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     try {
