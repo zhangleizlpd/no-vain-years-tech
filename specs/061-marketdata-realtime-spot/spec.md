@@ -2,9 +2,10 @@
 feature_id: 061-marketdata-realtime-spot
 modules: [marketdata, optionsdesk]
 owners: ['@zhangleizlpd']
-status: draft
+status: implementing
 created_at: '2026-08-17'
-updated_at: '2026-08-17'
+updated_at: '2026-08-18'
+migration_refs: ['20260817_2036_add_anchor_intraday_columns']
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: stub
