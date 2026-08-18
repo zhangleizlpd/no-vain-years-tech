@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { CreateAnchorUseCase, shanghaiDateOnly, toUtcDateOnly } from './create-anchor.usecase';
 import type { PrismaService } from '../security/prisma.service';
+import type { OutboxPublisher } from '../security/outbox/outbox-publisher.port';
 
 type Fn = ReturnType<typeof vi.fn>;
 
@@ -13,6 +14,10 @@ interface PrismaMock {
   create: Fn;
   updateMany: Fn;
   changeCreate: Fn;
+  /** `$transaction` 交给回调的那个 client —— 060 T009 断言 publish 收到的是**它**。 */
+  tx: unknown;
+  outbox: OutboxPublisher;
+  publish: Fn;
 }
 
 function buildPrismaMock(): PrismaMock {
@@ -21,6 +26,8 @@ function buildPrismaMock(): PrismaMock {
   const updateMany = vi.fn();
   const changeCreate = vi.fn().mockResolvedValue(undefined);
   const tx = { anchor: { create }, anchorChange: { create: changeCreate } };
+  const publish = vi.fn().mockResolvedValue(undefined);
+  const outbox = { publish } as unknown as OutboxPublisher;
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
   const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
@@ -30,7 +37,17 @@ function buildPrismaMock(): PrismaMock {
     anchorChange: { create: changeCreate },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
   } as unknown as PrismaService;
-  return { prisma, findUnique, create, updateMany, changeCreate, tradingDayFindFirst };
+  return {
+    prisma,
+    findUnique,
+    create,
+    updateMany,
+    changeCreate,
+    tradingDayFindFirst,
+    tx,
+    outbox,
+    publish,
+  };
 }
 
 const ASOF = new Date('2026-06-30T00:00:00Z');
@@ -77,7 +94,7 @@ describe('CreateAnchorUseCase — 生效 L 层写入求值 (FR-033, plan D3)', (
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -134,7 +151,7 @@ describe('CreateAnchorUseCase — 建锚即一次确认', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-02T13:30:00Z'));
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -165,7 +182,7 @@ describe('CreateAnchorUseCase — EC-10 建锚即逾期', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -206,7 +223,7 @@ describe('CreateAnchorUseCase — EC-7 同 ticker 重复建锚', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
   });
 
   it('预检命中既有锚 → ConflictException (409)', async () => {
@@ -253,7 +270,7 @@ describe('CreateAnchorUseCase — EC-3 V ≤ 0 拒绝保存', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
     m.findUnique.mockResolvedValue(null);
   });
 
@@ -278,7 +295,7 @@ describe('CreateAnchorUseCase — 变更痕迹 (FR-031)', () => {
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new CreateAnchorUseCase(m.prisma);
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
     m.findUnique.mockResolvedValue(null);
     m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
       anchorRow(data),
@@ -314,6 +331,87 @@ describe('CreateAnchorUseCase — 变更痕迹 (FR-031)', () => {
     m.findUnique.mockResolvedValue({ id: 42n });
     await expect(useCase.execute(validInput)).rejects.toThrow();
     expect(m.changeCreate).not.toHaveBeenCalled();
+  });
+});
+
+// 060 T009 / FR-001~FR-004: 建锚事务内发 outbox 事件, marketdata 侧据此起冷启动补数。
+describe('CreateAnchorUseCase — 建锚事件 (060 FR-001/002/004, plan §D1)', () => {
+  let m: PrismaMock;
+  let useCase: CreateAnchorUseCase;
+
+  beforeEach(() => {
+    m = buildPrismaMock();
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox);
+    m.findUnique.mockResolvedValue(null);
+    m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      anchorRow(data),
+    );
+  });
+
+  it('建锚成功 ⇒ publish 一次, 四个实参逐个钉死', async () => {
+    await useCase.execute(validInput);
+
+    expect(m.publish).toHaveBeenCalledTimes(1);
+    const [client, eventType, payload, producerContext] = m.publish.mock.calls[0]! as [
+      unknown,
+      string,
+      Record<string, unknown>,
+      string,
+    ];
+    // 🚨 client 必须是 `$transaction` 交回的那个 tx, **不是** this.prisma —— 传错的话锚回滚了
+    //    outbox 行还在, 于是给一只根本不存在的锚跑冷启动 (FR-004 要的正是这条同生共死)。
+    expect(client).toBe(m.tx);
+    // 事件类型字面量: marketdata 侧持同一份副本 (两 ctx 互不 import, 见 subscriber)。
+    expect(eventType).toBe('optionsdesk.anchor-created');
+    expect(payload).toEqual({ anchorId: '7', ticker: 'us:AOS' });
+    // producerContext 默认是 'auth', 不显式传就会把本事件记成 auth 产的。
+    expect(producerContext).toBe('optionsdesk');
+  });
+
+  it('payload.anchorId 是**十进制串**而非 bigint (消费侧按串校验, 给 bigint 会被判毒丸丢掉)', async () => {
+    await useCase.execute(validInput);
+
+    const payload = m.publish.mock.calls[0]![2] as Record<string, unknown>;
+    expect(typeof payload.anchorId).toBe('string');
+    expect(payload.anchorId).toMatch(/^\d+$/);
+  });
+
+  it('payload 只带 anchorId + ticker —— market 由消费侧从 ticker 前缀解析 (FR-020)', async () => {
+    await useCase.execute(validInput);
+
+    // 生产侧预解析 market = 把市场知识复制到第二处; 判据只该有一份。
+    expect(Object.keys(m.publish.mock.calls[0]![2] as object).sort()).toEqual([
+      'anchorId',
+      'ticker',
+    ]);
+  });
+
+  it('预检命中既有锚 (EC-7 409) ⇒ publish 零调用 (没建成锚就没有建锚事件)', async () => {
+    m.findUnique.mockResolvedValue({ id: 42n });
+
+    await expect(useCase.execute(validInput)).rejects.toBeInstanceOf(ConflictException);
+    expect(m.publish).not.toHaveBeenCalled();
+  });
+
+  it('并发窗被抢 (create 撞 P2002) ⇒ publish 零调用', async () => {
+    m.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 99n });
+    m.create.mockRejectedValue(Object.assign(new Error('unique'), { code: 'P2002' }));
+
+    await expect(useCase.execute(validInput)).rejects.toBeInstanceOf(ConflictException);
+    expect(m.publish).not.toHaveBeenCalled();
+  });
+
+  it('V ≤ 0 被拒 (EC-3) ⇒ publish 零调用 (校验早退在事务之前)', async () => {
+    await expect(useCase.execute({ ...validInput, v: '0' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(m.publish).not.toHaveBeenCalled();
+  });
+
+  it('publish 抛错 ⇒ 整个建锚失败上抛 (不吞: 吞了锚就成了永不补数的孤儿)', async () => {
+    m.publish.mockRejectedValue(new Error('outbox down'));
+
+    await expect(useCase.execute(validInput)).rejects.toThrow(/outbox down/);
   });
 });
 

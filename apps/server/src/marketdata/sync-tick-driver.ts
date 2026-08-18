@@ -5,7 +5,7 @@ import { marketdataSyncConfig, type MarketdataSyncConfig } from '../config/marke
 import { PrismaService } from '../security/prisma.service.js';
 import { CalendarHitCheck } from './calendar-hit-check.js';
 import type { DimensionKey } from './dimension-executor.js';
-import { MarketdataSyncQueue } from './marketdata-sync.worker.js';
+import { MarketdataSyncQueue } from './marketdata-sync.queue.js';
 import { SyncRunRecorder } from './sync-run.recorder.js';
 import {
   assembleSyncFlow,

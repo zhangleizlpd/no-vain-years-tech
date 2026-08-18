@@ -116,7 +116,9 @@ export function marketDateFor(marketScope: string[], now: Date): string {
  * market → 该市场**常规交易时段收盘时刻** (当地时区的当日分钟数)。
  *
  * 只用于「哪一个 session 已经收了」这一个判断, **不是**盘中时段表 —— 盘中时段还要午休段,
- * 那是另一件事 (归各消费方, 见 `alert/intraday-eval.processor.ts`)。
+ * 那是另一件事, **唯一落点是 `market-session.rules.ts`** (060 T001 下沉合并; 在那之前它只以
+ * `cn` 一条内联在 `alert/intraday-eval.processor.ts` 里, 本注释原先写的是「归各消费方」)。
+ * ⇒ 要判盘中去那儿, **别在这里长出第三份时段表**。
  */
 const MARKET_CLOSE_MINUTES: Record<string, number> = {
   cn: 15 * 60,

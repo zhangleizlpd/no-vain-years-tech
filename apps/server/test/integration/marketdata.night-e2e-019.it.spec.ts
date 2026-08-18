@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
+import { coldStartUnused } from '../_support/cold-start-stub';
 import { QueueEvents } from 'bullmq';
 import { Prisma } from '../../src/generated/prisma/client';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -13,8 +14,8 @@ import { QueueRedisLifecycle } from '../../src/marketdata/marketdata-queue-conne
 import {
   MARKETDATA_SYNC_QUEUE,
   MarketdataSyncQueue,
-  MarketdataSyncWorker,
-} from '../../src/marketdata/marketdata-sync.worker';
+} from '../../src/marketdata/marketdata-sync.queue';
+import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { SyncTickDriver } from '../../src/marketdata/sync-tick-driver';
 import { CalendarHitCheck } from '../../src/marketdata/calendar-hit-check';
 import type { TradingCalendarPort } from '../../src/marketdata/trading-calendar.port';
@@ -199,7 +200,13 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
     registry: DimensionExecutorRegistry,
     run: (events: QueueEvents) => Promise<void>,
   ): Promise<void> {
-    const worker = new MarketdataSyncWorker(lifecycle.client, registry, queue, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      registry,
+      queue,
+      coldStartUnused(),
+      CFG,
+    );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     worker.onModuleInit();

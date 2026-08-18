@@ -127,6 +127,10 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 维度依赖边表 (017, ADR-0049 PG 真相层): tick/flow 装配器 + trigger CLI cascade 独占
   // 读写 (R1 自有表, intra 叶子无跨 ctx)。未登记则 marketdata 调度代码读自己的表即硬拒。
   syncDependency: 'marketdata',
+  // 锚首建冷启动运行记录 (060, plan D7): 写方在 marketdata (AnchorColdStartUseCase 覆盖式
+  // 单行 upsert, R1 自有表)。落 marketdata 而非 optionsdesk 是因为**写它的人在这边** ——
+  // optionsdesk 只负责建锚时 publish 一条 outbox 事件, 全程不碰本表 (反向也无人读)。
+  anchorColdStartRun: 'marketdata',
   // alert 4 表归 alert (021, 第 6 bounded context; ADR-0052 调度自治预警引擎): CRUD/
   // 评估/消息 UC 独占读写 (R1 自有表)。跨 ctx 面 = alert 评估读 marketdata 的
   // dailyBar/instrument (Q7-B 只读直查, CROSS-CONTEXT-READ 注释强制); 反向无人读 alert。

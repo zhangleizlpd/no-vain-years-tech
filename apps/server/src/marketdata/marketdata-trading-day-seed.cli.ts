@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app/app.module.js';
-import { MARKETDATA_WORKER_DISABLED } from './marketdata-sync.worker.js';
+import { MARKETDATA_WORKER_DISABLED } from './marketdata-sync.queue.js';
 import { CALENDAR_MARKETS, TradingCalendarSyncService } from './trading-calendar-sync.service.js';
 import { shanghaiToday } from './trading-day-gate.js';
 

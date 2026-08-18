@@ -3,6 +3,10 @@ import type { JobsOptions } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { ALERT_QUEUE_REDIS } from './alert-queue-connection.js';
 import { PrismaService } from '../security/prisma.service.js';
+// 盘中时段表的**唯一落点**在 marketdata (060 T001 下沉合并; 本文件此前持有唯一副本, 只登记
+// 了 cn)。ADR-0053 的细分边 `marketdata-rules` 放行 alert → `src/marketdata/*.rules.ts` 的
+// 编译期复用, 故这里是 import 而不是各持一份。
+import { isWithinTradingSession, marketNow } from '../marketdata/market-session.rules.js';
 import {
   EvaluateIntradayAlertsUseCase,
   type IntradayEvalSummary,
@@ -31,61 +35,11 @@ export const INTRADAY_CIRCUIT_KEY = 'alert:intraday:circuit';
  *
  * 🚨 显式常量而非隐含默认: 时段一旦被当成「全局的盘中」, 接美股时会静默走 A 股时窗
  * (北京 09:30–15:00), 而美股盘中 = 北京 21:30–04:00, **两者零重叠 ⇒ 一次都不触发、且不报错**。
- * 接第二个市场时改这里 + 给该市场登记时段, 顺带定 tick 拓扑 (单 tick 判多市场 vs 各市场各 tick)。
+ * 接第二个市场时改这里, 顺带定 tick 拓扑 (单 tick 判多市场 vs 各市场各 tick)。
+ * ⚠️ **时段登记本身已不在本文件** —— 060 T001 起归 `marketdata/market-session.rules.ts`,
+ * 那里 cn / us / hk 都已登记, 故「接第二个市场」现在只是改本常量与 tick 拓扑的事。
  */
 export const INTRADAY_MARKET = 'cn';
-
-/** market → 定盘中时段所用时区 (IANA) + 连续竞价时段 (当地当日分钟数, 闭区间)。 */
-const MARKET_SESSION: Record<string, { timeZone: string; segments: readonly [number, number][] }> =
-  {
-    // 上午 [09:30,11:30] + 下午 [13:00,15:00] (收盘集合竞价归 15:00)。
-    cn: {
-      timeZone: 'Asia/Shanghai',
-      segments: [
-        [9 * 60 + 30, 11 * 60 + 30],
-        [13 * 60, 15 * 60],
-      ],
-    },
-  };
-
-/**
- * 某市场当地的日期串 + 当日分钟数。
- *
- * 🚨 **走 Intl 而非手工时区偏移** —— 原实现是 `now + 8h` 再取 UTC 字段, 对 `Asia/Shanghai`
- * (恒 UTC+8 无 DST) 答案正确, 但那份正确性只是巧合: 换任何有 DST 的市场 (`America/New_York`)
- * 都会静默错一小时, 而且错在**边界那一小时**上 —— 开盘/收盘各差一格, 不报错。
- * 未登记市场直接抛: 静默套用别的市场的时段, 正是这条要根除的失败形态。
- */
-export function marketNow(market: string, now: Date): { dateOnly: string; minutesOfDay: number } {
-  const session = MARKET_SESSION[market];
-  if (session === undefined) {
-    throw new Error(
-      `[intraday] 市场 "${market}" 未登记盘中时段 —— ` +
-        `加市场须在 MARKET_SESSION 显式登记其时区与时段 (禁默认套用 A 股时窗)`,
-    );
-  }
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: session.timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(now);
-  const pick = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  return {
-    dateOnly: `${pick('year')}-${pick('month')}-${pick('day')}`,
-    minutesOfDay: Number(pick('hour')) * 60 + Number(pick('minute')),
-  };
-}
-
-/** 该市场连续竞价时段判定 (闭区间; 午休落在两段之间 ⇒ false)。复杂度 O(段数)。 */
-export function isWithinTradingSession(market: string, minutesOfDay: number): boolean {
-  const session = MARKET_SESSION[market];
-  if (session === undefined) return false;
-  return session.segments.some(([from, to]) => minutesOfDay >= from && minutesOfDay <= to);
-}
 
 /** 一 tick 处置结果 (bullmq returnvalue 供排障 + IT 断言点)。 */
 export type IntradayTickOutcome =

@@ -67,9 +67,12 @@ import { SyncEarningsEventUseCase } from './sync-earnings-event.usecase.js';
 import { SyncProfileUseCase } from './sync-profile.usecase.js';
 import { SyncTierRecalc } from './sync-tier-recalc.js';
 import { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
+import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
+import { AnchorColdStartSubscriber } from './anchor-cold-start.subscriber.js';
 import { BackfillPacer, DEFAULT_BACKFILL_PACER_CONFIG } from './backfill-pacer.js';
 import { DimensionExecutorRegistry } from './dimension-executor.js';
-import { MarketdataSyncQueue, MarketdataSyncWorker } from './marketdata-sync.worker.js';
+import { MarketdataSyncQueue } from './marketdata-sync.queue.js';
+import { MarketdataSyncWorker } from './marketdata-sync.worker.js';
 import { SyncTickDriver } from './sync-tick-driver.js';
 import { CalendarHitCheck } from './calendar-hit-check.js';
 import { FreshnessSlaCheck } from './freshness-sla.check.js';
@@ -520,6 +523,12 @@ function collectionPort<T extends object>(
     // MARKETDATA_WORKER_DISABLED sentinel 置位 (CLI 进程, D6) → worker 不启动。
     MarketdataSyncQueue,
     MarketdataSyncWorker,
+    // 060 T005-T007 锚首建冷启动编排: 由 worker 的 `sync:anchor-cold-start` 分支路由
+    // (**不**进 DimensionExecutorRegistry —— 它是事件驱动的一次性补数, 不是周期维度)。
+    AnchorColdStartUseCase,
+    // 060 T008 建锚事件消费方 (R3 CROSS-CONTEXT-ASYNC 消费端): OnModuleInit 自注册进平台层
+    // OutboxSubscriberRegistry, 只做「校验 + 入队」—— relay 是单线 cron, 采集必须异步。
+    AnchorColdStartSubscriber,
     // PG 真相层 tick 驱动 (T013/T014): 分钟级 @Cron 扫 nextFireAt → 条件 UPDATE 抢占 →
     // 交易日 gate → D3 装配组 flow; MARKETDATA_TICK_ENABLED 灰度 flag 默认关 (US7)。
     SyncTickDriver,
