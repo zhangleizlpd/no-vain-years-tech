@@ -112,7 +112,10 @@ export class OptionSnapshotRemediation {
    */
   async retrySameDay(now: Date): Promise<RemediationOutcome> {
     const sessionDate = marketDateFor(US_MARKET_SCOPE, now);
-    if (!(await this.calendar.isTradingDay(US_MARKET_SCOPE[0], sessionDate))) {
+    // 062 T006 机械映射: 旧布尔 `!isTradingDay(...)` ≡ `classify(...) === 'non-trading'` ——
+    // 只有**确认**是非交易日才短路, `unknown` 继续往下走 (与改动前日历未 populate 时 fail-open
+    // 逐点相同, Impl Guardrail 1)。`unknown` 的显式分派与留痕留给 T009。
+    if ((await this.calendar.classify(US_MARKET_SCOPE[0], sessionDate)) === 'non-trading') {
       return this.idle('same_day_retry', sessionDate);
     }
     const before = await this.coverage.evaluate(sessionDate);
@@ -158,7 +161,8 @@ export class OptionSnapshotRemediation {
    */
   async backfillPremarket(now: Date): Promise<RemediationOutcome> {
     const today = marketDateFor(US_MARKET_SCOPE, now);
-    if (!(await this.calendar.isTradingDay(US_MARKET_SCOPE[0], today))) {
+    // 062 T006 机械映射, 同 {@link retrySameDay} 那一格 (Impl Guardrail 1)。
+    if ((await this.calendar.classify(US_MARKET_SCOPE[0], today)) === 'non-trading') {
       // 非交易日无盘前窗口 (OI 也不会翻新) ⇒ 不补; 下一个交易日的盘前仍能补回同一个 session。
       return this.idle('premarket_backfill', null);
     }

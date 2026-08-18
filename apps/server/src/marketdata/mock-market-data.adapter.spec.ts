@@ -17,12 +17,13 @@ describe('MockMarketDataAdapter (8 端口确定性 fixtures)', () => {
     expect(await mock.enumerate(['hk'])).toEqual([]);
   });
 
-  it('isTradingDay: 工作日 true / 周末 false (确定性)', async () => {
-    expect(await mock.isTradingDay('cn', '2026-06-01')).toBe(true); // Mon
-    expect(await mock.isTradingDay('cn', '2026-06-06')).toBe(false); // Sat
+  it('classify: 工作日 trading / 周末 non-trading (确定性, 恒不返 unknown)', async () => {
+    // Mock 的日历自身就是判据 ⇒ 不存在「还没填到」这回事, 三态在 dev/test 下退化成两态。
+    expect(await mock.classify('cn', '2026-06-01')).toBe('trading'); // Mon
+    expect(await mock.classify('cn', '2026-06-06')).toBe('non-trading'); // Sat
   });
 
-  it('fetchTradingDates: [from,to] 内周一~周五 + servedBy=mock (与 isTradingDay 同口径, 排除周末)', async () => {
+  it('fetchTradingDates: [from,to] 内周一~周五 + servedBy=mock (与 classify 同口径, 排除周末)', async () => {
     // 2026-06-01(Mon)~06-07(Sun) → 05-01..05 工作日, 排除 06-06(Sat)/06-07(Sun)。
     expect(await mock.fetchTradingDates('cn', '2026-06-01', '2026-06-07')).toEqual({
       dates: ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05'],

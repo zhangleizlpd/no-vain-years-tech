@@ -129,7 +129,10 @@ export class FreshnessSlaCheck {
       const key = `${market}:${date}`;
       let open = openCache.get(key);
       if (open === undefined) {
-        open = await this.calendar.isTradingDay(market, date);
+        // 062 T006 机械映射: 旧布尔 `isTradingDay` ≡ `classify(...) !== 'non-trading'` ——
+        // `unknown` 走**当开市**侧 (保守多算龄), 与改动前日历未 populate 时 fail-open 逐点
+        // 相同 (Impl Guardrail 1)。`unknown` 的显式语义分派 (含留痕) 留给 T009。
+        open = (await this.calendar.classify(market, date)) !== 'non-trading';
         openCache.set(key, open);
       }
       if (open) return true;

@@ -4,6 +4,7 @@ import { PrismaService } from '../../src/security/prisma.service';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 import { CalendarSourceFallbackChain } from '../../src/marketdata/calendar-source-fallback-chain.adapter';
 import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
+import { isTradingDayGateOpen } from '../../src/marketdata/trading-day-gate';
 import { TradingCalendarSyncService } from '../../src/marketdata/trading-calendar-sync.service';
 import type { TradingCalendarSource } from '../../src/marketdata/trading-calendar-source.port';
 
@@ -144,10 +145,12 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
     expect(l2.fetchTradingDates).not.toHaveBeenCalled();
   });
 
-  it('L1 成功 → 落库后 gate 据表判定 (交易日 true / 窗内周末 false, 不再 fail-open)', async () => {
+  it('L1 成功 → 落库后 gate 据表判定 (交易日 trading / 窗内周末 non-trading, 填充前 unknown)', async () => {
     const gate = new DbTradingCalendarAdapter(prisma);
-    // 填充前: 表空 → 近窗零行 → **fail-open true** (空表不静默停摆整管线)。
-    expect(await gate.isTradingDay('cn', '2026-06-20')).toBe(true);
+    // 填充前: 表空 + 无覆盖声明 → **unknown** (062 T006 起; 改动前是「近窗零行 ⇒ fail-open
+    // true」)。经调用点的机械映射 `!== 'non-trading'` 后 gate 仍开 —— 空表照样不静默停摆整管线。
+    expect(await gate.classify('cn', '2026-06-20')).toBe('unknown');
+    expect(await isTradingDayGateOpen(gate, 'cn', '2026-06-20')).toBe(true);
 
     await serviceWith([healthyNode({ cn: CN_TRADING_DATES }, 'tencent')]).syncRange(
       ['cn'],
@@ -155,9 +158,9 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
       TO,
     );
 
-    // 填充后: gate 开启 = 据表真判定, 不再靠 fail-open 兜底。
-    expect(await gate.isTradingDay('cn', '2026-07-13')).toBe(true); // 周一, 表内有行
-    expect(await gate.isTradingDay('cn', '2026-06-20')).toBe(false); // 周六, 近窗有行 → 真非交易日
+    // 填充后: 覆盖声明已推到 [FROM, TO] ⇒ 据表真判定, 不再靠放行侧兜底。
+    expect(await gate.classify('cn', '2026-07-13')).toBe('trading'); // 周一, 表内有行
+    expect(await gate.classify('cn', '2026-06-20')).toBe('non-trading'); // 周六, 声明内无行
   });
 
   it('🚨 L1 抛错 (源被下线) → 自动降级 L2 → 日历**完整**落库 + gate 照常开启', async () => {
@@ -172,8 +175,8 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
     expect(l2.fetchTradingDates).toHaveBeenCalledOnce();
 
     const gate = new DbTradingCalendarAdapter(prisma);
-    expect(await gate.isTradingDay('cn', '2026-07-13')).toBe(true);
-    expect(await gate.isTradingDay('cn', '2026-06-20')).toBe(false);
+    expect(await gate.classify('cn', '2026-07-13')).toBe('trading');
+    expect(await gate.classify('cn', '2026-06-20')).toBe('non-trading');
   });
 
   it('🚨 降级后结果与 L1 成功时**同构** (service 返回值 + 落库行逐一等值)', async () => {

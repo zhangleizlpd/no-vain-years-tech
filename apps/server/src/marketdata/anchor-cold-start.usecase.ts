@@ -162,13 +162,15 @@ export class AnchorColdStartUseCase {
     }
 
     // 「今天是不是交易日」**一次查、两处用**: 盘中闸与 §D4 的三元组决策问的是同一件事,
-    // 查两遍就是两处判据。端口对未 populate 的日历 fail-open, 但走到这里 `targetSession`
-    // 已定到 ⇒ 日历必已 populate ⇒ fail-open 够不着 (定位目标日那一步为何不用它, 见
-    // {@link lastClosedTradingDay})。
-    const todayIsTradingDay = await this.calendar.isTradingDay(
-      market,
-      marketDateFor([market], now),
-    );
+    // 查两遍就是两处判据。
+    //
+    // 062 T006 机械映射: 旧布尔 `isTradingDay` ≡ `classify(...) !== 'non-trading'` ——
+    // `unknown` (日历没填到这儿) 走**当交易日**侧, 与改动前端口对未 populate 的日历 fail-open
+    // 逐点相同 (Impl Guardrail 1)。走到这里 `targetSession` 已定到 ⇒ 日历必已填过 ⇒ 这一格
+    // 正常够不着 `unknown` (定位目标日那一步为何不用端口, 见 {@link lastClosedTradingDay})。
+    // `unknown` 的显式分派 (写敏感档不猜口径 ⇒ abandon) 留给 T009。
+    const todayIsTradingDay =
+      (await this.calendar.classify(market, marketDateFor([market], now))) !== 'non-trading';
 
     // 🚨 闸 = 「该场进行中」**且**「今天真有这一场」, 两个条件缺一不可:
     //
@@ -187,7 +189,7 @@ export class AnchorColdStartUseCase {
     //    📌 §D4 第四行 (`today > target` 且今天非交易日 ⇒ eod) 本就是为周末这一档写的 ——
     //    没有这个 `&&`, 那一行在 ET 场内钟点上**够不到**。
     //
-    // 方向也是安全的: 日历 fail-open 返 true ⇒ 闸仍然收紧 ⇒ 写库 fail-closed。
+    // 方向也是安全的: 日历 `unknown` 映射成 true ⇒ 闸仍然收紧 ⇒ 写库 fail-closed。
     if (isSessionUnderway(market, marketNow(market, now).minutesOfDay) && todayIsTradingDay) {
       return this.finish(input, COLD_START_OUTCOME.INTRADAY_SKIPPED, { targetSession });
     }
@@ -346,10 +348,10 @@ export class AnchorColdStartUseCase {
    * `trading_day` 中 ≤ 「已收盘 session 日期上界」的**最大交易日**。缺行返 `null`。
    *
    * ⚠️ **蓄意不走 `TRADING_CALENDAR_PORT`**, 尽管它就是交易日历的读端口 —— 它只有
-   * `isTradingDay(market, date)` 一个方法, 拿它找「最近一个已收盘交易日」只能逐日回退着问,
-   * 而 `DbTradingCalendarAdapter` 对**未 populate 的日历 fail-open 返 true** (那是它为「空表
-   * 别让整条管线停摆」刻意选的方向)。⇒ 日历真缺行时它会**编出**一个交易日, 正是 FR-009
-   * 「MUST NOT 猜测日期」禁的那件事。本查询要的是 fail-closed, 故直查自有表 —— 形态与
+   * `classify(market, date)` 一个方法, 拿它找「最近一个已收盘交易日」只能逐日回退着问, 而
+   * 日历没填到那儿时它给的是 `unknown`, 各调用点又统一把 `unknown` 映射到**放行**侧 (062 T006
+   * Guardrail 1) ⇒ 日历真缺行时逐日回退会**编出**一个交易日, 正是 FR-009「MUST NOT 猜测日期」
+   * 禁的那件事。本查询要的是 fail-closed, 故直查自有表 —— 形态与
    * `option-snapshot-remediation.resolvePreviousTradingDay` /
    * `sync-option-snapshot.resolveOiSessionDate` 逐字同构 (marketdata 自有表, 非跨 ctx)。
    *

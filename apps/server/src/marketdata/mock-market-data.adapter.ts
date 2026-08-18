@@ -6,6 +6,7 @@ import type {
 } from './trading-calendar-source.port.js';
 import type { InstrumentUniversePort } from './instrument-universe.port.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
+import type { TradingDayStatus } from './trading-day.rules.js';
 import type { EodBarPort } from './eod-bar.port.js';
 import type { FundamentalPort } from './fundamental.port.js';
 import type { FinancialsPort } from './financials.port.js';
@@ -169,10 +170,12 @@ export class MockMarketDataAdapter
     return new Map();
   }
 
-  async isTradingDay(_market: string, date: string): Promise<boolean> {
+  async classify(_market: string, date: string): Promise<TradingDayStatus> {
     // 确定性: 周一~周五视为交易日 (Mock 不查节假日)。
+    // 062 T006: Mock 的日历**自身就是判据**, 不存在「还没填到」这回事 ⇒ 恒不返 `unknown`,
+    // 三态在 dev/test 下退化成两态, 与改动前的布尔逐点等价 (零行为变更)。
     const day = new Date(`${date}T00:00:00Z`).getUTCDay();
-    return day >= 1 && day <= 5;
+    return day >= 1 && day <= 5 ? 'trading' : 'non-trading';
   }
 
   async fetchTradingDates(
@@ -180,7 +183,7 @@ export class MockMarketDataAdapter
     from: string,
     to: string,
   ): Promise<TradingCalendarFetchResult> {
-    // 确定性: [from, to] 内周一~周五视为交易日 (与 isTradingDay mock 同口径, 无外呼)。
+    // 确定性: [from, to] 内周一~周五视为交易日 (与 classify mock 同口径, 无外呼)。
     const dates: string[] = [];
     const end = new Date(`${to}T00:00:00Z`);
     for (let d = new Date(`${from}T00:00:00Z`); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {

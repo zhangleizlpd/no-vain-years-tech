@@ -730,6 +730,17 @@ function collectionPort<T extends object>(
   // 前两个是**端口 token**, 这个是**为一件事造的 use case**。刻意不 export `EOD_BAR_PORT`
   // 本身: 那等于把「按市场路由 vendor + 落库口径」这套策略搬到 optionsdesk 去, 而调用方真正
   // 需要的只是「给我这只票最近一根收盘」。边越窄, 将来换 vendor 时要动的地方越少。
-  exports: [REALTIME_QUOTE_PORT, MARKET_STATE_PORT, EnsureLatestEodBarUseCase],
+  //
+  // 📌 **第四个口子 (062 T006)**: `TRADING_CALENDAR_PORT`。开它是为了让 optionsdesk 的盘中闸
+  // 与陈旧度基准**从裸查 `prisma.tradingDay` 改成注入端口** (T008 / T010) —— 那才是把跨 ctx
+  // 边变成 `check-server-moat` 扫得见的 `CROSS-CONTEXT-SYNC` 注入点的唯一走法。撞到
+  // `marketdata-rules` 的 boundaries lint 红说明接法走偏了 (该注入却写成了 import), 修法是回到
+  // 端口, **MUST NOT 动 allowlist**。
+  exports: [
+    REALTIME_QUOTE_PORT,
+    MARKET_STATE_PORT,
+    TRADING_CALENDAR_PORT,
+    EnsureLatestEodBarUseCase,
+  ],
 })
 export class MarketdataModule {}

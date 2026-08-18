@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
+import type { TradingDayStatus } from './trading-day.rules.js';
 import {
   daysToExpiry,
   isTradingDayGateOpen,
@@ -14,20 +15,31 @@ import {
  * + Shanghai 今日格式。SyncRun 落库 (status=skipped) 由 recorder Testcontainers 测覆盖。
  */
 describe('isTradingDayGateOpen', () => {
-  function calendar(result: boolean): { port: TradingCalendarPort; spy: ReturnType<typeof vi.fn> } {
+  function calendar(result: TradingDayStatus): {
+    port: TradingCalendarPort;
+    spy: ReturnType<typeof vi.fn>;
+  } {
     const spy = vi.fn(async () => result);
-    return { port: { isTradingDay: spy }, spy };
+    return { port: { classify: spy }, spy };
   }
 
   it('交易日 → gate open true, 透传 market/date 给 calendar', async () => {
-    const { port, spy } = calendar(true);
+    const { port, spy } = calendar('trading');
     expect(await isTradingDayGateOpen(port, 'cn', '2026-06-03')).toBe(true);
     expect(spy).toHaveBeenCalledWith('cn', '2026-06-03');
   });
 
   it('非交易日 → gate closed false (调用方据此整管线 skip)', async () => {
-    const { port } = calendar(false);
+    const { port } = calendar('non-trading');
     expect(await isTradingDayGateOpen(port, 'cn', '2026-06-06')).toBe(false);
+  });
+
+  it('🚨 062 T006 Guardrail 1: `unknown` → gate **仍开** (映射是 `!== non-trading`)', async () => {
+    // 「日历还没填到这儿」MUST NOT 被读成「今天不是交易日」—— 那会让上线首刻 (覆盖声明表刚建
+    // ⇒ 全 unknown) 整条夜间管线恒 skip, 与 062 之前 fail-open 的方向正好相反, 且不会有任何
+    // 既有断言变红。这一条就是那颗钉子。
+    const { port } = calendar('unknown');
+    expect(await isTradingDayGateOpen(port, 'cn', '2026-06-03')).toBe(true);
   });
 });
 

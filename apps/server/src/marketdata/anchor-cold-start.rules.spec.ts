@@ -197,8 +197,8 @@ describe('与 option-snapshot-remediation 的等值回归', () => {
       },
     } as unknown as PrismaService;
     const calendar = {
-      isTradingDay: vi.fn(async (_market: string, date: string) =>
-        (US_TRADING_DAYS as readonly string[]).includes(date),
+      classify: vi.fn(async (_market: string, date: string) =>
+        (US_TRADING_DAYS as readonly string[]).includes(date) ? 'trading' : 'non-trading',
       ),
     } as unknown as TradingCalendarPort;
     const remediation = new OptionSnapshotRemediation(

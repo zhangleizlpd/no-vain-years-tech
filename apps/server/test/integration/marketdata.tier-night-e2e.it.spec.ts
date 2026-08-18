@@ -42,7 +42,7 @@ const CFG: MarketdataSyncConfig = {
   optionCoverageThreshold: 1,
 };
 
-const calendarOpen: TradingCalendarPort = { isTradingDay: async () => true };
+const calendarOpen: TradingCalendarPort = { classify: async () => 'trading' };
 
 const CODES = ['000001', '000002', '000003', '000004', '000005'];
 const T0_CODES = ['000004', '000005']; // 自选并集 (高 id → 与 id 序可分辨)

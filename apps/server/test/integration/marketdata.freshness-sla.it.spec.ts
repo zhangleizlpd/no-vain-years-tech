@@ -10,10 +10,10 @@ const NOW = new Date('2026-06-05T00:30:00Z');
 
 /** 工作日历 stub: 周一~周五交易日 (Mock adapter 同语义); 可整体关 (长假模拟)。 */
 const weekdayCalendar = (allClosed = false): TradingCalendarPort => ({
-  isTradingDay: async (_market: string, date: string) => {
-    if (allClosed) return false;
+  classify: async (_market: string, date: string) => {
+    if (allClosed) return 'non-trading';
     const day = new Date(`${date}T00:00:00Z`).getUTCDay();
-    return day >= 1 && day <= 5;
+    return day >= 1 && day <= 5 ? 'trading' : 'non-trading';
   },
 });
 
@@ -144,12 +144,26 @@ describe('019 T017 FreshnessSlaCheck (SC-S06 四态)', () => {
     await seedRun('sync:eod_bar', 'success', new Date('2026-06-02T14:30:00Z'));
     vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     const hkOnlyCalendar: TradingCalendarPort = {
-      isTradingDay: async (market, date) => {
-        if (market !== 'hk') return false; // cn/us 恒休市 — 证明未走硬编码 cn。
+      classify: async (market, date) => {
+        if (market !== 'hk') return 'non-trading'; // cn/us 恒休市 — 证明未走硬编码 cn。
         const day = new Date(`${date}T00:00:00Z`).getUTCDay();
-        return day >= 1 && day <= 5;
+        return day >= 1 && day <= 5 ? 'trading' : 'non-trading';
       },
     };
     expect(await build(hkOnlyCalendar).check(NOW)).toEqual(['eod_bar']);
+  });
+
+  it('🚨 ⑧ 062 T006 Guardrail 1: 日历 `unknown` ≡ 当开市 (与全交易日日历逐点同结果)', async () => {
+    // 本调用点的机械映射是 `!== 'non-trading'` —— `unknown` 走**当开市**侧 (保守多算龄), 与
+    // 改动前日历未 populate 时 fail-open 返 true 逐点相同。写成 `=== 'trading'` 会让上线首刻
+    // (覆盖声明空 ⇒ 全 unknown) 折算龄恒 0 ⇒ **再陈旧也永不告警**, 而没有任何既有断言会红。
+    await seedRun('sync:eod_bar', 'success', new Date('2026-06-02T14:30:00Z'));
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+    const allUnknown: TradingCalendarPort = { classify: async () => 'unknown' };
+    const allTrading: TradingCalendarPort = { classify: async () => 'trading' };
+    expect(await build(allUnknown).check(NOW)).toEqual(await build(allTrading).check(NOW));
+    // 且**不是**空数组 —— 两边同为 `[]` 时上面那条恒真, 起不到钉子作用。
+    expect(await build(allUnknown).check(NOW)).toEqual(['eod_bar']);
   });
 });

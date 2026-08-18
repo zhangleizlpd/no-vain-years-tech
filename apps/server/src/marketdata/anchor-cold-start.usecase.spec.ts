@@ -11,6 +11,7 @@ import type { MarketdataSyncQueue } from './marketdata-sync.queue.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
+import type { TradingDayStatus } from './trading-day.rules.js';
 
 /** 北京周六 10:00 = ET 周五 22:00 (盘后, 非盘中)。与 rules spec 共用同一周固定日历。 */
 const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
@@ -38,8 +39,12 @@ interface Overrides {
   snapshotRowsAfterCollect?: number;
   /** `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
-  /** `TRADING_CALENDAR_PORT.isTradingDay` 对**今天**的答案 (周末 / 节假日 = false)。 */
-  todayIsTradingDay?: boolean;
+  /**
+   * `TRADING_CALENDAR_PORT.classify` 对**今天**的答案 (周末 / 节假日 = `non-trading`)。
+   * 062 T006 起是三态: use case 的机械映射为 `!== 'non-trading'` ⇒ `unknown` 与 `trading`
+   * 在本片**逐点等价** (下面有一条专门的等价断言钉住它)。
+   */
+  todayCalendarStatus?: TradingDayStatus;
 }
 
 function build(overrides: Overrides = {}) {
@@ -114,8 +119,8 @@ function build(overrides: Overrides = {}) {
   });
   const snapshot = { collect } as unknown as SyncOptionSnapshotUseCase;
 
-  const isTradingDay = vi.fn(async () => overrides.todayIsTradingDay ?? true);
-  const calendar = { isTradingDay } as unknown as TradingCalendarPort;
+  const classify = vi.fn(async () => overrides.todayCalendarStatus ?? 'trading');
+  const calendar = { classify } as unknown as TradingCalendarPort;
 
   return {
     usecase: new AnchorColdStartUseCase(prisma, gate, syncQueue, snapshot, calendar),
@@ -131,7 +136,7 @@ function build(overrides: Overrides = {}) {
     enqueueFlow,
     jobOpts,
     collect,
-    isTradingDay,
+    classify,
   };
 }
 
@@ -403,7 +408,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 北京周日 00:00 = ET 周六 12:00 —— 钟点落在 09:30–16:00 内, 但那天根本没有场。
     // 境内用户周末夜里做研究建锚正是这个时段, 判成盘中会让快照**永久**缺失
     // (intraday_skipped 是终态不重试; 常规轮周一晚写的是周一的数据, 不回补周五)。
-    const ctx = build({ todayIsTradingDay: false, snapshotRowsAfterCollect: 1 });
+    const ctx = build({ todayCalendarStatus: 'non-trading', snapshotRowsAfterCollect: 1 });
     const result = await ctx.usecase.run({
       ...SNAPSHOT_PHASE,
       now: new Date('2026-08-15T16:00:00Z'),
@@ -416,7 +421,19 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
   });
 
   it('交易日的场内钟点仍判进行中 (回归: 修周末档 MUST NOT 顺手把真盘中放行)', async () => {
-    const ctx = build({ todayIsTradingDay: true });
+    const ctx = build({ todayCalendarStatus: 'trading' });
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
+    expect(ctx.collect).not.toHaveBeenCalled();
+  });
+
+  it('🚨 062 T006 Guardrail 1: 日历 `unknown` ≡ `trading` (映射是 `!== non-trading`)', async () => {
+    // 本调用点的机械映射把 `unknown` 放在**当交易日**侧 —— 方向安全 (闸收紧 ⇒ 写库
+    // fail-closed), 且与改动前日历未 populate 时 fail-open 返 true 逐点相同。写成
+    // `=== 'trading'` 会让上线首刻 (覆盖声明空 ⇒ 全 unknown) 的盘中建锚**照样写库**,
+    // 而那正是 SC-002 要消灭的「未收盘 session 的快照行」。
+    const ctx = build({ todayCalendarStatus: 'unknown' });
     const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
