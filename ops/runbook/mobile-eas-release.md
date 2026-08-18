@@ -15,6 +15,8 @@
 
 `workflow_dispatch` 手动触发一律 bypass phase gate。
 
+**内测包怎么进手机**：`release-android-internal.yml` 跑完后，run 的 **Summary 页**顶部有一条 EAS 安装直链（`https://expo.dev/artifacts/eas/*.apk`）——**无需登录**，手机浏览器打开即下即装；同 package 同 keystore ⇒ 覆盖升级不必卸载。同 run 底部那个 workflow artifact 是 **zip 且要登录 GitHub**，只作 14 天归档兜底，别拿它当分发口。
+
 ## 2. 双账号轮换 A/B（省 EAS Free 额度）
 
 EAS Free = **15 Android + 15 iOS 构建/月/账号**，每月 1 号重置。额度记在 **project owner 账号**头上（不是登录谁），故轮换 = 切 project（owner+projectId）成对换 token，由一个开关统一驱动。
