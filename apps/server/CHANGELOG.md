@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.30.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.29.0...server-v0.30.0) (2026-08-18)
+
+
+### Features
+
+* **core:** 行情时点语义收口三处 —— 建锚即有价 / 手动补采时点闸 / hk 时段单段化 ([#95](https://github.com/zhangleizlpd/no-vain-years-tech/issues/95)) ([bfcf1e6](https://github.com/zhangleizlpd/no-vain-years-tech/commit/bfcf1e6585f1118e7acfc45e7b8219a9cd5ce8bd))
+* **marketdata:** 061 行情实时面 + 美股正股盘中价接入期权台雷达 ([#92](https://github.com/zhangleizlpd/no-vain-years-tech/issues/92)) ([9069d3f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/9069d3f0af6dcd8ac86667f93f640cad61f79cbb))
+
 ## [0.29.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.28.1...server-v0.29.0) (2026-08-18)
 
 
