@@ -3,7 +3,7 @@
     "name": "不负光阴",
     "slug": "no-vain-years-mobile",
     "scheme": "nvy",
-    "version": "0.10.1",
+    "version": "0.11.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
