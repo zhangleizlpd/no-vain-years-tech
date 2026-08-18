@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.31.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.30.0...server-v0.31.0) (2026-08-18)
+
+
+### Features
+
+* **core:** 062 交易日历前瞻视野与三态语义收口 —— 修三处生产静默失效 ([#99](https://github.com/zhangleizlpd/no-vain-years-tech/issues/99)) ([a5a73ab](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a5a73abde0d9b6f1850fab3fb282bb2ee3072829))
+
 ## [0.30.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.29.0...server-v0.30.0) (2026-08-18)
 
 
