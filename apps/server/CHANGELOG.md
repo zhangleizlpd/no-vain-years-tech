@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.31.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.31.0...server-v0.31.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* **marketdata:** 心跳 served_by 归位活源链 —— 前瞻段覆写它会让主源之死不可观测 ([#101](https://github.com/zhangleizlpd/no-vain-years-tech/issues/101)) ([31c4318](https://github.com/zhangleizlpd/no-vain-years-tech/commit/31c43188d38a9e741fd0c1b0ea11fd2ae54d5c0c))
+
 ## [0.31.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.30.0...server-v0.31.0) (2026-08-18)
 
 
