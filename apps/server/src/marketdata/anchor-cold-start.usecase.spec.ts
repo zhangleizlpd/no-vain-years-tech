@@ -41,8 +41,8 @@ interface Overrides {
   budgetExhausted?: boolean;
   /**
    * `TRADING_CALENDAR_PORT.classify` 对**今天**的答案 (周末 / 节假日 = `non-trading`)。
-   * 062 T006 起是三态: use case 的机械映射为 `!== 'non-trading'` ⇒ `unknown` 与 `trading`
-   * 在本片**逐点等价** (下面有一条专门的等价断言钉住它)。
+   * 062 T009 起三态**各走各的**: `trading` / `non-trading` 进 §D4 决策表, `unknown` 直接
+   * 放弃并落 `calendar_missing` (写敏感档不猜口径, `state_branch` 7)。
    */
   todayCalendarStatus?: TradingDayStatus;
 }
@@ -428,16 +428,20 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     expect(ctx.collect).not.toHaveBeenCalled();
   });
 
-  it('🚨 062 T006 Guardrail 1: 日历 `unknown` ≡ `trading` (映射是 `!== non-trading`)', async () => {
-    // 本调用点的机械映射把 `unknown` 放在**当交易日**侧 —— 方向安全 (闸收紧 ⇒ 写库
-    // fail-closed), 且与改动前日历未 populate 时 fail-open 返 true 逐点相同。写成
-    // `=== 'trading'` 会让上线首刻 (覆盖声明空 ⇒ 全 unknown) 的盘中建锚**照样写库**,
-    // 而那正是 SC-002 要消灭的「未收盘 session 的快照行」。
+  it('🚨 062 T009: 日历 `unknown` ⇒ 放弃并落 calendar_missing, MUST NOT 猜口径 (state_branch 7)', async () => {
+    // 写敏感档这一格**不能**沿用盘中采集闸的「不知道就照跑」: 猜「是交易日」落
+    // `premarket_backfill` + OI 归属被补那场, 猜「不是」落 `eod` + OI 再往前一场 ——
+    // 差一整天的持仓量归属, 且**不报错**, 事后要人工回删。
+    //
+    // 时钟蓄意停在**盘中**: 结局仍须是 `calendar_missing` 而不是 `intraday_skipped` ——
+    // 后者是「一切正常」的一档, 折进去等于把该被人看见的事藏起来 (FR-027 零折叠)。
     const ctx = build({ todayCalendarStatus: 'unknown' });
     const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
 
-    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
     expect(ctx.collect).not.toHaveBeenCalled();
+    // 目标日已定位到 ⇒ 仍落痕, 人工介入时第一手信息不丢。
+    expect(recordedRow(ctx.runUpsert).targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
   });
 
   it('🚨 采集跑完但快照仍不在库 ⇒ backfill_incomplete, MUST NOT 记成 backfilled (FR-027a)', async () => {
