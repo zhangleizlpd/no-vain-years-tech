@@ -223,6 +223,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       'TRUNCATE optionsdesk.anchor, optionsdesk.anchor_change RESTART IDENTITY',
     );
     await prisma.$executeRawUnsafe('TRUNCATE marketdata.trading_day RESTART IDENTITY CASCADE');
+    await prisma.$executeRawUnsafe('TRUNCATE marketdata.calendar_coverage');
     await redis.flushdb();
     marketStatePort.calls = 0;
     marketStatePort.shouldFail = false;
@@ -260,6 +261,16 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
 
   async function seedTradingDay(market: string, date: string): Promise<void> {
     await prisma.tradingDay.create({ data: { market, date: day(date) } });
+  }
+
+  /**
+   * 062 T008 起「无 `trading_day` 行」只有配上覆盖声明才等于「非交易日」—— 声明缺席给的是
+   * 「未知」(闸放行)。故断言 `skipped-holiday` 的用例必须显式说出「这一段已经填过了」。
+   */
+  async function seedCoverage(market: string, from: string, to: string): Promise<void> {
+    await prisma.calendarCoverage.create({
+      data: { market, coveredFrom: day(from), coveredTo: day(to), servedBy: 'it-seed' },
+    });
   }
 
   const rowOf = (ticker: string) => prisma.anchor.findUniqueOrThrow({ where: { ticker } });
@@ -393,7 +404,9 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
     it('市场状态显示开市 但 当日非交易日 → 不采集（两闸取交集, 交易日闸不可被市场状态顶替）', async () => {
       await seedAnchor('us:AOS');
       marketStatePort.sessions = [{ market: 'us', session: 'regular' }];
-      // 蓄意**不**塞 trading_day 行 —— 源侧状态机滞后（节假日仍报 regular）就是这个现场。
+      // 蓄意**不**塞 trading_day 行, 但声明「这一段已经填过了」—— 源侧状态机滞后（节假日仍报
+      // regular）就是这个现场; 只有「填过了且没有这一天」才判非交易日（062 三态）。
+      await seedCoverage('us', '2026-01-01', '2026-12-31');
       realtimeQuotePort.quotes.set('us:AOS', { price: '36', capturedAt: NOW });
 
       const outcome = ticked(await scheduler.run(NOW));
