@@ -285,6 +285,63 @@ describe('062 T004 交易日历前瞻视野 — populate 两段 + coverage 推�
     expect(cn?.to).not.toBe('2027-12-31'); // 🚨 绝不伪造次年末
   });
 
+  it('seed CLI 的推进路径 = populate 的同一条 → 宽区间灌完声明即覆盖该区间 (T005 · FR-009)', async () => {
+    // `marketdata-trading-day-seed.cli.ts` 唯一的写库动作就是 `syncRange(markets, from, to)`,
+    // 而 `syncRange` 委托 `syncRangeWith` —— 与 populate 两段共用同一条声明推进路径。
+    // 🚫 **MUST NOT 在 CLI 里另写一份 coverage 写入逻辑** (FR-004: 两处维护必漂移)。上线灌视野
+    // 靠它, 所以「跑完之后声明真的覆盖到指定区间」必须有机器化断言。
+    const hist = healthy('tencent');
+    const fwd = healthy('static');
+
+    await serviceWith(hist.source, fwd.source).syncRange(['cn'], '2015-01-01', '2026-08-18');
+
+    expect(await coverageOf('cn')).toEqual({
+      from: '2015-01-01',
+      to: '2026-08-18',
+      servedBy: 'tencent',
+    });
+    expect(fwd.calls).toHaveLength(0); // seed 只走历史源
+  });
+
+  it('前瞻段写过的日期与历史段活源答案相反 → WARN + 计数留痕, 且**两边数据都不动** (T005 · state_branch 17)', async () => {
+    // plan §D8: 前瞻段先写、历史段后到 —— 说的是**同一个日期**被两条路径先后写到 (某日在成为
+    // 「今天」之前先由前瞻段落库, 日后再被历史段的活源覆盖到), 与 populate 内两段的执行顺序无关。
+    //
+    // 🚫 **MUST NOT 自动订正**: 谁对谁错要人判 —— 交易所临时休市 (前瞻年历错) 与年历解析错
+    // (活源对) 两者处置**完全相反**。这条留痕的价值是「两条独立路径互为校验」, 单源时代根本
+    // 发现不了这类错。
+    const CONFLICT_DAY = '2026-08-05'; // 落在历史窗 [2026-07-19, 2026-08-18] 内
+    await prisma.tradingDay.create({
+      data: { market: 'cn', date: new Date(`${CONFLICT_DAY}T00:00:00Z`) },
+    });
+    const warns = vi.spyOn(Logger.prototype, 'warn');
+
+    // 活源只给两天, 不含冲突日 ⇒ 「前瞻说是交易日、历史段活源没给」。
+    const hist = stubSource(() => ['2026-07-20', '2026-08-06'], 'tencent');
+    const fwd = healthy('static');
+    await serviceWith(hist.source, fwd.source).populate(NOW);
+
+    const warned = warns.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('交叉校验') && m.includes('cn'));
+    expect(warned).toBeDefined();
+    expect(warned).toContain(CONFLICT_DAY); // 痕里指得出是哪一天
+    expect(warned).toContain('"count":1'); // 计数
+
+    // 🚫 零订正: 冲突日那一行**还在**, 活源给的两天也照常落库 —— 两边数据都没被改动。
+    const cn = await prisma.tradingDay.findMany({
+      where: { market: 'cn' },
+      orderBy: { date: 'asc' },
+    });
+    expect(cn.map((r) => iso(r.date))).toEqual([
+      '2026-07-20',
+      CONFLICT_DAY,
+      '2026-08-06',
+      FWD_FROM,
+      FWD_TO,
+    ]);
+  });
+
   it('🚨 前瞻窗年份按**市场时区**算, 不是宿主 getFullYear() (Impl Guardrail 3 的机器化)', async () => {
     // 北京 2027-01-01 08:00 = ET 2026-12-31 19:00 —— 此刻 cn 在 2027 年、us 还在 2026 年。
     // 宿主年份 (测试机 = Asia/Shanghai) 会给 us 一个 2027-12-31 的窗: 源对次年多半返空,

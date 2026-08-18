@@ -36,6 +36,9 @@ function nextDay(date: string): string {
 /** 心跳 `lastError` 存文截断: vendor 报错可能挟带整页 HTML, 心跳行只需可诊断的开头。 */
 const ERROR_TEXT_MAX = 1000;
 
+/** 交叉校验 WARN 里列举的冲突日上限 (完整口径看 `count`; 日志行不该被一整年的日期撑爆)。 */
+const CROSS_CHECK_SAMPLE_MAX = 20;
+
 /** per-market 填充结果 (IT 断言面 + 日志)。 */
 export interface CalendarSyncResult {
   market: string;
@@ -147,6 +150,9 @@ export class TradingCalendarSyncService {
     for (const market of markets) {
       try {
         const { dates, servedBy } = await source.fetchTradingDates(market, from, to);
+        // 🚨 **必须在 createMany 之前**: 之后取快照就把本次写入也算成「已存在」, 差集恒为空
+        // ⇒ 这条校验静默失效**且不会红**。
+        await this.crossCheckAgainstExisting(market, from, to, dates);
         const { count } = await this.prisma.tradingDay.createMany({
           data: dates.map((d) => ({ market, date: new Date(`${d}T00:00:00Z`) })),
           skipDuplicates: true,
@@ -172,6 +178,61 @@ export class TradingCalendarSyncService {
     }
     this.logger.log(`trading-calendar 填充完成: ${JSON.stringify({ from, to, results })}`);
     return results;
+  }
+
+  /**
+   * **前瞻 / 历史两条路径的交叉校验**留痕 (062 T005, FR-009, `state_branch` 17, plan §D8)。
+   *
+   * 场景: 某日在成为「今天」之前先由**前瞻段**按权威年历落库, 日后被**历史段**的活源覆盖到
+   * —— 同一个日期被两条**物理独立**的路径先后回答。答案相反 (库里有行、本次活源没给) →
+   * `WARN` + 计数, 不阻断本轮。⚠️ 这与 `populate()` 内两段的执行顺序 (先历史后前瞻) 无关。
+   *
+   * 🚫 **MUST NOT 自动订正**: 谁对谁错要人判 —— 「交易所临时休市」(年历错) 与「年历解析错」
+   * (活源对) 两者的处置**完全相反**。本方法**只读**, 一行数据都不动。这条留痕的价值就是
+   * 「两条独立路径互为校验」: 单源时代根本发现不了这一类错。
+   *
+   * ⚠️ 只报「库里有、源没给」这一个方向。反向 (源给了库里没有) 是**填充的常态** (那正是本次
+   * 要写入的新行), 报它等于每轮都刷屏。
+   *
+   * 自身失败只 ERROR 不外抛 —— 观测设施不该把一次成功的填充记成失败 (同 `recordHeartbeat`)。
+   * 复杂度 O(区间内已有行数 + 源返回天数)。
+   */
+  private async crossCheckAgainstExisting(
+    market: string,
+    from: string,
+    to: string,
+    fetched: string[],
+  ): Promise<void> {
+    try {
+      const existing = await this.prisma.tradingDay.findMany({
+        where: {
+          market,
+          date: { gte: new Date(`${from}T00:00:00Z`), lte: new Date(`${to}T00:00:00Z`) },
+        },
+        select: { date: true },
+      });
+      const fetchedSet = new Set(fetched);
+      const disputed = existing
+        .map((row) => row.date.toISOString().slice(0, 10))
+        .filter((date) => !fetchedSet.has(date))
+        .sort();
+      if (disputed.length === 0) return;
+
+      this.logger.warn(
+        `trading-calendar 交叉校验不一致 (库里有行、本次源没给; **不自动订正**, 待人判): ` +
+          `${JSON.stringify({
+            market,
+            from,
+            to,
+            count: disputed.length,
+            dates: disputed.slice(0, CROSS_CHECK_SAMPLE_MAX),
+          })}`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `trading-calendar 交叉校验失败 (不影响填充结果): ${JSON.stringify({ market, from, to, error: String(err) })}`,
+      );
+    }
   }
 
   /**
