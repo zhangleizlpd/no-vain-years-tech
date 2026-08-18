@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.11.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.10.1...mobile-v0.11.0) (2026-08-18)
+
+
+### Features
+
+* **marketdata:** 061 行情实时面 + 美股正股盘中价接入期权台雷达 ([#92](https://github.com/zhangleizlpd/no-vain-years-tech/issues/92)) ([9069d3f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/9069d3f0af6dcd8ac86667f93f640cad61f79cbb))
+
 ## [0.10.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.10.0...mobile-v0.10.1) (2026-08-16)
 
 
