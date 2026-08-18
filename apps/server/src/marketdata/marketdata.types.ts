@@ -28,6 +28,12 @@ export const BAR_PERIODS: readonly BarPeriod[] = [
 /** 报价新鲜度口径 (FR-S07)。V1 仅 `eod_close`; 实时源接入翻 `realtime` 零消费者改。 */
 export type PriceKind = 'eod_close' | 'realtime';
 
+/**
+ * {@link PriceKind} 的运行时值域 (体例同 {@link ADJUSTS} / {@link BAR_PERIODS}) ——
+ * swagger `enum:` 需要一个真数组。类型标注绑住它, 与 wire 值域不会各写各的。
+ */
+export const PRICE_KINDS: readonly PriceKind[] = ['eod_close', 'realtime'] as const;
+
 // ── 搜索 (INSTRUMENT_SEARCH_PORT) ────────────────────────────────────────────
 export interface InstrumentSearchHit {
   /** canonical `market:code` */

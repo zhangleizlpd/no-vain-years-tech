@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SecurityModule } from '../security/security.module.js';
 import { AccountModule } from '../account/account.module.js';
+import { MarketdataModule } from '../marketdata/marketdata.module.js';
 import { CreateAnchorUseCase } from './create-anchor.usecase.js';
 import { UpdateAnchorUseCase } from './update-anchor.usecase.js';
 import { DeleteAnchorUseCase } from './delete-anchor.usecase.js';
@@ -18,6 +19,8 @@ import { LEG_RETRIEVAL_PORT } from './leg-retrieval.port.js';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter.js';
 import { SyncAnchorQuoteUseCase } from './sync-anchor-quote.js';
 import { SyncAnchorQuoteScheduler } from './sync-anchor-quote.scheduler.js';
+import { SyncAnchorIntradayUseCase } from './sync-anchor-intraday.js';
+import { SyncAnchorIntradayScheduler } from './sync-anchor-intraday.scheduler.js';
 import { OptionsdeskController } from './optionsdesk.controller.js';
 import { OptionsdeskGuestController } from './optionsdesk-guest.controller.js';
 import { ImportAnchorFromModelUseCase } from './import-anchor-from-model.usecase.js';
@@ -41,7 +44,11 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
  * AccountIdThrottlerGuard, **不新增对外服务化面** — FR-009 本片零消费方)。
  */
 @Module({
-  imports: [SecurityModule, AccountModule],
+  // 061 T008: `MarketdataModule` 是本 ctx **唯一**一条 module 边 (plan D1)。它导出的
+  // `REALTIME_QUOTE_PORT` / `MARKET_STATE_PORT` 两个 token 供盘中价 tick 强一致同步读 ——
+  // 注入的是 **port token + interface** 而非对方的 use case (catalog Q7-C 放行判据),
+  // 方向仍单向: marketdata 对锚表零感知。ESLint boundaries 本就放行 optionsdesk → marketdata。
+  imports: [SecurityModule, AccountModule, MarketdataModule],
   // 059 guest 面**另起一个 controller**: 上面那个是类级 JwtAuthGuard, 类级 guard 摘不掉。
   controllers: [OptionsdeskController, OptionsdeskGuestController],
   providers: [
@@ -78,6 +85,12 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
     // 上一行那个 use case 的**触发器** —— 没有它 `last_close` 投影在 prod 永不执行
     // (045 T012 只定义了怎么算、没定义谁来调), 雷达的距 W% / zone / 复核锚红标全部出不了真值。
     SyncAnchorQuoteScheduler,
+    // 061 盘中价投影 —— 与上面那条**并列的第二列**, 不是替代: `last_close` 仍是当日收盘的
+    // 权威值与一切降级的落脚点 (FR-015), 盘中两列只在 90 秒新鲜度闸内接管排序与呈现。
+    SyncAnchorIntradayUseCase,
+    // 它的触发器 (30 秒 tick + 熔断 + mock 闸 + 收盘补一拍)。mock 档下起手即 return,
+    // 零 port 调用 —— dev 机上本 tick 完全静默 (Guardrail 6 第一层防线)。
+    SyncAnchorIntradayScheduler,
   ],
 })
 export class OptionsdeskModule {}

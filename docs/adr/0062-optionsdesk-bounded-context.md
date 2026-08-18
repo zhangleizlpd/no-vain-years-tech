@@ -4,6 +4,7 @@ status: Accepted
 applies_to: [apps/server]
 sunset_trigger: |
   - 盘中实时 spot 上线（雷达/详情不再以 `last_close` + asOf 为唯一价源）→ 跨 ctx 读形态从「最终一致 Q7-B 只读直查」升格为强一致同步读，本 ADR §3 跨 ctx 面与 ADR-0048 sunset_trigger #2 一并重审
+    ✅ **FIRED 2026-08-18（061）· mitigated** —— §3 追加第 5 条**强一致同步读**边（DI `marketdata` 的 port token）；Consequences 里「雷达价的时效 = 最长延迟一天」那条取舍**已作废并改写**（详见 §复审记录 2026-08-18）
   - **把历史价格序列的读搬进 optionsdesk 端点**（server 端拼序列 ⇒ 须读时复权 ⇒ import `marketdata/*.rules.ts`）→ 触发 ADR-0053 sunset_trigger #2，重审是否升共享 package。⚠️ 「详情要画趋势」这个**需求**已由 046 兑现，但走的是**客户端合成两端点**（optionsdesk 只回锚派生边界、序列由客户端直调 marketdata bars 端点）⇒ 本 trigger 的判据是**读搬到哪一侧**，不是「有没有序列需求」（详见 §复审记录 2026-08-03）
   - 出现第二个消费锚表的 ctx（除 marketdata 采集闸外）→ 锚表从「自有事实 + 一条反向 Q7-B」升级为多消费者读模型，重审是否需投影 / 共享读服务（Q7-A）
   - 期权台从「锚 + 雷达」扩到**下单 / 持仓联动 / 许愿单自动触发**（P3）→ 与 portfolio 的边界（谁持有仓位事实）重审；本 ADR 的「叶子 ctx、零跨 ctx 写」假设届时失效
@@ -38,7 +39,7 @@ sunset_trigger: |
 | **Q4** 完全新业务领域，现 ctx 都不沾？        | **是** ✅ | 「以估值锚为中心的期权卖方决策台」是全新领域。落 `portfolio` 会让持仓域吃进「估值口径 + 击球区几何 + 复审状态机」三类异质职责，且锚**不是持仓**（无锚的票照样可以持有，有锚的票可以空仓）；落 `marketdata` 方向更错——底座会反向吃进用户的主观估值结论 |
 | **Q5** callee 失败须 rollback caller？        | **否**    | 无跨 ctx 写，无同 tx 编排                                                                                                                                                                                                                             |
 | **Q6** side-effect notification？             | **否**    | 无跨 ctx 事件发布（M1 不进 Outbox）                                                                                                                                                                                                                   |
-| **Q7** 独立跨 ctx 只读？                      | **是 ×4** | 见 §3（3 条 `optionsdesk → marketdata` + 1 条**反向**，全 Q7-B；045 立 2 条、046 加 2 条）                                                                                                                                                            |
+| **Q7** 独立跨 ctx 只读？                      | **是 ×4** | 见 §3（3 条 `optionsdesk → marketdata` + 1 条**反向**，全 Q7-B；045 立 2 条、046 加 2 条）。⚠️ **061 起 +1 条**「强一致同步读」（非 Q7-B，见 §3 末）                                                                                                  |
 
 - **物理面**：`apps/server/src/optionsdesk/`（ADR-0043 扁平贫血，文件平铺 + 直注 `PrismaService`，无 repository port / 无 Domain Class）+ Prisma schema `optionsdesk` 2 表（锚主表 + 变更痕迹表，moat owner=`optionsdesk`）+ `apps/mobile/src/optionsdesk/`（business-naming 三处同名）。
 - **依赖面**：**叶子 ctx** —— 单向 `optionsdesk → account`（`JwtAuthGuard` / `AccountIdThrottlerGuard` 鉴权 artefact 经 export 复用，非业务调用）+ `optionsdesk → security`（platform infra）+ **唯一放行的业务读边 `optionsdesk → marketdata`**（行情类型复用；数据面走 §3 的 Q7-B 直查）。**无人 import optionsdesk**（marketdata 侧采集闸同样走 Q7-B 直查，不 import 本 ctx —— 底座不依赖业务的方向铁律）。ESLint `boundaries` + `check-server-moat` 探针双层强制。
@@ -75,10 +76,26 @@ sunset_trigger: |
 - **方向 2 的降级纪律（照抄 `sync-tier-recalc.ts:38-41` 先例）**：整方法 try/catch 全包，读锚表失败只 `logger.warn` + 返 `null`、**不上抛** —— 上抛会污染 marketdata 的 `SyncRun` 状态。且**禁**把 optionsdesk 注册进 marketdata 的 `SyncDimension` / executor 钩子（底座不依赖业务）。
 - **`excluded` 不参与采集闸判定**：闸的判据严格是「有没有锚」。语义分工 = **锚 = 采集意愿，`excluded` = 交易意愿**；要彻底停采只能删锚。决定性理由 = 期权 EOD 无跨日补救，误停采造成永久数据断层。
 
+#### 🔁 2026-08-18（061）追加 · 第 5 条 = **强一致同步读**（非 Q7-B ⇒ 本节标题的「4 条 / 全 Q7-B」自此不再完整）
+
+| #   | 方向                         | 读什么                                                                                                                                                                                | 立于    | 分类                                        |
+| --- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------- |
+| 5   | `optionsdesk` → `marketdata` | 盘中投影 tick 经 **DI port token** 同步取实时报价（`REALTIME_QUOTE_PORT`，键 = canonical `market:code`）+ 市场时段（`MARKET_STATE_PORT`，回归一后的 `regular` / `other` / `unknown`） | **061** | **强一致同步读**（非只读直查，**非 Q7-B**） |
+
+- **读的不是对方的表，是对方 `exports` 的 port**（`MarketdataModule` 因此**首次有 `exports`**）⇒ 探针注释用 `// CROSS-CONTEXT-SYNC:`（不是前 4 条的 `// CROSS-CONTEXT-READ:`），且必须挂**构造器注入参数上方**（`check-server-moat` Check 2 扫的是注入参数类型，挂 import 上方不被采信）。
+- **Q7-C 禁令未破**：注入的是 **port token + interface**（ADR-0047 的 vendor 访问抽象），不是 use case —— 它没有业务生命周期、不写任何表、不产生痕迹。catalog Q7-C 禁的是 `@Inject()` 对方的 **use case**。
+- **仍然零跨 ctx 写**：port 方法不写 `marketdata` 任何表；tick 拿到价之后写的是 **optionsdesk 自有列**（锚表 `intraday_price` / `intraday_at`，expand-only 两列）⇒ §Trade-offs「双向 Q7-B」那行的前提不变。
+- **不新建实时投影表、不走两跳**（`marketdata` 落表 → `optionsdesk` 读表）：实时面**无历史需求**（历史归 `daily_bar`），落表只为被读一次；两跳把延迟叠成 `poll1 + poll2`，而 061 的验收基线是 `T + 30 s`。
+- **`apps/server/eslint.config.mjs` 零改动**：`optionsdesk → marketdata` 这条边 045 就已放行（§1 依赖面「唯一放行的业务读边」），本片只是**首次在运行时用它**（此前只用于行情类型复用）。⇒ 本片新增的 module 边**唯一一条**：`OptionsdeskModule.imports` 加 `MarketdataModule`。🚨 **不要顺手把 `marketdata` 的其他 port 也 export / import 进来**，只开这一个口子。
+- **路由 adapter 无默认路由 = 刻意 fail-closed**，未登记市场抛专属类型 `RealtimeQuoteMarketUnsupportedError`（带 `market` / `registeredMarkets`）。这个专属类型的存在意义是把「**配置事实**」与「**源故障**」分开 —— 只有后者计熔断。🚨 具体到本 ctx 这是**今天就会发生**的事：`anchor-import.rules.ts` 的 `IMPORTABLE_MARKETS = ['us', 'hk']` ⇒ **hk 锚合法且随时可建**，而 061 只登记了 us 路由；若把这个 throw 当源故障计数，**一只 hk 锚就能在 90 秒内（每 30 秒 +1，连续 3 次 open）把 us 那半边一起降级**，而 us 的源一切正常。⇒ tick 按 market 分组后**逐组独立 try/catch**，「该市场无路由」落显式降级 + 一条日志，不进熔断计数。
+- **前 4 条 Q7-B 只读直查一条未动**；`MODEL_OWNERSHIP` 无新增跨 ctx 表。
+
 ## Consequences
 
 - 045 T001 落本 ADR 的全部注册面（boundaries + moat `BUSINESS_CTX` + business-naming + module 空壳），T003 落 schema / migration / `MODEL_OWNERSHIP`；新表接线未在 `MODEL_OWNERSHIP` 声明 owner 会被 `moat-unmapped` 硬拒。
-- 雷达价的时效 = **最长延迟一天**（`last_close_date` 即对外 asOf），不是实时价 —— 这是 M1 的显式取舍，UI MUST 显示 asOf 否则该取舍不可验证。
+- ~~雷达价的时效 = **最长延迟一天**（`last_close_date` 即对外 asOf），不是实时价 —— 这是 M1 的显式取舍，UI MUST 显示 asOf 否则该取舍不可验证。~~
+  🔁 **该取舍 2026-08-18 由 061 作废并改写**（`sunset_trigger` #1 fired）。**现行**：雷达价 = **交易时段内优先盘中实时价，超新鲜度闸则回落 `last_close`**。三条钉死：① 新鲜度闸 = **3 × tick 间隔**（`3 × 30 s = 90 s`），倍数取 3 是为了让「熔断打开」与「数据被判陈旧」**同刻发生** —— 取 4 会留出 30 秒窗口让熔断已开而雷达仍按实时档排序，正是本次最想消灭的静默骗人形态；② SQL 排序表达式与回给客户端的档位（`priceKind`）**必须同源**，禁在 SQL 判一次、TS 再判一次（两处必漂移，且漂移表现为「排序按实时、显示说收盘」）；③ `asOf` 仍是该取舍**唯一**的可验证面，只是粒度在实时档从**日期**变**时刻**，**档位本身不上屏**（给档位另加视觉标记 = 新视觉元素 = 触发 mockup 闸）。
+  ⚠️ **复核锚状态机不在改写射程内**：`advanceBreachState()` 的 `breach_started_on` 恒用 `last_close` 驱动 —— 它是 `@db.Date` 的**日粒度**事实，用分钟级价驱动会让红标在同一天内随 spot 反复穿越 W 而反复置位 / 清空，而清空是**破坏性**的。⇒ 本 ctx 自 061 起**两个 spot 口径并存**：排序用「新鲜实时否则收盘」，状态机恒用收盘。这是刻意的，不是漂移。
 - `Instrument.needSync` 从「universe 同步私有列」变成**双写入点**列（universe create 分支 + 本 ctx 采集闸重算）。该列与 `syncTier` / `lixingerCompanyType` 同属 schema 注释点名的受保护列，重算路径**只碰这一列**。
 - 建锚不即时开采：建锚 → 下一轮 cron 前置步骤重算 → 纳入工作集（即时生效需跨 ctx 写，已禁）。
 - **046 起本 ctx 的跨 ctx 读进入「请求期」**（045 时只在日更同步步骤内）：两个新读端每次开屏都直查 marketdata 的表 ⇒ 跨 ctx 读**必须整段 try/catch 降级**（读失败只 `logger.warn` + 显式降级态、**不上抛**），否则 marketdata 侧一个小故障会把本 ctx 自有事实（锚卡 / 锚列表）也打成 500。降级态一律 **显式枚举 + null 值，禁回落成 0**（046 FR-014 / FR-017）——「指针停在 0」是错误信息，不是缺失信息。
@@ -140,8 +157,33 @@ elements of type "optionsdesk".  boundaries/dependencies
 
 **ADR-0048 trigger #2 同轮复判：未命中。** 046 一律 EOD + 显式 `asOf`（每个读数带自己的业务日，FR-020），且 FR-033 明禁盘中实时取数路径；读仍是最终一致的 Q7-B。命中条件不变（P3 许愿单触发判定需实时价 / 盘中实时 spot 上线）。
 
+### 2026-08-18 — 061 盘中实时 spot 上线；本 ADR `sunset_trigger` #1：`fired`，已缓解
+
+trigger 原文 = 「盘中实时 spot 上线（雷达/详情不再以 `last_close` + asOf 为唯一价源）→ 跨 ctx 读形态从『最终一致 Q7-B 只读直查』升格为强一致同步读，本 ADR §3 跨 ctx 面与 ADR-0048 `sunset_trigger` #2 一并重审」。
+
+**判定：命中，且升格方向是本 ADR 自己预先规定的**（不是绕过）。[061](../../specs/061-marketdata-realtime-spot/spec.md) 让雷达 / 详情的 spot 在交易时段内改以**盘中实时价**为准 ⇒ 2026-08-01 那节登记的两条绊线里的第 ②「盘中实时 spot 上线」**已发生**。
+
+**缓解 = §3 追加第 5 条跨 ctx 面（强一致同步读，非 Q7-B）**，机械面与判据见 §3 末新增块。要点三条：① 注入的是 **port token + interface**，不是 use case ⇒ Q7-C 禁令未破；② 本片新增的 module 边**唯一一条** `optionsdesk → marketdata`，注入点挂 `// CROSS-CONTEXT-SYNC:`；③ **不新建实时投影表、不走两跳**。
+
+**方向铁律不破**：`marketdata` 对本 ctx **零感知** —— 没有任何 marketdata 代码 import `optionsdesk`，`MarketdataModule` 只是 `exports` 两个 token（export 不产生对消费方的依赖），锚驱动的一切仍由消费方主动拉。§1「叶子 ctx、无人 import optionsdesk」的表述保持成立。同轮的跨层方向复判见 [ADR-0048](0048-marketdata-portfolio-cross-layer-dependency.md) §复审记录 2026-08-18；实时面为何升格 `marketdata` 而非 `packages/` 见 [ADR-0054](0054-alert-self-hosted-external-io-adapter.md) §复审记录 2026-08-18。
+
+🚨 **§Consequences 里「雷达价的时效 = 最长延迟一天」那条取舍已作废并改写，不是只标 fired 了事** —— 那句话自本日起是**错的**，留着它比没标 trigger 更坏（后人会照着一句错的正文做判断）。改写后的现行口径含新鲜度闸倍数（定死 3）、SQL 与 TS 档位同源、以及**复核锚状态机恒用 `last_close`** 的例外。
+
+**ADR-0053 `sunset_trigger` #2 同轮复判：仍 `accepted-as-is`，未命中；绊线一个字没动。** 本片跨 ctx 拿的是 **port token + interface**，不是 `marketdata/*.rules.ts` 纯函数 ⇒ `apps/server/eslint.config.mjs` 里 `optionsdesk` 的 `disallow` 含 `marketdata-rules` 那条**未被触碰**（`git diff --stat main...HEAD -- apps/server/eslint.config.mjs` 空输出）。⚠️ 这条在本片**真有咬合面**，不是形式主义：vendor 市场状态的**白名单归一化**天然想写成一个纯函数，它若落 `marketdata/*.rules.ts` 再被本 ctx import，`nx lint server` 当场红。061 的处理是**把归一化推回 adapter 内**（port 对外只回归一后的 `regular` / `other` / `unknown`），**不是**改 allowlist —— 上一节写的「别把 lint 红当成噪音顺手加进 allowlist」在本片实际生效过一次。
+
+### 2026-08-18 — 过渡态登记 ②：进程内 `@Cron` 多实例会重复触发
+
+> 与本 ADR 相邻、但**不是 061 新引入**的既有前提；登记在此以免半年后被读成设计漏洞。过渡态 ①（两套 failstreak 并存）canonical 在 [ADR-0054](0054-alert-self-hosted-external-io-adapter.md) §复审记录 2026-08-18。
+
+061 的盘中 tick 走进程内 `@Cron('*/30 * * * * *')`（`apps/server/src/optionsdesk/sync-anchor-intraday.scheduler.ts`），**不引 BullMQ** —— 本 ctx 一套 queue / worker / connection 都没有，为一个 30 秒 tick 从零搭 BullMQ 拓扑过不了 Senior Engineer Test；熔断计数用 Redis 即可，不需要 queue。
+
+⚠️ **已知代价**：进程内 `@Cron` 在**多实例部署**下会重复触发。这与本 ctx 既有的 `sync-anchor-quote.scheduler.ts`（045 起就是 `@Cron`）**同一前提，不是 061 新引入的**。现状单实例部署；且本 tick **幂等**（覆盖写锚表同一批列，最后写赢），重复触发的代价只是多一次 vendor 调用（配额余量 60×）。
+
+⇒ **真正的绊线是部署形态**：哪天 server 变多实例 / 蓝绿并存，这里要么加分布式锁、要么迁 BullMQ repeatable，且**两条 scheduler 一起迁**（只迁一条会留下更难读的半截状态）。在那之前不预造。
+
 ## References
 
+- [061 spec](../../specs/061-marketdata-realtime-spot/spec.md) / [plan](../../specs/061-marketdata-realtime-spot/plan.md)（Gate 0.4 判本次 amend 为 `mitigated`；D1 = 一跳 DI port token、D4 = 排序表达式与新鲜度闸、D5 = 状态机恒用 `last_close`、D6 = tick 载体）
 - [045 spec](../../specs/045-optionsdesk-anchors-radar/spec.md) / [plan](../../specs/045-optionsdesk-anchors-radar/plan.md)（D1-D15 决策 + Gate 0.4）
 - [046 spec](../../specs/046-optionsdesk-detail-thermometer/spec.md) / [plan](../../specs/046-optionsdesk-detail-thermometer/plan.md)（Gate 0.4 判本次 amend 为 `mitigated`；D2 = 禁碰复权、D8 = 两个读端形态）
 - [server-bounded-context-catalog](../conventions/server-bounded-context-catalog.md)（7Q 决策树 + 3 传播规则）

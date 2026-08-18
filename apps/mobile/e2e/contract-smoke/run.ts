@@ -37,6 +37,7 @@ import * as optionsdesk from './optionsdesk.contract';
 import * as optionsdeskChainLegPicker from './optionsdesk-chain-leg-picker.contract';
 import * as optionsdeskChainReport from './optionsdesk-chain-report.contract';
 import * as optionsdeskDetailThermometer from './optionsdesk-detail-thermometer.contract';
+import * as optionsdeskRealtimeSpot from './optionsdesk-realtime-spot.contract';
 import * as portfolioHoldings from './portfolio-holdings.contract';
 import * as stockDetail from './stock-detail.contract';
 import * as watchlist from './watchlist.contract';
@@ -71,6 +72,7 @@ const SPECS: readonly ContractSpec[] = [
   optionsdeskDetailThermometer,
   optionsdeskChainLegPicker,
   optionsdeskChainReport,
+  optionsdeskRealtimeSpot,
   portfolioHoldings,
 ];
 

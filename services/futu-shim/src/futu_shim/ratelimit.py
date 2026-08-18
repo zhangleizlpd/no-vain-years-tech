@@ -45,6 +45,19 @@ LIMITS: dict[str, tuple[int, int]] = {
     # 分页豁免同样不是本表能表达的; 财报日历按 ≤7 天窗 (含首尾, 即**端点差 ≤6**, 见
     # `EARNINGS_MAX_SPAN_DAYS`) 逐窗单发调用, 当前无分页路径要豁免。
     "earnings_calendar": (60, 30),
+    # `get_global_state` (/market-state) —— **兜底最严档, 且是「查过、确实没有」而不是
+    # 「没查」**。2026-08-17 直取 openapi.futunn.com 的 get-global-state 页: 全页没有
+    # 「接口限制」小节, 而该站的规矩是「每个接口的限频规则会有不同, 具体请参见每个接口
+    # 页面下面的接口限制」(intro/authority.html) ⇒ 官方从未就这个接口给过数。同类先例是
+    # `stock_basicinfo` (见 FALLBACK_LIMIT 注释块), 区别只在那条没有消费方要断言它的桶。
+    #
+    # 显式登记而不是留给查表未命中: 让"落兜底"这件事有个可读的落脚点, 否则下一个人会
+    # 把它当成又一处「忘了查文档」(history_kline 08-01 那次的形状) 而顺手调宽。
+    # ⚠️ 真值哪天出现就改这里, **别做等价换算** —— 本表已因等价换算踩过一次 prod 事故。
+    #
+    # 用量: 盘中投影 tick 每 30 秒打 1 次 ⇒ 兜底档 10 次/30 s 仍有 10 倍余量, 这个数
+    # 松紧与否对本片没有任何可观测差别。
+    "global_state": (10, 30),
 }
 
 # Strictest limit in LIMITS. Applied to anything not listed above.

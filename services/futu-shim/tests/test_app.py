@@ -10,6 +10,7 @@ import pytest
 from futu import RET_OK
 
 from futu_shim.app import GZIP_MIN_BYTES, create_app
+from futu_shim.opend import OpenDUnavailable
 from futu_shim.ratelimit import RateGate
 
 TOKEN = "test-token"
@@ -32,6 +33,7 @@ class FakeCtx:
         chain=None,
         snapshot=None,
         earnings=None,
+        global_state=None,
     ):
         self._basicinfo = basicinfo if basicinfo is not None else pd.DataFrame()
         self._trading_days = trading_days if trading_days is not None else []
@@ -45,6 +47,8 @@ class FakeCtx:
         self._chain = chain if chain is not None else pd.DataFrame()
         self._snapshot = snapshot if snapshot is not None else pd.DataFrame()
         self._earnings = earnings if earnings is not None else pd.DataFrame()
+        self._global_state = global_state if global_state is not None else {}
+        self.global_state_calls = 0
         self.basicinfo_calls: list[tuple[str, str]] = []
         self.trading_days_calls: list[tuple] = []
         self.kline_calls: list[dict] = []
@@ -169,16 +173,34 @@ class FakeCtx:
             return self._ret, "vendor said no"
         return RET_OK, self._earnings
 
+    def get_global_state(self):
+        self.global_state_calls += 1
+        if self._ret != RET_OK:
+            return self._ret, "vendor said no"
+        return RET_OK, self._global_state
+
 
 class FakeSupervisor:
-    def __init__(self, ctx: FakeCtx):
+    def __init__(self, ctx: FakeCtx, session_error: Exception | None = None):
         self.ctx = ctx
         self.sessions = 0
+        self._session_error = session_error
 
     @contextmanager
     def session(self):
+        if self._session_error is not None:
+            raise self._session_error
         self.sessions += 1
         yield self.ctx
+
+    def global_state(self):
+        """镜像 `OpenDSupervisor.global_state`: 走 **session()**, 不走 `status()`。
+
+        走错路时 `sessions` 计数就对不上 —— 断言照得到的前提是这个假件本身不替被测
+        实现打掩护。
+        """
+        with self.session() as ctx:
+            return ctx.get_global_state()
 
     def status(self):
         return {"opend_unit_active": True, "opend_connected": True, "qot_logined": True}
@@ -189,8 +211,8 @@ def _token(monkeypatch):
     monkeypatch.setenv("FUTU_SHIM_TOKEN", TOKEN)
 
 
-def build(ctx: FakeCtx, gate: RateGate | None = None):
-    supervisor = FakeSupervisor(ctx)
+def build(ctx: FakeCtx, gate: RateGate | None = None, session_error: Exception | None = None):
+    supervisor = FakeSupervisor(ctx, session_error)
     app = create_app(supervisor, gate)
     app.config.update(TESTING=True)
     return app.test_client(), supervisor
@@ -260,6 +282,7 @@ def test_deploy_probe_pattern_sees_every_registered_route():
         "/option-chain?code=US.PEP",
         "/option-snapshot?codes=US.PEP260807P145000",
         "/earnings-calendar?market=US",
+        "/market-state",
         # 裸路径（无 token 且无参数）：鉴权是 before_request 钩子，必须**先于**各 view
         # 自己的参数校验生效，否则「缺参」会盖过「没鉴权」，把 401 降级成 400 —— 未鉴权
         # 的调用方就能从错误码里读出参数形状。
@@ -1069,6 +1092,113 @@ def test_earnings_calendar_default_gate_admits_the_official_sixty_per_window():
     assert refused.status_code == 429
     assert refused.json["capability"] == "earnings_calendar"
     assert int(refused.headers["Retry-After"]) >= 1
+
+
+def _global_state_payload(**extra):
+    """形状照 vendor 文档的 Example 抄（2026-08-17 直取 `openapi.futunn.com` 的
+    get-global-state 页）。
+
+    刻意把**与市场状态无关的字段一起带上** —— 端点的契约是「整块原样带出」，在 shim 侧
+    挑字段就是替消费端做语义决定，而这份 payload 的消费端（server 侧 marketdata adapter）
+    还没写完。
+    """
+    payload = {
+        "market_sz": "MORNING",
+        "market_sh": "MORNING",
+        "market_hk": "MORNING",
+        "market_us": "AFTER_HOURS_END",
+        "market_hkfuture": "FUTURE_DAY_OPEN",
+        "market_usfuture": "FUTURE_OPEN",
+        "server_ver": "504",
+        "trd_logined": True,
+        "qot_logined": True,
+        "timestamp": "1620962951",
+        "local_timestamp": 1620962951.047128,
+        "program_status_type": "READY",
+        "program_status_desc": "",
+    }
+    payload.update(extra)
+    return payload
+
+
+def test_market_state_passes_the_whole_payload_through_from_the_data_path():
+    """🚨 走**数据路径**（`session()` → `_ensure_ready()`），不是 `/healthz` 那条被动路径。
+
+    `opend.status()` 蓄意不建 `OpenQuoteContext`（它的注释原文：健康探针必须无副作用），
+    所以没有活 context 时它对市场状态只能答 `None` —— 对探针诚实，对**判据**却致命：
+    上游把「状态不可得」当 fail-closed 信号停采，而真相只是没人先把 OpenD 叫醒。
+    `sessions == 1` 就是这条路径的机器化断言。
+
+    payload 整块原样带出：哪些状态算「常规交易时段」是**白名单**判断，属于消费端。
+    shim 判一次、server 再判一次，两处必漂移。
+    """
+    payload = _global_state_payload(market_us="MORNING")
+    ctx = FakeCtx(global_state=payload)
+    client, supervisor = build(ctx)
+    resp = client.get("/market-state", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert supervisor.sessions == 1  # 数据路径, 不是 status() 的被动路径
+    assert ctx.global_state_calls == 1
+    assert resp.json["count"] == 1
+    assert resp.json["rows"][0] == payload  # 一个字段不少、不改名、不解释
+    assert resp.json["as_of"].endswith("+00:00")
+
+
+def test_market_state_says_opend_is_down_instead_of_answering_an_empty_envelope():
+    """OpenD 起不来 ⇒ **503 + 明确错误**，不是 200 空信封。
+
+    上游对「状态不可得」是 fail-closed：不采、留痕、计失败。空信封会被读成「取到了，
+    只是这次没有市场字段」—— 那正是 fail-closed 判不出来的形状，于是盘前 / 夜盘照采。
+    """
+    ctx = FakeCtx()
+    client, _ = build(ctx, session_error=OpenDUnavailable("OpenD did not reach qot_logined"))
+    resp = client.get("/market-state", headers=AUTH)
+
+    assert resp.status_code == 503
+    assert resp.json["error"] == "opend_unavailable"
+    assert "qot_logined" in resp.json["detail"]
+    assert ctx.global_state_calls == 0
+
+
+def test_market_state_vendor_failure_surfaces_as_502_not_a_success():
+    """同 `/trading-days` 那条的理由：失败的 vendor 调用绝不能长得像「没数据」。"""
+    client, _ = build(FakeCtx(ret=-1))
+    resp = client.get("/market-state", headers=AUTH)
+
+    assert resp.status_code == 502
+    assert resp.json["error"] == "vendor_error"
+
+
+def test_healthz_advertises_market_state_as_a_registered_route():
+    """部署后「跑的是不是那棵树」的硬证据。
+
+    `routes` 取自 `app.url_map` = **已加载代码的内存状态**，磁盘上的 VERSION 文件伪造
+    不了它 —— shim 与 mono 是两条部署链，本端点没上线时 server 侧会 fail-closed 停采，
+    所以「它到底上没上」必须能一眼读出来。
+    """
+    client, _ = build(FakeCtx())
+    assert "/market-state" in client.get("/healthz").json["routes"]
+
+
+def test_market_state_is_metered_under_its_own_capability_not_the_snapshot_one():
+    """两个 capability = 两个桶。串到 `snapshot` 上的话，每 30 秒一发的盘中 tick 会悄悄
+    啃掉快照的额度，而症状要等夜里那条 EOD 采集链 429 才显形 —— 隔了一整天、隔了一个模块。
+
+    顺带钉住「限频在唤醒 OpenD 之前」：被拒的那一发 `global_state_calls` 不动。
+    """
+    gate = RateGate(limits={"global_state": (1, 30), "snapshot": (1, 30)})
+    ctx = FakeCtx(global_state=_global_state_payload())
+    client, _ = build(ctx, gate)
+
+    assert client.get("/market-state", headers=AUTH).status_code == 200
+    refused = client.get("/market-state", headers=AUTH)
+    assert refused.status_code == 429
+    assert refused.json["capability"] == "global_state"
+    assert int(refused.headers["Retry-After"]) >= 1
+    assert ctx.global_state_calls == 1  # 第二发在 OpenD 之前就被拒, 零副作用
+    # `snapshot` 那一格没被动过
+    assert client.get("/option-snapshot?codes=US.PEP", headers=AUTH).status_code == 200
 
 
 def test_unsupported_market_is_rejected_before_touching_opend():

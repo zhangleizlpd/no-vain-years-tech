@@ -674,6 +674,36 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
             days = _unwrap(ret, content, f"request_trading_days({market})")
         return _envelope(mappers.rows_to_records(days))
 
+    @app.get("/market-state")
+    def market_state():
+        """各市场**此刻**的交易状态（`market_us` / `market_hk` / ...）。撑起盘中投影的时段闸。
+
+        与 `/trading-days` 是同一道闸的两半，互不顶替：日历答「今天是不是交易日」，本端点
+        答「现在开不开」。消费端取两者的交集。
+
+        🚨 **走数据路径**（`session()` → `_ensure_ready()`），**不是** `/healthz` 那条。
+        `opend.status()` 蓄意不建 `OpenQuoteContext`，因此没有活 context 时它对市场状态只能
+        答 `null` —— 对健康探针诚实，对判据致命：上游把「状态不可得」当 fail-closed 信号停采，
+        而真相只是没人先把 OpenD 叫醒。理由全文见 `OpenDSupervisor.global_state`。
+
+        payload **整块原样带出**（`rows` 恰好一行），不挑字段、不做任何语义归一：
+        「哪些状态算常规交易时段」是**白名单**判断，属于消费端（server 侧 marketdata
+        adapter）。在 shim 判一次、server 再判一次，两处必漂移，而漂移的表现是盘前/夜盘
+        被误采 —— 没有任何断言会红。
+
+        限频 capability = `global_state`，档位 **10 次/30 s = 兜底最严档**，因为**查不到
+        官方值**（2026-08-17 复核，全文见 `ratelimit.LIMITS` 该条注释）。闸放在唤醒 OpenD
+        **之前**：被限频拒掉的那一发不该留下把 OpenD 叫起来这种副作用。
+        """
+        rate_gate.check("global_state")
+        ret, content = opend.global_state()
+        state = _unwrap(ret, content, "get_global_state()")
+        if not isinstance(state, dict):
+            raise VendorError(
+                f"get_global_state(): expected a dict, got {type(state).__name__}"
+            )
+        return _envelope([dict(state)])
+
     return app
 
 

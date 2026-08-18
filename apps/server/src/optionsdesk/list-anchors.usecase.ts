@@ -14,6 +14,7 @@ import {
   type WillingSellAnchors,
 } from './anchor.rules';
 import { resolveEffectiveAnchorValues, type AnchorEffectiveValues } from './anchor-cascade';
+import { resolveAnchorSpot, type AnchorSpot } from './intraday-spot.rules';
 import { shanghaiDateOnly, type AnchorRow } from './create-anchor.usecase';
 import { marketsOfTickers, resolveLastClosedSessions } from './last-closed-session';
 import { isAnchorOverdue, isAnchorReviewFlagOn } from './review-anchor.usecase';
@@ -56,7 +57,13 @@ export interface AnchorView {
   w: Prisma.Decimal;
   zones: AnchorZoneBoundaries;
   willingSell: WillingSellAnchors;
-  /** spot 所在区间; 行情不可用 (`last_close` 为空) ⇒ `null`, **不伪造** (FR-017)。 */
+  /**
+   * 061 生效 spot 三元组 (价 / 档位 / asOf), 由 `intraday-spot.rules.ts` **单点裁决**:
+   * 新鲜的盘中实时价, 否则收盘价。下面的 `zone` 与 `distanceToWPct` **都由它派生** ——
+   * 雷达 SQL 的排序表达式取的是同一份判据 (禁「排序按实时、显示说收盘」)。
+   */
+  spot: AnchorSpot;
+  /** spot 所在区间; 两价皆无 ⇒ `null`, **不伪造** (FR-017)。 */
   zone: AnchorZone | null;
   distanceToWPct: Prisma.Decimal | null;
   /** FR-004 日历逾期 (`next_review < 今日`) —— 红标 + 待复审清单判据。 */
@@ -85,7 +92,19 @@ export function toAnchorView(
   row: AnchorRow,
   lastClosedSession: string | null,
   today: Date = shanghaiDateOnly(new Date()),
+  now: Date = new Date(),
 ): AnchorView {
+  // 061: 生效 spot 单点裁决 —— 新鲜的盘中价否则收盘价 (FR-008)。`now` 与 `today` 是**两个不同
+  // 的时间事实**: `today` 是日粒度的人工复核节奏, 这个是秒粒度的行情新鲜度基准。
+  const spot = resolveAnchorSpot(
+    {
+      intradayPrice: row.intradayPrice,
+      intradayAt: row.intradayAt,
+      lastClose: row.lastClose,
+      lastCloseDate: row.lastCloseDate,
+    },
+    now,
+  );
   const effective = resolveEffectiveAnchorValues(
     { v: row.v, confidence: row.confidence },
     {
@@ -100,10 +119,14 @@ export function toAnchorView(
     w: computeW(effective.v),
     zones: computeZoneBoundaries(effective.v),
     willingSell: computeWillingSellAnchors(effective.v),
-    zone: row.lastClose === null ? null : classifyZone(effective.v, row.lastClose),
-    distanceToWPct: computeDistanceToWPct(effective.v, row.lastClose),
+    spot,
+    zone: spot.price === null ? null : classifyZone(effective.v, spot.price),
+    distanceToWPct: computeDistanceToWPct(effective.v, spot.price),
     overdue: isAnchorOverdue(row.nextReview, today),
     overdueAgainstAsof: row.nextReview !== null && row.nextReview.getTime() < row.asof.getTime(),
+    // 🚨 复核锚红标**恒用收盘价**, 不跟 spot 走 (061 plan D5): 它是日粒度状态机
+    // (`breach_started_on` 是 `@db.Date`), 用分钟级价驱动会让红标在一天内反复置位/清空,
+    // 而清空是**破坏性**的。同一处投影里两个 spot 口径并存是**刻意的**, 别顺手统一。
     reviewFlagOn: isAnchorReviewFlagOn({
       v: effective.v,
       lastClose: row.lastClose,

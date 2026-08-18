@@ -9,6 +9,7 @@ import type { AnchorResponseConfidenceSource } from './anchorResponseConfidenceS
 import type { AnchorResponseDerivedLLevel } from './anchorResponseDerivedLLevel';
 import type { AnchorResponseLLevelEffective } from './anchorResponseLLevelEffective';
 import type { AnchorResponseLLevelManual } from './anchorResponseLLevelManual';
+import type { AnchorResponsePriceKind } from './anchorResponsePriceKind';
 import type { AnchorResponseQuoteFreshnessTier } from './anchorResponseQuoteFreshnessTier';
 import type { AnchorResponseZone } from './anchorResponseZone';
 
@@ -63,7 +64,13 @@ export interface AnchorResponse {
   lastCloseDate: string | null;
   /** 行情 asOf 的新鲜度档 (FR-020): CURRENT 不落后于该市场最近一个已收盘交易日 / STALE 停在更早的交易日 / UNAVAILABLE 无行情。🚨 **判据在 server** —— 它要查交易日历, 客户端拿设备本地日期比会对美股恒判陈旧 (046 初版实证) */
   quoteFreshnessTier: AnchorResponseQuoteFreshnessTier;
-  /** 距 W 百分比 (雷达排序键); 行情不可用 ⇒ null */
+  /** 061 生效 spot = **新鲜的盘中实时价, 否则收盘价** —— `zone` / `distanceToWPct` 都由它算出。两价皆无 ⇒ null (禁伪造 0)。⚠️ 与上面的 `lastClose` **不是同一个数**: 那个恒为当日收盘的权威值 (FR-015 语义不变), 这个是「此刻该按哪个价看」的裁决结果 */
+  spot: string | null;
+  /** 061 生效 spot 的档位 (FR-009): realtime = 盘中实时价且在新鲜度闸内 / eod_close = 收盘价。🚨 **只进接口, 不上屏** —— 界面 MUST NOT 为它加独立视觉标记, 只以 `spotAsOf` 的**粒度**表达 (实时=时刻 / 收盘=交易日)。要上屏须先补走 mockup 步 */
+  priceKind: AnchorResponsePriceKind;
+  /** 061 生效 spot 的时间事实, **粒度即档位**: 实时档为 ISO 时刻 / 收盘档为 `YYYY-MM-DD` 交易日;两价皆无 ⇒ null */
+  spotAsOf: string | null;
+  /** 距 W 百分比 (雷达排序键, 由生效 spot 算出); 两价皆无 ⇒ null */
   distanceToWPct: string | null;
   /** 本轮跌破首次观测日 (YYYY-MM-DD; FR-013 状态机载体) */
   breachStartedOn: string | null;

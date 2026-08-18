@@ -21,6 +21,7 @@ import { ANCHOR_MANUAL_SLOTS } from './anchor-cascade';
 import { ANCHOR_SUBMISSION_STATUSES } from './anchor-import.rules';
 import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
+import { PRICE_KINDS } from '../marketdata/marketdata.types';
 import { ANCHOR_CONFIDENCE_SOURCES } from './create-anchor.usecase';
 import type { AnchorWriteResult } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
@@ -608,7 +609,38 @@ export class AnchorResponse {
   quoteFreshnessTier!: string;
 
   @ApiProperty({
-    description: '距 W 百分比 (雷达排序键); 行情不可用 ⇒ null',
+    description:
+      '061 生效 spot = **新鲜的盘中实时价, 否则收盘价** —— `zone` / `distanceToWPct` 都由它算出。' +
+      '两价皆无 ⇒ null (禁伪造 0)。⚠️ 与上面的 `lastClose` **不是同一个数**: 那个恒为当日收盘的' +
+      '权威值 (FR-015 语义不变), 这个是「此刻该按哪个价看」的裁决结果',
+    type: 'string',
+    nullable: true,
+    example: '36.0000',
+  })
+  spot!: string | null;
+
+  @ApiProperty({
+    description:
+      '061 生效 spot 的档位 (FR-009): realtime = 盘中实时价且在新鲜度闸内 / eod_close = 收盘价。' +
+      '🚨 **只进接口, 不上屏** —— 界面 MUST NOT 为它加独立视觉标记, 只以 `spotAsOf` 的**粒度**' +
+      '表达 (实时=时刻 / 收盘=交易日)。要上屏须先补走 mockup 步',
+    enum: [...PRICE_KINDS],
+    example: 'eod_close',
+  })
+  priceKind!: string;
+
+  @ApiProperty({
+    description:
+      '061 生效 spot 的时间事实, **粒度即档位**: 实时档为 ISO 时刻 / 收盘档为 `YYYY-MM-DD` 交易日;' +
+      '两价皆无 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '2026-08-01',
+  })
+  spotAsOf!: string | null;
+
+  @ApiProperty({
+    description: '距 W 百分比 (雷达排序键, 由生效 spot 算出); 两价皆无 ⇒ null',
     type: 'string',
     nullable: true,
     example: '-10.00',
@@ -1042,6 +1074,11 @@ export function toAnchorResponse(view: AnchorView): AnchorResponse {
     lastClose: decimal4(row.lastClose),
     lastCloseDate: dateOnly(row.lastCloseDate),
     quoteFreshnessTier: freshnessTier(dateOnly(row.lastCloseDate), view.lastClosedSession),
+    // 061: 三件套一起出, 全部取自 `view.spot` 这一个裁决结果 —— 分头取会让「价 / 档位 / asOf」
+    // 落在不同判据上, 而那种不一致在屏幕上看起来完全正常。
+    spot: decimal4(view.spot.price),
+    priceKind: view.spot.priceKind,
+    spotAsOf: view.spot.asOf,
     distanceToWPct: view.distanceToWPct === null ? null : view.distanceToWPct.toFixed(2),
     breachStartedOn: dateOnly(row.breachStartedOn),
     reviewFlagOn: view.reviewFlagOn,

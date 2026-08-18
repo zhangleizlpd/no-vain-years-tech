@@ -116,3 +116,37 @@ def test_earnings_calendar_uses_its_official_limit_not_the_strict_fallback():
     assert LIMITS["earnings_calendar"] != FALLBACK_LIMIT
     # 路由拿到的必须是这条 profile 本身, 不是查表未命中后的兜底
     assert RateGate().limit_for("earnings_calendar") == (60, 30)
+
+
+def test_global_state_is_registered_on_the_fallback_tier_on_purpose():
+    """🚨 与上面几条**方向相反**: 这条**就该**是兜底档 (10/30 s), 而且是「查过、确实没有」。
+
+    2026-08-17 直取 `openapi.futunn.com` 的 get-global-state 页: 全页没有「接口限制」
+    小节。该站的规矩是「每个接口的限频规则会有不同, 具体请参见每个接口页面下面的接口
+    限制」(`intro/authority.html`) ⇒ 官方从未就这个接口给过数。照 `stock_basicinfo`
+    的先例落兜底 (见 FALLBACK_LIMIT 注释块)。
+
+    显式登记而不是留给查表未命中: 有个可读的落脚点写清楚「为什么是这个数」，下一个人
+    才不会把它当成又一处「忘了查文档」而"顺手修正"。⚠️ 真值哪天出现就改这里,
+    **别做等价换算** —— 这张表已经因为等价换算踩过一次 prod 事故。
+    """
+    assert LIMITS["global_state"] == FALLBACK_LIMIT
+    assert RateGate().limit_for("global_state") == (10, 30)
+
+
+def test_global_state_does_not_spend_the_snapshot_budget():
+    """两个 capability = 两个桶, 且互不侵蚀。
+
+    盘中投影 tick 每 30 秒打一次 `/market-state`; 若它与 `snapshot` 共桶, 每晚那条
+    EOD 快照采集链的 60 格额度就被啃掉一部分, 而症状 (429 + server 侧熔断连坐) 会在
+    另一个模块、另一个时段才显形。
+    """
+    clock = FakeClock()
+    gate = RateGate(clock=clock)
+    for _ in range(10):
+        gate.check("global_state")
+    with pytest.raises(RateLimitExceeded):
+        gate.check("global_state")
+
+    for _ in range(60):  # snapshot 的 60 格一格未少
+        gate.check("snapshot")

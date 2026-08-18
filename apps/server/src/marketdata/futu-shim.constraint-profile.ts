@@ -112,3 +112,34 @@ export const FUTU_SHIM_EARNINGS_CALENDAR_PROFILE: VendorConstraintProfile = {
   vendor: 'futu-shim:earnings_calendar',
   rateLimit: { maxCalls: 60, windowMs: 30_000 },
 };
+
+/**
+ * 市场时段能力专用画像 (061 T004, plan D7)。**同一个 shim, 第四个自己的桶。**
+ *
+ * 🚫 **MUST NOT 共用上面任何一个** —— shim 侧的限频闸是 **per-capability** 的
+ * (`ratelimit.py` 的 `LIMITS`), 客户端侧照着分桶才是同构。本能力每 30 秒打 1 发 (盘中投影
+ * tick 的时段闸), 挂进快照那个桶会在夜间采集窗里跟真正的批量快照抢令牌; 反过来挂进链那个
+ * 更严的桶, 白天每半分钟一发也能把链发现挤到排队。
+ *
+ * 🚨 **10 次/30 s 是「兜底最严档」, 不是官方真值 —— 与上面两条的来历相反**: 2026-08-17 直取
+ * `openapi.futunn.com` 的 get-global-state 页复核, **全页没有「接口限制」小节**, 而该站的规矩是
+ * 「每个接口的限频规则会有不同, 具体请参见每个接口页面下面的接口限制」(`intro/authority.html`)
+ * ⇒ 官方从未就这个接口给过数。⚠️ 所以别照着 `option_chain` 那条的措辞把它当成「官方真值,
+ * 别顺手改宽」; 它是「查过、确实没有」。真值哪天出现就改这里, **但别做等价换算**
+ * (换算即 bug, 理由见 {@link FUTU_SHIM_OPTION_CHAIN_PROFILE} 的 08-09 事故段) ——
+ * 与 `ratelimit.py` 的 `LIMITS["global_state"] = (10, 30)` 逐字同构。
+ *
+ * 用量 1 发/30 s ⇒ 兜底档仍有 10 倍余量, 松紧对本片没有任何可观测差别。
+ *
+ * 🚨 **`timeoutMs` 刻意压到 10 s, 不继承主画像的 60 s**: 那 60 s 是给「kline 单次拉 10 年
+ * 日线」留的余量, 而本端点回的是一个几百字节的 dict。tick **每 30 秒一拍**, 最坏耗时
+ * = 2 次尝试 × 10 s + 一次 transient 等待 2 s ≈ 22 s < 30 s ⇒ 一拍再慢也压不到下一拍。
+ * 且超时即失败正是要的语义: 一个迟到 40 秒才回来的「现在开市」, 对 90 秒的新鲜度闸毫无价值,
+ * 它只会让 fail-closed 判定被推迟一整拍。
+ */
+export const FUTU_SHIM_MARKET_STATE_PROFILE: VendorConstraintProfile = {
+  ...FUTU_SHIM_PROFILE,
+  vendor: 'futu-shim:market_state',
+  rateLimit: { maxCalls: 10, windowMs: 30_000 },
+  timeoutMs: 10_000,
+};

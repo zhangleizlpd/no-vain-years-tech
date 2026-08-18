@@ -36,6 +36,7 @@ export * from './anchorResponseConfidenceSource';
 export * from './anchorResponseDerivedLLevel';
 export * from './anchorResponseLLevelEffective';
 export * from './anchorResponseLLevelManual';
+export * from './anchorResponsePriceKind';
 export * from './anchorResponseQuoteFreshnessTier';
 export * from './anchorResponseZone';
 export * from './anchorSubmissionResponse';

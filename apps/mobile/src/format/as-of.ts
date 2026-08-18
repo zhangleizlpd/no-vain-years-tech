@@ -6,7 +6,25 @@
 // 各写一份必 drift，故这里是唯一落点：portfolio 的 `formatAsOf` 现在委托到本函数。
 
 /**
- * 「数据截至 2026-06-01 · 收盘」。`asOf` 缺失 → 空串（调用方据此不渲染，绝不渲染裸数值）。
+ * ISO 时刻 → 设备本地 `HH:mm`；非法串 → null。
+ *
+ * 🚨 **本地时区，不是 UTC**（同 `~/alert` 的 `n()`）—— 这是给人读的墙钟：境内用户盯美股盘中，
+ * 看到的必须是自己表上的钟点。`~/format/datetime` 刻意选 UTC 是另一类需求（跨端可比的绝对
+ * 时刻），两者不要互相「统一」。
+ */
+function clockHm(iso: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * 「数据截至 2026-06-01 · 收盘」/「数据截至 13:22」。
+ * `asOf` 缺失 → 空串（调用方据此不渲染，绝不渲染裸数值）。
+ *
+ * 🚨 **粒度即档位**（061 FR-009）：`realtime` 呈**时刻**、`eod_close` 呈**交易日**。
+ * 呈现层 MUST NOT 为档位另加视觉标记 —— 所以实时档**不带任何后缀**，两档的区别只有粒度本身。
  * `priceKind === 'eod_close'` 才带「· 收盘」后缀；其余通路不加，避免把非收盘价说成收盘。
  */
 export function formatAsOfLabel(
@@ -14,6 +32,10 @@ export function formatAsOfLabel(
   priceKind?: string | null,
 ): string {
   if (!asOf) return '';
+  if (priceKind === 'realtime') {
+    const hm = clockHm(asOf);
+    return hm === null ? '' : `数据截至 ${hm}`;
+  }
   return `数据截至 ${asOf}${priceKind === 'eod_close' ? ' · 收盘' : ''}`;
 }
 
