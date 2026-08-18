@@ -42,6 +42,17 @@ const DAY_MS = 86_400_000;
 /** syncRange 不读 cfg (仅 @Cron handleCron 读 tickEnabled) → 最小占位。 */
 const CFG = { tickEnabled: true } as unknown as MarketdataSyncConfig;
 
+/**
+ * 前瞻源占位 (062 T004 起 `TradingCalendarSyncService` 的第 4 个依赖)。本文件只走
+ * `syncRange` (历史段) —— 前瞻段由 `marketdata.calendar-062.horizon.it.spec.ts` 专门覆盖。
+ * 故此处放一个**碰到即抛**的占位: 若哪天历史段意外触达前瞻源, 测试会当场红而不是静默走通。
+ */
+const NO_FORWARD: TradingCalendarSource = {
+  fetchTradingDates: async () => {
+    throw new Error('[test] 本文件的用例不应触达前瞻源');
+  },
+};
+
 /** 真链填充窗 (日常 populate 恒 30 天窗 → 恒受合理性闸保护, 不走短窗豁免)。 */
 const FROM = '2026-06-16';
 const TO = '2026-07-16';
@@ -87,6 +98,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
 
   beforeEach(async () => {
     await prisma.calendarSyncHealth.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
     await prisma.tradingDay.deleteMany();
   });
 
@@ -257,7 +269,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
   }
 
   it('真链跑成功 → 心跳落库 → 谓词判健康 exit 0 (写入端与读取端契约对齐)', async () => {
-    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG);
+    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG, NO_FORWARD);
 
     await svc.syncRange(['cn', 'hk', 'us'], FROM, TO);
 
@@ -267,7 +279,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
   });
 
   it('🚨 长假语义: 重跑「成功但零新增」→ 心跳照旧刷新 → 谓词仍判健康 (SC-005 不误报)', async () => {
-    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG);
+    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG, NO_FORWARD);
 
     await svc.syncRange(['cn', 'hk', 'us'], FROM, TO);
     const second = await svc.syncRange(['cn', 'hk', 'us'], FROM, TO);
@@ -289,7 +301,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
         },
       },
     ]);
-    const svc = new TradingCalendarSyncService(dead, prisma, CFG);
+    const svc = new TradingCalendarSyncService(dead, prisma, CFG, NO_FORWARD);
 
     const results = await svc.syncRange(['cn'], FROM, TO);
 

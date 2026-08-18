@@ -38,6 +38,17 @@ function stubSource(byMarket: Record<string, string[]>): {
 /** syncRange/populate 不读 cfg (仅 @Cron handleCron 读 tickEnabled) → IT 传最小占位。 */
 const CFG = { tickEnabled: true } as unknown as MarketdataSyncConfig;
 
+/**
+ * 前瞻源占位 (062 T004 起 `TradingCalendarSyncService` 的第 4 个依赖)。本文件只走
+ * `syncRange` (历史段) —— 前瞻段由 `marketdata.calendar-062.horizon.it.spec.ts` 专门覆盖。
+ * 故此处放一个**碰到即抛**的占位: 若哪天历史段意外触达前瞻源, 测试会当场红而不是静默走通。
+ */
+const NO_FORWARD: TradingCalendarSource = {
+  fetchTradingDates: async () => {
+    throw new Error('[test] 本文件的用例不应触达前瞻源');
+  },
+};
+
 describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + 幂等', () => {
   let prisma: PrismaService;
 
@@ -58,6 +69,7 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
   beforeEach(async () => {
     await prisma.tradingDay.deleteMany();
     await prisma.calendarSyncHealth.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
   });
 
   /** 心跳行读取 helper (per-market, 未写过 → null)。 */
@@ -68,7 +80,7 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
       cn: ['2026-07-13', '2026-07-14'],
       hk: ['2026-07-13'],
     });
-    const svc = new TradingCalendarSyncService(source, prisma, CFG);
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);
 
     const results = await svc.syncRange(['cn', 'hk'], '2026-07-01', '2026-07-14');
 
@@ -100,7 +112,7 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
 
   it('重跑同区间 → skipDuplicates 幂等 (inserted=0, 总行数不变)', async () => {
     const { source } = stubSource({ cn: ['2026-07-13', '2026-07-14'] });
-    const svc = new TradingCalendarSyncService(source, prisma, CFG);
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);
 
     const first = await svc.syncRange(['cn'], '2026-07-01', '2026-07-14');
     expect(first[0]).toEqual({ market: 'cn', fetched: 2, inserted: 2 });
@@ -128,7 +140,7 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
         return { dates: ['2026-07-13'], servedBy: 'stub' };
       },
     };
-    const svc = new TradingCalendarSyncService(source, prisma, CFG);
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);
 
     // 先埋一行「昨天成功过」的心跳 —— 失败必须**保住**它 (而非刷新), 心跳才会随时间陈旧。
     const yesterday = new Date(Date.now() - 24 * 3600_000);
@@ -164,7 +176,7 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
       hk: ['2026-07-14'],
       us: ['2026-07-13'],
     });
-    const svc = new TradingCalendarSyncService(source, prisma, CFG);
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);
 
     // 固定 now = 2026-07-14T12:00:00+08:00 → shanghaiToday = 2026-07-14。
     await svc.populate(new Date('2026-07-14T04:00:00Z'));

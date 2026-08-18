@@ -79,6 +79,17 @@ function healthyNode(byMarket: Record<string, string[]>, servedBy: string): Trad
 /** syncRange 不读 cfg (仅 @Cron handleCron 读 tickEnabled) → IT 传最小占位。 */
 const CFG = { tickEnabled: true } as unknown as MarketdataSyncConfig;
 
+/**
+ * 前瞻源占位 (062 T004 起 `TradingCalendarSyncService` 的第 4 个依赖)。本文件只走
+ * `syncRange` (历史段) —— 前瞻段由 `marketdata.calendar-062.horizon.it.spec.ts` 专门覆盖。
+ * 故此处放一个**碰到即抛**的占位: 若哪天历史段意外触达前瞻源, 测试会当场红而不是静默走通。
+ */
+const NO_FORWARD: TradingCalendarSource = {
+  fetchTradingDates: async () => {
+    throw new Error('[test] 本文件的用例不应触达前瞻源');
+  },
+};
+
 /** 预埋心跳 (模拟「昨天填充成功过」): 全链不合理时它必须**保持原样**。 */
 const SEEDED_SUCCESS_AT = new Date('2026-07-15T13:00:00Z');
 
@@ -102,11 +113,17 @@ describe('044 US2 合理性闸 (Testcontainers PG, 真链 + 真落库: 毒饵零
   beforeEach(async () => {
     await prisma.tradingDay.deleteMany();
     await prisma.calendarSyncHealth.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
   });
 
   /** 装配「真链 + service」(节点由各 it 注入, 模拟毒饵/健康组合)。 */
   function serviceWith(nodes: TradingCalendarSource[]): TradingCalendarSyncService {
-    return new TradingCalendarSyncService(new CalendarSourceFallbackChain(nodes), prisma, CFG);
+    return new TradingCalendarSyncService(
+      new CalendarSourceFallbackChain(nodes),
+      prisma,
+      CFG,
+      NO_FORWARD,
+    );
   }
 
   const datesOf = async (market: string): Promise<string[]> =>
