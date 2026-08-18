@@ -23,6 +23,30 @@ import { marketDateFor, shanghaiToday } from './trading-day-gate.js';
 /** 交易日历覆盖市场 (市场级, 与 universe 维度解耦; eastmoney 指数源三市场齐备)。 */
 export const CALENDAR_MARKETS = ['cn', 'hk', 'us'] as const;
 
+/**
+ * 填充段别 —— 决定这一段**有资格写哪一个 `served_by`**。`live` = 活源链 (populate 的历史段
+ * 与 seed CLI 的宽区间, 二者同源同链); `forward` = 前瞻年历段。
+ *
+ * 🚨🚨 **两个 `served_by` 各答一个问题, MUST NOT 互写**:
+ *
+ * · `calendar_sync_health.served_by` ← **只由 `live` 写**。答「**活源链**当前的胜出层是谁」,
+ *   是 FR-014「降级 ≠ 健康」的**唯一**载体。
+ * · `calendar_coverage.served_by` ← **谁推进了视野终点谁写** (判据在 `advanceCoverageFor`)。
+ *   答「当前视野终点是谁给的」, 稳态下即前瞻段。
+ *
+ * 🚨 **这条不是洁癖, 它修的是一个已在生产发生过的观测失明**: cn/hk 活源链是
+ * `[tencent → static]`, **其 L2 恰恰就是 `static`**, 而前瞻链 cn/hk 的唯一层也是 `static`。
+ * 前瞻段后跑 ⇒ 若它写心跳, 「腾讯挂了降级到静态年历」与「前瞻段一切正常」在同一格里**同值**。
+ * 而静态年历是 committed 本地数据、当年内不会失败 ⇒ 腾讯挂掉时心跳不陈旧 (static 兜住了)、
+ * `lastError` 被成功分支清空、视野照常推到年末 —— **`served_by` 是唯一的探测手段, 而它被抹平**,
+ * 于是主源之死一路潜伏到跨年静态表用尽、全链失败的那一刻才炸。
+ *
+ * 2026-08-18 生产实测 (v0.31.0 上线当晚): 部署前心跳 `cn/hk=tencent`, 21:00 前瞻段跑完变
+ * `static`, 视野探针每 4h 恒红。机器化反例见
+ * `marketdata.calendar-062.horizon.it.spec.ts` 的「心跳 servedBy」三条。
+ */
+export type CalendarFillSegment = 'live' | 'forward';
+
 /** @Cron 每日填充回看窗 (天): 覆盖今日 + 近期缺口 (服务短暂停摆自愈); 一次 vendor 调用覆盖整窗。 */
 const POPULATE_LOOKBACK_DAYS = 30;
 
@@ -103,7 +127,13 @@ export class TradingCalendarSyncService {
     const from = new Date(Date.parse(`${to}T00:00:00Z`) - POPULATE_LOOKBACK_DAYS * DAY_MS)
       .toISOString()
       .slice(0, 10);
-    const historical = await this.syncRangeWith(this.source, [...CALENDAR_MARKETS], from, to);
+    const historical = await this.syncRangeWith(
+      this.source,
+      [...CALENDAR_MARKETS],
+      from,
+      to,
+      'live',
+    );
 
     const forward: CalendarSyncResult[] = [];
     for (const market of CALENDAR_MARKETS) {
@@ -114,6 +144,8 @@ export class TradingCalendarSyncService {
           [market],
           nextDay(marketToday),
           `${marketToday.slice(0, 4)}-12-31`,
+          // 🚨 段别必须显式传 —— 前瞻段 MUST NOT 写心跳的 servedBy, 理由见 CalendarFillSegment。
+          'forward',
         )),
       );
     }
@@ -136,15 +168,20 @@ export class TradingCalendarSyncService {
    * `TRADING_CALENDAR_FORWARD_SOURCE` (权威年历, 问未来) —— 而 per-market 隔离 / 心跳留痕 /
    * 幂等落库三条语义两段完全一致, 故抽参数而**不是**复制一份。
    *
-   * ⚠️ 心跳是 **per-market 一行**, 两段共用: 后跑的那段会覆盖同市场的心跳。这是刻意的 ——
-   * 心跳答的是「填充这件事还活着吗」(liveness), 分段的成败区分由**覆盖声明**承担 (062 T004),
-   * 别为了分段再去把心跳表按段拆列。
+   * ⚠️ 心跳是 **per-market 一行**, 两段共用 `lastSuccessAt` / `lastError`: 后跑的那段会覆盖同
+   * 市场的这两列。这是刻意的 —— 它们答的是「填充这件事还活着吗」(liveness), 分段的成败区分由
+   * **覆盖声明**承担 (062 T004), 别为了分段再去把心跳表按段拆列。
+   *
+   * 🚨🚨 **但 `servedBy` 是例外, 它只属于 `live` 段** —— 那一列答的不是 liveness 而是「活源链
+   * 降级了没有」(FR-014)。让前瞻段一起写会把降级信号抹平, 完整推导见 {@link CalendarFillSegment}。
+   * 默认 `'live'` 使 `syncRange` (seed CLI) 保持原语义: 它走的就是活源链。
    */
   async syncRangeWith(
     source: TradingCalendarSource,
     markets: string[],
     from: string,
     to: string,
+    segment: CalendarFillSegment = 'live',
   ): Promise<CalendarSyncResult[]> {
     const results: CalendarSyncResult[] = [];
     for (const market of markets) {
@@ -157,7 +194,11 @@ export class TradingCalendarSyncService {
           data: dates.map((d) => ({ market, date: new Date(`${d}T00:00:00Z`) })),
           skipDuplicates: true,
         });
-        await this.recordHeartbeat(market, servedBy);
+        // 🚨 `servedBy` 只有 `live` 段传得进去 (见 {@link CalendarFillSegment})。前瞻段传
+        // `undefined` ⇒ Prisma 跳过该列 ⇒ **既有值原样保留**, 活源链的降级信号不被覆写。
+        // ⚠️ 唯一会留空的路径: 活源链从未成功过、前瞻段先建了行 —— 此时 `servedBy = null`,
+        // 探针的 `IS DISTINCT FROM 主源` 判降级而告警, **正确**: 活源链状态本就未知。
+        await this.recordHeartbeat(market, segment === 'live' ? servedBy : undefined);
         // 🚨 **只在成功分支** —— 见 `advanceCoverageFor` 与下面 catch 分支的注释。
         await this.advanceCoverageFor(market, { from, to }, servedBy);
         results.push({ market, fetched: dates.length, inserted: count });
@@ -247,6 +288,10 @@ export class TradingCalendarSyncService {
    *
    * 🚫 **MUST NOT 用 `max(trading_day.date)` 派生终点** (FR-003): 最大值看不出区间中间的空洞。
    *
+   * 🚨 **本行的 `served_by` 只在 `to` 端真前进时才写** (见下方内联注释): 它答「视野终点是谁给
+   * 的」, 与 `calendar_sync_health.served_by`「活源链降级了没有」是**两个不同的问题**, 分居两
+   * 表两列、互不覆写 —— 完整推导见 {@link CalendarFillSegment}。
+   *
    * 不推进 (与既有声明之间有缺口) → **ERROR 留痕**且声明纹丝不动 (`state_branch` 11)。自身
    * 写失败同样只 ERROR 不外抛: 抛出去会被 per-market catch 接住, 从而把一次**成功的填充**记成
    * 失败心跳 (结果计数也跟着变 0) —— 观测/声明设施不该反过来伪造填充结局。视野不前进这件事
@@ -278,10 +323,15 @@ export class TradingCalendarSyncService {
         return;
       }
 
+      // 🚨 `servedBy` 答的是「**当前视野终点**是谁给的」⇒ 只有真把 `to` 端往前推的那一次才有
+      // 资格写它。只扩 `from` 端 (seed CLI 回灌历史) MUST NOT 动它 —— 否则一次人工 seed 就把
+      // 「视野终点由前瞻年历给出」改写成「由活源链给出」, 记录失真。
+      // 首次建行 (`current === null`) 必然带 `to` ⇒ 走写入分支, 该列不会留空。
+      const advancesTo = current === null || advanced.coverage.to > current.to;
       const data = {
         coveredFrom: new Date(`${advanced.coverage.from}T00:00:00Z`),
         coveredTo: new Date(`${advanced.coverage.to}T00:00:00Z`),
-        servedBy,
+        ...(advancesTo ? { servedBy } : {}),
       };
       await this.prisma.calendarCoverage.upsert({
         where: { market },
