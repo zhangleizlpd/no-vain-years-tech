@@ -96,10 +96,45 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
     await db.drop();
   });
 
+  /**
+   * 📌 **062 T011 增补**: 同一个谓词自 062 起多了**视野档** (三档, 见 .sql 头部) —— 本文件测的是
+   * **心跳档**, 故在每个用例开跑前把视野埋成恒健康, 让这里的每一条红都只能来自心跳判据。
+   * 视野档自己的用例在 `marketdata.calendar-062.horizon-probe.it.spec.ts` (那边反过来把心跳
+   * 埋成恒健康)。两文件的分工 = FR-017「两档并存且互不替代」在测试面的落法。
+   *
+   * ⚠️ 相对 `current_date` 埋 (不写死年份): 视野判据全部是「相对今天」的, 写死日期明年必假红。
+   * 覆盖区间刻意**包住下面真链用例的填充窗** (FROM..TO), 于是 `advanceCoverage` 合并后区间不变
+   * —— 真链跑完视野仍健康, 这些用例照样只在测心跳。
+   */
+  async function seedHealthyHorizon(): Promise<void> {
+    const now = Date.now();
+    const iso = (t: number): Date =>
+      new Date(new Date(t).toISOString().slice(0, 10) + 'T00:00:00Z');
+    for (const market of ['cn', 'hk', 'us']) {
+      await prisma.calendarCoverage.upsert({
+        where: { market },
+        create: {
+          market,
+          coveredFrom: iso(now - 400 * DAY_MS),
+          coveredTo: iso(now + 20 * DAY_MS),
+          servedBy: market === 'us' ? 'futu' : 'tencent',
+        },
+        update: { coveredFrom: iso(now - 400 * DAY_MS), coveredTo: iso(now + 20 * DAY_MS) },
+      });
+      // 余量 10 个交易日 (> 阈值 5) —— 蓄意**不靠年末豁免**兜底: 靠豁免的话, 哪天有人改动豁免
+      // 表达式, 本文件会跟着一起红, 而它根本不测那件事。
+      await prisma.tradingDay.createMany({
+        data: Array.from({ length: 10 }, (_, i) => ({ market, date: iso(now + (i + 1) * DAY_MS) })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
   beforeEach(async () => {
     await prisma.calendarSyncHealth.deleteMany();
     await prisma.calendarCoverage.deleteMany();
     await prisma.tradingDay.deleteMany();
+    await seedHealthyHorizon();
   });
 
   /** 跑谓词 → 与 bash 侧完全相同的两列输出 (exit_code 直接就是 bash 的退出码)。 */
