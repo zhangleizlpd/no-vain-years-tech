@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.29.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.28.1...server-v0.29.0) (2026-08-18)
+
+
+### Features
+
+* **marketdata:** 060 锚首建冷启动补数 —— 建锚即补最近一场收盘的链 / 快照 / 日线 ([#89](https://github.com/zhangleizlpd/no-vain-years-tech/issues/89)) ([cd010f2](https://github.com/zhangleizlpd/no-vain-years-tech/commit/cd010f2b450f38bcb45fd1005ec65022c811b68f))
+
 ## [0.28.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.28.0...server-v0.28.1) (2026-08-17)
 
 
