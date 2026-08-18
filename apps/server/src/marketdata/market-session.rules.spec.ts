@@ -63,13 +63,13 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     });
   });
 
-  describe('hk — 本片新登记 (09:30–12:00 + 13:00–16:00 HKT, 午休分两段)', () => {
-    it('两段各自含端点, 段间的午休 false', () => {
+  describe('hk — 单段 [09:30,16:00] HKT (午休蓄意不建模, 见 rules 文件 hk 登记处的注释)', () => {
+    it('开收盘含端点; 午休判 true —— 「午休算场内」正是本简化的核心语义', () => {
       expect(isWithinTradingSession('hk', at(9, 29))).toBe(false); // 盘前
       expect(isWithinTradingSession('hk', at(9, 30))).toBe(true); // 开盘
-      expect(isWithinTradingSession('hk', at(12))).toBe(true); // 12:00 上午收 —— 闭区间, 同 cn 的 11:30
-      expect(isWithinTradingSession('hk', at(12, 30))).toBe(false); // 午休正中
-      expect(isWithinTradingSession('hk', at(13))).toBe(true); // 午开
+      expect(isWithinTradingSession('hk', at(12))).toBe(true); // 港交所上午收
+      expect(isWithinTradingSession('hk', at(12, 30))).toBe(true); // 午休正中 —— 单段下算场内
+      expect(isWithinTradingSession('hk', at(13))).toBe(true); // 港交所午开
       expect(isWithinTradingSession('hk', at(16))).toBe(true); // 收盘
       expect(isWithinTradingSession('hk', at(16, 1))).toBe(false); // 盘后
     });
@@ -94,8 +94,8 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
       expect(isSessionUnderway('cn', at(12))).toBe(true);
     });
 
-    it('🚨 hk 午休正中同理', () => {
-      expect(isWithinTradingSession('hk', at(12, 30))).toBe(false);
+    it('📌 hk 已合并单段 ⇒ 两谓词在它身上不再分道 (分道只剩 cn 一处)', () => {
+      expect(isWithinTradingSession('hk', at(12, 30))).toBe(true);
       expect(isSessionUnderway('hk', at(12, 30))).toBe(true);
     });
 
@@ -114,12 +114,13 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     });
 
     /**
-     * 📌 **今天这个 bug 是潜伏的, 这条断言把「为什么潜伏」钉住**: 唯一开通期权采集的市场是 us,
-     * 而 us 无午休 ⇒ 两个谓词在它身上逐点等价。接 hk 期权那片时这条等价立刻不成立。
+     * 📌 **两谓词的分道如今只剩 `cn` 一个市场**: us 本就无午休, hk 已合并单段 ⇒ 它俩身上逐分钟
+     * 等价。这条断言把这件事钉住 —— 谁把 hk 改回两段式, 这里第一个红, 逼他先回去读 FR-011。
      */
-    it('📌 us 无午休 ⇒ 两个谓词在全天逐分钟等价 (缺口今天潜伏的原因)', () => {
+    it('📌 us / hk 均为单段 ⇒ 两个谓词在全天逐分钟等价 (分道只剩 cn)', () => {
       for (let m = 0; m < 24 * 60; m += 1) {
         expect(isSessionUnderway('us', m)).toBe(isWithinTradingSession('us', m));
+        expect(isSessionUnderway('hk', m)).toBe(isWithinTradingSession('hk', m));
       }
     });
   });

@@ -16,7 +16,7 @@ import type { TradingCalendarPort } from './trading-calendar.port.js';
 const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
 /** 北京周一 22:30 = ET 周一 10:30 —— **连续竞价进行中**。 */
 const MONDAY_2230_BEIJING = new Date('2026-08-17T22:30+08:00');
-/** 北京/香港 周一 12:30 —— hk 的**午休正中** (两个谓词唯一分道的那一格)。 */
+/** 北京/香港 周一 12:30 —— 港交所的**午休正中**; hk 单段登记下它仍判「场内」。 */
 const MONDAY_1230_HKT = new Date('2026-08-17T12:30+08:00');
 
 const TARGET = '2026-08-14';
@@ -481,11 +481,14 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
 });
 
 /**
- * 🚨 **午休是两个谓词唯一分道的一格**, 而它今天端到端不可达: 唯一开通期权采集的 us 无午休,
- * 带午休的 hk 在 `COLD_START_CAPABILITY` 里是空表项、走到就提前返回。故在此**临时开通 hk**
- * 把这一格逼出来 —— 这不是给未来加设计, 是让「接 hk 期权那天才显形」的坑现在就有守卫。
+ * 🚨 **本档钉的是 FR-011 的结果, 不是某个谓词的实现**: 无论 hk 登记成两段还是单段 (2026-08-18
+ * 起为单段, 见 `market-session.rules.ts` hk 登记处), 午休都 MUST 判「该场未收」⇒ 不写快照。
+ *
+ * 它今天端到端不可达 —— 唯一开通期权采集的 us 真的无午休, 而 hk 在 `COLD_START_CAPABILITY`
+ * 里是空表项、走到就提前返回。故在此**临时开通 hk**把这一格逼出来: 哪天真给一个有午休的市场
+ * 开通期权采集, 这条守卫已经在了, 而那种错行**不报错**。
  */
-describe('第二相 —— 午休档 (FR-011, 今天潜伏)', () => {
+describe('第二相 —— 午休档 (FR-011, 今天端到端不可达)', () => {
   const original = COLD_START_CAPABILITY.hk;
 
   beforeEach(() => {

@@ -68,6 +68,8 @@ updated_at: '2026-08-17'
   >
   > 原 verify 写的「hk 午休 12:00 判 `false`」与本 task 自己要求的「cn 断言原样搬」相冲突（cn 的 11:30 上午收在闭区间下判 `true`，hk 的 12:00 同理），故例子改取 12:30 —— 修这个笔误时才牵出上面的缺口。
 
+  > 🔄 **ship 后修正（2026-08-18，user 定案）—— `hk` 改登记为单段 `[09:30,16:00]`，午休不再建模**。本 task 正文与上面几条注里「hk 两段」「hk 12:30 判 `false`」「接 hk 期权那片时第一个红」自此不成立，留原文只作留痕。判据与理由（含**接 hk 预警前 MUST NOT 直接用 `isWithinTradingSession`** 这条硬约束）以 plan §D6 的同日修正注 + `market-session.rules.ts` 的 hk 登记注释为准。补数侧取值逐点不变（`isSessionUnderway` 取 min(开盘)/max(收盘)，两段与单段同为 09:30/16:00）。
+
 - [X] T002 [Server] **alert 改 import，删本地副本**（plan §D6）：`alert/intraday-eval.processor.ts` 删掉那三个导出，改从 `../marketdata/market-session.rules.js` re-export 或直接 import；`INTRADAY_MARKET = 'cn'` **留在 alert**（那是 alert 的策略不是时段表的事）。→ verify: `nx test server alert/intraday-eval.processor.it.spec.ts` 绿。🚨 **该文件 `:67-69` 会红且是真实语义变更** —— 它拿 `us` 当「未登记市场」的例子断言 `toThrow(/未登记盘中时段/)` 与 `isWithinTradingSession('us', 600) === false`，而 `us` 现在已登记。**把例子换成仍未登记的 `sg`，不要删断言**（那条断言守的是「禁静默套用别人的时窗」，仍然要守）。另跑 `nx lint server` 确认 boundaries 放行（`from: alert` 的 disallow 未列 `marketdata-rules`，应当零告警 —— 若红说明 `market-session.rules.ts` 的文件名没落进 `src/marketdata/*.rules.ts` 这个 `mode:'full'` 元素）
 
   > 📌 **实现时对「不要删断言」做了归属上的偏离（impl 期记录）**：那三条纯时窗断言（cn 逐点 / `marketNow` 的 Intl 与跨日 / 「未登记市场抛」）**整体移到** `market-session.rules.spec.ts`（T001 已落，未登记市场的例子用的正是 `sg`），alert 的 IT 里**只留一条** —— 拿 `INTRADAY_MARKET` 断言「美东盘中时刻不在本通路时段内」。**断言一条没少，换的是归属**：① 表搬到哪、表的测试就在哪，否则同一组断言两处各半、改一处漏一处；② alert 那个文件是起 Redis 容器的 `.it.spec.ts`，纯函数断言挂在 Medium 档里本就是 size 分类学的味道。
