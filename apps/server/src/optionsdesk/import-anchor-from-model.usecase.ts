@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { type LLevel } from './anchor.rules';
@@ -24,6 +24,10 @@ import {
   type AnchorRow,
   type AnchorWriteResult,
 } from './create-anchor.usecase';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 059 —— 按**标的**寻址的模型估值导入 (FR-001 / FR-002 / FR-006 ~ FR-009 / FR-016)。
@@ -113,6 +117,10 @@ export class ImportAnchorFromModelUseCase {
   constructor(
     private readonly prisma: PrismaService,
     private readonly createAnchor: CreateAnchorUseCase,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
   ) {}
 
   async execute(input: ImportAnchorFromModelInput): Promise<ImportAnchorFromModelResult> {
@@ -146,7 +154,7 @@ export class ImportAnchorFromModelUseCase {
         action: 'noop',
         anchor: toAnchorWriteResult(
           existing,
-          await resolveLastClosedSessionForTicker(this.prisma, existing.ticker),
+          await resolveLastClosedSessionForTicker(this.calendar, existing.ticker),
         ),
         fallbackEntries: [],
       };
@@ -196,7 +204,7 @@ export class ImportAnchorFromModelUseCase {
       action: 'update',
       anchor: toAnchorWriteResult(
         row,
-        await resolveLastClosedSessionForTicker(this.prisma, row.ticker),
+        await resolveLastClosedSessionForTicker(this.calendar, row.ticker),
       ),
       fallbackEntries,
     };

@@ -24,7 +24,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     await db.drop();
   });
 
-  it('35 张 marketdata 表全部落库 (015 的 6 + 016 的 3 + 017 依赖边表 + 019 因子表 + 039 5 量化信号表 + 040 volatility/hot 2 表 + 041 4 事件流表 + 042 3 报告期表 + 043 2 分类文本表 + 044 日历心跳表 + 046 标的级 IV 2 表 + 046 美股指数日线表 + 047 链合约/逐日快照/财报日历 3 表 + 060 冷启动运行记录表)', async () => {
+  it('36 张 marketdata 表全部落库 (015 的 6 + 016 的 3 + 017 依赖边表 + 019 因子表 + 039 5 量化信号表 + 040 volatility/hot 2 表 + 041 4 事件流表 + 042 3 报告期表 + 043 2 分类文本表 + 044 日历心跳表 + 046 标的级 IV 2 表 + 046 美股指数日线表 + 047 链合约/逐日快照/财报日历 3 表 + 060 冷启动运行记录表 + 062 日历覆盖声明表)', async () => {
     const rows = await prisma.$queryRawUnsafe<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'marketdata' ORDER BY table_name`,
     );
@@ -34,6 +34,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'anchor_cold_start_run', // 060 T004
       'announcement', // 043 T001
       'buyback_event', // 041 T001
+      'calendar_coverage', // 062 T002
       'calendar_sync_health', // 044 T002
       'connect_holding_daily', // 039 T001
       'corporate_action',

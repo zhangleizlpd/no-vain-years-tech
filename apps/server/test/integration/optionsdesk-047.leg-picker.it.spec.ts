@@ -7,6 +7,7 @@ import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-leg
 import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 import { toLegTableResponse } from '../../src/optionsdesk/optionsdesk.dto';
 import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
+import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
 
 // 047 T029 选约表读端 IT (FR-005/006/007/008/013/014/016/020/021/041, SC-004)。
 //
@@ -25,7 +26,7 @@ import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
 //      而不是抛异常 (测 ③)。mock 上「返回空数组」是手写的, 证明不了真库的行为。
 //
 // ⇒ PG 从 `test/_support/isolated-db.ts` 的 **`setupIsolatedDb()`** 取 (共享 PG 的模板克隆,
-// **禁自起 Testcontainers**)。装配 = `new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma))` 打真 `PrismaService`
+// **禁自起 Testcontainers**)。装配 = `new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma), new DbTradingCalendarAdapter(prisma))` 打真 `PrismaService`
 // (样板 `optionsdesk-047.chain-sync.it.spec.ts` / `optionsdesk-047.integrity.it.spec.ts`)。
 //
 // 🚨 **造数两个坑** (T023 实撞过): 标的行的 `last` 别抄成期权价、行权价别取到「内在价值 > ask」
@@ -78,7 +79,11 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    useCase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      new DbTradingCalendarAdapter(prisma),
+    );
   }, 180_000);
 
   afterAll(async () => {
@@ -92,6 +97,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await prisma.earningsEvent.deleteMany();
     await prisma.instrument.deleteMany();
     await prisma.tradingDay.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
     await prisma.anchorChange.deleteMany();
     await prisma.anchor.deleteMany();
   });
@@ -128,6 +134,21 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
   async function seedTradingDays(): Promise<void> {
     await prisma.tradingDay.createMany({
       data: [STALE_SESSION, PREV_SESSION, TODAY].map((d) => ({ market: 'us', date: dateOf(d) })),
+    });
+    // 🚨 062 T010: 只 seed `trading_day` 仍不够 —— 收盘上界落在覆盖声明之外时端口返 `null`
+    // ⇒ 又落回 fail-open 恒判 CURRENT, 「陈旧」那一档照样走不到。
+    await seedCalendarCoverage();
+  }
+
+  /** 覆盖声明: 062 起「基准日可不可信」的唯一判据。 */
+  async function seedCalendarCoverage(): Promise<void> {
+    await prisma.calendarCoverage.create({
+      data: {
+        market: 'us',
+        coveredFrom: dateOf('2026-01-01'),
+        coveredTo: dateOf('2099-12-31'),
+        servedBy: 'it-seed',
+      },
     });
   }
 
@@ -593,6 +614,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await prisma.tradingDay.createMany({
       data: [PREV_SESSION, TODAY].map((d) => ({ market: 'us', date: dateOf(d) })),
     });
+    await seedCalendarCoverage();
 
     const view = await useCase.execute('us:VICI', 'all', NOW);
     // `evaluate` 而非 `check`: 纯判定不告警 —— 本测量的是分母口径, 不是告警行为。

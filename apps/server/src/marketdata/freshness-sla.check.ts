@@ -47,6 +47,8 @@ export class FreshnessSlaCheck {
     const stale: string[] = [];
     // per-market 交易日缓存 (`${market}:${date}` → 开市与否), 跨维度复用避免重复查表 (S2-T1)。
     const openCache = new Map<string, boolean>();
+    // 判定为 `unknown` 而按开市折算过的 `market:date` —— 收口成一条 WARN, 见本方法末尾。
+    const assumedOpen = new Set<string>();
     for (const dim of dims) {
       const lastOk = await this.prisma.syncRun.findFirst({
         where: {
@@ -70,6 +72,7 @@ export class FreshnessSlaCheck {
         now,
         dim.marketScope,
         openCache,
+        assumedOpen,
       );
       if (ageHours > (dim.slaHours as number)) {
         stale.push(dim.dimensionKey);
@@ -83,6 +86,16 @@ export class FreshnessSlaCheck {
           })}`,
         );
       }
+    }
+    // 🚨 FR-013: 按 `unknown` 继续算的那些天必须留痕, 否则「按开市算的」与「确认开市」事后
+    //    一样分不出 —— 而两者对「这条 SLA 告警可不可信」的含义完全不同。整轮汇总成一条,
+    //    逐天一条会在视野停摆时刷屏 (最多 60 天 × 市场数)。
+    if (assumedOpen.size > 0) {
+      this.logger.warn(
+        `freshness SLA: 交易日历视野未覆盖 ${assumedOpen.size} 个 market:date, ` +
+          `已按 unknown ⇒ **开市**折算 (偏保守多算龄, state_branch 8); ` +
+          `样本 ${[...assumedOpen].slice(0, 10).join(', ')} — 请补前瞻视野`,
+      );
     }
     return stale;
   }
@@ -98,6 +111,7 @@ export class FreshnessSlaCheck {
     now: Date,
     marketScope: string[],
     openCache: Map<string, boolean>,
+    assumedOpen: Set<string>,
   ): Promise<number> {
     if (from >= now) return 0;
     if (now.getTime() - from.getTime() > MAX_SCAN_DAYS * DAY_MS) {
@@ -111,7 +125,7 @@ export class FreshnessSlaCheck {
       // 当日 (Shanghai) 次日 0 点的 UTC 时刻。
       const nextMidnightUtc = new Date(new Date(`${date}T00:00:00+08:00`).getTime() + DAY_MS);
       const sliceEnd = nextMidnightUtc < now ? nextMidnightUtc : now;
-      if (await this.isAnyMarketOpen(marketScope, date, openCache)) {
+      if (await this.isAnyMarketOpen(marketScope, date, openCache, assumedOpen)) {
         hours += (sliceEnd.getTime() - cursor.getTime()) / 3_600_000;
       }
       cursor = sliceEnd;
@@ -119,17 +133,27 @@ export class FreshnessSlaCheck {
     return hours;
   }
 
-  /** marketScope 内任一市场当日开市 (OR 语义, per-market 折算龄); 按 `market:date` 缓存跨维度复用。 */
+  /**
+   * marketScope 内任一市场当日开市 (OR 语义, per-market 折算龄); 按 `market:date` 缓存跨维度复用。
+   *
+   * 🚨 **三态分派 (062 T009, `state_branch` 8): `unknown` ⇒ 按开市折算**, 即偏保守**多**算龄。
+   * 方向是刻意的 —— 多算龄最多多响一次可核查的 SLA 告警, 少算龄则是把「同步真的停了」悄悄
+   * 抹平成「今天休市而已」, 而这条检查存在的全部意义就是发现前者。
+   * 🚫 **MUST NOT 按休市折算**, 也 MUST NOT 写成 `=== 'trading'`（等价于按休市折算）。
+   */
   private async isAnyMarketOpen(
     marketScope: string[],
     date: string,
     openCache: Map<string, boolean>,
+    assumedOpen: Set<string>,
   ): Promise<boolean> {
     for (const market of marketScope) {
       const key = `${market}:${date}`;
       let open = openCache.get(key);
       if (open === undefined) {
-        open = await this.calendar.isTradingDay(market, date);
+        const status = await this.calendar.classify(market, date);
+        if (status === 'unknown') assumedOpen.add(key);
+        open = status !== 'non-trading';
         openCache.set(key, open);
       }
       if (open) return true;

@@ -58,6 +58,6 @@ Doc 文件组织 per [docs/conventions/docs-organization.md](docs/conventions/do
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-[specs/061-marketdata-realtime-spot/plan.md](specs/061-marketdata-realtime-spot/plan.md)
+[specs/062-trading-calendar-horizon/plan.md](specs/062-trading-calendar-horizon/plan.md)
 
 <!-- SPECKIT END -->

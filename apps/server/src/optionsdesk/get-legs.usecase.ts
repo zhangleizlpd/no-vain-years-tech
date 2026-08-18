@@ -72,6 +72,10 @@ import {
   type LegTierVerdict,
 } from './leg-tier.rules';
 import { earningsLegFamilyFor, type LegTab } from './leg-tab.rules';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 047 US2/US3/US4 — 意图 Tab 选约表读端 (FR-002/003/005/008/013/019/041/053/054,
@@ -366,6 +370,10 @@ export class GetLegsUseCase {
     // 召回层的数据来源接缝 (ADR-0064 决策 4)。🚫 **不是**跨 ctx 注入对方 use case (Q7-C 仍成立)
     // —— port 的实现住在本 ctx 内, 它自己直查 marketdata 表并带 `CROSS-CONTEXT-READ`。
     @Inject(LEG_RETRIEVAL_PORT) private readonly retrieval: LegRetrievalPort,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
   ) {}
 
   /**
@@ -474,7 +482,7 @@ export class GetLegsUseCase {
 
       // 🚫 **MUST NOT 传省略 `now`** —— 默认值会让本端点的注入时钟对新鲜度基准失效 (测试里
       // 钉住的那个「境内早晨」时刻就不再成立), 与 T006a 对 `daysToExpiry` 的同一条纪律同源。
-      const lastClosedSession = await resolveLastClosedSessionForTicker(this.prisma, symbol, now);
+      const lastClosedSession = await resolveLastClosedSessionForTicker(this.calendar, symbol, now);
 
       const zone = classifyZone(effective.v, chain.spot);
       const { intent, rentDepth } = classifyIntent(zone, effective.lLevel, positionBucket);

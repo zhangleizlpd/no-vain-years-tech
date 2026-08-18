@@ -137,7 +137,10 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
   } as unknown as PrismaService;
 
   const calendar: TradingCalendarPort = {
-    isTradingDay: async (_market: string, date: string) => tradingDays.includes(date),
+    classify: async (_market: string, date: string) =>
+      tradingDays.includes(date) ? 'trading' : 'non-trading',
+    // 062 T010: 本文件不验陈旧度基准 (那条归 optionsdesk-062.calendar IT)。
+    lastClosedSession: async () => null,
   };
 
   const coverage = new OptionSnapshotCoverageCheck(prisma, {

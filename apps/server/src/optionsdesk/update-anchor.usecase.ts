@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { type LLevel } from './anchor.rules';
@@ -18,6 +18,10 @@ import {
   type AnchorRow,
   type AnchorWriteResult,
 } from './create-anchor.usecase';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 045 US1 — 改锚 (FR-001 / FR-003a / FR-006 / FR-032 / FR-033 / FR-035, plan D3 + D9)。
@@ -114,7 +118,13 @@ function toCoreFieldData(patch: UpdateAnchorPatch): Prisma.AnchorUpdateManyMutat
 
 @Injectable()
 export class UpdateAnchorUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   async execute(
     anchorId: bigint,
@@ -184,7 +194,7 @@ export class UpdateAnchorUseCase {
     // 新鲜度基准在 tx 外取 (只读、与本次写无因果) —— 别把跨 ctx 读拖进写事务。
     return toAnchorWriteResult(
       row,
-      await resolveLastClosedSessionForTicker(this.prisma, row.ticker),
+      await resolveLastClosedSessionForTicker(this.calendar, row.ticker),
     );
   }
 }

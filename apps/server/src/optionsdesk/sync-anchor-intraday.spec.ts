@@ -8,6 +8,8 @@ import {
   type RealtimeQuotePort,
 } from '../marketdata/realtime-quote.port';
 import type { MarketSession, MarketStatePort } from '../marketdata/market-state.port';
+import type { TradingCalendarPort } from '../marketdata/trading-calendar.port';
+import type { TradingDayStatus } from '../marketdata/trading-day.rules';
 import type { PrismaService } from '../security/prisma.service';
 import {
   SyncAnchorIntradayUseCase,
@@ -28,21 +30,22 @@ interface PrismaMock {
   prisma: PrismaService;
   anchorFindMany: Fn;
   anchorUpdateMany: Fn;
-  tradingDayCount: Fn;
   anchorChangeCreate: Fn;
 }
 
+/**
+ * ⚠️ **062 T008 起本 mock 不再有 `tradingDay`** —— 交易日闸改走 `TRADING_CALENDAR_PORT`
+ * (optionsdesk 的唯一 module 边)。留着那个假方法只会让「实现又退回裸直查」这件事静默通过。
+ */
 function buildPrismaMock(anchors: { id: bigint; ticker: string }[]): PrismaMock {
   const anchorFindMany = vi.fn().mockResolvedValue(anchors);
   const anchorUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
-  const tradingDayCount = vi.fn().mockResolvedValue(1);
   const anchorChangeCreate = vi.fn().mockResolvedValue({});
   const prisma = {
     anchor: { findMany: anchorFindMany, updateMany: anchorUpdateMany },
-    tradingDay: { count: tradingDayCount },
     anchorChange: { create: anchorChangeCreate, createMany: anchorChangeCreate },
   } as unknown as PrismaService;
-  return { prisma, anchorFindMany, anchorUpdateMany, tradingDayCount, anchorChangeCreate };
+  return { prisma, anchorFindMany, anchorUpdateMany, anchorChangeCreate };
 }
 
 function quoteMapOf(symbols: readonly string[], price = '123.4500'): Map<string, RealtimeQuote> {
@@ -54,6 +57,8 @@ interface Harness {
   m: PrismaMock;
   fetchQuotes: Fn;
   getMarketSessions: Fn;
+  /** 交易日历读端口替身 —— 默认 `trading`, 用例按需摆成 `non-trading` / `unknown`。 */
+  classify: Fn;
 }
 
 function build(
@@ -63,12 +68,14 @@ function build(
   const m = buildPrismaMock(anchors);
   const fetchQuotes = vi.fn((symbols: readonly string[]) => Promise.resolve(quoteMapOf(symbols)));
   const getMarketSessions = vi.fn().mockResolvedValue(sessions);
+  const classify = vi.fn().mockResolvedValue('trading' satisfies TradingDayStatus);
   const useCase = new SyncAnchorIntradayUseCase(
     m.prisma,
     { fetchQuotes } as unknown as RealtimeQuotePort,
     { getMarketSessions } as unknown as MarketStatePort,
+    { classify, lastClosedSession: async () => null } as unknown as TradingCalendarPort,
   );
-  return { useCase, m, fetchQuotes, getMarketSessions };
+  return { useCase, m, fetchQuotes, getMarketSessions, classify };
 }
 
 /** 该 market 组的处置 (断言用; 找不到即 undefined, 让断言自己红)。 */
@@ -182,15 +189,30 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
   });
 
   it('🚨 状态说开市但当天非交易日 → 0 次源调用 (两闸取交集, 交易日闸不可被顶替, state_branch 5)', async () => {
-    const { useCase, m, fetchQuotes } = build([anchorRow(7n, 'us:AOS')]);
-    m.tradingDayCount.mockResolvedValue(0);
+    const { useCase, classify, fetchQuotes } = build([anchorRow(7n, 'us:AOS')]);
+    classify.mockResolvedValue('non-trading' satisfies TradingDayStatus);
 
     const report = await useCase.execute(NOW);
 
-    expect(m.tradingDayCount).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(1);
     expect(fetchQuotes).not.toHaveBeenCalled();
     expect(outcomeOf(report, 'us')).toMatchObject({ status: 'skipped-holiday' });
     expect(classifyTickSource(report)).toBe('no-attempt');
+  });
+
+  /**
+   * 🚨 **062 T008 —— `unknown` 落在放行侧**。它说的是「日历还没填到今天」而不是「今天不是
+   * 交易日」; 判成后者 = 每天开盘前整段静默停摆 (062 要消灭的病根)。留痕必须与 `confirmed`
+   * 分得出 (FR-013), 否则事后查不出「这一拍为什么采了」。
+   */
+  it('🚨 交易日判定为 unknown → 照常采集且留痕标 unknown (FR-012/FR-013, state_branch 5)', async () => {
+    const { useCase, classify, fetchQuotes } = build([anchorRow(7n, 'us:AOS')]);
+    classify.mockResolvedValue('unknown' satisfies TradingDayStatus);
+
+    const report = await useCase.execute(NOW);
+
+    expect(fetchQuotes).toHaveBeenCalledTimes(1);
+    expect(outcomeOf(report, 'us')).toMatchObject({ status: 'collected', calendar: 'unknown' });
   });
 
   it('状态不可得 → 0 次源调用, 计为**源故障** (fail-closed, state_branch 4)', async () => {
@@ -288,6 +310,10 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
       m.prisma,
       { fetchQuotes: vi.fn((s: readonly string[]) => Promise.resolve(quoteMapOf(s))) },
       { getMarketSessions: vi.fn().mockResolvedValue([{ market: 'us', session: 'regular' }]) },
+      {
+        classify: vi.fn().mockResolvedValue('trading' satisfies TradingDayStatus),
+        lastClosedSession: async () => null,
+      },
     );
 
     await useCase.execute(NOW);
@@ -319,11 +345,11 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
   });
 
   it('补一拍仍受交易日闸约束 (两闸交集不因强制而放开)', async () => {
-    const { useCase, m, fetchQuotes } = build(
+    const { useCase, classify, fetchQuotes } = build(
       [anchorRow(7n, 'us:AOS')],
       [{ market: 'us', session: 'other' }],
     );
-    m.tradingDayCount.mockResolvedValue(0);
+    classify.mockResolvedValue('non-trading' satisfies TradingDayStatus);
 
     await useCase.execute(NOW, { previousSessions: { us: 'regular' } });
 

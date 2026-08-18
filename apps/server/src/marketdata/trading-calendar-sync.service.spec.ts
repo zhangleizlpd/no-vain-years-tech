@@ -36,6 +36,13 @@ function mockPrisma(): {
         return args.create;
       }),
     },
+    // 062 T004: 成功分支还会推进 `calendar_coverage`。本文件的断言面是**心跳**, 故这里只放
+    // 最小可用的双方法 (findUnique 恒无声明 → 首次采用)。覆盖声明的判据/反例断言在
+    // `calendar-coverage.rules.spec.ts` 与 `marketdata.calendar-062.horizon.it.spec.ts`。
+    calendarCoverage: {
+      findUnique: vi.fn(async () => null),
+      upsert: vi.fn(async () => ({})),
+    },
   } as unknown as PrismaService;
   return { prisma, upserts };
 }
@@ -51,6 +58,16 @@ interface UpsertData {
 
 /** syncRange 不读 cfg (仅 @Cron handleCron 读 tickEnabled) → 最小占位。 */
 const CFG = { tickEnabled: true } as unknown as MarketdataSyncConfig;
+
+/**
+ * 前瞻源占位 (062 T004 起的第 4 个依赖)。本文件只走 `syncRange` (历史段) —— 碰到即抛,
+ * 若哪天历史段意外触达前瞻源, 测试当场红而不是静默走通。
+ */
+const NO_FORWARD: TradingCalendarSource = {
+  fetchTradingDates: async () => {
+    throw new Error('[test] 本文件的用例不应触达前瞻源');
+  },
+};
 
 /** 健康链: 按 market 返日历 + 自报服务方 (未预置 → throw, 模拟该市场取数失败)。 */
 function chain(byMarket: Record<string, string[]>, servedBy: string): TradingCalendarSource {
@@ -76,6 +93,7 @@ describe('TradingCalendarSyncService — 心跳写入 (044 T012: 失败不再静
       chain({ cn: ['2026-07-13', '2026-07-14'] }, 'tencent'),
       prisma,
       CFG,
+      NO_FORWARD,
     );
 
     const results = await svc.syncRange(['cn'], '2026-07-01', '2026-07-14');
@@ -102,6 +120,7 @@ describe('TradingCalendarSyncService — 心跳写入 (044 T012: 失败不再静
       chain({ hk: ['2026-07-13'] }, 'static'),
       prisma,
       CFG,
+      NO_FORWARD,
     );
 
     const results = await svc.syncRange(['hk'], '2026-07-01', '2026-07-14');
@@ -119,7 +138,7 @@ describe('TradingCalendarSyncService — 心跳写入 (044 T012: 失败不再静
         throw new Error('全链失败: [tencent] 端点 503 / [static] 区间外');
       }),
     };
-    const svc = new TradingCalendarSyncService(source, prisma, CFG);
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);
 
     const results = await svc.syncRange(['cn'], '2026-07-01', '2026-07-14');
 
@@ -140,7 +159,7 @@ describe('TradingCalendarSyncService — 心跳写入 (044 T012: 失败不再静
 
   it('🚨 失败不再被静默吞: 旧实现只 WARN + inserted:0 → 现在每次失败必留库内痕迹', async () => {
     const { prisma, upserts } = mockPrisma();
-    const svc = new TradingCalendarSyncService(chain({}, 'tencent'), prisma, CFG);
+    const svc = new TradingCalendarSyncService(chain({}, 'tencent'), prisma, CFG, NO_FORWARD);
 
     const results = await svc.syncRange(['cn'], '2026-07-01', '2026-07-14');
 
@@ -157,6 +176,7 @@ describe('TradingCalendarSyncService — 心跳写入 (044 T012: 失败不再静
       chain({ hk: ['2026-07-13'] }, 'tencent'),
       prisma,
       CFG,
+      NO_FORWARD,
     );
 
     const results = await svc.syncRange(['cn', 'hk'], '2026-07-01', '2026-07-14');
@@ -182,6 +202,7 @@ describe('TradingCalendarSyncService — 心跳写入 (044 T012: 失败不再静
       chain({ hk: ['2026-07-13'] }, 'tencent'),
       prisma,
       CFG,
+      NO_FORWARD,
     );
 
     // cn 取数失败 → 走失败心跳 (也炸) ; hk 取数成功 → 走成功心跳 (也炸)。整体仍不抛。

@@ -8,6 +8,7 @@ import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
 import { toLegTableResponse, toRequestedPerspective, toRetrievalOverride } from './optionsdesk.dto';
+import { lastClosedSessionCutoff } from '../marketdata/trading-day-gate';
 
 // 请求时刻 = 2026-08-04 ET 16:00 (= UTC 20:00) ⇒ 交易所的今天恒为 2026-08-04。
 // 🚨 蓄意用一个「北京已是 08-05 凌晨」都不成立的时刻也无所谓 —— 基准由 marketDateFor(['us'])
@@ -147,13 +148,17 @@ function snapshotsOf(legs: LegFixture[], session = '2026-08-03') {
  */
 const TRADING_DAYS = ['2026-07-31', '2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06'];
 
-/** 按 `date <= cutoff` 取最大交易日 —— 与 `last-closed-session.ts` 的真查询同语义。 */
-function tradingDayFindFirst() {
-  return vi.fn(async (args: { where: { market: string; date: { lte: Date } } }) => {
-    const cutoff = args.where.date.lte.toISOString().slice(0, 10);
-    const hit = [...TRADING_DAYS].reverse().find((d) => d <= cutoff);
-    return hit === undefined ? null : { date: date(hit) };
+/**
+ * 交易日历端口替身 —— 与 `DbTradingCalendarAdapter.lastClosedSession` **同语义**: 按市场当地
+ * 收盘上界取 {@link TRADING_DAYS} 里的最大交易日。062 T010 起本 use case 不再直查
+ * `trading_day`（判据收编进端口），故这里替的是端口而不是 prisma。
+ */
+function tradingCalendar(days: readonly string[] = TRADING_DAYS) {
+  const lastClosedSession = vi.fn(async (market: string, now: Date) => {
+    const cutoff = lastClosedSessionCutoff(market, now);
+    return [...days].reverse().find((d) => d <= cutoff) ?? null;
   });
+  return { classify: async (): Promise<'trading'> => 'trading', lastClosedSession };
 }
 
 function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] = LEGS) {
@@ -166,9 +171,6 @@ function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] 
       findMany: vi.fn().mockResolvedValue(snapshotsOf(legs)),
     },
     earningsEvent: { findMany: vi.fn().mockResolvedValue([{ earningsDate: date('2026-08-12') }]) },
-    // 📌 只剩 `findFirst` (最近一个已收盘交易日)。月度链标那次 `findMany` 于 #45 整条撤销 ——
-    //    判据改读随合约行出来的 vendor 到期周期, 本 use case 对交易日历只剩这一处读。
-    tradingDay: { findFirst: tradingDayFindFirst() },
     ...overrides,
   };
 }
@@ -181,9 +183,12 @@ function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] 
  * 假实现的用武之地在 `leg-retrieval.port.spec.ts` (脱离真库驱动召回判据, SC-009); 拿它替换
  * 这里会把本文件降级成「测我刚写的那份 mock」。
  */
-function makeUseCase(prisma: ReturnType<typeof makePrisma>) {
+function makeUseCase(
+  prisma: ReturnType<typeof makePrisma>,
+  calendar: ReturnType<typeof tradingCalendar> = tradingCalendar(),
+) {
   const service = prisma as unknown as PrismaService;
-  return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service));
+  return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service), calendar);
 }
 
 describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, Guardrail 7)', () => {
@@ -324,9 +329,9 @@ describe('get-legs.usecase — 每次只作答一个视角 (053 FR-001/FR-002, D
     // C-D 到期 2026-08-14 标 `WEEK` ⇒ 不带标。它证明这个标**不是恒 true**。
     expect(view.legs.find((l) => l.code === 'C-D')?.isMonthlyChain).toBe(false);
 
-    // 🚨 **零额外往返** (#45): 判据的输入随合约集那一次查询一并出来, 交易日历只被
-    // 「最近一个已收盘交易日」用一次 —— 换源前这里还有一次 `tradingDay.findMany`。
-    expect(prisma.tradingDay).not.toHaveProperty('findMany');
+    // 🚨 **零额外往返** (#45): 判据的输入随合约集那一次查询一并出来 —— 换源前这里还有一次
+    // `tradingDay.findMany`。062 T010 后交易日历只经端口被问「最近一场已收盘交易日」这一下。
+    expect(prisma).not.toHaveProperty('tradingDay');
     expect(prisma.optionContract.findMany).toHaveBeenCalledTimes(1);
   });
 
@@ -498,29 +503,31 @@ describe('get-legs.usecase — 缺口与故障是两件事', () => {
  *    (见 {@link TRADING_DAYS})。少任何一件, 「拿本地/UTC 今天当基准」的错写法都能蒙混过关。
  */
 describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个已收盘交易日)', () => {
-  const tableAt = async (session: string, now: Date, prismaOverrides = {}) => {
+  const tableAt = async (
+    session: string,
+    now: Date,
+    calendar: ReturnType<typeof tradingCalendar> = tradingCalendar(),
+  ) => {
     const prisma = makePrisma({
       optionDailySnapshot: {
         findFirst: vi.fn().mockResolvedValue({ sessionDate: date(session) }),
         findMany: vi.fn().mockResolvedValue(snapshotsOf(LEGS, session)),
       },
-      ...prismaOverrides,
     });
     return {
-      res: toLegTableResponse(await makeUseCase(prisma).execute(SYMBOL, 'all', now)),
-      prisma,
+      res: toLegTableResponse(await makeUseCase(prisma, calendar).execute(SYMBOL, 'all', now)),
+      calendar,
     };
   };
 
   it('🚨 境内早晨 (本地已翻页、市场当日已收盘) + 当日快照 ⇒ CURRENT, **不判陈旧**', async () => {
-    const { res, prisma } = await tableAt('2026-08-04', NOW_CN_MORNING);
+    const { res, calendar } = await tableAt('2026-08-04', NOW_CN_MORNING);
     expect(res.asOf).toBe('2026-08-04');
     expect(res.asOfFreshnessTier).toBe('CURRENT');
-    // 上界来自**市场当地收盘时刻**: ET 08-04 20:00 已过 16:00 ⇒ 08-04。取本地/UTC 今天会是
-    // 08-05, 日历里 08-05 有行 ⇒ 上面那条立刻翻成 STALE。
-    const where = prisma.tradingDay.findFirst.mock.calls[0][0].where;
-    expect(where.market).toBe('us');
-    expect(where.date.lte.toISOString().slice(0, 10)).toBe('2026-08-04');
+    // 基准按**市场 + 请求时刻**问端口, 收盘上界由端口内的纯函数按交易所时区求 (ET 08-04
+    // 20:00 已过 16:00 ⇒ 08-04)。拿本地/UTC 今天当基准会是 08-05, 日历里 08-05 有行 ⇒
+    // 上面那条立刻翻成 STALE。
+    expect(calendar.lastClosedSession).toHaveBeenCalledWith('us', NOW_CN_MORNING);
   });
 
   it('快照停在上一个交易日 ⇒ STALE, 且**全表照常渲染** (陈旧不等于不可用)', async () => {
@@ -530,23 +537,21 @@ describe('get-legs.usecase — FR-020 新鲜度档 (T027a, 判据 = 最近一个
     expect(res.legs).toHaveLength(LEGS.length);
   });
 
-  it('交易日历查不到 ⇒ fail-open 判 CURRENT (宁可漏报一次, 不重演「全体恒显已过时」)', async () => {
-    const { res } = await tableAt('2026-08-03', NOW_CN_MORNING, {
-      // 📌 覆盖整个 `tradingDay` 只需给 `findFirst` —— #45 之后本 use case 对交易日历只剩这一处
-      // 读 (月度链标那次 `findMany` 已撤销), 少给一个方法不会再把整屏兜成 read_failed。
-      tradingDay: { findFirst: vi.fn().mockResolvedValue(null) },
-    });
+  it('基准不可判定 (日历缺行 / 上界落在覆盖声明之外) ⇒ fail-open 判 CURRENT (宁可漏报一次, 不重演「全体恒显已过时」)', async () => {
+    // 062 T010 起端口把两种「基准不可信」合流成同一个 `null` —— 调用方的处置本就相同。
+    const { res } = await tableAt('2026-08-03', NOW_CN_MORNING, tradingCalendar([]));
     expect(res.asOfFreshnessTier).toBe('CURRENT');
   });
 
   it('链未就绪 ⇒ asOf 为 null ⇒ UNAVAILABLE (不编造日期, 也不白查日历)', async () => {
     const prisma = makePrisma({ instrument: { findUnique: vi.fn().mockResolvedValue(null) } });
+    const calendar = tradingCalendar();
     const res = toLegTableResponse(
-      await makeUseCase(prisma).execute(SYMBOL, 'all', NOW_CN_MORNING),
+      await makeUseCase(prisma, calendar).execute(SYMBOL, 'all', NOW_CN_MORNING),
     );
     expect(res.asOf).toBeNull();
     expect(res.asOfFreshnessTier).toBe('UNAVAILABLE');
-    expect(prisma.tradingDay.findFirst).not.toHaveBeenCalled();
+    expect(calendar.lastClosedSession).not.toHaveBeenCalled();
   });
 });
 
@@ -1212,10 +1217,15 @@ describe('get-legs.usecase — 表达层截断与三个计数 (053 T002)', () =>
 
     // 🚨 **必须带覆盖** —— 无覆盖时实现直接短路, 「只查一次」是平凡真; 只有第二趟判定真的
     // 跑起来, 这条断言才在守「第二次判定用的是同一批已在内存的行」。
-    const view = await new GetLegsUseCase(service, adapter).execute(SYMBOL, 'rent', NOW, {
-      perspective: 'rent',
-      criteria: { dteBand: { min: 1, max: 50 } },
-    });
+    const view = await new GetLegsUseCase(service, adapter, tradingCalendar()).execute(
+      SYMBOL,
+      'rent',
+      NOW,
+      {
+        perspective: 'rent',
+        criteria: { dteBand: { min: 1, max: 50 } },
+      },
+    );
 
     expect(view.memberCount).toBeGreaterThan(view.matchedCount);
     expect(retrieveSpy).toHaveBeenCalledTimes(1);

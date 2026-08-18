@@ -16,6 +16,7 @@ import type {
   OptionSnapshotRow,
 } from './option-snapshot.port';
 import type { TradingCalendarPort } from './trading-calendar.port';
+import type { TradingDayStatus } from './trading-day.rules';
 
 /**
  * 两级补救的**写库路径** IT（Testcontainers PG），054 T005 / FR-011。
@@ -123,8 +124,12 @@ class StubOptionSnapshotPort implements OptionSnapshotPort {
 
 /** 交易日闸 stub —— 本文件的被测面不是日历，恒判交易日。 */
 const alwaysTradingCalendar: TradingCalendarPort = {
-  async isTradingDay(): Promise<boolean> {
-    return true;
+  async classify(): Promise<TradingDayStatus> {
+    return 'trading';
+  },
+  // 062 T010: 本文件不验陈旧度基准。
+  async lastClosedSession(): Promise<string | null> {
+    return null;
   },
 };
 

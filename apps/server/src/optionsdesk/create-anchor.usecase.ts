@@ -6,6 +6,10 @@ import { computeW, mapConfidenceToLLevel, type LLevel } from './anchor.rules';
 import { buildCreationChange, type AnchorChangeSource } from './anchor-history';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
 import { EnsureLatestEodBarUseCase } from '../marketdata/ensure-latest-eod-bar.usecase';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 045 US1 — 建锚 (FR-001 / FR-003a / FR-033, plan D3)。
@@ -208,6 +212,10 @@ export class CreateAnchorUseCase {
     // 本 ctx 只问「这只票最近一根收盘是多少」。同步是刻意的 (产出要进本次创建响应), 但**失败
     // 不回滚建锚**, 故不与主 tx 共事务, 见 {@link CreateAnchorUseCase.seedLastClose}。
     private readonly ensureLatestEodBar: EnsureLatestEodBarUseCase,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
   ) {}
 
   async execute(input: CreateAnchorInput): Promise<AnchorWriteResult> {
@@ -273,7 +281,7 @@ export class CreateAnchorUseCase {
         return created;
       });
       // 新鲜度基准在 tx 外取 (只读、与本次写无因果) —— 别把跨 ctx 读拖进写事务。
-      const lastClosedSession = await resolveLastClosedSessionForTicker(this.prisma, row.ticker);
+      const lastClosedSession = await resolveLastClosedSessionForTicker(this.calendar, row.ticker);
       return toAnchorWriteResult(
         await this.seedLastClose(row, lastClosedSession),
         lastClosedSession,

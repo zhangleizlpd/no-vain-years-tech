@@ -32,6 +32,7 @@ const SERVER_DIR = process.cwd();
 const CHECK_SH = resolve(SERVER_DIR, '../../ops/jobs/marketdata-calendar-health.sh');
 
 const HOUR_MS = 3600_000;
+const DAY_MS = 86_400_000;
 
 describe('044 T016 探针独立性 (真跑 marketdata-calendar-health.sh, 全程零 app 进程)', () => {
   let container: StartedPostgreSqlContainer;
@@ -53,8 +54,44 @@ describe('044 T016 探针独立性 (真跑 marketdata-calendar-health.sh, 全程
     await container?.stop();
   });
 
+  /**
+   * 📌 **062 T011 增补**: 同一条谓词自 062 起在心跳档之外多了**视野档** (三档, 见 .sql 头部)。
+   * 本文件测的是**探针接线**(bash → docker exec psql → PG 这条无 app 通路), 故在每个用例开跑前
+   * 把视野埋成恒健康 —— 让这里每一个退出码都只反映心跳判据与胶水本身, 不被视野档串味。
+   * 手法与 `marketdata.calendar-044.health.it.spec.ts` 的 `seedHealthyHorizon` 完全一致 (同一份
+   * 基线两处用, 别在此另发明第二套)。
+   *
+   * ⚠️ 相对 `current_date` 埋 (不写死年份): 视野判据全部是「相对今天」的, 写死日期明年必假红。
+   * ⚠️ 余量 10 个交易日 (> 阈值 5) ⇒ **不靠年末豁免**兜底 —— 靠豁免的话, 同一条断言在 12 月与
+   *   1 月会给出不同结果, 且哪天有人动豁免表达式, 本文件会跟着一起红而它根本不测那件事。
+   */
+  async function seedHealthyHorizon(): Promise<void> {
+    const now = Date.now();
+    const iso = (t: number): Date =>
+      new Date(new Date(t).toISOString().slice(0, 10) + 'T00:00:00Z');
+    for (const market of ['cn', 'hk', 'us']) {
+      await prisma.calendarCoverage.upsert({
+        where: { market },
+        create: {
+          market,
+          coveredFrom: iso(now - 400 * DAY_MS),
+          coveredTo: iso(now + 20 * DAY_MS),
+          servedBy: market === 'us' ? 'futu' : 'tencent',
+        },
+        update: { coveredFrom: iso(now - 400 * DAY_MS), coveredTo: iso(now + 20 * DAY_MS) },
+      });
+      await prisma.tradingDay.createMany({
+        data: Array.from({ length: 10 }, (_, i) => ({ market, date: iso(now + (i + 1) * DAY_MS) })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
   beforeEach(async () => {
     await prisma.calendarSyncHealth.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
+    await prisma.tradingDay.deleteMany();
+    await seedHealthyHorizon();
   });
 
   /**

@@ -4,6 +4,7 @@ import { PrismaService } from '../../src/security/prisma.service';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
 import { CalendarSourceFallbackChain } from '../../src/marketdata/calendar-source-fallback-chain.adapter';
 import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
+import { isTradingDayGateOpen } from '../../src/marketdata/trading-day-gate';
 import { TradingCalendarSyncService } from '../../src/marketdata/trading-calendar-sync.service';
 import type { TradingCalendarSource } from '../../src/marketdata/trading-calendar-source.port';
 
@@ -84,6 +85,17 @@ function deadNode(msg: string): TradingCalendarSource {
 /** syncRange 不读 cfg (仅 @Cron handleCron 读 tickEnabled) → IT 传最小占位。 */
 const CFG = { tickEnabled: true } as unknown as MarketdataSyncConfig;
 
+/**
+ * 前瞻源占位 (062 T004 起 `TradingCalendarSyncService` 的第 4 个依赖)。本文件只走
+ * `syncRange` (历史段) —— 前瞻段由 `marketdata.calendar-062.horizon.it.spec.ts` 专门覆盖。
+ * 故此处放一个**碰到即抛**的占位: 若哪天历史段意外触达前瞻源, 测试会当场红而不是静默走通。
+ */
+const NO_FORWARD: TradingCalendarSource = {
+  fetchTradingDates: async () => {
+    throw new Error('[test] 本文件的用例不应触达前瞻源');
+  },
+};
+
 describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + 真落库)', () => {
   let prisma: PrismaService;
 
@@ -103,11 +115,17 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
 
   beforeEach(async () => {
     await prisma.tradingDay.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
   });
 
   /** 装配「真链 + service」(节点由各 it 注入, 模拟各层健康/故障组合)。 */
   function serviceWith(nodes: TradingCalendarSource[]): TradingCalendarSyncService {
-    return new TradingCalendarSyncService(new CalendarSourceFallbackChain(nodes), prisma, CFG);
+    return new TradingCalendarSyncService(
+      new CalendarSourceFallbackChain(nodes),
+      prisma,
+      CFG,
+      NO_FORWARD,
+    );
   }
 
   const datesOf = async (market: string): Promise<string[]> =>
@@ -127,10 +145,12 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
     expect(l2.fetchTradingDates).not.toHaveBeenCalled();
   });
 
-  it('L1 成功 → 落库后 gate 据表判定 (交易日 true / 窗内周末 false, 不再 fail-open)', async () => {
+  it('L1 成功 → 落库后 gate 据表判定 (交易日 trading / 窗内周末 non-trading, 填充前 unknown)', async () => {
     const gate = new DbTradingCalendarAdapter(prisma);
-    // 填充前: 表空 → 近窗零行 → **fail-open true** (空表不静默停摆整管线)。
-    expect(await gate.isTradingDay('cn', '2026-06-20')).toBe(true);
+    // 填充前: 表空 + 无覆盖声明 → **unknown** (062 T006 起; 改动前是「近窗零行 ⇒ fail-open
+    // true」)。经调用点的机械映射 `!== 'non-trading'` 后 gate 仍开 —— 空表照样不静默停摆整管线。
+    expect(await gate.classify('cn', '2026-06-20')).toBe('unknown');
+    expect(await isTradingDayGateOpen(gate, 'cn', '2026-06-20')).toBe(true);
 
     await serviceWith([healthyNode({ cn: CN_TRADING_DATES }, 'tencent')]).syncRange(
       ['cn'],
@@ -138,9 +158,9 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
       TO,
     );
 
-    // 填充后: gate 开启 = 据表真判定, 不再靠 fail-open 兜底。
-    expect(await gate.isTradingDay('cn', '2026-07-13')).toBe(true); // 周一, 表内有行
-    expect(await gate.isTradingDay('cn', '2026-06-20')).toBe(false); // 周六, 近窗有行 → 真非交易日
+    // 填充后: 覆盖声明已推到 [FROM, TO] ⇒ 据表真判定, 不再靠放行侧兜底。
+    expect(await gate.classify('cn', '2026-07-13')).toBe('trading'); // 周一, 表内有行
+    expect(await gate.classify('cn', '2026-06-20')).toBe('non-trading'); // 周六, 声明内无行
   });
 
   it('🚨 L1 抛错 (源被下线) → 自动降级 L2 → 日历**完整**落库 + gate 照常开启', async () => {
@@ -155,8 +175,8 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
     expect(l2.fetchTradingDates).toHaveBeenCalledOnce();
 
     const gate = new DbTradingCalendarAdapter(prisma);
-    expect(await gate.isTradingDay('cn', '2026-07-13')).toBe(true);
-    expect(await gate.isTradingDay('cn', '2026-06-20')).toBe(false);
+    expect(await gate.classify('cn', '2026-07-13')).toBe('trading');
+    expect(await gate.classify('cn', '2026-06-20')).toBe('non-trading');
   });
 
   it('🚨 降级后结果与 L1 成功时**同构** (service 返回值 + 落库行逐一等值)', async () => {
@@ -168,6 +188,7 @@ describe('044 US1 日历源多源降级 (Testcontainers PG, 真 fallback 链 + �
     const healthyRows = await datesOf('cn');
 
     await prisma.tradingDay.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
 
     // ② L1 挂 → L2 接住 (同一份日历数据)。
     const degraded = await serviceWith([

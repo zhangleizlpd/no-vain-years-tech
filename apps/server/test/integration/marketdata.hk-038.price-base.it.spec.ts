@@ -319,13 +319,24 @@ describe('038 T012 US1 港股价量底座聚合 (Testcontainers PG, mock hk adap
   it('④ 港股交易日历表驱动: hk 门控读 trading_day 表 → 非交易日整管线 skip', async () => {
     const TRADING_DAY = '2026-06-03'; // 周三: 表有行 → 开市
     const NON_TRADING = '2026-06-07'; // 周日: 表无行 → 休市
-    // 表驱动 (sync-1): seed hk 交易日行 (含近窗另一交易日, 使非交易日判定不误走 fail-open)。
+    // 表驱动 (sync-1): seed hk 交易日行。
     await prisma.tradingDay.createMany({
       data: [
-        { market: 'hk', date: new Date('2026-06-02T00:00:00Z') }, // 近窗另一交易日
+        { market: 'hk', date: new Date('2026-06-02T00:00:00Z') },
         { market: 'hk', date: new Date(`${TRADING_DAY}T00:00:00Z`) },
       ],
       skipDuplicates: true,
+    });
+    // 🚨 062 T006 起「无行 ⇒ 非交易日」必须有**覆盖声明**背书 —— 旧的「近窗有别的行就算填过」
+    // 这条近似判据已删除。没有这一行, `NON_TRADING` 给的是 `unknown` (还没填到) 而非
+    // `non-trading`, gate 照常放行, 下面那条断言就该红 —— 这正是本 feature 要的语义。
+    await prisma.calendarCoverage.create({
+      data: {
+        market: 'hk',
+        coveredFrom: new Date('2026-06-01T00:00:00Z'),
+        coveredTo: new Date('2026-06-30T00:00:00Z'),
+        servedBy: 'seed',
+      },
     });
     const calendar = new DbTradingCalendarAdapter(prisma);
     const recorder = new SyncRunRecorder(prisma);

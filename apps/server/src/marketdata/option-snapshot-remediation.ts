@@ -45,6 +45,11 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * 一轮白烧的 vendor 配额)。判据走管线既有的交易日闸 —— ⚠️ 这**不是** FR-045 禁的那种「拿日历
  * 给告警打补丁」: 那条禁的是「今天是大到期日所以放宽阈值」, 而这里判的是「今天到底有没有 session」。
  *
+ * ⚠️ **062 起这道闸是三态的**: 只有**确认**的非交易日才短路; 「日历视野还没填到今天」
+ * (`unknown`) 一律继续执行 —— 起手的覆盖率复判会决定是否真外呼, 不缺即零外呼返回
+ * (`state_branch` 6)。改前那个「无记录 ⇒ 非交易日」的布尔正是二级兜底静默死掉的成因:
+ * 它每天在北京 18:00 判「今天不是美股交易日」, 而那一刻今天那一行还没落库。
+ *
  * ## 周末的时序 (看起来晚, 但仍然正确)
  *
  * 周五 session 的采集发生在北京周六 06:30 (ET 周五晚)。① 级北京周六 08:00 跑时 us 业务日仍是
@@ -68,8 +73,22 @@ export type RemediationStatus =
   /** 前置缺失, 无法定位待补交易日 (日历缺行) —— 已升 ERROR。 */
   | 'blocked';
 
+/**
+ * 本级**凭什么**走到这个结局的日历判据 (062 T009, FR-013)。
+ *
+ * 🚨 三值而不是两值: 「确认非交易日」与「覆盖率达标」都落 `not_needed`, 少了这一格,
+ * 一条按结局分组的查询再也分不出「今天本就没有 session」和「今天有 session 且不缺」——
+ * 而二级兜底恰恰是靠**前者天天成立**才静默死了几个月 (`unknown` 被读成 `non-trading`)。
+ */
+export type RemediationCalendarBasis = 'confirmed' | 'unknown' | 'non-trading';
+
 export interface RemediationOutcome {
   level: RemediationLevel;
+  /**
+   * 本级的日历判据来源。`unknown` = 视野还没填到该业务日, 本级是「不知道所以照跑」——
+   * 与 `confirmed` 事后必须分得出 (FR-013)。
+   */
+  calendar: RemediationCalendarBasis;
   /** 被补救的交易日; `null` = 无法定位。 */
   sessionDate: string | null;
   status: RemediationStatus;
@@ -112,11 +131,14 @@ export class OptionSnapshotRemediation {
    */
   async retrySameDay(now: Date): Promise<RemediationOutcome> {
     const sessionDate = marketDateFor(US_MARKET_SCOPE, now);
-    if (!(await this.calendar.isTradingDay(US_MARKET_SCOPE[0], sessionDate))) {
-      return this.idle('same_day_retry', sessionDate);
+    const calendar = await this.calendarBasis(sessionDate);
+    if (calendar === 'non-trading') {
+      return this.idle('same_day_retry', sessionDate, calendar, '确认非交易日, 本就没有 session');
     }
     const before = await this.coverage.evaluate(sessionDate);
-    if (before.status !== 'degraded') return this.idle('same_day_retry', sessionDate);
+    if (before.status !== 'degraded') {
+      return this.idle('same_day_retry', sessionDate, calendar, `覆盖率 ${before.status}`);
+    }
 
     const after = await this.recollect(before, {
       sessionDate,
@@ -130,6 +152,7 @@ export class OptionSnapshotRemediation {
       );
       return {
         level: 'same_day_retry',
+        calendar,
         sessionDate,
         status: 'recovered',
         attempted,
@@ -144,6 +167,7 @@ export class OptionSnapshotRemediation {
     );
     return {
       level: 'same_day_retry',
+      calendar,
       sessionDate,
       status: 'still_missing',
       attempted,
@@ -158,9 +182,10 @@ export class OptionSnapshotRemediation {
    */
   async backfillPremarket(now: Date): Promise<RemediationOutcome> {
     const today = marketDateFor(US_MARKET_SCOPE, now);
-    if (!(await this.calendar.isTradingDay(US_MARKET_SCOPE[0], today))) {
+    const calendar = await this.calendarBasis(today);
+    if (calendar === 'non-trading') {
       // 非交易日无盘前窗口 (OI 也不会翻新) ⇒ 不补; 下一个交易日的盘前仍能补回同一个 session。
-      return this.idle('premarket_backfill', null);
+      return this.idle('premarket_backfill', null, calendar, '确认非交易日, 无盘前窗口');
     }
     const sessionDate = await this.resolvePreviousTradingDay(today);
     if (sessionDate === null) {
@@ -171,6 +196,7 @@ export class OptionSnapshotRemediation {
       );
       return {
         level: 'premarket_backfill',
+        calendar,
         sessionDate: null,
         status: 'blocked',
         attempted: [],
@@ -180,7 +206,9 @@ export class OptionSnapshotRemediation {
 
     const before = await this.coverage.evaluate(sessionDate);
     // 🚨 ① 级已补回 ⇒ 零外呼、不留降级痕 (见类注释)。
-    if (before.status !== 'degraded') return this.idle('premarket_backfill', sessionDate);
+    if (before.status !== 'degraded') {
+      return this.idle('premarket_backfill', sessionDate, calendar, `覆盖率 ${before.status}`);
+    }
 
     const after = await this.recollect(before, {
       sessionDate,
@@ -197,6 +225,7 @@ export class OptionSnapshotRemediation {
       );
       return {
         level: 'premarket_backfill',
+        calendar,
         sessionDate,
         status: 'recovered',
         attempted,
@@ -208,6 +237,7 @@ export class OptionSnapshotRemediation {
     this.coverage.alertIfDegraded(after, '两级补救均失败: ① 当日重试 + ② 次日盘前兜底');
     return {
       level: 'premarket_backfill',
+      calendar,
       sessionDate,
       status: 'still_missing',
       attempted,
@@ -258,8 +288,41 @@ export class OptionSnapshotRemediation {
     return prev === null ? null : prev.date.toISOString().slice(0, 10);
   }
 
-  private idle(level: RemediationLevel, sessionDate: string | null): RemediationOutcome {
-    return { level, sessionDate, status: 'not_needed', attempted: [], stillMissing: [] };
+  /**
+   * 「今天到底有没有 session」的**三态**分派 (062 T009, `state_branch` 6)。
+   *
+   * 🚨 `unknown` 走**继续执行**侧: 本级起手就有一次覆盖率复判, 不缺即零外呼返回 ——
+   * 「不知道」的代价只是一次本地查询, 而判错成非交易日的代价是**永久缺口**
+   * (期权收盘数据无跨日补救, 二级放弃掉的那一场再也补不回来)。
+   * 🚫 **MUST NOT 写成 `!== 'trading'`** —— 那就是 062 修掉的病原样犯回去。
+   */
+  private async calendarBasis(date: string): Promise<RemediationCalendarBasis> {
+    const status = await this.calendar.classify(US_MARKET_SCOPE[0], date);
+    if (status === 'non-trading') return 'non-trading';
+    if (status === 'trading') return 'confirmed';
+    this.logger.warn(
+      `[option-snapshot-remediation] 交易日历视野未覆盖 us 的 ${date} ⇒ 本级按「未知」继续执行 ` +
+        `(起手的覆盖率复判决定是否真外呼; 请补前瞻视野)`,
+    );
+    return 'unknown';
+  }
+
+  /**
+   * 本级零外呼的出口。**必须留痕** —— 这条路径以前是一句静默 `return`, 而二级盘前兜底正是
+   * 沿它每天判「无事可做」并返回, 一连几个月没有任何信号 (SC-004 实测执行率 0%)。
+   * `log` 而非 `warn`: 它在正常日子里每天都成立, 用 `warn` 会训练出「这条可以忽略」。
+   */
+  private idle(
+    level: RemediationLevel,
+    sessionDate: string | null,
+    calendar: RemediationCalendarBasis,
+    reason: string,
+  ): RemediationOutcome {
+    this.logger.log(
+      `[option-snapshot-remediation] ${level} 本级零外呼: ${reason} ` +
+        `(calendar=${calendar}, session=${sessionDate ?? '-'})`,
+    );
+    return { level, calendar, sessionDate, status: 'not_needed', attempted: [], stillMissing: [] };
   }
 }
 

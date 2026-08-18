@@ -7,9 +7,15 @@ import { shanghaiToday } from './trading-day-gate.js';
 
 /**
  * 交易日历历史 seed CLI (sync-1 S1-T2, FR: 部署切表驱动前先填历史): 一次性拉多年指数 kline
- * 落 `trading_day`。空表兜底虽有 DbTradingCalendarAdapter fail-open (S1-T3), 但 seed 后判定
- * 才精确 (真节假日)。照 `marketdata-backfill.cli.ts` 范式 (sentinel 前置 → NestFactory
+ * 落 `trading_day`。⚠️ 未 seed 时读侧给的是 `unknown` (062 T006 起; 旧的
+ * 「DbTradingCalendarAdapter 近窗零行 fail-open」判据已随之删除), 各消费方按 unknown 分派照常
+ * 工作 —— 但要**精确**判定 (真节假日) 仍必须先跑本 CLI。照 `marketdata-backfill.cli.ts` 范式 (sentinel 前置 → NestFactory
  * ApplicationContext → service → close), 但**同步直写** (无队列 / 无 worker / 无终态等待)。
+ *
+ * 🚨 **062 起本 CLI 同时是「灌覆盖声明」的入口**: `syncRange` 内部整段成功即推进
+ * `calendar_coverage` —— 与 `populate()` 两段**共用同一条推进路径**, 本文件因此**一行都不必
+ * 改**。🚫 **MUST NOT 在这里另写一份 coverage 写入逻辑** (FR-004: 两处维护必漂移)。上线顺序
+ * 里「部署后立即手动跑一次本 CLI」正是为了一次性灌满历史 + 前瞻视野 (plan §D9)。
  *
  * 用法: node dist/marketdata/marketdata-trading-day-seed.cli.js --from 2015-01-01 [--to 2026-07-14] [--markets cn,hk,us]
  * 退出码: 0 成功 / 1 解析或执行异常。

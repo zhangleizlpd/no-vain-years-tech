@@ -97,6 +97,7 @@ describe('024 alert 盘中实时求值引擎 (Testcontainers PG + Redis + Fastif
     await prisma.dailyBar.deleteMany();
     await prisma.instrument.deleteMany();
     await prisma.tradingDay.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
     await redis.flushdb(); // 清 failstreak / circuit / lasttick 跨 case 残留
     realtimePort.calls = 0;
     realtimePort.shouldFail = false;
@@ -116,6 +117,19 @@ describe('024 alert 盘中实时求值引擎 (Testcontainers PG + Redis + Fastif
     prisma.account.create({ data: { phone: nextPhone(), status: 'ACTIVE' } });
   const seedTradingDay = (date = TRADE_DATE) =>
     prisma.tradingDay.create({ data: { market: 'cn', date: new Date(date) } });
+  /**
+   * 062 T007 起「无 `trading_day` 行」只有配上覆盖声明才等于「非交易日」—— 声明缺席给的是
+   * 「未知」(闸放行)。故断言 `skipped-holiday` 的用例必须显式说出「这一段已经填过了」。
+   */
+  const seedCoverage = (from = '2026-05-01', to = '2026-06-30') =>
+    prisma.calendarCoverage.create({
+      data: {
+        market: 'cn',
+        coveredFrom: new Date(from),
+        coveredTo: new Date(to),
+        servedBy: 'it-seed',
+      },
+    });
 
   /** 喂一条实时报价到 mock (按 vendor 符号索引, changePct 当日口径无关本轮断言置 0)。 */
   function setQuote(code: string, price: number, prevClose = price, name = `名_${code}`): void {
@@ -238,7 +252,8 @@ describe('024 alert 盘中实时求值引擎 (Testcontainers PG + Redis + Fastif
   // ── ③b 节假日 (非交易日) tick → 空转 return, 0 源调用 ──────────────────────
   it('③b 时段内但当日非 cn 交易日 (无 trading_day 行) → skipped-holiday, 0 源调用', async () => {
     const acc = await seedAccount();
-    // 不 seed trading_day → 节假日/周末
+    // 不 seed trading_day, 但 seed 覆盖声明 → 「填过了, 当日确实不是交易日」(而非「还没填到」)
+    await seedCoverage();
     await seedAlert(acc.id, '600004', [{ type: 'PRICE_RISE_TO', threshold: 1 }]);
     setQuote('600004', 999);
 
@@ -278,7 +293,7 @@ describe('024 alert 盘中实时求值引擎 (Testcontainers PG + Redis + Fastif
 
     for (let i = 0; i < CIRCUIT_THRESHOLD; i += 1) {
       const outcome = await processor.process(tradingNow);
-      expect(outcome).toEqual({ status: 'source-failed' });
+      expect(outcome).toEqual({ status: 'source-failed', calendar: 'confirmed' });
     }
 
     expect(await redis.get(INTRADAY_FAILSTREAK_KEY)).toBe(String(CIRCUIT_THRESHOLD));

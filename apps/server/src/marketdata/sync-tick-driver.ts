@@ -151,7 +151,7 @@ export class SyncTickDriver {
    * per-market 交易日 gate (S2-T1, 取代旧 MARKET='cn' 单市场 gate): won 维度逐个按其 marketScope
    * 判定 —— scope 内**任一市场**当日开市即放行 (OR 语义: 某市场开市即该市场标的应同步, 下游
    * `loadActiveInstruments` 按开市市场切工作集); 全 marketScope 休市 → 剔除 + 短路审计 log。
-   * distinct market 去重后每市场至多一次 `isTradingDay` (零 vendor: DbTradingCalendarAdapter 读表)。
+   * distinct market 去重后每市场至多一次 `classify` (零 vendor: DbTradingCalendarAdapter 读表)。
    * claim 零改动 (红线): gate 只影响组 flow 集, nextFireAt 已在 claim 推进 (非交易日不补)。
    */
   /**

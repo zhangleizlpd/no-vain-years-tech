@@ -162,13 +162,34 @@ export class AnchorColdStartUseCase {
     }
 
     // 「今天是不是交易日」**一次查、两处用**: 盘中闸与 §D4 的三元组决策问的是同一件事,
-    // 查两遍就是两处判据。端口对未 populate 的日历 fail-open, 但走到这里 `targetSession`
-    // 已定到 ⇒ 日历必已 populate ⇒ fail-open 够不着 (定位目标日那一步为何不用它, 见
-    // {@link lastClosedTradingDay})。
-    const todayIsTradingDay = await this.calendar.isTradingDay(
-      market,
-      marketDateFor([market], now),
-    );
+    // 查两遍就是两处判据。
+    const today = marketDateFor([market], now);
+    const calendarStatus = await this.calendar.classify(market, today);
+
+    // 🚨 **写敏感档遇 `unknown` ⇒ 放弃, MUST NOT 猜口径** (062 T009, `state_branch` 7)。
+    //
+    // 这一格的取值直接决定 §D4 三元组里的 `source` 与 `oi_as_of`: 猜成「是交易日」就落
+    // `premarket_backfill` + OI 归属**被补那场**, 猜成「不是」就落 `eod` + OI 归属**再往前
+    // 一场** —— 两者差一整天的持仓量归属, 而活跃度排名与 UI 的 asOf 都读它。猜错**不报错**,
+    // 只留一批溯源信息写反的行, 事后订正要人工回删。
+    //
+    // 与盘中采集闸 (`sync-anchor-intraday` / alert) 的 `unknown ⇒ 照跑` 分派**方向相反, 这是
+    // 刻意的**: 那两处多跑一轮的代价只是一次外呼, 这里写错的代价是持久的脏数据。
+    //
+    // 📌 本格排在盘中闸**之前**: 日历不可判时, 「盘中还是盘后」这个问题本身就没有意义, 且
+    // `calendar_missing` 是需人工介入的一档 (探针会响), 而 `intraday_skipped` 是「一切正常」
+    // 的一档 —— 折进后者等于把该被人看见的事藏起来 (FR-027 零折叠)。
+    if (calendarStatus === 'unknown') {
+      this.logger.error(
+        `[anchor-cold-start] 交易日历视野未覆盖 ${market} 的 ${today} ⇒ 判不出补数口径, 放弃本次 ` +
+          `(anchorId=${anchorId} ticker=${ticker}; 请补前瞻视野)`,
+      );
+      return this.finish(input, COLD_START_OUTCOME.CALENDAR_MISSING, {
+        targetSession,
+        reason: `交易日历视野未覆盖 ${market} 的 ${today} (覆盖声明之外) ⇒ 不猜 source / oi_as_of`,
+      });
+    }
+    const todayIsTradingDay = calendarStatus === 'trading';
 
     // 🚨 闸 = 「该场进行中」**且**「今天真有这一场」, 两个条件缺一不可:
     //
@@ -187,7 +208,8 @@ export class AnchorColdStartUseCase {
     //    📌 §D4 第四行 (`today > target` 且今天非交易日 ⇒ eod) 本就是为周末这一档写的 ——
     //    没有这个 `&&`, 那一行在 ET 场内钟点上**够不到**。
     //
-    // 方向也是安全的: 日历 fail-open 返 true ⇒ 闸仍然收紧 ⇒ 写库 fail-closed。
+    // 走到这里 `calendarStatus` 只可能是 `trading` / `non-trading` (`unknown` 已在上面放弃) ⇒
+    // 本闸的两个条件都建立在**确定**的日历事实上。
     if (isSessionUnderway(market, marketNow(market, now).minutesOfDay) && todayIsTradingDay) {
       return this.finish(input, COLD_START_OUTCOME.INTRADAY_SKIPPED, { targetSession });
     }
@@ -346,10 +368,10 @@ export class AnchorColdStartUseCase {
    * `trading_day` 中 ≤ 「已收盘 session 日期上界」的**最大交易日**。缺行返 `null`。
    *
    * ⚠️ **蓄意不走 `TRADING_CALENDAR_PORT`**, 尽管它就是交易日历的读端口 —— 它只有
-   * `isTradingDay(market, date)` 一个方法, 拿它找「最近一个已收盘交易日」只能逐日回退着问,
-   * 而 `DbTradingCalendarAdapter` 对**未 populate 的日历 fail-open 返 true** (那是它为「空表
-   * 别让整条管线停摆」刻意选的方向)。⇒ 日历真缺行时它会**编出**一个交易日, 正是 FR-009
-   * 「MUST NOT 猜测日期」禁的那件事。本查询要的是 fail-closed, 故直查自有表 —— 形态与
+   * `classify(market, date)` 一个方法, 拿它找「最近一个已收盘交易日」只能逐日回退着问, 而
+   * 日历没填到那儿时它给的是 `unknown`, 各调用点又统一把 `unknown` 映射到**放行**侧 (062 T006
+   * Guardrail 1) ⇒ 日历真缺行时逐日回退会**编出**一个交易日, 正是 FR-009「MUST NOT 猜测日期」
+   * 禁的那件事。本查询要的是 fail-closed, 故直查自有表 —— 形态与
    * `option-snapshot-remediation.resolvePreviousTradingDay` /
    * `sync-option-snapshot.resolveOiSessionDate` 逐字同构 (marketdata 自有表, 非跨 ctx)。
    *

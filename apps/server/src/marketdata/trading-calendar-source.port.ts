@@ -9,6 +9,17 @@
  */
 export const TRADING_CALENDAR_SOURCE = Symbol('TRADING_CALENDAR_SOURCE');
 
+/**
+ * **前瞻**日历源 token (062 T003, plan §D4)。与 {@link TRADING_CALENDAR_SOURCE} 同一个接口、
+ * 同一个路由类, 只是 routes map 不同 —— 历史段问过去 (活源链), 前瞻段问未来 (权威年历)。
+ *
+ * 🚨 **两个 token 刻意分开而不是一个源打两段**: 活源 (腾讯指数 kline) 的判据是「某指数当日有
+ * bar ⟺ 当日开市」的**反推**, 未来的 bar 不存在 ⇒ 它结构上答不了前瞻段。合成一个 token 就只
+ * 能让 cn/hk 每天各多一条恒定的假失败 WARN (044 论证过的告警疲劳)。接线见
+ * `marketdata.module.ts` 与 `createForwardCalendarSource`。
+ */
+export const TRADING_CALENDAR_FORWARD_SOURCE = Symbol('TRADING_CALENDAR_FORWARD_SOURCE');
+
 /** `fetchTradingDates` 返回值: 交易日集 + **本次由链上哪层服务** (降级可观测, FR-014)。 */
 export interface TradingCalendarFetchResult {
   /** 区间内交易日列表 (`YYYY-MM-DD`)。非交易日不出现。 */

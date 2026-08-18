@@ -149,6 +149,17 @@ jobs:
         # 不依赖 nx affected — 护城河是 holistic invariant。
         run: pnpm tsx scripts/checks/check-server-moat.ts
 
+      - name: Enforce trading-calendar read discipline (per 062 US5 / FR-003 / FR-018)
+        # ts-morph AST 门禁, 两条正交判据:
+        #   A. marketdata/ 之外**读** tradingDay 的文件必须 import marketdata/trading-day.rules.ts
+        #      (「无记录」MUST NOT 被读成「不是交易日」);
+        #   B. **写** calendarCoverage 的文件内禁出现 tradingDay 的「取最大日期」形状
+        #      (aggregate / _max / orderBy date desc) —— 覆盖终点 MUST NOT 由 max(date) 派生。
+        # 与上一条 moat 门**正交**: moat 管「有没有注释」, 本门管「有没有用对判据」。
+        # lefthook trading-day-read-check 的云端镜像 (--no-verify 绕不过这里)。Full-scan,
+        # 不依赖 nx affected — 判定单点是 holistic invariant。
+        run: pnpm tsx scripts/checks/check-trading-day-read.ts
+
       - name: Enforce nullable @ApiProperty explicit type (per orval objectmap regression 012/023/024/025)
         # nullable 标量 DTO 字段 (string|null / number|null / boolean|null) 的
         # @ApiProperty(Optional) 必须显式 type:, 否则 @nestjs/swagger 反射推不出标量 →

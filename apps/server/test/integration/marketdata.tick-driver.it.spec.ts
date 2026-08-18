@@ -28,12 +28,14 @@ const CFG: MarketdataSyncConfig = {
 
 /** 交易日 gate stub (纯端口, 组 flow 前短路零 vendor 调用)。 */
 const calendarStub = (open: boolean): TradingCalendarPort => ({
-  isTradingDay: async () => open,
+  classify: async () => (open ? 'trading' : 'non-trading'),
+  lastClosedSession: async () => null,
 });
 
 /** per-market 交易日 gate stub (S2-T1): 按 market 返开市与否, 未列市场视为休市。 */
 const calendarStubByMarket = (open: Record<string, boolean>): TradingCalendarPort => ({
-  isTradingDay: async (market: string) => open[market] ?? false,
+  classify: async (market: string) => (open[market] === true ? 'trading' : 'non-trading'),
+  lastClosedSession: async () => null,
 });
 
 // 017 T013 tick 核心 IT (Testcontainers PG, 控时 = 注入 now + 直接操纵 nextFireAt 列):

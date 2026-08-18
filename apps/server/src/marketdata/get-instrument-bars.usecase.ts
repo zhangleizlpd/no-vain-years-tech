@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service.js';
 import {
   aggregateBars,
@@ -9,9 +9,9 @@ import {
 import { deriveAdjustedBars, type AdjustableBarRow } from './adjusted-bars.rules.js';
 import { InstrumentNotFoundException } from './instrument-not-found.exception.js';
 import { freshnessTier } from './freshness-tier.js';
-import { lastClosedSessionCutoff } from './trading-day-gate.js';
 import type { Adjust, BarPeriod, EodBarPoint } from './marketdata.types.js';
 import type { DailyBarListResponse } from './daily-bar-list.response.js';
+import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 export interface GetInstrumentBarsQuery {
   symbol: string;
@@ -35,7 +35,10 @@ const dateOnly = (d: Date): string => d.toISOString().slice(0, 10);
  */
 @Injectable()
 export class GetInstrumentBarsUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   async execute(query: GetInstrumentBarsQuery): Promise<DailyBarListResponse> {
     const parsed = parseCanonicalSymbol(query.symbol);
@@ -116,27 +119,10 @@ export class GetInstrumentBarsUseCase {
       adjust: query.adjust,
       period: query.period,
       items,
-      freshnessTier: freshnessTier(asOf, await this.lastClosedSession(parsed.market)),
+      freshnessTier: freshnessTier(
+        asOf,
+        await this.calendar.lastClosedSession(parsed.market, new Date()),
+      ),
     };
-  }
-
-  /**
-   * 该市场「最近一个已收盘交易日」(判据基准, 见 {@link freshnessTier})。日历无行 ⇒ `null`
-   * ⇒ fail-open 判当期, 与 `db-trading-calendar.adapter.ts` 近窗零行时的 fail-open 同向。
-   *
-   * ⚠️ optionsdesk 侧有一份形态相同的读 (`last-closed-session.ts`, 挂 `CROSS-CONTEXT-READ`)。
-   * **不合并**: 那是跨 ctx 只读逃生口, 合并等于让 optionsdesk 经 marketdata 的函数无痕读表,
-   * 护城河探针就再也看不见这条边。共用的是**纯判据**, 不是读路径。
-   */
-  private async lastClosedSession(market: string): Promise<string | null> {
-    const row = await this.prisma.tradingDay.findFirst({
-      where: {
-        market,
-        date: { lte: new Date(`${lastClosedSessionCutoff(market, new Date())}T00:00:00.000Z`) },
-      },
-      orderBy: { date: 'desc' },
-      select: { date: true },
-    });
-    return row === null ? null : row.date.toISOString().slice(0, 10);
   }
 }

@@ -14,6 +14,7 @@ import {
   OTM_BAND_COUNT,
   type ChainReportMetric,
 } from '../../src/optionsdesk/chain-report.rules';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 055 T007 —— 标的链分析报表的服务端侧 `state_branch` 全覆盖 (真 PG)。
 //
@@ -83,7 +84,7 @@ describe('055 标的链分析报表 · 服务端侧 state branch (Testcontainers
 
   const useCaseOf = (): GetChainReportUseCase =>
     new GetChainReportUseCase(
-      new GetUnderlyingDetailUseCase(prisma),
+      new GetUnderlyingDetailUseCase(prisma, stubTradingCalendar()),
       new PrismaLegRetrievalAdapter(prisma),
     );
 

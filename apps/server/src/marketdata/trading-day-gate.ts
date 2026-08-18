@@ -6,13 +6,19 @@ import type { TradingCalendarPort } from './trading-calendar.port.js';
  *
  * 纯委托 `TRADING_CALENDAR_PORT` (不自维护节假日表); `date` 由调用方按市场时区算 (见
  * `shanghaiToday`)。无副作用 → vitest 纯单测可喂 stub calendar。
+ *
+ * 🚨 **三态 → 布尔的映射是 `!== 'non-trading'`, 不是 `=== 'trading'`** (062 T006, Impl
+ * Guardrail 1): gate 的语义是「**确认**今天不是交易日才关」——「日历还没填到这儿」(`unknown`)
+ * 必须走**放行**侧, 与 062 之前 `DbTradingCalendarAdapter` 对未 populate 的日历 fail-open 返
+ * `true` 逐点相同 (零行为变更)。写成 `=== 'trading'` 会让上线首刻 (覆盖声明表刚建、尚未灌值
+ * ⇒ 全 `unknown`) 整条夜间管线恒 skip, 而**没有任何测试会红**。
  */
 export async function isTradingDayGateOpen(
   calendar: TradingCalendarPort,
   market: string,
   date: string,
 ): Promise<boolean> {
-  return calendar.isTradingDay(market, date);
+  return (await calendar.classify(market, date)) !== 'non-trading';
 }
 
 /**

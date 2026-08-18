@@ -13,6 +13,7 @@ import {
   RADAR_EMPTY_STATE_MESSAGES,
   type RadarPage,
 } from '../../src/optionsdesk/get-radar.usecase';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 045 T014 US2 集成 IT (**SC-006**) —— 真 PG 端到端: **IT 内塞真行 us `Instrument` + `DailyBar`**
 // (spec 明定的验收方式, 不碰任何 vendor) → `last_close` 单向投影 → 雷达读端返真值。
@@ -49,11 +50,16 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    createAnchor = new CreateAnchorUseCase(prisma, recordingOutboxPublisher(), noEodSeed());
-    reviewAnchor = new ReviewAnchorUseCase(prisma);
-    listAnchors = new ListAnchorsUseCase(prisma);
+    createAnchor = new CreateAnchorUseCase(
+      prisma,
+      recordingOutboxPublisher(),
+      noEodSeed(),
+      stubTradingCalendar(),
+    );
+    reviewAnchor = new ReviewAnchorUseCase(prisma, stubTradingCalendar());
+    listAnchors = new ListAnchorsUseCase(prisma, stubTradingCalendar());
     syncQuote = new SyncAnchorQuoteUseCase(prisma);
-    getRadar = new GetRadarUseCase(prisma);
+    getRadar = new GetRadarUseCase(prisma, stubTradingCalendar());
   }, 180_000);
 
   afterAll(async () => {

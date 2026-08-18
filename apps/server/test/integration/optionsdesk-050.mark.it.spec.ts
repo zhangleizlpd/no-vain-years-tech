@@ -8,6 +8,7 @@ import {
   BUILD_RECOMMEND_ABS_DELTA_BAND,
   RENT_RECOMMEND_ABS_DELTA_BANDS,
 } from '../../src/optionsdesk/leg-mark.rules';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 050 T009 打标层 IT (US3 全 6 条 AS, SC-005)。
 //
@@ -66,7 +67,11 @@ describe('050 T009 打标层 (Testcontainers PG, 真 vendor 到期周期列)', (
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    useCase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    );
   }, 180_000);
 
   afterAll(async () => {

@@ -11,6 +11,7 @@ import type { MarketdataSyncQueue } from './marketdata-sync.queue.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
+import type { TradingDayStatus } from './trading-day.rules.js';
 
 /** 北京周六 10:00 = ET 周五 22:00 (盘后, 非盘中)。与 rules spec 共用同一周固定日历。 */
 const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
@@ -38,8 +39,12 @@ interface Overrides {
   snapshotRowsAfterCollect?: number;
   /** `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
-  /** `TRADING_CALENDAR_PORT.isTradingDay` 对**今天**的答案 (周末 / 节假日 = false)。 */
-  todayIsTradingDay?: boolean;
+  /**
+   * `TRADING_CALENDAR_PORT.classify` 对**今天**的答案 (周末 / 节假日 = `non-trading`)。
+   * 062 T009 起三态**各走各的**: `trading` / `non-trading` 进 §D4 决策表, `unknown` 直接
+   * 放弃并落 `calendar_missing` (写敏感档不猜口径, `state_branch` 7)。
+   */
+  todayCalendarStatus?: TradingDayStatus;
 }
 
 function build(overrides: Overrides = {}) {
@@ -114,8 +119,8 @@ function build(overrides: Overrides = {}) {
   });
   const snapshot = { collect } as unknown as SyncOptionSnapshotUseCase;
 
-  const isTradingDay = vi.fn(async () => overrides.todayIsTradingDay ?? true);
-  const calendar = { isTradingDay } as unknown as TradingCalendarPort;
+  const classify = vi.fn(async () => overrides.todayCalendarStatus ?? 'trading');
+  const calendar = { classify } as unknown as TradingCalendarPort;
 
   return {
     usecase: new AnchorColdStartUseCase(prisma, gate, syncQueue, snapshot, calendar),
@@ -131,7 +136,7 @@ function build(overrides: Overrides = {}) {
     enqueueFlow,
     jobOpts,
     collect,
-    isTradingDay,
+    classify,
   };
 }
 
@@ -403,7 +408,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 北京周日 00:00 = ET 周六 12:00 —— 钟点落在 09:30–16:00 内, 但那天根本没有场。
     // 境内用户周末夜里做研究建锚正是这个时段, 判成盘中会让快照**永久**缺失
     // (intraday_skipped 是终态不重试; 常规轮周一晚写的是周一的数据, 不回补周五)。
-    const ctx = build({ todayIsTradingDay: false, snapshotRowsAfterCollect: 1 });
+    const ctx = build({ todayCalendarStatus: 'non-trading', snapshotRowsAfterCollect: 1 });
     const result = await ctx.usecase.run({
       ...SNAPSHOT_PHASE,
       now: new Date('2026-08-15T16:00:00Z'),
@@ -416,11 +421,27 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
   });
 
   it('交易日的场内钟点仍判进行中 (回归: 修周末档 MUST NOT 顺手把真盘中放行)', async () => {
-    const ctx = build({ todayIsTradingDay: true });
+    const ctx = build({ todayCalendarStatus: 'trading' });
     const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
     expect(ctx.collect).not.toHaveBeenCalled();
+  });
+
+  it('🚨 062 T009: 日历 `unknown` ⇒ 放弃并落 calendar_missing, MUST NOT 猜口径 (state_branch 7)', async () => {
+    // 写敏感档这一格**不能**沿用盘中采集闸的「不知道就照跑」: 猜「是交易日」落
+    // `premarket_backfill` + OI 归属被补那场, 猜「不是」落 `eod` + OI 再往前一场 ——
+    // 差一整天的持仓量归属, 且**不报错**, 事后要人工回删。
+    //
+    // 时钟蓄意停在**盘中**: 结局仍须是 `calendar_missing` 而不是 `intraday_skipped` ——
+    // 后者是「一切正常」的一档, 折进去等于把该被人看见的事藏起来 (FR-027 零折叠)。
+    const ctx = build({ todayCalendarStatus: 'unknown' });
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
+    expect(ctx.collect).not.toHaveBeenCalled();
+    // 目标日已定位到 ⇒ 仍落痕, 人工介入时第一手信息不丢。
+    expect(recordedRow(ctx.runUpsert).targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
   });
 
   it('🚨 采集跑完但快照仍不在库 ⇒ backfill_incomplete, MUST NOT 记成 backfilled (FR-027a)', async () => {

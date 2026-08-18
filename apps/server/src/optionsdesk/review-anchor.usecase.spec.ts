@@ -8,6 +8,10 @@ import {
   isAnchorReviewFlagOn,
 } from './review-anchor.usecase';
 import type { PrismaService } from '../security/prisma.service';
+import {
+  stubTradingCalendar,
+  type TradingCalendarStub,
+} from '../../test/_support/trading-calendar-stub';
 
 type Fn = ReturnType<typeof vi.fn>;
 
@@ -43,7 +47,8 @@ const baseRow = {
 
 interface PrismaMock {
   prisma: PrismaService;
-  tradingDayFindFirst: Fn;
+  /** 062 T010: 陈旧度基准改走 `TRADING_CALENDAR_PORT`，不再是 `tradingDay.findFirst`。 */
+  calendar: TradingCalendarStub;
   findUnique: Fn;
   updateMany: Fn;
   findUniqueOrThrow: Fn;
@@ -65,13 +70,12 @@ function buildPrismaMock(row: Record<string, unknown> = baseRow): PrismaMock {
   };
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
-  const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
+  const calendar = stubTradingCalendar();
   const prisma = {
-    tradingDay: { findFirst: tradingDayFindFirst },
     anchor: { findUnique },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
   } as unknown as PrismaService;
-  return { prisma, findUnique, updateMany, findUniqueOrThrow, changeCreate, tradingDayFindFirst };
+  return { prisma, findUnique, updateMany, findUniqueOrThrow, changeCreate, calendar };
 }
 
 describe('isAnchorOverdue — FR-004 日历逾期判据', () => {
@@ -168,7 +172,7 @@ describe('ReviewAnchorUseCase — 复审动作 (FR-004 / FR-007 / FR-013)', () =
     vi.useFakeTimers();
     vi.setSystemTime(TODAY);
     m = buildPrismaMock();
-    useCase = new ReviewAnchorUseCase(m.prisma);
+    useCase = new ReviewAnchorUseCase(m.prisma, m.calendar);
   });
 
   afterEach(() => {
@@ -210,7 +214,7 @@ describe('ReviewAnchorUseCase — 复审动作 (FR-004 / FR-007 / FR-013)', () =
 
   it('EC-12 深买区同理 —— 复审不改 V / spot ⇒ 区间归属恒不变', async () => {
     m = buildPrismaMock({ ...baseRow, lastClose: new Prisma.Decimal('28') });
-    useCase = new ReviewAnchorUseCase(m.prisma);
+    useCase = new ReviewAnchorUseCase(m.prisma, m.calendar);
     const result = await useCase.execute(7n, nextReview);
     expect(classifyZone(result.v, result.lastClose!)).toBe('deep_buy');
   });
@@ -261,7 +265,7 @@ describe('ReviewAnchorUseCase — 复审动作 (FR-004 / FR-007 / FR-013)', () =
       nextReview,
       lastReviewedOn: TODAY_DATE_ONLY,
     });
-    useCase = new ReviewAnchorUseCase(m.prisma);
+    useCase = new ReviewAnchorUseCase(m.prisma, m.calendar);
     await useCase.execute(7n, nextReview);
     expect(m.changeCreate).not.toHaveBeenCalled();
   });

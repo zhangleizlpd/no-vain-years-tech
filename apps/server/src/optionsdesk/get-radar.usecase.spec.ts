@@ -12,6 +12,10 @@ import {
 import { encodeRadarCursor } from './radar-cursor';
 import { INTRADAY_FRESHNESS_SECONDS, resolveAnchorSpot } from './intraday-spot.rules';
 import type { PrismaService } from '../security/prisma.service';
+import {
+  stubTradingCalendar,
+  type TradingCalendarStub,
+} from '../../test/_support/trading-calendar-stub';
 
 type Fn = ReturnType<typeof vi.fn>;
 
@@ -207,7 +211,8 @@ interface RadarKeyRowFixture {
 
 interface PrismaMock {
   prisma: PrismaService;
-  tradingDayFindFirst: Fn;
+  /** 062 T010: 陈旧度基准改走 `TRADING_CALENDAR_PORT`，不再是 `tradingDay.findFirst`。 */
+  calendar: TradingCalendarStub;
   queryRaw: Fn;
   findMany: Fn;
   updateMany: Fn;
@@ -255,9 +260,8 @@ function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
   const updateMany = vi.fn().mockResolvedValue({ count: 1 });
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
-  const tradingDayFindFirst = vi.fn(async () => null as { date: Date } | null);
+  const calendar = stubTradingCalendar();
   const prisma = {
-    tradingDay: { findFirst: tradingDayFindFirst },
     anchor: { findMany, updateMany },
     $queryRaw: queryRaw,
   } as unknown as PrismaService;
@@ -266,7 +270,7 @@ function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
     queryRaw,
     findMany,
     updateMany,
-    tradingDayFindFirst,
+    calendar,
     setPageKeys: (keys) => {
       pageKeys = keys;
     },
@@ -279,7 +283,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
 
   beforeEach(() => {
     m = buildPrismaMock();
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
   });
 
   const sqlCalls = (): { sql: string; values: unknown[] }[] =>
@@ -369,7 +373,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
 
   it('状态机变更走 conditional updateMany (带前置值, affected-count 判胜负)', async () => {
     m = buildPrismaMock([anchorRow({ lastClose: new Prisma.Decimal('36') })]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     await useCase.execute();
 
@@ -384,14 +388,14 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
 
   it('状态机无转移 → 零 UPDATE (打开雷达不产生噪声写)', async () => {
     m = buildPrismaMock([anchorRow({ lastClose: new Prisma.Decimal('45') })]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
     await useCase.execute();
     expect(m.updateMany).not.toHaveBeenCalled();
   });
 
   it('excluded 锚的状态机照常维护 (维护 ≠ 展示: 它在锚列表仍要显示红标)', async () => {
     m = buildPrismaMock([anchorRow({ excluded: true })]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
     await useCase.execute();
     expect(m.updateMany).toHaveBeenCalledTimes(1);
   });
@@ -399,7 +403,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
   it('行情不可用的行仍进结果且 zone/距 W% 为 null (EC-15 禁隐藏行 / 禁 0 值)', async () => {
     m = buildPrismaMock([anchorRow({ lastClose: null, lastCloseDate: null })]);
     m.setPageKeys([{ anchor_id: '7', distance_text: null }]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const page = await useCase.execute();
 
@@ -419,7 +423,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     m.findMany.mockImplementation(async (args: { where?: unknown }) =>
       args.where === undefined ? rows : rows,
     );
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const page = await useCase.execute();
 
@@ -468,7 +472,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
   it('实时价新鲜 → 距 W% 由实时价算 + 档位 realtime + asOf 呈**时刻** (state_branch 11)', async () => {
     const at = secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5);
     m = buildPrismaMock([anchorRow({ intradayPrice: new Prisma.Decimal('44'), intradayAt: at })]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const page = await useCase.execute();
 
@@ -486,7 +490,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
         intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS + 5),
       }),
     ]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const view = (await useCase.execute()).items[0]!;
     expect(view.spot.priceKind).toBe('eod_close');
@@ -497,7 +501,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
   it('两价皆无 → 距 W% 显式 null **不是 0**, 档位仍显式给出 (state_branch 13 / FR-014)', async () => {
     m = buildPrismaMock([anchorRow({ lastClose: null, lastCloseDate: null })]);
     m.setPageKeys([{ anchor_id: '7', distance_text: null }]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const view = (await useCase.execute()).items[0]!;
     expect(view.distanceToWPct).toBeNull();
@@ -516,7 +520,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
         intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5),
       }),
     ]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const page = await useCase.execute();
 
@@ -538,7 +542,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
         intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5),
       }),
     ]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const page = await useCase.execute();
 
@@ -557,7 +561,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
         intradayAt: secondsAgo(INTRADAY_FRESHNESS_SECONDS - 5),
       }),
     ]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
 
     const page = await useCase.execute();
 
@@ -590,7 +594,7 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     expect(active.emptyStateMessage).toBeNull();
 
     m = buildPrismaMock([anchorRow({ lastClose: new Prisma.Decimal('45') })]);
-    useCase = new GetRadarUseCase(m.prisma);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
     const idle = await useCase.execute();
     expect(idle.emptyState).toBe('all_idle');
     expect(idle.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.all_idle);

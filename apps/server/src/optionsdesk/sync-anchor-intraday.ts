@@ -14,6 +14,10 @@ import {
   type MarketSession,
   type MarketStatePort,
 } from '../marketdata/market-state.port';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 import { parseAnchorTicker } from './anchor.rules';
 
 /**
@@ -25,9 +29,16 @@ import { parseAnchorTicker } from './anchor.rules';
  * `INTRADAY_MARKET = 'cn'` 硬编码单市场形态 (那个文件自己的注释就写着「接第二个市场时改这里」)。
  * 写成分组形态是**零额外成本**的: 后续接港股只多一个键, 不改结构。
  *
- * 🚨 **两闸取交集, 交易日闸 MUST NOT 被市场状态顶替** (FR-011): vendor 状态答「现在开不开」,
- * `trading_day` 答「今天是不是交易日」。源侧状态机会滞后 —— 「状态说开市但当天其实是节假日」
- * 是 spec 明列的 Edge Case, 靠交易日闸兜。两条判据量纲不同, 谁也替不了谁。
+ * 🚨 **两闸取交集, 交易日闸 MUST NOT 被市场状态顶替** (FR-011 / 062 FR-014): vendor 状态答
+ * 「现在开不开」, 交易日历答「今天是不是交易日」。源侧状态机会滞后 —— 「状态说开市但当天其实
+ * 是节假日」是 spec 明列的 Edge Case, 靠交易日闸兜。两条判据量纲不同, 谁也替不了谁。
+ *
+ * 🚨 **交易日闸是三态, 不是布尔** (062 T008): 走 `TRADING_CALENDAR_PORT` 拿
+ * `trading` / `non-trading` / `unknown`, 只有 `non-trading` 才跳过。**`unknown` 继续采** ——
+ * 它说的是「日历还没填到今天」而不是「今天不是交易日」, 把两者折成一个布尔正是 062 要消灭的
+ * 病根 (盘中价在 `trading_day` 当日行落库之前一拍都不采)。多采一轮的代价由上面那条 vendor
+ * 状态闸兜着; 反过来「不知道就不采」的代价是**每天开盘前整段静默停摆**。
+ * 留痕落在 {@link MarketIntradayOutcome} 的 `calendar` 上 (FR-013), 不只在日志里。
  *
  * 🚨🚨 **「该市场没接实时源」是配置事实, 不是故障** (Guardrail 16, spec `state_branch` 14):
  * 逐组独立 try/catch, 捕到 {@link RealtimeQuoteMarketUnsupportedError} 落显式降级 + 一条日志,
@@ -55,6 +66,14 @@ import { parseAnchorTicker } from './anchor.rules';
  * 本文件只负责「这一拍该采什么、采到了写哪儿」, 不持有任何跨拍状态。
  */
 
+/**
+ * 本组**为什么**过了交易日闸 (062 T008, FR-013)。
+ *
+ * 🚨 `confirmed` 与 `unknown` **必须可分辨**: 「采是因为确认了是交易日」与「采是因为还不知道」
+ * 若在报告里长得一样, 下次同类故障照样查不出 —— 等于没修。
+ */
+export type AnchorIntradayCalendarBasis = 'confirmed' | 'unknown';
+
 /** 一个 market 在本拍的处置。**五态互斥**, 供 IT 断言与排障。 */
 export type MarketIntradayOutcome =
   | {
@@ -79,6 +98,11 @@ export type MarketIntradayOutcome =
   | {
       market: string;
       status: 'collected';
+      /**
+       * 本组过交易日闸的**判据来源** (FR-013)。`unknown` = 日历视野还没填到该业务日,
+       * 本拍是「不知道所以照采」—— 与 `confirmed` 事后必须分得出。
+       */
+      calendar: AnchorIntradayCalendarBasis;
       /** 本组锚数 / 采到报价的锚数 / 真正落库的锚数。 */
       anchors: number;
       quoted: number;
@@ -184,10 +208,15 @@ export class SyncAnchorIntradayUseCase {
     // CROSS-CONTEXT-SYNC: 注入 marketdata 的市场时段端口 (同上, port token + interface)。
     // vendor 原始状态串不出对方 adapter, 本 ctx 只见归一后的三态 —— 值域知识不复制过来。
     @Inject(MARKET_STATE_PORT) private readonly marketState: MarketStatePort,
+    // CROSS-CONTEXT-SYNC: 注入 marketdata 的交易日历读端口 (062 T008; 同上, port token +
+    // interface)。**取代**此前对 `marketdata.trading_day` 的裸 Prisma 直查 —— 直查读到的是
+    // 「有没有行」这个原始事实, 而判「今天是不是交易日」还需要「日历填到哪儿了」, 判据本体归
+    // 属方 (marketdata) 拿。同步读: 本拍的闸必须在本拍判完。方向仍单向: marketdata 对锚表零感知。
+    @Inject(TRADING_CALENDAR_PORT) private readonly tradingCalendar: TradingCalendarPort,
   ) {}
 
   /**
-   * 一拍投影。复杂度: O(锚数) 次写 + O(市场数) 次交易日查询 + O(ceil(锚数/400)) 次外呼。
+   * 一拍投影。复杂度: O(锚数) 次写 + O(市场数) 次交易日判定 + O(ceil(锚数/400)) 次外呼。
    *
    * @param now 注入时钟 (测试可控; 生产取 `new Date()`)。
    */
@@ -240,14 +269,21 @@ export class SyncAnchorIntradayUseCase {
       // 交易日闸 —— 与市场状态闸**取交集**, 且补一拍也不放开 (FR-011)。日期按**交易所时区**
       // 求, 不是宿主时区: us 的常规时段横跨北京日界, 用宿主日期会在后半段整体错一天。
       const date = marketDateFor([market], now);
-      // CROSS-CONTEXT-READ: marketdata.trading_day 只读直查 (catalog Q7-B) —— 判该市场当日是否
-      // 交易日。零写; marketdata 不知道锚表存在 (方向铁律)。
-      const tradingDays = await this.prisma.tradingDay.count({
-        where: { market, date: new Date(`${date}T00:00:00.000Z`) },
-      });
-      if (tradingDays === 0) {
+      const calendarStatus = await this.tradingCalendar.classify(market, date);
+      if (calendarStatus === 'non-trading') {
+        // 日历已填过这一段、当日确实非交易日 ⇒ 0 次源调用 (既有语义)。
         markets.push({ market, status: 'skipped-holiday', date });
         continue;
+      }
+      // 🚨 `unknown` 落在**放行侧**: 「还没填到这儿」不是「不是交易日」。这一行写成
+      // `!== 'trading'` 就是把 062 修掉的病原样犯回去 —— 且生产里它会静默地每天犯一次。
+      const calendar: AnchorIntradayCalendarBasis =
+        calendarStatus === 'trading' ? 'confirmed' : 'unknown';
+      if (calendar === 'unknown') {
+        this.logger.warn(
+          `市场 ${market} 的交易日历视野未覆盖 ${date} — 本拍按「未知」照常采集 ` +
+            `(FR-012; 时段闸仍独立生效)`,
+        );
       }
 
       const fetched = await this.fetchGroup(market, group);
@@ -268,6 +304,7 @@ export class SyncAnchorIntradayUseCase {
       markets.push({
         market,
         status: 'collected',
+        calendar,
         anchors: group.length,
         quoted: fetched.quotes.size,
         updated: written.updated,

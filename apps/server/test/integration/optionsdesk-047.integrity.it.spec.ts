@@ -211,6 +211,18 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     await prisma.tradingDay.createMany({
       data: TRADING_DAYS.map((d) => ({ market: 'us', date: dateOf(d) })),
     });
+    // 🚨 062 T006: 「表里没这一行 ⇒ 真非交易日」现在必须有**覆盖声明**背书 —— 旧的「近窗有别的
+    // 行就算填过」这条近似判据已删除。没有这一行, 周末给的是 `unknown` (还没填到) 而非
+    // `non-trading`, ⑦ 那条非交易日守卫就验不到它想验的东西。
+    await prisma.calendarCoverage.deleteMany();
+    await prisma.calendarCoverage.create({
+      data: {
+        market: 'us',
+        coveredFrom: dateOf('2026-06-01'),
+        coveredTo: dateOf('2026-06-30'),
+        servedBy: 'seed',
+      },
+    });
     port = new RecordingSnapshotPort();
     coverage = new OptionSnapshotCoverageCheck(prisma, {
       // 先验起手 100%: 「基线日在、当日未到期、当日却没数据」一条都不许有。
@@ -443,7 +455,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     await seedSnapshot(contract.id, MON);
     const err = spyError();
 
-    // 北京 18:00 周六 = ET 周六 06:00; trading_day 表里没有 06-20 这一行 (近窗有行 ⇒ 真非交易日)。
+    // 北京 18:00 周六 = ET 周六 06:00; trading_day 没有 06-20 这一行且 06 月已声明覆盖 ⇒ 真非交易日。
     const outcome = await remediation.backfillPremarket(new Date('2026-06-20T10:00:00Z'));
 
     expect(outcome.status).toBe('not_needed');

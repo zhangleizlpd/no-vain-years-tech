@@ -42,6 +42,17 @@ const DAY_MS = 86_400_000;
 /** syncRange 不读 cfg (仅 @Cron handleCron 读 tickEnabled) → 最小占位。 */
 const CFG = { tickEnabled: true } as unknown as MarketdataSyncConfig;
 
+/**
+ * 前瞻源占位 (062 T004 起 `TradingCalendarSyncService` 的第 4 个依赖)。本文件只走
+ * `syncRange` (历史段) —— 前瞻段由 `marketdata.calendar-062.horizon.it.spec.ts` 专门覆盖。
+ * 故此处放一个**碰到即抛**的占位: 若哪天历史段意外触达前瞻源, 测试会当场红而不是静默走通。
+ */
+const NO_FORWARD: TradingCalendarSource = {
+  fetchTradingDates: async () => {
+    throw new Error('[test] 本文件的用例不应触达前瞻源');
+  },
+};
+
 /** 真链填充窗 (日常 populate 恒 30 天窗 → 恒受合理性闸保护, 不走短窗豁免)。 */
 const FROM = '2026-06-16';
 const TO = '2026-07-16';
@@ -85,9 +96,45 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
     await db.drop();
   });
 
+  /**
+   * 📌 **062 T011 增补**: 同一个谓词自 062 起多了**视野档** (三档, 见 .sql 头部) —— 本文件测的是
+   * **心跳档**, 故在每个用例开跑前把视野埋成恒健康, 让这里的每一条红都只能来自心跳判据。
+   * 视野档自己的用例在 `marketdata.calendar-062.horizon-probe.it.spec.ts` (那边反过来把心跳
+   * 埋成恒健康)。两文件的分工 = FR-017「两档并存且互不替代」在测试面的落法。
+   *
+   * ⚠️ 相对 `current_date` 埋 (不写死年份): 视野判据全部是「相对今天」的, 写死日期明年必假红。
+   * 覆盖区间刻意**包住下面真链用例的填充窗** (FROM..TO), 于是 `advanceCoverage` 合并后区间不变
+   * —— 真链跑完视野仍健康, 这些用例照样只在测心跳。
+   */
+  async function seedHealthyHorizon(): Promise<void> {
+    const now = Date.now();
+    const iso = (t: number): Date =>
+      new Date(new Date(t).toISOString().slice(0, 10) + 'T00:00:00Z');
+    for (const market of ['cn', 'hk', 'us']) {
+      await prisma.calendarCoverage.upsert({
+        where: { market },
+        create: {
+          market,
+          coveredFrom: iso(now - 400 * DAY_MS),
+          coveredTo: iso(now + 20 * DAY_MS),
+          servedBy: market === 'us' ? 'futu' : 'tencent',
+        },
+        update: { coveredFrom: iso(now - 400 * DAY_MS), coveredTo: iso(now + 20 * DAY_MS) },
+      });
+      // 余量 10 个交易日 (> 阈值 5) —— 蓄意**不靠年末豁免**兜底: 靠豁免的话, 哪天有人改动豁免
+      // 表达式, 本文件会跟着一起红, 而它根本不测那件事。
+      await prisma.tradingDay.createMany({
+        data: Array.from({ length: 10 }, (_, i) => ({ market, date: iso(now + (i + 1) * DAY_MS) })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
   beforeEach(async () => {
     await prisma.calendarSyncHealth.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
     await prisma.tradingDay.deleteMany();
+    await seedHealthyHorizon();
   });
 
   /** 跑谓词 → 与 bash 侧完全相同的两列输出 (exit_code 直接就是 bash 的退出码)。 */
@@ -257,7 +304,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
   }
 
   it('真链跑成功 → 心跳落库 → 谓词判健康 exit 0 (写入端与读取端契约对齐)', async () => {
-    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG);
+    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG, NO_FORWARD);
 
     await svc.syncRange(['cn', 'hk', 'us'], FROM, TO);
 
@@ -267,7 +314,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
   });
 
   it('🚨 长假语义: 重跑「成功但零新增」→ 心跳照旧刷新 → 谓词仍判健康 (SC-005 不误报)', async () => {
-    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG);
+    const svc = new TradingCalendarSyncService(routedSource(), prisma, CFG, NO_FORWARD);
 
     await svc.syncRange(['cn', 'hk', 'us'], FROM, TO);
     const second = await svc.syncRange(['cn', 'hk', 'us'], FROM, TO);
@@ -289,7 +336,7 @@ describe('044 US3 交易日历健康谓词 (Testcontainers PG, 与 marketdata-ca
         },
       },
     ]);
-    const svc = new TradingCalendarSyncService(dead, prisma, CFG);
+    const svc = new TradingCalendarSyncService(dead, prisma, CFG, NO_FORWARD);
 
     const results = await svc.syncRange(['cn'], FROM, TO);
 

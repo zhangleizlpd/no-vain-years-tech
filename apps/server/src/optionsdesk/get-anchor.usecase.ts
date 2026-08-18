@@ -1,8 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service';
 import type { AnchorRow } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 
 /**
  * 045 US1 — 单锚详情读端 (FR-001, plan D6)。
@@ -15,7 +19,13 @@ import { resolveLastClosedSessionForTicker } from './last-closed-session';
  */
 @Injectable()
 export class GetAnchorUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
+    // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
+    // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   async execute(anchorId: bigint): Promise<AnchorView> {
     const row = (await this.prisma.anchor.findUnique({
@@ -24,6 +34,6 @@ export class GetAnchorUseCase {
     if (row === null) {
       throw new NotFoundException('ANCHOR_NOT_FOUND');
     }
-    return toAnchorView(row, await resolveLastClosedSessionForTicker(this.prisma, row.ticker));
+    return toAnchorView(row, await resolveLastClosedSessionForTicker(this.calendar, row.ticker));
   }
 }

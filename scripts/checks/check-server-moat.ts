@@ -89,6 +89,7 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   adjustmentFactor: 'marketdata', // 019 复权因子版本表 (executor/backfill 独占读写, intra)。
   tradingDay: 'marketdata',
   calendarSyncHealth: 'marketdata', // 044 日历填充心跳 (TradingCalendarSyncService 写 / ops 探针直读 PG, intra 无 FK)。
+  calendarCoverage: 'marketdata', // 062 日历覆盖声明 (TradingCalendarSyncService 写 / DbTradingCalendarAdapter + alert 只读, intra 无 FK)。
   shortSellingDaily: 'marketdata', // 039 US1 做空日频 (executor/backfill 独占读写, intra FK→instrument)。
   connectHoldingDaily: 'marketdata', // 039 US1 南向持股日频 (executor/backfill 独占读写, intra)。
   fundHolding: 'marketdata', // 039 US2 公募基金持股 (executor/backfill 独占读写, intra FK→instrument)。

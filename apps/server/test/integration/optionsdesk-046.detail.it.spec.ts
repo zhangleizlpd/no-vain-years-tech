@@ -17,6 +17,8 @@ import {
   mapConfidenceToLLevel,
 } from '../../src/optionsdesk/anchor.rules';
 import { ANCHOR_NOT_FOUND_FOR_SYMBOL } from '../../src/optionsdesk/get-underlying-detail.usecase';
+import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
+import { TRADING_CALENDAR_PORT } from '../../src/marketdata/trading-calendar.port';
 
 // 046 T016 详情读端 IT (FR-002/FR-003/FR-011/FR-012/FR-013/FR-014/FR-020/FR-032)。
 //
@@ -88,6 +90,14 @@ describe('046 T016 标的详情读端 (共享 PG + 收窄 boot + 真 HTTP)', () 
     })
       .overrideProvider(REDIS_CLIENT)
       .useValue({ call: () => undefined, quit: () => undefined, on: () => undefined })
+      .overrideProvider(TRADING_CALENDAR_PORT)
+      // 062 T010: 陈旧度基准改走端口。测试里 `MARKETDATA_PROVIDER` 恒为 `mock` ⇒ 端口会绑到
+      // `MockMarketDataAdapter`（按墙上时钟推最近工作日）⇒ 下面 seed 的 `trading_day` /
+      // `calendar_coverage` 一行都读不到、断言随墙上时钟漂。故显式绑真 adapter。
+      .useFactory({
+        factory: (p: PrismaService) => new DbTradingCalendarAdapter(p),
+        inject: [PrismaService],
+      })
       .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(
@@ -123,6 +133,18 @@ describe('046 T016 标的详情读端 (共享 PG + 收窄 boot + 真 HTTP)', () 
         { market: 'us', date: day(QUOTE_AS_OF) },
         { market: 'us', date: day(IV_AS_OF) },
       ],
+    });
+    // 🚨 062 T010: 只 seed `trading_day` 不够 —— 收盘上界落在覆盖声明之外时端口返 `null`
+    // ⇒ fail-open 判当期档, 「陈旧」那一档又走不到了。声明必须显式覆盖到上界。
+    await prisma.calendarCoverage.upsert({
+      where: { market: 'us' },
+      create: {
+        market: 'us',
+        coveredFrom: day('2026-01-01'),
+        coveredTo: day('2099-12-31'),
+        servedBy: 'it-seed',
+      },
+      update: {},
     });
   });
 

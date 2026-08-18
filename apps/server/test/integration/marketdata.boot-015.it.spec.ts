@@ -152,7 +152,7 @@ describe('015 marketdata module boot (Testcontainers PG + Redis + Fastify)', () 
 
     // 闸口: 拒了它 freshness-sla 这类只读检查在 dev 下全起不来 (FR-009 的具体所指)。
     const calendar = moduleRef.get<MockMarketDataAdapter>(TRADING_CALENDAR_PORT);
-    expect(await calendar.isTradingDay('cn', '2026-08-12')).toBe(true); // 周三
+    expect(await calendar.classify('cn', '2026-08-12')).toBe('trading'); // 周三
   });
 
   it('config fail-fast: kind=live 缺 LIXINGER_TOKEN → boot 抛 (不静默降级)', async () => {

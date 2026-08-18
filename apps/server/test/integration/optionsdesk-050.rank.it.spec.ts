@@ -5,6 +5,7 @@ import { GetLegsUseCase, type LegTableView } from '../../src/optionsdesk/get-leg
 import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
 import { BASIS_BY_TAB } from '../../src/optionsdesk/leg-rank.rules';
 import { LEG_TABS, type LegTab } from '../../src/optionsdesk/leg-tab.rules';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 050 T013 精排 + 一致性 IT (US4 全 5 条 AS, SC-006)。
 //
@@ -39,7 +40,11 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     process.env.DATABASE_URL = db.databaseUrl;
     prisma = new PrismaService(db.databaseUrl);
     await prisma.$connect();
-    useCase = new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma));
+    useCase = new GetLegsUseCase(
+      prisma,
+      new PrismaLegRetrievalAdapter(prisma),
+      stubTradingCalendar(),
+    );
   }, 180_000);
 
   afterAll(async () => {

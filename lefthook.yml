@@ -376,6 +376,23 @@ pre-commit:
       glob: 'apps/server/src/**/*.ts'
       run: pnpm tsx scripts/checks/check-server-moat.ts
 
+    trading-day-read-check:
+      tags: server architecture
+      # Per 062 US5 (FR-003 / FR-018) — 交易日历读法的防复发门禁, 两条正交判据:
+      #   A. `marketdata/` 之外**读** tradingDay 的文件必须 import
+      #      marketdata/trading-day.rules.ts (「无记录」MUST NOT 被读成「不是交易日」——
+      #      正是它让盘中预警整整一天不求值、且全程无人知道);
+      #   B. **写** calendarCoverage 的文件内禁出现 tradingDay 的「取最大日期」形状
+      #      (aggregate / _max / orderBy date desc): 覆盖终点 MUST NOT 由 max(date) 派生,
+      #      最大值看不出区间中间的空洞 = 同一个病换个地方犯 (FR-003)。
+      # 与 server-moat-check **正交, 不要合并**: moat 管「跨 ctx 读/注入有没有注释」, 本门禁管
+      # 「读完之后有没有用对判据」—— 带了 CROSS-CONTEXT-READ 的裸查照样能把 unknown 读成 false。
+      # glob 仅决定是否跑; 脚本忽略 args 始终全量扫 (holistic invariant, 同 server-moat-check)。
+      # CI mirror: pr-validation.yml validate-and-test 同名 step (--no-verify 绕得过 lefthook,
+      # 绕不过云端门禁)。Emergency exit: git commit --no-verify.
+      glob: 'apps/server/src/**/*.ts'
+      run: pnpm tsx scripts/checks/check-trading-day-read.ts
+
     api-property-nullable-check:
       tags: server architecture
       # Per memory reference_nullable_apiproperty_needs_type_string_else_orval_objectmap —
