@@ -22,6 +22,7 @@ import {
   LEG_TABLE_COLUMNS,
   type LegColumnKey,
 } from './leg-row.rules';
+import { legQuoteColumnSubs, type LegQuoteColumnInput } from './leg-tier-bar.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
@@ -80,14 +81,19 @@ export interface LegTableHeaderProps {
    * 取自服务端下发的 `basis`（053 起只发**本次视角**那一份），由调用方经 `rateHeaderFor` 映射（FR-017）。
    */
   rateHeader: LegRateHeader;
-  /** 🚨 OI 的**独立归属日**（与区块级 asOf 不是同一天，FR-013）。 */
-  oiAsOf: string | null;
+  /**
+   * 🚨 **两个时点必须同时在场**（064 FR-013 / FR-014）：OI 列挂 `oiAsOf`、成交量列按区块级
+   *    `priceKind` 切口径。判定单点在 `legQuoteColumnSubs` —— 🚫 MUST NOT 在这里就地取值，
+   *    读错那一个（OI 挂到 `quoteAsOf` 上）时列里的数字一个都不会变，屏幕上不会红。
+   */
+  quotes: LegQuoteColumnInput;
 }
 
 /** 12 列表头（sticky section header 的下半）。复杂度 O(1)（列数固定）。 */
-export function LegTableHeader({ tx, rateHeader, oiAsOf }: LegTableHeaderProps) {
+export function LegTableHeader({ tx, rateHeader, quotes }: LegTableHeaderProps) {
   // 费率列**整个列头**（主标 + 副标）都随口径换，其余 11 列取固定列名。
   const label: Record<LegColumnKey, string> = { ...COPY.columns, rate: rateHeader.main };
+  const columnSubs = legQuoteColumnSubs(quotes);
   // 穷举而非 `Partial<Record>` —— 加列时漏写副标即编译红，且「哪三列有副标」一眼可审。
   const sub: Record<LegColumnKey, string | null> = {
     strike: null,
@@ -95,11 +101,13 @@ export function LegTableHeader({ tx, rateHeader, oiAsOf }: LegTableHeaderProps) 
     rate: rateHeader.sub,
     premium: null,
     // 🚨 OI 的归属日与区块级 asOf 不同天 —— 挂在列头上，别只挂区块头（SC-003）。
-    oi: COPY.oiAsOfSub(oiAsOf === null ? COPY.noValue : oiAsOf.slice(5)),
+    //    064 起它更不跟 `quoteAsOf` 走（实时档下后者是今天此刻，而 OI 盘中冻结）。
+    oi: columnSubs.oi,
     spread: null,
     cost: null,
     delta: COPY.columnSubDelta,
-    vol: null,
+    // 🚨 064 FR-013：盘中的累计量天然小于全天量，两档共用一句文案会把活跃的腿看成冷门腿。
+    vol: columnSubs.vol,
     activity: null,
     mark: null,
     action: null,

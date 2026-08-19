@@ -294,6 +294,8 @@ const DEFAULT_BOOK: readonly CanonicalLeg[] = [
       isMonthlyChain: false,
       earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
       greeksComplete: true,
+      // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
+      priceKind: 'eod_close',
     },
   },
   {
@@ -326,6 +328,8 @@ const DEFAULT_BOOK: readonly CanonicalLeg[] = [
       // 建仓域**恒无标**（`null` 与 `no_date` 是两个值，UI 上一个「—」一个虚线 chip）。
       earningsMark: null,
       greeksComplete: true,
+      // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
+      priceKind: 'eod_close',
     },
   },
 ];
@@ -350,6 +354,10 @@ function makeLegTable(
     // 档位由 **server** 判（T027a）；这里给当期态。「陈旧」那一档的帧归 T035。
     asOfFreshnessTier: 'CURRENT',
     quoteAsOf: `${TODAY}T20:15:00.000Z`,
+    // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
+    priceKind: 'eod_close',
+    // 064 T007a: 链级降级标。mock 后端默认 `null` —— 正常收盘档不是降级, 告警态归 T011。
+    realtimeDegrade: null,
     // 🚨 与 asOf 差一天 —— OI 列 MUST 用它（FR-013 / Guardrail 6）。
     oiAsOf: YESTERDAY,
     source: 'eod',

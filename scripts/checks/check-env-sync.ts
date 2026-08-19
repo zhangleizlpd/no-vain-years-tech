@@ -122,6 +122,11 @@ const ALLOWLIST = new Set([
   // env-gated 真桶写入 IT 的开关 (research-oss.vendor.spec.ts; 057 T002)。vitest gate,
   // 非 application config。RESEARCH_OSS_* 四个凭证本身已在 .env.example。
   'RUN_RESEARCH_OSS_IT',
+  // 064 SC-005 冻结基线夹具的一次性重生成开关 (optionsdesk-064.overlay.it.spec.ts)。
+  // 平时恒不设 ⇒ 夹具只读; 置 1 才写出 optionsdesk-064.baseline.json。vitest gate, 非
+  // application config。🚨 重生成会连带抹掉「既有字段的值有没有被改动」这个判据 —— 那正是
+  // SC-005 要答的, 故仅在契约蓄意变更且人工确认后才用。
+  'NVY_064_WRITE_BASELINE',
   // Optional server config WITH a schema .default() in apps/server/src/config/*.config.ts —
   // the default (and its rationale) is the single source of truth in the .config.ts itself,
   // so these are NOT duplicated in .env.example. Set via env only to override. Adding a NEW

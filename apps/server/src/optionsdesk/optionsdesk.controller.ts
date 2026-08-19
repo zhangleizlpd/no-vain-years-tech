@@ -275,6 +275,11 @@ export class OptionsdeskController {
         toRequestedPerspective(query),
         undefined,
         toRetrievalOverride(query),
+        undefined,
+        // 064 `FR-015` / plan D6: **本 controller 是今天唯一传 `true` 的读路径**。开关显式落在
+        // 调用点上, 🚫 MUST NOT 让 use case 按鉴权状态或请求来源自己推断 —— 那会让「将来加一种
+        // 访问方式」静默改变外呼行为 (guest controller 那边一个字都不改, 默认恒关)。
+        true,
       ),
     );
   }
@@ -327,7 +332,8 @@ export class OptionsdeskController {
   async chainReport(@Param('symbol') symbol: string): Promise<ChainReportResponse> {
     // 🚫 **零查询参数**: 报表不排序、不截断、无可调条件, 四种格值一次全返 (plan D-API-2)。
     // 加一个「只要某种格值」的参数就等于把 SC-002 的「切换不发请求」交回给调用方自觉。
-    return toChainReportResponse(await this.getChainReport.execute(symbol));
+    // 064: 实时档开关同上 —— 与选约表同一条读路径上的两个端点, 口径必须一致。
+    return toChainReportResponse(await this.getChainReport.execute(symbol, undefined, true));
   }
 
   @Get('thermometer')

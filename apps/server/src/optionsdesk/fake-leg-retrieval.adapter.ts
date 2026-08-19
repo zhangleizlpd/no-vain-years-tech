@@ -20,6 +20,11 @@ import type {
  * 🚫 **MUST NOT 注册进 `OptionsdeskModule`** —— 它只服务测试。运行时的唯一实现是
  * `PrismaLegRetrievalAdapter`; ADR-0064 sunset #3 (规模突破阈值) 才是第二个实现的触发条件。
  *
+ * 📌 **064 起 `query.realtime` 在这里被有意忽略**: 假实现回放的是种子, 而实时覆盖是 Prisma
+ * 实现对**外部行情源**的一次调用 —— 在这里模拟它就等于「测我刚写的那份 mock」。档位由种子的
+ * `priceKind` 直接给, 想验哪一档就种哪一档; 覆盖本身的正确性归 `optionsdesk-064.overlay.it.spec.ts`
+ * (真 adapter + 真库 + 被 override 的读取口)。
+ *
  * 复杂度: 查种子 `O(1)` + 召回 `O(n)`。
  */
 export class FakeLegRetrievalAdapter implements LegRetrievalPort {

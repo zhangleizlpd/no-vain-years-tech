@@ -22,6 +22,8 @@ import { GetChainReportUseCase, type ChainReportView } from './get-chain-report.
 import { aggregateCell, chainReportGateCounts, chainReportRows } from './chain-report.rules';
 import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS, type PerspectiveCriteria } from './leg-recall.rules';
+import { PRICE_KINDS, type PriceKind } from '../marketdata/marketdata.types';
+import type { LegView } from './get-legs.usecase';
 
 // boot-time zod 校验的最小 env 集 (与 alert-crud.it.spec.ts 同口径)。必须在 Nest 编译前落位:
 // SecurityModule 的 ConfigModule.forRoot 在模块实例化时 .parse()。DB / Redis 均不真连 ——
@@ -466,13 +468,23 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
           headers: authed(),
         });
         expect([perspective, res.statusCode]).toEqual([perspective, 200]);
-        expect(legsExecute).toHaveBeenCalledWith('us:AOS', perspective, undefined, null);
+        // 🚨 末位那个 `true` 是 064 `FR-015` 的**唯一机器判据**: 实时档由**调用点**显式打开,
+        // 🚫 MUST NOT 由 use case 按鉴权状态 / 请求来源推断。改成 `expect.anything()` 就等于
+        // 把这条断言作废 —— 那时 use case 自己偷偷推断出来的 `true` 照样让它绿。
+        expect(legsExecute).toHaveBeenCalledWith(
+          'us:AOS',
+          perspective,
+          undefined,
+          null,
+          undefined,
+          true,
+        );
       }
     });
 
     it('🚨 只给 perspective 不给条件 ⇒ 覆盖为 null (首屏 / 「复位」走的就是这条)', async () => {
       await app.inject({ method: 'GET', url: legsUrl('perspective=rent'), headers: authed() });
-      expect(legsExecute).toHaveBeenCalledWith('us:AOS', 'rent', undefined, null);
+      expect(legsExecute).toHaveBeenCalledWith('us:AOS', 'rent', undefined, null, undefined, true);
     });
 
     it('给了条件 ⇒ 覆盖落在**同一个**视角上 (052 FR-015 一字不改)', async () => {
@@ -567,6 +579,10 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       expect(res.statusCode).toBe(200);
       const body = res.json();
 
+      // 🚨 064 `FR-015`: 报表端与选约表**同一条读路径**, 实时档同样由调用点显式打开
+      // (末位 `true`)。两个端点口径若分叉, 用户会在同一屏上拿到两个时刻的数。
+      expect(chainReportExecute).toHaveBeenCalledWith('us:PEP', undefined, true);
+
       // ① 每格
       expect(body.cells.allAnnualized[1][0]).toEqual({
         state: 'valued',
@@ -639,6 +655,186 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       }
     });
   });
+
+  // ── 064 T007: 档位出参与两种 asOf 形态 ─────────────────────────────────────
+
+  /**
+   * 064 `FR-010` / `FR-014` —— **两档的 `quoteAsOf` 序列化形态必须不同**。
+   *
+   * 🚨 实时档 = **时刻** (ISO 含秒), 收盘档 = **交易日** (`YYYY-MM-DD`)。这是
+   * `optionsdesk.dto.ts` 文件头那条纪律 (「日历日 vs 时刻, 混成一种会让『数据截至 X · 收盘』的
+   * asOf 呈现出错」) 的第二个实例, 也与 061 `resolveAnchorSpot` 的 `asOf` 同一套口径。
+   * 📌 混成一种**不会红任何一处**: 收盘档带上时分秒会让用户以为那是此刻的盘口 (而它是昨天
+   * 20:31 采的), 实时档只给日期则把「几点几分的价」这件唯一要紧的事抹掉。
+   */
+  const ISO_INSTANT = /T\d{2}:\d{2}:\d{2}/;
+  const TRADING_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+  /** 一条腿的完整投影 —— 除 `code` / `priceKind` 外全走定值 (本 spec 的验证面是形态不是数值)。 */
+  function legView(code: string, priceKind: PriceKind): LegView {
+    return {
+      code,
+      strike: new Prisma.Decimal('120'),
+      expiryDate: new Date('2026-09-18T00:00:00.000Z'),
+      dteDays: 38,
+      bid: new Prisma.Decimal('1.45'),
+      ask: new Prisma.Decimal('1.55'),
+      contractPremium: new Prisma.Decimal('145'),
+      relativeSpread: new Prisma.Decimal('0.0667'),
+      bidSize: 25,
+      askSize: 26,
+      basis: 'annualized',
+      periodRate: new Prisma.Decimal('0.0105'),
+      weeklyRate: null,
+      annualizedRate: new Prisma.Decimal('0.0853'),
+      tier: 'acceptable',
+      askRate: null,
+      effectiveCost: new Prisma.Decimal('118.55'),
+      effectiveCostVsWPct: new Prisma.Decimal('-1.04'),
+      absDelta: 0.32,
+      sigmaDistance: 0.4677,
+      openInterest: 1234,
+      volume: 87,
+      turnover: new Prisma.Decimal('10875'),
+      activity: null,
+      isRecommended: false,
+      isMonthlyChain: true,
+      earningsMark: null,
+      greeksComplete: true,
+      priceKind,
+    };
+  }
+
+  /** 区块级 `2026-08-11` 那一场 · 采集时刻 20:31:07 · OI 归属 **T−1** (蓄意不同天)。 */
+  const SESSION_DAY = '2026-08-11';
+  const OI_DAY = '2026-08-10';
+
+  function legTable(priceKind: PriceKind, legs: readonly LegView[]): LegTableView {
+    return {
+      ...emptyLegTable(),
+      state: 'available',
+      asOf: new Date(`${SESSION_DAY}T00:00:00.000Z`),
+      quoteAsOf: new Date(`${SESSION_DAY}T20:31:07.000Z`),
+      oiAsOf: new Date(`${OI_DAY}T00:00:00.000Z`),
+      lastClosedSession: SESSION_DAY,
+      source: 'eod',
+      spot: new Prisma.Decimal('132.4'),
+      legs: [...legs],
+      matchedCount: legs.length,
+      memberCount: legs.length,
+      priceKind,
+    };
+  }
+
+  const legsBody = async (): Promise<Record<string, unknown>> => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/optionsdesk/underlyings/us:AOS/legs?perspective=all',
+      headers: authed(),
+    });
+    expect(res.statusCode).toBe(200);
+    return res.json();
+  };
+
+  describe('064 T007 —— 档位与两种 asOf 形态 (FR-009 / FR-010 / FR-013 / FR-014 / SC-001)', () => {
+    it('🚨 `FR-010`: 实时档的区块级 `quoteAsOf` 是**时刻** (ISO 含秒), 且 `priceKind=realtime`', async () => {
+      legsExecute.mockResolvedValue(legTable('realtime', [legView('L-A', 'realtime')]));
+      const body = await legsBody();
+
+      expect(body['priceKind']).toBe('realtime');
+      expect(String(body['quoteAsOf'])).toMatch(ISO_INSTANT);
+      expect(String(body['quoteAsOf'])).not.toMatch(TRADING_DAY);
+    });
+
+    it('🚨 `FR-010`: 收盘档的区块级 `quoteAsOf` 是**交易日** (`YYYY-MM-DD`), 且 `priceKind=eod_close`', async () => {
+      legsExecute.mockResolvedValue(legTable('eod_close', [legView('L-A', 'eod_close')]));
+      const body = await legsBody();
+
+      expect(body['priceKind']).toBe('eod_close');
+      expect(String(body['quoteAsOf'])).toMatch(TRADING_DAY);
+      expect(String(body['quoteAsOf'])).not.toMatch(ISO_INSTANT);
+      // 🚨 交易日取的是**快照归属的那一场** (`asOf`), 🚫 不是把采集时刻按 UTC 截一刀 ——
+      // 美股收盘采集常落在次日 UTC, 截出来的那个日期会比真交易日晚一天而**看不出异常**。
+      expect(body['quoteAsOf']).toBe(SESSION_DAY);
+    });
+
+    it('🚨 `FR-009` 逐行: 同一响应里两种档位**都出得来** (页级一刀切在这里会红)', async () => {
+      legsExecute.mockResolvedValue(
+        legTable('realtime', [legView('L-LIVE', 'realtime'), legView('L-STALE', 'eod_close')]),
+      );
+      const body = await legsBody();
+
+      const legs = body['legs'] as unknown as { code: string; priceKind: string }[];
+      expect(legs.map((leg) => [leg.code, leg.priceKind])).toEqual([
+        ['L-LIVE', 'realtime'],
+        ['L-STALE', 'eod_close'],
+      ]);
+    });
+
+    it('🚨 `FR-013` / `SC-006` 反例: `oiAsOf` 是**独立出参**, 实时档下仍是 T−1 交易日', async () => {
+      legsExecute.mockResolvedValue(legTable('realtime', [legView('L-A', 'realtime')]));
+      const body = await legsBody();
+
+      // 🚨 它 MUST NOT 跟着区块档位变成时刻、更 MUST NOT 变成今天: OI 盘中冻结, 归属日与报价
+      // 时刻是两回事, 合成一个「数据截至」会让用户按今天的 OI 判流动性。
+      expect(body['oiAsOf']).toBe(OI_DAY);
+      expect(String(body['oiAsOf'])).not.toMatch(ISO_INSTANT);
+      expect(body['oiAsOf']).not.toBe(body['quoteAsOf']);
+    });
+
+    it('🚨 `FR-010`: 链分析报表两档同一口径 (两个读端点 MUST NOT 各出一套形态)', async () => {
+      const report = async (priceKind: PriceKind): Promise<Record<string, unknown>> => {
+        chainReportExecute.mockResolvedValue({ ...chainReport(), priceKind });
+        const res = await app.inject({
+          method: 'GET',
+          url: '/api/v1/optionsdesk/underlyings/us:PEP/chain-report',
+          headers: authed(),
+        });
+        expect(res.statusCode).toBe(200);
+        return res.json();
+      };
+
+      const live = await report('realtime');
+      expect(live['priceKind']).toBe('realtime');
+      expect(String(live['quoteAsOf'])).toMatch(ISO_INSTANT);
+
+      const closed = await report('eod_close');
+      expect(closed['priceKind']).toBe('eod_close');
+      expect(String(closed['quoteAsOf'])).toMatch(TRADING_DAY);
+      // OI 归属日在两档下逐字节相同 —— 报表的三个时点各自成句 (FR-033 ③)。
+      expect(closed['oiAsOf']).toBe(live['oiAsOf']);
+    });
+
+    it('🚨 OpenAPI: 三处 `priceKind` 的 enum **就是** `PRICE_KINDS`, 不是裸 string', () => {
+      const schemas = document.components!.schemas!;
+      const enumOf = (name: string): unknown => {
+        const props = (schemas[name] as { properties: Record<string, { enum?: unknown }> })
+          .properties;
+        return props['priceKind'].enum;
+      };
+      // 🚫 裸 `type: 'string'` 会让 orval 生成 `string` —— 客户端拿到的档位判据从此失去值域,
+      // 写错一个档位名照样编译得过 (T007 verify 的机器判据就是这条)。
+      for (const name of ['LegResponse', 'LegTableResponse', 'ChainReportResponse']) {
+        expect([name, enumOf(name)]).toEqual([name, [...PRICE_KINDS]]);
+      }
+    });
+
+    it('🚨 `FR-013` 服务端半边: 成交量 / 成交额的 description 写明**两档口径差异**', () => {
+      const props = (
+        document.components!.schemas!['LegResponse'] as {
+          properties: Record<string, { description?: string }>;
+        }
+      ).properties;
+      // 判据是「两个档位名都被点到」而不是某句中文 —— 前者改不动 (值域来自 PRICE_KINDS),
+      // 后者随文案编辑就会红, 于是必然被改成恒真。
+      for (const key of ['volume', 'turnover']) {
+        const description = props[key].description ?? '';
+        for (const kind of PRICE_KINDS) {
+          expect([key, kind, description.includes(kind)]).toEqual([key, kind, true]);
+        }
+      }
+    });
+  });
 });
 
 /** `GetLegsUseCase` 的「链未就绪」空壳 —— 本 spec 只验通道层, 业务形态归 use case 自己的 spec。 */
@@ -663,6 +859,9 @@ function emptyLegTable(): LegTableView {
     perspective: 'all',
     state: 'chain_not_ready',
     asOf: null,
+    // 064: 空壳一个实时值都没取到 ⇒ 恒收盘档 (本 fixture 只验通道层, 档位判据归 use case)。
+    priceKind: 'eod_close',
+    realtimeDegrade: null,
     quoteAsOf: null,
     oiAsOf: null,
     lastClosedSession: null,
@@ -702,6 +901,8 @@ function chainReport(): ChainReportView {
     spot,
     marketDate: '2026-08-11',
     asOf: new Date('2026-08-11T00:00:00.000Z'),
+    priceKind: 'eod_close',
+    realtimeDegrade: null,
     quoteAsOf: new Date('2026-08-11T20:15:00.000Z'),
     oiAsOf: new Date('2026-08-10T00:00:00.000Z'),
     source: 'eod',

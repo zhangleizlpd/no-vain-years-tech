@@ -32,6 +32,8 @@ const CHAIN: LegChainMeta = {
   oiAsOf: day('2026-08-10'),
   source: 'eod',
   spot: SPOT,
+  priceKind: 'eod_close',
+  realtimeDegrade: null,
 };
 
 interface Fixture {
@@ -171,6 +173,7 @@ function rowOf(fixture: Fixture): LegChainRow {
     openInterest: fixture.openInterest,
     volume: fixture.volume,
     greeksComplete: true,
+    priceKind: 'eod_close',
   };
 }
 

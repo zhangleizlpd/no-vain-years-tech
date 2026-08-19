@@ -78,6 +78,8 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     isMonthlyChain: false,
     earningsMark: null,
     greeksComplete: true,
+    // 064 `FR-009`: 逐行档位。夹具默认收盘档 —— 实时档的呈现分支由 T008 各自的用例喂。
+    priceKind: 'eod_close',
     ...overrides,
   };
 }
@@ -120,7 +122,11 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
     state: 'available',
     asOf: '2026-08-04',
     asOfFreshnessTier: 'CURRENT',
-    quoteAsOf: '2026-08-04T20:10:00.000Z',
+    // 064 `FR-009`: 区块级档位。夹具默认收盘档 (⇒ quoteAsOf 也是交易日形态)。
+    priceKind: 'eod_close',
+    // 064 T007a: 链级降级标。夹具默认 `null` —— 正常收盘档不是降级。
+    realtimeDegrade: null,
+    quoteAsOf: '2026-08-04',
     oiAsOf: '2026-08-03',
     source: 'eod',
     spot: '145.20',

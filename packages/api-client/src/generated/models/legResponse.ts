@@ -8,6 +8,7 @@
 import type { LegActivityResponse } from './legActivityResponse';
 import type { LegEarningsMarkResponse } from './legEarningsMarkResponse';
 import type { LegResponseBasis } from './legResponseBasis';
+import type { LegResponsePriceKind } from './legResponsePriceKind';
 import type { LegResponseTier } from './legResponseTier';
 
 export interface LegResponse {
@@ -53,9 +54,9 @@ export interface LegResponse {
   sigmaDistance: number | null;
   /** 未平仓量。🚨 它归属 **oiAsOf** 那一天, 不是区块级 asOf */
   openInterest: number | null;
-  /** 当日成交量 */
+  /** 成交量。🚨 **两档口径不同** (064 FR-013): priceKind=realtime ⇒ **截至该时刻的累计**成交量; priceKind=eod_close ⇒ **当日全天**成交量。🚫 呈现侧 MUST NOT 两档共用一句表头文案 —— 盘中的累计量天然小于全天量, 混着读会把活跃的腿看成冷门腿, 而两个数都显示得出来 */
   volume: number | null;
-  /** 成交额 = Vol × 权利金 × 100。📌 成交额高 ≠ 真流动 */
+  /** 成交额 = Vol × 权利金 × 100。🚨 **口径随 volume 分两档** (064 FR-013): priceKind=realtime ⇒ 至该时刻的累计成交额; priceKind=eod_close ⇒ 当日全天成交额。📌 成交额高 ≠ 真流动 */
   turnover: string | null;
   /** **本次视角**候选集内的活跃度标记 —— 排名是候选集内的相对量, 换视角归属就变 (D-SOT-5)。053 起收窄成单份: 拆请求之后另两个视角结构上没有可判的东西 */
   activity: LegActivityResponse | null;
@@ -67,4 +68,6 @@ export interface LegResponse {
   earningsMark: LegEarningsMarkResponse | null;
   /** greeks 是否齐全 (FR-007「数据不全」标注); false 的行**照常在表内** */
   greeksComplete: boolean;
+  /** **本行**数值的时间口径 (064 FR-009): realtime = 上面七列 (bid/ask/挂牌量/Δ/IV/成交量) 取自**此刻**的盘口; eod_close = 保留库内收盘档。🚨 **逐行成立, 与区块级那个 priceKind 不是同一个数** —— 实时源返回集里少几个合约是常态 (停牌 / 刚摘牌), 那几行标 eod_close 而区块级仍是 realtime。🚫 呈现侧 MUST NOT 拿区块级档位给每一行着色: 整页统一标实时与整页统一降级**都渲染得出一张完整的表**, 只有逐行标才分得出来 */
+  priceKind: LegResponsePriceKind;
 }

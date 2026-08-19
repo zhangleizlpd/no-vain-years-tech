@@ -90,6 +90,17 @@ sunset_trigger: |
 - **路由 adapter 无默认路由 = 刻意 fail-closed**，未登记市场抛专属类型 `RealtimeQuoteMarketUnsupportedError`（带 `market` / `registeredMarkets`）。这个专属类型的存在意义是把「**配置事实**」与「**源故障**」分开 —— 只有后者计熔断。🚨 具体到本 ctx 这是**今天就会发生**的事：`anchor-import.rules.ts` 的 `IMPORTABLE_MARKETS = ['us', 'hk']` ⇒ **hk 锚合法且随时可建**，而 061 只登记了 us 路由；若把这个 throw 当源故障计数，**一只 hk 锚就能在 90 秒内（每 30 秒 +1，连续 3 次 open）把 us 那半边一起降级**，而 us 的源一切正常。⇒ tick 按 market 分组后**逐组独立 try/catch**，「该市场无路由」落显式降级 + 一条日志，不进熔断计数。
 - **前 4 条 Q7-B 只读直查一条未动**；`MODEL_OWNERSHIP` 无新增跨 ctx 表。
 
+#### 🔁 2026-08-19（064）追加 · 第 6 条 = **同一条强一致同步读边的第二个消费者**（形态不变 ⇒ 只补清单，不重开重审）
+
+| #   | 方向                         | 读什么                                                                                                                                                                                                              | 立于    | 分类                                       |
+| --- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | ------------------------------------------ |
+| 6   | `optionsdesk` → `marketdata` | 选约表 / 链分析报表在美股盘中经 **DI port token** 同步取整窗期权合约（含标的自身那一行）的**此刻报价** —— `OPTION_SNAPSHOT_READ_PORT`（住 `apps/server/src/marketdata/option-snapshot.port.ts`，与第 5 条同一条边） | **064** | **强一致同步读**（同第 5 条，**非 Q7-B**） |
+
+- **形态与第 5 条逐条相同 ⇒ 本次只补这一行，不重开重审**（064 plan Gate 0.4 判 `accepted-as-is`）：注入的是 **port token + interface**（Q7-C 禁令未破）· 只读（`getSnapshots` 零落库、零新表、零新采集维度，064 `FR-019`）· 单向无环（`marketdata` 对本 ctx 仍零感知，只是 `exports` 多一个 token）· 注入点挂 `// CROSS-CONTEXT-SYNC:`（`check-server-moat` Check 2 强制）· **无新 module 边**（`OptionsdeskModule.imports` 里的 `MarketdataModule` 是 061 已开的那一条）。`apps/server/eslint.config.mjs` 零改动。
+- 🚨 **读取口 ≠ 采集口，这不是命名洁癖**：`OPTION_SNAPSHOT_PORT`（采集口）经 `collectionPort()` 注册、`kind=mock` 下绑 054 的拒绝壳；本条走**裸 provider** 注册的 `OPTION_SNAPSHOT_READ_PORT`，`kind=mock` 下绑一个**显式降级实现**（调用即抛具名的「本环境无实时源」）。复用采集口会让 054 的「采集口产出必然被持久化」意图分类当场变成假话。
+- 🚨 **两个 token 在 `kind=live` 下必须解析到同一个 `FutuOptionSnapshotAdapter` 实例**（`useFactory` 返回采集口那一个，🚫 MUST NOT 新 `new`）—— shim 侧限频是 per-capability 单桶，客户端每多一个实例就多一个令牌桶 = 上游允许值的 2 倍撞 429。
+- 本条**不新增 marketdata 侧的表读**：061 已登记的 `MARKET_STATE_PORT` 与 062 起就在用的 `TRADING_CALENDAR_PORT` 在 064 只是多了一个本 ctx 内的消费点，跨 ctx 面条数不因此增加。
+
 ## Consequences
 
 - 045 T001 落本 ADR 的全部注册面（boundaries + moat `BUSINESS_CTX` + business-naming + module 空壳），T003 落 schema / migration / `MODEL_OWNERSHIP`；新表接线未在 `MODEL_OWNERSHIP` 声明 owner 会被 `moat-unmapped` 硬拒。

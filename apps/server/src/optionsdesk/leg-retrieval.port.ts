@@ -1,3 +1,4 @@
+import type { PriceKind } from '../marketdata/marketdata.types';
 import type {
   RecallCandidate,
   RecallContext,
@@ -64,6 +65,16 @@ export interface LegRetrievalQuery {
    * 下发。让调用方传默认值就等于让它先算一份, 那正是 FR-011 禁的「同一判据两处各算一份」。
    */
   readonly override: RetrievalOverride | null;
+  /**
+   * 本次是否走**盘中实时档** (064 `FR-015`)。
+   *
+   * 🚨 **无默认值, 调用方必须显式传** —— 有默认值就等于「不写也能跑」, `FR-015` 的 fail-closed
+   * 当场名存实亡。🚫 MUST NOT 从鉴权状态 / 请求来源 / 任何其它上下文隐式推断: 隐式推断会让
+   * 「将来加一种访问方式」静默改变外呼行为。⇒ 将来新增任何读路径, 它默认就是不外呼的。
+   * 📌 传 `true` 也**不保证**拿到实时值 —— 非交易时段 / 源不可达 / 基准陈旧一律逐档回落,
+   * 结局由每行与链级的 {@link LegChainRow.priceKind} 如实上报, 而不是由这个入参代言。
+   */
+  readonly realtime: boolean;
 }
 
 /**
@@ -103,6 +114,16 @@ export interface LegChainRow extends RecallLegInput {
    * 那次查询多带一列即可, 于是「两个消费方各查一份会 drift」这条纪律**结构上消失**。
    */
   readonly expirationCycle: string | null;
+  /**
+   * 本行数值的**时间口径** (064 `FR-009`), 复用 marketdata 既有 {@link PriceKind}
+   * (`'eod_close' | 'realtime'`)。
+   *
+   * 🚨 **逐行成立, 🚫 MUST NOT 页级一刀切**: 实时源返回集里少了几个合约是常态 (停牌 / 刚摘牌),
+   * 那几条 MUST 逐行保留收盘值并逐行标 `'eod_close'`, 而其余行照常标 `'realtime'`。整页统一
+   * 降级与整页统一标实时**都渲染得出一张完整的表**, 只有逐行标才分得出来。
+   * 🚫 **禁新造第二套枚举** —— 两套会让「实时」这个词在同一个响应里有两个来源。
+   */
+  readonly priceKind: PriceKind;
 }
 
 /** 链级上下文 —— 候选集之外、每票每请求算一次的那几项。 */
@@ -124,7 +145,76 @@ export interface LegChainMeta {
   readonly source: string;
   /** vendor 随链下发的标的价, **未复权**; 与召回上下文同型 (十进制金额, 不降 `number`)。 */
   readonly spot: RecallContext['spot'];
+  /**
+   * **区块级**档位 (064 `FR-009`) —— 本批腿整体处于哪个时间口径。
+   *
+   * 📌 与逐行的 {@link LegChainRow.priceKind} **不是同一个数**: 部分合约未返回时链级是
+   * `'realtime'` 而那几行是 `'eod_close'`。呈现层的区块条读这个, 行级角标读那个。
+   * 📌 {@link quoteAsOf} 的语义随它变: `'realtime'` 下是本批的**我方采集时刻**,
+   * `'eod_close'` 下是库内那批快照的采集时刻 (归属日看 {@link sessionDate})。
+   */
+  readonly priceKind: PriceKind;
+  /**
+   * **本该给实时却没给成** (064 `FR-010` / `FR-011` / `FR-012`, T007a) —— 正常收盘档恒 `null`。
+   *
+   * 🚨 **它与 {@link priceKind} 回答两个不同的问题**, 🚫 MUST NOT 互相推导: 前者说「这批是什么
+   * 档」, 本字段说「此刻**本该**是什么档」。任何一方由另一方算出来, 两个问题就坍缩成一个 ——
+   * 而那正是 064 立项前的原状: 北京白天美股休市走收盘档, 与北京夜里美股盘中源挂了回落收盘档,
+   * 在响应里长得**一模一样**, 用户拿着昨天的盘口做决定且没有任何线索。
+   *
+   * 非 `null` 的**充要条件**: 调用方已开实时 (`realtime: true`) **且**两闸 (市场时段 ∩ 交易
+   * 日历) 判定此刻本该外呼, 而最终仍落在收盘档上。
+   * 🚨 **非交易时段 / 非交易日 / 调用方未开实时 ⇒ 恒 `null`** —— 那是正常的收盘档不是降级。
+   * 把常态误报成降级 = 造一个**永远为真的告警**, 国内用户白天每次打开都看见它, 于是真出事那
+   * 天它也就不再有人看。
+   * 🚨 **值域蓄意排除逐行的 `partial_miss`** ({@link RealtimeChainDegradeKind} 的 `Exclude`):
+   * 部分合约未返回是**逐行**降级, 由 {@link LegChainRow.priceKind} 承载、链级仍是 `'realtime'`。
+   * 把整块拉成降级态会让「逐行而非页级」当场作废, 而那张表照样渲染得出来。
+   */
+  readonly realtimeDegrade: RealtimeChainDegradeKind | null;
 }
+
+/**
+ * 一次实时取数**为什么没给成实时** (064 `FR-011` / `FR-023`) —— 契约面与日志面的**同一个**值域。
+ *
+ * | 类别 | 触发条件 | 粒度 |
+ * | --- | --- | --- |
+ * | `partial_miss` | 问了 N 条、返回集里少了几条 (停牌 / 刚摘牌) | **逐行** |
+ * | `window_over_cap` | 候选范围内条数 > 单批上限 ⇒ fail-closed 零外呼 | 整链 |
+ * | `window_basis_stale` | 定窗基准缺失 / 超出 061 的新鲜度闸 ⇒ 零外呼 | 整链 |
+ * | `source_unavailable` | 读取口抛 (不可达 / 本环境无实时源) 或请求级超时 | 整链 |
+ * | `gate_unknown` | 两闸自身故障 / 未绑定 ⇒ 不知道此刻该不该外呼, fail-closed | 整链 |
+ *
+ * 🚨 **一套枚举**: 日志类别 (`FR-023`) 与契约上的链级降级标共用它, 🚫 MUST NOT 各造一套 ——
+ * 两套会让「为什么降级」在日志与响应里各说各的, 而两边都答得出一个看起来合理的值。
+ * 📌 两个面**各自取子集**: 契约面走 {@link RealtimeChainDegradeKind} (排除逐行那一个); 留痕面
+ * 只装本片特有的那三类 (见 `leg-retrieval.adapter.ts` 的 `RealtimeDegradeLogKind` 与 `SC-010`)。
+ */
+export type RealtimeDegradeKind =
+  | 'partial_miss'
+  | 'window_over_cap'
+  | 'window_basis_stale'
+  | 'source_unavailable'
+  | 'gate_unknown';
+
+/**
+ * {@link LegChainMeta.realtimeDegrade} 的值域 —— **编译期**排除逐行的 `partial_miss`。
+ *
+ * 🚨 写成 `Exclude<>` 而不是注释一句「链级别用 partial_miss」: 后者只在有人读到它时成立,
+ * 而误用的那一版**照样渲染得出一张表** (整块变告警态, 只是把常态染成异常)。
+ */
+export type RealtimeChainDegradeKind = Exclude<RealtimeDegradeKind, 'partial_miss'>;
+
+/**
+ * {@link RealtimeChainDegradeKind} 的运行时值域 (体例同 `marketdata.types.ts` 的 `PRICE_KINDS`)
+ * —— swagger `enum:` 要一个真数组。类型标注绑住它, 与 wire 值域不会各写各的。
+ */
+export const REALTIME_CHAIN_DEGRADE_KINDS: readonly RealtimeChainDegradeKind[] = [
+  'window_over_cap',
+  'window_basis_stale',
+  'source_unavailable',
+  'gate_unknown',
+] as const;
 
 /** 一条候选 —— 层间传递的单元 (召回吐出、粗排合并、特征加工与精排消费)。 */
 export type LegCandidate = RecallCandidate<LegChainRow>;
@@ -160,6 +250,15 @@ export interface LegChainQuery {
   readonly symbol: string;
   /** 请求时刻。DTE 基准恒为**交易所的今天**, 由实现按它算 (同 {@link LegRetrievalQuery.now})。 */
   readonly now: Date;
+  /**
+   * 本次是否走盘中实时档 —— 语义与三条禁忌逐字同 {@link LegRetrievalQuery.realtime}
+   * (无默认值 / 禁隐式推断 / 传 true 不保证拿到)。
+   *
+   * 🚨 **两个方法各自带这个开关而不是提到实现的构造器上**: overlay 插在两者的共同根
+   * {@link LegRetrievalPort} 实现的 `loadChain` 里, 开关是**每次请求**的事实而不是这个 adapter
+   * 的配置 —— 提到构造器上就等于让同一个进程里两个调用方无法各自决定。
+   */
+  readonly realtime: boolean;
 }
 
 /** 该标的当前的**整条链** —— 未经召回、未排序、未截断。 */

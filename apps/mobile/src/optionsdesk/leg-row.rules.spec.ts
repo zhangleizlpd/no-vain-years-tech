@@ -64,6 +64,8 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     isMonthlyChain: false,
     earningsMark: null,
     greeksComplete: true,
+    // 064 `FR-009`: 逐行档位。夹具默认收盘档 —— 实时档的呈现分支由 T008 各自的用例喂。
+    priceKind: 'eod_close',
     ...overrides,
   };
 }

@@ -13,7 +13,7 @@
 // 🚨 **拆成三份自带两个新问题**，都在本文件闭环：
 //    ① 一致性（FR-020）—— 三次请求可能跨过业务日切换点，各自报着不同的 `asOf`；
 //    ② 水位失效（FR-021）—— key 含 `perspective` 之后，失效必须走**不含它的前缀 key**。
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import {
   getOptionsdeskControllerLegsQueryKey,
@@ -32,7 +32,9 @@ import {
 } from './leg-criteria.rules';
 import {
   legConsistencyStep,
+  legMembershipChange,
   legQueryEnabled,
+  type LegMembershipChange,
   type LegPerspectiveAsOf,
   type LegPerspectiveGate,
 } from './leg-query.rules';
@@ -65,6 +67,11 @@ export const LEG_TABLE_QUERY_KEY = ['optionsdesk', 'legs'] as const;
  */
 export function legTableQueryPrefix(symbol: string): readonly unknown[] {
   return getOptionsdeskControllerLegsQueryKey(symbol);
+}
+
+/** 腿集合 → 合约码集合（成员差集的比较面，064 FR-021）。复杂度 O(n)。 */
+function codeSet(legs: readonly LegResponse[]): ReadonlySet<string> {
+  return new Set(legs.map((leg) => leg.code));
 }
 
 /** 契约未到手时的空腿集 —— 常量引用，避免每次 render 造新数组把 `useMemo` 打穿。 */
@@ -174,6 +181,26 @@ export interface UseLegTableResult {
   asOfMismatch: boolean;
   /** 手动重取三份 —— `asOfMismatch` 的唯一出口。 */
   refreshAll: () => void;
+  /**
+   * 064 `FR-022`：**屏上已有一批、新一批在飞**。首屏（还没有表）恒 `false` —— 两者的处置不同：
+   * 首屏走等待态（骨架），刷新中**保留当前表**、不遮罩不置灰，新一批到齐后整体替换。
+   *
+   * 🚨 **MUST NOT 拿它去清空 `sections`** —— 那正好把「刷新」做成了一次闪表；React Query 在
+   *    重取期间把旧 `data` 留在原地，所以「保表」是**不写代码**就成立的，写了才会坏。
+   * 📌 判据只看**当前视角**那一份：屏上是它，另外两份在后台补齐与用户无关。
+   */
+  isRefreshing: boolean;
+  /**
+   * 064 `FR-021`：**相邻两次取数**之间的成员进出（本轮新进 N · 已不满足 M）；无变化 / 首屏 /
+   * 换视角 / 改条件 ⇒ `null`。
+   *
+   * 🚨 **首屏不报**：一进页面就被告知「3 条进」是无中生有 —— 那不是「变化」，那是第一批。
+   * 🚨 **换视角与改条件也不报**：那时成员变了是用户自己动的手，报出来只会稀释真正的信号
+   *    （盯着的那一行因价格移动而消失）。判据是「同一个视角、同一份条件」的相邻两批。
+   */
+  membershipChange: LegMembershipChange | null;
+  /** 关掉本轮的成员变化提示（可关闭，下一轮真有变化时重新出现）。 */
+  dismissMembershipChange: () => void;
 }
 
 export function useLegTable(symbol: string): UseLegTableResult {
@@ -280,6 +307,9 @@ export function useLegTable(symbol: string): UseLegTableResult {
     if (consistencyAction === 'refetch') refreshAll();
   }, [consistencyAction, nextLatched, latched, refreshAll]);
 
+  // 064 `FR-022`：`isPending` = 首屏（连一份 `data` 都还没有）⇒ 那一档归等待态，不是刷新。
+  const isRefreshing = currentQuery.isFetching && !currentQuery.isPending;
+
   const block = useMemo(
     () =>
       legBlockState(
@@ -297,6 +327,29 @@ export function useLegTable(symbol: string): UseLegTableResult {
   //    这里零 `slice`、零 `sort`（两者都是 server 的职责，客户端重排会让截断砍错腿）。
   const legs: readonly LegResponse[] = table?.legs ?? EMPTY_LEGS;
   const sections = useMemo(() => buildLegSections(legs), [legs]);
+
+  // ── 064 FR-021 成员变化（差集只在客户端算，plan §D9）─────────────────────────
+  // 🚨 **比的是「同一个视角 + 同一份条件」的相邻两批** —— 视角 / 条件一变就是另一条比较线，
+  //    此时只换基准、不报变化（那时成员变了是用户自己动的手）。
+  const membershipKey = `${tab}::${JSON.stringify(criteriaByPerspective[tab]?.params ?? null)}`;
+  // 🚫 上一轮的成员集合走 `useRef` 而非 `useState`：它不参与渲染，进 state 会白激一次 render。
+  const previousMembership = useRef<{ key: string; legs: readonly LegResponse[] } | null>(null);
+  const [membershipChange, setMembershipChange] = useState<LegMembershipChange | null>(null);
+  // 🚨 只在**已落地**的批次上比：在飞期间 `legs` 还是上一批（保表，FR-022），拿它去比恒无变化，
+  //    真正的那一批到齐时反而已经把基准换掉了。
+  const settledLegs = currentQuery.isFetching || !currentQuery.isSuccess ? null : legs;
+  useEffect(() => {
+    if (settledLegs === null) return;
+    const previous = previousMembership.current;
+    previousMembership.current = { key: membershipKey, legs: settledLegs };
+    // 首屏（无上一轮）/ 换了比较线 ⇒ 只换基准。
+    if (previous === null || previous.key !== membershipKey) return;
+    // 同一批的重渲染（引用没变）⇒ 什么都没发生，别把上一轮的提示重算一遍盖掉用户的关闭。
+    if (previous.legs === settledLegs) return;
+    setMembershipChange(legMembershipChange(codeSet(previous.legs), codeSet(settledLegs)));
+  }, [settledLegs, membershipKey]);
+
+  const dismissMembershipChange = useCallback(() => setMembershipChange(null), []);
 
   const setTab = useCallback((next: LegPickerTab) => setPicked({ intent, tab: next }), [intent]);
 
@@ -348,6 +401,9 @@ export function useLegTable(symbol: string): UseLegTableResult {
     retry,
     asOfMismatch: consistencyAction === 'warn',
     refreshAll,
+    isRefreshing,
+    membershipChange,
+    dismissMembershipChange,
   };
 }
 

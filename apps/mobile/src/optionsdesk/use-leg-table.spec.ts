@@ -13,7 +13,7 @@
 // 手法同 `use-anchor-mutations.spec.ts`：mock orval hook 捕获 `onSuccess`，手动触发后断言
 // **真 QueryClient 缓存里**的失效结果；不打真网络、不渲染任何组件（本仓测试分层：vitest = 逻辑）。
 import { createElement, type ReactNode } from 'react';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +29,11 @@ const h = vi.hoisted(() => ({
    *    （`enabled` 只管发不发请求），把它读成「没数据」会让这里的模型比真的更宽松。
    */
   legsByPerspective: {} as Record<string, Record<string, unknown> | undefined>,
+  /**
+   * 「这一份正在飞」—— 064 T009 的刷新态入口。📌 与上一格**正交**：刷新中的视角
+   * **仍有 `data`**（React Query 重取期间旧数据留在原地），两者一起才描述得出「保表」。
+   */
+  fetching: {} as Record<string, boolean>,
   // 引用稳定 —— 每 render 新造一个 `refetch` 会让 `refreshAll` 的 `useCallback` 每帧重建。
   refetch: () => Promise.resolve(),
 }));
@@ -52,7 +57,7 @@ vi.mock('@nvy/api-client', () => ({
           isPending: false,
           isSuccess: true,
           isError: false,
-          isFetching: false,
+          isFetching: h.fetching[params.perspective] === true,
           error: null,
           refetch: h.refetch,
         };
@@ -153,6 +158,7 @@ describe('useLegTable 的视角解析收敛性（T016 / React #301 回归）', (
 
   beforeEach(() => {
     h.legsByPerspective = {};
+    h.fetching = {};
   });
 
   it('三份缓存对 `intent` 各执一词（= 改水位后的失效窗口）⇒ 解析仍收敛，落位取新意图那一份', () => {
@@ -183,5 +189,179 @@ describe('useLegTable 的视角解析收敛性（T016 / React #301 回归）', (
     expect(result.current.table).toBeNull();
     expect(result.current.chain?.intent).toBe('rent');
     expect(result.current.block).toBe('loading');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 064 T009 —— 首屏等待态 + 刷新保表（FR-022 / `state_branches` 13）
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 🚨 **这三条守的是「屏上这一批必须来自同一次召回」**：先渲染一份库内收盘档、再用实时结果
+//    覆盖并重排，会在首屏制造一次用户没有发起过的「成员变化」，且让他在头几百毫秒里读到一份
+//    **按昨收筛出来的候选集** —— 每个数字都渲染得出来，只是筛它的那口价是昨天的。
+describe('064 T009 —— 首屏等待态 + 刷新保表（FR-022）', () => {
+  const SUBJECT = 'US:KO';
+  const AS_OF = '2026-08-18';
+
+  function table(legs: readonly Record<string, unknown>[]): Record<string, unknown> {
+    return {
+      intent: 'rent',
+      state: 'available',
+      legs,
+      criteria: null,
+      positionBucket: null,
+      asOf: AS_OF,
+      priceKind: 'realtime',
+      quoteAsOf: '2026-08-19T21:47:32',
+    };
+  }
+
+  beforeEach(() => {
+    h.legsByPerspective = {};
+    h.fetching = {};
+  });
+
+  it('① 首屏加载中：`rows` 恒为**空** —— MUST NOT 先渲染一份库内收盘档的表', () => {
+    // 三份都还没落地 = 真·首屏。若哪天改成「先出收盘档再覆盖」，这里会拿到非空。
+    const { result } = renderHook(() => useLegTable(SUBJECT));
+
+    expect(result.current.block).toBe('loading');
+    expect(result.current.total).toBe(0);
+    expect(result.current.sections[0]?.data).toHaveLength(0);
+    // 首屏**不是**刷新：两者的文案与处置都不同（一个「正在取」、一个「屏上这批仍是」）。
+    expect(result.current.isRefreshing).toBe(false);
+  });
+
+  it('② 刷新中：`rows` 保持**上一批的引用**不变，且 `isRefreshing` 为真（不遮罩不置灰的前提）', () => {
+    const legs = [{ code: 'KO260918P062000' }, { code: 'KO260918P060000' }];
+    const settled = table(legs);
+    h.legsByPerspective = { all: settled, build: settled, rent: settled };
+
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+    const before = result.current.sections[0]?.data;
+    expect(before).toBe(legs);
+    expect(result.current.isRefreshing).toBe(false);
+
+    // 新一批在飞：React Query 重取期间旧 `data` 留在原地 ⇒ 屏上这批一行不动。
+    h.fetching = { all: true, build: true, rent: true };
+    rerender();
+
+    expect(result.current.isRefreshing).toBe(true);
+    // 🚨 **同一个引用**，不是「内容相等」—— 重建数组会让 `SectionList` 整表重挂载，
+    //    用户眼里就是表闪了一下（而断言 `toEqual` 完全看不出来）。
+    expect(result.current.sections[0]?.data).toBe(before);
+    expect(result.current.total).toBe(2);
+  });
+
+  it('③ 零定时器 —— 🚫 MUST NOT 引入自动轮询（spec Assumption：取数只发生在进页面与刷新）', () => {
+    vi.useFakeTimers();
+    try {
+      const settled = table([{ code: 'KO260918P062000' }]);
+      h.legsByPerspective = { all: settled, build: settled, rent: settled };
+
+      renderHook(() => useLegTable(SUBJECT));
+
+      // 自动轮询无论用 setInterval 还是 setTimeout 自递归，都会在这里留下计数。
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 064 T010 —— 成员变化提示（FR-021 / SC-009 / `state_branches` 12）
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 🚨 **差集只在客户端算**：服务端无状态、不持有「这个客户端上一轮看到了哪些腿」——
+//    🚫 MUST NOT 为它在服务端引入会话态。
+// 🚨 **三个方向各断言一次**（只进不出 / 只出不进 / 有进有出）：只测一种的话，把两个集合
+//    的差集写反（拿新集减旧集当「已不满足」）在那一种里照样对得上数。
+describe('064 T010 —— 成员变化提示（FR-021）', () => {
+  const SUBJECT = 'US:PG';
+  const AS_OF = '2026-08-18';
+
+  function table(codes: readonly string[]): Record<string, unknown> {
+    return {
+      intent: 'rent',
+      state: 'available',
+      legs: codes.map((code) => ({ code })),
+      criteria: null,
+      positionBucket: null,
+      asOf: AS_OF,
+      priceKind: 'realtime',
+      quoteAsOf: '2026-08-19T21:47:32',
+    };
+  }
+
+  /** 三份同批 —— 视角解析不参与，测出来的变化只可能来自差集本身。 */
+  function seed(codes: readonly string[]): void {
+    const one = table(codes);
+    h.legsByPerspective = { all: one, build: one, rent: one };
+  }
+
+  beforeEach(() => {
+    h.legsByPerspective = {};
+    h.fetching = {};
+  });
+
+  it('① 首屏（没有上一轮）⇒ **不报**成员变化（否则一进页面就被告知「3 条进」）', () => {
+    seed(['A', 'B', 'C']);
+
+    const { result } = renderHook(() => useLegTable(SUBJECT));
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('② 只进不出：新一轮多了 2 条 ⇒ 进 2 / 出 0', () => {
+    seed(['A', 'B']);
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'C', 'D']);
+    rerender();
+
+    expect(result.current.membershipChange).toEqual({ entered: 2, left: 0 });
+  });
+
+  it('③ 只出不进：新一轮少了 1 条 ⇒ 进 0 / 出 1（正盯着那一行的人必须被告知）', () => {
+    seed(['A', 'B', 'C']);
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B']);
+    rerender();
+
+    expect(result.current.membershipChange).toEqual({ entered: 0, left: 1 });
+  });
+
+  it('④ 有进有出：换掉 1 条、又多进 1 条 ⇒ 进 2 / 出 1', () => {
+    seed(['A', 'B', 'C']);
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'D', 'E']);
+    rerender();
+
+    expect(result.current.membershipChange).toEqual({ entered: 2, left: 1 });
+  });
+
+  it('⑤ 成员完全相同（顺序变了也算相同）⇒ 不报 —— 重排不是成员变化', () => {
+    seed(['A', 'B', 'C']);
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['C', 'A', 'B']);
+    rerender();
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('⑥ 可关闭 —— 关掉之后不再复现（下一轮真有变化时才会重新出现）', () => {
+    seed(['A']);
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+    seed(['A', 'B']);
+    rerender();
+    expect(result.current.membershipChange).not.toBeNull();
+
+    act(() => result.current.dismissMembershipChange());
+
+    expect(result.current.membershipChange).toBeNull();
   });
 });

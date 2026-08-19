@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
+import type { PriceKind } from '../marketdata/marketdata.types';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import {
   classifyZone,
@@ -64,6 +65,7 @@ import {
   type LegCandidate,
   type LegRetrievalPort,
   type LegRetrievalResult,
+  type RealtimeChainDegradeKind,
 } from './leg-retrieval.port';
 import {
   classifyLegTier,
@@ -225,6 +227,15 @@ export interface LegView {
   earningsMark: EarningsMarkVerdict | null;
   /** greeks 是否齐全 (FR-007 的「数据不全」标注)。`false` 的行**照常在表内**。 */
   greeksComplete: boolean;
+  /**
+   * **本行数值的时间口径** (064 `FR-009`) —— 复用 marketdata 既有 `PriceKind`, 原样从检索层
+   * 的 `LegChainRow.priceKind` 带上来, 本层**零加工**。
+   *
+   * 🚨 **逐行成立, 🚫 MUST NOT 由区块级那一个数代言**: 实时源返回集里少几个合约是常态
+   * (停牌 / 刚摘牌), 那几行保留收盘值并各自标 `'eod_close'`。整页统一标实时与整页统一降级
+   * **都渲染得出一张完整的表**, 只有逐行标才分得出来。
+   */
+  priceKind: PriceKind;
 }
 
 /**
@@ -270,6 +281,25 @@ export interface LegTableView {
   state: LegTableState;
   /** 区块级 `asOf` = 快照归属交易日 (FR-013)。 */
   asOf: Date | null;
+  /**
+   * **区块级**时间口径 (064 `FR-009` / `FR-010`) —— 本批腿整体处于哪个档。
+   *
+   * 🚨 它决定 {@link quoteAsOf} 在契约面上的**序列化粒度**: 实时档出时刻、收盘档出交易日
+   * (`optionsdesk.dto.ts` 的 `toLegTableResponse`)。📌 与逐行的 {@link LegView.priceKind}
+   * **不是同一个数** —— 部分合约未返回时链级是 `'realtime'` 而那几行是 `'eod_close'`。
+   * 📌 链未就绪 / 跨 ctx 读降级时恒 `'eod_close'`: 没有取到任何实时值就 MUST NOT 自称实时,
+   * 而值域只有两个 (🚫 禁为「说不清」新造第三个枚举值)。
+   */
+  priceKind: PriceKind;
+  /**
+   * **本该给实时却没给成** (064 `FR-010` / `FR-011`, T007a) —— 检索层如实上报, 本层零加工。
+   *
+   * 🚨 🚫 MUST NOT 由 {@link priceKind} 或 `realtime` 入参反推 (语义与充要条件见
+   * `LegChainMeta.realtimeDegrade`): 正常收盘档与「盘中源挂了」在 `priceKind` 上是同一个值,
+   * 反推出来的那个标**在两种情形下都渲染得出来**, 而它们恰恰是本 feature 要分开的两件事。
+   * 📌 链未就绪 / 跨 ctx 读降级时恒 `null`: 那时连闸都没判过, 说不出「本该外呼」。
+   */
+  realtimeDegrade: RealtimeChainDegradeKind | null;
   /** 本批报价的实际采集时刻 (同批次内取最新一条)。 */
   quoteAsOf: Date | null;
   /** 🚨 **OI 的归属交易日** —— 与上面两个不是同一天 (Guardrail 6)。OI 列 MUST 用它。 */
@@ -391,6 +421,12 @@ export class GetLegsUseCase {
    *   **同一批真实数据**就能走遍截断的每一条分支。🚫 MUST NOT 改用合成 fixture 造几百条腿 ——
    *   那测的是「slice 能不能跑」而不是「真实链上截断对不对」。
    *   📌 HTTP 面**不暴露它** (053 FR-005 的字段表里没有这一项), 它只在进程内可注入。
+   * @param realtime 本次是否走**盘中实时档** (064 `FR-015`, plan D6)。**默认关 (fail-closed)**
+   *   —— 今天只有 authed controller 传 `true`; 将来新增任何读路径, 它默认就是不外呼的。
+   *   🚫 MUST NOT 在本方法内部按鉴权状态 / 请求来源推断: 隐式推断会让「将来加一种访问方式」
+   *   静默改变外呼行为, 而那一刻没有任何断言会红。
+   *   📌 传 `true` 也**不保证**拿到实时值 —— 非交易时段 / 源不可达 / 基准陈旧一律逐档回落,
+   *   结局由每行与链级的 `priceKind` 如实上报。
    * @throws NotFoundException 该 symbol 尚未建锚 (同 046 详情端: 回 200 空壳会让「没建锚」与
    *   「建了锚但没数据」在客户端不可区分)。
    */
@@ -400,6 +436,7 @@ export class GetLegsUseCase {
     now: Date = new Date(),
     override: RetrievalOverride | null = null,
     displayLimit: number | null = DISPLAY_LIMIT_BY_PERSPECTIVE[perspective],
+    realtime = false,
   ): Promise<LegTableView> {
     // 🚫 蓄意**不**转成 045 的 `AnchorRow`: 那个 interface 没有 T002 新加的水位两列, 而本端点
     // 正要读它 —— 给它补字段会连带打红一批手写 AnchorRow 的 mock 工厂 (Surgical Edits)。
@@ -428,6 +465,11 @@ export class GetLegsUseCase {
       perspective,
       state,
       asOf: null,
+      // 一个实时值都没取到 ⇒ MUST NOT 自称实时 (值域只有两个, 禁为「说不清」造第三个)。
+      priceKind: 'eod_close',
+      // 🚨 空壳恒 `null` (T007a): 链都没就绪 / 跨 ctx 读挂了, 连闸都没判过 ⇒ 说不出「本该外呼」。
+      // 🚫 MUST NOT 借这个字段表达「链读失败」—— 那是 `state` 的职责, 两个字段各答各的问题。
+      realtimeDegrade: null,
       quoteAsOf: null,
       oiAsOf: null,
       // 无 `asOf` 就没有可判的东西 (恒 `UNAVAILABLE`) ⇒ 不白跑一次日历查询。
@@ -476,6 +518,10 @@ export class GetLegsUseCase {
         // 候选上限 (052 FR-027): 保险丝, 与表达层给用户看几条**是两个数** —— 后者归 053。
         candidateCap: RECALL_CANDIDATE_CAP,
         override,
+        // 064 `FR-015`: 实时开关**由调用方显式传到底** —— 本方法只是把它原样传下去, 不加工。
+        // 🚫 MUST NOT 省略它靠默认值兜 (port 上蓄意没有默认值), 更 MUST NOT 从鉴权状态或请求
+        // 来源推断: 那会让「将来加一种访问方式」静默改变外呼行为。
+        realtime,
       });
       if (retrieval === null) return empty('chain_not_ready');
       const chain = retrieval.chain;
@@ -506,6 +552,12 @@ export class GetLegsUseCase {
         // 📌 召回层照旧产三份 (它的出参形状归 052, `FR-044` 钉死零改动), 契约面只取本次那一份。
         criteria: retrieval.criteriaByTab[perspective],
         asOf: chain.sessionDate,
+        // 064 `FR-009`: 链级档位由检索层如实上报, 本层原样带出 —— 🚫 MUST NOT 在这里按
+        // 「传了 realtime 吗」反推: 传 true 也可能整体回落, 反推出来的那个档照样渲染得出来。
+        priceKind: chain.priceKind,
+        // 064 T007a: 链级降级标同样**原样带出** —— 🚫 MUST NOT 在这里按 `priceKind` 或
+        // `realtime` 入参反推 (判据要交易日历, 那是检索层才有的东西)。
+        realtimeDegrade: chain.realtimeDegrade,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
         lastClosedSession,
@@ -660,6 +712,8 @@ export class GetLegsUseCase {
         isMonthlyChain: monthlyExpiries.has(dateOnlyOf(expiryDate)),
         earningsMark: marks.get(dateOnlyOf(expiryDate)) ?? null,
         greeksComplete: row.greeksComplete,
+        // 064 `FR-009`: 逐行档位原样带出 —— 🚫 MUST NOT 拿链级那个数填 (部分缺失时两者不同)。
+        priceKind: row.priceKind,
       } satisfies LegView;
     });
 
