@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.33.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.33.0...server-v0.33.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **core:** 064 收尾 —— market-state 限频修复 + 档位条文案与去重 + 窗内数回写 ([#126](https://github.com/zhangleizlpd/no-vain-years-tech/issues/126)) ([70765c5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/70765c533ca1cfa5581f3bff5a67b33565fd17e9))
+* **optionsdesk:** 实时覆盖漏了 greeksComplete —— 标与它描述的两格分了家 ([#122](https://github.com/zhangleizlpd/no-vain-years-tech/issues/122)) ([dceca84](https://github.com/zhangleizlpd/no-vain-years-tech/commit/dceca845453ff897d5000fe74f10019fdfac0d33))
+* **optionsdesk:** 盘中新锚看不到期权腿 —— 检索层加「实时独载基线」 ([#124](https://github.com/zhangleizlpd/no-vain-years-tech/issues/124)) ([068e436](https://github.com/zhangleizlpd/no-vain-years-tech/commit/068e436c0eabdcc33451cfe5f8147e84a519bd86))
+
 ## [0.33.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.32.0...server-v0.33.0) (2026-08-19)
 
 
