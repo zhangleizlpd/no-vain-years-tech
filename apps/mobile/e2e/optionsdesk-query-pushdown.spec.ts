@@ -220,6 +220,8 @@ const LEG_BASE: Omit<
   isMonthlyChain: false,
   earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
   greeksComplete: true,
+  // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
+  priceKind: 'eod_close',
 };
 
 function makeLeg(over: {
@@ -558,6 +560,8 @@ function projectTable(
     asOf,
     asOfFreshnessTier: asOf === TODAY ? 'CURRENT' : 'STALE',
     quoteAsOf: `${TODAY}T20:15:00.000Z`,
+    // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
+    priceKind: 'eod_close',
     oiAsOf: TODAY,
     source: 'eod',
     spot: '132.40',

@@ -79,7 +79,7 @@ updated_at: '2026-08-19'
 
 ## Phase 3: 契约面（US1 的出口）
 
-- [ ] T007 [Server] **DTO 出档位与两种 asOf**（`FR-009`, `FR-010`, `FR-013`, `FR-014`, `SC-001`, plan §D7）：`optionsdesk.dto.ts` —— ① 腿行 DTO 加 `priceKind`（`@ApiProperty({ enum: PRICE_KINDS })`）；② 区块级加 `priceKind` + `quoteAsOf`，**实时档序列化为时刻（ISO 含秒）、收盘档序列化为交易日（`YYYY-MM-DD`）**，照该文件 `:87` 已有的「日历日 vs 时刻混成一种会让 asOf 呈现出错」纪律；③ OI 相关列的 `oiAsOf` **独立出参**，不复用区块级；④ 成交量/成交额字段的 `description` 写明两档口径差异（`FR-013` 的服务端半边）。🚨 nullable 字段的 `@ApiProperty` 必须显式 `type: 'string'`（否则 orval 误生 objectmap）。→ verify: 扩既有 `optionsdesk.controller.spec.ts`（controllers-only module，🚫 禁 full boot）断言两档的 `quoteAsOf` **形态不同**（一个匹配 `/T\d{2}:\d{2}:\d{2}/`、一个匹配 `/^\d{4}-\d{2}-\d{2}$/`）；`pnpm nx run server:export-openapi` 后 `pnpm nx run api-client:generate`，断言生成的类型里 `priceKind` 是**联合字面量**而非 `string`
+- [X] T007 [Server] **DTO 出档位与两种 asOf**（`FR-009`, `FR-010`, `FR-013`, `FR-014`, `SC-001`, plan §D7）：`optionsdesk.dto.ts` —— ① 腿行 DTO 加 `priceKind`（`@ApiProperty({ enum: PRICE_KINDS })`）；② 区块级加 `priceKind` + `quoteAsOf`，**实时档序列化为时刻（ISO 含秒）、收盘档序列化为交易日（`YYYY-MM-DD`）**，照该文件 `:87` 已有的「日历日 vs 时刻混成一种会让 asOf 呈现出错」纪律；③ OI 相关列的 `oiAsOf` **独立出参**，不复用区块级；④ 成交量/成交额字段的 `description` 写明两档口径差异（`FR-013` 的服务端半边）。🚨 nullable 字段的 `@ApiProperty` 必须显式 `type: 'string'`（否则 orval 误生 objectmap）。→ verify: 扩既有 `optionsdesk.controller.spec.ts`（controllers-only module，🚫 禁 full boot）断言两档的 `quoteAsOf` **形态不同**（一个匹配 `/T\d{2}:\d{2}:\d{2}/`、一个匹配 `/^\d{4}-\d{2}-\d{2}$/`）；`pnpm nx run server:export-openapi` 后 `pnpm nx run api-client:generate`，断言生成的类型里 `priceKind` 是**联合字面量**而非 `string`
 
 ## Phase 4: mobile 呈现（US1 + US2 的用户面）
 

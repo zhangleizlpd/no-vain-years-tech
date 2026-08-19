@@ -128,9 +128,25 @@ function decimalText(value: string | null): string | undefined {
   return value === null ? undefined : new Prisma.Decimal(value).toString();
 }
 
-/** `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。 */
+/**
+ * `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。
+ *
+ * 🚨 **`priceKind` 逐个剔除** (064 T007): `FR-009` 蓄意给两个读端点的出参**新增**了档位字段,
+ * 那是本 feature 的产出而不是回归。⇒ 基线夹具**保持冻结**在 064 之前那一份, 断言退成
+ * 「除了这个蓄意新增的键, 其余逐字符相同」。
+ * 🚫 **MUST NOT 改成重新生成一份基线** —— 重生成会把「既有字段的值有没有被改动」这个问题一起
+ * 抹掉 (新旧两份都是本次跑出来的, 逐字符自然相同), 而 `SC-005` 要的正是那个问题的答案。
+ * 📌 档位字段本身的取值由本文件 T003 / T004a / T005 的用例逐条钉住, 不靠这条基线。
+ */
 function stable(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => (typeof v === 'bigint' ? v.toString() : v), 2);
+  return JSON.stringify(
+    value,
+    (key, v: unknown) => {
+      if (key === 'priceKind') return undefined;
+      return typeof v === 'bigint' ? v.toString() : v;
+    },
+    2,
+  );
 }
 
 describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 真 DI 容器)', () => {

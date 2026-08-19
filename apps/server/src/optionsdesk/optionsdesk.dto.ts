@@ -21,7 +21,7 @@ import { ANCHOR_MANUAL_SLOTS } from './anchor-cascade';
 import { ANCHOR_SUBMISSION_STATUSES } from './anchor-import.rules';
 import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
-import { PRICE_KINDS } from '../marketdata/marketdata.types';
+import { PRICE_KINDS, type PriceKind } from '../marketdata/marketdata.types';
 import { ANCHOR_CONFIDENCE_SOURCES } from './create-anchor.usecase';
 import type { AnchorWriteResult } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
@@ -100,6 +100,31 @@ function decimal8(value: Prisma.Decimal | null): string | null {
 /** `@db.Date` → `YYYY-MM-DD` (UTC 日界, 与写侧 `toUtcDateOnly` 同口径)。 */
 function dateOnly(value: Date | null): string | null {
   return value === null ? null : value.toISOString().slice(0, 10);
+}
+
+/**
+ * **区块级报价时点 → 契约面的串, 粒度即档位** (064 `FR-010` / `FR-014`)。
+ *
+ * | 档位 | 出什么 | 取自 |
+ * | --- | --- | --- |
+ * | `realtime` | ISO **时刻** (含秒) | 本批的我方采集时刻 |
+ * | `eod_close` | **交易日** `YYYY-MM-DD` | 快照归属的那一场 (`sessionDate`) |
+ *
+ * 🚨 这是本文件头那条纪律 (「日历日 vs 时刻, 混成一种会让『数据截至 X · 收盘』的 asOf 呈现
+ * 出错」) 的**第二个实例**, 与 061 `resolveAnchorSpot().asOf` 同一套口径 —— 🚫 MUST NOT 另立
+ * 一套。混成一种不会红任何一处: 收盘档带上时分秒会被读成此刻的盘口 (而它是昨天 20:31 采的),
+ * 实时档只给日期则把「几点几分的价」这件唯一要紧的事抹掉。
+ *
+ * 🚨 **收盘档取 `sessionDate` 而不是把采集时刻按 UTC 截一刀**: 美股收盘采集常落在次日 UTC,
+ * 截出来的日期会比真交易日晚一天, 而它**看着完全正常** (per `cross-timezone-date-semantics.md`)。
+ */
+function quoteAsOfText(
+  priceKind: PriceKind,
+  sessionDate: Date | null,
+  quoteAsOf: Date | null,
+): string | null {
+  if (priceKind === 'realtime') return quoteAsOf === null ? null : quoteAsOf.toISOString();
+  return dateOnly(sessionDate);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1424,11 +1449,21 @@ export class LegResponse {
   })
   openInterest!: number | null;
 
-  @ApiProperty({ description: '当日成交量', type: 'number', nullable: true, example: 87 })
+  @ApiProperty({
+    description:
+      '成交量。🚨 **两档口径不同** (064 FR-013): priceKind=realtime ⇒ **截至该时刻的累计**成交量; ' +
+      'priceKind=eod_close ⇒ **当日全天**成交量。🚫 呈现侧 MUST NOT 两档共用一句表头文案 —— ' +
+      '盘中的累计量天然小于全天量, 混着读会把活跃的腿看成冷门腿, 而两个数都显示得出来',
+    type: 'number',
+    nullable: true,
+    example: 87,
+  })
   volume!: number | null;
 
   @ApiProperty({
-    description: '成交额 = Vol × 权利金 × 100。📌 成交额高 ≠ 真流动',
+    description:
+      '成交额 = Vol × 权利金 × 100。🚨 **口径随 volume 分两档** (064 FR-013): priceKind=realtime ' +
+      '⇒ 至该时刻的累计成交额; priceKind=eod_close ⇒ 当日全天成交额。📌 成交额高 ≠ 真流动',
     type: 'string',
     nullable: true,
     example: '10875.00',
@@ -1473,6 +1508,19 @@ export class LegResponse {
     example: true,
   })
   greeksComplete!: boolean;
+
+  @ApiProperty({
+    description:
+      '**本行**数值的时间口径 (064 FR-009): realtime = 上面七列 (bid/ask/挂牌量/Δ/IV/成交量) 取自' +
+      '**此刻**的盘口; eod_close = 保留库内收盘档。' +
+      '🚨 **逐行成立, 与区块级那个 priceKind 不是同一个数** —— 实时源返回集里少几个合约是常态 ' +
+      '(停牌 / 刚摘牌), 那几行标 eod_close 而区块级仍是 realtime。' +
+      '🚫 呈现侧 MUST NOT 拿区块级档位给每一行着色: 整页统一标实时与整页统一降级**都渲染得出' +
+      '一张完整的表**, 只有逐行标才分得出来',
+    enum: [...PRICE_KINDS],
+    example: 'realtime',
+  })
+  priceKind!: string;
 }
 
 /** DTE 段 —— 一个维度、值是闭区间 (052 T010 六维表第 3 项)。 */
@@ -1688,7 +1736,24 @@ export class LegTableResponse {
   asOfFreshnessTier!: string;
 
   @ApiProperty({
-    description: '本批报价的实际采集时刻 (ISO-8601)',
+    description:
+      '**区块级**时间口径 (064 FR-009 / FR-010) —— 本批腿整体处于哪个档, 也决定下一字段 ' +
+      'quoteAsOf 的**粒度**。realtime = 本次取到了此刻的盘口; eod_close = 走库内收盘档 ' +
+      '(未开实时 / 非交易时段 / 源不可达 / 超单批上限 / 定窗基准陈旧, 一律落这一档)。' +
+      '🚨 **与每腿的 priceKind 不是同一个数** (见 LegResponse.priceKind): 部分合约未返回时' +
+      '本字段仍是 realtime 而那几行是 eod_close。区块条读这个, 行级角标读那个',
+    enum: [...PRICE_KINDS],
+    example: 'realtime',
+  })
+  priceKind!: string;
+
+  @ApiProperty({
+    description:
+      '本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 ' +
+      '**时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。' +
+      '🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上' +
+      '时分秒会被读成此刻的盘口, 实时档只给日期则抹掉唯一要紧的那件事。' +
+      '🚫 客户端 MUST NOT 自己截断或补齐粒度 (那就是把档位判据抄了第二份)',
     type: 'string',
     nullable: true,
     example: '2026-08-03T20:15:00.000Z',
@@ -1698,7 +1763,9 @@ export class LegTableResponse {
   @ApiProperty({
     description:
       '🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, ' +
-      '收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)',
+      '收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)。' +
+      '🚨 **064 起它更不跟 quoteAsOf 走**: 实时档下 OI 三列恒保留收盘值 (盘中冻结, FR-004), ' +
+      '本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天',
     type: 'string',
     nullable: true,
     example: '2026-07-31',
@@ -1969,7 +2036,8 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     state: view.state,
     asOf: dateOnly(view.asOf),
     asOfFreshnessTier: freshnessTier(dateOnly(view.asOf), view.lastClosedSession),
-    quoteAsOf: view.quoteAsOf === null ? null : view.quoteAsOf.toISOString(),
+    priceKind: view.priceKind,
+    quoteAsOf: quoteAsOfText(view.priceKind, view.asOf, view.quoteAsOf),
     oiAsOf: dateOnly(view.oiAsOf),
     source: view.source,
     spot: decimal4(view.spot),
@@ -2021,6 +2089,8 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
               lastEarningsDate: leg.earningsMark.lastEarningsDate,
             },
       greeksComplete: leg.greeksComplete,
+      // 🚫 逐行原样带出, MUST NOT 拿 `view.priceKind` 填 —— 部分缺失时两者本就不同 (FR-009)。
+      priceKind: leg.priceKind,
     })),
     gateCounts: {
       removedByPremiumFloor: view.gateCounts.removedByPremiumFloor,
@@ -2295,7 +2365,24 @@ export class ChainReportResponse {
   asOf!: string | null;
 
   @ApiProperty({
-    description: '本批报价的实际采集时刻 (ISO-8601)',
+    description:
+      '**区块级**时间口径 (064 FR-009 / FR-010) —— 本批腿整体处于哪个档, 也决定下一字段 ' +
+      'quoteAsOf 的**粒度**。realtime = 本次取到了此刻的盘口; eod_close = 走库内收盘档 ' +
+      '(未开实时 / 非交易时段 / 源不可达 / 超单批上限 / 定窗基准陈旧, 一律落这一档)。' +
+      '🚨 **与每腿的 priceKind 不是同一个数** (见 LegResponse.priceKind): 部分合约未返回时' +
+      '本字段仍是 realtime 而那几行是 eod_close。区块条读这个, 行级角标读那个',
+    enum: [...PRICE_KINDS],
+    example: 'realtime',
+  })
+  priceKind!: string;
+
+  @ApiProperty({
+    description:
+      '本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 ' +
+      '**时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。' +
+      '🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上' +
+      '时分秒会被读成此刻的盘口, 实时档只给日期则抹掉唯一要紧的那件事。' +
+      '🚫 客户端 MUST NOT 自己截断或补齐粒度 (那就是把档位判据抄了第二份)',
     type: 'string',
     nullable: true,
     example: '2026-08-11T20:15:00.000Z',
@@ -2305,7 +2392,7 @@ export class ChainReportResponse {
   @ApiProperty({
     description:
       '🚨 **OI 的归属交易日** (FR-033 ③) —— 与 asOf **不是同一天**。三个时点 MUST 各自成句, ' +
-      '🚫 MUST NOT 合并成一个「数据截至」',
+      '🚫 MUST NOT 合并成一个「数据截至」。064 起实时档下它仍是那个归属日 (OI 盘中冻结)',
     type: 'string',
     nullable: true,
     example: '2026-08-10',
@@ -2385,7 +2472,8 @@ export function toChainReportResponse(view: ChainReportView): ChainReportRespons
     spot: decimal4(view.spot),
     marketDate: view.marketDate,
     asOf: dateOnly(view.asOf),
-    quoteAsOf: view.quoteAsOf === null ? null : view.quoteAsOf.toISOString(),
+    priceKind: view.priceKind,
+    quoteAsOf: quoteAsOfText(view.priceKind, view.asOf, view.quoteAsOf),
     oiAsOf: dateOnly(view.oiAsOf),
     source: view.source,
     // 🚨 与详情读端 / 温度计**同一个投影函数** —— 三处的降级读数必须逐字节同形, 各写各的就会

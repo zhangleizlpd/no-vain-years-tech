@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
+import type { PriceKind } from '../marketdata/marketdata.types';
 import { dateOnlyOf } from './date-only';
 import { monthlyChainExpiries } from './leg-mark.rules';
 import {
@@ -113,6 +114,14 @@ export interface ChainReportView {
   marketDate: string | null;
   /** 快照归属交易日 (FR-033 ②)。 */
   asOf: Date | null;
+  /**
+   * **区块级**时间口径 (064 `FR-009` / `FR-010`) —— 与选约表**同一个字段、同一套值域**。
+   *
+   * 🚨 它决定 {@link quoteAsOf} 的序列化粒度 (实时档出时刻 / 收盘档出交易日)。两个读端点
+   * MUST 出**同一种**形态: 各出一套的话「这个数是什么时候的」在两屏上就有两种读法, 而两屏
+   * 都渲染得出来。链未就绪 / 降级时恒 `'eod_close'` (理由同 `LegTableView.priceKind`)。
+   */
+  priceKind: PriceKind;
   quoteAsOf: Date | null;
   /** 🚨 OI 的归属交易日 (FR-033 ③) —— 与上面两个**不是同一天**, 活跃度格值的时点跟它 (FR-014)。 */
   oiAsOf: Date | null;
@@ -168,6 +177,8 @@ export class GetChainReportUseCase {
       spot: null,
       marketDate: null,
       asOf: null,
+      // 一个实时值都没取到 ⇒ MUST NOT 自称实时 (同 `get-legs.usecase.ts` 的空壳)。
+      priceKind: 'eod_close',
       quoteAsOf: null,
       oiAsOf: null,
       source: null,
@@ -206,6 +217,8 @@ export class GetChainReportUseCase {
         spot: chain.spot,
         marketDate: chain.marketDate,
         asOf: chain.sessionDate,
+        // 064 `FR-009`: 检索层如实上报的链级档位, 本层原样带出 (🚫 不按入参反推)。
+        priceKind: chain.priceKind,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
         source: chain.source,

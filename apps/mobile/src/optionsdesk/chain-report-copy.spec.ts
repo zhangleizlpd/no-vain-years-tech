@@ -33,7 +33,9 @@ function report(overrides: Partial<ChainReportResponse> = {}): ChainReportRespon
     spot: '179.820000',
     marketDate: '2026-08-14',
     asOf: '2026-08-11',
-    quoteAsOf: '2026-08-11T20:05:00.000Z',
+    // 064 `FR-009`: 区块级档位。夹具默认收盘档 (⇒ quoteAsOf 也是交易日形态)。
+    priceKind: 'eod_close',
+    quoteAsOf: '2026-08-11',
     oiAsOf: '2026-08-08',
     source: 'eod',
     iv: IV_AVAILABLE,

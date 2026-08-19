@@ -14,6 +14,7 @@ import type { LegTableResponseLLevel } from './legTableResponseLLevel';
 import type { LegTableResponsePerspective } from './legTableResponsePerspective';
 import type { LegTableResponsePositionBucket } from './legTableResponsePositionBucket';
 import type { LegTableResponsePositionBucketSource } from './legTableResponsePositionBucketSource';
+import type { LegTableResponsePriceKind } from './legTableResponsePriceKind';
 import type { LegTableResponseRentDepth } from './legTableResponseRentDepth';
 import type { LegTableResponseState } from './legTableResponseState';
 import type { LegTableResponseZone } from './legTableResponseZone';
@@ -30,9 +31,11 @@ export interface LegTableResponse {
   asOf: string | null;
   /** 上一字段 (**区块级 asOf**) 的新鲜度档: CURRENT 不落后于该市场最近一个已收盘交易日 / STALE 停在更早的交易日 (全表照常渲染, 陈旧 ≠ 不可用) / UNAVAILABLE 无快照。🚨 **判据在 server** —— 它要查交易日历, 客户端拿设备本地日期比对美股恒判陈旧 (046 初版实证)。🚨 **名字带 asOf 前缀是刻意的**: 本响应有三个时点, 本档只判区块级 asOf —— oiAsOf 归属 T−1 是**定义如此**, 拿它判档会恒 STALE */
   asOfFreshnessTier: LegTableResponseAsOfFreshnessTier;
-  /** 本批报价的实际采集时刻 (ISO-8601) */
+  /** **区块级**时间口径 (064 FR-009 / FR-010) —— 本批腿整体处于哪个档, 也决定下一字段 quoteAsOf 的**粒度**。realtime = 本次取到了此刻的盘口; eod_close = 走库内收盘档 (未开实时 / 非交易时段 / 源不可达 / 超单批上限 / 定窗基准陈旧, 一律落这一档)。🚨 **与每腿的 priceKind 不是同一个数** (见 LegResponse.priceKind): 部分合约未返回时本字段仍是 realtime 而那几行是 eod_close。区块条读这个, 行级角标读那个 */
+  priceKind: LegTableResponsePriceKind;
+  /** 本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 **时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上时分秒会被读成此刻的盘口, 实时档只给日期则抹掉唯一要紧的那件事。🚫 客户端 MUST NOT 自己截断或补齐粒度 (那就是把档位判据抄了第二份) */
   quoteAsOf: string | null;
-  /** 🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, 收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013) */
+  /** 🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, 收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)。🚨 **064 起它更不跟 quoteAsOf 走**: 实时档下 OI 三列恒保留收盘值 (盘中冻结, FR-004), 本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天 */
   oiAsOf: string | null;
   /** 快照来源 (eod / premarket_backfill) —— 「一直靠兜底续命」要看得见 */
   source: string | null;
