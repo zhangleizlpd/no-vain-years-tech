@@ -111,7 +111,7 @@ updated_at: '2026-08-18'
 
 ## Phase 6: 上线与生产实证
 
-- [ ] T013 [Ops] **上线灌视野 + 生产验收取证**（`SC-001`, `SC-002`, `SC-004`, plan §D9）：按 plan §D9 的**不可颠倒**顺序：① migration 上线（空表 = 全 `unknown`，各消费方按 unknown 分派照常工作，**不停摆**）→ ② 部署带前瞻填充的版本 → ③ **立即手动跑一次 seed CLI** 灌历史 + 前瞻视野（否则空等到当晚 21:00）→ ④ 次一交易日取证。→ verify: **四项实测，逐条对照 plan Gate 0.1 的基线**：① `select market, covered_from, covered_to, served_by from marketdata.calendar_coverage` —— 三市场 `covered_to` 均抵当年 12-31；② `select market, max(date) from marketdata.trading_day group by market` —— 三市场均 ≥ 今天；③ **次一交易日北京 09:30 之后**查 `bull:alert-eval:completed` 的 `returnvalue`，**必须出现 `evaluated`**（基线是 43/43 `skipped-holiday`，🚨 Guardrail 15：这是唯一硬证据，别拿日志没报错顶替）；④ 视野探针手动跑一次 → 绿。四项全过才算本 feature 落地
+- [X] T013 [Ops] **上线灌视野 + 生产验收取证**（`SC-001`, `SC-002`, `SC-004`, plan §D9）：按 plan §D9 的**不可颠倒**顺序：① migration 上线（空表 = 全 `unknown`，各消费方按 unknown 分派照常工作，**不停摆**）→ ② 部署带前瞻填充的版本 → ③ **立即手动跑一次 seed CLI** 灌历史 + 前瞻视野（否则空等到当晚 21:00）→ ④ 次一交易日取证。→ verify: **四项实测，逐条对照 plan Gate 0.1 的基线**：① `select market, covered_from, covered_to, served_by from marketdata.calendar_coverage` —— 三市场 `covered_to` 均抵当年 12-31；② `select market, max(date) from marketdata.trading_day group by market` —— 三市场均 ≥ 今天；③ **次一交易日北京 09:30 之后**查 `bull:alert-eval:completed` 的 `returnvalue`，**必须出现 `evaluated`**（基线是 43/43 `skipped-holiday`，🚨 Guardrail 15：这是唯一硬证据，别拿日志没报错顶替）；④ 视野探针手动跑一次 → 绿。四项全过才算本 feature 落地
 
   **2026-08-19 四项实测**（prod `server-v0.31.2`；①②④ 08-18 首取，本次为求同时点一致性**全部重取**）：
 
@@ -125,6 +125,16 @@ updated_at: '2026-08-18'
   ⚠️ **③ 证的是「闸开了、求值真的在跑」，不是「预警端到端触发过」** —— `summary.fetched = 0`，当时 prod 无活跃盘中预警行。`SC-001` 的判据（队列必须出现 `evaluated`）已满足，且 062 修的本就是那道闸；若要覆盖「真有预警时会触发」，需另造预警行再等一个交易日窗口，属另一条证据。
 
   🚨 **④ 的 `served_by` MUST NOT 被当成「前瞻段不覆写心跳」（PR #101）的实证** —— 本次读到的 `cn/hk=tencent` 由 **2026-08-18 23:14:50 CST 的窄窗 seed** 写下（v0.31.1 部署于 23:09 CST，5 分钟后跑的 seed），而窄窗 seed **只跑活源链段、压根没跑前瞻段**。要证「前瞻段 MUST NOT 覆写心跳」必须等一次**两段都跑**的 `populate()`（每晚 21:00 cron）。⚠️ 顺带记一个读法陷阱：`calendar_sync_health.last_success_at` 是 **naive `timestamp`**（schema 无 `@db.Timestamptz`），对它用 `AT TIME ZONE 'Asia/Shanghai'` 会把 UTC 值反向解释成 Shanghai 值、算出比真实早 8 小时的结论。
+
+  **证据② —— 2026-08-19 21:00 CST 的 `populate()`（历史段 + 前瞻段**两段都跑**）**（prod `mbw-app:v0.33.0`，容器 `nvy-tight-app-1` 于 19:24 CST 起，故 21:00 那一拍在其生命周期内）：
+
+  - **这一跑真的发生且两段都走了** —— 容器日志 `2026-08-19T13:00:00Z`（= 21:00:00 CST）连出四行 `trading-calendar 填充完成`：历史段 `[2026-07-20, 2026-08-19]` cn / hk / us 各 `fetched 23`；前瞻段 `[2026-08-20, 2026-12-31]` cn `90` · hk `93` · us `93`。
+  - **跑完之后的心跳归属**（裸读，**不做**上一段警告的时区换算）：`cn = tencent` · `hk = tencent` · `us = futu`，三行 `last_success_at = last_attempt_at = 13:00:00.689 / .758 / 01.654`（UTC，即本次 21:00 那一跑），`last_error` 全空。⇒ **判据满足：前瞻段没有覆写心跳的 `served_by`。**
+  - **判别性交叉（这条才让上一行不是巧合）**：同一跑内 `calendar_coverage.updated_at` 为 `13:00:00.705 / .766 / 01.66`，**晚于**对应市场的心跳写入时刻（`.689 / .758 / 01.654`），且 `calendar_coverage.served_by` 是 **cn/hk = `static`**（前瞻源的名字）。⇒ 前瞻段确实在心跳落笔**之后**动了它自己那张表，却没有回头改心跳。若 PR #101 的修没生效，`.705` 那一刻心跳会被改写成 `static` —— 探针随即恒红。
+
+  ⇒ **T013 四项 + 证据② 全过，本 feature 落地。**
+
+  ⚠️ **本次取证自己踩了上一段那个坑**：首查对 `last_success_at` 加了 `AT TIME ZONE 'Asia/Shanghai'`，读出 `08-19 05:00`，据此一度判「21:00 没跑」并转去查容器时区（容器确实无 `tzdata`，但 Node 自带 ICU，`Intl` 解析 `Asia/Shanghai` 正常，`@Cron` 的时区未受影响）。裸取后真值是 `13:00:00.689` UTC = 21:00 CST。**警告写在这里仍不足以拦住人 —— 判据是「naive `timestamp` 一律裸读」，别在查询里顺手补时区。**
 
 ## Dependencies
 

@@ -2,9 +2,9 @@
 feature_id: 062-trading-calendar-horizon
 modules: [marketdata, alert, optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-18'
-updated_at: '2026-08-18'
+updated_at: '2026-08-19'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: na
