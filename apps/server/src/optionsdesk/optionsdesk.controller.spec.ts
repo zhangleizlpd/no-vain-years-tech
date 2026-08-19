@@ -466,13 +466,23 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
           headers: authed(),
         });
         expect([perspective, res.statusCode]).toEqual([perspective, 200]);
-        expect(legsExecute).toHaveBeenCalledWith('us:AOS', perspective, undefined, null);
+        // 🚨 末位那个 `true` 是 064 `FR-015` 的**唯一机器判据**: 实时档由**调用点**显式打开,
+        // 🚫 MUST NOT 由 use case 按鉴权状态 / 请求来源推断。改成 `expect.anything()` 就等于
+        // 把这条断言作废 —— 那时 use case 自己偷偷推断出来的 `true` 照样让它绿。
+        expect(legsExecute).toHaveBeenCalledWith(
+          'us:AOS',
+          perspective,
+          undefined,
+          null,
+          undefined,
+          true,
+        );
       }
     });
 
     it('🚨 只给 perspective 不给条件 ⇒ 覆盖为 null (首屏 / 「复位」走的就是这条)', async () => {
       await app.inject({ method: 'GET', url: legsUrl('perspective=rent'), headers: authed() });
-      expect(legsExecute).toHaveBeenCalledWith('us:AOS', 'rent', undefined, null);
+      expect(legsExecute).toHaveBeenCalledWith('us:AOS', 'rent', undefined, null, undefined, true);
     });
 
     it('给了条件 ⇒ 覆盖落在**同一个**视角上 (052 FR-015 一字不改)', async () => {
@@ -566,6 +576,10 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       });
       expect(res.statusCode).toBe(200);
       const body = res.json();
+
+      // 🚨 064 `FR-015`: 报表端与选约表**同一条读路径**, 实时档同样由调用点显式打开
+      // (末位 `true`)。两个端点口径若分叉, 用户会在同一屏上拿到两个时刻的数。
+      expect(chainReportExecute).toHaveBeenCalledWith('us:PEP', undefined, true);
 
       // ① 每格
       expect(body.cells.allAnnualized[1][0]).toEqual({

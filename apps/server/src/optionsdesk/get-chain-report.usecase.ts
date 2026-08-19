@@ -147,13 +147,19 @@ export class GetChainReportUseCase {
   /**
    * @param symbol canonical `market:code`。
    * @param now 请求时刻 (注入以便测试钉住基准)。🚫 MUST NOT 在下游改成算好的 `today` 字符串。
+   * @param realtime 本次是否走**盘中实时档** (064 `FR-015`, plan D6)。**默认关 (fail-closed)**,
+   *   语义与三条禁忌逐字同 `GetLegsUseCase.execute` 的同名入参 —— 两个读端共用一条开关纪律。
    * @throws NotFoundException 该 symbol 尚未建锚 —— 由 046 详情读端抛, 本片不另写一份判定
    *   (FR-037a: 未建锚 ⇒ 入口不出现且报表不可达, 🚫 不做成「缺一角的报表」)。
    *
    * 复杂度: 1 次整链检索 (3 次跨 ctx 查询) + 046 的 3 次点查 + `O(n)` 三趟纯 CPU
    * (骨架召回 / 三视角召回 / 逐腿分格), `n` = 该链腿数 (实测上界 825)。
    */
-  async execute(symbol: string, now: Date = new Date()): Promise<ChainReportView> {
+  async execute(
+    symbol: string,
+    now: Date = new Date(),
+    realtime = false,
+  ): Promise<ChainReportView> {
     // 🚨 **在 try 之外**: 无锚要 404 上抛 (FR-037a), 不能被下面的降级兜住变成一张空报表。
     const detail = await this.detail.execute(symbol);
     const empty = (state: ChainReportState): ChainReportView => ({
@@ -183,8 +189,8 @@ export class GetChainReportUseCase {
       // 🚨 **取整条链而不是候选集** (port `retrieveChain` 的存在理由): 候选集的成员判据是
       // 「至少进一个视角」⇒ 被权利金 / 活性挡下的腿结构上不在其中, 而本片两处都要它们
       // (骨架含被活性挡下的; 格态要分「无合约」与「有腿但太便宜」)。
-      // 064 T003 `FR-015`: 实时开关显式传, 本 task 一律 `false` (纪律与理由同 `get-legs`)。
-      const snapshot = await this.retrieval.retrieveChain({ symbol, now, realtime: false });
+      // 064 `FR-015`: 实时开关由调用方显式传到底, 本方法原样转发 (纪律与理由同 `get-legs`)。
+      const snapshot = await this.retrieval.retrieveChain({ symbol, now, realtime });
       if (snapshot === null) return empty('chain_not_ready');
       const { chain, legs } = snapshot;
       const context: RecallContext = { spot: chain.spot };

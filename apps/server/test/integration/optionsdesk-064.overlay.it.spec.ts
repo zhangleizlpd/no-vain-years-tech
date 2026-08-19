@@ -22,6 +22,13 @@ import {
   type OptionSnapshotQuery,
   type OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
+import {
+  MARKET_STATE_PORT,
+  type MarketSession,
+  type MarketSessionState,
+  type MarketStatePort,
+} from '../../src/marketdata/market-state.port';
+import type { LegChainSnapshot } from '../../src/optionsdesk/leg-retrieval.port';
 
 /**
  * 064 T003 + T004a —— **实时开关的两档**: 关态逐字节等价 (`FR-009` / `FR-015` / `FR-016` /
@@ -75,10 +82,33 @@ class SpySnapshotReadPort implements OptionSnapshotPort {
     asOf: REALTIME_AS_OF,
     rows: [],
   });
+  /** T005 `state_branch` 4 的两种输入之一: 源不可达 (抛)。`null` = 正常回放 {@link respond}。 */
+  fail: Error | null = null;
+  /** 另一种: 超时 —— 永不 settle 的调用, 由被测那侧的请求级超时把它切断。 */
+  hang = false;
 
   getSnapshots(query: OptionSnapshotQuery): Promise<OptionSnapshotBatch> {
     this.calls.push(query);
+    if (this.fail !== null) return Promise.reject(this.fail);
+    if (this.hang) return new Promise<OptionSnapshotBatch>(() => {});
     return Promise.resolve(this.respond(query));
+  }
+}
+
+/**
+ * 市场时段替身 (T005 `state_branch` 3 的一半)。
+ *
+ * 🚨 **必须 override 掉它**: `MARKET_STATE_PORT` 经 `collectionPort()` 注册, mock 档下绑的是
+ * **拒绝壳**(调用即抛) ⇒ 不换掉的话每条实时用例都会走 fail-closed, 全文件的开态断言集体假绿成
+ * 「反正没外呼」。
+ */
+class FakeMarketStatePort implements MarketStatePort {
+  session: MarketSession = 'regular';
+  fail: Error | null = null;
+
+  getMarketSessions(): Promise<MarketSessionState[]> {
+    if (this.fail !== null) return Promise.reject(this.fail);
+    return Promise.resolve([{ market: 'us', session: this.session }]);
   }
 }
 
@@ -101,6 +131,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   let moduleRef: TestingModule;
   let prisma: PrismaService;
   let readPort: SpySnapshotReadPort;
+  let marketState: FakeMarketStatePort;
 
   /** 请求时刻 = 2026-08-11 ET 16:00 ⇒ 交易所的今天恒为 2026-08-11 (钉住 DTE 基准)。 */
   const NOW = new Date('2026-08-11T20:00:00.000Z');
@@ -123,9 +154,14 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     delete process.env.MARKETDATA_PROVIDER;
 
     readPort = new SpySnapshotReadPort();
+    marketState = new FakeMarketStatePort();
     moduleRef = await Test.createTestingModule({ imports: [AppModule, OptionsdeskModule] })
       .overrideProvider(OPTION_SNAPSHOT_READ_PORT)
       .useValue(readPort)
+      .overrideProvider(MARKET_STATE_PORT)
+      .useValue(marketState)
+      // 🚫 **交易日历 MUST NOT override**: `GetLegsUseCase` 也在用它 (`lastClosedSession`),
+      // 换掉会连带改动基线夹具的输出。非交易日那一臂改由**把 `now` 挪到周六**来制造。
       .compile();
     prisma = moduleRef.get(PrismaService);
   }, 180_000);
@@ -138,6 +174,10 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   beforeEach(async () => {
     readPort.calls.length = 0;
     readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
+    readPort.fail = null;
+    readPort.hang = false;
+    marketState.session = 'regular';
+    marketState.fail = null;
     await prisma.optionDailySnapshot.deleteMany();
     await prisma.optionContract.deleteMany();
     await prisma.instrument.deleteMany();
@@ -725,5 +765,289 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     const closed = await chainOf(false);
     if (closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
     expect(closed.chain.spot.toString()).toBe(new Prisma.Decimal(SPOT).toString());
+  });
+
+  // ── T005 降级六路径 ───────────────────────────────────────────────────────
+
+  /**
+   * 🚨 **`SC-004` 的机器化**: 数出「被置为 `0` / 空串」的项数。逐字段肉眼核对必漏 ——
+   * 一张四行十一列的表, 人只会看自己想看的那两列。
+   *
+   * 📌 种子里**没有任何一个 0**, 于是「出现 0」= 有人拿 0 顶替了缺失 (`null` 不算: 它是
+   * 「没有这个数」的正确表达)。
+   */
+  function zeroOrBlankCount(snapshot: LegChainSnapshot): number {
+    const values: unknown[] = [
+      snapshot.chain.spot,
+      ...snapshot.legs.flatMap((leg) => [
+        leg.bid,
+        leg.ask,
+        leg.bidSize,
+        leg.askSize,
+        leg.delta,
+        leg.iv,
+        leg.volume,
+        leg.openInterest,
+        leg.strike,
+      ]),
+    ];
+    return values.filter((v) => v === '' || v === 0 || (v instanceof Prisma.Decimal && v.isZero()))
+      .length;
+  }
+
+  /** 收盘档那一份的逐行七列指纹 —— 降级后必须与它**逐字节相同** (`FR-011`: 禁清空既有值)。 */
+  function quoteFingerprint(snapshot: LegChainSnapshot): string[] {
+    return snapshot.legs.map((leg) =>
+      [
+        leg.code,
+        leg.priceKind,
+        String(leg.bid?.toString()),
+        String(leg.ask?.toString()),
+        String(leg.bidSize),
+        String(leg.askSize),
+        String(leg.delta),
+        String(leg.iv),
+        String(leg.volume),
+      ].join('|'),
+    );
+  }
+
+  it('🚨 `state_branch` 3a: 美股非常规交易状态 ⇒ **零外呼** + 整表收盘档', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    marketState.session = 'other';
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(0);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+    expect(snapshot.legs.map((leg) => leg.priceKind)).toEqual(snapshot.legs.map(() => 'eod_close'));
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  });
+
+  it('🚨 `state_branch` 3b: 当日非交易日 (周六) ⇒ **零外呼** + 整表收盘档 (两闸取交集)', async () => {
+    // 时段闸照常放行、定窗基准**也照常新鲜** (相对周六那个 `now`) —— 关掉的只有日历那一闸,
+    // 于是「取交集」这件事被单独验到。🚨 基准若沿用工作日那一拍, 这条会因「基准陈旧」而绿,
+    // 测的就不是日历闸了。
+    const saturday = new Date('2026-08-15T20:00:00.000Z');
+    await seedChain({ basis: { price: SPOT, at: new Date(saturday.getTime() - 10_000) } });
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await moduleRef
+      .get<LegRetrievalPort>(LEG_RETRIEVAL_PORT)
+      .retrieveChain({ symbol: SYMBOL, now: saturday, realtime: true });
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(0);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  });
+
+  it('🚨 `state_branch` 4a: 源不可达 (读取口抛) ⇒ 整体回落收盘档, 值一个不动', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    const closed = await chainOf(false);
+    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(1);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+    expect(quoteFingerprint(snapshot)).toEqual(quoteFingerprint(closed));
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  });
+
+  it('🚨 `state_branch` 4b: 源超时 (永不 settle) ⇒ 请求级超时切断并回落收盘档', async () => {
+    await seedChain();
+    const closed = await chainOf(false);
+    readPort.hang = true;
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(1);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+    expect(quoteFingerprint(snapshot)).toEqual(quoteFingerprint(closed));
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  }, 30_000);
+
+  it('🚨 `state_branch` 5: 部分合约未在返回集 ⇒ **逐行**保留收盘值; 两种档位必须**都出现**', async () => {
+    await seedChain();
+    const missing = 'L-BUILD';
+    readPort.respond = (query) => {
+      const full = realtimeBatch()(query);
+      return { asOf: full.asOf, rows: full.rows.filter((row) => row.code !== missing) };
+    };
+    const closed = await chainOf(false);
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    // 🚨 分布断言: 全 `eod_close` = 页级一刀切, 全 `realtime` = 缺失被吞 —— 两种错都渲染得出
+    // 一张完整的表, 只有「两种都在」才说明逐行成立。
+    expect(new Set(snapshot.legs.map((leg) => leg.priceKind))).toEqual(
+      new Set(['realtime', 'eod_close']),
+    );
+    const missed = snapshot.legs.find((leg) => leg.code === missing);
+    const closedMissed = closed.legs.find((leg) => leg.code === missing);
+    if (missed === undefined || closedMissed === undefined) throw new Error('断言前置失效');
+    expect(missed.priceKind).toBe('eod_close');
+    expect(missed.bid?.toString()).toBe(closedMissed.bid?.toString());
+    expect(missed.ask?.toString()).toBe(closedMissed.ask?.toString());
+    // 链级仍是实时档 (本批确实取到了) —— 区块条与行级角标读的是两个数。
+    expect(snapshot.chain.priceKind).toBe('realtime');
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  });
+
+  it('🚨 `state_branch` 11: 单腿买价 / 卖价皆空 ⇒ **整行**按未取到处理, 🚫 不拼半实时半昨收', async () => {
+    await seedChain();
+    const blanked = 'L-WIDE';
+    readPort.respond = (query) => {
+      const full = realtimeBatch()(query);
+      return {
+        asOf: full.asOf,
+        rows: full.rows.map((row) => (row.code === blanked ? { ...row, bid: null, ask: '' } : row)),
+      };
+    };
+    const closed = await chainOf(false);
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    const row = snapshot.legs.find((leg) => leg.code === blanked);
+    const closedRow = closed.legs.find((leg) => leg.code === blanked);
+    if (row === undefined || closedRow === undefined) throw new Error('断言前置失效');
+    expect(row.priceKind).toBe('eod_close');
+    // 🚨 整行 —— 不是只把 bid/ask 留下: 其余五列也 MUST 是收盘那一份 (半实时的行没有任何一个
+    // 时刻能解释它)。
+    expect(quoteFingerprint({ chain: snapshot.chain, legs: [row] })).toEqual(
+      quoteFingerprint({ chain: closed.chain, legs: [closedRow] }),
+    );
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  });
+
+  it('🚨 `state_branch` 14: 定窗基准陈旧 (超出 061 的新鲜度闸) ⇒ 零外呼 + 整体回落', async () => {
+    // 91 秒前的一拍 —— 闸是 3 × 30 s 且**闭区间**, 故这一拍必判陈旧。
+    await seedChain({ basis: { price: SPOT, at: new Date(NOW.getTime() - 91_000) } });
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(0);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+    expect(zeroOrBlankCount(snapshot)).toBe(0);
+  });
+
+  it('🚨 `state_branch` 14 反例: 基准整列缺失 (当日首拍之前) ⇒ 同样零外呼 + 回落', async () => {
+    await seedChain({ basis: { price: null, at: null } });
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(0);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+  });
+
+  it('🚨 `state_branch` 6 / `FR-012`: 返回集里标的行缺 spot ⇒ 显式「未就绪」, 🚫 不拿收盘价顶替', async () => {
+    await seedChain();
+    // 标的行在, 但它的价是空 —— 「链坏了」MUST NOT 看起来像正常。
+    readPort.respond = (query) => {
+      const full = realtimeBatch()(query);
+      return {
+        asOf: full.asOf,
+        rows: full.rows.map((row) => (row.isOption ? row : { ...row, last: null })),
+      };
+    };
+
+    expect(await chainOf(true)).toBeNull();
+    // 关态不受影响 —— 未就绪只属于这一次实时取数。
+    expect(await chainOf(false)).not.toBeNull();
+  });
+
+  it('🚨 `FR-011` fail-closed: 市场状态取不到 (源故障) ⇒ 不猜「开着市」, 零外呼', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    marketState.fail = new Error('futu shim 5xx');
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(readPort.calls).toHaveLength(0);
+    expect(snapshot.chain.priceKind).toBe('eod_close');
+  });
+
+  it('🚨 `SC-004` 扫描断言: 四类降级路径**逐条**跑一遍, 被置 0 / 空串的项数合计 = 0', async () => {
+    await seedChain();
+    const closed = await chainOf(false);
+    if (closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+    const degradations: { readonly name: string; readonly arm: () => void }[] = [
+      {
+        name: '非常规交易状态',
+        arm: () => {
+          marketState.session = 'other';
+        },
+      },
+      {
+        name: '源不可达',
+        arm: () => {
+          readPort.fail = new Error('boom');
+        },
+      },
+      {
+        name: '部分合约未返回',
+        arm: () => {
+          readPort.respond = (query) => {
+            const full = realtimeBatch()(query);
+            return { asOf: full.asOf, rows: full.rows.filter((row) => row.code !== 'L-OK') };
+          };
+        },
+      },
+      {
+        name: '单腿关键报价为空',
+        arm: () => {
+          readPort.respond = (query) => {
+            const full = realtimeBatch()(query);
+            return {
+              asOf: full.asOf,
+              rows: full.rows.map((row) => (row.isOption ? { ...row, bid: null, ask: null } : row)),
+            };
+          };
+        },
+      },
+    ];
+
+    let zeros = 0;
+    for (const { name, arm } of degradations) {
+      marketState.session = 'regular';
+      marketState.fail = null;
+      readPort.fail = null;
+      readPort.respond = realtimeBatch();
+      arm();
+      const snapshot = await chainOf(true);
+      if (snapshot === null) throw new Error(`降级路径「${name}」不该把链判成未就绪`);
+      zeros += zeroOrBlankCount(snapshot);
+      // 每一条路径都 MUST 留下可辨的档位 (`SC-004` 的另一半: 用户判得出这不是实时的)。
+      expect(snapshot.legs.some((leg) => leg.priceKind === 'eod_close')).toBe(true);
+    }
+    expect(zeros).toBe(0);
+  });
+
+  // ── T005 收尾: 把 `realtime` 真正打开 (plan D6) ────────────────────────────
+
+  it('🚨 plan D6: authed 读端显式传 `true` ⇒ 外呼发生; 不传 (默认 / 非 authed 读路径) ⇒ 恒 0', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    const legs = moduleRef.get(GetLegsUseCase);
+
+    // 默认态 = fail-closed: 省略开关的调用方**结构上**不外呼 (`FR-015` / `FR-016`)。
+    await legs.execute(SYMBOL, 'all', NOW);
+    expect(readPort.calls).toHaveLength(0);
+
+    // authed controller 传的就是这一路 (`optionsdesk.controller.ts` 的 `legs` / `chainReport`)。
+    const view = await legs.execute(SYMBOL, 'all', NOW, null, undefined, true);
+    expect(readPort.calls).toHaveLength(1);
+    // 实时那一批确实一路走到了视图上 (区块时刻 = 信封 `asOf`, 不是库内 `quote_as_of`)。
+    // 📌 档位字段本身的出参归 T007 的 DTO 层, 这里只证「开关真的通到底了」。
+    expect(view.quoteAsOf).toEqual(REALTIME_AS_OF);
+
+    const report = moduleRef.get(GetChainReportUseCase);
+    await report.execute(SYMBOL, NOW, true);
+    expect(readPort.calls).toHaveLength(2);
   });
 });

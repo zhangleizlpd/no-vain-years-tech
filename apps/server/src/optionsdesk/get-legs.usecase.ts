@@ -391,6 +391,12 @@ export class GetLegsUseCase {
    *   **同一批真实数据**就能走遍截断的每一条分支。🚫 MUST NOT 改用合成 fixture 造几百条腿 ——
    *   那测的是「slice 能不能跑」而不是「真实链上截断对不对」。
    *   📌 HTTP 面**不暴露它** (053 FR-005 的字段表里没有这一项), 它只在进程内可注入。
+   * @param realtime 本次是否走**盘中实时档** (064 `FR-015`, plan D6)。**默认关 (fail-closed)**
+   *   —— 今天只有 authed controller 传 `true`; 将来新增任何读路径, 它默认就是不外呼的。
+   *   🚫 MUST NOT 在本方法内部按鉴权状态 / 请求来源推断: 隐式推断会让「将来加一种访问方式」
+   *   静默改变外呼行为, 而那一刻没有任何断言会红。
+   *   📌 传 `true` 也**不保证**拿到实时值 —— 非交易时段 / 源不可达 / 基准陈旧一律逐档回落,
+   *   结局由每行与链级的 `priceKind` 如实上报。
    * @throws NotFoundException 该 symbol 尚未建锚 (同 046 详情端: 回 200 空壳会让「没建锚」与
    *   「建了锚但没数据」在客户端不可区分)。
    */
@@ -400,6 +406,7 @@ export class GetLegsUseCase {
     now: Date = new Date(),
     override: RetrievalOverride | null = null,
     displayLimit: number | null = DISPLAY_LIMIT_BY_PERSPECTIVE[perspective],
+    realtime = false,
   ): Promise<LegTableView> {
     // 🚫 蓄意**不**转成 045 的 `AnchorRow`: 那个 interface 没有 T002 新加的水位两列, 而本端点
     // 正要读它 —— 给它补字段会连带打红一批手写 AnchorRow 的 mock 工厂 (Surgical Edits)。
@@ -476,10 +483,10 @@ export class GetLegsUseCase {
         // 候选上限 (052 FR-027): 保险丝, 与表达层给用户看几条**是两个数** —— 后者归 053。
         candidateCap: RECALL_CANDIDATE_CAP,
         override,
-        // 064 T003 `FR-015`: 实时开关**显式传, 且本 task 一律传 false** —— 真正的开启在 T004b。
+        // 064 `FR-015`: 实时开关**由调用方显式传到底** —— 本方法只是把它原样传下去, 不加工。
         // 🚫 MUST NOT 省略它靠默认值兜 (port 上蓄意没有默认值), 更 MUST NOT 从鉴权状态或请求
         // 来源推断: 那会让「将来加一种访问方式」静默改变外呼行为。
-        realtime: false,
+        realtime,
       });
       if (retrieval === null) return empty('chain_not_ready');
       const chain = retrieval.chain;

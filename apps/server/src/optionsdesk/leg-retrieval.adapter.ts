@@ -5,8 +5,14 @@ import { exchangeCalendarDate } from '../marketdata/session-clock';
 import { daysToExpiry } from '../marketdata/trading-day-gate';
 import {
   OPTION_SNAPSHOT_READ_PORT,
+  type OptionSnapshotBatch,
   type OptionSnapshotPort,
 } from '../marketdata/option-snapshot.port';
+import { MARKET_STATE_PORT, type MarketStatePort } from '../marketdata/market-state.port';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 import { parseAnchorTicker } from './anchor.rules';
 import { isIntradayFresh } from './intraday-spot.rules';
 import { legWindowFor, windowTripwire, withinWindow, type LegWindow } from './leg-window.rules';
@@ -32,6 +38,29 @@ import type {
 interface LoadedChain {
   readonly snapshot: LegChainSnapshot;
   readonly window: LegWindow | null;
+}
+
+/**
+ * 实时报价的**请求级超时** (064 `FR-011`「源不可达 / 超时」那半, plan D3)。
+ *
+ * 取值 = `SC-002` 的端到端预算 (P95 ≤ 1.5 s) 的两倍: 等到这个数, 用户已经比预算多等了一倍,
+ * 再等下去不如给他一张**标着收盘档**的表。上界之下的正常往返实测 0.35–0.41 s (p0 线上 285 codes),
+ * 留了近一个数量级的余量 ⇒ 不会把「慢但正常」误判成故障。
+ *
+ * 🚨 **本片只有这一个时间阈值, 🚫 MUST NOT 顺手加断路器** (Guardrail 1): 熔断住在 061 的 tick,
+ * 经「停写盘中价 → 基准判陈旧」传导过来。两套状态必然不同步。
+ */
+const REALTIME_SNAPSHOT_TIMEOUT_MS = 3_000;
+
+/**
+ * 实时报价取回超时 —— 与读取口自己的失败语义 (`OptionSnapshotBudgetExhaustedError` 等) 并列,
+ * 但**属于调用方**: 是「我不等了」而不是「vendor 说不行」, 两者在日志里必须分得开。
+ */
+class RealtimeSnapshotTimeoutError extends Error {
+  constructor(ms: number, what: string) {
+    super(`[064] 实时报价取回超时 (${ms} ms), 本次回落收盘档: ${what}`);
+    this.name = 'RealtimeSnapshotTimeoutError';
+  }
 }
 
 /**
@@ -76,6 +105,18 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     @Optional()
     @Inject(OPTION_SNAPSHOT_READ_PORT)
     private readonly snapshots: OptionSnapshotPort | null = null,
+    // CROSS-CONTEXT-SYNC: 注入 marketdata 的市场时段端口 (port token + interface, 同上)。
+    // vendor 原始状态串**不出对方 adapter**, 本 ctx 只见归一后的三态 —— 值域知识不复制过来
+    // (`market-state.port.ts` 文件头; 复制过去两处必漂移, 而漂移表现为盘前 / 夜盘照样外呼)。
+    // 🚨 **与 061 的 tick 共用同一个白名单口径**, 🚫 MUST NOT 在本 ctx 再判一次「哪些状态算常规」。
+    @Optional()
+    @Inject(MARKET_STATE_PORT)
+    private readonly marketState: MarketStatePort | null = null,
+    // CROSS-CONTEXT-SYNC: 注入 marketdata 的交易日历**读**端口 (同上)。与时段闸**取交集**:
+    // 两者答的是两件事 (此刻开不开市 / 今天是不是交易日), 少一个都会在某类日子上放行外呼。
+    @Optional()
+    @Inject(TRADING_CALENDAR_PORT)
+    private readonly tradingCalendar: TradingCalendarPort | null = null,
   ) {}
 
   async retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
@@ -249,10 +290,80 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     }
     return this.overlayRealtimeQuotes(
       this.snapshots,
-      { symbol: query.symbol, market: parsed.market, now: query.now },
+      { symbol: query.symbol, market: parsed.market, marketDate, now: query.now },
       chain,
       legs,
     );
+  }
+
+  /**
+   * 实时取数的**两闸交集** (064 `FR-011` / `state_branch` 3, plan D3) —— 复用 061 已 ship 的
+   * 那两个端口, 判据一个字不重写。
+   *
+   * | 闸 | 答的问题 | 关掉时的结局 |
+   * | --- | --- | --- |
+   * | {@link MarketStatePort} | **此刻**是不是常规连续交易时段 | 盘前 / 盘后 / 夜盘 / 闭市不外呼 |
+   * | {@link TradingCalendarPort} | **今天**是不是交易日 | 节假日不外呼 |
+   *
+   * 🚨 **取交集不是洁癖**: 少了日历闸, 节假日里 vendor 报的时段状态未必翻转; 少了时段闸,
+   * 交易日的凌晨照样外呼。两种漏法都**只多烧配额、结果照样渲染得出来**。
+   * 🚨 **`unknown` 落在放行侧** (062 的判据): 「日历还没填到这一天」不是「今天不是交易日」——
+   * 写成 `!== 'trading'` 就是把 062 修掉的那个 closed-world 病原样犯回去。
+   * 🚨 **任何一闸自身出故障 ⇒ fail-closed 不外呼** (同 061 tick 的处置): 不知道开没开市就去问价,
+   * 等于把白名单判据作废。🚫 MUST NOT 猜「大概开着」。
+   *
+   * 复杂度: 1 次市场状态调用 + 1 次日历判定, 均为 `O(1)`。
+   */
+  private async isRealtimeSessionOpen(target: {
+    readonly symbol: string;
+    readonly market: string;
+    readonly marketDate: string;
+  }): Promise<boolean> {
+    // 两个端口任一未绑定 ⇒ 判不了闸 ⇒ 不外呼 (可空注入的默认结局与故障时一致)。
+    if (this.marketState === null || this.tradingCalendar === null) return false;
+    try {
+      const sessions = await this.marketState.getMarketSessions();
+      const session = sessions.find((state) => state.market === target.market)?.session;
+      if (session !== 'regular') return false;
+      const calendar = await this.tradingCalendar.classify(target.market, target.marketDate);
+      return calendar !== 'non-trading';
+    } catch (error) {
+      this.logger.warn(
+        `实时档闸判定失败, 本次 fail-closed 走收盘档 (064 FR-011): ${target.symbol} — ` +
+          describeError(error),
+      );
+      return false;
+    }
+  }
+
+  /**
+   * 一次带**请求级超时**的实时取数 (064 `FR-011`「源不可达 / 超时」)。失败一律 `null`,
+   * 调用方据此整体回落收盘档。
+   *
+   * 🚨 **本片只有超时, 🚫 MUST NOT 新建断路器** (plan D3 / Guardrail 1): 熔断住在 061 的 tick
+   * (`sync-anchor-intraday.ts`, 阈值 `INTRADAY_CIRCUIT_THRESHOLD`), 它保护的是每 30 秒一拍的
+   * scheduler; 上游熔断经「停写盘中价 → 基准判陈旧」传导到这里, **不需要本片有第二套状态**。
+   * 两套阈值必然不同步, 而不同步的表现是「一边说熔断了、一边照常外呼」。
+   * 🚨 **按类型分流**: mock 档下读取口抛的 `RealtimeOptionSnapshotUnavailableError` 走的也是这条
+   * 路 —— 它是「本环境没有实时源」而非故障, 落收盘档正是 dev 想要的形态 (故只记一行 warn)。
+   */
+  private async fetchQuotes(
+    port: OptionSnapshotPort,
+    target: { readonly symbol: string },
+    contractCodes: string[],
+  ): Promise<OptionSnapshotBatch | null> {
+    try {
+      return await withTimeout(
+        port.getSnapshots({ underlyingSymbol: target.symbol, contractCodes }),
+        REALTIME_SNAPSHOT_TIMEOUT_MS,
+        `${target.symbol} (${contractCodes.length} codes)`,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `实时报价取回失败, 整体回落收盘档 (064 FR-011): ${target.symbol} — ${describeError(error)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -332,62 +443,126 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * {@link resolveWindow} 那个定窗基准: 判据吃的数与呈现的数必须与腿报价同刻, 否则「按此刻筛」
    * 这句话当场不成立, 而两个数都渲染得出来。
    *
-   * 复杂度: 1 次外呼 + `O(m)` 建索引 + `O(n)` 逐腿覆盖 (m = 返回行数, n = 库内腿数)。
+   * 🚨 **四条降级路径全部收在这一段** (064 T005 / `FR-011`): 两闸不成立 / 基准不可用 / 取回失败
+   * 三条**整体**回落收盘档 (原样返回 `legs`, 一个值都不动), 第四条 (部分合约未返回 · 单腿关键
+   * 报价为空) 由 {@link applyRealtimeBatch} **逐行**处理。🚫 MUST NOT 回落成 0 / 清空既有值:
+   * 0 在买卖价上读作「有人挂到 0」, 与「没取到」是两件事, 而两者在屏上都显示得出来。
+   *
+   * 复杂度: ≤1 次外呼 + `O(m)` 建索引 + `O(n)` 逐腿覆盖 (m = 返回行数, n = 库内腿数)。
    */
   private async overlayRealtimeQuotes(
     port: OptionSnapshotPort,
-    target: { readonly symbol: string; readonly market: string; readonly now: Date },
+    target: {
+      readonly symbol: string;
+      readonly market: string;
+      readonly marketDate: string;
+      readonly now: Date;
+    },
     chain: LegChainMeta,
     legs: readonly LegChainRow[],
-  ): Promise<LoadedChain> {
-    const window = await this.resolveWindow(target);
-    // 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落收盘档, 零外呼 (`state_branch` 14)。
+  ): Promise<LoadedChain | null> {
+    /** 三条整体回落路径的共同落点 —— 与关态**逐字节相同**的那一份。 */
+    const eodClose: LoadedChain = { snapshot: { chain, legs }, window: null };
+
+    // ① 非常规交易状态 / 当日非交易日 ⇒ **零外呼** (`state_branch` 3)。
+    if (!(await this.isRealtimeSessionOpen(target))) return eodClose;
+
+    // ② 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落, 仍是零外呼 (`state_branch` 14)。
     // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。
-    if (window === null) return { snapshot: { chain, legs }, window: null };
+    const window = await this.resolveWindow(target);
+    if (window === null) return eodClose;
 
-    const batch = await port.getSnapshots({
-      underlyingSymbol: target.symbol,
-      contractCodes: legs.filter((leg) => withinWindow(leg, window)).map((leg) => leg.code),
-    });
-    const quoteByCode = new Map<string, (typeof batch.rows)[number]>();
-    let spot: Prisma.Decimal | null = null;
-    for (const row of batch.rows) {
-      if (row.isOption) {
-        quoteByCode.set(row.code, row);
-        continue;
-      }
-      // 标的自身那行: spot 落在 `last` 上 (同 047 采集侧口径 `sync-option-snapshot.usecase.ts`)。
-      spot = vendorDecimal(row.last) ?? spot;
-    }
+    // ③ 源不可达 / 超时 ⇒ 整体回落 (`state_branch` 4)。
+    const batch = await this.fetchQuotes(
+      port,
+      target,
+      legs.filter((leg) => withinWindow(leg, window)).map((leg) => leg.code),
+    );
+    if (batch === null) return eodClose;
 
-    return {
-      window,
-      snapshot: {
-        // 区块级时刻取**信封的采集时刻** (FR-010) —— 🚫 MUST NOT 用行内 `vendorUpdateTime` 顶替:
-        // 那是最后成交时刻, 低流动性腿上它可以停在上周 (`OptionSnapshotRow.vendorUpdateTime`)。
-        // 📌 标的行缺失 / 其价为空时的「未就绪」处置 (`state_branch` 6 / FR-012) 归 T005。
-        chain: { ...chain, quoteAsOf: batch.asOf, priceKind: 'realtime', spot: spot ?? chain.spot },
-        legs: legs.map((leg) => {
-          const quote = quoteByCode.get(leg.code);
-          // 未在返回集内 ⇒ 保留收盘值与收盘档。逐行处理**不是**页级降级 (FR-009 / FR-011),
-          // 该分支的完整判据 (含单腿关键报价为空) 归 T005。
-          if (quote === undefined) return leg;
-          return {
-            ...leg,
-            bid: vendorDecimal(quote.bid),
-            ask: vendorDecimal(quote.ask),
-            bidSize: vendorNumber(quote.bidSize),
-            askSize: vendorNumber(quote.askSize),
-            delta: vendorNumber(quote.delta),
-            // 🚫 原样带出, 不换算 —— 与库内那条同源纪律 (`LegChainRow.iv`)。
-            iv: vendorNumber(quote.iv),
-            volume: vendorNumber(quote.volume),
-            priceKind: 'realtime',
-          };
-        }),
-      },
-    };
+    // ④ 标的现价缺失 ⇒ 显式「未就绪」(`state_branch` 6 / FR-012), 🚫 MUST NOT 拿收盘价顶替:
+    // 顶替会让「链坏了」看起来像正常, 正是本仓反复吃亏的那类静默。
+    const applied = applyRealtimeBatch(chain, legs, batch);
+    if (applied === null) return null;
+    return { snapshot: applied, window };
   }
+}
+
+/**
+ * 一批实时报价 → 覆盖后的链 (064 T004a 的七列 + T005 的**逐行**降级)。标的现价缺失 ⇒ `null`
+ * (「未就绪」, `state_branch` 6)。纯函数, `O(m + n)`。
+ *
+ * 🚨 **逐行档位不是页级一刀切** (FR-009 / `state_branch` 5 / 11): 返回集里少了几个合约是常态
+ * (停牌 / 刚摘牌), 那几条保留收盘值并标 `'eod_close'`, 其余照常标 `'realtime'`。整页统一降级与
+ * 整页统一标实时**都渲染得出一张完整的表**, 只有逐行标才分得出来。
+ */
+function applyRealtimeBatch(
+  chain: LegChainMeta,
+  legs: readonly LegChainRow[],
+  batch: OptionSnapshotBatch,
+): LegChainSnapshot | null {
+  const quoteByCode = new Map<string, (typeof batch.rows)[number]>();
+  let spot: Prisma.Decimal | null = null;
+  for (const row of batch.rows) {
+    if (row.isOption) {
+      quoteByCode.set(row.code, row);
+      continue;
+    }
+    // 标的自身那行: spot 落在 `last` 上 (同 047 采集侧口径 `sync-option-snapshot.usecase.ts`)。
+    spot = vendorDecimal(row.last) ?? spot;
+  }
+  if (spot === null) return null;
+
+  return {
+    // 区块级时刻取**信封的采集时刻** (FR-010) —— 🚫 MUST NOT 用行内 `vendorUpdateTime` 顶替:
+    // 那是最后成交时刻, 低流动性腿上它可以停在上周 (`OptionSnapshotRow.vendorUpdateTime`)。
+    chain: { ...chain, quoteAsOf: batch.asOf, priceKind: 'realtime', spot },
+    legs: legs.map((leg) => {
+      const quote = quoteByCode.get(leg.code);
+      // 未在返回集内 (窗外 / 停牌 / 刚摘牌) ⇒ 保留收盘值与收盘档 (`state_branch` 5)。
+      if (quote === undefined) return leg;
+      const bid = vendorDecimal(quote.bid);
+      const ask = vendorDecimal(quote.ask);
+      // 🚨 买卖价**皆空 ⇒ 整行按「未取到实时」处理** (`state_branch` 11): 🚫 MUST NOT 逐字段拼出
+      // 一行半实时半昨收的数据 —— 那种行没有任何一个时刻能解释它; 更 MUST NOT 把空当成 0。
+      if (bid === null && ask === null) return leg;
+      return {
+        ...leg,
+        bid,
+        ask,
+        bidSize: vendorNumber(quote.bidSize),
+        askSize: vendorNumber(quote.askSize),
+        delta: vendorNumber(quote.delta),
+        // 🚫 原样带出, 不换算 —— 与库内那条同源纪律 (`LegChainRow.iv`)。
+        iv: vendorNumber(quote.iv),
+        volume: vendorNumber(quote.volume),
+        priceKind: 'realtime',
+      };
+    }),
+  };
+}
+
+/**
+ * 请求级超时 (064 `FR-011`)。`work` 在超时后仍会自己跑完 —— 我们只是不再等它, 且**不留计时器**
+ * (`finally` 清掉, 否则每请求泄一个 timer)。
+ */
+async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new RealtimeSnapshotTimeoutError(ms, what)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** 日志里的错误摘要 —— 非 `Error` 也要说得出是什么 (吞掉类型信息比不记还糟)。 */
+function describeError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
 /** 计数列与 Δ → number (张数与无量纲希腊值, 没有精度可丢; 金额列不走这里)。 */
