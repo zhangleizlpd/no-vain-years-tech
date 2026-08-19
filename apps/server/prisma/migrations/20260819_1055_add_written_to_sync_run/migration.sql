@@ -1,0 +1,28 @@
+-- 063 时间语义统一 Phase 3.3: `sync_run` 加**本次真正落到库里的行数**一列。nullable、无默认值、
+-- 无约束变更 ⇒ expand-only, 零破坏性变更, **不触发** expand-migrate-contract 三步法。
+--
+-- ## 它抓的是哪个故障
+--
+-- 现有四个计数 (`scanned`/`ok`/`skipped`/`failed`) 全是**执行侧**的数: 拉到了几只、几只没抛。
+-- 「vendor 返了行、行也过了闸、但一行都没进库」在它们眼里是**满绿的成功**。#103 期间三层监控
+-- 全绿正是这个形状。`written` 是唯一一个**落库侧**的数。
+--
+-- 口径: insert-only 段取 `createMany(skipDuplicates)` 报的 `count` —— 撞唯一键被跳过的行**不计**
+-- (它们没落库); 尾窗 upsert 段按行计 (那些行确实落库了, 见 `dimension-executor.writeDailyBarRows`)。
+--
+-- ## 🚨 为什么 nullable 而不是 `DEFAULT 0`
+--
+-- 三态, 与 062 交易日三态同源 —— 判据是「漏接一处会怎样」:
+--   · NULL = 本次**没有任何写路径上报**。① status=skipped/failed 起手就没写; ② 该维度全走
+--     覆盖式 upsert (universe / profile), 恒写恒非零, 「跑了但零写入」这个形态在它身上不存在,
+--     **蓄意不上报**; ③ 新维度尚未接线 —— 加维度时回到 schema.prisma 该列注释。
+--   · 0    = 上报了, 且真的一行都没进库。**这才是本列要抓的那个「全绿但没做事」。**
+-- 给 `DEFAULT 0` 则漏接一处 = 那个维度**恒报零写入** = 假警报且长得像真故障, 那正是「库里没有
+-- 的即为假」换个地方再犯一遍。
+--
+-- 既有行保持 NULL —— 它们确实没有这个事实, 回填任何数字都是编造。
+--
+-- migration_refs: docs/adr/0066-time-semantics-ubiquitous-language.md (063 Phase 3)
+
+-- AlterTable
+ALTER TABLE "marketdata"."sync_run" ADD COLUMN     "written" INTEGER;

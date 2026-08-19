@@ -3,6 +3,7 @@ import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import {
   SyncRunRecorder,
+  addWritten,
   deriveStatus,
   emptyStats,
   type SyncRunStats,
@@ -36,7 +37,14 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(running.status).toBe('running');
     expect(running.finishedAt).toBeNull();
 
-    const stats: SyncRunStats = { scanned: 100, ok: 100, skipped: 0, failed: 0, failedTargets: [] };
+    const stats: SyncRunStats = {
+      scanned: 100,
+      ok: 100,
+      skipped: 0,
+      failed: 0,
+      written: 97,
+      failedTargets: [],
+    };
     await recorder.finish(id, 'success', stats, NOW);
 
     const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
@@ -44,7 +52,29 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(done.scanned).toBe(100);
     expect(done.ok).toBe(100);
     expect(done.finishedAt).toEqual(NOW);
+    expect(done.written).toBe(97); // 063 Phase 3.3: 落库侧的数, 与 scanned/ok 不是一回事
     expect(done.failedTargets).toBeNull(); // 无失败 → JsonNull
+  });
+
+  it('🚨 written 三态: 没有写路径上报 ⇒ 落 **null** 而不是 0 (063 Phase 3.3)', async () => {
+    const id = await recorder.start('eod_bar');
+    await recorder.finish(id, 'success', { ...emptyStats(), scanned: 5, ok: 5 }, NOW);
+
+    const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    // null = 「本次没有任何写路径上报」; 0 = 「上报了, 且一行都没进」。折成 0 就等于让每个
+    // 尚未接线的维度**恒报零写入** —— 假警报, 且长得像真故障。
+    expect(done.written).toBeNull();
+  });
+
+  it('written 上报了 0 行 ⇒ 落 **0**, 与 null 可分辨 (这才是要抓的「全绿但没做事」)', async () => {
+    const id = await recorder.start('eod_bar');
+    const stats = { ...emptyStats(), scanned: 5, ok: 5 };
+    addWritten(stats, 0); // 一轮全命中唯一键的 delta: 跑了、没抛、但一行都没进
+    await recorder.finish(id, 'success', stats, NOW);
+
+    const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    expect(done.written).toBe(0);
+    expect(done.status).toBe('success'); // 状态照旧是绿的 —— 差别只在这一列上看得见
   });
 
   it('🚨 finish 不传第 4 参 → 落**真实收尾时刻** (不是调用方的逻辑 now)', async () => {
@@ -71,6 +101,7 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
       ok: 8,
       skipped: 0,
       failed: 2,
+      written: null,
       failedTargets: [
         { symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' },
         { symbol: 'cn:000001', step: 'fundamental', error: '429' },

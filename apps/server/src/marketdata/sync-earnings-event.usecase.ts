@@ -9,7 +9,7 @@ import {
   type EarningsCalendarEvent,
   type EarningsCalendarPort,
 } from './earnings-calendar.port.js';
-import type { SyncRunStats } from './sync-run.recorder.js';
+import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
 import { exchangeCalendarDateForScope } from './session-clock.js';
 
 /**
@@ -231,10 +231,14 @@ export class SyncEarningsEventUseCase {
     }
 
     for (const chunk of chunked(inserts, EARNINGS_ROW_CHUNK)) {
-      await this.prisma.earningsEvent.createMany({ data: chunk, skipDuplicates: true });
+      addWritten(
+        stats,
+        (await this.prisma.earningsEvent.createMany({ data: chunk, skipDuplicates: true })).count,
+      );
     }
     for (const { id, data } of updates) {
       await this.prisma.earningsEvent.update({ where: { id }, data });
+      addWritten(stats, 1); // 改期订正也是落库行 (稳态趋近 0, 非零即真有改期)。
     }
     this.reportDateChanges(changes, stats);
 

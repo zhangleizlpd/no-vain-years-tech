@@ -113,7 +113,7 @@ function buildFakes(opts: { marketScope?: string[]; deltaLookbackDays?: number }
 }
 
 function emptyStatsLike() {
-  return { scanned: 0, ok: 0, skipped: 0, failed: 0, failedTargets: [] };
+  return { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, failedTargets: [] };
 }
 
 const input = { mode: 'delta' as const, asOf: '2026-06-05', now: new Date('2026-06-05T14:00:00Z') };

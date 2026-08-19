@@ -86,7 +86,7 @@ describe('daily_bar 尾窗可订正落库 (063 Phase 3.1)', () => {
     );
   };
 
-  const write = (points: EodBarPoint[]): Promise<void> =>
+  const write = (points: EodBarPoint[]): Promise<number> =>
     writeDailyBarRows(
       prisma,
       points.map((p) => toDailyBarRow(instrumentId, p)),
@@ -111,6 +111,14 @@ describe('daily_bar 尾窗可订正落库 (063 Phase 3.1)', () => {
     expect(await prisma.dailyBar.count()).toBe(15);
   });
 
+  it('落库行数口径 (063 Phase 3.3): 头部撞唯一键的**不计**, 尾窗的**计**', async () => {
+    const dates = days('2026-08-01', 15);
+    expect(await write(dates.map((d) => bar(d, '100')))).toBe(15); // 首次: 15 行全新
+
+    // 重跑: 前 5 根撞唯一键被跳过 (没落库 ⇒ 不计); 后 10 根走尾窗 upsert (落了 ⇒ 计)。
+    expect(await write(dates.map((d) => bar(d, '200')))).toBe(10);
+  });
+
   it('入参**乱序**时尾窗仍按 tradeDate 切 (端口契约说升序, 但函数不赖它)', async () => {
     const dates = days('2026-08-01', 15);
     await write(dates.map((d) => bar(d, '100')));
@@ -121,8 +129,8 @@ describe('daily_bar 尾窗可订正落库 (063 Phase 3.1)', () => {
     expect(closes[dates[14]]).toBe(200);
   });
 
-  it('空批零往返 (停牌 / 新股无行情 ⇒ 不该开事务)', async () => {
-    await expect(write([])).resolves.toBeUndefined();
+  it('空批零往返 (停牌 / 新股无行情 ⇒ 不该开事务), 落库行数报 0', async () => {
+    await expect(write([])).resolves.toBe(0);
     expect(await prisma.dailyBar.count()).toBe(0);
   });
 

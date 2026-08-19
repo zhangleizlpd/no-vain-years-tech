@@ -14,7 +14,7 @@ import {
   type OptionChainPort,
   type OptionContractStatic,
 } from './option-chain.port.js';
-import type { SyncRunStats } from './sync-run.recorder.js';
+import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
 import { currencyForMarket } from './sync-universe.usecase.js';
 import { exchangeCalendarDateForScope } from './session-clock.js';
 
@@ -145,7 +145,7 @@ export class SyncOptionContractUseCase {
       }
       const symbol = `${inst.market}:${inst.code}`;
       try {
-        const gap = await this.syncUnderlying(inst.id, symbol, businessDate);
+        const gap = await this.syncUnderlying(inst.id, symbol, businessDate, stats);
         if (gap !== null) gaps.push(gap);
         stats.ok++;
       } catch (err) {
@@ -176,6 +176,7 @@ export class SyncOptionContractUseCase {
     instrumentId: bigint,
     symbol: string,
     businessDate: string,
+    stats: SyncRunStats,
   ): Promise<string | null> {
     const ladder = await this.chain.getExpiryDates(symbol); // HTTP (事务外)
     // FR-028a: 判据是 **≥** 当前交易日 —— 当日到期的合约当日仍可取快照 (官方文档「结束日期请
@@ -205,7 +206,11 @@ export class SyncOptionContractUseCase {
         rows.push(contractRow(instrumentId, c));
       }
       for (const chunk of chunked(rows, CONTRACT_ROW_CHUNK)) {
-        await this.prisma.optionContract.createMany({ data: chunk, skipDuplicates: true });
+        addWritten(
+          stats,
+          (await this.prisma.optionContract.createMany({ data: chunk, skipDuplicates: true }))
+            .count,
+        );
       }
     }
 

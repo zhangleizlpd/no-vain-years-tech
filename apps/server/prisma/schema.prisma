@@ -1313,6 +1313,18 @@ model SyncRun {
   ok            Int       @default(0)
   skipped       Int       @default(0)
   failed        Int       @default(0)
+  // 063 Phase 3.3: 本次执行**真正落到库里的行数** —— 让「跑了但零写入」不再恒绿。
+  // insert-only 段取 `createMany(skipDuplicates)` 报的 `count` (撞唯一键被跳过的行**不计**);
+  // 尾窗 upsert 段按行计 (那些行确实落库了, 见 dimension-executor.writeDailyBarRows)。
+  //
+  // 🚨 **nullable 是刻意的三态**, 与 062 交易日三态同源 —— 漏接一处的后果决定了这个选择:
+  //   · `null` = 本次**没有任何写路径上报**。三种情形: ① status=skipped/failed 起手就没写;
+  //     ② 该维度全走覆盖式 upsert (universe / profile), 恒写恒非零, 「跑了但零写入」这个
+  //     形态在它身上不存在, **蓄意不上报**; ③ 新维度尚未接线 —— 加维度时回到这里。
+  //   · `0`    = 上报了, 且真的一行都没进库。**这才是本列要抓的那个「全绿但没做事」。**
+  // 若用 `@default(0)` 非空, 漏接一处就等于让那个维度**恒报零写入** = 假警报, 且看起来
+  // 像真故障 —— 那正是「库里没有的即为假」换个地方再犯一遍。
+  written       Int?
   failedTargets Json?     @map("failed_targets")
   status        String    @db.VarChar(16)
   // 017: per-dim 执行回链 BullMQ job id (worker 路径写入; 旧聚合行 NULL)。
