@@ -8,6 +8,7 @@ import {
   type EarningsCalendarWindowQuery,
 } from './earnings-calendar.port.js';
 import { TransientVendorError, VendorHttpError } from './vendor-http-client.js';
+import { type ShimEnvelope, parseShimRows } from './futu-shim-envelope.js';
 import type { VendorHttpClient } from './vendor-http-client.js';
 
 /**
@@ -64,11 +65,6 @@ const FUTU_PREFIX_TO_MARKET: Record<string, string> = {
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const MS_PER_DAY = 86_400_000;
-
-interface ShimEnvelope {
-  count?: unknown;
-  rows?: unknown;
-}
 
 /**
  * 数值 → Decimal-safe string；缺失 / 非有限 → null。
@@ -200,11 +196,10 @@ export class FutuEarningsCalendarAdapter implements EarningsCalendarPort {
   }
 
   /**
-   * 打一次 shim + 信封校验 + 失败语义映射。
+   * 打一次 shim + 失败语义映射；信封校验委托 {@link parseShimRows}（两道闸的单点）。
    *
-   * 两道信封闸都不是形式主义：缺 `rows[]` = 契约变更；`count` 与实收不符 = 传输层截断
-   * （同 `FutuOptionChainAdapter` / `FutuEodBarAdapter` 的对账闸）。任一不过 → throw，
-   * **不返回半份数据** —— 半份日历在下游读作「那几天全市场没有财报」，与真缺口无法区分。
+   * 🚨 **本端点为什么在意闸②**：半份日历在下游读作「那几天全市场没有财报」，与真缺口无法
+   * 区分 —— 所以任一闸不过 → throw，**不返回半份数据**。
    */
   private async fetchRows(path: string, what: string): Promise<unknown[]> {
     let res: ShimEnvelope | undefined;
@@ -227,15 +222,6 @@ export class FutuEarningsCalendarAdapter implements EarningsCalendarPort {
       throw err;
     }
 
-    const rows = res?.rows;
-    if (!Array.isArray(rows)) {
-      throw new Error(`[futu] ${what} 响应缺 rows[] (契约变更?)`);
-    }
-    if (typeof res?.count === 'number' && res.count !== rows.length) {
-      throw new Error(
-        `[futu] ${what} 行数与信封 count 不符 (疑截断): count=${res.count} rows=${rows.length}`,
-      );
-    }
-    return rows;
+    return parseShimRows(res, what);
   }
 }

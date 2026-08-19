@@ -9,6 +9,7 @@ import {
   type OptionExpiry,
 } from './option-chain.port.js';
 import { TransientVendorError, VendorHttpError } from './vendor-http-client.js';
+import { type ShimEnvelope, parseShimRows } from './futu-shim-envelope.js';
 import type { VendorHttpClient } from './vendor-http-client.js';
 
 /**
@@ -75,11 +76,6 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * 只有一种合法切法（`VICI` + `126091` 后跟 `8` 不是 C/P，回溯即得 `VICI1`）。
  */
 const FUTU_OPTION_CODE_RE = /^(.+?)(\d{6})([CP])(\d+)$/;
-
-interface ShimEnvelope {
-  count?: unknown;
-  rows?: unknown;
-}
 
 /**
  * 数值 → Decimal-safe string；缺失 / 非有限 → null。
@@ -261,11 +257,10 @@ export class FutuOptionChainAdapter implements OptionChainPort {
   }
 
   /**
-   * 打一次 shim + 信封校验 + 失败语义映射。
+   * 打一次 shim + 失败语义映射；信封校验委托 {@link parseShimRows}（两道闸的单点）。
    *
-   * 两道信封闸都不是形式主义：缺 `rows[]` = 契约变更；`count` 与实收不符 = 传输层截断
-   * （同 `FutuEodBarAdapter` / `FutuUnderlyingIvAdapter` 的对账闸）。任一不过 → throw，
-   * **不返回半份数据** —— 半份链在下游读作「那段本来就没有合约」，与真缺口无法区分。
+   * 🚨 **本端点为什么在意闸②**：半份链在下游读作「那段本来就没有合约」，与真缺口无法区分
+   * —— 所以任一闸不过 → throw，**不返回半份数据**。
    */
   private async fetchRows(path: string, what: string): Promise<unknown[]> {
     let res: ShimEnvelope | undefined;
@@ -288,15 +283,6 @@ export class FutuOptionChainAdapter implements OptionChainPort {
       throw err;
     }
 
-    const rows = res?.rows;
-    if (!Array.isArray(rows)) {
-      throw new Error(`[futu] ${what} 响应缺 rows[] (契约变更?)`);
-    }
-    if (typeof res?.count === 'number' && res.count !== rows.length) {
-      throw new Error(
-        `[futu] ${what} 行数与信封 count 不符 (疑截断): count=${res.count} rows=${rows.length}`,
-      );
-    }
-    return rows;
+    return parseShimRows(res, what);
   }
 }

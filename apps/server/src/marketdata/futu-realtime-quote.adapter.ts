@@ -5,6 +5,7 @@ import {
   type RealtimeQuote,
   type RealtimeQuotePort,
 } from './realtime-quote.port.js';
+import { type ShimEnvelope, parseShimEnvelope } from './futu-shim-envelope.js';
 import type { VendorHttpClient } from './vendor-http-client.js';
 
 /**
@@ -55,12 +56,6 @@ import type { VendorHttpClient } from './vendor-http-client.js';
 const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   us: 'US',
 };
-
-interface ShimEnvelope {
-  as_of?: unknown;
-  count?: unknown;
-  rows?: unknown;
-}
 
 /**
  * 数值 → Decimal-safe string；缺失 / 非有限 → null。
@@ -144,12 +139,10 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
   }
 
   /**
-   * 打一次 shim + 信封校验。
+   * 打一次 shim; 信封校验委托 {@link parseShimEnvelope} (三道闸的单点)。
    *
-   * 三道闸同 `FutuOptionSnapshotAdapter.fetchEnvelope`: 缺 `rows[]` = 契约变更; `count` 与实收
-   * 不符 = 传输层截断; **`as_of` 不可解析 = 采集墙钟没了** —— 拿本机时钟顶替会把「这一行是
-   * 什么时候采的」变成「这段代码什么时候跑到这一句」, 而 90 秒的新鲜度闸判的正是前者。
-   * 任一不过 → throw, **不返回半份数据**。
+   * 🚨 **本端点为什么在意闸③**: `as_of` 不可解析 = 采集墙钟没了, 而 90 秒的新鲜度闸判的正是
+   * 它。任一闸不过 → throw, **不返回半份数据**。
    */
   private async fetchEnvelope(
     path: string,
@@ -161,19 +154,6 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
       headers: { Authorization: `Bearer ${this.token}` },
     });
 
-    const rows = res?.rows;
-    if (!Array.isArray(rows)) {
-      throw new Error(`[futu] ${what} 响应缺 rows[] (契约变更?)`);
-    }
-    if (typeof res?.count === 'number' && res.count !== rows.length) {
-      throw new Error(
-        `[futu] ${what} 行数与信封 count 不符 (疑截断): count=${res.count} rows=${rows.length}`,
-      );
-    }
-    const asOf = new Date(String(res?.as_of ?? ''));
-    if (Number.isNaN(asOf.getTime())) {
-      throw new Error(`[futu] ${what} 响应缺可解析的 as_of (采集墙钟, 契约变更?)`);
-    }
-    return { asOf, rows };
+    return parseShimEnvelope(res, what);
   }
 }
