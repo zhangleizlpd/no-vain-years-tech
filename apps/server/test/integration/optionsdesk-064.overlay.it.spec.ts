@@ -35,6 +35,10 @@ import {
   type MarketSessionState,
   type MarketStatePort,
 } from '../../src/marketdata/market-state.port';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../../src/marketdata/trading-calendar.port';
 import type { LegChainSnapshot } from '../../src/optionsdesk/leg-retrieval.port';
 
 /**
@@ -301,6 +305,18 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   }
 
   const FRESH_BASIS: SeedBasis = { price: SPOT, at: new Date(NOW.getTime() - 10_000) };
+
+  /**
+   * **真正的盘中时刻** (ET 12:00) —— 实时独载基线那组专用。
+   *
+   * 🚨 与 {@link NOW} (ET 16:00) 的差别是判别性的, 不是风格: 16:00 已到常规收盘分钟数 ⇒
+   * `sessionWatermark` 当场翻到**当天**, 于是「最近一个已收盘交易日」= 今天 = `sessionDate`,
+   * 那条「两个时点不同天」的断言就恒绿。挪到 12:00 之后水位仍停在昨天, `oiAsOf` 与
+   * `sessionDate` 才真的分得开 —— 而这正是实时独载基线最容易写错的那一格。
+   * 📌 仍落在同一个 ET 日历日内 ⇒ `exchangeCalendarDate` 与逐腿 DTE 与 {@link NOW} 一致。
+   */
+  const INTRADAY_NOW = new Date('2026-08-11T16:00:00.000Z');
+  const INTRADAY_BASIS: SeedBasis = { price: SPOT, at: new Date(INTRADAY_NOW.getTime() - 10_000) };
 
   /**
    * @param opts.snapshots `false` ⇒ 只落合约集不落快照行 (`state_branch` 9 的输入:
@@ -765,13 +781,185 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     expect(leg?.greeksComplete).toBe(false);
   });
 
-  it('🚨 `state_branch` 9: 库内零快照行 ⇒ 维持「未就绪」, 不靠实时值单独成链 (且零外呼)', async () => {
+  it('🚨 `state_branch` 9 改写后仍成立的那一半: 库内零快照行 + **关态** ⇒ 未就绪且零外呼', async () => {
     await seedChain({ snapshots: false });
     readPort.respond = realtimeBatch();
 
-    expect(await chainOf(true)).toBeNull();
-    // 链都没就绪就不该去问价 —— 外呼在这里发出去就是白烧配额。
+    // 关态下没有第二个数据源 ⇒ 结局与本条分支改写前**逐字节相同**。
+    expect(await chainOf(false)).toBeNull();
     expect(readPort.calls).toHaveLength(0);
+  });
+
+  // ── 实时独载基线 (库内零快照行 + 开态) ───────────────────────────────────────
+
+  const chainAt = (now: Date, realtime: boolean) =>
+    moduleRef
+      .get<LegRetrievalPort>(LEG_RETRIEVAL_PORT)
+      .retrieveChain({ symbol: SYMBOL, now, realtime });
+
+  /**
+   * 库内零快照 + 盘中基准新鲜 —— 实时独载基线的完整前置。
+   *
+   * 📌 **日历不必种**: 本文件删掉了 `MARKETDATA_PROVIDER` ⇒ `TRADING_CALENDAR_PORT` 绑的是
+   * mock 那一份 (`marketdata.module.ts` 的 `cfg.kind === 'mock' ? mock : Db...`), 它**不查库**
+   * —— `classify` 与 `lastClosedSession` 都按「周一~周五」现算, 恒不返 `null`。往 `trading_day`
+   * 里种行对本文件零作用, 种了反而会让人以为日历是从库里来的。
+   * ⇒ ET 12:00 的水位停在 {@link PREV_SESSION}（工作日），于是「最近已收盘交易日」与「交易所的
+   * 今天」天然是两天 —— 那条「两个时点不同天」的断言因此是判别性的。
+   */
+  async function seedRealtimeBaseline(extraLegs: readonly SeedLeg[] = []): Promise<void> {
+    await seedChain({ snapshots: false, basis: INTRADAY_BASIS, extraLegs });
+    readPort.respond = realtimeBatch();
+  }
+
+  it('🚨 盘中新锚 (库内零快照行 + 开态): 这一批实时**自己当基线**成链, 整表 `realtime`', async () => {
+    await seedRealtimeBaseline();
+
+    const snapshot = await chainAt(INTRADAY_NOW, true);
+    if (snapshot === null) throw new Error('实时独载基线应当成链 —— 断言前置失效');
+
+    expect(readPort.calls).toHaveLength(1);
+    expect(snapshot.legs).toHaveLength(LEGS.length);
+    expect(snapshot.chain.priceKind).toBe('realtime');
+    expect(snapshot.legs.map((leg) => leg.priceKind)).toEqual(snapshot.legs.map(() => 'realtime'));
+    // 🚨 占位值 MUST 被整体改写掉 —— 荒谬值一眼可辨: spot=0 / 时刻 1970。
+    expect(snapshot.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
+    expect(snapshot.chain.spot.toString()).toBe(decimalText(REALTIME_SPOT));
+
+    // 🚨 **两个时点不是同一天**: 报价归属正在进行的这一场, OI 归属最近一个已收盘交易日。
+    expect(snapshot.chain.sessionDate).toEqual(dateOf(TODAY));
+    expect(snapshot.chain.oiAsOf).toEqual(dateOf(PREV_SESSION));
+    // 「这批数从哪来」如实标出 —— 呈现侧靠 `source !== 'eod'` 渲「来源 realtime」。
+    expect(snapshot.chain.source).toBe('realtime');
+  });
+
+  it('🚨 `FR-004` 的另一半: 实时基线下 OI **来自同一批实时** (库内基线那条断言方向相反, 两条并存)', async () => {
+    await seedRealtimeBaseline();
+
+    const snapshot = await chainAt(INTRADAY_NOW, true);
+    if (snapshot === null) throw new Error('实时独载基线应当成链 —— 断言前置失效');
+
+    // 装置自检: 库内**根本没有** OI 可留 —— 这正是本基线与 `db_snapshot` 的分野。
+    for (const leg of snapshot.legs) {
+      expect(leg.openInterest).toBe(Number(REALTIME_BY_CODE[leg.code].openInterest));
+    }
+    // 🚨 反向钉死: 库内基线下同一批实时 OI **一个都不能进来** (既有 `SC-006` 那条覆盖此点),
+    // 于是「OI 归谁写」由 baseline 单值决定, 而不是由「这一格空不空」决定。
+    await prisma.optionDailySnapshot.deleteMany();
+    await prisma.optionContract.deleteMany();
+    await prisma.instrument.deleteMany();
+    await prisma.anchorChange.deleteMany();
+    await prisma.anchor.deleteMany();
+    await seedChain({ basis: INTRADAY_BASIS });
+    const withDb = await chainAt(INTRADAY_NOW, true);
+    if (withDb === null) throw new Error('库内基线应当命中 —— 断言前置失效');
+    for (const leg of withDb.legs) {
+      const seeded = LEGS.find((l) => l.code === leg.code);
+      expect(leg.openInterest).toBe(Number(seeded?.oi));
+    }
+  });
+
+  it('🚨 没拿到实时值的腿**整条丢弃**, 🚫 不让它去撑大「被权利金门槛移出」那个数', async () => {
+    // `L-NOQUOTE` 不在 `REALTIME_BY_CODE` 里 ⇒ 替身不会为它回一行 (= 停牌 / 刚摘牌的形态)。
+    const NO_QUOTE: SeedLeg = {
+      code: 'L-NOQUOTE',
+      dte: 35,
+      strike: '93',
+      bid: '2.00',
+      ask: '2.10',
+      oi: '900',
+      vol: '40',
+      iv: '20',
+    };
+    await seedRealtimeBaseline([NO_QUOTE]);
+
+    const snapshot = await chainAt(INTRADAY_NOW, true);
+    if (snapshot === null) throw new Error('实时独载基线应当成链 —— 断言前置失效');
+    expect(snapshot.legs.map((leg) => leg.code)).not.toContain(NO_QUOTE.code);
+
+    // 🚨 用户可见的那一半: 留着它的话, 这条从未被问过价的腿会被权利金门槛(bid 为空)挡下,
+    // 屏上于是多出「被权利金门槛移出」的一条 —— 一个真实、可读、且完全错的数。
+    const table = await moduleRef
+      .get(GetLegsUseCase)
+      .execute(SYMBOL, 'all', INTRADAY_NOW, null, undefined, true);
+    expect(table.legs.map((leg) => leg.code)).not.toContain(NO_QUOTE.code);
+    expect(table.gateCounts.removedByPremiumFloor).toBe(
+      // 只剩 `L-PENNY` 那条**真的**被门槛挡下的 (实时 bid 0.09 < 门槛)。
+      1,
+    );
+  });
+
+  it('🚨 日历答不出「最近已收盘交易日」⇒ 放弃 (不猜归属日) 且**零外呼**', async () => {
+    await seedRealtimeBaseline();
+    // 🚨 只 stub 这一个方法、只在这一条用例内 —— 🚫 MUST NOT 改 `.overrideProvider()`:
+    // 文件头写明日历不可 override (`GetLegsUseCase` 也在用它, 换掉会改动基线夹具的输出)。
+    // 打在**端口实例**上而不是 mock 类上: 那个实例就是 adapter 手里的那一个。
+    const calendar = moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT);
+    const stub = vi.spyOn(calendar, 'lastClosedSession').mockResolvedValue(null);
+    try {
+      expect(await chainAt(INTRADAY_NOW, true)).toBeNull();
+      // 归属日都定不下来就不该去问价 —— 外呼在这里发出去是白烧配额。
+      expect(readPort.calls).toHaveLength(0);
+    } finally {
+      stub.mockRestore();
+    }
+  });
+
+  it('🚨 四条整体回落路径在实时基线下**一律未就绪**, 占位值一个都逃不出去', async () => {
+    /**
+     * 每条路径配一个**期望外呼次数** —— 🚨 少了它这条用例就不判别: 若 `seedRealtimeBaseline`
+     * 哪天坏了 (比如骨架压根组不出来), 四条会**在同一个更靠前的地方**一起返 `null`, 而断言
+     * 全绿。次数把「走到了哪一格」钉住: 前三条零外呼, 源不可达那条必须已经问过一次。
+     */
+    const arrange: Readonly<Record<string, { calls: number; prepare: () => Promise<void> }>> = {
+      // ① 两闸: 非常规交易状态 ⇒ 正常收盘档, 但本基线没有收盘档可落。
+      'gate closed': {
+        calls: 0,
+        prepare: async () => {
+          marketState.session = 'other';
+        },
+      },
+      // ② 两闸自身故障 ⇒ fail-closed。
+      'gate unknown': {
+        calls: 0,
+        prepare: async () => {
+          marketState.fail = new Error('futu shim 5xx');
+        },
+      },
+      // ③ 定窗基准陈旧 (超出 061 的新鲜度闸)。
+      'window basis stale': {
+        calls: 0,
+        prepare: async () => {
+          await prisma.anchor.update({
+            where: { ticker: SYMBOL },
+            data: { intradayAt: new Date(INTRADAY_NOW.getTime() - 3 * 3600_000) },
+          });
+        },
+      },
+      // ④ 源不可达 —— **闸已判开、窗也定出来了**, 故这一条必然已经外呼过一次。
+      'source unavailable': {
+        calls: 1,
+        prepare: async () => {
+          readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
+        },
+      },
+    };
+
+    for (const [name, { calls, prepare }] of Object.entries(arrange)) {
+      await prisma.optionContract.deleteMany();
+      await prisma.instrument.deleteMany();
+      await prisma.anchorChange.deleteMany();
+      await prisma.anchor.deleteMany();
+      marketState.session = 'regular';
+      marketState.fail = null;
+      readPort.fail = null;
+      readPort.calls.length = 0;
+      await seedRealtimeBaseline();
+      await prepare();
+
+      expect(await chainAt(INTRADAY_NOW, true), `回落路径「${name}」应判未就绪`).toBeNull();
+      expect(readPort.calls, `回落路径「${name}」的外呼次数`).toHaveLength(calls);
+    }
   });
 
   it('🚨 `state_branch` 10: 返回集里库内不存在的合约被忽略 (盘中新挂, 当日不呈现)', async () => {

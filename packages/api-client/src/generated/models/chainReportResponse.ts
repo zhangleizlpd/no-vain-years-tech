@@ -23,7 +23,7 @@ export interface ChainReportResponse {
   spot: string | null;
   /** 本次检索所用的**交易所的今天** (FR-033 ①) */
   marketDate: string | null;
-  /** 快照归属交易日 (FR-033 ②) */
+  /** 快照归属交易日 (FR-033 ②)。🚨 **实时独载基线 (source=realtime) 下它是「交易所的今天」** —— 库内一期快照都没有时, 屏上的数全部来自此刻, 归属正在进行的这一场 */
   asOf: string | null;
   /** **区块级**时间口径 (064 FR-009 / FR-010) —— 本批腿整体处于哪个档, 也决定下一字段 quoteAsOf 的**粒度**。realtime = 本次取到了此刻的盘口; eod_close = 走库内收盘档 (未开实时 / 非交易时段 / 源不可达 / 超单批上限 / 定窗基准陈旧, 一律落这一档)。🚨 **与每腿的 priceKind 不是同一个数** (见 LegResponse.priceKind): 部分合约未返回时本字段仍是 realtime 而那几行是 eod_close。区块条读这个, 行级角标读那个 */
   priceKind: ChainReportResponsePriceKind;
@@ -31,9 +31,9 @@ export interface ChainReportResponse {
   realtimeDegrade: ChainReportResponseRealtimeDegrade;
   /** 本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 **时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上时分秒会被读成此刻的盘口, 实时档只给日期则抹掉唯一要紧的那件事。🚫 客户端 MUST NOT 自己截断或补齐粒度 (那就是把档位判据抄了第二份) */
   quoteAsOf: string | null;
-  /** 🚨 **OI 的归属交易日** (FR-033 ③) —— 与 asOf **不是同一天**。三个时点 MUST 各自成句, 🚫 MUST NOT 合并成一个「数据截至」。064 起实时档下它仍是那个归属日 (OI 盘中冻结) */
+  /** 🚨 **OI 的归属交易日** (FR-033 ③) —— 与 asOf **不是同一天**。三个时点 MUST 各自成句, 🚫 MUST NOT 合并成一个「数据截至」。064 起实时档下它仍是那个归属日 (OI 盘中冻结)。🚨 实时独载基线下 OI 改由同一批实时给出, 而本字段取最近一个已收盘交易日 —— 两者由构造对齐 */
   oiAsOf: string | null;
-  /** 快照来源 (eod / premarket_backfill) */
+  /** 这批数从哪来 (eod / premarket_backfill / realtime)。realtime = **实时独载基线**: 库内一期收盘快照都没有, 整条链由这一次实时取回撑起 (新锚盘中首访, 当晚收盘轮跑完即自愈) */
   source: string | null;
   /** 链级 IV 分位读数 —— **复用详情读端那一份**四态与形状 (FR-031), 无第二套词汇。🚨 它按**自己的**四态独立降级, **不被网格失败波及**: 网格挂了 IV 明明读得到 */
   iv: UnderlyingIvReadoutResponse;
