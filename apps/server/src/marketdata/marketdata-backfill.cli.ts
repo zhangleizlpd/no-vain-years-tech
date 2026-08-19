@@ -22,7 +22,8 @@ import {
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import { assertClosedSessionForManualSync } from './manual-sync-session-guard.js';
-import { shanghaiToday } from './trading-day-gate.js';
+import { userToday } from './session-clock.js';
+import { resolveAsOfForDimension } from './sync-asof.rules.js';
 
 /**
  * Backfill CLI (016 T017 → 017 T018 迁入队, FR-S15): 一次性历史回填运维命令。
@@ -47,7 +48,10 @@ export interface BackfillArgs {
   historyDepth?: number;
   dryRun: boolean;
   markets: string[];
-  /** 以此 `YYYY-MM-DD` 为「今天」(backfill 区间终点; D9: gate 归 tick 层, 运维指向已结算交易日)。 */
+  /**
+   * 以此 `YYYY-MM-DD` 为「今天」(backfill 区间终点), **压倒逐维度求值** (D9: gate 归 tick 层,
+   * 运维指向已结算交易日)。缺省 ⇒ 每个维度按自己声明的口径求 (`sync-asof.rules.ts`)。
+   */
   asOf?: string;
   /** 等待 job 终态上限 ms (默认 config `cliWaitTimeoutMs`)。 */
   timeoutMs?: number;
@@ -112,20 +116,44 @@ export async function executeBackfill(
   if (args.factors) return rebuildFactorChains(deps.prisma, logger, args.dryRun);
 
   const historyDepth = args.historyDepth ?? deps.backfillDefaultHistoryDays;
-  // `--as-of` 指定结算日为「今天」(backfill 区间终点; 当天 EOD 未就绪时运维须指向已结算
-  // 交易日 — CLI 路径无交易日 gate, D9 运维显式意图)。默认上海时区当天。
-  const asOf = args.asOf ?? shanghaiToday(now);
+
+  // won 集: --dimension 单维度 / 缺省全维度 (贴旧全管线行为; 键全集源 = 注册表 keys,
+  // 执行序由 flow 装配器按依赖边排, 此处只定集合)。retryMax 从真相层载。
+  //
+  // 🚨 **本查询提前到估算之前** (063 Phase 1): `asOf` 现在是**逐维度**求值的, 而求值要先知道
+  //    各维的 `marketScope` ⇒ 估算区间也只能在拿到行之后才算得出。
+  const keys = args.dimension ? [args.dimension] : [...DIMENSION_KEYS];
+  const rows = await deps.prisma.syncDimension.findMany({
+    where: { dimensionKey: { in: keys } },
+    select: { dimensionKey: true, retryMax: true, marketScope: true },
+  });
+  const retryByKey = new Map(rows.map((r) => [r.dimensionKey, r.retryMax]));
+
+  // `--as-of` 指定结算日为「今天」(backfill 区间终点), **压倒逐维度求值** —— 运维指向某个
+  // 已结算交易日是显式意图 (D9, CLI 路径无交易日 gate)。
+  //
+  // 缺省不再是宿主日 (旧 `shanghaiToday`): 那对 us 维度错位一天且每周固定丢周五, 盘中跑还会
+  // 把区间右端顶到一根**尚未收盘**的日 K 上 (#103)。改为各维按自己声明的口径求。
+  const asOfByKey = new Map(
+    rows.map((r) => [r.dimensionKey, args.asOf ?? resolveAsOfForDimension(r, now)]),
+  );
+  const asOfOf = (key: string): string => asOfByKey.get(key) ?? args.asOf ?? userToday(now);
+
+  // 估算区间取本批**最早**的那个 asOf (保守): 逐维度值可能差一天, 而估算是一个总数;
+  // 取最早只会让 `underlying_iv_daily` 的分页数**多算**不会少算 (无声截断禁止的方向)。
+  const asOfRangeEnd = keys.map(asOfOf).reduce((a, b) => (a <= b ? a : b));
   // 046 T009: `underlying_iv_daily` 的页数由回填区间决定 ⇒ 估算必须拿到区间, 不能只看维度键。
   const estimate = await estimateRequests(deps.prisma, args.markets, args.dimension, {
-    from: subtractDays(asOf, historyDepth),
-    to: asOf,
+    from: subtractDays(asOfRangeEnd, historyDepth),
+    to: asOfRangeEnd,
   });
   logger.log(
     `backfill plan: ${JSON.stringify({
       dimension: args.dimension ?? 'all',
       markets: args.markets,
       historyDepthDays: historyDepth,
-      asOf,
+      asOf: Object.fromEntries(keys.map((k) => [k, asOfOf(k)])),
+      asOfExplicit: args.asOf !== undefined,
       estVendorRequests: estimate,
       dryRun: args.dryRun,
     })}`,
@@ -134,14 +162,6 @@ export async function executeBackfill(
   // dry-run: 仅打印计划 (无声截断禁止), 不入队不写库。
   if (args.dryRun) return 0;
 
-  // won 集: --dimension 单维度 / 缺省全 6 维度 (贴旧全管线行为; 键全集源 = 注册表 keys,
-  // 执行序由 flow 装配器按依赖边排, 此处只定集合)。retryMax 从真相层载。
-  const keys = args.dimension ? [args.dimension] : [...DIMENSION_KEYS];
-  const rows = await deps.prisma.syncDimension.findMany({
-    where: { dimensionKey: { in: keys } },
-    select: { dimensionKey: true, retryMax: true, marketScope: true },
-  });
-  const retryByKey = new Map(rows.map((r) => [r.dimensionKey, r.retryMax]));
   const missing = keys.filter((k) => !retryByKey.has(k));
   if (missing.length > 0) {
     throw new Error(`sync_dimension 缺行: ${missing.join(',')} (seed 残缺或维度未登记)`);
@@ -157,7 +177,7 @@ export async function executeBackfill(
   const payload = (key: DimensionKey) => ({
     dimensionKey: key,
     mode: 'backfill' as const,
-    asOf,
+    asOf: asOfOf(key),
     backfillHistoryDays: historyDepth,
     markets: args.markets, // 038 seam#3: --markets 透传 → executor 工作集与 marketScope 取交集。
     noSkipComplete: args.noSkipComplete, // force-refetch: 绕过 fundamental skip-complete 游标。

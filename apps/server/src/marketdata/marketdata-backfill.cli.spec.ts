@@ -171,6 +171,8 @@ describe('executeBackfill --dry-run 估算含 039 五新维度 (T017)', () => {
         }),
       },
       syncDimension: {
+        // 063: dry-run 也逐维度求 asOf ⇒ 需要本桩。空数组 = 回落全局口径, 估算逐点不变。
+        findMany: vi.fn(async () => []),
         // eod_bar: 2 复权口径 → adjustCount=2; fundamental: batchSize=50。
         findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
           where.dimensionKey === 'eod_bar'
@@ -302,6 +304,8 @@ describe('executeBackfill --dry-run 估算含 040 volatility×3 窗口 (T010)', 
         }),
       },
       syncDimension: {
+        // 063: dry-run 也逐维度求 asOf ⇒ 需要本桩。空数组 = 回落全局口径, 估算逐点不变。
+        findMany: vi.fn(async () => []),
         findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
           where.dimensionKey === 'eod_bar'
             ? { dimensionKey: 'eod_bar', adjustTypes: ['none'], batchSize: 1 }
@@ -418,6 +422,8 @@ describe('executeBackfill --dry-run 估算含 041 四事件维度 (T016)', () =>
         }),
       },
       syncDimension: {
+        // 063: dry-run 也逐维度求 asOf ⇒ 需要本桩。空数组 = 回落全局口径, 估算逐点不变。
+        findMany: vi.fn(async () => []),
         findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
           where.dimensionKey === 'eod_bar'
             ? { dimensionKey: 'eod_bar', adjustTypes: ['none'], batchSize: 1 }
@@ -548,6 +554,8 @@ describe('executeBackfill --dry-run 估算含 042 三报告期维度 (T013)', ()
         }),
       },
       syncDimension: {
+        // 063: dry-run 也逐维度求 asOf ⇒ 需要本桩。空数组 = 回落全局口径, 估算逐点不变。
+        findMany: vi.fn(async () => []),
         findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
           where.dimensionKey === 'eod_bar'
             ? { dimensionKey: 'eod_bar', adjustTypes: ['none'], batchSize: 1 }
@@ -677,6 +685,8 @@ describe('executeBackfill --dry-run 估算含 043 announcement, 排除 industry_
         }),
       },
       syncDimension: {
+        // 063: dry-run 也逐维度求 asOf ⇒ 需要本桩。空数组 = 回落全局口径, 估算逐点不变。
+        findMany: vi.fn(async () => []),
         findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
           where.dimensionKey === 'eod_bar'
             ? { dimensionKey: 'eod_bar', adjustTypes: ['none'], batchSize: 1 }
@@ -937,6 +947,8 @@ describe('executeBackfill --dry-run 估算含 046 underlying_iv_daily × 分页�
         }),
       },
       syncDimension: {
+        // 063: dry-run 也逐维度求 asOf ⇒ 需要本桩。空数组 = 回落全局口径, 估算逐点不变。
+        findMany: vi.fn(async () => []),
         findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
           where.dimensionKey === 'eod_bar'
             ? { dimensionKey: 'eod_bar', adjustTypes: ['none'], batchSize: 1 }
@@ -1035,5 +1047,82 @@ describe('executeBackfill --dry-run 估算含 046 underlying_iv_daily × 分页�
       logSpy.mockRestore();
     }
     expect(countWhere[0]).toEqual({ market: { in: ['us'] }, status: 'active', needSync: true });
+  });
+});
+
+/**
+ * 063 Phase 1: `asOf` 从**单一全局值**改成**逐维度求值**。
+ *
+ * 🚨 这是本次 CLI 改动的承重点。旧实现 `args.asOf ?? shanghaiToday(now)` 在结构上就不可能
+ * 对 —— 一条 `--cascade` / 全维度命令里各维 `marketScope` 不同, 一个值服务不了两个时区,
+ * 而错的那一侧**不报错**: 对 us 维度错位一天且每周固定丢周五, 盘中跑还会把区间右端顶到一根
+ * 尚未收盘的日 K 上 (#103)。
+ */
+describe('executeBackfill 逐维度 asOf (063 Phase 1)', () => {
+  /** 2026-08-19 00:13 北京 = cn/hk 当地 08-19 凌晨 (两市均未开盘) = ET 08-18 12:13 (**盘中**)。 */
+  const INTRADAY_US = new Date('2026-08-19T00:13+08:00');
+
+  function buildDryRunDeps(): { deps: BackfillDeps } {
+    const prisma = {
+      instrument: { count: vi.fn(async () => 3) },
+      syncDimension: {
+        findUnique: vi.fn(async ({ where }: { where: { dimensionKey: string } }) =>
+          where.dimensionKey === 'eod_bar'
+            ? { dimensionKey: 'eod_bar', adjustTypes: ['none'], batchSize: 1 }
+            : { dimensionKey: 'fundamental', adjustTypes: [], batchSize: 50 },
+        ),
+        // 两个维度、两个 scope —— 正是「一个全局 asOf 服务不了」的最小反例。
+        findMany: vi.fn(async () => [
+          { dimensionKey: 'eod_bar', retryMax: 3, marketScope: ['cn', 'hk'] },
+          { dimensionKey: 'us_equity_bar', retryMax: 2, marketScope: ['us'] },
+        ]),
+      },
+    };
+    return {
+      deps: {
+        prisma,
+        syncQueue: {},
+        queueEvents: {},
+        cliWaitTimeoutMs: 1000,
+        backfillDefaultHistoryDays: 365,
+      } as unknown as BackfillDeps,
+    };
+  }
+
+  /** 跑一次 dry-run, 交回 `backfill plan` 那行日志解析出来的 asOf 映射。 */
+  async function planAsOf(asOfArg?: string): Promise<Record<string, string>> {
+    const { deps } = buildDryRunDeps();
+    const logger = new Logger('t');
+    const lines: string[] = [];
+    const spy = vi.spyOn(logger, 'log').mockImplementation((m: unknown) => {
+      lines.push(String(m));
+    });
+    try {
+      await executeBackfill(
+        deps,
+        { dryRun: true, markets: ['cn'], ...(asOfArg !== undefined ? { asOf: asOfArg } : {}) },
+        INTRADAY_US,
+        logger,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const plan = lines.find((l) => l.startsWith('backfill plan:'));
+    return JSON.parse(plan!.slice('backfill plan: '.length)).asOf as Record<string, string>;
+  }
+
+  it('🚨 同一条命令里两个维度拿到**不同**的 asOf (旧实现给同一个宿主日, 必红)', async () => {
+    const asOf = await planAsOf();
+    // cn/hk 当地 08-19 00:13 尚未开盘 ⇒ 上一场是 08-18。
+    expect(asOf.eod_bar).toBe('2026-08-18');
+    // ET 08-18 12:13 **盘中** ⇒ 上一场是 08-17, **不是**正在进行的 08-18 (#103)。
+    expect(asOf.us_equity_bar).toBe('2026-08-17');
+    expect(asOf.eod_bar).not.toBe(asOf.us_equity_bar);
+  });
+
+  it('`--as-of` 显式传入压倒逐维度求值 (D9 运维显式意图, 本次改动只换缺省值)', async () => {
+    const asOf = await planAsOf('2026-08-11');
+    expect(asOf.eod_bar).toBe('2026-08-11');
+    expect(asOf.us_equity_bar).toBe('2026-08-11');
   });
 });

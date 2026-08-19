@@ -18,7 +18,8 @@ import {
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import { assertClosedSessionForManualSync } from './manual-sync-session-guard.js';
-import { shanghaiToday } from './trading-day-gate.js';
+import { userToday } from './session-clock.js';
+import { resolveAsOfForDimension } from './sync-asof.rules.js';
 import type { SyncRunStats } from './sync-run.recorder.js';
 
 /**
@@ -38,7 +39,10 @@ import type { SyncRunStats } from './sync-run.recorder.js';
 export interface TriggerArgs {
   dimension: DimensionKey;
   cascade: boolean;
-  /** 以此 `YYYY-MM-DD` 为目标日 (默认上海时区当天; D9: gate 归 tick 层, CLI 视为运维显式意图)。 */
+  /**
+   * 以此 `YYYY-MM-DD` 为目标日, **压倒逐维度求值** (D9: gate 归 tick 层, CLI 视为运维显式意图)。
+   * 缺省 ⇒ 每个维度按自己声明的口径求 (`sync-asof.rules.ts`), 而**不是**一个全局的宿主日。
+   */
   asOf?: string;
   /** 等待 job 终态上限 ms (默认 config `cliWaitTimeoutMs`)。 */
   timeoutMs?: number;
@@ -154,7 +158,6 @@ export async function executeTrigger(
   logger: Logger = new Logger('marketdata-trigger'),
 ): Promise<number> {
   const timeoutMs = args.timeoutMs ?? deps.cliWaitTimeoutMs;
-  const asOf = args.asOf ?? shanghaiToday(now);
 
   // cascade won 集 = {root + 传递性下游闭包}; 非 cascade 单维度。
   const edges = args.cascade
@@ -177,6 +180,21 @@ export async function executeTrigger(
     throw new Error(`sync_dimension 缺行: ${missing.join(',')} (seed 残缺或维度未登记)`);
   }
 
+  // 🚨 `asOf` 现在是**逐维度**求值 (063 Phase 1), 不再是一个全局值。
+  //
+  // 旧实现是 `args.asOf ?? shanghaiToday(now)` —— **宿主日**, 两处错:
+  //   ① 对 us 维度错位一天且**每周固定丢掉周五** (失败形态表见 `session-clock.ts`);
+  //   ② 不判「这一场收了没有」⇒ 盘中敲一条命令就把半根 K 焊进库里 (#103 的止血正是被这条
+  //      逼着显式传 `--as-of` 才做成的)。
+  // `--cascade` / 全维度模式下各维 `marketScope` 不同 ⇒ 一个全局值在结构上就不可能都对。
+  //
+  // ⚠️ **`--as-of` 显式传入仍压倒一切** —— 运维指向某个已结算交易日是显式意图 (D9),
+  //    本改动只换缺省值。
+  const asOfByKey = new Map(
+    rows.map((r) => [r.dimensionKey, args.asOf ?? resolveAsOfForDimension(r, now)]),
+  );
+  const asOfOf = (key: string): string => asOfByKey.get(key) ?? args.asOf ?? userToday(now);
+
   // 🚨 时点闸 (2026-08-17 prod 实撞): 收盘口径的维度必须在该市场收盘后跑。**排在入队之前** ——
   // 入队之后再拦, 错行已经有一半机会落库了; 而这条命令的错误形态恰恰是「跑完了、还成功了」。
   // 判据与采集本体同源 (同一个 marketDateFor), 理由见 manual-sync-session-guard.ts 的文件头。
@@ -196,7 +214,12 @@ export async function executeTrigger(
     );
     const tree = assembleSyncFlow(
       keys.map((k) => ({
-        payload: { dimensionKey: k as DimensionKey, mode: 'delta' as const, asOf, triggeredBy },
+        payload: {
+          dimensionKey: k as DimensionKey,
+          mode: 'delta' as const,
+          asOf: asOfOf(k),
+          triggeredBy,
+        },
         opts: deps.syncQueue.jobOpts({ retryMax: retryByKey.get(k) as number }),
       })),
       edges,
@@ -205,12 +228,20 @@ export async function executeTrigger(
     job = (await deps.syncQueue.enqueueFlow(tree)).job;
   } else {
     job = await deps.syncQueue.enqueueDimensionJob(
-      { dimensionKey: args.dimension, mode: 'delta', asOf, triggeredBy },
+      { dimensionKey: args.dimension, mode: 'delta', asOf: asOfOf(args.dimension), triggeredBy },
       { retryMax: retryByKey.get(args.dimension) as number },
     );
   }
+  // 🚨 逐维度打出 `asOf`: 盘中跑现在会**目标上一场** ⇒ 工作集多半已落库 ⇒ 一轮 `scanned=0`
+  //    的空跑。不把日期打出来, 那就又是一个「全绿但什么都没做」的现场。
   logger.log(
-    `trigger 入队: ${JSON.stringify({ dimensions: keys, cascade: args.cascade, asOf, timeoutMs })}`,
+    `trigger 入队: ${JSON.stringify({
+      dimensions: keys,
+      cascade: args.cascade,
+      asOf: Object.fromEntries(keys.map((k) => [k, asOfOf(k)])),
+      asOfExplicit: args.asOf !== undefined,
+      timeoutMs,
+    })}`,
   );
   return waitJobExitCode(job, deps.queueEvents, timeoutMs, logger);
 }

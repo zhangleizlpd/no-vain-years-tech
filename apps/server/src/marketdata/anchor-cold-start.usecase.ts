@@ -24,7 +24,8 @@ import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { currencyForMarket } from './sync-universe.usecase.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
-import { lastClosedSessionCutoff, marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
+import { resolveAsOfForDimension } from './sync-asof.rules.js';
 
 /**
  * 锚首建冷启动的**编排体** (060 T005, plan §D3 / §D5 / §D9)。
@@ -130,7 +131,7 @@ export class AnchorColdStartUseCase {
           `(anchorId=${anchorId} ticker=${ticker}; 请补交易日历)`,
       );
       return this.finish(input, COLD_START_OUTCOME.CALENDAR_MISSING, {
-        reason: `交易日历缺 ${market} 在 ${lastClosedSessionCutoff(market, now)} 及之前的行`,
+        reason: `交易日历缺 ${market} 在 ${sessionWatermark(market, now)} 及之前的行`,
       });
     }
 
@@ -163,7 +164,7 @@ export class AnchorColdStartUseCase {
 
     // 「今天是不是交易日」**一次查、两处用**: 盘中闸与 §D4 的三元组决策问的是同一件事,
     // 查两遍就是两处判据。
-    const today = marketDateFor([market], now);
+    const today = exchangeCalendarDate(market, now);
     const calendarStatus = await this.calendar.classify(market, today);
 
     // 🚨 **写敏感档遇 `unknown` ⇒ 放弃, MUST NOT 猜口径** (062 T009, `state_branch` 7)。
@@ -307,8 +308,19 @@ export class AnchorColdStartUseCase {
    * - 其余 (`us_equity_bar`) → **soft** (`ignoreDependencyOnFailure`): 日线与快照互不依赖,
    *   日线挂了不该连累快照。
    *
-   * 🚫 delta job **不指定冷启动专属的 `asOf`** (FR-012a): 按各维度自己的 `marketScope` 求业务日,
-   * 与常规轮逐字同源; 日线维度自带的回看窗会把近期缺口一并补上。
+   * 🚫 delta job **不指定冷启动专属的 `asOf`** (FR-012a): 走与常规轮**同一个**求值单点
+   * (`resolveAsOfForDimension`), 日线维度自带的回看窗会把近期缺口一并补上。
+   *
+   * 🚨 **这里曾经是 #103 的病灶** (2026-08-19 prod 实证): 原实现取「市场当地的**今天**」,
+   * 而冷启动是全系统**唯一的非 cron 触发者** —— 时刻由建锚的人决定。北京 00:13 建一只美股锚
+   * = ET 12:13 **盘中** ⇒ 去拉一根还没收盘的日 K, 落库得到**半根**(实测 volume 仅正常日
+   * 23%–56%), 而 `daily_bar` 的写路径是 `createMany(skipDuplicates)` ⇒ 错行按唯一键占位、
+   * **永久驻留**, 当晚真收盘那轮被静默挡掉, `sync_run` 却记 `scanned=15 ok=15 failed=0`。
+   * 屏上标着「收盘」的价与官方收盘价最大差 1.88%。
+   * ⇒ 改用收盘口径后, 盘中触发拿到的是**上一场**, 当日那根由 06:00 常规轮在收盘后补。
+   *
+   * ⚠️ 爆炸半径提醒 (不是本格的病, 但会放大它): 入的是**维度级** job, 执行侧载整个市场工作集
+   * ⇒ 新增 1 只锚会连带重写该市场**全部**在采标的的日线。业务日算对时无害。
    */
   private async enqueueDeltaFlow(
     input: { anchorId: bigint; ticker: string; now: Date },
@@ -325,7 +337,7 @@ export class AnchorColdStartUseCase {
       data: {
         dimensionKey: row.dimensionKey as DimensionKey,
         mode: 'delta',
-        asOf: marketDateFor(row.marketScope, input.now),
+        asOf: resolveAsOfForDimension(row, input.now),
         triggeredBy: 'anchor-cold-start',
       } satisfies DimensionJobPayload,
       opts: {
@@ -378,7 +390,7 @@ export class AnchorColdStartUseCase {
    * 复杂度: 1 次 (market, date) 主键索引上的倒序 limit-1 查询。
    */
   private async lastClosedTradingDay(market: string, now: Date): Promise<string | null> {
-    const cutoff = lastClosedSessionCutoff(market, now);
+    const cutoff = sessionWatermark(market, now);
     const row = await this.prisma.tradingDay.findFirst({
       where: { market, date: { lte: new Date(`${cutoff}T00:00:00Z`) } },
       orderBy: { date: 'desc' },
