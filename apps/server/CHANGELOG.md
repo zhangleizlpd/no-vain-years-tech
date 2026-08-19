@@ -2,6 +2,16 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.32.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.31.2...server-v0.32.0) (2026-08-19)
+
+
+### Features
+
+* **marketdata:** 063 Phase 2a —— trading_day 记「这一场开整天还是半天」 ([#114](https://github.com/zhangleizlpd/no-vain-years-tech/issues/114)) ([a00a655](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a00a65580a04d78c7da8b7271ff2e5b4c2531c4f))
+* **marketdata:** 063 Phase 2b —— 半日市收盘时刻真正生效 ([#115](https://github.com/zhangleizlpd/no-vain-years-tech/issues/115)) ([c342bab](https://github.com/zhangleizlpd/no-vain-years-tech/commit/c342babb28fcd2f2c32af46e57d01b9951896255))
+* **marketdata:** 063 时间语义 Phase 3 —— daily_bar 尾窗可订正 + sync_run 记真正落库行数 ([#111](https://github.com/zhangleizlpd/no-vain-years-tech/issues/111)) ([9a5c0a0](https://github.com/zhangleizlpd/no-vain-years-tech/commit/9a5c0a0a98dbbc3f41ec287d809e392fec4a4303))
+* **optionsdesk:** 063 Phase 3.4 —— anchor 留 vendor 自报的「这个价是什么时候的」 ([#113](https://github.com/zhangleizlpd/no-vain-years-tech/issues/113)) ([d114e19](https://github.com/zhangleizlpd/no-vain-years-tech/commit/d114e19945f4ca55b6404c5950159025c6e1a808))
+
 ## [0.31.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.31.1...server-v0.31.2) (2026-08-19)
 
 
