@@ -27,7 +27,17 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
-from futu import RET_OK, AuType, KLType, Market, OptionType, SecurityType, TradeDateMarket
+from futu import (
+    RET_OK,
+    AuType,
+    KLType,
+    Market,
+    OptionCondType,
+    OptionDataFilter,
+    OptionType,
+    SecurityType,
+    TradeDateMarket,
+)
 
 from . import config, mappers
 from .auth import extract_token, is_authorized
@@ -204,6 +214,58 @@ def _require_enum(raw: str | None, holder: type, param: str) -> str:
             f"unsupported {param}={raw!r}; allowed: {','.join(sorted(allowed))}"
         )
     return allowed[candidate]
+
+
+#: `OptionDataFilter` 的全部区间字段（读自 SDK 10.08.6808 的构造签名，逐字同名）。
+#:
+#: 🚨 **这里只搬字段名，不搬语义**：区间的含义、按哪一刻的数据判，都由 vendor 决定。shim 是
+#: 传输层，把它们原样透出去；`vol_min` 到底是「当日累计成交」还是别的口径，是调用方要实测的事。
+#: 🚫 **没有 bid / ask 类字段** —— vendor 就不提供按价过滤，别在这里自己造一个。
+OPTION_DATA_FILTER_FIELDS = (
+    "implied_volatility_min",
+    "implied_volatility_max",
+    "delta_min",
+    "delta_max",
+    "gamma_min",
+    "gamma_max",
+    "vega_min",
+    "vega_max",
+    "theta_min",
+    "theta_max",
+    "rho_min",
+    "rho_max",
+    "net_open_interest_min",
+    "net_open_interest_max",
+    "open_interest_min",
+    "open_interest_max",
+    "vol_min",
+    "vol_max",
+)
+
+
+def _optional_float(raw: str | None, param: str) -> float | None:
+    """Parse an optional numeric query param, or raise -> 400."""
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return float(raw.strip())
+    except ValueError:
+        raise ValueError(f"query param `{param}` must be a number, got {raw!r}") from None
+
+
+def _optional_data_filter() -> OptionDataFilter | None:
+    """Assemble an `OptionDataFilter` from query params, or `None` when none were given.
+
+    🚨 **一个字段都没给时必须返回 `None`，不能返回一个全 `None` 的 filter 对象**：前者是「不筛」，
+    后者是「带着一个筛选条件去筛」，两者在 vendor 侧未必等价，而差别只会在返回集里显现 ——
+    那正是最难发现的一类差异。不传即不传。
+    """
+    given = {
+        field: value
+        for field in OPTION_DATA_FILTER_FIELDS
+        if (value := _optional_float(request.args.get(field), field)) is not None
+    }
+    return OptionDataFilter(**given) if given else None
 
 
 def _optional_date(raw: str | None, param: str) -> date | None:
@@ -538,8 +600,16 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
 
         🚨 `option_type` 默认 **ALL（含 CALL）**，且这个默认是承重的。「只要认沽」是**呈现面**
         的话，不是采集面的：链接口一次返双边、调用数完全不变，在这里滤掉一分钱不省，却会让
-        CALL 侧留下**不可回补**的永久缺口。同理 `data_filter` 恒不传 —— 任何 greeks / OI / IV
-        过滤都是在采集端丢证据；筛选是消费端的事。
+        CALL 侧留下**不可回补**的永久缺口。
+
+        🚨 **`option_cond_type` / `data_filter` 是可选的，默认一个都不传（= 与加它们之前逐字节
+        同一个调用）。「采集恒不传」是**调用方的纪律**，不是本层的限制** —— 采集端一旦筛就丢
+        证据且不可回补，所以 `sync-option-contract` 永远只传 `code/start/end/option_type`；
+        而读取面（064 起「该问哪些合约此刻的价」的预选）需要 vendor 侧先筛一道，那是另一个意图。
+        同一个 vendor 端点、同一个限频桶（`option_chain`），两种意图由**调用方**区分 —— 这与
+        `OPTION_SNAPSHOT_PORT` / `OPTION_SNAPSHOT_READ_PORT` 的分野是同一个范式。
+        🚫 **MUST NOT 给读取面另起一个 capability key**：桶是 vendor 侧的，我们这边分两个桶
+        只会让两条路各自以为自己有 10 发/30 s，合起来 20 发去撞 vendor 的 10。
 
         窗跨度上限见 `OPTION_CHAIN_MAX_SPAN_DAYS`：超窗 **400**，绝不截断。
 
@@ -567,6 +637,10 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
         option_type = _require_enum(
             request.args.get("option_type", "ALL"), OptionType, "option_type"
         )
+        option_cond_type = _require_enum(
+            request.args.get("option_cond_type", "ALL"), OptionCondType, "option_cond_type"
+        )
+        data_filter = _optional_data_filter()
 
         with opend.session() as ctx:
             rate_gate.check("option_chain")
@@ -575,6 +649,8 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
                 start=start.isoformat() if start is not None else None,
                 end=end.isoformat() if end is not None else None,
                 option_type=option_type,
+                option_cond_type=option_cond_type,
+                data_filter=data_filter,
             )
             frame = _unwrap(ret, content, f"get_option_chain({code},{start},{end})")
         return _envelope(mappers.dataframe_to_records(frame))
