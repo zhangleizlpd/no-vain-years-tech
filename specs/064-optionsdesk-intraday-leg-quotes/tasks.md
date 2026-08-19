@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: drafted
 created_at: '2026-08-19'
-updated_at: '2026-08-19'
+updated_at: '2026-08-20'
 ---
 
 # Tasks: 064-optionsdesk-intraday-leg-quotes（美股期权腿盘中实时报价）
@@ -104,13 +104,42 @@ updated_at: '2026-08-19'
 
 - [X] T012 [Contract-Smoke] **契约冒烟**（`FR-009`, `FR-010`, `FR-016`, `SC-005`）：新建 `apps/mobile/e2e/contract-smoke/064-intraday-leg-quotes.contract.ts` —— 用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条 happy path：拉选约表 → 断言 `priceKind` 与 `quoteAsOf` 的**序列化形态**（联合字面量 / 两种时间格式）能被客户端正确解封；再断言**实时关闭**时的响应与基线一致。→ verify: `pnpm nx run mobile:contract-smoke`
 
-- [ ] T013 [Ops] **美股盘中真机实证**（`SC-001`, `SC-002`, US1-AS1, US1-AS2, US2-AS1, US2-AS2, US2-AS3, US2-AS4, US3-AS1, US3-AS2）：美股常规时段（北京 21:30–04:00）真机打开选约表，逐条与外部行情终端对拍 bid/ask/成交量；下拉刷新观察 asOf 推进；记录**候选范围最大那只**的端到端等待时间（2026-08-19 实测是 `us:ACN`，265 合约；`SC-002` 预算 P95 ≤ 1.5 s，基线是 p0 线上实测的 0.35–0.41 s）。⚠️ 这三类 web e2e **验不到**（spec `web_compat_notes` 已写明）：真实时段内候选集随价格移动的进出 / 收盘那一刻的档位切换 / 与真源的数值一致性。→ verify: 截图 + 对拍表贴进本文件；env-gated 真 vendor IT（`RUN_MARKETDATA_IT=true`）手动跑一次并贴输出（该门恒 skip，「测试全绿」对真契约不构成证据）
+- [X] T013 [Ops] **美股盘中真机实证**（`SC-001`, `SC-002`, US1-AS1, US1-AS2, US2-AS1, US2-AS2, US2-AS3, US2-AS4, US3-AS1, US3-AS2）：美股常规时段（北京 21:30–04:00）真机打开选约表，逐条与外部行情终端对拍 bid/ask/成交量；下拉刷新观察 asOf 推进；记录**候选范围最大那只**的端到端等待时间（2026-08-19 实测是 `us:ACN`，265 合约；`SC-002` 预算 P95 ≤ 1.5 s，基线是 p0 线上实测的 0.35–0.41 s）。⚠️ 这三类 web e2e **验不到**（spec `web_compat_notes` 已写明）：真实时段内候选集随价格移动的进出 / 收盘那一刻的档位切换 / 与真源的数值一致性。→ verify: 截图 + 对拍表贴进本文件；env-gated 真 vendor IT（`RUN_MARKETDATA_IT=true`）手动跑一次并贴输出（该门恒 skip，「测试全绿」对真契约不构成证据）
+
+  **实证（2026-08-19 美股常规时段 / prod `MARKETDATA_PROVIDER=live` / 真机 CET-AL00 · mobile 0.12.0）** —— 截图与原始 JSON 落 `design/t013/`（该目录 gitignored，像素里可能有持仓）。
+
+  闸开那一刻实录：`21:30:02 market_us = AFTERNOON`（命中 `REGULAR_SESSION_STATES` 白名单）。同一分钟内 15 只锚**全部** `eod_close → realtime`，`quoteAsOf` 由交易日翻成时刻，`realtimeDegrade` 全 `null`。
+
+  | 判据 | 证据 |
+  | --- | --- |
+  | `SC-001` | 5 条抽样与富途终端对拍：4 条实时行**逐条一致**（近月贴价 / 深虚值 / 远月 / 中间档，含 bid·ask·成交量·×100 单位）；第 5 条 `ACN280121P190` 是窗外收盘档行，我方 `bid 44.00/ask 49.00/vol 21` 与 vendor 此刻 `41.00/42.70/5` **不同** ⇒ 反向确认它未被 overlay 覆盖 |
+  | `SC-002` | 候选范围最大那只（`us:ACN`，窗内 265）：间隔 ~1 s ×12 → **629–1162 ms，P95 1.16 s ≤ 1.5 s**。⚠️ 该达标以 PR #126 为前提 —— 修复前同样打法有一次 **18279 ms**，病灶是每请求一发 `/market-state` 撞 10 发/30 s 桶后**静默排队** |
+  | `US1-AS1` | 真机档位条 `● 实时 21:31:28`（时刻含秒） |
+  | `US1-AS2` | 点刷新后时刻推进、报价随之更新（开盘前 `收盘档 08-18` → 开盘后实时，同一台机器前后对照） |
+  | `US1-AS5` | 真机 `235 条未取到实时 · 见行内「收」标` —— 逐行标档，非页级一刀切 |
+  | `US1-AS6` / `FR-004` / `SC-006` | 开盘前后**共同腿 2226 条，`openInterest` 零变化**；OI 列表头仍标「截至 08-…」不随实时翻今天 |
+  | `US2-AS1` / `US2-AS2` | 15 只锚 13 只成员有进出（`us:ACN` `+4/−5`、`us:CPB` `+11/−4`）。新进的 `ACN260904P162500` 昨收在 `PREMIUM_FLOOR=0.31` 之下、盘中 `bid 1.80` ⇒ 正是「昨天不合格今天合格」那一格 |
+  | `US2-AS3` | 同一时刻 `legs` 与 `chain-report` 同档同时刻（`realtime` / `13:31:18Z`） |
+  | `US2-AS4` | 14/15 只 spot 移动（`us:ACN` 172.93 → 184.74），窗随之动（`strike [123.05, 184.57]`），`premiumMin` 随 spot 重算 |
+  | `US2-AS5` | 真机 `本轮 3 条新进 6 条已不满足` |
+  | `SC-004` | 实时行 292 条（ACN 160 + PEP 132）扫描：`absDelta` / `sigmaDistance` 为 0 或空的 **0 条** |
+  | 真 vendor IT | `RUN_MARKETDATA_IT=true` 手动跑两次：盘前 `[T013] /option-snapshot 采样 2026-08-19T11:48:18Z: 期权行 50, IV>0 44, greeksComplete 50`；盘中 `14:13:46Z: 期权行 50, IV>0 25, greeksComplete 50`。`EXIT=0`，`23 tests | 22 skipped` |
+
+  **本轮未观测（如实登记，不凑证据）**：
+
+  - `US1-AS4`（源不可达 → 整表回落 + 标降级）—— prod 上**造不出**这个输入；覆盖归 `T005` 的 IT 与 `T011` 的 e2e。
+  - `US3-AS1` / `US3-AS2`（超单批上限）—— 窗内最大 265 < 399，**今日零触发**，与 spec 判断一致。
+  - 收盘那一刻（北京 04:00）的档位切换 —— 需值守或无人值守采集，本轮未做。
+
+  **已知偏差**：真机跑的是 `mobile 0.12.0`，**不含**当日合入的档位条文案精简与区块头去重（PR #126 的 mobile 半边）。截图里的文案是精简**前**版本 —— 看图时别据此判断代码没改。
+
+  **实证期间发现、不属于 064 交付范围的三件事**：#129（包络罩不住建仓召回集）· #130（`bid=0` 被当作有效实时报价）· #131（总纲：讨论纪要与实证归档）。
 
 ## Phase 6: 收口
 
 - [X] T014 [Docs] **ADR-0062 跨 ctx 面补一行 + plan 转 approved + 自审段重算**（plan Gate 0.4）：① `docs/adr/0062-optionsdesk-bounded-context.md` 的跨 ctx 面清单补上本片新增的读取口 token `OPTION_SNAPSHOT_READ_PORT`（住 `apps/server/src/marketdata/option-snapshot.port.ts`）—— 061 已 amend 那条强一致同步读边，本片只是**第二个消费者**且形态不变（DI port token / 只读 / 单向无环），**不重开重审**，只登记第 6 行；② `plan.md` frontmatter `status: drafted → approved`、`updated_at` 同步；③ **校准本文件自审段**（FR / SC / AS / Edge Case / `state_branches` 条数与覆盖按 grep **实时重算**，纳入 impl 期新增的 T007a / T008a）；④ 订正两处 drift —— T001 行的 `windowTripwire` 签名（实装是 `(candidates, window)`）与 `leg-retrieval.adapter.ts` 里「mock 档落 `source_unavailable`」那句注释（实测是 `gate_unknown`：`MARKET_STATE_PORT` 经 `collectionPort` 注册、mock 下是 054 拒绝壳 ⇒ 闸一判即 `'unknown'`，在发起 fetch **之前**就 fail-closed；T012 契约冒烟实跑证实）。🚨 `spec.md` 的 `status` **本 task 不动** —— 拆成 T014b，理由见 §单 PR 与上线顺序。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；`pnpm tsx scripts/checks/check-adr-index.ts` 绿
 
-- [ ] T014b [Docs] **T013 证据齐后翻 `spec.md` status**（依赖 **T013**）：`spec.md` frontmatter `status: planned → implemented`、`updated_at` 同步。🚨 **它为什么不能跟 T014 一起做**：本文件 §单 PR 与上线顺序 自己立的门是「`SC-001` / `SC-002` 拿不到前不翻 `implemented`」，而这两条判据**只能**由 T013 的美股盘中真机实证提供 —— web e2e 结构上验不到（spec `web_compat_notes` 已写明三类验不到的东西）。⇒ T013 的截图与对拍表贴进本文件、T013 翻 `[X]` 之后，才动这一行。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；且本文件 T013 已是 `[X]`
+- [X] T014b [Docs] **T013 证据齐后翻 `spec.md` status**（依赖 **T013**）：`spec.md` frontmatter `status: planned → implemented`、`updated_at` 同步。🚨 **它为什么不能跟 T014 一起做**：本文件 §单 PR 与上线顺序 自己立的门是「`SC-001` / `SC-002` 拿不到前不翻 `implemented`」，而这两条判据**只能**由 T013 的美股盘中真机实证提供 —— web e2e 结构上验不到（spec `web_compat_notes` 已写明三类验不到的东西）。⇒ T013 的截图与对拍表贴进本文件、T013 翻 `[X]` 之后，才动这一行。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；且本文件 T013 已是 `[X]`
 
 ## Dependencies
 
