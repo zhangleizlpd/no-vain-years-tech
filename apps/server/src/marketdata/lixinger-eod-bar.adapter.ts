@@ -7,6 +7,16 @@ import { toLixinger } from './lixinger-symbol.rules.js';
 
 /** 理杏仁 `change` (涨跌幅小数, 如 -0.0215) → 百分数 string ("-2.1500"); 缺失透传 null。
  *  Decimal ×100 (非 Float, 防 -0.0215*100 = -2.1499999 漂移)。 */
+/**
+ * 📌 **盘中问「今天」返空数组**（2026-08-19 prod 取证，与富途相反）。
+ *
+ * 本端点在该 session 尚未收盘时对 `end = 今天` 返**空**，`syncEodBarNone` 拿到空数组即
+ * 早返、零落库 ⇒ cn/hk 历史上从未落过「半根 K」，即便有 5 次触发真的落在盘中/午休。
+ *
+ * 🚨 **别把这当成代码层的保护** —— 它是 vendor 行为，不是判据。同一个判据缺失在富途
+ * (`futu-eod-bar.adapter.ts`) 上就落了 #103。采集侧的真防线是 `sync-asof.rules.ts` 的
+ * 收盘口径 asOf（ADR-0066 §2）。
+ */
 function lixPctToString(v: unknown): string | null {
   const s = lixNumToString(v);
   return s === null ? null : new Prisma.Decimal(s).times(100).toFixed(4);

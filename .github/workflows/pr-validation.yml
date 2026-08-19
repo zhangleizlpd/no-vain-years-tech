@@ -160,6 +160,16 @@ jobs:
         # 不依赖 nx affected — 判定单点是 holistic invariant。
         run: pnpm tsx scripts/checks/check-trading-day-read.ts
 
+      - name: Enforce time-semantics vocabulary single point (per ADR-0066 §8)
+        # ts-morph AST 门禁, 两条正交判据:
+        #   A. 单文件 ≥2 个**不同**市场 IANA 时区字面量 = 第二张 market→时区表 → 拒;
+        #   B. 裸 Intl.DateTimeFormat({ timeZone }) → 拒 (vendor adapter / 存量豁免除外)。
+        # 这一类偏差**永不报错** —— 基准差一天只让 K 线少半天成交量、让带判据的边界腿静默
+        # 进出带 (#103), 通读式 review 抓不住, 只能机器拦。
+        # 与上一条 trading-day-read **正交**: 那条管「读日历用对判据」, 本条管「换算走词表」。
+        # lefthook time-semantics-check 的云端镜像 (--no-verify 绕不过这里)。Full-scan。
+        run: pnpm tsx scripts/checks/check-time-semantics.ts
+
       - name: Enforce nullable @ApiProperty explicit type (per orval objectmap regression 012/023/024/025)
         # nullable 标量 DTO 字段 (string|null / number|null / boolean|null) 的
         # @ApiProperty(Optional) 必须显式 type:, 否则 @nestjs/swagger 反射推不出标量 →

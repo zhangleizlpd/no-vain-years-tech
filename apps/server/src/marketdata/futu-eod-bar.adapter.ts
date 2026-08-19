@@ -11,6 +11,21 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  *
  * GET `<shim>/kline?code=US.PEP&start&end&ktype=K_DAY&autype=NONE`，Bearer 鉴权。
  *
+ * ## 🚨🚨 盘中问「今天」会返一根**进行中**的 K 线（2026-08-19 prod 取证）
+ *
+ * 这条差异是 #103 的直接成因，且**仓内此前零处记录**：本端点在该 session 尚未收盘时，对
+ * `end = 今天` **照样返一行**，装的是「截至此刻」的累计值 —— 实测 volume 仅正常日的
+ * 23%–56%，close 与官方收盘价最大差 `+1.88%`。而 `daily_bar` 的写路径是
+ * `createMany(skipDuplicates)` ⇒ 那根半根 K 按唯一键占位、**永久驻留**，当晚真收盘那轮被
+ * 静默挡掉，`sync_run` 却记 `ok=15 failed=0`。
+ *
+ * 📌 **理杏仁（cn/hk）在同样情形下返空数组** —— 所以同一个判据缺失只在 us 显形，cn/hk 在
+ * 5 次盘中触发下都干净。⇒ **cn/hk 的安全不是代码给的，是 vendor 给的。**
+ *
+ * ⇒ 采集侧的防线是 `sync-asof.rules.ts` 把区间右端退到**已收盘 session**（ADR-0066 §2），
+ * 本 adapter **不自己加闸**（它拿到什么区间就问什么，闸归调用方；在这里加会让「运维显式
+ * `--as-of`」也被拦掉）。🚨 **接入新 vendor 时，「盘中问今天返什么」是必验项。**
+ *
  * ## 🚨 只取不复权（`AuType.NONE`），这条是承重的
  *
  * 存储模型自 server feature 020（2026-06-05）起是「**只物化 `adjust='none'` 一行** +
