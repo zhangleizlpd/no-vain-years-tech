@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service.js';
-import { subtractDays, toDailyBarRow } from './dimension-executor.js';
+import { subtractDays, toDailyBarRow, writeDailyBarRows } from './dimension-executor.js';
 import { EOD_BAR_PORT, type EodBarPort } from './eod-bar.port.js';
 import { parseCanonicalSymbol } from './marketdata.rules.js';
 import type { EodBarPoint } from './marketdata.types.js';
@@ -21,8 +21,9 @@ import type { EodBarPoint } from './marketdata.types.js';
  *    cn/hk→理杏仁），映射复用 `DimensionExecutor` 的 `toDailyBarRow`。⇒ 本入口写进
  *    `daily_bar` 的行与常规轮写的**逐字段同口径**，不会出现「两条路两个数」。
  *    🚨 **MUST NOT 在这里另抄一份映射** —— 那正是两份必漂的形状。
- * 2. **幂等**：`createMany(skipDuplicates)`，唯一键 `(instrumentId, tradeDate, adjust)`
- *    ⇒ 与常规轮抢跑也只是各自 no-op，不需要协调。
+ * 2. **幂等 + 尾窗可订正**：与采集轮共用 {@link writeDailyBarRows}，唯一键
+ *    `(instrumentId, tradeDate, adjust)` ⇒ 与常规轮抢跑仍是各自 no-op、不需要协调；而落在
+ *    尾窗内的行改得动 ⇒ vendor 事后订正 / 盘中「进行中」K 线不会被这条旁路永久冻住。
  * 3. **不推水位**：`sync_dimension.lastWatermark` 一格不动。本入口是**旁路**，不是采集轮的
  *    一次执行；推了水位会让常规轮以为这段区间已经跑过，静默漏掉同批其余标的。
  *
@@ -73,10 +74,10 @@ export class EnsureLatestEodBarUseCase {
     });
     if (bars.length === 0) return null; // 停牌 / 新股尚无行情 —— 零落库, 非错误。
 
-    await this.prisma.dailyBar.createMany({
-      data: bars.map((b) => toDailyBarRow(instrument.id, b)),
-      skipDuplicates: true,
-    });
+    await writeDailyBarRows(
+      this.prisma,
+      bars.map((b) => toDailyBarRow(instrument.id, b)),
+    );
 
     // 端口契约说按 tradeDate 升序, 但这里**不赖它** —— 顺序若哪天变了, 取错的那根是一个
     // 「不报错、只是价格差几天」的静默偏差, 而这正是本仓反复踩的形状。取最大值零成本。

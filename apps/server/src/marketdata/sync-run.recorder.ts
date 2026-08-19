@@ -8,15 +8,34 @@ export interface SyncRunStats {
   ok: number;
   skipped: number;
   failed: number;
+  /**
+   * 本次执行**真正落到库里的行数** (063 Phase 3.3); `null` = 本次**没有任何写路径上报**。
+   * 三态语义 + 「为什么不是 `@default(0)`」的判据见 `schema.prisma` 的 `SyncRun.written` 注释。
+   *
+   * 🚨 累加必须走 {@link addWritten}, **别直接 `+=`** —— `null + 1` 在 TS 里过不了、在 JS 里
+   * 是 1 看着还对, 而 `stats.written! += n` 会把 null 起点变成 NaN 且一路不报错。
+   */
+  written: number | null;
   /** 失败目标明细 (续跑/重试源 + 可 grep), 每项形如 {symbol, step, error}。 */
   failedTargets: unknown[];
 }
 
 export type SyncRunStatus = 'success' | 'partial' | 'failed' | 'skipped';
 
+/**
+ * 累加**真正落库的行数** (063 Phase 3.3)。第一次上报把 `null` 抬成数, 之后累加 —— 「上报了 0
+ * 行」与「一次都没上报」因此在终值上可分辨, 而这正是本列存在的理由。
+ *
+ * 口径: insert-only 段传 `createMany(skipDuplicates)` 报的 `count` (撞唯一键被跳过的行**不计**,
+ * 它们没落库); 尾窗 upsert 段按行传 (那些行确实落库了)。
+ */
+export function addWritten(stats: SyncRunStats, rows: number): void {
+  stats.written = (stats.written ?? 0) + rows;
+}
+
 /** 空统计起点 (调用方累加)。 */
 export function emptyStats(): SyncRunStats {
-  return { scanned: 0, ok: 0, skipped: 0, failed: 0, failedTargets: [] };
+  return { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, failedTargets: [] };
 }
 
 /**
@@ -66,6 +85,7 @@ export class SyncRunRecorder {
         ok: stats.ok,
         skipped: stats.skipped,
         failed: stats.failed,
+        written: stats.written,
         failedTargets:
           stats.failedTargets.length > 0
             ? (stats.failedTargets as Prisma.InputJsonValue)

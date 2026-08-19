@@ -106,7 +106,7 @@ describe('019 T006 SC-S05 测试维度注册演练 (tick→flow→worker 全链)
     // ② 注册 executor (零 switch/常量改动 — 本 IT 的 diff 面即 SC-S05 证据)。
     const registry = buildRegistry();
     const testExecutor = vi.fn(async () => ({
-      stats: { scanned: 1, ok: 1, skipped: 0, failed: 0, failedTargets: [] },
+      stats: { scanned: 1, ok: 1, skipped: 0, failed: 0, written: null, failedTargets: [] },
       budgetExhausted: false,
     }));
     registry.registerExecutor(TEST_KEY, testExecutor);

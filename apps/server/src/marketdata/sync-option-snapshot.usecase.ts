@@ -20,7 +20,7 @@ import {
   type OptionSnapshotPort,
   type OptionSnapshotRow,
 } from './option-snapshot.port.js';
-import type { SyncRunStats } from './sync-run.recorder.js';
+import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
 import { exchangeCalendarDateForScope } from './session-clock.js';
 
 /**
@@ -331,7 +331,11 @@ export class SyncOptionSnapshotUseCase {
         );
       }
       for (const chunk of chunked(data, SNAPSHOT_ROW_CHUNK)) {
-        await this.prisma.optionDailySnapshot.createMany({ data: chunk, skipDuplicates: true });
+        addWritten(
+          stats,
+          (await this.prisma.optionDailySnapshot.createMany({ data: chunk, skipDuplicates: true }))
+            .count,
+        );
       }
       if (optionRows.length < batch.length) {
         // 覆盖率核对是 FR-045 (另 task) 的事; 这里只留可 grep 的痕, 不自建第二套判据。

@@ -57,6 +57,7 @@ import {
 } from './underlying-iv.rules.js';
 import type { EodBarPoint, FundamentalSnapshotDto } from './marketdata.types.js';
 import {
+  addWritten,
   deriveStatus,
   emptyStats,
   SyncRunRecorder,
@@ -342,6 +343,66 @@ export function toDailyBarRow(
 }
 
 /**
+ * `daily_bar` 落库: **尾部窗口 upsert + 更老 insert-only** (063 Phase 3.1, 形态照抄
+ * {@link DimensionExecutor.writeUsIndexRows})。**唯二**两个 `daily_bar` 写入口 —— 采集轮的
+ * `syncEodBarNone` 与建锚旁路 `EnsureLatestEodBarUseCase` —— 共用本函数。两处各写一遍必漂,
+ * 而漂移的形态恰是「同一根 K 在一条路上改得动、在另一条路上永远冻着」。
+ *
+ * ## 为什么不再是纯 insert-only
+ *
+ * 原写法 `createMany(skipDuplicates)` 对已存在的 `(instrument, date, adjust)` **静默跳过** ⇒
+ * vendor 的事后订正永远进不来, 且**盘中拿到的「进行中」K 线被永久冻结** (富途
+ * `request_history_kline` 盘中返进行中 K 线 —— #103 的形状)。
+ *
+ * ⚠️ **代价**: 订正的是「值」不是「版本」—— 旧值不留档, 做不了严格 PIT 回测 (无 look-ahead
+ * bias 的历史复盘)。业内正解是另开一条 vintage 轴, 但那是破坏性变更 (读侧全都要带「取最新
+ * 版本」语义), 真要回测时再上, 走 expand-migrate-contract。
+ *
+ * ## 前提: 一批 = 单标的单口径
+ *
+ * 「尾部」按 `tradeDate` 升序取最后 N 行 ⇒ 一批里混多只标的 / 多个复权口径时这个切法没有意义。
+ * 两个调用点都是「一只标的、一个口径、一段区间」, 保持这样。
+ *
+ * 🚨 **入参顺序不可信, 函数自己排** —— `EodBarPort` 契约说按 `tradeDate` 升序, 但顺序哪天变了,
+ * 尾窗就静默切在错误的 N 行上 (老行被 upsert、新行反而 insert-only), 而这是个不报错、只是订正
+ * 悄悄失效的偏差。排序 O(n log n) 相对 n 次往返可忽略。
+ *
+ * 复杂度: ⌈头部行数 / {@link BACKFILL_ROW_CHUNK}⌉ 次 `createMany` +
+ * ≤ {@link DAILY_BAR_REVISABLE_TAIL_ROWS} 次 upsert (单 tx)。
+ *
+ * @returns **真正落到库里的行数** (063 Phase 3.3): insert-only 段取 PG 报的真新增 (撞唯一键
+ *   被跳过的**不计**, 它们没落库); 尾窗段按行计 —— 那些行是订正, 确实落了库。
+ */
+export async function writeDailyBarRows(
+  prisma: PrismaService,
+  rows: Prisma.DailyBarCreateManyInput[],
+): Promise<number> {
+  if (rows.length === 0) return 0; // 停牌 / 新股无行情 —— 不开事务。
+  const sorted = [...rows].sort(
+    (a, b) => new Date(a.tradeDate).getTime() - new Date(b.tradeDate).getTime(),
+  );
+  const tailStart = Math.max(0, sorted.length - DAILY_BAR_REVISABLE_TAIL_ROWS);
+
+  let written = 0;
+  for (const chunk of chunked(sorted.slice(0, tailStart), BACKFILL_ROW_CHUNK)) {
+    written += (await prisma.dailyBar.createMany({ data: chunk, skipDuplicates: true })).count;
+  }
+
+  const tail = sorted.slice(tailStart);
+  await prisma.$transaction(async (tx) => {
+    for (const row of tail) {
+      const { instrumentId, tradeDate, adjust, ...values } = row;
+      await tx.dailyBar.upsert({
+        where: { instrumentId_tradeDate_adjust: { instrumentId, tradeDate, adjust } },
+        create: row,
+        update: values,
+      });
+    }
+  });
+  return written + tail.length;
+}
+
+/**
  * {@link UnderlyingIvSnapshot} → `underlying_iv_daily` 列 (046 T008)。
  *
  * `symbol` 是请求侧回填的**路由字段不是列**, 故不在此列出 (带进去 Prisma 直接抛未知字段)。
@@ -446,6 +507,17 @@ const BACKFILL_ROW_CHUNK = 500;
  * 「上周某天的值被订正」这种情形。
  */
 const US_INDEX_REVISABLE_TAIL_ROWS = 10;
+
+/**
+ * `daily_bar` **尾部可修订窗口** (行数, 063 Phase 3.1): 只有最近这么多根走 upsert, 更老的走
+ * insert-only。取值与理由同 {@link US_INDEX_REVISABLE_TAIL_ROWS} 的 10 —— 约两个交易周, 覆盖
+ * 「盘中先落进行中 K、收盘后订正」与一次长周末后的补发。
+ *
+ * 🚨 **必须 ≥ 各日线维度的 `delta_lookback_days`** (今天 us_equity_bar = 7, eod_bar = NULL):
+ * 回看窗决定「每晚重新问 vendor 要哪几天」, 尾窗决定「问回来的这几天里哪几天改得动」。尾窗小于
+ * 回看窗 = 每晚白拉几天回来又按 insert-only 丢掉, 纯浪费且不报错。调大回看窗时回到这里对一次。
+ */
+const DAILY_BAR_REVISABLE_TAIL_ROWS = 10;
 
 /**
  * skip-complete 游标宽限窗口 (grace-window, 2026-07-13 实测优化): 判「老端已回填」用 `from + N 天`
@@ -976,7 +1048,7 @@ export class DimensionExecutorRegistry {
       stats.scanned++;
       try {
         // 三模式全部只落 none (FR-A01): delta 当日 1 行 / backfill 历史区间。
-        await this.syncEodBarNone(inst, targetDate, from);
+        addWritten(stats, await this.syncEodBarNone(inst, targetDate, from));
         if (mode === 'delta' && hitInstruments.has(inst.id)) {
           // 除权命中: + transient 跃变锚定 (恰 2 次/标的, SC-A03; 与 corp 扫描双点幂等)。
           const lookback = dim.reAdjustLookbackDays ?? DEFAULT_RE_ADJUST_LOOKBACK_DAYS;
@@ -1135,7 +1207,7 @@ export class DimensionExecutorRegistry {
     let filled = 0;
     for (const inst of targets) {
       try {
-        await this.syncEodBarNone(inst, targetDate, from);
+        addWritten(stats, await this.syncEodBarNone(inst, targetDate, from));
         filled++;
       } catch (err) {
         // 与主跑同口径计失败: 补洞期 vendor 挂了同样值得知道 (维度转 partial → 飞书红)。
@@ -1169,24 +1241,22 @@ export class DimensionExecutorRegistry {
   }
 
   /**
-   * eod none 单口径落库 (020 T008, FR-A01): fetch [from, targetDate] none → append-only
-   * 幂等落库。019 推导段 (none × 最新因子写 forward/backward 行) 退役 — forward/backward
+   * eod none 单口径落库 (020 T008, FR-A01): fetch [from, targetDate] none → 幂等落库
+   * (尾窗可订正, 见 {@link writeDailyBarRows})。019 推导段 (none × 最新因子写 forward/backward 行) 退役 — forward/backward
    * 读时换算 (020 T003), DailyBar 收敛单口径事实表。
    */
   private async syncEodBarNone(
     inst: WorkingInstrument,
     targetDate: string,
     from: string,
-  ): Promise<void> {
+  ): Promise<number> {
     const symbol = `${inst.market}:${inst.code}`;
     const bars = await this.eodBar.getBars({ symbol, adjust: 'none', from, to: targetDate });
-    if (bars.length === 0) return; // 当日无 bar (停牌等) — 零落库。
-    await this.prisma.$transaction(async (tx) => {
-      await tx.dailyBar.createMany({
-        data: bars.map((b) => toDailyBarRow(inst.id, b)),
-        skipDuplicates: true,
-      });
-    });
+    if (bars.length === 0) return 0; // 当日无 bar (停牌等) — 零落库。
+    return writeDailyBarRows(
+      this.prisma,
+      bars.map((b) => toDailyBarRow(inst.id, b)),
+    );
   }
 
   /**
@@ -1247,7 +1317,11 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.shortSellingDaily.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.shortSellingDaily.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -1324,7 +1398,10 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.buybackEvent.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.buybackEvent.createMany({ data: rowChunk, skipDuplicates: true })).count,
+            );
           });
         }
         stats.ok++;
@@ -1396,7 +1473,10 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.equityChange.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.equityChange.createMany({ data: rowChunk, skipDuplicates: true })).count,
+            );
           });
         }
         stats.ok++;
@@ -1468,7 +1548,11 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.shareholderChange.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.shareholderChange.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -1537,7 +1621,10 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction; 空返回 (港股极罕见配股零样本) → chunked([]) 空 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.allotmentEvent.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.allotmentEvent.createMany({ data: rowChunk, skipDuplicates: true })).count,
+            );
           });
         }
         stats.ok++;
@@ -1613,7 +1700,10 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.revenueSegment.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.revenueSegment.createMany({ data: rowChunk, skipDuplicates: true })).count,
+            );
           });
         }
         stats.ok++;
@@ -1686,7 +1776,11 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.shareholderSnapshot.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.shareholderSnapshot.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -1762,7 +1856,11 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.employeeSnapshot.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.employeeSnapshot.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -1826,7 +1924,11 @@ export class DimensionExecutorRegistry {
         // 非港股通标的 points=[] → chunked([]) 空 → 零 createMany (零落库不崩)。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.connectHoldingDaily.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.connectHoldingDaily.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -1899,7 +2001,11 @@ export class DimensionExecutorRegistry {
           // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction; 空返回 → 零 createMany。
           for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
             await this.prisma.$transaction(async (tx) => {
-              await tx.volatilityDaily.createMany({ data: rowChunk, skipDuplicates: true });
+              addWritten(
+                stats,
+                (await tx.volatilityDaily.createMany({ data: rowChunk, skipDuplicates: true }))
+                  .count,
+              );
             });
           }
         }
@@ -2034,7 +2140,10 @@ export class DimensionExecutorRegistry {
         // 大表分片: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.fundHolding.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.fundHolding.createMany({ data: rowChunk, skipDuplicates: true })).count,
+            );
           });
         }
         stats.ok++;
@@ -2083,7 +2192,11 @@ export class DimensionExecutorRegistry {
         // 分片: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.fundCompanyHolding.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.fundCompanyHolding.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -2131,7 +2244,10 @@ export class DimensionExecutorRegistry {
         // 覆盖式: 单 tx 内清本股旧归属 + 灌当前快照 (原子替换, 反映最新)。
         await this.prisma.$transaction(async (tx) => {
           await tx.indexMembership.deleteMany({ where: { instrumentId: inst.id } });
-          await tx.indexMembership.createMany({ data: rows, skipDuplicates: true });
+          addWritten(
+            stats,
+            (await tx.indexMembership.createMany({ data: rows, skipDuplicates: true })).count,
+          );
         });
         stats.ok++;
       } catch (err) {
@@ -2183,7 +2299,11 @@ export class DimensionExecutorRegistry {
         // 覆盖式: 单 tx 内清本股旧归属 + 灌当前快照 (原子替换, 反映最新)。
         await this.prisma.$transaction(async (tx) => {
           await tx.industryClassification.deleteMany({ where: { instrumentId: inst.id } });
-          await tx.industryClassification.createMany({ data: rows, skipDuplicates: true });
+          addWritten(
+            stats,
+            (await tx.industryClassification.createMany({ data: rows, skipDuplicates: true }))
+              .count,
+          );
         });
         stats.ok++;
       } catch (err) {
@@ -2242,7 +2362,10 @@ export class DimensionExecutorRegistry {
         // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.announcement.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.announcement.createMany({ data: rowChunk, skipDuplicates: true })).count,
+            );
           });
         }
         stats.ok++;
@@ -2365,7 +2488,11 @@ export class DimensionExecutorRegistry {
         // skipDuplicates: 历史不可变 → 跳已存补缺, 天然幂等 (重跑不翻倍)。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.fundamentalSnapshot.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.fundamentalSnapshot.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
@@ -2462,7 +2589,7 @@ export class DimensionExecutorRegistry {
       try {
         const dtos = await this.financials.getFinancialsRange({ symbol, from, to: input.asOf }); // HTTP (tx 外)
         await this.prisma.$transaction(async (tx) => {
-          await tx.financialMetric.createMany({
+          const written = await tx.financialMetric.createMany({
             data: dtos.map((d) => ({
               instrumentId: inst.id,
               reportPeriod: d.reportPeriod,
@@ -2473,6 +2600,7 @@ export class DimensionExecutorRegistry {
             })),
             skipDuplicates: true, // 历史不可变 → 跳已存补缺; 天然幂等。
           });
+          addWritten(stats, written.count);
         });
         stats.ok++;
       } catch (err) {
@@ -2819,7 +2947,7 @@ export class DimensionExecutorRegistry {
         );
       }
 
-      await this.writeUsIndexRows(indexCode, usable);
+      addWritten(stats, await this.writeUsIndexRows(indexCode, usable));
       stats.ok += usable.length;
     }
 
@@ -2837,18 +2965,24 @@ export class DimensionExecutorRegistry {
    * 头部按 {@link BACKFILL_ROW_CHUNK} 分片: 首跑一次要灌 9.2k 行, 单条 `createMany` 塞满会
    * 顶到 Prisma 默认 5s 事务超时 (#675 病根)。
    */
-  private async writeUsIndexRows(indexCode: UsIndexCode, rows: UsIndexDailyPoint[]): Promise<void> {
+  private async writeUsIndexRows(
+    indexCode: UsIndexCode,
+    rows: UsIndexDailyPoint[],
+  ): Promise<number> {
     const tailStart = Math.max(0, rows.length - US_INDEX_REVISABLE_TAIL_ROWS);
 
+    let written = 0;
     for (const chunk of chunked(rows.slice(0, tailStart), BACKFILL_ROW_CHUNK)) {
-      await this.prisma.usIndexDaily.createMany({
-        data: chunk.map((row) => usIndexDailyRow(indexCode, row)),
-        skipDuplicates: true,
-      });
+      written += (
+        await this.prisma.usIndexDaily.createMany({
+          data: chunk.map((row) => usIndexDailyRow(indexCode, row)),
+          skipDuplicates: true,
+        })
+      ).count;
     }
 
     const tail = rows.slice(tailStart);
-    if (tail.length === 0) return;
+    if (tail.length === 0) return written;
     await this.prisma.$transaction(async (tx) => {
       for (const row of tail) {
         const data = { open: row.open, high: row.high, low: row.low, close: row.close };
@@ -2860,6 +2994,7 @@ export class DimensionExecutorRegistry {
         });
       }
     });
+    return written + tail.length;
   }
 
   /**
@@ -2920,7 +3055,11 @@ export class DimensionExecutorRegistry {
         // 空返回 → 零 createMany。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            await tx.underlyingIvHistory.createMany({ data: rowChunk, skipDuplicates: true });
+            addWritten(
+              stats,
+              (await tx.underlyingIvHistory.createMany({ data: rowChunk, skipDuplicates: true }))
+                .count,
+            );
           });
         }
         stats.ok++;
