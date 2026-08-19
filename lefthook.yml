@@ -393,6 +393,23 @@ pre-commit:
       glob: 'apps/server/src/**/*.ts'
       run: pnpm tsx scripts/checks/check-trading-day-read.ts
 
+    time-semantics-check:
+      tags: server architecture
+      # Per ADR-0066 §8 — 时间语义词表的防复发门禁, 两条正交判据:
+      #   A. 单文件内出现 ≥2 个**不同**的市场 IANA 时区字面量 = 一张 market→时区表的形状,
+      #      只允许在 session-clock.ts / market-session.rules.ts。两份必漂, 而漂的表现只是
+      #      某个市场的日期悄悄错一天、**不报错**;
+      #   B. 裸 Intl.DateTimeFormat({ timeZone }) 一律拒 (vendor adapter 与存量豁免除外) ——
+      #      自己转一次就是给「谁的今天」开第二个答案, 那正是 #103 的形状。
+      # 判据是「≥2 个不同」而不是「出现过」: 单个时区字面量的合法用途很多 (@Cron 的 tz 是
+      # processing-time 轴 / vendor 时间戳解析是 L3 轴), 一刀切会让门禁被加白名单加到失效。
+      # 与 trading-day-read-check **正交, 不要合并**: 那条管「读日历有没有用对三态判据」,
+      # 本条管「日期换算有没有走词表」—— 用对了三态判据的文件照样能自己 new 一个 Intl。
+      # glob 仅决定是否跑; 脚本忽略 args 始终全量扫 (holistic invariant, 同上)。
+      # CI mirror: pr-validation.yml validate-and-test 同名 step。Emergency exit: git commit --no-verify.
+      glob: 'apps/server/src/**/*.ts'
+      run: pnpm tsx scripts/checks/check-time-semantics.ts
+
     api-property-nullable-check:
       tags: server architecture
       # Per memory reference_nullable_apiproperty_needs_type_string_else_orval_objectmap —
