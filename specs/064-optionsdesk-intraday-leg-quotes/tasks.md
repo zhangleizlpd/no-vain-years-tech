@@ -95,7 +95,7 @@ updated_at: '2026-08-19'
 
 ## Phase 5: 两层验证与实证
 
-- [ ] T011 [Mobile-E2E] **hermetic UI e2e**（`FR-009`, `FR-011`, `FR-013`, `FR-021`, `FR-022`, `SC-004`, `SC-009`, US1-AS3, US1-AS4, US1-AS5, US1-AS6, US2-AS5）：新建 `apps/mobile/e2e/optionsdesk-intraday-tiers.spec.ts`（Playwright Expo Web，mock 后端）覆盖 —— 实时档 asOf 呈时刻 / 收盘档呈交易日 / 熔断降级整表回落且**零 0 值** / 部分缺失**逐行**标档（断言两种档位都在 DOM 里）/ OI 列归属日不随实时档变今天 / 刷新后成员变化提示出现且条数正确 / 首屏等待态期间**不出现任何腿行**。→ verify: `pnpm nx run mobile:e2e --grep 064`；🚨 叠屏 DOM 双命中用 `getByRole` 收窄（per `reference_expo_web_e2e_and_router_footguns`）
+- [X] T011 [Mobile-E2E] **hermetic UI e2e**（`FR-009`, `FR-011`, `FR-013`, `FR-021`, `FR-022`, `SC-004`, `SC-009`, US1-AS3, US1-AS4, US1-AS5, US1-AS6, US2-AS5）：新建 `apps/mobile/e2e/optionsdesk-intraday-tiers.spec.ts`（Playwright Expo Web，mock 后端）覆盖 —— 实时档 asOf 呈时刻 / 收盘档呈交易日 / 熔断降级整表回落且**零 0 值** / 部分缺失**逐行**标档（断言两种档位都在 DOM 里）/ OI 列归属日不随实时档变今天 / 刷新后成员变化提示出现且条数正确 / 首屏等待态期间**不出现任何腿行**。→ verify: `pnpm nx run mobile:e2e --grep 064`；🚨 叠屏 DOM 双命中用 `getByRole` 收窄（per `reference_expo_web_e2e_and_router_footguns`）
 
 - [ ] T012 [Contract-Smoke] **契约冒烟**（`FR-009`, `FR-010`, `FR-016`, `SC-005`）：新建 `apps/mobile/e2e/contract-smoke/064-intraday-leg-quotes.contract.ts` —— 用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条 happy path：拉选约表 → 断言 `priceKind` 与 `quoteAsOf` 的**序列化形态**（联合字面量 / 两种时间格式）能被客户端正确解封；再断言**实时关闭**时的响应与基线一致。→ verify: `pnpm nx run mobile:contract-smoke`
 
