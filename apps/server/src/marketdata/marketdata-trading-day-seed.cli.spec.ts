@@ -7,13 +7,30 @@ import { parseSeedArgs } from './marketdata-trading-day-seed.cli.js';
  */
 describe('parseSeedArgs', () => {
   it('缺省: markets=cn,hk,us, from=DEFAULT, to 未定 (运行时求今日)', () => {
-    expect(parseSeedArgs([])).toEqual({ markets: ['cn', 'hk', 'us'], from: '2015-01-01' });
+    expect(parseSeedArgs([])).toEqual({
+      markets: ['cn', 'hk', 'us'],
+      from: '2015-01-01',
+      backfillKind: false,
+    });
   });
 
   it('--from / --to / --markets 全解析', () => {
     expect(
       parseSeedArgs(['--from', '2018-01-01', '--to', '2026-07-14', '--markets', 'cn,hk']),
-    ).toEqual({ markets: ['cn', 'hk'], from: '2018-01-01', to: '2026-07-14' });
+    ).toEqual({
+      markets: ['cn', 'hk'],
+      from: '2018-01-01',
+      to: '2026-07-14',
+      backfillKind: false,
+    });
+  });
+
+  it('--backfill-kind → 走补写路径 (缺省不走)', () => {
+    expect(parseSeedArgs([]).backfillKind).toBe(false);
+    expect(parseSeedArgs(['--backfill-kind']).backfillKind).toBe(true);
+    // 与区间参数正交: 补写同样按区间收窄 (静态层只覆盖当年)。
+    const args = parseSeedArgs(['--backfill-kind', '--from', '2026-01-01', '--to', '2026-12-31']);
+    expect(args).toMatchObject({ backfillKind: true, from: '2026-01-01', to: '2026-12-31' });
   });
 
   it('坏 --from (非 YYYY-MM-DD) → 抛', () => {

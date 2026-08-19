@@ -121,7 +121,7 @@ describe('TencentCalendarAdapter', () => {
         '2026-06-25',
         '2026-06-25',
       );
-      expect(out).toEqual({ dates: ['2026-06-25'], servedBy: 'tencent' });
+      expect(out).toEqual({ dates: ['2026-06-25'], sessionKinds: {}, servedBy: 'tencent' });
       expect(calls[0].symbol).toBe('hkHSI');
     });
 
@@ -132,7 +132,7 @@ describe('TencentCalendarAdapter', () => {
         '2026-06-25',
         '2026-06-25',
       );
-      expect(out).toEqual({ dates: ['2026-06-25'], servedBy: 'tencent' });
+      expect(out).toEqual({ dates: ['2026-06-25'], sessionKinds: {}, servedBy: 'tencent' });
       expect(calls[0].symbol).toBe('usDJI');
     });
 
@@ -294,7 +294,7 @@ describe('TencentCalendarAdapter', () => {
           '2026-07-01',
           '2026-07-14',
         ),
-      ).toEqual({ dates: [], servedBy: 'tencent' });
+      ).toEqual({ dates: [], sessionKinds: {}, servedBy: 'tencent' });
     });
   });
 
@@ -313,7 +313,7 @@ describe('TencentCalendarAdapter', () => {
           '2026-07-01',
           '2026-07-07',
         ),
-      ).toEqual({ dates: ['2026-07-06'], servedBy: 'tencent' });
+      ).toEqual({ dates: ['2026-07-06'], sessionKinds: {}, servedBy: 'tencent' });
     });
 
     it('容错: day[] 内非数组 / 坏日期格式坏项跳过, 不整体失败', async () => {
@@ -338,7 +338,7 @@ describe('TencentCalendarAdapter', () => {
           '2026-07-01',
           '2026-07-14',
         ),
-      ).toEqual({ dates: ['2026-07-01', '2026-07-03'], servedBy: 'tencent' });
+      ).toEqual({ dates: ['2026-07-01', '2026-07-03'], sessionKinds: {}, servedBy: 'tencent' });
     });
   });
 });

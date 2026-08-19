@@ -1,0 +1,38 @@
+-- 063 时间语义统一 Phase 2: `trading_day` 加**这一场开整天还是半天**一列。带 DEFAULT 的加列,
+-- 无约束变更 ⇒ expand-only, 零破坏性变更。
+--
+-- ## 为什么需要
+--
+-- 收盘时刻此前是**代码常量** (`MARKET_CLOSE_MINUTES` / `MARKET_SESSION`), 而半日市当天的真实
+-- 收盘早几小时。2026 年内就有 5 天撞上:
+--   · NYSE  2026-11-27 (感恩节次日) / 2026-12-24 → 13:00 ET  (常量说 16:00)
+--   · HKEX  2026-02-16 (除夕) / 2026-12-24 / 2026-12-31 → 12:00 HKT (常量说 16:00)
+-- 偏差方向安全 (时钟说没收 ⇒ asOf 回退一天 ⇒ 少采一场, 不写半根), 但**半日市当天建锚会误判
+-- `intraday_skipped`**, 且将来给 hk/us 接盘中预警会在收盘后仍答「可成交」。
+--
+-- ## 🚨 三态, 且 `unknown` 是常态不是异常
+--
+-- 值域 `whole` | `half` | `unknown`, 语义同 062 交易日三态: **`unknown` ≠ `whole`**。
+-- 腾讯 (cn/hk 历史段主源) 是「指数当日有 bar ⟺ 开市」的**反推**源 —— 半日市当天指数照样有
+-- bar ⇒ 它结构上区分不了整天与半天, 写的行一律 `unknown`。给它填 `whole` 兜底就是把「我不
+-- 知道」伪装成「我确认是整天」。消费侧对 `unknown` **fail-open 回落常量** = 退回本列上线前的
+-- 行为, 而不是「连补采都做不了」。
+--
+-- ## DEFAULT 'unknown' 而不是 nullable
+--
+-- 与 sync_run.written 那一列的 nullable 三态**刻意不同**: 那里 NULL 与 0 是**两个不同事实**
+-- (没上报 / 上报了是零); 这里 NULL 与 'unknown' 会是**同一个事实**的两种写法 —— 多一种写法
+-- 就多一处要处理的分支, 而三态本身已经穷尽。既有行落 'unknown' 语义正确: 它们确实是在这一列
+-- 上线前写的, 我们对它们的场长一无所知。
+--
+-- ## 存量行怎么补
+--
+-- 本表是 `createMany(skipDuplicates)` **插入即冻结** —— 加列不会让既有行被回填, 而 2026 年
+-- 11/12 月的行前瞻段早已铺好 ⇒ **不补的话连 us 那两天都拿不到收益**。补法是**一次性、幂等**的
+-- `marketdata-trading-day-seed.cli.ts --backfill-kind` (只 UPDATE `session_kind = 'unknown'`
+-- 的行)。**蓄意不上常驻补写机制**: 存量行一次补完, 此后新插入的行天然带 kind, 两段之间没有缝隙。
+--
+-- migration_refs: docs/adr/0066-time-semantics-ubiquitous-language.md (063 Phase 2)
+
+-- AlterTable
+ALTER TABLE "marketdata"."trading_day" ADD COLUMN     "session_kind" VARCHAR(8) NOT NULL DEFAULT 'unknown';

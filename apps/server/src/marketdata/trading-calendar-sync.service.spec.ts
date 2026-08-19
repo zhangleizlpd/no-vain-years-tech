@@ -75,7 +75,7 @@ function chain(byMarket: Record<string, string[]>, servedBy: string): TradingCal
     fetchTradingDates: vi.fn(async (market: string) => {
       const dates = byMarket[market];
       if (!dates) throw new Error(`[${servedBy}] 无 ${market} 数据`);
-      return { dates, servedBy };
+      return { dates, sessionKinds: {}, servedBy };
     }),
   };
 }

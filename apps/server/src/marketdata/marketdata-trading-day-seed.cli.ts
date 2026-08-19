@@ -19,6 +19,17 @@ import { userToday } from './session-clock.js';
  *
  * 用法: node dist/marketdata/marketdata-trading-day-seed.cli.js --from 2015-01-01 [--to 2026-07-14] [--markets cn,hk,us]
  * 退出码: 0 成功 / 1 解析或执行异常。
+ *
+ * ## `--backfill-kind` (063 Phase 2, **一次性**)
+ *
+ * 换一条路径: 不拉日历、不新增任何交易日, 只把**存量行**的 `session_kind` 从 `unknown` 补成
+ * 权威年历说的 `whole` / `half`。加列时 2026 全年的行前瞻段早已铺好, 而本表 `createMany
+ * (skipDuplicates)` **插入即冻结** ⇒ 不补的话连 us 那两个半日市都拿不到收益。
+ *
+ * 补完即止: 此后新插入的行天然带 kind, 两段之间没有缝隙 —— **蓄意不上常驻补写机制**。
+ * 幂等 (只动 `unknown` 行), 重跑 `updated=0`。区间须落在权威年历覆盖内 (静态层当年)。
+ *
+ * 用法: node dist/marketdata/marketdata-trading-day-seed.cli.js --backfill-kind --from 2026-01-01 --to 2026-12-31
  */
 
 /** 缺省 seed 起点 (多年历史; 覆盖 A/港/美股近十年交易日, 单次 vendor 区间调用即可)。 */
@@ -29,18 +40,25 @@ export interface SeedArgs {
   from: string;
   /** 缺省 = 上海时区今日 (运行时求值)。 */
   to?: string;
+  /** `--backfill-kind`: 走 `session_kind` 一次性补写路径, **不拉日历、不新增交易日**。 */
+  backfillKind: boolean;
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** 解析 argv: `--from 2015-01-01 --to 2026-07-14 --markets cn,hk,us`。 */
 export function parseSeedArgs(argv: string[]): SeedArgs {
-  const args: SeedArgs = { markets: [...CALENDAR_MARKETS], from: DEFAULT_SEED_FROM };
+  const args: SeedArgs = {
+    markets: [...CALENDAR_MARKETS],
+    from: DEFAULT_SEED_FROM,
+    backfillKind: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--from') args.from = argv[++i];
     else if (a === '--to') args.to = argv[++i];
     else if (a === '--markets') args.markets = (argv[++i] ?? '').split(',').filter(Boolean);
+    else if (a === '--backfill-kind') args.backfillKind = true;
   }
   if (!ISO_DATE.test(args.from)) throw new Error(`--from 须为 YYYY-MM-DD (得 "${args.from}")`);
   if (args.to !== undefined && !ISO_DATE.test(args.to)) {
@@ -62,6 +80,13 @@ export async function runSeed(argv: string[]): Promise<number> {
   try {
     const service = app.get(TradingCalendarSyncService);
     const to = args.to ?? userToday(new Date());
+    if (args.backfillKind) {
+      const results = await service.backfillSessionKinds(args.markets, args.from, to);
+      logger.log(`session_kind 补写完成: ${JSON.stringify({ from: args.from, to, results })}`);
+      // 🚨 per-market 失败不改退出码 (与 seed 同口径: 一市场坏不拖垮其余), 但**必留痕** ——
+      // `results[].error` 就是那条痕, 上面这行日志把它一并打出来。
+      return 0;
+    }
     const results = await service.syncRange(args.markets, args.from, to);
     logger.log(`trading-day seed 完成: ${JSON.stringify({ from: args.from, to, results })}`);
     return 0;

@@ -20,8 +20,15 @@ import {
  * 心跳自身写失败) 见 `src/marketdata/trading-calendar-sync.service.spec.ts`。
  */
 
-/** stub 交易日历源: 记录调用参数 + 按 market 返回预置日期 (未预置 → 空)。 */
-function stubSource(byMarket: Record<string, string[]>): {
+/**
+ * stub 交易日历源: 记录调用参数 + 按 market 返回预置日期 (未预置 → 空)。
+ *
+ * `kindsByMarket` 缺省为空 = 该源**答不上来** kind (腾讯形态) ⇒ 落库恒 `unknown`。
+ */
+function stubSource(
+  byMarket: Record<string, string[]>,
+  kindsByMarket: Record<string, Record<string, 'whole' | 'half'>> = {},
+): {
   source: TradingCalendarSource;
   calls: { market: string; from: string; to: string }[];
 } {
@@ -29,7 +36,11 @@ function stubSource(byMarket: Record<string, string[]>): {
   const source: TradingCalendarSource = {
     async fetchTradingDates(market, from, to) {
       calls.push({ market, from, to });
-      return { dates: byMarket[market] ?? [], servedBy: 'stub' };
+      return {
+        dates: byMarket[market] ?? [],
+        sessionKinds: kindsByMarket[market] ?? {},
+        servedBy: 'stub',
+      };
     },
   };
   return { source, calls };
@@ -74,6 +85,54 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
 
   /** 心跳行读取 helper (per-market, 未写过 → null)。 */
   const healthOf = (market: string) => prisma.calendarSyncHealth.findUnique({ where: { market } });
+
+  it('🚨 063 Phase 2: 源给得出 kind → 落库带 kind; 给不出 → 落 unknown (不兜底成 whole)', async () => {
+    const { source } = stubSource(
+      { hk: ['2026-12-23', '2026-12-24'], cn: ['2026-12-23'] },
+      // hk 由权威年历服务 (答得上来); cn 这一侧模拟腾讯形态 —— 结构上答不了。
+      { hk: { '2026-12-23': 'whole', '2026-12-24': 'half' } },
+    );
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);
+
+    await svc.syncRange(['cn', 'hk'], '2026-12-01', '2026-12-31');
+
+    const kindOf = async (market: string, date: string) =>
+      (
+        await prisma.tradingDay.findUniqueOrThrow({
+          where: { market_date: { market, date: new Date(`${date}T00:00:00Z`) } },
+        })
+      ).sessionKind;
+
+    expect(await kindOf('hk', '2026-12-24')).toBe('half'); // 平安夜半日市
+    expect(await kindOf('hk', '2026-12-23')).toBe('whole');
+    // 🚨 源没说 ⇒ `unknown`, **不是** `whole`。折成 whole 就是把「我不知道」伪装成「我确认
+    // 是整天」—— 消费侧对 unknown 回落常量 (= 本列上线前行为), 对 whole 则会当成已确认。
+    expect(await kindOf('cn', '2026-12-23')).toBe('unknown');
+  });
+
+  it('🚨 063 Phase 2: session_kind 一次性补写 —— 只动 unknown 行, 重跑零变更', async () => {
+    // ① 先用「答不上来」的源灌一批 —— 模拟本列上线前就已存在的存量行。
+    const { source } = stubSource({ hk: ['2026-12-23', '2026-12-24'] });
+    const forward = stubSource(
+      { hk: ['2026-12-23', '2026-12-24'] },
+      { hk: { '2026-12-23': 'whole', '2026-12-24': 'half' } },
+    ).source;
+    const svc = new TradingCalendarSyncService(source, prisma, CFG, forward);
+    await svc.syncRange(['hk'], '2026-12-01', '2026-12-31');
+    expect(await prisma.tradingDay.count({ where: { market: 'hk', sessionKind: 'unknown' } })).toBe(
+      2,
+    );
+
+    // ② 补写: 走**前瞻源**(权威年历) —— 走活源链会拿到 `{}` 而报成功, 等于什么都没做。
+    const first = await svc.backfillSessionKinds(['hk'], '2026-12-01', '2026-12-31');
+    expect(first).toEqual([{ market: 'hk', known: 2, updated: 2 }]);
+    expect(await prisma.tradingDay.count({ where: { market: 'hk', sessionKind: 'half' } })).toBe(1);
+
+    // ③ 幂等: 再跑一次, 一行都不该动 (条件里那句 `sessionKind: 'unknown'` 是唯一保证)。
+    expect(await svc.backfillSessionKinds(['hk'], '2026-12-01', '2026-12-31')).toEqual([
+      { market: 'hk', known: 2, updated: 0 },
+    ]);
+  });
 
   it('syncRange → 逐市场 upsert trading_day; result.inserted = 新落库行数', async () => {
     const { source, calls } = stubSource({
@@ -137,7 +196,7 @@ describe('TradingCalendarSyncService (Testcontainers PG) — 真落库填充 + �
     const source: TradingCalendarSource = {
       async fetchTradingDates(market) {
         if (market === 'cn') throw new Error('vendor down');
-        return { dates: ['2026-07-13'], servedBy: 'stub' };
+        return { dates: ['2026-07-13'], sessionKinds: {}, servedBy: 'stub' };
       },
     };
     const svc = new TradingCalendarSyncService(source, prisma, CFG, NO_FORWARD);

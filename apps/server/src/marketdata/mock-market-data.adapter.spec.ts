@@ -27,6 +27,8 @@ describe('MockMarketDataAdapter (8 端口确定性 fixtures)', () => {
     // 2026-06-01(Mon)~06-07(Sun) → 05-01..05 工作日, 排除 06-06(Sat)/06-07(Sun)。
     expect(await mock.fetchTradingDates('cn', '2026-06-01', '2026-06-07')).toEqual({
       dates: ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05'],
+      // mock 蓄意不造半日市: 编出来的半日市会让测试绿在一个现实中不存在的形状上。
+      sessionKinds: {},
       servedBy: 'mock', // 自报家门 (降级可观测, FR-014)
     });
   });

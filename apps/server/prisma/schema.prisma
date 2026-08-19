@@ -1007,6 +1007,24 @@ model UsIndexDaily {
 model TradingDay {
   market String   @db.VarChar(8)
   date   DateTime @db.Date
+  /// 这一场开**整天**还是**半天** (063 Phase 2)。值域 `whole` | `half` | `unknown`，三态互斥且
+  /// 穷尽，语义同 062 交易日三态：**`unknown` ≠ `whole`**。
+  ///
+  /// 为什么必须有这一列：收盘时刻此前是**代码常量** (`MARKET_CLOSE_MINUTES` / `MARKET_SESSION`)，
+  /// 而半日市当天的真实收盘比常量早几小时 —— 2026 年内就有 5 天撞上 (NYSE 11-27 / 12-24 早收
+  /// 13:00 ET；HKEX 02-16 / 12-24 / 12-31 早收 12:00 HKT)。偏差方向安全 (时钟说没收 ⇒ asOf 回退
+  /// 一天 ⇒ 少采一场，不写半根)，但**半日市当天建锚会误判 `intraday_skipped`**，且将来给 hk/us
+  /// 接盘中预警会在收盘后仍答「可成交」。
+  ///
+  /// 🚨 **`unknown` 是常态不是异常**，且 fail-open 回落常量：腾讯 (cn/hk 历史段主源) 是「指数当日
+  /// 有 bar ⟺ 开市」的**反推**源，结构上给不出这个值 ⇒ 它写的行一律 `unknown`。回落到常量 =
+  /// 退回本列上线前的行为，而不是「连补采都做不了」。**MUST NOT** 有人后来把 `unknown` 当 `whole`
+  /// 处理来「简化」—— 那正是本列要消灭的那个折叠。
+  ///
+  /// ⚠️ 本列**只在插入那一刻写**（表是 `createMany(skipDuplicates)` 插入即冻结）。上线时既有行
+  /// 由一次性 backfill 补 (`marketdata-trading-day-seed.cli.ts --backfill-kind`，只动 `unknown`
+  /// 行、幂等)；此后新插入的行天然带 kind ⇒ 两段严丝合缝，**不需要常驻补写机制**。
+  sessionKind String @default("unknown") @map("session_kind") @db.VarChar(8)
 
   @@id([market, date])
   @@map("trading_day")

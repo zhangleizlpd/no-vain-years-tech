@@ -20,10 +20,31 @@ export const TRADING_CALENDAR_SOURCE = Symbol('TRADING_CALENDAR_SOURCE');
  */
 export const TRADING_CALENDAR_FORWARD_SOURCE = Symbol('TRADING_CALENDAR_FORWARD_SOURCE');
 
+/**
+ * 一场交易的**时长形态** (063 Phase 2)。
+ *
+ * 🚨 **`unknown` 蓄意不在值域里** —— 它由「日期不在 {@link TradingCalendarFetchResult.sessionKinds}
+ * 里」表达。多一个 `'unknown'` 字面量就等于允许源**显式声称**「我知道它是未知的」，而真实情况
+ * 只有两种: 源答得上来 (whole/half)，或答不上来 (缺席)。用缺席表达未知，源就没法把「没这个能力」
+ * 写成一个看起来很确定的值。
+ */
+export type SessionKind = 'whole' | 'half';
+
 /** `fetchTradingDates` 返回值: 交易日集 + **本次由链上哪层服务** (降级可观测, FR-014)。 */
 export interface TradingCalendarFetchResult {
   /** 区间内交易日列表 (`YYYY-MM-DD`)。非交易日不出现。 */
   dates: string[];
+  /**
+   * 日期 → 该场的时长形态 (063 Phase 2)。**缺席 = `unknown`，不是 `whole`** —— 与 062 交易日
+   * 三态同源: 「源没说」和「源说是整天」是两件事，折成一件就是「库里没有的即为假」换个地方再犯。
+   *
+   * 各源的能力差异是**真实的、不可抹平的**: 静态层 (HKEX 官方年历) 与富途 (`trade_date_type`)
+   * 答得上来; 腾讯是指数反推，结构上答不上来 ⇒ 恒返 `{}`。**MUST NOT** 给答不上来的源填
+   * `whole` 兜底 —— 那会让「腾讯服务的那段区间」看起来和「官方年历确认过的那段」一样确定。
+   *
+   * key ⊆ {@link dates}: 非交易日不该出现在这里 (它没有「场」)。
+   */
+  sessionKinds: Readonly<Record<string, SessionKind>>;
   /**
    * 本次结果的**服务方自报家门** (如 `'tencent'` / `'static'` / `'mock'`)。每个 adapter 自报,
    * 链原样返回胜出节点的结果 → 心跳落库后由探针判「是否降级运行」(FR-014)。

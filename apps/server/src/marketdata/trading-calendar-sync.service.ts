@@ -7,6 +7,7 @@ import type { CalendarCoverageRange } from './trading-day.rules.js';
 import {
   TRADING_CALENDAR_FORWARD_SOURCE,
   TRADING_CALENDAR_SOURCE,
+  type SessionKind,
   type TradingCalendarSource,
 } from './trading-calendar-source.port.js';
 import { exchangeCalendarDate, userToday } from './session-clock.js';
@@ -70,6 +71,17 @@ export interface CalendarSyncResult {
   fetched: number;
   /** 新落库行数 (幂等: 已存在的 (market,date) 由 skipDuplicates 跳过, 不计入)。 */
   inserted: number;
+}
+
+/** `session_kind` 一次性补写的单市场结果 (063 Phase 2, 见 {@link TradingCalendarSyncService.backfillSessionKinds})。 */
+export interface CalendarKindBackfillResult {
+  market: string;
+  /** 权威年历答得上来的日期数 (whole + half)。源答不上来 (腾讯形态) → 0。 */
+  known: number;
+  /** 真正被改写的行数 —— **只有 `session_kind='unknown'` 的行会被动**, 故重跑恒为 0。 */
+  updated: number;
+  /** 该市场失败时的原因 (per-market 隔离, 一市场坏不拖垮其余)。 */
+  error?: string;
 }
 
 @Injectable()
@@ -163,6 +175,69 @@ export class TradingCalendarSyncService {
   }
 
   /**
+   * **一次性**补写存量行的 `session_kind` (063 Phase 2)。入口 =
+   * `marketdata-trading-day-seed.cli.ts --backfill-kind`。
+   *
+   * ## 为什么需要它, 以及为什么**只需要一次**
+   *
+   * `trading_day` 是 `createMany(skipDuplicates)` —— **插入即冻结**。加 `session_kind` 列时,
+   * 2026 全年的行前瞻段早已铺好 ⇒ 它们的 kind 永远停在 `unknown`, 连 us 那两个半日市都拿不到
+   * 收益。而**未来**的新行插入那一刻就带着 kind ⇒ 存量补一次、增量天然带, 两段之间没有缝隙。
+   *
+   * 🚫 因此**蓄意不上常驻补写机制** (不把写路径改成 upsert): 那是为一个一次性缺口付永久的复杂度,
+   * 且会让「插入即冻结」这条已经被读侧依赖的性质失效。
+   *
+   * ## 三条刻意的性质
+   *
+   * 1. **走前瞻源 (权威年历), 不走活源链** —— 活源链首是腾讯, 它对 kind 恒返 `{}` (指数反推法
+   *    结构上答不了), 拿它 backfill 等于什么都不做却报成功。
+   * 2. **只 UPDATE `session_kind='unknown'` 的行** ⇒ ① 幂等: 重跑 `updated=0`; ② **永不覆盖
+   *    已知值**: 万一将来有别的写入口给了 kind, 这里不会把它抹回去。
+   * 3. **不写心跳、不推进覆盖声明** —— 它不是一次「填充」(没有新增任何交易日), 是一次补写。
+   *    混进 `syncRange` 会让 `calendar_coverage` 因为一次补写而前进, 那是假的视野。
+   *
+   * ⚠️ 区间须落在权威年历的覆盖内, 否则静态层按 Guardrail 7 **整段 throw** (per-market 留痕
+   * 后续跑其余市场)。这是对的: 半份补写比不补写更难发现。
+   *
+   * 复杂度 O(市场数 × 2) 次 UPDATE (whole / half 各一发, 日期集走 `IN`)。
+   */
+  async backfillSessionKinds(
+    markets: string[],
+    from: string,
+    to: string,
+  ): Promise<CalendarKindBackfillResult[]> {
+    const results: CalendarKindBackfillResult[] = [];
+    for (const market of markets) {
+      try {
+        const { sessionKinds } = await this.forwardSource.fetchTradingDates(market, from, to);
+        const byKind = new Map<SessionKind, Date[]>();
+        for (const [date, kind] of Object.entries(sessionKinds)) {
+          const bucket = byKind.get(kind) ?? [];
+          bucket.push(new Date(`${date}T00:00:00Z`));
+          byKind.set(kind, bucket);
+        }
+        let updated = 0;
+        for (const [kind, dates] of byKind) {
+          const { count } = await this.prisma.tradingDay.updateMany({
+            // 🚨 `sessionKind: 'unknown'` 这个条件是幂等与「不覆盖已知值」的**唯一**保证, 别删。
+            where: { market, date: { in: dates }, sessionKind: 'unknown' },
+            data: { sessionKind: kind },
+          });
+          updated += count;
+        }
+        results.push({ market, known: Object.keys(sessionKinds).length, updated });
+        this.logger.log(
+          `session_kind 补写: ${JSON.stringify({ market, from, to, known: Object.keys(sessionKinds).length, updated })}`,
+        );
+      } catch (err) {
+        results.push({ market, known: 0, updated: 0, error: String(err) });
+        this.logger.warn(`session_kind 补写失败 (其余市场续跑): ${market}: ${String(err)}`);
+      }
+    }
+    return results;
+  }
+
+  /**
    * `syncRange` 的**源参数化**形态 (062 T003, plan §D4)。同一段填充逻辑要被两个源各跑一遍
    * —— 历史段走 `TRADING_CALENDAR_SOURCE` (活源链, 问过去), 前瞻段走
    * `TRADING_CALENDAR_FORWARD_SOURCE` (权威年历, 问未来) —— 而 per-market 隔离 / 心跳留痕 /
@@ -186,12 +261,20 @@ export class TradingCalendarSyncService {
     const results: CalendarSyncResult[] = [];
     for (const market of markets) {
       try {
-        const { dates, servedBy } = await source.fetchTradingDates(market, from, to);
+        const { dates, sessionKinds, servedBy } = await source.fetchTradingDates(market, from, to);
         // 🚨 **必须在 createMany 之前**: 之后取快照就把本次写入也算成「已存在」, 差集恒为空
         // ⇒ 这条校验静默失效**且不会红**。
         await this.crossCheckAgainstExisting(market, from, to, dates);
         const { count } = await this.prisma.tradingDay.createMany({
-          data: dates.map((d) => ({ market, date: new Date(`${d}T00:00:00Z`) })),
+          // 🚨 `sessionKind` **只在插入这一刻定** (063 Phase 2): 本表是 insert-only, 撞键的行
+          // 一律跳过 ⇒ 已存在行的 kind 不会被本次结果改写。这是刻意的 —— 上线时的存量行由
+          // 一次性 backfill 补 (`--backfill-kind`), 此后新行天然带 kind, 两段严丝合缝。
+          // 源答不上来 (腾讯 / mock) → 缺席 → 落 `unknown` ⇒ 消费侧回落常量 = 上线前行为。
+          data: dates.map((d) => ({
+            market,
+            date: new Date(`${d}T00:00:00Z`),
+            sessionKind: sessionKinds[d] ?? 'unknown',
+          })),
           skipDuplicates: true,
         });
         // 🚨 `servedBy` 只有 `live` 段传得进去 (见 {@link CalendarFillSegment})。前瞻段传
