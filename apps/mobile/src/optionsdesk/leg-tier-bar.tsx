@@ -33,10 +33,11 @@ export function LegTierBar({
   priceKind,
   quoteAsOf,
   eodRowCount,
+  realtimeDegrade,
   phase,
   onRefresh,
 }: LegTierBarProps) {
-  const view = legQuoteTier({ priceKind, quoteAsOf, eodRowCount, phase });
+  const view = legQuoteTier({ priceKind, quoteAsOf, eodRowCount, realtimeDegrade, phase });
   const busy = view.variant === 'busy';
   return (
     <View

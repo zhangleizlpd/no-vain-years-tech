@@ -91,7 +91,7 @@ updated_at: '2026-08-19'
 
 - [X] T010 [Mobile] **成员变化提示**（`FR-021`, `SC-009`, `state_branches` 12, plan §D9, mockup 帧 ⑧）：新建 `apps/mobile/src/optionsdesk/leg-membership-notice.tsx` + 在 `use-leg-table.ts` 里持有**上一轮的合约码集合**做差集，刷新后报出「本轮新进 N · 已不满足 M」，中性 `--nvy-surface-sunken`，可关闭。🚨 **Guardrail 9**。🚫 服务端**不引入会话态** —— 差集只在客户端算。→ verify: `use-leg-table.spec.ts` 加：① 两轮不同成员 → 差集条数与实际一致（🚨 双向各断言一次：只进不出 / 只出不进 / 有进有出，三种都要，只测一种会漏方向写反）；② 首屏（无上一轮）→ **不报**成员变化（否则用户一进页面就被告知「3 条进」）；③ 成员完全相同 → 不报
 
-- [ ] T008a [Mobile] **档位条据降级信号分叉出告警态**（`FR-010`, `FR-011`, `SC-004`, plan §D10, mockup 帧 ④）：`leg-tier-bar.rules.ts` + `leg-tier-bar.tsx` —— 把收盘档拆成**两态**：降级标为 null 走既有中性态（美股休市，正常，天天如此）；非 null 走 `--nvy-warning-soft` 底 + 3px `--nvy-warning` 左边框 + `--nvy-text` 正文，**并按类别给出具体原因**（🚫 不是「加载失败」这种无信息文案）。🚨 **Guardrail 9**（禁 info）· **Guardrail 10**（禁涨跌色）。🚫 **MUST NOT 给所有 `eod_close` 刷告警底** —— 国内用户白天每次打开都看见告警 = 本仓自记的「永远为真的告警等于没有告警」。→ verify: `leg-tier-bar.rules.spec.ts` 加 —— ① 各类降级的原因文案非空且互不相同；② **🚨 反例：`eod_close` + 降级标为 null → 断言拿到中性态、样式不含 warning token**（这条先红：若实现按 `priceKind` 一刀切会拿到告警态）；③ 实时档不受本字段影响
+- [X] T008a [Mobile] **档位条据降级信号分叉出告警态**（`FR-010`, `FR-011`, `SC-004`, plan §D10, mockup 帧 ④）：`leg-tier-bar.rules.ts` + `leg-tier-bar.tsx` —— 把收盘档拆成**两态**：降级标为 null 走既有中性态（美股休市，正常，天天如此）；非 null 走 `--nvy-warning-soft` 底 + 3px `--nvy-warning` 左边框 + `--nvy-text` 正文，**并按类别给出具体原因**（🚫 不是「加载失败」这种无信息文案）。🚨 **Guardrail 9**（禁 info）· **Guardrail 10**（禁涨跌色）。🚫 **MUST NOT 给所有 `eod_close` 刷告警底** —— 国内用户白天每次打开都看见告警 = 本仓自记的「永远为真的告警等于没有告警」。→ verify: `leg-tier-bar.rules.spec.ts` 加 —— ① 各类降级的原因文案非空且互不相同；② **🚨 反例：`eod_close` + 降级标为 null → 断言拿到中性态、样式不含 warning token**（这条先红：若实现按 `priceKind` 一刀切会拿到告警态）；③ 实时档不受本字段影响
 
 ## Phase 5: 两层验证与实证
 

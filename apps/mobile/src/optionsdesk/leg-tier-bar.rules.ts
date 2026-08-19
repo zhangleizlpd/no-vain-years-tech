@@ -14,7 +14,11 @@
 //       归档位（实时）一家，别的语义拿它会撞脸。
 //    ② `--nvy-quote-up` / `--nvy-quote-down` **一处不用** —— 档位不是涨跌方向，误用会让「实时」
 //       被读成「涨」。机械防线是 {@link legTierBarClassNames}（值面扫描，见其注释）。
-import type { LegResponsePriceKind, LegTableResponsePriceKind } from '@nvy/api-client';
+import type {
+  LegResponsePriceKind,
+  LegTableResponsePriceKind,
+  LegTableResponseRealtimeDegrade,
+} from '@nvy/api-client';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import type { LegBlockState } from './underlying-detail.rules';
@@ -29,6 +33,19 @@ export type LegBlockPriceKind = LegTableResponsePriceKind;
 
 /** 行级档位。orval 为两处各生成一个同值域的字面量联合，结构上互相可赋值。 */
 export type LegRowPriceKind = LegResponsePriceKind;
+
+/**
+ * 链级降级标（064 T007a 契约新增，**已含 `null`**）——「本该给实时却没给成」。
+ *
+ * 🚨 **直接吃生成类型**，🚫 MUST NOT 在 mobile 侧照抄一套字面量：契约那边加一个类别时，
+ *    抄来的那份不会红，只会**静默走到 fallback**，于是新出的那类故障在屏上长得像正常收盘档。
+ * 📌 值域不含 `partial_miss`（服务端已用 `Exclude` 排除）—— 部分缺失是**逐行**的事，
+ *    由 {@link LegQuoteTierInput.eodRowCount} 那一路承载。
+ */
+export type LegBlockRealtimeDegrade = LegTableResponseRealtimeDegrade;
+
+/** 非 null 的降级类别 —— 文案穷举 `Record` 的键（契约加一类即编译红）。 */
+export type LegDegradeKind = NonNullable<LegBlockRealtimeDegrade>;
 
 // ═══════════════════ ① 两档的时间格式化 ═══════════════════
 
@@ -68,16 +85,17 @@ export function formatQuoteSessionDay(asOf: string | null | undefined): string |
 // ═══════════════════ ② 区块级档位条 ═══════════════════
 
 /**
- * 档位条三形态。
+ * 档位条四形态。
  *
- * 📌 **`degraded` 没有独立形态是有依据的**：契约里没有「为什么回落」这个字段（`priceKind` 只答
- *    「是不是实时」），而「非美股常规交易时段」与「源不可达」在客户端**不可分辨** —— 给收盘档
- *    一律挂告警底色的话，境内用户白天打开必然每次都看见它，那正是本仓反复记着的
- *    「永远为真的告警等于没有告警」（见 `legAsOfLabel` / `freshnessOf` 的同款长注）。
- *    ⇒ 收盘档走中性、由 {@link LegQuoteTierView.reason} 如实说明两种可能，告警底色留给
- *    **真·未就绪**（这一批连时点都没有）。要把两者分开呈现，前提是契约先下发降级原因。
+ * 🚨 **`eod_close` 与 `degraded` 是同一个 `priceKind` 下的两件事**（064 T008a）：前者是境内
+ *    白天的常态（美股休市，天天如此），后者是「美股开着、我们却没给成实时」。T008 时契约还
+ *    分不出这两者，收盘档只能走中性 + 一句两可的文案；T007a 下发 `realtimeDegrade` 之后
+ *    这一格才真正分得开。
+ * 🚫 **MUST NOT 给所有 `eod_close` 刷告警底** —— 那样境内用户白天每次打开都看见它，
+ *    「永远为真的告警等于没有告警」（同 `legAsOfLabel` / `freshnessOf` 的同款长注）。
+ *    机器判据是 {@link legQuoteTier} 的核心反例单测（收盘档 + 降级标 `null` ⇒ 零 warn token）。
  */
-export type LegQuoteTierVariant = 'realtime' | 'eod_close' | 'not_ready' | 'busy';
+export type LegQuoteTierVariant = 'realtime' | 'eod_close' | 'degraded' | 'not_ready' | 'busy';
 
 /**
  * 这一批的在途相位（064 T009 / FR-022）。
@@ -105,6 +123,15 @@ export interface LegQuoteTierInput {
   readonly quoteAsOf: string | null;
   /** 🚨 区块标 realtime **而行标 eod_close** 的条数（FR-011 逐行降级）；其余情形恒 0。 */
   readonly eodRowCount: number;
+  /**
+   * 链级降级标（契约 `realtimeDegrade`）——「本该给实时却没给成」，正常收盘档恒 `null`。
+   *
+   * 🚨 **必填、蓄意不给默认值**：默认成 `null` 的话，哪天有人接漏了这根线，屏上拿到的是
+   *    「一切正常」的中性态 —— 而那正是本 feature 要消灭的那张脸（表看着正常、数是昨天的）。
+   *    必填让「忘了接」当场编译红，而不是在真出事那天才被发现。
+   * 🚫 MUST NOT 由 {@link priceKind} 反推：收盘档在两种情形下都是同一个值。
+   */
+  readonly realtimeDegrade: LegBlockRealtimeDegrade;
   /** 在途相位（FR-022）。缺省 `'settled'` —— 只有 T009 的两条等待路径要显式传。 */
   readonly phase?: LegQuotePhase;
 }
@@ -153,6 +180,15 @@ const TIER_TONE: Readonly<
     stampClass: 'text-ink-muted',
     dotClass: 'bg-line-strong',
   },
+  // 降级 = 与未就绪**同一套 warn 视觉**（064 T008a）。🚫 蓄意不给它第三种颜色：这两者对用户
+  // 是同一件事的两种成因（「屏上这个数不是你以为的那个」），多一种色只会多一层要查的图例；
+  // 区分它们的是 `reason` 那一句话，不是底色。
+  degraded: {
+    container: 'border-l-[3px] border-warn bg-warn-soft',
+    nameClass: 'text-ink',
+    stampClass: 'text-ink',
+    dotClass: 'bg-warn',
+  },
   // 未就绪 = warning 底 + 3px 左边框 + **正文色**的字。🚫 不用 err/danger —— 这是被设计过的
   // 已知状态，不是错误（同 046 起的「数据缺口体系 ≠ 红标体系」纪律）。
   not_ready: {
@@ -171,6 +207,19 @@ const TIER_TONE: Readonly<
   },
 };
 
+/**
+ * 四类降级各自的原因（穷举 `Record` —— 契约的值域加一个类别，这里漏配当场编译红）。
+ *
+ * 🚨 **一类一句**（FR-011）：前两条用户自己能动手（收窄条件 / 下拉重试），后两条只能等 ——
+ * 收敛成一句通用文案就等于把「你现在能做什么」抹掉，而那张表照样渲染得出来。
+ */
+const DEGRADE_REASON: Readonly<Record<LegDegradeKind, string>> = {
+  window_over_cap: COPY.tierDegradeOverCap,
+  window_basis_stale: COPY.tierDegradeBasisStale,
+  source_unavailable: COPY.tierDegradeSourceDown,
+  gate_unknown: COPY.tierDegradeGateUnknown,
+};
+
 /** 时点的**粒度随它自己的档位走**（刷新中要报「上次」那一批的时点，档位没变）。O(1)。 */
 function stampOf(priceKind: LegBlockPriceKind | null, quoteAsOf: string | null): string | null {
   return priceKind === 'realtime' ? formatQuoteClock(quoteAsOf) : formatQuoteSessionDay(quoteAsOf);
@@ -181,7 +230,8 @@ function stampOf(priceKind: LegBlockPriceKind | null, quoteAsOf: string | null):
  *
  * 判定序（**先看有没有可用时点**，再看档位）：
  * 1. `priceKind === 'realtime'` 且时点解得出时刻 → 实时档（部分缺失时带出条数与去处）。
- * 2. `priceKind === 'eod_close'` 且时点解得出交易日 → 收盘档（中性 + 原因）。
+ * 2. `priceKind === 'eod_close'` 且时点解得出交易日 → 再看降级标：`null` → 收盘档常态
+ *    （中性 + 原因）；非 `null` → 降级态（warn 视觉 + **按类别**的具体原因）。
  * 3. 其余（契约未到手 / 时点缺失 / 粒度对不上档位）→ 未就绪，**不渲染任何时点**。
  *
  * 🚨 第 3 支覆盖的是「档位说实时、时点却不是个时刻」这类**自相矛盾**的响应：宁可显式未就绪，
@@ -230,13 +280,28 @@ export function legQuoteTier(input: LegQuoteTierInput): LegQuoteTierView {
   if (input.priceKind === 'eod_close') {
     const stamp = formatQuoteSessionDay(input.quoteAsOf);
     if (stamp !== null) {
+      const degrade = input.realtimeDegrade;
+      // 🚨 **核心分叉**（T008a）：同一个 `eod_close`，降级标 `null` 是常态、非 null 才是告警。
+      //    🚫 MUST NOT 按 `priceKind` 一刀切 —— 那会让境内白天的每一次打开都染上告警底。
+      if (degrade === null) {
+        return {
+          variant: 'eod_close',
+          name: COPY.tierEod,
+          stamp,
+          note: null,
+          reason: COPY.tierEodReason,
+          ...TIER_TONE.eod_close,
+        };
+      }
       return {
-        variant: 'eod_close',
+        variant: 'degraded',
+        // 📌 名字仍是「收盘档」—— 屏上确实就是收盘盘口，改名字等于换了个说法说同一件事；
+        //    「本该是实时」那半句由 warn 视觉 + `reason` 承担。
         name: COPY.tierEod,
         stamp,
         note: null,
-        reason: COPY.tierEodReason,
-        ...TIER_TONE.eod_close,
+        reason: DEGRADE_REASON[degrade],
+        ...TIER_TONE.degraded,
       };
     }
   }

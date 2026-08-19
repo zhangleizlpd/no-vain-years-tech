@@ -378,6 +378,9 @@ export function UnderlyingDetailScreen({
                       priceKind={blockPriceKind}
                       quoteAsOf={legTable.chain?.quoteAsOf ?? null}
                       eodRowCount={eodRowCount}
+                      // 🚨 064 T008a：链级降级标原样透传 —— 🚫 MUST NOT 在这里按档位反推，
+                      //    「正常休市」与「盘中源挂了」在 `priceKind` 上是同一个值。
+                      realtimeDegrade={legTable.chain?.realtimeDegrade ?? null}
                       // 🚨 064 FR-022：首屏走等待态、刷新中保表 —— 两者文案与处置都不同。
                       phase={legQuotePhase(legTable.block, legTable.isRefreshing)}
                       // 📌 刷新 = 重取**当前视角这一份**，与失败重试是同一个操作 ⇒ 复用同一个入口。

@@ -55,7 +55,12 @@ describe('🚨 FR-010 两档的时间格式化 —— 粒度即档位', () => {
 
 describe('🚨 FR-009 区块级档位条的三形态', () => {
   it('实时档：呈时刻含秒 + 品牌蓝，全到齐时**不报原因**（没有降级就没有要解释的事）', () => {
-    const view = legQuoteTier({ priceKind: 'realtime', quoteAsOf: LIVE_ISO, eodRowCount: 0 });
+    const view = legQuoteTier({
+      priceKind: 'realtime',
+      quoteAsOf: LIVE_ISO,
+      eodRowCount: 0,
+      realtimeDegrade: null,
+    });
 
     expect(view.variant).toBe('realtime');
     expect(view.name).toBe(COPY.tierLive);
@@ -65,7 +70,12 @@ describe('🚨 FR-009 区块级档位条的三形态', () => {
   });
 
   it('收盘档：呈交易日 + 中性灰，且**原因非空**（FR-011）', () => {
-    const view = legQuoteTier({ priceKind: 'eod_close', quoteAsOf: SESSION_DAY, eodRowCount: 0 });
+    const view = legQuoteTier({
+      priceKind: 'eod_close',
+      quoteAsOf: SESSION_DAY,
+      eodRowCount: 0,
+      realtimeDegrade: null,
+    });
 
     expect(view.variant).toBe('eod_close');
     expect(view.name).toBe(COPY.tierEod);
@@ -75,7 +85,12 @@ describe('🚨 FR-009 区块级档位条的三形态', () => {
   });
 
   it('未就绪：**不渲染任何时点**，warning 底 + 3px 左边框 + 正文色的字，且原因非空', () => {
-    const view = legQuoteTier({ priceKind: null, quoteAsOf: null, eodRowCount: 0 });
+    const view = legQuoteTier({
+      priceKind: null,
+      quoteAsOf: null,
+      eodRowCount: 0,
+      realtimeDegrade: null,
+    });
 
     expect(view.variant).toBe('not_ready');
     expect(view.name).toBe(COPY.tierNotReady);
@@ -90,7 +105,12 @@ describe('🚨 FR-009 区块级档位条的三形态', () => {
 
   it('🚨 反例：档位说 realtime、时点却是个交易日 → 落**未就绪**，MUST NOT 把交易日当时刻渲上去', () => {
     // 这类自相矛盾的响应正是「昨收伪装成此刻」的入口 —— 宁可显式未就绪。
-    const view = legQuoteTier({ priceKind: 'realtime', quoteAsOf: SESSION_DAY, eodRowCount: 0 });
+    const view = legQuoteTier({
+      priceKind: 'realtime',
+      quoteAsOf: SESSION_DAY,
+      eodRowCount: 0,
+      realtimeDegrade: null,
+    });
 
     expect(view.variant).toBe('not_ready');
     expect(view.stamp).toBeNull();
@@ -98,9 +118,19 @@ describe('🚨 FR-009 区块级档位条的三形态', () => {
 
   it('🚨 降级三态的文案与原因**逐条非空**（收盘档 / 未就绪 / 实时档部分缺失）', () => {
     const degraded = [
-      legQuoteTier({ priceKind: 'eod_close', quoteAsOf: SESSION_DAY, eodRowCount: 0 }),
-      legQuoteTier({ priceKind: null, quoteAsOf: null, eodRowCount: 0 }),
-      legQuoteTier({ priceKind: 'realtime', quoteAsOf: LIVE_ISO, eodRowCount: 2 }),
+      legQuoteTier({
+        priceKind: 'eod_close',
+        quoteAsOf: SESSION_DAY,
+        eodRowCount: 0,
+        realtimeDegrade: null,
+      }),
+      legQuoteTier({ priceKind: null, quoteAsOf: null, eodRowCount: 0, realtimeDegrade: null }),
+      legQuoteTier({
+        priceKind: 'realtime',
+        quoteAsOf: LIVE_ISO,
+        eodRowCount: 2,
+        realtimeDegrade: null,
+      }),
     ];
 
     for (const view of degraded) {
@@ -114,9 +144,9 @@ describe('🚨 FR-009 区块级档位条的三形态', () => {
   it('三形态的底色两两不同 —— 靠底色区分档位，撞色即失去信号', () => {
     const containers = (
       [
-        { priceKind: 'realtime', quoteAsOf: LIVE_ISO, eodRowCount: 0 },
-        { priceKind: 'eod_close', quoteAsOf: SESSION_DAY, eodRowCount: 0 },
-        { priceKind: null, quoteAsOf: null, eodRowCount: 0 },
+        { priceKind: 'realtime', quoteAsOf: LIVE_ISO, eodRowCount: 0, realtimeDegrade: null },
+        { priceKind: 'eod_close', quoteAsOf: SESSION_DAY, eodRowCount: 0, realtimeDegrade: null },
+        { priceKind: null, quoteAsOf: null, eodRowCount: 0, realtimeDegrade: null },
       ] as const
     ).map((input) => legQuoteTier(input).container);
 
@@ -218,6 +248,7 @@ describe('🚨 FR-022 在途相位压过档位', () => {
       priceKind: null,
       quoteAsOf: null,
       eodRowCount: 0,
+      realtimeDegrade: null,
       phase: 'first_load',
     });
 
@@ -232,6 +263,7 @@ describe('🚨 FR-022 在途相位压过档位', () => {
       priceKind: 'realtime',
       quoteAsOf: LIVE_ISO,
       eodRowCount: 0,
+      realtimeDegrade: null,
       phase: 'refreshing',
     });
 
@@ -246,6 +278,7 @@ describe('🚨 FR-022 在途相位压过档位', () => {
       priceKind: 'eod_close',
       quoteAsOf: SESSION_DAY,
       eodRowCount: 0,
+      realtimeDegrade: null,
       phase: 'refreshing',
     });
 
@@ -257,6 +290,7 @@ describe('🚨 FR-022 在途相位压过档位', () => {
       priceKind: 'realtime',
       quoteAsOf: LIVE_ISO,
       eodRowCount: 0,
+      realtimeDegrade: null,
       phase: 'refreshing',
     });
 
@@ -277,5 +311,100 @@ describe('🚨 FR-022 在途相位压过档位', () => {
     const names = legTierBarClassNames();
     expect(names).toContain('bg-surface-alt');
     for (const name of names) expect(name).not.toContain('quote-');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 064 T008a —— 链级降级信号把收盘档分叉成两态（FR-010 / FR-011 / SC-004）
+// ════════════════════════════════════════════════════════════════════════════
+describe('🚨 FR-011 收盘档一分为二：正常休市 vs「本该给实时却没给成」', () => {
+  /** 契约链级值域（🚫 不含逐行的 `partial_miss` —— 它由行级 `priceKind` 承载）。 */
+  const DEGRADE_KINDS = [
+    'window_over_cap',
+    'window_basis_stale',
+    'source_unavailable',
+    'gate_unknown',
+  ] as const;
+
+  function eodWith(realtimeDegrade: (typeof DEGRADE_KINDS)[number] | null) {
+    return legQuoteTier({
+      priceKind: 'eod_close',
+      quoteAsOf: SESSION_DAY,
+      eodRowCount: 0,
+      realtimeDegrade,
+    });
+  }
+
+  it('🚨 **核心反例**：收盘档 + 降级标 null → 中性态，四处 class 一个 warn token 都不含', () => {
+    // 按 `priceKind` 一刀切的实现在这里会拿到告警态 —— 而国内用户白天每次打开都是这一支，
+    // 于是那条告警永远为真，真出事那天也就不再有人看它。
+    const view = eodWith(null);
+
+    expect(view.variant).toBe('eod_close');
+    for (const cls of [view.container, view.nameClass, view.stampClass, view.dotClass]) {
+      expect(cls).not.toContain('warn');
+    }
+  });
+
+  it('🚨 中性态的原因**不再两可** —— 契约分得开之后，「或实时源暂不可用」是错的', () => {
+    const view = eodWith(null);
+
+    expect(view.reason).toBe(COPY.tierEodReason);
+    // 「源不可能取到」是降级态才成立的话；混在常态里说 = 每天都在暗示可能出事了。
+    expect(view.reason).not.toContain('实时源');
+  });
+
+  it('四类降级各自给出**具体原因**，非空且两两不同（一句通用文案 = 说了等于没说）', () => {
+    const reasons = DEGRADE_KINDS.map((kind) => eodWith(kind).reason);
+
+    for (const reason of reasons) expect(reason.length).toBeGreaterThan(0);
+    expect(new Set(reasons).size).toBe(4);
+  });
+
+  it('四类一律落告警态：warn 底 + 3px 左边框 + 正文色，🚫 不用 err（已知状态不是错误）', () => {
+    for (const kind of DEGRADE_KINDS) {
+      const view = eodWith(kind);
+
+      expect(view.variant).toBe('degraded');
+      expect(view.container).toContain('bg-warn-soft');
+      expect(view.container).toContain('border-l-[3px]');
+      expect(view.container).toContain('border-warn');
+      expect(view.container).not.toContain('err');
+      // 时点仍是那一批快照的交易日 —— 降级改的是**为什么**，不是**这是哪一批**。
+      expect(view.stamp).toBe('08-18');
+    }
+  });
+
+  it('🚨 实时档不受本字段影响 —— 取任意值输出**逐字段相同**', () => {
+    const base = legQuoteTier({
+      priceKind: 'realtime',
+      quoteAsOf: LIVE_ISO,
+      eodRowCount: 0,
+      realtimeDegrade: null,
+    });
+
+    for (const kind of DEGRADE_KINDS) {
+      expect(
+        legQuoteTier({
+          priceKind: 'realtime',
+          quoteAsOf: LIVE_ISO,
+          eodRowCount: 0,
+          realtimeDegrade: kind,
+        }),
+      ).toEqual(base);
+    }
+  });
+
+  it('值面扫描**覆盖到新形态**，且两条配色禁令仍成立（Guardrail 9 / 10）', () => {
+    const names = legTierBarClassNames();
+    const view = eodWith('source_unavailable');
+
+    for (const cls of [view.container, view.nameClass, view.stampClass, view.dotClass]) {
+      expect(names).toContain(cls);
+    }
+    for (const name of names) {
+      expect(name).not.toContain('quote-');
+      expect(name).not.toContain('info');
+    }
   });
 });
