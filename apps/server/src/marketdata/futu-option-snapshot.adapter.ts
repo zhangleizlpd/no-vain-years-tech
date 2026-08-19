@@ -10,6 +10,7 @@ import {
   type OptionSnapshotRow,
 } from './option-snapshot.port.js';
 import { TransientVendorError, VendorHttpError } from './vendor-http-client.js';
+import { type ShimEnvelope, parseShimEnvelope } from './futu-shim-envelope.js';
 import type { VendorHttpClient } from './vendor-http-client.js';
 
 /**
@@ -75,12 +76,6 @@ const GREEK_FIELDS = [
 
 /** `YYYY-MM-DD HH:mm:ss`(可带 `T` / 毫秒) 的宽松匹配。 */
 const NAIVE_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/;
-
-interface ShimEnvelope {
-  as_of?: unknown;
-  count?: unknown;
-  rows?: unknown;
-}
 
 /**
  * 数值 → Decimal-safe string；缺失 / 非有限 → null。
@@ -256,12 +251,10 @@ export class FutuOptionSnapshotAdapter implements OptionSnapshotPort {
   }
 
   /**
-   * 打一次 shim + 信封校验 + 失败语义映射。
+   * 打一次 shim + 失败语义映射; 信封校验委托 {@link parseShimEnvelope} (三道闸的单点)。
    *
-   * 三道信封闸都不是形式主义: 缺 `rows[]` = 契约变更; `count` 与实收不符 = 传输层截断
-   * (同 `FutuOptionChainAdapter` 的对账闸); **`as_of` 不可解析 = 落库的 `quote_as_of` 没了**
-   * —— 拿本机时钟顶替会把「这一行是什么时候采的」变成「这段代码什么时候跑到这一句」,
-   * 两者在链路卡顿时差得很远。任一不过 → throw, **不返回半份数据**。
+   * 🚨 **本端点为什么在意闸③**: `as_of` 不可解析 = 落库的 `quote_as_of` 没了。任一闸不过 →
+   * throw, **不返回半份数据**。
    */
   private async fetchEnvelope(
     path: string,
@@ -287,19 +280,6 @@ export class FutuOptionSnapshotAdapter implements OptionSnapshotPort {
       throw err;
     }
 
-    const rows = res?.rows;
-    if (!Array.isArray(rows)) {
-      throw new Error(`[futu] ${what} 响应缺 rows[] (契约变更?)`);
-    }
-    if (typeof res?.count === 'number' && res.count !== rows.length) {
-      throw new Error(
-        `[futu] ${what} 行数与信封 count 不符 (疑截断): count=${res.count} rows=${rows.length}`,
-      );
-    }
-    const asOf = new Date(String(res?.as_of ?? ''));
-    if (Number.isNaN(asOf.getTime())) {
-      throw new Error(`[futu] ${what} 响应缺可解析的 as_of (采集时刻, 契约变更?)`);
-    }
-    return { asOf, rows };
+    return parseShimEnvelope(res, what);
   }
 }
