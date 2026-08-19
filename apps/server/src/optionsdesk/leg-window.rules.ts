@@ -115,8 +115,14 @@ function isSupportedMarket(market: string): market is WindowMarket {
   return (WINDOW_SUPPORTED_MARKETS as readonly string[]).includes(market);
 }
 
-/** 这条腿是否落在窗内 —— 四个边界均闭区间。`O(1)`。 */
-function withinWindow(leg: RecallLegInput, window: LegWindow): boolean {
+/**
+ * 这条腿是否落在窗内 —— 四个边界均闭区间。`O(1)`。
+ *
+ * 🚨 **它是「该不该去问这条腿此刻的价」, 不是「这条腿是不是候选」** —— 成员判定单点在
+ * `leg-recall.rules.ts` (052 FR-003)。窗外的腿照常出现在结果里, 只是带着收盘档的价;
+ * 🚫 MUST NOT 拿它当 filter 去删腿, 那就是给召回开了第二个判据点。
+ */
+export function withinWindow(leg: RecallLegInput, window: LegWindow): boolean {
   if (leg.dteDays < window.dteMin || leg.dteDays > window.dteMax) return false;
   return (
     leg.strike.greaterThanOrEqualTo(window.strikeMin) &&

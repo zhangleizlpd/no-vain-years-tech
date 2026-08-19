@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { exchangeCalendarDate } from '../marketdata/session-clock';
@@ -8,7 +8,9 @@ import {
   type OptionSnapshotPort,
 } from '../marketdata/option-snapshot.port';
 import { parseAnchorTicker } from './anchor.rules';
-import { recallCandidates, type RecallContext } from './leg-recall.rules';
+import { isIntradayFresh } from './intraday-spot.rules';
+import { legWindowFor, windowTripwire, withinWindow, type LegWindow } from './leg-window.rules';
+import { recallCandidates, type RecallCandidate, type RecallContext } from './leg-recall.rules';
 import type {
   LegChainMeta,
   LegChainQuery,
@@ -18,6 +20,19 @@ import type {
   LegRetrievalQuery,
   LegRetrievalResult,
 } from './leg-retrieval.port';
+
+/**
+ * {@link PrismaLegRetrievalAdapter} 内部的取链产出 —— 快照 + 本次实际用过的窗 (064 T004b)。
+ *
+ * 🚨 窗**不上浮到 port 出参**: 它是「该问哪些合约此刻的价」这件事的内部细节, 对调用方零语义。
+ * 它存在只为一个用途 —— 喂 `windowTripwire` (064 `FR-007`), 而绊线的调用点必须在召回**之后**
+ * (入参是召回的判决, 不是裸腿)。收盘档 / 基准不可用时恒为 `null`: 没发生实时取数就没有窗,
+ * 也就无所谓漂移。
+ */
+interface LoadedChain {
+  readonly snapshot: LegChainSnapshot;
+  readonly window: LegWindow | null;
+}
 
 /**
  * 052 检索 port 的 **Prisma 实现** (plan D-PORT-1) —— 整块承接 050 `get-legs.usecase.ts` 里的
@@ -47,6 +62,8 @@ import type {
  */
 @Injectable()
 export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
+  private readonly logger = new Logger(PrismaLegRetrievalAdapter.name);
+
   constructor(
     private readonly prisma: PrismaService,
     // CROSS-CONTEXT-SYNC: 注入 marketdata 的期权快照**读取口** (port token + interface, 非
@@ -62,9 +79,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   ) {}
 
   async retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
-    const snapshot = await this.loadChain(query);
-    if (snapshot === null) return null;
-    const { chain, legs } = snapshot;
+    const loaded = await this.loadChainWithWindow(query);
+    if (loaded === null) return null;
+    const { chain, legs } = loaded.snapshot;
 
     const context: RecallContext = { spot: chain.spot };
     const outcome = recallCandidates(
@@ -74,6 +91,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       query.candidateCap,
       query.override,
     );
+    // 064 FR-007: 绊线在**召回之后**求值 —— 它问的是「窗排除掉的那些腿里, 有没有本来能进候选的」,
+    // 而「能不能进候选」只有召回答得了 (判据单点)。
+    this.reportWindowDrift(query.symbol, outcome.candidates, loaded.window);
     return {
       chain,
       ...outcome,
@@ -95,6 +115,12 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     return this.loadChain(query);
   }
 
+  /** {@link loadChainWithWindow} 的窄出口 —— 窗是内部细节, 不出这个类。 */
+  private async loadChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
+    const loaded = await this.loadChainWithWindow(query);
+    return loaded === null ? null : loaded.snapshot;
+  }
+
   /**
    * 三张 marketdata 表的只读直查 + 逐腿 DTE —— **两个 port 方法的共同根**。
    *
@@ -102,10 +128,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 查得出数据, 只是可能落在不同的快照期上 —— 而那时报表的骨架与选约表的候选集会对不上, 且
    * 界面上一切正常。
    */
-  private async loadChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
+  private async loadChainWithWindow(query: LegChainQuery): Promise<LoadedChain | null> {
     // 064 T003: `query.realtime` 是**每次请求**的显式开关 (`FR-015` fail-closed, 无默认值)。
-    // 本 task 只把开关与档位字段立起来, 两个读端一律传 `false` ⇒ 走到这里恒是收盘档;
-    // 尾部 overlay 与真正的分支实装在 T004a。
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
     const marketDate = exchangeCalendarDate('us', query.now);
@@ -220,8 +244,69 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     };
     // 🚨 **overlay 的插点就在这里** —— `legs` 已组装、`return` 之前, 见类文件头。关态 (或读取口
     // 未绑定) 时**一行都不执行**, 结果与 064 之前逐字节相同 (FR-016 / SC-005)。
-    if (!query.realtime || this.snapshots === null) return { chain, legs };
-    return this.overlayRealtimeQuotes(this.snapshots, query.symbol, chain, legs);
+    if (!query.realtime || this.snapshots === null) {
+      return { snapshot: { chain, legs }, window: null };
+    }
+    return this.overlayRealtimeQuotes(
+      this.snapshots,
+      { symbol: query.symbol, market: parsed.market, now: query.now },
+      chain,
+      legs,
+    );
+  }
+
+  /**
+   * 本次实时取数的**候选范围** (064 `FR-005` / `FR-006` / plan D4 / D5)。基准缺失或已被
+   * 061 的新鲜度闸判陈旧 ⇒ `null`, 调用方据此整体回落收盘档 (`state_branch` 14)。
+   *
+   * 🚨 **`anchor` 是本 ctx 自有表, 这次读是 intra-ctx** —— 🚫 MUST NOT 在它上方挂
+   * `CROSS-CONTEXT-READ`: 那等于在代码里留一条「anchor 归别的 ctx」的**假注释**, 而本仓的
+   * 护城河审计链完全靠这类注释承载 (`check-server-moat.ts` 按 import 来源与表归属判 ctx)。
+   *
+   * 🚨 **基准与判据用的现价是两个数, 🚫 MUST NOT 合并** (plan D5): 这里的基准只圈「问哪些合约」,
+   * 容得下一个采集周期 (≤30 s) 的滞后; 判据与表头吃的那个必须与腿报价**同刻**, 它随本批一起回来
+   * ({@link overlayRealtimeQuotes} 里的 `isOption: false` 那行)。拿这个去喂判据 =「按此刻筛」不成立;
+   * 拿那个来定窗 = 得先发一次请求才能知道该请求哪些合约。
+   *
+   * 复杂度: 1 次自有表点查 + `O(1)` 派生。
+   */
+  private async resolveWindow(target: {
+    readonly symbol: string;
+    readonly market: string;
+    readonly now: Date;
+  }): Promise<LegWindow | null> {
+    const anchor = await this.prisma.anchor.findUnique({
+      where: { ticker: target.symbol },
+      select: { intradayPrice: true, intradayAt: true },
+    });
+    if (anchor === null || anchor.intradayPrice === null) return null;
+    // 🚨 新鲜度闸复用 061 的单点 {@link isIntradayFresh} —— 🚫 MUST NOT 在这里再判一次「多久算旧」:
+    // 两处阈值必漂移, 而漂移的表现是「窗按一个已经没人维护的价定出来」, 结果照样渲染得出来。
+    if (!isIntradayFresh(anchor.intradayAt, target.now)) return null;
+    return legWindowFor(target.market, anchor.intradayPrice);
+  }
+
+  /**
+   * `FR-007` 的绊线留痕 —— 「被窗排除、却能通过召回判据」的腿。窗为 `null` (收盘档) ⇒ 无事发生。
+   *
+   * 🚨 报出来的不是「候选集算错了」而是「**包络该放宽了**」: 那两个 strike 比例是经验余量,
+   * 判据一旦调松 (门槛下调 / 成色上界放宽) 窗就可能比判据窄, 而窄掉的那批腿照常出现在结果里,
+   * 只是带着收盘档的价 —— 响应上看不出任何异常。`O(n)`。
+   */
+  private reportWindowDrift(
+    symbol: string,
+    candidates: readonly RecallCandidate<LegChainRow>[],
+    window: LegWindow | null,
+  ): void {
+    if (window === null) return;
+    const drifted = windowTripwire(candidates, window);
+    if (drifted.length === 0) return;
+    this.logger.warn(
+      `候选范围包络漂移 (064 FR-007): ${symbol} 有 ${drifted.length} 条腿落在窗外却能过召回判据 ` +
+        `—— 本次它们只拿到收盘档。窗 strike [${window.strikeMin.toString()}, ` +
+        `${window.strikeMax.toString()}] / DTE [${window.dteMin}, ${window.dteMax}]; ` +
+        `腿: ${drifted.map(({ leg }) => leg.code).join(' / ')}`,
+    );
   }
 
   /**
@@ -239,47 +324,68 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    *
    * 📌 返回集里**库内不存在的合约直接忽略** (`state_branch` 10, 盘中新挂 —— 本片不在盘中重跑
    * 链发现, 次日收盘采集自然补上): 按库内 `legs` 逐条去查返回集, 多出来的那些结构上够不着。
-   * 📌 **标的自身那行 (`isOption: false`) 本 task 不消费** —— 它是 T004b 的两个现价那件事。
+   *
+   * 🚨 **问的只是窗内那批** (064 T004b): `contractCodes` 由 {@link resolveWindow} 圈出,
+   * 🚫 MUST NOT 把整条链一股脑塞进去 —— 单批有硬上限 (`OPTION_SNAPSHOT_MAX_CONTRACT_CODES`),
+   * 超了 shim **整批 400 拒绝**。窗外的腿照常留在结果里, 只是带着收盘档的价 (逐行档位, FR-009)。
+   * 🚨 **表头 / 链级 spot 取返回集里 `isOption: false` 那行** (`FR-006a`) —— 🚫 MUST NOT 用
+   * {@link resolveWindow} 那个定窗基准: 判据吃的数与呈现的数必须与腿报价同刻, 否则「按此刻筛」
+   * 这句话当场不成立, 而两个数都渲染得出来。
    *
    * 复杂度: 1 次外呼 + `O(m)` 建索引 + `O(n)` 逐腿覆盖 (m = 返回行数, n = 库内腿数)。
    */
   private async overlayRealtimeQuotes(
     port: OptionSnapshotPort,
-    symbol: string,
+    target: { readonly symbol: string; readonly market: string; readonly now: Date },
     chain: LegChainMeta,
     legs: readonly LegChainRow[],
-  ): Promise<LegChainSnapshot> {
+  ): Promise<LoadedChain> {
+    const window = await this.resolveWindow(target);
+    // 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落收盘档, 零外呼 (`state_branch` 14)。
+    // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。
+    if (window === null) return { snapshot: { chain, legs }, window: null };
+
     const batch = await port.getSnapshots({
-      underlyingSymbol: symbol,
-      contractCodes: legs.map((leg) => leg.code),
+      underlyingSymbol: target.symbol,
+      contractCodes: legs.filter((leg) => withinWindow(leg, window)).map((leg) => leg.code),
     });
     const quoteByCode = new Map<string, (typeof batch.rows)[number]>();
+    let spot: Prisma.Decimal | null = null;
     for (const row of batch.rows) {
-      if (row.isOption) quoteByCode.set(row.code, row);
+      if (row.isOption) {
+        quoteByCode.set(row.code, row);
+        continue;
+      }
+      // 标的自身那行: spot 落在 `last` 上 (同 047 采集侧口径 `sync-option-snapshot.usecase.ts`)。
+      spot = vendorDecimal(row.last) ?? spot;
     }
 
     return {
-      // 区块级时刻取**信封的采集时刻** (FR-010) —— 🚫 MUST NOT 用行内 `vendorUpdateTime` 顶替:
-      // 那是最后成交时刻, 低流动性腿上它可以停在上周 (`OptionSnapshotRow.vendorUpdateTime`)。
-      chain: { ...chain, quoteAsOf: batch.asOf, priceKind: 'realtime' },
-      legs: legs.map((leg) => {
-        const quote = quoteByCode.get(leg.code);
-        // 未在返回集内 ⇒ 保留收盘值与收盘档。逐行处理**不是**页级降级 (FR-009 / FR-011),
-        // 该分支的完整判据 (含单腿关键报价为空) 归 T005。
-        if (quote === undefined) return leg;
-        return {
-          ...leg,
-          bid: vendorDecimal(quote.bid),
-          ask: vendorDecimal(quote.ask),
-          bidSize: vendorNumber(quote.bidSize),
-          askSize: vendorNumber(quote.askSize),
-          delta: vendorNumber(quote.delta),
-          // 🚫 原样带出, 不换算 —— 与库内那条同源纪律 (`LegChainRow.iv`)。
-          iv: vendorNumber(quote.iv),
-          volume: vendorNumber(quote.volume),
-          priceKind: 'realtime',
-        };
-      }),
+      window,
+      snapshot: {
+        // 区块级时刻取**信封的采集时刻** (FR-010) —— 🚫 MUST NOT 用行内 `vendorUpdateTime` 顶替:
+        // 那是最后成交时刻, 低流动性腿上它可以停在上周 (`OptionSnapshotRow.vendorUpdateTime`)。
+        // 📌 标的行缺失 / 其价为空时的「未就绪」处置 (`state_branch` 6 / FR-012) 归 T005。
+        chain: { ...chain, quoteAsOf: batch.asOf, priceKind: 'realtime', spot: spot ?? chain.spot },
+        legs: legs.map((leg) => {
+          const quote = quoteByCode.get(leg.code);
+          // 未在返回集内 ⇒ 保留收盘值与收盘档。逐行处理**不是**页级降级 (FR-009 / FR-011),
+          // 该分支的完整判据 (含单腿关键报价为空) 归 T005。
+          if (quote === undefined) return leg;
+          return {
+            ...leg,
+            bid: vendorDecimal(quote.bid),
+            ask: vendorDecimal(quote.ask),
+            bidSize: vendorNumber(quote.bidSize),
+            askSize: vendorNumber(quote.askSize),
+            delta: vendorNumber(quote.delta),
+            // 🚫 原样带出, 不换算 —— 与库内那条同源纪律 (`LegChainRow.iv`)。
+            iv: vendorNumber(quote.iv),
+            volume: vendorNumber(quote.volume),
+            priceKind: 'realtime',
+          };
+        }),
+      },
     };
   }
 }
