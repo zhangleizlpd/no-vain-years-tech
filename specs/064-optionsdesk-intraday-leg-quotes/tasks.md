@@ -61,7 +61,7 @@ updated_at: '2026-08-19'
 
 ## Phase 1: 取数底座与判据（阻塞其余）🎯
 
-- [X] T001 [P] [Server] **窗派生纯函数 + 包络绊线**（`FR-005`, `FR-006`, `FR-007`, `FR-008`, plan §D4）：新建 `apps/server/src/optionsdesk/leg-window.rules.ts`，导出 `legWindowFor(market: string, spot: Prisma.Decimal): LegWindow`（`{ optionType: 'PUT'; dteMin; dteMax; strikeMin; strikeMax; isStandard: true }`）。DTE 段由 `BUILD_RECALL_DTE` / `RENT_RECALL_DTE` **取并**派生（禁手写 `1` / `365`）；strike 上下界常量与召回常量**同文件邻接声明**并带注释「带余量的包络，非 `PREMIUM_FLOOR` 的精确反解」；另导出 `windowTripwire(legs, window, criteria)` —— 返回「被窗排除却能过召回判据」的腿。🚨 **Guardrail 5** · **零 IO / 零 class / 零 DI**（ADR-0043）。→ verify: colocate 单测覆盖 —— ① 窗边界确实由召回常量算出（改动 `RENT_RECALL_DTE.max` 后窗随之变，硬编码会红）；② `market` 传 `'us'` 之外的值 → **throw 且消息列出已支持市场**（p4 的入口，静默返空会让 hk 悄悄拿到 us 的窗）；③ 绊线：造一条 strike 落在 `0.7×spot` 之下、但权利金高于 `PREMIUM_FLOOR` 的腿 → `windowTripwire` **必须**报它；④ 反例：窗内且能过判据的腿 → 绊线**不**报（否则绊线恒响 = 等于没有）。跑 `pnpm nx test server src/optionsdesk/leg-window.rules.spec.ts`
+- [X] T001 [P] [Server] **窗派生纯函数 + 包络绊线**（`FR-005`, `FR-006`, `FR-007`, `FR-008`, plan §D4）：新建 `apps/server/src/optionsdesk/leg-window.rules.ts`，导出 `legWindowFor(market: string, spot: Prisma.Decimal): LegWindow`（`{ optionType: 'PUT'; dteMin; dteMax; strikeMin; strikeMax; isStandard: true }`）。DTE 段由 `BUILD_RECALL_DTE` / `RENT_RECALL_DTE` **取并**派生（禁手写 `1` / `365`）；strike 上下界常量与召回常量**同文件邻接声明**并带注释「带余量的包络，非 `PREMIUM_FLOOR` 的精确反解」；另导出 `windowTripwire(candidates, window)` —— 返回「被窗排除却能过召回判据」的候选。📌 **实装签名与本行初稿的 `(legs, window, criteria)` 不同**（2026-08-19 T014 订正）：入参收成**召回已经做出的判决**（`RecallCandidate[]`）而不是「裸腿 + 一套判据」，因为 `scripts/checks/check-optionsdesk-rule-constants.ts` 的 052 不变量 #7 硬禁六个成员判据函数（`failedCriteria(` / `passesHardGates(` 等）出现在 `leg-recall.rules.ts` 之外 —— 绊线自己再判一次当场红，而消费判决则让它**结构上不可能**与唯一的成员判定点意见相左。🚨 **Guardrail 5** · **零 IO / 零 class / 零 DI**（ADR-0043）。→ verify: colocate 单测覆盖 —— ① 窗边界确实由召回常量算出（改动 `RENT_RECALL_DTE.max` 后窗随之变，硬编码会红）；② `market` 传 `'us'` 之外的值 → **throw 且消息列出已支持市场**（p4 的入口，静默返空会让 hk 悄悄拿到 us 的窗）；③ 绊线：造一条 strike 落在 `0.7×spot` 之下、但权利金高于 `PREMIUM_FLOOR` 的腿 → `windowTripwire` **必须**报它；④ 反例：窗内且能过判据的腿 → 绊线**不**报（否则绊线恒响 = 等于没有）。跑 `pnpm nx test server src/optionsdesk/leg-window.rules.spec.ts`
 
 - [X] T002 [Server] **快照读取口 token + 接线**（`FR-015` 前置, plan §D1）：① `option-snapshot.port.ts` 新增 `export const OPTION_SNAPSHOT_READ_PORT = Symbol('OPTION_SNAPSHOT_READ_PORT')`，doc 写明**与采集口的分野**（读意图 / 零落库 / mock 下显式降级而非拒绝壳 / 054 意图分类为何不能复用采集口）；② `marketdata.module.ts` 用**裸 provider**（🚫 不走 `collectionPort`）注册它，`useFactory` 返回**与 `OPTION_SNAPSHOT_PORT` 同一个** `FutuOptionSnapshotAdapter` 实例；`kind: 'mock'` 分支返回一个**显式降级实现**（`getSnapshots` 抛一个具名的「本环境无实时源」错误，供上游落到收盘档）；③ 加进 `exports`。🚨 **Guardrail 3**（同实例）· **Guardrail 4**。→ verify: 新建 `marketdata-064.read-port.it.spec.ts`（`Test.createTestingModule({ imports: [MarketdataModule] })`）断言 —— ① `kind: live` 下两个 token 解析出的**是同一个对象引用**（`toBe`，不是 `toEqual`；这条是 Guardrail 3 的机器化，写成 `toEqual` 就漏了）；② `kind: mock` 下采集口调用即抛「拒绝壳」原有错误、读取口抛的是**可区分的**降级错误（两者混同会让 dev 的降级看起来像故障）；③ `MarketdataModule` 的 `exports` 含新 token（否则 optionsdesk 注入时 boot 才炸）
 
@@ -103,14 +103,16 @@ updated_at: '2026-08-19'
 
 ## Phase 6: 收口
 
-- [ ] T014 [Docs] **ADR-0062 跨 ctx 面补一行 + spec/plan status 转**（plan Gate 0.4）：`docs/adr/0062-optionsdesk-bounded-context.md` 的跨 ctx 面清单补上本片新增的读取口 token（061 已 amend 那条强一致同步读边，本片只是第二个消费者，**不重开重审**）；`spec.md` frontmatter `status: planned → implemented`、`updated_at` 同步；`plan.md` `status: drafted → approved`；**校准本文件自审段**（FR / SC / AS / `state_branches` 覆盖按 grep **实时重算**，纳入 T007a / T008a，并订正 T001 里 `windowTripwire` 的签名 drift —— 实装是 `(candidates, window)`，因不变量 #7 禁 `failedCriteria(` 外溢）。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；`pnpm tsx scripts/checks/check-adr-index.ts` 绿
+- [X] T014 [Docs] **ADR-0062 跨 ctx 面补一行 + plan 转 approved + 自审段重算**（plan Gate 0.4）：① `docs/adr/0062-optionsdesk-bounded-context.md` 的跨 ctx 面清单补上本片新增的读取口 token `OPTION_SNAPSHOT_READ_PORT`（住 `apps/server/src/marketdata/option-snapshot.port.ts`）—— 061 已 amend 那条强一致同步读边，本片只是**第二个消费者**且形态不变（DI port token / 只读 / 单向无环），**不重开重审**，只登记第 6 行；② `plan.md` frontmatter `status: drafted → approved`、`updated_at` 同步；③ **校准本文件自审段**（FR / SC / AS / Edge Case / `state_branches` 条数与覆盖按 grep **实时重算**，纳入 impl 期新增的 T007a / T008a）；④ 订正两处 drift —— T001 行的 `windowTripwire` 签名（实装是 `(candidates, window)`）与 `leg-retrieval.adapter.ts` 里「mock 档落 `source_unavailable`」那句注释（实测是 `gate_unknown`：`MARKET_STATE_PORT` 经 `collectionPort` 注册、mock 下是 054 拒绝壳 ⇒ 闸一判即 `'unknown'`，在发起 fetch **之前**就 fail-closed；T012 契约冒烟实跑证实）。🚨 `spec.md` 的 `status` **本 task 不动** —— 拆成 T014b，理由见 §单 PR 与上线顺序。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；`pnpm tsx scripts/checks/check-adr-index.ts` 绿
+
+- [ ] T014b [Docs] **T013 证据齐后翻 `spec.md` status**（依赖 **T013**）：`spec.md` frontmatter `status: planned → implemented`、`updated_at` 同步。🚨 **它为什么不能跟 T014 一起做**：本文件 §单 PR 与上线顺序 自己立的门是「`SC-001` / `SC-002` 拿不到前不翻 `implemented`」，而这两条判据**只能**由 T013 的美股盘中真机实证提供 —— web e2e 结构上验不到（spec `web_compat_notes` 已写明三类验不到的东西）。⇒ T013 的截图与对拍表贴进本文件、T013 翻 `[X]` 之后，才动这一行。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；且本文件 T013 已是 `[X]`
 
 ## Dependencies
 
 ```text
 T001 ─┐
       ├─→ T004a ─→ T004b ─→ T005 ─→ T006 ─→ T007 ─┬─→ T008 ─┐
-T002 ─┘    ▲                             ├─→ T009 ─┼─→ T011 ─→ T013 ─→ T014
+T002 ─┘    ▲                             ├─→ T009 ─┼─→ T011 ─→ T013 ─→ T014b
            │                             └─→ T010 ─┘        ▲
 T003 ──────┘                                  └──────────────┴─→ T012
 ```
@@ -121,6 +123,7 @@ T003 ──────┘                                  └─────�
 - **T008 / T009 / T010 三者可并行**（不同文件）。
 - **T013 有时间窗**：只能在美股常规时段跑（北京 21:30–04:00）。
 - **T007a → T008a → T011 串行**（2026-08-19 impl 期新增）：契约缺「降级」信号时客户端分不清「正常盘后」与「源挂了」，只能服务端给（判据要交易日历，客户端没有）。T011 的降级断言吊在 T008a 的告警态上。
+- **T014 与 T013 正交，T014b 才吊在 T013 上**（2026-08-19 拆分）：T014 的三件事（ADR 补行 / `plan.md` 转 `approved` / 自审段重算）不需要任何真机证据，impl 收尾即可做；只有 `spec.md` 翻 `implemented` 要等 `SC-001` / `SC-002` 的实证 ⇒ 那一句独立成 T014b。
 
 ## 判据覆盖矩阵（`state_branches` 14 条 → task）
 
@@ -128,10 +131,10 @@ T003 ──────┘                                  └─────�
 | --- | --- | --- |
 | 1 | 常规时段 + 交易日 + 已开启 → 取全窗实时 | T004a |
 | 2 | 未显式开启 → 纯收盘档且外呼 = 0 | T003 |
-| 3 | 非常规状态 / 非交易日 → 不外呼 | T005 |
-| 4 | 源不可达 / 超时 / 熔断 → 整体回落 | T005 |
+| 3 | 非常规状态 / 非交易日 → 不外呼 | T005 T007a |
+| 4 | 源不可达 / 超时 / 熔断 → 整体回落 | T005 T007a |
 | 5 | 部分合约未返回 → 逐行保留 | T005 |
-| 6 | 标的现价缺失 → 未就绪 | T005 |
+| 6 | 标的现价缺失 → 未就绪 | T005 T007a |
 | 7 | 超单批上限 → 不得混时刻 | T006 |
 | 8 | 持仓量列恒取收盘档 | T004a |
 | 9 | 库内无快照行 → 维持未就绪 | T004a |
@@ -139,23 +142,29 @@ T003 ──────┘                                  └─────�
 | 11 | 单腿关键报价为空 → 整行按未取到处理 | T005 |
 | 12 | 相邻两次取数成员不同 → 重算 + 报进出 | T010 |
 | 13 | 实时批未到齐 → 等待态 / 保表 | T009 |
-| 14 | 定窗基准缺失或陈旧 → 回落并标降级 | T005 |
+| 14 | 定窗基准缺失或陈旧 → 回落并标降级 | T005 T007a |
+
+📌 **第 3 / 4 / 6 / 14 条为什么在 T005 之外又挂了 T007a**（2026-08-19 重算）：T005 落的是「回落到收盘档、值一个不动」，T007a 之后这四条各多出**一层判据** —— 「本该给实时却没给成」这件事有没有**如实上到契约**（链级降级标）。两层缺一不可，且方向相反：第 3 条的核心是**不许**标降级（正常休市天天如此，标了就是造一个永远为真的告警），第 4 / 6 / 14 条的核心是**必须**标且类别可聚合。只验「回落了」验不到这一层。
 
 ## 自审：spec 有哪几层 / 扫了哪几层（per `sdd-authoring.md` 规则 ④）
 
 spec 共 **5 层**：`state_branches`（14）· FR（24）· SC（10）· Edge Cases（8）· Acceptance Scenarios（13）。**五层全扫**，无差集。
 
+📌 **条数于 2026-08-19（T014）对 `spec.md` 实时 `grep` 重算过一遍**（🚫 不抄历史数字）：FR 24（`FR-001`–`FR-023` 外加 `FR-006a`）· SC 10 · Edge Case 8 · Acceptance Scenario 13（US1 6 + US2 5 + US3 2）· `state_branches` 14 —— 与上行一致，无需改数。同轮把 impl 期新增的 **T007a**（链级降级信号出契约）与 **T008a**（档位条据降级信号分叉出告警态）纳入下列四张清单。⚠️ `state_branches` 的探针要**在 frontmatter 闭合的 `---` 处收住**：不收会把正文里 `FR-011` / `FR-022` 那两条缩进子弹当成分支，报出 16 条（本轮实撞的假阳性）。
+
 ### FR 覆盖（24 条，逐条枚举无范围记法）
 
-`FR-001` T004a · `FR-002` T004a · `FR-003` T004a · `FR-004` T004a · `FR-005` T001 · `FR-006` T001 · `FR-006a` T004b · `FR-007` T001 · `FR-008` T001 · `FR-009` T003 T007 T008 T011 T012 · `FR-010` T005 T007 T008 T011 T012 · `FR-011` T005 T011 · `FR-012` T005 · `FR-013` T007 T008 T011 · `FR-014` T007 T008 · `FR-015` T002 T003 · `FR-016` T003 T012 · `FR-017` T004b · `FR-018` T006 · `FR-019` T004a · `FR-020` T010 · `FR-021` T010 T011 · `FR-022` T009 T011 · `FR-023` T006
+`FR-001` T004a · `FR-002` T004a · `FR-003` T004a · `FR-004` T004a · `FR-005` T001 · `FR-006` T001 · `FR-006a` T004b · `FR-007` T001 · `FR-008` T001 · `FR-009` T003 T007 T008 T011 T012 · `FR-010` T005 T007 T007a T008 T008a T011 T012 · `FR-011` T005 T007a T008a T011 · `FR-012` T005 T007a · `FR-013` T007 T008 T011 · `FR-014` T007 T008 · `FR-015` T002 T003 · `FR-016` T003 T012 · `FR-017` T004b · `FR-018` T006 · `FR-019` T004a · `FR-020` T010 · `FR-021` T010 T011 · `FR-022` T009 T011 · `FR-023` T006
 
 ### SC 覆盖（10 条）
 
-`SC-001` T007 T008 T013 · `SC-002` T013 · `SC-003` T004b · `SC-004` T005 T011 · `SC-005` T003 T012 · `SC-006` T004a · `SC-007` T004a · `SC-008` T004b · `SC-009` T010 T011 · `SC-010` T006
+`SC-001` T007 T008 T013 · `SC-002` T013 · `SC-003` T004b · `SC-004` T005 T008a T011 · `SC-005` T003 T012 · `SC-006` T004a · `SC-007` T004a · `SC-008` T004b · `SC-009` T010 T011 · `SC-010` T006
 
 ### Acceptance Scenario 覆盖（13 条）
 
-US1-AS1 T013 · US1-AS2 T013 · US1-AS3 T011 · US1-AS4 T011 · US1-AS5 T011 · US1-AS6 T011 · US2-AS1 T004b T013 · US2-AS2 T004b T013 · US2-AS3 T004b T013 · US2-AS4 T004b T013 · US2-AS5 T010 T011 · US3-AS1 T006 T013 · US3-AS2 T006 T013
+US1-AS1 T013 · US1-AS2 T013 · US1-AS3 T011 · US1-AS4 T007a T008a T011 · US1-AS5 T011 · US1-AS6 T011 · US2-AS1 T004b T013 · US2-AS2 T004b T013 · US2-AS3 T004b T013 · US2-AS4 T004b T013 · US2-AS5 T010 T011 · US3-AS1 T006 T013 · US3-AS2 T006 T013
+
+📌 **US1-AS4（源不可达 / 超时 → 整表回落 + 显式标降级 + 零 0 值）2026-08-19 重算后挂三条**：T007a 出信号（服务端）· T008a 把信号画成告警态（客户端）· T011 端到端断言。三条缺一条这个场景就只验到一半 —— 客户端自己分不清「正常盘后」与「源挂了」，判据要交易日历，它没有。
 
 ### Edge Case 覆盖（8 条）
 

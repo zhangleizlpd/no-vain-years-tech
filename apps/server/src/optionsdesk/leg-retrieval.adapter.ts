@@ -348,8 +348,11 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     // 🚨 **overlay 的插点就在这里** —— `legs` 已组装、`return` 之前, 见类文件头。关态 (或读取口
     // 未绑定) 时**一行都不执行**, 结果与 064 之前逐字节相同 (FR-016 / SC-005)。
     // 🚨 这两条**都不算降级** (T007a): 未开实时是调用方的选择; 读取口整个没绑定则连闸都没判过,
-    // 「本该外呼」这个前提结构上不成立 (mock 档下它是**绑定着的**降级实现 ⇒ 走 `fetchQuotes`
-    // 那条路标 `source_unavailable`, 见 T002)。🚫 MUST NOT 在这里预置一个降级标充数。
+    // 「本该外呼」这个前提结构上不成立。📌 mock 档下读取口是**绑定着的**降级实现 (见 T002), 但
+    // 那条路轮不到它: `MARKET_STATE_PORT` 经 `collectionPort` 注册, mock 下是 054 的拒绝壳 ⇒
+    // `resolveRealtimeGate()` 一调即抛, 判 `'unknown'` 后**在发起 fetch 之前**就 fail-closed,
+    // 于是 mock 档实际标的是 `gate_unknown` 而非 `source_unavailable` (T012 契约冒烟实跑证实)。
+    // 🚫 MUST NOT 在这里预置一个降级标充数。
     if (!query.realtime || this.snapshots === null) {
       return { snapshot: { chain, legs }, window: null };
     }
