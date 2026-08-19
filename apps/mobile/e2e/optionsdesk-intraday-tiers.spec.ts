@@ -142,9 +142,11 @@ const COPY = {
   tierLive: '实时',
   tierEod: '收盘档',
   tierBusyFirstLoad: '正在取此刻报价',
-  tierEodReason: '美股当前非常规交易时段 —— 屏上是该交易日的收盘盘口',
-  tierDegradeSourceDown:
-    '🚨 美股盘中，但实时行情源此刻取不到 —— 屏上是上一交易日的收盘盘口，别据此下单',
+  tierEodReason: '美股非常规交易时段',
+  tierDegradeSourceDown: '🚨 盘中取不到实时源，勿据此下单',
+  tierDegradeOverCap: '合约过多超出单批上限，可收窄条件重试',
+  tierDegradeBasisStale: '标的盘中价未更新，定不出取价范围',
+  tierDegradeGateUnknown: '判不出是否交易时段，下拉可重试',
   tierPartialMiss: (n: number) => `${n} 条未取到实时 · 见行内「收」标`,
   eodBadge: '收',
   refreshCta: '刷新',
@@ -546,6 +548,21 @@ async function tierTone(page: Page): Promise<{ bg: string; borderLeft: string }>
   });
 }
 
+/**
+ * 原因文案在当前视口下**渲成了几行**。
+ *
+ * 🚨 判据是**渲染高度**而不是字数：字宽随字体 / 字号 / 视口而变，数汉字只是估计，
+ *    而「撑到第二行」是个像素事实。比的是元素自身高度与它自己的行高（🚫 不硬编码 px）。
+ */
+async function tierWhyLines(page: Page): Promise<number> {
+  return page.getByTestId(`${TIER}-why`).evaluate((el) => {
+    const s = getComputedStyle(el);
+    const lineHeight = Number.parseFloat(s.lineHeight);
+    const unit = Number.isFinite(lineHeight) ? lineHeight : Number.parseFloat(s.fontSize) * 1.2;
+    return Math.max(1, Math.round(el.getBoundingClientRect().height / unit));
+  });
+}
+
 /** 等这一批落定（腿行到齐）—— 档位条在等待态也渲染，拿它当落定信号等于不等。 */
 async function expectRows(page: Page, n: number): Promise<void> {
   await expect(rows(page)).toHaveCount(n, { timeout: 90_000 });
@@ -840,4 +857,35 @@ test('064 T011 — FR-011：正常休市的收盘档走**中性态**，源不可
   expect(await tierText(page, 'name')).toBe(COPY.tierLive);
   expect(live.borderLeft, '实时档挂了告警左边框').toBe('0px');
   expect(live.bg, '实时档与收盘档同底色 —— 档位没有被分开').not.toBe(neutral.bg);
+});
+
+test('064 收尾 — 档位条的原因文案在最窄视口下**恒为单行**（长度是硬约束，撑到第二行会把整条顶高）', async ({
+  page,
+}) => {
+  // 五种原因各占一票 —— 🚫 别只测最长那句：文案是逐条改的，只钉一条等于其余四条没有守卫。
+  const CASES = [
+    ['us:TIERG', null, COPY.tierEodReason],
+    ['us:TIERH', 'window_over_cap', COPY.tierDegradeOverCap],
+    ['us:TIERI', 'window_basis_stale', COPY.tierDegradeBasisStale],
+    ['us:TIERJ', 'source_unavailable', COPY.tierDegradeSourceDown],
+    ['us:TIERK', 'gate_unknown', COPY.tierDegradeGateUnknown],
+  ] as const;
+
+  await installLegMock(
+    page,
+    Object.fromEntries(
+      CASES.map(([symbol, degrade]) => [symbol, table(symbol, eodRegime(LEGS, degrade))]),
+    ),
+  );
+
+  for (const [symbol, , expected] of CASES) {
+    await openDetail(page, symbol);
+    await expectRows(page, LEGS.length);
+    // ① 先钉住文案本身 —— 改了文案就该在这里红（同本文件 COPY 镜像的约定）。
+    expect(await tierText(page, 'why'), `${symbol} 的原因文案对不上`).toBe(expected);
+    // ② 再钉版面：单行。🚨 这一条与 ① 缺一不可 —— 只钉文案，加长它不会红；
+    //    只钉行数，文案换成一个字也不会红。
+    const lines = await tierWhyLines(page);
+    expect(lines, `「${expected}」在 ${390} px 视口下折成了 ${lines} 行`).toBe(1);
+  }
 });

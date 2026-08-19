@@ -172,7 +172,7 @@ tick 熔断打开 → 停写 anchor.intraday_price / intraday_at
 
 🚨 **单批上限用 `OPTION_SNAPSHOT_MAX_CONTRACT_CODES = 399`**（`option-snapshot.port.ts:47`）。
 
-初稿写的 `REALTIME_QUOTE_MAX_SYMBOLS = 400` 是**错的常量** —— 那是正股口的。期权口是 `OPTION_SNAPSHOT_MAX_CODES(400) - 1`，**减掉的那 1 就是标的自身那行的槽位**。这个差值不是凑数：用 400 去切批会让每批多带一个 code，撞 shim 的 400 上限而整批被拒。ACN 的 285 仍远在其下。🚫 MUST NOT 在 `optionsdesk` 再写一个 399 或 400。
+初稿写的 `REALTIME_QUOTE_MAX_SYMBOLS = 400` 是**错的常量** —— 那是正股口的。期权口是 `OPTION_SNAPSHOT_MAX_CODES(400) - 1`，**减掉的那 1 就是标的自身那行的槽位**。这个差值不是凑数：用 400 去切批会让每批多带一个 code，撞 shim 的 400 上限而整批被拒。ACN 的窗内数（2026-08-19 实测 265）仍远在其下。🚫 MUST NOT 在 `optionsdesk` 再写一个 399 或 400。
 
 **`market` 入参本片只传 `'us'`** —— 预埋是为了 p4 把阈值改成 per-market 表时**只加数据不改结构**（同 061 §4.5 的 tick 分组预埋，一个道理）。零额外成本。
 
@@ -232,7 +232,7 @@ tick 熔断打开 → 停写 anchor.intraday_price / intraday_at
 
 ### 分批：本片**不实装**（US3 = P3）
 
-现有 13 只美股锚窗内数最大 **285**，全部 ≤ 400 ⇒ 今天零触发。本片只落**约束与守卫**：窗超上限时按 `window_over_cap` 留痕并**整体回落收盘档**（fail-closed），🚫 **MUST NOT** 悄悄截断到前 400 条 —— 那会让候选集少一截而外表完全正常。真要分批是将来的事，届时区块级时间取**最早**那批（保守）。
+现有 15 只美股锚窗内数最大 **265**（`us:ACN`，2026-08-19 在 prod 实测；🚨 别拿全腿视角行数当窗，那是**召回之后**的数，见 tasks.md 术语别名那条），全部 ≤ 400 ⇒ 今天零触发。本片只落**约束与守卫**：窗超上限时按 `window_over_cap` 留痕并**整体回落收盘档**（fail-closed），🚫 **MUST NOT** 悄悄截断到前 400 条 —— 那会让候选集少一截而外表完全正常。真要分批是将来的事，届时区块级时间取**最早**那批（保守）。
 
 ## Complexity Tracking
 

@@ -112,18 +112,77 @@ function normalizeSession(raw: string): MarketSession {
   return KNOWN_VENDOR_STATES.has(raw) ? 'other' : 'unknown';
 }
 
+/**
+ * 取值缓存的 TTL。
+ *
+ * 🚨 **这一层不是性能洁癖, 是配额** (2026-08-19 064 T013 盘中实测): 本能力的客户端桶是
+ * `FUTU_SHIM_MARKET_STATE_PROFILE` 的 **10 发 / 30 秒** (与 shim 侧 `LIMITS["global_state"]`
+ * 同构), 而 064 起**每个选约表读请求都要过这道闸** —— 选约表一个视角一个请求 (053 FR-025
+ * 错峰预取), 打开一只标的就是 3 发。用户 30 秒内连开三只即撞桶, 而
+ * `vendor-rate-limiter.ts` 的语义是**排队 await、不抛 429** ⇒ 表现为**十几秒静默白屏**,
+ * 没有任何错误、任何告警。实测尾部 7–18 秒 (间隔拉到 >3 秒后 8/8 全在 1.2 秒内)。
+ *
+ * 取 10 秒的理由: 桶是 10 发/30 秒 ⇒ 本能力最多 3 发/30 秒, 给 061 的盘中 tick (每 30 秒
+ * 1 发) 与其它消费者留足余量; 而市场时段按**分钟**变, 10 秒陈旧对判据无影响 —— 开盘/收盘
+ * 那一刻最多晚 10 秒生效, 且晚的方向是 fail-closed (还没翻常规时段 ⇒ 继续走收盘档)。
+ *
+ * 🚫 **不加 jitter**: 本端口是**单键**, jitter 防的是「同批 key 同秒集体过期」
+ * (`get-quotes.usecase.ts` 那种 per-symbol 多键场景), 单键上加它只是照抄形状。
+ */
+export const MARKET_STATE_CACHE_TTL_MS = 10_000;
+
 @Injectable()
 export class FutuMarketStateAdapter implements MarketStatePort {
   private readonly logger = new Logger(FutuMarketStateAdapter.name);
+
+  /**
+   * 缓存的那一格。**单键** —— 本端口只答一个问题 (「此刻各市场什么时段」), 一个字段就够,
+   * 🚫 不需要 Map、不需要 LRU、不需要淘汰策略。
+   */
+  private cached: { sessions: MarketSessionState[]; expiresAt: number } | null = null;
+
+  /**
+   * 在途的那一发 (**single-flight**)。
+   *
+   * 🚨 **承重的是这一格, 不是上面的 TTL**: 冷缓存下 N 个并发请求会**同时** miss, 纯 TTL 缓存
+   * 在那一瞬间完全不设防 (谁都还没写进缓存) ⇒ N 发照样打满配额。业界对这个形状的标准解法就是
+   * request coalescing / single-flight: 放行一发, 其余等它的结果。
+   */
+  private inFlight: Promise<MarketSessionState[]> | null = null;
 
   constructor(
     private readonly http: VendorHttpClient,
     private readonly baseUrl: string,
     private readonly token: string,
+    /** 注入仅为单测可控虚拟时钟 (同 `VendorRateLimiter` 的范式); 生产恒 `Date.now`。 */
+    private readonly now: () => number = () => Date.now(),
   ) {}
 
-  /** 复杂度: **1 个 HTTP 请求** + O(已登记市场数) 归一。 */
+  /**
+   * 复杂度: 命中缓存 `O(1)` 零外呼; 未命中 **1 个 HTTP 请求** + O(已登记市场数) 归一。
+   *
+   * 🚨 **失败不进缓存**: `loadSessions` 抛时既不写 {@link cached} 也不留 {@link inFlight}
+   * (`finally` 清), 下一发立刻真打 —— 把失败缓存住会让一次网络抖动把闸钉死整个 TTL,
+   * 而这道闸是 fail-closed 的 ⇒ 那 10 秒里所有用户都看到「判不出是否交易时段」的告警态。
+   */
   async getMarketSessions(): Promise<MarketSessionState[]> {
+    const cached = this.cached;
+    if (cached !== null && cached.expiresAt > this.now()) return cached.sessions;
+    if (this.inFlight !== null) return this.inFlight;
+
+    this.inFlight = this.loadSessions()
+      .then((sessions) => {
+        this.cached = { sessions, expiresAt: this.now() + MARKET_STATE_CACHE_TTL_MS };
+        return sessions;
+      })
+      .finally(() => {
+        this.inFlight = null;
+      });
+    return this.inFlight;
+  }
+
+  /** 真取一发并归一 (缓存与 single-flight 由 {@link getMarketSessions} 包在外面)。 */
+  private async loadSessions(): Promise<MarketSessionState[]> {
     const state = await this.fetchState();
     return Object.entries(FIELD_TO_MARKET).map(([field, market]) => ({
       market,

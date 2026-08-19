@@ -22,6 +22,11 @@ updated_at: '2026-08-19'
 - **测试不独立成 task** —— 每个 impl task 的 `→ verify:` 就是它的验收，红→绿在同一个 task 内闭环（Constitution §II）。
 - 层级：`[Server]` / `[Mobile]` / `[Mobile-E2E]` / `[Contract-Smoke]` / `[Ops]` / `[Docs]`。
 - 📌 **术语别名**：本文的「**窗**」= spec 的「**候选范围**」（spec `## Key Entities` 已声明该别名）。两处指同一个东西，改判据时两边都要看。
+- 🚨 **量「窗内有多少合约」时，屏上和响应里没有一个数能直接用**（2026-08-19 实撞两次，两次错在相反方向）：
+  - 「共 N 行」/ `matchedCount` / 全腿视角行数是**召回之后**的数 —— `leg-tab.rules.ts:23` 那句「`all` 不筛」只指不筛 intent-tab 判据，**权利金门槛照样滤**（`gateCounts.removedByPremiumFloor`，`us:ACN` 一次滤掉 218 条）⇒ 拿它当窗**低估**（ACN 154 vs 真值 265）。
+  - 反过来，库里该标的的 PUT 全量是**不限窗**的 ⇒ **高估**。
+  - 窗滤在 `leg-retrieval.adapter.ts` 的 `withinWindow`，位置是**召回之前、`loadChain` 之后** —— 也就是说它吃的是「链上有快照的全部标准未到期 PUT」，不是候选集。
+  - ⇒ 唯一可复算的口径（照 `leg-window.rules.ts` + `loadChain` 逐条）：`marketdata.option_contract` 中 **`option_type='PUT'` · `is_standard` · `expiry_date` 在 (今天, 今天+365] · `strike_price ∈ [0.7×spot, 1.05×spot]` · 且在最近一期 `option_daily_snapshot` 有行**。
 - 🚨 **FR / SC 一律逐条枚举，禁写 `FR-004~FR-008` 这类范围记法** —— 本仓自审纪律是逐条 `grep`，范围记法会让中间几条每次都被报成零命中。
 
 ## Path Conventions
@@ -99,7 +104,7 @@ updated_at: '2026-08-19'
 
 - [X] T012 [Contract-Smoke] **契约冒烟**（`FR-009`, `FR-010`, `FR-016`, `SC-005`）：新建 `apps/mobile/e2e/contract-smoke/064-intraday-leg-quotes.contract.ts` —— 用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条 happy path：拉选约表 → 断言 `priceKind` 与 `quoteAsOf` 的**序列化形态**（联合字面量 / 两种时间格式）能被客户端正确解封；再断言**实时关闭**时的响应与基线一致。→ verify: `pnpm nx run mobile:contract-smoke`
 
-- [ ] T013 [Ops] **美股盘中真机实证**（`SC-001`, `SC-002`, US1-AS1, US1-AS2, US2-AS1, US2-AS2, US2-AS3, US2-AS4, US3-AS1, US3-AS2）：美股常规时段（北京 21:30–04:00）真机打开选约表，逐条与外部行情终端对拍 bid/ask/成交量；下拉刷新观察 asOf 推进；记录 285 合约档的端到端等待时间（`SC-002` 预算 P95 ≤ 1.5 s，基线是 p0 线上实测的 0.35–0.41 s）。⚠️ 这三类 web e2e **验不到**（spec `web_compat_notes` 已写明）：真实时段内候选集随价格移动的进出 / 收盘那一刻的档位切换 / 与真源的数值一致性。→ verify: 截图 + 对拍表贴进本文件；env-gated 真 vendor IT（`RUN_MARKETDATA_IT=true`）手动跑一次并贴输出（该门恒 skip，「测试全绿」对真契约不构成证据）
+- [ ] T013 [Ops] **美股盘中真机实证**（`SC-001`, `SC-002`, US1-AS1, US1-AS2, US2-AS1, US2-AS2, US2-AS3, US2-AS4, US3-AS1, US3-AS2）：美股常规时段（北京 21:30–04:00）真机打开选约表，逐条与外部行情终端对拍 bid/ask/成交量；下拉刷新观察 asOf 推进；记录**候选范围最大那只**的端到端等待时间（2026-08-19 实测是 `us:ACN`，265 合约；`SC-002` 预算 P95 ≤ 1.5 s，基线是 p0 线上实测的 0.35–0.41 s）。⚠️ 这三类 web e2e **验不到**（spec `web_compat_notes` 已写明）：真实时段内候选集随价格移动的进出 / 收盘那一刻的档位切换 / 与真源的数值一致性。→ verify: 截图 + 对拍表贴进本文件；env-gated 真 vendor IT（`RUN_MARKETDATA_IT=true`）手动跑一次并贴输出（该门恒 skip，「测试全绿」对真契约不构成证据）
 
 ## Phase 6: 收口
 
@@ -173,7 +178,7 @@ US1-AS1 T013 · US1-AS2 T013 · US1-AS3 T011 · US1-AS4 T007a T008a T011 · US1-
 ## 故意零覆盖登记（per `sdd-authoring.md`「预期的零覆盖要写明是故意的」）
 
 - **`FR-020`（候选集每次整体重召回、不锁定成员）在服务端零 task** —— 它是 T004a 的**结构结果**而非独立行为：overlay 插在 `loadChain`（召回的共同根）之后，每次请求本就整条链重新召回，**要「锁定成员」反而得额外写代码**。客户端侧由 T010 承担。⇒ 下次 analyze 别把它当缺口补 task。
-- **US3（超上限分批）不实装分批** —— 现有 13 只美股锚窗内最大 285，全部 ≤ 399，今天零触发。T006 只落 fail-closed 守卫。真要分批是将来的事，届时区块级时间取**最早**那批。
+- **US3（超上限分批）不实装分批** —— 现有 15 只美股锚窗内最大 **265**（`us:ACN`，2026-08-19 在 prod 实测；口径见上方术语别名那条 —— 🚨 别拿候选集数当窗，那是召回之后的），全部 ≤ 399，今天零触发。T006 只落 fail-closed 守卫。真要分批是将来的事，届时区块级时间取**最早**那批。
 - **plan §D2（shim 信封解析单点化）在 tasks 里零引用** —— 它是 047 与 061 之间的**既有**重复，已作为独立 refactor 走 **PR #116** ship（5 个 adapter 收成 1 个单点，零行为变化）。本片经读取口拿已解析好的 `OptionSnapshotBatch`，**不产生第三份**。⇒ 这是唯一一个「plan 有 §D 而 tasks 零 task」的合法情形，下次 analyze 别当缺口。
 - **链分析报表无独立 mockup / 无独立 mobile task** —— 它与选约表共用 `loadChain`，档位标记同源，主体是 IV 曲线不受档位形态影响。若 T013 真机发现曲线在实时档下另有呈现问题，再补。
 

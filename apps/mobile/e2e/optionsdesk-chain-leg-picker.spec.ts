@@ -151,6 +151,8 @@ const LAST_WEEK = ymdMinusDays(TODAY, 7);
 const COPY = {
   asOfUnavailable: '无数据时点',
   asOfStaleSuffix: ' · 非当日',
+  /** 064：实时档下区块头改说「快照 X」（库内快照的归属日），时点归档位条。 */
+  snapshotPrefix: '快照 ',
   rowTotal: (n: number) => `共 ${n} 行`,
   chainNotReady:
     '期权链数据未就绪 —— 该标的尚未被快照覆盖。采集在每个美股交易日收盘后跑一轮，下一轮覆盖到它就能读。',
@@ -1051,10 +1053,16 @@ test('047 T035 — SC-003：区块 asOf + **OI 列独立归属日**（与区块 
   });
   await openDetail(page, 'us:PEP');
 
-  // ① 区块级 asOf：完整日期 + 收盘口径，且**不是**「无数据时点」。
-  const asOf = page.getByTestId('optionsdesk-detail-leg-asof');
-  await expect(asOf).toHaveText(asOfLabel(TODAY));
-  await expect(asOf).not.toHaveText(COPY.asOfUnavailable);
+  // ① 区块级时点：**收盘档 + 当期这一格已与 064 档位条去重**（2026-08-19）—— 两处原本都在说
+  //    「TODAY 的收盘」，同屏说两遍。SC-003 要的「每处读数带可见时点」在这一格由档位条承担，
+  //    所以断言换成「区块头那行不渲染 + 档位条确实给出同一个交易日」。
+  //    🚨 别把这条改回「区块头有文字」—— 那正是被去掉的那份重复。陈旧 / 无时点 / 实时三态
+  //    区块头照渲，各自的断言在下面两个用例里。
+  await expect(
+    page.getByTestId('optionsdesk-detail-leg-asof'),
+    '收盘档 + 当期仍渲区块头 asOf —— 与档位条同屏说了两遍同一个日期',
+  ).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-detail-leg-tier-stamp')).toHaveText(TODAY.slice(5));
 
   // ② OI 列的**独立**归属日挂在列头上（挂区块头会把 T−1 说成当日）。
   const oiSub = `截至 ${YESTERDAY.slice(5)}`;
@@ -1080,17 +1088,18 @@ test('047 T035 — 陈旧帧：`STALE` ⇒ asOf 带「· 非当日」且转醒�
   await installLegMock(page, {
     anchors: [makeAnchor({ id: '1', ticker: 'us:AOS' }), makeAnchor({ id: '2', ticker: 'us:PEP' })],
     legs: {
-      // 对照组：同一份腿、当期档。
-      'us:AOS': makeLegTable('us:AOS', legs),
+      // 对照组：同一份腿、当期档。🚨 走**实时档**（`快照 X`）—— 收盘档 + 当期那一格的区块头
+      // 已与档位条去重、不渲染（断言在 SC-003 用例），拿它当比色基线会取到一个不存在的元素。
+      'us:AOS': makeLegTable('us:AOS', legs, { priceKind: 'realtime' }),
       // 🚨 档位由 **server** 下发（客户端拿设备本地日期自判对美股恒为真 ⇒ 等于没有告警）。
       'us:PEP': makeLegTable('us:PEP', legs, { asOf: LAST_WEEK, asOfFreshnessTier: 'STALE' }),
     },
   });
 
-  // ── 对照组：当期档，无后缀 ────────────────────────────────────────────
+  // ── 对照组：当期档，无后缀（实时档下区块头说的是**库内快照的归属日**）────────────
   await openDetail(page, 'us:AOS');
   const currentAsOf = page.getByTestId('optionsdesk-detail-leg-asof');
-  await expect(currentAsOf).toHaveText(asOfLabel(TODAY));
+  await expect(currentAsOf).toHaveText(`${COPY.snapshotPrefix}${TODAY}`);
   const currentStyle = await currentAsOf.evaluate((el) => {
     const s = getComputedStyle(el);
     return { color: s.color, weight: s.fontWeight };
