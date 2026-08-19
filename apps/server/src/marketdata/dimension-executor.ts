@@ -342,6 +342,60 @@ export function toDailyBarRow(
 }
 
 /**
+ * `daily_bar` 落库: **尾部窗口 upsert + 更老 insert-only** (063 Phase 3.1, 形态照抄
+ * {@link DimensionExecutor.writeUsIndexRows})。**唯二**两个 `daily_bar` 写入口 —— 采集轮的
+ * `syncEodBarNone` 与建锚旁路 `EnsureLatestEodBarUseCase` —— 共用本函数。两处各写一遍必漂,
+ * 而漂移的形态恰是「同一根 K 在一条路上改得动、在另一条路上永远冻着」。
+ *
+ * ## 为什么不再是纯 insert-only
+ *
+ * 原写法 `createMany(skipDuplicates)` 对已存在的 `(instrument, date, adjust)` **静默跳过** ⇒
+ * vendor 的事后订正永远进不来, 且**盘中拿到的「进行中」K 线被永久冻结** (富途
+ * `request_history_kline` 盘中返进行中 K 线 —— #103 的形状)。
+ *
+ * ⚠️ **代价**: 订正的是「值」不是「版本」—— 旧值不留档, 做不了严格 PIT 回测 (无 look-ahead
+ * bias 的历史复盘)。业内正解是另开一条 vintage 轴, 但那是破坏性变更 (读侧全都要带「取最新
+ * 版本」语义), 真要回测时再上, 走 expand-migrate-contract。
+ *
+ * ## 前提: 一批 = 单标的单口径
+ *
+ * 「尾部」按 `tradeDate` 升序取最后 N 行 ⇒ 一批里混多只标的 / 多个复权口径时这个切法没有意义。
+ * 两个调用点都是「一只标的、一个口径、一段区间」, 保持这样。
+ *
+ * 🚨 **入参顺序不可信, 函数自己排** —— `EodBarPort` 契约说按 `tradeDate` 升序, 但顺序哪天变了,
+ * 尾窗就静默切在错误的 N 行上 (老行被 upsert、新行反而 insert-only), 而这是个不报错、只是订正
+ * 悄悄失效的偏差。排序 O(n log n) 相对 n 次往返可忽略。
+ *
+ * 复杂度: ⌈头部行数 / {@link BACKFILL_ROW_CHUNK}⌉ 次 `createMany` +
+ * ≤ {@link DAILY_BAR_REVISABLE_TAIL_ROWS} 次 upsert (单 tx)。
+ */
+export async function writeDailyBarRows(
+  prisma: PrismaService,
+  rows: Prisma.DailyBarCreateManyInput[],
+): Promise<void> {
+  if (rows.length === 0) return; // 停牌 / 新股无行情 —— 不开事务。
+  const sorted = [...rows].sort(
+    (a, b) => new Date(a.tradeDate).getTime() - new Date(b.tradeDate).getTime(),
+  );
+  const tailStart = Math.max(0, sorted.length - DAILY_BAR_REVISABLE_TAIL_ROWS);
+
+  for (const chunk of chunked(sorted.slice(0, tailStart), BACKFILL_ROW_CHUNK)) {
+    await prisma.dailyBar.createMany({ data: chunk, skipDuplicates: true });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    for (const row of sorted.slice(tailStart)) {
+      const { instrumentId, tradeDate, adjust, ...values } = row;
+      await tx.dailyBar.upsert({
+        where: { instrumentId_tradeDate_adjust: { instrumentId, tradeDate, adjust } },
+        create: row,
+        update: values,
+      });
+    }
+  });
+}
+
+/**
  * {@link UnderlyingIvSnapshot} → `underlying_iv_daily` 列 (046 T008)。
  *
  * `symbol` 是请求侧回填的**路由字段不是列**, 故不在此列出 (带进去 Prisma 直接抛未知字段)。
@@ -446,6 +500,17 @@ const BACKFILL_ROW_CHUNK = 500;
  * 「上周某天的值被订正」这种情形。
  */
 const US_INDEX_REVISABLE_TAIL_ROWS = 10;
+
+/**
+ * `daily_bar` **尾部可修订窗口** (行数, 063 Phase 3.1): 只有最近这么多根走 upsert, 更老的走
+ * insert-only。取值与理由同 {@link US_INDEX_REVISABLE_TAIL_ROWS} 的 10 —— 约两个交易周, 覆盖
+ * 「盘中先落进行中 K、收盘后订正」与一次长周末后的补发。
+ *
+ * 🚨 **必须 ≥ 各日线维度的 `delta_lookback_days`** (今天 us_equity_bar = 7, eod_bar = NULL):
+ * 回看窗决定「每晚重新问 vendor 要哪几天」, 尾窗决定「问回来的这几天里哪几天改得动」。尾窗小于
+ * 回看窗 = 每晚白拉几天回来又按 insert-only 丢掉, 纯浪费且不报错。调大回看窗时回到这里对一次。
+ */
+const DAILY_BAR_REVISABLE_TAIL_ROWS = 10;
 
 /**
  * skip-complete 游标宽限窗口 (grace-window, 2026-07-13 实测优化): 判「老端已回填」用 `from + N 天`
@@ -1169,8 +1234,8 @@ export class DimensionExecutorRegistry {
   }
 
   /**
-   * eod none 单口径落库 (020 T008, FR-A01): fetch [from, targetDate] none → append-only
-   * 幂等落库。019 推导段 (none × 最新因子写 forward/backward 行) 退役 — forward/backward
+   * eod none 单口径落库 (020 T008, FR-A01): fetch [from, targetDate] none → 幂等落库
+   * (尾窗可订正, 见 {@link writeDailyBarRows})。019 推导段 (none × 最新因子写 forward/backward 行) 退役 — forward/backward
    * 读时换算 (020 T003), DailyBar 收敛单口径事实表。
    */
   private async syncEodBarNone(
@@ -1181,12 +1246,10 @@ export class DimensionExecutorRegistry {
     const symbol = `${inst.market}:${inst.code}`;
     const bars = await this.eodBar.getBars({ symbol, adjust: 'none', from, to: targetDate });
     if (bars.length === 0) return; // 当日无 bar (停牌等) — 零落库。
-    await this.prisma.$transaction(async (tx) => {
-      await tx.dailyBar.createMany({
-        data: bars.map((b) => toDailyBarRow(inst.id, b)),
-        skipDuplicates: true,
-      });
-    });
+    await writeDailyBarRows(
+      this.prisma,
+      bars.map((b) => toDailyBarRow(inst.id, b)),
+    );
   }
 
   /**

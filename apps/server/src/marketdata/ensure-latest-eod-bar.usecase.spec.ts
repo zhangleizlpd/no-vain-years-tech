@@ -26,20 +26,26 @@ function build(): {
   useCase: EnsureLatestEodBarUseCase;
   instrumentFindUnique: Fn;
   createMany: Fn;
+  upsert: Fn;
   getBars: Fn;
 } {
   const instrumentFindUnique = vi.fn().mockResolvedValue({ id: 42n });
   const createMany = vi.fn().mockResolvedValue({ count: 0 });
+  const upsert = vi.fn().mockResolvedValue({});
   const getBars = vi.fn().mockResolvedValue([]);
+  // 写路径与采集轮共用 `writeDailyBarRows` ⇒ double 必须同时给出 `$transaction` 与尾窗
+  // 用的 `upsert`;「落了几行」的断言看 upsert (小批全落在尾窗内, createMany 不会被调)。
   const prisma = {
     instrument: { findUnique: instrumentFindUnique },
-    dailyBar: { createMany },
+    dailyBar: { createMany, upsert },
+    $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn({ dailyBar: { upsert } }),
   } as unknown as PrismaService;
   const eodBar = { getBars } as unknown as EodBarPort;
   return {
     useCase: new EnsureLatestEodBarUseCase(prisma, eodBar),
     instrumentFindUnique,
     createMany,
+    upsert,
     getBars,
   };
 }
@@ -67,6 +73,7 @@ describe('EnsureLatestEodBarUseCase — 单标的按需取最近收盘 + 幂等�
     expect(result).toBeNull();
     expect(ctx.getBars).not.toHaveBeenCalled();
     expect(ctx.createMany).not.toHaveBeenCalled();
+    expect(ctx.upsert).not.toHaveBeenCalled();
   });
 
   it('vendor 返空 (停牌 / 新股) ⇒ 返 null、零落库, 非错误', async () => {
@@ -76,9 +83,10 @@ describe('EnsureLatestEodBarUseCase — 单标的按需取最近收盘 + 幂等�
 
     expect(result).toBeNull();
     expect(ctx.createMany).not.toHaveBeenCalled();
+    expect(ctx.upsert).not.toHaveBeenCalled();
   });
 
-  it('取到数据 ⇒ 以 none 口径 + skipDuplicates 落库, 回看窗按 targetDate 倒推', async () => {
+  it('取到数据 ⇒ 以 none 口径落库 (≤ 尾窗 ⇒ 全走 upsert), 回看窗按 targetDate 倒推', async () => {
     ctx.getBars.mockResolvedValue([bar('2026-08-14', '84.79'), bar('2026-08-17', '86.94')]);
 
     const result = await ctx.useCase.execute('us:PDD', '2026-08-17');
@@ -89,13 +97,14 @@ describe('EnsureLatestEodBarUseCase — 单标的按需取最近收盘 + 幂等�
       from: '2026-08-07', // targetDate − 10 天
       to: '2026-08-17',
     });
-    const written = ctx.createMany.mock.calls[0][0] as {
-      data: { instrumentId: bigint; adjust: string }[];
-      skipDuplicates: boolean;
-    };
-    expect(written.skipDuplicates).toBe(true);
-    expect(written.data).toHaveLength(2);
-    expect(written.data.every((r) => r.instrumentId === 42n && r.adjust === 'none')).toBe(true);
+    // 两根都落在尾窗内 ⇒ 逐根 upsert, 头部 createMany 无事可做。
+    expect(ctx.createMany).not.toHaveBeenCalled();
+    const written = ctx.upsert.mock.calls.map(
+      (c) =>
+        (c as [{ create: { instrumentId: bigint; adjust: string; tradeDate: Date } }])[0].create,
+    );
+    expect(written).toHaveLength(2);
+    expect(written.every((r) => r.instrumentId === 42n && r.adjust === 'none')).toBe(true);
     expect(result?.close).toBe('86.94');
   });
 
