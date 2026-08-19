@@ -27,6 +27,8 @@ export { LegRow, type LegRowProps } from './leg-row';
 export { LegTableHeader, type LegTableHeaderProps } from './leg-table-header';
 // 064 T008 — 区块级档位条（实时 / 收盘 / 未就绪三形态；判定在 leg-tier-bar.rules）。
 export { LegTierBar, type LegTierBarProps } from './leg-tier-bar';
+// 064 T010 — 成员变化提示（差集在客户端算，服务端不引入会话态）。
+export { LegMembershipNotice, type LegMembershipNoticeProps } from './leg-membership-notice';
 // 047 T033 — 意图三 Tab + 水位手选 chip（两者都进详情屏那**一个** sticky section header）。
 export { LegPickerTabs, type LegPickerTabsProps } from './leg-picker-tabs';
 export { PositionBucketChips, type PositionBucketChipsProps } from './position-bucket-chips';

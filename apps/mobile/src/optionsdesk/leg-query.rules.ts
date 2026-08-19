@@ -83,3 +83,37 @@ export function legConsistencyStep(
   if (consistent) return { action: 'none', latched: false };
   return latched ? { action: 'warn', latched: true } : { action: 'refetch', latched: true };
 }
+
+// ═══════════════ 064 T010 —— 相邻两次取数的成员差集（FR-021 / SC-009） ═══════════════
+
+/**
+ * 一轮取数相对上一轮的成员进出。两个数**都为 0 时不构造它**（见 {@link legMembershipChange}）。
+ *
+ * 🚨 **差集只在客户端算**（plan §D9）：服务端无状态、不持有「这个客户端上一轮看到了哪些腿」，
+ *    🚫 MUST NOT 为它在服务端引入会话态。
+ */
+export interface LegMembershipChange {
+  /** 本轮**新进**的条数（上一轮没有、这一轮有）。 */
+  readonly entered: number;
+  /** 本轮**已不满足**的条数（上一轮有、这一轮没有）。 */
+  readonly left: number;
+}
+
+/**
+ * 上一轮 → 这一轮的成员差集；两侧都没动 ⇒ `null`（**不报**，无变化的提示只是噪点）。
+ * 复杂度 O(n + m)（`Set.has` 均摊 O(1)），n / m = 两轮的条数。
+ *
+ * 🚨 **两个方向都要算**：只算一边的话，「正盯着某一行准备下单、而它这一轮已不满足」——
+ *    也就是 FR-021 真正要防的那件事 —— 恰恰是被漏掉的那半。
+ * 📌 **顺序不算变化**：判据是集合而不是数组，重排（精排口径变了）不是成员增减。
+ */
+export function legMembershipChange(
+  previous: ReadonlySet<string>,
+  next: ReadonlySet<string>,
+): LegMembershipChange | null {
+  let entered = 0;
+  for (const code of next) if (!previous.has(code)) entered += 1;
+  let left = 0;
+  for (const code of previous) if (!next.has(code)) left += 1;
+  return entered === 0 && left === 0 ? null : { entered, left };
+}

@@ -91,6 +91,7 @@ import {
   type LegTruncationLine,
 } from './leg-picker.rules';
 import { LegPickerTabs } from './leg-picker-tabs';
+import { LegMembershipNotice } from './leg-membership-notice';
 import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
@@ -383,6 +384,14 @@ export function UnderlyingDetailScreen({
                       //    🚫 MUST NOT 为「刷新」另造第二个 refetch —— 两个名字必然长出两个实现。
                       onRefresh={legTable.retry}
                     />
+                    {/* 🚨 064 FR-021：成员变化是**瞬时告知**，位置在档位条与表头之间（帧 ⑧）——
+                        无变化 / 首屏 / 换视角 / 改条件时**整条不渲染**（判定在 hook 里）。 */}
+                    {legTable.membershipChange === null ? null : (
+                      <LegMembershipNotice
+                        change={legTable.membershipChange}
+                        onDismiss={legTable.dismissMembershipChange}
+                      />
+                    )}
                     <LegTableHeader
                       tx={tx}
                       // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——

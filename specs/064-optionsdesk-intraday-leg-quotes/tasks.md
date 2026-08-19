@@ -87,7 +87,7 @@ updated_at: '2026-08-19'
 
 - [X] T009 [P] [Mobile] **首屏等待态 + 刷新保表**（`FR-022`, `state_branches` 12, plan §D10, mockup 帧 ⑥⑦）：`use-leg-table.ts` + `underlying-detail-screen.tsx` —— 首屏走等待态（骨架），**MUST NOT 先渲染一份收盘档的表再覆盖重排**；下拉刷新期间**保留当前表**（不遮罩、不置灰到看不清），新一批到齐后整体替换；刷新指示位于档位条、带「上次」时刻。🚫 MUST NOT 引入自动轮询（spec Assumption）。→ verify: `use-leg-table.spec.ts` 加断言 —— ① 首次加载中 `rows` 恒为**空**而非「库内收盘档」（这条先红：若实现走渐进覆盖，这里会拿到非空）；② 刷新中 `rows` **保持上一批的引用不变**且 `isRefreshing` 为真；③ 无任何定时器被注册（断言 `vi.getTimerCount() === 0`，防自动轮询悄悄混进来）
 
-- [ ] T010 [Mobile] **成员变化提示**（`FR-021`, `SC-009`, `state_branches` 12, plan §D9, mockup 帧 ⑧）：新建 `apps/mobile/src/optionsdesk/leg-membership-notice.tsx` + 在 `use-leg-table.ts` 里持有**上一轮的合约码集合**做差集，刷新后报出「本轮新进 N · 已不满足 M」，中性 `--nvy-surface-sunken`，可关闭。🚨 **Guardrail 9**。🚫 服务端**不引入会话态** —— 差集只在客户端算。→ verify: `use-leg-table.spec.ts` 加：① 两轮不同成员 → 差集条数与实际一致（🚨 双向各断言一次：只进不出 / 只出不进 / 有进有出，三种都要，只测一种会漏方向写反）；② 首屏（无上一轮）→ **不报**成员变化（否则用户一进页面就被告知「3 条进」）；③ 成员完全相同 → 不报
+- [X] T010 [Mobile] **成员变化提示**（`FR-021`, `SC-009`, `state_branches` 12, plan §D9, mockup 帧 ⑧）：新建 `apps/mobile/src/optionsdesk/leg-membership-notice.tsx` + 在 `use-leg-table.ts` 里持有**上一轮的合约码集合**做差集，刷新后报出「本轮新进 N · 已不满足 M」，中性 `--nvy-surface-sunken`，可关闭。🚨 **Guardrail 9**。🚫 服务端**不引入会话态** —— 差集只在客户端算。→ verify: `use-leg-table.spec.ts` 加：① 两轮不同成员 → 差集条数与实际一致（🚨 双向各断言一次：只进不出 / 只出不进 / 有进有出，三种都要，只测一种会漏方向写反）；② 首屏（无上一轮）→ **不报**成员变化（否则用户一进页面就被告知「3 条进」）；③ 成员完全相同 → 不报
 
 ## Phase 5: 两层验证与实证
 
