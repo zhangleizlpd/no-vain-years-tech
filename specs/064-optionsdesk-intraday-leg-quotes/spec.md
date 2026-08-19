@@ -2,9 +2,9 @@
 feature_id: 064-optionsdesk-intraday-leg-quotes
 modules: [optionsdesk, marketdata]
 owners: ['@zhangleizlpd']
-status: planned
+status: implemented
 created_at: '2026-08-19'
-updated_at: '2026-08-19'
+updated_at: '2026-08-20'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 web_compat: stub
@@ -37,7 +37,7 @@ state_branches:
 
 **Feature Branch**: `064-optionsdesk-intraday-leg-quotes`
 **Created**: 2026-08-19
-**Status**: Planned
+**Status**: Implemented
 **Input**: 选约表与链分析报表读的是「最近一期交易日的全链快照」，而美股收盘采集跑在北京 06:30 —— 于是用户在美股盘中打开选约表，看到的是**上一交易日收盘的盘口**，却要据此决定卖哪一档。本 feature 让盘中的报价与候选集都走此刻的真实数据，且**零落库、零新表、零采集维度**：不留历史，只在被读的那一刻取一次。
 
 ## Clarifications
