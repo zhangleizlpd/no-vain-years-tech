@@ -35,7 +35,7 @@ export interface TradingCalendarPort {
    * `get-instrument-bars.usecase.ts` 与 optionsdesk 的 `last-closed-session.ts`），而 062 起
    * 判据多了「覆盖声明」这一维 —— 两份实现必然漂移，且漂移的表现只是档位悄悄错一档、不报错。
    *
-   * @param now 绝对时刻（收盘上界按**交易所时区**求，见 `lastClosedSessionCutoff`）。
+   * @param now 绝对时刻（收盘上界按**交易所时区**求，见 `sessionWatermark`）。
    */
   lastClosedSession(market: string, now: Date): Promise<string | null>;
 }

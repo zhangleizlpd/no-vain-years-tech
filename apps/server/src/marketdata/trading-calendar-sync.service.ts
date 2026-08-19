@@ -9,7 +9,7 @@ import {
   TRADING_CALENDAR_SOURCE,
   type TradingCalendarSource,
 } from './trading-calendar-source.port.js';
-import { marketDateFor, shanghaiToday } from './trading-day-gate.js';
+import { exchangeCalendarDate, userToday } from './session-clock.js';
 
 /**
  * 交易日历填充服务 (sync-1 S1-T2): `trading_day` 表的**写入端** (populate/seed)。读端是
@@ -123,7 +123,7 @@ export class TradingCalendarSyncService {
    * 唯一的信号也抹掉。
    */
   async populate(now: Date): Promise<CalendarSyncResult[]> {
-    const to = shanghaiToday(now);
+    const to = userToday(now);
     const from = new Date(Date.parse(`${to}T00:00:00Z`) - POPULATE_LOOKBACK_DAYS * DAY_MS)
       .toISOString()
       .slice(0, 10);
@@ -137,7 +137,7 @@ export class TradingCalendarSyncService {
 
     const forward: CalendarSyncResult[] = [];
     for (const market of CALENDAR_MARKETS) {
-      const marketToday = marketDateFor([market], now);
+      const marketToday = exchangeCalendarDate(market, now);
       forward.push(
         ...(await this.syncRangeWith(
           this.forwardSource,

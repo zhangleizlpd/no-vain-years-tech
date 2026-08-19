@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
-import { daysToExpiry, marketDateFor } from '../marketdata/trading-day-gate';
+import { exchangeCalendarDate } from '../marketdata/session-clock';
+import { daysToExpiry } from '../marketdata/trading-day-gate';
 import { parseAnchorTicker } from './anchor.rules';
 import { recallCandidates, type RecallContext } from './leg-recall.rules';
 import type {
@@ -78,7 +79,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   private async loadChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
-    const marketDate = marketDateFor(['us'], query.now);
+    const marketDate = exchangeCalendarDate('us', query.now);
 
     // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 锚 ticker → 标的 id
     // 寻址, 读法同 `get-underlying-detail.usecase.ts`。零写、零 @Inject() 对方 use case (Q7-C)。

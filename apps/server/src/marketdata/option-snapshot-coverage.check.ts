@@ -70,7 +70,7 @@ export interface UnderlyingCoverage {
 }
 
 export interface OptionCoverageReport {
-  /** 被核对的交易日 (us 业务日, 调用方按 `marketDateFor(['us'], now)` 求值)。 */
+  /** 被核对的交易日 (us 业务日, 调用方按 `exchangeCalendarDate('us', now)` 求值)。 */
   sessionDate: string;
   /** 分母取自哪一天; `null` = 全表无更早的快照行 (首日 / 零锚)。 */
   baselineDate: string | null;

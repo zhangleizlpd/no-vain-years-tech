@@ -3,7 +3,7 @@ import {
   SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
   type SnapshotCollectionSpec,
 } from './sync-option-snapshot.usecase.js';
-import { marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDate } from './session-clock.js';
 
 /**
  * 锚首建冷启动的**判据层** (060 T003, FR-006 / FR-008 / FR-014 / FR-023 / FR-024,
@@ -115,11 +115,11 @@ export interface SnapshotSpecInput {
   /** 本次冷启动的**绝对时刻**。 */
   now: Date;
   /**
-   * `trading_day` 中 ≤ `lastClosedSessionCutoff(market, now)` 的**最大交易日**
+   * `trading_day` 中 ≤ `sessionWatermark(market, now)` 的**最大交易日**
    * (= 最近一个已收盘交易日, FR-006)。`null` = 日历缺行。
    */
   lastClosedTradingDay: string | null;
-  /** `marketDateFor([market], now)` 那一天**是不是**该市场的交易日。 */
+  /** `exchangeCalendarDate(market, now)` 那一天**是不是**该市场的交易日。 */
   todayIsTradingDay: boolean;
   /** {@link lastClosedTradingDay} 的**上一个交易日**; `null` = 日历缺更早的行。 */
   tradingDayBeforeTarget: string | null;
@@ -178,7 +178,7 @@ export function resolveSnapshotSpec(input: SnapshotSpecInput): ColdStartSnapshot
     return { decision: 'abandon', outcome: COLD_START_OUTCOME.CALENDAR_MISSING };
   }
 
-  const today = marketDateFor([market], now);
+  const today = exchangeCalendarDate(market, now);
   // 已进下一个**交易日**的盘前 ⇒ 目标 session 的 OI 已随之翻新, 此刻抓到的就是它的真值。
   // 非交易日 (周末 / 节假日) 不翻新 ⇒ 与「仍在收盘当日」同走 eod。
   const oiRefreshed = today > target && todayIsTradingDay;

@@ -47,7 +47,7 @@ import {
   type UsIndexDailyPoint,
   type UsIndexPort,
 } from './us-index.port.js';
-import { marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDateForScope } from './session-clock.js';
 import {
   classifyIvpDivergence,
   computeIvPercentile,
@@ -2588,11 +2588,12 @@ export class DimensionExecutorRegistry {
    * ## 业务日期 = A′, 且**刻意不取 `input.asOf`** (FR-028)
    *
    * vendor 不随快照下发日期 ⇒ 这一行归哪个交易日只能由**市场时钟**定, 取
-   * `marketDateFor(dim.marketScope, input.now)` (us ⇒ America/New_York)。不取 `input.asOf`
+   * `exchangeCalendarDateForScope(dim.marketScope, input.now)` (us ⇒ America/New_York)。不取 `input.asOf`
    * 有两个各自独立的理由:
-   *   ① 两条 CLI 路径的 `asOf` 兜底是 `shanghaiToday(now)` (`marketdata-backfill.cli.ts` /
-   *      `marketdata-trigger.cli.ts`) —— 对 us 维度会**错位一天且每周固定丢掉周五**
-   *      (失败形态表见 {@link marketDateFor} 注释)。
+   *   ① `input.asOf` 是**入队时刻**算的, 而这一行归哪个交易日要按**执行时刻**的市场时钟定
+   *      —— 队列积压 / 重试跨过收盘或午夜时两条钟会分叉 (ADR-0066: event time ≠ processing
+   *      time)。⚠️ 063 Phase 1 前这里还有第三条理由「CLI 的 asOf 兜底是上海日」, 那个形态
+   *      已随两条 CLI 改逐维度求值而消失, 别再引用。
    *   ② 运维显式 `--as-of <过去某天>` 更糟: 会把**今天的**快照写进过去那天的行, 直接污染
    *      历史。区间型维度不受此影响 (vendor 按行下发日期), 故不动它们。
    *
@@ -2614,7 +2615,7 @@ export class DimensionExecutorRegistry {
       await this.backfillUnderlyingIvHistory(instruments, dim, stats, input);
       return;
     }
-    const date = toDateOnly(marketDateFor(dim.marketScope, input.now));
+    const date = toDateOnly(exchangeCalendarDateForScope(dim.marketScope, input.now));
     const idBySymbol = symbolIndex(instruments);
 
     for (const chunk of chunked(instruments, dim.batchSize)) {
@@ -2758,8 +2759,8 @@ export class DimensionExecutorRegistry {
    * ## A′ 在全量文件形态下的**唯一职责** = 未来日期行的上界闸 (FR-028)
    *
    * 行的日期来自文件本身, 不是算出来的 ⇒ A′ 不当「落库日期」用。但它仍要按 us 时区求
-   * ({@link marketDateFor}, 不吃 `input.asOf` —— 两条 CLI 的 `asOf` 兜底是上海日, 对 us 维度
-   * 会错位一天): **晚于 A′ 的行一律拦下并计 `skipped`**。正常情况下拦不到任何东西 (文件末行
+   * ({@link exchangeCalendarDateForScope}, 不吃 `input.asOf` —— 后者是入队时刻的日期, 而上界闸
+   * 要问执行时刻的「今天」): **晚于 A′ 的行一律拦下并计 `skipped`**。正常情况下拦不到任何东西 (文件末行
    * 恒为上一交易日), 拦到了就是源侧日期异常或本机时钟跑偏 —— 两种都该被数出来而不是默默入库。
    *
    * ## per-code 隔离
@@ -2775,7 +2776,7 @@ export class DimensionExecutorRegistry {
    */
   private async syncUsIndexDaily(input: ExecutorInput): Promise<ExecutorResult> {
     const dim = await this.loadDimension('us_index_daily');
-    const businessDate = marketDateFor(dim.marketScope, input.now);
+    const businessDate = exchangeCalendarDateForScope(dim.marketScope, input.now);
     const stats = emptyStats();
 
     for (const indexCode of US_INDEX_CODES) {

@@ -3,7 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app/app.module.js';
 import { MARKETDATA_WORKER_DISABLED } from './marketdata-sync.queue.js';
 import { CALENDAR_MARKETS, TradingCalendarSyncService } from './trading-calendar-sync.service.js';
-import { shanghaiToday } from './trading-day-gate.js';
+import { userToday } from './session-clock.js';
 
 /**
  * 交易日历历史 seed CLI (sync-1 S1-T2, FR: 部署切表驱动前先填历史): 一次性拉多年指数 kline
@@ -61,7 +61,7 @@ export async function runSeed(argv: string[]): Promise<number> {
   });
   try {
     const service = app.get(TradingCalendarSyncService);
-    const to = args.to ?? shanghaiToday(new Date());
+    const to = args.to ?? userToday(new Date());
     const results = await service.syncRange(args.markets, args.from, to);
     logger.log(`trading-day seed 完成: ${JSON.stringify({ from: args.from, to, results })}`);
     return 0;

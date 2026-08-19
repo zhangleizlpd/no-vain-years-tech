@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DIMENSION_KEYS } from './dimension-executor.js';
+import { exchangeCalendarDateForScope } from './session-clock.js';
 import { AS_OF_BASIS_BY_DIMENSION, resolveAsOfForDimension } from './sync-asof.rules.js';
 
 /**
@@ -95,11 +96,31 @@ describe('resolveAsOfForDimension — calendar-day 口径的维度不受影响',
     ).toBe('2026-08-18');
   });
 
-  it('跨时区 scope 在 calendar-day 口径下仍抛 (混 scope 的机器强制不能丢)', () => {
+  /**
+   * 🚨 全景 IT (`marketdata.{trigger,backfill}-cli.it.spec.ts`) 抓出来的回归 —— 这条钉死它。
+   *
+   * `universe` / `profile` 的 scope **合法地**是 `{cn,hk,us}`, 而 us 与 cn/hk 一天里大半时间
+   * 不在同一日历日 ⇒ 它们根本没有单一的「交易所今天」。在入口处抛会让一条
+   * `--cascade universe` 命令在一天里大半时间**整条死掉**, 而改动前它一直能跑。
+   */
+  it('🚨 跨时区 scope ({cn,hk,us}) 回落宿主日, **不抛** —— 逐点恢复改动前的取值', () => {
+    // 北京 06-11 06:00 = ET 06-10 18:00 ⇒ cn/hk 是 06-11 而 us 是 06-10, 三者不同日。
+    const now = new Date('2026-06-10T22:00:00Z');
+    const asOf = resolveAsOfForDimension(
+      { dimensionKey: 'universe', marketScope: ['cn', 'hk', 'us'] },
+      now,
+    );
+    expect(asOf).toBe('2026-06-11'); // = 旧实现的 shanghaiToday(now)
+  });
+
+  it('📌 但「别把 us 掺进 cn/hk 采集维度」的机器强制没丢 —— 它在采集本体那一侧', () => {
+    // 入口宽松、采集本体严格: 后者直接调 exchangeCalendarDateForScope, 混 scope 照样抛,
+    // 且错误直接指向真正出问题的采集路径。这里断言的是「入口不再是那道闸」。
     const now = new Date('2026-06-10T22:00:00Z');
     expect(() =>
       resolveAsOfForDimension({ dimensionKey: 'universe', marketScope: ['cn', 'us'] }, now),
-    ).toThrow(/跨时区/);
+    ).not.toThrow();
+    expect(() => exchangeCalendarDateForScope(['cn', 'us'], now)).toThrow(/跨时区/);
   });
 
   it('未登记的维度键 → 回落 calendar-day (= 改动前行为), 不让一行陈旧配置炸掉整轮 tick', () => {

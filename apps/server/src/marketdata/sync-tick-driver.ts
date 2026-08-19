@@ -195,7 +195,7 @@ export class SyncTickDriver {
     const scopeByKey = new Map(rows.map((r) => [r.dimensionKey, r.marketScope]));
     // distinct market 去重 → 每市场一次交易日判定 (缓存复用)。
     // 🔑 按 market 缓存仍然成立: 一个维度的 asOf = 其 scope 内各市场的**共同**业务日
-    // (marketDateFor 已保证唯一), 而市场→业务日在单次 tick 内是确定的 ⇒ 同一 market 无论
+    // (求值单点已保证唯一), 而市场→业务日在单次 tick 内是确定的 ⇒ 同一 market 无论
     // 出现在哪个维度, 查的都是同一个日期。
     const openByMarket = new Map<string, boolean>();
     for (const [key, scope] of scopeByKey) {

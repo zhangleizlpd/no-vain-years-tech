@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
-import { marketDateFor } from '../marketdata/trading-day-gate';
+import { exchangeCalendarDate } from '../marketdata/session-clock';
 import {
   REALTIME_QUOTE_MAX_SYMBOLS,
   REALTIME_QUOTE_PORT,
@@ -268,7 +268,7 @@ export class SyncAnchorIntradayUseCase {
 
       // 交易日闸 —— 与市场状态闸**取交集**, 且补一拍也不放开 (FR-011)。日期按**交易所时区**
       // 求, 不是宿主时区: us 的常规时段横跨北京日界, 用宿主日期会在后半段整体错一天。
-      const date = marketDateFor([market], now);
+      const date = exchangeCalendarDate(market, now);
       const calendarStatus = await this.tradingCalendar.classify(market, date);
       if (calendarStatus === 'non-trading') {
         // 日历已填过这一段、当日确实非交易日 ⇒ 0 次源调用 (既有语义)。

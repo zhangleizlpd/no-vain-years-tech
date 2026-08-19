@@ -3502,7 +3502,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
     expect(spies.getIvSnapshots.mock.calls[1][0]).toEqual(['us:KO']);
   });
 
-  it('🚨 A′ 业务日期按 us 时区 (FR-028): 北京周六 06:00 落库日期 = 周五(ET), **不是** shanghaiToday, 也不吃 input.asOf', async () => {
+  it('🚨 A′ 业务日期按 us 时区 (FR-028): 北京周六 06:00 落库日期 = 周五(ET), **不是**宿主日, 也不吃 input.asOf', async () => {
     const { registry, spies } = buildUnderlyingIvFakes();
     await registry.execute('underlying_iv_daily', ivInput);
     const dates = spies.ivUpsert.mock.calls.map((c) =>
@@ -3511,7 +3511,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
         .slice(0, 10),
     );
     expect(dates).toEqual([US_BUSINESS_DATE, US_BUSINESS_DATE]);
-    // 退回全局上海日 = 日期错位一天 + 每周固定丢掉周五 (marketDateFor 注释的失败形态表)。
+    // 退回全局宿主日 = 日期错位一天 + 每周固定丢掉周五 (session-clock.ts 注释的失败形态表)。
     expect(dates).not.toContain(SHANGHAI_DATE);
   });
 

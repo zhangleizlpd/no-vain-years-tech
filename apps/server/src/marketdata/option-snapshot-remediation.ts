@@ -12,7 +12,7 @@ import {
   SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
   SyncOptionSnapshotUseCase,
 } from './sync-option-snapshot.usecase.js';
-import { marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDateForScope } from './session-clock.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 /**
@@ -130,7 +130,7 @@ export class OptionSnapshotRemediation {
    * 复杂度: 2 次覆盖率判定 (各 O(n)) + O(缺票数) 次采集。
    */
   async retrySameDay(now: Date): Promise<RemediationOutcome> {
-    const sessionDate = marketDateFor(US_MARKET_SCOPE, now);
+    const sessionDate = exchangeCalendarDateForScope(US_MARKET_SCOPE, now);
     const calendar = await this.calendarBasis(sessionDate);
     if (calendar === 'non-trading') {
       return this.idle('same_day_retry', sessionDate, calendar, '确认非交易日, 本就没有 session');
@@ -181,7 +181,7 @@ export class OptionSnapshotRemediation {
    * 复杂度同 {@link retrySameDay}。
    */
   async backfillPremarket(now: Date): Promise<RemediationOutcome> {
-    const today = marketDateFor(US_MARKET_SCOPE, now);
+    const today = exchangeCalendarDateForScope(US_MARKET_SCOPE, now);
     const calendar = await this.calendarBasis(today);
     if (calendar === 'non-trading') {
       // 非交易日无盘前窗口 (OI 也不会翻新) ⇒ 不补; 下一个交易日的盘前仍能补回同一个 session。

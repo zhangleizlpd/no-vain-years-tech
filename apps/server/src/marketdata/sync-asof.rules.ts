@@ -1,5 +1,5 @@
 import { DIMENSION_KEYS, type DimensionKey } from './dimension-executor.js';
-import { exchangeCalendarDateForScope, sessionWatermarkForScope } from './session-clock.js';
+import { exchangeCalendarDate, sessionWatermarkForScope, userToday } from './session-clock.js';
 
 /**
  * 采集**业务日期 (`asOf`) 的求值单点** —— 063 Phase 1, ADR-0066。纯函数、无 I/O、无 DI。
@@ -46,7 +46,7 @@ export type AsOfBasis = (typeof AS_OF_BASIS)[number];
  * - `underlying_iv_daily` —— 同为 session 粒度; 落库是 upsert 故可自愈, 但没有理由先写错。
  * - `option_daily_snapshot` —— session 粒度且**不可逆** (`createMany(skipDuplicates)` on
  *   `(contract_id, session_date, source)`)。⚠️ **本格当前不改变它的行为**: 它的
- *   `session_date` 取自**执行时刻**的 `marketDateFor`, 不取 `asOf`。它的真闸是
+ *   `session_date` 取自**执行时刻**的 `exchangeCalendarDateForScope`, 不取 `asOf`。它的真闸是
  *   `manual-sync-session-guard` 的 `isSessionComplete` —— 「这一场还没收盘就别采」, 因为
  *   vendor 不提供历史交易日的链快照 ⇒ 正确动作是**拒绝执行**而不是订正日期。列在这里是让
  *   口径**声明为真**, 别让下一个人以为它是 `calendar-day`。
@@ -108,9 +108,22 @@ export interface AsOfDimensionInput {
 /**
  * 一个维度在 `now` 这一刻的**采集业务日期**。
  *
- * - `calendar-day` ⇒ 交易所当地日历日；scope 跨时区**抛**（没有单一「今天」可言）。
- * - `last-completed-session` ⇒ scope 内**最早**的已收盘 session 上界（最严）；跨时区**不抛**
- *   （「哪一场收了」对多市场恒有意义，取 min 即可）。两者极性刻意相反，见 `session-clock.ts`。
+ * - `last-completed-session` ⇒ scope 内**最早**的已收盘 session 上界（最严）。
+ * - `calendar-day` ⇒ 交易所当地日历日；scope **跨时区时回落宿主日**（见下）。
+ *
+ * 🚨 **跨时区 scope 在这里回落而不是抛 —— 与 `exchangeCalendarDateForScope` 的极性刻意不同**
+ * （2026-08-19 被两条 CLI 的全景 IT 抓出来的）：
+ *
+ * `universe` / `profile` 的 `market_scope` **合法地**是 `{cn,hk,us}`，而 us 与 cn/hk 一天里
+ * 大半时间不在同一日历日 ⇒ 它们**根本没有**单一的「交易所今天」。这不是配置错误，是这类
+ * **覆盖式 meta 维度**的本性：它们的 `asOf` 不往任何一行上盖日戳，scope 只是给交易日闸用的
+ * 元数据。在入口处抛会让一条 `--cascade universe` 命令在一天里大半时间**整条死掉**，而它
+ * 改动前一直是能跑的（旧实现取全局宿主日）。⇒ 回落宿主日 = **逐点恢复改动前的取值**。
+ *
+ * ⚠️ **那条「别往 cn/hk 维度里掺 us」的机器强制没有丢**，只是挪到了真正该管的地方：
+ * 采集本体（`sync-option-snapshot` / `sync-option-contract` / `dimension-executor`）仍直接调
+ * `exchangeCalendarDateForScope`，混 scope 的**采集**维度照样在执行时刻抛 —— 而且那里抛出的
+ * 错误直接指向真正出问题的采集路径，比在入口处抛更可判读。
  *
  * 🚨 **未登记的维度键回落 `calendar-day`（= 改动前行为）而不是抛**：`Record` 已在编译期拦住
  * 代码侧的遗漏，能走到这里的只有「DB 里有一行陈旧的 `sync_dimension`」——那属于配置问题，
@@ -124,9 +137,11 @@ export function resolveAsOfForDimension(dim: AsOfDimensionInput, now: Date): str
     ? AS_OF_BASIS_BY_DIMENSION[dim.dimensionKey]
     : 'calendar-day';
   const scope = dim.marketScope ?? [];
-  return basis === 'last-completed-session'
-    ? sessionWatermarkForScope(scope, now)
-    : exchangeCalendarDateForScope(scope, now);
+  if (basis === 'last-completed-session') return sessionWatermarkForScope(scope, now);
+
+  const distinct = new Set(scope.map((m) => exchangeCalendarDate(m, now)));
+  // 空 scope (meta 维度) 与跨时区 scope 同落宿主口径 —— 两者都是「没有单一交易所今天」。
+  return distinct.size === 1 ? [...distinct][0] : userToday(now);
 }
 
 function isDimensionKey(key: string): key is DimensionKey {

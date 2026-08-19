@@ -197,7 +197,7 @@ export async function executeTrigger(
 
   // 🚨 时点闸 (2026-08-17 prod 实撞): 收盘口径的维度必须在该市场收盘后跑。**排在入队之前** ——
   // 入队之后再拦, 错行已经有一半机会落库了; 而这条命令的错误形态恰恰是「跑完了、还成功了」。
-  // 判据与采集本体同源 (同一个 marketDateFor), 理由见 manual-sync-session-guard.ts 的文件头。
+  // 判据与采集本体同源 (同一份 `session-clock.ts`), 理由见 manual-sync-session-guard.ts 的文件头。
   assertClosedSessionForManualSync(rows, now);
 
   const triggeredBy = args.cascade ? ('cascade' as const) : ('cli' as const);

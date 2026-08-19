@@ -7,7 +7,7 @@ import {
   type CalendarCoverageRange,
   type TradingDayStatus,
 } from './trading-day.rules.js';
-import { lastClosedSessionCutoff } from './trading-day-gate.js';
+import { sessionWatermark } from './session-clock.js';
 
 /**
  * 表驱动交易日历 adapter (sync-1 S1-T3, TRADING_CALENDAR_PORT live 实现)。**去理杏仁化**:
@@ -56,7 +56,7 @@ export class DbTradingCalendarAdapter implements TradingCalendarPort {
 
   /**
    * 最近一场已收盘交易日（062 T010, `state_branch` 9）。收盘上界由纯函数
-   * {@link lastClosedSessionCutoff} 按**交易所时区**求，本方法只负责取数与可信度闸。
+   * {@link sessionWatermark} 按**交易所时区**求，本方法只负责取数与可信度闸。
    *
    * 🚨 **上界落在覆盖声明之外 ⇒ 返 `null`，MUST NOT 交回那个「最大交易日」**：那一段根本
    * 没填全，库里的最大值只是「填到哪儿」而不是「最近一场是哪天」。交回它 = 拿一个不可信的
@@ -66,7 +66,7 @@ export class DbTradingCalendarAdapter implements TradingCalendarPort {
    * 复杂度: 2 次索引查询（并发发出；一次唯一索引点查 + 一次 `(market,date)` 上的倒序 limit-1）。
    */
   async lastClosedSession(market: string, now: Date): Promise<string | null> {
-    const cutoff = lastClosedSessionCutoff(market, now);
+    const cutoff = sessionWatermark(market, now);
     const [coverageRow, dayRow] = await Promise.all([
       this.prisma.calendarCoverage.findUnique({ where: { market } }),
       this.prisma.tradingDay.findFirst({

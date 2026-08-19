@@ -16,7 +16,7 @@ import {
 } from './option-chain.port.js';
 import type { SyncRunStats } from './sync-run.recorder.js';
 import { currencyForMarket } from './sync-universe.usecase.js';
-import { marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDateForScope } from './session-clock.js';
 
 /**
  * 链合约发现维度 use case (047 T015, FR-028/028b/029/032/033/035/036/037/038)。
@@ -42,9 +42,14 @@ import { marketDateFor } from './trading-day-gate.js';
  *
  * ## 🚨 业务日期按 us 市场时区 (FR-036 / plan D-DATA-10)
  *
- * 取 `marketDateFor(dim.marketScope, input.now)` 而**不是** `input.asOf` —— 两条 CLI 的 `asOf`
- * 兜底是上海日, 对 us 维度会错位一天且**每周固定丢掉周五** (失败形态表见 `marketDateFor`
- * 注释)。本维度用它来剔除**已过期**的到期日, 判据是 `≥ 当前交易日` **不是 `>`**
+ * 取 `exchangeCalendarDateForScope(dim.marketScope, input.now)` 而**不是** `input.asOf`。
+ * 🚨 理由在 063 Phase 1 之后**换了一条**, 别再引用旧的那条 (「CLI 兜底是上海日」——
+ * 两条 CLI 的缺省已改为逐维度求值, 那个形态不复存在):
+ *   ① `input.asOf` 是**入队时刻**算的, 而本维度要问的是**执行时刻**「现在是哪一天」——
+ *      队列积压 / 重试跨过午夜时两条钟会分叉 (ADR-0066 的 event time vs processing time);
+ *   ② 运维显式 `--as-of <过去某天>` 会让「剔除已过期到期日」按过去那天判, 把早已到期的合约
+ *      当成有效的重新采回来。
+ * 本维度用它来剔除**已过期**的到期日, 判据是 `≥ 当前交易日` **不是 `>`**
  * (FR-028a: 当日到期的合约当日仍要采; 选约表那侧才是 `>`, 两处故意不同)。
  *
  * ## 幂等 (FR-037) = `createMany(skipDuplicates)` on `(market, code)`
@@ -127,7 +132,7 @@ export class SyncOptionContractUseCase {
     // 正是 SC-003 定的「建锚 → 下一轮 cron → 进工作集」时序。
     await this.seedAnchoredInstruments(dim.marketScope);
 
-    const businessDate = marketDateFor(dim.marketScope, input.now);
+    const businessDate = exchangeCalendarDateForScope(dim.marketScope, input.now);
     const gaps: string[] = [];
     let budgetExhausted = false;
 

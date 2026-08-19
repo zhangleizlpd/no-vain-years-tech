@@ -134,7 +134,7 @@ export function isWithinTradingSession(market: string, minutesOfDay: number): bo
  * 🚨 **它与 {@link isWithinTradingSession} 的差别只有午休那一段, 而那正是 FR-011 的落点。**
  * 期权快照是「按交易日归属、供应方只给当下一份」的数据, 它的闸要问的是「**这一场收了没有**」
  * 而不是「此刻在不在连续竞价」。午休时后者返 `false` —— 拿它当闸就会放行, 于是把午休时刻的
- * 盘口贴上「上一场收盘」的标签写进库（`lastClosedSessionCutoff` 在未过收盘时给出的目标日是
+ * 盘口贴上「上一场收盘」的标签写进库（`sessionWatermark` 在未过收盘时给出的目标日是
  * **上一个交易日**）。那种错行**不报错**、按唯一键占位、当晚正确的行反被挡掉 ⇒ 永久缺口。
  *
  * 📌 两谓词的分道如今**只剩 `cn`**: us 真的无午休, hk 已于 2026-08-18 合并成单段 (理由与
