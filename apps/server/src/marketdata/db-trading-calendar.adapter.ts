@@ -66,7 +66,11 @@ export class DbTradingCalendarAdapter implements TradingCalendarPort {
    * 复杂度: 2 次索引查询（并发发出；一次唯一索引点查 + 一次 `(market,date)` 上的倒序 limit-1）。
    */
   async lastClosedSession(market: string, now: Date): Promise<string | null> {
-    const cutoff = sessionWatermark(market, now);
+    // 🚨 **蓄意传 `'unknown'`** (063 Phase 2): 本方法是**陈旧度判定基准**的来源。接了半日市
+    // 之后, 半日市当天 12:00 一过基准就跳到今天, 而夜间管线要到北京 21:00/04:00 才落库 ⇒ 界面
+    // 会连着 9 小时显示「陈旧」。那是**事实**没错, 但它把一个一年 5 天的边角变成了肉眼可见的
+    // 退化, 而收益 (早几小时判出陈旧) 近乎为零。要改先想清楚这笔交换, 别顺手接上。
+    const cutoff = sessionWatermark(market, now, 'unknown');
     const [coverageRow, dayRow] = await Promise.all([
       this.prisma.calendarCoverage.findUnique({ where: { market } }),
       this.prisma.tradingDay.findFirst({

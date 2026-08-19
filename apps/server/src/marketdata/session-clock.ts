@@ -23,6 +23,7 @@
  * 需要「最近一个已收盘**交易日**」时, 拿本层的水位去 `trading_day` 取 `≤ 水位` 的最大交易日
  * (见 `TradingCalendarPort.lastClosedSession`), 日历不可用则**回落到本层结果**。
  */
+import type { SessionKindStatus } from './trading-day.rules.js';
 
 /**
  * market → 该市场**定业务日期所用的时区** (IANA)。
@@ -52,11 +53,7 @@ const DEFAULT_TIME_ZONE = 'Asia/Shanghai';
  * 那是另一件事, **唯一落点是 `market-session.rules.ts`**。⇒ 要判盘中去那儿,
  * **别在这里长出第三份时段表**。
  *
- * ⚠️ **半日市尚未建模** (063 Phase 2 的工作): NYSE 感恩节次日 / 平安夜 13:00 ET 收
- * (期权 13:15)、HKEX 平安夜 12:00 HKT 收。取常规收盘值的偏差方向是**安全**的 ——
- * 真收了而这里说没收 ⇒ 水位回退一天 ⇒ 少采一场, 下一轮补上; 反向 (说收了其实没收) 不存在,
- * 因为没有任何市场的实际收盘晚于登记值 (us 盘后延长时段 16:00–20:00 ET 刻意不登记,
- * 且那一段不产生日 K)。
+ * 半日市走 {@link HALF_DAY_CLOSE_MINUTES} —— 本表是**常规**收盘, 不含半日市。
  */
 const REGULAR_CLOSE_MINUTES: Record<string, number> = {
   cn: 15 * 60,
@@ -66,6 +63,25 @@ const REGULAR_CLOSE_MINUTES: Record<string, number> = {
 
 /** 未登记市场的兜底: 与 {@link DEFAULT_TIME_ZONE} 配套, 取较晚的 16:00 (偏保守 → 少判陈旧)。 */
 const DEFAULT_CLOSE_MINUTES = 16 * 60;
+
+/**
+ * market → **半日市**收盘时刻 (当地当日分钟数, 063 Phase 2)。缺席 = 该市场没有半日市形态
+ * (cn: A 股除夕直接休市, 不半开) ⇒ 即便日历说 `half` 也回落 {@link REGULAR_CLOSE_MINUTES},
+ * **不编一个出来**。
+ *
+ * 🚨 **us 取 13:15 = 期权收盘, 不是股票的 13:00**: 两个都真 (NYSE 半日市股票 13:00 ET 收、
+ * 期权 13:15 ET 收), 取较晚那个的判据是偏差方向 —— 取 13:00 会在期权仍可成交时判「这一场
+ * 收了」⇒ 以收盘口径写半根; 取 13:15 只是让股票 EOD 晚 15 分钟可写 (夜间管线本就在几小时后)。
+ * 精确区分股票/期权收盘要 MIC (ISO 10383) 粒度, plan 明确不做。
+ *
+ * ⚠️ **另一份半日市时段在 `market-session.rules.ts` 的 `halfDaySegments`** —— 与两文件对常规
+ * 收盘的既有重复同构 (各答一个问题, 见 {@link REGULAR_CLOSE_MINUTES} 注释 +
+ * `check-time-semantics.ts` 的 `TABLE_FILES`)。**改一处必改两处。**
+ */
+const HALF_DAY_CLOSE_MINUTES: Record<string, number> = {
+  hk: 12 * 60,
+  us: 13 * 60 + 15,
+};
 
 /** 任意 IANA 时区下 `now` 的 `YYYY-MM-DD` (DST 由 Intl 处理, 无需手工偏移)。 */
 function dateInTimeZone(now: Date, timeZone: string): string {
@@ -177,12 +193,19 @@ export function exchangeCalendarDateForScope(marketScope: readonly string[], now
  *
  * 复杂度 O(1)。
  */
-export function sessionWatermark(market: string, now: Date): string {
+export function sessionWatermark(market: string, now: Date, kind: SessionKindStatus): string {
   const { date, minutesOfDay } = timeInTimeZone(
     now,
     EXCHANGE_TIME_ZONE[market] ?? DEFAULT_TIME_ZONE,
   );
-  if (minutesOfDay >= (REGULAR_CLOSE_MINUTES[market] ?? DEFAULT_CLOSE_MINUTES)) return date;
+  const regular = REGULAR_CLOSE_MINUTES[market] ?? DEFAULT_CLOSE_MINUTES;
+  // 🚨 `kind` **必填**不可省 (063 Phase 2): 做成可选默认 `whole`, 漏传的调用点在半日市当天
+  // 会算出「今天还没收」⇒ 目标 session 退回昨天 ⇒ 拿昨天的价当锚的最近收盘。让 TS 把每个
+  // 调用点逼出来显式声明它知不知道 kind —— 传 `'unknown'` 是**可见的**「这条路还没接 kind」。
+  //
+  // `unknown` / 该市场无半日市形态 (cn) → 回落常规收盘 = 本函数上线前的逐点行为 (fail-open)。
+  const close = kind === 'half' ? (HALF_DAY_CLOSE_MINUTES[market] ?? regular) : regular;
+  if (minutesOfDay >= close) return date;
   return previousCalendarDay(date);
 }
 
@@ -198,9 +221,17 @@ export function sessionWatermark(market: string, now: Date): string {
  * 复杂度 O(scope 长度)。
  */
 export function sessionWatermarkForScope(marketScope: readonly string[], now: Date): string {
-  if (marketScope.length === 0) return sessionWatermark('', now);
+  // 🚨 **本函数蓄意不接半日市 kind** (063 Phase 2): 它服务的是 asOf 求值 (采集业务日), 而那条
+  // 路上半日市的偏差方向**自愈** —— 半日市当天 12:00–16:00 之间水位仍停在昨天 ⇒ 这一场当轮
+  // 不采, 夜间常规轮 (北京 21:00 / 04:00) 早已过任何市场的收盘时刻, 照常采到。接 kind 要给
+  // scope 内每个市场各查一次日历, 而收益是「早几小时能采」—— 不值当, 且会把一个纯函数变成
+  // 需要 IO 的东西。真正**不可自愈**的那条 (锚首建冷启动的 `intraday_skipped` 是终态不重试)
+  // 已在 `anchor-cold-start.usecase.ts` 显式接了 kind。
+  if (marketScope.length === 0) return sessionWatermark('', now, 'unknown');
   // `YYYY-MM-DD` 字典序 = 时序 ⇒ 直接取字符串最小值, 无需转 Date。
-  return marketScope.map((m) => sessionWatermark(m, now)).reduce((a, b) => (a <= b ? a : b));
+  return marketScope
+    .map((m) => sessionWatermark(m, now, 'unknown'))
+    .reduce((a, b) => (a <= b ? a : b));
 }
 
 /**
@@ -221,8 +252,13 @@ export function sessionWatermarkForScope(marketScope: readonly string[], now: Da
  *
  * 复杂度 O(1)。
  */
-export function isSessionComplete(market: string, sessionDate: string, now: Date): boolean {
-  return sessionDate <= sessionWatermark(market, now);
+export function isSessionComplete(
+  market: string,
+  sessionDate: string,
+  now: Date,
+  kind: SessionKindStatus,
+): boolean {
+  return sessionDate <= sessionWatermark(market, now, kind);
 }
 
 /**

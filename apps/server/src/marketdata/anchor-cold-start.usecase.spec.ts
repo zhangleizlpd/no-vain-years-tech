@@ -11,7 +11,7 @@ import type { MarketdataSyncQueue } from './marketdata-sync.queue.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
-import type { TradingDayStatus } from './trading-day.rules.js';
+import type { SessionKindStatus, TradingDayStatus } from './trading-day.rules.js';
 
 /** 北京周六 10:00 = ET 周五 22:00 (盘后, 非盘中)。与 rules spec 共用同一周固定日历。 */
 const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
@@ -19,6 +19,8 @@ const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
 const MONDAY_2230_BEIJING = new Date('2026-08-17T22:30+08:00');
 /** 北京/香港 周一 12:30 —— 港交所的**午休正中**; hk 单段登记下它仍判「场内」。 */
 const MONDAY_1230_HKT = new Date('2026-08-17T12:30+08:00');
+/** 北京周二 02:30 = ET 周一 14:30 —— 常规日在场内, **半日市 (13:15 收) 则已收盘**。 */
+const MONDAY_1430_ET = new Date('2026-08-17T14:30-04:00');
 
 const TARGET = '2026-08-14';
 const TARGET_DATE = new Date(`${TARGET}T00:00:00Z`);
@@ -45,6 +47,11 @@ interface Overrides {
    * 放弃并落 `calendar_missing` (写敏感档不猜口径, `state_branch` 7)。
    */
   todayCalendarStatus?: TradingDayStatus;
+  /**
+   * 交易所当地**今天**那一场的时长形态 (063 Phase 2)。缺省 `unknown` = 库里没这一行 / 源答
+   * 不上来 ⇒ 消费侧回落常规收盘 = 本片上线前的逐点行为, 故既有用例逐条不变。
+   */
+  todaySessionKind?: SessionKindStatus;
 }
 
 function build(overrides: Overrides = {}) {
@@ -61,6 +68,13 @@ function build(overrides: Overrides = {}) {
       return date === null ? null : { date: new Date(`${date}T00:00:00Z`) };
     },
   );
+  const tradingDayFindUnique = vi.fn(async (_args: unknown) => {
+    calls.push('tradingDay.findUnique');
+    // 库里没有该日的行 → null (与「今天不是交易日」同形) ⇒ use case 读成 `unknown`。
+    return overrides.todaySessionKind === undefined
+      ? null
+      : { sessionKind: overrides.todaySessionKind };
+  });
   const instrumentFindUnique = vi.fn(async (_args: unknown) => {
     calls.push('instrument.findUnique');
     return overrides.instrumentExists === true ? { id: INSTRUMENT_ID } : null;
@@ -94,7 +108,7 @@ function build(overrides: Overrides = {}) {
   });
 
   const prisma = {
-    tradingDay: { findFirst: tradingDayFindFirst },
+    tradingDay: { findFirst: tradingDayFindFirst, findUnique: tradingDayFindUnique },
     instrument: { findUnique: instrumentFindUnique, upsert: instrumentUpsert },
     anchorColdStartRun: { upsert: runUpsert },
     dailyBar: { count: dailyBarCount },
@@ -269,6 +283,9 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
     expect(ctx.calls.filter((c) => c !== 'anchorColdStartRun.upsert')).toEqual([
+      // 063 Phase 2: 半日市 kind 排在**定日历之前** —— 定目标日要用它算收盘时刻,
+      // 顺序反了的话目标日就是按常规收盘算出来的那个 (半日市当天差一场)。
+      'tradingDay.findUnique',
       'tradingDay.findFirst',
       'instrument.findUnique',
       'instrument.upsert',
@@ -427,6 +444,28 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
     expect(ctx.collect).not.toHaveBeenCalled();
     expect(recordedRow(ctx.runUpsert).outcome).toBe(COLD_START_OUTCOME.INTRADAY_SKIPPED);
+  });
+
+  it('🚨🚨 半日市当天收盘后 (ET 14:30) ⇒ **不再**判 intraday_skipped, 照常写快照 (063 Phase 2)', async () => {
+    // 这是 Phase 2 唯一**不可自愈**的收益点: `intraday_skipped` 是终态不重试, 一旦落了它,
+    // 那一场的快照就永久缺失 (常规轮当晚写的是当晚那一场, 不回补)。半日市 13:15 就收了,
+    // 而常规收盘表说 16:00 ⇒ 上线前 13:15–16:00 建的锚全部落进这个永久缺口。
+    const ctx = build({ todaySessionKind: 'half', snapshotRowsAfterCollect: 1 });
+    await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_1430_ET });
+
+    expect(recordedRow(ctx.runUpsert).outcome).not.toBe(COLD_START_OUTCOME.INTRADAY_SKIPPED);
+    expect(ctx.collect).toHaveBeenCalledTimes(1);
+  });
+
+  it('🚨 同一时刻若 kind 是 whole / unknown ⇒ 仍判 intraday_skipped (回落常规收盘)', async () => {
+    // 对照组: 证明上一条的差别**只**来自 kind。unknown 走的是本片上线前的逐点行为。
+    for (const kind of ['whole', 'unknown'] as const) {
+      const ctx = build({ todaySessionKind: kind });
+      const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_1430_ET });
+
+      expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
+      expect(ctx.collect).not.toHaveBeenCalled();
+    }
   });
 
   it('🚨 周末白天 (ET 场内钟点 + 当天非交易日) ⇒ **仍写快照**, MUST NOT 判 intraday_skipped', async () => {

@@ -155,7 +155,7 @@ const TRADING_DAYS = ['2026-07-31', '2026-08-03', '2026-08-04', '2026-08-05', '2
  */
 function tradingCalendar(days: readonly string[] = TRADING_DAYS) {
   const lastClosedSession = vi.fn(async (market: string, now: Date) => {
-    const cutoff = sessionWatermark(market, now);
+    const cutoff = sessionWatermark(market, now, 'unknown');
     return [...days].reverse().find((d) => d <= cutoff) ?? null;
   });
   return { classify: async (): Promise<'trading'> => 'trading', lastClosedSession };

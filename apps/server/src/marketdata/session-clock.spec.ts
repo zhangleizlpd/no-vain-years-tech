@@ -64,19 +64,41 @@ describe('exchangeCalendarDateForScope — scope 必须落在同一业务日', (
 describe('sessionWatermark — event-time 水位「哪一场已经收了」', () => {
   describe('🚨 判据是收盘时刻, 不是日历日', () => {
     it('us: ET 15:59 → 前一日; ET 16:00 (收盘瞬间) → 当日', () => {
-      expect(sessionWatermark('us', new Date('2026-06-10T19:59:00Z'))).toBe('2026-06-09');
-      expect(sessionWatermark('us', new Date('2026-06-10T20:00:00Z'))).toBe('2026-06-10');
+      expect(sessionWatermark('us', new Date('2026-06-10T19:59:00Z'), 'unknown')).toBe(
+        '2026-06-09',
+      );
+      expect(sessionWatermark('us', new Date('2026-06-10T20:00:00Z'), 'unknown')).toBe(
+        '2026-06-10',
+      );
+    });
+
+    it('🚨 半日市 (063 Phase 2): hk 港时 13:00 —— half 判当日已收, unknown 仍回落 16:00', () => {
+      const at13 = new Date('2026-12-24T05:00:00Z'); // 港时 13:00 (平安夜, HKEX 半日市)
+      expect(sessionWatermark('hk', at13, 'half')).toBe('2026-12-24');
+      expect(sessionWatermark('hk', at13, 'unknown')).toBe('2026-12-23');
+      expect(sessionWatermark('hk', at13, 'whole')).toBe('2026-12-23');
+    });
+
+    it('🚨🚨 半日市 us 取 13:15 (期权口径): ET 13:10 仍算前一日, 13:15 起算当日', () => {
+      // 2026-11-27 感恩节次日, NYSE 股票 13:00 收 / 期权 13:15 收。取较晚那个 ⇒ 13:00–13:15
+      // 之间不判「已收」, 期权仍在成交时不会有人以收盘口径往这一天写。
+      expect(sessionWatermark('us', new Date('2026-11-27T18:10:00Z'), 'half')).toBe('2026-11-26');
+      expect(sessionWatermark('us', new Date('2026-11-27T18:15:00Z'), 'half')).toBe('2026-11-27');
     });
 
     it('cn 收盘 15:00: 北京 14:59 → 前一日, 15:00 → 当日', () => {
-      expect(sessionWatermark('cn', new Date('2026-06-10T06:59:00Z'))).toBe('2026-06-09');
-      expect(sessionWatermark('cn', new Date('2026-06-10T07:00:00Z'))).toBe('2026-06-10');
+      expect(sessionWatermark('cn', new Date('2026-06-10T06:59:00Z'), 'unknown')).toBe(
+        '2026-06-09',
+      );
+      expect(sessionWatermark('cn', new Date('2026-06-10T07:00:00Z'), 'unknown')).toBe(
+        '2026-06-10',
+      );
     });
 
     it('hk 收盘 16:00: 港时 15:00 (cn 已收盘) 仍算前一日 —— 两市场不共用一个时刻', () => {
       const at15 = new Date('2026-06-10T07:00:00Z');
-      expect(sessionWatermark('cn', at15)).toBe('2026-06-10');
-      expect(sessionWatermark('hk', at15)).toBe('2026-06-09');
+      expect(sessionWatermark('cn', at15, 'unknown')).toBe('2026-06-10');
+      expect(sessionWatermark('hk', at15, 'unknown')).toBe('2026-06-09');
     });
   });
 
@@ -86,14 +108,14 @@ describe('sessionWatermark — event-time 水位「哪一场已经收了」', ()
 
     it('盘中建锚: 日历日给出**尚未收盘**的当日, 水位给出上一场 —— 差的就是那半根 K', () => {
       expect(exchangeCalendarDate('us', coldStartMoment)).toBe('2026-08-18'); // 旧口径 → 半根 K
-      expect(sessionWatermark('us', coldStartMoment)).toBe('2026-08-17'); // 新口径 → 完整的上一场
+      expect(sessionWatermark('us', coldStartMoment, 'unknown')).toBe('2026-08-17'); // 新口径 → 完整的上一场
     });
 
     it('同日 06:00 CST 的常规轮不受影响 —— 准点行为零变化是本阶段的红线', () => {
       // 北京 08-19 06:00 = 08-18T22:00Z = ET 08-18 18:00 (已收盘)。
       const regularRound = new Date('2026-08-18T22:00:00Z');
       expect(exchangeCalendarDate('us', regularRound)).toBe('2026-08-18');
-      expect(sessionWatermark('us', regularRound)).toBe('2026-08-18'); // 两者同值 ⇒ 行为不变
+      expect(sessionWatermark('us', regularRound, 'unknown')).toBe('2026-08-18'); // 两者同值 ⇒ 行为不变
     });
   });
 
@@ -102,23 +124,23 @@ describe('sessionWatermark — event-time 水位「哪一场已经收了」', ()
       // 北京 2026-06-11(四) 10:00 = 06-11T02:00Z, cn 早盘进行中 (10:00 < 15:00)。
       const recovery = new Date('2026-06-11T02:00:00Z');
       expect(exchangeCalendarDate('cn', recovery)).toBe('2026-06-11'); // 旧: 写今天的半根
-      expect(sessionWatermark('cn', recovery)).toBe('2026-06-10'); // 新: 捡回漏掉的 06-10
+      expect(sessionWatermark('cn', recovery, 'unknown')).toBe('2026-06-10'); // 新: 捡回漏掉的 06-10
     });
   });
 
   it('DST 两侧同一 ET 墙上时刻给同一答案', () => {
-    expect(sessionWatermark('us', new Date('2026-07-15T20:30:00Z'))).toBe('2026-07-15'); // EDT 16:30
-    expect(sessionWatermark('us', new Date('2026-01-15T21:30:00Z'))).toBe('2026-01-15'); // EST 16:30
+    expect(sessionWatermark('us', new Date('2026-07-15T20:30:00Z'), 'unknown')).toBe('2026-07-15'); // EDT 16:30
+    expect(sessionWatermark('us', new Date('2026-01-15T21:30:00Z'), 'unknown')).toBe('2026-01-15'); // EST 16:30
   });
 
   it('未登记市场 → 兜底 Asia/Shanghai + 16:00 (偏保守 → 少判陈旧)', () => {
-    expect(sessionWatermark('xx', new Date('2026-06-10T07:59:00Z'))).toBe('2026-06-09');
-    expect(sessionWatermark('xx', new Date('2026-06-10T08:00:00Z'))).toBe('2026-06-10');
+    expect(sessionWatermark('xx', new Date('2026-06-10T07:59:00Z'), 'unknown')).toBe('2026-06-09');
+    expect(sessionWatermark('xx', new Date('2026-06-10T08:00:00Z'), 'unknown')).toBe('2026-06-10');
   });
 
   it('跨月 / 跨年日界回退正确 (纯日历日运算, 与时区无关)', () => {
-    expect(sessionWatermark('cn', new Date('2026-06-01T00:00:00Z'))).toBe('2026-05-31');
-    expect(sessionWatermark('cn', new Date('2026-01-01T00:00:00Z'))).toBe('2025-12-31');
+    expect(sessionWatermark('cn', new Date('2026-06-01T00:00:00Z'), 'unknown')).toBe('2026-05-31');
+    expect(sessionWatermark('cn', new Date('2026-01-01T00:00:00Z'), 'unknown')).toBe('2025-12-31');
   });
 });
 
@@ -126,8 +148,8 @@ describe('sessionWatermarkForScope — 多市场取**最严** (最早的那个�
   it('{cn,hk} 在北京 15:30: cn 已收、hk 未收 → 取 hk 的前一日', () => {
     // 15:30 CST/HKT: cn(15:00) 已过 → 06-10; hk(16:00) 未过 → 06-09。最严 = 06-09。
     const at1530 = new Date('2026-06-10T07:30:00Z');
-    expect(sessionWatermark('cn', at1530)).toBe('2026-06-10');
-    expect(sessionWatermark('hk', at1530)).toBe('2026-06-09');
+    expect(sessionWatermark('cn', at1530, 'unknown')).toBe('2026-06-10');
+    expect(sessionWatermark('hk', at1530, 'unknown')).toBe('2026-06-09');
     expect(sessionWatermarkForScope(['cn', 'hk'], at1530)).toBe('2026-06-09');
   });
 
@@ -138,7 +160,7 @@ describe('sessionWatermarkForScope — 多市场取**最严** (最早的那个�
 
   it('单市场 scope 与单市场函数逐点等价', () => {
     const now = new Date('2026-08-18T16:13:00Z');
-    expect(sessionWatermarkForScope(['us'], now)).toBe(sessionWatermark('us', now));
+    expect(sessionWatermarkForScope(['us'], now)).toBe(sessionWatermark('us', now, 'unknown'));
   });
 
   it('🚨 跨时区 scope **不抛** —— 与 exchangeCalendarDateForScope 的极性刻意相反', () => {
@@ -156,13 +178,15 @@ describe('sessionWatermarkForScope — 多市场取**最严** (最早的那个�
 describe('isSessionComplete — 「此刻能不能以收盘口径往这一天落库」', () => {
   it('与 sessionWatermark 同一算式的一次比较 (字典序 = 时序)', () => {
     const at16 = new Date('2026-06-10T20:00:00Z'); // ET 16:00
-    expect(isSessionComplete('us', '2026-06-10', at16)).toBe(true);
-    expect(isSessionComplete('us', '2026-06-11', at16)).toBe(false);
+    expect(isSessionComplete('us', '2026-06-10', at16, 'unknown')).toBe(true);
+    expect(isSessionComplete('us', '2026-06-11', at16, 'unknown')).toBe(false);
   });
 
   it('🚫 MUST NOT 当「是不是交易日」用: 周六 ET 18:30 判周六同样返 true', () => {
     // 2026-06-13 是周六。本函数只回答「过没过收盘时刻」, 交易日判定归 trading_day。
-    expect(isSessionComplete('us', '2026-06-13', new Date('2026-06-13T22:30:00Z'))).toBe(true);
+    expect(isSessionComplete('us', '2026-06-13', new Date('2026-06-13T22:30:00Z'), 'unknown')).toBe(
+      true,
+    );
   });
 });
 
