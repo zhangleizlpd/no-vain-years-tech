@@ -14,7 +14,7 @@ import {
   type SyncOptionSnapshotUseCase,
 } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
-import { lastClosedSessionCutoff, marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
 
 /**
  * 固定日历: 2026-08-10 (一) ~ 08-14 (五) + 08-17 (一) + 08-18 (二), 周末无行。
@@ -39,13 +39,13 @@ const latestOnOrBefore = (bound: string): string | null =>
   [...US_TRADING_DAYS].reverse().find((d) => d <= bound) ?? null;
 
 /**
- * 调用方本该做完的那几次日历查询 —— **测试里也走真的 `marketDateFor` /
- * `lastClosedSessionCutoff`**, 因为生产调用方 (T005) 用的就是它们; 换成手算会让这套断言
+ * 调用方本该做完的那几次日历查询 —— **测试里也走真的 `exchangeCalendarDate` /
+ * `sessionWatermark`**, 因为生产调用方 (T005) 用的就是它们; 换成手算会让这套断言
  * 与真实入参口径脱钩。
  */
 function calendarFacts(market: string, now: Date) {
-  const today = marketDateFor([market], now);
-  const target = latestOnOrBefore(lastClosedSessionCutoff(market, now));
+  const today = exchangeCalendarDate(market, now);
+  const target = latestOnOrBefore(sessionWatermark(market, now));
   return {
     todayIsTradingDay: (US_TRADING_DAYS as readonly string[]).includes(today),
     lastClosedTradingDay: target,

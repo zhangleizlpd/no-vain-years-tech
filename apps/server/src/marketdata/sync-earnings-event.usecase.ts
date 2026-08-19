@@ -10,7 +10,7 @@ import {
   type EarningsCalendarPort,
 } from './earnings-calendar.port.js';
 import type { SyncRunStats } from './sync-run.recorder.js';
-import { marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDateForScope } from './session-clock.js';
 
 /**
  * 财报日历维度 use case (047 T019, FR-026/027/034/035a/035b/036/037)。
@@ -205,9 +205,10 @@ export class SyncEarningsEventUseCase {
     stats: SyncRunStats,
     input: ExecutorInput,
   ): Promise<boolean> {
-    // 🚨 业务日期按 us 市场时区 (FR-036), **不吃 `input.asOf`** —— 两条 CLI 的 asOf 兜底是
-    // 上海日, 对 us 维度会错位一天且每周固定丢掉周五 (失败形态表见 `marketDateFor` 注释)。
-    const businessDate = marketDateFor(dim.marketScope, input.now);
+    // 🚨 业务日期按 us 市场时区 (FR-036), **不吃 `input.asOf`** —— 后者是**入队时刻**算的,
+    // 而前向视野窗要从**执行时刻**的交易所今天起算 (ADR-0066: event time ≠ processing time);
+    // 且运维显式 `--as-of <过去某天>` 会把视野窗整体前移, 漏掉近端财报。
+    const businessDate = exchangeCalendarDateForScope(dim.marketScope, input.now);
     const horizonEnd = addDays(businessDate, EARNINGS_FORWARD_HORIZON_DAYS);
 
     const { observed, budgetExhausted } = await this.fetchHorizon(dim, businessDate, stats);

@@ -366,6 +366,31 @@ describe('第一相 —— 不敏感档组 flow (plan §D8, FR-012 / FR-012a)', 
       expect(child.data).not.toHaveProperty('codes');
     }
   });
+
+  /**
+   * 🚨 **#103 的验收面** (2026-08-19 prod 实证 → 063 Phase 1 修)。
+   *
+   * 冷启动是全系统**唯一的非 cron 触发者** —— 时刻由建锚的人决定。改动前这里取「市场当地的
+   * 今天」, 于是北京 00:13 建一只美股锚 (= ET 12:13 **盘中**) 会去拉一根还没收盘的日 K,
+   * 落库得到半根 (实测 volume 仅正常日 23%–56%), 而 `daily_bar` 写路径是
+   * `createMany(skipDuplicates)` ⇒ **永久驻留**、当晚真收盘那轮被静默挡掉、`sync_run` 全绿。
+   */
+  it('🚨 美股盘中建锚: 日线维度取**上一场**, 而不是尚未收盘的当日 (#103)', async () => {
+    // 2026-08-19 00:13 北京 = ET 2026-08-18(二) 12:13 —— 美股连续竞价进行中。
+    const intraday = new Date('2026-08-19T00:13+08:00');
+    const ctx = build();
+    await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: intraday });
+
+    const byName = new Map(
+      (enqueuedTree(ctx).children ?? []).map((c) => [c.name, c.data as { asOf: string }]),
+    );
+    // `us_equity_bar` 声明的是收盘口径 ⇒ 退到上一场 08-17。
+    expect(byName.get('sync:us_equity_bar')?.asOf).toBe('2026-08-17');
+    // 📌 `option_contract` 是 `calendar-day` 口径 ⇒ 仍取 ET 当日: 它拿业务日**剔除已过期的
+    //    到期日**, 不是往行上盖日戳, 退一天反而会把当日到期的合约漏采 (FR-028a)。
+    //    两个 child 的 asOf 不同**是对的** —— 这正是「逐维度声明口径」要表达的东西。
+    expect(byName.get('sync:option_contract')?.asOf).toBe('2026-08-18');
+  });
 });
 
 describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 / FR-018)', () => {

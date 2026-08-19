@@ -1,4 +1,4 @@
-import { isSessionClosed, marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDate, isSessionComplete } from './session-clock.js';
 
 /**
  * **手动补采的时点闸** —— 收盘口径的维度只能在该市场收盘后跑（2026-08-17 prod 实撞）。
@@ -11,7 +11,7 @@ import { isSessionClosed, marketDateFor } from './trading-day-gate.js';
  * **当晚真收盘那轮被静默挡掉**；而完整性探针只核逐合约覆盖率（行在 = 覆盖满）照样绿。
  * 13 只锚整条链被错标，靠人工 SQL 删了三次才清干净。
  *
- * 根因不是 CLI，是判据缺失：采集本体拿 `marketDateFor()`（市场时区的**日历日**）当
+ * 根因不是 CLI，是判据缺失：采集本体拿**市场时区的日历日**（`exchangeCalendarDate`）当
  * `session_date`，从不问「这一场收了没有」。四个入口里前三个（夜间轮 / 当日重试 / 盘前兜底）
  * 各有自己的 `cron_expr`、**时刻是评审过的配置**；CLI 是第四个，时刻由敲命令的人决定。
  *
@@ -23,7 +23,7 @@ import { isSessionClosed, marketDateFor } from './trading-day-gate.js';
  *    传的是 `now: new Date()`，于是 worker 驱动的整夜端到端 IT「几点跑就几点的结论」：
  *    北京 13:52 跑（ET 01:52 盘前）全红，凌晨跑就绿。测试的成败取决于运行时刻，不可接受。
  * 2. **没有任何一个 `now` 能同时满足全景 IT 的两个前提** —— `universe` 的 scope 是
- *    `{cn,hk,us}`，`marketDateFor` 在三者业务日不一致时**抛**；而 us 收盘要求 ET ≥ 16:00，
+ *    `{cn,hk,us}`，`exchangeCalendarDateForScope` 在三者业务日不一致时**抛**；而 us 收盘要求 ET ≥ 16:00，
  *    那时北京已翻天 ⇒ 「us 已收盘」与「三市场同业务日」在任何时刻都不可兼得。
  *    📌 生产里不存在这个矛盾：`universe` 的 cron 是周一 22:00（ET 10:00，同日历日），
  *    `option_daily_snapshot` 是每日 06:30（ET 前日 18:30，已收盘）—— **各维度各自挑了能让
@@ -32,6 +32,11 @@ import { isSessionClosed, marketDateFor } from './trading-day-gate.js';
  * ⇒ 闸放在**显式传 `now` 的手动入口**上：定时轮的时点由 `cron_expr` 治理，随手敲的命令才是
  * 风险源。**代价说清楚：采集本体没有第二道闸** —— 将来若新增第三个手动入口（管理端点 / 另一
  * 条 CLI），必须在那里也调 {@link assertClosedSessionForManualSync}，否则这个洞原样复活。
+ *
+ * 📌 **这笔债的另一半已在 063 Phase 1 结清**：「这批数据算哪一天」不再由各入口自算，四个入口
+ * 共用 `sync-asof.rules.ts` 的 `resolveAsOfForDimension`。本闸管的是**另一件事** ——「这一场还没
+ * 收盘就别去采」。两者不可互相替代：日线可以**订正日期**（区间接口能取历史），而期权链快照
+ * vendor 只给当下一份，跑早了只能**拒绝**。
  */
 
 /** 收盘口径 = 采集时刻决定业务日，因此必须在该场收盘后跑。 */
@@ -77,7 +82,7 @@ export class ManualSyncSessionNotClosedError extends Error {
 /**
  * 入队**之前**判一次：本批里凡属收盘口径的维度，其 `marketScope` 内每个市场都必须已收盘。
  *
- * 判据与采集本体**同源**：`sessionDate` 用同一个 {@link marketDateFor} 求（而不是另起一套
+ * 判据与采集本体**同源**：`sessionDate` 用同一个 {@link exchangeCalendarDateForScope} 求（而不是另起一套
  * 时区表），问的就是采集本体待会儿会写哪一天。两处若哪天漂了，漂的也是同一个函数。
  *
  * 多市场 scope 取**最严**（任一市场未收即拒）—— 现役受约束维度只有 `{us}`，这是为将来真接入
@@ -98,8 +103,8 @@ export function assertClosedSessionForManualSync(
     // `?? []` 不是防御性编程的花边: 空 / 缺 scope 按「不受约束」放行是本函数写明的语义,
     // 而裸 for-of 一个 undefined 会当场 TypeError —— 那会把「配置缺一列」变成「CLI 崩了」。
     for (const market of candidate.marketScope ?? []) {
-      // 逐市场问, 不整体求 —— `marketDateFor` 对跨时区 scope 会抛, 而本闸恰恰应该逐个判。
-      if (!isSessionClosed(market, marketDateFor([market], now), now)) {
+      // 逐市场问, 不整体求 —— scope 版对跨时区会抛, 而本闸恰恰应该逐个判。
+      if (!isSessionComplete(market, exchangeCalendarDate(market, now), now)) {
         offenders.push({ dimensionKey: candidate.dimensionKey, market });
       }
     }

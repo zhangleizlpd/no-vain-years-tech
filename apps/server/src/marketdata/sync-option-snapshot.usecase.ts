@@ -21,7 +21,7 @@ import {
   type OptionSnapshotRow,
 } from './option-snapshot.port.js';
 import type { SyncRunStats } from './sync-run.recorder.js';
-import { marketDateFor } from './trading-day-gate.js';
+import { exchangeCalendarDateForScope } from './session-clock.js';
 
 /**
  * 逐日快照维度 use case (047 T016, FR-030/031/032/037/040/043/044)。
@@ -41,7 +41,7 @@ import { marketDateFor } from './trading-day-gate.js';
  *
  * | 列 | 取值 | 为什么不能省 |
  * | --- | --- | --- |
- * | `session_date` | 当前 **us** 交易日 (`marketDateFor`) | 用上海日会错位一天且每周固定丢周五 |
+ * | `session_date` | 当前 **us** 交易日 (`exchangeCalendarDateForScope`, 按**执行时刻**求) | 取 `input.asOf` 会拿入队时刻的日期; 取宿主日会错位一天且每周固定丢周五 |
  * | `quote_as_of` | **本批**采集时刻 (端口 envelope 的 `as_of`) | 行内 vendor `update_time` 是**最后成交时刻**, 停牌腿会把采集时刻说成上周 |
  * | `oi_as_of` | **上一交易日** | 官方文档明写「美股期权 OI 在**盘前时段**更新」⇒ T 日收盘后采的快照, 其 OI 其实是 **T−1 日**的持仓量 |
  *
@@ -181,7 +181,7 @@ export class SyncOptionSnapshotUseCase {
       {
         // 🚨 业务日期跟**交易所**的今天走 (FR-036), 不吃 `input.asOf` (worker payload 的
         // 上海日) —— 用后者会错位一天且每周固定丢周五。
-        sessionDate: marketDateFor(dim.marketScope, input.now),
+        sessionDate: exchangeCalendarDateForScope(dim.marketScope, input.now),
         mode: SNAPSHOT_SOURCE_EOD,
         marketScope: dim.marketScope,
         now: input.now,

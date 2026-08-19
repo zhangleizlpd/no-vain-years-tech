@@ -8,10 +8,10 @@ import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS } from './leg-recall.rules';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter';
 import { toLegTableResponse, toRequestedPerspective, toRetrievalOverride } from './optionsdesk.dto';
-import { lastClosedSessionCutoff } from '../marketdata/trading-day-gate';
+import { sessionWatermark } from '../marketdata/session-clock';
 
 // 请求时刻 = 2026-08-04 ET 16:00 (= UTC 20:00) ⇒ 交易所的今天恒为 2026-08-04。
-// 🚨 蓄意用一个「北京已是 08-05 凌晨」都不成立的时刻也无所谓 —— 基准由 marketDateFor(['us'])
+// 🚨 蓄意用一个「北京已是 08-05 凌晨」都不成立的时刻也无所谓 —— 基准由 exchangeCalendarDate('us')
 // 决定, 本用例只需钉住那个日期; 时区基准本身由 trading-day-gate.spec.ts 承重。
 const NOW = new Date('2026-08-04T20:00:00.000Z');
 
@@ -155,7 +155,7 @@ const TRADING_DAYS = ['2026-07-31', '2026-08-03', '2026-08-04', '2026-08-05', '2
  */
 function tradingCalendar(days: readonly string[] = TRADING_DAYS) {
   const lastClosedSession = vi.fn(async (market: string, now: Date) => {
-    const cutoff = lastClosedSessionCutoff(market, now);
+    const cutoff = sessionWatermark(market, now);
     return [...days].reverse().find((d) => d <= cutoff) ?? null;
   });
   return { classify: async (): Promise<'trading'> => 'trading', lastClosedSession };

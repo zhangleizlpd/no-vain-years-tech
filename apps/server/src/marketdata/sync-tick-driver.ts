@@ -12,7 +12,9 @@ import {
   deriveExecutionOrder,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
-import { isTradingDayGateOpen, marketDateFor, shanghaiToday } from './trading-day-gate.js';
+import { userToday } from './session-clock.js';
+import { resolveAsOfForDimension } from './sync-asof.rules.js';
+import { isTradingDayGateOpen } from './trading-day-gate.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 /**
@@ -95,10 +97,11 @@ export class SyncTickDriver {
     const claim = await this.claim(now);
     if (claim.fireNow.length === 0) return { ...claim, fired: [] };
 
-    // 🚨 `asOf` 是**业务日期**, 不是墙上时钟 —— 按各维度 marketScope 所属市场的时区求值
-    // (`marketDateFor`)。us 的收盘落在北京次日凌晨, 全局用 `shanghaiToday` 会让 us 维度日期
-    // 错位一天、且每周固定丢掉周五 (失败形态表见 `marketDateFor` 注释)。cn/hk 求值结果与
-    // `shanghaiToday` 恒等 ⇒ 行为零变化。
+    // 🚨 `asOf` 是**业务日期**, 不是墙上时钟 —— 求值单点在 `sync-asof.rules.ts`
+    // (063 Phase 1): 按各维度自己声明的口径, 落到「交易所当地日历日」或「最近一场已收盘
+    // session」。us 的收盘落在北京次日凌晨, 全局用宿主日会让 us 维度日期错位一天、且每周
+    // 固定丢掉周五 (失败形态表见 `session-clock.ts`)。**准点触发时两种口径同值 ⇒ 行为零变化**,
+    // 差异只在盘中触发 / misfire 补触发那些非准点时刻显形 (#103)。
     const asOfByKey = await this.resolveAsOf(claim.fireNow, now);
     // S2-T1 per-market 交易日 gate (取代旧 MARKET='cn' 单市场 gate): 逐 won 维度按 marketScope
     // OR 判交易日 (零 vendor: 读表), 全 marketScope 休市的维度剔除; 全剔除则短路不组 flow。
@@ -128,7 +131,7 @@ export class SyncTickDriver {
           payload: {
             dimensionKey: w.dimensionKey as DimensionKey,
             mode: 'delta' as const,
-            asOf: asOfByKey.get(w.dimensionKey) ?? shanghaiToday(now),
+            asOf: asOfByKey.get(w.dimensionKey) ?? userToday(now),
             triggeredBy: 'tick' as const,
           },
           opts: this.syncQueue.jobOpts({ retryMax: w.retryMax }),
@@ -155,8 +158,8 @@ export class SyncTickDriver {
    * claim 零改动 (红线): gate 只影响组 flow 集, nextFireAt 已在 claim 推进 (非交易日不补)。
    */
   /**
-   * 逐 won 维度求其**业务日期** (A′, 业内口径见 `marketDateFor`): 按 `marketScope` 所属市场的
-   * 时区算"今天"。scope 跨时区 → `marketDateFor` 抛 → 此处**只剔除该维度并结构化 ERROR**,
+   * 逐 won 维度求其**业务日期** (A′) —— 委托 `resolveAsOfForDimension`, 本类不自算。
+   * scope 跨时区且口径为 `calendar-day` 时会抛 → 此处**只剔除该维度并结构化 ERROR**,
    * 不连坐其余维度 (一个配错的维度不该让整轮 tick 哑掉)。
    */
   private async resolveAsOf(fireNow: TickWonDimension[], now: Date): Promise<Map<string, string>> {
@@ -167,7 +170,7 @@ export class SyncTickDriver {
     const out = new Map<string, string>();
     for (const row of rows) {
       try {
-        out.set(row.dimensionKey, marketDateFor(row.marketScope, now));
+        out.set(row.dimensionKey, resolveAsOfForDimension(row, now));
       } catch (err) {
         this.logger.error(
           `tick 业务日期求值失败, 剔除该维度: ${JSON.stringify({
@@ -192,7 +195,7 @@ export class SyncTickDriver {
     const scopeByKey = new Map(rows.map((r) => [r.dimensionKey, r.marketScope]));
     // distinct market 去重 → 每市场一次交易日判定 (缓存复用)。
     // 🔑 按 market 缓存仍然成立: 一个维度的 asOf = 其 scope 内各市场的**共同**业务日
-    // (marketDateFor 已保证唯一), 而市场→业务日在单次 tick 内是确定的 ⇒ 同一 market 无论
+    // (求值单点已保证唯一), 而市场→业务日在单次 tick 内是确定的 ⇒ 同一 market 无论
     // 出现在哪个维度, 查的都是同一个日期。
     const openByMarket = new Map<string, boolean>();
     for (const [key, scope] of scopeByKey) {
@@ -258,7 +261,7 @@ export class SyncTickDriver {
       }
       if (row?.freshnessProfile === 'event-calendar') {
         // asOf 用该维度自己的业务日 (A′) —— 日历命中判定与交易日闸同一口径。
-        const asOf = asOfByKey.get(w.dimensionKey) ?? shanghaiToday(now);
+        const asOf = asOfByKey.get(w.dimensionKey) ?? userToday(now);
         const hit = await this.calendarCheck.isHit(
           { dimensionKey: w.dimensionKey, calendarSource: row.calendarSource },
           asOf,
