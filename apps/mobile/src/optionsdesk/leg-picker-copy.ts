@@ -25,6 +25,7 @@ import type {
 
 import { formatAsOfLabel } from '~/format/as-of';
 import { formatRatePct, rateCell, type StackedCell } from './leg-row.rules';
+import type { LegBlockPriceKind } from './leg-tier-bar.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import type { FreshnessTier } from './underlying-detail.rules';
 
@@ -123,8 +124,12 @@ export function legRateCell(
 
 // ═══════════════ 钉住列的两个标：贴合（推荐）+ 月（月度链） ═══════════════
 
-/** 钉住列的两个标（051 FR-014a：推荐标随行权价、月度链标随到期日）。 */
-export type LegStickyBadge = 'fit' | 'monthly';
+/**
+ * 钉住列的三个标（051 FR-014a：推荐标随行权价、月度链标随到期日；064 起「收」标随行权价）。
+ * 📌 `eod` 是 064 的行级档位标 —— **复用这套既有载体**，🚫 不新建组件、🚫 不新开一列
+ *    （mockup overflow 探针实证：挂进 bid/ask 列会把报价块顶出 7px）。
+ */
+export type LegStickyBadge = 'fit' | 'monthly' | 'eod';
 
 /**
  * 两个标的**共用载体**（FR-014b）—— 8px 描边短文字标。两者只在描边色上分权重，
@@ -140,6 +145,9 @@ export const LEG_STICKY_BADGE_BASE = 'rounded-sm border px-0.5 text-[8px] text-i
 export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> = {
   fit: 'border-tag-purple',
   monthly: 'border-line',
+  // 064 行级档位标：中性强描边（mockup `.eodchip` 逐值）。🚨 **蓄意不上 warning 色** ——
+  // 「这一行是收盘值」是事实陈述不是告警，告警底色留给区块条的未就绪那一档。
+  eod: 'border-line-strong',
 };
 
 // ═══════════════ 财报 chip：五形态 + null，三个「无标」不许合并 ═══════════════
@@ -258,13 +266,25 @@ const AS_OF_TONE: Readonly<Record<FreshnessTier, string>> = {
  * 🚨 **陈旧 ≠ 不可用**：本函数只管这一行标注，表格照常渲全量腿（FR-013）。
  * 📌 判的是**区块级 asOf**，不是 `oiAsOf` —— 后者归属 T−1 是定义如此（Guardrail 6），
  *    拿同一个档去标 OI 列会恒显陈旧。
+ *
+ * 🚨 **064 起第三个入参决定这一行说什么**：区块翻实时档之后，本行的 `asOf` 仍是**库内快照的
+ *    归属交易日**（OI 与未被覆盖的列出自它），但屏上的报价来自此刻 ⇒ 再说「数据截至 X · 收盘」
+ *    就是一句假话，且与档位条上的时刻**同屏对冲**。实时档下改说「快照 X」，收盘档下一字不变。
+ *    🚫 MUST NOT 让本行去报此刻的时刻 —— 那是档位条的活，两处报同一个量必 drift。
  */
-export function legAsOfLabel(asOf: string | null | undefined, tier: FreshnessTier): LegAsOfLabel {
+export function legAsOfLabel(
+  asOf: string | null | undefined,
+  tier: FreshnessTier,
+  blockPriceKind: LegBlockPriceKind | null = 'eod_close',
+): LegAsOfLabel {
   // asOf 缺失时无论 server 说什么都渲「无数据时点」—— 绝不渲染「数据截至 null」。
   if (!asOf || tier === 'UNAVAILABLE') {
     return { text: COPY.asOfUnavailable, className: AS_OF_TONE.UNAVAILABLE };
   }
-  const label = formatAsOfLabel(asOf, 'eod_close');
+  const label =
+    blockPriceKind === 'realtime'
+      ? `${COPY.snapshotPrefix}${asOf}`
+      : formatAsOfLabel(asOf, 'eod_close');
   return tier === 'CURRENT'
     ? { text: label, className: AS_OF_TONE.CURRENT }
     : { text: `${label}${COPY.asOfStaleSuffix}`, className: AS_OF_TONE.STALE };

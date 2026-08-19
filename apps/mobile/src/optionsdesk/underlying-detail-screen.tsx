@@ -87,6 +87,8 @@ import { LegPickerTabs } from './leg-picker-tabs';
 import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
+import { LegTierBar } from './leg-tier-bar';
+import { legEodRowCount, type LegBlockPriceKind } from './leg-tier-bar.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskChainReportRoute } from './optionsdesk-routes';
 import { PositionBucketChips } from './position-bucket-chips';
@@ -129,6 +131,15 @@ export function UnderlyingDetailScreen({
   const { composition } = detail;
   // 检索条件抽屉的开合（052 T012）。🚨 **不持久化**（FR-014）—— 与条件值一样只活在屏级 state。
   const [criteriaOpen, setCriteriaOpen] = useState(false);
+  // 🚨 064 FR-009：**区块级**档位与时点是链级字段 ⇒ 读 `chain`（当前视角那份还在飞时它回退到
+  //    已到手的任一视角，MUST NOT 因为换了个视角就把档位条闪成「未就绪」）。
+  const blockPriceKind = legTable.chain?.priceKind ?? null;
+  // 逐行降级的条数 —— 腿是**视角级**的 ⇒ 读 `table` 不读 `chain`（回退期那份腿属于别的视角）。
+  // 📌 记忆化同 `openCriteria`：它进的是 sticky section header，滚动期间每帧都会读到。
+  const eodRowCount = useMemo(
+    () => legEodRowCount(blockPriceKind, legTable.table?.legs ?? []),
+    [blockPriceKind, legTable.table?.legs],
+  );
   // 🚫 表还没到手 / 链未就绪时不给入口（`null`）：那时六维全 `null`，抽屉里只有一排空框。
   // 📌 记忆化不是为了性能洁癖 —— 这个回调进的是 sticky section header，滚动期间每帧都会读到它。
   const openCriteria = useMemo(
@@ -322,6 +333,9 @@ export function UnderlyingDetailScreen({
                         MUST NOT 因为换了个视角就把时点条闪成「无数据时点」。 */}
                     <LegBlockHeader
                       asOf={legTable.chain?.asOf ?? null}
+                      // 🚨 064：实时档下这一行说的是**库内快照的归属日**（「快照 X」），
+                      //    而不是「数据截至 X · 收盘」—— 后者会与档位条上的时刻同屏对冲。
+                      blockPriceKind={blockPriceKind}
                       // 表还没到手就没有可判的东西 —— 显式 UNAVAILABLE，MUST NOT 默认成 CURRENT。
                       freshnessTier={legTable.chain?.asOfFreshnessTier ?? 'UNAVAILABLE'}
                       source={legTable.chain?.source ?? null}
@@ -342,12 +356,25 @@ export function UnderlyingDetailScreen({
                       onOpenCriteria={openCriteria}
                       criteriaCount={criteriaOverrideCount(legTable.criteria)}
                     />
+                    {/* 🚨 064 档位条：叠在 Tab 行与 12 列表头之间（mockup 帧 ①~⑤）。
+                        它与上面那条区块头**各答一个问题**，MUST NOT 合并 —— 详见组件文件头。 */}
+                    <LegTierBar
+                      priceKind={blockPriceKind}
+                      quoteAsOf={legTable.chain?.quoteAsOf ?? null}
+                      eodRowCount={eodRowCount}
+                    />
                     <LegTableHeader
                       tx={tx}
                       // 🚨 费率列头即口径本身，取自服务端下发的映射（051 FR-017）——
                       //    契约未到手时退降级标题，MUST NOT 先猜一个口径挂上去。
                       rateHeader={rateHeaderFor(legTable.table?.basis ?? null)}
-                      oiAsOf={legTable.chain?.oiAsOf ?? null}
+                      // 🚨 两个时点一并交给列头的单点判定：OI 挂 `oiAsOf`、成交量按档位切口径。
+                      //    🚫 MUST NOT 在这里择一传入 —— 「取错了那一个」正是 FR-014 的静默失效面。
+                      quotes={{
+                        priceKind: blockPriceKind,
+                        quoteAsOf: legTable.chain?.quoteAsOf ?? null,
+                        oiAsOf: legTable.chain?.oiAsOf ?? null,
+                      }}
                     />
                     {/* 🚨 指示条钉在 12 列表头**正下方**（不是表格底部）—— 它描述列的位置，
                         且要跟着 sticky 栈走（FR-005）。几何读同一个 `tx`，无第二个来源。 */}
@@ -361,7 +388,7 @@ export function UnderlyingDetailScreen({
                 renderItem={({ item }) => (
                   // 🚨 053 起档位与活跃标都在 `item` 自己身上（契约按视角收窄成标量）——
                   //    这里再也没有「取哪一格」这一步，故也传不错。
-                  <LegRow leg={item} tx={tx} today={detail.today} />
+                  <LegRow leg={item} tx={tx} today={detail.today} blockPriceKind={blockPriceKind} />
                 )}
                 renderSectionFooter={() => (
                   // 🚨 三样东西同落非常驻区（051 FR-010a）：就地说明 + 两个门槛计数 + 空态解释。
@@ -477,16 +504,19 @@ function BlockSkeleton({ testID }: { testID: string }) {
  */
 function LegBlockHeader({
   asOf,
+  blockPriceKind,
   freshnessTier,
   source,
   countLine,
 }: {
   asOf: string | null;
+  /** 🚨 064：实时档下本行改说「快照 X」—— 报价的时点归档位条，两处报同一个量必 drift。 */
+  blockPriceKind: LegBlockPriceKind | null;
   freshnessTier: FreshnessTier;
   source: string | null;
   countLine: string;
 }) {
-  const asOfLabel = legAsOfLabel(asOf, freshnessTier);
+  const asOfLabel = legAsOfLabel(asOf, freshnessTier, blockPriceKind);
   return (
     <View
       className="flex-row items-center justify-between border-b border-line bg-surface-alt px-md py-xs"

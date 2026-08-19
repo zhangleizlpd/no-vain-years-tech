@@ -33,6 +33,7 @@ import {
   legRowToneClass,
 } from './leg-picker-copy';
 import { LEG_ROW_HEIGHT, LegStickyCell, legColumnWidth } from './leg-table-header';
+import { legRowEodMarked, type LegBlockPriceKind } from './leg-tier-bar.rules';
 import {
   LEG_SCROLL_REGION_WIDTH,
   costCell,
@@ -54,6 +55,12 @@ export interface LegRowProps {
   tx: SharedValue<number>;
   /** 设备本地日历日 —— **只用于判到期日要不要补年份**，不参与任何新鲜度判断。 */
   today: string;
+  /**
+   * 🚨 **区块级**档位（064 FR-009）—— 与 `leg.priceKind` **不是同一个数**：本行要不要标「收」
+   *    取决于两者的**组合**（区块实时 + 本行收盘 才标），判定在 `legRowEodMarked`。
+   *    契约未到手 ⇒ `null`（等价于不标）。
+   */
+  blockPriceKind: LegBlockPriceKind | null;
 }
 
 /**
@@ -63,7 +70,7 @@ export interface LegRowProps {
  *    量从 by-tab 映射收窄成**本次视角**的标量 ⇒ 原本靠 `tab` prop「取哪一格」的两个入参随之
  *    退役，调用方少两个可以传错的东西。
  */
-export function LegRow({ leg, tx, today }: LegRowProps) {
+export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
   // 🚨 档位在本行有**四个消费点**（bid 底色 / 行底 / 动作两处 / 费率副标）⇒ 这里取一次，
   //    四处共用同一个值（同源，不会 drift）。
   const tier = leg.tier;
@@ -73,6 +80,9 @@ export function LegRow({ leg, tx, today }: LegRowProps) {
   const cost = costCell(leg);
   const bidTone = legBidTone(tier);
   const earnings = legEarningsChip(leg.earningsMark);
+  // 🚨 064 FR-009：**只在「区块实时、本行收盘」时**为真 —— 整表收盘档时逐行打标只是噪点，
+  //    而把 bid 数字全体降灰还会吃掉 053 的四档色（档位色只着 bid 单元格，是那一片的全部信号）。
+  const eodMarked = legRowEodMarked(blockPriceKind, leg.priceKind);
 
   return (
     <View
@@ -99,6 +109,16 @@ export function LegRow({ leg, tx, today }: LegRowProps) {
               testID={`optionsdesk-detail-leg-fit-${leg.code}`}
             >
               {COPY.fitBadge}
+            </Text>
+          ) : null}
+          {/* 🚨 064 行级档位标：这一行没取到此刻的盘口 —— **复用同一条 badge 载体**
+              （🚫 不新建组件、不新开一列），只在描边色上与另外两个标分权重。 */}
+          {eodMarked ? (
+            <Text
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.eod}`}
+              testID={`optionsdesk-detail-leg-eod-${leg.code}`}
+            >
+              {COPY.eodBadge}
             </Text>
           ) : null}
         </View>
@@ -143,7 +163,9 @@ export function LegRow({ leg, tx, today }: LegRowProps) {
               price={leg.bid === null ? COPY.noValue : formatPriceText(leg.bid)}
               size={formatQuoteSize(leg.bidSize)}
               // 🚨 档位色**只上买侧的价**；卖侧与两个量一律 muted，染上会被读成「它们也参与判档」。
-              priceClass={`font-semibold ${bidTone.text}`}
+              // 🚨 064：本行未取到实时时，买侧的价**降为次级墨色** —— 档位判定仍成立（server 拿
+              //    收盘值判的），但这个数不是此刻的，不该以档位色的权重出现在一片实时数里。
+              priceClass={`font-semibold ${eodMarked ? 'text-ink-muted' : bidTone.text}`}
             />
             <QuoteSide
               price={leg.ask === null ? COPY.noValue : formatPriceText(leg.ask)}
