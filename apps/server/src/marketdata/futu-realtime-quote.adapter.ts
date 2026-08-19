@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { vendorTimeToDate } from './futu-option-snapshot.adapter.js';
 import { parseCanonicalSymbol } from './marketdata.rules.js';
 import {
   REALTIME_QUOTE_MAX_SYMBOLS,
@@ -28,11 +29,15 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * ⚠️ **复用的是 client 实例, 不是 `FutuOptionSnapshotAdapter` 这个类** —— 它的 `getSnapshots`
  * 对空 `contractCodes` 前置拒绝, 语义是「取某标的的链」, 与本能力「一批正股的现价」不是一件事。
  *
- * ## 🚨 FR-020: 只读 `last_price` 一列
+ * ## 🚨 FR-020: 价只读 `last_price` 一列
  *
  * 响应里的 `pre_*` / `after_*` / `overnight_*` 三族 (盘前 / 盘后 / 夜盘) **登记但不消费**,
  * 本文件里 MUST NOT 出现对它们的读取。要不要呈现盘后价是**独立的产品决策** —— 顺手读进来
  * 就等于替它做了, 而做完之后没有任何断言会红。单测里有一条属性访问代理钉着这件事。
+ *
+ * ⚠️ 063 Phase 3.4 起另读 `update_time` 一列, 但它**不是价** —— 是 vendor 自报的「这个价是
+ * 什么时候的」, 纯证据、零判据 (端口 `RealtimeQuote.vendorUpdateTime` 注释写着为什么不能拿它
+ * 判新鲜度)。FR-020 管的是「呈现哪个价」, 与它正交。
  *
  * ## 只承担 us
  *
@@ -122,7 +127,12 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
       const price = numToString(raw.last_price);
       // 行在但没价 (停牌 / 这一刻无成交) 与整行缺席同义: 静默省略, 上游保留旧值。
       if (price === null) continue;
-      quotes.set(symbol, { price, capturedAt: asOf });
+      // 🚨 `update_time` 只作**证据**落到 `vendorUpdateTime`, 判据仍是信封 `as_of` (见端口注释)。
+      quotes.set(symbol, {
+        price,
+        capturedAt: asOf,
+        vendorUpdateTime: vendorTimeToDate(raw.update_time),
+      });
     }
 
     if (quotes.size === 0) {

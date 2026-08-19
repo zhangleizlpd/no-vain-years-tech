@@ -1747,6 +1747,22 @@ model Anchor {
   /// `anchor_intraday_history`。盘中价的历史归 `marketdata.daily_bar`, 本表只留最新一拍。
   intradayPrice Decimal?  @map("intraday_price") @db.Decimal(18, 4)
   intradayAt    DateTime? @map("intraday_at") @db.Timestamptz(6)
+  /// 063 Phase 3.4: vendor **自报**的「这个价是什么时候的」—— 与 `intraday_at`(我们的采集
+  /// 墙钟) 是 ingestion time 的两端, 并列存放是业内 market-data 的标准做法 (存 exchange
+  /// timestamp 与 received timestamp 两个, 判据只用其一但证据留下)。命名同
+  /// `option_daily_snapshot.vendor_update_time` —— 指向 vendor 原字段, 不宣称语义。
+  ///
+  /// 🚨 **MUST NOT 拿它做新鲜度判据** (90 秒闸只认 `intraday_at`): 富途给的是**最后成交
+  /// 时刻**, 做市商挪报价时它纹丝不动 ⇒ 不活跃标的会被稳定误判成陈旧, 而这个错**不会红**,
+  /// 界面只是悄悄回落收盘档。
+  ///
+  /// 它存在的理由只有一个: 让 061 那次**一次性**探测出来的 vendor 滞后 (中位 40 s / p95
+  /// 292 s / max 672 s) 可复算、可监控漂移 —— 事后无法复算正是当时的痛点。
+  ///
+  /// ⚠️ 富途**两条 API 都给不出**业内说的报价时刻: `get_market_snapshot` 只有 `update_time`,
+  /// `get_stock_quote` 只有 `data_time` = "Time of latest price" (2026-08-19 直取官方 doc
+  /// 复核)。⇒ 别再花时间找那个字段, 它不存在; 要真报价时刻只能换源。
+  intradayVendorUpdateTime DateTime? @map("intraday_vendor_update_time") @db.Timestamptz(6)
 
   /// 本轮跌破首次观测日 —— FR-013 状态机载体 (红标不是一次比较是个状态机):
   /// spot 由上穿下 → 置当日; spot 回到 W 上方 → 清空; 再跌破算新一轮 (不因「本轮已复审过」
