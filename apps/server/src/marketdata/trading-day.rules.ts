@@ -30,6 +30,22 @@
  */
 export type TradingDayStatus = 'trading' | 'non-trading' | 'unknown';
 
+/**
+ * 一场交易的**时长形态**三态 (063 Phase 2)，`trading_day.session_kind` 列的值域。**互斥且穷尽**：
+ * · `whole`   —— 整天（常规收盘时刻）。
+ * · `half`    —— 半日市（提前收盘；NYSE 感恩节次日 / 平安夜，HKEX 除夕 / 平安夜 / 新年前夕）。
+ * · `unknown` —— 写这一行的源答不上来（腾讯是「指数当日有 bar ⟺ 开市」的反推，半日市当天指数
+ *   照样有 bar ⇒ 结构上区分不了）。
+ *
+ * 🚨 **`unknown` ≠ `whole`**，同 {@link TradingDayStatus} 的立意：折成 `whole` 就是把「我不知道」
+ * 伪装成「我确认是整天」。消费侧对 `unknown` **fail-open 回落常规收盘** —— 那等于本列上线前的
+ * 行为（少采一场、下一轮补上），而不是「连补采都做不了」。
+ *
+ * ⚠️ 与**源侧**类型 `TradingCalendarFetchResult.sessionKinds` 的 `SessionKind`（只有
+ * `whole` | `half`）刻意不同名不同域：源侧用**缺席**表达未知，落库后才收敛成这三个字面量。
+ */
+export type SessionKindStatus = 'whole' | 'half' | 'unknown';
+
 /** 某市场的交易日历覆盖声明（闭区间，`YYYY-MM-DD`）。`null` = 该市场尚无任何声明。 */
 export interface CalendarCoverageRange {
   from: string;

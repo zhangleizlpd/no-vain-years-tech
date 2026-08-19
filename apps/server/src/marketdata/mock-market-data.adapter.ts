@@ -185,7 +185,8 @@ export class MockMarketDataAdapter
    * 直查在 dev/test 下逐点等价。
    */
   async lastClosedSession(market: string, now: Date): Promise<string | null> {
-    let cursor = new Date(`${sessionWatermark(market, now)}T00:00:00Z`);
+    // mock 不建模半日市 (编出来的半日市会让测试绿在一个现实中不存在的形状上)。
+    let cursor = new Date(`${sessionWatermark(market, now, 'unknown')}T00:00:00Z`);
     for (let i = 0; i < 7; i++) {
       const day = cursor.getUTCDay();
       if (day >= 1 && day <= 5) return cursor.toISOString().slice(0, 10);

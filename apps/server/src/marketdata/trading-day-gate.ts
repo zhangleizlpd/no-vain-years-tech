@@ -53,14 +53,21 @@ export function marketDateFor(marketScope: string[], now: Date): string {
   return exchangeCalendarDateForScope(marketScope, now);
 }
 
-/** @deprecated 改用 `session-clock.ts` 的 `sessionWatermark` (业内名 = event-time watermark)。 */
+/**
+ * @deprecated 改用 `session-clock.ts` 的 `sessionWatermark` (业内名 = event-time watermark)。
+ * ⚠️ 本壳**按常规收盘**算 —— 063 Phase 2 给新函数加了半日市入参, 而转发壳没有那个信息可传。
+ * 又一条「该迁走了」的理由。
+ */
 export function lastClosedSessionCutoff(market: string, now: Date): string {
-  return sessionWatermark(market, now);
+  return sessionWatermark(market, now, 'unknown');
 }
 
-/** @deprecated 改用 `session-clock.ts` 的 `isSessionComplete`。 */
+/**
+ * @deprecated 改用 `session-clock.ts` 的 `isSessionComplete`。
+ * ⚠️ 同上: 本壳按常规收盘算, 半日市当天答案偏保守 (说没收)。
+ */
 export function isSessionClosed(market: string, sessionDate: string, now: Date): boolean {
-  return isSessionComplete(market, sessionDate, now);
+  return isSessionComplete(market, sessionDate, now, 'unknown');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

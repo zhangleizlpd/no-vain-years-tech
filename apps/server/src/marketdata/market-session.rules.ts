@@ -14,51 +14,73 @@
  * ⚠️ 反向不成立：`from: { type: 'optionsdesk' }` 的 disallow **含** `marketdata-rules`
  * ⇒ 将来若想把盘中判断挪进 optionsdesk 会直接撞墙。
  */
+import type { SessionKindStatus } from './trading-day.rules.js';
 
-/** market → 定盘中时段所用时区 (IANA) + 连续竞价时段 (当地当日分钟数, 闭区间)。 */
-const MARKET_SESSION: Record<string, { timeZone: string; segments: readonly [number, number][] }> =
+/**
+ * market → 定盘中时段所用时区 (IANA) + 连续竞价时段 (当地当日分钟数, 闭区间)。
+ *
+ * `halfDaySegments` = 该市场**半日市**当天的时段 (063 Phase 2); 缺席 = 该市场没有半日市形态
+ * (cn: A 股除夕直接休市, 不半开) ⇒ 即便日历说 `half` 也回落常规时段, **不编一个出来**。
+ */
+const MARKET_SESSION: Record<
+  string,
   {
-    // 上午 [09:30,11:30] + 下午 [13:00,15:00] (收盘集合竞价归 15:00)。
-    cn: {
-      timeZone: 'Asia/Shanghai',
-      segments: [
-        [9 * 60 + 30, 11 * 60 + 30],
-        [13 * 60, 15 * 60],
-      ],
-    },
-    // 单段 [09:30,16:00] ET —— **真的无午休** (与 hk 的「有午休但蓄意不建模」不是一回事)。
-    // 盘后延长时段 (16:00–20:00 ET) 蓄意**不登记**: 期权在那一段基本无成交, 既有常规快照轮
-    // (北京 06:30 = ET 17:30/18:30) 正是落在其中并把 `last` 当收盘态用, 本片沿用同一口径。
-    us: {
-      timeZone: 'America/New_York',
-      segments: [[9 * 60 + 30, 16 * 60]],
-    },
-    // 单段 [09:30,16:00] HKT —— **午休 (12:00–13:00) 蓄意不建模**, 合并进一段 (2026-08-18
-    // user 定案, 趁 hk 期权尚未开通落地)。登记 hk 本身是为 FR-024 的「市场能力显式登记」留结构
-    // 位 —— hk 期权采集仍**未开通** (`COLD_START_CAPABILITY` 里 hk 是空表项)。
-    //
-    // 🚨🚨 **这个简化只对「补数闸」成立, 对「预警」不成立 —— 两种语义在这里分岔, 别混。**
-    //
-    // · 补数闸 ({@link isSessionUnderway}) 问的是「**这一场收了没有**」。单段化后午休仍算场内
-    //   ⇒ 冷启动在午休照样 `intraday_skipped`、不写快照 ⇒ FR-011 原样成立, 取值**逐点不变**。
-    //
-    // · 预警问的是**另一件事**:「**此刻能不能成交**」。午休不能成交 ⇒ 盘中告警在午休 MUST NOT
-    //   触发。而单段化让 {@link isWithinTradingSession} 对 hk 午休从 `false` 翻成 `true`
-    //   —— **对预警而言那是错的答案**。
-    //
-    // ⇒ 🚨 **将来给 hk 接盘中告警时, MUST NOT 直接拿本表的 hk 单段去判。** 两条路二选一:
-    //   ① **首选**: 把 hk 恢复成 [09:30,12:00] + [13:00,16:00] 两段。对补数闸**零影响** ——
-    //      `isSessionUnderway` 取的是 min(开盘)/max(收盘), 两段与单段同为 09:30/16:00 ——
-    //      而预警同时拿回正确答案。换言之这条退路是免费的。
-    //   ② 或给预警侧单独登记一份带午休的 hk 时段, 别让两个消费场景共用同一行。
-    //
-    // 今天之所以可以先合: `isWithinTradingSession` 唯一的生产调用方是
-    // `alert/intraday-eval.processor.ts`, 参数写死 `INTRADAY_MARKET = 'cn'` ⇒ hk 够不到它。
-    hk: {
-      timeZone: 'Asia/Hong_Kong',
-      segments: [[9 * 60 + 30, 16 * 60]],
-    },
-  };
+    timeZone: string;
+    segments: readonly [number, number][];
+    halfDaySegments?: readonly [number, number][];
+  }
+> = {
+  // 上午 [09:30,11:30] + 下午 [13:00,15:00] (收盘集合竞价归 15:00)。
+  cn: {
+    timeZone: 'Asia/Shanghai',
+    segments: [
+      [9 * 60 + 30, 11 * 60 + 30],
+      [13 * 60, 15 * 60],
+    ],
+  },
+  // 单段 [09:30,16:00] ET —— **真的无午休** (与 hk 的「有午休但蓄意不建模」不是一回事)。
+  // 盘后延长时段 (16:00–20:00 ET) 蓄意**不登记**: 期权在那一段基本无成交, 既有常规快照轮
+  // (北京 06:30 = ET 17:30/18:30) 正是落在其中并把 `last` 当收盘态用, 本片沿用同一口径。
+  us: {
+    timeZone: 'America/New_York',
+    segments: [[9 * 60 + 30, 16 * 60]],
+    // 🚨 **13:15 = 期权收盘, 不是股票的 13:00** (063 Phase 2)。两个都真: NYSE 半日市股票
+    // 13:00 ET 收、期权 13:15 ET 收。取**较晚**那个, 判据是偏差方向:
+    // · 取 13:15 → 13:00–13:15 之间股票 EOD 晚采 15 分钟。无害 (夜间 cron 本就在几小时后)。
+    // · 取 13:00 → 期权仍在交易时判「已收盘」⇒ **写半根**。正是本片要消灭的那类。
+    // 而本表唯一的生产消费方 (锚首建冷启动) 服务的恰恰是**期权**采集能力。
+    // 精确区分股票/期权收盘要 MIC (ISO 10383) 粒度, plan 已明确不做。
+    halfDaySegments: [[9 * 60 + 30, 13 * 60 + 15]],
+  },
+  // 单段 [09:30,16:00] HKT —— **午休 (12:00–13:00) 蓄意不建模**, 合并进一段 (2026-08-18
+  // user 定案, 趁 hk 期权尚未开通落地)。登记 hk 本身是为 FR-024 的「市场能力显式登记」留结构
+  // 位 —— hk 期权采集仍**未开通** (`COLD_START_CAPABILITY` 里 hk 是空表项)。
+  //
+  // 🚨🚨 **这个简化只对「补数闸」成立, 对「预警」不成立 —— 两种语义在这里分岔, 别混。**
+  //
+  // · 补数闸 ({@link isSessionUnderway}) 问的是「**这一场收了没有**」。单段化后午休仍算场内
+  //   ⇒ 冷启动在午休照样 `intraday_skipped`、不写快照 ⇒ FR-011 原样成立, 取值**逐点不变**。
+  //
+  // · 预警问的是**另一件事**:「**此刻能不能成交**」。午休不能成交 ⇒ 盘中告警在午休 MUST NOT
+  //   触发。而单段化让 {@link isWithinTradingSession} 对 hk 午休从 `false` 翻成 `true`
+  //   —— **对预警而言那是错的答案**。
+  //
+  // ⇒ 🚨 **将来给 hk 接盘中告警时, MUST NOT 直接拿本表的 hk 单段去判。** 两条路二选一:
+  //   ① **首选**: 把 hk 恢复成 [09:30,12:00] + [13:00,16:00] 两段。对补数闸**零影响** ——
+  //      `isSessionUnderway` 取的是 min(开盘)/max(收盘), 两段与单段同为 09:30/16:00 ——
+  //      而预警同时拿回正确答案。换言之这条退路是免费的。
+  //   ② 或给预警侧单独登记一份带午休的 hk 时段, 别让两个消费场景共用同一行。
+  //
+  // 今天之所以可以先合: `isWithinTradingSession` 唯一的生产调用方是
+  // `alert/intraday-eval.processor.ts`, 参数写死 `INTRADAY_MARKET = 'cn'` ⇒ hk 够不到它。
+  hk: {
+    timeZone: 'Asia/Hong_Kong',
+    segments: [[9 * 60 + 30, 16 * 60]],
+    // 半日市 = **只开上午** (12:00 HKT 收, 无下午段) —— 与上面「午休蓄意不建模」正交:
+    // 那条合并的是 12:00–13:00 这个**休息**段, 而半日市当天 12:00 之后根本没有下午场。
+    halfDaySegments: [[9 * 60 + 30, 12 * 60]],
+  },
+};
 
 function unregisteredMarketError(market: string): Error {
   return new Error(
@@ -146,14 +168,26 @@ export function isWithinTradingSession(market: string, minutesOfDay: number): bo
  * ⚠️ 未登记市场**抛**（与 `isWithinTradingSession` 相反）: 返 `false` 的方向是「没在进行中」
  * ⇒ 放行写快照, 那是 fail-open。本谓词的每一个 `false` 都意味着「可以写」, 故未知即抛。
  */
-export function isSessionUnderway(market: string, minutesOfDay: number): boolean {
+export function isSessionUnderway(
+  market: string,
+  minutesOfDay: number,
+  kind: SessionKindStatus,
+): boolean {
   const session = MARKET_SESSION[market];
   if (session === undefined) {
     throw unregisteredMarketError(market);
   }
+  // 🚨 `kind` **必填**不可省 (063 Phase 2): 做成可选默认 `whole` 的话, 漏传的调用点会在半日
+  // 市当天静默拿到「还在场内」⇒ 落终态不重试的 `intraday_skipped` ⇒ 那一场的快照**永久缺失**。
+  // 让 TS 把每个调用点逼出来显式声明它知不知道 kind, 与 `daysToExpiry` 拒绝可选交易所入参同源。
+  //
+  // `unknown` → 回落常规时段 = 本列上线前的逐点行为 (fail-open, 少采一场下轮补上);
+  // 该市场没登记 `halfDaySegments` (cn) 同样回落 —— **不为一个没有半日市的市场编一个出来**。
+  const segments =
+    kind === 'half' ? (session.halfDaySegments ?? session.segments) : session.segments;
   // 取 min(开盘) / max(收盘) 而非 segments[0] / at(-1) —— 不把「登记时必须按时序排」这条
   // 隐式不变式压在加市场的人身上（排错了不会红, 只会让午休那段悄悄漏出闸）。
-  const open = Math.min(...session.segments.map(([from]) => from));
-  const close = Math.max(...session.segments.map(([, to]) => to));
+  const open = Math.min(...segments.map(([from]) => from));
+  const close = Math.max(...segments.map(([, to]) => to));
   return minutesOfDay >= open && minutesOfDay <= close;
 }

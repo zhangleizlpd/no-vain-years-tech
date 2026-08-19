@@ -24,6 +24,7 @@ import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { currencyForMarket } from './sync-universe.usecase.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
+import type { SessionKindStatus } from './trading-day.rules.js';
 import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
 import { resolveAsOfForDimension } from './sync-asof.rules.js';
 
@@ -121,8 +122,13 @@ export class AnchorColdStartUseCase {
       });
     }
 
+    // 🚨 **半日市三态, 一次查、三处用** (063 Phase 2): 下面的目标日推导、日历缺行的
+    // reason 串、以及盘中闸, 问的都是「今天这一场几点收」。查三遍就是三处判据。
+    // `unknown` ⇒ 回落常规收盘 = 本片上线前的逐点行为。
+    const todayKind = await this.todaySessionKind(market, now);
+
     // ── 2. 目标交易日 = 最近一个已收盘交易日 (FR-006 / FR-007) ──
-    const targetSession = await this.lastClosedTradingDay(market, now);
+    const targetSession = await this.lastClosedTradingDay(market, now, todayKind);
     if (targetSession === null) {
       // 🚫 不猜日子 (FR-009): 猜错就是一批 session_date 标错的脏行, 比不补更难发现且要人工
       //    回删。照抄 option-snapshot-remediation 的 blocked 纪律。ERROR 级 = 需人工介入。
@@ -131,7 +137,7 @@ export class AnchorColdStartUseCase {
           `(anchorId=${anchorId} ticker=${ticker}; 请补交易日历)`,
       );
       return this.finish(input, COLD_START_OUTCOME.CALENDAR_MISSING, {
-        reason: `交易日历缺 ${market} 在 ${sessionWatermark(market, now)} 及之前的行`,
+        reason: `交易日历缺 ${market} 在 ${sessionWatermark(market, now, todayKind)} 及之前的行`,
       });
     }
 
@@ -211,7 +217,13 @@ export class AnchorColdStartUseCase {
     //
     // 走到这里 `calendarStatus` 只可能是 `trading` / `non-trading` (`unknown` 已在上面放弃) ⇒
     // 本闸的两个条件都建立在**确定**的日历事实上。
-    if (isSessionUnderway(market, marketNow(market, now).minutesOfDay) && todayIsTradingDay) {
+    // 🚨 `todayKind='half'` 时收盘时刻提前 (hk 12:00 / us 13:15 期权口径) ⇒ 半日市当天下午
+    // 不再被误判成「场内」。这一格是本片**唯一不可自愈**的收益: `intraday_skipped` 是终态
+    // 不重试, 落了它那一场的快照就**永久缺失** (常规轮当晚写的是当晚那一场)。
+    if (
+      isSessionUnderway(market, marketNow(market, now).minutesOfDay, todayKind) &&
+      todayIsTradingDay
+    ) {
       return this.finish(input, COLD_START_OUTCOME.INTRADAY_SKIPPED, { targetSession });
     }
 
@@ -389,8 +401,35 @@ export class AnchorColdStartUseCase {
    *
    * 复杂度: 1 次 (market, date) 主键索引上的倒序 limit-1 查询。
    */
-  private async lastClosedTradingDay(market: string, now: Date): Promise<string | null> {
-    const cutoff = sessionWatermark(market, now);
+  /**
+   * 交易所当地**今天**那一场是整天还是半天 (063 Phase 2)。库里没有该日的行 ⇒ `'unknown'`
+   * —— 与列默认值同值, 且消费侧对 `unknown` 一律回落常规收盘 (fail-open)。
+   *
+   * 🚨 **直查自有表而非走 `TRADING_CALENDAR_PORT`**: 与本类既有的 `lastClosedTradingDay`
+   * 同一条理由 —— `trading_day` 是 marketdata 自有表, 而端口那两个方法答的是别的问题
+   * (三态分类 / 最近已收盘交易日), 为一个列查询往端口上加第三个方法会让所有 fake 跟着改,
+   * 收益为零。
+   *
+   * ⚠️ 「没有该日的行」有两种成因 (今天不是交易日 / 日历还没填到) —— 本方法**不区分**:
+   * 两种情形下「今天这一场几点收」都无从谈起, 而调用点自己另有日历三态判据分派。
+   *
+   * 复杂度: 1 次 (market, date) 主键点查。
+   */
+  private async todaySessionKind(market: string, now: Date): Promise<SessionKindStatus> {
+    const today = exchangeCalendarDate(market, now);
+    const row = await this.prisma.tradingDay.findUnique({
+      where: { market_date: { market, date: new Date(`${today}T00:00:00Z`) } },
+      select: { sessionKind: true },
+    });
+    return (row?.sessionKind ?? 'unknown') as SessionKindStatus;
+  }
+
+  private async lastClosedTradingDay(
+    market: string,
+    now: Date,
+    todayKind: SessionKindStatus,
+  ): Promise<string | null> {
+    const cutoff = sessionWatermark(market, now, todayKind);
     const row = await this.prisma.tradingDay.findFirst({
       where: { market, date: { lte: new Date(`${cutoff}T00:00:00Z`) } },
       orderBy: { date: 'desc' },

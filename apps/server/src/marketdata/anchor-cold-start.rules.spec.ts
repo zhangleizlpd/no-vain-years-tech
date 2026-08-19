@@ -45,7 +45,7 @@ const latestOnOrBefore = (bound: string): string | null =>
  */
 function calendarFacts(market: string, now: Date) {
   const today = exchangeCalendarDate(market, now);
-  const target = latestOnOrBefore(sessionWatermark(market, now));
+  const target = latestOnOrBefore(sessionWatermark(market, now, 'unknown'));
   return {
     todayIsTradingDay: (US_TRADING_DAYS as readonly string[]).includes(today),
     lastClosedTradingDay: target,

@@ -91,26 +91,50 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
   describe('isSessionUnderway — 「该场进行中」(含午休), 敏感档的闸', () => {
     it('🚨 cn 午休: 与 isWithinTradingSession 结论相反 —— 这就是本谓词存在的理由', () => {
       expect(isWithinTradingSession('cn', at(12))).toBe(false);
-      expect(isSessionUnderway('cn', at(12))).toBe(true);
+      expect(isSessionUnderway('cn', at(12), 'unknown')).toBe(true);
     });
 
     it('📌 hk 已合并单段 ⇒ 两谓词在它身上不再分道 (分道只剩 cn 一处)', () => {
       expect(isWithinTradingSession('hk', at(12, 30))).toBe(true);
-      expect(isSessionUnderway('hk', at(12, 30))).toBe(true);
+      expect(isSessionUnderway('hk', at(12, 30), 'unknown')).toBe(true);
     });
 
     it('盘前 / 盘后判 false —— 那两段正是 premarket_backfill 与 eod 的合法取数窗', () => {
-      expect(isSessionUnderway('cn', at(9, 29))).toBe(false); // 盘前
-      expect(isSessionUnderway('cn', at(15, 1))).toBe(false); // 盘后
-      expect(isSessionUnderway('hk', at(16, 1))).toBe(false);
-      expect(isSessionUnderway('us', at(16, 1))).toBe(false);
+      expect(isSessionUnderway('cn', at(9, 29), 'unknown')).toBe(false); // 盘前
+      expect(isSessionUnderway('cn', at(15, 1), 'unknown')).toBe(false); // 盘后
+      expect(isSessionUnderway('hk', at(16, 1), 'unknown')).toBe(false);
+      expect(isSessionUnderway('us', at(16, 1), 'unknown')).toBe(false);
+    });
+
+    describe('🚨 半日市 (063 Phase 2) —— kind 决定收盘时刻', () => {
+      it('hk 半日市 12:00 收: 港时 14:00 判**已收**, 而整天/未知都判进行中', () => {
+        expect(isSessionUnderway('hk', at(14), 'half')).toBe(false);
+        expect(isSessionUnderway('hk', at(14), 'whole')).toBe(true);
+        // unknown ⇒ 回落常规时段 = 本片上线前的逐点行为 (fail-open, 少采一场下轮补上)。
+        expect(isSessionUnderway('hk', at(14), 'unknown')).toBe(true);
+        expect(isSessionUnderway('hk', at(12), 'half')).toBe(true); // 12:00 收盘瞬间仍含在内
+      });
+
+      it('🚨🚨 us 半日市取 **13:15 (期权收盘)** 而不是 13:00 (股票收盘)', () => {
+        // 13:10 期权仍可成交 —— 若这里取了 13:00, 冷启动会在期权场内判「已收盘」去采快照,
+        // 落进去的就是半根。本条是那个取值判据的钉子, 改成 13:00 立刻红。
+        expect(isSessionUnderway('us', at(13, 10), 'half')).toBe(true);
+        expect(isSessionUnderway('us', at(13, 15), 'half')).toBe(true); // 端点含在内
+        expect(isSessionUnderway('us', at(13, 16), 'half')).toBe(false);
+      });
+
+      it('cn 没登记半日市形态 ⇒ 即便日历说 half 也回落常规时段 (**不编一个出来**)', () => {
+        // A 股除夕直接休市、不半开 ⇒ cn 的 `half` 只可能来自源侧错误。回落 = 安全侧。
+        expect(isSessionUnderway('cn', at(14), 'half')).toBe(true);
+        expect(isSessionUnderway('cn', at(15, 1), 'half')).toBe(false);
+      });
     });
 
     it('首段开盘 / 末段收盘两个端点含在内', () => {
-      expect(isSessionUnderway('cn', at(9, 30))).toBe(true);
-      expect(isSessionUnderway('cn', at(15))).toBe(true);
-      expect(isSessionUnderway('hk', at(9, 30))).toBe(true);
-      expect(isSessionUnderway('hk', at(16))).toBe(true);
+      expect(isSessionUnderway('cn', at(9, 30), 'unknown')).toBe(true);
+      expect(isSessionUnderway('cn', at(15), 'unknown')).toBe(true);
+      expect(isSessionUnderway('hk', at(9, 30), 'unknown')).toBe(true);
+      expect(isSessionUnderway('hk', at(16), 'unknown')).toBe(true);
     });
 
     /**
@@ -119,8 +143,8 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
      */
     it('📌 us / hk 均为单段 ⇒ 两个谓词在全天逐分钟等价 (分道只剩 cn)', () => {
       for (let m = 0; m < 24 * 60; m += 1) {
-        expect(isSessionUnderway('us', m)).toBe(isWithinTradingSession('us', m));
-        expect(isSessionUnderway('hk', m)).toBe(isWithinTradingSession('hk', m));
+        expect(isSessionUnderway('us', m, 'unknown')).toBe(isWithinTradingSession('us', m));
+        expect(isSessionUnderway('hk', m, 'unknown')).toBe(isWithinTradingSession('hk', m));
       }
     });
   });
@@ -131,7 +155,7 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     });
 
     it('🚨 isSessionUnderway 同样抛 (fail-closed: 返 false 会放行写快照)', () => {
-      expect(() => isSessionUnderway('sg', 600)).toThrow(/未登记盘中时段/);
+      expect(() => isSessionUnderway('sg', 600, 'unknown')).toThrow(/未登记盘中时段/);
     });
 
     it('isWithinTradingSession 保持既有的返 false 语义 (alert 侧行为原样)', () => {

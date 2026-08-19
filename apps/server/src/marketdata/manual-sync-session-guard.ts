@@ -104,7 +104,10 @@ export function assertClosedSessionForManualSync(
     // 而裸 for-of 一个 undefined 会当场 TypeError —— 那会把「配置缺一列」变成「CLI 崩了」。
     for (const market of candidate.marketScope ?? []) {
       // 逐市场问, 不整体求 —— scope 版对跨时区会抛, 而本闸恰恰应该逐个判。
-      if (!isSessionComplete(market, exchangeCalendarDate(market, now), now)) {
+      // 传 `'unknown'` = 按常规收盘判 (063 Phase 2)。本闸是**拒绝执行**型的: 半日市当天
+      // 12:00–16:00 之间它会说「还没收」⇒ 人工 CLI 被拒 ⇒ 稍晚再跑。方向偏保守, 而接了 kind
+      // 之后要给这个纯函数喂一次日历查询 —— 为「早几小时能手动跑一轮」不值当。
+      if (!isSessionComplete(market, exchangeCalendarDate(market, now), now, 'unknown')) {
         offenders.push({ dimensionKey: candidate.dimensionKey, market });
       }
     }
