@@ -26,6 +26,8 @@ import type {
   LegRetrievalPort,
   LegRetrievalQuery,
   LegRetrievalResult,
+  RealtimeChainDegradeKind,
+  RealtimeDegradeKind,
 } from './leg-retrieval.port';
 
 /**
@@ -84,8 +86,23 @@ const REALTIME_SNAPSHOT_TIMEOUT_MS = 3_000;
  * 🚨 **只装本片特有的那三类**: 两闸判定失败 / 源不可达 / 超时那几条是 `FR-011` 的通用降级,
  * 它们照常留 warn 但**不进这个值域** —— 混进来的话「本片特有的失败有多少」这个数就再也问不出
  * 来了, 而聚合出来的图照样画得出来 (`SC-010`)。
+ * 📌 T007a 起**枚举本身住在 port 上** ({@link RealtimeDegradeKind}, 契约与日志同源): 这里用
+ * `Extract` 取它的子集, 于是「留痕只装三类」是**编译期**保证 —— 把 `source_unavailable` 传进
+ * {@link PrismaLegRetrievalAdapter.warnDegraded} 会当场不过 tsc, 而不是等 `SC-010` 那条反例来抓。
  */
-export type RealtimeDegradeKind = 'partial_miss' | 'window_over_cap' | 'window_basis_stale';
+type RealtimeDegradeLogKind = Extract<
+  RealtimeDegradeKind,
+  'partial_miss' | 'window_over_cap' | 'window_basis_stale'
+>;
+
+/**
+ * 两闸的判定结果 (064 T007a) —— **三态**, 🚫 MUST NOT 退回布尔。
+ *
+ * 🚨 `'closed'` 与 `'unknown'` 对**外呼**的结局相同 (都不发), 对**降级标**的结局却相反:
+ * 前者是正常休市 (恒 `null`), 后者是「不知道此刻该不该给实时」(算降级)。合成一个布尔就等于
+ * 把这两件事在响应里再次坍缩成一个 —— 那正是 T007a 要拆开的那一处。
+ */
+type RealtimeGate = 'open' | 'closed' | 'unknown';
 
 /**
  * 三类留痕的行首 tag —— 日志聚合按它捞行、按 `kind` 分组。🚫 MUST NOT 在第二处手写这个串
@@ -323,9 +340,16 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       source: newest.source,
       spot,
       priceKind: 'eod_close',
+      // 064 T007a: 库内读出来的那一份**不是降级** —— 降级标只由本方法尾部的 overlay 按「本该
+      // 外呼却没给成」写上。🚫 MUST NOT 在这里按 `query.realtime` 预填: 那就是让它与开关
+      // 互相推导, 而开关为真时最常见的结局恰恰是**正常的**收盘档 (非交易时段)。
+      realtimeDegrade: null,
     };
     // 🚨 **overlay 的插点就在这里** —— `legs` 已组装、`return` 之前, 见类文件头。关态 (或读取口
     // 未绑定) 时**一行都不执行**, 结果与 064 之前逐字节相同 (FR-016 / SC-005)。
+    // 🚨 这两条**都不算降级** (T007a): 未开实时是调用方的选择; 读取口整个没绑定则连闸都没判过,
+    // 「本该外呼」这个前提结构上不成立 (mock 档下它是**绑定着的**降级实现 ⇒ 走 `fetchQuotes`
+    // 那条路标 `source_unavailable`, 见 T002)。🚫 MUST NOT 在这里预置一个降级标充数。
     if (!query.realtime || this.snapshots === null) {
       return { snapshot: { chain, legs }, window: null };
     }
@@ -353,27 +377,32 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 🚨 **任何一闸自身出故障 ⇒ fail-closed 不外呼** (同 061 tick 的处置): 不知道开没开市就去问价,
    * 等于把白名单判据作废。🚫 MUST NOT 猜「大概开着」。
    *
+   * 🚨 **出参是三态而不是布尔** (064 T007a): 「闸说没开市」与「闸自己坏了」对外呼的结局相同,
+   * 对**用户**却是两件事 —— 前者天天如此 (收盘档是常态), 后者是「我们不知道此刻该不该给实时」。
+   * 只有分得开, 链级降级标才敢在前者上恒 `null` (见 {@link LegChainMeta.realtimeDegrade})。
+   *
    * 复杂度: 1 次市场状态调用 + 1 次日历判定, 均为 `O(1)`。
    */
-  private async isRealtimeSessionOpen(target: {
+  private async resolveRealtimeGate(target: {
     readonly symbol: string;
     readonly market: string;
     readonly marketDate: string;
-  }): Promise<boolean> {
-    // 两个端口任一未绑定 ⇒ 判不了闸 ⇒ 不外呼 (可空注入的默认结局与故障时一致)。
-    if (this.marketState === null || this.tradingCalendar === null) return false;
+  }): Promise<RealtimeGate> {
+    // 两个端口任一未绑定 ⇒ 判不了闸 ⇒ 不外呼, 且**不是**「今天休市」(可空注入的默认结局与故障
+    // 时一致: 都是「不知道」)。
+    if (this.marketState === null || this.tradingCalendar === null) return 'unknown';
     try {
       const sessions = await this.marketState.getMarketSessions();
       const session = sessions.find((state) => state.market === target.market)?.session;
-      if (session !== 'regular') return false;
+      if (session !== 'regular') return 'closed';
       const calendar = await this.tradingCalendar.classify(target.market, target.marketDate);
-      return calendar !== 'non-trading';
+      return calendar === 'non-trading' ? 'closed' : 'open';
     } catch (error) {
       this.logger.warn(
         `实时档闸判定失败, 本次 fail-closed 走收盘档 (064 FR-011): ${target.symbol} — ` +
           describeError(error),
       );
-      return false;
+      return 'unknown';
     }
   }
 
@@ -509,11 +538,24 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     chain: LegChainMeta,
     legs: readonly LegChainRow[],
   ): Promise<LoadedChain | null> {
-    /** 三条整体回落路径的共同落点 —— 与关态**逐字节相同**的那一份。 */
-    const eodClose: LoadedChain = { snapshot: { chain, legs }, window: null };
+    /**
+     * 整体回落路径的共同落点 —— 值一个不动, 只在 meta 上说清**本该给实时却没给成**没有。
+     *
+     * 🚨 `null` 那一支与关态**逐字节相同** (`realtimeDegrade` 在 `chain` 上已是 `null`, 展开
+     * 不改键序也不改值); 非 `null` 那一支只多这一个字段的取值。
+     */
+    const eodClose = (realtimeDegrade: RealtimeChainDegradeKind | null): LoadedChain => ({
+      snapshot: { chain: { ...chain, realtimeDegrade }, legs },
+      window: null,
+    });
 
     // ① 非常规交易状态 / 当日非交易日 ⇒ **零外呼** (`state_branch` 3)。
-    if (!(await this.isRealtimeSessionOpen(target))) return eodClose;
+    // 🚨 `'closed'` 是**正常收盘档**, 降级标恒 `null` —— 北京白天美股休市, 天天如此。给它刷上
+    // 降级 = 造一个永远为真的告警, 真出事那天它也就不再有人看 (T007a 的核心反例)。
+    // 🚨 `'unknown'` 相反: 外呼同样没发, 但我们**不知道**此刻该不该发 ⇒ 如实标降级。
+    const gate = await this.resolveRealtimeGate(target);
+    if (gate === 'closed') return eodClose(null);
+    if (gate === 'unknown') return eodClose('gate_unknown');
 
     // ② 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落, 仍是零外呼 (`state_branch` 14)。
     // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。
@@ -524,7 +566,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         // 🚫 阈值取 061 的派生单点, MUST NOT 在留痕里手写第二个 90 —— 调参那天日志会开始骗人。
         freshnessSeconds: INTRADAY_FRESHNESS_SECONDS,
       });
-      return eodClose;
+      return eodClose('window_basis_stale');
     }
 
     // ③ 窗内条数超单批上限 ⇒ **整体回落 + 零外呼** (`FR-018` / `state_branch` 7, plan §分批)。
@@ -539,13 +581,14 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         windowCodes: windowed.length,
         cap: OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
       });
-      return eodClose;
+      return eodClose('window_over_cap');
     }
     const contractCodes = windowed.map((leg) => leg.code);
 
-    // ④ 源不可达 / 超时 ⇒ 整体回落 (`state_branch` 4)。
+    // ④ 源不可达 / 超时 ⇒ 整体回落 (`state_branch` 4)。**闸已判开** ⇒ 这一路必是降级:
+    // 北京 22:00 美股盘中源挂了, 界面若与正常盘后长得一样, 用户就又一次拿着昨天的盘口做决定。
     const batch = await this.fetchQuotes(port, target, contractCodes);
-    if (batch === null) return eodClose;
+    if (batch === null) return eodClose('source_unavailable');
 
     // ⑤ 标的现价缺失 ⇒ 显式「未就绪」(`state_branch` 6 / FR-012), 🚫 MUST NOT 拿收盘价顶替:
     // 顶替会让「链坏了」看起来像正常, 正是本仓反复吃亏的那类静默。
@@ -587,7 +630,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 「没人看就没数据」的指标当哨兵会把「今天没人开选约表」读成「通道挂了」。
    */
   private warnDegraded(
-    kind: RealtimeDegradeKind,
+    kind: RealtimeDegradeLogKind,
     symbol: string,
     detail: Readonly<Record<string, unknown>>,
   ): void {
@@ -623,6 +666,9 @@ function applyRealtimeBatch(
   return {
     // 区块级时刻取**信封的采集时刻** (FR-010) —— 🚫 MUST NOT 用行内 `vendorUpdateTime` 顶替:
     // 那是最后成交时刻, 低流动性腿上它可以停在上周 (`OptionSnapshotRow.vendorUpdateTime`)。
+    // 🚨 `realtimeDegrade` 原样保持 `null` (T007a): 本批**取到了**实时值, 返回集里少几个合约是
+    // 逐行的事 (那几行标 `'eod_close'`), 🚫 MUST NOT 因此把整块拉成降级态 —— 值域上
+    // `partial_miss` 结构性够不着链级字段, 这里只是把「为什么」写下来。
     chain: { ...chain, quoteAsOf: batch.asOf, priceKind: 'realtime', spot },
     legs: legs.map((leg) => {
       const quote = quoteByCode.get(leg.code);

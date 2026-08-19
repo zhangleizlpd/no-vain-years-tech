@@ -36,6 +36,7 @@ const chainMeta: LegChainMeta = {
   source: 'eod',
   spot: SPOT,
   priceKind: 'eod_close',
+  realtimeDegrade: null,
 };
 
 /** 基线腿: DTE=35 (重叠区)、有效成本 98 < spot、两道门槛均宽松通过。 */

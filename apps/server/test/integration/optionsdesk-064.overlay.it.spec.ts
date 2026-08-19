@@ -14,7 +14,10 @@ import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
+  REALTIME_CHAIN_DEGRADE_KINDS,
   type LegRetrievalPort,
+  type RealtimeChainDegradeKind,
+  type RealtimeDegradeKind,
 } from '../../src/optionsdesk/leg-retrieval.port';
 import {
   OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
@@ -24,10 +27,7 @@ import {
   type OptionSnapshotQuery,
   type OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
-import {
-  REALTIME_DEGRADE_LOG_TAG,
-  type RealtimeDegradeKind,
-} from '../../src/optionsdesk/leg-retrieval.adapter';
+import { REALTIME_DEGRADE_LOG_TAG } from '../../src/optionsdesk/leg-retrieval.adapter';
 import { INTRADAY_FRESHNESS_SECONDS } from '../../src/optionsdesk/intraday-spot.rules';
 import {
   MARKET_STATE_PORT,
@@ -131,9 +131,9 @@ function decimalText(value: string | null): string | undefined {
 /**
  * `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。
  *
- * 🚨 **`priceKind` 逐个剔除** (064 T007): `FR-009` 蓄意给两个读端点的出参**新增**了档位字段,
- * 那是本 feature 的产出而不是回归。⇒ 基线夹具**保持冻结**在 064 之前那一份, 断言退成
- * 「除了这个蓄意新增的键, 其余逐字符相同」。
+ * 🚨 **`priceKind` (064 T007) 与 `realtimeDegrade` (064 T007a) 逐个剔除**: `FR-009` / `FR-010`
+ * 蓄意给两个读端点的出参**新增**了这两个键, 它们是本 feature 的产出而不是回归。⇒ 基线夹具
+ * **保持冻结**在 064 之前那一份, 断言退成「除了这两个蓄意新增的键, 其余逐字符相同」。
  * 🚫 **MUST NOT 改成重新生成一份基线** —— 重生成会把「既有字段的值有没有被改动」这个问题一起
  * 抹掉 (新旧两份都是本次跑出来的, 逐字符自然相同), 而 `SC-005` 要的正是那个问题的答案。
  * 📌 档位字段本身的取值由本文件 T003 / T004a / T005 的用例逐条钉住, 不靠这条基线。
@@ -142,7 +142,7 @@ function stable(value: unknown): string {
   return JSON.stringify(
     value,
     (key, v: unknown) => {
-      if (key === 'priceKind') return undefined;
+      if (key === 'priceKind' || key === 'realtimeDegrade') return undefined;
       return typeof v === 'bigint' ? v.toString() : v;
     },
     2,
@@ -1252,6 +1252,163 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     expect(logs.map((log) => log.kind)).toEqual(['partial_miss']);
     expect(logs[0].missing).toBe(missing.length);
     expect(logs[0].requested).toBe(LEGS.length);
+  });
+
+  // ── T007a 链级降级信号出契约 ────────────────────────────────────────────────
+
+  /**
+   * 链级降级标 —— **`priceKind` 之外的第二个数**, 答的是「此刻**本该**是什么档」。
+   *
+   * 🚨 用它取值而不是各处手写 `snapshot.chain.realtimeDegrade`, 是为了让下面每条断言都同时
+   * 钉住**档位**与**降级标**两项: 只断言其一的话, 「把两者互相推导出来」的实现照样全绿
+   * (推导实现在每一条单项断言上都给得出正确答案, 只有把两个数并排看才露馅)。
+   */
+  function tierOf(snapshot: LegChainSnapshot): {
+    priceKind: string;
+    degrade: RealtimeChainDegradeKind | null;
+  } {
+    return { priceKind: snapshot.chain.priceKind, degrade: snapshot.chain.realtimeDegrade };
+  }
+
+  it('🚨 T007a ① 核心反例 a: 美股非常规交易状态 ⇒ 收盘档且降级标**恒 null** (正常休市不是降级)', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    marketState.session = 'other';
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    // 🚨 这一条把「落了 eod 就算降级」的朴素实现钉死: 国内用户白天每次打开都走这条路, 给它
+    // 刷降级 = 造一个**永远为真的告警**, 于是真出事那天它也不再有人看。
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: null });
+    expect(readPort.calls).toHaveLength(0);
+  });
+
+  it('🚨 T007a ① 核心反例 b: 当日非交易日 (周六) ⇒ 收盘档且降级标**恒 null**', async () => {
+    // 与 `state_branch` 3b 同一套输入: 时段闸放行、基准照常新鲜, 关掉的只有日历那一闸。
+    const saturday = new Date('2026-08-15T20:00:00.000Z');
+    await seedChain({ basis: { price: SPOT, at: new Date(saturday.getTime() - 10_000) } });
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await moduleRef
+      .get<LegRetrievalPort>(LEG_RETRIEVAL_PORT)
+      .retrieveChain({ symbol: SYMBOL, now: saturday, realtime: true });
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: null });
+    expect(readPort.calls).toHaveLength(0);
+  });
+
+  it('🚨 T007a ②: 源不可达 / 超时 ⇒ `source_unavailable` (盘中源挂了 MUST 与正常盘后分得开)', async () => {
+    await seedChain();
+    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
+
+    const unreachable = await chainOf(true);
+    if (unreachable === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(unreachable)).toEqual({ priceKind: 'eod_close', degrade: 'source_unavailable' });
+
+    // 超时那一半走同一个类别 —— 对用户是同一件事 (此刻的盘口没拿到), 区分留在日志里。
+    readPort.fail = null;
+    readPort.hang = true;
+    const timedOut = await chainOf(true);
+    if (timedOut === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(timedOut)).toEqual({ priceKind: 'eod_close', degrade: 'source_unavailable' });
+  }, 30_000);
+
+  it('🚨 T007a ②: 两闸自身故障 ⇒ `gate_unknown` (不知道该不该给实时 ≠ 今天休市)', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    marketState.fail = new Error('futu shim 5xx');
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    // 🚨 与上面那条「非常规时段」的输出**逐字段对照**: 档位相同、降级标相反。两者若合成一个
+    // 布尔闸 (今天的 `isRealtimeSessionOpen`), 这一条与 ①a 必有一条红。
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: 'gate_unknown' });
+    expect(readPort.calls).toHaveLength(0);
+  });
+
+  it('🚨 T007a ③: 定窗基准陈旧 ⇒ `window_basis_stale`', async () => {
+    await seedChain({ basis: { price: SPOT, at: new Date(NOW.getTime() - 91_000) } });
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: 'window_basis_stale' });
+  });
+
+  it('🚨 T007a ④: 窗内条数超单批上限 ⇒ `window_over_cap`', async () => {
+    await seedChain();
+    await seedOverCapLegs();
+    readPort.respond = pennyBatch;
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: 'window_over_cap' });
+  }, 60_000);
+
+  it('🚨 T007a ⑤: 部分合约未返回 ⇒ **链级 null** 且行级两种 `priceKind` 都出现', async () => {
+    await seedChain();
+    const missing = 'L-BUILD';
+    readPort.respond = (query) => {
+      const full = realtimeBatch()(query);
+      return { asOf: full.asOf, rows: full.rows.filter((row) => row.code !== missing) };
+    };
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    // 🚨 部分缺失是**逐行**降级 —— 把整块拉成告警态会让 `state_branch` 5 当场作废, 而那张表
+    // 照样渲染得出来。值域上 `partial_miss` 结构性够不着链级字段 (`Exclude<>`), 这里是它的运行时证。
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'realtime', degrade: null });
+    expect(new Set(snapshot.legs.map((leg) => leg.priceKind))).toEqual(
+      new Set(['realtime', 'eod_close']),
+    );
+    // 留痕面照旧记这一类 (`FR-023`) —— 契约面不报 ≠ 运维面看不见。
+    expect(degradeLogs().map((log) => log.kind)).toEqual(['partial_miss']);
+  });
+
+  it('🚨 T007a ⑤ 反例: 全部合约都返回 ⇒ 降级标 null 且**没有**行级 `eod_close`', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'realtime', degrade: null });
+    expect(new Set(snapshot.legs.map((leg) => leg.priceKind))).toEqual(new Set(['realtime']));
+  });
+
+  it('🚨 T007a ⑥: 关态 ⇒ 降级标恒 null 且外呼计数仍 = 0', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await chainOf(false);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: null });
+    expect(readPort.calls).toHaveLength(0);
+
+    // 两个读端点的视图层同样恒 null (`realtime` 默认关) —— 基线夹具那条断言剔除的正是这个键。
+    const views = await readBothEndpoints();
+    for (const [name, view] of Object.entries(views)) {
+      expect((view as { realtimeDegrade: unknown }).realtimeDegrade, name).toBeNull();
+    }
+    expect(readPort.calls).toHaveLength(0);
+  });
+
+  it('🚨 T007a: 降级标一路上浮到**两个读端点的视图**, 且值域可聚合 (客户端据它分叉告警态)', async () => {
+    await seedChain();
+    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
+
+    const view = await moduleRef
+      .get(GetLegsUseCase)
+      .execute(SYMBOL, 'rent', NOW, null, undefined, true);
+    const report = await moduleRef.get(GetChainReportUseCase).execute(SYMBOL, NOW, true);
+    // 🚨 两个读端点出**同一个**值域与同一份判定 —— 各出各的会让同一事实在两屏上有两种读法。
+    expect(view.realtimeDegrade).toBe('source_unavailable');
+    expect(report.realtimeDegrade).toBe('source_unavailable');
+    expect(view.priceKind).toBe('eod_close');
+    // 值域是**契约面**声明的那一份 (swagger `enum:` 取的同一个数组) ⇒ 客户端按类别分叉不会漏。
+    expect(REALTIME_CHAIN_DEGRADE_KINDS).toContain(view.realtimeDegrade);
+    // 🚨 逐行的 `partial_miss` 结构性不在链级值域里 (`Exclude<>` 的运行时证)。
+    const chainLevel: readonly RealtimeDegradeKind[] = REALTIME_CHAIN_DEGRADE_KINDS;
+    expect(chainLevel).not.toContain('partial_miss');
   });
 
   it('🚨 `SC-010` 反例: 降级了但不属于三类 (闸判定失败 / 源不可达) ⇒ **不被**错误归类', async () => {

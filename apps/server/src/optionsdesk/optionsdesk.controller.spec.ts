@@ -861,6 +861,7 @@ function emptyLegTable(): LegTableView {
     asOf: null,
     // 064: 空壳一个实时值都没取到 ⇒ 恒收盘档 (本 fixture 只验通道层, 档位判据归 use case)。
     priceKind: 'eod_close',
+    realtimeDegrade: null,
     quoteAsOf: null,
     oiAsOf: null,
     lastClosedSession: null,
@@ -901,6 +902,7 @@ function chainReport(): ChainReportView {
     marketDate: '2026-08-11',
     asOf: new Date('2026-08-11T00:00:00.000Z'),
     priceKind: 'eod_close',
+    realtimeDegrade: null,
     quoteAsOf: new Date('2026-08-11T20:15:00.000Z'),
     oiAsOf: new Date('2026-08-10T00:00:00.000Z'),
     source: 'eod',

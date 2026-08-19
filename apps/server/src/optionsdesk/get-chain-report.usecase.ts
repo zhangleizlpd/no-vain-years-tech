@@ -31,7 +31,12 @@ import {
   type RecallContext,
 } from './leg-recall.rules';
 import { LEG_TABS, type LegTab } from './leg-tab.rules';
-import { LEG_RETRIEVAL_PORT, type LegChainRow, type LegRetrievalPort } from './leg-retrieval.port';
+import {
+  LEG_RETRIEVAL_PORT,
+  type LegChainRow,
+  type LegRetrievalPort,
+  type RealtimeChainDegradeKind,
+} from './leg-retrieval.port';
 
 /**
  * 055 标的链分析报表读端 (FR-005/010/011/012/013/014/031/033/034, plan D-API-1 / D-API-2 /
@@ -122,6 +127,15 @@ export interface ChainReportView {
    * 都渲染得出来。链未就绪 / 降级时恒 `'eod_close'` (理由同 `LegTableView.priceKind`)。
    */
   priceKind: PriceKind;
+  /**
+   * **本该给实时却没给成** (064 `FR-010` / `FR-011`, T007a) —— 与选约表**同一个字段、同一套
+   * 值域** (`LegChainMeta.realtimeDegrade`), 检索层如实上报, 本层零加工。
+   *
+   * 🚨 🚫 MUST NOT 由 {@link priceKind} 或 `realtime` 入参反推: 正常收盘档与「盘中源挂了」在
+   * `priceKind` 上是同一个值 —— 反推出来的那个标两种情形下都渲染得出来。
+   * 📌 链未就绪 / 跨 ctx 读降级时恒 `null` (那时连闸都没判过, 说不出「本该外呼」)。
+   */
+  realtimeDegrade: RealtimeChainDegradeKind | null;
   quoteAsOf: Date | null;
   /** 🚨 OI 的归属交易日 (FR-033 ③) —— 与上面两个**不是同一天**, 活跃度格值的时点跟它 (FR-014)。 */
   oiAsOf: Date | null;
@@ -179,6 +193,8 @@ export class GetChainReportUseCase {
       asOf: null,
       // 一个实时值都没取到 ⇒ MUST NOT 自称实时 (同 `get-legs.usecase.ts` 的空壳)。
       priceKind: 'eod_close',
+      // 🚨 空壳恒 `null` (T007a): 连闸都没判过 ⇒ 说不出「本该外呼」。「链读挂了」由 `state` 说。
+      realtimeDegrade: null,
       quoteAsOf: null,
       oiAsOf: null,
       source: null,
@@ -219,6 +235,8 @@ export class GetChainReportUseCase {
         asOf: chain.sessionDate,
         // 064 `FR-009`: 检索层如实上报的链级档位, 本层原样带出 (🚫 不按入参反推)。
         priceKind: chain.priceKind,
+        // 064 T007a: 链级降级标原样带出 —— 🚫 MUST NOT 按入参 / 档位反推 (判据要交易日历)。
+        realtimeDegrade: chain.realtimeDegrade,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
         source: chain.source,

@@ -124,6 +124,8 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
     asOfFreshnessTier: 'CURRENT',
     // 064 `FR-009`: 区块级档位。夹具默认收盘档 (⇒ quoteAsOf 也是交易日形态)。
     priceKind: 'eod_close',
+    // 064 T007a: 链级降级标。夹具默认 `null` —— 正常收盘档不是降级。
+    realtimeDegrade: null,
     quoteAsOf: '2026-08-04',
     oiAsOf: '2026-08-03',
     source: 'eod',

@@ -65,6 +65,7 @@ import {
   type LegCandidate,
   type LegRetrievalPort,
   type LegRetrievalResult,
+  type RealtimeChainDegradeKind,
 } from './leg-retrieval.port';
 import {
   classifyLegTier,
@@ -290,6 +291,15 @@ export interface LegTableView {
    * 而值域只有两个 (🚫 禁为「说不清」新造第三个枚举值)。
    */
   priceKind: PriceKind;
+  /**
+   * **本该给实时却没给成** (064 `FR-010` / `FR-011`, T007a) —— 检索层如实上报, 本层零加工。
+   *
+   * 🚨 🚫 MUST NOT 由 {@link priceKind} 或 `realtime` 入参反推 (语义与充要条件见
+   * `LegChainMeta.realtimeDegrade`): 正常收盘档与「盘中源挂了」在 `priceKind` 上是同一个值,
+   * 反推出来的那个标**在两种情形下都渲染得出来**, 而它们恰恰是本 feature 要分开的两件事。
+   * 📌 链未就绪 / 跨 ctx 读降级时恒 `null`: 那时连闸都没判过, 说不出「本该外呼」。
+   */
+  realtimeDegrade: RealtimeChainDegradeKind | null;
   /** 本批报价的实际采集时刻 (同批次内取最新一条)。 */
   quoteAsOf: Date | null;
   /** 🚨 **OI 的归属交易日** —— 与上面两个不是同一天 (Guardrail 6)。OI 列 MUST 用它。 */
@@ -457,6 +467,9 @@ export class GetLegsUseCase {
       asOf: null,
       // 一个实时值都没取到 ⇒ MUST NOT 自称实时 (值域只有两个, 禁为「说不清」造第三个)。
       priceKind: 'eod_close',
+      // 🚨 空壳恒 `null` (T007a): 链都没就绪 / 跨 ctx 读挂了, 连闸都没判过 ⇒ 说不出「本该外呼」。
+      // 🚫 MUST NOT 借这个字段表达「链读失败」—— 那是 `state` 的职责, 两个字段各答各的问题。
+      realtimeDegrade: null,
       quoteAsOf: null,
       oiAsOf: null,
       // 无 `asOf` 就没有可判的东西 (恒 `UNAVAILABLE`) ⇒ 不白跑一次日历查询。
@@ -542,6 +555,9 @@ export class GetLegsUseCase {
         // 064 `FR-009`: 链级档位由检索层如实上报, 本层原样带出 —— 🚫 MUST NOT 在这里按
         // 「传了 realtime 吗」反推: 传 true 也可能整体回落, 反推出来的那个档照样渲染得出来。
         priceKind: chain.priceKind,
+        // 064 T007a: 链级降级标同样**原样带出** —— 🚫 MUST NOT 在这里按 `priceKind` 或
+        // `realtime` 入参反推 (判据要交易日历, 那是检索层才有的东西)。
+        realtimeDegrade: chain.realtimeDegrade,
         quoteAsOf: chain.quoteAsOf,
         oiAsOf: chain.oiAsOf,
         lastClosedSession,

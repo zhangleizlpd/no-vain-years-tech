@@ -22,6 +22,7 @@ import { ANCHOR_SUBMISSION_STATUSES } from './anchor-import.rules';
 import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
 import { PRICE_KINDS, type PriceKind } from '../marketdata/marketdata.types';
+import { REALTIME_CHAIN_DEGRADE_KINDS } from './leg-retrieval.port';
 import { ANCHOR_CONFIDENCE_SOURCES } from './create-anchor.usecase';
 import type { AnchorWriteResult } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
@@ -1749,6 +1750,27 @@ export class LegTableResponse {
 
   @ApiProperty({
     description:
+      '**本该给实时却没给成** (064 FR-010 / FR-011) —— 正常收盘档恒 null。' +
+      '🚨 **它与 priceKind 回答两个不同的问题**: 后者说「这批是什么档」, 本字段说「此刻**本该**' +
+      '是什么档」。非 null 的充要条件 = 调用方开了实时 **且** 两闸 (市场时段 ∩ 交易日历) 判定' +
+      '此刻本该外呼, 而最终仍落收盘档。' +
+      '🚨 **非交易时段 / 非交易日 / 未开实时 ⇒ 恒 null** —— 北京白天美股休市走收盘档是常态, ' +
+      '给它刷降级 = 造一个永远为真的告警。' +
+      '🚫 客户端 MUST NOT 拿 priceKind 反推本字段 (反推出来的标在「正常盘后」与「盘中源挂了」' +
+      '两种情形下都渲染得出来, 而那恰是本 feature 要分开的两件事)。' +
+      '📌 值域**不含** partial_miss: 部分合约未返回是**逐行**降级, 由每腿的 priceKind 承载、' +
+      '本字段仍为 null。' +
+      'window_over_cap = 候选范围内条数超单批上限 (fail-closed 零外呼); ' +
+      'window_basis_stale = 定窗基准缺失 / 陈旧; source_unavailable = 源不可达或请求级超时; ' +
+      'gate_unknown = 两闸自身故障, 不知道此刻该不该外呼',
+    enum: [...REALTIME_CHAIN_DEGRADE_KINDS],
+    nullable: true,
+    example: 'source_unavailable',
+  })
+  realtimeDegrade!: string | null;
+
+  @ApiProperty({
+    description:
       '本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 ' +
       '**时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。' +
       '🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上' +
@@ -2037,6 +2059,9 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     asOf: dateOnly(view.asOf),
     asOfFreshnessTier: freshnessTier(dateOnly(view.asOf), view.lastClosedSession),
     priceKind: view.priceKind,
+    // 🚫 **MUST NOT 由 `priceKind` 推导** (064 T007a): 两个字段答的是两个问题, 任一方由另一方
+    // 算出来都会把它们坍缩成一个 —— 而坍缩后的响应在「正常盘后」与「盘中源挂了」上完全一样。
+    realtimeDegrade: view.realtimeDegrade,
     quoteAsOf: quoteAsOfText(view.priceKind, view.asOf, view.quoteAsOf),
     oiAsOf: dateOnly(view.oiAsOf),
     source: view.source,
@@ -2378,6 +2403,27 @@ export class ChainReportResponse {
 
   @ApiProperty({
     description:
+      '**本该给实时却没给成** (064 FR-010 / FR-011) —— 正常收盘档恒 null。' +
+      '🚨 **它与 priceKind 回答两个不同的问题**: 后者说「这批是什么档」, 本字段说「此刻**本该**' +
+      '是什么档」。非 null 的充要条件 = 调用方开了实时 **且** 两闸 (市场时段 ∩ 交易日历) 判定' +
+      '此刻本该外呼, 而最终仍落收盘档。' +
+      '🚨 **非交易时段 / 非交易日 / 未开实时 ⇒ 恒 null** —— 北京白天美股休市走收盘档是常态, ' +
+      '给它刷降级 = 造一个永远为真的告警。' +
+      '🚫 客户端 MUST NOT 拿 priceKind 反推本字段 (反推出来的标在「正常盘后」与「盘中源挂了」' +
+      '两种情形下都渲染得出来, 而那恰是本 feature 要分开的两件事)。' +
+      '📌 值域**不含** partial_miss: 部分合约未返回是**逐行**降级, 由每腿的 priceKind 承载、' +
+      '本字段仍为 null。' +
+      'window_over_cap = 候选范围内条数超单批上限 (fail-closed 零外呼); ' +
+      'window_basis_stale = 定窗基准缺失 / 陈旧; source_unavailable = 源不可达或请求级超时; ' +
+      'gate_unknown = 两闸自身故障, 不知道此刻该不该外呼',
+    enum: [...REALTIME_CHAIN_DEGRADE_KINDS],
+    nullable: true,
+    example: 'source_unavailable',
+  })
+  realtimeDegrade!: string | null;
+
+  @ApiProperty({
+    description:
       '本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 ' +
       '**时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。' +
       '🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上' +
@@ -2473,6 +2519,9 @@ export function toChainReportResponse(view: ChainReportView): ChainReportRespons
     marketDate: view.marketDate,
     asOf: dateOnly(view.asOf),
     priceKind: view.priceKind,
+    // 🚫 **MUST NOT 由 `priceKind` 推导** (064 T007a): 两个字段答的是两个问题, 任一方由另一方
+    // 算出来都会把它们坍缩成一个 —— 而坍缩后的响应在「正常盘后」与「盘中源挂了」上完全一样。
+    realtimeDegrade: view.realtimeDegrade,
     quoteAsOf: quoteAsOfText(view.priceKind, view.asOf, view.quoteAsOf),
     oiAsOf: dateOnly(view.oiAsOf),
     source: view.source,

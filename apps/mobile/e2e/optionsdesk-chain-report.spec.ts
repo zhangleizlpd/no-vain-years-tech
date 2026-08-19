@@ -398,6 +398,8 @@ function makeReport(over: ReportOver = {}): ChainReportResponse {
     quoteAsOf: `${REPORT_AS_OF}T20:15:00.000Z`,
     // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
     priceKind: 'eod_close',
+    // 064 T007a: 链级降级标。mock 后端默认 `null` —— 正常收盘档不是降级, 告警态归 T011。
+    realtimeDegrade: null,
     oiAsOf: REPORT_OI_AS_OF,
     source: 'eod',
     iv: over.iv ?? makeIv(),
@@ -458,6 +460,8 @@ function makeLegTable(
     quoteAsOf: `${asOf}T20:15:00.000Z`,
     // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
     priceKind: 'eod_close',
+    // 064 T007a: 链级降级标。mock 后端默认 `null` —— 正常收盘档不是降级, 告警态归 T011。
+    realtimeDegrade: null,
     oiAsOf: asOf,
     source: 'eod',
     spot: SPOT.toFixed(2),

@@ -15,6 +15,7 @@ import type { LegTableResponsePerspective } from './legTableResponsePerspective'
 import type { LegTableResponsePositionBucket } from './legTableResponsePositionBucket';
 import type { LegTableResponsePositionBucketSource } from './legTableResponsePositionBucketSource';
 import type { LegTableResponsePriceKind } from './legTableResponsePriceKind';
+import type { LegTableResponseRealtimeDegrade } from './legTableResponseRealtimeDegrade';
 import type { LegTableResponseRentDepth } from './legTableResponseRentDepth';
 import type { LegTableResponseState } from './legTableResponseState';
 import type { LegTableResponseZone } from './legTableResponseZone';
@@ -33,6 +34,8 @@ export interface LegTableResponse {
   asOfFreshnessTier: LegTableResponseAsOfFreshnessTier;
   /** **区块级**时间口径 (064 FR-009 / FR-010) —— 本批腿整体处于哪个档, 也决定下一字段 quoteAsOf 的**粒度**。realtime = 本次取到了此刻的盘口; eod_close = 走库内收盘档 (未开实时 / 非交易时段 / 源不可达 / 超单批上限 / 定窗基准陈旧, 一律落这一档)。🚨 **与每腿的 priceKind 不是同一个数** (见 LegResponse.priceKind): 部分合约未返回时本字段仍是 realtime 而那几行是 eod_close。区块条读这个, 行级角标读那个 */
   priceKind: LegTableResponsePriceKind;
+  /** **本该给实时却没给成** (064 FR-010 / FR-011) —— 正常收盘档恒 null。🚨 **它与 priceKind 回答两个不同的问题**: 后者说「这批是什么档」, 本字段说「此刻**本该**是什么档」。非 null 的充要条件 = 调用方开了实时 **且** 两闸 (市场时段 ∩ 交易日历) 判定此刻本该外呼, 而最终仍落收盘档。🚨 **非交易时段 / 非交易日 / 未开实时 ⇒ 恒 null** —— 北京白天美股休市走收盘档是常态, 给它刷降级 = 造一个永远为真的告警。🚫 客户端 MUST NOT 拿 priceKind 反推本字段 (反推出来的标在「正常盘后」与「盘中源挂了」两种情形下都渲染得出来, 而那恰是本 feature 要分开的两件事)。📌 值域**不含** partial_miss: 部分合约未返回是**逐行**降级, 由每腿的 priceKind 承载、本字段仍为 null。window_over_cap = 候选范围内条数超单批上限 (fail-closed 零外呼); window_basis_stale = 定窗基准缺失 / 陈旧; source_unavailable = 源不可达或请求级超时; gate_unknown = 两闸自身故障, 不知道此刻该不该外呼 */
+  realtimeDegrade: LegTableResponseRealtimeDegrade;
   /** 本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 **时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上时分秒会被读成此刻的盘口, 实时档只给日期则抹掉唯一要紧的那件事。🚫 客户端 MUST NOT 自己截断或补齐粒度 (那就是把档位判据抄了第二份) */
   quoteAsOf: string | null;
   /** 🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, 收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)。🚨 **064 起它更不跟 quoteAsOf 走**: 实时档下 OI 三列恒保留收盘值 (盘中冻结, FR-004), 本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天 */
