@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.33.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.32.0...server-v0.33.0) (2026-08-19)
+
+
+### Features
+
+* **optionsdesk:** 064 美股期权腿盘中实时报价 ([#119](https://github.com/zhangleizlpd/no-vain-years-tech/issues/119)) ([38216ae](https://github.com/zhangleizlpd/no-vain-years-tech/commit/38216aed67882a0da833a0457f66475777b12b71))
+
 ## [0.32.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.31.2...server-v0.32.0) (2026-08-19)
 
 
