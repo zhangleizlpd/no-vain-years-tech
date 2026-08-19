@@ -35,6 +35,42 @@
 export const OPTION_SNAPSHOT_PORT = Symbol('OPTION_SNAPSHOT_PORT');
 
 /**
+ * **读取口** DI token (064 T002, FR-015 前置, plan D1) —— 与上面那个采集口**同一个 interface、
+ * 同一个 adapter 实例, 不同的意图**。
+ *
+ * ```text
+ * OPTION_SNAPSHOT_PORT        采集口 · collectionPort() · mock→拒绝壳     ← 047
+ * OPTION_SNAPSHOT_READ_PORT   读取口 · 裸 provider      · mock→显式降级   ← 064
+ *                                      └── 同一个 FutuOptionSnapshotAdapter 实例
+ * ```
+ *
+ * ## 🚨 为什么不直接注入 {@link OPTION_SNAPSHOT_PORT}
+ *
+ * 它经 `marketdata.module.ts` 的 `collectionPort()` helper 注册, 那是**采集口**语义: 054 给它
+ * 立的判据原文是「采集口的产出**必然被持久化** (逐 port 核过 consumer, 全是写手), 故 mock 下
+ * 必须拒绝而不是给 fixture —— 否则伪造行情与真行情同形落进真表」。
+ *
+ * 064 走的是**读路径、零落库** (FR-019): 拿到的报价只覆盖一次响应, 一个字节都不进表。让读路径
+ * 复用采集口, 「逐 port 核过 consumer, 全是写手」当场变成假话 —— 054 建立的意图分类
+ * (采集口 / 读取口 / 搜索口) 就此失去依据。🚨 **这不是会报错的问题, 是把一条结构性保证降级成
+ * 一句过期注释**, 只能靠人守。
+ *
+ * ## mock 下是「显式降级」而不是「拒绝壳」
+ *
+ * 采集口在 mock 下抛, 是因为**返回假数据会污染真表**; 读取口没有这个风险, 它的正确行为是让
+ * 上游**落到收盘档** —— 那正是 dev/test 下选约表想要的形态。⇒ mock 绑
+ * {@link unavailableOptionSnapshotReadPort}: 调用即抛一个**具名且可与拒绝壳区分**的
+ * {@link RealtimeOptionSnapshotUnavailableError}, 上游 catch 它就降级。两者若混同, dev 里的
+ * 「本来就没有实时源」会看起来像一次故障。
+ *
+ * 🚨 **live 分支 MUST 复用采集口那**一个**`FutuOptionSnapshotAdapter` 实例, MUST NOT 新 `new`**:
+ * shim 侧限频是 per-capability 单桶, 而客户端每个 `VendorHttpClient` 实例各持一个令牌桶 ⇒
+ * 多起一个 = 上游允许值的 2 倍, 撞 429。同一病灶在 prod 上让链发现每 30 分钟顺延一次、12 只锚
+ * 永远只采到前 2 只 (`futu-shim.constraint-profile.ts` 的 08-09 事故段)。
+ */
+export const OPTION_SNAPSHOT_READ_PORT = Symbol('OPTION_SNAPSHOT_READ_PORT');
+
+/**
  * vendor 单批 `codes` 上限 (shim `SNAPSHOT_MAX_CODES` 同值)。超出 shim **直接 400**,
  * 不截断 —— 被悄悄裁掉的尾巴在下游读作「那些合约今天没数据」, 与真缺口无法区分。
  */
@@ -146,4 +182,45 @@ export interface OptionSnapshotPort {
    * (合法状态: 停牌 / 刚摘牌), **不是错误** —— 覆盖率核对是 FR-045 的事, 不在本端口。
    */
   getSnapshots(query: OptionSnapshotQuery): Promise<OptionSnapshotBatch>;
+}
+
+/**
+ * 本环境**没有实时行情源** (064 T002) —— `MARKETDATA_PROVIDER=mock` 下读取口的绑定物抛它。
+ *
+ * 🚨 **它是「配置使然」不是「故障」**, 与 `MockCollectionRefusedError` **刻意分成两个类型**:
+ * 采集口那个说的是「我拒绝给你假数据」(dev 里每次出现都值得看一眼), 这个说的是「这里本来就
+ * 没有实时源, 请走收盘档」(dev 里每次都会出现, 且是想要的行为)。混成一个类型, 上游就只能靠
+ * 消息文本去分辨该降级还是该告警。
+ *
+ * 📌 与 {@link OptionSnapshotBudgetExhaustedError} / {@link OptionSnapshotRejectedError} 同居
+ * 本文件的理由一样: 它是这个端口的**失败语义**之一, 调用方要按类型分流。
+ */
+export class RealtimeOptionSnapshotUnavailableError extends Error {
+  constructor(what: string) {
+    super(
+      `[option-snapshot] 本环境无实时行情源 (MARKETDATA_PROVIDER=mock), 无法取盘中快照: ${what} —— ` +
+        '这是配置使然, 不是故障; 上游应落到收盘档。要打真 vendor 请设 MARKETDATA_PROVIDER=live。',
+    );
+    this.name = 'RealtimeOptionSnapshotUnavailableError';
+  }
+}
+
+/**
+ * `MARKETDATA_PROVIDER=mock` 下 {@link OPTION_SNAPSHOT_READ_PORT} 的绑定物: 调用即抛
+ * {@link RealtimeOptionSnapshotUnavailableError}。
+ *
+ * 🚫 **MUST NOT 改成返回 fixture** —— 读路径虽零落库, 但假报价会一路走到候选集判据上, 让 dev
+ * 看到一张「按伪造盘口筛出来的」选约表, 且它与真实时档在界面上完全同形。抛出来才让上游按
+ * FR-010 落到收盘档 (dev 想要的正是这个)。
+ * 📌 **不走 `refusingCollectionPort` 那个 Proxy**: 那个壳的语义是采集拒绝, 且它抛的错误类型
+ * 正是这里要区分开的那个。本端口只有一个方法, 直接写一个对象字面量比套 Proxy 更小更清楚。
+ */
+export function unavailableOptionSnapshotReadPort(): OptionSnapshotPort {
+  return {
+    async getSnapshots(query: OptionSnapshotQuery): Promise<OptionSnapshotBatch> {
+      throw new RealtimeOptionSnapshotUnavailableError(
+        `${query.underlyingSymbol} (${query.contractCodes.length} codes)`,
+      );
+    },
+  };
 }

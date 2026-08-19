@@ -132,7 +132,12 @@ import { ANNOUNCEMENT_PORT, type AnnouncementPort } from './announcement.port.js
 import { QUOTE_PORT } from './quote.port.js';
 import { OPTION_CHAIN_PORT, type OptionChainPort } from './option-chain.port.js';
 import { FutuOptionChainAdapter } from './futu-option-chain.adapter.js';
-import { OPTION_SNAPSHOT_PORT, type OptionSnapshotPort } from './option-snapshot.port.js';
+import {
+  OPTION_SNAPSHOT_PORT,
+  OPTION_SNAPSHOT_READ_PORT,
+  unavailableOptionSnapshotReadPort,
+  type OptionSnapshotPort,
+} from './option-snapshot.port.js';
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import { EARNINGS_CALENDAR_PORT, type EarningsCalendarPort } from './earnings-calendar.port.js';
 import { FutuEarningsCalendarAdapter } from './futu-earnings-calendar.adapter.js';
@@ -335,6 +340,33 @@ function collectionPort<T extends object>(
       live: (cfg, snapshotHttp: VendorHttpClient) =>
         new FutuOptionSnapshotAdapter(snapshotHttp, cfg.futuShimUrl, cfg.futuShimToken),
     }),
+
+    // ── 期权快照**读取口** (064 T002, FR-015 前置): 同一个 interface、同一个 adapter 实例,
+    // 不同的意图 ──
+    //
+    // 🚨 **刻意不走 `collectionPort` helper** (Guardrail 4): 那个 helper 是**采集口**语义 ——
+    // 它的判据原文是「采集口的产出必然被持久化 (逐 port 核过 consumer, 全是写手), 故 mock 下
+    // 必须拒绝而不是给 fixture」。064 是**读路径、零落库** (FR-019), 复用采集口 token 会让那句
+    // 「逐 port 核过 consumer, 全是写手」变成假话, 054 立的意图分类 (采集口 / 读取口 / 搜索口)
+    // 就此失去依据。**这不报错**, 只把一条结构性保证降级成一句过期注释 ⇒ 只能靠这条裸 provider
+    // 与它的注释守。
+    //
+    // 🚨🚨 **live 分支注入 `OPTION_SNAPSHOT_PORT` 并原样返回, MUST NOT 新 `new` 一个**
+    // (Guardrail 3): shim 侧限频是 per-capability 单桶, 而客户端每个 `VendorHttpClient` 实例
+    // 各持一个令牌桶 ⇒ 多起一个 adapter = 多一个桶 = 上游允许值的 2 倍, 撞 429。同一病灶已在
+    // prod 上让链发现每 30 分钟顺延一次、12 只锚永远只采到前 2 只
+    // (`futu-shim.constraint-profile.ts` 的 08-09 事故段)。
+    // 📌 「注入采集口 token」是**同实例的结构保证**, 不是对 Guardrail 4 的违反: 违反的形态是
+    // **消费方**注入采集口, 而这里是本模块内部把同一个实例按第二种意图再暴露一次。
+    //
+    // mock 分支绑显式降级壳 (调用即抛具名错误) 而非拒绝壳 —— 读取口返回假报价不会污染任何表,
+    // 但会让 dev 看到一张按伪造盘口筛出来的选约表; 抛出来上游才按 FR-010 落到收盘档。
+    {
+      provide: OPTION_SNAPSHOT_READ_PORT,
+      inject: [marketdataConfig.KEY, OPTION_SNAPSHOT_PORT],
+      useFactory: (cfg: MarketdataConfig, collectionPortInstance: OptionSnapshotPort) =>
+        cfg.kind === 'mock' ? unavailableOptionSnapshotReadPort() : collectionPortInstance,
+    },
 
     // ── 财报日历端口 (047 T018, FR-034/039): kind=live → 富途 shim `/earnings-calendar`
     // (走自己的 60/30s 桶) ──
@@ -731,6 +763,11 @@ function collectionPort<T extends object>(
   // 本身: 那等于把「按市场路由 vendor + 落库口径」这套策略搬到 optionsdesk 去, 而调用方真正
   // 需要的只是「给我这只票最近一根收盘」。边越窄, 将来换 vendor 时要动的地方越少。
   //
+  // 📌 **第五个口子 (064 T002)**: `OPTION_SNAPSHOT_READ_PORT` —— 选约表在美股盘中拿此刻报价。
+  // 它是**读取口**, 与同实例的采集口 `OPTION_SNAPSHOT_PORT` 分成两个 token 的理由见
+  // `option-snapshot.port.ts`。🚨 漏在 exports 里的后果是 optionsdesk 注入时**boot 才炸**,
+  // 单测一路绿到最后。
+  //
   // 📌 **第四个口子 (062 T006)**: `TRADING_CALENDAR_PORT`。开它是为了让 optionsdesk 的盘中闸
   // 与陈旧度基准**从裸查 `prisma.tradingDay` 改成注入端口** (T008 / T010) —— 那才是把跨 ctx
   // 边变成 `check-server-moat` 扫得见的 `CROSS-CONTEXT-SYNC` 注入点的唯一走法。撞到
@@ -740,6 +777,7 @@ function collectionPort<T extends object>(
     REALTIME_QUOTE_PORT,
     MARKET_STATE_PORT,
     TRADING_CALENDAR_PORT,
+    OPTION_SNAPSHOT_READ_PORT,
     EnsureLatestEodBarUseCase,
   ],
 })
