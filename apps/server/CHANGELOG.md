@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.31.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.31.1...server-v0.31.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **marketdata:** 063 时间语义 Phase 1 —— 采集业务日收口到「已收盘 session」+ 词表统一 ([#107](https://github.com/zhangleizlpd/no-vain-years-tech/issues/107)) ([2a66d36](https://github.com/zhangleizlpd/no-vain-years-tech/commit/2a66d36b24649115e5de78c00335dcc27128d782))
+
 ## [0.31.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.31.0...server-v0.31.1) (2026-08-18)
 
 
