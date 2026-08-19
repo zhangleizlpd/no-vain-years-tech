@@ -476,6 +476,10 @@ export class GetLegsUseCase {
         // 候选上限 (052 FR-027): 保险丝, 与表达层给用户看几条**是两个数** —— 后者归 053。
         candidateCap: RECALL_CANDIDATE_CAP,
         override,
+        // 064 T003 `FR-015`: 实时开关**显式传, 且本 task 一律传 false** —— 真正的开启在 T004b。
+        // 🚫 MUST NOT 省略它靠默认值兜 (port 上蓄意没有默认值), 更 MUST NOT 从鉴权状态或请求
+        // 来源推断: 那会让「将来加一种访问方式」静默改变外呼行为。
+        realtime: false,
       });
       if (retrieval === null) return empty('chain_not_ready');
       const chain = retrieval.chain;

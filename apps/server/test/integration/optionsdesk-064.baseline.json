@@ -1,0 +1,1048 @@
+{
+  "legs:all": {
+    "symbol": "us:PEP",
+    "perspective": "all",
+    "state": "available",
+    "asOf": "2026-08-11T00:00:00.000Z",
+    "quoteAsOf": "2026-08-11T20:31:07.000Z",
+    "oiAsOf": "2026-08-10T00:00:00.000Z",
+    "lastClosedSession": "2026-08-11",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "L-BUILD",
+        "strike": "95",
+        "expiryDate": "2026-08-21T00:00:00.000Z",
+        "dteDays": 10,
+        "bid": "1.5",
+        "ask": "1.6",
+        "contractPremium": "150",
+        "relativeSpread": "0.064516129032258064516",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.016042780748663101604",
+        "weeklyRate": "0.011229946524064171123",
+        "annualizedRate": "0.58556149732620320855",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "93.5",
+        "effectiveCostVsWPct": "-22.083333333333333333",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 300,
+        "volume": 20,
+        "turnover": "3000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      },
+      {
+        "code": "L-WIDE",
+        "strike": "85",
+        "expiryDate": "2026-09-15T00:00:00.000Z",
+        "dteDays": 35,
+        "bid": "3",
+        "ask": "6",
+        "contractPremium": "300",
+        "relativeSpread": "0.66666666666666666667",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.036585365853658536585",
+        "weeklyRate": "0.0073170731707317073171",
+        "annualizedRate": "0.38153310104529616726",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "82",
+        "effectiveCostVsWPct": "-31.666666666666666667",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "12000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      },
+      {
+        "code": "L-OK",
+        "strike": "90",
+        "expiryDate": "2026-09-15T00:00:00.000Z",
+        "dteDays": 35,
+        "bid": "2",
+        "ask": "2.1",
+        "contractPremium": "200",
+        "relativeSpread": "0.04878048780487804878",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.022727272727272727273",
+        "weeklyRate": "0.0045454545454545454546",
+        "annualizedRate": "0.23701298701298701299",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "88",
+        "effectiveCostVsWPct": "-26.666666666666666667",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "8000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 1,
+      "excludedFromIntentTabs": 0
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 3,
+    "memberCount": 3,
+    "displayLimit": null,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": null,
+        "relativeSpreadMax": null
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": null,
+        "relativeSpreadMax": null
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  },
+  "legs:build": {
+    "symbol": "us:PEP",
+    "perspective": "build",
+    "state": "available",
+    "asOf": "2026-08-11T00:00:00.000Z",
+    "quoteAsOf": "2026-08-11T20:31:07.000Z",
+    "oiAsOf": "2026-08-10T00:00:00.000Z",
+    "lastClosedSession": "2026-08-11",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "L-BUILD",
+        "strike": "95",
+        "expiryDate": "2026-08-21T00:00:00.000Z",
+        "dteDays": 10,
+        "bid": "1.5",
+        "ask": "1.6",
+        "contractPremium": "150",
+        "relativeSpread": "0.064516129032258064516",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "weekly",
+        "periodRate": "0.016042780748663101604",
+        "weeklyRate": "0.011229946524064171123",
+        "annualizedRate": "0.58556149732620320855",
+        "tier": "acceptable",
+        "askRate": null,
+        "effectiveCost": "93.5",
+        "effectiveCostVsWPct": "-22.083333333333333333",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 300,
+        "volume": 20,
+        "turnover": "3000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      },
+      {
+        "code": "L-OK",
+        "strike": "90",
+        "expiryDate": "2026-09-15T00:00:00.000Z",
+        "dteDays": 35,
+        "bid": "2",
+        "ask": "2.1",
+        "contractPremium": "200",
+        "relativeSpread": "0.04878048780487804878",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "weekly",
+        "periodRate": "0.022727272727272727273",
+        "weeklyRate": "0.0045454545454545454546",
+        "annualizedRate": "0.23701298701298701299",
+        "tier": "dead",
+        "askRate": null,
+        "effectiveCost": "88",
+        "effectiveCostVsWPct": "-26.666666666666666667",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "8000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 1,
+      "excludedFromIntentTabs": 1
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 2,
+    "memberCount": 2,
+    "displayLimit": 80,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": {
+          "min": 1,
+          "max": 49
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": {
+          "min": 1,
+          "max": 49
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  },
+  "legs:rent": {
+    "symbol": "us:PEP",
+    "perspective": "rent",
+    "state": "available",
+    "asOf": "2026-08-11T00:00:00.000Z",
+    "quoteAsOf": "2026-08-11T20:31:07.000Z",
+    "oiAsOf": "2026-08-10T00:00:00.000Z",
+    "lastClosedSession": "2026-08-11",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "L-OK",
+        "strike": "90",
+        "expiryDate": "2026-09-15T00:00:00.000Z",
+        "dteDays": 35,
+        "bid": "2",
+        "ask": "2.1",
+        "contractPremium": "200",
+        "relativeSpread": "0.04878048780487804878",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.022727272727272727273",
+        "weeklyRate": "0.0045454545454545454546",
+        "annualizedRate": "0.23701298701298701299",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "88",
+        "effectiveCostVsWPct": "-26.666666666666666667",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "8000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 1,
+      "excludedFromIntentTabs": 1
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 1,
+    "memberCount": 1,
+    "displayLimit": 80,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": "103",
+        "dteBand": {
+          "min": 30,
+          "max": 365
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": "103",
+        "dteBand": {
+          "min": 30,
+          "max": 365
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  },
+  "chain-report": {
+    "symbol": "us:PEP",
+    "state": "available",
+    "spot": "100",
+    "marketDate": "2026-08-11",
+    "asOf": "2026-08-11T00:00:00.000Z",
+    "quoteAsOf": "2026-08-11T20:31:07.000Z",
+    "oiAsOf": "2026-08-10T00:00:00.000Z",
+    "source": "eod",
+    "lastClosedSession": "2026-08-18",
+    "iv": {
+      "state": "missing",
+      "iv": null,
+      "ivPercentile": null,
+      "asOf": null
+    },
+    "anchorExcluded": false,
+    "gateCounts": {
+      "total": 4,
+      "removedByPremium": 1,
+      "skeleton": 3,
+      "outsideRowFloor": 0,
+      "withinRows": 3,
+      "blockedByLiveness": 0,
+      "valued": 3
+    },
+    "rows": [
+      {
+        "index": 0,
+        "otmFloor": "-0.1",
+        "otmCeiling": "0",
+        "strikeFloor": "100",
+        "strikeCeiling": "110"
+      },
+      {
+        "index": 1,
+        "otmFloor": "0",
+        "otmCeiling": "0.1",
+        "strikeFloor": "90",
+        "strikeCeiling": "100"
+      },
+      {
+        "index": 2,
+        "otmFloor": "0.1",
+        "otmCeiling": "0.2",
+        "strikeFloor": "80",
+        "strikeCeiling": "90"
+      },
+      {
+        "index": 3,
+        "otmFloor": "0.2",
+        "otmCeiling": "0.3",
+        "strikeFloor": "70",
+        "strikeCeiling": "80"
+      },
+      {
+        "index": 4,
+        "otmFloor": "0.3",
+        "otmCeiling": "0.4",
+        "strikeFloor": "60",
+        "strikeCeiling": "70"
+      },
+      {
+        "index": 5,
+        "otmFloor": "0.4",
+        "otmCeiling": "0.5",
+        "strikeFloor": "50",
+        "strikeCeiling": "60"
+      },
+      {
+        "index": 6,
+        "otmFloor": "0.5",
+        "otmCeiling": "0.6",
+        "strikeFloor": "40",
+        "strikeCeiling": "50"
+      },
+      {
+        "index": 7,
+        "otmFloor": "0.6",
+        "otmCeiling": null,
+        "strikeFloor": null,
+        "strikeCeiling": "40"
+      }
+    ],
+    "columns": [
+      {
+        "expiryDate": "2026-08-21T00:00:00.000Z",
+        "dteDays": 10,
+        "isMonthlyChain": false,
+        "atmIv": null,
+        "inRecallBand": {
+          "build_quality": true,
+          "rent_annualized": false,
+          "all_annualized": true,
+          "activity": true
+        }
+      },
+      {
+        "expiryDate": "2026-09-15T00:00:00.000Z",
+        "dteDays": 35,
+        "isMonthlyChain": false,
+        "atmIv": null,
+        "inRecallBand": {
+          "build_quality": true,
+          "rent_annualized": true,
+          "all_annualized": true,
+          "activity": true
+        }
+      }
+    ],
+    "cells": {
+      "build_quality": [
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "valued",
+            "legCount": 1,
+            "best": "-22.083333333333333333",
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "valued",
+            "legCount": 1,
+            "best": "-26.666666666666666667",
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "gated",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ]
+      ],
+      "rent_annualized": [
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "gated",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "valued",
+            "legCount": 1,
+            "best": "0.23701298701298701299",
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "gated",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ]
+      ],
+      "all_annualized": [
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "valued",
+            "legCount": 1,
+            "best": "0.58556149732620320855",
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "valued",
+            "legCount": 2,
+            "best": "0.38153310104529616726",
+            "runnerUp": "0.23701298701298701299"
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "gated",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ]
+      ],
+      "activity": [
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "valued",
+            "legCount": 1,
+            "best": "320",
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "valued",
+            "legCount": 2,
+            "best": "940",
+            "runnerUp": "940"
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "gated",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ],
+        [
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          },
+          {
+            "state": "absent",
+            "legCount": 0,
+            "best": null,
+            "runnerUp": null
+          }
+        ]
+      ]
+    }
+  }
+}

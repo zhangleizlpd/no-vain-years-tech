@@ -77,6 +77,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 界面上一切正常。
    */
   private async loadChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
+    // 064 T003: `query.realtime` 是**每次请求**的显式开关 (`FR-015` fail-closed, 无默认值)。
+    // 本 task 只把开关与档位字段立起来, 两个读端一律传 `false` ⇒ 走到这里恒是收盘档;
+    // 尾部 overlay 与真正的分支实装在 T004a。
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
     const marketDate = exchangeCalendarDate('us', query.now);
@@ -173,6 +176,10 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         // 🚫 vendor 原样带出, 不归一化大小写、不回落默认值 —— 判据是白名单 `=== 'MONTH'`,
         // 在这里「顺手」规整会让「vendor 换了取值」这件事在打标层看不出来 (`leg-mark.rules.ts`)。
         expirationCycle: contract.expirationCycle,
+        // 064 T003: 库里读出来的就是收盘档 —— 这里是**唯一**的落点, 实时档由本方法尾部的
+        // overlay 逐行改写 (T004a)。🚫 MUST NOT 在下游任何一层「补标」: 补标点有第二个,
+        // 「这个数是什么时候的」就有两个答案, 而两个答案都渲染得出来。
+        priceKind: 'eod_close',
       };
     });
 
@@ -184,6 +191,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         oiAsOf: newest.oiAsOf,
         source: newest.source,
         spot,
+        priceKind: 'eod_close',
       },
       legs,
     };

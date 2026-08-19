@@ -141,6 +141,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       perspectives: LEG_TABS,
       candidateCap,
       override,
+      realtime: false,
     });
     if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
     return result;

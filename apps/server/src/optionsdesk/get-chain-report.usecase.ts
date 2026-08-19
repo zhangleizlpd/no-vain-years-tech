@@ -183,7 +183,8 @@ export class GetChainReportUseCase {
       // 🚨 **取整条链而不是候选集** (port `retrieveChain` 的存在理由): 候选集的成员判据是
       // 「至少进一个视角」⇒ 被权利金 / 活性挡下的腿结构上不在其中, 而本片两处都要它们
       // (骨架含被活性挡下的; 格态要分「无合约」与「有腿但太便宜」)。
-      const snapshot = await this.retrieval.retrieveChain({ symbol, now });
+      // 064 T003 `FR-015`: 实时开关显式传, 本 task 一律 `false` (纪律与理由同 `get-legs`)。
+      const snapshot = await this.retrieval.retrieveChain({ symbol, now, realtime: false });
       if (snapshot === null) return empty('chain_not_ready');
       const { chain, legs } = snapshot;
       const context: RecallContext = { spot: chain.spot };

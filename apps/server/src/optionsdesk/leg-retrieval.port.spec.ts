@@ -35,6 +35,7 @@ const chainMeta: LegChainMeta = {
   oiAsOf: new Date('2026-07-31T00:00:00.000Z'),
   source: 'eod',
   spot: SPOT,
+  priceKind: 'eod_close',
 };
 
 /** 基线腿: DTE=35 (重叠区)、有效成本 98 < spot、两道门槛均宽松通过。 */
@@ -54,6 +55,7 @@ function row(over: Partial<LegChainRow> = {}): LegChainRow {
     volume: 40,
     greeksComplete: true,
     expirationCycle: 'WEEK',
+    priceKind: 'eod_close',
     ...over,
   };
 }
@@ -72,6 +74,7 @@ async function retrieve(
     perspectives,
     candidateCap,
     override,
+    realtime: false,
   });
   if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
   return result;
@@ -156,6 +159,7 @@ describe('leg-retrieval.port — 「链未就绪」与「链在但候选为空�
       perspectives: [...LEG_TABS],
       candidateCap: RECALL_CANDIDATE_CAP,
       override: null,
+      realtime: false,
     });
     expect(result).toBeNull();
   });

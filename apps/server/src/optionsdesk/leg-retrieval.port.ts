@@ -1,3 +1,4 @@
+import type { PriceKind } from '../marketdata/marketdata.types';
 import type {
   RecallCandidate,
   RecallContext,
@@ -64,6 +65,16 @@ export interface LegRetrievalQuery {
    * 下发。让调用方传默认值就等于让它先算一份, 那正是 FR-011 禁的「同一判据两处各算一份」。
    */
   readonly override: RetrievalOverride | null;
+  /**
+   * 本次是否走**盘中实时档** (064 `FR-015`)。
+   *
+   * 🚨 **无默认值, 调用方必须显式传** —— 有默认值就等于「不写也能跑」, `FR-015` 的 fail-closed
+   * 当场名存实亡。🚫 MUST NOT 从鉴权状态 / 请求来源 / 任何其它上下文隐式推断: 隐式推断会让
+   * 「将来加一种访问方式」静默改变外呼行为。⇒ 将来新增任何读路径, 它默认就是不外呼的。
+   * 📌 传 `true` 也**不保证**拿到实时值 —— 非交易时段 / 源不可达 / 基准陈旧一律逐档回落,
+   * 结局由每行与链级的 {@link LegChainRow.priceKind} 如实上报, 而不是由这个入参代言。
+   */
+  readonly realtime: boolean;
 }
 
 /**
@@ -103,6 +114,16 @@ export interface LegChainRow extends RecallLegInput {
    * 那次查询多带一列即可, 于是「两个消费方各查一份会 drift」这条纪律**结构上消失**。
    */
   readonly expirationCycle: string | null;
+  /**
+   * 本行数值的**时间口径** (064 `FR-009`), 复用 marketdata 既有 {@link PriceKind}
+   * (`'eod_close' | 'realtime'`)。
+   *
+   * 🚨 **逐行成立, 🚫 MUST NOT 页级一刀切**: 实时源返回集里少了几个合约是常态 (停牌 / 刚摘牌),
+   * 那几条 MUST 逐行保留收盘值并逐行标 `'eod_close'`, 而其余行照常标 `'realtime'`。整页统一
+   * 降级与整页统一标实时**都渲染得出一张完整的表**, 只有逐行标才分得出来。
+   * 🚫 **禁新造第二套枚举** —— 两套会让「实时」这个词在同一个响应里有两个来源。
+   */
+  readonly priceKind: PriceKind;
 }
 
 /** 链级上下文 —— 候选集之外、每票每请求算一次的那几项。 */
@@ -124,6 +145,15 @@ export interface LegChainMeta {
   readonly source: string;
   /** vendor 随链下发的标的价, **未复权**; 与召回上下文同型 (十进制金额, 不降 `number`)。 */
   readonly spot: RecallContext['spot'];
+  /**
+   * **区块级**档位 (064 `FR-009`) —— 本批腿整体处于哪个时间口径。
+   *
+   * 📌 与逐行的 {@link LegChainRow.priceKind} **不是同一个数**: 部分合约未返回时链级是
+   * `'realtime'` 而那几行是 `'eod_close'`。呈现层的区块条读这个, 行级角标读那个。
+   * 📌 {@link quoteAsOf} 的语义随它变: `'realtime'` 下是本批的**我方采集时刻**,
+   * `'eod_close'` 下是库内那批快照的采集时刻 (归属日看 {@link sessionDate})。
+   */
+  readonly priceKind: PriceKind;
 }
 
 /** 一条候选 —— 层间传递的单元 (召回吐出、粗排合并、特征加工与精排消费)。 */
@@ -160,6 +190,15 @@ export interface LegChainQuery {
   readonly symbol: string;
   /** 请求时刻。DTE 基准恒为**交易所的今天**, 由实现按它算 (同 {@link LegRetrievalQuery.now})。 */
   readonly now: Date;
+  /**
+   * 本次是否走盘中实时档 —— 语义与三条禁忌逐字同 {@link LegRetrievalQuery.realtime}
+   * (无默认值 / 禁隐式推断 / 传 true 不保证拿到)。
+   *
+   * 🚨 **两个方法各自带这个开关而不是提到实现的构造器上**: overlay 插在两者的共同根
+   * {@link LegRetrievalPort} 实现的 `loadChain` 里, 开关是**每次请求**的事实而不是这个 adapter
+   * 的配置 —— 提到构造器上就等于让同一个进程里两个调用方无法各自决定。
+   */
+  readonly realtime: boolean;
 }
 
 /** 该标的当前的**整条链** —— 未经召回、未排序、未截断。 */
