@@ -81,6 +81,8 @@ updated_at: '2026-08-19'
 
 - [X] T007 [Server] **DTO 出档位与两种 asOf**（`FR-009`, `FR-010`, `FR-013`, `FR-014`, `SC-001`, plan §D7）：`optionsdesk.dto.ts` —— ① 腿行 DTO 加 `priceKind`（`@ApiProperty({ enum: PRICE_KINDS })`）；② 区块级加 `priceKind` + `quoteAsOf`，**实时档序列化为时刻（ISO 含秒）、收盘档序列化为交易日（`YYYY-MM-DD`）**，照该文件 `:87` 已有的「日历日 vs 时刻混成一种会让 asOf 呈现出错」纪律；③ OI 相关列的 `oiAsOf` **独立出参**，不复用区块级；④ 成交量/成交额字段的 `description` 写明两档口径差异（`FR-013` 的服务端半边）。🚨 nullable 字段的 `@ApiProperty` 必须显式 `type: 'string'`（否则 orval 误生 objectmap）。→ verify: 扩既有 `optionsdesk.controller.spec.ts`（controllers-only module，🚫 禁 full boot）断言两档的 `quoteAsOf` **形态不同**（一个匹配 `/T\d{2}:\d{2}:\d{2}/`、一个匹配 `/^\d{4}-\d{2}-\d{2}$/`）；`pnpm nx run server:export-openapi` 后 `pnpm nx run api-client:generate`，断言生成的类型里 `priceKind` 是**联合字面量**而非 `string`
 
+- [ ] T007a [Server] **链级降级信号出契约**（`FR-010`, `FR-011`, `FR-012`, `state_branches` 3, 4, 6, 14, plan §D3, §D11）：`leg-retrieval.port.ts` 的 `LegChainMeta` 加一个 nullable 的链级降级标（如 `realtimeDegrade`），`optionsdesk.dto.ts` 区块级同步出参（`@ApiProperty` 显式 `enum` + nullable）。**语义是「本该给实时却没给成」**：调用方已开实时 **且** 两闸判定此刻本该外呼，最终仍落 `eod_close` → 非 null；**非交易时段 / 非交易日 / 调用方未开实时 → 恒 null**（那是正常收盘档，不是降级）。🚨 值域与 T006 的日志类别**同源**（扩既有 `RealtimeDegradeKind`，🚫 禁第二套枚举）；链级字段的类型**排除逐行的 `partial_miss`**（`Exclude<...>`）—— 部分缺失由**行级** `priceKind` 承载、链级仍是 `realtime`，🚫 不得把整块拉成降级态。🚫 MUST NOT 让它与 `priceKind` 互相推导 —— 那是两个问题（「这批是什么档」vs「本该是什么档」）。→ verify: `optionsdesk-064.overlay.it.spec.ts` 逐条断言 —— ① **🚨 核心反例**：非交易日 / 非常规时段 → `priceKind === 'eod_close'` **且降级标恒 null**（把正常休市误报成降级 = 永远为真的告警，等于没有告警）；② 源不可达 / 超时 → 非 null 且类别可聚合；③ 定窗基准陈旧 → `window_basis_stale`；④ 超上限 → `window_over_cap`；⑤ 部分缺失 → **链级 null** 且行级两种 `priceKind` 都出现；⑥ 关态 → 恒 null 且外呼计数仍 = 0（基线比对的剔除键增补本字段并注明「蓄意新增」）。收尾 `pnpm nx run server:export-openapi` + `pnpm nx run api-client:generate`，生成物同 commit
+
 ## Phase 4: mobile 呈现（US1 + US2 的用户面）
 
 - [X] T008 [P] [Mobile] **区块级档位条 + 行级档位标**（`FR-009`, `FR-010`, `FR-013`, `FR-014`, `SC-001`, plan §D10, mockup 帧 ①②③④⑤）：① 新建 `apps/mobile/src/optionsdesk/leg-tier-bar.tsx` —— 实时档呈时刻含秒 + `--nvy-primary` / `--nvy-primary-soft`；收盘档呈交易日 + `--nvy-text-muted` / `--nvy-surface-alt`；降级与未就绪走 `--nvy-warning-soft` 底 + 3px `--nvy-warning` 左边框 + `--nvy-text` 正文，且**必须给原因**（不是「加载失败」）；② `leg-row.tsx` 收盘行的 bid/ask 降 `--nvy-text-muted`，冻结列行权价旁挂「收」角标（**复用既有 badge 视觉，不新建组件、不新开一列**）；③ `leg-table-header.tsx` 的 OI 列挂 `oiAsOf`、成交量列按档位切「至此刻 / 当日」；④ 文案落 `leg-picker-copy.ts`。🚨 **Guardrail 9**（不用 info）· **Guardrail 10**（不用涨跌色）。→ verify: `leg-row.rules.ts` / 新增 `leg-tier-bar.rules.ts` 的 colocate 单测（vitest，**logic-only，禁组件 render**）覆盖：两档的时间格式化分支、降级三态的文案与原因非空、OI 列取 `oiAsOf` 而非区块级（🚨 反例：喂两个不同的时间，断言取的是前者）；UI 归 T012
@@ -88,6 +90,8 @@ updated_at: '2026-08-19'
 - [X] T009 [P] [Mobile] **首屏等待态 + 刷新保表**（`FR-022`, `state_branches` 12, plan §D10, mockup 帧 ⑥⑦）：`use-leg-table.ts` + `underlying-detail-screen.tsx` —— 首屏走等待态（骨架），**MUST NOT 先渲染一份收盘档的表再覆盖重排**；下拉刷新期间**保留当前表**（不遮罩、不置灰到看不清），新一批到齐后整体替换；刷新指示位于档位条、带「上次」时刻。🚫 MUST NOT 引入自动轮询（spec Assumption）。→ verify: `use-leg-table.spec.ts` 加断言 —— ① 首次加载中 `rows` 恒为**空**而非「库内收盘档」（这条先红：若实现走渐进覆盖，这里会拿到非空）；② 刷新中 `rows` **保持上一批的引用不变**且 `isRefreshing` 为真；③ 无任何定时器被注册（断言 `vi.getTimerCount() === 0`，防自动轮询悄悄混进来）
 
 - [X] T010 [Mobile] **成员变化提示**（`FR-021`, `SC-009`, `state_branches` 12, plan §D9, mockup 帧 ⑧）：新建 `apps/mobile/src/optionsdesk/leg-membership-notice.tsx` + 在 `use-leg-table.ts` 里持有**上一轮的合约码集合**做差集，刷新后报出「本轮新进 N · 已不满足 M」，中性 `--nvy-surface-sunken`，可关闭。🚨 **Guardrail 9**。🚫 服务端**不引入会话态** —— 差集只在客户端算。→ verify: `use-leg-table.spec.ts` 加：① 两轮不同成员 → 差集条数与实际一致（🚨 双向各断言一次：只进不出 / 只出不进 / 有进有出，三种都要，只测一种会漏方向写反）；② 首屏（无上一轮）→ **不报**成员变化（否则用户一进页面就被告知「3 条进」）；③ 成员完全相同 → 不报
+
+- [ ] T008a [Mobile] **档位条据降级信号分叉出告警态**（`FR-010`, `FR-011`, `SC-004`, plan §D10, mockup 帧 ④）：`leg-tier-bar.rules.ts` + `leg-tier-bar.tsx` —— 把收盘档拆成**两态**：降级标为 null 走既有中性态（美股休市，正常，天天如此）；非 null 走 `--nvy-warning-soft` 底 + 3px `--nvy-warning` 左边框 + `--nvy-text` 正文，**并按类别给出具体原因**（🚫 不是「加载失败」这种无信息文案）。🚨 **Guardrail 9**（禁 info）· **Guardrail 10**（禁涨跌色）。🚫 **MUST NOT 给所有 `eod_close` 刷告警底** —— 国内用户白天每次打开都看见告警 = 本仓自记的「永远为真的告警等于没有告警」。→ verify: `leg-tier-bar.rules.spec.ts` 加 —— ① 各类降级的原因文案非空且互不相同；② **🚨 反例：`eod_close` + 降级标为 null → 断言拿到中性态、样式不含 warning token**（这条先红：若实现按 `priceKind` 一刀切会拿到告警态）；③ 实时档不受本字段影响
 
 ## Phase 5: 两层验证与实证
 
@@ -99,7 +103,7 @@ updated_at: '2026-08-19'
 
 ## Phase 6: 收口
 
-- [ ] T014 [Docs] **ADR-0062 跨 ctx 面补一行 + spec/plan status 转**（plan Gate 0.4）：`docs/adr/0062-optionsdesk-bounded-context.md` 的跨 ctx 面清单补上本片新增的读取口 token（061 已 amend 那条强一致同步读边，本片只是第二个消费者，**不重开重审**）；`spec.md` frontmatter `status: planned → implemented`、`updated_at` 同步；`plan.md` `status: drafted → approved`。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；`pnpm tsx scripts/checks/check-adr-index.ts` 绿
+- [ ] T014 [Docs] **ADR-0062 跨 ctx 面补一行 + spec/plan status 转**（plan Gate 0.4）：`docs/adr/0062-optionsdesk-bounded-context.md` 的跨 ctx 面清单补上本片新增的读取口 token（061 已 amend 那条强一致同步读边，本片只是第二个消费者，**不重开重审**）；`spec.md` frontmatter `status: planned → implemented`、`updated_at` 同步；`plan.md` `status: drafted → approved`；**校准本文件自审段**（FR / SC / AS / `state_branches` 覆盖按 grep **实时重算**，纳入 T007a / T008a，并订正 T001 里 `windowTripwire` 的签名 drift —— 实装是 `(candidates, window)`，因不变量 #7 禁 `failedCriteria(` 外溢）。→ verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；`pnpm tsx scripts/checks/check-adr-index.ts` 绿
 
 ## Dependencies
 
@@ -116,6 +120,7 @@ T003 ──────┘                                  └─────�
 - **T004a → T004b 串行**：T004b 的窗要圈出 `contractCodes` 喂给 T004a 建好的那次调用，两者共用同一段代码路径，并行会互相改同一处。
 - **T008 / T009 / T010 三者可并行**（不同文件）。
 - **T013 有时间窗**：只能在美股常规时段跑（北京 21:30–04:00）。
+- **T007a → T008a → T011 串行**（2026-08-19 impl 期新增）：契约缺「降级」信号时客户端分不清「正常盘后」与「源挂了」，只能服务端给（判据要交易日历，客户端没有）。T011 的降级断言吊在 T008a 的告警态上。
 
 ## 判据覆盖矩阵（`state_branches` 14 条 → task）
 
