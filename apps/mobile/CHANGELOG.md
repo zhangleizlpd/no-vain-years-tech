@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.12.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.11.0...mobile-v0.12.0) (2026-08-19)
+
+
+### Features
+
+* **optionsdesk:** 064 美股期权腿盘中实时报价 ([#119](https://github.com/zhangleizlpd/no-vain-years-tech/issues/119)) ([38216ae](https://github.com/zhangleizlpd/no-vain-years-tech/commit/38216aed67882a0da833a0457f66475777b12b71))
+
 ## [0.11.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.10.1...mobile-v0.11.0) (2026-08-18)
 
 
