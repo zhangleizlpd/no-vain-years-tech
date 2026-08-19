@@ -35,7 +35,11 @@ function fakeRoute(quotes: Record<string, RealtimeQuote> = {}) {
   return { port, seen };
 }
 
-const QUOTE: RealtimeQuote = { price: '148.21', capturedAt: new Date('2026-08-17T20:19:48Z') };
+const QUOTE: RealtimeQuote = {
+  price: '148.21',
+  capturedAt: new Date('2026-08-17T20:19:48Z'),
+  vendorUpdateTime: new Date('2026-08-17T19:59:12Z'),
+};
 
 describe('MarketRoutedRealtimeQuoteAdapter', () => {
   it('已登记市场 → 转给该路由, 结果原样合并', async () => {

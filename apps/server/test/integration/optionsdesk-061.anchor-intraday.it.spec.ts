@@ -326,7 +326,10 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       await seedAnchor('us:AOS');
       await givenUsRegularTradingDay();
       const capturedAt = new Date('2026-08-12T19:59:30.000Z');
-      realtimeQuotePort.quotes.set('us:AOS', { price: '36.25', capturedAt });
+      // vendor 自报的「这个价是什么时候的」—— 蓄意早于采集墙钟 40 秒 (061 实测滞后中位数),
+      // 两者若被混用会被下面两条断言逮住。
+      const vendorUpdateTime = new Date('2026-08-12T19:58:50.000Z');
+      realtimeQuotePort.quotes.set('us:AOS', { price: '36.25', capturedAt, vendorUpdateTime });
 
       const outcome = ticked(await scheduler.run(NOW));
 
@@ -342,6 +345,8 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       const row = await rowOf('us:AOS');
       expect(row.intradayPrice?.toString()).toBe('36.25');
       expect(row.intradayAt?.toISOString()).toBe(capturedAt.toISOString());
+      // 063 Phase 3.4: 证据列与判据列**并存**, 谁也没顶替谁。
+      expect(row.intradayVendorUpdateTime?.toISOString()).toBe(vendorUpdateTime.toISOString());
     });
 
     it('市场处于白名单外的已知状态（盘前 / 盘后 / 夜盘 / 收盘竞价 / 闭市）→ 不采集, 且不清空既有实时价', async () => {
@@ -407,7 +412,11 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       // 蓄意**不**塞 trading_day 行, 但声明「这一段已经填过了」—— 源侧状态机滞后（节假日仍报
       // regular）就是这个现场; 只有「填过了且没有这一天」才判非交易日（062 三态）。
       await seedCoverage('us', '2026-01-01', '2026-12-31');
-      realtimeQuotePort.quotes.set('us:AOS', { price: '36', capturedAt: NOW });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '36',
+        capturedAt: NOW,
+        vendorUpdateTime: null,
+      });
 
       const outcome = ticked(await scheduler.run(NOW));
 
@@ -429,6 +438,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       realtimeQuotePort.quotes.set('us:AOS', {
         price: '36',
         capturedAt: new Date('2026-08-12T19:59:30.000Z'),
+        vendorUpdateTime: null,
       });
 
       // ① 盘中一拍：上一拍状态落 Redis（补一拍唯一的跨拍状态）。
@@ -440,7 +450,11 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       // ② 状态**离开**白名单的那一拍：时段闸没过, 但仍然采 —— 收的就是当日收盘价。
       marketStatePort.sessions = [{ market: 'us', session: 'other' }];
       const closingAt = new Date('2026-08-12T20:00:05.000Z');
-      realtimeQuotePort.quotes.set('us:AOS', { price: '35.5', capturedAt: closingAt });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '35.5',
+        capturedAt: closingAt,
+        vendorUpdateTime: null,
+      });
       const closingTick = ticked(await scheduler.run(NOW));
 
       expect(marketOf(closingTick.report, 'us')).toMatchObject({
@@ -467,7 +481,11 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
     it('市场状态不可得的那一拍 → 不覆写上一拍的市场时段（否则一次源抖动会吞掉唯一的收盘边沿）', async () => {
       await seedAnchor('us:AOS');
       await givenUsRegularTradingDay();
-      realtimeQuotePort.quotes.set('us:AOS', { price: '36', capturedAt: NOW });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '36',
+        capturedAt: NOW,
+        vendorUpdateTime: null,
+      });
       ticked(await scheduler.run(NOW));
 
       // 源抖动一拍：`sessions === null` ⇒ 上一拍状态**不**被覆写。
@@ -482,7 +500,11 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       marketStatePort.shouldFail = false;
       marketStatePort.sessions = [{ market: 'us', session: 'other' }];
       const closingAt = new Date('2026-08-12T20:00:05.000Z');
-      realtimeQuotePort.quotes.set('us:AOS', { price: '35.5', capturedAt: closingAt });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '35.5',
+        capturedAt: closingAt,
+        vendorUpdateTime: null,
+      });
       const closingTick = ticked(await scheduler.run(NOW));
 
       expect(marketOf(closingTick.report, 'us')).toMatchObject({
@@ -498,7 +520,11 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       await seedAnchor('us:TAP', { intradayPrice: '28.5', intradayAt: keptAt });
       await givenUsRegularTradingDay();
       // 响应里只有 AOS —— 停牌 / 刚摘牌 / 这一刻没有成交价都归此列。
-      realtimeQuotePort.quotes.set('us:AOS', { price: '36', capturedAt: NOW });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '36',
+        capturedAt: NOW,
+        vendorUpdateTime: null,
+      });
 
       const outcome = ticked(await scheduler.run(NOW));
 
@@ -520,14 +546,23 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       await seedAnchor('us:TAP', { intradayPrice: '28.5', intradayAt: keptAt });
       await seedAnchor('us:PEP');
       await givenUsRegularTradingDay();
-      realtimeQuotePort.quotes.set('us:AOS', { price: '36', capturedAt: NOW });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '36',
+        capturedAt: NOW,
+        vendorUpdateTime: null,
+      });
       // 🚨 真 PG 才有的失败：`intraday_price` 是 `numeric(18,4)` ⇒ 20 位整数直接被库拒,
       // 而同批其余行已各自独立提交（逐锚 `updateMany`, 无包裹事务）。
       realtimeQuotePort.quotes.set('us:TAP', {
         price: '99999999999999999999',
         capturedAt: NOW,
+        vendorUpdateTime: null,
       });
-      realtimeQuotePort.quotes.set('us:PEP', { price: '41', capturedAt: NOW });
+      realtimeQuotePort.quotes.set('us:PEP', {
+        price: '41',
+        capturedAt: NOW,
+        vendorUpdateTime: null,
+      });
 
       const outcome = ticked(await scheduler.run(NOW));
 
@@ -609,7 +644,11 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       // open 态**不另设跳闸** —— 每拍仍探一次源, 成功即回升（无人工干预入口）。
       realtimeQuotePort.failWith = null;
       const recoveredAt = new Date();
-      realtimeQuotePort.quotes.set('us:AOS', { price: '33', capturedAt: recoveredAt });
+      realtimeQuotePort.quotes.set('us:AOS', {
+        price: '33',
+        capturedAt: recoveredAt,
+        vendorUpdateTime: null,
+      });
       const recovered = ticked(await scheduler.run(NOW));
 
       expect(recovered.verdict).toBe('success');

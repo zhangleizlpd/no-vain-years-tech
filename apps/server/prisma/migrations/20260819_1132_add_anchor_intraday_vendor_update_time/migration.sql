@@ -1,0 +1,31 @@
+-- 063 时间语义统一 Phase 3.4: optionsdesk.anchor 加**vendor 自报的「这个价是什么时候的」**一列。
+-- nullable、无默认值、无约束变更 ⇒ expand-only, 零破坏性变更。既有行落 NULL, 语义 = 「这一拍
+-- 是本列上线前采的」。
+--
+-- ## 为什么要这一列
+--
+-- `intraday_at` 是**我们的采集墙钟**, 而 vendor 自报的时刻此前**整个被丢弃**。后果: 061 测出来
+-- 的 vendor 滞后 (中位 40 s / p95 292 s / max 672 s) 只能靠一次性临时探测拿到, **事后无法复算、
+-- 无法监控漂移**。业内 market-data 的标准做法是两个时间戳都存 (exchange timestamp + received
+-- timestamp), 判据只用其一但证据留下 —— 本列就是那个证据。
+--
+-- 零额外外呼: 该值**本来就在同一个响应里** (anchor 盘中 tick 打的就是 shim `/option-snapshot`,
+-- `update_time` 一直随行回来, 只是从没被读)。
+--
+-- ## 🚨 MUST NOT 拿它做新鲜度判据
+--
+-- 90 秒新鲜度闸只认 `intraday_at`。富途给的是**最后成交时刻** —— 做市商挪报价时它纹丝不动 ⇒
+-- 不活跃标的会被稳定误判成陈旧, 而这个错**不会红**, 界面只是悄悄回落收盘档 (FR-006 已为此立过
+-- 规矩, 本列不推翻它, 只是把被丢掉的证据捡回来)。
+--
+-- ⚠️ 富途**两条 API 都给不出**业内说的报价时刻 (exchange timestamp): `get_market_snapshot` 只有
+-- `update_time`, `get_stock_quote` 只有 `data_time` = "Time of latest price" (2026-08-19 直取
+-- 官方 doc 复核)。⇒ 别再花时间找那个字段, 它不存在; 要真报价时刻只能换源。
+--
+-- 命名同 `option_daily_snapshot.vendor_update_time` —— **指向 vendor 原字段, 不宣称语义**,
+-- 语义写在 schema.prisma 该列注释里。两张表同一个读法, 不用记两套。
+--
+-- migration_refs: docs/adr/0066-time-semantics-ubiquitous-language.md (063 Phase 3)
+
+-- AlterTable
+ALTER TABLE "optionsdesk"."anchor" ADD COLUMN     "intraday_vendor_update_time" TIMESTAMPTZ(6);

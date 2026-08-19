@@ -182,7 +182,7 @@ describe('062 T008 optionsdesk 盘中交易日闸三态 (Testcontainers PG + Red
       confidence: '8', // → L2
       nextReview: day('2099-01-01'),
     });
-    realtimeQuotePort.quotes.set(ticker, { price: '36', capturedAt: NOW });
+    realtimeQuotePort.quotes.set(ticker, { price: '36', capturedAt: NOW, vendorUpdateTime: null });
   }
 
   const seedTradingDay = (market: string, date: string) =>

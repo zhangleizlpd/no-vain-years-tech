@@ -109,6 +109,8 @@ describe('FutuRealtimeQuoteAdapter', () => {
       expect(quotes.get('us:PEP')).toEqual({
         price: '148.21',
         capturedAt: new Date(AS_OF),
+        // `15:59:12` 是 **ET**(夏令 = UTC−4), 不是 UTC —— 当 UTC 解析会整体偏 4 小时且不会红。
+        vendorUpdateTime: new Date('2026-08-17T19:59:12Z'),
       });
     });
 
@@ -117,6 +119,29 @@ describe('FutuRealtimeQuoteAdapter', () => {
       const { http } = makeShim([stockRow('US.PEP', { update_time: '2026-08-17 09:31:00' })]);
       const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
       expect(quotes.get('us:PEP')?.capturedAt).toEqual(new Date(AS_OF));
+    });
+
+    it('🚨 两个时间戳**并存且不互相顶替** (063 Phase 3.4): as_of 是判据, update_time 是证据', async () => {
+      const { http } = makeShim([stockRow('US.PEP', { update_time: '2026-08-17 09:31:00' })]);
+      const quote = await makeAdapter(http).fetchQuotes(['us:PEP']);
+
+      // 判据侧: 采集墙钟, 一格不动。
+      expect(quote.get('us:PEP')?.capturedAt).toEqual(new Date(AS_OF));
+      // 证据侧: vendor 说这个价是 09:31 ET 的 —— 与采集时刻的差就是 061 那次一次性探测
+      // (滞后中位 40 s / p95 292 s) 想要监控的量, 现在每一拍都留了痕。
+      expect(quote.get('us:PEP')?.vendorUpdateTime).toEqual(new Date('2026-08-17T13:31:00Z'));
+    });
+
+    it('update_time 缺失 / 坏形态 → `null`, **不阻断这一拍** (它不参与任何判据)', async () => {
+      const { http } = makeShim([
+        stockRow('US.PEP', { update_time: undefined }),
+        stockRow('US.AAPL', { update_time: 'not-a-time' }),
+      ]);
+      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
+
+      expect(quotes.get('us:PEP')?.vendorUpdateTime).toBeNull();
+      expect(quotes.get('us:AAPL')?.vendorUpdateTime).toBeNull();
+      expect(quotes.get('us:PEP')?.price).toBe('148.21'); // 价照落
     });
 
     it('缺某标的 → **省略不抛** (停牌 / 刚摘牌; 上游据此保留旧值)', async () => {

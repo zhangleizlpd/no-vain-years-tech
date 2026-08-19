@@ -391,7 +391,12 @@ export class SyncAnchorIntradayUseCase {
       try {
         await this.prisma.anchor.updateMany({
           where: { id: anchor.id },
-          data: { intradayPrice: new Prisma.Decimal(quote.price), intradayAt: quote.capturedAt },
+          data: {
+            intradayPrice: new Prisma.Decimal(quote.price),
+            intradayAt: quote.capturedAt,
+            // 证据列: vendor 说这个价是什么时候的; 源没给 → null (不阻断这一拍)。
+            intradayVendorUpdateTime: quote.vendorUpdateTime,
+          },
         });
         updated += 1;
       } catch (e) {

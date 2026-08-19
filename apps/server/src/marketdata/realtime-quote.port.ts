@@ -83,6 +83,24 @@ export interface RealtimeQuote {
    * 时候跑到这一句」, 两者在链路卡顿时差得很远。信封没有可解析的 `as_of` ⇒ adapter 抛。
    */
   capturedAt: Date;
+  /**
+   * vendor 自报的**「最新价是什么时候的」**(063 Phase 3.4); 源没给 / 给了坏形态 → `null`。
+   *
+   * 与 {@link capturedAt} 是**两条时间轴**, 一个是 ingestion time 的两端:
+   * · `capturedAt` = 我们什么时候拿到 → **判据**(新鲜度闸只认它)
+   * · `vendorUpdateTime` = vendor 说这个价是什么时候的 → **证据**
+   *
+   * 🚨 **MUST NOT 拿它做新鲜度判据** —— 富途给的是最后成交时刻 (`get_market_snapshot` 的
+   * `update_time`; 官方 doc 只写 "String of updated time", 语义由 p3b E32/E33 实测钉死),
+   * 做市商挪报价时它纹丝不动 ⇒ 不活跃标的会被稳定误判成陈旧, 而这个错**不会红**, 界面只是
+   * 悄悄回落收盘档。它存在的理由只有一个: 让 061 那次一次性探测出来的 vendor 滞后 (中位
+   * 40 s / p95 292 s / max 672 s) **可复算、可监控漂移** —— 事后无法复算正是当时的痛点。
+   *
+   * ⚠️ 富途**两条 API 都给不出**业内说的报价时刻 (exchange timestamp): `get_market_snapshot`
+   * 只有 `update_time`, `get_stock_quote` 只有 `data_time` = "Time of latest price"
+   * (2026-08-19 直取官方 doc 复核)。⇒ 别再花时间找那个字段, 它不存在。
+   */
+  vendorUpdateTime: Date | null;
 }
 
 export interface RealtimeQuotePort {

@@ -133,8 +133,13 @@ function timeZoneOffsetMs(utcMs: number, timeZone: string): number {
 /**
  * vendor 的**无时区**时间串 → `Date`, 按 {@link VENDOR_UPDATE_TIME_ZONE} 解释。
  * 不合形态 → null (缺时间戳不阻断落库: 该列 nullable, 且不参与任何判据)。复杂度 O(1)。
+ *
+ * 🚨 **导出是为了给 `FutuRealtimeQuoteAdapter` 用, 别再抄第二份** (063 Phase 3.4): 两个
+ * adapter 打的是**同一个** shim 端点 (`/option-snapshot`)、解析的是**同一个** `update_time`
+ * 字段 —— 时区与解析规约属于 vendor 而不属于某一个 adapter, 抄第二份就等着两边对时区的理解
+ * 各自漂移, 而漂移的表现只是一个诊断时间戳悄悄偏 4 小时。
  */
-function vendorTimeToDate(v: unknown): Date | null {
+export function vendorTimeToDate(v: unknown): Date | null {
   const parts = NAIVE_DATETIME_RE.exec(typeof v === 'string' ? v : '');
   if (parts === null) return null;
   const naiveUtc = Date.UTC(

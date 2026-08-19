@@ -22,6 +22,8 @@ type Fn = ReturnType<typeof vi.fn>;
 
 /** 采集墙钟 —— 来自 shim 信封的 `as_of`, **不是**本机时钟 (port 契约)。 */
 const CAPTURED_AT = new Date('2026-08-17T14:31:05.000Z');
+/** vendor 自报的「最新价时刻」—— 蓄意早于 {@link CAPTURED_AT}, 两者混用会被断言逮住。 */
+const VENDOR_AT = new Date('2026-08-17T14:30:25.000Z');
 const NOW = new Date('2026-08-17T14:31:06.000Z');
 
 const anchorRow = (id: bigint, ticker: string) => ({ id, ticker });
@@ -49,7 +51,9 @@ function buildPrismaMock(anchors: { id: bigint; ticker: string }[]): PrismaMock 
 }
 
 function quoteMapOf(symbols: readonly string[], price = '123.4500'): Map<string, RealtimeQuote> {
-  return new Map(symbols.map((s) => [s, { price, capturedAt: CAPTURED_AT }]));
+  return new Map(
+    symbols.map((s) => [s, { price, capturedAt: CAPTURED_AT, vendorUpdateTime: VENDOR_AT }]),
+  );
 }
 
 interface Harness {
@@ -144,7 +148,11 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
     expect(m.anchorUpdateMany).toHaveBeenCalledTimes(1);
     expect(m.anchorUpdateMany.mock.calls[0]?.[0]).toEqual({
       where: { id: 7n },
-      data: { intradayPrice: new Prisma.Decimal('123.4500'), intradayAt: CAPTURED_AT },
+      data: {
+        intradayPrice: new Prisma.Decimal('123.4500'),
+        intradayAt: CAPTURED_AT,
+        intradayVendorUpdateTime: VENDOR_AT,
+      },
     });
     expect(report.updated).toBe(1);
     expect(report.sourceSuccesses).toBe(1);
