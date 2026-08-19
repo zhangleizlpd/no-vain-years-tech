@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { Logger } from '@nestjs/common';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setupIsolatedStores } from '../_support/isolated-db';
@@ -16,12 +17,18 @@ import {
   type LegRetrievalPort,
 } from '../../src/optionsdesk/leg-retrieval.port';
 import {
+  OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
   OPTION_SNAPSHOT_READ_PORT,
   type OptionSnapshotBatch,
   type OptionSnapshotPort,
   type OptionSnapshotQuery,
   type OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
+import {
+  REALTIME_DEGRADE_LOG_TAG,
+  type RealtimeDegradeKind,
+} from '../../src/optionsdesk/leg-retrieval.adapter';
+import { INTRADAY_FRESHNESS_SECONDS } from '../../src/optionsdesk/intraday-spot.rules';
 import {
   MARKET_STATE_PORT,
   type MarketSession,
@@ -132,6 +139,13 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   let prisma: PrismaService;
   let readPort: SpySnapshotReadPort;
   let marketState: FakeMarketStatePort;
+  /**
+   * 064 T006 —— warn 的**全量**捕获面 (`FR-023`)。
+   *
+   * 🚨 采集端一律不过滤 (记下每一条 warn), 归类只发生在断言侧 —— 采集时就按前缀筛的话,
+   * `SC-010` 那条「降级了但不属于三类」的反例**结构上看不见**: 管道里根本没有它的位置。
+   */
+  const warnings: string[] = [];
 
   /** 请求时刻 = 2026-08-11 ET 16:00 ⇒ 交易所的今天恒为 2026-08-11 (钉住 DTE 基准)。 */
   const NOW = new Date('2026-08-11T20:00:00.000Z');
@@ -164,14 +178,19 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       // 换掉会连带改动基线夹具的输出。非交易日那一臂改由**把 `now` 挪到周六**来制造。
       .compile();
     prisma = moduleRef.get(PrismaService);
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => {
+      warnings.push(typeof message === 'string' ? message : JSON.stringify(message));
+    });
   }, 180_000);
 
   afterAll(async () => {
+    vi.restoreAllMocks();
     await moduleRef?.close();
     await stores.drop();
   });
 
   beforeEach(async () => {
+    warnings.length = 0;
     readPort.calls.length = 0;
     readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
     readPort.fail = null;
@@ -1049,5 +1068,197 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     const report = moduleRef.get(GetChainReportUseCase);
     await report.execute(SYMBOL, NOW, true);
     expect(readPort.calls).toHaveLength(2);
+  });
+
+  // ── T006 超上限 fail-closed + 三类特有失败留痕 ─────────────────────────────
+
+  /** 一条本片特有失败的结构化留痕 (`FR-023`) —— 类别字段在 `kind` 上, 可直接聚合。 */
+  interface DegradeLog {
+    readonly kind: RealtimeDegradeKind;
+    readonly symbol: string;
+    readonly [field: string]: unknown;
+  }
+
+  /**
+   * 从**全量** warn 里捞出本片的结构化留痕并解开 payload。
+   *
+   * 🚨 断言的是**类别字段的值**, 不是「日志非空」(`SC-010`): 「有 warn」在任何一条降级路径上
+   * 都成立 —— 拿它当判据等于把三类失败与其余降级混成一堆, 而聚合出来的图照样画得出来。
+   */
+  function degradeLogs(): DegradeLog[] {
+    return warnings
+      .filter((line) => line.startsWith(REALTIME_DEGRADE_LOG_TAG))
+      .map((line) => JSON.parse(line.slice(REALTIME_DEGRADE_LOG_TAG.length)) as DegradeLog);
+  }
+
+  /**
+   * 🚨 **真造**出一批窗内腿把单批上限撑破 (`FR-018` / `state_branch` 7)。
+   *
+   * 🚫 蓄意**不把 `OPTION_SNAPSHOT_MAX_CONTRACT_CODES` stub 成小值**: 那样绿只证明「我塞进去的
+   * 小数被读到了」, 而真正要守的是「窗真的圈出四百条时会不会去外呼」—— 上限是从
+   * `option-snapshot.port.ts` import 的同一个常量, 拿它当条数造种子, 反例 (截断实现) 才落在
+   * 管道能看见的地方。造数走 `createMany` (两条 INSERT), 不是四百次往返。
+   *
+   * 行权价全部落在窗 `[0.7 × 100, 1.05 × 100]` 之内、DTE 35 落在窗的 DTE 段内 ⇒ 连同
+   * {@link LEGS} 四条一起, 窗内条数 = 上限 + 4 > 上限。
+   */
+  async function seedOverCapLegs(): Promise<void> {
+    const instrument = await prisma.instrument.findFirstOrThrow({
+      where: { market: 'us', code: 'PEP' },
+      select: { id: true },
+    });
+    const expiry = new Date(dateOf(TODAY).getTime() + 35 * 86_400_000);
+    const bulk = Array.from({ length: OPTION_SNAPSHOT_MAX_CONTRACT_CODES }, (_unused, i) => ({
+      code: `L-BULK-${String(i).padStart(3, '0')}`,
+      // 70.10 → 101.94, 步长 0.08: 四百个互不相同的行权价, 全部在窗内。
+      strike: (70.1 + i * 0.08).toFixed(2),
+    }));
+    await prisma.optionContract.createMany({
+      data: bulk.map((leg) => ({
+        market: 'us',
+        code: leg.code,
+        root: 'PEP',
+        underlyingInstrumentId: instrument.id,
+        expiryDate: expiry,
+        strikePrice: leg.strike,
+        optionType: 'PUT',
+        isStandard: true,
+        expirationCycle: 'WEEK',
+      })),
+    });
+    const created = await prisma.optionContract.findMany({
+      where: { underlyingInstrumentId: instrument.id, code: { startsWith: 'L-BULK-' } },
+      select: { id: true },
+    });
+    await prisma.optionDailySnapshot.createMany({
+      data: created.map((contract) => ({
+        contractId: contract.id,
+        sessionDate: dateOf(TODAY),
+        source: 'eod',
+        quoteAsOf: new Date(`${TODAY}T20:31:07Z`),
+        oiAsOf: dateOf(PREV_SESSION),
+        // 收盘档下**过得了**两道门槛 ⇒ 它们是候选; 实时档若真取到 (见 `pennyBatch`) 就全掉出去。
+        bid: '2.00',
+        ask: '2.10',
+        bidSize: '25',
+        askSize: '26',
+        delta: '-0.30',
+        iv: '20',
+        openInterest: '900',
+        netOpenInterest: '111',
+        volume: '40',
+        underlyingSpot: SPOT,
+        greeksComplete: true,
+      })),
+    });
+  }
+
+  /**
+   * 🚨 截断实现的**反例装置**: 对**每一个**被问到的 code 都回一个过不了权利金门槛的报价。
+   *
+   * 于是「悄悄截断到前 N 条」这种实现会真的发一次外呼、真的把那 N 条腿的权利金改成一分钱,
+   * 候选集条数当场塌下来 —— 若只喂与库内同值的报价, 「fail-closed 还是截断」两种实现的输出
+   * 完全一样, 那条条数断言就恒绿 = 等于没写。
+   */
+  const pennyBatch = (query: OptionSnapshotQuery): OptionSnapshotBatch => ({
+    asOf: REALTIME_AS_OF,
+    rows: [
+      underlyingRow(REALTIME_SPOT),
+      ...query.contractCodes.map(
+        (code): OptionSnapshotRow => ({
+          code,
+          isOption: true,
+          ...realtimeRow({ bid: '0.01', ask: '0.02' }),
+        }),
+      ),
+    ],
+  });
+
+  it('🚨 `FR-018` / `state_branch` 7: 窗内条数超单批上限 ⇒ 整表收盘档 + 零外呼, 候选集条数与关态**相同**', async () => {
+    await seedChain();
+    await seedOverCapLegs();
+    readPort.respond = pennyBatch;
+
+    const closed = await candidatesOf(false);
+    const live = await candidatesOf(true);
+    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+    // ① 零外呼 —— 截断实现在这里就会红 (它得先问过才知道该截多少)。
+    expect(readPort.calls).toHaveLength(0);
+    // ② 整表回落收盘档 (本仓的「降级标记」就是档位本身, 没有第二个 flag)。
+    expect(live.chain.priceKind).toBe('eod_close');
+    const chain = await chainOf(true);
+    if (chain === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(chain.legs.map((leg) => leg.priceKind)).toEqual(chain.legs.map(() => 'eod_close'));
+    // ③ 🚨 候选集条数与关态**相同** —— 这条才咬得住 fail-closed 与截断的差别: 截掉一截的话,
+    //    被截掉的那批拿的是 `pennyBatch` 的报价, 权利金门槛会把它们全踢出候选。
+    expect(live.candidates.length).toBe(closed.candidates.length);
+    expect(live.candidates.length).toBeGreaterThan(OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
+  }, 60_000);
+
+  it('🚨 `FR-023` `window_over_cap`: 留痕带窗内条数与上限, 且上限取自 marketdata 那个常量', async () => {
+    await seedChain();
+    await seedOverCapLegs();
+    readPort.respond = pennyBatch;
+
+    await chainOf(true);
+    const logs = degradeLogs();
+    expect(logs.map((log) => log.kind)).toEqual(['window_over_cap']);
+    expect(logs[0].cap).toBe(OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
+    // 判别性自检: 窗内条数**确实**超了上限 (否则这条用例测的根本不是超限路径)。
+    expect(logs[0].windowCodes).toBeGreaterThan(OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
+    expect(logs[0].symbol).toBe(SYMBOL);
+  }, 60_000);
+
+  it('🚨 `FR-023` `window_basis_stale`: 留痕带基准时刻与判据阈值', async () => {
+    const staleAt = new Date(NOW.getTime() - 91_000);
+    await seedChain({ basis: { price: SPOT, at: staleAt } });
+    readPort.respond = realtimeBatch();
+
+    await chainOf(true);
+    const logs = degradeLogs();
+    expect(logs.map((log) => log.kind)).toEqual(['window_basis_stale']);
+    expect(logs[0].basisAt).toBe(staleAt.toISOString());
+    // 阈值取自 061 的单点 —— 🚫 留痕里 MUST NOT 手写第二个 90。
+    expect(logs[0].freshnessSeconds).toBe(INTRADAY_FRESHNESS_SECONDS);
+  });
+
+  it('🚨 `FR-023` `partial_miss`: 留痕带缺失条数 (与实际缺的条数一致)', async () => {
+    await seedChain();
+    const missing = ['L-BUILD', 'L-WIDE'];
+    readPort.respond = (query) => {
+      const full = realtimeBatch()(query);
+      return { asOf: full.asOf, rows: full.rows.filter((row) => !missing.includes(row.code)) };
+    };
+
+    await chainOf(true);
+    const logs = degradeLogs();
+    expect(logs.map((log) => log.kind)).toEqual(['partial_miss']);
+    expect(logs[0].missing).toBe(missing.length);
+    expect(logs[0].requested).toBe(LEGS.length);
+  });
+
+  it('🚨 `SC-010` 反例: 降级了但不属于三类 (闸判定失败 / 源不可达) ⇒ **不被**错误归类', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    // ① 两闸自身故障 ⇒ fail-closed 收盘档。它是 `FR-011` 的路径, 不是本片特有的三类之一。
+    marketState.fail = new Error('futu shim 5xx');
+    const gated = await chainOf(true);
+    if (gated === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(gated.chain.priceKind).toBe('eod_close');
+    // 判别性前提: 这条路径**确实**留下了 warn —— 否则「没有被归类」只是因为管道里什么都没有。
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(degradeLogs()).toHaveLength(0);
+
+    // ② 源不可达 ⇒ 整体回落。同样留 warn, 同样不属三类。
+    warnings.length = 0;
+    marketState.fail = null;
+    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
+    const unreachable = await chainOf(true);
+    if (unreachable === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(unreachable.chain.priceKind).toBe('eod_close');
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(degradeLogs()).toHaveLength(0);
   });
 });

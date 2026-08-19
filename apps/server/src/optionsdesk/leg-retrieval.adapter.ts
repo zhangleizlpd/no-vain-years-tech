@@ -4,6 +4,7 @@ import { PrismaService } from '../security/prisma.service';
 import { exchangeCalendarDate } from '../marketdata/session-clock';
 import { daysToExpiry } from '../marketdata/trading-day-gate';
 import {
+  OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
   OPTION_SNAPSHOT_READ_PORT,
   type OptionSnapshotBatch,
   type OptionSnapshotPort,
@@ -14,7 +15,7 @@ import {
   type TradingCalendarPort,
 } from '../marketdata/trading-calendar.port';
 import { parseAnchorTicker } from './anchor.rules';
-import { isIntradayFresh } from './intraday-spot.rules';
+import { INTRADAY_FRESHNESS_SECONDS, isIntradayFresh } from './intraday-spot.rules';
 import { legWindowFor, windowTripwire, withinWindow, type LegWindow } from './leg-window.rules';
 import { recallCandidates, type RecallCandidate, type RecallContext } from './leg-recall.rules';
 import type {
@@ -41,6 +42,21 @@ interface LoadedChain {
 }
 
 /**
+ * {@link PrismaLegRetrievalAdapter.resolveWindow} 的出参 —— 窗 + **它是按哪一刻的基准定的**
+ * (064 T006)。
+ *
+ * 🚨 `basisAt` 不是为了算窗, 是为了在窗定不出来时说得出**为什么**: `FR-023` 的
+ * `window_basis_stale` 要带基准时刻与判据阈值, 而「陈旧」与「整列还没写过」在响应里长得一模一样
+ * (都是一张收盘档的表)。只报一个 `null` 的话, 聚合出来的那条曲线分不出「熔断传导过来了」还是
+ * 「这只锚今天根本没进过 tick」。
+ */
+interface ResolvedWindow {
+  readonly window: LegWindow | null;
+  /** 定窗基准的采集时刻; 锚不存在 / 该列从未写过 ⇒ `null`。 */
+  readonly basisAt: Date | null;
+}
+
+/**
  * 实时报价的**请求级超时** (064 `FR-011`「源不可达 / 超时」那半, plan D3)。
  *
  * 取值 = `SC-002` 的端到端预算 (P95 ≤ 1.5 s) 的两倍: 等到这个数, 用户已经比预算多等了一倍,
@@ -51,6 +67,31 @@ interface LoadedChain {
  * 经「停写盘中价 → 基准判陈旧」传导过来。两套状态必然不同步。
  */
 const REALTIME_SNAPSHOT_TIMEOUT_MS = 3_000;
+
+/**
+ * 本片**特有**的三类失败 (064 `FR-023`, plan D11) —— 每类一条结构化 warn 的**类别字段**值域。
+ *
+ * | 类别 | 什么时候 | 附带的判据 |
+ * | --- | --- | --- |
+ * | `partial_miss` | 部分合约未在返回集 | 缺失条数 / 本次问了多少条 |
+ * | `window_over_cap` | 窗内条数超单批上限 | 窗内条数 / 上限 |
+ * | `window_basis_stale` | 定窗基准缺失或陈旧 | 基准时刻 / 新鲜度阈值 |
+ *
+ * 🚨 **通道级健康 MUST NOT 由本片回答** (plan D11): 复用 061 的观测面, 本片**不新建心跳、
+ * 不新建健康指标**。理由是判据本身 —— 本片**按需触发**, 「没人看就没数据」的指标当哨兵会把
+ * 「今天没人开选约表」读成「通道挂了」; 061 的 tick 每 30 秒主动探一次, 它才是这条通道的哨兵。
+ *
+ * 🚨 **只装本片特有的那三类**: 两闸判定失败 / 源不可达 / 超时那几条是 `FR-011` 的通用降级,
+ * 它们照常留 warn 但**不进这个值域** —— 混进来的话「本片特有的失败有多少」这个数就再也问不出
+ * 来了, 而聚合出来的图照样画得出来 (`SC-010`)。
+ */
+export type RealtimeDegradeKind = 'partial_miss' | 'window_over_cap' | 'window_basis_stale';
+
+/**
+ * 三类留痕的行首 tag —— 日志聚合按它捞行、按 `kind` 分组。🚫 MUST NOT 在第二处手写这个串
+ * (聚合器与产出方各写一份, 改一处就静默漏掉一半的行)。
+ */
+export const REALTIME_DEGRADE_LOG_TAG = '[064] realtime-degraded';
 
 /**
  * 实时报价取回超时 —— 与读取口自己的失败语义 (`OptionSnapshotBudgetExhaustedError` 等) 并列,
@@ -385,16 +426,23 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     readonly symbol: string;
     readonly market: string;
     readonly now: Date;
-  }): Promise<LegWindow | null> {
+  }): Promise<ResolvedWindow> {
     const anchor = await this.prisma.anchor.findUnique({
       where: { ticker: target.symbol },
       select: { intradayPrice: true, intradayAt: true },
     });
-    if (anchor === null || anchor.intradayPrice === null) return null;
+    if (anchor === null || anchor.intradayPrice === null) {
+      return { window: null, basisAt: anchor?.intradayAt ?? null };
+    }
     // 🚨 新鲜度闸复用 061 的单点 {@link isIntradayFresh} —— 🚫 MUST NOT 在这里再判一次「多久算旧」:
     // 两处阈值必漂移, 而漂移的表现是「窗按一个已经没人维护的价定出来」, 结果照样渲染得出来。
-    if (!isIntradayFresh(anchor.intradayAt, target.now)) return null;
-    return legWindowFor(target.market, anchor.intradayPrice);
+    if (!isIntradayFresh(anchor.intradayAt, target.now)) {
+      return { window: null, basisAt: anchor.intradayAt };
+    }
+    return {
+      window: legWindowFor(target.market, anchor.intradayPrice),
+      basisAt: anchor.intradayAt,
+    };
   }
 
   /**
@@ -469,22 +517,81 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
 
     // ② 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落, 仍是零外呼 (`state_branch` 14)。
     // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。
-    const window = await this.resolveWindow(target);
-    if (window === null) return eodClose;
+    const { window, basisAt } = await this.resolveWindow(target);
+    if (window === null) {
+      this.warnDegraded('window_basis_stale', target.symbol, {
+        basisAt: basisAt === null ? null : basisAt.toISOString(),
+        // 🚫 阈值取 061 的派生单点, MUST NOT 在留痕里手写第二个 90 —— 调参那天日志会开始骗人。
+        freshnessSeconds: INTRADAY_FRESHNESS_SECONDS,
+      });
+      return eodClose;
+    }
 
-    // ③ 源不可达 / 超时 ⇒ 整体回落 (`state_branch` 4)。
-    const batch = await this.fetchQuotes(
-      port,
-      target,
-      legs.filter((leg) => withinWindow(leg, window)).map((leg) => leg.code),
-    );
+    // ③ 窗内条数超单批上限 ⇒ **整体回落 + 零外呼** (`FR-018` / `state_branch` 7, plan §分批)。
+    // 🚫 **MUST NOT 截断到前 `OPTION_SNAPSHOT_MAX_CONTRACT_CODES` 条**: 少一截的候选集**外表
+    // 完全正常** —— 被裁掉的那批带着收盘档的价照常渲染, 用户无从知道自己看的是一个残缺的口径。
+    // fail-closed 至少把整表都标成收盘档, 那是说得清的一句话。
+    // 🚫 MUST NOT 在本 ctx 再写一个 399 / 400 —— 上限单点在 `option-snapshot.port.ts`
+    // (它是 `shim 400 上限 − 标的自身那行`, 两处各写一份会在改批量那天静默撞 400 整批被拒)。
+    const windowed = legs.filter((leg) => withinWindow(leg, window));
+    if (windowed.length > OPTION_SNAPSHOT_MAX_CONTRACT_CODES) {
+      this.warnDegraded('window_over_cap', target.symbol, {
+        windowCodes: windowed.length,
+        cap: OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
+      });
+      return eodClose;
+    }
+    const contractCodes = windowed.map((leg) => leg.code);
+
+    // ④ 源不可达 / 超时 ⇒ 整体回落 (`state_branch` 4)。
+    const batch = await this.fetchQuotes(port, target, contractCodes);
     if (batch === null) return eodClose;
 
-    // ④ 标的现价缺失 ⇒ 显式「未就绪」(`state_branch` 6 / FR-012), 🚫 MUST NOT 拿收盘价顶替:
+    // ⑤ 标的现价缺失 ⇒ 显式「未就绪」(`state_branch` 6 / FR-012), 🚫 MUST NOT 拿收盘价顶替:
     // 顶替会让「链坏了」看起来像正常, 正是本仓反复吃亏的那类静默。
     const applied = applyRealtimeBatch(chain, legs, batch);
     if (applied === null) return null;
+    this.reportPartialMiss(target.symbol, contractCodes, batch);
     return { snapshot: applied, window };
+  }
+
+  /**
+   * 问了但没回来的那几条 (064 `FR-023` `partial_miss`, `state_branch` 5)。零缺失 ⇒ 不留痕。
+   *
+   * 🚨 判据是「**请求里有、返回集里没有**」而不是「这一行没被覆盖」: 后者会把
+   * `state_branch` 11 (行回来了但买卖价皆空) 一并算进来, 而那是另一回事 —— vendor 给了这一行、
+   * 只是此刻没有盘口。两者混成一个数, 「实时源今天漏了多少合约」就再也问不出来。`O(m + n)`。
+   */
+  private reportPartialMiss(
+    symbol: string,
+    requested: readonly string[],
+    batch: OptionSnapshotBatch,
+  ): void {
+    const returned = new Set(batch.rows.filter((row) => row.isOption).map((row) => row.code));
+    const missing = requested.filter((code) => !returned.has(code)).length;
+    if (missing === 0) return;
+    this.warnDegraded('partial_miss', symbol, { missing, requested: requested.length });
+  }
+
+  /**
+   * 三类**本片特有**失败的结构化留痕 (064 `FR-023`, plan D11) —— 单点。
+   *
+   * 行首是 {@link REALTIME_DEGRADE_LOG_TAG}, 其后是一段 JSON, 类别在 `kind` 上 ⇒ 聚合器
+   * 按 tag 捞行、按 `kind` 分组即可, 不必对中文正文写正则。体例照 061 的
+   * `sync-anchor-intraday.ts` (`JSON.stringify` 一个扁平对象)。
+   *
+   * 🚨 **只有这三类走这里**: `FR-011` 的通用降级 (两闸判定失败 / 源不可达 / 超时) 照常各自
+   * 留 warn, 但**不带这个 tag** —— 带上就等于把「本片特有的失败」这个问题作废 (`SC-010`),
+   * 而聚合出来的图照样画得出来。
+   * 🚨 **不新建心跳 / 健康指标** (plan D11): 通道级健康由 061 的 tick 回答, 本片按需触发,
+   * 「没人看就没数据」的指标当哨兵会把「今天没人开选约表」读成「通道挂了」。
+   */
+  private warnDegraded(
+    kind: RealtimeDegradeKind,
+    symbol: string,
+    detail: Readonly<Record<string, unknown>>,
+  ): void {
+    this.logger.warn(`${REALTIME_DEGRADE_LOG_TAG} ${JSON.stringify({ kind, symbol, ...detail })}`);
   }
 }
 
