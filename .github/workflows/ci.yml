@@ -12,6 +12,27 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # 🚨 `edited` 不是可选项，它是这个 workflow **唯一的自愈路径**（2026-08-19 #112 实证）：
+    # 该 PR 的 CI run 被 GitHub 创建后一直卡在 `queued`，而 `gh run cancel` 返 HTTP 500、
+    # `gh run rerun` 返 `cannot be rerun; This workflow is already running` —— 两条常规出路
+    # 全断，7 个 required check 停在「Expected — Waiting for status to be reported」⇒ PR
+    # 永久 BLOCKED。同一时刻 `pr-validation.yml` 同样被卡，但它配了 `edited`，release-please
+    # 一改 body 就自动重跑爬起来了；本文件没配，只能靠人 `gh pr close` + `gh pr reopen`
+    # （而 reopen 会清掉 auto-merge，得再 arm 一次）。
+    # ⚠️ 顺带：改 PR 标题后 `PR title (conventional commits)` 那道闸本就该重跑，`edited` 一并修了。
+    types: [opened, synchronize, reopened, edited]
+
+# 🚨 与上面的 `edited` **成对出现，不可只加一半**：release-please 更新 Release PR 时会在
+# **同一秒**触发两个事件，两轮各自跑满。`pr-validation.yml` 那边的实测代价是每天白烧约
+# 39 分钟 runner（见该文件同名段），本文件的 job 便宜得多但形状一样。
+#
+# 🚨 group key 里的 `|| github.sha` **不能省**：本 workflow 还跑在 `push: main` 上，那里
+# `github.event.pull_request` 为 null —— 直接抄 pr-validation 的 key 会让**所有 main push
+# 落进同一个组互相取消**，即「合入 B 把 A 那轮 CI 掐掉」，而 main 上的绿是发版前的最后一道
+# 存证。用 sha 兜底后每次 push 自成一组，cancel-in-progress 只在同一个 PR 内生效。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
