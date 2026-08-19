@@ -701,8 +701,12 @@ def test_option_chain_asks_for_both_sides_not_puts_only():
 
     「本片只含认沽」是**呈现面**的话。在采集端就滤成 PUT 不会红，但快照**漏采即永久
     缺口** —— 后续要 CALL（wheel / covered call）时买不回来。而链接口一次返双边，
-    调用数不变，滤掉一分钱都不省。同理 `data_filter` 恒为 None：任何 greeks / OI /
-    IV 过滤都是在采集端丢证据。
+    调用数不变，滤掉一分钱都不省。
+
+    🚨 **本用例同时钉住「不传筛选参数 ⇒ 与加它们之前逐字节同一个调用」**：`option_cond_type`
+    落 SDK 默认 `ALL`、`data_filter` 落 `None`。采集端一旦筛就丢证据且不可回补，所以
+    `sync-option-contract` 永远只传 `code/start/end/option_type` —— 那是**调用方**的纪律，
+    由这条断言在 shim 侧兜底。
     """
     ctx = FakeCtx(
         chain=pd.DataFrame(
@@ -718,6 +722,7 @@ def test_option_chain_asks_for_both_sides_not_puts_only():
     assert resp.status_code == 200
     call = ctx.chain_calls[0]
     assert call["option_type"] == "ALL"
+    assert call["option_cond_type"] == "ALL"
     assert call["data_filter"] is None
     assert (call["code"], call["start"], call["end"]) == ("US.PEP", "2026-08-01", "2026-08-07")
     assert {r["option_type"] for r in resp.json["rows"]} == {"PUT", "CALL"}
@@ -1322,3 +1327,58 @@ def test_small_responses_stay_uncompressed_even_when_asked():
     assert resp.status_code == 200
     assert len(resp.data) < GZIP_MIN_BYTES
     assert "Content-Encoding" not in resp.headers
+
+
+def test_option_chain_passes_read_side_filters_through_to_the_sdk():
+    """读取面预选：`option_cond_type` + `data_filter` 原样透传给 SDK。
+
+    🚨 断言的是**送进 SDK 的那个对象**，不是响应体 —— 筛选发生在 vendor 侧，返回集里看不出
+    「我们究竟有没有把条件递过去」。少了这条，参数名写错（如把 `vol_min` 传成 `volume_min`）
+    会静默变成「不筛」，而返回集看起来完全正常。
+    """
+    ctx = FakeCtx(chain=pd.DataFrame([_chain_row("US.PEP260807P145000", 145.0)]))
+    client, _ = build(ctx)
+
+    resp = client.get(
+        "/option-chain?code=US.PEP&option_cond_type=WITHIN&vol_min=1&open_interest_min=50",
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 200
+    call = ctx.chain_calls[0]
+    assert call["option_cond_type"] == "WITHIN"
+    df = call["data_filter"]
+    assert df is not None
+    assert (df.vol_min, df.open_interest_min) == (1.0, 50.0)
+    # 🚨 没给的字段必须留 None —— 补一个 0 会把「不限」变成「≥ 0」，而那两者在 vendor 侧
+    #    未必等价（且差别只在返回集里显现）。
+    assert (df.delta_min, df.implied_volatility_max, df.vol_max) == (None, None, None)
+
+
+def test_option_chain_rejects_junk_cond_type_and_non_numeric_filters():
+    """坏参数 400（永久错），不是静默忽略。
+
+    静默忽略会让「筛了但没筛到」与「压根没筛」长得一模一样 —— 而这两者的返回集都合法。
+    """
+    ctx = FakeCtx(chain=pd.DataFrame([_chain_row("US.PEP260807P145000", 145.0)]))
+    client, _ = build(ctx)
+
+    assert (
+        client.get("/option-chain?code=US.PEP&option_cond_type=DEEP_ITM", headers=AUTH).status_code
+        == 400
+    )
+    assert client.get("/option-chain?code=US.PEP&vol_min=many", headers=AUTH).status_code == 400
+    # 一个都没送到 vendor —— 参数校验在 opend session 之前。
+    assert ctx.chain_calls == []
+
+
+def test_option_chain_empty_filter_params_stay_unfiltered():
+    """🚨 空串 / 全缺省 ⇒ `data_filter=None`，**不是**一个全 None 的 filter 对象。
+
+    「不筛」与「带着一个空条件去筛」在 vendor 侧未必等价，而两者的差别只会在返回集里显现。
+    """
+    ctx = FakeCtx(chain=pd.DataFrame([_chain_row("US.PEP260807P145000", 145.0)]))
+    client, _ = build(ctx)
+
+    assert client.get("/option-chain?code=US.PEP&vol_min=&delta_max=", headers=AUTH).status_code == 200
+    assert ctx.chain_calls[0]["data_filter"] is None
