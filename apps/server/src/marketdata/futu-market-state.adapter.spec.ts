@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { describe, it, expect, vi } from 'vitest';
-import { FutuMarketStateAdapter } from './futu-market-state.adapter.js';
+import { FutuMarketStateAdapter, MARKET_STATE_CACHE_TTL_MS } from './futu-market-state.adapter.js';
 import type { VendorHttpClient, VendorRequest } from './vendor-http-client.js';
 
 /**
@@ -170,5 +170,101 @@ describe('FutuMarketStateAdapter', () => {
       const doubled = makeShim([globalState(), globalState()]);
       await expect(makeAdapter(doubled.http).getMarketSessions()).rejects.toThrow(/一行/);
     });
+  });
+});
+
+/**
+ * 取值缓存 + single-flight（064 T013 期实证后补，见 adapter 类注释「为什么要有这一层」）。
+ *
+ * 🚨 判据是**对 transport 的调用次数**，不是「返回值对不对」—— 缓存坏掉时返回值照样对，
+ *    只是每一发都打了 vendor，而那正是把 10 发/30 秒配额打爆、让请求静默排队十几秒的病灶。
+ */
+describe('FutuMarketStateAdapter · 取值缓存 + single-flight', () => {
+  /** 可手动放行的假 transport —— 用来制造「第一发还在途中，第二发就来了」。 */
+  function makeDeferredShim() {
+    const pending: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];
+    const request = vi.fn(
+      () =>
+        new Promise((resolve, reject) => {
+          pending.push({ resolve, reject });
+        }),
+    );
+    const settleLast = (rows: unknown[]) =>
+      pending[pending.length - 1].resolve({
+        as_of: '2026-08-19T13:31:00+00:00',
+        count: rows.length,
+        rows,
+      });
+    const rejectLast = (err: unknown) => pending[pending.length - 1].reject(err);
+    return { http: { request } as unknown as VendorHttpClient, request, settleLast, rejectLast };
+  }
+
+  /** 可控时钟 —— 同 `VendorRateLimiter` 的注入范式，🚫 不用 fake timers（这里没有定时器）。 */
+  function makeClock(start = 1_000_000) {
+    let t = start;
+    return { now: () => t, advance: (ms: number) => (t += ms) };
+  }
+
+  it('TTL 内的重复调用零外呼（配额是 10 发/30 秒，每发都打就会静默排队）', async () => {
+    const { http, request } = makeShim([globalState()]);
+    const clock = makeClock();
+    const adapter = new FutuMarketStateAdapter(http, BASE, TOKEN, clock.now);
+
+    const first = await adapter.getMarketSessions();
+    clock.advance(MARKET_STATE_CACHE_TTL_MS - 1);
+    const second = await adapter.getMarketSessions();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+  });
+
+  it('TTL 过期后重新取（🚨 反例：缓存恒不过期会把收盘那一刻的切换永久钉住）', async () => {
+    const { http, request } = makeShim([globalState()]);
+    const clock = makeClock();
+    const adapter = new FutuMarketStateAdapter(http, BASE, TOKEN, clock.now);
+
+    await adapter.getMarketSessions();
+    clock.advance(MARKET_STATE_CACHE_TTL_MS);
+    await adapter.getMarketSessions();
+
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('🚨 single-flight：冷缓存下并发 5 发 → 只打 vendor 1 次，5 个调用方拿到同一份', async () => {
+    const { http, request, settleLast } = makeDeferredShim();
+    const adapter = new FutuMarketStateAdapter(http, BASE, TOKEN, makeClock().now);
+
+    // 🚨 全部在第一发落定**之前**发出 —— 纯 TTL 缓存在这一格是不设防的（都还没写进缓存）。
+    const inFlight = Array.from({ length: 5 }, () => adapter.getMarketSessions());
+    settleLast([globalState()]);
+    const results = await Promise.all(inFlight);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    for (const r of results) expect(r).toEqual(results[0]);
+  });
+
+  it('🚨 失败不进缓存：抛了之后下一发立刻真打（否则一次抖动被钉死整个 TTL）', async () => {
+    const { http, request } = makeThrowingShim(new Error('boom'));
+    const clock = makeClock();
+    const adapter = new FutuMarketStateAdapter(http, BASE, TOKEN, clock.now);
+
+    await expect(adapter.getMarketSessions()).rejects.toThrow(/boom/);
+    await expect(adapter.getMarketSessions()).rejects.toThrow(/boom/);
+
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('🚨 并发失败时每个等待者都收到错误（🚫 不许有人拿到 undefined 当成「闸开着」）', async () => {
+    const { http, rejectLast } = makeDeferredShim();
+    const adapter = new FutuMarketStateAdapter(http, BASE, TOKEN, makeClock().now);
+
+    const waiters = Array.from({ length: 3 }, () => adapter.getMarketSessions());
+    // 🚨 先挂上 catch 再 reject —— 否则 Node 会把尚未被 await 的那两个记成 unhandled rejection。
+    const settled = waiters.map((p) =>
+      p.then(() => 'resolved' as const).catch(() => 'rejected' as const),
+    );
+    rejectLast(new Error('boom'));
+
+    expect(await Promise.all(settled)).toEqual(['rejected', 'rejected', 'rejected']);
   });
 });
