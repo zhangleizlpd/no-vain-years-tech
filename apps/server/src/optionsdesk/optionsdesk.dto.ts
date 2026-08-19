@@ -1717,7 +1717,11 @@ export class LegTableResponse {
   state!: string;
 
   @ApiProperty({
-    description: '区块级 asOf = 快照归属交易日 (YYYY-MM-DD)',
+    description:
+      '区块级 asOf = 快照归属交易日 (YYYY-MM-DD)。' +
+      '🚨 **实时独载基线下它是「交易所的今天」**: 库内一期快照都没有时 (新锚盘中首访), ' +
+      '屏上的报价列全部来自此刻 ⇒ 归属的是**正在进行的这一场**, 而非上一场收盘。' +
+      '此时 source=realtime, 且 oiAsOf 仍是最近一个已收盘交易日 (两者依旧不同天)',
     type: 'string',
     nullable: true,
     example: '2026-08-03',
@@ -1787,7 +1791,9 @@ export class LegTableResponse {
       '🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, ' +
       '收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)。' +
       '🚨 **064 起它更不跟 quoteAsOf 走**: 实时档下 OI 三列恒保留收盘值 (盘中冻结, FR-004), ' +
-      '本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天',
+      '本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天。' +
+      '🚨 **实时独载基线 (source=realtime) 下 OI 改由同一批实时给出**, 而本字段取最近一个已收盘' +
+      '交易日 —— 两者由构造对齐 (OI 盘前更新、盘中冻结 ⇒ 此刻取回的那个数归属上一场收盘)',
     type: 'string',
     nullable: true,
     example: '2026-07-31',
@@ -1795,7 +1801,10 @@ export class LegTableResponse {
   oiAsOf!: string | null;
 
   @ApiProperty({
-    description: '快照来源 (eod / premarket_backfill) —— 「一直靠兜底续命」要看得见',
+    description:
+      '这批数从哪来 (eod / premarket_backfill / realtime) —— 「一直靠兜底续命」要看得见。' +
+      'realtime = **实时独载基线**: 库内一期收盘快照都没有, 整条链由这一次实时取回撑起 ' +
+      '(新锚盘中首访的形态, 当晚收盘轮跑完即自愈)',
     type: 'string',
     nullable: true,
     example: 'eod',
@@ -2382,7 +2391,9 @@ export class ChainReportResponse {
   marketDate!: string | null;
 
   @ApiProperty({
-    description: '快照归属交易日 (FR-033 ②)',
+    description:
+      '快照归属交易日 (FR-033 ②)。🚨 **实时独载基线 (source=realtime) 下它是「交易所的今天」**' +
+      ' —— 库内一期快照都没有时, 屏上的数全部来自此刻, 归属正在进行的这一场',
     type: 'string',
     nullable: true,
     example: '2026-08-11',
@@ -2438,7 +2449,8 @@ export class ChainReportResponse {
   @ApiProperty({
     description:
       '🚨 **OI 的归属交易日** (FR-033 ③) —— 与 asOf **不是同一天**。三个时点 MUST 各自成句, ' +
-      '🚫 MUST NOT 合并成一个「数据截至」。064 起实时档下它仍是那个归属日 (OI 盘中冻结)',
+      '🚫 MUST NOT 合并成一个「数据截至」。064 起实时档下它仍是那个归属日 (OI 盘中冻结)。' +
+      '🚨 实时独载基线下 OI 改由同一批实时给出, 而本字段取最近一个已收盘交易日 —— 两者由构造对齐',
     type: 'string',
     nullable: true,
     example: '2026-08-10',
@@ -2446,7 +2458,9 @@ export class ChainReportResponse {
   oiAsOf!: string | null;
 
   @ApiProperty({
-    description: '快照来源 (eod / premarket_backfill)',
+    description:
+      '这批数从哪来 (eod / premarket_backfill / realtime)。realtime = **实时独载基线**: ' +
+      '库内一期收盘快照都没有, 整条链由这一次实时取回撑起 (新锚盘中首访, 当晚收盘轮跑完即自愈)',
     type: 'string',
     nullable: true,
     example: 'eod',

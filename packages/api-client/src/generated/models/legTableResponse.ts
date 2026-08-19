@@ -28,7 +28,7 @@ export interface LegTableResponse {
   perspective: LegTableResponsePerspective;
   /** 区块状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开 */
   state: LegTableResponseState;
-  /** 区块级 asOf = 快照归属交易日 (YYYY-MM-DD) */
+  /** 区块级 asOf = 快照归属交易日 (YYYY-MM-DD)。🚨 **实时独载基线下它是「交易所的今天」**: 库内一期快照都没有时 (新锚盘中首访), 屏上的报价列全部来自此刻 ⇒ 归属的是**正在进行的这一场**, 而非上一场收盘。此时 source=realtime, 且 oiAsOf 仍是最近一个已收盘交易日 (两者依旧不同天) */
   asOf: string | null;
   /** 上一字段 (**区块级 asOf**) 的新鲜度档: CURRENT 不落后于该市场最近一个已收盘交易日 / STALE 停在更早的交易日 (全表照常渲染, 陈旧 ≠ 不可用) / UNAVAILABLE 无快照。🚨 **判据在 server** —— 它要查交易日历, 客户端拿设备本地日期比对美股恒判陈旧 (046 初版实证)。🚨 **名字带 asOf 前缀是刻意的**: 本响应有三个时点, 本档只判区块级 asOf —— oiAsOf 归属 T−1 是**定义如此**, 拿它判档会恒 STALE */
   asOfFreshnessTier: LegTableResponseAsOfFreshnessTier;
@@ -38,9 +38,9 @@ export interface LegTableResponse {
   realtimeDegrade: LegTableResponseRealtimeDegrade;
   /** 本批报价的时点, **粒度即档位** (064 FR-010 / FR-014): priceKind=realtime ⇒ ISO-8601 **时刻** (含秒); priceKind=eod_close ⇒ 该批快照归属的**交易日** `YYYY-MM-DD`。🚨 两档混成一种形态不会红任何一处, 但会让「数据截至 X · 收盘」的呈现出错 —— 收盘档带上时分秒会被读成此刻的盘口, 实时档只给日期则抹掉唯一要紧的那件事。🚫 客户端 MUST NOT 自己截断或补齐粒度 (那就是把档位判据抄了第二份) */
   quoteAsOf: string | null;
-  /** 🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, 收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)。🚨 **064 起它更不跟 quoteAsOf 走**: 实时档下 OI 三列恒保留收盘值 (盘中冻结, FR-004), 本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天 */
+  /** 🚨 **OI 的归属交易日** (YYYY-MM-DD) —— 与 asOf **不是同一天**: 美股期权 OI 在盘前更新, 收盘后采的快照其 OI 归属 T−1 日。OI 列 MUST 用它而非区块级 asOf (FR-013)。🚨 **064 起它更不跟 quoteAsOf 走**: 实时档下 OI 三列恒保留收盘值 (盘中冻结, FR-004), 本字段照旧是那个归属日 —— 🚫 MUST NOT 因为区块级翻了 realtime 就把它读成今天。🚨 **实时独载基线 (source=realtime) 下 OI 改由同一批实时给出**, 而本字段取最近一个已收盘交易日 —— 两者由构造对齐 (OI 盘前更新、盘中冻结 ⇒ 此刻取回的那个数归属上一场收盘) */
   oiAsOf: string | null;
-  /** 快照来源 (eod / premarket_backfill) —— 「一直靠兜底续命」要看得见 */
+  /** 这批数从哪来 (eod / premarket_backfill / realtime) —— 「一直靠兜底续命」要看得见。realtime = **实时独载基线**: 库内一期收盘快照都没有, 整条链由这一次实时取回撑起 (新锚盘中首访的形态, 当晚收盘轮跑完即自愈) */
   source: string | null;
   /** vendor 随链下发的标的价, **未复权** */
   spot: string | null;
