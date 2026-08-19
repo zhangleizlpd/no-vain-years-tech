@@ -195,7 +195,10 @@ export class TencentCalendarAdapter implements TradingCalendarSource {
         dates.add(date);
       }
     }
-    return { dates: [...dates], servedBy: 'tencent' };
+    // 🚨 `sessionKinds` **恒空** (063 Phase 2): 本源的判据是「某指数当日有 bar ⟺ 开市」——
+    // 半日市当天指数**照样有 bar**, 反推法结构上区分不了整天与半天。填 `whole` 兜底会把
+    // 「我不知道」伪装成「我确认是整天」, 那正是这一列存在的理由的反面。
+    return { dates: [...dates], sessionKinds: {}, servedBy: 'tencent' };
   }
 
   private klineUrl(symbol: string, chunk: CalendarChunk): string {

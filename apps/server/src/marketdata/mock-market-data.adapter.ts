@@ -206,7 +206,9 @@ export class MockMarketDataAdapter
       const day = d.getUTCDay();
       if (day >= 1 && day <= 5) dates.push(d.toISOString().slice(0, 10));
     }
-    return { dates, servedBy: 'mock' };
+    // `sessionKinds` 恒空 = 全 unknown ⇒ 消费侧回落常量, 与本列上线前逐点同行为。
+    // mock 蓄意**不造**半日市: 编出来的半日市会让测试绿在一个现实中不存在的形状上。
+    return { dates, sessionKinds: {}, servedBy: 'mock' };
   }
 
   async getBars(query: EodBarQuery): Promise<EodBarPoint[]> {

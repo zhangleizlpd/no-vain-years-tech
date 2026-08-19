@@ -62,7 +62,7 @@ const THIN_DATES = CN_TRADING_DATES.slice(0, 5);
  * (旧东财源被定向下线后即如此回应)。闸不在, 这就是一份「今天起没有交易日」的权威答复。
  */
 function poisonNode(dates: string[], servedBy: string): TradingCalendarSource {
-  return { fetchTradingDates: vi.fn(async () => ({ dates, servedBy })) };
+  return { fetchTradingDates: vi.fn(async () => ({ dates, sessionKinds: {}, servedBy })) };
 }
 
 /** test-local 健康源: 按 market 返预置日历 + 自报家门 (未预置的 market → throw)。 */
@@ -71,7 +71,7 @@ function healthyNode(byMarket: Record<string, string[]>, servedBy: string): Trad
     fetchTradingDates: vi.fn(async (market: string) => {
       const dates = byMarket[market];
       if (!dates) throw new Error(`[${servedBy}] 无 ${market} 数据`);
-      return { dates, servedBy };
+      return { dates, sessionKinds: {}, servedBy };
     }),
   };
 }
@@ -217,8 +217,12 @@ describe('044 US2 合理性闸 (Testcontainers PG, 真链 + 真落库: 毒饵零
     const l1: TradingCalendarSource = {
       fetchTradingDates: vi.fn(async (market: string) =>
         market === 'hk'
-          ? { dates: CN_TRADING_DATES.filter((d) => d !== '2026-07-01'), servedBy: 'tencent' }
-          : { dates: THIN_DATES, servedBy: 'tencent' },
+          ? {
+              dates: CN_TRADING_DATES.filter((d) => d !== '2026-07-01'),
+              sessionKinds: {},
+              servedBy: 'tencent',
+            }
+          : { dates: THIN_DATES, sessionKinds: {}, servedBy: 'tencent' },
       ),
     };
     const l2 = healthyNode({}, 'static');

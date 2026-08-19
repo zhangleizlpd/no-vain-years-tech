@@ -68,7 +68,7 @@ function healthyNode(byMarket: Record<string, string[]>, servedBy: string): Trad
     fetchTradingDates: vi.fn(async (market: string) => {
       const dates = byMarket[market];
       if (!dates) throw new Error(`[${servedBy}] 无 ${market} 数据`);
-      return { dates, servedBy };
+      return { dates, sessionKinds: {}, servedBy };
     }),
   };
 }

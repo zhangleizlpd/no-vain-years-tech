@@ -76,7 +76,7 @@ function healthyNode(byMarket: Record<string, string[]>, servedBy: string): Trad
     async fetchTradingDates(market: string) {
       const dates = byMarket[market];
       if (!dates) throw new Error(`[${servedBy}] 无 ${market} 数据`);
-      return { dates, servedBy };
+      return { dates, sessionKinds: {}, servedBy };
     },
   };
 }

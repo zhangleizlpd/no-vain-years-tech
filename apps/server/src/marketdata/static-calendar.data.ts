@@ -508,3 +508,16 @@ export const STATIC_CALENDAR_DATES: Readonly<Record<string, readonly string[]>> 
     '2026-12-31',
   ],
 };
+
+/**
+ * market → 该市场 2026 年**半日市**日期 (`YYYY-MM-DD` 升序)，是 {@link STATIC_CALENDAR_DATES}
+ * 的**子集** (063 Phase 2)。
+ *
+ * 🚨 **覆盖区间内「不在本表」= whole, 不是 unknown**: 官方年历对区间内每个工作日都表了态
+ * (空白 / `Half Day` / `Holiday`), 故补集是**有据的 whole**。区间外由 adapter 的
+ * Guardrail 7 直接 throw, 够不到这个推断。
+ */
+export const STATIC_CALENDAR_HALF_DAYS: Readonly<Record<string, readonly string[]>> = {
+  cn: [],
+  hk: ['2026-02-16', '2026-12-24', '2026-12-31'],
+};

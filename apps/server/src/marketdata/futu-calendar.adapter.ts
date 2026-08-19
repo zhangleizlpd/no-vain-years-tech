@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type {
+  SessionKind,
   TradingCalendarFetchResult,
   TradingCalendarSource,
 } from './trading-calendar-source.port.js';
@@ -15,9 +16,10 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * GET `<shim>/trading-days?market=US&start=<from>&end=<to>`, Bearer 鉴权。响应信封
  * `{as_of, count, rows: [{time: 'YYYY-MM-DD', trade_date_type: 'WHOLE'|'MORNING'}]}`。
  *
- * **半日市 `trade_date_type` 蓄意不落库** (user 2026-07-31 拍板): 现零消费方 (p4 的 EOD
- * 采集时点 / session 归属才用); 且腾讯与静态层都给不出该值 ⇒ 落库后列语义会随 `servedBy`
- * 漂移, 是个陷阱。p4 建 6 个维度时连「未知」语义一并设计。
+ * **半日市 `trade_date_type` 自 063 Phase 2 起落库**: 2026-07-31 拍板不落时的理由是「现零消费
+ * 方 (p4 的 EOD 采集时点 / session 归属才用)」—— 063 正是那个消费方, 该前提已失效。当时的第二条
+ * 顾虑「腾讯与静态层给不出 ⇒ 列语义随 `servedBy` 漂」由**三态**化解: 答不上来的源返 `{}`
+ * (= unknown), 与「答得上来且是整天」在类型上分得开, 谁也伪装不了谁。
  *
  * 🚨🚨 **本 adapter 的核心防线 = 首尾截断断言** (本机实测产物, 2026-07-31 · 7 个窗口)。
  * 富途该接口的两个边界**都以「静默截断」的形式表现, 不报错**:
@@ -97,28 +99,49 @@ interface ShimEnvelope {
 }
 
 /**
+ * 富途 `trade_date_type` → {@link SessionKind} (063 Phase 2)。**认不出的值一律返 `null`
+ * (= 缺席 = unknown)**, 绝不兜底成 `whole`: vendor 哪天加一个新枚举 (`AFTERNOON`?), 兜底会把
+ * 它静默读成整天, 而这个错**不会红** —— 只是那天的收盘时刻悄悄用了常量。
+ */
+function sessionKindOf(v: unknown): SessionKind | null {
+  if (v === 'WHOLE') return 'whole';
+  if (v === 'MORNING') return 'half';
+  return null;
+}
+
+/**
  * 信封 → 交易日集 (升序去重)。
  *
  * **坏行 = throw, 不跳过** (与腾讯 adapter 的「坏项跳过」刻意不同): 腾讯那边每项是 kline
  * 数组、混入杂项可信; 这里每行是 SDK 直出的 dict, 少了 `time` 只可能是**契约变更**, 而静默
  * 丢一行 = 静默丢一个交易日 —— 正是本 feature 要消灭的那类。
  */
-function parseRows(res: ShimEnvelope | null | undefined, ctx: string): string[] {
+function parseRows(
+  res: ShimEnvelope | null | undefined,
+  ctx: string,
+): { dates: string[]; sessionKinds: Record<string, SessionKind> } {
   const rows = res?.rows;
   if (!Array.isArray(rows)) {
     throw new Error(`[futu] trading-calendar 响应缺 rows[] (契约变更?): ${ctx}`);
   }
   const dates = new Set<string>();
+  const sessionKinds: Record<string, SessionKind> = {};
   for (const row of rows) {
-    const time = row !== null && typeof row === 'object' ? (row as { time?: unknown }).time : null;
+    const cell = row !== null && typeof row === 'object' ? (row as Record<string, unknown>) : {};
+    const time = cell.time;
     if (typeof time !== 'string' || !ISO_DATE_RE.test(time)) {
       throw new Error(
         `[futu] trading-calendar 行缺合法 time (契约变更?): ${ctx}; 行=${JSON.stringify(row)}`,
       );
     }
     dates.add(time);
+    // 🚨 `trade_date_type` 缺失 / 认不出 → **不写这个 key** (= unknown), 不 throw: 少一个
+    // 收盘时刻只让那天回落常量 (= 本列上线前的行为), 而为它中断整份日历填充是拿一个诊断级
+    // 字段去阻断结构性数据 —— 轻重倒置。`time` 缺失才 throw, 因为那是真丢一个交易日。
+    const kind = sessionKindOf(cell.trade_date_type);
+    if (kind !== null) sessionKinds[time] = kind;
   }
-  return [...dates].sort();
+  return { dates: [...dates].sort(), sessionKinds };
 }
 
 @Injectable()
@@ -155,9 +178,9 @@ export class FutuCalendarAdapter implements TradingCalendarSource {
     });
 
     const ctx = `${market} ${from}..${to}`;
-    const dates = parseRows(res, ctx);
+    const { dates, sessionKinds } = parseRows(res, ctx);
     this.assertNotTruncated(dates, fromMs, toMs, ctx);
-    return { dates, servedBy: 'futu' };
+    return { dates, sessionKinds, servedBy: 'futu' };
   }
 
   /**

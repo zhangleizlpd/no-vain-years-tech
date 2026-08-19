@@ -52,7 +52,7 @@ function stubSource(
       if (from > to) throw new Error(`[stub] 区间非法 (from > to): ${from}..${to}`);
       const result = handler(market, from, to);
       if (result instanceof Error) throw result;
-      return { dates: result, servedBy };
+      return { dates: result, sessionKinds: {}, servedBy };
     },
   };
   return { source, calls };

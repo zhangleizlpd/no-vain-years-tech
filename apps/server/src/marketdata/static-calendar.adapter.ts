@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { STATIC_CALENDAR_COVERAGE, STATIC_CALENDAR_DATES } from './static-calendar.data.js';
+import {
+  STATIC_CALENDAR_COVERAGE,
+  STATIC_CALENDAR_DATES,
+  STATIC_CALENDAR_HALF_DAYS,
+} from './static-calendar.data.js';
 import type {
   TradingCalendarFetchResult,
   TradingCalendarSource,
@@ -90,6 +94,15 @@ export class StaticCalendarAdapter implements TradingCalendarSource {
 
     // 数据升序 ⇒ filter 保序。区间内确无交易日 → 空数组是**合法**结果 (port 契约), 与上文
     // 「区间外」的 throw 是两回事 —— 别把两者合流。
-    return { dates: dates.filter((d) => d >= from && d <= to), servedBy: 'static' };
+    const inRange = dates.filter((d) => d >= from && d <= to);
+
+    // 🚨 063 Phase 2: 覆盖区间内**每一天都给 kind** —— 官方年历对区间内每个工作日都表了态
+    // (空白 / `Half Day` / `Holiday`), 故「不在半日市表里」是**有据的 whole**, 不是 unknown。
+    // 这个推断只在上面 Guardrail 7 放行之后成立 (区间外根本走不到这里)。
+    const half = new Set(STATIC_CALENDAR_HALF_DAYS[market] ?? []);
+    const sessionKinds = Object.fromEntries(
+      inRange.map((d) => [d, half.has(d) ? 'half' : 'whole'] as const),
+    );
+    return { dates: inRange, sessionKinds, servedBy: 'static' };
   }
 }

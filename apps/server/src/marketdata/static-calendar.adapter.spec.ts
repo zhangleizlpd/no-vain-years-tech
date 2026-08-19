@@ -44,6 +44,31 @@ describe('StaticCalendarAdapter', () => {
       expect(cn.dates).toEqual([]);
     });
 
+    it('🚨 063 Phase 2: hk 半日市 = half, 同区间其余交易日 = whole', async () => {
+      const r = await adapter.fetchTradingDates('hk', '2026-12-01', '2026-12-31');
+
+      // HKEX 官方年历 2026: 平安夜 + 除夕两天半日市 (12-25 圣诞整天休市, 不在 dates 里)。
+      expect(r.sessionKinds['2026-12-24']).toBe('half');
+      expect(r.sessionKinds['2026-12-31']).toBe('half');
+      expect(r.sessionKinds['2026-12-23']).toBe('whole');
+      expect(r.sessionKinds['2026-12-25']).toBeUndefined(); // 休市日没有「场」
+    });
+
+    it('🚨 春节除夕 2026-02-16 是 hk 半日市 (它同时也是「Half Day 计为交易日」那条的探针日)', async () => {
+      const r = await adapter.fetchTradingDates('hk', '2026-02-16', '2026-02-16');
+      expect(r.sessionKinds).toEqual({ '2026-02-16': 'half' });
+    });
+
+    it('cn 全年零半日市 ⇒ 区间内每天都是 whole (A 股除夕直接休市, 不半开)', async () => {
+      const r = await adapter.fetchTradingDates('cn', '2026-12-01', '2026-12-31');
+      expect(new Set(Object.values(r.sessionKinds))).toEqual(new Set(['whole']));
+    });
+
+    it('🚨 sessionKinds 的 key 恰为 dates —— 非交易日不出现 (它没有「场」)', async () => {
+      const r = await adapter.fetchTradingDates('hk', '2026-02-13', '2026-02-20');
+      expect(Object.keys(r.sessionKinds).sort()).toEqual([...r.dates].sort());
+    });
+
     it('🚨 Connect 陷阱探针日: 2026-07-01 cn **有**、hk 无（Connect 关闭 ≠ 市场休市）', async () => {
       const cn = await adapter.fetchTradingDates('cn', '2026-07-01', '2026-07-01');
       const hk = await adapter.fetchTradingDates('hk', '2026-07-01', '2026-07-01');

@@ -121,13 +121,32 @@ describe('FutuCalendarAdapter', () => {
       expect(out.dates).not.toContain('2026-07-03'); // 独立日 (顺延) 休市
     });
 
-    it('半日市行照常计入交易日, 但 trade_date_type 不出现在返回里 (本 PR 不落库)', async () => {
+    it('🚨 半日市行照常计入交易日, 且 trade_date_type 落进 sessionKinds (063 Phase 2)', async () => {
       const { http } = makeShim();
       const out = await makeAdapter(http).fetchTradingDates('us', '2026-11-20', '2026-12-04');
 
       expect(out.dates).toContain('2026-11-27'); // MORNING 仍是交易日
       expect(out.dates).not.toContain('2026-11-26'); // 感恩节休市
-      expect(Object.keys(out)).toEqual(['dates', 'servedBy']); // 契约面无第三个字段
+      // 「是不是交易日」与「开整天还是半天」是两个正交事实 —— 2026-07-31 那次判「零消费方」
+      // 所以只取前者, 063 就是那个消费方。
+      expect(out.sessionKinds['2026-11-27']).toBe('half');
+      expect(out.sessionKinds['2026-11-25']).toBe('whole');
+    });
+
+    it('🚨 trade_date_type 缺失 / 认不出 → 该日**缺席** sessionKinds (= unknown), 不兜底成 whole', async () => {
+      const http = makeHttp({
+        rows: [
+          { time: '2026-07-01', trade_date_type: 'WHOLE' },
+          { time: '2026-07-02' }, // 字段缺席
+          { time: '2026-07-03', trade_date_type: 'AFTERNOON' }, // vendor 哪天加的新枚举
+        ],
+      });
+      const out = await makeAdapter(http).fetchTradingDates('us', '2026-07-01', '2026-07-03');
+
+      // 三天都是交易日 —— kind 认不出 MUST NOT 影响「这天开不开市」这个结构性事实。
+      expect(out.dates).toEqual(['2026-07-01', '2026-07-02', '2026-07-03']);
+      // 而 kind 侧只认得第一天。兜底成 whole 会把「vendor 出了新枚举」静默读成整天, 且不会红。
+      expect(out.sessionKinds).toEqual({ '2026-07-01': 'whole' });
     });
 
     it('非 us 市场 → 明确抛 (cn/hk 走腾讯主源, 不该路由到这里), 且零外呼', async () => {
@@ -227,7 +246,7 @@ describe('FutuCalendarAdapter', () => {
       // 取「年初未发布」那一刻 vendor 真正会给的日期集, 塞进一个不做截断断言的节点。
       const truncated = tradingDaysBetween('2026-12-06', '2026-12-31');
       const naiveNode: TradingCalendarSource = {
-        fetchTradingDates: async () => ({ dates: truncated, servedBy: 'naive' }),
+        fetchTradingDates: async () => ({ dates: truncated, sessionKinds: {}, servedBy: 'naive' }),
       };
       const out = await new CalendarSourceFallbackChain([naiveNode]).fetchTradingDates(
         'us',
@@ -250,6 +269,7 @@ describe('FutuCalendarAdapter', () => {
       const { http } = makeShim();
       expect(await makeAdapter(http).fetchTradingDates('us', '2026-07-04', '2026-07-05')).toEqual({
         dates: [],
+        sessionKinds: {},
         servedBy: 'futu',
       });
     });

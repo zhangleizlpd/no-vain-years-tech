@@ -18,7 +18,7 @@ function makeSource(servedBy: string): TradingCalendarSource & { calls: string[]
     calls,
     fetchTradingDates: vi.fn(async (market: string, from: string, to: string) => {
       calls.push(`${market} ${from}..${to}`);
-      return { dates: [from], servedBy };
+      return { dates: [from], sessionKinds: {}, servedBy };
     }),
   };
 }
@@ -47,6 +47,7 @@ describe('MarketRoutedCalendarSource', () => {
     const routed = new MarketRoutedCalendarSource({ us: makeSource('futu') });
     expect(await routed.fetchTradingDates('us', '2026-07-01', '2026-07-31')).toEqual({
       dates: ['2026-07-01'],
+      sessionKinds: {},
       servedBy: 'futu',
     });
   });
@@ -87,6 +88,7 @@ describe('createForwardCalendarSource (062 T003 — 前瞻路由)', () => {
 
     expect(await forward.fetchTradingDates('cn', '2026-08-19', '2026-12-31')).toEqual({
       dates: ['2026-08-19'],
+      sessionKinds: {},
       servedBy: 'static',
     });
     expect(staticCal.calls).toEqual(['cn 2026-08-19..2026-12-31']);
@@ -100,6 +102,7 @@ describe('createForwardCalendarSource (062 T003 — 前瞻路由)', () => {
 
     expect(await forward.fetchTradingDates('hk', '2026-08-19', '2026-12-31')).toEqual({
       dates: ['2026-08-19'],
+      sessionKinds: {},
       servedBy: 'static',
     });
     expect(staticCal.calls).toEqual(['hk 2026-08-19..2026-12-31']);
@@ -113,6 +116,7 @@ describe('createForwardCalendarSource (062 T003 — 前瞻路由)', () => {
 
     expect(await forward.fetchTradingDates('us', '2026-08-19', '2026-12-31')).toEqual({
       dates: ['2026-08-19'],
+      sessionKinds: {},
       servedBy: 'futu',
     });
     expect(futu.calls).toEqual(['us 2026-08-19..2026-12-31']);
