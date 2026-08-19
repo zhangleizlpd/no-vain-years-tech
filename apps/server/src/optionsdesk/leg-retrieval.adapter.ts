@@ -501,11 +501,20 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   }
 
   /**
-   * 用**此刻**的报价覆盖库内收盘档 —— 恰好七列 (064 FR-001 / FR-002)。
+   * 用**此刻**的报价覆盖库内收盘档 —— 七个值 + 描述其中两个的那一个标 (064 FR-001 / FR-002)。
    *
-   * 🚨 **写入面只有这七列**: `bid` / `ask` / `bidSize` / `askSize` / `delta` / `iv` / `volume`。
-   * 派生量 (成交额 / 单笔权利金 / 价差及其相对值) 由下游从这七列现算 ⇒ 自动成为实时口径,
+   * 🚨 **写入面 = 七个值**: `bid` / `ask` / `bidSize` / `askSize` / `delta` / `iv` / `volume`。
+   * 派生量 (成交额 / 单笔权利金 / 价差及其相对值) 由下游从这七个值现算 ⇒ 自动成为实时口径,
    * 🚫 MUST NOT 为它们另设覆盖路径 (FR-003: 派生量有第二个来源就等于同一个数在两处各算一份)。
+   * 🚨 **外加 `greeksComplete` —— 它不是第八个值, 是描述 `delta` / `iv` 这两格的标**, 故必须
+   * 跟着那两格一起翻。留着库内那个, 就是让一个标去描述**一批已经不在屏上的数**, 两个方向都坏
+   * 且都渲染得出来:
+   * · 昨收深实值腿 IV 无解 (库内 `false`)、此刻实时给全了 ⇒ `get-legs.usecase.ts` 的
+   *   `deriveDeltaColumns(greeksComplete ? delta : null)` 把值掐掉 ⇒ Δ 与 σ 距空着、不判档不
+   *   着色 (FR-007 的「数据不全」形态被误触发), 而数据就在手里;
+   * · 昨收齐全 (库内 `true`)、此刻实时的 Δ/IV 皆空 ⇒ 契约上下发「greeks 齐全」而两格是 `null`。
+   * 📌 与下面 OI 那条**判据相反且不冲突**: OI 盘中冻结 ⇒ 此刻取回的与库内**是同一个数**, 覆不
+   * 覆盖都一样, 故按 FR-004 不纳入; `greeksComplete` 描述的两格**已经被换掉了**, 不跟就是错的。
    * 🚨 **持仓量三列 (`openInterest` / `netOpenInterest` / `oiAsOf`) 的保留是结构性的**
    * (FR-004 / plan D8): 前者不在下面的字面量里、后两者根本不在 {@link LegChainRow} 上 ——
    * 🚫 MUST NOT 为了「对称」把它们纳入再跳过, 那把编译期保证降级成一条注释。依据是实测:
@@ -692,6 +701,10 @@ function applyRealtimeBatch(
         // 🚫 原样带出, 不换算 —— 与库内那条同源纪律 (`LegChainRow.iv`)。
         iv: vendorNumber(quote.iv),
         volume: vendorNumber(quote.volume),
+        // 🚨 标跟着它描述的那两格走 (见方法头)。`??` 只是把端口的 `boolean | null` 收成
+        // `boolean` —— `null ⟺ 非期权行`, 而 `quoteByCode` 只装 `isOption` 的行 ⇒ 右支结构上
+        // 够不着。🚫 MUST NOT 把它读成「vendor 没给就沿用库内」的兜底策略, 那是另一回事。
+        greeksComplete: quote.greeksComplete ?? leg.greeksComplete,
         priceKind: 'realtime',
       };
     }),

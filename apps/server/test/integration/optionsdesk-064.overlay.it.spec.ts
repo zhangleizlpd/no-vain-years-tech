@@ -231,6 +231,13 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     readonly oi: string;
     readonly vol: string;
     readonly iv: string;
+    /**
+     * 库内那批快照的 greeks 完整性标; 省略 = `true` (基线四条腿的形态, 省略即维持原样)。
+     *
+     * 🚨 只有 `greeksComplete` 标做成可覆盖, `delta` / `iv` 两列**仍写死** —— 本字段存在的
+     * 唯一理由是造「库内的标与实时批的标不一致」那两条反例, 让标与它描述的两格分头取值。
+     */
+    readonly greeksComplete?: boolean;
   }
 
   /**
@@ -352,7 +359,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
           netOpenInterest: '111',
           volume: leg.vol,
           underlyingSpot: SPOT,
-          greeksComplete: true,
+          greeksComplete: leg.greeksComplete ?? true,
         },
       });
     }
@@ -506,6 +513,29 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       delta: '-0.04',
       iv: '23.5',
       volume: '60',
+    }),
+    // ── `greeksComplete` 跟不跟着 Δ/IV 翻的两条反例 ─────────────────────────
+    /** 昨收 IV 无解 (库内标 `false`)、此刻实时把两格都给全了 ⇒ 标必须翻成 `true`。 */
+    'L-GREEKS-WAKE': realtimeRow({
+      bid: '2.55',
+      ask: '2.62',
+      bidSize: '77',
+      askSize: '88',
+      delta: '-0.37',
+      iv: '28.5',
+      volume: '512',
+      greeksComplete: true,
+    }),
+    /** 昨收齐全 (库内标 `true`)、此刻实时的两格皆空 ⇒ 标必须翻成 `false`。 */
+    'L-GREEKS-FADE': realtimeRow({
+      bid: '2.55',
+      ask: '2.62',
+      bidSize: '77',
+      askSize: '88',
+      // Δ/IV 蓄意留 `null` (`realtimeRow` 的默认值) —— 买卖价仍在 ⇒ 整行**不会**走
+      // `state_branch` 11 的「按未取到处理」那条路, 于是这一行确实被覆盖过。
+      volume: '512',
+      greeksComplete: false,
     }),
   };
 
@@ -663,6 +693,76 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     // 跳过了」, 而是压根没有这个字段可覆盖。把它加进返回类型再在 overlay 里跳过, 等于把一条
     // 编译期保证降级成一条注释。
     for (const leg of live.legs) expect(Object.keys(leg)).not.toContain('netOpenInterest');
+  });
+
+  /**
+   * `greeksComplete` 的两条反例样本 —— 报价六维照抄 `L-OK` (三视角全进), **只在库内那个标上
+   * 分头取值**, 于是「标翻没翻」不会被成员变化掩盖。行权价错开一档只为不与 `L-OK` 同格。
+   */
+  const GREEKS_WAKE: SeedLeg = {
+    code: 'L-GREEKS-WAKE',
+    dte: 35,
+    strike: '91',
+    bid: '2.00',
+    ask: '2.10',
+    oi: '900',
+    vol: '40',
+    iv: '20',
+    // 昨收深实值腿 bid 跌破内在价值 ⇒ IV 无解, 是数学固有现象不是采集故障
+    // (`option-snapshot.port.ts`: 实测 2150 行里 227 行是这个形态)。
+    greeksComplete: false,
+  };
+
+  const GREEKS_FADE: SeedLeg = {
+    ...GREEKS_WAKE,
+    code: 'L-GREEKS-FADE',
+    strike: '92',
+    greeksComplete: true,
+  };
+
+  it('🚨 `FR-002` 反例 (假阴): 昨收 greeks 缺失、此刻实时给全了 ⇒ 标跟着两格一起翻, Δ 不被掐掉', async () => {
+    await seedChain({ extraLegs: [GREEKS_WAKE] });
+    readPort.respond = realtimeBatch();
+
+    const closed = await chainOf(false);
+    const live = await chainOf(true);
+    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+    // 反例装置自检: 库内那个标**确实**是 false, 否则下面两条恒绿 = 等于没写。
+    expect(closed.legs.find((leg) => leg.code === GREEKS_WAKE.code)?.greeksComplete).toBe(false);
+
+    const leg = live.legs.find((row) => row.code === GREEKS_WAKE.code);
+    expect(leg?.delta).toBe(-0.37);
+    expect(leg?.greeksComplete).toBe(true);
+
+    // 🚨 用户可见的那一半: 标不跟着翻的话, `get-legs.usecase.ts` 的
+    // `deriveDeltaColumns(greeksComplete ? delta : null)` 会把已经在手里的 Δ 掐成 `null`
+    // ⇒ Δ 与 σ 距空着、不判档不着色 (FR-007 的「数据不全」形态被误触发)。
+    const table = await moduleRef
+      .get(GetLegsUseCase)
+      .execute(SYMBOL, 'all', NOW, null, undefined, true);
+    const row = table.legs.find((view) => view.code === GREEKS_WAKE.code);
+    expect(row?.greeksComplete).toBe(true);
+    expect(row?.absDelta).toBeCloseTo(0.37, 10);
+  });
+
+  it('🚨 `FR-002` 反例 (假阳): 昨收 greeks 齐全、此刻实时两格皆空 ⇒ 标翻成 `false`, 不下发「齐全」的假话', async () => {
+    await seedChain({ extraLegs: [GREEKS_FADE] });
+    readPort.respond = realtimeBatch();
+
+    const closed = await chainOf(false);
+    const live = await chainOf(true);
+    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+    expect(closed.legs.find((leg) => leg.code === GREEKS_FADE.code)?.greeksComplete).toBe(true);
+
+    const leg = live.legs.find((row) => row.code === GREEKS_FADE.code);
+    // 前置: 这一行**确实被覆盖过** (买卖价来自实时) ⇒ 排除 `state_branch` 11 那条
+    // 「买卖价皆空 ⇒ 整行按未取到处理」的路径, 否则本条测的就不是标而是那条分支。
+    expect(leg?.priceKind).toBe('realtime');
+    expect(leg?.bid?.toString()).toBe(decimalText('2.55'));
+    expect(leg?.delta).toBeNull();
+    expect(leg?.greeksComplete).toBe(false);
   });
 
   it('🚨 `state_branch` 9: 库内零快照行 ⇒ 维持「未就绪」, 不靠实时值单独成链 (且零外呼)', async () => {
