@@ -113,6 +113,19 @@ updated_at: '2026-08-18'
 
 - [ ] T013 [Ops] **上线灌视野 + 生产验收取证**（`SC-001`, `SC-002`, `SC-004`, plan §D9）：按 plan §D9 的**不可颠倒**顺序：① migration 上线（空表 = 全 `unknown`，各消费方按 unknown 分派照常工作，**不停摆**）→ ② 部署带前瞻填充的版本 → ③ **立即手动跑一次 seed CLI** 灌历史 + 前瞻视野（否则空等到当晚 21:00）→ ④ 次一交易日取证。→ verify: **四项实测，逐条对照 plan Gate 0.1 的基线**：① `select market, covered_from, covered_to, served_by from marketdata.calendar_coverage` —— 三市场 `covered_to` 均抵当年 12-31；② `select market, max(date) from marketdata.trading_day group by market` —— 三市场均 ≥ 今天；③ **次一交易日北京 09:30 之后**查 `bull:alert-eval:completed` 的 `returnvalue`，**必须出现 `evaluated`**（基线是 43/43 `skipped-holiday`，🚨 Guardrail 15：这是唯一硬证据，别拿日志没报错顶替）；④ 视野探针手动跑一次 → 绿。四项全过才算本 feature 落地
 
+  **2026-08-19 四项实测**（prod `server-v0.31.2`；①②④ 08-18 首取，本次为求同时点一致性**全部重取**）：
+
+  - **① ✅ `calendar_coverage`** —— 三市场 `covered_from = 2015-01-01` / `covered_to = 2026-12-31`，均抵**当年**年末（`served_by`：cn/hk=`static`、us=`futu`）。
+  - **② ✅ `trading_day` 最大日期** —— cn / hk / us 均 `2026-12-31`，`max(date) >= current_date` 三行全 `t`。
+  - **③ ✅ `SC-001` 的唯一硬证据 —— alert 队列出现 `evaluated`**：窗口 `08-19 05:35 → 09:45` 共 52 拍（`bull:alert-eval:completed` 的 `removeOnComplete` 只留 60 拍、5 分钟一拍 ⇒ 回看窗约 5 小时，**过 14:00 即被挤出**，故当日早盘取）。分布 **`evaluated` 4 拍 / `skipped-session` 47 拍 / `skipped-holiday` 0 拍**（另 1 拍为 `alert-eval-catchup` 日频补评，returnvalue 无 `status` 字段，非本判据对象）。**变点精确落在 `09:30`**（`09:25 skipped-session` → `09:30 evaluated`），即 A 股连续竞价开盘时刻。4 拍原文逐字相同：`{"status":"evaluated","calendar":"confirmed","summary":{"fetched":0,"triggered":0,"skippedDuplicate":0,"skippedNoData":0}}`。
+  - **④ ✅ 视野探针 `exit=0`** —— `✅ 交易日历健康 (心跳 26h · 视野 5 个交易日 · 监控 cn/hk/us · 主源 cn,hk=tencent us=futu): cn=11h前/tencent 视野2026-12-31(余量90个交易日) | hk=11h前/tencent 视野2026-12-31(余量93个交易日) | us=11h前/futu 视野2026-12-31(余量93个交易日)`
+
+  **③ 的两条独立证据**（一条不够）：`skipped-holiday` 由基线 43/43 归零 ⇒ 062 修的那个「无记录读成非交易日」不在了；`"calendar":"confirmed"` ⇒ 走的是三态里的**确定**分支，不是 `unknown` 走 fail-open 蒙对的。变点落在 `09:30` 本身是第三重交叉验证：交易日闸与时段闸（`isWithinTradingSession`）各司其职、没有互相掩盖。
+
+  ⚠️ **③ 证的是「闸开了、求值真的在跑」，不是「预警端到端触发过」** —— `summary.fetched = 0`，当时 prod 无活跃盘中预警行。`SC-001` 的判据（队列必须出现 `evaluated`）已满足，且 062 修的本就是那道闸；若要覆盖「真有预警时会触发」，需另造预警行再等一个交易日窗口，属另一条证据。
+
+  🚨 **④ 的 `served_by` MUST NOT 被当成「前瞻段不覆写心跳」（PR #101）的实证** —— 本次读到的 `cn/hk=tencent` 由 **2026-08-18 23:14:50 CST 的窄窗 seed** 写下（v0.31.1 部署于 23:09 CST，5 分钟后跑的 seed），而窄窗 seed **只跑活源链段、压根没跑前瞻段**。要证「前瞻段 MUST NOT 覆写心跳」必须等一次**两段都跑**的 `populate()`（每晚 21:00 cron）。⚠️ 顺带记一个读法陷阱：`calendar_sync_health.last_success_at` 是 **naive `timestamp`**（schema 无 `@db.Timestamptz`），对它用 `AT TIME ZONE 'Asia/Shanghai'` 会把 UTC 值反向解释成 Shanghai 值、算出比真实早 8 小时的结论。
+
 ## Dependencies
 
 ```text
