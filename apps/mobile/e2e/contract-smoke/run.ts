@@ -17,6 +17,7 @@
  * e2e-real-backend.yml 软信号（失败开 issue,不拦 merge）。本地 feature 收尾手动跑作 PR2 门。
  */
 import { bootRealBackend, type RealBackendCtx } from '../_support/real-backend-harness';
+import * as optionsdeskIntradayLegQuotes from './064-intraday-leg-quotes.contract';
 import * as alert from './alert.contract';
 import * as alertIndicators from './alert-indicators.contract';
 import * as alertPush from './alert-push.contract';
@@ -73,6 +74,7 @@ const SPECS: readonly ContractSpec[] = [
   optionsdeskChainLegPicker,
   optionsdeskChainReport,
   optionsdeskRealtimeSpot,
+  optionsdeskIntradayLegQuotes,
   portfolioHoldings,
 ];
 

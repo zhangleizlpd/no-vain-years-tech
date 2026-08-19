@@ -393,10 +393,21 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
 
   // 🎯 靶心 ④：三个时点是三件事，且 oiAsOf **不是** asOf 那天。
   assert.equal(table.asOf, today, 'legs.asOf = 快照归属交易日（YYYY-MM-DD）');
+  // 🚨 **064 T007 起本条改判，就地订正（值层 drift，`nx typecheck` 结构上看不见）**：
+  //    `quoteAsOf` 的**粒度即档位**（064 FR-010）—— `priceKind=eod_close` ⇒ 该批快照归属的
+  //    **交易日**；只有 `realtime` 档才是 ISO 时刻。本片跑在 `MARKETDATA_PROVIDER=mock` 下，
+  //    实时源结构上取不到 ⇒ 恒收盘档 ⇒ 这里恒是 `YYYY-MM-DD`。
+  //    📌 原断言顺带承载的「同期两来源取新的那条」（dedupe，FR-040）**没有丢**：它由紧随其后的
+  //       `table.source === 'eod'` 原样承担（premarket_backfill 那条的 `quote_as_of` 更早）。
+  //    🚨 反向那半条保留判别力：粒度**必须不是**时刻，否则「昨收伪装成此刻」又回来了。
   assert.equal(
     table.quoteAsOf,
-    `${today}${QUOTE_TIME_NEWEST}`,
-    'legs.quoteAsOf = 本批最新一条报价的采集时刻（ISO-8601，非日期）',
+    today,
+    'legs.quoteAsOf：收盘档下粒度 = 交易日（064 FR-010「粒度即档位」）',
+  );
+  assert.ok(
+    !table.quoteAsOf?.includes('T'),
+    'legs.quoteAsOf 带上了时分秒 —— 收盘档被渲成此刻的盘口（064 FR-010）',
   );
   assert.equal(table.oiAsOf, plusDays(today, -1), 'legs.oiAsOf 归属 T−1（Guardrail 6）');
   assert.notEqual(table.oiAsOf, table.asOf, 'legs: OI 归属日与区块 asOf MUST NOT 折成同一天');
@@ -446,7 +457,13 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'positionBucket',
       'positionBucketSetAt',
       'positionBucketSource',
+      // 064 FR-009/FR-010：**区块级**时间口径（与每腿那个不是同一个数）。
+      'priceKind',
       'quoteAsOf',
+      // 064 FR-010/FR-011（T007a）：链级降级标 —— 「本该给实时却没给成」，正常收盘档恒 null。
+      // 🚨 它**必须在键集里**：nullable ≠ 可缺席，`undefined` 会被 JSON 序列化整个吃掉，
+      //    而客户端读到 `undefined` 走的是「没接这根线」那条路。
+      'realtimeDegrade',
       'rentDepth',
       'source',
       'spot',
@@ -1451,6 +1468,8 @@ function assertLegKeySetClosed(leg: LegResponse): void {
       'isRecommended',
       'openInterest',
       'periodRate',
+      // 064 FR-009：**本行**数值的时间口径 —— 逐行成立，与区块级那个 priceKind 不是同一个数。
+      'priceKind',
       // 053 FR-032：相对价差（召回层流动性判据在用的同一个派生值）。
       'relativeSpread',
       'sigmaDistance',

@@ -97,7 +97,7 @@ updated_at: '2026-08-19'
 
 - [X] T011 [Mobile-E2E] **hermetic UI e2e**（`FR-009`, `FR-011`, `FR-013`, `FR-021`, `FR-022`, `SC-004`, `SC-009`, US1-AS3, US1-AS4, US1-AS5, US1-AS6, US2-AS5）：新建 `apps/mobile/e2e/optionsdesk-intraday-tiers.spec.ts`（Playwright Expo Web，mock 后端）覆盖 —— 实时档 asOf 呈时刻 / 收盘档呈交易日 / 熔断降级整表回落且**零 0 值** / 部分缺失**逐行**标档（断言两种档位都在 DOM 里）/ OI 列归属日不随实时档变今天 / 刷新后成员变化提示出现且条数正确 / 首屏等待态期间**不出现任何腿行**。→ verify: `pnpm nx run mobile:e2e --grep 064`；🚨 叠屏 DOM 双命中用 `getByRole` 收窄（per `reference_expo_web_e2e_and_router_footguns`）
 
-- [ ] T012 [Contract-Smoke] **契约冒烟**（`FR-009`, `FR-010`, `FR-016`, `SC-005`）：新建 `apps/mobile/e2e/contract-smoke/064-intraday-leg-quotes.contract.ts` —— 用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条 happy path：拉选约表 → 断言 `priceKind` 与 `quoteAsOf` 的**序列化形态**（联合字面量 / 两种时间格式）能被客户端正确解封；再断言**实时关闭**时的响应与基线一致。→ verify: `pnpm nx run mobile:contract-smoke`
+- [X] T012 [Contract-Smoke] **契约冒烟**（`FR-009`, `FR-010`, `FR-016`, `SC-005`）：新建 `apps/mobile/e2e/contract-smoke/064-intraday-leg-quotes.contract.ts` —— 用生成的 `@nvy/api-client` 打 testcontainers 真 server，走一条 happy path：拉选约表 → 断言 `priceKind` 与 `quoteAsOf` 的**序列化形态**（联合字面量 / 两种时间格式）能被客户端正确解封；再断言**实时关闭**时的响应与基线一致。→ verify: `pnpm nx run mobile:contract-smoke`
 
 - [ ] T013 [Ops] **美股盘中真机实证**（`SC-001`, `SC-002`, US1-AS1, US1-AS2, US2-AS1, US2-AS2, US2-AS3, US2-AS4, US3-AS1, US3-AS2）：美股常规时段（北京 21:30–04:00）真机打开选约表，逐条与外部行情终端对拍 bid/ask/成交量；下拉刷新观察 asOf 推进；记录 285 合约档的端到端等待时间（`SC-002` 预算 P95 ≤ 1.5 s，基线是 p0 线上实测的 0.35–0.41 s）。⚠️ 这三类 web e2e **验不到**（spec `web_compat_notes` 已写明）：真实时段内候选集随价格移动的进出 / 收盘那一刻的档位切换 / 与真源的数值一致性。→ verify: 截图 + 对拍表贴进本文件；env-gated 真 vendor IT（`RUN_MARKETDATA_IT=true`）手动跑一次并贴输出（该门恒 skip，「测试全绿」对真契约不构成证据）
 
