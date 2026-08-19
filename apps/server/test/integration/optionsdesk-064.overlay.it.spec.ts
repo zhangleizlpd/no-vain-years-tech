@@ -6,6 +6,7 @@ import { setupIsolatedStores } from '../_support/isolated-db';
 import { AppModule } from '../../src/app/app.module';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { PrismaService } from '../../src/security/prisma.service';
+import { Prisma } from '../../src/generated/prisma/client';
 import { GetLegsUseCase } from '../../src/optionsdesk/get-legs.usecase';
 import { GetChainReportUseCase } from '../../src/optionsdesk/get-chain-report.usecase';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
@@ -19,11 +20,17 @@ import {
   type OptionSnapshotBatch,
   type OptionSnapshotPort,
   type OptionSnapshotQuery,
+  type OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
 
 /**
- * 064 T003 —— **实时开关关态下的逐字节等价** (`FR-009` / `FR-015` / `FR-016` / `SC-005`,
- * `state_branch` 2, plan D6 / D7)。
+ * 064 T003 + T004a —— **实时开关的两档**: 关态逐字节等价 (`FR-009` / `FR-015` / `FR-016` /
+ * `SC-005`, `state_branch` 2) + 开态尾部覆盖七列 / OI 结构性不覆盖 (`FR-001` / `FR-002` /
+ * `FR-003` / `FR-004` / `FR-019` / `SC-006` / `SC-007`, `state_branches` 1 / 8 / 9 / 10),
+ * plan D1 / D6 / D7 / D8。
+ *
+ * 📌 降级四路径 (超时 / 部分缺失 / 非交易时段 / 基准陈旧) 与两个标的现价归 T005 / T004b,
+ * **本文件的开态只走 happy path** —— 别在这里为它们补 `it()`, 会与那两个 task 撞车。
  *
  * ## 为什么必须要真 PG + 真 DI 容器
  *
@@ -53,19 +60,36 @@ import {
  * 红。要重新生成 (仅当**蓄意**改变输出契约时) 就带那个 env 再跑一次, 并在 PR 里说明为什么。
  */
 
-/** 计数型读取口替身 —— 关态下它一次都不该被调到。 */
-class CountingSnapshotReadPort implements OptionSnapshotPort {
+/** 本批实时报价的**我方采集时刻** (信封 `as_of`) —— 与库内 `quote_as_of` 蓄意不同刻。 */
+const REALTIME_AS_OF = new Date('2026-08-11T17:45:03.000Z');
+
+/**
+ * 计数 + 可编程的读取口替身。
+ *
+ * 🚨 **计数是关态的唯一机器判据** (`FR-016`), `respond` 是开态的输入面。默认返回**空批**:
+ * 忘了给 `respond` 的用例会拿到「一条都没覆盖」而不是「悄悄覆盖成了某个默认值」。
+ */
+class SpySnapshotReadPort implements OptionSnapshotPort {
   readonly calls: OptionSnapshotQuery[] = [];
+  respond: (query: OptionSnapshotQuery) => OptionSnapshotBatch = () => ({
+    asOf: REALTIME_AS_OF,
+    rows: [],
+  });
 
   getSnapshots(query: OptionSnapshotQuery): Promise<OptionSnapshotBatch> {
     this.calls.push(query);
-    return Promise.resolve({ asOf: new Date('2026-08-11T17:45:03.000Z'), rows: [] });
+    return Promise.resolve(this.respond(query));
   }
 }
 
 /** `nx test server` 的 cwd 恒为 `apps/server` (同本目录其余 IT 的 `SERVER_DIR` 体例)。 */
 const BASELINE_PATH = join(process.cwd(), 'test/integration/optionsdesk-064.baseline.json');
 const WRITE_BASELINE = process.env.NVY_064_WRITE_BASELINE === '1';
+
+/** vendor 侧金额串的规范形 —— 尾零归一, 用于与 `Decimal.toString()` 对比。 */
+function decimalText(value: string | null): string | undefined {
+  return value === null ? undefined : new Prisma.Decimal(value).toString();
+}
 
 /** `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。 */
 function stable(value: unknown): string {
@@ -76,7 +100,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   let stores: Awaited<ReturnType<typeof setupIsolatedStores>>;
   let moduleRef: TestingModule;
   let prisma: PrismaService;
-  let readPort: CountingSnapshotReadPort;
+  let readPort: SpySnapshotReadPort;
 
   /** 请求时刻 = 2026-08-11 ET 16:00 ⇒ 交易所的今天恒为 2026-08-11 (钉住 DTE 基准)。 */
   const NOW = new Date('2026-08-11T20:00:00.000Z');
@@ -98,7 +122,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     // 读取口的绑定由 override 决定, 不受本机 env 影响 (且本文件一次外呼都不该发)。
     delete process.env.MARKETDATA_PROVIDER;
 
-    readPort = new CountingSnapshotReadPort();
+    readPort = new SpySnapshotReadPort();
     moduleRef = await Test.createTestingModule({ imports: [AppModule, OptionsdeskModule] })
       .overrideProvider(OPTION_SNAPSHOT_READ_PORT)
       .useValue(readPort)
@@ -113,6 +137,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
 
   beforeEach(async () => {
     readPort.calls.length = 0;
+    readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
     await prisma.optionDailySnapshot.deleteMany();
     await prisma.optionContract.deleteMany();
     await prisma.instrument.deleteMany();
@@ -184,7 +209,11 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     },
   ];
 
-  async function seedChain(): Promise<void> {
+  /**
+   * @param opts.snapshots `false` ⇒ 只落合约集不落快照行 (`state_branch` 9 的输入:
+   *   新锚在首次收盘采集跑过之前, 库里有合约没有快照)。
+   */
+  async function seedChain(opts: { snapshots?: boolean } = {}): Promise<void> {
     const instrument = await prisma.instrument.create({
       data: {
         market: 'us',
@@ -213,6 +242,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
         },
         select: { id: true },
       });
+      if (opts.snapshots === false) continue;
       await prisma.optionDailySnapshot.create({
         data: {
           contractId: contract.id,
@@ -307,5 +337,192 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       `缺基线夹具 ${BASELINE_PATH} —— 见文件头「golden file」段`,
     ).toBe(true);
     expect(actual).toBe(readFileSync(BASELINE_PATH, 'utf8').trimEnd());
+  });
+
+  // ── T004a 开态: 尾部覆盖七列 + OI 结构性不覆盖 ─────────────────────────────
+
+  /**
+   * 实时批的逐行取值 —— **七列每一列都与库内不同**, 且 OI 两列蓄意喂成与库内不同的数。
+   *
+   * 🚨 后者是 `FR-004` / `SC-006` 的**反例装置**: 若 overlay 把 OI 也覆盖了, 下面那条断言就红。
+   * 喂同一个数的话该断言恒绿 —— 那就等于没写。
+   */
+  const REALTIME_BY_CODE: Readonly<Record<string, Omit<OptionSnapshotRow, 'code' | 'isOption'>>> = {
+    'L-OK': realtimeRow({
+      bid: '2.55',
+      ask: '2.62',
+      bidSize: '77',
+      askSize: '88',
+      delta: '-0.41',
+      iv: '31.5',
+      volume: '512',
+      openInterest: '4321',
+      netOpenInterest: '999',
+    }),
+    'L-BUILD': realtimeRow({
+      bid: '1.81',
+      ask: '1.90',
+      bidSize: '11',
+      askSize: '12',
+      delta: '-0.22',
+      iv: '26.5',
+      volume: '133',
+      openInterest: '4322',
+      netOpenInterest: '998',
+    }),
+    'L-PENNY': realtimeRow({
+      bid: '0.09',
+      ask: '0.14',
+      bidSize: '3',
+      askSize: '4',
+      delta: '-0.02',
+      iv: '19.5',
+      volume: '7',
+      openInterest: '4323',
+      netOpenInterest: '997',
+    }),
+    'L-WIDE': realtimeRow({
+      bid: '3.33',
+      ask: '6.66',
+      bidSize: '5',
+      askSize: '6',
+      delta: '-0.55',
+      iv: '33.5',
+      volume: '9',
+      openInterest: '4324',
+      netOpenInterest: '996',
+    }),
+  };
+
+  function realtimeRow(
+    over: Partial<Omit<OptionSnapshotRow, 'code' | 'isOption'>>,
+  ): Omit<OptionSnapshotRow, 'code' | 'isOption'> {
+    return {
+      underlyingCode: 'US.PEP',
+      bid: null,
+      ask: null,
+      bidSize: null,
+      askSize: null,
+      last: '9.99',
+      prevClose: '8.88',
+      iv: null,
+      delta: null,
+      // 🚨 本片**不覆盖**其余希腊值 (`FR-002`: 覆盖没有读者的值只是无收益的成本) —— 给它们
+      // 喂一个显眼的值, 若哪天被写进 `LegChainRow` 会当场看得出来。
+      gamma: '0.111',
+      vega: '0.222',
+      theta: '-0.333',
+      rho: '0.444',
+      openInterest: null,
+      netOpenInterest: null,
+      volume: null,
+      turnover: '123456.78',
+      vendorUpdateTime: new Date('2026-08-04T13:00:00.000Z'),
+      greeksComplete: true,
+      ...over,
+    };
+  }
+
+  /** 按请求里的 code 逐条回放; `extra` 用于塞库内不存在的合约 (`state_branch` 10)。 */
+  function realtimeBatch(
+    extra: readonly string[] = [],
+  ): (q: OptionSnapshotQuery) => OptionSnapshotBatch {
+    return (query) => ({
+      asOf: REALTIME_AS_OF,
+      rows: [
+        ...query.contractCodes.flatMap((code): OptionSnapshotRow[] => {
+          const seeded = REALTIME_BY_CODE[code];
+          return seeded === undefined ? [] : [{ code, isOption: true, ...seeded }];
+        }),
+        ...extra.map(
+          (code): OptionSnapshotRow => ({
+            code,
+            isOption: true,
+            ...realtimeRow({ bid: '7.77', ask: '7.88' }),
+          }),
+        ),
+      ],
+    });
+  }
+
+  const chainOf = (realtime: boolean) =>
+    moduleRef
+      .get<LegRetrievalPort>(LEG_RETRIEVAL_PORT)
+      .retrieveChain({ symbol: SYMBOL, now: NOW, realtime });
+
+  it('🚨 `FR-001` / `FR-002` / `state_branch` 1: 七列取到实时值, 逐行 `priceKind=realtime`, 区块时刻取信封 `asOf`', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+    // 一次请求 = 一次外呼, 且 `contractCodes` 取自**已组装的 legs** (库内链行的 code)。
+    expect(readPort.calls).toHaveLength(1);
+    expect(readPort.calls[0].underlyingSymbol).toBe(SYMBOL);
+    expect([...readPort.calls[0].contractCodes].sort()).toEqual(LEGS.map((l) => l.code).sort());
+
+    expect(snapshot.chain.priceKind).toBe('realtime');
+    // 🚨 区块时刻是**我方采集时刻** (`FR-010`), 🚫 不是库内 `quote_as_of`, 也不是行内
+    // `vendorUpdateTime` (那是最后成交时刻)。
+    expect(snapshot.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
+
+    for (const leg of snapshot.legs) {
+      const expected = REALTIME_BY_CODE[leg.code];
+      expect(leg.priceKind).toBe('realtime');
+      // 经 `Decimal` 归一后再比 —— 直接比字符串会被尾零绊住 ('1.90' vs '1.9'), 那不是口径差异。
+      expect(leg.bid?.toString()).toBe(decimalText(expected.bid));
+      expect(leg.ask?.toString()).toBe(decimalText(expected.ask));
+      expect(leg.bidSize).toBe(Number(expected.bidSize));
+      expect(leg.askSize).toBe(Number(expected.askSize));
+      expect(leg.delta).toBe(Number(expected.delta));
+      expect(leg.iv).toBe(Number(expected.iv));
+      expect(leg.volume).toBe(Number(expected.volume));
+    }
+  });
+
+  it('🚨 `FR-004` / `SC-006` 反例: OI 三列在两档下**逐字节相同** —— 实时批喂的是不同的数', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const closed = await chainOf(false);
+    const live = await chainOf(true);
+    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+    // 反例装置自检: 实时批给的 OI **确实**与库内不同, 否则下面那条断言恒绿 = 等于没写。
+    for (const leg of LEGS) {
+      expect(REALTIME_BY_CODE[leg.code].openInterest).not.toBe(leg.oi);
+    }
+
+    const oiOf = (snap: NonNullable<Awaited<ReturnType<typeof chainOf>>>) =>
+      snap.legs.map((leg) => `${leg.code}:${String(leg.openInterest)}`).sort();
+    expect(oiOf(live)).toEqual(oiOf(closed));
+    expect(live.chain.oiAsOf).toEqual(closed.chain.oiAsOf);
+    // 🚨 归属日 MUST NOT 被标成当天 (`SC-006`) —— 种子里 OI 归属 T−1。
+    expect(live.chain.oiAsOf).toEqual(dateOf(PREV_SESSION));
+
+    // 🚨 **Guardrail 6 的结构判据**: `netOpenInterest` 根本不在腿的写入面上 —— 它不是「覆盖时
+    // 跳过了」, 而是压根没有这个字段可覆盖。把它加进返回类型再在 overlay 里跳过, 等于把一条
+    // 编译期保证降级成一条注释。
+    for (const leg of live.legs) expect(Object.keys(leg)).not.toContain('netOpenInterest');
+  });
+
+  it('🚨 `state_branch` 9: 库内零快照行 ⇒ 维持「未就绪」, 不靠实时值单独成链 (且零外呼)', async () => {
+    await seedChain({ snapshots: false });
+    readPort.respond = realtimeBatch();
+
+    expect(await chainOf(true)).toBeNull();
+    // 链都没就绪就不该去问价 —— 外呼在这里发出去就是白烧配额。
+    expect(readPort.calls).toHaveLength(0);
+  });
+
+  it('🚨 `state_branch` 10: 返回集里库内不存在的合约被忽略 (盘中新挂, 当日不呈现)', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch(['US.PEP260918P130000-GHOST']);
+
+    const snapshot = await chainOf(true);
+    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
+    expect(snapshot.legs).toHaveLength(LEGS.length);
+    expect(snapshot.legs.map((leg) => leg.code)).not.toContain('US.PEP260918P130000-GHOST');
   });
 });
