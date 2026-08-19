@@ -352,6 +352,12 @@ export function UnderlyingDetailScreen({
                       // 🚨 064：实时档下这一行说的是**库内快照的归属日**（「快照 X」），
                       //    而不是「数据截至 X · 收盘」—— 后者会与档位条上的时刻同屏对冲。
                       blockPriceKind={blockPriceKind}
+                      // 🚨 去重的前提是档位条**真的在说同一个交易日**（收盘档 + 有 quoteAsOf）；
+                      //    quoteAsOf 缺失时它渲「未就绪」，那时本行必须留着。
+                      tierBarSaysSameDay={
+                        blockPriceKind === 'eod_close' &&
+                        (legTable.chain?.quoteAsOf ?? null) !== null
+                      }
                       // 表还没到手就没有可判的东西 —— 显式 UNAVAILABLE，MUST NOT 默认成 CURRENT。
                       freshnessTier={legTable.chain?.asOfFreshnessTier ?? 'UNAVAILABLE'}
                       source={legTable.chain?.source ?? null}
@@ -540,6 +546,7 @@ function LegBlockHeader({
   freshnessTier,
   source,
   countLine,
+  tierBarSaysSameDay,
 }: {
   asOf: string | null;
   /** 🚨 064：实时档下本行改说「快照 X」—— 报价的时点归档位条，两处报同一个量必 drift。 */
@@ -547,17 +554,31 @@ function LegBlockHeader({
   freshnessTier: FreshnessTier;
   source: string | null;
   countLine: string;
+  /**
+   * 档位条此刻是否**正在渲一个同值的交易日**（收盘档 + 拿得到 `quoteAsOf`）。判据在调用点算 ——
+   * 🚫 MUST NOT 在本组件里由 `blockPriceKind` 单独推断：`quoteAsOf` 缺失时档位条渲的是
+   * 「未就绪」（没有任何时点），那时本行若也隐藏，整屏就一个日期都没有了。
+   */
+  tierBarSaysSameDay: boolean;
 }) {
   const asOfLabel = legAsOfLabel(asOf, freshnessTier, blockPriceKind);
+  // 🚨 **收盘档 + 当期这一格，本行与档位条同值同义**（两处都在说「08-18 的收盘」）⇒ 只渲染
+  //    一处，交给档位条（它还多带原因与刷新）。其余三格 MUST NOT 一并隐藏，各有独有信息：
+  //    ① 实时档下本行说「快照 X」（库内快照的归属日）而档位条说此刻的时刻 —— 不同值；
+  //    ② 陈旧态是本行**独有**的告警（判据要查交易日历，档位条拿不到）；
+  //    ③ 无时点态要显式说「无数据时点」，静默消失会被读成「还没加载」。
+  const duplicatesTierBar = tierBarSaysSameDay && freshnessTier === 'CURRENT';
   return (
     <View
       className="flex-row items-center justify-between border-b border-line bg-surface-alt px-md py-xs"
       testID="optionsdesk-detail-leg-header"
     >
       <View className="flex-row items-baseline gap-xs">
-        <Text className={asOfLabel.className} testID="optionsdesk-detail-leg-asof">
-          {asOfLabel.text}
-        </Text>
+        {duplicatesTierBar ? null : (
+          <Text className={asOfLabel.className} testID="optionsdesk-detail-leg-asof">
+            {asOfLabel.text}
+          </Text>
+        )}
         {source !== null && source !== 'eod' ? (
           <Text className="text-[10px] text-ink-muted" testID="optionsdesk-detail-leg-source">
             {`${LEG_COPY.sourceBackfillPrefix}${source}`}
