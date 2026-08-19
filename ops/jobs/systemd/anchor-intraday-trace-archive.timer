@@ -1,0 +1,19 @@
+[Unit]
+Description=Archive app-container trace before the 13h log ring overwrites it (hourly)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+
+[Timer]
+# 每小时,分钟错开整点 —— 77 上另外几个探针都压在 :00（calendar-health 00/4、
+# table-health 02/6、futu-shim-health 01/4），本任务要 `docker logs` 拉一段再写盘，
+# 没必要跟它们抢同一分钟。
+#
+# 频率论证：容器日志环是 `json-file 10m × 3` = 30 MB，实测约 2.25 MB/h ⇒ **约 13 小时转没**。
+# 一小时一跑 = **13 倍余量**：要连漏 13 次才会真丢数据，而看门狗在漏 3 次前就报了。
+# 更慢（4h/6h）也够，但余量从 13 倍掉到 3 倍、2 倍 —— 这条任务存在的全部理由就是「别丢」，
+# 拿余量换一天 20 次 journal 记录不划算。
+# Persistent 补跑宕机期间漏掉的一次；断点在 .since 文件里，补跑不会重复归档。
+OnCalendar=*-*-* *:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
