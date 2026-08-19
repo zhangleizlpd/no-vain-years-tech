@@ -174,6 +174,15 @@ export interface UseLegTableResult {
   asOfMismatch: boolean;
   /** 手动重取三份 —— `asOfMismatch` 的唯一出口。 */
   refreshAll: () => void;
+  /**
+   * 064 `FR-022`：**屏上已有一批、新一批在飞**。首屏（还没有表）恒 `false` —— 两者的处置不同：
+   * 首屏走等待态（骨架），刷新中**保留当前表**、不遮罩不置灰，新一批到齐后整体替换。
+   *
+   * 🚨 **MUST NOT 拿它去清空 `sections`** —— 那正好把「刷新」做成了一次闪表；React Query 在
+   *    重取期间把旧 `data` 留在原地，所以「保表」是**不写代码**就成立的，写了才会坏。
+   * 📌 判据只看**当前视角**那一份：屏上是它，另外两份在后台补齐与用户无关。
+   */
+  isRefreshing: boolean;
 }
 
 export function useLegTable(symbol: string): UseLegTableResult {
@@ -280,6 +289,9 @@ export function useLegTable(symbol: string): UseLegTableResult {
     if (consistencyAction === 'refetch') refreshAll();
   }, [consistencyAction, nextLatched, latched, refreshAll]);
 
+  // 064 `FR-022`：`isPending` = 首屏（连一份 `data` 都还没有）⇒ 那一档归等待态，不是刷新。
+  const isRefreshing = currentQuery.isFetching && !currentQuery.isPending;
+
   const block = useMemo(
     () =>
       legBlockState(
@@ -348,6 +360,7 @@ export function useLegTable(symbol: string): UseLegTableResult {
     retry,
     asOfMismatch: consistencyAction === 'warn',
     refreshAll,
+    isRefreshing,
   };
 }
 

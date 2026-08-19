@@ -45,7 +45,14 @@
 // 判定全在 `underlying-detail.rules.ts`（vitest 覆盖）；本文件与子件只做接线与版面，
 // 渲染 / 交互 / a11y 走 Playwright e2e（本仓测试分层：vitest=logic / Playwright=UI）。
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, SectionList, Text, View, type LayoutChangeEvent } from 'react-native';
+import {
+  Pressable,
+  RefreshControl,
+  SectionList,
+  Text,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useSharedValue } from 'react-native-reanimated';
@@ -88,7 +95,7 @@ import { LegRow } from './leg-row';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
 import { LegTierBar } from './leg-tier-bar';
-import { legEodRowCount, type LegBlockPriceKind } from './leg-tier-bar.rules';
+import { legEodRowCount, legQuotePhase, type LegBlockPriceKind } from './leg-tier-bar.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskChainReportRoute } from './optionsdesk-routes';
 import { PositionBucketChips } from './position-bucket-chips';
@@ -259,6 +266,14 @@ export function UnderlyingDetailScreen({
                 keyExtractor={(leg) => leg.code}
                 // 🚨 Guardrail 9 —— 只在 iOS 默认为 true，MUST 显式传（否则 Android 表头滚走）。
                 stickySectionHeadersEnabled={true}
+                // 🚨 064 FR-022 下拉刷新：横滑 `Pan` 已配 `failOffsetY([-12, 12])`（纵向超 12px
+                //    直接交还本列表）⇒ 两者正交，不抢手势。**不遮罩不置灰** —— 旧表全程可读，
+                //    新一批到齐后由 React Query 整体替换。
+                //    📌 RN Web 的 `RefreshControl` 无下拉行为 ⇒ 档位条上另有一个可点入口，
+                //    两者调的是**同一个** refetch。
+                refreshControl={
+                  <RefreshControl refreshing={legTable.isRefreshing} onRefresh={legTable.retry} />
+                }
                 testID="optionsdesk-detail-scroll"
                 ListHeaderComponent={
                   // ── 046 三块（FR-001 版式不动，三个组件一行不改）─────────────
@@ -362,6 +377,11 @@ export function UnderlyingDetailScreen({
                       priceKind={blockPriceKind}
                       quoteAsOf={legTable.chain?.quoteAsOf ?? null}
                       eodRowCount={eodRowCount}
+                      // 🚨 064 FR-022：首屏走等待态、刷新中保表 —— 两者文案与处置都不同。
+                      phase={legQuotePhase(legTable.block, legTable.isRefreshing)}
+                      // 📌 刷新 = 重取**当前视角这一份**，与失败重试是同一个操作 ⇒ 复用同一个入口。
+                      //    🚫 MUST NOT 为「刷新」另造第二个 refetch —— 两个名字必然长出两个实现。
+                      onRefresh={legTable.retry}
                     />
                     <LegTableHeader
                       tx={tx}

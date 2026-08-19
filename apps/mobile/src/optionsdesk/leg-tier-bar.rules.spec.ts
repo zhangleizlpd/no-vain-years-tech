@@ -13,6 +13,7 @@ import {
   formatQuoteSessionDay,
   legEodRowCount,
   legQuoteColumnSubs,
+  legQuotePhase,
   legQuoteTier,
   legRowEodMarked,
   legTierBarClassNames,
@@ -205,5 +206,76 @@ describe('🚨 Guardrail 9 / 10 配色禁令（值面扫描，非源码 grep）'
     for (const name of legTierBarClassNames()) {
       expect(name).not.toContain('ink-subtle');
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 064 T009 —— 在途相位（首屏等待态 / 刷新保表，FR-022）
+// ════════════════════════════════════════════════════════════════════════════
+describe('🚨 FR-022 在途相位压过档位', () => {
+  it('首屏等待态：不给任何时点（屏上还没有任何一批数），且说明**不先出收盘档**', () => {
+    const view = legQuoteTier({
+      priceKind: null,
+      quoteAsOf: null,
+      eodRowCount: 0,
+      phase: 'first_load',
+    });
+
+    expect(view.variant).toBe('busy');
+    expect(view.name).toBe(COPY.tierBusyFirstLoad);
+    expect(view.stamp).toBeNull();
+    expect(view.reason).toBe(COPY.tierBusyFirstLoadNote);
+  });
+
+  it('刷新中：报**「上次」的时点**并标明屏上这批仍是它（粒度随它自己的档位走）', () => {
+    const view = legQuoteTier({
+      priceKind: 'realtime',
+      quoteAsOf: LIVE_ISO,
+      eodRowCount: 0,
+      phase: 'refreshing',
+    });
+
+    expect(view.variant).toBe('busy');
+    expect(view.name).toBe(COPY.tierBusyRefreshing);
+    expect(view.note).toBe(COPY.tierBusyKeptNote);
+    expect(view.stamp).toBe('21:47:32');
+  });
+
+  it('🚨 刷新中的收盘档报的仍是**交易日**不是时刻 —— 「上次」不改变那一批的粒度', () => {
+    const view = legQuoteTier({
+      priceKind: 'eod_close',
+      quoteAsOf: SESSION_DAY,
+      eodRowCount: 0,
+      phase: 'refreshing',
+    });
+
+    expect(view.stamp).toBe('08-18');
+  });
+
+  it('🚨 在途相位**压过档位**：刷新中不渲「实时」那一档 —— 时点尚未推进，说了就是假的', () => {
+    const view = legQuoteTier({
+      priceKind: 'realtime',
+      quoteAsOf: LIVE_ISO,
+      eodRowCount: 0,
+      phase: 'refreshing',
+    });
+
+    expect(view.variant).not.toBe('realtime');
+    expect(view.name).not.toBe(COPY.tierLive);
+  });
+
+  it('相位映射：首屏 loading → first_load；有表在飞 → refreshing；其余 → settled', () => {
+    expect(legQuotePhase('loading', false)).toBe('first_load');
+    // 🚨 首屏优先：`isRefreshing` 在首屏本就恒 false，两条同时为真时也不许报成「刷新」。
+    expect(legQuotePhase('loading', true)).toBe('first_load');
+    expect(legQuotePhase('available', true)).toBe('refreshing');
+    expect(legQuotePhase('available', false)).toBe('settled');
+    expect(legQuotePhase('chain_not_ready', false)).toBe('settled');
+  });
+
+  it('在途那一档的配色仍受两条禁令约束（值面扫描覆盖全部形态）', () => {
+    const names = legTierBarClassNames();
+    expect(names).toContain('bg-surface-alt');
+    for (const name of names) expect(name).not.toContain('quote-');
   });
 });

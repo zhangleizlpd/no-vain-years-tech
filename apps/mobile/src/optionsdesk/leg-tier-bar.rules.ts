@@ -17,6 +17,7 @@
 import type { LegResponsePriceKind, LegTableResponsePriceKind } from '@nvy/api-client';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import type { LegBlockState } from './underlying-detail.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
@@ -76,7 +77,26 @@ export function formatQuoteSessionDay(asOf: string | null | undefined): string |
  *    ⇒ 收盘档走中性、由 {@link LegQuoteTierView.reason} 如实说明两种可能，告警底色留给
  *    **真·未就绪**（这一批连时点都没有）。要把两者分开呈现，前提是契约先下发降级原因。
  */
-export type LegQuoteTierVariant = 'realtime' | 'eod_close' | 'not_ready';
+export type LegQuoteTierVariant = 'realtime' | 'eod_close' | 'not_ready' | 'busy';
+
+/**
+ * 这一批的在途相位（064 T009 / FR-022）。
+ *
+ * 🚨 **首屏与刷新中是两件事，MUST NOT 合并**：首屏屏上**还没有表**（走等待态，且刻意不先出
+ *    一份收盘档），刷新中屏上**有一批完整的表**（保留不动、不遮罩不置灰，到齐后整体替换）。
+ *    合并成一个 `isLoading` 之后，两者只能共用一套文案与一种处置，而它们该说的话正相反。
+ */
+export type LegQuotePhase = 'settled' | 'first_load' | 'refreshing';
+
+/**
+ * 区块态 + 刷新中 → 相位。复杂度 O(1)。
+ * 📌 `loading` 优先：`isRefreshing` 在首屏恒 `false`（hook 侧已由 `isPending` 分开），
+ *    这里再判一次是**结构冗余不是重复判据** —— 它让本函数对任意入参组合都有确定输出。
+ */
+export function legQuotePhase(block: LegBlockState, isRefreshing: boolean): LegQuotePhase {
+  if (block === 'loading') return 'first_load';
+  return isRefreshing ? 'refreshing' : 'settled';
+}
 
 export interface LegQuoteTierInput {
   /** 区块级档位；契约未到手 ⇒ `null`（**不默认成收盘档**，那是替服务端作答）。 */
@@ -85,6 +105,8 @@ export interface LegQuoteTierInput {
   readonly quoteAsOf: string | null;
   /** 🚨 区块标 realtime **而行标 eod_close** 的条数（FR-011 逐行降级）；其余情形恒 0。 */
   readonly eodRowCount: number;
+  /** 在途相位（FR-022）。缺省 `'settled'` —— 只有 T009 的两条等待路径要显式传。 */
+  readonly phase?: LegQuotePhase;
 }
 
 export interface LegQuoteTierView {
@@ -93,6 +115,12 @@ export interface LegQuoteTierView {
   name: string;
   /** 时刻含秒（实时）/ `MM-DD`（收盘）/ `null`（未就绪 —— **不给看似正常的时点**）。 */
   stamp: string | null;
+  /**
+   * 时点**前面**的限定语（刷新中的「屏上这批仍是」）；其余形态恒 `null`。
+   * 🚨 位置是语义的一部分：跟在时点后面会被读成「这批取于 X 之后」，而它说的是「屏上这个数
+   *    还是 X 那一批的」。
+   */
+  note: string | null;
   /**
    * 🚨 **收盘档与未就绪两档恒非空**（FR-011：显式标降级且说得出所以然）——
    *    🚫 MUST NOT 退化成「加载失败」那种零信息文案。实时档只在**部分缺失**时非空。
@@ -133,7 +161,20 @@ const TIER_TONE: Readonly<
     stampClass: 'text-ink',
     dotClass: 'bg-warn',
   },
+  // 在途 = 与收盘档同一档中性（mockup `.tier-busy` 逐值）。🚫 **蓄意不给它自己的颜色** ——
+  // 「正在取」是过程不是结论，染成品牌蓝会让人以为已经拿到了实时。
+  busy: {
+    container: 'bg-surface-alt',
+    nameClass: 'text-ink-muted',
+    stampClass: 'text-ink-muted',
+    dotClass: 'bg-line-strong',
+  },
 };
+
+/** 时点的**粒度随它自己的档位走**（刷新中要报「上次」那一批的时点，档位没变）。O(1)。 */
+function stampOf(priceKind: LegBlockPriceKind | null, quoteAsOf: string | null): string | null {
+  return priceKind === 'realtime' ? formatQuoteClock(quoteAsOf) : formatQuoteSessionDay(quoteAsOf);
+}
 
 /**
  * 区块级档位条的呈现决策。复杂度 O(1)。
@@ -147,6 +188,30 @@ const TIER_TONE: Readonly<
  *    也 MUST NOT 把交易日当成时刻渲上去 —— 那正好制造出「昨收伪装成此刻」的那张表。
  */
 export function legQuoteTier(input: LegQuoteTierInput): LegQuoteTierView {
+  // 🚨 在途相位**压过档位**（FR-022）：这一批还没到齐，屏上的档位说的是**上一批**的事 ——
+  //    在它上面继续渲「实时 21:47:32」会让人以为时点已经推进了。
+  if (input.phase === 'first_load') {
+    return {
+      variant: 'busy',
+      name: COPY.tierBusyFirstLoad,
+      // 🚫 首屏不给任何时点 —— 屏上还没有任何一批数，写上去就是凭空的。
+      stamp: null,
+      note: null,
+      reason: COPY.tierBusyFirstLoadNote,
+      ...TIER_TONE.busy,
+    };
+  }
+  if (input.phase === 'refreshing') {
+    return {
+      variant: 'busy',
+      name: COPY.tierBusyRefreshing,
+      // 「上次」的时点 —— 屏上这批仍是它，粒度照旧随**它自己的**档位走。
+      stamp: stampOf(input.priceKind, input.quoteAsOf),
+      note: COPY.tierBusyKeptNote,
+      reason: '',
+      ...TIER_TONE.busy,
+    };
+  }
   if (input.priceKind === 'realtime') {
     const stamp = formatQuoteClock(input.quoteAsOf);
     if (stamp !== null) {
@@ -154,6 +219,7 @@ export function legQuoteTier(input: LegQuoteTierInput): LegQuoteTierView {
         variant: 'realtime',
         name: COPY.tierLive,
         stamp,
+        note: null,
         // 逐行降级的**去处**（FR-009：档位逐行成立）—— 整页统一标实时与整页统一降级都渲染得出
         // 一张完整的表，只有把「有几条不是此刻的」说出来，人才知道要去行内找那枚「收」标。
         reason: input.eodRowCount > 0 ? COPY.tierPartialMiss(input.eodRowCount) : '',
@@ -168,6 +234,7 @@ export function legQuoteTier(input: LegQuoteTierInput): LegQuoteTierView {
         variant: 'eod_close',
         name: COPY.tierEod,
         stamp,
+        note: null,
         reason: COPY.tierEodReason,
         ...TIER_TONE.eod_close,
       };
@@ -177,6 +244,7 @@ export function legQuoteTier(input: LegQuoteTierInput): LegQuoteTierView {
     variant: 'not_ready',
     name: COPY.tierNotReady,
     stamp: null,
+    note: null,
     reason: COPY.tierNotReadyReason,
     ...TIER_TONE.not_ready,
   };
