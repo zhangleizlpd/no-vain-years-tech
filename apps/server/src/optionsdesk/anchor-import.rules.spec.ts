@@ -3,10 +3,15 @@ import { Prisma } from '../generated/prisma/client';
 import {
   ANCHOR_CONFIDENCE_MAX,
   ANCHOR_CONFIDENCE_MIN,
+  ANCHOR_CREATE_INVALID_PREFIX,
+  ANCHOR_IMPORT_INVALID_PREFIX,
   IMPORTABLE_MARKETS,
+  INVALID_ANCHOR_MARKET_CODE,
+  INVALID_ANCHOR_TICKER_CODE,
   INVALID_IMPORT_CONFIDENCE_CODE,
   INVALID_IMPORT_MARKET_CODE,
   INVALID_IMPORT_TICKER_CODE,
+  assertCreatableTicker,
   assertImportableConfidence,
   assertImportableTicker,
 } from './anchor-import.rules';
@@ -85,5 +90,45 @@ describe('anchor-import.rules — 置信度值域 (FR-004)', () => {
   it('非数字 → 拒 (Decimal 构造异常也折成同一个校验失败, 不外泄 vendor 报错)', () => {
     expect(() => assertImportableConfidence('高')).toThrow(INVALID_IMPORT_CONFIDENCE_CODE);
     expect(() => assertImportableConfidence('')).toThrow(INVALID_IMPORT_CONFIDENCE_CODE);
+  });
+});
+
+/**
+ * 065 T02 —— 建锚入口复用同一套判据, 但**标签另起**且顺带把市场段交回给写侧。
+ *
+ * 建锚失败报「IMPORT」读起来是错的; 而 059 的码有 IT 在断言 ⇒ 不能改它。重复的只是错误
+ * 字符串 (无害), 判据仍单点在 {@link assertImportableTicker} —— 会漂的是那个, 不是字符串。
+ */
+describe('anchor-import.rules — 建锚侧 assertCreatableTicker (065 FR-013 / FR-014)', () => {
+  it('合法 ticker 返回市场段 —— 写侧据此写列, MUST NOT 再解析第二次', () => {
+    expect(assertCreatableTicker('us:AOS')).toBe('us');
+    expect(assertCreatableTicker('hk:00700')).toBe('hk');
+    expect(assertCreatableTicker('us:BRK.B')).toBe('us');
+  });
+
+  it('失败标签换成 INVALID_ANCHOR_*', () => {
+    expect(() => assertCreatableTicker('AOS')).toThrow(INVALID_ANCHOR_TICKER_CODE);
+    expect(() => assertCreatableTicker('us:')).toThrow(INVALID_ANCHOR_TICKER_CODE);
+    expect(() => assertCreatableTicker('us:BRK:B')).toThrow(INVALID_ANCHOR_TICKER_CODE);
+    expect(() => assertCreatableTicker('cn:600519')).toThrow(INVALID_ANCHOR_MARKET_CODE);
+  });
+
+  it('**只换前缀**: message 体与 059 侧逐字相同 (判据单点的直接证据)', () => {
+    const grab = (fn: () => void): string => {
+      try {
+        fn();
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return '';
+    };
+    for (const bad of ['AOS', 'us:pep', 'us:BRK:B', 'cn:600519']) {
+      const importMsg = grab(() => assertImportableTicker(bad));
+      const createMsg = grab(() => assertCreatableTicker(bad));
+      expect(importMsg).not.toBe('');
+      expect(createMsg).toBe(
+        importMsg.replace(ANCHOR_IMPORT_INVALID_PREFIX, ANCHOR_CREATE_INVALID_PREFIX),
+      );
+    }
   });
 });

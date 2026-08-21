@@ -268,7 +268,15 @@ describe('045 optionsdesk US4 采集闸集成 IT (Testcontainers PG)', () => {
     expect(await needSyncOf('hk', '00700')).toBe(true);
 
     // cn/hk 锚同样不影响 cn/hk (它们本就全量采, 闸对其无意义)。
-    await createAnchor.execute(anchorInput('cn:600519'));
+    // 🚨 直接种行而非走 `createAnchor`: 065 T02 起建锚拒非白名单市场 (FR-014), 而本断言
+    //    要的是「**库里真有**一只 cn 锚时闸仍不动 cn/hk」—— 那正是关闸路径的反例输入。
+    await prisma.anchor.create({
+      data: {
+        ...anchorInput('cn:600519'),
+        confidenceSource: 'manual',
+        lLevelEffective: 'L2',
+      },
+    });
     await gate.recalcSafely();
     expect(await workingSet(['cn', 'hk'])).toEqual(cnHkBefore);
   });

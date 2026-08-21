@@ -529,3 +529,82 @@ describe('CreateAnchorUseCase — 建锚即取最近收盘 (best-effort)', () =>
     expect(m.publish).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── 065 T02 建锚派生 market + 市场/形状收紧 (FR-013 / FR-014 / SC-006, plan §D0) ──────
+//
+// 🚨 建锚是全仓**唯一**的 `prisma.anchor.create` ⇒ market 只在这里派生一次, 两条服务端建锚
+//    入口 (App controller / 059 模型导入的委托) 自动都覆盖到。这不是巧合, 是 059 那个决定
+//    的红利 —— 委托一旦被改成自己 create, 覆盖当场就断 (回归钉见 T08)。
+describe('CreateAnchorUseCase — 065 市场归属派生与形状收紧', () => {
+  let m: PrismaMock;
+  let useCase: CreateAnchorUseCase;
+
+  beforeEach(() => {
+    m = buildPrismaMock();
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar, m.calendar);
+    m.findUnique.mockResolvedValue(null);
+    m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      anchorRow(data),
+    );
+  });
+
+  it('us:AOS → data.market = us', async () => {
+    await useCase.execute(validInput);
+    expect(m.create.mock.calls[0]![0].data.market).toBe('us');
+  });
+
+  it('hk:00700 → data.market = hk (白名单两个市场都要能建成)', async () => {
+    await useCase.execute({ ...validInput, ticker: 'hk:00700' });
+    expect(m.create.mock.calls[0]![0].data.market).toBe('hk');
+  });
+
+  // 🚨 多段代码的 canonical 是**点**: `IMPORTABLE_CODE_PATTERN` = /^[A-Z0-9][A-Z0-9.]*$/。
+  it('us:BRK.B → market = us 且 ticker 原样落库 (code 段的点不被当分隔符)', async () => {
+    await useCase.execute({ ...validInput, ticker: 'us:BRK.B' });
+    const data = m.create.mock.calls[0]![0].data as Record<string, unknown>;
+    expect(data.market).toBe('us');
+    expect(data.ticker).toBe('us:BRK.B');
+  });
+
+  // 🚨 `parseAnchorTicker` 解得出 (`code = 'BRK:B'`) **不等于**建锚收 —— 判据是
+  //    `IMPORTABLE_CODE_PATTERN`, 它不含冒号。两者方向相反, 别照直觉写成受支持。
+  it('us:BRK:B → 400 (code 段含冒号不受支持)', async () => {
+    await expect(useCase.execute({ ...validInput, ticker: 'us:BRK:B' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(m.create).not.toHaveBeenCalled();
+  });
+
+  it('cn:600519 → 400 且消息含市场值域 us / hk', async () => {
+    await expect(useCase.execute({ ...validInput, ticker: 'cn:600519' })).rejects.toMatchObject({
+      message: expect.stringContaining('us / hk'),
+    });
+    expect(m.create).not.toHaveBeenCalled();
+  });
+
+  it('AOS (无分隔符) → 400', async () => {
+    await expect(useCase.execute({ ...validInput, ticker: 'AOS' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(m.create).not.toHaveBeenCalled();
+  });
+
+  // `us:` 正是 plan §D3 里 SQL 前缀切分与 parseAnchorTicker 会分叉的那个串 (前者给 `us`,
+  // 后者判非法) —— 堵在写侧, 库里就永远不会出现它。
+  it('us: (空 code 段) → 400', async () => {
+    await expect(useCase.execute({ ...validInput, ticker: 'us:' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(m.create).not.toHaveBeenCalled();
+  });
+
+  // 🚫 059 的线上错误码 MUST NOT 被本片改掉 (`optionsdesk-059.anchor-import.it.spec.ts` 在断言它)。
+  it('建锚侧报 INVALID_ANCHOR_*, 不报 059 的 INVALID_IMPORT_*', async () => {
+    await expect(useCase.execute({ ...validInput, ticker: 'cn:600519' })).rejects.toMatchObject({
+      message: expect.stringContaining('INVALID_ANCHOR_MARKET'),
+    });
+    await expect(useCase.execute({ ...validInput, ticker: 'AOS' })).rejects.toMatchObject({
+      message: expect.stringContaining('INVALID_ANCHOR_TICKER'),
+    });
+  });
+});
