@@ -321,3 +321,41 @@ describe('toUnderlyingDetailResponse — 契约面禁字段 (FR-013 / FR-034 / F
     });
   });
 });
+
+/**
+ * 陈旧度基准的**注入面**（2026-08-21 修）。
+ *
+ * 缺陷形态: `execute()` 原本不收 `now`, 内部 `resolveLastClosedSessionForTicker` 省略第三参
+ * ⇒ 落回 `new Date()` ⇒ 调用方 `get-chain-report` 的同一份响应里 `marketDate` / `asOf` 跟
+ * **注入时钟**走、`lastClosedSession` 跟**真实时钟**走, 就此分叉成两条时间轴。同族纪律见
+ * `get-legs.usecase.ts` 那句「MUST NOT 传省略 `now`」—— legs 绕开了本 use case 所以躲过,
+ * chain-report 走它所以踩上。这类偏差**不报错**(`cross-timezone-date-semantics.md` §6 第 6 问)。
+ *
+ * 🚨 **与 golden file 互补, 不重复**: `optionsdesk-064.overlay.it.spec.ts` 的 `SC-005` 逐字节
+ * 夹具确实会因基准漂而变红, 但它带 `NVY_064_WRITE_BASELINE=1` 重录口 —— 谁撞见红顺手重录
+ * 一次, 缺陷就被洗白、夹具照样显示绿。本段钉的是**传参本身**, 重录洗不掉。
+ */
+describe('GetUnderlyingDetailUseCase — 陈旧度基准跟注入时钟走', () => {
+  it('🚨 注入的 `now` 一路传到 `TradingCalendarPort.lastClosedSession`', async () => {
+    const m = buildPrismaMock();
+    const useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
+    const spy = vi.spyOn(m.calendar, 'lastClosedSession');
+    const now = new Date('2026-08-11T13:00:00Z');
+
+    await useCase.execute('us:PEP', now);
+
+    expect(spy).toHaveBeenCalledWith('us', now);
+  });
+
+  it('调用方省略 `now` ⇒ 落回当前时刻 (controller 那条路的既有形态, 行为不变)', async () => {
+    const m = buildPrismaMock();
+    const useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
+    const spy = vi.spyOn(m.calendar, 'lastClosedSession');
+    const before = Date.now();
+
+    await useCase.execute('us:PEP');
+
+    const passed = spy.mock.calls[0]![1] as Date;
+    expect(passed.getTime()).toBeGreaterThanOrEqual(before);
+  });
+});
