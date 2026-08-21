@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.12.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.12.0...mobile-v0.12.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **core:** 064 收尾 —— market-state 限频修复 + 档位条文案与去重 + 窗内数回写 ([#126](https://github.com/zhangleizlpd/no-vain-years-tech/issues/126)) ([70765c5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/70765c533ca1cfa5581f3bff5a67b33565fd17e9))
+
 ## [0.12.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.11.0...mobile-v0.12.0) (2026-08-19)
 
 
