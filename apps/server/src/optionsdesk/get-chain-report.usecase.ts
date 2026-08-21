@@ -184,7 +184,9 @@ export class GetChainReportUseCase {
     realtime = false,
   ): Promise<ChainReportView> {
     // 🚨 **在 try 之外**: 无锚要 404 上抛 (FR-037a), 不能被下面的降级兜住变成一张空报表。
-    const detail = await this.detail.execute(symbol);
+    // 🚫 **MUST NOT 省略 `now`** (体例同 `get-legs.usecase.ts` 那条): 省了 detail 的
+    // `lastClosedSession` 就落回真实时钟, 与本响应 `marketDate` / `asOf` 的注入时钟分叉。
+    const detail = await this.detail.execute(symbol, now);
     const empty = (state: ChainReportState): ChainReportView => ({
       symbol,
       state,

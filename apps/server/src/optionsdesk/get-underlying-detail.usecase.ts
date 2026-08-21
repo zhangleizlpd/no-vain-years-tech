@@ -119,12 +119,16 @@ export class GetUnderlyingDetailUseCase {
 
   /**
    * @param symbol canonical `market:code` (锚 ticker 全局唯一, 即标的身份)。
+   * @param now 请求时刻 (注入以便测试钉住基准)。🚫 **调用侧 MUST NOT 省略** —— 省了就落回
+   *   `new Date()`, 于是本 use case 的陈旧度基准 `lastClosedSession` 吃**真实时钟**、而调用方
+   *   响应里的其余日期跟**注入时钟**走, 同一份响应就此分叉成两条时间轴。这类偏差**不报错**
+   *   (`cross-timezone-date-semantics.md` §6 第 6 问), 只能靠测试钉住。
    * @throws NotFoundException 该 symbol 尚未建锚 (FR-011)。非法形态折叠进同一分支 ——
    *   与「没建锚」不可区分, 不给第二套校验面 (体例同 controller 的 `parseAnchorId`)。
    *
    * 复杂度: 三次点查 (锚唯一键 / instrument 唯一键 / IV 唯一键前缀 desc 取一), O(1) 往返。
    */
-  async execute(symbol: string): Promise<UnderlyingDetail> {
+  async execute(symbol: string, now: Date = new Date()): Promise<UnderlyingDetail> {
     const row = (await this.prisma.anchor.findUnique({
       where: { ticker: symbol },
     })) as AnchorRow | null;
@@ -134,7 +138,7 @@ export class GetUnderlyingDetailUseCase {
         message: `${ANCHOR_NOT_FOUND_FOR_SYMBOL}: ${symbol} 尚未建锚`,
       });
     }
-    const lastClosedSession = await resolveLastClosedSessionForTicker(this.calendar, symbol);
+    const lastClosedSession = await resolveLastClosedSessionForTicker(this.calendar, symbol, now);
     return {
       symbol,
       anchor: toAnchorView(row, lastClosedSession),
