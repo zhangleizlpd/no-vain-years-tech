@@ -1711,6 +1711,17 @@ model IdeationMockup {
 model Anchor {
   id     BigInt   @id @default(autoincrement())
   ticker String   @unique(map: "uk_anchor_ticker") @db.VarChar(32) // canonical `market:code`
+  /// 市场归属 = canonical ticker 的 `market` 段, **写入时单点派生** (`parseAnchorTicker`)。
+  /// 落列判据同本 model 头注释 FR-003a ③「参与 SQL 筛选/排序的生效值 → 落**普通列**、应用层
+  /// 写入时求值」, 与 `l_level_effective` 同体例: 雷达自 065 起按市场分作用域, market 要进
+  /// `WHERE` 与 `GROUP BY`; 在 SQL 里现解析 ticker 前缀会与 `parseAnchorTicker` 对同一行给出
+  /// 不一致的归属 (`us:` 空 code 那类), 落列把这一整类问题消掉 (065 plan D0 / D3)。
+  /// 🚨 **MUST NOT 用 DB 生成列** —— 同 `l_level_effective` 的理由: 生成列会把解析表达式塞回
+  /// SQL, 正是本列要消灭的东西, 且改解析口径就要 DDL 变更。
+  /// 🚨 值域与 `anchor-import.rules.ts` 的 `IMPORTABLE_MARKETS` **成对, 改一处必改另一处**。
+  /// ⚠️ nullable 是 expand 步的**中间态** (065 T01): 写路径尚未派生、读路径不依赖它。
+  ///   T03 (contract 步, 单独部署) 收紧 NOT NULL + CHECK, 届时本 `?` 去掉。
+  market String?  @db.VarChar(4)
   /// 模型/基准估值 V。生效 V = COALESCE(v_manual, v)。V ≤ 0 由应用层拒 (EC-3)。
   v      Decimal  @db.Decimal(18, 4)
   /// 估值 as-of 日 (V 的口径日期), 与 last_close_date (行情 asOf) 是两回事。
