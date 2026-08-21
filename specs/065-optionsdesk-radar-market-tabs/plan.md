@@ -3,7 +3,7 @@ feature_id: 065-optionsdesk-radar-market-tabs
 spec_ref: ./spec.md
 status: approved
 created_at: '2026-08-19'
-updated_at: '2026-08-19'
+updated_at: '2026-08-21'
 adr_refs: ['0024', '0032', '0035', '0040', '0043', '0062', '0066']
 context7_verified: []
 ---
@@ -41,7 +41,7 @@ context7_verified: []
 ### Gate 0.1 — Integration Smoke Gate
 
 - [x] **Server**: 真 boot smoke 覆盖新的查询形状。落点是既有 `apps/server/test/integration/optionsdesk-045.radar.it.spec.ts`（补市场作用域用例：种 us+hk，验 `market:'hk'` 只回 hk **且空态由 hk-only 计数算出**）+ 新建 `optionsdesk-065.schema.it.spec.ts`（验 NOT NULL / CHECK / backfill 正确性 —— 这三样只有真 PG 能验）。
-- [x] **Mobile**: P1 两条 user story 各走一遍真会话。US1 走 Playwright Expo Web（切页签 → 请求带 market → 行确实变了）；US2 因 dev 库 12 只锚全 `us`，**港股页签天然是零锚空态**，可直接手验第 4 空态与常驻说明，无需造数据。
+- [x] **Mobile**: P1 两条 user story 各走一遍真会话。US1 走 Playwright Expo Web（切页签 → 请求带 market → 行确实变了）；US2 因 dev 库 12 只锚全 `us`（2026-08-21 复核仍是 12），**港股页签天然是零锚空态**，可直接手验第 4 空态与常驻说明，无需造数据。
 - [x] **Evidence**: 本 gate 在 plan 阶段是**承诺 + 落点**，证据于 impl 阶段回填到对应 task 的 commit。落点文件名已在上面点名，不是「到时候再说」。
 
 ### Gate 0.2 — Cross-stack Vendor Intersection 6Q Card
@@ -112,7 +112,7 @@ context7_verified: []
 | **1（expand + backfill）** | 加可空 `market`；同 migration 内按 ticker 前缀回填 | 写路径开始派生并写入；读路径**仍不依赖它** | 回滚到旧镜像 ⇒ 旧代码不写该列、列可空 ⇒ 照常工作 |
 | **2（contract）** | `SET NOT NULL` + `CHECK` | 雷达读路径切到按列过滤 | 只能回滚到步 1 的镜像（它已在写该列）。**MUST NOT 越过步 1 回滚** |
 
-🚨 步 1 的回填按 ticker 前缀切分，是**一次性**的，与「运行时不做字符串解析」不矛盾。前提是取证已确认表内无畸形 ticker（2026-08-19 实测：15 行全部 well-formed `us:*`，0 畸形）。若将来有畸形行，步 2 的 CHECK 会**在迁移期失败**而不是在运行期静默算错 —— 这正是要的。
+🚨 步 1 的回填按 ticker 前缀切分，是**一次性**的，与「运行时不做字符串解析」不矛盾。前提是取证已确认表内无畸形 ticker（2026-08-21 复测 **prod 库**：16 行全部 well-formed `us:*`，0 畸形；dev 库 12 行同形）。判据用的是 `parseAnchorTicker` + `IMPORTABLE_CODE_PATTERN` + 32 字符上限三样合起来，不是肉眼扫前缀。若将来有畸形行，步 2 的 CHECK 会**在迁移期失败**而不是在运行期静默算错 —— 这正是要的。
 
 ### D1 — `market` 是**作用域**不是**筛选项**（本片最容易做错的一处）
 
@@ -150,7 +150,7 @@ context7_verified: []
 
 DTO 侧仍要值域校验（`@IsIn` 取 `IMPORTABLE_MARKETS`）—— 它挡的是**入参**，与列的 CHECK 挡的**存量**是两件事，不可互相替代。
 
-`us:BRK:B` 是明确支持的 ticker 形态（code 段含冒号），必须进派生逻辑的测试。
+🚨 **多段代码的 canonical 形态是 `us:BRK.B`（点，不是冒号）**，必须进派生逻辑的测试。两件事别混：`parseAnchorTicker` 只按**首个**冒号切、code 段原样保留（故 `us:BRK:B` 在它那里能解析出 `code = 'BRK:B'`），但建锚要复用的 `assertImportableTicker` 会用 `IMPORTABLE_CODE_PATTERN`（`^[A-Z0-9][A-Z0-9.]*$`，**不含冒号**）把它拒掉。仓内证据：`anchor-import.rules.spec.ts` 正面断言 `us:BRK.B` 不抛；research ctx 把 `BRK.B.US` 归一成 `us:BRK.B`。全仓唯一说「code 侧可含冒号」的是 `marketdata/anchor-driven-sync-gate.ts` 自持的宽松解析器 —— 那是另一个 ctx 刻意分开的三行，**不是建锚判据**。
 
 ### D4 — 空态计数改为一次查全部市场
 
@@ -191,7 +191,7 @@ DTO 侧仍要值域校验（`@IsIn` 取 `IMPORTABLE_MARKETS`）—— 它挡的�
 
 ### D10 — 顺带交付 061 FR-010 欠的那半条
 
-061 FR-010 要求「该市场不支持实时」**被显式表达**，但全仓 `rg '不支持实时'` **零命中** —— 061 只在采集层兑现了（fail-closed adapter + 排除出熔断计数），UI 层从未兑现。港股专属页签是这件事第一次成为**常驻**用户可见事实。
+061 FR-010 要求「该市场不支持实时」**被显式表达**，但全仓 `rg '不支持实时'` **零 UI 文案命中**（2026-08-21 复核：3 处命中全部是代码注释 —— contract-smoke 2 处 + anchors-radar e2e 1 处）—— 061 只在采集层兑现了（fail-closed adapter + 排除出熔断计数），UI 层从未兑现。港股专属页签是这件事第一次成为**常驻**用户可见事实。
 
 ⇒ 页签下常驻一行说明。注意这**不违反**「界面不为档位另加视觉标记」那条既有纪律 —— 那条管的是**行级**价格档位，这里说的是**市场级能力**，两个量纲。
 
