@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client.js';
 import {
   DIMENSION_KEYS,
   DimensionExecutorRegistry,
+  mergeStats,
   subtractDays,
   type DimensionKey,
 } from './dimension-executor.js';
@@ -4354,6 +4355,73 @@ describe('047 T003 三个新维度注册 + 依赖拓扑守卫', () => {
     // 反例守卫: 若哪天 tie-break 规则变了、这条不再成立, 上面那条 priority 注释就该重写。
     expect(brokenOrder.indexOf('eod_bar')).toBeGreaterThan(
       brokenOrder.indexOf('corporate_action') + 1,
+    );
+  });
+});
+
+// #103 (063 Phase 3.3): `written` 是**落库侧**唯一的那个数, 三态 null/0/>0 各有语义。
+// 🚨 它曾在 `execute()` ↔ `factExecutor` 的 stats 交接处**整列丢失** —— `mergeStats` 搬了
+//    scanned/ok/skipped/failed/failedTargets, 唯独漏了 written ⇒ 外层恒停在 null ⇒ 生产上
+//    **每一个** sync_type 的 written 都是 NULL, 而运行记录照旧全绿。2026-08-21 prod 实证:
+//    sync:us_equity_bar 连跑两轮 scanned=15 / ok=15 / status=success, written 仍 NULL。
+//    既有覆盖为何看不见它 (两处都是**反例不在管道里**):
+//      · recorder IT 手工构造 stats 直喂 finish() —— 测的是交接**下游**;
+//      · 本 spec 的 emptyStatsLike() 恒 written:null —— 合并前后都 null, 差异无从显形。
+//    故两条都要: 直测合并语义 + 端到端断言「executor 报的数进得了 recorder」。
+describe('#103 written 跨 stats 交接不得丢失 (063 Phase 3.3 落库侧计数)', () => {
+  const statsWith = (written: number | null) => ({
+    scanned: 0,
+    ok: 0,
+    skipped: 0,
+    failed: 0,
+    written,
+    failedTargets: [] as unknown[],
+  });
+
+  it('两边都没上报 ⇒ 仍是 null (「一次都没上报」这个态要留住)', () => {
+    const into = statsWith(null);
+    mergeStats(into, statsWith(null));
+    expect(into.written).toBeNull();
+  });
+
+  it('子执行上报了 ⇒ 抬成数 (曾经的塌法: 外层永远停在 null)', () => {
+    const into = statsWith(null);
+    mergeStats(into, statsWith(42));
+    expect(into.written).toBe(42);
+  });
+
+  it('🚨 子执行上报 0 行 ⇒ 落 0 而非 null —— 「写了 0 行」与「没上报」可分辨, 这是本列存在的全部理由', () => {
+    const into = statsWith(null);
+    mergeStats(into, statsWith(0));
+    expect(into.written).toBe(0);
+  });
+
+  it('两边都有数 ⇒ 累加', () => {
+    const into = statsWith(3);
+    mergeStats(into, statsWith(5));
+    expect(into.written).toBe(8);
+  });
+
+  it('子执行没上报 ⇒ 不抹掉外层已有的数', () => {
+    const into = statsWith(3);
+    mergeStats(into, statsWith(null));
+    expect(into.written).toBe(3);
+  });
+
+  it('🚨 端到端: executor 上报的 written 必须到达 recorder.finish (不关心中间用什么机制搬)', async () => {
+    const { deps, registry } = buildFakes();
+    registry.registerExecutor(
+      'test_dimension' as DimensionKey,
+      vi.fn(async () => ({
+        stats: { ...emptyStatsLike(), scanned: 15, ok: 15, written: 42 },
+        budgetExhausted: false,
+      })),
+    );
+    await registry.execute('test_dimension' as DimensionKey, input);
+    expect(deps.recorder.finish).toHaveBeenCalledWith(
+      1n,
+      'success',
+      expect.objectContaining({ written: 42 }),
     );
   });
 });

@@ -476,6 +476,11 @@ export function mergeStats(into: SyncRunStats, from: SyncRunStats): void {
   into.ok += from.ok;
   into.skipped += from.skipped;
   into.failed += from.failed;
+  // 🚨 written 是**三态**列 (null/0/>0), 不能跟着上面 `+=` —— null 起点会变 NaN 且一路不报错
+  // (见 addWritten 注释)。只有 from 真上报过才动 into: 两边都 null ⇒ 保持 null (「一次都没
+  // 上报」); from=0 ⇒ into 抬成 0 (「写了 0 行」)。这两态必须可分辨, 那是本列存在的理由。
+  // #103: 本行曾整个缺失 ⇒ 外层 stats 恒 null ⇒ 生产上每个 sync_type 的 written 都是 NULL。
+  if (from.written !== null) addWritten(into, from.written);
   into.failedTargets.push(...from.failedTargets);
 }
 
