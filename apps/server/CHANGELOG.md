@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.33.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.33.1...server-v0.33.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **marketdata:** [#103](https://github.com/zhangleizlpd/no-vain-years-tech/issues/103) mergeStats 漏搬 written —— 落库侧计数在生产上恒 NULL ([#136](https://github.com/zhangleizlpd/no-vain-years-tech/issues/136)) ([f7e823d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f7e823d47c87f8169eb9f3efaa7cc965eab5e79e))
+* **optionsdesk:** chain-report 的陈旧度基准吃真实时钟 —— 与同响应其余日期分叉 ([#134](https://github.com/zhangleizlpd/no-vain-years-tech/issues/134)) ([eee4b95](https://github.com/zhangleizlpd/no-vain-years-tech/commit/eee4b95a5f4f85f936fa4ab0e423a1e4d3b4aefb))
+
 ## [0.33.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.33.0...server-v0.33.1) (2026-08-19)
 
 
