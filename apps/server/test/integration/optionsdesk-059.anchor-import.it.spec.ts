@@ -253,6 +253,22 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       expect(changes.map((c) => c.source)).toEqual(['model']);
     });
 
+    // ── 065 T08: 委托链回归钉 ────────────────────────────────────────────────
+    //
+    // 🚨 **本条零 impl 面, 存在的唯一理由是钉住「导入口不自己 create」这条边。**
+    //    今天 `import-anchor-from-model.usecase.ts` 是**委托** `CreateAnchorUseCase`（059 刻意
+    //    如此）⇒ 065 T02 落在那唯一一处 INSERT 的市场派生自动覆盖到导入口。有人日后把委托
+    //    改成自己 `prisma.anchor.create`, 覆盖当场就断 —— 而**没有别的东西会红**。
+    //
+    // 🚨 钉子必须落在**这里**而不是 `import-anchor-from-model.usecase.spec.ts`: 那个单测把
+    //    `CreateAnchorUseCase` 整个 stub 掉了, 观测不到真派生, 钉不住这条边。
+    it('🚨 经导入口建出的锚也带上 market（委托链回归钉, 065 FR-013）', async () => {
+      const res = await importAs(importBody);
+      expect((res.json() as { action: string }).action).toBe('create');
+      const row = await prisma.anchor.findUniqueOrThrow({ where: { ticker: 'us:AOS' } });
+      expect(row.market).toBe('us');
+    });
+
     it('② 已有锚且估值有变 → 按导入语义更新, 不报冲突（建锚口对同 ticker 是蓄意 409）', async () => {
       await seedAnchor();
       const res = await importAs({ ...importBody, v: '60.0000', confidence: '9.50' });

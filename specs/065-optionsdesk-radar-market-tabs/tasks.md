@@ -71,7 +71,7 @@ updated_at: '2026-08-21'
 
 - [ ] T07 [Server] **失联市场的告警级留痕**（`FR-015`, `state_branches` 10, plan §D4）：T04 的 `GROUP BY market` 结果里若出现**没有对应页签的市场**，落一条 WARN 日志（含市场值与条数）。🚫 **MUST NOT 上 UI**（spec Clarifications Q1：此类锚并未从系统失联 —— 锚管理页不分市场、仍完整列出它；雷达是「击球区」视图，不为不受支持市场的锚开后门）。本条守的是「将来新增受支持市场时忘了同步加页签」。→ verify: `get-radar.usecase.spec.ts` 用 logger spy 断言 —— 计数结果含未知市场 → WARN 一次且消息含该市场值；只含 us/hk → **零 WARN**（防每次请求都刷日志）
 
-- [ ] T08 [Server] **🚨 委托链回归钉（防 059 的委托被改成自己 create）**（`FR-013`, plan §建锚侧收紧）：`import-anchor-from-model.usecase.spec.ts` 加一条断言 —— guest 模型导入**新建**的锚也带上正确的 `market`。**本 task 零 impl 面**：guest 导入今天是委托 `CreateAnchorUseCase.execute()`（059 刻意如此），T02 落地后自动覆盖。这条钉防的是有人日后把委托改成自己 `prisma.anchor.create` —— 那一刻覆盖就断了，而**没有别的东西会红**。→ verify: 该 spec 新增用例绿；断言里显式走导入口而非直调建锚 use case（否则钉不到委托这条边）
+- [X] T08 [Server] **🚨 委托链回归钉（防 059 的委托被改成自己 create）**（`FR-013`, plan §建锚侧收紧）：钉子落 `optionsdesk-059.anchor-import.it.spec.ts`（**与本条原稿点名的文件不同**：`import-anchor-from-model.usecase.spec.ts` 把 `CreateAnchorUseCase` 整个 stub 掉了，观测不到真派生、钉不住这条边；IT 走真 HTTP + 真 PG 才钉得住）加一条断言 —— guest 模型导入**新建**的锚也带上正确的 `market`。**本 task 零 impl 面**：guest 导入今天是委托 `CreateAnchorUseCase.execute()`（059 刻意如此），T02 落地后自动覆盖。这条钉防的是有人日后把委托改成自己 `prisma.anchor.create` —— 那一刻覆盖就断了，而**没有别的东西会红**。→ verify: 该 spec 新增用例绿；断言里显式走导入口而非直调建锚 use case（否则钉不到委托这条边）
 
 ## API Client
 
