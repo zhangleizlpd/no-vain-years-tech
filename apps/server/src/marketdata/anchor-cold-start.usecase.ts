@@ -12,7 +12,7 @@ import { isSessionRegistered, isSessionUnderway, marketNow } from './market-sess
 import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
-import { currencyForMarket } from './sync-universe.usecase.js';
+import { seedInstrumentCreateData } from './sync-universe.usecase.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 import type { SessionKindStatus } from './trading-day.rules.js';
 import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
@@ -391,10 +391,15 @@ export class AnchorColdStartUseCase {
   }
 
   /**
-   * 兜底 seed 标的行, 返回其 id。判据**逐条照抄** `SyncOptionContractUseCase.
-   * seedAnchoredInstruments`: `needSync` 落 **false** (受保护列, 重算的唯一权威是
-   * `anchor-driven-sync-gate.ts`; 这里写 true 等于给它开第三个写入点), `name` 落 code 占位
-   * (列 NOT NULL, universe 轮到该票时其 update 分支覆盖成真名)。
+   * 兜底 seed 标的行, 返回其 id。create payload 走
+   * {@link import('./sync-universe.usecase.js').seedInstrumentCreateData} —— 与另一个 seed 点
+   * (`SyncOptionContractUseCase.seedAnchoredInstruments`) **共用同一个 helper** (066 T03,
+   * FR-009), 不再各自内联一份。
+   *
+   * 🚨 此前这里无条件写 `needSync: false`, 理由是「受保护列, 重算的唯一权威是采集闸」——
+   * **那条理由只对被闸管的市场 (us) 成立**。港股没有闸, 被本路径首建的港股行会永远停在
+   * `false` 并被 `eod_bar` / `sync-profile` / backfill CLI 三个消费方静默排除 ⇒ **那只标的
+   * 永远没有日线且零告警**。分工订正为: **create 路径定默认值, 闸只负责被闸市场的重算**。
    *
    * 空 `update` 是纯兜底: 已有行的 name / syncTier / needSync 一个都不许被 seed 冲掉。
    */
@@ -407,15 +412,7 @@ export class AnchorColdStartUseCase {
 
     const seeded = await this.prisma.instrument.upsert({
       where: { market_code: { market, code } },
-      create: {
-        market,
-        code,
-        name: code,
-        type: 'stock',
-        currency: currencyForMarket(market, code),
-        status: 'active',
-        needSync: false,
-      },
+      create: seedInstrumentCreateData(market, code),
       update: {},
       select: { id: true },
     });

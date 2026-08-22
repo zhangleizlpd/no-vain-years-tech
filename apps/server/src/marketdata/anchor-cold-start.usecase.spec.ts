@@ -9,6 +9,7 @@ import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import type { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
+import { seedInstrumentCreateData } from './sync-universe.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
 import type { SessionKindStatus, TradingDayStatus } from './trading-day.rules.js';
 
@@ -307,7 +308,16 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
     expect(ctx.instrumentUpsert).not.toHaveBeenCalled();
   });
 
-  it('🚨 seed 落 needSync=false —— needSync 的重算权威只有采集闸, 不给它开第三个写入点', async () => {
+  // 066 T03 (FR-009): create payload 走**共用 helper**, 不再内联一份字面量。
+  // 🚨 us 的期望值仍是 `false` —— 变的不是美股行为, 而是「谁定这个默认值」: 从两处各写死
+  // 一个 false, 改成三个 create 路径 (universe + 两个 seed 点) 共用
+  // `seedInstrumentCreateData`。港股那半 (落 `true`) 在本路径上要等 hk 冷启动开通才够得到,
+  // 现由 `sync-universe.usecase.spec.ts` 的 helper 单测 +
+  // `sync-option-contract.usecase.spec.ts` 的港股反例覆盖。
+  //
+  // 📌 `barRows` 不再需要 (issue #159): 日线已不在 `dataAlreadyPresent` 的判据内, 本例只需
+  // 快照在场就能在 seed 之后立刻早退。
+  it('🚨 seed payload 取自共用 helper —— 美股仍落 needSync=false (闸负责它的重算)', async () => {
     const ctx = build({ snapshotRows: 1 });
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
@@ -315,6 +325,7 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
       create: Record<string, unknown>;
       update: Record<string, unknown>;
     };
+    expect(args.create).toEqual(seedInstrumentCreateData('us', 'PEP'));
     expect(args.create).toMatchObject({ market: 'us', code: 'PEP', name: 'PEP', needSync: false });
     expect(args.update).toEqual({});
   });

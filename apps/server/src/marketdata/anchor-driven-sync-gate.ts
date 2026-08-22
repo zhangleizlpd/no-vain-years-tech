@@ -10,8 +10,8 @@ export interface AnchorSyncGateResult {
 /**
  * 受锚表驱动的市场集合 —— **仅 us**。
  *
- * 🚨 成对约束: 单一真相源是 `sync-universe.usecase.ts` 新标的 create 分支的
- * `needSync: entry.market !== 'us'` —— 只有 us 走「无锚不采」成员制, cn/hk 是全量语义
+ * 🚨 成对约束: 单一真相源是 `sync-universe.usecase.ts` 的 `defaultNeedSync()` (066 T03 起
+ * 三个 create 路径共用) —— 只有 us 走「无锚不采」成员制, cn/hk 是全量语义
  * (列默认 true)。本重算的关闸路径 (`notIn`) 若放到 cn/hk, 会把全部 cn/hk 在市标的一次性
  * 移出工作集 = 直接违反 **SC-007「既有 cn/hk 同步范围零变化」**。两处判据必须同步改。
  */

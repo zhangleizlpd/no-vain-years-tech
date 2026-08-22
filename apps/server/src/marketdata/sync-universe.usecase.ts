@@ -101,10 +101,10 @@ export class SyncUniverseUseCase {
         listDate,
         pinyinAbbr: abbr,
         pinyinFull: full,
-        // 采集闸 (成员制): us 新标的默认**不采** (无锚不采) —— 仍全量入库供搜索 / 发现候选;
-        // 其余市场默认采 (cn/hk 全量语义不变)。DB 列默认值无法按市场区分, 故策略落在此**单一
-        // 写入点**而非各 universe adapter —— 换源 (东财 → 富途) 后自动继续成立。
-        needSync: entry.market !== 'us',
+        // 采集闸 (成员制): 判据住 {@link defaultNeedSync} —— 它是**新建行默认值的单一真相源**,
+        // 两个兜底 seed 点走同一个函数 (066 T03)。策略落在函数里而非各 universe adapter,
+        // 换源 (东财 → 富途) 后自动继续成立。
+        needSync: defaultNeedSync(entry.market),
         // syncTier 走 schema @default(2); lixingerCompanyType 留 null 待 profile 富化 (T010)
       },
       update: {
@@ -145,6 +145,48 @@ export function currencyForMarket(market: string, code: string): string {
     if (code.startsWith('900')) return 'USD'; // 沪市 B 股
   }
   return 'CNY';
+}
+
+/**
+ * **新建**标的行的采集资格默认值 (`Instrument.needSync`) —— **单一真相源** (066 T03, FR-009)。
+ *
+ * `us` 走「无锚不采」成员制 (新标的默认**不采**, 仍全量入库供搜索 / 发现候选); 其余市场是
+ * 全量语义, 默认**采**。DB 列默认值无法按市场区分, 故策略落在本函数这一处。
+ *
+ * 🚨 **分工** (066 T03 订正的正是这一条): **create 路径定默认值, 闸只负责被闸市场的重算**。
+ * `anchor-driven-sync-gate.ts` 只循环 `ANCHOR_GATED_MARKETS = ['us']` ⇒ 它对 cn/hk 一行都不
+ * 动。此前两个兜底 seed 点无条件写 `false`, 理由注的是「重算的唯一权威是采集闸」—— 那条理由
+ * **只对被闸管的市场成立**: 港股没有闸、`upsert` 的 update 分支又刻意不写该列, 于是被 seed
+ * 首建的港股行**永远停在 `false`**, 同时被 `eod_bar` / `sync-profile` / backfill CLI 三个
+ * 消费方静默排除 —— **那只标的永远没有日线, 且没有任何告警** (`daily_bar` 是雷达跌破判据的
+ * 输入)。⇒ 三个 create 路径 (universe / 两个 seed 点) 一律取本函数。
+ */
+export function defaultNeedSync(market: string): boolean {
+  return market !== 'us';
+}
+
+/**
+ * 两个**兜底 seed 点**共用的 `Instrument` create payload (066 T03, FR-009):
+ * `anchor-cold-start.usecase.ts` 的 `seedInstrument` 与 `sync-option-contract.usecase.ts` 的
+ * `seedAnchoredInstruments`。二者此前各自内联一份逐字相同的字面量, 而其中的 `needSync` 两处
+ * 一起错 —— 合成一处后「默认值只有一个定义」变成结构事实而不是纪律。
+ *
+ * `name` 落 `code` 占位 (列 NOT NULL): universe 轮到该票时其 update 分支会覆盖成真名。
+ *
+ * 📌 **兜底不是主路径**: `universe` 维度仍是标的入库的正规通道, seed 只覆盖「新锚建了、
+ * universe 还没轮到」这个时间差与上游漏收。配套的 `update` 一律留空 —— 已有行的
+ * `name` / `syncTier` / `needSync` 一个都不许被 seed 冲掉。
+ */
+export function seedInstrumentCreateData(market: string, code: string) {
+  return {
+    market,
+    code,
+    name: code,
+    type: 'stock',
+    currency: currencyForMarket(market, code),
+    status: 'active',
+    needSync: defaultNeedSync(market),
+  };
 }
 
 /** name → 拼音 (无音调, 无分隔)。空/纯非中文映射空串 → null (列 nullable)。 */

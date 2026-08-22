@@ -15,7 +15,7 @@ import {
   type OptionContractStatic,
 } from './option-chain.port.js';
 import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
-import { currencyForMarket } from './sync-universe.usecase.js';
+import { seedInstrumentCreateData } from './sync-universe.usecase.js';
 import { exchangeCalendarDateForScope } from './session-clock.js';
 
 /**
@@ -28,10 +28,11 @@ import { exchangeCalendarDateForScope } from './session-clock.js';
  * ## 工作集 = 锚白名单 (FR-035), 由 `factExecutor` 前置给定
  *
  * 本 use case **不自己查 `Instrument`** —— 走 `DimensionExecutorRegistry.factExecutor` 那条既有
- * 路径 (tier 重算 → `AnchorDrivenSyncGate.recalcSafely()` → `loadActiveInstruments`,
- * `market ∈ scope ∧ active ∧ needSync`), 与 046 的 `underlying_iv_daily` 同形态。⇒ **零锚时
- * 工作集为空、对 vendor 的请求数为 0**, 且加第 13 只锚只需锚闸把它刷成 `needSync`,
- * 零代码改动自动纳入 (FR-038)。
+ * 路径 (tier 重算 → `AnchorDrivenSyncGate.recalcSafely()` → `loadActiveInstruments`), 与 046 的
+ * `underlying_iv_daily` 同形态。066 T02 起本维度是**锚作用域**的:
+ * `market ∈ scope ∧ active ∧ **有锚**`, `needSync` 已退出谓词 (登记表见
+ * `anchor-scoped-dimensions.rules.ts`)。⇒ **零锚时工作集为空、对 vendor 的请求数为 0**,
+ * 且加第 13 只锚零代码改动自动纳入 (FR-038)。
  *
  * ## 🚨 采集端零过滤 (Guardrail 3 / 4, plan D-DATA-3)
  *
@@ -287,13 +288,15 @@ export class SyncOptionContractUseCase {
    * 📌 **兜底不是主路径**: `universe` 维度仍是标的入库的正规通道, seed 只覆盖「新锚建了、
    * universe 还没轮到」这个时间差与上游漏收。
    *
-   * 🚨 **`needSync` 落 `false`**: 该列是受保护列, 其重算的唯一权威是
-   * `anchor-driven-sync-gate.ts` (schema 注释点名它与 `syncTier` 同属「不得被覆盖」的列)。
-   * 这里照 `SyncUniverseUseCase.upsert` 的 **create 分支**同一判据落 false, 由**下一轮** fact
-   * 前置的锚闸开闸 —— 在 seed 里直接写 true 等于给这列开第三个写入点, 而它是「每轮 universe
-   * 同步会不会冲掉人工配置」那条绊线的看护对象。
+   * 🚨 **create payload 走 {@link seedInstrumentCreateData} 这一个 helper** (066 T03,
+   * FR-009), 与另一个 seed 点 (`anchor-cold-start.usecase.ts`) 及 `SyncUniverseUseCase.upsert`
+   * 的 create 分支**共用同一份默认值**。此前这里无条件写 `needSync: false`, 理由是「重算的
+   * 唯一权威是采集闸」—— **那条理由只对被闸管的市场 (us) 成立**: 港股没有闸, 被本路径首建的
+   * 港股行会永远停在 `false` 并被 `eod_bar` 静默排除 ⇒ 那只标的永远没有日线。分工订正为
+   * **create 路径定默认值, 闸只负责被闸市场的重算**。
    *
-   * `name` 落 code 占位 (列 NOT NULL): universe 轮到该票时其 update 分支会覆盖成真名。
+   * `update` 仍留空 —— 已有行的 `name` / `syncTier` / `needSync` 一个都不许被 seed 冲掉
+   * (「每轮同步会不会冲掉人工配置」那条绊线的看护对象)。
    *
    * 复杂度: 1 次锚表读 + 1 次存在性批查 + O(缺失数) 次 upsert (稳态为 0)。
    */
@@ -319,15 +322,7 @@ export class SyncOptionContractUseCase {
     for (const { market, code } of wanted.values()) {
       await this.prisma.instrument.upsert({
         where: { market_code: { market, code } },
-        create: {
-          market,
-          code,
-          name: code,
-          type: 'stock',
-          currency: currencyForMarket(market, code),
-          status: 'active',
-          needSync: false,
-        },
+        create: seedInstrumentCreateData(market, code),
         // 空 update = 纯兜底: 已有行的 name / syncTier / needSync 一个都不许被 seed 冲掉。
         update: {},
       });
