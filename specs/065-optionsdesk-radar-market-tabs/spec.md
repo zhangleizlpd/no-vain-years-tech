@@ -5,6 +5,9 @@ owners: ['@zhangleizlpd']
 status: implemented
 created_at: '2026-08-19'
 updated_at: '2026-08-22'
+# expand → contract 两步, **刻意分开**: prod 回滚只换镜像 tag、不回退 schema,
+# 合并后回滚到旧镜像会因旧代码不写该列而 INSERT 失败 (per ADR-0035 + plan §D0)。
+migration_refs: [20260821_1554_add_anchor_market, 20260822_0918_tighten_anchor_market]
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
