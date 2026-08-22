@@ -91,15 +91,19 @@ updated_at: '2026-08-21'
 
 ## E2E
 
-- [ ] T15 [Mobile-E2E] **三处 hermetic mock 补 market + 分页 / 空态 / 页签用例**（`FR-001`, `FR-004`, `FR-005`, `FR-006`, `FR-007`, `FR-008`, `FR-010`, `SC-001`, `SC-004`, `state_branches` 2, `state_branches` 3, `state_branches` 4, `state_branches` 5, `state_branches` 6, US1, US2）：① **三处** radar hermetic mock（`optionsdesk-anchors-radar.spec.ts` / `optionsdesk-detail-thermometer.spec.ts` / `optionsdesk-chain-report.spec.ts`）补 market 谓词 —— 🚨 不改它们会 **e2e 全绿而 mock 已不再是契约镜像**（fixture 全是 `us:*`，违反 `.claude/rules/mobile-e2e-hermetic.md`「mock 是契约镜像」）；② `optionsdesk-anchors-radar.spec.ts` 把硬编码的 3 空态与 3 路优先级阶梯扩到 4；③ 新增用例，分四组：
+- [X] T15 [Mobile-E2E] **三处 hermetic mock 补 market + 分页 / 空态 / 页签用例**（`FR-001`, `FR-004`, `FR-005`, `FR-006`, `FR-007`, `FR-008`, `FR-010`, `SC-001`, `SC-004`, `state_branches` 2, `state_branches` 3, `state_branches` 4, `state_branches` 5, `state_branches` 6, US1, US2）：
 
-  **(a) 切换与默认**（US1-AS1, US1-AS5, US1-AS6）：点港股 → 请求带 `market=hk` **且行确实变了**（🚫 **不要**断言 `aria-selected`，`react-native-web` 不渲染它）；港股 → 详情 → 返回仍在港股；冷启动落美股。
+  ① **三处** radar hermetic mock 全部升级成真契约镜像（作用域切分 + `marketCounts` + 四态）：`optionsdesk-anchors-radar.spec.ts`（T14 时已做，另加 keyset 分页 + POST /anchors + 请求记录）/ `optionsdesk-detail-thermometer.spec.ts` / `optionsdesk-chain-report.spec.ts`。🚨 三处 fixture **全是 `us:*`** ⇒ 漏改不会红 —— 正是这类 mock 悄悄失真的典型路径，注释里逐处点名。② 硬编码空态从 3 扩到 4（`EMPTY_STATE_MESSAGES` + 两条优先级 e2e）。
 
-  **(b) 🚨 分页连续性 —— 本组不可省**（US1-AS2, US1-AS4, Edge Case 3, `FR-004`, `FR-005`）：① 在美股翻到第 2 页后继续下拉，断言**后续页的行全部仍属美股**；② 翻页途中改动行情使排序键变化，断言**不漏行、不重复行**；③ **翻到第 2 页后切到港股，断言回到第一屏**、不接续上一个市场的翻页位置。🚨 **这三条是 plan §D6 撤销「market 进游标」的代价对冲** —— 撤销的唯一依据是「第 2 页悄悄没应用作用域由 D1 挡住」，那就必须有真的翻页断言来证明 D1 确实挡住了，否则等于拆了栏杆又不验地板。
+  → verify: **已绿**。`nx run mobile:e2e` **237 passed**（全套）；`nx run mobile:runtime-smoke` **237 passed**（改了共享 hook，blast radius = 整套）；单 spec 25 passed。新增 5 条：
 
-  **(c) 空态入口双向**（US2-AS3, US2-AS4, `SC-004`）：港股零锚（库中另有美股锚）→ 市场文案渲染**且**建锚 CTA 与「清除筛选」按钮**计数均为 0**（抓 T13 的 fall-through）；**整库零锚 → 建锚 CTA 必须出现**。🚨 **两个方向都要断**：`SC-004`「行动入口 100% 可执行」既禁止出现无从执行的入口，也要求该出现的入口确实在；只断前者会让「什么入口都不给」照样绿。
+  **(a) 切换与默认**（US1-AS1/AS5/AS6）：冷启动落美股（港股行零命中）→ 点港股**行确实换了**（🚫 不断言 `aria-selected`，`react-native-web` 不渲染它）→ 二级页往返后仍在港股。
 
-  **(d) 行级粒度与筛选**（US2-AS2, US1-AS3, `SC-001`）：港股 fixture 需显式带收盘档行，断言**行内行情时点是交易日而非时刻**（T11 只覆盖了顶部新鲜度聚合，覆盖不到行内）；筛选跨页签保留。→ verify: `nx run mobile:e2e` 全绿；🚨 改了共享 hook ⇒ 跑**全套** `runtime-smoke` 而非单 spec（blast radius = 整套 e2e）
+  **(b) 分页连续性**（US1-AS2/AS4, Edge Case 3, `FR-004`, `FR-005`）：🚨 **判据从「第一屏有几行」改成「请求序列」**——实测发现 web 的 FlatList 在内容不满一屏时会**立即反复触发 `onEndReached`**，短列表一次性翻到底 ⇒ 行数断言取决于视口高度，是环境相关的假信号（第一版就是这么红的）。改断：首请求无游标 / 至少一次**带游标的续页** / **每一次都带 `market=us`**（续页丢作用域正是 D1 要挡的洞）/ 切页签后第一次请求**不带游标**（= 回第一屏）。UI 侧断集合：5 只美股一只不少、无重复、港股那只**即使距 W% 更靠前也不在**（作用域先于排序）。「翻页途中改排序键」改成「排序键变动后重新分页仍不漏不重」（同一原因：没有可控的「途中」），mock 写的是**真 keyset 而非 offset**，所以这条仍测得到真东西。
+
+  **(c) 空态入口双向**（US2-AS3/AS4, `SC-004`）：港股零锚（库中另有美股锚）→ 第 4 态文案在且**建锚 CTA 与「清除筛选」计数均为 0**（抓 T13 的 fall-through）、文案不等于第 1 态；**反向** —— 整库零锚 → 落 `zero_anchors` 且建锚 CTA **必须出现**，切到港股仍是第 1 态（优先级不可换）。🚨 只断前者会让「什么入口都不给」照样绿。
+
+  **(d) 行级粒度与筛选**（US2-AS2, US1-AS3, `SC-001`）：港股行内行情时点是**交易日**而非时刻（T11 只覆盖顶部聚合，覆盖不到行内）；筛选**跨页签保留**（美股筛 L1 → 空 → 切港股，L1 的港股行仍在）。
 
 - [ ] T16 [Contract-Smoke] **契约冒烟带上 market**（`FR-002`, `SC-003`）：`apps/mobile/e2e/contract-smoke/optionsdesk.contract.ts` 与 `optionsdesk-realtime-spot.contract.ts` 调雷达时带 `market`。🚨 现状是**可选参数 ⇒ 绿但零覆盖**，不改的话生成的 client 与真 server 在这个新参数上的对齐从未被验证过。→ verify: `nx run mobile:contract-smoke` 绿；断言**并集性质**（分别取 us 与 hk 两个作用域，两次结果的并集 = 不带作用域时的全集，交集为空）—— 这是 `SC-003` 唯一的端到端落点
 

@@ -201,6 +201,9 @@ function radarSort(items: AnchorResponse[]): AnchorResponse[] {
  * actionableTotal）。065 起第 2 位是「本市场零锚」—— 它与第 1 位的有效动作**相反**
  * （换个市场 vs 去建锚），文案 MUST NOT 复用。
  */
+/** mock 的一页条数 —— 刻意小于真 server 的 20，好用少量 fixture 就翻得动页（065 T15-b）。 */
+const RADAR_MOCK_PAGE = 3;
+
 const EMPTY_STATE_MESSAGES = {
   zero_anchors: '还没有锚 —— 先去锚管理建第一个锚',
   zero_anchors_in_market: '这个市场还没有锚 —— 换个市场看看',
@@ -209,6 +212,19 @@ const EMPTY_STATE_MESSAGES = {
 } as const;
 
 interface OptionsdeskMock {
+  /**
+   * 翻页途中改动行情（065 T15-b）——「排序键在两次取页之间变了」是 keyset 分页真正要扛住的
+   * 场景，而 fixture 恒定的话那条断言永远无法失败。
+   */
+  setDistance: (id: string, distanceToWPct: string) => void;
+  /**
+   * 每次 `GET /radar` 的作用域与游标（065 T15-b）。
+   *
+   * 🚨 **分页断言走请求序列而不是「第一屏有几行」**：react-native-web 的 FlatList 在内容不
+   * 满一屏时会立即反复触发 `onEndReached`，短列表**一次性翻到底** ⇒ 任何「第 1 页恰好 N 行」
+   * 的断言都取决于视口高度，是环境相关的假信号。请求序列反映的是分页**契约本身**。
+   */
+  radarRequests: () => readonly { market: string | null; cursor: string | null }[];
   /** PATCH 命中次数（验「写动作真发出去了」，与 UI 断言正交）。 */
   patchCount: () => number;
   /** 最近一次 PATCH 的 body（验撤销发的是 `null` 而非空串 / 缺字段）。 */
@@ -232,6 +248,7 @@ async function installOptionsdeskMock(
   const anchors = seed.map((a) => ({ ...a }));
   let patchSeq = 0;
   let lastBody: Record<string, unknown> | null = null;
+  const radarCalls: { market: string | null; cursor: string | null }[] = [];
 
   await page.route(OPTIONSDESK_RE, async (route: Route) => {
     const req = route.request();
@@ -262,6 +279,7 @@ async function installOptionsdeskMock(
       // 🚨 065：`market` 是**作用域**（与 excluded 同级、进计数），不是筛选项。mock 必须真的
       //    按它切分，否则 e2e 全绿而 mock 已不再是契约镜像（`.claude/rules/mobile-e2e-hermetic`）。
       const market = url.searchParams.get('market');
+      radarCalls.push({ market, cursor: url.searchParams.get('cursor') });
 
       const allBase = anchors.filter((a) => !a.excluded); // FR-005：雷达默认排除 excluded
       const base = allBase.filter((a) => market === null || a.ticker.startsWith(`${market}:`));
@@ -297,10 +315,42 @@ async function installOptionsdeskMock(
                 ? 'all_idle'
                 : null;
 
+      // ── keyset 分页（065 T15-b）─────────────────────────────────────────
+      // 🚨 **真 keyset 而不是 offset**：本组要验「翻页途中排序键变化 → 不漏行、不重复行」，
+      //    而 offset 恰恰会漏会重 —— 用 offset 的 mock 会让那条断言变成永远无法失败的装饰。
+      //    游标格式与 server 的 `encodeRadarCursor` 同形：base64(JSON [distanceToWPct, id])。
+      const sorted = radarSort(filtered);
+      const cursorParam = url.searchParams.get('cursor');
+      const decoded = cursorParam
+        ? (JSON.parse(Buffer.from(cursorParam, 'base64').toString('utf8')) as [
+            string | null,
+            string,
+          ])
+        : null;
+      const distOf = (v: string | null): number =>
+        v === null ? Number.POSITIVE_INFINITY : Number.parseFloat(v);
+      const afterCursor = (a: AnchorResponse): boolean => {
+        if (decoded === null) return true;
+        const [cd, cid] = decoded;
+        const ad = distOf(a.distanceToWPct);
+        const cdn = distOf(cd);
+        return ad > cdn || (ad === cdn && a.id > cid);
+      };
+      const remaining = sorted.filter(afterCursor);
+      const pageItems = remaining.slice(0, RADAR_MOCK_PAGE);
+      const hasMore = remaining.length > RADAR_MOCK_PAGE;
+      const lastRow = pageItems.at(-1);
+      const nextCursor =
+        hasMore && lastRow !== undefined
+          ? Buffer.from(JSON.stringify([lastRow.distanceToWPct, lastRow.id]), 'utf8').toString(
+              'base64',
+            )
+          : null;
+
       return void (await json(200, {
-        items: radarSort(filtered),
-        nextCursor: null,
-        hasMore: false,
+        items: pageItems,
+        nextCursor,
+        hasMore,
         emptyState,
         emptyStateMessage: emptyState === null ? null : EMPTY_STATE_MESSAGES[emptyState],
         marketCounts,
@@ -347,7 +397,15 @@ async function installOptionsdeskMock(
     await route.fallback();
   });
 
-  return { patchCount: () => patchSeq, lastPatchBody: () => lastBody };
+  return {
+    radarRequests: () => radarCalls,
+    setDistance: (id, distanceToWPct) => {
+      const target = anchors.find((a) => a.id === id);
+      if (target !== undefined) target.distanceToWPct = distanceToWPct;
+    },
+    patchCount: () => patchSeq,
+    lastPatchBody: () => lastBody,
+  };
 }
 
 /**
@@ -1022,6 +1080,166 @@ test('065 T14③ 选择器双向 — A 股可见但不可选 + 给出原因；us
   await page.getByTestId('optionsdesk-field-asof').fill('2026-06-30');
   await page.getByTestId('optionsdesk-anchor-save').tap();
   await expect(page.getByTestId('optionsdesk-anchor-row-us:AOS')).toBeVisible({ timeout: 20_000 });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 065 T15 — 切换与默认 / 分页连续性 / 空态入口双向 / 行级粒度
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 滚到列表尾触发 `onEndReached`（react-native-web 的 FlatList 是 ScrollView）。 */
+async function loadMoreRadar(page: Page): Promise<void> {
+  await page.getByTestId('optionsdesk-radar-more').scrollIntoViewIfNeeded();
+}
+
+/** 当前页上可见的雷达行 ticker（按 DOM 序 = 列表序）。 */
+async function visibleRadarTickers(page: Page): Promise<string[]> {
+  const ids = await page.locator('[data-testid^="optionsdesk-radar-row-"]').all();
+  return Promise.all(
+    ids.map(async (el) =>
+      (await el.getAttribute('data-testid'))!.replace('optionsdesk-radar-row-', ''),
+    ),
+  );
+}
+
+test('065 T15(a) 切换与默认 — 冷启动落美股；点港股换的是**行**；二级页往返仍在港股', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '-4.5' }),
+    makeAnchor({ id: '2', ticker: 'hk:00700', distanceToWPct: '-2.0' }),
+  ]);
+  await gotoOptionsdesk(page);
+
+  // US1-AS6 冷启动落美股：只看到美股那行。
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toHaveCount(0);
+
+  // US1-AS1 点港股 —— 🚫 **不要**断言 `aria-selected`：`react-native-web` 不渲染它。
+  //    判据是「**行**确实变了」，那是作用域真生效的唯一硬证据。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toHaveCount(0);
+
+  // US1-AS5 二级页往返后仍在港股（会话内记忆）。
+  await page.getByTestId('optionsdesk-anchors-button').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-list')).toBeVisible({ timeout: 30_000 });
+  await headerBack(page);
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toHaveCount(0);
+});
+
+test('065 T15(b) 分页连续性 — 续页带游标且仍属本市场 / 不漏不重 / 切页签回第一屏', async ({
+  page,
+}) => {
+  // 🚨 **本组是 plan D6 撤销「market 编进游标」的代价对冲**：撤销的唯一依据是「第 2 页悄悄
+  //    没应用作用域由 D1 挡住」，那就必须有真的翻页断言来证明 D1 确实挡住了 ——
+  //    否则等于拆了栏杆又不验地板。
+  // 🚨 判据取**请求序列**而非「第一屏有几行」：web 的 FlatList 在内容不满一屏时会立即反复
+  //    触发 `onEndReached`，短列表一次性翻到底 ⇒ 行数断言取决于视口高度，是环境相关的假信号。
+  const mock = await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '-9.0' }),
+    makeAnchor({ id: '2', ticker: 'us:PEP', distanceToWPct: '-7.0' }),
+    makeAnchor({ id: '3', ticker: 'us:TAP', distanceToWPct: '-5.0' }),
+    makeAnchor({ id: '4', ticker: 'us:CPB', distanceToWPct: '-3.0' }),
+    makeAnchor({ id: '5', ticker: 'us:VICI', distanceToWPct: '-1.0' }),
+    makeAnchor({ id: '6', ticker: 'hk:00700', distanceToWPct: '-8.0' }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-row-us:VICI')).toBeVisible({ timeout: 30_000 });
+
+  // ① 翻完页后：5 只美股一只不少、无重复；港股那只**即使距 W% 更靠前也不在**（作用域先于排序）。
+  const firstPass = await visibleRadarTickers(page);
+  expect(new Set(firstPass).size).toBe(firstPass.length);
+  expect([...firstPass].sort()).toEqual(['us:AOS', 'us:CPB', 'us:PEP', 'us:TAP', 'us:VICI']);
+
+  // ② 请求序列：首请求无游标；至少有一次**带游标的续页**，且每一次都带 `market=us`。
+  //    「续页没带作用域」正是 D1 要挡的那个洞 —— 它会让第 2 页混进港股行。
+  const usCalls = mock.radarRequests();
+  expect(usCalls[0]?.cursor).toBeNull();
+  expect(usCalls.some((c) => c.cursor !== null)).toBe(true);
+  expect(usCalls.every((c) => c.market === 'us')).toBe(true);
+
+  // ③ 排序键变动后重新分页仍不漏不重（keyset 而非 offset；offset 会在键变动时漏行）。
+  mock.setDistance('1', '99.0'); // 把原本排头的 us:AOS 推到最后
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId('optionsdesk-radar-market-tab-us').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 20_000 });
+  const secondPass = await visibleRadarTickers(page);
+  expect(new Set(secondPass).size).toBe(secondPass.length);
+  expect([...secondPass].sort()).toEqual(['us:AOS', 'us:CPB', 'us:PEP', 'us:TAP', 'us:VICI']);
+
+  // ④ 切页签后的第一次请求**不带游标** = 回第一屏（market 进 query key ⇒ pageParam 自然重置）。
+  const hkFirst = mock.radarRequests().find((c) => c.market === 'hk');
+  expect(hkFirst?.cursor).toBeNull();
+});
+
+test('065 T15(c) 空态入口双向 — 本市场零锚零入口；整库零锚建锚 CTA 必须在（SC-004）', async ({
+  page,
+}) => {
+  // 🚨 **两个方向都要断**：SC-004「行动入口 100% 可执行」既禁止出现无从执行的入口，也要求
+  //    该出现的入口确实在 —— 只断前者的话「什么入口都不给」会照样绿。
+  await installOptionsdeskMock(page, [makeAnchor({ id: '1', ticker: 'us:AOS' })]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+
+  // 港股零锚而库中另有美股锚 → 第 4 态：市场文案在，**两个按钮计数均为 0**。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  const marketEmpty = page.getByTestId('optionsdesk-radar-empty-market');
+  await expect(marketEmpty).toBeVisible({ timeout: 20_000 });
+  await expect(marketEmpty).toContainText(EMPTY_STATE_MESSAGES.zero_anchors_in_market);
+  // 这两条抓的正是 T13 的 fall-through：文案对了，却配一个什么都不做的「清除筛选」。
+  await expect(page.getByTestId('optionsdesk-radar-create-anchor')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-radar-clear-filter')).toHaveCount(0);
+  // 与「整库还没有锚」的文案 MUST NOT 复用。
+  await expect(marketEmpty).not.toContainText(EMPTY_STATE_MESSAGES.zero_anchors);
+});
+
+test('065 T15(c) 反向 — 整库零锚：仍落 zero_anchors 且建锚 CTA 出现（优先级不可换）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, []);
+  await gotoOptionsdesk(page);
+
+  const zero = page.getByTestId('optionsdesk-radar-empty-zero');
+  await expect(zero).toBeVisible({ timeout: 30_000 });
+  await expect(zero).toContainText(EMPTY_STATE_MESSAGES.zero_anchors);
+  await expect(page.getByTestId('optionsdesk-radar-create-anchor')).toBeVisible();
+
+  // 切到港股：整库仍是空的 ⇒ **仍落第 1 态**（此时「去建锚」才是对的动作）。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-empty-zero')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('optionsdesk-radar-empty-market')).toHaveCount(0);
+});
+
+test('065 T15(d) 行级粒度与筛选 — 港股行内时点是交易日；筛选跨页签保留', async ({ page }) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', lLevelEffective: 'L2', distanceToWPct: '-4.0' }),
+    makeAnchor({
+      id: '2',
+      ticker: 'hk:00700',
+      lLevelEffective: 'L1',
+      distanceToWPct: '-2.0',
+      // 港股恒收盘档：`spotAsOf` 是交易日粒度（无时刻），priceKind 是收盘。
+      spotAsOf: '2026-08-21',
+      priceKind: 'eod_close',
+    }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+
+  // 先在美股页签选一个筛选（L1 —— 美股这只是 L2 ⇒ 本页签筛完为空）。
+  await page.getByTestId('optionsdesk-radar-filter-L1').tap();
+  await expect(page.getByTestId('optionsdesk-radar-empty-filtered')).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // 切到港股：筛选**跨页签保留**（它是镜头，不是每页签独立的状态）⇒ L1 的港股那只仍在。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  const hkRow = page.getByTestId('optionsdesk-radar-row-hk:00700');
+  await expect(hkRow).toBeVisible({ timeout: 20_000 });
+  // 行内行情时点是**交易日**而非时刻（T11 只覆盖了顶部新鲜度聚合，覆盖不到行内）。
+  await expect(hkRow).not.toContainText(/\d{2}:\d{2}/);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
