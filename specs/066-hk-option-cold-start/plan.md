@@ -178,7 +178,13 @@ context7_verified: []
 
 1. `futu-realtime-quote.adapter.ts` 加 `hk: 'HK'`
 2. `marketdata.module.ts:404` `MarketRoutedRealtimeQuoteAdapter` 补 hk 槽位
-3. 🚨 `market-session.rules.ts` 把港股从单段 `[09:30,16:00]` **还原成 `[09:30,12:00] + [13:00,16:00]`**。文件里已有粗体警告，且注明还原是**免费**的 —— `isSessionUnderway` 取 min/max，冷启动那道闸逐点不变；变的是 `isWithinTradingSession`（盘中采价用的那个）在午休正确返 false。**不还原 ⇒ 午休盘口被当成盘中价写进锚表，雷达照常渲染、排序照常成立、没有任何断言会红。**
+3. 🚨 `market-session.rules.ts` 把港股从单段 `[09:30,16:00]` **还原成 `[09:30,12:00] + [13:00,16:00]`**。**不还原 ⇒ 午休盘口被当成盘中价写进锚表，雷达照常渲染、排序照常成立、没有任何断言会红。**
+
+   **「还原是免费的」已逐个消费方核实**（不是照抄文件里那句注释）—— 全仓只有两个消费方读这两个谓词：
+   - `alert/intraday-eval.processor.ts:95` 用 `isWithinTradingSession`，但市场参数是**写死的** `INTRADAY_MARKET = 'cn'`（`:45`）⇒ 港股够不到它
+   - `anchor-cold-start.usecase.ts:224` 用 `isSessionUnderway`，取 min/max ⇒ 拆段逐点不变
+
+   ⇒ **现存零个消费方**会因为港股拆段而改变行为；唯一的分段敏感读者是本片新接的港股盘中采价路径。这条把「改共享时段表」从「有回归面」降成「无回归面」。
 4. mobile：`radar.rules.ts` 的 `MARKETS_WITHOUT_INTRADAY` 去掉 `'hk'`、`optionsdesk-copy.ts` 的 `marketNoIntraday` 下线，`apps/mobile/e2e/optionsdesk-anchors-radar.spec.ts:1011-1040` 那条双向断言同步改。
 
 #### A8 — `'N/A'` 规范化（**已证实的缺陷，不是假设**）
