@@ -2,6 +2,18 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.13.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.12.1...mobile-v0.13.0) (2026-08-22)
+
+
+### Features
+
+* **optionsdesk:** 065 雷达按市场分页签 —— 美股 / 港股 ([#118](https://github.com/zhangleizlpd/no-vain-years-tech/issues/118)) ([214a3a5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/214a3a50e78625d83e29d2adc9ecab6a7b161fb7))
+
+
+### Bug Fixes
+
+* **optionsdesk:** 空态文案 chainNotReady 描述的是 060 冷启动与 [#124](https://github.com/zhangleizlpd/no-vain-years-tech/issues/124) 之前的世界 ([#141](https://github.com/zhangleizlpd/no-vain-years-tech/issues/141)) ([f2440a7](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f2440a7f3dfdee8af5f14b74ebab55f382e0c7f2))
+
 ## [0.12.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.12.0...mobile-v0.12.1) (2026-08-21)
 
 
