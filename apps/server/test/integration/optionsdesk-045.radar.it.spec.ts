@@ -550,5 +550,26 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       // 反向: 同一批数据切到美股 ⇒ 有可动 ⇒ 非 all_idle (证明上面那条不是恒 all_idle)。
       expect((await getRadar.execute({ market: 'us' })).emptyState).toBeNull();
     });
+
+    it('state_branch 4: 港股无锚而库中另有美股锚 → zero_anchors_in_market (引导切市场)', async () => {
+      await seedAnchor({ code: 'AOS', close: '36' });
+      await syncQuote.execute();
+
+      const page = await getRadar.execute({ market: 'hk' });
+
+      expect(page.items).toHaveLength(0);
+      expect(page.emptyState).toBe('zero_anchors_in_market');
+      expect(page.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.zero_anchors_in_market);
+      // 🚨 与「整库还没有锚」**互不复用** —— 两者的有效动作相反 (切市场 vs 去建锚), 复用文案
+      //    会让用户以为自己之前建的那些锚丢了。
+      expect(page.emptyStateMessage).not.toBe(RADAR_EMPTY_STATE_MESSAGES.zero_anchors);
+    });
+
+    it('state_branch 5: 整库无锚 → 仍落 zero_anchors (带作用域也一样, 此时「去建锚」才对)', async () => {
+      const page = await getRadar.execute({ market: 'hk' });
+
+      expect(page.emptyState).toBe('zero_anchors');
+      expect(page.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.zero_anchors);
+    });
   });
 });

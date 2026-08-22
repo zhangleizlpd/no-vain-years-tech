@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { classifyZone, computeW, isBelowW } from './anchor.rules';
 import { isAnchorReviewFlagOn } from './review-anchor.usecase';
 import {
   GetRadarUseCase,
   RADAR_EMPTY_STATE_MESSAGES,
+  RADAR_EMPTY_STATES,
   resolveBreachTransition,
   resolveRadarEmptyState,
 } from './get-radar.usecase';
@@ -175,11 +176,33 @@ describe('resolveBreachTransition — FR-013 复核锚状态机四条转移', ()
   });
 });
 
-describe('resolveRadarEmptyState — 三空态 (FR-015 + FR-034)', () => {
-  const base = { baseTotal: 5, pageItems: 3, actionableTotal: 1, firstPage: true };
+describe('resolveRadarEmptyState — 四空态 (FR-008/FR-009/FR-010, FR-015 + FR-034)', () => {
+  const base = {
+    baseTotal: 5,
+    globalBaseTotal: 5,
+    pageItems: 3,
+    actionableTotal: 1,
+    firstPage: true,
+  };
 
   it('锚库为空 → zero_anchors (引导建锚)', () => {
-    expect(resolveRadarEmptyState({ ...base, baseTotal: 0, pageItems: 0 })).toBe('zero_anchors');
+    expect(
+      resolveRadarEmptyState({ ...base, baseTotal: 0, globalBaseTotal: 0, pageItems: 0 }),
+    ).toBe('zero_anchors');
+  });
+
+  it('065 库里有锚但本市场一只都没有 → zero_anchors_in_market (引导切市场)', () => {
+    expect(
+      resolveRadarEmptyState({ ...base, baseTotal: 0, globalBaseTotal: 7, pageItems: 0 }),
+    ).toBe('zero_anchors_in_market');
+  });
+
+  it('🚨 065 优先级: 整库为空 ∧ 本市场为空 → 落 zero_anchors 而非 zero_anchors_in_market', () => {
+    // 两个条件此时**同时**成立, 判定序是唯一的分辨器。落错了不会红也不会崩 —— 只是把人支到
+    // 另一个同样空的页签, 还暗示「你的锚在别处」(其实并没有)。
+    expect(
+      resolveRadarEmptyState({ ...base, baseTotal: 0, globalBaseTotal: 0, pageItems: 0 }),
+    ).not.toBe('zero_anchors_in_market');
   });
 
   it('有锚但筛选后为空 → filtered_empty (不是零锚)', () => {
@@ -198,12 +221,18 @@ describe('resolveRadarEmptyState — 三空态 (FR-015 + FR-034)', () => {
     expect(resolveRadarEmptyState({ ...base, pageItems: 0, firstPage: false })).toBeNull();
   });
 
-  it('🚨 三态文案两两不同, MUST NOT 复用 (FR-034 明令与 FR-015 区分)', () => {
+  it('🚨 四态文案两两不同, MUST NOT 复用 (FR-034 明令与 FR-015 区分)', () => {
     const texts = Object.values(RADAR_EMPTY_STATE_MESSAGES);
+    expect(texts).toHaveLength(RADAR_EMPTY_STATES.length); // 加了枚举值必须补文案
     expect(new Set(texts).size).toBe(texts.length);
     expect(RADAR_EMPTY_STATE_MESSAGES.all_idle).toContain('今日无解');
     expect(RADAR_EMPTY_STATE_MESSAGES.filtered_empty).toContain('筛选');
     expect(RADAR_EMPTY_STATE_MESSAGES.zero_anchors).not.toContain('筛选');
+    // 🚨 第 4 态的有效动作是**切市场**不是**建锚** —— 两条文案措辞必须真的不同,
+    //    复制第一条过来会让用户以为自己之前建的锚丢了。
+    expect(RADAR_EMPTY_STATE_MESSAGES.zero_anchors_in_market).toContain('市场');
+    expect(RADAR_EMPTY_STATE_MESSAGES.zero_anchors_in_market).not.toContain('建');
+    expect(RADAR_EMPTY_STATE_MESSAGES.zero_anchors).toContain('建');
   });
 });
 
@@ -266,9 +295,15 @@ function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
   const queryRaw = vi.fn(async (arg: { sql: string }) =>
     arg.sql.includes('actionable_total') ? countBaseSet(rows, new Date()) : pageKeys,
   );
-  const findMany = vi.fn(async (args: { where?: unknown }) =>
-    args.where === undefined ? rows : rows.filter((r) => r.excluded === false),
-  );
+  // 🚨 mock **必须认** `where.market` —— 065 D2 的否定断言全靠它: 若 mock 无视 market 谓词,
+  //    有人给状态机扫描 (`advanceBreachState`) 加上 scope 也照样全绿, 那颗钉子就是**假的**。
+  //    状态机那条 `findMany` 无 `where` ⇒ 回全部行 (含 excluded, 维护 ≠ 展示);
+  //    `hydrate` 那条带 `where.id` ⇒ 回非 excluded 行 (雷达不展示 excluded)。
+  const findMany = vi.fn(async (args: { where?: Record<string, unknown> }) => {
+    const market = args.where?.market;
+    const scoped = market === undefined ? rows : rows.filter((r) => r.market === market);
+    return args.where === undefined ? scoped : scoped.filter((r) => r.excluded === false);
+  });
   const updateMany = vi.fn().mockResolvedValue({ count: 1 });
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
@@ -674,14 +709,92 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     expect(page.emptyState).toBeNull(); // 计数按全部市场加总 ⇒ 那只美股仍算「可动」
   });
 
-  it('作用域指向一格都没有的市场 ⇒ 计数按市场取到零 (T06 第 4 空态要吃的输入形态)', async () => {
+  it('🚨 D2 否定断言: 请求 us 作用域时港股锚的跌破状态机**仍被推进** (MUST NOT 被 scope)', async () => {
+    // 🚨 此前**零覆盖**: 本文件的 fixture 恒 `us:AOS` (唯一 override 是 `us:PEP`) ⇒ 有人「为了
+    //    一致性」把 market 串进 `advanceBreachState` 的扫描面, 现有测试照样全绿。
+    //    一旦被 scope, 用户停在美股页签期间港股锚的状态机整段冻结, 而 `breachStartedOn` 的清空
+    //    是破坏性、日粒度、**不可回补**的 (plan D2)。
+    m = buildPrismaMock([
+      anchorRow({ id: 8n, ticker: 'hk:00700', lastClose: new Prisma.Decimal('36') }), // < W ⇒ 该落起点
+    ]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+    m.setPageKeys([]); // 美股作用域下这一页本就是空的 —— 状态机照样必须跑
+
+    await useCase.execute({ market: 'us' });
+
+    expect(m.updateMany).toHaveBeenCalledTimes(1);
+    const call = m.updateMany.mock.calls[0]![0] as { where: { id: bigint } };
+    expect(call.where.id).toBe(8n); // 写的正是那只**不属于当前作用域**的港股锚
+  });
+
+  it('🚨 T06 库里有锚但本市场一只都没有 → zero_anchors_in_market (不是「整库还没有锚」)', async () => {
     m = buildPrismaMock([anchorRow({ id: 7n, ticker: 'us:AOS' })]);
     useCase = new GetRadarUseCase(m.prisma, m.calendar);
     m.setPageKeys([]);
 
-    // ⚠️ 今天落 `zero_anchors`(「整库还没有锚」的文案) —— **语义是错的**, 但修它是 T06 的事
-    //    (加 `zero_anchors_in_market` + 「整库为空优先」的判定序)。本条钉的只是「计数确实按
-    //    market 取, 取不到就是零」这一半。
+    const page = await useCase.execute({ market: 'hk' });
+
+    // 作用域计数取到零 (T04) + 整库计数非零 (T06 的 globalBaseTotal) ⇒ 两者的差别就是判据。
+    expect(page.emptyState).toBe('zero_anchors_in_market');
+    expect(page.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.zero_anchors_in_market);
+  });
+
+  it('🚨 T06 优先级: 整库真的空时仍落 zero_anchors (此时「去建锚」才是对的动作)', async () => {
+    m = buildPrismaMock([]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+    m.setPageKeys([]);
+
     expect((await useCase.execute({ market: 'hk' })).emptyState).toBe('zero_anchors');
+  });
+
+  // ── 065 T07 失联市场的告警级留痕 (FR-015, state_branches 10) ────────────────
+
+  it('🚨 T07 计数含无页签可达的市场 → WARN 一次且消息含市场值与条数', async () => {
+    // 🚨 fixture 里的 cn 锚模拟的是「历史遗留 / 新增了受支持市场却忘了加页签」那一类行 ——
+    //    T03 的 `ck_anchor_market` 今天不让 cn 落库, 但这条判据必须在**将来**那种形态出现时
+    //    仍然成立, 所以在 mock 层造出它。这是**判据的输入**, 不是往 DB 种脏数据。
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    m = buildPrismaMock([
+      anchorRow({ id: 7n, ticker: 'us:AOS' }),
+      anchorRow({ id: 9n, ticker: 'cn:600519' }),
+    ]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+
+    await useCase.execute({ market: 'us' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = String(warn.mock.calls[0]![0]);
+    expect(msg).toContain('cn'); // 市场值
+    expect(msg).toContain('cn=1'); // 条数
+    expect(msg).not.toContain('us='); // 受支持的那些不进告警正文
+    warn.mockRestore();
+  });
+
+  it('🚨 T07 只含受支持市场 → **零 WARN** (雷达首页高频, 每请求一条会沦为背景噪声)', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    m = buildPrismaMock([
+      anchorRow({ id: 7n, ticker: 'us:AOS' }),
+      anchorRow({ id: 8n, ticker: 'hk:00700' }),
+    ]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+
+    await useCase.execute({ market: 'us' });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('🚨 T07 续页不查计数 ⇒ 也不喊 (同一次滚动里不该重复告警)', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    m = buildPrismaMock([anchorRow({ id: 9n, ticker: 'cn:600519' })]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+
+    await useCase.execute({
+      market: 'us',
+      cursor: encodeRadarCursor({ distanceToWPct: '-5', anchorId: '3' }),
+    });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
