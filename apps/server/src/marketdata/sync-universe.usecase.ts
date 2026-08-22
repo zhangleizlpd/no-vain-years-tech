@@ -6,7 +6,7 @@ import {
   type InstrumentUniversePort,
 } from './instrument-universe.port.js';
 import type { UniverseEntry } from './marketdata.types.js';
-import { emptyStats, type SyncRunStats } from './sync-run.recorder.js';
+import { addWritten, emptyStats, type SyncRunStats } from './sync-run.recorder.js';
 
 /**
  * universe 同步 use case (016 T008, FR-S01/S03 / US3)。
@@ -29,6 +29,10 @@ export class SyncUniverseUseCase {
 
   async run(): Promise<SyncRunStats> {
     const stats = emptyStats();
+    // #138: 本维度有写路径 ⇒ 起手声明一次。旧口径把 universe/profile 蓄意豁免出 written
+    // (理由「恒写恒非零, 零写入这个形态在它身上不存在」), 但 `enumerate()` 返空 —— fallback
+    // 链耗尽 / 上游改了返回形态 —— 恰好就是「跑了、全绿、一行没写」, 而那正是本列要抓的东西。
+    addWritten(stats, 0);
     const entries = await this.universe.enumerate(await this.universeMarketScope());
     stats.scanned = entries.length;
 
@@ -42,6 +46,7 @@ export class SyncUniverseUseCase {
       }
       try {
         await this.upsert(entry);
+        addWritten(stats, 1); // upsert 逐行按行计 (insert 与 update 都真的写了, 口径见 addWritten)。
         stats.ok++;
       } catch (err) {
         stats.failed++;

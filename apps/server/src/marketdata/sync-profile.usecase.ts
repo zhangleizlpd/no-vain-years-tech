@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service.js';
 import { COMPANY_PROFILE_PORT, type CompanyProfilePort } from './company-profile.port.js';
-import { emptyStats, type SyncRunStats } from './sync-run.recorder.js';
+import { addWritten, emptyStats, type SyncRunStats } from './sync-run.recorder.js';
 
 /** 单批解析的 stockCode 上限 (理杏仁 /cn/company 批量约束保守值; 超量分批)。 */
 const PROFILE_BATCH_SIZE = 100;
@@ -26,6 +26,9 @@ export class SyncProfileUseCase {
 
   async run(): Promise<SyncRunStats> {
     const stats = emptyStats();
+    // #138: 本维度有写路径 ⇒ 起手声明一次 (含下面 missing 为空的早退 —— 那一轮确实跑了、
+    // 确实一行没写)。旧口径把 universe/profile 蓄意豁免出 written, 见 sync-universe 同位注释。
+    addWritten(stats, 0);
 
     // 038 T009: 富化范围经 profile 维度 marketScope (seam#2) —— cn + hk。缺行兜底 {cn}。
     const scope = await this.profileMarketScope();
@@ -66,6 +69,12 @@ export class SyncProfileUseCase {
         const batch = codes.slice(i, i + PROFILE_BATCH_SIZE);
         try {
           const resolved = await this.profile.resolveCompanyTypes(market, batch);
+          // #138 落库行数 = `resolved.size`。**这是从 port 契约推出来的, 不是本地写的**:
+          // 上面的查询条件已把 `lixingerCompanyType: null` 钉死 ⇒ 整批必然全是缓存未命中 ⇒
+          // `resolveFsTypes` 对每个解析成功的 code 都会 `updateMany` 回写一行。
+          // ⚠️ 该等式的前提就是那个查询条件 —— 若哪天本维度改成也传已缓存的 code, 这个数会
+          // 变成高估 (缓存命中不回写), 届时 MUST 让 port 直接返回写入行数。
+          addWritten(stats, resolved.size);
           // resolved 命中的算 ok; 未解析出 fsType 的 (vendor 未返/未知类型) 算 skipped。
           for (const code of batch) {
             if (resolved.has(code)) stats.ok++;

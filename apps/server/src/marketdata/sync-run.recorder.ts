@@ -9,8 +9,8 @@ export interface SyncRunStats {
   skipped: number;
   failed: number;
   /**
-   * 本次执行**真正落到库里的行数** (063 Phase 3.3); `null` = 本次**没有任何写路径上报**。
-   * 三态语义 + 「为什么不是 `@default(0)`」的判据见 `schema.prisma` 的 `SyncRun.written` 注释。
+   * 本次执行**实际发生了写操作的行数** (063 Phase 3.3); `null` = 本次**没有任何写路径上报**。
+   * 三态语义 + 口径 + 「为什么不是 `@default(0)`」的判据见 `schema.prisma` 的 `SyncRun.written` 注释。
    *
    * 🚨 累加必须走 {@link addWritten}, **别直接 `+=`** —— `null + 1` 在 TS 里过不了、在 JS 里
    * 是 1 看着还对, 而 `stats.written! += n` 会把 null 起点变成 NaN 且一路不报错。
@@ -23,11 +23,21 @@ export interface SyncRunStats {
 export type SyncRunStatus = 'success' | 'partial' | 'failed' | 'skipped';
 
 /**
- * 累加**真正落库的行数** (063 Phase 3.3)。第一次上报把 `null` 抬成数, 之后累加 —— 「上报了 0
- * 行」与「一次都没上报」因此在终值上可分辨, 而这正是本列存在的理由。
+ * 累加**实际发生了写操作的行数** (063 Phase 3.3)。第一次上报把 `null` 抬成数, 之后累加 ——
+ * 「上报了 0 行」与「一次都没上报」因此在终值上可分辨, 而这正是本列存在的理由。
  *
- * 口径: insert-only 段传 `createMany(skipDuplicates)` 报的 `count` (撞唯一键被跳过的行**不计**,
- * 它们没落库); 尾窗 upsert 段按行传 (那些行确实落库了)。
+ * ## 口径只有一条, 全维度统一 (#138 定): **「这一行发生了写吗」**
+ *
+ *   · `createMany(skipDuplicates)` 段传它报的 `count` —— 撞唯一键被跳过的行**没发生写**, 不计;
+ *   · 逐行 `upsert` 段**按行传** —— insert 与 update 都是真的写了库。
+ *
+ * 🚨 盲区写在明处: upsert 段分辨不出「覆盖了但内容没变」⇒ 逐行 upsert 的维度 (hot_snapshot /
+ * fundamental delta 等) 稳态恒等于当轮拿到的行数。它抓得到的是「vendor 整轮返空」= 0。要连
+ * 「写了但没变」都分辨, 得走 PG `ON CONFLICT … RETURNING (xmax = 0)`, 代价是这些写路径全改
+ * `$queryRaw` —— 2026-08-22 权衡后**明确不做**, 别当遗漏。
+ *
+ * 🚨 有写路径的维度**必须起手 `addWritten(stats, 0)` 声明一次** —— 否则「工作集为空 / vendor
+ * 零行」的一轮会停在 `null`, 与「这个维度压根没接线」不可分辨, 而那正是 #138 的病根。
  */
 export function addWritten(stats: SyncRunStats, rows: number): void {
   stats.written = (stats.written ?? 0) + rows;

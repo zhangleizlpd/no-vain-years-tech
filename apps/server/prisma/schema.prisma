@@ -1331,14 +1331,19 @@ model SyncRun {
   ok            Int       @default(0)
   skipped       Int       @default(0)
   failed        Int       @default(0)
-  // 063 Phase 3.3: 本次执行**真正落到库里的行数** —— 让「跑了但零写入」不再恒绿。
-  // insert-only 段取 `createMany(skipDuplicates)` 报的 `count` (撞唯一键被跳过的行**不计**);
-  // 尾窗 upsert 段按行计 (那些行确实落库了, 见 dimension-executor.writeDailyBarRows)。
+  // 063 Phase 3.3: 本次执行**实际发生了写操作的行数** —— 让「跑了但零写入」不再恒绿。
+  // 🚨 口径**只有一条, 全维度统一** (#138 定): 「这一行发生了写吗」。据此:
+  //   · `createMany(skipDuplicates)` 段取它报的 `count` —— 被跳过的行**没发生写**, 不计;
+  //   · 逐行 `upsert` 段**按行计** —— insert 与 update 都是真的写了 (含尾窗, 见
+  //     dimension-executor.writeDailyBarRows)。
+  //   盲区写在明处: upsert 段分辨不出「覆盖了但内容没变」, 权衡见 `addWritten` 注释。
   //
   // 🚨 **nullable 是刻意的三态**, 与 062 交易日三态同源 —— 漏接一处的后果决定了这个选择:
-  //   · `null` = 本次**没有任何写路径上报**。三种情形: ① status=skipped/failed 起手就没写;
-  //     ② 该维度全走覆盖式 upsert (universe / profile), 恒写恒非零, 「跑了但零写入」这个
-  //     形态在它身上不存在, **蓄意不上报**; ③ 新维度尚未接线 —— 加维度时回到这里。
+  //   · `null` = 本次**没有任何写路径上报**。两种情形: ① status=skipped/failed 起手就没写;
+  //     ② 新维度尚未接线 —— 加维度时回到这里。
+  //     (#138 前还有第三种「universe / profile 恒写恒非零, 蓄意豁免」, **已撤**: `enumerate()`
+  //      返空 —— fallback 链耗尽 —— 恰好就是「跑了、全绿、一行没写」, 豁免等于把本列要抓的
+  //      那个形态挡在门外。)
   //   · `0`    = 上报了, 且真的一行都没进库。**这才是本列要抓的那个「全绿但没做事」。**
   // 若用 `@default(0)` 非空, 漏接一处就等于让那个维度**恒报零写入** = 假警报, 且看起来
   // 像真故障 —— 那正是「库里没有的即为假」换个地方再犯一遍。
