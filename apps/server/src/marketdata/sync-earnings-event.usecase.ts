@@ -205,6 +205,8 @@ export class SyncEarningsEventUseCase {
     stats: SyncRunStats,
     input: ExecutorInput,
   ): Promise<boolean> {
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     // 🚨 业务日期按 us 市场时区 (FR-036), **不吃 `input.asOf`** —— 后者是**入队时刻**算的,
     // 而前向视野窗要从**执行时刻**的交易所今天起算 (ADR-0066: event time ≠ processing time);
     // 且运维显式 `--as-of <过去某天>` 会把视野窗整体前移, 漏掉近端财报。

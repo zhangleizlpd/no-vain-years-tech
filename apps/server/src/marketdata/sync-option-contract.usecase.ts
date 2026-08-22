@@ -127,6 +127,8 @@ export class SyncOptionContractUseCase {
     stats: SyncRunStats,
     input: ExecutorInput,
   ): Promise<boolean> {
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     // FR-028b 兜底 seed 先跑: 它修的是「有锚必有 Instrument 行」这个 FK 前提, 与本轮工作集
     // 无关 (本轮工作集已由 factExecutor 定死) —— 新 seed 的标的由**下一轮**锚闸开闸后纳入,
     // 正是 SC-003 定的「建锚 → 下一轮 cron → 进工作集」时序。
