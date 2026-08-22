@@ -196,9 +196,14 @@ function radarSort(items: AnchorResponse[]): AnchorResponse[] {
   });
 }
 
-/** server 的空态三分（get-radar.usecase：baseTotal → pageItems → actionableTotal）。 */
+/**
+ * server 的空态**四分**（get-radar.usecase：globalBaseTotal → baseTotal → pageItems →
+ * actionableTotal）。065 起第 2 位是「本市场零锚」—— 它与第 1 位的有效动作**相反**
+ * （换个市场 vs 去建锚），文案 MUST NOT 复用。
+ */
 const EMPTY_STATE_MESSAGES = {
   zero_anchors: '还没有锚 —— 先去锚管理建第一个锚',
+  zero_anchors_in_market: '这个市场还没有锚 —— 换个市场看看',
   filtered_empty: '当前筛选无结果',
   all_idle: '今日无解，空仓是常态',
 } as const;
@@ -254,8 +259,12 @@ async function installOptionsdeskMock(
       );
       const pendingReview = url.searchParams.get('pendingReview') === 'true';
       const belowW = url.searchParams.get('belowW') === 'true';
+      // 🚨 065：`market` 是**作用域**（与 excluded 同级、进计数），不是筛选项。mock 必须真的
+      //    按它切分，否则 e2e 全绿而 mock 已不再是契约镜像（`.claude/rules/mobile-e2e-hermetic`）。
+      const market = url.searchParams.get('market');
 
-      const base = anchors.filter((a) => !a.excluded); // FR-005：雷达默认排除 excluded
+      const allBase = anchors.filter((a) => !a.excluded); // FR-005：雷达默认排除 excluded
+      const base = allBase.filter((a) => market === null || a.ticker.startsWith(`${market}:`));
       const filtered = base.filter(
         (a) =>
           (lLevels.size === 0 || lLevels.has(a.lLevelEffective)) &&
@@ -264,14 +273,29 @@ async function installOptionsdeskMock(
       );
       const actionable = filtered.filter(isBelowW);
 
+      // 全市场计数 —— **不受本次作用域限制**（FR-016 小圆点要的正是别的市场那几格）。
+      const marketCounts = [...new Set(allBase.map((a) => a.ticker.split(':')[0] ?? ''))].map(
+        (m) => {
+          const rows = allBase.filter((a) => a.ticker.startsWith(`${m}:`));
+          return {
+            market: m,
+            baseTotal: rows.length,
+            actionableTotal: rows.filter(isBelowW).length,
+          };
+        },
+      );
+
+      // 四分，判定序不可换：整库空优先于本市场空（此时「去建锚」才是对的动作）。
       const emptyState =
-        base.length === 0
+        allBase.length === 0
           ? 'zero_anchors'
-          : filtered.length === 0
-            ? 'filtered_empty'
-            : actionable.length === 0
-              ? 'all_idle'
-              : null;
+          : base.length === 0
+            ? 'zero_anchors_in_market'
+            : filtered.length === 0
+              ? 'filtered_empty'
+              : actionable.length === 0
+                ? 'all_idle'
+                : null;
 
       return void (await json(200, {
         items: radarSort(filtered),
@@ -279,6 +303,7 @@ async function installOptionsdeskMock(
         hasMore: false,
         emptyState,
         emptyStateMessage: emptyState === null ? null : EMPTY_STATE_MESSAGES[emptyState],
+        marketCounts,
       }));
     }
 
@@ -287,6 +312,17 @@ async function installOptionsdeskMock(
       if (method === 'GET') {
         const items = [...anchors].sort((x, y) => x.ticker.localeCompare(y.ticker));
         return void (await json(200, { items, total: items.length }));
+      }
+      // 065 T14③ 的正向那半条要一路建成锚 ⇒ mock 需要真的写侧（此前只有 GET / PATCH）。
+      if (method === 'POST') {
+        const body = (req.postDataJSON() as { ticker?: string } | null) ?? {};
+        const created = makeAnchor({
+          id: String(anchors.length + 1),
+          ticker: body.ticker ?? 'us:NEW',
+          distanceToWPct: '9.9',
+        });
+        anchors.push(created);
+        return void (await json(201, created));
       }
       return void (await route.fallback());
     }
@@ -877,6 +913,115 @@ test('045 锚表单 — 三处人工位：置值即标「人工调整 · 将回�
   await expect(page.getByTestId('optionsdesk-manual-badge-lLevel')).toHaveCount(0);
   expect(mock.lastPatchBody()).toHaveProperty('lLevelManual', null);
   expect(mock.patchCount()).toBe(3);
+});
+
+/** `GET /marketdata/search` —— 只在需要走建锚选择器的用例里装（065 T14③）。 */
+async function installSearchMock(
+  page: Page,
+  items: readonly { symbol: string; name: string }[],
+): Promise<void> {
+  await page.route('**/api/v1/marketdata/search**', async (route: Route) => {
+    if (route.request().method() === 'OPTIONS')
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    const q = new URL(route.request().url()).searchParams.get('q') ?? '';
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ items: q ? items : [] }),
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 065 T14 — 港股能力说明常驻 / 跨页签小圆点 / 选择器双向
+// ════════════════════════════════════════════════════════════════════════════
+
+test('065 T14① 港股能力说明常驻 — **有锚时仍在**，不是只在空态下呈现（US2-AS1）', async ({
+  page,
+}) => {
+  // 🚨 只验空态会漏掉「有了锚说明就消失」这个正要防的形态 —— 而恰恰是有行之后用户才会去读
+  //    行情时点、才真会把交易日粒度误读成「今天还没开盘」。
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '-4.5' }),
+    makeAnchor({ id: '2', ticker: 'hk:00700', distanceToWPct: '8.0' }),
+  ]);
+  await gotoOptionsdesk(page);
+
+  // 美股页签：不渲说明（美股有盘中实时价）。
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('optionsdesk-radar-market-notice')).toHaveCount(0);
+
+  // 切港股：**列表有行**且说明同屏在。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('optionsdesk-radar-market-notice')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toHaveCount(0); // 作用域真生效
+});
+
+test('065 T14② 跨页签小圆点 — 非当前页签有可动锚才出现，且**不含任何数字**（FR-016）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '8.0' }), // 美股：不可动
+    makeAnchor({ id: '2', ticker: 'hk:00700', distanceToWPct: '-3.0' }), // 港股：可动
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+
+  // 当前在美股：港股有可动 ⇒ 港股页签有点；当前页签自己**不渲**点（内容就在眼前）。
+  await expect(page.getByTestId('optionsdesk-radar-market-dot-hk')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-radar-market-dot-us')).toHaveCount(0);
+  // 🚫 不带数量 —— 页签上的数字会被读成「该市场有 N 只锚」而不是「N 只可动」。
+  await expect(page.getByTestId('optionsdesk-radar-market-dot-hk')).toHaveText('');
+
+  // 切到港股后：它成了当前页签 ⇒ 点消失；而美股无可动 ⇒ 美股也不该有点（反向那半条）。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('optionsdesk-radar-market-dot-hk')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-radar-market-dot-us')).toHaveCount(0);
+});
+
+test('065 T14③ 选择器双向 — A 股可见但不可选 + 给出原因；us 仍可选并一路建成锚（US3-AS1/AS2）', async ({
+  page,
+}) => {
+  // 🚨 **正向那半条不可省**：白名单收紧最常见的回归是 over-blocking，一旦误伤会让建锚整条
+  //    路径不可用，而只测「A 股被挡住」照样全绿。
+  // seed 一只无关的锚：锚列表空态不渲 `optionsdesk-anchor-list`（走空态视图），
+  // 而本用例要从列表进建锚入口。
+  await installOptionsdeskMock(page, [makeAnchor({ id: '1', ticker: 'us:PEP' })]);
+  await installSearchMock(page, [
+    { symbol: 'cn:600519', name: '贵州茅台' },
+    { symbol: 'us:AOS', name: 'A.O. Smith' },
+  ]);
+  await gotoOptionsdesk(page);
+  await page.getByTestId('optionsdesk-anchors-button').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-list')).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('optionsdesk-anchor-create').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-form')).toBeVisible({ timeout: 30_000 });
+
+  await page.getByTestId('optionsdesk-ticker-search-input').fill('60');
+
+  // ── 反向：A 股**可见**（🚫 MUST NOT 静默过滤 —— 搜「茅台」返回空白会让人以为搜索坏了）
+  //    且不可选、且原因就地同屏。
+  const cnRow = page.getByTestId('optionsdesk-ticker-result-cn:600519');
+  await expect(cnRow).toBeVisible({ timeout: 20_000 });
+  // 🚨 用 `toBeDisabled()` 断，**不要**写成「tap 一下再看没反应」—— Playwright 对 disabled
+  //    元素的 tap 会一直重试到用例超时（实测 120s），那是假红、不是真信号。
+  await expect(cnRow).toBeDisabled();
+  await expect(page.getByTestId('optionsdesk-ticker-unsupported-cn:600519')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-ticker-picked')).toHaveCount(0);
+
+  // ── 正向：us 项仍可选，且能**一路建成锚** —— over-blocking 的真实症状正是这条路径断掉，
+  //    而只断「A 股被挡住」的话它会照样全绿。
+  await page.getByTestId('optionsdesk-ticker-result-us:AOS').tap();
+  await expect(page.getByTestId('optionsdesk-ticker-picked')).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId('optionsdesk-field-v').fill('100');
+  await page.getByTestId('optionsdesk-field-confidence').fill('8');
+  await page.getByTestId('optionsdesk-field-method').fill('dcf');
+  await page.getByTestId('optionsdesk-field-asof').fill('2026-06-30');
+  await page.getByTestId('optionsdesk-anchor-save').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-row-us:AOS')).toBeVisible({ timeout: 20_000 });
 });
 
 // ════════════════════════════════════════════════════════════════════════════

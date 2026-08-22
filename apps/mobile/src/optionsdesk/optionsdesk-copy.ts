@@ -71,6 +71,17 @@ export const OPTIONSDESK_COPY = {
       us: '美股',
       hk: '港股',
     } satisfies Record<OptionsdeskControllerRadarMarket, string>,
+
+    /**
+     * 市场级能力说明（065 FR-012；兑现 061 FR-010 欠的 UI 那半条 —— 此前全仓
+     * `rg '不支持实时'` 在 UI 文案里**零命中**，3 处命中全是代码注释）。
+     *
+     * 🚨 **常驻，MUST NOT 只在空态下呈现**：港股一旦有了锚说明就消失，而恰恰是有行之后
+     *    用户才会去读行情时点、才真会把交易日粒度误读成「今天还没开盘」。
+     * 🚨 它**不违反**「界面不为档位另加视觉标记」—— 那条管**行级**价格档位，这里是**市场级**
+     *    能力，两个量纲。
+     */
+    marketNoIntraday: '该市场暂不提供盘中实时价，行情以交易日收盘为准',
   },
 
   /**
@@ -921,6 +932,11 @@ export const OPTIONSDESK_COPY = {
     tickerSearchLabel: '标的代码 / 名称',
     tickerSearchPlaceholder: '输入代码或名称搜索',
     tickerSearchHint: '来自标的库 · 只能选',
+    /**
+     * 非受支持市场的搜索结果（065 FR-017 / SC-006）：**可见但不可选 + 一句原因**。
+     * 🚫 **MUST NOT 静默过滤掉** —— 搜「茅台」返回空白会让人以为搜索坏了。
+     */
+    tickerMarketUnsupported: '暂不支持该市场',
     /** EC-2：搜不到即不能建锚，**不提供任何绕过**（FR-002 硬约束）。 */
     tickerNoMatch: '标的库中无此代码 —— 无法建锚',
     tickerNoBypass: '无「仍然保存」绕过路径',

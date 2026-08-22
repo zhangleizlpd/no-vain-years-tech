@@ -482,3 +482,35 @@ describe('065 SC-002 —— 同一页签内行情时点粒度同质', () => {
     expect(mixed.text).toMatch(/\d{2}:\d{2}/);
   });
 });
+
+// ── 065 T13 空态映射强制穷举 (FR-008 / FR-010, SC-004) ───────────────────────
+
+describe('065 radarViewState —— server 四态的全映射', () => {
+  const statePage = (
+    emptyState: RadarPageLike['emptyState'],
+    items: RadarRowAnchor[] = [row()],
+  ) => ({ emptyState, items });
+
+  it('🚨 第 4 态映射到**自己的** view state, 而不是 filtered_empty', () => {
+    // 改回 if 链的那一刻这条就红。fall-through 的病症很隐蔽: 文案是对的(server 下发),
+    // 但会配一个什么都不做的「清除筛选」按钮 —— 当时根本没选筛选。
+    expect(radarViewState(statePage('zero_anchors_in_market', []))).toBe('zero_anchors_in_market');
+    expect(radarViewState(statePage('zero_anchors_in_market', []))).not.toBe('filtered_empty');
+  });
+
+  it('四个 server 态各自透传, 互不折叠', () => {
+    expect(radarViewState(statePage('zero_anchors', []))).toBe('zero_anchors');
+    expect(radarViewState(statePage('filtered_empty', []))).toBe('filtered_empty');
+    expect(radarViewState(statePage('all_idle'))).toBe('all_idle');
+    expect(radarViewState(statePage(null))).toBe('normal');
+  });
+
+  it('🚨 行情整体不可得仍压过 all_idle (「没数据」≠「今日无解, 空仓是常态」)', () => {
+    const noQuote = [row({ spotAsOf: null })];
+    expect(radarViewState({ emptyState: 'all_idle', items: noQuote })).toBe('quotes_degraded');
+    // 而零锚类**不**让位给降级 —— 它们说的是「一行都没有」, 压根没有行可降级。
+    expect(radarViewState({ emptyState: 'zero_anchors_in_market', items: noQuote })).toBe(
+      'zero_anchors_in_market',
+    );
+  });
+});
