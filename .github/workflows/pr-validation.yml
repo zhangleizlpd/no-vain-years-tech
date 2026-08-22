@@ -395,8 +395,20 @@ jobs:
     name: validate-and-test
     needs: [gate-checks, lint-typecheck, server-test, mobile-checks]
     # 上游红时 needs 里的 job 会变成 skipped，本 job 默认也会被跳过 —— 而**被跳过的
-    # required check 在 GitHub 眼里不是失败**，PR 会显示可合并。故必须 always()。
-    if: always()
+    # required check 在 GitHub 眼里不是失败**，PR 会显示可合并。故必须绕开默认的
+    # `success()` 前置：`!cancelled()` 和 always() 一样在上游红时照跑，唯一的区别是
+    # **整轮被取消时不跑**。
+    #
+    # 🚨 不能用 always()（2026-08-22 实测，#143）：上面的 concurrency 取消旧轮时四个分
+    # job 全变 `cancelled`，而 always() 让本 job 照跑，于是按下面的 fail-closed 规则判红
+    # —— 一个纯粹被取代的旧轮，在 head SHA 上留下一条永不消失的 `validate-and-test =
+    # failure`。分支保护取同名**最新**一条（新一轮的 success），所以它**不挡合并**，但 PR
+    # 页面从此长期挂红，把「红 = 该看一眼」训练成噪声。换 `!cancelled()` 后这轮直接
+    # skipped，不留红。
+    #
+    # 这不开新口子：四个分 job 各自也是 ruleset 的 required context，整轮被人工取消时
+    # 它们是 `cancelled`（GitHub 不当通过），PR 照样卡住 —— 兜底不靠本聚合门。
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate gate
