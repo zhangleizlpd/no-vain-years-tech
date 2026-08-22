@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.35.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.0...server-v0.35.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **repo:** 标的查询口的体量数字全部错了 —— 改成隔通道实测值 ([#154](https://github.com/zhangleizlpd/no-vain-years-tech/issues/154)) ([cb1a978](https://github.com/zhangleizlpd/no-vain-years-tech/commit/cb1a97808a66ec6d6f0bdee10a2225eaa5b3e60a))
+
 ## [0.35.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.34.0...server-v0.35.0) (2026-08-22)
 
 
