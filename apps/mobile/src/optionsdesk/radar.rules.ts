@@ -309,6 +309,29 @@ export function radarFilterParams(selected: readonly RadarFilterKey[]): RadarFil
   };
 }
 
+/** 雷达列表 query key 的稳定前缀 —— 锚 mutation（建 / 删 / 改 list-visible 字段）须失效它。 */
+export const RADAR_QUERY_KEY = ['optionsdesk', 'radar'] as const;
+
+/**
+ * 雷达 query key 工厂（065 T11）—— **列表侧与 mutation 失效侧共用这一处**。
+ *
+ * 🚨 **两处各拼各的正是 T12 要修的那个既存缺陷**: `useRadar` 手拼 key、而
+ * `use-anchor-mutations` 失效的是 orval 生成的 key，两者**无共同前缀** ⇒ 任何锚的增删改
+ * **从未失效过雷达**（锚管理列表的失效是好的，那屏用 orval hook；只有雷达是孤儿）。
+ * 工厂化之后，「两边必须同一个 key」从纪律变成结构。
+ *
+ * 🚨 **market 进 key 是刻意的**（plan D8 / D9）: 切页签即换 query ⇒ `pageParam` 自然重置回
+ * 首页。这正是 D6 判定「跨市场游标在 app 里不可达」、从而敢撤销「market 编进游标」的依据 ——
+ * 把 market 从 key 里拿掉，那个判定当场失效。
+ *
+ * 🚨 **筛选也进 key 而 market 与它并列**: 二者都换 query。但语义不同 —— 筛选 state 本身
+ * **跨页签保留**（它是镜头，不是每页签独立的状态，plan D9），只是「筛选 × 市场」这个组合
+ * 各自缓存各自的页。
+ */
+export function radarQueryKey(market: string, filters: RadarFilterParams): readonly unknown[] {
+  return [...RADAR_QUERY_KEY, market, filters];
+}
+
 // ─────────────────────────── 游标分页（SC-002） ───────────────────────────
 
 /**

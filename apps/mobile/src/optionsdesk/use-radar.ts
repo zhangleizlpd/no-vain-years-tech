@@ -19,25 +19,37 @@ import {
 import type { AxiosResponse } from 'axios';
 
 import {
+  RADAR_MARKETS,
   getRadarNextCursor,
   mergeRadarPages,
   radarFilterParams,
   radarFreshness,
+  radarQueryKey,
   radarViewState,
   toggleRadarFilter,
   type RadarFilterKey,
   type RadarFreshness,
+  type RadarMarket,
   type RadarViewState,
 } from './radar.rules';
 
 /** 页大小（server 缺省 20 / 上限 100）。下拉一屏的标准翻页量。 */
 const PAGE_SIZE = 20;
 
-/** 列表 query key 稳定前缀 —— 锚 mutation（建 / 删 / 改 list-visible 字段）须失效它。 */
-export const RADAR_QUERY_KEY = ['optionsdesk', 'radar'] as const;
+// key 前缀与工厂都住 `radar.rules.ts`（纯函数, 有 vitest 覆盖）。这里 re-export 保持
+// `index.ts` 的对外面不变, 也让 mutation 侧能从任一处拿到**同一个**工厂（T12）。
+export { RADAR_QUERY_KEY, radarQueryKey } from './radar.rules';
 
 export interface UseRadarResult {
   items: AnchorResponse[];
+  /** 当前市场作用域（冷启动落 `RADAR_MARKETS[0]` = 美股, FR-005）。 */
+  market: RadarMarket;
+  selectMarket: (market: RadarMarket) => void;
+  /**
+   * 有「可动锚」的市场（FR-016 小圆点数据源）—— 取自 server 的 `marketCounts`，
+   * **不受当前作用域限制**，所以能回答「**别的**页签有没有值得看的东西」。
+   */
+  actionableMarkets: string[];
   viewState: RadarViewState;
   /** 三空态文案由 server 下发（前端不拼），无空态 → null。 */
   emptyStateMessage: string | null;
@@ -55,6 +67,12 @@ export interface UseRadarResult {
 }
 
 export function useRadar(): UseRadarResult {
+  // 🚨 **会话内记忆**: 底部 Tab 常驻不 unmount ⇒ `useState` 就够, 不必持久化。
+  // 🚫 **MUST NOT 依据「当前哪个市场开市」自动切换**（plan D8）—— 那会让「我刚才在哪个
+  //    页签」变得不可预测, 并且在开 / 收盘那一刻自己翻页。默认恒落 `RADAR_MARKETS[0]`。
+  const [market, setMarket] = useState<RadarMarket>(RADAR_MARKETS[0]!);
+  // 🚨 筛选 state **跨页签保留**（plan D9）: 它是镜头, 不是每页签独立的状态 —— 切市场时
+  //    保持同一组筛选, 才谈得上「同一把尺子量两个市场」。
   const [selectedFilters, setSelectedFilters] = useState<RadarFilterKey[]>([]);
   const filterParams = useMemo(() => radarFilterParams(selectedFilters), [selectedFilters]);
 
@@ -65,11 +83,12 @@ export function useRadar(): UseRadarResult {
     readonly unknown[],
     string | undefined
   >({
-    // 筛选进 key：变更即换 query（首页重取，不与旧筛选的页混淆）。
-    queryKey: [...RADAR_QUERY_KEY, filterParams],
+    // 市场与筛选都进 key：变更即换 query（首页重取，`pageParam` 自然重置 —— 这正是
+    // plan D6 敢撤销「market 编进游标」的依据）。
+    queryKey: radarQueryKey(market, filterParams),
     queryFn: ({ pageParam, signal }) =>
       optionsdeskControllerRadar(
-        { limit: PAGE_SIZE, ...(pageParam ? { cursor: pageParam } : {}), ...filterParams },
+        { limit: PAGE_SIZE, market, ...(pageParam ? { cursor: pageParam } : {}), ...filterParams },
         { signal, paramsSerializer: { indexes: null } },
       ),
     initialPageParam: undefined,
@@ -85,6 +104,10 @@ export function useRadar(): UseRadarResult {
     [items, firstPage],
   );
   const freshness = useMemo(() => radarFreshness(items), [items]);
+  const actionableMarkets = useMemo(
+    () => (firstPage?.marketCounts ?? []).filter((c) => c.actionableTotal > 0).map((c) => c.market),
+    [firstPage],
+  );
 
   const toggleFilter = useCallback((key: RadarFilterKey) => {
     setSelectedFilters((cur) => toggleRadarFilter(cur, key));
@@ -100,6 +123,9 @@ export function useRadar(): UseRadarResult {
 
   return {
     items,
+    market,
+    selectMarket: setMarket,
+    actionableMarkets,
     viewState,
     emptyStateMessage: firstPage?.emptyStateMessage ?? null,
     freshness,

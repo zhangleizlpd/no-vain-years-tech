@@ -25,6 +25,7 @@ import { DrawerMenuButton } from '~/core/app-shell-drawer';
 import { colors } from '~/theme';
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { RadarMarketTabs } from './radar-market-tabs';
 import {
   distanceToWTone,
   radarRowFields,
@@ -110,6 +111,13 @@ export function RadarScreen() {
           </Pressable>
         </View>
       </View>
+
+      {/* 市场页签（065 FR-001）—— 紧贴题头下方，作用域切换是本屏最外层的取数维度。 */}
+      <RadarMarketTabs
+        market={radar.market}
+        onSelect={radar.selectMarket}
+        actionableMarkets={radar.actionableMarkets}
+      />
 
       {/* 新鲜度条：每个行情数值都带 asOf 与档位（FR-016）。 */}
       {radar.items.length > 0 ? (

@@ -6,6 +6,8 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
   RADAR_BADGE_ORDER,
   RADAR_MARKETS,
+  RADAR_QUERY_KEY,
+  radarQueryKey,
   RADAR_FILTER_KEYS,
   RADAR_ROW_FIELD_KEYS,
   distanceToWTone,
@@ -430,5 +432,53 @@ describe('065 RADAR_MARKETS —— 页签集合从契约派生', () => {
       RADAR_MARKETS.length,
     );
     expect(new Set(labels).size).toBe(labels.length);
+  });
+});
+
+// ── 065 T11 query key 工厂 + SC-002 新鲜度粒度 ───────────────────────────────
+
+describe('065 radarQueryKey —— 列表侧与 mutation 失效侧的同一处', () => {
+  it('同参数 → 同 key（结构相等即可, react-query 按结构比对）', () => {
+    expect(radarQueryKey('us', { belowW: true })).toEqual(radarQueryKey('us', { belowW: true }));
+  });
+
+  it('🚨 市场不同 → key 不同 (切页签即换 query ⇒ pageParam 自然重置回首页)', () => {
+    // 这条是 plan D6 敢撤销「market 编进游标」的依据: 跨市场游标在 app 里**不可达**。
+    // 把 market 从 key 里拿掉, 那个判定当场失效, 而**列表照样能渲染**、没有别的断言会红。
+    expect(radarQueryKey('us', {})).not.toEqual(radarQueryKey('hk', {}));
+  });
+
+  it('筛选不同 → key 不同; 且两者与前缀共享 RADAR_QUERY_KEY（mutation 失效靠这个前缀命中）', () => {
+    expect(radarQueryKey('us', {})).not.toEqual(radarQueryKey('us', { pendingReview: true }));
+    for (const key of [radarQueryKey('us', {}), radarQueryKey('hk', { belowW: true })]) {
+      expect(key.slice(0, RADAR_QUERY_KEY.length)).toEqual([...RADAR_QUERY_KEY]);
+    }
+  });
+});
+
+describe('065 SC-002 —— 同一页签内行情时点粒度同质', () => {
+  type FreshRow = Pick<RadarRowAnchor, 'spotAsOf' | 'priceKind' | 'quoteFreshnessTier'>;
+  const freshRow = (
+    spotAsOf: string,
+    priceKind: FreshRow['priceKind'],
+    tier: FreshRow['quoteFreshnessTier'],
+  ): FreshRow => ({ spotAsOf, priceKind, quoteFreshnessTier: tier });
+
+  it('🚨 只含 hk 行 → 交易日粒度, 不是时刻粒度 (港股无盘中实时价, 061 FR-010)', () => {
+    const fresh = radarFreshness([freshRow('2026-08-21', 'eod_close', 'CURRENT')]);
+    // 日粒度的判据是文本里**没有**时刻 —— 用冒号做判据比比对整句文案结实(文案会改)。
+    expect(fresh.text).not.toMatch(/\d{2}:\d{2}/);
+    expect(fresh.asOf).toBe('2026-08-21');
+  });
+
+  it('🚨 反例记录: 不分市场混排时, 一只美股实时行就把整条 bar 拉成时刻粒度', () => {
+    // 本条断言的是**今天混排会发生什么**, 它是「为什么必须按市场分作用域」的机械证据:
+    // 字典序 = 时间序, 美股的 `...T13:45:00` > 港股的 `2026-08-21` ⇒ 聚合落到美股那行,
+    // 于是港股用户在顶部看到「实时」, 而他那几行全是昨收。065 之后两个市场各查各的, 撞不上。
+    const mixed = radarFreshness([
+      freshRow('2026-08-21', 'eod_close', 'CURRENT'),
+      freshRow('2026-08-21T13:45:00.000Z', 'realtime', 'CURRENT'),
+    ]);
+    expect(mixed.text).toMatch(/\d{2}:\d{2}/);
   });
 });
