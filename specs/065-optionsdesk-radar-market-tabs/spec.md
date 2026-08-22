@@ -2,7 +2,7 @@
 feature_id: 065-optionsdesk-radar-market-tabs
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-19'
 updated_at: '2026-08-22'
 spec_kit_version: '>=0.8.5,<0.10.0'
