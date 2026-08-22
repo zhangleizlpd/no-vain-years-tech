@@ -11,12 +11,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   getOptionsdeskControllerGetOneQueryKey,
   getOptionsdeskControllerListQueryKey,
-  getOptionsdeskControllerRadarQueryKey,
   useOptionsdeskControllerCreate,
   useOptionsdeskControllerRemove,
   useOptionsdeskControllerReview,
   useOptionsdeskControllerUpdate,
 } from '@nvy/api-client';
+
+import { RADAR_QUERY_KEY } from './radar.rules';
 
 /**
  * 失效锚列表 + 雷达（+ 可选的单条详情）。两个 list 工厂不带参调用 ⇒ 返回的是**前缀** key，
@@ -32,7 +33,12 @@ export function useInvalidateAnchorQueries() {
   return useCallback(
     (anchorId?: string) => {
       void queryClient.invalidateQueries({ queryKey: getOptionsdeskControllerListQueryKey() });
-      void queryClient.invalidateQueries({ queryKey: getOptionsdeskControllerRadarQueryKey() });
+      // 🚨 **雷达的 key 不能取 orval 工厂** —— 雷达那屏不用 orval hook（orval 不 emit
+      //    useInfinite，`use-radar.ts` 自拼游标），它的 key 由 `radarQueryKey()` 铸造、前缀是
+      //    `RADAR_QUERY_KEY`。orval 给的是 `['/api/v1/optionsdesk/radar']`，与之**无任何共同
+      //    前缀**，而 react-query 的 invalidate 走前缀匹配 ⇒ 065 之前**任何锚的增删改都从未
+      //    失效过雷达**（锚管理列表是好的，那屏确实用 orval hook；只有雷达是孤儿）。
+      void queryClient.invalidateQueries({ queryKey: [...RADAR_QUERY_KEY] });
       if (anchorId !== undefined) {
         void queryClient.invalidateQueries({
           queryKey: getOptionsdeskControllerGetOneQueryKey(anchorId),

@@ -880,6 +880,52 @@ test('045 锚表单 — 三处人工位：置值即标「人工调整 · 将回�
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// 065 T12 — 雷达缓存失效链（**先于本 feature 存在的缺陷**）
+// ════════════════════════════════════════════════════════════════════════════
+
+test('065 T12 雷达失效链 — 改锚后返回雷达，行上的 L 层徽标随之更新（既存缺陷回归钉）', async ({
+  page,
+}) => {
+  // 病根：`use-anchor-mutations` 失效的是 orval 生成的 key（`['/api/v1/optionsdesk/radar']`），
+  // 而 `useRadar` 的 key 由 `radarQueryKey()` 铸造（前缀 `['optionsdesk','radar']`）——
+  // 两者**无共同前缀**，而 react-query 的 invalidate 走前缀匹配 ⇒ 任何锚的增删改**从未失效过
+  // 雷达**。叠加全局 `staleTime 30s` + 底部 Tab 常驻不 unmount（不触发 refetchOnMount）+
+  // `refetchOnWindowFocus: false`，雷达一旦缓存就没有任何触发器重取，陈旧到 App 重启。
+  //
+  // 🚨 为什么断 L 层徽标而不是「新行出现」：mock 不支持 POST /anchors，而**改 L 层**同样穿过
+  // 整条链（PATCH → onSuccess → invalidate → 雷达重取 → 行内徽标变），且 `applyAnchorPatch`
+  // 会真的改 `lLevelEffective` ⇒ 差异在雷达行上直接可见。证明力相同，路径便宜得多。
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', lLevelEffective: 'L2', derivedLLevel: 'L2' }),
+  ]);
+  await gotoOptionsdesk(page);
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toContainText('L2');
+
+  // 雷达 → 锚管理 → 表单：把 L 层人工位置成 L1（选项 tap 即 PATCH，无二次确认）。
+  await page.getByTestId('optionsdesk-anchors-button').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-list')).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('optionsdesk-anchor-row-us:AOS').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-form')).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('optionsdesk-manual-set-lLevel').tap();
+  await page.getByTestId('optionsdesk-manual-option-lLevel-L1').tap();
+  await expect(page.getByTestId('optionsdesk-manual-badge-lLevel')).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // 返回雷达（两级：表单 → 锚列表 → 雷达）。走 header back —— `goBack` 在 Expo Web 会被
+  // 重映射到 Stack 首屏。
+  await headerBack(page);
+  await expect(page.getByTestId('optionsdesk-anchor-list')).toBeVisible({ timeout: 20_000 });
+  await headerBack(page);
+  await expect(page.getByTestId('optionsdesk-menu-button')).toBeVisible({ timeout: 20_000 });
+
+  // 失效链断裂时这里仍是 L2（雷达吃的是 30s 前的缓存）。
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toContainText('L1', {
+    timeout: 20_000,
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // ⑥ 灵感四项能力零回归（SC-010）
 // ════════════════════════════════════════════════════════════════════════════
 

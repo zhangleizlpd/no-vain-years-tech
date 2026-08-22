@@ -16,7 +16,6 @@ type CapturedOpts =
 // ⚠️ vi.mock 的 factory 被 hoist 到文件最顶 —— 里面只能碰 vi.hoisted 出来的东西。
 const h = vi.hoisted(() => ({
   LIST_KEY: ['/api/v1/optionsdesk/anchors'],
-  RADAR_KEY: ['/api/v1/optionsdesk/radar'],
   getOneKey: (id: string) => [`/api/v1/optionsdesk/anchors/${id}`],
   captured: {} as Record<string, unknown>,
 }));
@@ -28,7 +27,6 @@ vi.mock('@nvy/api-client', () => {
   };
   return {
     getOptionsdeskControllerListQueryKey: () => h.LIST_KEY,
-    getOptionsdeskControllerRadarQueryKey: () => h.RADAR_KEY,
     getOptionsdeskControllerGetOneQueryKey: h.getOneKey,
     useOptionsdeskControllerCreate: stub('create'),
     useOptionsdeskControllerUpdate: stub('update'),
@@ -37,6 +35,7 @@ vi.mock('@nvy/api-client', () => {
   };
 });
 
+import { RADAR_QUERY_KEY } from './radar.rules';
 import {
   useCreateAnchor,
   useDeleteAnchor,
@@ -56,10 +55,24 @@ function renderWithSpiedClient<T>(hook: () => T) {
 
 function expectBothKeysInvalidated(spy: { mock: { calls: unknown[][] } }) {
   expect(spy).toHaveBeenCalledWith({ queryKey: h.LIST_KEY });
-  expect(spy).toHaveBeenCalledWith({ queryKey: h.RADAR_KEY });
+  // 🚨 065 T12: 雷达那一半取 `RADAR_QUERY_KEY`（`useRadar` 实际用的前缀），**不是** orval
+  //    工厂 —— 后者与雷达的 key 无共同前缀，写成它这几条断言会全绿而失效从未发生过。
+  expect(spy).toHaveBeenCalledWith({ queryKey: [...RADAR_QUERY_KEY] });
 }
 
 describe('use-anchor-mutations（写动作共置失效）', () => {
+  // ── 065 T12: 病根的直接判据（先于 e2e 红） ──────────────────────────────────
+  it('🚨 失效用的雷达 key 与 `useRadar` 实际用的 key **共享前缀**（否则从未失效过雷达）', () => {
+    const { result, spy } = renderWithSpiedClient(() => useInvalidateAnchorQueries());
+    result.current();
+
+    const keys = spy.mock.calls.map((c) => (c[0] as { queryKey: readonly unknown[] }).queryKey);
+    // `useRadar` 的 key 由 `radarQueryKey(market, filters)` 铸造，前缀恒是 `RADAR_QUERY_KEY`。
+    // react-query 的 invalidate 走**前缀匹配** ⇒ 失效侧必须发出这个前缀，否则永远命中不到。
+    // 此前发的是 orval 的 `['/api/v1/optionsdesk/radar']` —— 与它无任何共同前缀。
+    expect(keys).toContainEqual([...RADAR_QUERY_KEY]);
+  });
+
   it('useInvalidateAnchorQueries：一次调用失效锚列表 + 雷达两个 key', () => {
     const { result, spy } = renderWithSpiedClient(() => useInvalidateAnchorQueries());
     result.current();
