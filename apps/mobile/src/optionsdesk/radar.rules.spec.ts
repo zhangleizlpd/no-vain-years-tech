@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
   RADAR_BADGE_ORDER,
+  RADAR_MARKETS,
   RADAR_FILTER_KEYS,
   RADAR_ROW_FIELD_KEYS,
   distanceToWTone,
@@ -406,5 +407,28 @@ describe('🚨 US1-AS1 —— 雷达页内不再有「标的详情即将可用�
 
   it('键面也不留 detailComingSoon（防只改值不删键、下次又被接回轻提示）', () => {
     expect(Object.keys(COPY)).not.toContain('detailComingSoon');
+  });
+});
+
+// ── 065 T10 市场页签集合 (FR-001) ────────────────────────────────────────────
+
+describe('065 RADAR_MARKETS —— 页签集合从契约派生', () => {
+  it('🚨 恰好是文案表的键 —— 集合与契约的绑定靠它 (有人改成硬编码数组这条就会红)', () => {
+    // 文案表是 `satisfies Record<RadarMarket, string>` ⇒ 契约加市场不补文案即 tsc 红。
+    // 本条钉的是「集合确实取自那张表」—— 改成字面量 `['us','hk']` 后, 下次 server 加市场时
+    // 文案表(被 tsc 逼着)会多一个键而集合不会, 这条当场红。那正是 FR-015 要防的时刻。
+    expect(RADAR_MARKETS).toEqual(Object.keys(OPTIONSDESK_COPY.radar.marketTabs));
+  });
+
+  it('美股在前 —— FR-005「冷启动落美股」的前提 (顺序来自 server 常量, 不在前端改)', () => {
+    expect(RADAR_MARKETS[0]).toBe('us');
+  });
+
+  it('每个市场都有页签文案且两两互异 (satisfies 是编译期, 这条是运行期兜底)', () => {
+    const labels = RADAR_MARKETS.map((m) => OPTIONSDESK_COPY.radar.marketTabs[m]);
+    expect(labels.filter((l) => typeof l === 'string' && l.length > 0)).toHaveLength(
+      RADAR_MARKETS.length,
+    );
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });

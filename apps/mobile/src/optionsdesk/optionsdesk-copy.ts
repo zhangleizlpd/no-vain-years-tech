@@ -1,4 +1,6 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
+import type { OptionsdeskControllerRadarMarket } from '@nvy/api-client';
+
 export const OPTIONSDESK_COPY = {
   /** 雷达屏题头（= 期权台 tab 落地屏）。 */
   radarTitle: '击球区雷达',
@@ -55,6 +57,20 @@ export const OPTIONSDESK_COPY = {
 
     /** 零锚空态的行动入口（文案本体来自 server 的 emptyStateMessage）。 */
     goCreateAnchor: '去建锚',
+
+    /**
+     * 市场页签标签（065 FR-001）。用**双字**，两格等分下双字最稳（三字会在窄机上换行）。
+     *
+     * 🚨 键的值域是 `OptionsdeskControllerRadarMarket`（= server `IMPORTABLE_MARKETS` 经
+     *    `@IsIn` → openapi → orval），`satisfies Record<...>` 让**加了受支持市场却不补文案
+     *    即 tsc 红** —— 与服务端 `RADAR_EMPTY_STATE_MESSAGES` 同一手法。
+     * 🚫 **MUST NOT 用 `marketBadgeLabel`** —— 它签名 `(code, market = 'cn')` 是 **code 优先**
+     *    的**标的**徽标（传空 code + `'cn'` 得「深A」），不是市场名。
+     */
+    marketTabs: {
+      us: '美股',
+      hk: '港股',
+    } satisfies Record<OptionsdeskControllerRadarMarket, string>,
   },
 
   /**

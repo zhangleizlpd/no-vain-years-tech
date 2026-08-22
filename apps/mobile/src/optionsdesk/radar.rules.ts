@@ -9,7 +9,11 @@
 //    「价说昨收、距 W% 说实时」。`lastClose` / `lastCloseDate` 语义未变（仍是当日收盘的
 //    权威值，FR-015），但它们不再是行内呈现的取数口径。
 // 🚨 **FR-014 徽标只能取自 `RADAR_BADGE_ORDER` 白名单**，衍生徽标（达标腿数 / 直接买主案）无处可生。
-import type { AnchorResponse, RadarResponseEmptyState } from '@nvy/api-client';
+import type {
+  AnchorResponse,
+  OptionsdeskControllerRadarMarket,
+  RadarResponseEmptyState,
+} from '@nvy/api-client';
 
 import { formatAsOfLabel } from '~/format/as-of';
 import type { FreshnessTier } from './underlying-detail.rules';
@@ -17,6 +21,33 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 
 const COPY = OPTIONSDESK_COPY.radar;
+
+/** 市场作用域的值域（= 页签集合）。契约侧单点是 server 的 `IMPORTABLE_MARKETS`。 */
+export type RadarMarket = OptionsdeskControllerRadarMarket;
+
+/**
+ * 市场页签集合（065 FR-001）—— 取**文案表的键**。
+ *
+ * 🚨 **它与契约的绑定是编译期的、双向的, 不是「本地抄了一份」**: 文案表声明成
+ * `satisfies Record<RadarMarket, string>`（见 `optionsdesk-copy.ts`）⇒
+ * ① server 新增受支持市场而这里没补文案 → **tsc 红**;
+ * ② 这里多写一个契约里没有的市场 → excess property check **tsc 红**。
+ * 这条编译期闸是 FR-015「加了受支持市场却忘了加页签」在**客户端**这一侧的唯一保护 ——
+ * 服务端那侧的 WARN 判据只能是 `IMPORTABLE_MARKETS`（它看不见客户端有哪几个页签）,
+ * 恰恰对这种场景漏报。🚫 **MUST NOT 把文案表的 `satisfies` 摘掉**, 那会同时拆掉两侧。
+ *
+ * 🚨 **为什么不直接 `Object.values(OptionsdeskControllerRadarMarket)`**（那才是字面意义的
+ * 单一来源）: 那是**值**导入, 而 mobile 的 vitest 至今只对 `@nvy/api-client` 做过
+ * `import type`（被 erase, 从不加载其运行时代码）。真去解析会撞
+ * `Failed to resolve entry for package "@nvy/api-client"` —— 包的 `exports` 把
+ * `no-vain-years-mono` condition 指向 `src/index.ts`, 但 vitest 把 workspace 包 externalize
+ * 后走 Node 解析, 而 Node 不认自定义 condition, 于是落到并不存在的 `./dist/index.js`
+ * （2026-08-22 实测）。为一个常量去改整个 mobile 的测试基建, 收益不抵风险。
+ *
+ * ⚠️ 顺序 = 文案表的字面量声明序 = `IMPORTABLE_MARKETS` 的序 = `['us', 'hk']`,
+ * 与「冷启动落美股」(FR-005) 一致。换序要动 server 的常量, 不在这里改。
+ */
+export const RADAR_MARKETS = Object.keys(COPY.marketTabs) as readonly RadarMarket[];
 
 /** 雷达行用得上的锚字段（按结构子集吃，测试可造小 fixture）。 */
 export type RadarRowAnchor = Pick<
