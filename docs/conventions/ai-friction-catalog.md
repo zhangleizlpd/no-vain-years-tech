@@ -122,3 +122,4 @@
 - **Cache-Hit-False-Green**: nx cache 假绿 (per memory `feedback_nx_cache_false_green_on_new_files`) — 单次实证后已加 `--skip-nx-cache` 纪律,等再撞触发 entry。
 - **Lockfile-Bypass-Phantom-Dep**: `shamefully-hoist=true` 副作用 (per F-003 sunset) — 子包 require 未 declare dep 不失败,etu 后由 eslint-plugin-import enforce。
 - **CLAUDECODE-Env-Gate-Bypass**: subprocess 内未设 `CLAUDECODE=1` 时 hook 不触 (per memory orchestrator 5 盲区) — 待 orchestrator 独立 PoC 推进。
+- **Tab-Split-Null-Collapse**: `IFS=$'\t' read` 里 tab 属 IFS **whitespace** ⇒ 连续 tab 折叠成一个分隔符 ⇒ psql 输出的 NULL (空字段) 当场蒸发、其后各列**静默前移** —— 不报错,只是值全错。2026-08-22 PR #147 给晨报加可空列 `sync_run.written` 时实撞 (`wr=` 打出了时间戳)。缓解: 可空字段在**源头**换哨兵 (`coalesce(col::text, 'NULL')`),先例见 `ops/jobs/futu-shim-health.sh` 的 `tri()` / `val()`;判据与修法写在 `ops/jobs/marketdata-sync-report.sh` 主查询注释里。
