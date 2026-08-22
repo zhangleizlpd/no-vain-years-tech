@@ -83,6 +83,12 @@ AGG_SQL="SELECT
   sync_type,
   status,
   scanned, ok, skipped, failed,
+  -- 🚨 NULL **必须**在 SQL 侧换成哨兵, 不能把空字段丢给下面的 `read`。
+  -- `IFS=$'\t'` 里 tab 仍属 **IFS whitespace** ⇒ 连续 tab 折叠成一个分隔符 ⇒ psql 输出的
+  -- NULL(空字段)当场消失, 其后所有列**静默前移一位**。2026-08-22 实撞: written 是本查询第一
+  -- 个出现在**中间**的可空列, 于是 wr 显示成了 started 的时间戳。既有列恰好全非空, 故这个坑
+  -- 潜伏至今。**再加可空列时照此办理**, 别信「-F $'\t' 就是严格分隔」。
+  coalesce(written::text, 'NULL'),
   to_char(started_at AT TIME ZONE 'Asia/Shanghai', 'MM-DD HH24:MI'),
   (finished_at IS NULL),
   CASE WHEN status IN ('success','skipped') OR failed_targets IS NULL THEN ''
@@ -151,8 +157,11 @@ fi
 
 # ── 格式化逐维度摘要 ─────────────────────────────────────────────────────────────────────
 declare -i n_total=0 n_ok=0 n_bad=0 n_skip=0 n_other=0 problems=0
+# #146 Phase 1: written 上报面计数。**只统计真跑过写路径的轮次** (success/partial) ——
+# skipped (非交易日短路) 的 written 本就该是 NULL, 混进来会在周末误判成「埋点没上」。
+declare -i n_wr_eligible=0 n_wr_null=0
 report=""
-while IFS=$'\t' read -r stype status scanned ok skipped failed started unfinished ft; do
+while IFS=$'\t' read -r stype status scanned ok skipped failed written started unfinished ft; do
   [ -z "${stype:-}" ] && continue
   n_total+=1
   case "$status" in
@@ -163,8 +172,17 @@ while IFS=$'\t' read -r stype status scanned ok skipped failed started unfinishe
     skipped) icon="⏭️"; n_skip+=1 ;;
     *)       icon="❓"; n_other+=1; problems=1 ;;
   esac
-  line="$(printf '%s %-26s %-8s scanned=%s ok=%s skip=%s fail=%s  @%s' \
-    "$icon" "$stype" "$status" "$scanned" "$ok" "$skipped" "$failed" "$started")"
+  # #146 Phase 1: `wr=` 是**落库侧**唯一的那个数 (见 schema 的 SyncRun.written 注释)。
+  # 🚨 NULL 与 0 **必须渲染成两个样子**: 前者 =「没有任何写路径上报」, 后者 =「上报了, 真的一
+  # 行没写」。这一列存在的全部理由就是这两态可分辨 —— 在报告里糊成同一个字符, #103/#138 那
+  # 两轮修的东西就白修了。NULL 由上面的 SQL 换成哨兵 'NULL' 送过来（理由见那条注释）。
+  if [ "$status" = 'success' ] || [ "$status" = 'partial' ]; then
+    n_wr_eligible+=1
+    [ "${written:-NULL}" = 'NULL' ] && n_wr_null+=1
+  fi
+  [ "${written:-NULL}" = 'NULL' ] && wr='—' || wr="$written"
+  line="$(printf '%s %-26s %-8s scanned=%s ok=%s skip=%s fail=%s wr=%s  @%s' \
+    "$icon" "$stype" "$status" "$scanned" "$ok" "$skipped" "$failed" "$wr" "$started")"
   [ "$unfinished" = "t" ] && line="$line  ⚠未收尾"
   report="${report}${line}"$'\n'
   [ -n "$ft" ] && report="${report}     ↳ ${ft}"$'\n'
@@ -173,6 +191,24 @@ done <<<"$rows"
 printf '%s' "$report"
 printf '—— 合计 %s 维度: %s✅ %s🔴/⚠ %s⏭ %s❓ · 窗口 %sh · %s\n' \
   "$n_total" "$n_ok" "$n_bad" "$n_skip" "$n_other" "$WINDOW_HOURS" "$PG_CONTAINER"
+
+# ── written 上报面提示（#146 Phase 1: 只显示, **不判红**）────────────────────────────────
+#
+# 本段**刻意零判据**, 不碰 `problems`。理由是 `written=0` 对不同维度**含义相反**: fund_holding
+# 的 delta 空转是设计常态 (代码注释原话「delta 是安全空转」), option_contract 链稳定时全被
+# skipDuplicates 折叠也报 0; 而 hot_snapshot 报 0 意味着 11132 次 vendor 调用一行没落。一条
+# 朴素的「0 且 success ⇒ 红」第一晚就至少三个维度假红 —— 而假红会训练人无视这份报告, 那正是
+# 上面因子闸注释里已经写死要避开的失效模式。判据等攒够 baseline 再定, 见 #146 Phase 2。
+#
+# 🚨 全 NULL 那档报「埋点未生效」而非判红, 形状照抄上面因子闸的列存在性探测: ops 脚本随 host
+# git pull 走、app 镜像随 deploy 走, 是**两条独立上线通路** ⇒ 必然存在「脚本已更新、埋点未上」
+# 的窗口。那段时间假红与静默跳过都是错的 —— 前者训练人无视, 后者分不清「闸没开」和「没问题」。
+if [ "$n_wr_eligible" -gt 0 ] && [ "$n_wr_null" -eq "$n_wr_eligible" ]; then
+  printf '⏭️ written 埋点未生效（脚本已更新、app 镜像未上）→ 本轮 wr 列全不可用\n'
+elif [ "$n_wr_null" -gt 0 ]; then
+  printf 'ℹ️ written: %s/%s 个跑过的维度未上报（埋点缺口，见上表 wr=—）\n' \
+    "$n_wr_null" "$n_wr_eligible"
+fi
 
 # ── 复权因子质量闸 ───────────────────────────────────────────────────────────────────────
 #
