@@ -212,6 +212,8 @@ const INDEX_MISSING: UsIndexReadoutResponse = {
 /** server 的空态三分（`get-radar.usecase`：baseTotal → pageItems → actionableTotal）。 */
 const EMPTY_STATE_MESSAGES = {
   zero_anchors: '还没有锚 —— 先去锚管理建第一个锚',
+  // 065：第 2 位是「本市场零锚」，与第 1 位的有效动作相反（换个市场 vs 去建锚）。
+  zero_anchors_in_market: '这个市场还没有锚 —— 换个市场看看',
   filtered_empty: '当前筛选无结果',
   all_idle: '今日无解，空仓是常态',
 } as const;

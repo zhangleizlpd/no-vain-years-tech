@@ -105,7 +105,7 @@ updated_at: '2026-08-21'
 
   **(d) 行级粒度与筛选**（US2-AS2, US1-AS3, `SC-001`）：港股行内行情时点是**交易日**而非时刻（T11 只覆盖顶部聚合，覆盖不到行内）；筛选**跨页签保留**（美股筛 L1 → 空 → 切港股，L1 的港股行仍在）。
 
-- [ ] T16 [Contract-Smoke] **契约冒烟带上 market**（`FR-002`, `SC-003`）：`apps/mobile/e2e/contract-smoke/optionsdesk.contract.ts` 与 `optionsdesk-realtime-spot.contract.ts` 调雷达时带 `market`。🚨 现状是**可选参数 ⇒ 绿但零覆盖**，不改的话生成的 client 与真 server 在这个新参数上的对齐从未被验证过。→ verify: `nx run mobile:contract-smoke` 绿；断言**并集性质**（分别取 us 与 hk 两个作用域，两次结果的并集 = 不带作用域时的全集，交集为空）—— 这是 `SC-003` 唯一的端到端落点
+- [X] T16 [Contract-Smoke] **契约冒烟带上 market**（`FR-002`, `SC-003`）：`optionsdesk.contract.ts`（2 处）与 `optionsdesk-realtime-spot.contract.ts`（2 处）调雷达时带 `market`。🚨 现状是**可选参数 ⇒ 绿但零覆盖**，不改的话生成的 client 与真 server 在这个新参数上的对齐从未被验证过。→ verify: **已真跑** —— `RUN_REAL_BACKEND_SMOKE=true nx run mobile:contract-smoke` **25/25 passed**（日志实证 `radar?limit=50&market=us` 与 `limit=100&market=hk` 都真的打出去了）。新增 `SC-003` 端到端断言：分别取 us / hk 两个作用域 + 一次不带作用域，断**并集 = 全集**（无遗漏）、**交集为空**（无重复）、各作用域**只回本市场行**（列相等谓词真到 SQL 端）、`marketCounts` **不随作用域收窄**（否则港股有可动锚时美股页签零信号）。🚨 并集断言配了前置 `assert.equal(all.data.hasMore, false)` —— 全集超过一页时比的是两个**被截断**的集合，有这条则锚数超 100 时明确红出来而非静默失真。🚨🚨 **本 task 踩到并记录一次「绿得骗人」**：`nx run mobile:contract-smoke` 首次返回 `EXIT=0` + `Successfully ran target`，但日志只有一行 `RUN_REAL_BACKEND_SMOKE !== 'true' — skipping` —— 整个套件**被 env gate 跳过**，新参数一次都没执行。按退出码汇报就会把 T16 记成「已验证」。⇒ 跑 contract-smoke **必须显式带 `RUN_REAL_BACKEND_SMOKE=true`**，且**必须核对日志里的 `done — N/N passed`**，退出码在这条命令上不构成证据（`docs/conventions/local-verification.md` §3）
 
 ## Polish
 
