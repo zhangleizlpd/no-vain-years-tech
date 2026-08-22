@@ -29,11 +29,15 @@ import type {
 
 import type {
   DailyBarListResponse,
+  InstrumentBasicsResponse,
+  InstrumentCodeListResponse,
   InstrumentDetailResponse,
   InstrumentSearchResponse,
   MarketdataControllerBarsParams,
   MarketdataControllerQuoteParams,
   MarketdataControllerSearchParams,
+  MarketdataGuestControllerInstrumentBasicsParams,
+  MarketdataGuestControllerInstrumentCodesParams,
   ProblemDetailResponse,
   QuoteListResponse
 } from '../models';
@@ -412,6 +416,192 @@ export function useMarketdataControllerBars<TData = Awaited<ReturnType<typeof ma
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getMarketdataControllerBarsQueryOptions(symbol,params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * Returns every registered bare code for one market, ascending, in a single unpaginated response — the master-list shape (Futu get_stock_basicinfo / Alpaca /v2/assets / Zerodha /instruments): fetch once, cache, then batch-resolve details. Codes carry NO market prefix; pair them with the `market` param on instrument-basics. Defaults to status=active because the payload has no status field to disambiguate delisted rows with. Largest market (us) is ~19.5k codes ≈ 158 KB raw / 49 KB gzipped — the channel gzips it, callers must send Accept-Encoding (curl --compressed).
+ * @summary Enumerate all instrument codes in a market (guest channel)
+ */
+export const marketdataGuestControllerInstrumentCodes = (
+    params: MarketdataGuestControllerInstrumentCodesParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<InstrumentCodeListResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/marketdata/instrument-codes`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getMarketdataGuestControllerInstrumentCodesQueryKey = (params?: MarketdataGuestControllerInstrumentCodesParams,) => {
+    return [
+    `/api/v1/marketdata/instrument-codes`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getMarketdataGuestControllerInstrumentCodesQueryOptions = <TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError = AxiosError<ProblemDetailResponse>>(params: MarketdataGuestControllerInstrumentCodesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getMarketdataGuestControllerInstrumentCodesQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>> = ({ signal }) => marketdataGuestControllerInstrumentCodes(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type MarketdataGuestControllerInstrumentCodesQueryResult = NonNullable<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>>
+export type MarketdataGuestControllerInstrumentCodesQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useMarketdataGuestControllerInstrumentCodes<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentCodesParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>,
+          TError,
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useMarketdataGuestControllerInstrumentCodes<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentCodesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>,
+          TError,
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useMarketdataGuestControllerInstrumentCodes<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentCodesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Enumerate all instrument codes in a market (guest channel)
+ */
+
+export function useMarketdataGuestControllerInstrumentCodes<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentCodesParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentCodes>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getMarketdataGuestControllerInstrumentCodesQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * Resolves up to 500 bare codes within one market to name / type / currency / status / listing dates. Codes are matched EXACTLY (case-sensitive, never normalized) — use the strings instrument-codes returned verbatim. Unmatched codes come back in `missing[]` rather than as an error, which is the only way to tell "no such code" apart from "found, but the field is empty": listingStatus and listDate are null for EVERY us instrument (only the Lixinger source supplies them) and null there does NOT mean delisted.
+ * @summary Batch instrument basics by code (guest channel)
+ */
+export const marketdataGuestControllerInstrumentBasics = (
+    params: MarketdataGuestControllerInstrumentBasicsParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<InstrumentBasicsResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/marketdata/instrument-basics`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getMarketdataGuestControllerInstrumentBasicsQueryKey = (params?: MarketdataGuestControllerInstrumentBasicsParams,) => {
+    return [
+    `/api/v1/marketdata/instrument-basics`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getMarketdataGuestControllerInstrumentBasicsQueryOptions = <TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError = AxiosError<ProblemDetailResponse>>(params: MarketdataGuestControllerInstrumentBasicsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getMarketdataGuestControllerInstrumentBasicsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>> = ({ signal }) => marketdataGuestControllerInstrumentBasics(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type MarketdataGuestControllerInstrumentBasicsQueryResult = NonNullable<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>>
+export type MarketdataGuestControllerInstrumentBasicsQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useMarketdataGuestControllerInstrumentBasics<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentBasicsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>,
+          TError,
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useMarketdataGuestControllerInstrumentBasics<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentBasicsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>,
+          TError,
+          Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useMarketdataGuestControllerInstrumentBasics<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentBasicsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Batch instrument basics by code (guest channel)
+ */
+
+export function useMarketdataGuestControllerInstrumentBasics<TData = Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataGuestControllerInstrumentBasicsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataGuestControllerInstrumentBasics>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getMarketdataGuestControllerInstrumentBasicsQueryOptions(params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 

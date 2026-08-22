@@ -63,6 +63,8 @@ import { GetQuotesUseCase } from './get-quotes.usecase.js';
 import { GetInstrumentDetailUseCase } from './get-instrument-detail.usecase.js';
 import { GetInstrumentBarsUseCase } from './get-instrument-bars.usecase.js';
 import { SearchInstrumentsUseCase } from './search-instruments.usecase.js';
+import { ListInstrumentCodesUseCase } from './list-instrument-codes.usecase.js';
+import { GetInstrumentBasicsUseCase } from './get-instrument-basics.usecase.js';
 import { SyncRunRecorder } from './sync-run.recorder.js';
 import { SyncUniverseUseCase } from './sync-universe.usecase.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
@@ -84,6 +86,7 @@ import { OptionSnapshotCoverageCheck } from './option-snapshot-coverage.check.js
 import { OptionSnapshotRemediation } from './option-snapshot-remediation.js';
 import { marketdataQueueRedisProviders } from './marketdata-queue-connection.js';
 import { MarketdataController } from './marketdata.controller.js';
+import { MarketdataGuestController } from './marketdata-guest.controller.js';
 import { INSTRUMENT_SEARCH_PORT } from './instrument-search.port.js';
 import {
   INSTRUMENT_UNIVERSE_PORT,
@@ -258,7 +261,9 @@ function collectionPort<T extends object>(
 
 @Module({
   imports: [SecurityModule, AccountModule],
-  controllers: [MarketdataController],
+  // 两个 controller 的鉴权面**完全不同**: 前者是 App 的 JWT 面 (类级 guard), 后者是隧道内的
+  // guest 面 (方法级 GuestUploadAuthGuard, 零用户 principal)。刻意分文件, 别合并。
+  controllers: [MarketdataController, MarketdataGuestController],
   providers: [
     MockMarketDataAdapter,
     { provide: LIXINGER_HTTP_CLIENT, useFactory: () => new VendorHttpClient(LIXINGER_PROFILE) },
@@ -581,6 +586,9 @@ function collectionPort<T extends object>(
     GetInstrumentBarsUseCase,
     // 搜索 use case (EP1, 经 INSTRUMENT_SEARCH_PORT, T014)。
     SearchInstrumentsUseCase,
+    // guest 通道标的查询 (枚举 + 批量基础信息, 直读注册表)。只读, 走 GuestUploadAuthGuard。
+    ListInstrumentCodesUseCase,
+    GetInstrumentBasicsUseCase,
 
     // ── 同步层 (016) ──
     // SyncRun 审计/水位记录器 (T004): 同步管线 + scheduler + backfill 共用。
