@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.35.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.34.0...server-v0.35.0) (2026-08-22)
+
+
+### Features
+
+* **marketdata:** guest 通道标的查询 —— 枚举 + 批量基础信息(server 侧) ([#151](https://github.com/zhangleizlpd/no-vain-years-tech/issues/151)) ([7bfe1cc](https://github.com/zhangleizlpd/no-vain-years-tech/commit/7bfe1cc076197d232262ed8896736482eface65e))
+* **optionsdesk:** 065 T03 anchor.market 收紧 NOT NULL + 值域 CHECK ([#149](https://github.com/zhangleizlpd/no-vain-years-tech/issues/149)) ([56d247f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/56d247fb1c9725bde7784eb90b820a80707cee50))
+
+
+### Bug Fixes
+
+* **server:** IT globalSetup 的 migrate 失败原因不再被吞掉 ([#152](https://github.com/zhangleizlpd/no-vain-years-tech/issues/152)) ([e6d92af](https://github.com/zhangleizlpd/no-vain-years-tech/commit/e6d92afe13c2047afa06943bebfbe299a9ae0720))
+
 ## [0.34.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.33.2...server-v0.34.0) (2026-08-22)
 
 
