@@ -83,7 +83,7 @@ export class MarketdataGuestController {
   @ApiOperation({
     summary: 'Enumerate all instrument codes in a market (guest channel)',
     description:
-      'Returns every registered bare code for one market, ascending, in a single unpaginated response — the master-list shape (Futu get_stock_basicinfo / Alpaca /v2/assets / Zerodha /instruments): fetch once, cache, then batch-resolve details. Codes carry NO market prefix; pair them with the `market` param on instrument-basics. Defaults to status=active because the payload has no status field to disambiguate delisted rows with. Largest market (us) is ~19.5k codes ≈ 158 KB raw / 49 KB gzipped — the channel gzips it, callers must send Accept-Encoding (curl --compressed).',
+      'Returns every registered bare code for one market, ascending, in a single unpaginated response — the master-list shape (Futu get_stock_basicinfo / Alpaca /v2/assets / Zerodha /instruments): fetch once, cache, then batch-resolve details. Codes carry NO market prefix; pair them with the `market` param on instrument-basics. Defaults to status=active because the payload has no status field to disambiguate delisted rows with. Largest market (us) measured 19622 codes = 139,856 bytes raw / 58,553 bytes on the wire once gzipped (2026-08-22, through the guest channel) — the count drifts with universe sync, and the channel only gzips when the caller sends Accept-Encoding (curl --compressed).',
   })
   @ApiQuery({
     name: 'market',
