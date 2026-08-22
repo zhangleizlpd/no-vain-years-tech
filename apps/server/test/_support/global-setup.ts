@@ -47,11 +47,34 @@ export async function setup(): Promise<void> {
   const tPg = Date.now();
 
   const adminUri = pg.getConnectionUri();
-  execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-    cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: adminUri },
-    stdio: 'ignore',
-  });
+  // 🚨 **失败路径必须可见**：这里原本是 `stdio: 'ignore'` —— 成功时不刷屏是对的（migrate
+  // deploy 会逐条打印全部 migration），但它把**失败原因也一起丢了**：migrate 一旦挂掉
+  // （migration 冲突 / schema drift / DATABASE_URL 不通），整轮 IT 在 globalSetup 阶段就炸，
+  // 而 stderr 一个字都不留 —— 只能看到一个没有上下文的异常。那种排查只能靠「往里加日志再跑
+  // 一轮」，成本极高且每次都要重来一遍。
+  //
+  // 改成 `pipe` + 失败时把 stdout/stderr 原样吐出来：成功路径的静默完全保持（输出进内存就
+  // 丢弃），只在真出事时付出打印的代价。🚫 **MUST NOT 改回 `ignore`**，也 MUST NOT 在 catch
+  // 里吞掉异常 —— 初始化失败必须让整轮红，这里只是给它配上可读的原因。
+  try {
+    execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
+      cwd: process.cwd(),
+      env: { ...process.env, DATABASE_URL: adminUri },
+      stdio: 'pipe',
+      // migrate deploy 的输出是 N 行 migration 名，1MB 默认值够用；给到 10MB 纯属兜底，
+      // 免得「输出太大 → execFileSync 自己抛 ENOBUFS」把真实报错再盖一层。
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (err) {
+    const e = err as { stdout?: Buffer | string; stderr?: Buffer | string };
+    const text = (v: Buffer | string | undefined): string => (v === undefined ? '' : String(v));
+    console.error(
+      '[it globalSetup] 🚨 prisma migrate deploy 失败 —— 整轮 IT 无法开始。\n' +
+        `DATABASE_URL=${adminUri}\n` +
+        `--- stdout ---\n${text(e.stdout)}\n--- stderr ---\n${text(e.stderr)}`,
+    );
+    throw err;
+  }
   const tMigrate = Date.now();
 
   // worker 靠这个变量找到共享 PG；隔离库由 isolated-db.ts 按需从 template 克隆。
