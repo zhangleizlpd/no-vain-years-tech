@@ -91,6 +91,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: V,
         asof: dateOf('2026-06-30'),
         method: 'dcf',

@@ -204,6 +204,7 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: '50',
         asof: dateOf('2026-06-01'),
         method: 'dcf',

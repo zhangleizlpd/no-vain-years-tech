@@ -156,6 +156,7 @@ describe.skipIf(!RUN_PERF)('050 T016 选约表读端 perf 档位实测 (真 HTTP
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: V,
         asof: utcMidnight(sessions[0]),
         method: 'dcf',

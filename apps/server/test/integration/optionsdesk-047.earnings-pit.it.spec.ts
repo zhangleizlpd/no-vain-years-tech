@@ -168,6 +168,7 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: '50',
         asof: dateOf('2026-06-01'),
         method: 'dcf',

@@ -247,27 +247,26 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   }
 
   /**
-   * 种一只**写侧闸不肯造**的锚 (不受支持市场 / 非 canonical 写法), 返回 anchorId。
+   * 造一个**没有对应锚行**的 anchorId, 供「写侧闸不肯造」的 ticker (不受支持市场 / 非 canonical
+   * 写法) 驱动冷启动的 fail-closed 早退。
    *
-   * 🚨 刻意绕开 `CreateAnchorUseCase`: 065 T02 起建锚拒非白名单市场与非法形状 (FR-014)。
-   *    但本文件测的是 **marketdata 冷启动对这类行的 fail-closed 行为** —— 那是另一个 ctx,
-   *    它的输入是事件载荷里的 ticker 串, 必须对任何取值都留痕早退, 不能靠「上游不会给」。
-   *    直接种行是让这个契约仍然可测的唯一办法, 不是偷懒。
+   * 🚨 为什么不种锚行: `AnchorColdStartUseCase.run({anchorId, ticker, now})` 的 **ticker 是入参**,
+   *    全程不读 `optionsdesk.anchor`; 而 `marketdata.anchor_cold_start_run.anchor_id` 是**裸 PK
+   *    无 FK** (ADR-0062 护城河: 跨 schema 禁 FK) ⇒ 这几例本就不需要锚行。传个 bigint 反而更贴合
+   *    真实契约 —— 冷启动的输入是**事件载荷里的 ticker 串**, 它必须对任何取值都留痕早退, 不能
+   *    靠「上游不会给」。
+   * 🚨 065 T03 起这也成了唯一可行的写法: `optionsdesk.anchor.market` 收紧为 NOT NULL +
+   *    `ck_anchor_market` CHECK ('us','hk') ⇒ jp / cn / 无冒号那几只**在 DB 层根本存不下**。
+   * 🚫 MUST NOT 改回种行、拿 `market: 'us'` 去凑 CHECK —— 那种 ticker 是 jp 而 market 是 us 的行
+   *    既过编译又过 CHECK、测试照样全绿, 却把 T03 刚立起来的 FR-013 不变式 (market 恒等于 ticker
+   *    的 market 段) 在测试代码里第一时间弄脏, 而**没有任何断言会红**。
+   * 🚫 也 MUST NOT 图省事写死一个常量: `anchor_cold_start_run` 的 PK 是 anchorId, 同一用例内两只
+   *    票撞同一个 id 会让第二行 upsert 覆盖第一行 (㉒ 的「九行同时在场」当场变八行)。
+   * ⚠️ 起点取远离自增序列的 900_000 —— 与 `createAnchorFor` 建出的真锚 id 不撞, 且排在它们之后
+   *    (⑭ 按 anchorId 升序断言 `['hk:0700', 'cn:600519']` 依赖这个先后)。
    */
-  async function seedRawAnchor(ticker: string): Promise<bigint> {
-    const row = await prisma.anchor.create({
-      data: {
-        ticker,
-        v: '50',
-        asof: dateOf('2026-06-30'),
-        method: 'dcf',
-        confidence: '8',
-        confidenceSource: 'manual',
-        lLevelEffective: 'L2',
-      },
-    });
-    return row.id;
-  }
+  let nextOrphanAnchorId = 900_000n;
+  const orphanAnchorId = (): bigint => nextOrphanAnchorId++;
 
   /** 建一只锚 (走真 use case ⇒ 顺带落 outbox 行), 返回 anchorId。 */
   async function createAnchorFor(ticker: string): Promise<bigint> {
@@ -392,7 +391,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   // ───────────────────────────────────────────────────────────────────────────
 
   it('⑮ ticker 解析不出 `market:code` ⇒ ticker_unresolved, 零外呼且不建任何 Instrument 行', async () => {
-    const anchorId = await seedRawAnchor('PEP');
+    const anchorId = orphanAnchorId();
 
     const result = await coldStart.run({ anchorId, ticker: 'PEP', now: SAT_NIGHT });
 
@@ -407,7 +406,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   });
 
   it('⑬ 市场未登记盘中时段 ⇒ session_unregistered (fail-closed, 先于能力检查)', async () => {
-    const anchorId = await seedRawAnchor('jp:7203');
+    const anchorId = orphanAnchorId();
 
     const result = await coldStart.run({ anchorId, ticker: 'jp:7203', now: SAT_NIGHT });
 
@@ -422,7 +421,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
 
   it('⑭ hk (登记了时段但能力空表项) 与 cn (压根没登记能力) ⇒ 同落 market_not_enabled, 各留一行', async () => {
     const hk = await createAnchorFor('hk:0700');
-    const cn = await seedRawAnchor('cn:600519');
+    const cn = orphanAnchorId();
 
     const hkResult = await coldStart.run({ anchorId: hk, ticker: 'hk:0700', now: SAT_NIGHT });
     const cnResult = await coldStart.run({ anchorId: cn, ticker: 'cn:600519', now: SAT_NIGHT });
@@ -683,9 +682,9 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     // ④⑤⑥ 三种早退。
     const anchorHk = await createAnchorFor('hk:0700');
     await coldStart.run({ anchorId: anchorHk, ticker: 'hk:0700', now: SAT_NIGHT });
-    const anchorJp = await seedRawAnchor('jp:7203');
+    const anchorJp = orphanAnchorId();
     await coldStart.run({ anchorId: anchorJp, ticker: 'jp:7203', now: SAT_NIGHT });
-    const anchorBare = await seedRawAnchor('PEP');
+    const anchorBare = orphanAnchorId();
     await coldStart.run({ anchorId: anchorBare, ticker: 'PEP', now: SAT_NIGHT });
 
     // ⑦ retry_exhausted: 走 worker 的真出口。

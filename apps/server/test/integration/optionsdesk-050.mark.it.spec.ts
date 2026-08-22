@@ -104,6 +104,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真 vendor 到期周期列)', (
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: opts.v ?? V,
         asof: dateOf('2026-06-30'),
         method: 'dcf',

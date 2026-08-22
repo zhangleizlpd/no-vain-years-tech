@@ -19,6 +19,9 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
 
   const anchorSeed = {
     ticker: 'us:TAP',
+    // 065 T03 起 NOT NULL + `ck_anchor_market` ⇒ 必填。🚨 override `ticker` 的用法 (下面
+    // 「痕迹可插」那条) 必须同步 override 本列, 否则种出 market 与 ticker 不一致的行。
+    market: 'us',
     v: '50',
     asof: new Date('2026-08-01T00:00:00Z'),
     method: 'dcf',
