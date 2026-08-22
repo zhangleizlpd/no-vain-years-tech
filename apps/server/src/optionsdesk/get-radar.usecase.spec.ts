@@ -26,7 +26,10 @@ const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
 
 const anchorRow = (overrides: Record<string, unknown> = {}) => ({
   id: 7n,
-  ticker: 'us:AOS',
+  ticker: (overrides.ticker as string | undefined) ?? 'us:AOS',
+  // 🚨 跟随 ticker 派生, MUST NOT 写死 'us' —— 065 起本文件有 override 成 hk 的用例, 写死会种出
+  //    market 与 ticker 不一致的行, 而那种行恰好会让市场作用域的断言**假绿**。
+  market: ((overrides.ticker as string | undefined) ?? 'us:AOS').split(':')[0]!,
   v: V,
   asof: day('2026-06-30'),
   method: 'dcf',
@@ -224,13 +227,17 @@ interface PrismaMock {
 }
 
 /**
- * 空态计数查询的 fixture 侧求值 —— 与 SQL 的 `COUNT(*) FILTER (WHERE spot < W)` 同语义:
- * 只数 `excluded = false` 的行, spot 走 rules 单点 {@link resolveAnchorSpot}。真 SQL 与它的
- * 等价性由 IT (`optionsdesk-045.radar.it.spec.ts`) 覆盖, 本文件只钉「计数吃的是哪个口径」。
+ * 空态计数查询的 fixture 侧求值 —— 与 SQL 的 `GROUP BY market` + `COUNT(*) FILTER (WHERE spot < W)`
+ * 同语义: 只数 `excluded = false` 的行、**按市场分组**, spot 走 rules 单点 {@link resolveAnchorSpot}。
+ * 真 SQL 与它的等价性由 IT (`optionsdesk-045.radar.it.spec.ts`) 覆盖, 本文件只钉「计数吃的是哪个
+ * 口径、按什么分组」。
+ *
+ * 🚨 065 起回**多行**(每市场一行): 计数一次查回全部市场是 plan D4 的刻意选择 —— 同一次扫描额外
+ * 换来 FR-016 的跨页签小圆点与 FR-015 的失联市场告警, 严格优于只查当前作用域。
  */
 function countBaseSet(rows: readonly ReturnType<typeof anchorRow>[], now: Date) {
-  const base = rows.filter((r) => r.excluded === false);
-  const actionable = base.filter((r) => {
+  const byMarket = new Map<string, { base_total: number; actionable_total: number }>();
+  for (const r of rows.filter((row) => row.excluded === false)) {
     const { price } = resolveAnchorSpot(
       {
         intradayPrice: r.intradayPrice,
@@ -240,9 +247,14 @@ function countBaseSet(rows: readonly ReturnType<typeof anchorRow>[], now: Date) 
       },
       now,
     );
-    return price !== null && isBelowW(r.vManual ?? r.v, price);
-  });
-  return [{ base_total: base.length, actionable_total: actionable.length }];
+    const actionable = price !== null && isBelowW(r.vManual ?? r.v, price);
+    const cur = byMarket.get(r.market) ?? { base_total: 0, actionable_total: 0 };
+    byMarket.set(r.market, {
+      base_total: cur.base_total + 1,
+      actionable_total: cur.actionable_total + (actionable ? 1 : 0),
+    });
+  }
+  return [...byMarket].map(([market, counts]) => ({ market, ...counts }));
 }
 
 function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
@@ -598,5 +610,78 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     const idle = await useCase.execute();
     expect(idle.emptyState).toBe('all_idle');
     expect(idle.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.all_idle);
+  });
+
+  // ── 065 T04 市场作用域 (FR-002/FR-003/FR-004, SC-003, plan D1/D3/D4) ────────
+
+  /**
+   * 「作用域没进计数」的最小反例形态: 美股已跌破 (W = 50 × 0.8 = 40), 港股未跌破。
+   * 计数若取全集, 港股页签会因为**那只美股**而判不出 `all_idle`。
+   */
+  const usBreachedHkIdle = () => [
+    anchorRow({ id: 7n, ticker: 'us:AOS', lastClose: new Prisma.Decimal('36') }),
+    anchorRow({ id: 8n, ticker: 'hk:00700', lastClose: new Prisma.Decimal('45') }),
+  ];
+
+  it('🚨 作用域**同时**落在分页 SQL 与计数 SQL —— D1 的不变式, 此前零覆盖', async () => {
+    await useCase.execute({ market: 'hk' });
+
+    // 分页侧: **列相等**谓词 (plan D3 否掉了 `ticker LIKE 'us:%'` 与切分隔符两种写法)。
+    expect(lastSql().sql).toContain('market = ');
+    // 计数侧: 同一列**分组**。作用域进计数不靠 WHERE, 靠「按同一列分组 + 按同一个值取那一格」——
+    // 两处同源但不同形, 别因为 `radarScopeSql` 只有一个调用点就以为作用域没进计数。
+    expect(countSql()!.sql).toContain('GROUP BY market');
+    // 🚨 反向: 计数 MUST NOT 被当前作用域 WHERE 掉 —— 那样别的市场那几格永远查不出来,
+    //    FR-016 的跨页签小圆点与 FR-015 的失联市场告警会同时失去数据源 (plan D4)。
+    expect(countSql()!.sql).not.toContain('market = ');
+  });
+
+  it('market 走参数绑定 (values 含市场值、sql 文本不含)', async () => {
+    await useCase.execute({ market: 'hk' });
+    expect(lastSql().values).toContain('hk');
+    expect(lastSql().sql).not.toContain("'hk'");
+  });
+
+  it('🚨 作用域进计数: 美股全部跌破 MUST NOT 压掉港股的「全体不动区」判定', async () => {
+    m = buildPrismaMock(usBreachedHkIdle());
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+    m.setPageKeys([{ anchor_id: '8', distance_text: '12.5000' }]); // 港股那一行
+
+    const page = await useCase.execute({ market: 'hk' });
+
+    // 计数若取全集, actionableTotal = 1 (那只美股) ⇒ 空态被压成 null, 港股页签明明一只可动
+    // 都没有却不给提示。这正是「只进分页不进计数」的病症, 别的断言都抓不到它。
+    expect(page.items).toHaveLength(1); // 不动区不隐藏行, 只在顶部加提示
+    expect(page.emptyState).toBe('all_idle');
+  });
+
+  it('🚨 反向: 同一批数据切到美股作用域 → 判成「有可动」(证明上一条不是恒 all_idle)', async () => {
+    m = buildPrismaMock(usBreachedHkIdle());
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+    m.setPageKeys([{ anchor_id: '7', distance_text: '-10.0000' }]);
+
+    expect((await useCase.execute({ market: 'us' })).emptyState).toBeNull();
+  });
+
+  it('省略 market = 不声明作用域 = 全集 (SC-003 并集性质的服务端前提)', async () => {
+    m = buildPrismaMock(usBreachedHkIdle());
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+    m.setPageKeys([{ anchor_id: '7', distance_text: '-10.0000' }]);
+
+    const page = await useCase.execute();
+
+    expect(lastSql().sql).not.toContain('market = '); // 分页不加作用域谓词
+    expect(page.emptyState).toBeNull(); // 计数按全部市场加总 ⇒ 那只美股仍算「可动」
+  });
+
+  it('作用域指向一格都没有的市场 ⇒ 计数按市场取到零 (T06 第 4 空态要吃的输入形态)', async () => {
+    m = buildPrismaMock([anchorRow({ id: 7n, ticker: 'us:AOS' })]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+    m.setPageKeys([]);
+
+    // ⚠️ 今天落 `zero_anchors`(「整库还没有锚」的文案) —— **语义是错的**, 但修它是 T06 的事
+    //    (加 `zero_anchors_in_market` + 「整库为空优先」的判定序)。本条钉的只是「计数确实按
+    //    market 取, 取不到就是零」这一半。
+    expect((await useCase.execute({ market: 'hk' })).emptyState).toBe('zero_anchors');
   });
 });

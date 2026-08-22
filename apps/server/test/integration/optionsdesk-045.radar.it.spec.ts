@@ -79,14 +79,14 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
   // ── fixture helpers ────────────────────────────────────────────────────────
 
   /** 塞一行真 us `Instrument` (与富途/理杏仁无关, 纯本地行)。 */
-  async function seedInstrument(code: string): Promise<bigint> {
+  async function seedInstrument(code: string, market = 'us'): Promise<bigint> {
     const row = await prisma.instrument.create({
       data: {
-        market: 'us',
+        market,
         code,
         name: `${code} Inc.`,
         type: 'stock',
-        currency: 'USD',
+        currency: market === 'hk' ? 'HKD' : 'USD',
         status: 'active',
       },
       select: { id: true },
@@ -111,6 +111,8 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
   interface AnchorFixture {
     code: string;
+    /** 市场 (缺省 us)。065 起雷达按它分作用域 —— 建锚白名单是 `IMPORTABLE_MARKETS`。 */
+    market?: string;
     /** 收盘价; 省略 = 该标的**从未被采集** (EC-15)。 */
     close?: string;
     /** bar 的 session 日 (缺省今日)。 */
@@ -125,14 +127,15 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
   /** 建锚 (+ 可选真行情行), 返回锚 id。 */
   async function seedAnchor(fixture: AnchorFixture): Promise<bigint> {
+    const market = fixture.market ?? 'us';
     if (fixture.unregistered !== true) {
-      const instrumentId = await seedInstrument(fixture.code);
+      const instrumentId = await seedInstrument(fixture.code, market);
       if (fixture.close !== undefined) {
         await seedBar(instrumentId, fixture.tradeDate ?? todayUtc(), fixture.close);
       }
     }
     const created = await createAnchor.execute({
-      ticker: `us:${fixture.code}`,
+      ticker: `${market}:${fixture.code}`,
       v: fixture.v ?? V,
       asof: day('2026-06-30'),
       method: 'dcf',
@@ -508,6 +511,44 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       expect(page.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.filtered_empty);
       expect(page.emptyStateMessage).not.toBe(RADAR_EMPTY_STATE_MESSAGES.zero_anchors);
       expect(page.emptyStateMessage).not.toBe(RADAR_EMPTY_STATE_MESSAGES.all_idle);
+    });
+  });
+
+  // ── 065 T04 市场作用域 (FR-002 / FR-003 / FR-004, SC-003) ──────────────────
+
+  describe('065 市场作用域: 分页与空态计数都按市场 (FR-002/FR-003/FR-004, SC-003)', () => {
+    it('hk 作用域只回 hk; 两个作用域的并集 = 不带作用域的全集、交集为空 (SC-003)', async () => {
+      await seedAnchor({ code: 'AOS', close: '36' });
+      await seedAnchor({ code: '00700', market: 'hk', close: '45' });
+      await syncQuote.execute();
+
+      const hk = await getRadar.execute({ market: 'hk' });
+      const us = await getRadar.execute({ market: 'us' });
+      const all = await getRadar.execute();
+
+      expect(tickerOf(hk)).toEqual(['hk:00700']);
+      expect(tickerOf(us)).toEqual(['us:AOS']);
+      // SC-003 的两半 —— 并集 = 全集 (无遗漏), 交集为空 (无重复)。
+      expect([...tickerOf(us), ...tickerOf(hk)].sort()).toEqual([...tickerOf(all)].sort());
+      expect(tickerOf(us).filter((t) => tickerOf(hk).includes(t))).toEqual([]);
+    });
+
+    it('🚨 美股全部跌破 W MUST NOT 压掉港股的「全体不动区」判定 (作用域必须同时进计数)', async () => {
+      await seedAnchor({ code: 'AOS', close: '36' }); // < W = 40 ⇒ 可动
+      await seedAnchor({ code: 'CPB', close: '30' }); // < W ⇒ 可动
+      await seedAnchor({ code: '00700', market: 'hk', close: '45' }); // > W ⇒ 不动
+      await syncQuote.execute();
+
+      const page = await getRadar.execute({ market: 'hk' });
+
+      // 计数若漏了作用域 (取全集), actionableTotal = 2 ⇒ 这里会是 null: 港股页签明明一只可动
+      // 都没有却不给提示, 而列表照常渲染 —— **没有别的断言会红**, 这条是它唯一的机械保护。
+      expect(tickerOf(page)).toEqual(['hk:00700']); // 不动区不隐藏行
+      expect(page.emptyState).toBe('all_idle');
+      expect(page.emptyStateMessage).toBe(RADAR_EMPTY_STATE_MESSAGES.all_idle);
+
+      // 反向: 同一批数据切到美股 ⇒ 有可动 ⇒ 非 all_idle (证明上面那条不是恒 all_idle)。
+      expect((await getRadar.execute({ market: 'us' })).emptyState).toBeNull();
     });
   });
 });
