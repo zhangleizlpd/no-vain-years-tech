@@ -8,7 +8,8 @@ import { QUERYABLE_MARKETS } from './instrument-query.rules.js';
  * 3 字节 × 2 万条: 市场作为独立参数意味着**跨市场混批在结构上不可能**, 通道层因此不需要抄
  * `/option-snapshot` 那道「每一段都必须是 US.」的第二步闸。
  *
- * 🚨 **不分页, 一次返全量** (2026-08-22 实测 us 19546 条 = 158 KB, gzip 后 49 KB)。业内
+ * 🚨 **不分页, 一次返全量** (2026-08-22 隔 guest 通道实测 us 19622 条 = 139,856 字节明文,
+ * 线上带 gzip 传 58,553 字节)。业内
  * master-list 一类接口的一致做法 (Zerodha Kite `/instruments` 直接返 gzip CSV 全量转储、
  * Alpaca `/v2/assets` 全量数组只有过滤没有分页、富途 `get_stock_basicinfo` 按 market 全量),
  * 消费方式是「拉一次存下来」而不是「翻页读」。压缩由通道层 nginx 做, 调方须带
@@ -18,7 +19,7 @@ export class InstrumentCodeListResponse {
   @ApiProperty({ description: '市场段', enum: QUERYABLE_MARKETS, example: 'us' })
   market!: string;
 
-  @ApiProperty({ description: 'codes 长度 (调方自检用)', example: 19546 })
+  @ApiProperty({ description: 'codes 长度 (调方自检用)', example: 19622 })
   count!: number;
 
   @ApiProperty({

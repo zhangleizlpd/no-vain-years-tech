@@ -6,7 +6,7 @@ import { QUERYABLE_MARKETS } from './instrument-query.rules.js';
  *
  * 🚨 **字段覆盖度按市场差异极大, 且缺失一律是 `null` 而不是报错** (体例同 015 详情的
  * "detail field coverage")。2026-08-22 实测: `listingStatus` / `listDate` 在 cn / hk 侧近乎
- * 全覆盖, 在 **us 侧恒 null** (0/19546 —— 只有理杏仁供这两个字段, 东财 universe 不供);
+ * 全覆盖, 在 **us 侧恒 null** (实测全表无一例外 —— 只有理杏仁供这两个字段, 东财 universe 不供);
  * us 另有 555 条 `name === code` 的占位行。⇒ 目录必须写明 **null ≠ 已退市**, 否则调方的
  * 模型会把「这个字段我们没有」读成「这只票退了」。
  *
