@@ -6,6 +6,7 @@
  * OpenAPI spec version: 1.0
  */
 import type { AnchorResponse } from './anchorResponse';
+import type { RadarMarketCountResponse } from './radarMarketCountResponse';
 import type { RadarResponseEmptyState } from './radarResponseEmptyState';
 
 export interface RadarResponse {
@@ -15,8 +16,10 @@ export interface RadarResponse {
   nextCursor: string | null;
   /** 是否还有下一页 (下拉增量加载判据) */
   hasMore: boolean;
-  /** 空态三分 (FR-015 + FR-034): zero_anchors 零锚 / filtered_empty 筛选无结果 / all_idle 全体不动区; 无空态 = null */
+  /** 空态四分 (FR-008/FR-009/FR-010 + FR-015 + FR-034): zero_anchors 整库零锚 / zero_anchors_in_market 本市场零锚 (库里有锚, 有效动作是切市场) / filtered_empty 筛选无结果 / all_idle 全体不动区; 无空态 = null */
   emptyState: RadarResponseEmptyState;
-  /** 该空态的文案 (三态 MUST NOT 复用同一句) */
+  /** 该空态的文案 (四态 MUST NOT 复用同一句) */
   emptyStateMessage: string | null;
+  /** 全部市场的基础集合计数 (FR-016 跨页签小圆点的数据源) —— **不受本次 market 作用域限制**, 一次扫描回全部。⚠️ **续页恒为空数组**: 计数只在首页查, 客户端 MUST NOT 在续页响应里读它。 */
+  marketCounts: RadarMarketCountResponse[];
 }

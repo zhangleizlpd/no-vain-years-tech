@@ -19,6 +19,7 @@ import { GetAnchorUseCase } from './get-anchor.usecase';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase';
 import { GetLegsUseCase, type LegTableView } from './get-legs.usecase';
 import { GetChainReportUseCase, type ChainReportView } from './get-chain-report.usecase';
+import { GetRadarUseCase } from './get-radar.usecase';
 import { aggregateCell, chainReportGateCounts, chainReportRows } from './chain-report.rules';
 import { DISPLAY_LIMIT_BY_PERSPECTIVE } from './leg-rank.rules';
 import { RETRIEVAL_CRITERION_KEYS, type PerspectiveCriteria } from './leg-recall.rules';
@@ -95,6 +96,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
   const atExecute = vi.fn();
   const legsExecute = vi.fn();
   const chainReportExecute = vi.fn();
+  const radarExecute = vi.fn();
 
   beforeAll(async () => {
     const prismaStub = {
@@ -141,6 +143,10 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       .useValue({ execute: legsExecute })
       .overrideProvider(GetChainReportUseCase)
       .useValue({ execute: chainReportExecute })
+      // 065 T09: 此前**没有** override —— 本文件零条 radar 用例, 真 use case 拿 prismaStub
+      // (只有 account.findUnique) 一跑就炸。加了 radar 断言就必须同时把它换掉。
+      .overrideProvider(GetRadarUseCase)
+      .useValue({ execute: radarExecute })
       .compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter(), {
@@ -171,6 +177,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
     atExecute.mockResolvedValue(null);
     legsExecute.mockResolvedValue(emptyLegTable());
     chainReportExecute.mockResolvedValue(chainReport());
+    radarExecute.mockResolvedValue(radarPage());
   });
 
   const authed = (extra: Record<string, string> = {}) => ({
@@ -835,6 +842,109 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       }
     });
   });
+
+  // ── 065 T09 GET /radar 市场作用域 (FR-001 / FR-002 / FR-016, plan D3 / D6) ──
+  //
+  // 🚨 本文件此前**零条 radar 用例** —— 雷达的查询串校验从未被通道层验证过。065 给它加了
+  //    第一个有值域的参数, 而 `@IsIn` / `@ValidateIf` 这类只有跑**真 ValidationPipe** 才看
+  //    得见效果 (use case spec 直接调方法, 绕过整条管道)。
+
+  describe('GET /radar — 市场作用域 (065)', () => {
+    it('?market=us 抵达 use case, 且**不混进 filter** (作用域 ≠ 筛选项)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/radar?market=us',
+        headers: authed(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      const arg = radarExecute.mock.calls.at(-1)![0] as {
+        market?: string;
+        filter?: Record<string, unknown>;
+      };
+      expect(arg.market).toBe('us');
+      // 🚨 plan D1: 混进 filter 就会只进分页不进计数, 而那条病症没有别的断言抓得到。
+      expect(arg.filter?.market).toBeUndefined();
+    });
+
+    it('🚨 ?market=jp → 400, use case 不被调用 (真 ValidationPipe 跑 @IsIn)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/radar?market=jp',
+        headers: authed(),
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(radarExecute).not.toHaveBeenCalled();
+    });
+
+    it('🚨 带 cursor 却不带 market → 400 (D6: 不声明作用域就不许翻页)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/radar?cursor=WyItMTAuMDAiLCI3Il0',
+        headers: authed(),
+      });
+
+      // D6 撤销了「market 编进游标」, 这三行校验就是它的**全部**替代保护 —— 少了它,
+      // 跨市场续页会静默按上一个市场的游标继续翻。
+      expect(res.statusCode).toBe(400);
+      expect(radarExecute).not.toHaveBeenCalled();
+    });
+
+    it('带 cursor **且**带 market → 200 (正向那半条: 别把翻页整个挡死)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/radar?cursor=WyItMTAuMDAiLCI3Il0&market=us',
+        headers: authed(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(radarExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it('两者都不带 → 200 且 market 为 undefined (= 全集, SC-003 并集断言的前提)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/radar',
+        headers: authed(),
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect((radarExecute.mock.calls.at(-1)![0] as { market?: string }).market).toBeUndefined();
+    });
+
+    it('marketCounts 回全部市场且**不受本次作用域限制** (FR-016 小圆点数据源)', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/optionsdesk/radar?market=us',
+        headers: authed(),
+      });
+
+      const body = res.json() as {
+        marketCounts: { market: string; baseTotal: number; actionableTotal: number }[];
+      };
+      // 请求的是 us, 但 hk 那格照样回来 —— 否则港股有可动锚时美股页签零信号 (plan D4)。
+      expect(body.marketCounts.map((c) => c.market).sort()).toEqual(['hk', 'us']);
+      expect(body.marketCounts.find((c) => c.market === 'hk')).toEqual({
+        market: 'hk',
+        baseTotal: 2,
+        actionableTotal: 0,
+      });
+    });
+
+    it('marketCounts 是**数组**不是 map (防 orval 生成 objectmap, 同 012/023/024/025 那族)', () => {
+      const schema = document.components!.schemas!['RadarResponse'] as {
+        properties: Record<
+          string,
+          { type?: string; items?: unknown; additionalProperties?: unknown }
+        >;
+      };
+      const prop = schema.properties['marketCounts'];
+      expect(prop.type).toBe('array');
+      expect(prop.items).toBeDefined();
+      expect(prop.additionalProperties).toBeUndefined();
+    });
+  });
 });
 
 /** `GetLegsUseCase` 的「链未就绪」空壳 —— 本 spec 只验通道层, 业务形态归 use case 自己的 spec。 */
@@ -939,6 +1049,24 @@ function chainReport(): ChainReportView {
       rent_annualized: cellsOf('0.24'),
       all_annualized: cellsOf('0.24'),
       activity: cellsOf('940'),
+    },
+  };
+}
+
+/**
+ * 雷达页 fixture —— `marketCounts` 刻意含**两个**市场: FR-016 的小圆点要的正是「非当前页签」
+ * 那几格, 只放一个市场的话「计数不受作用域限制」这条断言会退化成恒真。
+ */
+function radarPage() {
+  return {
+    items: [],
+    nextCursor: null,
+    hasMore: false,
+    emptyState: null,
+    emptyStateMessage: null,
+    marketCounts: {
+      us: { baseTotal: 3, actionableTotal: 1 },
+      hk: { baseTotal: 2, actionableTotal: 0 },
     },
   };
 }

@@ -218,6 +218,13 @@ export interface RadarPage {
   hasMore: boolean;
   emptyState: RadarEmptyState | null;
   emptyStateMessage: string | null;
+  /**
+   * 全部市场的基础集合计数 —— FR-016 跨页签小圆点的数据源 (065 T09)。
+   *
+   * 🚨 **续页恒为空对象**: 计数只在首页查 (与空态同一条理由 —— 「有没有可动的」是「打开雷达
+   * 这一刻」的语义)。客户端 MUST NOT 在续页响应里读它, 更不能因为空就把小圆点抹掉。
+   */
+  marketCounts: RadarCountsByMarket;
 }
 
 /**
@@ -364,6 +371,7 @@ export class GetRadarUseCase {
     return {
       items,
       hasMore,
+      marketCounts: countsByMarket,
       nextCursor:
         hasMore && last !== undefined
           ? encodeRadarCursor({ distanceToWPct: last.distance_text, anchorId: last.anchor_id })

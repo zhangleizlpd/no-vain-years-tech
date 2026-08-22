@@ -5,6 +5,7 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
+import type { OptionsdeskControllerRadarMarket } from './optionsdeskControllerRadarMarket';
 
 export type OptionsdeskControllerRadarParams = {
 /**
@@ -27,4 +28,8 @@ pendingReview?: boolean;
  * true = 只看已跌破 W 的锚 (行情不可用的行不计入)
  */
 belowW?: boolean;
+/**
+ * 市场作用域 (us / hk)。省略 = 全部市场。🚨 **它是作用域不是筛选项** —— 与 limit / cursor 同级地定义「问的是哪一批行」, 同时进分页与空态计数; 而 lLevels / pendingReview / belowW 是在基础集合上再筛。🚨 **带 cursor 时必填**: 不声明作用域就不许翻页 (跨市场续页的语义没有定义)。
+ */
+market?: OptionsdeskControllerRadarMarket;
 };

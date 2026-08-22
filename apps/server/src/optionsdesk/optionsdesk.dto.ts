@@ -18,7 +18,7 @@ import {
 import { Prisma } from '../generated/prisma/client';
 import { ANCHOR_ZONES, L_LEVELS, type LLevel } from './anchor.rules';
 import { ANCHOR_MANUAL_SLOTS } from './anchor-cascade';
-import { ANCHOR_SUBMISSION_STATUSES } from './anchor-import.rules';
+import { ANCHOR_SUBMISSION_STATUSES, IMPORTABLE_MARKETS } from './anchor-import.rules';
 import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
 import { PRICE_KINDS, type PriceKind } from '../marketdata/marketdata.types';
@@ -394,6 +394,25 @@ export class RadarQueryDto {
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()
   belowW?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      `市场作用域 (${IMPORTABLE_MARKETS.join(' / ')})。省略 = 全部市场。` +
+      '🚨 **它是作用域不是筛选项** —— 与 limit / cursor 同级地定义「问的是哪一批行」, ' +
+      '同时进分页与空态计数; 而 lLevels / pendingReview / belowW 是在基础集合上再筛。' +
+      '🚨 **带 cursor 时必填**: 不声明作用域就不许翻页 (跨市场续页的语义没有定义)。',
+    enum: [...IMPORTABLE_MARKETS],
+    example: 'us',
+  })
+  // 🚨 两个条件的**或**, 缺一不可:
+  //   · `market !== undefined` ⇒ 给了就必须在白名单内 (挡 `?market=jp`), 不管带不带 cursor;
+  //   · `cursor != null`       ⇒ 带游标却没给 market 时, `@IsIn(undefined)` 失败 ⇒ 400。
+  // 🚫 MUST NOT 写成 `@IsOptional()` + `@IsIn()`: 那样带 cursor 缺 market 会静默放过,
+  //    而这正是 D6 撤销「market 编进游标」后唯一的替代保护。
+  // 🚨 本条挡的是**入参**, 与 `ck_anchor_market` 挡**存量**是两件事, 不可互相替代。
+  @ValidateIf((o: RadarQueryDto) => o.market !== undefined || o.cursor != null)
+  @IsIn([...IMPORTABLE_MARKETS])
+  market?: string;
 }
 
 /**
@@ -743,6 +762,27 @@ export class AnchorListResponse {
   total!: number;
 }
 
+/**
+ * 单市场的基础集合计数 (065 FR-016)。
+ *
+ * 🚨 `market` 声明成裸 string 而**不是** enum: 响应侧要能如实回出「不在受支持白名单内」的市场
+ * (FR-015 的失联场景 —— 库里真有那种锚时, 契约不该反过来说它不存在)。值域校验只属于**入参**
+ * (`RadarQueryDto.market` 的 `@IsIn`)。
+ */
+export class RadarMarketCountResponse {
+  @ApiProperty({ description: '市场代号 (canonical ticker 的 market 段)', example: 'us' })
+  market!: string;
+
+  @ApiProperty({
+    description: '该市场基础集合 (不含 excluded、**未加用户筛选**) 的锚数',
+    example: 12,
+  })
+  baseTotal!: number;
+
+  @ApiProperty({ description: '该市场已跌破 W 的锚数 (= 可动)', example: 3 })
+  actionableTotal!: number;
+}
+
 export class RadarResponse {
   @ApiProperty({
     description:
@@ -764,7 +804,9 @@ export class RadarResponse {
 
   @ApiProperty({
     description:
-      '空态三分 (FR-015 + FR-034): zero_anchors 零锚 / filtered_empty 筛选无结果 / all_idle 全体不动区; 无空态 = null',
+      '空态四分 (FR-008/FR-009/FR-010 + FR-015 + FR-034): zero_anchors 整库零锚 / ' +
+      'zero_anchors_in_market 本市场零锚 (库里有锚, 有效动作是切市场) / ' +
+      'filtered_empty 筛选无结果 / all_idle 全体不动区; 无空态 = null',
     enum: [...RADAR_EMPTY_STATES],
     nullable: true,
     example: null,
@@ -772,12 +814,20 @@ export class RadarResponse {
   emptyState!: string | null;
 
   @ApiProperty({
-    description: '该空态的文案 (三态 MUST NOT 复用同一句)',
+    description: '该空态的文案 (四态 MUST NOT 复用同一句)',
     type: 'string',
     nullable: true,
     example: null,
   })
   emptyStateMessage!: string | null;
+
+  @ApiProperty({
+    description:
+      '全部市场的基础集合计数 (FR-016 跨页签小圆点的数据源) —— **不受本次 market 作用域限制**, ' +
+      '一次扫描回全部。⚠️ **续页恒为空数组**: 计数只在首页查, 客户端 MUST NOT 在续页响应里读它。',
+    type: [RadarMarketCountResponse],
+  })
+  marketCounts!: RadarMarketCountResponse[];
 }
 
 /**
@@ -1141,6 +1191,13 @@ export function toRadarResponse(page: RadarPage): RadarResponse {
     hasMore: page.hasMore,
     emptyState: page.emptyState,
     emptyStateMessage: page.emptyStateMessage,
+    // Record → 数组: OpenAPI 的 map 形态会让 orval 生成 `{ [k: string]: unknown }`
+    // (012/023/024/025 那条 objectmap 回归的同族问题), 数组则生成具名 item 类型。
+    marketCounts: Object.entries(page.marketCounts).map(([market, counts]) => ({
+      market,
+      baseTotal: counts.baseTotal,
+      actionableTotal: counts.actionableTotal,
+    })),
   };
 }
 
