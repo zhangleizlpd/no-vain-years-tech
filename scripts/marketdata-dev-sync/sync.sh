@@ -192,12 +192,26 @@ TABLE_POLICIES=(
   # 🔻 体量约 8.6k 行（cn+hk+us 各约 2.9k，2015 至今），full 的成本可忽略。
   # 📌 与 #45 主修**无依赖**：月度链标已换源到 `option_contract.expiration_cycle`，不再读本表。
   "marketdata.trading_day:full"        # 044 交易日历（三市场 × 2015 至今）
+  # 2026-08-22 补登记（062 落 prod 后），直接 full —— 它是上面 trading_day 的**覆盖声明**，
+  # 两张必须同进退。真读路径两条、跨两个 context：
+  #   · `db-trading-calendar.adapter.ts` classify() / lastClosedSession()
+  #     —— 后者 `if (!isWithinCoverage(coverage, cutoff)) return null`，**coverage 行缺失 ⇒ 恒返 null**
+  #   · `alert/intraday-eval.processor.ts` 盘中闸（CROSS-CONTEXT-READ，Q7-B per ADR-0052）
+  # ⇒ 设 skip 的形态是「trading_day 有 8601 行、覆盖声明却是空的」= 填了但没声明填，陈旧度档与
+  #   交易日闸在 dev 上给的是另一套答案，而两屏都照常渲染 —— 与 2026-08-15 trading_day 由 skip
+  #   翻 full 那条**同构的静默失真**，且比两张都空更坏。体量 3 行，成本可忽略。
+  "marketdata.calendar_coverage:full"  # 062 日历覆盖声明（market 级 PK，无 instrument_id）
   # ── 运维 / 配置表（非标的级，dev 不需要）──────────────────────────────────────────
   "marketdata.calendar_sync_health:skip"     # 044 交易日历填充心跳（市场级 PK，无 instrument_id）
   "marketdata.sync_run:skip"           # 同步运行态，运维表
   "marketdata.sync_dimension:skip"     # 同步维度配置
   "marketdata.sync_dependency:skip"    # 同步依赖拓扑
   "marketdata.sync_blacklist:skip"     # 同步黑名单
+  # 2026-08-22 补登记（060 落 prod 后）。归这一组而非业务组：server 侧**只写不读** ——
+  # `anchor-cold-start.usecase.ts` 的 finish() 一处覆盖式单行 upsert（PK=anchorId，FR-026 只留
+  # 最近一次），全仓零读路径。它记的是「**这台库上**冷启动跑过没有、结局如何」= dev 自己的事实；
+  # 搬 prod 的进来等于给 dev 编一份它没跑过的运行史。与 sync_run / calendar_sync_health 同族。
+  "marketdata.anchor_cold_start_run:skip"    # 060 锚冷启动补齐运行记录（无 instrument_id，无 FK）
   # ── optionsdesk：锚（045）—— 期权台一切的入口，无锚则雷达/详情/聚合三屏全是空态 ──────
   # 两张都 full 且**都切不出样本**（anchor 无 instrument_id，主键是 canonical ticker 字符串）。
   # 体量恒定在十几行量级（锚是人工维护的白名单，2026-08-10 prod = 12 / 12）。
@@ -205,6 +219,13 @@ TABLE_POLICIES=(
   #    要在本地留自造锚做实验，得先把这两行改回 skip。
   "optionsdesk.anchor:full"                  # 045 愿买价锚（V / confidence / L 层 / excluded / 水位手选）
   "optionsdesk.anchor_change:full"           # 045 锚变更审计流水（无 FK，纯 anchor_id 引用）
+  # 2026-08-22 补登记（059 落 prod 后）。⚠️ 与同组两张不同，这张是 **skip**，两条理由：
+  # ① 无失真风险：server 侧只 create 不读（`submit-anchor-from-guest.usecase.ts`，controller 只
+  #    回显刚写那行）⇒ dev 恒空不会让任何一处答错；
+  # ② full 有**真代价**：本脚本截断→重灌，会抹掉本地自己投的测试提交 —— 而本地联调 059 访客
+  #    投递流程要看的正是刚投那条。
+  # 将来出现审核队列 / 列表读路径（那时 dev 空表 = 屏永远空）再翻 full。
+  "optionsdesk.anchor_submission:skip"       # 059 访客估值投递待审表（prod 131 行 @2026-08-22）
 )
 
 # ─── 工具函数 ─────────────────────────────────────────────────────────────────
