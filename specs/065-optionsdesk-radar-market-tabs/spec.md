@@ -2,12 +2,15 @@
 feature_id: 065-optionsdesk-radar-market-tabs
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: implemented
+status: implementing
 created_at: '2026-08-19'
 updated_at: '2026-08-22'
-# expand → contract 两步, **刻意分开**: prod 回滚只换镜像 tag、不回退 schema,
-# 合并后回滚到旧镜像会因旧代码不写该列而 INSERT 失败 (per ADR-0035 + plan §D0)。
-migration_refs: [20260821_1554_add_anchor_market, 20260822_0918_tighten_anchor_market]
+# expand → contract **刻意分成两个 PR / 两次部署**: migration 由容器 entrypoint 的
+# `prisma migrate deploy` 在启动时应用 ⇒ 同一个 PR 里的两个 migration 会在同一次部署里全
+# 应用,「单独部署」不会发生。而 prod 回滚只换镜像 tag、不回退 schema, 一次上完会让那次发布
+# 不可用 `rollback-prod.sh` 回滚 (ops/runbook §回滚「image-only 回滚的硬前提」)。
+# contract 步的 migration 随它自己那个 PR 落地, 届时补进本列表。
+migration_refs: [20260821_1554_add_anchor_market]
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 

@@ -1718,12 +1718,13 @@ model Anchor {
   /// 不一致的归属 (`us:` 空 code 那类), 落列把这一整类问题消掉 (065 plan D0 / D3)。
   /// 🚨 **MUST NOT 用 DB 生成列** —— 同 `l_level_effective` 的理由: 生成列会把解析表达式塞回
   /// SQL, 正是本列要消灭的东西, 且改解析口径就要 DDL 变更。
-  /// 🚨 值域与 `anchor-import.rules.ts` 的 `IMPORTABLE_MARKETS` **成对, 改一处必改另一处** ——
-  ///   DB 侧 `ck_anchor_market` CHECK (065 T03) 是这份白名单的副本, 加受支持市场必须同改
-  ///   migration, 否则新市场的锚在 INSERT 处被 DB 拒 (而写侧闸已放行, 症状是 500 不是 400)。
-  /// ⚠️ Prisma **不建模 CHECK 约束** ⇒ 后续 `migrate dev --create-only` 的 diff 会把
-  ///   `ck_anchor_market` 误报成待 `DROP CONSTRAINT` (同 pg_trgm GIN 索引那类), 生成后剔掉。
-  market String   @db.VarChar(4)
+  /// 🚨 值域与 `anchor-import.rules.ts` 的 `IMPORTABLE_MARKETS` **成对, 改一处必改另一处**。
+  /// ⚠️ **nullable 是 expand 步的刻意中间态** (065 T01): 写侧已由 T02 单点派生写入, 但列先留
+  ///   可空 —— 这样本次发布是**向后兼容**的, `rollback-prod.sh` 的 image-only 回滚仍然可用
+  ///   (旧镜像不写该列也 INSERT 得进去)。收紧成 NOT NULL + `ck_anchor_market` CHECK 的
+  ///   **contract 步单独一个 PR / 单独一次部署** (065 T03) —— prod 回滚只换镜像 tag、不回退
+  ///   schema, 两步挤在一次发布里会让这次发布**不可回滚** (per ops/runbook + ADR-0035)。
+  market String?  @db.VarChar(4)
   /// 模型/基准估值 V。生效 V = COALESCE(v_manual, v)。V ≤ 0 由应用层拒 (EC-3)。
   v      Decimal  @db.Decimal(18, 4)
   /// 估值 as-of 日 (V 的口径日期), 与 last_close_date (行情 asOf) 是两回事。
