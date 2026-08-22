@@ -278,6 +278,7 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: '50',
         asof: dateOf('2026-06-01'),
         method: 'dcf',

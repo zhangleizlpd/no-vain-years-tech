@@ -227,7 +227,7 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
 
 /** 雷达里的某一行（拿不到 = 断言失败，比后续 `?.` 一路吞掉强）。 */
 async function radarRow(cfg: Cfg, ticker: string): Promise<AnchorResponse> {
-  const radar = await optionsdeskControllerRadar({ limit: 50 }, cfg);
+  const radar = await optionsdeskControllerRadar({ limit: 50, market: 'us' }, cfg);
   assert.equal(radar.status, 200, `radar expected 200, got ${radar.status}`);
   const row = radar.data.items.find((a) => a.ticker === ticker);
   assert.ok(row, `${ticker} 应在雷达上`);
@@ -236,7 +236,7 @@ async function radarRow(cfg: Cfg, ticker: string): Promise<AnchorResponse> {
 
 /** 本 spec 两只锚在雷达上的相对次序（其他 spec 的锚已各自清理，但仍按 ticker 收窄）。 */
 async function radarOrder(cfg: Cfg): Promise<string[]> {
-  const radar = await optionsdeskControllerRadar({ limit: 50 }, cfg);
+  const radar = await optionsdeskControllerRadar({ limit: 50, market: 'us' }, cfg);
   assert.equal(radar.status, 200);
   return radar.data.items
     .map((a) => a.ticker)

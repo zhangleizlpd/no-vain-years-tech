@@ -212,6 +212,8 @@ const INDEX_MISSING: UsIndexReadoutResponse = {
 /** server 的空态三分（`get-radar.usecase`：baseTotal → pageItems → actionableTotal）。 */
 const EMPTY_STATE_MESSAGES = {
   zero_anchors: '还没有锚 —— 先去锚管理建第一个锚',
+  // 065：第 2 位是「本市场零锚」，与第 1 位的有效动作相反（换个市场 vs 去建锚）。
+  zero_anchors_in_market: '这个市场还没有锚 —— 换个市场看看',
   filtered_empty: '当前筛选无结果',
   all_idle: '今日无解，空仓是常态',
 } as const;
@@ -546,22 +548,40 @@ async function installDeskMock(page: Page, fixture: DeskFixture): Promise<DeskMo
       );
       const pendingReview = url.searchParams.get('pendingReview') === 'true';
       const belowW = url.searchParams.get('belowW') === 'true';
+      // 🚨 065：`market` 是**作用域**（与 excluded 同级、进计数），不是筛选项。mock 不跟着改
+      //    会**全绿而不再是契约镜像**（`.claude/rules/mobile-e2e-hermetic.md`）——
+      //    本文件的 fixture 全是 `us:*`，作用域切分对它们恒等价，正因如此漏改也不会红。
+      const market = url.searchParams.get('market');
 
-      const base = anchors.filter((a) => !a.excluded);
+      const allBase = anchors.filter((a) => !a.excluded);
+      const base = allBase.filter((a) => market === null || a.ticker.startsWith(`${market}:`));
       const filtered = base.filter(
         (a) =>
           (lLevels.size === 0 || lLevels.has(a.lLevelEffective)) &&
           (!pendingReview || a.overdue) &&
           (!belowW || isBelowW(a)),
       );
+      // 全市场计数 —— **不受本次作用域限制**（FR-016 小圆点的数据源）。
+      const marketCounts = [...new Set(allBase.map((a) => a.ticker.split(':')[0] ?? ''))].map(
+        (m) => {
+          const rows = allBase.filter((a) => a.ticker.startsWith(`${m}:`));
+          return {
+            market: m,
+            baseTotal: rows.length,
+            actionableTotal: rows.filter(isBelowW).length,
+          };
+        },
+      );
       const emptyState =
-        base.length === 0
+        allBase.length === 0
           ? 'zero_anchors'
-          : filtered.length === 0
-            ? 'filtered_empty'
-            : filtered.filter(isBelowW).length === 0
-              ? 'all_idle'
-              : null;
+          : base.length === 0
+            ? 'zero_anchors_in_market'
+            : filtered.length === 0
+              ? 'filtered_empty'
+              : filtered.filter(isBelowW).length === 0
+                ? 'all_idle'
+                : null;
 
       return void (await json(200, {
         items: radarSort(filtered),
@@ -569,6 +589,7 @@ async function installDeskMock(page: Page, fixture: DeskFixture): Promise<DeskMo
         hasMore: false,
         emptyState,
         emptyStateMessage: emptyState === null ? null : EMPTY_STATE_MESSAGES[emptyState],
+        marketCounts,
       }));
     }
 

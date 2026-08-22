@@ -158,6 +158,7 @@ describe('046 T018 波动温度计读端 (共享 PG + 收窄 boot + 真 HTTP)', 
     prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: V,
         asof: day('2026-06-30'),
         method: 'dcf',

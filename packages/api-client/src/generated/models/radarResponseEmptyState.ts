@@ -7,13 +7,14 @@
  */
 
 /**
- * 空态三分 (FR-015 + FR-034): zero_anchors 零锚 / filtered_empty 筛选无结果 / all_idle 全体不动区; 无空态 = null
+ * 空态四分 (FR-008/FR-009/FR-010 + FR-015 + FR-034): zero_anchors 整库零锚 / zero_anchors_in_market 本市场零锚 (库里有锚, 有效动作是切市场) / filtered_empty 筛选无结果 / all_idle 全体不动区; 无空态 = null
  */
 export type RadarResponseEmptyState = typeof RadarResponseEmptyState[keyof typeof RadarResponseEmptyState] | null;
 
 
 export const RadarResponseEmptyState = {
   zero_anchors: 'zero_anchors',
+  zero_anchors_in_market: 'zero_anchors_in_market',
   filtered_empty: 'filtered_empty',
   all_idle: 'all_idle',
 } as const;

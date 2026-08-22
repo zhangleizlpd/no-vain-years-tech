@@ -13,6 +13,7 @@ import { useMarketdataControllerSearch, type InstrumentSearchItem } from '@nvy/a
 import { colors } from '~/theme';
 import { Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { isSupportedMarket } from './radar.rules';
 
 const COPY = OPTIONSDESK_COPY.anchorForm;
 
@@ -109,12 +110,22 @@ export function TickerSearchPicker({ picked, onPick, disabled }: TickerSearchPic
           <ScrollView keyboardShouldPersistTaps="handled">
             {results.map((r) => {
               const { market, code } = splitSymbol(r.symbol);
+              // 065 FR-017 / SC-006：非受支持市场**可见但不可选 + 一句原因**。
+              // 🚫 MUST NOT 静默过滤掉 —— 搜「茅台」返回空白会让人以为搜索坏了。
+              // 判据与市场页签**取同一处**（`isSupportedMarket`），分成两份必然漂。
+              const supported = isSupportedMarket(market);
               return (
                 <Pressable
                   key={r.symbol}
-                  onPress={() => onPick(r)}
+                  onPress={supported ? () => onPick(r) : undefined}
+                  disabled={!supported}
                   accessibilityRole="button"
-                  accessibilityLabel={`${code} ${r.name}`}
+                  accessibilityState={{ disabled: !supported }}
+                  accessibilityLabel={
+                    supported
+                      ? `${code} ${r.name}`
+                      : `${code} ${r.name} ${COPY.tickerMarketUnsupported}`
+                  }
                   testID={`optionsdesk-ticker-result-${r.symbol}`}
                   className="flex-row items-center gap-sm py-sm border-b border-line-soft"
                 >
@@ -122,7 +133,17 @@ export function TickerSearchPicker({ picked, onPick, disabled }: TickerSearchPic
                   <Text className="flex-1 text-sm text-ink-muted" numberOfLines={1}>
                     {r.name}
                   </Text>
-                  <Text className="text-xs text-ink-subtle">{market}</Text>
+                  {supported ? (
+                    <Text className="text-xs text-ink-subtle">{market}</Text>
+                  ) : (
+                    // 原因就地给出 —— 「为什么点不动」必须与那一行同屏，否则等于静默失效。
+                    <Text
+                      className="text-xs text-ink-subtle"
+                      testID={`optionsdesk-ticker-unsupported-${r.symbol}`}
+                    >
+                      {COPY.tickerMarketUnsupported}
+                    </Text>
+                  )}
                 </Pressable>
               );
             })}

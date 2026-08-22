@@ -213,6 +213,7 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: '150',
         asof: dateOf('2026-06-30'),
         method: 'dcf',

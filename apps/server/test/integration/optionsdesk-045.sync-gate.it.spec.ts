@@ -267,8 +267,13 @@ describe('045 optionsdesk US4 采集闸集成 IT (Testcontainers PG)', () => {
     expect(await needSyncOf('cn', '600519')).toBe(true);
     expect(await needSyncOf('hk', '00700')).toBe(true);
 
-    // cn/hk 锚同样不影响 cn/hk (它们本就全量采, 闸对其无意义)。
-    await createAnchor.execute(anchorInput('cn:600519'));
+    // 非 us 锚同样不影响 cn/hk 工作集 (它们本就全量采, 闸对其无意义)。
+    // 🚨 065 T03 起反例输入从 cn 换成 hk: `optionsdesk.anchor.market` 收紧为 NOT NULL +
+    //    `ck_anchor_market` CHECK ('us','hk') ⇒ cn 锚**在 DB 层根本存不下**, 「库里真有一只 cn
+    //    锚」这个前提已不存在 (写侧 FR-014 也拒它)。hk 是**更强**的反例, 不是将就: 065 起 hk 是
+    //    受支持市场, hk 锚是真会出现的形态, 而闸的受闸市场恒为 us ⇒ 它必须仍然不碰 hk。
+    //    若关闸路径误放到 cn/hk, 此刻无锚的 cn 两只会被一次关掉, 下面这条当场红。
+    await createAnchor.execute(anchorInput('hk:00700'));
     await gate.recalcSafely();
     expect(await workingSet(['cn', 'hk'])).toEqual(cnHkBefore);
   });

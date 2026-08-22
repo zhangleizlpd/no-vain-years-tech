@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
   RADAR_BADGE_ORDER,
+  RADAR_MARKETS,
+  RADAR_QUERY_KEY,
+  radarQueryKey,
   RADAR_FILTER_KEYS,
   RADAR_ROW_FIELD_KEYS,
   distanceToWTone,
@@ -406,5 +409,108 @@ describe('🚨 US1-AS1 —— 雷达页内不再有「标的详情即将可用�
 
   it('键面也不留 detailComingSoon（防只改值不删键、下次又被接回轻提示）', () => {
     expect(Object.keys(COPY)).not.toContain('detailComingSoon');
+  });
+});
+
+// ── 065 T10 市场页签集合 (FR-001) ────────────────────────────────────────────
+
+describe('065 RADAR_MARKETS —— 页签集合从契约派生', () => {
+  it('🚨 恰好是文案表的键 —— 集合与契约的绑定靠它 (有人改成硬编码数组这条就会红)', () => {
+    // 文案表是 `satisfies Record<RadarMarket, string>` ⇒ 契约加市场不补文案即 tsc 红。
+    // 本条钉的是「集合确实取自那张表」—— 改成字面量 `['us','hk']` 后, 下次 server 加市场时
+    // 文案表(被 tsc 逼着)会多一个键而集合不会, 这条当场红。那正是 FR-015 要防的时刻。
+    expect(RADAR_MARKETS).toEqual(Object.keys(OPTIONSDESK_COPY.radar.marketTabs));
+  });
+
+  it('美股在前 —— FR-005「冷启动落美股」的前提 (顺序来自 server 常量, 不在前端改)', () => {
+    expect(RADAR_MARKETS[0]).toBe('us');
+  });
+
+  it('每个市场都有页签文案且两两互异 (satisfies 是编译期, 这条是运行期兜底)', () => {
+    const labels = RADAR_MARKETS.map((m) => OPTIONSDESK_COPY.radar.marketTabs[m]);
+    expect(labels.filter((l) => typeof l === 'string' && l.length > 0)).toHaveLength(
+      RADAR_MARKETS.length,
+    );
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+});
+
+// ── 065 T11 query key 工厂 + SC-002 新鲜度粒度 ───────────────────────────────
+
+describe('065 radarQueryKey —— 列表侧与 mutation 失效侧的同一处', () => {
+  it('同参数 → 同 key（结构相等即可, react-query 按结构比对）', () => {
+    expect(radarQueryKey('us', { belowW: true })).toEqual(radarQueryKey('us', { belowW: true }));
+  });
+
+  it('🚨 市场不同 → key 不同 (切页签即换 query ⇒ pageParam 自然重置回首页)', () => {
+    // 这条是 plan D6 敢撤销「market 编进游标」的依据: 跨市场游标在 app 里**不可达**。
+    // 把 market 从 key 里拿掉, 那个判定当场失效, 而**列表照样能渲染**、没有别的断言会红。
+    expect(radarQueryKey('us', {})).not.toEqual(radarQueryKey('hk', {}));
+  });
+
+  it('筛选不同 → key 不同; 且两者与前缀共享 RADAR_QUERY_KEY（mutation 失效靠这个前缀命中）', () => {
+    expect(radarQueryKey('us', {})).not.toEqual(radarQueryKey('us', { pendingReview: true }));
+    for (const key of [radarQueryKey('us', {}), radarQueryKey('hk', { belowW: true })]) {
+      expect(key.slice(0, RADAR_QUERY_KEY.length)).toEqual([...RADAR_QUERY_KEY]);
+    }
+  });
+});
+
+describe('065 SC-002 —— 同一页签内行情时点粒度同质', () => {
+  type FreshRow = Pick<RadarRowAnchor, 'spotAsOf' | 'priceKind' | 'quoteFreshnessTier'>;
+  const freshRow = (
+    spotAsOf: string,
+    priceKind: FreshRow['priceKind'],
+    tier: FreshRow['quoteFreshnessTier'],
+  ): FreshRow => ({ spotAsOf, priceKind, quoteFreshnessTier: tier });
+
+  it('🚨 只含 hk 行 → 交易日粒度, 不是时刻粒度 (港股无盘中实时价, 061 FR-010)', () => {
+    const fresh = radarFreshness([freshRow('2026-08-21', 'eod_close', 'CURRENT')]);
+    // 日粒度的判据是文本里**没有**时刻 —— 用冒号做判据比比对整句文案结实(文案会改)。
+    expect(fresh.text).not.toMatch(/\d{2}:\d{2}/);
+    expect(fresh.asOf).toBe('2026-08-21');
+  });
+
+  it('🚨 反例记录: 不分市场混排时, 一只美股实时行就把整条 bar 拉成时刻粒度', () => {
+    // 本条断言的是**今天混排会发生什么**, 它是「为什么必须按市场分作用域」的机械证据:
+    // 字典序 = 时间序, 美股的 `...T13:45:00` > 港股的 `2026-08-21` ⇒ 聚合落到美股那行,
+    // 于是港股用户在顶部看到「实时」, 而他那几行全是昨收。065 之后两个市场各查各的, 撞不上。
+    const mixed = radarFreshness([
+      freshRow('2026-08-21', 'eod_close', 'CURRENT'),
+      freshRow('2026-08-21T13:45:00.000Z', 'realtime', 'CURRENT'),
+    ]);
+    expect(mixed.text).toMatch(/\d{2}:\d{2}/);
+  });
+});
+
+// ── 065 T13 空态映射强制穷举 (FR-008 / FR-010, SC-004) ───────────────────────
+
+describe('065 radarViewState —— server 四态的全映射', () => {
+  const statePage = (
+    emptyState: RadarPageLike['emptyState'],
+    items: RadarRowAnchor[] = [row()],
+  ) => ({ emptyState, items });
+
+  it('🚨 第 4 态映射到**自己的** view state, 而不是 filtered_empty', () => {
+    // 改回 if 链的那一刻这条就红。fall-through 的病症很隐蔽: 文案是对的(server 下发),
+    // 但会配一个什么都不做的「清除筛选」按钮 —— 当时根本没选筛选。
+    expect(radarViewState(statePage('zero_anchors_in_market', []))).toBe('zero_anchors_in_market');
+    expect(radarViewState(statePage('zero_anchors_in_market', []))).not.toBe('filtered_empty');
+  });
+
+  it('四个 server 态各自透传, 互不折叠', () => {
+    expect(radarViewState(statePage('zero_anchors', []))).toBe('zero_anchors');
+    expect(radarViewState(statePage('filtered_empty', []))).toBe('filtered_empty');
+    expect(radarViewState(statePage('all_idle'))).toBe('all_idle');
+    expect(radarViewState(statePage(null))).toBe('normal');
+  });
+
+  it('🚨 行情整体不可得仍压过 all_idle (「没数据」≠「今日无解, 空仓是常态」)', () => {
+    const noQuote = [row({ spotAsOf: null })];
+    expect(radarViewState({ emptyState: 'all_idle', items: noQuote })).toBe('quotes_degraded');
+    // 而零锚类**不**让位给降级 —— 它们说的是「一行都没有」, 压根没有行可降级。
+    expect(radarViewState({ emptyState: 'zero_anchors_in_market', items: noQuote })).toBe(
+      'zero_anchors_in_market',
+    );
   });
 });

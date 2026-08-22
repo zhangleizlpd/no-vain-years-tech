@@ -25,6 +25,8 @@ import { DrawerMenuButton } from '~/core/app-shell-drawer';
 import { colors } from '~/theme';
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { RadarMarketTabs } from './radar-market-tabs';
+import { marketLacksIntraday } from './radar.rules';
 import {
   distanceToWTone,
   radarRowFields,
@@ -111,6 +113,23 @@ export function RadarScreen() {
         </View>
       </View>
 
+      {/* 市场页签（065 FR-001）—— 紧贴题头下方，作用域切换是本屏最外层的取数维度。 */}
+      <RadarMarketTabs
+        market={radar.market}
+        onSelect={radar.selectMarket}
+        actionableMarkets={radar.actionableMarkets}
+      />
+
+      {/* 市场能力说明（065 FR-012）—— 🚨 **常驻**，不随空态 / 有行而增删：恰恰是有了行之后
+          用户才会去读行情时点，才真会把交易日粒度误读成「今天还没开盘」。 */}
+      {marketLacksIntraday(radar.market) ? (
+        <View className="bg-surface-alt px-md py-xs">
+          <Text className="text-xs text-ink-subtle" testID="optionsdesk-radar-market-notice">
+            {COPY.marketNoIntraday}
+          </Text>
+        </View>
+      ) : null}
+
       {/* 新鲜度条：每个行情数值都带 asOf 与档位（FR-016）。 */}
       {radar.items.length > 0 ? (
         <View
@@ -195,6 +214,21 @@ function RadarBody({ radar, router }: RadarBodyProps) {
         >
           <Text className="text-sm font-semibold text-white">{COPY.goCreateAnchor}</Text>
         </Pressable>
+      </View>
+    );
+  }
+  // 065 T13 第 4 空态：**只渲文案、零按钮** —— 有效动作是「切市场」，而市场页签就在这块区域
+  // 正上方（FR-010）。🚫 MUST NOT 复用「去建锚」CTA：库里已经有锚了，引导建锚会让人以为自己
+  // 之前建的锚丢了；也 MUST NOT 落「清除筛选」（当时根本没选筛选，那是 fall-through 的病症）。
+  if (radar.viewState === 'zero_anchors_in_market') {
+    return (
+      <View className="flex-1 items-center justify-center px-xl">
+        <Text
+          className="text-center text-sm text-ink-muted"
+          testID="optionsdesk-radar-empty-market"
+        >
+          {radar.emptyStateMessage}
+        </Text>
       </View>
     );
   }

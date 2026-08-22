@@ -1,8 +1,9 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { W_COEFFICIENT, isBelowW, type LLevel } from './anchor.rules';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
+import { IMPORTABLE_MARKETS } from './anchor-import.rules';
 import { shanghaiDateOnly, toUtcDateOnly, type AnchorRow } from './create-anchor.usecase';
 import { intradayFreshnessCutoff } from './intraday-spot.rules';
 import { sessionOf, toAnchorView, type AnchorView } from './list-anchors.usecase';
@@ -109,7 +110,12 @@ export function resolveBreachTransition(input: BreachTransitionInput): BreachTra
 // 三空态 (FR-015 + FR-034)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const RADAR_EMPTY_STATES = ['zero_anchors', 'filtered_empty', 'all_idle'] as const;
+export const RADAR_EMPTY_STATES = [
+  'zero_anchors',
+  'zero_anchors_in_market',
+  'filtered_empty',
+  'all_idle',
+] as const;
 
 export type RadarEmptyState = (typeof RADAR_EMPTY_STATES)[number];
 
@@ -122,13 +128,26 @@ export type RadarEmptyState = (typeof RADAR_EMPTY_STATES)[number];
  */
 export const RADAR_EMPTY_STATE_MESSAGES: Readonly<Record<RadarEmptyState, string>> = {
   zero_anchors: '还没有锚 —— 先去锚管理建第一个锚',
+  // 065 T06: 有效动作是**切市场**, 不是去建锚 —— 库里已经有锚了, 引导建锚会让人以为自己
+  // 之前建的锚丢了。四条文案两两互异由 spec 强制。
+  zero_anchors_in_market: '这个市场还没有锚 —— 换个市场看看',
   filtered_empty: '当前筛选无结果',
   all_idle: '今日无解，空仓是常态',
 };
 
 export interface RadarEmptyStateInput {
-  /** 基础集合 (`excluded = false`, **未加筛选**) 的锚数。 */
+  /** **当前作用域**基础集合 (`excluded = false` ∧ 作用域内, **未加筛选**) 的锚数。 */
   baseTotal: number;
+  /**
+   * **全部市场**基础集合的锚数 (065 T06)。
+   *
+   * 它与 {@link RadarEmptyStateInput.baseTotal} 的差别正是第 4 空态的判据: 两个都是 0 ⇒ 整库
+   * 真的空; 只有 baseTotal 是 0 ⇒ 库里有锚, 只是**这个市场**没有。缺了这一维就分不开这两件事,
+   * 而它们的有效动作**相反**(去建锚 vs 切市场)。
+   *
+   * 不声明作用域时它恒等于 baseTotal ⇒ 判定退化成 065 之前的三态, 语义逐字不变。
+   */
+  globalBaseTotal: number;
   /** 本页返回条数。 */
   pageItems: number;
   /** 基础集合中 spot 已跌破 W 的锚数 (= 可动)。 */
@@ -138,17 +157,21 @@ export interface RadarEmptyStateInput {
 }
 
 /**
- * 空态三分。判定序不可换: 零锚 → 筛选无结果 → 全体不动区。
+ * 空态四分。判定序不可换: 整库零锚 → 本市场零锚 → 筛选无结果 → 全体不动区。
  *
- * - **零锚**: 基础集合为空 (锚库为空, 或仅有的锚全被 `excluded`)。两种都引导去锚管理 ——
- *   excluded 的锚在**那边**可见 (FR-005), 雷达这边说「去建锚」不会让人找不到东西。
+ * - **整库零锚**: 全部市场的基础集合都空 (锚库为空, 或仅有的锚全被 `excluded`)。两种都引导去
+ *   锚管理 —— excluded 的锚在**那边**可见 (FR-005), 雷达这边说「去建锚」不会让人找不到东西。
+ * - **本市场零锚** (065 T06): 库里有锚, 但当前市场一只都没有 ⇒ 有效动作是**切市场**。
+ *   🚨 **顺序不可换**: 整库为空时两个条件**同时**成立, 必须落前者 —— 那时候「去建锚」才是对的,
+ *   而「换个市场看看」会把人支到另一个同样空的页签, 且暗示「你的锚在别处」(其实并没有)。
  * - **筛选无结果**: 有锚但本页空 ⇒ 是筛选滤掉的 (基础集合非空时首页为空只可能是筛选)。
  * - **全体不动区**: 有行但无一只跌破 W —— 行**照常渲染**, 只在顶部加提示 (非空白页)。
  * - **续页不判空态**: 空态是「打开雷达这一刻」的语义, 翻到底自然到头, 不是「无结果」。
  */
 export function resolveRadarEmptyState(input: RadarEmptyStateInput): RadarEmptyState | null {
   if (!input.firstPage) return null;
-  if (input.baseTotal === 0) return 'zero_anchors';
+  if (input.globalBaseTotal === 0) return 'zero_anchors';
+  if (input.baseTotal === 0) return 'zero_anchors_in_market';
   if (input.pageItems === 0) return 'filtered_empty';
   if (input.actionableTotal === 0) return 'all_idle';
   return null;
@@ -172,6 +195,18 @@ export interface RadarQuery {
   limit?: number;
   /** 上一页返回的 `nextCursor`; 省略 = 首页。 */
   cursor?: string | null;
+  /**
+   * 市场作用域 (`optionsdesk.anchor.market` 的列值)。
+   *
+   * 🚨 **刻意落在 {@link RadarQuery} 顶层而不是 {@link RadarFilter} 里** —— 它与 `limit` /
+   * `cursor` 同级地定义「问的是哪一批行」, 而 `RadarFilter` 的语义是「在基础集合上**再**筛」。
+   * 混进 filter 会让下一个人顺着既有模式只把它接进 {@link GetRadarUseCase.selectPageKeys},
+   * 而那正是 plan D1 点名要防的错 (症状见 {@link radarScopeSql})。
+   *
+   * 省略 = **不声明作用域 = 全集**。SC-003 的端到端落点据此断言「us 与 hk 两个作用域的并集
+   * = 不带作用域时的全集, 交集为空」。
+   */
+  market?: string;
   filter?: RadarFilter;
 }
 
@@ -183,6 +218,13 @@ export interface RadarPage {
   hasMore: boolean;
   emptyState: RadarEmptyState | null;
   emptyStateMessage: string | null;
+  /**
+   * 全部市场的基础集合计数 —— FR-016 跨页签小圆点的数据源 (065 T09)。
+   *
+   * 🚨 **续页恒为空对象**: 计数只在首页查 (与空态同一条理由 —— 「有没有可动的」是「打开雷达
+   * 这一刻」的语义)。客户端 MUST NOT 在续页响应里读它, 更不能因为空就把小圆点抹掉。
+   */
+  marketCounts: RadarCountsByMarket;
 }
 
 /**
@@ -228,9 +270,18 @@ type RadarBaseSetCounts = Pick<RadarEmptyStateInput, 'baseTotal' | 'actionableTo
 
 /** 空态计数查询的输出行 —— PG 的 `COUNT` 原生是 bigint, `::int` 转换后才是 number。 */
 interface RadarCountRow {
+  market: string;
   base_total: number;
   actionable_total: number;
 }
+
+/**
+ * 全部市场的基础集合计数, 键 = `optionsdesk.anchor.market` 的列值 (plan D4)。
+ *
+ * 一次扫描回全部市场而不是只回当前作用域, 换来的第二、三样东西是 FR-016 的跨页签小圆点与
+ * FR-015 的失联市场告警 —— 它们要的恰恰是**别的**市场那几格。
+ */
+export type RadarCountsByMarket = Readonly<Record<string, RadarBaseSetCounts>>;
 
 /**
  * 🚨 **W 与 spot 两个 SQL 片段的单点声明** —— 距 W% 排序键、`belowW` 筛选、空态计数
@@ -256,8 +307,32 @@ function radarSpotSql(now: Date): Prisma.Sql {
   return Prisma.sql`COALESCE(CASE WHEN intraday_at >= ${intradayFreshnessCutoff(now)} THEN intraday_price END, last_close)`;
 }
 
+/**
+ * 🚨 **市场作用域的单点声明** —— `market` 是**作用域**不是**筛选项** (plan D1, 本片最容易做
+ * 错的一处)。
+ *
+ * 它与 `excluded = false` 同级: **同时**进分页查询与空态计数; 而 `lLevels` / `pendingReview` /
+ * `belowW` 是在基础集合上再筛, **只**进分页。只进分页不进计数的症状 —— 美股页签顶着「今日无解」
+ * 而列表里一只美股都没跌破, 且**没有任何断言会红** (061 T019 修的是同一个坑的前一形态)。
+ *
+ * 🚨 两处**同源但不同形**, 别因为本函数只有一个调用点就以为作用域没进计数: 分页用**列相等
+ * 谓词** (本函数); 空态计数用 `GROUP BY market` 一次查回**全部**市场、再按同一个 market 值取
+ * 那一格 ({@link GetRadarUseCase.countBaseSet} + {@link GetRadarUseCase.scopedCounts}, plan D4)。
+ * 两边必须落在**同一列**上 —— 那才是这条不变式的实体。加第三处用法时继续从这里取, 别复制。
+ *
+ * 谓词是**列相等 + 参数绑定**, SQL 端不做任何字符串解析。plan D3 否掉了 `ticker LIKE 'us:%'`
+ * 与「按分隔符切首段」两种写法: 它们在 `us:` 这种空 code 串上给 `us`, 而 `parseAnchorTicker`
+ * 判它非法 ⇒ SQL 与 TS 对同一行的归属不一致 (且 LIKE 还让 `_` / `%` 变成元字符)。两端一致性
+ * 由「写入时单点派生 + `ck_anchor_market`」在**写侧**保证, 不在每条读查询里重新赌一次。
+ */
+function radarScopeSql(market: string): Prisma.Sql {
+  return Prisma.sql`market = ${market}`;
+}
+
 @Injectable()
 export class GetRadarUseCase {
+  private readonly logger = new Logger(GetRadarUseCase.name);
+
   constructor(
     private readonly prisma: PrismaService,
     // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 (ADR-0062 的唯一 module 边)。
@@ -281,9 +356,13 @@ export class GetRadarUseCase {
     // 而且每页重扫全表纯属浪费。⚠️ 它顺带返回的两个计数**已不再被消费** (061 T019, 见下)。
     if (firstPage) await this.advanceBreachState();
     // 空态计数按 spot 口径**另查一条** —— 同样只在首页需要 (续页不判空态)。
-    const counts = firstPage ? await this.countBaseSet(now) : { baseTotal: 0, actionableTotal: 0 };
+    // 一次查回全部市场 (plan D4), 再收敛到当前作用域那一格。
+    const countsByMarket = firstPage ? await this.countBaseSet(now) : {};
+    // FR-015: 有锚落在没有页签可达的市场上 ⇒ 告警级留痕。只有首页查了计数才有数据可判。
+    if (firstPage) this.warnUnreachableMarkets(countsByMarket);
+    const counts = this.scopedCounts(countsByMarket, query.market);
 
-    const keys = await this.selectPageKeys(cursor, query.filter ?? {}, limit, now);
+    const keys = await this.selectPageKeys(cursor, query.filter ?? {}, limit, now, query.market);
     const hasMore = keys.length > limit;
     const pageKeys = hasMore ? keys.slice(0, limit) : keys;
     const items = await this.hydrate(pageKeys, now);
@@ -292,11 +371,17 @@ export class GetRadarUseCase {
     return {
       items,
       hasMore,
+      marketCounts: countsByMarket,
       nextCursor:
         hasMore && last !== undefined
           ? encodeRadarCursor({ distanceToWPct: last.distance_text, anchorId: last.anchor_id })
           : null,
-      ...this.emptyState({ ...counts, pageItems: items.length, firstPage }),
+      ...this.emptyState({
+        ...counts,
+        globalBaseTotal: this.totalOf(countsByMarket).baseTotal,
+        pageItems: items.length,
+        firstPage,
+      }),
     };
   }
 
@@ -329,6 +414,20 @@ export class GetRadarUseCase {
    * ⚠️ **返回的两个计数已无人消费** (061 T019): 空态计数改走 {@link countBaseSet} 的 spot 口径。
    * 「一行不动」管的是**写库判据与状态转换**, 不含这两个纯展示数 —— 让它们继续用收盘口径, 会让
    * 同一份响应里两个口径回答同一个问题「有没有锚跌破 W」。此处保留它们只为让本方法体保持零改动。
+   *
+   * 🚨🚨 **065: `market` MUST NOT 进本方法** —— 整个 use case 自 065 起按市场分作用域,
+   * **唯独这里不按**。这条违反直觉, 所以写在这里, 防止下一个人「为了一致性」顺手去修它:
+   *  1. 它是全仓**唯一**的 `breach_started_on` 写者, 且锚管理页的复核红标也靠它喂 (那一页
+   *     **不分市场**);
+   *  2. 一旦被 scope, **用户停在美股页签期间, 港股锚的跌破状态机整段冻结** —— 而
+   *     `breach_started_on` 的清空是**破坏性、日粒度、不可回补**的: 错过那一天就永远补不回来;
+   *  3. 与上面「扫描面含 `excluded`」是同一条道理 —— **维护 ≠ 展示**: 展示按市场分, 维护不分。
+   *
+   * ⚠️ **成本已知并接受**: 本方法现在每个页签的首页各跑一次 ⇒ 暴跌日两次全表扫 + 两轮串行
+   * 条件更新。条件更新本身抗竞态 (affected-count 裁决) ⇒ 这是**成本不是正确性问题**,
+   * 🚫 **MUST NOT 靠 scope 它来「优化」**。
+   * 回归钉: `get-radar.usecase.spec.ts` 的「🚨 D2 否定断言」—— 塞一只已跌破的 hk 锚、请求
+   * **us** 作用域, 断言 hk 那行**仍被** `updateMany` 写到 (plan D2)。
    *
    * O(n) 扫 + O(变更行) 次 UPDATE (n = 锚数, 上限约 1000; 常态下 0 次写)。
    */
@@ -399,16 +498,72 @@ export class GetRadarUseCase {
    *
    * O(n) 单次全表扫 (n = 锚数, 上限约 1000), 只在首页发。
    */
-  private async countBaseSet(now: Date): Promise<RadarBaseSetCounts> {
+  private async countBaseSet(now: Date): Promise<RadarCountsByMarket> {
     const rows = await this.prisma.$queryRaw<RadarCountRow[]>(Prisma.sql`
-      SELECT COUNT(*)::int AS base_total,
+      SELECT market,
+             COUNT(*)::int AS base_total,
              (COUNT(*) FILTER (WHERE ${radarSpotSql(now)} < ${radarWSql()}))::int AS actionable_total
       FROM optionsdesk.anchor
       WHERE excluded = false
+      GROUP BY market
     `);
-    // 聚合查询恒回一行; 防御性兜底避免空数组时 NaN 顺流进空态判定。
-    const row = rows.at(0);
-    return { baseTotal: row?.base_total ?? 0, actionableTotal: row?.actionable_total ?? 0 };
+    return Object.fromEntries(
+      rows.map((r) => [r.market, { baseTotal: r.base_total, actionableTotal: r.actionable_total }]),
+    );
+  }
+
+  /**
+   * 把全市场计数收敛成**当前作用域**那一份 —— 作用域进计数的落点 (plan D1, 与
+   * {@link radarScopeSql} 进分页是同一条不变式的两半)。
+   *
+   * - 给了 market: 取那一格; 该市场一格都没有 ⇒ 零 (这正是 T06 第 4 空态要吃的输入形态)。
+   * - 省略 market: 不声明作用域 = 全集 ⇒ 把所有市场加总, 语义与本片之前逐字一致
+   *   (SC-003 的端到端落点据此断言两个作用域的并集 = 不带作用域时的全集)。
+   */
+  private scopedCounts(
+    counts: RadarCountsByMarket,
+    market: string | undefined,
+  ): RadarBaseSetCounts {
+    if (market !== undefined) return counts[market] ?? { baseTotal: 0, actionableTotal: 0 };
+    return this.totalOf(counts);
+  }
+
+  /**
+   * FR-015: 计数里出现**不在受支持市场白名单内**的市场 ⇒ 那些锚在雷达上不可达 (没有任何页签
+   * 能显示它们) ⇒ 落一条告警级留痕。守的是「将来新增受支持市场时忘了同步加页签」这一场景。
+   *
+   * 🚫 **MUST NOT 上 UI** (spec Clarifications Q1): 此类锚**并未从系统失联** —— 锚管理页不分
+   * 市场、仍完整列出它。雷达是「击球区」视图, 不为不受支持的市场开后门。
+   *
+   * 🚨 **判据是 `IMPORTABLE_MARKETS`, 不是「客户端有哪几个页签」** —— 服务端看不见后者。两者
+   * 在一种场景下会**漏报**: 新增受支持市场时改了白名单与 `ck_anchor_market`、却忘了给 mobile
+   * 加页签, 那时 DB 里的新市场锚在服务端看来「受支持」⇒ 不喊, 而用户那边确实够不到它。
+   * ⇒ 页签集合 MUST 与 `IMPORTABLE_MARKETS` **同源**而不是各写一份 (T10 / T14 的约束);
+   * 同源之后这条判据才真的等价于 FR-015 的原文。
+   *
+   * 🚨 只在**确有**未知市场时喊一次 —— 常态零 WARN。雷达首页是高频入口, 每次请求都刷一条会
+   * 让它瞬间沦为背景噪声, 而它守的恰恰是「一年才可能发生一次」的那种事。
+   */
+  private warnUnreachableMarkets(counts: RadarCountsByMarket): void {
+    const supported = new Set<string>(IMPORTABLE_MARKETS);
+    const orphans = Object.entries(counts).filter(([market]) => !supported.has(market));
+    if (orphans.length === 0) return;
+    this.logger.warn(
+      `[radar] 存在无市场页签可达的锚: ` +
+        `${orphans.map(([market, c]) => `${market}=${c.baseTotal}`).join(', ')} ` +
+        `(受支持市场: ${IMPORTABLE_MARKETS.join(' / ')}; 新增市场时须同步加页签)`,
+    );
+  }
+
+  /** 全部市场加总 —— 「不声明作用域 = 全集」与第 4 空态的 `globalBaseTotal` 共用这一处。 */
+  private totalOf(counts: RadarCountsByMarket): RadarBaseSetCounts {
+    return Object.values(counts).reduce(
+      (acc, c) => ({
+        baseTotal: acc.baseTotal + c.baseTotal,
+        actionableTotal: acc.actionableTotal + c.actionableTotal,
+      }),
+      { baseTotal: 0, actionableTotal: 0 },
+    );
   }
 
   /**
@@ -428,10 +583,14 @@ export class GetRadarUseCase {
     filter: RadarFilter,
     limit: number,
     now: Date,
+    market: string | undefined,
   ): Promise<RadarKeyRow[]> {
     const w = radarWSql();
     const spot = radarSpotSql(now);
     const conditions: Prisma.Sql[] = [Prisma.sql`excluded = false`]; // Guardrail 12 基础条件
+    // 🚨 作用域与 `excluded = false` 同级、**在筛选之前** —— 它定义的是基础集合本身, 不是在
+    // 基础集合上再筛 (plan D1)。它同时也进空态计数, 见 {@link radarScopeSql}。
+    if (market !== undefined) conditions.push(radarScopeSql(market));
     if (filter.lLevels !== undefined && filter.lLevels.length > 0) {
       conditions.push(Prisma.sql`l_level_effective IN (${Prisma.join([...filter.lLevels])})`);
     }

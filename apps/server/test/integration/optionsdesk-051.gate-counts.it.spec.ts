@@ -85,6 +85,7 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: V,
         asof: dateOf('2026-06-30'),
         method: 'dcf',

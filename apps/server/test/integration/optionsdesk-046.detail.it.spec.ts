@@ -159,6 +159,7 @@ describe('046 T016 标的详情读端 (共享 PG + 收窄 boot + 真 HTTP)', () 
     prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: V,
         asof: day('2026-06-30'),
         method: 'dcf',

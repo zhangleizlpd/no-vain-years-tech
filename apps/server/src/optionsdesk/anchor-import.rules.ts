@@ -39,6 +39,17 @@ export const INVALID_IMPORT_MARKET_CODE = `${ANCHOR_IMPORT_INVALID_PREFIX}MARKET
 export const INVALID_IMPORT_CONFIDENCE_CODE = `${ANCHOR_IMPORT_INVALID_PREFIX}CONFIDENCE`;
 
 /**
+ * 建锚入口 (045 App 手工建锚) 的同类失败码 —— 与上面 059 导入侧**判据同源、字符串另起**。
+ *
+ * 建锚失败报「IMPORT」读起来是错的; 而 059 的码有 IT 在断言 (`optionsdesk-059.anchor-import.it.spec.ts`)
+ * ⇒ **MUST NOT 改它**。重复的只是错误字符串 (无害), 判据仍单点在 {@link assertImportableTicker}
+ * —— 会漂的是那个, 不是字符串。前缀体例同 `anchor.rules.ts` 的 `INVALID_ANCHOR_V`。
+ */
+export const ANCHOR_CREATE_INVALID_PREFIX = 'INVALID_ANCHOR_';
+export const INVALID_ANCHOR_TICKER_CODE = `${ANCHOR_CREATE_INVALID_PREFIX}TICKER`;
+export const INVALID_ANCHOR_MARKET_CODE = `${ANCHOR_CREATE_INVALID_PREFIX}MARKET`;
+
+/**
  * 待审收件箱三态 (059 FR-011)。**人工处置的留痕, 不是状态机**: 系统只写 `PENDING`,
  * 另两态由本人在 DB 直连处置后手工置 —— 本片刻意零审阅面 (plan §6)。
  */
@@ -78,6 +89,41 @@ export function assertImportableTicker(ticker: string): void {
   if (!IMPORTABLE_CODE_PATTERN.test(parsed.code)) {
     throw new Error(`${INVALID_IMPORT_TICKER_CODE}: 代码段须为大写字母 / 数字 (可含 \`.\`)`);
   }
+}
+
+/**
+ * 建锚入口的 ticker 校验 + **市场归属单点派生** (065 FR-013 / FR-014, plan §D0)。
+ * O(|ticker|)。
+ *
+ * 判据整个委托 {@link assertImportableTicker}, 本函数只做两件事:
+ *   ① 把 059 的 `INVALID_IMPORT_` 前缀换成建锚侧的 `INVALID_ANCHOR_`, message 体一字不改;
+ *   ② 把已经解析出来的市场段**返回**给写侧, 免得它再解析一次。
+ *
+ * 🚨 调用方 MUST 用返回值写 `anchor.market`, MUST NOT 自己再调一次 `parseAnchorTicker`
+ *    —— 「写入侧单点求值」是这一列不会 drift 的三个前提之一 (schema.prisma 该列注释)。
+ *
+ * 🚨 canonical 的多段代码是 `us:BRK.B` (**点**)。`parseAnchorTicker` 按首个冒号切、code 段
+ *    原样保留, 所以 `us:BRK:B` 在它那里解得出 `code = 'BRK:B'` —— 但 {@link IMPORTABLE_CODE_PATTERN}
+ *    不含冒号, 建锚**拒**它。两者方向相反, 别照直觉当成受支持。
+ */
+export function assertCreatableTicker(ticker: string): ImportableMarket {
+  try {
+    assertImportableTicker(ticker);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith(ANCHOR_IMPORT_INVALID_PREFIX)) {
+      throw new Error(
+        ANCHOR_CREATE_INVALID_PREFIX + err.message.slice(ANCHOR_IMPORT_INVALID_PREFIX.length),
+      );
+    }
+    throw err;
+  }
+  const parsed = parseAnchorTicker(ticker);
+  if (parsed === null || !isImportableMarket(parsed.market)) {
+    // 到不了 —— 上面那句已判过「可解析」与「市场在白名单」。留着是 TS 收窄所需, 且真到了
+    // 这里, 静默返回一个空/越界市场会让 T03 的 NOT NULL + CHECK 拖到部署期才炸。
+    throw new Error(`${INVALID_ANCHOR_TICKER_CODE}: 须为 canonical \`market:code\` 写法`);
+  }
+  return parsed.market;
 }
 
 /**

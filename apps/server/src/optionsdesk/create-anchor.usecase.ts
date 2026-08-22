@@ -10,6 +10,11 @@ import {
   TRADING_CALENDAR_PORT,
   type TradingCalendarPort,
 } from '../marketdata/trading-calendar.port';
+import {
+  ANCHOR_CREATE_INVALID_PREFIX,
+  assertCreatableTicker,
+  type ImportableMarket,
+} from './anchor-import.rules';
 
 /**
  * 045 US1 — 建锚 (FR-001 / FR-003a / FR-033, plan D3)。
@@ -125,6 +130,26 @@ export function assertUsableV(v: AnchorDecimalInput): void {
 }
 
 /**
+ * 065 FR-013 / FR-014: 建锚时确定市场归属, 并把不受支持的市场与非法形状挡在写侧。
+ *
+ * 判据**不在写侧复判** —— 全部委托 `anchor-import.rules.ts` 的 {@link assertCreatableTicker}
+ * (059 立的那套), 本函数只把 `INVALID_ANCHOR_` 前缀映射成 400, 体例同 {@link assertUsableV}。
+ *
+ * 🚨 这是全仓**唯一**的 anchor INSERT 前置 ⇒ 归属只在这里求一次值。App 手工建锚 (controller)
+ *    与 059 模型导入 (委托本 use case) 两条入口自动都覆盖到。
+ */
+export function resolveAnchorMarket(ticker: string): ImportableMarket {
+  try {
+    return assertCreatableTicker(ticker);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith(ANCHOR_CREATE_INVALID_PREFIX)) {
+      throw new BadRequestException(err.message);
+    }
+    throw err;
+  }
+}
+
+/**
  * EC-7 同 ticker 重复建锚 → 409 + 既有锚 id, 引导去编辑既有锚。
  *
  * spec 给的是「拒绝或改为更新」二选一, 取**拒绝**: 静默 upsert 会覆盖已录的估值结论,
@@ -219,6 +244,9 @@ export class CreateAnchorUseCase {
   ) {}
 
   async execute(input: CreateAnchorInput): Promise<AnchorWriteResult> {
+    // 归属先于一切: 它同时是**校验**(不受支持的市场 / 非法形状一律拒) 与**派生**(要写进列)。
+    // 求值只此一次, 下面 create 直接用它 —— 别在第二处再解析 ticker (plan §D0)。
+    const market = resolveAnchorMarket(input.ticker);
     assertUsableV(input.v);
 
     // 建锚不带人工位 (FR-032 ① 人工调整是显式动作, 系统不代设) ⇒ 生效 L 层 = confidence 映射值。
@@ -238,6 +266,8 @@ export class CreateAnchorUseCase {
         const created = (await tx.anchor.create({
           data: {
             ticker: input.ticker,
+            // 065 FR-013: 归属在建锚时定, 此后不变 (`ticker` 建后不可变 ⇒ 两者不会各自演化)。
+            market,
             v: input.v,
             asof: input.asof,
             method: input.method,

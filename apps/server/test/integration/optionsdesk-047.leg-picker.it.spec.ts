@@ -112,6 +112,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     await prisma.anchor.create({
       data: {
         ticker,
+        market: ticker.split(':')[0]!,
         v: V,
         asof: dateOf('2026-06-30'),
         method: 'dcf',

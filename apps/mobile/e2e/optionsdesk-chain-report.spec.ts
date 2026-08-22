@@ -518,12 +518,25 @@ async function installChainReportMock(page: Page, fixture: ReportFixture): Promi
       json(404, { status: 404, code: 'ANCHOR_NOT_FOUND_FOR_SYMBOL', title: 'anchor not found' });
 
     if (path.endsWith('/optionsdesk/radar')) {
+      // 🚨 065：本片只把雷达当「进链报表的入口」用，但 mock 仍须是**契约镜像** ——
+      //    作用域切分 + 全市场计数（`.claude/rules/mobile-e2e-hermetic.md`）。fixture 全是
+      //    `us:*` ⇒ 漏改不会红，正是这类 mock 悄悄失真的原因。
+      const market = url.searchParams.get('market');
+      const allBase = anchors.filter((a) => !a.excluded);
+      const items = allBase.filter((a) => market === null || a.ticker.startsWith(`${market}:`));
+      const marketCounts = [...new Set(allBase.map((a) => a.ticker.split(':')[0] ?? ''))].map(
+        (m) => {
+          const rows = allBase.filter((a) => a.ticker.startsWith(`${m}:`));
+          return { market: m, baseTotal: rows.length, actionableTotal: 0 };
+        },
+      );
       return void (await json(200, {
-        items: anchors.filter((a) => !a.excluded),
+        items,
         nextCursor: null,
         hasMore: false,
         emptyState: null,
         emptyStateMessage: null,
+        marketCounts,
       }));
     }
 

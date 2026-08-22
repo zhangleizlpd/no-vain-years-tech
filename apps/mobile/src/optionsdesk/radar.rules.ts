@@ -9,7 +9,11 @@
 //    「价说昨收、距 W% 说实时」。`lastClose` / `lastCloseDate` 语义未变（仍是当日收盘的
 //    权威值，FR-015），但它们不再是行内呈现的取数口径。
 // 🚨 **FR-014 徽标只能取自 `RADAR_BADGE_ORDER` 白名单**，衍生徽标（达标腿数 / 直接买主案）无处可生。
-import type { AnchorResponse, RadarResponseEmptyState } from '@nvy/api-client';
+import type {
+  AnchorResponse,
+  OptionsdeskControllerRadarMarket,
+  RadarResponseEmptyState,
+} from '@nvy/api-client';
 
 import { formatAsOfLabel } from '~/format/as-of';
 import type { FreshnessTier } from './underlying-detail.rules';
@@ -17,6 +21,61 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 
 const COPY = OPTIONSDESK_COPY.radar;
+
+/** 市场作用域的值域（= 页签集合）。契约侧单点是 server 的 `IMPORTABLE_MARKETS`。 */
+export type RadarMarket = OptionsdeskControllerRadarMarket;
+
+/**
+ * 市场页签集合（065 FR-001）—— 取**文案表的键**。
+ *
+ * 🚨 **它与契约的绑定是编译期的、双向的, 不是「本地抄了一份」**: 文案表声明成
+ * `satisfies Record<RadarMarket, string>`（见 `optionsdesk-copy.ts`）⇒
+ * ① server 新增受支持市场而这里没补文案 → **tsc 红**;
+ * ② 这里多写一个契约里没有的市场 → excess property check **tsc 红**。
+ * 这条编译期闸是 FR-015「加了受支持市场却忘了加页签」在**客户端**这一侧的唯一保护 ——
+ * 服务端那侧的 WARN 判据只能是 `IMPORTABLE_MARKETS`（它看不见客户端有哪几个页签）,
+ * 恰恰对这种场景漏报。🚫 **MUST NOT 把文案表的 `satisfies` 摘掉**, 那会同时拆掉两侧。
+ *
+ * 🚨 **为什么不直接 `Object.values(OptionsdeskControllerRadarMarket)`**（那才是字面意义的
+ * 单一来源）: 那是**值**导入, 而 mobile 的 vitest 至今只对 `@nvy/api-client` 做过
+ * `import type`（被 erase, 从不加载其运行时代码）。真去解析会撞
+ * `Failed to resolve entry for package "@nvy/api-client"` —— 包的 `exports` 把
+ * `no-vain-years-mono` condition 指向 `src/index.ts`, 但 vitest 把 workspace 包 externalize
+ * 后走 Node 解析, 而 Node 不认自定义 condition, 于是落到并不存在的 `./dist/index.js`
+ * （2026-08-22 实测）。为一个常量去改整个 mobile 的测试基建, 收益不抵风险。
+ *
+ * ⚠️ 顺序 = 文案表的字面量声明序 = `IMPORTABLE_MARKETS` 的序 = `['us', 'hk']`,
+ * 与「冷启动落美股」(FR-005) 一致。换序要动 server 的常量, 不在这里改。
+ */
+export const RADAR_MARKETS = Object.keys(COPY.marketTabs) as readonly RadarMarket[];
+
+/**
+ * 该市场是否受支持（既是「有页签」也是「能建锚」）。
+ *
+ * 🚨 建锚选择器（`ticker-search-picker.tsx`）与市场页签**取同一处** —— 判据分成两份的后果
+ * 见 {@link RADAR_MARKETS} 的注释（FR-015 双双漏报）。它住 `radar.rules.ts` 只是因为集合
+ * 定义在这里，语义上不是雷达专有。
+ */
+export function isSupportedMarket(market: string): boolean {
+  return (RADAR_MARKETS as readonly string[]).includes(market);
+}
+
+/**
+ * 无盘中实时价的市场（065 FR-012，兑现 061 FR-010 的 UI 那半条）。
+ *
+ * 🚨 **本地常量而不是从行数据推断**: 说明必须**常驻**（空态时也在），而空态时一行都没有、
+ * 推断不出任何东西。这也是它 MUST NOT 写成「所有行的 priceKind 都是 eod_close 就显示」的原因。
+ *
+ * ⚠️ 它是 **marketdata 行情能力表的镜像**（与 `IMPORTABLE_MARKETS` 是**两件事**：那个管
+ * 「能不能建锚」，这个管「有没有盘中价」）。新增受支持市场时须一并核对本表 —— 漏了只会让
+ * 说明少一行，不报错、不崩，所以放在这里显式点名。
+ */
+export const MARKETS_WITHOUT_INTRADAY: readonly RadarMarket[] = ['hk'];
+
+/** 该市场是否无盘中实时价（决定顶部说明行渲不渲）。 */
+export function marketLacksIntraday(market: string): boolean {
+  return (MARKETS_WITHOUT_INTRADAY as readonly string[]).includes(market);
+}
 
 /** 雷达行用得上的锚字段（按结构子集吃，测试可造小 fixture）。 */
 export type RadarRowAnchor = Pick<
@@ -58,24 +117,45 @@ export interface RadarPageLike {
 export type RadarViewState =
   | 'normal'
   | 'zero_anchors'
+  | 'zero_anchors_in_market'
   | 'filtered_empty'
   | 'quotes_degraded'
   | 'all_idle';
 
 /**
- * 判定序：零锚 → 筛选无结果 → **行情整体不可得** → 全体不动区 → 常态。
+ * server 空态 → 视图态的**全映射**（065 T13）。
+ *
+ * 🚨 **必须是 `Record` 而不是 `Partial<Record>`、更不能是 if 链**：server 加第 4 个枚举值时
+ * `Record` 当场 tsc 红，而 if 链**照样编译**并静默 fall through —— 065 之前那条链会把
+ * `zero_anchors_in_market` 落进下面的 `items.length === 0` 分支、判成 `filtered_empty`，
+ * 于是渲染出**正确的文案配一个什么都不做的「清除筛选」按钮**（当时根本没选筛选）。
+ * 这是 `mobile-impl-playbook` 已有的规则（enum→copy 映射用 `Record`），只是这处没用上。
+ */
+const SERVER_EMPTY_STATE_TO_VIEW: Readonly<
+  Record<NonNullable<RadarResponseEmptyState>, RadarViewState>
+> = {
+  zero_anchors: 'zero_anchors',
+  zero_anchors_in_market: 'zero_anchors_in_market',
+  filtered_empty: 'filtered_empty',
+  all_idle: 'all_idle',
+};
+
+/**
+ * 判定序：server 的「一行都没有」类 → **行情整体不可得** → 全体不动区 → 常态。
  *
  * 🚨 行情降级**压过** `all_idle`：没有 spot 时 server 自然算出「无一只跌破 W」⇒ all_idle，
  *    但那会把「没数据」说成「今日无解，空仓是常态」—— 语义完全不同，不能混。
+ * 🚨 `all_idle` 是 server 四态里**唯一「有行」的那个** ⇒ 只有它要让位给前端派生的降级判定；
+ *    其余（含将来新增的）一律直接透传。新枚举值默认走透传是对的 —— 空态的新成员几乎必然
+ *    属于「一行都没有」那一类。
  */
 export function radarViewState(page: Pick<RadarPageLike, 'items' | 'emptyState'>): RadarViewState {
-  if (page.emptyState === 'zero_anchors') return 'zero_anchors';
-  if (page.emptyState === 'filtered_empty') return 'filtered_empty';
+  const mapped = page.emptyState === null ? null : SERVER_EMPTY_STATE_TO_VIEW[page.emptyState];
+  if (mapped !== null && mapped !== 'all_idle') return mapped;
   // 防御：基础集合非空却一行不返，只可能是筛选滤空（server 首页会给 emptyState，这里兜底）。
   if (page.items.length === 0) return 'filtered_empty';
   if (page.items.every((a) => a.spotAsOf === null)) return 'quotes_degraded';
-  if (page.emptyState === 'all_idle') return 'all_idle';
-  return 'normal';
+  return mapped ?? 'normal';
 }
 
 // ─────────────────────────── 徽标（FR-014） ───────────────────────────
@@ -276,6 +356,29 @@ export function radarFilterParams(selected: readonly RadarFilterKey[]): RadarFil
     ...(selected.includes('pendingReview') ? { pendingReview: true } : {}),
     ...(selected.includes('belowW') ? { belowW: true } : {}),
   };
+}
+
+/** 雷达列表 query key 的稳定前缀 —— 锚 mutation（建 / 删 / 改 list-visible 字段）须失效它。 */
+export const RADAR_QUERY_KEY = ['optionsdesk', 'radar'] as const;
+
+/**
+ * 雷达 query key 工厂（065 T11）—— **列表侧与 mutation 失效侧共用这一处**。
+ *
+ * 🚨 **两处各拼各的正是 T12 要修的那个既存缺陷**: `useRadar` 手拼 key、而
+ * `use-anchor-mutations` 失效的是 orval 生成的 key，两者**无共同前缀** ⇒ 任何锚的增删改
+ * **从未失效过雷达**（锚管理列表的失效是好的，那屏用 orval hook；只有雷达是孤儿）。
+ * 工厂化之后，「两边必须同一个 key」从纪律变成结构。
+ *
+ * 🚨 **market 进 key 是刻意的**（plan D8 / D9）: 切页签即换 query ⇒ `pageParam` 自然重置回
+ * 首页。这正是 D6 判定「跨市场游标在 app 里不可达」、从而敢撤销「market 编进游标」的依据 ——
+ * 把 market 从 key 里拿掉，那个判定当场失效。
+ *
+ * 🚨 **筛选也进 key 而 market 与它并列**: 二者都换 query。但语义不同 —— 筛选 state 本身
+ * **跨页签保留**（它是镜头，不是每页签独立的状态，plan D9），只是「筛选 × 市场」这个组合
+ * 各自缓存各自的页。
+ */
+export function radarQueryKey(market: string, filters: RadarFilterParams): readonly unknown[] {
+  return [...RADAR_QUERY_KEY, market, filters];
 }
 
 // ─────────────────────────── 游标分页（SC-002） ───────────────────────────

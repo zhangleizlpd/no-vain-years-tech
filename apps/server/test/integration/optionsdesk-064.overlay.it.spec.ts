@@ -383,6 +383,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: '150',
         asof: dateOf('2026-06-30'),
         method: 'dcf',

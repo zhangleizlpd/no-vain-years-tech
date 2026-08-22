@@ -68,6 +68,7 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: V,
         asof: dateOf('2026-06-30'),
         method: 'dcf',

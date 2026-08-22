@@ -82,6 +82,7 @@ describe('061 anchor 盘中价两列 schema expand (Testcontainers PG migrate de
     const created = await prisma.anchor.create({
       data: {
         ticker: 'us:PEP',
+        market: 'us:PEP'.split(':')[0]!,
         v: '150',
         asof: new Date('2026-08-14T00:00:00Z'),
         method: 'dcf',

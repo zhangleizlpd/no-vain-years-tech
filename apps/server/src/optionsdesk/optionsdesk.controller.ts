@@ -392,6 +392,8 @@ export class OptionsdeskController {
       await this.getRadar.execute({
         limit: query.limit,
         cursor: query.cursor ?? null,
+        // 作用域与 limit / cursor 同级 —— **不进 filter** (plan D1: 它定义基础集合, 不是再筛)。
+        market: query.market,
         filter: {
           lLevels: query.lLevels,
           pendingReview: query.pendingReview,

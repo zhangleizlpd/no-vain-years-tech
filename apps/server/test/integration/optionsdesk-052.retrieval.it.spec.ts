@@ -227,6 +227,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: '150',
         asof: dateOf('2026-06-30'),
         method: 'dcf',
@@ -277,6 +278,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: '150',
         asof: dateOf('2026-06-30'),
         method: 'dcf',
@@ -445,6 +447,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
         v: anchorV,
         asof: dateOf('2026-06-30'),
         method: 'dcf',
