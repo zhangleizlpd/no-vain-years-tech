@@ -1043,6 +1043,8 @@ export class DimensionExecutorRegistry {
     let processed = 0;
     let exhausted = false;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (processed >= maxEodInstruments) {
         exhausted = true;
@@ -1303,6 +1305,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingShortSellingInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1378,6 +1382,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingBuybackInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1457,6 +1463,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingEquityChangeInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1532,6 +1540,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingShareholderChangeInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1606,6 +1616,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingAllotmentInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1681,6 +1693,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingRevenueSegmentInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1760,6 +1774,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingShareholderSnapshotInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1839,6 +1855,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingEmployeeInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1911,6 +1929,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingConnectHoldingInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -1983,6 +2003,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingVolatilityInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       const symbol = `${inst.market}:${inst.code}`;
       stats.scanned++;
@@ -2131,6 +2153,8 @@ export class DimensionExecutorRegistry {
         ? subtractDays(input.asOf, input.backfillHistoryDays ?? dim.historyDepth ?? 1825)
         : deltaFrom(dim, input.asOf); // delta = 近窗单日 (plan Decision 2; 本维度 lookback 蓄意留 NULL)。
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -2183,6 +2207,8 @@ export class DimensionExecutorRegistry {
         ? subtractDays(input.asOf, input.backfillHistoryDays ?? dim.historyDepth ?? 1825)
         : deltaFrom(dim, input.asOf); // delta = 近窗单日 (plan Decision 2; 本维度 lookback 蓄意留 NULL)。
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -2235,6 +2261,8 @@ export class DimensionExecutorRegistry {
     stats: SyncRunStats,
     _input: ExecutorInput,
   ): Promise<void> {
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       await this.backfillPacer.pace(); // 038 T017 (INV-3): 全域扫每股自限速 (index 无 delta/backfill 分, 恒限速)。
       const symbol = `${inst.market}:${inst.code}`;
@@ -2290,6 +2318,8 @@ export class DimensionExecutorRegistry {
     stats: SyncRunStats,
     _input: ExecutorInput,
   ): Promise<void> {
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       await this.backfillPacer.pace(); // 全域扫每股自限速 (industry 无 delta/backfill 分, 恒限速)。
       const symbol = `${inst.market}:${inst.code}`;
@@ -2353,6 +2383,8 @@ export class DimensionExecutorRegistry {
         ? await this.pendingAnnouncementInstruments(instruments, input.asOf)
         : instruments;
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of pending) {
       if (input.mode === 'backfill') await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填自限速。
       const symbol = `${inst.market}:${inst.code}`;
@@ -2489,6 +2521,8 @@ export class DimensionExecutorRegistry {
           instruments.map((i) => i.id),
           from,
         );
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       if (covered.has(inst.id)) {
         stats.skipped++;
@@ -2609,6 +2643,8 @@ export class DimensionExecutorRegistry {
     input: ExecutorInput,
   ): Promise<void> {
     const from = subtractDays(input.asOf, input.backfillHistoryDays ?? dim.historyDepth ?? 365);
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       await this.backfillPacer.pace(); // 038 T017 (INV-3): 回填期自限速, 叠加软护栏防风控。
       const symbol = `${inst.market}:${inst.code}`;
@@ -3070,6 +3106,8 @@ export class DimensionExecutorRegistry {
     const depth = input.backfillHistoryDays ?? dim.historyDepth ?? HIS_VOLATILITY_MAX_SPAN_DAYS;
     const windows = splitBackfillWindows(subtractDays(input.asOf, depth), input.asOf);
 
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       const symbol = `${inst.market}:${inst.code}`;
       stats.scanned++;

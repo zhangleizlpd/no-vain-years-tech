@@ -176,6 +176,8 @@ export class SyncOptionSnapshotUseCase {
     stats: SyncRunStats,
     input: ExecutorInput,
   ): Promise<boolean> {
+    // #138: 声明写路径 —— 让空工作集 / vendor 零行的一轮报 0 而非 null (见 addWritten 注释)。
+    addWritten(stats, 0);
     return this.collect(
       instruments,
       {
