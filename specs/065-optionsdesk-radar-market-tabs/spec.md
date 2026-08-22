@@ -2,9 +2,9 @@
 feature_id: 065-optionsdesk-radar-market-tabs
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: tasks-ready
+status: implementing
 created_at: '2026-08-19'
-updated_at: '2026-08-21'
+updated_at: '2026-08-22'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
