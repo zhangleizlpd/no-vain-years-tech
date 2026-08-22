@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.34.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.33.2...server-v0.34.0) (2026-08-22)
+
+
+### Features
+
+* **optionsdesk:** 065 雷达按市场分页签 —— 美股 / 港股 ([#118](https://github.com/zhangleizlpd/no-vain-years-tech/issues/118)) ([214a3a5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/214a3a50e78625d83e29d2adc9ecab6a7b161fb7))
+
+
+### Bug Fixes
+
+* **marketdata:** [#138](https://github.com/zhangleizlpd/no-vain-years-tech/issues/138) 族一 —— 7 个逐行 upsert 的维度从不上报 written ([#142](https://github.com/zhangleizlpd/no-vain-years-tech/issues/142)) ([26b7231](https://github.com/zhangleizlpd/no-vain-years-tech/commit/26b7231f9c3198282dcf6b312c9ca999bc52e603))
+* **marketdata:** [#138](https://github.com/zhangleizlpd/no-vain-years-tech/issues/138) 族二 —— 21 处写路径埋在空转分支内, 空转一轮报 NULL ([#145](https://github.com/zhangleizlpd/no-vain-years-tech/issues/145)) ([32e4a3c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/32e4a3c7a3888049f8ce2a999e27306cc38e79eb))
+
 ## [0.33.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.33.1...server-v0.33.2) (2026-08-21)
 
 
