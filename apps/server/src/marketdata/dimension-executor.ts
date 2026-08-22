@@ -2062,6 +2062,9 @@ export class DimensionExecutorRegistry {
     stats: SyncRunStats,
     _input: ExecutorInput,
   ): Promise<void> {
+    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行」的一轮报 0 而非
+    // null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       const symbol = `${inst.market}:${inst.code}`;
       for (const hotType of HOT_TYPES) {
@@ -2088,6 +2091,10 @@ export class DimensionExecutorRegistry {
               });
             }
           });
+          // #138: 逐行 upsert 按行计 —— per-stock 单只传入 ⇒ dtos ≤ 1, 稳态每 type 各 1 行。
+          // 🚨 口径不分 insert / update ⇒ 本维度**每晚恒等于当轮拿到的行数**, 它抓不到
+          // 「覆盖了但内容没变」。抓得到的是「vendor 整轮返空」(dtos 恒 0 ⇒ written 0)。
+          addWritten(stats, dtos.length);
           stats.ok++;
         } catch (err) {
           // per-type 隔离: 某 type 抛错计 failed 不 mutate, 不阻塞其余 type / 其余股 (FR-007)。
@@ -2411,11 +2418,15 @@ export class DimensionExecutorRegistry {
       return;
     }
     const idBySymbol = symbolIndex(instruments);
+    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行」的一轮报 0 而非
+    // null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
+    addWritten(stats, 0);
     for (const chunk of chunked(instruments, dim.batchSize)) {
       const symbols = chunk.map((i) => `${i.market}:${i.code}`);
       stats.scanned += chunk.length;
       try {
         const dtos = await this.fundamental.getFundamentals(symbols); // HTTP (tx 外)
+        let upserted = 0;
         await this.prisma.$transaction(async (tx) => {
           for (const d of dtos) {
             const instrumentId = idBySymbol.get(d.symbol);
@@ -2427,8 +2438,12 @@ export class DimensionExecutorRegistry {
               create: { instrumentId, date, ...data },
               update: data,
             });
+            upserted++;
           }
         });
+        // #138: 逐行 upsert 按**发生了写操作的行**计 (insert 与 update 都算, 口径见 addWritten)。
+        // 计 upserted 而非 dtos.length —— 后者含 symbol 对不上工作集、被 continue 掉的行。
+        addWritten(stats, upserted);
         stats.ok += chunk.length;
       } catch (err) {
         stats.failed += chunk.length;
@@ -2541,11 +2556,15 @@ export class DimensionExecutorRegistry {
       return;
     }
     const idBySymbol = symbolIndex(instruments);
+    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行」的一轮报 0 而非
+    // null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
+    addWritten(stats, 0);
     for (const chunk of chunked(instruments, dim.batchSize)) {
       const symbols = chunk.map((i) => `${i.market}:${i.code}`);
       stats.scanned += chunk.length;
       try {
         const dtos = await this.financials.getFinancials(symbols); // HTTP (tx 外)
+        let upserted = 0;
         await this.prisma.$transaction(async (tx) => {
           for (const d of dtos) {
             const instrumentId = idBySymbol.get(d.symbol);
@@ -2558,8 +2577,11 @@ export class DimensionExecutorRegistry {
               create: { instrumentId, reportPeriod: d.reportPeriod, ...data },
               update: data,
             });
+            upserted++;
           }
         });
+        // #138: 同 fundamental delta —— 逐行 upsert 按**发生了写操作的行**计。
+        addWritten(stats, upserted);
         stats.ok += chunk.length;
       } catch (err) {
         stats.failed += chunk.length;
@@ -2626,13 +2648,17 @@ export class DimensionExecutorRegistry {
     reAdjustLookbackDays: number,
     stats: SyncRunStats,
   ): Promise<void> {
+    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行」的一轮报 0 而非
+    // null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
+    addWritten(stats, 0);
     for (const inst of instruments) {
       const symbol = `${inst.market}:${inst.code}`;
       stats.scanned++;
       try {
         const actions = await this.corporateAction.getCorporateActions(symbol); // HTTP (tx 外)
         if (actions.length > 0) {
-          const minNewExDate = await this.upsertCorporateActions(inst.id, actions);
+          const { minNewExDate, written } = await this.upsertCorporateActions(inst.id, actions);
+          addWritten(stats, written); // #138: 逐行 upsert 按行计 (口径见 addWritten)。
           // 新增 action → transient 跃变锚定 (020 T007, 仅受影响标的; 窗口 = 策略字段)。
           if (minNewExDate) {
             await this.anchorNewFactorVersion(inst, targetDate, reAdjustLookbackDays);
@@ -2646,11 +2672,14 @@ export class DimensionExecutorRegistry {
     }
   }
 
-  /** upsert 公司行动 (自然键), 返**新增** action 的最早 exDate (无新增 → null)。 */
+  /**
+   * upsert 公司行动 (自然键), 返**新增** action 的最早 exDate (无新增 → null) + 本次
+   * **发生了写操作的行数** (#138: insert 与 update 都计 —— 两者都真的写了库, 口径见 addWritten)。
+   */
   private async upsertCorporateActions(
     instrumentId: bigint,
     actions: { exDate: string; type: string; payload: unknown }[],
-  ): Promise<string | null> {
+  ): Promise<{ minNewExDate: string | null; written: number }> {
     const existing = await this.prisma.corporateAction.findMany({
       where: { instrumentId },
       select: { exDate: true, type: true },
@@ -2672,7 +2701,7 @@ export class DimensionExecutorRegistry {
         }
       }
     });
-    return minNewExDate;
+    return { minNewExDate, written: actions.length };
   }
 
   /**
@@ -2750,6 +2779,9 @@ export class DimensionExecutorRegistry {
     }
     const date = toDateOnly(exchangeCalendarDateForScope(dim.marketScope, input.now));
     const idBySymbol = symbolIndex(instruments);
+    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行」的一轮报 0 而非
+    // null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
+    addWritten(stats, 0);
 
     for (const chunk of chunked(instruments, dim.batchSize)) {
       const symbols = chunk.map((i) => `${i.market}:${i.code}`);
@@ -2770,6 +2802,9 @@ export class DimensionExecutorRegistry {
             matched.push({ instrumentId, snapshot: s });
           }
         });
+        // #138: 逐行 upsert 按行计。取 matched 而非 chunk.length —— 无期权的标的整行缺席,
+        // 那些标的一行都没写 (它们计 skipped, 见下一行)。
+        addWritten(stats, matched.length);
         stats.ok += matched.length;
         // 无期权的标的**整行缺席** (port 契约: 返回长度可 < 请求长度)。这既不是成功也不是
         // 失败 —— 计 skipped 才能与真失败区分开, 且不让它被静默丢掉。

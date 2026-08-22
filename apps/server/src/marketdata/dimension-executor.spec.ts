@@ -4425,3 +4425,215 @@ describe('#103 written 跨 stats 交接不得丢失 (063 Phase 3.3 落库侧计�
     );
   });
 });
+
+// #138 (承 #103): `written` 的**埋点覆盖面**。#103 修好了交接管道, 但管道两端多数维度压根
+// 没往里放东西 —— 2026-08-22 双通道实测 (prod 全维度取证 + 真 registry 探针): 28 个维度里
+// **只有** eod_bar / us_equity_bar / us_index_daily 在空转一轮时报得出 0, 其余 25 个恒 NULL。
+// 本块钉住其中**族一**那 5 个 —— 生产路径 (delta) 全走逐行 `upsert`, 一次 `addWritten` 都没有。
+// (fundamental / financial 的 backfill 路径埋了, delta 路径没埋 —— 夜里跑的恰恰是 delta。)
+//
+// 🚨 判据是**两条, 缺一不可**:
+//   ① 空转一轮 (工作集空 / vendor 零行) ⇒ written = 0 而非 null —— 「跑了、写了 0 行」;
+//   ② 有行一轮 ⇒ written = 实际发生写操作的行数。
+//   只做 ① 会让 hot_snapshot 每晚报 0 而实际写了 11132 行 —— 那比 NULL **更坏**: 把无害的
+//   「没上报」换成一句主动的谎话, 而这一列存在的全部理由就是不说这种谎。
+describe('#138 族一: 逐行 upsert 的维度必须上报 written (空转报 0, 有行报行数)', () => {
+  const CORP_ACTION = { exDate: '2026-06-01', type: 'dividend', payload: {} };
+
+  function buildFamilyOneFakes(
+    opts: {
+      marketScope?: string[];
+      instruments?: { id: bigint; market: string; code: string }[];
+      fundamentals?: unknown[];
+      financials?: unknown[];
+      corporateActions?: unknown[];
+      hotDtos?: HotSnapshotDto[];
+      ivSnapshots?: UnderlyingIvSnapshot[];
+    } = {},
+  ) {
+    const instruments = opts.instruments ?? [{ id: 1n, market: 'cn', code: '600519' }];
+    const upsert = {
+      fundamentalSnapshot: vi.fn(async () => ({})),
+      financialMetric: vi.fn(async () => ({})),
+      corporateAction: vi.fn(async () => ({})),
+      hotSnapshot: vi.fn(async () => ({})),
+      underlyingIvDaily: vi.fn(async () => ({})),
+    };
+    const deps = {
+      syncUniverse: { run: vi.fn(async () => emptyStatsLike()) },
+      syncProfile: { run: vi.fn(async () => emptyStatsLike()) },
+      eodBar: { getBars: vi.fn(async () => []) },
+      fundamental: { getFundamentals: vi.fn(async () => opts.fundamentals ?? []) },
+      financials: { getFinancials: vi.fn(async () => opts.financials ?? []) },
+      corporateAction: {
+        getCorporateActions: vi.fn(async () => opts.corporateActions ?? []),
+      },
+      hotSnapshot: { getHotSnapshot: vi.fn(async () => opts.hotDtos ?? []) },
+      underlyingIv: {
+        getIvSnapshots: vi.fn(async () => opts.ivSnapshots ?? []),
+        getIvHistoryRange: vi.fn(async () => []),
+      },
+      prisma: {
+        syncDimension: {
+          findUnique: vi.fn(async () => ({
+            dimensionKey: 'any',
+            enabled: true,
+            cronExpr: '0 0 22 * * *',
+            marketScope: opts.marketScope ?? ['cn'],
+            adjustTypes: ['none'],
+            batchSize: 50,
+            historyDepth: 365,
+            retryMax: 3,
+            misfirePolicy: 'fire-now',
+            reAdjustLookbackDays: 30,
+            deltaLookbackDays: null,
+            pausedUntil: null,
+          })),
+          update: vi.fn(async () => ({})),
+        },
+        instrument: { findMany: vi.fn(async () => instruments) },
+        // 既有键与本轮 action 同键 ⇒ minNewExDate = null ⇒ 不触发跃变锚定 (本块只验计数)。
+        corporateAction: {
+          findMany: vi.fn(async () => [{ exDate: new Date('2026-06-01'), type: 'dividend' }]),
+        },
+        // IVP 双算对表的窗口查询 (空窗 ⇒ verdict skipped ⇒ 静默, 不干扰计数)。
+        underlyingIvHistory: { findMany: vi.fn(async () => []) },
+        $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
+          fn({
+            fundamentalSnapshot: { upsert: upsert.fundamentalSnapshot },
+            financialMetric: { upsert: upsert.financialMetric },
+            corporateAction: { upsert: upsert.corporateAction },
+            hotSnapshot: { upsert: upsert.hotSnapshot },
+            underlyingIvDaily: { upsert: upsert.underlyingIvDaily },
+          }),
+        ),
+      },
+      recorder: { start: vi.fn(async () => 1n), finish: vi.fn(async () => undefined) },
+      tierRecalc: { recalcSafely: vi.fn(async () => null) },
+    };
+    const u = undefined as never;
+    const registry = new DimensionExecutorRegistry(
+      deps.syncUniverse as never,
+      deps.syncProfile as never,
+      deps.eodBar as never,
+      deps.fundamental as never,
+      deps.financials as never,
+      deps.corporateAction as never,
+      deps.prisma as never,
+      deps.recorder as never,
+      deps.tierRecalc as never,
+      u,
+      u,
+      u,
+      u,
+      u,
+      u,
+      u, // backfillPacer … volatility
+      deps.hotSnapshot as never, // hot_snapshot (第 17 位)
+      u,
+      u,
+      u,
+      u,
+      u,
+      u,
+      u,
+      u,
+      u,
+      u, // buyback … anchorGate
+      deps.underlyingIv as never, // underlying_iv_daily (第 28 位)
+    );
+    return { deps, registry, upsert };
+  }
+
+  const IV_OPTS = {
+    marketScope: ['us'],
+    instruments: [{ id: 1n, market: 'us', code: 'PEP' }],
+  };
+
+  it('fundamental (delta 逐行 upsert): vendor 零行 ⇒ written = 0', async () => {
+    const { registry } = buildFamilyOneFakes();
+    const { stats } = await registry.execute('fundamental', input);
+    expect(stats.written).toBe(0);
+  });
+
+  it('fundamental (delta 逐行 upsert): 落了 2 行 ⇒ written = 2', async () => {
+    const { registry, upsert } = buildFamilyOneFakes({
+      instruments: [
+        { id: 1n, market: 'cn', code: '600519' },
+        { id: 2n, market: 'cn', code: '000001' },
+      ],
+      fundamentals: [
+        { symbol: 'cn:600519', date: '2026-06-05' },
+        { symbol: 'cn:000001', date: '2026-06-05' },
+      ],
+    });
+    const { stats } = await registry.execute('fundamental', input);
+    expect(upsert.fundamentalSnapshot).toHaveBeenCalledTimes(2);
+    expect(stats.written).toBe(2);
+  });
+
+  it('financial (delta 逐行 upsert): vendor 零行 ⇒ written = 0', async () => {
+    const { registry } = buildFamilyOneFakes();
+    const { stats } = await registry.execute('financial', input);
+    expect(stats.written).toBe(0);
+  });
+
+  it('financial (delta 逐行 upsert): 落了 1 行 ⇒ written = 1', async () => {
+    const { registry, upsert } = buildFamilyOneFakes({
+      financials: [{ symbol: 'cn:600519', reportPeriod: '2026-03-31' }],
+    });
+    const { stats } = await registry.execute('financial', input);
+    expect(upsert.financialMetric).toHaveBeenCalledTimes(1);
+    expect(stats.written).toBe(1);
+  });
+
+  it('corporate_action (逐行 upsert): vendor 零行 ⇒ written = 0', async () => {
+    const { registry } = buildFamilyOneFakes();
+    const { stats } = await registry.execute('corporate_action', input);
+    expect(stats.written).toBe(0);
+  });
+
+  it('corporate_action (逐行 upsert): 落了 1 行 ⇒ written = 1', async () => {
+    const { registry, upsert } = buildFamilyOneFakes({ corporateActions: [CORP_ACTION] });
+    const { stats } = await registry.execute('corporate_action', input);
+    expect(upsert.corporateAction).toHaveBeenCalledTimes(1);
+    expect(stats.written).toBe(1);
+  });
+
+  it('hot_snapshot (逐行 upsert × HOT_TYPES): vendor 零行 ⇒ written = 0', async () => {
+    const { registry } = buildFamilyOneFakes();
+    const { stats } = await registry.execute('hot_snapshot', input);
+    expect(stats.written).toBe(0);
+  });
+
+  it('🚨 hot_snapshot: 每 type 各落 1 行 ⇒ written = HOT_TYPES 长度 (只做「空转报 0」会让它恒报 0 = 谎话)', async () => {
+    const { registry, upsert } = buildFamilyOneFakes({
+      hotDtos: [{ hotType: 'x', dataDate: '2026-06-04', payload: { a: 1 } }],
+    });
+    const { stats } = await registry.execute('hot_snapshot', input);
+    expect(upsert.hotSnapshot).toHaveBeenCalledTimes(HOT_TYPES.length);
+    expect(stats.written).toBe(HOT_TYPES.length);
+  });
+
+  it('underlying_iv_daily (delta 逐行 upsert): vendor 零快照 ⇒ written = 0', async () => {
+    const { registry } = buildFamilyOneFakes(IV_OPTS);
+    const { stats } = await registry.execute('underlying_iv_daily', input);
+    expect(stats.written).toBe(0);
+  });
+
+  it('underlying_iv_daily (delta 逐行 upsert): 落了 1 行 ⇒ written = 1 (= matched, 非请求批大小)', async () => {
+    const { registry, upsert } = buildFamilyOneFakes({
+      ...IV_OPTS,
+      ivSnapshots: [{ symbol: 'us:PEP', iv: '24.8' } as UnderlyingIvSnapshot],
+    });
+    const { stats } = await registry.execute('underlying_iv_daily', input);
+    expect(upsert.underlyingIvDaily).toHaveBeenCalledTimes(1);
+    expect(stats.written).toBe(1);
+  });
+
+  it('🚨 工作集为空 (无锚不采) 也要报 0 —— 「跑了、一行没写」正是本列要抓的那个形态', async () => {
+    const { registry } = buildFamilyOneFakes({ ...IV_OPTS, instruments: [] });
+    const { stats } = await registry.execute('underlying_iv_daily', input);
+    expect(stats.written).toBe(0);
+  });
+});

@@ -69,3 +69,29 @@ describe('SyncUniverseUseCase — 038 T004 / S2-T3 currency 按 market + B 股 c
     expect(currencyOf(upsert, '300692')).toBe('CNY');
   });
 });
+
+// #138: universe 曾被**蓄意豁免**出 `written` (schema 原话「恒写恒非零, 跑了但零写入这个形态
+// 在它身上不存在」)。豁免不成立: `enumerate()` 返空 —— fallback 链耗尽 / 上游改了返回形态 ——
+// 就是「跑了、status=success、一行没写」, 而那恰恰是本列要抓的东西。豁免等于把它挡在门外。
+describe('SyncUniverseUseCase — #138 written 埋点 (豁免已撤)', () => {
+  it('🚨 enumerate 返空 ⇒ written = 0 而非 null (跑了、全绿、一行没写 = 本列要抓的形态)', async () => {
+    const { useCase, upsert } = buildUseCase([]);
+
+    const stats = await useCase.run();
+
+    expect(upsert).not.toHaveBeenCalled();
+    expect(stats.written).toBe(0);
+  });
+
+  it('逐行 upsert 按行计 ⇒ 3 行入库 ⇒ written = 3', async () => {
+    const { useCase } = buildUseCase([
+      { market: 'cn', code: '600519', name: '贵州茅台' },
+      { market: 'hk', code: '00700', name: '腾讯控股' },
+      { market: 'us', code: 'AAPL', name: '苹果' },
+    ]);
+
+    const stats = await useCase.run();
+
+    expect(stats.written).toBe(3);
+  });
+});
