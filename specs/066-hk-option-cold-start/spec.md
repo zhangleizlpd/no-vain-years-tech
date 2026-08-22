@@ -2,7 +2,7 @@
 feature_id: 066-hk-option-cold-start
 modules: [marketdata, optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: planned
 created_at: '2026-08-22'
 updated_at: '2026-08-22'
 spec_kit_version: '>=0.8.5,<0.10.0'

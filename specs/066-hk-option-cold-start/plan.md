@@ -1,7 +1,7 @@
 ---
 feature_id: 066-hk-option-cold-start
 spec_ref: ./spec.md
-status: drafted
+status: approved
 created_at: '2026-08-22'
 updated_at: '2026-08-22'
 adr_refs: ['0024', '0032', '0035', '0040', '0043', '0047', '0053', '0062', '0066']
