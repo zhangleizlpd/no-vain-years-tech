@@ -3381,12 +3381,17 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       /** vendor 不可达 (FR-030 路径)。 */
       throwOnFetch?: boolean;
       batchSize?: number;
+      /** 锚表 ticker 列 (066 T02: 本维度是**锚作用域**的, 工作集判据读的是它)。 */
+      anchorTickers?: string[];
     } = {},
   ) {
     const instruments = opts.instruments ?? [
       { id: 1n, market: 'us', code: 'PEP' },
       { id: 2n, market: 'us', code: 'VICI' },
     ];
+    // 066 T02: 缺省让工作集里每只标的都有锚 —— 本 describe 验的是装配 / 批量 / 幂等形态,
+    // 锚闸本身的双向行为归 `test/integration/marketdata-066.anchor-scoped-workset.it.spec.ts`。
+    const anchorTickers = opts.anchorTickers ?? instruments.map((i) => `${i.market}:${i.code}`);
     const ivUpsert = vi.fn(async (_arg: unknown) => ({}));
     const getIvSnapshots = vi.fn(async (symbols: readonly string[]) => {
       if (opts.throwOnFetch) throw new Error('shim 502');
@@ -3419,6 +3424,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => instruments) },
+        anchor: { findMany: vi.fn(async () => anchorTickers.map((ticker) => ({ ticker }))) },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
         ),
@@ -3467,17 +3473,20 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
     now: NOW_BEIJING_SAT_6AM,
   };
 
-  it('工作集挂锚闸 (FR-026/FR-031): loadActiveInstruments 的 needSync=true 过滤生效, 且走 fact 前置 (tier + 锚闸重算)', async () => {
+  it('工作集挂锚闸 (FR-026/FR-031): loadActiveInstruments 走**锚集**谓词 (066 T02 起 needSync 已退出), 且走 fact 前置 (tier + 锚闸重算)', async () => {
     const { registry, deps } = buildUnderlyingIvFakes();
     await registry.execute('underlying_iv_daily', ivInput);
-    // 无锚不采 = `needSync:true`; 加第 13 只锚只需锚闸把它刷成 true, 零代码改动 (FR-031)。
+    // 无锚不采 = 工作集 ∩ 锚集; 加第 13 只锚只需建锚, 零代码改动 (FR-031)。
+    expect(deps.prisma.anchor.findMany).toHaveBeenCalledWith({ select: { ticker: true } });
     expect(deps.prisma.instrument.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { market: { in: ['us'] }, status: 'active', needSync: true },
+        where: { status: 'active', OR: [{ market: 'us', code: { in: ['PEP', 'VICI'] } }] },
       }),
     );
     expect(deps.tierRecalc.recalcSafely).toHaveBeenCalledTimes(1);
-    expect(deps.anchorGate.recalcSafely).toHaveBeenCalledTimes(1); // 锚 → needSync 的刷新点
+    // 锚闸仍在前置里跑 —— 它重算的 `needSync` 是 `eod_bar` / `sync-profile` / backfill CLI
+    // 那三个消费方的输入 (066 plan §A4: A3 与 A4 互补), 只是不再是本维度的工作集判据。
+    expect(deps.anchorGate.recalcSafely).toHaveBeenCalledTimes(1);
   });
 
   it('批量形态 (FR-023): 整批一次 getIvSnapshots(symbols), 不是逐票 N 次', async () => {
@@ -3617,6 +3626,13 @@ describe('046 T009 underlying_iv_daily backfill (his_volatility ≤364 天分页
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => instruments) },
+        // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表。让工作集里每只标的都有锚,
+        // 本 describe 验的是分窗形态而非闸行为。
+        anchor: {
+          findMany: vi.fn(async () =>
+            instruments.map((i) => ({ ticker: `${i.market}:${i.code}` })),
+          ),
+        },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvHistory: { createMany: histCreateMany } }),
         ),
@@ -3815,6 +3831,8 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => [{ id: 1n, market: 'us', code: 'PEP' }]) },
+        // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表 (这里给 PEP 一只锚)。
+        anchor: { findMany: vi.fn(async () => [{ ticker: 'us:PEP' }]) },
         underlyingIvHistory: { findMany: histFindMany },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
