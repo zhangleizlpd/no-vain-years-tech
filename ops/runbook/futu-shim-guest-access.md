@@ -23,6 +23,11 @@
 在运行时下发。**因此加端点不再需要重新打包、也不需要联系访客**，只改仓内这几处：
 
 1. `nginx/futu-shim-guest.conf.template` —— 加 `location = /<新端点>`，连同它自己的市场闸 / 限频 zone
+   - **若它打的是本机 mono（不是港机 shim）**，还有两件 shim 类端点不需要的事：① `proxy_set_header`
+     **整组三条**必须抄进 location（那是整组覆盖不是逐条合并，漏抄会把 shim 那把 token 漏下去，
+     表现成「这个访客 token 不对」而真因是代理少了一行）；② 响应上 KB 就要在 location 里显式开
+     `gzip` + `gzip_types application/json`（nginx 两项默认都不给 JSON 压缩，而漏了**两侧都不报错**，
+     访客只会觉得慢）
 2. `capabilities/capabilities.md` —— 在「端点一览」表里加一行，并补它的参数说明与踩坑
 3. **仅当**该端点此前在 `verify-guards.sh` 闸 2 的「不可见」名单里（`/his-vol` `/universe`
    `/trading-days` `/earnings-calendar` 这几条）—— 把它从那个 `for p in …` 列表里**移出去**，

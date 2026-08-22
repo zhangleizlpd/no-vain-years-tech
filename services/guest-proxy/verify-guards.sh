@@ -245,6 +245,82 @@ else
   printf '  ❌ %-46s 实得 %s\n' "锚提交 400 由 app 返（非 nginx）" "${submit_body:0:100}"; fail=$((fail+1))
 fi
 
+echo "== 闸 9 标的注册表（本代理上唯一的读 mono 端点）=="
+CODES="$BASE/instrument-codes"
+BASICS="$BASE/instrument-basics"
+
+# ── 9a. 无凭证：两个口各拒一次 ────────────────────────────────────────────
+check "枚举口无 token 被拒" 401 "$(code "$CODES?market=us")"
+check "批量口无 token 被拒" 401 "$(code "$BASICS?market=us&codes=AOS")"
+
+# ── 9b. 只放 GET（两个口各写一份 —— 闸是逐 location 写的）──────────────────
+# 🚨 期望 **403 不是 405**（同闸 6 / 闸 8b：干活的是 `limit_except` 里的 `deny`）。
+# 🚨 **必须带合法 market** —— 市场闸是 rewrite 阶段的 `if`，跑在 `limit_except` 所在的
+#    access 阶段**之前**；不带 market 会先撞 400，这条就验不到方法闸了（同 8b 带合法
+#    ticker 的理由）。
+check "枚举口 POST 被拒" 403 "$(code -X POST "${AUTH[@]}" "$CODES?market=us")"
+check "批量口 POST 被拒" 403 "$(code -X POST "${AUTH[@]}" "$BASICS?market=us&codes=AOS")"
+
+# ── 9c. 市场闸 ────────────────────────────────────────────────────────────
+# 🚨 与 server 侧 `instrument-query.rules.ts` 的 `QUERYABLE_MARKETS` 是**两份独立文本**。
+#    这几条是通道那一半；服务端那一半由 marketdata-instrument-guest-query IT 的三市场断言钉住。
+# 🚨 形态与本仓其它市场闸都不同：这里是 `^(cn|hk|us)$` **全值匹配**，不是前缀匹配 ——
+#    所以 `usx` / `us:AOS` 这两条反例是本组独有的，抄 8c 抄不到。
+market_query_gate() { # market_query_gate <端点> <额外参数> <标签前缀>
+  check "$3 缺 market 被拒"      400 "$(code "${AUTH[@]}" "$1?$2")"
+  check "$3 market 大写被拒"     400 "$(code "${AUTH[@]}" "$1?market=US&$2")"
+  check "$3 market 越界被拒"     400 "$(code "${AUTH[@]}" "$1?market=jp&$2")"
+  # 全值匹配的证据：少写尾锚 `$` 时下面两条会放行。
+  check "$3 market 尾缀被拒"     400 "$(code "${AUTH[@]}" "$1?market=usx&$2")"
+  check "$3 market 带冒号被拒"   400 "$(code "${AUTH[@]}" "$1?market=us:AOS&$2")"
+}
+market_query_gate "$CODES"  "type=stock"  "枚举口"
+market_query_gate "$BASICS" "codes=AOS"   "批量口"
+
+# ── 9d. codes 字符集闸（只批量口有）────────────────────────────────────────
+# `$arg_*` 不解码 ⇒ 逗号写成 `%2C` 撞不上字符集白名单，fail-closed 成 400。
+check "批量口 codes %2C 编码被拒" 400 "$(code "${AUTH[@]}" "$BASICS?market=us&codes=AOS%2CPEP")"
+check "批量口 codes 带冒号被拒"   400 "$(code "${AUTH[@]}" "$BASICS?market=us&codes=us:AOS")"
+# 🚨 **反向反例：合法但「看着不像 code」的那些必须放行。** registry 美股侧实测 112 条含
+#    `_` / `*` / `/` / `-`。照抄 /option-snapshot 那道窄字符集会把它们拒掉，而那是
+#    **枚举口自己刚发出去的串** —— 只写上面两条拒例的话，抄窄了也全绿。
+check "批量口 codes 含 _ * / . 放行" 200 "$(code "${AUTH[@]}" "$BASICS?market=us&codes=WFC_Z,BHVN*,PSUS/PS,BRK.B")"
+
+# ── 9e. 请求**真的到了 app**（同 8e 的手法）────────────────────────────────
+# 🚨 价值不在「200」，在于证明 `proxy_pass` 的路径没写错：上面所有 4xx 都是 nginx 自己
+#    return 的，只有它们的话，路径写成 `/instrument-code`（少个 s）也全绿，直到访客真用才炸。
+#    ⇒ 连**谁返的**一起验：body 里有 `count` = app 的枚举响应；HTML / Nest 的 404 体都不是。
+codes_body="$(curl -s -m 100 "${AUTH[@]}" "$CODES?market=hk")"
+if grep -q '"count"' <<<"$codes_body"; then
+  printf '  ✅ %-46s\n' "枚举口 200 由 app 返（非 nginx）"; pass=$((pass+1))
+else
+  printf '  ❌ %-46s 实得 %s\n' "枚举口 200 由 app 返（非 nginx）" "${codes_body:0:120}"; fail=$((fail+1))
+fi
+basics_body="$(curl -s -m 100 "${AUTH[@]}" "$BASICS?market=us&codes=NOSUCHCODE")"
+if grep -q '"missing"' <<<"$basics_body"; then
+  printf '  ✅ %-46s\n' "批量口 200 由 app 返（非 nginx）"; pass=$((pass+1))
+else
+  printf '  ❌ %-46s 实得 %s\n' "批量口 200 由 app 返（非 nginx）" "${basics_body:0:120}"; fail=$((fail+1))
+fi
+
+# ── 9f. gzip 真的开着 ──────────────────────────────────────────────────────
+# 🚨 **这条是本组唯一能抓到「压缩静默失效」的断言。** nginx 的 `gzip` 默认 off、
+#    `gzip_types` 默认只有 text/html ⇒ 漏写任一条，枚举口就退化成 158 KB 明文过隧道，
+#    而**两侧都不会报错**，访客只会觉得慢。
+# ⚠️ 必须用 `--compressed`（发 Accept-Encoding）—— 不发就本来也不该压缩，那时这条恒红
+#    是对的，不是误报。
+gz_hdr="$(curl -s -m 100 -D - -o /dev/null --compressed "${AUTH[@]}" "$CODES?market=us")"
+if grep -qi '^content-encoding:.*gzip' <<<"$gz_hdr"; then
+  printf '  ✅ %-46s\n' "枚举口带 --compressed 真回 gzip"; pass=$((pass+1))
+else
+  printf '  ❌ %-46s 响应头无 Content-Encoding: gzip\n' "枚举口带 --compressed 真回 gzip"; fail=$((fail+1))
+fi
+
+# 📌 **本组刻意不验限频**（枚举 6r/m / 批量 30r/m），说明写在这里而不是让人自己发现:
+#    那两条护的是本机 PG 与出口体量，不是 vendor 限额、也不是「两个口互不牵连」这类
+#    有明确需求的判据 ⇒ 打满它需要 9+ 发真请求，代价换不来相应的回归价值。
+#    要验就照 --include-429 那段的写法补，别默认加进主路径。
+
 echo "== 闸 7 能力目录（薄壳 skill 的端点清单唯一来源）=="
 # 访客手里的 skill 不含端点清单,全靠 `/capabilities` 下发 ⇒ 这份目录取不到、或它列的端点
 # 打不通,访客侧就**整体不可用**,而症状会表现成「agent 说这个通道没这个能力」——

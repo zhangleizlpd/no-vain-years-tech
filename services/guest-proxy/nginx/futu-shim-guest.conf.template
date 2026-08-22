@@ -1,4 +1,7 @@
-# 访客侧 futu-shim 入口（K 线 + 期权链三条 + 标的级 /overview，只放美股）。
+# 访客侧入口。两类上游、两套市场口径，别把其中一套当成全局规则：
+#   · 打港机 futu-shim 的行情面（K 线 + 期权链三条 + 标的级 /overview）—— **只放美股**
+#   · 打本机 mono 的业务面（研报投递 / 锚两条 / 标的注册表两条）—— **A股 + 港股 + 美股**
+#     （锚两条按 059 只收 us/hk；判据各写各的，见各自 location）
 #
 # 跑在 77 (`mbw-staging`) 上、**独立于 prod compose 的 nginx**，绑 wg2 虚 IP `10.90.0.1`。
 # 为什么不复用 prod nginx：那个容器 `ports: 80:80 / 443:443`，若给它加一条
@@ -13,8 +16,11 @@
 #   FUTU_SHIM_TOKEN  shim 的真 token（访客永远看不到它）
 #   GUEST1_TOKEN     发给访客 1 的 bearer（与 shim token 无关，可单独吊销）
 #   GUEST1_NAME      日志里的可读名字
-#   GUEST_UPLOAD_TOKEN  转发给本机 mono app 的 bearer（研报投递 + 锚估值提交 + 锚直写，
-#                       057/059 —— 三条 location 同一把，见 /anchor-import 的闸 E）
+#   GUEST_UPLOAD_TOKEN  转发给本机 mono app 的 bearer（研报投递 + 锚估值提交 + 锚直写 +
+#                       标的枚举 + 标的批量基础信息 —— **五条 location 同一把**，
+#                       见 /anchor-import 的闸 E。后两条是只读，前三条是写；
+#                       为什么不给读面另发一把，判据单点在 mono 的
+#                       apps/server/src/config/guest-upload.config.ts 顶部）
 #   ANCHOR_OWNER_NAME   有权直写锚的访客名（= 某个 GUESTn_NAME 的值，059）
 
 # ── 访客身份：Authorization 整串 → 名字。命不中 = 空 = 401 ───────────────────
@@ -111,6 +117,22 @@ limit_req_zone $guest_name zone=guest_upload:1m rate=2r/m;
 limit_req_zone $guest_name zone=guest_anchor:1m rate=6r/m;
 limit_req_zone $guest_name zone=guest_anchor_submit:1m rate=2r/m;
 
+# ⑦⑧ 标的注册表查询。🚨 **它们护的是第三种账**，别照抄上面任何一条的推理：
+#    ①②③ 护上游 vendor 的官方限额、④ 护本机磁盘、⑤⑥ 护锚表的写入速率；
+#    本组护的是**本机 PG 的一次市场级全扫 + 出口体量** —— 枚举口一发要扫某市场全部行
+#    （2026-08-22 实测美股 19546 行）并序列化出 158 KB（gzip 后 49 KB）；批量口一发是
+#    ≤500 个唯一索引点查，便宜得多。两条都**不打上游、不落盘**，与访客的期权 / 日线
+#    额度互不相干 —— 打满它们不会让 prod 少一次富途调用。
+#
+#    算账：
+#      · 枚举 6r/m —— 真实用法是「一天拉一次全市场存下来」（能力目录明写按天缓存），
+#        6 次/分对它绰绰有余，循环打立刻 429。与直写锚同额度不是巧合：同为「低频、
+#        但单发昂贵」。burst 2 容一次「三个市场连着拉」。
+#      · 批量 30r/m —— 美股全量 19546 / 500 = **40 发**，这是本组要支持的最重工作流，
+#        30r/m 让它约 80 秒批完。burst 5 让分批脚本前几发连着过。
+limit_req_zone $guest_name zone=guest_instr_codes:1m  rate=6r/m;
+limit_req_zone $guest_name zone=guest_instr_basics:1m rate=30r/m;
+
 limit_req_status 429;
 
 # ── 日志里的 codes 截断 ─────────────────────────────────────────────────────
@@ -189,9 +211,11 @@ server {
     proxy_read_timeout 90s;
 
     # ── 闸 2：端点白名单 ───────────────────────────────────────────────────
-    # 开 /capabilities + /kline + 期权链三条 + 标的级 /overview。/his-vol /universe
-    # /trading-days /earnings-calendar 一律不可见。面越小越好;要放新端点是显式动作,
-    # 不是默认继承。
+    # 开 /capabilities + /kline + 期权链三条 + 标的级 /overview + 标的注册表两条。
+    # /his-vol /universe /trading-days /earnings-calendar 一律不可见。面越小越好;要放新端点
+    # 是显式动作,不是默认继承。
+    # ⚠️ 上游 shim 自己也有一条 `/universe`,与本文放行的 `/instrument-codes` **不是一回事**
+    #    （那条查的是富途的标的全集,这两条读的是 mono 的注册表）—— 别因为名字像就把它一起开。
     #
     # 🚨 **加 location 就必须同步 capabilities/capabilities.md** —— 两侧集合相等由
     #    `deploy/install.sh` 的 Gate A 机器强制,写漏一个部署直接红。这不是提醒,是闸。
@@ -331,6 +355,101 @@ server {
         limit_req zone=guest_option_meta burst=5 nodelay;
 
         proxy_pass ${FUTU_SHIM_URL}/overview$is_args$args;
+    }
+
+    # ── 标的注册表 —— 本代理上第一条**读 mono** 的端点 ────────────────────────
+    #
+    # 上面行情面打的是港机 shim；下面研报 / 锚打的是本机 mono，但**全是写**。这两条是
+    # 读 mono：访客问「这个市场有哪些标的、它们叫什么」。开它的动机很具体 —— 下面两条写口
+    # 都要求调方先知道 canonical `market:code`，而在此之前通道上**没有任何地方能告诉他**，
+    # 只能猜；猜错会静默落到另一只票上。
+    #
+    # 🚨 **market 是独立参数，闸的形态与本文件其它所有市场闸都不同**：行情面是 `^US\.`
+    #    前缀匹配、锚是 `^(us|hk):` 前缀匹配，这里是 `^(cn|hk|us)$` **两端锚定的全值匹配**。
+    #    少写尾锚 `$` 就放过 `usx` / `us%00` 一类。**别照抄邻居改齐。**
+    #
+    # 🚨 **三个市场全放，与行情面的 US-only 刻意不同**，同样别改齐：那边收窄是因为每一发都
+    #    在切富途的官方限额（给访客多少 prod 就少多少）；本面读的是本机 PG 里的上市元数据，
+    #    不打上游、不耗任何配额 —— 收窄只会让通道对一半标的不可用。判据与 /research-report
+    #    同源（研报库同样收三个市场），不与 /kline 同源。
+    #
+    # ⚠️ 与 server 侧是**两份独立文本、会漂**：服务端那份的单点在
+    #    `apps/server/src/marketdata/instrument-query.rules.ts`。钉住两侧的是那边的单测 +
+    #    IT 的三市场断言（服务端一半）与本目录 `verify-guards.sh` 闸 9 的反例（通道一半）。
+    location = /instrument-codes {
+        # ── 闸 A：只放 GET（059「只放 POST」那条的镜像）─────────────────────
+        # 服务端同样没实装任何写动作，但两层各拒一次、不依赖对方：某天有人在这个前缀下加了
+        # 写端点，光靠「服务端恰好没实现」就直接对访客开放了。
+        # ⚠️ 干活的是 `deny` ⇒ 返回 **403 不是 405**（057 真跑证伪过 405 这个直觉）。
+        limit_except GET { deny all; }
+
+        if ($arg_market !~ "^(cn|hk|us)$") {
+            return 400 '{"error":"bad_request","detail":"market must be exactly one of cn / hk / us (lowercase, in the query string)"}';
+        }
+
+        limit_req zone=guest_instr_codes burst=2 nodelay;
+
+        # ── gzip：是本端点成立的前提，不是锦上添花 ──────────────────────────
+        # 美股全量实测 158 KB → 49 KB（3.2×）。mono 侧**没有装 `@fastify/compress`** ⇒ 上游
+        # 发的是明文，压缩只能在这里做。
+        # 🚨 nginx 的 `gzip` 默认 **off**、`gzip_types` 默认只有 `text/html` ⇒ 这两条都必须
+        #    显式写，少任何一条都是「配了等于没配」，而**两侧都不会报错**。
+        # ⚠️ `gzip_proxied any` 在当前拓扑下其实用不上（该指令只在请求带 `Via` 头时生效，
+        #    访客是直连本机的）。写上是为了将来本代理若被塞到另一层代理后面时不静默停止压缩。
+        # 🚨 **访客不带 `Accept-Encoding` 就没有压缩** —— curl 必须加 `--compressed`。能力
+        #    目录的示例命令写死了它，`verify-guards.sh` 闸 9 断言响应头真有 `Content-Encoding`。
+        gzip on;
+        gzip_types application/json;
+        gzip_proxied any;
+        gzip_vary on;
+        gzip_min_length 1024;
+
+        # ── token 置换（整组三条，理由同 /research-report）────────────────
+        proxy_set_header Authorization "Bearer ${GUEST_UPLOAD_TOKEN}";
+        proxy_set_header Host $host;
+        proxy_set_header X-Guest $guest_name;
+
+        proxy_pass http://127.0.0.1:3001/api/v1/marketdata/instrument-codes$is_args$args;
+    }
+
+    location = /instrument-basics {
+        limit_except GET { deny all; }
+
+        # 市场闸与上面同源同文本（两条 location 各写一份，与本文件既有风格一致 ——
+        # `/kline` 与 `/overview` 的 US-only 也是各写各的）。
+        if ($arg_market !~ "^(cn|hk|us)$") {
+            return 400 '{"error":"bad_request","detail":"market must be exactly one of cn / hk / us (lowercase, in the query string)"}';
+        }
+
+        # ── codes 字符集闸 ─────────────────────────────────────────────────
+        # 🚨 **只有一步，不是两步 —— 别照抄 /option-snapshot 那道两步闸。** 那里的步骤 ②
+        #    （「每一段都必须 `US.`」）防的是跨市场混批；本端点的 market 是**独立参数**，
+        #    一发只查一个市场，混批在结构上不可能。抄过来只会拒掉合法请求。
+        # 🚨 字符集这一步一个字都不能少，它的全部意义是**百分号编码绕过**：`$arg_*` 不解码，
+        #    `codes=AOS%2CPEP` 在这里是一个不含字面逗号的单段串。
+        # 🚨 **本字符集比 /option-snapshot 那份宽，这是实测决定的、不是手滑**：2026-08-22 实测
+        #    registry 美股侧有 112 条真实 code 落在那份窄集合之外 —— `_` 97 条（`WFC_Z`）、
+        #    `*` 13 条（`BHVN*`）、`/` 1 条（`PSUS/PS`）、`-` 1 条。抄窄的那份会把
+        #    **/instrument-codes 自己刚发出去的串**拒掉，而访客永远查不出原因。
+        #    与 server 侧 `INSTRUMENT_CODE_PATTERN` 同源，改一处必改另一处。
+        if ($arg_codes ~ "[^A-Za-z0-9.,_/*-]") {
+            return 400 '{"error":"bad_request","detail":"codes contains an illegal character (letters, digits, dot, hyphen, underscore, slash, star, comma only; percent-encoding is rejected)"}';
+        }
+
+        limit_req zone=guest_instr_basics burst=5 nodelay;
+
+        # 同上：一发 500 个标的的基础信息也有几十 KB，且 curl 必须 --compressed。
+        gzip on;
+        gzip_types application/json;
+        gzip_proxied any;
+        gzip_vary on;
+        gzip_min_length 1024;
+
+        proxy_set_header Authorization "Bearer ${GUEST_UPLOAD_TOKEN}";
+        proxy_set_header Host $host;
+        proxy_set_header X-Guest $guest_name;
+
+        proxy_pass http://127.0.0.1:3001/api/v1/marketdata/instrument-basics$is_args$args;
     }
 
     # 存活探针。不碰 OpenD(shim 侧 /healthz 明确 never starts OpenD),
