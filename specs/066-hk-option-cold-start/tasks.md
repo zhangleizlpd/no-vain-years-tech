@@ -2,9 +2,9 @@
 feature_id: 066-hk-option-cold-start
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: not-started
+status: implementing
 created_at: '2026-08-22'
-updated_at: '2026-08-22'
+updated_at: '2026-08-23'
 ---
 
 # Tasks: 066-hk-option-cold-start（港股期权接入与锚冷启动开通港股）
