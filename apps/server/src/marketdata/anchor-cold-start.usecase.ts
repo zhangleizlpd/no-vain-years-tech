@@ -89,8 +89,12 @@ export class AnchorColdStartUseCase {
   ) {}
 
   /**
-   * 复杂度: O(1) 次日历查询 + O(1) 次标的查询 + 开闸的 O(市场数) 次 updateMany +
-   * ≤2 次复判 count + 1 次运行记录 upsert; 第二相另加 1 次快照采集 (O(合约数))。
+   * 复杂度 —— **每一项都按「这一只锚」计**, 与已开闸标的总数无关:
+   * O(1) 次日历查询 + O(1) 次标的查询 + 开闸的 O(市场数) 次 updateMany + 1 次复判 count
+   * + 链本体 O(该票到期日窗数) 次外呼 + 快照本体 O(该票未到期合约数) + 1 次运行记录 upsert。
+   *
+   * 🚨 「与标的总数无关」这一句就是 issue #159 修掉的东西: 改直调前链走的是**维度级** job,
+   * 执行侧载全部已开闸标的 ⇒ 单只锚的成本是 O(N)、93 只锚合起来 O(N²)。
    */
   async run(input: { anchorId: bigint; ticker: string; now: Date }): Promise<ColdStartResult> {
     const { anchorId, ticker, now } = input;
