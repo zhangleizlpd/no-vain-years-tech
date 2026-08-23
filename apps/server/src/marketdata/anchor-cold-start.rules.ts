@@ -68,13 +68,19 @@ export type ColdStartOutcome = (typeof COLD_START_OUTCOME)[keyof typeof COLD_STA
 /** 某市场冷启动能补哪些内容。空表项 (两档全关) = 已知但未开通。 */
 export interface ColdStartCapability {
   /**
-   * **不敏感档**: 组 flow 入队的维度 code, 顺序即依赖次序 (链 → 日线)。空数组 = 不补。
+   * **不敏感档**: 是否补期权链 (直调 `SyncOptionContractUseCase.collect`)。
    *
-   * 登记 code 而非布尔, 是因为「哪个市场走哪个维度」本身就是市场相关的
-   * (`us_equity_bar` 就带着市场名) —— 登记布尔的话执行侧还得再写一张 market → dim 的映射,
-   * 那就是 FR-024 要禁的「散落在多个判断分支里」的第二处。
+   * 🚫 **日线不在本表** (issue #159 起): 建锚那一刻 `CreateAnchorUseCase.seedLastClose`
+   * 已经同步调过 `EnsureLatestEodBarUseCase` 取最近收盘 —— 同一个 `EOD_BAR_PORT`
+   * (按市场路由)、同一个 `writeDailyBarRows`、10 天回看窗。而 `optionsdesk.anchor` 全仓
+   * **只有一个 create 点** (`create-anchor.usecase.ts`), 控制器建锚与批量导入都汇到它
+   * ⇒ 每一只锚的日线在它出生那一秒就已经取过了, 冷启动再补一遍是纯重复劳动。
+   *
+   * 📌 因此本字段从 `deltaDimensions: string[]` 收成布尔: 原先登记 code 是因为要拿它去
+   * 组维度 job 的 flow, 而维度 job 的工作集是**全部**已开闸标的 —— 那正是 #159 要消灭的
+   * O(N²)。改直调本体后既不需要 dim code, 也不再有第二个成员。
    */
-  deltaDimensions: readonly string[];
+  optionChain: boolean;
   /** **敏感档**: 是否补期权日快照 (直调 `SyncOptionSnapshotUseCase.collect`)。 */
   optionSnapshot: boolean;
 }
@@ -88,15 +94,15 @@ export interface ColdStartCapability {
  * {@link COLD_START_OUTCOME.MARKET_NOT_ENABLED}, 但下一个加市场的人需要知道 hk 被想过。
  */
 export const COLD_START_CAPABILITY: Record<string, ColdStartCapability> = {
-  us: { deltaDimensions: ['option_contract', 'us_equity_bar'], optionSnapshot: true },
-  hk: { deltaDimensions: [], optionSnapshot: false },
+  us: { optionChain: true, optionSnapshot: true },
+  hk: { optionChain: false, optionSnapshot: false },
 };
 
 /** 该市场是否有任何一档可补 —— 两档全关或未登记 ⇒ `false` (FR-023 显式 no-op)。 */
 export function isColdStartEnabled(market: string): boolean {
   const capability = COLD_START_CAPABILITY[market];
   if (capability === undefined) return false;
-  return capability.deltaDimensions.length > 0 || capability.optionSnapshot;
+  return capability.optionChain || capability.optionSnapshot;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -22,6 +22,8 @@ import { closeWithTimeout } from '../security/close-with-timeout.js';
  * `emitDecoratorMetadata` 在**类装饰期**就要读它 ⇒ 后加载的一侧拿到 TDZ ⇒
  * `ReferenceError: Cannot access 'MarketdataSyncQueue' before initialization`, **boot 直接炸**
  * 而不是某个测试红。060 的锚冷启动 (worker 路由它 + 它要组 flow 入队) 是第一个撞上的。
+ * 📌 issue #159 后冷启动**已不再入队** (链与快照都改直调本体), 故它本身不再构成这条环 ——
+ *    但本约束对**任何**「被 worker 路由、自己又要入队」的 use case 仍然成立, 别据此放松。
  *
  * 修法取的是业内通行解而非 `forwardRef`: NestJS 官方文档把 `forwardRef` 的代价写在明面上
  * ——「互相依赖的 provider 实例化顺序变得不确定」; Trilon 的定性是「last resort … shouldn't
@@ -72,24 +74,22 @@ export function dimensionJobName(key: DimensionKey): string {
 export const ANCHOR_COLD_START_JOB = 'sync:anchor-cold-start';
 
 /**
- * 冷启动 job 的**自有** payload —— 与 {@link DimensionJobPayload} 无继承无共用
- * (🚫 那边一个字段都不加: 给「工作集选择」开第二个口子正是 `anchor-driven-sync-gate.ts`
- * 那条绊线注释警告的形态)。
+ * 冷启动 job 的**自有** payload —— 与 {@link DimensionJobPayload} 无继承无共用。
+ *
+ * 🚫 **那边一个字段都不加**: 给「工作集选择」开第二个口子正是 `anchor-driven-sync-gate.ts`
+ * 那条绊线注释警告的形态 —— 工作集会有两套口径, 且**漂了不报错**。
+ *
+ * ⚠️ **这条禁令的射程仅限本 payload, 不及于「直调采集本体」** (issue #159 澄清): 采集本体
+ * (`SyncOptionContractUseCase.collect` / `SyncOptionSnapshotUseCase.collect`) 收一个标的
+ * 数组参数**不新增任何口径** —— 选择权仍恒属 `DimensionExecutorRegistry.factExecutor` 的
+ * `loadActiveInstruments`, 本体从不自己查库。排查 #159 时曾把这条禁令误当成解空间边界,
+ * 进而提出「给全域重扫加游标缓存」那种打补丁的解法; 教训固化在
+ * `.claude/rules/server-impl-playbook.md` § 改结构三步。
  */
 export interface AnchorColdStartJobPayload {
   ticker: string;
   /** `Anchor.id`。BigInt 过不了 job payload 的 JSON 序列化, 故走字符串。 */
   anchorId: string;
-  /**
-   * 缺省 = **第一相**(定日历 → seed → 开闸 → 复判 → 组 flow 入队链/日线);
-   * `'snapshot'` = **第二相**, 由第一相组的 flow 以 **parent** 身份挂在链/日线两个 child 之上。
-   *
-   * 🚨 两相是**必须**的, 不是优化: worker `concurrency=1` 且冷启动 job 自己就跑在这条 worker
-   * 上 ⇒ 它入队的 flow 在它返回之前一个都跑不了。若在同一次调用里 inline 抓快照, 对一只全新
-   * 锚 `option_contract` 恰好 0 行 ⇒ `SyncOptionSnapshotUseCase` 判「无未到期合约」直接
-   * WARN + 零外呼返回 ⇒ **目标交易日的快照永远不写, 而整条路径全绿**。SC-001 要的正是那份快照。
-   */
-  phase?: 'snapshot';
 }
 
 /**

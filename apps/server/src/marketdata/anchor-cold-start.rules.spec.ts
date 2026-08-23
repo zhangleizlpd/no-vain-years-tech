@@ -242,15 +242,15 @@ describe('与 option-snapshot-remediation 的等值回归', () => {
 });
 
 describe('COLD_START_CAPABILITY —— FR-024 一处显式登记', () => {
-  it('us 三档齐开: 链 + 日线走维度 job, 快照走敏感档直调', () => {
-    expect(COLD_START_CAPABILITY.us).toEqual({
-      deltaDimensions: ['option_contract', 'us_equity_bar'],
-      optionSnapshot: true,
-    });
+  it('us 两档齐开: 链与快照都走**直调本体**, 日线不在表内', () => {
+    // 🚫 日线曾以 `us_equity_bar` 出现在本表 (issue #159 前): 建锚那一刻
+    //    `CreateAnchorUseCase.seedLastClose` 已同步调过 `EnsureLatestEodBarUseCase`,
+    //    而 `optionsdesk.anchor` 全仓只有一个 create 点 ⇒ 冷启动再补一遍是重复劳动。
+    expect(COLD_START_CAPABILITY.us).toEqual({ optionChain: true, optionSnapshot: true });
   });
 
   it('hk 是空表项 —— 显式登记「已知但未开通」, 走到冷启动 = 显式 no-op (FR-023)', () => {
-    expect(COLD_START_CAPABILITY.hk).toEqual({ deltaDimensions: [], optionSnapshot: false });
+    expect(COLD_START_CAPABILITY.hk).toEqual({ optionChain: false, optionSnapshot: false });
   });
 
   it('未登记市场取不到表项 —— 与「登记了但全关」同样落 market_not_enabled, 但不静默', () => {

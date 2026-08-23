@@ -334,35 +334,26 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
   // 分档执行 + 时点归属 (§D4 三行)
   // ───────────────────────────────────────────────────────────────────────────
 
-  it('① 休市建锚 ⇒ 第一相组 flow 入队链+日线, 第二相写快照且归属日 = 最近一个已收盘交易日', async () => {
-    const { instrumentId } = await seedUnderlying(TICKER);
+  it('① 休市建锚 ⇒ **一次调用**直达终局: 链与快照顺序跑完, 归属日 = 最近一个已收盘交易日', async () => {
+    await seedUnderlying(TICKER);
     const anchorId = await createAnchorFor(TICKER);
 
-    const first = await coldStart.run({ anchorId, ticker: TICKER, now: SAT_NIGHT });
-    expect(first).toEqual({ settled: false, deferral: 'awaiting_chain' });
+    const result = await coldStart.run({ anchorId, ticker: TICKER, now: SAT_NIGHT });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
+
+    // 🚨 **本用例最要紧的一格** (issue #159): 队列必须是空的。改直调前这里会留下三个 job
+    //    (parent 第二相 + `sync:option_contract` + `sync:us_equity_bar`), 而那两个 child
+    //    是**维度级**的 —— 执行侧载全部已开闸标的, 每建一只锚就把所有标的的链重下一遍。
+    //    prod 实证 93 只锚跑了 59 小时, 其中 90% 是零写入的重复外呼。
     const queued = await syncQueue.queue.getJobs([
       'waiting',
       'waiting-children',
       'delayed',
       'prioritized',
     ]);
-    expect(queued.map((j) => j.name).sort()).toEqual([
-      ANCHOR_COLD_START_JOB, // parent = 第二相
-      'sync:option_contract',
-      'sync:us_equity_bar',
-    ]);
-    // 第一相不写运行记录 —— 两相加起来才是一次冷启动 (FR-026 记的是结局)。
-    expect(await prisma.anchorColdStartRun.count()).toBe(0);
+    expect(queued).toHaveLength(0);
 
-    await seedTargetDayData(instrumentId);
-    const second = await coldStart.run({
-      anchorId,
-      ticker: TICKER,
-      now: SAT_NIGHT,
-      phase: 'snapshot',
-    });
-
-    expect(second).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
     const row = await theSnapshotRow();
     expect(dayOf(row.sessionDate)).toBe(TARGET);
     expect(row.source).toBe(SNAPSHOT_SOURCE_EOD);
@@ -376,7 +367,7 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
     const anchorId = await createAnchorFor(TICKER);
     await seedTargetDayData(instrumentId);
 
-    await coldStart.run({ anchorId, ticker: TICKER, now: FRI_AFTER_CLOSE, phase: 'snapshot' });
+    await coldStart.run({ anchorId, ticker: TICKER, now: FRI_AFTER_CLOSE });
 
     const row = await theSnapshotRow();
     expect(dayOf(row.sessionDate)).toBe(TARGET);
@@ -391,7 +382,7 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
     const anchorId = await createAnchorFor(TICKER);
     await seedTargetDayData(instrumentId);
 
-    await coldStart.run({ anchorId, ticker: TICKER, now: MON_PREMARKET, phase: 'snapshot' });
+    await coldStart.run({ anchorId, ticker: TICKER, now: MON_PREMARKET });
 
     const row = await theSnapshotRow();
     expect(dayOf(row.sessionDate)).toBe(TARGET);
@@ -411,7 +402,6 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
       anchorId,
       ticker: TICKER,
       now: SAT_MIDDAY,
-      phase: 'snapshot',
     });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
@@ -431,7 +421,6 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
       anchorId,
       ticker: TICKER,
       now: MON_MIDSESSION,
-      phase: 'snapshot',
     });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
@@ -484,7 +473,7 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
     const anchorId = await createAnchorFor(TICKER);
     await seedTargetDayData(instrumentId);
 
-    await coldStart.run({ anchorId, ticker: TICKER, now: SAT_NIGHT, phase: 'snapshot' });
+    await coldStart.run({ anchorId, ticker: TICKER, now: SAT_NIGHT });
     const afterFirst = await prisma.optionDailySnapshot.count();
     expect(afterFirst).toBe(1);
     expect(port.calls).toHaveLength(1);
@@ -505,7 +494,7 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
     const anchorB = await createAnchorFor(TICKER_B);
 
     await seedTargetDayData(a.instrumentId);
-    await coldStart.run({ anchorId: anchorA, ticker: TICKER, now: SAT_NIGHT, phase: 'snapshot' });
+    await coldStart.run({ anchorId: anchorA, ticker: TICKER, now: SAT_NIGHT });
     expect(port.calls).toHaveLength(1);
     port.calls.length = 0;
 
