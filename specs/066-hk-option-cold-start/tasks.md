@@ -58,7 +58,7 @@ updated_at: '2026-08-22'
    🚫 **MUST NOT 走 `{ optionChain: true, optionSnapshot: false }` 这个中间态**当临时闸。该组合在能力表的本意里不存在（值域只有「开通」与「已知但未开通」两种），而冷启动第 7 步的 chain-only 早退位于**盘中闸、`no_option_chain` 判断、快照落库复判之前** ⇒ 三条同时破：无挂牌期权的港股票落 `backfilled`（结局说谎）、盘中建锚落 `backfilled` 而非 `intraday_skipped`、且 `dataAlreadyPresent` 退化成「合约计数 > 0」使无期权票**每次重复投递都重跑一遍链发现**（破 Edge Case 10）。
 6. 🚫 **T10 MUST NOT 动 `market-session.rules.ts`**（原第③处「港股午休还原成两段」已作废）：盘中采价的闸读的是**供应方的市场时段状态**（归一后只有「常规连续交易时段」才准采，午休不在白名单内），**根本不读本地时段表**。三个消费方逐个核过 —— 补数闸要的正是「含午休」的单段语义；盘中采价不读那张表；只有**尚未接入**的盘中告警（市场参数写死 `cn`）将来接 hk 时才需要拆段，那不属于本片。
 7. **T17 → T10**：`futu-realtime-quote.adapter.ts` 与快照适配器复用同一个 `vendorTimeToDate`。反了的话港股盘中价会带着偏 12 小时的时间戳落进 `intraday_at`，而那一列是**真判据**（90 秒新鲜度闸读它）—— 快照那列只是证据、偏了不影响判据，实时价这列偏了会让锚**恒被判为陈旧**或**恒被判为新鲜**，取决于偏的方向。
-8. **T14 → T15**：wg1 隧道是 E2E 实跑的硬前置。PoC 走 SSH 在港机本机打不需要它，T15 要让**本机的 NestJS 进程**连 shim，SSH 打不通这条。
+8. **批 B 已部署到 prod → T15**（2026-08-23 改：原文是「T14 → T15」，随 T14 撤销一并改口径）。T15 在 **prod** 上跑真锚验收，**不**在本机 —— 本机 live 联调是被蓄意关掉的一条路，且它验的是生产上不存在的配置。理由全文见 T14 的撤销说明。
 
 ## 🗂 两批推进（U2 结论未落地前）
 
@@ -66,14 +66,14 @@ updated_at: '2026-08-22'
 
 > ✅ **批 A 已于 2026-08-23 全部完成并 push**（`T17` / `T10` / `T11` / `T12` / `T13`，连同更早的 `T01`–`T05` / `T08`）。
 >
-> 🚫 **但它不单独开 PR** —— 仓库 PR 模板的第 3 个 hard-gate checkbox 要求「本特性的 `state_branches` 均已在 integration test 中 100% `it()` 覆盖」，而批 A **覆盖不到 7 条**（1 / 2 / 3 / 4 / 6 / 7 归 T06 / T07，21 归 T15）—— 那些分支在冷启动未开通时**物理上不可达**，不是测试没写。⇒ **单 PR，等批 B 落地后一起开**（2026-08-23 决定）。
+> 🚫 **但它不单独开 PR** —— 仓库 PR 模板的第 3 个 hard-gate checkbox 要求「本特性的 `state_branches` 均已在 integration test 中 100% `it()` 覆盖」，而批 A **覆盖不到 7 条**（1 / 2 / 3 / 4 / 6 / 7 归 T06 / T07，21 归 T09）—— 那些分支在冷启动未开通时**物理上不可达**，不是测试没写。⇒ **单 PR，等批 B 落地后一起开**（2026-08-23 决定）。
 >
 > 🚨 **批 B 落地前禁止对本分支接 auto-merge** —— 批 B 要往同一分支 push，而 auto-merge 启用后再 push 会让新 commit 孤儿化（git-workflow 明禁）。
 
 | 批 | Task | 说明 |
 | --- | --- | --- |
-| **A（可先行）** | `T17 → T10 → T12 → T13`，并行 `T11`、`T14` | 与 OI 归属正交。`T11` 现在就可验 —— `hk_option_contract` 与 `hk_underlying_iv_daily` 两个维度**已 enabled**、已在同一队列上 |
-| **B（等 #164）** | `T16`（读结论）→ `T09`（分叉）→ `T06`（开通）→ `T07`；`T15` 另需 `T14` | 见排序铁律 4 / 5 |
+| **A（可先行）** | `T17 → T10 → T12 → T13`，并行 `T11` | 与 OI 归属正交。`T11` 现在就可验 —— `hk_option_contract` 与 `hk_underlying_iv_daily` 两个维度**已 enabled**、已在同一队列上。⚠️ `T14` 已于 2026-08-23 **撤销**，不在任何一批里 |
+| **B（等 #164）** | `T16`（读结论）→ `T09`（分叉）→ `T06`（开通）→ `T07`；`T15` 在**批 B 部署到 prod 之后**跑 | 见排序铁律 4 / 5 / 8 |
 
 ⚠️ **批 A 跑完不满足 `SC-001`**：港股锚届时能拿到期权合约集、标的 IV（当晚 23:00 cron）、日线（22:00 或建锚时取）、盘中实时价，但**没有期权日快照**，也没有「建完即有」的即时性。P1 故事要等批 B。
 
@@ -97,7 +97,7 @@ updated_at: '2026-08-22'
 
 - [X] T08 [P] [Server] **标的 IV 适配器认 hk + 回填跨窗 + 分位样本只数真实观测**（`FR-002`, `FR-018`, `FR-019`, `FR-019a`, plan §A9）：`futu-underlying-iv.adapter.ts` 的 `MARKET_TO_FUTU_PREFIX` 加 `hk: 'HK'`。`hk_underlying_iv_daily.history_depth = 1095` 走既有 `splitBackfillWindows()` —— 🚨 **单个 364 天窗港股只返 244 个交易日、美股 250，两者都不足 `IVP_MIN_WINDOW_TRADING_DAYS = 252`**，只拉一年会让分位恒为 `insufficient_window` **且不报错**。港股历史起点实测 **2023-06-27**（美股 2023-06-26），总深约 3.15 年 / ~773 行。⚠️ **补一条只在港股才够得到的污染路径**：无挂牌期权的标的其概览整行为空值观测（网关返 200 + 整行 `'N/A'`，经 `numToString` 落 `null`），若这类空行累积到 252 就被判「样本充足」，会让一个毫无意义的分位看起来可算 ⇒ 样本判据必须只数**真实有值**的观测。→ verify: 断 ① 港股标的完成首次回填后分位**可算**（`SC-007` 前半）；② 只回填一年（244 行）时分位为「不可算」而**不是** 0（`SC-007` 后半 + `state_branches` 14）；③ 无挂牌期权标的的分位**恒为不可算**，不因空值观测累积而变成可算（`SC-012`）；④ 用 PoC 落进 `__fixtures__/` 的真实港股 `/his-vol` 响应断解析正确
 
-- [ ] T09 [Server] **`oiAsOf` 按市场分叉（纯规则层）**〔批 B · [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164)〕（`FR-016`, plan §A6）🚨 **本 task 被 U2 卡着，08-25 出结论后才动**：若实测证明 HKEX 22:00 的 EOD 已把当日 OI 定稿 → 给 `resolveSnapshotSpec` 增一个**按市场的 `oiRefreshedAtEod` 事实位**，由调用方从登记表喂进来（**纯函数仍零 I/O**）；若证否 → 现规则逐字适用，本 task 归零（只留一条把结论钉住的断言）。🚫 **MUST NOT 把 `eod` / `premarket_backfill` 两条 `oiAsOf` 路径抹平**（规则层注释明禁）：抹平后永远不会红，但两条路径产出的 OI 差一天，而活跃度排名与 UI 的 `asOf` 都读它。🚫 **本 task MUST NOT 翻任何开关** —— 开通归 T06，且两个开关必须在**同一个 commit** 里一起翻（`FR-016a`，排序铁律 5）。⇒ 本 task 的验收面**全在纯函数层**，落库面归 T06 与 T15。→ verify: 断 ① `resolveSnapshotSpec` 对 hk 算出的 `oi_as_of` 与实测口径一致（结论进 spec `## Clarifications`，断言引用它）；② 美股两条路径的 `oiAsOf` **逐点不变**（分叉是增量不是改写）；③ 分叉后函数仍**零 I/O**（事实位由调用方从登记表喂进来，不在函数内查库）
+- [ ] T09 [Server] **`oiAsOf` 按市场分叉（纯规则层）**〔批 B · [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164)〕（`FR-016`, plan §A6）🚨 **本 task 被 U2 卡着，08-25 出结论后才动**：若实测证明 HKEX 22:00 的 EOD 已把当日 OI 定稿 → 给 `resolveSnapshotSpec` 增一个**按市场的 `oiRefreshedAtEod` 事实位**，由调用方从登记表喂进来（**纯函数仍零 I/O**）；若证否 → 现规则逐字适用，本 task 归零（只留一条把结论钉住的断言）。🚫 **MUST NOT 把 `eod` / `premarket_backfill` 两条 `oiAsOf` 路径抹平**（规则层注释明禁）：抹平后永远不会红，但两条路径产出的 OI 差一天，而活跃度排名与 UI 的 `asOf` 都读它。🚫 **本 task MUST NOT 翻任何开关** —— 开通归 T06，且两个开关必须在**同一个 commit** 里一起翻（`FR-016a`，排序铁律 5）。⇒ 本 task 的验收面**全在纯函数层**，落库面归 T06 与 T15。→ verify: 断 ① `resolveSnapshotSpec` 对 hk 算出的 `oi_as_of` 与实测口径一致（结论进 spec `## Clarifications`，断言引用它）；② 美股两条路径的 `oiAsOf` **逐点不变**（分叉是增量不是改写）；③ 分叉后函数仍**零 I/O**（事实位由调用方从登记表喂进来，不在函数内查库）；④ 🆕 **希腊值缺失的行照常在库并带标注、不丢行**（`SC-010`, `state_branches` 21 —— 2026-08-23 从 T15 挪来：T15 已改为 post-deploy 验收，这一条不该等到部署后才有覆盖，而它在**纯函数层就能断**）。🚨 **两份真实 fixture 里都没有缺失态**，别去里面找：`hk-option-snapshot-00700-2026-08-23.json` 实测 132/132 `greeks_complete=true`；`option-snapshot-us-2026-07-29.csv` 是 7 列瘦投影（`contract_code,option_side,strike_price,bid,ask,delta,underlying_spot`），2150 行 `delta` 空值为 **0**。⇒ 本条必须**自己构造缺失态**（取真实响应里的一行，删掉它的 greeks 块再喂进解析），断 ⓐ 该行**仍在**结果集里（不被丢弃）、ⓑ 带 `greeks_complete=false` 标注、ⓒ 五个希腊值落 `null` 而**不是** 0（0 在下游是有意义的值，与「算不出」方向相反）。📌 丢行的后果是「腿在但算不出档」与「这条腿今天整行没采到」不可区分 —— 前者是数学固有现象，后者是真缺口
 
 - [X] T10 [P] [Server] **港股实时报价两处连改**（`FR-003`, plan §A7）：① `futu-realtime-quote.adapter.ts` 的 `MARKET_TO_FUTU_PREFIX` 加 `hk: 'HK'`；② `marketdata.module.ts:404` 的 `MarketRoutedRealtimeQuoteAdapter` 补 hk 槽位 —— 今天港股锚在每 30 秒的盘中 tick 里落 `unsupported-market`（无实时源路由，属**配置事实**、按纪律不计入熔断），补上槽位这条路才通。🚫 **MUST NOT 动 `market-session.rules.ts`**（排序铁律 6）：盘中采价的闸读的是**供应方的市场时段状态**，归一后只有「常规连续交易时段」准采、午休不在白名单内 ⇒ 天然不采，本地时段表的单段登记与本 task 无关。→ verify: 断 ① 港股连续竞价时段实时价投影到锚（`state_branches` 16）；② **午休时段不采、不把午休盘口标成盘中价**（`state_branches` 17，本 task 的核心回归钉 —— 🚨 断言必须打在**供应方时段状态的归一**这一层，打在本地时段表上验的是另一件事）；③ 非交易日 / 收盘后保留收盘档（`state_branches` 18）；④ **半日市当天下午按提前收盘判定**（`state_branches` 19 —— ⚠️ 供应方在港股半日市 12:00 之后报什么状态**尚未实测**，本条要么补实测、要么在 T15 真锚上收口，**不得凭推断写绿**）；⑤ 既有 cn 盘中告警路径**逐点不变**
 
@@ -113,11 +113,23 @@ updated_at: '2026-08-22'
 
 ## E2E
 
-- [ ] T14 [Manual] **打通本机 dev → `broker-hk` 的 wg1 隧道**（T15 的硬前置）：PoC 阶段走 `ssh $NVY_BROKER_HK_SSH_ALIAS` 在港机本机打 `10.89.0.1:8811`，零基建改动；但 T15 要让**本机的 NestJS 进程**连 shim，SSH 打不通这条。当前实测本机对 `10.89.0.1:8811` **不可达**（`curl` 返 `000`）。→ verify: 本机 `curl -m 5 --noproxy '*' http://10.89.0.1:8811/healthz` 返 **200**，且响应里 `routes` 含 11 条、`version` 非 `unknown`、`opend_connected` 与 `qot_logined` 均为 `true`
+- [X] T14 [Manual] ~~**打通本机 dev → `broker-hk` 的 wg1 隧道**~~ —— 🚫 **本条已撤销（2026-08-23），不实施**
 
-  > 备选（若 wg1 provision 成本高）：访客通道 `10.90.0.1:8811` 从本机**已可达**（返 401，token 在 `~/.config/nvy-futu/token`），但它的 nginx 对五个行情端点硬门 `^US\.`。放开成 `^(US|HK)\.` 是可审的小改，但要同步改 `capabilities/capabilities.md`（`install.sh` 的 Gate A 断言两侧集合严格相等，漏一处部署当场红），且**顺带把港股能力给了访客** —— 是不是想要，是另一个决定。
+  **撤销理由（三条，任一条独立成立）**：
 
-- [ ] T15 [E2E] **真港股锚跑通整链**〔批 B · [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164)〕（`SC-001`, `SC-003`, `SC-006`, plan §Gate 0.1）：**前置 = T14**。本机 `MARKETDATA_PROVIDER=live` + `FUTU_SHIM_URL` 指隧道内的 shim，用 `/anchor-import` 建一只真实港股锚（该 command 原生支持 `hk:`，nginx 那道闸也是 `^(us|hk):`）。→ verify: **逐条查库，不看日志** —— ① `optionsdesk.anchor` 有该行且 `market='hk'`；② `security.outbox_event` 有一条 `optionsdesk.anchor-created` 且已被 relay 消费；③ `marketdata.instrument` 有 `hk:<code>` 且 `needSync=true`；④ `marketdata.option_contract` 有该标的合约行、到期日阶梯**覆盖到远月不截断**；⑤ `marketdata.option_daily_snapshot` 有目标交易日的行，**`iv` 与五个 greeks 的非 null 率 ≥ 95%**（PoC 实测 132/132 = 100%；缺失行必须带 `greeks_complete=false` 而非丢行），`net_open_interest` **有值**；⑥ `marketdata.anchor_cold_start_run.outcome = 'backfilled'`（**不是** `market_not_enabled`、**不是** `backfill_incomplete`）；⑦ `marketdata.daily_bar` 有该标的目标交易日的行；⑧ 雷达港股页签渲染出该锚、`marketCounts` 的 hk 计数 +1。⚠️ **盯住 `backfill_incomplete`** —— 它专盖「跑完了但快照仍不在库」，是链 child 成功完成但零结果时唯一会显形的信号；看到 `backfilled` 也要顺手查第 ⑤ 条，两者不一致说明落库复判有洞。⚠️ 冷启动是**两相**的（worker `concurrency=1`，第一相入队的 flow 在它返回前一个都跑不了），第一相返回后**不要立刻判失败**，等 parent 的第二相跑完。⚠️ 另跑一遍**无挂牌期权**的港股标的（如 `hk:00777`），断落 `no_option_chain` 且**无 ERROR 级告警**
+  1. **它削弱一条刻意的安全属性**。shim 绑的是隧道虚拟 IP 而非 `0.0.0.0`，`services/futu-shim/README.md` 写明那是为了「让 shim 在隧道外不可达，**即使安全组规则被放松也一样**」。为跑一次验收把这条隧道扩到一台开发机上，削弱的正是它。
+  2. **通向港机的路本来就存在，且不经过开发机**。`ops/runbook/deploy-topology.md` § 1：futu-shim 自己的部署链就是**两跳** `runner → app → 港机（走 wg1 隧道内 SSH）`，消费侧同表写明 `mono app → futu-shim（wg1 隧道）` —— `app` 既是 wg1 的 peer，也是跳板。
+  3. **它的前提「本机 live 联调」是被蓄意关掉的**。`docs/conventions/local-verification.md` 明写：`marketdata.config.ts` 蓄意不给 `FUTU_SHIM_URL` / `FUTU_SHIM_TOKEN` 加 `.default()`，`.env` 里的 URL 为空串 ⇒ **显式 `live` 的 boot 必炸**，「本地 live 联调这条路当前蓄意不可用」，开不开还挂在一个开放问题上。
+
+  ⇒ T15 改为**在 prod 上跑**（见下），本条随之不再需要。**MUST NOT** 因为「打通了更方便」把它捡回来 —— 方便不是重开那条口子的理由。
+
+- [ ] T15 [E2E] **真港股锚跑通整链**〔批 B · [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164)〕（`SC-001`, `SC-003`, `SC-006`, plan §Gate 0.1）：**前置 = 批 B 已部署到 prod**（**不是**隧道 —— 见 T14 的撤销说明）。用 **prod** 的 `/anchor-import` 建一只真实港股锚（该 command 原生支持 `hk:`，nginx 那道闸也是 `^(us|hk):`），随后逐条查 **prod 的库**。
+
+  🚨 **为什么必须在 prod 跑，而不是本机**：prod 走 wg1 直连 shim + 生产 env；本机即使打通隧道，跑的也是**另一条配置路径**。本 task 的全部价值在「真数据端到端」—— 验在一条**生产上不存在的路**上，绿了也不构成生产链路的证据。这条与 plan `Gate 0.1` 的定位一致：该 gate 在 plan 阶段是「已规划」而非「已完成」，最终由本 task 落证据。
+
+  ⚠️ **这是 prod 写操作**：建锚会往生产库写真行。动手前把标的与参数**呈给维护者确认**，不自主执行。
+
+  → verify: **逐条查库，不看日志** —— ① `optionsdesk.anchor` 有该行且 `market='hk'`；② `security.outbox_event` 有一条 `optionsdesk.anchor-created` 且已被 relay 消费；③ `marketdata.instrument` 有 `hk:<code>` 且 `needSync=true`；④ `marketdata.option_contract` 有该标的合约行、到期日阶梯**覆盖到远月不截断**；⑤ `marketdata.option_daily_snapshot` 有目标交易日的行，**`iv` 与五个 greeks 的非 null 率 ≥ 95%**（PoC 实测 132/132 = 100%；缺失行必须带 `greeks_complete=false` 而非丢行），`net_open_interest` **有值**；⑥ `marketdata.anchor_cold_start_run.outcome = 'backfilled'`（**不是** `market_not_enabled`、**不是** `backfill_incomplete`）；⑦ `marketdata.daily_bar` 有该标的目标交易日的行；⑧ 雷达港股页签渲染出该锚、`marketCounts` 的 hk 计数 +1。⚠️ **盯住 `backfill_incomplete`** —— 它专盖「跑完了但快照仍不在库」，是链 child 成功完成但零结果时唯一会显形的信号；看到 `backfilled` 也要顺手查第 ⑤ 条，两者不一致说明落库复判有洞。📌 **冷启动已不再分两相**（issue #159：链改直调采集本体，两相合一）—— 一次调用直达终局，**不必**再等第二相。若看到「结局已落但快照还没有」，那不是时序未完成，是真缺口。⚠️ 另跑一遍**无挂牌期权**的港股标的（如 `hk:00777`），断落 `no_option_chain` 且**无 ERROR 级告警**
 
 ## Polish
 
@@ -164,7 +176,7 @@ updated_at: '2026-08-22'
 | SC-010 | T09 |
 | SC-011 | T05 |
 | SC-012 | T08 |
-| `state_branches` 1–21 | 1 → T06 ｜ 2 → T07 ｜ 3 → T07 ｜ 4 → T06 ｜ 5 → T03 ｜ 6 → T07 ｜ 7 → T07 ｜ 8 → T05 ｜ 9 → T05 ｜ 10 → T02 ｜ 11 → T02 ｜ 12 → T02 ｜ 13 → T02 ｜ 14 → T08 ｜ 15 → T08 ｜ 16 → T10 ｜ 17 → T10 ｜ 18 → T10 ｜ 19 → T10 ｜ 20 → T11 ｜ 21 → T15 |
+| `state_branches` 1–21 | 1 → T06 ｜ 2 → T07 ｜ 3 → T07 ｜ 4 → T06 ｜ 5 → T03 ｜ 6 → T07 ｜ 7 → T07 ｜ 8 → T05 ｜ 9 → T05 ｜ 10 → T02 ｜ 11 → T02 ｜ 12 → T02 ｜ 13 → T02 ｜ 14 → T08 ｜ 15 → T08 ｜ 16 → T10 ｜ 17 → T10 ｜ 18 → T10 ｜ 19 → T10 ｜ 20 → T11 ｜ 21 → T09 |
 | **Acceptance Scenario 11 条** | US1: AS1→T06+T15 · AS2→T07 · AS3→T06 · AS4→T03；US2: AS1→T08 · AS2→T08 · AS3→T08；US3: AS1→T10 · AS2→T10（午休） · AS3→T10（半日市） · AS4→T12+T13 |
 | **Edge Case 10 条** | 1 无挂牌期权→T05 ｜ 2 有期权但快照未落→T05 ｜ 3 两者不得折叠→T05 ｜ 4 希腊值缺失→T15 ｜ 5 港美同时触发→T11 ｜ 6 停牌→T01 ｜ 7 两地上市→T01 ｜ 8 日历视野未覆盖→T07 ｜ 9 建锚回滚→T06 ｜ 10 重复投递→T06 |
 
