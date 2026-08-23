@@ -103,7 +103,7 @@ updated_at: '2026-08-22'
 
 - [X] T12 [P] [Mobile] **港股「无盘中报价」常驻说明下线**（`FR-020`, plan §A7 第 4 点）：`radar.rules.ts` 的 `MARKETS_WITHOUT_INTRADAY` 去掉 `'hk'`（该常量随之变成空数组 —— **保留常量本身**，它是「市场能力表」的落点，删掉会让下一个无盘中市场无处可挂）；`optionsdesk-copy.ts` 的 `marketNoIntraday` 文案随之不再被引用 → 一并清理（本次改动产生的 orphan 必须清）。→ verify: `nx test mobile` 绿；`radar.rules.ts` 的 `marketLacksIntraday('hk')` 返 `false`
 
-- [ ] T13 [Mobile-E2E] **雷达港股页签双向断言反转**（`FR-020`, `SC-008`, plan §A7）：`optionsdesk-anchors-radar.spec.ts:1011-1040` 那条断言现在断的是「港股页签**有**常驻说明」，需反转为「**没有**」，并**保留**美股侧的对照断言（双向，只断单向会让「两个页签都没有」照样绿）。→ verify: `nx run mobile:e2e` 全绿；断言在港股页签**有锚**与**零锚**两种状态下都成立（说明的消失不能依赖有没有行）
+- [X] T13 [Mobile-E2E] **雷达港股页签双向断言反转**（`FR-020`, `SC-008`, plan §A7）：`optionsdesk-anchors-radar.spec.ts:1011-1040` 那条断言现在断的是「港股页签**有**常驻说明」，需反转为「**没有**」，并**保留**美股侧的对照断言（双向，只断单向会让「两个页签都没有」照样绿）。→ verify: `nx run mobile:e2e` 全绿；断言在港股页签**有锚**与**零锚**两种状态下都成立（说明的消失不能依赖有没有行）
 
 ## E2E
 
