@@ -231,6 +231,16 @@ context7_verified: []
 
 `sync-option-contract` 对链**永远只传** `code/start/end/option_type`，**不传** `option_cond_type` / `data_filter`。采集端一旦筛就丢证据且**不可回补**（vendor 不提供历史交易日的链快照）。过滤是读取面的事。港股照此，不开例外。
 
+#### A13 — vendor 时间戳按**行所属市场**解析，映射与 `session-clock` 同源
+
+`futu-option-snapshot.adapter.ts` 的 `VENDOR_UPDATE_TIME_ZONE` 固定按美东解释 vendor 的 `update_time`。港股实测给的是**港股当地时刻** ⇒ 该列在港股上整体偏 12 小时。
+
+⇒ 引入一张 `market → tz` 映射，按行的市场解析。🚨 **它必须与 `session-clock.ts` 的 `EXCHANGE_TIME_ZONE` 同源，MUST NOT 复制第二份** —— 两份市场时区表一旦漂开，表现是「某个市场的时间戳悄悄差几小时」，不报错。
+
+📌 **为什么不是紧急修**：该列是纯证据零判据（`option-snapshot.port.ts` 明禁用它顶替采集时刻，新鲜度看信封的 `as_of`），偏了不影响任何判据。**但它卡在 A7 前面** —— `futu-realtime-quote.adapter.ts` 复用同一个 `vendorTimeToDate`，而实时报价那条路上 `intraday_at` 是真判据（90 秒新鲜度闸读它）。
+
+🚫 **MUST NOT 顺手把 `exchangeCalendarDate` 对未登记市场的静默回落也改成抛** —— 那处的回落是既有语义（meta 维度空 scope 依赖它），改极性会波及全部维度的 asOf。未登记市场的风险已由 `marketdata.dimension-scope-invariant.it.spec.ts` 从**数据侧**兜住。
+
 ## Complexity Tracking
 
 > Constitution Check 无违规，本表为空。
