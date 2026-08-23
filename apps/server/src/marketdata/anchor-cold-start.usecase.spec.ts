@@ -530,6 +530,31 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     expect(recordedRow(ctx.runUpsert).targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
   });
 
+  it('🚨 066 T07: 日历前瞻视野未覆盖 **hk 的今天** ⇒ 同样放弃、不猜口径 (Edge Case 8)', async () => {
+    // 🚨 **这条只在本层验得到**: IT 里 `TRADING_CALENDAR_PORT` 绑的是 Mock (周一~周五恒判
+    //    `trading`), **恒不返 `unknown`** ⇒ 在那一层写它只会得到一个恒真用例。而真跑的
+    //    `DbTradingCalendarAdapter` 对「覆盖声明里没有 hk 这一行 / 声明没填到今天」正是答
+    //    `unknown` —— 港股日历是本片新接入的一档, 它的覆盖声明比 us 更可能落在视野之外。
+    //
+    // 时钟蓄意停在**港股盘中** (12:30 HKT, 午休正中): 结局仍须是 `calendar_missing` 而不是
+    // `intraday_skipped` —— 日历不可判时「盘中还是盘后」这个问题本身就没有意义, 而前者是
+    // 需人工介入的一档、后者是「一切正常」的一档 (FR-027 零折叠)。
+    const ctx = build({ todayCalendarStatus: 'unknown' });
+
+    const result = await ctx.usecase.run({
+      anchorId: ANCHOR_ID,
+      ticker: 'hk:00700',
+      now: MONDAY_1230_HKT,
+    });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
+    expect(ctx.collect).not.toHaveBeenCalled();
+    const row = recordedRow(ctx.runUpsert);
+    // 目标日已定位到 ⇒ 仍落痕; 而**口径**(source / oi_as_of) 一格都不猜。
+    expect(row.targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
+    expect(row.reason).toContain('hk');
+  });
+
   it('🚨 采集跑完但快照仍不在库 ⇒ backfill_incomplete, MUST NOT 记成 backfilled (FR-027a)', async () => {
     // 链 child **成功完成但零结果** 时的真实形态: collect 照常返回 (非配额耗尽), 而库里
     // 一行都没多出来。2026-08-17 本地真跑实撞 —— 13 只票链全失败、job 却 completed。

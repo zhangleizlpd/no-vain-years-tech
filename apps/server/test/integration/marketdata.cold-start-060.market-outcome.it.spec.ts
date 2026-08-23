@@ -25,6 +25,7 @@ import {
   type DimensionJobPayload,
 } from '../../src/marketdata/marketdata-sync.queue';
 import { SNAPSHOT_SOURCE_EOD } from '../../src/marketdata/sync-option-snapshot.usecase';
+import { SyncOptionContractUseCase } from '../../src/marketdata/sync-option-contract.usecase';
 import {
   OPTION_SNAPSHOT_PORT,
   OptionSnapshotBudgetExhaustedError,
@@ -102,6 +103,10 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   // 而 hk 的日历行由 `beforeEach` 单独 seed (`market: 'hk'`) —— 共用的是**日期集合**, 不是行。
   /** HKT 周日 08:00 (= 北京周日 08:00): 港股休市 —— 敏感档可写, 目标日 = 上周五。 */
   const HK_SUN_MORNING = new Date('2026-08-16T00:00:00Z');
+  /** HKT 周一 10:30: 港股连续竞价进行中 (066 T07 verify ①)。 */
+  const HK_MON_MIDSESSION = new Date('2026-08-17T02:30:00Z');
+  /** HKT 周一 12:30: 港交所**午休正中** —— 单段登记 `[09:30,16:00]` 下仍判「该场进行中」。 */
+  const HK_MON_LUNCH_BREAK = new Date('2026-08-17T04:30:00Z');
   const HK_TICKER = 'hk:00700';
 
   /** market → 富途 code 前缀 (fake 端口造 owner 行用; 真表在各 adapter 的 `MARKET_TO_FUTU_PREFIX`)。 */
@@ -1023,5 +1028,150 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     ).toBe(0);
     const run = await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } });
     expect(run.reason).toContain('无挂牌期权');
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 066 T07 冷启动的时段闸与放弃路径 (FR-012)
+  //
+  // 🚨 **本段零新增实现面** —— 四条分支的实现早就在 (`isSessionUnderway` 的盘中闸、日历三态的
+  // 放弃路径、配额顺延), 只是**在港股上从未被执行过**: T06 之前 hk 在第 1c 步就 `market_not_
+  // enabled` 早退, 这四格一个都够不到。⇒ 本段是把它们逐条钉住, 而**这四条错了都不报错**。
+  //
+  // 📌 verify ④「日历前瞻视野未覆盖 hk 的今天」**蓄意不在本层**: IT 里 `TRADING_CALENDAR_PORT`
+  //    绑的是 Mock (周一~周五恒 `trading`), **恒不返 `unknown`** ⇒ 在这里写它只会得到一个恒真
+  //    用例。它落在 `anchor-cold-start.usecase.spec.ts` 的「066 T07 … Edge Case 8」那条。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('🚨 ① 港股连续竞价时段建锚 ⇒ 补链, 但**不写任何按交易日归属的快照** (state_branches 2)', async () => {
+    const { instrumentId } = await seedUnderlying(HK_TICKER);
+    const anchorId = await createAnchorFor(HK_TICKER);
+    const chainSpy = vi.spyOn(moduleRef.get(SyncOptionContractUseCase), 'collect');
+
+    try {
+      const result = await coldStart.run({
+        anchorId,
+        ticker: HK_TICKER,
+        now: HK_MON_MIDSESSION,
+      });
+
+      expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
+      // 🚫 链**不受盘中判据约束** (FR-012): 合约的静态属性与交易日无关 ⇒ 盘中照补。
+      //    盘中闸只管敏感档, 且落在第 7 步 —— 真正要写快照的那一刻。
+      expect(chainSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      chainSpy.mockRestore();
+    }
+
+    // 🚨 判据**不是**「午休/盘中取不到上一场的数据」, 而是「放行会写出一行标签错的脏数据」:
+    //    此刻 §D4 算出的归属日恒为**上一个已收盘交易日**, 而拿到的是**今天的盘中态** ⇒ 那行
+    //    按唯一键占位, 当晚正确的行反被挡掉 ⇒ 永久缺口。fail-closed: 宁可缺一场, 不可脏一场。
+    expect(port.calls).toHaveLength(0);
+    expect(
+      await prisma.optionDailySnapshot.count({
+        where: { contract: { underlyingInstrumentId: instrumentId } },
+      }),
+    ).toBe(0);
+  });
+
+  it('🚨 ② 港股**午休**时段建锚 ⇒ 判定同盘中, 一行快照都不写 (state_branches 3)', async () => {
+    // 🚨 闸用的是 `isSessionUnderway`(**含午休**, 问「这一场收了没有」), MUST NOT 换成
+    //    `isWithinTradingSession`(问「此刻能不能成交」, 午休返 false ⇒ 放行)。港股的单段登记
+    //    `[09:30, 16:00]` 正是本条要的语义 —— **不需要也不允许**为它拆段。
+    const { instrumentId } = await seedUnderlying(HK_TICKER);
+    const anchorId = await createAnchorFor(HK_TICKER);
+
+    const result = await coldStart.run({
+      anchorId,
+      ticker: HK_TICKER,
+      now: HK_MON_LUNCH_BREAK,
+    });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
+    expect(port.calls).toHaveLength(0);
+    expect(
+      await prisma.optionDailySnapshot.count({
+        where: { contract: { underlyingInstrumentId: instrumentId } },
+      }),
+    ).toBe(0);
+    // 终态不重试 ⇒ 这一格落错了那一场的快照**永久缺失** (常规轮当晚写的是当晚那一场)。
+    const run = await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } });
+    expect(run.outcome).toBe(COLD_START_OUTCOME.INTRADAY_SKIPPED);
+    expect(run.targetSession?.toISOString().slice(0, 10)).toBe(TARGET);
+  });
+
+  it('🚨 ③ 交易日历缺 hk 的行 ⇒ calendar_missing + ERROR (需人工介入), **不猜日期**', async () => {
+    const { instrumentId } = await seedUnderlying(HK_TICKER);
+    const anchorId = await createAnchorFor(HK_TICKER);
+    // 只删 hk 的行 —— us 的还在, 证明「缺行」是按市场判的, 不是「表空了」。
+    await prisma.tradingDay.deleteMany({ where: { market: 'hk' } });
+    expect(await prisma.tradingDay.count({ where: { market: 'us' } })).toBeGreaterThan(0);
+
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      const result = await coldStart.run({
+        anchorId,
+        ticker: HK_TICKER,
+        now: HK_SUN_MORNING,
+      });
+      expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
+      // ERROR 级 = 需人工介入 —— 与 `intraday_skipped`(「一切正常」) 分属两档, 不折叠。
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    const run = await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } });
+    // 🚨 猜一个日子 ⇒ 一批 session_date 标错的脏行, 比不补更难发现且要人工回删。
+    //    「猜了没有」的可判读证据就是这一格: 定位不到就必须是 NULL。
+    expect(run.targetSession).toBeNull();
+    expect(run.reason).toContain('hk');
+    expect(port.calls).toHaveLength(0);
+    expect(
+      await prisma.optionDailySnapshot.count({
+        where: { contract: { underlyingInstrumentId: instrumentId } },
+      }),
+    ).toBe(0);
+  });
+
+  it('🚨 ⑤ 港股供应方配额耗尽 ⇒ 顺延、**不记失败**, 且已落的数据一行不动 (state_branches 7)', async () => {
+    const { instrumentId } = await seedUnderlying(HK_TICKER);
+    const anchorId = await createAnchorFor(HK_TICKER);
+    // 造一份**别的交易日**已落的快照: 顺延路径 MUST NOT 碰它 (起手复判问的是 TARGET, 不命中)。
+    const contract = await prisma.optionContract.findFirstOrThrow({
+      where: { underlyingInstrumentId: instrumentId },
+      select: { id: true },
+    });
+    await prisma.optionDailySnapshot.create({
+      data: {
+        contractId: contract.id,
+        sessionDate: dateOf(DAY_BEFORE_TARGET),
+        source: SNAPSHOT_SOURCE_EOD,
+        quoteAsOf: new Date(`${DAY_BEFORE_TARGET}T08:31:07Z`),
+        oiAsOf: dateOf('2026-08-12'),
+        bid: '2.30',
+        ask: '2.40',
+        greeksComplete: true,
+      },
+    });
+    port.failNextWith = new OptionSnapshotBudgetExhaustedError('IT 造的 429 (港股)');
+
+    const result = await coldStart.run({
+      anchorId,
+      ticker: HK_TICKER,
+      now: HK_SUN_MORNING,
+    });
+
+    // 🚫 顺延 ≠ 失败 (FR-018 / FR-019b): 落 `backfilled` 是谎 (什么都没采到), 落
+    //    `retry_exhausted` 是冤 (还没开始重试) ⇒ 这张表此刻必须是空的。
+    expect(result).toEqual({ settled: false, deferral: 'vendor_budget' });
+    expect(await prisma.anchorColdStartRun.count()).toBe(0);
+    expect(port.calls).toHaveLength(1);
+
+    // 已落的那一行原样在场 —— 顺延不是回滚, 不许把已有数据当「半成品」清掉。
+    const rows = await prisma.optionDailySnapshot.findMany({
+      where: { contract: { underlyingInstrumentId: instrumentId } },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.sessionDate.toISOString().slice(0, 10)).toBe(DAY_BEFORE_TARGET);
   });
 });
