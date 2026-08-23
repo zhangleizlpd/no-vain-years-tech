@@ -387,4 +387,73 @@ describe('SyncOptionContractUseCase', () => {
       expect(h.instrumentUpsert).toHaveBeenCalledTimes(1);
     });
   });
+
+  /**
+   * 🚨 本体 `collect` 提 public (issue #159)。
+   *
+   * 冷启动直调它补**单只**新锚, 不再入维度 job —— 维度 job 的工作集是「全部 `needSync`
+   * 标的」⇒ 93 只锚 = 93 次全域重扫 (O(N²))。prod 实测 2026-08-23: 单轮 2555 秒 /
+   * 872 次外呼 / **写 0 行**, 93 只锚跑 59 小时, 而真正需要的是约 42 秒。
+   *
+   * 形态**逐字对齐** {@link SyncOptionSnapshotUseCase}: `run()` 只做「从 dim/input 算
+   * spec」的薄适配 (供 `factExecutor` 注册), 工作集选择**恒属** `factExecutor` ——
+   * 本体从不自己查工作集, 那才是「第二个口子」。
+   */
+  describe('🚨 collect —— 本体 public 入口 (冷启动直调, issue #159)', () => {
+    const SPEC = { businessDate: '2026-09-18' };
+
+    it('只采传入的那一只 —— 工作集不从库里查', async () => {
+      const h = makeHarness({
+        ladder: { 'us:PEP': ['2026-09-18'], 'us:VICI': ['2026-09-18'] },
+      });
+
+      await h.useCase.collect([PEP], SPEC, emptyStats());
+
+      // VICI 也是已开闸标的, 但没传进来就一次都不碰 —— 这正是 54× 放大的解药。
+      expect(h.expiryCalls).toEqual(['us:PEP']);
+    });
+
+    it('🚨 MUST NOT 跑兜底 seed —— 那是维度级职责, 留在薄适配层', async () => {
+      // seed 修的是「有锚必有 Instrument 行」这个 FK 前提, 与本轮工作集无关; 冷启动
+      // 相一已 seed 过自己那一只。让本体也跑 = 每建一只锚就全量扫一遍锚表。
+      const h = makeHarness({ anchors: ['us:NVDA'], existing: [] });
+
+      await h.useCase.collect([PEP], SPEC, emptyStats());
+
+      expect(h.instrumentUpsert).not.toHaveBeenCalled();
+    });
+
+    it('businessDate 由调用方显式给 —— 本体不自己算 (同快照侧 collect)', async () => {
+      const h = makeHarness({ ladder: { 'us:PEP': ['2026-09-18', '2026-12-18'] } });
+
+      // 显式给一个晚于首个到期日的业务日 ⇒ 它被 FR-028a 的 `>=` 判据剔除。
+      await h.useCase.collect([PEP], { businessDate: '2026-10-01' }, emptyStats());
+
+      expect(h.windowCalls.map((q) => q.start)).toEqual(['2026-12-18']);
+    });
+
+    it('gapCheck 差集仍 MUST 上抛 —— 换入口不许把这条对表丢掉', async () => {
+      const h = makeHarness({
+        ladder: { 'us:PEP': ['2026-09-18'] },
+        chainFor: async () => [], // 权威列表有该到期日, 却一个合约都没发现
+      });
+
+      await expect(h.useCase.collect([PEP], SPEC, emptyStats())).rejects.toThrow(
+        /到期日对表有差集/,
+      );
+    });
+
+    it('run() 语义不变 —— 薄适配层照旧 seed + 自己算 businessDate (回归)', async () => {
+      const h = makeHarness({
+        ladder: { 'us:PEP': ['2026-09-18'] },
+        anchors: ['us:NVDA'],
+        existing: [],
+      });
+
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput('2026-09-18'));
+
+      expect(h.expiryCalls).toEqual(['us:PEP']);
+      expect(h.instrumentUpsert).toHaveBeenCalledTimes(1);
+    });
+  });
 });
