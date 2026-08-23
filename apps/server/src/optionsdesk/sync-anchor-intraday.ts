@@ -48,6 +48,9 @@ import { parseAnchorTicker } from './anchor.rules';
  * 库里有一只, failstreak 每 30 秒 +1、90 秒后 circuit open, 把 us 一起降级 —— 而 us 的源正常。
  * 熔断侧的裁决口径单点在 {@link classifyTickSource}。
  *
+ * ⚠️ 066 T10 起 hk **已接上**实时源 (live 档路由 = us + hk), 这条分支现役的对象是 cn
+ * (实时源仍挂在 `alert/`) 与不成形的 ticker —— 上面那段是它当初存在的理由, 不是现状清单。
+ *
  * 🚨 **切批是调用方的事** (Guardrail 17): 按 {@link REALTIME_QUOTE_MAX_SYMBOLS} 切、**逐批独立
  * 成败** (一批失败不拖垮其余, 与 FR-017 部分失败语义同一条)。adapter 侧只做超限前置拒绝,
  * 同一段边界逻辑写两遍必漂移。
@@ -154,7 +157,8 @@ export type TickSourceVerdict = 'success' | 'failure' | 'no-attempt';
  *   混着失败批次也算成功轮 —— 部分失败已由 {@link SyncAnchorIntradayReport} 的计数留痕。
  * - 一次成功都没有但有真源故障 ⇒ `failure`。
  * - **一次源调用都没发生** (全被两闸挡下 / 全是无路由市场) ⇒ `no-attempt`: 既不计失败也不
- *   清计数。**这一条是那颗回归钉** —— 库里只有 hk 锚时每拍都落这里, 连跑一天 circuit 也不该开。
+ *   清计数。**这一条是那颗回归钉** —— 库里只有无路由市场的锚时每拍都落这里, 连跑一天 circuit
+ *   也不该开。
  *
  * O(1) 纯函数。
  */

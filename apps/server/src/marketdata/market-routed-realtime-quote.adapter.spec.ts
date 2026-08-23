@@ -17,7 +17,8 @@ import type { VendorHttpClient, VendorRequest } from './vendor-http-client.js';
  * 按市场路由的实时报价 adapter 单测 + **module 接线的机器化回归钉** (061 T005)。
  *
  * 后半段刻意不 boot Nest: 要验的两件事 (① 实时报价与期权快照注入**同一个** client 实例
- * ② live 档下 `hk` / `cn` 槽确实空着) 都写在 `@Module` 的 metadata 与 `useFactory` 里,
+ * ② live 档下哪几个市场槽真接上了 —— 066 T10 起是 `us` + `hk`, `cn` 仍空) 都写在
+ * `@Module` 的 metadata 与 `useFactory` 里,
  * 直接读 metadata + 调工厂比起一个真容器更直接, 也验得到 mock 档那一支。
  */
 const BASE = 'http://10.89.0.1:8811';
@@ -70,7 +71,7 @@ describe('MarketRoutedRealtimeQuoteAdapter', () => {
       expect((err as Error).message).toMatch(/us/);
     });
 
-    it('cn → 同上 (本片三个槽只接了 us)', async () => {
+    it('cn → 同上 (066 T10 后 live 档接的是 us + hk, cn 槽仍留空)', async () => {
       const routed = new MarketRoutedRealtimeQuoteAdapter({ us: fakeRoute().port });
       await expect(routed.fetchQuotes(['cn:600519'])).rejects.toBeInstanceOf(
         RealtimeQuoteMarketUnsupportedError,
@@ -163,17 +164,22 @@ describe('marketdata.module 接线', () => {
   });
 
   describe('live 档', () => {
-    it('us 接上; hk / cn 槽留空 ⇒ 抛专属错误类型', async () => {
+    it('🚨 us + hk 都接上 (066 T10); cn 槽仍留空 ⇒ 抛专属错误类型', async () => {
       const { http, request } = fakeHttp();
       const port = providerFor(REALTIME_QUOTE_PORT).useFactory(LIVE_CFG, http) as RealtimeQuotePort;
 
       expect((await port.fetchQuotes(['us:PEP'])).get('us:PEP')?.price).toBe('148.21');
       expect(request).toHaveBeenCalledTimes(1);
 
-      await expect(port.fetchQuotes(['hk:00700'])).rejects.toBeInstanceOf(
+      // 🚨 hk 槽是 066 T10 的另一半 (适配器前缀是第一半): 缺它的时候港股锚每 30 秒落一次
+      // `unsupported-market`、恒为收盘档 —— 且那是**配置事实**, 不计熔断 ⇒ 一条告警都不会有。
+      expect((await port.fetchQuotes(['hk:00700'])).get('hk:00700')?.price).toBe('148.21');
+      expect(request).toHaveBeenCalledTimes(2);
+
+      await expect(port.fetchQuotes(['cn:600519'])).rejects.toBeInstanceOf(
         RealtimeQuoteMarketUnsupportedError,
       );
-      expect(request).toHaveBeenCalledTimes(1); // 无路由 ⇒ 零外呼
+      expect(request).toHaveBeenCalledTimes(2); // 无路由 ⇒ 零外呼
     });
 
     it('市场时段口打的是 /market-state (不套 MarketRouted*, 一次返全部市场)', async () => {
