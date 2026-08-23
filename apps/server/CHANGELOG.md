@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.35.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.2...server-v0.35.3) (2026-08-23)
+
+
+### Bug Fixes
+
+* **marketdata:** sync_run 被部署打断的行收敛为 interrupted —— running 恢复信息量 ([#165](https://github.com/zhangleizlpd/no-vain-years-tech/issues/165)) ([536fef9](https://github.com/zhangleizlpd/no-vain-years-tech/commit/536fef9e5378e738f8bd448ef355c6d7c622e28b))
+
 ## [0.35.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.1...server-v0.35.2) (2026-08-23)
 
 
