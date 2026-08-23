@@ -152,6 +152,22 @@ export const DIMENSION_KEYS = [
   // ⇒ 它的 executor **MUST NOT 复用 factExecutor**(那条路径先 loadActiveInstruments);
   // market_scope={us} 对它**只是元数据** (供 tick 的 per-market 交易日闸用)。
   'earnings_event',
+  // ── 066 T04 港股三行 (migration 20260823_1015_seed_hk_option_dimensions, plan §A1) ──
+  // 🚨 **独立维度而非给上面三个美股维度扩 scope** —— 与 `us_equity_bar` 当初从 `eod_bar` 拆
+  //    出来同一条理由, 且港股这边更硬: `exchangeCalendarDateForScope` 在 scope 内各市场算出
+  //    的日历日不同时**直接 throw** (北京 06:00 时 us=D-1 而 hk=D), 而该 throw 存在的目的
+  //    就是禁止这种混用。即使绕过它, tick payload 无 `markets` 字段 ⇒ 混 scope 维度的工作集
+  //    恒为全 scope, 港股休市而美股开市的日子会对港股全量发请求。
+  //    📌 反过来 `{cn,hk}` **不会抛** (现役 `eod_bar` 就是这个 scope) —— 判据是「算出来的
+  //    日期相同」而非「时区字符串相同」。
+  // 三者与各自的美股同名维度**共用同一份 use case**: 市场从维度行的 `market_scope` 进,
+  // vendor 前缀由适配器的 `MARKET_TO_FUTU_PREFIX` 查 (066 T01 / T08 已加 `hk: 'HK'`) ⇒
+  // 下面注册表里那三条只是路由, 不存在第二份搬运逻辑。三者同为**锚作用域**维度, 已登记在
+  // `anchor-scoped-dimensions.rules.ts` (066 T02, 蓄意先于本片 seed —— 反了的话上线那一刻
+  // 工作集是整个港股 universe)。
+  'hk_option_contract',
+  'hk_option_daily_snapshot',
+  'hk_underlying_iv_daily',
 ] as const;
 
 /** 维度键全集 (016 起; 017 executor 注册表/worker named job/tick won 集共用)。 */
@@ -971,6 +987,29 @@ export class DimensionExecutorRegistry {
         const budgetExhausted = await this.syncEarningsEvent.run(dim, stats, input);
         return { stats, budgetExhausted };
       },
+      // ── 066 T04 港股三条路由 ────────────────────────────────────────────────────────
+      // 与上面三条美股同名维度**逐字同形**, 差别全在维度行 (`market_scope={hk}` / cron 23:00 /
+      // `hk_underlying_iv_daily.history_depth = 1095`): `factExecutor` 先 `loadDimension(key)`
+      // 再 `loadWorkingSet`, 市场从行里进; vendor 前缀由适配器按市场查 (066 T01 / T08)。
+      // 🚫 **不要在这里另写一份搬运逻辑** —— 那会让「同一口径两份实现」这件事从此不报错。
+      hk_option_contract: this.factExecutor(
+        'hk_option_contract',
+        (instruments, dim, stats, input) =>
+          this.syncOptionContract.run(instruments, dim, stats, input),
+      ),
+      // ⚠️ seed 时 `enabled = false` (FR-016, 排序铁律 5) ⇒ 这条路由上线即**跑不到**。
+      // 注册它不是提前开闸, 是让「seed 行存在但 executor 未注册」那条 throw 不可能发生 ——
+      // 开关翻在维度行上 (T09 收尾), 不在注册表上。
+      hk_option_daily_snapshot: this.factExecutor(
+        'hk_option_daily_snapshot',
+        (instruments, dim, stats, input) =>
+          this.syncOptionSnapshot.run(instruments, dim, stats, input),
+      ),
+      hk_underlying_iv_daily: this.factExecutor(
+        'hk_underlying_iv_daily',
+        (instruments, dim, stats, input) =>
+          this.syncUnderlyingIvDaily(instruments, dim, stats, input),
+      ),
     };
   }
 

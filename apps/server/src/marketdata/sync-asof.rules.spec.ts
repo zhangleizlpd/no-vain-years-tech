@@ -19,12 +19,18 @@ describe('AS_OF_BASIS_BY_DIMENSION — 口径必须逐维度显式声明', () =>
     }
   });
 
-  it('Phase 1 切到收盘口径的只有价格/快照族四个 (其余保持现状 = 零行为变化)', () => {
+  // 066 T04 起是六个 —— 新增的两个是港股快照 / 港股标的 IV, 口径**逐条照抄各自的美股同名
+  // 维度** (判据是「一个尚未收盘的 session 混进来会不会产生不可逆的坏行」, 那与市场无关,
+  // 只与端点形态有关)。`hk_option_contract` 与美股 `option_contract` 一样留 `calendar-day`:
+  // 链发现取的是「当下可得的合约集」, 没有 session 粒度。
+  it('Phase 1 切到收盘口径的只有价格/快照族 (其余保持现状 = 零行为变化)', () => {
     const closedSession = DIMENSION_KEYS.filter(
       (k) => AS_OF_BASIS_BY_DIMENSION[k] === 'last-completed-session',
     );
     expect([...closedSession].sort()).toEqual([
       'eod_bar',
+      'hk_option_daily_snapshot',
+      'hk_underlying_iv_daily',
       'option_daily_snapshot',
       'underlying_iv_daily',
       'us_equity_bar',

@@ -68,7 +68,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     ]);
   });
 
-  it('SyncDimension seed 28 维度行存在 (6 核心 + 039 5 港股量化维度 + 040 volatility/hot_snapshot + 041 4 事件流维度 + 042 3 报告期维度 + 043 2 分类文本维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event)', async () => {
+  it('SyncDimension seed 31 维度行存在 (6 核心 + 039 5 港股量化维度 + 040 volatility/hot_snapshot + 041 4 事件流维度 + 042 3 报告期维度 + 043 2 分类文本维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度)', async () => {
     const dims = await prisma.syncDimension.findMany({
       // priority desc, key asc 二级序: 040 volatility(4)/hot_snapshot(3) 与 039 short_selling(4)/
       // connect_holding(3) 撞 priority 值 → 加 dimensionKey asc 二级键定死平局序 (与派生执行序 tie-break 同);
@@ -94,6 +94,9 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'financial',
       'corporate_action',
       'eod_bar',
+      'hk_option_contract', // 066 T04
+      'hk_option_daily_snapshot', // 066 T04
+      'hk_underlying_iv_daily', // 066 T04
       'option_contract', // 047 priority 5 (撞 eod_bar → key 后置: 'eod_bar' < 'option_contract')
       'option_daily_snapshot', // 047 priority 5 (hard 边 option_contract→option_daily_snapshot 的相邻性由此 key 序保证)
       'underlying_iv_daily', // 046 priority 5 (撞 us_equity_bar → key 前置: 'option_daily_snapshot' < 'underlying_iv_daily' < 'us_equity_bar')
@@ -163,6 +166,21 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       '0 30 6 * * *',
     );
     expect(dims.find((d) => d.dimensionKey === 'earnings_event')?.cronExpr).toBe('0 0 6 * * *');
+    // 066 三个港股期权维度排 **23:00** 而不是 22:00 —— 22:00 是仓里既有的港股锚点
+    // (eod_bar + 18 个理杏仁 cn/hk 维度全在这一刻, runbook 记「22:00 起、当晚 ~22:30 就位」),
+    // 而 BullMQ worker `concurrency = 1` ⇒ 那批要占用队列一段时间, 23:00 是留给它的余量。
+    // 🚨 这里是**写死字符串**的一档 (故意的): 本文件钉的是 seed 现状快照。FR-015 那条「性质」
+    //    断言 (解析 cron 断下一触发晚于同日 22:00) 在
+    //    `marketdata-066.hk-dimension-seed.it.spec.ts` —— 两层各管一件事。
+    expect(dims.find((d) => d.dimensionKey === 'hk_option_contract')?.cronExpr).toBe(
+      '0 0 23 * * *',
+    );
+    expect(dims.find((d) => d.dimensionKey === 'hk_option_daily_snapshot')?.cronExpr).toBe(
+      '0 30 23 * * *',
+    );
+    expect(dims.find((d) => d.dimensionKey === 'hk_underlying_iv_daily')?.cronExpr).toBe(
+      '0 0 23 * * *',
+    );
     expect(
       dims
         .filter(
@@ -184,6 +202,9 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
               'option_contract', // 047 清晨 06:00 档 (值已由上方显式断言钉死)
               'option_daily_snapshot', // 047 清晨 06:30 档 (值已由上方显式断言钉死)
               'earnings_event', // 047 清晨 06:00 档 (值已由上方显式断言钉死)
+              'hk_option_contract', // 066 港股 23:00 档 (值已由上方显式断言钉死)
+              'hk_option_daily_snapshot', // 066 港股 23:30 档 (值已由上方显式断言钉死)
+              'hk_underlying_iv_daily', // 066 港股 23:00 档 (值已由上方显式断言钉死)
             ].includes(d.dimensionKey),
         )
         .every((d) => d.cronExpr === '0 0 22 * * *'),
@@ -210,6 +231,18 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'employee', // 042
       'industry_classification', // 043
       'announcement', // 043
+      // 066 港股期权三维度: 同为 {hk}, 但**独立于上面那 16 个理杏仁维度** —— 那些是「全港股
+      // 在市标的」的市场级成员制, 这三个是**锚作用域**的 (工作集 = 有锚的港股标的)。
+      // scope 值相同、角色不同, 故下面另有一条「恰为 ['hk']」的更强断言。
+      'hk_option_contract', // 066
+      'hk_option_daily_snapshot', // 066
+      'hk_underlying_iv_daily', // 066
+    ];
+    /** 066 三行的 scope 必须**恰为** {hk}: 掺进 us 会在 tick 求业务日期时当场 throw。 */
+    const hkOptionDims = [
+      'hk_option_contract',
+      'hk_option_daily_snapshot',
+      'hk_underlying_iv_daily',
     ];
     // sellput-viz: marketScope = {us} —— 与港股维度一样「不含 cn」, 但它也**不含 hk**,
     // 故必须与 hkOnlyDims 分开: 前者用于「其余维度含 cn」的排除集, 后者才断言含 hk。
@@ -240,6 +273,11 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       dims
         .filter((d) => usOnlyDims.includes(d.dimensionKey))
         .every((d) => d.marketScope.length === 1 && d.marketScope[0] === 'us'),
+    ).toBe(true);
+    expect(
+      dims
+        .filter((d) => hkOptionDims.includes(d.dimensionKey))
+        .every((d) => d.marketScope.length === 1 && d.marketScope[0] === 'hk'),
     ).toBe(true);
     // 020 T010 配置收窄 (FR-A01): 写路径只落 none 单口径, adjust_types deprecated 恒 {none}。
     expect(dims.find((d) => d.dimensionKey === 'eod_bar')?.adjustTypes).toEqual(['none']);

@@ -169,7 +169,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     }
   });
 
-  it('④ cascade universe 根 → flow 含全部传递性下游 (26 维度全链执行, FR-S15)', async () => {
+  it('④ cascade universe 根 → flow 含全部传递性下游 (29 维度全链执行, FR-S15)', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
     const worker = new MarketdataSyncWorker(
       lifecycle.client,
@@ -200,6 +200,9 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
           'sync:us_equity_bar', // sellput-viz
           'sync:profile',
           'sync:fundamental',
+          'sync:hk_option_contract', // 066 T04
+          'sync:hk_option_daily_snapshot', // 066 T04
+          'sync:hk_underlying_iv_daily', // 066 T04
           'sync:financial',
           'sync:eod_bar',
           'sync:corporate_action',

@@ -1,0 +1,186 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { setupEmptyDb } from '../_support/isolated-db';
+import { runMigrateDeploy } from '../_support/run-migrate';
+import { PrismaService } from '../../src/security/prisma.service';
+import { computeNext } from '../../src/marketdata/sync-tick-driver';
+
+// 066 T04 港股期权三维度 seed + 依赖边 IT (FR-015, plan §A1)。
+//
+// ## 为什么用 `setupEmptyDb()` + 自己跑 `migrate deploy`
+//
+// 本 task 的被测对象**就是那份 migration**。共享 PG 的模板克隆 (`setupIsolatedDb()`) 拿到的
+// 是「migration 已经跑完」的库 —— 断言照样绿, 但绿的是模板, 不是本片新写的 SQL。⇒ 走
+// `optionsdesk-045.schema.it.spec.ts` 那一档: 空库 + `runMigrateDeploy()`, 顺带把 verify ④
+// 「migration 在空库单向可用」也一并验掉 (跑不通就在 beforeAll 当场炸)。
+//
+// ## 三行为什么必须是独立维度而不是给现有维度扩 scope (plan §A1)
+//
+// `session-clock.ts` 的 `exchangeCalendarDateForScope` 在 scope 内各市场算出的日历日不同时
+// **直接 throw**, 而该 throw 存在的目的就是禁止这种混用 (北京 06:00 时 us=D-1 而 hk=D)。
+// 即使绕过它, 第二个坑仍在: tick payload 无 `markets` 字段 ⇒ 混 scope 维度的工作集恒为全
+// scope, 港股休市而美股开市的日子会对港股全量发请求。
+// 📌 反过来 `{cn,hk}` **不会抛** (现役 `eod_bar` 就是这个 scope) —— 判据是「算出来的日期
+//    相同」而非「时区字符串相同」。所以下面断的是 `market_scope` **恰为** `['hk']`。
+describe('066 T04 港股期权三维度 seed (Testcontainers PG migrate deploy)', () => {
+  let prisma: PrismaService;
+  let db: Awaited<ReturnType<typeof setupEmptyDb>>;
+
+  const HK_CHAIN = 'hk_option_contract';
+  const HK_SNAPSHOT = 'hk_option_daily_snapshot';
+  const HK_IV = 'hk_underlying_iv_daily';
+
+  /**
+   * `hk_underlying_iv_daily.history_depth` (自然日)。
+   *
+   * 🚨 **这个值是一条性质的载体, 不是一个可调参数**: 单个 vendor 窗 (≤364 天) 港股只返 244
+   * 个交易日, 不足 `IVP_MIN_WINDOW_TRADING_DAYS = 252` ⇒ 只拉一年会让分位**恒为**
+   * `insufficient_window` 且**不报错**。1095 保证回填跨 ≥2 窗。
+   * 同一个值在 `underlying-iv.rules.spec.ts` 的 `HK_HISTORY_DEPTH_DAYS` (066 T08) 也钉了一遍
+   * —— 那边钉「单窗给不出 252」, 这边钉「维度行确实配到了跨窗的深度」, 两边缺一都留缺口。
+   */
+  const HK_HISTORY_DEPTH_DAYS = 1095;
+
+  beforeAll(async () => {
+    db = await setupEmptyDb();
+    process.env.DATABASE_URL = db.databaseUrl;
+
+    runMigrateDeploy();
+
+    prisma = new PrismaService(db.databaseUrl);
+    await prisma.$connect();
+  }, 180_000);
+
+  afterAll(async () => {
+    await prisma?.$disconnect();
+    await db.drop();
+  });
+
+  it('三行落 marketdata.sync_dimension, `market_scope` 恰为 {hk} (不掺 us ⇒ 不撞 scope 日历 throw)', async () => {
+    const rows = await prisma.syncDimension.findMany({
+      where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
+      orderBy: { dimensionKey: 'asc' },
+    });
+    expect(rows.map((r) => r.dimensionKey)).toEqual([HK_CHAIN, HK_SNAPSHOT, HK_IV]);
+    for (const row of rows) {
+      expect(row.marketScope).toEqual(['hk']);
+      expect(row.vendor).toBe('futu');
+    }
+  });
+
+  // 🚫 本片解决港股期权的方式**只能**是新增三行, MUST NOT 给任何**采集**维度的 market_scope
+  // 加 'hk' 凑合 —— 采集本体 (`sync-option-contract` / `sync-option-snapshot` /
+  // `dimension-executor`) 直接调 `exchangeCalendarDateForScope`, 它在 scope 内各市场算出的
+  // 日历日不同时**直接 throw** (北京 06:00 时 us=D-1 而 hk=D)。
+  //
+  // 📌 `universe` 是**合法例外**且必须留在白名单里: 它的 scope 就是 {cn,hk,us}, 而它是覆盖式
+  //    meta 维度 —— asOf 不往任何一行上盖日戳, scope 只是给交易日闸用的元数据。
+  //    `resolveAsOfForDimension` 对这类跨时区 scope **刻意回落宿主日而不是抛** (极性与
+  //    `exchangeCalendarDateForScope` 相反, 见 sync-asof.rules.ts 那段注释)。
+  // ⇒ 断的是**白名单快照**: 混 {us,hk} 的维度集合恰为 {universe}。多出任何一个名字都是本片
+  //    最想防的那种改法 (「给 eod_bar / option_contract 扩个 scope 就完事」)。
+  it('🚫 混 {us,hk} 的维度集合恰为 {universe} —— 没有任何采集维度被顺手扩了 scope', async () => {
+    const mixed = await prisma.syncDimension.findMany({
+      where: { marketScope: { hasEvery: ['us', 'hk'] } },
+      select: { dimensionKey: true },
+      orderBy: { dimensionKey: 'asc' },
+    });
+    expect(mixed.map((r) => r.dimensionKey)).toEqual(['universe']);
+  });
+
+  it('链发现: batch_size 1 (get_option_chain 是单 code 接口) + history_depth NULL (链无回填语义)', async () => {
+    const row = await prisma.syncDimension.findUniqueOrThrow({
+      where: { dimensionKey: HK_CHAIN },
+    });
+    expect(row.enabled).toBe(true);
+    expect(row.batchSize).toBe(1);
+    expect(row.historyDepth).toBeNull();
+  });
+
+  it('🚨 快照行 seed 时 `enabled = false` (FR-016): HKEX 的 OI 归属日结论未落地前不得开', async () => {
+    const row = await prisma.syncDimension.findUniqueOrThrow({
+      where: { dimensionKey: HK_SNAPSHOT },
+    });
+    // 归属错了**不报错**, 只让持仓量整体偏一天 —— 而活跃度排名与 UI 的 asOf 都读它。
+    // 翻开这一位是 T09 的收尾动作, 前置是 U2 实测出结论 (排序铁律 5)。
+    expect(row.enabled).toBe(false);
+    expect(row.batchSize).toBe(400); // get_option_snapshot 官方批量上限, 别套 /kline 那个兜底值
+    expect(row.historyDepth).toBeNull(); // 期权 EOD 无跨日补救, 漏采即永久缺口
+  });
+
+  it('🚨 标的 IV: history_depth 恰为 1095 —— 单个 364 天窗港股只返 244 个交易日, 不足 252', async () => {
+    const row = await prisma.syncDimension.findUniqueOrThrow({ where: { dimensionKey: HK_IV } });
+    expect(row.enabled).toBe(true);
+    expect(row.historyDepth).toBe(HK_HISTORY_DEPTH_DAYS);
+    expect(row.batchSize).toBe(500);
+  });
+
+  // FR-015 的机械断言。🚨 **不写死字符串比对** —— `expect(cronExpr).toBe('0 0 23 * * *')`
+  // 会在有人把 cron 改成 `0 0 21 * * *` 时…… 红, 但红得毫无信息量; 更糟的是它对
+  // `0 0 23 * * 1-5`(只跑工作日) 这类改动同样红, 而那根本不违反本 FR。这里断的是**性质**:
+  // 下一触发时刻落在同日 22:00 之后、次日 00:00 之前。
+  //
+  // 22:00 是仓里既有的港股锚点 (`eod_bar` + 18 个理杏仁 cn/hk 维度全在这一刻), runbook 记
+  // 「22:00 起、当晚 ~22:30 就位」, 而 BullMQ worker `concurrency = 1` ⇒ 那批要占用队列一段
+  // 时间。23:00 是给它留的余量。
+  it('FR-015 三行 cron 的下一触发时刻均晚于同日 22:00 (Shanghai)、早于次日 00:00', async () => {
+    const rows = await prisma.syncDimension.findMany({
+      where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
+      select: { dimensionKey: true, cronExpr: true },
+      orderBy: { dimensionKey: 'asc' },
+    });
+    expect(rows).toHaveLength(3);
+
+    // 取一个「当天 22:00 之前」的时刻当 now, 让 computeNext 一定落在同一个自然日内。
+    // 2026-08-24 是周一 (非交易日会不会跑由 tick 的交易日闸管, 与 cron 表达式无关)。
+    const now = new Date('2026-08-24T04:00:00Z'); // 12:00 Asia/Shanghai
+    const sameDay2200 = new Date('2026-08-24T14:00:00Z'); // 22:00 Asia/Shanghai
+    const nextDay0000 = new Date('2026-08-24T16:00:00Z'); // 次日 00:00 Asia/Shanghai
+
+    for (const row of rows) {
+      const next = computeNext(row.cronExpr, now);
+      expect(
+        next.getTime(),
+        `${row.dimensionKey} 的 cron "${row.cronExpr}" 触发早于同日 22:00 —— 会与 22:00 那批抢 concurrency=1 的队列`,
+      ).toBeGreaterThan(sameDay2200.getTime());
+      expect(
+        next.getTime(),
+        `${row.dimensionKey} 的 cron "${row.cronExpr}" 溢出到次日 —— 业务日期会整体错位一天`,
+      ).toBeLessThan(nextDay0000.getTime());
+    }
+  });
+
+  it('依赖边: universe→链发现 / universe→标的 IV 为 soft, 链发现→快照为 hard', async () => {
+    const edges = await prisma.syncDependency.findMany({
+      where: { downstream: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
+      select: { upstream: true, downstream: true, mode: true },
+      orderBy: [{ downstream: 'asc' }, { upstream: 'asc' }],
+    });
+    expect(edges).toEqual([
+      // universe→* 全 soft 是第一道拦截 (017 先例): 标的须先注册才有 instrument_id 可挂,
+      // 但 universe 缺席/失败不该拖垮它们。
+      { upstream: 'universe', downstream: HK_CHAIN, mode: 'soft' },
+      // 无合约表即无从取快照 ⇒ 链发现失败必须断下游 (failParentOnFailure)。
+      { upstream: HK_CHAIN, downstream: HK_SNAPSHOT, mode: 'hard' },
+      { upstream: 'universe', downstream: HK_IV, mode: 'soft' },
+    ]);
+  });
+
+  it('🚨 快照刻意没有 universe 边 —— 多一个前驱会与那条 hard 边争 Kahn 拓扑里的相邻位', async () => {
+    const count = await prisma.syncDependency.count({
+      where: { upstream: 'universe', downstream: HK_SNAPSHOT },
+    });
+    expect(count).toBe(0);
+  });
+
+  it('纯 seed 无 DDL: 三行的 priority 与 047 美股期权同档 (相邻性守卫在 dimension-executor.spec.ts)', async () => {
+    const rows = await prisma.syncDimension.findMany({
+      where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
+      select: { dimensionKey: true, priority: true, freshnessProfile: true, slaHours: true },
+    });
+    for (const row of rows) {
+      expect(row.priority).toBe(5);
+      expect(row.freshnessProfile).toBe('continuous-daily');
+      expect(row.slaHours).toBe(26);
+    }
+  });
+});

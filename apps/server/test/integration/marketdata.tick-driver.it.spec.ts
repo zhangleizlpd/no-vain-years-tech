@@ -96,6 +96,9 @@ describe('017 T013 SyncTickDriver.claim (NULL 懒初始化 + 抢占 + misfire �
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_option_contract', // 066 T04
+      'hk_option_daily_snapshot', // 066 T04
+      'hk_underlying_iv_daily', // 066 T04
       'hot_snapshot', // 040
       'index_membership', // 039
       'industry_classification', // 043 ('index_membership' < 'industry_classification' < 'profile')
