@@ -183,6 +183,9 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       'sync:financial',
       'sync:corporate_action',
       'sync:eod_bar',
+      'sync:hk_option_contract', // 066 T04
+      'sync:hk_option_daily_snapshot', // 066 T04
+      'sync:hk_underlying_iv_daily', // 066 T04
       'sync:option_contract', // 047 (priority 5, 'eod_bar' < 'option_contract')
       'sync:option_daily_snapshot', // 047 (priority 5; hard 边要求紧邻上游 option_contract, 由 key 字典序天然满足)
       'sync:underlying_iv_daily', // 046 (priority 5, 'option_daily_snapshot' < 'underlying_iv_daily' < 'us_equity_bar')
@@ -236,6 +239,9 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_option_contract', // 066 T04
+      'hk_option_daily_snapshot', // 066 T04
+      'hk_underlying_iv_daily', // 066 T04
       'hot_snapshot', // 040
       'index_membership', // 039
       'industry_classification', // 043 ('index_membership' < 'industry_classification' < 'profile')

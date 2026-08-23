@@ -23,6 +23,14 @@
  * 落 0 会让「历史太短」长得像「IV 处于一年最低」——**恰好方向相反的误读**。
  * 对表侧同理：窗口不足 **跳过对表且不告警**（缺窗口不是口径漂移）。
  *
+ * ## 「样本」= 真实有值的观测，**不是行数**（FR-019a，066 T08 补）
+ *
+ * 判「够不够 252」数的是 {@link isRealIvObservation} 为真的那些观测，空值观测累积再多也不进
+ * 分子。这条在美股上一直无从触发（无期权的标的其概览**整行缺席**），但**港股上是常态**：港股
+ * 绝大多数标的没有挂牌期权，它们的概览会返 200 + 各数值字段字面量 `'N/A'`，经采集侧规范化
+ * 落 `null` —— 也就是说库里会**有行**、只是行里没有观测。若按行数判，这类空行凑够 252 就
+ * 会被判「样本充足」，产出一个毫无意义却看起来可算的分位，**且不报错**。
+ *
  * ## 为什么分位值走 Prisma.Decimal 而不是 number
  *
  * 三档判定卡在**恰好 2pp / 恰好 5pp** 上，而浮点减法会让 `40.3 - 38.3 = 1.9999999999999964`
@@ -67,7 +75,7 @@ export interface IvPercentileComputed {
   computable: true;
   /** 0–100，Decimal 精确值（是否四舍五入到列精度由落库侧决定）。 */
   percentilePct: Prisma.Decimal;
-  /** 参与计算的有效样本数（null / 非有限值已剔除）。 */
+  /** 参与计算的**真实观测**数（空值观测已剔除，见 {@link isRealIvObservation}）。 */
   sampleSize: number;
 }
 
@@ -106,6 +114,17 @@ export class InvalidBackfillRangeError extends Error {
   }
 }
 
+/**
+ * 一个「真实有值的观测」（FR-019a）—— 分位样本的**唯一**入选判据。
+ *
+ * 具名而不内联，是因为它是那条判据本身：`null` 在这条链路上不表示 0、也不表示「那天没开市」，
+ * 而是「那天这只票根本没有 IV 这个读数」（无挂牌期权标的的常态形态）。把它并回
+ * `filter(v => v !== null)` 会让「样本 ≠ 行数」这件事重新变成一句注释。
+ */
+function isRealIvObservation(v: Prisma.Decimal | null): v is Prisma.Decimal {
+  return v !== null && v.isFinite();
+}
+
 const HUNDRED = new Prisma.Decimal(100);
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MS_PER_DAY = 86_400_000;
@@ -121,14 +140,15 @@ const MS_PER_DAY = 86_400_000;
  * 秩」写的；求**给定值的秩**无需排序，计数法结果等价且更省 —— 此处记录该偏离，免得下次
  * 有人「补」一个排序回来。
  *
- * @param history 历史 IV 序列（顺序无关）；`null` / 非有限值视为该日无数据，剔除后再判窗口。
+ * @param history 历史 IV 序列（顺序无关）；空值观测（{@link isRealIvObservation} 为假）视为该日
+ *                无读数，**先剔除再判窗口** —— 判据是观测数不是行数（FR-019a）。
  * @param current 当日直读 IV；缺失 ⇒ `missing_current`（优先于窗口判定：连被比较的值都没有）。
  */
 export function computeIvPercentile(
   history: readonly (Prisma.Decimal | null)[],
   current: Prisma.Decimal | null,
 ): IvPercentileResult {
-  const sample = history.filter((v): v is Prisma.Decimal => v !== null && v.isFinite());
+  const sample = history.filter(isRealIvObservation);
 
   if (current === null || !current.isFinite()) {
     return {

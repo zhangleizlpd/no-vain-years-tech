@@ -66,9 +66,9 @@ describe('FutuRealtimeQuoteAdapter', () => {
       expect(calls[0].auth).toBe(`Bearer ${TOKEN}`);
     });
 
-    it('非 us symbol → 直接抛且**零外呼** (静默返空会被记成「该标的今天没有报价」)', async () => {
+    it('未登记市场 → 直接抛且**零外呼** (静默返空会被记成「该标的今天没有报价」)', async () => {
       const { http, request } = makeShim([stockRow('US.PEP')]);
-      await expect(makeAdapter(http).fetchQuotes(['hk:00700'])).rejects.toThrow(/仅承担 us/);
+      await expect(makeAdapter(http).fetchQuotes(['cn:600519'])).rejects.toThrow(/仅承担 us \/ hk/);
       expect(request).not.toHaveBeenCalled();
     });
   });
@@ -227,5 +227,40 @@ describe('FutuRealtimeQuoteAdapter', () => {
 
       await expect(makeAdapter(http).fetchQuotes(['us:PEP'])).rejects.toBe(boom);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T10 — 港股 (hk) 实时报价 (FR-003, plan §A7)
+// ---------------------------------------------------------------------------
+/**
+ * 补上前缀之前, 港股锚在每 30 秒的盘中 tick 里恒落 `unsupported-market` (无实时源路由) ⇒
+ * 恒为收盘档。⚠️ 前缀只是这条路的一半, 另一半是 `marketdata.module.ts` 的 hk 槽位 ——
+ * 那半的回归钉在 `market-routed-realtime-quote.adapter.spec.ts` 的「module 接线」段。
+ */
+describe('066 T10 FutuRealtimeQuoteAdapter — 港股 (hk) 实时报价', () => {
+  it('hk symbol → `HK.` 前缀; 结果键原样回传 canonical (state_branches 16 的适配器半)', async () => {
+    const { http, calls } = makeShim([stockRow('HK.00700', { last_price: 457 })]);
+    const quotes = await makeAdapter(http).fetchQuotes(['hk:00700']);
+
+    expect(new URL(calls[0].url).searchParams.get('codes')).toBe('HK.00700');
+    expect(quotes.get('hk:00700')?.price).toBe('457');
+  });
+
+  it('混批 us + hk → 一发两前缀 (同一个 shim 端点, 不为每个市场各打一发)', async () => {
+    const { http, calls } = makeShim([stockRow('US.PEP'), stockRow('HK.00700')]);
+    const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'hk:00700']);
+
+    expect(calls).toHaveLength(1);
+    expect(new URL(calls[0].url).searchParams.get('codes')).toBe('US.PEP,HK.00700');
+    expect([...quotes.keys()].sort()).toEqual(['hk:00700', 'us:PEP']);
+  });
+
+  it('🚨 hk 行的 update_time 按**港股当地**解析 (066 T17 的联动: 两个 adapter 共用一份解析)', async () => {
+    // vendor 给的 15:59:12 是港股当地 ⇒ 07:59:12Z (港股恒 UTC+8 无 DST); 按美东读会偏 12 小时。
+    const { http } = makeShim([stockRow('HK.00700')]);
+    const quotes = await makeAdapter(http).fetchQuotes(['hk:00700']);
+
+    expect(quotes.get('hk:00700')?.vendorUpdateTime).toEqual(new Date('2026-08-17T07:59:12Z'));
   });
 });

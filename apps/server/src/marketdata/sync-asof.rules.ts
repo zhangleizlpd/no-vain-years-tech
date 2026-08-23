@@ -89,6 +89,13 @@ export const AS_OF_BASIS_BY_DIMENSION: Record<DimensionKey, AsOfBasis> = {
   option_contract: 'calendar-day',
   option_daily_snapshot: 'last-completed-session',
   earnings_event: 'calendar-day',
+  // 066 T04 港股三行: 口径**逐条照抄各自的美股同名维度** —— 判据是「一个尚未收盘的 session
+  // 混进来会不会产生不可逆的坏行」, 而那与市场无关, 只与端点形态有关。
+  // 港股的 session 收在北京 16:00, 而三行的 cron 都排在 23:00 ⇒ 准点触发时两种口径同值,
+  // 差异只在盘中触发 / misfire 补触发那些非准点时刻显形 —— 正是冷启动会撞到的时刻 (T07)。
+  hk_option_contract: 'calendar-day',
+  hk_option_daily_snapshot: 'last-completed-session',
+  hk_underlying_iv_daily: 'last-completed-session',
 };
 
 /** {@link resolveAsOfForDimension} 的入参 —— 贫血投影, 两列都取自 `sync_dimension` 行。 */

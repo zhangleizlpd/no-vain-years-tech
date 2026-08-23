@@ -386,6 +386,30 @@ describe('SyncOptionContractUseCase', () => {
       await h.useCase.run([], DIM, emptyStats(), makeInput());
       expect(h.instrumentUpsert).toHaveBeenCalledTimes(1);
     });
+
+    // 066 T03 (FR-009): 港股锚走 create 分支时**必须**落 needSync=true。
+    //
+    // 🚨 反例必须自己造 —— 拿 universe 已收录的港股票断言毫无意义 (那行的 needSync 本来
+    // 就是 true, seed 分支根本没跑)。这里用一个 `existing` 里**没有**的港股代码, 逼 seed
+    // 走 create。写 false 的后果: 该行被 22:00 的 `eod_bar` 静默排除 ⇒ 那只标的永远没日线,
+    // 且**没有任何告警**。
+    it('🚨 港股锚首建 → needSync=true (港股没有采集闸, seed 写死 false 会让它永远没日线)', async () => {
+      const hkDim = {
+        dimensionKey: 'hk_option_contract',
+        marketScope: ['hk'],
+        batchSize: 1,
+      } as unknown as ExecutorSyncDimensionRow;
+      const h = makeHarness({ anchors: ['hk:09999'], existing: [] });
+      await h.useCase.run([], hkDim, emptyStats(), makeInput());
+
+      const arg = h.instrumentUpsert.mock.calls[0][0] as { create: Record<string, unknown> };
+      expect(arg.create).toMatchObject({
+        market: 'hk',
+        code: '09999',
+        currency: 'HKD',
+        needSync: true,
+      });
+    });
   });
 
   /**

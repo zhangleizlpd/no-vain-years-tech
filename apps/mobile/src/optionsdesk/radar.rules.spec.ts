@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
+  MARKETS_WITHOUT_INTRADAY,
   RADAR_BADGE_ORDER,
   RADAR_MARKETS,
   RADAR_QUERY_KEY,
@@ -14,6 +15,7 @@ import {
   formatDistanceToW,
   formatSpot,
   getRadarNextCursor,
+  marketLacksIntraday,
   mergeRadarPages,
   radarBadges,
   radarFilterParams,
@@ -432,6 +434,23 @@ describe('065 RADAR_MARKETS —— 页签集合从契约派生', () => {
       RADAR_MARKETS.length,
     );
     expect(new Set(labels).size).toBe(labels.length);
+  });
+});
+
+// ── 066 T12 市场能力表 (FR-020) ──────────────────────────────
+
+describe('066 MARKETS_WITHOUT_INTRADAY —— 港股实时报价上线后表内清空 (FR-020)', () => {
+  it('🚨 hk 不再算「无盘中」—— 066 T10 把港股接进实时报价, 常驻说明再留就是骗人', () => {
+    expect(marketLacksIntraday('hk')).toBe(false);
+  });
+
+  it('受支持市场无一缺盘中价 ⇒ 能力表为空 (常量本身保留: 下一个无盘中市场的落点)', () => {
+    expect(MARKETS_WITHOUT_INTRADAY).toEqual([]);
+    expect(RADAR_MARKETS.filter((m) => marketLacksIntraday(m))).toEqual([]);
+  });
+
+  it('表外市场一律 false —— 判据是白名单式「在表里才算」, 不是取反', () => {
+    expect(marketLacksIntraday('cn')).toBe(false);
   });
 });
 

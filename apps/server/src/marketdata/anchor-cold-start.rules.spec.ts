@@ -249,8 +249,12 @@ describe('COLD_START_CAPABILITY —— FR-024 一处显式登记', () => {
     expect(COLD_START_CAPABILITY.us).toEqual({ optionChain: true, optionSnapshot: true });
   });
 
-  it('hk 是空表项 —— 显式登记「已知但未开通」, 走到冷启动 = 显式 no-op (FR-023)', () => {
-    expect(COLD_START_CAPABILITY.hk).toEqual({ optionChain: false, optionSnapshot: false });
+  it('🚨 066 T06 起 hk 两档全开 —— MUST NOT 停在 `{chain:true, snapshot:false}` 中间态', () => {
+    // 中间态会让第 7 步的 chain-only 早退 (`return backfilled`) 抢在**盘中闸 /
+    // `no_option_chain` 判断 / 落库复判**之前, 三条验收同时破: 盘中建的港股锚会落
+    // `backfilled` 而一行快照都没有、无期权的票落不到 `no_option_chain`、采集没落库也照样
+    // 报「已补齐」。⇒ 两档要么全关要么全开。
+    expect(COLD_START_CAPABILITY.hk).toEqual({ optionChain: true, optionSnapshot: true });
   });
 
   it('未登记市场取不到表项 —— 与「登记了但全关」同样落 market_not_enabled, 但不静默', () => {
@@ -258,11 +262,14 @@ describe('COLD_START_CAPABILITY —— FR-024 一处显式登记', () => {
   });
 });
 
-describe('COLD_START_OUTCOME —— FR-027 九种结局零折叠 (SC-009)', () => {
-  it('恰好九种且取值两两互异', () => {
+// 📌 计数口径说明: 066 的 `FR-014` 写的是「由 8 扩到 9」—— 那个 8 是 `FR-027` 当初的**原始
+// 八档**, 没把后来 `FR-027a` 补的 `backfill_incomplete` 算进去。代码里的基线因此是 9,
+// 加上本片的 `no_option_chain` 是 **10**。差的那一档是记账口径, 不是漏了一个值。
+describe('COLD_START_OUTCOME —— FR-027 结局零折叠 (SC-009); 066 FR-014 起十种', () => {
+  it('恰好十种且取值两两互异', () => {
     const values = Object.values(COLD_START_OUTCOME);
-    expect(values).toHaveLength(9);
-    expect(new Set(values).size).toBe(9);
+    expect(values).toHaveLength(10);
+    expect(new Set(values).size).toBe(10);
   });
 
   it('「没做」与「做了但失败」不共用取值', () => {
@@ -278,5 +285,18 @@ describe('COLD_START_OUTCOME —— FR-027 九种结局零折叠 (SC-009)', () =
     expect(COLD_START_OUTCOME.BACKFILL_INCOMPLETE).not.toBe(COLD_START_OUTCOME.RETRY_EXHAUSTED);
     // VarChar(32) 列宽兜底。
     for (const v of Object.values(COLD_START_OUTCOME)) expect(v.length).toBeLessThanOrEqual(32);
+  });
+
+  it('🚨 066 FR-014 「无挂牌期权」与「做了但没补上」MUST NOT 共用取值', () => {
+    // 前者是「本就没有可做的」(终态、非错误、不告警), 后者是「该做没做成」(ERROR 级、需人工
+    // 介入)。港股绝大多数标的没有挂牌期权 (实测颐海国际 0 / 网龙 0 个到期日) —— 折进
+    // backfill_incomplete 会让每一只无期权的港股锚都产出一条无从处理的告警。
+    expect(COLD_START_OUTCOME.NO_OPTION_CHAIN).not.toBe(COLD_START_OUTCOME.BACKFILL_INCOMPLETE);
+    // 也不是「已补齐」—— 什么都没补, 只是本就无从补。
+    expect(COLD_START_OUTCOME.NO_OPTION_CHAIN).not.toBe(COLD_START_OUTCOME.BACKFILLED);
+    // 也不是「该市场未开通」—— 那条说的是系统侧没开, 这条说的是标的侧没有。
+    expect(COLD_START_OUTCOME.NO_OPTION_CHAIN).not.toBe(COLD_START_OUTCOME.MARKET_NOT_ENABLED);
+    // 零 migration 的前提: `anchor_cold_start_run.outcome` 是 VarChar(32) 且无 CHECK 约束。
+    expect(COLD_START_OUTCOME.NO_OPTION_CHAIN.length).toBeLessThanOrEqual(32);
   });
 });

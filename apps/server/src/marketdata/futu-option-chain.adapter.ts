@@ -19,10 +19,27 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * - GET `<shim>/option-expirations?code=US.PEP` → 全部可得到期日 (含 LEAPS, 无裁剪)
  * - GET `<shim>/option-chain?code=US.PEP&start&end&option_type=ALL` → 单窗合约静态属性
  *
- * ## 只承担 us
+ * ## 承担 us + hk (066 T01 起)
  *
- * 期权面只覆盖美股锚 (FR-023 / FR-032), 非 us symbol **直接抛、零外呼** —— 静默返空会被
- * 同步管线记成「该标的今天没有链」, 一次成功的空采集比一次响亮的失败难发现得多。
+ * 未登记市场的 symbol **直接抛、零外呼** —— 静默返空会被同步管线记成「该标的今天没有链」,
+ * 一次成功的空采集比一次响亮的失败难发现得多。
+ *
+ * 港股是 066 加进来的第二个市场: 网关本身市场无关 (市场参数对着 SDK 枚举白名单校验、代码原样
+ * 透传), 本端点对港股返回的**字段集与美股逐字相同** (2026-08-23 实取, 原始响应落在
+ * `__fixtures__/hk-option-chain-00700-2026-08-23.json`)。
+ *
+ * ## 🚨 关联键只能是 `stock_owner` (plan §A11)
+ *
+ * 港股合约标识的词根是**交易所助记符** (腾讯期权是 `HK.TCH260828C220000` 里的 `TCH`), **不是**
+ * 标的数字代码 `00700` ⇒ **从合约标识反推不出标的**。美股 `US.PEP260918P130000` 那种「词根即
+ * ticker」是巧合不是契约, 别把它当假设带过来 —— 关联一律只认 vendor 给的 `stock_owner`, 该列
+ * 缺失即坏行 throw (猜一个标的比缺一行危险得多)。
+ *
+ * ## 🚨 `'N/A'` 是 vendor 的空值哨兵, 不是取值 (plan §A8)
+ *
+ * 网关侧 `mappers.clean_value` 只处理空值 / 非有限数, **字符串原样透传** ⇒ 字符串列的「没有值」
+ * 在线上就是字面量 `'N/A'`。港股链每一行的 `option_settlement_mode` 都是它 (2026-08-23 实测
+ * 132/132), 美股返 `AM` / `PM` 永远撞不到。见 {@link strOrNull}。
  *
  * ## 🚨 `option_type=ALL` 写死在这里 (Guardrail 3 / plan D-DATA-3)
  *
@@ -55,20 +72,27 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * `RUN_MARKETDATA_IT`) —— ⚠️ 该门恒 skip, 「测试全绿」对真契约不构成证据。
  */
 
-/** market → 富途 code 前缀。**只有 us**（期权面只覆盖美股锚）。 */
+/** market → 富途 code 前缀。未登记的市场 = 本源不承担（见文件头「承担 us + hk」）。 */
 const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   us: 'US',
+  hk: 'HK',
 };
 
-/** 富途 code 前缀 → canonical market（上表的反向，落库 `option_contract.market` 用）。 */
+/**
+ * 富途 code 前缀 → canonical market（上表的反向，落库 `option_contract.market` 用）。
+ * 🚨 **与上表严格互逆** —— 只加正向那张会让 `stock_owner` 解不出市场, 于是每一行港股合约都
+ * 撞「行不合契约」而 throw（响亮但完全没必要）。
+ */
 const FUTU_PREFIX_TO_MARKET: Record<string, string> = {
   US: 'us',
+  HK: 'hk',
 };
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * 富途合约代码 = `<市场>.<root><YYMMDD><C|P><行权价数字>`（实测 `US.PEP260918P130000`）。
+ * 富途合约代码 = `<市场>.<root><YYMMDD><C|P><行权价数字>`（实测 `US.PEP260918P130000` /
+ * `HK.TCH260828C220000` —— 港股同形态，只是 root 段是交易所助记符而非 ticker）。
  *
  * 🚨 **root 段用惰性匹配从尾部锚定**，不能写成 `^([A-Z]+)`：调整后 root 自带尾数字
  * （`VICI1`），字母类正则会把它切成 `VICI` 并把 `1` 算进日期段 —— 那正是 CBOE 采集器
@@ -94,9 +118,29 @@ function numOrNull(v: unknown): number | null {
   return null;
 }
 
-/** 非空字符串 → 原样 trim；其余（null / 空串 / 非字符串）→ null（禁默认值冒充）。 */
+/**
+ * vendor 在**字符串列**上表达「没有值」用的字面量哨兵。
+ *
+ * 🚨 它不是一个取值 —— 网关侧 `clean_value` 只处理空值 / 非有限数、字符串原样透传
+ * (`services/futu-shim/src/futu_shim/mappers.py:50-51`), 所以 SDK 那句 `'N/A'` 是原封不动
+ * 到这里的。数值列上同一个哨兵已由 {@link numToString} 挡住 (`Number('N/A')` 为 NaN), 字符串列
+ * 此前没有对应闸。
+ */
+const VENDOR_STRING_NULL_SENTINEL = 'N/A';
+
+/**
+ * 非空字符串 → 原样 trim；其余（null / 空串 / 非字符串 / {@link VENDOR_STRING_NULL_SENTINEL}）
+ * → null（禁默认值冒充）。
+ *
+ * 🚨 **`'N/A'` 必须落 null**（plan §A8, 2026-08-23 实测）：港股链 132/132 行的
+ * `option_settlement_mode` 都是它, 照原样透传就等于把「没有结算方式」写成一个**看起来有效的
+ * 结算方式**存进库, 而美股那一列返 `AM` / `PM` 永远撞不到这条路径 ⇒ 没有任何既有断言会红。
+ * 复杂度 O(1)。
+ */
 function strOrNull(v: unknown): string | null {
-  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
+  if (typeof v !== 'string') return null;
+  const trimmed = v.trim();
+  return trimmed === '' || trimmed.toUpperCase() === VENDOR_STRING_NULL_SENTINEL ? null : trimmed;
 }
 
 function asRecord(row: unknown): Record<string, unknown> {
@@ -126,7 +170,8 @@ function dateOrNull(v: unknown): string | null {
  *
  * 1. `option_standard_type`（vendor 直给，实测 `STANDARD` / `NON_STANDARD`）；
  * 2. root 尾数字 —— 美股正股 ticker 不以数字结尾，`<TICKER>1` 恰恰是 OCC 对被并购公司期权的
- *    改名规则（p3b E20：GDEN → `VICI1`）。
+ *    改名规则（p3b E20：GDEN → `VICI1`）。港股 root 是交易所助记符（实测 `TCH`），同样不以数字
+ *    结尾；港股调整后合约的形态尚无实测样本，故这一判据在港股上保持合取的**保守**方向不变。
  *
  * 取合取而非只信 vendor：**误标成标准**会让一张 90 股乘数的合约混进选约层并被按 ×100 算出
  * 一个看起来正常的错数（p3b §4.5 第 3 条点名的后果）；误标成非标只是少一个本就不可交易的候选。
@@ -187,7 +232,7 @@ function parseChainRow(row: unknown, ctx: string): OptionContractStatic {
     (optionType !== 'PUT' && optionType !== 'CALL')
   ) {
     throw new Error(
-      `[futu] option-chain 行不合契约 (须 code=<US>.<root><YYMMDD><C|P><strike> + ` +
+      `[futu] option-chain 行不合契约 (须 code=<US|HK>.<root><YYMMDD><C|P><strike> + ` +
         `stock_owner + strike_time + 数值 strike_price + option_type∈{PUT,CALL}; 契约变更?): ` +
         `${ctx} 行=${JSON.stringify(row)}`,
     );
@@ -246,12 +291,12 @@ export class FutuOptionChainAdapter implements OptionChainPort {
     return rows.map((row) => parseChainRow(row, ctx));
   }
 
-  /** canonical `market:code` → 富途 code；非 us 直接抛（零外呼）。 */
+  /** canonical `market:code` → 富途 code；未登记市场直接抛（零外呼）。 */
   private futuCode(symbol: string, what: string): string {
     const parsed = parseCanonicalSymbol(symbol);
     const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
     if (!parsed || !prefix) {
-      throw new Error(`[futu] ${what} 不支持 symbol "${symbol}" (本源仅承担 us)`);
+      throw new Error(`[futu] ${what} 不支持 symbol "${symbol}" (本源仅承担 us / hk)`);
     }
     return `${prefix}.${parsed.code}`;
   }

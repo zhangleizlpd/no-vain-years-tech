@@ -1,14 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
-import {
-  COLD_START_CAPABILITY,
-  COLD_START_OUTCOME,
-  resolveSnapshotSpec,
-} from './anchor-cold-start.rules.js';
+import { COLD_START_OUTCOME, resolveSnapshotSpec } from './anchor-cold-start.rules.js';
 import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import type { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
+import { seedInstrumentCreateData } from './sync-universe.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
 import type { SessionKindStatus, TradingDayStatus } from './trading-day.rules.js';
 
@@ -18,6 +15,8 @@ const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
 const MONDAY_2230_BEIJING = new Date('2026-08-17T22:30+08:00');
 /** 北京/香港 周一 12:30 —— 港交所的**午休正中**; hk 单段登记下它仍判「场内」。 */
 const MONDAY_1230_HKT = new Date('2026-08-17T12:30+08:00');
+/** 香港周六 18:00 —— 已过 16:00 收盘 ⇒ 敏感档可写 (066 T06 港股开通后的正向路径)。 */
+const HK_SATURDAY_1800_HKT = new Date('2026-08-15T18:00+08:00');
 /** 北京周二 02:30 = ET 周一 14:30 —— 常规日在场内, **半日市 (13:15 收) 则已收盘**。 */
 const MONDAY_1430_ET = new Date('2026-08-17T14:30-04:00');
 
@@ -38,6 +37,12 @@ interface Overrides {
    * 同值, 即「采集没让库里多出任何东西」—— 那正是链零结果时的真实形态。
    */
   snapshotRowsAfterCollect?: number;
+  /**
+   * 该标的在库里的**期权合约行数** (066 FR-014a: `no_option_chain` 与 `backfill_incomplete`
+   * 的唯一分岔判据)。缺省 1 = 「这只票有挂牌期权」—— 美股锚的常态, 也让既有用例逐条不变。
+   * 取 0 = 该标的根本没有挂牌期权 (港股常态)。
+   */
+  contractRows?: number;
   /** 快照 `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
   /** 链本体 `collect` 返 true = vendor 配额耗尽 (issue #159 起冷启动直调它)。 */
@@ -102,6 +107,10 @@ function build(overrides: Overrides = {}) {
     if (collected) return overrides.snapshotRowsAfterCollect ?? overrides.snapshotRows ?? 0;
     return overrides.snapshotRows ?? 0;
   });
+  const contractCount = vi.fn(async (_args: unknown) => {
+    calls.push('optionContract.count');
+    return overrides.contractRows ?? 1;
+  });
   const syncDimensionFindMany = vi.fn(async (_args: unknown) => {
     calls.push('syncDimension.findMany');
     return [
@@ -116,6 +125,7 @@ function build(overrides: Overrides = {}) {
     anchorColdStartRun: { upsert: runUpsert },
     dailyBar: { count: dailyBarCount },
     optionDailySnapshot: { count: snapshotCount },
+    optionContract: { count: contractCount },
     syncDimension: { findMany: syncDimensionFindMany },
   } as unknown as PrismaService;
 
@@ -153,6 +163,7 @@ function build(overrides: Overrides = {}) {
     recalcSafely,
     dailyBarCount,
     snapshotCount,
+    contractCount,
     syncDimensionFindMany,
     chainCollect,
     collect,
@@ -212,18 +223,25 @@ describe('AnchorColdStartUseCase 早退分支 —— 各自结局 + 零外呼', 
     expectNothingDownstream();
   });
 
-  it('市场未开通期权采集 (hk 空表项) ⇒ market_not_enabled, 显式 no-op 非错误 (FR-023)', async () => {
-    const result = await ctx.usecase.run({
+  it('🚨 066 T06: hk 已开通 ⇒ **不再** market_not_enabled, 链与快照两档都真的跑 (FR-010)', async () => {
+    // 「未开通」那条路径零外呼、零落库、不报错 —— 与「今天没数据」外观完全相同 ⇒ 只有走到
+    // 终局才分得出「开通了」和「忘了开」。`snapshotRowsAfterCollect: 1` = 采集真落了行。
+    const local = build({ instrumentExists: true, snapshotRowsAfterCollect: 1 });
+
+    const result = await local.usecase.run({
       anchorId: ANCHOR_ID,
       ticker: 'hk:00700',
-      now: SATURDAY_1000_BEIJING,
+      now: HK_SATURDAY_1800_HKT,
     });
 
-    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.MARKET_NOT_ENABLED });
-    expectNothingDownstream();
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
+    // 🚨 两档都要被调到 —— 只翻 `optionChain` 会让第 7 步 chain-only 早退, 结局同样是
+    //    `backfilled` 而**一行快照都没有** (排序铁律 5 禁的那个中间态)。
+    expect(local.chainCollect).toHaveBeenCalledTimes(1);
+    expect(local.collect).toHaveBeenCalledTimes(1);
   });
 
-  it('市场压根不在能力登记表 (cn) ⇒ 同样 market_not_enabled, 不静默', async () => {
+  it('市场压根不在能力登记表 (cn) ⇒ market_not_enabled, 不静默', async () => {
     const result = await ctx.usecase.run({
       anchorId: ANCHOR_ID,
       ticker: 'cn:600519',
@@ -307,7 +325,16 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
     expect(ctx.instrumentUpsert).not.toHaveBeenCalled();
   });
 
-  it('🚨 seed 落 needSync=false —— needSync 的重算权威只有采集闸, 不给它开第三个写入点', async () => {
+  // 066 T03 (FR-009): create payload 走**共用 helper**, 不再内联一份字面量。
+  // 🚨 us 的期望值仍是 `false` —— 变的不是美股行为, 而是「谁定这个默认值」: 从两处各写死
+  // 一个 false, 改成三个 create 路径 (universe + 两个 seed 点) 共用
+  // `seedInstrumentCreateData`。港股那半 (落 `true`) 在本路径上要等 hk 冷启动开通才够得到,
+  // 现由 `sync-universe.usecase.spec.ts` 的 helper 单测 +
+  // `sync-option-contract.usecase.spec.ts` 的港股反例覆盖。
+  //
+  // 📌 `barRows` 不再需要 (issue #159): 日线已不在 `dataAlreadyPresent` 的判据内, 本例只需
+  // 快照在场就能在 seed 之后立刻早退。
+  it('🚨 seed payload 取自共用 helper —— 美股仍落 needSync=false (闸负责它的重算)', async () => {
     const ctx = build({ snapshotRows: 1 });
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
@@ -315,6 +342,7 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
       create: Record<string, unknown>;
       update: Record<string, unknown>;
     };
+    expect(args.create).toEqual(seedInstrumentCreateData('us', 'PEP'));
     expect(args.create).toMatchObject({ market: 'us', code: 'PEP', name: 'PEP', needSync: false });
     expect(args.update).toEqual({});
   });
@@ -401,14 +429,18 @@ describe('不敏感档 —— 直调链本体 (issue #159, FR-012)', () => {
 });
 
 describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 / FR-018)', () => {
-  const SNAPSHOT_PHASE = { anchorId: ANCHOR_ID, ticker: 'us:PEP', phase: 'snapshot' } as const;
+  // `run()` 的固定入参底座 —— 各用例只覆盖 `now`。
+  // 📌 issue #159 前它叫 `SNAPSHOT_PHASE` 并带 `phase: 'snapshot'`, 用来显式驱动第二相。
+  //    两相合一后该入参已从 `run()` 删除; 这里的残留靠 spread 不触发 TS 多余属性检查才
+  //    一直编译得过 —— 属于死属性, 连同那个已无所指的名字一并清掉。
+  const RUN_BASE = { anchorId: ANCHOR_ID, ticker: 'us:PEP' } as const;
 
   it('非盘中 ⇒ collect 收到的 spec **原样**来自 T003 纯函数 (不在这里重算, FR-014)', async () => {
     // `snapshotRowsAfterCollect: 1` = 采集真落了行 ⇒ 落库复判过 (FR-027a); 缺省的「零行」
     // 会落 backfill_incomplete, 那是另一条用例。
     const ctx = build({ snapshotRowsAfterCollect: 1 });
     const now = SATURDAY_1000_BEIJING;
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
     const [instruments, spec] = ctx.collect.mock.calls[0];
@@ -429,7 +461,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
 
   it('🚨 盘中 ⇒ intraday_skipped 且 collect 零调用 (SC-002: 未收盘交易日的快照行恒为 0)', async () => {
     const ctx = build();
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: MONDAY_2230_BEIJING });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
     expect(ctx.collect).not.toHaveBeenCalled();
@@ -441,7 +473,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 那一场的快照就永久缺失 (常规轮当晚写的是当晚那一场, 不回补)。半日市 13:15 就收了,
     // 而常规收盘表说 16:00 ⇒ 上线前 13:15–16:00 建的锚全部落进这个永久缺口。
     const ctx = build({ todaySessionKind: 'half', snapshotRowsAfterCollect: 1 });
-    await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_1430_ET });
+    await ctx.usecase.run({ ...RUN_BASE, now: MONDAY_1430_ET });
 
     expect(recordedRow(ctx.runUpsert).outcome).not.toBe(COLD_START_OUTCOME.INTRADAY_SKIPPED);
     expect(ctx.collect).toHaveBeenCalledTimes(1);
@@ -451,7 +483,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 对照组: 证明上一条的差别**只**来自 kind。unknown 走的是本片上线前的逐点行为。
     for (const kind of ['whole', 'unknown'] as const) {
       const ctx = build({ todaySessionKind: kind });
-      const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_1430_ET });
+      const result = await ctx.usecase.run({ ...RUN_BASE, now: MONDAY_1430_ET });
 
       expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
       expect(ctx.collect).not.toHaveBeenCalled();
@@ -464,7 +496,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // (intraday_skipped 是终态不重试; 常规轮周一晚写的是周一的数据, 不回补周五)。
     const ctx = build({ todayCalendarStatus: 'non-trading', snapshotRowsAfterCollect: 1 });
     const result = await ctx.usecase.run({
-      ...SNAPSHOT_PHASE,
+      ...RUN_BASE,
       now: new Date('2026-08-15T16:00:00Z'),
     });
 
@@ -476,7 +508,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
 
   it('交易日的场内钟点仍判进行中 (回归: 修周末档 MUST NOT 顺手把真盘中放行)', async () => {
     const ctx = build({ todayCalendarStatus: 'trading' });
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: MONDAY_2230_BEIJING });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED });
     expect(ctx.collect).not.toHaveBeenCalled();
@@ -490,7 +522,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 时钟蓄意停在**盘中**: 结局仍须是 `calendar_missing` 而不是 `intraday_skipped` ——
     // 后者是「一切正常」的一档, 折进去等于把该被人看见的事藏起来 (FR-027 零折叠)。
     const ctx = build({ todayCalendarStatus: 'unknown' });
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: MONDAY_2230_BEIJING });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: MONDAY_2230_BEIJING });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
     expect(ctx.collect).not.toHaveBeenCalled();
@@ -498,12 +530,37 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     expect(recordedRow(ctx.runUpsert).targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
   });
 
+  it('🚨 066 T07: 日历前瞻视野未覆盖 **hk 的今天** ⇒ 同样放弃、不猜口径 (Edge Case 8)', async () => {
+    // 🚨 **这条只在本层验得到**: IT 里 `TRADING_CALENDAR_PORT` 绑的是 Mock (周一~周五恒判
+    //    `trading`), **恒不返 `unknown`** ⇒ 在那一层写它只会得到一个恒真用例。而真跑的
+    //    `DbTradingCalendarAdapter` 对「覆盖声明里没有 hk 这一行 / 声明没填到今天」正是答
+    //    `unknown` —— 港股日历是本片新接入的一档, 它的覆盖声明比 us 更可能落在视野之外。
+    //
+    // 时钟蓄意停在**港股盘中** (12:30 HKT, 午休正中): 结局仍须是 `calendar_missing` 而不是
+    // `intraday_skipped` —— 日历不可判时「盘中还是盘后」这个问题本身就没有意义, 而前者是
+    // 需人工介入的一档、后者是「一切正常」的一档 (FR-027 零折叠)。
+    const ctx = build({ todayCalendarStatus: 'unknown' });
+
+    const result = await ctx.usecase.run({
+      anchorId: ANCHOR_ID,
+      ticker: 'hk:00700',
+      now: MONDAY_1230_HKT,
+    });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
+    expect(ctx.collect).not.toHaveBeenCalled();
+    const row = recordedRow(ctx.runUpsert);
+    // 目标日已定位到 ⇒ 仍落痕; 而**口径**(source / oi_as_of) 一格都不猜。
+    expect(row.targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
+    expect(row.reason).toContain('hk');
+  });
+
   it('🚨 采集跑完但快照仍不在库 ⇒ backfill_incomplete, MUST NOT 记成 backfilled (FR-027a)', async () => {
     // 链 child **成功完成但零结果** 时的真实形态: collect 照常返回 (非配额耗尽), 而库里
     // 一行都没多出来。2026-08-17 本地真跑实撞 —— 13 只票链全失败、job 却 completed。
     const ctx = build({ snapshotRowsAfterCollect: 0 });
 
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE });
     expect(ctx.collect).toHaveBeenCalledTimes(1);
@@ -514,12 +571,52 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     expect(row.reason).toContain(TARGET);
   });
 
+  it('🚨 066 FR-014 该标的零期权合约 ⇒ no_option_chain 而不是 backfill_incomplete', async () => {
+    // 与上一条用例**只差一个入参**: 两者都是「采集跑完但快照仍不在库」, 分岔判据是库里的
+    // 期权合约计数。港股绝大多数标的落这一档 (实测颐海国际 0 / 网龙 0 个到期日) —— 折进
+    // backfill_incomplete 会让每一只无期权的锚都产出一条 ERROR 级、无从处理的记录。
+    const ctx = build({ snapshotRowsAfterCollect: 0, contractRows: 0 });
+
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.NO_OPTION_CHAIN });
+    const row = recordedRow(ctx.runUpsert);
+    expect(row.outcome).toBe(COLD_START_OUTCOME.NO_OPTION_CHAIN);
+    // 终态也要能读出「补的是哪一天」—— 按结局分组时同一张表两列一起看。
+    expect(row.targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
+  });
+
+  it('🚨 066 FR-014a 分岔判据只查**库**, 不看 collect 的统计量', async () => {
+    // 「有合约但整批被落库前硬门拒」时采集统计量同样为空 ⇒ 拿统计量当判据会把两件事混成一个。
+    // 这条钉的是「那次 count 真的发生了、且问的是 option_contract 这张表」。
+    const ctx = build({ snapshotRowsAfterCollect: 0, contractRows: 0 });
+
+    await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
+
+    expect(ctx.contractCount).toHaveBeenCalledTimes(1);
+    // 🚨 where 逐字断死而不是只断「被调过」—— **不带到期日过滤**是刻意的: 问的是「这只票有
+    //    没有挂牌期权」这个标的属性, 不是「今天有没有可采的合约」。加上 `expiryDate >= target`
+    //    会让「合约全部已到期」也落进 no_option_chain, 而那是一个**该有人管**的情形。
+    const where = (ctx.contractCount.mock.calls[0][0] as { where: Record<string, unknown> }).where;
+    expect(where).toEqual({ underlyingInstrumentId: INSTRUMENT_ID });
+    expect(Object.keys(where)).toEqual(['underlyingInstrumentId']);
+  });
+
+  it('🚨 快照落了库就根本不问合约计数 (分岔只在「没补上」那一格上生效)', async () => {
+    const ctx = build({ snapshotRowsAfterCollect: 3 });
+
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
+    expect(ctx.contractCount).not.toHaveBeenCalled();
+  });
+
   it('🚨 落库复判与起手复判问的是**同一个问题** (同一处判据, 两个调用点)', async () => {
     // ⚠️ `barRows: 1` 是必需的: 起手复判先问日线, 缺日线就**短路**在那一格、根本问不到快照
     //    (于是只剩落库复判一次调用)。要看到「同一个问题被问两遍」, 得让它走完整条。
     const ctx = build({ barRows: 1, snapshotRows: 0, snapshotRowsAfterCollect: 3 });
 
-    await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+    await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
 
     // 第二相里 optionDailySnapshot.count 被调两次: 采集前 (起手复判) + 采集后 (落库复判),
     // 且两次的 where 逐字相同 —— 口径漂了这条立刻红。
@@ -539,7 +636,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // (前者重入队, 后者要人工看)。谁把落库复判放到配额分支之前, 这条立刻红。
     const ctx = build({ budgetExhausted: true, snapshotRowsAfterCollect: 0 });
 
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
 
     expect(result).toEqual({ settled: false, deferral: 'vendor_budget' });
     expect(ctx.runUpsert).not.toHaveBeenCalled();
@@ -547,7 +644,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
 
   it('配额耗尽 ⇒ 交回 vendor_budget 顺延, **不**落 retry_exhausted、也不落 backfilled', async () => {
     const ctx = build({ budgetExhausted: true });
-    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+    const result = await ctx.usecase.run({ ...RUN_BASE, now: SATURDAY_1000_BEIJING });
 
     expect(result).toEqual({ settled: false, deferral: 'vendor_budget' });
     // 顺延 ≠ 失败 (FR-018 / FR-019b): 一行运行记录都不该写。
@@ -559,21 +656,13 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
  * 🚨 **本档钉的是 FR-011 的结果, 不是某个谓词的实现**: 无论 hk 登记成两段还是单段 (2026-08-18
  * 起为单段, 见 `market-session.rules.ts` hk 登记处), 午休都 MUST 判「该场未收」⇒ 不写快照。
  *
- * 它今天端到端不可达 —— 唯一开通期权采集的 us 真的无午休, 而 hk 在 `COLD_START_CAPABILITY`
- * 里是空表项、走到就提前返回。故在此**临时开通 hk**把这一格逼出来: 哪天真给一个有午休的市场
- * 开通期权采集, 这条守卫已经在了, 而那种错行**不报错**。
+ * 📌 **066 T06 起本档端到端可达**: 此前 hk 在 `COLD_START_CAPABILITY` 里是空表项、走到就提前
+ * 返回, 故这里曾**临时把 hk 改成 `{chain:false, snapshot:true}`** 才逼得出这一格。hk 两档全开
+ * 之后那个 override 既没必要、又恰好是排序铁律 5 禁的中间态 ⇒ 删掉, 直接用真能力表跑。
+ * ⚠️ 判据没变: 放行会写出一行标签错的脏数据 —— 归属日恒为上一个已收盘交易日, 而此刻拿到的是
+ * 今天上午的盘中态。fail-closed: 宁可缺一场, 不可脏一场。
  */
-describe('第二相 —— 午休档 (FR-011, 今天端到端不可达)', () => {
-  const original = COLD_START_CAPABILITY.hk;
-
-  beforeEach(() => {
-    // deltaDimensions 留空 ⇒ 第一相无 flow 可组, 直接落到敏感档, 正好把这一格暴露出来。
-    COLD_START_CAPABILITY.hk = { optionChain: false, optionSnapshot: true };
-  });
-  afterEach(() => {
-    COLD_START_CAPABILITY.hk = original;
-  });
-
+describe('第二相 —— 午休档 (FR-011)', () => {
   it('🚨 午休 ⇒ 同样 intraday_skipped、collect 零调用 (该场尚未收盘)', async () => {
     const ctx = build();
     const result = await ctx.usecase.run({

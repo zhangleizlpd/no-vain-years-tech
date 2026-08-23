@@ -744,7 +744,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
       expect(tickersOf(page)).toEqual(['us:BELOW', 'us:ABOVE', 'us:NEW']);
     });
 
-    it('锚所属市场不在实时支持范围内（港股 / A 股）→ 该锚恒为收盘档, 不表现为故障、不静默返回空', async () => {
+    it('锚所属市场不在实时支持范围内 → 该锚恒为收盘档, 不表现为故障、不静默返回空', async () => {
       const closeDate = dayOf(new Date());
       await seedAnchor('hk:00700', { lastClose: '45', lastCloseDate: closeDate });
       marketStatePort.sessions = [{ market: 'hk', session: 'regular' }];
@@ -752,8 +752,14 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
 
       const incrSpy = vi.spyOn(redis, 'incr');
       try {
-        // 连跑到**超过**熔断阈值：「只要库里存在一只 hk 锚, 90 秒后 circuit open 把 us 一起
-        // 降级」是今天就会发生的故障（hk 锚合法且随时可建）。
+        // 连跑到**超过**熔断阈值：验的是「未接实时源的市场不得把已接的市场一起拖进熔断」。
+        //
+        // 📌 **叙事订正（066 T10）**: 本例的 fixture 仍用 hk, 但 hk 在生产上**已经接入实时
+        //    路由**了（`futu-realtime-quote.adapter.ts` 认 hk + module 补了 hk 槽位）——
+        //    这里靠 fake port 钉死 `registeredMarkets: ['us']` 把那条分支**造出来**, 而不是
+        //    在描述今天的故障。被测的不变量与具体是哪个市场无关: 只要有市场没接实时源,
+        //    它就不能污染熔断计数。换个真未接入的市场当 fixture 要先过 `IMPORTABLE_MARKETS`
+        //    (今天只有 us / hk), 故保留 hk + fake port 这个组合。
         for (let round = 0; round <= INTRADAY_CIRCUIT_THRESHOLD; round += 1) {
           const outcome = ticked(await scheduler.run(NOW));
           expect(outcome.verdict).toBe('no-attempt');

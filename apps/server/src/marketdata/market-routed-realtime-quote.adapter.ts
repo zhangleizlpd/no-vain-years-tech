@@ -11,9 +11,10 @@ import {
  * 一个绑定, 而各市场的实时源天然不同 vendor (us 走富途 shim; cn 的现役实时源今天还挂在
  * `alert` 里、且富途账号无 A 股权限) —— 故「不同市场用不同 vendor」这件事必须由一层路由承担。
  *
- * V1 路由 (见 `marketdata.module.ts` 接线):
- * - `us` → 富途 shim `/option-snapshot` 的正股行 (`FutuRealtimeQuoteAdapter`)
- * - `hk` / `cn` → **槽留空** (本片 out of scope; 留空 = 该市场的锚恒为收盘档)
+ * 路由 (见 `marketdata.module.ts` 接线):
+ * - `us` / `hk` → 富途 shim `/option-snapshot` 的正股行 (`FutuRealtimeQuoteAdapter`, 同一实例;
+ *   hk 自 066 T10 接上)
+ * - `cn` → **槽留空** (现役实时源仍挂在 `alert/`; 留空 = 该市场的锚恒为收盘档)
  *
  * 🚨 **无默认路由 = 刻意 fail-closed** (同 `MarketRoutedEodBarAdapter`): 未登记的市场直接抛,
  * 而不是悄悄落到某个 vendor 上 —— 后者会把「配置漏了」表现成「每只标的都失败」。

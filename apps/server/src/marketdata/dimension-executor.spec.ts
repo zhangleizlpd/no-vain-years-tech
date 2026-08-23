@@ -150,6 +150,9 @@ describe('019 T004 executor 注册表路由 (switch 退役 → Map)', () => {
       'option_contract', // 047 T003 M2b 链合约发现 (per-code, 挂锚闸, FR-035)
       'option_daily_snapshot', // 047 T003 M2b 全链逐日快照 (per-code, 挂锚闸 + hard 依赖链发现, FR-031)
       'earnings_event', // 047 T003 M2b 财报日历 (**市场级接口, 不挂锚闸**, FR-035a)
+      'hk_option_contract', // 066 T04 港股链合约发现 (独立维度而非给 option_contract 扩 scope, plan §A1)
+      'hk_option_daily_snapshot', // 066 T04 港股全链逐日快照 (seed 时 enabled=false, FR-016)
+      'hk_underlying_iv_daily', // 066 T04 港股标的级 IV 日快照 (history_depth 1095, FR-018)
     ]);
   });
 
@@ -3381,12 +3384,17 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       /** vendor 不可达 (FR-030 路径)。 */
       throwOnFetch?: boolean;
       batchSize?: number;
+      /** 锚表 ticker 列 (066 T02: 本维度是**锚作用域**的, 工作集判据读的是它)。 */
+      anchorTickers?: string[];
     } = {},
   ) {
     const instruments = opts.instruments ?? [
       { id: 1n, market: 'us', code: 'PEP' },
       { id: 2n, market: 'us', code: 'VICI' },
     ];
+    // 066 T02: 缺省让工作集里每只标的都有锚 —— 本 describe 验的是装配 / 批量 / 幂等形态,
+    // 锚闸本身的双向行为归 `test/integration/marketdata-066.anchor-scoped-workset.it.spec.ts`。
+    const anchorTickers = opts.anchorTickers ?? instruments.map((i) => `${i.market}:${i.code}`);
     const ivUpsert = vi.fn(async (_arg: unknown) => ({}));
     const getIvSnapshots = vi.fn(async (symbols: readonly string[]) => {
       if (opts.throwOnFetch) throw new Error('shim 502');
@@ -3419,6 +3427,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => instruments) },
+        anchor: { findMany: vi.fn(async () => anchorTickers.map((ticker) => ({ ticker }))) },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
         ),
@@ -3467,17 +3476,20 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
     now: NOW_BEIJING_SAT_6AM,
   };
 
-  it('工作集挂锚闸 (FR-026/FR-031): loadActiveInstruments 的 needSync=true 过滤生效, 且走 fact 前置 (tier + 锚闸重算)', async () => {
+  it('工作集挂锚闸 (FR-026/FR-031): loadActiveInstruments 走**锚集**谓词 (066 T02 起 needSync 已退出), 且走 fact 前置 (tier + 锚闸重算)', async () => {
     const { registry, deps } = buildUnderlyingIvFakes();
     await registry.execute('underlying_iv_daily', ivInput);
-    // 无锚不采 = `needSync:true`; 加第 13 只锚只需锚闸把它刷成 true, 零代码改动 (FR-031)。
+    // 无锚不采 = 工作集 ∩ 锚集; 加第 13 只锚只需建锚, 零代码改动 (FR-031)。
+    expect(deps.prisma.anchor.findMany).toHaveBeenCalledWith({ select: { ticker: true } });
     expect(deps.prisma.instrument.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { market: { in: ['us'] }, status: 'active', needSync: true },
+        where: { status: 'active', OR: [{ market: 'us', code: { in: ['PEP', 'VICI'] } }] },
       }),
     );
     expect(deps.tierRecalc.recalcSafely).toHaveBeenCalledTimes(1);
-    expect(deps.anchorGate.recalcSafely).toHaveBeenCalledTimes(1); // 锚 → needSync 的刷新点
+    // 锚闸仍在前置里跑 —— 它重算的 `needSync` 是 `eod_bar` / `sync-profile` / backfill CLI
+    // 那三个消费方的输入 (066 plan §A4: A3 与 A4 互补), 只是不再是本维度的工作集判据。
+    expect(deps.anchorGate.recalcSafely).toHaveBeenCalledTimes(1);
   });
 
   it('批量形态 (FR-023): 整批一次 getIvSnapshots(symbols), 不是逐票 N 次', async () => {
@@ -3617,6 +3629,13 @@ describe('046 T009 underlying_iv_daily backfill (his_volatility ≤364 天分页
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => instruments) },
+        // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表。让工作集里每只标的都有锚,
+        // 本 describe 验的是分窗形态而非闸行为。
+        anchor: {
+          findMany: vi.fn(async () =>
+            instruments.map((i) => ({ ticker: `${i.market}:${i.code}` })),
+          ),
+        },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvHistory: { createMany: histCreateMany } }),
         ),
@@ -3815,6 +3834,8 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => [{ id: 1n, market: 'us', code: 'PEP' }]) },
+        // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表 (这里给 PEP 一只锚)。
+        anchor: { findMany: vi.fn(async () => [{ ticker: 'us:PEP' }]) },
         underlyingIvHistory: { findMany: histFindMany },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
@@ -4287,6 +4308,13 @@ const LIVE_SEED_PRIORITIES = new Map<string, number>([
   ['option_contract', 5],
   ['option_daily_snapshot', 5],
   ['earnings_event', 4],
+  // 066 T04 港股三行 (migration 20260823_1015_seed_hk_option_dimensions)。全取 priority 5:
+  // 同 priority 下 key 字典序 asc, 而 'eod_bar' < 'hk_*' < 'option_*' ⇒ 既有两条 hard 边
+  // (corporate_action→eod_bar / option_contract→option_daily_snapshot) 的相邻性不受影响,
+  // 且 'hk_option_contract' < 'hk_option_daily_snapshot' 让本片新增的 hard 边自然相邻。
+  ['hk_option_contract', 5],
+  ['hk_option_daily_snapshot', 5],
+  ['hk_underlying_iv_daily', 5],
 ]);
 
 /** seed 现状快照 (marketdata.sync_dependency; 末三条 = 047 本片新增)。 */
@@ -4326,6 +4354,12 @@ const LIVE_SEED_EDGES: SyncDependencyEdge[] = [
   { upstream: 'universe', downstream: 'earnings_event', mode: 'soft' },
   // 047 新增: 快照 **hard** 依赖链发现 (FR-031 —— 无合约表即无从取快照)。
   { upstream: 'option_contract', downstream: 'option_daily_snapshot', mode: 'hard' },
+  // 066 T04 新增: 港股两条 universe soft (链发现 / 标的 IV 都 FK→instrument) + 一条 hard
+  // (港股快照依赖港股链发现, 同 047 的美股形态)。🚨 `hk_option_daily_snapshot` 同样**刻意
+  // 没有 universe 边** —— 多一个前驱会让它在 Kahn 拓扑里与那条 hard 边争相邻位 (047 先例)。
+  { upstream: 'universe', downstream: 'hk_option_contract', mode: 'soft' },
+  { upstream: 'universe', downstream: 'hk_underlying_iv_daily', mode: 'soft' },
+  { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'hard' },
 ];
 
 describe('047 T003 三个新维度注册 + 依赖拓扑守卫', () => {
@@ -4356,6 +4390,56 @@ describe('047 T003 三个新维度注册 + 依赖拓扑守卫', () => {
     expect(brokenOrder.indexOf('eod_bar')).toBeGreaterThan(
       brokenOrder.indexOf('corporate_action') + 1,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 066 T04 港股三维度 seed 的依赖拓扑守卫 (FR-015, plan §A1)。
+//
+// 与上面 047 那块**同一条**失败形态: seed migration 自己跑得绿绿的, 错的是 priority 取值让
+// 某条 hard 边的两端在派生全序里不再相邻 ⇒ **夜间 flow 装配运行期 throw**
+// (`assembleSyncFlow` → `assertEdgesExpressible`)。港股这一片新增的 hard 边
+// `hk_option_contract → hk_option_daily_snapshot` 与既有两条一样, 只能靠这一层钉住。
+//
+// 🚨 本片新增的第三行 `hk_underlying_iv_daily` **不在任何 hard 边上**, 但它同样会破事 ——
+//    它只要 priority 取得比 5 高, 就会在 `corporate_action` 与 `eod_bar` 之间被选走, 把一条
+//    与港股期权毫无关系的既有 hard 边掰断。下面的反例把这条钉住。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('066 T04 港股三维度 seed 的依赖拓扑守卫', () => {
+  const order = deriveExecutionOrder(LIVE_SEED_EDGES, LIVE_SEED_PRIORITIES);
+  const pos = (key: string): number => order.indexOf(key);
+
+  it('三个港股维度键都在 DIMENSION_KEYS 在册 (seed 行有、executor 无 ⇒ 每晚 runDimension throw)', () => {
+    for (const key of [
+      'hk_option_contract',
+      'hk_option_daily_snapshot',
+      'hk_underlying_iv_daily',
+    ]) {
+      expect(DIMENSION_KEYS).toContain(key);
+    }
+  });
+
+  it('港股快照排在港股链发现之后且**相邻** (hard 边, 非相邻 = 失败传播绕不过中间节点)', () => {
+    expect(pos('hk_option_contract')).toBeGreaterThanOrEqual(0);
+    expect(pos('hk_option_daily_snapshot')).toBe(pos('hk_option_contract') + 1);
+  });
+
+  it('🚨 港股三行不得掰断既有两条 hard 边 —— 反例: hk_underlying_iv_daily 取 priority 6', () => {
+    // 正例: 现行 seed 值下 corporate_action→eod_bar 仍相邻 (上面 047 那块的全量循环也覆盖,
+    // 这里单列是为了让反例有对照 —— 只有反例的守卫看不出「正例本来是什么样」)。
+    expect(pos('eod_bar')).toBe(pos('corporate_action') + 1);
+
+    const broken = new Map(LIVE_SEED_PRIORITIES).set('hk_underlying_iv_daily', 6);
+    const brokenOrder = deriveExecutionOrder(LIVE_SEED_EDGES, broken);
+    // 'corporate_action' < 'hk_underlying_iv_daily' 字典序 ⇒ 同 priority 6 时 corp 先被选,
+    // 随后 hk_underlying_iv_daily 仍以 6 压过 priority 5 的 eod_bar 插进中间。
+    expect(brokenOrder.indexOf('eod_bar')).toBeGreaterThan(
+      brokenOrder.indexOf('corporate_action') + 1,
+    );
+  });
+
+  it('港股三行不打乱美股期权那对 hard 边的相邻性 (纯增量: 047 的结论逐点不变)', () => {
+    expect(pos('option_daily_snapshot')).toBe(pos('option_contract') + 1);
   });
 });
 

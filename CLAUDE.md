@@ -58,6 +58,6 @@ Doc 文件组织 per [docs/conventions/docs-organization.md](docs/conventions/do
 
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-[specs/065-optionsdesk-radar-market-tabs/plan.md](specs/065-optionsdesk-radar-market-tabs/plan.md)
+[specs/066-hk-option-cold-start/plan.md](specs/066-hk-option-cold-start/plan.md)
 
 <!-- SPECKIT END -->

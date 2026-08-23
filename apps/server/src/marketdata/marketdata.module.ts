@@ -397,16 +397,21 @@ function collectionPort<T extends object>(
     // (`futu-shim.constraint-profile.ts` 的 08-09 事故段)。
     // ⚠️ 复用的是 **client 实例**, 不是 `FutuOptionSnapshotAdapter` 这个类。
     //
-    // 🚨 **`hk` / `cn` 槽刻意留空** = 未登记市场 fail-closed 抛
+    // 🚨 **`hk` 槽自 066 T10 起接上**: 在那之前港股锚每 30 秒落一次 `unsupported-market`、
+    // 恒为收盘档 —— 而那是**配置事实**、按纪律不计熔断 ⇒ 一条告警都不会有 (FR-003)。
+    // us 与 hk 共用**同一个** adapter 实例: 打的是同一个 shim 端点、同一个令牌桶, 起两个只是
+    // 把 Guardrail 1 那个坑换个地方再踩一遍。
+    //
+    // 🚨 **`cn` 槽仍刻意留空** = 未登记市场 fail-closed 抛
     // `RealtimeQuoteMarketUnsupportedError` (专属类型, 供上游把「配置事实」与「源故障」分开;
-    // hk 锚今天就合法可建, 混淆两者会让 90 秒后整条链降级)。cn 的现役实时源仍在 `alert` 里,
-    // 收编是后续 feature 的事且被账号权限挡着 (富途无 A 股权限) —— 本片 `alert/` 一行不动。
+    // 混淆两者会让 90 秒后整条链降级)。cn 的现役实时源仍在 `alert` 里, 收编是后续 feature 的事
+    // 且被账号权限挡着 (富途无 A 股权限) —— 本片 `alert/` 一行不动。
     collectionPort<RealtimeQuotePort>(REALTIME_QUOTE_PORT, {
       inject: [FUTU_OPTION_SNAPSHOT_HTTP_CLIENT],
-      live: (cfg, snapshotHttp: VendorHttpClient) =>
-        new MarketRoutedRealtimeQuoteAdapter({
-          us: new FutuRealtimeQuoteAdapter(snapshotHttp, cfg.futuShimUrl, cfg.futuShimToken),
-        }),
+      live: (cfg, snapshotHttp: VendorHttpClient) => {
+        const futu = new FutuRealtimeQuoteAdapter(snapshotHttp, cfg.futuShimUrl, cfg.futuShimToken);
+        return new MarketRoutedRealtimeQuoteAdapter({ us: futu, hk: futu });
+      },
     }),
 
     // ── 市场时段端口 (061 T004/T005, FR-002/003): kind=live → 富途 shim `/market-state`

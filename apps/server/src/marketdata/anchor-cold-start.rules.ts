@@ -12,17 +12,20 @@ import { exchangeCalendarDate } from './session-clock.js';
  * 三样东西住这里, 都是「散开就会漂」的那类:
  * 1. {@link resolveSnapshotSpec} —— 快照三元组 (归属交易日 / 来源 / OI 归属日) 的决策表;
  * 2. {@link COLD_START_CAPABILITY} —— 「哪些市场支持哪些补数内容」的**唯一**登记处 (FR-024);
- * 3. {@link COLD_START_OUTCOME} —— 结局值域 (FR-027 八种, 零折叠)。
+ * 3. {@link COLD_START_OUTCOME} —— 结局值域 (FR-027 起, 零折叠)。
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 结局值域 (FR-027)
+// 结局值域 (FR-027, 066 FR-014)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 一次冷启动的结局。**八种取值两两互异** —— FR-027 明禁把「没做」与「做了但失败」折叠成
+ * 一次冷启动的结局。**取值两两互异** —— FR-027 明禁把「没做」与「做了但失败」折叠成
  * 同一个值: 折叠之后一条按结局分组的查询再也分不出「今天本就不该做」和「今天该做没做成」,
  * 而那两件事的处置完全相反 (前者不该有人管, 后者要人管)。
+ *
+ * 沿革: FR-027 原始八档 → FR-027a 补 {@link BACKFILL_INCOMPLETE} → 066 FR-014 补
+ * {@link NO_OPTION_CHAIN}, 现为十档。
  */
 export const COLD_START_OUTCOME = {
   /** 已补齐 —— 本次真的采了并落了库。 */
@@ -57,6 +60,31 @@ export const COLD_START_OUTCOME = {
    * —— 链是**第一相**跑的, 第二相重试只会拿着同一个空工作集再问一遍。
    */
   BACKFILL_INCOMPLETE: 'backfill_incomplete',
+  /**
+   * 该标的**根本没有挂牌期权** (066 FR-014 / FR-014a) —— **终态、非错误、不告警**。
+   *
+   * 🚨 它与 {@link BACKFILL_INCOMPLETE} 的差别是「本就没有可做的」对「该做没做成」, 两者的
+   * 处置完全相反 (前者不该有人管, 后者要人管) —— 正是 `FR-027` 零折叠立论的同一条理由。
+   *
+   * **为什么必须是一档独立结局而不是降一级日志**: 「按结局分组的查询要能分出这两件事」是
+   * 八值零折叠的立论本身; 只降日志级别不改 `outcome` 列, 查询面依然分不出。
+   *
+   * **为什么不是边缘情况**: 港股绝大多数标的没有挂牌期权 (2026-08-22 实测六只: 腾讯 8 /
+   * 小米 8 / 海底捞 7 / 药明康德 8 个到期日, 而**颐海国际 0、网龙 0**) —— 与美股「大部分
+   * 流动股都有期权」正好相反。折进 `backfill_incomplete` 会让每一只无期权的港股锚都产出
+   * 一条 ERROR 级、需人工介入的记录, 而那件事既不是故障也无从处理。
+   *
+   * 🚫 判据**取自库中该标的的期权合约计数**, MUST NOT 取采集过程的统计量 —— 「有合约但整批
+   * 被落库前硬门拒掉」那种情形统计量同样为空, 两件事会被混成一个 (与既有「判据看库不看
+   * stats」同源, 见 `anchor-cold-start.usecase.ts` 落库复判处)。
+   *
+   * ⚠️ **对美股不是零影响, 这是蓄意的**: 「链跑完但该票零合约」这条路径以前落
+   * `backfill_incomplete`, 现在按同一判据落本档。美股锚基本都是有期权的票 ⇒ 真撞上它多半
+   * 意味着链发现对该 target 失败了, 而那条**由链维度自己的失败计数告警**
+   * (`dimension-executor.ts` 的 `alertIfDegraded`), 不靠冷启动结局兜底。既有八档的**语义**
+   * 逐点不变, 变的只是这一条路径的归属。
+   */
+  NO_OPTION_CHAIN: 'no_option_chain',
 } as const;
 
 export type ColdStartOutcome = (typeof COLD_START_OUTCOME)[keyof typeof COLD_START_OUTCOME];
@@ -88,14 +116,32 @@ export interface ColdStartCapability {
 /**
  * 「哪些市场支持哪些补数内容」的**唯一**登记处 (FR-024)。
  *
- * ⚠️ `hk` 是**空表项而非缺项**: 它已在 `market-session.rules.ts` 登记了盘中时段, 却蓄意
- * 不开通期权采集 (那片是并行 HK 集成的地盘, plan §D11)。写成空表项而不是干脆不写, 是为了
- * 让「已知但未开通」与「压根没考虑过」在代码里看得出差别 —— 两者结局同为
- * {@link COLD_START_OUTCOME.MARKET_NOT_ENABLED}, 但下一个加市场的人需要知道 hk 被想过。
+ * ⚠️ 「登记了但两档全关」(空表项) 与「压根没登记」(缺项) 结局同为
+ * {@link COLD_START_OUTCOME.MARKET_NOT_ENABLED}, 但代码里看得出差别 —— 空表项的意思是
+ * 「已知但未开通」。今天两者的现役例子分别是: 无 (hk 已于 066 T06 开通) 与 `cn`。
+ *
+ * 🚨 **`hk` 两档必须同开同关 —— MUST NOT 停在 `{optionChain: true, optionSnapshot: false}`
+ * 这个中间态** (066 FR-016a): 中间态会让 use case 第 7 步的 chain-only 早退
+ * (`if (!capability.optionSnapshot) return backfilled`) 抢在**盘中闸 / `no_option_chain`
+ * 判断 / 落库复判**三者之前 —— 盘中建的港股锚会落 `backfilled` 而一行快照都没有、无挂牌期权
+ * 的票落不到 `no_option_chain`、采集没落库也照样报「已补齐」。三条验收同时破, 且**都不报错**。
+ *
+ * 🚨 **本表与 `sync_dimension.hk_option_daily_snapshot.enabled` 是彼此独立的两条路, 必须
+ * 在同一个 commit 里一起翻** (FR-016a): 本表管**建锚路径** (冷启动直调采集本体, **不读**
+ * 采集维度的启用位), 那一行管**夜间 cron 路径**。只翻其一的表现是两条路行为分叉 —— 建锚补得到
+ * 而当晚 cron 一行不采, 或反之 —— 而两种分叉都只是「某条路默默什么都没做」, 不报错。
+ * 机械断言 (两者同真同假) 在 `test/integration/marketdata-066.hk-dimension-seed.it.spec.ts`。
+ *
+ * 🚫 **日线不在本表** (issue #159): 建锚那一刻 `CreateAnchorUseCase.seedLastClose` 已同步调过
+ * `EnsureLatestEodBarUseCase` (按市场路由, hk 走理杏仁, 写同一张 `daily_bar`) ⇒ FR-011「不新增
+ * 日线采集维度」自动满足。⚠️ 但那条路对 **universe 未收录**的港股票会**早退**: `instrument`
+ * 行不存在时它只 warn 返 `null` (「不猜、不建 instrument 行」是它的明写纪律) —— 那种标的的日线
+ * 要靠 066 T03 修好的 `needSync` 默认值 (`market !== 'us'`) + 当晚 22:00 的 `eod_bar` 才补得上。
+ * 这就是「T03 必须先于本开关」那条排序的真实后果面。
  */
 export const COLD_START_CAPABILITY: Record<string, ColdStartCapability> = {
   us: { optionChain: true, optionSnapshot: true },
-  hk: { optionChain: false, optionSnapshot: false },
+  hk: { optionChain: true, optionSnapshot: true },
 };
 
 /** 该市场是否有任何一档可补 —— 两档全关或未登记 ⇒ `false` (FR-023 显式 no-op)。 */

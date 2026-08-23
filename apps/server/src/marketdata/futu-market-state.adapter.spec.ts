@@ -143,6 +143,45 @@ describe('FutuMarketStateAdapter', () => {
     });
   });
 
+  // ── 066 T10: 港股盘中采价的**唯一**闸就在这一层 (FR-003, plan §A7) ────────────────
+  /**
+   * 🚨 **午休 / 提前收盘挡在这儿, 不在本地时段表**: `market-session.rules.ts` 把港股登记成
+   * **含午休的单段** `[09:30, 16:00]` —— 那是补数闸要的语义, 盘中采价**根本不读那张表** ⇒
+   * MUST NOT 为了午休去把它拆两段 (066 tasks.md 排序铁律 6)。
+   */
+  describe('066 T10 港股时段 (state_branches 16 / 17 / 19)', () => {
+    it.each([['MORNING'], ['AFTERNOON']])(
+      '港股连续竞价 %s → regular, 准采 (state_branches 16; 有午休的市场上下午各出现一个值)',
+      async (raw) => {
+        const { http } = makeShim([globalState({ market_hk: raw })]);
+        const states = await makeAdapter(http).getMarketSessions();
+        expect(sessionOf(states, 'hk')).toBe('regular');
+      },
+    );
+
+    it('🚨 港股午休 → vendor 报 REST ⇒ 归一成 other ⇒ 不采 (state_branches 17)', async () => {
+      const { http } = makeShim([globalState({ market_hk: 'REST' })]);
+      const states = await makeAdapter(http).getMarketSessions();
+
+      expect(sessionOf(states, 'hk')).toBe('other');
+      // 反向也钉住: 午休**不得**被当成常规时段, 否则午休盘口会被标成盘中价写进锚表。
+      expect(sessionOf(states, 'hk')).not.toBe('regular');
+    });
+
+    it.each([['REST'], ['CLOSED'], ['HK_CAS']])(
+      '⚠️ 半日市当天下午: 供应方报 %s 一律不采 (state_branches 19)',
+      async (raw) => {
+        // 🚨 **未实测**: 港股半日市 12:00 提前收盘之后供应方到底报哪个状态, 本机够不到 vendor,
+        // 待 T15 在真锚上收口。⇒ 这里**不得**凭推断写一条「半日市 = CLOSED」的绿断言。
+        // 今天能断死的只有归一这一层: 只要不是 MORNING / AFTERNOON 就不采, 而三个候选值
+        // (午休 REST / 收市 CLOSED / 收市竞价 HK_CAS) 归一后全是 other。
+        const { http } = makeShim([globalState({ market_hk: raw })]);
+        const states = await makeAdapter(http).getMarketSessions();
+        expect(sessionOf(states, 'hk')).toBe('other');
+      },
+    );
+  });
+
   describe('取不到状态 → 抛 (FR-003, state_branch 4)', () => {
     it('端点不可达 → 原样上抛, MUST NOT 吞成空数组', async () => {
       // 空数组会被上游读成「取到了, 只是没有市场」⇒ 不采但也不计失败 ⇒ 真故障永不显形。

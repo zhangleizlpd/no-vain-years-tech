@@ -10,10 +10,10 @@ import { type ShimEnvelope, parseShimEnvelope } from './futu-shim-envelope.js';
 import type { VendorHttpClient } from './vendor-http-client.js';
 
 /**
- * 富途实时报价 adapter (061 T003, `REALTIME_QUOTE_PORT` 的 us 实现)。
+ * 富途实时报价 adapter (061 T003, `REALTIME_QUOTE_PORT` 的 us + hk 实现)。
  *
  * 打 shim 一个端点 (`services/futu-shim/`, Bearer 鉴权, 经 B↔C WireGuard 隧道):
- * GET `<shim>/option-snapshot?codes=US.PEP,US.AAPL` → 每个正股一行, 本 adapter 只取 `last_price`。
+ * GET `<shim>/option-snapshot?codes=US.PEP,HK.00700` → 每个正股一行, 本 adapter 只取 `last_price`。
  *
  * ## 🚨🚨 与 `FutuOptionSnapshotAdapter` **共用同一个 `VendorHttpClient` 实例** (Guardrail 1)
  *
@@ -40,11 +40,16 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * 什么时候的」, 纯证据、零判据 (端口 `RealtimeQuote.vendorUpdateTime` 注释写着为什么不能拿它
  * 判新鲜度)。FR-020 管的是「呈现哪个价」, 与它正交。
  *
- * ## 只承担 us
+ * ## 承担 us + hk (066 T10 起)
  *
- * 非 us symbol **直接抛、零外呼** (照 `FutuOptionSnapshotAdapter` 的 `futuCode` 形态) ——
- * 静默返空会被上游记成「该标的今天没有报价」, 一次成功的空采集比一次响亮的失败难发现得多。
+ * 未登记市场的 symbol **直接抛、零外呼** (照 `FutuOptionSnapshotAdapter` 的 `vendorRef` 形态)
+ * —— 静默返空会被上游记成「该标的今天没有报价」, 一次成功的空采集比一次响亮的失败难发现得多。
  * 「哪些市场有实时源」这件事本身由 `MarketRoutedRealtimeQuoteAdapter` 表达, 本类只兜底。
+ *
+ * 🚨 **港股午休不在这一层挡**: 盘中采价的闸读的是**供应方的市场时段状态**
+ * (`FutuMarketStateAdapter` 归一后的三态, 午休的 `REST` 落在白名单外) ⇒ 天然不采。
+ * 本地时段表 (`market-session.rules.ts`) 把港股登记成含午休的单段, 那张表**不参与**这条路,
+ * MUST NOT 为了午休去拆它 (066 tasks.md 排序铁律 6)。
  *
  * ## 失败一律原样上抛, 不映射具名错误
  *
@@ -57,9 +62,13 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * —— ⚠️ 该门恒 skip, 「测试全绿」对真契约不构成证据。
  */
 
-/** market → 富途 code 前缀。**只有 us** (本片实时面只覆盖美股, spec「故意零覆盖」第 1 条)。 */
+/**
+ * market → 富途 code 前缀。**us + hk** (066 T10 起; cn 无实时源, 富途账号也无 A 股权限)。
+ * 与 `FutuOptionSnapshotAdapter` 同表同源: 两者打的是同一个 shim 端点。
+ */
 const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   us: 'US',
+  hk: 'HK',
 };
 
 /**
@@ -106,10 +115,14 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
 
     // vendor code → 入参 canonical symbol 的回查表: 结果键**原样回传入参那个串**, 且省掉一张
     // 反向前缀表 (响应里出现未请求的 code 时也能一眼判为「不是我要的」)。
-    const codeToSymbol = new Map<string, string>();
-    for (const symbol of symbols) codeToSymbol.set(this.futuCode(symbol), symbol);
+    // market 一并留着: 行内 `update_time` 的时区跟市场走 (066 T17)。
+    const codeToRef = new Map<string, { symbol: string; market: string }>();
+    for (const symbol of symbols) {
+      const { market, futuCode } = this.vendorRef(symbol);
+      codeToRef.set(futuCode, { symbol, market });
+    }
 
-    const params = new URLSearchParams({ codes: [...codeToSymbol.keys()].join(',') });
+    const params = new URLSearchParams({ codes: [...codeToRef.keys()].join(',') });
     const what = `realtime-quote ${symbols.length} symbols`;
     const { asOf, rows } = await this.fetchEnvelope(`/option-snapshot?${params.toString()}`, what);
 
@@ -117,16 +130,16 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
     for (const row of rows) {
       const raw = asRecord(row);
       const code = strOrNull(raw.code);
-      const symbol = code === null ? undefined : codeToSymbol.get(code);
-      if (symbol === undefined) continue; // 未请求的行 —— 忽略, 不混进结果
+      const ref = code === null ? undefined : codeToRef.get(code);
+      if (ref === undefined) continue; // 未请求的行 —— 忽略, 不混进结果
       const price = numToString(raw.last_price);
       // 行在但没价 (停牌 / 这一刻无成交) 与整行缺席同义: 静默省略, 上游保留旧值。
       if (price === null) continue;
       // 🚨 `update_time` 只作**证据**落到 `vendorUpdateTime`, 判据仍是信封 `as_of` (见端口注释)。
-      quotes.set(symbol, {
+      quotes.set(ref.symbol, {
         price,
         capturedAt: asOf,
-        vendorUpdateTime: vendorTimeToDate(raw.update_time),
+        vendorUpdateTime: vendorTimeToDate(raw.update_time, ref.market),
       });
     }
 
@@ -138,14 +151,17 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
     return quotes;
   }
 
-  /** canonical `market:code` → 富途 code；非 us 直接抛（零外呼）。 */
-  private futuCode(symbol: string): string {
+  /**
+   * canonical `market:code` → 富途 code **与它所属的 market**；未登记市场直接抛（零外呼）。
+   * market 一并返回是因为行内 `update_time` 的时区跟市场走（066 T17）。
+   */
+  private vendorRef(symbol: string): { market: string; futuCode: string } {
     const parsed = parseCanonicalSymbol(symbol);
     const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
     if (!parsed || !prefix) {
-      throw new Error(`[futu] realtime-quote 不支持 symbol "${symbol}" (本源仅承担 us)`);
+      throw new Error(`[futu] realtime-quote 不支持 symbol "${symbol}" (本源仅承担 us / hk)`);
     }
-    return `${prefix}.${parsed.code}`;
+    return { market: parsed.market, futuCode: `${prefix}.${parsed.code}` };
   }
 
   /**

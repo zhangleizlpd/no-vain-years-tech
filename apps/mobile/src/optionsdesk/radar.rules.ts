@@ -61,18 +61,21 @@ export function isSupportedMarket(market: string): boolean {
 }
 
 /**
- * 无盘中实时价的市场（065 FR-012，兑现 061 FR-010 的 UI 那半条）。
+ * 无盘中实时价的市场 —— **marketdata 行情能力表的镜像**。
  *
- * 🚨 **本地常量而不是从行数据推断**: 说明必须**常驻**（空态时也在），而空态时一行都没有、
- * 推断不出任何东西。这也是它 MUST NOT 写成「所有行的 priceKind 都是 eod_close 就显示」的原因。
+ * 📌 **066 FR-020 起为空表**：港股接进实时报价（066 T10）后，两个受支持市场都有盘中价 ⇒
+ * 065 FR-012 那条常驻说明连同它的文案一并下线（留着就是骗人）。
+ * 🚨 **常量本身刻意保留**：它是下一个无盘中市场的落点，删掉会让那时的能力判据无处可挂
+ * （届时说明行怎么呈现要重新走一遍 mockup 步，本表只管「是不是」）。
  *
- * ⚠️ 它是 **marketdata 行情能力表的镜像**（与 `IMPORTABLE_MARKETS` 是**两件事**：那个管
- * 「能不能建锚」，这个管「有没有盘中价」）。新增受支持市场时须一并核对本表 —— 漏了只会让
- * 说明少一行，不报错、不崩，所以放在这里显式点名。
+ * ⚠️ 与 `IMPORTABLE_MARKETS` 是**两件事**：那个管「能不能建锚」，这个管「有没有盘中价」。
+ * 新增受支持市场时须一并核对本表 —— 漏了不报错、不崩，所以放在这里显式点名。
+ * 🚨 **本地常量而不是从行数据推断**: 它是**市场级**能力，而空态时一行都没有、推断不出任何
+ * 东西。这也是它 MUST NOT 写成「所有行的 priceKind 都是 eod_close 就算」的原因。
  */
-export const MARKETS_WITHOUT_INTRADAY: readonly RadarMarket[] = ['hk'];
+export const MARKETS_WITHOUT_INTRADAY: readonly RadarMarket[] = [];
 
-/** 该市场是否无盘中实时价（决定顶部说明行渲不渲）。 */
+/** 该市场是否无盘中实时价。判据是白名单式「在表里才算」—— 表为空 ⇒ 恒 `false`。 */
 export function marketLacksIntraday(market: string): boolean {
   return (MARKETS_WITHOUT_INTRADAY as readonly string[]).includes(market);
 }

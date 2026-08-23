@@ -16,10 +16,20 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * - GET `<shim>/overview?codes=US.PEP,US.VICI` → 当日 IV / iv_rank / iv_percentile + HV 阶梯
  * - GET `<shim>/his-vol?code=US.PEP&start&end` → IV / HV / 标的价 日序列
  *
- * ## 只承担 us
+ * ## 承担 us + hk (066 T08 起)
  *
- * 富途期权面本片只覆盖美股锚 (FR-023), 非 us symbol **直接抛、零外呼** —— 静默返空会被
- * 同步管线记成「该标的今天没有 IV」, 一次成功的空采集比一次响亮的失败难发现得多。
+ * 未登记市场的 symbol **直接抛、零外呼** —— 静默返空会被同步管线记成「该标的今天没有 IV」,
+ * 一次成功的空采集比一次响亮的失败难发现得多。
+ *
+ * 港股是 066 加进来的第二个市场: 网关本身市场无关 (市场参数对着 SDK 枚举白名单校验、代码
+ * 原样透传), 两个端点对港股返回的**字段集与美股逐字相同** (2026-08-22 PoC 实测, 原始响应
+ * 落在 `__fixtures__/hk-underlying-iv-*.json`) ⇒ server 侧要改的只有下面那张前缀表。
+ *
+ * 🚨 **港股独有的一种正常形态: 整行空值观测**。港股绝大多数标的没有挂牌期权, 它们的
+ * `overview` 概览会返 200 + 各数值字段字面量 `'N/A'` (网关侧 `clean_value` 只处理空值/非有限
+ * 数, 字符串原样透传)。{@link numToString} 让这类字段落 `null` —— 而 `null` 正是下游
+ * `computeIvPercentile` 把它剔出样本的依据 (FR-019a: 分位样本只数**真实有值**的观测, 空值
+ * 观测累积再多也凑不出「样本充足」)。美股同形态是**整行缺席**, 这条路径在美股上撞不到。
  *
  * ## 分批在这里, 切窗不在这里
  *
@@ -40,9 +50,10 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * `RUN_MARKETDATA_IT`) —— ⚠️ 该门恒 skip, 「测试全绿」对真契约不构成证据。
  */
 
-/** market → 富途 code 前缀。**只有 us**（期权面本片只覆盖美股锚）。 */
+/** market → 富途 code 前缀。未登记的市场 = 本源不承担（见文件头「承担 us + hk」）。 */
 const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   us: 'US',
+  hk: 'HK',
 };
 
 /**
@@ -153,7 +164,7 @@ export class FutuUnderlyingIvAdapter implements UnderlyingIvPort {
       const parsed = parseCanonicalSymbol(symbol);
       const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
       if (!parsed || !prefix) {
-        throw new Error(`[futu] overview 不支持 symbol "${symbol}" (本源仅承担 us)`);
+        throw new Error(`[futu] overview 不支持 symbol "${symbol}" (本源仅承担 us / hk)`);
       }
       canonicalByFutuCode.set(`${prefix}.${parsed.code}`, symbol);
     }
@@ -182,7 +193,7 @@ export class FutuUnderlyingIvAdapter implements UnderlyingIvPort {
     const parsed = parseCanonicalSymbol(query.symbol);
     const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
     if (!parsed || !prefix) {
-      throw new Error(`[futu] his-vol 不支持 symbol "${query.symbol}" (本源仅承担 us)`);
+      throw new Error(`[futu] his-vol 不支持 symbol "${query.symbol}" (本源仅承担 us / hk)`);
     }
 
     const params = new URLSearchParams({ code: `${prefix}.${parsed.code}` });

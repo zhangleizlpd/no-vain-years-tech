@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { Prisma } from '../generated/prisma/client.js';
 import {
@@ -228,5 +230,158 @@ describe('splitBackfillWindows — ≤364 天分页, 边界不重复计入不漏
     expect(() => splitBackfillWindows('2026-01-01', '2026-12-31', 0)).toThrow(
       InvalidBackfillRangeError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T08 — 港股: 回填必须跨 ≥2 窗, 且分位样本只数**真实有值**的观测
+// (FR-002 / FR-018 / FR-019 / FR-019a, SC-007 / SC-012, state_branches 14/15, plan §A9)
+// ---------------------------------------------------------------------------
+
+/**
+ * 真实样本回放: 2026-08-22 PoC 直连港股侧行情网关 `/his-vol` 实采的 HK.00700 四个窗口。
+ *
+ * ## 这一段在证什么 (读代码看不出来的那半)
+ *
+ * `hk_underlying_iv_daily.history_depth` 取 **1095** (约 3 年) 不是保守, 是硬要求: 单个 vendor
+ * 窗 (≤{@link HIS_VOLATILITY_MAX_SPAN_DAYS} 天) 港股只返 **244** 个交易日、美股 250 —— 两者
+ * 都不足 {@link IVP_MIN_WINDOW_TRADING_DAYS}=252。只回填一年, 分位会**恒为** `insufficient_window`
+ * **且不报错**: 采集全绿、库里也确实有行, 只是那一列永远是 null。这一档只能靠断言钉住。
+ *
+ * ## 磁盘读取的例外说明 (分类学 Small = 禁磁盘 I/O)
+ *
+ * 读的是**同仓 colocate 的只读静态 fixture**, 单进程内、零容器零网络, 与
+ * `option-snapshot-guard.rules.spec.ts` 读 `__fixtures__/option-snapshot-us-2026-07-29.csv` 同形态。
+ */
+interface HisVolFixture {
+  windows: {
+    requested: { code: string; start: string; end: string };
+    response: { count: number; rows: { time: string; iv: unknown }[] };
+  }[];
+}
+
+const HK_HIS_VOL = JSON.parse(
+  readFileSync(join(__dirname, '__fixtures__', 'hk-underlying-iv-his-vol-2026-08-22.json'), 'utf8'),
+) as HisVolFixture;
+
+/** 单个 vendor 窗港股实返的交易日数。fixture 被裁小会在这里当场红 (回放就失去意义了)。 */
+const HK_TRADING_DAYS_PER_WINDOW = 244;
+
+/** `hk_underlying_iv_daily.history_depth` (自然日)。维度行由 T04 seed, 这里对齐同一个值。 */
+const HK_HISTORY_DEPTH_DAYS = 1095;
+
+/** 2026-08-22 实测 HK.00700 的 `overview` 直读聚合 IV —— 当日值, 分位的被比较对象。 */
+const HK_CURRENT_IV = D('32.365');
+
+/** fixture 某窗的 iv 序列 → 采集侧落库形态 (数值 → Decimal; 非有限 / `'N/A'` → null)。 */
+function ivSeriesOf(windowIndex: number): (Prisma.Decimal | null)[] {
+  return HK_HIS_VOL.windows[windowIndex].response.rows.map((r) =>
+    typeof r.iv === 'number' && Number.isFinite(r.iv) ? D(r.iv) : null,
+  );
+}
+
+describe('066 T08 港股 IV 回填跨窗 (FR-018, SC-007, plan §A9)', () => {
+  it('fixture 完整性: 首窗恰 244 行且 iv 全部有值 (掺空 / 裁小会让下面两条失去意义)', () => {
+    const w = HK_HIS_VOL.windows[0];
+    expect(w.requested).toEqual({ code: 'HK.00700', start: '2024-08-25', end: '2025-08-23' });
+    expect(w.response.count).toBe(HK_TRADING_DAYS_PER_WINDOW);
+    expect(w.response.rows).toHaveLength(HK_TRADING_DAYS_PER_WINDOW);
+    expect(ivSeriesOf(0).filter((v) => v === null)).toEqual([]);
+  });
+
+  it('🚨 只回填一年 (单窗 244 个真实观测) → 分位「不可算」而不是 0 (SC-007 后半 / state_branches 14)', () => {
+    const result = computeIvPercentile(ivSeriesOf(0), HK_CURRENT_IV);
+
+    expect(result.computable).toBe(false);
+    // 落 0 会让「历史太短」长得像「IV 处于一年最低」—— 恰好方向相反的误读。
+    expect(result.percentilePct).toBeNull();
+    expect(result.sampleSize).toBe(HK_TRADING_DAYS_PER_WINDOW);
+    if (!result.computable) expect(result.reason).toBe('insufficient_window');
+    // 单窗给不出 252 —— 这就是 history_depth 必须 > 一年的全部理由。
+    expect(HK_TRADING_DAYS_PER_WINDOW).toBeLessThan(IVP_MIN_WINDOW_TRADING_DAYS);
+  });
+
+  it('history_depth=1095 → 既有 splitBackfillWindows 切 4 窗, 首尾相接不重不漏 (不另写分窗)', () => {
+    // 执行侧口径: `splitBackfillWindows(asOf − history_depth, asOf)` (dimension-executor 回填路径)。
+    const asOf = '2026-08-22';
+    const start = '2023-08-23'; // = asOf − 1095 天 (含 2024 闰日)
+    const windows = splitBackfillWindows(start, asOf);
+
+    expect(windows).toHaveLength(4);
+    expect(windows[0].start).toBe(start);
+    expect(windows.at(-1)?.end).toBe(asOf);
+    for (let i = 1; i < windows.length; i++) {
+      // 闭区间语义下唯一不重不漏的接法: 下一窗起点 = 上一窗终点 +1 天。
+      const prevEnd = Date.parse(`${windows[i - 1].end}T00:00:00Z`);
+      expect(windows[i].start).toBe(new Date(prevEnd + 86_400_000).toISOString().slice(0, 10));
+    }
+    // 4 窗 × 244 个交易日足以跨过 252; 1 窗不能 —— 「必须跨 ≥2 窗」是算出来的, 不是拍的。
+    expect(windows.length * HK_TRADING_DAYS_PER_WINDOW).toBeGreaterThanOrEqual(
+      IVP_MIN_WINDOW_TRADING_DAYS,
+    );
+    expect(HK_HISTORY_DEPTH_DAYS).toBeGreaterThan(HIS_VOLATILITY_MAX_SPAN_DAYS);
+  });
+
+  it('🚨 跨 2 窗 (488 个真实观测) → 分位可算 (SC-007 前半 / state_branches 15)', () => {
+    const result = computeIvPercentile([...ivSeriesOf(0), ...ivSeriesOf(1)], HK_CURRENT_IV);
+
+    expect(result.computable).toBe(true);
+    expect(result.sampleSize).toBe(HK_TRADING_DAYS_PER_WINDOW * 2);
+    if (result.computable) {
+      expect(result.percentilePct.greaterThanOrEqualTo(0)).toBe(true);
+      expect(result.percentilePct.lessThanOrEqualTo(100)).toBe(true);
+    }
+  });
+
+  it('第三窗只有 41 行且最早一行是 2023-06-27 → 港股侧历史起点; 更早的窗返 0 行', () => {
+    expect(HK_HIS_VOL.windows[2].response.rows.at(-1)?.time).toBe('2023-06-27');
+    expect(HK_HIS_VOL.windows[3].response.count).toBe(0);
+  });
+});
+
+describe('066 T08 分位样本只数真实观测 (FR-019a, SC-012, plan §A9)', () => {
+  /** 无挂牌期权的标的: `his-vol` 行照常在, 但 iv 是字面量 `'N/A'` ⇒ 采集侧落 null。 */
+  const emptyObservations = (n: number): (Prisma.Decimal | null)[] =>
+    Array.from({ length: n }, () => null);
+
+  it('🚨 无挂牌期权标的: 252 个空值观测 + 当日直读值也缺 → 恒不可算, 样本数 0 (SC-012)', () => {
+    const result = computeIvPercentile(emptyObservations(IVP_MIN_WINDOW_TRADING_DAYS), null);
+
+    expect(result.computable).toBe(false);
+    expect(result.percentilePct).toBeNull();
+    expect(result.sampleSize).toBe(0);
+    if (!result.computable) expect(result.reason).toBe('missing_current');
+  });
+
+  it('🚨 空值观测累积到 252 行也**不**构成「样本充足」—— 数行数会误判 (FR-019a 核心钉)', () => {
+    // 即便当日直读值在 (走不到 missing_current 那道早退), 空行本身仍凑不出任何样本。
+    const result = computeIvPercentile(emptyObservations(IVP_MIN_WINDOW_TRADING_DAYS), D(30));
+
+    expect(result.computable).toBe(false);
+    expect(result.percentilePct).toBeNull();
+    expect(result.sampleSize).toBe(0);
+    if (!result.computable) expect(result.reason).toBe('insufficient_window');
+  });
+
+  it('🚨 244 真实 + 8 空值 = 252 **行**但只有 244 个观测 → 仍不可算 (行数 ≠ 样本量)', () => {
+    const history = [...ivSeriesOf(0), ...emptyObservations(8)];
+    expect(history).toHaveLength(IVP_MIN_WINDOW_TRADING_DAYS);
+
+    const result = computeIvPercentile(history, HK_CURRENT_IV);
+
+    expect(result.computable).toBe(false);
+    expect(result.sampleSize).toBe(HK_TRADING_DAYS_PER_WINDOW);
+    if (!result.computable) expect(result.reason).toBe('insufficient_window');
+  });
+
+  it('补满第 8 个**真实**观测后立刻可算 —— 分界卡在观测数, 与行数无关', () => {
+    const history = [
+      ...ivSeriesOf(0),
+      ...ivSeriesOf(1).slice(0, IVP_MIN_WINDOW_TRADING_DAYS - HK_TRADING_DAYS_PER_WINDOW),
+    ];
+    const result = computeIvPercentile(history, HK_CURRENT_IV);
+
+    expect(result.computable).toBe(true);
+    expect(result.sampleSize).toBe(IVP_MIN_WINDOW_TRADING_DAYS);
   });
 });

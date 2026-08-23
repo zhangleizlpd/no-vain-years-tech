@@ -992,29 +992,51 @@ async function installSearchMock(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 065 T14 — 港股能力说明常驻 / 跨页签小圆点 / 选择器双向
+// 066 T13 — 港股无常驻说明（原 065 T14① 的反面）
+// 065 T14 — 跨页签小圆点 / 选择器双向
 // ════════════════════════════════════════════════════════════════════════════
 
-test('065 T14① 港股能力说明常驻 — **有锚时仍在**，不是只在空态下呈现（US2-AS1）', async ({
+// 🚨 **两条 test 缺一不可**：那条说明当初是**常驻**的（空态时也在），所以反过来也必须
+//    **有锚 / 零锚**两态各验一遍 —— 只验有锚那态，会漏掉「空态下它又冒出来」。
+// 🚨 **每态都断两个页签（双向）** —— 只断港股一侧的话，「说明整个渲染路径坏掉、两个页签
+//    都没有」照样全绿。且每条 `toHaveCount(0)` 旁边都配一条**该市场真渲出来了**的正向锚
+//    点（有锚 → 行可见 / 零锚 → 市场空态可见），否则页面压根没加载时零计数也成立。
+
+test('066 T13 港股无常驻说明 — 有锚态：切过去行在、说明不在；美股侧同样不在（FR-020, US3-AS4）', async ({
   page,
 }) => {
-  // 🚨 只验空态会漏掉「有了锚说明就消失」这个正要防的形态 —— 而恰恰是有行之后用户才会去读
-  //    行情时点、才真会把交易日粒度误读成「今天还没开盘」。
+  const notice = page.getByTestId('optionsdesk-radar-market-notice');
   await installOptionsdeskMock(page, [
     makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '-4.5' }),
     makeAnchor({ id: '2', ticker: 'hk:00700', distanceToWPct: '8.0' }),
   ]);
   await gotoOptionsdesk(page);
 
-  // 美股页签：不渲说明（美股有盘中实时价）。
+  // 美股页签：不渲说明（对照侧，从来就没有）。
   await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId('optionsdesk-radar-market-notice')).toHaveCount(0);
+  await expect(notice).toHaveCount(0);
 
-  // 切港股：**列表有行**且说明同屏在。
+  // 切港股：**列表有行**，而说明**不在** —— 066 T10 把港股接进实时报价后它不再为真。
   await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
   await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByTestId('optionsdesk-radar-market-notice')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toHaveCount(0); // 作用域真生效
+  await expect(notice).toHaveCount(0);
+});
+
+test('066 T13 港股无常驻说明 — 零锚态：市场空态在、说明仍不在（说明的消失不依赖有没有行）', async ({
+  page,
+}) => {
+  const notice = page.getByTestId('optionsdesk-radar-market-notice');
+  // 库里只有美股锚 ⇒ 港股页签落「本市场零锚」空态（第 4 态，见 065 T15(c)）。
+  await installOptionsdeskMock(page, [makeAnchor({ id: '1', ticker: 'us:AOS' })]);
+  await gotoOptionsdesk(page);
+
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toHaveCount(0);
+
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-empty-market')).toBeVisible({ timeout: 20_000 });
+  await expect(notice).toHaveCount(0);
 });
 
 test('065 T14② 跨页签小圆点 — 非当前页签有可动锚才出现，且**不含任何数字**（FR-016）', async ({

@@ -124,7 +124,7 @@ describe('classifyTickSource — 「配置事实」与「源故障」的分界 (
   });
 
   it('🚨 一次源调用都没发生 (全被闸挡下 / 全是无路由市场) → no-attempt, **不是** failure', () => {
-    expect(classifyTickSource({ ...base, unsupportedMarkets: ['hk'] })).toBe('no-attempt');
+    expect(classifyTickSource({ ...base, unsupportedMarkets: ['cn'] })).toBe('no-attempt');
   });
 });
 
@@ -236,17 +236,19 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
     expect(classifyTickSource(report)).toBe('failure');
   });
 
-  it('🚨 hk 锚无实时源路由 → 独立成组、显式降级、回报为**配置事实**而非源故障; us 组照常成功 (Guardrail 16 / state_branch 14)', async () => {
+  it('🚨 无实时源路由的市场 → 独立成组、显式降级、回报为**配置事实**而非源故障; us 组照常成功 (Guardrail 16 / state_branch 14)', async () => {
+    // ⚠️ 例子用 cn 而非 hk: hk 自 066 T10 起已接上实时源 (live 档 us + hk), 拿它当「无路由」
+    // 的例子会让这条回归钉说一件已经不成立的事。cn 的现役实时源仍挂在 `alert/` 里。
     const { useCase, m, fetchQuotes } = build(
-      [anchorRow(7n, 'us:AOS'), anchorRow(9n, 'hk:00700')],
+      [anchorRow(7n, 'us:AOS'), anchorRow(9n, 'cn:600519')],
       [
         { market: 'us', session: 'regular' },
-        { market: 'hk', session: 'regular' },
+        { market: 'cn', session: 'regular' },
       ],
     );
     fetchQuotes.mockImplementation((symbols: readonly string[]) =>
-      symbols[0]?.startsWith('hk:')
-        ? Promise.reject(new RealtimeQuoteMarketUnsupportedError('hk', ['us']))
+      symbols[0]?.startsWith('cn:')
+        ? Promise.reject(new RealtimeQuoteMarketUnsupportedError('cn', ['us', 'hk']))
         : Promise.resolve(quoteMapOf(symbols)),
     );
 
@@ -254,12 +256,12 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
 
     // 分组: 两个 market 各发一次, 互不牵连。
     expect(fetchQuotes).toHaveBeenCalledTimes(2);
-    expect(report.unsupportedMarkets).toEqual(['hk']);
-    // 🚨 这条是回归钉: 无路由 MUST NOT 进源故障计数, 否则一只 hk 锚 90 秒后把 us 一起降级。
+    expect(report.unsupportedMarkets).toEqual(['cn']);
+    // 🚨 这条是回归钉: 无路由 MUST NOT 进源故障计数, 否则一只无路由锚 90 秒后把 us 一起降级。
     expect(report.sourceFailures).toBe(0);
     expect(report.sourceSuccesses).toBe(1);
     expect(classifyTickSource(report)).toBe('success');
-    expect(outcomeOf(report, 'hk')).toMatchObject({ status: 'unsupported-market' });
+    expect(outcomeOf(report, 'cn')).toMatchObject({ status: 'unsupported-market' });
     // us 那只照常落库。
     expect(m.anchorUpdateMany).toHaveBeenCalledTimes(1);
     expect(m.anchorUpdateMany.mock.calls[0]?.[0]).toMatchObject({ where: { id: 7n } });
@@ -380,5 +382,125 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
 
     expect(fetchQuotes).not.toHaveBeenCalled();
     expect(report.sessions).toEqual({ us: 'regular' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T10 — 港股接上实时源之后的四条分支 (FR-003, plan §A7)
+// ---------------------------------------------------------------------------
+/**
+ * 🚨 **午休 / 提前收盘由「供应方的市场时段状态」挡, 不由本地时段表挡** (tasks.md 排序铁律 6)。
+ * 本文件看到的是归一后的三态, 归一那一层的断言在 `marketdata/futu-market-state.adapter.spec.ts`
+ * 的「066 T10 港股时段」段 (午休 `REST` → `other`)。两层分开断: 这里验「非 regular ⇒ 不采」,
+ * 那里验「vendor 的哪些串算 regular」。
+ *
+ * ⑤ **既有 cn 盘中告警通路逐点不动**: 它挂在 `alert/`, 有**自己的** `REALTIME_QUOTE_PORT`
+ * symbol 与 `INTRADAY_MARKET = 'cn'` (钉在 `alert/intraday-eval.processor.it.spec.ts`),
+ * 与本 ctx 的端口不是同一个 token ⇒ 本 task 对它零触碰。
+ */
+describe('066 T10 SyncAnchorIntradayUseCase — 港股盘中价投影', () => {
+  beforeEach(() => {
+    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('① 港股连续竞价时段 → 实时价投影到锚 (state_branches 16)', async () => {
+    const { useCase, m, fetchQuotes } = build(
+      [anchorRow(9n, 'hk:00700')],
+      [{ market: 'hk', session: 'regular' }],
+    );
+
+    const report = await useCase.execute(NOW);
+
+    expect(fetchQuotes.mock.calls[0]?.[0]).toEqual(['hk:00700']);
+    // 🚨 补上槽位之前这里是 `unsupported-market` (0 次源调用、恒为收盘档且不报警)。
+    expect(report.unsupportedMarkets).toEqual([]);
+    expect(outcomeOf(report, 'hk')).toMatchObject({
+      status: 'collected',
+      anchors: 1,
+      quoted: 1,
+      updated: 1,
+    });
+    expect(m.anchorUpdateMany.mock.calls[0]?.[0]).toEqual({
+      where: { id: 9n },
+      data: {
+        intradayPrice: new Prisma.Decimal('123.4500'),
+        intradayAt: CAPTURED_AT,
+        intradayVendorUpdateTime: VENDOR_AT,
+      },
+    });
+    expect(classifyTickSource(report)).toBe('success');
+  });
+
+  it('② 港股午休 (vendor REST → other) → 0 次源调用, 且 MUST NOT 把午休盘口写成盘中价 (state_branches 17)', async () => {
+    const { useCase, m, fetchQuotes } = build(
+      [anchorRow(9n, 'hk:00700')],
+      [{ market: 'hk', session: 'other' }],
+    );
+
+    const report = await useCase.execute(NOW);
+
+    expect(fetchQuotes).not.toHaveBeenCalled();
+    // 既不写新值也不清旧值 —— 该锚这一拍维持上一次的两列。
+    expect(m.anchorUpdateMany).not.toHaveBeenCalled();
+    expect(outcomeOf(report, 'hk')).toEqual({
+      market: 'hk',
+      status: 'skipped-session',
+      session: 'other',
+    });
+    // 时段闸挡下 ≠ 源故障: 一次调用都没发生 ⇒ 既不计失败也不清熔断计数。
+    expect(classifyTickSource(report)).toBe('no-attempt');
+  });
+
+  it('③ 港股非交易日 → 0 次源调用, 保留收盘档 (state_branches 18)', async () => {
+    const { useCase, m, fetchQuotes, classify } = build(
+      [anchorRow(9n, 'hk:00700')],
+      [{ market: 'hk', session: 'regular' }],
+    );
+    classify.mockResolvedValue('non-trading' satisfies TradingDayStatus);
+
+    const report = await useCase.execute(NOW);
+
+    expect(fetchQuotes).not.toHaveBeenCalled();
+    expect(m.anchorUpdateMany).not.toHaveBeenCalled();
+    expect(outcomeOf(report, 'hk')).toMatchObject({ status: 'skipped-holiday' });
+  });
+
+  it('③ 港股收盘后 (vendor CLOSED → other) → 同样不写盘中价 (state_branches 18)', async () => {
+    const { useCase, m, fetchQuotes } = build(
+      [anchorRow(9n, 'hk:00700')],
+      [{ market: 'hk', session: 'other' }],
+    );
+
+    const report = await useCase.execute(NOW);
+
+    expect(fetchQuotes).not.toHaveBeenCalled();
+    expect(m.anchorUpdateMany).not.toHaveBeenCalled();
+    expect(report.updated).toBe(0);
+  });
+
+  it('④ 港股半日市当天下午 → 当天**仍是交易日**, 挡它的是时段闸 (state_branches 19)', async () => {
+    // ⚠️ **未实测**: 半日市 12:00 提前收盘之后供应方报 REST 还是 CLOSED, 本机够不到 vendor,
+    // 待 T15 在真锚上收口。⇒ 本条**不**断「半日市 = 某个具体状态串」(那要靠推断, 会写出一条
+    // 假绿), 只断这条链上真正成立的那一层: **交易日闸放行、时段闸独立生效**, 只要供应方报的
+    // 不是白名单状态就一拍不采 —— 归一层「REST / CLOSED / HK_CAS 全归 other」的断言在
+    // `futu-market-state.adapter.spec.ts`。
+    const { useCase, m, fetchQuotes, classify } = build(
+      [anchorRow(9n, 'hk:00700')],
+      [{ market: 'hk', session: 'other' }],
+    );
+
+    const report = await useCase.execute(NOW);
+
+    // 日历闸没被触发: 时段闸在它之前就短路了 (0 次 classify)。半日市当天是交易日, 拿日历
+    // 去挡它反而会挡掉上午那半场。
+    expect(classify).not.toHaveBeenCalled();
+    expect(fetchQuotes).not.toHaveBeenCalled();
+    expect(m.anchorUpdateMany).not.toHaveBeenCalled();
+    expect(outcomeOf(report, 'hk')).toMatchObject({ status: 'skipped-session' });
   });
 });

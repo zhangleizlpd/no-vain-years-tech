@@ -2,6 +2,10 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../security/prisma.service.js';
 import { anchorFactorsForInstrument } from './anchor-factors.js';
+import {
+  anchoredCodesForScope,
+  isAnchorScopedDimension,
+} from './anchor-scoped-dimensions.rules.js';
 import { BackfillPacer } from './backfill-pacer.js';
 import { CORPORATE_ACTION_PORT, type CorporateActionPort } from './corporate-action.port.js';
 import { EOD_BAR_PORT, type EodBarPort } from './eod-bar.port.js';
@@ -125,8 +129,9 @@ export const DIMENSION_KEYS = [
   // 043 港股分类文本 US2 公告: 单只港股按 [asOf−historyDepth, asOf] 的历次公告流元数据 (linkUrl 天然唯一 NK, 超大表只存元数据)。
   'announcement',
   // 046 M2a 标的级 IV 日快照 (US3): 富途 overview 批量直读当日 IV 结论 + his_volatility 序列增量。
-  // 工作集**挂锚闸** (走 factExecutor 的 loadActiveInstruments, 已含 needSync) —— 无锚不采,
-  // 否则从 12 只炸到 19,465 只 us 标的 (FR-026)。
+  // 工作集**挂锚闸** (走 factExecutor 的 loadActiveInstruments) —— 无锚不采, 否则从 12 只炸到
+  // 19,465 只 us 标的 (FR-026)。066 T02 起判据是**锚集本身**而非 needSync, 见
+  // `anchor-scoped-dimensions.rules.ts` 的登记表。
   'underlying_iv_daily',
   // 046 M2a 美股波动率指数日线 (US3): VIX / VVIX, 源 = CBOE 官方历史 CSV 全量文件 upsert。
   // 🚨 **不挂锚闸、不复用 factExecutor** —— 工作集 = 两个固定代码常量, 不查 Instrument
@@ -147,6 +152,22 @@ export const DIMENSION_KEYS = [
   // ⇒ 它的 executor **MUST NOT 复用 factExecutor**(那条路径先 loadActiveInstruments);
   // market_scope={us} 对它**只是元数据** (供 tick 的 per-market 交易日闸用)。
   'earnings_event',
+  // ── 066 T04 港股三行 (migration 20260823_1015_seed_hk_option_dimensions, plan §A1) ──
+  // 🚨 **独立维度而非给上面三个美股维度扩 scope** —— 与 `us_equity_bar` 当初从 `eod_bar` 拆
+  //    出来同一条理由, 且港股这边更硬: `exchangeCalendarDateForScope` 在 scope 内各市场算出
+  //    的日历日不同时**直接 throw** (北京 06:00 时 us=D-1 而 hk=D), 而该 throw 存在的目的
+  //    就是禁止这种混用。即使绕过它, tick payload 无 `markets` 字段 ⇒ 混 scope 维度的工作集
+  //    恒为全 scope, 港股休市而美股开市的日子会对港股全量发请求。
+  //    📌 反过来 `{cn,hk}` **不会抛** (现役 `eod_bar` 就是这个 scope) —— 判据是「算出来的
+  //    日期相同」而非「时区字符串相同」。
+  // 三者与各自的美股同名维度**共用同一份 use case**: 市场从维度行的 `market_scope` 进,
+  // vendor 前缀由适配器的 `MARKET_TO_FUTU_PREFIX` 查 (066 T01 / T08 已加 `hk: 'HK'`) ⇒
+  // 下面注册表里那三条只是路由, 不存在第二份搬运逻辑。三者同为**锚作用域**维度, 已登记在
+  // `anchor-scoped-dimensions.rules.ts` (066 T02, 蓄意先于本片 seed —— 反了的话上线那一刻
+  // 工作集是整个港股 universe)。
+  'hk_option_contract',
+  'hk_option_daily_snapshot',
+  'hk_underlying_iv_daily',
 ] as const;
 
 /** 维度键全集 (016 起; 017 executor 注册表/worker named job/tick won 集共用)。 */
@@ -279,6 +300,80 @@ export interface WorkingInstrument {
   id: bigint;
   market: string;
   code: string;
+}
+
+/**
+ * 同步工作集判据的**唯一**实现 (066 T02, FR-006 / FR-007 / FR-008, plan §A3)。
+ *
+ * 038 seam#2: 市场范围取维度级 `marketScope` 列 (取代旧 `MARKET='cn'` 常量)。
+ * 038 seam#3: `markets` (CLI `--markets` 透传) 非空时与 `marketScope` 取**交集**缩窄
+ * (运维可只回填某市场); 缺省 → 用全 `marketScope`。
+ * tier 序消费 (018 FR-S03): `syncTier` asc 优先 (T0 先吃令牌桶/预算), 同 tier 内 id 稳定序。
+ * 与 `syncTier` 正交: 本函数**筛范围**、`syncTier` 只**定顺序**。
+ *
+ * 🚨 **写成模块级导出而非私有方法**是刻意的: SC-005 要对**每一个**已注册维度各取一次工作集
+ * 快照做逐元素比对, 私有方法取不到 —— 而「换判据没动到美股任何维度」这件事若只写在 plan 里
+ * 就等于没有。
+ *
+ * ## 两条互斥支路, 由 {@link isAnchorScopedDimension} 一处登记 (禁散进 if 分支)
+ *
+ * - **锚作用域维度** (per-code 期权 / IV): `{ market ∈ scope, status: 'active' } ∩ 锚集`,
+ *   **`needSync` 不进谓词**。理由与「为什么不能靠 needSync 修港股」全文见
+ *   `anchor-scoped-dimensions.rules.ts` 的文件头。对 us **逐点等价** (闸已让
+ *   `needSync ≡ 有锚`), 对 hk 才是真闸 (hk 的 `needSync` 恒 true, 零收窄作用)。
+ * - **其余维度**: 沿用**采集闸** (`Instrument.needSync`) —— false 的标的不进工作集。
+ *   us 无锚不采 (仍全量入库供搜索), cn/hk 全 true 故零回归 (SC-004 的前提)。
+ */
+export async function loadWorkingSet(
+  prisma: PrismaService,
+  dim: Pick<ExecutorSyncDimensionRow, 'dimensionKey' | 'marketScope'>,
+  markets?: string[],
+): Promise<WorkingInstrument[]> {
+  const scope =
+    markets && markets.length > 0
+      ? dim.marketScope.filter((m) => markets.includes(m))
+      : dim.marketScope;
+
+  if (isAnchorScopedDimension(dim.dimensionKey)) return loadAnchoredInstruments(prisma, scope);
+
+  return prisma.instrument.findMany({
+    where: { market: { in: scope }, status: 'active', needSync: true },
+    select: { id: true, market: true, code: true },
+    orderBy: [{ syncTier: 'asc' }, { id: 'asc' }],
+  });
+}
+
+/**
+ * 锚作用域维度的工作集 = scope 内**有锚**的在市标的。排序与另一支路逐字相同
+ * (`syncTier` asc → id asc), 换判据不换消费顺序。
+ *
+ * 复杂度: 1 次锚表全量读 (只取 ticker 一列) + 1 次 `Instrument` 批查。
+ */
+async function loadAnchoredInstruments(
+  prisma: PrismaService,
+  scope: string[],
+): Promise<WorkingInstrument[]> {
+  // CROSS-CONTEXT-READ: 只读 optionsdesk.anchor 全量 ticker (catalog Q7-B 只读逃生口,
+  // ADR-0062 已记), 算 marketdata 自有的工作集。零写对方表、零 @Inject() 对方 use case
+  // —— 与 `anchor-driven-sync-gate.ts` / `sync-option-contract.usecase.ts` 是**同一条**既有
+  // 只读路径, 不开新口子 (护城河: NEVER 写 tx.<otherTable>.*)。
+  const anchors = await prisma.anchor.findMany({ select: { ticker: true } });
+  const byMarket = anchoredCodesForScope(
+    anchors.map((a) => a.ticker),
+    scope,
+  );
+  // 零锚 ⇒ 空工作集 (SC-002: 零对外请求且判定成功)。**必须提前返回** —— 空 `OR: []` 在
+  // Prisma 里匹配全表, 那会把「零锚」翻成「全量采」, 且不会红。
+  if (byMarket.size === 0) return [];
+
+  return prisma.instrument.findMany({
+    where: {
+      status: 'active',
+      OR: [...byMarket].map(([market, codes]) => ({ market, code: { in: codes } })),
+    },
+    select: { id: true, market: true, code: true },
+    orderBy: [{ syncTier: 'asc' }, { id: 'asc' }],
+  });
 }
 
 const toDateOnly = (s: string): Date => new Date(`${s}T00:00:00Z`);
@@ -840,9 +935,9 @@ export class DimensionExecutorRegistry {
       announcement: this.factExecutor('announcement', (instruments, dim, stats, input) =>
         this.syncAnnouncement(instruments, dim, stats, input),
       ),
-      // 046 T008 标的级 IV 日快照: **走 factExecutor** ⇒ 工作集 = loadActiveInstruments
-      // (`market ∈ {us} ∧ active ∧ needSync`) —— **无锚不采** (FR-026), 加第 13 只锚只需
-      // 锚闸把它刷成 needSync, 零代码改动自动纳入 (FR-031)。
+      // 046 T008 标的级 IV 日快照: **走 factExecutor** ⇒ 工作集 = loadActiveInstruments。
+      // 066 T02 起本维度是**锚作用域**的 (`market ∈ {us} ∧ active ∧ **有锚**`, `needSync`
+      // 已退出谓词) —— **无锚不采** (FR-026), 加第 13 只锚零代码改动自动纳入 (FR-031)。
       // 🚨 与 `us_index_daily` **判据相反**, 别把两者写成同一形态: 那条是指数级、工作集 =
       // 两个固定代码常量, **不挂锚闸** (FR-027) —— 挂了零锚时会静默不跑。
       underlying_iv_daily: this.factExecutor(
@@ -858,9 +953,10 @@ export class DimensionExecutorRegistry {
       // 上面 `universe` / `profile` 那类 meta 维度: 自己管自己的前置, 不吃 fact 前置那套
       // (tier 重算 / 锚闸重算跑了也不出错, 但会让「指数依赖锚表状态」这条假依赖在调用图上成立)。
       us_index_daily: (input) => this.syncUsIndexDaily(input),
-      // 047 T015 M2b 链合约发现: **走 factExecutor** ⇒ 工作集 = loadActiveInstruments
-      // (`market ∈ {us} ∧ active ∧ needSync`) —— per-code 接口, **无锚不采** (FR-035),
-      // 加第 13 只锚只需锚闸把它刷成 needSync, 零代码改动自动纳入 (FR-038)。形态同 046 的
+      // 047 T015 M2b 链合约发现: **走 factExecutor** ⇒ 工作集 = loadActiveInstruments。
+      // 066 T02 起本维度是**锚作用域**的 (`market ∈ {us} ∧ active ∧ **有锚**`, `needSync`
+      // 已退出谓词) —— per-code 接口, **无锚不采** (FR-035), 加第 13 只锚零代码改动自动纳入
+      // (FR-038)。形态同 046 的
       // `underlying_iv_daily`, 与 `us_index_daily` 那条「不挂锚闸」判据相反, 别写成同一形态。
       // 返 true = vendor 限频预算耗尽 → 顺延重入队且不耗 attempts (deferral ≠ failure)。
       option_contract: this.factExecutor('option_contract', (instruments, dim, stats, input) =>
@@ -891,6 +987,29 @@ export class DimensionExecutorRegistry {
         const budgetExhausted = await this.syncEarningsEvent.run(dim, stats, input);
         return { stats, budgetExhausted };
       },
+      // ── 066 T04 港股三条路由 ────────────────────────────────────────────────────────
+      // 与上面三条美股同名维度**逐字同形**, 差别全在维度行 (`market_scope={hk}` / cron 23:00 /
+      // `hk_underlying_iv_daily.history_depth = 1095`): `factExecutor` 先 `loadDimension(key)`
+      // 再 `loadWorkingSet`, 市场从行里进; vendor 前缀由适配器按市场查 (066 T01 / T08)。
+      // 🚫 **不要在这里另写一份搬运逻辑** —— 那会让「同一口径两份实现」这件事从此不报错。
+      hk_option_contract: this.factExecutor(
+        'hk_option_contract',
+        (instruments, dim, stats, input) =>
+          this.syncOptionContract.run(instruments, dim, stats, input),
+      ),
+      // ⚠️ seed 时 `enabled = false` (FR-016, 排序铁律 5) ⇒ 这条路由上线即**跑不到**。
+      // 注册它不是提前开闸, 是让「seed 行存在但 executor 未注册」那条 throw 不可能发生 ——
+      // 开关翻在维度行上 (T09 收尾), 不在注册表上。
+      hk_option_daily_snapshot: this.factExecutor(
+        'hk_option_daily_snapshot',
+        (instruments, dim, stats, input) =>
+          this.syncOptionSnapshot.run(instruments, dim, stats, input),
+      ),
+      hk_underlying_iv_daily: this.factExecutor(
+        'hk_underlying_iv_daily',
+        (instruments, dim, stats, input) =>
+          this.syncUnderlyingIvDaily(instruments, dim, stats, input),
+      ),
     };
   }
 
@@ -980,27 +1099,18 @@ export class DimensionExecutorRegistry {
   }
 
   /**
-   * 同步工作集 = 黑名单外、市场落在本维度有效范围内的全活跃标的 (universe 已 upsert;
-   * 黑名单命中不 insert)。038 seam#2: 市场范围从旧 `MARKET='cn'` 常量 → 维度级 `marketScope`
-   * 列 (marketScope={cn} 无回归 / ={cn,hk} 纳入 hk)。038 seam#3: `markets` (CLI `--markets`
-   * 透传) 非空时与 marketScope 取交集缩窄 (运维可只回填某市场); 缺省 → 用全 marketScope。
-   * tier 序消费 (018 FR-S03): syncTier asc 优先 (T0 先吃令牌桶/预算), 同 tier 内 id 稳定序。
-   * 采集闸 (`Instrument.needSync`): false 的标的**不进工作集** —— us 无锚不采 (仍全量入库供搜索),
-   * cn/hk 全 true 故零回归。与 syncTier 正交: needSync **筛范围**、syncTier 只**定顺序**。
+   * fact 维度共用的工作集入口 = 黑名单外、市场落在本维度有效范围内的活跃标的 (universe 已
+   * upsert; 黑名单命中不 insert)。
+   *
+   * 判据本体已于 066 T02 抽到模块级 {@link loadWorkingSet} (两条支路: 锚作用域维度 ∩ 锚集 /
+   * 其余维度走 `needSync` 采集闸) —— 本方法只是保留调用点名字的**薄委托**, 全仓多处注释以
+   * 「走 factExecutor 的 loadActiveInstruments」指代这条路径。
    */
   private async loadActiveInstruments(
     dim: ExecutorSyncDimensionRow,
     markets?: string[],
   ): Promise<WorkingInstrument[]> {
-    const scope =
-      markets && markets.length > 0
-        ? dim.marketScope.filter((m) => markets.includes(m))
-        : dim.marketScope;
-    return this.prisma.instrument.findMany({
-      where: { market: { in: scope }, status: 'active', needSync: true },
-      select: { id: true, market: true, code: true },
-      orderBy: [{ syncTier: 'asc' }, { id: 'asc' }],
-    });
+    return loadWorkingSet(this.prisma, dim, markets);
   }
 
   // ── eod_bar: per-instrument 拉 candlestick → DailyBar append (幂等) ──

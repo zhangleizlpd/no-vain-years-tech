@@ -49,15 +49,17 @@ import {
 // ## 两处刻意的「非端到端」
 //
 // 1. **worker 不启动** (`MARKETDATA_WORKER_DISABLED` 置位): 本文件验的是编排判据, 不是 BullMQ
-//    的调度。worker 一起来就会去真跑链发现/日线维度, 那是另一片的地盘。⇒ 第一相组的 flow 停在
-//    队列里供断言, 第二相由本文件**显式**以 `phase: 'snapshot'` 驱动 (正是 flow parent 的语义)。
+//    的调度。⇒ subscriber 投出的 `sync:anchor-cold-start` job 停在队列里供断言, 编排本身由本
+//    文件**直调** `coldStart.run(...)` 驱动。
+//    📌 issue #159 前这里是两相: 第一相组 flow 入队链/日线、第二相以 `phase: 'snapshot'` 当
+//    parent 挂其上。链改直调采集本体后两相合一, `phase` 入参随之从 `run()` 删除。
 // 2. **「链/日线已跑完」靠手工 seed**: 同上, child job 不会真跑, 故由 `seedTargetDayData()`
 //    造出它们的产物。这一步造的是**数据形态**, 不是在替被测代码干活。
 //
-// ⚠️ **午休档 (state_branch ③) 蓄意不在这一层**: 唯一开通期权采集的市场是 us 而 us 无午休;
-// hk 在 `COLD_START_CAPABILITY` 里是空表项, 走到就 `market_not_enabled` 提前返回、够不到快照
-// 分支 ⇒ 午休分支**端到端今天不可达**, 在这里写它只会得到一个恒真 IT。它由 T001 (谓词层, 逐分钟
-// 断言) + T006 (use case 层, 临时开通 hk 逼出那一格) 覆盖; 接 hk 期权采集那片时再上提到本层。
+// ⚠️ **午休档 (state_branch ③) 不在这一层**: us 无午休, 而 hk 的午休档 066 T06 开通后才端到端
+// 可达 —— 它已在**姊妹文件** `marketdata.cold-start-060.market-outcome.it.spec.ts` 的「066 T07」
+// 段上提到 IT 层 (港股午休真锚路径), 另有 T001 (谓词层, 逐分钟断言) 与
+// `anchor-cold-start.usecase.spec.ts` 的「第二相 —— 午休档」两层各钉一遍。本文件不重复。
 describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + Redis, 真 DI 容器)', () => {
   let moduleRef: TestingModule;
   let prisma: PrismaService;

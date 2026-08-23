@@ -47,6 +47,24 @@ const EXCHANGE_TIME_ZONE: Record<string, string> = {
 const DEFAULT_TIME_ZONE = 'Asia/Shanghai';
 
 /**
+ * market → 交易所所在时区 (IANA)。**{@link EXCHANGE_TIME_ZONE} 唯一的对外出口。**
+ *
+ * 🚨 **导出是为了让 vendor adapter 取同一份表** (066 T17): 富途 `/option-snapshot` 的
+ * `update_time` 是**行所属市场的当地时刻** —— 美股行给美东、港股行给港股当地 (2026-08-23
+ * 实取: 期权行 09:30、标的行 16:07:49, 均为 HKT)。抄第二份表的表现是「某个市场的时间戳
+ * 悄悄差几小时」, **不报错** —— `check-time-semantics.ts` Rule A 拦的正是这个形状。
+ *
+ * ⚠️ 本函数只答「交易所在哪」这一件事, **不含**收盘时刻 / 盘中时段 (那是
+ * {@link REGULAR_CLOSE_MINUTES} 与 `market-session.rules.ts`)。
+ *
+ * 未登记市场回落 {@link DEFAULT_TIME_ZONE} —— 与 {@link exchangeCalendarDate} 是**同一条既有
+ * 语义**(meta 维度的空 scope 依赖它), 不在这里改极性。复杂度 O(1)。
+ */
+export function exchangeTimeZone(market: string): string {
+  return EXCHANGE_TIME_ZONE[market] ?? DEFAULT_TIME_ZONE;
+}
+
+/**
  * market → 该市场**常规交易时段收盘时刻** (当地时区的当日分钟数)。
  *
  * 只用于「哪一个 session 已经收了」这一个判断, **不是**盘中时段表 —— 盘中时段还要午休段,
@@ -146,7 +164,7 @@ function previousCalendarDay(date: string): string {
  * 复杂度 O(1)。
  */
 export function exchangeCalendarDate(market: string, now: Date): string {
-  return dateInTimeZone(now, EXCHANGE_TIME_ZONE[market] ?? DEFAULT_TIME_ZONE);
+  return dateInTimeZone(now, exchangeTimeZone(market));
 }
 
 /**
@@ -194,10 +212,7 @@ export function exchangeCalendarDateForScope(marketScope: readonly string[], now
  * 复杂度 O(1)。
  */
 export function sessionWatermark(market: string, now: Date, kind: SessionKindStatus): string {
-  const { date, minutesOfDay } = timeInTimeZone(
-    now,
-    EXCHANGE_TIME_ZONE[market] ?? DEFAULT_TIME_ZONE,
-  );
+  const { date, minutesOfDay } = timeInTimeZone(now, exchangeTimeZone(market));
   const regular = REGULAR_CLOSE_MINUTES[market] ?? DEFAULT_CLOSE_MINUTES;
   // 🚨 `kind` **必填**不可省 (063 Phase 2): 做成可选默认 `whole`, 漏传的调用点在半日市当天
   // 会算出「今天还没收」⇒ 目标 session 退回昨天 ⇒ 拿昨天的价当锚的最近收盘。让 TS 把每个
