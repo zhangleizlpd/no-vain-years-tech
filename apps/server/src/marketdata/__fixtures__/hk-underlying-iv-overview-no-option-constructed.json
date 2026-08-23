@@ -1,0 +1,31 @@
+{
+  "_provenance": "🚧 构造样本，不是原始响应。066 PoC 未抓过「无挂牌期权标的」的 /overview，故本行按已实测的字段形态构造：键集与采集日期 2026-08-22 的真实 HK.00700 行逐字相同（见 hk-underlying-iv-overview-2026-08-22.json），差别只在各数值字段取字面量 'N/A' —— 网关侧 mappers.clean_value 只处理空值/非有限数，字符串原样透传，故这是空值观测在本端点上的真实形态。code 取 HK.00777（网龙），PoC 实测其挂牌期权到期日数为 0。",
+  "response": {
+    "as_of": "2026-08-22T13:44:46+00:00",
+    "count": 1,
+    "rows": [
+      {
+        "call_open_interest": "N/A",
+        "call_volume": "N/A",
+        "code": "HK.00777",
+        "hv_120d": "N/A",
+        "hv_120d_percentile": "N/A",
+        "hv_30d": "N/A",
+        "hv_30d_percentile": "N/A",
+        "hv_365d": "N/A",
+        "hv_365d_percentile": "N/A",
+        "hv_60d": "N/A",
+        "hv_60d_percentile": "N/A",
+        "hv_90d": "N/A",
+        "hv_90d_percentile": "N/A",
+        "iv": "N/A",
+        "iv_percentile": "N/A",
+        "iv_rank": "N/A",
+        "name": "网龙",
+        "pre_iv": "N/A",
+        "put_open_interest": "N/A",
+        "put_volume": "N/A"
+      }
+    ]
+  }
+}

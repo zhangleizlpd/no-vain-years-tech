@@ -1,0 +1,53 @@
+{
+  "_provenance": "原始响应（未加工）。来源：港股侧行情网关 /overview 端点，066 PoC 直连实测，采集日期 2026-08-22。一次请求两个代码：HK.00700（港股，有挂牌期权）与 US.PEP（美股对照）。字段集两市逐字相同。",
+  "response": {
+    "as_of": "2026-08-22T13:44:46+00:00",
+    "count": 2,
+    "rows": [
+      {
+        "call_open_interest": 1383747,
+        "call_volume": 45701,
+        "code": "HK.00700",
+        "hv_120d": 39.645,
+        "hv_120d_percentile": 90.873,
+        "hv_30d": 31.962,
+        "hv_30d_percentile": 61.904,
+        "hv_365d": 32.863,
+        "hv_365d_percentile": 84.127,
+        "hv_60d": 41.572,
+        "hv_60d_percentile": 89.285,
+        "hv_90d": 42.728,
+        "hv_90d_percentile": 96.031,
+        "iv": 32.365,
+        "iv_percentile": 58.73,
+        "iv_rank": 50.801,
+        "name": "腾讯控股",
+        "pre_iv": 33.485,
+        "put_open_interest": 1097171,
+        "put_volume": 53739
+      },
+      {
+        "call_open_interest": 278279,
+        "call_volume": 16820,
+        "code": "US.PEP",
+        "hv_120d": 23.056,
+        "hv_120d_percentile": 78.571,
+        "hv_30d": 18.619,
+        "hv_30d_percentile": 35.317,
+        "hv_365d": 21.171,
+        "hv_365d_percentile": 5.952,
+        "hv_60d": 24.84,
+        "hv_60d_percentile": 80.158,
+        "hv_90d": 24.083,
+        "hv_90d_percentile": 78.968,
+        "iv": 21.852,
+        "iv_percentile": 17.857,
+        "iv_rank": 29.729,
+        "name": "百事可乐",
+        "pre_iv": 23.544,
+        "put_open_interest": 133562,
+        "put_volume": 4696
+      }
+    ]
+  }
+}

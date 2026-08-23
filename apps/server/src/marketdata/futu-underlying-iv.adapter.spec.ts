@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { FutuUnderlyingIvAdapter } from './futu-underlying-iv.adapter.js';
 import { TransientVendorError, VendorHttpError } from './vendor-http-client.js';
@@ -117,9 +119,10 @@ describe('FutuUnderlyingIvAdapter', () => {
       expect(calls).toHaveLength(1);
     });
 
-    it('非 us symbol → throw 且零外呼（不静默返空让管线记 0 行成功）', async () => {
+    it('未登记市场 symbol → throw 且零外呼（不静默返空让管线记 0 行成功）', async () => {
       const { http, calls } = makeShim([]);
-      for (const symbol of ['cn:600519', 'hk:00700', 'PEP', 'us:']) {
+      // 066 T08: hk 已登记 ⇒ 从本表移出（它的正例在文件末尾的港股段）。
+      for (const symbol of ['cn:600519', 'PEP', 'us:']) {
         await expect(makeAdapter(http).getIvSnapshots([symbol])).rejects.toThrow(/不支持 symbol/);
       }
       expect(calls).toHaveLength(0);
@@ -225,7 +228,7 @@ describe('FutuUnderlyingIvAdapter', () => {
       expect(calls).toHaveLength(1);
     });
 
-    it('非 us symbol → throw 且零外呼', async () => {
+    it('未登记市场 symbol → throw 且零外呼', async () => {
       const { http, calls } = makeShim([]);
       await expect(makeAdapter(http).getIvHistoryRange({ symbol: 'cn:600519' })).rejects.toThrow(
         /不支持 symbol/,
@@ -329,5 +332,154 @@ describe('FutuUnderlyingIvAdapter', () => {
       } as unknown as VendorHttpClient;
       await expect(makeAdapter(http).getIvSnapshots(symbols)).rejects.toThrow(TransientVendorError);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T08 — 港股 (hk) 接入 (FR-002 / FR-019a, plan §A9)
+// ---------------------------------------------------------------------------
+/**
+ * 真实响应回放: 2026-08-22 PoC 直连港股侧行情网关实采, 落进 `__fixtures__/` 的原始信封。
+ *
+ * 网关本身市场无关 (市场参数对着 SDK 枚举白名单校验、代码原样透传), 两个端点对港股返回的
+ * **字段集与美股逐字相同** —— 故本片 server 侧要改的只有 `MARKET_TO_FUTU_PREFIX` 一张表。
+ * 这几条断言存在的意义是: 「逐字相同」是**实测结论**, 一旦 vendor 改口径, 它必须在这里红。
+ *
+ * 🚨 无挂牌期权那条只在港股够得到: 港股绝大多数标的没有挂牌期权, 它们的 `overview` 概览
+ * **整行为空值观测** (网关返 200 + 各数值字段字面量 `'N/A'`)。美股同形态是**整行缺席**,
+ * 所以这条路径在美股上永远撞不到 —— 而它正是 FR-019a 那条污染路径的源头。
+ */
+interface OverviewFixture {
+  response: { as_of: string; count: number; rows: Record<string, unknown>[] };
+}
+interface HisVolFixture {
+  windows: {
+    requested: { code: string; start: string; end: string };
+    response: { as_of: string; count: number; rows: Record<string, unknown>[] };
+  }[];
+}
+
+const readFixture = <T>(name: string): T =>
+  JSON.parse(readFileSync(join(__dirname, '__fixtures__', name), 'utf8')) as T;
+
+const HK_OVERVIEW = readFixture<OverviewFixture>('hk-underlying-iv-overview-2026-08-22.json');
+const HK_OVERVIEW_NO_OPTION = readFixture<OverviewFixture>(
+  'hk-underlying-iv-overview-no-option-constructed.json',
+);
+const HK_HIS_VOL = readFixture<HisVolFixture>('hk-underlying-iv-his-vol-2026-08-22.json');
+
+const hkOverviewRow = (code: string) =>
+  HK_OVERVIEW.response.rows.find((r) => r.code === code) as Record<string, unknown>;
+
+describe('066 T08 FutuUnderlyingIvAdapter — 港股 (hk) 接入', () => {
+  it('🚨 hk symbol → 前缀 HK.（这一行就是本 task 的全部实现面）', async () => {
+    const { http, calls } = makeShim([hkOverviewRow('HK.00700')]);
+    const [snapshot] = await makeAdapter(http).getIvSnapshots(['hk:00700']);
+
+    expect(calls[0].url).toBe(`${BASE}/overview?codes=HK.00700`);
+    expect(snapshot.symbol).toBe('hk:00700');
+  });
+
+  it('港股 overview 20 列逐字同美股口径 → 全部落 Decimal-safe string（实测值回放）', async () => {
+    const { http } = makeShim([hkOverviewRow('HK.00700')]);
+    const [snapshot] = await makeAdapter(http).getIvSnapshots(['hk:00700']);
+
+    expect(snapshot).toEqual({
+      symbol: 'hk:00700',
+      iv: '32.365',
+      ivRank: '50.801',
+      ivPercentile: '58.73',
+      preIv: '33.485',
+      hv30: '31.962',
+      hv30Percentile: '61.904',
+      hv60: '41.572',
+      hv60Percentile: '89.285',
+      hv90: '42.728',
+      hv90Percentile: '96.031',
+      hv120: '39.645',
+      hv120Percentile: '90.873',
+      hv365: '32.863',
+      hv365Percentile: '84.127',
+      callVolume: '45701',
+      putVolume: '53739',
+      callOi: '1383747',
+      putOi: '1097171',
+    });
+  });
+
+  it('同一批混 hk + us → 各自前缀, 两行都回正确的 canonical symbol（不串市场）', async () => {
+    const { http, calls } = makeShim(HK_OVERVIEW.response.rows);
+    const snapshots = await makeAdapter(http).getIvSnapshots(['hk:00700', 'us:PEP']);
+
+    expect(calls[0].url).toBe(`${BASE}/overview?codes=HK.00700%2CUS.PEP`);
+    expect(snapshots.map((s) => s.symbol)).toEqual(['hk:00700', 'us:PEP']);
+    expect(snapshots.map((s) => s.iv)).toEqual(['32.365', '21.852']);
+  });
+
+  it('🚨 无挂牌期权标的: 整行 N/A → 每个数值字段落 null（不是 0、不是字符串 "N/A"）', async () => {
+    const { http } = makeShim(HK_OVERVIEW_NO_OPTION.response.rows);
+    const [snapshot] = await makeAdapter(http).getIvSnapshots(['hk:00777']);
+
+    // symbol 仍要认出来 —— 这一行不是错误, 是「这只票没有期权」这个事实的正常形态。
+    expect(snapshot.symbol).toBe('hk:00777');
+    const numericFields = Object.entries(snapshot).filter(([key]) => key !== 'symbol');
+    expect(numericFields).toHaveLength(18); // symbol 之外的 18 个数值列, 一个不漏地全为 null
+    expect(numericFields.every(([, value]) => value === null)).toBe(true);
+    // 落 0 会让「没有值」长得像「一年最低」; 落 "N/A" 会让 Decimal 列写入直接炸在采集期。
+    expect(snapshot.iv).toBeNull();
+    expect(snapshot.ivPercentile).toBeNull();
+  });
+
+  it('🚨 hk his-vol 单窗 244 行真实响应全部解析 + 升序（vendor 按日期降序下发）', async () => {
+    const window = HK_HIS_VOL.windows[0];
+    const { http, calls } = makeShim(window.response.rows);
+    const points = await makeAdapter(http).getIvHistoryRange({
+      symbol: 'hk:00700',
+      from: window.requested.start,
+      to: window.requested.end,
+    });
+
+    expect(calls[0].url).toBe(`${BASE}/his-vol?code=HK.00700&start=2024-08-25&end=2025-08-23`);
+    expect(points).toHaveLength(244);
+    expect(points[0]).toEqual({
+      date: '2024-08-26',
+      iv: '25.675',
+      hv: '20.481',
+      underlyingPrice: '372.2',
+    });
+    expect(points.at(-1)).toEqual({
+      date: '2025-08-22',
+      iv: '26.506',
+      hv: '24.09',
+      underlyingPrice: '594.7',
+    });
+    // 一行都不许丢: 少几行会让「窗口够不够 252 天」的分界悄悄挪位。
+    expect(points.filter((p) => p.iv === null)).toEqual([]);
+    expect(new Set(points.map((p) => p.date)).size).toBe(244);
+  });
+
+  it('hk his-vol 早于历史起点的窗 → 0 行不抛（起点 2023-06-27, 更早的窗 vendor 返空）', async () => {
+    const empty = HK_HIS_VOL.windows[3];
+    expect(empty.response.count).toBe(0);
+    const { http } = makeShim(empty.response.rows);
+
+    expect(
+      await makeAdapter(http).getIvHistoryRange({
+        symbol: 'hk:00700',
+        from: empty.requested.start,
+        to: empty.requested.end,
+      }),
+    ).toEqual([]);
+  });
+
+  it('🚨 hk 之外的未登记市场仍 throw 且零外呼（开通港股不等于开通全部市场）', async () => {
+    const { http, calls } = makeShim([]);
+    for (const symbol of ['cn:600519', 'sg:D05']) {
+      await expect(makeAdapter(http).getIvSnapshots([symbol])).rejects.toThrow(/不支持 symbol/);
+      await expect(makeAdapter(http).getIvHistoryRange({ symbol })).rejects.toThrow(
+        /不支持 symbol/,
+      );
+    }
+    expect(calls).toHaveLength(0);
   });
 });

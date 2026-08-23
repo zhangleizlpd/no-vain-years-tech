@@ -1,0 +1,4801 @@
+{
+  "_provenance": "原始响应（未加工）。来源：港股侧行情网关 /his-vol 端点，066 PoC 直连实测，采集日期 2026-08-22。四个窗口按 vendor 单次 <=364 天跨度上限逐段取，逐窗保留完整信封（as_of / count / rows）。rows 按 vendor 原样保序（日期降序）。要点：单个 364 天窗只返 244 个交易日（< IVP_MIN_WINDOW_TRADING_DAYS=252）；第三窗只有 41 行且最早一行是 2023-06-27 —— 那是港股侧历史起点；第四窗（2021-2022）count=0，即起点之前确实无数据。",
+  "windows": [
+    {
+      "requested": { "code": "HK.00700", "start": "2024-08-25", "end": "2025-08-23" },
+      "response": {
+        "as_of": "2026-08-22T13:45:34+00:00",
+        "count": 244,
+        "rows": [
+          {
+            "code": "HK.00700",
+            "hv": 24.09,
+            "iv": 26.506,
+            "name": "腾讯控股",
+            "time": "2025-08-22",
+            "timestamp": 1755792000,
+            "underlying_price": 594.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.331,
+            "iv": 25.811,
+            "name": "腾讯控股",
+            "time": "2025-08-21",
+            "timestamp": 1755705600,
+            "underlying_price": 587.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.316,
+            "iv": 26.239,
+            "name": "腾讯控股",
+            "time": "2025-08-20",
+            "timestamp": 1755619200,
+            "underlying_price": 585.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.217,
+            "iv": 27.543,
+            "name": "腾讯控股",
+            "time": "2025-08-19",
+            "timestamp": 1755532800,
+            "underlying_price": 587.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.65,
+            "iv": 26.785,
+            "name": "腾讯控股",
+            "time": "2025-08-18",
+            "timestamp": 1755446400,
+            "underlying_price": 581.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.748,
+            "iv": 22.941,
+            "name": "腾讯控股",
+            "time": "2025-08-15",
+            "timestamp": 1755187200,
+            "underlying_price": 586.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.885,
+            "iv": 27.151,
+            "name": "腾讯控股",
+            "time": "2025-08-14",
+            "timestamp": 1755100800,
+            "underlying_price": 584.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.973,
+            "iv": 29.916,
+            "name": "腾讯控股",
+            "time": "2025-08-13",
+            "timestamp": 1755014400,
+            "underlying_price": 580.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.018,
+            "iv": 29.31,
+            "name": "腾讯控股",
+            "time": "2025-08-12",
+            "timestamp": 1754928000,
+            "underlying_price": 554.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.586,
+            "iv": 27.654,
+            "name": "腾讯控股",
+            "time": "2025-08-11",
+            "timestamp": 1754841600,
+            "underlying_price": 555.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.239,
+            "iv": 28.209,
+            "name": "腾讯控股",
+            "time": "2025-08-08",
+            "timestamp": 1754582400,
+            "underlying_price": 555.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.312,
+            "iv": 29.351,
+            "name": "腾讯控股",
+            "time": "2025-08-07",
+            "timestamp": 1754496000,
+            "underlying_price": 561.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.175,
+            "iv": 27.218,
+            "name": "腾讯控股",
+            "time": "2025-08-06",
+            "timestamp": 1754409600,
+            "underlying_price": 563.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.734,
+            "iv": 29.14,
+            "name": "腾讯控股",
+            "time": "2025-08-05",
+            "timestamp": 1754323200,
+            "underlying_price": 553.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.23,
+            "iv": 29.643,
+            "name": "腾讯控股",
+            "time": "2025-08-04",
+            "timestamp": 1754236800,
+            "underlying_price": 544.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.952,
+            "iv": 27.656,
+            "name": "腾讯控股",
+            "time": "2025-08-01",
+            "timestamp": 1753977600,
+            "underlying_price": 529.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.281,
+            "iv": 27.595,
+            "name": "腾讯控股",
+            "time": "2025-07-31",
+            "timestamp": 1753891200,
+            "underlying_price": 544.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.076,
+            "iv": 27.869,
+            "name": "腾讯控股",
+            "time": "2025-07-30",
+            "timestamp": 1753804800,
+            "underlying_price": 543.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.748,
+            "iv": 29.295,
+            "name": "腾讯控股",
+            "time": "2025-07-29",
+            "timestamp": 1753718400,
+            "underlying_price": 549.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.281,
+            "iv": 30.047,
+            "name": "腾讯控股",
+            "time": "2025-07-28",
+            "timestamp": 1753632000,
+            "underlying_price": 550.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.743,
+            "iv": 29.511,
+            "name": "腾讯控股",
+            "time": "2025-07-25",
+            "timestamp": 1753372800,
+            "underlying_price": 545.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.004,
+            "iv": 30.267,
+            "name": "腾讯控股",
+            "time": "2025-07-24",
+            "timestamp": 1753286400,
+            "underlying_price": 551.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.866,
+            "iv": 31.38,
+            "name": "腾讯控股",
+            "time": "2025-07-23",
+            "timestamp": 1753200000,
+            "underlying_price": 546.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.673,
+            "iv": 26.565,
+            "name": "腾讯控股",
+            "time": "2025-07-22",
+            "timestamp": 1753113600,
+            "underlying_price": 520.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.966,
+            "iv": 26.082,
+            "name": "腾讯控股",
+            "time": "2025-07-21",
+            "timestamp": 1753027200,
+            "underlying_price": 516.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.795,
+            "iv": 26.355,
+            "name": "腾讯控股",
+            "time": "2025-07-18",
+            "timestamp": 1752768000,
+            "underlying_price": 513.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.195,
+            "iv": 25.668,
+            "name": "腾讯控股",
+            "time": "2025-07-17",
+            "timestamp": 1752681600,
+            "underlying_price": 511.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.37,
+            "iv": 27.168,
+            "name": "腾讯控股",
+            "time": "2025-07-16",
+            "timestamp": 1752595200,
+            "underlying_price": 511.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.736,
+            "iv": 28.484,
+            "name": "腾讯控股",
+            "time": "2025-07-15",
+            "timestamp": 1752508800,
+            "underlying_price": 512.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.519,
+            "iv": 25.005,
+            "name": "腾讯控股",
+            "time": "2025-07-14",
+            "timestamp": 1752422400,
+            "underlying_price": 494.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.567,
+            "iv": 25.187,
+            "name": "腾讯控股",
+            "time": "2025-07-11",
+            "timestamp": 1752163200,
+            "underlying_price": 491.3
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.951,
+            "iv": 24.139,
+            "name": "腾讯控股",
+            "time": "2025-07-10",
+            "timestamp": 1752076800,
+            "underlying_price": 491.3
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.14,
+            "iv": 24.577,
+            "name": "腾讯控股",
+            "time": "2025-07-09",
+            "timestamp": 1751990400,
+            "underlying_price": 492.3
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.748,
+            "iv": 24.726,
+            "name": "腾讯控股",
+            "time": "2025-07-08",
+            "timestamp": 1751904000,
+            "underlying_price": 499.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.911,
+            "iv": 24.674,
+            "name": "腾讯控股",
+            "time": "2025-07-07",
+            "timestamp": 1751817600,
+            "underlying_price": 496.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.276,
+            "iv": 23.751,
+            "name": "腾讯控股",
+            "time": "2025-07-04",
+            "timestamp": 1751558400,
+            "underlying_price": 491.5
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.919,
+            "iv": 23.782,
+            "name": "腾讯控股",
+            "time": "2025-07-03",
+            "timestamp": 1751472000,
+            "underlying_price": 495.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.595,
+            "iv": 23.259,
+            "name": "腾讯控股",
+            "time": "2025-07-02",
+            "timestamp": 1751385600,
+            "underlying_price": 496.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.837,
+            "iv": 23.658,
+            "name": "腾讯控股",
+            "time": "2025-06-30",
+            "timestamp": 1751212800,
+            "underlying_price": 497.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.182,
+            "iv": 24.636,
+            "name": "腾讯控股",
+            "time": "2025-06-27",
+            "timestamp": 1750953600,
+            "underlying_price": 507.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.647,
+            "iv": 25.197,
+            "name": "腾讯控股",
+            "time": "2025-06-26",
+            "timestamp": 1750867200,
+            "underlying_price": 507.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.735,
+            "iv": 25.621,
+            "name": "腾讯控股",
+            "time": "2025-06-25",
+            "timestamp": 1750780800,
+            "underlying_price": 507.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.349,
+            "iv": 25.707,
+            "name": "腾讯控股",
+            "time": "2025-06-24",
+            "timestamp": 1750694400,
+            "underlying_price": 504.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.359,
+            "iv": 25.649,
+            "name": "腾讯控股",
+            "time": "2025-06-23",
+            "timestamp": 1750608000,
+            "underlying_price": 498.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.686,
+            "iv": 25.361,
+            "name": "腾讯控股",
+            "time": "2025-06-20",
+            "timestamp": 1750348800,
+            "underlying_price": 500.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.382,
+            "iv": 26.358,
+            "name": "腾讯控股",
+            "time": "2025-06-19",
+            "timestamp": 1750262400,
+            "underlying_price": 492.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.461,
+            "iv": 26.546,
+            "name": "腾讯控股",
+            "time": "2025-06-18",
+            "timestamp": 1750176000,
+            "underlying_price": 502.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.334,
+            "iv": 27.292,
+            "name": "腾讯控股",
+            "time": "2025-06-17",
+            "timestamp": 1750089600,
+            "underlying_price": 508.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.572,
+            "iv": 28.167,
+            "name": "腾讯控股",
+            "time": "2025-06-16",
+            "timestamp": 1750003200,
+            "underlying_price": 504.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.944,
+            "iv": 28.689,
+            "name": "腾讯控股",
+            "time": "2025-06-13",
+            "timestamp": 1749744000,
+            "underlying_price": 504.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.861,
+            "iv": 27.887,
+            "name": "腾讯控股",
+            "time": "2025-06-12",
+            "timestamp": 1749657600,
+            "underlying_price": 504.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.551,
+            "iv": 28.449,
+            "name": "腾讯控股",
+            "time": "2025-06-11",
+            "timestamp": 1749571200,
+            "underlying_price": 512.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.623,
+            "iv": 28.777,
+            "name": "腾讯控股",
+            "time": "2025-06-10",
+            "timestamp": 1749484800,
+            "underlying_price": 508.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.88,
+            "iv": 29.402,
+            "name": "腾讯控股",
+            "time": "2025-06-09",
+            "timestamp": 1749398400,
+            "underlying_price": 512.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.02,
+            "iv": 28.542,
+            "name": "腾讯控股",
+            "time": "2025-06-06",
+            "timestamp": 1749139200,
+            "underlying_price": 509.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.344,
+            "iv": 28.901,
+            "name": "腾讯控股",
+            "time": "2025-06-05",
+            "timestamp": 1749052800,
+            "underlying_price": 509.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.606,
+            "iv": 29.509,
+            "name": "腾讯控股",
+            "time": "2025-06-04",
+            "timestamp": 1748966400,
+            "underlying_price": 506.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.001,
+            "iv": 30.548,
+            "name": "腾讯控股",
+            "time": "2025-06-03",
+            "timestamp": 1748880000,
+            "underlying_price": 499.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.493,
+            "iv": 29.685,
+            "name": "腾讯控股",
+            "time": "2025-06-02",
+            "timestamp": 1748793600,
+            "underlying_price": 493.1
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.391,
+            "iv": 30.53,
+            "name": "腾讯控股",
+            "time": "2025-05-30",
+            "timestamp": 1748534400,
+            "underlying_price": 492.9
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.699,
+            "iv": 30.928,
+            "name": "腾讯控股",
+            "time": "2025-05-29",
+            "timestamp": 1748448000,
+            "underlying_price": 505.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.125,
+            "iv": 31.475,
+            "name": "腾讯控股",
+            "time": "2025-05-28",
+            "timestamp": 1748361600,
+            "underlying_price": 500.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.582,
+            "iv": 32.253,
+            "name": "腾讯控股",
+            "time": "2025-05-27",
+            "timestamp": 1748275200,
+            "underlying_price": 506.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.301,
+            "iv": 32.468,
+            "name": "腾讯控股",
+            "time": "2025-05-26",
+            "timestamp": 1748188800,
+            "underlying_price": 504.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.237,
+            "iv": 30.891,
+            "name": "腾讯控股",
+            "time": "2025-05-23",
+            "timestamp": 1747929600,
+            "underlying_price": 512.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.687,
+            "iv": 31.815,
+            "name": "腾讯控股",
+            "time": "2025-05-22",
+            "timestamp": 1747843200,
+            "underlying_price": 511.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.133,
+            "iv": 31.952,
+            "name": "腾讯控股",
+            "time": "2025-05-21",
+            "timestamp": 1747756800,
+            "underlying_price": 515.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.881,
+            "iv": 32.184,
+            "name": "腾讯控股",
+            "time": "2025-05-20",
+            "timestamp": 1747670400,
+            "underlying_price": 511.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.679,
+            "iv": 32.589,
+            "name": "腾讯控股",
+            "time": "2025-05-19",
+            "timestamp": 1747584000,
+            "underlying_price": 508.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.894,
+            "iv": 32.003,
+            "name": "腾讯控股",
+            "time": "2025-05-16",
+            "timestamp": 1747324800,
+            "underlying_price": 502.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.475,
+            "iv": 33.19,
+            "name": "腾讯控股",
+            "time": "2025-05-15",
+            "timestamp": 1747238400,
+            "underlying_price": 510.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.017,
+            "iv": 35.625,
+            "name": "腾讯控股",
+            "time": "2025-05-14",
+            "timestamp": 1747152000,
+            "underlying_price": 511.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.427,
+            "iv": 35.479,
+            "name": "腾讯控股",
+            "time": "2025-05-13",
+            "timestamp": 1747065600,
+            "underlying_price": 496.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.031,
+            "iv": 37.38,
+            "name": "腾讯控股",
+            "time": "2025-05-12",
+            "timestamp": 1746979200,
+            "underlying_price": 507.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.035,
+            "iv": 36.978,
+            "name": "腾讯控股",
+            "time": "2025-05-09",
+            "timestamp": 1746720000,
+            "underlying_price": 484.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.398,
+            "iv": 37.381,
+            "name": "腾讯控股",
+            "time": "2025-05-08",
+            "timestamp": 1746633600,
+            "underlying_price": 488.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.946,
+            "iv": 38.061,
+            "name": "腾讯控股",
+            "time": "2025-05-07",
+            "timestamp": 1746547200,
+            "underlying_price": 480
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.594,
+            "iv": 37.761,
+            "name": "腾讯控股",
+            "time": "2025-05-06",
+            "timestamp": 1746460800,
+            "underlying_price": 485.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.697,
+            "iv": 32.909,
+            "name": "腾讯控股",
+            "time": "2025-05-02",
+            "timestamp": 1746115200,
+            "underlying_price": 478
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.385,
+            "iv": 35.132,
+            "name": "腾讯控股",
+            "time": "2025-04-30",
+            "timestamp": 1745942400,
+            "underlying_price": 467.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.874,
+            "iv": 35.915,
+            "name": "腾讯控股",
+            "time": "2025-04-29",
+            "timestamp": 1745856000,
+            "underlying_price": 463.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.373,
+            "iv": 37.522,
+            "name": "腾讯控股",
+            "time": "2025-04-28",
+            "timestamp": 1745769600,
+            "underlying_price": 468.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.744,
+            "iv": 38.366,
+            "name": "腾讯控股",
+            "time": "2025-04-25",
+            "timestamp": 1745510400,
+            "underlying_price": 468.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.673,
+            "iv": 39.17,
+            "name": "腾讯控股",
+            "time": "2025-04-24",
+            "timestamp": 1745424000,
+            "underlying_price": 461.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.042,
+            "iv": 39.818,
+            "name": "腾讯控股",
+            "time": "2025-04-23",
+            "timestamp": 1745337600,
+            "underlying_price": 464.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 53.562,
+            "iv": 41.205,
+            "name": "腾讯控股",
+            "time": "2025-04-22",
+            "timestamp": 1745251200,
+            "underlying_price": 450.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.011,
+            "iv": 41.543,
+            "name": "腾讯控股",
+            "time": "2025-04-17",
+            "timestamp": 1744819200,
+            "underlying_price": 448.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.972,
+            "iv": 41.77,
+            "name": "腾讯控股",
+            "time": "2025-04-16",
+            "timestamp": 1744732800,
+            "underlying_price": 438.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.865,
+            "iv": 40.615,
+            "name": "腾讯控股",
+            "time": "2025-04-15",
+            "timestamp": 1744646400,
+            "underlying_price": 446.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.02,
+            "iv": 44.683,
+            "name": "腾讯控股",
+            "time": "2025-04-14",
+            "timestamp": 1744560000,
+            "underlying_price": 444.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.99,
+            "iv": 49.524,
+            "name": "腾讯控股",
+            "time": "2025-04-11",
+            "timestamp": 1744300800,
+            "underlying_price": 433.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.963,
+            "iv": 47.842,
+            "name": "腾讯控股",
+            "time": "2025-04-10",
+            "timestamp": 1744214400,
+            "underlying_price": 435
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.862,
+            "iv": 53.441,
+            "name": "腾讯控股",
+            "time": "2025-04-09",
+            "timestamp": 1744128000,
+            "underlying_price": 431.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 53.281,
+            "iv": 51.443,
+            "name": "腾讯控股",
+            "time": "2025-04-08",
+            "timestamp": 1744041600,
+            "underlying_price": 430.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 57.156,
+            "iv": 58.944,
+            "name": "腾讯控股",
+            "time": "2025-04-07",
+            "timestamp": 1743955200,
+            "underlying_price": 425.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 39.305,
+            "iv": 31.907,
+            "name": "腾讯控股",
+            "time": "2025-04-03",
+            "timestamp": 1743609600,
+            "underlying_price": 488
+          },
+          {
+            "code": "HK.00700",
+            "hv": 39.383,
+            "iv": 31.491,
+            "name": "腾讯控股",
+            "time": "2025-04-02",
+            "timestamp": 1743523200,
+            "underlying_price": 494.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 39.396,
+            "iv": 32.455,
+            "name": "腾讯控股",
+            "time": "2025-04-01",
+            "timestamp": 1743436800,
+            "underlying_price": 494.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 39.666,
+            "iv": 33.693,
+            "name": "腾讯控股",
+            "time": "2025-03-31",
+            "timestamp": 1743350400,
+            "underlying_price": 487.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 40.419,
+            "iv": 33.241,
+            "name": "腾讯控股",
+            "time": "2025-03-28",
+            "timestamp": 1743091200,
+            "underlying_price": 499.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 41.928,
+            "iv": 37.165,
+            "name": "腾讯控股",
+            "time": "2025-03-27",
+            "timestamp": 1743004800,
+            "underlying_price": 499.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 42.967,
+            "iv": 35.657,
+            "name": "腾讯控股",
+            "time": "2025-03-26",
+            "timestamp": 1742918400,
+            "underlying_price": 496.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 44.709,
+            "iv": 33.39,
+            "name": "腾讯控股",
+            "time": "2025-03-25",
+            "timestamp": 1742832000,
+            "underlying_price": 492.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 45.409,
+            "iv": 34.191,
+            "name": "腾讯控股",
+            "time": "2025-03-24",
+            "timestamp": 1742745600,
+            "underlying_price": 503.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 49.585,
+            "iv": 38.927,
+            "name": "腾讯控股",
+            "time": "2025-03-21",
+            "timestamp": 1742486400,
+            "underlying_price": 501.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 49.26,
+            "iv": 37.692,
+            "name": "腾讯控股",
+            "time": "2025-03-20",
+            "timestamp": 1742400000,
+            "underlying_price": 509.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 47.556,
+            "iv": 40.413,
+            "name": "腾讯控股",
+            "time": "2025-03-19",
+            "timestamp": 1742313600,
+            "underlying_price": 530.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 48.79,
+            "iv": 42.95,
+            "name": "腾讯控股",
+            "time": "2025-03-18",
+            "timestamp": 1742227200,
+            "underlying_price": 531.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 49.329,
+            "iv": 56.06,
+            "name": "腾讯控股",
+            "time": "2025-03-17",
+            "timestamp": 1742140800,
+            "underlying_price": 514.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 53.654,
+            "iv": 49.29,
+            "name": "腾讯控股",
+            "time": "2025-03-14",
+            "timestamp": 1741881600,
+            "underlying_price": 511.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 53.97,
+            "iv": 41.565,
+            "name": "腾讯控股",
+            "time": "2025-03-13",
+            "timestamp": 1741795200,
+            "underlying_price": 497.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.686,
+            "iv": 43.569,
+            "name": "腾讯控股",
+            "time": "2025-03-12",
+            "timestamp": 1741708800,
+            "underlying_price": 502.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.451,
+            "iv": 42.376,
+            "name": "腾讯控股",
+            "time": "2025-03-11",
+            "timestamp": 1741622400,
+            "underlying_price": 507.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.679,
+            "iv": 42.805,
+            "name": "腾讯控股",
+            "time": "2025-03-10",
+            "timestamp": 1741536000,
+            "underlying_price": 506.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.5,
+            "iv": 73.225,
+            "name": "腾讯控股",
+            "time": "2025-03-07",
+            "timestamp": 1741276800,
+            "underlying_price": 523.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 51.284,
+            "iv": 50.759,
+            "name": "腾讯控股",
+            "time": "2025-03-06",
+            "timestamp": 1741190400,
+            "underlying_price": 534.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 48.242,
+            "iv": 42.194,
+            "name": "腾讯控股",
+            "time": "2025-03-05",
+            "timestamp": 1741104000,
+            "underlying_price": 495.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 47.708,
+            "iv": 66.239,
+            "name": "腾讯控股",
+            "time": "2025-03-04",
+            "timestamp": 1741017600,
+            "underlying_price": 481.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 48.811,
+            "iv": 42.493,
+            "name": "腾讯控股",
+            "time": "2025-03-03",
+            "timestamp": 1740931200,
+            "underlying_price": 473.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 49.916,
+            "iv": 44.558,
+            "name": "腾讯控股",
+            "time": "2025-02-28",
+            "timestamp": 1740672000,
+            "underlying_price": 468.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 48.667,
+            "iv": 47.979,
+            "name": "腾讯控股",
+            "time": "2025-02-27",
+            "timestamp": 1740585600,
+            "underlying_price": 485.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 47.837,
+            "iv": 48.263,
+            "name": "腾讯控股",
+            "time": "2025-02-26",
+            "timestamp": 1740499200,
+            "underlying_price": 491.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 47.173,
+            "iv": 72.472,
+            "name": "腾讯控股",
+            "time": "2025-02-25",
+            "timestamp": 1740412800,
+            "underlying_price": 475
+          },
+          {
+            "code": "HK.00700",
+            "hv": 46.079,
+            "iv": 49.646,
+            "name": "腾讯控股",
+            "time": "2025-02-24",
+            "timestamp": 1740326400,
+            "underlying_price": 487.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 40.838,
+            "iv": 45.024,
+            "name": "腾讯控股",
+            "time": "2025-02-21",
+            "timestamp": 1740067200,
+            "underlying_price": 507.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 38.759,
+            "iv": 41.526,
+            "name": "腾讯控股",
+            "time": "2025-02-20",
+            "timestamp": 1739980800,
+            "underlying_price": 477
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.93,
+            "iv": 44.467,
+            "name": "腾讯控股",
+            "time": "2025-02-19",
+            "timestamp": 1739894400,
+            "underlying_price": 488
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.815,
+            "iv": 48.309,
+            "name": "腾讯控股",
+            "time": "2025-02-18",
+            "timestamp": 1739808000,
+            "underlying_price": 493.7
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.485,
+            "iv": 19.027,
+            "name": "腾讯控股",
+            "time": "2025-02-17",
+            "timestamp": 1739721600,
+            "underlying_price": 483.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.373,
+            "iv": 38.474,
+            "name": "腾讯控股",
+            "time": "2025-02-14",
+            "timestamp": 1739462400,
+            "underlying_price": 465
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.442,
+            "iv": 41.536,
+            "name": "腾讯控股",
+            "time": "2025-02-13",
+            "timestamp": 1739376000,
+            "underlying_price": 432.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.613,
+            "iv": 33.51,
+            "name": "腾讯控股",
+            "time": "2025-02-12",
+            "timestamp": 1739289600,
+            "underlying_price": 434.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.759,
+            "iv": 35.086,
+            "name": "腾讯控股",
+            "time": "2025-02-11",
+            "timestamp": 1739203200,
+            "underlying_price": 417.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.525,
+            "iv": 36.126,
+            "name": "腾讯控股",
+            "time": "2025-02-10",
+            "timestamp": 1739116800,
+            "underlying_price": 427.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.358,
+            "iv": 33.894,
+            "name": "腾讯控股",
+            "time": "2025-02-07",
+            "timestamp": 1738857600,
+            "underlying_price": 418.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.396,
+            "iv": 33.112,
+            "name": "腾讯控股",
+            "time": "2025-02-06",
+            "timestamp": 1738771200,
+            "underlying_price": 410.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 39.583,
+            "iv": 33.977,
+            "name": "腾讯控股",
+            "time": "2025-02-05",
+            "timestamp": 1738684800,
+            "underlying_price": 408
+          },
+          {
+            "code": "HK.00700",
+            "hv": 39.653,
+            "iv": 36.017,
+            "name": "腾讯控股",
+            "time": "2025-02-04",
+            "timestamp": 1738598400,
+            "underlying_price": 411
+          },
+          {
+            "code": "HK.00700",
+            "hv": 37.797,
+            "iv": 20.826,
+            "name": "腾讯控股",
+            "time": "2025-02-03",
+            "timestamp": 1738512000,
+            "underlying_price": 394.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.89,
+            "iv": 9.466,
+            "name": "腾讯控股",
+            "time": "2025-01-28",
+            "timestamp": 1737993600,
+            "underlying_price": 391.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.143,
+            "iv": 7.152,
+            "name": "腾讯控股",
+            "time": "2025-01-27",
+            "timestamp": 1737907200,
+            "underlying_price": 385.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.657,
+            "iv": 28.037,
+            "name": "腾讯控股",
+            "time": "2025-01-24",
+            "timestamp": 1737648000,
+            "underlying_price": 380.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.005,
+            "iv": 28.402,
+            "name": "腾讯控股",
+            "time": "2025-01-23",
+            "timestamp": 1737561600,
+            "underlying_price": 371.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.136,
+            "iv": 8.41,
+            "name": "腾讯控股",
+            "time": "2025-01-22",
+            "timestamp": 1737475200,
+            "underlying_price": 373.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.175,
+            "iv": 30.935,
+            "name": "腾讯控股",
+            "time": "2025-01-21",
+            "timestamp": 1737388800,
+            "underlying_price": 377.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.166,
+            "iv": 31.397,
+            "name": "腾讯控股",
+            "time": "2025-01-20",
+            "timestamp": 1737302400,
+            "underlying_price": 380
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.7,
+            "iv": 29.686,
+            "name": "腾讯控股",
+            "time": "2025-01-17",
+            "timestamp": 1737043200,
+            "underlying_price": 370
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.908,
+            "iv": 30.031,
+            "name": "腾讯控股",
+            "time": "2025-01-16",
+            "timestamp": 1736956800,
+            "underlying_price": 372.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.707,
+            "iv": 29.681,
+            "name": "腾讯控股",
+            "time": "2025-01-15",
+            "timestamp": 1736870400,
+            "underlying_price": 370.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.513,
+            "iv": 20.102,
+            "name": "腾讯控股",
+            "time": "2025-01-14",
+            "timestamp": 1736784000,
+            "underlying_price": 365.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.4,
+            "iv": 30.563,
+            "name": "腾讯控股",
+            "time": "2025-01-13",
+            "timestamp": 1736697600,
+            "underlying_price": 356.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.335,
+            "iv": 30.928,
+            "name": "腾讯控股",
+            "time": "2025-01-10",
+            "timestamp": 1736438400,
+            "underlying_price": 359.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.702,
+            "iv": 32.479,
+            "name": "腾讯控股",
+            "time": "2025-01-09",
+            "timestamp": 1736352000,
+            "underlying_price": 363.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.873,
+            "iv": 34.552,
+            "name": "腾讯控股",
+            "time": "2025-01-08",
+            "timestamp": 1736265600,
+            "underlying_price": 359.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.89,
+            "iv": 31.754,
+            "name": "腾讯控股",
+            "time": "2025-01-07",
+            "timestamp": 1736179200,
+            "underlying_price": 369.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.742,
+            "iv": 24.195,
+            "name": "腾讯控股",
+            "time": "2025-01-06",
+            "timestamp": 1736092800,
+            "underlying_price": 399.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.637,
+            "iv": 22.327,
+            "name": "腾讯控股",
+            "time": "2025-01-03",
+            "timestamp": 1735833600,
+            "underlying_price": 404.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.633,
+            "iv": 23.074,
+            "name": "腾讯控股",
+            "time": "2025-01-02",
+            "timestamp": 1735747200,
+            "underlying_price": 406.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.108,
+            "iv": 23.779,
+            "name": "腾讯控股",
+            "time": "2024-12-31",
+            "timestamp": 1735574400,
+            "underlying_price": 407.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.683,
+            "iv": 26.833,
+            "name": "腾讯控股",
+            "time": "2024-12-30",
+            "timestamp": 1735488000,
+            "underlying_price": 409.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.546,
+            "iv": 24.482,
+            "name": "腾讯控股",
+            "time": "2024-12-27",
+            "timestamp": 1735228800,
+            "underlying_price": 407.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.391,
+            "iv": 24.968,
+            "name": "腾讯控股",
+            "time": "2024-12-24",
+            "timestamp": 1734969600,
+            "underlying_price": 410.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.809,
+            "iv": 24.122,
+            "name": "腾讯控股",
+            "time": "2024-12-23",
+            "timestamp": 1734883200,
+            "underlying_price": 410.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.904,
+            "iv": 25.783,
+            "name": "腾讯控股",
+            "time": "2024-12-20",
+            "timestamp": 1734624000,
+            "underlying_price": 416.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.557,
+            "iv": 25.147,
+            "name": "腾讯控股",
+            "time": "2024-12-19",
+            "timestamp": 1734537600,
+            "underlying_price": 405.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.977,
+            "iv": 59.972,
+            "name": "腾讯控股",
+            "time": "2024-12-18",
+            "timestamp": 1734451200,
+            "underlying_price": 396.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.789,
+            "iv": 20.744,
+            "name": "腾讯控股",
+            "time": "2024-12-17",
+            "timestamp": 1734364800,
+            "underlying_price": 392.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.157,
+            "iv": 28.577,
+            "name": "腾讯控股",
+            "time": "2024-12-16",
+            "timestamp": 1734278400,
+            "underlying_price": 395.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.525,
+            "iv": 24.009,
+            "name": "腾讯控股",
+            "time": "2024-12-13",
+            "timestamp": 1734019200,
+            "underlying_price": 400
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.053,
+            "iv": 27.351,
+            "name": "腾讯控股",
+            "time": "2024-12-12",
+            "timestamp": 1733932800,
+            "underlying_price": 405.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.988,
+            "iv": 26.225,
+            "name": "腾讯控股",
+            "time": "2024-12-11",
+            "timestamp": 1733846400,
+            "underlying_price": 400
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.852,
+            "iv": 26.389,
+            "name": "腾讯控股",
+            "time": "2024-12-10",
+            "timestamp": 1733760000,
+            "underlying_price": 401.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.936,
+            "iv": 27.635,
+            "name": "腾讯控股",
+            "time": "2024-12-09",
+            "timestamp": 1733673600,
+            "underlying_price": 409
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.56,
+            "iv": 32.397,
+            "name": "腾讯控股",
+            "time": "2024-12-06",
+            "timestamp": 1733414400,
+            "underlying_price": 402.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.226,
+            "iv": 23.455,
+            "name": "腾讯控股",
+            "time": "2024-12-05",
+            "timestamp": 1733328000,
+            "underlying_price": 395.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.568,
+            "iv": 40.838,
+            "name": "腾讯控股",
+            "time": "2024-12-04",
+            "timestamp": 1733241600,
+            "underlying_price": 393.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.379,
+            "iv": 25.385,
+            "name": "腾讯控股",
+            "time": "2024-12-03",
+            "timestamp": 1733155200,
+            "underlying_price": 394.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.49,
+            "iv": 25.216,
+            "name": "腾讯控股",
+            "time": "2024-12-02",
+            "timestamp": 1733068800,
+            "underlying_price": 390
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.047,
+            "iv": 27.48,
+            "name": "腾讯控股",
+            "time": "2024-11-29",
+            "timestamp": 1732809600,
+            "underlying_price": 388.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.642,
+            "iv": 28.088,
+            "name": "腾讯控股",
+            "time": "2024-11-28",
+            "timestamp": 1732723200,
+            "underlying_price": 390.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.632,
+            "iv": 29.807,
+            "name": "腾讯控股",
+            "time": "2024-11-27",
+            "timestamp": 1732636800,
+            "underlying_price": 393
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.248,
+            "iv": 27.757,
+            "name": "腾讯控股",
+            "time": "2024-11-26",
+            "timestamp": 1732550400,
+            "underlying_price": 384
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.933,
+            "iv": 41.72,
+            "name": "腾讯控股",
+            "time": "2024-11-25",
+            "timestamp": 1732464000,
+            "underlying_price": 385.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.236,
+            "iv": 28.025,
+            "name": "腾讯控股",
+            "time": "2024-11-22",
+            "timestamp": 1732204800,
+            "underlying_price": 390.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.467,
+            "iv": 27.861,
+            "name": "腾讯控股",
+            "time": "2024-11-21",
+            "timestamp": 1732118400,
+            "underlying_price": 397.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.537,
+            "iv": 29.587,
+            "name": "腾讯控股",
+            "time": "2024-11-20",
+            "timestamp": 1732032000,
+            "underlying_price": 401
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.142,
+            "iv": 29.008,
+            "name": "腾讯控股",
+            "time": "2024-11-19",
+            "timestamp": 1731945600,
+            "underlying_price": 396.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.575,
+            "iv": 32.021,
+            "name": "腾讯控股",
+            "time": "2024-11-18",
+            "timestamp": 1731859200,
+            "underlying_price": 394.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.362,
+            "iv": 30.455,
+            "name": "腾讯控股",
+            "time": "2024-11-15",
+            "timestamp": 1731600000,
+            "underlying_price": 391.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.344,
+            "iv": 32.867,
+            "name": "腾讯控股",
+            "time": "2024-11-14",
+            "timestamp": 1731513600,
+            "underlying_price": 393.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.913,
+            "iv": 38.604,
+            "name": "腾讯控股",
+            "time": "2024-11-13",
+            "timestamp": 1731427200,
+            "underlying_price": 394
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.732,
+            "iv": 35.176,
+            "name": "腾讯控股",
+            "time": "2024-11-12",
+            "timestamp": 1731340800,
+            "underlying_price": 394
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.958,
+            "iv": 38.768,
+            "name": "腾讯控股",
+            "time": "2024-11-11",
+            "timestamp": 1731254400,
+            "underlying_price": 403.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.382,
+            "iv": 42.771,
+            "name": "腾讯控股",
+            "time": "2024-11-08",
+            "timestamp": 1730995200,
+            "underlying_price": 411
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.355,
+            "iv": 42.619,
+            "name": "腾讯控股",
+            "time": "2024-11-07",
+            "timestamp": 1730908800,
+            "underlying_price": 418.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 42.814,
+            "iv": 38.269,
+            "name": "腾讯控股",
+            "time": "2024-11-06",
+            "timestamp": 1730822400,
+            "underlying_price": 410
+          },
+          {
+            "code": "HK.00700",
+            "hv": 42.568,
+            "iv": 39.875,
+            "name": "腾讯控股",
+            "time": "2024-11-05",
+            "timestamp": 1730736000,
+            "underlying_price": 418
+          },
+          {
+            "code": "HK.00700",
+            "hv": 42.726,
+            "iv": 37.037,
+            "name": "腾讯控股",
+            "time": "2024-11-04",
+            "timestamp": 1730649600,
+            "underlying_price": 409.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 43.017,
+            "iv": 37.672,
+            "name": "腾讯控股",
+            "time": "2024-11-01",
+            "timestamp": 1730390400,
+            "underlying_price": 409.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 45.683,
+            "iv": 36.209,
+            "name": "腾讯控股",
+            "time": "2024-10-31",
+            "timestamp": 1730304000,
+            "underlying_price": 394.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 46.807,
+            "iv": 37.894,
+            "name": "腾讯控股",
+            "time": "2024-10-30",
+            "timestamp": 1730217600,
+            "underlying_price": 401.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 47.003,
+            "iv": 39.938,
+            "name": "腾讯控股",
+            "time": "2024-10-29",
+            "timestamp": 1730131200,
+            "underlying_price": 408.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 48.221,
+            "iv": 40.438,
+            "name": "腾讯控股",
+            "time": "2024-10-28",
+            "timestamp": 1730044800,
+            "underlying_price": 407.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.017,
+            "iv": 38.615,
+            "name": "腾讯控股",
+            "time": "2024-10-25",
+            "timestamp": 1729785600,
+            "underlying_price": 411.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.148,
+            "iv": 40.276,
+            "name": "腾讯控股",
+            "time": "2024-10-24",
+            "timestamp": 1729699200,
+            "underlying_price": 412.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.942,
+            "iv": 40.849,
+            "name": "腾讯控股",
+            "time": "2024-10-23",
+            "timestamp": 1729612800,
+            "underlying_price": 418.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.949,
+            "iv": 38.937,
+            "name": "腾讯控股",
+            "time": "2024-10-22",
+            "timestamp": 1729526400,
+            "underlying_price": 411.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.47,
+            "iv": 40.27,
+            "name": "腾讯控股",
+            "time": "2024-10-21",
+            "timestamp": 1729440000,
+            "underlying_price": 411.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 52.012,
+            "iv": 41.42,
+            "name": "腾讯控股",
+            "time": "2024-10-18",
+            "timestamp": 1729180800,
+            "underlying_price": 421
+          },
+          {
+            "code": "HK.00700",
+            "hv": 51.967,
+            "iv": 37.565,
+            "name": "腾讯控股",
+            "time": "2024-10-17",
+            "timestamp": 1729094400,
+            "underlying_price": 402.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 51.623,
+            "iv": 38.433,
+            "name": "腾讯控股",
+            "time": "2024-10-16",
+            "timestamp": 1729008000,
+            "underlying_price": 406
+          },
+          {
+            "code": "HK.00700",
+            "hv": 51.592,
+            "iv": 38.152,
+            "name": "腾讯控股",
+            "time": "2024-10-15",
+            "timestamp": 1728921600,
+            "underlying_price": 407.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 49.447,
+            "iv": 40.135,
+            "name": "腾讯控股",
+            "time": "2024-10-14",
+            "timestamp": 1728835200,
+            "underlying_price": 426.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 46.3,
+            "iv": 43.896,
+            "name": "腾讯控股",
+            "time": "2024-10-10",
+            "timestamp": 1728489600,
+            "underlying_price": 429
+          },
+          {
+            "code": "HK.00700",
+            "hv": 46.673,
+            "iv": 45.451,
+            "name": "腾讯控股",
+            "time": "2024-10-09",
+            "timestamp": 1728403200,
+            "underlying_price": 424.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 45.699,
+            "iv": 43.493,
+            "name": "腾讯控股",
+            "time": "2024-10-08",
+            "timestamp": 1728316800,
+            "underlying_price": 428.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.8,
+            "iv": 58.514,
+            "name": "腾讯控股",
+            "time": "2024-10-07",
+            "timestamp": 1728230400,
+            "underlying_price": 468.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.725,
+            "iv": 35.625,
+            "name": "腾讯控股",
+            "time": "2024-10-04",
+            "timestamp": 1727971200,
+            "underlying_price": 467.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.959,
+            "iv": 47.794,
+            "name": "腾讯控股",
+            "time": "2024-10-03",
+            "timestamp": 1727884800,
+            "underlying_price": 456.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.468,
+            "iv": 58.565,
+            "name": "腾讯控股",
+            "time": "2024-10-02",
+            "timestamp": 1727798400,
+            "underlying_price": 460.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.437,
+            "iv": 37.555,
+            "name": "腾讯控股",
+            "time": "2024-09-30",
+            "timestamp": 1727625600,
+            "underlying_price": 434.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.495,
+            "iv": 37.555,
+            "name": "腾讯控股",
+            "time": "2024-09-27",
+            "timestamp": 1727366400,
+            "underlying_price": 428
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.641,
+            "iv": 33.562,
+            "name": "腾讯控股",
+            "time": "2024-09-26",
+            "timestamp": 1727280000,
+            "underlying_price": 420.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.911,
+            "iv": 26.811,
+            "name": "腾讯控股",
+            "time": "2024-09-25",
+            "timestamp": 1727193600,
+            "underlying_price": 395.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.112,
+            "iv": 26.949,
+            "name": "腾讯控股",
+            "time": "2024-09-24",
+            "timestamp": 1727107200,
+            "underlying_price": 392.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.923,
+            "iv": 23.673,
+            "name": "腾讯控股",
+            "time": "2024-09-23",
+            "timestamp": 1727020800,
+            "underlying_price": 377.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.325,
+            "iv": 23.599,
+            "name": "腾讯控股",
+            "time": "2024-09-20",
+            "timestamp": 1726761600,
+            "underlying_price": 378.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.158,
+            "iv": 23.969,
+            "name": "腾讯控股",
+            "time": "2024-09-19",
+            "timestamp": 1726675200,
+            "underlying_price": 379
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.216,
+            "iv": 22.815,
+            "name": "腾讯控股",
+            "time": "2024-09-17",
+            "timestamp": 1726502400,
+            "underlying_price": 370.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 15.447,
+            "iv": 24.198,
+            "name": "腾讯控股",
+            "time": "2024-09-16",
+            "timestamp": 1726416000,
+            "underlying_price": 368
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.249,
+            "iv": 23.386,
+            "name": "腾讯控股",
+            "time": "2024-09-13",
+            "timestamp": 1726156800,
+            "underlying_price": 365
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.754,
+            "iv": 24.185,
+            "name": "腾讯控股",
+            "time": "2024-09-12",
+            "timestamp": 1726070400,
+            "underlying_price": 362.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 16.976,
+            "iv": 24.365,
+            "name": "腾讯控股",
+            "time": "2024-09-11",
+            "timestamp": 1725984000,
+            "underlying_price": 360.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.545,
+            "iv": 24.255,
+            "name": "腾讯控股",
+            "time": "2024-09-10",
+            "timestamp": 1725897600,
+            "underlying_price": 358.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 17.927,
+            "iv": 24.7,
+            "name": "腾讯控股",
+            "time": "2024-09-09",
+            "timestamp": 1725811200,
+            "underlying_price": 361.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.189,
+            "iv": 23.253,
+            "name": "腾讯控股",
+            "time": "2024-09-05",
+            "timestamp": 1725465600,
+            "underlying_price": 363.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.35,
+            "iv": 24.008,
+            "name": "腾讯控股",
+            "time": "2024-09-04",
+            "timestamp": 1725379200,
+            "underlying_price": 363
+          },
+          {
+            "code": "HK.00700",
+            "hv": 18.669,
+            "iv": 24.066,
+            "name": "腾讯控股",
+            "time": "2024-09-03",
+            "timestamp": 1725292800,
+            "underlying_price": 368.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.129,
+            "iv": 24.697,
+            "name": "腾讯控股",
+            "time": "2024-09-02",
+            "timestamp": 1725206400,
+            "underlying_price": 368
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.082,
+            "iv": 24.56,
+            "name": "腾讯控股",
+            "time": "2024-08-30",
+            "timestamp": 1724947200,
+            "underlying_price": 372.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.937,
+            "iv": 24.129,
+            "name": "腾讯控股",
+            "time": "2024-08-29",
+            "timestamp": 1724860800,
+            "underlying_price": 367.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.668,
+            "iv": 25.434,
+            "name": "腾讯控股",
+            "time": "2024-08-28",
+            "timestamp": 1724774400,
+            "underlying_price": 364.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.203,
+            "iv": 26.898,
+            "name": "腾讯控股",
+            "time": "2024-08-27",
+            "timestamp": 1724688000,
+            "underlying_price": 372
+          },
+          {
+            "code": "HK.00700",
+            "hv": 20.481,
+            "iv": 25.675,
+            "name": "腾讯控股",
+            "time": "2024-08-26",
+            "timestamp": 1724601600,
+            "underlying_price": 372.2
+          }
+        ]
+      }
+    },
+    {
+      "requested": { "code": "HK.00700", "start": "2023-08-25", "end": "2024-08-22" },
+      "response": {
+        "as_of": "2026-08-22T13:45:34+00:00",
+        "count": 244,
+        "rows": [
+          {
+            "code": "HK.00700",
+            "hv": 23.352,
+            "iv": 26.471,
+            "name": "腾讯控股",
+            "time": "2024-08-22",
+            "timestamp": 1724256000,
+            "underlying_price": 368
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.748,
+            "iv": 25.632,
+            "name": "腾讯控股",
+            "time": "2024-08-21",
+            "timestamp": 1724169600,
+            "underlying_price": 361.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.209,
+            "iv": 26.294,
+            "name": "腾讯控股",
+            "time": "2024-08-20",
+            "timestamp": 1724083200,
+            "underlying_price": 360.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.765,
+            "iv": 27.856,
+            "name": "腾讯控股",
+            "time": "2024-08-19",
+            "timestamp": 1723996800,
+            "underlying_price": 362.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.711,
+            "iv": 27.588,
+            "name": "腾讯控股",
+            "time": "2024-08-16",
+            "timestamp": 1723737600,
+            "underlying_price": 362.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.175,
+            "iv": 28.641,
+            "name": "腾讯控股",
+            "time": "2024-08-15",
+            "timestamp": 1723651200,
+            "underlying_price": 358.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.718,
+            "iv": 32.177,
+            "name": "腾讯控股",
+            "time": "2024-08-14",
+            "timestamp": 1723564800,
+            "underlying_price": 364
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.894,
+            "iv": 32.419,
+            "name": "腾讯控股",
+            "time": "2024-08-13",
+            "timestamp": 1723478400,
+            "underlying_price": 368.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.317,
+            "iv": 33.262,
+            "name": "腾讯控股",
+            "time": "2024-08-12",
+            "timestamp": 1723392000,
+            "underlying_price": 365.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.375,
+            "iv": 30.938,
+            "name": "腾讯控股",
+            "time": "2024-08-09",
+            "timestamp": 1723132800,
+            "underlying_price": 360.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.313,
+            "iv": 31.667,
+            "name": "腾讯控股",
+            "time": "2024-08-08",
+            "timestamp": 1723046400,
+            "underlying_price": 358.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.806,
+            "iv": 31.662,
+            "name": "腾讯控股",
+            "time": "2024-08-07",
+            "timestamp": 1722960000,
+            "underlying_price": 353.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.46,
+            "iv": 33.219,
+            "name": "腾讯控股",
+            "time": "2024-08-06",
+            "timestamp": 1722873600,
+            "underlying_price": 344.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.203,
+            "iv": 34.715,
+            "name": "腾讯控股",
+            "time": "2024-08-05",
+            "timestamp": 1722787200,
+            "underlying_price": 346.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.722,
+            "iv": 30.079,
+            "name": "腾讯控股",
+            "time": "2024-08-02",
+            "timestamp": 1722528000,
+            "underlying_price": 348.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.735,
+            "iv": 29.088,
+            "name": "腾讯控股",
+            "time": "2024-08-01",
+            "timestamp": 1722441600,
+            "underlying_price": 355.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.218,
+            "iv": 29.713,
+            "name": "腾讯控股",
+            "time": "2024-07-31",
+            "timestamp": 1722355200,
+            "underlying_price": 352.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.881,
+            "iv": 28.947,
+            "name": "腾讯控股",
+            "time": "2024-07-30",
+            "timestamp": 1722268800,
+            "underlying_price": 343.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.537,
+            "iv": 29.853,
+            "name": "腾讯控股",
+            "time": "2024-07-29",
+            "timestamp": 1722182400,
+            "underlying_price": 348.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.066,
+            "iv": 28.881,
+            "name": "腾讯控股",
+            "time": "2024-07-26",
+            "timestamp": 1721923200,
+            "underlying_price": 344.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.528,
+            "iv": 28.987,
+            "name": "腾讯控股",
+            "time": "2024-07-25",
+            "timestamp": 1721836800,
+            "underlying_price": 341.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.6,
+            "iv": 28.238,
+            "name": "腾讯控股",
+            "time": "2024-07-24",
+            "timestamp": 1721750400,
+            "underlying_price": 353.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.307,
+            "iv": 29.053,
+            "name": "腾讯控股",
+            "time": "2024-07-23",
+            "timestamp": 1721664000,
+            "underlying_price": 356.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.665,
+            "iv": 38.269,
+            "name": "腾讯控股",
+            "time": "2024-07-22",
+            "timestamp": 1721577600,
+            "underlying_price": 363.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.404,
+            "iv": 28.252,
+            "name": "腾讯控股",
+            "time": "2024-07-19",
+            "timestamp": 1721318400,
+            "underlying_price": 354.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.778,
+            "iv": 29.654,
+            "name": "腾讯控股",
+            "time": "2024-07-18",
+            "timestamp": 1721232000,
+            "underlying_price": 359.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.932,
+            "iv": 29.063,
+            "name": "腾讯控股",
+            "time": "2024-07-17",
+            "timestamp": 1721145600,
+            "underlying_price": 362
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.345,
+            "iv": 29.326,
+            "name": "腾讯控股",
+            "time": "2024-07-16",
+            "timestamp": 1721059200,
+            "underlying_price": 368.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.179,
+            "iv": 40.213,
+            "name": "腾讯控股",
+            "time": "2024-07-15",
+            "timestamp": 1720972800,
+            "underlying_price": 380.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.827,
+            "iv": 28.924,
+            "name": "腾讯控股",
+            "time": "2024-07-12",
+            "timestamp": 1720713600,
+            "underlying_price": 387.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.005,
+            "iv": 35.896,
+            "name": "腾讯控股",
+            "time": "2024-07-11",
+            "timestamp": 1720627200,
+            "underlying_price": 375
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.176,
+            "iv": 26.671,
+            "name": "腾讯控股",
+            "time": "2024-07-10",
+            "timestamp": 1720540800,
+            "underlying_price": 367.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.316,
+            "iv": 26.615,
+            "name": "腾讯控股",
+            "time": "2024-07-09",
+            "timestamp": 1720454400,
+            "underlying_price": 371.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.983,
+            "iv": 27.082,
+            "name": "腾讯控股",
+            "time": "2024-07-08",
+            "timestamp": 1720368000,
+            "underlying_price": 368.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.241,
+            "iv": 29.604,
+            "name": "腾讯控股",
+            "time": "2024-07-05",
+            "timestamp": 1720108800,
+            "underlying_price": 370
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.331,
+            "iv": 26.98,
+            "name": "腾讯控股",
+            "time": "2024-07-04",
+            "timestamp": 1720022400,
+            "underlying_price": 372.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.838,
+            "iv": 28.27,
+            "name": "腾讯控股",
+            "time": "2024-07-03",
+            "timestamp": 1719936000,
+            "underlying_price": 369.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.96,
+            "iv": 26.014,
+            "name": "腾讯控股",
+            "time": "2024-07-02",
+            "timestamp": 1719849600,
+            "underlying_price": 359.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.701,
+            "iv": 25.74,
+            "name": "腾讯控股",
+            "time": "2024-06-28",
+            "timestamp": 1719504000,
+            "underlying_price": 362.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.212,
+            "iv": 25.74,
+            "name": "腾讯控股",
+            "time": "2024-06-27",
+            "timestamp": 1719417600,
+            "underlying_price": 364.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.203,
+            "iv": 26.158,
+            "name": "腾讯控股",
+            "time": "2024-06-26",
+            "timestamp": 1719331200,
+            "underlying_price": 372.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.166,
+            "iv": 26.784,
+            "name": "腾讯控股",
+            "time": "2024-06-25",
+            "timestamp": 1719244800,
+            "underlying_price": 372.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.833,
+            "iv": 28.377,
+            "name": "腾讯控股",
+            "time": "2024-06-24",
+            "timestamp": 1719158400,
+            "underlying_price": 370.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.638,
+            "iv": 28.015,
+            "name": "腾讯控股",
+            "time": "2024-06-21",
+            "timestamp": 1718899200,
+            "underlying_price": 371.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.058,
+            "iv": 28.323,
+            "name": "腾讯控股",
+            "time": "2024-06-20",
+            "timestamp": 1718812800,
+            "underlying_price": 377.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.282,
+            "iv": 28.67,
+            "name": "腾讯控股",
+            "time": "2024-06-19",
+            "timestamp": 1718726400,
+            "underlying_price": 379.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.345,
+            "iv": 28.471,
+            "name": "腾讯控股",
+            "time": "2024-06-18",
+            "timestamp": 1718640000,
+            "underlying_price": 367.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.895,
+            "iv": 29.606,
+            "name": "腾讯控股",
+            "time": "2024-06-17",
+            "timestamp": 1718553600,
+            "underlying_price": 371.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.987,
+            "iv": 29.234,
+            "name": "腾讯控股",
+            "time": "2024-06-14",
+            "timestamp": 1718294400,
+            "underlying_price": 370
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.912,
+            "iv": 29.915,
+            "name": "腾讯控股",
+            "time": "2024-06-13",
+            "timestamp": 1718208000,
+            "underlying_price": 370
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.669,
+            "iv": 29.989,
+            "name": "腾讯控股",
+            "time": "2024-06-12",
+            "timestamp": 1718121600,
+            "underlying_price": 361
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.332,
+            "iv": 30.661,
+            "name": "腾讯控股",
+            "time": "2024-06-11",
+            "timestamp": 1718035200,
+            "underlying_price": 364
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.915,
+            "iv": 30.16,
+            "name": "腾讯控股",
+            "time": "2024-06-07",
+            "timestamp": 1717689600,
+            "underlying_price": 365
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.154,
+            "iv": 31.038,
+            "name": "腾讯控股",
+            "time": "2024-06-06",
+            "timestamp": 1717603200,
+            "underlying_price": 371.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.525,
+            "iv": 31.699,
+            "name": "腾讯控股",
+            "time": "2024-06-05",
+            "timestamp": 1717516800,
+            "underlying_price": 371
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.861,
+            "iv": 32.141,
+            "name": "腾讯控股",
+            "time": "2024-06-04",
+            "timestamp": 1717430400,
+            "underlying_price": 367.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.255,
+            "iv": 33.491,
+            "name": "腾讯控股",
+            "time": "2024-06-03",
+            "timestamp": 1717344000,
+            "underlying_price": 365.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.042,
+            "iv": 33.635,
+            "name": "腾讯控股",
+            "time": "2024-05-31",
+            "timestamp": 1717084800,
+            "underlying_price": 350
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.719,
+            "iv": 32.171,
+            "name": "腾讯控股",
+            "time": "2024-05-30",
+            "timestamp": 1716998400,
+            "underlying_price": 358.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.626,
+            "iv": 32.273,
+            "name": "腾讯控股",
+            "time": "2024-05-29",
+            "timestamp": 1716912000,
+            "underlying_price": 361.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.59,
+            "iv": 32.201,
+            "name": "腾讯控股",
+            "time": "2024-05-28",
+            "timestamp": 1716825600,
+            "underlying_price": 370.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.338,
+            "iv": 32.535,
+            "name": "腾讯控股",
+            "time": "2024-05-27",
+            "timestamp": 1716739200,
+            "underlying_price": 367.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.764,
+            "iv": 35.517,
+            "name": "腾讯控股",
+            "time": "2024-05-24",
+            "timestamp": 1716480000,
+            "underlying_price": 367.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.703,
+            "iv": 32.237,
+            "name": "腾讯控股",
+            "time": "2024-05-23",
+            "timestamp": 1716393600,
+            "underlying_price": 372
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.93,
+            "iv": 33.462,
+            "name": "腾讯控股",
+            "time": "2024-05-22",
+            "timestamp": 1716307200,
+            "underlying_price": 374.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.647,
+            "iv": 33.988,
+            "name": "腾讯控股",
+            "time": "2024-05-21",
+            "timestamp": 1716220800,
+            "underlying_price": 373.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.889,
+            "iv": 32.773,
+            "name": "腾讯控股",
+            "time": "2024-05-20",
+            "timestamp": 1716134400,
+            "underlying_price": 385.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.891,
+            "iv": 32.628,
+            "name": "腾讯控股",
+            "time": "2024-05-17",
+            "timestamp": 1715875200,
+            "underlying_price": 385.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.924,
+            "iv": 33.246,
+            "name": "腾讯控股",
+            "time": "2024-05-16",
+            "timestamp": 1715788800,
+            "underlying_price": 383.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.279,
+            "iv": 35.058,
+            "name": "腾讯控股",
+            "time": "2024-05-14",
+            "timestamp": 1715616000,
+            "underlying_price": 368.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.087,
+            "iv": 36.143,
+            "name": "腾讯控股",
+            "time": "2024-05-13",
+            "timestamp": 1715529600,
+            "underlying_price": 365
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.482,
+            "iv": 35.168,
+            "name": "腾讯控股",
+            "time": "2024-05-10",
+            "timestamp": 1715270400,
+            "underlying_price": 357.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.311,
+            "iv": 35.226,
+            "name": "腾讯控股",
+            "time": "2024-05-09",
+            "timestamp": 1715184000,
+            "underlying_price": 356.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.063,
+            "iv": 34.929,
+            "name": "腾讯控股",
+            "time": "2024-05-08",
+            "timestamp": 1715097600,
+            "underlying_price": 348.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.465,
+            "iv": 36.216,
+            "name": "腾讯控股",
+            "time": "2024-05-07",
+            "timestamp": 1715011200,
+            "underlying_price": 352.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.392,
+            "iv": 37.012,
+            "name": "腾讯控股",
+            "time": "2024-05-06",
+            "timestamp": 1714924800,
+            "underlying_price": 357
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.313,
+            "iv": 36.416,
+            "name": "腾讯控股",
+            "time": "2024-05-03",
+            "timestamp": 1714665600,
+            "underlying_price": 351.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.518,
+            "iv": 34.784,
+            "name": "腾讯控股",
+            "time": "2024-05-02",
+            "timestamp": 1714579200,
+            "underlying_price": 347.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.789,
+            "iv": 35.022,
+            "name": "腾讯控股",
+            "time": "2024-04-30",
+            "timestamp": 1714406400,
+            "underlying_price": 334
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.61,
+            "iv": 35.022,
+            "name": "腾讯控股",
+            "time": "2024-04-29",
+            "timestamp": 1714320000,
+            "underlying_price": 334.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.438,
+            "iv": 34.315,
+            "name": "腾讯控股",
+            "time": "2024-04-26",
+            "timestamp": 1714060800,
+            "underlying_price": 335.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.872,
+            "iv": 33.681,
+            "name": "腾讯控股",
+            "time": "2024-04-25",
+            "timestamp": 1713974400,
+            "underlying_price": 326.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.983,
+            "iv": 34.222,
+            "name": "腾讯控股",
+            "time": "2024-04-24",
+            "timestamp": 1713888000,
+            "underlying_price": 331
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.028,
+            "iv": 32.755,
+            "name": "腾讯控股",
+            "time": "2024-04-23",
+            "timestamp": 1713801600,
+            "underlying_price": 319.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.739,
+            "iv": 31.777,
+            "name": "腾讯控股",
+            "time": "2024-04-22",
+            "timestamp": 1713715200,
+            "underlying_price": 307.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.818,
+            "iv": 29.295,
+            "name": "腾讯控股",
+            "time": "2024-04-19",
+            "timestamp": 1713456000,
+            "underlying_price": 290.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.404,
+            "iv": 29.48,
+            "name": "腾讯控股",
+            "time": "2024-04-18",
+            "timestamp": 1713369600,
+            "underlying_price": 291.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.945,
+            "iv": 30.975,
+            "name": "腾讯控股",
+            "time": "2024-04-17",
+            "timestamp": 1713283200,
+            "underlying_price": 287.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.721,
+            "iv": 31.315,
+            "name": "腾讯控股",
+            "time": "2024-04-16",
+            "timestamp": 1713196800,
+            "underlying_price": 288.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.053,
+            "iv": 30.8,
+            "name": "腾讯控股",
+            "time": "2024-04-15",
+            "timestamp": 1713110400,
+            "underlying_price": 291.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.786,
+            "iv": 29.293,
+            "name": "腾讯控股",
+            "time": "2024-04-12",
+            "timestamp": 1712851200,
+            "underlying_price": 296.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.628,
+            "iv": 29.903,
+            "name": "腾讯控股",
+            "time": "2024-04-11",
+            "timestamp": 1712764800,
+            "underlying_price": 301.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.486,
+            "iv": 29.633,
+            "name": "腾讯控股",
+            "time": "2024-04-10",
+            "timestamp": 1712678400,
+            "underlying_price": 301
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.619,
+            "iv": 28.697,
+            "name": "腾讯控股",
+            "time": "2024-04-09",
+            "timestamp": 1712592000,
+            "underlying_price": 291.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.042,
+            "iv": 29.271,
+            "name": "腾讯控股",
+            "time": "2024-04-08",
+            "timestamp": 1712505600,
+            "underlying_price": 292.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.609,
+            "iv": 28.886,
+            "name": "腾讯控股",
+            "time": "2024-04-05",
+            "timestamp": 1712246400,
+            "underlying_price": 296.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.531,
+            "iv": 28.757,
+            "name": "腾讯控股",
+            "time": "2024-04-03",
+            "timestamp": 1712073600,
+            "underlying_price": 295.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.484,
+            "iv": 29.963,
+            "name": "腾讯控股",
+            "time": "2024-04-02",
+            "timestamp": 1711987200,
+            "underlying_price": 296
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.76,
+            "iv": 29.691,
+            "name": "腾讯控股",
+            "time": "2024-03-28",
+            "timestamp": 1711555200,
+            "underlying_price": 290.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.947,
+            "iv": 29.691,
+            "name": "腾讯控股",
+            "time": "2024-03-27",
+            "timestamp": 1711468800,
+            "underlying_price": 288.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.159,
+            "iv": 30.003,
+            "name": "腾讯控股",
+            "time": "2024-03-26",
+            "timestamp": 1711382400,
+            "underlying_price": 286.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.324,
+            "iv": 29.834,
+            "name": "腾讯控股",
+            "time": "2024-03-25",
+            "timestamp": 1711296000,
+            "underlying_price": 275.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.774,
+            "iv": 30.017,
+            "name": "腾讯控股",
+            "time": "2024-03-22",
+            "timestamp": 1711036800,
+            "underlying_price": 275.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.045,
+            "iv": 30.09,
+            "name": "腾讯控股",
+            "time": "2024-03-21",
+            "timestamp": 1710950400,
+            "underlying_price": 278
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.881,
+            "iv": 35.23,
+            "name": "腾讯控股",
+            "time": "2024-03-20",
+            "timestamp": 1710864000,
+            "underlying_price": 275.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.765,
+            "iv": 35.216,
+            "name": "腾讯控股",
+            "time": "2024-03-19",
+            "timestamp": 1710777600,
+            "underlying_price": 271.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.117,
+            "iv": 36.061,
+            "name": "腾讯控股",
+            "time": "2024-03-18",
+            "timestamp": 1710691200,
+            "underlying_price": 276.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.919,
+            "iv": 35.526,
+            "name": "腾讯控股",
+            "time": "2024-03-15",
+            "timestamp": 1710432000,
+            "underlying_price": 270.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.463,
+            "iv": 35.998,
+            "name": "腾讯控股",
+            "time": "2024-03-14",
+            "timestamp": 1710345600,
+            "underlying_price": 276
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.099,
+            "iv": 36.488,
+            "name": "腾讯控股",
+            "time": "2024-03-13",
+            "timestamp": 1710259200,
+            "underlying_price": 277.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.877,
+            "iv": 36.267,
+            "name": "腾讯控股",
+            "time": "2024-03-12",
+            "timestamp": 1710172800,
+            "underlying_price": 277.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.146,
+            "iv": 34.863,
+            "name": "腾讯控股",
+            "time": "2024-03-11",
+            "timestamp": 1710086400,
+            "underlying_price": 265.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.079,
+            "iv": 27.12,
+            "name": "腾讯控股",
+            "time": "2024-03-08",
+            "timestamp": 1709827200,
+            "underlying_price": 256.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.336,
+            "iv": 29.634,
+            "name": "腾讯控股",
+            "time": "2024-03-07",
+            "timestamp": 1709740800,
+            "underlying_price": 257.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.13,
+            "iv": 36.939,
+            "name": "腾讯控股",
+            "time": "2024-03-06",
+            "timestamp": 1709654400,
+            "underlying_price": 261.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.793,
+            "iv": 37.31,
+            "name": "腾讯控股",
+            "time": "2024-03-05",
+            "timestamp": 1709568000,
+            "underlying_price": 255
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.504,
+            "iv": 37.603,
+            "name": "腾讯控股",
+            "time": "2024-03-04",
+            "timestamp": 1709481600,
+            "underlying_price": 263
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.812,
+            "iv": 36.422,
+            "name": "腾讯控股",
+            "time": "2024-03-01",
+            "timestamp": 1709222400,
+            "underlying_price": 264.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.194,
+            "iv": 37.13,
+            "name": "腾讯控股",
+            "time": "2024-02-29",
+            "timestamp": 1709136000,
+            "underlying_price": 264
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.097,
+            "iv": 38.937,
+            "name": "腾讯控股",
+            "time": "2024-02-28",
+            "timestamp": 1709049600,
+            "underlying_price": 263.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.52,
+            "iv": 38.587,
+            "name": "腾讯控股",
+            "time": "2024-02-27",
+            "timestamp": 1708963200,
+            "underlying_price": 271.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.191,
+            "iv": 38.348,
+            "name": "腾讯控股",
+            "time": "2024-02-26",
+            "timestamp": 1708876800,
+            "underlying_price": 274
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.884,
+            "iv": 37.201,
+            "name": "腾讯控股",
+            "time": "2024-02-23",
+            "timestamp": 1708617600,
+            "underlying_price": 277.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.036,
+            "iv": 37.409,
+            "name": "腾讯控股",
+            "time": "2024-02-22",
+            "timestamp": 1708531200,
+            "underlying_price": 278.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.099,
+            "iv": 37.746,
+            "name": "腾讯控股",
+            "time": "2024-02-21",
+            "timestamp": 1708444800,
+            "underlying_price": 275.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 37.561,
+            "iv": 38.46,
+            "name": "腾讯控股",
+            "time": "2024-02-20",
+            "timestamp": 1708358400,
+            "underlying_price": 271
+          },
+          {
+            "code": "HK.00700",
+            "hv": 38.352,
+            "iv": 39.151,
+            "name": "腾讯控股",
+            "time": "2024-02-19",
+            "timestamp": 1708272000,
+            "underlying_price": 271.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 37.264,
+            "iv": 39.984,
+            "name": "腾讯控股",
+            "time": "2024-02-16",
+            "timestamp": 1708012800,
+            "underlying_price": 278.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 38.182,
+            "iv": 57.086,
+            "name": "腾讯控股",
+            "time": "2024-02-15",
+            "timestamp": 1707926400,
+            "underlying_price": 272.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 38.807,
+            "iv": 37.272,
+            "name": "腾讯控股",
+            "time": "2024-02-14",
+            "timestamp": 1707840000,
+            "underlying_price": 276.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 37.783,
+            "iv": 21.795,
+            "name": "腾讯控股",
+            "time": "2024-02-09",
+            "timestamp": 1707408000,
+            "underlying_price": 274
+          },
+          {
+            "code": "HK.00700",
+            "hv": 38.112,
+            "iv": 36.609,
+            "name": "腾讯控股",
+            "time": "2024-02-08",
+            "timestamp": 1707321600,
+            "underlying_price": 274
+          },
+          {
+            "code": "HK.00700",
+            "hv": 37.916,
+            "iv": 37.182,
+            "name": "腾讯控股",
+            "time": "2024-02-07",
+            "timestamp": 1707235200,
+            "underlying_price": 279
+          },
+          {
+            "code": "HK.00700",
+            "hv": 38.154,
+            "iv": 38.202,
+            "name": "腾讯控股",
+            "time": "2024-02-06",
+            "timestamp": 1707148800,
+            "underlying_price": 277.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.461,
+            "iv": 36.944,
+            "name": "腾讯控股",
+            "time": "2024-02-05",
+            "timestamp": 1707062400,
+            "underlying_price": 266.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.224,
+            "iv": 35.644,
+            "name": "腾讯控股",
+            "time": "2024-02-02",
+            "timestamp": 1706803200,
+            "underlying_price": 266.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.941,
+            "iv": 36.038,
+            "name": "腾讯控股",
+            "time": "2024-02-01",
+            "timestamp": 1706716800,
+            "underlying_price": 258.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.299,
+            "iv": 36.825,
+            "name": "腾讯控股",
+            "time": "2024-01-31",
+            "timestamp": 1706630400,
+            "underlying_price": 257.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.049,
+            "iv": 36.382,
+            "name": "腾讯控股",
+            "time": "2024-01-30",
+            "timestamp": 1706544000,
+            "underlying_price": 260.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.605,
+            "iv": 35.411,
+            "name": "腾讯控股",
+            "time": "2024-01-29",
+            "timestamp": 1706457600,
+            "underlying_price": 268.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.476,
+            "iv": 34.878,
+            "name": "腾讯控股",
+            "time": "2024-01-26",
+            "timestamp": 1706198400,
+            "underlying_price": 269.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 37.101,
+            "iv": 37.225,
+            "name": "腾讯控股",
+            "time": "2024-01-25",
+            "timestamp": 1706112000,
+            "underlying_price": 277.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.677,
+            "iv": 38.503,
+            "name": "腾讯控股",
+            "time": "2024-01-24",
+            "timestamp": 1706025600,
+            "underlying_price": 268.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.35,
+            "iv": 39.09,
+            "name": "腾讯控股",
+            "time": "2024-01-23",
+            "timestamp": 1705939200,
+            "underlying_price": 258.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.978,
+            "iv": 40.611,
+            "name": "腾讯控股",
+            "time": "2024-01-22",
+            "timestamp": 1705852800,
+            "underlying_price": 249
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.433,
+            "iv": 36.273,
+            "name": "腾讯控股",
+            "time": "2024-01-19",
+            "timestamp": 1705593600,
+            "underlying_price": 258
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.471,
+            "iv": 35.913,
+            "name": "腾讯控股",
+            "time": "2024-01-18",
+            "timestamp": 1705507200,
+            "underlying_price": 264.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.884,
+            "iv": 37.577,
+            "name": "腾讯控股",
+            "time": "2024-01-17",
+            "timestamp": 1705420800,
+            "underlying_price": 261.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.25,
+            "iv": 33.743,
+            "name": "腾讯控股",
+            "time": "2024-01-16",
+            "timestamp": 1705334400,
+            "underlying_price": 269.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.589,
+            "iv": 33.069,
+            "name": "腾讯控股",
+            "time": "2024-01-15",
+            "timestamp": 1705248000,
+            "underlying_price": 276.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.941,
+            "iv": 32.206,
+            "name": "腾讯控股",
+            "time": "2024-01-12",
+            "timestamp": 1704988800,
+            "underlying_price": 275.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.321,
+            "iv": 32.976,
+            "name": "腾讯控股",
+            "time": "2024-01-11",
+            "timestamp": 1704902400,
+            "underlying_price": 274.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.316,
+            "iv": 32.953,
+            "name": "腾讯控股",
+            "time": "2024-01-10",
+            "timestamp": 1704816000,
+            "underlying_price": 267
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.268,
+            "iv": 32.687,
+            "name": "腾讯控股",
+            "time": "2024-01-09",
+            "timestamp": 1704729600,
+            "underlying_price": 270.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 56.873,
+            "iv": 33.055,
+            "name": "腾讯控股",
+            "time": "2024-01-08",
+            "timestamp": 1704643200,
+            "underlying_price": 274.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.168,
+            "iv": 31.081,
+            "name": "腾讯控股",
+            "time": "2024-01-05",
+            "timestamp": 1704384000,
+            "underlying_price": 279
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.868,
+            "iv": 31.866,
+            "name": "腾讯控股",
+            "time": "2024-01-04",
+            "timestamp": 1704297600,
+            "underlying_price": 285.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.514,
+            "iv": 33.495,
+            "name": "腾讯控股",
+            "time": "2024-01-03",
+            "timestamp": 1704211200,
+            "underlying_price": 287.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.228,
+            "iv": 34.729,
+            "name": "腾讯控股",
+            "time": "2024-01-02",
+            "timestamp": 1704124800,
+            "underlying_price": 283.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.445,
+            "iv": 35.618,
+            "name": "腾讯控股",
+            "time": "2023-12-29",
+            "timestamp": 1703779200,
+            "underlying_price": 280.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 55.352,
+            "iv": 35.618,
+            "name": "腾讯控股",
+            "time": "2023-12-28",
+            "timestamp": 1703692800,
+            "underlying_price": 279.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 54.166,
+            "iv": 37.748,
+            "name": "腾讯控股",
+            "time": "2023-12-27",
+            "timestamp": 1703606400,
+            "underlying_price": 271.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 50.076,
+            "iv": 48.13,
+            "name": "腾讯控股",
+            "time": "2023-12-22",
+            "timestamp": 1703174400,
+            "underlying_price": 260.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.876,
+            "iv": 28.968,
+            "name": "腾讯控股",
+            "time": "2023-12-21",
+            "timestamp": 1703088000,
+            "underlying_price": 299.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.872,
+            "iv": 29.436,
+            "name": "腾讯控股",
+            "time": "2023-12-20",
+            "timestamp": 1703001600,
+            "underlying_price": 301
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.893,
+            "iv": 35.096,
+            "name": "腾讯控股",
+            "time": "2023-12-19",
+            "timestamp": 1702915200,
+            "underlying_price": 298.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.636,
+            "iv": 30.705,
+            "name": "腾讯控股",
+            "time": "2023-12-18",
+            "timestamp": 1702828800,
+            "underlying_price": 298.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.781,
+            "iv": 30.566,
+            "name": "腾讯控股",
+            "time": "2023-12-15",
+            "timestamp": 1702569600,
+            "underlying_price": 301.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.851,
+            "iv": 30.576,
+            "name": "腾讯控股",
+            "time": "2023-12-14",
+            "timestamp": 1702483200,
+            "underlying_price": 293.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.823,
+            "iv": 31.426,
+            "name": "腾讯控股",
+            "time": "2023-12-13",
+            "timestamp": 1702396800,
+            "underlying_price": 293.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.425,
+            "iv": 32.521,
+            "name": "腾讯控股",
+            "time": "2023-12-12",
+            "timestamp": 1702310400,
+            "underlying_price": 298.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.924,
+            "iv": 32.709,
+            "name": "腾讯控股",
+            "time": "2023-12-11",
+            "timestamp": 1702224000,
+            "underlying_price": 294
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.478,
+            "iv": 36.037,
+            "name": "腾讯控股",
+            "time": "2023-12-08",
+            "timestamp": 1701964800,
+            "underlying_price": 292.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.403,
+            "iv": 32.758,
+            "name": "腾讯控股",
+            "time": "2023-12-07",
+            "timestamp": 1701878400,
+            "underlying_price": 294.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.38,
+            "iv": 33.186,
+            "name": "腾讯控股",
+            "time": "2023-12-06",
+            "timestamp": 1701792000,
+            "underlying_price": 298.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.583,
+            "iv": 33.93,
+            "name": "腾讯控股",
+            "time": "2023-12-05",
+            "timestamp": 1701705600,
+            "underlying_price": 295.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.599,
+            "iv": 31.663,
+            "name": "腾讯控股",
+            "time": "2023-12-04",
+            "timestamp": 1701619200,
+            "underlying_price": 303.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.688,
+            "iv": 31.612,
+            "name": "腾讯控股",
+            "time": "2023-12-01",
+            "timestamp": 1701360000,
+            "underlying_price": 305.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.3,
+            "iv": 31.441,
+            "name": "腾讯控股",
+            "time": "2023-11-30",
+            "timestamp": 1701273600,
+            "underlying_price": 313.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.753,
+            "iv": 31.113,
+            "name": "腾讯控股",
+            "time": "2023-11-29",
+            "timestamp": 1701187200,
+            "underlying_price": 303.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.365,
+            "iv": 29.795,
+            "name": "腾讯控股",
+            "time": "2023-11-28",
+            "timestamp": 1701100800,
+            "underlying_price": 306.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.936,
+            "iv": 30.379,
+            "name": "腾讯控股",
+            "time": "2023-11-27",
+            "timestamp": 1701014400,
+            "underlying_price": 309.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.578,
+            "iv": 29.95,
+            "name": "腾讯控股",
+            "time": "2023-11-24",
+            "timestamp": 1700755200,
+            "underlying_price": 308
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.983,
+            "iv": 30.714,
+            "name": "腾讯控股",
+            "time": "2023-11-23",
+            "timestamp": 1700668800,
+            "underlying_price": 316
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.204,
+            "iv": 31.29,
+            "name": "腾讯控股",
+            "time": "2023-11-22",
+            "timestamp": 1700582400,
+            "underlying_price": 311.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.963,
+            "iv": 32.33,
+            "name": "腾讯控股",
+            "time": "2023-11-21",
+            "timestamp": 1700496000,
+            "underlying_price": 311.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.285,
+            "iv": 32.188,
+            "name": "腾讯控股",
+            "time": "2023-11-20",
+            "timestamp": 1700409600,
+            "underlying_price": 313.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.196,
+            "iv": 31.979,
+            "name": "腾讯控股",
+            "time": "2023-11-17",
+            "timestamp": 1700150400,
+            "underlying_price": 302
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.454,
+            "iv": 31.536,
+            "name": "腾讯控股",
+            "time": "2023-11-16",
+            "timestamp": 1700064000,
+            "underlying_price": 311.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.453,
+            "iv": 34.386,
+            "name": "腾讯控股",
+            "time": "2023-11-15",
+            "timestamp": 1699977600,
+            "underlying_price": 309.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.144,
+            "iv": 34.049,
+            "name": "腾讯控股",
+            "time": "2023-11-14",
+            "timestamp": 1699891200,
+            "underlying_price": 294.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.432,
+            "iv": 33.085,
+            "name": "腾讯控股",
+            "time": "2023-11-13",
+            "timestamp": 1699804800,
+            "underlying_price": 296.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.785,
+            "iv": 31.76,
+            "name": "腾讯控股",
+            "time": "2023-11-10",
+            "timestamp": 1699545600,
+            "underlying_price": 289.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.562,
+            "iv": 30.957,
+            "name": "腾讯控股",
+            "time": "2023-11-09",
+            "timestamp": 1699459200,
+            "underlying_price": 293.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.508,
+            "iv": 32.153,
+            "name": "腾讯控股",
+            "time": "2023-11-08",
+            "timestamp": 1699372800,
+            "underlying_price": 295.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 31.568,
+            "iv": 32.308,
+            "name": "腾讯控股",
+            "time": "2023-11-07",
+            "timestamp": 1699286400,
+            "underlying_price": 295.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.168,
+            "iv": 33.377,
+            "name": "腾讯控股",
+            "time": "2023-11-06",
+            "timestamp": 1699200000,
+            "underlying_price": 299.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.608,
+            "iv": 31.556,
+            "name": "腾讯控股",
+            "time": "2023-11-03",
+            "timestamp": 1698940800,
+            "underlying_price": 289.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.826,
+            "iv": 31.505,
+            "name": "腾讯控股",
+            "time": "2023-11-02",
+            "timestamp": 1698854400,
+            "underlying_price": 275.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.165,
+            "iv": 31.831,
+            "name": "腾讯控股",
+            "time": "2023-11-01",
+            "timestamp": 1698768000,
+            "underlying_price": 273.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.844,
+            "iv": 32.378,
+            "name": "腾讯控股",
+            "time": "2023-10-31",
+            "timestamp": 1698681600,
+            "underlying_price": 276
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.42,
+            "iv": 32.83,
+            "name": "腾讯控股",
+            "time": "2023-10-30",
+            "timestamp": 1698595200,
+            "underlying_price": 282.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.455,
+            "iv": 32.576,
+            "name": "腾讯控股",
+            "time": "2023-10-27",
+            "timestamp": 1698336000,
+            "underlying_price": 279.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.681,
+            "iv": 33.343,
+            "name": "腾讯控股",
+            "time": "2023-10-26",
+            "timestamp": 1698249600,
+            "underlying_price": 274.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.239,
+            "iv": 33.345,
+            "name": "腾讯控股",
+            "time": "2023-10-25",
+            "timestamp": 1698163200,
+            "underlying_price": 274.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.445,
+            "iv": 33.047,
+            "name": "腾讯控股",
+            "time": "2023-10-24",
+            "timestamp": 1698076800,
+            "underlying_price": 269.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.129,
+            "iv": 31.063,
+            "name": "腾讯控股",
+            "time": "2023-10-20",
+            "timestamp": 1697731200,
+            "underlying_price": 275.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.836,
+            "iv": 30.343,
+            "name": "腾讯控股",
+            "time": "2023-10-19",
+            "timestamp": 1697644800,
+            "underlying_price": 278
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.581,
+            "iv": 29.199,
+            "name": "腾讯控股",
+            "time": "2023-10-18",
+            "timestamp": 1697558400,
+            "underlying_price": 286.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.029,
+            "iv": 29.172,
+            "name": "腾讯控股",
+            "time": "2023-10-17",
+            "timestamp": 1697472000,
+            "underlying_price": 289
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.72,
+            "iv": 30.386,
+            "name": "腾讯控股",
+            "time": "2023-10-16",
+            "timestamp": 1697385600,
+            "underlying_price": 288
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.691,
+            "iv": 29.23,
+            "name": "腾讯控股",
+            "time": "2023-10-13",
+            "timestamp": 1697126400,
+            "underlying_price": 293.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.397,
+            "iv": 28.552,
+            "name": "腾讯控股",
+            "time": "2023-10-12",
+            "timestamp": 1697040000,
+            "underlying_price": 303.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.8,
+            "iv": 29.23,
+            "name": "腾讯控股",
+            "time": "2023-10-11",
+            "timestamp": 1696953600,
+            "underlying_price": 297.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.542,
+            "iv": 30.674,
+            "name": "腾讯控股",
+            "time": "2023-10-10",
+            "timestamp": 1696867200,
+            "underlying_price": 295
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.044,
+            "iv": 31.867,
+            "name": "腾讯控股",
+            "time": "2023-10-09",
+            "timestamp": 1696780800,
+            "underlying_price": 293.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.678,
+            "iv": 30.939,
+            "name": "腾讯控股",
+            "time": "2023-10-06",
+            "timestamp": 1696521600,
+            "underlying_price": 292
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.312,
+            "iv": 31.424,
+            "name": "腾讯控股",
+            "time": "2023-10-05",
+            "timestamp": 1696435200,
+            "underlying_price": 286.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.063,
+            "iv": 31.807,
+            "name": "腾讯控股",
+            "time": "2023-10-04",
+            "timestamp": 1696348800,
+            "underlying_price": 284.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.506,
+            "iv": 30.919,
+            "name": "腾讯控股",
+            "time": "2023-10-03",
+            "timestamp": 1696262400,
+            "underlying_price": 287.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.911,
+            "iv": 29.55,
+            "name": "腾讯控股",
+            "time": "2023-09-29",
+            "timestamp": 1695916800,
+            "underlying_price": 293
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.923,
+            "iv": 29.55,
+            "name": "腾讯控股",
+            "time": "2023-09-28",
+            "timestamp": 1695830400,
+            "underlying_price": 284.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.251,
+            "iv": 29.273,
+            "name": "腾讯控股",
+            "time": "2023-09-27",
+            "timestamp": 1695744000,
+            "underlying_price": 288.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.162,
+            "iv": 30.212,
+            "name": "腾讯控股",
+            "time": "2023-09-26",
+            "timestamp": 1695657600,
+            "underlying_price": 286.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 25.386,
+            "iv": 30.067,
+            "name": "腾讯控股",
+            "time": "2023-09-25",
+            "timestamp": 1695571200,
+            "underlying_price": 291.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 24.675,
+            "iv": 29.042,
+            "name": "腾讯控股",
+            "time": "2023-09-22",
+            "timestamp": 1695312000,
+            "underlying_price": 300.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.121,
+            "iv": 27.938,
+            "name": "腾讯控股",
+            "time": "2023-09-21",
+            "timestamp": 1695225600,
+            "underlying_price": 289.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 19.923,
+            "iv": 26.966,
+            "name": "腾讯控股",
+            "time": "2023-09-20",
+            "timestamp": 1695139200,
+            "underlying_price": 296
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.093,
+            "iv": 27.392,
+            "name": "腾讯控股",
+            "time": "2023-09-19",
+            "timestamp": 1695052800,
+            "underlying_price": 299.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.561,
+            "iv": 27.712,
+            "name": "腾讯控股",
+            "time": "2023-09-18",
+            "timestamp": 1694966400,
+            "underlying_price": 299
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.423,
+            "iv": 26.578,
+            "name": "腾讯控股",
+            "time": "2023-09-15",
+            "timestamp": 1694707200,
+            "underlying_price": 304
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.697,
+            "iv": 27.037,
+            "name": "腾讯控股",
+            "time": "2023-09-14",
+            "timestamp": 1694620800,
+            "underlying_price": 306.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.673,
+            "iv": 27.902,
+            "name": "腾讯控股",
+            "time": "2023-09-13",
+            "timestamp": 1694534400,
+            "underlying_price": 307
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.719,
+            "iv": 28.656,
+            "name": "腾讯控股",
+            "time": "2023-09-12",
+            "timestamp": 1694448000,
+            "underlying_price": 308.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.26,
+            "iv": 30.024,
+            "name": "腾讯控股",
+            "time": "2023-09-11",
+            "timestamp": 1694361600,
+            "underlying_price": 310.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.538,
+            "iv": 30.06,
+            "name": "腾讯控股",
+            "time": "2023-09-07",
+            "timestamp": 1694016000,
+            "underlying_price": 308.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.675,
+            "iv": 30.226,
+            "name": "腾讯控股",
+            "time": "2023-09-06",
+            "timestamp": 1693929600,
+            "underlying_price": 314.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.811,
+            "iv": 31.173,
+            "name": "腾讯控股",
+            "time": "2023-09-05",
+            "timestamp": 1693843200,
+            "underlying_price": 315.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 23.428,
+            "iv": 31.574,
+            "name": "腾讯控股",
+            "time": "2023-09-04",
+            "timestamp": 1693756800,
+            "underlying_price": 320.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.847,
+            "iv": 30.976,
+            "name": "腾讯控股",
+            "time": "2023-08-31",
+            "timestamp": 1693411200,
+            "underlying_price": 311.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 21.798,
+            "iv": 32.077,
+            "name": "腾讯控股",
+            "time": "2023-08-30",
+            "timestamp": 1693324800,
+            "underlying_price": 312.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.286,
+            "iv": 33.453,
+            "name": "腾讯控股",
+            "time": "2023-08-29",
+            "timestamp": 1693238400,
+            "underlying_price": 316.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.333,
+            "iv": 33.829,
+            "name": "腾讯控股",
+            "time": "2023-08-28",
+            "timestamp": 1693152000,
+            "underlying_price": 312
+          },
+          {
+            "code": "HK.00700",
+            "hv": 22.145,
+            "iv": 33.902,
+            "name": "腾讯控股",
+            "time": "2023-08-25",
+            "timestamp": 1692892800,
+            "underlying_price": 306.8
+          }
+        ]
+      }
+    },
+    {
+      "requested": { "code": "HK.00700", "start": "2022-08-25", "end": "2023-08-23" },
+      "response": {
+        "as_of": "2026-08-22T13:45:34+00:00",
+        "count": 41,
+        "rows": [
+          {
+            "code": "HK.00700",
+            "hv": 29.463,
+            "iv": 34.046,
+            "name": "腾讯控股",
+            "time": "2023-08-23",
+            "timestamp": 1692720000,
+            "underlying_price": 304.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.568,
+            "iv": 34.907,
+            "name": "腾讯控股",
+            "time": "2023-08-22",
+            "timestamp": 1692633600,
+            "underlying_price": 305.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.975,
+            "iv": 36.52,
+            "name": "腾讯控股",
+            "time": "2023-08-21",
+            "timestamp": 1692547200,
+            "underlying_price": 304.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.392,
+            "iv": 33.893,
+            "name": "腾讯控股",
+            "time": "2023-08-18",
+            "timestamp": 1692288000,
+            "underlying_price": 311.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.823,
+            "iv": 33.62,
+            "name": "腾讯控股",
+            "time": "2023-08-17",
+            "timestamp": 1692201600,
+            "underlying_price": 319.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.386,
+            "iv": 34.404,
+            "name": "腾讯控股",
+            "time": "2023-08-16",
+            "timestamp": 1692115200,
+            "underlying_price": 315.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.048,
+            "iv": 34.79,
+            "name": "腾讯控股",
+            "time": "2023-08-15",
+            "timestamp": 1692028800,
+            "underlying_price": 319.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.905,
+            "iv": 35.167,
+            "name": "腾讯控股",
+            "time": "2023-08-14",
+            "timestamp": 1691942400,
+            "underlying_price": 320
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.811,
+            "iv": 33.71,
+            "name": "腾讯控股",
+            "time": "2023-08-11",
+            "timestamp": 1691683200,
+            "underlying_price": 322.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.245,
+            "iv": 34.397,
+            "name": "腾讯控股",
+            "time": "2023-08-10",
+            "timestamp": 1691596800,
+            "underlying_price": 326.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.44,
+            "iv": 33.722,
+            "name": "腾讯控股",
+            "time": "2023-08-09",
+            "timestamp": 1691510400,
+            "underlying_price": 324
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.443,
+            "iv": 34.133,
+            "name": "腾讯控股",
+            "time": "2023-08-08",
+            "timestamp": 1691424000,
+            "underlying_price": 321.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.6,
+            "iv": 35.104,
+            "name": "腾讯控股",
+            "time": "2023-08-07",
+            "timestamp": 1691337600,
+            "underlying_price": 328
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.93,
+            "iv": 35.266,
+            "name": "腾讯控股",
+            "time": "2023-08-04",
+            "timestamp": 1691078400,
+            "underlying_price": 330.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.174,
+            "iv": 35.279,
+            "name": "腾讯控股",
+            "time": "2023-08-03",
+            "timestamp": 1690992000,
+            "underlying_price": 329
+          },
+          {
+            "code": "HK.00700",
+            "hv": 36.422,
+            "iv": 35.249,
+            "name": "腾讯控股",
+            "time": "2023-08-02",
+            "timestamp": 1690905600,
+            "underlying_price": 330.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.848,
+            "iv": 35.732,
+            "name": "腾讯控股",
+            "time": "2023-08-01",
+            "timestamp": 1690819200,
+            "underlying_price": 340.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.608,
+            "iv": 34.877,
+            "name": "腾讯控股",
+            "time": "2023-07-31",
+            "timestamp": 1690732800,
+            "underlying_price": 341.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.06,
+            "iv": 34.877,
+            "name": "腾讯控股",
+            "time": "2023-07-28",
+            "timestamp": 1690473600,
+            "underlying_price": 337.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.958,
+            "iv": 34.176,
+            "name": "腾讯控股",
+            "time": "2023-07-27",
+            "timestamp": 1690387200,
+            "underlying_price": 330.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.897,
+            "iv": 35.193,
+            "name": "腾讯控股",
+            "time": "2023-07-26",
+            "timestamp": 1690300800,
+            "underlying_price": 327.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 35.819,
+            "iv": 36.44,
+            "name": "腾讯控股",
+            "time": "2023-07-25",
+            "timestamp": 1690214400,
+            "underlying_price": 331.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 29.686,
+            "iv": 35.747,
+            "name": "腾讯控股",
+            "time": "2023-07-24",
+            "timestamp": 1690128000,
+            "underlying_price": 311.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.697,
+            "iv": 34.42,
+            "name": "腾讯控股",
+            "time": "2023-07-21",
+            "timestamp": 1689868800,
+            "underlying_price": 319.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.169,
+            "iv": 35.752,
+            "name": "腾讯控股",
+            "time": "2023-07-20",
+            "timestamp": 1689782400,
+            "underlying_price": 319.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.855,
+            "iv": 35.73,
+            "name": "腾讯控股",
+            "time": "2023-07-19",
+            "timestamp": 1689696000,
+            "underlying_price": 319.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 30.842,
+            "iv": 35.017,
+            "name": "腾讯控股",
+            "time": "2023-07-18",
+            "timestamp": 1689609600,
+            "underlying_price": 323.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.622,
+            "iv": 32.786,
+            "name": "腾讯控股",
+            "time": "2023-07-14",
+            "timestamp": 1689264000,
+            "underlying_price": 339.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 28.548,
+            "iv": 34.395,
+            "name": "腾讯控股",
+            "time": "2023-07-13",
+            "timestamp": 1689177600,
+            "underlying_price": 336.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 27.52,
+            "iv": 33.171,
+            "name": "腾讯控股",
+            "time": "2023-07-12",
+            "timestamp": 1689091200,
+            "underlying_price": 326.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.787,
+            "iv": 33.201,
+            "name": "腾讯控股",
+            "time": "2023-07-11",
+            "timestamp": 1689004800,
+            "underlying_price": 320.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.981,
+            "iv": 33.342,
+            "name": "腾讯控股",
+            "time": "2023-07-10",
+            "timestamp": 1688918400,
+            "underlying_price": 315.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.288,
+            "iv": 32.844,
+            "name": "腾讯控股",
+            "time": "2023-07-07",
+            "timestamp": 1688659200,
+            "underlying_price": 313.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.531,
+            "iv": 31.612,
+            "name": "腾讯控股",
+            "time": "2023-07-06",
+            "timestamp": 1688572800,
+            "underlying_price": 313.6
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.328,
+            "iv": 30.899,
+            "name": "腾讯控股",
+            "time": "2023-07-05",
+            "timestamp": 1688486400,
+            "underlying_price": 322.2
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.208,
+            "iv": 31.176,
+            "name": "腾讯控股",
+            "time": "2023-07-04",
+            "timestamp": 1688400000,
+            "underlying_price": 326
+          },
+          {
+            "code": "HK.00700",
+            "hv": 26.868,
+            "iv": 32.224,
+            "name": "腾讯控股",
+            "time": "2023-07-03",
+            "timestamp": 1688313600,
+            "underlying_price": 324.8
+          },
+          {
+            "code": "HK.00700",
+            "hv": 32.663,
+            "iv": 32.23,
+            "name": "腾讯控股",
+            "time": "2023-06-30",
+            "timestamp": 1688054400,
+            "underlying_price": 318.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.408,
+            "iv": 34.425,
+            "name": "腾讯控股",
+            "time": "2023-06-29",
+            "timestamp": 1687968000,
+            "underlying_price": 320.4
+          },
+          {
+            "code": "HK.00700",
+            "hv": 33.196,
+            "iv": 35.305,
+            "name": "腾讯控股",
+            "time": "2023-06-28",
+            "timestamp": 1687881600,
+            "underlying_price": 323
+          },
+          {
+            "code": "HK.00700",
+            "hv": 34.472,
+            "iv": 36.182,
+            "name": "腾讯控股",
+            "time": "2023-06-27",
+            "timestamp": 1687795200,
+            "underlying_price": 328.2
+          }
+        ]
+      }
+    },
+    {
+      "requested": { "code": "HK.00700", "start": "2021-08-25", "end": "2022-08-23" },
+      "response": {
+        "as_of": "2026-08-22T13:45:34+00:00",
+        "count": 0,
+        "rows": []
+      }
+    }
+  ]
+}
