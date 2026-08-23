@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { RedisContainer, type StartedRedisContainer } from '@testcontainers/redis';
 import { QueueEvents } from 'bullmq';
 import { coldStartUnused } from '../_support/cold-start-stub';
+import { syncRunRecorderNoop } from '../_support/sync-run-recorder-stub';
 import { QueueRedisLifecycle } from '../../src/marketdata/marketdata-queue-connection';
 import {
   ANCHOR_COLD_START_JOB,
@@ -129,6 +130,11 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
       queue,
       coldStartUnused(),
       CFG,
+      // #165 起构造器第 6 位。本 IT 无 PG ⇒ 走 no-op 桩（返 0 = 无僵尸行可收，正是稳态）。
+      // 🚨 它刻意**不抛**（与 `coldStartUnused()` 不同）—— 理由见桩自身的注释：
+      //    ① 它在正常路径上就会被调（每个维度 job 开工前一次）；② 调用点外面有 try/catch，
+      //    抛了会被吞成 WARN、测试照样绿。
+      syncRunRecorderNoop(),
     );
 
     const [usJob, hkJob] = await Promise.all([
