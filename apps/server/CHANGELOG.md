@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.35.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.1...server-v0.35.2) (2026-08-23)
+
+
+### Bug Fixes
+
+* **marketdata:** 建锚冷启动不再触发全域重扫 —— 单锚 vendor 外呼 872 → 约 14 次 ([#162](https://github.com/zhangleizlpd/no-vain-years-tech/issues/162)) ([ea251cd](https://github.com/zhangleizlpd/no-vain-years-tech/commit/ea251cd7c44f4a2d98660c8743d4f26c74989818)), closes [#159](https://github.com/zhangleizlpd/no-vain-years-tech/issues/159)
+
 ## [0.35.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.0...server-v0.35.1) (2026-08-22)
 
 
