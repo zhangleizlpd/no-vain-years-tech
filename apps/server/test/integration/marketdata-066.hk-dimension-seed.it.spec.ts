@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupEmptyDb } from '../_support/isolated-db';
 import { runMigrateDeploy } from '../_support/run-migrate';
 import { PrismaService } from '../../src/security/prisma.service';
+import { COLD_START_CAPABILITY } from '../../src/marketdata/anchor-cold-start.rules';
 import { computeNext } from '../../src/marketdata/sync-tick-driver';
 
 // 066 T04 港股期权三维度 seed + 依赖边 IT (FR-015, plan §A1)。
@@ -96,15 +97,37 @@ describe('066 T04 港股期权三维度 seed (Testcontainers PG migrate deploy)'
     expect(row.historyDepth).toBeNull();
   });
 
-  it('🚨 快照行 seed 时 `enabled = false` (FR-016): HKEX 的 OI 归属日结论未落地前不得开', async () => {
+  it('快照行: batch_size 400 (官方批量上限) + history_depth NULL (期权 EOD 无跨日补救)', async () => {
     const row = await prisma.syncDimension.findUniqueOrThrow({
       where: { dimensionKey: HK_SNAPSHOT },
     });
-    // 归属错了**不报错**, 只让持仓量整体偏一天 —— 而活跃度排名与 UI 的 asOf 都读它。
-    // 翻开这一位是 T09 的收尾动作, 前置是 U2 实测出结论 (排序铁律 5)。
-    expect(row.enabled).toBe(false);
     expect(row.batchSize).toBe(400); // get_option_snapshot 官方批量上限, 别套 /kline 那个兜底值
     expect(row.historyDepth).toBeNull(); // 期权 EOD 无跨日补救, 漏采即永久缺口
+  });
+
+  // ── 066 T06 verify ⑦: 两个开关的机械断言 (FR-016a) ────────────────────────────────────
+  //
+  // 🚨 `COLD_START_CAPABILITY.hk`(**建锚路径**) 与 `hk_option_daily_snapshot.enabled`
+  // (**夜间 cron 路径**) 是**彼此独立的两条路**: 冷启动直调采集本体, **不读**采集维度的启用位
+  // (全仓实证: 冷启动编排对 `sync_dimension` 零引用) ⇒ 只翻其一, 两条路的行为当场分叉 ——
+  // 只翻能力表 = 建锚补得到、当晚 cron 一行都不采; 只翻维度行 = cron 采得到、新锚建完是空的。
+  // 而**两种分叉都不报错**, 只是某一条路默默什么都没做。
+  //
+  // 📌 判据写成「两者同真同假」而不是各断各的 `true`: 前者对「将来有人只改一处」也红, 后者
+  // 只对「改错了值」红。seed 那份 `enabled = false` (T04) 与今天这份 `true` 都能被它守住。
+  it('🚨 FR-016a 能力表的 hk 两档与 `hk_option_daily_snapshot.enabled` **同真同假**', async () => {
+    const row = await prisma.syncDimension.findUniqueOrThrow({
+      where: { dimensionKey: HK_SNAPSHOT },
+    });
+    const capability = COLD_START_CAPABILITY.hk;
+
+    // 两档同开同关 —— 中间态 `{chain:true, snapshot:false}` 会让冷启动第 7 步的 chain-only
+    // 早退抢在盘中闸 / `no_option_chain` / 落库复判之前 (排序铁律 5)。
+    expect(capability.optionChain).toBe(capability.optionSnapshot);
+    // 建锚路径与夜间 cron 路径**同真同假**。
+    expect(row.enabled).toBe(capability.optionSnapshot);
+    // 钉住当下这一档的取值本身 (T06 = 两条路都开)。
+    expect(row.enabled).toBe(true);
   });
 
   it('🚨 标的 IV: history_depth 恰为 1095 —— 单个 364 天窗港股只返 244 个交易日, 不足 252', async () => {

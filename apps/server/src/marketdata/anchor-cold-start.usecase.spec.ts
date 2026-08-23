@@ -1,10 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
-import {
-  COLD_START_CAPABILITY,
-  COLD_START_OUTCOME,
-  resolveSnapshotSpec,
-} from './anchor-cold-start.rules.js';
+import { COLD_START_OUTCOME, resolveSnapshotSpec } from './anchor-cold-start.rules.js';
 import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
@@ -19,6 +15,8 @@ const SATURDAY_1000_BEIJING = new Date('2026-08-15T10:00+08:00');
 const MONDAY_2230_BEIJING = new Date('2026-08-17T22:30+08:00');
 /** 北京/香港 周一 12:30 —— 港交所的**午休正中**; hk 单段登记下它仍判「场内」。 */
 const MONDAY_1230_HKT = new Date('2026-08-17T12:30+08:00');
+/** 香港周六 18:00 —— 已过 16:00 收盘 ⇒ 敏感档可写 (066 T06 港股开通后的正向路径)。 */
+const HK_SATURDAY_1800_HKT = new Date('2026-08-15T18:00+08:00');
 /** 北京周二 02:30 = ET 周一 14:30 —— 常规日在场内, **半日市 (13:15 收) 则已收盘**。 */
 const MONDAY_1430_ET = new Date('2026-08-17T14:30-04:00');
 
@@ -225,18 +223,25 @@ describe('AnchorColdStartUseCase 早退分支 —— 各自结局 + 零外呼', 
     expectNothingDownstream();
   });
 
-  it('市场未开通期权采集 (hk 空表项) ⇒ market_not_enabled, 显式 no-op 非错误 (FR-023)', async () => {
-    const result = await ctx.usecase.run({
+  it('🚨 066 T06: hk 已开通 ⇒ **不再** market_not_enabled, 链与快照两档都真的跑 (FR-010)', async () => {
+    // 「未开通」那条路径零外呼、零落库、不报错 —— 与「今天没数据」外观完全相同 ⇒ 只有走到
+    // 终局才分得出「开通了」和「忘了开」。`snapshotRowsAfterCollect: 1` = 采集真落了行。
+    const local = build({ instrumentExists: true, snapshotRowsAfterCollect: 1 });
+
+    const result = await local.usecase.run({
       anchorId: ANCHOR_ID,
       ticker: 'hk:00700',
-      now: SATURDAY_1000_BEIJING,
+      now: HK_SATURDAY_1800_HKT,
     });
 
-    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.MARKET_NOT_ENABLED });
-    expectNothingDownstream();
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
+    // 🚨 两档都要被调到 —— 只翻 `optionChain` 会让第 7 步 chain-only 早退, 结局同样是
+    //    `backfilled` 而**一行快照都没有** (排序铁律 5 禁的那个中间态)。
+    expect(local.chainCollect).toHaveBeenCalledTimes(1);
+    expect(local.collect).toHaveBeenCalledTimes(1);
   });
 
-  it('市场压根不在能力登记表 (cn) ⇒ 同样 market_not_enabled, 不静默', async () => {
+  it('市场压根不在能力登记表 (cn) ⇒ market_not_enabled, 不静默', async () => {
     const result = await ctx.usecase.run({
       anchorId: ANCHOR_ID,
       ticker: 'cn:600519',
@@ -626,21 +631,13 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
  * 🚨 **本档钉的是 FR-011 的结果, 不是某个谓词的实现**: 无论 hk 登记成两段还是单段 (2026-08-18
  * 起为单段, 见 `market-session.rules.ts` hk 登记处), 午休都 MUST 判「该场未收」⇒ 不写快照。
  *
- * 它今天端到端不可达 —— 唯一开通期权采集的 us 真的无午休, 而 hk 在 `COLD_START_CAPABILITY`
- * 里是空表项、走到就提前返回。故在此**临时开通 hk**把这一格逼出来: 哪天真给一个有午休的市场
- * 开通期权采集, 这条守卫已经在了, 而那种错行**不报错**。
+ * 📌 **066 T06 起本档端到端可达**: 此前 hk 在 `COLD_START_CAPABILITY` 里是空表项、走到就提前
+ * 返回, 故这里曾**临时把 hk 改成 `{chain:false, snapshot:true}`** 才逼得出这一格。hk 两档全开
+ * 之后那个 override 既没必要、又恰好是排序铁律 5 禁的中间态 ⇒ 删掉, 直接用真能力表跑。
+ * ⚠️ 判据没变: 放行会写出一行标签错的脏数据 —— 归属日恒为上一个已收盘交易日, 而此刻拿到的是
+ * 今天上午的盘中态。fail-closed: 宁可缺一场, 不可脏一场。
  */
-describe('第二相 —— 午休档 (FR-011, 今天端到端不可达)', () => {
-  const original = COLD_START_CAPABILITY.hk;
-
-  beforeEach(() => {
-    // deltaDimensions 留空 ⇒ 第一相无 flow 可组, 直接落到敏感档, 正好把这一格暴露出来。
-    COLD_START_CAPABILITY.hk = { optionChain: false, optionSnapshot: true };
-  });
-  afterEach(() => {
-    COLD_START_CAPABILITY.hk = original;
-  });
-
+describe('第二相 —— 午休档 (FR-011)', () => {
   it('🚨 午休 ⇒ 同样 intraday_skipped、collect 零调用 (该场尚未收盘)', async () => {
     const ctx = build();
     const result = await ctx.usecase.run({

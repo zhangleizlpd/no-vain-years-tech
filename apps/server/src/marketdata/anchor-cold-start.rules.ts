@@ -116,14 +116,32 @@ export interface ColdStartCapability {
 /**
  * 「哪些市场支持哪些补数内容」的**唯一**登记处 (FR-024)。
  *
- * ⚠️ `hk` 是**空表项而非缺项**: 它已在 `market-session.rules.ts` 登记了盘中时段, 却蓄意
- * 不开通期权采集 (那片是并行 HK 集成的地盘, plan §D11)。写成空表项而不是干脆不写, 是为了
- * 让「已知但未开通」与「压根没考虑过」在代码里看得出差别 —— 两者结局同为
- * {@link COLD_START_OUTCOME.MARKET_NOT_ENABLED}, 但下一个加市场的人需要知道 hk 被想过。
+ * ⚠️ 「登记了但两档全关」(空表项) 与「压根没登记」(缺项) 结局同为
+ * {@link COLD_START_OUTCOME.MARKET_NOT_ENABLED}, 但代码里看得出差别 —— 空表项的意思是
+ * 「已知但未开通」。今天两者的现役例子分别是: 无 (hk 已于 066 T06 开通) 与 `cn`。
+ *
+ * 🚨 **`hk` 两档必须同开同关 —— MUST NOT 停在 `{optionChain: true, optionSnapshot: false}`
+ * 这个中间态** (066 FR-016a): 中间态会让 use case 第 7 步的 chain-only 早退
+ * (`if (!capability.optionSnapshot) return backfilled`) 抢在**盘中闸 / `no_option_chain`
+ * 判断 / 落库复判**三者之前 —— 盘中建的港股锚会落 `backfilled` 而一行快照都没有、无挂牌期权
+ * 的票落不到 `no_option_chain`、采集没落库也照样报「已补齐」。三条验收同时破, 且**都不报错**。
+ *
+ * 🚨 **本表与 `sync_dimension.hk_option_daily_snapshot.enabled` 是彼此独立的两条路, 必须
+ * 在同一个 commit 里一起翻** (FR-016a): 本表管**建锚路径** (冷启动直调采集本体, **不读**
+ * 采集维度的启用位), 那一行管**夜间 cron 路径**。只翻其一的表现是两条路行为分叉 —— 建锚补得到
+ * 而当晚 cron 一行不采, 或反之 —— 而两种分叉都只是「某条路默默什么都没做」, 不报错。
+ * 机械断言 (两者同真同假) 在 `test/integration/marketdata-066.hk-dimension-seed.it.spec.ts`。
+ *
+ * 🚫 **日线不在本表** (issue #159): 建锚那一刻 `CreateAnchorUseCase.seedLastClose` 已同步调过
+ * `EnsureLatestEodBarUseCase` (按市场路由, hk 走理杏仁, 写同一张 `daily_bar`) ⇒ FR-011「不新增
+ * 日线采集维度」自动满足。⚠️ 但那条路对 **universe 未收录**的港股票会**早退**: `instrument`
+ * 行不存在时它只 warn 返 `null` (「不猜、不建 instrument 行」是它的明写纪律) —— 那种标的的日线
+ * 要靠 066 T03 修好的 `needSync` 默认值 (`market !== 'us'`) + 当晚 22:00 的 `eod_bar` 才补得上。
+ * 这就是「T03 必须先于本开关」那条排序的真实后果面。
  */
 export const COLD_START_CAPABILITY: Record<string, ColdStartCapability> = {
   us: { optionChain: true, optionSnapshot: true },
-  hk: { optionChain: false, optionSnapshot: false },
+  hk: { optionChain: true, optionSnapshot: true },
 };
 
 /** 该市场是否有任何一档可补 —— 两档全关或未登记 ⇒ `false` (FR-023 显式 no-op)。 */

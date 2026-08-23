@@ -249,8 +249,12 @@ describe('COLD_START_CAPABILITY —— FR-024 一处显式登记', () => {
     expect(COLD_START_CAPABILITY.us).toEqual({ optionChain: true, optionSnapshot: true });
   });
 
-  it('hk 是空表项 —— 显式登记「已知但未开通」, 走到冷启动 = 显式 no-op (FR-023)', () => {
-    expect(COLD_START_CAPABILITY.hk).toEqual({ optionChain: false, optionSnapshot: false });
+  it('🚨 066 T06 起 hk 两档全开 —— MUST NOT 停在 `{chain:true, snapshot:false}` 中间态', () => {
+    // 中间态会让第 7 步的 chain-only 早退 (`return backfilled`) 抢在**盘中闸 /
+    // `no_option_chain` 判断 / 落库复判**之前, 三条验收同时破: 盘中建的港股锚会落
+    // `backfilled` 而一行快照都没有、无期权的票落不到 `no_option_chain`、采集没落库也照样
+    // 报「已补齐」。⇒ 两档要么全关要么全开。
+    expect(COLD_START_CAPABILITY.hk).toEqual({ optionChain: true, optionSnapshot: true });
   });
 
   it('未登记市场取不到表项 —— 与「登记了但全关」同样落 market_not_enabled, 但不静默', () => {
