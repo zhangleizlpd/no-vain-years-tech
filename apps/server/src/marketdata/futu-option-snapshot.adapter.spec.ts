@@ -453,3 +453,139 @@ describe('066 T17 FutuOptionSnapshotAdapter — vendor 时间戳按行所属市�
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 066 T09 (verify ④) — 希腊值缺失的港股行照常在库、带标注、不丢行
+// (SC-010, `state_branches` 21; 2026-08-23 从 T15 挪来 —— T15 已改为 post-deploy 验收,
+//  而这三件事在**纯函数层**就能断, 不该等到部署后才有覆盖)
+// ---------------------------------------------------------------------------
+/**
+ * `state_branches` 21 原文: 供应方对某港股合约不返回希腊值 → 该行 MUST 照常落库并标注**档位
+ * 不可定**, MUST NOT 丢行。
+ *
+ * 🚨 **缺失态是构造出来的, 不是实取的** —— 手上两份真实 fixture 里都没有:
+ *   · 港股这份 132/132 `greeks_complete=true` (上一块已逐行断);
+ *   · 美股那份是 7 列瘦投影, `delta` 的空值写成 **0** —— 拿它当缺失态等于拿 0 冒充 null,
+ *     恰好是本块要禁的那件事。
+ * 供应方**哪天**不下发 greeks 不由我们决定 (实值腿 bid 跌破内在价值 ⇒ IV 无解 ⇒ 六个字段
+ * 一起没有, 美股实测 227/2150 行); 港股只是至今没在采样窗里撞上。撞上那天这条路必须**已经**
+ * 是对的 ⇒ 取一条**实取行**、只把 greeks 块改造掉 (其余 142 列逐字原样), 这是「照实取形态
+ * 动一个变量」, 不是凭空捏一行。
+ *
+ * 🚫 本块**不断**「标记为 true ⇒ 值可用」: 2026-08-07 真 vendor 实测 `US.PEP260807C75000`
+ * `greeks_complete === true` 而五个数**全为 0** —— 那条判据归 `option-anomaly.rules.ts`
+ * (它的入参**蓄意不收** `greeksComplete`), 在这里再判一次就是第二处判据, 且方向相反。
+ * 本块只断**解析层**三件事: ⓐ 行不丢 ⓑ 标记带上 ⓒ 值落 `null`。
+ *
+ * 📌 丢行的后果: 「腿在但算不出档」与「这条腿今天整行没采到」变得不可区分 —— 前者是数学固有
+ * 现象、后者是真缺口, 而 vendor 不提供历史交易日的期权快照, 丢一行就是永久缺席。
+ */
+/** 缺失形态: `blank` = 键在值为 null (shim 已判定并标记) / `absent` = 键整块缺席。 */
+type GreeksMissingShape = 'blank' | 'absent';
+
+/**
+ * 捐赠行: 实取的一条真行, 五个 greeks 全非零 (删得掉才谈得上「缺失」), OI 非零,
+ * 且 `bid_price` 实取就是 **0** —— 同一行里同时有「真实的 0」与「算不出」, 是 ⓒ 的对照面。
+ */
+const HK_GREEKS_DONOR_CODE = 'HK.TCH260828P230000';
+const HK_GREEKS_DONOR = HK_OPTION_ROWS.find((r) => r.code === HK_GREEKS_DONOR_CODE) as Record<
+  string,
+  unknown
+>;
+/** 与 shim `mappers.GREEK_FIELDS` 同集合: IV 与五个 greeks **一起来、一起没**。 */
+const SHIM_GREEK_FIELDS = [
+  'option_implied_volatility',
+  'option_delta',
+  'option_gamma',
+  'option_vega',
+  'option_theta',
+  'option_rho',
+] as const;
+/** 端口侧的五个希腊值 (IV 单列, 不算「希腊值」)。 */
+const PARSED_GREEKS = ['delta', 'gamma', 'vega', 'theta', 'rho'] as const;
+
+/** 实取行 → 「供应方不返回希腊值」的同一行 (只动 greeks 块与标记, 其余列原样)。 */
+function withGreeksMissing(
+  row: Record<string, unknown>,
+  shape: GreeksMissingShape,
+): Record<string, unknown> {
+  const out = { ...row };
+  for (const field of SHIM_GREEK_FIELDS) {
+    if (shape === 'blank') out[field] = null;
+    else delete out[field];
+  }
+  // `absent` 连标记一起拿掉: vendor 不下发且 shim 未加工时, 完整性由 adapter 兜底现算。
+  if (shape === 'blank') out.greeks_complete = false;
+  else delete out.greeks_complete;
+  return out;
+}
+
+/** 整份实取响应里**只**把捐赠行换成缺失态 —— 「不丢行」只有在整批里量才有意义。 */
+async function replayHkWithGreeksMissing(shape: GreeksMissingShape) {
+  const rows = HK_SNAPSHOT_ROWS.map((r) =>
+    r.code === HK_GREEKS_DONOR_CODE ? withGreeksMissing(r, shape) : r,
+  );
+  const { http } = makeShim(rows, { as_of: HK_SNAPSHOT.response.as_of });
+  const batch = await makeAdapter(http).getSnapshots({
+    underlyingSymbol: 'hk:00700',
+    contractCodes: HK_CONTRACT_CODES,
+  });
+  const donor = batch.rows.find((r) => r.code === HK_GREEKS_DONOR_CODE);
+  return { batch, donor };
+}
+
+describe('066 T09 (verify ④) 港股希腊值缺失: 照常在库 + 带标注 + 不丢行 (SC-010, 分支 21)', () => {
+  it('构造前的对照面: 捐赠行实取时五个 greeks 全非零、标记为 true (缺失态确实是删出来的)', () => {
+    expect(HK_GREEKS_DONOR).toBeDefined();
+    expect(HK_GREEKS_DONOR.greeks_complete).toBe(true);
+    for (const field of SHIM_GREEK_FIELDS) {
+      expect(typeof HK_GREEKS_DONOR[field]).toBe('number');
+      expect(HK_GREEKS_DONOR[field]).not.toBe(0);
+    }
+    // ⓒ 的对照面: 同一行的 bid 实取就是 0 —— 0 是**值**, 与「算不出」方向相反。
+    expect(HK_GREEKS_DONOR.bid_price).toBe(0);
+    expect(HK_GREEKS_DONOR.option_open_interest).toBe(121);
+  });
+
+  describe.each([
+    ['shim 已判定并标记 (greeks_complete=false, 六个字段值为 null)', 'blank'],
+    ['供应方连键都不下发 (整块缺席, shim 亦未加标记)', 'absent'],
+  ] as [string, GreeksMissingShape][])('%s', (_label, shape) => {
+    it('ⓐ 该行仍在结果集里: 133 行一行不丢, 其余 131 条腿的标记不受牵连', async () => {
+      const { batch, donor } = await replayHkWithGreeksMissing(shape);
+
+      expect(batch.rows).toHaveLength(133);
+      expect(donor).toBeDefined();
+      // 丢了这行 = 「腿在但算不出档」与「这条腿今天整行没采到」不可区分。
+      expect(donor?.isOption).toBe(true);
+      expect(donor?.underlyingCode).toBe('HK.00700');
+      const others = batch.rows.filter((r) => r.isOption && r.code !== HK_GREEKS_DONOR_CODE);
+      expect(others.filter((r) => r.greeksComplete === true)).toHaveLength(131);
+    });
+
+    it('ⓑ 标注档位不可定: greeksComplete=false (不是 null —— null 是「不适用」, 只归标的行)', async () => {
+      const { batch, donor } = await replayHkWithGreeksMissing(shape);
+      expect(donor?.greeksComplete).toBe(false);
+      // 「不适用」与「缺失」是两个状态, 不能合流。
+      const underlying = batch.rows.find((r) => !r.isOption);
+      expect(underlying?.greeksComplete).toBeNull();
+    });
+
+    it('ⓒ 五个希腊值落 null 而**不是** 0 (0 在下游是有意义的值, 与「算不出」方向相反)', async () => {
+      const { donor } = await replayHkWithGreeksMissing(shape);
+      for (const greek of PARSED_GREEKS) {
+        expect(donor?.[greek]).toBeNull();
+      }
+      // IV 与它们一起来、一起没。
+      expect(donor?.iv).toBeNull();
+    });
+
+    it('🚨 ⓒ 的反面: 同一行 bid 实取就是 0 → 照常落 "0", OI 照常落库 (缺的只是 greeks, 不是整行)', async () => {
+      const { donor } = await replayHkWithGreeksMissing(shape);
+      expect(donor?.bid).toBe('0');
+      expect(donor?.openInterest).toBe('121');
+      expect(donor?.netOpenInterest).toBe('31');
+      expect(donor?.vendorUpdateTime).not.toBeNull();
+    });
+  });
+});
