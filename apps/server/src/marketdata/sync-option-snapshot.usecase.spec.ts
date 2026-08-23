@@ -123,11 +123,15 @@ interface Harness {
  * @param contracts   每 instrumentId 的合约表内容 (默认空 = 链发现还没跑过)
  * @param rowsFor     每批返回的快照行 (默认: 请求的每个合约一行 + 标的一行)
  * @param prevTradingDay 交易日历里 `< session_date` 的最近一天 (null = 日历缺行)
+ * @param listedContractCount 每 instrumentId 在库中的**全部**合约计数 (不带到期日过滤;
+ *   默认 = `contracts` 的长度)。只在工作集为空时被读到 —— 它是「该标的无挂牌期权」与
+ *   「有合约但全部已到期」的唯一分辨面 (#173)。
  */
 function makeHarness(opts: {
   contracts?: Record<string, ReturnType<typeof contractRow>[]>;
   rowsFor?: (q: OptionSnapshotQuery) => OptionSnapshotRow[];
   prevTradingDay?: string | null;
+  listedContractCount?: Record<string, number>;
   /**
    * T024a: 「已见过的非标 root」的**持久化载体**在库里的初值 —— 即已有过快照行的非标 root。
    * 本 harness 让 `createMany` 真的往里补本轮落的行, 于是「次日不重复报」不是测试手填一个
@@ -176,6 +180,11 @@ function makeHarness(opts: {
           return opts.contracts?.[String(args.where.underlyingInstrumentId)] ?? [];
         },
       ),
+      // #173: 全部合约计数 (无到期日过滤) —— 与上面的工作集查询是两条不同的路径。
+      count: vi.fn(async (args: { where: { underlyingInstrumentId: bigint } }) => {
+        const id = String(args.where.underlyingInstrumentId);
+        return opts.listedContractCount?.[id] ?? opts.contracts?.[id]?.length ?? 0;
+      }),
     },
     optionDailySnapshot: { createMany },
     tradingDay: {
@@ -212,6 +221,40 @@ describe('SyncOptionSnapshotUseCase', () => {
       expect(budgetExhausted).toBe(false);
       // 无合约 ≠ 失败: 链发现还没轮到该票 (或该票无期权链), 计 skipped 跑绿。
       expect(stats).toMatchObject({ scanned: 1, ok: 0, failed: 0, skipped: 1 });
+    });
+
+    // 🚨 #173: 「零未到期合约」有两种成因、定性相反, 曾被压成同一条带问号的 WARN ——
+    // 与上层冷启动对同一件事判「无挂牌期权, 港股常态、非故障」正好相反。066 开通港股后
+    // 无期权标的从罕见变常态, 那条 WARN 会每晚每票复发一条, 把「链发现 stale」这条真信号稀释掉。
+    it('库中零合约 → INFO「无挂牌期权」, 不抬 WARN (与冷启动层同一定性)', async () => {
+      const h = makeHarness({ contracts: {} });
+      const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput());
+
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('无挂牌期权');
+      expect(logged).toContain('us:PEP');
+      expect(warnSpy).not.toHaveBeenCalled();
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('库中有合约但全部已到期 → 仍抬 WARN (链发现 stale 是真信号, MUST NOT 一起降级)', async () => {
+      const h = makeHarness({ contracts: {}, listedContractCount: { '1': 3 } });
+      const logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput());
+
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toContain('us:PEP');
+      expect(warned).toContain('全部已到期');
+      // 反向臂: 这一档**不得**落到「无挂牌期权」那句 INFO 上。
+      expect(logSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('无挂牌期权');
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
     });
 
     it('零工作集 (零锚) → 零外呼、零落库、跑绿 (state_branch 21)', async () => {
