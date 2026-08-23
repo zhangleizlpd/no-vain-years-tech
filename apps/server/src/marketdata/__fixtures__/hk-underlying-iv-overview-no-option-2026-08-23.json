@@ -1,0 +1,53 @@
+{
+  "_provenance": "原始响应（未加工）。来源：港股侧行情网关 /overview 端点实取，采集日期 2026-08-23，请求 /overview?codes=HK.00777,HK.00700。HK.00777（网龙，无挂牌期权）与 HK.00700（有挂牌期权）同批取，一次请求就把两种形态摆在一起对照。实测形态：无期权那行 20 个字段里 18 个是字面量 N/A，只有 code 与 name 有值；对照行 0 个 N/A。网关侧 clean_value 只处理空值/非有限数、字符串原样透传，故 N/A 是空值观测在本端点上的真实形态。",
+  "response": {
+    "as_of": "2026-08-23T00:48:14+00:00",
+    "count": 2,
+    "rows": [
+      {
+        "call_open_interest": "N/A",
+        "call_volume": "N/A",
+        "code": "HK.00777",
+        "hv_120d": "N/A",
+        "hv_120d_percentile": "N/A",
+        "hv_30d": "N/A",
+        "hv_30d_percentile": "N/A",
+        "hv_365d": "N/A",
+        "hv_365d_percentile": "N/A",
+        "hv_60d": "N/A",
+        "hv_60d_percentile": "N/A",
+        "hv_90d": "N/A",
+        "hv_90d_percentile": "N/A",
+        "iv": "N/A",
+        "iv_percentile": "N/A",
+        "iv_rank": "N/A",
+        "name": "网龙",
+        "pre_iv": "N/A",
+        "put_open_interest": "N/A",
+        "put_volume": "N/A"
+      },
+      {
+        "call_open_interest": 1383747,
+        "call_volume": 45701,
+        "code": "HK.00700",
+        "hv_120d": 39.645,
+        "hv_120d_percentile": 90.873,
+        "hv_30d": 31.962,
+        "hv_30d_percentile": 61.904,
+        "hv_365d": 32.863,
+        "hv_365d_percentile": 84.127,
+        "hv_60d": 41.572,
+        "hv_60d_percentile": 89.285,
+        "hv_90d": 42.728,
+        "hv_90d_percentile": 96.031,
+        "iv": 32.365,
+        "iv_percentile": 58.73,
+        "iv_rank": 50.801,
+        "name": "腾讯控股",
+        "pre_iv": 33.485,
+        "put_open_interest": 1097171,
+        "put_volume": 53739
+      }
+    ]
+  }
+}
