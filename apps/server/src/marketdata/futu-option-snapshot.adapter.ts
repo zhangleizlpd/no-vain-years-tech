@@ -31,10 +31,23 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * shim 对 > 400 codes **直接 400、绝不截断**。本 adapter **一次调用 = 一批**, 只做**前置
  * 拒绝**(零外呼): 同一段边界逻辑写两遍必漂移, 而真超了 shim 会以 400 说出来。
  *
- * ## 只承担 us
+ * ## 承担 us + hk (066 T01 起)
  *
- * 期权面只覆盖美股锚 (FR-023 / FR-032), 非 us symbol **直接抛、零外呼** —— 静默返空会被同步
- * 管线记成「该标的今天没有快照」, 一次成功的空采集比一次响亮的失败难发现得多。
+ * 未登记市场的 symbol **直接抛、零外呼** —— 静默返空会被同步管线记成「该标的今天没有快照」,
+ * 一次成功的空采集比一次响亮的失败难发现得多。
+ *
+ * 港股是 066 加进来的第二个市场: 网关本身市场无关 (市场参数对着 SDK 枚举白名单校验、代码原样
+ * 透传), 本端点对港股返回的**键集与美股逐字相同** (2026-08-23 实取 133 行 = 132 期权 + 1 标的,
+ * 原始响应落在 `__fixtures__/hk-option-snapshot-00700-2026-08-23.json`); 港股独有的
+ * `option_net_open_interest` / `option_contract_nominal_value` / `option_owner_lot_multiplier`
+ * 在美股行上同样在场, 只是取值不同 ⇒ server 侧要改的只有下面那张前缀表。
+ *
+ * ## 🚨 期权行归属标的只能靠 `stock_owner` (plan §A11)
+ *
+ * 港股合约标识的词根是**交易所助记符** (`HK.TCH260828C220000` 里的 `TCH`), **不是**标的数字
+ * 代码 `00700` ⇒ **从合约标识反推不出标的**。美股 `US.PEP260918P130000` 那种「词根即 ticker」
+ * 是巧合不是契约 —— `underlyingCode` 一律只取 vendor 给的 `stock_owner` (标的自己那行没有它,
+ * 它就是标的)。
  *
  * ## 🚨 greeks 缺失的行照常返回 (FR-007 的下游承接)
  *
@@ -46,9 +59,10 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * `RUN_MARKETDATA_IT`) —— ⚠️ 该门恒 skip, 「测试全绿」对真契约不构成证据。
  */
 
-/** market → 富途 code 前缀。**只有 us**（期权面只覆盖美股锚）。 */
+/** market → 富途 code 前缀。未登记的市场 = 本源不承担（见文件头「承担 us + hk」）。 */
 const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   us: 'US',
+  hk: 'HK',
 };
 
 /**
@@ -61,6 +75,11 @@ const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
  *
  * ⚠️ 该列只作诊断: **报价新鲜度一律取采集时刻** (E33 两条硬纪律之一) ——
  * `update_time` 是**最后成交时刻**, 做市商挪报价时它纹丝不动。
+ *
+ * 🚨 **已知缺口 (066 T01 记录, 未修)**: 港股行给的是**港股本地时刻** (2026-08-23 实取: 期权行
+ * `2026-08-21 09:30:00`、标的行 `16:07:49`, 都是 HKT), 按美东解释会让这一列整体偏 12 小时。
+ * 之所以没在本 task 顺手改: 该列是**纯证据零判据** (`option-snapshot.port.ts` 写明不得用它顶替
+ * 采集时刻), 而按行推市场需要一张 market→tz 表 —— 那是一个 spec 尚未定的决策, 不是一行改动。
  */
 const VENDOR_UPDATE_TIME_ZONE = 'America/New_York';
 
@@ -240,12 +259,12 @@ export class FutuOptionSnapshotAdapter implements OptionSnapshotPort {
     };
   }
 
-  /** canonical `market:code` → 富途 code；非 us 直接抛（零外呼）。 */
+  /** canonical `market:code` → 富途 code；未登记市场直接抛（零外呼）。 */
   private futuCode(symbol: string): string {
     const parsed = parseCanonicalSymbol(symbol);
     const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
     if (!parsed || !prefix) {
-      throw new Error(`[futu] option-snapshot 不支持 symbol "${symbol}" (本源仅承担 us)`);
+      throw new Error(`[futu] option-snapshot 不支持 symbol "${symbol}" (本源仅承担 us / hk)`);
     }
     return `${prefix}.${parsed.code}`;
   }

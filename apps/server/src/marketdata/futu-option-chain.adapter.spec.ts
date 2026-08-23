@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { FutuOptionChainAdapter } from './futu-option-chain.adapter.js';
 import { OptionChainBudgetExhaustedError, OptionChainRejectedError } from './option-chain.port.js';
@@ -263,12 +265,14 @@ describe('FutuOptionChainAdapter', () => {
   });
 
   describe('契约防御', () => {
-    it('非 us symbol → throw 且零外呼 (静默返空会被记成「该票今天没有链」)', async () => {
+    it('未登记市场 → throw 且零外呼 (静默返空会被记成「该票今天没有链」)', async () => {
       const { http, request } = makeThrowingShim(new Error('不该被调用'));
-      await expect(makeAdapter(http).getExpiryDates('cn:600519')).rejects.toThrow(/仅承担 us/);
+      await expect(makeAdapter(http).getExpiryDates('cn:600519')).rejects.toThrow(
+        /仅承担 us \/ hk/,
+      );
       await expect(
-        makeAdapter(http).getChainWindow({ ...WINDOW, symbol: 'hk:00700' }),
-      ).rejects.toThrow(/仅承担 us/);
+        makeAdapter(http).getChainWindow({ ...WINDOW, symbol: 'cn:600519' }),
+      ).rejects.toThrow(/仅承担 us \/ hk/);
       expect(request).not.toHaveBeenCalled();
     });
 
@@ -299,6 +303,166 @@ describe('FutuOptionChainAdapter', () => {
 
       const { http: badCode } = makeShim([chainRow('US.WAT-EVER', 130)]);
       await expect(makeAdapter(badCode).getChainWindow(WINDOW)).rejects.toThrow(/不合契约/);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T01 — 港股 (hk) 接入 + `'N/A'` 规范化 (FR-001 / FR-004 / FR-005, plan §A8 / §A11)
+// ---------------------------------------------------------------------------
+/**
+ * 真实响应回放: 直连港股侧行情网关实取 (2026-08-23, `HK.00700` 2026-08-22..09-20 单窗),
+ * `__fixtures__/` 里放的是**原始信封** (as_of / count / rows 逐字未加工)。
+ *
+ * 🚨 **两层分开断**: 先量**原始行形态** (vendor 到底给了什么), 再断**解析结果**。少了前一层,
+ * 「settlementMode 落 null」这条可以在 vendor 根本没返 `'N/A'` 的情况下照样绿 —— 那时它守的
+ * 是一条不存在的路径。
+ */
+interface ChainFixture {
+  requested: { code: string; start: string; end: string; option_type: string };
+  response: { as_of: string; count: number; rows: Record<string, unknown>[] };
+}
+
+const HK_CHAIN = JSON.parse(
+  readFileSync(join(__dirname, '__fixtures__', 'hk-option-chain-00700-2026-08-23.json'), 'utf8'),
+) as ChainFixture;
+const HK_ROWS = HK_CHAIN.response.rows;
+const HK_WINDOW = { symbol: 'hk:00700', start: '2026-08-22', end: '2026-09-20' } as const;
+
+/** 去重后的取值集合 (断「132/132 全是同一个值」用)。 */
+const uniq = (values: unknown[]) => [...new Set(values)];
+
+/** 把整份实取响应喂进 adapter, 返回解析结果 + 出站调用记录。 */
+async function replayHkChain(rows: unknown[] = HK_ROWS) {
+  const { http, calls } = makeShim(rows);
+  const out = await makeAdapter(http).getChainWindow(HK_WINDOW);
+  return { out, calls };
+}
+
+describe('066 T01 FutuOptionChainAdapter — 港股 (hk) 接入', () => {
+  describe('原始行形态 (先量 vendor 给了什么)', () => {
+    it('实取 132 行 / 单到期日 2026-08-28 / 66 档行权价 220–790 / CALL 66 + PUT 66', () => {
+      expect(HK_CHAIN.requested).toMatchObject({ code: 'HK.00700', option_type: 'ALL' });
+      expect(HK_CHAIN.response.count).toBe(132);
+      expect(HK_ROWS).toHaveLength(132);
+      expect(uniq(HK_ROWS.map((r) => r.strike_time))).toEqual(['2026-08-28']);
+
+      const strikes = uniq(HK_ROWS.map((r) => r.strike_price)) as number[];
+      expect(strikes).toHaveLength(66);
+      expect([Math.min(...strikes), Math.max(...strikes)]).toEqual([220, 790]);
+      expect(HK_ROWS.filter((r) => r.option_type === 'CALL')).toHaveLength(66);
+      expect(HK_ROWS.filter((r) => r.option_type === 'PUT')).toHaveLength(66);
+      // 字段集 14 列 —— 与美股逐字相同, 这条一旦红就是 vendor 改了口径。
+      expect(Object.keys(HK_ROWS[0]).sort()).toEqual([
+        'code',
+        'expiration_cycle',
+        'index_option_type',
+        'lot_size',
+        'name',
+        'option_settlement_mode',
+        'option_standard_type',
+        'option_type',
+        'stock_id',
+        'stock_owner',
+        'stock_type',
+        'strike_price',
+        'strike_time',
+        'suspension',
+      ]);
+    });
+
+    it('🚨 option_settlement_mode 132/132 是字面量 N/A (美股返 AM/PM, 永远撞不到)', () => {
+      expect(uniq(HK_ROWS.map((r) => r.option_settlement_mode))).toEqual(['N/A']);
+      // 同形态第二处: 本 adapter 未映射该列, 但它证明 'N/A' 是 vendor 的空值哨兵而非孤例。
+      expect(uniq(HK_ROWS.map((r) => r.index_option_type))).toEqual(['N/A']);
+    });
+
+    it('🚨 合约标识里根本没有标的代码 —— 词根是交易所助记符 TCH (plan §A11)', () => {
+      // 从 `HK.TCH260828C220000` 反推不出 `00700`, 所以关联只能走 stock_owner。
+      expect(HK_ROWS.every((r) => !String(r.code).includes('00700'))).toBe(true);
+      expect(uniq(HK_ROWS.map((r) => r.stock_owner))).toEqual(['HK.00700']);
+    });
+  });
+
+  describe('解析结果', () => {
+    it('hk symbol → 前缀 HK. (option_type 仍恒 ALL)', async () => {
+      const { calls } = await replayHkChain();
+      const url = new URL(calls[0].url);
+      expect(url.searchParams.get('code')).toBe('HK.00700');
+      expect(url.searchParams.get('option_type')).toBe('ALL');
+    });
+
+    it('132 行全部解析出 hk 市场 / hk:00700 标的 / TCH 词根 / 66 档行权价', async () => {
+      const { out } = await replayHkChain();
+
+      expect(out).toHaveLength(132);
+      expect(uniq(out.map((c) => c.market))).toEqual(['hk']);
+      // 🚨 标的取自 stock_owner, **不是**从词根反推 —— 词根是 TCH, 标的是 00700。
+      expect(uniq(out.map((c) => c.underlyingSymbol))).toEqual(['hk:00700']);
+      expect(uniq(out.map((c) => c.root))).toEqual(['TCH']);
+      expect(uniq(out.map((c) => c.expiryDate))).toEqual(['2026-08-28']);
+      expect(uniq(out.map((c) => c.strikePrice))).toHaveLength(66);
+      expect(out.filter((c) => c.optionType === 'CALL')).toHaveLength(66);
+      expect(out.filter((c) => c.optionType === 'PUT')).toHaveLength(66);
+      // 非标判据在港股上不误伤: 助记符不以数字结尾 + vendor 说 STANDARD。
+      expect(uniq(out.map((c) => c.isStandard))).toEqual([true]);
+    });
+
+    it('🚨 核心回归钉: settlementMode 132/132 落 null, 不是字符串 "N/A"', async () => {
+      const { out } = await replayHkChain();
+      // 原样透传 = 把「没有结算方式」写成一个看起来有效的结算方式存进库, 且没有任何既有断言会红。
+      expect(uniq(out.map((c) => c.settlementMode))).toEqual([null]);
+      expect(out.some((c) => c.settlementMode === 'N/A')).toBe(false);
+    });
+
+    it('首行逐字段映射 (code 原样含前缀 —— 这串正是喂回 /option-snapshot 的键)', async () => {
+      const { out } = await replayHkChain();
+      expect(out[0]).toEqual({
+        market: 'hk',
+        code: 'HK.TCH260828C220000',
+        root: 'TCH',
+        underlyingSymbol: 'hk:00700',
+        expiryDate: '2026-08-28',
+        strikePrice: '220',
+        optionType: 'CALL',
+        expirationCycle: 'MONTH',
+        settlementMode: null,
+        isStandard: true,
+      });
+    });
+
+    it('stock_owner 缺失 / 为 N/A → throw (MUST NOT 拿词根反推标的)', async () => {
+      const noOwner = { ...HK_ROWS[0] };
+      delete noOwner.stock_owner;
+      await expect(replayHkChain([noOwner])).rejects.toThrow(/不合契约/);
+      await expect(replayHkChain([{ ...HK_ROWS[0], stock_owner: 'N/A' }])).rejects.toThrow(
+        /不合契约/,
+      );
+    });
+  });
+
+  describe("'N/A' 规范化对其余字符串列同样生效", () => {
+    it('expiration_cycle=N/A → null (禁把哨兵当成一个到期周期)', async () => {
+      const { out } = await replayHkChain([{ ...HK_ROWS[0], expiration_cycle: 'N/A' }]);
+      expect(out[0].expirationCycle).toBeNull();
+    });
+
+    it('option_standard_type=N/A → 退回 root 判据, 不被当成「非 STANDARD」', async () => {
+      // 修前: 'N/A'.toUpperCase() !== 'STANDARD' ⇒ 整只票被静默标成非标, 下游选约层全量排除。
+      const { out } = await replayHkChain([{ ...HK_ROWS[0], option_standard_type: 'N/A' }]);
+      expect(out[0].isStandard).toBe(true);
+    });
+
+    it('到期日阶梯的 expiration_cycle=N/A 同样落 null (同一个 strOrNull)', async () => {
+      const { http } = makeShim([
+        { strike_time: '2026-08-28', option_expiry_date_distance: 5, expiration_cycle: 'N/A' },
+      ]);
+      const [expiry] = await makeAdapter(http).getExpiryDates('hk:00700');
+      expect(expiry).toEqual({
+        expiryDate: '2026-08-28',
+        expirationCycle: null,
+        daysToExpiry: 5,
+      });
     });
   });
 });

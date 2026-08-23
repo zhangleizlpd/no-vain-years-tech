@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import {
@@ -98,11 +100,11 @@ describe('FutuOptionSnapshotAdapter', () => {
       expect(calls[0].auth).toBe(`Bearer ${TOKEN}`);
     });
 
-    it('非 us symbol → 直接抛且**零外呼** (静默返空会被记成「今天没有快照」)', async () => {
+    it('未登记市场 → 直接抛且**零外呼** (静默返空会被记成「今天没有快照」)', async () => {
       const { http, request } = makeShim([]);
       await expect(
-        makeAdapter(http).getSnapshots({ underlyingSymbol: 'hk:00700', contractCodes: [LEG] }),
-      ).rejects.toThrow(/仅承担 us/);
+        makeAdapter(http).getSnapshots({ underlyingSymbol: 'cn:600519', contractCodes: [LEG] }),
+      ).rejects.toThrow(/仅承担 us \/ hk/);
       expect(request).not.toHaveBeenCalled();
     });
   });
@@ -285,6 +287,112 @@ describe('FutuOptionSnapshotAdapter', () => {
         );
       expect(err).toBeInstanceOf(TransientVendorError);
       expect(err).not.toBeInstanceOf(OptionSnapshotBudgetExhaustedError);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T01 — 港股 (hk) 接入 (FR-001 / FR-004 / FR-005, plan §A11)
+// ---------------------------------------------------------------------------
+/**
+ * 真实响应回放: 直连港股侧行情网关实取 (2026-08-23, 同日链上 132 个合约 + 标的 `HK.00700`),
+ * `__fixtures__/` 里放的是**原始信封** (as_of / count / rows 逐字未加工)。
+ *
+ * 🚨 **两层分开断**: 先量原始行形态 (vendor 给了什么), 再断解析结果。港股期权行与美股行的
+ * **键集逐字相同** —— 这是实测结论, 一旦 vendor 改口径必须在这里红, 而不是在夜间采集里静默半份。
+ */
+interface SnapshotFixture {
+  response: { as_of: string; count: number; rows: Record<string, unknown>[] };
+}
+
+const HK_SNAPSHOT = JSON.parse(
+  readFileSync(join(__dirname, '__fixtures__', 'hk-option-snapshot-00700-2026-08-23.json'), 'utf8'),
+) as SnapshotFixture;
+const HK_SNAPSHOT_ROWS = HK_SNAPSHOT.response.rows;
+const HK_OPTION_ROWS = HK_SNAPSHOT_ROWS.filter((r) => r.option_valid === true);
+const HK_UNDERLYING_RAW = HK_SNAPSHOT_ROWS.find((r) => r.option_valid !== true) as Record<
+  string,
+  unknown
+>;
+const HK_CONTRACT_CODES = HK_OPTION_ROWS.map((r) => String(r.code));
+/** 港股独有 (美股行同样在场但取值不同) —— 缺哪个都说明 vendor 换了口径。 */
+const HK_ONLY_FIELDS = [
+  'option_net_open_interest',
+  'option_contract_nominal_value',
+  'option_owner_lot_multiplier',
+] as const;
+
+const uniq = (values: unknown[]) => [...new Set(values)];
+
+/** 把整份实取响应喂进 adapter (信封 as_of 用实取值)。 */
+async function replayHkSnapshot() {
+  const { http, calls } = makeShim(HK_SNAPSHOT_ROWS, { as_of: HK_SNAPSHOT.response.as_of });
+  const batch = await makeAdapter(http).getSnapshots({
+    underlyingSymbol: 'hk:00700',
+    contractCodes: HK_CONTRACT_CODES,
+  });
+  return { batch, calls };
+}
+
+describe('066 T01 FutuOptionSnapshotAdapter — 港股 (hk) 接入', () => {
+  describe('原始行形态 (先量 vendor 给了什么)', () => {
+    it('实取 133 行 = 132 期权 + 1 标的; 两类行键集逐字相同 (143 列)', () => {
+      expect(HK_SNAPSHOT.response.count).toBe(133);
+      expect(HK_SNAPSHOT_ROWS).toHaveLength(133);
+      expect(HK_OPTION_ROWS).toHaveLength(132);
+      expect(HK_UNDERLYING_RAW.code).toBe('HK.00700');
+      expect(Object.keys(HK_UNDERLYING_RAW).sort()).toEqual(Object.keys(HK_OPTION_ROWS[0]).sort());
+    });
+
+    it('🚨 期权行 stock_owner 132/132 = HK.00700, 标的行没有它 (plan §A11)', () => {
+      expect(uniq(HK_OPTION_ROWS.map((r) => r.stock_owner))).toEqual(['HK.00700']);
+      expect(HK_UNDERLYING_RAW.stock_owner).toBeNull();
+      // 合约标识里没有 00700 —— 词根是交易所助记符 TCH, 反推不出标的。
+      expect(HK_CONTRACT_CODES.every((c) => !c.includes('00700'))).toBe(true);
+    });
+
+    it('greeks_complete 132/132 为 true; 三个港股独有字段 132/132 有真值', () => {
+      expect(uniq(HK_OPTION_ROWS.map((r) => r.greeks_complete))).toEqual([true]);
+      for (const field of HK_ONLY_FIELDS) {
+        expect(HK_OPTION_ROWS.filter((r) => typeof r[field] === 'number')).toHaveLength(132);
+      }
+    });
+  });
+
+  describe('解析结果', () => {
+    it('hk symbol → 标的 HK.00700 拼进 codes 首位, 132 个合约同批 (不另发调用)', async () => {
+      const { calls } = await replayHkSnapshot();
+      expect(calls).toHaveLength(1);
+      const codes = new URL(calls[0].url).searchParams.get('codes') as string;
+      expect(codes.split(',')[0]).toBe('HK.00700');
+      expect(codes.split(',')).toHaveLength(133);
+    });
+
+    it('133 行一行不丢: 132 行 isOption + 归属 HK.00700, 标的行 isOption=false', async () => {
+      const { batch } = await replayHkSnapshot();
+
+      expect(batch.asOf).toEqual(new Date('2026-08-23T00:48:11+00:00'));
+      expect(batch.rows).toHaveLength(133);
+      const options = batch.rows.filter((r) => r.isOption);
+      expect(options).toHaveLength(132);
+      // 🚨 归属只取 stock_owner —— 词根 TCH 反推不出 00700。
+      expect(uniq(options.map((r) => r.underlyingCode))).toEqual(['HK.00700']);
+      expect(uniq(options.map((r) => r.greeksComplete))).toEqual([true]);
+
+      const underlying = batch.rows.find((r) => !r.isOption) as (typeof batch.rows)[number];
+      expect(underlying.code).toBe('HK.00700');
+      expect(underlying.underlyingCode).toBeNull();
+      // 不适用 ≠ 缺失。
+      expect(underlying.greeksComplete).toBeNull();
+      expect(underlying.last).toBe('457');
+    });
+
+    it('港股独有的净持仓量列落 Decimal-safe string, 132/132 非 null', async () => {
+      const { batch } = await replayHkSnapshot();
+      const options = batch.rows.filter((r) => r.isOption);
+      expect(options.filter((r) => r.netOpenInterest !== null)).toHaveLength(132);
+      expect(options.filter((r) => r.openInterest !== null)).toHaveLength(132);
+      expect(uniq(options.map((r) => typeof r.netOpenInterest))).toEqual(['string']);
     });
   });
 });
