@@ -113,6 +113,14 @@ context7_verified: []
 
 #### A2 — 港股日线**不新建维度**，沿用 22:00 的理杏仁 `eod_bar`
 
+> 🚫 **本节的落地手段已随 issue #159 作废（2026-08-23），结论仍然成立。**
+>
+> 作废的是「靠 `deltaDimensions` 表达补哪些档」这套机制本身：冷启动改直调采集本体后，`COLD_START_CAPABILITY` 的 `deltaDimensions: string[]` 收成了两个布尔（`optionChain` / `optionSnapshot`），**日线整个不在冷启动职责内** —— 建锚那一刻 `CreateAnchorUseCase.seedLastClose` 已同步取过最近收盘（走同一个 `EOD_BAR_PORT`，按市场路由、hk 走理杏仁）。⇒ 下文「`deltaDimensions` 不含日线」与「`dataAlreadyPresent` 的日线复判要显式化」两段**都不再需要做**，`FR-011` 自动满足。
+>
+> **仍然成立的结论**：港股日线不加富途口径这一条 —— 理由（ADR-0047 §6 基准敏感维度不得静默换源）与机制无关，换成直调后同样适用。
+>
+> 原文保留在下方作决策留痕，勿据其写实现。
+
 已在采、已入 `daily_bar`、半日市与日历配套齐全。加富途口径的港股日线会撞 ADR-0047 §6 明禁的情形：**基准敏感维度不得静默切到不同基准的备源**。同一 `(instrument_id, trade_date, adjust='none')` 唯一键上两个源抢写，而 `createMany(skipDuplicates)` 会让先到的永久占位。
 
 ⇒ `COLD_START_CAPABILITY.hk.deltaDimensions` **不含任何日线维度**。
@@ -174,17 +182,23 @@ context7_verified: []
 
 🚨 **闸**：结论落地前，`hk_option_daily_snapshot` **MUST NOT** 置 `enabled = true`（spec FR-016）。这只卡这一个维度，不卡本片其余任何 task。
 
-#### A7 — 实时报价是**四处连改**，漏一处就是静默错值
+#### A7 — 实时报价是**两处连改**（原第 3 点已作废）
 
 1. `futu-realtime-quote.adapter.ts` 加 `hk: 'HK'`
 2. `marketdata.module.ts:404` `MarketRoutedRealtimeQuoteAdapter` 补 hk 槽位
-3. 🚨 `market-session.rules.ts` 把港股从单段 `[09:30,16:00]` **还原成 `[09:30,12:00] + [13:00,16:00]`**。**不还原 ⇒ 午休盘口被当成盘中价写进锚表，雷达照常渲染、排序照常成立、没有任何断言会红。**
+3. 🚫 ~~`market-session.rules.ts` 把港股还原成两段~~ —— **已作废（2026-08-23）**。
 
-   **「还原是免费的」已逐个消费方核实**（不是照抄文件里那句注释）—— 全仓只有两个消费方读这两个谓词：
-   - `alert/intraday-eval.processor.ts:95` 用 `isWithinTradingSession`，但市场参数是**写死的** `INTRADAY_MARKET = 'cn'`（`:45`）⇒ 港股够不到它
-   - `anchor-cold-start.usecase.ts:224` 用 `isSessionUnderway`，取 min/max ⇒ 拆段逐点不变
+   原推理有一处错：它假定「本片新接的港股盘中采价」是分段敏感读者。**不是。** 盘中采价的闸走的是 `MARKET_STATE_PORT` —— **供应方的市场时段状态**，归一成三态后只有「常规连续交易时段」准采（`REGULAR_SESSION_STATES = { MORNING, AFTERNOON }`），午休（vendor 报 `REST`）落「白名单外的已知状态」⇒ **天然不采**，与本地时段表无关。
 
-   ⇒ **现存零个消费方**会因为港股拆段而改变行为；唯一的分段敏感读者是本片新接的港股盘中采价路径。这条把「改共享时段表」从「有回归面」降成「无回归面」。
+   三个消费方逐个核过，没有一个需要拆段：
+
+   | 消费方 | 用什么判 | 要不要拆段 |
+   | --- | --- | --- |
+   | 补数闸（冷启动写不写快照） | `isSessionUnderway`（本地表） | ❌ 单段正确 —— 语义要的**就是**「含午休」 |
+   | 盘中采价（本片新接） | **供应方市场时段状态** | ❌ 不读那张表 |
+   | 盘中告警（市场参数写死 `cn`） | `isWithinTradingSession`（本地表） | ⚠️ **将来接 hk 时才要**，不属于本片 |
+
+   ⇒ 本片对 `market-session.rules.ts` **零改动**。港股单段 `[09:30, 16:00]` + 半日市 `[09:30, 12:00]` 与 HKEX 官方口径逐项吻合（2026-08-23 已核实：股票期权与正股同开同收、无 AHT；股票期权属 Non-Holiday Trading Exchange Contracts ⇒ 期权日历 = 正股日历）。⚠️ 该结论**只对个股期权成立** —— 将来做指数期权（恒指 / 国指）时三条全部翻转，那时必须把 hk 拆成两份登记。
 4. mobile：`radar.rules.ts` 的 `MARKETS_WITHOUT_INTRADAY` 去掉 `'hk'`、`optionsdesk-copy.ts` 的 `marketNoIntraday` 下线，`apps/mobile/e2e/optionsdesk-anchors-radar.spec.ts:1011-1040` 那条双向断言同步改。
 
 #### A8 — `'N/A'` 规范化（**已证实的缺陷，不是假设**）
@@ -205,7 +219,8 @@ context7_verified: []
 
 - 网关的限频闸是**按 capability 全局计**的，不分市场（vendor 侧的桶本来就是账号级的，分两个桶只会让两条路各以为自己有 10 发）。
 - `option_chain` **10 次/30s 是官方真值不是兜底**（`app.py` 已有粗体警示，别顺手改宽）。
-- **港股与美股链发现结构上不可能并发** —— 所有维度 job 共享 `marketdata-sync` 单队列且 worker `concurrency: 1`。这条对 cron 触发与**冷启动触发**同样成立，比「错峰 cron」强得多（冷启动是全系统唯一的非 cron 触发者，建锚时刻由人决定，错峰保证不了）。
+- **港股与美股链发现结构上不可能并发** —— 所有维度 job 与冷启动 job 共享 `marketdata-sync` 单队列且 worker `concurrency: 1`。这条对 cron 触发与**冷启动触发**同样成立，比「错峰 cron」强得多（冷启动是全系统唯一的非 cron 触发者，建锚时刻由人决定，错峰保证不了）。
+  📌 **issue #159 后这条不仅成立，还更强了**：冷启动不再把链组成 flow 入队，而是**在自己这个 job 内部直调采集本体** ⇒ 链发现连「另一个 job」都不是，更不可能与 cron 的链维度并发。⚠️ 但「冷启动已不再入队」这句话说的是**它不再往队列投 child**，它自己仍是队列上的 `sync:anchor-cold-start` job —— 串行保证的前提正是这一点，别据此把它挪出队列。
 - **容量实测**：21 只美股锚的一轮 `option_contract` ≈ **8 分钟**（2026-08-22 生产实测），全程把 10/30s 的桶占满。港股是**另一轮串行叠加**，估算墙钟按「两轮相加」而非「取最大」。腾讯一只票 30 天窗就有 132 个合约、8 个到期日 ⇒ 贪心分窗约 5–8 发；港股**不比美股省**（US.PEP 是 16 个到期日，只多一倍，不是数量级差别）。
 
 #### A11 — 合约 ↔ 标的的关联键
