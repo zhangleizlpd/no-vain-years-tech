@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { setupIsolatedStores } from '../_support/isolated-db';
 import { narrowTestModule } from '../_support/narrow-boot';
@@ -43,7 +44,7 @@ import {
 //   ① **建锚事件的事务边界** —— ⑤ 要的是「建锚回滚 ⇒ outbox 行一起没」。publish 是否真的与
 //      锚行同生共死, 只有让一次**真回滚**发生在真事务里才验得到; mock 的 publisher 无论挂在
 //      tx 里还是 tx 外, 被调次数都一样。
-//   ② **结局的零折叠 (㉒)** —— 判据是「同一张表里九种取值同时在场且两两互异」。单测里各分支
+//   ② **结局的零折叠 (㉒)** —— 判据是「同一张表里十种取值同时在场且两两互异」。单测里各分支
 //      各自断言自己那个常量, 断不出「两个分支落了同一个值」。
 //   ③ **顺延重入队 (㉑) 是真 Redis 的账** —— `attempts` 有没有被顺延吃掉、`phase` 有没有被
 //      丢掉、delay 是不是配额窗, 都记在 BullMQ 的 job 上, 不在被测代码的返回值里。
@@ -214,7 +215,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
    */
   async function seedUnderlying(
     ticker: string,
-    opts: { withContract?: boolean } = {},
+    opts: { withContract?: boolean; strike?: string } = {},
   ): Promise<{ instrumentId: bigint; code: string }> {
     const code = ticker.split(':')[1]!;
     const inst = await prisma.instrument.create({
@@ -229,16 +230,20 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       },
       select: { id: true },
     });
-    // `withContract: false` = 链发现**跑完了但这只票零合约** —— 第二相于是拿着空工作集跑。
+    // `withContract: false` = 该标的在库里**一个期权合约都没有** —— 066 FR-014a 起这就是
+    // `no_option_chain` 的判据 (港股常态)。
     if (opts.withContract === false) return { instrumentId: inst.id, code };
+    // `strike` 可覆盖: 默认 130 (spot 128.40 ⇒ PUT 虚值侧, 过得了落库前硬门); 传一个深实值
+    // 的行权价 (如 200 ⇒ 内在价值 71.60 ≫ ask 2.40) 会让整批被硬门拒 ⇒ 有合约但零快照。
+    const strike = opts.strike ?? '130';
     await prisma.optionContract.create({
       data: {
         market: 'us',
-        code: `US.${code}301220P130000`,
+        code: `US.${code}301220P${strike}000`,
         root: code,
         underlyingInstrumentId: inst.id,
         expiryDate: dateOf('2030-12-20'),
-        strikePrice: '130',
+        strikePrice: strike,
         optionType: 'PUT',
         isStandard: true,
       },
@@ -464,13 +469,17 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
 
     const result = await coldStart.run({ anchorId, ticker: TICKER, now: SAT_NIGHT });
 
-    // 本例只有锚、没有任何合约行 ⇒ 链 (IT 里是 no-op 端口) 采不到东西, 快照于是零外呼,
-    // 落库复判判出「跑完了但目标日快照仍不在库」⇒ `backfill_incomplete` (FR-027a)。
-    // 📌 issue #159 前这里是 `awaiting_chain`: 第一相组完 flow 就交回, 结局要等第二相。
-    //    两相合一后**一次调用直达终局**, 本用例真正要验的 seed→开闸 次序不受影响。
+    // 本例只有锚、没有任何合约行 ⇒ 链 (IT 里是 no-op 端口) 采不到东西, 快照于是零外呼。
+    // 📌 结局值经历过两次变更, 都**不是**本用例的验收点 (它验的是 seed→开闸 次序):
+    //    · issue #159 前 = `awaiting_chain` (第一相组完 flow 就交回, 结局要等第二相);
+    //    · #159 两相合一后 = `backfill_incomplete` (一次调用直达终局);
+    //    · 066 T05 起 = `no_option_chain` —— 分岔判据是**库里的期权合约计数**, 而本例这只
+    //      标的是刚被兜底 seed 出来的、零合约 ⇒ 落「本就没有可做的」这一档 (FR-014a)。
+    //      美股这条路径的归属确实变了, 是 T05 判据的必然推论、已知并接受: 真撞上多半意味着
+    //      链发现对该 target 失败了, 而那条由链维度自己的 `alertIfDegraded` 告警。
     expect(result).toEqual({
       settled: true,
-      outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE,
+      outcome: COLD_START_OUTCOME.NO_OPTION_CHAIN,
     });
     const inst = await prisma.instrument.findUniqueOrThrow({
       where: { market_code: { market: 'us', code: 'PEP' } },
@@ -623,26 +632,74 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   // 结局面 (FR-026 / FR-027, SC-009)
   // ───────────────────────────────────────────────────────────────────────────
 
-  it('🚨 FR-027a 链跑完但该票零合约 ⇒ backfill_incomplete, MUST NOT 记成 backfilled', async () => {
-    // 2026-08-17 本地真跑实撞的形态: 链 job **completed** (per-target 失败不让 job 失败,
-    // 故 `failParentOnFailure` 够不着), 但该标的一个合约都没落 ⇒ 第二相拿着空工作集跑,
-    // `SyncOptionSnapshotUseCase` 判「无未到期合约」WARN + 零外呼返回, 一切"正常"。
+  // ── 066 T05 `no_option_chain` 与 `backfill_incomplete` 的分岔 (FR-013 / FR-014 / FR-014a) ──
+  //
+  // 两条用例是**一对**, 缺一条另一条就证不了零折叠: 单独断「零合约落 no_option_chain」不排除
+  // 「有合约但没补上」也落了同一个值。判据是库里的期权合约计数, 不是采集统计量 —— 后者在
+  // 「有合约但整批被落库前硬门拒」时同样为空, 两件事会被混成一个。
+  //
+  // ⚠️ 这里用 `us:` 标的驱动, 因为**判据本身与市场无关**, 而港股在 T06 之前还走不到第二相
+  //    (`isColdStartEnabled('hk')` 在第 1c 步就返回 `market_not_enabled`)。港股端到端那一档
+  //    由 T06 起在本文件补港股分支、由 T15 在真锚上收口。
+
+  it('🚨 FR-014 该标的零期权合约 ⇒ no_option_chain, 且**不产生 ERROR 级日志** (SC-011 前半)', async () => {
+    // 港股绝大多数标的是这个形态 (实测颐海国际 0 / 网龙 0 个到期日) —— 既不是故障也无从处理。
     const { instrumentId } = await seedUnderlying(TICKER, { withContract: false });
     const anchorId = await createAnchorFor(TICKER);
-    await seedTargetDayData(instrumentId); // 日线在, 只缺合约
+    await seedTargetDayData(instrumentId); // 日线在, 只是这只票压根没有期权
 
-    const result = await coldStart.run({
-      anchorId,
-      ticker: TICKER,
-      now: SAT_NIGHT,
-    });
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      const result = await coldStart.run({
+        anchorId,
+        ticker: TICKER,
+        now: SAT_NIGHT,
+      });
+      expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.NO_OPTION_CHAIN });
+      // 🚨 这条才是本档存在的理由: 折进 backfill_incomplete 会让每一只无期权的锚都产出一条
+      //    ERROR 级、需人工介入的记录, 而那件事既不是故障也无从处理。
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
 
-    // 🚨 期权 EOD 无跨日补救 ⇒ 这是**永久缺口**。记成 backfilled 会让唯一能发现它的那条
-    //    按结局分组的查询失明 —— 而运维最想抓的恰恰是「新锚没补上」。
-    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE });
     expect(await prisma.optionDailySnapshot.count()).toBe(0);
     // 零合约 ⇒ 连一次外呼都不该有 (WARN 早退在打 vendor 之前)。
     expect(port.calls).toHaveLength(0);
+    const run = await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } });
+    expect(run.outcome).toBe(COLD_START_OUTCOME.NO_OPTION_CHAIN);
+    // 终态也要能读出「补的是哪一天」—— 运维按结局分组时同一张表两列一起看。
+    expect(run.targetSession).not.toBeNull();
+    expect(run.reason).toContain('无挂牌期权');
+  });
+
+  it('🚨 FR-013 有合约但整批被落库前硬门拒 ⇒ backfill_incomplete + **产生** ERROR (SC-011 后半)', async () => {
+    // 行权价 200 的 PUT 对 spot 128.40 是深实值 ⇒ 内在价值 71.60 ≫ ask 2.40 ⇒ 无套利下界
+    // 硬门拒整批。这是 `BACKFILL_INCOMPLETE` 两条到达路径里的第二条 (Edge Case 2)。
+    const { instrumentId } = await seedUnderlying(TICKER, { strike: '200' });
+    const anchorId = await createAnchorFor(TICKER);
+    await seedTargetDayData(instrumentId); // 日线在, 合约也在, 只是快照落不下去
+
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      const result = await coldStart.run({
+        anchorId,
+        ticker: TICKER,
+        now: SAT_NIGHT,
+      });
+      // 🚨 期权 EOD 无跨日补救 ⇒ 这是**永久缺口**。记成 backfilled 会让唯一能发现它的那条
+      //    按结局分组的查询失明 —— 而运维最想抓的恰恰是「新锚没补上」。
+      expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE });
+      // ERROR 级 = 需人工介入。与上一条用例的 `not.toHaveBeenCalled()` 成对, 缺任一条都证不了
+      // 「两者告警面可分」。
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(await prisma.optionDailySnapshot.count()).toBe(0);
+    // 有合约 ⇒ 确实打了 vendor 一次 (与零合约那条的零外呼互为对照)。
+    expect(port.calls).toHaveLength(1);
     const run = await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } });
     expect(run.outcome).toBe(COLD_START_OUTCOME.BACKFILL_INCOMPLETE);
     // 「补哪一天没补上」是人工介入的第一手信息, 故 target_session 仍要落。
@@ -650,7 +707,44 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     expect(run.reason).toContain(TARGET);
   });
 
-  it('🚨 ㉒ 九种结局在同一张表里同时在场、两两互异, 且**恰好**是值域全集 (零折叠)', async () => {
+  it('🚨 两者可由 `outcome` 列直接分开统计 —— 零折叠 (SC-011 末句)', async () => {
+    const none = await seedUnderlying(TICKER, { withContract: false });
+    const anchorNone = await createAnchorFor(TICKER);
+    await seedTargetDayData(none.instrumentId);
+    const rejected = await seedUnderlying(TICKER_B, { strike: '200' });
+    const anchorRejected = await createAnchorFor(TICKER_B);
+    await seedTargetDayData(rejected.instrumentId);
+
+    const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      await coldStart.run({
+        anchorId: anchorNone,
+        ticker: TICKER,
+        now: SAT_NIGHT,
+      });
+      await coldStart.run({
+        anchorId: anchorRejected,
+        ticker: TICKER_B,
+        now: SAT_NIGHT,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    // 🚨 判据是「同一张表里两行、值不同」—— 各自断言自己那个常量是断不出折叠的
+    //    (两条路径落同一个值时, 两条单测各自照样绿)。
+    const byOutcome = await prisma.anchorColdStartRun.groupBy({
+      by: ['outcome'],
+      _count: { _all: true },
+      orderBy: { outcome: 'asc' },
+    });
+    expect(byOutcome).toEqual([
+      { outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE, _count: { _all: 1 } },
+      { outcome: COLD_START_OUTCOME.NO_OPTION_CHAIN, _count: { _all: 1 } },
+    ]);
+  });
+
+  it('🚨 ㉒ 十种结局在同一张表里同时在场、两两互异, 且**恰好**是值域全集 (零折叠)', async () => {
     const outcomeOf = async (anchorId: bigint): Promise<string> =>
       (await prisma.anchorColdStartRun.findUniqueOrThrow({ where: { anchorId } })).outcome;
 
@@ -694,13 +788,25 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     });
     await worker.onJobFailed(failedJob.id!, 'boom');
 
-    // ⑧ backfill_incomplete: 链跑完但该票零合约。
-    const empty = await seedUnderlying('us:PM', { withContract: false });
-    const anchorEmpty = await createAnchorFor('us:PM');
-    await seedTargetDayData(empty.instrumentId);
+    // ⑧ backfill_incomplete: 有合约但整批被落库前硬门拒 (深实值 PUT, ask < 内在价值 − 容差)。
+    const rejected = await seedUnderlying('us:PM', { strike: '200' });
+    const anchorRejected = await createAnchorFor('us:PM');
+    await seedTargetDayData(rejected.instrumentId);
     await coldStart.run({
-      anchorId: anchorEmpty,
+      anchorId: anchorRejected,
       ticker: 'us:PM',
+      now: SAT_NIGHT,
+    });
+
+    // ⑩ no_option_chain (066 FR-014): 该标的零期权合约 —— 与 ⑧ 同为「快照不在库」, 分岔判据
+    //    是库里的合约计数。两者必须落**不同**的值, 否则按结局分组的查询分不出「本就没有可做
+    //    的」与「该做没做成」。
+    const noChain = await seedUnderlying('us:T', { withContract: false });
+    const anchorNoChain = await createAnchorFor('us:T');
+    await seedTargetDayData(noChain.instrumentId);
+    await coldStart.run({
+      anchorId: anchorNoChain,
+      ticker: 'us:T',
       now: SAT_NIGHT,
     });
 
@@ -717,7 +823,8 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       await outcomeOf(anchorJp),
       await outcomeOf(anchorBare),
       await outcomeOf(anchorFailed),
-      await outcomeOf(anchorEmpty),
+      await outcomeOf(anchorRejected),
+      await outcomeOf(anchorNoChain),
       await outcomeOf(anchorNoCal),
     ];
 
@@ -726,7 +833,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     //    再也分不出「今天本就不该做」与「今天该做没做成」, 而这两件事的处置完全相反。
     expect(new Set(observed).size).toBe(observed.length);
     expect(new Set(observed)).toEqual(new Set(Object.values(COLD_START_OUTCOME)));
-    expect(await prisma.anchorColdStartRun.count()).toBe(9);
+    expect(await prisma.anchorColdStartRun.count()).toBe(10);
   });
 
   it('🚨 ㉔ 删锚后以同一 ticker 重建 ⇒ 运行记录**两行** (PK 是 anchorId, 不是 ticker)', async () => {

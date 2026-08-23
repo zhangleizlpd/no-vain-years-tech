@@ -58,7 +58,7 @@ import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
 /**
  * 一次调用的结果。**未终结时不落运行记录** —— 那张表记的是「最近一次冷启动的**结局**」
  * (FR-026), 而两相加起来才是一次冷启动; 中途写一行会让「最近一次的结局」在窗口期内是错的,
- * 且八种结局 (FR-027) 里本就没有「进行中」这个值, 硬塞第九个会直接破 SC-009 的零折叠。
+ * 且 {@link COLD_START_OUTCOME} 里本就没有「进行中」这个值, 硬塞一个会直接破 SC-009 的零折叠。
  */
 export type ColdStartResult =
   | { settled: true; outcome: ColdStartOutcome }
@@ -294,14 +294,40 @@ export class AnchorColdStartUseCase {
     // 🚫 **只看快照, 不看日线**: 日线压根不在本流程内 (建锚时已取), 让它左右结局会把
     // 一件与冷启动无关的事翻成冷启动失败。
     if (!(await this.snapshotPresent(instrumentId, targetSession))) {
+      // 🚨 分岔口 (066 FR-014 / FR-014a): 「本就没有可做的」与「该做没做成」在这里分开。
+      //
+      // 判据**取自库中该标的的期权合约计数**, 与上面「判据看库不看 stats」同源:
+      //   · 计数 = 0 ⇒ 该标的没有挂牌期权 ⇒ 终态、非错误、不告警;
+      //   · 计数 > 0 但快照不在库 ⇒ 有合约却没补上 ⇒ ERROR 级、需人工介入。
+      // 🚫 MUST NOT 改用采集统计量: 「有合约但整批被落库前硬门拒掉」那种情形统计量同样为空,
+      //    两件事会被混成一个 —— 而它们的处置完全相反。
+      //
+      // 港股绝大多数标的没有挂牌期权 (实测颐海国际 0 / 网龙 0 个到期日), 与美股正好相反 ⇒
+      // 不分岔的话, 每一只无期权的港股锚都会产出一条无从处理的 ERROR。
+      // ⚠️ 对美股这条路径的归属**确实变了** (以前零合约也落 `backfill_incomplete`): 美股锚
+      //    基本都是有期权的票, 真撞上多半意味着链发现对该 target 失败了 —— 而那条由链维度
+      //    自己的失败计数告警 (`dimension-executor.ts` 的 `alertIfDegraded`), 不靠冷启动结局
+      //    兜底。既有八档的**语义**逐点不变。
+      if (!(await this.hasListedContracts(instrumentId))) {
+        // 🚫 **不是** ERROR —— 这是终态、非错误、不需人工介入 (SC-011 前半的机械断言面)。
+        this.logger.log(
+          `[anchor-cold-start] ${ticker} 在库中零期权合约 ⇒ 无挂牌期权, 本次无从补数 ` +
+            `(anchorId=${anchorId}; 港股常态, 非故障)`,
+        );
+        return this.finish(input, COLD_START_OUTCOME.NO_OPTION_CHAIN, {
+          targetSession,
+          reason: `该标的无挂牌期权 (option_contract 计数为 0), ${targetSession} 无快照可补`,
+        });
+      }
       // ERROR 级 = 需人工介入, 与 `calendar_missing` 同档 (两者都是「放弃 + 留可判读记录」)。
       this.logger.error(
         `[anchor-cold-start] 采集跑完但 ${targetSession} 的快照仍不在库 ⇒ 本次补数未完成 ` +
-          `(anchorId=${anchorId} ticker=${ticker}; 常见成因: 链发现未覆盖该标的 / 整批被落库前硬门拒)`,
+          `(anchorId=${anchorId} ticker=${ticker}; 该标的有挂牌合约, 常见成因: 合约全部已到期 / ` +
+          `整批被落库前硬门拒)`,
       );
       return this.finish(input, COLD_START_OUTCOME.BACKFILL_INCOMPLETE, {
         targetSession,
-        reason: `采集已执行但 ${targetSession} 快照未落库 (零未到期合约, 或整批未过落库前硬门)`,
+        reason: `采集已执行但 ${targetSession} 快照未落库 (合约在库但零未到期, 或整批未过落库前硬门)`,
       });
     }
     return this.finish(input, COLD_START_OUTCOME.BACKFILLED, { targetSession });
@@ -475,6 +501,26 @@ export class AnchorColdStartUseCase {
           sessionDate: new Date(`${targetSession}T00:00:00Z`),
           contract: { underlyingInstrumentId: instrumentId },
         },
+      })) > 0
+    );
+  }
+
+  /**
+   * 「该标的在库里有没有**任何**期权合约行」—— `no_option_chain` 与 `backfill_incomplete`
+   * 的唯一分岔判据 (066 FR-014a)。
+   *
+   * 🚨 **不带到期日过滤**, 这是刻意的: 这里问的是「这只票有没有挂牌期权」这个**标的属性**,
+   * 不是「今天有没有可采的合约」。加上 `expiryDate >= target` 会让「合约全部已到期」也落进
+   * `no_option_chain` —— 那是一个**该有人管**的情形 (链发现停在旧数据上), 与「本就没有挂牌
+   * 期权」性质相反。带到期日的那半判据住在 `SyncOptionSnapshotUseCase` 里, 不在这层复制。
+   *
+   * 复杂度: 1 次 `option_contract` 上按 `underlying_instrument_id` 的 count
+   * (`ix_option_contract_underlying_expiry` 前缀命中)。
+   */
+  private async hasListedContracts(instrumentId: bigint): Promise<boolean> {
+    return (
+      (await this.prisma.optionContract.count({
+        where: { underlyingInstrumentId: instrumentId },
       })) > 0
     );
   }

@@ -39,6 +39,12 @@ interface Overrides {
    * 同值, 即「采集没让库里多出任何东西」—— 那正是链零结果时的真实形态。
    */
   snapshotRowsAfterCollect?: number;
+  /**
+   * 该标的在库里的**期权合约行数** (066 FR-014a: `no_option_chain` 与 `backfill_incomplete`
+   * 的唯一分岔判据)。缺省 1 = 「这只票有挂牌期权」—— 美股锚的常态, 也让既有用例逐条不变。
+   * 取 0 = 该标的根本没有挂牌期权 (港股常态)。
+   */
+  contractRows?: number;
   /** 快照 `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
   /** 链本体 `collect` 返 true = vendor 配额耗尽 (issue #159 起冷启动直调它)。 */
@@ -103,6 +109,10 @@ function build(overrides: Overrides = {}) {
     if (collected) return overrides.snapshotRowsAfterCollect ?? overrides.snapshotRows ?? 0;
     return overrides.snapshotRows ?? 0;
   });
+  const contractCount = vi.fn(async (_args: unknown) => {
+    calls.push('optionContract.count');
+    return overrides.contractRows ?? 1;
+  });
   const syncDimensionFindMany = vi.fn(async (_args: unknown) => {
     calls.push('syncDimension.findMany');
     return [
@@ -117,6 +127,7 @@ function build(overrides: Overrides = {}) {
     anchorColdStartRun: { upsert: runUpsert },
     dailyBar: { count: dailyBarCount },
     optionDailySnapshot: { count: snapshotCount },
+    optionContract: { count: contractCount },
     syncDimension: { findMany: syncDimensionFindMany },
   } as unknown as PrismaService;
 
@@ -154,6 +165,7 @@ function build(overrides: Overrides = {}) {
     recalcSafely,
     dailyBarCount,
     snapshotCount,
+    contractCount,
     syncDimensionFindMany,
     chainCollect,
     collect,
@@ -523,6 +535,46 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     // 目标日仍要落 —— 「补哪一天没补上」是人工介入的第一手信息。
     expect(row.targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
     expect(row.reason).toContain(TARGET);
+  });
+
+  it('🚨 066 FR-014 该标的零期权合约 ⇒ no_option_chain 而不是 backfill_incomplete', async () => {
+    // 与上一条用例**只差一个入参**: 两者都是「采集跑完但快照仍不在库」, 分岔判据是库里的
+    // 期权合约计数。港股绝大多数标的落这一档 (实测颐海国际 0 / 网龙 0 个到期日) —— 折进
+    // backfill_incomplete 会让每一只无期权的锚都产出一条 ERROR 级、无从处理的记录。
+    const ctx = build({ snapshotRowsAfterCollect: 0, contractRows: 0 });
+
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.NO_OPTION_CHAIN });
+    const row = recordedRow(ctx.runUpsert);
+    expect(row.outcome).toBe(COLD_START_OUTCOME.NO_OPTION_CHAIN);
+    // 终态也要能读出「补的是哪一天」—— 按结局分组时同一张表两列一起看。
+    expect(row.targetSession).toEqual(new Date(`${TARGET}T00:00:00Z`));
+  });
+
+  it('🚨 066 FR-014a 分岔判据只查**库**, 不看 collect 的统计量', async () => {
+    // 「有合约但整批被落库前硬门拒」时采集统计量同样为空 ⇒ 拿统计量当判据会把两件事混成一个。
+    // 这条钉的是「那次 count 真的发生了、且问的是 option_contract 这张表」。
+    const ctx = build({ snapshotRowsAfterCollect: 0, contractRows: 0 });
+
+    await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+
+    expect(ctx.contractCount).toHaveBeenCalledTimes(1);
+    // 🚨 where 逐字断死而不是只断「被调过」—— **不带到期日过滤**是刻意的: 问的是「这只票有
+    //    没有挂牌期权」这个标的属性, 不是「今天有没有可采的合约」。加上 `expiryDate >= target`
+    //    会让「合约全部已到期」也落进 no_option_chain, 而那是一个**该有人管**的情形。
+    const where = (ctx.contractCount.mock.calls[0][0] as { where: Record<string, unknown> }).where;
+    expect(where).toEqual({ underlyingInstrumentId: INSTRUMENT_ID });
+    expect(Object.keys(where)).toEqual(['underlyingInstrumentId']);
+  });
+
+  it('🚨 快照落了库就根本不问合约计数 (分岔只在「没补上」那一格上生效)', async () => {
+    const ctx = build({ snapshotRowsAfterCollect: 3 });
+
+    const result = await ctx.usecase.run({ ...SNAPSHOT_PHASE, now: SATURDAY_1000_BEIJING });
+
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
+    expect(ctx.contractCount).not.toHaveBeenCalled();
   });
 
   it('🚨 落库复判与起手复判问的是**同一个问题** (同一处判据, 两个调用点)', async () => {
