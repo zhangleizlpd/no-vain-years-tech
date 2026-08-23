@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.36.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.3...server-v0.36.0) (2026-08-23)
+
+
+### Features
+
+* **marketdata:** 066 港股期权接入与锚冷启动开通港股 ([#169](https://github.com/zhangleizlpd/no-vain-years-tech/issues/169)) ([ea74b5f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/ea74b5fa4975957d2a5dbc9888c74a9e3c9ce908))
+
 ## [0.35.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.2...server-v0.35.3) (2026-08-23)
 
 
