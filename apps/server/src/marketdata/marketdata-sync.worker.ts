@@ -22,7 +22,7 @@ import {
   type DimensionJobPayload,
   type MarketdataSyncJobPayload,
 } from './marketdata-sync.queue.js';
-import type { SyncRunStats } from './sync-run.recorder.js';
+import { INTERRUPT_REASON, SyncRunRecorder, type SyncRunStats } from './sync-run.recorder.js';
 import { closeWithTimeout } from '../security/close-with-timeout.js';
 
 /**
@@ -68,6 +68,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
     private readonly syncQueue: MarketdataSyncQueue,
     private readonly coldStart: AnchorColdStartUseCase,
     @Inject(marketdataSyncConfig.KEY) private readonly cfg: MarketdataSyncConfig,
+    private readonly runRecorder: SyncRunRecorder,
   ) {}
 
   /** worker 是否已启动 (sentinel 断言面 + 测试观察点)。 */
@@ -97,8 +98,14 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
    * `Job.moveToFailed` 只在 `shouldRetryJob` 为假时才走 `moveToFinished(target='failed')`
    * (发本事件的那一条); 还能重试的走 `moveToDelayed`/`retryJob`, 发的是 `delayed`/`waiting`。
    *
-   * 两件事: ① 结构化 ERROR log (FR-S17 log-based alerting 唯一出口, 既有);
-   * ② 冷启动 job 另补一笔 `retry_exhausted` 运行记录 (FR-019a) —— 维度 job **不**碰那张表。
+   * 三件事: ① 结构化 ERROR log (FR-S17 log-based alerting 唯一出口, 既有);
+   * ② #137 收敛触发点 B (补刀): 本事件 = 这个 job **再也不会被处理**, 故它名下若还挂着
+   * `running` 行, 就永远等不到触发点 A 那位接管者了 —— 在这里收干净;
+   * ③ 冷启动 job 另补一笔 `retry_exhausted` 运行记录 (FR-019a) —— 维度 job **不**碰那张表。
+   *
+   * 📌 触发点 B **刻意挂 `failed` 而不是 `stalled`**: `stalled` 事件的投递与 worker 重新拉取
+   * 该 job 是并发的, 事件晚到就会把**新 attempt 刚开的那一行**误标成 interrupted。而「会被重跑」
+   * 的情形已由触发点 A 零竞态地覆盖, B 只需补「不会再被重跑」这一半 —— 那正是本事件的语义。
    *
    * 🚨 **本方法不许抛**: 它挂在事件监听上, 抛出去就是 unhandled rejection (进程级噪音,
    * 且吞不掉的那一刻正是 Redis / DB 已经不健康的时候)。落库失败降级成 WARN。
@@ -107,6 +114,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
     this.logger.error(
       `marketdata-sync job failed (retries exhausted): ${JSON.stringify({ jobId, failedReason })}`,
     );
+    await this.convergeInterruptedRuns(jobId, INTERRUPT_REASON.RETRIES_EXHAUSTED);
     try {
       const job = await this.syncQueue.queue.getJob(jobId);
       // undefined = 已被 removeOnFail 留存上限挤掉 (FR-S12 内存有界的代价), 无从判断 job 类型。
@@ -122,6 +130,31 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         `[anchor-cold-start] retry 耗尽运行记录落库失败 (jobId=${jobId}): ${String(err)}`,
       );
+    }
+  }
+
+  /**
+   * #137 两个收敛触发点的共同出口: 把同 job 上没能自己收尾的 `sync_run` 行收成 `interrupted`。
+   *
+   * 🚨 **不抛** —— 两个调用点都不能被它带崩: 触发点 B 挂在事件监听上 (抛=unhandled rejection),
+   * 触发点 A 后面跟着的是真正要干的活, 为「审计行没收干净」把整轮同步废掉是本末倒置。失败的
+   * 代价只是**退回本 issue 之前的状态**(多一条僵尸行), 不会多坏。
+   *
+   * 但降级必须**有声** —— 这个机制自己坏掉且没有声音, 正是 #137 / #103 同族问题的病根。
+   * ⇒ 失败走 WARN, 且收敛到行时打一行 log (0 行是稳态, 不打)。
+   */
+  private async convergeInterruptedRuns(jobId: string | undefined, reason: string): Promise<void> {
+    // 理论上恒非空 (bullmq 入队即分配 id); 类型上可选, 故守住 —— 空串会让 where 命中一片空。
+    if (jobId === undefined || jobId === '') return;
+    try {
+      const converged = await this.runRecorder.convergeInterrupted(jobId, reason);
+      if (converged > 0) {
+        this.logger.log(
+          `sync_run 收敛 interrupted: ${JSON.stringify({ jobId, rows: converged, reason })}`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(`sync_run interrupted 收敛失败 (jobId=${jobId}): ${String(err)}`);
     }
   }
 
@@ -179,6 +212,10 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
       // 非法 payload (name/payload 漂移) → 直接 fail (不路由错维度)。
       throw new Error(`job name "${job.name}" 与 payload dimensionKey "${dimensionKey}" 不一致`);
     }
+    // #137 收敛触发点 A (主): 开工前先把**同 job 上一次没收尾的 attempt** 收成 interrupted。
+    // 🚨 必须在 execute() 之前 —— execute() 起手就 `recorder.start()` 开新行, 顺序反了就把自己
+    // 刚开的那行当僵尸收掉。判据为何是确定性的 (不靠心跳/阈值) 见 convergeInterrupted 注释。
+    await this.convergeInterruptedRuns(job.id, INTERRUPT_REASON.SUPERSEDED_BY_RETRY);
     const result = await this.executors.execute(
       dimensionKey,
       {

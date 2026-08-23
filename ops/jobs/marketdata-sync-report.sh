@@ -169,6 +169,11 @@ while IFS=$'\t' read -r stype status scanned ok skipped failed written started u
     partial) icon="⚠️"; n_bad+=1; problems=1 ;;
     failed)  icon="🔴"; n_bad+=1; problems=1 ;;
     running) icon="⏳"; n_other+=1; problems=1 ;; # 昨晚起卡 running 未收尾 = 异常
+    # interrupted (#137) = 被部署换容器打断、由收敛路径补的终态。**判红**, 判据不直觉:
+    # 本查询取的是每维度**窗口内最新一行**, 而「打断→重跑成功」里重跑行的 started_at 更晚 ⇒
+    # 正常那条 interrupted 根本进不来。它能出现在这里, 恰恰说明其后**没有**新一轮接上
+    # (重试耗尽 / 队列没排到) ⇒ 该维度昨晚是真没跑成, 不能静默。
+    interrupted) icon="⚠️"; n_bad+=1; problems=1 ;;
     skipped) icon="⏭️"; n_skip+=1 ;;
     *)       icon="❓"; n_other+=1; problems=1 ;;
   esac

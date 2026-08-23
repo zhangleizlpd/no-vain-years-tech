@@ -209,6 +209,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

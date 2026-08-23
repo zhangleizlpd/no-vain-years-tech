@@ -15,7 +15,7 @@ import {
   type MarketdataSyncJobPayload,
 } from './marketdata-sync.queue.js';
 import { MarketdataSyncWorker } from './marketdata-sync.worker.js';
-import { emptyStats } from './sync-run.recorder.js';
+import { INTERRUPT_REASON, emptyStats, type SyncRunRecorder } from './sync-run.recorder.js';
 
 const REQUEUE_DELAY_MS = 1_800_000;
 
@@ -53,15 +53,31 @@ function build(
   overrides: {
     coldStartResult?: ColdStartResult;
     budgetExhausted?: boolean;
+    convergeThrows?: boolean;
+    convergedRows?: number;
   } = {},
 ) {
   const { instance: syncQueue, add, getJob } = buildQueue();
 
-  const execute = vi.fn(async (_key: string, _opts: unknown, _jobId?: string) => ({
-    stats: { ...emptyStats(), ok: 3 },
-    budgetExhausted: overrides.budgetExhausted === true,
-  }));
+  // #137: 收敛与执行的**先后**是本机制的正确性依据 (收敛必须早于新行 INSERT), 而两个 spy
+  // 各自的 mock.calls 看不出跨 spy 的顺序 ⇒ 记一条共同时间线。
+  const order: string[] = [];
+
+  const execute = vi.fn(async (_key: string, _opts: unknown, _jobId?: string) => {
+    order.push('execute');
+    return {
+      stats: { ...emptyStats(), ok: 3 },
+      budgetExhausted: overrides.budgetExhausted === true,
+    };
+  });
   const executors = { execute } as unknown as DimensionExecutorRegistry;
+
+  const convergeInterrupted = vi.fn(async (_jobId: string, _reason: string, _now?: Date) => {
+    order.push('converge');
+    if (overrides.convergeThrows === true) throw new Error('DB down');
+    return overrides.convergedRows ?? 0;
+  });
+  const runRecorder = { convergeInterrupted } as unknown as SyncRunRecorder;
 
   const run = vi.fn(
     async (_input: unknown): Promise<ColdStartResult> =>
@@ -70,13 +86,30 @@ function build(
   const recordRetryExhausted = vi.fn(async (_input: unknown) => undefined);
   const coldStart = { run, recordRetryExhausted } as unknown as AnchorColdStartUseCase;
 
-  const worker = new MarketdataSyncWorker({} as never, executors, syncQueue, coldStart, CFG);
+  const worker = new MarketdataSyncWorker(
+    {} as never,
+    executors,
+    syncQueue,
+    coldStart,
+    CFG,
+    runRecorder,
+  );
   // `onJobFailed` 的降级出口是 WARN —— 断言它**没被调**才能区分「守卫早退」与「撞了异常被
   // catch 吞掉」, 两者的可观测面（recordRetryExhausted 零调用）本来一模一样。
   const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
   vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-  return { worker, execute, run, recordRetryExhausted, add, getJob, warn };
+  return {
+    worker,
+    execute,
+    run,
+    recordRetryExhausted,
+    add,
+    getJob,
+    warn,
+    convergeInterrupted,
+    order,
+  };
 }
 
 function coldStartJob(
@@ -263,6 +296,64 @@ describe('MarketdataSyncWorker — retry 耗尽出口 (FR-019a)', () => {
     recordRetryExhausted.mockRejectedValue(new Error('PG down'));
 
     await expect(worker.onJobFailed('cs-1', 'boom')).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MarketdataSyncWorker — 打断收敛 (#137)', () => {
+  it('触发点 A: 维度 job 开工前先收敛同 job 的僵尸行, **且早于 execute**', async () => {
+    const { worker, convergeInterrupted, order } = build();
+
+    await worker.process(dimensionJob(DIMENSION_PAYLOAD));
+
+    expect(convergeInterrupted).toHaveBeenCalledWith('dim-1', INTERRUPT_REASON.SUPERSEDED_BY_RETRY);
+    // 🚨 顺序即正确性: execute() 起手就 recorder.start() 开新行, 收敛跑在它之后就会把自己
+    //    刚开的那一行当僵尸收掉 —— 而那是**静默**的错 (两行都在, 状态却反了)。
+    expect(order).toEqual(['converge', 'execute']);
+  });
+
+  it('触发点 A 失败 ⇒ 降级 WARN 但**本轮同步照跑** (审计行没收干净不该废掉整轮活)', async () => {
+    const { worker, execute, warn } = build({ convergeThrows: true });
+
+    await expect(worker.process(dimensionJob(DIMENSION_PAYLOAD))).resolves.toMatchObject({ ok: 3 });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    // 降级必须**有声** —— 这个机制自己坏掉且没有声音, 正是 #137 / #103 同族问题的病根。
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('冷启动 job **不**走触发点 A (它不落 sync_run 行, 没有可收的东西)', async () => {
+    const { worker, convergeInterrupted } = build();
+
+    await worker.process(coldStartJob(COLD_START_PAYLOAD));
+
+    expect(convergeInterrupted).not.toHaveBeenCalled();
+  });
+
+  it('触发点 B: retry 耗尽 ⇒ 收敛且 reason 是「不会再重跑」那一条', async () => {
+    const { worker, convergeInterrupted, getJob } = build();
+    getJob.mockResolvedValue(dimensionJob(DIMENSION_PAYLOAD));
+
+    await worker.onJobFailed('dim-1', 'boom');
+
+    // 🚨 必须跑在 `getJob` 的冷启动早退**之前** —— 维度 job 正是要收的那一类, 放在早退之后
+    //    等于对全部维度 job 无效, 而它照样绿。
+    expect(convergeInterrupted).toHaveBeenCalledWith('dim-1', INTERRUPT_REASON.RETRIES_EXHAUSTED);
+  });
+
+  it('触发点 B: job 已被 removeOnFail 清掉也照收 (行在 PG 里, 与 Redis 还留不留 job 无关)', async () => {
+    const { worker, convergeInterrupted, getJob } = build();
+    getJob.mockResolvedValue(undefined);
+
+    await worker.onJobFailed('gone-1', 'boom');
+
+    expect(convergeInterrupted).toHaveBeenCalledWith('gone-1', INTERRUPT_REASON.RETRIES_EXHAUSTED);
+  });
+
+  it('触发点 B 失败 ⇒ 不抛 (事件监听里抛 = unhandled rejection)', async () => {
+    const { worker, warn } = build({ convergeThrows: true });
+
+    await expect(worker.onJobFailed('dim-1', 'boom')).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
   });
 });

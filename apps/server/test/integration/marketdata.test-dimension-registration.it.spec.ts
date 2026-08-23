@@ -118,6 +118,7 @@ describe('019 T006 SC-S05 测试维度注册演练 (tick→flow→worker 全链)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

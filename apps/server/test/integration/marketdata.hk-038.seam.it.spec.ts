@@ -269,6 +269,7 @@ describe('038 T006 Phase 1 平台市场缝隙 seam (Testcontainers PG+Redis, moc
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     worker.onModuleInit();
     try {
