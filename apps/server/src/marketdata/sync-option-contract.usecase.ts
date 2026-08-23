@@ -56,8 +56,16 @@ import { exchangeCalendarDateForScope } from './session-clock.js';
  *
  * 合约静态属性一经挂牌即不变 ⇒ 本表是 **insert-only** 的: 第一天灌满该票的全链, 此后每晚
  * 只有新挂的到期日会真正落行, 其余全被唯一键挡掉。换成逐行 `upsert` 会让每晚多付约 2.5 万条
- * UPDATE (12 票 × 约 2150 合约) 去重写一堆不会变的值。⚠️ 代价记在这里: vendor 若**订正**某个
- * 静态字段 (如 `is_standard`), 本路径不会自动改写既有行 —— 那属定向回填, 不该由夜间管线兜。
+ * UPDATE (12 票 × 约 2150 合约) 去重写一堆不会变的值。
+ *
+ * 🚨 **别把这条读成「本路径已经优化过了」**: 它省的是 **DB 层**, 而 DB 层从来不是瓶颈。
+ * 占本维度 99.9% 成本的是 **vendor 外呼**, 那一侧**一个 skip 都没有** —— 重跑同一只票仍会
+ * 把它的整条链完整重下一遍, 只是落库时全被 `skipDuplicates` 挡掉。⇒ `sync_run.written=0`
+ * 是「DB 没写」, **不是**「没干活」。2026-08-23 prod 实证: 连续 11 轮 written=0, 每轮仍耗
+ * 2555 秒 / 872 次外呼 (issue #159)。看这个指标判成本会得出完全相反的结论。
+ *
+ * ⚠️ 代价记在这里: vendor 若**订正**某个静态字段 (如 `is_standard`), 本路径不会自动改写既有
+ * 行 —— 那属定向回填, 不该由夜间管线兜。
  *
  * ## 🚨 跑完 MUST 对表, 差集非空 MUST 上抛 (plan D-DATA-2)
  *
@@ -74,6 +82,18 @@ const CONTRACT_ROW_CHUNK = 500;
 
 /** `YYYY-MM-DD` → `@db.Date` 列的 UTC 零点 Date。 */
 const toDateOnly = (s: string): Date => new Date(`${s}T00:00:00Z`);
+
+/**
+ * {@link SyncOptionContractUseCase.collect} 的显式入参 —— 本体需要的**全部**外部输入。
+ *
+ * 只有一个字段是刻意的: 链合约是**与交易日无关的静态属性**, 唯一用到业务日的地方是
+ * 「剔除已过期到期日」那一步 (FR-028a, 判据 `≥` 不是 `>`)。字段少不等于该省掉这层 ——
+ * 显式 spec 正是「本体不自己算日期」的结构保证 (同 `SyncOptionSnapshotUseCase` 的 spec)。
+ */
+export interface OptionChainCollectSpec {
+  /** `YYYY-MM-DD`, 交易所本地日。维度轮从 `marketScope` 求, 冷启动从该锚的市场求。 */
+  businessDate: string;
+}
 
 /** {@link OptionContractStatic} → `option_contract` createMany 行。 */
 function contractRow(
@@ -132,9 +152,46 @@ export class SyncOptionContractUseCase {
     // FR-028b 兜底 seed 先跑: 它修的是「有锚必有 Instrument 行」这个 FK 前提, 与本轮工作集
     // 无关 (本轮工作集已由 factExecutor 定死) —— 新 seed 的标的由**下一轮**锚闸开闸后纳入,
     // 正是 SC-003 定的「建锚 → 下一轮 cron → 进工作集」时序。
+    //
+    // 🚫 **MUST NOT 下沉进 `collect`**: 那条路径上冷启动每建一只锚都会全量扫一遍锚表,
+    //    而它相一已经 seed 过自己那一只了。这是「维度级职责」与「本体职责」的分界线。
     await this.seedAnchoredInstruments(dim.marketScope);
 
-    const businessDate = exchangeCalendarDateForScope(dim.marketScope, input.now);
+    return this.collect(
+      instruments,
+      // 🚨 取交易所的今天而非 `input.asOf`, 两条理由见类注释 § 业务日期按 us 市场时区。
+      { businessDate: exchangeCalendarDateForScope(dim.marketScope, input.now) },
+      stats,
+    );
+  }
+
+  /**
+   * 采集本体 —— 夜间维度轮与**锚首建冷启动**共用。返 `true` = vendor 限频预算耗尽。
+   *
+   * ## 🚨 工作集由调用方给定, 本体从不自己查
+   *
+   * 维度轮的工作集来自 `DimensionExecutorRegistry.factExecutor` 的 `loadActiveInstruments`
+   * (`market ∈ scope ∧ active ∧ needSync`); 冷启动直接传它那一只新锚。
+   * ⚠️ 别把「收一个标的数组参数」误读成 `marketdata-sync.queue.ts` 那条注释警告的
+   * **「给工作集选择开第二个口子」** —— 那条禁的是给 `DimensionJobPayload` 加筛选字段
+   * (会让工作集有两套口径且会漂移)。本体收数组不新增任何口径, 选择权仍恒属 `factExecutor`。
+   *
+   * ## 🚨 冷启动 MUST 走这里, MUST NOT 入维度 job (issue #159)
+   *
+   * 维度 job 的工作集是**全部**已开闸标的 ⇒ 每建一只锚就把所有标的的链重下一遍, O(N²)。
+   * 2026-08-23 prod 实证 (93 只锚批量导入): 每只耗 2555 秒 / 872 次外呼 / `written=0`
+   * —— 本表 insert-only, 重跑全撞唯一键被 `skipDuplicates` 挡掉, 于是**DB 层看着零成本,
+   * vendor 侧却每轮实打实全做了**。总计 59 小时, 而真正需要的是每只约 42 秒 (54× 放大)。
+   *
+   * 复杂度: **O(标的数 × 窗数) 次外呼, 与落库行数无关** —— 链接口是「单 code + 到期日窗
+   * 跨度 ≤30 天」的硬约束。改这条路径时要盯的守恒量是这个乘积的**左**因子。
+   */
+  async collect(
+    instruments: WorkingInstrument[],
+    spec: OptionChainCollectSpec,
+    stats: SyncRunStats,
+  ): Promise<boolean> {
+    const { businessDate } = spec;
     const gaps: string[] = [];
     let budgetExhausted = false;
 

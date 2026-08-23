@@ -446,7 +446,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId,
       ticker: TICKER,
       now: SAT_NIGHT,
-      phase: 'snapshot',
     });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.CALENDAR_MISSING });
@@ -465,7 +464,14 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
 
     const result = await coldStart.run({ anchorId, ticker: TICKER, now: SAT_NIGHT });
 
-    expect(result).toEqual({ settled: false, deferral: 'awaiting_chain' });
+    // 本例只有锚、没有任何合约行 ⇒ 链 (IT 里是 no-op 端口) 采不到东西, 快照于是零外呼,
+    // 落库复判判出「跑完了但目标日快照仍不在库」⇒ `backfill_incomplete` (FR-027a)。
+    // 📌 issue #159 前这里是 `awaiting_chain`: 第一相组完 flow 就交回, 结局要等第二相。
+    //    两相合一后**一次调用直达终局**, 本用例真正要验的 seed→开闸 次序不受影响。
+    expect(result).toEqual({
+      settled: true,
+      outcome: COLD_START_OUTCOME.BACKFILL_INCOMPLETE,
+    });
     const inst = await prisma.instrument.findUniqueOrThrow({
       where: { market_code: { market: 'us', code: 'PEP' } },
     });
@@ -495,7 +501,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId,
       ticker: TICKER,
       now: SAT_NIGHT,
-      phase: 'snapshot',
     });
 
     expect(result).toEqual({ settled: false, deferral: 'vendor_budget' });
@@ -514,7 +519,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     const job = await syncQueue.enqueueColdStart({
       anchorId: String(anchorId),
       ticker: TICKER,
-      phase: 'snapshot',
     });
     // 手工驱动 processor 的前提: 真 worker 没在跑, 否则它会抢走这个 job。
     expect(worker.running).toBe(false);
@@ -539,7 +543,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     expect(delayed[0]!.data).toEqual({
       anchorId: String(anchorId),
       ticker: TICKER,
-      phase: 'snapshot',
     });
     // 🚨 顺延 ≠ 失败 (FR-019b): 重试次数一次都不该耗 —— 否则一次限频窗就能把 3 次机会烧光,
     //    最后落一个 `retry_exhausted` 的冤枉结局。
@@ -591,7 +594,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId: anchorB,
       ticker: TICKER_B,
       now: SAT_NIGHT,
-      phase: 'snapshot',
     });
 
     expect(resultB).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
@@ -633,7 +635,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId,
       ticker: TICKER,
       now: SAT_NIGHT,
-      phase: 'snapshot',
     });
 
     // 🚨 期权 EOD 无跨日补救 ⇒ 这是**永久缺口**。记成 backfilled 会让唯一能发现它的那条
@@ -667,7 +668,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId: anchorFilled,
       ticker: TICKER_B,
       now: SAT_NIGHT,
-      phase: 'snapshot',
     });
 
     // ③ intraday_skipped: 同样的输入, 只把时刻换到连续竞价内。
@@ -676,7 +676,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId: anchorIntraday,
       ticker: 'us:MO',
       now: MON_MIDSESSION,
-      phase: 'snapshot',
     });
 
     // ④⑤⑥ 三种早退。
@@ -703,7 +702,6 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       anchorId: anchorEmpty,
       ticker: 'us:PM',
       now: SAT_NIGHT,
-      phase: 'snapshot',
     });
 
     // ⑨ calendar_missing: 放最后 —— 它要把日历删空。

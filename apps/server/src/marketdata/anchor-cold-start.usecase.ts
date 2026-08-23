@@ -1,5 +1,4 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import type { FlowJob } from 'bullmq';
 import { PrismaService } from '../security/prisma.service.js';
 import {
   COLD_START_CAPABILITY,
@@ -9,24 +8,14 @@ import {
   type ColdStartOutcome,
 } from './anchor-cold-start.rules.js';
 import { AnchorDrivenSyncGate, parseGateTicker } from './anchor-driven-sync-gate.js';
-import type { DimensionKey } from './dimension-executor.js';
 import { isSessionRegistered, isSessionUnderway, marketNow } from './market-session.rules.js';
-import {
-  ANCHOR_COLD_START_JOB,
-  ANCHOR_COLD_START_RETRY_MAX,
-  MARKETDATA_SYNC_QUEUE,
-  MarketdataSyncQueue,
-  dimensionJobName,
-  type AnchorColdStartJobPayload,
-  type DimensionJobPayload,
-} from './marketdata-sync.queue.js';
 import { emptyStats } from './sync-run.recorder.js';
+import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { currencyForMarket } from './sync-universe.usecase.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 import type { SessionKindStatus } from './trading-day.rules.js';
 import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
-import { resolveAsOfForDimension } from './sync-asof.rules.js';
 
 /**
  * 锚首建冷启动的**编排体** (060 T005, plan §D3 / §D5 / §D9)。
@@ -41,22 +30,30 @@ import { resolveAsOfForDimension } from './sync-asof.rules.js';
  * 3. Instrument 行缺失 ⇒ seed
  * 4. AnchorDrivenSyncGate.recalcSafely() 幂等开闸
  * 5. 起手复判：本锚**标的**在目标交易日的数据是否已具备；已具备 ⇒ already_present
- * 6. 不敏感档 (第一相)：组 flow 入队链 + 日线, 本 job 以 phase='snapshot' 当 parent 挂其上
- * 7. 敏感档 (第二相)：盘中 ⇒ intraday_skipped；否则按 §D4 算 spec → collect
+ * 6. 不敏感档：**直调链本体** `SyncOptionContractUseCase.collect([这一只])`
+ * 7. 敏感档：盘中 ⇒ intraday_skipped；否则按 §D4 算 spec → `SyncOptionSnapshotUseCase.collect`
  * 8. 落运行记录
  * ```
- * 3 → 4 → 载工作集这个次序反了会**静默拿到空工作集**: 闸只认已存在的 Instrument 行, 而新锚
+ * 3 → 4 → 复判这个次序反了会**静默拿到空数据**: 闸只认已存在的 Instrument 行, 而新锚
  * 在 universe 轮到它之前可能一行都没有。
  *
- * ## 🚨 6 与 7 为什么必须分两相 (impl 期定案, 2026-08-17)
+ * ## 🚨 全程直调本体, 不入任何队 (issue #159, 2026-08-23 定案)
  *
- * worker `concurrency=1` 且冷启动 job 自己就跑在这条 worker 上 ⇒ 它入队的 flow 在它返回之前
- * **一个都跑不了** (确定性, 非竞态)。若在同一次调用里 inline 抓快照, 对一只**全新锚**
- * `option_contract` 恰好 0 行 ⇒ `SyncOptionSnapshotUseCase` 判「无未到期合约」WARN + 零外呼
- * 返回 ⇒ **目标交易日的快照永远不写, 而整条路径全绿、结局还会落 `backfilled`**。
- * SC-001 要的正是那份快照。⇒ 第二相由 BullMQ flow 的 parent 语义保证「children 全终态才跑」。
+ * 6 与 7 **在同一次调用里顺序跑完**。原实现把链与日线组成 BullMQ flow 入队、本 job 以
+ * `phase='snapshot'` 当 parent 挂其上, 分两相 —— 那是被「链作为 job 入队后, 在本 job 返回
+ * 之前跑不了 (worker `concurrency=1`)」逼出来的。链改直调后该前提消失, **两相不是可以合,
+ * 是没有分的理由了**。
  *
- * 📌 顺带更正确的一点: 盘中闸因此落在**真正要写的那一刻**, 而不是入队那一刻 (FR-010/011)。
+ * 代价曾经是数量级的: 维度 job 的工作集是**全部**已开闸标的 ⇒ 每建一只锚就把所有标的的链
+ * 重下一遍 (O(N²))。93 只锚批量导入 prod 实测每只 2555 秒 / 872 次外呼 / `written=0`,
+ * 总计 59 小时, 而真正需要的是每只约 40 秒。
+ *
+ * 🚫 **日线不在本流程内**: 建锚那一刻 `CreateAnchorUseCase.seedLastClose` 已同步调过
+ * `EnsureLatestEodBarUseCase`, 而 `optionsdesk.anchor` 全仓只有一个 create 点 ⇒ 每只锚的
+ * 日线在它出生那一秒就有了。原先那个 `us_equity_bar` flow child 是纯重复劳动。
+ *
+ * 📌 盘中闸仍落在**真正要写的那一刻** (第 7 步), 而不是入队那一刻 (FR-010/011) —— 直调后
+ * 这一点天然成立, 不再依赖 flow 的执行时机。
  */
 /**
  * 一次调用的结果。**未终结时不落运行记录** —— 那张表记的是「最近一次冷启动的**结局**」
@@ -68,10 +65,12 @@ export type ColdStartResult =
   | {
       settled: false;
       /**
-       * `awaiting_chain` = 第一相已组 flow, 第二相由 parent 语义接着跑;
-       * `vendor_budget` = 配额耗尽, **顺延**重入队 (不耗 attempts, FR-019b)。
+       * `vendor_budget` = vendor 限频配额耗尽, **顺延**重入队 (不耗 attempts, FR-019b)。
+       *
+       * 📌 issue #159 前这里还有一个 `awaiting_chain` (第一相组完 flow 交回、第二相由
+       * BullMQ parent 语义接着跑)。链改直调后**两相合一**, 该值随之退役。
        */
-      deferral: 'awaiting_chain' | 'vendor_budget';
+      deferral: 'vendor_budget';
     };
 
 @Injectable()
@@ -81,7 +80,10 @@ export class AnchorColdStartUseCase {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gate: AnchorDrivenSyncGate,
-    private readonly syncQueue: MarketdataSyncQueue,
+    // 🚨 直注两个采集本体, **不注 `MarketdataSyncQueue`** (issue #159 起)。后者曾是本类的
+    // 构造器参数, 而 `marketdata-sync.queue.ts` 顶部那条 TDZ 警告说的「第一个撞上的」正是
+    // 060 冷启动 —— 链改直调后本类不再入任何队, 那条循环 import 的风险面随之消失。
+    private readonly chain: SyncOptionContractUseCase,
     private readonly snapshot: SyncOptionSnapshotUseCase,
     @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
   ) {}
@@ -90,13 +92,8 @@ export class AnchorColdStartUseCase {
    * 复杂度: O(1) 次日历查询 + O(1) 次标的查询 + 开闸的 O(市场数) 次 updateMany +
    * ≤2 次复判 count + 1 次运行记录 upsert; 第二相另加 1 次快照采集 (O(合约数))。
    */
-  async run(input: {
-    anchorId: bigint;
-    ticker: string;
-    now: Date;
-    phase?: 'snapshot';
-  }): Promise<ColdStartResult> {
-    const { anchorId, ticker, now, phase } = input;
+  async run(input: { anchorId: bigint; ticker: string; now: Date }): Promise<ColdStartResult> {
+    const { anchorId, ticker, now } = input;
 
     // ── 1. 市场归属只从 ticker 解析, 不假定默认市场 (FR-020 / FR-021) ──
     const parsed = parseGateTicker(ticker);
@@ -154,17 +151,38 @@ export class AnchorColdStartUseCase {
 
     const capability = COLD_START_CAPABILITY[market];
 
-    // ── 6. 不敏感档 (第一相): 链 + 日线组 flow, 本 job 当 parent 排在它们之后 ──
-    // 🚫 链与日线**不受盘中判据约束** (FR-012): 前者是与交易日无关的静态属性, 后者有可指定
-    //    日期的历史来源。盘中闸只管敏感档, 且落在第二相 (真正要写的那一刻)。
-    if (phase !== 'snapshot' && capability.deltaDimensions.length > 0) {
-      await this.enqueueDeltaFlow(input, market, capability.deltaDimensions);
-      return { settled: false, deferral: 'awaiting_chain' };
+    // ── 6. 不敏感档: **直调链本体**补这一只锚 (issue #159) ──
+    //
+    // 🚫 链**不受盘中判据约束** (FR-012): 合约静态属性与交易日无关。盘中闸只管敏感档,
+    //    且落在第 7 步 —— 真正要写快照的那一刻。
+    //
+    // 🚨 **从「入维度 job」改成「直调本体」是本片的要害**: 维度 job 的工作集是**全部**已开闸
+    //    标的 ⇒ 每建一只锚就把所有标的的链重下一遍, O(N²)。2026-08-23 prod 实证 (93 只锚
+    //    批量导入): 每只 2555 秒 / 872 次外呼 / `written=0` (insert-only 表重跑全撞唯一键,
+    //    DB 层看着零成本、vendor 侧每轮实打实全做), 总计 59 小时。直调后只打自己那一份。
+    //
+    // 🚨 **硬边语义靠「不 catch」表达**: 链失败直接上抛 ⇒ 本 job 交 BullMQ 重试 ⇒ attempts
+    //    耗尽由 job 层落 `retry_exhausted` (FR-019a)。原先是 flow child 的
+    //    `failParentOnFailure` 在表达同一件事。吞掉它就会退回「零合约 ⇒ 快照零外呼 ⇒ 却落
+    //    `backfilled` 的谎」那个已知缺陷 —— 第 7 步末的落库复判是**第二道**网, 不是第一道。
+    if (capability.optionChain) {
+      const chainBudgetExhausted = await this.chain.collect(
+        [{ id: instrumentId, market, code }],
+        // 链只拿业务日剔除已过期到期日 (FR-028a, 判据 `≥` 不是 `>`)。跟**交易所的今天**走,
+        // 与维度轮同源 —— 单市场时 `exchangeCalendarDateForScope([m], now)` 与本式逐点相等。
+        { businessDate: exchangeCalendarDate(market, now) },
+        emptyStats(),
+      );
+      if (chainBudgetExhausted) {
+        // 🚫 顺延 ≠ 失败 (FR-018 / FR-019b): 链没采完就去抓快照 = 拿着残缺工作集问 vendor。
+        this.logger.warn(`[anchor-cold-start] 链发现配额耗尽, 顺延重跑: ${ticker}`);
+        return { settled: false, deferral: 'vendor_budget' };
+      }
     }
 
     // ── 7. 敏感档 ──
     if (!capability.optionSnapshot) {
-      // 该市场只补链/日线 —— 走到这里说明它们已由第一相入队完成, 本次冷启动到此为止。
+      // 该市场只补链 —— 上一步已就地补完, 本次冷启动到此为止。
       return this.finish(input, COLD_START_OUTCOME.BACKFILLED, { targetSession });
     }
 
@@ -261,16 +279,16 @@ export class AnchorColdStartUseCase {
     //
     // `collect` 只交回「配额耗没耗尽」一个布尔; 「该票零未到期合约」在它内部只是
     // `stats.skipped++` + 一条 WARN, 而 stats 到不了这里。于是最该被发现的那条路径 ——
-    // 链 child **成功完成但零结果** (per-target 失败不让 job 失败 ⇒ `failParentOnFailure`
-    // 够不着) —— 会一路走到下面那行落 `backfilled`, 而目标日的快照一行都没有。
+    // 链**跑完但零结果** (per-target 失败只计 stats.failed, 不让 `collect` 抛) —— 会一路
+    // 走到下面那行落 `backfilled`, 而目标日的快照一行都没有。
     // 期权 EOD 无跨日补救 ⇒ 那是**永久缺口**, 却记成了「已补齐」。
     //
     // 判据蓄意**不看 stats 而看库**: 一来它与起手复判**同源** (同一个「标的+交易日的数据
     // 在不在」, 见 {@link snapshotPresent} 的两个调用点), 不新造第二套口径; 二来 stats 的
     // `ok=1` 只说明「有合约、走完了采集路径」, 整批被落库前硬门拒掉时它照样是 1。
     //
-    // 🚫 **只看快照, 不看日线**: 日线那条边是 soft (`ignoreDependencyOnFailure`) 且可重拉,
-    // 让它左右结局会把「日线没补上」也翻成失败。
+    // 🚫 **只看快照, 不看日线**: 日线压根不在本流程内 (建锚时已取), 让它左右结局会把
+    // 一件与冷启动无关的事翻成冷启动失败。
     if (!(await this.snapshotPresent(instrumentId, targetSession))) {
       // ERROR 级 = 需人工介入, 与 `calendar_missing` 同档 (两者都是「放弃 + 留可判读记录」)。
       this.logger.error(
@@ -292,11 +310,10 @@ export class AnchorColdStartUseCase {
    * 🚨 **判据留在 job 层, 不在这里复判**: 「还能不能再试」是 BullMQ 的账 (`attemptsMade` /
    * `opts.attempts`), use case 看不见也不该看见。本方法只负责把结论落库。
    *
-   * ⚠️ 它可能**覆盖**同一次冷启动刚写下的 `backfilled`: 链 child 带 `failParentOnFailure`
-   * 硬失败时, BullMQ 仍会**先跑一遍** parent (第二相), 待其收尾时才以「有失败 child」
-   * 拒绝 complete (bullmq `scripts.js` 把 lua 的 `-9` 折成 `UnrecoverableError`) ⇒ 那一遍
-   * 可能已写过一个 `backfilled` 的谎 (零合约 ⇒ 零外呼 ⇒ 也算"跑完了")。后写的这一行才是真相,
-   * 覆盖是**要的行为**, 不是竞态。
+   * 📌 issue #159 前这里还有一段「它可能覆盖同一次冷启动刚写下的 `backfilled`」的说明 ——
+   * 那是 flow 形态的产物: 链 child 带 `failParentOnFailure` 硬失败时 BullMQ 仍会先跑一遍
+   * parent, 那一遍可能已写过一个 `backfilled` 的谎。改直调后**链失败直接上抛、根本走不到
+   * 落库那一行**, 该覆盖场景随之消失。
    */
   async recordRetryExhausted(input: {
     anchorId: bigint;
@@ -307,75 +324,6 @@ export class AnchorColdStartUseCase {
     await this.finish(input, COLD_START_OUTCOME.RETRY_EXHAUSTED, {
       reason: `BullMQ attempts 耗尽: ${input.failedReason ?? '(无 failedReason)'}`,
     });
-  }
-
-  /**
-   * 组 flow 入队: children = 能力登记表里的 delta 维度, parent = **本 job 的第二相**。
-   *
-   * 边的软硬**不同**, 且都必须显式给 —— 裸 child 会让 parent 永久卡在 `waiting-children`
-   * (`sync-flow-assembler.ts` 已实证过一次):
-   * - `option_contract` → **hard** (`failParentOnFailure`): 没有链就没有合约行, 第二相跑起来
-   *   只会 WARN 零外呼然后落一个 `backfilled` 的谎。让 parent 一起失败, 结局交由 job 层的
-   *   retry-exhausted 出口落 `retry_exhausted` (FR-019a) —— 那才是真相。
-   * - 其余 (`us_equity_bar`) → **soft** (`ignoreDependencyOnFailure`): 日线与快照互不依赖,
-   *   日线挂了不该连累快照。
-   *
-   * 🚫 delta job **不指定冷启动专属的 `asOf`** (FR-012a): 走与常规轮**同一个**求值单点
-   * (`resolveAsOfForDimension`), 日线维度自带的回看窗会把近期缺口一并补上。
-   *
-   * 🚨 **这里曾经是 #103 的病灶** (2026-08-19 prod 实证): 原实现取「市场当地的**今天**」,
-   * 而冷启动是全系统**唯一的非 cron 触发者** —— 时刻由建锚的人决定。北京 00:13 建一只美股锚
-   * = ET 12:13 **盘中** ⇒ 去拉一根还没收盘的日 K, 落库得到**半根**(实测 volume 仅正常日
-   * 23%–56%), 而 `daily_bar` 的写路径是 `createMany(skipDuplicates)` ⇒ 错行按唯一键占位、
-   * **永久驻留**, 当晚真收盘那轮被静默挡掉, `sync_run` 却记 `scanned=15 ok=15 failed=0`。
-   * 屏上标着「收盘」的价与官方收盘价最大差 1.88%。
-   * ⇒ 改用收盘口径后, 盘中触发拿到的是**上一场**, 当日那根由 06:00 常规轮在收盘后补。
-   *
-   * ⚠️ 爆炸半径提醒 (不是本格的病, 但会放大它): 入的是**维度级** job, 执行侧载整个市场工作集
-   * ⇒ 新增 1 只锚会连带重写该市场**全部**在采标的的日线。业务日算对时无害。
-   */
-  private async enqueueDeltaFlow(
-    input: { anchorId: bigint; ticker: string; now: Date },
-    market: string,
-    deltaDimensions: readonly string[],
-  ): Promise<void> {
-    const rows = await this.prisma.syncDimension.findMany({
-      where: { dimensionKey: { in: [...deltaDimensions] } },
-      select: { dimensionKey: true, marketScope: true, retryMax: true },
-    });
-    const children: FlowJob[] = rows.map((row) => ({
-      name: dimensionJobName(row.dimensionKey as DimensionKey),
-      queueName: MARKETDATA_SYNC_QUEUE,
-      data: {
-        dimensionKey: row.dimensionKey as DimensionKey,
-        mode: 'delta',
-        asOf: resolveAsOfForDimension(row, input.now),
-        triggeredBy: 'anchor-cold-start',
-      } satisfies DimensionJobPayload,
-      opts: {
-        ...this.syncQueue.jobOpts({ retryMax: row.retryMax }),
-        ...(row.dimensionKey === 'option_contract'
-          ? { failParentOnFailure: true }
-          : { ignoreDependencyOnFailure: true }),
-      },
-    }));
-
-    const tree: FlowJob = {
-      name: ANCHOR_COLD_START_JOB,
-      queueName: MARKETDATA_SYNC_QUEUE,
-      data: {
-        ticker: input.ticker,
-        anchorId: String(input.anchorId),
-        phase: 'snapshot',
-      } satisfies AnchorColdStartJobPayload,
-      opts: this.syncQueue.jobOpts({ retryMax: ANCHOR_COLD_START_RETRY_MAX }),
-      ...(children.length > 0 ? { children } : {}),
-    };
-    await this.syncQueue.enqueueFlow(tree);
-    this.logger.log(
-      `[anchor-cold-start] ${input.ticker} (${market}) 已组 flow: ` +
-        `children=[${rows.map((r) => r.dimensionKey).join(', ')}] → parent=第二相快照`,
-    );
   }
 
   /** `trading_day` 中**严格早于** `date` 的最大交易日; `null` = 缺行 (见 {@link lastClosedTradingDay})。 */
@@ -482,7 +430,12 @@ export class AnchorColdStartUseCase {
    * 同一标的的 N 只锚会各判「没做过」⇒ 同一份**标的级共享数据**被拉 N 遍。
    *
    * 逐档按能力登记表问, 不写死 us: 只在该市场真的会补那一档时才要求它在场。
-   * 复杂度: ≤2 次 count (短路 —— 日线缺就不必再问快照)。
+   *
+   * 🚫 **日线已不在判据内** (issue #159): 它不再是冷启动的职责 (建锚那一刻
+   * `CreateAnchorUseCase.seedLastClose` 已取过), 拿它当闸只会让「日线恰好没落上」误挡住
+   * 真正要补的快照。
+   *
+   * 复杂度: 1 次 count。
    */
   private async dataAlreadyPresent(
     market: string,
@@ -490,16 +443,18 @@ export class AnchorColdStartUseCase {
     targetSession: string,
   ): Promise<boolean> {
     const capability = COLD_START_CAPABILITY[market];
-    const sessionDate = new Date(`${targetSession}T00:00:00Z`);
 
-    const barPresent =
-      capability.deltaDimensions.length === 0 ||
-      (await this.prisma.dailyBar.count({
-        where: { instrumentId, tradeDate: sessionDate },
-      })) > 0;
-    if (!barPresent) return false;
+    // 快照在场 ⇒ 它上游的链**必然**也在 (快照是按 `option_contract` 行去采的) ⇒ 快照这一档
+    // 就是最强判据, 不必再多问一次链。
+    if (capability.optionSnapshot) return this.snapshotPresent(instrumentId, targetSession);
 
-    return !capability.optionSnapshot || (await this.snapshotPresent(instrumentId, targetSession));
+    // 只补链、不补快照的市场 —— 今天没有这样的市场, 留结构位 (加市场时才走得到)。
+    return (
+      !capability.optionChain ||
+      (await this.prisma.optionContract.count({
+        where: { underlyingInstrumentId: instrumentId },
+      })) > 0
+    );
   }
 
   /**

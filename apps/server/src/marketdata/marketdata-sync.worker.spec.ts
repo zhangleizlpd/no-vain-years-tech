@@ -127,18 +127,7 @@ describe('MarketdataSyncWorker — 冷启动路由 (060 T007)', () => {
     expect(input.anchorId).toBe(42n);
     expect(input.ticker).toBe('us:AAPL');
     expect(input.now).toBeInstanceOf(Date);
-    expect(input.phase).toBeUndefined();
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
-  });
-
-  it('第二相 `phase: snapshot` 原样透传 (flow parent 靠它跑敏感档)', async () => {
-    const { worker, run } = build({
-      coldStartResult: { settled: true, outcome: COLD_START_OUTCOME.INTRADAY_SKIPPED },
-    });
-
-    await worker.process(coldStartJob({ ...COLD_START_PAYLOAD, phase: 'snapshot' }));
-
-    expect((run.mock.calls[0]?.[0] as { phase?: string }).phase).toBe('snapshot');
   });
 
   it('配额顺延 (`vendor_budget`) ⇒ 延时重入队同 payload, 不抛不耗 attempts', async () => {
@@ -146,21 +135,24 @@ describe('MarketdataSyncWorker — 冷启动路由 (060 T007)', () => {
       coldStartResult: { settled: false, deferral: 'vendor_budget' },
     });
 
-    await expect(
-      worker.process(coldStartJob({ ...COLD_START_PAYLOAD, phase: 'snapshot' })),
-    ).resolves.toEqual({ settled: false, deferral: 'vendor_budget' });
+    await expect(worker.process(coldStartJob(COLD_START_PAYLOAD))).resolves.toEqual({
+      settled: false,
+      deferral: 'vendor_budget',
+    });
 
     expect(add).toHaveBeenCalledTimes(1);
     const [name, data, opts] = add.mock.calls[0] as [string, unknown, { delay?: number }];
     expect(name).toBe(ANCHOR_COLD_START_JOB);
-    // 原样重入队: 丢了 phase 就会从第一相重跑 ⇒ 再组一棵 flow ⇒ 链/日线被重复拉一遍。
-    expect(data).toEqual({ ...COLD_START_PAYLOAD, phase: 'snapshot' });
+    // 原样重入队 (issue #159 后 payload 只剩 ticker + anchorId, 两相已合一)。
+    expect(data).toEqual(COLD_START_PAYLOAD);
     expect(opts.delay).toBe(REQUEUE_DELAY_MS);
   });
 
-  it('第一相交回 `awaiting_chain` ⇒ 零重入队 (第二相由 flow parent 语义接管)', async () => {
+  it('终结结局 ⇒ 零重入队 (只有 vendor_budget 顺延才重投)', async () => {
+    // issue #159 前这里验的是 `awaiting_chain`(第一相组完 flow 交回、不重投)。两相合一后
+    // 该 deferral 退役, 剩下唯一的「不重投」情形就是已终结。
     const { worker, add } = build({
-      coldStartResult: { settled: false, deferral: 'awaiting_chain' },
+      coldStartResult: { settled: true, outcome: COLD_START_OUTCOME.BACKFILLED },
     });
 
     await worker.process(coldStartJob(COLD_START_PAYLOAD));
@@ -228,7 +220,7 @@ describe('MarketdataSyncWorker — 既有维度路由回归', () => {
 describe('MarketdataSyncWorker — retry 耗尽出口 (FR-019a)', () => {
   it('冷启动 job 硬失败 ⇒ 落 `retry_exhausted`', async () => {
     const { worker, recordRetryExhausted, getJob } = build();
-    getJob.mockResolvedValue(coldStartJob({ ...COLD_START_PAYLOAD, phase: 'snapshot' }));
+    getJob.mockResolvedValue(coldStartJob(COLD_START_PAYLOAD));
 
     await worker.onJobFailed('cs-1', 'boom');
 

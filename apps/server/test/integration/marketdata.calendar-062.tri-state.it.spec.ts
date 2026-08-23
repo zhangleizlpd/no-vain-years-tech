@@ -10,7 +10,7 @@ import { AnchorColdStartUseCase } from '../../src/marketdata/anchor-cold-start.u
 import { COLD_START_OUTCOME } from '../../src/marketdata/anchor-cold-start.rules';
 import type { AnchorDrivenSyncGate } from '../../src/marketdata/anchor-driven-sync-gate';
 import { FreshnessSlaCheck } from '../../src/marketdata/freshness-sla.check';
-import type { MarketdataSyncQueue } from '../../src/marketdata/marketdata-sync.queue';
+import type { SyncOptionContractUseCase } from '../../src/marketdata/sync-option-contract.usecase';
 import type {
   OptionSnapshotBatch,
   OptionSnapshotPort,
@@ -352,10 +352,9 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       new AnchorColdStartUseCase(
         prisma,
         { recalcSafely: async () => null } as unknown as AnchorDrivenSyncGate,
-        {
-          enqueueFlow: async () => undefined,
-          jobOpts: () => ({}),
-        } as unknown as MarketdataSyncQueue,
+        // issue #159: 冷启动改直调链本体, 不再入队 ⇒ 原先桩的是 MarketdataSyncQueue。
+        // 本文件验的是日历三态判据, 链有没有真跑与判据无关 ⇒ no-op 桩 (返 false = 配额未耗尽)。
+        { collect: async () => false } as unknown as SyncOptionContractUseCase,
         snapshot,
         adapter,
       );
@@ -430,8 +429,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       await seedCoverage('us', '2026-08-01', '2026-12-31');
 
       const viaColdStart = await collectAndDrain(
-        () =>
-          buildColdStart().run({ anchorId: 7n, ticker: 'us:PEP', now: ET_0300, phase: 'snapshot' }),
+        () => buildColdStart().run({ anchorId: 7n, ticker: 'us:PEP', now: ET_0300 }),
         PREV,
       );
       const viaRemediation = await collectAndDrain(
@@ -453,8 +451,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       await seedCoverage('us', '2026-08-01', '2026-12-31');
 
       const viaColdStart = await collectAndDrain(
-        () =>
-          buildColdStart().run({ anchorId: 8n, ticker: 'us:PEP', now: ET_1630, phase: 'snapshot' }),
+        () => buildColdStart().run({ anchorId: 8n, ticker: 'us:PEP', now: ET_1630 }),
         TODAY,
       );
       const viaRemediation = await collectAndDrain(
@@ -481,7 +478,6 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
         anchorId: 9n,
         ticker: 'us:PEP',
         now: ET_0300,
-        phase: 'snapshot',
       });
 
       // 写敏感档 MUST NOT 猜口径：`premarket_backfill` 与 `eod` 差的是一整天的 OI 归属。

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FlowJob } from 'bullmq';
 import type { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
 import {
   COLD_START_CAPABILITY,
@@ -7,8 +6,8 @@ import {
   resolveSnapshotSpec,
 } from './anchor-cold-start.rules.js';
 import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
-import type { MarketdataSyncQueue } from './marketdata-sync.queue.js';
 import type { PrismaService } from '../security/prisma.service.js';
+import type { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import type { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
 import type { SessionKindStatus, TradingDayStatus } from './trading-day.rules.js';
@@ -39,8 +38,12 @@ interface Overrides {
    * 同值, 即「采集没让库里多出任何东西」—— 那正是链零结果时的真实形态。
    */
   snapshotRowsAfterCollect?: number;
-  /** `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
+  /** 快照 `collect` 返 true = vendor 配额耗尽 (顺延信号)。 */
   budgetExhausted?: boolean;
+  /** 链本体 `collect` 返 true = vendor 配额耗尽 (issue #159 起冷启动直调它)。 */
+  chainBudgetExhausted?: boolean;
+  /** 链本体抛错 —— 硬边语义: MUST 上抛给 BullMQ, MUST NOT 被吞成 `backfilled`。 */
+  chainThrows?: boolean;
   /**
    * `TRADING_CALENDAR_PORT.classify` 对**今天**的答案 (周末 / 节假日 = `non-trading`)。
    * 062 T009 起三态**各走各的**: `trading` / `non-trading` 进 §D4 决策表, `unknown` 直接
@@ -122,9 +125,13 @@ function build(overrides: Overrides = {}) {
   });
   const gate = { recalcSafely } as unknown as AnchorDrivenSyncGate;
 
-  const enqueueFlow = vi.fn(async (_tree: FlowJob) => ({}) as never);
-  const jobOpts = vi.fn((o: { retryMax: number }) => ({ attempts: o.retryMax }));
-  const syncQueue = { enqueueFlow, jobOpts } as unknown as MarketdataSyncQueue;
+  // issue #159: 冷启动直调链本体 (原先是组 flow 入维度 job)。返 true = vendor 配额耗尽。
+  const chainCollect = vi.fn(async (_instruments: unknown, _spec: unknown, _stats: unknown) => {
+    calls.push('chain.collect');
+    if (overrides.chainThrows === true) throw new Error('chain boom');
+    return overrides.chainBudgetExhausted === true;
+  });
+  const chain = { collect: chainCollect } as unknown as SyncOptionContractUseCase;
 
   const collect = vi.fn(async (_instruments: unknown, _spec: unknown, _stats: unknown) => {
     calls.push('snapshot.collect');
@@ -137,7 +144,7 @@ function build(overrides: Overrides = {}) {
   const calendar = { classify } as unknown as TradingCalendarPort;
 
   return {
-    usecase: new AnchorColdStartUseCase(prisma, gate, syncQueue, snapshot, calendar),
+    usecase: new AnchorColdStartUseCase(prisma, gate, chain, snapshot, calendar),
     calls,
     tradingDayFindFirst,
     instrumentFindUnique,
@@ -147,8 +154,7 @@ function build(overrides: Overrides = {}) {
     dailyBarCount,
     snapshotCount,
     syncDimensionFindMany,
-    enqueueFlow,
-    jobOpts,
+    chainCollect,
     collect,
     classify,
   };
@@ -175,7 +181,7 @@ describe('AnchorColdStartUseCase 早退分支 —— 各自结局 + 零外呼', 
     expect(ctx.recalcSafely).not.toHaveBeenCalled();
     expect(ctx.dailyBarCount).not.toHaveBeenCalled();
     expect(ctx.snapshotCount).not.toHaveBeenCalled();
-    expect(ctx.enqueueFlow).not.toHaveBeenCalled();
+    expect(ctx.chainCollect).not.toHaveBeenCalled();
     expect(ctx.collect).not.toHaveBeenCalled();
   }
 
@@ -241,7 +247,7 @@ describe('AnchorColdStartUseCase 早退分支 —— 各自结局 + 零外呼', 
     // 🚨 放弃必须早于 seed 与开闸 —— 定不到目标日就动库, 正是 FR-009 禁的「落数据行」。
     expect(local.instrumentFindUnique).not.toHaveBeenCalled();
     expect(local.recalcSafely).not.toHaveBeenCalled();
-    expect(local.enqueueFlow).not.toHaveBeenCalled();
+    expect(local.chainCollect).not.toHaveBeenCalled();
     const row = recordedRow(local.runUpsert);
     expect(row.outcome).toBe(COLD_START_OUTCOME.CALENDAR_MISSING);
     expect(row.targetSession).toBeNull();
@@ -249,8 +255,8 @@ describe('AnchorColdStartUseCase 早退分支 —— 各自结局 + 零外呼', 
 });
 
 describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
-  it('目标交易日的日线 + 快照都在 ⇒ already_present, 零外呼且不组 flow', async () => {
-    const ctx = build({ barRows: 1, snapshotRows: 2150 });
+  it('目标交易日的快照已在 ⇒ already_present, 零外呼 (链与快照都不碰)', async () => {
+    const ctx = build({ snapshotRows: 2150 });
     const result = await ctx.usecase.run({
       anchorId: ANCHOR_ID,
       ticker: 'us:PEP',
@@ -258,19 +264,19 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
     });
 
     expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.ALREADY_PRESENT });
-    expect(ctx.enqueueFlow).not.toHaveBeenCalled();
+    expect(ctx.chainCollect).not.toHaveBeenCalled();
     expect(ctx.collect).not.toHaveBeenCalled();
     const row = recordedRow(ctx.runUpsert);
     expect(row.targetSession).toEqual(TARGET_DATE);
   });
 
-  it('🚨 复判查的是 daily_bar / option_daily_snapshot 本身, **不读** anchor_cold_start_run', async () => {
-    const ctx = build({ barRows: 1, snapshotRows: 1 });
+  it('🚨 复判查的是 option_daily_snapshot 本身, **不读** anchor_cold_start_run', async () => {
+    const ctx = build({ snapshotRows: 1 });
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
-    expect(ctx.dailyBarCount.mock.calls[0][0]).toMatchObject({
-      where: { instrumentId: INSTRUMENT_ID, tradeDate: TARGET_DATE },
-    });
+    // 🚫 issue #159 起**不再查 daily_bar**: 日线已不是冷启动的职责 (建锚时 seedLastClose
+    //    已取过), 拿它当闸只会让「日线恰好没落上」误挡住真正要补的快照。
+    expect(ctx.dailyBarCount).not.toHaveBeenCalled();
     expect(ctx.snapshotCount.mock.calls[0][0]).toMatchObject({
       where: { sessionDate: TARGET_DATE, contract: { underlyingInstrumentId: INSTRUMENT_ID } },
     });
@@ -278,8 +284,8 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
     expect(ctx.runUpsert).toHaveBeenCalledTimes(1);
   });
 
-  it('🚨 D9 顺序: 定日历 → seed → 开闸 → 复判 (反了会静默拿到空工作集)', async () => {
-    const ctx = build({ barRows: 1, snapshotRows: 1 });
+  it('🚨 D9 顺序: 定日历 → seed → 开闸 → 复判 (反了会静默拿到空数据)', async () => {
+    const ctx = build({ snapshotRows: 1 });
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
     expect(ctx.calls.filter((c) => c !== 'anchorColdStartRun.upsert')).toEqual([
@@ -290,20 +296,19 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
       'instrument.findUnique',
       'instrument.upsert',
       'gate.recalcSafely',
-      'dailyBar.count',
       'optionDailySnapshot.count',
     ]);
   });
 
   it('Instrument 行已在 ⇒ 不 seed, 直接用既有 id (空 update 也不发)', async () => {
-    const ctx = build({ instrumentExists: true, barRows: 1, snapshotRows: 1 });
+    const ctx = build({ instrumentExists: true, snapshotRows: 1 });
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
     expect(ctx.instrumentUpsert).not.toHaveBeenCalled();
   });
 
   it('🚨 seed 落 needSync=false —— needSync 的重算权威只有采集闸, 不给它开第三个写入点', async () => {
-    const ctx = build({ barRows: 1, snapshotRows: 1 });
+    const ctx = build({ snapshotRows: 1 });
     await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
 
     const args = ctx.instrumentUpsert.mock.calls[0][0] as {
@@ -313,100 +318,85 @@ describe('AnchorColdStartUseCase 前置顺序与起手复判', () => {
     expect(args.create).toMatchObject({ market: 'us', code: 'PEP', name: 'PEP', needSync: false });
     expect(args.update).toEqual({});
   });
-
-  it('日线缺 ⇒ 短路, 连快照都不必问 (少一次 count)', async () => {
-    const ctx = build({ barRows: 0, snapshotRows: 2150 });
-    await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
-    expect(ctx.snapshotCount).not.toHaveBeenCalled();
-  });
 });
 
-describe('第一相 —— 不敏感档组 flow (plan §D8, FR-012 / FR-012a)', () => {
-  /** 取第一相实际入队的那棵树。 */
-  function enqueuedTree(ctx: ReturnType<typeof build>): FlowJob {
-    expect(ctx.enqueueFlow).toHaveBeenCalledTimes(1);
-    return ctx.enqueueFlow.mock.calls[0][0];
-  }
+describe('不敏感档 —— 直调链本体 (issue #159, FR-012)', () => {
+  const RUN = { anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING };
 
-  it('数据缺 ⇒ 组 flow 并交回 awaiting_chain, **此时不落运行记录**', async () => {
-    const ctx = build();
-    const result = await ctx.usecase.run({
-      anchorId: ANCHOR_ID,
-      ticker: 'us:PEP',
-      now: SATURDAY_1000_BEIJING,
-    });
+  it('🚨 只把**这一只**锚传进链本体 —— 不再入维度 job (那会拉上全部已开闸标的)', async () => {
+    const ctx = build({ snapshotRowsAfterCollect: 2150 });
+    await ctx.usecase.run(RUN);
 
-    expect(result).toEqual({ settled: false, deferral: 'awaiting_chain' });
-    // 两相加起来才是一次冷启动 —— 中途写一行会让「最近一次的结局」在窗口期内是错的。
-    expect(ctx.runUpsert).not.toHaveBeenCalled();
-    // 第一相**不碰快照**: 它的合约表还是空的, 此刻抓只会 WARN 零外呼。
-    expect(ctx.collect).not.toHaveBeenCalled();
+    // 这条断言就是 54× 放大的解药: 传进去的必须**恰好一只**, 且就是本锚那只。
+    expect(ctx.chainCollect).toHaveBeenCalledTimes(1);
+    const [instruments] = ctx.chainCollect.mock.calls[0] as [unknown[], unknown, unknown];
+    expect(instruments).toEqual([{ id: INSTRUMENT_ID, market: 'us', code: 'PEP' }]);
   });
 
-  it('🚨 parent 是本 job 的第二相 —— 快照排在链/日线之后, 这是 SC-001 的承重点', async () => {
-    const ctx = build();
-    await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
+  it('🚨 一次调用跑完两档 —— 链在前快照在后, 不再有 awaiting_chain 中断', async () => {
+    const ctx = build({ snapshotRowsAfterCollect: 2150 });
 
-    const tree = enqueuedTree(ctx);
-    expect(tree.name).toBe('sync:anchor-cold-start');
-    expect(tree.data).toEqual({ ticker: 'us:PEP', anchorId: '42', phase: 'snapshot' });
-    expect(tree.children?.map((c) => c.name)).toEqual([
-      'sync:option_contract',
-      'sync:us_equity_bar',
+    const result = await ctx.usecase.run(RUN);
+
+    // 两相合一 (原先第一相组完 flow 就 return, 第二相靠 BullMQ parent 语义另跑一遍)。
+    // 顺序**必须**是链在前 —— 反了的话快照拿到的是空合约表, 零外呼还照样落 backfilled。
+    expect(ctx.calls.filter((c) => c === 'chain.collect' || c === 'snapshot.collect')).toEqual([
+      'chain.collect',
+      'snapshot.collect',
     ]);
-  });
-
-  it('🚨 每个 child 都显式给了传播 opts —— 裸 child 会让 parent 永久卡 waiting-children', async () => {
-    const ctx = build();
-    await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
-
-    const [chain, bar] = enqueuedTree(ctx).children ?? [];
-    // 链是 **hard**: 没有合约行, 第二相跑起来只会零外呼然后落一个 backfilled 的谎。
-    expect(chain.opts).toMatchObject({ attempts: 5, failParentOnFailure: true });
-    // 日线是 **soft**: 与快照互不依赖, 挂了不该连累它。
-    expect(bar.opts).toMatchObject({ attempts: 2, ignoreDependencyOnFailure: true });
-    expect(chain.opts).not.toHaveProperty('ignoreDependencyOnFailure');
-    expect(bar.opts).not.toHaveProperty('failParentOnFailure');
-  });
-
-  it('🚨 delta job 的 asOf 按各维度自己的 marketScope 求 (FR-012a: 不设冷启动专属目标日)', async () => {
-    const ctx = build();
-    await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: SATURDAY_1000_BEIJING });
-
-    for (const child of enqueuedTree(ctx).children ?? []) {
-      // 北京周六 10:00 = ET 周五 ⇒ us 维度的业务日是 08-14, **不是**宿主的 08-15。
-      expect(child.data).toMatchObject({
-        mode: 'delta',
-        asOf: TARGET,
-        triggeredBy: 'anchor-cold-start',
-      });
-      expect(child.data).not.toHaveProperty('codes');
-    }
+    expect(result).toEqual({ settled: true, outcome: COLD_START_OUTCOME.BACKFILLED });
   });
 
   /**
-   * 🚨 **#103 的验收面** (2026-08-19 prod 实证 → 063 Phase 1 修)。
+   * 🚨 **#103 的验收面在这里换了形态但没丢** (2026-08-19 prod 实证 → 063 Phase 1 修)。
    *
-   * 冷启动是全系统**唯一的非 cron 触发者** —— 时刻由建锚的人决定。改动前这里取「市场当地的
-   * 今天」, 于是北京 00:13 建一只美股锚 (= ET 12:13 **盘中**) 会去拉一根还没收盘的日 K,
-   * 落库得到半根 (实测 volume 仅正常日 23%–56%), 而 `daily_bar` 写路径是
-   * `createMany(skipDuplicates)` ⇒ **永久驻留**、当晚真收盘那轮被静默挡掉、`sync_run` 全绿。
+   * 原先两个 child 各自按维度声明求 `asOf`：`us_equity_bar` 是收盘口径 (退到上一场, 防拉半根
+   * 未收盘的 K)、`option_contract` 是 `calendar-day` 口径 (取 ET 当日)。日线移出本流程后,
+   * 只剩链这一档要盯 —— 而它**恰恰是不能退**的那个: 业务日在链里只用来剔除已过期的到期日
+   * (FR-028a 判据 `≥`), 退一天会把**当日到期**的合约整批漏采。
    */
-  it('🚨 美股盘中建锚: 日线维度取**上一场**, 而不是尚未收盘的当日 (#103)', async () => {
-    // 2026-08-19 00:13 北京 = ET 2026-08-18(二) 12:13 —— 美股连续竞价进行中。
-    const intraday = new Date('2026-08-19T00:13+08:00');
-    const ctx = build();
-    await ctx.usecase.run({ anchorId: ANCHOR_ID, ticker: 'us:PEP', now: intraday });
+  it('🚨 链的 businessDate 取 ET 当日 —— 退一天会漏采当日到期的合约 (FR-028a)', async () => {
+    // 2026-08-19 00:13 北京 = ET 2026-08-18(二) 12:13, 美股连续竞价进行中。
+    const ctx = build({ snapshotRowsAfterCollect: 2150 });
 
-    const byName = new Map(
-      (enqueuedTree(ctx).children ?? []).map((c) => [c.name, c.data as { asOf: string }]),
-    );
-    // `us_equity_bar` 声明的是收盘口径 ⇒ 退到上一场 08-17。
-    expect(byName.get('sync:us_equity_bar')?.asOf).toBe('2026-08-17');
-    // 📌 `option_contract` 是 `calendar-day` 口径 ⇒ 仍取 ET 当日: 它拿业务日**剔除已过期的
-    //    到期日**, 不是往行上盖日戳, 退一天反而会把当日到期的合约漏采 (FR-028a)。
-    //    两个 child 的 asOf 不同**是对的** —— 这正是「逐维度声明口径」要表达的东西。
-    expect(byName.get('sync:option_contract')?.asOf).toBe('2026-08-18');
+    await ctx.usecase.run({ ...RUN, now: new Date('2026-08-19T00:13+08:00') });
+
+    const [, spec] = ctx.chainCollect.mock.calls[0] as [unknown, { businessDate: string }, unknown];
+    expect(spec.businessDate).toBe('2026-08-18');
+  });
+
+  it('🚨🚨 链抛错 MUST 上抛 —— 吞掉它就会落一个 `backfilled` 的谎', async () => {
+    const ctx = build({ chainThrows: true });
+
+    await expect(ctx.usecase.run(RUN)).rejects.toThrow(/chain boom/);
+
+    // 硬边语义 (原先由 flow child 的 `failParentOnFailure` 表达, 现在靠「不 catch」):
+    // 没有链就没有合约行 ⇒ 快照跑起来只会零外呼 ⇒ 必须让整个 job 失败, 交 BullMQ 重试,
+    // attempts 耗尽后由 job 层落 `retry_exhausted` (FR-019a)。
+    expect(ctx.collect).not.toHaveBeenCalled();
+    expect(ctx.runUpsert).not.toHaveBeenCalled();
+  });
+
+  it('链配额耗尽 ⇒ vendor_budget 顺延, 不碰快照也不落运行记录', async () => {
+    const ctx = build({ chainBudgetExhausted: true });
+
+    const result = await ctx.usecase.run(RUN);
+
+    expect(result).toEqual({ settled: false, deferral: 'vendor_budget' });
+    // 🚫 链没采全就去抓快照 = 拿着残缺工作集问 vendor; 顺延 ≠ 失败, 故也不落结局行。
+    expect(ctx.collect).not.toHaveBeenCalled();
+    expect(ctx.runUpsert).not.toHaveBeenCalled();
+  });
+
+  it('🚫 日线全程不参与 —— 建锚那一刻 seedLastClose 已取过 (原 child 是重复劳动)', async () => {
+    const ctx = build({ snapshotRowsAfterCollect: 2150 });
+
+    await ctx.usecase.run(RUN);
+
+    // 结构性断言: 冷启动对 daily_bar **零读零写**。`optionsdesk.anchor` 全仓只有一个 create
+    // 点, 而它的 seedLastClose 同步调过 EnsureLatestEodBarUseCase ⇒ 每只锚出生即有日线。
+    expect(ctx.dailyBarCount).not.toHaveBeenCalled();
+    expect(ctx.calls.some((c) => c.startsWith('dailyBar'))).toBe(false);
   });
 });
 
@@ -578,7 +568,7 @@ describe('第二相 —— 午休档 (FR-011, 今天端到端不可达)', () => 
 
   beforeEach(() => {
     // deltaDimensions 留空 ⇒ 第一相无 flow 可组, 直接落到敏感档, 正好把这一格暴露出来。
-    COLD_START_CAPABILITY.hk = { deltaDimensions: [], optionSnapshot: true };
+    COLD_START_CAPABILITY.hk = { optionChain: false, optionSnapshot: true };
   });
   afterEach(() => {
     COLD_START_CAPABILITY.hk = original;

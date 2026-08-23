@@ -135,12 +135,14 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
    * 冷启动分支 (060 plan §D3)。**不**进 `DimensionExecutorRegistry` —— 冷启动没有
    * `sync_dimension` 行, 也不该有 (它是事件驱动的一次性补数, 不是有水位的周期维度)。
    *
-   * 顺延语义与维度分支逐字同源: `vendor_budget` ⇒ 延时重入队**同 payload** (含 `phase`),
-   * deferral ≠ failure 故不耗本 job attempts (FR-019b)。`awaiting_chain` 无需重投 ——
-   * 第二相是 flow parent, 由 BullMQ 的「children 全终态才跑」保证。
+   * 顺延语义与维度分支逐字同源: `vendor_budget` ⇒ 延时重入队**同 payload**,
+   * deferral ≠ failure 故不耗本 job attempts (FR-019b)。
+   *
+   * 📌 issue #159 前还有第二个 deferral `awaiting_chain` (第一相组完 flow 交回、第二相由
+   * BullMQ parent 语义接着跑)。链改直调后两相合一, 该分支随之退役。
    */
   private async processColdStart(job: Job<AnchorColdStartJobPayload>): Promise<ColdStartResult> {
-    const { ticker, anchorId, phase } = job.data;
+    const { ticker, anchorId } = job.data;
     if (typeof ticker !== 'string' || ticker === '' || !/^\d+$/.test(String(anchorId))) {
       // 非法 payload (生产者漂移) → 直接 fail, 与维度分支的 name/dimensionKey 校验同一形态。
       throw new Error(`${ANCHOR_COLD_START_JOB} payload 非法: ${JSON.stringify(job.data)}`);
@@ -149,7 +151,6 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
       anchorId: BigInt(anchorId),
       ticker,
       now: new Date(),
-      phase,
     });
     if (!result.settled && result.deferral === 'vendor_budget') {
       await this.syncQueue.enqueueColdStart(job.data, {
