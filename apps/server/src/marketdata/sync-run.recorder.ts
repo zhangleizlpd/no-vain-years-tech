@@ -20,7 +20,29 @@ export interface SyncRunStats {
   failedTargets: unknown[];
 }
 
-export type SyncRunStatus = 'success' | 'partial' | 'failed' | 'skipped';
+/**
+ * SyncRun 终态值域。`interrupted` (#137) 是**基建打断**, 与 `failed` (业务/vendor 失败)
+ * 刻意分开 —— 被换容器打断的那一轮由 BullMQ stalled 接管重跑, 把它记成失败会污染失败率。
+ * 业内同一取舍: Nomad 的 `lost` 与 `failed` 并列, Oracle Scheduler 把被打断的作业记
+ * `STOPPED` 而非 `FAILED`; K8s 的 `podFailurePolicy` 更进一步, 让基建打断**不计入**重试预算。
+ *
+ * 🚨 `interrupted` **只由收敛路径产出** ({@link SyncRunRecorder.convergeInterrupted}),
+ * {@link deriveStatus} 永远不会返它 —— 它不是由计数派生的结论, 是「上一次没能自己收尾」的事后判定。
+ */
+export type SyncRunStatus = 'success' | 'partial' | 'failed' | 'skipped' | 'interrupted';
+
+/**
+ * `interrupted` 行落进 `failed_targets` 的判据文本 —— **两个触发点各有各的一句**, 因为它们
+ * 回答的是不同的问题:「这一轮还会不会被重跑」。查表的人只看这一列就能分辨, 不必回溯队列。
+ * (审计明细通道复用 `failed_targets`, 非失败语义 —— 同 {@link SyncRunRecorder.recordSkippedWithReason}。)
+ */
+export const INTERRUPT_REASON = {
+  /** 同 job 的下一个 attempt 开工前扫地 ⇒ **已有接管者**, 本轮的活不会丢。 */
+  SUPERSEDED_BY_RETRY:
+    'interrupted: 上一 attempt 未收尾 (进程被替换 / 崩溃), 同 job 已由新 attempt 接管重跑',
+  /** job 重试耗尽 (含 stalled 次数超限) ⇒ **不会再有接管者**, 这一轮的活是真的没做。 */
+  RETRIES_EXHAUSTED: 'interrupted: attempt 未收尾且 job 重试已耗尽 — 不会再重跑',
+} as const;
 
 /**
  * 累加**实际发生了写操作的行数** (063 Phase 3.3)。第一次上报把 `null` 抬成数, 之后累加 ——
@@ -67,6 +89,43 @@ export class SyncRunRecorder {
       select: { id: true },
     });
     return run.id;
+  }
+
+  /**
+   * 把同一 BullMQ job 上**没能自己收尾的 attempt** 收成 `interrupted` 终态 (#137), 返收敛行数。
+   *
+   * ## 判据是确定性的, 不靠任何时间阈值
+   *
+   * BullMQ 的 job lock 保证同一 `jobId` 任一时刻只被一个 worker 处理 ⇒「同 `bull_job_id` 还
+   * 挂着 `running`」只可能是**被打断的上一次 attempt**, 不可能是活着的并发者。业内那些通用
+   * 调度器 (Airflow 心跳超时 / Temporal Heartbeat Timeout) 只能用「多久没心跳就算死」这类概率
+   * 判据, 是因为它们的执行体可能并发多实例; 本仓有 lock 互斥 + `bull_job_id` 恒非空 (见
+   * `DimensionExecutorRegistry.execute` 注释), 故可以做到零阈值、零心跳。
+   *
+   * 🚨 **调用点必须在新行 INSERT 之前** —— 那是「绝不误伤自己」的全部依据, 顺序反了就会把刚
+   * 开的那一行当僵尸收掉。两个调用点都在 `marketdata-sync.worker.ts`（BullMQ attempt 是它的
+   * 领域知识, 不是 executor 的), 判据见那里。
+   *
+   * 🚨 `finishedAt` 记的是**收敛时刻, 不是被打断的时刻** —— 真正断在哪一秒没有任何人记得下来
+   * (进程当时已经没了)。⇒ `interrupted` 行的 `finished_at - started_at` **不是耗时**: app 停机
+   * 几天再起, 它就是几天。任何耗时统计必须把本终态排除掉 —— 而「能被排除」正是它独立成一个
+   * 终态、而不是复用 `failed` 的收益所在。
+   */
+  async convergeInterrupted(
+    bullJobId: string,
+    reason: string,
+    now: Date = new Date(),
+  ): Promise<number> {
+    const { count } = await this.prisma.syncRun.updateMany({
+      where: { bullJobId, status: 'running' },
+      data: {
+        status: 'interrupted',
+        finishedAt: now,
+        // 未收尾的行 failedTargets 恒为 NULL ⇒ 这里是首写, 不会盖掉任何既有明细。
+        failedTargets: [{ reason }] as Prisma.InputJsonValue,
+      },
+    });
+    return count;
   }
 
   /**

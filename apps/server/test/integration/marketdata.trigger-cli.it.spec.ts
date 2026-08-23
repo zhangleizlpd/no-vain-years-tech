@@ -106,6 +106,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -139,6 +140,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -175,6 +177,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -241,6 +244,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -282,6 +286,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -315,6 +320,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

@@ -417,6 +417,7 @@ describe('041 T017 US 回填 pacing + 续跑 + 无回归 (Testcontainers PG+Redi
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

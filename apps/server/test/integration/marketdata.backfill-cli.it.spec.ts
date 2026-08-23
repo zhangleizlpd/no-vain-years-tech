@@ -230,6 +230,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -297,6 +298,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

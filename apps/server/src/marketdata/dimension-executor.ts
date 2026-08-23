@@ -930,6 +930,15 @@ export class DimensionExecutorRegistry {
    * 执行单维度: 自管 `sync:<dim>` SyncRun 行 (含 bullJobId 回链) + per-dim 降级告警;
    * 顶层异常收 failed 后上抛 (worker attempts 重试语义源)。`budgetExhausted` 顺延信号
    * 由 worker 消费 (D5, deferral ≠ failure 不耗 attempts)。
+   *
+   * 🚨 **本方法是全仓唯一开 `running` 行的地方** (其余调用方走 `recordSkipped*`, 开收原子),
+   * 而它今天唯一的调用者是 `MarketdataSyncWorker.processDimension` 且恒传 `job.id` ——
+   * 两条合起来才使得「`sync_run` 里每一行 `running` 都带 `bull_job_id`」成立, 而 #137 的
+   * 收敛判据整个建在这条不变量上。
+   *
+   * ⇒ **再加第二个调用者时先读 `marketdata-sync.worker.ts` 的收敛触发点 A**: 打断收敛
+   * (`convergeInterrupted`) 挂在 worker 而非这里 (BullMQ attempt 是 worker 的领域知识),
+   * 新调用者若自己传 bullJobId 却不走那条路径, 留下的僵尸行不会有任何人收 —— 且没有声音。
    */
   async execute(
     key: DimensionKey,

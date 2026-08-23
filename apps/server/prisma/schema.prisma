@@ -1349,6 +1349,15 @@ model SyncRun {
   // 像真故障 —— 那正是「库里没有的即为假」换个地方再犯一遍。
   written       Int?
   failedTargets Json?     @map("failed_targets")
+  // 值域: running(进行中) | success | partial | failed | skipped | interrupted。
+  // 无 DB 侧 enum/CHECK —— 值域的单一来源是 `SyncRunStatus` (sync-run.recorder.ts), 加值零 migration。
+  //
+  // 🚨 `interrupted` (#137) 是**基建打断**, 与 `failed` (业务/vendor 失败) 刻意分开: 部署换容器
+  //   时进程被替换, in-flight job 的 `finish()` 永远调不到 —— 那一行不是失败, job 已由 BullMQ
+  //   stalled 接管重跑。记成 failed 会污染失败率, 不收敛则让 `running` 彻底失去信息量 (病史:
+  //   一条 18 天的僵尸 running 差点被判成卡死)。收敛判据与两个触发点见 `convergeInterrupted`。
+  // 🚨 `interrupted` 行的 `finished_at` 是**收敛时刻不是打断时刻** ⇒ 它的 finished-started
+  //   **不是耗时**。任何耗时/成功率统计都要显式排除本终态 —— 这正是它独立成值的收益。
   status        String    @db.VarChar(16)
   // 017: per-dim 执行回链 BullMQ job id (worker 路径写入; 旧聚合行 NULL)。
   bullJobId     String?   @map("bull_job_id") @db.VarChar(64)

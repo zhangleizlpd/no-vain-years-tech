@@ -323,6 +323,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -381,6 +382,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

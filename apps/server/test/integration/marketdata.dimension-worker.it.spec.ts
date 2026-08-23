@@ -95,6 +95,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -131,6 +132,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     try {
       worker.onModuleInit();
@@ -158,6 +160,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -218,6 +221,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -266,6 +270,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -320,6 +325,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -370,6 +376,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
@@ -397,6 +404,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

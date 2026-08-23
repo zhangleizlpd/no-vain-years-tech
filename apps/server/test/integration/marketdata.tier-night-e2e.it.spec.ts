@@ -212,6 +212,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();

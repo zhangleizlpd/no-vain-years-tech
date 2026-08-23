@@ -124,6 +124,7 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       queue,
       coldStartUnused(),
       CFG,
+      new SyncRunRecorder(prisma),
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
