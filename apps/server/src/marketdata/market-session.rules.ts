@@ -73,6 +73,26 @@ const MARKET_SESSION: Record<
   //
   // 今天之所以可以先合: `isWithinTradingSession` 唯一的生产调用方是
   // `alert/intraday-eval.processor.ts`, 参数写死 `INTRADAY_MARKET = 'cn'` ⇒ hk 够不到它。
+  // ── 🚨 本行取值已按 HKEX 官方核实 (2026-08-23), 不是照搬正股口径的默认值 ──
+  //
+  // 核实对象 = **单只股票期权** (Stock Options), 逐项与本行吻合、无需修正:
+  // · 早市 09:30–12:00 + 午市 13:00–16:00 ⇒ 整场跨度 09:30/16:00, 同 `segments`;
+  // · 半日市 12:00 收 (只开上午), 同 `halfDaySegments`;
+  // · **无** AHT / T+1 盘后段, **无**竞价段 ⇒ 本表不登记它们是对的;
+  // · 被排除在「衍生品假日交易」(DHT, 2022-05-09 起) 之外, 属 Non-Holiday Trading Exchange
+  //   Contracts ⇒ **期权交易日历 = 正股交易日历**, `todayIsTradingDay` 走现有 hk 日历即可。
+  // 源: HKEX 的 Stock Options FAQ / Derivatives Market Trading Hours / After-Hours Trading /
+  //     Trading Calendar and Holiday Schedule 四页互相印证。
+  //
+  // ⇒ 港股**不存在** us 那格的「股票 13:00 / 期权 13:15」分叉 (见上方 us 的 `halfDaySegments`
+  //   注释)。那道题在这里问过了, 答案是「同开同收」—— 别再重查一遍。
+  //
+  // 🚨🚨 **以上仅对单只股票期权成立。要做指数期权 (HSI / HHI) 时三条全部翻转:**
+  //   ① 有 AHT: 17:00 – 次日 03:00 ⇒ 本行的 16:00 收盘会在盘后段判「已收盘」而写脏快照;
+  //   ② 在 DHT 名单内 ⇒ 公众假期照常交易, 而正股日历那天是 non-trading;
+  //   ③ ⇒ 交易日历与正股**分叉**, 不能再共用 hk 这一份。
+  //   届时 MUST 把 hk 拆成「股票期权 / 指数期权」两份登记, 别让两类产品共用本行 ——
+  //   三个维度会同时错, 且与 us 那格同款: **静默写脏数据, 不报错**。
   hk: {
     timeZone: 'Asia/Hong_Kong',
     segments: [[9 * 60 + 30, 16 * 60]],
