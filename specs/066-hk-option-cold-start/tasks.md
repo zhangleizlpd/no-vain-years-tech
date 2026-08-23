@@ -62,7 +62,13 @@ updated_at: '2026-08-22'
 
 ## 🗂 两批推进（U2 结论未落地前）
 
-本片的 task 按「依不依赖 HKEX 的 OI 归属日实测结论」切成两批。**批 A 现在就能推完**；批 B 全部挂在 [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164) 上，等 U2 出结论。
+本片的 task 按「依不依赖 HKEX 的 OI 归属日实测结论」切成两批。批 B 全部挂在 [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164) 上，等 U2 出结论。
+
+> ✅ **批 A 已于 2026-08-23 全部完成并 push**（`T17` / `T10` / `T11` / `T12` / `T13`，连同更早的 `T01`–`T05` / `T08`）。
+>
+> 🚫 **但它不单独开 PR** —— 仓库 PR 模板的第 3 个 hard-gate checkbox 要求「本特性的 `state_branches` 均已在 integration test 中 100% `it()` 覆盖」，而批 A **覆盖不到 7 条**（1 / 2 / 3 / 4 / 6 / 7 归 T06 / T07，21 归 T15）—— 那些分支在冷启动未开通时**物理上不可达**，不是测试没写。⇒ **单 PR，等批 B 落地后一起开**（2026-08-23 决定）。
+>
+> 🚨 **批 B 落地前禁止对本分支接 auto-merge** —— 批 B 要往同一分支 push，而 auto-merge 启用后再 push 会让新 commit 孤儿化（git-workflow 明禁）。
 
 | 批 | Task | 说明 |
 | --- | --- | --- |
