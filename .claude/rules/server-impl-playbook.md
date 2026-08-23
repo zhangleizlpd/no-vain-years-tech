@@ -13,6 +13,16 @@ paths:
 
 > **全量样板索引（跨 task kind / 含 mobile）→ [golden-sample-registry](../../docs/conventions/golden-sample-registry.md)**（「task kind → 样板文件」单一索引）。
 
+## 改结构 / 换调用形态前（三步，缺一条 = 在打补丁）
+
+> 🚨 **CRITICAL —— 注释里的 `🚫` / `MUST NOT` 是针对某次具体事故的禁令，NOT 解空间的边界。** 当成边界就会在错误前提里找优化，典型形状是**给一个不该发生的操作加缓存 / 游标 / 跳过判据** —— 正解是删掉那个操作。发现自己在设计这类东西时，**MUST** 先回头问「这个操作本身该不该发生」。
+
+1. **先数调用方、再读注释**（顺序反了必错）：`rg -n '<符号>' apps/server/src --glob '!*.spec.ts'`，把数字写进回复。实证 2026-08-23：`SyncOptionContractUseCase.run` 只有 **1** 个调用方，而注释语气暗示的耦合面大得多。
+2. **逐条判禁令射程**：对每条 `🚫` 写出「它约束 X / 我要做 Y / 是否重合」。同日实证：「不许给『工作集选择』开第二个口子」约束的是**给 `DimensionJobPayload` 加字段**，直调 use case 本体根本不过那条路径 ⇒ 够不到。
+3. **找同仓已做对的对称样本**（最强信号常在同一目录）：同日实证：`SyncOptionSnapshotUseCase` 早已是 `run()` 薄适配 + **public** `collect(instruments, spec, stats)` 本体两层，而 `SyncOptionContractUseCase` 的本体仍 private —— 对称样本直接给出了正解形状。
+
+**维度采集本体的正确分层**：`run(instruments, dim, stats, input)` 只做「从 dim/input 算 spec」的薄适配（供 `factExecutor` 注册），活放在 **public 本体**（收任意标的列表 + 显式 spec）。工作集选择只属于 `factExecutor` —— **NEVER** 让本体自己查工作集，那才是「第二个口子」。
+
 ## 并发 / 事务
 
 - **单行状态转换 = conditional UPDATE + affected-count**（`updateMany where {id,<前置>}` → `count===1` won / `0` lost），READ COMMITTED。**NEVER** 单行上 `SELECT … FOR UPDATE` / Serializable（偏索引 SSI 假冲突，004 实证 72/100 假失败）。
