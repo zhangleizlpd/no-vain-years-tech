@@ -217,7 +217,7 @@ describe('FutuOptionSnapshotAdapter', () => {
     });
   });
 
-  describe('🚨 vendor 时间戳按**美东**解释 (p3b E21/E32)', () => {
+  describe('🚨 美股行的 vendor 时间戳按**美东**解释 (p3b E21/E32)', () => {
     it('夏令时 16:00 ET → 20:00Z', async () => {
       const { http } = makeShim([snapshotRow(LEG)]);
       const [row] = (await makeAdapter(http).getSnapshots(QUERY)).rows;
@@ -394,5 +394,62 @@ describe('066 T01 FutuOptionSnapshotAdapter — 港股 (hk) 接入', () => {
       expect(options.filter((r) => r.openInterest !== null)).toHaveLength(132);
       expect(uniq(options.map((r) => typeof r.netOpenInterest))).toEqual(['string']);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 066 T17 — vendor 时间戳按**行所属市场**解析 (FR-005a, plan §A13)
+// ---------------------------------------------------------------------------
+/**
+ * 病灶: `update_time` 此前固定按美东解释, 而港股行给的是**港股当地时刻** ⇒ 港股这一列整体
+ * 偏 12 小时。快照这条路上它是**纯证据零判据** (端口注释禁止拿它顶替采集时刻), 偏了不会有
+ * 任何断言变红 —— 这正是它一直没被发现的原因; 但**同一个** `vendorTimeToDate` 被实时报价
+ * adapter 复用, 那条路上 `intraday_at` 是 90 秒新鲜度闸的真判据。
+ */
+const ADAPTER_SRC = readFileSync(join(__dirname, 'futu-option-snapshot.adapter.ts'), 'utf8');
+const SESSION_CLOCK_SRC = readFileSync(join(__dirname, 'session-clock.ts'), 'utf8');
+/** 被引号括起来的 IANA 时区字面量 = 这个文件自己存了一份「market → 时区」表。 */
+const QUOTED_IANA = /['"](?:Asia|America|Europe|Australia)\/[A-Za-z_]+['"]/;
+/** 一个瞬间的 UTC 时刻部分 (`HH:mm:ss`) —— 日期各行不同, 要比的是「几点」。 */
+const utcClock = (d: Date | null) => (d === null ? null : d.toISOString().slice(11, 19));
+const utcMinutes = (d: Date) => d.getUTCHours() * 60 + d.getUTCMinutes();
+
+describe('066 T17 FutuOptionSnapshotAdapter — vendor 时间戳按行所属市场解析', () => {
+  it('① 港股期权行 132/132 落在当地 09:30–16:00 (= 01:30Z–8:00Z), 按美东会整列偏 12 小时', async () => {
+    const { batch } = await replayHkSnapshot();
+    const options = batch.rows.filter((r) => r.isOption);
+    expect(options).toHaveLength(132);
+    // 港股恒 UTC+8 且无 DST ⇒ 当地盘中区间唯一对应 01:30Z–8:00Z;
+    // 按美东 (8 月 = EDT, UTC-4) 解释会把整列推到 13:30Z–20:00Z —— 一行不剩地落在区间外。
+    const outside = options.filter((r) => {
+      const m = utcMinutes(r.vendorUpdateTime as Date);
+      return m < 90 || m > 8 * 60;
+    });
+    expect(outside).toHaveLength(0);
+    // 87 条今日未成交的腿时间戳停在开盘那一刻 (当地 09:30)。
+    expect(options.filter((r) => utcClock(r.vendorUpdateTime) === '01:30:00')).toHaveLength(87);
+  });
+
+  it('① 港股标的行 16:07:49 当地 → 08:07:49Z (逐秒对齐, 不是偏 12 小时的 20:07:49Z)', async () => {
+    const { batch } = await replayHkSnapshot();
+    const underlying = batch.rows.find((r) => !r.isOption) as (typeof batch.rows)[number];
+    expect(underlying.vendorUpdateTime).toEqual(new Date('2026-08-21T08:07:49Z'));
+  });
+
+  it('② 美股行逐点不变: 标的行与期权行同批, 16:00 ET 仍是 20:00Z', async () => {
+    const { http } = makeShim([UNDERLYING_ROW, snapshotRow(LEG)]);
+    const { rows } = await makeAdapter(http).getSnapshots(QUERY);
+    expect(uniq(rows.map((r) => r.vendorUpdateTime?.toISOString()))).toEqual([
+      '2026-08-04T20:00:00.000Z',
+    ]);
+  });
+
+  it('③ 市场→时区**只有一份**: 表在 session-clock, adapter 零 IANA 字面量', () => {
+    // 两份市场时区表一旦漂开, 表现是「某个市场的时间戳悄悄差几小时」, 不报错 ⇒ 只能机械断。
+    expect(QUOTED_IANA.test(SESSION_CLOCK_SRC)).toBe(true);
+    expect(QUOTED_IANA.test(ADAPTER_SRC)).toBe(false);
+    expect(ADAPTER_SRC).toMatch(
+      /import \{[^}]*exchangeTimeZone[^}]*\} from '\.\/session-clock\.js'/,
+    );
   });
 });

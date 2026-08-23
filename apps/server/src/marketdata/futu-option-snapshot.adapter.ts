@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { parseCanonicalSymbol } from './marketdata.rules.js';
+import { exchangeTimeZone } from './session-clock.js';
 import {
   OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
   OptionSnapshotBudgetExhaustedError,
@@ -65,24 +66,6 @@ const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   hk: 'HK',
 };
 
-/**
- * vendor `update_time` 的时区。
- *
- * 🚨 **是美东、不是北京, 也不是 UTC** —— p3b E21 实测「1333/2150 行时间戳停在 **09:30 ET**」
- * (美股期权开盘那一刻)、E32 实测正股 PEP 的 `update_time` = `04:59:43` 正是探针在 **ET 盘前**
- * 执行的那一秒。当 UTC 解析会把这一列整体推后 4–5 小时 (夏令 / 冬令还不一样), 而**这个错不会
- * 红** —— 它只是让一个诊断用的时间戳悄悄偏移。
- *
- * ⚠️ 该列只作诊断: **报价新鲜度一律取采集时刻** (E33 两条硬纪律之一) ——
- * `update_time` 是**最后成交时刻**, 做市商挪报价时它纹丝不动。
- *
- * 🚨 **已知缺口 (066 T01 记录, 未修)**: 港股行给的是**港股本地时刻** (2026-08-23 实取: 期权行
- * `2026-08-21 09:30:00`、标的行 `16:07:49`, 都是 HKT), 按美东解释会让这一列整体偏 12 小时。
- * 之所以没在本 task 顺手改: 该列是**纯证据零判据** (`option-snapshot.port.ts` 写明不得用它顶替
- * 采集时刻), 而按行推市场需要一张 market→tz 表 —— 那是一个 spec 尚未定的决策, 不是一行改动。
- */
-const VENDOR_UPDATE_TIME_ZONE = 'America/New_York';
-
 /** `get_market_snapshot` 期权行的 greeks 块 (与 shim `mappers.GREEK_FIELDS` 同集合)。 */
 const GREEK_FIELDS = [
   'option_implied_volatility',
@@ -145,15 +128,28 @@ function timeZoneOffsetMs(utcMs: number, timeZone: string): number {
 }
 
 /**
- * vendor 的**无时区**时间串 → `Date`, 按 {@link VENDOR_UPDATE_TIME_ZONE} 解释。
- * 不合形态 → null (缺时间戳不阻断落库: 该列 nullable, 且不参与任何判据)。复杂度 O(1)。
+ * vendor 的**无时区**时间串 → `Date`, 按**该行所属市场的交易所时区**解释 (066 T17)。
+ * 不合形态 → null (缺时间戳不阻断落库: 该列 nullable, 且不参与快照侧任何判据)。复杂度 O(1)。
+ *
+ * 🚨 **时区跟市场走, 不是固定美东**: vendor 用**交易所当地时刻**打这个戳 —— 美股行给美东
+ * (p3b E21 实测「1333/2150 行停在 09:30 ET」= 美股期权开盘那一刻; E32 实测正股 PEP 的
+ * `04:59:43` 正是探针在 ET 盘前执行的那一秒), 港股行给港股当地 (2026-08-23 实取: 期权行
+ * `09:30:00`、标的行 `16:07:49`, 均为 HKT)。整列按美东读会让港股这一列**偏 12 小时**,
+ * 而**这个错不会红** —— 它只让一个时间戳悄悄偏移。
+ *
+ * 🚨 **market → 时区取 `session-clock` 的那一份表, MUST NOT 在本文件里再存一份**: 两份表
+ * 一旦漂开, 表现就是某个市场的时间戳悄悄差几小时 (`check-time-semantics.ts` Rule A 拦的正是
+ * 这个形状)。
+ *
+ * ⚠️ 该列在快照侧只作诊断: **报价新鲜度一律取采集时刻** (E33 两条硬纪律之一) ——
+ * `update_time` 是**最后成交时刻**, 做市商挪报价时它纹丝不动。
  *
  * 🚨 **导出是为了给 `FutuRealtimeQuoteAdapter` 用, 别再抄第二份** (063 Phase 3.4): 两个
  * adapter 打的是**同一个** shim 端点 (`/option-snapshot`)、解析的是**同一个** `update_time`
  * 字段 —— 时区与解析规约属于 vendor 而不属于某一个 adapter, 抄第二份就等着两边对时区的理解
- * 各自漂移, 而漂移的表现只是一个诊断时间戳悄悄偏 4 小时。
+ * 各自漂移。
  */
-export function vendorTimeToDate(v: unknown): Date | null {
+export function vendorTimeToDate(v: unknown, market: string): Date | null {
   const parts = NAIVE_DATETIME_RE.exec(typeof v === 'string' ? v : '');
   if (parts === null) return null;
   const naiveUtc = Date.UTC(
@@ -165,7 +161,7 @@ export function vendorTimeToDate(v: unknown): Date | null {
     Number(parts[6]),
   );
   // 先当 UTC 读, 再减去该瞬间的本地偏移 (偏移在两侧相差不到一天, 单次校正足够)。
-  return new Date(naiveUtc - timeZoneOffsetMs(naiveUtc, VENDOR_UPDATE_TIME_ZONE));
+  return new Date(naiveUtc - timeZoneOffsetMs(naiveUtc, exchangeTimeZone(market)));
 }
 
 /**
@@ -189,7 +185,7 @@ function greeksCompleteOf(raw: Record<string, unknown>, isOption: boolean): bool
  * 当日的快照永久缺席 (vendor 不提供历史交易日的期权快照), 且完整性核对的分子跟着少一个,
  * 缺口自我掩盖。其余字段缺失一律 `null` (缺 greeks 是固有现象, 见类注释)。
  */
-function parseSnapshotRow(row: unknown, ctx: string): OptionSnapshotRow {
+function parseSnapshotRow(row: unknown, ctx: string, market: string): OptionSnapshotRow {
   const raw = asRecord(row);
   const code = strOrNull(raw.code);
   if (code === null) {
@@ -219,7 +215,7 @@ function parseSnapshotRow(row: unknown, ctx: string): OptionSnapshotRow {
     netOpenInterest: numToString(raw.option_net_open_interest),
     volume: numToString(raw.volume),
     turnover: numToString(raw.turnover),
-    vendorUpdateTime: vendorTimeToDate(raw.update_time),
+    vendorUpdateTime: vendorTimeToDate(raw.update_time, market),
     greeksComplete: greeksCompleteOf(raw, isOption),
   };
 }
@@ -248,25 +244,30 @@ export class FutuOptionSnapshotAdapter implements OptionSnapshotPort {
     }
 
     // 标的自身放首位: 它是 spot 的来源, 与期权行同批返回 (不另发调用)。
-    const codes = [this.futuCode(underlyingSymbol), ...contractCodes];
+    const { market, futuCode } = this.vendorRef(underlyingSymbol);
+    const codes = [futuCode, ...contractCodes];
     const params = new URLSearchParams({ codes: codes.join(',') });
     const what = `option-snapshot ${underlyingSymbol} ${contractCodes.length} codes`;
     const res = await this.fetchEnvelope(`/option-snapshot?${params.toString()}`, what);
 
     return {
       asOf: res.asOf,
-      rows: res.rows.map((row) => parseSnapshotRow(row, what)),
+      // 一批 = 一个标的 ⇒ 整批同市场, vendor 的行内时刻按该市场的交易所时区解释。
+      rows: res.rows.map((row) => parseSnapshotRow(row, what, market)),
     };
   }
 
-  /** canonical `market:code` → 富途 code；未登记市场直接抛（零外呼）。 */
-  private futuCode(symbol: string): string {
+  /**
+   * canonical `market:code` → 富途 code **与它所属的 market**；未登记市场直接抛（零外呼）。
+   * market 一并返回是因为行内 `update_time` 的时区跟市场走（066 T17）。
+   */
+  private vendorRef(symbol: string): { market: string; futuCode: string } {
     const parsed = parseCanonicalSymbol(symbol);
     const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
     if (!parsed || !prefix) {
       throw new Error(`[futu] option-snapshot 不支持 symbol "${symbol}" (本源仅承担 us / hk)`);
     }
-    return `${prefix}.${parsed.code}`;
+    return { market: parsed.market, futuCode: `${prefix}.${parsed.code}` };
   }
 
   /**

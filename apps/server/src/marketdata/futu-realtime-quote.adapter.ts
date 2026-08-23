@@ -42,7 +42,7 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  *
  * ## 只承担 us
  *
- * 非 us symbol **直接抛、零外呼** (照 `FutuOptionSnapshotAdapter` 的 `futuCode` 形态) ——
+ * 非 us symbol **直接抛、零外呼** (照 `FutuOptionSnapshotAdapter` 的 `vendorRef` 形态) ——
  * 静默返空会被上游记成「该标的今天没有报价」, 一次成功的空采集比一次响亮的失败难发现得多。
  * 「哪些市场有实时源」这件事本身由 `MarketRoutedRealtimeQuoteAdapter` 表达, 本类只兜底。
  *
@@ -106,10 +106,14 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
 
     // vendor code → 入参 canonical symbol 的回查表: 结果键**原样回传入参那个串**, 且省掉一张
     // 反向前缀表 (响应里出现未请求的 code 时也能一眼判为「不是我要的」)。
-    const codeToSymbol = new Map<string, string>();
-    for (const symbol of symbols) codeToSymbol.set(this.futuCode(symbol), symbol);
+    // market 一并留着: 行内 `update_time` 的时区跟市场走 (066 T17)。
+    const codeToRef = new Map<string, { symbol: string; market: string }>();
+    for (const symbol of symbols) {
+      const { market, futuCode } = this.vendorRef(symbol);
+      codeToRef.set(futuCode, { symbol, market });
+    }
 
-    const params = new URLSearchParams({ codes: [...codeToSymbol.keys()].join(',') });
+    const params = new URLSearchParams({ codes: [...codeToRef.keys()].join(',') });
     const what = `realtime-quote ${symbols.length} symbols`;
     const { asOf, rows } = await this.fetchEnvelope(`/option-snapshot?${params.toString()}`, what);
 
@@ -117,16 +121,16 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
     for (const row of rows) {
       const raw = asRecord(row);
       const code = strOrNull(raw.code);
-      const symbol = code === null ? undefined : codeToSymbol.get(code);
-      if (symbol === undefined) continue; // 未请求的行 —— 忽略, 不混进结果
+      const ref = code === null ? undefined : codeToRef.get(code);
+      if (ref === undefined) continue; // 未请求的行 —— 忽略, 不混进结果
       const price = numToString(raw.last_price);
       // 行在但没价 (停牌 / 这一刻无成交) 与整行缺席同义: 静默省略, 上游保留旧值。
       if (price === null) continue;
       // 🚨 `update_time` 只作**证据**落到 `vendorUpdateTime`, 判据仍是信封 `as_of` (见端口注释)。
-      quotes.set(symbol, {
+      quotes.set(ref.symbol, {
         price,
         capturedAt: asOf,
-        vendorUpdateTime: vendorTimeToDate(raw.update_time),
+        vendorUpdateTime: vendorTimeToDate(raw.update_time, ref.market),
       });
     }
 
@@ -138,14 +142,17 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
     return quotes;
   }
 
-  /** canonical `market:code` → 富途 code；非 us 直接抛（零外呼）。 */
-  private futuCode(symbol: string): string {
+  /**
+   * canonical `market:code` → 富途 code **与它所属的 market**；未登记市场直接抛（零外呼）。
+   * market 一并返回是因为行内 `update_time` 的时区跟市场走（066 T17）。
+   */
+  private vendorRef(symbol: string): { market: string; futuCode: string } {
     const parsed = parseCanonicalSymbol(symbol);
     const prefix = parsed ? MARKET_TO_FUTU_PREFIX[parsed.market] : undefined;
     if (!parsed || !prefix) {
       throw new Error(`[futu] realtime-quote 不支持 symbol "${symbol}" (本源仅承担 us)`);
     }
-    return `${prefix}.${parsed.code}`;
+    return { market: parsed.market, futuCode: `${prefix}.${parsed.code}` };
   }
 
   /**
