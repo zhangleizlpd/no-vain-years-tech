@@ -130,6 +130,20 @@ describe('FutuOptionChainAdapter', () => {
       expect(url.searchParams.get('option_type')).toBe('ALL');
     });
 
+    it('🚨 066 T11 链请求参数**恰为** code/start/end/option_type —— 不传 option_cond_type / data_filter (FR-015)', async () => {
+      // 采集端一旦筛就**丢证据且不可回补**: vendor 不提供历史交易日的链快照, 今天没取到的
+      // 那些腿明天补不回来。筛是**读取面**的事 (shim 支持这两个参数, 采集面刻意不用)。
+      const { http, calls } = makeShim([chainRow('US.PEP260918P130000', 130)]);
+      await makeAdapter(http).getChainWindow({
+        symbol: 'us:PEP',
+        start: '2026-09-01',
+        end: '2026-09-30',
+      });
+
+      const keys = [...new URL(calls[0].url).searchParams.keys()].sort();
+      expect(keys).toEqual(['code', 'end', 'option_type', 'start']);
+    });
+
     it('CALL 与 PUT 双边行均照常返回', async () => {
       const { http } = makeShim([
         chainRow('US.PEP260918P130000', 130),
