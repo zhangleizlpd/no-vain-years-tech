@@ -26,7 +26,6 @@ import { colors } from '~/theme';
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { RadarMarketTabs } from './radar-market-tabs';
-import { marketLacksIntraday } from './radar.rules';
 import {
   distanceToWTone,
   radarRowFields,
@@ -119,16 +118,6 @@ export function RadarScreen() {
         onSelect={radar.selectMarket}
         actionableMarkets={radar.actionableMarkets}
       />
-
-      {/* 市场能力说明（065 FR-012）—— 🚨 **常驻**，不随空态 / 有行而增删：恰恰是有了行之后
-          用户才会去读行情时点，才真会把交易日粒度误读成「今天还没开盘」。 */}
-      {marketLacksIntraday(radar.market) ? (
-        <View className="bg-surface-alt px-md py-xs">
-          <Text className="text-xs text-ink-subtle" testID="optionsdesk-radar-market-notice">
-            {COPY.marketNoIntraday}
-          </Text>
-        </View>
-      ) : null}
 
       {/* 新鲜度条：每个行情数值都带 asOf 与档位（FR-016）。 */}
       {radar.items.length > 0 ? (
