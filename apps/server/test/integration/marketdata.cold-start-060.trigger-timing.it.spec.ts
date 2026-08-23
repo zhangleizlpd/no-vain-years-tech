@@ -49,8 +49,10 @@ import {
 // ## 两处刻意的「非端到端」
 //
 // 1. **worker 不启动** (`MARKETDATA_WORKER_DISABLED` 置位): 本文件验的是编排判据, 不是 BullMQ
-//    的调度。worker 一起来就会去真跑链发现/日线维度, 那是另一片的地盘。⇒ 第一相组的 flow 停在
-//    队列里供断言, 第二相由本文件**显式**以 `phase: 'snapshot'` 驱动 (正是 flow parent 的语义)。
+//    的调度。⇒ subscriber 投出的 `sync:anchor-cold-start` job 停在队列里供断言, 编排本身由本
+//    文件**直调** `coldStart.run(...)` 驱动。
+//    📌 issue #159 前这里是两相: 第一相组 flow 入队链/日线、第二相以 `phase: 'snapshot'` 当
+//    parent 挂其上。链改直调采集本体后两相合一, `phase` 入参随之从 `run()` 删除。
 // 2. **「链/日线已跑完」靠手工 seed**: 同上, child job 不会真跑, 故由 `seedTargetDayData()`
 //    造出它们的产物。这一步造的是**数据形态**, 不是在替被测代码干活。
 //
