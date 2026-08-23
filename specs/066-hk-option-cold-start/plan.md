@@ -180,7 +180,7 @@ context7_verified: []
 
 🚫 **MUST NOT 把 `eod` / `premarket_backfill` 两条 `oiAsOf` 路径抹平**（规则层注释明禁）：抹平后永远不会红，但两条路径产出的 OI 差一天，而活跃度排名与 UI 的 `asOf` 都读它。
 
-🚨 **闸**：结论落地前，`hk_option_daily_snapshot` **MUST NOT** 置 `enabled = true`（spec FR-016）。这只卡这一个维度，不卡本片其余任何 task。
+🔓 **原「闸」已于 2026-08-23 解除**（原文：结论落地前 `hk_option_daily_snapshot` MUST NOT 置 `enabled = true`）。理由：`oi_as_of` 是快照行上的**独立日期列**，不进 `(contract, session_date, source)` 唯一键、与未平仓合约数的**值**无关 ⇒ 写错了是一条**确定性 `UPDATE`**；而不采 = **永久缺口**（供应方不提供历史快照）。同一条不对称性 `sync-option-snapshot.usecase.ts` 对「日历缺行」那条路径早已选了「落库继续、抬 ERROR」——本节照它办：**照常采集，结论落地后重标**（`FR-016`）。⇒ 本节不再卡 A2 的开通，也不卡任何 task。
 
 #### A7 — 实时报价是**两处连改**（原第 3 点已作废）
 
