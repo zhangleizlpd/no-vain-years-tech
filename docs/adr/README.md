@@ -90,6 +90,7 @@
 | 0064 | Optionsdesk 选约检索五层架构 — 召回/粗排/特征加工/精排/表达,可插拔精排,不设重排层       | apps/server, apps/mobile                         | Accepted   |
 | 0065 | 研报库第 11 Bounded Context — 私有桶 + server 代理上传,amend ADR-0045 两条被否决项      | apps/server                                      | Accepted   |
 | 0066 | 时间语义统一语言 — 四条时间轴 + session 词表 + 逐维度 asOf 口径,纯时钟层不碰日历        | apps/server                                      | Accepted   |
+| 0067 | Vendor 缺失语义 — 带内哨兵在 adapter 边界归一为 null,成对判据 + 不可判定列显式登记      | apps/server                                      | Accepted   |
 
 (0021 历史空缺,跳过编号 — 详 commit 历史)
 

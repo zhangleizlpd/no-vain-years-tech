@@ -1,5 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { parseCanonicalSymbol } from './marketdata.rules.js';
+import {
+  normalizeQuoteSide,
+  strOrNullSentinelAware,
+  type QuoteSideForm,
+} from './vendor-absence.rules.js';
 import { exchangeTimeZone } from './session-clock.js';
 import {
   OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
@@ -90,11 +95,6 @@ function numToString(v: unknown): string | null {
   return null;
 }
 
-/** 非空字符串 → 原样 trim；其余 → null（禁默认值冒充）。 */
-function strOrNull(v: unknown): string | null {
-  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
-}
-
 function asRecord(row: unknown): Record<string, unknown> {
   return row !== null && typeof row === 'object' ? (row as Record<string, unknown>) : {};
 }
@@ -179,30 +179,61 @@ function greeksCompleteOf(raw: Record<string, unknown>, isOption: boolean): bool
 }
 
 /**
+ * 把一侧的 `inconsistent` 记进批级累加器。**不改值、不丢行** —— 只留痕。
+ *
+ * 🚨 它是「哨兵理论破裂」的**唯一信号**: 富途没有文档化缺失时返什么
+ * (2026-08-24 核官方 `get-market-snapshot` 页), 所以「(price, vol) 成对为 0 = 无挂单」
+ * 是**从数据反推**的。反推出来的东西会过期, 且过期时不报错。O(1)。
+ */
+function collectInconsistent(
+  sink: string[],
+  code: string,
+  side: 'bid' | 'ask',
+  form: QuoteSideForm,
+  price: string | null,
+  size: string | null,
+): void {
+  if (form !== 'inconsistent') return;
+  sink.push(`${code} ${side}=${price ?? 'null'}/${size ?? 'null'}`);
+}
+
+/**
  * 单行 `option-snapshot` → {@link OptionSnapshotRow}。
  *
  * **坏行 throw、不跳过**: 唯一的必填是 `code` —— 没有它这行无从归属, 而静默丢一行 = 那条腿
  * 当日的快照永久缺席 (vendor 不提供历史交易日的期权快照), 且完整性核对的分子跟着少一个,
  * 缺口自我掩盖。其余字段缺失一律 `null` (缺 greeks 是固有现象, 见类注释)。
  */
-function parseSnapshotRow(row: unknown, ctx: string, market: string): OptionSnapshotRow {
+function parseSnapshotRow(
+  row: unknown,
+  ctx: string,
+  market: string,
+  inconsistent: string[],
+): OptionSnapshotRow {
   const raw = asRecord(row);
-  const code = strOrNull(raw.code);
+  const code = strOrNullSentinelAware(raw.code);
   if (code === null) {
     throw new Error(
       `[futu] option-snapshot 行缺 code (契约变更?): ${ctx} 行=${JSON.stringify(row)}`,
     );
   }
   const isOption = raw.option_valid === true;
+  // 🚨 盘口两侧**成对**归一 (#172): `(price, vol)` 同时为 0 = 该侧无挂单 ⇒ null。
+  // 单看价格会误杀合法零价买盘 (OPRA: 「Zero in the bid price field represents a
+  // valid Bid Price」), 见 vendor-absence.rules.ts。
+  const bidSide = normalizeQuoteSide(raw.bid_price, raw.bid_vol);
+  const askSide = normalizeQuoteSide(raw.ask_price, raw.ask_vol);
+  collectInconsistent(inconsistent, code, 'bid', bidSide.form, bidSide.price, bidSide.size);
+  collectInconsistent(inconsistent, code, 'ask', askSide.form, askSide.price, askSide.size);
   return {
     code,
     isOption,
     // 非期权行没有 stock_owner —— 它自己就是标的。
-    underlyingCode: isOption ? strOrNull(raw.stock_owner) : null,
-    bid: numToString(raw.bid_price),
-    ask: numToString(raw.ask_price),
-    bidSize: numToString(raw.bid_vol),
-    askSize: numToString(raw.ask_vol),
+    underlyingCode: isOption ? strOrNullSentinelAware(raw.stock_owner) : null,
+    bid: bidSide.price,
+    ask: askSide.price,
+    bidSize: bidSide.size,
+    askSize: askSide.size,
     last: numToString(raw.last_price),
     prevClose: numToString(raw.prev_close_price),
     iv: numToString(raw.option_implied_volatility),
@@ -219,6 +250,8 @@ function parseSnapshotRow(row: unknown, ctx: string, market: string): OptionSnap
     greeksComplete: greeksCompleteOf(raw, isOption),
   };
 }
+
+const SNAPSHOT_LOGGER = new Logger('FutuOptionSnapshotAdapter');
 
 @Injectable()
 export class FutuOptionSnapshotAdapter implements OptionSnapshotPort {
@@ -250,10 +283,21 @@ export class FutuOptionSnapshotAdapter implements OptionSnapshotPort {
     const what = `option-snapshot ${underlyingSymbol} ${contractCodes.length} codes`;
     const res = await this.fetchEnvelope(`/option-snapshot?${params.toString()}`, what);
 
+    // 盘口归一化的「不一致」累加器 —— 批级报一次, 不逐行刷屏。
+    const inconsistent: string[] = [];
+    const rows = res.rows.map((row) => parseSnapshotRow(row, what, market, inconsistent));
+    if (inconsistent.length > 0) {
+      // 🚨 这条 WARN 的意义不是「有脏数据」, 是「**我们对 vendor 的假设可能已经不成立**」。
+      // 行已照常入库 (原值未改) —— 猜错的代价远高于留一行待查数据。
+      SNAPSHOT_LOGGER.warn(
+        `[futu] 盘口形态与哨兵假设不符 ${inconsistent.length} 侧 (原值已保留、行未丢): ` +
+          `${what}; 前 10 侧 = ${inconsistent.slice(0, 10).join(', ')}`,
+      );
+    }
     return {
       asOf: res.asOf,
       // 一批 = 一个标的 ⇒ 整批同市场, vendor 的行内时刻按该市场的交易所时区解释。
-      rows: res.rows.map((row) => parseSnapshotRow(row, what, market)),
+      rows,
     };
   }
 

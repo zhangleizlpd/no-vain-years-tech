@@ -47,6 +47,14 @@ sunset_trigger: |
 > 3. **429 改为采信 vendor 的 `Retry-After`**（RFC 9110 定义；RFC 6585 §4 的 429 原文是 **MAY** 带 ⇒ 兜底不能删），取 `max(profile.transientWaitMs, Retry-After)` —— profile 的值从「兜底」升为**下界**，理杏仁「429 = 分钟级封禁 ⇒ ≥60 s」那份保守不被 vendor 报的更短值抹掉。
 > 4. **实现改名**：`DualWindowRateLimiter` → `VendorRateLimiter`（一个类现在管两种形状，旧名会说谎）。本文件 §3 的代码草图与「过双窗令牌桶」一句按本条读。
 
+<!-- 分隔两个 Amendment 引用块（markdownlint MD028：blockquote 之间不得只隔空行） -->
+
+> **⚠️ Amendment 2026-08-24 — per-adapter 约束档新增一节「缺失语义」，见 [ADR-0067](0067-vendor-absence-semantics.md)**
+>
+> 本 ADR 的 per-adapter 约束档此前只管**传输层**约束（限频档 / 熔断 / 重试语义 / 不得静默换源），**不管 vendor 如何表达「没有这个值」**。同一形状的缺陷因此在本仓出现了三次（`'N/A'` 字符串哨兵 → [#130](https://github.com/zhangleizlpd/no-vain-years-tech/issues/130) 实时档 `bid=0` → [#172](https://github.com/zhangleizlpd/no-vain-years-tech/issues/172) 日线快照 `bid/ask=0`）。
+>
+> 自本次起，**新增或改动任何 vendor adapter MUST 在约束档里回答 ADR-0067 §D5 的三问**（vendor 用什么形态表达缺失 / 哪些列无伴生字段不可判定 / 这个假设是文档写明的还是从数据反推的）。判据与分层表在 ADR-0067，不在本文件复述。
+
 ## Context
 
 portfolio 大模块的多数特性（04 自选 / 05 详情 / 预警 / 策略实验室）依赖一个统一的股票数据层。该层要同时对接**异构外部数据源**，且各源的能力子集与访问约束差异巨大：

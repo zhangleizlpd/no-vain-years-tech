@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Logger } from '@nestjs/common';
 import { describe, it, expect, vi } from 'vitest';
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import {
@@ -580,12 +581,95 @@ describe('066 T09 (verify ④) 港股希腊值缺失: 照常在库 + 带标注 +
       expect(donor?.iv).toBeNull();
     });
 
-    it('🚨 ⓒ 的反面: 同一行 bid 实取就是 0 → 照常落 "0", OI 照常落库 (缺的只是 greeks, 不是整行)', async () => {
+    it('🚨 ⓒ 的反面: 缺的只是 greeks 不是整行 —— 有挂单的那一侧与 OI 照常落库', async () => {
+      // 本条原本断言 `bid === '0'`, 前提是「bid 实取就是 0」。**那个前提是错的** (#172):
+      // 该行 fixture 是 `bid_price=0 ∧ bid_vol=0` —— 富途的「无买盘」哨兵, 不是零元买价。
+      // 整份真实港股 fixture 132 行期权对此零例外 (101 行成对为 0 / 31 行成对为正)。
       const { donor } = await replayHkWithGreeksMissing(shape);
-      expect(donor?.bid).toBe('0');
+      // 无买盘 ⇒ price 与 size **同进同退**落 null。
+      expect(donor?.bid).toBeNull();
+      expect(donor?.bidSize).toBeNull();
+      // 🚨 同一行的**卖方有真挂单** —— 它必须原样活着, 这才证明「缺的只是 greeks 不是整行」。
+      expect(donor?.ask).toBe('0.06');
+      expect(donor?.askSize).toBe('90');
       expect(donor?.openInterest).toBe('121');
       expect(donor?.netOpenInterest).toBe('31');
       expect(donor?.vendorUpdateTime).not.toBeNull();
     });
+
+    it('🚨 哨兵不得越界: OI / 成交量的 0 是**合法值**, MUST NOT 跟着 null 化', async () => {
+      // 与上一条相反的方向: 把「真的是 0」抹成「不知道」同样是数据损坏, 且同样不会红。
+      // 判据是有没有伴生字段可消歧 —— 盘口价有 `*_vol`, 这几列没有 (见
+      // vendor-absence.rules.ts 的 INDISTINGUISHABLE_ZERO_FIELDS)。
+      const { batch } = await replayHkWithGreeksMissing(shape);
+      const zeroOi = batch.rows.filter((r) => r.isOption && r.openInterest === '0');
+      expect(zeroOi.length).toBeGreaterThan(0);
+      for (const r of zeroOi) expect(r.openInterest).toBe('0');
+    });
+  });
+});
+
+/**
+ * #172 盘口哨兵归一化 —— adapter 侧的接线与**报警器**。
+ *
+ * 纯判定逻辑在 `vendor-absence.rules.spec.ts`; 这里只盯三件 adapter 才有的事:
+ * ① 归一化真的接上了 (端到端一行进、一行出)
+ * ② 不一致形态**行不丢、值不改**, 只抬批级 WARN
+ * ③ 正常批**不刷屏** —— 报警器天天响就等于没有
+ */
+describe('FutuOptionSnapshotAdapter — 盘口哨兵 (#172)', () => {
+  const query = { underlyingSymbol: 'us:PEP', contractCodes: [LEG] };
+
+  it('(price, vol) 成对为 0 → bid 与 bidSize 双双 null, 且**不**抬 WARN (这是常态不是异常)', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const shim = makeShim([UNDERLYING_ROW, snapshotRow(LEG, { bid_price: 0, bid_vol: 0 })]);
+
+    const batch = await makeAdapter(shim.http).getSnapshots(query);
+
+    const leg = batch.rows.find((r) => r.code === LEG);
+    expect(leg?.bid).toBeNull();
+    expect(leg?.bidSize).toBeNull();
+    // 卖方仍有真挂单 —— 只归一了没挂单的那一侧。
+    expect(leg?.ask).toBe('2.4');
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('🚨 零价 + 有量 → **原值保留**且行不丢, 抬 WARN (OPRA: 零价可以是合法买价)', async () => {
+    // 写成 `if (price === 0) return null` 会在这一档静默吃掉真实报价, 且不会红。
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const shim = makeShim([UNDERLYING_ROW, snapshotRow(LEG, { bid_price: 0, bid_vol: 5 })]);
+
+    const batch = await makeAdapter(shim.http).getSnapshots(query);
+
+    const leg = batch.rows.find((r) => r.code === LEG);
+    expect(leg).toBeDefined();
+    expect(leg?.bid).toBe('0');
+    expect(leg?.bidSize).toBe('5');
+    const msg = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain('哨兵假设不符');
+    expect(msg).toContain(LEG);
+    expect(msg).toContain('bid=0/5');
+    warn.mockRestore();
+  });
+
+  it('有价无量同样报 (单边形态两个方向都得盯, 只盯一个等于漏一半)', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const shim = makeShim([UNDERLYING_ROW, snapshotRow(LEG, { ask_price: 2.4, ask_vol: 0 })]);
+
+    await makeAdapter(shim.http).getSnapshots(query);
+
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('ask=2.4/0');
+    warn.mockRestore();
+  });
+
+  it('全是正常报价的批 → 零 WARN (报警器不刷屏)', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const shim = makeShim([UNDERLYING_ROW, snapshotRow(LEG)]);
+
+    await makeAdapter(shim.http).getSnapshots(query);
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
