@@ -285,8 +285,22 @@ export class SyncOptionSnapshotUseCase {
       orderBy: { id: 'asc' },
     });
     if (contracts.length === 0) {
-      // 🚨 hard 依赖链发现 (FR-031): 零外呼。不是失败 —— 链发现还没轮到该票 / 该票无期权链。
-      this.logger.warn(`跳过快照 (合约表无未到期合约, 链发现未覆盖?): ${symbol}`);
+      // 🚨 hard 依赖链发现 (FR-031): 零外呼。不是失败, 但**两种成因定性相反** (#173) ——
+      // 判据是同一张表的**全部**合约计数 (不带到期日过滤), 与上层冷启动的 `hasListedContracts`
+      // 同口径, 两层对同一件事才不会一个说「常态」一个说「未覆盖?」。
+      // 🚫 MUST NOT 无差别降级成一条日志: 「链发现 stale」那一档是真缺口, 埋掉就再也没人看。
+      const listed = await this.prisma.optionContract.count({
+        where: { underlyingInstrumentId: instrumentId },
+      });
+      if (listed === 0) {
+        // 终态、非故障 —— 港股绝大多数标的没有挂牌期权, 066 开通港股后这一档从罕见变常态,
+        // 抬 WARN 会每晚每票复发一条, 把真信号稀释掉 (SC-011: MUST NOT 产生需人工介入的告警)。
+        this.logger.log(`跳过快照 (库中零期权合约 ⇒ 无挂牌期权): ${symbol}`);
+        return false;
+      }
+      this.logger.warn(
+        `跳过快照 (${listed} 个合约全部已到期 ⇒ 链发现 stale / 尚未轮到该票): ${symbol}`,
+      );
       return false;
     }
 
