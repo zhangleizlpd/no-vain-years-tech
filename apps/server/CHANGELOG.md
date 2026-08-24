@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.36.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.0...server-v0.36.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **marketdata:** 回改已入库的盘口哨兵 —— 38966 行 (price,size) 成对为 0 落 NULL ([#172](https://github.com/zhangleizlpd/no-vain-years-tech/issues/172)) ([#178](https://github.com/zhangleizlpd/no-vain-years-tech/issues/178)) ([b39c8fa](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b39c8fa138c9f51520a3586aaa3d7940502781dc))
+* **marketdata:** 无挂牌期权不再抬 WARN —— 下层就地分岔, 与冷启动层同一定性 ([#173](https://github.com/zhangleizlpd/no-vain-years-tech/issues/173)) ([#174](https://github.com/zhangleizlpd/no-vain-years-tech/issues/174)) ([f91ca92](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f91ca92b77dfc0dada08f8dd398fe104fbe9daeb))
+* **marketdata:** 盘口带内哨兵在 adapter 边界归一为 null —— 成对判据 + 破裂报警 ([#172](https://github.com/zhangleizlpd/no-vain-years-tech/issues/172)) ([#177](https://github.com/zhangleizlpd/no-vain-years-tech/issues/177)) ([f85bcc2](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f85bcc2093a52da71c666a8e366d18dcce369b72))
+
 ## [0.36.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.35.3...server-v0.36.0) (2026-08-23)
 
 
