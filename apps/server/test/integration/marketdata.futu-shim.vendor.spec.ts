@@ -574,6 +574,42 @@ describe.skipIf(!ENABLED)('富途期权链四端点真 vendor IT (env-gated, 默
       optionRows.length / 2,
     );
     expect(optionRows.some((r) => r.bid !== null && r.ask !== null)).toBe(true);
+
+    // ── 🚨 盘口哨兵契约 (#172 / ADR-0067) —— 本仓唯一能证伪它的地方 ──────────────
+    //
+    // 「`(price, vol)` 同时为 0 = 该侧无挂单」这条判据是**从数据反推**的：富途官方
+    // `get-market-snapshot` 页把四个字段只列了类型, **没规定缺失时返什么**(2026-08-24 核)。
+    // 反推出来的东西会过期, 且过期时不报错 —— 所以它必须在**真端**上被反复证伪。
+    //
+    // 归一化后的两条不变量:
+    //   ① price 与 size **同进同退** —— 只有一侧为 null = 归一化漏了一半
+    //   ② 非 null 的盘口价**必为正** —— 出现 '0' 意味着 vendor 给了 `(0, vol>0)`,
+    //      即哨兵理论破裂 (那种形态 adapter 会原样保留并抬 WARN, 正是为了在这里现形)
+    expect(
+      optionRows.every((r) => (r.bid === null) === (r.bidSize === null)),
+      'bid 与 bidSize 未同进同退 ⇒ 成对归一化漏了一半',
+    ).toBe(true);
+    expect(
+      optionRows.every((r) => (r.ask === null) === (r.askSize === null)),
+      'ask 与 askSize 未同进同退 ⇒ 成对归一化漏了一半',
+    ).toBe(true);
+    expect(
+      optionRows.every((r) => r.bid === null || Number(r.bid) > 0),
+      '归一化后仍出现 bid=0 ⇒ vendor 给了 (0, vol>0), 哨兵判据需重审 (见 ADR-0067 §D2)',
+    ).toBe(true);
+    expect(
+      optionRows.every((r) => r.ask === null || Number(r.ask) > 0),
+      '归一化后仍出现 ask=0 ⇒ vendor 给了 (0, vol>0), 哨兵判据需重审 (见 ADR-0067 §D2)',
+    ).toBe(true);
+
+    // 🚨 只**记录**不断言缺失行数: 盘口满不满随时段浮动, 断它等于时段抽奖。
+    // 但零缺失行连续出现在收盘时段, 是「归一化没生效」的嫌疑信号, 留给人读。
+    const absentBid = optionRows.filter((r) => r.bid === null).length;
+    const absentAsk = optionRows.filter((r) => r.ask === null).length;
+    console.log(
+      `[#172] 盘口哨兵采样 ${batch.asOf.toISOString()}: 期权行 ${optionRows.length}, ` +
+        `无买盘 ${absentBid}, 无卖盘 ${absentAsk}`,
+    );
   }, 240_000);
 
   it('④ /earnings-calendar: 市场级窗返全市场事件 + 字段非空', async () => {
