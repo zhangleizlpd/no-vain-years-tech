@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.36.4](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.3...server-v0.36.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* **marketdata:** [#186](https://github.com/zhangleizlpd/no-vain-years-tech/issues/186) 落库前硬门 ④ 对非标合约跳过 —— 内在价值算不出, 不是违规 ([#195](https://github.com/zhangleizlpd/no-vain-years-tech/issues/195)) ([6cb5d95](https://github.com/zhangleizlpd/no-vain-years-tech/commit/6cb5d95e5f1649c1cc251cb9af3fa06d5c362a01))
+* **marketdata:** 港股 OI 定稿改按时刻判 + 收盘缓冲按 CAS 取 10 分钟 ([#197](https://github.com/zhangleizlpd/no-vain-years-tech/issues/197)) ([b9ecb7c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b9ecb7cb5d9044dd7a8c0f8eea4962435d882025))
+
 ## [0.36.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.2...server-v0.36.3) (2026-08-25)
 
 
