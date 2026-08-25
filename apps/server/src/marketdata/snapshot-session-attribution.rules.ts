@@ -4,7 +4,7 @@ import {
   type SnapshotCollectionSpec,
 } from './sync-option-snapshot.usecase.js';
 import { exchangeCalendarDate } from './session-clock.js';
-import { isSessionUnderway, marketNow } from './market-session.rules.js';
+import { isSessionUnderway, marketNow, oiRefreshedAtEod } from './market-session.rules.js';
 import type { SessionKindStatus } from './trading-day.rules.js';
 
 /**
@@ -105,8 +105,13 @@ export type SnapshotAttribution =
  *      周六 11:00 它照样返 `true`。少了这一格，**整个周末都采不到上一场的收盘**，而周末
  *      恰是境内用户建锚的高发时段。
  *
- * 🚨 `oiAsOf` 两条路径 MUST NOT 抹平：抹平后永远不会红，但两条路径产出的 OI 差一天，
- * 而活跃度排名与 UI 的 `asOf` 都读它。
+ * 🚨 `oiAsOf` 两条路径 MUST NOT **无差别**抹平：抹平后永远不会红，但两条路径产出的 OI
+ * 差一天，而活跃度排名与 UI 的 `asOf` 都读它。
+ *
+ * 📌 **066 T09 的分叉不是抹平** —— 它是按市场答「这个市场的两条路径**本来**就不差一天」：
+ * `oiRefreshedAtEod` 为真的市场（hk，2026-08-25 U2 实测）在收盘当晚就已定稿，两条路径同值
+ * 是**实测事实**；为假的市场（us）仍必须差一天，单测里有一条专钉这件事。⇒ 禁的是「不看市场
+ * 一律取同值」，不是「某个市场恰好同值」。
  *
  * 🚫 MUST NOT 扩成「补最近 N 天」：只有紧邻的上一个 session 能从当下快照原样补回，
  * 再往前一天拿到的是**错的收盘价**。
@@ -130,18 +135,21 @@ export function resolveSnapshotAttribution(input: SnapshotAttributionInput): Sna
   const today = exchangeCalendarDate(market, now);
   // 已进下一个**交易日**的盘前 ⇒ 目标 session 的 OI 已随之翻新，此刻抓到的就是它的真值。
   // 非交易日（周末 / 节假日）不翻新 ⇒ 与「仍在收盘当日」同走 eod。
-  const oiRefreshed = today > target && todayIsTradingDay;
+  const crossedIntoNextSession = today > target && todayIsTradingDay;
 
   return {
     decision: 'collect',
     spec: {
       sessionDate: target,
-      mode: oiRefreshed ? SNAPSHOT_SOURCE_PREMARKET_BACKFILL : SNAPSHOT_SOURCE_EOD,
+      mode: crossedIntoNextSession ? SNAPSHOT_SOURCE_PREMARKET_BACKFILL : SNAPSHOT_SOURCE_EOD,
       marketScope: [market],
       // 绝对时刻原样带过去：DTE 基准要的是「今天离到期还有几天」，拿 `sessionDate` 当基准
       // 会让豁免线在补采路径上系统性偏一天且永远不会红。
       now,
     },
-    oiAsOf: oiRefreshed ? target : input.tradingDayBeforeTarget,
+    // 066 T09：两条 OI 翻新路径**并集**。`crossedIntoNextSession` 之外还有一条 ——
+    // 该市场自己在收盘当晚就把 OI 定稿（`oiRefreshedAtEod`，纯查表零 I/O）。
+    oiAsOf:
+      crossedIntoNextSession || oiRefreshedAtEod(market) ? target : input.tradingDayBeforeTarget,
   };
 }

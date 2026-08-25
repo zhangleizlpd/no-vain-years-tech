@@ -231,6 +231,11 @@ function persistedRows(createMany: ReturnType<typeof vi.fn>): Record<string, unk
 
 const PEP_CONTRACTS = { '1': [contractRow('US.PEP260918P130000')] };
 
+/** 066 T09 的 hk 对照组 —— 词根是交易所助记符 (`TCH`), 不是标的数字代码。 */
+const TCH = { id: 3n, market: 'hk', code: '00700' };
+const TCH_CONTRACTS = { '3': [contractRow('HK.TCH260918P130000', { root: 'TCH' })] };
+const HK_DIM = { ...DIM, marketScope: ['hk'] } as unknown as ExecutorSyncDimensionRow;
+
 describe('SyncOptionSnapshotUseCase', () => {
   describe('🚨 hard 依赖链发现 (FR-031)', () => {
     it('合约表无行 → 一次外呼都不发 (不是「请求了但返回空」)', async () => {
@@ -300,6 +305,59 @@ describe('SyncOptionSnapshotUseCase', () => {
         underlyingInstrumentId: 1n,
         expiryDate: { gte: day('2026-06-12') },
       });
+    });
+  });
+
+  /**
+   * 🚨 066 T09 / `FR-016`：`oi_as_of` 的 `eod` 那一行**按市场分叉**，落库侧必须跟着分。
+   *
+   * 上面那条「`oi_as_of` = 上一交易日」是 **us 口径**（清算所 T+1 才发布）。hk 在 D 日收盘
+   * 当晚就已定稿（2026-08-25 U2 实测），⇒ 同样走 `eod`，答案是 `session_date` 自己。
+   *
+   * 🚨 **这一格是三处同源里唯一真正写库的那处** —— 两个纯规则函数（`snapshot-session-
+   * attribution` / `anchor-cold-start`）给出的 `oiAsOf` 只喂单测对表，`collect` 自己按
+   * `spec.mode` 重新派生。只改规则层而漏了这里，单测全绿而**库里照旧偏一天**。
+   */
+  describe('🚨 oi_as_of 的 eod 路径按市场分叉 (066 T09, FR-016)', () => {
+    /** hk 当地 2026-09-18 23:30（= 夜间轮的 23:30），该场已收盘、尚未跨日。 */
+    const hkEodNight: ExecutorInput = {
+      mode: 'delta',
+      asOf: '2026-09-18',
+      now: new Date('2026-09-18T15:30:00Z'),
+    };
+
+    it('🚨 hk 走 eod → oi_as_of = **session_date 自己**，不退到上一交易日', async () => {
+      // `prevTradingDay` 刻意给了真值：分叉若没生效，这里会拿到 09-17 —— 断言正是要它拿不到。
+      const h = makeHarness({ contracts: TCH_CONTRACTS, prevTradingDay: '2026-09-17' });
+      await h.useCase.run([TCH], HK_DIM, emptyStats(), hkEodNight);
+
+      const row = persistedRows(h.createMany)[0];
+      expect(row.source).toBe('eod');
+      expect(row.sessionDate).toEqual(day('2026-09-18'));
+      expect(row.oiAsOf).toEqual(day('2026-09-18'));
+      expect(row.oiAsOf).toEqual(row.sessionDate);
+    });
+
+    it('🚨 同一形态下 us 必须仍差一天 —— 分叉是增量，不是把口径全局改了', async () => {
+      const h = makeHarness({ contracts: PEP_CONTRACTS, prevTradingDay: '2026-09-17' });
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput('2026-09-18'));
+
+      const row = persistedRows(h.createMany)[0];
+      expect(row.source).toBe('eod');
+      expect(row.oiAsOf).toEqual(day('2026-09-17'));
+      expect(row.oiAsOf).not.toEqual(row.sessionDate);
+    });
+
+    it('hk 的日历即使缺 `< session_date` 的行也不受影响（那条查询压根不发）', async () => {
+      // us 侧同样的输入会走兜底 + 抬 ERROR（见上面那条）。hk 不查上一交易日 ⇒ 无兜底、无 ERROR。
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const h = makeHarness({ contracts: TCH_CONTRACTS, prevTradingDay: null });
+
+      await h.useCase.run([TCH], HK_DIM, emptyStats(), hkEodNight);
+
+      expect(persistedRows(h.createMany)[0].oiAsOf).toEqual(day('2026-09-18'));
+      expect(errSpy).not.toHaveBeenCalled();
+      errSpy.mockRestore();
     });
   });
 

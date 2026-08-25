@@ -921,10 +921,14 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     expect(snapshots[0]!.sessionDate.toISOString().slice(0, 10)).toBe(TARGET);
     // 休市档 ⇒ OI 未翻新 ⇒ 走 eod 而非 premarket_backfill (§D4 第四行)。
     expect(snapshots[0]!.source).toBe(SNAPSHOT_SOURCE_EOD);
-    // 📌 `oi_as_of` 按**现行 (美股) 规则**逐字写: eod 路径 ⇒ 目标日的上一交易日。066 FR-016
-    //    的港股分叉 (若 U2 实测要求) 是 T09 的事, 且它是一条确定性 `UPDATE` —— 本 task
-    //    MUST NOT 在这里发明市场分叉。
-    expect(snapshots[0]!.oiAsOf?.toISOString().slice(0, 10)).toBe(DAY_BEFORE_TARGET);
+    // 🚨 `oi_as_of` = **目标日自己**, 不是它的上一交易日 —— 066 T09 的港股分叉 (`FR-016`)。
+    //    U2 实测 (2026-08-25, 360 行样本) 证明港股 OI 在 D 日收盘当晚就已定稿, 「T 日的 OI
+    //    要 T+1 才发布」只是美股清算所的行为。事实位登记在 `oiRefreshedAtEod`。
+    //    📌 本行原本钉的是分叉**之前**的取值 (`DAY_BEFORE_TARGET`), 由 T06 刻意留着并注明
+    //    「分叉是 T09 的事」—— 它按预期在 T09 这一轮转红, 是这条 IT 存在的意义之一。
+    //    🚨 这里是**端到端**的那一格 (Testcontainers + 真 DI + 真落库): 三处派生里只有
+    //    `collect` 真的写库, 纯函数层的单测全绿也盖不住它。
+    expect(snapshots[0]!.oiAsOf?.toISOString().slice(0, 10)).toBe(TARGET);
     expect(port.calls).toHaveLength(1);
     expect(port.calls[0]!.underlyingSymbol).toBe(HK_TICKER);
   });
