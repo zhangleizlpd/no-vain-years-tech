@@ -199,25 +199,52 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     });
   });
 
-  describe('oiRefreshedAtEod — OI 是否收盘当晚定稿 (066 T09, FR-016)', () => {
-    it('hk = true —— 2026-08-25 U2 实测: 定稿落在 D 日 16:30–21:30, 早于 22:00 日终', () => {
-      expect(oiRefreshedAtEod('hk')).toBe(true);
+  describe('oiRefreshedAtEod — OI 定稿了没有 (066 T09, FR-016; 时刻化见 rules 文件注释)', () => {
+    /** 2026-08-21 是周五、hk 常规交易日; 港股恒 UTC+8 无 DST ⇒ 偏移量写死安全。 */
+    const HK_SESSION = '2026-08-21';
+    const hkAt = (dayIso: string, hhmm: string) => new Date(`${dayIso}T${hhmm}:00+08:00`);
+
+    it('hk: 定稿时刻 21:30 **含**端点 —— 实测窗口 16:30–21:30 取上界', () => {
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt(HK_SESSION, '21:30'))).toBe(true);
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt(HK_SESSION, '21:29'))).toBe(false);
     });
 
-    it('🚨 us = false —— 清算所 T+1 才发布, 收盘当晚抓到的属于上一场 (分叉是增量, 美股逐点不变)', () => {
-      expect(oiRefreshedAtEod('us')).toBe(false);
+    it('🚨🚨 hk: 收盘后、定稿前采到的仍是**上一场**的 OI —— 本次修的就是这一格', () => {
+      // 建锚冷启动由用户行为触发, 落点不受 cron 时刻约束。静态查表时这一刻答 true
+      // ⇒ 把 D−1 的持仓量标成 D, 数字与标签双错; 且 skipDuplicates 会让当晚 23:30
+      // 那轮正确的写入被静默跳过 —— 那一场的 OI 从此拿不回来。
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt(HK_SESSION, '16:05'))).toBe(false);
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt(HK_SESSION, '17:00'))).toBe(false);
+      // 而夜间 cron (23:30) 恒在定稿之后 —— 那条路的取值**逐点不变**
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt(HK_SESSION, '23:30'))).toBe(true);
     });
 
-    it('cn = false —— 期权采集未开通, 未实测过的市场一律保守取 false', () => {
-      expect(oiRefreshedAtEod('cn')).toBe(false);
+    it('🚨 hk: 已跨过 session 那天 ⇒ 恒 true, **不比分钟数**', () => {
+      // 只比当日分钟数会把这两种情形全判成「未定稿」(01:30 / 10:00 都 < 21:30),
+      // 而它们早已过了定稿时刻。#181 的长链正是被挤过午夜的。
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt('2026-08-22', '01:30'))).toBe(true);
+      // 周六补采上一场 (境内用户建锚的高发时段)
+      expect(oiRefreshedAtEod('hk', HK_SESSION, hkAt('2026-08-22', '10:00'))).toBe(true);
+    });
+
+    it('🚨 us = false 恒真 —— 清算所 T+1 才发布 (分叉是增量, 美股逐点不变)', () => {
+      for (const hhmm of ['16:05', '21:30', '23:30']) {
+        expect(oiRefreshedAtEod('us', HK_SESSION, hkAt(HK_SESSION, hhmm))).toBe(false);
+      }
+      expect(oiRefreshedAtEod('us', HK_SESSION, hkAt('2026-08-22', '10:00'))).toBe(false);
+    });
+
+    it('cn = false —— 期权采集未开通, 未实测过的市场一律保守取 null', () => {
+      expect(oiRefreshedAtEod('cn', HK_SESSION, hkAt('2026-08-22', '10:00'))).toBe(false);
     });
 
     it('🚨 未登记市场返 false 而**不抛** —— 与 marketNow/isSessionUnderway 蓄意不同', () => {
       // 那两个的返回值是判据, 静默套用别市场的时窗会写出脏行 ⇒ fail-closed 抛。
       // 本表的保守值只让标签偏早一天, 一条确定性 UPDATE 可订正 (FR-016 的不对称性)
       // ⇒ 为一个 OI 标签把整轮采集炸掉, 方向反了。
-      expect(oiRefreshedAtEod('sg')).toBe(false);
-      expect(() => oiRefreshedAtEod('sg')).not.toThrow();
+      const now = hkAt('2026-08-22', '10:00');
+      expect(oiRefreshedAtEod('sg', HK_SESSION, now)).toBe(false);
+      expect(() => oiRefreshedAtEod('sg', HK_SESSION, now)).not.toThrow();
     });
   });
 });
@@ -304,19 +331,41 @@ describe('🚨 边界一致性: market-session 与 session-clock 在收盘分钟
 });
 
 describe('🚨 收盘定稿缓冲 —— 从「闭区间的副作用」拆成显式参数 (#187 后续 P0-3)', () => {
-  it('缓冲默认 1 分钟 = 拆出来之前的等效值 ⇒ 行为逐点不变', () => {
-    for (const market of ['cn', 'hk', 'us']) {
+  it('缓冲默认 1 分钟 = 拆出来之前的等效值 ⇒ 未分叉的市场行为逐点不变', () => {
+    // 🚨 us 留在默认值上是**有理由的空缺**, 不是漏填: 美股收盘竞价的官方价何时进到本供应方
+    // 的快照里没实测过。别照着 hk 编一个 (rules 文件 CLOSE_SETTLE_BUFFER_MINUTES 注释)。
+    for (const market of ['cn', 'us']) {
       expect(closeSettleBufferMinutes(market)).toBe(1);
     }
+  });
+
+  it('🚨 hk = 10 分钟 —— HKEX CAS 16:08–16:10 随机收市, 官方收盘价最早 16:10 才存在', () => {
+    expect(closeSettleBufferMinutes('hk')).toBe(10);
+
+    const close = sessionCloseMinutes('hk', 'whole') as number;
+    // 16:01 (旧 buffer=1 的放行点) 到 16:09 全程仍拒写 —— 这一段落库的 underlying_spot
+    // 会是**竞价撮合前**的最后成交价, 而它被实值/虚值分类、快照硬门、选约表 spot 三处读。
+    for (let m = close + 1; m <= close + 9; m++) {
+      expect(isCloseWriteBlocked('hk', m, 'whole')).toBe(true);
+    }
+    expect(isCloseWriteBlocked('hk', close + 10, 'whole')).toBe(false);
+  });
+
+  it('🚨 hk 半日市同样 10 —— CAS 整体平移到 12:00–12:10, 按 market 取值即可, 不按 kind 分叉', () => {
+    const halfClose = sessionCloseMinutes('hk', 'half') as number;
+    expect(halfClose).toBe(at(12));
+    expect(isCloseWriteBlocked('hk', halfClose + 9, 'half')).toBe(true);
+    expect(isCloseWriteBlocked('hk', halfClose + 10, 'half')).toBe(false);
   });
 
   it.each([
     { market: 'cn', kind: 'whole' as SessionKindStatus },
     { market: 'hk', kind: 'whole' as SessionKindStatus },
+    { market: 'hk', kind: 'half' as SessionKindStatus },
     { market: 'us', kind: 'whole' as SessionKindStatus },
     { market: 'us', kind: 'half' as SessionKindStatus },
   ])(
-    '$market/$kind: isCloseWriteBlocked = [open, close+buffer) —— 与改造前的闭区间逐点等价',
+    '$market/$kind: isCloseWriteBlocked = [open, close+buffer) —— 端点取值由 buffer 派生',
     ({ market, kind }) => {
       const close = sessionCloseMinutes(market, kind) as number;
       const buffer = closeSettleBufferMinutes(market);
@@ -333,15 +382,16 @@ describe('🚨 收盘定稿缓冲 —— 从「闭区间的副作用」拆成显
     },
   );
 
-  it('🚨 缓冲与场内**严格互补且相邻**: 两段不重叠、不留缝', () => {
-    const close = sessionCloseMinutes('us', 'whole') as number;
-    for (let m = close - 3; m <= close + 3; m++) {
-      const underway = isSessionUnderway('us', m, 'whole');
-      const inBuffer = isWithinCloseSettleBuffer('us', m, 'whole');
+  it.each(['us', 'hk'])('🚨 %s: 缓冲与场内**严格互补且相邻**: 两段不重叠、不留缝', (market) => {
+    const close = sessionCloseMinutes(market, 'whole') as number;
+    // 扫到 close+13 才能覆盖 hk 的 10 分钟缓冲并越过它的右端点
+    for (let m = close - 3; m <= close + 13; m++) {
+      const underway = isSessionUnderway(market, m, 'whole');
+      const inBuffer = isWithinCloseSettleBuffer(market, m, 'whole');
       // 同一分钟不可能既「场内」又「在缓冲窗」—— 重叠意味着两段各自的语义已经糊了
       expect(underway && inBuffer).toBe(false);
       // 并集恰好是写闸
-      expect(isCloseWriteBlocked('us', m, 'whole')).toBe(underway || inBuffer);
+      expect(isCloseWriteBlocked(market, m, 'whole')).toBe(underway || inBuffer);
     }
   });
 

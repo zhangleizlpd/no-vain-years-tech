@@ -103,7 +103,8 @@ const MARKET_SESSION: Record<
 };
 
 /**
- * market → **该市场的未平仓合约数是否在收盘当晚就已定稿** (066 T09, `FR-016`)。
+ * market → **该市场的未平仓合约数当天几点定稿**（当地当日分钟数）；`null` = 不在收盘当晚定稿
+ * （沿用隔日口径）。066 T09 建表, `FR-016`。
  *
  * 🚨 **这是清算侧的事实, 与上面那张连续竞价时段表是两件事** —— 刻意分表, 别折进
  * {@link MARKET_SESSION}: 时段表答「什么时候在交易」, 本表答「什么时候能拿到定稿的 OI」,
@@ -111,38 +112,77 @@ const MARKET_SESSION: Record<
  *
  * | 市场 | 值 | 依据 |
  * | --- | --- | --- |
- * | `us` | `false` | 清算所 T+1 才发布 ⇒ 收盘当晚抓到的 OI 属于**上一场** |
- * | `hk` | `true`  | **2026-08-25 U2 实测** (见 `specs/066-hk-option-cold-start/spec.md` 的 Clarifications) |
- * | `cn` | `false` | 期权采集尚未开通; **保守取 false** —— 见下 |
+ * | `us` | `null` | 清算所 T+1 才发布 ⇒ 收盘当晚抓到的 OI 属于**上一场** |
+ * | `hk` | `21:30` | **2026-08-25 U2 实测** (见 `specs/066-hk-option-cold-start/spec.md` 的 Clarifications) |
+ * | `cn` | `null` | 期权采集尚未开通; **保守取 null** —— 见下 |
  *
  * 📌 **`hk` 那条的实测形态**: 30 只合约 12 拍 360 行里 OI 只变动过一次, 落在 D 日
  * **16:30 之后、21:30 之前** (24/30 只变); 跨 22:00 日终那一拍 0/30, 次日盘前 0/30。
  * ⇒ 定稿早于日终, 而 `hk_option_daily_snapshot` 跑在 23:30, **落在定稿之后**。
+ * 取窗口的**上界** 21:30 而非下界 16:30: 实测只能把定稿时刻夹在这两点之间, 取下界等于赌
+ * 「一变完就到」, 而赌错的方向正是下面那条 fail-safe 要挡的那一侧。
  *
- * 🚨 **默认值 `false` 是刻意的 fail-safe, 不是省事**: 猜 `true` 而实际是 T+1 ⇒ 把上一场的
- * OI 标成当天的, 数字与标签**双错**且不报错; 猜 `false` 而实际当晚定稿 ⇒ 只是标签保守偏早,
- * 一条确定性 `UPDATE` 可订正 (与 `FR-016` 判不对称性的方向同源)。⇒ **没实测过的市场一律 `false`。**
+ * ## 🚨 登记的是**当地绝对时刻**, 不是「收盘后 N 分钟」
+ *
+ * 两条理由缺一不可:
+ * ① 清算所的日终处理跑的是**墙钟排程**, 不跟着收盘走 —— 表达成收盘偏移量, 语义从一开始就错;
+ * ② 偏移量会在**半日市**当天自动推出一个没人实测过的时刻 (hk 半日市 12:00 收, +5.5h = 17:30)。
+ *    绝对时刻则天然与 `kind` 正交 —— 半日市当天 21:30 仍是 21:30。
+ *
+ * ## 🚨 定稿是**时刻**, 不是市场的静态属性 (#194 后续)
+ *
+ * 本表原为 `MARKET_OI_REFRESHED_AT_EOD: Record<string, boolean>`, 判据只问「这个市场当晚定稿
+ * 吗」。那个形状对**夜间 cron** 成立 (hk 跑 23:30, 恒在定稿之后), 对**事件驱动**路径不成立:
+ * 锚首建冷启动由用户行为触发, 落在 D 日 16:00–21:30 之间时, 端点返的仍是 **D−1 的 OI**, 而
+ * 静态判据照样把它标成 D ⇒ 数字与标签**双错**, 且 `createMany(skipDuplicates)` 会让当晚 23:30
+ * 那轮**正确的**写入被静默跳过 —— 那一场的 OI 从此拿不回来 (供应方不提供历史快照)。
+ * 066 spec 的实测结论只把推论走到了 cron 那条路; 本表补上第二条。
+ *
+ * 🚨 **`null` 是刻意的 fail-safe, 不是省事**: 猜「已定稿」而实际是 T+1 ⇒ 把上一场的 OI 标成
+ * 当天的, 数字与标签**双错**且不报错; 猜「未定稿」而实际已定稿 ⇒ 只是标签保守偏早, 一条确定性
+ * `UPDATE` 可订正 (与 `FR-016` 判不对称性的方向同源)。⇒ **没实测过的市场一律 `null`。**
  *
  * 🚫 **MUST NOT 拿它去改 `source`** (`eod` / `premarket_backfill`)。那个标签答的是「这批
  * 快照捕捉的是**哪一场**的收盘」, 与 OI 归属是正交的两件事 —— 混用会让「D 日盘后采的」被
  * 标成「次日盘前补的」, 而覆盖率与补采审计都读 `source`。
+ *
+ * ⚠️ **沿革留痕**: migration `20260825_1910_relabel_hk_option_oi_as_of` 的注释里那句「与
+ * `market-session.rules.ts` 的 `MARKET_OI_REFRESHED_AT_EOD` 是同一个判断的两处表达」引用的是
+ * **本表的旧名**。该 migration 已应用, 改它的注释会炸 Prisma checksum ⇒ 刻意不动; 从那句话
+ * grep 过来的人落在这里。它说的那条纪律**依然成立**: 给别的市场填上非 `null` 时, MUST 同时
+ * 补一条同形的清理 migration。
  */
-const MARKET_OI_REFRESHED_AT_EOD: Record<string, boolean> = {
-  cn: false,
-  us: false,
-  hk: true,
+const MARKET_OI_SETTLE_LOCAL_MINUTE: Record<string, number | null> = {
+  cn: null,
+  us: null,
+  hk: 21 * 60 + 30,
 };
 
 /**
- * 该市场的未平仓合约数是否在**收盘当晚**就已定稿。纯查表, 零 I/O。复杂度 O(1)。
+ * `sessionDate` 那一场的未平仓合约数, 在 `now` 这一刻**定稿了没有**。纯查表 + 一次时区折算,
+ * 零 I/O。复杂度 O(1)。
  *
- * 未登记市场返 `false` —— 与 {@link marketNow} / {@link isSessionUnderway} 的「未登记即抛」
- * **蓄意不同**: 那两个的返回值是判据, 静默套用别市场的时窗会写出错的行; 而本表的保守值
- * (`false` = 沿用隔日口径) 产出的偏差是**可订正的标签**, 不是脏数据。为一个 OI 标签把整轮
- * 采集炸掉, 方向反了 (同 `FR-016` 的不对称性)。
+ * 三档判定, 顺序即优先级:
+ * 1. 本表无值 (`null` / 未登记) ⇒ `false`, 沿用隔日口径;
+ * 2. 该市场当地日期**已跨过** `sessionDate` ⇒ `true` —— 周末补采 (周六 10:00 补周五) 与
+ *    #181 那种跨午夜的长链都落在这一档, 它们早已过了定稿时刻, 但当日分钟数**小于**定稿分钟,
+ *    只比分钟数会把它们全判成「未定稿」;
+ * 3. 同一天 ⇒ 比当日分钟数。
+ *
+ * 未登记市场返 `false` 而**不抛** —— 与 {@link marketNow} / {@link isSessionUnderway} 的
+ * 「未登记即抛」**蓄意不同**: 那两个的返回值是判据, 静默套用别市场的时窗会写出错的行; 而本表
+ * 的保守值 (`false` = 沿用隔日口径) 产出的偏差是**可订正的标签**, 不是脏数据。为一个 OI 标签
+ * 把整轮采集炸掉, 方向反了 (同 `FR-016` 的不对称性)。⇒ 第 1 档的 `isSessionRegistered` 守卫
+ * 不是冗余: 少了它, 「本表填了值但 {@link MARKET_SESSION} 没登记」这种配置错会从
+ * {@link marketNow} 抛出去, 把上面那条不抛的契约破掉。
  */
-export function oiRefreshedAtEod(market: string): boolean {
-  return MARKET_OI_REFRESHED_AT_EOD[market] ?? false;
+export function oiRefreshedAtEod(market: string, sessionDate: string, now: Date): boolean {
+  const settleMinute = MARKET_OI_SETTLE_LOCAL_MINUTE[market];
+  if (settleMinute === undefined || settleMinute === null) return false;
+  if (!isSessionRegistered(market)) return false;
+  const { dateOnly, minutesOfDay } = marketNow(market, now);
+  if (dateOnly !== sessionDate) return dateOnly > sessionDate;
+  return minutesOfDay >= settleMinute;
 }
 
 function unregisteredMarketError(market: string): Error {
@@ -283,24 +323,44 @@ export function sessionCloseMinutes(market: string, kind: SessionKindStatus): nu
  * 是**闭区间的副作用**，而不是任何人做过的决定：它既没有名字、不能按市场调、也无法被证据替换。
  * 本常量把它拆出来命名，取值 **1 分钟 = 拆出来之前的等效值**，⇒ 行为逐点不变。
  *
- * ## 🚨 1 这个数字**不是研究结论**，是继承来的
+ * ## 🚨 默认值 1 **不是研究结论**，是继承来的；`hk` 的 10 是
  *
- * 业界不用墙钟回答「收盘定稿了没有」—— 它由 tape 的 trade qualifier（盘后成交打 `T`，不计入
- * regular session 收盘价）与各 vendor 的 preliminary/final 口径决定。⇒ 正解是拿**真信号**替掉
- * 本常量；在那之前，这里至少让「我们赌了 1 分钟」这件事在代码里看得见。
+ * 「vendor 会不会下发终局标记」已核实过一轮（2026-08-25），结论是**不会**，三层证据一致：
+ * ① 实取 payload（`__fixtures__/hk-option-snapshot-00700-2026-08-23.json`，143 个字段）里与成熟度
+ * 沾边的只有 `update_time` / `sec_status` / `suspension`，无 preliminary-final 之分；② 供应方
+ * `get_market_snapshot` 官方文档同样无此字段；③ 066 U2 实测**已证伪**最像的那个候选 ——
+ * `update_time` 在 16:30 与 21:30 两拍逐只完全相同，而 OI 在它不动的情况下变了（spec
+ * `## Clarifications`）。⇒ tape trade qualifier 那条路在本供应方身上无处落地，**别再去找那个标记**。
+ *
+ * 但「没有真信号」不等于「1 是对的」。`hk` 的 10 来自**交易所公开规格**，不是墙钟猜测：
+ * HKEX 收盘竞价（CAS）16:00 起，16:08–16:10 **随机**收市，撮合发生在随机收市之后，最终 IEP
+ * 即当日收盘价 ⇒ **16:08 之前港股正股的官方收盘价根本不存在**。而本表的 `hk` 收盘登记在 16:00,
+ * 取 buffer=1 时写闸 16:01 就放行 ⇒ 落库的 `underlying_spot` 是**竞价撮合前**的最后成交价,
+ * 而它被 `option-anomaly.rules`（实值/虚值分类）、`option-snapshot-guard.rules`（硬门）、
+ * `leg-retrieval.adapter`（选约表 spot）三处读。旁证在同一份 fixture 里: 标的行的 `update_time`
+ * 是 `16:07:49`，不是 16:00。
+ * 📌 半日市**同样成立**且同样是 10：CAS 整体平移到 12:00–12:10，而本函数按 market 取值、
+ * 由调用方叠加在该 `kind` 的收盘分钟上 ⇒ 不必按 kind 再分叉。
  *
  * 🚫 **MUST NOT 把它调大来「稳一点」**：每多一分钟就是采集窗口少一分钟，而现役 cron 全部落在
  * 收盘后数小时 ⇒ 调大对正常路径零收益，只会让**事件驱动**路径（锚首建冷启动）更容易落
- * `intraday_skipped`（终态不重试）。要动它得先有那个市场的定稿证据。
+ * `intraday_skipped`（终态不重试）。要动它得先有那个市场的定稿证据 —— `hk` 那条给出的正是
+ * 这种证据（交易所规格 + 实取旁证），`us` 至今**没有**（美股收盘竞价的官方价何时进到本供应方的
+ * 快照里，没实测过）⇒ us 留在默认值上，别照着 hk 编一个。
  *
- * 📌 **按市场分叉的位置留在这里**（三条现役市场的收盘形态并不同：us 期权半日市 13:15 收、
- * cn 收盘集合竞价在 15:00 打印、hk 无盘后段），但今天三者**都没有**各自的证据 ⇒ 统一取默认值，
- * 不编三个看起来很讲究、其实同源的数字。
+ * 🚨 **它管不了 OI** —— 那是清算侧的第二条时间线，由 {@link oiRefreshedAtEod} 单独回答。
+ * 港股 OI 的定稿在 21:30（实测窗口上界），拿 buffer 去覆盖它意味着收盘后 5.5 小时不准写，
+ * 那是拿「挡住写入」解决「标签说谎」，代价与病灶不匹配（2026-08-25 定案：允许冷启动立刻写一份
+ * spot 偏早的行 —— `quote_as_of` 已如实记录采集时刻，偏差是**披露过的**；而 OI 标签没有任何
+ * 列在披露它，故治标签、不挡写）。
  */
 const DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES = 1;
 
-/** per-market 覆盖；缺项 ⇒ {@link DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES}。今天**刻意为空**。 */
-const CLOSE_SETTLE_BUFFER_MINUTES: Record<string, number> = {};
+/** per-market 覆盖；缺项 ⇒ {@link DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES}。依据见上方文档。 */
+const CLOSE_SETTLE_BUFFER_MINUTES: Record<string, number> = {
+  // HKEX CAS 16:08–16:10 随机收市，撮合在其后 ⇒ 官方收盘价最早 16:10 才存在。
+  hk: 10,
+};
 
 /** 该市场的定稿缓冲分钟数。复杂度 O(1)。 */
 export function closeSettleBufferMinutes(market: string): number {
@@ -378,8 +438,10 @@ export function isWithinCloseSettleBuffer(
  * = {@link isSessionUnderway}（场内，端点数据还没产生）∪ {@link isWithinCloseSettleBuffer}
  * （刚收，收盘价可能还没定稿）。**这才是采集路径该问的那个谓词**，不是前两者之一。
  *
- * 🚨 取 buffer=1 时本函数与改造前的 `isSessionUnderway`（闭区间 `[open, close]`）**逐点等价**
- * —— 这是刻意的: 本次拆分改的是语义与可调性, 不是行为。
+ * 🚨 取 buffer=1 时本函数与 #194 改造前的 `isSessionUnderway`（闭区间 `[open, close]`）**逐点
+ * 等价** —— 那次拆分改的是语义与可调性, 不是行为。**`hk` 自本次起不再落在这个等价上**
+ * （buffer=10，依据见 {@link CLOSE_SETTLE_BUFFER_MINUTES}）：拆出来的可调性正是为了这一步，
+ * 别把「与旧行为逐点等价」当成本函数的不变式去维护。
  */
 export function isCloseWriteBlocked(
   market: string,

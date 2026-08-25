@@ -258,6 +258,18 @@ export class SyncOptionSnapshotUseCase {
    * #187 起全仓唯一的一份, 冷启动已折进它) 读的是**同一张表** —— 两处同源, 改坏任一边单测立刻红。
    * 🚨 判据层给出的 `oiAsOf` 只喂单测对表, **真正写库的是这里** ⇒ 只改判据层会「单测全绿而
    * 库里照旧偏一天」。
+   *
+   * ## 🚨 「当晚定稿」是**时刻**判据, 故本处 MUST 把 `spec.now` 喂进去
+   *
+   * 上一段的实测把定稿时刻夹在 D 日 16:30–21:30 之间, 而本维度的 hk cron 跑 23:30 ⇒ **cron
+   * 这条路** 恒在定稿之后, 静态查表也不会错。但 `collect` 还服务**事件驱动**那条路 (锚首建
+   * 冷启动经 `resolveSnapshotAttribution` 直调本体, 不读 `sync_dimension`): 用户在 D 日 17:00
+   * 建锚时, 端点返的仍是 **D−1 的 OI**, 而静态判据照样标 D ⇒ 数字与标签双错。
+   * 🚨 更要命的是它**不可回补**: 本处 `createMany(skipDuplicates)` 的唯一键是
+   * `(contract_id, session_date, source)` ⇒ 冷启动先落的那批行会让当晚 23:30 那轮**正确的**
+   * 写入被静默跳过, 而供应方不提供历史快照。
+   * 📌 与之相对, `underlying_spot` 在同一时刻的偏早 (港股 CAS 撮合前的最后成交价) **不治** ——
+   * `quote_as_of` 已如实记录采集时刻, 那个偏差是**披露过的**; 而 OI 标签没有任何列在披露它。
    */
   async collect(
     instruments: WorkingInstrument[],
@@ -274,7 +286,8 @@ export class SyncOptionSnapshotUseCase {
     // 📌 混合 scope 今天不存在 (维度 per-market, 冷启动传 `[market]`) —— 这里写死答案是为了
     // 它将来出现时**有个确定行为**, 而不是留一个「碰巧看第一个元素」的隐式结果。
     const oiFinalizedAtSessionClose =
-      spec.marketScope.length > 0 && spec.marketScope.every((m) => oiRefreshedAtEod(m));
+      spec.marketScope.length > 0 &&
+      spec.marketScope.every((m) => oiRefreshedAtEod(m, spec.sessionDate, spec.now));
     const ctx: ResolvedSnapshotContext = {
       sessionDate: spec.sessionDate,
       source: spec.mode,

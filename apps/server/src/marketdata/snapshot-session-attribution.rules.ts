@@ -113,6 +113,10 @@ export type SnapshotAttribution =
  * `oiRefreshedAtEod` 为真的市场（hk，2026-08-25 U2 实测）在收盘当晚就已定稿，两条路径同值
  * 是**实测事实**；为假的市场（us）仍必须差一天，单测里有一条专钉这件事。⇒ 禁的是「不看市场
  * 一律取同值」，不是「某个市场恰好同值」。
+ * 🚨 **「当晚定稿」还带时刻**：hk 的定稿落在 D 日 21:30（实测窗口上界），在那之前端点返的仍是
+ * 上一场的 OI。夜间 cron 恒在其后，而本判据还服务**建锚冷启动**那条随时可触发的路 ⇒
+ * `oiRefreshedAtEod` 吃 `(market, sessionDate, now)` 三个入参，少喂 `now` 会让收盘到定稿之间
+ * 采的那批**数字与标签双错**，且 `skipDuplicates` 让当晚正确的那轮再也写不进去。
  *
  * 🚫 MUST NOT 扩成「补最近 N 天」：只有紧邻的上一个 session 能从当下快照原样补回，
  * 再往前一天拿到的是**错的收盘价**。
@@ -150,8 +154,13 @@ export function resolveSnapshotAttribution(input: SnapshotAttributionInput): Sna
       now,
     },
     // 066 T09：两条 OI 翻新路径**并集**。`crossedIntoNextSession` 之外还有一条 ——
-    // 该市场自己在收盘当晚就把 OI 定稿（`oiRefreshedAtEod`，纯查表零 I/O）。
+    // 该市场自己在收盘当晚就把 OI 定稿（`oiRefreshedAtEod`，纯查表 + 一次时区折算，零 I/O）。
+    // 🚨 后者吃 `now`：定稿是**时刻**不是市场属性。夜间 cron 恒在定稿之后，而冷启动由建锚
+    // 事件触发、落在收盘到定稿之间时端点返的仍是上一场的 OI —— 少了这个入参，那一档会被
+    // 标成本场，数字与标签双错且不报错（见 `market-session.rules.ts` 该函数注释）。
     oiAsOf:
-      crossedIntoNextSession || oiRefreshedAtEod(market) ? target : input.tradingDayBeforeTarget,
+      crossedIntoNextSession || oiRefreshedAtEod(market, target, now)
+        ? target
+        : input.tradingDayBeforeTarget,
   };
 }

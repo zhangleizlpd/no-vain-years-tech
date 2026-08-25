@@ -82,6 +82,50 @@ describe('resolveSnapshotAttribution', () => {
       });
     });
 
+    it('🚨🚨 ②b 收盘后、OI 定稿前（17:00）→ 照采，但 oiAsOf 退回**上一交易日**', () => {
+      // 与上面 ② 只差一个钟点，答案相反。②（23:30）是**夜间 cron** 的落点，恒在定稿之后；
+      // 本格是**建锚冷启动**的落点 —— 它由用户行为触发，落在 D 日 16:10–21:30 之间时，
+      // 端点返的仍是 D−1 的 OI。判据若不吃 `now`，这一格会把 D−1 的持仓量标成 D：
+      // 数字与标签**双错**，且 `createMany(skipDuplicates)` 让当晚 23:30 那轮正确的写入被
+      // 静默跳过 ⇒ 那一场的 OI 从此拿不回来（供应方不提供历史快照）。
+      // 📌 `spec` 三元组**逐点不变** —— 治的是标签，不是挡写（2026-08-25 定案）。
+      const r = resolveSnapshotAttribution({
+        ...base,
+        now: hkt('2026-08-24T17:00:00'),
+        lastClosedTradingDay: '2026-08-24',
+        todayIsTradingDay: true,
+        tradingDayBeforeTarget: '2026-08-21',
+      });
+      expect(r).toMatchObject({
+        decision: 'collect',
+        spec: { sessionDate: '2026-08-24', mode: 'eod', marketScope: ['hk'] },
+        oiAsOf: '2026-08-21',
+      });
+    });
+
+    it('🚨 ②a 收盘后 9 分钟（16:09）仍在定稿缓冲窗内 → skip —— HKEX CAS 还没撮合', () => {
+      // hk 的缓冲从 1 提到 10（CAS 16:08–16:10 随机收市，官方收盘价最早 16:10 才存在）。
+      // 放行的话 `underlying_spot` 落的是竞价撮合前的最后成交价，而实值/虚值分类、快照硬门、
+      // 选约表 spot 三处都读它。
+      const r = resolveSnapshotAttribution({
+        ...base,
+        now: hkt('2026-08-24T16:09:00'),
+        lastClosedTradingDay: '2026-08-21',
+        todayIsTradingDay: true,
+        tradingDayBeforeTarget: '2026-08-20',
+      });
+      expect(r).toEqual({ decision: 'skip', reason: 'session_underway' });
+      // 而 16:10 整放行 —— 缓冲是左闭右开 `[close, close+buffer)`
+      const after = resolveSnapshotAttribution({
+        ...base,
+        now: hkt('2026-08-24T16:10:00'),
+        lastClosedTradingDay: '2026-08-24',
+        todayIsTradingDay: true,
+        tradingDayBeforeTarget: '2026-08-21',
+      });
+      expect(after.decision).toBe('collect');
+    });
+
     it('🚨 ③ 已跨进下一交易日盘前（01:30）→ 仍归**上一个已收盘 session**，premarket_backfill', () => {
       // 这一格就是 #181 的病灶：`exchangeCalendarDate` 在 00:00 翻页，会把这批数据标成
       // 08-25（一个还没开盘的 session）。归属必须跟「哪一场收了」走，不跟日历日走。
