@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.36.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.1...server-v0.36.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **marketdata:** [#179](https://github.com/zhangleizlpd/no-vain-years-tech/issues/179) vendor 按词根串市场 —— 链 adapter 丢跨市场行, us:ALB 恢复采集 ([#185](https://github.com/zhangleizlpd/no-vain-years-tech/issues/185)) ([7b7cc55](https://github.com/zhangleizlpd/no-vain-years-tech/commit/7b7cc553867192419a8244d51c0f025c273cd2de))
+* **marketdata:** 快照归属跟「哪一场收了」走, 不跟日历日走 —— 判据 + 盘中闸合一 ([#181](https://github.com/zhangleizlpd/no-vain-years-tech/issues/181)) ([#183](https://github.com/zhangleizlpd/no-vain-years-tech/issues/183)) ([a91e1a2](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a91e1a2d56a67ceb41f857a8bab2304772348efa))
+
 ## [0.36.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.0...server-v0.36.1) (2026-08-24)
 
 
