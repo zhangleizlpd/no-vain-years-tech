@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.36.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.2...server-v0.36.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **marketdata:** 066 T09 oi_as_of 按市场分叉 —— 港股收盘当晚定稿, 重标已采的 523 行 ([#191](https://github.com/zhangleizlpd/no-vain-years-tech/issues/191)) ([80d5873](https://github.com/zhangleizlpd/no-vain-years-tech/commit/80d58734f71b780075374745aa0cb00ea5c808f3))
+
 ## [0.36.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.1...server-v0.36.2) (2026-08-25)
 
 
