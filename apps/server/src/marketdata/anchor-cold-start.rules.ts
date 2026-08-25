@@ -1,18 +1,15 @@
-import {
-  SNAPSHOT_SOURCE_EOD,
-  SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
-  type SnapshotCollectionSpec,
-} from './sync-option-snapshot.usecase.js';
-import { exchangeCalendarDate } from './session-clock.js';
-
 /**
- * 锚首建冷启动的**判据层** (060 T003, FR-006 / FR-008 / FR-014 / FR-023 / FR-024,
- * plan §D4)。纯函数、**零 I/O**、无 DI (ADR-0043 §4) —— 日历查询由调用方做完再喂进来。
+ * 锚首建冷启动的**判据层** (060 T003, FR-023 / FR-024)。纯函数、**零 I/O**、无 DI
+ * (ADR-0043 §4)。
  *
- * 三样东西住这里, 都是「散开就会漂」的那类:
- * 1. {@link resolveSnapshotSpec} —— 快照三元组 (归属交易日 / 来源 / OI 归属日) 的决策表;
- * 2. {@link COLD_START_CAPABILITY} —— 「哪些市场支持哪些补数内容」的**唯一**登记处 (FR-024);
- * 3. {@link COLD_START_OUTCOME} —— 结局值域 (FR-027 起, 零折叠)。
+ * 两样东西住这里, 都是「散开就会漂」的那类:
+ * 1. {@link COLD_START_CAPABILITY} —— 「哪些市场支持哪些补数内容」的**唯一**登记处 (FR-024);
+ * 2. {@link COLD_START_OUTCOME} —— 结局值域 (FR-027 起, 零折叠)。
+ *
+ * 🚫 **第三样已经搬走了 (#187)**: 原 `resolveSnapshotSpec`(快照三元组决策表) 与 #181 新增的
+ * `resolveSnapshotAttribution` 是**两份同源判据**, 两份必漂, 而漂的表现是「某条路径的
+ * `session_date` 悄悄差一天」—— 不报错。冷启动现直接走
+ * `snapshot-session-attribution.rules.ts` 的那一份, 本文件**MUST NOT** 再长回一个日期推导。
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,7 +37,12 @@ export const COLD_START_OUTCOME = {
   SESSION_UNREGISTERED: 'session_unregistered',
   /** 标的标识不可解析 (ticker → market/code 失败)。 */
   TICKER_UNRESOLVED: 'ticker_unresolved',
-  /** 交易日历缺行 ⇒ 定位不到目标交易日, 不猜 (见 {@link resolveSnapshotSpec})。 */
+  /**
+   * 交易日历缺行 ⇒ 定位不到目标交易日, 不猜。两条到达路径:
+   * ① 目标 session 本身查不到 (`trading_day` 缺行);
+   * ② 写敏感档时「今天是不是交易日」判成 `unknown` (062 T009 —— 猜口径会让 `source` 与
+   *    `oi_as_of` 差一整天, 且不报错)。
+   */
   CALENDAR_MISSING: 'calendar_missing',
   /** BullMQ `attempts` 耗尽后仍失败 (FR-019a) —— **做了但失败**。 */
   RETRY_EXHAUSTED: 'retry_exhausted',
@@ -149,102 +151,4 @@ export function isColdStartEnabled(market: string): boolean {
   const capability = COLD_START_CAPABILITY[market];
   if (capability === undefined) return false;
   return capability.optionChain || capability.optionSnapshot;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 快照三元组决策 (plan §D4)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * 决策入参。**全部日历事实由调用方查好喂进来** —— 本文件零 I/O。
- *
- * 🚫 `market` **MUST NOT 做成带默认值的可选入参** (同 `trading-day-gate.ts` 的
- * `OPTION_EXCHANGE_SCOPE` 上方那条禁令): 悄悄落回某个市场的口径, 正是本函数存在的理由。
- */
-export interface SnapshotSpecInput {
-  /** 锚所属市场 (`us` / `hk` / ...)。必填。 */
-  market: string;
-  /** 本次冷启动的**绝对时刻**。 */
-  now: Date;
-  /**
-   * `trading_day` 中 ≤ `sessionWatermark(market, now)` 的**最大交易日**
-   * (= 最近一个已收盘交易日, FR-006)。`null` = 日历缺行。
-   */
-  lastClosedTradingDay: string | null;
-  /** `exchangeCalendarDate(market, now)` 那一天**是不是**该市场的交易日。 */
-  todayIsTradingDay: boolean;
-  /** {@link lastClosedTradingDay} 的**上一个交易日**; `null` = 日历缺更早的行。 */
-  tradingDayBeforeTarget: string | null;
-}
-
-/**
- * 决策结果: 要么给出一份可直接喂给 `collect` 的归属声明, 要么放弃并交回结局。
- */
-export type ColdStartSnapshotDecision =
-  | {
-      decision: 'collect';
-      /**
-       * 🚨 **原样喂给 `SyncOptionSnapshotUseCase.collect`, 别在调用点重算** ——
-       * 重算就是第二处判据, 而这套判据错了不报错、只让数字差一天。
-       */
-      spec: SnapshotCollectionSpec;
-      /**
-       * 本次采集的 OI 归属日 (`YYYY-MM-DD`)。
-       *
-       * ⚠️ **不喂给 `collect`** —— 它自己从 `trading_day` 派生 (`resolveOiSessionDate`)。
-       * 之所以仍在这里给出: FR-014 要求「归属交易日」与「OI 归属日」两个口径与常规轮 / 盘前
-       * 兜底在同一时刻取值一致, 而 D4 那张表的第三列在这儿写死一次之后, 单测才能拿它跟
-       * `collect` 的派生规则对表 —— 谁改坏任一边立刻红。
-       *
-       * `null` = {@link SnapshotSpecInput.tradingDayBeforeTarget} 缺行。此时**不复制**
-       * `collect` 的 `previousWeekday` 兜底 (那条兜底连同它的 ERROR 只该有一处), 采集照常。
-       */
-      oiAsOf: string | null;
-    }
-  | { decision: 'abandon'; outcome: typeof COLD_START_OUTCOME.CALENDAR_MISSING };
-
-/**
- * 按 plan §D4 的四行表定「补哪一天、按什么来源、OI 算哪天」。复杂度 O(1)。
- *
- * | 条件 | `sessionDate` | `source` | `oiAsOf` |
- * | --- | --- | --- | --- |
- * | `target` 查不到 | — | — | **放弃** (照抄 remediation 的 `blocked`: 不猜日子) |
- * | `today === target` (仍在目标 session 收盘当日的盘后) | `target` | `eod` | `target` 的上一交易日 |
- * | `today > target` 且 `today` **是**交易日 (已进下一交易日盘前, OI 已翻新) | `target` | `premarket_backfill` | `target` |
- * | `today > target` 且 `today` **不是**交易日 (周末 / 节假日, OI 未翻新) | `target` | `eod` | `target` 的上一交易日 |
- *
- * 🚨 **本函数把 `option-snapshot-remediation` 的两条固定路径推广成一条连续规则** —— 在它
- * 自己的两个时点 (北京 08:00 / 18:00) 上取值**逐字相同**, 单测里有一条跑真 remediation 的
- * 等值回归钉住这件事。
- *
- * 🚨 **`oiAsOf` 两条路径 MUST NOT 抹平**: 抹平后永远不会红, 但两条路径产出的 OI 差一天,
- * 而活跃度排名与 UI 的 `asOf` 都读它 (`sync-option-snapshot.usecase.ts` Guardrail 6)。
- *
- * 🚫 **MUST NOT 扩成「补最近 N 天」** (FR-008): 只有紧邻的上一个 session 能从当下快照原样
- * 补回, 再往前一天拿到的是错的收盘价。
- */
-export function resolveSnapshotSpec(input: SnapshotSpecInput): ColdStartSnapshotDecision {
-  const { market, now, lastClosedTradingDay: target, todayIsTradingDay } = input;
-  if (target === null) {
-    // 🚫 不猜: 猜错就是一批 `session_date` 标错的脏行, 比不补更难发现且要人工回删。
-    return { decision: 'abandon', outcome: COLD_START_OUTCOME.CALENDAR_MISSING };
-  }
-
-  const today = exchangeCalendarDate(market, now);
-  // 已进下一个**交易日**的盘前 ⇒ 目标 session 的 OI 已随之翻新, 此刻抓到的就是它的真值。
-  // 非交易日 (周末 / 节假日) 不翻新 ⇒ 与「仍在收盘当日」同走 eod。
-  const oiRefreshed = today > target && todayIsTradingDay;
-
-  return {
-    decision: 'collect',
-    spec: {
-      sessionDate: target,
-      mode: oiRefreshed ? SNAPSHOT_SOURCE_PREMARKET_BACKFILL : SNAPSHOT_SOURCE_EOD,
-      marketScope: [market],
-      // 绝对时刻原样带过去: DTE 基准要的是「今天离到期还有几天」, 拿 `sessionDate` 当基准
-      // 会让豁免线在补采路径上系统性偏一天且永远不会红 (Guardrail 18)。
-      now,
-    },
-    oiAsOf: oiRefreshed ? target : input.tradingDayBeforeTarget,
-  };
 }

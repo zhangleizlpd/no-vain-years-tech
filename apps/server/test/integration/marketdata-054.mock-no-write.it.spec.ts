@@ -34,8 +34,16 @@ import { MARKET_STATE_PORT, type MarketStatePort } from '../../src/marketdata/ma
  * 任何不经真 DI 容器的写法验不到核心 (plan Testing Invariants「MANDATORY INTEGRATION」)。
  */
 
-/** ET 16:00 (2026-08-12 周三) ⇒ `marketDateFor(['us'])` 恒得 `2026-08-12`, 且 mock 判它是交易日。 */
-const NOW = new Date('2026-08-12T20:00:00Z');
+/**
+ * ET 20:00 (2026-08-12 周三) = ① 级 cron 的**真实时刻** ⇒ `marketDateFor(['us'])` 恒得
+ * `2026-08-12`, 且 mock 判它是交易日。
+ *
+ * 🚨 **不取 ET 16:00 整** (本文件原值): `isSessionUnderway` 的时段是**闭区间**
+ * `[09:30, 16:00]`, 而 `sessionWatermark` 的判据是 `>= 收盘` ⇒ 恰好 16:00 那一分钟两者不一致,
+ * #187 起接了判据层的 ① 级会给出 `session_underway`。方向是保守侧 (宁可少采一轮), 但拿它当
+ * fixture 会让本组验的东西从「mock 档写手被拒」变成「边界那一分钟」。
+ */
+const NOW = new Date('2026-08-13T00:00:00Z');
 const TODAY = '2026-08-12';
 /** ② 级兜底要补的那个 session (= `TODAY` 的上一交易日, 由 `trading_day` 行定位)。 */
 const PREV = '2026-08-11';
@@ -127,6 +135,10 @@ describe('054 kind=mock 下写手零写库 (Testcontainers PG + Redis, 全 boot 
   });
 
   it('state_branch 2: 判定无需采集 (空库 → no_subject) → 零写库', async () => {
+    // #187: ① 级的归属日取自 `trading_day` 的「最近一个已收盘 session」—— 缺行时它会先落
+    // `blocked`(不猜日子), 那样本用例验不到覆盖率判定这一档。
+    await prisma.tradingDay.create({ data: { market: 'us', date: day(TODAY) } });
+
     const outcome = await remediation.retrySameDay(NOW);
 
     expect(outcome.status).toBe('not_needed');
@@ -135,6 +147,8 @@ describe('054 kind=mock 下写手零写库 (Testcontainers PG + Redis, 全 boot 
   });
 
   it('state_branch 1: 判定需采集 (① 当日重试) → 试采被拒, 目标表零增长', async () => {
+    // #187: 归属日的来源 (见 state_branch 2 的同款注释)。
+    await prisma.tradingDay.create({ data: { market: 'us', date: day(TODAY) } });
     await seedCoverageGap(PREV); // 分母来自 PREV, 当日 (TODAY) 无行 ⇒ degraded
     const before = await prisma.optionDailySnapshot.count();
 

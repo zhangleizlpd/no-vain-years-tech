@@ -242,6 +242,14 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
     await prisma.instrument.deleteMany();
     await prisma.anchor.deleteMany();
     await prisma.syncRun.deleteMany();
+    await prisma.tradingDay.deleteMany();
+    // 🚨 #187: 归属日不再是「执行时刻的日历日」, 而是 `trading_day` 里**最近一个已收盘
+    //    session** —— 日历缺行时本维度**放弃本轮**(不猜日子)。三个业务日各造一行, 让下面的
+    //    断言仍在验采集/幂等本身。⚠️ 顺带也钉住了正确性: 三行都是 A′ (us 业务日) 而非上海日,
+    //    若判据哪天退回日历日, `dayOf(row.date)` 的断言会当场红。
+    await prisma.tradingDay.createMany({
+      data: [D1, D2, D3].map((d) => ({ market: 'us', date: dateOf(d.us) })),
+    });
     port = new RecordingIvPort();
   });
 

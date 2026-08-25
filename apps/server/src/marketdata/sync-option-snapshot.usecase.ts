@@ -21,13 +21,9 @@ import {
   type OptionSnapshotRow,
 } from './option-snapshot.port.js';
 import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
-import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
-import {
-  resolveSnapshotAttribution,
-  type SnapshotAttribution,
-} from './snapshot-session-attribution.rules.js';
+import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
+import type { SnapshotAttribution } from './snapshot-session-attribution.rules.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
-import type { SessionKindStatus } from './trading-day.rules.js';
 
 /**
  * 逐日快照维度 use case (047 T016, FR-030/031/032/037/040/043/044)。
@@ -162,13 +158,18 @@ interface WorkingContract {
 export class SyncOptionSnapshotUseCase {
   private readonly logger = new Logger(SyncOptionSnapshotUseCase.name);
 
+  /** 归属判据的**唯一**取数入口 (#187) —— 曾在本类内联三个私有查询, 与另外两处逐字同构。 */
+  private readonly attribution: SnapshotSessionAttributionLookup;
+
   constructor(
     @Inject(OPTION_SNAPSHOT_PORT) private readonly snapshot: OptionSnapshotPort,
     private readonly prisma: PrismaService,
     // #181: 归属判据要问「今天是不是交易日」的**三态** —— `unknown` 必须走「不猜口径、放弃」
     // 那一档 (062 T009)。这是真实依赖不是顺手注入: 定「这批数据归哪一场」本来就需要交易日历。
-    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
-  ) {}
+    @Inject(TRADING_CALENDAR_PORT) calendar: TradingCalendarPort,
+  ) {
+    this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
+  }
 
   /**
    * 逐票快照。返 `true` = vendor 预算耗尽 (顺延信号, `ExecutorResult.budgetExhausted`)。
@@ -215,12 +216,8 @@ export class SyncOptionSnapshotUseCase {
   }
 
   /**
-   * 查齐归属判据要的日历事实, 交给纯函数定夺 (#181)。
-   *
-   * ⚠️ 下面三个查询与 `anchor-cold-start.usecase` / `option-snapshot-remediation` 里的同名
-   * 助手**逐字同构** —— 那笔去重债走独立 PR, 本次不夹带 (改动面追溯到 #181 之外)。
-   *
-   * 复杂度: 3 次索引点查 (全轮一次, 与工作集大小无关)。
+   * 单市场 scope 守卫 + 归属决策 (#181)。日历查询与判据均已单点化 (#187), 本方法只剩
+   * 「维度行 → 市场」这一格适配。
    */
   private async resolveAttribution(
     dim: ExecutorSyncDimensionRow,
@@ -235,61 +232,7 @@ export class SyncOptionSnapshotUseCase {
           `(混 scope 请拆成各自的维度)`,
       );
     }
-    const market = dim.marketScope[0];
-    const todayKind = await this.todaySessionKind(market, now);
-    const target = await this.lastClosedTradingDay(market, now, todayKind);
-    return resolveSnapshotAttribution({
-      market,
-      now,
-      lastClosedTradingDay: target,
-      todayIsTradingDay:
-        (await this.calendar.classify(market, exchangeCalendarDate(market, now))) === 'trading',
-      tradingDayBeforeTarget: target === null ? null : await this.tradingDayBefore(market, target),
-      todayKind,
-    });
-  }
-
-  /** 今天在 `trading_day` 里登记的 session 形态; 无行 ⇒ `unknown`。O(1) 点查。 */
-  private async todaySessionKind(market: string, now: Date): Promise<SessionKindStatus> {
-    const row = await this.prisma.tradingDay.findUnique({
-      where: {
-        market_date: { market, date: new Date(`${exchangeCalendarDate(market, now)}T00:00:00Z`) },
-      },
-      select: { sessionKind: true },
-    });
-    return (row?.sessionKind ?? 'unknown') as SessionKindStatus;
-  }
-
-  /**
-   * `trading_day` 中 ≤「已收盘 session 日期上界」的**最大交易日**; 缺行返 `null`。
-   *
-   * ⚠️ **蓄意不走 `TRADING_CALENDAR_PORT.lastClosedSession`**: 本查询要 fail-closed
-   * (缺行就是 `null`, 交由调用方放弃), 而端口那侧各调用点把 `unknown` 统一映射到放行侧。
-   */
-  private async lastClosedTradingDay(
-    market: string,
-    now: Date,
-    todayKind: SessionKindStatus,
-  ): Promise<string | null> {
-    const row = await this.prisma.tradingDay.findFirst({
-      where: {
-        market,
-        date: { lte: new Date(`${sessionWatermark(market, now, todayKind)}T00:00:00Z`) },
-      },
-      orderBy: { date: 'desc' },
-      select: { date: true },
-    });
-    return row === null ? null : row.date.toISOString().slice(0, 10);
-  }
-
-  /** 某交易日的**上一个**交易日; 缺更早的行返 `null`。O(1) 索引查。 */
-  private async tradingDayBefore(market: string, date: string): Promise<string | null> {
-    const row = await this.prisma.tradingDay.findFirst({
-      where: { market, date: { lt: new Date(`${date}T00:00:00Z`) } },
-      orderBy: { date: 'desc' },
-      select: { date: true },
-    });
-    return row === null ? null : row.date.toISOString().slice(0, 10);
+    return this.attribution.resolve(dim.marketScope[0], now);
   }
 
   /**
@@ -638,15 +581,15 @@ export class SyncOptionSnapshotUseCase {
    *
    * 权威来源是 `marketdata.trading_day` (日历维度每日填充, `CALENDAR_MARKETS` 含 us) ——
    * 「减一天」会在周一与长假后错成非交易日。缺行时走 {@link previousWeekday} 兜底并抬 ERROR,
-   * 见该函数注释的不对称性论证。复杂度: 1 次 (market, date) 主键索引上的倒序 limit-1 查询。
+   * 见该函数注释的不对称性论证。
+   *
+   * ⚠️ 查询本体已归 {@link SnapshotSessionAttributionLookup.tradingDayBefore} (#187) —— 本方法
+   * 只保留**兜底 + ERROR** 那半段, 它连同它的告警全仓仍只有这一处。
+   * 复杂度: 1 次 (market, date) 主键索引上的倒序 limit-1 查询。
    */
   private async resolveOiSessionDate(marketScope: string[], sessionDate: string): Promise<Date> {
-    const prev = await this.prisma.tradingDay.findFirst({
-      where: { market: { in: marketScope }, date: { lt: toDateOnly(sessionDate) } },
-      orderBy: { date: 'desc' },
-      select: { date: true },
-    });
-    if (prev !== null) return prev.date;
+    const prev = await this.attribution.tradingDayBefore(marketScope, sessionDate);
+    if (prev !== null) return toDateOnly(prev);
 
     const fallback = previousWeekday(sessionDate);
     this.logger.error(

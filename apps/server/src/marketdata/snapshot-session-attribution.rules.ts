@@ -43,6 +43,11 @@ import type { SessionKindStatus } from './trading-day.rules.js';
  * ＋ use case 里一个独立的 `isSessionUnderway` 闸），而**夜间维度路径从来没有过** ——
  * 它的 `run()` 写死 `sessionDate = 当前日历日` + `source = eod`。#181 正是这个缺口。
  * ⇒ 判据搬到与「冷启动」无关的名字底下，让下一个写采集路径的人**找得到**。
+ *
+ * 📌 **#187 起这里是全仓唯一的一份**：冷启动那份（`resolveSnapshotSpec`）已退役并入本函数，
+ * `underlying_iv_daily`（同病、同形）与 `option-snapshot-remediation` 的 ① 级也改走这里。
+ * 取数那一半（三次日历查询）在 `snapshot-session-attribution.lookup.ts`，同样只有一份。
+ * 🚫 **MUST NOT 再在任何调用点重算其中任何一格** —— 这套判据错了不报错，只让数字差一天。
  */
 
 /** {@link resolveSnapshotAttribution} 的入参 —— 贫血投影，日历事实由调用方查好喂进来。 */

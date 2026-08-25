@@ -15,6 +15,8 @@ import type {
   OptionSnapshotQuery,
   OptionSnapshotRow,
 } from './option-snapshot.port.js';
+import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
+import { resolveSnapshotAttribution } from './snapshot-session-attribution.rules.js';
 import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
@@ -336,6 +338,63 @@ describe('OptionSnapshotRemediation', () => {
       expect(premarket.status).toBe('not_needed');
       expect(h.evaluate).not.toHaveBeenCalled();
       expect(h.queries).toHaveLength(0);
+    });
+  });
+
+  /**
+   * 🚨 **两级喂给 `collect` 的归属声明必须与判据层在同一时点逐字相同** (#187, 原住
+   * `anchor-cold-start.rules.spec.ts`)。这里跑的是**真的** `OptionSnapshotRemediation`, 不是
+   * 它的算法副本 —— 两级各钉一件不同的事:
+   *
+   * · ① 级 —— 它**就是**判据层的产物, 本条钉的是「原样转发、不在调用点重算任何一格」;
+   * · ② 级 —— 它的 `mode` 是**自己硬编码**的留痕载体 (见该方法注释: 判据层在日历 `unknown`
+   *   那天会给 `eod`, 恰恰是最需要留痕的日子)。本条钉的是「手写的那两格在该时点与判据层等值」
+   *   —— 哪天两侧的时点归属被改动, 它立刻红。
+   */
+  describe('两级的归属声明 vs 判据层 —— 等值回归', () => {
+    /** 判据层在给定时刻应给出的 spec（日历事实取自本 harness 同一份 `TRADING_DAYS`）。 */
+    function expectedSpec(now: Date) {
+      const today = exchangeCalendarDate('us', now);
+      const target = TRADING_DAYS.filter((d) => d <= sessionWatermark('us', now, 'whole')).at(-1);
+      const decision = resolveSnapshotAttribution({
+        market: 'us',
+        now,
+        lastClosedTradingDay: target ?? null,
+        todayIsTradingDay: TRADING_DAYS.includes(today),
+        tradingDayBeforeTarget:
+          target === undefined ? null : (TRADING_DAYS.filter((d) => d < target).at(-1) ?? null),
+        todayKind: 'whole',
+      });
+      if (decision.decision !== 'collect') throw new Error('unreachable');
+      return decision;
+    }
+
+    it('① 当日重试 ⇒ spec 原样来自判据层 (eod / 最近一个已收盘 session)', async () => {
+      const h = makeHarness([report('degraded'), report('ok')]);
+      const collect = vi.spyOn(h.useCase, 'collect');
+
+      await h.remediation.retrySameDay(SAME_DAY_RETRY_AT);
+
+      const expected = expectedSpec(SAME_DAY_RETRY_AT);
+      expect(collect).toHaveBeenCalledTimes(1);
+      expect(collect.mock.calls[0][1]).toEqual(expected.spec);
+      // ① 级的 oi_as_of 由 collect 自己取 session_date 的上一交易日 (Guardrail 6)。
+      expect(expected.oiAsOf).toBe(PREV_SESSION);
+      // `now` 是**同一个 Date 实例**穿过去的 —— 谁在调用点重新 new 一个, 这条立刻红。
+      expect(collect.mock.calls[0][1].now).toBe(SAME_DAY_RETRY_AT);
+    });
+
+    it('② 盘前兜底 ⇒ 手写的 sessionDate / mode 与判据层在该时点等值 (premarket_backfill / 上一交易日)', async () => {
+      const h = makeHarness([report('degraded'), report('ok')]);
+      const collect = vi.spyOn(h.useCase, 'collect');
+
+      await h.remediation.backfillPremarket(PREMARKET_AT);
+
+      const expected = expectedSpec(PREMARKET_AT);
+      expect(collect).toHaveBeenCalledTimes(1);
+      expect(collect.mock.calls[0][1]).toEqual(expected.spec);
+      // ② 级的 oi_as_of **= session_date** (盘前 OI 已翻新), 与 ① 级差一天且 MUST NOT 抹平。
+      expect(expected.oiAsOf).toBe(SESSION);
     });
   });
 

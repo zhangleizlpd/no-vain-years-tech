@@ -4,17 +4,17 @@ import {
   COLD_START_CAPABILITY,
   COLD_START_OUTCOME,
   isColdStartEnabled,
-  resolveSnapshotSpec,
   type ColdStartOutcome,
 } from './anchor-cold-start.rules.js';
 import { AnchorDrivenSyncGate, parseGateTicker } from './anchor-driven-sync-gate.js';
-import { isSessionRegistered, isSessionUnderway, marketNow } from './market-session.rules.js';
+import { isSessionRegistered } from './market-session.rules.js';
+import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
+import { resolveSnapshotAttribution } from './snapshot-session-attribution.rules.js';
 import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { seedInstrumentCreateData } from './sync-universe.usecase.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
-import type { SessionKindStatus } from './trading-day.rules.js';
 import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
 
 /**
@@ -31,7 +31,8 @@ import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
  * 4. AnchorDrivenSyncGate.recalcSafely() 幂等开闸
  * 5. 起手复判：本锚**标的**在目标交易日的数据是否已具备；已具备 ⇒ already_present
  * 6. 不敏感档：**直调链本体** `SyncOptionContractUseCase.collect([这一只])`
- * 7. 敏感档：盘中 ⇒ intraday_skipped；否则按 §D4 算 spec → `SyncOptionSnapshotUseCase.collect`
+ * 7. 敏感档：一次 `resolveSnapshotAttribution` 定夺 —— 盘中 ⇒ intraday_skipped；否则拿它给的
+ *    spec 直调 `SyncOptionSnapshotUseCase.collect`
  * 8. 落运行记录
  * ```
  * 3 → 4 → 复判这个次序反了会**静默拿到空数据**: 闸只认已存在的 Instrument 行, 而新锚
@@ -77,6 +78,12 @@ export type ColdStartResult =
 export class AnchorColdStartUseCase {
   private readonly logger = new Logger(AnchorColdStartUseCase.name);
 
+  /**
+   * 归属判据的**唯一**取数入口 (#187) —— 本类曾内联 `todaySessionKind` /
+   * `lastClosedTradingDay` / `tradingDayBefore` 三个查询, 与另外两处逐字同构。
+   */
+  private readonly attribution: SnapshotSessionAttributionLookup;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly gate: AnchorDrivenSyncGate,
@@ -85,8 +92,10 @@ export class AnchorColdStartUseCase {
     // 060 冷启动 —— 链改直调后本类不再入任何队, 那条循环 import 的风险面随之消失。
     private readonly chain: SyncOptionContractUseCase,
     private readonly snapshot: SyncOptionSnapshotUseCase,
-    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
-  ) {}
+    @Inject(TRADING_CALENDAR_PORT) calendar: TradingCalendarPort,
+  ) {
+    this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
+  }
 
   /**
    * 复杂度 —— **每一项都按「这一只锚」计**, 与已开闸标的总数无关:
@@ -126,10 +135,10 @@ export class AnchorColdStartUseCase {
     // 🚨 **半日市三态, 一次查、三处用** (063 Phase 2): 下面的目标日推导、日历缺行的
     // reason 串、以及盘中闸, 问的都是「今天这一场几点收」。查三遍就是三处判据。
     // `unknown` ⇒ 回落常规收盘 = 本片上线前的逐点行为。
-    const todayKind = await this.todaySessionKind(market, now);
+    const todayKind = await this.attribution.todaySessionKind(market, now);
 
     // ── 2. 目标交易日 = 最近一个已收盘交易日 (FR-006 / FR-007) ──
-    const targetSession = await this.lastClosedTradingDay(market, now, todayKind);
+    const targetSession = await this.attribution.lastClosedTradingDay(market, now, todayKind);
     if (targetSession === null) {
       // 🚫 不猜日子 (FR-009): 猜错就是一批 session_date 标错的脏行, 比不补更难发现且要人工
       //    回删。照抄 option-snapshot-remediation 的 blocked 纪律。ERROR 级 = 需人工介入。
@@ -190,14 +199,12 @@ export class AnchorColdStartUseCase {
       return this.finish(input, COLD_START_OUTCOME.BACKFILLED, { targetSession });
     }
 
-    // 「今天是不是交易日」**一次查、两处用**: 盘中闸与 §D4 的三元组决策问的是同一件事,
-    // 查两遍就是两处判据。
     const today = exchangeCalendarDate(market, now);
-    const calendarStatus = await this.calendar.classify(market, today);
+    const calendarStatus = await this.attribution.classifyToday(market, now);
 
     // 🚨 **写敏感档遇 `unknown` ⇒ 放弃, MUST NOT 猜口径** (062 T009, `state_branch` 7)。
     //
-    // 这一格的取值直接决定 §D4 三元组里的 `source` 与 `oi_as_of`: 猜成「是交易日」就落
+    // 这一格的取值直接决定判据层算出的 `source` 与 `oi_as_of`: 猜成「是交易日」就落
     // `premarket_backfill` + OI 归属**被补那场**, 猜成「不是」就落 `eod` + OI 归属**再往前
     // 一场** —— 两者差一整天的持仓量归属, 而活跃度排名与 UI 的 asOf 都读它。猜错**不报错**,
     // 只留一批溯源信息写反的行, 事后订正要人工回删。
@@ -218,55 +225,46 @@ export class AnchorColdStartUseCase {
         reason: `交易日历视野未覆盖 ${market} 的 ${today} (覆盖声明之外) ⇒ 不猜 source / oi_as_of`,
       });
     }
-    const todayIsTradingDay = calendarStatus === 'trading';
-
-    // 🚨 闸 = 「该场进行中」**且**「今天真有这一场」, 两个条件缺一不可:
+    // 🚨 **盘中闸与三元组决策是同一次判定** (#187): 二者问的都是「此刻该不该采、采到的算哪
+    // 一场」, 而本类此前把它们写成两段 —— 一个独立的 `isSessionUnderway && todayIsTradingDay`
+    // 闸 + 一次 `resolveSnapshotSpec`。#181 之后夜间维度路径也长出了同一套逻辑
+    // (`resolveSnapshotAttribution`), 于是全仓有了**两份同源判据** —— 两份必漂, 而漂的表现是
+    // 「某条路径的 `session_date` 悄悄差一天」, 不报错。现统一走那一份。
     //
-    // ① `isSessionUnderway`「该场进行中」(**含午休**) MUST NOT 换成 `isWithinTradingSession`
-    //    —— 后者午休返 false ⇒ 放行, 而此刻 D4 算出的目标日是**上一个交易日** ⇒ 把午休盘口
-    //    贴上「上一场收盘」的标签写进库 (FR-011)。
-    //    📌 **2026-08-18 起这条差异在本片够不到任何市场**: hk 已合并成单段登记 (午休算场内),
-    //    us 真的无午休, 而 cn 不在 `COLD_START_CAPABILITY` 里 ⇒ 两谓词在能走到这里的市场上
-    //    逐点等价。仍然用 `isSessionUnderway` 不是形式主义: 哪天给一个有午休的市场开通期权
-    //    采集, 用错的那个当场就是永久缺口, 而它**不报错**。
-    // ② `todayIsTradingDay` 这一格是 T010 铺时点用例时补上的 (impl 期修正, 2026-08-17):
-    //    `isSessionUnderway` 是**纯时钟**谓词, 不看星期也不看日历 ⇒ 周六 ET 12:00 它照样返
-    //    true。少了这一格, **北京周六 21:30 – 周日 04:00 建的锚会落 `intraday_skipped`**,
-    //    而那是终态不重试、常规轮周一晚写的又是周一的数据 ⇒ 目标日快照**永久**缺失
-    //    (SC-001 要的正是它)。境内用户周末夜里建锚恰是高发时段, 美股节假日同理。
-    //    📌 §D4 第四行 (`today > target` 且今天非交易日 ⇒ eod) 本就是为周末这一档写的 ——
-    //    没有这个 `&&`, 那一行在 ET 场内钟点上**够不到**。
+    // 📌 判据层的两个决策**映射到冷启动自己的结局值域**, 不外泄它的 `reason` 串:
+    //   · `skip`(该场进行中)  → `intraday_skipped` (终态、非错误)
+    //   · `abandon`(日历缺行) → `calendar_missing`  (需人工介入)
+    // 两条各自的完整理由 (盘中为什么必须**拒绝**而不是标成上一场 / 为什么不猜日子, 以及
+    // `isSessionUnderway` 与 `todayIsTradingDay` 两个条件为何缺一不可) 见
+    // `snapshot-session-attribution.rules.ts` —— **不在这里复述第二遍**。
     //
-    // 走到这里 `calendarStatus` 只可能是 `trading` / `non-trading` (`unknown` 已在上面放弃) ⇒
-    // 本闸的两个条件都建立在**确定**的日历事实上。
-    // 🚨 `todayKind='half'` 时收盘时刻提前 (hk 12:00 / us 13:15 期权口径) ⇒ 半日市当天下午
-    // 不再被误判成「场内」。这一格是本片**唯一不可自愈**的收益: `intraday_skipped` 是终态
-    // 不重试, 落了它那一场的快照就**永久缺失** (常规轮当晚写的是当晚那一场)。
-    if (
-      isSessionUnderway(market, marketNow(market, now).minutesOfDay, todayKind) &&
-      todayIsTradingDay
-    ) {
-      return this.finish(input, COLD_START_OUTCOME.INTRADAY_SKIPPED, { targetSession });
-    }
-
-    const decision = resolveSnapshotSpec({
+    // 🚨 日历事实**沿用上面已查好的** (`targetSession` / `todayKind` / `calendarStatus`),
+    // 不调 `lookup.resolve()` 重查一遍: 同一轮里查两次同一件事就是给「一次查、N 处用」那条
+    // 纪律开口子, 且两次之间日历真被填上时, 结局与 `targetSession` 会指向不同的 session。
+    const attribution = resolveSnapshotAttribution({
       market,
       now,
       lastClosedTradingDay: targetSession,
-      todayIsTradingDay,
-      tradingDayBeforeTarget: await this.tradingDayBefore(market, targetSession),
+      todayIsTradingDay: calendarStatus === 'trading',
+      tradingDayBeforeTarget: await this.attribution.tradingDayBefore([market], targetSession),
+      todayKind,
     });
-    if (decision.decision === 'abandon') {
+    if (attribution.decision === 'skip') {
+      // 🚨 `intraday_skipped` 是终态不重试 ⇒ 落了它那一场的快照就**永久缺失** (常规轮当晚
+      // 写的是当晚那一场)。半日市 (`todayKind='half'`) 收盘提前那一格由判据层处理。
+      return this.finish(input, COLD_START_OUTCOME.INTRADAY_SKIPPED, { targetSession });
+    }
+    if (attribution.decision === 'abandon') {
       // 兜底: 第 2 步已挡过日历缺行, 这条正常够不到 —— 但判据在规则层, 不在这里复制一份。
-      return this.finish(input, decision.outcome, {});
+      return this.finish(input, COLD_START_OUTCOME.CALENDAR_MISSING, {});
     }
 
-    // 🚨 直调 `collect` 而非维度 job 的 `run()`: 后者写死 `sessionDate = 当前业务日` + `eod`
-    //    (plan §D8), 在盘前窗口会把 `sessionDate` 标成**尚未收盘的那天**。`collect` 是唯一
-    //    能显式指定归属日的入口, 且 spec **原样**来自 T003 的纯函数, 此处不重算 (FR-014)。
+    // 🚨 直调 `collect` 而非维度 job 的 `run()`: 后者的工作集是**全部**已开闸标的, 而
+    //    `collect` 是唯一能收「就这一只 + 一份显式归属声明」的入口。spec **原样**来自判据层的
+    //    纯函数, 此处不重算任何一格 (FR-014) —— 重算就是第三处判据。
     const budgetExhausted = await this.snapshot.collect(
       [{ id: instrumentId, market, code }],
-      decision.spec,
+      attribution.spec,
       emptyStats(),
     );
     if (budgetExhausted) {
@@ -354,66 +352,6 @@ export class AnchorColdStartUseCase {
     await this.finish(input, COLD_START_OUTCOME.RETRY_EXHAUSTED, {
       reason: `BullMQ attempts 耗尽: ${input.failedReason ?? '(无 failedReason)'}`,
     });
-  }
-
-  /** `trading_day` 中**严格早于** `date` 的最大交易日; `null` = 缺行 (见 {@link lastClosedTradingDay})。 */
-  private async tradingDayBefore(market: string, date: string): Promise<string | null> {
-    const row = await this.prisma.tradingDay.findFirst({
-      where: { market, date: { lt: new Date(`${date}T00:00:00Z`) } },
-      orderBy: { date: 'desc' },
-      select: { date: true },
-    });
-    return row === null ? null : row.date.toISOString().slice(0, 10);
-  }
-
-  /**
-   * `trading_day` 中 ≤ 「已收盘 session 日期上界」的**最大交易日**。缺行返 `null`。
-   *
-   * ⚠️ **蓄意不走 `TRADING_CALENDAR_PORT`**, 尽管它就是交易日历的读端口 —— 它只有
-   * `classify(market, date)` 一个方法, 拿它找「最近一个已收盘交易日」只能逐日回退着问, 而
-   * 日历没填到那儿时它给的是 `unknown`, 各调用点又统一把 `unknown` 映射到**放行**侧 (062 T006
-   * Guardrail 1) ⇒ 日历真缺行时逐日回退会**编出**一个交易日, 正是 FR-009「MUST NOT 猜测日期」
-   * 禁的那件事。本查询要的是 fail-closed, 故直查自有表 —— 形态与
-   * `option-snapshot-remediation.resolvePreviousTradingDay` /
-   * `sync-option-snapshot.resolveOiSessionDate` 逐字同构 (marketdata 自有表, 非跨 ctx)。
-   *
-   * 复杂度: 1 次 (market, date) 主键索引上的倒序 limit-1 查询。
-   */
-  /**
-   * 交易所当地**今天**那一场是整天还是半天 (063 Phase 2)。库里没有该日的行 ⇒ `'unknown'`
-   * —— 与列默认值同值, 且消费侧对 `unknown` 一律回落常规收盘 (fail-open)。
-   *
-   * 🚨 **直查自有表而非走 `TRADING_CALENDAR_PORT`**: 与本类既有的 `lastClosedTradingDay`
-   * 同一条理由 —— `trading_day` 是 marketdata 自有表, 而端口那两个方法答的是别的问题
-   * (三态分类 / 最近已收盘交易日), 为一个列查询往端口上加第三个方法会让所有 fake 跟着改,
-   * 收益为零。
-   *
-   * ⚠️ 「没有该日的行」有两种成因 (今天不是交易日 / 日历还没填到) —— 本方法**不区分**:
-   * 两种情形下「今天这一场几点收」都无从谈起, 而调用点自己另有日历三态判据分派。
-   *
-   * 复杂度: 1 次 (market, date) 主键点查。
-   */
-  private async todaySessionKind(market: string, now: Date): Promise<SessionKindStatus> {
-    const today = exchangeCalendarDate(market, now);
-    const row = await this.prisma.tradingDay.findUnique({
-      where: { market_date: { market, date: new Date(`${today}T00:00:00Z`) } },
-      select: { sessionKind: true },
-    });
-    return (row?.sessionKind ?? 'unknown') as SessionKindStatus;
-  }
-
-  private async lastClosedTradingDay(
-    market: string,
-    now: Date,
-    todayKind: SessionKindStatus,
-  ): Promise<string | null> {
-    const cutoff = sessionWatermark(market, now, todayKind);
-    const row = await this.prisma.tradingDay.findFirst({
-      where: { market, date: { lte: new Date(`${cutoff}T00:00:00Z`) } },
-      orderBy: { date: 'desc' },
-      select: { date: true },
-    });
-    return row === null ? null : row.date.toISOString().slice(0, 10);
   }
 
   /**

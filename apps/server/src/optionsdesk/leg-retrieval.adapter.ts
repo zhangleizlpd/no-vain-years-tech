@@ -443,7 +443,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 收盘轮。于是整个美股交易时段里这只锚都答「未就绪」, 而此刻的真实盘口一直取得到。
    *
    * 🚨 **`oiAsOf` 取最近一个已收盘交易日, 与实时 OI 的归属由构造对齐**: 美股期权 OI 盘前更新、
-   * 盘中冻结 ⇒ 此刻取回的那个数归属的正是上一场收盘 (与 marketdata `resolveSnapshotSpec` 在
+   * 盘中冻结 ⇒ 此刻取回的那个数归属的正是上一场收盘 (与 marketdata
+   * `resolveSnapshotAttribution` 在
    * 同一时点上的取值逐字相同)。日历答不出这一天 ⇒ **放弃, 不猜** —— 猜错就是一整页 OI 顶着
    * 错误的归属日, 而整页渲染正常。
    * 🚨 **`sessionDate` 取交易所的今天**: 屏上的报价列全部来自此刻, 归属**正在进行的这一场**。

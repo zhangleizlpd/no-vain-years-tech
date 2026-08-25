@@ -155,7 +155,7 @@ const SESSION_ATTRIBUTION_KEYS = ['sessionDate', 'session_date'];
 const CALENDAR_DAY_FNS = ['exchangeCalendarDate', 'exchangeCalendarDateForScope'];
 
 /**
- * Rule C：把**日历日**直接写进 `sessionDate` 这类**归属列**（#181）。
+ * Rule C：把**日历日**直接写进 `sessionDate` 这类**归属列**（#181；#187 起也扫变量声明）。
  *
  * 归属列进幂等键且落库多为 `skipDuplicates` ⇒ 标错**不可逆、不报错**，还会静默挡掉次日的
  * 真实采集。而日历日 00:00 就翻页，与「这一场收没收盘」无关 —— 队列积压把执行时刻推过午夜
@@ -164,38 +164,54 @@ const CALENDAR_DAY_FNS = ['exchangeCalendarDate', 'exchangeCalendarDateForScope'
  * 🚨 **不存在合法用法**：`sessionDate` 的语义就是「哪一场」，取日历日永远是错的。
  * 故本规则无豁免名单。
  *
- * ⚠️ **覆盖边界（写在明处，别以为它管全了）**：只扫**对象属性赋值**
- * （`{ sessionDate: exchangeCalendarDate(...) }`），不扫变量声明
- * （`const sessionDate = exchangeCalendarDate(...)`）。后者现存一处
- * （`option-snapshot-remediation.ts` 的 ① 级重试）—— 它跑在北京 08:00 = ET 19:00/20:00，
- * 恒在美股收盘后同一日历日内，**靠 cron 时刻成立**而非靠判据。要收紧就得连同把它改成走
- * `resolveSnapshotAttribution`，不在本规则范围内。
+ * ## 覆盖面：对象属性赋值 **+** 变量声明
+ *
+ * 两种形态都扫（`{ sessionDate: exchangeCalendarDate(...) }` 与
+ * `const sessionDate = exchangeCalendarDate(...)`）。后者曾被明文放过一次 ——
+ * `option-snapshot-remediation.ts` 的 ① 级重试靠 cron 时刻（北京 08:00 = ET 19:00/20:00，恒
+ * 在美股收盘后同一日历日内）成立、而非靠判据。#187 把它改成走 `resolveSnapshotAttribution`
+ * 之后，这条豁免的理由消失，规则随之收紧。
+ *
+ * 🚨 **名字是判据的全部** —— 变量叫别的（`today` / `businessDate`）就扫不到，这是**蓄意的**：
+ * 「今天几号」有合法用途（交易日闸「今天开不开市」、DTE 这类前瞻派生量的基准），把它们一并
+ * 咬住会让门禁误报到被加白名单加失效。⇒ 本规则拦的是**取错值又叫对名字**那一类；给一个日历日
+ * 起名 `sessionDate` 之外的写法，靠 review 与 `session-clock.ts` 的函数注释守。
  */
 function scanCalendarDayAsSession(sf: SourceFile, out: Violation[]): void {
   const filePath = sf.getFilePath();
-  for (const pa of sf.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
-    if (!SESSION_ATTRIBUTION_KEYS.includes(pa.getName().replace(/['"]/g, ''))) continue;
-    const init = pa.getInitializer();
-    if (init === undefined) continue;
+  /** 归属名 + 初始化表达式 → 命中的日历日函数（无则 undefined）。 */
+  const calendarDayCall = (name: string, init: Node | undefined) => {
+    if (!SESSION_ATTRIBUTION_KEYS.includes(name.replace(/['"]/g, ''))) return undefined;
+    if (init === undefined) return undefined;
     const calls = [
       ...(Node.isCallExpression(init) ? [init] : []),
       ...init.getDescendantsOfKind(SyntaxKind.CallExpression),
     ];
-    const hit = calls.find((c) => CALENDAR_DAY_FNS.includes(c.getExpression().getText()));
-    if (hit === undefined) continue;
-
+    return calls.find((c) => CALENDAR_DAY_FNS.includes(c.getExpression().getText()));
+  };
+  const report = (name: string, line: number, fn: string) =>
     out.push({
       file: filePath,
-      line: pa.getStartLineNumber(),
+      line,
       rule: 'calendar-day-as-session',
       message:
-        `把日历日 (${hit.getExpression().getText()}) 直接写进归属列 \`${pa.getName()}\` —— ` +
+        `把日历日 (${fn}) 直接写进归属列 \`${name}\` —— ` +
         `日历日 00:00 就翻页, 与「这一场收没收盘」无关。队列积压 / 重试把执行时刻推过午夜, ` +
         `就会整批标错一天, 而落库是 skipDuplicates ⇒ **不可逆、不报错**, 还会静默挡掉次日的` +
         `真实采集 (2026-08-25 prod 实撞 2200 行, #181)。⇒ 归属走 ` +
         `marketdata/snapshot-session-attribution.rules.ts 的 resolveSnapshotAttribution, ` +
         `判据是「最近一个已收盘 session」而不是「今天几号」`,
     });
+
+  for (const pa of sf.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
+    const hit = calendarDayCall(pa.getName(), pa.getInitializer());
+    if (hit !== undefined)
+      report(pa.getName(), pa.getStartLineNumber(), hit.getExpression().getText());
+  }
+  for (const vd of sf.getDescendantsOfKind(SyntaxKind.VariableDeclaration)) {
+    const hit = calendarDayCall(vd.getName(), vd.getInitializer());
+    if (hit !== undefined)
+      report(vd.getName(), vd.getStartLineNumber(), hit.getExpression().getText());
   }
 }
 

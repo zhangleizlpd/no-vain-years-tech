@@ -173,9 +173,9 @@ context7_verified: []
 
 #### A6 — `oiAsOf` 按市场分叉（**形状待 U2，08-25 出结论**）
 
-北京 23:00 于交易日 D 会命中 `resolveSnapshotSpec` 的 `today === target` 行 ⇒ `source='eod'`、`oiAsOf = D-1`。该规则来自美股清算所的隔日翻新。港股是否同构**正在实测**（`broker-hk:~/nvy-u2/`，四时点跨交易日采样，周六基线已采）。
+北京 23:00 于交易日 D 会命中 `resolveSnapshotAttribution` 的 `today === target` 行 ⇒ `source='eod'`、`oiAsOf = D-1`。该规则来自美股清算所的隔日翻新。港股是否同构**正在实测**（`broker-hk:~/nvy-u2/`，四时点跨交易日采样，周六基线已采）。
 
-- 已定稿 ⇒ 给 `resolveSnapshotSpec` 增一个**按市场的 `oiRefreshedAtEod` 事实位**，由调用方从登记表喂进来（**纯函数仍零 I/O**）
+- 已定稿 ⇒ 给 `resolveSnapshotAttribution` 增一个**按市场的 `oiRefreshedAtEod` 事实位**，由调用方从登记表喂进来（**纯函数仍零 I/O**）
 - 未定稿 ⇒ 现规则逐字适用，本条取消
 
 🚫 **MUST NOT 把 `eod` / `premarket_backfill` 两条 `oiAsOf` 路径抹平**（规则层注释明禁）：抹平后永远不会红，但两条路径产出的 OI 差一天，而活跃度排名与 UI 的 `asOf` 都读它。
