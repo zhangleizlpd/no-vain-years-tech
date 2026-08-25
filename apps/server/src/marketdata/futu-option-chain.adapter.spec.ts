@@ -227,6 +227,33 @@ describe('FutuOptionChainAdapter', () => {
       const { http } = makeShim([]);
       expect(await makeAdapter(http).getChainWindow(WINDOW)).toEqual([]);
     });
+
+    // #179: vendor 在美股方向按词根解析标的、忽略市场前缀。2026-08-25 打真 shim 实测
+    // US.ALB 136 行里 56 行 stock_owner=HK.09988 (阿里港股, 助记符恰好也是 ALB);
+    // 反方向 HK.09988 干净, 对照 US.PDD 干净 ⇒ 是 vendor 行为, 不是我们参数错。
+    const ALB = { symbol: 'us:ALB', start: '2026-08-28', end: '2026-08-28' } as const;
+
+    it('🚨 跨市场行被丢弃 —— 请求 us:ALB 收到 HK.09988 的合约 (#179)', async () => {
+      const { http } = makeShim([
+        chainRow('US.ALB260828P75000', 75, { stock_owner: 'US.ALB' }),
+        chainRow('HK.ALB260828C75000', 75, { stock_owner: 'HK.09988', option_type: 'CALL' }),
+        chainRow('US.ALB260828C80000', 80, { stock_owner: 'US.ALB', option_type: 'CALL' }),
+      ]);
+
+      const out = await makeAdapter(http).getChainWindow(ALB);
+
+      expect(out.map((c) => c.code)).toEqual(['US.ALB260828P75000', 'US.ALB260828C80000']);
+      expect(out.every((c) => c.underlyingSymbol === 'us:ALB')).toBe(true);
+    });
+
+    it('🚫 同市场 owner 不符**不**在本层吞 —— 那是「归属真的变了」, 归 usecase 的护城河 throw', async () => {
+      const { http } = makeShim([chainRow('US.ALB260828P75000', 75, { stock_owner: 'US.OTHER' })]);
+
+      const out = await makeAdapter(http).getChainWindow(ALB);
+
+      expect(out).toHaveLength(1);
+      expect(out[0]?.underlyingSymbol).toBe('us:OTHER');
+    });
   });
 
   describe('失败语义 (T014 的承重设计)', () => {
