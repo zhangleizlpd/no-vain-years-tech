@@ -27,6 +27,9 @@ docs/private/plans/              # local-only（gitignored），结构同下
   <YYYY-MM>/
     <MM-DD-kebab-slug>.md        # 如 05-21-archive-memory-bridge.md
 docs/private/runbook/            # local-only：拓扑/凭据相邻的 runbook（公开侧留 stub）
+docs/private/evidence/           # local-only：一次性取证的原始数据与采集脚本（带主机/容器名/IP/持仓快照，
+  <NNN-feature-slug>/            #   永远不入公开仓）。按 feature 归档而非月度 —— 它跟着被验的 feature 走
+
 docs/improvements/               # 调优 / 优化 / 改造记录（**入仓**），结构同上
   <YYYY-MM>/
     <MM-DD-kebab-slug>.md

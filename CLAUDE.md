@@ -6,7 +6,7 @@
 
 Nx mono-repo。`apps/server/`（NestJS + Fastify adapter + Prisma）；`apps/mobile/`（Expo，含 `auth/` / `core/` / `theme/` / `ui/` 内联子目录，per [ADR-0030](docs/adr/0030-package-decomposition.md) 「5 包减 2」）；`packages/`（仅 `api-client` + `types`，跨 mobile + server-types 真共享；其他单 consumer 候选已内联到 `apps/mobile/src/`）。
 
-Doc 文件组织 per [docs/conventions/docs-organization.md](docs/conventions/docs-organization.md)；`docs/experience/` 与 `docs/private/`（plans + 拓扑相邻 runbook）为 local-only（gitignored 不入库；命名约定仍适用）。旧 meta-repo 的 experience 历史不迁入（2026-05-23 决定作废 Plan 3 迁入）。
+Doc 文件组织 per [docs/conventions/docs-organization.md](docs/conventions/docs-organization.md)；`docs/experience/` 与 `docs/private/`（plans + 拓扑相邻 runbook + 取证 evidence）为 local-only（gitignored 不入库；命名约定仍适用）。旧 meta-repo 的 experience 历史不迁入（2026-05-23 决定作废 Plan 3 迁入）。
 
 **本仓面向公开** —— 主机只以代号出现，标识符运行时从仓外 `fleet.env` 解析，判据见 [docs/conventions/information-boundary.md](docs/conventions/information-boundary.md)（三层归属 + 5 问自检；机器强制 `scripts/checks/check-identifier-boundary.ts`）。
 
