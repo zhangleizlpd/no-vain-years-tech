@@ -19,6 +19,7 @@ function putRow(overrides: Partial<OptionSnapshotGuardRow> = {}): OptionSnapshot
     contractCode: 'US.PEP260918P130000',
     optionSide: 'PUT',
     strikePrice: '130',
+    isStandard: true,
     bid: '1.20',
     ask: '1.25',
     delta: '-0.42',
@@ -33,6 +34,7 @@ function callRow(overrides: Partial<OptionSnapshotGuardRow> = {}): OptionSnapsho
     contractCode: 'US.PEP260918C160000',
     optionSide: 'CALL',
     strikePrice: '160',
+    isStandard: true,
     bid: '0.85',
     ask: '0.95',
     delta: '0.31',
@@ -191,6 +193,40 @@ describe('checkOptionSnapshotRow — 门 ④ 无套利下界用 `ask` 不用 `bi
   });
 });
 
+describe('checkOptionSnapshotRow — 门 ④ 只对标准合约成立：非标合约跳过 (#186, FR-033)', () => {
+  /**
+   * 形状取自 #186 的真实被拒行 `US.CHTR1260918C17500`（`ask 20.5` 被判「低于无套利下界」）。
+   * 调整后合约的交割物不是 100 股标的 ⇒ `max(0, S − K)` 算出来的**不是**它的内在价值。
+   * spot 取一个让普通公式当场跌破下界的值（内在价值 27.80，下界 27.75，ask 20.5）。
+   */
+  const adjustedCall = (overrides: Partial<OptionSnapshotGuardRow> = {}) =>
+    callRow({
+      contractCode: 'US.CHTR1260918C17500',
+      strikePrice: '17.5',
+      underlyingSpot: '45.30',
+      bid: '20.1',
+      ask: '20.5',
+      delta: '0.98',
+      isStandard: false,
+      ...overrides,
+    });
+
+  it('🚨 非标合约的 ask 远低于「用普通行权价算出的内在价值」→ 放行 (FR-033 采集端照常全采)', () => {
+    expect(checkOptionSnapshotRow(adjustedCall()).admitted).toBe(true);
+  });
+
+  it('🚨 对照：同一行标成标准合约即被拒 —— 放行来自 is_standard，不是数值恰好合规', () => {
+    expect(codesOf(adjustedCall({ isStandard: false }))).toEqual([]);
+    expect(codesOf(adjustedCall({ isStandard: true }))).toEqual(['ask_below_intrinsic']);
+  });
+
+  it('跳过的只有门 ④ 一条 —— 非标合约的交叉盘口 / 非法 Δ 照拦', () => {
+    expect(codesOf(adjustedCall({ bid: '30', ask: '20.5' }))).toEqual(['bid_above_ask']);
+    expect(codesOf(adjustedCall({ delta: '-0.98' }))).toEqual(['delta_sign']);
+    expect(codesOf(adjustedCall({ delta: '1.4' }))).toEqual(['delta_out_of_range']);
+  });
+});
+
 describe('checkOptionSnapshotRow — 逐行判定语义：多违规并列、永不抛异常', () => {
   it('一行同时撞多条门 → violations 全列出（不是撞第一条就短路）', () => {
     const verdict = checkOptionSnapshotRow(
@@ -319,6 +355,9 @@ describe('SC-010 真实样本回放 (T007a) — 2026-07-29 美股收盘后实采
         contractCode,
         optionSide: optionSide as OptionSnapshotGuardRow['optionSide'],
         strikePrice,
+        // 导出时没有这一列, 全批按**标准合约**喂 ⇒ 门 ④ 对每一行都武装着, SC-010 的零误拦
+        // 断言不因 #186「非标跳过」而被削弱 (这批里确有 12 行 `VICI1` 是非标 root)。
+        isStandard: true,
         bid,
         ask,
         delta,
