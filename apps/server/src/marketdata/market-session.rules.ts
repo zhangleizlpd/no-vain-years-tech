@@ -102,6 +102,49 @@ const MARKET_SESSION: Record<
   },
 };
 
+/**
+ * market → **该市场的未平仓合约数是否在收盘当晚就已定稿** (066 T09, `FR-016`)。
+ *
+ * 🚨 **这是清算侧的事实, 与上面那张连续竞价时段表是两件事** —— 刻意分表, 别折进
+ * {@link MARKET_SESSION}: 时段表答「什么时候在交易」, 本表答「什么时候能拿到定稿的 OI」,
+ * 两者由不同机构按不同节奏决定, 合表会让下一个加市场的人以为填了时段就填全了。
+ *
+ * | 市场 | 值 | 依据 |
+ * | --- | --- | --- |
+ * | `us` | `false` | 清算所 T+1 才发布 ⇒ 收盘当晚抓到的 OI 属于**上一场** |
+ * | `hk` | `true`  | **2026-08-25 U2 实测** (见 `specs/066-hk-option-cold-start/spec.md` 的 Clarifications) |
+ * | `cn` | `false` | 期权采集尚未开通; **保守取 false** —— 见下 |
+ *
+ * 📌 **`hk` 那条的实测形态**: 30 只合约 12 拍 360 行里 OI 只变动过一次, 落在 D 日
+ * **16:30 之后、21:30 之前** (24/30 只变); 跨 22:00 日终那一拍 0/30, 次日盘前 0/30。
+ * ⇒ 定稿早于日终, 而 `hk_option_daily_snapshot` 跑在 23:30, **落在定稿之后**。
+ *
+ * 🚨 **默认值 `false` 是刻意的 fail-safe, 不是省事**: 猜 `true` 而实际是 T+1 ⇒ 把上一场的
+ * OI 标成当天的, 数字与标签**双错**且不报错; 猜 `false` 而实际当晚定稿 ⇒ 只是标签保守偏早,
+ * 一条确定性 `UPDATE` 可订正 (与 `FR-016` 判不对称性的方向同源)。⇒ **没实测过的市场一律 `false`。**
+ *
+ * 🚫 **MUST NOT 拿它去改 `source`** (`eod` / `premarket_backfill`)。那个标签答的是「这批
+ * 快照捕捉的是**哪一场**的收盘」, 与 OI 归属是正交的两件事 —— 混用会让「D 日盘后采的」被
+ * 标成「次日盘前补的」, 而覆盖率与补采审计都读 `source`。
+ */
+const MARKET_OI_REFRESHED_AT_EOD: Record<string, boolean> = {
+  cn: false,
+  us: false,
+  hk: true,
+};
+
+/**
+ * 该市场的未平仓合约数是否在**收盘当晚**就已定稿。纯查表, 零 I/O。复杂度 O(1)。
+ *
+ * 未登记市场返 `false` —— 与 {@link marketNow} / {@link isSessionUnderway} 的「未登记即抛」
+ * **蓄意不同**: 那两个的返回值是判据, 静默套用别市场的时窗会写出错的行; 而本表的保守值
+ * (`false` = 沿用隔日口径) 产出的偏差是**可订正的标签**, 不是脏数据。为一个 OI 标签把整轮
+ * 采集炸掉, 方向反了 (同 `FR-016` 的不对称性)。
+ */
+export function oiRefreshedAtEod(market: string): boolean {
+  return MARKET_OI_REFRESHED_AT_EOD[market] ?? false;
+}
+
 function unregisteredMarketError(market: string): Error {
   return new Error(
     `[market-session] 市场 "${market}" 未登记盘中时段 —— ` +

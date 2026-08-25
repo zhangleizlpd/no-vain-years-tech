@@ -23,6 +23,7 @@ import {
 import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
 import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
 import type { SnapshotAttribution } from './snapshot-session-attribution.rules.js';
+import { oiRefreshedAtEod } from './market-session.rules.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 /**
@@ -245,8 +246,18 @@ export class SyncOptionSnapshotUseCase {
    * | 收盘后正常采集 | `eod` | 当前 us 交易日 | **上一交易日** (T 日的 OI 要 T+1 盘前才发布) |
    * | 次日盘前兜底 | `premarket_backfill` | **被补的那一天** | **= `session_date`** (盘前 OI 已翻新, 正是被补那天的真值) |
    *
-   * 🚫 **MUST NOT 把两者抹平成同一个取值** —— 抹平后永远不会红, 但两条路径产出的 OI 差一天,
-   * 而活跃度排名与 UI 的 asOf 都读它。
+   * 🚫 **MUST NOT 把两者无差别抹平成同一个取值** —— 抹平后永远不会红, 但两条路径产出的 OI
+   * 差一天, 而活跃度排名与 UI 的 asOf 都读它。
+   *
+   * ## 🚨 上表第三列是 **us 口径**; `eod` 那一行按市场分叉 (066 T09, `FR-016`)
+   *
+   * 「T 日的 OI 要 T+1 才发布」是**清算所的**行为, 不是普适规律。hk 在 D 日收盘当晚就已定稿
+   * (2026-08-25 U2 实测: 360 行样本里 OI 只在 D 日 16:30–21:30 之间变过一次, 跨 22:00 日终
+   * 那一拍 0/30) ⇒ hk 走 `eod` 时 `oi_as_of` **= `session_date`**, 不退到上一交易日。
+   * 事实位登记在 {@link oiRefreshedAtEod}, 与判据层 (`snapshot-session-attribution.rules.ts`,
+   * #187 起全仓唯一的一份, 冷启动已折进它) 读的是**同一张表** —— 两处同源, 改坏任一边单测立刻红。
+   * 🚨 判据层给出的 `oiAsOf` 只喂单测对表, **真正写库的是这里** ⇒ 只改判据层会「单测全绿而
+   * 库里照旧偏一天」。
    */
   async collect(
     instruments: WorkingInstrument[],
@@ -255,11 +266,20 @@ export class SyncOptionSnapshotUseCase {
   ): Promise<boolean> {
     // 全轮取一次: OI 的归属日只跟交易日历有关, 与标的无关。零工作集时也不该多查 —— 但它
     // 先于循环发生, 代价是 1 次索引查询, 换掉「每票重复查一遍」。
+    // 066 T09: `eod` 路径的 OI 归属按市场分叉。该市场若在收盘当晚就把 OI 定稿, 此刻抓到的
+    // 就是 `sessionDate` 自己的真值 —— 不必退到上一交易日, 连那次索引查询也一并省掉。
+    // 🚨 `every` + 非空 而非 `some`: 混合 scope 下只有**全体**都当晚定稿才走这条, 否则保守
+    // 沿用隔日口径。方向由不对称性定 (同 FR-016): 保守取值只是标签偏早, 一条确定性 UPDATE
+    // 可订正; 而猜早了是标签与数字**双错**且不报错。空数组走 `every` 恒真是 JS 的坑, 显式挡掉。
+    // 📌 混合 scope 今天不存在 (维度 per-market, 冷启动传 `[market]`) —— 这里写死答案是为了
+    // 它将来出现时**有个确定行为**, 而不是留一个「碰巧看第一个元素」的隐式结果。
+    const oiFinalizedAtSessionClose =
+      spec.marketScope.length > 0 && spec.marketScope.every((m) => oiRefreshedAtEod(m));
     const ctx: ResolvedSnapshotContext = {
       sessionDate: spec.sessionDate,
       source: spec.mode,
       oiAsOf:
-        spec.mode === SNAPSHOT_SOURCE_EOD
+        spec.mode === SNAPSHOT_SOURCE_EOD && !oiFinalizedAtSessionClose
           ? await this.resolveOiSessionDate(spec.marketScope, spec.sessionDate)
           : toDateOnly(spec.sessionDate),
     };

@@ -4,6 +4,7 @@ import {
   isSessionUnderway,
   isWithinTradingSession,
   marketNow,
+  oiRefreshedAtEod,
 } from './market-session.rules.js';
 
 /** 当地当日分钟数字面量（与实现同口径，避免测试里再算一遍时区）。 */
@@ -165,6 +166,28 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     it('isSessionRegistered 是唯一「未登记也不抛」的入口 (060 T005, FR-022 的显式跳过要它)', () => {
       expect(isSessionRegistered('sg')).toBe(false);
       for (const market of ['cn', 'us', 'hk']) expect(isSessionRegistered(market)).toBe(true);
+    });
+  });
+
+  describe('oiRefreshedAtEod — OI 是否收盘当晚定稿 (066 T09, FR-016)', () => {
+    it('hk = true —— 2026-08-25 U2 实测: 定稿落在 D 日 16:30–21:30, 早于 22:00 日终', () => {
+      expect(oiRefreshedAtEod('hk')).toBe(true);
+    });
+
+    it('🚨 us = false —— 清算所 T+1 才发布, 收盘当晚抓到的属于上一场 (分叉是增量, 美股逐点不变)', () => {
+      expect(oiRefreshedAtEod('us')).toBe(false);
+    });
+
+    it('cn = false —— 期权采集未开通, 未实测过的市场一律保守取 false', () => {
+      expect(oiRefreshedAtEod('cn')).toBe(false);
+    });
+
+    it('🚨 未登记市场返 false 而**不抛** —— 与 marketNow/isSessionUnderway 蓄意不同', () => {
+      // 那两个的返回值是判据, 静默套用别市场的时窗会写出脏行 ⇒ fail-closed 抛。
+      // 本表的保守值只让标签偏早一天, 一条确定性 UPDATE 可订正 (FR-016 的不对称性)
+      // ⇒ 为一个 OI 标签把整轮采集炸掉, 方向反了。
+      expect(oiRefreshedAtEod('sg')).toBe(false);
+      expect(() => oiRefreshedAtEod('sg')).not.toThrow();
     });
   });
 });
