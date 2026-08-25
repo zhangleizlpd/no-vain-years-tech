@@ -22,6 +22,7 @@ import type {
   OptionSnapshotQuery,
   OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 047 T017 链发现 + 逐日快照采集 IT (FR-031/032/033/035/036/037/038/043)。
 //
@@ -249,7 +250,7 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
       undefined, // underlyingIv → 默认 null-object
       undefined, // usIndex → 默认 null-object
       new SyncOptionContractUseCase(chain, prisma), // 047 T015 (尾部第 30 位)
-      new SyncOptionSnapshotUseCase(snapshot, prisma), // 047 T016 (尾部第 31 位)
+      new SyncOptionSnapshotUseCase(snapshot, prisma, stubTradingCalendar()), // 047 T016 (尾部第 31 位)
     );
   }
 

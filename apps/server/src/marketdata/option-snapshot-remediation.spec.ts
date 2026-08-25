@@ -18,6 +18,7 @@ import type {
 import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
+import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
 /**
  * 两级自动补救单测 (047 T022, Small —— mock port + mock prisma, 零容器)。
@@ -128,11 +129,20 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
     },
     tradingDay: {
       // 「早于 X 的最近一个交易日」—— use case 取 oi_as_of 与补救取待补日共用这一条查询。
-      findFirst: vi.fn(async (args: { where: { date: { lt: Date } } }) => {
-        const before = args.where.date.lt.toISOString().slice(0, 10);
+      // #181 起还多一种问法「≤ 上界的最近一个交易日」(归属判据)，两者 MUST 分辨：
+      // 混作一谈会让 session_date 整体偏一天，而**测试照样绿**。
+      findFirst: vi.fn(async (args: { where: { date: { lt?: Date; lte?: Date } } }) => {
+        if (args.where.date.lte !== undefined) {
+          const upTo = args.where.date.lte.toISOString().slice(0, 10);
+          const closed = tradingDays.filter((d) => d <= upTo).at(-1);
+          return closed === undefined ? null : { date: day(closed) };
+        }
+        const before = (args.where.date.lt as Date).toISOString().slice(0, 10);
         const prev = tradingDays.filter((d) => d < before).at(-1);
         return prev === undefined ? null : { date: day(prev) };
       }),
+      // #181 归属判据要今天的 session 形态；本片不测半日市，恒 `whole`。
+      findUnique: vi.fn(async () => ({ sessionKind: 'whole' })),
     },
   } as unknown as PrismaService;
 
@@ -151,7 +161,7 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
   const evaluate = vi.fn(async () => verdicts.shift() ?? report('ok'));
   vi.spyOn(coverage, 'evaluate').mockImplementation(evaluate);
 
-  const useCase = new SyncOptionSnapshotUseCase(port, prisma);
+  const useCase = new SyncOptionSnapshotUseCase(port, prisma, stubTradingCalendar());
   return {
     remediation: new OptionSnapshotRemediation(coverage, useCase, prisma, calendar),
     useCase,
