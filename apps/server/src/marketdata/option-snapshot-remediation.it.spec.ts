@@ -17,6 +17,7 @@ import type {
 } from './option-snapshot.port';
 import type { TradingCalendarPort } from './trading-calendar.port';
 import type { TradingDayStatus } from './trading-day.rules';
+import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
 /**
  * 两级补救的**写库路径** IT（Testcontainers PG），054 T005 / FR-011。
@@ -159,7 +160,7 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
     port = new StubOptionSnapshotPort();
     remediation = new OptionSnapshotRemediation(
       new OptionSnapshotCoverageCheck(prisma, marketdataSyncConfig()),
-      new SyncOptionSnapshotUseCase(port, prisma),
+      new SyncOptionSnapshotUseCase(port, prisma, stubTradingCalendar()),
       prisma,
       alwaysTradingCalendar,
     );

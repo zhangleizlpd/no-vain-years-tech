@@ -23,6 +23,7 @@ import {
   SyncOptionSnapshotUseCase,
 } from '../../src/marketdata/sync-option-snapshot.usecase';
 import { isTradingDayGateOpen } from '../../src/marketdata/trading-day-gate';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 /**
  * 062 T006 —— 读端口三态 IT（Testcontainers PG，真 `DbTradingCalendarAdapter`）。
@@ -300,7 +301,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       await prisma.syncRun.deleteMany();
       await prisma.syncDimension.deleteMany();
       port = new StubOptionSnapshotPort();
-      snapshot = new SyncOptionSnapshotUseCase(port, prisma);
+      snapshot = new SyncOptionSnapshotUseCase(port, prisma, stubTradingCalendar());
     });
 
     /** 一票 + 一张远月合约 + 只有 `BASELINE` 那天的快照行 ⇒ `PREV` / `TODAY` 均判 degraded。 */

@@ -78,7 +78,7 @@ const MARKET_TIME_ZONES = ['Asia/Shanghai', 'Asia/Hong_Kong', 'America/New_York'
 export interface Violation {
   file: string;
   line: number;
-  rule: 'timezone-table-duplicated' | 'raw-timezone-conversion';
+  rule: 'timezone-table-duplicated' | 'raw-timezone-conversion' | 'calendar-day-as-session';
   message: string;
 }
 
@@ -148,12 +148,64 @@ function scanRawConversion(sf: SourceFile, out: Violation[]): void {
   }
 }
 
+/** 归属列名 —— 写进它们的值必须是「哪一场收了」，不是「今天几号」。 */
+const SESSION_ATTRIBUTION_KEYS = ['sessionDate', 'session_date'];
+
+/** 「今天几号」类函数：它们回答日历日，00:00 就翻页。 */
+const CALENDAR_DAY_FNS = ['exchangeCalendarDate', 'exchangeCalendarDateForScope'];
+
+/**
+ * Rule C：把**日历日**直接写进 `sessionDate` 这类**归属列**（#181）。
+ *
+ * 归属列进幂等键且落库多为 `skipDuplicates` ⇒ 标错**不可逆、不报错**，还会静默挡掉次日的
+ * 真实采集。而日历日 00:00 就翻页，与「这一场收没收盘」无关 —— 队列积压把执行时刻推过午夜
+ * 就整批错一天。2026-08-25 prod 实撞 2200 行。
+ *
+ * 🚨 **不存在合法用法**：`sessionDate` 的语义就是「哪一场」，取日历日永远是错的。
+ * 故本规则无豁免名单。
+ *
+ * ⚠️ **覆盖边界（写在明处，别以为它管全了）**：只扫**对象属性赋值**
+ * （`{ sessionDate: exchangeCalendarDate(...) }`），不扫变量声明
+ * （`const sessionDate = exchangeCalendarDate(...)`）。后者现存一处
+ * （`option-snapshot-remediation.ts` 的 ① 级重试）—— 它跑在北京 08:00 = ET 19:00/20:00，
+ * 恒在美股收盘后同一日历日内，**靠 cron 时刻成立**而非靠判据。要收紧就得连同把它改成走
+ * `resolveSnapshotAttribution`，不在本规则范围内。
+ */
+function scanCalendarDayAsSession(sf: SourceFile, out: Violation[]): void {
+  const filePath = sf.getFilePath();
+  for (const pa of sf.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
+    if (!SESSION_ATTRIBUTION_KEYS.includes(pa.getName().replace(/['"]/g, ''))) continue;
+    const init = pa.getInitializer();
+    if (init === undefined) continue;
+    const calls = [
+      ...(Node.isCallExpression(init) ? [init] : []),
+      ...init.getDescendantsOfKind(SyntaxKind.CallExpression),
+    ];
+    const hit = calls.find((c) => CALENDAR_DAY_FNS.includes(c.getExpression().getText()));
+    if (hit === undefined) continue;
+
+    out.push({
+      file: filePath,
+      line: pa.getStartLineNumber(),
+      rule: 'calendar-day-as-session',
+      message:
+        `把日历日 (${hit.getExpression().getText()}) 直接写进归属列 \`${pa.getName()}\` —— ` +
+        `日历日 00:00 就翻页, 与「这一场收没收盘」无关。队列积压 / 重试把执行时刻推过午夜, ` +
+        `就会整批标错一天, 而落库是 skipDuplicates ⇒ **不可逆、不报错**, 还会静默挡掉次日的` +
+        `真实采集 (2026-08-25 prod 实撞 2200 行, #181)。⇒ 归属走 ` +
+        `marketdata/snapshot-session-attribution.rules.ts 的 resolveSnapshotAttribution, ` +
+        `判据是「最近一个已收盘 session」而不是「今天几号」`,
+    });
+  }
+}
+
 /** 纯扫描（单测直喂 in-memory SourceFile[]）。复杂度 O(AST 节点数)。 */
 export function scanTimeSemantics(sourceFiles: readonly SourceFile[]): Violation[] {
   const out: Violation[] = [];
   for (const sf of sourceFiles) {
     scanTimezoneTable(sf, out);
     scanRawConversion(sf, out);
+    scanCalendarDayAsSession(sf, out);
   }
   return out;
 }
@@ -176,7 +228,7 @@ function main(): void {
   }
   const violations = scanServerTimeSemantics();
   if (violations.length === 0) {
-    console.log('[check-time-semantics] ✓ 0 违规 (时区表单点 + 日期换算走词表)');
+    console.log('[check-time-semantics] ✓ 0 违规 (时区表单点 + 日期换算走词表 + 归属列不吃日历日)');
     process.exit(0);
   }
   console.error('❌ check-time-semantics: 发现时间语义违规 (ADR-0066 §8)');

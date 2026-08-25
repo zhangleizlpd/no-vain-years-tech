@@ -52,6 +52,7 @@ import {
   type UsIndexPort,
 } from './us-index.port.js';
 import { exchangeCalendarDateForScope } from './session-clock.js';
+import type { TradingCalendarPort } from './trading-calendar.port.js';
 import {
   classifyIvpDivergence,
   computeIvPercentile,
@@ -694,6 +695,15 @@ const NULL_OPTION_SNAPSHOT: OptionSnapshotPort = {
 const NULL_EARNINGS_CALENDAR: EarningsCalendarPort = {
   getWindow: async () => [],
 };
+// #181 交易日历读端口 null-object：`SyncOptionSnapshotUseCase` 自本次起要拿它定归属。
+// 恒 `unknown` / `null` ⇒ 该维度走「判不出、放弃本轮」那一档, **零外呼零落库**, 与
+// NULL_OPTION_SNAPSHOT 的效果同向 —— 让不触及本维度的既有 IT 零改动通过。
+// 🚨 **刻意 fail-closed**：不写成「回落到日历日」那种宽松默认, 那等于把 #181 的缺陷
+// 当作默认行为留在测试路径里。生产经 MarketdataModule DI 注真 adapter。
+const NULL_TRADING_CALENDAR: TradingCalendarPort = {
+  classify: async () => 'unknown',
+  lastClosedSession: async () => null,
+};
 
 /**
  * per-dimension executor 注册表 (017 T008, ADR-0049 执行层)。
@@ -793,6 +803,7 @@ export class DimensionExecutorRegistry {
     private readonly syncOptionSnapshot: SyncOptionSnapshotUseCase = new SyncOptionSnapshotUseCase(
       NULL_OPTION_SNAPSHOT,
       prisma,
+      NULL_TRADING_CALENDAR,
     ),
     // 047 T019 财报日历 use case (尾部第 32 位, 同上两位的理由与默认值形态)。
     // 🚨 默认值 **MUST NOT 写成 throw-on-missing** —— 十几个 IT 按位置直实例化本注册表, 一个

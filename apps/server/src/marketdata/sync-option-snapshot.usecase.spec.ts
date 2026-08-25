@@ -13,6 +13,7 @@ import {
 } from './option-snapshot.port.js';
 import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
+import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
 /**
  * 逐日快照维度 use case 单测 (047 T016, Small —— mock port + mock prisma, 零容器)。
@@ -117,6 +118,7 @@ interface Harness {
   queries: OptionSnapshotQuery[];
   contractWhere: unknown[];
   createMany: ReturnType<typeof vi.fn>;
+  calendar: ReturnType<typeof stubTradingCalendar>;
 }
 
 /**
@@ -138,6 +140,12 @@ function makeHarness(opts: {
    * 数组, 而是**通路真的闭合**: 落库 → 下一轮读回。
    */
   snapshottedNonStandardRoots?: string[];
+  /** #181: 传 `null` ⇒ 交易日历查不到已收盘 session（走 abandon 那一档）。 */
+  lastClosedSession?: null;
+  /** #181: 今天在日历里的三态 —— `non-trading` / `unknown` 会改变归属与盘中闸。 */
+  calendarStatus?: 'trading' | 'non-trading' | 'unknown';
+  /** #181: 今天的 session 形态（半日市收盘时刻提前）。 */
+  todayKind?: 'whole' | 'half' | 'unknown';
 }): Harness {
   const queries: OptionSnapshotQuery[] = [];
   const contractWhere: unknown[] = [];
@@ -168,6 +176,11 @@ function makeHarness(opts: {
     return { count: args.data.length };
   });
   const prevDay = opts.prevTradingDay === undefined ? '2026-09-17' : opts.prevTradingDay;
+  // #181: 归属判据把 `trading_day` 问**两种**问题, mock 必须能分辨 —— 否则「上一交易日」的
+  // 答案会被当成「最近一个已收盘 session」, 让 session_date 整体偏一天而**测试照样绿**。
+  //   · `lte 上界`    → 最近一个已收盘交易日 (= 本轮的 session_date)
+  //   · `lt  session` → 它的上一交易日 (= oi_as_of)
+  const calendar = stubTradingCalendar({ status: opts.calendarStatus ?? 'trading' });
   const prisma = {
     optionContract: {
       findMany: vi.fn(
@@ -188,15 +201,24 @@ function makeHarness(opts: {
     },
     optionDailySnapshot: { createMany },
     tradingDay: {
-      findFirst: vi.fn(async () => (prevDay === null ? null : { date: day(prevDay) })),
+      findFirst: vi.fn(async (args: { where: { date: { lte?: Date; lt?: Date } } }) => {
+        // `lte 上界` = 「最近一个已收盘交易日」。日历完整时它**就是上界本身** ⇒ 回显入参,
+        // 而不是回一个常量 —— 回常量会让「换个业务日跑」的用例静默拿到别的 session。
+        if (args.where.date.lte !== undefined) {
+          return opts.lastClosedSession === null ? null : { date: args.where.date.lte };
+        }
+        return prevDay === null ? null : { date: day(prevDay) };
+      }),
+      findUnique: vi.fn(async () => ({ sessionKind: opts.todayKind ?? 'whole' })),
     },
   } as unknown as PrismaService;
 
   return {
-    useCase: new SyncOptionSnapshotUseCase(port, prisma),
+    useCase: new SyncOptionSnapshotUseCase(port, prisma, calendar),
     queries,
     contractWhere,
     createMany,
+    calendar,
   };
 }
 
@@ -652,5 +674,85 @@ describe('SyncOptionSnapshotUseCase', () => {
       expect(anomalyCodes(warnSpy)).toEqual([]);
       warnSpy.mockRestore();
     });
+  });
+});
+
+/**
+ * #181 归属判据接线 —— 维度路径（`run()`）此前写死 `sessionDate = 当前日历日` + `eod`。
+ *
+ * 纯判定逻辑在 `snapshot-session-attribution.rules.spec.ts`；这里只盯三件**接线**才有的事：
+ * ① 跨午夜时 `session_date` 仍归上一个已收盘 session（#181 的回归钉）
+ * ② 盘中**零外呼**，且不是失败
+ * ③ 日历判不出时放弃 + ERROR，而不是猜一个日子
+ */
+describe('SyncOptionSnapshotUseCase — 归属判据 (#181)', () => {
+  /** 指定绝对时刻的 ExecutorInput（`makeInput` 只能给「北京 06:00」那一个时刻）。 */
+  const inputAt = (iso: string): ExecutorInput => ({
+    mode: 'delta',
+    asOf: iso.slice(0, 10),
+    now: new Date(iso),
+  });
+
+  it('🚨 跨过午夜执行 → session_date 仍是**上一个已收盘 session**，不是执行时刻的日历日', async () => {
+    // 2026-09-19T05:00Z = ET 09-19 01:00（已过午夜、盘前）。改前这里会落 `2026-09-19` ——
+    // 一个**还没开盘**的 session，且 createMany(skipDuplicates) 不可逆、还会挡掉次日真采集。
+    const h = makeHarness({ contracts: PEP_CONTRACTS });
+    const stats = emptyStats();
+
+    await h.useCase.run([PEP], DIM, stats, inputAt('2026-09-19T05:00:00Z'));
+
+    const row = persistedRows(h.createMany)[0];
+    expect(row.sessionDate).toEqual(day('2026-09-18'));
+    // 已进下一交易日盘前 ⇒ OI 已翻新 ⇒ 走 premarket_backfill，且 oi_as_of = session_date。
+    expect(row.source).toBe('premarket_backfill');
+    expect(row.oiAsOf).toEqual(day('2026-09-18'));
+  });
+
+  it('收盘当日盘后执行 → eod + oi_as_of = 上一交易日（既有行为逐点不变）', async () => {
+    const h = makeHarness({ contracts: PEP_CONTRACTS });
+
+    await h.useCase.run([PEP], DIM, emptyStats(), inputAt('2026-09-18T22:00:00Z'));
+
+    const row = persistedRows(h.createMany)[0];
+    expect(row.sessionDate).toEqual(day('2026-09-18'));
+    expect(row.source).toBe('eod');
+    expect(row.oiAsOf).toEqual(day('2026-09-17'));
+  });
+
+  it('🚨 盘中执行 → **零外呼**、零落库，计 skipped 而非 failed', async () => {
+    // ET 09-18 11:00 = 15:00Z，美股盘中。此刻端点返的是盘中态，落成任何 session 的收盘都是脏数据。
+    const h = makeHarness({ contracts: PEP_CONTRACTS });
+    const stats = emptyStats();
+
+    const budgetExhausted = await h.useCase.run([PEP], DIM, stats, inputAt('2026-09-18T15:00:00Z'));
+
+    expect(h.queries).toHaveLength(0);
+    expect(h.createMany).not.toHaveBeenCalled();
+    expect(budgetExhausted).toBe(false);
+    // 不是失败 —— 是「还没到能采的时刻」。
+    expect(stats).toMatchObject({ failed: 0, skipped: 1 });
+  });
+
+  it('日历查不到已收盘 session → 放弃本轮 + ERROR，MUST NOT 猜一个日子', async () => {
+    const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const h = makeHarness({ contracts: PEP_CONTRACTS, lastClosedSession: null });
+    const stats = emptyStats();
+
+    await h.useCase.run([PEP], DIM, stats, inputAt('2026-09-18T22:00:00Z'));
+
+    expect(h.queries).toHaveLength(0);
+    expect(h.createMany).not.toHaveBeenCalled();
+    expect(String(errSpy.mock.calls[0][0])).toContain('判不出归属');
+    expect(stats.failed).toBe(0);
+    errSpy.mockRestore();
+  });
+
+  it('🚨 混市场 scope → 抛，MUST NOT 挑第一个（另一个市场的行会静默标错）', async () => {
+    const h = makeHarness({ contracts: PEP_CONTRACTS });
+    const mixed = { ...DIM, marketScope: ['us', 'hk'] } as unknown as ExecutorSyncDimensionRow;
+
+    await expect(
+      h.useCase.run([PEP], mixed, emptyStats(), inputAt('2026-09-18T22:00:00Z')),
+    ).rejects.toThrow(/单市场 scope/);
   });
 });

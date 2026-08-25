@@ -13,6 +13,7 @@ import type {
   OptionSnapshotQuery,
   OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 047 T023 完整性核对 + 两级自动补救 IT (FR-045/046/052, SC-002 三向 · SC-011 双向)。
 //
@@ -228,7 +229,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
       // 先验起手 100%: 「基线日在、当日未到期、当日却没数据」一条都不许有。
       optionCoverageThreshold: 1,
     } as unknown as MarketdataSyncConfig);
-    useCase = new SyncOptionSnapshotUseCase(port, prisma);
+    useCase = new SyncOptionSnapshotUseCase(port, prisma, stubTradingCalendar());
     // 🚨 日历走**真** adapter (读 trading_day 表): 「非交易日不跑」与「上一交易日跨周末」
     // 两条都是那张表上的查询, stub 掉就没验。
     remediation = new OptionSnapshotRemediation(
