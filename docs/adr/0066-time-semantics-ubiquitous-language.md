@@ -108,6 +108,15 @@ sunset_trigger: |
 
 业内（`exchange_calendars` 等）逐 session 存 `open` / `close` / `break_start` / `break_end`（UTC）。本仓当前把它拆成两处**常量**（`REGULAR_CLOSE_MINUTES` + `MARKET_SESSION` 的 segments），因此**半日市不可表达**（NYSE 感恩节次日 / 平安夜 13:00 ET，期权 13:15；HKEX 平安夜 12:00 HKT）。
 
+📌 **2026-08-25 后续（#187 的连带修复）——「拆成两处常量」这半句已不成立，决策本身不变**：
+两处常量已合并成一处，`REGULAR_CLOSE_MINUTES` / `HALF_DAY_CLOSE_MINUTES` 删除，收盘时刻统一由
+`market-session.rules.ts` 的 `sessionCloseMinutes()`（从 `MARKET_SESSION` 的 `max(to)` 派生）给出。
+半日市自 063 Phase 2 起也已可表达。两处常量并存期间的实际代价不是「不可表达」，而是**两份数字
+只靠散文维系、且 `check-time-semantics` Rule A 同时豁免了两个文件** ⇒ 漂了不报错；更糟的是两边
+对**收盘那一分钟**隐含了不同的区间侧（`>= close` 对 `[open, close]`），在归属判据里合成出一轮
+无来由的 skip。现由 `market-session.rules.spec.ts` 的「边界一致性」段逐 market × kind 机器钉住。
+⇒ 本节的决策（session 时刻归**表**、常量降级为兜底）**仍未落地**，sunset 判据不变。
+
 **决策**：session 时刻归**交易日历表**（数据），代码常量降级为**兜底默认**。落地分期，且判定必须是**三态**（`whole` / `half` / **`unknown`**）——富途日历源已下发 `trade_date_type`，而腾讯（cn/hk 主源，指数反推法）与静态层给不出该值，二值化会让列语义随 `servedBy` 漂。三态语义直接复用 062 的日历三态。
 
 ### 6. 值的订正走「可修订尾窗」，原值语义不被覆盖

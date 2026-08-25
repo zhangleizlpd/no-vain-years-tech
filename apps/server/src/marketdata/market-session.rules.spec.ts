@@ -1,11 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
+  closeSettleBufferMinutes,
+  isCloseWriteBlocked,
   isSessionRegistered,
   isSessionUnderway,
+  isWithinCloseSettleBuffer,
   isWithinTradingSession,
   marketNow,
   oiRefreshedAtEod,
+  sessionCloseMinutes,
 } from './market-session.rules.js';
+import { isSessionComplete, sessionWatermark } from './session-clock.js';
+import type { SessionKindStatus } from './trading-day.rules.js';
 
 /** 当地当日分钟数字面量（与实现同口径，避免测试里再算一遍时区）。 */
 const at = (hour: number, minute = 0) => hour * 60 + minute;
@@ -113,14 +119,23 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
         expect(isSessionUnderway('hk', at(14), 'whole')).toBe(true);
         // unknown ⇒ 回落常规时段 = 本片上线前的逐点行为 (fail-open, 少采一场下轮补上)。
         expect(isSessionUnderway('hk', at(14), 'unknown')).toBe(true);
-        expect(isSessionUnderway('hk', at(12), 'half')).toBe(true); // 12:00 收盘瞬间仍含在内
+        // 🚨 #187 后续: 收盘分钟本身**不再**算场内 (side="left") —— 它归收盘定稿缓冲管,
+        //    写闸 `isCloseWriteBlocked` 在这一分钟仍拒绝, 故对采集路径行为不变。
+        expect(isSessionUnderway('hk', at(12), 'half')).toBe(false);
+        expect(isCloseWriteBlocked('hk', at(12), 'half')).toBe(true);
+        expect(isSessionUnderway('hk', at(11, 59), 'half')).toBe(true);
       });
 
       it('🚨🚨 us 半日市取 **13:15 (期权收盘)** 而不是 13:00 (股票收盘)', () => {
         // 13:10 期权仍可成交 —— 若这里取了 13:00, 冷启动会在期权场内判「已收盘」去采快照,
         // 落进去的就是半根。本条是那个取值判据的钉子, 改成 13:00 立刻红。
         expect(isSessionUnderway('us', at(13, 10), 'half')).toBe(true);
-        expect(isSessionUnderway('us', at(13, 15), 'half')).toBe(true); // 端点含在内
+        expect(isSessionUnderway('us', at(13, 14), 'half')).toBe(true);
+        // 🚨 13:15 = 收盘分钟 ⇒ side="left" 下不算场内, 但**写闸仍拒**(定稿缓冲)。
+        //    改成 13:00 (股票口径) 的话, 13:00–13:15 期权仍在成交却被判可写 ⇒ 本条立刻红。
+        expect(isSessionUnderway('us', at(13, 15), 'half')).toBe(false);
+        expect(isCloseWriteBlocked('us', at(13, 15), 'half')).toBe(true);
+        expect(isCloseWriteBlocked('us', at(13, 14), 'half')).toBe(true);
         expect(isSessionUnderway('us', at(13, 16), 'half')).toBe(false);
       });
 
@@ -131,19 +146,34 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
       });
     });
 
-    it('首段开盘 / 末段收盘两个端点含在内', () => {
+    it('🚨 区间为左闭右开: 开盘端点含在内, 收盘端点**不含** (side="left", #187 后续)', () => {
+      // 分钟标签 `close` 代表 `[收盘, 收盘+1分钟)` —— 落在收盘**之后**, 故不算场内分钟。
+      // 与 `session-clock.sessionWatermark` 的 `>= close ⇒ 已收` 同侧; 两侧的互补性由
+      // 本文件「边界一致性」段逐 market × kind 钉住。
       expect(isSessionUnderway('cn', at(9, 30), 'unknown')).toBe(true);
-      expect(isSessionUnderway('cn', at(15), 'unknown')).toBe(true);
+      expect(isSessionUnderway('cn', at(15), 'unknown')).toBe(false);
+      expect(isSessionUnderway('cn', at(14, 59), 'unknown')).toBe(true);
       expect(isSessionUnderway('hk', at(9, 30), 'unknown')).toBe(true);
-      expect(isSessionUnderway('hk', at(16), 'unknown')).toBe(true);
+      expect(isSessionUnderway('hk', at(16), 'unknown')).toBe(false);
+      expect(isSessionUnderway('hk', at(15, 59), 'unknown')).toBe(true);
     });
 
     /**
      * 📌 **两谓词的分道如今只剩 `cn` 一个市场**: us 本就无午休, hk 已合并单段 ⇒ 它俩身上逐分钟
      * 等价。这条断言把这件事钉住 —— 谁把 hk 改回两段式, 这里第一个红, 逼他先回去读 FR-011。
      */
-    it('📌 us / hk 均为单段 ⇒ 两个谓词在全天逐分钟等价 (分道只剩 cn)', () => {
+    it('📌 us / hk 均为单段 ⇒ 两个谓词除**收盘那一分钟**外全天逐分钟等价 (分道只剩 cn)', () => {
+      // 🚨 #187 后续起两者刻意取不同侧: `isWithinTradingSession` 问「能不能成交」(收盘集合
+      //    竞价就在收盘那一刻成交 ⇒ side="both"), `isSessionUnderway` 问「这一场收了没有」
+      //    (归属口径 ⇒ side="left")。⇒ 收盘分钟必然分叉, 其余分钟仍等价。
       for (let m = 0; m < 24 * 60; m += 1) {
+        if (m === sessionCloseMinutes('us', 'unknown')) {
+          expect(isSessionUnderway('us', m, 'unknown')).toBe(false);
+          expect(isWithinTradingSession('us', m)).toBe(true);
+          expect(isSessionUnderway('hk', m, 'unknown')).toBe(false);
+          expect(isWithinTradingSession('hk', m)).toBe(true);
+          continue;
+        }
         expect(isSessionUnderway('us', m, 'unknown')).toBe(isWithinTradingSession('us', m));
         expect(isSessionUnderway('hk', m, 'unknown')).toBe(isWithinTradingSession('hk', m));
       }
@@ -189,5 +219,135 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
       expect(oiRefreshedAtEod('sg')).toBe(false);
       expect(() => oiRefreshedAtEod('sg')).not.toThrow();
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🚨 边界一致性 —— 本段是「两张表在收盘那一分钟打架」的**防复发闸**（#187 后续）
+//
+// 病史：`session-clock.sessionWatermark` 用 `>= close ⇒ 已收`（业内的 side="left"），而本文件
+// 的 `isSessionUnderway` 曾用闭区间 `[open, close]`（side="both"）⇒ 收盘那一分钟，两者对**同一
+// 个时刻**给出相反答案。归属判据同时消费两者，合成出一轮无来由的 skip；而没有任何断言会红
+// —— 两边各自的单测都只测自己那一侧，恰好各自都「对」。
+//
+// ⇒ 本段断言的不是任一侧的取值，而是**两侧的关系**。改任一张表的收盘时刻或区间符号，这里必红。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🚨 边界一致性: market-session 与 session-clock 在收盘分钟必须同侧', () => {
+  /** 现役市场 × kind 全组合（cn 无半日市形态 ⇒ half 回落常规，同样要覆盖）。 */
+  const CASES: { market: string; kind: SessionKindStatus }[] = [
+    { market: 'cn', kind: 'whole' },
+    { market: 'cn', kind: 'half' },
+    { market: 'cn', kind: 'unknown' },
+    { market: 'hk', kind: 'whole' },
+    { market: 'hk', kind: 'half' },
+    { market: 'hk', kind: 'unknown' },
+    { market: 'us', kind: 'whole' },
+    { market: 'us', kind: 'half' },
+    { market: 'us', kind: 'unknown' },
+  ];
+
+  /** 该市场当地 `minutesOfDay` 那一刻的绝对时刻（取一个已知交易日，日期本身不参与断言）。 */
+  function instantAt(market: string, minutesOfDay: number): Date {
+    // 2026-06-10 是周三。逐分钟扫当天 UTC，找到该市场当地分钟数吻合的那一刻。
+    for (let utcMin = 0; utcMin < 48 * 60; utcMin++) {
+      const d = new Date(Date.UTC(2026, 5, 10, 0, utcMin));
+      if (marketNow(market, d).minutesOfDay === minutesOfDay) return d;
+    }
+    throw new Error(`找不到 ${market} 当地 ${minutesOfDay} 分的时刻`);
+  }
+
+  it.each(CASES)(
+    '$market/$kind: 收盘分钟 —— watermark 说「已收」∧ isSessionUnderway 说「不在场内」(两侧同为 left)',
+    ({ market, kind }) => {
+      const close = sessionCloseMinutes(market, kind);
+      expect(close).toBeDefined();
+      const atClose = instantAt(market, close as number);
+      const today = marketNow(market, atClose).dateOnly;
+
+      // ① 时钟层: 收盘分钟起算「今天已收」
+      expect(sessionWatermark(market, atClose, kind)).toBe(today);
+      expect(isSessionComplete(market, today, atClose, kind)).toBe(true);
+      // ② 时段层: 同一分钟**不**算场内 —— 这就是 side="left"
+      expect(isSessionUnderway(market, close as number, kind)).toBe(false);
+      // ③ 互补性: 两者对同一时刻的答案必须相反。这一条才是防复发的核心。
+      expect(isSessionUnderway(market, close as number, kind)).toBe(
+        !isSessionComplete(market, today, atClose, kind),
+      );
+    },
+  );
+
+  it.each(CASES)(
+    '$market/$kind: 收盘前一分钟 —— 反向同样成立 (场内 ∧ 未收)',
+    ({ market, kind }) => {
+      const close = sessionCloseMinutes(market, kind) as number;
+      const atLast = instantAt(market, close - 1);
+      const today = marketNow(market, atLast).dateOnly;
+
+      expect(isSessionUnderway(market, close - 1, kind)).toBe(true);
+      expect(isSessionComplete(market, today, atLast, kind)).toBe(false);
+    },
+  );
+
+  it('收盘时刻表只有一份: sessionCloseMinutes 逐点等于 session-clock 删掉的那张表', () => {
+    // 🚨 这不是重复断言 —— 它钉住 P0-1 的**搬运保真**: 两张表合并前后取值必须逐点相同,
+    //    否则「单源化」会顺手改掉一个市场的收盘时刻而无人察觉。
+    expect(sessionCloseMinutes('cn', 'whole')).toBe(15 * 60);
+    expect(sessionCloseMinutes('hk', 'whole')).toBe(16 * 60);
+    expect(sessionCloseMinutes('us', 'whole')).toBe(16 * 60);
+    expect(sessionCloseMinutes('hk', 'half')).toBe(12 * 60);
+    expect(sessionCloseMinutes('us', 'half')).toBe(13 * 60 + 15); // 期权口径, 非股票 13:00
+    // cn 没有半日市形态 ⇒ 回落常规收盘, **不编一个出来**
+    expect(sessionCloseMinutes('cn', 'half')).toBe(15 * 60);
+    // 未登记市场返 undefined（由 session-clock 自己 fail-open 兜底, 极性刻意不同）
+    expect(sessionCloseMinutes('xx', 'whole')).toBeUndefined();
+  });
+});
+
+describe('🚨 收盘定稿缓冲 —— 从「闭区间的副作用」拆成显式参数 (#187 后续 P0-3)', () => {
+  it('缓冲默认 1 分钟 = 拆出来之前的等效值 ⇒ 行为逐点不变', () => {
+    for (const market of ['cn', 'hk', 'us']) {
+      expect(closeSettleBufferMinutes(market)).toBe(1);
+    }
+  });
+
+  it.each([
+    { market: 'cn', kind: 'whole' as SessionKindStatus },
+    { market: 'hk', kind: 'whole' as SessionKindStatus },
+    { market: 'us', kind: 'whole' as SessionKindStatus },
+    { market: 'us', kind: 'half' as SessionKindStatus },
+  ])(
+    '$market/$kind: isCloseWriteBlocked = [open, close+buffer) —— 与改造前的闭区间逐点等价',
+    ({ market, kind }) => {
+      const close = sessionCloseMinutes(market, kind) as number;
+      const buffer = closeSettleBufferMinutes(market);
+
+      // 收盘分钟: 不在场内, 但在缓冲窗内 ⇒ 仍然**不许写** (= 改造前 `[open, close]` 的取值)
+      expect(isSessionUnderway(market, close, kind)).toBe(false);
+      expect(isWithinCloseSettleBuffer(market, close, kind)).toBe(true);
+      expect(isCloseWriteBlocked(market, close, kind)).toBe(true);
+
+      // 缓冲窗结束后的第一分钟 ⇒ 放行
+      expect(isCloseWriteBlocked(market, close + buffer, kind)).toBe(false);
+      // 收盘前一分钟 ⇒ 场内, 自然也不许写
+      expect(isCloseWriteBlocked(market, close - 1, kind)).toBe(true);
+    },
+  );
+
+  it('🚨 缓冲与场内**严格互补且相邻**: 两段不重叠、不留缝', () => {
+    const close = sessionCloseMinutes('us', 'whole') as number;
+    for (let m = close - 3; m <= close + 3; m++) {
+      const underway = isSessionUnderway('us', m, 'whole');
+      const inBuffer = isWithinCloseSettleBuffer('us', m, 'whole');
+      // 同一分钟不可能既「场内」又「在缓冲窗」—— 重叠意味着两段各自的语义已经糊了
+      expect(underway && inBuffer).toBe(false);
+      // 并集恰好是写闸
+      expect(isCloseWriteBlocked('us', m, 'whole')).toBe(underway || inBuffer);
+    }
+  });
+
+  it('未登记市场一律抛 (fail-closed) —— 每个 false 都意味着「可以写」', () => {
+    expect(() => isSessionUnderway('xx', 600, 'whole')).toThrow(/未登记盘中时段/);
+    expect(() => isWithinCloseSettleBuffer('xx', 600, 'whole')).toThrow(/未登记盘中时段/);
+    expect(() => isCloseWriteBlocked('xx', 600, 'whole')).toThrow(/未登记盘中时段/);
   });
 });

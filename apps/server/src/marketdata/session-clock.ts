@@ -23,6 +23,7 @@
  * 需要「最近一个已收盘**交易日**」时, 拿本层的水位去 `trading_day` 取 `≤ 水位` 的最大交易日
  * (见 `TradingCalendarPort.lastClosedSession`), 日历不可用则**回落到本层结果**。
  */
+import { sessionCloseMinutes } from './market-session.rules.js';
 import type { SessionKindStatus } from './trading-day.rules.js';
 
 /**
@@ -55,7 +56,7 @@ const DEFAULT_TIME_ZONE = 'Asia/Shanghai';
  * 悄悄差几小时」, **不报错** —— `check-time-semantics.ts` Rule A 拦的正是这个形状。
  *
  * ⚠️ 本函数只答「交易所在哪」这一件事, **不含**收盘时刻 / 盘中时段 (那是
- * {@link REGULAR_CLOSE_MINUTES} 与 `market-session.rules.ts`)。
+ * `market-session.rules.ts` 的时段表)。
  *
  * 未登记市场回落 {@link DEFAULT_TIME_ZONE} —— 与 {@link exchangeCalendarDate} 是**同一条既有
  * 语义**(meta 维度的空 scope 依赖它), 不在这里改极性。复杂度 O(1)。
@@ -65,41 +66,19 @@ export function exchangeTimeZone(market: string): string {
 }
 
 /**
- * market → 该市场**常规交易时段收盘时刻** (当地时区的当日分钟数)。
+ * 未登记市场的兜底收盘时刻: 与 {@link DEFAULT_TIME_ZONE} 配套, 取较晚的 16:00 (偏保守 → 少判陈旧)。
  *
- * 只用于「哪一个 session 已经收了」这一个判断, **不是**盘中时段表 —— 盘中时段还要午休段,
- * 那是另一件事, **唯一落点是 `market-session.rules.ts`**。⇒ 要判盘中去那儿,
- * **别在这里长出第三份时段表**。
+ * 🚨 **已登记市场的收盘时刻不在本文件** —— 唯一来源是 `market-session.rules.ts` 的
+ * {@link sessionCloseMinutes}（由那张时段表的 `max(to)` 派生, 含半日市）。本文件此前自持一份
+ * `REGULAR_CLOSE_MINUTES` + `HALF_DAY_CLOSE_MINUTES`, 与那边**逐点相同**却只靠一句「改一处必改
+ * 两处」的散文维系, 而 `check-time-semantics` 的 Rule A **同时豁免了这两个文件** ⇒ 它们之间漂了
+ * 门禁不会响。漂的后果见 `sessionCloseMinutes` 的注释（#181 的形状）。
  *
- * 半日市走 {@link HALF_DAY_CLOSE_MINUTES} —— 本表是**常规**收盘, 不含半日市。
+ * ⚠️ 本兜底值只对**未登记市场**生效 —— 那条路上 `sessionCloseMinutes` 返 `undefined`, 而本文件
+ * 的语义是 fail-open 回落（meta 维度的空 scope 依赖它）, 与 `market-session.rules.ts` 对未登记
+ * 市场一律抛的极性刻意相反。
  */
-const REGULAR_CLOSE_MINUTES: Record<string, number> = {
-  cn: 15 * 60,
-  hk: 16 * 60,
-  us: 16 * 60,
-};
-
-/** 未登记市场的兜底: 与 {@link DEFAULT_TIME_ZONE} 配套, 取较晚的 16:00 (偏保守 → 少判陈旧)。 */
 const DEFAULT_CLOSE_MINUTES = 16 * 60;
-
-/**
- * market → **半日市**收盘时刻 (当地当日分钟数, 063 Phase 2)。缺席 = 该市场没有半日市形态
- * (cn: A 股除夕直接休市, 不半开) ⇒ 即便日历说 `half` 也回落 {@link REGULAR_CLOSE_MINUTES},
- * **不编一个出来**。
- *
- * 🚨 **us 取 13:15 = 期权收盘, 不是股票的 13:00**: 两个都真 (NYSE 半日市股票 13:00 ET 收、
- * 期权 13:15 ET 收), 取较晚那个的判据是偏差方向 —— 取 13:00 会在期权仍可成交时判「这一场
- * 收了」⇒ 以收盘口径写半根; 取 13:15 只是让股票 EOD 晚 15 分钟可写 (夜间管线本就在几小时后)。
- * 精确区分股票/期权收盘要 MIC (ISO 10383) 粒度, plan 明确不做。
- *
- * ⚠️ **另一份半日市时段在 `market-session.rules.ts` 的 `halfDaySegments`** —— 与两文件对常规
- * 收盘的既有重复同构 (各答一个问题, 见 {@link REGULAR_CLOSE_MINUTES} 注释 +
- * `check-time-semantics.ts` 的 `TABLE_FILES`)。**改一处必改两处。**
- */
-const HALF_DAY_CLOSE_MINUTES: Record<string, number> = {
-  hk: 12 * 60,
-  us: 13 * 60 + 15,
-};
 
 /** 任意 IANA 时区下 `now` 的 `YYYY-MM-DD` (DST 由 Intl 处理, 无需手工偏移)。 */
 function dateInTimeZone(now: Date, timeZone: string): string {
@@ -213,13 +192,16 @@ export function exchangeCalendarDateForScope(marketScope: readonly string[], now
  */
 export function sessionWatermark(market: string, now: Date, kind: SessionKindStatus): string {
   const { date, minutesOfDay } = timeInTimeZone(now, exchangeTimeZone(market));
-  const regular = REGULAR_CLOSE_MINUTES[market] ?? DEFAULT_CLOSE_MINUTES;
   // 🚨 `kind` **必填**不可省 (063 Phase 2): 做成可选默认 `whole`, 漏传的调用点在半日市当天
   // 会算出「今天还没收」⇒ 目标 session 退回昨天 ⇒ 拿昨天的价当锚的最近收盘。让 TS 把每个
   // 调用点逼出来显式声明它知不知道 kind —— 传 `'unknown'` 是**可见的**「这条路还没接 kind」。
   //
-  // `unknown` / 该市场无半日市形态 (cn) → 回落常规收盘 = 本函数上线前的逐点行为 (fail-open)。
-  const close = kind === 'half' ? (HALF_DAY_CLOSE_MINUTES[market] ?? regular) : regular;
+  // `unknown` / 该市场无半日市形态 (cn) → 回落常规收盘 (由 `sessionCloseMinutes` 内部处理);
+  // 市场未登记 → 回落 {@link DEFAULT_CLOSE_MINUTES} = 本函数上线前的逐点行为 (fail-open)。
+  const close = sessionCloseMinutes(market, kind) ?? DEFAULT_CLOSE_MINUTES;
+  // 🚨 `>=` 是 **`side="left"`** 的写法: 分钟标签 `close` 代表 `[收盘, 收盘+1分钟)`, 落在收盘
+  // **之后** ⇒ 那一分钟算「已收」。`market-session.rules.isSessionUnderway` 取同一侧
+  // (`< close`), 两者在收盘分钟必须给出互补答案 —— 单测钉在 `market-session.rules.spec.ts`。
   if (minutesOfDay >= close) return date;
   return previousCalendarDay(date);
 }
