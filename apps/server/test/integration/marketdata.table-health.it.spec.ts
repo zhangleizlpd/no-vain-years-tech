@@ -502,6 +502,45 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     expect(summary).toContain('option_contract=2/2');
   });
 
+  // ── #179 词根撞名: 只报数, 不判红 ──────────────────────────────────────────────────────
+  it('🚨 HK 合约词根撞上美股标的代码 → 摘要报数, 但**不**翻红 (撞名长期存在, 判红 = 永久假红)', async () => {
+    await seedAllFresh();
+    // us:ALB (Albemarle) 与 hk:09988 (阿里巴巴) —— 后者的交易所助记符恰好也是 ALB。
+    // 🚨 两只都必须 need_sync=false: 本用例只想引入「撞名」这一个变量, 而 need_sync 的 us 票会被
+    //    us_equity_bar 的工作集收进去当成掉队的票 —— 那样翻红的是别的判据, 断言就不指向撞名了。
+    const usAlb = await seedInstrument('us', 'ALB', false);
+    const hkAli = await seedInstrument('hk', '09988', false);
+    await prisma.optionContract.create({
+      data: {
+        market: 'hk',
+        code: 'HK.ALB260828C75000',
+        root: 'ALB',
+        underlyingInstrumentId: hkAli,
+        expiryDate: daysAhead(200),
+        strikePrice: 75,
+        optionType: 'CALL',
+        isStandard: true,
+      },
+    });
+
+    const { exitCode, summary } = await runPredicate();
+
+    expect(summary).toContain('root撞名=1(ALB)');
+    // 承重断言: 撞名单独存在**不得**让探针翻红 —— 否则 066 之后它会天天假红。
+    expect(exitCode).toBe(0);
+    expect(summary).toContain('✅');
+    expect(usAlb).toBeDefined();
+  });
+
+  it('无撞名 → 报 0 且不带括号', async () => {
+    await seedAllFresh();
+
+    const { summary } = await runPredicate();
+
+    expect(summary).toContain('root撞名=0');
+    expect(summary).not.toContain('root撞名=0(');
+  });
+
   // ── ⑪ 047 M2b earnings_event: 市场级两条信号并联 ────────────────────────────────────────
   it('🚨 前向视野右端腰斩到 +90d (26 个窗只跑了一半) → 不健康 exit 1', async () => {
     await seedAllFresh();

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { parseCanonicalSymbol } from './marketdata.rules.js';
 import {
   OptionChainBudgetExhaustedError,
@@ -27,6 +27,16 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * 港股是 066 加进来的第二个市场: 网关本身市场无关 (市场参数对着 SDK 枚举白名单校验、代码原样
  * 透传), 本端点对港股返回的**字段集与美股逐字相同** (2026-08-23 实取, 原始响应落在
  * `__fixtures__/hk-option-chain-00700-2026-08-23.json`)。
+ *
+ * ## 🚨 vendor 在美股方向按**词根**解析标的、忽略市场 (#179 实测)
+ *
+ * 请求 `US.ALB` (Albemarle) 会**掺回** `HK.ALB…` 的合约, 其 `stock_owner=HK.09988` (阿里巴巴港股,
+ * 交易所助记符恰好也是 `ALB`) —— 2026-08-25 三臂实测: `US.ALB` 136 行里 56 行属 `HK.09988`;
+ * 反方向 `HK.09988` 干净; 对照 `US.PDD` 干净。**我们发出的 code 是对的**, 这是 vendor 侧行为。
+ *
+ * ⇒ {@link dropForeignMarketRows}: **跨市场**的行丢弃 + 计数 warn。
+ * 🚫 **同市场** owner 不符**不在这里吞** —— 那是「合约真的换了归属」, 归 usecase 的护城河 throw。
+ * 两者分开的理由: 前者是已知 vendor 怪癖 (吞掉才能让该票继续采), 后者是未知事实 (吞掉就瞎了)。
  *
  * ## 🚨 关联键只能是 `stock_owner` (plan §A11)
  *
@@ -255,6 +265,46 @@ function parseChainRow(row: unknown, ctx: string): OptionContractStatic {
   };
 }
 
+/**
+ * 丢掉**跨市场**的行 —— vendor 按词根串市场时掺进来的别家合约 (见类注释 #179 那节)。
+ *
+ * 为什么不在这里一并处理「同市场 owner 不符」: 那一类是**未知事实** (合约归属真的变了 / 契约变更),
+ * 静默丢会让它永不被发现; 它照旧流到 `sync-option-contract` 的护城河去 throw。本函数只吞
+ * **已知的、可复现的**那一种。
+ *
+ * 丢弃**必须留声**: 静默过滤会让「vendor 哪天改了行为 (比如开始反向泄漏)」变成看不见的事。
+ *
+ * 复杂度 O(n), n = 本窗行数。
+ */
+function dropForeignMarketRows(
+  rows: OptionContractStatic[],
+  symbol: string,
+  ctx: string,
+): OptionContractStatic[] {
+  const market = parseCanonicalSymbol(symbol)?.market;
+  // 不可达 (futuCode 在发请求前就拦下未登记市场); 真到了这儿宁可原样返回, 交给下游护城河。
+  if (market === undefined) return rows;
+
+  const kept = rows.filter((row) => row.underlyingSymbol.startsWith(`${market}:`));
+  const droppedCount = rows.length - kept.length;
+  if (droppedCount > 0) {
+    const owners = [
+      ...new Set(
+        rows
+          .filter((row) => !row.underlyingSymbol.startsWith(`${market}:`))
+          .map((row) => row.underlyingSymbol),
+      ),
+    ].sort();
+    CHAIN_LOGGER.warn(
+      `[option-chain] ${ctx} 丢弃跨市场行 ${droppedCount}/${rows.length} ` +
+        `(owner=${owners.join(', ')}) —— vendor 按词根串市场, 见 issue #179`,
+    );
+  }
+  return kept;
+}
+
+const CHAIN_LOGGER = new Logger('FutuOptionChainAdapter');
+
 @Injectable()
 export class FutuOptionChainAdapter implements OptionChainPort {
   constructor(
@@ -288,7 +338,11 @@ export class FutuOptionChainAdapter implements OptionChainPort {
     });
     const ctx = `${query.symbol} ${query.start}..${query.end}`;
     const rows = await this.fetchRows(`/option-chain?${params.toString()}`, `option-chain ${ctx}`);
-    return rows.map((row) => parseChainRow(row, ctx));
+    return dropForeignMarketRows(
+      rows.map((row) => parseChainRow(row, ctx)),
+      query.symbol,
+      ctx,
+    );
   }
 
   /** canonical `market:code` → 富途 code；未登记市场直接抛（零外呼）。 */

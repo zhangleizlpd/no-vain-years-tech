@@ -302,6 +302,22 @@ opt_verdict AS (
          (SELECT expected_day FROM us_expected) AS expected_day
   FROM opt_probe
 ),
+-- ── #179：HK 合约词根 ∩ 美股标的代码（vendor 按词根串市场的**前提条件**）─────────────────
+-- 富途在美股方向按**词根**解析标的、忽略市场前缀 ⇒ 请求 `US.<root>` 会掺回同词根的 HK 合约
+-- （2026-08-25 实测：`US.ALB` 136 行里 56 行属 `HK.09988` —— 阿里港股的交易所助记符恰好也是
+-- `ALB`）。链 adapter 已按 owner 市场把它们丢掉，所以**撞名本身不是故障**。
+--
+-- 🚫 **别把它接进 `bad`**：撞名一旦存在就长期存在（`ALB` 自 066 接入港股锚起就在），接进去
+--    = 永久假红，正是文件头那条「稀疏事件流硬塞进来只会制造长期噪音」。这里**只报数**，
+--    要看的是**这个数什么时候变**（每加一只港股锚都可能长出新撞名，而人维护的清单会失效）。
+root_collision AS (
+  SELECT count(DISTINCT c.root) AS n,
+         coalesce(string_agg(DISTINCT c.root, ',' ORDER BY c.root), '') AS roots
+  FROM marketdata.option_contract c
+  WHERE c.market = 'hk'
+    AND EXISTS (SELECT 1 FROM marketdata.instrument i
+                WHERE i.market = 'us' AND i.code = c.root)
+),
 -- ── 047 M2b：财报日历（市场级，无逐票工作集）────────────────────────────────────────────
 -- 两条信号并联，理由见文件头。max() 各走 ix_earnings_event_date / 全表（表小，见下注）。
 -- ⚠️ `first_seen_at` 无索引 ⇒ max() 是 seq scan；该表 2–8 万行/年、逐年累积，量级远低于
@@ -396,4 +412,7 @@ SELECT
                FROM disk_verdict),
               (SELECT '样本不足(' || session_days || '/10 交易日)' FROM disk_verdict))
   || CASE WHEN (SELECT unhealthy FROM disk_verdict) THEN '⚠水位' ELSE '' END
+  -- #179 词根撞名：**报数不判红**（理由见上面 root_collision 那段的 🚫）。无撞名时不带括号。
+  || ' | root撞名=' || (SELECT n FROM root_collision)
+  || coalesce('(' || nullif((SELECT roots FROM root_collision), '') || ')', '')
   AS summary;
