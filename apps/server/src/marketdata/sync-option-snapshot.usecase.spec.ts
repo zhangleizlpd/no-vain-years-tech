@@ -338,6 +338,26 @@ describe('SyncOptionSnapshotUseCase', () => {
       expect(row.oiAsOf).toEqual(row.sessionDate);
     });
 
+    it('🚨🚨 hk 收盘后但 OI 未定稿（17:00）→ oi_as_of **退回上一交易日**，落库侧同样跟着时刻走', async () => {
+      // 判据层已有同形断言（`snapshot-session-attribution.rules.spec.ts` 的 ②b）。这条钉的是
+      // **写库侧**：`collect` 自己按 `spec` 重新派生 oi_as_of，只改判据层会「单测全绿而库里
+      // 照旧偏一天」（见本 describe 的文档注释）。
+      // 落点是**建锚冷启动**（用户行为触发，不受 cron 时刻约束），不是夜间轮。
+      const h = makeHarness({ contracts: TCH_CONTRACTS, prevTradingDay: '2026-09-17' });
+      await h.useCase.run([TCH], HK_DIM, emptyStats(), {
+        mode: 'delta',
+        asOf: '2026-09-18',
+        now: new Date('2026-09-18T09:00:00Z'), // = hk 当地 17:00，晚于收盘、早于 21:30 定稿
+      });
+
+      const row = persistedRows(h.createMany)[0];
+      // 🚨 `source` / `session_date` **逐点不变** —— 治的是 OI 标签，不是挡写。
+      expect(row.source).toBe('eod');
+      expect(row.sessionDate).toEqual(day('2026-09-18'));
+      expect(row.oiAsOf).toEqual(day('2026-09-17'));
+      expect(row.oiAsOf).not.toEqual(row.sessionDate);
+    });
+
     it('🚨 同一形态下 us 必须仍差一天 —— 分叉是增量，不是把口径全局改了', async () => {
       const h = makeHarness({ contracts: PEP_CONTRACTS, prevTradingDay: '2026-09-17' });
       await h.useCase.run([PEP], DIM, emptyStats(), makeInput('2026-09-18'));
