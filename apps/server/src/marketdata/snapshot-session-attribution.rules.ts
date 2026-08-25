@@ -4,7 +4,7 @@ import {
   type SnapshotCollectionSpec,
 } from './sync-option-snapshot.usecase.js';
 import { exchangeCalendarDate } from './session-clock.js';
-import { isSessionUnderway, marketNow, oiRefreshedAtEod } from './market-session.rules.js';
+import { isCloseWriteBlocked, marketNow, oiRefreshedAtEod } from './market-session.rules.js';
 import type { SessionKindStatus } from './trading-day.rules.js';
 
 /**
@@ -97,11 +97,12 @@ export type SnapshotAttribution =
 /**
  * 定「这批快照该归哪个 session，还是根本不该采」。复杂度 O(1)。
  *
- * 🚨 盘中闸的两个条件**缺一不可**：
- *   ① `isSessionUnderway`「该场进行中」（**含午休**）MUST NOT 换成 `isWithinTradingSession`
+ * 🚨 写闸的两个条件**缺一不可**：
+ *   ① `isCloseWriteBlocked`「场内 ∪ 收盘定稿缓冲」MUST NOT 换成 `isWithinTradingSession`
  *      —— 后者午休返 `false` ⇒ 放行，而此刻算出的目标日是**上一个交易日** ⇒ 把午休盘口贴上
- *      「上一场收盘」的标签写进库。
- *   ② `todayIsTradingDay` —— `isSessionUnderway` 是**纯时钟**谓词，不看星期也不看日历 ⇒
+ *      「上一场收盘」的标签写进库。也 MUST NOT 换成裸 `isSessionUnderway`：那个谓词止于收盘
+ *      那一刻（`side="left"`），而收盘价此刻可能还没定稿 —— 缓冲那一段正是为它留的。
+ *   ② `todayIsTradingDay` —— 上面那个是**纯时钟**谓词，不看星期也不看日历 ⇒
  *      周六 11:00 它照样返 `true`。少了这一格，**整个周末都采不到上一场的收盘**，而周末
  *      恰是境内用户建锚的高发时段。
  *
@@ -119,9 +120,10 @@ export type SnapshotAttribution =
 export function resolveSnapshotAttribution(input: SnapshotAttributionInput): SnapshotAttribution {
   const { market, now, lastClosedTradingDay: target, todayIsTradingDay, todayKind } = input;
 
-  // 盘中：端点返的是活报价，落成任何 session 的收盘都是错的 ⇒ 拒绝，而不是标成上一场。
+  // 场内 / 刚收未定稿：端点返的是活报价（或未定稿的收盘），落成任何 session 的收盘都是错的
+  // ⇒ 拒绝，而不是标成上一场。
   if (
-    isSessionUnderway(market, marketNow(market, now).minutesOfDay, todayKind) &&
+    isCloseWriteBlocked(market, marketNow(market, now).minutesOfDay, todayKind) &&
     todayIsTradingDay
   ) {
     return { decision: 'skip', reason: 'session_underway' };

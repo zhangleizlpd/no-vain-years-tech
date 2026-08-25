@@ -195,8 +195,19 @@ export function marketNow(market: string, now: Date): { dateOnly: string; minute
 }
 
 /**
- * 该市场**连续竞价**时段判定 (闭区间; 午休落在两段之间 ⇒ false)。复杂度 O(段数)。
+ * 该市场**连续竞价**时段判定 (午休落在两段之间 ⇒ false)。复杂度 O(段数)。
  * 语义 =「**此刻能不能成交**」⇒ 预警 / 盘中触发这类判据用它。
+ *
+ * ## 🚨 区间约定 = **两端皆闭** `[from, to]`（业内的 `side="both"`），与
+ * {@link isSessionUnderway} 的左闭右开**刻意不同**
+ *
+ * 不是疏漏, 是因为两者回答的是两个问题: 本谓词问「能不能成交」, 而**收盘集合竞价就在收盘
+ * 那一刻成交**（cn 15:00 / hk 16:00 的收盘价正是它撮出来的）⇒ 端点必须算在内, 否则盘中预警
+ * 会在最后一分钟静默失灵。而 {@link isSessionUnderway} 问「这一场收了没有」, 归属口径下收盘
+ * 分钟属于**已收**（见那边的 `side` 论证）。
+ *
+ * 📌 业内把这个选择显式参数化（`exchange_calendars` 的 `side`）正是因为它有多个合理取值 ——
+ * 同一份时段表, 不同消费方取不同侧是**正常的**, 不正常的是取了不同侧却没人写下来。
  *
  * 🚨 但它的答案取决于该市场**登记了几段**: hk 已合并成单段 (2026-08-18) ⇒ 它对 hk 午休答
  * `true`, 而午休不能成交 ⇒ **对预警是错的答案**。接 hk 盘中告警前, 必须先按 `MARKET_SESSION`
@@ -213,8 +224,107 @@ export function isWithinTradingSession(market: string, minutesOfDay: number): bo
 }
 
 /**
- * 该市场当日的这一场**是否进行中** —— 自首段开盘至末段收盘, **含**中间的休息段（午休）。
+ * 该 `kind` 下生效的时段表。`unknown` / 该市场没登记 `halfDaySegments` (cn) 一律回落常规时段
+ * —— **不为一个没有半日市的市场编一个出来**。
+ *
+ * 🚨 `kind` **必填**不可省 (063 Phase 2): 做成可选默认 `whole` 的话, 漏传的调用点会在半日市
+ * 当天静默拿到「还在场内」⇒ 落终态不重试的 `intraday_skipped` ⇒ 那一场的快照**永久缺失**。
+ * 让 TS 把每个调用点逼出来显式声明它知不知道 kind, 与 `daysToExpiry` 拒绝可选交易所入参同源。
+ */
+function segmentsFor(
+  session: (typeof MARKET_SESSION)[string],
+  kind: SessionKindStatus,
+): readonly (readonly [number, number])[] {
+  return kind === 'half' ? (session.halfDaySegments ?? session.segments) : session.segments;
+}
+
+/**
+ * 取 min(开盘) / max(收盘) 而非 `segments[0]` / `at(-1)` —— 不把「登记时必须按时序排」这条
+ * 隐式不变式压在加市场的人身上 (排错了不会红, 只会让午休那段悄悄漏出闸)。
+ */
+const spanOf = (
+  segments: readonly (readonly [number, number])[],
+): { open: number; close: number } => ({
+  open: Math.min(...segments.map(([from]) => from)),
+  close: Math.max(...segments.map(([, to]) => to)),
+});
+
+/**
+ * 该市场该 `kind` 下的**收盘分钟**（当地当日分钟数）；未登记市场返 `undefined`。
+ *
+ * 🚨 **本函数存在的唯一理由是消灭第二份收盘时刻表**（#187 后续）。`session-clock.ts` 曾自持
+ * 一份 `REGULAR_CLOSE_MINUTES` + `HALF_DAY_CLOSE_MINUTES`（cn 900 / hk 960 / us 960 +
+ * hk-half 720 / us-half 795），与本表的 `max(to)` **逐点相同**，靠一句「改一处必改两处」的
+ * 散文维系 —— 而 `check-time-semantics` 的 Rule A **同时豁免了这两个文件**，它们之间漂了
+ * 门禁不会响。
+ *
+ * 漂了会怎样：假如有人把那边的 us 改成 16:15 而这边的 segments 没动 ⇒ 收盘后 15 分钟内
+ * 「已收盘水位」说未收、「场内判定」说已收 ⇒ 写闸放行 + 归属指向上一场 ⇒ **把今天的盘口贴上
+ * 昨天的标签写进库**。那正是 #181 的形状。现在它在类型层不可能发生。
+ *
+ * ⚠️ **未登记市场返 `undefined` 而不抛**，与 {@link isSessionUnderway} 的极性刻意不同:
+ * 调用方 `session-clock.sessionWatermark` 对未登记市场有自己的 fail-open 兜底 (meta 维度的
+ * 空 scope 依赖它), 在这里抛会把那条既有语义打断。
+ *
  * 复杂度 O(段数)。
+ */
+export function sessionCloseMinutes(market: string, kind: SessionKindStatus): number | undefined {
+  const session = MARKET_SESSION[market];
+  if (session === undefined) return undefined;
+  return spanOf(segmentsFor(session, kind)).close;
+}
+
+/**
+ * 收盘后的**定稿缓冲**（分钟）—— 「这一场收了」到「它的收盘数据可以安全落库」之间的那段。
+ *
+ * ## 🚨 它此前是一个**伪装成区间端点的参数**
+ *
+ * {@link isSessionUnderway} 原本是闭区间 `[open, close]`，于是「收盘那一分钟不许写」这条行为
+ * 是**闭区间的副作用**，而不是任何人做过的决定：它既没有名字、不能按市场调、也无法被证据替换。
+ * 本常量把它拆出来命名，取值 **1 分钟 = 拆出来之前的等效值**，⇒ 行为逐点不变。
+ *
+ * ## 🚨 1 这个数字**不是研究结论**，是继承来的
+ *
+ * 业界不用墙钟回答「收盘定稿了没有」—— 它由 tape 的 trade qualifier（盘后成交打 `T`，不计入
+ * regular session 收盘价）与各 vendor 的 preliminary/final 口径决定。⇒ 正解是拿**真信号**替掉
+ * 本常量；在那之前，这里至少让「我们赌了 1 分钟」这件事在代码里看得见。
+ *
+ * 🚫 **MUST NOT 把它调大来「稳一点」**：每多一分钟就是采集窗口少一分钟，而现役 cron 全部落在
+ * 收盘后数小时 ⇒ 调大对正常路径零收益，只会让**事件驱动**路径（锚首建冷启动）更容易落
+ * `intraday_skipped`（终态不重试）。要动它得先有那个市场的定稿证据。
+ *
+ * 📌 **按市场分叉的位置留在这里**（三条现役市场的收盘形态并不同：us 期权半日市 13:15 收、
+ * cn 收盘集合竞价在 15:00 打印、hk 无盘后段），但今天三者**都没有**各自的证据 ⇒ 统一取默认值，
+ * 不编三个看起来很讲究、其实同源的数字。
+ */
+const DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES = 1;
+
+/** per-market 覆盖；缺项 ⇒ {@link DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES}。今天**刻意为空**。 */
+const CLOSE_SETTLE_BUFFER_MINUTES: Record<string, number> = {};
+
+/** 该市场的定稿缓冲分钟数。复杂度 O(1)。 */
+export function closeSettleBufferMinutes(market: string): number {
+  return CLOSE_SETTLE_BUFFER_MINUTES[market] ?? DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES;
+}
+
+/**
+ * 该市场当日的这一场**是否进行中** —— 自首段开盘至末段收盘，**含**中间的休息段（午休）。
+ * 复杂度 O(段数)。
+ *
+ * ## 🚨 区间约定 = **左闭右开** `[open, close)`（业内的 `side="left"`）
+ *
+ * `minutesOfDay` 是一个**分钟标签**，`960` 代表的是 `[16:00:00, 16:01:00)` 这 60 秒 —— 它落在
+ * 收盘**之后**，故**不算**场内分钟。这与 `session-clock.sessionWatermark` 的 `>= close ⇒ 已收`
+ * 是同一个约定的两种写法；两边取不同侧，就会在收盘那一分钟对同一个时刻给出相反的答案
+ * （#187 实撞：归属判据说「已收」、本谓词说「场内」，合成为一轮无来由的 skip）。
+ *
+ * 📌 业内把这个选择**显式参数化**（`exchange_calendars` 的 `side`: left / right / both /
+ * neither），且自 v4.0 起所有日历默认 `left`。本仓不做成参数（只有两个消费方），改为
+ * **每个谓词在注释里声明自己用哪一侧**，并由单测钉住两侧一致（见 `market-session.rules.spec.ts`
+ * 的「边界一致性」段）。
+ *
+ * 🚫 **别拿本谓词当写闸** —— 「场内吗」与「现在写安全吗」是两个问题，后者还要加定稿缓冲，
+ * 走 {@link isCloseWriteBlocked}。
  *
  * 🚨 **它与 {@link isWithinTradingSession} 的差别只有午休那一段, 而那正是 FR-011 的落点。**
  * 期权快照是「按交易日归属、供应方只给当下一份」的数据, 它的闸要问的是「**这一场收了没有**」
@@ -222,9 +332,8 @@ export function isWithinTradingSession(market: string, minutesOfDay: number): bo
  * 盘口贴上「上一场收盘」的标签写进库（`sessionWatermark` 在未过收盘时给出的目标日是
  * **上一个交易日**）。那种错行**不报错**、按唯一键占位、当晚正确的行反被挡掉 ⇒ 永久缺口。
  *
- * 📌 两谓词的分道如今**只剩 `cn`**: us 真的无午休, hk 已于 2026-08-18 合并成单段 (理由与
- * 「接 hk 预警时必须改回去」的硬约束见上面 hk 登记处的注释) ⇒ 它俩在这两个市场上逐分钟等价
- * （单测里有一条逐分钟断言钉住这件事）。而 cn 不在 `COLD_START_CAPABILITY` 里 ⇒ 这个差异当前
+ * 📌 两谓词的分道如今**只剩 `cn`**: us 真的无午休, hk 已于 2026-08-18 合并成单段 ⇒ 它俩在这两个
+ * 市场上除收盘那一分钟外逐分钟等价。而 cn 不在 `COLD_START_CAPABILITY` 里 ⇒ 这个差异当前
  * **无生产落点**; 留着本谓词是为了「哪天给一个有午休的市场开通期权采集」时闸仍站在收紧那侧,
  * 而不是指望那天有人临时想起来该用哪一个。
  *
@@ -240,17 +349,45 @@ export function isSessionUnderway(
   if (session === undefined) {
     throw unregisteredMarketError(market);
   }
-  // 🚨 `kind` **必填**不可省 (063 Phase 2): 做成可选默认 `whole` 的话, 漏传的调用点会在半日
-  // 市当天静默拿到「还在场内」⇒ 落终态不重试的 `intraday_skipped` ⇒ 那一场的快照**永久缺失**。
-  // 让 TS 把每个调用点逼出来显式声明它知不知道 kind, 与 `daysToExpiry` 拒绝可选交易所入参同源。
-  //
-  // `unknown` → 回落常规时段 = 本列上线前的逐点行为 (fail-open, 少采一场下轮补上);
-  // 该市场没登记 `halfDaySegments` (cn) 同样回落 —— **不为一个没有半日市的市场编一个出来**。
-  const segments =
-    kind === 'half' ? (session.halfDaySegments ?? session.segments) : session.segments;
-  // 取 min(开盘) / max(收盘) 而非 segments[0] / at(-1) —— 不把「登记时必须按时序排」这条
-  // 隐式不变式压在加市场的人身上（排错了不会红, 只会让午休那段悄悄漏出闸）。
-  const open = Math.min(...segments.map(([from]) => from));
-  const close = Math.max(...segments.map(([, to]) => to));
-  return minutesOfDay >= open && minutesOfDay <= close;
+  const { open, close } = spanOf(segmentsFor(session, kind));
+  return minutesOfDay >= open && minutesOfDay < close;
+}
+
+/**
+ * 收盘后仍在**定稿缓冲**窗内 —— `[close, close + buffer)`。复杂度 O(段数)。
+ *
+ * 与 {@link isSessionUnderway} 严格互补且相邻: 前者管 `[open, close)`, 本函数接着管
+ * `[close, close + buffer)`, 两段之和就是 {@link isCloseWriteBlocked}。
+ */
+export function isWithinCloseSettleBuffer(
+  market: string,
+  minutesOfDay: number,
+  kind: SessionKindStatus,
+): boolean {
+  const session = MARKET_SESSION[market];
+  if (session === undefined) {
+    throw unregisteredMarketError(market);
+  }
+  const { close } = spanOf(segmentsFor(session, kind));
+  return minutesOfDay >= close && minutesOfDay < close + closeSettleBufferMinutes(market);
+}
+
+/**
+ * 此刻**不可**以收盘口径往「今天这一场」落库 —— `[open, close + buffer)`。复杂度 O(段数)。
+ *
+ * = {@link isSessionUnderway}（场内，端点数据还没产生）∪ {@link isWithinCloseSettleBuffer}
+ * （刚收，收盘价可能还没定稿）。**这才是采集路径该问的那个谓词**，不是前两者之一。
+ *
+ * 🚨 取 buffer=1 时本函数与改造前的 `isSessionUnderway`（闭区间 `[open, close]`）**逐点等价**
+ * —— 这是刻意的: 本次拆分改的是语义与可调性, 不是行为。
+ */
+export function isCloseWriteBlocked(
+  market: string,
+  minutesOfDay: number,
+  kind: SessionKindStatus,
+): boolean {
+  return (
+    isSessionUnderway(market, minutesOfDay, kind) ||
+    isWithinCloseSettleBuffer(market, minutesOfDay, kind)
+  );
 }
