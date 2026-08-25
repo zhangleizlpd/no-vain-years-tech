@@ -46,8 +46,16 @@ import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
  * （它同样直接 `new OptionSnapshotCoverageCheck(prisma, marketdataSyncConfig())`）。
  */
 
-/** ET 16:00（2026-08-12 周三）⇒ us 业务日恒为 `2026-08-12`。 */
-const NOW = new Date('2026-08-12T20:00:00Z');
+/**
+ * ET 20:00（2026-08-12 周三）= ① 级 cron 的**真实时刻**（北京 08-13 08:00）⇒ us 业务日恒为
+ * `2026-08-12`，且那一场早已收盘。
+ *
+ * 🚨 **不能取 ET 16:00 整**（本文件原值）：`isSessionUnderway` 的时段是**闭区间**
+ * `[09:30, 16:00]`，而 `sessionWatermark` 的判据是 `>= 收盘`⇒ 恰好 16:00 那一分钟两者不一致，
+ * 归属判据会给出 `skip`。取值方向是**保守侧**（宁可少采一轮也不写），故那不是缺陷；但拿它当
+ * fixture 会让本组验的东西从「正常路径」变成「边界那一分钟」。
+ */
+const NOW = new Date('2026-08-13T00:00:00Z');
 const TODAY = '2026-08-12';
 /** `TODAY` 的上一交易日 —— ② 级要补的 session，同时是 `eod` 路径 `oi_as_of` 的取值。 */
 const PREV = '2026-08-11';
@@ -166,7 +174,16 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
     );
     // `oi_as_of` 的权威来源 —— 缺行会退到「最近工作日」近似值并抬 ERROR，那会让下面的
     // `oi_as_of` 断言变成在验兜底逻辑而不是验正常路径。
-    await prisma.tradingDay.create({ data: { market: 'us', date: day(PREV) } });
+    // 🚨 #187 起 `TODAY` 那一行也必须在：① 级的归属日改由 `resolveSnapshotAttribution` 从
+    //    `trading_day` 取「最近一个已收盘 session」⇒ 少了它，① 级会正确地判定「今天那一场还
+    //    没进日历」并去补 `PREV`。那是本片**刻意**的新行为（日历滞后时与夜间轮对齐），不是
+    //    缺陷；这里补上行，是因为本组要验的是**日历完整**时的正常路径。
+    await prisma.tradingDay.createMany({
+      data: [
+        { market: 'us', date: day(PREV) },
+        { market: 'us', date: day(TODAY) },
+      ],
+    });
   });
 
   /**

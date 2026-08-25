@@ -127,6 +127,60 @@ describe('Rule B — 禁绕过词表裸做时区换算', () => {
   });
 });
 
+describe('Rule C — 归属列不得吃日历日', () => {
+  it('🚨 对象属性赋值形态 → calendar-day-as-session', () => {
+    const sf = mk({
+      '/apps/server/src/marketdata/some.usecase.ts': `
+        const spec = { sessionDate: exchangeCalendarDate(market, now), mode: 'eod' };`,
+    });
+    expect(rules(sf)).toEqual(['calendar-day-as-session']);
+  });
+
+  it('🚨 变量声明形态同样被拒 (#187 收紧前它是漏网的那一半)', () => {
+    // = option-snapshot-remediation.ts ① 级重试改造前的原样形状。
+    const sf = mk({
+      '/apps/server/src/marketdata/option-snapshot-remediation.ts': `
+        const sessionDate = exchangeCalendarDateForScope(US_MARKET_SCOPE, now);`,
+    });
+    expect(rules(sf)).toEqual(['calendar-day-as-session']);
+  });
+
+  it('🚨 包在别的表达式里也算 —— 判据是「子树里有没有那次调用」不是「初始化器本身是不是」', () => {
+    const sf = mk({
+      '/apps/server/src/marketdata/some.usecase.ts': `
+        const sessionDate = toDateOnly(exchangeCalendarDateForScope(scope, now));`,
+    });
+    expect(rules(sf)).toEqual(['calendar-day-as-session']);
+  });
+
+  it('✅ 归属列取判据层的产物 → 放行 (这才是正解形状)', () => {
+    const sf = mk({
+      '/apps/server/src/marketdata/some.usecase.ts': `
+        const sessionDate = attribution.spec.sessionDate;
+        const row = { sessionDate: toDateOnly(ctx.sessionDate) };`,
+    });
+    expect(scanTimeSemantics(sf)).toHaveLength(0);
+  });
+
+  it('✅ 日历日**叫别的名字**放行 —— 「今天开不开市」的交易日闸是它的合法用途', () => {
+    // 🚨 这条是判据的**边界声明**, 不是遗漏: 一刀切会把交易日闸 / DTE 基准全咬住,
+    //    而门禁一旦开始误报就会被加白名单加到失效。
+    const sf = mk({
+      '/apps/server/src/marketdata/option-snapshot-remediation.ts': `
+        const today = exchangeCalendarDateForScope(US_MARKET_SCOPE, now);`,
+    });
+    expect(scanTimeSemantics(sf)).toHaveLength(0);
+  });
+
+  it('✅ 归属列名但取的不是日历日函数 → 放行 (判据咬的是取值, 不是名字本身)', () => {
+    const sf = mk({
+      '/apps/server/src/marketdata/some.usecase.ts': `
+        const sessionDate = sessionWatermark(market, now, kind);`,
+    });
+    expect(scanTimeSemantics(sf)).toHaveLength(0);
+  });
+});
+
 describe('两条 Rule 正交', () => {
   it('同一文件可同时违反两条 —— 各报各的, 不互相吞', () => {
     const sf = mk({

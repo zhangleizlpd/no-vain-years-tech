@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
-import { COLD_START_OUTCOME, resolveSnapshotSpec } from './anchor-cold-start.rules.js';
+import { COLD_START_OUTCOME } from './anchor-cold-start.rules.js';
+import { resolveSnapshotAttribution } from './snapshot-session-attribution.rules.js';
 import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
@@ -435,7 +436,7 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
   //    一直编译得过 —— 属于死属性, 连同那个已无所指的名字一并清掉。
   const RUN_BASE = { anchorId: ANCHOR_ID, ticker: 'us:PEP' } as const;
 
-  it('非盘中 ⇒ collect 收到的 spec **原样**来自 T003 纯函数 (不在这里重算, FR-014)', async () => {
+  it('非盘中 ⇒ collect 收到的 spec **原样**来自判据层纯函数 (不在这里重算, FR-014)', async () => {
     // `snapshotRowsAfterCollect: 1` = 采集真落了行 ⇒ 落库复判过 (FR-027a); 缺省的「零行」
     // 会落 backfill_incomplete, 那是另一条用例。
     const ctx = build({ snapshotRowsAfterCollect: 1 });
@@ -446,12 +447,13 @@ describe('第二相 —— 敏感档快照 (plan §D8, FR-010 / FR-011 / FR-014 
     const [instruments, spec] = ctx.collect.mock.calls[0];
     expect(instruments).toEqual([{ id: INSTRUMENT_ID, market: 'us', code: 'PEP' }]);
 
-    const expected = resolveSnapshotSpec({
+    const expected = resolveSnapshotAttribution({
       market: 'us',
       now,
       lastClosedTradingDay: TARGET,
       todayIsTradingDay: true,
       tradingDayBeforeTarget: DAY_BEFORE_TARGET,
+      todayKind: 'unknown',
     });
     if (expected.decision !== 'collect') throw new Error('unreachable');
     expect(spec).toEqual(expected.spec);

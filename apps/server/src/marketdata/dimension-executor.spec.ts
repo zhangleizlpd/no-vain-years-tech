@@ -11,6 +11,7 @@ import {
 import { deriveExecutionOrder, type SyncDependencyEdge } from './sync-flow-assembler.js';
 import type { UnderlyingIvSnapshot } from './underlying-iv.port.js';
 import type { UsIndexDailyPoint } from './us-index.port.js';
+import type { TradingCalendarPort } from './trading-calendar.port.js';
 import type {
   AllotmentDto,
   AllotmentRangeQuery,
@@ -3340,6 +3341,48 @@ describe('042 T011 employee 装配 (mode 分 from + typed 子行透传 + 同名 
 // 本 spec 住 src/ 且非 .it. ⇒ unit project, 零容器是机器强制的硬不变量 ⇒ **只放纯逻辑**:
 // 工作集挂锚闸 / A′ 用 us 时区 / 批量形态 / upsert 幂等形态 / 缺席计 skipped / 失败可重拉告警。
 // 「失败不破坏已落历史」「同日重跑真幂等」需真 DB ⇒ 归 T011 的 IT, 禁往这里塞容器。
+/**
+ * `trading_day` 的**共享**替身 (#187): 归属判据的三次点查全走它。
+ *
+ * 🚨 两种问法 MUST 分辨 —— `lte`「≤ 已收盘上界的最大交易日」(归属日) 与 `lt`「严格早于的最大
+ * 交易日」(OI 归属日 / 上一场)。混作一谈会让归属整体偏一天, 而**测试照样绿**。
+ *
+ * 缺省日历 = **所有工作日**, 刻意不写死几个日期: 本文件各 describe 的 `now` 散落在好几周,
+ * 钉死一小段日期会让「判据放弃本轮」以**别的用例失败**的形式冒出来, 而那与它们要验的东西无关。
+ * 要模拟日历缺行就显式传 `[]`; 要模拟节假日就显式传一份日期表。
+ */
+function tradingDayFake(tradingDays?: string[]) {
+  const isTradingDay = (date: string): boolean => {
+    if (tradingDays !== undefined) return tradingDays.includes(date);
+    const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
+    return dow !== 0 && dow !== 6;
+  };
+  /** 从 `bound` 起向前找最近一个交易日 (`inclusive=false` ⇒ 严格早于)。找不到返 null。 */
+  const latestOnOrBefore = (bound: string, inclusive: boolean): string | null => {
+    const d = new Date(`${bound}T00:00:00Z`);
+    if (!inclusive) d.setUTCDate(d.getUTCDate() - 1);
+    // 10 天足以跨过任何周末 + 本文件用到的假期; 显式列表为空时直接落空返 null。
+    for (let i = 0; i < 10; i++) {
+      const iso = d.toISOString().slice(0, 10);
+      if (isTradingDay(iso)) return iso;
+      d.setUTCDate(d.getUTCDate() - 1);
+    }
+    return null;
+  };
+  return {
+    findFirst: vi.fn(async (args: { where: { date: { lt?: Date; lte?: Date } } }) => {
+      const inclusive = args.where.date.lte !== undefined;
+      const bound = (args.where.date.lte ?? (args.where.date.lt as Date))
+        .toISOString()
+        .slice(0, 10);
+      const hit = latestOnOrBefore(bound, inclusive);
+      return hit === null ? null : { date: new Date(`${hit}T00:00:00Z`) };
+    }),
+    // 半日市那一格归 063 Phase 2 的用例, 本文件恒 `whole`。
+    findUnique: vi.fn(async () => ({ sessionKind: 'whole' })),
+  };
+}
+
 describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + A′ us 时区 + upsert 幂等)', () => {
   /** 北京 2026-06-13(周六) 06:00 = us 维度 cron 时刻; ET 侧还是 2026-06-12(周五) 18:00。 */
   const NOW_BEIJING_SAT_6AM = new Date('2026-06-12T22:00:00Z');
@@ -3386,6 +3429,17 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       batchSize?: number;
       /** 锚表 ticker 列 (066 T02: 本维度是**锚作用域**的, 工作集判据读的是它)。 */
       anchorTickers?: string[];
+      /**
+       * 库内 us 交易日历 (#187: 归属判据要「最近一个已收盘交易日」)。
+       * 缺省覆盖到 06-12 那一周; 给 `[]` 即模拟日历缺行 ⇒ 判据放弃本轮。
+       */
+      tradingDays?: string[];
+      /**
+       * 交易日历读端口 (**构造器第 33 位**)。缺省不传 ⇒ 走 `NULL_TRADING_CALENDAR`
+       * (`classify` 恒 `unknown` ⇒ `todayIsTradingDay=false` ⇒ 盘中闸不成立)。
+       * 只有要验**盘中拒绝**的用例才需要给真答案 —— 那一格必须是确定的 `trading`。
+       */
+      tradingCalendar?: TradingCalendarPort;
     } = {},
   ) {
     const instruments = opts.instruments ?? [
@@ -3428,6 +3482,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
         },
         instrument: { findMany: vi.fn(async () => instruments) },
         anchor: { findMany: vi.fn(async () => anchorTickers.map((ticker) => ({ ticker }))) },
+        tradingDay: tradingDayFake(opts.tradingDays),
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
         ),
@@ -3464,7 +3519,15 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       undefined, // industryClassification → 默认 null-object
       undefined, // announcement → 默认 null-object
       deps.anchorGate as never, // anchorGate (045 T015 采集闸重算)
-      deps.underlyingIv as never, // underlyingIv (046 T008, 尾部)
+      deps.underlyingIv as never, // underlyingIv (046 T008, 尾部第 28 位)
+      undefined, // usIndex → 默认 null-object
+      undefined, // syncOptionContract → 默认 (NULL_OPTION_CHAIN)
+      undefined, // syncOptionSnapshot → 默认 (NULL_OPTION_SNAPSHOT)
+      undefined, // syncEarningsEvent → 默认 (NULL_EARNINGS_CALENDAR)
+      // #187 交易日历读端口 (第 33 位)。缺省 undefined ⇒ NULL_TRADING_CALENDAR: 归属日仍由
+      // 上面 prisma 替身的 `tradingDay` 给出 (那才是「最近一个已收盘交易日」的来源), 只有
+      // 「今天是不是交易日」恒 unknown ⇒ 盘中闸不成立。要验盘中拒绝才必须给真答案。
+      opts.tradingCalendar,
     );
     return { registry, deps, spies: { getIvSnapshots, ivUpsert } };
   }
@@ -3526,6 +3589,102 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
     expect(dates).toEqual([US_BUSINESS_DATE, US_BUSINESS_DATE]);
     // 退回全局宿主日 = 日期错位一天 + 每周固定丢掉周五 (session-clock.ts 注释的失败形态表)。
     expect(dates).not.toContain(SHANGHAI_DATE);
+  });
+
+  /**
+   * 🚨 #187: 归属日跟「**哪一场收了**」走, 不跟日历日走。
+   *
+   * 本维度在 #187 之前是 `toDateOnly(exchangeCalendarDateForScope(dim.marketScope, input.now))`
+   * —— 与 #181 逐字同形。日历日 00:00 就翻页, 与「这一场收没收盘」毫无关系。
+   */
+  describe('🚨 #187 归属判据 (跨午夜 / 盘中 / 日历缺行)', () => {
+    /** 落库日期列表 (逐次 upsert 的 `where` 键)。 */
+    const upsertDates = (ivUpsert: ReturnType<typeof vi.fn>): string[] =>
+      ivUpsert.mock.calls.map((c) =>
+        (c[0] as { where: { instrumentId_date: { date: Date } } }).where.instrumentId_date.date
+          .toISOString()
+          .slice(0, 10),
+      );
+
+    it('🚨 跨午夜回归钉: 执行时刻被挤到 ET 次日凌晨 01:30 ⇒ date 仍是**上一个已收盘 session**, 不是那个还没开盘的日子', async () => {
+      // ET 周三 01:30 (北京周三 13:30)。日历日已翻到 06-17 —— 那一场**还没开盘**;
+      // 最近一个已收盘 session 仍是周二 06-16。2026-08-25 01:30 prod 就是这个形状 (#181)。
+      const now = new Date('2026-06-17T05:30:00Z');
+      const { registry, spies } = buildUnderlyingIvFakes();
+
+      await registry.execute('underlying_iv_daily', { mode: 'delta', asOf: '2026-06-17', now });
+
+      expect(upsertDates(spies.ivUpsert)).toEqual(['2026-06-16', '2026-06-16']);
+      // 改前的取值 —— 一个还没开盘的日子。
+      expect(upsertDates(spies.ivUpsert)).not.toContain('2026-06-17');
+    });
+
+    it('🚨 盘中 ⇒ 整轮不采 (端点此刻返活 IV, 落成任一 session 的收盘 IV 都是脏数据)', async () => {
+      // ET 周二 11:00 (北京周二 23:00) —— 场内。此刻算出的归属日是**周一**, 若不拒绝就会拿
+      // 盘中读数 upsert 覆盖掉周一那行已收盘的真值 —— 比改前 (写脏当天那行, 当晚被覆盖回来)
+      // 更糟。故归属日与盘中闸必须**一起**改。
+      const now = new Date('2026-06-16T15:00:00Z');
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      try {
+        const { registry, spies } = buildUnderlyingIvFakes({
+          // 盘中闸的两个条件缺一不可, `todayIsTradingDay` 这一格只有真日历给得出。
+          tradingCalendar: { classify: async () => 'trading', lastClosedSession: async () => null },
+        });
+
+        const { stats } = await registry.execute('underlying_iv_daily', {
+          mode: 'delta',
+          asOf: '2026-06-16',
+          now,
+        });
+
+        expect(spies.getIvSnapshots).not.toHaveBeenCalled();
+        expect(spies.ivUpsert).not.toHaveBeenCalled();
+        // 「跑了但没采」与「采了零行」必须可分辨: written 报 0 (不是 null), 且计 skipped。
+        expect(stats).toMatchObject({ skipped: 2, ok: 0, failed: 0, written: 0 });
+        expect(warn.mock.calls.map((c) => String(c[0])).join(' | ')).toContain('该场进行中');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('🚨 日历缺行 ⇒ 放弃本轮 + ERROR, **不猜日子**也不退回日历日', async () => {
+      const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      try {
+        const { registry, spies } = buildUnderlyingIvFakes({ tradingDays: [] });
+
+        const { stats } = await registry.execute('underlying_iv_daily', ivInput);
+
+        expect(spies.getIvSnapshots).not.toHaveBeenCalled();
+        expect(spies.ivUpsert).not.toHaveBeenCalled();
+        expect(stats).toMatchObject({ skipped: 2, ok: 0, failed: 0, written: 0 });
+        // 本档**可重拉** (次日重跑 / his_volatility 回填补得回), 放弃一轮远好过写一批标错日子的行。
+        expect(error.mock.calls.map((c) => String(c[0])).join(' | ')).toContain('判不出归属');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('🚨 混 scope ⇒ fail-closed 抛 (盘中闸问的是「**这个市场**收了没」, 混 scope 没有单一答案)', async () => {
+      const { registry, deps } = buildUnderlyingIvFakes();
+      deps.prisma.syncDimension.findUnique = vi.fn(async () => ({
+        dimensionKey: 'underlying_iv_daily',
+        enabled: true,
+        cronExpr: '0 0 6 * * *',
+        marketScope: ['us', 'hk'],
+        adjustTypes: ['none'],
+        batchSize: 500,
+        historyDepth: 1095,
+        retryMax: 3,
+        misfirePolicy: 'fire-now',
+        reAdjustLookbackDays: null,
+        deltaLookbackDays: null,
+        pausedUntil: null,
+      })) as never;
+
+      await expect(registry.execute('underlying_iv_daily', ivInput)).rejects.toThrow(
+        /单市场 scope/,
+      );
+    });
   });
 
   it('幂等 upsert (FR-029): where = 唯一键 (instrumentId,date), create/update 同一份 data (禁 create-only)', async () => {
@@ -3629,6 +3788,7 @@ describe('046 T009 underlying_iv_daily backfill (his_volatility ≤364 天分页
           update: vi.fn(async () => ({})),
         },
         instrument: { findMany: vi.fn(async () => instruments) },
+        tradingDay: tradingDayFake(),
         // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表。让工作集里每只标的都有锚,
         // 本 describe 验的是分窗形态而非闸行为。
         anchor: {
@@ -3836,6 +3996,7 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
         instrument: { findMany: vi.fn(async () => [{ id: 1n, market: 'us', code: 'PEP' }]) },
         // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表 (这里给 PEP 一只锚)。
         anchor: { findMany: vi.fn(async () => [{ ticker: 'us:PEP' }]) },
+        tradingDay: tradingDayFake(),
         underlyingIvHistory: { findMany: histFindMany },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
@@ -4580,6 +4741,7 @@ describe('#138 族一: 逐行 upsert 的维度必须上报 written (空转报 0,
         corporateAction: {
           findMany: vi.fn(async () => [{ exDate: new Date('2026-06-01'), type: 'dividend' }]),
         },
+        tradingDay: tradingDayFake(),
         // IVP 双算对表的窗口查询 (空窗 ⇒ verdict skipped ⇒ 静默, 不干扰计数)。
         underlyingIvHistory: { findMany: vi.fn(async () => []) },
         $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>

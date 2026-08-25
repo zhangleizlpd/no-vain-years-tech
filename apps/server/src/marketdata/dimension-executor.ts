@@ -52,7 +52,8 @@ import {
   type UsIndexPort,
 } from './us-index.port.js';
 import { exchangeCalendarDateForScope } from './session-clock.js';
-import type { TradingCalendarPort } from './trading-calendar.port.js';
+import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
+import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 import {
   classifyIvpDivergence,
   computeIvPercentile,
@@ -700,6 +701,11 @@ const NULL_EARNINGS_CALENDAR: EarningsCalendarPort = {
 // NULL_OPTION_SNAPSHOT 的效果同向 —— 让不触及本维度的既有 IT 零改动通过。
 // 🚨 **刻意 fail-closed**：不写成「回落到日历日」那种宽松默认, 那等于把 #181 的缺陷
 // 当作默认行为留在测试路径里。生产经 MarketdataModule DI 注真 adapter。
+//
+// ⚠️ #187 起它还是**尾部第 34 位**的默认值 (`underlying_iv_daily` 同样要定归属)。那条路上
+// 「最近一个已收盘交易日」查的是 `prisma.tradingDay` —— 即**注进来的那个 prisma**, 于是测试
+// 无需给第 34 位传值, 只要在 prisma 替身上声明日历事实即可 (`classify` 恒 `unknown` 只影响
+// `mode` / `oi_as_of`, 而本维度两者都不用)。
 const NULL_TRADING_CALENDAR: TradingCalendarPort = {
   classify: async () => 'unknown',
   lastClosedSession: async () => null,
@@ -719,6 +725,14 @@ export class DimensionExecutorRegistry {
 
   /** key → executor 注册表 (019 T004, switch 退役)。Map 形态允许 IT 注册测试维度 (SC-S05)。 */
   private readonly executors: Map<DimensionKey, DimensionExecutorFn>;
+
+  /**
+   * 快照归属判据的取数入口 (#187) —— 目前唯一消费方是 {@link syncUnderlyingIvDaily}。
+   *
+   * 🚨 它与 `SyncOptionSnapshotUseCase` 内那一份是**同一个类**, 不是同构的第二份: 判据本体
+   * 恒在 `snapshot-session-attribution.rules.ts` 的纯函数里, 这里只是把日历事实查给它。
+   */
+  private readonly attribution: SnapshotSessionAttributionLookup;
 
   constructor(
     private readonly syncUniverse: SyncUniverseUseCase,
@@ -812,7 +826,19 @@ export class DimensionExecutorRegistry {
       NULL_EARNINGS_CALENDAR,
       prisma,
     ),
+    // #187 交易日历读端口 (尾部第 33 位 + null-object 默认, 同 039-047 尾部先例)。
+    //
+    // 🚨 **为什么是端口而不是一个组装好的 lookup**: 判据的另外两个事实 (最近一个已收盘交易日 /
+    // 它的上一个交易日) 查的是 `prisma.tradingDay`, 也就是**第 7 位注进来的那个 prisma** ——
+    // 让 registry 自己拼 lookup, 测试便只需在既有的 prisma 替身上声明日历事实, **不必为了盖
+    // 到本参数而补 33 个位置实参**。那正是本构造器「60+ 处按位置传参」形态下唯一不加摩擦的口子。
+    //
+    // 🚫 默认值 MUST NOT 写成「回落到日历日」: 那等于把 #181 的缺陷当默认行为留在测试路径里
+    // (`NULL_TRADING_CALENDAR` 上方那条同源禁令)。生产经 MarketdataModule DI 注真 adapter。
+    @Inject(TRADING_CALENDAR_PORT)
+    tradingCalendar: TradingCalendarPort = NULL_TRADING_CALENDAR,
   ) {
+    this.attribution = new SnapshotSessionAttributionLookup(prisma, tradingCalendar);
     this.executors = new Map(
       Object.entries(this.buildExecutors()) as [DimensionKey, DimensionExecutorFn][],
     );
@@ -2913,23 +2939,34 @@ export class DimensionExecutorRegistry {
    * 区间** —— 它回答的永远是「现在」。故本方法无 mode 分支、无 from/to、无 pending 游标。
    * (backfill 模式下的历史序列走另一条路径 —— `his_volatility` 分页回填, T009。)
    *
-   * ## 业务日期 = A′, 且**刻意不取 `input.asOf`** (FR-028)
+   * ## 归属日走判据层, **既不取 `input.asOf`、也不取日历日** (FR-028 + #181/#187)
    *
-   * vendor 不随快照下发日期 ⇒ 这一行归哪个交易日只能由**市场时钟**定, 取
-   * `exchangeCalendarDateForScope(dim.marketScope, input.now)` (us ⇒ America/New_York)。不取 `input.asOf`
-   * 有两个各自独立的理由:
-   *   ① `input.asOf` 是**入队时刻**算的, 而这一行归哪个交易日要按**执行时刻**的市场时钟定
-   *      —— 队列积压 / 重试跨过收盘或午夜时两条钟会分叉 (ADR-0066: event time ≠ processing
-   *      time)。⚠️ 063 Phase 1 前这里还有第三条理由「CLI 的 asOf 兜底是上海日」, 那个形态
-   *      已随两条 CLI 改逐维度求值而消失, 别再引用。
-   *   ② 运维显式 `--as-of <过去某天>` 更糟: 会把**今天的**快照写进过去那天的行, 直接污染
-   *      历史。区间型维度不受此影响 (vendor 按行下发日期), 故不动它们。
+   * vendor 不随快照下发日期 ⇒ 这一行归哪个交易日只能由**执行时刻相对该市场 session 的位置**
+   * 定, 判据与它的完整理由在 `snapshot-session-attribution.rules.ts`。
+   *
+   * 两条被排除的取值, 理由各自独立:
+   *   ① `input.asOf` 是**入队时刻**算的, 而归属要按**执行时刻**定 —— 队列积压 / 重试跨过收盘
+   *      或午夜时两条钟会分叉 (ADR-0066: event time ≠ processing time)。运维显式
+   *      `--as-of <过去某天>` 更糟: 会把**今天的**快照写进过去那天的行。区间型维度不受此影响
+   *      (vendor 按行下发日期), 故不动它们。⚠️ 063 Phase 1 前这里还有第三条理由「CLI 的 asOf
+   *      兜底是上海日」, 那个形态已随两条 CLI 改逐维度求值而消失, 别再引用。
+   *   ② 🚨 **日历日 (`exchangeCalendarDateForScope`) 同样是错的** —— 它 00:00 就翻页, 与「这一
+   *      场收没收盘」无关。本方法在 #187 之前正是这么写的, 与 #181 逐字同形: 2026-08-25 01:30
+   *      prod 那次长链积压把执行时刻挤过午夜, 3 行 IV 被标进一个**还没开盘**的日子 (已人工重标)。
+   *
+   * ## 🚨 盘中 MUST 拒绝, 不是「标成上一场」—— 这一格与归属日是**一起**改的
+   *
+   * 只把归属日换成「最近一个已收盘 session」而不接盘中闸, 会比改前**更糟**: 盘中触发时
+   * `overview` 返的是活 IV, 落库 upsert 会拿它**覆盖上一场已收盘**的那一行 (改前只是写脏
+   * 当天那行, 当晚常规轮再覆盖回来)。两件事缺一格就等于没做。
    *
    * ## 幂等 = upsert on 唯一键 (FR-029)
    *
    * `(instrument_id, date)` 唯一键即幂等语义载体; 同日重跑覆盖同一行, 不产生重复。
+   * 📌 也正是这个 upsert 让本维度的严重性**低于** `option_daily_snapshot` (那边是
+   * `createMany(skipDuplicates)` ⇒ 标错不可逆), 但「自愈」只是代价小, 不是判据可以错。
    *
-   * 复杂度 O(标的数) 次 upsert + ⌈标的数 / batchSize⌉ 次 vendor 调用。
+   * 复杂度 O(标的数) 次 upsert + ⌈标的数 / batchSize⌉ 次 vendor 调用 + 3 次日历点查。
    */
   private async syncUnderlyingIvDaily(
     instruments: WorkingInstrument[],
@@ -2939,15 +2976,50 @@ export class DimensionExecutorRegistry {
   ): Promise<void> {
     // backfill = 完全不同的取数形态 (his_volatility 区间分页 → underlying_iv_history), 早退
     // 分流同 syncFundamentals 先例。两条路径共用维度行但不共用端点。
+    // 🚨 早退**必须在归属判据之前**: 回填走的是 vendor 按行下发日期的区间接口, 归属根本不由
+    // 执行时刻定 —— 把它也拉进判据会让「盘中不采」误伤整条历史回填。
     if (input.mode === 'backfill') {
       await this.backfillUnderlyingIvHistory(instruments, dim, stats, input);
       return;
     }
-    const date = toDateOnly(exchangeCalendarDateForScope(dim.marketScope, input.now));
-    const idBySymbol = symbolIndex(instruments);
-    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行」的一轮报 0 而非
-    // null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
+    // #138: 本维度有写路径 ⇒ 起手声明一次, 让「工作集为空 / vendor 零行 / 判据说不采」的一轮
+    // 报 0 而非 null —— 「跑了、一行没写」正是本列要抓的形态, 与「没上报」必须可分辨。
     addWritten(stats, 0);
+
+    // 🚨 单市场 scope 是本维度族的**前提** (同 `SyncOptionSnapshotUseCase.resolveAttribution`):
+    // 盘中闸问的是「**这个市场**的这一场收了没」, 混 scope 没有单一答案。fail-closed 抛而不是
+    // 挑第一个 —— 挑一个会让另一个市场的行静默标错, 且不报错。
+    if (dim.marketScope.length !== 1) {
+      throw new Error(
+        `[underlying-iv] 归属判据要求单市场 scope, 收到 ${JSON.stringify(dim.marketScope)} ` +
+          `(混 scope 请拆成各自的维度)`,
+      );
+    }
+    const attribution = await this.attribution.resolve(dim.marketScope[0], input.now);
+    if (attribution.decision === 'skip') {
+      // **不是失败**: 此刻 `overview` 返的是活 IV, 落成任何 session 的收盘 IV 都是脏数据。
+      // 计 skipped 让「跑了但没采」与「采了零行」可分辨 (同 written 三态的判据)。
+      stats.skipped += instruments.length;
+      this.logger.warn(
+        `[underlying-iv] 该场进行中, 本轮不采 (端点此刻返盘中态): ${dim.marketScope.join('/')}`,
+      );
+      return;
+    }
+    if (attribution.decision === 'abandon') {
+      // ERROR 级 = 需人工介入 (补交易日历), 与快照维度的 `calendar_missing` 同档。
+      // 🚫 不退回日历日: 那正是 #187 修掉的东西, 且这一档**可重拉** (次日重跑 / his_volatility
+      //    回填都能补回本日 IV), 放弃一轮的代价远小于写一批标错日子的行。
+      stats.skipped += instruments.length;
+      this.logger.error(
+        `[underlying-iv] 交易日历查不到 ${dim.marketScope.join('/')} 上一个已收盘交易日 ⇒ ` +
+          `判不出归属, 放弃本轮 (MUST NOT 猜日子: 猜错就是一批 date 标错的行)`,
+      );
+      return;
+    }
+    // 🚨 归属日**原样**取自判据, 别在这里重算任何一格 —— 重算就是第二处判据。
+    // (`spec.mode` / `oiAsOf` 是期权快照那条路的字段, 本维度只有 `date` 一列, 不消费它们。)
+    const date = toDateOnly(attribution.spec.sessionDate);
+    const idBySymbol = symbolIndex(instruments);
 
     for (const chunk of chunked(instruments, dim.batchSize)) {
       const symbols = chunk.map((i) => `${i.market}:${i.code}`);
