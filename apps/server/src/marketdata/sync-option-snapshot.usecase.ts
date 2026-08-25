@@ -139,8 +139,9 @@ function previousWeekday(date: string): string {
 }
 
 /**
- * 合约表投影: id 建 FK, code 做批次键, 类型/行权价喂硬门; 后三列 (T024a) 只喂异常监控 ——
- * root/is_standard 判 ③「新非标 root」, expiry_date 判 ② 的 DTE 豁免线。
+ * 合约表投影: id 建 FK, code 做批次键, 类型/行权价/is_standard 喂硬门 (#186: 非标合约的内在
+ * 价值算不出 ⇒ 门 ④ 跳过); 另两列 (T024a) 喂异常监控 —— root 配 is_standard 判 ③「新非标
+ * root」, expiry_date 判 ② 的 DTE 豁免线。
  *
  * 🚨 三列一律取**库内合约行**而非 vendor 快照行: 落库归属的是前者, 让告警面与入库面对同一条
  * 腿的判断同源 (同 `toGuardRow` 的口径)。
@@ -437,6 +438,7 @@ export class SyncOptionSnapshotUseCase {
       contractCode: row.code,
       optionSide: contract.optionType as OptionSide,
       strikePrice: contract.strikePrice,
+      isStandard: contract.isStandard,
       bid: row.bid,
       ask: row.ask,
       delta: row.delta,

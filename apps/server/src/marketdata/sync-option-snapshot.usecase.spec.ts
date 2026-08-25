@@ -489,6 +489,44 @@ describe('SyncOptionSnapshotUseCase', () => {
       expect(h.queries[0].underlyingSymbol).toBe('us:PEP');
       expect(persistedRows(h.createMany)[0].underlyingSpot).toBe('148.21');
     });
+
+    it('🚨 非标合约的 ask 低于「用普通行权价算出的内在价值」→ 照常入库 (#186, FR-033)', async () => {
+      // 2026-08-24 夜实拒 238 行的形态: 调整后合约交割的不是 100 股标的 ⇒ 那个「内在价值」
+      // 不是它的。**这条钉的是通路**: `toGuardRow` 一旦不把 is_standard 递下去 (或写死 true),
+      // 硬门就只能按标准合约判, 而 rules 层的单测全绿 —— 缺口正好落在两层之间。
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const ADJUSTED = 'US.VICI1260918P30000';
+      const h = makeHarness({
+        contracts: {
+          '2': [
+            contractRow(ADJUSTED, {
+              strikePrice: new Prisma.Decimal('30'),
+              root: 'VICI1',
+              isStandard: false,
+            }),
+          ],
+        },
+        // PUT K=30 / spot 9.00 ⇒ 普通公式的内在价值 21.00 (下界 20.95), 而 ask 只有 3.60。
+        rowsFor: (q) => [
+          quoteRow(q.contractCodes[0], { underlyingCode: 'US.VICI', bid: '3.50', ask: '3.60' }),
+          underlyingRow('US.VICI', '9.00'),
+        ],
+      });
+      const stats = emptyStats();
+
+      await h.useCase.run([VICI], DIM, stats, makeInput());
+
+      // 🚨 先取证再 restore, 再断言 —— 断言失败时 `mockRestore()` 就跑不到了, 留着的那个
+      // mock 会把**后面**的用例一起带红 (本条的定向变异实验里当场撞到过)。
+      const errors = errSpy.mock.calls.map((c) => String(c[0]));
+      warnSpy.mockRestore();
+      errSpy.mockRestore();
+
+      expect(errors).toEqual([]);
+      expect(persistedRows(h.createMany)).toHaveLength(1);
+      expect(stats.failedTargets).toEqual([]);
+    });
   });
 
   describe('🚨 批量上限切在调用方 (shim > 400 codes 直接 400)', () => {

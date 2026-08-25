@@ -127,6 +127,44 @@ describe('detectOptionAnomalies —— ① greeks 缺失只在虚值区抬 (FR-0
   });
 });
 
+describe('detectOptionAnomalies —— 非标合约判不出实值/虚值 (#186, 与落库硬门同源)', () => {
+  /** 调整后合约 (`CHTR1`): 交割物不是 100 股标的 ⇒ K 与 S 的大小关系不决定实值/虚值。 */
+  const adjustedPut = (overrides: Partial<OptionAnomalyRow> = {}) =>
+    otmPut({
+      contractCode: 'US.CHTR1260918P17500',
+      root: 'CHTR1',
+      isStandard: false,
+      strikePrice: '17.5',
+      ...overrides,
+    });
+
+  /** greeks 整块缺失 (深实值腿的形态, 也正是非标腿被误判成虚值时会被冤枉的那一组)。 */
+  const NO_GREEKS = { iv: null, delta: null, gamma: null, vega: null, theta: null } as const;
+
+  it('🚨 非标腿缺 greeks → 计「不可分类」而非虚值缺失, 不抬 WARN', () => {
+    // 非标 root 本身会另抬 ③ new_nonstandard_root, 预置进已知名单以隔离本条判定。
+    const report = run([adjustedPut(NO_GREEKS)], NOW, ['CHTR1']);
+    expect(report.findings).toEqual([]);
+    expect(report.metrics).toMatchObject({
+      greeksSubjects: 0,
+      greeksUnavailable: 0,
+      greeksUnclassified: 1,
+    });
+  });
+
+  it('🚨 对照：同一行标成标准合约即进虚值判定面并告警 —— 退出判定面来自 is_standard', () => {
+    const standard = run([otmPut(), adjustedPut({ ...NO_GREEKS, isStandard: true })], NOW, [
+      'CHTR1',
+    ]);
+    expect(standard.findings.map((f) => f.code)).toEqual(['otm_greeks_unavailable']);
+    expect(standard.metrics).toMatchObject({ greeksSubjects: 2, greeksUnavailable: 1 });
+
+    const nonStandard = run([otmPut(), adjustedPut(NO_GREEKS)], NOW, ['CHTR1']);
+    expect(nonStandard.findings).toEqual([]);
+    expect(nonStandard.metrics).toMatchObject({ greeksSubjects: 1, greeksUnclassified: 1 });
+  });
+});
+
 describe('detectOptionAnomalies —— ② IV 离群结合 DTE (FR-048)', () => {
   /** 600% 的 IV, 到期日由用例给。 */
   const wideIvPut = (expiryDate: string, contractCode = 'US.PEP260808P130000') =>

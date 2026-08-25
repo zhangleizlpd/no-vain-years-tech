@@ -32,6 +32,23 @@ import { Prisma } from '../generated/prisma/client.js';
  * 价值 ⇒ 门 ④ 不成立而非判违规。**把「算不出」判成「违规」= 拿缺失冒充证据**, 与本仓
  * 「不可算是显式态」纪律一致。
  *
+ * ## 非标 (调整后) 合约的内在价值**算不出** ⇒ 门 ④ 跳过 (#186, FR-033)
+ *
+ * 调整后合约 (并购 / 分拆 / 特别股息后重构, root 带 `1` 后缀如 `CHTR1`) 交割的不是 100 股标的,
+ * 而是「整股 + 零碎股现金找零 + 特别现金分配」的混合物 ⇒ 拿普通 `strikePrice` 与
+ * `underlyingSpot` 代进 `max(0, S − K)` 得到的**不是那张合约的内在价值**。2026-08-24 夜实拒
+ * 238 行, root 分布 **100%** 落在带 `1` 后缀的调整后合约上 (`CHTR1` 93 / `APTV1` 70 /
+ * `CMCS1` 46 / `LEN1` 29); 非标合约快照覆盖率 **70.5% vs 标准合约 97.1%**, 且每晚复发。
+ *
+ * ⇒ 与上一节同一条纪律: 缺的不是 `underlying_spot` 而是「一张合约到底交割多少股」, 把
+ * 「算不出」判成「违规」同样是拿缺失冒充证据。非标合约 MUST 照常全采落库 (FR-033), 排除只
+ * 发生在选约层 (FR-008)。
+ *
+ * 🚫 **MUST NOT 改成「拿 vendor 的合约乘数重算内在价值」** —— FR-028 明令「MUST NOT 存合约
+ * 乘数、MUST NOT 做乘数感知计算」: 那个混合物本就不是一个乘数能表达的。
+ * 🚫 **MUST NOT 改成「放宽容差」** —— 容差要拦的是**数量级错误** (spot/strike 错配、合约映射
+ * 串行), 放宽会让那类真错误一起漏过。
+ *
  * 金融数值一律 `Prisma.Decimal` (Decimal.js, 零新 dep): 门 ③ 与门 ④ 都卡在**恰好等于**边界上
  * (|Δ| 恰好 1 / ask 恰好 = 内在价值 − 容差), 浮点减法会让边界归属随输入随机漂移;
  * 且 DB 侧本就是 `Decimal(16,8)` / `Decimal(18,4)`, 直传零转换 (与「禁 Float」一致)。
@@ -98,6 +115,11 @@ export interface OptionSnapshotGuardRow {
   contractCode: string;
   optionSide: OptionSide;
   strikePrice: Decimalish;
+  /**
+   * 库内 `option_contract.is_standard`。**只喂门 ④** —— 见文件头「非标合约的内在价值算不出」。
+   * 🚫 MUST NOT 拿它豁免其余三条门: 那三条只用行内自带的数, 与交割物是什么无关。
+   */
+  isStandard: boolean;
   /** vendor 未下发 ⇒ `null`, 对应的门跳过 (缺失不是违规)。 */
   bid: Decimalish | null;
   ask: Decimalish | null;
@@ -127,6 +149,10 @@ export interface OptionSnapshotVerdict {
  *
  * 导出供 `option-anomaly.rules.ts` (T024) 判实值/虚值复用: 告警面与入库面对同一条腿的
  * 「是不是实值」必须同源, 各写一份必 drift。
+ *
+ * 🚨 **只对标准合约成立** —— 非标合约交割的不是 100 股标的, 这个公式对它没有意义。两个消费方
+ * (门 ④ 与 `moneynessOf`) 都在调用**之前**用 `is_standard` 挡掉 (#186), 本函数不自带那道判断:
+ * 它拿不到 `is_standard`, 而多加一个入参会让「同源」变成「两处各判一次」。
  */
 export function intrinsicValue(
   side: OptionSide,
@@ -177,7 +203,8 @@ export function checkOptionSnapshotRow(row: OptionSnapshotGuardRow): OptionSnaps
   }
 
   // ④ 无套利下界 —— 🚨 用 `ask` 不用 `bid` (FR-044, 见文件头 706 行实证)。
-  if (ask !== null && spot !== null) {
+  // 🚨 非标合约整条跳过 (#186): 交割物不是 100 股标的 ⇒ 内在价值**算不出**, 不是「违规」。
+  if (ask !== null && spot !== null && row.isStandard) {
     const intrinsic = intrinsicValue(row.optionSide, D(row.strikePrice), spot);
     const floor = intrinsic.minus(INTRINSIC_VALUE_TOLERANCE);
     if (ask.lessThan(floor)) {

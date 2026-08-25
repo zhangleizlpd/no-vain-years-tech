@@ -101,7 +101,8 @@ export interface OptionAnomalyFinding {
 
 /**
  * 监控指标。🚨 **实值区的 greeks 缺失不在这里的任何一个数里** —— 见文件头 ①。
- * `greeksUnclassified` 是显式的「不可算」态（缺 spot ⇒ 判不出实值/虚值），MUST NOT 并进另两个数。
+ * `greeksUnclassified` 是显式的「不可算」态（缺 spot、或非标合约 ⇒ 判不出实值/虚值），
+ * MUST NOT 并进另两个数。
  */
 export interface OptionAnomalyMetrics {
   /** 本批行数（上下文，不参与判定）。 */
@@ -110,7 +111,7 @@ export interface OptionAnomalyMetrics {
   greeksSubjects: number;
   /** 其中 greeks 不可用的行数。 */
   greeksUnavailable: number;
-  /** 缺 `underlyingSpot` ⇒ 无法分类实值/虚值的行数。 */
+  /** 判不出实值/虚值的行数：缺 `underlyingSpot`，或**非标合约**（#186）。 */
   greeksUnclassified: number;
   /** 参与 IV 离群判定的行数（IV 缺失或 ≤ 0 的行不算）。 */
   ivEvaluated: number;
@@ -126,6 +127,7 @@ export interface OptionAnomalyRow {
   contractCode: string;
   optionSide: OptionSide;
   root: string;
+  /** 库内 `option_contract.is_standard`。判 ③「新非标 root」；且非标 ⇒ 实值/虚值判不出（#186）。 */
   isStandard: boolean;
   /** `YYYY-MM-DD` 或 `@db.Date` 读出的 UTC 午夜 `Date`；带时间的绝对时刻会被 `daysToExpiry` 拒。 */
   expiryDate: Date | string;
@@ -178,8 +180,15 @@ function greeksUsable(row: OptionAnomalyRow): boolean {
 /**
  * 实值 / 虚值（含平值）/ 不可分类。**与落库硬门共用 `intrinsicValue`** —— 两处各写一份
  * `K > S` 必 drift，而 drift 的形态恰好是「告警面与入库面对同一条腿的判断不一致」。O(1)。
+ *
+ * 🚨 **非标（调整后）合约判不出**（#186）：交割物不是 100 股标的 ⇒ K 与 S 的大小关系不决定
+ * 实值/虚值。这与落库硬门在非标合约上跳过门 ④ 是**同一条依据** —— 只改一面，drift 的形态
+ * 就正好是上一段警告的那件事：入库面说「这条腿的内在价值算不出」而告警面说「它是虚值」。
+ * ⇒ 归入「不可分类」这个**显式态**（计 `greeksUnclassified`），MUST NOT 塞进任一侧：塞进
+ * 虚值区就会给那批腿的固有 greeks 缺失刷 WARN，正是 FR-047 要防的那种长期噪音。
  */
 function moneynessOf(row: OptionAnomalyRow): 'itm' | 'otm' | null {
+  if (!row.isStandard) return null;
   if (row.underlyingSpot === null) return null;
   const intrinsic = intrinsicValue(row.optionSide, D(row.strikePrice), D(row.underlyingSpot));
   return intrinsic.greaterThan(ZERO) ? 'itm' : 'otm';
