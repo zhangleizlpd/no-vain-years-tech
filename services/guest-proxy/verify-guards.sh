@@ -61,44 +61,53 @@ for p in /his-vol /universe /trading-days /earnings-calendar /definitely-not-a-r
   check "$p 不可见" 404 "$(code "${AUTH[@]}" "$BASE$p?code=US.PEP&codes=US.PEP&market=US")"
 done
 
-echo "== 闸 3 市场白名单（只放美股）=="
-check "HK.00700 被拒"      400 "$(code "${AUTH[@]}" "$BASE/kline?code=HK.00700")"
+echo "== 闸 3 市场白名单（放美股 + 港股，A 股仍拒）=="
+# 🚨 **本组只验「拒」这个方向，负控制一律用 A 股。** 2026-08-26 放行港股之后，原先那批拿
+#    `HK.` 当反例的断言若只是删掉，闸 3 就没有负控制了 —— 所以是**换靶**不是删。
+#    「港股确实放行了」那半边验不在这里：nginx 拒和 shim 拒**都是 400**、状态码分不开，
+#    只能按响应体文案判 ⇒ 见下面「上游可达性」与「闸 10」两段。
 check "SH.600519 被拒"     400 "$(code "${AUTH[@]}" "$BASE/kline?code=SH.600519")"
 check "缺 code 被拒"       400 "$(code "${AUTH[@]}" "$BASE/kline")"
 check "US 前缀伪造被拒"    400 "$(code "${AUTH[@]}" "$BASE/kline?code=XUS.PEP")"
+check "HK 前缀伪造被拒"    400 "$(code "${AUTH[@]}" "$BASE/kline?code=XHK.00700")"
 # 重复参数不构成绕过：nginx 的 $arg_code 与 Flask 的 args.get 都取**第一个**。
 # 这条正是闸 3 成立的前提，改动前必须复核 —— 所以它是断言不是注释。
-check "重复 code（首个为 HK）被拒" 400 "$(code "${AUTH[@]}" "$BASE/kline?code=HK.00700&code=US.PEP")"
+# ⚠️ 首个必须取一个**仍被拒**的市场，否则这条恒绿、不再测「取第一个」。
+check "重复 code（首个为 SH）被拒" 400 "$(code "${AUTH[@]}" "$BASE/kline?code=SH.600519&code=US.PEP")"
 
 echo "== 闸 3 市场白名单 · 期权面（单数 code 两条 + 复数 codes 四条）=="
 # 单数 code 的两个端点：与 /kline 同形态，但**必须各自断言** —— 闸是逐 location 写的，
 # 漏写一个 location 的形态是「那一条恒放行」，而其余全绿看不出来。
-check "option-expirations HK 被拒" 400 "$(code "${AUTH[@]}" "$BASE/option-expirations?code=HK.00700")"
+check "option-expirations SH 被拒" 400 "$(code "${AUTH[@]}" "$BASE/option-expirations?code=SH.600519")"
 check "option-chain SH 被拒"       400 "$(code "${AUTH[@]}" "$BASE/option-chain?code=SH.600519")"
 
 # 复数 codes：`$arg_code`（单数）在这个端点恒为空 ⇒ 单数写法对它**完全不生效**。
-check "snapshot 多值含 HK 被拒"    400 "$(code "${AUTH[@]}" "$BASE/option-snapshot?codes=US.PEP,HK.00700")"
+# 🔎 顺带验到「混市场只要有一段越界就整发拒」—— `US.PEP` 那一段本身是合法的。
+check "snapshot 多值含 SH 被拒"    400 "$(code "${AUTH[@]}" "$BASE/option-snapshot?codes=US.PEP,SH.600519")"
 check "snapshot 缺 codes 被拒"     400 "$(code "${AUTH[@]}" "$BASE/option-snapshot")"
 
 # 🚨 **本组最重要的一条。** nginx 的 $arg_* 不做 URL 解码 ⇒ `%2C` 在这里不是逗号，
-#    整串因此「不含分隔符」，`^US\.` 会匹配通过并放行；而 Flask 侧会解码成
-#    `US.PEP,HK.00700` 并按逗号切开 —— 港股就这么进去了，且日志里像一次合法请求。
+#    整串因此「不含分隔符」，`^(US|HK)\.` 会匹配通过并放行；而 Flask 侧会解码成
+#    `US.PEP,SH.600519` 并按逗号切开 —— A 股就这么进去了，且日志里像一次合法请求。
 #    挡住它的是字符集白名单那一步（`%` 越界）。**这条红了说明那一步被删了或被放宽了。**
-check "snapshot %2C 编码绕过被拒"  400 "$(code "${AUTH[@]}" "$BASE/option-snapshot?codes=US.PEP%2CHK.00700")"
+# 🚨 **靶子必须是仍被拒的市场。** 这里原先用 `HK.00700`，2026-08-26 港股放行后它已经合法 ——
+#    留着的话「绕过成功」与「被闸拒掉」都是 400，这条断言就恒绿了。
+check "snapshot %2C 编码绕过被拒"  400 "$(code "${AUTH[@]}" "$BASE/option-snapshot?codes=US.PEP%2CSH.600519")"
 
 # 满批 400 个 code ⇒ query string ≈ 8.8 KB，**超过 nginx 默认 large_client_header_buffers
 # 的单个 8k 缓冲**（官方：请求行放不进一个缓冲就返 414）。不加 `4 16k` 的形态是
 # 「小批正常、满批恒 414」，且请求根本到不了 shim、上游日志查不到痕迹。
-# 🔎 **故意把最后一个 code 设成港股**：这样期望值是闸 3 的 400 而不是上游的 200 ——
+# 🔎 **故意把最后一个 code 设成 A 股**：这样期望值是闸 3 的 400 而不是上游的 200 ——
 #    既验到了缓冲够大（够大才解析得出 codes、才轮得到闸 3），又不打上游一发。
-big_codes="$(printf 'US.PEP250815P%08d,' $(seq 1 399))HK.00700"
+# ⚠️ 2026-08-26 前这里末位是 `HK.00700`；港股放行后它会真打上游 ⇒ 必须换成仍被拒的市场。
+big_codes="$(printf 'US.PEP250815P%08d,' $(seq 1 399))SH.600519"
 check "满批 400 codes 不撞 414"    400 "$(code "${AUTH[@]}" "$BASE/option-snapshot?codes=$big_codes")"
 
 # 🚨 /overview 的两步 codes 闸是从 /option-snapshot **抄**过来的（nginx 没有跨 location
 #    复用 if 的干净写法，且本文件里单数版闸同样是三份）。抄本必然有漂移风险 ⇒ **这两条
 #    断言就是那份复制的安全阀**：只验 /option-snapshot 不验 /overview 等于只验了一半。
-check "overview 多值含 HK 被拒"    400 "$(code "${AUTH[@]}" "$BASE/overview?codes=US.PEP,HK.00700")"
-check "overview %2C 编码绕过被拒"  400 "$(code "${AUTH[@]}" "$BASE/overview?codes=US.PEP%2CHK.00700")"
+check "overview 多值含 SH 被拒"    400 "$(code "${AUTH[@]}" "$BASE/overview?codes=US.PEP,SH.600519")"
+check "overview %2C 编码绕过被拒"  400 "$(code "${AUTH[@]}" "$BASE/overview?codes=US.PEP%2CSH.600519")"
 
 echo "== 闸 4 上游 token 不外泄 =="
 body="$(curl -s -m 20 "${AUTH[@]}" "$BASE/healthz")"
@@ -365,6 +374,71 @@ else
   done <<<"$cap_eps"
 fi
 
+echo "== 闸 10 行情面市场口径（目录声明 ≡ 通道实际放行）=="
+# 🚨 **本闸是 `deploy/install.sh` 那道 Gate A 的运行时另一半，补的是它的结构性盲区。**
+#    Gate A 断言「目录列的端点集 ≡ nginx 的 location 集」—— 那只看得见**加端点**。而
+#    「放宽已有端点的市场闸」既不加 location、也不加目录行 ⇒ **nginx 开了一个市场而目录
+#    仍写着没开，两侧都不会红**。那个漂移的后果恰好是薄壳化要消灭的那一个：访客侧模型
+#    照目录回「做不到」，而它的失败形态是**照记忆编数据**，不是老实说不知道。
+#
+# 🚨 **必须两个方向都验，只验一半等于没验**：
+#    · 目录声明了 → 通道上真的放行（漏了这半 = 目录吹牛）
+#    · 目录没声明 → 通道上真的被拒（漏了这半 = 悄悄开了没人知道，正是上面那个漂移）
+#    ⇒ 判据是对一个**固定候选市场集**逐个探，每个都必须落到它该在的那一边。
+#    ⚠️ 候选集之外的新市场本闸看不见 —— 这是已知边界，不是遗漏：加市场时**必须**同时
+#      往 `market_probe_code` 里补一个真实 code，否则声明侧那条会直接红（见下面 fail-closed）。
+#
+# 判据取「响应体文案」而非状态码 —— 市场闸拒和 shim 参数校验拒**都是 400**：
+#   · 过得了市场闸 ⇒ 请求到 shim ⇒ shim 因窗口超宽回 `expiry window too wide`
+#   · 过不了市场闸 ⇒ nginx 直接 return ⇒ 文案是 `must start with`
+# 超宽窗校验在 shim 侧、**触碰 OpenD 之前** ⇒ 本闸整段零 vendor 调用、零配额。
+
+# 候选市场集：本通道可能被开到的市场。每个都要有一个**真实存在**的 code。
+MARKET_CANDIDATES="US HK SH SZ"
+market_probe_code() {
+  case "$1" in
+    US) echo "US.PEP"     ;;
+    HK) echo "HK.00700"   ;;
+    SH) echo "SH.600519"  ;;
+    SZ) echo "SZ.000001"  ;;
+    *)  echo ""           ;;
+  esac
+}
+market_gate_body() { curl -s -m 100 "${AUTH[@]}" "$BASE/option-chain?code=$1&start=2026-01-01&end=2026-12-31"; }
+
+declared="$(grep -oE '^<!-- quote-markets: [A-Z,]+ -->' <<<"$cap_body" \
+  | sed -E 's/^<!-- quote-markets: //; s/ -->$//' | tr ',' ' ')"
+
+# 🚨 反空转闸，与闸 7 的 `cap_eps` 那条同一手法：声明行没了 / 改名了 / 正则漂了，
+#    下面每一条都会退化成「按未声明处理」而整段照样有绿有红，看不出闸本身坏了。
+if [[ -z "${declared// /}" ]]; then
+  printf '  ❌ %-46s 目录里没有解析得出的 quote-markets 声明行\n' "市场声明解析（本闸自己坏了）"; fail=$((fail+1))
+else
+  printf '  ✅ %-46s %s\n' "市场声明解析" "$declared"
+  pass=$((pass+1))
+  for m in $MARKET_CANDIDATES; do
+    pc="$(market_probe_code "$m")"
+    # fail-closed：候选集里没配探针 code 的市场直接红，不静默跳过。
+    if [[ -z "$pc" ]]; then
+      printf '  ❌ %-46s 候选集里有它但没配探针 code\n' "$m 有探针可验"; fail=$((fail+1)); continue
+    fi
+    body="$(market_gate_body "$pc")"
+    if [[ " $declared " == *" $m "* ]]; then
+      if grep -q 'expiry window too wide' <<<"$body"; then
+        printf '  ✅ %-46s\n' "目录声明的 $m 通道真放行"; pass=$((pass+1))
+      else
+        printf '  ❌ %-46s 请求没到 shim —— 市场闸把它拒了\n' "目录声明的 $m 通道真放行"; fail=$((fail+1))
+      fi
+    else
+      if grep -q 'must start with' <<<"$body"; then
+        printf '  ✅ %-46s\n' "目录没声明的 $m 通道真拒掉"; pass=$((pass+1))
+      else
+        printf '  ❌ %-46s 它过闸了 —— 通道开了一个目录没声明的市场\n' "目录没声明的 $m 通道真拒掉"; fail=$((fail+1))
+      fi
+    fi
+  done
+fi
+
 if [[ " $* " == *" --from-guest "* ]]; then
   # ── 闸 0：接口级包过滤（只有从访客机跑才有意义）─────────────────────────
   # WireGuard 把包直接交给 77 的 IP 栈，且**安全组管不到隧道内流量** ⇒ 若 wg2 上
@@ -418,6 +492,23 @@ reached "/option-snapshot 确实转到了 shim" 'too many codes' \
 ov_codes="$(printf 'US.A%05d,' $(seq 1 501) | sed 's/,$//')"
 reached "/overview 确实转到了 shim" 'too many codes' \
         "$BASE/overview?codes=$ov_codes"
+
+# ── 港股放行的正例（2026-08-26）—— **零 vendor 调用、零配额** ────────────────
+# 🚨 港股这半边**不能用状态码验**：nginx 拒（市场闸）和 shim 拒（参数校验）都是 400。
+#    ⇒ 沿用上面那套判据：构造一个过得了 nginx、但会被 shim 自己拒的请求，再断言那句
+#    错误文案**只可能出自 shim** —— 收到它就证明市场闸放行了港股。
+#
+# 🚫 **不要在这里加真调用的港股正例。** `/kline` 的额度按**证券**计、7 天滚动，真打一发
+#    港股就占掉对方一个槽位；期权那几条则会从 `guest_option_meta`（20 次/分）再抽一发，
+#    而本套件已经从那个桶里取了 4 发、连跑两遍就会撞自己的脚印（见下面正例那段）。
+#    端到端真通不通由 prod 侧每天的港股采集回答，不该在这里再花一次钱。
+reached "/option-chain 放行港股" 'expiry window too wide' \
+        "$BASE/option-chain?code=HK.00700&start=2026-01-01&end=2026-12-31"
+
+# `ktype` 在 shim 侧走 `_require_enum`，**校验发生在触碰 OpenD 之前**（app.py 里它在
+# `opend.session()` 上方）⇒ 这一发不进任何配额，也不会把 OpenD 唤醒。
+reached "/kline 放行港股" 'unsupported ktype' \
+        "$BASE/kline?code=HK.00700&ktype=NOT_A_KTYPE"
 
 echo "== 正例（会真打上游的两条）=="
 # OpenD 自 2026-08-04 (#868) 起**常驻**，正常路径首发就是 200（同日实测空闲 14343s 后

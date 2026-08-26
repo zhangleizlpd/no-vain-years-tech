@@ -1,5 +1,6 @@
 # 访客侧入口。两类上游、两套市场口径，别把其中一套当成全局规则：
-#   · 打港机 futu-shim 的行情面（K 线 + 期权链三条 + 标的级 /overview）—— **只放美股**
+#   · 打港机 futu-shim 的行情面（K 线 + 期权链三条 + 标的级 /overview）—— **美股 + 港股**
+#     （港股 2026-08-26 放行，此前只放美股；**A 股不在此面**，闸的负控制就是它）
 #   · 打本机 mono 的业务面（研报投递 / 锚两条 / 标的注册表两条）—— **A股 + 港股 + 美股**
 #     （锚两条按 059 只收 us/hk；判据各写各的，见各自 location）
 #
@@ -89,6 +90,13 @@ limit_req_zone $guest_name zone=guest_kline:1m rate=110r/m;
 #         不耗 attempts，所以后果是**慢**不是**失败**。
 #    ⇒ **上线后第一个交易日必须核对那轮 `SyncRun` 的墙钟**；持续贴着 15 分钟就把这个
 #      数调回去。别把「至今没红」当成余量。
+#
+#    ⚠️ **2026-08-26 放行港股后，这笔账两侧都变了，但方向相反 ——**
+#      · **访客侧天花板没动**：zone 按 `$guest_name` 计、与市场无关，港股只是让这 10 次
+#        能花在哪里变宽了。给港股单开一个 zone 才会真的抬高天花板到 20 次/分 = 整个
+#        vendor 池，**所以刻意不开**。
+#      · **prod 侧的分母变大了**：066 之后 prod 自己也在采港股链，而上面那笔「120-170 次
+#        调用」算的是 12 只美股锚。上面那条核对纪律因此**更要紧**，不是更宽松。
 limit_req_zone $guest_name zone=guest_option_chain:1m rate=10r/m;
 
 # ③ `expiration_date` 与 `snapshot` 官方均 60 次/30s = 120 次/分，与 ① 同档，故同额度。
@@ -257,16 +265,22 @@ server {
 
     location = /kline {
         # ── 闸 3：市场白名单 ────────────────────────────────────────────────
-        # 🔴 只放 US。理由是**最小权限**，不是行情权风险 —— V10（08-04 港股早市实测）
-        #    已证伪「OpenD 抢走手机行情权」，那条旧理由已作废。访客的用途就是美股，
-        #    一个只放行实际需要的市场的白名单本身就比「怕降级所以挡」更耐久。
-        #    **要给访客开港股是一个独立决策**，改这条正则即可，别当成 V10 的连带后果。
+        # ✅ 放 US + HK。**那个「独立决策」已于 2026-08-26 执行**（此前只放 US）——
+        #    行情权风险早被 V10（08-04 港股早市实测）证伪：OpenD 不抢手机行情权。真正
+        #    拦着的一直是**最小权限**，而 066 之后港股期权已进 prod 采集、访客也确有港股
+        #    用途 ⇒ 白名单跟着实际需要走。**A 股仍然不放**，它是本闸的负控制。
+        #
+        # 🔴 **本条与期权那四条的成本形状不同，别一起推理。** 期权面唯一的闸是那些
+        #    **按访客计**的限频 zone，与市场无关 ⇒ 放行港股**不抬高访客天花板一分**。
+        #    `/kline` 背后另有富途**按证券计、7 天滚动**的配额，**限频 zone 管不到它**
+        #    ⇒ 放行港股确实把「访客能烧掉配额槽的票池」扩大了一倍。这笔账是明知并接受
+        #    的（2026-08-26 owner 定），代价写在能力目录「不要批量扫标的」那条硬约束里。
         #
         # nginx 的 $arg_code 与 Flask 的 request.args.get('code') 在重复参数时
-        # **都取第一个**,所以 ?code=US.X&code=HK.Y 不构成绕过 —— 两侧看到的是
+        # **都取第一个**,所以 ?code=US.X&code=SH.Y 不构成绕过 —— 两侧看到的是
         # 同一个值。这一点是本闸成立的前提,改动前先复核。
-        if ($arg_code !~ "^US\.") {
-            return 400 '{"error":"bad_request","detail":"code must start with US. (guest access is US-only)"}';
+        if ($arg_code !~ "^(US|HK)\.") {
+            return 400 '{"error":"bad_request","detail":"code must start with US. or HK. (guest access covers US + HK)"}';
         }
 
         limit_req zone=guest_kline burst=15 nodelay;
@@ -280,12 +294,13 @@ server {
     #
     # 🔴 `/earnings-calendar` **刻意不开**（不是遗漏）：它的参数是 `market=US`、
     #    **连 code 都没有** ⇒ 闸 3 在结构上够不到它；而且它是市场级全量接口，返回的是
-    #    全市场财报日历，与「美股期权」这个用途无关。要开它得先给它设计一道自己的闸，
-    #    那是一个独立决策。
+    #    全市场财报日历，与「查期权」这个用途无关。要开它得先给它设计一道自己的闸，
+    #    那是一个独立决策 —— 2026-08-26 放行港股走的是「改已有闸的正则」，够不到它，
+    #    所以它**至今仍是 404**，别以为开了港股就顺带开了。
     location = /option-expirations {
         # 单 code 端点，与 /kline 同形态。
-        if ($arg_code !~ "^US\.") {
-            return 400 '{"error":"bad_request","detail":"code must start with US. (guest access is US-only)"}';
+        if ($arg_code !~ "^(US|HK)\.") {
+            return 400 '{"error":"bad_request","detail":"code must start with US. or HK. (guest access covers US + HK)"}';
         }
 
         limit_req zone=guest_option_meta burst=5 nodelay;
@@ -294,8 +309,8 @@ server {
     }
 
     location = /option-chain {
-        if ($arg_code !~ "^US\.") {
-            return 400 '{"error":"bad_request","detail":"code must start with US. (guest access is US-only)"}';
+        if ($arg_code !~ "^(US|HK)\.") {
+            return 400 '{"error":"bad_request","detail":"code must start with US. or HK. (guest access covers US + HK)"}';
         }
 
         # 🔴 上游最紧的池（算账见顶部 zone ②）。burst 给 3 而不是 5，是让「一只票的
@@ -313,19 +328,23 @@ server {
         # 闸看着在、实际恒放行。
         #
         # 🚨 **步骤 ① 存在的唯一理由是百分号编码绕过，不是洁癖。**
-        #    nginx 的 `$arg_*` **不做 URL 解码**。`codes=US.PEP%2CHK.700` 在这里是一个
-        #    **不含字面逗号**的串 ⇒ 只写步骤 ② 的话，它会被当成单个 code、`^US\.` 匹配
-        #    通过、**放行**；而 Flask 侧 `request.args` 会把它解码成 `US.PEP,HK.700`，
-        #    shim 按逗号切开 —— 港股就这么进去了，且日志里看着像一次合法请求。
+        #    nginx 的 `$arg_*` **不做 URL 解码**。`codes=US.PEP%2CSH.600519` 在这里是一个
+        #    **不含字面逗号**的串 ⇒ 只写步骤 ② 的话，它会被当成单个 code、`^(US|HK)\.`
+        #    匹配通过、**放行**；而 Flask 侧 `request.args` 会把它解码成 `US.PEP,SH.600519`，
+        #    shim 按逗号切开 —— A 股就这么进去了，且日志里看着像一次合法请求。
         #    字符集白名单先把 `%` 拒掉，步骤 ② 才成立。**两步是一个整体，别拆。**
+        #    ⚠️ 举例用 A 股不是随手挑的：2026-08-26 放行港股后，拿港股举例等于在解释
+        #       一件不再成立的事。**这个例子必须始终用一个仍被拒的市场。**
         if ($arg_codes ~ "[^A-Za-z0-9.,\-]") {
             return 400 '{"error":"bad_request","detail":"codes contains an illegal character (letters, digits, dot, hyphen, comma only; percent-encoding is rejected)"}';
         }
 
-        # 步骤 ②：**每一段**都必须是 `US.`，不是「开头是 US. 就行」。
-        # `^US\.` 那种写法会放过 `US.PEP,HK.700`。
-        if ($arg_codes !~ "^US\.[^,]+(,US\.[^,]+)*$") {
-            return 400 '{"error":"bad_request","detail":"every code must start with US. (guest access is US-only)"}';
+        # 步骤 ②：**每一段**都必须是 `US.` 或 `HK.`，不是「开头对了就行」。
+        # 少了尾部那个 `$`、或写成 `^(US|HK)\.` 一个前缀匹配，就会放过 `US.PEP,SH.600519`。
+        # 🔎 混市场（`US.PEP,HK.00700`）是**刻意允许**的：上游一发同批两市已实证
+        #    （仓内 fixture hk-underlying-iv-overview-2026-08-22.json 就是这么拉的）。
+        if ($arg_codes !~ "^(US|HK)\.[^,]+(,(US|HK)\.[^,]+)*$") {
+            return 400 '{"error":"bad_request","detail":"every code must start with US. or HK. (guest access covers US + HK)"}';
         }
 
         limit_req zone=guest_option_meta burst=5 nodelay;
@@ -338,15 +357,15 @@ server {
         # 对做卖方的人,IV 分位比链本身更常用,而这条一次调用就覆盖整个自选池。
         #
         # ⚠️ **两步 codes 闸是从 /option-snapshot 抄过来的,两份必须同步改。**
-        #    没抽成 map 是刻意的:本文件里单数版的 `if ($arg_code !~ "^US\.")` 同样在三个
+        #    没抽成 map 是刻意的:本文件里单数版的 `if ($arg_code !~ "^(US|HK)\.")` 同样在三个
         #    location 里各写一份,与既有风格一致;而且两步各自的诊断文案对访客侧的模型有用,
         #    合并成一条会丢掉「别做百分号编码」这个具体指引。
         #    **复制的安全阀是 verify-guards.sh 给本端点单配了反例断言** —— 抄漏或改漂了会红。
         if ($arg_codes ~ "[^A-Za-z0-9.,\-]") {
             return 400 '{"error":"bad_request","detail":"codes contains an illegal character (letters, digits, dot, hyphen, comma only; percent-encoding is rejected)"}';
         }
-        if ($arg_codes !~ "^US\.[^,]+(,US\.[^,]+)*$") {
-            return 400 '{"error":"bad_request","detail":"every code must start with US. (guest access is US-only)"}';
+        if ($arg_codes !~ "^(US|HK)\.[^,]+(,(US|HK)\.[^,]+)*$") {
+            return 400 '{"error":"bad_request","detail":"every code must start with US. or HK. (guest access covers US + HK)"}';
         }
 
         # 与 /option-expirations · /option-snapshot 共用 meta 池：三者的上游官方限额同为
@@ -475,9 +494,10 @@ server {
         limit_except POST { deny all; }
 
         # ── 闸 B：市场白名单 ────────────────────────────────────────────────
-        # 🔴 **与上面行情端点的 US-only 刻意不同**，别当成不一致改齐：行情那条只放 US 是
-        #    「访客的用途就是美股」的最小权限；而研报库按 PRD 覆盖 A股/港股/美股三个市场，
-        #    收窄到 US 会让这条通道对一半标的不可用。两处的判据本来就不是同一个。
+        # 🔴 **与上面行情端点的市场口径刻意不同**，别当成不一致改齐：行情面放 US + HK 是
+        #    「只放访客实际用得到的市场」的最小权限；而研报库按 PRD 覆盖 A股/港股/美股三个
+        #    市场，收窄会让这条通道对一部分标的不可用。两处的判据本来就不是同一个 ——
+        #    2026-08-26 行情面加了港股之后**仍然不是**（行情面没有 A 股）。
         #
         # ⚠️ `$arg_*` **不解码** ⇒ 投递方若把冒号写成 `%3A`，这里撞不上、直接 400。
         #    方向是 fail-closed（安全），但错误文案必须写明「不要编码」，否则 agent 会

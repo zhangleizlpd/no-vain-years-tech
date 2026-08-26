@@ -19,19 +19,28 @@
 #   3. 桩上游只认那三条真路径，其余一律 404 ⇒ `proxy_pass` 路径写错（少个 s 之类）
 #      会被抓到，而不是像纯 nginx return 的 4xx 那样全绿。
 #
-# ⇒ 因此**闸 8 之外的失败是 harness 的必然结果，不是回归**（没有真 shim / 真 app /
-#   真能力目录）。本脚本只对闸 8 下判定，其余失败逐条列出但不计入退出码。
+#   4. **能力目录按真身挂进容器**（`capabilities/` 整个目录，与 77 上同一份）——
+#      闸 7 与闸 10 都要读它，不挂的话这两道在本地恒红，而恒红与「真的坏了」分不开。
+#      ⚠️ 挂的是 `$stage` 里的**副本**：变异 4 要改它，绝不能改到仓里那份。
+#
+# ⇒ 因此**闸 8 / 闸 10 之外的失败是 harness 的必然结果，不是回归**（没有真 shim / 真 app）。
+#   本脚本只对这两道下判定，其余失败逐条列出但不计入退出码。
 #
 # ── 跑法 ────────────────────────────────────────────────────────────────────
-#   ./verify-guards.local-harness.sh                  # 判定：闸 8 两种角色必须全绿
+#   ./verify-guards.local-harness.sh                  # 判定：闸 8 两种角色 + 闸 10 必须全绿
 #   ./verify-guards.local-harness.sh --include-429    # 连限频那三条一起（慢）
 #   MUTATE=1 ./verify-guards.local-harness.sh         # 自证：删掉授权闸，闸 8 必须真红
 #   MUTATE=2 ./verify-guards.local-harness.sh         # 自证：直写口注错 bearer，必须真红
+#   MUTATE=3 ./verify-guards.local-harness.sh         # 自证：市场闸收回只放美股，闸 10 必须真红
+#   MUTATE=4 ./verify-guards.local-harness.sh         # 自证：目录声明改回只有美股，闸 10 必须真红
 #
-# 🚨 **`MUTATE` 是本脚本的自测，不是调试开关**。闸 8 是那条需求唯一的护栏，而「唯一的
-#    护栏其实是恒真探针」正是本目录 2026-08-03 那次教训的原形。改动闸 8 或本 harness 后
-#    两个变异都要跑一遍：它们覆盖**互补**的两半 —— 变异 1 只让 other 侧红（本人本来就
-#    过得了授权闸），变异 2 只让 owner 侧红（他人在授权闸就被 403、根本到不了 token 那步）。
+# 🚨 **`MUTATE` 是本脚本的自测，不是调试开关**。闸 8 与闸 10 各是一条需求唯一的护栏，而
+#    「唯一的护栏其实是恒真探针」正是本目录 2026-08-03 那次教训的原形。改动其中任一道或
+#    本 harness 后，对应的两个变异都要跑一遍 —— **每一对都覆盖互补的两半**：
+#      · 闸 8：变异 1 只让 other 侧红（本人本来就过得了授权闸），变异 2 只让 owner 侧红
+#        （他人在授权闸就被 403、根本到不了 token 那步）。
+#      · 闸 10：变异 3 打「目录声明了但通道没放行」，变异 4 打「通道放行了但目录没声明」。
+#        两个方向必须各有一个变异 —— 只验一个方向的闸，另一半就是恒真的。
 #
 # 退出码：0 判定通过 · 1 判定失败 · 2 前置不满足 · 9 变异没改动文件（结果无效）
 set -uo pipefail
@@ -63,6 +72,9 @@ trap cleanup EXIT
 docker rm -f "$CNAME" >/dev/null 2>&1
 
 cp -r "$SRC/nginx" "$stage/nginx"
+# 能力目录同样进 stage（而不是直接挂 $SRC）—— 闸 10 的变异要改它，绝不能改到仓里那份。
+cp -r "$SRC/capabilities" "$stage/capabilities"
+cat_md="$stage/capabilities/capabilities.md"
 tpl="$stage/nginx/futu-shim-guest.conf.template"
 perl -pi -e 's|listen 10\.\d+\.\d+\.\d+:\d+;|listen 0.0.0.0:8811;|' "$tpl"
 
@@ -107,23 +119,47 @@ server {
     listen 127.0.0.1:3002;
     default_type application/json;
     location = /healthz { return 200 '{"ok":true,"stub":"shim"}'; }
+
+    # 🚨 桩**不复刻 shim 的参数校验，只回它那几句文案**。闸 3 / 闸 10 与 reached() 那批断言
+    #    问的都是同一件事：**请求过得了市场闸、到得了上游吗** —— 而不是「上游校验对不对」。
+    #    过不了市场闸的请求根本到不了这里（nginx 直接 return）⇒ 无条件回文案不会让那些断言
+    #    失真。没有这几条，闸 10 在本地会因为「桩说不出 shim 的话」而恒红，那是桩的形状问题、
+    #    不是配置回归。
+    location = /option-chain    { return 400 '{"error":"bad_request","detail":"expiry window too wide (stub)"}'; }
+    location = /option-snapshot { return 400 '{"error":"bad_request","detail":"too many codes (stub)"}'; }
+    # ⚠️ /overview 与 /kline **必须分流**：本套件对这两条既有「超限应被上游拒」的探针，
+    #    也有「正常一发应当 200」的正例，一刀切会把正例打红。判据取各自那条规则本身，
+    #    不取探针的字面串 —— 探针改写法时不该跟着改桩。
+    location = /overview {
+        if ($arg_codes ~ "(,[^,]+){500,}") { return 400 '{"error":"bad_request","detail":"too many codes (stub)"}'; }
+        return 200 '{"stub":"shim"}';
+    }
+    location = /kline {
+        if ($arg_ktype !~ "^(K_DAY|K_WEEK|K_MON|)$") { return 400 '{"error":"bad_request","detail":"unsupported ktype (stub)"}'; }
+        return 200 '{"stub":"shim"}';
+    }
     location / { return 200 '{"stub":"shim"}'; }
 }
 STUB
 
 # ── 变异（本脚本的自测，见文件头）──────────────────────────────────────────
-before="$(hash_of "$tpl")"
+before_tpl="$(hash_of "$tpl")"; before_cat="$(hash_of "$cat_md")"
 case "$MUTATE" in
   0) ;;
   1) perl -0pi -e 's/\n        if \(\$anchor_write_allowed = "0"\) \{\n            return 403[^\n]*\n        \}\n//' "$tpl"
      echo "🧬 变异 1：删掉 /anchor-import 的授权闸 —— 期望 other 侧闸 8 真红" ;;
   2) perl -0pi -e 's/(location = \/anchor-import \{.*?)proxy_set_header Authorization "Bearer \$\{GUEST_UPLOAD_TOKEN\}";/${1}proxy_set_header Authorization "Bearer \${FUTU_SHIM_TOKEN}";/s' "$tpl"
      echo "🧬 变异 2：/anchor-import 改注入 FUTU_SHIM_TOKEN —— 期望 owner 侧闸 8 真红" ;;
-  *) die "MUTATE 只支持 0 / 1 / 2" 2 ;;
+  3) perl -pi -e 's/\^\(US\|HK\)\\\./^US\\./g' "$tpl"
+     echo "🧬 变异 3：市场闸收回「只放美股」，目录不动 —— 期望闸 10 的「声明了→真放行」那半真红" ;;
+  4) perl -pi -e 's/^<!-- quote-markets: .*-->$/<!-- quote-markets: US -->/' "$cat_md"
+     echo "🧬 变异 4：目录声明改回只有美股，nginx 不动 —— 期望闸 10 的「没声明→真拒掉」那半真红" ;;
+  *) die "MUTATE 只支持 0 / 1 / 2 / 3 / 4" 2 ;;
 esac
 if [[ "$MUTATE" != "0" ]]; then
   # 🚨 没改成的变异会让结果全绿 —— 那是本 harness 能产出的最坏的假证据。
-  [[ "$(hash_of "$tpl")" != "$before" ]] || die "变异 $MUTATE 没有改动模板（正则与模板文本漂了）—— 结果无效" 9
+  [[ "$(hash_of "$tpl")$(hash_of "$cat_md")" != "$before_tpl$before_cat" ]] \
+    || die "变异 $MUTATE 没有改动任何文件（正则与正文漂了）—— 结果无效" 9
 fi
 
 # ── 假 env：由仓内模板派生，形状与 render-env.sh 的真产物一致 ────────────────
@@ -143,6 +179,7 @@ OTHER_TOKEN="$(sed -n 's/^GUEST2_TOKEN=//p' "$env_file" | head -1)"
 docker run -d --name "$CNAME" -p "$HOSTPORT:8811" \
   --env-file "$env_file" \
   -v "$stage/nginx:/etc/nginx/templates:ro" \
+  -v "$stage/capabilities:/etc/nvy-guest-capabilities:ro" \
   -v /dev/null:/etc/nginx/conf.d/default.conf:ro \
   "$IMAGE" >/dev/null || die "容器起不来（$HOSTPORT 被占？HOSTPORT=xxxxx 换一个）" 2
 
@@ -154,37 +191,50 @@ done
 docker ps --format '{{.Names}}' | grep -qx "$CNAME" \
   || { echo "容器日志："; docker logs "$CNAME" 2>&1 | tail -20; die "nginx 起来又退了（配置没过 nginx -t？）" 2; }
 
-# ── 跑两种角色，只对闸 8 下判定 ──────────────────────────────────────────────
-gate8() { awk '/^== 闸 8 /{f=1;next} /^== /{f=0} f' "$1"; }   # 闸 8 段（到下一个 == 为止）
+# ── 跑两种角色，对闸 8 与闸 10 下判定 ────────────────────────────────────────
+# 闸 10 也进判定，是因为它和闸 8 同属一类：**某条需求唯一的护栏**。闸 8 护「只有本人能
+# 直写锚」，闸 10 护「目录声明的行情市场 ≡ 通道实际放行」—— 后者漏了不会有任何别的东西红
+# （Gate A 只看端点集，看不见市场闸放宽），而症状是访客侧模型照旧目录回「做不到」。
+gate8()  { awk '/^== 闸 8 /{f=1;next}  /^== /{f=0} f' "$1"; }   # 闸 8 段（到下一个 == 为止）
+gate10() { awk '/^== 闸 10 /{f=1;next} /^== /{f=0} f' "$1"; }   # 闸 10 段，同上
 
-total_bad=0
+total_bad_8=0
+total_bad_10=0
 for role in other owner; do
   tok="$OTHER_TOKEN"; [[ "$role" == owner ]] && tok="$OWNER_TOKEN"
   log="$stage/out-$role.log"
   env BASE="$BASE" GUEST_TOKEN="$tok" ANCHOR_ROLE="$role" \
     bash "$SRC/verify-guards.sh" "$@" > "$log" 2>&1
 
-  ok="$(gate8 "$log" | grep -c '✅')"
-  bad="$(gate8 "$log" | grep -c '❌')"
-  total_bad=$((total_bad + bad))
-  printf '\n── ANCHOR_ROLE=%-6s 闸 8：%s 绿 / %s 红 ──\n' "$role" "$ok" "$bad"
-  gate8 "$log" | grep -E '✅|❌' | sed 's/^/  /'
+  ok8="$(gate8 "$log" | grep -c '✅')";   bad8="$(gate8 "$log" | grep -c '❌')"
+  ok10="$(gate10 "$log" | grep -c '✅')"; bad10="$(gate10 "$log" | grep -c '❌')"
+  total_bad_8=$((total_bad_8 + bad8))
+  total_bad_10=$((total_bad_10 + bad10))
+  printf '\n── ANCHOR_ROLE=%-6s 闸 8：%s 绿 / %s 红 ｜ 闸 10：%s 绿 / %s 红 ──\n' \
+    "$role" "$ok8" "$bad8" "$ok10" "$bad10"
+  { gate8 "$log"; gate10 "$log"; } | grep -E '✅|❌' | sed 's/^/  /'
 done
 
 # 闸 8 之外的失败：harness 结构上盖不到的那些，列出来但不计入判定。
 echo
-echo "── 闸 8 之外的失败（harness 没有真 shim / 真 app / 真能力目录，属必然）──"
+echo "── 闸 8 / 闸 10 之外的失败（harness 没有真 shim / 真 app，属必然）──"
 for role in other owner; do
-  awk '/^== 闸 8 /{f=1;next} /^== /{f=0} !f' "$stage/out-$role.log" \
+  awk '/^== 闸 8 /{f=1;next} /^== 闸 10 /{f=1;next} /^== /{f=0} !f' "$stage/out-$role.log" \
     | grep '❌' | sed "s/^/  [$role]/"
 done | sort -u
 
 echo
-if [[ "$MUTATE" == "0" ]]; then
-  [[ "$total_bad" == "0" ]] || die "闸 8 有 $total_bad 条红 —— 通道层那道唯一的授权闸出问题了" 1
-  echo "✅ 闸 8 两种角色全绿"
-else
-  [[ "$total_bad" != "0" ]] \
-    || die "变异 $MUTATE 之后闸 8 仍然全绿 —— 它是恒真探针，验不出这个改法" 1
-  echo "✅ 变异 $MUTATE 被闸 8 抓到（$total_bad 条红）—— 它不是恒真探针"
-fi
+case "$MUTATE" in
+  0)
+    [[ "$total_bad_8" == "0" ]]  || die "闸 8 有 $total_bad_8 条红 —— 通道层那道唯一的授权闸出问题了" 1
+    [[ "$total_bad_10" == "0" ]] || die "闸 10 有 $total_bad_10 条红 —— 目录声明的行情市场与通道实际放行的对不上" 1
+    echo "✅ 闸 8 两种角色全绿；闸 10 全绿" ;;
+  1|2)
+    [[ "$total_bad_8" != "0" ]] \
+      || die "变异 $MUTATE 之后闸 8 仍然全绿 —— 它是恒真探针，验不出这个改法" 1
+    echo "✅ 变异 $MUTATE 被闸 8 抓到（$total_bad_8 条红）—— 它不是恒真探针" ;;
+  3|4)
+    [[ "$total_bad_10" != "0" ]] \
+      || die "变异 $MUTATE 之后闸 10 仍然全绿 —— 它是恒真探针，验不出这个改法" 1
+    echo "✅ 变异 $MUTATE 被闸 10 抓到（$total_bad_10 条红）—— 它不是恒真探针" ;;
+esac
