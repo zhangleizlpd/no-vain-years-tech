@@ -192,9 +192,12 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       expect(delayed).toHaveLength(1);
       expect(delayed[0]?.name).toBe('sync:eod_bar');
       expect(delayed[0]?.opts.delay).toBe(CFG.requeueDelayMs);
-      // payload 原样保留 (triggeredBy / 配额参数不漂移)。
-      expect(delayed[0]?.data.triggeredBy).toBe('cli');
+      // payload 原样保留 —— **配额参数不漂移**。
       expect(delayed[0]?.data.maxEodInstruments).toBe(1);
+      // 🚨 唯一的例外是 `triggeredBy` (#202): 顺延跑出来的是**同一轮的重入**, 而它会开出第二行
+      // sync_run。继续继承原触发源 (这里是 'cli') 就等于让「连续 N 轮」的计数器把一轮数成两轮
+      // —— 原触发源已由第一行记下, 第二行要如实说自己是顺延来的。
+      expect(delayed[0]?.data.triggeredBy).toBe('requeue');
 
       // 第一窗已落 600519 none 1 行 (020 T008 单口径)。
       const barsAfterFirst = await prisma.dailyBar.count();
