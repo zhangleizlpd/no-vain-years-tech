@@ -123,11 +123,34 @@ updated_at: '2026-08-24'
 
   ⇒ T15 改为**在 prod 上跑**（见下），本条随之不再需要。**MUST NOT** 因为「打通了更方便」把它捡回来 —— 方便不是重开那条口子的理由。
 
-- [ ] T15 [E2E] **真港股锚跑通整链**（`SC-001`, `SC-003`, `SC-006`, plan §Gate 0.1）：**前置 = `T06` / `T07` 已部署到 prod**（**不是**隧道 —— 见 T14 的撤销说明）。用 **prod** 的 `/anchor-import` 建一只真实港股锚（该 command 原生支持 `hk:`，nginx 那道闸也是 `^(us|hk):`），随后逐条查 **prod 的库**。
+- [ ] T15 [E2E] **真港股锚跑通整链**（`SC-001`, `SC-003`, plan §Gate 0.1）：**前置 = `T06` / `T07` 已部署到 prod**（**不是**隧道 —— 见 T14 的撤销说明）。用 **prod** 的 `/anchor-import` 建一只真实港股锚（该 command 原生支持 `hk:`，nginx 那道闸也是 `^(us|hk):`），随后逐条查 **prod 的库**。
 
   🚨 **为什么必须在 prod 跑，而不是本机**：prod 走 wg1 直连 shim + 生产 env；本机即使打通隧道，跑的也是**另一条配置路径**。本 task 的全部价值在「真数据端到端」—— 验在一条**生产上不存在的路**上，绿了也不构成生产链路的证据。这条与 plan `Gate 0.1` 的定位一致：该 gate 在 plan 阶段是「已规划」而非「已完成」，最终由本 task 落证据。
 
   ⚠️ **这是 prod 写操作**：建锚会往生产库写真行。动手前把标的与参数**呈给维护者确认**，不自主执行。
+
+  - 📌 **2026-08-26 范围收窄 + 实验设计（prod 只读取证后写下，动手前）**
+
+    **`SC-006` 已拆出**，见 [#203](https://github.com/zhangleizlpd/no-vain-years-tech/issues/203) —— 它要的「universe 未收录的港股」**按需造不出来**：prod 实查港股 universe **2791** 只（主板 2483 + GEM 308）= 整个港交所，只能等一只新 IPO 还没被周一那轮 `universe` 采到时自然发生。现有三只港股锚建锚前**全都**已在 universe 里（日线 2488 / 2488 / 1658 行）⇒ 拿 `hk:09988` 冒充已验等于把没发生过的事当验过。**本 task 只收 `SC-001` + `SC-003`。**
+
+    **`SC-003` 现已可直接取证**：港股 universe 2791 只，而有期权合约的**只有 2 只**，正是 3 只锚里有挂牌期权的那 2 只（`hk:00700` 1110 张 + `hk:09988` 1118 张 = 2228，与夜间轮写入数逐字相符；`hk:00777` 无挂牌期权 ⇒ `no_option_chain`）；夜间轮 `ok=2 + skipped=1 = 3 = N`。加一只新锚可把它从「静态相符」升级成「N 变、覆盖跟着变」的判别式证据。
+
+    🚨 **执行时刻决定成败，判别窗口只有 30 分钟。** `oiRefreshedAtEod` 自 [#197](https://github.com/zhangleizlpd/no-vain-years-tech/pull/197) 起**已不是布尔表**而是按时刻判（`MARKET_OI_SETTLE_LOCAL_MINUTE.hk = 21:30`），四档窗口互不相同：
+
+    | 执行窗口（HKT，交易日） | `crossedIntoNextSession` | `oiRefreshedAtEod` | `source` | `oi_as_of` |
+    | --- | --- | --- | --- | --- |
+    | 09:30–16:10（含午休 + 收盘定稿缓冲 10 分钟） | — | — | **不写** | 结局 `intraday_skipped` |
+    | 16:10–21:29 | false | **false**（同日但未到定稿分钟） | `eod` | 前一交易日 |
+    | **21:30–23:59** | false | **true** | `eod` | **当日** |
+    | 次日 00:00–09:30 | **true** | true | `premarket_backfill` | 当日（`\|\|` 左边短路） |
+
+    ⇒ **只有 21:30–23:59 那一档能验到 T09 的分叉在新写入上生效** —— 其余三档要么不写、要么被 `crossedIntoNextSession` 短路。这正是 T09 那条 📌 里记的「生产证据不含新写入走分叉」的**唯一补法**，⇒ 本实验一次收两笔。
+
+    🚨 **再叠一层队列约束**：冷启动走 outbox（`optionsdesk.anchor-created` → `AnchorColdStartSubscriber` → `enqueueColdStart`），进的是与夜间维度**同一条并发为 1** 的 `marketdata-sync` 队列，而 **15 个维度全部挤在 22:00**（10:00–22:00 之间零触发）。22:00 之后建锚会被压在长链后面、很可能被推过午夜，落回短路档。⇒ **黄金窗口 = 交易日 21:30–21:59**，分叉已生效且队列空。
+
+    **预注册判据**（先写死，事后不许改口径）：`outcome = backfilled` · `target_session` = 当日 · `source = eod` · **`oi_as_of` = 当日**（若为前一交易日 ⇒ 分叉没生效，这是核心判别）· 合约数与快照行数相等且 > 0 · `SC-003` 覆盖标的数 3 → 4 且仍远小于 2791。⚠️ 若执行滑出窗口导致 `source = premarket_backfill`，本次**作废而非失败**，改日重跑。
+
+    ⚠️ **`v`（每股内在价值）MUST 由维护者提供** —— `/anchor-import` 明令「不要从你自己的知识里补任何数值，也不要从上下文里推断」。且这**不是一只测试锚**：它会真进锚表、进 L 层与仓位上限推导、并永久进入每晚采集工作集 ⇒ 选一只本来就要建锚的票，别为实验编一个 V。
 
   → verify: **逐条查库，不看日志** —— ① `optionsdesk.anchor` 有该行且 `market='hk'`；② `security.outbox_event` 有一条 `optionsdesk.anchor-created` 且已被 relay 消费；③ `marketdata.instrument` 有 `hk:<code>` 且 `needSync=true`；④ `marketdata.option_contract` 有该标的合约行、到期日阶梯**覆盖到远月不截断**；⑤ `marketdata.option_daily_snapshot` 有目标交易日的行，**`iv` 与五个 greeks 的非 null 率 ≥ 95%**（PoC 实测 132/132 = 100%；缺失行必须带 `greeks_complete=false` 而非丢行），`net_open_interest` **有值**；⑥ `marketdata.anchor_cold_start_run.outcome = 'backfilled'`（**不是** `market_not_enabled`、**不是** `backfill_incomplete`）；⑦ `marketdata.daily_bar` 有该标的目标交易日的行；⑧ 雷达港股页签渲染出该锚、`marketCounts` 的 hk 计数 +1。⚠️ **盯住 `backfill_incomplete`** —— 它专盖「跑完了但快照仍不在库」，是链 child 成功完成但零结果时唯一会显形的信号；看到 `backfilled` 也要顺手查第 ⑤ 条，两者不一致说明落库复判有洞。📌 **冷启动已不再分两相**（issue #159：链改直调采集本体，两相合一）—— 一次调用直达终局，**不必**再等第二相。若看到「结局已落但快照还没有」，那不是时序未完成，是真缺口。⚠️ 另跑一遍**无挂牌期权**的港股标的（如 `hk:00777`），断落 `no_option_chain` 且**无 ERROR 级告警**
 
