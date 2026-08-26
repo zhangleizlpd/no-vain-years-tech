@@ -60,7 +60,7 @@ describe('017 T008 dimension executor registry (per-dim SyncRun)', () => {
     const { stats } = await registry.execute(
       'universe',
       { mode: 'delta', asOf: AS_OF, now: NOW },
-      'job-universe-1',
+      { bullJobId: 'job-universe-1', triggeredBy: 'tick' },
     );
     expect(stats.failed).toBe(0);
     expect(await prisma.instrument.count()).toBeGreaterThan(0);
@@ -68,6 +68,10 @@ describe('017 T008 dimension executor registry (per-dim SyncRun)', () => {
     const runs = await prisma.syncRun.findMany({ where: { syncType: 'sync:universe' } });
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe('success');
+    // #202 来历两列走到真库 (migration + @db.Date 映射一起验): 触发源逐字来自调用方,
+    // as_of 恒取 `input.asOf` —— executor 不许有第二个业务日口径。
+    expect(runs[0]?.triggeredBy).toBe('tick');
+    expect(runs[0]?.asOf?.toISOString()).toBe(`${AS_OF}T00:00:00.000Z`);
     expect(runs[0]?.bullJobId).toBe('job-universe-1');
     // 🚨 finished_at 是**真实收尾时刻**, 不是 input.now (= job 起点)。这里曾断言
     // `toEqual(NOW)` —— 那正是缺陷本身: finished_at ≈ started_at ⇒ 一轮跑了多久永远
@@ -82,7 +86,7 @@ describe('017 T008 dimension executor registry (per-dim SyncRun)', () => {
     const { stats } = await registry.execute(
       'eod_bar',
       { mode: 'delta', asOf: AS_OF, now: NOW },
-      'job-eod-7',
+      { bullJobId: 'job-eod-7' },
     );
     expect(stats.ok).toBeGreaterThan(0);
     expect(await prisma.dailyBar.count()).toBeGreaterThan(0);
@@ -102,7 +106,11 @@ describe('017 T008 dimension executor registry (per-dim SyncRun)', () => {
     await prisma.syncDimension.delete({ where: { dimensionKey: 'eod_bar' } });
     try {
       await expect(
-        registry.execute('eod_bar', { mode: 'delta', asOf: AS_OF, now: NOW }, 'job-eod-fail'),
+        registry.execute(
+          'eod_bar',
+          { mode: 'delta', asOf: AS_OF, now: NOW },
+          { bullJobId: 'job-eod-fail' },
+        ),
       ).rejects.toThrow();
       const run = await prisma.syncRun.findFirst({ where: { syncType: 'sync:eod_bar' } });
       expect(run?.status).toBe('failed');

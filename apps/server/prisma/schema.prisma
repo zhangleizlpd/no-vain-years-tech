@@ -1361,6 +1361,25 @@ model SyncRun {
   status        String    @db.VarChar(16)
   // 017: per-dim 执行回链 BullMQ job id (worker 路径写入; 旧聚合行 NULL)。
   bullJobId     String?   @map("bull_job_id") @db.VarChar(64)
+  // #202: **这一行是谁触发的**。值域单一来源是 `DimensionTriggeredBy` (marketdata-sync.queue.ts),
+  // 无 DB 侧 enum/CHECK —— 同 `status` 的取舍, 加值零 migration。
+  //
+  // 🚨 它存在的理由是**「连续 N 轮」里的那个「轮」在这张表里此前不可判**: 触发源只活在 BullMQ
+  //   job payload 里, 而 job 按 count 淘汰 ⇒ 那份信息会消失, 不是「晚点再查」。实测后果:
+  //   `option_contract` 同一段零写 streak 按裸 run 计 17 轮 (15 轮是一天内的人工补数)、按 tick
+  //   轮计只有 2 轮 —— 任何按行计的阈值都会被一次补数风暴冲垮 (#146 Phase 2 / #199 共用此列)。
+  //
+  // 🚨 **nullable 且无默认值是刻意的**: 给 `DEFAULT 'tick'` 则任何漏传的新路径都会**冒充成
+  //   一轮按计划执行的 tick 轮**被计数器吃进去。NULL = 本行没有这个事实 (历史行 / 未接线路径)
+  //   ⇒ 判据侧**既不计一轮、也不打断 streak**;「不知道」就是不知道, 别替它猜。
+  triggeredBy   String?   @map("triggered_by") @db.VarChar(20)
+  // #202: **这一轮采的是哪一天** —— 该维度自己的业务日 (交易所口径, `resolveAsOfForDimension`
+  // 按 `AS_OF_BASIS_BY_DIMENSION` 逐维度推导), 就是 job payload 里那个 `asOf`。
+  //
+  // 🚨 **不是 `started_at` 的日期**: misfire `fire-now` 与队列积压都会让「跑的时刻」与「采的
+  //   那一天」分家 (跨时区日期语义 §3)。也正因如此, 配额顺延 (D5) 重入队跑出来的第二行与
+  //   「真的又跑了一轮」此前不可分辨 —— 同 `(sync_type, as_of)` 的多行 = 同一轮的重入。
+  asOf          DateTime? @map("as_of") @db.Date
 
   @@index([syncType, startedAt(sort: Desc)], map: "ix_sync_run_type_started")
   @@map("sync_run")

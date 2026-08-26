@@ -256,6 +256,9 @@ export class SyncTickDriver {
           `sync:${w.dimensionKey}`,
           `paused_until ${row.pausedUntil.toISOString()} 未到期 (维度暂停, 画像不参与判定)`,
           now,
+          // #202: 这一行也是 tick 开出来的 —— 「轮到它了、按设计什么都没做」与「压根没轮到」
+          // 是两件事, 只有把来历记下来, 判据侧才分得开 (skipped 行不计一轮也不打断 streak)。
+          { triggeredBy: 'tick', asOf: asOfByKey.get(w.dimensionKey) },
         );
         continue;
       }
@@ -271,6 +274,7 @@ export class SyncTickDriver {
             `sync:${w.dimensionKey}`,
             `event-calendar 日历未命中 (asOf=${asOf}, source=${row.calendarSource ?? 'NULL'})`,
             now,
+            { triggeredBy: 'tick', asOf },
           );
           continue;
         }

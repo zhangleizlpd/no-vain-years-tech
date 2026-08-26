@@ -67,6 +67,7 @@ import {
   deriveStatus,
   emptyStats,
   SyncRunRecorder,
+  type SyncRunOrigin,
   type SyncRunStats,
 } from './sync-run.recorder.js';
 import { SyncProfileUseCase } from './sync-profile.usecase.js';
@@ -1083,7 +1084,7 @@ export class DimensionExecutorRegistry {
   }
 
   /**
-   * 执行单维度: 自管 `sync:<dim>` SyncRun 行 (含 bullJobId 回链) + per-dim 降级告警;
+   * 执行单维度: 自管 `sync:<dim>` SyncRun 行 (含 bullJobId 回链 + #202 的来历两列) + per-dim 降级告警;
    * 顶层异常收 failed 后上抛 (worker attempts 重试语义源)。`budgetExhausted` 顺延信号
    * 由 worker 消费 (D5, deferral ≠ failure 不耗 attempts)。
    *
@@ -1099,10 +1100,12 @@ export class DimensionExecutorRegistry {
   async execute(
     key: DimensionKey,
     input: ExecutorInput,
-    bullJobId?: string,
+    origin: Omit<SyncRunOrigin, 'asOf'> = {},
   ): Promise<ExecutorResult> {
     const syncType = `sync:${key}`;
-    const runId = await this.recorder.start(syncType, bullJobId);
+    // 🚨 `asOf` 由本方法从 `input.asOf` 填, **不收调用方的第二份** —— 落库的业务日与采集本体
+    //   实际用的必须是同一个值, 开第二个口子就会漂 (#202; 同 anchor-driven-sync-gate 那条绊线)。
+    const runId = await this.recorder.start(syncType, { ...origin, asOf: input.asOf });
     const stats = emptyStats();
     try {
       const result = await this.runDimension(key, input);

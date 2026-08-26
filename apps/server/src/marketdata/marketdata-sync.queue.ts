@@ -57,10 +57,22 @@ export interface DimensionJobPayload {
    * 触发源审计: tick 自动 / cli 手动 / cascade 级联 / requeue 配额顺延 /
    * anchor-cold-start 锚首建冷启动 (060)。
    *
-   * ⚠️ **纯审计, 无人对它分支** —— 加值不改行为, 但别把它当开关用。
+   * ⚠️ **无人对它分支** —— 加值不改行为, 别把它当开关用。
+   * 🚨 但它**不再只是日志**: #202 起随 `SyncRun.triggered_by` 落库, 是「连续 N 轮」判据里
+   *   「哪些行算一轮」的唯一依据 (只有 `tick` 算)。⇒ **新增入队路径必须诚实地报自己是谁**,
+   *   随手填 `'tick'` 会让那一轮被计数器当成「按计划执行过了」。
    */
-  triggeredBy: 'tick' | 'cli' | 'cascade' | 'requeue' | 'anchor-cold-start';
+  triggeredBy: DimensionTriggeredBy;
 }
+
+/**
+ * 维度 job 的触发源值域 —— 同时是 `SyncRun.triggered_by` 的值域单一来源 (#202)。
+ *
+ * 🚨 `anchor-cold-start` **不产出 `sync_run` 行**: 冷启动是另一条 job 路由
+ * ({@link ANCHOR_COLD_START_JOB}), 直调采集本体 (#159 后两相合一), 全程不开 SyncRun 行。
+ * 它留在本值域里是因为**这是 job 的触发源值域**, 不是「库里见得到的值」的清单。
+ */
+export type DimensionTriggeredBy = 'tick' | 'cli' | 'cascade' | 'requeue' | 'anchor-cold-start';
 
 /** named job 形态: `sync:<dim>` (worker 路由键 + SyncRun.syncType 同形)。 */
 export function dimensionJobName(key: DimensionKey): string {

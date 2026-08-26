@@ -1,0 +1,38 @@
+-- #202 记录层: `sync_run` 加**这一行是谁触发的**(`triggered_by`) + **这一轮的业务日**(`as_of`)。
+-- 两列皆 nullable、无默认值、无约束变更 ⇒ expand-only, 零破坏性变更。
+--
+-- ## 它解锁的是哪个判据
+--
+-- #146 Phase 2 (连续 N 轮零写 ⇒ 🔴) 与 #199 (同一失败连续 N 轮 ⇒ 不再算瞬时) 共用一个原语:
+-- **「连续 N 轮」**。而「轮」在这张表里此前**不可判**:
+--   · 触发源只活在 BullMQ job payload 里 (`marketdata-sync.queue.ts` 的 `triggeredBy`),
+--     job 按 count 淘汰 ⇒ 那份信息不是「晚点再查」, 是**会消失**;
+--   · 业务日 (`asOf`) 压根没落库 ⇒ 配额顺延 (D5) 重入队产生的第二行, 与「真的又跑了一轮」
+--     长得一模一样。
+-- 后果有实测: `option_contract` 同一段零写 streak, 按裸 run 计 17 轮 (其中 15 轮是 08-23 一天
+-- 内的人工补数), 按 tick 轮计只有 2 轮 —— 任何按行计的阈值都会被一次补数风暴冲垮。
+--
+-- ## 🚨 为什么两列都 nullable 而不是给默认值
+--
+-- 同 `written` 那次的判据 (三态, 见该列注释): 给 `triggered_by` 一个 `DEFAULT 'tick'`, 则将来
+-- 任何新开 `sync_run` 行的路径只要漏传, 就会**冒充成一轮按计划执行的 tick 轮**并被计数器吃进
+-- 去 —— 那是「库里没有的即为假」换个地方再犯一遍, 且这次污染的是告警阈值本身。
+--   · NULL = 本行没有这个事实 (上线前的历史行 / 未接线的新路径) ⇒ 计数器**既不计一轮、也不
+--     打断 streak**, 「不知道」就是不知道;
+--   · 非 NULL = 这一行明确声明了自己是谁触发的。
+-- 既有行保持 NULL —— 它们确实没有这个事实, 回填任何值都是编造 (08-23 那 15 轮的归属今天只能
+-- 靠当事人记得, 正是本列要终结的东西)。
+--
+-- ## `as_of` 是谁的日期
+--
+-- **该维度自己的业务日** (交易所口径, 由 `sync-asof.rules.ts` 的 `resolveAsOfForDimension`
+-- 逐维度按 `AS_OF_BASIS_BY_DIMENSION` 推导), 与采集本体用的是同一个值 —— 它就是 job payload
+-- 里那个 `asOf`。⚠️ 不是宿主日、不是 UTC 日期、也不是 `started_at` 的日期:
+-- misfire `fire-now` 与队列积压都会让「跑的时刻」与「采的那一天」分家, 而分家到哪一天此前
+-- 事后完全查不出来 (跨时区日期语义 §3)。
+--
+-- migration_refs: docs/conventions/cross-timezone-date-semantics.md §3 (「今天」的归属)
+
+-- AlterTable
+ALTER TABLE "marketdata"."sync_run" ADD COLUMN     "triggered_by" VARCHAR(20),
+ADD COLUMN     "as_of" DATE;

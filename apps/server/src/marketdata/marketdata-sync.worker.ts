@@ -207,6 +207,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
       maxEodInstruments,
       markets,
       noSkipComplete,
+      triggeredBy,
     } = job.data;
     if (job.name !== dimensionJobName(dimensionKey)) {
       // 非法 payload (name/payload 漂移) → 直接 fail (不路由错维度)。
@@ -227,15 +228,24 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
         markets,
         noSkipComplete,
       },
-      job.id,
+      // #202: 来历两列的输入 —— 触发源逐字来自 payload, 别在这里兜底成 'tick'
+      // (漏传的路径要以 NULL 现形, 不是伪装成一轮按计划的执行)。
+      { bullJobId: job.id, triggeredBy },
     );
     if (result.budgetExhausted) {
-      // 配额顺延 (D5): standalone delayed job 重入队同 named job — 不进 flow、payload
-      // 原样 (triggeredBy/配额参数保留)、deferral ≠ failure 不耗本 job attempts。
-      await this.syncQueue.enqueueDimensionJob(job.data, {
-        retryMax: job.opts.attempts ?? 1,
-        delayMs: this.cfg.requeueDelayMs,
-      });
+      // 配额顺延 (D5): standalone delayed job 重入队同 named job — 不进 flow、配额参数保留、
+      // deferral ≠ failure 不耗本 job attempts。
+      //
+      // 🚨 **只有 `triggeredBy` 改写成 `'requeue'`** (#202): 顺延跑出来的是**同一轮的重入**,
+      //   而它会开出第二行 `sync_run`。继续继承 `'tick'` 就等于让「连续 N 轮」的计数器把一轮
+      //   数成两轮 —— 一次配额耗尽就能凭空吃掉一格阈值预算。
+      await this.syncQueue.enqueueDimensionJob(
+        { ...job.data, triggeredBy: 'requeue' },
+        {
+          retryMax: job.opts.attempts ?? 1,
+          delayMs: this.cfg.requeueDelayMs,
+        },
+      );
       this.logger.log(
         `sync:${dimensionKey} 配额耗尽 — 顺延 re-enqueue (delay=${this.cfg.requeueDelayMs}ms, skipped=${result.stats.skipped})`,
       );

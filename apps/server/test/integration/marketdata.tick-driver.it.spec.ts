@@ -462,6 +462,12 @@ describe('019 T014 tick freshness gate (paused + event-calendar 分流)', () => 
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe('skipped');
     expect(JSON.stringify(runs[0].failedTargets)).toContain('日历未命中');
+    // #202: tick 开出来的 skipped 行也带来历 ——「轮到它了、按设计什么都没做」与「压根没轮到」
+    // 是两件事。as_of 与原因串里那个 asOf **必须同一天** (同源, 分叉即红)。
+    expect(runs[0].triggeredBy).toBe('tick');
+    expect(JSON.stringify(runs[0].failedTargets)).toContain(
+      `asOf=${runs[0].asOf?.toISOString().slice(0, 10)}`,
+    );
     // nextFireAt 已在 claim 推进 (零额外动作)。
     const row = await prisma.syncDimension.findUnique({ where: { dimensionKey: 'financial' } });
     expect(row?.nextFireAt).toEqual(NEXT_FROM_NOW);
@@ -543,6 +549,9 @@ describe('019 T014 tick freshness gate (paused + event-calendar 分流)', () => 
     const skipped = await prisma.syncRun.findMany({ where: { status: 'skipped' } });
     expect(skipped.map((r) => r.syncType).sort()).toEqual(['sync:eod_bar', 'sync:profile']);
     expect(JSON.stringify(skipped[0].failedTargets)).toContain('paused_until');
+    // #202: 暂停期的 skipped 行同样是 tick 开的, 且带业务日 (维度暂停 ≠ 这一轮不存在)。
+    expect(skipped.every((r) => r.triggeredBy === 'tick')).toBe(true);
+    expect(skipped.every((r) => r.asOf !== null)).toBe(true);
     // paused 到期后: 置 nextFireAt due → 照常执行 (可恢复)。
     await prisma.syncDimension.update({
       where: { dimensionKey: 'eod_bar' },

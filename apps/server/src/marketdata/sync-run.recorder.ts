@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../security/prisma.service.js';
+import type { DimensionTriggeredBy } from './marketdata-sync.queue.js';
 
 /** 单次同步执行的派发统计 + 失败目标 (SyncRun 收尾写入)。 */
 export interface SyncRunStats {
@@ -71,6 +72,32 @@ export function emptyStats(): SyncRunStats {
 }
 
 /**
+ * 一行 `SyncRun` 的**来历** —— 谁触发的 / 采的哪一天 / 回链哪个 BullMQ job (#202 + 017)。
+ *
+ * 🚨 三个字段**全可缺省, 且缺省即 NULL, 不替调用方猜**。`triggered_by` 若给个 `'tick'` 兜底,
+ * 漏传的路径就会冒充成「这个维度按计划跑过的一轮」被 #146 Phase 2 / #199 的计数器吃进去 ——
+ * 判据的输入被污染了还全绿。判据侧的对偶约定: NULL 行**既不计一轮、也不打断 streak**。
+ */
+export interface SyncRunOrigin {
+  /** per-dim worker 路径回链 (017)。 */
+  bullJobId?: string;
+  /** 触发源。**只有 `'tick'` 算「按计划跑的一轮」**, 其余都是按需执行 (#202)。 */
+  triggeredBy?: DimensionTriggeredBy;
+  /** 本轮的业务日 `YYYY-MM-DD` —— 该维度自己的 `asOf` (交易所口径), 不是执行时刻的日期。 */
+  asOf?: string;
+}
+
+/**
+ * 业务日 `YYYY-MM-DD` → `@db.Date` 列要的 `Date`。
+ *
+ * 🚨 **显式补 `T00:00:00Z`**: 裸 `new Date('2026-08-26T00:00:00')` 按**本机**时区解析, 宿主
+ * 时区一换整列就漂一天; 而 `@db.Date` 读出来本就是 UTC 午夜 (跨时区日期语义 §3)。
+ */
+function businessDayToDate(asOf: string): Date {
+  return new Date(`${asOf}T00:00:00Z`);
+}
+
+/**
  * SyncRunRecorder (016 T004, FR-S17): SyncRun 行生命周期 — 开 (running) / 收
  * (success|partial|failed|skipped + 计数 + failedTargets + finishedAt)。贫血 prisma row
  * 写 marketdata.sync_run (R1 自有表)。每次同步执行落一行, 是审计 + DLQ-lite + 水位载体。
@@ -82,10 +109,19 @@ export function emptyStats(): SyncRunStats {
 export class SyncRunRecorder {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** 开一行 running SyncRun, 返 id (后续 finish 引用)。`bullJobId` = per-dim worker 路径回链 (017)。 */
-  async start(syncType: string, bullJobId?: string): Promise<bigint> {
+  /**
+   * 开一行 running SyncRun, 返 id (后续 finish 引用)。`origin` 见 {@link SyncRunOrigin} ——
+   * 缺省的字段一律留 NULL (**不猜**), 判据侧据此把这一行当「不知道来历」而非「按计划的一轮」。
+   */
+  async start(syncType: string, origin: SyncRunOrigin = {}): Promise<bigint> {
     const run = await this.prisma.syncRun.create({
-      data: { syncType, status: 'running', ...(bullJobId ? { bullJobId } : {}) },
+      data: {
+        syncType,
+        status: 'running',
+        ...(origin.bullJobId ? { bullJobId: origin.bullJobId } : {}),
+        ...(origin.triggeredBy ? { triggeredBy: origin.triggeredBy } : {}),
+        ...(origin.asOf ? { asOf: businessDayToDate(origin.asOf) } : {}),
+      },
       select: { id: true },
     });
     return run.id;
@@ -165,8 +201,8 @@ export class SyncRunRecorder {
   }
 
   /** 非交易日短路: 开一行 running 立即收为 skipped (零 vendor 调用, FR-S02)。 */
-  async recordSkipped(syncType: string, now: Date): Promise<bigint> {
-    const id = await this.start(syncType);
+  async recordSkipped(syncType: string, now: Date, origin: SyncRunOrigin = {}): Promise<bigint> {
+    const id = await this.start(syncType, origin);
     await this.finish(id, 'skipped', emptyStats(), now);
     return id;
   }
@@ -175,8 +211,13 @@ export class SyncRunRecorder {
    * freshness gate 跳过 (019 T014, FR-S03 审计痕): skipped 行 + 跳过原因 (failedTargets
    * Json 列承载 `[{reason}]` — 审计明细通道复用, 非失败语义)。
    */
-  async recordSkippedWithReason(syncType: string, reason: string, now: Date): Promise<bigint> {
-    const id = await this.start(syncType);
+  async recordSkippedWithReason(
+    syncType: string,
+    reason: string,
+    now: Date,
+    origin: SyncRunOrigin = {},
+  ): Promise<bigint> {
+    const id = await this.start(syncType, origin);
     await this.finish(id, 'skipped', { ...emptyStats(), failedTargets: [{ reason }] }, now);
     return id;
   }

@@ -63,13 +63,19 @@ function build(
   // 各自的 mock.calls 看不出跨 spy 的顺序 ⇒ 记一条共同时间线。
   const order: string[] = [];
 
-  const execute = vi.fn(async (_key: string, _opts: unknown, _jobId?: string) => {
-    order.push('execute');
-    return {
-      stats: { ...emptyStats(), ok: 3 },
-      budgetExhausted: overrides.budgetExhausted === true,
-    };
-  });
+  const execute = vi.fn(
+    async (
+      _key: string,
+      _opts: unknown,
+      _origin?: { bullJobId?: string; triggeredBy?: string },
+    ) => {
+      order.push('execute');
+      return {
+        stats: { ...emptyStats(), ok: 3 },
+        budgetExhausted: overrides.budgetExhausted === true,
+      };
+    },
+  );
   const executors = { execute } as unknown as DimensionExecutorRegistry;
 
   const convergeInterrupted = vi.fn(async (_jobId: string, _reason: string, _now?: Date) => {
@@ -220,11 +226,18 @@ describe('MarketdataSyncWorker — 既有维度路由回归', () => {
 
     expect(run).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledTimes(1);
-    const [key, opts, jobId] = execute.mock.calls[0] as [string, Record<string, unknown>, string];
+    const [key, opts, origin] = execute.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+      { bullJobId?: string; triggeredBy?: string },
+    ];
     expect(key).toBe('us_equity_bar');
     expect(opts.mode).toBe('delta');
     expect(opts.asOf).toBe('2026-08-14');
-    expect(jobId).toBe('dim-1');
+    expect(origin.bullJobId).toBe('dim-1');
+    // #202: 触发源逐字来自 payload —— worker 不许在这里兜底, 否则任何漏传的入队路径都会
+    // 冒充成一轮按计划执行的 tick 轮, 而「连续 N 轮」的计数器正是吃这一列。
+    expect(origin.triggeredBy).toBe('tick');
     expect(stats).toEqual({ ...emptyStats(), ok: 3 });
   });
 
@@ -245,7 +258,9 @@ describe('MarketdataSyncWorker — 既有维度路由回归', () => {
     expect(add).toHaveBeenCalledTimes(1);
     const [name, data, opts] = add.mock.calls[0] as [string, unknown, { delay?: number }];
     expect(name).toBe('sync:us_equity_bar');
-    expect(data).toEqual(DIMENSION_PAYLOAD);
+    // #202: **除 triggeredBy 外**原样 —— 顺延跑出来的是同一轮的重入, 它会开出第二行 sync_run;
+    // 继续标 'tick' 就等于把一轮数成两轮, 一次配额耗尽凭空吃掉一格阈值预算。
+    expect(data).toEqual({ ...DIMENSION_PAYLOAD, triggeredBy: 'requeue' });
     expect(opts.delay).toBe(REQUEUE_DELAY_MS);
   });
 });
