@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.37.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.4...server-v0.37.0) (2026-08-26)
+
+
+### Features
+
+* **marketdata:** [#202](https://github.com/zhangleizlpd/no-vain-years-tech/issues/202) sync_run 记来历两列 —— 「连续 N 轮」里的那个「轮」变得可判 ([#206](https://github.com/zhangleizlpd/no-vain-years-tech/issues/206)) ([8846668](https://github.com/zhangleizlpd/no-vain-years-tech/commit/88466688ff8094a1fa5e4a2dc4d436bc73d0e0d6))
+
 ## [0.36.4](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.3...server-v0.36.4) (2026-08-25)
 
 
