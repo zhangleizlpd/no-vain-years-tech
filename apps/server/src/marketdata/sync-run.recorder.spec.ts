@@ -109,3 +109,86 @@ describe('SyncRunRecorder.convergeInterrupted (#137)', () => {
     expect(INTERRUPT_REASON.SUPERSEDED_BY_RETRY).not.toBe(INTERRUPT_REASON.RETRIES_EXHAUSTED);
   });
 });
+
+/**
+ * Small × Narrow: 一行 `SyncRun` 的**来历两列** (#202) —— `triggered_by` / `as_of`。
+ *
+ * 断言的是**写进去了什么**, 故双替身只实现 `create` / `update` 的记账语义: 这两列没有任何
+ * 读侧行为, 它们的全部风险就在「落库时是不是那个值」。
+ */
+function writeDouble() {
+  const created: Record<string, unknown>[] = [];
+  const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    created.push(data);
+    return { id: BigInt(created.length) };
+  });
+  const update = vi.fn(async () => ({}));
+  return { prisma: { syncRun: { create, update } }, created };
+}
+
+describe('SyncRunRecorder.start — 来历两列 (#202)', () => {
+  it('origin 三件套逐字落库 (bullJobId / triggeredBy / asOf)', async () => {
+    const { prisma, created } = writeDouble();
+    const recorder = new SyncRunRecorder(prisma as never);
+
+    await recorder.start('sync:option_contract', {
+      bullJobId: 'job-7',
+      triggeredBy: 'tick',
+      asOf: '2026-08-26',
+    });
+
+    expect(created[0]).toMatchObject({
+      syncType: 'sync:option_contract',
+      status: 'running',
+      bullJobId: 'job-7',
+      triggeredBy: 'tick',
+    });
+    expect((created[0]?.asOf as Date).toISOString()).toBe('2026-08-26T00:00:00.000Z');
+  });
+
+  it('🚨 origin 缺省 ⇒ 两列一个都不写 (NULL), **不兜底成 tick**', async () => {
+    const { prisma, created } = writeDouble();
+    const recorder = new SyncRunRecorder(prisma as never);
+
+    await recorder.start('sync:eod_bar');
+
+    // 键本身不该出现 —— 「不知道来历」与「按计划跑的一轮」若在库里长得一样, #146 Phase 2 /
+    // #199 的计数器就会把漏接线的路径当成 tick 轮吃进去, 而那是判据输入被污染且全绿。
+    expect(created[0]).not.toHaveProperty('triggeredBy');
+    expect(created[0]).not.toHaveProperty('asOf');
+  });
+
+  it('🚨 asOf 是**业务日**不是本机日期 —— 宿主时区换了也必须落同一天', async () => {
+    const original = process.env.TZ;
+    try {
+      // 两个方向都试: 本机领先 / 落后 UTC 各一次。裸 `new Date('YYYY-MM-DDT00:00:00')` 会按
+      // 本机时区解析 ⇒ 这两轮会落到相邻的两天上, 本用例即为该写法的定向反例。
+      for (const tz of ['Asia/Tokyo', 'America/New_York']) {
+        process.env.TZ = tz;
+        const { prisma, created } = writeDouble();
+        const recorder = new SyncRunRecorder(prisma as never);
+
+        await recorder.start('sync:eod_bar', { triggeredBy: 'tick', asOf: '2026-08-26' });
+
+        expect((created[0]?.asOf as Date).toISOString()).toBe('2026-08-26T00:00:00.000Z');
+      }
+    } finally {
+      // 进程级全局 —— 不还原会污染同 worker 里后续文件的任何日期断言。
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
+  it('skipped 行同样带来历 —— 「轮到它了但按设计没做」与「压根没轮到」必须分得开', async () => {
+    const { prisma, created } = writeDouble();
+    const recorder = new SyncRunRecorder(prisma as never);
+
+    await recorder.recordSkippedWithReason('sync:announcement', 'event-calendar 日历未命中', NOW, {
+      triggeredBy: 'tick',
+      asOf: '2026-08-26',
+    });
+
+    expect(created[0]).toMatchObject({ status: 'running', triggeredBy: 'tick' });
+    expect((created[0]?.asOf as Date).toISOString()).toBe('2026-08-26T00:00:00.000Z');
+  });
+});

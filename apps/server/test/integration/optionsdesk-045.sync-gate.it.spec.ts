@@ -239,7 +239,11 @@ describe('045 optionsdesk US4 采集闸集成 IT (Testcontainers PG)', () => {
       // 端到端: 前置重算失败 MUST NOT 冒泡到 executor 顶层 catch (那会把整条采集链记成
       // failed) —— 跑一轮真维度, SyncRun 收 success。
       const registry = buildRegistry(gate);
-      await registry.execute('eod_bar', { mode: 'delta', asOf: AS_OF, now: NOW }, 'job-gate-1');
+      await registry.execute(
+        'eod_bar',
+        { mode: 'delta', asOf: AS_OF, now: NOW },
+        { bullJobId: 'job-gate-1' },
+      );
 
       const run = await prisma.syncRun.findFirst({ where: { syncType: 'sync:eod_bar' } });
       expect(run?.status).toBe('success');

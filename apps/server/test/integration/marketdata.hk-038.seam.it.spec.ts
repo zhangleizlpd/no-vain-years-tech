@@ -144,7 +144,7 @@ describe('038 T006 Phase 1 平台市场缝隙 seam (Testcontainers PG+Redis, moc
     const { stats } = await registry.execute(
       'eod_bar',
       { mode: 'delta', asOf: AS_OF, now: NOW },
-      'job-cn-noreg',
+      { bullJobId: 'job-cn-noreg' },
     );
 
     // 工作集含两只 cn (016 语义逐字节无回归); no-data 标的不算失败。
