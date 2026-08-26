@@ -79,6 +79,11 @@ const ALLOWLIST = new Set([
   'PERF_TICK_REPS',
   // vitest 运行时自动注入 (sms-code.rules.ts 用 !process.env.VITEST 区分测试 vs dev)。
   'VITEST',
+  // 宿主时区 —— **只由测试自己翻转**, 用来证明业务日解析与本机时区无关
+  // (sync-run.recorder.spec.ts 里 `${asOf}T00:00:00Z` 那条纪律的定向反例臂: 用例内把 TZ 切到
+  // Tokyo / New_York 两侧各跑一次, try/finally 还原)。OS/运行时级变量, 不是 application
+  // config —— 生产从不读它, 故不进任何 .env.example。
+  'TZ',
   // 真发 SMS env-gated IT (apps/server/test/integration/aliyun-sms.real-send.vendor.spec.ts)
   // opt-in flag + 测试手机号 — vitest gate / 测试输入,非 application config。
   // (ALIYUN_ACCESS_KEY_ID/SECRET/SIGN_NAME/TEMPLATE_CODE 已在 .env.example。)
