@@ -473,6 +473,33 @@ describe('SyncOptionSnapshotUseCase', () => {
       errSpy.mockRestore();
     });
 
+    // #198: 审计通道必须自带违规码。ERROR 文案里有码, 但它只进容器 stdout (30MB 环, 无投递),
+    // 而 `failed_targets` 是持久的 —— 码不进来, 事后就只剩一个 `rejected: N`, 四条门分不出是哪条。
+    // 🚨 判据钉在**码**上而不是 reason 文案: 文案会改, 码是稳定标识。
+    it('拒绝留痕带违规码, 使「撞的是哪条门」事后可判 (#198)', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const h = makeHarness({
+        contracts: PEP_CONTRACTS,
+        rowsFor: (q) => [quoteRow(q.contractCodes[0], { delta: '0.31' }), underlyingRow()],
+      });
+      const stats = emptyStats();
+
+      await h.useCase.run([PEP], DIM, stats, makeInput());
+
+      // 🚨 先取证再 restore, 再断言 —— 同下方 #186 那条记下的教训: 断言失败时 `mockRestore()`
+      // 跑不到, 留着的 mock 会把**后面**的用例一起带红 (本条初版就当场复现了这个级联)。
+      const entry = stats.failedTargets.find(
+        (t): t is { step: string; violations: string[] } =>
+          typeof t === 'object' &&
+          t !== null &&
+          (t as { step?: string }).step === 'option_snapshot_guard',
+      );
+      errSpy.mockRestore();
+
+      expect(entry).toBeDefined();
+      expect(entry?.violations).toEqual(['delta_sign']);
+    });
+
     it('greeks 整块缺失的深实值腿照常入库 (缺失跳过对应的门, FR-007)', async () => {
       // 实值腿 bid 跌破内在价值 ⇒ IV 无解 ⇒ 五个 greeks 与 IV 一起没有, 实测 227/2150 行。
       // 在这里拒掉 = 决策带按 |Δ| 定义, 缺 Δ 的腿被筛没且无人知晓。
