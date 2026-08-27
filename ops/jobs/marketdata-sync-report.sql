@@ -114,6 +114,20 @@ SELECT
   coalesce(l.written::text, 'NULL')                                        AS written,
   to_char(l.started_at AT TIME ZONE 'Asia/Shanghai', 'MM-DD HH24:MI')      AS started_cst,
   (l.finished_at IS NULL)                                                  AS unfinished,
+  -- #210: 逐维度**耗时(秒)**。此前全仓没有任何地方统计过阶段耗时 —— 本文件只打 started_cst,
+  -- 于是「那 2h35m 是被哪个维度吃掉的」只能靠人手查库。要动链长, 先得有这个数。
+  -- 🚨 **必须排除 `interrupted`**: 该终态的 `finished_at` 是**收敛时刻**而非打断时刻
+  --    (SyncRun.status 的 schema 注释明写) ⇒ 它的 finished−started **不是耗时**。混进来会把
+  --    耗时整体拉长, 而且看起来完全正常 —— 正是本仓反复吃亏的那类静默偏差。
+  -- 🚨 NULL 走哨兵, 与上面 `written` 那条**同源**: `IFS=$'\t'` 下空字段被折叠 ⇒ 其后各列
+  --    静默前移一位。**加可空列一律照此办理。**
+  coalesce(
+    CASE
+      WHEN l.status <> 'interrupted' AND l.finished_at IS NOT NULL
+      THEN round(extract(epoch FROM (l.finished_at - l.started_at)))::text
+    END,
+    'NULL'
+  )                                                                        AS elapsed_s,
   -- 🚨 MUST ①: **展开不看 `status`** —— 恒为 success 的行也要出明细, 否则本文件白写。
   left(regexp_replace(coalesce(g.d, ''), '[\t\n\r]+', ' ', 'g'), 300)     AS findings_digest
 FROM latest l
