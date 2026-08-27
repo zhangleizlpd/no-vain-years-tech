@@ -20,11 +20,18 @@ const SERVER_DIR = process.cwd();
  * 探针 `ops/jobs/marketdata-table-health.sh` 读**同一文件**跑（同目录同名兄弟）。
  * 绝不在此内联复制 SQL（复制 = drift = 论证作废）。
  *
- * 🚨🚨 **改完谓词必须 `--skipNxCache` 重跑本文件**：谓词在 `ops/` 下，**不在 server project 的
- * Nx inputs 里** ⇒ 只改 `.sql` 时 `nx test server <file>` 会**命中缓存直接返绿**（日志里那句
- * `Nx read the output from the cache`），根本没跑。这是「假绿」不是「假红」—— 危险得多，因为
- * 它长得跟通过一模一样。2026-08-04 扩两个新维度时当场踩中：把 AND 蓄意改成 OR 跑出 17/17 绿，
- * 加 `--skipNxCache` 后立刻红 1 条。**变异验证不加这个 flag = 白做。**
+ * 📌 **「改完谓词必须 `--skipNxCache`」这条已于 2026-08-27 根治，本段保留为病史。**
+ *
+ * 曾经的形状：谓词在 `ops/` 下、不在 `test` target 的 Nx inputs 里 ⇒ 只改 `.sql` 时
+ * `nx test server <file>` **命中缓存直接返绿**，根本没跑。这是「假绿」不是「假红」——危险得多，
+ * 因为它长得跟通过一模一样。2026-08-04 扩两个新维度时当场踩中：把 AND 蓄意改成 OR 跑出 17/17
+ * 绿，加 `--skipNxCache` 后立刻红 1 条。
+ *
+ * 修法在 `nx.json` 的 `targetDefaults.test.inputs`（显式列出 `{workspaceRoot}/ops/jobs/*.sql`）。
+ * 🚨 **不是** `namedInputs.sharedGlobals` —— 实测那里对 `test` target **根本不生效**（改根
+ * `package.json` 同样命中缓存），里面几条对它是装饰性的。**别把这条 inputs 挪回去。**
+ *
+ * ⇒ 今天直接 `nx test server <file>` 即可；`--skipNxCache` 只是保险，不再是正确性前提。
  *
  * ═══ 本文件的重点是**变异测试**，不是「跑得通」═══
  * 探针的价值 100% 在「故障时会不会红」。只断言健康态返 0 等于什么都没验 —— 一个 `SELECT 0`
