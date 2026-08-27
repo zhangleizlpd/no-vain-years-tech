@@ -1248,6 +1248,22 @@ model SyncDimension {
   // cn/hk 走理杏仁、us 走东财), 而本列停在 ADR-0047 2026-06-03 Amendment 之前的语义。
   // 勿作路由依据 —— 仓内不存在「按维度配 provider」的路由能力, 绑新 vendor 只能靠拆维度。
   vendor               String    @db.VarChar(32)
+  // 🚨 **执行 lane —— 与上面那个 `vendor` 列不是一回事, 别合并**。`vendor` 是**死的装饰列**
+  // (见其注释: 代码从不读取), 本列是**代码真读**的队列路由依据: job 落 `marketdata-sync`
+  // 还是 `marketdata-sync-futu`, 由它决定。
+  //
+  // 之所以另起一列而不「修好 `vendor` 再复用」: 那会让一个**值本身就不可信**的列
+  // (eod_bar 记 lixinger, 但同一个 EOD_BAR_PORT 对 us 路由到富途) 一夜之间变成承重件 ——
+  // 修它要先把 21 个维度的 vendor 值逐个复核对齐 DI 绑定, 那是另一件事, 且做错了没人会发现。
+  // 新列则从第一天起只有一个语义, 且默认值让「没登记的维度」落回现状而不是落进未知。
+  //
+  // 🚨 lane 的判据是**共享哪个限频令牌桶**, 不是「哪个市场」也不是「哪个业务域」——
+  // 拆 lane 的全部收益来自「不同 vendor 的调用不再互相排队」(bulkhead)。按市场拆会把
+  // 同一个理杏仁桶劈成两条 lane 并发打, 那是**反向**收益。
+  //
+  // 值域单一来源是 `QUEUE_LANES` (marketdata-sync.queue.ts), 无 DB 侧 enum/CHECK ——
+  // 同 `status` / `triggered_by` 的取舍, 加值零 migration。
+  queueLane            String    @default("default") @map("queue_lane") @db.VarChar(16)
   marketScope          String[]  @map("market_scope")
   metricsList          Json?     @map("metrics_list")
   // deprecated (020 T010, FR-A01): eod 写路径收窄后恒 {none} — 复权读时换算, 列保留语义收窄。
