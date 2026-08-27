@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.37.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.37.0...server-v0.37.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **marketdata:** [#198](https://github.com/zhangleizlpd/no-vain-years-tech/issues/198) 落库前硬门的拒绝留痕带上违规码 —— 「撞的是哪条门」事后可判 ([#212](https://github.com/zhangleizlpd/no-vain-years-tech/issues/212)) ([8269901](https://github.com/zhangleizlpd/no-vain-years-tech/commit/82699011d5faafd9474da7b8e63d8774952cfbd4))
+* **marketdata:** [#211](https://github.com/zhangleizlpd/no-vain-years-tech/issues/211) 补上 FR-023 的「增量」半边 —— IVP 自算窗口不再逐日陈旧 ([#215](https://github.com/zhangleizlpd/no-vain-years-tech/issues/215)) ([6f0fb9d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/6f0fb9ddda7f007245dca347e64c9f63667a1ce7))
+
+
+### Code Refactoring
+
+* **marketdata:** [#209](https://github.com/zhangleizlpd/no-vain-years-tech/issues/209) sync_run.failed_targets 改名 findings + 每条带 kind (三步法 expand 步) ([#214](https://github.com/zhangleizlpd/no-vain-years-tech/issues/214)) ([a516655](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a5166558974a603397fcab209c95967f7bc54cca))
+
 ## [0.37.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.36.4...server-v0.37.0) (2026-08-26)
 
 
