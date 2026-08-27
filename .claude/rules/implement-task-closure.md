@@ -21,7 +21,7 @@ paths:
 
 **Per-task 节奏**：每 task 走完 6 步**直接 commit**，无需用户审批；phase 之间 `Review gate`（clarify → plan / plan → tasks / analyze → implement）是 phase-level 人工卡点，不在 implement 内 per-task 触发。
 
-> 🆕 **新文件首跑带 `--skip-nx-cache`**：本 task 新建的 `.ts` / `.spec.ts` / config 第一次跑 `nx test|build|lint` 必加 `--skip-nx-cache`（步 1 / 3），否则 nx cache 可能假绿（新文件 / `import.meta` 被 cache hit 漏报，#7 实证）。
+> 🆕 **新文件首跑带 `--skip-nx-cache`**：本 task 新建的 `.ts` / `.spec.ts` / config 第一次跑 `nx test|build|lint` 必加 `--skip-nx-cache`（步 1 / 3），否则 nx cache 可能假绿（新文件 / `import.meta` 被 cache hit 漏报，#7 实证）。完整判据（拿 env 做对照实验、测试运行时读 project 外资产 —— 同样必带）见 [local-verification §4](../../docs/conventions/local-verification.md)。
 
 ## 强制层（双层兜底）
 
