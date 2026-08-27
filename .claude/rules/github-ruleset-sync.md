@@ -27,8 +27,6 @@ gh api -X PUT repos/<owner>/<repo>/rulesets/<id> --input <patched.json>
 
 ### 2. 改 `.github/CODEOWNERS` 通常 implies 引第二人协作
 
-引入第二人 / 内测前必须**收紧 ruleset PR 4 字段** — 完整字段清单（current values + 收紧目标 + 启用 CODEOWNERS）见 canonical [`docs/conventions/github-ruleset.md` § solo dev 期豁免](../../docs/conventions/github-ruleset.md#solo-dev-期豁免引第二人前必收紧)。
+引入第二人 / 内测前必须**收紧 3 个豁免参数 + 启用 CODEOWNERS**（`required_approving_review_count` 已 ≥ 1，勿动）— 清单见 canonical [`docs/conventions/github-ruleset.md` § solo dev 期豁免](../../docs/conventions/github-ruleset.md#solo-dev-期豁免引第二人前必收紧)。
 
-## 单源真理
-
-详细 ruleset 配置（仓库 PR 设置 / `main-protection` 4 rule type 用途 / solo dev 期豁免清单 / 实时 `gh api` 查询命令）见 [`docs/conventions/github-ruleset.md`](../../docs/conventions/github-ruleset.md)。本 rule 仅 surface 硬约束 invariant；rule body 与 canonical 文档**不重复字段值**（值实时 truth 走 `gh api`）。
+canonical：[`docs/conventions/github-ruleset.md`](../../docs/conventions/github-ruleset.md)（字段值实时 truth 走 `gh api`，本 rule 不复述）。
