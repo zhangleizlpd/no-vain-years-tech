@@ -77,8 +77,11 @@ describe('017 marketdata scheduler schema expand (Testcontainers PG migrate depl
     );
     expect(edges).toEqual([
       { upstream: 'corporate_action', downstream: 'eod_bar', mode: 'hard' }, // 019 T011 (FR-S08)。
-      // 066 T04: 港股快照 hard 依赖港股链发现 (同 047 的美股形态; 'hk_' < 'option_' 排在前)。
-      { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'hard' },
+      // 066 T04 / #210: 港股这条**由 hard 降 soft** —— 判据是「能不能补救」而非对称:
+      // 美股有 OptionSnapshotRemediation 两级兜底, fail-closed 了还救得回来; 港股零补救且
+      // vendor 不给历史期权快照 ⇒ 漏采即永久缺口, fail-closed 会把「漏几张新挂牌合约」
+      // 换成「整晚全丢且不可回补」。顺序不受影响 (soft 边同样给 Kahn 前驱)。
+      { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'soft' },
       // 047 T003 FR-031: 无合约表即无从取快照 ⇒ 链发现失败必须断下游 (failParentOnFailure)。
       { upstream: 'option_contract', downstream: 'option_daily_snapshot', mode: 'hard' },
       { upstream: 'profile', downstream: 'fundamental', mode: 'hard' },

@@ -160,15 +160,22 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     // 10:00 = 22:00 EDT / 21:00 EST, 两个 DST 档都在发布之后 (migration 20260804_0910)。
     expect(dims.find((d) => d.dimensionKey === 'us_index_daily')?.cronExpr).toBe('0 0 10 * * *');
     // 047 三维度同属美股清晨档 (06:00 = 前一交易日 18:00 EDT / 17:00 EST, 均在 16:00 收盘之后)。
-    // 快照比链发现晚 30 分钟 —— hard 依赖边保证执行序, cron 错开是同一约束在调度侧的第二道表达。
+    //
+    // 🚨 **#210: 快照与链发现现在是同一时刻, 不再错开 30 分钟。** 原注释写「cron 错开是同一
+    //    约束在调度侧的第二道表达」—— 那句话是**反的**: 依赖边只在同一 tick 内生效
+    //    (ADR-0049 §3), 错开 30 分钟恰恰让两端落进两个 tick, 于是那条 hard 边**从上线至今
+    //    一次都没装配过**。合进同一时刻才是它生效的前提。
     expect(dims.find((d) => d.dimensionKey === 'option_contract')?.cronExpr).toBe('0 0 6 * * *');
     expect(dims.find((d) => d.dimensionKey === 'option_daily_snapshot')?.cronExpr).toBe(
-      '0 30 6 * * *',
+      '0 0 6 * * *',
     );
     expect(dims.find((d) => d.dimensionKey === 'earnings_event')?.cronExpr).toBe('0 0 6 * * *');
     // 066 三个港股期权维度排 **23:00** 而不是 22:00 —— 22:00 是仓里既有的港股锚点
-    // (eod_bar + 18 个理杏仁 cn/hk 维度全在这一刻, runbook 记「22:00 起、当晚 ~22:30 就位」),
-    // 而 BullMQ worker `concurrency = 1` ⇒ 那批要占用队列一段时间, 23:00 是留给它的余量。
+    // (eod_bar + 18 个理杏仁 cn/hk 维度全在这一刻)。
+    // 🚨 原注释在这里写「concurrency=1 ⇒ 那批要占用队列一段时间, 23:00 是留给它的余量」——
+    //    **该前提已被证伪** (#210): 那批实测跑到次日 00:34, 港股三维连续三晚执行在午夜后。
+    //    解法是拆 vendor lane, 不是继续往后挪 cron。23:00 保留是因为它满足真正的下界
+    //    (港股 OI 21:30 定稿) 与上界 (不溢出到次日)。
     // 🚨 这里是**写死字符串**的一档 (故意的): 本文件钉的是 seed 现状快照。FR-015 那条「性质」
     //    断言 (解析 cron 断下一触发晚于同日 22:00) 在
     //    `marketdata-066.hk-dimension-seed.it.spec.ts` —— 两层各管一件事。
@@ -176,7 +183,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       '0 0 23 * * *',
     );
     expect(dims.find((d) => d.dimensionKey === 'hk_option_daily_snapshot')?.cronExpr).toBe(
-      '0 30 23 * * *',
+      '0 0 23 * * *', // #210: 与链发现同一时刻 = 同一 tick, 依赖边才装得上
     );
     expect(dims.find((d) => d.dimensionKey === 'hk_underlying_iv_daily')?.cronExpr).toBe(
       '0 0 23 * * *',
