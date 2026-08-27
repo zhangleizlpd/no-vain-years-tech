@@ -60,7 +60,36 @@ env -u OSS_ACCESS_KEY_ID -u OSS_ACCESS_KEY_SECRET <VAR> PORT=3099 \
 | OpenAPI 导出                                     | `nx run server:export-openapi`                                                              | 🚨 必走 canonical `node dist/main.js`（非 `dump.mjs`）；见下                                                                                                                                              |
 | 护城河                                           | `pnpm tsx scripts/checks/check-server-moat.ts`                                              | 期望 exit 0                                                                                                                                                                                               |
 | **PR 门（勾 checkbox 前必须真跑）**              | `nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` | 见 [pr-creation-protocol](pr-creation-protocol.md) 第 4 条；**结果判定见 §3「exit code 会说谎」**                                                                                                         |
+| **CI `gate-checks` 那一批治理脚本**              | `scripts/checks/*.ts` 全扫，见 §2.1                                                         | 🚨 上面那条 `nx affected` 门**不覆盖**它们 —— gate-checks job 另跑约 18 个 check 脚本；只跑 affected 门就推，仍可能被打红                                                                                 |
 | **用「CI 那样干净」的 env 重跑任一条上面的命令** | `scripts/local-verify-as-ci.sh <上面任一命令>`（`--list` 只看泄漏清单，不跑）               | 按 `apps/server/.env.example` 的键集把**本机泄漏的 server env 全 unset** 再跑（键集派生、不硬编码）。**本地绿而 CI 红时先跑它**，判据见 §3 同名行。⚠️ 只覆盖 env 这一个维度，核数 / Docker 资源仍是本机的 |
+
+### 2.1 推之前把 `scripts/checks/` 全扫一遍
+
+`nx affected -t lint typecheck test build runtime-smoke` 只覆盖 lint / typecheck / test / build /
+runtime-smoke 五个 target。CI 的 **`gate-checks` job 另外跑约 18 个治理脚本**（env-sync /
+repo-layout / test-size / identifier-boundary / time-semantics / server-moat / scheduled-tasks /
+skill-snippets / convention-orphan / …），本矩阵此前只点名了其中一个（护城河）。⇒ **affected 门
+exit 0 ≠ CI 会绿。**
+
+```bash
+for f in scripts/checks/*.ts; do
+  case "$f" in *.spec.ts) continue;; esac
+  out=$(pnpm tsx "$f" 2>&1) && echo "✅ $(basename "$f")" || { echo "❌ $(basename "$f")"; echo "$out" | tail -12; }
+done
+pnpm tsx scripts/checks/check-commit-msg-parseable.ts --range origin/main..HEAD
+```
+
+⚠️ **三个脚本必带参数，裸跑报 usage —— 那不是失败**，别据此判红（上面的循环已把第一个单独列出）：
+
+| 脚本                            | 必带参数                                           |
+| ------------------------------- | -------------------------------------------------- |
+| `check-commit-msg-parseable.ts` | `--file <path>` 或 `--range origin/main..HEAD`     |
+| `gen-static-calendar.ts`        | `--year <YYYY> --in <txt>`（是生成器，不是 check） |
+| `plan-compiler.ts`              | `<spec-dir>`                                       |
+
+🟢 2026-08-27 实证：PR #234 本地 affected 门 exit 0、推上去被 `check-env-sync` 打红——新增
+server config 项只落了出生地 `*.config.ts`，漏了 env 清单四处（规则 SoT 见
+[`.claude/rules/config-env-sync.md`](../../.claude/rules/config-env-sync.md)）。
 
 ### `export-openapi` 的静默失败（最阴的一条）
 

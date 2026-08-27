@@ -46,6 +46,8 @@ interface ReportRow {
   written: string;
   started_cst: string;
   unfinished: boolean;
+  /** #210 逐维度耗时(秒)。文本形态: 数字串或哨兵 'NULL' (同 `written`, 理由见 SQL 注释)。 */
+  elapsed_s: string;
   findings_digest: string;
 }
 
@@ -97,7 +99,7 @@ describe('#209 日报 findings 展开判据 (Testcontainers PG)', () => {
     });
   }
 
-  it('契约: 每维度一行, 恒 10 列 (bash 侧按位读 TSV 的前提)', async () => {
+  it('契约: 每维度一行, 恒 11 列 (bash 侧按位读 TSV 的前提)', async () => {
     await seedRun('sync:eod_bar', 'success', null);
     const rows = await runPredicate();
 
@@ -114,8 +116,47 @@ describe('#209 日报 findings 展开判据 (Testcontainers PG)', () => {
         'sync_type',
         'unfinished',
         'written',
+        'elapsed_s', // #210 逐维度耗时(秒); 'NULL' 哨兵同 written
       ].sort(),
     );
+  });
+
+  // ── #210 逐维度耗时 ────────────────────────────────────────────────────────────────
+  it('耗时: 已收尾的行给出秒数 (seedRun 固定 60s 窗)', async () => {
+    await seedRun('sync:eod_bar', 'success', null);
+    const rows = await runPredicate();
+    expect(rows[0]?.elapsed_s).toBe('60');
+  });
+
+  // 🚨 这一条是本列**唯一**容易做错的地方, 也是它必须被钉住的理由:
+  //    `interrupted` 的 `finished_at` 是**收敛时刻**而不是打断时刻 (SyncRun.status 的 schema
+  //    注释明写) ⇒ 它的 finished−started 不是耗时。不排除的话, 耗时统计会被一条 18 天的
+  //    僵尸行整体拉长, 而报告看起来完全正常 —— 那正是本仓反复吃亏的静默偏差形态。
+  it('🚨 耗时: interrupted 行不给耗时 (finished_at 是收敛时刻, 差值不是耗时)', async () => {
+    await seedRun('sync:eod_bar', 'interrupted', null);
+    const rows = await runPredicate();
+    expect(rows[0]?.status).toBe('interrupted');
+    expect(rows[0]?.elapsed_s).toBe('NULL');
+  });
+
+  it('耗时: 未收尾 (finished_at IS NULL) 的行不给耗时, 且走哨兵而非空字段', async () => {
+    const now = new Date();
+    await prisma.syncRun.create({
+      data: {
+        syncType: 'sync:eod_bar',
+        status: 'running',
+        startedAt: new Date(now.getTime() - 60_000),
+        finishedAt: null,
+        scanned: 1,
+        ok: 1,
+        skipped: 0,
+        failed: 0,
+      },
+    });
+    const rows = await runPredicate();
+    expect(rows[0]?.unfinished).toBe(true);
+    // 哨兵而非空串: 空字段会被 `IFS=$'\t'` 折叠掉, 其后各列在 bash 侧静默前移一位。
+    expect(rows[0]?.elapsed_s).toBe('NULL');
   });
 
   it('🚨 MUST ①: status=success 的行也要展开 —— 这正是「写了但没人读」的那一半', async () => {

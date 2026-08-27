@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import type { FlowJob } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client.js';
 import {
@@ -9,8 +10,10 @@ import {
   type DimensionKey,
 } from './dimension-executor.js';
 import {
+  assembleSyncFlow,
   assertHardEdgesWithinLane,
   deriveExecutionOrder,
+  type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import type { SyncRunFinding } from './sync-run.recorder.js';
@@ -4540,7 +4543,8 @@ const LIVE_SEED_PRIORITIES = new Map<string, number>([
   // 066 T04 港股三行 (migration 20260823_1015_seed_hk_option_dimensions)。全取 priority 5:
   // 同 priority 下 key 字典序 asc, 而 'eod_bar' < 'hk_*' < 'option_*' ⇒ 既有两条 hard 边
   // (corporate_action→eod_bar / option_contract→option_daily_snapshot) 的相邻性不受影响,
-  // 且 'hk_option_contract' < 'hk_option_daily_snapshot' 让本片新增的 hard 边自然相邻。
+  // 且 'hk_option_contract' < 'hk_option_daily_snapshot' 让港股那对天然相邻
+  // (#210 后该边已降 soft, 相邻性不再是硬要求, 但顺序仍由它给的 Kahn 前驱保证)。
   ['hk_option_contract', 5],
   ['hk_option_daily_snapshot', 5],
   ['hk_underlying_iv_daily', 5],
@@ -4584,11 +4588,16 @@ const LIVE_SEED_EDGES: SyncDependencyEdge[] = [
   // 047 新增: 快照 **hard** 依赖链发现 (FR-031 —— 无合约表即无从取快照)。
   { upstream: 'option_contract', downstream: 'option_daily_snapshot', mode: 'hard' },
   // 066 T04 新增: 港股两条 universe soft (链发现 / 标的 IV 都 FK→instrument) + 一条 hard
-  // (港股快照依赖港股链发现, 同 047 的美股形态)。🚨 `hk_option_daily_snapshot` 同样**刻意
+  // (港股快照依赖港股链发现, 同 047 的美股形态; #210 后港股那条降 soft)。
+  // 🚨 `hk_option_daily_snapshot` 同样**刻意
   // 没有 universe 边** —— 多一个前驱会让它在 Kahn 拓扑里与那条 hard 边争相邻位 (047 先例)。
   { upstream: 'universe', downstream: 'hk_option_contract', mode: 'soft' },
   { upstream: 'universe', downstream: 'hk_underlying_iv_daily', mode: 'soft' },
-  { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'hard' },
+  // #210: 港股这条**由 hard 降为 soft**。判据是「能不能补救」不是对称: 美股有两级补救
+  // (08:00 当日重试 + 18:00 盘前兜底), fail-closed 了还救得回来; 港股**零补救**且
+  // `history_depth = NULL` (vendor 不给历史期权快照) ⇒ 漏采即永久缺口, fail-closed 会把
+  // 「漏几张新挂牌合约」换成「整晚全丢且不可回补」。顺序不受影响: soft 边同样给 Kahn 前驱。
+  { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'soft' },
 ];
 
 /**
@@ -4632,6 +4641,95 @@ describe('#210 lane 归属守卫 (seed 快照)', () => {
   });
 });
 
+describe('#210 期权链→快照的失败传播语义 (按 seed 现状装配)', () => {
+  const order = deriveExecutionOrder(LIVE_SEED_EDGES, LIVE_SEED_PRIORITIES);
+
+  /**
+   * 只装这一对, 交回 child (= 前驱 = 链发现) 那个节点的 opts。
+   * 链装配是「后继当 parent、前驱当 child」, 故 root 应当是快照。
+   */
+  function chainDiscoveryChildOpts(contract: string, snapshot: string) {
+    const input = (key: string): FlowDimensionInput => ({
+      payload: {
+        dimensionKey: key as DimensionKey,
+        mode: 'delta',
+        asOf: '2026-08-27',
+        triggeredBy: 'tick',
+      },
+      opts: {},
+      queueName: 'marketdata-sync-futu',
+    });
+    const tree = assembleSyncFlow([input(contract), input(snapshot)], LIVE_SEED_EDGES, order);
+    expect(tree.name).toContain(snapshot); // 快照是 root ⇒ 它等链发现跑完
+    const child = tree.children?.[0];
+    expect(child?.name).toContain(contract);
+    return child?.opts ?? {};
+  }
+
+  // 🚨 这两例断的是**一对不对称的选择**, 别"为了一致性"把它们统一掉。
+  //    判据是「能不能补救」: 美股有 OptionSnapshotRemediation 两级兜底 (08:00 当日重试 +
+  //    18:00 盘前补), fail-closed 了还救得回来; 港股零补救且 vendor 不给历史期权快照
+  //    (`history_depth = NULL`) ⇒ 漏采即**永久缺口**, fail-closed 赔的是不可回补的那一晚。
+  it('美股: 链发现失败 ⇒ 断下游 (failParentOnFailure)', () => {
+    const opts = chainDiscoveryChildOpts('option_contract', 'option_daily_snapshot');
+    expect(opts.failParentOnFailure).toBe(true);
+    expect(opts.ignoreDependencyOnFailure).toBeUndefined();
+  });
+
+  it('港股: 链发现失败 ⇒ 快照照跑 (ignoreDependencyOnFailure)', () => {
+    const opts = chainDiscoveryChildOpts('hk_option_contract', 'hk_option_daily_snapshot');
+    expect(opts.ignoreDependencyOnFailure).toBe(true);
+    expect(opts.failParentOnFailure).toBeUndefined();
+  });
+
+  // 🚨 **合 tick 引入的新风险, 这一层是它唯一的守卫。**
+  //    合并之前两端从不同 tick 触发 ⇒ hard 边的相邻性校验**根本没被走到过**。合并之后
+  //    `assertEdgesExpressible` 每晚都会真跑, 而它不满足时是**装配期 throw**;
+  //    `tick()` 把异常吞成 ERROR log (sync-tick-driver.ts), 叠加 #209「告警无接收方」
+  //    ⇒ 失败形态是**整批不跑且静默**。单测在这里挡, 比夜里发现便宜得多。
+  it.each([
+    {
+      label: '06:00 美股 tick',
+      won: [
+        'option_contract',
+        'option_daily_snapshot',
+        'underlying_iv_daily',
+        'us_equity_bar',
+        'earnings_event',
+      ],
+    },
+    {
+      label: '23:00 港股 tick',
+      won: ['hk_option_contract', 'hk_option_daily_snapshot', 'hk_underlying_iv_daily'],
+    },
+  ])('$label 的 won 集可装配, 且快照紧跟链发现', ({ won }) => {
+    const inputs = won.map(
+      (key): FlowDimensionInput => ({
+        payload: {
+          dimensionKey: key as DimensionKey,
+          mode: 'delta',
+          asOf: '2026-08-27',
+          triggeredBy: 'tick',
+        },
+        opts: {},
+        queueName: 'marketdata-sync-futu',
+      }),
+    );
+    expect(() => assembleSyncFlow(inputs, LIVE_SEED_EDGES, order)).not.toThrow();
+
+    // 链是「后继当 parent、前驱当 child」⇒ 最深的 child 最先执行, 递归收上来即执行序。
+    const execOrder = (node: FlowJob): string[] => {
+      const child = node.children?.[0];
+      return child === undefined ? [node.name] : [...execOrder(child), node.name];
+    };
+    const exec = execOrder(assembleSyncFlow(inputs, LIVE_SEED_EDGES, order));
+    const contract = exec.findIndex((n) => n.includes('option_contract'));
+    const snapshot = exec.findIndex((n) => n.includes('option_daily_snapshot'));
+    expect(contract).toBeGreaterThanOrEqual(0);
+    expect(snapshot).toBe(contract + 1);
+  });
+});
+
 describe('047 T003 三个新维度注册 + 依赖拓扑守卫', () => {
   const order = deriveExecutionOrder(LIVE_SEED_EDGES, LIVE_SEED_PRIORITIES);
   const pos = (key: string): number => order.indexOf(key);
@@ -4668,8 +4766,11 @@ describe('047 T003 三个新维度注册 + 依赖拓扑守卫', () => {
 //
 // 与上面 047 那块**同一条**失败形态: seed migration 自己跑得绿绿的, 错的是 priority 取值让
 // 某条 hard 边的两端在派生全序里不再相邻 ⇒ **夜间 flow 装配运行期 throw**
-// (`assembleSyncFlow` → `assertEdgesExpressible`)。港股这一片新增的 hard 边
-// `hk_option_contract → hk_option_daily_snapshot` 与既有两条一样, 只能靠这一层钉住。
+// (`assembleSyncFlow` → `assertEdgesExpressible`)。
+//
+// 📌 #210 后港股 `hk_option_contract → hk_option_daily_snapshot` 已降 **soft** ⇒ 它不再受
+//    相邻性约束; 但**执行序**仍要钉 (快照的工作集来自合约表, 跑反了就是拿昨天的合约集采)。
+//    仍受相邻性约束的是**美股**那条 hard 边, 守卫在上面 047 那块。
 //
 // 🚨 本片新增的第三行 `hk_underlying_iv_daily` **不在任何 hard 边上**, 但它同样会破事 ——
 //    它只要 priority 取得比 5 高, 就会在 `corporate_action` 与 `eod_bar` 之间被选走, 把一条
@@ -4689,9 +4790,12 @@ describe('066 T04 港股三维度 seed 的依赖拓扑守卫', () => {
     }
   });
 
-  it('港股快照排在港股链发现之后且**相邻** (hard 边, 非相邻 = 失败传播绕不过中间节点)', () => {
+  // #210: 断**顺序**而不再断相邻。边降 soft 后相邻性不是要求了, 继续断它等于过度约束 ——
+  // 将来往港股链里合法插一个维度会让本例无谓变红。而「快照必须在链发现之后」是真需求:
+  // 快照的工作集来自 `option_contract` 表, 跑反了就是拿昨天的合约集采, 且不会报错。
+  it('港股快照排在港股链发现之后 (工作集来自合约表; soft 边同样给 Kahn 前驱)', () => {
     expect(pos('hk_option_contract')).toBeGreaterThanOrEqual(0);
-    expect(pos('hk_option_daily_snapshot')).toBe(pos('hk_option_contract') + 1);
+    expect(pos('hk_option_daily_snapshot')).toBeGreaterThan(pos('hk_option_contract'));
   });
 
   it('🚨 港股三行不得掰断既有两条 hard 边 —— 反例: hk_underlying_iv_daily 取 priority 6', () => {

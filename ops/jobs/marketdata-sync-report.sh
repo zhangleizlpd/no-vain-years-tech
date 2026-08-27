@@ -143,7 +143,7 @@ declare -i n_total=0 n_ok=0 n_bad=0 n_skip=0 n_other=0 problems=0
 # skipped (非交易日短路) 的 written 本就该是 NULL, 混进来会在周末误判成「埋点没上」。
 declare -i n_wr_eligible=0 n_wr_null=0
 report=""
-while IFS=$'\t' read -r stype status scanned ok skipped failed written started unfinished ft; do
+while IFS=$'\t' read -r stype status scanned ok skipped failed written started unfinished elapsed_s ft; do
   [ -z "${stype:-}" ] && continue
   n_total+=1
   case "$status" in
@@ -168,8 +168,11 @@ while IFS=$'\t' read -r stype status scanned ok skipped failed written started u
     [ "${written:-NULL}" = 'NULL' ] && n_wr_null+=1
   fi
   [ "${written:-NULL}" = 'NULL' ] && wr='—' || wr="$written"
-  line="$(printf '%s %-26s %-8s scanned=%s ok=%s skip=%s fail=%s wr=%s  @%s' \
-    "$icon" "$stype" "$status" "$scanned" "$ok" "$skipped" "$failed" "$wr" "$started")"
+  # #210 耗时: 'NULL' = 该行没有可用耗时 (未收尾, 或 interrupted —— 它的 finished_at 是收敛
+  # 时刻不是打断时刻, SQL 侧已剔除)。渲染成 '—' 与「真的 0 秒」区分开。
+  if [ "${elapsed_s:-NULL}" = 'NULL' ]; then el='—'; else el="$((elapsed_s / 60))m$((elapsed_s % 60))s"; fi
+  line="$(printf '%s %-26s %-8s scanned=%s ok=%s skip=%s fail=%s wr=%s  @%s +%s' \
+    "$icon" "$stype" "$status" "$scanned" "$ok" "$skipped" "$failed" "$wr" "$started" "$el")"
   [ "$unfinished" = "t" ] && line="$line  ⚠未收尾"
   report="${report}${line}"$'\n'
   [ -n "$ft" ] && report="${report}     ↳ ${ft}"$'\n'
