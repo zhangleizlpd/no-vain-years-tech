@@ -50,9 +50,29 @@ import { Prisma } from '../generated/prisma/client.js';
 export const IVP_MIN_WINDOW_TRADING_DAYS = 252;
 
 /**
+ * 日更增量回看窗（自然日，#211 修 FR-023 的「增量」半边）。
+ *
+ * 单位是**自然日**而非交易日：它是喂给 `his_volatility` 区间接口的 `from`，那个接口按日历
+ * 日收区间、按交易日返行。窗内含多少交易日无所谓 —— 多取几天的代价是零（同在 vendor 单次
+ * 上限 {@link HIS_VOLATILITY_MAX_SPAN_DAYS} 内 ⇒ 恒为**一页**，与取 1 天同样一次调用）。
+ *
+ * 🚨 **为什么是滚动窗而不是「只补当日」**：`skipDuplicates` + 回看窗 ⇒ 任一晚失败（vendor
+ * 抖动 / 部署撞链 / 进程被替换），下一晚**自动补回**，无需人介入。而「只补当日」漏一晚就是
+ * 一个永久空洞，只能靠人工回填发现并修复 —— **那正是 #211 的成因形状**：`underlying_iv_history`
+ * 此前只有 backfill 一条写入路径，静默停更 23 天而无人知晓。自愈是本常量存在的全部理由。
+ *
+ * 取 30 而非 7：成本完全相同（都是一页），但能扛住的故障窗口从「一个周末」变成「一个月」。
+ */
+export const IV_HISTORY_INCREMENT_LOOKBACK_DAYS = 30;
+
+/**
  * 双算差 WARN 阈值（pp）。差 ≤ 此值 = 静默（量化噪声带）。
  *
  * 取 p3b §6.3 已给的实测基线，不另拍脑袋。
+ *
+ * 📌 2026-08-27 prod 横截面复核（12 只标的、窗口滞后 0 天那日）：残差**全部是 1/252 =
+ * 0.3968pp 的整数倍**（1×~4×），只有 4 只完全吻合。⇒ 残差成因是「窗口内容差几个样本」而
+ * **不是口径不同**，这条 2pp 噪声带的标定依然成立。🚫 别期待差值归零后再收紧阈值。
  */
 export const IVP_DIVERGENCE_WARN_PP = new Prisma.Decimal(2);
 

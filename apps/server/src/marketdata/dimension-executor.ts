@@ -59,6 +59,7 @@ import {
   computeIvPercentile,
   HIS_VOLATILITY_MAX_SPAN_DAYS,
   IVP_MIN_WINDOW_TRADING_DAYS,
+  IV_HISTORY_INCREMENT_LOOKBACK_DAYS,
   splitBackfillWindows,
 } from './underlying-iv.rules.js';
 import type { EodBarPoint, FundamentalSnapshotDto } from './marketdata.types.js';
@@ -3050,6 +3051,8 @@ export class DimensionExecutorRegistry {
         // 无期权的标的**整行缺席** (port 契约: 返回长度可 < 请求长度)。这既不是成功也不是
         // 失败 —— 计 skipped 才能与真失败区分开, 且不让它被静默丢掉。
         stats.skipped += chunk.length - matched.length;
+        // #211: FR-023 的「增量」半边。**先于对表** —— 补进来的行本轮就能进自算窗口。
+        await this.appendIvHistoryIncrement(chunk, date, stats);
         // 046 T010 双算对表 (tx 外, 监控侧信道 —— 见方法注释)。
         await this.crossCheckIvPercentile(matched, date);
       } catch (err) {
@@ -3105,6 +3108,81 @@ export class DimensionExecutorRegistry {
    * 对表**失败不拖垮采集**: 它是监控侧信道, 不是采集的前置条件 (catch 内降级为 WARN)。
    * 复杂度 O(标的数) 次查询 × O(252) 计数。
    */
+  /**
+   * 046 `FR-023` 的「**增量**」半边 —— #211 修复。
+   *
+   * ## 它补的洞
+   *
+   * `underlying_iv_history` 此前**只有一条写入路径**（{@link backfillUnderlyingIvHistory}），
+   * 且只在 `mode === 'backfill'` 走 ⇒ 日更从不追加。prod 实测后果：表停在 2026-08-03 而
+   * `underlying_iv_daily` 已到 08-26，自算窗口滞后 23 天 ⇒ `us:ACN` 双算差 **5.5561pp** 撞硬门。
+   * 而那**不是 vendor 口径漂移**：同日滞后 0–1 天时两边差 0.3964 / **0.0007**pp。
+   *
+   * ## 🚫 为什么不从 `overview` 派生（那样零外呼）
+   *
+   * 2026-08-27 实证（12 只重叠行）：`history.iv ≡ daily.iv`、`history.hv ≡ daily.hv_30` **皆逐位
+   * 相同** ⇒ 派生在这两列上确实等价。但两条否决理由：
+   * 1. `overview` **不提供** `underlying_price`（见 `UnderlyingIvSnapshot`），那一列只能留空；
+   * 2. 更要命的是派生**不自愈** —— 漏一晚即永久空洞。而「不自愈」正是本缺陷的成因形状。
+   *
+   * 走同端点则口径原生一致（PoC 实证：`his_volatility` 给 `US.PEP` 08-26 的 `iv = 21.006`，
+   * 与库里 `underlying_iv_daily` 同日逐位相同），三列齐全，且滚动窗天然自愈。
+   *
+   * ## 工作集不新造
+   *
+   * 收的是调用方**同一个 `chunk`** —— 本维度已在 `ANCHOR_SCOPED_DIMENSIONS`，工作集恒为
+   * 「锚集 ∩ 在市」。🚫 MUST NOT 在此另查标的表：那就是给工作集开第二个口子，会漂且漂了不报错。
+   *
+   * ## 失败降级为留痕，而不是只打日志
+   *
+   * 它是监控侧原料，失败不该让日更这一轮变 `partial`（`stats.failed` 不动）。但 🚫 也 MUST NOT
+   * 只 `logger.warn` 就算完 —— **日志在生产上没有接收端**（#209），那恰恰是本缺陷藏了 23 天没
+   * 被发现的原因。故降级为 `failedTargets` 留痕：那一列持久、且晨报会读。
+   *
+   * 复杂度 O(工作集) 次 vendor 调用（每只一页，窗恒 ≤ 一页上限），按页节流同回填。
+   */
+  private async appendIvHistoryIncrement(
+    instruments: WorkingInstrument[],
+    date: Date,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    const to = dateOnlyStr(date);
+    const from = subtractDays(to, IV_HISTORY_INCREMENT_LOOKBACK_DAYS);
+    for (const inst of instruments) {
+      const symbol = `${inst.market}:${inst.code}`;
+      try {
+        await this.backfillPacer.pace();
+        const points = await this.underlyingIv.getIvHistoryRange({ symbol, from, to });
+        if (points.length === 0) continue;
+        await this.prisma.underlyingIvHistory.createMany({
+          // 滚动窗必然与已落行重叠 ⇒ `skipDuplicates` 是幂等的前提, 不是优化。
+          skipDuplicates: true,
+          data: points.map((p) => ({
+            instrumentId: inst.id,
+            date: toDateOnly(p.date),
+            iv: p.iv,
+            hv: p.hv,
+            underlyingPrice: p.underlyingPrice,
+          })),
+        });
+      } catch (err) {
+        stats.failedTargets.push({
+          symbol,
+          step: 'underlying_iv_history_increment',
+          error: String(err),
+        });
+        this.logger.warn(
+          `underlying_iv_history 增量失败 (不改判本轮; 滚动窗下一晚自动补回): ${JSON.stringify({
+            symbol,
+            from,
+            to,
+            error: String(err),
+          })}`,
+        );
+      }
+    }
+  }
+
   private async crossCheckIvPercentile(
     matched: { instrumentId: bigint; snapshot: UnderlyingIvSnapshot }[],
     date: Date,
@@ -3112,7 +3190,12 @@ export class DimensionExecutorRegistry {
     for (const { instrumentId, snapshot } of matched) {
       try {
         const rows = await this.prisma.underlyingIvHistory.findMany({
-          where: { instrumentId, date: { lte: date } },
+          // 🚨 `lt` 而**不是** `lte` —— MUST 排除当日行 (#211)。当日行的 `iv` 恒等于 `current`,
+          // 严格 `<` 不计它却仍占分母 ⇒ 每只标的凭空多出 1/252 = 0.3968pp 的系统性偏差。
+          // prod 实证: 08-03 (增量上线前唯一一天当日行在窗口内) 自算 220/252 而 vendor
+          // 221/252, 差**恰好一格**。增量上线前两者等价 (表里压根没有当日行), 上线后不再
+          // 等价 —— 故这一格与 `appendIvHistoryIncrement` 必须同一次改, 拆开就是修一个引一个。
+          where: { instrumentId, date: { lt: date } },
           select: { iv: true },
           orderBy: { date: 'desc' },
           take: IVP_MIN_WINDOW_TRADING_DAYS,
