@@ -98,8 +98,51 @@ function makeCheck(rows: FakeSnapshotRow[], threshold = 1): OptionSnapshotCovera
             )
             .map((r) => ({
               contractId: r.contractId,
-              contract: { code: r.contractCode, underlying: r.underlying },
+              // `underlyingInstrumentId` 是**存在性层**的输入 (#231): 当日这批行里出现过的票
+              // = 今天有行的票。真实侧由 select 多取一列拿到, 替身必须镜像, 否则新层拿到
+              // undefined 而**不会报错**, 只会静默不判 —— 正是它要防的那种塌法。
+              contract: {
+                code: r.contractCode,
+                underlying: r.underlying,
+                underlyingInstrumentId: r.underlying.id,
+              },
             }));
+        },
+      ),
+    },
+    // ── #231 存在性层用到的两个委托 ──────────────────────────────────────────────────────
+    // 🚨 替身把「名册」建模成 **fixture 里出现过、且当日仍未到期的那些票**。真实侧的名册是
+    //    `instrument(market='us' ∧ need_sync) ∧ 有未到期 option_contract` —— 替身没有
+    //    `need_sync` / 独立合约表这两个维度, 故 **`need_sync` 闸与「合约表有而快照没有」这两条
+    //    只由 IT 覆盖**（`marketdata.snapshot-integrity.it.spec.ts`, 真 PG）。此处不假装覆盖。
+    instrument: {
+      findMany: vi.fn(
+        async (args: { where: { optionContracts: { some: { expiryDate: { gte: Date } } } } }) => {
+          const asOf = iso(args.where.optionContracts.some.expiryDate.gte);
+          const byId = new Map<string, { id: bigint; market: string; code: string }>();
+          for (const r of rows) {
+            if (r.expiryDate >= asOf) byId.set(r.underlying.id.toString(), r.underlying);
+          }
+          return [...byId.values()];
+        },
+      ),
+    },
+    optionContract: {
+      findMany: vi.fn(
+        async (args: {
+          where: { underlyingInstrumentId: { in: bigint[] }; expiryDate: { gte: Date } };
+        }) => {
+          const asOf = iso(args.where.expiryDate.gte);
+          const wanted = new Set(args.where.underlyingInstrumentId.in.map((v) => v.toString()));
+          const seen = new Set<string>();
+          const out: { underlyingInstrumentId: bigint; code: string }[] = [];
+          for (const r of rows) {
+            if (!wanted.has(r.underlying.id.toString()) || r.expiryDate < asOf) continue;
+            if (seen.has(r.contractCode)) continue;
+            seen.add(r.contractCode);
+            out.push({ underlyingInstrumentId: r.underlying.id, code: r.contractCode });
+          }
+          return out;
         },
       ),
     },
@@ -118,9 +161,36 @@ function spyError(): ReturnType<typeof vi.spyOn> {
 
 const MON = '2026-06-15';
 const TUE = '2026-06-16';
+/** #231 的用例需要**第三**个交易日: 缺席要连缺两轮才撞上「基线日也没有它」。 */
+const WED = '2026-06-17';
 
 describe('OptionSnapshotCoverageCheck', () => {
   describe('🚨 逐票判定, 不是全局总数 (FR-045)', () => {
+    /**
+     * 🚨 **#231 的病灶形状**: 连缺**两轮**时, 该票在基线日也没有行 ⇒ 不进分母 ⇒ 比例层对它
+     * **无输出** ⇒ 判绿。上一条只证了「缺一轮」, 那轮基线日还有它。缺席必须走**名册**判。
+     */
+    it('🚨 连缺两轮 → 仍判 degraded (缺席走名册, 不看基线日有没有它)', async () => {
+      const pepMon = chain(PEP, MON, '2026-07-17', 10);
+      const viciMon = chain(VICI, MON, '2026-07-17', 4);
+      // MON 两票都在; TUE 只有 PEP (VICI 第一次缺); WED 仍只有 PEP (第二次缺, 且基线日 = TUE
+      // 已经没有 VICI) —— 老判据在 WED 这轮结构上判不出来。
+      const check = makeCheck(
+        [...pepMon, ...viciMon, ...carriedTo(pepMon, TUE), ...carriedTo(pepMon, WED)],
+        1,
+      );
+
+      const report = await check.evaluate(WED);
+
+      expect(report.status).toBe('degraded');
+      expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
+      // 缺席票的分母取**库内未到期合约数**(替身里 = fixture 中那 4 张), covered 恒 0。
+      expect(report.degraded[0]).toMatchObject({ expected: 4, covered: 0 });
+      // 逐票明细要能喂补救侧重采 (它按 instrumentId 直接重采)。
+      expect(report.degraded[0].instrumentId).toBe(VICI.id);
+      expect(report.degraded[0].missingContractCodes).toHaveLength(4);
+    });
+
     it('整票缺席 → 该票 ERROR, 即便全局覆盖率仍在阈值之上 (大票盖不住小票)', async () => {
       // PEP 730 行全在 + VICI 48 行整票消失 = 全局 93.8%, 阈值 0.9 下全局判据**是绿的**。
       const pepMon = chain(PEP, MON, '2026-07-17', 730);

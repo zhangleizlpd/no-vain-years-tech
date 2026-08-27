@@ -254,6 +254,65 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     expect((await runPredicate()).summary).toContain('us:VICI=0/4⚠缺');
   });
 
+  // ── #231 存在性层：名册驱动，缺席不靠历史分母 ─────────────────────────────────────────
+  /**
+   * 🚨 **本判据的病灶形状**（#231，`us:ALB` 实撞）：一只票**连缺两轮**时，它在基线日也没有行
+   * ⇒ 不进分母 ⇒ 判据对它**无输出** ⇒ ✅ 绿。与 Prometheus「实例从服务发现消失后
+   * `avg by (job)(up)` returning nothing rather than alerting」逐字同构 —— 期望源取自被监控
+   * 数据自身，数据消失把期望一起带走。
+   *
+   * ⇒ 缺席**必须**用**名册**判（`need_sync` 工作集 ∧ 有未到期合约），与历史分母无关。
+   * 承重断言 = 第二轮仍然 exit 1；第一轮绿是错的方向（那轮全局基线本来就能抓到）。
+   */
+  it('🚨 单票连缺两轮 → 第二轮仍 exit 1 (缺席走名册, 不靠基线日有没有它)', async () => {
+    const pep = await seedContracts('PEP', 10);
+    const vici = await seedContracts('VICI', 4);
+    await seedSnapshots([...pep, ...vici], shift(today, -2));
+    // 第一轮：VICI 缺席（基线日 = T-2，它在那天有行 ⇒ 老判据也抓得到）
+    await seedSnapshots(pep, shift(today, -1));
+    // 第二轮：VICI 继续缺席，而基线日已滑到 T-1 —— 那天它就没有行了
+    await seedSnapshots(pep, today);
+
+    const { exitCode, degraded } = await assertBothAgree();
+    expect(exitCode).toBe(1);
+    expect(degraded).toEqual(['us:VICI']);
+    expect((await runPredicate()).summary).toContain('us:VICI');
+  });
+
+  /**
+   * 🚨 **假阳性守卫**：名册 = 采集侧同源的工作集（`need_sync`，它是锚闸 `anchor-driven-sync-gate`
+   * 对锚表重算后的**物化结果**）。删锚 ⇒ 下一轮闸把 `need_sync` 置 false ⇒ 该票离开名册。
+   * 不挂这道闸的话，删锚之后那只票会因「名册还记得它」而永久判红。
+   */
+  it('🚨 不在工作集的票 (need_sync=false) 连缺不判红 (删锚不得变成永久假红)', async () => {
+    const pep = await seedContracts('PEP', 10);
+    const gone = await seedContracts('VICI', 4);
+    await seedSnapshots([...pep, ...gone], shift(today, -2));
+    await seedSnapshots(pep, shift(today, -1));
+    await seedSnapshots(pep, today);
+    await prisma.instrument.updateMany({ where: { code: 'VICI' }, data: { needSync: false } });
+
+    const { exitCode, degraded } = await assertBothAgree();
+    expect(exitCode).toBe(0);
+    expect(degraded).toEqual([]);
+  });
+
+  /**
+   * 🚨 **假阳性守卫**：名册要求「**有未到期合约**」。合约全到期的票本就无可采，
+   * 留在名册里等于每天假红一次 —— 同「大到期日次日不假红」那条的方向。
+   */
+  it('🚨 名册里合约全已到期的票 → 不进名册, 不判红', async () => {
+    const pep = await seedContracts('PEP', 10);
+    const dead = await seedContracts('VICI', 4, shift(today, -1)); // 昨天到期
+    await seedSnapshots([...pep, ...dead], shift(today, -2));
+    await seedSnapshots(pep, shift(today, -1));
+    await seedSnapshots(pep, today);
+
+    const { exitCode, degraded } = await assertBothAgree();
+    expect(exitCode).toBe(0);
+    expect(degraded).toEqual([]);
+  });
+
   /**
    * 🚨 这条同时是**阈值 drift 的绊线**：9/10 = 90%。阈值 100% ⇒ 两边都判红；任一侧被悄悄放宽到
    * 0.9 以下，`assertBothAgree` 立刻不一致。
