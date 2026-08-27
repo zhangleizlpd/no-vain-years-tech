@@ -2,6 +2,18 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.38.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.37.2...server-v0.38.0) (2026-08-27)
+
+
+### Features
+
+* **ops:** 非 marketdata 侧应用状态探针 —— 补上 optionsdesk / outbox 的进程外监控 ([#224](https://github.com/zhangleizlpd/no-vain-years-tech/issues/224)) ([b2b9722](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b2b9722a7f7e47964c24200496ea5ccccf5e8bcf))
+
+
+### Code Refactoring
+
+* **marketdata:** [#209](https://github.com/zhangleizlpd/no-vain-years-tech/issues/209) 第 3 步 contract —— drop sync_run.failed_targets, 三步法收官 ([#222](https://github.com/zhangleizlpd/no-vain-years-tech/issues/222)) ([1cd336c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/1cd336ccf818f753cb3bb9653b6088341eabf82d))
+
 ## [0.37.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.37.1...server-v0.37.2) (2026-08-27)
 
 
