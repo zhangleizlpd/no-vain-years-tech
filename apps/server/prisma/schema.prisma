@@ -1348,8 +1348,11 @@ model SyncRun {
   // 若用 `@default(0)` 非空, 漏接一处就等于让那个维度**恒报零写入** = 假警报, 且看起来
   // 像真故障 —— 那正是「库里没有的即为假」换个地方再犯一遍。
   written       Int?
-  // #209 三步法 **expand 步**: 本列在本步与 `findings` **双写**, 读侧仍可读它。
-  // migrate 步把读侧切到 `findings`、停双写, contract 步 drop 本列。别在本列上加新写入点。
+  // #209 三步法 **migrate 步已完成**: 本列此刻**无写者、无读者** —— 应用只写 `findings`,
+  // 读侧 (`ops/jobs/marketdata-sync-report.sql`) 只读 `findings`, 历史行已回填
+  // (migration 20260827_1207)。留着它只为让「回滚到 expand 步的那个镜像」仍写得下去 ——
+  // 那个镜像双写两列。contract 步 drop 它。
+  // 🚫 别在本列上加新写入点, 也别再读它。
   failedTargets Json?     @map("failed_targets")
   // `failed_targets` 的新名字 (#209)。
   //
