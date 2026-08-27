@@ -54,6 +54,14 @@ WORKDIR /app
 # already-fixed base-image CVEs don't ship in the runtime image (e.g.
 # CVE-2026-45447 HIGH — OpenSSL PKCS7_verify use-after-free, fixed in
 # libssl3/libcrypto3 3.5.7-r0). Stays within the pinned node:22-alpine minor.
+#
+# 🚨 这一行**只有在 `runner` stage 不吃构建缓存时才成立**。指令字符串恒定 ⇒ 一旦上游
+# 有 `cache-from`，BuildKit 每次都判 `CACHED` 而**不执行**它，镜像的补丁水平就被冻在
+# 该层第一次构建那天 —— 措施还写在这里，但已经不生效了，且**不会报错**。
+# 2026-08-27 实证：CVE-2026-14456 在 main 连红两轮，构建日志 `#25 … CACHED`，镜像里是
+# `3.5.7-r0`（base 出厂 3.5.6-r0、当时最新 3.5.8-r0）—— 那个中间版本号就是冻结日期的指纹。
+# ⇒ 保障在 `.github/workflows/ci.yml` 的 `no-cache-filters: runner`。**动这一行前先看那里**；
+#   把 runner 放回缓存 = 把这条 CVE 防线悄悄关掉。
 RUN apk upgrade --no-cache
 
 # Strip global npm shipped with node:22-alpine — we use pnpm exclusively at

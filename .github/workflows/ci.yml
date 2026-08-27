@@ -171,6 +171,16 @@ jobs:
           tags: nvy/server:ci
           platforms: linux/amd64
           cache-from: type=gha
+          # 🚨 `runner` stage **不吃缓存** —— 它含 `RUN apk upgrade --no-cache`，而那条指令的
+          # 字符串永远不变 ⇒ 配上 `cache-from` 后 BuildKit 每次都判 `CACHED`、**根本不执行**，
+          # 于是镜像的系统补丁水平被冻在「这一层第一次构建那天」。
+          # 2026-08-27 实证：`CVE-2026-14456`(HIGH, openssl DoS) 在 main 上连红两轮，
+          # 构建日志里 `#25 [runner 3/10] RUN apk upgrade --no-cache` → `#25 CACHED`；
+          # 镜像里是 `libcrypto3 3.5.7-r0` —— 既不是 base 出厂的 3.5.6-r0、也不是当前的
+          # 3.5.8-r0，正是上一次该层真正执行那天的版本指纹。
+          # ⇒ 这是**静默退化**：措施还在 Dockerfile 里写着，但已经很久没生效了。
+          # `runner` 只有 apk + 几个 COPY/chmod，重建代价是秒级；builder stage 照旧吃缓存。
+          no-cache-filters: runner
           # 🚨 `mode=max` 会把**每一个中间层**都写进 Actions 缓存，且每次 main 推送产生新一代。
           # 2026-08-02 实测：仓库 Actions 缓存 **11.17 GB / 上限 10 GB**、180 个条目，绝大多数是
           # 本步产生的 `buildkit-blob-*`（单个 261MB/237MB/131MB…）。超限后 GitHub 按 LRU 驱逐，
