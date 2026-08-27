@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — mobile hermetic e2e（网络边界全 mock + 稳定 testID + 断言对应 tasks 编号）。索引见 docs/conventions/golden-sample-registry.md，纪律见 .claude/rules/mobile-e2e-hermetic.md。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import type { AnchorResponse } from '@nvy/api-client';
 

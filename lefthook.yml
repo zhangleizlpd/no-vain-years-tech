@@ -313,6 +313,14 @@ pre-commit:
       glob: '{docs/conventions/*.md,CLAUDE.md,.claude/rules/*.md,scripts/checks/check-convention-orphan.ts}'
       run: pnpm tsx scripts/checks/check-convention-orphan.ts
 
+    golden-sample-registry-check:
+      tags: docs governance
+      # golden-sample-registry.md ↔ 代码 `// GOLDEN SAMPLE` banner 双向一致（表里的必有 banner、
+      # 有 banner 的必在表里）。两向都 100% 静默，故机器守；glob 含 checker 自身与注册表，
+      # banner 文件本身改动由 CI gate-checks 全扫兜底（--no-verify 绕不过）。
+      glob: '{docs/conventions/golden-sample-registry.md,scripts/checks/check-golden-sample-registry.ts}'
+      run: pnpm tsx scripts/checks/check-golden-sample-registry.ts
+
     skill-snippets-check:
       tags: docs governance
       # .claude/skills 下的代码块是「照抄即跑」的契约 —— skill 正文对执行方说的就是

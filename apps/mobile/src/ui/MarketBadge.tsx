@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — UI 列表 / badge（组件 + *.rules.ts 纯函数分离）。索引见 docs/conventions/golden-sample-registry.md。
 import { Text, View } from 'react-native';
 
 import { marketBadgeLabel } from './market-badge.rules';

@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — mobile 数据层另一形态：数据 hook 自持 list + mutation + 共置失效。索引见 docs/conventions/golden-sample-registry.md，详版见 mobile-impl-playbook § 8。
 // 028 T007 — 会话列表 hook（抽屉历史列表数据源）。
 //
 // 职责：cursor 分页累加（list）+ 标题搜索防抖（q）+ rename / delete mutation + 失效。

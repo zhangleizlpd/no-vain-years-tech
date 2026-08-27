@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — 契约冒烟（生成客户端打真 server + 从另一端点读回证落库 + 自清理保幂等）。索引见 docs/conventions/golden-sample-registry.md，详版见 mobile-impl-playbook § 5。
 /**
  * 045 optionsdesk 契约冒烟（Constitution §V 两层验证之二）。
  *

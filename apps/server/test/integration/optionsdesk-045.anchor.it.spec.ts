@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — 测试 Medium 档 server IT（真 PG，从 isolated-db.ts 入口取库，别自己起容器）。索引见 docs/conventions/golden-sample-registry.md，纪律见 testing.md §4。
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { recordingOutboxPublisher } from '../_support/outbox-stub';

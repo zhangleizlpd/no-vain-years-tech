@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — 测试 Small 档（纯逻辑单测：零外部依赖、与源码 colocate）。索引见 docs/conventions/golden-sample-registry.md，纪律见 testing.md §4。
 import { describe, it, expect } from 'vitest';
 import {
   RADAR_PAGE_SIZE_DEFAULT,
