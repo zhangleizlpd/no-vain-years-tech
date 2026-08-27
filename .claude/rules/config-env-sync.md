@@ -20,7 +20,7 @@ paths:
 
 ## `.env.example` 是什么（别误解）
 
-运行时**谁都不加载它**。它只有两个职责：① `cp .env.example .env` onboarding 模板；② 权威 key 清单，`scripts/checks/check-env-sync.ts` 拿它 diff。本地 `nx serve` 读 `apps/server/.env`（真值，gitignored）；**测试不读 `.env` 也不读 `.env.example`**，IT/e2e boot 吃 `vitest.config.ts` `test.env` + harness 里写死的占位。
+运行时**谁都不加载它**。它只有两个职责：① `cp .env.example .env` onboarding 模板；② 权威 key 清单，`scripts/checks/check-env-sync.ts` 拿它 diff。本地 `nx serve` 读 `apps/server/.env`（真值，gitignored）；**测试不依赖 `.env` / `.env.example`**：IT/e2e boot 靠 `vitest.config.ts` `test.env` + harness 写死的占位钉死（shell 或 `.env` 里若有同名 key 只会填缺失，钉住的值不受影响；三层机制见 [test-environment-matrix.md §2](../../docs/conventions/test-environment-matrix.md)）。
 
 ## 加一个 server env var → 9 个位置（缺一即埋雷）
 

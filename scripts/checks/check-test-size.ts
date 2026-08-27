@@ -258,10 +258,10 @@ function main(): void {
     console.error('\nFix (docs/conventions/testing.md §4 has the full decision flow):');
     console.error('  small-stays-small        → rename to `<name>.it.spec.ts` (keep it in place —');
     console.error(
-      '                             apps/server/test/ is still not linted (typecheck covered',
+      '                             src/*.it.spec.ts stay colocated by design, testing.md §3.1;',
     );
     console.error(
-      '                             since 2026-08-03), per matrix T-2), then take the DB from',
+      '                             test/** is typechecked + linted too), then take the DB from',
     );
     console.error(
       '                             setupIsolatedDb / setupIsolatedStores / setupEmptyDb',
