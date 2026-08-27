@@ -8,13 +8,17 @@ import { PrismaService } from '../security/prisma.service.js';
 import { DIMENSION_KEYS, type DimensionKey } from './dimension-executor.js';
 import { MARKETDATA_QUEUE_REDIS } from './marketdata-queue-connection.js';
 import {
-  MARKETDATA_SYNC_QUEUE,
+  DEFAULT_QUEUE_LANE,
   MARKETDATA_WORKER_DISABLED,
   MarketdataSyncQueue,
+  queueNameForLane,
+  type QueueLane,
 } from './marketdata-sync.queue.js';
 import {
   assembleSyncFlow,
+  assertHardEdgesWithinLane,
   deriveExecutionOrder,
+  type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import { assertClosedSessionForManualSync } from './manual-sync-session-guard.js';
@@ -143,10 +147,65 @@ export async function waitJobExitCode(
   }
 }
 
+/** 一个待等待的树根 / 单 job, 连同它所在的 lane (决定用哪个 QueueEvents 等)。 */
+export interface LaneJob {
+  job: Job;
+  lane: QueueLane;
+}
+
+/**
+ * 等待**多条 lane** 的根 job, 取最差退出码 (#210)。
+ *
+ * 退出码语义沿用 {@link waitJobExitCode}: 0 全绿 / 1 有失败 / 2 等待超时。取 `Math.max` ⇒
+ * 任一超时即 2、任一失败即 1 —— **禁止**用「最后一个」或「第一个」的码, 那会让另一条 lane
+ * 的失败在退出码上消失, 而运维只看退出码。
+ *
+ * 并行等待而非顺序: 两条 lane 本就并行执行, 顺序等会把 timeout 预算变成两倍墙钟。
+ */
+export async function waitLaneJobsExitCode(
+  roots: readonly LaneJob[],
+  queueEventsFor: (lane: QueueLane) => QueueEvents,
+  timeoutMs: number,
+  logger: Logger,
+): Promise<number> {
+  const codes = await Promise.all(
+    roots.map((r) => waitJobExitCode(r.job, queueEventsFor(r.lane), timeoutMs, logger)),
+  );
+  return codes.reduce((worst, c) => Math.max(worst, c), 0);
+}
+
+/**
+ * 进程级 per-lane QueueEvents 缓存 + 统一关闭 —— 两个 CLI entry 共用。
+ * 懒建: 只有真的用到那条 lane 才连 Redis。
+ */
+export function createLaneQueueEvents(connection: Redis): {
+  queueEventsFor: (lane: QueueLane) => QueueEvents;
+  closeAll: () => Promise<void>;
+} {
+  const cache = new Map<QueueLane, QueueEvents>();
+  return {
+    queueEventsFor: (lane) => {
+      const hit = cache.get(lane);
+      if (hit !== undefined) return hit;
+      const created = new QueueEvents(queueNameForLane(lane), { connection });
+      cache.set(lane, created);
+      return created;
+    },
+    closeAll: async () => {
+      for (const events of cache.values()) await events.close();
+    },
+  };
+}
+
 export interface TriggerDeps {
   prisma: PrismaService;
   syncQueue: MarketdataSyncQueue;
-  queueEvents: QueueEvents;
+  /**
+   * 按 lane 取 QueueEvents (#210)。**不能再是单个实例** —— `waitUntilFinished` 必须用**该
+   * job 所在队列**的 QueueEvents, 拿 default 的去等 futu lane 的 job 会一直等到超时退 2,
+   * 那是个看起来像「worker 没在线」的假象。
+   */
+  queueEventsFor: (lane: QueueLane) => QueueEvents;
   cliWaitTimeoutMs: number;
 }
 
@@ -172,9 +231,13 @@ export async function executeTrigger(
   // retryMax 从真相层载 (attempts 注入语义与 tick 同源); 缺行 = seed 残缺, fail-fast。
   const rows = await deps.prisma.syncDimension.findMany({
     where: { dimensionKey: { in: keys } },
-    select: { dimensionKey: true, retryMax: true, marketScope: true },
+    select: { dimensionKey: true, retryMax: true, marketScope: true, queueLane: true },
   });
   const retryByKey = new Map(rows.map((r) => [r.dimensionKey, r.retryMax]));
+  const laneByKey = new Map(
+    rows.map((r) => [r.dimensionKey, deps.syncQueue.resolveLane(r.queueLane)]),
+  );
+  const laneOf = (key: string): QueueLane => laneByKey.get(key) ?? DEFAULT_QUEUE_LANE;
   const missing = keys.filter((k) => !retryByKey.has(k));
   if (missing.length > 0) {
     throw new Error(`sync_dimension 缺行: ${missing.join(',')} (seed 残缺或维度未登记)`);
@@ -201,7 +264,7 @@ export async function executeTrigger(
   assertClosedSessionForManualSync(rows, now);
 
   const triggeredBy = args.cascade ? ('cascade' as const) : ('cli' as const);
-  let job: Job;
+  const roots: LaneJob[] = [];
   if (keys.length > 1) {
     // cascade 多维度 → 复用 D3 装配器组 flow, 等待树根 (根终态 = 整链终态)。
     // 全序派生与 tick 同源 (019 T005): 全维度行 priority + 边 → Kahn。
@@ -212,8 +275,16 @@ export async function executeTrigger(
       edges,
       new Map(priorities.map((p) => [p.dimensionKey, p.priority])),
     );
-    const tree = assembleSyncFlow(
-      keys.map((k) => ({
+    // #210: cascade 闭包**可能跨 lane** (如 universe→hk_option_contract 那条 soft 边) ⇒
+    // 与 tick 同样按 lane 分组、每条 lane 各一棵树, 然后等**全部**树根。
+    // 🚫 别退化成「跨 lane 就报错让人分两次跑」—— `trigger --dimension hk_option_contract`
+    //    是常规运维动作, 拿不到才是问题。
+    assertHardEdgesWithinLane(edges, laneByKey);
+    const inputsByLane = new Map<QueueLane, FlowDimensionInput[]>();
+    for (const k of keys) {
+      const lane = laneOf(k);
+      const bucket = inputsByLane.get(lane) ?? [];
+      bucket.push({
         payload: {
           dimensionKey: k as DimensionKey,
           mode: 'delta' as const,
@@ -221,16 +292,23 @@ export async function executeTrigger(
           triggeredBy,
         },
         opts: deps.syncQueue.jobOpts({ retryMax: retryByKey.get(k) as number }),
-      })),
-      edges,
-      executionOrder,
-    );
-    job = (await deps.syncQueue.enqueueFlow(tree)).job;
+        queueName: queueNameForLane(lane),
+      });
+      inputsByLane.set(lane, bucket);
+    }
+    for (const [lane, inputs] of inputsByLane) {
+      const tree = assembleSyncFlow(inputs, edges, executionOrder);
+      roots.push({ job: (await deps.syncQueue.enqueueFlow(tree)).job, lane });
+    }
   } else {
-    job = await deps.syncQueue.enqueueDimensionJob(
-      { dimensionKey: args.dimension, mode: 'delta', asOf: asOfOf(args.dimension), triggeredBy },
-      { retryMax: retryByKey.get(args.dimension) as number },
-    );
+    const lane = laneOf(args.dimension);
+    roots.push({
+      job: await deps.syncQueue.enqueueDimensionJob(
+        { dimensionKey: args.dimension, mode: 'delta', asOf: asOfOf(args.dimension), triggeredBy },
+        { retryMax: retryByKey.get(args.dimension) as number, lane },
+      ),
+      lane,
+    });
   }
   // 🚨 逐维度打出 `asOf`: 盘中跑现在会**目标上一场** ⇒ 工作集多半已落库 ⇒ 一轮 `scanned=0`
   //    的空跑。不把日期打出来, 那就又是一个「全绿但什么都没做」的现场。
@@ -243,7 +321,7 @@ export async function executeTrigger(
       timeoutMs,
     })}`,
   );
-  return waitJobExitCode(job, deps.queueEvents, timeoutMs, logger);
+  return waitLaneJobsExitCode(roots, deps.queueEventsFor, timeoutMs, logger);
 }
 
 /** NestFactory 接线 entry: sentinel 前置 → 起 DI → executeTrigger → close。 */
@@ -254,21 +332,21 @@ export async function runTrigger(argv: string[]): Promise<number> {
     logger: ['error', 'warn', 'log'],
   });
   const connection = app.get<Redis>(MARKETDATA_QUEUE_REDIS);
-  const queueEvents = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection });
+  const { queueEventsFor, closeAll } = createLaneQueueEvents(connection);
   try {
     const cfg = app.get<MarketdataSyncConfig>(marketdataSyncConfig.KEY);
     return await executeTrigger(
       {
         prisma: app.get(PrismaService),
         syncQueue: app.get(MarketdataSyncQueue),
-        queueEvents,
+        queueEventsFor,
         cliWaitTimeoutMs: cfg.cliWaitTimeoutMs,
       },
       parseTriggerArgs(argv),
       new Date(),
     );
   } finally {
-    await queueEvents.close();
+    await closeAll();
     await app.close();
   }
 }

@@ -1,6 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { QueueEvents, type Job } from 'bullmq';
+import { QueueEvents } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { AppModule } from '../app/app.module.js';
 import { marketdataSyncConfig, type MarketdataSyncConfig } from '../config/marketdata.config.js';
@@ -11,14 +11,22 @@ import { splitBackfillWindows } from './underlying-iv.rules.js';
 import { VOLATILITY_WINDOWS } from './lixinger-volatility.adapter.js';
 import { MARKETDATA_QUEUE_REDIS } from './marketdata-queue-connection.js';
 import {
-  MARKETDATA_SYNC_QUEUE,
+  DEFAULT_QUEUE_LANE,
   MARKETDATA_WORKER_DISABLED,
   MarketdataSyncQueue,
+  queueNameForLane,
+  type QueueLane,
 } from './marketdata-sync.queue.js';
-import { waitJobExitCode } from './marketdata-trigger.cli.js';
+import {
+  createLaneQueueEvents,
+  waitLaneJobsExitCode,
+  type LaneJob,
+} from './marketdata-trigger.cli.js';
 import {
   assembleSyncFlow,
+  assertHardEdgesWithinLane,
   deriveExecutionOrder,
+  type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import { assertClosedSessionForManualSync } from './manual-sync-session-guard.js';
@@ -96,7 +104,8 @@ export interface BackfillDeps {
   prisma: PrismaService;
   /** `--factors` transient 锚定的 vendor backward 源 (020 T009)。 */
   syncQueue: MarketdataSyncQueue;
-  queueEvents: QueueEvents;
+  /** 按 lane 取 QueueEvents (#210) —— 理由见 `TriggerDeps.queueEventsFor`。 */
+  queueEventsFor: (lane: QueueLane) => QueueEvents;
   cliWaitTimeoutMs: number;
   backfillDefaultHistoryDays: number;
 }
@@ -125,7 +134,7 @@ export async function executeBackfill(
   const keys = args.dimension ? [args.dimension] : [...DIMENSION_KEYS];
   const rows = await deps.prisma.syncDimension.findMany({
     where: { dimensionKey: { in: keys } },
-    select: { dimensionKey: true, retryMax: true, marketScope: true },
+    select: { dimensionKey: true, retryMax: true, marketScope: true, queueLane: true },
   });
   const retryByKey = new Map(rows.map((r) => [r.dimensionKey, r.retryMax]));
 
@@ -183,7 +192,15 @@ export async function executeBackfill(
     noSkipComplete: args.noSkipComplete, // force-refetch: 绕过 fundamental skip-complete 游标。
     triggeredBy: 'cli' as const,
   });
-  let job: Job;
+  // 🚨 lane 求值放在 dry-run 早返**之后**: dry-run 的契约是「不入队、不触碰 syncQueue」
+  //    (spec 里那个 `syncQueue: {}` 就是这条契约的机器表达)。放在前面会让 --dry-run 也去
+  //    调 `syncQueue.resolveLane`, 把一条只读路径变成有依赖的路径。
+  const laneByKey = new Map(
+    rows.map((r) => [r.dimensionKey, deps.syncQueue.resolveLane(r.queueLane)]),
+  );
+  const laneOf = (key: string): QueueLane => laneByKey.get(key) ?? DEFAULT_QUEUE_LANE;
+
+  const roots: LaneJob[] = [];
   if (keys.length > 1) {
     // 全维度组 flow (D3 装配器, seed 边语义与 tick 同源), 等待树根 = 整链终态。
     const edges = (await deps.prisma.syncDependency.findMany({
@@ -197,21 +214,39 @@ export async function executeBackfill(
       edges,
       new Map(priorities.map((p) => [p.dimensionKey, p.priority])),
     );
-    const tree = assembleSyncFlow(
-      keys.map((k) => ({
+    // #210: 全维度 backfill 必然跨 lane ⇒ 与 tick / trigger 同样按 lane 分组各装一棵树。
+    assertHardEdgesWithinLane(edges, laneByKey);
+    const inputsByLane = new Map<QueueLane, FlowDimensionInput[]>();
+    for (const k of keys) {
+      const lane = laneOf(k);
+      const bucket = inputsByLane.get(lane) ?? [];
+      bucket.push({
         payload: payload(k as DimensionKey),
         opts: deps.syncQueue.jobOpts({ retryMax: retryByKey.get(k) as number }),
-      })),
-      edges,
-      executionOrder,
-    );
-    job = (await deps.syncQueue.enqueueFlow(tree)).job;
+        queueName: queueNameForLane(lane),
+      });
+      inputsByLane.set(lane, bucket);
+    }
+    for (const [lane, inputs] of inputsByLane) {
+      const tree = assembleSyncFlow(inputs, edges, executionOrder);
+      roots.push({ job: (await deps.syncQueue.enqueueFlow(tree)).job, lane });
+    }
   } else {
-    job = await deps.syncQueue.enqueueDimensionJob(payload(keys[0] as DimensionKey), {
-      retryMax: retryByKey.get(keys[0] as string) as number,
+    const lane = laneOf(keys[0] as string);
+    roots.push({
+      job: await deps.syncQueue.enqueueDimensionJob(payload(keys[0] as DimensionKey), {
+        retryMax: retryByKey.get(keys[0] as string) as number,
+        lane,
+      }),
+      lane,
     });
   }
-  return waitJobExitCode(job, deps.queueEvents, args.timeoutMs ?? deps.cliWaitTimeoutMs, logger);
+  return waitLaneJobsExitCode(
+    roots,
+    deps.queueEventsFor,
+    args.timeoutMs ?? deps.cliWaitTimeoutMs,
+    logger,
+  );
 }
 
 /**
@@ -448,14 +483,14 @@ export async function runBackfill(argv: string[]): Promise<number> {
     logger: ['error', 'warn', 'log'],
   });
   const connection = app.get<Redis>(MARKETDATA_QUEUE_REDIS);
-  const queueEvents = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection });
+  const { queueEventsFor, closeAll } = createLaneQueueEvents(connection);
   try {
     const cfg = app.get<MarketdataSyncConfig>(marketdataSyncConfig.KEY);
     return await executeBackfill(
       {
         prisma: app.get(PrismaService),
         syncQueue: app.get(MarketdataSyncQueue),
-        queueEvents,
+        queueEventsFor,
         cliWaitTimeoutMs: cfg.cliWaitTimeoutMs,
         backfillDefaultHistoryDays: cfg.backfillDefaultHistoryDays,
       },
@@ -463,7 +498,7 @@ export async function runBackfill(argv: string[]): Promise<number> {
       new Date(),
     );
   } finally {
-    await queueEvents.close();
+    await closeAll();
     await app.close();
   }
 }

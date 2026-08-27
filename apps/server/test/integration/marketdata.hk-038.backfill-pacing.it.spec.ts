@@ -161,7 +161,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
     return {
       prisma,
       syncQueue: queue,
-      queueEvents: events,
+      queueEventsFor: () => events,
       cliWaitTimeoutMs: 60_000,
       backfillDefaultHistoryDays: 365,
     };
@@ -339,7 +339,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
           markets: ['hk'],
           triggeredBy: 'cli',
         },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       const jobB = await queue.enqueueDimensionJob(
         {
@@ -349,7 +349,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
           markets: ['cn'],
           triggeredBy: 'tick',
         },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await Promise.all([
         jobA.waitUntilFinished(events, 30_000),

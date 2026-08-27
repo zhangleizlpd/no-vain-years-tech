@@ -98,7 +98,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
     return {
       prisma,
       syncQueue: queue,
-      queueEvents: events,
+      queueEventsFor: () => events,
       cliWaitTimeoutMs: 60_000,
       backfillDefaultHistoryDays: 365,
     };

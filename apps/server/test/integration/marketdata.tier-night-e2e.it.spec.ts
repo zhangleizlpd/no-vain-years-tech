@@ -304,7 +304,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
           maxEodInstruments: 3,
           triggeredBy: 'cli',
         },
-        { retryMax: 2 },
+        { retryMax: 2, lane: 'default' },
       );
       await eodJob.waitUntilFinished(events, 30_000);
 

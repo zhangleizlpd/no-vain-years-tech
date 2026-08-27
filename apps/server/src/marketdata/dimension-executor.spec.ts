@@ -8,7 +8,11 @@ import {
   subtractDays,
   type DimensionKey,
 } from './dimension-executor.js';
-import { deriveExecutionOrder, type SyncDependencyEdge } from './sync-flow-assembler.js';
+import {
+  assertHardEdgesWithinLane,
+  deriveExecutionOrder,
+  type SyncDependencyEdge,
+} from './sync-flow-assembler.js';
 import type { SyncRunFinding } from './sync-run.recorder.js';
 import { IV_HISTORY_INCREMENT_LOOKBACK_DAYS } from './underlying-iv.rules.js';
 import type { UnderlyingIvSnapshot } from './underlying-iv.port.js';
@@ -4576,6 +4580,47 @@ const LIVE_SEED_EDGES: SyncDependencyEdge[] = [
   { upstream: 'universe', downstream: 'hk_underlying_iv_daily', mode: 'soft' },
   { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'hard' },
 ];
+
+/**
+ * seed 现状快照 (marketdata.sync_dimension.queue_lane, migration 20260827_1817)。
+ * 打 futu shim 的 8 个维度; 其余落 default (DEFAULT 'default')。
+ */
+const LIVE_SEED_FUTU_LANE = new Set<string>([
+  'earnings_event',
+  'hk_option_contract',
+  'hk_option_daily_snapshot',
+  'hk_underlying_iv_daily',
+  'option_contract',
+  'option_daily_snapshot',
+  'underlying_iv_daily',
+  'us_equity_bar',
+]);
+
+const LIVE_SEED_LANES = new Map<string, string>(
+  [...LIVE_SEED_PRIORITIES.keys()].map((k) => [k, LIVE_SEED_FUTU_LANE.has(k) ? 'futu' : 'default']),
+);
+
+describe('#210 lane 归属守卫 (seed 快照)', () => {
+  // 🚨 这条守的是**同一个 bug 的第三次**: 「链发现失败必须断下游」已经因为两端跨 tick 静默
+  //    失效过一次 (从上线到 #210 一次都没装配)。跨 lane 是它能再失效一次的第二条路 ——
+  //    分进两棵树, `failParentOnFailure` 同样装不上, 同样全绿。
+  //    ⇒ 新增 futu 维度并给它连一条指向 default lane 维度的 hard 边, 本例必红。
+  it('seed 里每条 hard 边的两端都同 lane', () => {
+    expect(() => assertHardEdgesWithinLane(LIVE_SEED_EDGES, LIVE_SEED_LANES)).not.toThrow();
+  });
+
+  it('两条 lane 都非空 —— 全落 default 说明 seed 没生效, 拆 lane 等于没做', () => {
+    const lanes = [...LIVE_SEED_LANES.values()];
+    expect(lanes.filter((l) => l === 'futu').length).toBe(LIVE_SEED_FUTU_LANE.size);
+    expect(lanes.some((l) => l === 'default')).toBe(true);
+  });
+
+  it('futu lane 名单里的键都在 seed priority 快照里 (改名 / 删维度会让名单悄悄失效)', () => {
+    for (const key of LIVE_SEED_FUTU_LANE) {
+      expect(LIVE_SEED_PRIORITIES.has(key)).toBe(true);
+    }
+  });
+});
 
 describe('047 T003 三个新维度注册 + 依赖拓扑守卫', () => {
   const order = deriveExecutionOrder(LIVE_SEED_EDGES, LIVE_SEED_PRIORITIES);

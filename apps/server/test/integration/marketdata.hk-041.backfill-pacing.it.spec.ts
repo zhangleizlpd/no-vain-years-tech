@@ -272,7 +272,7 @@ describe('041 T017 US 回填 pacing + 续跑 + 无回归 (Testcontainers PG+Redi
     return {
       prisma,
       syncQueue: queue,
-      queueEvents: events,
+      queueEventsFor: () => events,
       cliWaitTimeoutMs: 60_000,
       backfillDefaultHistoryDays: 3650,
     };

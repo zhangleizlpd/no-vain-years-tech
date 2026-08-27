@@ -96,7 +96,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
   }
 
   function buildDeps(queue: MarketdataSyncQueue, events: QueueEvents): TriggerDeps {
-    return { prisma, syncQueue: queue, queueEvents: events, cliWaitTimeoutMs: 30_000 };
+    return { prisma, syncQueue: queue, queueEventsFor: () => events, cliWaitTimeoutMs: 30_000 };
   }
 
   it('① 成功: trigger universe → job 完成 → 退出码 0 + SyncRun sync:universe success', async () => {
@@ -299,7 +299,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
       // 自动 job (tick 形态直入队) 与 CLI trigger 并发提交 → 同 queue 串行消费。
       const autoJob = await queue.enqueueDimensionJob(
         { dimensionKey: 'profile', mode: 'delta', asOf: '2026-06-03', triggeredBy: 'tick' },
-        { retryMax: 3 },
+        { retryMax: 3, lane: 'default' },
       );
       const [, code] = await Promise.all([
         autoJob.waitUntilFinished(events, 30_000),

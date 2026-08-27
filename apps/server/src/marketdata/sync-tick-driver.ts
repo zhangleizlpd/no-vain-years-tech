@@ -5,11 +5,18 @@ import { marketdataSyncConfig, type MarketdataSyncConfig } from '../config/marke
 import { PrismaService } from '../security/prisma.service.js';
 import { CalendarHitCheck } from './calendar-hit-check.js';
 import type { DimensionKey } from './dimension-executor.js';
-import { MarketdataSyncQueue } from './marketdata-sync.queue.js';
+import {
+  DEFAULT_QUEUE_LANE,
+  MarketdataSyncQueue,
+  queueNameForLane,
+  type QueueLane,
+} from './marketdata-sync.queue.js';
 import { SyncRunRecorder } from './sync-run.recorder.js';
 import {
   assembleSyncFlow,
+  assertHardEdgesWithinLane,
   deriveExecutionOrder,
+  type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import { userToday } from './session-clock.js';
@@ -126,8 +133,18 @@ export class SyncTickDriver {
         edges as SyncDependencyEdge[],
         new Map(priorities.map((p) => [p.dimensionKey, p.priority])),
       );
-      const tree = assembleSyncFlow(
-        toFire.map((w) => ({
+      // #210 lane 分组: **每条 lane 各装一棵树、各自入队**。
+      // 🚨 不能把跨 lane 的 won 集装成一棵树 —— parent 会等另一条 lane 的 child, 等于把队头
+      //    阻塞从队列层原样搬到 flow 层, 且更隐蔽 (`assembleSyncFlow` 已就此设门)。
+      // 📌 跨 lane 的 **soft** 边随之失去约束力, 这是**预期**: soft 边只定执行序, 而「跨 lane
+      //    互不排队」正是拆 lane 的目的。只有 hard 边的失败传播是语义, 丢了不响 ⇒ 下面这道门。
+      const laneByKey = await this.resolveLanes(toFire);
+      assertHardEdgesWithinLane(edges as SyncDependencyEdge[], laneByKey);
+      const inputsByLane = new Map<QueueLane, FlowDimensionInput[]>();
+      for (const w of toFire) {
+        const lane = laneByKey.get(w.dimensionKey) ?? DEFAULT_QUEUE_LANE;
+        const bucket = inputsByLane.get(lane) ?? [];
+        bucket.push({
           payload: {
             dimensionKey: w.dimensionKey as DimensionKey,
             mode: 'delta' as const,
@@ -135,11 +152,15 @@ export class SyncTickDriver {
             triggeredBy: 'tick' as const,
           },
           opts: this.syncQueue.jobOpts({ retryMax: w.retryMax }),
-        })),
-        edges as SyncDependencyEdge[],
-        executionOrder,
-      );
-      await this.syncQueue.enqueueFlow(tree);
+          queueName: queueNameForLane(lane),
+        });
+        inputsByLane.set(lane, bucket);
+      }
+      for (const inputs of inputsByLane.values()) {
+        await this.syncQueue.enqueueFlow(
+          assembleSyncFlow(inputs, edges as SyncDependencyEdge[], executionOrder),
+        );
+      }
       return { ...claim, fired: toFire.map((w) => w.dimensionKey) };
     } catch (err) {
       // 不可表达拓扑 (装配 throw) / 入队失败: 禁静默 — 结构化 ERROR (FR-S17 出口)。
@@ -182,6 +203,18 @@ export class SyncTickDriver {
       }
     }
     return out;
+  }
+
+  /**
+   * 逐 won 维度取其生效 lane (#210)。灰度 flag 的判据收在 `syncQueue.resolveLane` 一处,
+   * 本类不自读 `cfg.futuLaneEnabled` —— 同一判据两处表达迟早分叉。
+   */
+  private async resolveLanes(fireNow: TickWonDimension[]): Promise<Map<string, QueueLane>> {
+    const rows = await this.prisma.syncDimension.findMany({
+      where: { dimensionKey: { in: fireNow.map((w) => w.dimensionKey) } },
+      select: { dimensionKey: true, queueLane: true },
+    });
+    return new Map(rows.map((r) => [r.dimensionKey, this.syncQueue.resolveLane(r.queueLane)]));
   }
 
   private async tradingDayGate(

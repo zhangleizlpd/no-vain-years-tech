@@ -181,29 +181,81 @@ export type MarketdataSyncJobPayload = DimensionJobPayload | AnchorColdStartJobP
  */
 @Injectable()
 export class MarketdataSyncQueue implements OnModuleDestroy {
-  readonly queue: Queue;
+  /**
+   * lane → Queue, **懒建**。灰度关时 `resolveLane()` 恒返 default ⇒ futu lane 从不被请求
+   * ⇒ Redis 里**不会出现**它的任何 key。这是「回滚 = 翻 flag」能成立的另一半。
+   */
+  private readonly queues = new Map<QueueLane, Queue>();
   private flowProducer?: FlowProducer;
 
   constructor(
     @Inject(MARKETDATA_QUEUE_REDIS) private readonly connection: Redis,
     @Inject(marketdataSyncConfig.KEY) private readonly cfg: MarketdataSyncConfig,
-  ) {
-    this.queue = new Queue(MARKETDATA_SYNC_QUEUE, { connection });
+  ) {}
+
+  /**
+   * default lane 的 Queue。**保留 `queue` 这个名字是刻意的** —— 灰度关时它就是拆 lane 前
+   * 的那一个, 既有 IT 的断言面逐字不变, 「什么都没发生」才是真的。
+   */
+  get queue(): Queue {
+    return this.queueFor(DEFAULT_QUEUE_LANE);
   }
 
-  /** 入队单维度 job。`retryMax` 来自 SyncDimension 行 (调用方已载); `delayMs` 供顺延。 */
+  /** 取某条 lane 的 Queue (worker 按自己消费的 lane 取; 测试断言面)。 */
+  queueFor(lane: QueueLane): Queue {
+    const existing = this.queues.get(lane);
+    if (existing !== undefined) return existing;
+    const created = new Queue(queueNameForLane(lane), { connection: this.connection });
+    this.queues.set(lane, created);
+    return created;
+  }
+
+  /**
+   * `SyncDimension.queueLane` 原始值 → 生效 lane。**灰度 flag 的唯一读取点** ——
+   * 别在调用侧各读一次 `cfg.futuLaneEnabled`, 那是同一判据的第二处表达。
+   */
+  resolveLane(rawLane: string | null | undefined): QueueLane {
+    return resolveQueueLane(rawLane, this.cfg.futuLaneEnabled);
+  }
+
+  /**
+   * 本进程该起 worker 的 lane 集合。
+   *
+   * 灰度关 ⇒ 只有 default —— 一条都不多起, 于是 futu queue 在 Redis 里**连消费者都没有**,
+   * 与「回滚 = 翻 flag」一致 (翻回去之后不会留一个空转的 worker 连着一个空队列)。
+   */
+  activeLanes(): readonly QueueLane[] {
+    return this.cfg.futuLaneEnabled ? QUEUE_LANES : [DEFAULT_QUEUE_LANE];
+  }
+
+  /**
+   * 入队单维度 job。`retryMax` 来自 SyncDimension 行 (调用方已载); `delayMs` 供顺延。
+   *
+   * 🚨 `lane` **必填, 蓄意不给默认值**: 给了默认值, 将来新加的入队路径会静默落进 default
+   * lane —— 那正是本次要根除的「排在理杏仁后面」。必填 ⇒ 漏传是 typecheck 红, 不是夜里的
+   * 一个惊喜。
+   */
   async enqueueDimensionJob(
     payload: DimensionJobPayload,
-    opts: { retryMax: number; delayMs?: number },
+    opts: { retryMax: number; lane: QueueLane; delayMs?: number },
   ): Promise<Job<DimensionJobPayload>> {
-    return this.queue.add(dimensionJobName(payload.dimensionKey), payload, this.jobOpts(opts));
+    return this.queueFor(opts.lane).add(
+      dimensionJobName(payload.dimensionKey),
+      payload,
+      this.jobOpts(opts),
+    );
   }
 
   /**
    * 入队锚冷启动 job (060 T007)。两个调用点: outbox subscriber 首次触发 / worker 配额顺延重投。
    *
-   * 🚨 **走的是构造器绑定的那一个 `this.queue` (`marketdata-sync`)** —— 另起队列 = 冷启动与
-   * 夜间批**并发**打 vendor, 直接撞限频; 那条 `concurrency=1` 是限频的支柱 (plan §D3)。
+   * 🚨 **恒落 futu lane** —— 冷启动调的就是 futu 的链发现与快照本体。
+   *   沿革: 本处原注释写「必须走同一个 `marketdata-sync`, 另起队列 = 冷启动与夜间批并发打
+   *   vendor 直接撞限频」。那句话的**结论**在 #210 被推翻, 但**担心的东西**没有: 限频的
+   *   enforcer 是传输层单例令牌桶 (见 {@link QUEUE_LANES} 注释), 并发几条 lane 都撞不了限频;
+   *   而把冷启动压在理杏仁 2h35m 长链后面是有实测代价的 —— 22:00 后建锚会被推过午夜,
+   *   「黄金窗口」只剩交易日 21:30-21:59 (066 tasks.md)。
+   *   ⚠️ 灰度关时它仍落 default lane (`resolveLane` 恒返 default), 行为与今天一致。
    *
    * `retryMax` 默认取 {@link ANCHOR_COLD_START_RETRY_MAX}: 冷启动不是维度、没有自己的
    * `sync_dimension` 行, 故取常量而非查表。
@@ -212,7 +264,7 @@ export class MarketdataSyncQueue implements OnModuleDestroy {
     payload: AnchorColdStartJobPayload,
     opts: { retryMax?: number; delayMs?: number } = {},
   ): Promise<Job<AnchorColdStartJobPayload>> {
-    return this.queue.add(
+    return this.queueFor(this.resolveLane('futu')).add(
       ANCHOR_COLD_START_JOB,
       payload,
       this.jobOpts({
@@ -241,6 +293,9 @@ export class MarketdataSyncQueue implements OnModuleDestroy {
 
   async onModuleDestroy(): Promise<void> {
     await closeWithTimeout('marketdata-sync flowProducer', async () => this.flowProducer?.close());
-    await closeWithTimeout('marketdata-sync queue', () => this.queue.close());
+    // 只关**已建**的 lane —— 用 this.queue 会把 default lane 凭空建出来再关掉。
+    for (const [lane, queue] of this.queues) {
+      await closeWithTimeout(`${queueNameForLane(lane)} queue`, () => queue.close());
+    }
   }
 }

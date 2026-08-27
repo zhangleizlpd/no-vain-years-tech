@@ -599,7 +599,10 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     expect(run.reason).toContain('boom: vendor 503');
 
     // 反例: 同一个 `QueueEvents('failed')` 出口也会收到维度 job 的失败 —— 那张表不归它们碰。
-    const dimJob = await syncQueue.enqueueDimensionJob(dimensionPayload, { retryMax: 3 });
+    const dimJob = await syncQueue.enqueueDimensionJob(dimensionPayload, {
+      retryMax: 3,
+      lane: 'default',
+    });
     await worker.onJobFailed(dimJob.id!, 'boom: 维度 job 也失败了');
 
     expect(await prisma.anchorColdStartRun.count()).toBe(1);
@@ -636,7 +639,7 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
   });
 
   it('⑱ 冷启动 job 与维度 job 落在**同一条队列**上 (concurrency=1 串行限频的前提)', async () => {
-    await syncQueue.enqueueDimensionJob(dimensionPayload, { retryMax: 3 });
+    await syncQueue.enqueueDimensionJob(dimensionPayload, { retryMax: 3, lane: 'default' });
     await syncQueue.enqueueColdStart({ anchorId: '1', ticker: TICKER });
 
     const jobs = await syncQueue.queue.getJobs(['waiting', 'delayed', 'prioritized']);

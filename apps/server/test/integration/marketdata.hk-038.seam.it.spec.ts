@@ -106,7 +106,7 @@ describe('038 T006 Phase 1 平台市场缝隙 seam (Testcontainers PG+Redis, moc
     return {
       prisma,
       syncQueue: queue,
-      queueEvents: events,
+      queueEventsFor: () => events,
       cliWaitTimeoutMs: 60_000,
       backfillDefaultHistoryDays: 365,
     };

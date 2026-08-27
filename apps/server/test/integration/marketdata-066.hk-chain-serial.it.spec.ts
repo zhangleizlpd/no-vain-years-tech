@@ -89,8 +89,11 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
   });
 
   it('① 港股链与美股链两个维度 job 入的是**同一条队列** (concurrency=1 串行的前提)', async () => {
-    await queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3 });
-    await queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3 });
+    await queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3, lane: 'default' });
+    await queue.enqueueDimensionJob(payloadOf('hk_option_contract'), {
+      retryMax: 3,
+      lane: 'default',
+    });
     // 冷启动是全系统唯一的非 cron 触发者 —— 它也在这条队列上, 串行保证才覆盖得到它。
     await queue.enqueueColdStart({ anchorId: '1', ticker: 'hk:00700' });
 
@@ -139,8 +142,8 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
     );
 
     const [usJob, hkJob] = await Promise.all([
-      queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3 }),
-      queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3 }),
+      queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3, lane: 'default' }),
+      queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3, lane: 'default' }),
     ]);
     worker.onModuleInit();
     try {
