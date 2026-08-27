@@ -375,7 +375,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
     // 脉冲跳过审计在场 (FR-S03)。
     const skipped = await prisma.syncRun.findMany({ where: { status: 'skipped' } });
     expect(skipped.map((r) => r.syncType)).toEqual(['sync:financial']);
-    expect(JSON.stringify(skipped[0].failedTargets)).toContain('日历未命中');
+    expect(JSON.stringify(skipped[0].findings)).toContain('日历未命中');
 
     await withWorker(registry, async (events) => {
       const jobs = await queue.queue.getJobs(['waiting', 'waiting-children']);

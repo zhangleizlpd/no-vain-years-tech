@@ -96,7 +96,7 @@ describe('executeBackfill --markets 透传 (seam#3)', () => {
         ok: 0,
         skipped: 0,
         failed: 0,
-        failedTargets: [],
+        findings: [],
       })),
     };
     const prisma = {

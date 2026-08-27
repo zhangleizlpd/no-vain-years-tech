@@ -1005,8 +1005,8 @@ model UsIndexDaily {
 
 // 交易日历 (按市场)。唯一 (market, date)。无 instrument 关联 (市场级, TRADING_CALENDAR 端口消费)。
 model TradingDay {
-  market String   @db.VarChar(8)
-  date   DateTime @db.Date
+  market      String   @db.VarChar(8)
+  date        DateTime @db.Date
   /// 这一场开**整天**还是**半天** (063 Phase 2)。值域 `whole` | `half` | `unknown`，三态互斥且
   /// 穷尽，语义同 062 交易日三态：**`unknown` ≠ `whole`**。
   ///
@@ -1024,7 +1024,7 @@ model TradingDay {
   /// ⚠️ 本列**只在插入那一刻写**（表是 `createMany(skipDuplicates)` 插入即冻结）。上线时既有行
   /// 由一次性 backfill 补 (`marketdata-trading-day-seed.cli.ts --backfill-kind`，只动 `unknown`
   /// 行、幂等)；此后新插入的行天然带 kind ⇒ 两段严丝合缝，**不需要常驻补写机制**。
-  sessionKind String @default("unknown") @map("session_kind") @db.VarChar(8)
+  sessionKind String   @default("unknown") @map("session_kind") @db.VarChar(8)
 
   @@id([market, date])
   @@map("trading_day")
@@ -1320,7 +1320,7 @@ model SyncBlacklist {
 }
 
 // 执行审计 + DLQ-lite (US1/US5): 每次同步执行的 scanned/ok/skipped/failed 计数 +
-// failedTargets(Json 续跑/重试源) + status (running|success|partial|failed|skipped) + 时间窗。
+// findings(Json 本轮值得人看的明细) + status (running|success|partial|failed|skipped) + 时间窗。
 // (syncType, startedAt desc) 索引服务审计查询「某类同步最近 N 次」。
 model SyncRun {
   id            BigInt    @id @default(autoincrement())
@@ -1348,7 +1348,31 @@ model SyncRun {
   // 若用 `@default(0)` 非空, 漏接一处就等于让那个维度**恒报零写入** = 假警报, 且看起来
   // 像真故障 —— 那正是「库里没有的即为假」换个地方再犯一遍。
   written       Int?
+  // #209 三步法 **expand 步**: 本列在本步与 `findings` **双写**, 读侧仍可读它。
+  // migrate 步把读侧切到 `findings`、停双写, contract 步 drop 本列。别在本列上加新写入点。
   failedTargets Json?     @map("failed_targets")
+  // `failed_targets` 的新名字 (#209)。
+  //
+  // 🚨 **改名不是洁癖 —— 这一列早就名不副实**: 它今天装的东西里非失败的形态比失败的还多:
+  //   · `{kind:'skip'}`      freshness gate 跳过的原因 (recordSkippedWithReason)
+  //   · `{kind:'interrupt'}` 上一 attempt 未收尾被收敛的判据文本 (convergeInterrupted)
+  //   · `{kind:'reject'}`    落库前硬门拒的行 —— **蓄意不计 `failed`** (粒度是标的不是行)
+  //   · `{kind:'notice'}`    财报标的未匹配 / 财报改期 —— 代码里早已自陈「这个计数是监控信号
+  //                          不是噪音」「改期不是本轮同步的失败, 它是本维度存在的理由」
+  //   只有 `{kind:'failure'}` 那一族才真的是「失败目标」。
+  //
+  //   名字叫 failed_targets 是有后果的, 不只是难看: `ops/jobs/marketdata-sync-report.sh` 顺着
+  //   这个名字只在 `status NOT IN ('success','skipped')` 时展开它 ⇒ 上面四种非失败形态所在的
+  //   行恒为 `success` ⇒ **写了等于没写**。#209 要把这条通道变成告警的落点, 前提是名字与职责对上。
+  //
+  // 🚨 **每个 entry 恒带 `kind` 判别字段**, 值域单一来源是 `SyncRunFinding`
+  //   (`sync-run.recorder.ts`), 无 DB 侧 enum/CHECK —— 同 `status` / `triggered_by` 的取舍,
+  //   加值零 migration。没有 `kind`, 读侧只能 dump 原文 400 字; 有了它,「本轮硬门拒 N 条、
+  //   码分布如何」这类聚合才写得出来, 而那正是 #198 / #199 判据要的输入。
+  //
+  // 🚨 `null` = 本轮无任何 finding, **不是空数组** —— 同 `written` 的三态判据: 别让「确实没有」
+  //   和「没上报过」长成一个样。
+  findings      Json?
   // 值域: running(进行中) | success | partial | failed | skipped | interrupted。
   // 无 DB 侧 enum/CHECK —— 值域的单一来源是 `SyncRunStatus` (sync-run.recorder.ts), 加值零 migration。
   //
@@ -1415,10 +1439,10 @@ model AnchorColdStartRun {
   // canonical `market:code`, 与 optionsdesk.anchor.ticker 同宽同量纲。
   ticker   String @db.VarChar(32)
 
-  lastRunAt DateTime @default(now()) @map("last_run_at") @db.Timestamptz(6)
-  outcome   String   @db.VarChar(32)
+  lastRunAt     DateTime  @default(now()) @map("last_run_at") @db.Timestamptz(6)
+  outcome       String    @db.VarChar(32)
   // 结局的自由文本补充 (失败原因 / 跳过依据), 系统不解析。
-  reason    String?  @db.Text
+  reason        String?   @db.Text
   // 本次冷启动瞄准的交易日; 早退分支 (市场未开通 / 日历缺行等) 定位不到 ⇒ NULL。
   targetSession DateTime? @map("target_session") @db.Date
 
@@ -1821,8 +1845,8 @@ model Anchor {
   ///
   /// 🚫 这是「**最近一次**」不是历史序列 (FR-019): **MUST NOT** 有人后来为它加一张
   /// `anchor_intraday_history`。盘中价的历史归 `marketdata.daily_bar`, 本表只留最新一拍。
-  intradayPrice Decimal?  @map("intraday_price") @db.Decimal(18, 4)
-  intradayAt    DateTime? @map("intraday_at") @db.Timestamptz(6)
+  intradayPrice            Decimal?  @map("intraday_price") @db.Decimal(18, 4)
+  intradayAt               DateTime? @map("intraday_at") @db.Timestamptz(6)
   /// 063 Phase 3.4: vendor **自报**的「这个价是什么时候的」—— 与 `intraday_at`(我们的采集
   /// 墙钟) 是 ingestion time 的两端, 并列存放是业内 market-data 的标准做法 (存 exchange
   /// timestamp 与 received timestamp 两个, 判据只用其一但证据留下)。命名同
@@ -1911,7 +1935,7 @@ model AnchorChange {
 // 索引还快, 而每条索引都要在写路径上维护。按真实查询形状建才对 (同 research_report 那条判据),
 // 真到每天十几条要按标的/状态检索时再说。
 model AnchorSubmission {
-  id BigInt @id @default(autoincrement())
+  id        BigInt @id @default(autoincrement())
   /// 提交方 = guest-proxy 无条件覆写的 `X-Guest` 头值。**仅作归属, 绝不作授权**
   /// (授权是两把 token 那一层的事, 两者正交)。
   submitter String @db.VarChar(64)

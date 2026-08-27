@@ -119,7 +119,7 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
         active -= 1;
         return {
           budgetExhausted: false,
-          stats: { scanned: 0, ok: 0, skipped: 0, failed: 0, failedTargets: [] },
+          stats: { scanned: 0, ok: 0, skipped: 0, failed: 0, findings: [] },
         };
       },
     } as unknown as DimensionExecutorRegistry;

@@ -280,7 +280,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
         maxActive = Math.max(maxActive, active);
         await new Promise((r) => setTimeout(r, 300));
         active--;
-        return { scanned: 0, ok: 0, skipped: 0, failed: 0, failedTargets: [] };
+        return { scanned: 0, ok: 0, skipped: 0, failed: 0, findings: [] };
       },
     } as unknown as SyncProfileUseCase;
     const worker = new MarketdataSyncWorker(

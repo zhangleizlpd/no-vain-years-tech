@@ -580,7 +580,7 @@ export function mergeStats(into: SyncRunStats, from: SyncRunStats): void {
   // 上报」); from=0 ⇒ into 抬成 0 (「写了 0 行」)。这两态必须可分辨, 那是本列存在的理由。
   // #103: 本行曾整个缺失 ⇒ 外层 stats 恒 null ⇒ 生产上每个 sync_type 的 written 都是 NULL。
   if (from.written !== null) addWritten(into, from.written);
-  into.failedTargets.push(...from.failedTargets);
+  into.findings.push(...from.findings);
 }
 
 /** instruments → canonical symbol → instrumentId 索引 (批量维度回填 instrumentId)。 */
@@ -1230,7 +1230,8 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol: `${inst.market}:${inst.code}`,
           // 维度名取自入参而非字面量: 本方法被 eod_bar (cn/hk) 与 us_equity_bar 共用。
           step: dim.dimensionKey,
@@ -1379,7 +1380,8 @@ export class DimensionExecutorRegistry {
       } catch (err) {
         // 与主跑同口径计失败: 补洞期 vendor 挂了同样值得知道 (维度转 partial → 飞书红)。
         stats.failed++;
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol: `${inst.market}:${inst.code}`,
           step: `${dim.dimensionKey}:gap-fill`,
           error: String(err),
@@ -1496,7 +1498,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'short_selling', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'short_selling', error: String(err) });
       }
     }
   }
@@ -1578,7 +1580,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'buyback', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'buyback', error: String(err) });
       }
     }
   }
@@ -1655,7 +1657,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'equity_change', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'equity_change', error: String(err) });
       }
     }
   }
@@ -1733,7 +1735,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'shareholder_change', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'shareholder_change',
+          error: String(err),
+        });
       }
     }
   }
@@ -1807,7 +1814,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'allotment', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'allotment', error: String(err) });
       }
     }
   }
@@ -1888,7 +1895,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'revenue_segment', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'revenue_segment',
+          error: String(err),
+        });
       }
     }
   }
@@ -1967,7 +1979,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'shareholder_snapshot', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'shareholder_snapshot',
+          error: String(err),
+        });
       }
     }
   }
@@ -2049,7 +2066,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'employee', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'employee', error: String(err) });
       }
     }
   }
@@ -2119,7 +2136,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'connect_holding', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'connect_holding',
+          error: String(err),
+        });
       }
     }
   }
@@ -2199,7 +2221,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'volatility', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'volatility', error: String(err) });
       }
     }
   }
@@ -2281,7 +2303,12 @@ export class DimensionExecutorRegistry {
         } catch (err) {
           // per-type 隔离: 某 type 抛错计 failed 不 mutate, 不阻塞其余 type / 其余股 (FR-007)。
           stats.failed++;
-          stats.failedTargets.push({ symbol, step: `hot_snapshot:${hotType}`, error: String(err) });
+          stats.findings.push({
+            kind: 'failure',
+            symbol,
+            step: `hot_snapshot:${hotType}`,
+            error: String(err),
+          });
         }
       }
     }
@@ -2345,7 +2372,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'fund_holding', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'fund_holding', error: String(err) });
       }
     }
   }
@@ -2400,7 +2427,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'fund_company_holding', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'fund_company_holding',
+          error: String(err),
+        });
       }
     }
   }
@@ -2452,7 +2484,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'index_membership', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'index_membership',
+          error: String(err),
+        });
       }
     }
   }
@@ -2510,7 +2547,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'industry_classification', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'industry_classification',
+          error: String(err),
+        });
       }
     }
   }
@@ -2575,7 +2617,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'announcement', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'announcement', error: String(err) });
       }
     }
   }
@@ -2639,7 +2681,8 @@ export class DimensionExecutorRegistry {
         stats.ok += chunk.length;
       } catch (err) {
         stats.failed += chunk.length;
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol: `${symbols[0]}..${chunk.length}`,
           step: 'fundamental',
           error: String(err),
@@ -2712,7 +2755,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'fundamental', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'fundamental', error: String(err) });
       }
     }
   }
@@ -2779,7 +2822,8 @@ export class DimensionExecutorRegistry {
         stats.ok += chunk.length;
       } catch (err) {
         stats.failed += chunk.length;
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol: `${symbols[0]}..${chunk.length}`,
           step: 'financial',
           error: String(err),
@@ -2828,7 +2872,7 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'financial', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol, step: 'financial', error: String(err) });
       }
     }
   }
@@ -2863,7 +2907,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'corporate_action', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'corporate_action',
+          error: String(err),
+        });
       }
     }
   }
@@ -3057,7 +3106,8 @@ export class DimensionExecutorRegistry {
         await this.crossCheckIvPercentile(matched, date);
       } catch (err) {
         stats.failed += chunk.length;
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol: `${symbols[0]}..${chunk.length}`,
           step: 'underlying_iv_daily',
           error: String(err),
@@ -3137,7 +3187,12 @@ export class DimensionExecutorRegistry {
    *
    * 它是监控侧原料，失败不该让日更这一轮变 `partial`（`stats.failed` 不动）。但 🚫 也 MUST NOT
    * 只 `logger.warn` 就算完 —— **日志在生产上没有接收端**（#209），那恰恰是本缺陷藏了 23 天没
-   * 被发现的原因。故降级为 `failedTargets` 留痕：那一列持久、且晨报会读。
+   * 被发现的原因。故降级为 `findings` 留痕：那一列持久。
+   *
+   * ⚠️ **#209 订正**：本段原写「且晨报会读」—— **今天不成立**。`marketdata-sync-report.sh`
+   * 只在 `status NOT IN ('success','skipped')` 时才展开这一列，而本处**刻意不动
+   * `stats.failed`** ⇒ 这条留痕所在的那一轮恒为 `success` ⇒ 它**展不开**。同一个坑 #198/#212
+   * 也踩了（违规码写进去了，同样读不到）。三步法第 2 步把读侧改成按 `kind` 展开之后才成立。
    *
    * 复杂度 O(工作集) 次 vendor 调用（每只一页，窗恒 ≤ 一页上限），按页节流同回填。
    */
@@ -3166,7 +3221,8 @@ export class DimensionExecutorRegistry {
           })),
         });
       } catch (err) {
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol,
           step: 'underlying_iv_history_increment',
           error: String(err),
@@ -3277,7 +3333,12 @@ export class DimensionExecutorRegistry {
         history = await this.usIndex.getIndexHistory(indexCode); // HTTP (tx 外)
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol: indexCode, step: 'us_index_daily', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol: indexCode,
+          step: 'us_index_daily',
+          error: String(err),
+        });
         this.logger.warn(
           `us_index_daily 取数失败 (可重拉: 源是覆盖式全量文件, 次日重跑自愈, 非当日必醒): ${JSON.stringify(
             { indexCode, businessDate, error: String(err) },
@@ -3431,7 +3492,12 @@ export class DimensionExecutorRegistry {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'underlying_iv_daily', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'underlying_iv_daily',
+          error: String(err),
+        });
       }
     }
   }

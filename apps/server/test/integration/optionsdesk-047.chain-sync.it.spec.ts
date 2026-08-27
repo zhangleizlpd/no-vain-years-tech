@@ -530,9 +530,9 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
     // 违规行不入库, 同批其余行照常入库 —— 一条脏行 MUST NOT 带走当日唯一一次采集机会。
     expect(day2).toHaveLength(1);
     expect(day2[0].contract.code).not.toBe(put);
-    // 该票整体仍算 ok (行级拒绝不是标的级失败), 但留痕进 failedTargets 审计通道。
+    // 该票整体仍算 ok (行级拒绝不是标的级失败), 但留痕进 findings 审计通道。
     expect(run.stats).toMatchObject({ scanned: 1, ok: 1, failed: 0 });
-    expect(JSON.stringify(run.stats.failedTargets)).toContain(put);
+    expect(JSON.stringify(run.stats.findings)).toContain(put);
 
     // 🚨 已落历史逐字段未动 (含被拒那条腿前一日的行)。
     const day1After = await prisma.optionDailySnapshot.findMany({

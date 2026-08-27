@@ -9,6 +9,7 @@ import {
   type DimensionKey,
 } from './dimension-executor.js';
 import { deriveExecutionOrder, type SyncDependencyEdge } from './sync-flow-assembler.js';
+import type { SyncRunFinding } from './sync-run.recorder.js';
 import { IV_HISTORY_INCREMENT_LOOKBACK_DAYS } from './underlying-iv.rules.js';
 import type { UnderlyingIvSnapshot } from './underlying-iv.port.js';
 import type { UsIndexDailyPoint } from './us-index.port.js';
@@ -116,7 +117,7 @@ function buildFakes(opts: { marketScope?: string[]; deltaLookbackDays?: number }
 }
 
 function emptyStatsLike() {
-  return { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, failedTargets: [] };
+  return { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, findings: [] };
 }
 
 const input = { mode: 'delta' as const, asOf: '2026-06-05', now: new Date('2026-06-05T14:00:00Z') };
@@ -3719,7 +3720,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       const { registry, spies } = buildUnderlyingIvFakes({ throwOnFetch: true });
       const { stats } = await registry.execute('underlying_iv_daily', ivInput);
       expect(stats).toMatchObject({ scanned: 2, ok: 0, failed: 2 });
-      expect(stats.failedTargets[0]).toMatchObject({ step: 'underlying_iv_daily' });
+      expect(stats.findings[0]).toMatchObject({ step: 'underlying_iv_daily' });
       // 失败发生在 tx 外的 HTTP 段 ⇒ 零写路径被触及 (「不破坏已落历史」的单测半边;
       // 真 DB 半边归 T011 IT)。
       expect(spies.ivUpsert).not.toHaveBeenCalled();
@@ -3901,7 +3902,7 @@ describe('046 T009 underlying_iv_daily backfill (his_volatility ≤364 天分页
     });
     const { stats } = await registry.execute('underlying_iv_daily', backfillInput);
     expect(stats).toMatchObject({ scanned: 2, ok: 1, failed: 1 });
-    expect(stats.failedTargets[0]).toMatchObject({ symbol: 'us:PEP', step: 'underlying_iv_daily' });
+    expect(stats.findings[0]).toMatchObject({ symbol: 'us:PEP', step: 'underlying_iv_daily' });
     // 失败的那只零落库, 成功的那只 4 窗照落。
     const rows = spies.histCreateMany.mock.calls.flatMap(
       (c) => (c[0] as { data: { instrumentId: bigint }[] }).data,
@@ -4430,7 +4431,7 @@ describe('046 T013 us_index_daily 装配 (固定 2 代码 + 不挂锚闸 + 全�
       // VIX 整份文件没拿到 ⇒ 计 1 个失败**目标**(单位是文件不是行, 失败时无行可计);
       // VVIX 的 2 行照常落 —— 一个源抖动不该把另一个指数一起拖没。
       expect(stats).toMatchObject({ scanned: 2, ok: 2, failed: 1 });
-      expect(stats.failedTargets[0]).toMatchObject({ symbol: 'VIX', step: 'us_index_daily' });
+      expect(stats.findings[0]).toMatchObject({ symbol: 'VIX', step: 'us_index_daily' });
       expect(upsertedKeys(spies.indexUpsert)).toEqual([
         `VVIX@2026-06-11`,
         `VVIX@${US_BUSINESS_DATE}`,
@@ -4659,7 +4660,7 @@ describe('066 T04 港股三维度 seed 的依赖拓扑守卫', () => {
 
 // #103 (063 Phase 3.3): `written` 是**落库侧**唯一的那个数, 三态 null/0/>0 各有语义。
 // 🚨 它曾在 `execute()` ↔ `factExecutor` 的 stats 交接处**整列丢失** —— `mergeStats` 搬了
-//    scanned/ok/skipped/failed/failedTargets, 唯独漏了 written ⇒ 外层恒停在 null ⇒ 生产上
+//    scanned/ok/skipped/failed/findings, 唯独漏了 written ⇒ 外层恒停在 null ⇒ 生产上
 //    **每一个** sync_type 的 written 都是 NULL, 而运行记录照旧全绿。2026-08-21 prod 实证:
 //    sync:us_equity_bar 连跑两轮 scanned=15 / ok=15 / status=success, written 仍 NULL。
 //    既有覆盖为何看不见它 (两处都是**反例不在管道里**):
@@ -4673,7 +4674,7 @@ describe('#103 written 跨 stats 交接不得丢失 (063 Phase 3.3 落库侧计�
     skipped: 0,
     failed: 0,
     written,
-    failedTargets: [] as unknown[],
+    findings: [] as SyncRunFinding[],
   });
 
   it('两边都没上报 ⇒ 仍是 null (「一次都没上报」这个态要留住)', () => {

@@ -469,7 +469,7 @@ describe('SyncOptionSnapshotUseCase', () => {
       // PUT 的 Δ 必须 ≤ 0 —— 原因串进 ERROR 文案, 运维不必回查原始 payload。
       expect(String(errSpy.mock.calls[0][0])).toMatch(/delta_sign/);
       // 留痕进 SyncRun 的审计明细通道 (同 recordSkippedWithReason 的复用), 不改判 failed。
-      expect(JSON.stringify(stats.failedTargets)).toContain('US.PEP260918P130000');
+      expect(JSON.stringify(stats.findings)).toContain('US.PEP260918P130000');
       errSpy.mockRestore();
     });
 
@@ -488,12 +488,9 @@ describe('SyncOptionSnapshotUseCase', () => {
 
       // 🚨 先取证再 restore, 再断言 —— 同下方 #186 那条记下的教训: 断言失败时 `mockRestore()`
       // 跑不到, 留着的 mock 会把**后面**的用例一起带红 (本条初版就当场复现了这个级联)。
-      const entry = stats.failedTargets.find(
-        (t): t is { step: string; violations: string[] } =>
-          typeof t === 'object' &&
-          t !== null &&
-          (t as { step?: string }).step === 'option_snapshot_guard',
-      );
+      // 按 `kind` 取而非按 `step` —— #209 给 findings 上了判别联合后 TS 自己收窄,
+      // 手写类型谓词那一层 (原为绕 `unknown[]`) 随之不再需要。
+      const entry = stats.findings.find((t) => t.kind === 'reject');
       errSpy.mockRestore();
 
       expect(entry).toBeDefined();
@@ -572,7 +569,7 @@ describe('SyncOptionSnapshotUseCase', () => {
 
       expect(errors).toEqual([]);
       expect(persistedRows(h.createMany)).toHaveLength(1);
-      expect(stats.failedTargets).toEqual([]);
+      expect(stats.findings).toEqual([]);
     });
   });
 
@@ -653,7 +650,7 @@ describe('SyncOptionSnapshotUseCase', () => {
 
       expect(budgetExhausted).toBe(false);
       expect(stats).toMatchObject({ scanned: 2, ok: 1, failed: 1 });
-      expect(JSON.stringify(stats.failedTargets)).toContain('us:PEP');
+      expect(JSON.stringify(stats.findings)).toContain('us:PEP');
     });
 
     it('返回了不在本批请求内的 code → 该票 failed, 零落库 (批次错配比没落更难发现)', async () => {

@@ -277,7 +277,7 @@ describe('046 T014 指数采集 (Testcontainers PG, 真空库 + 记账指数端�
       // 记失败: 计入 stats + SyncRun 收 partial, 且**不上抛** —— 上抛会让 worker 按「崩溃」
       // 重试整轮, 而全量文件天然自愈 (明天那份文件里今天这行还在)。
       expect(stats).toMatchObject({ ok: 4, failed: 1 });
-      expect(stats.failedTargets[0]).toMatchObject({ symbol: 'VIX', step: 'us_index_daily' });
+      expect(stats.findings[0]).toMatchObject({ symbol: 'VIX', step: 'us_index_daily' });
       const failedRun = await latestRun();
       expect(failedRun.status).toBe('partial');
       expect(failedRun.failed).toBe(1);

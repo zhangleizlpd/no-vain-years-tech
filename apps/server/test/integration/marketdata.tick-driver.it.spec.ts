@@ -457,15 +457,15 @@ describe('019 T014 tick freshness gate (paused + event-calendar 分流)', () => 
     expect(result.fired).toEqual([]); // gate 剔除 → 不组 flow。
     const counts = await queue.queue.getJobCounts();
     expect(counts.waiting + counts['waiting-children'] + counts.delayed).toBe(0);
-    // skipped 审计行 (FR-S03): 原因在 failedTargets Json。
+    // skipped 审计行 (FR-S03): 原因在 findings Json。
     const runs = await prisma.syncRun.findMany({ where: { syncType: 'sync:financial' } });
     expect(runs).toHaveLength(1);
     expect(runs[0].status).toBe('skipped');
-    expect(JSON.stringify(runs[0].failedTargets)).toContain('日历未命中');
+    expect(JSON.stringify(runs[0].findings)).toContain('日历未命中');
     // #202: tick 开出来的 skipped 行也带来历 ——「轮到它了、按设计什么都没做」与「压根没轮到」
     // 是两件事。as_of 与原因串里那个 asOf **必须同一天** (同源, 分叉即红)。
     expect(runs[0].triggeredBy).toBe('tick');
-    expect(JSON.stringify(runs[0].failedTargets)).toContain(
+    expect(JSON.stringify(runs[0].findings)).toContain(
       `asOf=${runs[0].asOf?.toISOString().slice(0, 10)}`,
     );
     // nextFireAt 已在 claim 推进 (零额外动作)。
@@ -548,7 +548,7 @@ describe('019 T014 tick freshness gate (paused + event-calendar 分流)', () => 
     expect(counts.waiting + counts['waiting-children'] + counts.delayed).toBe(0);
     const skipped = await prisma.syncRun.findMany({ where: { status: 'skipped' } });
     expect(skipped.map((r) => r.syncType).sort()).toEqual(['sync:eod_bar', 'sync:profile']);
-    expect(JSON.stringify(skipped[0].failedTargets)).toContain('paused_until');
+    expect(JSON.stringify(skipped[0].findings)).toContain('paused_until');
     // #202: 暂停期的 skipped 行同样是 tick 开的, 且带业务日 (维度暂停 ≠ 这一轮不存在)。
     expect(skipped.every((r) => r.triggeredBy === 'tick')).toBe(true);
     expect(skipped.every((r) => r.asOf !== null)).toBe(true);

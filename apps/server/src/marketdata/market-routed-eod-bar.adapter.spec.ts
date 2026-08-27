@@ -63,7 +63,7 @@ describe('MarketRoutedEodBarAdapter', () => {
     }
   });
 
-  it('被路由实现抛错原样冒泡（由维度执行层逐标的 catch 记 failedTargets）', async () => {
+  it('被路由实现抛错原样冒泡（由维度执行层逐标的 catch 记 findings）', async () => {
     const boom: EodBarPort = {
       getBars: async () => {
         throw new Error('vendor 挂了');

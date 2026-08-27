@@ -1,0 +1,47 @@
+-- #209 三步法 **第 1 步 (expand)**: `sync_run` 加 `findings` —— 即 `failed_targets` 的新名字。
+-- 本步**只加列、不动旧列、不改任何读侧**; 应用同步改为**双写**两列 (载荷完全一致)。
+--
+-- ## 为什么这一列要改名 (动机不是洁癖)
+--
+-- `failed_targets` 今天装的东西里, **非失败的形态比失败的还多样**:
+--   · freshness gate 跳过的原因        (`recordSkippedWithReason` → `[{reason}]`)
+--   · 上一 attempt 未收尾的收敛判据文本 (`convergeInterrupted`     → `[{reason}]`)
+--   · 落库前硬门拒的行明细              (`reportRejected`, **蓄意不计 `failed`**: 那个计数的
+--                                       粒度是标的, 用它记行级拒绝会把一票里的一条脏行说成整票失败)
+--   · 财报标的未匹配 / 财报改期         (`sync-earnings-event.usecase.ts`, 那里的注释早已自陈
+--                                       「这个计数是**监控信号**不是噪音」「改期不是本轮同步的
+--                                       失败, 它是本维度存在的理由」)
+--
+-- 名字错了是**有后果的**, 不只是难看: `ops/jobs/marketdata-sync-report.sh` 顺着这个名字, 只在
+-- `status NOT IN ('success','skipped')` 时才展开这一列。而上面那四种非失败形态所在的行**恒为
+-- `success`** ⇒ 它们写进去等于没写。#209 的排查里这条是「有痕迹但没人读」那一族的头号实例。
+--
+-- ⇒ 先让名字与职责对上, 这条通道才能承接 #198 (硬门违规码) / #199 (连续 N 轮) 的判据输入。
+--
+-- ## `kind` 判别字段
+--
+-- 改名同时给每个 entry 加 `kind`: `failure` | `skip` | `interrupt` | `reject` | `notice`。
+-- 值域的单一来源是 `SyncRunFinding` (`apps/server/src/marketdata/sync-run.recorder.ts`),
+-- **无 DB 侧 enum / CHECK** —— 同 `status` / `triggered_by` 的取舍, 加值零 migration。
+-- 没有它, 读侧只能 dump 原文 400 字; 有了它「本轮硬门拒 N 条 / 码分布如何」才聚合得出来。
+--
+-- ## 🚨 为什么走三步法而不是一把梭 RENAME COLUMN
+--
+-- 本仓 prod 回滚是 **image-only**(不回退 schema, 见 `.github/workflows/deploy.yml` 的 healthcheck
+-- 自动回滚 + `ops/bin/rollback-prod.sh`)。单 PR `RENAME COLUMN` 之后, 任何回滚都会让旧镜像
+-- INSERT 一个已不存在的列 —— 而这一列是**每晚每维度必写**的, 后果是整条夜间同步当场挂掉,
+-- 期权链 EOD 漏采即**永久**缺口。
+--
+-- 08-16 那次 `avatar_url` 改名援引了 `.claude/rules/migration-rules.md` §3 跳步条件, 代价是
+-- 「回滚窗口内 `GET /me` 报错」—— 罕写列 + 用户可见报错, 与本列的风险画像完全不同, 不照抄。
+--
+-- 三步:
+--   1. (本 PR) expand  : 加 `findings`, 应用双写两列, 读侧不动
+--   2.         migrate : 回填历史行, `marketdata-sync-report.sh` 改读 `findings`, 应用停双写
+--   3.         contract: DROP COLUMN `failed_targets`
+-- 相邻两步之间的回滚均安全 (第 2 步之后旧镜像仍双写、新读侧读得到; 第 3 步之后镜像已不写旧列)。
+--
+-- migration_refs: .claude/rules/migration-rules.md §2 (expand-migrate-contract 三步法)
+
+-- AlterTable
+ALTER TABLE "marketdata"."sync_run" ADD COLUMN     "findings" JSONB;

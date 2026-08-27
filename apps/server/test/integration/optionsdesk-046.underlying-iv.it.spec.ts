@@ -370,7 +370,7 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
       // 记失败: 计入 stats + SyncRun 收 failed, 且**不上抛** —— 上抛会把「可重拉」这一档
       // 伪装成崩溃, 触发 worker 重试并污染整条采集链的运行状态。
       expect(stats).toMatchObject({ scanned: 1, ok: 0, skipped: 0, failed: 1 });
-      expect(stats.failedTargets[0]).toMatchObject({ step: 'underlying_iv_daily' });
+      expect(stats.findings[0]).toMatchObject({ step: 'underlying_iv_daily' });
       const failedRun = await prisma.syncRun.findFirstOrThrow({
         where: { syncType: 'sync:underlying_iv_daily' },
         orderBy: { id: 'desc' },

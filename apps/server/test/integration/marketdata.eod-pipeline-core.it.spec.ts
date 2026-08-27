@@ -19,7 +19,7 @@ const AS_OF = '2026-06-03';
 
 // 016 T011 → 017 PR-7 改造: 旧聚合管线 run() 清退后, 同步核心语义经 executor 注册表直调
 // 回归 (Testcontainers PG, mock adapters): 维度序执行 → 四类事实落库 + 连跑两次幂等无重复 +
-// per-instrument 失败隔离 (failedTargets + 阈值告警) + HTTP-out-of-tx (事务回调内零 vendor
+// per-instrument 失败隔离 (findings + 阈值告警) + HTTP-out-of-tx (事务回调内零 vendor
 // 调用)。交易日 gate / due 过滤已分别归 tick 层 (tick-driver IT) — 不在 executor 面。
 describe('016 T011 EOD sync core semantics via dimension executors (PR-7 form)', () => {
   let prisma: PrismaService;
@@ -71,8 +71,8 @@ describe('016 T011 EOD sync core semantics via dimension executors (PR-7 form)',
    *  本测试各维度写不同表, 相对序无语义影响), 返 key→stats。 */
   async function runAll(
     registry: DimensionExecutorRegistry,
-  ): Promise<Map<DimensionKey, { ok: number; failed: number; failedTargets: unknown[] }>> {
-    const out = new Map<DimensionKey, { ok: number; failed: number; failedTargets: unknown[] }>();
+  ): Promise<Map<DimensionKey, { ok: number; failed: number; findings: unknown[] }>> {
+    const out = new Map<DimensionKey, { ok: number; failed: number; findings: unknown[] }>();
     for (const key of DIMENSION_KEYS) {
       const { stats } = await registry.execute(key, { mode: 'delta', asOf: AS_OF, now: NOW });
       out.set(key, stats);
@@ -115,7 +115,7 @@ describe('016 T011 EOD sync core semantics via dimension executors (PR-7 form)',
     expect(await prisma.corporateAction.count()).toBe(1);
   });
 
-  it('③④ 单标 eod 抛错 → 隔离记 failedTargets + 达阈值 ERROR 告警, 其余维度照常', async () => {
+  it('③④ 单标 eod 抛错 → 隔离记 findings + 达阈值 ERROR 告警, 其余维度照常', async () => {
     const errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     // eod 对全部 3 标的抛错 → 3 failures ≥ 阈值; fundamental/financial/corp 仍 mock 正常。
     const throwingEod: EodBarPort = {
@@ -128,9 +128,9 @@ describe('016 T011 EOD sync core semantics via dimension executors (PR-7 form)',
     // eod 三标的全失败 (per-instrument 隔离, 维度不顶层 throw)。
     const eod = stats.get('eod_bar');
     expect(eod?.failed).toBe(3);
-    expect(
-      (eod?.failedTargets as { step: string }[]).filter((t) => t.step === 'eod_bar'),
-    ).toHaveLength(3);
+    expect((eod?.findings as { step: string }[]).filter((t) => t.step === 'eod_bar')).toHaveLength(
+      3,
+    );
     // 失败隔离: 其余维度仍落库 (corp 跃变锚定同用 eod 端口, 失败仅 WARN 不计 failed — FR-A05)。
     expect(await prisma.dailyBar.count()).toBe(0);
     expect(await prisma.fundamentalSnapshot.count()).toBe(1);
