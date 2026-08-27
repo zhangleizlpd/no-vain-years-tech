@@ -136,7 +136,7 @@ export class SyncOptionContractUseCase {
   /**
    * 逐票链发现。返 `true` = vendor 预算耗尽 (顺延信号, `ExecutorResult.budgetExhausted`)。
    *
-   * **per-instrument 隔离** (016 四支柱): 单票失败计 `failed` + `failedTargets` 后继续下一只,
+   * **per-instrument 隔离** (016 四支柱): 单票失败计 `failed` + `findings` 后继续下一只,
    * 不整轮塌; **HTTP 在事务外**。
    *
    * 复杂度: O(工作集) 次到期日调用 + Σ O(窗数) 次链调用 (远端到期日稀疏 ⇒ 实测约 10–14 窗/票,
@@ -216,7 +216,12 @@ export class SyncOptionContractUseCase {
           continue;
         }
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'option_contract', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'option_contract',
+          error: String(err),
+        });
       }
     }
 

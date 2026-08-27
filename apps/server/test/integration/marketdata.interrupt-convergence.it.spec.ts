@@ -264,7 +264,7 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       // ── 进程 2: 接管
       spawnProcess({
         executor: async () => ({
-          stats: { scanned: 2, ok: 2, skipped: 0, failed: 0, written: 2, failedTargets: [] },
+          stats: { scanned: 2, ok: 2, skipped: 0, failed: 0, written: 2, findings: [] },
           budgetExhausted: false,
         }),
       });
@@ -286,7 +286,7 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       // ① 被打断那一轮落到可与「真的在跑」区分开的终态, 且带收尾时刻(否则报告脚本永远给它挂「未收尾」)。
       expect(interrupted?.status).toBe('interrupted');
       expect(interrupted?.finishedAt).not.toBeNull();
-      expect(JSON.stringify(interrupted?.failedTargets)).toContain('接管重跑');
+      expect(JSON.stringify(interrupted?.findings)).toContain('接管重跑');
 
       // ② 重跑那一轮正常收尾 —— 收敛**没有**误伤它。
       expect(retried?.status).toBe('success');
@@ -329,7 +329,7 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       // 永远不会跑, 只剩 `failed` 事件这一条路 —— 正是要验的那一半。
       spawnProcess({
         executor: async () => ({
-          stats: { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, failedTargets: [] },
+          stats: { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, findings: [] },
           budgetExhausted: false,
         }),
         maxStalledCount: 0,
@@ -349,7 +349,7 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       expect(rows[0]?.status).toBe('interrupted');
       expect(rows[0]?.finishedAt).not.toBeNull();
       // reason 必须是「不会再重跑」那一条 —— 与触发点 A 的文案可分辨, 查表的人据此判断要不要补跑。
-      expect(JSON.stringify(rows[0]?.failedTargets)).toContain('重试已耗尽');
+      expect(JSON.stringify(rows[0]?.findings)).toContain('重试已耗尽');
     } finally {
       await shutdownAll();
     }

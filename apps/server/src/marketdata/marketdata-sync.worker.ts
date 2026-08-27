@@ -50,7 +50,7 @@ function isColdStartJob(job: Job<MarketdataSyncJobPayload>): job is Job<AnchorCo
  * 它**不**进 `DimensionExecutorRegistry` (冷启动不是维度, 没有 `sync_dimension` 行)。
  * 复用同一条队列是硬约束而非省事: 另起队列 = 冷启动与夜间批并发打 vendor (plan §D3)。
  *
- * 告警分工两道: executor 内业务降级告警 (failedTargets 阈值, per-dim) / 本类 QueueEvents
+ * 告警分工两道: executor 内业务降级告警 (`failed` 计数阈值, per-dim) / 本类 QueueEvents
  * `failed` 监听 = retry 耗尽硬失败 (结构化 ERROR log, FR-S17 log-based alerting 出口)。
  *
  * 启停门 (D6): `MARKETDATA_WORKER_DISABLED` sentinel 置位 → onModuleInit no-op (CLI 进程

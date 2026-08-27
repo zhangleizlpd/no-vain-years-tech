@@ -50,7 +50,7 @@ import { exchangeCalendarDateForScope } from './session-clock.js';
  * ## 🚨 `Instrument` 表外的标的 → 跳过并计数, **MUST NOT 改幂等键绕 FK** (plan D-DATA-8)
  *
  * 全市场必然撞上库里没有的票 (新上市 / OTC)。跳过并把计数**上抛作监控信号** (WARN +
- * `failedTargets` 审计明细 → `SyncRun`): 该数**持续升高 = universe 枚举漏了一类标的**。把幂等键
+ * `findings` 审计明细 → `SyncRun`): 该数**持续升高 = universe 枚举漏了一类标的**。把幂等键
  * 改成不依赖 `Instrument` 的裸 (市场, 代码) 能让这些行落库, 但会同时废掉「标的」这个概念在
  * 本表的锚点, 且让漏枚举彻底静默。
  *
@@ -190,7 +190,7 @@ export class SyncEarningsEventUseCase {
   /**
    * 一轮财报日历同步。返 `true` = vendor 预算耗尽 (顺延信号, `ExecutorResult.budgetExhausted`)。
    *
-   * **per-window 隔离**: 单窗失败计 `failed` + `failedTargets` 后继续下一窗, 不整轮塌
+   * **per-window 隔离**: 单窗失败计 `failed` + `findings` 后继续下一窗, 不整轮塌
    * (财报日历每日重拉整个视野 ⇒ 当窗失败次日自愈); **HTTP 全在事务外**。
    *
    * 计数单位 (同 `us_index_daily` 的记账口径): `scanned` / `ok` / `skipped` 是**事件行**,
@@ -282,7 +282,8 @@ export class SyncEarningsEventUseCase {
         }
         // 窗级隔离: Rejected (永久) 与 5xx / 契约变更同处置 —— 都不该让其余那些窗陪葬。
         stats.failed++;
-        stats.failedTargets.push({
+        stats.findings.push({
+          kind: 'failure',
           symbol: `${market} ${start}..${end}`,
           step: 'earnings_event',
           error: String(err),
@@ -337,10 +338,10 @@ export class SyncEarningsEventUseCase {
         `财报日历有 ${unmatchedCount} 条事件的标的不在 Instrument 表内 (已跳过保 FK; ` +
           `持续升高 = universe 枚举漏了一类标的): 样本 ${unmatched.join(', ')}`,
       );
-      stats.failedTargets.push({
+      stats.findings.push({
+        kind: 'notice',
         step: 'earnings_instrument_unmatched',
-        unmatched: unmatchedCount,
-        samples: unmatched,
+        detail: { unmatched: unmatchedCount, samples: unmatched },
       });
     }
     return byInstrument;
@@ -508,7 +509,7 @@ export class SyncEarningsEventUseCase {
   /**
    * 改期 → **WARN 复核名单** + `SyncRun` 审计明细 (FR-027)。
    *
-   * 两条通路都要: WARN 是当下能被人看见的那条, `failedTargets` 是事后可查询的那条。
+   * 两条通路都要: WARN 是当下能被人看见的那条, `findings` 是事后可查询的那条。
    * 🚫 计数**不计 `failed`** —— 改期不是本轮同步的失败, 它是本维度存在的理由。
    */
   private reportDateChanges(changes: EarningsDateChange[], stats: SyncRunStats): void {
@@ -517,6 +518,10 @@ export class SyncEarningsEventUseCase {
       `财报日相较库内记录发生变更 ${changes.length} 条 (已记 PIT, 进复核名单): ` +
         changes.map((c) => `${c.symbol} ${c.from}→${c.to}`).join(' | '),
     );
-    stats.failedTargets.push({ step: 'earnings_date_changed', changed: changes.length, changes });
+    stats.findings.push({
+      kind: 'notice',
+      step: 'earnings_date_changed',
+      detail: { changed: changes.length, changes },
+    });
   }
 }

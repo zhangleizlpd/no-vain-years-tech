@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { PrismaService } from '../../src/security/prisma.service';
 import {
+  INTERRUPT_REASON,
   SyncRunRecorder,
   addWritten,
   deriveStatus,
@@ -10,7 +11,10 @@ import {
 } from '../../src/marketdata/sync-run.recorder';
 
 // 016 T004: SyncRunRecorder 生命周期 (Testcontainers PG)。开 running → 收 4 终态 + 计数 +
-// failedTargets(Json) + finishedAt 落 marketdata.sync_run; deriveStatus 计数派生。
+// findings(Json) + finishedAt 落 marketdata.sync_run; deriveStatus 计数派生。
+//
+// #209 expand 步起本文件还锁两件事: ① `findings` 与旧列 `failed_targets` **双写同载荷**;
+// ② 每条 finding **恒带 `kind`**, 且非失败形态 (skip/interrupt) 也走这一列。
 describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
   let prisma: PrismaService;
   let recorder: SyncRunRecorder;
@@ -43,7 +47,7 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
       skipped: 0,
       failed: 0,
       written: 97,
-      failedTargets: [],
+      findings: [],
     };
     await recorder.finish(id, 'success', stats, NOW);
 
@@ -53,7 +57,8 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(done.ok).toBe(100);
     expect(done.finishedAt).toEqual(NOW);
     expect(done.written).toBe(97); // 063 Phase 3.3: 落库侧的数, 与 scanned/ok 不是一回事
-    expect(done.failedTargets).toBeNull(); // 无失败 → JsonNull
+    expect(done.findings).toBeNull(); // 无 finding → JsonNull (不是空数组)
+    expect(done.failedTargets).toBeNull(); // 双写: 旧列同步为 null
   });
 
   it('🚨 written 三态: 没有写路径上报 ⇒ 落 **null** 而不是 0 (063 Phase 3.3)', async () => {
@@ -94,7 +99,7 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     // 这一个时钟, 已经把「写的是收尾时刻不是逻辑 now」钉死。
   });
 
-  it('finish(partial) → failedTargets(Json) 落库可审计', async () => {
+  it('finish(partial) → findings(Json) 落库可审计', async () => {
     const id = await recorder.start('eod_bar');
     const stats: SyncRunStats = {
       scanned: 10,
@@ -102,9 +107,9 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
       skipped: 0,
       failed: 2,
       written: null,
-      failedTargets: [
-        { symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' },
-        { symbol: 'cn:000001', step: 'fundamental', error: '429' },
+      findings: [
+        { kind: 'failure', symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' },
+        { kind: 'failure', symbol: 'cn:000001', step: 'fundamental', error: '429' },
       ],
     };
     await recorder.finish(id, deriveStatus(stats), stats, NOW);
@@ -112,7 +117,89 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
     expect(done.status).toBe('partial');
     expect(done.failed).toBe(2);
-    expect(done.failedTargets).toEqual(stats.failedTargets);
+    expect(done.findings).toEqual(stats.findings);
+  });
+
+  it('🚨 expand 步**双写**: findings 与 failed_targets 载荷完全一致 (#209 三步法第 1 步)', async () => {
+    const id = await recorder.start('option_daily_snapshot');
+    const stats: SyncRunStats = {
+      ...emptyStats(),
+      scanned: 3,
+      ok: 2,
+      failed: 1,
+      findings: [
+        { kind: 'failure', symbol: 'us:ALB', step: 'option_daily_snapshot', error: '502' },
+      ],
+    };
+    await recorder.finish(id, deriveStatus(stats), stats, NOW);
+
+    const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    expect(done.findings).toEqual(stats.findings);
+    // 🚨 旧列在 expand 步 MUST 同载荷写入: 读侧 (marketdata-sync-report.sh) 本步仍读它, 且
+    // prod 回滚是 image-only —— 相邻两个镜像必须都能从自己读的那一列拿到同一份东西。
+    // 这条断言就是三步法第 1 步的不变量; 它变红 = 提前进了 migrate 步。
+    expect(done.failedTargets).toEqual(stats.findings);
+  });
+
+  it('🚨 非失败形态也走这一列 —— reject / notice 恒带 kind 且不改 failed 计数', async () => {
+    const id = await recorder.start('option_daily_snapshot');
+    const stats: SyncRunStats = {
+      ...emptyStats(),
+      scanned: 1,
+      ok: 1,
+      findings: [
+        {
+          kind: 'reject',
+          symbol: 'us:ALB',
+          step: 'option_snapshot_guard',
+          rejected: 2,
+          contracts: ['ALB260918C90000', 'ALB260918P90000'],
+          // #198/#212: 去重聚合, 与 contracts 不等长也不同序 —— 别按下标配对。
+          violations: ['bid_above_ask', 'delta_sign'],
+        },
+        {
+          kind: 'notice',
+          step: 'earnings_date_changed',
+          detail: { changed: 1 },
+        },
+      ],
+    };
+    await recorder.finish(id, deriveStatus(stats), stats, NOW);
+
+    const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    // 这一行**恒为 success** —— 正是它让旧读侧 (status NOT IN ('success','skipped') 才展开)
+    // 把这两条永久藏了起来。改名 + kind 就是为了让读侧能改成按 kind 展开。
+    expect(done.status).toBe('success');
+    expect(done.failed).toBe(0);
+    expect(done.findings).toEqual(stats.findings);
+    expect(done.failedTargets).toEqual(stats.findings);
+  });
+
+  it("recordSkippedWithReason → findings 落 {kind:'skip'} (审计痕, 非失败语义)", async () => {
+    const id = await recorder.recordSkippedWithReason('eod_bar', '上游未就绪', NOW);
+
+    const row = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('skipped');
+    expect(row.findings).toEqual([{ kind: 'skip', reason: '上游未就绪' }]);
+    expect(row.failedTargets).toEqual(row.findings);
+  });
+
+  it("convergeInterrupted → findings 落 {kind:'interrupt'} + 判据文本", async () => {
+    const jobId = 'job-209-expand';
+    const id = await recorder.start('eod_bar', { bullJobId: jobId });
+    const count = await recorder.convergeInterrupted(
+      jobId,
+      INTERRUPT_REASON.RETRIES_EXHAUSTED,
+      NOW,
+    );
+    expect(count).toBe(1);
+
+    const row = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('interrupted');
+    expect(row.findings).toEqual([
+      { kind: 'interrupt', reason: INTERRUPT_REASON.RETRIES_EXHAUSTED },
+    ]);
+    expect(row.failedTargets).toEqual(row.findings);
   });
 
   it('recordSkipped → 非交易日短路一行 status=skipped (零计数)', async () => {

@@ -3,7 +3,60 @@ import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../security/prisma.service.js';
 import type { DimensionTriggeredBy } from './marketdata-sync.queue.js';
 
-/** 单次同步执行的派发统计 + 失败目标 (SyncRun 收尾写入)。 */
+/**
+ * 一条 **finding** —— 本轮执行里「计数表达不了、但人需要看到」的一件事 (#209)。
+ *
+ * ## 为什么它有 `kind` 而不是随手 push 一个字面量
+ *
+ * 这条通道此前叫 `failedTargets`, 而它装的东西里**非失败的形态比失败的还多样**: 跳过原因、
+ * 打断判据、硬门拒绝、财报改期……读侧于是只能 `dump` 原文 400 字, 分不出「本轮拒了几条」
+ * 和「本轮失败了几个标的」。加上判别字段后, 读侧才有可能按 kind 聚合 —— 那正是 #198 / #199
+ * 的判据要的输入。
+ *
+ * 🚨 **值域的单一来源就是本类型**, DB 侧无 enum / CHECK (同 `SyncRunStatus` 的取舍: 加一个
+ * kind 零 migration)。新增 kind 时**先在这里加**, 再去改写入点 —— 反过来会得到一个读侧
+ * 不认识的字符串, 而 JSON 列不会为此报错。
+ */
+export type SyncRunFinding =
+  /**
+   * 一个目标在某一步失败了 (续跑 / 重试的来源)。
+   *
+   * 🚨 **本 kind 不蕴含「计入 `stats.failed`」** —— 计不计数是写入点自己的决定, 两者刻意解耦。
+   * 反例已在仓里: `appendIvHistoryIncrement` (#215) 是监控侧原料, 失败留痕但**不改判**本轮,
+   * 否则日更会因为一条辅助数据变 `partial`。把计数绑进 kind 的定义, 下一个这样的写入点就只能
+   * 去挑一个语义不对的 kind。
+   */
+  | { kind: 'failure'; symbol: string; step: string; error: string }
+  /**
+   * 落库前硬门拒了若干行, 行**不入库**。🚫 **不计 `failed`** —— 那个计数的粒度是「标的」,
+   * 用它记行级拒绝会把一票里的一条脏行说成整票失败并触发降级告警。
+   */
+  | {
+      kind: 'reject';
+      symbol: string;
+      step: string;
+      rejected: number;
+      contracts: string[];
+      /**
+       * 撞了哪几条门 (#198 / #212) —— **去重聚合而非逐合约**, 故与 `contracts` 不等长、
+       * 不同序, 两者 MUST NOT 按下标配对。批量拒绝时分不出「哪张合约撞哪条门」是知情的代价;
+       * 单行拒绝 (us:CPB 那种) 两者等价。
+       */
+      violations: string[];
+    }
+  /** 本轮被 freshness gate 跳过 (审计痕, 非失败语义)。 */
+  | { kind: 'skip'; reason: string }
+  /** 上一 attempt 未收尾, 被收敛成 `interrupted` (#137)。 */
+  | { kind: 'interrupt'; reason: string }
+  /**
+   * 非失败但值得人看的观察 —— 载荷各异故统一收进 `detail`, 不给联合开索引签名的口子
+   * (开了就等于没有类型)。今天的两个实例都在 `sync-earnings-event.usecase.ts`:
+   * 标的未匹配 (「持续升高 = universe 枚举漏了一类标的」) 与财报改期 (「不是失败, 是本维度
+   * 存在的理由」)。
+   */
+  | { kind: 'notice'; step: string; detail: Record<string, unknown> };
+
+/** 单次同步执行的派发统计 + 本轮 findings (SyncRun 收尾写入)。 */
 export interface SyncRunStats {
   scanned: number;
   ok: number;
@@ -17,8 +70,13 @@ export interface SyncRunStats {
    * 是 1 看着还对, 而 `stats.written! += n` 会把 null 起点变成 NaN 且一路不报错。
    */
   written: number | null;
-  /** 失败目标明细 (续跑/重试源 + 可 grep), 每项形如 {symbol, step, error}。 */
-  failedTargets: unknown[];
+  /**
+   * 本轮**值得人看的明细** —— 落 `sync_run.findings` (#209 前叫 `failedTargets` / `failed_targets`,
+   * 改名理由见 {@link SyncRunFinding} 与 schema 上的列注释)。
+   *
+   * 🚨 **不是「失败清单」**: `failure` 只是五种 kind 之一, 其余四种所在的行往往恒为 `success`。
+   */
+  findings: SyncRunFinding[];
 }
 
 /**
@@ -33,9 +91,9 @@ export interface SyncRunStats {
 export type SyncRunStatus = 'success' | 'partial' | 'failed' | 'skipped' | 'interrupted';
 
 /**
- * `interrupted` 行落进 `failed_targets` 的判据文本 —— **两个触发点各有各的一句**, 因为它们
+ * `interrupted` 行落进 `findings` 的判据文本 —— **两个触发点各有各的一句**, 因为它们
  * 回答的是不同的问题:「这一轮还会不会被重跑」。查表的人只看这一列就能分辨, 不必回溯队列。
- * (审计明细通道复用 `failed_targets`, 非失败语义 —— 同 {@link SyncRunRecorder.recordSkippedWithReason}。)
+ * (以 `{kind:'interrupt'}` 落 findings, 非失败语义 —— 同 {@link SyncRunRecorder.recordSkippedWithReason}。)
  */
 export const INTERRUPT_REASON = {
   /** 同 job 的下一个 attempt 开工前扫地 ⇒ **已有接管者**, 本轮的活不会丢。 */
@@ -68,7 +126,7 @@ export function addWritten(stats: SyncRunStats, rows: number): void {
 
 /** 空统计起点 (调用方累加)。 */
 export function emptyStats(): SyncRunStats {
-  return { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, failedTargets: [] };
+  return { scanned: 0, ok: 0, skipped: 0, failed: 0, written: null, findings: [] };
 }
 
 /**
@@ -99,7 +157,7 @@ function businessDayToDate(asOf: string): Date {
 
 /**
  * SyncRunRecorder (016 T004, FR-S17): SyncRun 行生命周期 — 开 (running) / 收
- * (success|partial|failed|skipped + 计数 + failedTargets + finishedAt)。贫血 prisma row
+ * (success|partial|failed|skipped + 计数 + findings + finishedAt)。贫血 prisma row
  * 写 marketdata.sync_run (R1 自有表)。每次同步执行落一行, 是审计 + DLQ-lite + 水位载体。
  *
  * `finalStatus` 由计数派生 (FR-S17 log-based alerting 入口): failed>0 但 ok>0 → partial;
@@ -157,15 +215,21 @@ export class SyncRunRecorder {
       data: {
         status: 'interrupted',
         finishedAt: now,
-        // 未收尾的行 failedTargets 恒为 NULL ⇒ 这里是首写, 不会盖掉任何既有明细。
-        failedTargets: [{ reason }] as Prisma.InputJsonValue,
+        // 未收尾的行两列恒为 NULL ⇒ 这里是首写, 不会盖掉任何既有明细。
+        findings: [{ kind: 'interrupt', reason }] as Prisma.InputJsonValue,
+        // #209 expand 步双写 (migrate 步停写, contract 步 drop 本列)。
+        failedTargets: [{ kind: 'interrupt', reason }] as Prisma.InputJsonValue,
       },
     });
     return count;
   }
 
   /**
-   * 收尾: 写终态 + 计数 + failedTargets(Json) + finishedAt。
+   * 收尾: 写终态 + 计数 + findings(Json) + finishedAt。
+   *
+   * 🚨 **`findings` 与 `failed_targets` 双写同一份载荷** —— #209 三步法的 expand 步。读侧
+   * (`ops/jobs/marketdata-sync-report.sh`) 本步仍读旧列, 且 prod 回滚是 image-only, 相邻两个
+   * 镜像必须都能从各自读的那一列拿到同一份东西。migrate 步停双写, contract 步 drop 旧列。
    *
    * 🚨 **`finishedAt` 默认取真实收尾时刻, 不吃调用方的「逻辑 now」** —— 那正是这个参数
    * 曾经的塌法: `DimensionExecutorRegistry` 一直传 `ExecutorInput.now` (job **起点**),
@@ -182,6 +246,12 @@ export class SyncRunRecorder {
     stats: SyncRunStats,
     finishedAt: Date = new Date(),
   ): Promise<void> {
+    // 空数组落 JsonNull 而非 `[]`: 同 `written` 的三态判据 —— 「确实没有」与「没上报过」
+    // 别长成一个样。两列共用同一个值, 双写因此不可能分叉。
+    const payload: Prisma.InputJsonValue | typeof Prisma.JsonNull =
+      stats.findings.length > 0
+        ? (stats.findings as unknown as Prisma.InputJsonValue)
+        : Prisma.JsonNull;
     await this.prisma.syncRun.update({
       where: { id },
       data: {
@@ -191,10 +261,8 @@ export class SyncRunRecorder {
         skipped: stats.skipped,
         failed: stats.failed,
         written: stats.written,
-        failedTargets:
-          stats.failedTargets.length > 0
-            ? (stats.failedTargets as Prisma.InputJsonValue)
-            : Prisma.JsonNull,
+        findings: payload,
+        failedTargets: payload,
         finishedAt,
       },
     });
@@ -208,8 +276,8 @@ export class SyncRunRecorder {
   }
 
   /**
-   * freshness gate 跳过 (019 T014, FR-S03 审计痕): skipped 行 + 跳过原因 (failedTargets
-   * Json 列承载 `[{reason}]` — 审计明细通道复用, 非失败语义)。
+   * freshness gate 跳过 (019 T014, FR-S03 审计痕): skipped 行 + 跳过原因
+   * (`findings` 列承载 `[{kind:'skip', reason}]` — 非失败语义, 见 {@link SyncRunFinding})。
    */
   async recordSkippedWithReason(
     syncType: string,
@@ -218,7 +286,12 @@ export class SyncRunRecorder {
     origin: SyncRunOrigin = {},
   ): Promise<bigint> {
     const id = await this.start(syncType, origin);
-    await this.finish(id, 'skipped', { ...emptyStats(), failedTargets: [{ reason }] }, now);
+    await this.finish(
+      id,
+      'skipped',
+      { ...emptyStats(), findings: [{ kind: 'skip', reason }] },
+      now,
+    );
     return id;
   }
 }

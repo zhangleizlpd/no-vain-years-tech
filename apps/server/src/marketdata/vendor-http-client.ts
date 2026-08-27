@@ -140,7 +140,7 @@ export interface VendorRequest {
  * 🚨 **混在一个计数器里, 后果不是「多等一会儿」而是错误类型被换掉**: 熔断开启后抛的是
  * cockatiel 的 `BrokenCircuitError`, 它**不是** `TransientVendorError` ⇒ ① 外层 retry 的
  * 过滤器不认它, 当场放弃剩余重试; ② adapter 里「429 → `OptionChainBudgetExhaustedError`」
- * 那条映射同样不认 ⇒ 一次**纯限频**被记成该标的的 `failed` (进 `failedTargets` + 降级告警),
+ * 那条映射同样不认 ⇒ 一次**纯限频**被记成该标的的 `failed` (进 `findings` + 降级告警),
  * 而不是顺延信号。同一件事被同时误报成「vendor 故障」和「本标的失败」两次。
  *
  * 🚨 它还会把刚采信 `Retry-After` 等出来的那次机会吃掉: 老老实实等满 29 秒本该放行, 熔断

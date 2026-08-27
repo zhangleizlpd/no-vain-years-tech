@@ -14,11 +14,11 @@ interface Row {
   bullJobId: string | null;
   status: string;
   finishedAt: Date | null;
-  failedTargets: unknown;
+  findings: unknown;
 }
 
 function row(id: bigint, bullJobId: string | null, status: string): Row {
-  return { id, bullJobId, status, finishedAt: null, failedTargets: null };
+  return { id, bullJobId, status, finishedAt: null, findings: null };
 }
 
 /** 只实现 `syncRun.updateMany` 的等价语义 (等值 where + 整体赋值)。 */
@@ -57,7 +57,9 @@ describe('SyncRunRecorder.convergeInterrupted (#137)', () => {
     expect(target.status).toBe('interrupted');
     // 终态必须带 finishedAt —— 否则报告脚本的 `finished_at IS NULL` 会永远给它挂「⚠未收尾」。
     expect(target.finishedAt).toEqual(NOW);
-    expect(target.failedTargets).toEqual([{ reason: INTERRUPT_REASON.SUPERSEDED_BY_RETRY }]);
+    expect(target.findings).toEqual([
+      { kind: 'interrupt', reason: INTERRUPT_REASON.SUPERSEDED_BY_RETRY },
+    ]);
   });
 
   it('🚨 只碰 running 行 —— 已收尾的同 job 行 (前几次 attempt) 一律不动', async () => {
@@ -105,7 +107,7 @@ describe('SyncRunRecorder.convergeInterrupted (#137)', () => {
     expect(closed.status).toBe('failed');
   });
 
-  it('两个触发点的 reason 可分辨 —— 查表的人只看 failed_targets 就知道还会不会重跑', () => {
+  it('两个触发点的 reason 可分辨 —— 查表的人只看 findings 就知道还会不会重跑', () => {
     expect(INTERRUPT_REASON.SUPERSEDED_BY_RETRY).not.toBe(INTERRUPT_REASON.RETRIES_EXHAUSTED);
   });
 });

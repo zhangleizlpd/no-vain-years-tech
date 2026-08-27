@@ -313,7 +313,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     ).rejects.toThrow();
   });
 
-  it('SyncRun 可写读 + 审计计数/failedTargets/status', async () => {
+  it('SyncRun 可写读 + 审计计数/findings/status', async () => {
     const run = await prisma.syncRun.create({ data: { syncType: 'eod_bar', status: 'running' } });
     expect(run.scanned).toBe(0);
     const done = await prisma.syncRun.update({
@@ -323,14 +323,14 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
         ok: 8,
         skipped: 1,
         failed: 1,
-        failedTargets: [{ symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' }],
+        findings: [{ kind: 'failure', symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' }],
         status: 'partial',
         finishedAt: new Date(),
       },
     });
     expect(done.status).toBe('partial');
-    expect(done.failedTargets).toEqual([
-      { symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' },
+    expect(done.findings).toEqual([
+      { kind: 'failure', symbol: 'cn:600519', step: 'eod_bar', error: 'timeout' },
     ]);
   });
 

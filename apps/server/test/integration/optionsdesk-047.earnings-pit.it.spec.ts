@@ -275,7 +275,7 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
     expect(rows[0].id).toBe(day1.id);
 
     // 复核名单进了 SyncRun 审计明细 (WARN 是当下那条通路, 这条是事后可查询的那条)。
-    const audit = (await lastRun()).failedTargets as { step: string; changed?: number }[];
+    const audit = (await lastRun()).findings as { step: string; changed?: number }[];
     expect(audit).toContainEqual(expect.objectContaining({ step: 'earnings_date_changed' }));
   });
 
@@ -320,9 +320,17 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
     // 那份账上 (SyncRun), 而不是只在一行 log 里。
     const persisted = await lastRun();
     expect(persisted.skipped).toBe(2);
-    const audit = persisted.failedTargets as { step: string; unmatched?: number }[];
+    const audit = persisted.findings as {
+      kind: string;
+      step: string;
+      detail?: { unmatched?: number };
+    }[];
     expect(audit).toContainEqual(
-      expect.objectContaining({ step: 'earnings_instrument_unmatched', unmatched: 2 }),
+      expect.objectContaining({
+        kind: 'notice',
+        step: 'earnings_instrument_unmatched',
+        detail: expect.objectContaining({ unmatched: 2 }),
+      }),
     );
     // 跳过不是失败 —— 计 failed 会让夜间日报天天红。
     expect(persisted.status).toBe('success');

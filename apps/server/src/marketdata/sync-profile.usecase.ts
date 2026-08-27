@@ -82,7 +82,8 @@ export class SyncProfileUseCase {
           }
         } catch (err) {
           stats.failed += batch.length;
-          stats.failedTargets.push({
+          stats.findings.push({
+            kind: 'failure',
             symbol: `${market}:${batch[0]}..${batch.length}`,
             step: 'profile',
             error: String(err),

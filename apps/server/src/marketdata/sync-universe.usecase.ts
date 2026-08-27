@@ -50,7 +50,7 @@ export class SyncUniverseUseCase {
         stats.ok++;
       } catch (err) {
         stats.failed++;
-        stats.failedTargets.push({ symbol: key, step: 'universe', error: String(err) });
+        stats.findings.push({ kind: 'failure', symbol: key, step: 'universe', error: String(err) });
       }
     }
     return stats;

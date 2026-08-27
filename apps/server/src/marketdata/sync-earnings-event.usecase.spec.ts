@@ -256,8 +256,12 @@ describe('SyncEarningsEventUseCase', () => {
       expect(insertedRows(createMany)).toHaveLength(1);
       expect([stats.scanned, stats.ok, stats.skipped]).toEqual([3, 1, 2]);
       // 计数持续升高 = universe 枚举漏了一类标的 ⇒ 必须是可查询的信号, 不是一句 log 了事。
-      expect(stats.failedTargets).toContainEqual(
-        expect.objectContaining({ step: 'earnings_instrument_unmatched', unmatched: 2 }),
+      expect(stats.findings).toContainEqual(
+        expect.objectContaining({
+          kind: 'notice',
+          step: 'earnings_instrument_unmatched',
+          detail: expect.objectContaining({ unmatched: 2 }),
+        }),
       );
     });
   });
@@ -288,8 +292,12 @@ describe('SyncEarningsEventUseCase', () => {
       expect(args.data.dateChangedAt).toEqual(input.now);
       expect(args.data.firstSeenAt).toBeUndefined();
       // 进 WARN 复核名单 + SyncRun 审计明细。
-      expect(stats.failedTargets).toContainEqual(
-        expect.objectContaining({ step: 'earnings_date_changed', changed: 1 }),
+      expect(stats.findings).toContainEqual(
+        expect.objectContaining({
+          kind: 'notice',
+          step: 'earnings_date_changed',
+          detail: expect.objectContaining({ changed: 1 }),
+        }),
       );
     });
 
@@ -346,7 +354,7 @@ describe('SyncEarningsEventUseCase', () => {
       expect(args.data.epsActual).toBe('2.35');
       expect(args.data.dateChangedAt).toBeUndefined();
       expect(args.data.prevEarningsDate).toBeUndefined();
-      expect(stats.failedTargets).toHaveLength(0);
+      expect(stats.findings).toHaveLength(0);
     });
 
     it('🚨 同日重跑幂等: 逐字段相等 → 零 insert 零 update (Decimal 标度差不算变更)', async () => {

@@ -176,7 +176,7 @@ export class SyncOptionSnapshotUseCase {
   /**
    * 逐票快照。返 `true` = vendor 预算耗尽 (顺延信号, `ExecutorResult.budgetExhausted`)。
    *
-   * **per-instrument 隔离** (016 四支柱): 单票失败计 `failed` + `failedTargets` 后继续下一只,
+   * **per-instrument 隔离** (016 四支柱): 单票失败计 `failed` + `findings` 后继续下一只,
    * 不整轮塌; **HTTP 在事务外**。
    *
    * 复杂度: O(工作集) 次合约表查询 + Σ O(合约数 / 399) 次快照调用 + O(合约数 / 500) 次
@@ -325,7 +325,12 @@ export class SyncOptionSnapshotUseCase {
           continue;
         }
         stats.failed++;
-        stats.failedTargets.push({ symbol, step: 'option_daily_snapshot', error: String(err) });
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'option_daily_snapshot',
+          error: String(err),
+        });
       }
     }
     this.reportAnomalies(anomalyRows, knownNonStandardRoots, spec.now);
@@ -460,10 +465,10 @@ export class SyncOptionSnapshotUseCase {
   }
 
   /**
-   * 违规行 → ERROR + `failedTargets` 审计痕。
+   * 违规行 → ERROR + `findings` 审计痕。
    *
    * **不计 `failed`**: 那个计数的粒度是「标的」, 用它记行级拒绝会把一票里的一条脏行说成整票
-   * 失败并触发降级告警。`failedTargets` 作审计明细通道是既有用法 (同
+   * 失败并触发降级告警。`findings` 作审计明细通道是既有用法 (同
    * `SyncRunRecorder.recordSkippedWithReason`)。FR-043 要的「ERROR」是这条 log。
    */
   private reportRejected(
@@ -482,13 +487,14 @@ export class SyncOptionSnapshotUseCase {
       `[option-snapshot] 落库前硬门拒绝 ${rejected.length} 行 (不入库, 已落历史不受影响): ` +
         `${symbol} ${detail}`,
     );
-    stats.failedTargets.push({
+    stats.findings.push({
+      kind: 'reject',
       symbol,
       step: 'option_snapshot_guard',
       rejected: rejected.length,
       contracts: rejected.map((v) => v.contractCode),
       // #198: 违规码是**唯一**能分辨四条门的东西。它此前只出现在上面那条 ERROR 里, 而日志
-      // 只进容器 stdout (30MB 环, 无投递, 部署即滚) —— `failed_targets` 才是持久的那一份。
+      // 只进容器 stdout (30MB 环, 无投递, 部署即滚) —— `findings` 才是持久的那一份。
       // 不带进来, 事后就只剩一个 `rejected: N`, 「撞的是哪条门」永远查不回去 (us:CPB 连拒
       // 四晚正是这么变成不可归因的)。
       // 🚫 去重聚合而非逐合约: `contracts` 的数组形状**不变**, 既有读者不受影响。
@@ -528,10 +534,16 @@ export class SyncOptionSnapshotUseCase {
    * 三条异常监控 (FR-047/048/049) 的**上报**: 逐条 finding 一行 WARN。
    *
    * 上报形态顺 {@link SyncOptionSnapshotUseCase.reportRejected} 的 log-based alerting (同
-   * `alertIfDegraded` 范式), **不另造通道**。🚫 不进 `stats.failedTargets`: 那条通道只在
+   * `alertIfDegraded` 范式), **不另造通道**。🚫 不进 `stats.findings`: 那条通道只在
    * `sync_run.status` 为问题态时才被次日日报展开, 而本组恒为 WARN 且不改判 `failed` ⇒ 写进去
    * 只是让一条永不被读的 JSON 变长。🚫 更不碰 FR-046 的**当日触达** —— 那道门的唯一载体是
    * T025a 的独立 timer (Guardrail 16), 本组是完全不同的一条线。
+   *
+   *   ⚠️ #209 注记 (顺序敏感, 别倒着做): 「只在问题态展开」是**读侧**的毛病, 不是这条通道的
+   *   性质 —— 三步法第 2 步会把 `ops/jobs/marketdata-sync-report.sh` 改成按 `kind` 展开。那之后
+   *   本段第一个 🚫 的前提就消失了, 这组 finding 应当改走 `stats.findings` 的 `kind:'notice'`。
+   *   **但必须等读侧先改**: 反过来先动这里, 只是往一条仍然没人读的 JSON 里多塞一种形态。
+   *   (第二个 🚫「不碰当日触达」与 #209 无关, 那条线照旧。)
    *
    * 复杂度 O(n)，n = 本轮落库行数 (判定单趟遍历, findings 基数为常数)。
    */

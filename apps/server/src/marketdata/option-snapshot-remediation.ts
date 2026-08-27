@@ -335,7 +335,7 @@ export class OptionSnapshotRemediation {
     if (stats.failed > 0) {
       this.logger.warn(
         `[option-snapshot-remediation] 重采期间 ${stats.failed} 票失败: ` +
-          `${JSON.stringify(stats.failedTargets)}`,
+          `${JSON.stringify(stats.findings)}`,
       );
     }
     return this.coverage.evaluate(spec.sessionDate);

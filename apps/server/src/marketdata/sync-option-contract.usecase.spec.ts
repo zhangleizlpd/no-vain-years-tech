@@ -327,8 +327,8 @@ describe('SyncOptionContractUseCase', () => {
 
       expect(budgetExhausted).toBe(false);
       expect(stats).toMatchObject({ scanned: 2, ok: 1, failed: 1 });
-      expect(stats.failedTargets).toHaveLength(1);
-      expect(JSON.stringify(stats.failedTargets)).toContain('us:PEP');
+      expect(stats.findings).toHaveLength(1);
+      expect(JSON.stringify(stats.findings)).toContain('us:PEP');
     });
 
     it('合约归属错配 (underlyingSymbol ≠ 请求的 symbol) → 该票计 failed, 不落到别人名下', async () => {

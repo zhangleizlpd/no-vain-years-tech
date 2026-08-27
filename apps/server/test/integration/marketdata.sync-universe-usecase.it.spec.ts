@@ -238,7 +238,7 @@ describe('016 T008 SyncUniverseUseCase (Testcontainers PG)', () => {
     expect(blacklisted).toBeNull(); // 黑名单未落库
   });
 
-  it('坏项隔离: 单标 upsert 抛错 (name 超长) → failedTargets, 其余正常落库', async () => {
+  it('坏项隔离: 单标 upsert 抛错 (name 超长) → findings, 其余正常落库', async () => {
     const tooLong = 'X'.repeat(200); // VarChar(128) 溢出 → DB 抛
     const uc = new SyncUniverseUseCase(
       stubPort([
@@ -253,8 +253,8 @@ describe('016 T008 SyncUniverseUseCase (Testcontainers PG)', () => {
     expect(stats.scanned).toBe(3);
     expect(stats.ok).toBe(2); // 两个正常标的落库
     expect(stats.failed).toBe(1);
-    expect(stats.failedTargets).toHaveLength(1);
-    expect(stats.failedTargets[0]).toMatchObject({ symbol: 'cn:600000', step: 'universe' });
+    expect(stats.findings).toHaveLength(1);
+    expect(stats.findings[0]).toMatchObject({ symbol: 'cn:600000', step: 'universe' });
     expect(await prisma.instrument.count()).toBe(2); // 坏项未阻断其余
   });
 });
