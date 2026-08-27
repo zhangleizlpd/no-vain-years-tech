@@ -142,9 +142,14 @@ describe('066 T04 港股期权三维度 seed (Testcontainers PG migrate deploy)'
   // `0 0 23 * * 1-5`(只跑工作日) 这类改动同样红, 而那根本不违反本 FR。这里断的是**性质**:
   // 下一触发时刻落在同日 22:00 之后、次日 00:00 之前。
   //
-  // 22:00 是仓里既有的港股锚点 (`eod_bar` + 18 个理杏仁 cn/hk 维度全在这一刻), runbook 记
-  // 「22:00 起、当晚 ~22:30 就位」, 而 BullMQ worker `concurrency = 1` ⇒ 那批要占用队列一段
-  // 时间。23:00 是给它留的余量。
+  // 22:00 是仓里既有的港股锚点 (`eod_bar` + 18 个理杏仁 cn/hk 维度全在这一刻)。
+  //
+  // 🚨 **原本写在这里的理由已被证伪, 留痕防回潮**: 曾写「BullMQ worker concurrency=1 ⇒ 那批
+  //    要占用队列一段时间, 23:00 是给它留的余量」。实测那批跑到**次日 00:34:57**, 港股三维
+  //    连续三晚执行在午夜后 (issue #210) ⇒ 「错峰留余量」这个前提从来没成立过。
+  //    真正的解法是拆 vendor lane (#210 PR-1), 不是把 cron 再往后挪 —— 后者正是
+  //    `cross-timezone-date-semantics.md` 那条 📌「别指望把 cron 挪到安全时刻」禁止的动作。
+  //    本例仍然有价值: 它守的是**下界** (港股 OI 21:30 定稿) 与**上界** (不许溢出到次日)。
   it('FR-015 三行 cron 的下一触发时刻均晚于同日 22:00 (Shanghai)、早于次日 00:00', async () => {
     const rows = await prisma.syncDimension.findMany({
       where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
@@ -172,7 +177,28 @@ describe('066 T04 港股期权三维度 seed (Testcontainers PG migrate deploy)'
     }
   });
 
-  it('依赖边: universe→链发现 / universe→标的 IV 为 soft, 链发现→快照为 hard', async () => {
+  // #210 的承重断言: 链发现与快照必须落在**同一个 tick**。
+  //
+  // 🚨 它们之间那条 `sync_dependency` 边**只在同一 tick 内生效** (ADR-0049 §3) —— 两端 cron
+  //    差 30 分钟时会分进两棵 flow 树, `assertEdgesExpressible` 见到一端不在链里就整段跳过,
+  //    于是这条边**从上线至今一次都没装配过**, 而且全绿。合进同一 tick 是它生效的**前提**。
+  // 📌 断的是「下一触发时刻相同」这个性质, 不是字符串相等 —— 将来两者一起改成别的时刻
+  //    (只要仍在窗口内) 本例不该红。
+  it('#210 链发现与快照的下一触发时刻相同 (同 tick, 否则那条依赖边根本装不上)', async () => {
+    const rows = await prisma.syncDimension.findMany({
+      where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT] } },
+      select: { dimensionKey: true, cronExpr: true },
+    });
+    expect(rows).toHaveLength(2);
+    const now = new Date('2026-08-24T04:00:00Z'); // 12:00 Asia/Shanghai
+    const byKey = new Map(rows.map((r) => [r.dimensionKey, computeNext(r.cronExpr, now)]));
+    expect(
+      byKey.get(HK_SNAPSHOT)?.getTime(),
+      '链发现与快照不同 tick ⇒ 分进两棵 flow 树 ⇒ 依赖边静默失效 (#210 的根因之一)',
+    ).toBe(byKey.get(HK_CHAIN)?.getTime());
+  });
+
+  it('依赖边: universe→链发现 / universe→标的 IV 为 soft; 链发现→快照 #210 起也是 soft', async () => {
     const edges = await prisma.syncDependency.findMany({
       where: { downstream: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
       select: { upstream: true, downstream: true, mode: true },
@@ -182,13 +208,21 @@ describe('066 T04 港股期权三维度 seed (Testcontainers PG migrate deploy)'
       // universe→* 全 soft 是第一道拦截 (017 先例): 标的须先注册才有 instrument_id 可挂,
       // 但 universe 缺席/失败不该拖垮它们。
       { upstream: 'universe', downstream: HK_CHAIN, mode: 'soft' },
-      // 无合约表即无从取快照 ⇒ 链发现失败必须断下游 (failParentOnFailure)。
-      { upstream: HK_CHAIN, downstream: HK_SNAPSHOT, mode: 'hard' },
+      // 🚨 #210 由 hard 降 soft。原意「无合约表即无从取快照 ⇒ 链发现失败必须断下游」对**美股**
+      // 仍然成立并保留, 但港股**零补救** (`OptionSnapshotRemediation` 的 US_MARKET_SCOPE=['us'],
+      // 且 `history_depth = NULL` —— vendor 不给历史交易日的期权快照) ⇒ 漏采即**永久缺口**。
+      // fail-closed 会把「漏几张当天新挂牌的合约」换成「整晚全丢且不可回补」, 方向反了。
+      // ⚠️ 尤其挡的是链发现**专有**的硬失败路径 (`gapCheckExpiryDates` 对账 diff 非空直接
+      //    throw) —— 那时 futu 是好的、快照本来完全采得到。
+      // 📌 顺序不受影响: soft 边同样给 Kahn 前驱, 快照仍排在链发现之后。
+      { upstream: HK_CHAIN, downstream: HK_SNAPSHOT, mode: 'soft' },
       { upstream: 'universe', downstream: HK_IV, mode: 'soft' },
     ]);
   });
 
-  it('🚨 快照刻意没有 universe 边 —— 多一个前驱会与那条 hard 边争 Kahn 拓扑里的相邻位', async () => {
+  // (#210 后那条边已降 soft, 相邻性不再是硬要求; 但「不给快照多加前驱」这条仍然照旧 ——
+  //  它的工作集来自合约表而不是 Instrument, 连一条 universe 边本就是语义错误。)
+  it('🚨 快照刻意没有 universe 边 —— 它的工作集来自合约表, 不是 Instrument', async () => {
     const count = await prisma.syncDependency.count({
       where: { upstream: 'universe', downstream: HK_SNAPSHOT },
     });
