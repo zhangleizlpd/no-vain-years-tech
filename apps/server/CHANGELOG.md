@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.38.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.38.0...server-v0.38.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **marketdata:** [#199](https://github.com/zhangleizlpd/no-vain-years-tech/issues/199) us:ALB 每晚 502 —— 库里 146 行跨市场幽灵合约, 且 502 从不带 vendor 原话 ([#225](https://github.com/zhangleizlpd/no-vain-years-tech/issues/225)) ([a4490ca](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a4490ca38ddf935649df6be8f57c44ae3d9a38ee))
+
 ## [0.38.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.37.2...server-v0.38.0) (2026-08-27)
 
 
