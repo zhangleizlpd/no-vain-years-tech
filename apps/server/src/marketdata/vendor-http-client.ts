@@ -49,16 +49,39 @@ export function parseRetryAfterMs(raw: string | null | undefined, nowMs: number)
 }
 
 /**
+ * 5xx 时回读并附进错误消息的 vendor 响应体上限 (字符)。
+ *
+ * 300: 一条 vendor 错误串绰绰有余 (实测 futu-shim 的
+ * `{"detail":"get_market_snapshot(400 codes): 未知股票 …","error":"vendor_error"}` 约 90 字符),
+ * 又挡得住网关吐一整页 HTML —— 这串会**原样**进 `sync_run.findings` 与日志。
+ */
+const VENDOR_ERROR_BODY_MAX_CHARS = 300;
+
+/**
  * 瞬时 (可重试) vendor 故障: 429 / 5xx / 网络错。被 cockatiel retry + circuitBreaker
  * 捕获并退避重试。4xx (非 429) = 永久错 → `VendorHttpError`, 不重试。
+ *
+ * ## 🚨 5xx 必须带上 vendor 的原话 (#199)
+ *
+ * 「502」三个字自己什么都不说明。futu-shim 把**任何** vendor `ret != OK` 都映射成 502 并把原文
+ * 放进 body ⇒ 一个**确定性的永久错**(`未知股票 ALB260828C100000`, 库里 146 行幽灵合约) 与
+ * 「网关真挂了」在这一层完全不可分辨。本类此前只留 status, `sync_run.findings` 里就是一个光秃秃
+ * 的 502 —— 那个错连续三轮每晚复现, 取证却要人去港机翻服务日志才拿得到一句话。
  */
 export class TransientVendorError extends Error {
   constructor(
     readonly vendor: string,
     readonly status: number | 'network',
     cause?: unknown,
+    /**
+     * vendor 响应体摘要 (**仅 5xx 通路**有)。**不存字段、只进 message** —— 它存在的全部意义
+     * 就是被 `String(err)` 带进 `findings` 与日志; 存成字段等于多一处没人读的公开面。
+     */
+    detail?: string,
   ) {
-    super(`[${vendor}] transient vendor failure: ${status}`);
+    super(
+      `[${vendor}] transient vendor failure: ${status}${detail === undefined ? '' : ` — ${detail}`}`,
+    );
     this.name = 'TransientVendorError';
     if (cause !== undefined) this.cause = cause;
   }
@@ -93,6 +116,36 @@ type FetchResponseLike = {
    */
   headers?: { get: (name: string) => string | null };
 };
+
+/**
+ * 响应体 → 能放进一行错误消息的摘要。空白折叠成单空格 (findings / 各处摘要都按**单行**读),
+ * 超长截断并留 `…` 标记「后面还有」。空 / 全空白 → `undefined` (别挂一个说不出话的后缀)。
+ *
+ * 复杂度 O(n), n = 响应体长度。
+ */
+function summarizeErrorBody(raw: string): string | undefined {
+  const flat = raw.replace(/\s+/g, ' ').trim();
+  if (flat === '') return undefined;
+  return flat.length > VENDOR_ERROR_BODY_MAX_CHARS
+    ? `${flat.slice(0, VENDOR_ERROR_BODY_MAX_CHARS)}…`
+    : flat;
+}
+
+/**
+ * 5xx 的响应体, 读不到就 `undefined` —— **MUST NOT 让读 body 的失败盖掉真正的那个 5xx**。
+ *
+ * 两条都要兜: ① `text` 可选是仓内既有假 fetch 的形状 (见 {@link FetchResponseLike.text});
+ * ② 真读取可能因超时 abort / 连接断开抛出。两种情况都退回「无 detail」, 与本改动前逐字一致。
+ * 复杂度 O(body)。
+ */
+async function readErrorBody(res: FetchResponseLike): Promise<string | undefined> {
+  if (typeof res.text !== 'function') return undefined;
+  try {
+    return summarizeErrorBody(await res.text());
+  } catch {
+    return undefined;
+  }
+}
 
 type FetchLike = (
   input: string,
@@ -243,7 +296,14 @@ export class VendorHttpClient {
       throw new TransientVendorError(this.profile.vendor, 429);
     }
     if (res.status >= 500) {
-      throw new TransientVendorError(this.profile.vendor, res.status);
+      // 🚨 **只有这一条通路回读 body** (#199): 5xx 是唯一一个「状态码本身说不清是什么错」的
+      // 档位 —— 429 自带 Retry-After 语义、4xx 由 adapter 按语义映射, 都不需要。见类注释。
+      throw new TransientVendorError(
+        this.profile.vendor,
+        res.status,
+        undefined,
+        await readErrorBody(res),
+      );
     }
     if (!res.ok) {
       // 4xx (非 429) = 永久错 (鉴权/参数), 重试无意义。

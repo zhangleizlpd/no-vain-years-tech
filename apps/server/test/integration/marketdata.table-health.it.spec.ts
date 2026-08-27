@@ -536,6 +536,9 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     // 承重断言: 撞名单独存在**不得**让探针翻红 —— 否则 066 之后它会天天假红。
     expect(exitCode).toBe(0);
     expect(summary).toContain('✅');
+    // 🚨 同一批数据同时是 #199 幽灵判据的负控制: 只有 hk 那一行 ⇒ 没有跨市场重合 ⇒ 必须报 0。
+    // 两条判据共用这组 seed 才能证明它们**确实分得开** (一个只报数、一个判红)。
+    expect(summary).toContain('幽灵合约=0');
     expect(usAlb).toBeDefined();
   });
 
@@ -546,6 +549,37 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
 
     expect(summary).toContain('root撞名=0');
     expect(summary).not.toContain('root撞名=0(');
+    expect(summary).toContain('幽灵合约=0');
+    expect(summary).not.toContain('幽灵合约=0(');
+  });
+
+  // ── #199 跨市场幽灵合约: 判红 (与上面的词根撞名方向相反) ──────────────────────────────────
+  it('🚨 同一合约标识同时挂在 us 与 hk 标的名下 → 不健康 exit 1 (vendor 侧不存在的幽灵行)', async () => {
+    await seedAllFresh();
+    // 2026-08-22 prod 实际形态: vendor 把阿里港股的期权阶梯用 `US.ALB…` 返回, 146 行落进
+    // us:ALB 名下 ⇒ 此后每晚第一批快照必 502「未知股票」, 整票零采、无人被叫醒。
+    const usAlb = await seedInstrument('us', 'ALB', false);
+    const hkAli = await seedInstrument('hk', '09988', false);
+    const contract = (market: string, code: string, underlyingInstrumentId: bigint) => ({
+      market,
+      code,
+      root: 'ALB',
+      underlyingInstrumentId,
+      expiryDate: daysAhead(200),
+      strikePrice: 75,
+      optionType: 'CALL',
+      isStandard: true,
+    });
+    await prisma.optionContract.create({ data: contract('hk', 'HK.ALB260828C75000', hkAli) });
+    // 幽灵: 与上一行**同一个合约标识**, 只换了市场前缀。
+    await prisma.optionContract.create({ data: contract('us', 'US.ALB260828C75000', usAlb) });
+
+    const { exitCode, summary } = await runPredicate();
+
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('幽灵合约=1(us:ALB)⚠跨市场');
+    // 词根撞名照旧只报数 —— 翻红的是幽灵那条, 不是它。
+    expect(summary).toContain('root撞名=1(ALB)');
   });
 
   // ── ⑪ 047 M2b earnings_event: 市场级两条信号并联 ────────────────────────────────────────

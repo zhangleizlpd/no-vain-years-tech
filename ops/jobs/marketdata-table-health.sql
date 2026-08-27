@@ -37,6 +37,7 @@
 --   ⑧ 期权快照掉队：有合约的 us 锚**任一只**拿不到新 `option_daily_snapshot`（047 FR-050）
 --   ⑨ 财报视野塌陷 / 停止观察：前向视野右端 < today+120d，或 5 个交易日无新 `first_seen_at`
 --   ⑩ 磁盘水位：可用空间 < 实测日均增长 × 90 天（047 FR-052a）
+--   ⑪ 跨市场幽灵合约：同一合约标识同时挂在 us 与 hk 标的名下（#199；与「词根撞名报数」是两件事）
 --
 -- ═══ 为什么是「逐票哨兵 EXISTS」而不是「全表 max(date) + 行数下界」═══
 -- 🚨 **性能是硬约束，不是优化偏好**：被监控表的索引一律 `(instrument_id, date)` 前导，**没有任何
@@ -318,6 +319,52 @@ root_collision AS (
     AND EXISTS (SELECT 1 FROM marketdata.instrument i
                 WHERE i.market = 'us' AND i.code = c.root)
 ),
+-- ── #199：跨市场幽灵合约（**判红** —— 与上面那条方向刚好相反，别混）───────────────────────
+-- 判据 = 同一个**合约标识**（code 去掉市场前缀那一段 = `root+到期+方向+行权价`）同时挂在一个
+-- **us** 标的和一个 **hk** 标的名下。
+--
+-- 🚨 **它和「词根撞名」不是同一件事，所以判红方向也相反**：
+--   · 词根撞名 = `root` 这一层的巧合，**长期存在、不是故障** ⇒ 上面那条只报数。
+--   · 本条 = **合约行**这一层的重合（到期日 / 方向 / 行权价全都一样）。vendor 侧一个合约标识
+--     只属于一个市场 —— 2026-08-27 实测 `US.ALB260828C100000` 在 vendor 那里**根本不存在**
+--     （打快照直接「未知股票」），而同后缀的 `HK.ALB260828C100000` 是真的 ⇒ 两边同时有行，
+--     其中一边必然是**脏行**。
+--
+-- ═══ 它抓的是什么形态（2026-08-22 prod 真事，别当假设）═══
+-- vendor 在美股方向按词根解析标的时，**有一种自洽形态**：把阿里港股的整条期权阶梯用
+-- `code=US.ALB…` + `stock_owner=US.ALB` 返回。#179 的跨市场 filter（按 owner 市场丢行）和
+-- `sync-option-contract` 的护城河（owner ≠ 请求标的则 throw）**两道都看不见它** —— 它没有任何
+-- 一处自相矛盾。于是 146 行幽灵合约落进 us:ALB 名下，此后每晚快照第一批必 502、整票零采，
+-- 而 502 在当时只显形为一个光秃秃的状态码 ⇒ 三轮无人被叫醒。
+-- ⇒ **本条是目前唯一能抓到「自洽形态」的判据**，别因为「#179 已经修了」就把它删掉。
+--
+-- ⚠️ **理论假阳性**：若哪天真出现「美股某票的 root 撞上港股某 root，且同一到期日 + 同方向 +
+--    同行权价」的合法重合，本条会红。蓄意接受 —— 那个组合罕见到本来就该有人看一眼再判，而它的
+--    反面（幽灵行静默常驻）已经真实发生过一次，代价是该票**每晚整票零采**。
+--
+-- 🚨 判据与一次性清理 migration `20260827_1457_delete_cross_market_ghost_option_contracts`
+--    **同口径**（那条删的正是本条数出来的行）。改一处必须改另一处，否则表现是「清理跑完探针
+--    还红」或反过来「探针绿而库里仍有脏行」。
+--
+-- 性能：`option_contract` 是万行量级（prod 2026-08-10 实测 7620 行），两侧各一次 seq scan +
+-- 表达式 hash semi join，毫秒级 —— 与文件头警告的 `volatility_daily`（1590 万行）不是一个量级。
+hk_contract_suffix AS (
+  SELECT DISTINCT substring(h.code FROM 4) AS suffix
+  FROM marketdata.option_contract h
+  JOIN marketdata.instrument hi ON hi.id = h.underlying_instrument_id
+  WHERE h.market = 'hk' AND hi.market = 'hk'
+),
+ghost_contract AS (
+  SELECT count(*) AS n,
+         coalesce(string_agg(DISTINCT g.symbol, ',' ORDER BY g.symbol), '') AS symbols
+  FROM (
+    SELECT i.market || ':' || i.code AS symbol
+    FROM marketdata.option_contract c
+    JOIN marketdata.instrument i ON i.id = c.underlying_instrument_id
+    WHERE c.market = 'us' AND i.market = 'us'
+      AND substring(c.code FROM 4) IN (SELECT suffix FROM hk_contract_suffix)
+  ) g
+),
 -- ── 047 M2b：财报日历（市场级，无逐票工作集）────────────────────────────────────────────
 -- 两条信号并联，理由见文件头。max() 各走 ix_earnings_event_date / 全表（表小，见下注）。
 -- ⚠️ `first_seen_at` 无索引 ⇒ max() 是 seq scan；该表 2–8 万行/年、逐年累积，量级远低于
@@ -373,7 +420,8 @@ bad AS (
        + (SELECT count(*) FROM opt_verdict WHERE contract_unhealthy)
        + (SELECT count(*) FROM opt_verdict WHERE snapshot_unhealthy)
        + (SELECT count(*) FROM earn_verdict WHERE unhealthy)
-       + (SELECT count(*) FROM disk_verdict WHERE unhealthy) AS n
+       + (SELECT count(*) FROM disk_verdict WHERE unhealthy)
+       + (SELECT count(*) FROM ghost_contract WHERE n > 0) AS n
 )
 SELECT
   ((SELECT n FROM bad) > 0)::int AS exit_code,
@@ -415,4 +463,8 @@ SELECT
   -- #179 词根撞名：**报数不判红**（理由见上面 root_collision 那段的 🚫）。无撞名时不带括号。
   || ' | root撞名=' || (SELECT n FROM root_collision)
   || coalesce('(' || nullif((SELECT roots FROM root_collision), '') || ')', '')
+  -- #199 跨市场幽灵合约：**判红**。`⚠跨市场` 是本条专属标记词，别与上面几个混用。
+  || ' | 幽灵合约=' || (SELECT n FROM ghost_contract)
+  || coalesce('(' || nullif((SELECT symbols FROM ghost_contract), '') || ')', '')
+  || CASE WHEN (SELECT n FROM ghost_contract) > 0 THEN '⚠跨市场' ELSE '' END
   AS summary;
