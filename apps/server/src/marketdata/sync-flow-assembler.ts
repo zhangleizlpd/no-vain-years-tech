@@ -1,9 +1,5 @@
 import type { FlowJob, JobsOptions } from 'bullmq';
-import {
-  dimensionJobName,
-  MARKETDATA_SYNC_QUEUE,
-  type DimensionJobPayload,
-} from './marketdata-sync.queue.js';
+import { dimensionJobName, type DimensionJobPayload } from './marketdata-sync.queue.js';
 
 /** `sync_dependency` 边 (PG 真相层投影; seed 6 边, 未来 admin 可增)。 */
 export interface SyncDependencyEdge {
@@ -64,6 +60,13 @@ export function deriveExecutionOrder(
 export interface FlowDimensionInput {
   payload: DimensionJobPayload;
   opts: JobsOptions;
+  /**
+   * 该维度所属 lane 的 queue 名 (`queueNameForLane(lane)`)。
+   *
+   * 🚨 **必填, 蓄意不给默认值** (#210): 给默认值 = 新入队路径静默把 futu 的活装进 default
+   * 队列, 又排回理杏仁后面 —— 那正是本次要根除的东西。必填 ⇒ 漏传是 typecheck 红。
+   */
+  queueName: string;
 }
 
 /**
@@ -91,12 +94,13 @@ export function assembleSyncFlow(
   // won 链 = won 集按全序排序; chain[i-1] 是 chain[i] 的 child。全序由调用点
   // deriveExecutionOrder(edges, priority) 派生注入 (019 T005, 常量退役)。
   const chain = sortedWonChain(dimensions, executionOrder);
+  assertSingleLane(chain);
   assertEdgesExpressible(edges, chain, executionOrder);
 
   const edgeByPair = new Map(edges.map((e) => [`${e.upstream}→${e.downstream}`, e]));
   const toNode = (d: FlowDimensionInput): FlowJob => ({
     name: dimensionJobName(d.payload.dimensionKey),
-    queueName: MARKETDATA_SYNC_QUEUE,
+    queueName: d.queueName,
     data: d.payload,
     opts: { ...d.opts },
   });
@@ -119,6 +123,59 @@ export function assembleSyncFlow(
     prevKey = d.payload.dimensionKey;
   }
   return node;
+}
+
+/**
+ * won 集内的 **hard 边两端必须同 lane** —— 否则 throw (#210)。
+ *
+ * 🚨 **这道门存在的理由是一个已经发生过的、静默了几个月的 bug**: `hk_option_contract →
+ * hk_option_daily_snapshot` 与 `option_contract → option_daily_snapshot` 两条 hard 边, 因为
+ * 两端 cron 差 30 分钟落在**不同 tick**, 从上线起就一次都没装配过 —— `assertEdgesExpressible`
+ * 见到 `chainPos.get(upstream) === undefined` 就整段跳过, 于是「链发现失败必须断下游」这条
+ * 语义**一直是句空话**, 而且全绿。
+ *
+ * 拆 lane 引入了**第二条**能让同一件事再发生一次的路径: 两端同 tick 但分属不同 lane ⇒ 分进
+ * 两棵树 ⇒ `failParentOnFailure` 同样装不上, 同样全绿。⇒ 这里必须**吵**, 不能沿用
+ * 「一端不在链里就跳过」那套沉默。
+ *
+ * 📌 **soft 边跨 lane 是允许的, 不在本门管辖内**: 它只定执行序, 而「跨 lane 不再排队」正是
+ * 拆 lane 的目的本身。只有 hard 边的失败传播是**语义**, 丢了不响。
+ *
+ * @param laneByKey 只含**本轮 won** 的维度 → 其生效 lane; 一端不在其中 = 该边本轮本就不生效。
+ */
+export function assertHardEdgesWithinLane(
+  edges: readonly SyncDependencyEdge[],
+  laneByKey: ReadonlyMap<string, string>,
+): void {
+  for (const e of edges) {
+    if (e.mode !== 'hard') continue;
+    const up = laneByKey.get(e.upstream);
+    const down = laneByKey.get(e.downstream);
+    if (up === undefined || down === undefined) continue;
+    if (up !== down) {
+      throw new Error(
+        `hard 边 ${e.upstream}(lane=${up})→${e.downstream}(lane=${down}) 跨 lane — ` +
+          `失败传播会静默失效, 两端必须同 lane`,
+      );
+    }
+  }
+}
+
+/**
+ * **一棵树只能属于一条 lane** —— 跨 lane 装配必须 throw (#210)。
+ *
+ * BullMQ 的 flow 树本身**允许**跨队列 (官方: "children can reside in different queues than
+ * the parent")。正因为它允许, 这里才需要一道显式的门: 把 futu 的 child 挂在 default 的
+ * parent 下, parent 就要**等** child —— 跨 lane 的等待恰恰就是本次要消除的队头阻塞, 只是从
+ * 队列层挪到了 flow 层, 且更隐蔽。⇒ 调用方 MUST 先按 lane 分组, 每条 lane 各装一棵树。
+ */
+function assertSingleLane(chain: FlowDimensionInput[]): void {
+  const lanes = new Set(chain.map((d) => d.queueName));
+  if (lanes.size > 1) {
+    throw new Error(
+      `flow 装配输入跨 lane (${[...lanes].sort().join(' / ')}) — 一棵树只能属于一条 lane, 请按 lane 分组后逐条装配`,
+    );
+  }
 }
 
 /** won 集校验 (未知维度 / 重复) + 按维度全序排序成链。 */

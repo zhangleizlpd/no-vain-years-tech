@@ -8,6 +8,8 @@ import type { DimensionExecutorRegistry } from './dimension-executor.js';
 import {
   ANCHOR_COLD_START_JOB,
   ANCHOR_COLD_START_RETRY_MAX,
+  DEFAULT_QUEUE_LANE,
+  MARKETDATA_SYNC_FUTU_QUEUE,
   MARKETDATA_SYNC_QUEUE,
   MarketdataSyncQueue,
   type AnchorColdStartJobPayload,
@@ -23,6 +25,8 @@ const CFG = {
   requeueDelayMs: REQUEUE_DELAY_MS,
   removeOnCompleteCount: 200,
   removeOnFailCount: 100,
+  // 灰度关 ⇒ `resolveLane` 恒返 default、`activeLanes()` 只含 default (#210)。
+  futuLaneEnabled: false,
 } as MarketdataSyncConfig;
 
 const COLD_START_PAYLOAD: AnchorColdStartJobPayload = { ticker: 'us:AAPL', anchorId: '42' };
@@ -35,18 +39,30 @@ const DIMENSION_PAYLOAD: DimensionJobPayload = {
 };
 
 /**
- * 真 `MarketdataSyncQueue` 原型 + 假 `queue` —— 入队 helper 走的是**被测的真实现**
+ * 真 `MarketdataSyncQueue` 原型 + 假 queue —— 入队 helper 走的是**被测的真实现**
  * (`enqueueColdStart` / `enqueueDimensionJob` / `jobOpts`), 只把最外层 bullmq 调用换成 spy。
  *
- * 这样「谁另起了一条队列」是可观测的: 新 `new Queue(...)` 不会落到这个 `add` 上 ⇒ 断言直接红。
+ * 这样「谁另起了一条队列」仍然可观测, 且 #210 后**更严**: 只给 `default` lane 塞了假 queue,
+ * 任何走到别的 lane 的路径都会让 `queueFor()` 去 `new Queue(...)` 真连 Redis (connection
+ * 未注入) ⇒ 当场炸, 而不是悄悄落到这个 `add` 上。
  */
-function buildQueue() {
-  const add = vi.fn(async (name: string, data: unknown, opts: unknown) => ({ name, data, opts }));
-  const getJob = vi.fn(async (_id: string): Promise<unknown> => undefined);
-  const queue = { name: MARKETDATA_SYNC_QUEUE, add, getJob };
+function buildQueue(opts: { futuLaneEnabled?: boolean } = {}) {
+  const mk = (name: string) => {
+    const add = vi.fn(async (n: string, data: unknown, o: unknown) => ({ name: n, data, opts: o }));
+    const getJob = vi.fn(async (_id: string): Promise<unknown> => undefined);
+    return { queue: { name, add, getJob }, add, getJob };
+  };
+  const def = mk(MARKETDATA_SYNC_QUEUE);
+  const futu = mk(MARKETDATA_SYNC_FUTU_QUEUE);
+  const queues = new Map<string, unknown>([[DEFAULT_QUEUE_LANE, def.queue]]);
+  // 灰度关时**不**塞 futu —— 走到它就会去 new Queue(...) 真连 Redis 而当场炸 (见上注释)。
+  if (opts.futuLaneEnabled === true) queues.set('futu', futu.queue);
   const instance = Object.create(MarketdataSyncQueue.prototype) as MarketdataSyncQueue;
-  Object.assign(instance, { queue, cfg: CFG });
-  return { instance, add, getJob };
+  Object.assign(instance, {
+    queues,
+    cfg: { ...CFG, futuLaneEnabled: opts.futuLaneEnabled === true },
+  });
+  return { instance, add: def.add, getJob: def.getJob, futuAdd: futu.add };
 }
 
 function build(
@@ -373,15 +389,21 @@ describe('MarketdataSyncWorker — 打断收敛 (#137)', () => {
   });
 });
 
-describe('MarketdataSyncQueue.enqueueColdStart — 单队列铁律 (Guardrail 6)', () => {
-  it('入队走构造器绑定的那一个 `marketdata-sync` 队列, job 名 + attempts 按冷启动语义', async () => {
-    const { instance, add } = buildQueue();
+describe('MarketdataSyncQueue.enqueueColdStart — lane 归属 (原 Guardrail 6)', () => {
+  // 🚨 **本组的判据在 #210 变了, 别照着旧名字改回去。**
+  //   旧名是「单队列铁律」, 理由写的是「另起队列 = 冷启动与夜间批并发打 vendor 直接撞限频」。
+  //   那个理由**已被证伪**: 限频的 enforcer 是传输层单例令牌桶 (每个 VendorHttpClient 单例,
+  //   futu 按 capability 拆 5 个, acquire() 用 tail promise 链把并发调用 FIFO 排队) ——
+  //   并发几条 lane 都撞不了限频。而把冷启动压在理杏仁 2h35m 长链后面是有实测代价的:
+  //   22:00 后建锚会被推过午夜, 「黄金窗口」只剩交易日 21:30-21:59。
+  //   ⇒ 现在的判据是**lane 归属**: 灰度关 → default (行为不变); 灰度开 → futu。
+  it('灰度关: 仍落 default lane, job 名 + attempts 按冷启动语义', async () => {
+    const { instance, add, futuAdd } = buildQueue();
 
     await instance.enqueueColdStart(COLD_START_PAYLOAD);
 
-    // 🚨 另起一条队列的话这个 spy 一次都不会被调到 —— 这条断言守的就是那件事 (plan §D3:
-    //    另起队列 = 冷启动与夜间批并发打 vendor, 直接撞限频)。
     expect(add).toHaveBeenCalledTimes(1);
+    expect(futuAdd).not.toHaveBeenCalled();
     const [name, data, opts] = add.mock.calls[0] as [
       string,
       unknown,
@@ -392,6 +414,16 @@ describe('MarketdataSyncQueue.enqueueColdStart — 单队列铁律 (Guardrail 6)
     expect(opts.attempts).toBe(ANCHOR_COLD_START_RETRY_MAX);
     expect(opts.backoff).toEqual({ type: 'exponential', delay: 60_000 });
     expect(opts.delay).toBeUndefined();
+  });
+
+  it('灰度开: 落 futu lane (冷启动打的就是 futu 的链发现与快照)', async () => {
+    const { instance, add, futuAdd } = buildQueue({ futuLaneEnabled: true });
+
+    await instance.enqueueColdStart(COLD_START_PAYLOAD);
+
+    expect(futuAdd).toHaveBeenCalledTimes(1);
+    expect(add).not.toHaveBeenCalled();
+    expect(futuAdd.mock.calls[0]?.[0]).toBe(ANCHOR_COLD_START_JOB);
   });
 
   it('`delayMs` 透传 (配额顺延复用同一入口)', async () => {

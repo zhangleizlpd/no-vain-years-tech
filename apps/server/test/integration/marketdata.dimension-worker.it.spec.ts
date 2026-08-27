@@ -28,6 +28,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false,
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 
@@ -103,7 +104,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     try {
       const job = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
-        { retryMax: 3 },
+        { retryMax: 3, lane: 'default' },
       );
       // job opts 注入断言 (attempts=retryMax + backoff + removeOn* 走 config)。
       expect(job.opts.attempts).toBe(3);
@@ -140,7 +141,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
       await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await new Promise((r) => setTimeout(r, 500)); // 给「若误启动的 worker」消费窗口。
       expect(await queue.queue.getWaitingCount()).toBe(1); // 仍积压 — 没人消费。
@@ -169,7 +170,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       // 先种 universe (3 标的: 600519 有 bar / 000001 / 430047 无)。
       const uJob = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: '2026-06-01', triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await uJob.waitUntilFinished(events, 30_000);
 
@@ -183,7 +184,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
           maxEodInstruments: 1,
           triggeredBy: 'cli',
         },
-        { retryMax: 2 },
+        { retryMax: 2, lane: 'default' },
       );
       await job.waitUntilFinished(events, 30_000);
 
@@ -234,11 +235,11 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     try {
       const jobA = await queue.enqueueDimensionJob(
         { dimensionKey: 'eod_bar', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       const jobB = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await expect(jobA.waitUntilFinished(events, 30_000)).rejects.toThrow(/不存在/);
       await jobB.waitUntilFinished(events, 30_000); // B 不受 A 失败影响 (无连坐)。
@@ -337,7 +338,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       // 先种 universe (mock 3 标的), 再 seed 自选 600519。
       const uJob = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: '2026-06-01', triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await uJob.waitUntilFinished(events, 30_000);
       const group = await prisma.group.create({
@@ -349,7 +350,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
 
       const job = await queue.enqueueDimensionJob(
         { dimensionKey: 'eod_bar', mode: 'delta', asOf: '2026-06-01', triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await job.waitUntilFinished(events, 30_000);
 
@@ -387,7 +388,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     try {
       const job = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
-        { retryMax: 1 },
+        { retryMax: 1, lane: 'default' },
       );
       await job.waitUntilFinished(events, 30_000);
       expect(await prisma.instrument.count()).toBeGreaterThan(0); // universe 本身照常。

@@ -40,6 +40,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false,
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 
@@ -401,7 +402,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
           maxEodInstruments: 3,
           triggeredBy: 'cli',
         },
-        { retryMax: 2 },
+        { retryMax: 2, lane: 'default' },
       );
       await eodJob.waitUntilFinished(events, 30_000);
       const delayed = await queue.queue.getDelayed();

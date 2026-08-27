@@ -2,12 +2,13 @@ import { describe, it, expect } from 'vitest';
 import type { FlowJob } from 'bullmq';
 import {
   assembleSyncFlow,
+  assertHardEdgesWithinLane,
   deriveExecutionOrder,
   type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
 import type { DimensionKey } from './dimension-executor.js';
-import { MARKETDATA_SYNC_QUEUE } from './marketdata-sync.queue.js';
+import { MARKETDATA_SYNC_FUTU_QUEUE, MARKETDATA_SYNC_QUEUE } from './marketdata-sync.queue.js';
 
 /** seed 6 边 (017 T005): universe→* 全 soft ×5 + profile→fundamental hard。 */
 const SEED_EDGES: SyncDependencyEdge[] = [
@@ -32,10 +33,15 @@ const SEED_PRIORITIES = new Map<string, number>([
 /** 派生全序 (各 assembleSyncFlow 调用点同源)。 */
 const ORDER = deriveExecutionOrder(SEED_EDGES, SEED_PRIORITIES);
 
-function dim(key: DimensionKey, retryMax = 3): FlowDimensionInput {
+function dim(
+  key: DimensionKey,
+  retryMax = 3,
+  queueName: string = MARKETDATA_SYNC_QUEUE,
+): FlowDimensionInput {
   return {
     payload: { dimensionKey: key, mode: 'delta', asOf: '2026-06-01', triggeredBy: 'tick' },
     opts: { attempts: retryMax, backoff: { type: 'exponential', delay: 60_000 } },
+    queueName,
   };
 }
 
@@ -342,5 +348,76 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
       /重复/,
     );
     expect(() => assembleSyncFlow([], SEED_EDGES, ORDER)).toThrow(/空/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #210 vendor lane 隔离
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#210 一棵树只能属于一条 lane', () => {
+  const ORDER = ['universe', 'profile', 'eod_bar'];
+
+  it('混入两条 lane ⇒ throw —— 跨 lane 的 parent-child 等待 = 队头阻塞换了个地方', () => {
+    expect(() =>
+      assembleSyncFlow([dim('universe'), dim('profile', 3, MARKETDATA_SYNC_FUTU_QUEUE)], [], ORDER),
+    ).toThrow(/跨 lane/);
+  });
+
+  it('单 lane 树: 每个节点都带该 lane 的 queueName (不再硬编码 marketdata-sync)', () => {
+    const tree = assembleSyncFlow(
+      [
+        dim('universe', 3, MARKETDATA_SYNC_FUTU_QUEUE),
+        dim('profile', 3, MARKETDATA_SYNC_FUTU_QUEUE),
+      ],
+      [],
+      ORDER,
+    );
+    const names: string[] = [];
+    for (let node: FlowJob | undefined = tree; node !== undefined; node = node.children?.[0]) {
+      names.push(node.queueName);
+    }
+    expect(names).toEqual([MARKETDATA_SYNC_FUTU_QUEUE, MARKETDATA_SYNC_FUTU_QUEUE]);
+  });
+});
+
+describe('assertHardEdgesWithinLane (#210)', () => {
+  const HARD: SyncDependencyEdge[] = [
+    { upstream: 'option_contract', downstream: 'option_daily_snapshot', mode: 'hard' },
+  ];
+
+  it('两端同 lane ⇒ 通过', () => {
+    const lanes = new Map([
+      ['option_contract', 'futu'],
+      ['option_daily_snapshot', 'futu'],
+    ]);
+    expect(() => assertHardEdgesWithinLane(HARD, lanes)).not.toThrow();
+  });
+
+  // 🚨 这条守的是「hard 边静默失效」再来一次: 跨 lane ⇒ 分进两棵树 ⇒ failParentOnFailure
+  //    装不上 ⇒ 「链发现失败必须断下游」又变成一句全绿的空话 (跨 tick 那次就是这么丢的)。
+  it('两端跨 lane ⇒ throw', () => {
+    const lanes = new Map([
+      ['option_contract', 'futu'],
+      ['option_daily_snapshot', 'default'],
+    ]);
+    expect(() => assertHardEdgesWithinLane(HARD, lanes)).toThrow(/跨 lane/);
+  });
+
+  it('一端本轮未 won ⇒ 通过 (该边本轮本就不生效, 与既有相邻性判据同语义)', () => {
+    const lanes = new Map([['option_contract', 'futu']]);
+    expect(() => assertHardEdgesWithinLane(HARD, lanes)).not.toThrow();
+  });
+
+  // 📌 soft 边跨 lane 是**允许**的: 它只定执行序, 而「跨 lane 互不排队」正是拆 lane 的目的。
+  it('soft 边跨 lane ⇒ 通过 (刻意, 不在本门管辖内)', () => {
+    const soft: SyncDependencyEdge[] = [
+      { upstream: 'universe', downstream: 'hk_option_contract', mode: 'soft' },
+    ];
+    const lanes = new Map([
+      ['universe', 'default'],
+      ['hk_option_contract', 'futu'],
+    ]);
+    expect(() => assertHardEdgesWithinLane(soft, lanes)).not.toThrow();
   });
 });

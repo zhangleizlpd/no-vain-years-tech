@@ -23,6 +23,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false, // 灰度 flag 默认关 (handleCron 短路面; tick() 直调不受 flag 门)。
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 

@@ -47,6 +47,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false,
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 
@@ -88,8 +89,11 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
   });
 
   it('① 港股链与美股链两个维度 job 入的是**同一条队列** (concurrency=1 串行的前提)', async () => {
-    await queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3 });
-    await queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3 });
+    await queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3, lane: 'default' });
+    await queue.enqueueDimensionJob(payloadOf('hk_option_contract'), {
+      retryMax: 3,
+      lane: 'default',
+    });
     // 冷启动是全系统唯一的非 cron 触发者 —— 它也在这条队列上, 串行保证才覆盖得到它。
     await queue.enqueueColdStart({ anchorId: '1', ticker: 'hk:00700' });
 
@@ -104,6 +108,39 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
     );
     // 🚨 给港股链另起一条队列的那一刻并发就回来了, 且不会有任何单测红。本层验的正是这个前提。
     expect(new Set(jobs.map((j) => j.queueQualifiedName)).size).toBe(1);
+  });
+
+  // #210: 拆 vendor lane 后, 这条不变量的**载体**从「全局唯一队列」变成「同一条 lane」——
+  // `option_contract` / `hk_option_contract` / 冷启动在 seed 里都归 futu lane, 故仍然同队、
+  // 仍然串行, 港美两轮依旧打不穿那个 10 发/30 秒的桶。
+  //
+  // 🚨 **本例必须存在**: 上面 ① 显式钉了 `lane: 'default'`, 灰度翻开后它测的就是一个
+  //    prod 里不存在的配置 —— 绿得很, 但什么都没保证。这一例才是翻开之后的真实拓扑。
+  it('①b 灰度开: 两个链发现维度 + 冷启动仍在同一条队列 (换成 futu lane)', async () => {
+    const q = new MarketdataSyncQueue(lifecycle.client, { ...CFG, futuLaneEnabled: true });
+    const lane = q.resolveLane('futu'); // seed 里这三者同归 futu
+    expect(lane).toBe('futu');
+    try {
+      await q.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3, lane });
+      await q.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3, lane });
+      await q.enqueueColdStart({ anchorId: '1', ticker: 'hk:00700' });
+
+      const states = ['waiting', 'delayed', 'prioritized'] as const;
+      const futuJobs = await q.queueFor('futu').getJobs([...states]);
+      expect(futuJobs.map((j) => j.name).sort()).toEqual(
+        [
+          ANCHOR_COLD_START_JOB,
+          dimensionJobName('option_contract'),
+          dimensionJobName('hk_option_contract'),
+        ].sort(),
+      );
+      expect(new Set(futuJobs.map((j) => j.queueQualifiedName)).size).toBe(1);
+      // 🚨 且 default lane 一个都没有 —— 少了这一条, 「三个 job 同 lane」可以被
+      //    「有一个漏到别的 lane 上」蒙混过去 (那正是配额被打穿的形态)。
+      expect(await q.queue.getJobs([...states])).toHaveLength(0);
+    } finally {
+      await q.queueFor('futu').obliterate({ force: true });
+    }
   });
 
   it('② 港美两轮**同时入队** → 串行完成、零并发窗、无一方失败 (SC-009, state_branches 20)', async () => {
@@ -138,8 +175,8 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
     );
 
     const [usJob, hkJob] = await Promise.all([
-      queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3 }),
-      queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3 }),
+      queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3, lane: 'default' }),
+      queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3, lane: 'default' }),
     ]);
     worker.onModuleInit();
     try {

@@ -35,8 +35,64 @@ import { closeWithTimeout } from '../security/close-with-timeout.js';
  * 会被 worker 路由的 use case —— 依赖方向恒为「消费者 → 生产者」单向。
  */
 
-/** 单 queue 承载全部维度 named job (`sync:<dim>`), concurrency=1 串行天然限频。 */
+/**
+ * default lane 的 queue —— 拆 lane 前**唯一**的那一个 (理杏仁 / 东财 / cboe 全在此)。
+ * 名字保持不变是刻意的: 灰度 flag 关时全部 job 仍落这里, Redis 里不出现新 key。
+ */
 export const MARKETDATA_SYNC_QUEUE = 'marketdata-sync';
+
+/** futu lane 的 queue (issue #210): 期权链 / 快照 / IV / 美股日线 / 财报 + 锚冷启动。 */
+export const MARKETDATA_SYNC_FUTU_QUEUE = 'marketdata-sync-futu';
+
+/**
+ * 执行 lane 值域 —— `SyncDimension.queueLane` 的**单一来源** (DB 侧无 enum/CHECK, 同
+ * `status` / `triggered_by` 的取舍)。
+ *
+ * 🚨 **lane 的判据是「共享哪个限频令牌桶」**, 不是「哪个市场」也不是「哪个业务域」。拆 lane
+ *    的全部收益来自「不同 vendor 的活不再互相排队」(bulkhead); cn 与 hk 共用同一个理杏仁桶,
+ *    按市场拆只会让同一个桶被两条 lane 并发打 —— 那是**反向**收益。
+ *
+ * 🚨 **lane 不负责限频, 别把它当限频机制。** 限频的真正 enforcer 是传输层的**单例令牌桶**:
+ *    每个 `VendorHttpClient` 是单例 provider (futu 还按 capability 拆了 5 个), 且
+ *    `VendorRateLimiter.acquire()` 用一条 tail promise 链把并发调用 FIFO 排队 ⇒ 有几条 lane
+ *    并发对限频**完全无影响**。这一点很重要: `universe` 走
+ *    `UniverseFallbackChainAdapter([理杏仁, 富途, 东财])`, **本就是个多 vendor 维度** ⇒
+ *    「一条 lane = 一个 vendor」从来不成立, MUST NOT 拿它当任何推导的前提。
+ */
+export const QUEUE_LANES = ['default', 'futu'] as const;
+
+export type QueueLane = (typeof QUEUE_LANES)[number];
+
+/** 未登记 / 灰度关 / 值不可识别时的归宿 —— 落回它 = 退化成拆 lane 前的现状, 不是坏数据。 */
+export const DEFAULT_QUEUE_LANE: QueueLane = 'default';
+
+/** lane → queue 名。新增 lane 必须同时在此登记, 否则 typecheck 红 (Record 穷尽)。 */
+const QUEUE_NAME_BY_LANE: Record<QueueLane, string> = {
+  default: MARKETDATA_SYNC_QUEUE,
+  futu: MARKETDATA_SYNC_FUTU_QUEUE,
+};
+
+export function queueNameForLane(lane: QueueLane): string {
+  return QUEUE_NAME_BY_LANE[lane];
+}
+
+/**
+ * `SyncDimension.queueLane` 的原始值 → 生效 lane。**纯函数**, 全部入队点共用这一个判据。
+ *
+ * 两道收敛, 都刻意收敛到 `default` 而不是抛:
+ *  1. `enabled === false` (灰度 flag 关) ⇒ 一律 `default` —— 这是回滚开关, 行为与拆 lane 前
+ *     逐字节相同, 故 flag 关时 Redis 里不会出现 futu queue 的 key。
+ *  2. 值不在 {@link QUEUE_LANES} 内 (DB 侧无约束, 手改 / 打错字都可能) ⇒ `default`。
+ *     🚨 这里**不抛**是有取舍的: 抛会让一个打错字的 lane 值在 tick 里炸掉整轮组 flow
+ *     (`tick()` 把异常吞成 ERROR log, 而告警无接收方 ⇒ 整夜静默瘫痪)。落回 default 的代价
+ *     只是「那个维度退回和理杏仁排队」= 现状, 可观测、可自愈、不丢数据。
+ */
+export function resolveQueueLane(rawLane: string | null | undefined, enabled: boolean): QueueLane {
+  if (!enabled) return DEFAULT_QUEUE_LANE;
+  return (QUEUE_LANES as readonly string[]).includes(rawLane ?? '')
+    ? (rawLane as QueueLane)
+    : DEFAULT_QUEUE_LANE;
+}
 
 /** CLI 永不起 worker 的 sentinel env (017 D6, clarify Q2): entry 起手置位 → boot no-op。 */
 export const MARKETDATA_WORKER_DISABLED = 'MARKETDATA_WORKER_DISABLED';
@@ -125,29 +181,81 @@ export type MarketdataSyncJobPayload = DimensionJobPayload | AnchorColdStartJobP
  */
 @Injectable()
 export class MarketdataSyncQueue implements OnModuleDestroy {
-  readonly queue: Queue;
+  /**
+   * lane → Queue, **懒建**。灰度关时 `resolveLane()` 恒返 default ⇒ futu lane 从不被请求
+   * ⇒ Redis 里**不会出现**它的任何 key。这是「回滚 = 翻 flag」能成立的另一半。
+   */
+  private readonly queues = new Map<QueueLane, Queue>();
   private flowProducer?: FlowProducer;
 
   constructor(
     @Inject(MARKETDATA_QUEUE_REDIS) private readonly connection: Redis,
     @Inject(marketdataSyncConfig.KEY) private readonly cfg: MarketdataSyncConfig,
-  ) {
-    this.queue = new Queue(MARKETDATA_SYNC_QUEUE, { connection });
+  ) {}
+
+  /**
+   * default lane 的 Queue。**保留 `queue` 这个名字是刻意的** —— 灰度关时它就是拆 lane 前
+   * 的那一个, 既有 IT 的断言面逐字不变, 「什么都没发生」才是真的。
+   */
+  get queue(): Queue {
+    return this.queueFor(DEFAULT_QUEUE_LANE);
   }
 
-  /** 入队单维度 job。`retryMax` 来自 SyncDimension 行 (调用方已载); `delayMs` 供顺延。 */
+  /** 取某条 lane 的 Queue (worker 按自己消费的 lane 取; 测试断言面)。 */
+  queueFor(lane: QueueLane): Queue {
+    const existing = this.queues.get(lane);
+    if (existing !== undefined) return existing;
+    const created = new Queue(queueNameForLane(lane), { connection: this.connection });
+    this.queues.set(lane, created);
+    return created;
+  }
+
+  /**
+   * `SyncDimension.queueLane` 原始值 → 生效 lane。**灰度 flag 的唯一读取点** ——
+   * 别在调用侧各读一次 `cfg.futuLaneEnabled`, 那是同一判据的第二处表达。
+   */
+  resolveLane(rawLane: string | null | undefined): QueueLane {
+    return resolveQueueLane(rawLane, this.cfg.futuLaneEnabled);
+  }
+
+  /**
+   * 本进程该起 worker 的 lane 集合。
+   *
+   * 灰度关 ⇒ 只有 default —— 一条都不多起, 于是 futu queue 在 Redis 里**连消费者都没有**,
+   * 与「回滚 = 翻 flag」一致 (翻回去之后不会留一个空转的 worker 连着一个空队列)。
+   */
+  activeLanes(): readonly QueueLane[] {
+    return this.cfg.futuLaneEnabled ? QUEUE_LANES : [DEFAULT_QUEUE_LANE];
+  }
+
+  /**
+   * 入队单维度 job。`retryMax` 来自 SyncDimension 行 (调用方已载); `delayMs` 供顺延。
+   *
+   * 🚨 `lane` **必填, 蓄意不给默认值**: 给了默认值, 将来新加的入队路径会静默落进 default
+   * lane —— 那正是本次要根除的「排在理杏仁后面」。必填 ⇒ 漏传是 typecheck 红, 不是夜里的
+   * 一个惊喜。
+   */
   async enqueueDimensionJob(
     payload: DimensionJobPayload,
-    opts: { retryMax: number; delayMs?: number },
+    opts: { retryMax: number; lane: QueueLane; delayMs?: number },
   ): Promise<Job<DimensionJobPayload>> {
-    return this.queue.add(dimensionJobName(payload.dimensionKey), payload, this.jobOpts(opts));
+    return this.queueFor(opts.lane).add(
+      dimensionJobName(payload.dimensionKey),
+      payload,
+      this.jobOpts(opts),
+    );
   }
 
   /**
    * 入队锚冷启动 job (060 T007)。两个调用点: outbox subscriber 首次触发 / worker 配额顺延重投。
    *
-   * 🚨 **走的是构造器绑定的那一个 `this.queue` (`marketdata-sync`)** —— 另起队列 = 冷启动与
-   * 夜间批**并发**打 vendor, 直接撞限频; 那条 `concurrency=1` 是限频的支柱 (plan §D3)。
+   * 🚨 **恒落 futu lane** —— 冷启动调的就是 futu 的链发现与快照本体。
+   *   沿革: 本处原注释写「必须走同一个 `marketdata-sync`, 另起队列 = 冷启动与夜间批并发打
+   *   vendor 直接撞限频」。那句话的**结论**在 #210 被推翻, 但**担心的东西**没有: 限频的
+   *   enforcer 是传输层单例令牌桶 (见 {@link QUEUE_LANES} 注释), 并发几条 lane 都撞不了限频;
+   *   而把冷启动压在理杏仁 2h35m 长链后面是有实测代价的 —— 22:00 后建锚会被推过午夜,
+   *   「黄金窗口」只剩交易日 21:30-21:59 (066 tasks.md)。
+   *   ⚠️ 灰度关时它仍落 default lane (`resolveLane` 恒返 default), 行为与今天一致。
    *
    * `retryMax` 默认取 {@link ANCHOR_COLD_START_RETRY_MAX}: 冷启动不是维度、没有自己的
    * `sync_dimension` 行, 故取常量而非查表。
@@ -156,7 +264,7 @@ export class MarketdataSyncQueue implements OnModuleDestroy {
     payload: AnchorColdStartJobPayload,
     opts: { retryMax?: number; delayMs?: number } = {},
   ): Promise<Job<AnchorColdStartJobPayload>> {
-    return this.queue.add(
+    return this.queueFor(this.resolveLane('futu')).add(
       ANCHOR_COLD_START_JOB,
       payload,
       this.jobOpts({
@@ -185,6 +293,9 @@ export class MarketdataSyncQueue implements OnModuleDestroy {
 
   async onModuleDestroy(): Promise<void> {
     await closeWithTimeout('marketdata-sync flowProducer', async () => this.flowProducer?.close());
-    await closeWithTimeout('marketdata-sync queue', () => this.queue.close());
+    // 只关**已建**的 lane —— 用 this.queue 会把 default lane 凭空建出来再关掉。
+    for (const [lane, queue] of this.queues) {
+      await closeWithTimeout(`${queueNameForLane(lane)} queue`, () => queue.close());
+    }
   }
 }

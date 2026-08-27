@@ -34,6 +34,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false,
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 
@@ -105,7 +106,7 @@ describe('038 T006 Phase 1 平台市场缝隙 seam (Testcontainers PG+Redis, moc
     return {
       prisma,
       syncQueue: queue,
-      queueEvents: events,
+      queueEventsFor: () => events,
       cliWaitTimeoutMs: 60_000,
       backfillDefaultHistoryDays: 365,
     };

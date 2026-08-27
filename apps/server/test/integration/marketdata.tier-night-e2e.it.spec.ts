@@ -39,6 +39,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false,
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 
@@ -303,7 +304,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
           maxEodInstruments: 3,
           triggeredBy: 'cli',
         },
-        { retryMax: 2 },
+        { retryMax: 2, lane: 'default' },
       );
       await eodJob.waitUntilFinished(events, 30_000);
 

@@ -94,6 +94,7 @@ const CFG: MarketdataSyncConfig = {
   removeOnCompleteCount: 200,
   removeOnFailCount: 500,
   tickEnabled: false,
+  futuLaneEnabled: false, // 灰度默认关 ⇒ 全部 job 落 default lane (拆 lane 前的行为)。
   optionCoverageThreshold: 1,
 };
 
@@ -249,7 +250,7 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       // ── 进程 1: 开出 running 行后卡住(= 部署那一刻正在跑的那个 job)
       const p1 = spawnProcess({ executor: () => new Promise<never>(() => undefined) });
       await p1.bull.waitUntilReady();
-      const job = await p1.queue.enqueueDimensionJob(PAYLOAD, { retryMax: 3 });
+      const job = await p1.queue.enqueueDimensionJob(PAYLOAD, { retryMax: 3, lane: 'default' });
       const jobId = job.id as string;
 
       await waitFor(
@@ -314,7 +315,7 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       // 进程 1 同上: 开出 running 行后卡住。
       const p1 = spawnProcess({ executor: () => new Promise<never>(() => undefined) });
       await p1.bull.waitUntilReady();
-      const job = await p1.queue.enqueueDimensionJob(PAYLOAD, { retryMax: 1 });
+      const job = await p1.queue.enqueueDimensionJob(PAYLOAD, { retryMax: 1, lane: 'default' });
       const jobId = job.id as string;
 
       await waitFor(

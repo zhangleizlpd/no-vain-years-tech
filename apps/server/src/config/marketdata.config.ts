@@ -87,6 +87,10 @@ export const marketdataConfig = registerAs('marketdata', (): MarketdataConfig =>
  *   noeviction 下 Redis 内存有界的机制锚, FR-S12)。
  * - `tickEnabled`: 017 灰度 flag (US7) — 分钟级 tick 驱动开关, **默认 false** (新旧调度
  *   并存期由 env 翻开; 不用 z.coerce.boolean — 字符串 'false' 会被 coerce 成 true)。
+ * - `futuLaneEnabled`: vendor lane 灰度 flag (issue #210) — **默认 false**。关时
+ *   `resolveQueueLane()` 对所有维度一律返回 'default' ⇒ 行为与拆 lane 前**逐字节相同**,
+ *   故回滚 = 把本 flag 翻回 false, **不必回退 migration**。同 `tickEnabled` 用 z.enum 而非
+ *   z.coerce.boolean —— 后者会把字符串 'false' coerce 成 true。
  * - `optionCoverageThreshold`: 047 期权快照**逐票**覆盖率告警阈值 (FR-045), **先验起手 1
  *   = 100%** —— 快照按设计「有合约就有一行」(无报价也照落行), 故「基线日在、当日未到期、当日
  *   却没数据」一条都不该有。校准动作落 impl 期观察窗 (至少覆盖一个月度到期日次日): 若发现存在
@@ -99,6 +103,10 @@ const MarketdataSyncConfigSchema = z.object({
   removeOnCompleteCount: z.coerce.number().int().positive().default(200),
   removeOnFailCount: z.coerce.number().int().positive().default(500),
   tickEnabled: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  futuLaneEnabled: z
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
@@ -117,6 +125,7 @@ export const marketdataSyncConfig = registerAs(
       removeOnCompleteCount: process.env.MARKETDATA_SYNC_REMOVE_ON_COMPLETE_COUNT,
       removeOnFailCount: process.env.MARKETDATA_SYNC_REMOVE_ON_FAIL_COUNT,
       tickEnabled: process.env.MARKETDATA_TICK_ENABLED,
+      futuLaneEnabled: process.env.MARKETDATA_FUTU_LANE_ENABLED,
       optionCoverageThreshold: process.env.MARKETDATA_OPTION_COVERAGE_THRESHOLD,
     }),
 );

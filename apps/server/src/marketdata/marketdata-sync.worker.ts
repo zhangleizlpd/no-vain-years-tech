@@ -14,10 +14,12 @@ import { MARKETDATA_QUEUE_REDIS } from './marketdata-queue-connection.js';
 import {
   ANCHOR_COLD_START_JOB,
   ANCHOR_COLD_START_RETRY_MAX,
-  MARKETDATA_SYNC_QUEUE,
+  DEFAULT_QUEUE_LANE,
   MARKETDATA_WORKER_DISABLED,
   MarketdataSyncQueue,
   dimensionJobName,
+  queueNameForLane,
+  type QueueLane,
   type AnchorColdStartJobPayload,
   type DimensionJobPayload,
   type MarketdataSyncJobPayload,
@@ -59,8 +61,9 @@ function isColdStartJob(job: Job<MarketdataSyncJobPayload>): job is Job<AnchorCo
 @Injectable()
 export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MarketdataSyncWorker.name);
-  private worker?: Worker<MarketdataSyncJobPayload>;
-  private events?: QueueEvents;
+  /** 每条 active lane 一个 Worker + 一个 QueueEvents (#210)。 */
+  private readonly workers: Worker<MarketdataSyncJobPayload>[] = [];
+  private readonly events: QueueEvents[] = [];
 
   constructor(
     @Inject(MARKETDATA_QUEUE_REDIS) private readonly connection: Redis,
@@ -73,7 +76,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
 
   /** worker 是否已启动 (sentinel 断言面 + 测试观察点)。 */
   get running(): boolean {
-    return this.worker !== undefined;
+    return this.workers.length > 0;
   }
 
   onModuleInit(): void {
@@ -81,16 +84,25 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`${MARKETDATA_WORKER_DISABLED} 置位 — worker 不启动 (CLI 入队进程, D6)`);
       return;
     }
-    this.worker = new Worker<MarketdataSyncJobPayload>(
-      MARKETDATA_SYNC_QUEUE,
-      (job) => this.process(job),
-      { connection: this.connection, concurrency: 1 },
-    );
-    this.events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: this.connection });
-    // retry 耗尽硬失败 (与 executor 内业务降级告警分工两道)。
-    this.events.on('failed', ({ jobId, failedReason }) => {
-      void this.onJobFailed(jobId, failedReason);
-    });
+    // #210: 每条 active lane 各起一个 Worker, **各自 concurrency: 1**。
+    // 🚨 `concurrency` 保持 1 不是保守 —— 同一条 lane 内串行仍是我们要的 (同 vendor 的活
+    //    一件件来); 拆的是**lane 之间**, 不是 lane 内部。别顺手把它调大。
+    for (const lane of this.syncQueue.activeLanes()) {
+      const queueName = queueNameForLane(lane);
+      this.workers.push(
+        new Worker<MarketdataSyncJobPayload>(queueName, (job) => this.process(job, lane), {
+          connection: this.connection,
+          concurrency: 1,
+        }),
+      );
+      const events = new QueueEvents(queueName, { connection: this.connection });
+      // retry 耗尽硬失败 (与 executor 内业务降级告警分工两道)。
+      events.on('failed', ({ jobId, failedReason }) => {
+        void this.onJobFailed(jobId, failedReason, lane);
+      });
+      this.events.push(events);
+      this.logger.log(`marketdata-sync worker 启动: lane=${lane} queue=${queueName}`);
+    }
   }
 
   /**
@@ -110,13 +122,17 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
    * 🚨 **本方法不许抛**: 它挂在事件监听上, 抛出去就是 unhandled rejection (进程级噪音,
    * 且吞不掉的那一刻正是 Redis / DB 已经不健康的时候)。落库失败降级成 WARN。
    */
-  async onJobFailed(jobId: string, failedReason: string): Promise<void> {
+  async onJobFailed(
+    jobId: string,
+    failedReason: string,
+    lane: QueueLane = DEFAULT_QUEUE_LANE,
+  ): Promise<void> {
     this.logger.error(
       `marketdata-sync job failed (retries exhausted): ${JSON.stringify({ jobId, failedReason })}`,
     );
     await this.convergeInterruptedRuns(jobId, INTERRUPT_REASON.RETRIES_EXHAUSTED);
     try {
-      const job = await this.syncQueue.queue.getJob(jobId);
+      const job = await this.syncQueue.queueFor(lane).getJob(jobId);
       // undefined = 已被 removeOnFail 留存上限挤掉 (FR-S12 内存有界的代价), 无从判断 job 类型。
       if (job === undefined || job.name !== ANCHOR_COLD_START_JOB) return;
       const { ticker, anchorId } = job.data as AnchorColdStartJobPayload;
@@ -159,9 +175,15 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   /** processor: `job.name` 路由 —— `sync:anchor-cold-start` 走冷启动, 其余 `sync:<dim>` 走 executor。 */
-  async process(job: Job<MarketdataSyncJobPayload>): Promise<SyncRunStats | ColdStartResult> {
+  async process(
+    job: Job<MarketdataSyncJobPayload>,
+    // 📌 `lane` 给默认值与 `enqueueDimensionJob` 的「必填」是**刻意的不对称**: 本方法的生产
+    //    调用方只有上面那个 Worker 闭包 (它恒显式传), 默认值只服务测试直调, 且 default 正是
+    //    灰度关时的真实 lane。而入队面是开放 API, 漏传必须 typecheck 红。
+    lane: QueueLane = DEFAULT_QUEUE_LANE,
+  ): Promise<SyncRunStats | ColdStartResult> {
     if (isColdStartJob(job)) return this.processColdStart(job);
-    return this.processDimension(job as Job<DimensionJobPayload>);
+    return this.processDimension(job as Job<DimensionJobPayload>, lane);
   }
 
   /**
@@ -198,7 +220,10 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   /** 维度分支 (017 T009 原语义, 逐字不变): job.name `sync:<dim>` 路由 executor per-dim 路径。 */
-  private async processDimension(job: Job<DimensionJobPayload>): Promise<SyncRunStats> {
+  private async processDimension(
+    job: Job<DimensionJobPayload>,
+    lane: QueueLane,
+  ): Promise<SyncRunStats> {
     const {
       dimensionKey,
       mode,
@@ -244,6 +269,9 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
         {
           retryMax: job.opts.attempts ?? 1,
           delayMs: this.cfg.requeueDelayMs,
+          // 🚨 顺延必须回**同一条 lane** —— 回错 lane 就是把 futu 的活又扔回理杏仁队尾排队,
+          //    而这条路径恰恰是配额耗尽时走的, 那时最不该再排队。
+          lane,
         },
       );
       this.logger.log(
@@ -254,7 +282,11 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await closeWithTimeout('marketdata-sync worker', async () => this.worker?.close());
-    await closeWithTimeout('marketdata-sync events', async () => this.events?.close());
+    for (const worker of this.workers) {
+      await closeWithTimeout('marketdata-sync worker', () => worker.close());
+    }
+    for (const events of this.events) {
+      await closeWithTimeout('marketdata-sync events', () => events.close());
+    }
   }
 }

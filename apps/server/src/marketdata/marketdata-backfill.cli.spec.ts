@@ -121,12 +121,14 @@ describe('executeBackfill --markets 透传 (seam#3)', () => {
         return fakeJob;
       }),
       jobOpts: vi.fn(() => ({})),
+      // #210: 灰度关 ⇒ 恒 default lane (与 prod 默认一致)。
+      resolveLane: vi.fn(() => 'default'),
     };
     const deps = {
       prisma,
       eodBar: {},
       syncQueue,
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -185,7 +187,7 @@ describe('executeBackfill --dry-run 估算含 039 五新维度 (T017)', () => {
       prisma,
       eodBar: {},
       syncQueue: {}, // dry-run 不入队, 不触碰
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -317,7 +319,7 @@ describe('executeBackfill --dry-run 估算含 040 volatility×3 窗口 (T010)', 
       prisma,
       eodBar: {},
       syncQueue: {},
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -435,7 +437,7 @@ describe('executeBackfill --dry-run 估算含 041 四事件维度 (T016)', () =>
       prisma,
       eodBar: {},
       syncQueue: {},
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -567,7 +569,7 @@ describe('executeBackfill --dry-run 估算含 042 三报告期维度 (T013)', ()
       prisma,
       eodBar: {},
       syncQueue: {},
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -698,7 +700,7 @@ describe('executeBackfill --dry-run 估算含 043 announcement, 排除 industry_
       prisma,
       eodBar: {},
       syncQueue: {},
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -960,7 +962,7 @@ describe('executeBackfill --dry-run 估算含 046 underlying_iv_daily × 分页�
       prisma,
       eodBar: {},
       syncQueue: {},
-      queueEvents: {},
+      queueEventsFor: () => ({}),
       cliWaitTimeoutMs: 1000,
       backfillDefaultHistoryDays: 365,
     } as unknown as BackfillDeps;
@@ -1082,7 +1084,7 @@ describe('executeBackfill 逐维度 asOf (063 Phase 1)', () => {
       deps: {
         prisma,
         syncQueue: {},
-        queueEvents: {},
+        queueEventsFor: () => ({}),
         cliWaitTimeoutMs: 1000,
         backfillDefaultHistoryDays: 365,
       } as unknown as BackfillDeps,

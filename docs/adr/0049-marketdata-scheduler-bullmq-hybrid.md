@@ -17,6 +17,17 @@ sunset_trigger: |
 - Relates: follows [ADR-0047](0047-marketdata-pluggable-data-access.md)（vendor 限频 F4 = 单例无分片前提）；演进 016-marketdata-sync 的调度形态（静态 @Cron 22:00 + 管线内 due 过滤）；设计全文 = [06-04-marketdata-scheduler-redesign](../private/plans/2026-06/06-04-marketdata-scheduler-redesign.md)
 - Supersedes（部分）: [06-03-sync-window-config-reconciliation-seam](../private/plans/2026-06/06-03-sync-window-config-reconciliation-seam.md) 中「SchedulerRegistry 动态注册 per-dimension cron」的升级 seam 设想 — 改走本 ADR 的 tick + nextFireAt 形态
 
+> **⚠️ Amendment 2026-08-27 — 单 queue concurrency=1 → per-vendor lane（issue #210）**
+>
+> 本 ADR `sunset_trigger` 第 3 条（「多 vendor 并行 → 单节点 + 进程内令牌桶 + concurrency=1 前提失效」）触发。修订三处：
+>
+> 1. **事实更正：`concurrency=1` 从来不是限频的支柱。** 原文（Decision §1 表 / §4）把它当作限频与互斥的承重件。实际 enforcer 是**传输层的进程内单例令牌桶**：`marketdata.module.ts` 里每个 `VendorHttpClient` 都是单例 provider（futu 还按 capability 拆了 5 个），且 `VendorRateLimiter.acquire()` 用一条 tail promise 链把并发调用 FIFO 排队 ⇒ **有几条 lane 并发对限频完全无影响**。⚠️ 佐证：`universe` 走 `UniverseFallbackChainAdapter([理杏仁, 富途, 东财])`，**本就是个多 vendor 维度** ⇒「一条 lane = 一个 vendor」从来不成立，不可作为任何推导的前提。
+> 2. **执行层改为 per-vendor lane，每条 lane 各自 `concurrency: 1`**：`marketdata-sync`（理杏仁 / 东财 / cboe）+ `marketdata-sync-futu`（期权链 / 快照 / IV / 美股日线 / 财报 + 锚冷启动）。lane 归属落 `SyncDimension.queue_lane`（**代码真读**，与那个从不被读的 `vendor` 列不是一回事），灰度 flag `MARKETDATA_FUTU_LANE_ENABLED` 默认 false。
+>    代价是实测的：单 lane 下限频靠 job 内 `sleep` 实现 ⇒ **睡觉时占着唯一 worker 槽**，futu 那 10 次/30s 的桶每次调用约 3s 纯睡眠期间理杏仁整条链冻住；反过来理杏仁 2h35m 的夜间链跑着时 futu 的桶完全空闲却用不上。港股期权三维因此连续三晚执行在午夜后（本体只跑 5–6 秒，三维合计约 37 秒，其余全是排队）。
+>    🚨 **lane 的判据是「共享哪个限频令牌桶」**，不是市场也不是业务域 —— 按市场拆会把同一个理杏仁桶劈成两条 lane 并发打，是**反向**收益。
+> 3. **新增一条承重性质：依赖边只在同一个 tick 内生效 ⇒ 跨 cron 的边等于没有。** §3 原本已写「依赖边只约束同一 tick 内共同触发的维度」，但没把推论写出来：`hk_option_contract → hk_option_daily_snapshot` 与 `option_contract → option_daily_snapshot` 两条 **hard** 边，因两端 cron 差 30 分钟落在不同 tick，**从上线起一次都没装配过**，而 `assertEdgesExpressible` 见到一端不在链里就整段跳过 ⇒「链发现失败必须断下游」一直是句全绿的空话。
+>    ⇒ **加 hard 边时 MUST 同时确认两端同 tick 且同 lane**；后者由 `assertHardEdgesWithinLane` 机器强制（跨 lane 直接 throw），前者仍靠人。
+
 ## Context
 
 016 ship 的调度形态有四个结构性缺陷（代码实证见设计文档 §A）：
@@ -34,11 +45,11 @@ sunset_trigger: |
 
 ### 1. 分层：PG 调度真相层 + 裸 BullMQ 执行层
 
-| 层             | Quartz 类比               | 实现                                                                                                                                                                                                                                                                                                                        |
-| -------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PG 调度真相层  | JDBC JobStore             | `SyncDimension` 扩 `nextFireAt`（物化下次触发时刻，`cronExpr` 仍是真相）+ `misfirePolicy`；新表 `sync_dependency`（upstream/downstream/mode `hard\|soft`）                                                                                                                                                                  |
-| SyncTickDriver | 调度线程 + MisfireHandler | 分钟级无状态 `@Cron` tick；**条件 UPDATE 抢占推进 nextFireAt**（affected-count won/lost，防双 tick 重复入队，正确性不依赖 Redis 锁）；启动后首个 tick 扫到过期 `nextFireAt` = 天然 misfire catch-up；交易日 gate 在此层（组 flow 前短路）                                                                                   |
-| BullMQ 执行层  | ThreadPool                | **裸 bullmq + 手动 provider**（不用 `@nestjs/bullmq` 装饰器 wrapper，贴 ADR-0043 扁平手控风格）；单 queue `marketdata-sync`，concurrency=1；6 个 per-dimension named job；`retryMax`→BullMQ `attempts`；依赖 = FlowProducer 按 `sync_dependency` 现场组 flow，hard=`failParentOnFailure` / soft=`ignoreDependencyOnFailure` |
+| 层             | Quartz 类比               | 实现                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PG 调度真相层  | JDBC JobStore             | `SyncDimension` 扩 `nextFireAt`（物化下次触发时刻，`cronExpr` 仍是真相）+ `misfirePolicy`；新表 `sync_dependency`（upstream/downstream/mode `hard\|soft`）                                                                                                                                                                                                                                                         |
+| SyncTickDriver | 调度线程 + MisfireHandler | 分钟级无状态 `@Cron` tick；**条件 UPDATE 抢占推进 nextFireAt**（affected-count won/lost，防双 tick 重复入队，正确性不依赖 Redis 锁）；启动后首个 tick 扫到过期 `nextFireAt` = 天然 misfire catch-up；交易日 gate 在此层（组 flow 前短路）                                                                                                                                                                          |
+| BullMQ 执行层  | ThreadPool                | **裸 bullmq + 手动 provider**（不用 `@nestjs/bullmq` 装饰器 wrapper，贴 ADR-0043 扁平手控风格）；~~单 queue `marketdata-sync`，concurrency=1~~ → **per-vendor lane，每条 lane 各自 concurrency=1**（见顶部 Amendment 2026-08-27）；6 个 per-dimension named job；`retryMax`→BullMQ `attempts`；依赖 = FlowProducer 按 `sync_dependency` 现场组 flow，hard=`failParentOnFailure` / soft=`ignoreDependencyOnFailure` |
 
 **Redis 角色铁律**：Redis 只是执行队列，**不是调度真相** —— job 丢失（驱逐/宕机）由 PG 真相层下轮 tick 发现未跑、重新入队，可自愈。为此 prod compose 改 `maxmemory-policy allkeys-lru → noeviction` + 加 `appendfsync everysec`（AOF 已开）。
 
