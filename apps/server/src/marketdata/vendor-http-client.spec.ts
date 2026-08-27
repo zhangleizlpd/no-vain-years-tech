@@ -32,6 +32,27 @@ function makeFetch(statuses: number[], payload: unknown = { ok: 1 }) {
   return { fetch, calls };
 }
 
+/**
+ * 同 {@link makeFetch}, 但**造了 `text()`** —— 真 `Response` 两个都有, 而上面那个刻意只造
+ * `json()`(仓内既有假 fetch 的形状)。两个并存是负控制: 缺 `text()` 的通路必须逐字不变。
+ */
+function makeFetchWithBody(statuses: number[], bodyText: string) {
+  const calls: FetchArgs[] = [];
+  let i = 0;
+  const fetch = vi.fn(async (url: string, init?: FetchArgs['init']) => {
+    calls.push({ url, init });
+    const status = statuses[Math.min(i, statuses.length - 1)];
+    i++;
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      json: async () => ({ ok: 1 }),
+      text: async () => bodyText,
+    };
+  });
+  return { fetch, calls };
+}
+
 describe('VendorHttpClient', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -93,6 +114,124 @@ describe('VendorHttpClient', () => {
     const out = (await settled) as { err?: unknown };
     expect(out.err).toBeInstanceOf(TransientVendorError);
     expect(calls).toHaveLength(4); // 1 初次 + 3 重试
+  });
+
+  // ── #199: 5xx 的响应体必须进 message ────────────────────────────────────────────────────
+  // 「502」三个字自己什么都不说明。futu-shim 把**任何** vendor ret 都映射成 502 并把原文放进
+  // body, 而本类此前只留 status ⇒ `sync_run.findings` 里就是一个光秃秃的 502, 一条确定性的
+  // 永久错(「未知股票」) 与「网关真挂了」不可分辨, 取证要靠人去港机翻日志。
+  const SHIM_502_BODY =
+    '{"detail":"get_market_snapshot(400 codes): 未知股票 ALB260828C100000","error":"vendor_error"}';
+
+  it('🚨 5xx → vendor 响应体进 TransientVendorError.message (光一个状态码取证不了)', async () => {
+    const { fetch } = makeFetchWithBody([502], SHIM_502_BODY);
+    const client = new VendorHttpClient(LIXINGER_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    const settled = p.then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+    const { err } = await settled;
+
+    expect(err).toBeInstanceOf(TransientVendorError);
+    expect(String(err)).toContain('transient vendor failure: 502');
+    // 承重断言: vendor 的原话必须能被 `String(err)` 带出去 —— findings 存的就是它。
+    expect(String(err)).toContain('未知股票 ALB260828C100000');
+  });
+
+  it('响应体折成单行并截断 (findings / 摘要按单行读; 网关吐整页 HTML 不得灌进去)', async () => {
+    const body = `line1\n  line2\t${'x'.repeat(1000)}`;
+    const { fetch } = makeFetchWithBody([503], body);
+    const client = new VendorHttpClient(LIXINGER_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    const settled = p.then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+    const msg = String((await settled).err);
+
+    expect(msg).not.toMatch(/[\n\t]/);
+    expect(msg).toContain('line1 line2 xxx');
+    expect(msg).toContain('…'); // 截断留标记, 别假装这就是全部
+    expect(msg.length).toBeLessThan(400);
+  });
+
+  it('负控制: 假 fetch 没有 text() → message 逐字不变 (几十个既有用例的形状)', async () => {
+    const { fetch } = makeFetch([503]);
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    const settled = p.then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(String((await settled).err)).toBe(
+      `TransientVendorError: [${EASTMONEY_PROFILE.vendor}] transient vendor failure: 503`,
+    );
+  });
+
+  it('负控制: text() 自己抛 → 退回无 detail, MUST NOT 把读 body 的失败盖掉真正的 5xx', async () => {
+    const fetch = vi.fn(async () => ({
+      status: 500,
+      ok: false,
+      json: async () => ({}),
+      text: async () => {
+        throw new Error('body 读到一半连接断了');
+      },
+    }));
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    const settled = p.then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+    const { err } = await settled;
+
+    expect(err).toBeInstanceOf(TransientVendorError);
+    expect((err as TransientVendorError).status).toBe(500);
+    expect(String(err)).toBe(
+      `TransientVendorError: [${EASTMONEY_PROFILE.vendor}] transient vendor failure: 500`,
+    );
+  });
+
+  it('空 body → 不挂一个说不出话的后缀 (message 逐字不变)', async () => {
+    const { fetch } = makeFetchWithBody([503], '   \n  ');
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    const settled = p.then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(String((await settled).err)).toBe(
+      `TransientVendorError: [${EASTMONEY_PROFILE.vendor}] transient vendor failure: 503`,
+    );
+  });
+
+  it('负控制: 429 不回读 body —— 它自带 Retry-After 语义, 读了只是白烧一次 I/O', async () => {
+    const { fetch } = makeFetchWithBody([429], '{"error":"rate_limited","retry_after_s":29}');
+    const client = new VendorHttpClient(LIXINGER_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    const settled = p.then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(String((await settled).err)).toBe(
+      `TransientVendorError: [${LIXINGER_PROFILE.vendor}] transient vendor failure: 429`,
+    );
   });
 
   it('4xx (非 429) → 永久错立即抛 VendorHttpError, 不重试', async () => {
