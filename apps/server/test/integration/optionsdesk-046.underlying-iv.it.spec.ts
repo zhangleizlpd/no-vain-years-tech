@@ -435,7 +435,7 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
       // ⇒ **自算分位恰为 50.0000**。三档差值由各自的直读 iv_percentile 拉开。
       const wrn = await seedInstrument('PEP', false); // 直读 53.5 ⇒ 差 3.5pp → warn
       const okk = await seedInstrument('VICI', false); // 直读 51.0 ⇒ 差 1.0pp → ok (静默)
-      const hrd = await seedInstrument('LULU', false); // 直读 58.5 ⇒ 差 8.5pp → hard
+      const hrd = await seedInstrument('LULU', false); // 直读 58.5 ⇒ 差 8.5pp → notable
       const sht = await seedInstrument('CPB', false); // 窗口仅 10 天 ⇒ skipped (不告警)
       for (const t of ['us:PEP', 'us:VICI', 'us:LULU', 'us:CPB']) await seedAnchor(t);
 
@@ -458,24 +458,26 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
       const warnMsgs = xcheck(warn.mock.calls);
       const errMsgs = xcheck(error.mock.calls);
 
-      // WARN 名单恰一条 = 那只 3.5pp 的; 结构化 detail 带 level / diffPp 供运维定位。
-      expect(warnMsgs).toHaveLength(1);
-      expect(warnMsgs[0]).toContain('进复核名单');
-      expect(warnMsgs[0]).toContain('"symbol":"us:PEP"');
-      expect(warnMsgs[0]).toContain('"level":"warn"');
-      expect(warnMsgs[0]).toContain('"diffPp":"3.5000"');
-      expect(warnMsgs[0]).toContain(`"date":"${D1.us}"`);
-      // 硬门恰一条 = 那只 8.5pp 的 (>5pp, 疑似 vendor 聚合口径漂移)。
-      expect(errMsgs).toHaveLength(1);
-      expect(errMsgs[0]).toContain('"symbol":"us:LULU"');
-      expect(errMsgs[0]).toContain('"level":"hard"');
+      // 两条 WARN: 3.5pp 的进复核名单, 8.5pp 的记「显著偏离」—— 结构化 detail 带 level /
+      // diffPp 供运维定位。🚨 **errMsgs 恒为空**是本用例现在的承重断言 (2026-08-27 降级,
+      // py-futu-api#257): 差值成因全在 vendor 侧且客户端消不掉, 抬 ERROR = 派无解任务。
+      expect(warnMsgs).toHaveLength(2);
+      const byWarn = (sym: string) => warnMsgs.find((m) => m.includes(`"symbol":"${sym}"`));
+      expect(byWarn('us:PEP')).toContain('进复核名单');
+      expect(byWarn('us:PEP')).toContain('"level":"warn"');
+      expect(byWarn('us:PEP')).toContain('"diffPp":"3.5000"');
+      expect(byWarn('us:PEP')).toContain(`"date":"${D1.us}"`);
+      expect(byWarn('us:LULU')).toContain('不判人工介入');
+      expect(byWarn('us:LULU')).toContain('"level":"notable"');
+      expect(byWarn('us:LULU')).toContain('"diffPp":"8.5000"');
+      expect(errMsgs).toHaveLength(0);
       // ok (噪声带内) 与 skipped (窗口不足) **蓄意零输出** —— 否则告警面会被上线头一年的
       // 新标的刷屏, WARN 名单就失去分辨力了。
       const allMsgs = [...warnMsgs, ...errMsgs];
       expect(allMsgs.some((m) => m.includes('us:VICI'))).toBe(false);
       expect(allMsgs.some((m) => m.includes('us:CPB'))).toBe(false);
 
-      // 🚨 显示口径单源 (FR-035): 落库的 iv_percentile 恒为 **vendor 直读值**, 三档判定
+      // 🚨 显示口径单源 (FR-035): 落库的 iv_percentile 恒为 **vendor 直读值**, 各档判定
       // 一律不改写它; 自算值 (50) **不存在于任何一列** —— T010 只读、返 void、出口只有
       // logger。这条断言就是防它顺着某个新列漏进 DTO 再漏上 UI。
       const rows = await prisma.underlyingIvDaily.findMany();
