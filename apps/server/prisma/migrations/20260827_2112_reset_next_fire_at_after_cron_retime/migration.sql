@@ -1,0 +1,34 @@
+-- 改完 cron_expr 补置 next_fire_at = NULL —— 20260827_1957 漏掉的那一半。
+-- 纯 data-only UPDATE, 幂等 (置 NULL 再置 NULL 无副作用) → 单 PR 合规。
+--
+-- ══ 漏了会怎样: 改动**静默滞后一个周期** ══════════════════════════════════════════════
+-- `next_fire_at` 是 cron 的**物化值**, 只在该行**触发时**由 `computeNext(cronExpr, now)` 重算
+-- (`sync-tick-driver.ts` claim 分支 b)。⇒ 只改 `cron_expr` 不动它, 那一行**下一次仍按旧时刻
+-- 触发**, 新 cron 要到再下一轮才生效。
+--
+-- 20260827_1957 把两对期权维度合进同一 tick, prod 实测 (2026-08-27 21:07, 部署后 2h09m):
+--   hk_option_daily_snapshot  cron='0 0 23 * * *'  但 next_fire_at = 08-27 **23:30**
+--   option_daily_snapshot     cron='0 0 6 * * *'   但 next_fire_at = 08-28 **06:30**
+-- ⇒ 那一晚两端仍落在**两个 tick**, 依赖边照样装不上 —— 也就是说那条 migration 的**目的当晚
+--   完全没达成**, 而一切看起来正常 (无报错、无红、cron 列也确实是新值)。
+--
+-- 🚨 它会自愈 (触发一次之后就按新 cron 走了), 但**靠自愈是隐式的**: 没人能从库里看出「这一
+--    行现在处在滞后期」, 而验证的人会把旧行为当成新行为读。本 migration 的价值不在修复量,
+--    在于**把滞后窗压成零**, 让「改了 cron」与「按新 cron 跑」之间没有一个说不清的中间态。
+--
+-- ══ 为什么置 NULL 是对的做法 (而不是算一个新时刻写进去) ═══════════════════════════════
+-- `NULL` 是 schema 定义的**未物化哨兵**: tick 的 claim 分支 (a) 见到 `enabled AND
+-- next_fire_at IS NULL` 会按当前 `cron_expr` 物化成 from-now 的下一触发, 且**本轮不入队**
+-- (「无 surprise 补跑」, 017 clarify Q1)。⇒ 置 NULL 既不会造成一次意外补跑, 也不需要在
+-- migration 里复刻一遍 cron 解析逻辑 (复刻 = 第二处表达, 迟早与 cron-parser 漂移)。
+--
+-- 🚨 **以后改任何一行的 `cron_expr`, MUST 在同一条 migration 里把它的 `next_fire_at` 置 NULL。**
+--    该约束已同时写进 `schema.prisma` 的 `cronExpr` 列注释 —— 那里是改 cron 的人必经之处。
+--
+-- 📌 对 prod 本条大概率是 no-op (自愈已发生 / 已由人工 SQL 先修), 这是**预期**: 幂等的意义
+--    正是「无论那台库处在滞后期的哪一段, 跑完都落到同一个确定状态」。
+--
+-- migration_refs: issue #210
+UPDATE "marketdata"."sync_dimension"
+   SET "next_fire_at" = NULL
+ WHERE "dimension_key" IN ('hk_option_daily_snapshot', 'option_daily_snapshot');
