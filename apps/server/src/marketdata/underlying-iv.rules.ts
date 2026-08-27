@@ -93,6 +93,14 @@ export const IVP_DIVERGENCE_WARN_PP = new Prisma.Decimal(2);
 export const IVP_DIVERGENCE_NOTABLE_PP = new Prisma.Decimal(5);
 
 /**
+ * 「恰合」的判据（pp）。差 ≤ 此值即算两侧算出同一个数。
+ *
+ * 不写「差恰为 0」：自算走 `below / sampleSize * 100` 的 Decimal 除法，除不尽时留尾数；
+ * 直读值也已按列精度四舍五入。两侧都对时差值是 **1e-4 量级**，不是严格 0。
+ */
+export const IVP_EXACT_MATCH_PP = new Prisma.Decimal(0.001);
+
+/**
  * `his_volatility` 单次请求的跨度上限（自然日，**含首尾**）。
  *
  * vendor 官方限制是「单次跨度 ≤364 天」，但没说 364 算的是含首尾天数还是端点日期差。
@@ -131,6 +139,87 @@ export interface IvpDivergenceVerdict {
   diffPp: Prisma.Decimal | null;
   /** 人可读依据，进告警面供运维定位。 */
   reason: string;
+}
+
+/**
+ * 「恰合数为 0」这条判据成立所需的**最小可算样本数**。
+ *
+ * 🚨 **它不是保守裕度，是判据的前提**：那条判据的逻辑是「窗口内没有空值日的票**必然**恰合，
+ * 所以一只都不合 ⇒ 是我们这侧算错了」。样本太小时前提不成立 —— 抽到的那几只**本来就可能
+ * 全都有空值日**，此时「恰合数为 0」是正常态，不是塌陷。
+ *
+ * 取 10：2026-08-26 实测 110 只可算标的中 65 只恰合（59%）。若每只独立地有 ~41% 概率带空值日，
+ * 10 只全带的概率约 `0.41^10 ≈ 1e-4` ⇒ 假阳性可忽略，而 #211 那种**全域**塌陷照样命中。
+ * 🚫 别为了「让小样本也能判」把它调小 —— 那恰好是把前提拆掉。
+ */
+export const IVP_SYSTEMIC_BREAK_MIN_SAMPLE = 10;
+
+/** 一轮对表的批级汇总（逐票判据退场后，采集侧唯一的输出面）。 */
+export interface IvpBatchSummary {
+  /** 成立对表的标的数（`skipped` 不计 —— 不成立对表 ≠ 对不上）。 */
+  computable: number;
+  /** 其中两侧算出同一个数的（差 ≤ {@link IVP_EXACT_MATCH_PP}）。 */
+  exact: number;
+  /** 最大偏移（pp）；零可算标的时为 `null`（不拿 0 冒充「完全吻合」）。 */
+  maxOffsetPp: Prisma.Decimal | null;
+  /** 最大偏移折成**样本数**（四舍五入）——它才是「窗口内空值日数」的直读量。 */
+  maxOffsetSamples: number;
+  /** 🚨 唯一的自动判据，见函数注释。 */
+  systemicBreak: boolean;
+}
+
+/**
+ * 批级汇总 + **唯一一条**系统性判据。
+ *
+ * ## 🚨 逐票判据为什么退场（py-futu-api#257 / #218 / #209）
+ *
+ * vendor 已书面确认：`get_option_underlying_his_volatility` 的序列对 IV 为空的日期**前向填充**
+ * 且**客户端无法仅凭返回序列区分真实日与被填充日**；而 `iv_percentile` 的分母取**实际有效
+ * 天数**（不含空值日），更新频率还是**盘中分钟级**。⇒ 逐票偏移 = 该票窗口内的空值日数，
+ * **客户端消不掉**。2026-08-26 实测 110 只可算标的里 24 只落在原 WARN 带 —— 全是这种。
+ *
+ * 🚫 **MUST NOT 靠调阈值解决**：偏移没有上界（某只票空值日一多就能差很远），放宽到今天的
+ * 经验上界（10 样本 ≈ 3.97pp）明天就会被一只空值日更多的票越过。而天天响的告警等于没有告警
+ * （#209 正文：「天天判红会让人学会无视这份报告 —— 那等于闸失效」）。
+ *
+ * ## 那还剩什么值得自动判
+ *
+ * **恰合数为 0**。填充机制下，**窗口内没有空值日的那批票必然恰合**（2026-08-26 实测 65/110
+ * 恰合）；连它们都不合了，就不是 vendor 侧的填充，而是**我们这侧**算错了。#211（历史序列
+ * 停更 23 天）正是这个形状：全域偏移变大、恰合归零 —— 它能被这一条抓到，而那 24 条噪声
+ * 不会触发它。
+ *
+ * 🚨 可算样本不足 {@link IVP_SYSTEMIC_BREAK_MIN_SAMPLE} 时**一律不判塌陷**：上线首日 / 全部
+ * 窗口不足时可算集本就很小，而判据的前提（样本里存在无空值日的票）此时不成立 —— 详见该常量。
+ *
+ * 📌 **恢复逐票判据的条件**：vendor 提供空值标记（如逐行 `iv_filled`）或未填充口径 —— 官方
+ * 已主动表示可另行对齐。拿到之前，把逐票阈值接回告警面都是在制造无解的人工任务。
+ *
+ * 复杂度 O(n)，n = 本轮标的数。
+ */
+export function summarizeIvpDivergences(
+  verdicts: readonly IvpDivergenceVerdict[],
+): IvpBatchSummary {
+  let computable = 0;
+  let exact = 0;
+  let maxOffsetPp: Prisma.Decimal | null = null;
+
+  for (const v of verdicts) {
+    if (v.diffPp === null) continue; // skipped：不成立对表
+    computable++;
+    if (v.diffPp.lessThanOrEqualTo(IVP_EXACT_MATCH_PP)) exact++;
+    if (maxOffsetPp === null || v.diffPp.greaterThan(maxOffsetPp)) maxOffsetPp = v.diffPp;
+  }
+
+  // 1 样本 = 100 / 252 pp。折样本数是为了让这个数**可直接读成「空值日数」**。
+  const perSample = HUNDRED.div(IVP_MIN_WINDOW_TRADING_DAYS);
+  return {
+    computable,
+    exact,
+    maxOffsetPp,
+    maxOffsetSamples: maxOffsetPp === null ? 0 : Math.round(maxOffsetPp.div(perSample).toNumber()),
+    systemicBreak: computable >= IVP_SYSTEMIC_BREAK_MIN_SAMPLE && exact === 0,
+  };
 }
 
 /** 回填窗口，闭区间 `[start, end]`，两端均为 `YYYY-MM-DD`。 */

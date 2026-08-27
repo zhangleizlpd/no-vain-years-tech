@@ -5,6 +5,9 @@ import { Prisma } from '../generated/prisma/client.js';
 import {
   HIS_VOLATILITY_MAX_SPAN_DAYS,
   IVP_DIVERGENCE_NOTABLE_PP,
+  IVP_EXACT_MATCH_PP,
+  IVP_SYSTEMIC_BREAK_MIN_SAMPLE,
+  summarizeIvpDivergences,
   IVP_DIVERGENCE_WARN_PP,
   IVP_MIN_WINDOW_TRADING_DAYS,
   InvalidBackfillRangeError,
@@ -151,6 +154,68 @@ describe('classifyIvpDivergence — 三档判定, 两个边界值归属唯一 (F
 
   it('每档都带人可读依据（进告警面定位用）', () => {
     expect(classifyIvpDivergence(D(80), selfAt(50)).reason).toContain('30');
+  });
+});
+
+describe('summarizeIvpDivergences — 逐票判据退场后, 批级汇总 + 唯一一条系统性判据', () => {
+  const v = (level: string, diffPp: number | null) =>
+    ({ level, diffPp: diffPp === null ? null : D(String(diffPp)), reason: '' }) as never;
+
+  it('恰合的口径是「差 ≤ IVP_EXACT_MATCH_PP」, 不是「差恰为 0」(Decimal 除法留尾数)', () => {
+    expect(IVP_EXACT_MATCH_PP.toNumber()).toBe(0.001);
+    const s = summarizeIvpDivergences([v('ok', 0), v('ok', 0.0005), v('ok', 0.002)]);
+    expect(s.computable).toBe(3);
+    expect(s.exact).toBe(2);
+  });
+
+  it('skipped 不进分母 (不成立对表 ≠ 对不上)', () => {
+    const s = summarizeIvpDivergences([v('skipped', null), v('ok', 0), v('warn', 3)]);
+    expect(s.computable).toBe(2);
+    expect(s.exact).toBe(1);
+  });
+
+  /**
+   * 🚨 **这是逐票 WARN 退场后剩下的唯一自动判据**（py-futu-api#257 / #218 / #209）。
+   * 填充机制下, **窗口内没有空值日的那批票必然恰合** —— 连它们都不合了, 就不是 vendor 侧的
+   * 填充, 是**我们这侧**塌了。#211（历史序列停更 23 天）正是这个形状: 全域偏移变大、恰合归零。
+   */
+  it('🚨 样本足够且恰合数为 0 → systemicBreak (我们这侧塌了, 不是 vendor 的填充)', () => {
+    const s = summarizeIvpDivergences(
+      Array.from({ length: IVP_SYSTEMIC_BREAK_MIN_SAMPLE }, () => v('warn', 3)),
+    );
+    expect(s.exact).toBe(0);
+    expect(s.systemicBreak).toBe(true);
+  });
+
+  it('🚨 反臂: 只要还有一只恰合, 就不是系统性塌陷 (24 只已知偏移不得触发)', () => {
+    const many = Array.from({ length: 24 }, () => v('warn', 3));
+    const s = summarizeIvpDivergences([v('ok', 0), ...many]);
+    expect(s.exact).toBe(1);
+    expect(s.systemicBreak).toBe(false);
+  });
+
+  /**
+   * 🚨 **这条守的是判据的前提, 不是保守裕度**: 「无空值日的票必然恰合」要求样本里**存在**
+   * 那种票。样本太小时抽到的几只本来就可能全带空值日 —— 此时恰合数为 0 是正常态。
+   */
+  it('🚨 可算样本不足闸值 → 即便一只都不恰合也不判塌陷', () => {
+    const s = summarizeIvpDivergences(
+      Array.from({ length: IVP_SYSTEMIC_BREAK_MIN_SAMPLE - 1 }, () => v('warn', 3)),
+    );
+    expect(s.exact).toBe(0);
+    expect(s.systemicBreak).toBe(false);
+  });
+
+  it('🚨 零可算标的 → 不是塌陷 (上线首日 / 全 skipped, 判红等于每天假红)', () => {
+    const s = summarizeIvpDivergences([v('skipped', null), v('skipped', null)]);
+    expect(s.computable).toBe(0);
+    expect(s.systemicBreak).toBe(false);
+  });
+
+  it('最大偏移按样本数给 (1 样本 = 1/252 = 0.3968pp) —— 它才是「空值日数」的直读量', () => {
+    const s = summarizeIvpDivergences([v('ok', 0), v('warn', 3.9683)]);
+    expect(s.maxOffsetPp?.toFixed(4)).toBe('3.9683');
+    expect(s.maxOffsetSamples).toBe(10);
   });
 });
 
