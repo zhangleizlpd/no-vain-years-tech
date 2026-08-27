@@ -217,8 +217,6 @@ export class SyncRunRecorder {
         finishedAt: now,
         // 未收尾的行两列恒为 NULL ⇒ 这里是首写, 不会盖掉任何既有明细。
         findings: [{ kind: 'interrupt', reason }] as Prisma.InputJsonValue,
-        // #209 expand 步双写 (migrate 步停写, contract 步 drop 本列)。
-        failedTargets: [{ kind: 'interrupt', reason }] as Prisma.InputJsonValue,
       },
     });
     return count;
@@ -227,9 +225,12 @@ export class SyncRunRecorder {
   /**
    * 收尾: 写终态 + 计数 + findings(Json) + finishedAt。
    *
-   * 🚨 **`findings` 与 `failed_targets` 双写同一份载荷** —— #209 三步法的 expand 步。读侧
-   * (`ops/jobs/marketdata-sync-report.sh`) 本步仍读旧列, 且 prod 回滚是 image-only, 相邻两个
-   * 镜像必须都能从各自读的那一列拿到同一份东西。migrate 步停双写, contract 步 drop 旧列。
+   * 🚨 **只写 `findings`, 不再写 `failed_targets`** —— #209 三步法的 migrate 步。读侧
+   * (`ops/jobs/marketdata-sync-report.sql`) 已改读新列, 历史行也已回填 ⇒ 旧列自此无写者、无读者,
+   * 由 contract 步 drop。
+   *
+   * 🚨 回滚仍安全: 回到 expand 步的镜像会**双写**两列, 而读侧(ops/jobs 随部署铺到机器上,
+   * **不随镜像回滚**)读 `findings` —— 那个镜像照样在写它。
    *
    * 🚨 **`finishedAt` 默认取真实收尾时刻, 不吃调用方的「逻辑 now」** —— 那正是这个参数
    * 曾经的塌法: `DimensionExecutorRegistry` 一直传 `ExecutorInput.now` (job **起点**),
@@ -247,7 +248,11 @@ export class SyncRunRecorder {
     finishedAt: Date = new Date(),
   ): Promise<void> {
     // 空数组落 JsonNull 而非 `[]`: 同 `written` 的三态判据 —— 「确实没有」与「没上报过」
-    // 别长成一个样。两列共用同一个值, 双写因此不可能分叉。
+    // 别长成一个样。
+    //
+    // 🚨 注意它落的是 **JSON 标量 `null`** 而非 SQL NULL ⇒ 消费方**不能**用 `findings IS NOT NULL`
+    // 判「有没有明细」(prod 实测 749 行如此, 会被全数误判为有)。正确谓词是
+    // `jsonb_typeof(findings) = 'array'`, 见 `ops/jobs/marketdata-sync-report.sql` 的 MUST ②。
     const payload: Prisma.InputJsonValue | typeof Prisma.JsonNull =
       stats.findings.length > 0
         ? (stats.findings as unknown as Prisma.InputJsonValue)
@@ -262,7 +267,6 @@ export class SyncRunRecorder {
         failed: stats.failed,
         written: stats.written,
         findings: payload,
-        failedTargets: payload,
         finishedAt,
       },
     });

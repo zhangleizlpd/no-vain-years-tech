@@ -11,7 +11,8 @@
 #   docker exec -i <pg> psql -U <user> -d <db>（scheduled-tasks.md「故障排查」段）。
 #
 # 时窗为「滚动 N 小时」而非日历「当日」：tick 22:00 起、报告次晨 09:00 跑，跨午夜 →「当日」
-# 会恒空（00:00-09:00 无 tick）。默认 18h 回看恰好罩住昨晚 22:00 tick、排除前晚（35h 外）。
+# 会恒空（00:00-09:00 无 tick）。**窗口值与理由都在谓词里**（`marketdata-sync-report.sql`），
+# 本脚本不再持有第二份 —— 阈值有两份就会漂。
 #
 # 零行判定（防周末/节假日「假停摆」误报）：非交易日 tick 全 marketScope 休市 → 短路不组 flow
 # → **零 sync_run 行**（sync-tick-driver.ts:178-182 仅 log 不落行）。故窗口零行时再查 S1 的
@@ -44,14 +45,14 @@
 # Config — 可选 EnvironmentFile /etc/marketdata-sync-report.env（仅任务调参）：
 #   SYNC_REPORT_PG_CONTAINER  postgres 容器（默认 nvy-tight-postgres-1 = prod）
 #   SYNC_REPORT_PG_USER / _DB psql -U / -d（默认 mbw / mbw）
-#   SYNC_REPORT_WINDOW_HOURS  回看窗口小时（默认 18）
 #   CALENDAR_HEALTH_PREDICATE_SQL  044 共享健康谓词路径（默认 = 同目录 marketdata-calendar-health.sql）
+# （原 `SYNC_REPORT_WINDOW_HOURS` 已随 #209 第 2 步取数下沉一并去掉：窗口是**阈值**不是观测值，
+#   传参 = 把判断挪回 bash。prod 从未设置过该 env。）
 set -uo pipefail
 
 PG_CONTAINER="${SYNC_REPORT_PG_CONTAINER:-nvy-tight-postgres-1}"
 PG_USER="${SYNC_REPORT_PG_USER:-mbw}"
 PG_DB="${SYNC_REPORT_PG_DB:-mbw}"
-WINDOW_HOURS="${SYNC_REPORT_WINDOW_HOURS:-18}"
 # 044 共享健康谓词（**唯一判断所在地**，禁内联复制）。
 # 🚨 2026-08-07 ops/jobs 扁平化前这里是**跨目录**相对路径（`../marketdata-calendar-health/`），
 # 装机后解析不到，只能靠 .service 里一行 `Environment=CALENDAR_HEALTH_PREDICATE_SQL=` 兜住 ——
@@ -59,10 +60,11 @@ WINDOW_HOURS="${SYNC_REPORT_WINDOW_HOURS:-18}"
 # 已随之删除。**别再把谓词挪去别的目录**，挪了就要把那根拐杖重新长回来。
 _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREDICATE_SQL="${CALENDAR_HEALTH_PREDICATE_SQL:-$_self_dir/marketdata-calendar-health.sql}"
-
-case "$WINDOW_HOURS" in
-  '' | *[!0-9]*) echo "[report] SYNC_REPORT_WINDOW_HOURS 须为非负整数，实得: $WINDOW_HOURS" >&2; exit 2 ;;
-esac
+# #209 第 2 步：取数 + findings 展开判据下沉到**同目录同名兄弟**（仓 ops/jobs/ ↔ 机
+# /usr/local/lib/nvy/jobs/ 两侧同形）。**蓄意不给 env 覆盖口**：上面那条注释记的就是路径知识
+# 分散两处的代价，别再长一根新拐杖出来。判据由 Testcontainers IT 真测
+# （apps/server/test/integration/marketdata.sync-report-digest.it.spec.ts，含三条变异用例）。
+REPORT_SQL="$_self_dir/marketdata-sync-report.sql"
 
 # 单参 helper：跑一段只读 SQL，tuples-only + tab 分隔（-A 不对齐 / -t 无表头脚注 / -q 静默）。
 psql_ro() {
@@ -70,39 +72,19 @@ psql_ro() {
     -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -c "$1"
 }
 
-# 同上，但跑一个只读 SQL **文件**（stdin 喂 `psql -f -`）。专给 044 共享健康谓词用 ——
-# 谓词必须**读文件**，见脚本头「禁止内联复制」。谓词自包含无参数（阈值写死在 SQL 内）→ 无 -v 传参。
+# 同上，但跑一个只读 SQL **文件**（stdin 喂 `psql -f -`）。两个谓词都走它：本脚本的取数
+# （marketdata-sync-report.sql，#209 第 2 步下沉）与 044 共享健康谓词。
+# 谓词必须**读文件**，见脚本头「禁止内联复制」。二者皆自包含无参数（阈值写死在 SQL 内）→ 无 -v 传参。
 psql_ro_file() {
   docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" \
     -X -q -At -F $'\t' -v ON_ERROR_STOP=1 -f - < "$1"
 }
 
-# ── 主查询：窗口内每 sync_type 最近一行（DISTINCT ON），失败态在前便于扫读 ──────────────────
-# failed_targets 明细仅对问题态展开（success/skipped 不展开）；剔 tab/换行防坏字段分隔、截 400 字。
-AGG_SQL="SELECT
-  sync_type,
-  status,
-  scanned, ok, skipped, failed,
-  -- 🚨 NULL **必须**在 SQL 侧换成哨兵, 不能把空字段丢给下面的 `read`。
-  -- `IFS=$'\t'` 里 tab 仍属 **IFS whitespace** ⇒ 连续 tab 折叠成一个分隔符 ⇒ psql 输出的
-  -- NULL(空字段)当场消失, 其后所有列**静默前移一位**。2026-08-22 实撞: written 是本查询第一
-  -- 个出现在**中间**的可空列, 于是 wr 显示成了 started 的时间戳。既有列恰好全非空, 故这个坑
-  -- 潜伏至今。**再加可空列时照此办理**, 别信「-F $'\t' 就是严格分隔」。
-  coalesce(written::text, 'NULL'),
-  to_char(started_at AT TIME ZONE 'Asia/Shanghai', 'MM-DD HH24:MI'),
-  (finished_at IS NULL),
-  CASE WHEN status IN ('success','skipped') OR failed_targets IS NULL THEN ''
-       ELSE left(regexp_replace(failed_targets::text, '[\t\n\r]+', ' ', 'g'), 400) END
-FROM (
-  SELECT DISTINCT ON (sync_type) *
-  FROM marketdata.sync_run
-  WHERE started_at >= now() - make_interval(hours => ${WINDOW_HOURS})
-  ORDER BY sync_type, started_at DESC
-) t
-ORDER BY CASE status WHEN 'failed' THEN 0 WHEN 'partial' THEN 1 WHEN 'running' THEN 2
-                     WHEN 'success' THEN 3 WHEN 'skipped' THEN 4 ELSE 5 END, sync_type;"
-
-rows="$(psql_ro "$AGG_SQL" 2>&1)"
+# ── 主查询：下沉到 marketdata-sync-report.sql（**唯一判断所在地**，禁内联复制）──────────────
+# 它给出「窗口内每 sync_type 最近一行」+ 按 kind 聚合的 findings_digest。
+# 🚨 展开**不再看 status**：多个写入点蓄意不计 `failed`（粒度是标的不是行）⇒ 那些行恒为
+#   success ⇒ 旧判据下它们写进去等于没写。prod 实测 53 行带明细、27 行因此永不展开（#209）。
+rows="$(psql_ro_file "$REPORT_SQL" 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   printf '查询 marketdata.sync_run 失败 (rc=%s):\n%s\n' "$rc" "$rows" >&2
@@ -116,14 +98,14 @@ if [ -z "${rows//[$'\t\n ']/}" ]; then
     (SELECT count(*) FROM marketdata.trading_day WHERE date >= (now() AT TIME ZONE 'Asia/Shanghai')::date - 30);" 2>&1)"
   drc=$?
   if [ "$drc" -ne 0 ]; then
-    printf '窗口 %sh 内零 sync_run，且 trading_day 判定查询失败 (rc=%s):\n%s\n' "$WINDOW_HOURS" "$drc" "$diag" >&2
+    printf '回看窗口内零 sync_run，且 trading_day 判定查询失败 (rc=%s):\n%s\n' "$drc" "$diag" >&2
     exit 1
   fi
   IFS=$'\t' read -r y_trading recent_pop <<<"$diag"
   y_trading="${y_trading:-0}"; recent_pop="${recent_pop:-0}"
 
   if [ "$recent_pop" -eq 0 ]; then
-    printf '⚠️ 窗口 %sh 内零 sync_run，且 trading_day 近 30 日为空（表未 populate）→ 无法判定停摆，保守告警\n' "$WINDOW_HOURS" >&2
+    printf '⚠️ 回看窗口内零 sync_run，且 trading_day 近 30 日为空（表未 populate）→ 无法判定停摆，保守告警\n' >&2
     exit 1
   fi
 
@@ -133,25 +115,25 @@ if [ -z "${rows//[$'\t\n ']/}" ]; then
   cal_row="$(psql_ro_file "$PREDICATE_SQL" 2>&1)"
   crc=$?
   if [ "$crc" -ne 0 ]; then
-    printf '⚠️ 窗口 %sh 内零 sync_run，且日历健康谓词查询失败 (rc=%s) → 无法判定停摆，保守告警:\n%s\n' \
-      "$WINDOW_HOURS" "$crc" "$cal_row" >&2
+    printf '⚠️ 回看窗口内零 sync_run，且日历健康谓词查询失败 (rc=%s) → 无法判定停摆，保守告警:\n%s\n' \
+      "$crc" "$cal_row" >&2
     exit 1
   fi
   IFS=$'\t' read -r cal_unhealthy cal_summary <<<"$cal_row"
   # 缺省取 1（不健康）而非 0：谓词没给出可信答案时**倒向告警**——沉默 ≠ 健康，那正是本次事故的形状。
   if [ "${cal_unhealthy:-1}" -ne 0 ]; then
-    printf '🔴 窗口 %sh 内零 sync_run，且**日历不健康，无法判定停摆**（trading_day 可能已陈旧 →\n' "$WINDOW_HOURS" >&2
+    printf '🔴 回看窗口内零 sync_run，且**日历不健康，无法判定停摆**（trading_day 可能已陈旧 →\n' >&2
     printf '   「昨日非交易日」这个结论本身不可信，不予放行）: %s\n' "${cal_summary:-谓词返回异常: $cal_row}" >&2
     exit 1
   fi
 
   # 走到这里 = 日历健康 ⇒ trading_day 可信 ⇒ 下面两档（既有能力，FR-013 不回归）判据成立。
   if [ "$y_trading" -gt 0 ]; then
-    printf '🔴 窗口 %sh 内零 sync_run，但昨日为交易日 → 夜间同步疑似停摆（tick 未跑 / worker 无 job）\n' "$WINDOW_HOURS" >&2
+    printf '🔴 回看窗口内零 sync_run，但昨日为交易日 → 夜间同步疑似停摆（tick 未跑 / worker 无 job）\n' >&2
     exit 1
   fi
-  printf '⏭️ 窗口 %sh 内零 sync_run —— 日历健康且昨日非交易日，无夜间同步属预期（%s）\n' \
-    "$WINDOW_HOURS" "$cal_summary"
+  printf '⏭️ 回看窗口内零 sync_run —— 日历健康且昨日非交易日，无夜间同步属预期（%s）\n' \
+    "$cal_summary"
   exit 0
 fi
 
@@ -194,8 +176,8 @@ while IFS=$'\t' read -r stype status scanned ok skipped failed written started u
 done <<<"$rows"
 
 printf '%s' "$report"
-printf '—— 合计 %s 维度: %s✅ %s🔴/⚠ %s⏭ %s❓ · 窗口 %sh · %s\n' \
-  "$n_total" "$n_ok" "$n_bad" "$n_skip" "$n_other" "$WINDOW_HOURS" "$PG_CONTAINER"
+printf '—— 合计 %s 维度: %s✅ %s🔴/⚠ %s⏭ %s❓ · %s\n' \
+  "$n_total" "$n_ok" "$n_bad" "$n_skip" "$n_other" "$PG_CONTAINER"
 
 # ── written 上报面提示（#146 Phase 1: 只显示, **不判红**）────────────────────────────────
 #
