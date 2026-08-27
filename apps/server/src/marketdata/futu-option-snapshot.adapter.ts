@@ -3,6 +3,7 @@ import { parseCanonicalSymbol } from './marketdata.rules.js';
 import {
   normalizeQuoteSide,
   strOrNullSentinelAware,
+  tradedPriceOrNull,
   type QuoteSideForm,
 } from './vendor-absence.rules.js';
 import { exchangeTimeZone } from './session-clock.js';
@@ -234,8 +235,11 @@ function parseSnapshotRow(
     ask: askSide.price,
     bidSize: bidSide.size,
     askSize: askSide.size,
-    last: numToString(raw.last_price),
-    prevClose: numToString(raw.prev_close_price),
+    // 🚨 成交价类走 `tradedPriceOrNull` 而非 `numToString` (#258): 富途用带内哨兵 `0` 表达
+    // 「没有这个价」, 而 `numToString` 只认带外缺失 ⇒ 那道闸在这个 vendor 上恒不触发。
+    // 官方书面确认期权成交价恒为正, 故单列判即可 (盘口价为何必须成对见该函数注释)。
+    last: tradedPriceOrNull(raw.last_price),
+    prevClose: tradedPriceOrNull(raw.prev_close_price),
     iv: numToString(raw.option_implied_volatility),
     delta: numToString(raw.option_delta),
     gamma: numToString(raw.option_gamma),

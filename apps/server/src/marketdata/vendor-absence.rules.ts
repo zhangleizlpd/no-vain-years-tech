@@ -116,6 +116,40 @@ export function normalizeQuoteSide(rawPrice: unknown, rawSize: unknown): Normali
 }
 
 /**
+ * **成交价类**数值的带内哨兵归一: `0` = 「没有这个价」, 不是价格。适用 `last_price` /
+ * `prev_close_price`(期权行与标的行同判)。缺失 / 非有限 / 空串照旧 null。复杂度 O(1)。
+ *
+ * ## 🚨 为什么这里**允许单列判**, 而盘口价 ({@link normalizeQuoteSide}) 必须成对
+ *
+ * 两者判据不同**不是疏忽, 是反向约束不同**, MUST NOT 互相套用:
+ *
+ * | | 反向约束 | 判据 |
+ * | --- | --- | --- |
+ * | 盘口 `bid` / `ask` | OPRA 明写「Zero in the bid price field represents a **valid** Bid Price」⇒ **零价可能是真报价** | `(price, size)` 成对为 0 |
+ * | 成交价 `last` / `prev_close` | 富途官方: 期权**最小价位 > 0**, 成交价恒为正 ⇒ **不存在真实的 0** | 单列 `= 0` |
+ *
+ * ## 判据出处 = vendor **书面答复**, 不是从数据反推 (ADR-0067 D5 第 3 问的最强那一档)
+ *
+ * py-futu-api#258 (2026-08-27, 官方 `hughex`): SDK 侧 `last_price = record.basic.curPrice` /
+ * `prev_close_price = record.basic.lastClosePrice` **直接透传**, 无空值转换; OpenD 侧
+ * `QotRealTimeData.cpp` 新建缓存条目时默认 `set_curprice(0) / set_lastcloseprice(0)`,
+ * **`0` 就是「无价格数据」的占位**。⇒ 本判据不会像 D2 那样「过期时不报错」。
+ *
+ * ## 📌 `last = 0 ∧ volume > 0` 这个形态**存在, 且蓄意不报警**
+ *
+ * 实测 2 行 (`HK.ALB260904P122000` / `…P124000`, 2026-08-24, 有 13.7 万港元成交额却无成交价)。
+ * 官方已把它解释为**新挂牌合约首个交易日**「价格字段尚未填充」—— 仍是「无值」, **不是**
+ * 哨兵理论破裂 ⇒ 归一即可。不为它抬 WARN 的理由与 ADR-0067 拒绝把稀疏事件流塞进探针同源:
+ * 港股周度合约每周都新挂, 报它就是长期噪音。**形态写在这里, 不写进运行时。**
+ * ⚠️ 官方对「为何首日有成交却无价」只答「尚未填充」, 未给机制根因; 我们的数据把它框在
+ * 「首日 + 从未成交」两档内 (5509/5511 是 `volume=0 ∧ open_interest=0`), 够用但不是封闭解释。
+ */
+export function tradedPriceOrNull(raw: unknown): string | null {
+  const price = numToString(raw);
+  return isZero(price) ? null : price;
+}
+
+/**
  * 非空字符串 → 原样 trim；空串 / 非字符串 / {@link VENDOR_STRING_NULL_SENTINEL} → null。
  *
  * 收编自 `futu-option-chain.adapter.ts` 的同名逻辑 (066 T01) —— 两个 adapter 各写一份必 drift,
@@ -137,9 +171,9 @@ export function strOrNullSentinelAware(v: unknown): string | null {
  * 🚫 **MUST NOT 把这些列也 `0 → null`** —— 那会把「真的是 0」抹成「不知道」, 方向与本次修复
  * 正好相反, 且同样不会红。
  *
- * 📌 `last_price` / `prev_close_price` **刻意不在本表**: 实测两者的 0 值计数完全相等
- * (3312 / 3312, 疑似「从未成交的合约」), 但**不能凭数据断言**语义 —— 待向 vendor 求证后
- * 再决定归属, 在此之前维持原样不动。
+ * 📌 `last_price` / `prev_close_price` **已求证, 归属已定, 不在本表**: 曾因「0 值计数完全相等
+ * 但不能凭数据断言语义」挂起; 富途官方于 py-futu-api#258 (2026-08-27) 书面确认 `0` 即无值 ⇒
+ * 归 {@link tradedPriceOrNull} 单列归一。**别再把它们往回搬进本表。**
  */
 export const INDISTINGUISHABLE_ZERO_FIELDS: ReadonlySet<string> = new Set([
   'volume',

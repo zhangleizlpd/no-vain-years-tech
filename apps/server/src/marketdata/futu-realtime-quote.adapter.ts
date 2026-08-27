@@ -6,6 +6,7 @@ import {
   type RealtimeQuote,
   type RealtimeQuotePort,
 } from './realtime-quote.port.js';
+import { tradedPriceOrNull } from './vendor-absence.rules.js';
 import { type ShimEnvelope, parseShimEnvelope } from './futu-shim-envelope.js';
 import type { VendorHttpClient } from './vendor-http-client.js';
 
@@ -71,17 +72,6 @@ const MARKET_TO_FUTU_PREFIX: Record<string, string> = {
   hk: 'HK',
 };
 
-/**
- * 数值 → Decimal-safe string；缺失 / 非有限 → null。
- * 🚨 **不回落成 0**：0 是一个有意义的价, 用它表达「vendor 没给价」会让下游把一个不存在的
- * 报价当真, 而 0 距 W% 会把该锚顶到榜首。
- */
-function numToString(v: unknown): string | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : null;
-  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return v.trim();
-  return null;
-}
-
 /** 非空字符串 → 原样 trim；其余 → null（禁默认值冒充）。 */
 function strOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
@@ -132,7 +122,10 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
       const code = strOrNull(raw.code);
       const ref = code === null ? undefined : codeToRef.get(code);
       if (ref === undefined) continue; // 未请求的行 —— 忽略, 不混进结果
-      const price = numToString(raw.last_price);
+      // 🚨 `tradedPriceOrNull` 而非 `numToString` (#258): 下面那句「行在但没价」在这个 vendor
+      // 上**从来没成立过** —— 富途不产生带外缺失, 它用带内哨兵 `0` 表达没有 (官方书面确认)。
+      // 用 `numToString` 的话, 一只停牌 / 无成交的正股会被当成「现价 0 元」发布进锚的盘中价。
+      const price = tradedPriceOrNull(raw.last_price);
       // 行在但没价 (停牌 / 这一刻无成交) 与整行缺席同义: 静默省略, 上游保留旧值。
       if (price === null) continue;
       // 🚨 `update_time` 只作**证据**落到 `vendorUpdateTime`, 判据仍是信封 `as_of` (见端口注释)。

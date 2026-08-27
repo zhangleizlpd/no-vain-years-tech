@@ -173,6 +173,43 @@ describe('FutuOptionSnapshotAdapter', () => {
       });
     });
 
+    it('🚨 last / prevClose = 0 → null (#258: 官方确认 0 是无值哨兵, 期权成交价恒为正)', async () => {
+      const { http } = makeShim([snapshotRow(LEG, { last_price: 0, prev_close_price: 0 })]);
+      const [row] = (await makeAdapter(http).getSnapshots(QUERY)).rows;
+
+      expect(row.last).toBeNull();
+      expect(row.prevClose).toBeNull();
+      // 承重: 只归一这两列, **别顺手把 volume / open_interest 一起 0→null** ——
+      // 那两列的 0 是合法值 (今天真没成交 / 真没持仓), 见 INDISTINGUISHABLE_ZERO_FIELDS。
+      expect(row.volume).toBe('1204');
+      expect(row.openInterest).toBe('3120');
+    });
+
+    it('🚨 新挂牌首日形态 (prevClose=0 但 last>0) → 只归一 prevClose, last 原样', async () => {
+      // 实测 81 行, 官方 py-futu-api#258 已确认「首日无前收盘」⇒ 0 即无值, 与 last 无关。
+      const { http } = makeShim([snapshotRow(LEG, { last_price: 6.74, prev_close_price: 0 })]);
+      const [row] = (await makeAdapter(http).getSnapshots(QUERY)).rows;
+
+      expect(row.last).toBe('6.74');
+      expect(row.prevClose).toBeNull();
+    });
+
+    it('负控制: 极小成交价原样透传 (0.01 是真价, 归一掉就是静默吃掉真实成交)', async () => {
+      const { http } = makeShim([snapshotRow(LEG, { last_price: 0.01, prev_close_price: 0.0001 })]);
+      const [row] = (await makeAdapter(http).getSnapshots(QUERY)).rows;
+
+      expect(row.last).toBe('0.01');
+      expect(row.prevClose).toBe('0.0001');
+    });
+
+    it('🚨 标的行的 last = 0 也归一 (它是 underlying_spot 的来源, spot=0 会一路算下去)', async () => {
+      const { http } = makeShim([{ ...UNDERLYING_ROW, last_price: 0 }]);
+      const [row] = (await makeAdapter(http).getSnapshots(QUERY)).rows;
+
+      expect(row.isOption).toBe(false);
+      expect(row.last).toBeNull();
+    });
+
     it('标的自身那行 → isOption=false + greeksComplete=null (不适用, 不是「缺失」)', async () => {
       const { http } = makeShim([UNDERLYING_ROW]);
       const [row] = (await makeAdapter(http).getSnapshots(QUERY)).rows;
