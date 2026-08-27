@@ -20,7 +20,8 @@
     },
     "test": {
       "cache": true,
-      "dependsOn": ["typecheck"]
+      "dependsOn": ["typecheck"],
+      "inputs": ["default", "^default", "{workspaceRoot}/ops/jobs/*.sql"]
     },
     "lint": {
       "cache": true
