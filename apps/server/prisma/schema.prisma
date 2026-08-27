@@ -1323,14 +1323,14 @@ model SyncBlacklist {
 // findings(Json 本轮值得人看的明细) + status (running|success|partial|failed|skipped) + 时间窗。
 // (syncType, startedAt desc) 索引服务审计查询「某类同步最近 N 次」。
 model SyncRun {
-  id            BigInt    @id @default(autoincrement())
-  syncType      String    @map("sync_type") @db.VarChar(32)
-  startedAt     DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
-  finishedAt    DateTime? @map("finished_at") @db.Timestamptz(6)
-  scanned       Int       @default(0)
-  ok            Int       @default(0)
-  skipped       Int       @default(0)
-  failed        Int       @default(0)
+  id          BigInt    @id @default(autoincrement())
+  syncType    String    @map("sync_type") @db.VarChar(32)
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz(6)
+  scanned     Int       @default(0)
+  ok          Int       @default(0)
+  skipped     Int       @default(0)
+  failed      Int       @default(0)
   // 063 Phase 3.3: 本次执行**实际发生了写操作的行数** —— 让「跑了但零写入」不再恒绿。
   // 🚨 口径**只有一条, 全维度统一** (#138 定): 「这一行发生了写吗」。据此:
   //   · `createMany(skipDuplicates)` 段取它报的 `count` —— 被跳过的行**没发生写**, 不计;
@@ -1347,14 +1347,9 @@ model SyncRun {
   //   · `0`    = 上报了, 且真的一行都没进库。**这才是本列要抓的那个「全绿但没做事」。**
   // 若用 `@default(0)` 非空, 漏接一处就等于让那个维度**恒报零写入** = 假警报, 且看起来
   // 像真故障 —— 那正是「库里没有的即为假」换个地方再犯一遍。
-  written       Int?
-  // #209 三步法 **migrate 步已完成**: 本列此刻**无写者、无读者** —— 应用只写 `findings`,
-  // 读侧 (`ops/jobs/marketdata-sync-report.sql`) 只读 `findings`, 历史行已回填
-  // (migration 20260827_1207)。留着它只为让「回滚到 expand 步的那个镜像」仍写得下去 ——
-  // 那个镜像双写两列。contract 步 drop 它。
-  // 🚫 别在本列上加新写入点, 也别再读它。
-  failedTargets Json?     @map("failed_targets")
-  // `failed_targets` 的新名字 (#209)。
+  written     Int?
+  // 本轮**值得人看的明细**。#209 三步法已走完 (expand 20260827_0927 / migrate 20260827_1207 /
+  // contract 20260827_1333), 旧列 `failed_targets` 已 drop。
   //
   // 🚨 **改名不是洁癖 —— 这一列早就名不副实**: 它今天装的东西里非失败的形态比失败的还多:
   //   · `{kind:'skip'}`      freshness gate 跳过的原因 (recordSkippedWithReason)
@@ -1364,9 +1359,11 @@ model SyncRun {
   //                          不是噪音」「改期不是本轮同步的失败, 它是本维度存在的理由」
   //   只有 `{kind:'failure'}` 那一族才真的是「失败目标」。
   //
-  //   名字叫 failed_targets 是有后果的, 不只是难看: `ops/jobs/marketdata-sync-report.sh` 顺着
-  //   这个名字只在 `status NOT IN ('success','skipped')` 时展开它 ⇒ 上面四种非失败形态所在的
-  //   行恒为 `success` ⇒ **写了等于没写**。#209 要把这条通道变成告警的落点, 前提是名字与职责对上。
+  //   旧名 `failed_targets` 是有后果的, 不只是难看: `marketdata-sync-report.sh` 顺着那个名字
+  //   只在 `status NOT IN ('success','skipped')` 时展开 ⇒ 上面四种非失败形态所在的行恒为
+  //   `success` ⇒ **写了等于没写**。prod 实测: 53 行带真数组明细, **27 行(51%)因此永不展开**;
+  //   `earnings_instrument_unmatched` 13 埋 / **0 可见**。读侧已于 migrate 步改为按 `kind` 展开
+  //   (`ops/jobs/marketdata-sync-report.sql`), 与本列名字一起构成那条通道的两半。
   //
   // 🚨 **每个 entry 恒带 `kind` 判别字段**, 值域单一来源是 `SyncRunFinding`
   //   (`sync-run.recorder.ts`), 无 DB 侧 enum/CHECK —— 同 `status` / `triggered_by` 的取舍,
@@ -1375,7 +1372,7 @@ model SyncRun {
   //
   // 🚨 `null` = 本轮无任何 finding, **不是空数组** —— 同 `written` 的三态判据: 别让「确实没有」
   //   和「没上报过」长成一个样。
-  findings      Json?
+  findings    Json?
   // 值域: running(进行中) | success | partial | failed | skipped | interrupted。
   // 无 DB 侧 enum/CHECK —— 值域的单一来源是 `SyncRunStatus` (sync-run.recorder.ts), 加值零 migration。
   //
@@ -1385,9 +1382,9 @@ model SyncRun {
   //   一条 18 天的僵尸 running 差点被判成卡死)。收敛判据与两个触发点见 `convergeInterrupted`。
   // 🚨 `interrupted` 行的 `finished_at` 是**收敛时刻不是打断时刻** ⇒ 它的 finished-started
   //   **不是耗时**。任何耗时/成功率统计都要显式排除本终态 —— 这正是它独立成值的收益。
-  status        String    @db.VarChar(16)
+  status      String    @db.VarChar(16)
   // 017: per-dim 执行回链 BullMQ job id (worker 路径写入; 旧聚合行 NULL)。
-  bullJobId     String?   @map("bull_job_id") @db.VarChar(64)
+  bullJobId   String?   @map("bull_job_id") @db.VarChar(64)
   // #202: **这一行是谁触发的**。值域单一来源是 `DimensionTriggeredBy` (marketdata-sync.queue.ts),
   // 无 DB 侧 enum/CHECK —— 同 `status` 的取舍, 加值零 migration。
   //
@@ -1399,14 +1396,14 @@ model SyncRun {
   // 🚨 **nullable 且无默认值是刻意的**: 给 `DEFAULT 'tick'` 则任何漏传的新路径都会**冒充成
   //   一轮按计划执行的 tick 轮**被计数器吃进去。NULL = 本行没有这个事实 (历史行 / 未接线路径)
   //   ⇒ 判据侧**既不计一轮、也不打断 streak**;「不知道」就是不知道, 别替它猜。
-  triggeredBy   String?   @map("triggered_by") @db.VarChar(20)
+  triggeredBy String?   @map("triggered_by") @db.VarChar(20)
   // #202: **这一轮采的是哪一天** —— 该维度自己的业务日 (交易所口径, `resolveAsOfForDimension`
   // 按 `AS_OF_BASIS_BY_DIMENSION` 逐维度推导), 就是 job payload 里那个 `asOf`。
   //
   // 🚨 **不是 `started_at` 的日期**: misfire `fire-now` 与队列积压都会让「跑的时刻」与「采的
   //   那一天」分家 (跨时区日期语义 §3)。也正因如此, 配额顺延 (D5) 重入队跑出来的第二行与
   //   「真的又跑了一轮」此前不可分辨 —— 同 `(sync_type, as_of)` 的多行 = 同一轮的重入。
-  asOf          DateTime? @map("as_of") @db.Date
+  asOf        DateTime? @map("as_of") @db.Date
 
   @@index([syncType, startedAt(sort: Desc)], map: "ix_sync_run_type_started")
   @@map("sync_run")

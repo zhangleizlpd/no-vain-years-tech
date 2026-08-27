@@ -13,8 +13,8 @@ import {
 // 016 T004: SyncRunRecorder 生命周期 (Testcontainers PG)。开 running → 收 4 终态 + 计数 +
 // findings(Json) + finishedAt 落 marketdata.sync_run; deriveStatus 计数派生。
 //
-// #209 migrate 步起本文件锁两件事: ① **只写 `findings`, 旧列 `failed_targets` 不再有写者**;
-// ② 每条 finding **恒带 `kind`**, 且非失败形态 (skip/interrupt) 也走这一列。
+// #209 三步法走完后本文件锁的是: 每条 finding **恒带 `kind`**, 且非失败形态 (skip/interrupt)
+// 也走这一列 —— 那正是旧名 `failed_targets` 说不出、因而读侧也从不展开的那半。
 describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
   let prisma: PrismaService;
   let recorder: SyncRunRecorder;
@@ -58,7 +58,6 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(done.finishedAt).toEqual(NOW);
     expect(done.written).toBe(97); // 063 Phase 3.3: 落库侧的数, 与 scanned/ok 不是一回事
     expect(done.findings).toBeNull(); // 无 finding → JsonNull (不是空数组)
-    expect(done.failedTargets).toBeNull(); // migrate 步: 旧列已无写者
   });
 
   it('🚨 written 三态: 没有写路径上报 ⇒ 落 **null** 而不是 0 (063 Phase 3.3)', async () => {
@@ -120,7 +119,7 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(done.findings).toEqual(stats.findings);
   });
 
-  it('🚨 migrate 步: **只写 findings**, 旧列 failed_targets 无写者 (#209 三步法第 2 步)', async () => {
+  it('finish 写 findings —— 载荷原样落库可审计 (#209 三步法已走完, 旧列已 drop)', async () => {
     const id = await recorder.start('option_daily_snapshot');
     const stats: SyncRunStats = {
       ...emptyStats(),
@@ -135,10 +134,6 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
 
     const done = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
     expect(done.findings).toEqual(stats.findings);
-    // 🚨 读侧已改读 `findings`(marketdata-sync-report.sql)、历史行也已回填 ⇒ 旧列自此
-    // **无写者、无读者**, 只等 contract 步 drop。本行为 SQL NULL(start() 从不写它)。
-    // 这条断言是三步法第 2 步的不变量; 它变红 = 有人把双写加回来了, 或提前做了 contract。
-    expect(done.failedTargets).toBeNull();
   });
 
   it('🚨 非失败形态也走这一列 —— reject / notice 恒带 kind 且不改 failed 计数', async () => {
@@ -172,7 +167,6 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(done.status).toBe('success');
     expect(done.failed).toBe(0);
     expect(done.findings).toEqual(stats.findings);
-    expect(done.failedTargets).toBeNull();
   });
 
   it("recordSkippedWithReason → findings 落 {kind:'skip'} (审计痕, 非失败语义)", async () => {
@@ -181,7 +175,6 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     const row = await prisma.syncRun.findUniqueOrThrow({ where: { id } });
     expect(row.status).toBe('skipped');
     expect(row.findings).toEqual([{ kind: 'skip', reason: '上游未就绪' }]);
-    expect(row.failedTargets).toBeNull();
   });
 
   it("convergeInterrupted → findings 落 {kind:'interrupt'} + 判据文本", async () => {
@@ -199,7 +192,6 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
     expect(row.findings).toEqual([
       { kind: 'interrupt', reason: INTERRUPT_REASON.RETRIES_EXHAUSTED },
     ]);
-    expect(row.failedTargets).toBeNull();
   });
 
   it('recordSkipped → 非交易日短路一行 status=skipped (零计数)', async () => {

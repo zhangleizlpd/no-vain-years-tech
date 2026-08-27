@@ -474,7 +474,7 @@ describe('SyncOptionSnapshotUseCase', () => {
     });
 
     // #198: 审计通道必须自带违规码。ERROR 文案里有码, 但它只进容器 stdout (30MB 环, 无投递),
-    // 而 `failed_targets` 是持久的 —— 码不进来, 事后就只剩一个 `rejected: N`, 四条门分不出是哪条。
+    // 而 `findings` 是持久的 —— 码不进来, 事后就只剩一个 `rejected: N`, 四条门分不出是哪条。
     // 🚨 判据钉在**码**上而不是 reason 文案: 文案会改, 码是稳定标识。
     it('拒绝留痕带违规码, 使「撞的是哪条门」事后可判 (#198)', async () => {
       const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);

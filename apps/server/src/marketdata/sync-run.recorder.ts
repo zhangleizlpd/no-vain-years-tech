@@ -8,7 +8,7 @@ import type { DimensionTriggeredBy } from './marketdata-sync.queue.js';
  *
  * ## 为什么它有 `kind` 而不是随手 push 一个字面量
  *
- * 这条通道此前叫 `failedTargets`, 而它装的东西里**非失败的形态比失败的还多样**: 跳过原因、
+ * 这条通道 #209 前叫 `failedTargets`, 而它装的东西里**非失败的形态比失败的还多样**: 跳过原因、
  * 打断判据、硬门拒绝、财报改期……读侧于是只能 `dump` 原文 400 字, 分不出「本轮拒了几条」
  * 和「本轮失败了几个标的」。加上判别字段后, 读侧才有可能按 kind 聚合 —— 那正是 #198 / #199
  * 的判据要的输入。
@@ -72,7 +72,7 @@ export interface SyncRunStats {
   written: number | null;
   /**
    * 本轮**值得人看的明细** —— 落 `sync_run.findings` (#209 前叫 `failedTargets` / `failed_targets`,
-   * 改名理由见 {@link SyncRunFinding} 与 schema 上的列注释)。
+   * 旧列已于 contract 步 drop; 改名理由见 {@link SyncRunFinding} 与 schema 上的列注释)。
    *
    * 🚨 **不是「失败清单」**: `failure` 只是五种 kind 之一, 其余四种所在的行往往恒为 `success`。
    */
@@ -225,12 +225,8 @@ export class SyncRunRecorder {
   /**
    * 收尾: 写终态 + 计数 + findings(Json) + finishedAt。
    *
-   * 🚨 **只写 `findings`, 不再写 `failed_targets`** —— #209 三步法的 migrate 步。读侧
-   * (`ops/jobs/marketdata-sync-report.sql`) 已改读新列, 历史行也已回填 ⇒ 旧列自此无写者、无读者,
-   * 由 contract 步 drop。
-   *
-   * 🚨 回滚仍安全: 回到 expand 步的镜像会**双写**两列, 而读侧(ops/jobs 随部署铺到机器上,
-   * **不随镜像回滚**)读 `findings` —— 那个镜像照样在写它。
+   * 🚨 **只写 `findings`** —— #209 三步法已走完, 旧列 `failed_targets` 已 drop
+   * (contract, migration 20260827_1333)。读侧是 `ops/jobs/marketdata-sync-report.sql`。
    *
    * 🚨 **`finishedAt` 默认取真实收尾时刻, 不吃调用方的「逻辑 now」** —— 那正是这个参数
    * 曾经的塌法: `DimensionExecutorRegistry` 一直传 `ExecutorInput.now` (job **起点**),
