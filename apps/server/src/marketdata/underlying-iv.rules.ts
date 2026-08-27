@@ -73,11 +73,24 @@ export const IV_HISTORY_INCREMENT_LOOKBACK_DAYS = 30;
  * 📌 2026-08-27 prod 横截面复核（12 只标的、窗口滞后 0 天那日）：残差**全部是 1/252 =
  * 0.3968pp 的整数倍**（1×~4×），只有 4 只完全吻合。⇒ 残差成因是「窗口内容差几个样本」而
  * **不是口径不同**，这条 2pp 噪声带的标定依然成立。🚫 别期待差值归零后再收紧阈值。
+ *
+ * 📌 **同日 vendor 官方给出了那「几个样本」的来源**（py-futu-api#257）：他们的分母取**实际有效
+ * 天数**（不含空值日），而历史序列已把空值日**前向填充**过 ⇒ 我们数 252、他们数 252−空值日，
+ * 差的正是整数个样本。⇒ 上面这条经验标定与官方口径**互相印证**，但也说明差值**没有上界**
+ * （某只票空值日一多就能差很远）——所以 5pp 那档在同一天被降级，见
+ * {@link IVP_DIVERGENCE_NOTABLE_PP}。
  */
 export const IVP_DIVERGENCE_WARN_PP = new Prisma.Decimal(2);
 
-/** 双算差硬门阈值（pp）。差 > 此值 = 口径疑似漂移，进硬告警。同取 p3b §6.3 基线。 */
-export const IVP_DIVERGENCE_HARD_PP = new Prisma.Decimal(5);
+/**
+ * 双算差**显著档**阈值（pp）。同取 p3b §6.3 基线。
+ *
+ * 🚨 **它曾经是硬门，2026-08-27 降级了 —— 别改回去**（py-futu-api#257 官方答复）。原文案是
+ * 「差 > 5pp = 口径疑似漂移 ⇒ 硬告警 ⇒ 需人工核口径」，那个**推断现在已知是错的**：差值有三个
+ * 已确认的结构性来源，客户端一个都消不掉。见 {@link classifyIvpDivergence} 的表。
+ * 留着它只是让「差得离谱」与「差一点点」在日志里仍可分辨，**不再断言任何关于 vendor 的结论**。
+ */
+export const IVP_DIVERGENCE_NOTABLE_PP = new Prisma.Decimal(5);
 
 /**
  * `his_volatility` 单次请求的跨度上限（自然日，**含首尾**）。
@@ -110,7 +123,7 @@ export interface IvPercentileUncomputable {
 export type IvPercentileResult = IvPercentileComputed | IvPercentileUncomputable;
 
 /** 三档 + 跳过档。`skipped` 不是第四档严重度，是「本次不成立对表」。 */
-export type IvpDivergenceLevel = 'skipped' | 'ok' | 'warn' | 'hard';
+export type IvpDivergenceLevel = 'skipped' | 'ok' | 'warn' | 'notable';
 
 export interface IvpDivergenceVerdict {
   level: IvpDivergenceLevel;
@@ -200,12 +213,34 @@ export function computeIvPercentile(
 /**
  * 双算差三档判定（FR-034）。
  *
- * | 差值 `d`（pp）        | 档     | 处置                     |
- * | --------------------- | ------ | ------------------------ |
- * | 自算不可算 / 无直读值 | `skipped` | 不对表、**不告警**    |
- * | `d ≤ 2`               | `ok`   | 静默（量化噪声带）       |
- * | `2 < d ≤ 5`           | `warn` | 进 WARN 复核名单         |
- * | `d > 5`               | `hard` | 硬门告警（疑似口径漂移） |
+ * | 差值 `d`（pp）        | 档        | 处置                                   |
+ * | --------------------- | --------- | -------------------------------------- |
+ * | 自算不可算 / 无直读值 | `skipped` | 不对表、**不告警**                     |
+ * | `d ≤ 2`               | `ok`      | 静默（量化噪声带）                     |
+ * | `2 < d ≤ 5`           | `warn`    | 进 WARN 复核名单                       |
+ * | `d > 5`               | `notable` | 同样只进 WARN，**不喊人工介入**（见下） |
+ *
+ * ## 🚨 本对表**不再是 vendor 口径的判据**（py-futu-api#257，2026-08-27 官方答复）
+ *
+ * 差值有三个已确认的结构性来源，**客户端一个都消不掉**：
+ *
+ * | 来源 | 官方原文要点 |
+ * | --- | --- |
+ * | **历史序列被前向填充** | `get_option_underlying_his_volatility` 对 iv 为空的日期「取**最近一个有效 iv** 填充后返回」，且**客户端无法仅凭返回序列区分真实日与被填充日** |
+ * | **分母口径不同** | vendor 取**实际有效天数**（不含空值日），我们取固定 252 |
+ * | **取数时点不同** | 该字段**盘中分钟级更新**，我们拿日线收盘序列比 |
+ *
+ * 🚨 第一条是 {@link isRealIvObservation} 那道闸的**第二次落空**：它按「空值观测剔出样本」写，
+ * 而序列里根本没有空值——同 ADR-0067 里 `numToString` 「在这个 vendor 上恒不触发」的形状，
+ * 只是这次的带内哨兵不是 `0` 而是**前一个有效值**，连异常都不像。
+ *
+ * ⇒ 本函数现在只剩**一个**有效用途：盯**我们自己**这侧的回归（#211 那种把当日行算进窗口的错）。
+ * 对 vendor 侧不构成任何判据，故最高档也只 WARN。
+ *
+ * 📌 **恢复硬门的条件**（别凭感觉改回去）：vendor 提供空值标记（如逐行 `iv_filled`）或未填充口径
+ * ——官方已主动表示可另行对齐。拿到之前，把任何一档接回 ERROR 都是在制造无解的人工任务。
+ * 🚫 已否决的替代：「连续相同 IV 值 = 填充日」这个启发式会把**真实平盘日**一并误判，
+ * 属于用一个静默错误换另一个。
  *
  * **两个边界各只属一档**：恰好 2pp 归 `ok`、恰好 5pp 归 `warn` —— 两个 `≤` 顺序判定，
  * 结构上不可能两档同时亮（配合 Decimal 精确减法，边界不随浮点误差漂移）。
@@ -235,13 +270,16 @@ export function classifyIvpDivergence(
   if (diff.lessThanOrEqualTo(IVP_DIVERGENCE_WARN_PP)) {
     return { level: 'ok', diffPp: diff, reason: `${detail} ≤ ${IVP_DIVERGENCE_WARN_PP}pp` };
   }
-  if (diff.lessThanOrEqualTo(IVP_DIVERGENCE_HARD_PP)) {
+  if (diff.lessThanOrEqualTo(IVP_DIVERGENCE_NOTABLE_PP)) {
     return { level: 'warn', diffPp: diff, reason: `${detail}, 进 WARN 复核名单` };
   }
   return {
-    level: 'hard',
+    level: 'notable',
     diffPp: diff,
-    reason: `${detail} > ${IVP_DIVERGENCE_HARD_PP}pp, 疑似 vendor 聚合口径漂移`,
+    // 🚫 MUST NOT 写回「疑似 vendor 聚合口径漂移」—— 那个推断已被官方答复证否 (见函数注释)。
+    reason:
+      `${detail} > ${IVP_DIVERGENCE_NOTABLE_PP}pp。**不据此判 vendor 口径漂移**: 已知成因 = ` +
+      `his_volatility 序列对空值日前向填充(不可分辨) + vendor 分母取实际有效天数 + 盘中分钟级更新`,
   };
 }
 

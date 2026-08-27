@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { Prisma } from '../generated/prisma/client.js';
 import {
   HIS_VOLATILITY_MAX_SPAN_DAYS,
-  IVP_DIVERGENCE_HARD_PP,
+  IVP_DIVERGENCE_NOTABLE_PP,
   IVP_DIVERGENCE_WARN_PP,
   IVP_MIN_WINDOW_TRADING_DAYS,
   InvalidBackfillRangeError,
@@ -93,7 +93,19 @@ describe('classifyIvpDivergence — 三档判定, 两个边界值归属唯一 (F
 
   it('阈值是具名常量, 取 p3b §6.3 实测基线 2pp / 5pp', () => {
     expect(IVP_DIVERGENCE_WARN_PP.toNumber()).toBe(2);
-    expect(IVP_DIVERGENCE_HARD_PP.toNumber()).toBe(5);
+    expect(IVP_DIVERGENCE_NOTABLE_PP.toNumber()).toBe(5);
+  });
+
+  // 🚨 py-futu-api#257 (2026-08-27 官方答复) 之后, **没有任何一档再断言「vendor 口径漂移」**:
+  // 差值有三个已确认的结构性来源 (历史序列对空值日**前向填充**且客户端不可分辨 · vendor 分母
+  // 取实际有效天数 · vendor 盘中分钟级更新 vs 我们的日线收盘)。本对表现在只能当**我们自己**
+  // 那侧的回归闸 (#211 那种), 对 vendor 侧不构成判据。
+  it('🚨 最高档只到 notable —— 不存在会喊「需人工核口径」的硬门了', () => {
+    const levels = ['0', '20', '55.1', '100'].map(
+      (v) => classifyIvpDivergence(D(v), selfAt(50)).level,
+    );
+    expect(levels).not.toContain('hard');
+    expect(levels).toContain('notable');
   });
 
   it.each([
@@ -101,8 +113,8 @@ describe('classifyIvpDivergence — 三档判定, 两个边界值归属唯一 (F
     ['差 1.9pp', '51.9', 'ok'],
     ['差 2.1pp', '52.1', 'warn'],
     ['差 4.9pp', '54.9', 'warn'],
-    ['差 5.1pp', '55.1', 'hard'],
-    ['差 30pp（反向）', '20', 'hard'],
+    ['差 5.1pp', '55.1', 'notable'],
+    ['差 30pp（反向）', '20', 'notable'],
   ])('%s → %s', (_label, vendorPct, expected) => {
     const verdict = classifyIvpDivergence(D(vendorPct), selfAt(50));
     expect(verdict.level).toBe(expected);

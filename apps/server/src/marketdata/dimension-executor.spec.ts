@@ -4136,15 +4136,21 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
     expect(ivpAlerts(r.errors)).toHaveLength(0);
   });
 
-  it('档③ 差 >5pp (直读 57 vs 自算 50) → 硬门 ERROR (疑似 vendor 聚合口径漂移)', async () => {
+  it('🚨 档③ 差 >5pp (直读 57 vs 自算 50) → 只进 WARN, **零 ERROR** (2026-08-27 降级)', async () => {
+    // py-futu-api#257 官方答复证否了原来那句「疑似 vendor 聚合口径漂移」: 差值的三个成因
+    // (序列前向填充不可分辨 / 分母取实际有效天数 / 盘中分钟级更新) 全在 vendor 侧且客户端
+    // 消不掉 ⇒ 抬 ERROR 等于派给人一个无解任务。承重断言是**下面那条 errors 为 0**。
     const r = await runAndCollectAlerts({ vendorIvPercentile: '57' });
-    expect(ivpAlerts(r.errors)).toHaveLength(1);
-    expect(ivpAlerts(r.errors)[0]).toContain('us:PEP');
+    expect(ivpAlerts(r.warns)).toHaveLength(1);
+    expect(ivpAlerts(r.warns)[0]).toContain('us:PEP');
+    expect(ivpAlerts(r.errors)).toHaveLength(0);
+    // 措辞也一并钉住: 恢复硬门要连注释里那条「恢复条件」一起改, 不能只把 ERROR 加回来。
+    expect(ivpAlerts(r.warns)[0]).toContain('不判人工介入');
   });
 
   it('🚨 窗口不足 (251 < 252 交易日) → 跳过对表且**不告警** (缺窗口不是口径漂移)', async () => {
     const r = await runAndCollectAlerts({ vendorIvPercentile: '99', historyCount: 251 });
-    // 差 49pp 远超硬门, 但样本不够就不成立对表 —— 否则告警面会被上线头一年的新标的刷屏。
+    // 差 49pp 远超最高档, 但样本不够就不成立对表 —— 否则告警面会被上线头一年的新标的刷屏。
     expect(ivpAlerts(r.warns)).toHaveLength(0);
     expect(ivpAlerts(r.errors)).toHaveLength(0);
     expect(r.stats).toMatchObject({ ok: 1, failed: 0 });
@@ -4156,7 +4162,7 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
     expect(ivpAlerts(r.errors)).toHaveLength(0);
   });
 
-  it('🚨 自算值 MUST NOT 进写路径 (FR-035): 硬门档下落库 ivPercentile 仍 = 直读值, 行内零自算字段', async () => {
+  it('🚨 自算值 MUST NOT 进写路径 (FR-035): 显著偏离档下落库 ivPercentile 仍 = 直读值, 行内零自算字段', async () => {
     const r = await runAndCollectAlerts({ vendorIvPercentile: '57' });
     const arg = r.spies.ivUpsert.mock.calls[0][0] as {
       create: Record<string, unknown>;

@@ -3270,10 +3270,12 @@ export class DimensionExecutorRegistry {
         });
         if (verdict.level === 'warn') {
           this.logger.warn(`IVP 双算对表 WARN (进复核名单): ${detail}`);
-        } else if (verdict.level === 'hard') {
-          this.logger.error(
-            `IVP 双算对表 硬门 (疑似 vendor 聚合口径漂移, 需人工核口径): ${detail}`,
-          );
+        } else if (verdict.level === 'notable') {
+          // 🚨 2026-08-27 由 ERROR 降为 WARN (py-futu-api#257): 原文案「需人工核口径」派给人的
+          // 是一个**无解**的任务 —— 差值的三个成因全在 vendor 侧且客户端不可消除
+          // (序列前向填充不可分辨 / 分母取实际有效天数 / 盘中分钟级更新)。判据与恢复硬门的
+          // 条件写在 `classifyIvpDivergence` 注释里, 别只改这一行。
+          this.logger.warn(`IVP 双算对表 显著偏离 (记录, 不判人工介入): ${detail}`);
         }
         // 'ok' / 'skipped' 蓄意零输出: 前者是噪声带内, 后者不成立对表 (见上文)。
       } catch (err) {
