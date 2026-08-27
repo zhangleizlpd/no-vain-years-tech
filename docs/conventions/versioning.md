@@ -30,6 +30,22 @@ mono 仓双线发版:`apps/server` + `apps/mobile` 各自独立 SemVer 版本线
 
 `feat` 的 minor bump 是 `0.9.0 → 0.10.0 → 0.11.0 …`(decimal 不进位),永远不会自动到 `1.0.0`。**`bump-minor-pre-major` 的唯一作用**是把 breaking change 从 release-please 默认的 major bump(`→ 1.0.0`)压成 minor —— 堵住「一个 `feat!` commit 把 pre-1.0 版本直接弹到 `1.0.0`」的地雷。`1.0.0` 只由 M4 手动 `release-as` 触达(见下「M4 上架路线」)。
 
+## CHANGELOG 可见性(哪些 type 会进 release notes)
+
+两 config 均显式写死 `changelog-sections`(**不吃 release-please 默认**,因为默认表把 `refactor` 藏了)。可见 / 隐藏如下:
+
+| 可见                                               | 隐藏(仍计入发布内容,只是不出现在 notes)    |
+| -------------------------------------------------- | ------------------------------------------ |
+| `feat` `fix` `perf` `deps` `revert` **`refactor`** | `docs` `style` `chore` `test` `build` `ci` |
+
+🚨 **「不在 notes 里」不等于「不在这个 release 里」。** release tag 打在 Release PR 合进 main 之后的那个 commit 上 ⇒ **那一刻 main 上的全部改动都进了这个版本**,不管它的 type 有没有被 notes 收录。实例:`a78ae9c8`(refactor,#194)在 `server-v0.36.4` 里,而 0.36.4 的 notes 只列了两条 Bug Fixes。
+
+⇒ 这就是 `refactor` 被放出来的理由:**带 DB migration 的改动经常是 `refactor`**(改列名 / 拆表这类),而读 release notes 的人正是拿它判断「这个版本能不能回滚、要不要挑时间部署」。一次 `DROP COLUMN` 在 notes 里隐形 = 把回滚代价藏起来。
+
+🚨 **`chore` 仍然隐藏** —— 31 个历史 commit 用它,放出来 notes 会被基建噪声淹掉。⇒ **带 migration 的改动 MUST NOT 用 `chore`**,按实际性质取 `feat` / `fix` / `refactor`。
+
+> 判据来源是实证不是默认表推断: `docs`(3) / `chore`(31) / `build`(1) / `test`(3) / `refactor`(6) 这些 type 都有 commit 触及过 `apps/server`,而 CHANGELOG 全史只出现过 `Bug Fixes` 与 `Features` 两个 section。
+
 ## 发版流程
 
 由 [release-please](https://github.com/googleapis/release-please) 自动化驱动:
