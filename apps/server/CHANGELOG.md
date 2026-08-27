@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.37.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.37.1...server-v0.37.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **marketdata:** [#209](https://github.com/zhangleizlpd/no-vain-years-tech/issues/209) 第 2 步 —— 日报按 kind 展开 findings, 「写了但没人读」的那一半补上 ([#217](https://github.com/zhangleizlpd/no-vain-years-tech/issues/217)) ([e65fb3a](https://github.com/zhangleizlpd/no-vain-years-tech/commit/e65fb3a7d76852bde5a959cb8606915a0f87d81f))
+* **repo:** 只改 ops/jobs/*.sql 时 nx test 假绿 —— 谓词改了、测试没跑、结果是绿的 ([#220](https://github.com/zhangleizlpd/no-vain-years-tech/issues/220)) ([ed99f33](https://github.com/zhangleizlpd/no-vain-years-tech/commit/ed99f33eebffc0c608f8cecf4971f1319da3abbc))
+
 ## [0.37.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.37.0...server-v0.37.1) (2026-08-27)
 
 
