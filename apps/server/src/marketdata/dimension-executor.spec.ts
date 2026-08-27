@@ -4122,30 +4122,34 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
     });
   });
 
-  it('档① 差 ≤2pp (直读 51 vs 自算 50) → 静默: 零 IVP 告警, 采集照常计 ok', async () => {
-    const r = await runAndCollectAlerts({ vendorIvPercentile: '51' });
+  /**
+   * 🚨 **逐票判据已退场** (2026-08-27, py-futu-api#257 / #218 / #209)。逐票偏移 = 该票窗口内的
+   * 空值日数, 客户端消不掉; 逐票报 = 每晚 24 条已知噪声。⇒ 三档判定仍在算 (值有信息), 但
+   * **不再逐票落 log**, 输出改为批级一条。下面三条按「差值大小」参数化, 承重断言是**逐票
+   * 告警恒零**, 且**差多大都一样** —— 那正是「阈值不再是判据」的表达。
+   */
+  it.each([
+    ['档① 差 ≤2pp', '51'],
+    ['档② 2pp < 差 ≤5pp', '53'],
+    ['档③ 差 >5pp', '57'],
+  ])('%s (直读 %s vs 自算 50) → 逐票零告警, 采集照常计 ok', async (_label, vendorIvPercentile) => {
+    const r = await runAndCollectAlerts({ vendorIvPercentile });
+    // 🚨 承重: 逐票不再有任何输出 —— 差 1pp 与差 7pp 表现完全相同。
     expect(ivpAlerts(r.warns)).toHaveLength(0);
     expect(ivpAlerts(r.errors)).toHaveLength(0);
     expect(r.stats).toMatchObject({ scanned: 1, ok: 1, failed: 0 });
   });
 
-  it('档② 2pp < 差 ≤5pp (直读 53 vs 自算 50) → WARN 进复核名单, 不升 ERROR', async () => {
-    const r = await runAndCollectAlerts({ vendorIvPercentile: '53' });
-    expect(ivpAlerts(r.warns)).toHaveLength(1);
-    expect(ivpAlerts(r.warns)[0]).toContain('us:PEP');
-    expect(ivpAlerts(r.errors)).toHaveLength(0);
-  });
-
-  it('🚨 档③ 差 >5pp (直读 57 vs 自算 50) → 只进 WARN, **零 ERROR** (2026-08-27 降级)', async () => {
-    // py-futu-api#257 官方答复证否了原来那句「疑似 vendor 聚合口径漂移」: 差值的三个成因
-    // (序列前向填充不可分辨 / 分母取实际有效天数 / 盘中分钟级更新) 全在 vendor 侧且客户端
-    // 消不掉 ⇒ 抬 ERROR 等于派给人一个无解任务。承重断言是**下面那条 errors 为 0**。
+  /**
+   * 🚨 逐票退场后**唯一**的自动判据是「可算标的里恰合数为 0」, 但它带**最小样本闸**
+   * ({@link IVP_SYSTEMIC_BREAK_MIN_SAMPLE} = 10) —— 本 harness 只跑单票, 结构上够不到那个闸,
+   * 故这里只钉「不误触发」这一半; 判据本体的正反两臂在 `underlying-iv.rules.spec.ts` 里,
+   * 那边造 N 个 verdict 是零成本的。**此处不假装覆盖。**
+   */
+  it('🚨 单票差 >5pp 也不触发塌陷判据 (样本不足闸值, 前提不成立)', async () => {
     const r = await runAndCollectAlerts({ vendorIvPercentile: '57' });
-    expect(ivpAlerts(r.warns)).toHaveLength(1);
-    expect(ivpAlerts(r.warns)[0]).toContain('us:PEP');
+    expect(r.warns.map(String).filter((m) => m.includes('恰合数为 0'))).toHaveLength(0);
     expect(ivpAlerts(r.errors)).toHaveLength(0);
-    // 措辞也一并钉住: 恢复硬门要连注释里那条「恢复条件」一起改, 不能只把 ERROR 加回来。
-    expect(ivpAlerts(r.warns)[0]).toContain('不判人工介入');
   });
 
   it('🚨 窗口不足 (251 < 252 交易日) → 跳过对表且**不告警** (缺窗口不是口径漂移)', async () => {

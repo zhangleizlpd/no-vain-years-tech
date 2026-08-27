@@ -427,7 +427,7 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
   });
 
   // ── ⑤ IVP 双算对表 (FR-034/FR-035): 差超阈进 WARN 名单 + 自算值不进任何列 ──
-  it('⑤ 双算差超阈进 WARN 名单: 三档分流 + 窗口不足跳过不告警 + **自算值不存在于任何列**', async () => {
+  it('⑤ 双算对表: 逐票零告警 (判据已退场) + 窗口不足跳过 + **自算值不存在于任何列**', async () => {
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     try {
@@ -458,18 +458,13 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
       const warnMsgs = xcheck(warn.mock.calls);
       const errMsgs = xcheck(error.mock.calls);
 
-      // 两条 WARN: 3.5pp 的进复核名单, 8.5pp 的记「显著偏离」—— 结构化 detail 带 level /
-      // diffPp 供运维定位。🚨 **errMsgs 恒为空**是本用例现在的承重断言 (2026-08-27 降级,
-      // py-futu-api#257): 差值成因全在 vendor 侧且客户端消不掉, 抬 ERROR = 派无解任务。
-      expect(warnMsgs).toHaveLength(2);
-      const byWarn = (sym: string) => warnMsgs.find((m) => m.includes(`"symbol":"${sym}"`));
-      expect(byWarn('us:PEP')).toContain('进复核名单');
-      expect(byWarn('us:PEP')).toContain('"level":"warn"');
-      expect(byWarn('us:PEP')).toContain('"diffPp":"3.5000"');
-      expect(byWarn('us:PEP')).toContain(`"date":"${D1.us}"`);
-      expect(byWarn('us:LULU')).toContain('不判人工介入');
-      expect(byWarn('us:LULU')).toContain('"level":"notable"');
-      expect(byWarn('us:LULU')).toContain('"diffPp":"8.5000"');
+      // 🚨 **逐票判据已退场** (2026-08-27, py-futu-api#257): 逐票偏移 = 该票窗口内的空值日数,
+      // 客户端消不掉 ⇒ 逐票报 = 每晚已知噪声。本用例现在的承重断言有两条:
+      //   ① 逐票 WARN / ERROR **恒零** —— 差 1pp 与差 8.5pp 表现完全相同;
+      //   ② 可算样本不足 IVP_SYSTEMIC_BREAK_MIN_SAMPLE(10) ⇒ 连塌陷判据也不触发 (本用例 3 只)。
+      // 判据本体的正反两臂在 `underlying-iv.rules.spec.ts`, 此处不假装覆盖。
+      expect(warnMsgs.filter((m) => m.includes('"symbol"'))).toHaveLength(0);
+      expect(warnMsgs.filter((m) => m.includes('恰合数为 0'))).toHaveLength(0);
       expect(errMsgs).toHaveLength(0);
       // ok (噪声带内) 与 skipped (窗口不足) **蓄意零输出** —— 否则告警面会被上线头一年的
       // 新标的刷屏, WARN 名单就失去分辨力了。

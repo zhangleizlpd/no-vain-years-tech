@@ -56,6 +56,8 @@ import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 import {
   classifyIvpDivergence,
+  summarizeIvpDivergences,
+  type IvpDivergenceVerdict,
   computeIvPercentile,
   HIS_VOLATILITY_MAX_SPAN_DAYS,
   IVP_MIN_WINDOW_TRADING_DAYS,
@@ -3243,6 +3245,7 @@ export class DimensionExecutorRegistry {
     matched: { instrumentId: bigint; snapshot: UnderlyingIvSnapshot }[],
     date: Date,
   ): Promise<void> {
+    const verdicts: IvpDivergenceVerdict[] = [];
     for (const { instrumentId, snapshot } of matched) {
       try {
         const rows = await this.prisma.underlyingIvHistory.findMany({
@@ -3260,24 +3263,12 @@ export class DimensionExecutorRegistry {
           rows.map((r) => r.iv),
           toDecimalOrNull(snapshot.iv),
         );
-        const verdict = classifyIvpDivergence(toDecimalOrNull(snapshot.ivPercentile), self);
-        const detail = JSON.stringify({
-          symbol: snapshot.symbol,
-          date: dateOnlyStr(date),
-          level: verdict.level,
-          diffPp: verdict.diffPp?.toFixed(4) ?? null,
-          reason: verdict.reason,
-        });
-        if (verdict.level === 'warn') {
-          this.logger.warn(`IVP 双算对表 WARN (进复核名单): ${detail}`);
-        } else if (verdict.level === 'notable') {
-          // 🚨 2026-08-27 由 ERROR 降为 WARN (py-futu-api#257): 原文案「需人工核口径」派给人的
-          // 是一个**无解**的任务 —— 差值的三个成因全在 vendor 侧且客户端不可消除
-          // (序列前向填充不可分辨 / 分母取实际有效天数 / 盘中分钟级更新)。判据与恢复硬门的
-          // 条件写在 `classifyIvpDivergence` 注释里, 别只改这一行。
-          this.logger.warn(`IVP 双算对表 显著偏离 (记录, 不判人工介入): ${detail}`);
-        }
-        // 'ok' / 'skipped' 蓄意零输出: 前者是噪声带内, 后者不成立对表 (见上文)。
+        verdicts.push(classifyIvpDivergence(toDecimalOrNull(snapshot.ivPercentile), self));
+        // 🚨 **逐票零输出** (2026-08-27, py-futu-api#257): 逐票偏移 = 该票窗口内的空值日数,
+        // 客户端消不掉 (序列前向填充不可分辨 + 分母取实际有效天数 + 盘中分钟级更新)。实测
+        // 110 只可算标的里 24 只落在原 WARN 带 —— 全是这种。逐票报 = 每晚 24 条已知噪声,
+        // 而 #209 正文那句「天天判红会让人学会无视这份报告」正是要防的。
+        // ⇒ 输出改为**批级一条**, 判据只剩「恰合数为 0」, 见 `summarizeIvpDivergences`。
       } catch (err) {
         this.logger.warn(
           `IVP 双算对表 执行失败 (监控侧信道, 不影响本轮采集): ${JSON.stringify({
@@ -3287,6 +3278,25 @@ export class DimensionExecutorRegistry {
         );
       }
     }
+
+    // 批级一条。零可算标的时连这条也不出 —— 没有对象可汇总, 出一条空摘要只是噪声。
+    const summary = summarizeIvpDivergences(verdicts);
+    if (summary.computable === 0) return;
+    const detail = JSON.stringify({
+      date: dateOnlyStr(date),
+      computable: summary.computable,
+      exact: summary.exact,
+      maxOffsetPp: summary.maxOffsetPp?.toFixed(4) ?? null,
+      // 折样本数是为了让它**可直接读成「窗口内空值日数」**(1 样本 = 1/252 = 0.3968pp)。
+      maxOffsetSamples: summary.maxOffsetSamples,
+    });
+    if (summary.systemicBreak) {
+      // 🚨 唯一的自动判据: 无空值日的那批票必然恰合, 连它们都不合 ⇒ **我们这侧**算错了
+      // (#211 停更 23 天就是这个形状)。判据与「为什么只剩这一条」见 summarizeIvpDivergences。
+      this.logger.warn(`IVP 双算对表 恰合数为 0 (疑似自算侧塌陷, 非 vendor 填充): ${detail}`);
+      return;
+    }
+    this.logger.log(`IVP 双算对表: ${detail}`);
   }
 
   /**
