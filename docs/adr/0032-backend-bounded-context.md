@@ -149,4 +149,4 @@ auth → security
 - [ADR-0020](0020-module-boundary-nestjs.md) (现有 ESLint boundaries 机制)
 - [ADR-0033](0033-outbox-cross-context-comm.md) (cross-context async 路径)
 - [ADR-0034](0034-auth-account-operation-catalog.md) (LLM decision tree 写在哪)
-- [AI Friction Catalog · F-006 Indirect-Spec-Module-Mapping](../conventions/ai-friction-catalog.md#f-006--indirect-spec-module-mapping) — 物理拆 security/account/auth 缓解 LLM 错向放置
+- [AI Friction Catalog · F-006 Indirect-Spec-Module-Mapping](../improvements/2026-05/05-21-ai-friction-catalog-v1.md#f-006--indirect-spec-module-mapping) — 物理拆 security/account/auth 缓解 LLM 错向放置

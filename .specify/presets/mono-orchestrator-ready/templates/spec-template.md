@@ -15,8 +15,8 @@ orchestrator_compat: ">=0.2.0"
 web_compat: na
 # web_compat_notes: "Expo Web export 仅冒烟 login flow,onboarding+我的页未测"
 
-# AI agent 协作摩擦观察 (per ADR-0024 amend + docs/conventions/ai-friction-catalog.md).
-# 当 true 时 agent_friction_notes 必填,引 catalog 模式 ID + 一句话现象.
+# AI agent 协作摩擦观察 (per ADR-0024 amend; 历史模式目录 docs/improvements/2026-05/05-21-ai-friction-catalog-v1.md).
+# 当 true 时 agent_friction_notes 必填(≥ 10 字符): 写现象 + 缓解 ADR 链接, 不要求引 catalog ID.
 agent_friction_observed: false
 # agent_friction_notes: "TS-Bundler-Mismatch — .js 后缀强加在 packages/auth 反 Metro"
 
