@@ -5,15 +5,15 @@
 
 ## 判据表
 
-| 顶层目录    | 判据（一句话说得清才算合格）                                                                                                 |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `apps/`     | **可部署物**，且归 pnpm workspace / Nx 管（有 `project.json`）                                                               |
-| `services/` | **可部署物**，但**自带独立工具链**（自己的 lockfile / Python venv / 纯配置），刻意不入 workspace                             |
-| `packages/` | **不可独立部署**的共享库，且 ≥ 2 个 consumer（单 consumer 按 [ADR-0030](../adr/0030-package-decomposition.md) 内联到使用方） |
-| `ops/`      | 运维产物。**仅 5 个子目录**，见下                                                                                            |
-| `scripts/`  | 只在**开发机 / CI** 跑的工具，**不进生产宿主机**                                                                             |
-| `docs/`     | 文档（分类见 [docs-organization.md](docs-organization.md)）                                                                  |
-| `specs/`    | SDD feature 产物（见 [sdd.md](sdd.md)）                                                                                      |
+| 顶层目录    | 判据（一句话说得清才算合格）                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/`     | **可部署物**，且归 pnpm workspace / Nx 管（有 `project.json`）                                                                        |
+| `services/` | **可部署物**，但**自带独立工具链**（自己的 lockfile / Python venv / 纯配置），刻意不入 workspace                                      |
+| `packages/` | **不可独立部署**的共享库，且 ≥ 2 个 consumer（单 consumer 按 [ADR-0030](../adr/0030-package-decomposition.md) 内联到使用方）          |
+| `ops/`      | 运维产物。**仅 5 个子目录**，见下                                                                                                     |
+| `scripts/`  | 只在**开发机 / CI** 跑的工具，**不进生产宿主机**                                                                                      |
+| `docs/`     | 文档（plans / improvements / experience 三类的分工与命名见 [docs-organization.md](docs-organization.md)；ADR / conventions 各有体例） |
+| `specs/`    | SDD feature 产物（见 [sdd.md](sdd.md)）                                                                                               |
 
 ### `ops/` 的 5 个子目录
 
@@ -62,6 +62,7 @@ ops/jobs/systemd/<unit>.service + <unit>.timer
 - **文件名 = systemd unit 名**，不是别的。这条让「unit ↔ 脚本」可机器校验。
 - **`<unit>.sh` 与 `<unit>.sql` 必须是同目录同名兄弟** —— 脚本按 sibling 找谓词，仓内与装机后（`/usr/local/lib/nvy/jobs/`）形状一致。拆开放 = 运行期「谓词文件缺失」告警。
 - 安装一律走 `ops/jobs/install.sh`（幂等），不在 unit 头注释里写各自的 `cp` 步骤。
+- **跨任务原语例外**：本体在 `ops/lib/` 的共享件（如看门狗 `nvy-watchdog.sh`）只在 `ops/jobs/systemd/` 有 unit、没有同名 `.sh` 兄弟 —— 别当违规去搬。
 
 ## 机器强制的五条
 
@@ -79,6 +80,6 @@ ops/jobs/systemd/<unit>.service + <unit>.timer
 
 判据不写下来，目录就会渐进沙化：每一步单看都合理，合起来没人说得清一个新东西该放哪。
 
-**要治的是「判据说不清」，不是「顶层目录多」** —— 这两件事常被混为一谈。2026-08-07 起草本文时实取过一批同量级公开 monorepo（immich / cal.com / supabase / PostHog / grafana / n8n）的顶层目录做基线，本仓当时是其中最少的之一，而痛感依然存在，痛点在 `ops/` 内部；对照数据留在 [08-07 布局重排 plan](../private/plans/2026-08/08-07-mono-layout-reorg.md)。
+**要治的是「判据说不清」，不是「顶层目录多」** —— 这两件事常被混为一谈。2026-08-07 起草本文时实取过一批同量级公开 monorepo（immich / cal.com / supabase / PostHog / grafana / n8n）的顶层目录做基线，本仓当时是其中最少的之一，而痛感依然存在，痛点在 `ops/` 内部；对照数据留在本地 plan `08-07-mono-layout-reorg`（本机私有，未公开）。
 
 取舍原则照 Nx 官方口径：_group by scope, not type_ / _projects that change together should sit together_。

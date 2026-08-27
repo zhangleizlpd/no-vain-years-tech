@@ -23,7 +23,9 @@ paths:
 
 ## ② 登记注册表
 
-归到对应 host section（本地 / 62 / 77），一行含：任务 | 调度 | 触发器 unit/label | 执行 | 仓库锚点 | 用途。退役则删行 + 在相关 runbook 注明，别留 stale 行。漏登记 = 注册表静默 stale，后人查「哪台机器在跑什么定时任务」时被误导。
+归到对应 host section，一行含：任务 | 调度 | 触发器 unit/label | 执行 | 仓库锚点 | 用途。退役则删行 + 在相关 runbook 注明，别留 stale 行。漏登记 = 注册表静默 stale，后人查「哪台机器在跑什么定时任务」时被误导。
+
+> 文件形态（同名三件套 / 文件名 = unit / `.sql` 必须同目录同名兄弟 / 安装走 `install.sh`；`ops/lib` 共享件例外）per [`docs/conventions/repo-layout.md` § ops/jobs 的内部形态](../../docs/conventions/repo-layout.md) —— CI 只抓 ExecStart 目标，`.sql` 错位抓不到，写的时候自查。
 
 ## CI 硬门（绕不过）
 

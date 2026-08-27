@@ -19,12 +19,8 @@ paths:
 
 ### 3. 护栏条件必须对执行方可观测
 
-往 `.claude/` 写护栏（commands / skills / rules）时，每个条件先过一问：**执行它的那一方，从自己上下文里能观测到吗？** 观测不到 → 改成无条件规则。
-
-不可观测的典型：调用方身份（人 / 上游 agent / headless —— 收到的都只是一条 user turn）、上游是否已获授权、上游意图。后果不可逆的动作（外部写入 / 删除 / 发送）→ 直接写成无条件闸，不留身份或授权例外。
-
-→ 依赖不可观测状态的护栏 = 没有护栏。实证见 `ops/runbook/claude-design.md` § 7（`create_project`）。
+每个条件先问：**执行它的那一方，从自己上下文里能观测到吗？** 观测不到（调用方身份 / 上游授权 / 上游意图）→ 改成无条件规则；后果不可逆的动作直接写成无条件闸。典型与实证见 canonical § 护栏措辞。
 
 ## 单源真理
 
-完整配置项分布（路径锚点 Hooks 嵌 `settings.json` / Plans 落 `docs/private/plans/` / 全局 `~/.claude/` 边界细节）见 [`docs/conventions/claude-config-layout.md`](../../docs/conventions/claude-config-layout.md)。本 rule 仅 surface 路径触发的硬 invariant，不重复 canonical 分布表。
+完整配置项分布见 [`docs/conventions/claude-config-layout.md`](../../docs/conventions/claude-config-layout.md)。本 rule 仅 surface 路径触发的硬 invariant，不重复 canonical 分布表。

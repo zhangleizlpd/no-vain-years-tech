@@ -7,7 +7,7 @@
 > - `docs/experience/` —— 一次性操作手记（2026-06-05 决定）
 > - `docs/private/` —— plans + 拓扑/凭据相邻的运维散文（2026-08-08 决定）。判据见 [`information-boundary.md`](information-boundary.md)：plan 天然记录主机、账号、部署拓扑与「还没修的洞」，属该文「私有散文」一层 —— 这类内容不进面向公开的仓。
 
-**不受此约束**：`docs/conventions/` / `docs/adr/`（ADR 走 `NNNN-<slug>.md` 编号体例）/ `docs/spec/`。
+**不受此约束**：`docs/conventions/`（它的 evergreen 约束见下节）/ `docs/adr/`（ADR 走 `NNNN-<slug>.md` 编号体例）。
 
 ## 命名
 
@@ -50,8 +50,10 @@ docs/experience/                 # local-only（gitignored），结构同上
 
 > `docs/improvements/` 是三者里唯一入仓的 —— 因为「测到了什么」通常是可公开的技术事实（前后对比、复跑命令），而「要做什么」几乎必然牵出主机与账号。写 improvements 时若某条实测**离不开**真实标识符，那条按 [`information-boundary.md`](information-boundary.md) 判：用代号改写，或整条挪进 `docs/private/`。
 
+## `docs/conventions/` 只放 evergreen
+
 🚨 **会随代码增长而失效的数（文件计数 / 比例 / 耗时 / 某次改了几个文件）一律不进 `docs/conventions/`** —— convention 只放「一年后仍成立」的常驻规则，时点事实归 `docs/improvements/`。规范里需要引用证据时，链接过去，不要把数抄进来。判据不是「有没有数字」，是「会不会随时间失效」：PR # / 日期作历史证据锚、外部常数（如 Google 测试配比）都是耐久的。
 
 **产出顺序（重构 / 优化 session）**：先落 `docs/improvements/` 实测记录，convention 事后从记录**提炼**——同一 session 手边全是「修了几个 / 还剩几秒」的素材时同步写 convention，时点数字必然互渗（2026-08-03 根因分析实证，两次事故均此形态）。
 
-**守卫三层**（防「规约在写作时刻不在场」）：`scripts/pretooluse-convention-rubric.sh`（Write|Edit 时刻注入自检——新建文件唯一覆盖通道）+ `.claude/rules/convention-authoring.md`（read/edit 触发摘要）+ `scripts/checks/check-convention-orphan.ts`（全仓零引用的 convention = 红，路由不到等于不存在）。
+**守卫三层**（防「规约在写作时刻不在场」）：`scripts/pretooluse-convention-rubric.sh`（Write|Edit 时刻注入自检——新建文件唯一覆盖通道；对 plans / improvements / experience 同一 hook 注入命名规则）+ `.claude/rules/convention-authoring.md`（read/edit 触发摘要）+ `scripts/checks/check-convention-orphan.ts`（全仓零引用的 convention = 红，路由不到等于不存在）。lefthook `docs-organization-drift` 只能拦入仓的 `docs/improvements/` 新文件命名 —— plans / experience 是 gitignored，进不了 staged。
