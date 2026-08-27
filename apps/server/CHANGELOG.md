@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.39.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.38.2...server-v0.39.0) (2026-08-27)
+
+
+### Features
+
+* **marketdata:** [#210](https://github.com/zhangleizlpd/no-vain-years-tech/issues/210) 按 vendor 拆执行 lane —— 港股期权不再排在理杏仁夜间链后面 ([#234](https://github.com/zhangleizlpd/no-vain-years-tech/issues/234)) ([abd2281](https://github.com/zhangleizlpd/no-vain-years-tech/commit/abd22816c87a14afb1794dea4ad74b0f068a0093))
+
+
+### Bug Fixes
+
+* **marketdata:** [#210](https://github.com/zhangleizlpd/no-vain-years-tech/issues/210) 链发现与快照合进同一 tick —— 让那条从未装配过的 hard 边真正生效 ([#236](https://github.com/zhangleizlpd/no-vain-years-tech/issues/236)) ([64f5608](https://github.com/zhangleizlpd/no-vain-years-tech/commit/64f56085c0bd52156a4aa35af063cfaf04a7e064))
+* **marketdata:** IVP 逐票判据退场 —— 它量的是 vendor 的空值日数, 不是我们能修的东西 ([#233](https://github.com/zhangleizlpd/no-vain-years-tech/issues/233)) ([d71afdd](https://github.com/zhangleizlpd/no-vain-years-tech/commit/d71afdd2ae7db0517eaaeffed6d9e6d9c2e33c44))
+
 ## [0.38.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.38.1...server-v0.38.2) (2026-08-27)
 
 
