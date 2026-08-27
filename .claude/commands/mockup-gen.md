@@ -32,7 +32,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash, ToolSearch, DesignSync, mcp_
 
 ## Step 1 · 组装 2-段 prompt
 
-按 `mobile-impl-playbook.md §3` 两段结构从 spec 派生，写 `specs/<dir>/design/claude-design-prompt.md`：
+按下方两段结构（模板 SoT 在此，playbook §3 只指过来）从 spec 派生，写 `specs/<dir>/design/claude-design-prompt.md`：
 
 - **段 1 · Design context 表**：屏/路由（Expo route）· 用户与场景（journey 节点）· 关键状态（空/loading/错误/成功 + 各 edge 变体，**从 spec FR/SC + Clarifications + state_branches 枚举**）· 数据来源（消费哪个已 ship server 端点）· 范围（一句话圈定，呼应 Out-of-Scope）。
 - **段 2 · Prompt block**：业务+状态机（锚 spec FR/SC 编号）· POSITIVE 约束（必现元素/交互/状态指示）· NEGATIVE 约束 DO-NOT（**逐条搬 spec Out-of-Scope**）· 页面结构（区块布局非像素）· 状态变体图示（每个关键状态画一屏）· 视觉语言 · DELIVERABLES。

@@ -46,7 +46,7 @@ A-002 (account profile + mobile bootstrap, PR #65) ship 中暴露 3 类前端数
 
 - PR-5 (Orval migration) 一次性切换,迁移成本 ~2 天 (codegen 配 + 调 react-query / Zustand 职责划分 + 全 hook 重 wire)
 - 关闭 Issue #68 (无 `.js` 后缀问题)
-- testID convention 落 [`../conventions/maestro-testid.md`](../conventions/maestro-testid.md) (PR-7)
+- testID convention 落 [`../conventions/mobile-testid.md`](../conventions/mobile-testid.md)（原 `maestro-testid.md`，2026-08-27 按在用连字符体例改写）(PR-7)
 - Plan 4 (binary 分发) 开始时 Maestro flow 写得快 (testID 就位时)
 - **2026-06-02 — 「testID 现起强制」relax 为 Plan 4 deferred**：上文 Decision 表「现在起所有交互元素必须 testID」+ PR-review 人工检查在 003-011 实践中 0 adoption（全仓仅 `error-boundary.*` 2 个、golden-sample 屏 0 个、无机械强制）。真 forcing function = Plan 4 写 Maestro flow 时按 `state_branches` 逐分支补 testID（缺漏卡 flow），非提前回填。convention `maestro-testid.md` 已 reframe 为**休眠 forward spec**；命名体例 `<feature>.<element>.<verb>` 不变
 
