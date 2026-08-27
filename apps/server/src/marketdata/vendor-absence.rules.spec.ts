@@ -3,6 +3,7 @@ import {
   VENDOR_STRING_NULL_SENTINEL,
   normalizeQuoteSide,
   strOrNullSentinelAware,
+  tradedPriceOrNull,
   INDISTINGUISHABLE_ZERO_FIELDS,
 } from './vendor-absence.rules.js';
 
@@ -100,6 +101,43 @@ describe('strOrNullSentinelAware', () => {
     expect(strOrNullSentinelAware('')).toBeNull();
     expect(strOrNullSentinelAware(null)).toBeNull();
     expect(strOrNullSentinelAware(42)).toBeNull();
+  });
+});
+
+describe('tradedPriceOrNull', () => {
+  // 判据来源 = 富途官方书面答复 (py-futu-api#258, 2026-08-27), **不是**从数据反推:
+  // 「期权成交价恒为正值(最小价位 > 0), 接口返回的 0 一律表示『无最后成交价』,
+  //   不存在『真实成交价恰为 0』的情况」。
+  it('🚨 0 = 无值 —— 单列判据即可, 不需要伴生字段', () => {
+    expect(tradedPriceOrNull(0)).toBeNull();
+    expect(tradedPriceOrNull('0')).toBeNull();
+    expect(tradedPriceOrNull('0.00')).toBeNull();
+    expect(tradedPriceOrNull('-0')).toBeNull();
+  });
+
+  it('🚨 反臂: 非零价原样透传 (含极小价, MUST NOT 因为「看着像 0」就吃掉)', () => {
+    expect(tradedPriceOrNull(6.74)).toBe('6.74');
+    expect(tradedPriceOrNull('8.37')).toBe('8.37');
+    // 期权最小价位可以很小 —— 0.01 / 0.0001 都是真价, 归一掉就是静默吃掉真实成交。
+    expect(tradedPriceOrNull(0.01)).toBe('0.01');
+    expect(tradedPriceOrNull('0.0001')).toBe('0.0001');
+  });
+
+  it('带外缺失照旧 null (与 numToString 同口径, 本函数只是多认一个带内哨兵)', () => {
+    expect(tradedPriceOrNull(undefined)).toBeNull();
+    expect(tradedPriceOrNull(null)).toBeNull();
+    expect(tradedPriceOrNull('')).toBeNull();
+    expect(tradedPriceOrNull('  ')).toBeNull();
+    expect(tradedPriceOrNull(Number.NaN)).toBeNull();
+    expect(tradedPriceOrNull(Number.POSITIVE_INFINITY)).toBeNull();
+    expect(tradedPriceOrNull('abc')).toBeNull();
+  });
+
+  it('🚨 负控制: 它与 normalizeQuoteSide 的判据**故意不同** —— 盘口价单列判会误杀合法零价', () => {
+    // OPRA: 「Zero in the bid price field represents a valid Bid Price」⇒ 盘口必须成对判。
+    // 成交价没有这条反向约束(官方明说恒为正), 所以才允许单列。两处判据不得互相套用。
+    expect(normalizeQuoteSide(0, 5)).toEqual({ price: '0', size: '5', form: 'inconsistent' });
+    expect(tradedPriceOrNull(0)).toBeNull();
   });
 });
 

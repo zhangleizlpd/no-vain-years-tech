@@ -160,6 +160,30 @@ describe('FutuRealtimeQuoteAdapter', () => {
       expect(quotes.get('us:PEP')?.price).toBe('148.21');
     });
 
+    it('🚨 行在但 last_price = 0 → 同样省略 (#258: 0 是带内哨兵, 不是价)', async () => {
+      // 本用例存在的理由: 上一条断言的「缺失 → 省略」在**这个 vendor 上恒不触发** ——
+      // 富途从不产生带外缺失, 它用 `0` 表达「没有」(官方 py-futu-api#258 确认)。
+      // 没有本条, 一只停牌 / 无成交的正股会被当成「现价 0 元」发布进锚的盘中价。
+      const { http } = makeShim([stockRow('US.PEP'), stockRow('US.AAPL', { last_price: 0 })]);
+      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
+
+      expect(quotes.has('us:AAPL')).toBe(false);
+      expect(quotes.get('us:PEP')?.price).toBe('148.21');
+    });
+
+    it('负控制: 极小价原样发布 (0.01 是真价, MUST NOT 因为「看着像 0」被吃掉)', async () => {
+      const { http } = makeShim([stockRow('US.PEP', { last_price: 0.01 })]);
+      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
+
+      expect(quotes.get('us:PEP')?.price).toBe('0.01');
+    });
+
+    it('🚨 全部行都是哨兵 0 → 响亮失败 (等价于「一条可用报价都没有」, 供上游熔断计数)', async () => {
+      const { http } = makeShim([stockRow('US.PEP', { last_price: 0 })]);
+
+      await expect(makeAdapter(http).fetchQuotes(['us:PEP'])).rejects.toThrow(/一条可用报价都没有/);
+    });
+
     it('响应里的多余行 (未请求的 code) → 忽略, 不混进结果', async () => {
       const { http } = makeShim([stockRow('US.PEP'), stockRow('US.MSFT')]);
       const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
