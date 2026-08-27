@@ -154,16 +154,15 @@ export class OptionSnapshotCoverageCheck {
       // 缺席明细的稳定序 (ERROR log 逐日可比); 同时让同一合约的多来源行相邻。
       orderBy: { contractId: 'asc' },
     });
-    if (baselineRows.length === 0) {
-      return this.emptyReport(sessionDate, baselineDate, threshold);
-    }
-
     // 分子: 当日实得的合约集。同一合约可有多来源行 (eod / premarket_backfill), Set 天然去重。
+    // 🚨 多取 `underlyingInstrumentId` 一列是**存在性层**的输入 (#231) —— 同一趟查询、零额外
+    // 往返。单独再查一次「今天有哪些票有行」等于把这 9 万行再扫一遍。
     const collectedRows = await this.prisma.optionDailySnapshot.findMany({
       where: { sessionDate: toDateOnly(sessionDate) },
-      select: { contractId: true },
+      select: { contractId: true, contract: { select: { underlyingInstrumentId: true } } },
     });
     const collected = new Set(collectedRows.map((r) => r.contractId));
+    const presentUnderlyings = new Set(collectedRows.map((r) => r.contract.underlyingInstrumentId));
 
     const byUnderlying = new Map<string, CoverageAccumulator>();
     const seenContracts = new Set<bigint>();
@@ -190,20 +189,30 @@ export class OptionSnapshotCoverageCheck {
       else acc.missingContractCodes.push(row.contract.code);
     }
 
+    // 🚨 存在性层 (#231): 名册里今天一行都没有的票。比例层结构上看不见它们 —— 连缺两轮时
+    // 它在基线日也没有行 ⇒ 不进分母 ⇒ 无输出。判据与 SQL 侧 `absent` CTE **必须同源**。
+    const absent = await this.resolveAbsentUnderlyings(
+      sessionDate,
+      presentUnderlyings,
+      byUnderlying,
+    );
+
     const underlyings: UnderlyingCoverage[] = [...byUnderlying.values()]
-      .sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0))
       .map((acc) => ({
         ...acc,
         // 乘法而非除法: 阈值 = 1 时退化成 `covered < expected` 的精确比较, 不吃浮点误差。
         degraded: acc.covered < acc.expected * threshold,
-      }));
+      }))
+      .concat(absent)
+      .sort((a, b) => (a.symbol < b.symbol ? -1 : a.symbol > b.symbol ? 1 : 0));
     const degraded = underlyings.filter((u) => u.degraded);
 
     return {
       sessionDate,
       baselineDate,
       threshold,
-      status: degraded.length > 0 ? 'degraded' : 'ok',
+      // 分母为空 = 「无对象」而非 0%（零锚 / 首日 / 基线日合约当日全部到期）。两层都空才算。
+      status: underlyings.length === 0 ? 'no_subject' : degraded.length > 0 ? 'degraded' : 'ok',
       expected: underlyings.reduce((n, u) => n + u.expected, 0),
       covered: underlyings.reduce((n, u) => n + u.covered, 0),
       underlyings,
@@ -237,6 +246,74 @@ export class OptionSnapshotCoverageCheck {
           })),
         }),
     );
+  }
+
+  /**
+   * **存在性层** (#231): 名册里今天一行都没有的票 —— 缺席用**名册**判, 与历史分母无关。
+   *
+   * ## 🚨 为什么比例层判不出来
+   *
+   * 比例层的分母取自**基线日的快照数据自己**。一只票连缺两轮时, 它在基线日也没有行 ⇒ 不进分母
+   * ⇒ 聚合产不出这一组 ⇒ 判据对它**无输出**。与 Prometheus「实例从服务发现消失后
+   * `avg by (job)(up)` **returning nothing rather than alerting**」逐字同构 —— 期望源取自被监控
+   * 数据自身, 数据一消失把期望一起带走。2026-08-27 `us:ALB` 实撞: 连缺三轮, 只在第一轮可见。
+   *
+   * ## 名册 = **us 工作集 ∧ 有未到期合约**, 两个限定各自承重
+   *
+   * · `needSync` —— 它是锚闸 (`anchor-driven-sync-gate`) 对锚表重算后的**物化结果**, 与采集侧
+   *   同源; **删锚**后下一轮闸置 false ⇒ 该票自动离开名册。不挂它 = 删锚变永久假红。
+   *   🚫 MUST NOT 改读 `anchor.excluded`: 那是**交易**意愿不是采集意愿 (FR-028 / Guardrail 8),
+   *   prod 现有 3 只 `excluded=true` 的锚**照常在采**。
+   * · **有未到期合约** —— 合约全到期的票本就无可采, 留在名册里 = 每天假红一次。
+   *
+   * 📌 `expected` 取**库内未到期合约数**而非历史分母: 缺席是**二值**的, 这个数只用来说明
+   * 「有多少没采到」, 判定本身不依赖它。⇒ 无需把分母窗口拉宽 (2026-08-27 实测: 拉到 21 自然日
+   * 窗要多付 2.4x 耗时 + 342k buffers, 而买到的信息**只有缺席那一只票**)。
+   *
+   * 复杂度: 1 次 instrument 索引扫 (名册, 个位数~百级) + **仅在真有缺席时**再取一次那几只票的
+   * 合约 code。稳态零缺席 ⇒ 第二次查询不发生。
+   */
+  private async resolveAbsentUnderlyings(
+    sessionDate: string,
+    presentUnderlyings: ReadonlySet<bigint>,
+    alreadyCounted: ReadonlyMap<string, CoverageAccumulator>,
+  ): Promise<UnderlyingCoverage[]> {
+    const unexpired = { expiryDate: { gte: toDateOnly(sessionDate) } };
+    const roster = await this.prisma.instrument.findMany({
+      where: { market: 'us', needSync: true, optionContracts: { some: unexpired } },
+      select: { id: true, market: true, code: true },
+    });
+    const absent = roster.filter(
+      (r) => !presentUnderlyings.has(r.id) && !alreadyCounted.has(`${r.market}:${r.code}`),
+    );
+    if (absent.length === 0) return [];
+
+    // 缺席票的未到期合约 code —— 只为 ERROR log 的逐票明细, 稳态下这一发不发生。
+    const contracts = await this.prisma.optionContract.findMany({
+      where: { underlyingInstrumentId: { in: absent.map((r) => r.id) }, ...unexpired },
+      select: { underlyingInstrumentId: true, code: true },
+      orderBy: { id: 'asc' },
+    });
+    const codesByInstrument = new Map<string, string[]>();
+    for (const c of contracts) {
+      const key = c.underlyingInstrumentId.toString();
+      const bucket = codesByInstrument.get(key);
+      if (bucket) bucket.push(c.code);
+      else codesByInstrument.set(key, [c.code]);
+    }
+
+    return absent.map((r) => {
+      const codes = codesByInstrument.get(r.id.toString()) ?? [];
+      return {
+        instrumentId: r.id,
+        symbol: `${r.market}:${r.code}`,
+        expected: codes.length,
+        covered: 0,
+        missingContractCodes: codes,
+        // 名册说它该有, 而它一行都没有 ⇒ 恒降级 (不走阈值乘法: 那是比例层的判据)。
+        degraded: true,
+      };
+    });
   }
 
   /**

@@ -38,6 +38,21 @@
 --   不吃浮点误差）。**MUST NOT 只看全局总数**：实测 PEP 730 行 / VICI 48 行，一只小票整票消失
 --   落在全局比值的噪声里（778 → 730 = 93.8%，任何合理的全局阈值都判绿）。
 --
+-- ═══ 两层，期望源不同，**别揉在一起**（#231）═══
+--   | 层 | 问的问题 | 期望源 | 归谁 |
+--   | --- | --- | --- | --- |
+--   | 存在性 | 这只票今天**完全没有行**吗？ | **名册**（`need_sync` 工作集 ∧ 有未到期合约） | 本谓词的 `absent` CTE |
+--   | 完整性 | 今天**有行**的票，逐合约覆盖率够吗？ | 基线日快照 | 本谓词的 `per_underlying` |
+--
+-- 🚨 **与 `marketdata-table-health.sql` 判据 ⑧ 的分工（改任一侧前先读这段）**：⑧ 问的是
+--    「有合约的 us 锚**任一只**拿不到新快照」，逐票、无基线、**lag 2 交易日**。它抓「整票**长期**
+--    消失」；本谓词抓「**当日**的缺席与逐合约缺口」。⇒ 两者互补不重叠：
+--      · 只有 ⑧ ⇒ 「某票少了 48 张合约」永远看不见（⑧ 只要有一行就算新鲜）；
+--      · 只有本谓词 ⇒ 缺口超出当日视野后无人接管。
+--    🚫 **MUST NOT 在本谓词里重造 ⑧**（把窗口拉宽去追长期缺席）：2026-08-27 prod 实测，分母
+--    拉到 21 自然日窗要多付 **2.4× 耗时 + 342k buffers（≈2.7 GB）**，而买到的信息**只有缺席
+--    那一只票** —— 而那只票用名册一次索引扫就抓到了。
+--
 -- 🚨 **分母的到期判据是 `>=` 不是 `>`**（Guardrail 7）：当日到期的合约**当日仍可取快照**
 --    （官方「结束日期请输入今天或未来的日期」），而那是这批腿**最后一次**可采的机会。写成 `>`
 --    只在到期日当天整批放行，平时看不出来。⚠️ 选约表那侧（T027）是 `>`（已到期腿不可交易）——
@@ -136,12 +151,65 @@ per_underlying AS (
   JOIN marketdata.instrument i ON i.id = dn.underlying_instrument_id
   GROUP BY 1
 ),
+-- ── #231 存在性层：缺席用**名册**判，与历史分母无关 ──────────────────────────────────────
+-- 🚨 上面那套（分母取自基线日快照）**结构上判不出「连缺两轮」**：第二轮时该票在基线日也没有
+--    行 ⇒ 不进分母 ⇒ `per_underlying` 无该行 ⇒ 判据对它**无输出** ⇒ ✅ 绿。
+--    与 Prometheus「实例从服务发现消失后 `avg by (job)(up)` **returning nothing rather than
+--    alerting**」逐字同构 —— 期望源取自被监控数据自身，数据消失把期望一起带走了。
+--    ⇒ 缺席必须有一份**独立于快照表、且在数据消失时依然存在**的名册（同 `absent(up{job=…})`
+--    里的 `up` 取自服务发现）。2026-08-27 `us:ALB` 实撞：连缺三轮，本探针只在第一轮可见。
+--
+-- 名册 = **us 工作集 ∧ 有未到期合约**。两个限定各自承重：
+--   · `need_sync` —— 它就是锚闸（`anchor-driven-sync-gate.ts`）对锚表重算后的**物化结果**，
+--     与采集侧同源；**删锚**后下一轮闸置 false ⇒ 该票自动离开名册。不挂它 = 删锚变永久假红。
+--     🚫 MUST NOT 改读 `optionsdesk.anchor.excluded`：`excluded` 是**交易**意愿不是采集意愿
+--     （FR-028 / Guardrail 8），prod 现有 3 只 `excluded=true` 的锚**照常在采**。
+--   · **有未到期合约** —— 合约全到期的票本就无可采，留在名册里 = 每天假红一次。
+--
+-- 🚨 `baseline_day IS NULL` 时**整层不判**：全表无更早快照 = 采集尚未跑过第一轮，
+--    此时谈「缺席」没有对象（上线首日的正常空态，同下面「无对象」那一档）。
+--
+-- 📌 **本层刻意不给「有行但少了几张」出力** —— 那是上面比例层的事。两层的期望源不同
+--    （名册 vs 基线日），揉在一起就会回到「拉宽历史窗口」那条路：2026-08-27 prod 实测，
+--    把分母拉到 21 自然日窗要多付 2.4× 耗时 + 342k buffers，而买到的信息**只有缺席那一只票**。
+--
+-- 复杂度：`present` 与 `collected` 同一趟当日行（已在缓存里）；`roster` 是 instrument 上的
+-- 索引扫 + 每票一次 `option_contract (underlying_instrument_id, expiry_date)` 前导索引 EXISTS。
+-- **无窗口扫、无全表扫。**
+roster AS (
+  SELECT i.id, i.market || ':' || i.code AS symbol
+  FROM marketdata.instrument i, bounds b
+  WHERE i.market = 'us' AND i.need_sync
+    AND EXISTS (SELECT 1 FROM marketdata.option_contract c
+                WHERE c.underlying_instrument_id = i.id AND c.expiry_date >= b.current_day)
+),
+present AS (
+  SELECT DISTINCT c.underlying_instrument_id AS iid
+  FROM marketdata.option_daily_snapshot d
+  JOIN marketdata.option_contract c ON c.id = d.contract_id, bounds b
+  WHERE d.session_date = b.current_day
+),
+absent AS (
+  SELECT r.symbol,
+         -- 缺席是**二值**的，分母只用来说明「有多少没采到」⇒ 取库内未到期合约数即可，
+         -- 不必（也无从）取历史分母。判定本身不依赖这个数。
+         (SELECT count(*) FROM marketdata.option_contract c, bounds b2
+          WHERE c.underlying_instrument_id = r.id AND c.expiry_date >= b2.current_day) AS expected
+  FROM roster r
+  WHERE (SELECT baseline_day FROM baseline) IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM present p WHERE p.iid = r.id)
+    -- 已被比例层收录的票不重复列（它在基线日有行 ⇒ 那边已给出 0/N）。
+    AND NOT EXISTS (SELECT 1 FROM per_underlying pu WHERE pu.symbol = r.symbol)
+),
 verdict AS (
   SELECT p.symbol, p.expected, p.covered,
          -- 乘法不除法：阈值 = 1 时退化成 `covered < expected` 的精确比较。
          p.covered::numeric < p.expected::numeric * (SELECT coverage_threshold FROM config)
            AS degraded
   FROM per_underlying p
+  UNION ALL
+  -- 存在性层：covered 恒 0、expected > 0 ⇒ 恒 degraded（名册说它该有，而它一行都没有）。
+  SELECT a.symbol, a.expected::bigint, 0::bigint, true FROM absent a
 )
 SELECT
   CASE WHEN b.is_et_weekend
