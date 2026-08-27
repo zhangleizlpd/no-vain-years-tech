@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.38.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.38.1...server-v0.38.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **marketdata:** [#231](https://github.com/zhangleizlpd/no-vain-years-tech/issues/231) 缺席改用名册判 —— 期望源取自被监控数据自身, 数据一消失把期望一起带走 ([#232](https://github.com/zhangleizlpd/no-vain-years-tech/issues/232)) ([b87317d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b87317dc7d6666bcb15ef0651071e0e43d53a191))
+* **marketdata:** IVP 双算对表的硬门降级 —— 它断言的「vendor 口径漂移」已被官方答复证否 ([#230](https://github.com/zhangleizlpd/no-vain-years-tech/issues/230)) ([5b235d1](https://github.com/zhangleizlpd/no-vain-years-tech/commit/5b235d14c54f99b976b9ba640b915c5bcc115ba1))
+* **marketdata:** last / prev_close 的 0 是哨兵不是价 —— vendor 书面结案 ADR-0067 挂了三天的待查项 ([#228](https://github.com/zhangleizlpd/no-vain-years-tech/issues/228)) ([18ce6a5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/18ce6a5e8d160eb877ac1164b78348f75752dfb3))
+
 ## [0.38.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.38.0...server-v0.38.1) (2026-08-27)
 
 
