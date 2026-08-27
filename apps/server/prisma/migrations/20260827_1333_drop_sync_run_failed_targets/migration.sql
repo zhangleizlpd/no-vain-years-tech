@@ -1,0 +1,32 @@
+-- #209 三步法 **第 3 步 (contract)**: drop `sync_run.failed_targets`。
+--
+-- 三步走完:
+--   1. 20260827_0927 expand   : 加 `findings`, 应用双写两列, 读侧不动          → v0.37.1 已部署
+--   2. 20260827_1207 migrate  : 回填历史, 读侧改读 `findings`, 应用停双写      → v0.37.2 已部署
+--   3. 本次          contract : drop 旧列
+--
+-- ## 🚨 前置条件已在 prod 逐条实测, 不是推理
+--
+-- 本步的安全性**完全**取决于「已经没有任何镜像会写这一列」。三条证据 (2026-08-27):
+--
+--   · 运行镜像 = `v0.37.2`(含 migrate 步), healthy —— 查的是容器实际镜像, 不是 workflow 的
+--     conclusion (`#465` 的教训: deploy「success」不等于新镜像在跑);
+--   · 回填生效: 两列各 53 个数组行、`jsonb_typeof` 零不匹配; 余 4 行两列同为 SQL NULL
+--     (2026-07 的老 `failed` 行, 旧列本就是 SQL NULL ⇒ 回填正确地把 NULL 拷成 NULL);
+--   · **停双写实证**: 经 CLI 在 prod 触发一轮 `profile` (工作集为空 ⇒ 零 vendor 调用、零业务
+--     写入, 但走完整 `finish()`), 落下的行 `findings` 有值而 `failed_targets` 为 **SQL NULL**
+--     ⇒ 部署中的镜像确实不再写它。
+--
+-- ⚠️ **回滚代价知情**: prod 回滚是 image-only(不回退 schema)。回到 `v0.37.2` 安全(它只写
+--    `findings`); 回到 `v0.37.1` 或更早会 INSERT 一个已不存在的列 ⇒ **夜间同步整条挂掉**,
+--    而期权链 EOD 漏采是**永久**缺口。这正是三步法把 drop 排在最后、且要求相邻两步之间必须
+--    已部署的原因 —— 本步之后, `v0.37.1` 及更早的镜像不再是可用的回滚目标。
+--
+-- 🚫 本列**无写者亦无读者**: 应用侧写路径已在 migrate 步移除; 读侧 `marketdata-sync-report.sql`
+--    只读 `findings`; 全仓 grep 无 `failed_targets` 的功能性引用(仅剩 CHANGELOG 与 ADR-0049
+--    的历史文本, 按「历史不动」保留)。
+--
+-- migration_refs: .claude/rules/migration-rules.md §2 (expand-migrate-contract 三步法)
+
+-- AlterTable
+ALTER TABLE "marketdata"."sync_run" DROP COLUMN "failed_targets";
