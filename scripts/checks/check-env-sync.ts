@@ -145,6 +145,8 @@ const ALLOWLIST = new Set([
   'EASTMONEY_CLIST_BASE_URL',
   'TENCENT_CALENDAR_BASE_URL',
   'MARKETDATA_TICK_ENABLED',
+  // #210 vendor lane 灰度 flag; schema default 'false'。
+  'MARKETDATA_FUTU_LANE_ENABLED',
   'MARKETDATA_BACKFILL_HISTORY_DAYS',
   'MARKETDATA_SYNC_REQUEUE_DELAY_MS',
   'MARKETDATA_CLI_WAIT_TIMEOUT_MS',
@@ -161,7 +163,13 @@ const ALLOWLIST = new Set([
 //   - MBW_VERSION: prod image tag (deploy.yml exports it); dev runs `nx serve`, no image.
 //   - DB_USERNAME: prod compose assembles DATABASE_URL from it; dev sets DATABASE_URL whole.
 //   - MARKETDATA_TICK_ENABLED: 017 gray-release flag, prod flips it; dev relies on default.
-const ENV_SPECIFIC_ALLOWLIST = new Set(['MBW_VERSION', 'DB_USERNAME', 'MARKETDATA_TICK_ENABLED']);
+//   - MARKETDATA_FUTU_LANE_ENABLED: #210 gray-release flag, same shape as the tick one.
+const ENV_SPECIFIC_ALLOWLIST = new Set([
+  'MBW_VERSION',
+  'DB_USERNAME',
+  'MARKETDATA_TICK_ENABLED',
+  'MARKETDATA_FUTU_LANE_ENABLED',
+]);
 
 // Check H allowlist: keys deliberately consumed ONLY by host-side deploy tooling,
 // never inside the app container — the only legitimate reason for a declared prod key
