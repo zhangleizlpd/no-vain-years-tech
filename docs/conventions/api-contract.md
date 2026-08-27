@@ -7,10 +7,10 @@
 ## URL 体例
 
 - 全局前缀 `/api`（`apps/server/src/main.ts` `setGlobalPrefix('api')`）
-- Controller path `v{n}/<resource>` → 实际 URL `/api/v{n}/<resource>`
+- Controller 根段 = `v{n}/<module>`（module 名 = [business-naming.md](business-naming.md) 的业务模块，**单数**：`v1/chat` / `v1/alert` / `v1/ideation` / `v1/optionsdesk`；`v1/accounts` 是 auth / account 早期遗留）→ 实际 URL `/api/v{n}/<module>/...`
 - `n` = major version；向后兼容必新 `v2` 不动 `v1`；deprecate 走 OpenAPI `deprecated: true`
-- 资源 = **复数 kebab-case**：`/api/v1/accounts` / `/api/v1/third-party-bindings`
-- 嵌套 sub-resource：`/api/v1/accounts/{id}/sessions`
+- 资源集合放子段或方法级路径，**复数 kebab-case**：`v1/portfolio/broker-accounts` / `v1/portfolio/watchlist-items`
+- 嵌套 sub-resource：`conversations/:id/messages`（`v1/chat`）/ `anchors/:id/at`（`v1/optionsdesk`）
 
 ## HTTP 方法语义
 
@@ -27,7 +27,8 @@
 ## 字段体例
 
 - **时间**：ISO 8601 UTC（`2026-05-23T07:00:00Z`）；DB `TIMESTAMP WITH TIME ZONE` UTC 落库
-- **枚举**：大写 `SNAKE_CASE` 字符串（`AccountStatus: "ACTIVE" | "FROZEN"`）；与 Prisma enum / DB ENUM 字面值严格一致；mobile 客户端通过 Orval typed codegen 穷举（per [ADR-0027](../adr/0027-frontend-data-test-layer.md)）
+- **枚举**：大写 `SNAKE_CASE` 字符串（`AccountStatus: "ACTIVE" | "FROZEN"`）；wire 值与 TS enum 字面值一致（如 `account/account.rules.ts` `AccountStatus`），DB 以 varchar 落、**不建** Prisma / DB ENUM；mobile 客户端通过 Orval typed codegen 穷举（per [ADR-0027](../adr/0027-frontend-data-test-layer.md)）
+- **nullable 标量字段**的 `@ApiProperty` 必显式 `type:`（否则 orval 生成 `{ [k]: unknown } | null`；`scripts/checks/check-api-property-nullable.ts` 机器强制）
 - **错误码 `code` 字段**：大写 `SNAKE_CASE`（per [ADR-0038](../adr/0038-error-handling-ux-contract.md) Trade-offs）
 
 ## 鉴权
@@ -44,11 +45,15 @@
 
 ## OpenAPI 同步链
 
-→ [sdd.md § server impl 后的 mobile types 同步](sdd.md#server-impl-后的-mobile-types-同步)
+mono 内 server → api-client → mobile 走 Nx target 依赖链（本节是 canonical；`.claude/rules/api-contract-trigger.md` 改 controller / DTO / api-client 时自动注入其 invariant）：
 
-server `@nestjs/swagger` 装饰 → `apps/server/openapi.json` → `packages/api-client` Orval typed → `apps/mobile` 消费。
+1. `apps/server` `@nestjs/swagger` 装饰器 → `nx run server:export-openapi` 起临时实例 curl `/docs-json` → 写 `apps/server/openapi.json`
+2. `packages/api-client` `nx run api-client:generate` 跑 `orval` 读 ① 产出的 `openapi.json` 生成 typed client（types + React Query hooks + axios，per `orval.config.ts`）
+3. `apps/mobile` 依赖 `packages/api-client`，`nx affected` 改 server endpoint 自动传导 api-client regen + mobile rebuild
 
-🚨 **改 endpoint / DTO 后必须跑两步，没有「一行覆盖」**（2026-08-03 实证纠正 —— 本节此前写的「`nx affected --target=generate` 一行覆盖」是错的）：
+**PR 边界**（per [Constitution §V](../../.specify/memory/constitution.md)）：server impl + api-client regen + mobile 消费**同一 PR**（跨端 feature 单 PR，零类型 drift）；纯 server / 纯 types-sync → 单 PR，commit `chore(api-client): sync types — <feature-slug>` 或并入 server PR 备注。
+
+🚨 **① → ② 之间没有 Nx 边，改 endpoint / DTO 后必须跑两步，没有「一行覆盖」**（2026-08-03 实证）：
 
 ```bash
 nx run server:export-openapi   # ① 起临时实例 curl /docs-json → 重写 apps/server/openapi.json
@@ -57,7 +62,7 @@ nx affected -t generate        # ② orval 读该 json → regen packages/api-cl
 
 **漏掉 ① 的后果是静默的**：`api-client:generate` **没有任何 `dependsOn`**（`nx show project api-client --json` 可查）。单跑它只有它自己一个 task，orval 会拿**上一版** `openapi.json` regen —— 产物与已入库的 generated 文件逐字节相同 ⇒ `git status` 干净、lint / typecheck / test / build 全绿、CI 无一处会红。**陈旧 client 就这样合进 main。**
 
-**为什么不能把 ① 接成 `generate` 的 `dependsOn`**（2026-08-03 真接上去跑过一次、量完爆炸半径才否决的）：`api-client:build` 是 `dependsOn: ["generate"]` 的 noop，而 api-client 又 `implicitDependencies: ["server"]` ⇒ 改**任何**一个 server 文件都会把 api-client + mobile 拖进 affected 集（`nx show projects --affected --files=apps/server/src/app/app.controller.ts` → `["server","api-client","mobile"]`）。接线后同一条 `mobile-checks` job 命令的任务图从 5 个任务涨到 7 个，多出的正是 `server:build` + `server:export-openapi` —— 而该 job **蓄意不带** Postgres / Redis service 容器，也没有 boot secrets（`PrismaService.onModuleInit` 里是 `$connect()`，boot 必须要活的 DB）。失败形态更糟：`export-openapi` 的 boot 失败会**无限空转**而非报错（见 [local-verification.md § `export-openapi` 的静默失败](local-verification.md)），CI 会挂到 job 超时。要接线就得给 `mobile-checks` + `nightly-sweep` 补 service 容器与 secrets —— 代价远超省下的那一行。
+**为什么不能把 ① 接成 `generate` 的 `dependsOn`**（2026-08-03 真接上去跑过一次、量完爆炸半径才否决的）：`api-client:build` 是 `dependsOn: ["generate"]` 的 noop，而 api-client 又 `implicitDependencies: ["server"]` ⇒ 改**任何**一个 server 文件都会把 api-client + mobile 拖进 affected 集（`nx show projects --affected --files=apps/server/src/app/app.controller.ts` → `["server","api-client","mobile"]`）。接线后同一条 `mobile-checks` job 命令的任务图会多出 `server:build` + `server:export-openapi` —— 而该 job **蓄意不带** Postgres / Redis service 容器，也没有 boot secrets（`PrismaService.onModuleInit` 里是 `$connect()`，boot 必须要活的 DB）。失败形态更糟：`export-openapi` 的 boot 失败会**无限空转**而非报错（见 [local-verification.md § `export-openapi` 的静默失败](local-verification.md)），CI 会挂到 job 超时。要接线就得给 `mobile-checks` + `nightly-sweep` 补 service 容器与 secrets —— 代价远超省下的那一行。
 
 ⚠️ 反过来，② **本身不用手动记**：`nx affected -t build`（PR 全量门就含 `build`）会经 `api-client:build → generate` 自动带上。**真正只能靠人记住的是 ①。**
 
@@ -69,10 +74,10 @@ nx affected -t generate        # ② orval 读该 json → regen packages/api-cl
 
 ## 与其他约定的分工
 
-| 关心点                                  | 单源                                                                                                        |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| HTTP wire format（URL / method / 字段） | 本文件                                                                                                      |
-| 错误响应 schema + UX 串联               | [ADR-0038](../adr/0038-error-handling-ux-contract.md)                                                       |
-| 业务 Operation 跨 context 传播规则      | [server-bounded-context-catalog.md](server-bounded-context-catalog.md)                                      |
-| 模块命名（业务概念字符串）              | [business-naming.md](business-naming.md)                                                                    |
-| OpenAPI codegen + Orval typed           | [sdd.md § server impl 后的 mobile types 同步](sdd.md) + [ADR-0027](../adr/0027-frontend-data-test-layer.md) |
+| 关心点                                  | 单源                                                                        |
+| --------------------------------------- | --------------------------------------------------------------------------- |
+| HTTP wire format（URL / method / 字段） | 本文件                                                                      |
+| 错误响应 schema + UX 串联               | [ADR-0038](../adr/0038-error-handling-ux-contract.md)                       |
+| 业务 Operation 跨 context 传播规则      | [server-bounded-context-catalog.md](server-bounded-context-catalog.md)      |
+| 模块命名（业务概念字符串）              | [business-naming.md](business-naming.md)                                    |
+| OpenAPI codegen + Orval typed           | 本文 § OpenAPI 同步链 + [ADR-0027](../adr/0027-frontend-data-test-layer.md) |
