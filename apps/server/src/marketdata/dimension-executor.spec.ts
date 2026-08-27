@@ -9,6 +9,7 @@ import {
   type DimensionKey,
 } from './dimension-executor.js';
 import { deriveExecutionOrder, type SyncDependencyEdge } from './sync-flow-assembler.js';
+import { IV_HISTORY_INCREMENT_LOOKBACK_DAYS } from './underlying-iv.rules.js';
 import type { UnderlyingIvSnapshot } from './underlying-iv.port.js';
 import type { UsIndexDailyPoint } from './us-index.port.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
@@ -3908,11 +3909,28 @@ describe('046 T009 underlying_iv_daily backfill (his_volatility ≤364 天分页
     expect(rows.every((r) => r.instrumentId === 2n)).toBe(true);
   });
 
-  it('回归护栏: delta 分支不碰历史序列 (零 getIvHistoryRange), backfill 分支不碰快照端点', async () => {
+  // 🚨 **本条的不变量在 #211 被如实收窄**，原文是「delta 分支**不碰**历史序列（零
+  // `getIvHistoryRange`）」。那条当初立得对 —— 那时日更确实不该碰。但它把 FR-023 只实现了
+  // 一半（「增量与回填」只落了回填），而缺的那半正是 #211 的病根：`underlying_iv_history`
+  // 只有 backfill 一条写入路径，静默停更 23 天，自算窗口随之陈旧到撞硬门。
+  //
+  // ⇒ 新不变量不是「不碰」，而是「**碰，但只碰滚动短窗**」：日更走 ≤ 回看窗的一页，回填才
+  // 走满窗分页。两个分支的区分点从「碰不碰」下移到「窗多宽」，而**方向仍是单向的** ——
+  // backfill 分支照旧一次都不碰快照端点。
+  it('回归护栏 (#211 收窄): delta 分支只取滚动短窗, backfill 分支仍不碰快照端点', async () => {
     const { registry, deps, spies } = buildIvBackfillFakes();
     await registry.execute('underlying_iv_daily', { mode: 'delta', asOf: AS_OF, now: NOW });
-    expect(spies.getIvHistoryRange).not.toHaveBeenCalled();
+
+    // delta 侧: 快照端点恒一次; 历史端点按工作集逐只, 且窗宽 MUST ≤ 回看窗 (不是满窗回填)。
     expect(deps.underlyingIv.getIvSnapshots).toHaveBeenCalledTimes(1);
+    expect(spies.getIvHistoryRange).toHaveBeenCalled();
+    for (const call of spies.getIvHistoryRange.mock.calls) {
+      const { from, to } = call[0] as { from: string; to: string };
+      const spanDays =
+        (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+      expect(spanDays).toBeLessThanOrEqual(IV_HISTORY_INCREMENT_LOOKBACK_DAYS);
+    }
+
     deps.underlyingIv.getIvSnapshots.mockClear();
     await registry.execute('underlying_iv_daily', backfillInput);
     expect(deps.underlyingIv.getIvSnapshots).not.toHaveBeenCalled();
@@ -3942,6 +3960,7 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
   }) {
     const ivUpsert = vi.fn(async (_arg: unknown) => ({}));
     const histFindMany = vi.fn(async (_arg: unknown) => historyRows(opts.historyCount ?? 252));
+    const histCreateMany = vi.fn(async (_arg: unknown) => ({ count: 0 }));
     const deps = {
       syncUniverse: { run: vi.fn(async () => emptyStatsLike()) },
       syncProfile: { run: vi.fn(async () => emptyStatsLike()) },
@@ -3973,7 +3992,11 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
             putOi: null,
           },
         ]),
-        getIvHistoryRange: vi.fn(async () => []),
+        // #211: 增量走同端点 —— 给两天真点, 让「有行就落库」这条路径可断言。
+        getIvHistoryRange: vi.fn(async () => [
+          { date: '2026-06-11', iv: '49', hv: '31', underlyingPrice: '140.5' },
+          { date: '2026-06-12', iv: '50', hv: '32', underlyingPrice: '141.0' },
+        ]),
       },
       prisma: {
         syncDimension: {
@@ -3997,7 +4020,7 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
         // 066 T02: 本维度是**锚作用域**的 ⇒ 工作集判据先读锚表 (这里给 PEP 一只锚)。
         anchor: { findMany: vi.fn(async () => [{ ticker: 'us:PEP' }]) },
         tradingDay: tradingDayFake(),
-        underlyingIvHistory: { findMany: histFindMany },
+        underlyingIvHistory: { findMany: histFindMany, createMany: histCreateMany },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
         ),
@@ -4036,7 +4059,7 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
       deps.anchorGate as never, // anchorGate
       deps.underlyingIv as never, // underlyingIv (046 T008)
     );
-    return { registry, deps, spies: { ivUpsert, histFindMany } };
+    return { registry, deps, spies: { ivUpsert, histFindMany, histCreateMany } };
   }
 
   /** 跑一轮 delta 并收集本维度打出的 WARN / ERROR 文本。 */
@@ -4067,6 +4090,36 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
   }
 
   const ivpAlerts = (msgs: string[]) => msgs.filter((m) => m.includes('IVP 双算对表'));
+
+  // ── #211: FR-023 的「增量」半边此前从未落地 —— `underlying_iv_history` 只有 backfill 一条
+  //    写入路径, 日更从不追加 ⇒ 自算窗口每天多陈旧一天, 偏差随滞后单调放大 (prod 实测 23 天
+  //    滞后 ⇒ us:ACN 差 5.5561pp 撞硬门, 而滞后 0–1 天时差 ≈ 0)。下面两条钉住修复的两半。
+  describe('#211 日更增量补 underlying_iv_history + 对表窗口排除当日行', () => {
+    it('日更一轮 MUST 用同一工作集把滚动窗写进 history (FR-023「增量」半边)', async () => {
+      const { spies, deps } = await runAndCollectAlerts({ vendorIvPercentile: '50' });
+
+      // 增量走 his_volatility 同端点 —— 🚫 MUST NOT 从 overview 派生: 那边没有
+      // `underlying_price`, 且派生不自愈 (漏一晚即永久空洞, 正是本缺陷的成因形状)。
+      expect(deps.underlyingIv.getIvHistoryRange).toHaveBeenCalled();
+      expect(spies.histCreateMany).toHaveBeenCalled();
+
+      // 幂等: 滚动窗必然与已落行重叠 ⇒ 必须 skipDuplicates, 否则每晚撞唯一键。
+      const arg = spies.histCreateMany.mock.calls[0][0] as { skipDuplicates?: boolean };
+      expect(arg.skipDuplicates).toBe(true);
+    });
+
+    it('🚨 对表窗口 MUST 排除当日行 (lt 而非 lte) —— 否则永久多出 1/252 偏差', async () => {
+      const { spies } = await runAndCollectAlerts({ vendorIvPercentile: '50' });
+
+      // 当日行的 iv 恒等于 current ⇒ 严格 `<` 不计它, 但它仍占分母 ⇒ 每只标的凭空多出
+      // 1/252 = 0.3968pp 的系统性偏差。prod 实证: 08-03 (唯一一天当日行在窗口内) 自算
+      // 220/252 而 vendor 221/252, 差**恰好一格**。增量上线前 `lte` 与 `lt` 等价 (表里
+      // 压根没有当日行), 上线后就不再等价 —— 故两者必须同一次改。
+      const where = (spies.histFindMany.mock.calls[0][0] as { where: { date: unknown } }).where;
+      expect(where.date).toEqual({ lt: expect.anything() });
+      expect(where.date).not.toHaveProperty('lte');
+    });
+  });
 
   it('档① 差 ≤2pp (直读 51 vs 自算 50) → 静默: 零 IVP 告警, 采集照常计 ok', async () => {
     const r = await runAndCollectAlerts({ vendorIvPercentile: '51' });
