@@ -23,4 +23,4 @@ EnvironmentFile=-/etc/nvy-alert.env
 #    这一行是唯一能区分二者的东西，别顺手删（044 T014）。
 # 🚨 backup-pg 是例外：它 --on-success report（每天一条 ✅），本行对它是**第二层**兜底 ——
 #    防「timer 被禁 / 脚本被删」这类连 wrapper 都跑不起来的形态。#892 之前它三条防线一条都没有。
-ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-watchdog.sh cert-expiry:90000 marketdata-sync-report:90000 marketdata-calendar-health:43200 marketdata-table-health:43200 futu-shim-health:43200 marketdata-snapshot-integrity:90000 backup-pg:90000
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-watchdog.sh cert-expiry:90000 marketdata-sync-report:90000 marketdata-calendar-health:43200 marketdata-table-health:43200 futu-shim-health:43200 marketdata-snapshot-integrity:90000 backup-pg:90000 app-state-health:43200

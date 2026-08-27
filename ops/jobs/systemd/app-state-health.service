@@ -1,0 +1,16 @@
+[Unit]
+# 非 marketdata 侧的应用状态健康探针（#209 实证③：optionsdesk / outbox 此前零进程外监控）。
+# 判据全在同名 .sql 兄弟里（Testcontainers IT 真测，含 5 条变异用例）；本 unit 只负责调度。
+Description=App-state health probe (anchor close staleness / outbox relay stall -> Feishu)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/nvy-alert.env
+# 与其余探针共用同一套 PG 变量名（同一个 prod PG，多套名字 = 多份会漂）。
+EnvironmentFile=-/etc/marketdata-sync-report.env
+# 🚨 `--on-success silent`：4h 频次，成功也推会刷屏并训练出「这条可以忽略」。正向 liveness
+# 由 nvy-watchdog 的心跳覆盖（本 unit 已登记进看门狗清单）。
+ExecStart=/usr/bin/bash /usr/local/lib/nvy/nvy-run-reported.sh app-state-health --on-success silent --tail 5 -- /usr/local/lib/nvy/jobs/app-state-health.sh

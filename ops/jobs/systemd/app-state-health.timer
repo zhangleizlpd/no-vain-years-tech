@@ -1,0 +1,12 @@
+[Unit]
+Description=App-state health probe timer (every 4h)
+Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/scheduled-tasks.md
+
+[Timer]
+# 🚨 错开既有 4h 探针的相位，别在同一分钟一起压 PG：
+#   calendar-health 00/4 · futu-shim-health 01/4 · table-health 02/4 · 本探针 03/4
+OnCalendar=*-*-* 03/4:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
