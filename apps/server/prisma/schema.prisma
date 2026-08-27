@@ -1242,6 +1242,14 @@ model SyncDimension {
   id                   BigInt    @id @default(autoincrement())
   dimensionKey         String    @unique(map: "uk_sync_dimension_key") @map("dimension_key") @db.VarChar(32)
   enabled              Boolean   @default(true)
+  // 🚨 **改这一列, MUST 在同一条 migration 里把该行的 `next_fire_at` 一并置 NULL。**
+  // `next_fire_at` 是本列的**物化值**, 只在该行触发时才由 `computeNext(cronExpr, now)` 重算
+  // ⇒ 只改这里的话, 那一行**下一次仍按旧时刻触发**, 新 cron 要到再下一轮才生效。
+  // 后果是**静默滞后一个周期**: 无报错、无红, 本列也确实已是新值, 但行为还是旧的 —— 验证的
+  // 人会把旧行为当成新行为读 (2026-08-27 实测: 20260827_1957 合并两对期权维度的 tick, 当晚
+  // 两端仍落在两个 tick, 那条 migration 的目的当晚完全没达成)。
+  // 置 NULL 即可: 它是 schema 定义的未物化哨兵, tick 会按新 cron 懒物化且**本轮不入队**
+  // (见下方 `nextFireAt` 注释)。补救先例: 20260827_2112。
   cronExpr             String    @map("cron_expr") @db.VarChar(64)
   // ⚠️ 语义已过期 (2026-07-30 上报): 仅记录建表时的 V1 意图, **代码从不读取本列**。运行时
   // provider 由 DI 绑定决定 (UniverseFallbackChainAdapter([理杏仁, 东财]) 逐市场降级 →
