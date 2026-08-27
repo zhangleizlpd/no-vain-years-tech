@@ -16,9 +16,12 @@ const SERVER_DIR = process.cwd();
  * ⚠️ **本文件不覆盖该脚本的全部判据**：逐维度图标 / 计数 / 退出码仍在 `.sh` 里（既有债，本次
  * 蓄意不动 —— 与 044 零行诊断段「薄消费留 bash」是同一形状）。别据此以为脚本已零逻辑。
  *
- * 🚨🚨 **改完 `.sql` 必须 `--skipNxCache` 重跑本文件**：谓词在 `ops/` 下，**不在 server project 的
- * Nx inputs 里** ⇒ 只改 `.sql` 时 `nx test server <file>` 会命中缓存直接返绿，根本没跑。
- * 这是「假绿」不是「假红」，危险得多。**变异验证不加这个 flag = 白做。**
+ * 📌 **「改完 `.sql` 必须 `--skipNxCache`」这条已根治**（#220）：`{workspaceRoot}/ops/jobs/*.sql`
+ * 已显式进 `nx.json` 的 `targetDefaults.test.inputs` ⇒ 直接 `nx test server <file>` 即可，
+ * 缓存会正确失效。`--skipNxCache` 只是保险，不再是正确性前提。
+ *
+ * 🚨 那条 inputs **不能挪回 `namedInputs.sharedGlobals`** —— 实测 `sharedGlobals` 对 `test`
+ * target 根本不生效（改根 `package.json` 同样命中缓存）。修法必须是**显式** inputs。
  *
  * ═══ 本文件的重点是三条 MUST 的变异，不是「跑得通」═══
  *
