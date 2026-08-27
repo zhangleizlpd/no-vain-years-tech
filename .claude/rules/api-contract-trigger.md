@@ -2,6 +2,8 @@
 paths:
   - 'apps/server/src/**/*.controller.ts'
   - 'apps/server/src/**/*.dto.ts'
+  - 'apps/server/src/**/*.request.ts'
+  - 'apps/server/src/**/*.response.ts'
   - 'apps/server/openapi.json'
   - 'packages/api-client/src/**'
 ---

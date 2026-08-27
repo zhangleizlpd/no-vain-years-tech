@@ -17,7 +17,7 @@ name: PR Validation
 #   mobile-checks   ─┘
 #
 # 🚨 **`validate-and-test` 这个名字不能改**：它是 ruleset `main-protection`
-# (id 16500378) `required_status_checks` 里列的 context。保留一个同名聚合 job，
+# `required_status_checks` 里列的 context（id 走 `gh api repos/{owner}/{repo}/rulesets`，勿硬编码）。保留一个同名聚合 job，
 # 是为了让**以后再怎么拆 job / 加分片都不必再动 ruleset** —— 改 ruleset 是本仓
 # 唯一不可逆的操作（contexts 与 job 名绑定，漏改则之后所有 PR 永久等一个永不出现
 # 的 check）。SoT: docs/conventions/github-ruleset.md。
