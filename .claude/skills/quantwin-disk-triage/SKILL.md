@@ -306,7 +306,7 @@ Output = <空>                 StartTime → FinishedTime 仅 1 秒（根本没�
 ⇒ **打印 `InvocationStatus` 是强制的**。不打这一行，两种成因在终端上无法区分。
 2026-08-15 真机复现：第一次取数就撞上 `Pending`，而第一反应是去查编码 —— 白查。
 
-> `scripts/quantwin-health/probe.sh` 没有这个 bug，但**不是因为状态判断写对了**（它同样只认
+> `scripts/jobs/quantwin-health/probe.sh` 没有这个 bug，但**不是因为状态判断写对了**（它同样只认
 > `Running`），而是靠后面一行 `[ -n "$out_b64" ] || continue` 兜住：`Pending` 时 Output 为空
 > 就继续轮询。改那个循环时别把这道兜底顺手删了。
 
@@ -329,7 +329,7 @@ Output = <空>                 StartTime → FinishedTime 仅 1 秒（根本没�
 > 这条是被真实咬到才发现的：SKILL.md 初版的采集脚本注释里有一个 `⚠️`，第一次真机试跑
 > **完全无输出而一切指标显示成功**。同期能跑通的 6 个脚本纯属「碰巧全用英文写」。
 >
-> 另外注意：`scripts/quantwin-health/probe.sh` 的载荷（`build_ps`）已验证为纯 ASCII，改它时同样适用本条。
+> 另外注意：`scripts/jobs/quantwin-health/probe.sh` 的载荷（`build_ps`）已验证为纯 ASCII，改它时同样适用本条。
 
 ### 该机其它已知事实
 

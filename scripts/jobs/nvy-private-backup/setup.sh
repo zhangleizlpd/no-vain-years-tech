@@ -20,10 +20,10 @@
 # recipient.txt。此后备份进程只碰公钥，私钥不参与加密路径（最小权限）。
 #
 # 用法：
-#   bash scripts/nvy-private-backup/setup.sh                    # 默认每日 09:30，目标代号 app
-#   bash scripts/nvy-private-backup/setup.sh --time 09:30
-#   bash scripts/nvy-private-backup/setup.sh --target index     # 换目标代号（需 fleet.env 里有对应 *_SSH）
-#   bash scripts/nvy-private-backup/setup.sh --keep 30          # 远端保留份数
+#   bash scripts/jobs/nvy-private-backup/setup.sh                    # 默认每日 09:30，目标代号 app
+#   bash scripts/jobs/nvy-private-backup/setup.sh --time 09:30
+#   bash scripts/jobs/nvy-private-backup/setup.sh --target index     # 换目标代号（需 fleet.env 里有对应 *_SSH）
+#   bash scripts/jobs/nvy-private-backup/setup.sh --keep 30          # 远端保留份数
 #
 set -euo pipefail
 
@@ -47,7 +47,7 @@ done
 
 [[ "$(uname)" == 'Darwin' ]] || { echo '定时能力仅支持 macOS（launchd）。' >&2; exit 1; }
 # 🚨 `${TIME}` 花括号不可省：裸 $TIME 紧跟全角「）」在 CJK locale 下会被 bash 折进变量名
-#    （同 scripts/nvy-watchdog/setup.sh 的 2026-08-04 实测坑）。
+#    （同 scripts/jobs/nvy-watchdog/setup.sh 的 2026-08-04 实测坑）。
 [[ "$TIME" =~ ^([0-9]{1,2}):([0-9]{2})$ ]] || { echo "--time 格式应为 HH:MM（收到 ${TIME}）" >&2; exit 1; }
 HOUR="$((10#${BASH_REMATCH[1]}))"
 MIN="$((10#${BASH_REMATCH[2]}))"
@@ -109,7 +109,7 @@ PATH_VAL="$(resolve_bin_dirs)"
 
 cat >"$WRAPPER" <<EOF
 #!/bin/zsh
-# 由 scripts/nvy-private-backup/setup.sh 生成——请勿手改，重跑 setup 覆盖
+# 由 scripts/jobs/nvy-private-backup/setup.sh 生成——请勿手改，重跑 setup 覆盖
 export PATH="$PATH_VAL"
 export NVY_MONO_HOME="$MONO_HOME"
 export NVY_BACKUP_TARGET_VAR="$TARGET_VAR"
@@ -164,6 +164,6 @@ printf '   wrapper: %s\n   plist:   %s\n   日志:    %s\n   收件人:  %s\n' \
 printf '\n手动触发一次验证：\n   launchctl kickstart -k gui/%s/%s\n' "$UID_NUM" "$LABEL"
 printf '卸载：launchctl bootout gui/%s/%s && rm -f %s\n' "$UID_NUM" "$LABEL" "$PLIST"
 printf '\n⚠️  本任务须在看门狗清单里，否则 no-show（根本没跑）无人兜底。清单已含 %s 则无需动作；\n' "$TASK"
-printf '   若缺，改 scripts/nvy-watchdog/setup.sh 的 TASKS **默认值**后重跑它 —— 只传 --tasks\n'
+printf '   若缺，改 scripts/jobs/nvy-watchdog/setup.sh 的 TASKS **默认值**后重跑它 —— 只传 --tasks\n'
 printf '   会在将来任何人裸跑一次 setup 时被静默摘掉（2026-07-30 futu-eod 踩过）。\n'
 printf '\n🚨 age 私钥 %s 是单点：它丢了，所有密文备份一起变废纸。确保另有离线副本。\n' "$AGE_KEY"

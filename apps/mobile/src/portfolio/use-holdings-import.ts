@@ -23,7 +23,7 @@ export interface PickedHoldingsFile {
 
 const ERR = HOLDINGS_COPY.screen.import.errors;
 
-// 文件名 YYYYMMDD → asOf YYYY-MM-DD（镜像 scripts/holdings-sync asOfFromFileName）。App 内手动
+// 文件名 YYYYMMDD → asOf YYYY-MM-DD（镜像 scripts/jobs/holdings-sync asOfFromFileName）。App 内手动
 // 上传更宽松：缺日期 / 非法日期返回 undefined，交 server 兜底当日（不像同步工具抛错）。
 export function asOfFromFilename(filename: string): string | undefined {
   const d = /(\d{8})/.exec(filename)?.[1];

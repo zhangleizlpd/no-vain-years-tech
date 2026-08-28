@@ -100,7 +100,7 @@ skips an index tick while it's fresh → ≤1 bge-m3 in RAM (query > index prior
 
 ## Gaps (deferred)
 
-- **No CI yet** — `.nxignore`d like `scripts/holdings-sync` (nx's plugins would else
+- **No CI yet** — `.nxignore`d like `scripts/jobs/holdings-sync` (nx's plugins would else
   false-detect it and run typecheck/lint in `nx affected`, but CI's frozen workspace
   install never installs these outside-workspace deps → red). Gate is local
   `pnpm typecheck && pnpm test`; a path-filtered dedicated CI job lands in **S2.3**.

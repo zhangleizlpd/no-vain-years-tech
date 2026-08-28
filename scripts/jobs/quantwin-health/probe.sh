@@ -167,7 +167,7 @@ while [ "$i" -lt "$POLL_MAX" ]; do
 done
 
 # 🚨 `${invoke_id}` 花括号不可省：裸 $VAR 紧跟全角「）」在 CJK locale 下会被 bash 折进变量名，
-#    `set -u` 当场炸「未绑定的变量」。同 scripts/nvy-watchdog/setup.sh 头部那条。setup.sh 有机械守门。
+#    `set -u` 当场炸「未绑定的变量」。同 scripts/jobs/nvy-watchdog/setup.sh 头部那条。setup.sh 有机械守门。
 [ -n "$raw" ] || fail_probe "云助手 $((POLL_MAX * 5))s 内未返回结果（InvokeId=${invoke_id}）"
 
 line="$(printf '%s\n' "$raw" | grep '^NVYPROBE ' | head -1)"

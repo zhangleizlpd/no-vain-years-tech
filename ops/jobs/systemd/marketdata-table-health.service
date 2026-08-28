@@ -13,7 +13,7 @@
 #   → 健康时**静默不推**（见下 --on-success silent）；验证看 `systemctl status` / journalctl 的 ✅ 摘要行。
 # 飞书 webhook/secret + 心跳目录来自 /etc/nvy-alert.env（NVY_ALERT_* / NVY_HEARTBEAT_DIR；缺 webhook → 静默跳过）。
 #
-# 🚨 新增本任务后**必须同步 nvy-watchdog 的 TASKS 默认清单**（scripts/nvy-watchdog/setup.sh）——
+# 🚨 新增本任务后**必须同步 nvy-watchdog 的 TASKS 默认清单**（scripts/jobs/nvy-watchdog/setup.sh）——
 #    否则裸跑一次 setup 会静默把本任务的 no-show 兜底摘掉（F2 踩过一次，见 scheduled-tasks.md）。
 [Unit]
 Description=Marketdata table-level data freshness probe (stale dimension data -> Feishu)

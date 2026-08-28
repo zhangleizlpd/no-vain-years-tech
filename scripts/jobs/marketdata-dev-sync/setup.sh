@@ -7,7 +7,7 @@
 # 用法：
 #   pnpm dev-marketdata:setup                 # 默认 09:05（须晚于 holdings 09:00）
 #   pnpm dev-marketdata:setup --time 09:05
-#   bash scripts/marketdata-dev-sync/setup.sh --time 09:05
+#   bash scripts/jobs/marketdata-dev-sync/setup.sh --time 09:05
 #
 set -euo pipefail
 
@@ -94,7 +94,7 @@ PATH_VAL="$(resolve_bin_dirs)"
 
 cat >"$WRAPPER" <<EOF
 #!/bin/zsh
-# 由 scripts/marketdata-dev-sync/setup.sh 生成——请勿手改，重跑 setup 覆盖
+# 由 scripts/jobs/marketdata-dev-sync/setup.sh 生成——请勿手改，重跑 setup 覆盖
 export PATH="$PATH_VAL"
 # 飞书公共配置（webhook/secret/机器名）——可选；缺文件 → feishu-send.sh 静默跳过
 [ -f "\$HOME/.nvy/feishu-alert.env" ] && { set -a; . "\$HOME/.nvy/feishu-alert.env"; set +a; }

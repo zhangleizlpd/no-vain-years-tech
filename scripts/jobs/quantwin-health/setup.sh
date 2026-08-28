@@ -9,8 +9,8 @@
 # ⚠️ 改仓内 probe.sh 后**必须重跑本 setup**，否则跑的仍是旧副本（marketdata-dev-sync 踩过的「静默的成功」）。
 #
 # 用法：
-#   bash scripts/quantwin-health/setup.sh                    # 默认每 30 分钟
-#   bash scripts/quantwin-health/setup.sh --interval 900     # 每 15 分钟
+#   bash scripts/jobs/quantwin-health/setup.sh                    # 默认每 30 分钟
+#   bash scripts/jobs/quantwin-health/setup.sh --interval 900     # 每 15 分钟
 #
 set -euo pipefail
 
@@ -36,7 +36,7 @@ TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 🚨 裸 `$VAR` 紧跟全角标点（）「」等）在 CJK locale 下会被 bash 折进变量名，`set -u` 当场炸
 #    「未绑定的变量」。probe.sh 2026-08-15 在**恢复通知**那条上真炸过 —— 而且只在恢复路径触发，
 #    happy-path 全绿也发现不了；崩在 write_state 之前 ⇒ 状态永久卡 CRIT、每 6h 重复误报。
-#    修法一律是加花括号 `${VAR}`。同 scripts/nvy-watchdog/setup.sh 头部那条注释。
+#    修法一律是加花括号 `${VAR}`。同 scripts/jobs/nvy-watchdog/setup.sh 头部那条注释。
 if command -v python3 >/dev/null 2>&1; then
   if ! python3 - "$TOOL_DIR/probe.sh" <<'PYEOF'
 import re, sys, pathlib
@@ -98,7 +98,7 @@ command -v aliyun >/dev/null 2>&1 || echo '⚠️ aliyun CLI 当前不在 PATH�
 
 cat >"$WRAPPER" <<EOF
 #!/bin/zsh
-# 由 scripts/quantwin-health/setup.sh 生成——请勿手改，重跑 setup 覆盖
+# 由 scripts/jobs/quantwin-health/setup.sh 生成——请勿手改，重跑 setup 覆盖
 export PATH="$PATH_VAL"
 [ -f "\$HOME/.nvy/feishu-alert.env" ] && { set -a; . "\$HOME/.nvy/feishu-alert.env"; set +a; }
 exec /bin/bash "$PROBE"
@@ -138,4 +138,4 @@ launchctl print "gui/$UID_NUM/$LABEL" >/dev/null
 printf '\n✅ 已安装 %s：每 %s 秒探测一次\n' "$LABEL" "$INTERVAL"
 printf '   probe:   %s\n   wrapper: %s\n   env:     %s\n   日志:    %s\n' "$PROBE" "$WRAPPER" "$ENV_FILE" "$LAUNCHD_LOG"
 printf '\n手动触发一次验证：\n   launchctl kickstart -k gui/%s/%s && sleep 45 && tail -20 %s\n' "$UID_NUM" "$LABEL" "$LAUNCHD_LOG"
-printf '卸载：bash scripts/quantwin-health/uninstall.sh\n'
+printf '卸载：bash scripts/jobs/quantwin-health/uninstall.sh\n'

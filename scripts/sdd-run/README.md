@@ -19,7 +19,7 @@
 node scripts/sdd-run/burst.mjs 026-alert-condition-ux --cap 20 --max-turns 300 --wall 5400
 ```
 
-外层安全栈（全确定性，不靠模型自限）：`--max-budget-usd`（per-run $ 闸）+ `--max-turns`（迭代闸）+ **node SIGKILL wall-clock**（`realRunner` 里 `setTimeout`→`child.kill`，**macOS 无 GNU `timeout`/`gtimeout`**，故不用外部 timeout 包；超时归一 exit 124）+ `--permission-mode dontAsk --allowedTools`（工具锁）+ **PreToolUse destructive-guard**（`scripts/pretooluse-burst-destructive-guard.sh`，env `SDD_BURST=1` 时拦 `rm -rf`/force-push/`reset --hard`/DB-drop 的 Bash 内容——`dontAsk` 只锁工具不锁 Bash 参数；交互式无此 env 故 no-op）。runaway 分类见 `classifyOutcome`（每 subtype 单测）。
+外层安全栈（全确定性，不靠模型自限）：`--max-budget-usd`（per-run $ 闸）+ `--max-turns`（迭代闸）+ **node SIGKILL wall-clock**（`realRunner` 里 `setTimeout`→`child.kill`，**macOS 无 GNU `timeout`/`gtimeout`**，故不用外部 timeout 包；超时归一 exit 124）+ `--permission-mode dontAsk --allowedTools`（工具锁）+ **PreToolUse destructive-guard**（`scripts/hooks/pretooluse-burst-destructive-guard.sh`，env `SDD_BURST=1` 时拦 `rm -rf`/force-push/`reset --hard`/DB-drop 的 Bash 内容——`dontAsk` 只锁工具不锁 Bash 参数；交互式无此 env 故 no-op）。runaway 分类见 `classifyOutcome`（每 subtype 单测）。
 
 ### 🚨 Money gate（务必）
 

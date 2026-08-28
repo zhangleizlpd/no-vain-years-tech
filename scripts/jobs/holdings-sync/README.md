@@ -16,11 +16,11 @@
 
 - macOS + Google Chrome（`/Applications/Google Chrome.app`）
 - Node >= 22（原生 `fetch`/`FormData`/`Blob`）
-- 依赖：在**工具目录内**装一次 → `cd scripts/holdings-sync && pnpm install`
+- 依赖：在**工具目录内**装一次 → `cd scripts/jobs/holdings-sync && pnpm install`
   （仅 `playwright-core` + `tsx`；在 mono-repo 内跑则复用根 hoisted 依赖，可跳过）
 - 目标 server 可达（dev `http://127.0.0.1:3000`；prod `https://api.shintongtech.com`）
 
-> 新 Mac 上跑：clone 仓（或只拷 `scripts/holdings-sync/` 目录）→ 目录内 `pnpm install` →
+> 新 Mac 上跑：clone 仓（或只拷 `scripts/jobs/holdings-sync/` 目录）→ 目录内 `pnpm install` →
 > 装 Google Chrome → `pnpm holdings:setup`（见下）。
 
 ## L2 — 手动一键

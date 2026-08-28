@@ -3,7 +3,7 @@
 > **本文是本地跑 lint / typecheck / test / e2e / smoke / export-openapi 的单一来源。**
 > 存在理由不是「记不住命令」，而是：**这些命令失败时红得像代码问题，其实是环境或工具链问题。**
 
-机器强制在 `scripts/pretooluse-local-verify-guard.sh`（`PreToolUse(Bash)` hook）——「跑了必红 / 必骗人」档会被直接拦下并给出替代写法，「不够严谨」档只写在本文不拦。文档与 hook 的判据必须同步改。
+机器强制在 `scripts/hooks/pretooluse-local-verify-guard.sh`（`PreToolUse(Bash)` hook）——「跑了必红 / 必骗人」档会被直接拦下并给出替代写法，「不够严谨」档只写在本文不拦。文档与 hook 的判据必须同步改。
 
 ## 0. 编写纪律：每条声明必须标注证据等级
 

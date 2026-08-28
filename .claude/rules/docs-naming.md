@@ -5,7 +5,7 @@ paths:
   - 'docs/experience/**'
 ---
 
-# Docs 命名纪律（path-triggered，读取 / 编辑 `docs/private/plans/**` · `docs/improvements/**` · `docs/experience/**` 已有文件时自动加载；**新建走 Write 不触发** —— 命名时刻的提醒由 `scripts/pretooluse-convention-rubric.sh` 注入）
+# Docs 命名纪律（path-triggered，读取 / 编辑 `docs/private/plans/**` · `docs/improvements/**` · `docs/experience/**` 已有文件时自动加载；**新建走 Write 不触发** —— 命名时刻的提醒由 `scripts/hooks/pretooluse-convention-rubric.sh` 注入）
 
 新建文件按 `MM-DD-<kebab-slug>.md`，归档进 `YYYY-MM/` 月度子目录：
 

@@ -73,10 +73,10 @@ pnpm dev-marketdata:uninstall
 
 两个独立的本地晨间 launchd 任务,错开几分钟:
 
-| 时间(CST) | 任务                                              | 方向               |
-| --------- | ------------------------------------------------- | ------------------ |
-| 09:00     | `com.nvy.marketdata-dev-sync`(本工具)             | prod → 本地 dev PG |
-| 09:05     | `com.nvy.holdings-sync`(`scripts/holdings-sync/`) | 同花顺 → prod      |
+| 时间(CST) | 任务                                                   | 方向               |
+| --------- | ------------------------------------------------------ | ------------------ |
+| 09:00     | `com.nvy.marketdata-dev-sync`(本工具)                  | prod → 本地 dev PG |
+| 09:05     | `com.nvy.holdings-sync`(`scripts/jobs/holdings-sync/`) | 同花顺 → prod      |
 
 数据侧任意早上时间都安全:prod 的理杏仁同步 22:00 起跑、当晚 ~22:30 前就位。约束只是 **Mac 须在该时刻醒着**(setup 会打印 `pmset` 唤醒命令)。
 

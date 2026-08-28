@@ -3,8 +3,8 @@
 # Run after `npx claude-mem upgrade` to detect re-patch needed.
 #
 # Usage:
-#   scripts/claude-mem-guard-check.sh                    # uses default hooks.json
-#   scripts/claude-mem-guard-check.sh /path/to/hooks.json
+#   scripts/hooks/claude-mem-guard-check.sh                    # uses default hooks.json
+#   scripts/hooks/claude-mem-guard-check.sh /path/to/hooks.json
 #
 # Exit 0 = all hooks gated. Exit 1 = at least one missing gate.
 

@@ -1,8 +1,8 @@
-# scripts/holdings-sync 是自包含本地工具（自带 package.json + tsconfig，可拷到任意 Mac 跑）。
+# scripts/jobs/holdings-sync 是自包含本地工具（自带 package.json + tsconfig，可拷到任意 Mac 跑）。
 # 它不是 Nx 项目；Nx 的 @nx/js/typescript + @nx/eslint 插件会扫全树把它误检为 project，
 # 污染 `nx affected`（凭空多出 holdings-sync:typecheck/lint）。.nxignore 让 Nx 整目录无视。
-# 工具自身 typecheck 走 `cd scripts/holdings-sync && pnpm run typecheck`（本机，不进 CI）。
-scripts/holdings-sync
+# 工具自身 typecheck 走 `cd scripts/jobs/holdings-sync && pnpm run typecheck`（本机，不进 CI）。
+scripts/jobs/holdings-sync
 
 # services/code-index 同理：standalone 索引服务（workspace 外，自带 lockfile，部署到专用宿主
 # 62 per ADR-0059/0060）。Nx 插件会把它误检为 project 跑 typecheck/lint，但 CI 的 root

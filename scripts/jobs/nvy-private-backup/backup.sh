@@ -41,7 +41,7 @@ KEEP="${NVY_BACKUP_KEEP:-30}"                                # 远端保留份�
 SUBDIRS="private experience explore"
 
 # ── 前置检查：缺任何一项都硬失败。静默失败 = 以为有备份其实没有，正是本脚本要根治的 ──
-[ -n "$MONO_HOME" ]      || { echo "❌ NVY_MONO_HOME 未设 —— 重跑 scripts/nvy-private-backup/setup.sh"; exit 1; }
+[ -n "$MONO_HOME" ]      || { echo "❌ NVY_MONO_HOME 未设 —— 重跑 scripts/jobs/nvy-private-backup/setup.sh"; exit 1; }
 [ -d "$MONO_HOME/docs" ] || { echo "❌ 读不到 ${MONO_HOME}/docs —— 路径错，或 launchd 撞 TCC（见脚本头注释）"; exit 1; }
 [ -d "$HUB/.git" ]       || { echo "❌ ${HUB} 不是 git 仓"; exit 1; }
 [ -f "$RECIPIENT_FILE" ] || { echo "❌ 缺 age 公钥 ${RECIPIENT_FILE} —— 重跑 setup.sh"; exit 1; }

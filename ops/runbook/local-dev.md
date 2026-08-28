@@ -450,7 +450,7 @@ lsof -tnP -iTCP:8081 -sTCP:LISTEN | xargs -r kill -9
 > stack is **shared** — the unattended **09:05 marketdata sync** (`com.nvy.marketdata-dev-sync`)
 > depends on it. `compose down` _removes_ the containers (not just stops), so a next-morning
 > sync would otherwise fail with "本地 dev PG 未就绪". The sync now **self-heals** (it runs
-> `compose up -d` before its readiness probe — `scripts/marketdata-dev-sync/sync.sh` §0), so
+> `compose up -d` before its readiness probe — `scripts/jobs/marketdata-dev-sync/sync.sh` §0), so
 > a stray `down` is no longer fatal; still, prefer leaving the DB up between sessions.
 
 Only tear down the DB when you actually need to (reclaim resources / reset data):

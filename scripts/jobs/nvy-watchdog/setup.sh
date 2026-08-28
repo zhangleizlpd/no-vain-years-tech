@@ -9,9 +9,9 @@
 # 自包含：把 nvy-watchdog.sh + feishu-send.sh 拷到 ~/.nvy/lib（脱离 git worktree，改 lib 须重跑）。
 #
 # 用法：
-#   bash scripts/nvy-watchdog/setup.sh                       # 默认 10:00，查 holdings + marketdata + backup
-#   bash scripts/nvy-watchdog/setup.sh --time 10:00
-#   bash scripts/nvy-watchdog/setup.sh --tasks "holdings-sync:90000 marketdata-dev-sync:90000"   # 覆盖默认清单
+#   bash scripts/jobs/nvy-watchdog/setup.sh                       # 默认 10:00，查 holdings + marketdata + backup
+#   bash scripts/jobs/nvy-watchdog/setup.sh --time 10:00
+#   bash scripts/jobs/nvy-watchdog/setup.sh --tasks "holdings-sync:90000 marketdata-dev-sync:90000"   # 覆盖默认清单
 #
 set -euo pipefail
 
@@ -68,7 +68,7 @@ PATH_VAL="$(resolve_bin_dirs)"
 
 cat >"$WRAPPER" <<EOF
 #!/bin/zsh
-# 由 scripts/nvy-watchdog/setup.sh 生成——请勿手改，重跑 setup 覆盖
+# 由 scripts/jobs/nvy-watchdog/setup.sh 生成——请勿手改，重跑 setup 覆盖
 export PATH="$PATH_VAL"
 # 飞书公共配置（webhook/secret/机器名）——可选；缺文件 → feishu-send.sh 静默跳过
 [ -f "\$HOME/.nvy/feishu-alert.env" ] && { set -a; . "\$HOME/.nvy/feishu-alert.env"; set +a; }

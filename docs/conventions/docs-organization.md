@@ -56,4 +56,4 @@ docs/experience/                 # local-only（gitignored），结构同上
 
 **产出顺序（重构 / 优化 session）**：先落 `docs/improvements/` 实测记录，convention 事后从记录**提炼**——同一 session 手边全是「修了几个 / 还剩几秒」的素材时同步写 convention，时点数字必然互渗（2026-08-03 根因分析实证，两次事故均此形态）。
 
-**守卫三层**（防「规约在写作时刻不在场」）：`scripts/pretooluse-convention-rubric.sh`（Write|Edit 时刻注入自检——新建文件唯一覆盖通道；对 plans / improvements / experience 同一 hook 注入命名规则）+ `.claude/rules/convention-authoring.md`（read/edit 触发摘要）+ `scripts/checks/check-convention-orphan.ts`（全仓零引用的 convention = 红，路由不到等于不存在）。lefthook `docs-organization-drift` 只能拦入仓的 `docs/improvements/` 新文件命名 —— plans / experience 是 gitignored，进不了 staged。
+**守卫三层**（防「规约在写作时刻不在场」）：`scripts/hooks/pretooluse-convention-rubric.sh`（Write|Edit 时刻注入自检——新建文件唯一覆盖通道；对 plans / improvements / experience 同一 hook 注入命名规则）+ `.claude/rules/convention-authoring.md`（read/edit 触发摘要）+ `scripts/checks/check-convention-orphan.ts`（全仓零引用的 convention = 红，路由不到等于不存在）。lefthook `docs-organization-drift` 只能拦入仓的 `docs/improvements/` 新文件命名 —— plans / experience 是 gitignored，进不了 staged。

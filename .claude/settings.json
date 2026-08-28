@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/graphify-cheatsheet-hook.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/graphify-cheatsheet-hook.sh\""
           }
         ]
       }
@@ -32,15 +32,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-gnu-flag-guard.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pretooluse-gnu-flag-guard.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-burst-destructive-guard.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pretooluse-burst-destructive-guard.sh\""
           },
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-local-verify-guard.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pretooluse-local-verify-guard.sh\""
           }
         ]
       },
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/pretooluse-convention-rubric.sh\""
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pretooluse-convention-rubric.sh\""
           }
         ]
       }

@@ -7,7 +7,7 @@
 # /clear, which resets cwd to $HOME in current Claude Code.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 [ -f "$ROOT/graphify-out/graph.json" ] || exit 0   # no graph → stay silent
 
 cat <<'EOF'

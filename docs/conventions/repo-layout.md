@@ -11,7 +11,7 @@
 | `services/` | **可部署物**，但**自带独立工具链**（自己的 lockfile / Python venv / 纯配置），刻意不入 workspace                                      |
 | `packages/` | **不可独立部署**的共享库，且 ≥ 2 个 consumer（单 consumer 按 [ADR-0030](../adr/0030-package-decomposition.md) 内联到使用方）          |
 | `ops/`      | 运维产物。**仅 5 个子目录**，见下                                                                                                     |
-| `scripts/`  | 只在**开发机 / CI** 跑的工具，**不进生产宿主机**                                                                                      |
+| `scripts/`  | 只在**开发机 / CI** 跑的工具，**不进生产宿主机**。**仅 6 个子目录 + 根文件白名单**，见下                                              |
 | `docs/`     | 文档（plans / improvements / experience 三类的分工与命名见 [docs-organization.md](docs-organization.md)；ADR / conventions 各有体例） |
 | `specs/`    | SDD feature 产物（见 [sdd.md](sdd.md)）                                                                                               |
 
@@ -25,6 +25,22 @@
 | `ops/lib/`     | 跨任务复用的 shell 原语（飞书发送、run-reported wrapper、看门狗） |
 | `ops/runbook/` | **纯文档**（`.md`）。可执行一律归 `ops/bin/`                      |
 
+### `scripts/` 的 6 个子目录 + 根文件白名单
+
+| 子目录             | 放什么                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------- |
+| `scripts/checks/`  | 治理检查（独立 Nx project；lefthook + CI `gate-checks` 消费）                                        |
+| `scripts/ci/`      | 仅 CI workflow 调用的 helper                                                                         |
+| `scripts/hooks/`   | Claude Code harness 钩子（`.claude/settings.json` 消费）                                             |
+| `scripts/jobs/`    | 开发机 launchd **定时任务**，一任务一目录 `<name>/`（注册表统一在 `ops/runbook/scheduled-tasks.md`） |
+| `scripts/sdd-run/` | SDD 派单 / burst 工具链                                                                              |
+| `scripts/eas/`     | EAS 构建辅助                                                                                         |
+
+根上只许两类**单文件**（白名单 = `check-repo-layout.ts` 的 `SCRIPTS_ROOT_ALLOWLIST`，改它先改本文）：
+
+- **preset 钉死**：spec-kit preset 装的 `check-*-frontmatters.ts` 落点是 `scripts/` 根，位置不归本仓定
+- **入口级工具**：动词前缀命名的单文件（如 `local-verify-as-ci.sh`）。长到多文件 → 开子目录并进上表
+
 ## 新东西该放哪：按顺序问
 
 1. **它会被部署到某台机器上跑吗？**
@@ -35,9 +51,9 @@
    - 否（自带 lockfile / venv / 纯配置）→ `services/<name>/`，必须有 `deploy/`
 3. **它是「定时跑」而不是「常驻」吗？**
    - 定时 + 跑在**生产宿主机** → `ops/jobs/`（见下「定时任务的三个家」）
-   - 定时 + 跑在**开发机** → `scripts/<name>/`
+   - 定时 + 跑在**开发机** → `scripts/jobs/<name>/`
    - 常驻 → 回第 2 步，它是个 service
-4. **不部署的东西**：给人读的 → `docs/`；被别的代码 import 的 → `packages/`；开发/CI 工具 → `scripts/`；运维用的宿主机配置或可执行 → `ops/host/` 或 `ops/bin/`
+4. **不部署的东西**：给人读的 → `docs/`；被别的代码 import 的 → `packages/`；开发/CI 工具 → `scripts/`（内部归舱见上表）；运维用的宿主机配置或可执行 → `ops/host/` 或 `ops/bin/`
 
 ## 定时任务的三个家（**刻意不统一**，别当成不一致去"修"）
 
@@ -45,7 +61,7 @@
 | ----------------------- | ------------------------ | ------------------------------------------------- |
 | 生产宿主机（业务 host） | `ops/jobs/`              | —                                                 |
 | 某个 service 自己的机器 | `services/<svc>/deploy/` | **就近**：它与该 service 同生共死，跟着它一起部署 |
-| 开发机（macOS launchd） | `scripts/<name>/`        | 不进生产宿主机，判据同 `scripts/` 那条            |
+| 开发机（macOS launchd） | `scripts/jobs/<name>/`   | 不进生产宿主机，判据同 `scripts/` 那条            |
 
 三者的**逻辑**统一在注册表 [`ops/runbook/scheduled-tasks.md`](../../ops/runbook/scheduled-tasks.md)（机器强制：`check-scheduled-tasks.ts`），不需要文件系统也统一。
 
@@ -64,7 +80,7 @@ ops/jobs/systemd/<unit>.service + <unit>.timer
 - 安装一律走 `ops/jobs/install.sh`（幂等），不在 unit 头注释里写各自的 `cp` 步骤。
 - **跨任务原语例外**：本体在 `ops/lib/` 的共享件（如看门狗 `nvy-watchdog.sh`）只在 `ops/jobs/systemd/` 有 unit、没有同名 `.sh` 兄弟 —— 别当违规去搬。
 
-## 机器强制的五条
+## 机器强制的七条
 
 `scripts/checks/check-repo-layout.ts`，全部 **fail-closed**（目标目录缺失 = 红，不是 skip）：
 
@@ -73,6 +89,8 @@ ops/jobs/systemd/<unit>.service + <unit>.timer
 3. 每个 `apps/*` 有 `project.json`
 4. 每个 `services/*` 有 `deploy/`，且**不被** `pnpm-workspace.yaml` 的 glob 命中
 5. `ops/jobs/systemd/`：每个 `.timer` 有同名 `.service`；每个 `.service` 的 `ExecStart` 里指向 `/usr/local/lib/nvy/…` 的路径，映射回仓内必须存在
+6. `scripts/` 顶层子目录 ⊆ 上表 6 个
+7. `scripts/` 根文件 ⊆ 白名单（`SCRIPTS_ROOT_ALLOWLIST`；隐藏文件不判）
 
 > 第 5 条防的是**静默失效**：unit 指着一个仓里已不存在的脚本，systemd 不会提前报错，要等下次 `OnCalendar` 触发才 `203/EXEC`；而多数探针是 `--on-success silent`，届时「装错了」与「探到真故障」在飞书上没法区分。它在仓内的孪生是 `ops/jobs/install.sh` 的装机自检（同一条不变量的运行期版本）。
 

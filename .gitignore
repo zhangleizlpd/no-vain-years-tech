@@ -113,7 +113,7 @@ docs/experience
 #
 # 物理位置只有主 worktree 一处；副 worktree 的这三条由 feat-open 建成 symlink 指过来
 # （同 inode，不是副本，因此无同步/冲突可言）。异地副本走每日 age 密文 bundle 推 prod
-# 主机，见 scripts/nvy-private-backup/。
+# 主机，见 scripts/jobs/nvy-private-backup/。
 # 🚨 三条 pattern 刻意「不带尾斜杠」：带尾斜杠只匹配目录，而 symlink 不是目录，
 # 会漏成 untracked —— 既阻塞 feat-close，又让私有内容有被误 commit 回公开仓的风险。
 # （旧注释说「备份只有归档仓 split 时点的冻结副本」是错的：tag archive/pre-public-split

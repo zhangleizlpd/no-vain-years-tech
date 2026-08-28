@@ -172,7 +172,7 @@ TradeRecord      @@map("trade_record") @@schema("portfolio")
 - **工具栏入口**：`watchlist-main-screen.tsx` 顶部工具栏 bell 旁加钱包 icon（mockup 位序：搜索→铃铛→持仓→消息）→ `router.push('/(app)/portfolio/holdings')`。
 - **空态文案**：「暂无持仓数据 / 持仓数据由本机同步工具导入」（mockup 定稿措辞；无任何上传入口）。
 
-### 本机同步工具（`scripts/holdings-sync/`，FR-012；TS + tsx，复用 repo 既有 playwright 依赖）
+### 本机同步工具（`scripts/jobs/holdings-sync/`，FR-012；TS + tsx，复用 repo 既有 playwright 依赖）
 
 - **`fetch-tzzb.ts`**（拉取段）：`chromium.connectOverCDP('http://127.0.0.1:18800')` attach 用户常驻调试 Chrome（profile 持久登录态，download_tzzb.md 方案翻 TS）；未起则带 `--remote-debugging-port` + 固定 profile 启动并等待人工登录。页面内点「数据导出」→ note API 轮询 file_name → 页内 XHR 取二进制 →落本地。**去硬编码**：user_id/fund_key 从页面会话/导出 XHR 的实际请求中捕获（CDP network 监听），不写死。
 - **`upload-holdings.ts`**（上传段）：读 `~/.nvy/holdings-sync.json`（refresh token，chmod 600）→ 调 003 refresh 端点换 access（**轮转后回写新 refresh**）→ multipart POST EP1（asOf 取文件名日期）→ 打印导入摘要。首跑无 token → CLI 交互走 SMS 登录（发码/验码端点）。`--base-url` 区分 dev/prod。
@@ -227,7 +227,7 @@ _SoT = spec frontmatter `perf_budgets`。EP1 预算含 xlsx 解析 + 全量替�
 
 - **PR-1（server，feat(portfolio)）**：deps（exceljs + @fastify/multipart + main.ts 注册）+ Prisma schema/migration（3 表）+ moat owner 注册 + `holdings-import.rules.ts` 纯函数红绿 + `holdings-xlsx.parser.ts` + import UC（含 Q7-B quotable 批查）+ EP1 controller + EP2/EP3 UC+controller + 持仓组派生改造（items/groups 两 UC）+ Testcontainers IT（state_branches server 条目全覆盖）+ fixtures 双轨 + **api-client regen**（cite §V 例外）。
 - **PR-2（mobile，feat(portfolio)）**：holdings/trade-history 两屏 + helpers 纯函数 vitest + hooks（quote merge 复用）+ 2 薄路由 + 工具栏钱包入口 + 空态/降级态 + `[Mobile-E2E]` hermetic（双 tab/降级行/空态/行点入导航；mock 后端）+ `[Contract-Smoke]`（登录 → EP1 导入样本 → EP2 回显 → EP3 流水，落 `apps/mobile/e2e/contract-smoke/portfolio-holdings.contract.ts`）。
-- **PR-3（同步工具，feat(portfolio)）**：`scripts/holdings-sync/` fetch-tzzb.ts + upload-holdings.ts（SMS 首登/refresh 轮转/multipart 上传）+ README 使用说明 + **人工验收矩阵**（真实拉取→dev 导入→回显比对 + 续期路径，证据贴 PR）。
+- **PR-3（同步工具，feat(portfolio)）**：`scripts/jobs/holdings-sync/` fetch-tzzb.ts + upload-holdings.ts（SMS 首登/refresh 轮转/multipart 上传）+ README 使用说明 + **人工验收矩阵**（真实拉取→dev 导入→回显比对 + 续期路径，证据贴 PR）。
 
 > 依赖：PR-2 依赖 PR-1 merge（§V）；PR-3 依赖 PR-1 端点 ship（可与 PR-2 并行）。
 

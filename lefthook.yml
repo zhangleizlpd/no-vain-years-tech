@@ -352,7 +352,7 @@ pre-commit:
       #    提前报错，要等下次 OnCalendar 才 203/EXEC，而多数探针 --on-success silent，
       #    届时「装错了」与「探到真故障」在飞书上没法区分。
       # CI 侧 pr-validation gate-checks 无条件镜像（--no-verify 绕不过）。
-      glob: '{ops/**,apps/*/project.json,services/**,pnpm-workspace.yaml,docs/conventions/repo-layout.md,scripts/checks/check-repo-layout.ts}'
+      glob: '{ops/**,apps/*/project.json,services/**,pnpm-workspace.yaml,docs/conventions/repo-layout.md,scripts/**}'
       run: pnpm tsx scripts/checks/check-repo-layout.ts
 
     adr-index-check:
