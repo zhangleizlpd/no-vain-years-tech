@@ -17,7 +17,13 @@ import type {
 } from './option-snapshot.port.js';
 import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
 import { resolveSnapshotAttribution } from './snapshot-session-attribution.rules.js';
-import { emptyStats } from './sync-run.recorder.js';
+import {
+  emptyStats,
+  type SyncRunOrigin,
+  type SyncRunRecorder,
+  type SyncRunStats,
+  type SyncRunStatus,
+} from './sync-run.recorder.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { TradingCalendarPort } from './trading-calendar.port.js';
 import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
@@ -117,6 +123,14 @@ function hkReport(status: 'ok' | 'degraded'): OptionCoverageReport {
   };
 }
 
+/** 补救轮自己开的那一行 `SyncRun` —— 开 (start) 与收 (finish) 合成一条便于断言。 */
+interface RecordedRun {
+  syncType: string;
+  origin: SyncRunOrigin;
+  status?: SyncRunStatus;
+  stats?: SyncRunStats;
+}
+
 interface Harness {
   remediation: OptionSnapshotRemediation;
   useCase: SyncOptionSnapshotUseCase;
@@ -127,24 +141,49 @@ interface Harness {
   evaluate: ReturnType<typeof vi.fn>;
   /** 日历闸**问的是哪个市场** (#255) —— 不记下来就断言不了「按 hk 问」。 */
   classifyCalls: [string, string][];
+  /**
+   * 补救轮落的 `SyncRun` 行。**「零外呼」的对偶断言在这里**: 不缺就不该开行, 缺了才开一行
+   * 并把 findings 收进去 (#261 续 —— 此前补救轮在库里完全不存在)。
+   */
+  runs: RecordedRun[];
 }
 
 /**
  * @param verdicts `coverage.evaluate` 的**逐次**返回 (第一次 = 补救前判定, 第二次 = 重采后复判)
  * @param tradingDays 库内交易日历 (缺 `SESSION` 之前的行 → 二级无法定位待补日)
+ * @param underlyingLast 标的 spot。默认 `128.40` 让 K=130 的 PUT 是浅实值 ⇒ 硬门放行;
+ *        调低到深实值区间即可让 `ask_below_intrinsic` 整批拒掉 (见 {@link underlyingRow})
  */
-function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAYS): Harness {
+function makeHarness(
+  verdicts: OptionCoverageReport[],
+  tradingDays = TRADING_DAYS,
+  underlyingLast = '128.40',
+): Harness {
   const queries: OptionSnapshotQuery[] = [];
   const persisted: Record<string, unknown>[] = [];
+  const runs: RecordedRun[] = [];
 
   const port: OptionSnapshotPort = {
     getSnapshots: vi.fn(async (q: OptionSnapshotQuery) => {
       queries.push({ ...q, contractCodes: [...q.contractCodes] });
       const rows: OptionSnapshotRow[] = q.contractCodes.map((code) => quoteRow(code));
-      rows.push(underlyingRow());
+      rows.push(underlyingRow(underlyingLast));
       return { asOf: new Date('2026-06-16T10:02:11Z'), rows };
     }),
   };
+
+  // 🚨 深拷 `findings`: 被测方法收尾之后仍持有同一个 stats 对象, 存引用等于让断言看后续状态。
+  const recorder = {
+    start: vi.fn(async (syncType: string, origin: SyncRunOrigin = {}) => {
+      runs.push({ syncType, origin });
+      return BigInt(runs.length);
+    }),
+    finish: vi.fn(async (id: bigint, status: SyncRunStatus, stats: SyncRunStats) => {
+      const run = runs[Number(id) - 1];
+      run.status = status;
+      run.stats = { ...stats, findings: [...stats.findings] };
+    }),
+  } as unknown as SyncRunRecorder;
 
   const prisma = {
     optionContract: {
@@ -154,6 +193,9 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
           code: PEP_CONTRACT_CODE,
           optionType: 'PUT',
           strikePrice: new Prisma.Decimal('130'),
+          // 🚨 缺这一格时门 ④ (无套利下界) **整条跳过** (#186 对非标合约的豁免), 于是
+          //    「深实值腿被拒」那条用例怎么调 spot 都拒不掉 —— 静默地测了个寂寞。
+          isStandard: true,
         },
       ]),
     },
@@ -202,12 +244,13 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
 
   const useCase = new SyncOptionSnapshotUseCase(port, prisma, stubTradingCalendar());
   return {
-    remediation: new OptionSnapshotRemediation(coverage, useCase, prisma, calendar),
+    remediation: new OptionSnapshotRemediation(coverage, useCase, prisma, calendar, recorder),
     useCase,
     queries,
     persisted,
     evaluate,
     classifyCalls,
+    runs,
   };
 }
 
@@ -244,14 +287,14 @@ function quoteRow(code: string): OptionSnapshotRow {
  * 这批 PUT 变成深实值腿而被 `ask_below_intrinsic` 整批拒掉, 于是「补救到底落没落库」这件事根本
  * 走不到 (本文件第一版实撞)。
  */
-function underlyingRow(): OptionSnapshotRow {
+function underlyingRow(last = '128.40'): OptionSnapshotRow {
   return {
     ...quoteRow('US.PEP'),
     isOption: false,
     underlyingCode: null,
     bid: null,
     ask: null,
-    last: '128.40',
+    last,
     delta: null,
     greeksComplete: null,
   };
@@ -303,6 +346,85 @@ describe('OptionSnapshotRemediation', () => {
       expect(warn).toHaveBeenCalled();
       err.mockRestore();
       warn.mockRestore();
+    });
+  });
+
+  /**
+   * 补救轮的 `SyncRun` 留痕 (#261 续)。
+   *
+   * 🚨 修之前**三层全空**: ① 本方法不开 SyncRun 行 ⇒ `stats.findings` 落不了库 (唯一通道是
+   * `recorder.finish`); ② 那条兜底 WARN 的条件是 `failed > 0`, 而硬门拒绝**蓄意不计 failed**
+   * ⇒ 连 WARN 都不打; ③ `RemediationOutcome` 被 @Cron handler 直接 await 掉, 无人接收。
+   * 2026-08-28 实证: 08:00 那轮 us ① 级把 1110 行按美股语义写进港股 (#255), 而 `sync_run` 里
+   * **查无此轮** —— 唯一能证明它发生过的东西是那批行自己的 `quote_as_of`。
+   */
+  describe('SyncRun 留痕', () => {
+    it('覆盖率达标 → **不开** SyncRun 行 (零外呼的对偶: 什么都没做就不该留一行)', async () => {
+      const h = makeHarness([report('ok')]);
+
+      await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
+
+      expect(h.runs).toHaveLength(0);
+    });
+
+    it('① 级重采 → 开一行与夜链**同名**的 SyncRun, 靠 triggered_by 分辨', async () => {
+      const h = makeHarness([report('degraded'), report('ok')]);
+
+      await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
+
+      expect(h.runs).toHaveLength(1);
+      expect(h.runs[0]).toMatchObject({
+        // 🚨 与 tick 轮同名 ⇒ 同一维度的历史串成一条线, 不被拆进两个互相看不见的 sync_type。
+        syncType: 'sync:option_daily_snapshot',
+        origin: { triggeredBy: 'same_day_retry', asOf: SESSION },
+      });
+    });
+
+    it('② 级重采 → triggered_by = premarket_backfill (两级 MUST 分得开, 别按时刻反推)', async () => {
+      const h = makeHarness([report('degraded'), report('ok')]);
+      const warn = spyLog('warn');
+
+      await h.remediation.backfillPremarket('us', PREMARKET_AT);
+      warn.mockRestore();
+
+      expect(h.runs.map((r) => r.origin.triggeredBy)).toEqual(['premarket_backfill']);
+    });
+
+    it('hk ① 级 → 记在**港股自己**的维度键下, 不挂到美股名下', async () => {
+      const h = makeHarness([hkReport('degraded'), hkReport('ok')]);
+      const warn = spyLog('warn');
+
+      await h.remediation.retrySameDay('hk', HK_SAME_DAY_RETRY_AT);
+      warn.mockRestore();
+
+      expect(h.runs.map((r) => r.syncType)).toEqual(['sync:hk_option_daily_snapshot']);
+    });
+
+    it('🚨 硬门拒绝 → 带数字的 violationSamples 随本行进库 (此前只进容器 stdout, 部署即滚)', async () => {
+      // spot 78.21 ⇒ K=130 的 PUT 内在价值 51.79, 而 fixture 的 ask=2.40 远在下界之下
+      // ⇒ 整批撞 `ask_below_intrinsic`, 与 #261 那四张腾讯深实值 PUT 同形。
+      const h = makeHarness([report('degraded'), report('degraded')], TRADING_DAYS, '78.21');
+      const err = spyLog('error');
+      const warn = spyLog('warn');
+
+      await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
+      // 先 restore 再断言 —— 断言失败时的输出不该被这两个 spy 吞掉。
+      err.mockRestore();
+      warn.mockRestore();
+
+      expect(h.persisted).toHaveLength(0); // 拒了就不入库
+      const entry = h.runs[0]?.stats?.findings.find((f) => f.kind === 'reject');
+      expect(entry).toBeDefined();
+      expect(entry).toMatchObject({ symbol: 'us:PEP', violations: ['ask_below_intrinsic'] });
+      // 🚨 本条的**全部价值**: 那两个数字必须跟着这一行进库。判据钉在 fixture 决定的 ask 与
+      //    内在价值上, **蓄意不钉容差** —— #261 的收敛方向之一就是改容差 (同 #264 单测)。
+      const samples = (entry as { violationSamples: string[] }).violationSamples;
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toContain('2.4');
+      expect(samples[0]).toContain('51.79');
+      // 🚨 拒绝**不计 failed** ⇒ 本行终态仍是 `success`。这正是「看 status 判不出问题、
+      //    必须看 findings」的由来 —— 也正是这一行不能不写的理由。
+      expect(h.runs[0]?.status).toBe('success');
     });
   });
 

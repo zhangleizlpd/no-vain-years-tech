@@ -127,8 +127,25 @@ export interface DimensionJobPayload {
  * 🚨 `anchor-cold-start` **不产出 `sync_run` 行**: 冷启动是另一条 job 路由
  * ({@link ANCHOR_COLD_START_JOB}), 直调采集本体 (#159 后两相合一), 全程不开 SyncRun 行。
  * 它留在本值域里是因为**这是 job 的触发源值域**, 不是「库里见得到的值」的清单。
+ *
+ * 🚨 反过来, `same_day_retry` / `premarket_backfill` 这两个值**不经队列**: 它们是
+ * `OptionSnapshotRemediation` 的两级 @Cron 直调采集本体后自己开的 SyncRun 行 (#261 续)。
+ * 之所以仍收在这里, 是因为本类型是 `SyncRun.triggered_by` 的**值域单一来源** —— 判据侧
+ * (「哪些行算一轮」) 只认这一份清单, 开第二处枚举就等于让判据的输入分叉。
+ * 📌 两级各占一个值而不是合成一个 `'remediation'`: 它们**就是两个不同的触发源**(两个
+ *    @Cron, 不同时刻、不同判据、不同落库口径)。合成一个之后「这一行是哪一级写的」只能
+ *    按 `started_at` 反推 —— 而 #202 的结论恰恰是「按时刻猜」是最脆的那个判据。
  */
-export type DimensionTriggeredBy = 'tick' | 'cli' | 'cascade' | 'requeue' | 'anchor-cold-start';
+export type DimensionTriggeredBy =
+  | 'tick'
+  | 'cli'
+  | 'cascade'
+  | 'requeue'
+  | 'anchor-cold-start'
+  // 与 `RemediationLevel` 逐字同形 (option-snapshot-remediation.ts) —— 那边的值直接赋到这里,
+  // 结构等价即编译期锁死, 无需互相 import (队列 → 补救器的依赖不该存在)。
+  | 'same_day_retry'
+  | 'premarket_backfill';
 
 /** named job 形态: `sync:<dim>` (worker 路由键 + SyncRun.syncType 同形)。 */
 export function dimensionJobName(key: DimensionKey): string {

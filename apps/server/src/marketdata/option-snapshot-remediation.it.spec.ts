@@ -4,6 +4,7 @@ import { PrismaService } from '../security/prisma.service';
 import { marketdataSyncConfig } from '../config/marketdata.config';
 import { OptionSnapshotCoverageCheck } from './option-snapshot-coverage.check';
 import { OptionSnapshotRemediation } from './option-snapshot-remediation';
+import { SyncRunRecorder } from './sync-run.recorder';
 import {
   SNAPSHOT_SOURCE_EOD,
   SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
@@ -171,6 +172,7 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
       new SyncOptionSnapshotUseCase(port, prisma, stubTradingCalendar()),
       prisma,
       alwaysTradingCalendar,
+      new SyncRunRecorder(prisma),
     );
     // `oi_as_of` 的权威来源 —— 缺行会退到「最近工作日」近似值并抬 ERROR，那会让下面的
     // `oi_as_of` 断言变成在验兜底逻辑而不是验正常路径。
