@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.39.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.0...server-v0.39.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **marketdata:** 改 cron_expr 必须同时置 next_fire_at = NULL —— 补 20260827_1957 漏掉的那一半 ([#237](https://github.com/zhangleizlpd/no-vain-years-tech/issues/237)) ([b2299a0](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b2299a0f6c5ffff67e4be3444bf0c3c236464dec))
+
 ## [0.39.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.38.2...server-v0.39.0) (2026-08-27)
 
 
