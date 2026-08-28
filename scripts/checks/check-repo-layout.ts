@@ -8,7 +8,7 @@
  * 每一步单看都合理，合起来就没人说得清「一个新东西该放哪」。**目录沙化是渐进的，靠人眼
  * 守不住**，所以把判据写成断言。
  *
- * 五条断言（全部 fail-closed —— 目标目录缺失 = 红，不是 skip）：
+ * 七条断言（全部 fail-closed —— 目标目录缺失 = 红，不是 skip）：
  *   1. `ops/` 顶层子目录 ⊆ {bin, host, jobs, lib, runbook}   ← 主要价值：防 ops/ 再次长回来
  *   2. `ops/runbook/` 下不得有可执行（*.sh / *.ts）—— 它是纯文档目录
  *   3. 每个 `apps/*` 必须有 project.json（apps/ 的定义 = 归 Nx / pnpm workspace 管的可部署物）
@@ -16,6 +16,9 @@
  *      （services/ 的定义 = 独立工具链的可部署物，刻意不入 workspace）
  *   5. `ops/jobs/systemd/`：每个 `.timer` 有同名 `.service`；每个 `.service` 的 ExecStart
  *      里指向 `/usr/local/lib/nvy/…` 的路径，映射回仓内必须真的存在
+ *   6. `scripts/` 顶层子目录 ⊆ {checks, ci, eas, hooks, jobs, sdd-run} ← 防 scripts/ 根再次长草
+ *      （2026-08-28 收敛前根上平铺过 13 个文件、横跨 3 类受众）
+ *   7. `scripts/` 根文件 ⊆ 显式白名单（preset 钉死的 2 个 + 入口级单文件工具）
  *
  * 第 5 条是重排最大的风险面：unit 指着一个仓里已经不存在的脚本，systemd **不会提前告诉你**,
  * 要等下一次 OnCalendar 触发才 203/EXEC —— 而 5 个任务是 `--on-success silent`，
@@ -38,6 +41,22 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 /** `ops/` 允许的顶层子目录。加一个之前先改 docs/conventions/repo-layout.md，别只改这里。 */
 export const OPS_ALLOWED = ['bin', 'host', 'jobs', 'lib', 'runbook'] as const;
 
+/** `scripts/` 允许的顶层子目录。加一个之前先改 docs/conventions/repo-layout.md，别只改这里。 */
+export const SCRIPTS_ALLOWED = ['checks', 'ci', 'eas', 'hooks', 'jobs', 'sdd-run'] as const;
+
+/**
+ * `scripts/` 根允许的文件。两类：spec-kit preset 钉死在根的治理检查（落点不归本仓定，#170）
+ * + 入口级单文件工具。新增先改 docs/conventions/repo-layout.md 再登记这里；
+ * 长到多文件就开子目录（进 SCRIPTS_ALLOWED 那张表）。
+ */
+export const SCRIPTS_ROOT_ALLOWLIST = [
+  'check-adr-frontmatters.ts', // preset 钉死
+  'check-spec-frontmatters.ts', // preset 钉死
+  'inject-perf-env.ts',
+  'local-verify-as-ci.sh',
+  'prisma-migrate.ts',
+] as const;
+
 /** 装机落点 → 仓内路径的映射（`ops/jobs/install.sh` 的落点契约，两处必须一致）。 */
 const INSTALL_PREFIXES: readonly [string, string][] = [
   ['/usr/local/lib/nvy/jobs/', 'ops/jobs/'],
@@ -49,6 +68,10 @@ export interface LayoutSnapshot {
   opsChildren: string[];
   /** ops/runbook/ 下的文件名（不含子目录） */
   runbookFiles: string[];
+  /** scripts/ 的顶层子目录名 */
+  scriptsChildren: string[];
+  /** scripts/ 根的文件名（隐藏文件已在采集端滤掉，.DS_Store 之类不判） */
+  scriptsRootFiles: string[];
   appDirs: { name: string; hasProjectJson: boolean }[];
   serviceDirs: { name: string; hasDeployDir: boolean }[];
   /** pnpm-workspace.yaml 的 packages 条目，原样 */
@@ -157,6 +180,29 @@ export function checkRepoLayout(s: LayoutSnapshot): string[] {
     }
   }
 
+  // ── 6. scripts/ 顶层白名单 ───────────────────────────────────────────────
+  for (const child of s.scriptsChildren) {
+    if (!(SCRIPTS_ALLOWED as readonly string[]).includes(child)) {
+      v.push(
+        `[scripts-toplevel] scripts/${child}/ 不在允许清单 {${SCRIPTS_ALLOWED.join(', ')}} 里。` +
+          `先读 docs/conventions/repo-layout.md 判断它属于哪一舱：治理检查 → scripts/checks/；` +
+          `CI 专用 helper → scripts/ci/；Claude harness 钩子 → scripts/hooks/；` +
+          `开发机 launchd 定时任务 → scripts/jobs/<name>/；会落到生产宿主机的东西不属于 scripts/ → ops/。`,
+      );
+    }
+  }
+
+  // ── 7. scripts/ 根文件白名单 ─────────────────────────────────────────────
+  for (const f of s.scriptsRootFiles) {
+    if (!(SCRIPTS_ROOT_ALLOWLIST as readonly string[]).includes(f)) {
+      v.push(
+        `[scripts-root] scripts/${f} 不在根文件白名单里。入口级单文件工具 → 先改 ` +
+          `docs/conventions/repo-layout.md 再登记 SCRIPTS_ROOT_ALLOWLIST；多文件工具 → 开子目录；` +
+          `治理检查 → scripts/checks/（preset 钉死的除外）。`,
+      );
+    }
+  }
+
   return v;
 }
 
@@ -175,7 +221,7 @@ function childFiles(abs: string): string[] {
 
 function buildSnapshot(root: string): LayoutSnapshot {
   // fail-closed：三个域缺一个都说明仓结构已经不是本检查认识的样子，红比 skip 好。
-  for (const d of ['ops', 'apps', 'services', 'ops/runbook', 'ops/jobs/systemd']) {
+  for (const d of ['ops', 'apps', 'services', 'scripts', 'ops/runbook', 'ops/jobs/systemd']) {
     if (!existsSync(join(root, d))) {
       throw new Error(
         `仓内缺 ${d}/ — 布局已偏离 docs/conventions/repo-layout.md，请先对齐再跑本检查`,
@@ -209,6 +255,8 @@ function buildSnapshot(root: string): LayoutSnapshot {
   return {
     opsChildren: childDirs(join(root, 'ops')),
     runbookFiles: childFiles(join(root, 'ops/runbook')),
+    scriptsChildren: childDirs(join(root, 'scripts')),
+    scriptsRootFiles: childFiles(join(root, 'scripts')).filter((f) => !f.startsWith('.')),
     appDirs: childDirs(join(root, 'apps')).map((name) => ({
       name,
       hasProjectJson: existsSync(join(root, 'apps', name, 'project.json')),
@@ -233,7 +281,7 @@ function main(): void {
     process.exit(1);
   }
   console.log(
-    '✅ 顶层布局守门通过（ops 白名单 + runbook 纯文档 + apps/services 判据 + unit 目标存在性）。',
+    '✅ 顶层布局守门通过（ops/scripts 白名单 + runbook 纯文档 + apps/services 判据 + unit 目标存在性 + scripts 根白名单）。',
   );
 }
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { checkRepoLayout, OPS_ALLOWED, type LayoutSnapshot } from './check-repo-layout';
+import {
+  checkRepoLayout,
+  OPS_ALLOWED,
+  SCRIPTS_ALLOWED,
+  SCRIPTS_ROOT_ALLOWLIST,
+  type LayoutSnapshot,
+} from './check-repo-layout';
 
 /**
  * 每条断言都配一个**反例**用例 —— 只测「合规输入返空」等于什么都没验：
@@ -11,6 +17,8 @@ function baseline(): LayoutSnapshot {
   return {
     opsChildren: ['bin', 'host', 'jobs', 'lib', 'runbook'],
     runbookFiles: ['scheduled-tasks.md', 'cert-management.md'],
+    scriptsChildren: ['checks', 'ci', 'eas', 'hooks', 'jobs', 'sdd-run'],
+    scriptsRootFiles: ['check-adr-frontmatters.ts', 'local-verify-as-ci.sh'],
     appDirs: [
       { name: 'server', hasProjectJson: true },
       { name: 'mobile', hasProjectJson: true },
@@ -148,18 +156,52 @@ describe('check-repo-layout', () => {
     expect(checkRepoLayout(s)).toEqual([]);
   });
 
+  // ── 6/7. scripts/ 白名单（2026-08-28 收敛的另一半：ops/ 之后轮到 scripts/）─
+  it('🚨 scripts/ 下冒出一个新目录 → 报错（防 scripts/ 再次沙化的主闸）', () => {
+    const s = baseline();
+    s.scriptsChildren.push('my-new-tool');
+    const v = checkRepoLayout(s);
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain('[scripts-toplevel]');
+    expect(v[0]).toContain('my-new-tool');
+  });
+
+  it('🚨 scripts/ 根出现白名单外的文件 → 报错（收敛前根上平铺过 13 个文件）', () => {
+    const s = baseline();
+    s.scriptsRootFiles.push('quick-fix.sh');
+    const v = checkRepoLayout(s);
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain('[scripts-root]');
+    expect(v[0]).toContain('quick-fix.sh');
+  });
+
+  it('scripts 白名单常量与判据同源（改一处不会漏改另一处）', () => {
+    expect([...SCRIPTS_ALLOWED].sort()).toEqual([
+      'checks',
+      'ci',
+      'eas',
+      'hooks',
+      'jobs',
+      'sdd-run',
+    ]);
+    expect([...SCRIPTS_ROOT_ALLOWLIST]).toContain('check-adr-frontmatters.ts');
+    expect([...SCRIPTS_ROOT_ALLOWLIST]).toContain('check-spec-frontmatters.ts');
+  });
+
   // ── 多条同时违规不互相遮蔽 ──────────────────────────────────────────────
   it('多类违规同时存在时全部报出（不是撞到第一条就 return）', () => {
     const s = baseline();
     s.opsChildren.push('watchdog');
     s.runbookFiles.push('backup-pg.sh');
     s.appDirs.push({ name: 'x', hasProjectJson: false });
+    s.scriptsChildren.push('rogue');
     const v = checkRepoLayout(s);
-    expect(v).toHaveLength(3);
+    expect(v).toHaveLength(4);
     expect(v.map((x) => x.match(/^\[([a-z-]+)\]/)?.[1]).sort()).toEqual([
       'apps-definition',
       'ops-toplevel',
       'runbook-purity',
+      'scripts-toplevel',
     ]);
   });
 });
