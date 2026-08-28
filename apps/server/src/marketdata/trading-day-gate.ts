@@ -79,14 +79,6 @@ const MS_PER_CALENDAR_DAY = 86_400_000;
 
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-/**
- * 期权到期日所属交易所 —— 本片全为美股期权 (047 T003 三个维度 `market_scope={us}`)。
- *
- * 🚫 **MUST NOT 做成带默认值的可选入参**: 「悄悄用了宿主日期」正是 `daysToExpiry` 存在的理由。
- * 将来真接入他所期权时, 加一个**必填**参数, 让每个调用点显式声明是哪个交易所。
- */
-const OPTION_EXCHANGE = 'us';
-
 export interface DaysToExpiryInput {
   /**
    * 合约到期日。接受 Prisma `@db.Date` 读出的 `Date` (恒为 UTC 午夜) 或 `YYYY-MM-DD` 字符串。
@@ -100,6 +92,19 @@ export interface DaysToExpiryInput {
    * 判断推回给调用方, 于是每个调用点各自发挥 —— 正是本函数要消灭的形态。
    */
   now: Date;
+  /**
+   * 该合约到期日所属**交易所** (`us` / `hk` / …, 词表见 `session-clock.ts` 的时区表)。
+   *
+   * 🚫 **MUST NOT 做成带默认值的可选入参** (#263): 「悄悄用了另一个市场的今天」正是本函数
+   * 存在的理由。本片曾写死 `'us'`, 港股期权 2026-08-23 上线后那个字面量就成了一条静默偏
+   * 一天的判据 —— 必填是为了让每个调用点**显式声明**是哪个交易所, 加错了在 tsc 当场红。
+   *
+   * ⚠️ `exchangeCalendarDate` 对**未登记市场 fail-open 回落宿主时区** (`session-clock.ts`
+   * 的 `DEFAULT_TIME_ZONE`, 那条 fail-open 是 meta 维度空 scope 要的、刻意如此) ⇒ 本入参
+   * 传错一个拼写也不会抛, 只会静默拿到上海的今天。调用点 MUST 从**已有的市场事实**派生
+   * (维度的 `marketScope` / 标的的 `market`), 🚫 不要在调用点手写字面量。
+   */
+  exchange: string;
 }
 
 /**
@@ -113,10 +118,11 @@ export interface DaysToExpiryInput {
  *
  * 三条纪律, 每条都对应一种**不会报错、只让数字悄悄差一天**的塌法:
  *
- * 1. **基准 = 交易所的今天** (`exchangeCalendarDate('us', now)`), 不是宿主本地日期。北京上午
- *    = ET 前一日晚 ⇒ 取宿主日期会让 DTE **恒偏 1 天**, 而 DTE 是两个意图 Tab 的带判据
- *    (建仓腿 `DTE ≤ 14` / 收租腿 `DTE ∈ [150,365]`) 与 FR-048 的豁免线 (`DTE ≤ 2`),
- *    偏一天 = 边界腿静默进出带。
+ * 1. **基准 = 该合约所属交易所的今天** (`exchangeCalendarDate(exchange, now)`), 不是宿主本地
+ *    日期、也不是别的市场的今天。北京上午 = ET 前一日晚 ⇒ 美股腿取宿主日期会让 DTE **恒偏
+ *    1 天**; 反过来港股腿沿用 `'us'` 基准同样偏 1 天 (港股与宿主同为 UTC+8, #263 就是这条)。
+ *    而 DTE 是两个意图 Tab 的带判据 (建仓腿 `DTE ≤ 14` / 收租腿 `DTE ∈ [150,365]`) 与
+ *    FR-048 的豁免线 (`DTE ≤ 2`), 偏一天 = 边界腿静默进出带。
  * 2. **整数日历日, 含周末与节假日**; 到期日当天 = 0, 已过期为负 (🚫 不 clamp 到 0 —— 0 已被
  *    "当天到期"占用)。🚫 **禁用绝对时刻差**: 会得小数, 让 `≤ N 天` 这类带判据在一天之内抖,
  *    且跨 DST 的窗口不是 24h 的整数倍 (73 小时的窗会算成 3.04 天)。
@@ -130,8 +136,8 @@ export interface DaysToExpiryInput {
  *
  * 复杂度 O(1)。
  */
-export function daysToExpiry({ expiry, now }: DaysToExpiryInput): number {
-  const today = exchangeCalendarDate(OPTION_EXCHANGE, now);
+export function daysToExpiry({ expiry, now, exchange }: DaysToExpiryInput): number {
+  const today = exchangeCalendarDate(exchange, now);
   return utcEpochDay(expiryDateOnly(expiry)) - utcEpochDay(today);
 }
 

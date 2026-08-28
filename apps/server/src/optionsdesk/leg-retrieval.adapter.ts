@@ -278,6 +278,10 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     // 064 T003: `query.realtime` 是**每次请求**的显式开关 (`FR-015` fail-closed, 无默认值)。
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
+    // ⚠️ **写死 `'us'` 是已知缺陷, 跟踪在 #274** —— `parsed.market` 就在上一行, 但换基准会改变
+    // 用户可见的腿集合 (它喂 `expiryDate > marketDate` 这道 FR-028a 过滤 + 返回的 `chain.marketDate`),
+    // 先要答「港股当天到期、尚未收盘的腿该不该滤掉」这个语义问题。#263 只参数化了同文件的 DTE
+    // 基准 (`toLegRows`), 🚫 MUST NOT 顺手把这一行一起改掉 —— 两处判据面不同, 证据面也不同。
     const marketDate = exchangeCalendarDate('us', query.now);
 
     // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 锚 ticker → 标的 id
@@ -348,7 +352,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       b.snapshot.quoteAsOf.getTime() > a.snapshot.quoteAsOf.getTime() ? b : a,
     ).snapshot;
 
-    const legs = this.toLegRows(rows, query.now);
+    const legs = this.toLegRows(rows, query.now, parsed.market);
 
     const chain: LegChainMeta = {
       marketDate,
@@ -391,19 +395,26 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 🚫 **MUST NOT 为骨架另写一份字面量**: 两份字面量必漂移, 而漂移的表现是「某一列在新锚上
    * 永远是空的」—— 那张表照样渲染得出来, 没有任何断言会红。
    *
+   * 🚨 `market` 必填 (#263): DTE 基准是**该锚所属交易所的今天**。此前 `daysToExpiry` 内部写死
+   * `'us'`, 而 `IMPORTABLE_MARKETS` 含 `hk` 且本方法所在的 `db_snapshot` 基线路径**不经过**
+   * `legWindowFor` 那道「未支持市场即抛」的闸 ⇒ 港股锚一路用美股基准算完、不会红。港股与宿主
+   * 同为 UTC+8, 北京上午 ET 尚未翻日 ⇒ 那段窗口里每条腿的 `dteDays` 恒偏 1 天, 而建仓腿
+   * `DTE ≤ 14` / 收租腿 `DTE ∈ [150,365]` 两条带判据直接读它。
+   *
    * 复杂度 `O(n)`。DTE 按到期日缓存: 合约数百行、到期日只有几十个 ⇒ `daysToExpiry` 每个日期
-   * 只算一次。
+   * 只算一次 (基准 `market` 单次调用内恒定, 故仍可只按到期日做键)。
    */
   private toLegRows(
     rows: readonly { contract: ChainContractRow; snapshot: OptionDailySnapshot | null }[],
     now: Date,
+    market: string,
   ): LegChainRow[] {
     const dteByExpiry = new Map<string, number>();
     return rows.map(({ contract, snapshot }) => {
       const key = contract.expiryDate.toISOString().slice(0, 10);
       let dteDays = dteByExpiry.get(key);
       if (dteDays === undefined) {
-        dteDays = daysToExpiry({ expiry: contract.expiryDate, now });
+        dteDays = daysToExpiry({ expiry: contract.expiryDate, now, exchange: market });
         dteByExpiry.set(key, dteDays);
       }
       return {
@@ -485,6 +496,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     const legs = this.toLegRows(
       contracts.map((contract) => ({ contract, snapshot: null })),
       query.now,
+      market,
     );
     const chain: LegChainMeta = {
       marketDate,

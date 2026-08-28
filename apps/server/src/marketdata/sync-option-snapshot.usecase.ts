@@ -93,7 +93,8 @@ export interface SnapshotCollectionSpec {
   /** 求「上一交易日」用的市场范围 (仅 `eod` 路径用到)。 */
   marketScope: string[];
   /**
-   * 本轮的**绝对时刻** (T024a): 异常监控 ② 的 DTE 基准由 `daysToExpiry` 从它折成 **ET 的今天**。
+   * 本轮的**绝对时刻** (T024a): 异常监控 ② 的 DTE 基准由 `daysToExpiry` 从它折成
+   * **本轮市场的今天** (交易所由 {@link marketScope} 派生, #263 起显式传入)。
    *
    * 🚫 收 instant 而非 `sessionDate` 那个字符串: 后者是**归属业务日**, 而 DTE 要的是「今天离
    * 到期还有几天」—— 盘前兜底路径上两者恰好差一天 (补的是昨天的 session, 数的是今天到期距离),
@@ -355,7 +356,7 @@ export class SyncOptionSnapshotUseCase {
         });
       }
     }
-    this.reportAnomalies(anomalyRows, knownNonStandardRoots, spec.now);
+    this.reportAnomalies(anomalyRows, knownNonStandardRoots, spec.now, spec.marketScope);
     return budgetExhausted;
   }
 
@@ -582,10 +583,23 @@ export class SyncOptionSnapshotUseCase {
     rows: OptionAnomalyRow[],
     knownNonStandardRoots: string[],
     now: Date,
+    marketScope: readonly string[],
   ): void {
     // 零落库行 ⇒ 无判定对象。判一遍会拿空批算出「零可用 greeks」之类的空洞结论。
     if (rows.length === 0) return;
-    const report = detectOptionAnomalies({ rows, now, knownNonStandardRoots });
+    // 🚨 #263: DTE 基准 = **本轮市场**的今天, 从 scope 派生而非写死 `'us'`。单市场 scope 是本
+    // 维度族的前提 (`collect()` 的 `foreign` 守卫 + `resolveAttribution` 的 `length !== 1` 双闸),
+    // 故取第 0 个即答案。仍显式挡空数组: `exchangeCalendarDate` 对未登记市场**fail-open 回落
+    // 宿主时区** (那条 fail-open 是 meta 维度空 scope 要的、刻意如此) ⇒ 传 undefined 进去不抛,
+    // 只静默拿到上海的今天; 而港股与上海同为 UTC+8 ⇒ 连港股样本都验不出这个错。
+    // 🚨 判据放在**零行早退之后**: 空批本来就无判定对象, 在那条路上新抛异常是行为回归。
+    const [exchange] = marketScope;
+    if (exchange === undefined) {
+      throw new Error(
+        `[option-snapshot] 空 marketScope 判不出 DTE 基准交易所 (异常监控 ② 的 ${rows.length} 行无从起算)`,
+      );
+    }
+    const report = detectOptionAnomalies({ rows, now, exchange, knownNonStandardRoots });
     for (const finding of report.findings) {
       this.logger.warn(
         `[option-anomaly] ${finding.code} (${finding.affected} 条): ${finding.reason}` +
