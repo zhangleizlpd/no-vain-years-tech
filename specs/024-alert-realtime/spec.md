@@ -14,7 +14,7 @@ orchestrator_compat: '>=0.2.0'
 web_compat: untested
 web_compat_notes: '本 feature 服务端为主(盘中 tick 求值);mobile 仅在 023 已有条件选择器上增量加「5 分钟涨跌幅」一类条目,Expo Web export 未单独冒烟该条目'
 
-# AI agent 协作摩擦观察 (per ADR-0024 amend + docs/conventions/ai-friction-catalog.md).
+# AI agent 协作摩擦观察 (per ADR-0024 amend; 历史模式目录 docs/improvements/2026-05/05-21-ai-friction-catalog-v1.md).
 agent_friction_observed: false
 
 # 性能预算 (per ADR-0039 SSOT). tick 求值为后台 job 非 user-facing endpoint,

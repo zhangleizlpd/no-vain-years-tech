@@ -1,12 +1,13 @@
-# AI Agent Friction Catalog v1
+# AI Agent Friction Catalog v1（2026-05-21 retro 记录）
 
-> Symptoms / 实证场景 / 缓解策略,sourced from A-002 ship retro + Plan 1 W2-W5 实证。每条 entry 对应 spec frontmatter `agent_friction_observed=true` 时 `agent_friction_notes` 可引用的 catalog ID。
+> 2026-08-27 自 `docs/conventions/` 迁入本目录：它是 A-002 ship retro + Plan 1 W2-W5 的**实证记录**，不是常驻约束 —— 6 条模式的缓解均已机械化或有 ADR canonical（见各条「缓解」），撞坑时刻也没有任何路由会加载它。spec frontmatter `agent_friction_notes` 的写法见 `.claude/rules/sdd-authoring.md`（写现象 + 缓解 ADR 链接，不要求引本文 ID）。
+>
+> Symptoms / 实证场景 / 缓解策略,sourced from A-002 ship retro + Plan 1 W2-W5 实证。
 
-## How this catalog is used
+## 当时的使用方式（历史）
 
-- **spec frontmatter**: 业务 spec ship 后 retro，若 LLM 协作中撞到本 catalog 已记的模式 → spec.md frontmatter `agent_friction_observed: true` + `agent_friction_notes: "<catalog-id>: <一句话现象>; <catalog-id>: ..."`。schema (per `mono-orchestrator-ready`，真相源 `.specify/schemas/mono-orchestrator-ready/spec.zod.ts`) 强制 notes ≥ 10 字符。
-- **新模式触发**: 撞到本 catalog 未记的新摩擦模式 → 加 entry 到本文件 v(N+1) 段 + spec 引用。
-- **ADR 联动**: 每个 entry 关联 1+ ADR (有则缓解措施已立; 无则为 backlog candidate)。
+- spec ship 后 retro 若撞到已记模式 → `agent_friction_observed: true` + `agent_friction_notes: "<catalog-id>: <一句话现象>"`（zod 只强制 notes ≥ 10 字符，不强制 ID；实践中 65 spec 仅 4 个 `true`，且新模式未回写 —— 这是它退出 conventions 的原因）。
+- 每个 entry 关联 1+ ADR（有则缓解已立；无则为 backlog candidate）。
 
 ---
 
@@ -18,12 +19,12 @@
 
 **实证**:
 
-- PR #65 `@hey-api/openapi-ts` 输出 `import './schemas.js'` → Metro 解不开 (Issue #68)
-- PR #67 `packages/auth/src/*` 显式 `.js` 后缀被 sweep 删
+- 旧 meta 仓 PR #65 `@hey-api/openapi-ts` 输出 `import './schemas.js'` → Metro 解不开 (Issue #68)
+- 旧 meta 仓 PR #67 `packages/auth/src/*` 显式 `.js` 后缀被 sweep 删
 
 **LLM 摩擦**: agent 默认按 Node.js ESM 规则 (训练数据 dominant) 加 `.js` 后缀, IDE auto-import 配 nodenext 时也加,前端 PR 反复修。
 
-**缓解 ADR**: [ADR-0029](../adr/0029-ts-module-resolution-policy.md) (base = `bundler`, apps/server override = `nodenext`)
+**缓解 ADR**: [ADR-0029](../../adr/0029-ts-module-resolution-policy.md) (base = `bundler`, apps/server override = `nodenext`)
 
 ---
 
@@ -33,15 +34,15 @@
 
 **实证**:
 
-- memory `feedback_nest_app_module_full_boot_needs_external_deps` — vitest 测 NestJS swagger metadata 用 controllers-only test module,禁 full AppModule boot
+- vitest 测 NestJS swagger metadata 用 controllers-only test module,禁 full AppModule boot（boot 触发 Prisma + ioredis 连接）
 - W1.4 W3 阶段反复撞: typecheck green → CI run test fail (PG/Redis 未起)
 
 **LLM 摩擦**: agent 默认相信 typecheck pass = correctness pass,跳过 boot smoke; CI fail 才发现 boot 路径需要 testcontainers。
 
 **缓解**:
 
-- unit test 用 controllers-only test module (per memory)
-- e2e 走 Testcontainers (per [ADR-0019](../adr/0019-orm-prisma.md) IT 章节)
+- unit test 用 controllers-only test module
+- e2e 走 Testcontainers (per [ADR-0019](../../adr/0019-orm-prisma.md) Testcontainers 段)
 
 ---
 
@@ -51,12 +52,12 @@
 
 **实证**:
 
-- A-002 ship 中 PR #66 (publicHoistPattern 半解) + PR #67 (`shamefully-hoist=true` 全解)
+- A-002 ship 中旧 meta 仓 PR #66 (publicHoistPattern 半解) + PR #67 (`shamefully-hoist=true` 全解)
 - 11+ Expo peer dep 雪崩补到 root package.json
 
 **LLM 摩擦**: agent 默认遵循 pnpm best practice strict mode,撞 Metro 报错时反复加 publicHoistPattern,最终才接受 `shamefully-hoist`。
 
-**缓解 ADR**: [ADR-0028](../adr/0028-monorepo-pnpm-policy.md) (`shamefully-hoist=true` + 文档化 sunset trigger)
+**缓解 ADR**: [ADR-0028](../../adr/0028-monorepo-pnpm-policy.md) (`shamefully-hoist=true` + 文档化 sunset trigger)
 
 ---
 
@@ -66,8 +67,7 @@
 
 **实证**:
 
-- memory `feedback_orchestrator_llm_cwd_must_match_target_paths` (5 类 LLM-subprocess 盲区之一)
-- W1.4 实证 `prisma migrate dev` 一次性 prompt 命名输入 — wrapper 半自动化已 ship 进 [ADR-0035](../adr/0035-data-layer-governance.md)
+- W1.4 实证 `prisma migrate dev` 一次性 prompt 命名输入 — wrapper 半自动化已 ship 进 [ADR-0035](../../adr/0035-data-layer-governance.md)
 
 **LLM 摩擦**: agent 看不到 prompt 提示,bash subprocess 默认非交互;脚本作者得显式 `--name <verb>_<obj>` flag pass-through 才能让 LLM 调用。
 
@@ -85,11 +85,11 @@
 **实证**:
 
 - A-002 ship 前 mobile 端 ProblemDetail 消费 fallback chain 缺失,各处手写 `if (err.message === '...')` 反模式
-- memory `feedback_smoke_test_catches_spec_drift` (错误处理代码必须列所有 wrapper 类型)
+- 错误处理代码必须列所有 wrapper 类型（真后端冒烟才抓得到 spec drift）
 
 **LLM 摩擦**: agent 看 ProblemDetail.code 字段 string 类型 → 编造业务合理的 code 字符串 (训练数据风格),无 schema enforce。
 
-**缓解 ADR**: [ADR-0038](../adr/0038-error-handling-ux-contract.md) (OpenAPI `allOf` per-endpoint code union + Orval codegen 产 typed enum)
+**缓解 ADR**: [ADR-0038](../../adr/0038-error-handling-ux-contract.md) (OpenAPI `allOf` per-endpoint code union + Orval codegen 产 typed enum)
 
 ---
 
@@ -109,9 +109,9 @@
 
 **缓解 ADR**:
 
-- [ADR-0024](../adr/0024-spec-feature-first-layout.md) (spec frontmatter `modules:` SSOT + 反查)
-- [ADR-0031](../adr/0031-adr-governance.md) (ADR `applies_to` + programmatic filter)
-- [ADR-0032](../adr/0032-backend-bounded-context.md) (物理拆 security / account / auth 3 context)
+- [ADR-0024](../../adr/0024-spec-feature-first-layout.md) (spec frontmatter `modules:` SSOT + 反查)
+- [ADR-0031](../../adr/0031-adr-governance.md) (ADR `applies_to` + programmatic filter)
+- [ADR-0032](../../adr/0032-backend-bounded-context.md) (物理拆 security / account / auth 3 context)
 
 ---
 
@@ -119,7 +119,7 @@
 
 候选模式 (撞 ≥ 2 次后晋升 v2):
 
-- **Cache-Hit-False-Green**: nx cache 假绿 (per memory `feedback_nx_cache_false_green_on_new_files`) — 单次实证后已加 `--skip-nx-cache` 纪律,等再撞触发 entry。
-- **Lockfile-Bypass-Phantom-Dep**: `shamefully-hoist=true` 副作用 (per F-003 sunset) — 子包 require 未 declare dep 不失败,etu 后由 eslint-plugin-import enforce。
-- **CLAUDECODE-Env-Gate-Bypass**: subprocess 内未设 `CLAUDECODE=1` 时 hook 不触 (per memory orchestrator 5 盲区) — 待 orchestrator 独立 PoC 推进。
+- **Cache-Hit-False-Green**: nx cache 假绿 — `--skip-nx-cache` 判据现落 [local-verification.md §4](../../conventions/local-verification.md)（新文件 / env 对照 / 读 project 外资产）。
+- **Lockfile-Bypass-Phantom-Dep**: `shamefully-hoist=true` 副作用 (per F-003 sunset) — 子包 require 未 declare dep 不失败；跨 project 边界由根 `eslint.config.mjs` 的 `@nx/enforce-module-boundaries` enforce（未装 eslint-plugin-import）。
+- **CLAUDECODE-Env-Gate-Bypass**: subprocess 内未设 `CLAUDECODE=1` 时 hook 不触 — 曾挂在 orchestrator PoC 上，orchestrator 已退役，条目冻结。
 - **Tab-Split-Null-Collapse**: `IFS=$'\t' read` 里 tab 属 IFS **whitespace** ⇒ 连续 tab 折叠成一个分隔符 ⇒ psql 输出的 NULL (空字段) 当场蒸发、其后各列**静默前移** —— 不报错,只是值全错。2026-08-22 PR #147 给晨报加可空列 `sync_run.written` 时实撞 (`wr=` 打出了时间戳)。缓解: 可空字段在**源头**换哨兵 (`coalesce(col::text, 'NULL')`),先例见 `ops/jobs/futu-shim-health.sh` 的 `tri()` / `val()`;判据与修法写在 `ops/jobs/marketdata-sync-report.sh` 主查询注释里。

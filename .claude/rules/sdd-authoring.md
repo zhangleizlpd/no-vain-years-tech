@@ -18,6 +18,7 @@ spec → clarify → Mockup（design/，库选型 + paradigm 决策先做；走 
 
 - **库 / paradigm 选型**：自由画布（PKM 知识图谱）/ 数据可视化（投资板块图表 / dashboard）等需先锁库与渲染范式的场景，在 **Mockup 阶段**一并决策（图表库 + 数据建模与 mockup 互锁）——这是 mockup 阶段的通用注意事项，不再单列类别。
 - **后端业务模块**（account / pkm / 其他 server use case）：不涉及 UI，走完整 SDD 标准流程，无 mockup 步骤。
+- **spec frontmatter `agent_friction_observed: true` 时**：`agent_friction_notes` 写「现象 + 缓解 ADR 链接」（≥ 10 字符，zod 强制）；历史模式目录在 [improvements 05-21](../../docs/improvements/2026-05/05-21-ai-friction-catalog-v1.md)，不要求引其 ID。
 - **跨端 feature**：impl 走**单 PR**（server impl + 真后端 IT + api-client regen + mobile 消费同 PR，per [Constitution §V](../../.specify/memory/constitution.md)）。mobile 侧落**正交两层验证**：① `[Mobile-E2E]` hermetic UI e2e（Playwright，验交互/点通）+ ② `[Contract-Smoke]` 契约冒烟（node 层，生成 `@nvy/api-client` 打 testcontainers 真 server，验契约对齐+真落库，补 hermetic mock 与 server IT 都覆盖不到的缝；落 `apps/mobile/e2e/contract-smoke/<feature>.contract.ts` 共享套件，`nx run mobile:contract-smoke`）。业务流验证由 **server IT + mobile 两层**承担，**无需占位 UI 预验**。（⚠️ 旧「真后端冒烟」措辞混指 ①，已拆）
 
 ### Mockup 留迹路径（per [ADR-0024](../../docs/adr/0024-spec-feature-first-layout.md)）

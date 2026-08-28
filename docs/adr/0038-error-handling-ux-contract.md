@@ -144,4 +144,4 @@ export const ERROR_DISPLAY_MAP: Record<string, string> = {
 - RFC 9457 (Problem Details for HTTP APIs)
 - [ADR-0027](0027-frontend-data-test-layer.md)
 - [ADR-0036](0036-observability-logging-governance.md)
-- [AI Friction Catalog · F-005 Untyped-Error-Code-Hallucination](../conventions/ai-friction-catalog.md#f-005--untyped-error-code-hallucination) — OpenAPI `allOf` per-endpoint code union + Orval typed enum 缓解 LLM 编造 code
+- [AI Friction Catalog · F-005 Untyped-Error-Code-Hallucination](../improvements/2026-05/05-21-ai-friction-catalog-v1.md#f-005--untyped-error-code-hallucination) — OpenAPI `allOf` per-endpoint code union + Orval typed enum 缓解 LLM 编造 code

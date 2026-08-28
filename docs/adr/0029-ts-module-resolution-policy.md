@@ -81,4 +81,4 @@ A-002 ship (PR #65/#66/#67) 暴露 `tsconfig.base.json` 用 `moduleResolution: n
 - memory `reference_pnpm_C_does_not_propagate_child_cwd` (相关 build tool cwd 不一致问题)
 - PR #67 (`shamefully-hoist` ship 同时 sweep packages/auth `.js` 后缀)
 - <https://www.typescriptlang.org/docs/handbook/modules/reference.html#bundler>
-- [AI Friction Catalog · F-001 TS-Bundler-Mismatch](../conventions/ai-friction-catalog.md#f-001--ts-bundler-mismatch) — 本 ADR 是此 friction 的直接缓解
+- [AI Friction Catalog · F-001 TS-Bundler-Mismatch](../improvements/2026-05/05-21-ai-friction-catalog-v1.md#f-001--ts-bundler-mismatch) — 本 ADR 是此 friction 的直接缓解

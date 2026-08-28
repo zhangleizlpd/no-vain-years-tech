@@ -119,4 +119,4 @@ loadADRsFor(taskScope: string): ADR[] {
 
 - memory `feedback_audit_must_verify_code_anchors` (governance 校验思路源头)
 - [ADR-0024](0024-spec-feature-first-layout.md) (类似 frontmatter 反查思路)
-- [AI Friction Catalog · F-006 Indirect-Spec-Module-Mapping](../conventions/ai-friction-catalog.md#f-006--indirect-spec-module-mapping) — ADR `applies_to` + programmatic filter 缓解 LLM 上下文噪声
+- [AI Friction Catalog · F-006 Indirect-Spec-Module-Mapping](../improvements/2026-05/05-21-ai-friction-catalog-v1.md#f-006--indirect-spec-module-mapping) — ADR `applies_to` + programmatic filter 缓解 LLM 上下文噪声

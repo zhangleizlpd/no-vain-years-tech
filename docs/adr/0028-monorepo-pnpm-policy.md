@@ -61,4 +61,4 @@ shamefully-hoist=true
 - PR #67 (`shamefully-hoist=true` 最终方案)
 - memory `feedback_expo_sdk_major_dedicated_session`
 - <https://pnpm.io/npmrc#shamefully-hoist>
-- [AI Friction Catalog · F-003 Pnpm-Strict-vs-Expo-Hoist](../conventions/ai-friction-catalog.md#f-003--pnpm-strict-vs-expo-hoist) — 本 ADR 是此 friction 的直接缓解
+- [AI Friction Catalog · F-003 Pnpm-Strict-vs-Expo-Hoist](../improvements/2026-05/05-21-ai-friction-catalog-v1.md#f-003--pnpm-strict-vs-expo-hoist) — 本 ADR 是此 friction 的直接缓解
