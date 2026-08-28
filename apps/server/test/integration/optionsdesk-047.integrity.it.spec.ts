@@ -7,6 +7,7 @@ import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calend
 import { OptionSnapshotCoverageCheck } from '../../src/marketdata/option-snapshot-coverage.check';
 import { OptionSnapshotRemediation } from '../../src/marketdata/option-snapshot-remediation';
 import { SyncOptionSnapshotUseCase } from '../../src/marketdata/sync-option-snapshot.usecase';
+import { SyncRunRecorder } from '../../src/marketdata/sync-run.recorder';
 import type {
   OptionSnapshotBatch,
   OptionSnapshotPort,
@@ -237,6 +238,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
       useCase,
       prisma,
       new DbTradingCalendarAdapter(prisma),
+      new SyncRunRecorder(prisma),
     );
   });
 

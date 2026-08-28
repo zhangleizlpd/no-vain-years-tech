@@ -1,12 +1,17 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../security/prisma.service.js';
-import type { WorkingInstrument } from './dimension-executor.js';
+import type { DimensionKey, WorkingInstrument } from './dimension-executor.js';
 import {
   OptionSnapshotCoverageCheck,
   type OptionCoverageReport,
 } from './option-snapshot-coverage.check.js';
-import { emptyStats, type SyncRunStats } from './sync-run.recorder.js';
+import {
+  deriveStatus,
+  emptyStats,
+  SyncRunRecorder,
+  type SyncRunStats,
+} from './sync-run.recorder.js';
 import {
   SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
   SyncOptionSnapshotUseCase,
@@ -154,6 +159,37 @@ export interface RemediationOutcome {
   stillMissing: string[];
 }
 
+/**
+ * market → 该市场快照维度的键。补救轮开的 `SyncRun` **与夜间 tick 轮同名**, 两者靠
+ * `triggered_by` 分辨 (值域见 `DimensionTriggeredBy`) —— 同一维度的历史因此串在一条线上,
+ * 而不是被拆成两个互相看不见的 `sync_type`。
+ *
+ * 🚨 **查不到就抛, 不 fallback**: 猜一个键的后果是补救轮把自己记到别的维度名下, 而那正是
+ * 事后归因最不该出现的一种脏数据。新市场上线时这里当场红, 是设计如此。
+ */
+const SNAPSHOT_DIMENSION_KEY: Readonly<Record<string, DimensionKey>> = {
+  us: 'option_daily_snapshot',
+  hk: 'hk_option_daily_snapshot',
+};
+
+/**
+ * `sync:<维度键>` —— 形状的定义方是 `dimensionJobName()` (marketdata-sync.queue.ts)。
+ *
+ * 🚫 **不从那边 import**: 那个模块 top-level `import 'bullmq'`, 拉进来会把本文件的 Small
+ * 单测 (mock port + mock prisma, 零容器) 变成要起 bullmq/ioredis 的重测。`dimension-executor`
+ * 的 tick 路径同样是就地拼这个前缀 (`const syncType = \`sync:${key}\``), 本处照它。
+ */
+function snapshotSyncType(market: string): string {
+  const key = SNAPSHOT_DIMENSION_KEY[market];
+  if (!key) {
+    throw new Error(
+      `[option-snapshot-remediation] 未登记市场 "${market}" 的快照维度键 —— ` +
+        `新市场上线须补 SNAPSHOT_DIMENSION_KEY`,
+    );
+  }
+  return `sync:${key}`;
+}
+
 @Injectable()
 export class OptionSnapshotRemediation {
   private readonly logger = new Logger(OptionSnapshotRemediation.name);
@@ -166,6 +202,7 @@ export class OptionSnapshotRemediation {
     private readonly snapshot: SyncOptionSnapshotUseCase,
     prisma: PrismaService,
     @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+    private readonly recorder: SyncRunRecorder,
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
   }
@@ -262,7 +299,7 @@ export class OptionSnapshotRemediation {
       return this.idle(market, 'same_day_retry', sessionDate, calendar, `覆盖率 ${before.status}`);
     }
 
-    const after = await this.recollect(market, before, attribution.spec);
+    const after = await this.recollect(market, before, attribution.spec, 'same_day_retry');
     const attempted = before.degraded.map((u) => u.symbol);
     if (after.status !== 'degraded') {
       this.logger.warn(
@@ -349,12 +386,17 @@ export class OptionSnapshotRemediation {
       );
     }
 
-    const after = await this.recollect(market, before, {
-      sessionDate,
-      mode: SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
-      marketScope: [market],
-      now,
-    });
+    const after = await this.recollect(
+      market,
+      before,
+      {
+        sessionDate,
+        mode: SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
+        marketScope: [market],
+        now,
+      },
+      'premarket_backfill',
+    );
     const attempted = before.degraded.map((u) => u.symbol);
     if (after.status !== 'degraded') {
       // 降级 MUST 留痕 + 告警 (FR-052), 但**不是** ERROR —— 缺口已补上。留痕的权威形态是
@@ -392,16 +434,44 @@ export class OptionSnapshotRemediation {
    *
    * `spec` 收完整的 {@link SnapshotCollectionSpec}: ① 级原样转判据层的产物 (**不重算**),
    * ② 级自己声明 (它的 `mode` 是留痕载体, 见 {@link backfillPremarket})。
+   *
+   * ## 🚨 本级开自己的 `SyncRun` 行 —— 补救轮此前在库里**完全不存在**
+   *
+   * `collect()` 会把硬门拒绝写进 `stats.findings` (#198 的违规码 + #261 的带数字样本), 而
+   * `stats` 要变成库里的一行**只有一条通道**: {@link SyncRunRecorder.finish}。本方法此前拿
+   * 一个局部 `emptyStats()` 接住再丢掉 ⇒ 补救轮上的拒绝**三层全空**:
+   *   ① 没有 `sync_run` 行 ⇒ findings 落不了库;
+   *   ② 那条兜底 WARN 的条件是 `stats.failed > 0`, 而硬门拒绝**蓄意不计 `failed`**
+   *      (粒度是标的不是行, 见 `SyncRunFinding` 的 `reject` 注释) ⇒ 连 WARN 都不打;
+   *   ③ `RemediationOutcome` 被 @Cron handler 直接 await 掉, 无人接收。
+   * 2026-08-28 实证: 08:00 那轮 us ① 级把 1110 行按美股语义写进港股 (#255), 而 `sync_run`
+   * 里**查无此轮** —— 唯一能证明它发生过的东西是那批行自己的 `quote_as_of`。
+   *
+   * 📌 形态照 `dimension-executor` 的 tick 路径逐字来 (start → collect → finish, catch 收
+   * `failed` 不留悬挂 running 行), 因为「一次执行 = 一行」这个口径**只该有一份**。
    */
   private async recollect(
     market: string,
     before: OptionCoverageReport,
     spec: SnapshotCollectionSpec,
+    level: RemediationLevel,
   ): Promise<OptionCoverageReport> {
     const stats: SyncRunStats = emptyStats();
-    // 🚨 只重采**缺的那几票**, 不整轮重跑: 整轮会让已达标的票平白多一批 vendor 请求, 且在
-    // ② 级把 `premarket_backfill` 的痕盖到本来正常的票上。
-    await this.snapshot.collect(before.degraded.map(toWorkingInstrument), spec, stats);
+    const runId = await this.recorder.start(snapshotSyncType(market), {
+      // 🚨 两级各报自己是谁 —— 判据侧「只有 tick 算一轮」(#202) 据此把补救轮排除在计数外。
+      triggeredBy: level,
+      asOf: spec.sessionDate,
+    });
+    try {
+      // 🚨 只重采**缺的那几票**, 不整轮重跑: 整轮会让已达标的票平白多一批 vendor 请求, 且在
+      // ② 级把 `premarket_backfill` 的痕盖到本来正常的票上。
+      await this.snapshot.collect(before.degraded.map(toWorkingInstrument), spec, stats);
+      await this.recorder.finish(runId, deriveStatus(stats), stats);
+    } catch (err) {
+      // 顶层异常: 收成 failed, 不留 running 悬挂行 (同 dimension-executor)。
+      await this.recorder.finish(runId, 'failed', stats);
+      throw err;
+    }
     if (stats.failed > 0) {
       this.logger.warn(
         `[option-snapshot-remediation] ${market} 重采期间 ${stats.failed} 票失败: ` +

@@ -22,6 +22,7 @@ import {
   SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
   SyncOptionSnapshotUseCase,
 } from '../../src/marketdata/sync-option-snapshot.usecase';
+import { SyncRunRecorder } from '../../src/marketdata/sync-run.recorder';
 import { isTradingDayGateOpen } from '../../src/marketdata/trading-day-gate';
 import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
@@ -186,6 +187,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
         { collect } as unknown as SyncOptionSnapshotUseCase,
         prisma,
         adapter,
+        new SyncRunRecorder(prisma),
       );
       // ET 2026-08-18 10:00 (= 14:00Z) ⇒ us 业务日 = 2026-08-18。
       const NOW = new Date('2026-08-18T14:00:00Z');
@@ -349,6 +351,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
         snapshot,
         prisma,
         adapter,
+        new SyncRunRecorder(prisma),
       );
 
     const buildColdStart = () =>

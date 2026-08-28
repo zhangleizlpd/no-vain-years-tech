@@ -82,14 +82,20 @@ describe('#209 日报 findings 展开判据 (Testcontainers PG)', () => {
     status: string,
     findings: unknown,
     counts: { scanned?: number; ok?: number; failed?: number } = {},
+    /**
+     * 触发源 + 起跑时刻回拨(ms)。`latest` CTE 的选行判据「先 tick 后时刻」只有同时控住这两格
+     * 才测得了 —— 窗口恒 60s (上面那条耗时用例钉着它), 故回拨的是**起点**, 终点跟着走。
+     */
+    origin: { triggeredBy?: string; startedMsAgo?: number } = {},
   ): Promise<void> {
-    const now = new Date();
+    const startedAt = new Date(Date.now() - (origin.startedMsAgo ?? 60_000));
     await prisma.syncRun.create({
       data: {
         syncType,
         status,
-        startedAt: new Date(now.getTime() - 60_000),
-        finishedAt: now,
+        startedAt,
+        finishedAt: new Date(startedAt.getTime() + 60_000),
+        ...(origin.triggeredBy ? { triggeredBy: origin.triggeredBy } : {}),
         scanned: counts.scanned ?? 1,
         ok: counts.ok ?? 1,
         skipped: 0,
@@ -157,6 +163,57 @@ describe('#209 日报 findings 展开判据 (Testcontainers PG)', () => {
     expect(rows[0]?.unfinished).toBe(true);
     // 哨兵而非空串: 空字段会被 `IFS=$'\t'` 折叠掉, 其后各列在 bash 侧静默前移一位。
     expect(rows[0]?.elapsed_s).toBe('NULL');
+  });
+
+  it('🚨 latest: 按需轮排在 tick 之后, **不得**顶掉 tick 那一行', async () => {
+    // 每维度只有一行 ⇒ 那一行必须代表「按计划跑的那一轮」。补救轮 (23:40) 恒排在夜链 (23:00)
+    // 之后, 只按时刻取最新就会把「一次 1 票的补采」说成整个维度昨晚的成绩, 且夜链的 findings
+    // 连带被顶掉 —— 而那正是 #261 要看的那份。
+    await seedRun(
+      'sync:hk_option_daily_snapshot',
+      'success',
+      [
+        {
+          kind: 'reject',
+          symbol: 'hk:00700',
+          step: 'option_snapshot_guard',
+          rejected: 4,
+          contracts: ['HK.TCH260929P630000'],
+          violations: ['ask_below_intrinsic'],
+          violationSamples: ['HK.TCH260929P630000: ask 0 低于无套利下界 171.75'],
+        },
+      ],
+      { scanned: 3, ok: 3 },
+      { triggeredBy: 'tick', startedMsAgo: 3_600_000 },
+    );
+    await seedRun(
+      'sync:hk_option_daily_snapshot',
+      'success',
+      null,
+      { scanned: 1, ok: 1 },
+      { triggeredBy: 'same_day_retry', startedMsAgo: 60_000 },
+    );
+
+    const rows = await runPredicate();
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].scanned).toBe(3);
+    expect(rows[0].findings_digest).toContain('hk:00700');
+  });
+
+  it('latest: 窗口内一轮 tick 都没有 → 仍展示最新那一行 (这是排序, 不是过滤)', async () => {
+    // 「该维度今天没按计划跑」要靠别的判据喊, 不能靠让它从日报里整行消失来表达。
+    await seedRun(
+      'sync:hk_option_daily_snapshot',
+      'success',
+      null,
+      { scanned: 1, ok: 1 },
+      { triggeredBy: 'same_day_retry' },
+    );
+
+    const rows = await runPredicate();
+
+    expect(rows.map((r) => r.sync_type)).toEqual(['sync:hk_option_daily_snapshot']);
   });
 
   it('🚨 MUST ①: status=success 的行也要展开 —— 这正是「写了但没人读」的那一半', async () => {

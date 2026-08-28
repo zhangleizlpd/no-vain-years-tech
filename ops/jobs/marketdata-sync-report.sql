@@ -60,11 +60,26 @@
 --    时窗为「滚动 N 小时」而非日历「当日」: tick 22:00 起、报告次晨 09:00 跑, 跨午夜 ⇒「当日」
 --    会恒空。18h 回看恰好罩住昨晚 22:00 tick、排除前晚(35h 外)。
 
+-- 🚨 排序**先看是不是 tick 轮, 再看时刻** —— 日报每维度只有一行, 那一行必须代表「这个维度
+--    按计划跑的那一轮」。只按时刻取最新, 任何**按需轮**只要发生在 tick 之后就会顶掉它, 于是
+--    日报把一次 1 票的补采说成整个维度昨晚的成绩。
+--
+--    不是假设: #202 记的 08-23 实测, 一次建锚冷启动风暴半天产出 15 轮按需 run; 而补救轮
+--    (`same_day_retry` / `premarket_backfill`, #261 续) 自己开 SyncRun 行之后, hk 期权
+--    **每晚 23:40** 都会有一轮排在夜链之后。
+--
+--    ⚠️ 这是排序不是过滤: 窗口内一轮 tick 都没有时 (tick 没触发 / 周更维度落在窗外) 仍退回
+--    展示最新的那一行 —— 「该维度今天没有按计划跑」这件事本身要靠别的判据喊, 不能靠让它
+--    从日报里整行消失来表达。
+--
+--    `IS DISTINCT FROM` 而非 `<> 'tick'`: `triggered_by` 可为 NULL (#202 落列之前的历史行,
+--    以及任何没诚实上报触发源的路径), 而 `NULL <> 'tick'` 求值为 NULL, 排序位置随
+--    NULLS FIRST/LAST 默认值漂。`IS DISTINCT FROM` 恒返 true/false。
 WITH latest AS (
   SELECT DISTINCT ON (sync_type) *
   FROM marketdata.sync_run
   WHERE started_at >= now() - interval '18 hours'
-  ORDER BY sync_type, started_at DESC
+  ORDER BY sync_type, (triggered_by IS DISTINCT FROM 'tick'), started_at DESC
 ),
 entry AS (
   -- 🚨 MUST ②: `jsonb_typeof(...) = 'array'` 而**不是** `IS NOT NULL` —— 空态存的是 JSON 标量
