@@ -61,6 +61,15 @@ const DAY_MS = 86_400_000;
  */
 const TODAY = '2026-06-10';
 
+/**
+ * 谓词服务的市场（#267 起市场通用）—— **与 `.sql` 的 `markets` CTE 同源**。
+ *
+ * 🚨 这里多写 / 少写一个市场，本文件的布景就与谓词的判定面对不上：少写 ⇒ 该市场落 `unknown`
+ * ⇒ 全文件假红；多写 ⇒ 造了一个谓词根本不看的市场，白 seed 且掩盖真问题。
+ * ⇒ **改 `.sql` 的 `markets` 必须同时改这里**，下面那条「市场清单同源」用例就是拿来撞这个 drift 的。
+ */
+const PREDICATE_MARKETS = ['us', 'hk'] as const;
+
 /** `YYYY-MM-DD` → `@db.Date` 列的 UTC 零点 Date。 */
 const day = (s: string): Date => new Date(`${s}T00:00:00Z`);
 
@@ -100,12 +109,14 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
   });
 
   /**
-   * us 交易日历的**默认**布景（#276 三态闸的前提）：`[TODAY-60, TODAY+60]` 全部工作日为交易日，
+   * 交易日历的**默认**布景（#276 三态闸的前提）：`[TODAY-60, TODAY+60]` 全部工作日为交易日，
    * 覆盖声明恰为同一区间。
    *
-   * 🚨 **每个用例都要它** —— 少了它，`current_day` 落在「无声明」⇒ 三态判 `unknown` ⇒ 闸
-   * fail-closed 判红，本文件所有场景用例会整片变红且看起来像判据坏了。⇒ 放 `beforeEach`
-   * 而非 `beforeAll`：假期档那条用例要**删掉其中一行**，不能污染别的用例。
+   * 🚨 **两个市场都要 seed**（#267 起谓词是市场通用的）：谓词逐市场判，少了 hk 那份 ⇒ hk 落
+   * `unknown` ⇒ `max(code)` 恒 1 ⇒ 本文件**所有**用例整片变红，且看起来像判据坏了。
+   *
+   * 🚨 **每个用例都要它** ⇒ 放 `beforeEach` 而非 `beforeAll`：假期档那条用例要**删掉其中一行**，
+   * 不能污染别的用例。
    *
    * 🚫 **MUST NOT 只 seed `trading_day` 不 seed `calendar_coverage`**：那样无行的日子会落
    * `unknown` 而不是 `non-trading`，正是三态要分开的那两格。
@@ -119,12 +130,19 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
       // 周末不进 `trading_day`（真实形态如此）——它们落 `non-trading`，与 isodow 闸结论一致。
       if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) days.push(date);
     }
-    await prisma.tradingDay.createMany({
-      data: days.map((date) => ({ market: 'us', date, sessionKind: 'whole' })),
-    });
-    await prisma.calendarCoverage.create({
-      data: { market: 'us', coveredFrom: day(from), coveredTo: day(to), servedBy: 'futu' },
-    });
+    for (const market of PREDICATE_MARKETS) {
+      await prisma.tradingDay.createMany({
+        data: days.map((date) => ({ market, date, sessionKind: 'whole' })),
+      });
+      await prisma.calendarCoverage.create({
+        data: {
+          market,
+          coveredFrom: day(from),
+          coveredTo: day(to),
+          servedBy: market === 'us' ? 'futu' : 'static',
+        },
+      });
+    }
   }
 
   async function seedInstrument(code: string, market = 'us'): Promise<bigint> {
@@ -231,6 +249,22 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     [...summary.matchAll(/([a-z]{2}:[A-Za-z0-9.]+)=\d+\/\d+⚠缺/g)].map((m) => m[1]).sort();
 
   /**
+   * 取摘要里某个市场那一段（#267：谓词逐市场判，段间 ` || ` 连接、每段带 `US ` / `HK ` 前缀）。
+   *
+   * 🚨 找不到就当场失败而不是返空串 —— 返空会让所有基于该段的断言**静默退化成恒真**，
+   * 正是 testing.md §7.1 说的那种「交付了一条永远不会红的断言」。
+   */
+  const segmentOf = (summary: string, market: string): string => {
+    const prefix = `${market.toUpperCase()} `;
+    const seg = summary.split(' || ').find((s) => s.startsWith(prefix));
+    expect(
+      seg,
+      `摘要缺 ${market} 段（.sql 的 markets CTE 与 PREDICATE_MARKETS drift?）: ${summary.slice(0, 120)}`,
+    ).toBeDefined();
+    return seg as string;
+  };
+
+  /**
    * 🚨 **同判据两处实现的绊线**：同一批数据，SQL 与 TS 的**逐票结论必须一致**。
    * 返回两边一致的那份 degraded 票集，供各用例继续断言具体内容。
    */
@@ -238,11 +272,15 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     const { exitCode, summary } = await runPredicate();
     const tsReport = await check.evaluate('us', today);
 
-    const sqlDegraded = degradedFromSummary(summary);
+    // 🚨 #267 起谓词逐市场判、摘要分段 ⇒ 与 TS 侧比的必须是 **us 那一段**。拿整条摘要比会把
+    //    港股的 degraded 混进来，而 TS 侧这次调用问的只有 us —— 那不是 drift，是拿两个问题对答案。
+    const usSegment = segmentOf(summary, 'us');
+    const sqlDegraded = degradedFromSummary(usSegment);
     const tsDegraded = tsReport.degraded.map((u) => u.symbol).sort();
     expect(sqlDegraded).toEqual(tsDegraded);
-    // 退出码与 TS 侧的 status 必须同向（`no_subject` / `ok` 都是 0）。
-    expect(exitCode).toBe(tsReport.status === 'degraded' ? 1 : 0);
+    // 🚨 比的是 **us 段自己的红绿**，不是全局 `exit_code` —— 后者是两市场的 `max`，港股的红会
+    //    把它染红。用全局码比会让「港股缺口」伪装成「两侧判据 drift」。
+    expect(usSegment.includes('🔴')).toBe(tsReport.status === 'degraded');
     return { exitCode, degraded: sqlDegraded };
   }
 
@@ -451,7 +489,7 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     await seedSnapshots(pep, today);
 
     const before = await assertBothAgree();
-    const beforeSummary = (await runPredicate()).summary;
+    const beforeUs = segmentOf((await runPredicate()).summary, 'us');
     expect(before.degraded).toEqual([]);
 
     // 港股：基线日有 10 张、当日一张都没有 = 一个**整票缺口**。跨市场泄漏时它会被算进 us 的
@@ -459,9 +497,17 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     const tencent = await seedContracts('00700', 10, shift(today, 60), 'hk');
     await seedSnapshots(tencent, shift(today, -1));
 
-    expect(await assertBothAgree()).toEqual(before);
-    // SQL 侧摘要**逐字节**不变 —— 逐票数字也不许动，不只是 degraded 集合。
-    expect((await runPredicate()).summary).toBe(beforeSummary);
+    const after = await runPredicate();
+    // ① 不变式：**us 那一段逐字节不变** —— 逐票数字也不许动，不只是 degraded 集合。
+    //    🚨 #267 起比的是**段**不是整条摘要：整条现在必然变（港股多了自己的结论），拿整条比
+    //    只会逼着后人把这条断言删掉，而它保护的东西（跨市场隔离）恰恰一条都没变。
+    expect(segmentOf(after.summary, 'us')).toBe(beforeUs);
+    expect((await assertBothAgree()).degraded).toEqual([]);
+
+    // ② 反例臂：港股**自己**那段必须把这个整票缺口报出来。少了它，① 那条在「谓词根本不看港股」
+    //    的实现下也会绿 —— 那正是 #267 之前的状态，等于交付一条证不了任何事的断言。
+    expect(segmentOf(after.summary, 'hk')).toContain('hk:00700=0/10⚠缺');
+    expect(after.exitCode).toBe(1);
   });
 
   it('🚨 #255 基线日按市场取: us 昨日无行而港股有行时，基线必须退到 us 自己有行的那天', async () => {
@@ -478,7 +524,94 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     const report = await check.evaluate('us', today);
     expect(report.baselineDate).toBe(shift(today, -3));
     expect(report.status).toBe('ok');
-    expect(await assertBothAgree()).toEqual({ exitCode: 0, degraded: [] });
+    // us 侧达标（基线正确退到了 -3）；🚨 全局 `exitCode` 在此**必然是 1** —— 港股那份布景本身
+    // 就是个整票缺口（-1 有行、当日无行），#267 起它会被如实判出来。断言它而不是绕开它：
+    // 写成 `exitCode: 0` 会在 hk 判据真的坏掉时反而变绿。
+    expect((await assertBothAgree()).degraded).toEqual([]);
+    const { exitCode, summary } = await runPredicate();
+    expect(segmentOf(summary, 'us')).toContain('us:PEP=10/10');
+    expect(segmentOf(summary, 'hk')).toContain('hk:00700=0/10⚠缺');
+    expect(exitCode).toBe(1);
+  });
+
+  // ── ⑥b 港股进判定面（#267）：FR-051 那条通道不再只服务 us ─────────────────────────────
+  /**
+   * 🚨 本组存在的理由：#267 之前本谓词**只服务 us**，港股在「app 挂了也还在」这条独立通道上
+   * 是一片空白。#267 起谓词逐市场判（`.sql` 的 `markets` CTE），本组钉死三件事：
+   *   ① 港股缺口真的会被报出来（不是加了市场维但判据没接上）
+   *   ② 两个市场的**日历各判各的** —— 同一个日期可以一边 `trading` 一边 `non-trading`
+   *   ③ 市场清单在 `.sql` 与本文件之间同源（drift 绊线）
+   */
+  it('🚨 港股整票缺口 → exit 1 且指认到 hk 那只票 (#267: 通道不再只服务 us)', async () => {
+    const tencent = await seedContracts('00700', 8, shift(today, 60), 'hk');
+    await seedSnapshots(tencent, shift(today, -1)); // 基线日有、当日无
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(degradedFromSummary(segmentOf(summary, 'hk'))).toEqual(['hk:00700']);
+    expect(segmentOf(summary, 'hk')).toContain('hk:00700=0/8⚠缺');
+    // us 侧无布景 ⇒ 「无对象」，MUST NOT 被港股的红带成红。
+    expect(segmentOf(summary, 'us')).toContain('无对象');
+    expect(summary).not.toMatch(/[\t\n\r]/);
+  });
+
+  it('🚨 反例: 同一批港股合约当日到齐 → hk 段转绿, 证明缺口不是靠「hk 恒红」凑出来的', async () => {
+    const tencent = await seedContracts('00700', 8, shift(today, 60), 'hk');
+    await seedSnapshots(tencent, shift(today, -1));
+    await seedSnapshots(tencent, today);
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(0);
+    expect(segmentOf(summary, 'hk')).toContain('hk:00700=8/8');
+    expect(degradedFromSummary(segmentOf(summary, 'hk'))).toEqual([]);
+  });
+
+  /**
+   * 🚨 **两市场日历各判各的** —— 这是「一个探针服务两个市场」与「两个探针」相比最容易塌的一格：
+   * 共用一份日历判定会让 10-01（us 开市 / hk 休市）与 09-07（us 休市 / hk 开市）两类日子必错一边。
+   * prod 实查印证：`trading_day` 里 2026-10-01 有 us 行、无 hk 行；2026-09-07 反之。
+   */
+  it('🚨 同一个日期两市场判定相反: hk 休市 + us 开市 → hk 段不判、us 段照判', async () => {
+    const pep = await seedContracts('PEP', 5);
+    await seedSnapshots(pep, shift(today, -1));
+    const tencent = await seedContracts('00700', 5, shift(today, 60), 'hk');
+    await seedSnapshots(tencent, shift(today, -1));
+    // 当日两边都没采；只把 hk 那天从交易日历摘掉 ⇒ 期望 hk 不判、us 判红。
+    await prisma.tradingDay.delete({ where: { market_date: { market: 'hk', date: day(today) } } });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(segmentOf(summary, 'hk')).toContain('非交易日不判');
+    expect(segmentOf(summary, 'hk')).toContain('不在 hk 交易日历');
+    expect(segmentOf(summary, 'us')).toContain('🔴');
+    expect(degradedFromSummary(segmentOf(summary, 'us'))).toEqual(['us:PEP']);
+  });
+
+  it('🚨 反过来: us 休市 + hk 开市 → us 段不判、hk 段照判 (两向都验, 免得闸只对一个市场生效)', async () => {
+    const pep = await seedContracts('PEP', 5);
+    await seedSnapshots(pep, shift(today, -1));
+    const tencent = await seedContracts('00700', 5, shift(today, 60), 'hk');
+    await seedSnapshots(tencent, shift(today, -1));
+    await prisma.tradingDay.delete({ where: { market_date: { market: 'us', date: day(today) } } });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(segmentOf(summary, 'us')).toContain('不在 us 交易日历');
+    expect(degradedFromSummary(segmentOf(summary, 'hk'))).toEqual(['hk:00700']);
+  });
+
+  /**
+   * 🚨 **drift 绊线**：`.sql` 的 `markets` CTE 与本文件的 `PREDICATE_MARKETS` 必须同源。
+   * 少一个 ⇒ 该市场落 `unknown` 全文件假红；多一个 ⇒ 白 seed 一个谓词不看的市场。
+   * 直接从谓词源文件解析，**不内联复制清单**（复制 = 又一处会漂的真相）。
+   */
+  it('🚨 市场清单与谓词同源 (.sql 的 markets CTE ↔ PREDICATE_MARKETS)', () => {
+    const cte = /WITH markets\(market, tz, day_offset\) AS \(\s*VALUES([\s\S]*?)\n\),/.exec(
+      PREDICATE_SQL,
+    );
+    expect(cte, '谓词里找不到 markets CTE（形状变了就改这条正则，别删这条用例）').not.toBeNull();
+    const inSql = [...cte![1].matchAll(/\('([a-z]{2})'/g)].map((m) => m[1]).sort();
+    expect(inSql).toEqual([...PREDICATE_MARKETS].sort());
   });
 
   // ── ⑦ ET 周末闸：非交易日不判（三向可证伪）────────────────────────────────────────────
