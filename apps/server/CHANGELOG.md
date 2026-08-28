@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.39.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.1...server-v0.39.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* **marketdata:** [#255](https://github.com/zhangleizlpd/no-vain-years-tech/issues/255) 覆盖率判据与两级补救按市场收窄 —— 美股补救不再跨市场采港股并按美股语义写库 ([#265](https://github.com/zhangleizlpd/no-vain-years-tech/issues/265)) ([8a1b3c5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/8a1b3c5db5e324a655e907afc2f3176b79dfaca9))
+* **marketdata:** [#255](https://github.com/zhangleizlpd/no-vain-years-tech/issues/255) 订正跨市场写进港股的 1110 行快照 —— 修标签 + 删 1106 行冗余 ([#268](https://github.com/zhangleizlpd/no-vain-years-tech/issues/268)) ([2b8d26d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/2b8d26d70a3cc3d4524961ebd987301a7cac85ce))
+* **marketdata:** [#261](https://github.com/zhangleizlpd/no-vain-years-tech/issues/261) 硬门拒绝留痕带上数字 —— 只有违规码判不出「ask 差内在价值多少」 ([#264](https://github.com/zhangleizlpd/no-vain-years-tech/issues/264)) ([61b9371](https://github.com/zhangleizlpd/no-vain-years-tech/commit/61b93714bc3d72d6baae7499cefffa547dbfa95c))
+
 ## [0.39.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.0...server-v0.39.1) (2026-08-28)
 
 
