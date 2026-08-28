@@ -38,6 +38,8 @@ interface FakeSnapshotRow {
 
 const PEP = { id: 1n, market: 'us', code: 'PEP' };
 const VICI = { id: 2n, market: 'us', code: 'VICI' };
+/** #255: 另一个市场的票 —— 用来验「市场谓词真的在过滤」，而不只是被传了下去。 */
+const TENCENT = { id: 3n, market: 'hk', code: '00700' };
 
 let nextContractId = 1n;
 
@@ -50,7 +52,7 @@ function snap(
 ): FakeSnapshotRow {
   return {
     contractId,
-    contractCode: `US.${underlying.code}${expiryDate.replaceAll('-', '').slice(2)}P${contractId}`,
+    contractCode: `${underlying.market.toUpperCase()}.${underlying.code}${expiryDate.replaceAll('-', '').slice(2)}P${contractId}`,
     sessionDate,
     expiryDate,
     underlying,
@@ -74,26 +76,52 @@ function carriedTo(rows: FakeSnapshotRow[], sessionDate: string): FakeSnapshotRo
   return rows.map((r) => ({ ...r, sessionDate }));
 }
 
+/**
+ * 🚨 #255: 替身**必须镜像市场谓词**。真实侧四处查询都带 `contract.underlying.market`，替身若把
+ * 它当不存在，那三处过滤在单测里就永远是空操作 —— 而那正是本 issue 的形态（判据看起来在，实际
+ * 不筛任何东西，且不报错）。下面每个 `where` 都显式读它。
+ */
+const marketOf = (where: { contract?: { underlying?: { market?: string } } }): string | undefined =>
+  where.contract?.underlying?.market;
+
 function makeCheck(rows: FakeSnapshotRow[], threshold = 1): OptionSnapshotCoverageCheck {
   const prisma = {
     optionDailySnapshot: {
-      // 基线日 = 存在快照行的、早于 sessionDate 的最近一个交易日。
-      findFirst: vi.fn(async (args: { where: { sessionDate: { lt: Date } } }) => {
-        const before = iso(args.where.sessionDate.lt);
-        const dates = [...new Set(rows.map((r) => r.sessionDate))].filter((d) => d < before).sort();
-        const last = dates.at(-1);
-        return last === undefined ? null : { sessionDate: day(last) };
-      }),
+      // 基线日 = 存在**该市场**快照行的、早于 sessionDate 的最近一个交易日。
+      findFirst: vi.fn(
+        async (args: {
+          where: { sessionDate: { lt: Date }; contract?: { underlying?: { market?: string } } };
+        }) => {
+          const before = iso(args.where.sessionDate.lt);
+          const market = marketOf(args.where);
+          const dates = [
+            ...new Set(
+              rows
+                .filter((r) => market === undefined || r.underlying.market === market)
+                .map((r) => r.sessionDate),
+            ),
+          ]
+            .filter((d) => d < before)
+            .sort();
+          const last = dates.at(-1);
+          return last === undefined ? null : { sessionDate: day(last) };
+        },
+      ),
       findMany: vi.fn(
         async (args: {
-          where: { sessionDate: Date; contract?: { expiryDate: { gte: Date } } };
+          where: {
+            sessionDate: Date;
+            contract?: { expiryDate?: { gte: Date }; underlying?: { market?: string } };
+          };
         }) => {
           const at = iso(args.where.sessionDate);
-          const notExpiredBefore = args.where.contract?.expiryDate.gte;
+          const notExpiredBefore = args.where.contract?.expiryDate?.gte;
+          const market = marketOf(args.where);
           return rows
             .filter(
               (r) =>
                 r.sessionDate === at &&
+                (market === undefined || r.underlying.market === market) &&
                 (notExpiredBefore === undefined || r.expiryDate >= iso(notExpiredBefore)),
             )
             .map((r) => ({
@@ -117,11 +145,16 @@ function makeCheck(rows: FakeSnapshotRow[], threshold = 1): OptionSnapshotCovera
     //    只由 IT 覆盖**（`marketdata.snapshot-integrity.it.spec.ts`, 真 PG）。此处不假装覆盖。
     instrument: {
       findMany: vi.fn(
-        async (args: { where: { optionContracts: { some: { expiryDate: { gte: Date } } } } }) => {
+        async (args: {
+          where: { market: string; optionContracts: { some: { expiryDate: { gte: Date } } } };
+        }) => {
           const asOf = iso(args.where.optionContracts.some.expiryDate.gte);
           const byId = new Map<string, { id: bigint; market: string; code: string }>();
           for (const r of rows) {
-            if (r.expiryDate >= asOf) byId.set(r.underlying.id.toString(), r.underlying);
+            // 名册也按市场收窄 —— 真实侧是 `instrument.market`, 替身镜像它。
+            if (r.expiryDate >= asOf && r.underlying.market === args.where.market) {
+              byId.set(r.underlying.id.toString(), r.underlying);
+            }
           }
           return [...byId.values()];
         },
@@ -165,6 +198,43 @@ const TUE = '2026-06-16';
 const WED = '2026-06-17';
 
 describe('OptionSnapshotCoverageCheck', () => {
+  // #255: 四处查询此前只有名册带市场谓词, 另三处是裸的 —— 「只有美股」那个前提写成了
+  // **没有过滤条件**, 所以它失效时没有任何既有用例会红。本组是那三处的单测面（真 PG 侧的
+  // 对照见 `marketdata.snapshot-integrity.it.spec.ts` 的两条 #255 用例）。
+  describe('🚨 市场收窄 (#255)', () => {
+    it('别的市场的整票缺口 MUST NOT 进 us 报告', async () => {
+      const pepMon = chain(PEP, MON, '2026-07-17', 10);
+      const check = makeCheck([
+        ...pepMon,
+        ...carriedTo(pepMon, TUE),
+        // 港股: 基线日 MON 有 10 张、当日 TUE 一张都没有 = 一个**整票缺口**。
+        // 跨市场泄漏时它会进 us 分母并被判缺 —— 那正是补救器拿 `['us']` 去重采它的入口。
+        ...chain(TENCENT, MON, '2026-07-17', 10),
+      ]);
+
+      const report = await check.evaluate('us', TUE);
+
+      expect(report.status).toBe('ok');
+      expect(report.underlyings.map((u) => u.symbol)).toEqual(['us:PEP']);
+      expect(report.market).toBe('us');
+    });
+
+    it('基线日按市场取: us 昨日无行而港股有行时, 基线退到 us 自己有行的那天', async () => {
+      const pepMon = chain(PEP, MON, '2026-07-17', 10);
+      const check = makeCheck([
+        ...pepMon, // us 只有 MON 与 WED 有行
+        ...carriedTo(pepMon, WED),
+        ...chain(TENCENT, TUE, '2026-07-17', 10), // TUE 只有港股有行
+      ]);
+
+      const report = await check.evaluate('us', WED);
+
+      // 不按市场取时 `max(session_date) < WED` = TUE（只有港股）⇒ us 分母整个来自港股。
+      expect(report.baselineDate).toBe(MON);
+      expect(report.status).toBe('ok');
+    });
+  });
+
   describe('🚨 逐票判定, 不是全局总数 (FR-045)', () => {
     /**
      * 🚨 **#231 的病灶形状**: 连缺**两轮**时, 该票在基线日也没有行 ⇒ 不进分母 ⇒ 比例层对它
@@ -180,7 +250,7 @@ describe('OptionSnapshotCoverageCheck', () => {
         1,
       );
 
-      const report = await check.evaluate(WED);
+      const report = await check.evaluate('us', WED);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
@@ -198,7 +268,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...pepMon, ...viciMon, ...carriedTo(pepMon, TUE)], 0.9);
       const err = spyError();
 
-      const report = await check.check(TUE);
+      const report = await check.check('us', TUE);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
@@ -216,7 +286,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...pepMon, ...survived]);
       const err = spyError();
 
-      const report = await check.check(TUE);
+      const report = await check.check('us', TUE);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded[0]).toMatchObject({ symbol: 'us:PEP', expected: 5, covered: 3 });
@@ -239,7 +309,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...expiring, ...surviving, ...carriedTo(surviving, TUE)]);
       const err = spyError();
 
-      const report = await check.check(TUE);
+      const report = await check.check('us', TUE);
 
       expect(report.status).toBe('ok');
       expect(report).toMatchObject({ expected: 40, covered: 40 });
@@ -254,7 +324,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...expiringToday]); // 06-16 一条都没采到
       const err = spyError();
 
-      const report = await check.check(TUE);
+      const report = await check.check('us', TUE);
 
       expect(report).toMatchObject({ status: 'degraded', expected: 12, covered: 0 });
       expect(err).toHaveBeenCalled();
@@ -267,7 +337,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([]);
       const err = spyError();
 
-      const report = await check.check(TUE);
+      const report = await check.check('us', TUE);
 
       expect(report).toMatchObject({ status: 'no_subject', baselineDate: null, expected: 0 });
       expect(err).not.toHaveBeenCalled();
@@ -278,7 +348,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(chain(PEP, MON, MON, 30));
       const err = spyError();
 
-      const report = await check.check(TUE);
+      const report = await check.check('us', TUE);
 
       expect(report).toMatchObject({ status: 'no_subject', baselineDate: MON, expected: 0 });
       expect(err).not.toHaveBeenCalled();
@@ -291,7 +361,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(pepMon); // 06-16 与 06-17 都没采
       const err = spyError();
 
-      const report = await check.check('2026-06-17');
+      const report = await check.check('us', '2026-06-17');
 
       expect(report).toMatchObject({
         status: 'degraded',
@@ -308,8 +378,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const pepMon = chain(PEP, MON, '2026-07-17', 20);
       const partial = carriedTo(pepMon.slice(0, 19), TUE);
 
-      const strict = await makeCheck([...pepMon, ...partial], 1).evaluate(TUE);
-      const relaxed = await makeCheck([...pepMon, ...partial], 0.9).evaluate(TUE);
+      const strict = await makeCheck([...pepMon, ...partial], 1).evaluate('us', TUE);
+      const relaxed = await makeCheck([...pepMon, ...partial], 0.9).evaluate('us', TUE);
 
       expect(strict.status).toBe('degraded');
       expect(strict.threshold).toBe(1);
@@ -324,7 +394,7 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(pepMon);
       const err = spyError();
 
-      const report = await check.evaluate(TUE);
+      const report = await check.evaluate('us', TUE);
 
       expect(report.status).toBe('degraded');
       // 补救链路要先静默判定、补回来之后才决定响不响 (FR-046: 两级都失败才升 ERROR)。
@@ -338,7 +408,7 @@ describe('OptionSnapshotCoverageCheck', () => {
         ...chain(VICI, MON, '2026-07-17', 2),
       ]);
 
-      const report = await check.evaluate(TUE);
+      const report = await check.evaluate('us', TUE);
 
       expect(report.underlyings.map((u) => [u.symbol, u.instrumentId])).toEqual([
         ['us:PEP', 1n],

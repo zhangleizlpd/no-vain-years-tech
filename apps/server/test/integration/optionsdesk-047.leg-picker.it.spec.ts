@@ -621,7 +621,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
     // `evaluate` 而非 `check`: 纯判定不告警 —— 本测量的是分母口径, 不是告警行为。
     const report = await new OptionSnapshotCoverageCheck(prisma, {
       optionCoverageThreshold: 1,
-    } as unknown as MarketdataSyncConfig).evaluate(TODAY);
+    } as unknown as MarketdataSyncConfig).evaluate('us', TODAY);
 
     // 读端: 当日到期已不可交易 ⇒ 只剩后到期那一条。
     expect(view.legs.map((l) => l.code)).toEqual([laterExpiry]);

@@ -277,6 +277,28 @@ export class SyncOptionSnapshotUseCase {
     spec: SnapshotCollectionSpec,
     stats: SyncRunStats,
   ): Promise<boolean> {
+    // 🚨 fail-closed: 工作集里每一只标的都必须属于本次声明的市场 (#255)。
+    //
+    // 下面整段 `ctx` 的三个时点列全部从 `spec` 派生, 而 `spec.marketScope` 决定了 OI 归属按
+    // 哪个市场的清算行为算 —— 混进别的市场的标的, 产出的就是「值对、标签错一天」的行, 且
+    // **不报错**: 唯一键第三段是 `source`, 两套语义的行可以并存, 读侧按 `max(quote_as_of)`
+    // 去重时错的那份还恒定胜出。2026-08-28 08:00 实撞 1110 行。
+    //
+    // 🚫 **MUST NOT 改成「过滤掉不属于本市场的」** —— 静默少采一批票与静默写错一批行同档,
+    //    只是方向相反。调用方传错了就该当场知道。
+    //
+    // ⚠️ 与 `manual-sync-session-guard.ts` 记的那次「断言下沉到 collect() 失败」**不是一回事**,
+    //    别把那条教训套到这里: 那条断言问的是「这一场收盘了没有」, 结论依赖墙上时钟 ⇒ IT 的
+    //    成败取决于运行时刻。本条是**纯结构不变式**, 零时间依赖、零 I/O, 与本方法上方
+    //    `resolveAttribution` 里那道 `marketScope.length !== 1` 的守卫同族。
+    const foreign = instruments.filter((i) => !spec.marketScope.includes(i.market));
+    if (foreign.length > 0) {
+      throw new Error(
+        `[option-snapshot] 工作集含 ${JSON.stringify(spec.marketScope)} 之外的标的: ` +
+          `${foreign.map((i) => `${i.market}:${i.code}`).join(', ')} ` +
+          `(归属语义按 marketScope 派生, 混市场会写出「值对、标签错一天」且不报错的行)`,
+      );
+    }
     // 全轮取一次: OI 的归属日只跟交易日历有关, 与标的无关。零工作集时也不该多查 —— 但它
     // 先于循环发生, 代价是 1 次索引查询, 换掉「每票重复查一遍」。
     // 066 T09: `eod` 路径的 OI 归属按市场分叉。该市场若在收盘当晚就把 OI 定稿, 此刻抓到的

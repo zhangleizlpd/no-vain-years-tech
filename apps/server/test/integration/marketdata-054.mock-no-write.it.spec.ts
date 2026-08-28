@@ -139,7 +139,7 @@ describe('054 kind=mock 下写手零写库 (Testcontainers PG + Redis, 全 boot 
     // `blocked`(不猜日子), 那样本用例验不到覆盖率判定这一档。
     await prisma.tradingDay.create({ data: { market: 'us', date: day(TODAY) } });
 
-    const outcome = await remediation.retrySameDay(NOW);
+    const outcome = await remediation.retrySameDay('us', NOW);
 
     expect(outcome.status).toBe('not_needed');
     expect(outcome.attempted).toEqual([]);
@@ -153,7 +153,7 @@ describe('054 kind=mock 下写手零写库 (Testcontainers PG + Redis, 全 boot 
     const before = await prisma.optionDailySnapshot.count();
 
     // 不上抛是被断言的行为本身: 既有写手整轮 try/catch, 专属错误走既有路径落日志 (plan D-4)。
-    const outcome = await remediation.retrySameDay(NOW);
+    const outcome = await remediation.retrySameDay('us', NOW);
 
     expect(outcome.sessionDate).toBe(TODAY);
     // 🚨 这两条把「零写库」与「压根没跑」区分开: 它确实进了采集分支, 且采集**没成功**。
@@ -168,7 +168,7 @@ describe('054 kind=mock 下写手零写库 (Testcontainers PG + Redis, 全 boot 
     await seedCoverageGap(BASELINE); // 分母来自 BASELINE, PREV 当天无行 ⇒ degraded
     const before = await prisma.optionDailySnapshot.count();
 
-    const outcome = await remediation.backfillPremarket(NOW);
+    const outcome = await remediation.backfillPremarket('us', NOW);
 
     expect(outcome.sessionDate).toBe(PREV);
     expect(outcome.attempted).toEqual(['us:PEP']);

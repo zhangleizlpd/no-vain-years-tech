@@ -938,4 +938,29 @@ describe('SyncOptionSnapshotUseCase — 归属判据 (#181)', () => {
       h.useCase.run([PEP], mixed, emptyStats(), inputAt('2026-09-18T22:00:00Z')),
     ).rejects.toThrow(/单市场 scope/);
   });
+
+  // #255: 上一条守的是 **scope 的形状**（几个市场），本条守的是 **工作集与 scope 对不对得上**。
+  // 两者都缺时，`collect` 会拿 `marketScope=['us']` 的归属语义去写港股行 —— `oi_as_of` 差一天、
+  // 唯一键第三段是 source 故两套行并存、读侧按 max(quote_as_of) 去重时错的那份恒定胜出。
+  // 2026-08-28 08:00 实撞 1110 行。
+  it('🚨 工作集含 marketScope 之外的标的 → collect 抛（#255）', async () => {
+    const h = makeHarness({ contracts: PEP_CONTRACTS });
+    const tencent = { id: 9n, market: 'hk', code: '00700' };
+
+    await expect(
+      h.useCase.collect(
+        [PEP, tencent],
+        {
+          sessionDate: '2026-09-18',
+          mode: 'eod',
+          marketScope: ['us'],
+          now: new Date('2026-09-18T22:00:00Z'),
+        },
+        emptyStats(),
+      ),
+    ).rejects.toThrow(/hk:00700/);
+    // 🚫 不是「过滤掉再继续」：一次外呼都不该发生，否则等于静默少采一批票。
+    expect(h.queries).toHaveLength(0);
+    expect(h.createMany).not.toHaveBeenCalled();
+  });
 });
