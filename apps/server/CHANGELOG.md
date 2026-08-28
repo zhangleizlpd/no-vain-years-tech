@@ -2,6 +2,18 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.40.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.3...server-v0.40.0) (2026-08-28)
+
+
+### Features
+
+* **marketdata:** [#267](https://github.com/zhangleizlpd/no-vain-years-tech/issues/267) 完整性探针改市场通用, 港股接入 FR-051 那条「app 挂了也还在」的通道 ([#279](https://github.com/zhangleizlpd/no-vain-years-tech/issues/279)) ([1548f4d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/1548f4d374920cc7f94ea450e5a9653c5747138a))
+
+
+### Bug Fixes
+
+* **marketdata:** [#276](https://github.com/zhangleizlpd/no-vain-years-tech/issues/276) 完整性探针的非交易日闸补上公众假期 —— 三态判据, 日历陈旧判红而非判绿 ([#277](https://github.com/zhangleizlpd/no-vain-years-tech/issues/277)) ([f5eae98](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f5eae9889e364ac90136d0bb57ca1d0d2d74c407))
+
 ## [0.39.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.2...server-v0.39.3) (2026-08-28)
 
 
