@@ -8,6 +8,8 @@ paths:
   - 'scripts/checks/check-identifier-boundary.ts'
   - 'scripts/*/setup.sh'
   - 'scripts/*/sync.sh'
+  - 'docs/improvements/**'
+  - '**/docker-compose*.yml'
 ---
 
 # 信息边界（path-triggered，触及主机配置 / 部署链 / 私有散文时自动加载）
@@ -18,9 +20,9 @@ paths:
 
 **永不**把下列内容写进 tracked 文件、commit message、PR body、spec / plan：
 
-公网 IP · `user@host` 串 · ECS/云主机实例 ID · 云账号 UID · VPC / vSwitch / 安全组 ID · 容器镜像仓实例 ID · CDN / DNS 账号 ID · 移动构建服务 project ID · operator 的家庭或办公出口 IP · 宿主机上**凭据文件**的确切路径
+公网 IP · `user@host` 串 · ECS/云主机实例 ID · 云账号 UID · VPC / vSwitch / 安全组 ID · 容器镜像仓实例 ID · CDN / DNS 账号 ID · operator 的家庭或办公出口 IP · 宿主机上**凭据文件**的确切路径
 
-**反过来这两类留公开**（初版划错过）：ssh-config alias（它本身就是代号，有识别性的是 alias→IP 的映射）、主机上的**仓**路径（文件系统路径，且 systemd `WorkingDirectory=` 必须字面量）。判据：泄漏它是否降低攻击成本 + 它能不能被 env 化，两个都「否」就别塞进仓外层 —— 那只会制造假阳性，而假阳性会让整层守门失去可信度。
+**反过来这三类留公开**（初版划错过）：ssh-config alias、主机上的**仓**路径、公开构建服务的 project ID（Expo / EAS）。判据：泄漏它是否降低攻击成本 + 它能不能被 env 化，两个都「否」就别塞进仓外层 —— 假阳性会让整层守门失去可信度（为什么 → canonical § 三条容易判错的边界）。
 
 **改为**：仓内只用**角色代号**；真值在 `ops/host/fleet.env.example` 声明变量名，运行时从 `~/.nvy/fleet.env`（dev 机）/ `/etc/nvy-fleet.env`（主机）/ GitHub Actions repo secrets 解析。
 
