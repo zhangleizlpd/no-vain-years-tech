@@ -132,20 +132,18 @@ export class OptionSnapshotCoverageCheck {
   ) {}
 
   /**
-   * 判定 + 告警。返回值同 {@link evaluate} (调用方可继续消费明细)。
-   *
-   * @param market      被核对的市场 (`us` / `hk`)
-   * @param sessionDate 被核对的**该市场业务日** `YYYY-MM-DD`
-   */
-  async check(market: string, sessionDate: string): Promise<OptionCoverageReport> {
-    const report = await this.evaluate(market, sessionDate);
-    this.alertIfDegraded(report);
-    return report;
-  }
-
-  /**
    * **纯判定, 不告警** —— 两级自动补救 (T022) 要在补回来之后才决定响不响 (FR-046「两级都失败
    * 才升 ERROR」), 合成一个方法就没法既判定又不响。
+   *
+   * 🚫 **MUST NOT 再加一个 `check()` 把本方法与 {@link alertIfDegraded} 合起来** (#262)：
+   * 曾经有过那么一个方法，**生产侧零调用方、只有 6 个测试在调**。它不是无害的便利糖 ——
+   * FR-046 的语义是「判完先补救，两级都失败才升 ERROR」，而一个「判完立刻告警」的入口
+   * 让**违反 FR-046 这件事变得可构造**。留着它再配一句「🚫 别调」的注释，等于把结构约束
+   * 降级成文档约束，而 #262 的立单理由恰恰就是「不变式只写在注释里、没有机器强制」。
+   * ⇒ 2026-08-28 删除（判据：Fowler《Refactoring》Dead Code —— **唯一使用者是测试时，
+   * 连测试一起删**；那 6 个测试当时验的是一个生产上永不发生的组合）。
+   * 真要「判完就响」的调用点，**显式写两行** `evaluate()` + `alertIfDegraded()`，
+   * 让「我此刻绕过了补救」在 diff 里看得见。
    *
    * 复杂度 O(n): 两次以 `session_date` 为入口的索引查询 (基线日行 + 当日行), 逐行一次 Map/Set
    * 操作; n = 两日快照行数之和。

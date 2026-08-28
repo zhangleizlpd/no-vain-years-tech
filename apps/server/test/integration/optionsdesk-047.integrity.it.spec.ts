@@ -260,7 +260,8 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     for (const c of pepContracts) await seedSnapshot(c.id, TUE);
     const err = spyError();
 
-    const report = await coverage.check('us', TUE);
+    const report = await coverage.evaluate('us', TUE);
+    coverage.alertIfDegraded(report);
 
     expect(report.status).toBe('degraded');
     expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
@@ -281,7 +282,8 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     await seedSnapshot(contracts[0].id, TUE);
     const err = spyError();
 
-    const report = await coverage.check('us', TUE);
+    const report = await coverage.evaluate('us', TUE);
+    coverage.alertIfDegraded(report);
 
     expect(report.degraded[0]).toMatchObject({ symbol: 'us:PEP', expected: 3, covered: 1 });
     expect(report.degraded[0].missingContractCodes.sort()).toEqual(
@@ -315,7 +317,8 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     for (const c of surviving) await seedSnapshot(c.id, NEXT_MON);
     const err = spyError();
 
-    const report = await coverage.check('us', NEXT_MON);
+    const report = await coverage.evaluate('us', NEXT_MON);
+    coverage.alertIfDegraded(report);
 
     expect(report).toMatchObject({
       status: 'ok',
@@ -340,7 +343,8 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     await seedContract(pep, 'PEP', '2026-07-17', 130);
     const err = spyError();
 
-    const report = await coverage.check('us', TUE);
+    const report = await coverage.evaluate('us', TUE);
+    coverage.alertIfDegraded(report);
 
     expect(report).toMatchObject({ status: 'no_subject', baselineDate: null, expected: 0 });
     expect(err).not.toHaveBeenCalled();

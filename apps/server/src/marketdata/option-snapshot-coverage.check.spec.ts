@@ -268,7 +268,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...pepMon, ...viciMon, ...carriedTo(pepMon, TUE)], 0.9);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
@@ -286,7 +287,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...pepMon, ...survived]);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded[0]).toMatchObject({ symbol: 'us:PEP', expected: 5, covered: 3 });
@@ -309,7 +311,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...expiring, ...surviving, ...carriedTo(surviving, TUE)]);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report.status).toBe('ok');
       expect(report).toMatchObject({ expected: 40, covered: 40 });
@@ -324,7 +327,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...expiringToday]); // 06-16 一条都没采到
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({ status: 'degraded', expected: 12, covered: 0 });
       expect(err).toHaveBeenCalled();
@@ -337,7 +341,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([]);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({ status: 'no_subject', baselineDate: null, expected: 0 });
       expect(err).not.toHaveBeenCalled();
@@ -348,7 +353,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(chain(PEP, MON, MON, 30));
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({ status: 'no_subject', baselineDate: MON, expected: 0 });
       expect(err).not.toHaveBeenCalled();
@@ -361,7 +367,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(pepMon); // 06-16 与 06-17 都没采
       const err = spyError();
 
-      const report = await check.check('us', '2026-06-17');
+      const report = await check.evaluate('us', '2026-06-17');
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({
         status: 'degraded',
