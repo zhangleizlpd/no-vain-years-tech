@@ -93,8 +93,39 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     await prisma.optionDailySnapshot.deleteMany();
     await prisma.optionContract.deleteMany();
     await prisma.instrument.deleteMany();
+    await prisma.tradingDay.deleteMany();
+    await prisma.calendarCoverage.deleteMany();
+    await seedCalendar();
     contractIds.clear();
   });
+
+  /**
+   * us 交易日历的**默认**布景（#276 三态闸的前提）：`[TODAY-60, TODAY+60]` 全部工作日为交易日，
+   * 覆盖声明恰为同一区间。
+   *
+   * 🚨 **每个用例都要它** —— 少了它，`current_day` 落在「无声明」⇒ 三态判 `unknown` ⇒ 闸
+   * fail-closed 判红，本文件所有场景用例会整片变红且看起来像判据坏了。⇒ 放 `beforeEach`
+   * 而非 `beforeAll`：假期档那条用例要**删掉其中一行**，不能污染别的用例。
+   *
+   * 🚫 **MUST NOT 只 seed `trading_day` 不 seed `calendar_coverage`**：那样无行的日子会落
+   * `unknown` 而不是 `non-trading`，正是三态要分开的那两格。
+   */
+  async function seedCalendar(): Promise<void> {
+    const from = shift(TODAY, -60);
+    const to = shift(TODAY, 60);
+    const days: Date[] = [];
+    for (let d = day(from).getTime(); d <= day(to).getTime(); d += DAY_MS) {
+      const date = new Date(d);
+      // 周末不进 `trading_day`（真实形态如此）——它们落 `non-trading`，与 isodow 闸结论一致。
+      if (date.getUTCDay() !== 0 && date.getUTCDay() !== 6) days.push(date);
+    }
+    await prisma.tradingDay.createMany({
+      data: days.map((date) => ({ market: 'us', date, sessionKind: 'whole' })),
+    });
+    await prisma.calendarCoverage.create({
+      data: { market: 'us', coveredFrom: day(from), coveredTo: day(to), servedBy: 'futu' },
+    });
+  }
 
   async function seedInstrument(code: string, market = 'us'): Promise<bigint> {
     const row = await prisma.instrument.create({
@@ -498,6 +529,84 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     const { exitCode, summary } = await runPredicate(MONDAY);
     expect(exitCode).toBe(1);
     expect(degradedFromSummary(summary)).toEqual(['us:PEP', 'us:VICI']);
+  });
+
+  // ── ⑦b 公众假期闸：三态 non-trading / unknown（#276）───────────────────────────────────
+  /**
+   * 🚨 本组存在的理由：⑦ 那道 isodow 闸**只挡周末**。美股公众假期是工作日 ⇒ 闸放行 ⇒ 当日零
+   * 快照 ⇒ 存在性层判全票缺席 ⇒ **假红**。2026-08-28 对 prod 注入 `2026-09-07`（劳动节）实测
+   * `exit 1` + 106 票全 `0/N⚠缺`，约 9–10 次/年。
+   *
+   * 判据 = `trading-day.rules.ts` 的三态（`trading` / `non-trading` / `unknown`），本组三条各钉一格。
+   */
+
+  /** 布景：TODAY 有完整数据（供基线与名册），当日换成一个**没有快照**的工作日。 */
+  async function seedHolidayScene(): Promise<string> {
+    const pep = await seedContracts('PEP', 2);
+    await seedSnapshots(pep, today);
+    // TODAY+7 = 2026-06-17（周三），本文件其余用例都不碰它。
+    return shift(today, 7);
+  }
+
+  it('🚨 公众假期 (工作日但不在 trading_day, 且落在已声明覆盖区间内) → exit 0, 不假红', async () => {
+    const holiday = await seedHolidayScene();
+    // 把它从交易日历里摘掉 = 制造一个「填过了、确实休市」的工作日。
+    await prisma.tradingDay.delete({
+      where: { market_date: { market: 'us', date: day(holiday) } },
+    });
+
+    const { exitCode, summary } = await runPredicate(holiday);
+    expect(exitCode).toBe(0);
+    expect(summary).toContain('非交易日不判');
+    expect(summary).toContain(`当日 ${holiday}`);
+    // 🚨 必须说明是**哪一档**放行的 —— 与周末档的文案不可混（混了就分不出闸走了哪条路）。
+    expect(summary).toContain('不在 us 交易日历');
+    expect(summary).not.toContain('ET 周末');
+    expect(summary).not.toMatch(/[\t\n\r]/);
+  });
+
+  /**
+   * 🚨 **反例向 ①** —— 同一个日子、同一批数据，只要它**在** `trading_day` 里就必须判红。
+   * 没有这条，上面那条等于「把判据整个关掉」也能绿。
+   */
+  it('🚨 反例: 同一个工作日留在 trading_day 里 → exit 1 (证明假期闸没把判据整个关掉)', async () => {
+    const workday = await seedHolidayScene(); // 不删 trading_day 那一行
+
+    const { exitCode, summary } = await runPredicate(workday);
+    expect(exitCode).toBe(1);
+    expect(degradedFromSummary(summary)).toEqual(['us:PEP']);
+  });
+
+  /**
+   * 🚨 **反例向 ②（极性）** —— 「无行」有两种：填过了确实没有（`non-trading`，放行）与根本没填到
+   * 这儿（`unknown`，判红）。把后者读成前者正是 `check-trading-day-read.ts` 记的那个 closed-world
+   * 病。本条钉死极性：覆盖区间**之外**的日子 MUST 判红，MUST NOT 静默 exit 0。
+   */
+  it('🚨 当日落在覆盖声明之外 → exit 1 fail-closed, 且说清是「判不出」不是「没事」', async () => {
+    await seedHolidayScene();
+    const beyond = shift(today, 120); // 声明只到 TODAY+60
+
+    const { exitCode, summary } = await runPredicate(beyond);
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('判不出');
+    expect(summary).toContain('覆盖区间之外');
+    // 🚫 不得退化成「达标」或「非交易日不判」——那两句都等于把 unknown 说成了确定答案。
+    expect(summary).not.toContain('完整性达标');
+    expect(summary).not.toContain('非交易日不判');
+    expect(summary).not.toMatch(/[\t\n\r]/);
+  });
+
+  it('🚨 无覆盖声明 (整行缺失) → 同样 exit 1, 而不是把「没人承诺过」读成休市', async () => {
+    const holiday = await seedHolidayScene();
+    await prisma.tradingDay.delete({
+      where: { market_date: { market: 'us', date: day(holiday) } },
+    });
+    await prisma.calendarCoverage.deleteMany();
+
+    const { exitCode, summary } = await runPredicate(holiday);
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('判不出');
+    expect(summary).toContain('缺');
   });
 
   // ── ⑧ 时区锚：不注入时「当日」必须是 ET 的今天 ────────────────────────────────────────
