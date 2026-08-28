@@ -253,7 +253,7 @@ jobs:
           node --test scripts/sdd-run/*.test.mjs
           bash scripts/hooks/pretooluse-local-verify-guard.test.sh scripts/hooks/pretooluse-local-verify-guard.sh
           bash scripts/hooks/pretooluse-convention-rubric.test.sh scripts/hooks/pretooluse-convention-rubric.sh
-          bash scripts/marketdata-dev-sync/sync.test.sh scripts/marketdata-dev-sync/sync.sh
+          bash scripts/jobs/marketdata-dev-sync/sync.test.sh scripts/jobs/marketdata-dev-sync/sync.sh
 
       - name: Enforce convention reachability (orphan detection, per .claude/rules/convention-authoring.md)
         # docs/conventions/*.md 必须从 CLAUDE.md / .claude/** / 兄弟 convention / ops/**

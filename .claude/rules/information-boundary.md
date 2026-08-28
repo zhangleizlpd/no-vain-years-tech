@@ -6,8 +6,8 @@ paths:
   - '.github/workflows/**'
   - 'docs/private/**'
   - 'scripts/checks/check-identifier-boundary.ts'
-  - 'scripts/*/setup.sh'
-  - 'scripts/*/sync.sh'
+  - 'scripts/**/setup.sh'
+  - 'scripts/**/sync.sh'
   - 'docs/improvements/**'
   - '**/docker-compose*.yml'
 ---

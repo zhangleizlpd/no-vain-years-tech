@@ -44,7 +44,7 @@
 # 前置：本地 dev schema 已迁移（首次需 `cd apps/server && pnpm prisma migrate deploy`）。
 #       本地缺 prod 已有的列 → \copy fail-fast（提示 migrate deploy），不静默丢列。
 #
-# 用法：pnpm dev-marketdata:sync   或   bash scripts/marketdata-dev-sync/sync.sh
+# 用法：pnpm dev-marketdata:sync   或   bash scripts/jobs/marketdata-dev-sync/sync.sh
 #
 set -euo pipefail
 

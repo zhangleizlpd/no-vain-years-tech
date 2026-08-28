@@ -57,9 +57,9 @@
 ## 用法
 
 ```bash
-bash scripts/quantwin-health/setup.sh                 # 装（默认 30 min）
-bash scripts/quantwin-health/setup.sh --interval 900  # 改成 15 min
-bash scripts/quantwin-health/uninstall.sh             # 摘
+bash scripts/jobs/quantwin-health/setup.sh                 # 装（默认 30 min）
+bash scripts/jobs/quantwin-health/setup.sh --interval 900  # 改成 15 min
+bash scripts/jobs/quantwin-health/uninstall.sh             # 摘
 
 launchctl kickstart -k gui/$(id -u)/com.nvy.quantwin-health   # 手动触发一次
 tail -20 ~/.nvy/quantwin-health/launchd.log                    # 看结果

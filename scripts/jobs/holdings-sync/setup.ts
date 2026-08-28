@@ -118,7 +118,7 @@ export function buildWrapper(baseUrl: string): string {
   // 跑 ~/.nvy 下的自包含副本（脱离 git checkout）；PATH 注入 node 目录供 tsx 的 env-node shebang 解析
   return [
     '#!/bin/zsh',
-    '# 由 scripts/holdings-sync/setup.ts 生成——请勿手改，重跑 setup 覆盖',
+    '# 由 scripts/jobs/holdings-sync/setup.ts 生成——请勿手改，重跑 setup 覆盖',
     `export PATH="${nodeDir}:$PATH"`,
     // 飞书公共配置（webhook/secret/机器名）——可选；缺文件 → feishu-send.sh 静默跳过
     '[ -f "$HOME/.nvy/feishu-alert.env" ] && { set -a; . "$HOME/.nvy/feishu-alert.env"; set +a; }',

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 对照表测试：marketdata-dev-sync/sync.sh 里那几个**纯函数**（不连 prod、不碰任何 DB）。
-# 用法: bash scripts/marketdata-dev-sync/sync.test.sh scripts/marketdata-dev-sync/sync.sh
+# 用法: bash scripts/jobs/marketdata-dev-sync/sync.test.sh scripts/jobs/marketdata-dev-sync/sync.sh
 #
 # 为什么是「抽函数体 + eval」而不是 source：sync.sh 是可执行 payload，顶层就开始 ssh prod +
 # TRUNCATE 本地库，一 source 就真跑同步。故按行抽出目标函数，在干净子 shell 里 eval。

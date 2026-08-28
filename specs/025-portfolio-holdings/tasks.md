@@ -29,7 +29,7 @@ created_at: '2026-06-07'
 - contract：`apps/server/openapi.json`（`nx run server:export-openapi`，canonical `node dist/main.js`）→ `packages/api-client/`（Orval `nx affected -t generate`）；**EP2 `asOf` nullable string 必须 `@ApiProperty({type:'string', nullable:true})`**（orval 陷阱 memory 实证）
 - mobile：屏体/hooks/helpers `apps/mobile/src/portfolio/`；薄路由 `apps/mobile/app/(app)/portfolio/holdings.tsx` + `apps/mobile/app/(app)/portfolio/trades/[symbol].tsx`（`parseSymbol` 复用 014 canonical `cn:603915`）；工具栏 `apps/mobile/src/portfolio/watchlist-main-screen.tsx`
 - e2e：hermetic `apps/mobile/e2e/`（**必 mock 003 refresh-token 端点** per memory）；contract-smoke `apps/mobile/e2e/contract-smoke/portfolio-holdings.contract.ts`
-- tool：`scripts/holdings-sync/`（fetch-tzzb.ts / upload-holdings.ts / README.md）；token 持久化 `~/.nvy/holdings-sync.json`（chmod 600）
+- tool：`scripts/jobs/holdings-sync/`（fetch-tzzb.ts / upload-holdings.ts / README.md）；token 持久化 `~/.nvy/holdings-sync.json`（chmod 600）
 - dev DB：`docker compose -f docker-compose.dev.yml up -d --wait` + `prisma migrate deploy`（mbw-poc-postgres:5433 / redis:6380）；**本地 server IT/smoke 前 `env -u OSS_*`**；新表落库后 `prisma generate` 先行；新文件首跑 `--skip-nx-cache`
 
 ---
@@ -75,8 +75,8 @@ created_at: '2026-06-07'
 
 **Goal**：FR-012 拉取+上传两段交付，端到端人工验收（不进 CI）。
 
-- [X] T018 [P] [US1] [Tool] **拉取段**：`scripts/holdings-sync/fetch-tzzb.ts`（playwright `chromium.connectOverCDP('http://127.0.0.1:18800')` attach 常驻调试 Chrome；未起则带 `--remote-debugging-port` + 固定 profile（`~/.nvy/chrome-tzzb-profile`）启动并提示人工登录；页面点「数据导出」→ note API 轮询 file_name → 页内 XHR 取二进制 base64 → 落 `汇总持仓_YYYYMMDD.xlsx`；**user_id/fund_key 从 CDP network 捕获实际导出请求提取，零硬编码**；重试 ×3）+ `scripts/holdings-sync/README.md`（首跑登录/日常一键/故障排查）
-- [X] T019 [US1] [Tool] **上传段**：`scripts/holdings-sync/upload-holdings.ts`（读 `~/.nvy/holdings-sync.json` refresh token → 调 003 refresh 换 access + **轮转回写新 refresh**（chmod 600）→ multipart POST EP1（asOf=文件名日期）→ 打印导入摘要表；首跑无 token → CLI 交互 SMS 登录（发码/验码端点）；`--base-url` 区分 dev/prod；`--file` 可指定跳过拉取）+ 入口串联 `pnpm tsx scripts/holdings-sync/sync.ts`（fetch → upload 一键）
+- [X] T018 [P] [US1] [Tool] **拉取段**：`scripts/jobs/holdings-sync/fetch-tzzb.ts`（playwright `chromium.connectOverCDP('http://127.0.0.1:18800')` attach 常驻调试 Chrome；未起则带 `--remote-debugging-port` + 固定 profile（`~/.nvy/chrome-tzzb-profile`）启动并提示人工登录；页面点「数据导出」→ note API 轮询 file_name → 页内 XHR 取二进制 base64 → 落 `汇总持仓_YYYYMMDD.xlsx`；**user_id/fund_key 从 CDP network 捕获实际导出请求提取，零硬编码**；重试 ×3）+ `scripts/jobs/holdings-sync/README.md`（首跑登录/日常一键/故障排查）
+- [X] T019 [US1] [Tool] **上传段**：`scripts/jobs/holdings-sync/upload-holdings.ts`（读 `~/.nvy/holdings-sync.json` refresh token → 调 003 refresh 换 access + **轮转回写新 refresh**（chmod 600）→ multipart POST EP1（asOf=文件名日期）→ 打印导入摘要表；首跑无 token → CLI 交互 SMS 登录（发码/验码端点）；`--base-url` 区分 dev/prod；`--file` 可指定跳过拉取）+ 入口串联 `pnpm tsx scripts/jobs/holdings-sync/sync.ts`（fetch → upload 一键）
 - [X] T020 [US1] [Manual] **端到端人工验收矩阵**（证据贴 PR-3 描述）：真实拉取（含登录态复用二跑）→ 上传 dev server → EP2/App 回显比对真实数据（SC-001 <10s 实测 + SC-004 全量核对）→ 重跑幂等（SC-002）→ refresh 轮转续期路径（state_branch #9：token 过期→续期→重试成功）→ spec frontmatter `status: implemented` 翻 + tasks 全 `[X]` 核对
 
 ---

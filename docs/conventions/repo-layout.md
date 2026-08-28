@@ -35,7 +35,7 @@
    - 否（自带 lockfile / venv / 纯配置）→ `services/<name>/`，必须有 `deploy/`
 3. **它是「定时跑」而不是「常驻」吗？**
    - 定时 + 跑在**生产宿主机** → `ops/jobs/`（见下「定时任务的三个家」）
-   - 定时 + 跑在**开发机** → `scripts/<name>/`
+   - 定时 + 跑在**开发机** → `scripts/jobs/<name>/`
    - 常驻 → 回第 2 步，它是个 service
 4. **不部署的东西**：给人读的 → `docs/`；被别的代码 import 的 → `packages/`；开发/CI 工具 → `scripts/`；运维用的宿主机配置或可执行 → `ops/host/` 或 `ops/bin/`
 
@@ -45,7 +45,7 @@
 | ----------------------- | ------------------------ | ------------------------------------------------- |
 | 生产宿主机（业务 host） | `ops/jobs/`              | —                                                 |
 | 某个 service 自己的机器 | `services/<svc>/deploy/` | **就近**：它与该 service 同生共死，跟着它一起部署 |
-| 开发机（macOS launchd） | `scripts/<name>/`        | 不进生产宿主机，判据同 `scripts/` 那条            |
+| 开发机（macOS launchd） | `scripts/jobs/<name>/`   | 不进生产宿主机，判据同 `scripts/` 那条            |
 
 三者的**逻辑**统一在注册表 [`ops/runbook/scheduled-tasks.md`](../../ops/runbook/scheduled-tasks.md)（机器强制：`check-scheduled-tasks.ts`），不需要文件系统也统一。
 

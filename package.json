@@ -11,14 +11,14 @@
   "scripts": {
     "postinstall": "if command -v git >/dev/null 2>&1; then lefthook install; fi",
     "db:migrate": "tsx scripts/prisma-migrate.ts",
-    "holdings:sync": "tsx scripts/holdings-sync/sync.ts",
-    "holdings:fetch": "tsx scripts/holdings-sync/fetch-tzzb.ts",
-    "holdings:upload": "tsx scripts/holdings-sync/upload-holdings.ts",
-    "holdings:setup": "tsx scripts/holdings-sync/setup.ts",
-    "holdings:uninstall": "tsx scripts/holdings-sync/uninstall.ts",
-    "dev-marketdata:sync": "bash scripts/marketdata-dev-sync/sync.sh",
-    "dev-marketdata:setup": "bash scripts/marketdata-dev-sync/setup.sh",
-    "dev-marketdata:uninstall": "bash scripts/marketdata-dev-sync/uninstall.sh"
+    "holdings:sync": "tsx scripts/jobs/holdings-sync/sync.ts",
+    "holdings:fetch": "tsx scripts/jobs/holdings-sync/fetch-tzzb.ts",
+    "holdings:upload": "tsx scripts/jobs/holdings-sync/upload-holdings.ts",
+    "holdings:setup": "tsx scripts/jobs/holdings-sync/setup.ts",
+    "holdings:uninstall": "tsx scripts/jobs/holdings-sync/uninstall.ts",
+    "dev-marketdata:sync": "bash scripts/jobs/marketdata-dev-sync/sync.sh",
+    "dev-marketdata:setup": "bash scripts/jobs/marketdata-dev-sync/setup.sh",
+    "dev-marketdata:uninstall": "bash scripts/jobs/marketdata-dev-sync/uninstall.sh"
   },
   "pnpm": {
     "overrides": {
