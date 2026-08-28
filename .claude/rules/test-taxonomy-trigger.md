@@ -24,11 +24,7 @@ paths:
 
 1. **默认写 Small**（`*.spec.ts` + 与源码 colocate）。需要容器 / 浏览器 / 本机 server 才往下。
 2. **先试 test double** 换掉那个依赖。换得掉就换（配比锚 ~80% narrow / ~15% integration / ~5% e2e）。
-3. **换不掉 → `*.it.spec.ts`**，文件头写一行「为什么必须要真 X」。**PG 绝不自己起容器**，从 `test/_support/isolated-db.ts` 三入口取：
-   - 只要 PG → `setupIsolatedDb()`
-   - PG + Redis → `setupIsolatedStores()`
-   - 自己要跑 `migrate deploy` 并验证其产物 → `setupEmptyDb()`
-   - **只要 Redis、不要 PG → 自起 `RedisContainer`**（三入口都会白克隆一个用不上的 PG 库）
+3. **换不掉 → `*.it.spec.ts`**，文件头写一行「为什么必须要真 X」。**PG 别自己起容器**（唯一蓄意例外 = 把容器 ID 交给外部脚本的 probe-independence 那类，见矩阵 §1），入口从 `test/_support/isolated-db.ts` 头部那张表选（只要 PG / PG + Redis / 自跑 `migrate deploy` 各一个；**只要 Redis 不要 PG → 自起 `RedisContainer`**）。
 4. **要打真 vendor** → 包进 `describe.skipIf(!RUN_<VENDOR>_IT)`，并把 env 名登记进 `scripts/checks/check-env-sync.ts` 的 `ALLOWLIST`。
    ⚠️ 这些 env **无任何 workflow 设置 = 恒 skip**。「测试全绿」对它们覆盖的契约**不构成证据**。
 5. **位置**：Narrow colocate / Broad 进 `test/` —— 惯例而非硬约束，存量例外都是蓄意的，别当缺口补。
@@ -49,7 +45,7 @@ paths:
 
 ## 单源真理
 
-- 分类学完整版（两个轴为什么正交、命名决策记录、存量 grandfather 规则、规范自身怎么验）→ [`docs/conventions/testing.md`](../../docs/conventions/testing.md)
+- 分类学完整版（两个轴为什么正交、命名决策记录、存量 grandfather 规则、规范自身怎么验）→ [`docs/conventions/testing.md`](../../docs/conventions/testing.md)。**反例臂怎么选**：被测对象是收敛 / 回收 / 对账类、「最终状态」守不住顺序时，换观察面到操作作用域（命中几行 / 调了几次 / 顺序）→ testing.md §7.1，别交付恒真断言
 - 各类测试跑在哪个环境、吃什么 env、隔离到什么级别、常驻陷阱 → [`docs/conventions/test-environment-matrix.md`](../../docs/conventions/test-environment-matrix.md)
 - 照抄结构的测试样板 → [`docs/conventions/golden-sample-registry.md`](../../docs/conventions/golden-sample-registry.md)
 - 本地怎么跑、哪些失败是环境骗你的 → [`docs/conventions/local-verification.md`](../../docs/conventions/local-verification.md)

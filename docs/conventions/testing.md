@@ -67,7 +67,7 @@
 
 `apps/mobile/e2e/`（Playwright + contract-smoke，全 Medium）与 `apps/mobile/src/`（vitest，全 Small）**各自只有一档**，目录本身就是判据，故不要求后缀（`scripts/checks/` 的治理检查单测同理，全 Small）。
 
-**后缀的职责是在同一个 runner 内部分档** —— server 的 vitest 同时装三档，才必须靠它。守卫替这些单一档目录守住「保持单一档」（§6 不变量 4、6、7），vendor 门控（不变量 2）也随扫描一并覆盖它们。守不住的是「e2e 真 hermetic」—— `page.goto` 打真外网静态判不出，那仍是 review 的事。
+**后缀的职责是在同一个 runner 内部分档** —— server 的 vitest 同时装三档，才必须靠它。守卫替这些单一档目录守住「保持单一档」（§6 不变量 4、6、7），vendor 门控（不变量 2）也随扫描一并覆盖它们。e2e hermetic 只有 GET `/me` 边界被 `check-e2e-seed-auth-mock` 机器守（lefthook + PR 门）；`page.goto` 打真外网静态判不出，仍是 review 的事 —— 纪律 canonical 在 [`.claude/rules/mobile-e2e-hermetic.md`](../../.claude/rules/mobile-e2e-hermetic.md)。
 
 ### 2.3 为什么 Small 这条线值钱
 
@@ -106,12 +106,7 @@ Google ch11 的定义 🟢：
    - 不需要 → `*.spec.ts`，与源码 colocate。**这是默认选项**。
    - 需要 → 继续第 2 步。
 2. **能不能用 test double 换掉那个依赖？** 能就换 —— Google 的配比锚是 **~80% narrow-scoped 小测试 / ~15% integration / ~5% e2e** 🟢。换不掉再往下。
-3. **写成 `*.it.spec.ts`**，并在文件头写一行「为什么必须要真 X」。**PG 别自己起容器**，从三个入口取：
-   - 只要 PG → `setupIsolatedDb()`
-   - 要 PG + Redis → `setupIsolatedStores()`
-   - **自己要跑 `migrate deploy` 并验证其产物** → `setupEmptyDb()`
-   - **只要 Redis、不要 PG** → 自起 `RedisContainer`（Redis 蓄意每文件独立，理由见矩阵 §1；三个入口都会附带克隆一个用不上的 PG 库。先例 = `src/alert/*.processor.it.spec.ts`）
-   - 详细适用条件在 `apps/server/test/_support/isolated-db.ts` 头部。**选错就是净退化或把被测对象抽掉。**
+3. **写成 `*.it.spec.ts`**，并在文件头写一行「为什么必须要真 X」。**PG 别自己起容器**（唯一蓄意例外：把自己容器 ID 交给外部脚本、被测通路不经 node 的那类，如 `marketdata.calendar-044.probe-independence`，见矩阵 §1），从 `apps/server/test/_support/isolated-db.ts` 头部那张表选入口（只要 PG / PG + Redis / 自跑 `migrate deploy`）—— **选错就是净退化或把被测对象抽掉**。**只要 Redis、不要 PG** → 自起 `RedisContainer`（Redis 蓄意每文件独立，理由见 `isolated-db.ts` 🚨 段；三入口都会附带克隆一个用不上的 PG 库。先例 = `src/alert/*.processor.it.spec.ts`）。
 4. **要打真 vendor / 真外网？** 把该块包进 `describe.skipIf(!RUN_<VENDOR>_IT)`（默认 skip），并把那个 env 名登记进 `scripts/checks/check-env-sync.ts` 的 `ALLOWLIST`（gate flag 是测试开关、非 application config，不进 `.env.example`；登记注释写明消费它的 spec。漏登不用怕——该 check 的 `process.env` 引用扫描会直接拦红）。
    - 整个文件都是真 vendor → 文件名用 **`*.vendor.spec.ts`**
    - 只是 Medium 文件里的一个块 → 文件名**保持 `*.it.spec.ts`**（§2.1）
@@ -158,8 +153,8 @@ Google ch11 的定义 🟢：
 - **静态守卫看不见运行时真相** —— 它扫的是 import，抓不到动态 require / 间接网络调用。要证明 Small 真的零外部依赖，得用**运行时探针**（拦 `net.connect` / `dns.lookup` / `child_process`）跑一遍，而不是信静态扫描。
 - **两臂对照才算实证** —— 「跑了绿」不构成证据；必须同时给出「反例存在时它会红」的那一臂。
 - **注意工具自身的假绿** —— 如 nx 对只改 env 的对照实验会命中缓存回放（见 `local-verification.md` §4）。
-- 🚨 **替身数据的「形状」包含长度 / 网络模式 / 链路位置**，不只是取值合法 —— 形状不对，测试绿是运气。2026-08-04 一天三例，**全是本机全绿、真环境当场崩**：① 假 token 12 字符 vs 生产 48 ⇒ nginx `map_hash` 桶宽不够、起不来 ② 本机 bridge + 端口映射 vs 生产 `network_mode: host` ⇒ 镜像自带 `default.conf` 抢 80 端口 ③ 只拦 `iptables INPUT` vs docker 发布端口走 `FORWARD` ⇒ 宿主服务挡住了、容器端口完全没挡住（**只有从对端真打才看得见**）。
-- **本节适用面不止「本约定」** —— 任何**会被长期依赖的检查**（部署自检 / 模板占位自检 / 覆盖矩阵）同样适用。同日两条恒真检查即为反例：部署自检断言「401=路由存在」而未注册路径也返 401；模板自检 `grep '__FILL_'` 而注释里也含该字样 ⇒ **恒有输出 = 恒无输出**，判据必须能区分「过」与「不过」。
+- 🚨 **替身数据的「形状」包含长度 / 网络模式 / 链路位置**，不只是取值合法 —— 形状不对，测试绿是运气（**只有从对端真打才看得见**）。
+- **本节适用面不止「本约定」** —— 任何**会被长期依赖的检查**（部署自检 / 模板占位自检 / 覆盖矩阵）同样适用：**恒有输出 = 恒无输出**，判据必须能区分「过」与「不过」。两类的仓内实例（2026-08-04 一天五例，全是本机全绿、真环境当场崩）见 [08-27 替身形状与恒真检查实例](../improvements/2026-08/08-27-replica-shape-and-tautological-checks.md)。
 
 ### 7.1 反例臂怎么选：先问「错误实现的最终状态会不同吗」
 
@@ -186,6 +181,4 @@ Google ch11 的定义 🟢：
 | 「术语叫什么不重要，选定并贯彻才重要」                                                                                                   | [Fowler, Practical Test Pyramid](https://martinfowler.com/articles/practical-test-pyramid.html)                    | 🟢 一手原文           |
 | NestJS 官方结构 = 两个 runner 两个 root（`rootDir:"src"` + `testRegex:".*\.spec\.ts$"` / `rootDir:"."` + `testRegex:"\.e2e-spec\.ts$"`） | [nestjs/typescript-starter](https://github.com/nestjs/typescript-starter) 的 `package.json` + `test/jest-e2e.json` | 🟢 一手配置           |
 | vitest `--project <name>` 过滤、projects 间配置不继承                                                                                    | [Vitest Test Projects](https://v3.vitest.dev/guide/projects)                                                       | 🟢 一手文档           |
-| Google 内部 size 的**时限**（60s/300s/900s）                                                                                             | 仅见二手转述，一手页本机不可达                                                                                     | 🟠 **二手，故不采纳** |
-
-> 📌 抓这些源时的坑：部分域名本机不可达，而 `WebFetch` 对它们**无限挂死不报错**。抓任何新域名前先 `curl -sS -m 8 --noproxy '*' -o /dev/null -w '%{http_code}' <url>`。
+| Google 内部 size 的**时限**（60s/300s/900s）                                                                                             | 仅见二手转述，未取得一手页                                                                                         | 🟠 **二手，故不采纳** |
