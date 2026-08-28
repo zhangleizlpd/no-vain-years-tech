@@ -168,7 +168,7 @@ type VendorConstraintProfile = {
 
 - [ADR-0032](0032-backend-bounded-context.md) — Backend Bounded Context Split（新 context 流程）
 - [ADR-0043](0043-server-flat-module-paradigm.md) §4 — port triage（本 ADR 的扩展基底）
-- [ADR-0033](0033-cross-context-communication-via-outbox.md) — 跨 context 通信（portfolio→marketdata 读走 R2）
+- [ADR-0033](0033-outbox-cross-context-comm.md) — 跨 context 通信（portfolio→marketdata 读走 R2）
 - PRD: `docs/prd/portfolio/portfolio-03-data-provider-tech-design.md`（§7 被本 ADR 取代）
 - Master plan: `docs/private/plans/2026-06/06-02-portfolio-marketdata-master.md`（含子 plan 1 访问层 / 子 plan 2 同步）
 - 复用：`apps/server/src/auth/sms-gateway.port.ts` + `config/sms.config.ts` + `auth/cockatiel-retry.executor.ts`

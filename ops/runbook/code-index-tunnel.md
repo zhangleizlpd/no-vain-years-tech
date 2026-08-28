@@ -35,7 +35,7 @@ app                              index
 
 ## 前置：安全组（你在两账号控制台改，我做不了）
 
-阿里云安全组由控制台管（per `reference_aliyun_swas_ufw_incompat`，OS 层 ufw 不兼容）。两条入方向规则：
+阿里云安全组由控制台管（SWAS 与 OS 层 ufw 不兼容，见 ADR-0026 § A-Tight v2「SWAS bootstrap」行）。两条入方向规则：
 
 1. **62（账号 A 控制台）**：入方向放行 **UDP 51820**，源 = `$NVY_APP_HOST/32`（仅 `app`）。**不要**放行 TCP 7700 公网（保持拦）。
 2. **77（账号 B 控制台）**：入方向放行 **UDP 51820**，源 = `$NVY_INDEX_HOST/32`（仅 `index`）。

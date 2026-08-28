@@ -1,6 +1,6 @@
 # 治两条 nightly 连红根因（P4.8）—— 55/40 天恒红都是「单测试出生即坏」
 
-> 2026-08-03。ship = #830；plan 归属 = [08-02 环境 × 测试体系重构](../../plans/2026-08/08-02-env-test-architecture-refactor.md) P4.8。
+> 2026-08-03。ship = #830；plan 归属 = [08-02 环境 × 测试体系重构](../../private/plans/2026-08/08-02-env-test-architecture-refactor.md)（本机私有，未公开） P4.8。
 > 矩阵 T-3 已回写；本文是取证过程与时点数据的归档。
 
 ## 症状与错误认知

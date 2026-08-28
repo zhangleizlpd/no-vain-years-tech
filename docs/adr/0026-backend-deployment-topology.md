@@ -43,13 +43,13 @@ sunset_trigger: |
 
 | #   | 决策点         | 锁定值                                                                | 联动 ADR / Memory                                                                                                                                                                                                       |
 | --- | -------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Compute 形态   | **SWAS 单实例**（复用既有同一台）                                     | memory [`reference_aliyun_swas_ufw_incompat`](memory)                                                                                                                                                                   |
+| D1  | Compute 形态   | **SWAS 单实例**（复用既有同一台）                                     | SWAS 与 OS 层 ufw 不兼容，安全组只走阿里云控制台（见下表 SWAS bootstrap 行）                                                                                                                                            |
 | D2  | DB 托管        | **SWAS 同机 docker compose `postgres:16-alpine`**                     | drop + recreate（`prisma migrate deploy` + seed），不保留既有 Java Flyway schema                                                                                                                                        |
 | D3  | Redis 托管     | **SWAS 同机 docker compose `redis:7-alpine`**                         | drop + `FLUSHALL`，不保留既有 keys                                                                                                                                                                                      |
 | D4  | Secrets 注入   | **`--env-file .env.production`（docker compose CLI flag）**           | deploy.yml 用 `docker compose --env-file .env.production`；文件权限 + .gitignore 双保险；[ADR-0037](0037-security-credentials-governance.md) § secrets 的 `secrets:` 段 + `/run/secrets` 是未来硬化（Proposed，未实装） |
 | D5  | 镜像 registry  | **阿里云 ACR 个人版 `mbw_xcs/mbw-app`**（namespace + repo 名 全复用） | drop-in image replacement；push 同 repo，`server-vX.Y.Z` tag（per [ADR-0042](0042-monorepo-release-strategy.md) component-in-tag）+ `latest` 覆盖既有 latest                                                            |
 | D6  | CI/CD pipeline | **GitHub Actions → SSH deploy**（复用既有 workflow 体例 + secrets）   | secrets 复用：`APP_SSH_KEY` / `APP_HOST` / `APP_SSH_USER` / `ACR_USERNAME` / `ACR_PASSWORD`                                                                                                                             |
-| D7  | 备案 / 域名    | **复用 `api.xiaocaishen.me`**（已国内备案，接管不需重新备案）         | 解 memory [`reference_cf_workers_to_aliyun_ecs_525`](memory) 跨境问题                                                                                                                                                   |
+| D7  | 备案 / 域名    | **复用 `api.xiaocaishen.me`**（已国内备案，接管不需重新备案）         | 解 CF → 未备案国内 ECS 525 跨境问题（见 [ADR-0025](0025-frontend-cloudflare-pages-expo-web.md)）                                                                                                                        |
 
 ### A-Tight v2 拓扑细则
 
@@ -59,7 +59,7 @@ sunset_trigger: |
 | 对象存储       | **直接接 `mbw-oss` bucket + RAM 子用户 `mbw-server`**（复用既有已 provisioned）— 不启用 MinIO                                                      |
 | Email 通道     | **Resend HTTPS API**（复用既有 `RESEND_API_KEY` + `sender@xiaocaishen.me` DKIM/SPF）；mono M1.1 阶段不主动发 email，但 SDK + secrets 配置就位      |
 | HTTPS / 反代   | **Nginx 反代 + Let's Encrypt SSL** — 复用既有 nginx 配 + 证书 + reverse-proxy path                                                                 |
-| SWAS bootstrap | **跳 ufw 整段**（per memory [`reference_aliyun_swas_ufw_incompat`](memory)）— SWAS 简化网络模型与 ufw default deny 冲突 → 管理面失联               |
+| SWAS bootstrap | **跳 ufw 整段**（2026-05 实证，本行即 SoT）— SWAS 简化网络模型与 ufw default deny 冲突 → 管理面失联                                                |
 | 内存预算       | **Node ~500MB-1GB（相较此前 JVM 1.5g）** — 2c4g SWAS 余量更宽（Node + PG + Redis + Nginx ≈ 1.8GB，低于此前 JVM 部署 2.86GB），不需调 `-Xmx` 类参数 |
 
 ### 部署切换（cutover）流程
@@ -131,6 +131,6 @@ sunset_trigger: |
 - [ADR-0018](0018-backend-language-pivot.md)（backend pivot to TS/NestJS）
 - [ADR-0037](0037-security-credentials-governance.md)（secrets 注入路径 D4）
 - [ADR-0042](0042-monorepo-release-strategy.md)（component-in-tag `server-vX.Y.Z` D5）
-- memory `reference_aliyun_swas_ufw_incompat`（SWAS+ufw 不兼容实证）
-- memory `reference_cf_workers_to_aliyun_ecs_525`（备案 D7 驱动）
+- SWAS + ufw 不兼容实证（2026-05；原 memory 条目已退役，见 § A-Tight v2「SWAS bootstrap」行）
+- CF → 未备案国内 ECS 525 实证（备案 D7 驱动；见 [ADR-0025](0025-frontend-cloudflare-pages-expo-web.md)）
 - [docs/private/plans/2026-05/05-23-claude-config-meta-to-mono-p3-automation.md](../private/plans/2026-05/05-23-claude-config-meta-to-mono-p3-automation.md) sub-plan（Phase 3 build-image / deploy 落地）

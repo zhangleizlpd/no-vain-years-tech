@@ -14,7 +14,7 @@ sunset_trigger: |
 - Status: Accepted (2026-06-14)
 - Deciders: @zhangleizlpd
 - Tags: server / bounded-context / chat / sse-streaming / llm-provider
-- Relates: [ADR-0032](0032-backend-bounded-context.md)（bounded context 拆分框架 + sunset trigger）/ [ADR-0043](0043-server-flat-module-paradigm.md)（扁平贫血 + `*.rules.ts` 纯函数层）/ [ADR-0038](0038-fullstack-error-handling-ux-contract.md)（ProblemDetail 错误契约，lazy-hijack 前置异常走 Filter）/ [ADR-0052](0052-alert-bounded-context.md)（第 6 ctx alert，叶子 ctx + JWT 复用先例）/ [ADR-0047](0047-marketdata-pluggable-data-access.md)（vendor adapter + port 范式，复用其形）；实施载体 = [027-ai-chat-streaming](../../specs/027-ai-chat-streaming/spec.md)（plan D1 / D3 / D7）
+- Relates: [ADR-0032](0032-backend-bounded-context.md)（bounded context 拆分框架 + sunset trigger）/ [ADR-0043](0043-server-flat-module-paradigm.md)（扁平贫血 + `*.rules.ts` 纯函数层）/ [ADR-0038](0038-error-handling-ux-contract.md)（ProblemDetail 错误契约，lazy-hijack 前置异常走 Filter）/ [ADR-0052](0052-alert-bounded-context.md)（第 6 ctx alert，叶子 ctx + JWT 复用先例）/ [ADR-0047](0047-marketdata-pluggable-data-access.md)（vendor adapter + port 范式，复用其形）；实施载体 = [027-ai-chat-streaming](../../specs/027-ai-chat-streaming/spec.md)（plan D1 / D3 / D7）
 
 ## Context
 
