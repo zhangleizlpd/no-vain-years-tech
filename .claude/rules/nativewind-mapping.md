@@ -15,19 +15,19 @@ UI/UX 设计意图 → NativeWind className 翻译规则。
 
 所有视觉值一律走 Tailwind class，**禁** inline 字面量（`style={{padding:16}}` / hex / rgb / `8px`）。token 不够 → 改 `apps/mobile/src/theme/` 对应模块，**不**在业务代码 magic number / hex：
 
-| 类别 | class                                           | 缺 token 改                                    |
-| ---- | ----------------------------------------------- | ---------------------------------------------- |
-| 间距 | `p-*` / `m-*` / `gap-{xs\|sm\|md\|lg\|xl\|2xl}` | `theme/spacing.ts`                             |
-| 颜色 | `bg-brand-500` / `text-text` / `border-border`  | `theme/colors.ts`（danger/warning/success 等） |
-| 字号 | `text-{xs\|sm\|base\|lg\|xl\|2xl\|3xl}`         | `theme/typography.ts`                          |
-| 圆角 | `rounded-{sm\|md\|lg\|full}`                    | `theme/`                                       |
-| 阴影 | `shadow-{sm\|md\|lg}`                           | `theme/`                                       |
+| 类别 | class                                                                                            | 缺 token 改                                     |
+| ---- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| 间距 | `p-*` / `m-*` / `gap-{xs\|sm\|md\|lg\|xl\|2xl\|3xl}`                                             | `theme/spacing.ts`                              |
+| 颜色 | `bg-brand-500` / `text-ink` / `text-ink-muted` / `border-line` / `bg-surface` / `bg-err-soft`    | `theme/index.ts` `colors`（ok / warn / err 等） |
+| 字号 | `text-{xs\|sm\|base\|lg\|xl\|2xl\|3xl}`（Tailwind 默认阶，未定制）                               | —                                               |
+| 圆角 | `rounded-{xs\|sm\|md\|lg\|full}`                                                                 | `theme/index.ts` `borderRadius`                 |
+| 阴影 | `shadow-{card\|cta\|modal\|sheet\|…}`（命名 token 优先；Tailwind 默认 `shadow-sm/md/lg` 仍可用） | `theme/index.ts` `boxShadow`                    |
 
 ```tsx
 // ✅ 正确
 <View className="gap-md p-lg" />
 <Pressable className="bg-brand-500" />
-<Text className="text-text" />
+<Text className="text-ink" />
 
 // ❌ 错误
 <View style={{ gap: 16, padding: 24 }} />
@@ -41,7 +41,7 @@ UI/UX 设计意图 → NativeWind className 翻译规则。
 
 ```tsx
 // ✅ 复用频次 ≥ 2，抽 apps/mobile/src/ui/Button.tsx
-import { Button } from '@/ui';
+import { Button } from '~/ui';
 <Button variant="primary" size="md">登录</Button>
 
 // ⚠️ 单次使用，4 个原子内可接受
@@ -56,7 +56,7 @@ import { Button } from '@/ui';
 - **禁用** `rounded-[50%]`（RN-Web 报警告，用 `rounded-full` 或 `rounded-[9999px]`）
 - **禁用** 百分比 borderWidth（RN 不支持）
 - web 专属样式（hover / focus-visible）用 `web:` 前缀（NativeWind v4 平台 modifier）；native-only 用 `native:`
-- 字体走 `theme/typography.ts` 的 `fontFamily.body` / `heading` / `mono` token，避免业务代码写具体字体名
+- 字体走 `font-sans` / `font-mono`（`theme/typography.ts` `fontFamily` 只有这两族），避免业务代码写具体字体名
 
 ## 推荐（强烈鼓励）
 

@@ -141,7 +141,7 @@ while IFS= read -r line_; do
 
 改跑（全量落盘 → 再查终态串）：
   <cmd> > /tmp/verify.log 2>&1; echo \"EXIT=\$?\"
-  rg -n 'Successfully ran target|Failed tasks' /tmp/verify.log
+  rg -n -e 'Successfully ran target' -e 'Failed tasks' /tmp/verify.log
 
 SoT: $SOT §3"
   done
