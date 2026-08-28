@@ -170,6 +170,9 @@ describe('#209 日报 findings 展开判据 (Testcontainers PG)', () => {
         rejected: 1,
         contracts: ['US.CPB270115P38000'],
         violations: ['delta_sign'],
+        violationSamples: [
+          'US.CPB270115P38000: PUT 的 Δ 符号非法: 0.12 (PUT 要求 ≤ 0, CALL 要求 ≥ 0)',
+        ],
       },
     ]);
 

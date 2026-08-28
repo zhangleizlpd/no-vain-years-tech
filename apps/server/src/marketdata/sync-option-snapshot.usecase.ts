@@ -487,18 +487,27 @@ export class SyncOptionSnapshotUseCase {
       `[option-snapshot] 落库前硬门拒绝 ${rejected.length} 行 (不入库, 已落历史不受影响): ` +
         `${symbol} ${detail}`,
     );
+    // #198 / #261: 违规码是**唯一**能分辨四条门的东西, 样本是**唯一**能判「差多少」的东西。
+    // 两者此前都只出现在上面那条 ERROR 里, 而日志只进容器 stdout (30MB 环, 无投递, 部署即滚)
+    // —— `findings` 才是持久的那一份。不带进来, 事后就只剩一个 `rejected: N`: us:CPB 连拒四晚
+    // 是这么变成不可归因的, hk:00700 那四张深实值 PUT「ask 到底差内在价值多少」同理。
+    // 🚫 去重聚合而非逐合约: `contracts` 的数组形状**不变**, 既有读者不受影响。
+    // 🚨 码与样本从**同一个 Map** 派生 ⇒ 同序等长由构造保证, 不会各排各的然后悄悄错位。
+    const sampleByCode = new Map<string, string>();
+    for (const v of rejected) {
+      for (const x of v.violations) {
+        if (!sampleByCode.has(x.code)) sampleByCode.set(x.code, `${v.contractCode}: ${x.reason}`);
+      }
+    }
+    const byCode = [...sampleByCode].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     stats.findings.push({
       kind: 'reject',
       symbol,
       step: 'option_snapshot_guard',
       rejected: rejected.length,
       contracts: rejected.map((v) => v.contractCode),
-      // #198: 违规码是**唯一**能分辨四条门的东西。它此前只出现在上面那条 ERROR 里, 而日志
-      // 只进容器 stdout (30MB 环, 无投递, 部署即滚) —— `findings` 才是持久的那一份。
-      // 不带进来, 事后就只剩一个 `rejected: N`, 「撞的是哪条门」永远查不回去 (us:CPB 连拒
-      // 四晚正是这么变成不可归因的)。
-      // 🚫 去重聚合而非逐合约: `contracts` 的数组形状**不变**, 既有读者不受影响。
-      violations: [...new Set(rejected.flatMap((v) => v.violations.map((x) => x.code)))].sort(),
+      violations: byCode.map(([code]) => code),
+      violationSamples: byCode.map(([, sample]) => sample),
     });
   }
 
