@@ -147,3 +147,35 @@ useAnimatedReaction(观测 shared value) → 计数落 useSharedValue → useAni
 - **修法**：用之前**先改一次位移、确认该坐标真的动**，再拿它当判据 —— 即「如果反例存在，我的管道能看到吗」在 UI 测量上的具体形态。
 - **顺带**：`react-native-web` 不认 `accessibilityState`（故 web e2e 只能靠样式自比较断选中态），但 **Android 原生认** —— dump 里 `selected="true"` 可直接断，真机侧不必绕。
 - **实证锚**：049（#20）的「表头与全部可见行同列左缘 ≤1px」—— 13 个位移载体的 x1 全等于 254，差点被当成完美对齐；改看 x2、并先证明它随位移从 700 变到 270，才拿到有鉴别力的 Δ=0px。
+
+## 12. 样式 / 层级 / hook 依赖陷阱（单侧中招家族）
+
+> 与 § 7–§ 9「真机才暴露」互补：本节 12.1 **只 web 中招**（native 全好），12.2 / 12.4 **真机才现形**（web e2e 全绿）。共同铁律：修法都不是「把 class 改成 inline 字面量」—— design token 不能丢。
+
+### 12.1 NativeWind `className` 挂 `Animated.View` 在 web 被整串吞
+
+reanimated 与 RN 内建的 `Animated.View` 带 `className` 时，react-native-web 渲出的 DOM 只剩基类 `css-view-xxxx`，所有 tailwind class（position / bg / border / size）全不生效（reanimated#8329 / nativewind#1181，reanimated 4.1.1+ 回归）；native 不受影响。**修法**：`Animated.View` 只留动画 transform + 定位 / 尺寸 inline style，视觉 token（bg / border / rounded / size class）下沉到**非动画的 plain `<View className=…>` 子节点**（随父一起动）。样板 `src/ui/SuccessCheck.tsx` / `src/ui/Spinner.tsx`（文件内注释即此坑）。
+
+- **排查**：Playwright 看渲出 class 只剩 `css-view-*`、`position` 退回 `relative`、`top/bottom:0` 面板塌。
+- **实证锚**：旧仓 #471（chat-drawer 面板 / Spinner / SuccessCheck 三处同修）。
+
+### 12.2 要盖住 Tab 栏的抽屉 / overlay 必用 RN `Modal`
+
+bottom-tabs 把 Tab 栏与屏 content 渲成**同级兄弟**；抽屉 / 遮罩若渲在某 tab 屏内，其 `absolute inset-0` 受该屏容器约束，**够不到同级 Tab 栏**（Tab 栏外露不被遮）。整屏遮罩要包进 RN 内建 `<Modal transparent>` —— native 挂到 root 层、web 渲成视口 overlay；嵌套 Modal（抽屉内再开确认框）也正常。
+
+- 要点：① `statusBarTranslucent` + `navigationBarTranslucent` 让 Android 画到状态栏 / 导航栏之下；② 全屏后面板自管安全区（bg 铺满、内容用 `useSafeAreaInsets` 内缩，`SafeAreaProvider` 在 app root、context 穿透 Modal）；③ `onRequestClose` 接 Android 硬件返回键。
+- **样板**：`src/chat/chat-drawer.tsx`（旧仓 #471）；同范式 `src/ui/app-drawer.tsx`。
+
+### 12.3 渐变背景用已装的 `react-native-svg`，不引 `expo-linear-gradient`
+
+`apps/mobile` 没装 `expo-linear-gradient` / `react-native-linear-gradient`（引入 = 新 runtime dep，触发 § 4 stop-signal）。渐变走 `react-native-svg`：`<Svg preserveAspectRatio="none"><Defs><LinearGradient>…</LinearGradient></Defs><Rect fill="url(#id)" /></Svg>`，外层 `<View className="absolute inset-0">` 铺满、放内容**之前**（z 序在底，不拦触摸）；色值取 `~/theme` token 勿硬编 hex；要贯通状态栏区则外层普通 View 承渐变 + 透明 SafeAreaView 叠其上。
+
+- **样板**：`src/chat/chat-home-screen.tsx` `ChatGradientBackground` / `app/(app)/(tabs)/profile.tsx` `HeroBlurBackdrop`（旧仓 #473）。
+
+### 12.4 `useMutation` 结果对象每 render 新 identity —— 禁整对象进 hook 依赖
+
+react-query `useMutation` 返回对象**每次 render 都是新 identity**（状态翻转必 re-render）。整对象放进 `useCallback` 依赖，宿主再用 `useFocusEffect(…, [该 callback])` 消费 → mutation 状态一变 → callback 新 identity → effect 重跑 → 再发请求 → **自激环**（真机实证 1 秒 169 发，被服务端 429 兜住；错误路径静默 catch 会让环转到导航离开为止，429 还会毒化同窗口其他查询的 refetch）。
+
+- **修法**：只解构 `mutateAsync`（react-query 保证 `mutate` / `mutateAsync` 引用稳定）进依赖。
+- **CR 检查点**：`useCallback` / `useEffect` 依赖里出现完整 `useMutation` / `useQuery` 结果对象 → 驳回。
+- **实证锚**：021 mark-read（`src/alert/use-alert-messages.ts`，2026-06-07 真机）。

@@ -37,6 +37,14 @@ create / delete / 改 list-visible 字段（title / status / updatedAt）的 mut
 
 根 `app/_layout.tsx` **不**全局挂 GHRV；用 `GestureDetector` / `SwipeRow` / `LongPressMenu` / `DraggableList` 的路由屏顶层自套 `<GestureHandlerRootView style={{ flex: 1 }}>`（漏套 = 一进屏红屏，web e2e 不一定触发；详版 § 9.1）。
 
+## 样式 / 层级（web 或真机单侧中招）
+
+`className` 挂 `Animated.View` 在 web 被整串吞 → 视觉 token 下沉到 plain 子 `View`（禁改 inline 字面量丢 token）；要盖住 Tab 栏的抽屉 / overlay 用 RN `<Modal transparent>`（tab 屏内 `absolute` 够不到同级 Tab 栏）；渐变背景走已装 `react-native-svg` `LinearGradient`，**不引** `expo-linear-gradient`（新 dep）。详版 § 12.1–12.3。
+
+## hook 依赖禁整个 mutation / query 结果对象
+
+`useMutation` 结果对象每 render 新 identity；整对象进 `useCallback` 依赖再被 `useFocusEffect` 消费 = 自激请求风暴（真机 1s 169 发）。只解构 `mutateAsync` / `mutate`（引用稳定）；CR 见依赖里出现完整 `useMutation` / `useQuery` 结果对象 → 驳回。详版 § 12.4。
+
 ## 已有单一家（引用不复述）
 
 Metro `.js` extensionless（ESLint 已拦）/ 测试分层 vitest=logic·Playwright=UI（[testing.md](../../docs/conventions/testing.md) 不变量 4）/ 目录·凭据（[fe-directory-structure.md](../../docs/conventions/fe-directory-structure.md)；`refresh_token` 等持久化凭证走 expo-secure-store，`access_token` 仅内存，`auth/store.ts`）/ enum→copy 映射用 `Record<Enum, X>`（**非 `Partial<Record>`**，tsc 强制穷举、漏 enum 成员即编译红，如 `alert-copy.ts` `ALERT_CONDITION_META`）。
