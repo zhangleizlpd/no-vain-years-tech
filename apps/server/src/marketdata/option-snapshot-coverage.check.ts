@@ -35,14 +35,29 @@ import { PrismaService } from '../security/prisma.service.js';
  *
  * 若取日历日而那天恰好也整体停摆 ⇒ 分母为空 ⇒ 判「无对象」⇒ **连续停摆自我掩盖**。取最近有
  * 数据的那天则缺口一直挂着直到补回来。跨假期的陈旧基线不会造成假红: `到期日 ≥ 当日` 已把期间
- * 到期的腿滤掉。⚠️ 代价是**非交易日调用会假红** (当日本就无快照) ⇒ 调用方 MUST 只在 us 交易日
- * 调用 (管线既有的交易日闸), 本类不自己判日历。
+ * 到期的腿滤掉。⚠️ 代价是**非交易日调用会假红** (当日本就无快照) ⇒ 调用方 MUST 只在**该市场**
+ * 的交易日调用 (管线既有的交易日闸), 本类不自己判日历。
  *
  * ⚠️ **探针那份实现在这一点上故意与本类不同, 别为了「同源」抄平**: `ops/jobs/marketdata-snapshot-integrity.sql`
  * 的调用方是 systemd timer (`*-*-* 08:00` **每日**跑, 没有任何交易日闸) ⇒ 那份**自带一道 ET 周末闸**
  * (纯 `isodow` 算术, 不查 `trading_day`, 故不构成循环信任)。本类不需要, 因为管线的交易日闸已经在
  * 调用侧挡住了。**「两处判据必须同源」指的是分母 / 分子 / 阈值, 不是调用侧的闸** —— IT 里那组周末
  * 用例因此刻意不走 `assertBothAgree`。
+ *
+ * ## 🚨 每一处取数都必须带 `market` (#255)
+ *
+ * 本类的四处查询 (基线日 / 分母 / 分子 / 名册) 此前**只有名册**带市场谓词, 另三处是裸的 ——
+ * 而「只有美股」这个前提不是写成字面量, 是写成**没有过滤条件**。港股期权 2026-08-23 接入后
+ * 该前提失效, 却没有任何一处会因此报错: 港股与美股的 `session_date` 常是同一天 ⇒ 港股合约混进
+ * 美股补救的分母 ⇒ `hk:00700` 被判覆盖不足 ⇒ 美股补救器拿 `marketScope: ['us']` 去重采它, 并按
+ * 美股归属语义写库 (2026-08-28 08:00 实撞, 1110 行 `oi_as_of` 差一天)。
+ *
+ * ⇒ 市场是**必填首参**, 不给默认值。给了默认值就等于把同一个洞留在原地, 只是换了个写法。
+ *
+ * 🚨 过滤钉在**标的**的市场 (`contract.underlying.market`) 而不是 `option_contract.market`:
+ * 本报告的单位是「票」, 消费方 (补救器) 也是按票重采 ⇒ 判据必须保证「报告里每一只票都属于这个
+ * 市场」。两列可以不一致 —— #199 那批跨市场幽灵合约正是 `contract.market='us'` 挂在港股标的
+ * 名下, 按合约列过滤会把它们放回美股分母, 原样复发本 bug。
  *
  * ## 分母为空 = 「无对象」, **不是 0%**
  *
@@ -70,7 +85,9 @@ export interface UnderlyingCoverage {
 }
 
 export interface OptionCoverageReport {
-  /** 被核对的交易日 (us 业务日, 调用方按 `exchangeCalendarDate('us', now)` 求值)。 */
+  /** 被核对的市场 (#255) —— 基线日 / 分母 / 分子 / 名册四层全部收窄到它。 */
+  market: string;
+  /** 被核对的交易日 (该市场的业务日, 调用方按 `exchangeCalendarDate(market, now)` 求值)。 */
   sessionDate: string;
   /** 分母取自哪一天; `null` = 全表无更早的快照行 (首日 / 零锚)。 */
   baselineDate: string | null;
@@ -117,10 +134,11 @@ export class OptionSnapshotCoverageCheck {
   /**
    * 判定 + 告警。返回值同 {@link evaluate} (调用方可继续消费明细)。
    *
-   * @param sessionDate 被核对的 **us 业务日** `YYYY-MM-DD`
+   * @param market      被核对的市场 (`us` / `hk`)
+   * @param sessionDate 被核对的**该市场业务日** `YYYY-MM-DD`
    */
-  async check(sessionDate: string): Promise<OptionCoverageReport> {
-    const report = await this.evaluate(sessionDate);
+  async check(market: string, sessionDate: string): Promise<OptionCoverageReport> {
+    const report = await this.evaluate(market, sessionDate);
     this.alertIfDegraded(report);
     return report;
   }
@@ -132,18 +150,19 @@ export class OptionSnapshotCoverageCheck {
    * 复杂度 O(n): 两次以 `session_date` 为入口的索引查询 (基线日行 + 当日行), 逐行一次 Map/Set
    * 操作; n = 两日快照行数之和。
    */
-  async evaluate(sessionDate: string): Promise<OptionCoverageReport> {
+  async evaluate(market: string, sessionDate: string): Promise<OptionCoverageReport> {
     const threshold = this.cfg.optionCoverageThreshold;
-    const baselineDate = await this.resolveBaselineDate(sessionDate);
+    const baselineDate = await this.resolveBaselineDate(market, sessionDate);
     if (baselineDate === null) {
-      return this.emptyReport(sessionDate, null, threshold);
+      return this.emptyReport(market, sessionDate, null, threshold);
     }
 
     // 分母: 基线日的行 × **到期日 ≥ 当日** (Guardrail 7 —— `>` 会在到期日当天整批放行)。
     const baselineRows = await this.prisma.optionDailySnapshot.findMany({
       where: {
         sessionDate: toDateOnly(baselineDate),
-        contract: { expiryDate: { gte: toDateOnly(sessionDate) } },
+        // #255: 市场谓词钉在**标的**上, 见文件头「每一处取数都必须带 market」。
+        contract: { expiryDate: { gte: toDateOnly(sessionDate) }, underlying: { market } },
       },
       select: {
         contractId: true,
@@ -158,7 +177,7 @@ export class OptionSnapshotCoverageCheck {
     // 🚨 多取 `underlyingInstrumentId` 一列是**存在性层**的输入 (#231) —— 同一趟查询、零额外
     // 往返。单独再查一次「今天有哪些票有行」等于把这 9 万行再扫一遍。
     const collectedRows = await this.prisma.optionDailySnapshot.findMany({
-      where: { sessionDate: toDateOnly(sessionDate) },
+      where: { sessionDate: toDateOnly(sessionDate), contract: { underlying: { market } } },
       select: { contractId: true, contract: { select: { underlyingInstrumentId: true } } },
     });
     const collected = new Set(collectedRows.map((r) => r.contractId));
@@ -192,6 +211,7 @@ export class OptionSnapshotCoverageCheck {
     // 🚨 存在性层 (#231): 名册里今天一行都没有的票。比例层结构上看不见它们 —— 连缺两轮时
     // 它在基线日也没有行 ⇒ 不进分母 ⇒ 无输出。判据与 SQL 侧 `absent` CTE **必须同源**。
     const absent = await this.resolveAbsentUnderlyings(
+      market,
       sessionDate,
       presentUnderlyings,
       byUnderlying,
@@ -208,6 +228,7 @@ export class OptionSnapshotCoverageCheck {
     const degraded = underlyings.filter((u) => u.degraded);
 
     return {
+      market,
       sessionDate,
       baselineDate,
       threshold,
@@ -231,6 +252,7 @@ export class OptionSnapshotCoverageCheck {
     this.logger.error(
       `[option-snapshot-coverage] 逐合约覆盖率跌破阈值${context === undefined ? '' : ` (${context})`}: ` +
         JSON.stringify({
+          market: report.market,
           sessionDate: report.sessionDate,
           baselineDate: report.baselineDate,
           threshold: report.threshold,
@@ -258,7 +280,7 @@ export class OptionSnapshotCoverageCheck {
    * `avg by (job)(up)` **returning nothing rather than alerting**」逐字同构 —— 期望源取自被监控
    * 数据自身, 数据一消失把期望一起带走。2026-08-27 `us:ALB` 实撞: 连缺三轮, 只在第一轮可见。
    *
-   * ## 名册 = **us 工作集 ∧ 有未到期合约**, 两个限定各自承重
+   * ## 名册 = **该市场工作集 ∧ 有未到期合约**, 两个限定各自承重
    *
    * · `needSync` —— 它是锚闸 (`anchor-driven-sync-gate`) 对锚表重算后的**物化结果**, 与采集侧
    *   同源; **删锚**后下一轮闸置 false ⇒ 该票自动离开名册。不挂它 = 删锚变永久假红。
@@ -274,13 +296,14 @@ export class OptionSnapshotCoverageCheck {
    * 合约 code。稳态零缺席 ⇒ 第二次查询不发生。
    */
   private async resolveAbsentUnderlyings(
+    market: string,
     sessionDate: string,
     presentUnderlyings: ReadonlySet<bigint>,
     alreadyCounted: ReadonlyMap<string, CoverageAccumulator>,
   ): Promise<UnderlyingCoverage[]> {
     const unexpired = { expiryDate: { gte: toDateOnly(sessionDate) } };
     const roster = await this.prisma.instrument.findMany({
-      where: { market: 'us', needSync: true, optionContracts: { some: unexpired } },
+      where: { market, needSync: true, optionContracts: { some: unexpired } },
       select: { id: true, market: true, code: true },
     });
     const absent = roster.filter(
@@ -320,9 +343,11 @@ export class OptionSnapshotCoverageCheck {
    * 基线日 = **有快照行的**、早于 `sessionDate` 的最近一个交易日 (见文件头的取值论证)。
    * 复杂度: `ix_option_daily_snapshot_session_date` 上的倒序 limit-1。
    */
-  private async resolveBaselineDate(sessionDate: string): Promise<string | null> {
+  private async resolveBaselineDate(market: string, sessionDate: string): Promise<string | null> {
     const row = await this.prisma.optionDailySnapshot.findFirst({
-      where: { sessionDate: { lt: toDateOnly(sessionDate) } },
+      // 🚨 基线日也必须按市场取 (#255): 取全表最近一天时, 一个「该市场休市、别的市场开市」的
+      // 日子会被选成基线 ⇒ 分母整个来自别的市场。这条与另外三处同源, 少任何一处洞就还在。
+      where: { sessionDate: { lt: toDateOnly(sessionDate) }, contract: { underlying: { market } } },
       orderBy: { sessionDate: 'desc' },
       select: { sessionDate: true },
     });
@@ -331,11 +356,13 @@ export class OptionSnapshotCoverageCheck {
 
   /** 分母为空 ⇒ 「无对象」而非 0% (零锚 / 首日 / 基线日合约当日全部到期)。 */
   private emptyReport(
+    market: string,
     sessionDate: string,
     baselineDate: string | null,
     threshold: number,
   ): OptionCoverageReport {
     return {
+      market,
       sessionDate,
       baselineDate,
       threshold,

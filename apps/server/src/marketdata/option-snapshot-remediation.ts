@@ -12,17 +12,42 @@ import {
   SyncOptionSnapshotUseCase,
   type SnapshotCollectionSpec,
 } from './sync-option-snapshot.usecase.js';
-import { exchangeCalendarDateForScope } from './session-clock.js';
+import { exchangeCalendarDate } from './session-clock.js';
 import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 /**
  * 快照缺口的**两级自动补救** (047 T022, FR-046 / FR-052, plan D-DATA-4/5)。
  *
- * | 级 | 时刻 (Asia/Shanghai) | 落库口径 | 失败后 |
- * | --- | --- | --- | --- |
- * | ① 当日重试 | 08:00 (夜间采集窗 06:30 之后) | 与正常路径**同源**: 归属整份取自 `resolveSnapshotAttribution` (该时点 ⇒ `source=eod` · `oi_as_of` = 上一交易日) | 只 WARN, 挂着等 ② |
- * | ② 次日盘前兜底 | 18:00 (= ET 05:00/06:00, 落在盘前 04:00–09:30 内, 亦在 spec 的北京 16:00–21:30 窗内) | `source=premarket_backfill` · `session_date` = **被补的那天** · `oi_as_of` = `session_date` | **升 ERROR** |
+ * 四档 cron 的时刻**一律用 `Asia/Shanghai` 表达** (运维视角的墙上时钟), 见下方「时区字面量只许一个」。
+ *
+ * | 市场 | 级 | 时刻 (Asia/Shanghai) | 落库口径 | 失败后 |
+ * | --- | --- | --- | --- | --- |
+ * | us | ① 当日重试 | 08:00 (夜间采集窗之后) | 与正常路径**同源**: 归属整份取自 `resolveSnapshotAttribution` (该时点 ⇒ `source=eod` · `oi_as_of` = 上一交易日) | 只 WARN, 挂着等 ② |
+ * | us | ② 次日盘前兜底 | 18:00 (= ET 05:00/06:00, 落在盘前 04:00–09:30 内) | `source=premarket_backfill` · `session_date` = **被补的那天** · `oi_as_of` = `session_date` | **升 ERROR** |
+ * | hk | ① 当日重试 | **23:40** (= HKT 23:40; 夜链 23:00 起, 约 40s 跑完) | 判据在该时点给 `source=eod` · `oi_as_of` = `session_date` (hk 的 OI 21:30 已定稿) | 只 WARN, 挂着等 ② |
+ * | hk | ② 次日盘前兜底 | **08:30** (= HKT 08:30, 09:00 竞价前) | `source=premarket_backfill` · `oi_as_of` = `session_date` | **升 ERROR** |
+ *
+ * ## 🚨 hk ① 级钉在 23:40 而不是跨过午夜 (#255)
+ *
+ * 两个时刻都能补上缺口, 但落库形态不同, 差别全在**同不同一个港股日历日**:
+ *
+ * · **23:40 (选中)** —— 仍是同一日历日 ⇒ `crossedIntoNextSession` 为假 ⇒ 判据给 `mode=eod`,
+ *   与 23:00 夜链**同 source** ⇒ 撞唯一键 `(contract_id, session_date, 'eod')` ⇒ 夜链已写过的
+ *   行被 `createMany(skipDuplicates)` 天然挡掉, **只有真缺的那几张会落库**。
+ * · 00:30 (否决) —— 已跨日 ⇒ 判据给 `mode=premarket_backfill` ⇒ 每一轮重采都给数据盖上
+ *   「这天是靠兜底续命的」那条痕。而 FR-052 那条痕的意义正在于稀有, **天天有等于没有**
+ *   (同下一节「二级起手先复判」的判据, 只是换了个触发面)。
+ *
+ * ⚠️ 两个时刻都在 hk 的 close-write 闸之外 (收盘 16:00 + settle buffer 10min = 16:10)。
+ *
+ * ## 🚨 hk ② 级存在的理由与 us **不同**, 别照抄论证
+ *
+ * us 的 ② 级是**等 OI 翻新**: 「T 日的 OI 要 T+1 盘前才发布」是美股清算所的行为。hk 的 OI 在
+ * D 日收盘当晚 21:30 就已定稿 (066 T09 / `MARKET_OI_SETTLE_LOCAL_MINUTE`) ⇒ 对 hk 而言 ② 级
+ * **买不到任何 OI 正确性**, 它留下来只为两件事: 再补一次, 以及 FR-046 的「两级都失败才升
+ * ERROR」需要有个第二级。⇒ 🚫 将来若有人想「hk 反正 OI 已定稿, 把 ② 级砍了」, 砍掉的是
+ * **ERROR 升级路径**, 不是一次冗余重采。
  *
  * ## 🚨 二级起手先复判 —— 一级救回了就**零外呼**
  *
@@ -51,6 +76,25 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * (`state_branch` 6)。改前那个「无记录 ⇒ 非交易日」的布尔正是二级兜底静默死掉的成因:
  * 它每天在北京 18:00 判「今天不是美股交易日」, 而那一刻今天那一行还没落库。
  *
+ * ## 🚨 时区字面量只许一个 —— hk 的两档也写 `Asia/Shanghai`
+ *
+ * `@Cron` 的 `timeZone` 必须是静态值, 而「每个市场一个时区字面量」就是一张 market → 时区表的
+ * 形状 —— 全仓只允许有一份 (ADR-0066 §3, `MARKET_SESSION`), `check-time-semantics` 机器强制。
+ * 🚫 也**不能**改成从那张表取: `marketTimeZone('us')` 会给 `America/New_York`, 而 us 两档的
+ * 08:00 / 18:00 本就是**北京时刻**(挑出来是为了落在 ET 的正确窗口内), 换成 ET 是行为改变。
+ *
+ * ⇒ 四档统一用运维视角的 `Asia/Shanghai`。对 hk 这**恰好**等价: 两地同为 UTC+8 且都不实行
+ * 夏令时 (香港 1979 年、内地 1991 年后再未实行)。
+ * 📌 万一哪天其中一边变了, 这里必须拆成两个时区 —— 而拆的那一刻 `check-time-semantics` 会
+ * 当场红并要求你去动 `MARKET_SESSION`。**那道红是这个简化的安全网, 不是它的障碍。**
+ *
+ * ## 🚨 每个市场一套 cron, 而不是一个 cron 循环市场
+ *
+ * `@Cron` 表达式是**静态**的, 而两个市场的正确时刻由各自的收盘 / 定稿 / 开市决定, 差了 9 个
+ * 小时。写成「一个 cron 里 for (const m of MARKETS)」等于让其中一个市场跑在别人的时刻上 ——
+ * 那正是 #255 的病根 (拿一个市场的语义去处理另一个市场) 换了个形态复发。⇒ 每档一个方法、
+ * 时刻直接写在装饰器上, 看得见。
+ *
  * ## 周末的时序 (看起来晚, 但仍然正确)
  *
  * 周五 session 的采集发生在北京周六 06:30 (ET 周五晚)。① 级北京周六 08:00 跑时 us 业务日仍是
@@ -58,9 +102,6 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * 而周一盘前的 last close 也仍是周五收盘 ⇒ 补回的值正确。🚫 **MUST NOT 把 ② 级改成「补最近 N 天」**:
  * 只有**紧邻的上一个 session** 能从盘前快照原样补回, 再往前一天拿到的是错的收盘价。
  */
-
-/** 本片补救只服务美股期权 (三个维度 `market_scope={us}`)。 */
-const US_MARKET_SCOPE = ['us'];
 
 export type RemediationLevel = 'same_day_retry' | 'premarket_backfill';
 
@@ -96,6 +137,8 @@ export type RemediationStatus =
 export type RemediationCalendarBasis = 'confirmed' | 'unknown' | 'non-trading';
 
 export interface RemediationOutcome {
+  /** 本级服务的市场 (#255) —— 与 `sessionDate` 配对才说得清「补的是哪一场」。 */
+  market: string;
   level: RemediationLevel;
   /**
    * 本级的日历判据来源。`unknown` = 视野还没填到该业务日, 本级是「不知道所以照跑」——
@@ -127,16 +170,28 @@ export class OptionSnapshotRemediation {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
   }
 
-  /** ① 级: 每日 08:00 Asia/Shanghai —— 夜间快照窗 (06:30) 之后, 留足限频顺延重入队的时间。 */
+  /** us ① 级: 每日 08:00 Asia/Shanghai —— 夜间快照窗之后, 留足限频顺延重入队的时间。 */
   @Cron('0 0 8 * * *', { timeZone: 'Asia/Shanghai' })
-  async handleSameDayRetryCron(): Promise<void> {
-    await this.retrySameDay(new Date());
+  async handleUsSameDayRetryCron(): Promise<void> {
+    await this.retrySameDay('us', new Date());
   }
 
-  /** ② 级: 每日 18:00 Asia/Shanghai —— 见类注释的窗口论证 (@Cron 表达式静态, 故取固定时刻)。 */
+  /** us ② 级: 每日 18:00 Asia/Shanghai —— 见类注释的窗口论证 (@Cron 表达式静态, 故取固定时刻)。 */
   @Cron('0 0 18 * * *', { timeZone: 'Asia/Shanghai' })
-  async handlePremarketBackfillCron(): Promise<void> {
-    await this.backfillPremarket(new Date());
+  async handleUsPremarketBackfillCron(): Promise<void> {
+    await this.backfillPremarket('us', new Date());
+  }
+
+  /** hk ① 级: 每日 23:40 (= HKT 23:40) —— 夜链 23:00 起、约 40s 跑完; 时刻论证见类注释。 */
+  @Cron('0 40 23 * * *', { timeZone: 'Asia/Shanghai' })
+  async handleHkSameDayRetryCron(): Promise<void> {
+    await this.retrySameDay('hk', new Date());
+  }
+
+  /** hk ② 级: 每日 08:30 (= HKT 08:30) —— 09:00 竞价前; 它的存在理由与 us 不同, 见类注释。 */
+  @Cron('0 30 8 * * *', { timeZone: 'Asia/Shanghai' })
+  async handleHkPremarketBackfillCron(): Promise<void> {
+    await this.backfillPremarket('hk', new Date());
   }
 
   /**
@@ -161,21 +216,22 @@ export class OptionSnapshotRemediation {
    *
    * 复杂度: 3 次日历点查 + 2 次覆盖率判定 (各 O(n)) + O(缺票数) 次采集。
    */
-  async retrySameDay(now: Date): Promise<RemediationOutcome> {
+  async retrySameDay(market: string, now: Date): Promise<RemediationOutcome> {
     // ⚠️ 这一格取的**就是日历日**, 且合法: 它问的是「今天开不开市」(交易日闸), 与「该写哪一天」
     // 正交 —— 后者才是下面的判据层。非交易日短路逐点不变 (见类注释「非交易日两级都不跑」)。
-    const today = exchangeCalendarDateForScope(US_MARKET_SCOPE, now);
-    const calendar = await this.calendarBasis(today);
+    const today = exchangeCalendarDate(market, now);
+    const calendar = await this.calendarBasis(market, today);
     if (calendar === 'non-trading') {
-      return this.idle('same_day_retry', today, calendar, '确认非交易日, 本就没有 session');
+      return this.idle(market, 'same_day_retry', today, calendar, '确认非交易日, 本就没有 session');
     }
-    const attribution = await this.attribution.resolve(US_MARKET_SCOPE[0], now);
+    const attribution = await this.attribution.resolve(market, now);
     if (attribution.decision === 'skip') {
       this.logger.log(
-        `[option-snapshot-remediation] same_day_retry 本级零外呼: 该场进行中, 端点此刻返盘中态 ` +
-          `(calendar=${calendar})`,
+        `[option-snapshot-remediation] ${market} same_day_retry 本级零外呼: 该场进行中, ` +
+          `端点此刻返盘中态 (calendar=${calendar})`,
       );
       return {
+        market,
         level: 'same_day_retry',
         calendar,
         sessionDate: null,
@@ -187,10 +243,11 @@ export class OptionSnapshotRemediation {
     if (attribution.decision === 'abandon') {
       // 🚫 不猜日子 —— 与 ② 级的 `blocked` 同档 (ERROR 级, 需人工补日历)。
       this.logger.error(
-        `[option-snapshot-remediation] 交易日历查不到 us 最近一个已收盘交易日 ⇒ ① 级当日重试` +
-          `无法定位待补 session, 跳过 (请补交易日历)`,
+        `[option-snapshot-remediation] 交易日历查不到 ${market} 最近一个已收盘交易日 ⇒ ① 级` +
+          `当日重试无法定位待补 session, 跳过 (请补交易日历)`,
       );
       return {
+        market,
         level: 'same_day_retry',
         calendar,
         sessionDate: null,
@@ -200,18 +257,20 @@ export class OptionSnapshotRemediation {
       };
     }
     const sessionDate = attribution.spec.sessionDate;
-    const before = await this.coverage.evaluate(sessionDate);
+    const before = await this.coverage.evaluate(market, sessionDate);
     if (before.status !== 'degraded') {
-      return this.idle('same_day_retry', sessionDate, calendar, `覆盖率 ${before.status}`);
+      return this.idle(market, 'same_day_retry', sessionDate, calendar, `覆盖率 ${before.status}`);
     }
 
-    const after = await this.recollect(before, attribution.spec);
+    const after = await this.recollect(market, before, attribution.spec);
     const attempted = before.degraded.map((u) => u.symbol);
     if (after.status !== 'degraded') {
       this.logger.warn(
-        `[option-snapshot-remediation] ① 当日重试补回 ${sessionDate}: ${attempted.join(', ')}`,
+        `[option-snapshot-remediation] ${market} ① 当日重试补回 ${sessionDate}: ` +
+          `${attempted.join(', ')}`,
       );
       return {
+        market,
         level: 'same_day_retry',
         calendar,
         sessionDate,
@@ -223,10 +282,11 @@ export class OptionSnapshotRemediation {
     // 🚫 这里**不**升 ERROR: 还有 ② 级兜底 (FR-046「两级都失败才升 ERROR」)。
     const stillMissing = after.degraded.map((u) => u.symbol);
     this.logger.warn(
-      `[option-snapshot-remediation] ① 当日重试后仍缺 ${stillMissing.length} 票 (${sessionDate}: ` +
-        `${stillMissing.join(', ')}), 待次日盘前 ② 级兜底`,
+      `[option-snapshot-remediation] ${market} ① 当日重试后仍缺 ${stillMissing.length} 票 ` +
+        `(${sessionDate}: ${stillMissing.join(', ')}), 待次日盘前 ② 级兜底`,
     );
     return {
+      market,
       level: 'same_day_retry',
       calendar,
       sessionDate,
@@ -252,21 +312,22 @@ export class OptionSnapshotRemediation {
    *
    * 复杂度同 {@link retrySameDay}。
    */
-  async backfillPremarket(now: Date): Promise<RemediationOutcome> {
-    const today = exchangeCalendarDateForScope(US_MARKET_SCOPE, now);
-    const calendar = await this.calendarBasis(today);
+  async backfillPremarket(market: string, now: Date): Promise<RemediationOutcome> {
+    const today = exchangeCalendarDate(market, now);
+    const calendar = await this.calendarBasis(market, today);
     if (calendar === 'non-trading') {
       // 非交易日无盘前窗口 (OI 也不会翻新) ⇒ 不补; 下一个交易日的盘前仍能补回同一个 session。
-      return this.idle('premarket_backfill', null, calendar, '确认非交易日, 无盘前窗口');
+      return this.idle(market, 'premarket_backfill', null, calendar, '确认非交易日, 无盘前窗口');
     }
-    const sessionDate = await this.attribution.tradingDayBefore(US_MARKET_SCOPE, today);
+    const sessionDate = await this.attribution.tradingDayBefore([market], today);
     if (sessionDate === null) {
       // 🚫 不猜日子: 猜错就是一批 `session_date` 标错的脏行, 比不补更难发现且要人工回删。
       this.logger.error(
-        `[option-snapshot-remediation] 交易日历缺 us 在 ${today} 之前的行, 无法定位待补交易日 ` +
-          `⇒ ② 级兜底跳过 (请补交易日历)`,
+        `[option-snapshot-remediation] 交易日历缺 ${market} 在 ${today} 之前的行, 无法定位待补` +
+          `交易日 ⇒ ② 级兜底跳过 (请补交易日历)`,
       );
       return {
+        market,
         level: 'premarket_backfill',
         calendar,
         sessionDate: null,
@@ -276,16 +337,22 @@ export class OptionSnapshotRemediation {
       };
     }
 
-    const before = await this.coverage.evaluate(sessionDate);
+    const before = await this.coverage.evaluate(market, sessionDate);
     // 🚨 ① 级已补回 ⇒ 零外呼、不留降级痕 (见类注释)。
     if (before.status !== 'degraded') {
-      return this.idle('premarket_backfill', sessionDate, calendar, `覆盖率 ${before.status}`);
+      return this.idle(
+        market,
+        'premarket_backfill',
+        sessionDate,
+        calendar,
+        `覆盖率 ${before.status}`,
+      );
     }
 
-    const after = await this.recollect(before, {
+    const after = await this.recollect(market, before, {
       sessionDate,
       mode: SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
-      marketScope: US_MARKET_SCOPE,
+      marketScope: [market],
       now,
     });
     const attempted = before.degraded.map((u) => u.symbol);
@@ -293,10 +360,11 @@ export class OptionSnapshotRemediation {
       // 降级 MUST 留痕 + 告警 (FR-052), 但**不是** ERROR —— 缺口已补上。留痕的权威形态是
       // 落库行的 `source`, 本条 log 只是让它当场可见。
       this.logger.warn(
-        `[option-snapshot-remediation] ② 次日盘前兜底补回 ${sessionDate} (source=` +
+        `[option-snapshot-remediation] ${market} ② 次日盘前兜底补回 ${sessionDate} (source=` +
           `${SNAPSHOT_SOURCE_PREMARKET_BACKFILL}, 本日数据来自兜底补采): ${attempted.join(', ')}`,
       );
       return {
+        market,
         level: 'premarket_backfill',
         calendar,
         sessionDate,
@@ -309,6 +377,7 @@ export class OptionSnapshotRemediation {
     // 逐票明细 + sessionDate 都在里面。
     this.coverage.alertIfDegraded(after, '两级补救均失败: ① 当日重试 + ② 次日盘前兜底');
     return {
+      market,
       level: 'premarket_backfill',
       calendar,
       sessionDate,
@@ -325,6 +394,7 @@ export class OptionSnapshotRemediation {
    * ② 级自己声明 (它的 `mode` 是留痕载体, 见 {@link backfillPremarket})。
    */
   private async recollect(
+    market: string,
     before: OptionCoverageReport,
     spec: SnapshotCollectionSpec,
   ): Promise<OptionCoverageReport> {
@@ -334,11 +404,11 @@ export class OptionSnapshotRemediation {
     await this.snapshot.collect(before.degraded.map(toWorkingInstrument), spec, stats);
     if (stats.failed > 0) {
       this.logger.warn(
-        `[option-snapshot-remediation] 重采期间 ${stats.failed} 票失败: ` +
+        `[option-snapshot-remediation] ${market} 重采期间 ${stats.failed} 票失败: ` +
           `${JSON.stringify(stats.findings)}`,
       );
     }
-    return this.coverage.evaluate(spec.sessionDate);
+    return this.coverage.evaluate(market, spec.sessionDate);
   }
 
   /**
@@ -349,13 +419,13 @@ export class OptionSnapshotRemediation {
    * (期权收盘数据无跨日补救, 二级放弃掉的那一场再也补不回来)。
    * 🚫 **MUST NOT 写成 `!== 'trading'`** —— 那就是 062 修掉的病原样犯回去。
    */
-  private async calendarBasis(date: string): Promise<RemediationCalendarBasis> {
-    const status = await this.calendar.classify(US_MARKET_SCOPE[0], date);
+  private async calendarBasis(market: string, date: string): Promise<RemediationCalendarBasis> {
+    const status = await this.calendar.classify(market, date);
     if (status === 'non-trading') return 'non-trading';
     if (status === 'trading') return 'confirmed';
     this.logger.warn(
-      `[option-snapshot-remediation] 交易日历视野未覆盖 us 的 ${date} ⇒ 本级按「未知」继续执行 ` +
-        `(起手的覆盖率复判决定是否真外呼; 请补前瞻视野)`,
+      `[option-snapshot-remediation] 交易日历视野未覆盖 ${market} 的 ${date} ⇒ 本级按「未知」` +
+        `继续执行 (起手的覆盖率复判决定是否真外呼; 请补前瞻视野)`,
     );
     return 'unknown';
   }
@@ -366,16 +436,25 @@ export class OptionSnapshotRemediation {
    * `log` 而非 `warn`: 它在正常日子里每天都成立, 用 `warn` 会训练出「这条可以忽略」。
    */
   private idle(
+    market: string,
     level: RemediationLevel,
     sessionDate: string | null,
     calendar: RemediationCalendarBasis,
     reason: string,
   ): RemediationOutcome {
     this.logger.log(
-      `[option-snapshot-remediation] ${level} 本级零外呼: ${reason} ` +
+      `[option-snapshot-remediation] ${market} ${level} 本级零外呼: ${reason} ` +
         `(calendar=${calendar}, session=${sessionDate ?? '-'})`,
     );
-    return { level, calendar, sessionDate, status: 'not_needed', attempted: [], stillMissing: [] };
+    return {
+      market,
+      level,
+      calendar,
+      sessionDate,
+      status: 'not_needed',
+      attempted: [],
+      stillMissing: [],
+    };
   }
 }
 

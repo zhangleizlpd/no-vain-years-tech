@@ -258,7 +258,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     for (const c of pepContracts) await seedSnapshot(c.id, TUE);
     const err = spyError();
 
-    const report = await coverage.check(TUE);
+    const report = await coverage.check('us', TUE);
 
     expect(report.status).toBe('degraded');
     expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
@@ -279,7 +279,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     await seedSnapshot(contracts[0].id, TUE);
     const err = spyError();
 
-    const report = await coverage.check(TUE);
+    const report = await coverage.check('us', TUE);
 
     expect(report.degraded[0]).toMatchObject({ symbol: 'us:PEP', expected: 3, covered: 1 });
     expect(report.degraded[0].missingContractCodes.sort()).toEqual(
@@ -313,7 +313,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     for (const c of surviving) await seedSnapshot(c.id, NEXT_MON);
     const err = spyError();
 
-    const report = await coverage.check(NEXT_MON);
+    const report = await coverage.check('us', NEXT_MON);
 
     expect(report).toMatchObject({
       status: 'ok',
@@ -327,7 +327,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     // 🚨 反向绊线: 判据若写成 `>` (当日到期不进分母), 到期日**当天**的整批缺失会被静默放行。
     await prisma.optionDailySnapshot.deleteMany({ where: { sessionDate: dateOf(EXPIRY_FRI) } });
     for (const c of [...expiring, ...surviving]) await seedSnapshot(c.id, '2026-06-18');
-    const onExpiryDay = await coverage.evaluate(EXPIRY_FRI);
+    const onExpiryDay = await coverage.evaluate('us', EXPIRY_FRI);
     expect(onExpiryDay).toMatchObject({ status: 'degraded', expected: 9, covered: 0 });
   });
 
@@ -338,7 +338,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     await seedContract(pep, 'PEP', '2026-07-17', 130);
     const err = spyError();
 
-    const report = await coverage.check(TUE);
+    const report = await coverage.check('us', TUE);
 
     expect(report).toMatchObject({ status: 'no_subject', baselineDate: null, expected: 0 });
     expect(err).not.toHaveBeenCalled();
@@ -357,11 +357,11 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     ];
     for (const c of contracts) await seedSnapshot(c.id, MON);
     // 周二整体失败: 一行都没有。
-    const before = await coverage.evaluate(TUE);
+    const before = await coverage.evaluate('us', TUE);
     expect(before).toMatchObject({ status: 'degraded', expected: 2, covered: 0 });
 
     const err = spyError();
-    const outcome = await remediation.backfillPremarket(PREMARKET_AT);
+    const outcome = await remediation.backfillPremarket('us', PREMARKET_AT);
 
     expect(outcome).toMatchObject({
       level: 'premarket_backfill',
@@ -372,7 +372,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     // 缺口补上了 ⇒ 不升 ERROR (FR-046: 两级都失败才升)。
     expect(err).not.toHaveBeenCalled();
     err.mockRestore();
-    expect((await coverage.evaluate(TUE)).status).toBe('ok');
+    expect((await coverage.evaluate('us', TUE)).status).toBe('ok');
 
     const rows = await prisma.optionDailySnapshot.findMany({
       where: { sessionDate: dateOf(TUE) },
@@ -406,7 +406,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
       await seedSnapshot(c.id, TUE); // 当日正常采到 (= ① 级已补回或本就没缺)
     }
 
-    const outcome = await remediation.backfillPremarket(PREMARKET_AT);
+    const outcome = await remediation.backfillPremarket('us', PREMARKET_AT);
 
     expect(outcome.status).toBe('not_needed');
     expect(port.calls).toHaveLength(0);
@@ -431,7 +431,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     port.blackout.add('us:VICI');
     const err = spyError();
 
-    const outcome = await remediation.backfillPremarket(PREMARKET_AT);
+    const outcome = await remediation.backfillPremarket('us', PREMARKET_AT);
 
     expect(outcome).toMatchObject({
       status: 'still_missing',
@@ -457,7 +457,7 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
     const err = spyError();
 
     // 北京 18:00 周六 = ET 周六 06:00; trading_day 没有 06-20 这一行且 06 月已声明覆盖 ⇒ 真非交易日。
-    const outcome = await remediation.backfillPremarket(new Date('2026-06-20T10:00:00Z'));
+    const outcome = await remediation.backfillPremarket('us', new Date('2026-06-20T10:00:00Z'));
 
     expect(outcome.status).toBe('not_needed');
     expect(port.calls).toHaveLength(0);

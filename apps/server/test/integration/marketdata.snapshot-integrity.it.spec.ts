@@ -96,14 +96,14 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     contractIds.clear();
   });
 
-  async function seedInstrument(code: string): Promise<bigint> {
+  async function seedInstrument(code: string, market = 'us'): Promise<bigint> {
     const row = await prisma.instrument.create({
       data: {
-        market: 'us',
+        market,
         code,
-        name: `us:${code}`,
+        name: `${market}:${code}`,
         type: 'stock',
-        currency: 'USD',
+        currency: market === 'hk' ? 'HKD' : 'USD',
         status: 'active',
         needSync: true,
       },
@@ -116,19 +116,21 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     code: string,
     count: number,
     expiryDate = shift(today, 60),
+    market = 'us',
   ): Promise<string[]> {
-    const instrumentId = contractIds.has(`inst:${code}`)
-      ? contractIds.get(`inst:${code}`)!
-      : await seedInstrument(code).then((id) => {
-          contractIds.set(`inst:${code}`, id);
+    const key = `inst:${market}:${code}`;
+    const instrumentId = contractIds.has(key)
+      ? contractIds.get(key)!
+      : await seedInstrument(code, market).then((id) => {
+          contractIds.set(key, id);
           return id;
         });
     const codes: string[] = [];
     for (let i = 0; i < count; i++) {
-      const contractCode = `US.${code}${expiryDate.replaceAll('-', '')}P${100 + i}000`;
+      const contractCode = `${market.toUpperCase()}.${code}${expiryDate.replaceAll('-', '')}P${100 + i}000`;
       const row = await prisma.optionContract.create({
         data: {
-          market: 'us',
+          market,
           code: contractCode,
           root: code,
           underlyingInstrumentId: instrumentId,
@@ -203,7 +205,7 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
    */
   async function assertBothAgree(): Promise<{ exitCode: number; degraded: string[] }> {
     const { exitCode, summary } = await runPredicate();
-    const tsReport = await check.evaluate(today);
+    const tsReport = await check.evaluate('us', today);
 
     const sqlDegraded = degradedFromSummary(summary);
     const tsDegraded = tsReport.degraded.map((u) => u.symbol).sort();
@@ -365,7 +367,7 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     const { exitCode, summary } = await runPredicate();
     expect(exitCode).toBe(0);
     expect(summary).toContain('无对象');
-    expect((await check.evaluate(today)).status).toBe('no_subject');
+    expect((await check.evaluate('us', today)).status).toBe('no_subject');
   });
 
   it('全表空 → exit 0 (上线首日的正常空态)', async () => {
@@ -405,6 +407,47 @@ describe('期权快照逐合约完整性谓词 (Testcontainers PG, 与 check.sh 
     expect(exitCode).toBe(0);
     expect(degraded).toEqual([]);
     expect((await runPredicate()).summary).toContain('us:PEP=4/4');
+  });
+
+  // ── #255 跨市场隔离：港股行 MUST NOT 进 us 判定 ───────────────────────────────────────
+  //
+  // 🚨 这两条是 **invariance metamorphic relation**（往输入里加一批与被测对象无关的数据，输出
+  //    必须不变）。#255 之前本谓词与 TS 侧的 baseline / denom / collected 三处都没有市场谓词
+  //    —— 那个前提不是写成字面量，是写成**没有过滤条件**，所以没有任何既有用例会因它失效而红。
+  it('🚨 #255 港股整票缺口 MUST NOT 改变 us 的逐票结论（两侧同时验）', async () => {
+    const pep = await seedContracts('PEP', 10);
+    await seedSnapshots(pep, shift(today, -1));
+    await seedSnapshots(pep, today);
+
+    const before = await assertBothAgree();
+    const beforeSummary = (await runPredicate()).summary;
+    expect(before.degraded).toEqual([]);
+
+    // 港股：基线日有 10 张、当日一张都没有 = 一个**整票缺口**。跨市场泄漏时它会被算进 us 的
+    // 分母并判 `hk:00700` 缺 —— 那正是 2026-08-28 08:00 把港股票交给美股补救器的那条路。
+    const tencent = await seedContracts('00700', 10, shift(today, 60), 'hk');
+    await seedSnapshots(tencent, shift(today, -1));
+
+    expect(await assertBothAgree()).toEqual(before);
+    // SQL 侧摘要**逐字节**不变 —— 逐票数字也不许动，不只是 degraded 集合。
+    expect((await runPredicate()).summary).toBe(beforeSummary);
+  });
+
+  it('🚨 #255 基线日按市场取: us 昨日无行而港股有行时，基线必须退到 us 自己有行的那天', async () => {
+    // 现实原型 = 2026-10-01 / 2026-10-19（`trading_day` 实查: us `whole`、hk 无行）的镜像：
+    // 一个「一边开市、另一边休市」的日子。不按市场取基线时，`max(session_date)` 会选中只有
+    // 对方市场行的那天 ⇒ us 分母整个来自港股 ⇒ 判据对 us **无输出**（假绿）。
+    const pep = await seedContracts('PEP', 10);
+    await seedSnapshots(pep, shift(today, -3));
+    await seedSnapshots(pep, today);
+
+    const tencent = await seedContracts('00700', 10, shift(today, 60), 'hk');
+    await seedSnapshots(tencent, shift(today, -1)); // 只有港股有行的那一天
+
+    const report = await check.evaluate('us', today);
+    expect(report.baselineDate).toBe(shift(today, -3));
+    expect(report.status).toBe('ok');
+    expect(await assertBothAgree()).toEqual({ exitCode: 0, degraded: [] });
   });
 
   // ── ⑦ ET 周末闸：非交易日不判（三向可证伪）────────────────────────────────────────────

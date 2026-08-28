@@ -54,6 +54,9 @@ const WEEKEND_AT = new Date('2026-06-20T10:00:00Z');
 
 const PEP_CONTRACT_CODE = 'US.PEP260717P130000';
 
+/** 港股 ① 级的时刻: 23:40 HKT 周一 = 15:40 UTC ⇒ 仍在**同一港股日历日**内 (#255)。 */
+const HK_SAME_DAY_RETRY_AT = new Date('2026-06-15T15:40:00Z');
+
 const day = (s: string): Date => new Date(`${s}T00:00:00Z`);
 
 /** 一票的覆盖率明细 (补救侧只消费 instrumentId + symbol)。 */
@@ -74,7 +77,36 @@ function report(
 ): OptionCoverageReport {
   const degraded = status === 'degraded' ? [shortfall()] : [];
   return {
+    market: 'us',
     sessionDate,
+    baselineDate: PREV_SESSION,
+    threshold: 1,
+    status,
+    expected: 2,
+    covered: status === 'degraded' ? 1 : 2,
+    underlyings: degraded,
+    degraded,
+  };
+}
+
+/** 港股档的覆盖率明细 —— `symbol` 决定 `toWorkingInstrument` 反解出来的 market。 */
+function hkReport(status: 'ok' | 'degraded'): OptionCoverageReport {
+  const degraded =
+    status === 'degraded'
+      ? [
+          {
+            instrumentId: 7n,
+            symbol: 'hk:00700',
+            expected: 2,
+            covered: 1,
+            missingContractCodes: ['HK.TCH260929P630000'],
+            degraded: true,
+          },
+        ]
+      : [];
+  return {
+    market: 'hk',
+    sessionDate: SESSION,
     baselineDate: PREV_SESSION,
     threshold: 1,
     status,
@@ -93,6 +125,8 @@ interface Harness {
   /** 落库行 (source / oi_as_of 的 SQL 可查性就靠它)。 */
   persisted: Record<string, unknown>[];
   evaluate: ReturnType<typeof vi.fn>;
+  /** 日历闸**问的是哪个市场** (#255) —— 不记下来就断言不了「按 hk 问」。 */
+  classifyCalls: [string, string][];
 }
 
 /**
@@ -148,9 +182,12 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
     },
   } as unknown as PrismaService;
 
+  const classifyCalls: [string, string][] = [];
   const calendar: TradingCalendarPort = {
-    classify: async (_market: string, date: string) =>
-      tradingDays.includes(date) ? 'trading' : 'non-trading',
+    classify: async (market: string, date: string) => {
+      classifyCalls.push([market, date]);
+      return tradingDays.includes(date) ? 'trading' : 'non-trading';
+    },
     // 062 T010: 本文件不验陈旧度基准 (那条归 optionsdesk-062.calendar IT)。
     lastClosedSession: async () => null,
   };
@@ -170,6 +207,7 @@ function makeHarness(verdicts: OptionCoverageReport[], tradingDays = TRADING_DAY
     queries,
     persisted,
     evaluate,
+    classifyCalls,
   };
 }
 
@@ -227,7 +265,7 @@ describe('OptionSnapshotRemediation', () => {
     it('覆盖率达标 → 零外呼、零落库 (正常日不该有任何补救动作)', async () => {
       const h = makeHarness([report('ok')]);
 
-      const outcome = await h.remediation.retrySameDay(SAME_DAY_RETRY_AT);
+      const outcome = await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
 
       expect(outcome).toMatchObject({ status: 'not_needed', sessionDate: SESSION });
       expect(h.queries).toHaveLength(0);
@@ -238,7 +276,7 @@ describe('OptionSnapshotRemediation', () => {
       const h = makeHarness([report('degraded'), report('ok')]);
       const err = spyLog('error');
 
-      const outcome = await h.remediation.retrySameDay(SAME_DAY_RETRY_AT);
+      const outcome = await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
 
       expect(outcome).toMatchObject({ status: 'recovered', attempted: ['us:PEP'] });
       expect(h.queries.map((q) => q.underlyingSymbol)).toEqual(['us:PEP']);
@@ -257,7 +295,7 @@ describe('OptionSnapshotRemediation', () => {
       const err = spyLog('error');
       const warn = spyLog('warn');
 
-      const outcome = await h.remediation.retrySameDay(SAME_DAY_RETRY_AT);
+      const outcome = await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
 
       expect(outcome.status).toBe('still_missing');
       // FR-046: 两级都失败**才**升 ERROR —— 一级就响会把每次 vendor 抖动都变成红。
@@ -272,7 +310,7 @@ describe('OptionSnapshotRemediation', () => {
     it('🚨 一级已补回 → 二级复判达标 ⇒ **零外呼**, 不留降级痕', async () => {
       const h = makeHarness([report('ok')]);
 
-      const outcome = await h.remediation.backfillPremarket(PREMARKET_AT);
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
 
       expect(outcome).toMatchObject({ status: 'not_needed', sessionDate: SESSION });
       expect(h.queries).toHaveLength(0);
@@ -284,7 +322,7 @@ describe('OptionSnapshotRemediation', () => {
       const err = spyLog('error');
       const warn = spyLog('warn');
 
-      const outcome = await h.remediation.backfillPremarket(PREMARKET_AT);
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
 
       expect(outcome).toMatchObject({ status: 'recovered', sessionDate: SESSION });
       // 留痕形态 = 行状态本身 (T025a 的独立进程读 SQL, 读不到 app 的 log)。
@@ -305,7 +343,7 @@ describe('OptionSnapshotRemediation', () => {
       const h = makeHarness([report('degraded'), report('degraded')]);
       const err = spyLog('error');
 
-      const outcome = await h.remediation.backfillPremarket(PREMARKET_AT);
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
 
       expect(outcome).toMatchObject({ status: 'still_missing', stillMissing: ['us:PEP'] });
       const logged = err.mock.calls.map((c: unknown[]) => String(c[0])).join(' | ');
@@ -318,7 +356,7 @@ describe('OptionSnapshotRemediation', () => {
       const h = makeHarness([report('degraded')], ['2026-06-16']);
       const err = spyLog('error');
 
-      const outcome = await h.remediation.backfillPremarket(PREMARKET_AT);
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
 
       expect(outcome).toMatchObject({ status: 'blocked', sessionDate: null });
       expect(h.queries).toHaveLength(0);
@@ -331,8 +369,8 @@ describe('OptionSnapshotRemediation', () => {
     it('周六 → 零判定、零外呼 (当日本就没有 session, 照跑会读成整批缺失)', async () => {
       const h = makeHarness([report('degraded'), report('degraded')]);
 
-      const same = await h.remediation.retrySameDay(WEEKEND_AT);
-      const premarket = await h.remediation.backfillPremarket(WEEKEND_AT);
+      const same = await h.remediation.retrySameDay('us', WEEKEND_AT);
+      const premarket = await h.remediation.backfillPremarket('us', WEEKEND_AT);
 
       expect(same.status).toBe('not_needed');
       expect(premarket.status).toBe('not_needed');
@@ -373,7 +411,7 @@ describe('OptionSnapshotRemediation', () => {
       const h = makeHarness([report('degraded'), report('ok')]);
       const collect = vi.spyOn(h.useCase, 'collect');
 
-      await h.remediation.retrySameDay(SAME_DAY_RETRY_AT);
+      await h.remediation.retrySameDay('us', SAME_DAY_RETRY_AT);
 
       const expected = expectedSpec(SAME_DAY_RETRY_AT);
       expect(collect).toHaveBeenCalledTimes(1);
@@ -388,13 +426,55 @@ describe('OptionSnapshotRemediation', () => {
       const h = makeHarness([report('degraded'), report('ok')]);
       const collect = vi.spyOn(h.useCase, 'collect');
 
-      await h.remediation.backfillPremarket(PREMARKET_AT);
+      await h.remediation.backfillPremarket('us', PREMARKET_AT);
 
       const expected = expectedSpec(PREMARKET_AT);
       expect(collect).toHaveBeenCalledTimes(1);
       expect(collect.mock.calls[0][1]).toEqual(expected.spec);
       // ② 级的 oi_as_of **= session_date** (盘前 OI 已翻新), 与 ① 级差一天且 MUST NOT 抹平。
       expect(expected.oiAsOf).toBe(SESSION);
+    });
+  });
+
+  // #255: 本片此前写死 `US_MARKET_SCOPE = ['us']`, 而覆盖率判据又不带市场谓词 ⇒ 港股票混进
+  // 美股补救的分母, 被拿 `marketScope: ['us']` 重采并按美股归属语义写库。
+  describe('🚨 按市场分派 (#255)', () => {
+    it('hk ① 级: 归属按港股自己的清算行为算 ⇒ oi_as_of = session_date, 与 us 方向相反', async () => {
+      const h = makeHarness([hkReport('degraded'), hkReport('ok')]);
+      const warn = spyLog('warn');
+
+      const outcome = await h.remediation.retrySameDay('hk', HK_SAME_DAY_RETRY_AT);
+      warn.mockRestore();
+
+      expect(outcome.market).toBe('hk');
+      expect(outcome.status).toBe('recovered');
+      // 🚨 本条测试的全部价值: 同一档 (① 级 / mode=eod) 下, hk 的 OI 在 D 日 21:30 已定稿 ⇒
+      //    **不退到上一交易日**; 而 us 那条 (第 250 行) 在同一档下是 `day(PREV_SESSION)`。
+      //    #255 就是把港股行按下面那个 us 口径写出去的 —— 值对、标签差一天、且不报错。
+      expect(h.persisted[0]).toMatchObject({
+        sessionDate: day(SESSION),
+        source: 'eod',
+        oiAsOf: day(SESSION),
+      });
+      // 覆盖率判据必须收到市场 —— 少这一格就是本 issue 的病根本身。
+      expect(h.evaluate.mock.calls[0][0]).toBe('hk');
+    });
+
+    it('hk 非交易日 → 两级都零外呼 (日历闸按 hk 问, 不是按 us)', async () => {
+      const h = makeHarness([], ['2026-06-11', '2026-06-12']); // 06-15 不在表内 ⇒ non-trading
+
+      const outcome = await h.remediation.retrySameDay('hk', HK_SAME_DAY_RETRY_AT);
+
+      expect(outcome).toMatchObject({
+        market: 'hk',
+        status: 'not_needed',
+        calendar: 'non-trading',
+      });
+      // 🚨 判据钉在「问的是哪个市场」上: 拿 us 的日历回答 hk 开不开市, 在两地假期不同的日子
+      //    (2026-10-01 / 10-19 = us 开、hk 休) 会直接放行, 而那正是最坏那个形态的入口。
+      expect(h.classifyCalls[0]).toEqual(['hk', '2026-06-15']);
+      expect(h.queries).toHaveLength(0);
+      expect(h.persisted).toHaveLength(0);
     });
   });
 
@@ -409,7 +489,7 @@ describe('OptionSnapshotRemediation', () => {
 
       // 正常路径 (收盘后 eod) 与兜底路径 (次日盘前) 各落一行。
       await h.useCase.run([{ id: 1n, market: 'us', code: 'PEP' }], dim, emptyStats(), input);
-      await h.remediation.backfillPremarket(PREMARKET_AT);
+      await h.remediation.backfillPremarket('us', PREMARKET_AT);
 
       const [eod, backfill] = h.persisted;
       expect(eod.contractId).toEqual(backfill.contractId);

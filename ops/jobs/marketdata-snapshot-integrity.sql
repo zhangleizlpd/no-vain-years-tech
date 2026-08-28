@@ -96,6 +96,16 @@
 --    ⚠️ 它同时是个**静音开关**：谁要是 `ALTER DATABASE … SET nvy.current_day`，探针会天天核对
 --    同一个历史日、永远绿。别这么干，也别把它接进任何 env / 配置文件。
 --
+-- ═══ 🚨 本探针**只服务 us**，而这件事从 2026-08-28 起是写出来的，不再是「没写过滤条件」═══
+-- #255：港股期权 2026-08-23 接入后，本文件的 baseline / denom / collected / present 四处仍是裸的
+-- （只有 `roster` 带 `i.market = 'us'`）⇒ 港股合约混进美股分母。app 侧同一缺陷把港股票交给了
+-- 美股补救器，按美股语义写库、1110 行 `oi_as_of` 差一天。四处现已全部显式收窄。
+--
+-- ⚠️ **港股侧目前没有独立探针**。app 内的两级补救已按市场参数化（`option-snapshot-remediation.ts`
+--    的 hk ①②），但那是进程内的；本文件这条「app 挂了也还在」的独立通道仍只覆盖 us。要开 hk
+--    探针需要另一条 systemd timer + 一套港股的 ET-周末闸等价物（港股周末闸不能照抄 isodow ET）。
+--    **别把这件事默默留成空白** —— 它现在写在这里，是为了下一个读本文件的人知道它是空白。
+--
 -- ═══ 性能 ═══
 -- 两次以 `session_date` 为入口的查询，走 `ix_option_daily_snapshot_session_date`；合约按主键
 -- join。**没有任何全表扫**（本表是全库增长最快的表，约 6.4M 行/年）。O(两日快照行数之和)。
@@ -120,26 +130,46 @@ config AS (
   SELECT 1::numeric AS coverage_threshold
 ),
 -- 基线日 = 有快照行的、早于当日的最近一个交易日（见文件头）。全表无更早行 → NULL → 分母为空。
+-- 🚨 #255：必须按市场取。取全表最近一天时，一个「us 休市、hk 开市」的日子会被选成基线
+--    ⇒ 分母整个来自港股。2026-10-01 / 2026-10-19 就是这样的日子（us whole / hk 无行）。
+-- 🚨 写成 `ORDER BY … DESC LIMIT 1` 而不是 `max()`：带 join 之后 `max()` 拿不到「索引倒序扫、
+--    命中第一行就停」的形状，会退化成聚合全扫。本形状与 TS 侧 `findFirst(orderBy desc)` 同源。
 baseline AS (
-  SELECT (SELECT max(d.session_date)
-          FROM marketdata.option_daily_snapshot d, bounds b
-          WHERE d.session_date < b.current_day) AS baseline_day
+  SELECT (SELECT d.session_date
+          FROM marketdata.option_daily_snapshot d
+          JOIN marketdata.option_contract c ON c.id = d.contract_id
+          JOIN marketdata.instrument i ON i.id = c.underlying_instrument_id,
+               bounds b
+          WHERE d.session_date < b.current_day
+            AND i.market = 'us'
+          ORDER BY d.session_date DESC
+          LIMIT 1) AS baseline_day
 ),
 -- 分母：同一合约在基线日可能有 eod + premarket_backfill 两行 ⇒ **DISTINCT 去重**，否则靠兜底
 -- 补采续命的那些票分母会凭空翻倍、覆盖率恒判红。
+-- 🚨 #255：市场谓词钉在**标的**（`instrument.market`）而不是 `option_contract.market`。
+--    本判据的单位是「票」，而两列可以不一致 —— #199 那批跨市场幽灵合约正是 `c.market='us'`
+--    挂在港股标的名下，按合约列过滤会把它们放回美股分母。TS 侧 `option-snapshot-coverage.check.ts`
+--    的四处查询用的是同一个谓词，**改一处必须改另一处**。
 denom AS (
   SELECT DISTINCT d.contract_id, c.underlying_instrument_id
   FROM marketdata.option_daily_snapshot d
-  JOIN marketdata.option_contract c ON c.id = d.contract_id,
+  JOIN marketdata.option_contract c ON c.id = d.contract_id
+  JOIN marketdata.instrument di ON di.id = c.underlying_instrument_id,
        baseline bl, bounds b
   WHERE d.session_date = bl.baseline_day
     AND c.expiry_date >= b.current_day
+    AND di.market = 'us'
 ),
 -- 分子：当日实得的合约集（同样多来源去重）。
 collected AS (
   SELECT DISTINCT d.contract_id
-  FROM marketdata.option_daily_snapshot d, bounds b
+  FROM marketdata.option_daily_snapshot d
+  JOIN marketdata.option_contract c ON c.id = d.contract_id
+  JOIN marketdata.instrument ci ON ci.id = c.underlying_instrument_id,
+       bounds b
   WHERE d.session_date = b.current_day
+    AND ci.market = 'us'
 ),
 per_underlying AS (
   SELECT i.market || ':' || i.code AS symbol,
@@ -186,8 +216,11 @@ roster AS (
 present AS (
   SELECT DISTINCT c.underlying_instrument_id AS iid
   FROM marketdata.option_daily_snapshot d
-  JOIN marketdata.option_contract c ON c.id = d.contract_id, bounds b
+  JOIN marketdata.option_contract c ON c.id = d.contract_id
+  JOIN marketdata.instrument pi ON pi.id = c.underlying_instrument_id,
+       bounds b
   WHERE d.session_date = b.current_day
+    AND pi.market = 'us'
 ),
 absent AS (
   SELECT r.symbol,

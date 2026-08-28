@@ -192,7 +192,8 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
 
       // ① 空 coverage → unknown → **不**在日历那一格短路, 一路走到「定位待补交易日」并因
       //    `trading_day` 无历史行而落 blocked。改动前 fail-open true 走的是同一条路。
-      expect(await remediation.backfillPremarket(NOW)).toEqual({
+      expect(await remediation.backfillPremarket('us', NOW)).toEqual({
+        market: 'us',
         level: 'premarket_backfill',
         // 062 T009 起结局带上判据来源: 这一格正是「不知道所以照跑」。
         calendar: 'unknown',
@@ -204,7 +205,8 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
 
       // ② 对照组: 声明覆盖今天且今天无行 → non-trading → 日历那一格短路 (not_needed)。
       await seedCoverage('us', '2026-08-01', '2026-08-31');
-      expect(await remediation.backfillPremarket(NOW)).toEqual({
+      expect(await remediation.backfillPremarket('us', NOW)).toEqual({
+        market: 'us',
         level: 'premarket_backfill',
         calendar: 'non-trading',
         sessionDate: null,
@@ -381,7 +383,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       await seedCoverage('us', '2026-08-01', PREV);
       expect(await adapter.classify('us', TODAY)).toBe('unknown');
 
-      const outcome = await buildRemediation().backfillPremarket(ET_0300);
+      const outcome = await buildRemediation().backfillPremarket('us', ET_0300);
 
       expect(outcome.sessionDate).toBe(PREV);
       expect(outcome.status).toBe('recovered');
@@ -397,7 +399,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       await seedDay('us', TODAY);
       await seedCoverage('us', '2026-08-01', '2026-12-31');
 
-      const outcome = await buildRemediation().backfillPremarket(ET_0300);
+      const outcome = await buildRemediation().backfillPremarket('us', ET_0300);
 
       expect(outcome).toMatchObject({
         sessionDate: PREV,
@@ -411,7 +413,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       await seedDay('us', PREV);
       await seedCoverage('us', '2026-08-01', '2026-12-31'); // TODAY 无行且在覆盖内 ⇒ 确认非交易日
 
-      const outcome = await buildRemediation().backfillPremarket(ET_0300);
+      const outcome = await buildRemediation().backfillPremarket('us', ET_0300);
 
       expect(outcome).toMatchObject({ status: 'not_needed', calendar: 'non-trading' });
       expect(port.calls).toEqual([]);
@@ -434,7 +436,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
         PREV,
       );
       const viaRemediation = await collectAndDrain(
-        () => buildRemediation().backfillPremarket(ET_0300),
+        () => buildRemediation().backfillPremarket('us', ET_0300),
         PREV,
       );
 
@@ -456,7 +458,7 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
         TODAY,
       );
       const viaRemediation = await collectAndDrain(
-        () => buildRemediation().retrySameDay(ET_1630),
+        () => buildRemediation().retrySameDay('us', ET_1630),
         TODAY,
       );
 

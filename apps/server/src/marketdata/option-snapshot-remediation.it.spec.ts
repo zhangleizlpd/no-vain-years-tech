@@ -245,7 +245,7 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
   it('① 当日重试: 落库行 source = eod, oi_as_of = 上一交易日 (state_branch 5)', async () => {
     await seedGap(PREV, [CONTRACT_OK]);
 
-    await remediation.retrySameDay(NOW);
+    await remediation.retrySameDay('us', NOW);
 
     // 🚨 断言落库行, 不是 RemediationOutcome —— 返回值全绿而 source 写错照样全绿。
     const rows = await rowsOn(TODAY);
@@ -265,7 +265,7 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
   it('② 盘前兜底: 落库行 source = premarket_backfill, 落在**被补的那天**', async () => {
     await seedGap(BASELINE, [CONTRACT_OK]);
 
-    await remediation.backfillPremarket(NOW);
+    await remediation.backfillPremarket('us', NOW);
 
     // 补的是 PREV 那个 session, 不是 TODAY。
     expect(await rowsOn(TODAY)).toHaveLength(0);
@@ -282,7 +282,7 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
     await seedGap(PREV, [CONTRACT_OK, CONTRACT_CROSSED]);
     port.crossed.add(CONTRACT_CROSSED); // bid 9.00 > ask 2.10 ⇒ 盘口交叉, 落库前被拒
 
-    await remediation.retrySameDay(NOW);
+    await remediation.retrySameDay('us', NOW);
 
     const rows = await rowsOn(TODAY);
     // 一条脏行 MUST NOT 带走同批其余行 (整批回滚会丢掉当日唯一一次采集机会)。
@@ -295,10 +295,10 @@ describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集
 
   it('幂等: 同一 session 重跑第二遍不改写已落行 (唯一键挡掉)', async () => {
     await seedGap(PREV, [CONTRACT_OK]);
-    await remediation.retrySameDay(NOW);
+    await remediation.retrySameDay('us', NOW);
     const first = await rowsOn(TODAY);
 
-    await remediation.retrySameDay(NOW);
+    await remediation.retrySameDay('us', NOW);
 
     // 第二遍覆盖率已达标 ⇒ 零外呼 (端口调用数不增), 行也不该多出或被改写。
     expect(port.calls).toHaveLength(1);
