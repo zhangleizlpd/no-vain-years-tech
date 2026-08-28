@@ -14,4 +14,4 @@ paths:
 - **往 CLAUDE.md 按需表加行时**：摘要 ≤ 40 字 —— 触发列才是命中依据，摘要只帮判「要不要读」；always-load 预算 5,000 tok，摘要通胀是超标主因。
 - 交付前自审**逐行问「12 个月后还成立吗」**，过不了就挪走 —— 通读式自审对自己刚写的文档无效（同 SDD 反模式「analyze 靠通读」条）。
 
-> canonical：[`docs/conventions/docs-organization.md`](../../docs/conventions/docs-organization.md)（约束范围 + 三类记录怎么选）。写入时刻的自检注入由 `scripts/pretooluse-convention-rubric.sh` 承担（本 rule 只覆盖 read/edit 路径；Write 新文件不触发 path rule，2026-08-03 装载日志实证）。
+> canonical：[`docs/conventions/docs-organization.md`](../../docs/conventions/docs-organization.md)（约束范围 + 三类记录怎么选）。写入时刻的自检注入由 `scripts/hooks/pretooluse-convention-rubric.sh` 承担（本 rule 只覆盖 read/edit 路径；Write 新文件不触发 path rule，2026-08-03 装载日志实证）。

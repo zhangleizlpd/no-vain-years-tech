@@ -250,7 +250,7 @@ export function persist({ feature, resultEvent, record, baseDir }) {
  * 124 so classifyOutcome maps it to `timeout`.
  *
  * SDD_BURST=1 is exported so the repo's PreToolUse destructive-op guard
- * (scripts/pretooluse-burst-destructive-guard.sh) ENFORCES inside this headless
+ * (scripts/hooks/pretooluse-burst-destructive-guard.sh) ENFORCES inside this headless
  * run — it env-gates off and no-ops in interactive sessions. The claude process
  * inherits this env, and so do its hook subprocesses + subagents.
  */

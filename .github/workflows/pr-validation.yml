@@ -251,8 +251,8 @@ jobs:
         # 三者都不在 Nx graph 里 → 放本 job (治理全扫, 不依赖 affected)。
         run: |
           node --test scripts/sdd-run/*.test.mjs
-          bash scripts/pretooluse-local-verify-guard.test.sh scripts/pretooluse-local-verify-guard.sh
-          bash scripts/pretooluse-convention-rubric.test.sh scripts/pretooluse-convention-rubric.sh
+          bash scripts/hooks/pretooluse-local-verify-guard.test.sh scripts/hooks/pretooluse-local-verify-guard.sh
+          bash scripts/hooks/pretooluse-convention-rubric.test.sh scripts/hooks/pretooluse-convention-rubric.sh
           bash scripts/marketdata-dev-sync/sync.test.sh scripts/marketdata-dev-sync/sync.sh
 
       - name: Enforce convention reachability (orphan detection, per .claude/rules/convention-authoring.md)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 对照表测试：pretooluse-convention-rubric.sh
-# 用法: bash scripts/pretooluse-convention-rubric.test.sh scripts/pretooluse-convention-rubric.sh
+# 用法: bash scripts/hooks/pretooluse-convention-rubric.test.sh scripts/hooks/pretooluse-convention-rubric.sh
 # 断言两类：① 命中臂必须注入 rubric ② 静默臂必须零输出；全部臂 exit 0（fail-open 契约）。
 set -u
 

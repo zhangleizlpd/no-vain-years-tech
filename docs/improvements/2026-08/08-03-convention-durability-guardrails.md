@@ -40,14 +40,14 @@
 
 ## 落地的防线
 
-| 层             | 实体                                                                                      | 覆盖                                  |
-| -------------- | ----------------------------------------------------------------------------------------- | ------------------------------------- |
-| 写入时刻       | `scripts/pretooluse-convention-rubric.sh`（+9 臂 `.test.sh`，接进 CI Tooling self-tests） | Write 新建 + Edit（唯一全覆盖通道）   |
-| read/edit 触发 | `.claude/rules/convention-authoring.md`（paths: `docs/conventions/**`）                   | 碰到 convention 即注入判据            |
-| 路由           | CLAUDE.md 按需表加行                                                                      | 人/模型主动查表                       |
-| 机器硬闸       | `scripts/checks/check-convention-orphan.ts`（lefthook + pr-validation 双接线）            | 孤儿 convention（零引用=红）          |
-| 流程           | docs-organization.md「产出顺序」段                                                        | 直击 R6：先 improvements 后提炼       |
-| 顺带           | sdd.md 抽 3 段 → `.claude/rules/sdd-authoring.md`（paths: `specs/**`）                    | always-load 19,848 → 16,042 B（−19%） |
+| 层             | 实体                                                                                            | 覆盖                                  |
+| -------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------- |
+| 写入时刻       | `scripts/hooks/pretooluse-convention-rubric.sh`（+9 臂 `.test.sh`，接进 CI Tooling self-tests） | Write 新建 + Edit（唯一全覆盖通道）   |
+| read/edit 触发 | `.claude/rules/convention-authoring.md`（paths: `docs/conventions/**`）                         | 碰到 convention 即注入判据            |
+| 路由           | CLAUDE.md 按需表加行                                                                            | 人/模型主动查表                       |
+| 机器硬闸       | `scripts/checks/check-convention-orphan.ts`（lefthook + pr-validation 双接线）                  | 孤儿 convention（零引用=红）          |
+| 流程           | docs-organization.md「产出顺序」段                                                              | 直击 R6：先 improvements 后提炼       |
+| 顺带           | sdd.md 抽 3 段 → `.claude/rules/sdd-authoring.md`（paths: `specs/**`）                          | always-load 19,848 → 16,042 B（−19%） |
 
 maestro-testid.md（改造前唯一真孤儿）→ mobile-impl-playbook §10 加指针转绿（保留，Plan 4 醒来用）。
 
