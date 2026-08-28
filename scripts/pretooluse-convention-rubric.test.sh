@@ -29,6 +29,14 @@ run_case() {
         FAILED=1
       fi
       ;;
+    naming)
+      if printf '%s' "$out" | grep -q 'DOCS 命名闸'; then
+        echo "✅ $name"
+      else
+        echo "❌ $name — 应注入命名闸，实际输出: ${out:-<empty>}"
+        FAILED=1
+      fi
+      ;;
     silent)
       if [ -z "$out" ]; then
         echo "✅ $name"
@@ -50,9 +58,11 @@ run_case "Edit 存量 convention" \
 
 # —— 静默臂 ——
 run_case "server 源码" "$(j Write /Users/x/repo/apps/server/src/auth/foo.ts)" silent
-run_case "improvements 记录（时点数字的合法归宿，不该拦）" \
-  "$(j Write /Users/x/repo/docs/improvements/2026-08/08-03-x.md)" silent
-run_case "plans" "$(j Edit /Users/x/repo/docs/private/plans/2026-08/08-02-x.md)" silent
+run_case "improvements 记录（时点数字的合法归宿：注入命名闸而非耐久性闸）" \
+  "$(j Write /Users/x/repo/docs/improvements/2026-08/08-03-x.md)" naming
+run_case "plans（Write 新建 = 唯一命名时刻）" "$(j Write /Users/x/repo/docs/private/plans/2026-08/08-02-x.md)" naming
+run_case "experience" "$(j Edit /Users/x/repo/docs/experience/2026-08/08-02-x.md)" naming
+run_case "plans 下非 md" "$(j Write /Users/x/repo/docs/private/plans/2026-08/raw.json)" silent
 run_case "conventions 下非 md" "$(j Write /Users/x/repo/docs/conventions/foo.png)" silent
 
 # —— fail-open 逆境臂 ——
