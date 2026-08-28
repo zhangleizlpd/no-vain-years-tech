@@ -80,9 +80,12 @@
 --    而周末闸是 `isodow` **纯日期算术，不读任何表、不依赖任何被监控对象**：周六周日永远不是 us
 --    交易日，那两天根本不存在「本该有快照却没有」这个状态 ⇒ 消掉它**零检测力损失**。
 --
--- 🚨 **美股节假日仍然会假红**（~9-10 次/年），这是**蓄意保留**：要消掉它就必须查 `trading_day`，
---    那就正好踩进上一段那个循环信任陷阱。节假日是已知日期、一年十次、看一眼即弃 —— 代价远小于
---    让这个探针获得「跟着日历一起瞎」的能力。**别顺手把它也修了。**
+-- 🚨 **美股节假日曾经会假红（~9-10 次/年），2026-08-28 已修（#276）**。此处原文写的是
+--    「蓄意保留，别顺手把它也修了」，理由是「要消掉它就必须查 `trading_day`，那就踩进循环信任」。
+--    **那个二选一是假的**：踩陷阱的是「查日历 → 静默放行」，而三态判据在**放行前要求日历正向
+--    声明它覆盖了今天**，日历陈旧时落 `unknown` ⇒ **判红**。极性相反，不是同一件事。
+--    判据与逐条语义见下方 `calendar` CTE 上方那段。实证：注入 `2026-09-07`（劳动节）修前
+--    `exit 1` + 106 票全 `0/N⚠缺`，修后 `exit 0`「非交易日不判」。
 --
 -- ═══ 当日 = **ET 的今天**，不是宿主的今天 ═══
 -- `session_date` 是按 us 市场时区求值的业务日（FR-036）。timer 跑在北京 08:00 = ET 前一日
@@ -104,10 +107,13 @@
 -- ⚠️ **港股侧目前没有独立探针 —— 跟踪在 #267**。app 内的两级补救已按市场参数化
 --    （`option-snapshot-remediation.ts` 的 hk ①②），但那是进程内的；本文件这条「app 挂了也还在」
 --    的独立通道（FR-051 的全部理由）仍只覆盖 us。
---    开 hk 探针的难点不在 SQL 而在**非交易日闸**：本文件这道是纯 `isodow` 的 ET 周末闸（不查
---    `trading_day`，故不构成 FR-045 禁的循环信任），港股照抄只能罩住周末 —— 公众假期（如
---    2026-10-01 / 2026-10-19）仍会各假红一次，而每月假红一次的告警等于没有告警。判据设计见 #267。
---    **别把这件事默默留成空白** —— 它现在写在这里，是为了下一个读本文件的人知道它是空白。
+--    ✅ **#267 原本卡在「非交易日闸怎么设计」那一格 —— 该格已由 #276 解开**：闸不再只有
+--    `isodow` 一道，而是「isodow 周末 → 三态 `unknown` fail-closed → 三态 `non-trading` 放行」
+--    三档（见下方 `calendar` CTE 上方那段）。三态判据**与市场无关**，港股把 `'us'` 换成 `'hk'`
+--    即成立：`calendar_coverage.hk` 现有声明 `2015-01-01..2026-12-31`（`served_by = static`，
+--    HKEX 官方年历），2026-10-01 / 10-19 那类港股公众假期落 `non-trading` ⇒ 不假红。
+--    ⇒ 开 hk 探针剩下的是**照本文件复制四层结构 + 换市场谓词 + 第二条 timer**（时刻要落在港股
+--    夜链收口之后），不再有未决的判据设计。
 --
 -- ═══ 性能 ═══
 -- 两次以 `session_date` 为入口的查询，走 `ix_option_daily_snapshot_session_date`；合约按主键
@@ -125,6 +131,46 @@ WITH bounds AS (
              (now() AT TIME ZONE 'America/New_York')::date
            ) AS current_day
   ) anchor
+),
+-- ═══ 非交易日闸的**第二格**：公众假期（#276）═══
+-- 上面那道 `isodow` 闸只挡周末。美股公众假期是**工作日** ⇒ 闸放行 ⇒ 当日零快照 ⇒ 存在性层判
+-- 全票缺席 ⇒ 假红。2026-08-28 用本文件自己的 GUC 注入口对 prod 实测：注入 `2026-09-07`
+-- （劳动节，周一）得 `exit 1` + 106 票全 `0/N⚠缺`；注入 `2026-09-05`（周六）与 `2026-08-27`
+-- （真交易日）均如常。⇒ 假红是实证，不是推演。约 9–10 次/年。
+--
+-- 🚨 **判据 = `trading-day.rules.ts` 的三态 `classifyTradingDay`，🚫 MUST NOT 自己发明第四种读法。**
+--   `check-trading-day-read.ts` 的文件头记着本仓犯过的那个病：把「无记录」读成「不是交易日」
+--   （closed-world assumption）⇒ 那一行落库之前，所有消费方拿到**静默的**错误答案。语义逐条对齐：
+--
+--   | 条件                                                    | 状态          | 本闸处置              |
+--   | ------------------------------------------------------- | ------------- | --------------------- |
+--   | `trading_day` 有该行                                    | `trading`     | 正常判                |
+--   | 无该行，**且**该日在 `calendar_coverage` 已声明区间内    | `non-trading` | exit 0「非交易日不判」 |
+--   | 无该行，且在区间外 / 无声明                             | `unknown`     | **exit 1**，fail-closed |
+--
+-- 🚨 **这为什么不撞 FR-045 的循环信任**：被禁的形态是「查日历 → 静默放行」。这里放行需要日历
+--   **正向声明**它覆盖了今天；日历陈旧 ⇒ 落 `unknown` ⇒ **判红**而不是判绿。
+--   「日历坏了会让探针撒谎」被翻成「日历坏了会让探针响」——极性相反，不是同一件事。
+--   ⚠️ `unknown` 也不会只有这一条通道看见：`calendar_coverage` 的活性另有独立探针每 4h 判
+--   （`marketdata-calendar-health.sql` 判据 ③ 无声明 / ④ 视野落后 / ⑤ 视野过近）。
+--
+-- 🚨 **`is_et_weekend` 保留、不被三态取代**：它是纯算术、不读任何表 ⇒ 即使 `calendar_coverage`
+--   整个坏掉，周末仍静默。周末在三态下同样得 `non-trading`，两者结论一致，isodow 只是更早短路。
+--
+-- 🚫 **已验过会错、别再走一遍**：「断言前瞻视野 ≥ N 天」**每年 12 月必假红** —— 前瞻段是
+--   `[明天, 当年 12-31]`（`trading-calendar-sync.service.ts`），视野往年末逐日收缩。这件事
+--   `marketdata-calendar-health.sql` 判据 ⑤ 早已处理（年末豁免 + 1 月 1 日起必红），且注释明写
+--   「🚫 MUST NOT 加『1 月宽限期』」。⇒ 用 `calendar_coverage` 的**区间**语义，不造第二份视野判据。
+calendar AS (
+  -- 两个标量 EXISTS、无 FROM ⇒ 恒 1 行，`FROM bounds b, calendar cal` 仍是 1×1（守住「恒返单行」契约）。
+  -- 🚨 区间判据是**闭区间两端**（`covered_from ≤ day ≤ covered_to`），与 `isWithinCoverage` 同形；
+  --    只比 `covered_to` 会把「声明起点之前」误读成 non-trading。
+  SELECT
+    EXISTS (SELECT 1 FROM marketdata.trading_day t, bounds b
+            WHERE t.market = 'us' AND t.date = b.current_day) AS has_row,
+    EXISTS (SELECT 1 FROM marketdata.calendar_coverage c, bounds b
+            WHERE c.market = 'us'
+              AND b.current_day BETWEEN c.covered_from AND c.covered_to) AS within_coverage
 ),
 -- 🚨 **阈值的唯一所在地**（先验起手 1 = 100%，FR-045）。它与 TS 侧的
 --    `MARKETDATA_OPTION_COVERAGE_THRESHOLD`（zod 默认 1）是**同一个口径的两处实现** ——
@@ -248,14 +294,29 @@ verdict AS (
   SELECT a.symbol, a.expected::bigint, 0::bigint, true FROM absent a
 )
 SELECT
-  CASE WHEN b.is_et_weekend
-       THEN 0
+  -- 🚨 三档顺序**不可交换**（#276）: 先纯算术的周末闸（不读表, 日历坏掉时周末仍静默）,
+  --    再 `unknown` 的 fail-closed, 最后才是 `non-trading` 的放行。把后两者对调 = 把
+  --    「根本没填到这儿」读成「填过了确实没有」= 原样重犯 closed-world 那个病。
+  CASE WHEN b.is_et_weekend                                    THEN 0
+       WHEN NOT cal.has_row AND NOT cal.within_coverage        THEN 1
+       WHEN NOT cal.has_row                                    THEN 0
        ELSE (EXISTS (SELECT 1 FROM verdict WHERE degraded))::int END AS exit_code,
   CASE
     -- 周末不判也**要说清楚为什么不判** —— 静默会被读成「判过了、没事」，那正是 044 的病灶形状。
     WHEN b.is_et_weekend
       THEN '✅ 非交易日不判 (当日 ' || b.current_day::text
         || ' 是 ET 周末 · us 不开盘, 本就无快照可核对)'
+    -- `unknown`: 判**不出**, 与「判过了没事」是两件事 ⇒ 说清楚是哪一格缺, 别只报一个 🔴。
+    WHEN NOT cal.has_row AND NOT cal.within_coverage
+      THEN '🔴 判不出: 当日 ' || b.current_day::text
+        || ' 落在 us 交易日历的已声明覆盖区间之外 (声明 '
+        || coalesce((SELECT c.covered_from::text || '..' || c.covered_to::text
+                     FROM marketdata.calendar_coverage c WHERE c.market = 'us'), '缺')
+        || '), 「今天是不是交易日」答不上来 ⇒ fail-closed 判红而非静默放行 (三态 unknown 档)'
+    -- `non-trading`: 无行 **且** 落在已声明区间内 ⇒ 「填过了, 确实没有」。
+    WHEN NOT cal.has_row
+      THEN '✅ 非交易日不判 (当日 ' || b.current_day::text
+        || ' 不在 us 交易日历, 且落在已声明覆盖区间内 ⇒ 休市, 本就无快照可核对)'
     ELSE
       (CASE WHEN EXISTS (SELECT 1 FROM verdict WHERE degraded)
             THEN '🔴 期权快照逐合约覆盖率跌破阈值'
@@ -271,5 +332,6 @@ SELECT
                    FROM verdict),
                   '无对象（基线日无存续合约 / 首日 / 零锚 —— 不是 0%）'))
   END AS summary
--- bounds 恒 1 行 ⇒ 「恒返单行两列」的契约不变（bash 侧单次 read 读完 = 零逻辑的前提）。
-FROM bounds b;
+-- bounds 恒 1 行 × calendar 恒 1 行（两个标量 EXISTS、无 FROM）⇒ 「恒返单行两列」的契约不变
+-- （bash 侧单次 read 读完 = 零逻辑的前提）。
+FROM bounds b, calendar cal;
