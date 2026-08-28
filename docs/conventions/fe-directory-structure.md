@@ -6,13 +6,13 @@
 
 ## 目录与边界（已由 ADR 治理）
 
-| 关心点                                                               | 单源                                                                                                                                                                                       |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| apps/\* + packages/\* 物理边界 + ESLint boundaries + Nx project 边界 | [ADR-0032](../adr/0032-backend-bounded-context.md) + [ADR-0043](../adr/0043-server-flat-module-paradigm.md)（ADR-0020 已 Superseded）；scope-tag depConstraints SoT 在 `eslint.config.mjs` |
-| Package decomposition（mono 5 包减 2，留 api-client + types）        | [ADR-0030](../adr/0030-package-decomposition.md)                                                                                                                                           |
-| pnpm policy（shamefully-hoist + Expo 兼容）                          | [ADR-0028](../adr/0028-monorepo-pnpm-policy.md)                                                                                                                                            |
-| TS module resolution（bundler 基线 + apps/server nodenext override） | [ADR-0029](../adr/0029-ts-module-resolution-policy.md)                                                                                                                                     |
-| 业务模块字符串前后端一致                                             | [business-naming.md](business-naming.md)                                                                                                                                                   |
+| 关心点                                                               | 单源                                                                                                                                                                                                           |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| apps/\* + packages/\* 物理边界 + Nx project 边界                     | `eslint.config.mjs` `@nx/enforce-module-boundaries` depConstraints（`scope:mobile-app` 只许依赖 `scope:pkg-types` / `scope:pkg-api-client`）；为何只剩 2 包见 [ADR-0030](../adr/0030-package-decomposition.md) |
+| Package decomposition（mono 5 包减 2，留 api-client + types）        | [ADR-0030](../adr/0030-package-decomposition.md)                                                                                                                                                               |
+| pnpm policy（shamefully-hoist + Expo 兼容）                          | [ADR-0028](../adr/0028-monorepo-pnpm-policy.md)                                                                                                                                                                |
+| TS module resolution（bundler 基线 + apps/server nodenext override） | [ADR-0029](../adr/0029-ts-module-resolution-policy.md)                                                                                                                                                         |
+| 业务模块字符串前后端一致                                             | [business-naming.md](business-naming.md)                                                                                                                                                                       |
 
 本文件不重复物理目录布局 / 跨包依赖纪律 / pnpm 配置 / TS 解析策略。
 
@@ -24,13 +24,13 @@
 
 ## 依赖引入
 
-- **Expo SDK / RN 生态包**（任何 `expo-*` / `react-native` / `react-native-*`）必走 `cd apps/mobile && pnpm exec expo install <pkg>`；**禁** `pnpm add` — 后者拉 npm latest，撞 Expo SDK 兼容版本错位
+- **Expo SDK / RN 生态包**（任何 `expo-*` / `react-native` / `react-native-*`）必走 `pnpm -C apps/mobile exec expo install <pkg>`；**禁** `pnpm add` — 后者拉 npm latest，撞 Expo SDK 兼容版本错位
 - **非 Expo 包**（`zustand` / `@tanstack/react-query` / `react-hook-form` / `zod` 等纯 JS lib）走 `pnpm add --filter mobile <pkg>` 或 `pnpm add -Dw <pkg>`
-- **版本漂移修复**：`cd apps/mobile && pnpm exec expo install --fix`
+- **版本漂移修复**：`pnpm -C apps/mobile exec expo install --fix`，跑完必 `pnpm install`（pnpm mono 下 `--fix` 会留残缺 node_modules）
 - 不确定包属哪类时，停下来问
 
 ## 客户端 token 存储
 
-- `refresh_token` / `access_token` 等敏感凭证只走 [`expo-secure-store`](https://docs.expo.dev/versions/latest/sdk/securestore/)（实证 `apps/mobile/src/auth/device-store.ts`）
+- `refresh_token` 等**需持久化**的凭证只走 [`expo-secure-store`](https://docs.expo.dev/versions/latest/sdk/securestore/)（`apps/mobile/src/auth/store.ts` persist 策略 / `auth/device-store.ts`）；`access_token` **仅内存不落盘**，冷启动由 refresh 重新派生
 - **禁**写进 MMKV / AsyncStorage（明文 / 未加密）
 - 后端 token issue / verify / rotation 设计见 [ADR-0037 JWT HS256 双 token + Redis jti 白名单](../adr/0037-security-credentials-governance.md)
