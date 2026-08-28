@@ -1,6 +1,7 @@
 ---
 paths:
   - 'apps/mobile/e2e/**/*.spec.ts'
+  - 'apps/mobile/e2e/contract-smoke/*.contract.ts'
 ---
 
 # Mobile e2e hermetic 边界（path-triggered，写 Expo Web e2e spec 时自动加载）
@@ -47,4 +48,15 @@ seed-authed e2e（`addInitScript` 注 `nvy-auth` 假 session）必须把后端�
 
 实证：047 T035 首轮 4 条红全是这条；同片另一条只能留真机的是**大规模虚拟化窗口**（`VirtualizedList` 默认 `windowSize=21` ≈369 行，而 e2e 承受得起的行数够不到那条线，web 下全渲染 ⇒ 「只渲染视口那一窗」在 web 验不出来）。
 
-> 测试分层：UI / render / 交互走本层 Playwright Expo Web；纯逻辑走 vitest（per [mobile-impl-playbook](mobile-impl-playbook.md)）。
+## 契约冒烟（`*.contract.ts`，跨端 feature 第二层）
+
+- 用**生成的** `@nvy/api-client` 打 `bootRealBackend()` 起的真 server；不做 UI 断言（点通归 hermetic）。
+- **写完从另一个端点读回**证真落库；专属 ticker / 数据 + 末尾自清理，保同 boot 内多 spec 幂等。
+- 多分支（happy + 降级 / 错误路径）走 **content-driven**：Fake provider 读 user message 内嵌关键字自行分支（先例 `chat-model-switch.contract.ts`），**不靠 DI override**（外部真进程拿不到 `overrideProvider`）；分支只在命中关键字时触发，Fake 默认行为零改。
+- 新 spec 在 `contract-smoke/run.ts` `SPECS` 注册一行；HOW 详版 [mobile-impl-playbook § 5](../../docs/conventions/mobile-impl-playbook.md)。
+
+## testID
+
+定位一律 `getByTestId`，体例 `<feature>-<element>[-<state>]` → [mobile-testid.md](../../docs/conventions/mobile-testid.md)。
+
+> 测试分层：UI / render / 交互走本层 Playwright Expo Web；纯逻辑走 vitest（[testing.md](../../docs/conventions/testing.md) 不变量 4）。
