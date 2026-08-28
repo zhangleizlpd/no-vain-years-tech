@@ -37,8 +37,8 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 飞书发送原语：优先用 ~/.nvy/lib 的自包含副本（launchd 对 ~/Documents 无 TCC）
 if [ -f "$HOME/.nvy/lib/feishu-send.sh" ]; then
   . "$HOME/.nvy/lib/feishu-send.sh"
-elif [ -f "$SELF_DIR/../../ops/lib/feishu-send.sh" ]; then
-  . "$SELF_DIR/../../ops/lib/feishu-send.sh"
+elif [ -f "$SELF_DIR/../../../ops/lib/feishu-send.sh" ]; then
+  . "$SELF_DIR/../../../ops/lib/feishu-send.sh"
 else
   feishu_send() { printf '[probe] feishu-send.sh 缺失，消息未发送：\n%s\n' "$1" >&2; }
 fi

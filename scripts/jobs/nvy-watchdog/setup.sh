@@ -40,7 +40,7 @@ MIN="$((10#${BASH_REMATCH[2]}))"
 { [[ "$HOUR" -le 23 ]] && [[ "$MIN" -le 59 ]]; } || { echo "--time 越界：$TIME" >&2; exit 1; }
 
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_LIB_DIR="$TOOL_DIR/../../ops/lib"
+SRC_LIB_DIR="$TOOL_DIR/../../../ops/lib"
 LIB_DIR="$HOME/.nvy/lib"
 WATCHDOG_SH="$LIB_DIR/nvy-watchdog.sh"
 NVY_DIR="$HOME/.nvy/watchdog"

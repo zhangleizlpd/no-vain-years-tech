@@ -83,7 +83,7 @@ async function materializeRuntime(): Promise<void> {
  * 生成的 wrapper 引用这份冻结副本；改 lib 须重跑 setup 覆盖（与 sync 运行时副本同范式）。
  */
 async function materializeSharedLib(): Promise<void> {
-  const repoLibDir = resolve(TOOL_DIR, '..', '..', 'ops', 'lib');
+  const repoLibDir = resolve(TOOL_DIR, '..', '..', '..', 'ops', 'lib');
   await mkdir(LIB_DIR, { recursive: true });
   for (const f of SHARED_LIBS) {
     await copyFile(join(repoLibDir, f), join(LIB_DIR, f));
