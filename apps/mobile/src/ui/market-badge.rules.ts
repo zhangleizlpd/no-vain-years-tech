@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — UI badge 的纯函数规则半边（companion 于 MarketBadge.tsx）。索引见 docs/conventions/golden-sample-registry.md。
 // 市场/板块小标签纯函数（自 021 target-select.helpers 提升共享，013/021 列表行共用）。
 // A股段与 ~/alert/limit-price.rules 同口径（688/689 科创、300/301 创业、920/8x/4x 北交）；
 // V1 主覆盖 A股个股，ETF/指数等边角按首位兜底（6→沪A / 其余→深A），允许不准

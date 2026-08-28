@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — 测试 Medium 变体：自己跑 migrate deploy 并验证产物（setupEmptyDb）。索引见 docs/conventions/golden-sample-registry.md。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupEmptyDb } from '../_support/isolated-db';
 import { runMigrateDeploy } from '../_support/run-migrate';

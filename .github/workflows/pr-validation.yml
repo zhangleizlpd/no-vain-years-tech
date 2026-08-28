@@ -262,6 +262,12 @@ jobs:
         # 历史不构成当下路由）。Full-scan, 不依赖 nx affected — 可达性是 holistic invariant。
         run: pnpm tsx scripts/checks/check-convention-orphan.ts
 
+      - name: Enforce golden-sample registry ↔ banner consistency (per docs/conventions/golden-sample-registry.md)
+        # 注册表里每条样板必存在且带 `// GOLDEN SAMPLE` banner；有 banner 的文件必在注册表里。
+        # 两个方向都 100% 静默（没有测试会因此红），/sdd-auto-impl 派单靠注册表、读者靠 banner。
+        # Full-scan（扫 apps/ packages/ scripts/ 的 .ts/.tsx），不依赖 nx affected。
+        run: pnpm tsx scripts/checks/check-golden-sample-registry.ts
+
       - name: Enforce skill snippet runnability (per .claude/rules/convention-authoring.md)
         # .claude/skills 下的代码块是「照抄即跑」的契约。三条判据均来自真机踩坑:
         #   1. bash/sh 块必须 bash -n 通过 —— 裸 <占位符> 被解析成重定向, 照抄即语法错误

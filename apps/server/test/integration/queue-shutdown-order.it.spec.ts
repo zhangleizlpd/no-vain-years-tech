@@ -1,3 +1,4 @@
+// GOLDEN SAMPLE — 测试 Medium 变体：只要 Redis 不要 PG（自起 RedisContainer）。索引见 docs/conventions/golden-sample-registry.md。
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
