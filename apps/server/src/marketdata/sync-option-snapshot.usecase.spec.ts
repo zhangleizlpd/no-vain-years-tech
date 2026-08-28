@@ -497,6 +497,49 @@ describe('SyncOptionSnapshotUseCase', () => {
       expect(entry?.violations).toEqual(['delta_sign']);
     });
 
+    // #261: 码解决了「撞的是哪条门」, 但解决不了「差多少」。2026-08-27 夜港股 4 张深实值 PUT
+    // 撞 `ask_below_intrinsic`, 事后要判的是两个**修法方向相反**的假设 —— 容差 0.05 是绝对值
+    // 对港股价格尺度太紧 (收紧/改相对量) vs 港交所 ask 侧本就机械占位 (放行)。判据是 ask 离
+    // 内在价值**差多少**, 而那个数只在 ERROR 文案里、只进容器 stdout ⇒ 事后不可判。
+    // 🚨 样本**逐 code 一条**而非逐合约: 与 `violations` 同序等长可按下标配对 —— 与 `contracts`
+    // 的「MUST NOT 按下标配对」刻意相反, 且行数不随批量拒绝规模增长。
+    it('拒绝留痕逐 code 带一条含数字的样本, 使「差多少」事后可判 (#261)', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const h = makeHarness({
+        contracts: {
+          '1': [
+            contractRow('US.PEP260918P130000'),
+            // K=200 > spot 148.21 ⇒ 内在价值 51.79, 而默认 ask 2.40 远在下界之下 ⇒ 撞门 ④。
+            contractRow('US.PEP260918P200000', { strikePrice: new Prisma.Decimal('200') }),
+          ],
+        },
+        rowsFor: (q) => [
+          quoteRow(q.contractCodes[0], { delta: '0.31' }),
+          quoteRow(q.contractCodes[1]),
+          underlyingRow(),
+        ],
+      });
+      const stats = emptyStats();
+
+      await h.useCase.run([PEP], DIM, stats, makeInput());
+
+      // 先取证再 restore, 再断言 —— 同上一条记下的级联教训。
+      const entry = stats.findings.find((t) => t.kind === 'reject');
+      errSpy.mockRestore();
+
+      expect(entry?.violations).toEqual(['ask_below_intrinsic', 'delta_sign']);
+      // 同序等长: 每个码都配得上一条样本, 一条都不能少 (少了那个码就退回「只有 code」的旧态)。
+      expect(entry?.violationSamples).toHaveLength(2);
+      // 样本自带合约码 ⇒ 能定位到具体那张腿 (批量拒绝时 `contracts` 与 `violations` 不可配对)。
+      expect(entry?.violationSamples[0]).toContain('US.PEP260918P200000');
+      expect(entry?.violationSamples[1]).toContain('US.PEP260918P130000');
+      // 🚨 本条测试的**全部价值**: 数字必须在。判据钉在 ask 与内在价值这两个由 fixture 决定的
+      // 值上, **不钉容差** —— #261 的收敛方向之一就是改容差, 钉它等于让修法当场撞红自己。
+      expect(entry?.violationSamples[0]).toContain('2.4');
+      expect(entry?.violationSamples[0]).toContain('51.79');
+      expect(entry?.violationSamples[1]).toContain('0.31');
+    });
+
     it('greeks 整块缺失的深实值腿照常入库 (缺失跳过对应的门, FR-007)', async () => {
       // 实值腿 bid 跌破内在价值 ⇒ IV 无解 ⇒ 五个 greeks 与 IV 一起没有, 实测 227/2150 行。
       // 在这里拒掉 = 决策带按 |Δ| 定义, 缺 Δ 的腿被筛没且无人知晓。

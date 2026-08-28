@@ -151,6 +151,11 @@ describe('016 SyncRunRecorder lifecycle (Testcontainers PG)', () => {
           contracts: ['ALB260918C90000', 'ALB260918P90000'],
           // #198/#212: 去重聚合, 与 contracts 不等长也不同序 —— 别按下标配对。
           violations: ['bid_above_ask', 'delta_sign'],
+          // #261: 逐 code 一条带数字的样本, 与 violations 同序等长。
+          violationSamples: [
+            'ALB260918C90000: 盘口交叉: bid 9.9 > ask 2.4',
+            'ALB260918P90000: PUT 的 Δ 符号非法: 0.31 (PUT 要求 ≤ 0, CALL 要求 ≥ 0)',
+          ],
         },
         {
           kind: 'notice',

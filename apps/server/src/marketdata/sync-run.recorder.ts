@@ -43,6 +43,19 @@ export type SyncRunFinding =
        * 单行拒绝 (us:CPB 那种) 两者等价。
        */
       violations: string[];
+      /**
+       * 每条门一条**带数字**的样本 (`<contractCode>: <reason>`, #261) —— 与 `violations`
+       * 同序等长, **可**按下标配对 (与上面 `contracts` 的不可配对刻意相反)。
+       *
+       * 🚨 码解决「撞的是哪条门」, 样本解决「差多少」。两个假设修法方向相反时判据就是那个数:
+       * 2026-08-27 夜 hk:00700 四张深实值 PUT 撞 `ask_below_intrinsic`, 要判的是「容差 0.05
+       * 是绝对值、对港股价格尺度太紧」还是「该市场 ask 侧本就机械占位」—— 前者收紧、后者放行。
+       * 而 ask 离内在价值差多少此前只在 ERROR 文案里, 日志只进容器 stdout (30MB 环, 无投递)
+       * ⇒ 事后不可判, 只剩一个 code。
+       *
+       * 📌 逐 code 一条而非逐合约: 行数封顶 = 门的条数, 不随批量拒绝规模增长。
+       */
+      violationSamples: string[];
     }
   /** 本轮被 freshness gate 跳过 (审计痕, 非失败语义)。 */
   | { kind: 'skip'; reason: string }
