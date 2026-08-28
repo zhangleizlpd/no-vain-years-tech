@@ -15,18 +15,14 @@ paths:
 
 ## 改结构 / 换调用形态前（三步，缺一条 = 在打补丁）
 
-> 🚨 **CRITICAL —— 注释里的 `🚫` / `MUST NOT` 是针对某次具体事故的禁令，NOT 解空间的边界。** 当成边界就会在错误前提里找优化，典型形状是**给一个不该发生的操作加缓存 / 游标 / 跳过判据** —— 正解是删掉那个操作。发现自己在设计这类东西时，**MUST** 先回头问「这个操作本身该不该发生」。
+> 🚨 **CRITICAL —— 注释里的 `🚫` / `MUST NOT` 是针对某次具体事故的禁令，NOT 解空间的边界。** 发现自己在给一个不该发生的操作加缓存 / 游标 / 跳过判据时，**MUST** 先回头问「这个操作本身该不该发生」。
 
-1. **先数调用方、再读注释**（顺序反了必错）：`rg -n '<符号>' apps/server/src --glob '!*.spec.ts'`，把数字写进回复。实证 2026-08-23：`SyncOptionContractUseCase.run` 只有 **1** 个调用方，而注释语气暗示的耦合面大得多。
-2. **逐条判禁令射程**：对每条 `🚫` 写出「它约束 X / 我要做 Y / 是否重合」。同日实证：「不许给『工作集选择』开第二个口子」约束的是**给 `DimensionJobPayload` 加字段**，直调 use case 本体根本不过那条路径 ⇒ 够不到。
-3. **找同仓已做对的对称样本**（最强信号常在同一目录）：同日实证：`SyncOptionSnapshotUseCase` 早已是 `run()` 薄适配 + **public** `collect(instruments, spec, stats)` 本体两层，而 `SyncOptionContractUseCase` 的本体仍 private —— 对称样本直接给出了正解形状。
-
-**维度采集本体的正确分层**：`run(instruments, dim, stats, input)` 只做「从 dim/input 算 spec」的薄适配（供 `factExecutor` 注册），活放在 **public 本体**（收任意标的列表 + 显式 spec）。工作集选择只属于 `factExecutor` —— **NEVER** 让本体自己查工作集，那才是「第二个口子」。
+**先数调用方**（`rg -n '<符号>' apps/server/src --glob '!*.spec.ts'`，数字写进回复）→ **逐条判禁令射程** → **找同仓已做对的对称样本**。实证与展开见详版 § 4。
 
 ## 并发 / 事务
 
-- **单行状态转换 = conditional UPDATE + affected-count**（`updateMany where {id,<前置>}` → `count===1` won / `0` lost），READ COMMITTED。**NEVER** 单行上 `SELECT … FOR UPDATE` / Serializable（偏索引 SSI 假冲突，004 实证 72/100 假失败）。
-- **并发 insert 确需 Serializable 时**：catch **P2002 + P2034 双形态**（只 catch P2002 → ~50% flaky）；⚠️ Prisma 7+adapter-pg 下 P2034 = `DriverAdapterError`（code undefined），检测要兼容。
+- **单行状态转换 = conditional UPDATE + affected-count**（`updateMany where {id,<前置>}` → `count===1` won / `0` lost），READ COMMITTED。**NEVER** 单行上 `SELECT … FOR UPDATE` / Serializable（偏索引 SSI 假冲突，见详版 P2）。
+- **并发 insert 确需 Serializable 时**：catch **P2002 + P2034 双形态**（只 catch P2002 会 flaky，见详版 P3）；⚠️ Prisma 7+adapter-pg 下 P2034 = `DriverAdapterError`（code undefined），检测要兼容。
 - **outbox 事件**：`publish(tx, eventType, payload)` —— caller 传 tx，事件行与状态写**同 `$transaction`**，任一失败回滚。
 - **scheduler**：批扫后**逐行独立 tx**（单行失败隔离）；与并发用户操作互斥靠谓词互斥 + 行写锁。
 - **外部 I/O**：split-tx（TX1 PENDING → tx 外调 HTTP → TX2 标结果），**NEVER** tx 内持锁等 HTTP。
@@ -40,5 +36,5 @@ paths:
 
 ## 本地验证 & vendor 配置
 
-- **本地跑 server IT / smoke / export-openapi 的 env 前缀、命令矩阵、以及「红得像代码坏了其实是环境」的四类失败** → [`docs/conventions/local-verification.md`](../../docs/conventions/local-verification.md)（canonical，**本 rule 不复述**）。缺 env 的那几档由 `scripts/pretooluse-local-verify-guard.sh` 在**命令执行时刻**硬拦并给出补齐后的命令 —— 因为这类坑发生在「跑命令」而非「改文件」，光靠 path-trigger 的规则捞不到。
-- **新 vendor（SMS / 推送 / OSS 等）配置镜像 `sms.config.ts` 范式**：zod **discriminated union**（按 provider 分支）+ boot 时 `.parse()` 兜底。⚠️ boot healthy ≠ cred 有效（`.parse()` 只校验非空 / 形状，不校验可用性）。
+- **本地跑 server IT / smoke / export-openapi 的命令矩阵与「红得像代码坏了其实是环境」的假红分类** → [`docs/conventions/local-verification.md`](../../docs/conventions/local-verification.md)（canonical，**本 rule 不复述**；无需任何 env 前缀，「必骗人」档由 PreToolUse hook 在命令时刻硬拦）。
+- **新 vendor 配置范式** → 详版 § 3 V1（zod discriminated union + boot `.parse()`；boot healthy ≠ cred 有效）。
