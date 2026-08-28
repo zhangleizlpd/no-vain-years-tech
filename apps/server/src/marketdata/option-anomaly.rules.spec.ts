@@ -61,8 +61,14 @@ const ZERO_GREEKS = {
   theta: '0',
 } as const;
 
-const run = (rows: OptionAnomalyRow[], now: Date = NOW, knownNonStandardRoots: string[] = []) =>
-  detectOptionAnomalies({ rows, now, knownNonStandardRoots });
+const run = (
+  rows: OptionAnomalyRow[],
+  now: Date = NOW,
+  knownNonStandardRoots: string[] = [],
+  // 本文件既有全部样本都是美股合约 (`US.` 前缀 code) ⇒ 默认 `'us'`; 港股基准另有专测,
+  // 见 `trading-day-gate.spec.ts` 的「基准按交易所分叉」describe (#263)。
+  exchange = 'us',
+) => detectOptionAnomalies({ rows, now, exchange, knownNonStandardRoots });
 
 const codes = (rows: OptionAnomalyRow[], now?: Date, known?: string[]) =>
   run(rows, now, known).findings.map((f) => f.code);

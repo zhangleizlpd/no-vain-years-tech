@@ -179,8 +179,10 @@ describe('daysToExpiry (请求时 DTE, 基准 = 交易所的今天)', () => {
 
       // ET 基准 = 08-21 − 08-04 = 17; 宿主 (上海) 基准会给 16 —— 恰好是建仓腿 `DTE ≤ 14`
       // 与收租腿 `DTE ∈ [150,365]` 两条带判据的静默偏移源。
-      expect(daysToExpiry({ expiry: '2026-08-21', now: beijingMorning })).toBe(17);
-      expect(daysToExpiry({ expiry: '2026-08-21', now: beijingMorning })).not.toBe(16);
+      expect(daysToExpiry({ expiry: '2026-08-21', now: beijingMorning, exchange: 'us' })).toBe(17);
+      expect(daysToExpiry({ expiry: '2026-08-21', now: beijingMorning, exchange: 'us' })).not.toBe(
+        16,
+      );
     });
 
     it('同一个 ET 日内任意时刻 → DTE 恒定 (禁绝对时刻差: 小数会让带判据在一天内抖)', () => {
@@ -191,8 +193,59 @@ describe('daysToExpiry (请求时 DTE, 基准 = 交易所的今天)', () => {
         new Date('2026-08-05T03:59:00Z'), // ET 08-04 23:59 —— 日界前一分钟
       ];
       for (const now of sameEtDay) {
-        expect(daysToExpiry({ expiry: '2026-08-21', now })).toBe(17);
+        expect(daysToExpiry({ expiry: '2026-08-21', now, exchange: 'us' })).toBe(17);
       }
+    });
+  });
+
+  /**
+   * #263: `exchange` 此前是写死的 `'us'`。港股期权 2026-08-23 上线后, 那个字面量就成了一条
+   * **静默偏一天**的判据。
+   *
+   * 🚨 本 describe 的取样时刻是**蓄意挑的**: 必须落在「港股已翻日、ET 尚未翻日」那段窗口里,
+   * 否则两个市场同日, 断言退化成恒真 —— 前置断言把这一点钉死。
+   */
+  describe('🚨 基准按交易所分叉: 同一时刻 hk 与 us 不是同一天 (#263)', () => {
+    // 北京/香港 2026-08-05 10:00 = 02:00Z = 纽约 2026-08-04 22:00 EDT。
+    const beijingMorning = new Date('2026-08-05T02:00:00Z');
+
+    it('北京上午: hk 基准取 08-05, us 基准取 08-04 ⇒ 同一张港股合约 DTE 差 1 天', () => {
+      // 前置: 这一刻两个交易所的日期确实不同 (否则下面两条断言恒真, 等于没测)。
+      expect(marketDateFor(['hk'], beijingMorning)).toBe('2026-08-05');
+      expect(marketDateFor(['us'], beijingMorning)).toBe('2026-08-04');
+
+      // 真实港股合约形态: `HK.TCH260929P630000` 到期 2026-09-29。
+      const hkExpiry = '2026-09-29';
+      expect(daysToExpiry({ expiry: hkExpiry, now: beijingMorning, exchange: 'hk' })).toBe(55);
+      // 🚨 这一条就是 #263 的病灶: 港股腿沿用 us 基准会恒多算 1 天。
+      expect(daysToExpiry({ expiry: hkExpiry, now: beijingMorning, exchange: 'us' })).toBe(56);
+    });
+
+    it('🚨 差一天足以让 FR-048 的豁免线 (DTE ≤ 2) 静默错判一整档', () => {
+      // 到期日 = hk 的后天。hk 基准 ⇒ DTE=2 (豁免); us 基准 ⇒ DTE=3 (不豁免) —— 边界腿
+      // 就是这样静默进出带的, 而两边都算得出数、都不会红。
+      const expiry = '2026-08-07';
+      expect(daysToExpiry({ expiry, now: beijingMorning, exchange: 'hk' })).toBe(2);
+      expect(daysToExpiry({ expiry, now: beijingMorning, exchange: 'us' })).toBe(3);
+    });
+
+    it('港股收盘后 (16:10 HKT) 与次日盘前同属两个 hk 日 ⇒ DTE 递减 1, 不受 ET 未翻日影响', () => {
+      // 08-05 16:10 HKT = 08:10Z (ET 还是 08-05 04:10, 同日) —— 这一刻两所同日, 用来做对照;
+      // 08-06 09:00 HKT = 08-06 01:00Z (ET 仍是 08-05) —— hk 已翻日而 ET 没有。
+      const hkCloseDay1 = new Date('2026-08-05T08:10:00Z');
+      const hkOpenDay2 = new Date('2026-08-06T01:00:00Z');
+      expect(marketDateFor(['hk'], hkOpenDay2)).toBe('2026-08-06');
+      expect(marketDateFor(['us'], hkOpenDay2)).toBe('2026-08-05');
+
+      const expiry = '2026-09-29';
+      const d1 = daysToExpiry({ expiry, now: hkCloseDay1, exchange: 'hk' });
+      const d2 = daysToExpiry({ expiry, now: hkOpenDay2, exchange: 'hk' });
+      expect(d1 - d2).toBe(1);
+      // us 基准在这两刻是同一天 ⇒ 它数不出这一格递减 (正是"跟错了谁的今天"的形状)。
+      expect(
+        daysToExpiry({ expiry, now: hkCloseDay1, exchange: 'us' }) -
+          daysToExpiry({ expiry, now: hkOpenDay2, exchange: 'us' }),
+      ).toBe(0);
     });
   });
 
@@ -200,17 +253,25 @@ describe('daysToExpiry (请求时 DTE, 基准 = 交易所的今天)', () => {
   const etNoon = (utcIso: string) => new Date(utcIso);
 
   it('到期日当天 = 0 (canonical §4)', () => {
-    expect(daysToExpiry({ expiry: '2026-08-21', now: etNoon('2026-08-21T16:00:00Z') })).toBe(0);
+    expect(
+      daysToExpiry({ expiry: '2026-08-21', now: etNoon('2026-08-21T16:00:00Z'), exchange: 'us' }),
+    ).toBe(0);
   });
 
   it('整数日历日, 跨周末不跳过 (周五 → 周一 = 3 不是 1)', () => {
     // 2026-08-21 周五 → 2026-08-24 周一。交易日算法会给 1, 日历日给 3 —— 口径是日历日。
-    expect(daysToExpiry({ expiry: '2026-08-24', now: etNoon('2026-08-21T16:00:00Z') })).toBe(3);
+    expect(
+      daysToExpiry({ expiry: '2026-08-24', now: etNoon('2026-08-21T16:00:00Z'), exchange: 'us' }),
+    ).toBe(3);
   });
 
   it('已过期 → 负数 (不 clamp 到 0: 0 已被"当天到期"占用, clamp 会把两种状态混成一种)', () => {
-    expect(daysToExpiry({ expiry: '2026-08-20', now: etNoon('2026-08-21T16:00:00Z') })).toBe(-1);
-    expect(daysToExpiry({ expiry: '2026-07-21', now: etNoon('2026-08-21T16:00:00Z') })).toBe(-31);
+    expect(
+      daysToExpiry({ expiry: '2026-08-20', now: etNoon('2026-08-21T16:00:00Z'), exchange: 'us' }),
+    ).toBe(-1);
+    expect(
+      daysToExpiry({ expiry: '2026-07-21', now: etNoon('2026-08-21T16:00:00Z'), exchange: 'us' }),
+    ).toBe(-31);
   });
 
   it('🚨 DST 切换日附近不抖 (2026-11-01 美东回拨: 该窗 73 绝对小时, 时刻差会给 3.04)', () => {
@@ -222,7 +283,7 @@ describe('daysToExpiry (请求时 DTE, 基准 = 交易所的今天)', () => {
       ['2026-11-02T17:00:00Z', 0], // ET 周一 11-02
     ];
     for (const [utcIso, expected] of byEtDay) {
-      const dte = daysToExpiry({ expiry: '2026-11-02', now: etNoon(utcIso) });
+      const dte = daysToExpiry({ expiry: '2026-11-02', now: etNoon(utcIso), exchange: 'us' });
       expect(dte).toBe(expected);
       expect(Number.isInteger(dte)).toBe(true);
     }
@@ -230,19 +291,25 @@ describe('daysToExpiry (请求时 DTE, 基准 = 交易所的今天)', () => {
 
   it('接受 Prisma `@db.Date` 读出的 Date (UTC 午夜) 与 `YYYY-MM-DD` 字符串, 两者同值', () => {
     const now = etNoon('2026-08-21T16:00:00Z');
-    const fromDbDate = daysToExpiry({ expiry: new Date('2026-08-24T00:00:00Z'), now });
-    expect(fromDbDate).toBe(daysToExpiry({ expiry: '2026-08-24', now }));
+    const fromDbDate = daysToExpiry({
+      expiry: new Date('2026-08-24T00:00:00Z'),
+      now,
+      exchange: 'us',
+    });
+    expect(fromDbDate).toBe(daysToExpiry({ expiry: '2026-08-24', now, exchange: 'us' }));
   });
 
   it('🚨 到期日传了一个带时间的绝对时刻 → throw (canonical §3 那个"身兼两职"的陷阱)', () => {
     const now = etNoon('2026-08-21T16:00:00Z');
-    expect(() => daysToExpiry({ expiry: new Date('2026-08-24T13:30:00Z'), now })).toThrow(/到期日/);
+    expect(() =>
+      daysToExpiry({ expiry: new Date('2026-08-24T13:30:00Z'), now, exchange: 'us' }),
+    ).toThrow(/到期日/);
   });
 
   it('非 YYYY-MM-DD 字符串 → throw (不静默返 NaN)', () => {
     const now = etNoon('2026-08-21T16:00:00Z');
-    expect(() => daysToExpiry({ expiry: '2026/08/24', now })).toThrow(/YYYY-MM-DD/);
-    expect(() => daysToExpiry({ expiry: '2026-02-30', now })).toThrow(/YYYY-MM-DD/);
+    expect(() => daysToExpiry({ expiry: '2026/08/24', now, exchange: 'us' })).toThrow(/YYYY-MM-DD/);
+    expect(() => daysToExpiry({ expiry: '2026-02-30', now, exchange: 'us' })).toThrow(/YYYY-MM-DD/);
   });
 });
 

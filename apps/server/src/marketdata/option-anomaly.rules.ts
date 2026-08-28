@@ -38,8 +38,9 @@ import { daysToExpiry } from './trading-day-gate.js';
  *
  * 实测 3/2150 的 >500% IV **全部**是 DTE=1 的宽价差 —— 极短 DTE 下时间价值趋零，报价的一个
  * 最小跳动反解出来就是几百个点的 IV，属预期而非脏数据。一刀切阈值等于每个到期日前一天固定
- * 假红一次。DTE 走 {@link daysToExpiry}（基准 = **ET 的今天**），🚫 MUST NOT 在此另写一份
- * 日期基准：北京上午 = ET 前一日，取错基准 DTE 恒偏 1 天，边界腿静默进出豁免线且永远不会红。
+ * 假红一次。DTE 走 {@link daysToExpiry}（基准 = **本批所属交易所的今天**，由
+ * {@link OptionAnomalyInput.exchange} 显式声明），🚫 MUST NOT 在此另写一份日期基准：北京上午
+ * = ET 前一日，取错基准 DTE 恒偏 1 天，边界腿静默进出豁免线且永远不会红。
  *
  * ## ③ 新的非标 root = 某白名单票发生了并购类公司行为
  *
@@ -73,6 +74,13 @@ export const IV_OUTLIER_PERCENT = new Prisma.Decimal(500);
  * 取 2 而非 1：到期周（周五到期）里周三采的快照 DTE=2 已进入同一形态，且 `daysToExpiry` 数的是
  * **日历日**（含周末）⇒ 周五采、下周一到期的腿 DTE=3 但只隔一个交易日。取 2 是「实测的 1」加
  * 一格余量，方向偏宽 —— 误豁免只是少一条 WARN，误报则是每个到期日固定假红。
+ *
+ * ⚠️ **上面这段论证的标定样本全是美股**（2150 行里 3 行 >500% IV、全为 DTE=1），且「周五到期」
+ * 这个前提**对港股不成立** —— 库内两张真港股合约 `HK.TCH260929P*`（2026-09-29 周二）/
+ * `HK.TCH261230P720000`（2026-12-30 周三）都不在周五。⇒ 本常量对港股是**沿用**，不是标定：
+ * 「极短 DTE 下时间价值趋零 ⇒ 一个最小跳动反解出巨大 IV」这个**机制**与星期几无关，方向上仍
+ * 成立；但「取 2 恰好够」这一格在港股没有对应实测。#263 只把 DTE 的**基准**参数化，🚫 没有
+ * 也不该顺手改这个阈值（没有港股样本之前改它，改的是一个没人验过的数）。
  */
 export const SHORT_DTE_EXEMPT_DAYS = 2;
 
@@ -143,8 +151,14 @@ export interface OptionAnomalyRow {
 
 export interface OptionAnomalyInput {
   rows: readonly OptionAnomalyRow[];
-  /** **请求时刻**（绝对时刻）。DTE 基准由 {@link daysToExpiry} 折成 ET 的今天。 */
+  /** **请求时刻**（绝对时刻）。DTE 基准由 {@link daysToExpiry} 折成 {@link exchange} 的今天。 */
   now: Date;
+  /**
+   * 本批合约所属**交易所**（`us` / `hk` / …）。批级而非逐行：一轮采集的工作集恒为单市场
+   * （`sync-option-snapshot.usecase.ts` 的 `marketScope` 守卫 fail-closed 抛），逐行带
+   * market 只会造出「同一批里两个基准」这个本来不存在的状态。
+   */
+  exchange: string;
   /** 已见过的非标 root（调用方持久化）。 */
   knownNonStandardRoots: readonly string[];
 }
@@ -231,7 +245,11 @@ export function detectOptionAnomalies(input: OptionAnomalyInput): OptionAnomalyR
     if (row.iv !== null && D(row.iv).greaterThan(ZERO)) {
       ivEvaluated++;
       if (D(row.iv).greaterThan(IV_OUTLIER_PERCENT)) {
-        const dte = daysToExpiry({ expiry: row.expiryDate, now: input.now });
+        const dte = daysToExpiry({
+          expiry: row.expiryDate,
+          now: input.now,
+          exchange: input.exchange,
+        });
         if (dte <= SHORT_DTE_EXEMPT_DAYS) ivShortDteExempt++;
         else ivOutlierCodes.push(row.contractCode);
       }
