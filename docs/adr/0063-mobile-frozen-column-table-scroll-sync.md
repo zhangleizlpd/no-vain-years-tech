@@ -15,7 +15,7 @@ sunset_trigger: |
 - Status: Accepted (2026-08-10)
 - Deciders: @zhangleizlpd
 - Tags: mobile / table / reanimated / gesture-handler / new-architecture
-- Relates: [ADR-0027](0027-frontend-data-test-layer.md)（前端数据与测试层）/ [ADR-0030](0030-package-decomposition.md)（`~/ui` 上提判据 = 本 ADR sunset #5）；实施载体 = [047-optionsdesk-chain-leg-picker](../../specs/047-optionsdesk-chain-leg-picker/spec.md)（`FR-003` 选约表，现状实现被本 ADR 取代）· [048-optionsdesk-radar-aggregate-views](../../specs/048-optionsdesk-radar-aggregate-views/spec.md)（`FR-024` / V-C gate）
+- Relates: [ADR-0027](0027-frontend-data-test-layer.md)（前端数据与测试层）/ [ADR-0030](0030-package-decomposition.md)（`~/ui` 上提判据 = 本 ADR sunset #5）；实施载体 = [047-optionsdesk-chain-leg-picker](../../specs/047-optionsdesk-chain-leg-picker/spec.md)（`FR-003` 选约表，现状实现被本 ADR 取代）· `specs/048-optionsdesk-radar-aggregate-views/spec.md`（`FR-024` / V-C gate；spec 仍在未合入的 `048-optionsdesk-radar-aggregate-views` 分支上，main 无此文件，合入后改回链接）
 
 ## Context
 

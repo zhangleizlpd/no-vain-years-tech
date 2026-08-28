@@ -43,7 +43,7 @@ mono Plan 3 前端部署链:
 2. **Host**:**Cloudflare Pages**(static asset 托管,非 Functions / Workers tier)
 3. **Build trigger**:GitHub repo connect → CF Pages 拉取 main 分支自动 build(or 改 GitHub Actions push 触发 `wrangler pages deploy`,具体方式 Plan 3 Phase 2 实施时决)
 4. **Build command**:`pnpm nx run mobile:build`(`apps/mobile/project.json` 的 `build` target,executor 跑 `expo export -p web` 产出 `apps/mobile/dist/`)
-5. **API 调用方式**:Web SPA 直接走 CORS 访问 `https://api.<domain>`(后端 Aliyun ECS / SWAS / ACK 任一,per ADR-0026)— **不走 CF Pages Functions 反代**,避开 [CF Workers/Pages Functions → Aliyun ECS 525](../../memory/reference_cf_workers_to_aliyun_ecs_525.md) 已知卡 TLS 握手问题
+5. **API 调用方式**:Web SPA 直接走 CORS 访问 `https://api.<domain>`(后端 Aliyun ECS / SWAS / ACK 任一,per ADR-0026)— **不走 CF Pages Functions 反代**,避开 CF Workers/Pages Functions → Aliyun ECS 525 已知卡 TLS 握手问题
 6. **mobile binary 部署 deferred**:本 ADR 不锁定 EAS Build / 真机分发 / 国内商店上架方案;触发时机 = Plan 3 ship 后 Plan 4 立 ADR
 
 ## Consequences
@@ -56,7 +56,7 @@ mono Plan 3 前端部署链:
 - **HTTPS + SSL 默认** — CF 自动签 SSL,无需手动管证书 / 续期;`*.pages.dev` 默认域 + custom domain 接 CF 后 SSL 自动覆盖
 - **成本可控** — CF Pages free tier(500 build/月 + 无限 request)对 PoC / 早期用户期实质免费;商用化升级 Pro $20/月仍低成本
 - **scope 切干净** — mobile binary 部署 OOS,Plan 3 1 周可收 Phase 2,不被 EAS Build / 国内商店审核流程拖延
-- **Avoid CF→Aliyun 525** — Web SPA → API 走 CORS 而非 CF Pages Functions 反代,绕开 [`reference_cf_workers_to_aliyun_ecs_525`](../../memory/reference_cf_workers_to_aliyun_ecs_525.md) memory 记录的 TLS 握手 525 阻断
+- **Avoid CF→Aliyun 525** — Web SPA → API 走 CORS 而非 CF Pages Functions 反代,绕开 CF Workers/Pages Functions fetch 未备案国内 ECS 时 TLS 握手被卡 525 的阻断（2026-05 实证，SoT 即本 ADR）
 
 ### Negative / Trade-offs
 
@@ -78,7 +78,7 @@ mono Plan 3 前端部署链:
 - **Independent Next.js / Vite Web 项目** — 拒绝:Web 与 RN 业务代码分裂 = 双套维护 / 类型 / 测试,与 Plan 1 mono "前后端共享 packages" 心智冲突;Expo Web 是"Expo 框架对 RN-for-Web 的官方包装",原生方案
 - **Capacitor / Tauri WebView** — 拒绝:本质是用 native 壳跑 Web,Plan 3 Web 入口需求是"浏览器直访问"非"打包 mobile",方案错位
 - **不做 Web,只 mobile binary** — 拒绝:Plan 3 done condition L171 "Cloudflare Pages 通过 HTTPS 访问 Expo Web export 主入口" 是显式验收标准;Web 入口是 PoC 阶段最快验证用户路径的形态(无下载 / 无审核)
-- **CF Pages Functions 反代后端 API** — 拒绝:CF Pages Functions / Workers fetch Aliyun ECS 在 TLS 握手阶段被卡 525 ([`reference_cf_workers_to_aliyun_ecs_525`](../../memory/reference_cf_workers_to_aliyun_ecs_525.md) 实证);Web 直走 CORS 调 Aliyun API 是直接路径,功能等价 + 避坑
+- **CF Pages Functions 反代后端 API** — 拒绝:CF Pages Functions / Workers fetch Aliyun ECS 在 TLS 握手阶段被卡 525 (2026-05 实证，SoT 即本 ADR);Web 直走 CORS 调 Aliyun API 是直接路径,功能等价 + 避坑
 
 ## Validation
 
@@ -96,7 +96,7 @@ mono Plan 3 前端部署链:
 - [Plan 2/3 § 2.2.6 task](../private/plans/2026-05/05-25-account-migration-master.md)
 - [Expo Web docs](https://docs.expo.dev/workflow/web/) — Expo SDK 54+ Web export
 - [Cloudflare Pages docs](https://developers.cloudflare.com/pages/) — static host + build config
-- memory `reference_cf_workers_to_aliyun_ecs_525` — CF Workers/Pages Functions → 阿里云 ECS 525 实证
+- CF Workers/Pages Functions → 阿里云 ECS 525 实证（2026-05；原 memory 条目已收进本 ADR，本 ADR 为 SoT）
 - **deferred / 未决**:
   - ADR-0026(后端部署形态,Plan 3 Phase 1)
   - ADR-0027(CI/CD deploy 流,Plan 3 Phase 1)

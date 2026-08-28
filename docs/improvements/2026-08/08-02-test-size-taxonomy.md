@@ -2,7 +2,7 @@
 
 > **这是一份「做完测到了什么」的记录**（per [docs-organization](../../conventions/docs-organization.md) 三类记录）。
 > 规则本身在 [`docs/conventions/testing.md`](../../conventions/testing.md) —— 那里**不放**本文的任何数字，因为它们会随代码增长失效。
-> 承接：T-1（[plan](../../plans/2026-08/08-02-env-test-architecture-refactor.md) § T-1）修的是症状，本轮修的是病因。
+> 承接：T-1（[plan](../../private/plans/2026-08/08-02-env-test-architecture-refactor.md)（本机私有，未公开） § T-1）修的是症状，本轮修的是病因。
 
 ## 1. 做了什么
 

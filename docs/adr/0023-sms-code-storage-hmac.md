@@ -83,7 +83,7 @@ SMS code Redis 存储**从 bcrypt(cost=12) 改 HMAC-SHA256 + `crypto.timingSafeE
 
 - [Plan 1 § B Security Posture](../private/plans/2026-05/05-18-plan1-backend-stack-poc.md)
 - [`specs/001-phone-sms-auth/spec.md` FR-S06](../../specs/001-phone-sms-auth/spec.md)
-- [`apps/server/src/auth/infrastructure/sms-code.redis.repository.ts`](../../apps/server/src/auth/infrastructure/sms-code.redis.repository.ts)
+- [`apps/server/src/auth/sms-code.store.ts`](../../apps/server/src/auth/sms-code.store.ts)（原 `auth/infrastructure/sms-code.redis.repository.ts`，ADR-0043 扁平化后改名）
 - [`apps/server/test/integration/timing-defense.p95.it.spec.ts`](../../apps/server/test/integration/timing-defense.p95.it.spec.ts)
 - mono PR #23 实证 200-rep diff ≈ 193ms(IT first ship 暴露 spec gap)
 - OWASP Cheat Sheet Series — Authentication & Cryptographic Storage(HMAC + timingSafeEqual 短时 token 推荐)
