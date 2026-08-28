@@ -71,14 +71,15 @@
 --
 -- ⚠️ **代价：非交易日跑会假红**（当日本就无快照）。timer 是 `*-*-* 08:00` **每日**跑，所以这个
 --    代价是真会兑现的，而且是**每周两条**不是一条：北京周日早 = ET 周六，北京周一早 = ET 周日
---    （~104 条/年）。⇒ 本谓词自带一道 **ET 周末闸**（下面 `bounds.is_et_weekend`）：当日落在
---    ET 周六 / 周日 ⇒ exit 0，且 summary 显式写明「不判」（**不静默**）。
+--    （~104 条/年）。⇒ 本谓词自带一道**周末闸**（下面 `bounds.is_weekend`）：该市场的当日落在
+--    周六 / 周日 ⇒ exit 0，且 summary 显式写明「不判」（**不静默**）。逐市场各判各的。
 --
 -- 🚨 **周末闸与上面那条「MUST NOT 用交易日历」不是一类东西，别把它当成破例**：
 --    那条禁的是**查 `trading_day` 表**来放宽 / 跳过判定 —— 那张表正是采集管线交易日闸读的同一张，
 --    日历一坏 ⇒ 采集跳过真交易日 ⇒ 谓词跟着闭嘴，**恰好瞎在最该告警的地方**（044 病灶形状）。
---    而周末闸是 `isodow` **纯日期算术，不读任何表、不依赖任何被监控对象**：周六周日永远不是 us
---    交易日，那两天根本不存在「本该有快照却没有」这个状态 ⇒ 消掉它**零检测力损失**。
+--    而周末闸是 `isodow` **纯日期算术，不读任何表、不依赖任何被监控对象**：周六周日对本谓词
+--    服务的两个市场都不是交易日，那两天根本不存在「本该有快照却没有」这个状态 ⇒ 消掉它
+--    **零检测力损失**。
 --
 -- 🚨 **美股节假日曾经会假红（~9-10 次/年），2026-08-28 已修（#276）**。此处原文写的是
 --    「蓄意保留，别顺手把它也修了」，理由是「要消掉它就必须查 `trading_day`，那就踩进循环信任」。
@@ -87,9 +88,11 @@
 --    判据与逐条语义见下方 `calendar` CTE 上方那段。实证：注入 `2026-09-07`（劳动节）修前
 --    `exit 1` + 106 票全 `0/N⚠缺`，修后 `exit 0`「非交易日不判」。
 --
--- ═══ 当日 = **ET 的今天**，不是宿主的今天 ═══
--- `session_date` 是按 us 市场时区求值的业务日（FR-036）。timer 跑在北京 08:00 = ET 前一日
--- 19:00/20:00 ⇒ ET 日期正是刚采完的那一场。用 `Asia/Shanghai` 会**恒偏一天**、每天整批假红。
+-- ═══ 当日 = **该市场的今天**，不是宿主的今天（逐市场取，见下方 `markets` CTE）═══
+-- `session_date` 是按各市场时区求值的业务日（FR-036）。timer 跑在北京 08:00：
+--   · us = ET 前一日 19:00/20:00 ⇒ `ET 当日` 正是刚采完的那一场（offset 0）；
+--   · hk = HKT 当日 08:00，而港股夜链在 **HKT 次日 00:33–00:36** 才采上一场 ⇒ 取 `HKT 当日 − 1`。
+-- 用 `Asia/Shanghai` 或对两个市场共用一个日期，都会**恒偏一天**、每天整批假红。
 --
 -- 🚨 **「当日」可注入，且注入点只为可测性存在**：`current_setting('nvy.current_day', true)` 非空
 --    时覆盖它。**生产从不设这个 GUC** —— `.sh` 不传 `-v`、不设任何 SET ⇒ 恒走 `now()` 那支。
@@ -99,36 +102,59 @@
 --    ⚠️ 它同时是个**静音开关**：谁要是 `ALTER DATABASE … SET nvy.current_day`，探针会天天核对
 --    同一个历史日、永远绿。别这么干，也别把它接进任何 env / 配置文件。
 --
--- ═══ 🚨 本探针**只服务 us**，而这件事从 2026-08-28 起是写出来的，不再是「没写过滤条件」═══
--- #255：港股期权 2026-08-23 接入后，本文件的 baseline / denom / collected / present 四处仍是裸的
+-- ═══ 🚨 市场维：**每一处取数都必须带 market**，而且带的是**标的**那一列 ═══
+-- #255：港股期权 2026-08-23 接入后，本文件的 baseline / denom / collected / present 四处曾是裸的
 -- （只有 `roster` 带 `i.market = 'us'`）⇒ 港股合约混进美股分母。app 侧同一缺陷把港股票交给了
--- 美股补救器，按美股语义写库、1110 行 `oi_as_of` 差一天。四处现已全部显式收窄。
+-- 美股补救器，按美股语义写库、1110 行 `oi_as_of` 差一天。⇒ **漏一处就是一次跨市场污染**，
+-- 而它不会红：分母悄悄变大 / 变小，逐票数字照样打得出来。
 --
--- ⚠️ **港股侧目前没有独立探针 —— 跟踪在 #267**。app 内的两级补救已按市场参数化
---    （`option-snapshot-remediation.ts` 的 hk ①②），但那是进程内的；本文件这条「app 挂了也还在」
---    的独立通道（FR-051 的全部理由）仍只覆盖 us。
---    ✅ **#267 原本卡在「非交易日闸怎么设计」那一格 —— 该格已由 #276 解开**：闸不再只有
---    `isodow` 一道，而是「isodow 周末 → 三态 `unknown` fail-closed → 三态 `non-trading` 放行」
---    三档（见下方 `calendar` CTE 上方那段）。三态判据**与市场无关**，港股把 `'us'` 换成 `'hk'`
---    即成立：`calendar_coverage.hk` 现有声明 `2015-01-01..2026-12-31`（`served_by = static`，
---    HKEX 官方年历），2026-10-01 / 10-19 那类港股公众假期落 `non-trading` ⇒ 不假红。
---    ⇒ 开 hk 探针剩下的是**照本文件复制四层结构 + 换市场谓词 + 第二条 timer**（时刻要落在港股
---    夜链收口之后），不再有未决的判据设计。
+-- ✅ **#267：本谓词自 2026-08-28 起服务 us + hk 两个市场**（此前只有 us，港股在「app 挂了也
+--    还在」这条独立通道上是一片空白，FR-051 对港股未兑现）。落法是**单文件市场通用**而不是
+--    复制第二份：两市场的判据只差三个常量（market / 时区 / 日偏移），复制出来的第二份必 drift，
+--    而 #255 正是「四处判据漏改一处」出的事。
+--    📌 **没有第二条 timer**：北京 08:00 那一跑对港股同样成立 —— hk 的 `current_day` = HKT 当日
+--    减一天，那一场在 HKT 00:33–00:36 就采完了，早 7 个多小时。
+--    📌 TS 侧 `option-snapshot-coverage.check.ts` 的 `check(market, sessionDate)` 早已是市场
+--    参数化的（#255 做的），本文件此前是落后的那一半；两侧现在同形，IT 那条「逐票结论一致」
+--    的绊线也随之覆盖到 hk。
 --
 -- ═══ 性能 ═══
 -- 两次以 `session_date` 为入口的查询，走 `ix_option_daily_snapshot_session_date`；合约按主键
 -- join。**没有任何全表扫**（本表是全库增长最快的表，约 6.4M 行/年）。O(两日快照行数之和)。
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
-WITH bounds AS (
-  SELECT anchor.current_day,
-         -- ET 周六(6) / 周日(7)：us 不开盘 ⇒ 当日本就不存在快照，判它 = 每周两条假红（见文件头）。
+-- ═══ 市场表：本谓词**唯一**的市场维（#267）═══
+-- 🚨 这**不是**「传参」——`.sh` 仍不传任何东西，判断仍全在本文件里。文件头那条「自包含 / 无参数」
+--    禁的是把判断挪回 bash，而一张写死在谓词内部的市场表恰恰相反：它把「服务哪些市场」也变成了
+--    本文件的一部分，改市场 = 改本文件 = 走 IT。
+--
+-- 🚨 `day_offset` **不是凑数，两个市场的采集时刻结构不同**（2026-08-28 实测）：
+--   · us：夜链在 ET 当日盘后跑完；timer 北京 08:00 = ET 前一日 19:00/20:00 ⇒ `ET 当日` 恰是
+--     刚采完的那一场 ⇒ offset 0。
+--   · hk：夜链 cron 写 23:00，但**实际执行落在次日 HKT 00:33–00:36**（run 834 = 08-28 00:36:46
+--     采 session 08-27；799 / 775 同形）⇒ **任何「session D 已入库」的时刻，HKT 日期都 ≥ D+1**
+--     ⇒ 照抄 `HKT 当日` 会每天判一个还没开盘的 session（实测该日恒 0 行 = 天天假红）⇒ offset −1。
+--
+-- 🚫 **MUST NOT 改成「取该市场最后一个已收盘交易日」** —— 那个取法实测会让周六 / 周日 / 周一
+--    三天都指向同一个周五 session ⇒ **同一个缺口重复报三次**。`−1` + 三态闸则每个 session
+--    恰好判一次（周六判周五、周日判周六→non-trading 不判、周一判周日→不判、周二判周一）。
+WITH markets(market, tz, day_offset) AS (
+  VALUES ('us', 'America/New_York', 0),
+         ('hk', 'Asia/Hong_Kong', -1)
+),
+bounds AS (
+  SELECT m.market,
+         anchor.current_day,
+         -- 周六(6) / 周日(7)：该市场不开盘 ⇒ 当日本就不存在快照，判它 = 每周两条假红（见文件头）。
          -- **纯 isodow 算术，不读任何表** —— 与被禁的「查交易日历放宽判定」不是一类。
-         EXTRACT(isodow FROM anchor.current_day) >= 6 AS is_et_weekend
-  FROM (
+         EXTRACT(isodow FROM anchor.current_day) >= 6 AS is_weekend
+  FROM markets m
+  CROSS JOIN LATERAL (
     SELECT coalesce(
-             -- 仅测试注入（见文件头）；生产从不设此 GUC ⇒ 恒走下面的 now() 那支。
+             -- 仅测试注入（见文件头）；生产从不设此 GUC ⇒ 恒走下面那支。
+             -- ⚠️ 注入时**对所有市场同时生效且不再加 offset** —— 注入的语义是「直接钉死 current_day」。
+             --    ⇒ `day_offset` 只走生产那支 ⇒ 必须另有一条**不注入**的用例守它（同 ET 时区那条）。
              nullif(current_setting('nvy.current_day', true), '')::date,
-             (now() AT TIME ZONE 'America/New_York')::date
+             (now() AT TIME ZONE m.tz)::date + m.day_offset
            ) AS current_day
   ) anchor
 ),
@@ -154,7 +180,7 @@ WITH bounds AS (
 --   ⚠️ `unknown` 也不会只有这一条通道看见：`calendar_coverage` 的活性另有独立探针每 4h 判
 --   （`marketdata-calendar-health.sql` 判据 ③ 无声明 / ④ 视野落后 / ⑤ 视野过近）。
 --
--- 🚨 **`is_et_weekend` 保留、不被三态取代**：它是纯算术、不读任何表 ⇒ 即使 `calendar_coverage`
+-- 🚨 **`is_weekend` 保留、不被三态取代**：它是纯算术、不读任何表 ⇒ 即使 `calendar_coverage`
 --   整个坏掉，周末仍静默。周末在三态下同样得 `non-trading`，两者结论一致，isodow 只是更早短路。
 --
 -- 🚫 **已验过会错、别再走一遍**：「断言前瞻视野 ≥ N 天」**每年 12 月必假红** —— 前瞻段是
@@ -162,15 +188,16 @@ WITH bounds AS (
 --   `marketdata-calendar-health.sql` 判据 ⑤ 早已处理（年末豁免 + 1 月 1 日起必红），且注释明写
 --   「🚫 MUST NOT 加『1 月宽限期』」。⇒ 用 `calendar_coverage` 的**区间**语义，不造第二份视野判据。
 calendar AS (
-  -- 两个标量 EXISTS、无 FROM ⇒ 恒 1 行，`FROM bounds b, calendar cal` 仍是 1×1（守住「恒返单行」契约）。
+  -- 逐市场一行（与 `bounds` 同基数）。
   -- 🚨 区间判据是**闭区间两端**（`covered_from ≤ day ≤ covered_to`），与 `isWithinCoverage` 同形；
   --    只比 `covered_to` 会把「声明起点之前」误读成 non-trading。
-  SELECT
-    EXISTS (SELECT 1 FROM marketdata.trading_day t, bounds b
-            WHERE t.market = 'us' AND t.date = b.current_day) AS has_row,
-    EXISTS (SELECT 1 FROM marketdata.calendar_coverage c, bounds b
-            WHERE c.market = 'us'
+  SELECT b.market,
+    EXISTS (SELECT 1 FROM marketdata.trading_day t
+            WHERE t.market = b.market AND t.date = b.current_day) AS has_row,
+    EXISTS (SELECT 1 FROM marketdata.calendar_coverage c
+            WHERE c.market = b.market
               AND b.current_day BETWEEN c.covered_from AND c.covered_to) AS within_coverage
+  FROM bounds b
 ),
 -- 🚨 **阈值的唯一所在地**（先验起手 1 = 100%，FR-045）。它与 TS 侧的
 --    `MARKETDATA_OPTION_COVERAGE_THRESHOLD`（zod 默认 1）是**同一个口径的两处实现** ——
@@ -184,15 +211,16 @@ config AS (
 -- 🚨 写成 `ORDER BY … DESC LIMIT 1` 而不是 `max()`：带 join 之后 `max()` 拿不到「索引倒序扫、
 --    命中第一行就停」的形状，会退化成聚合全扫。本形状与 TS 侧 `findFirst(orderBy desc)` 同源。
 baseline AS (
-  SELECT (SELECT d.session_date
+  SELECT b.market,
+         (SELECT d.session_date
           FROM marketdata.option_daily_snapshot d
           JOIN marketdata.option_contract c ON c.id = d.contract_id
-          JOIN marketdata.instrument i ON i.id = c.underlying_instrument_id,
-               bounds b
+          JOIN marketdata.instrument i ON i.id = c.underlying_instrument_id
           WHERE d.session_date < b.current_day
-            AND i.market = 'us'
+            AND i.market = b.market
           ORDER BY d.session_date DESC
           LIMIT 1) AS baseline_day
+  FROM bounds b
 ),
 -- 分母：同一合约在基线日可能有 eod + premarket_backfill 两行 ⇒ **DISTINCT 去重**，否则靠兜底
 -- 补采续命的那些票分母会凭空翻倍、覆盖率恒判红。
@@ -201,34 +229,35 @@ baseline AS (
 --    挂在港股标的名下，按合约列过滤会把它们放回美股分母。TS 侧 `option-snapshot-coverage.check.ts`
 --    的四处查询用的是同一个谓词，**改一处必须改另一处**。
 denom AS (
-  SELECT DISTINCT d.contract_id, c.underlying_instrument_id
-  FROM marketdata.option_daily_snapshot d
+  SELECT DISTINCT b.market, d.contract_id, c.underlying_instrument_id
+  FROM bounds b
+  JOIN baseline bl ON bl.market = b.market
+  JOIN marketdata.option_daily_snapshot d ON d.session_date = bl.baseline_day
   JOIN marketdata.option_contract c ON c.id = d.contract_id
-  JOIN marketdata.instrument di ON di.id = c.underlying_instrument_id,
-       baseline bl, bounds b
-  WHERE d.session_date = bl.baseline_day
-    AND c.expiry_date >= b.current_day
-    AND di.market = 'us'
+  JOIN marketdata.instrument di ON di.id = c.underlying_instrument_id
+  WHERE c.expiry_date >= b.current_day
+    AND di.market = b.market
 ),
 -- 分子：当日实得的合约集（同样多来源去重）。
 collected AS (
-  SELECT DISTINCT d.contract_id
-  FROM marketdata.option_daily_snapshot d
+  SELECT DISTINCT b.market, d.contract_id
+  FROM bounds b
+  JOIN marketdata.option_daily_snapshot d ON d.session_date = b.current_day
   JOIN marketdata.option_contract c ON c.id = d.contract_id
-  JOIN marketdata.instrument ci ON ci.id = c.underlying_instrument_id,
-       bounds b
-  WHERE d.session_date = b.current_day
-    AND ci.market = 'us'
+  JOIN marketdata.instrument ci ON ci.id = c.underlying_instrument_id
+  WHERE ci.market = b.market
 ),
 per_underlying AS (
-  SELECT i.market || ':' || i.code AS symbol,
+  SELECT dn.market,
+         i.market || ':' || i.code AS symbol,
          count(*) AS expected,
          count(*) FILTER (
-           WHERE EXISTS (SELECT 1 FROM collected co WHERE co.contract_id = dn.contract_id)
+           WHERE EXISTS (SELECT 1 FROM collected co
+                          WHERE co.market = dn.market AND co.contract_id = dn.contract_id)
          ) AS covered
   FROM denom dn
   JOIN marketdata.instrument i ON i.id = dn.underlying_instrument_id
-  GROUP BY 1
+  GROUP BY 1, 2
 ),
 -- ── #231 存在性层：缺席用**名册**判，与历史分母无关 ──────────────────────────────────────
 -- 🚨 上面那套（分母取自基线日快照）**结构上判不出「连缺两轮」**：第二轮时该票在基线日也没有
@@ -256,82 +285,96 @@ per_underlying AS (
 -- 索引扫 + 每票一次 `option_contract (underlying_instrument_id, expiry_date)` 前导索引 EXISTS。
 -- **无窗口扫、无全表扫。**
 roster AS (
-  SELECT i.id, i.market || ':' || i.code AS symbol
+  SELECT b.market, i.id, i.market || ':' || i.code AS symbol
   FROM marketdata.instrument i, bounds b
-  WHERE i.market = 'us' AND i.need_sync
+  WHERE i.market = b.market AND i.need_sync
     AND EXISTS (SELECT 1 FROM marketdata.option_contract c
                 WHERE c.underlying_instrument_id = i.id AND c.expiry_date >= b.current_day)
 ),
 present AS (
-  SELECT DISTINCT c.underlying_instrument_id AS iid
-  FROM marketdata.option_daily_snapshot d
+  SELECT DISTINCT b.market, c.underlying_instrument_id AS iid
+  FROM bounds b
+  JOIN marketdata.option_daily_snapshot d ON d.session_date = b.current_day
   JOIN marketdata.option_contract c ON c.id = d.contract_id
-  JOIN marketdata.instrument pi ON pi.id = c.underlying_instrument_id,
-       bounds b
-  WHERE d.session_date = b.current_day
-    AND pi.market = 'us'
+  JOIN marketdata.instrument pi ON pi.id = c.underlying_instrument_id
+  WHERE pi.market = b.market
 ),
 absent AS (
-  SELECT r.symbol,
+  SELECT r.market, r.symbol,
          -- 缺席是**二值**的，分母只用来说明「有多少没采到」⇒ 取库内未到期合约数即可，
          -- 不必（也无从）取历史分母。判定本身不依赖这个数。
          (SELECT count(*) FROM marketdata.option_contract c, bounds b2
-          WHERE c.underlying_instrument_id = r.id AND c.expiry_date >= b2.current_day) AS expected
+          WHERE b2.market = r.market
+            AND c.underlying_instrument_id = r.id AND c.expiry_date >= b2.current_day) AS expected
   FROM roster r
-  WHERE (SELECT baseline_day FROM baseline) IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM present p WHERE p.iid = r.id)
+  WHERE (SELECT bl.baseline_day FROM baseline bl WHERE bl.market = r.market) IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM present p WHERE p.market = r.market AND p.iid = r.id)
     -- 已被比例层收录的票不重复列（它在基线日有行 ⇒ 那边已给出 0/N）。
-    AND NOT EXISTS (SELECT 1 FROM per_underlying pu WHERE pu.symbol = r.symbol)
+    AND NOT EXISTS (SELECT 1 FROM per_underlying pu
+                     WHERE pu.market = r.market AND pu.symbol = r.symbol)
 ),
 verdict AS (
-  SELECT p.symbol, p.expected, p.covered,
+  SELECT p.market, p.symbol, p.expected, p.covered,
          -- 乘法不除法：阈值 = 1 时退化成 `covered < expected` 的精确比较。
          p.covered::numeric < p.expected::numeric * (SELECT coverage_threshold FROM config)
            AS degraded
   FROM per_underlying p
   UNION ALL
   -- 存在性层：covered 恒 0、expected > 0 ⇒ 恒 degraded（名册说它该有，而它一行都没有）。
-  SELECT a.symbol, a.expected::bigint, 0::bigint, true FROM absent a
+  SELECT a.market, a.symbol, a.expected::bigint, 0::bigint, true FROM absent a
 )
+, per_market AS (
 SELECT
+  b.market,
   -- 🚨 三档顺序**不可交换**（#276）: 先纯算术的周末闸（不读表, 日历坏掉时周末仍静默）,
   --    再 `unknown` 的 fail-closed, 最后才是 `non-trading` 的放行。把后两者对调 = 把
   --    「根本没填到这儿」读成「填过了确实没有」= 原样重犯 closed-world 那个病。
-  CASE WHEN b.is_et_weekend                                    THEN 0
+  CASE WHEN b.is_weekend                                       THEN 0
        WHEN NOT cal.has_row AND NOT cal.within_coverage        THEN 1
        WHEN NOT cal.has_row                                    THEN 0
-       ELSE (EXISTS (SELECT 1 FROM verdict WHERE degraded))::int END AS exit_code,
+       ELSE (EXISTS (SELECT 1 FROM verdict v
+                      WHERE v.market = b.market AND v.degraded))::int END AS code,
+  upper(b.market) || ' ' ||
   CASE
     -- 周末不判也**要说清楚为什么不判** —— 静默会被读成「判过了、没事」，那正是 044 的病灶形状。
-    WHEN b.is_et_weekend
+    WHEN b.is_weekend
       THEN '✅ 非交易日不判 (当日 ' || b.current_day::text
-        || ' 是 ET 周末 · us 不开盘, 本就无快照可核对)'
+        || ' 是周末 · ' || b.market || ' 不开盘, 本就无快照可核对)'
     -- `unknown`: 判**不出**, 与「判过了没事」是两件事 ⇒ 说清楚是哪一格缺, 别只报一个 🔴。
     WHEN NOT cal.has_row AND NOT cal.within_coverage
       THEN '🔴 判不出: 当日 ' || b.current_day::text
-        || ' 落在 us 交易日历的已声明覆盖区间之外 (声明 '
+        || ' 落在 ' || b.market || ' 交易日历的已声明覆盖区间之外 (声明 '
         || coalesce((SELECT c.covered_from::text || '..' || c.covered_to::text
-                     FROM marketdata.calendar_coverage c WHERE c.market = 'us'), '缺')
+                     FROM marketdata.calendar_coverage c WHERE c.market = b.market), '缺')
         || '), 「今天是不是交易日」答不上来 ⇒ fail-closed 判红而非静默放行 (三态 unknown 档)'
     -- `non-trading`: 无行 **且** 落在已声明区间内 ⇒ 「填过了, 确实没有」。
     WHEN NOT cal.has_row
       THEN '✅ 非交易日不判 (当日 ' || b.current_day::text
-        || ' 不在 us 交易日历, 且落在已声明覆盖区间内 ⇒ 休市, 本就无快照可核对)'
+        || ' 不在 ' || b.market || ' 交易日历, 且落在已声明覆盖区间内 ⇒ 休市, 本就无快照可核对)'
     ELSE
-      (CASE WHEN EXISTS (SELECT 1 FROM verdict WHERE degraded)
+      (CASE WHEN EXISTS (SELECT 1 FROM verdict v WHERE v.market = b.market AND v.degraded)
             THEN '🔴 期权快照逐合约覆盖率跌破阈值'
             ELSE '✅ 期权快照逐合约完整性达标' END
       || ' (当日 ' || b.current_day::text
-      || ' · 基线日 ' || coalesce((SELECT baseline_day::text FROM baseline), '无')
+      || ' · 基线日 ' || coalesce((SELECT bl.baseline_day::text FROM baseline bl
+                                   WHERE bl.market = b.market), '无')
       || ' · 阈值 ' || (SELECT (coverage_threshold * 100)::text FROM config) || '%): '
       -- 逐票全列（12 只白名单量级，单行放得下），degraded 的打 ⚠缺 —— 只报全局比值等于把小票
       -- 整票消失读没了，而那正是本判据存在的理由。
-      || coalesce((SELECT string_agg(symbol || '=' || covered || '/' || expected
-                                     || CASE WHEN degraded THEN '⚠缺' ELSE '' END,
-                                     ' | ' ORDER BY symbol)
-                   FROM verdict),
+      || coalesce((SELECT string_agg(v.symbol || '=' || v.covered || '/' || v.expected
+                                     || CASE WHEN v.degraded THEN '⚠缺' ELSE '' END,
+                                     ' | ' ORDER BY v.symbol)
+                   FROM verdict v WHERE v.market = b.market),
                   '无对象（基线日无存续合约 / 首日 / 零锚 —— 不是 0%）'))
-  END AS summary
--- bounds 恒 1 行 × calendar 恒 1 行（两个标量 EXISTS、无 FROM）⇒ 「恒返单行两列」的契约不变
--- （bash 侧单次 read 读完 = 零逻辑的前提）。
-FROM bounds b, calendar cal;
+  END AS text
+  FROM bounds b JOIN calendar cal ON cal.market = b.market
+)
+-- 🚨 **契约仍是「恒返单行两列」**（bash 侧单次 read 读完 = 零逻辑的前提）：`per_market` 每市场
+--    一行，这里用**无 GROUP BY 的聚合**收成恒 1 行（即使 `markets` 空表也返 1 行 NULL）。
+-- 🚨 `max(code)` = **任一市场不健康即 exit 1**。🚫 MUST NOT 改成 `min` / 只看某个市场：
+--    那等于让一个市场的绿把另一个市场的红盖掉，正是本探针存在的理由的反面。
+-- 📌 两个市场**各出一段**、`||` 分隔且带 `US ` / `HK ` 前缀 —— 合并成一句会让「哪个市场缺」
+--    重新变得不可读，而 #255 那次跨市场污染的教训正是「两个市场的结论必须分得开」。
+SELECT coalesce(max(pm.code), 0) AS exit_code,
+       coalesce(string_agg(pm.text, ' || ' ORDER BY pm.market), '无市场登记') AS summary
+FROM per_market pm;
