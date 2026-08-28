@@ -32,8 +32,8 @@ MIN="$((10#${BASH_REMATCH[2]}))"
 
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_SYNC_SH="$TOOL_DIR/sync.sh"
-SRC_COMPOSE="$TOOL_DIR/../../docker-compose.dev.yml"   # repo 根；随 sync.sh 一并下发供 §0 自愈
-SRC_LIB_DIR="$TOOL_DIR/../../ops/lib"                  # 飞书共享 lib（feishu-send + nvy-run-reported）
+SRC_COMPOSE="$TOOL_DIR/../../../docker-compose.dev.yml"   # repo 根；随 sync.sh 一并下发供 §0 自愈
+SRC_LIB_DIR="$TOOL_DIR/../../../ops/lib"                  # 飞书共享 lib（feishu-send + nvy-run-reported）
 NVY_DIR="$HOME/.nvy/marketdata-dev-sync"
 # launchd agent 对 ~/Documents 无 TCC 权限，故把 sync.sh 拷到 ~/.nvy 下执行（改了源码需重跑 setup）
 SYNC_SH="$NVY_DIR/sync.sh"

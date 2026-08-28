@@ -54,7 +54,7 @@ PYEOF
   fi
 fi
 
-SRC_LIB_DIR="$TOOL_DIR/../../ops/lib"
+SRC_LIB_DIR="$TOOL_DIR/../../../ops/lib"
 LIB_DIR="$HOME/.nvy/lib"
 NVY_DIR="$HOME/.nvy/quantwin-health"
 PROBE="$NVY_DIR/probe.sh"

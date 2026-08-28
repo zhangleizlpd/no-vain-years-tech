@@ -58,7 +58,7 @@ MIN="$((10#${BASH_REMATCH[2]}))"
 TARGET_VAR="NVY_$(printf '%s' "$TARGET_CODENAME" | tr '[:lower:]-' '[:upper:]_')_SSH"
 
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_LIB_DIR="$TOOL_DIR/../../ops/lib"
+SRC_LIB_DIR="$TOOL_DIR/../../../ops/lib"
 NVY_DIR="$HOME/.nvy/nvy-private-backup"
 LIB_DIR="$HOME/.nvy/lib"
 BACKUP_SH="$NVY_DIR/backup.sh"

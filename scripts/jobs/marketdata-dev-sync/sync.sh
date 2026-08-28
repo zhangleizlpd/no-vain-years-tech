@@ -89,7 +89,7 @@ LOCAL_CTR="${LOCAL_CTR:-mbw-poc-postgres}"
 COMPOSE_FILE="${COMPOSE_FILE:-}"
 if [[ -z "$COMPOSE_FILE" ]]; then
   for _c in "$(dirname "${BASH_SOURCE[0]}")/docker-compose.dev.yml" \
-            "$(dirname "${BASH_SOURCE[0]}")/../../docker-compose.dev.yml"; do
+            "$(dirname "${BASH_SOURCE[0]}")/../../../docker-compose.dev.yml"; do
     [[ -f "$_c" ]] && { COMPOSE_FILE="$_c"; break; }
   done
 fi
