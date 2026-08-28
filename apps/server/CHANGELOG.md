@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.39.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.2...server-v0.39.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* **core:** [#263](https://github.com/zhangleizlpd/no-vain-years-tech/issues/263) daysToExpiry 基准改必填 exchange —— 港股腿不再跑在美股日期上 ([#275](https://github.com/zhangleizlpd/no-vain-years-tech/issues/275)) ([b6a1eea](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b6a1eeac25a04c1926fea38d12c2b9ff0b716175))
+* **marketdata:** [#261](https://github.com/zhangleizlpd/no-vain-years-tech/issues/261) 补救轮开自己的 SyncRun 行 —— 硬门拒绝此前三层全空, 库里查无此轮 ([#272](https://github.com/zhangleizlpd/no-vain-years-tech/issues/272)) ([d438139](https://github.com/zhangleizlpd/no-vain-years-tech/commit/d4381391a2ec4deb2f1072e4238657357f3d40eb))
+
 ## [0.39.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.1...server-v0.39.2) (2026-08-28)
 
 
