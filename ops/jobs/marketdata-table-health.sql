@@ -38,6 +38,7 @@
 --   ⑨ 财报视野塌陷 / 停止观察：前向视野右端 < today+120d，或 5 个交易日无新 `first_seen_at`
 --   ⑩ 磁盘水位：可用空间 < 实测日均增长 × 90 天（047 FR-052a）
 --   ⑪ 跨市场幽灵合约：同一合约标识同时挂在 us 与 hk 标的名下（#199；与「词根撞名报数」是两件事）
+--   ⑫ OI 归属标签漂移：按合约**真实市场**重算的 `oi_as_of` 与库里的值不符（#262；市场通用）
 --
 -- ═══ 为什么是「逐票哨兵 EXISTS」而不是「全表 max(date) + 行数下界」═══
 -- 🚨 **性能是硬约束，不是优化偏好**：被监控表的索引一律 `(instrument_id, date)` 前导，**没有任何
@@ -124,6 +125,51 @@
 --    全部还在本文件里，`check.sh` 仍是零逻辑（它只跑一次 `df` 把数字递进来）。
 --    副作用是这条判据**反而成了最好测的一条** —— IT 直接注入低余量即可要求翻红。
 --    未定义 / 空值 → SQL 语法错 → `ON_ERROR_STOP` 非零退出 → 告警（fail-closed，不静默放行）。
+--
+-- ═══ ⑫ OI 归属标签（#262）：本文件唯一一条「重算应然值」型判据 ═══
+--
+-- 其余判据问的都是「数据够不够新 / 在不在」。本条问的是「**这一行的标签对不对**」——
+-- 按合约的**真实市场**把 `oi_as_of` 重算一遍，与库里的值比对，不符即红。
+--
+-- 它补的洞（#255 实证）：`option-snapshot-coverage` 的查询缺市场谓词 ⇒ 港股合约混进美股分母
+-- ⇒ 08:00 那轮拿 `marketScope:['us']` 把 hk:00700 整票重采，按**美股**语义写 `oi_as_of`
+-- ⇒ **1110 行标签错一天**。三层防线全绿：唯一键第三段是 `source`，两套语义的行可以并存；
+-- 读侧按 `max(quote_as_of)` 去重时错的那份还恒定胜出。⇒ 值对、标签错，且不报错。
+--
+-- 🚨 **判据是 `oiRefreshedAtEod` 的第三处表达**（另两处：`market-session.rules.ts` 的
+--    `MARKET_OI_SETTLE_LOCAL_MINUTE` 登记表、`sync-option-snapshot.usecase.ts` 的写路径）。
+--    改任一处必须同步本条，否则表现是「探针天天红而代码是对的」或反过来。同 ⑪ 与它那条
+--    清理 migration 的关系。
+--
+-- ═══ 常量 `21:30` 的证据状态（说清楚哪一半没验实）═══
+--   ✅ **市场分叉本身已验实**（2026-08-28，独立于 vendor）：库里 session `2026-08-26` 那批
+--      （`08-27 00:35` 采）的腾讯类 OI 汇总 `2,577,304 / 1,440,340 / 1,136,964` 与 HKEX 官方
+--      日报 `dqe260826` **逐位相同**。若港股走美股那套 T+1，它装的该是 08-25 的数。
+--   ❌ **那个「分钟」没有交易所证据**：只有一次内部采样把它夹在 (16:30, 21:30] 内，取的是
+--      窗口上沿（保守侧：猜早了是「数字与标签双错」，猜晚了只是标签偏早、一条 UPDATE 可订正）。
+--      本轮独立验到的上界是 22:04（vendor 实时已是 D 口径）/ 22:10（HKEX 报表已在线）。
+--   📌 **但它对当前所有生产行的判决不敏感**：三条采集路径（夜链 23:00 · ① 级 23:40 ·
+--      ② 级次日 08:30）全部落在任何候选边界**之后** ⇒ 常量取 [16:30, 23:00) 内任何值，判决相同。
+--      唯一会落进 16:10–21:29 的是**建锚冷启动**，而 `anchor_cold_start_run` 全表 hk 三条
+--      （15:45 / 22:02 / 22:07）**无一落在该窗口**。⇒ 该窗口今天是空的，日后若被打中，本条
+--      在那一档会与代码一起错（**不会误报**，只是看不见），修法是先验实边界再改上面那张登记表。
+--
+-- ═══ 覆盖边界与性能（两者是同一个决定）═══
+-- 🚨 窗口 = **最近 3 个交易日**（`oi_prev` 的 `rn <= 3`）。`option_daily_snapshot` 是全库增长
+--    最快的表（约 6.4M 行/年），**全表**重算实测 1.7s 且随年份线性劣化 —— 撞文件头那条性能
+--    硬约束。2026-08-29 实测（本谓词整体，同库连跑取稳态）：
+--      不含本条 420ms │ K=2 646ms(19.1万行) │ **K=3 737ms(28.1万行)** │ K=5 936ms(46.2万行)
+--    📌 **限窗后开销不随年份增长**：窗口以「交易日个数」计而非行数 ⇒ 判定面恒为
+--       `3 × 每场行数`（现约 9.4 万/场），与历史长度无关。它只随**锚数**增长。
+--    K=3 的依据：探针每 4h 一跑（每天 6 次），窗口给出 2–3 个交易日 ⇒ 每个脏批有 12–18 次
+--    被看见的机会。K=5 多花 200ms 买不到额外检出力。
+--    ⇒ **窗口外的旧行不判**（历史脏行由一次性 migration 清，不是探针的活）。
+-- 🚨 `oi_prev` 必须 `MATERIALIZED`：PG12+ 对单引用 CTE 自动内联，会把「上一交易日」变成
+--    **逐行相关 SubPlan**（36 万行 × 索引查），实测 buffer 从 1.8 万涨到 **290 万**。别摘掉它。
+-- 空窗口（判定面 0 行）→ 判绿。本条是**正确性**判据不是 liveness ——「有没有在长」由 ⑧ 管，
+--    形态同 ⑪（`count > 0` 才红）。
+-- fail-closed：日历不足以给出「上一交易日」（`prev_td` 为 NULL）时，`IS DISTINCT FROM` 让
+--    该行落进 `NOT ok` ⇒ 判红，而不是因为「算不出来」而静默放行。
 --
 -- ═══ 阈值 ═══
 -- `max_lag_trading_days` = 允许落后多少个**交易日**（非自然日，长假不误报）。
@@ -412,6 +458,53 @@ disk_verdict AS (
           AND m.avail_bytes < (m.bytes_047 / m.session_days) * 90) AS unhealthy
   FROM disk_measured m
 ),
+-- ── #262：OI 归属标签一致性（判据 ⑫，**市场通用**；论证见文件头该段）───────────────────
+-- `settle_min` 为 NULL 的市场 = 「不在收盘当晚定稿」⇒ `eod` 路径恒退到上一交易日（us 现役 45.7
+-- 万行走的就是这一档）。hk 登记 21:30。**本表与 `MARKET_OI_SETTLE_LOCAL_MINUTE` 必须同值。**
+oi_zone(market, zone, settle_min) AS (
+  VALUES ('hk', 'Asia/Hong_Kong', 21 * 60 + 30),
+         ('us', 'America/New_York', NULL::int)
+),
+-- 近期每个交易日 → 它的上一交易日。rn 升序 = 日期降序 ⇒ `lead()` 恰是「更早那一个」。
+-- 取 4 档：前 3 档是可判 session，第 4 档只作为第 3 档的前驱。🚨 MATERIALIZED 不可摘（见文件头）。
+oi_prev AS MATERIALIZED (
+  SELECT market, date AS session_date, rn,
+         lead(date) OVER (PARTITION BY market ORDER BY rn) AS prev_td
+  FROM cal WHERE rn <= 4
+),
+oi_probe AS (
+  SELECT c.market, s.session_date, s.oi_as_of, s.source, p.prev_td, z.settle_min,
+         (s.quote_as_of AT TIME ZONE z.zone)        AS local_ts,
+         (s.quote_as_of AT TIME ZONE z.zone)::date  AS local_date
+  FROM marketdata.option_daily_snapshot s
+  JOIN marketdata.option_contract c ON c.id = s.contract_id
+  JOIN oi_zone z ON z.market = c.market
+  JOIN oi_prev p ON p.market = c.market AND p.session_date = s.session_date AND p.rn <= 3
+  WHERE s.session_date >= (SELECT min(session_date) FROM oi_prev WHERE rn <= 3)
+),
+-- 应然值 = 写路径 (`sync-option-snapshot.usecase.ts` 的 `oiFinalizedAtSessionClose`) 的 SQL 复刻：
+--   非 eod（盘前补采）        ⇒ 恒 session_date（已跨进下一场的盘前，OI 必已翻新）
+--   该市场不在当晚定稿        ⇒ 上一交易日（us）
+--   采集日 ≠ session 日       ⇒ 更晚即已定稿 → session_date；更早（不该出现）→ 上一交易日
+--   同日且已过定稿时刻        ⇒ session_date，否则上一交易日
+oi_verdict AS (
+  SELECT count(*) AS judged,
+         count(*) FILTER (WHERE NOT ok) AS bad_rows,
+         count(*) FILTER (WHERE NOT ok) > 0 AS unhealthy,
+         coalesce(string_agg(DISTINCT tag, ',' ORDER BY tag) FILTER (WHERE NOT ok), '') AS tags
+  FROM (
+    SELECT market || ':' || session_date || '/' || source AS tag,
+           oi_as_of IS NOT DISTINCT FROM (CASE
+             WHEN source <> 'eod' THEN session_date
+             WHEN settle_min IS NULL THEN prev_td
+             WHEN local_date <> session_date
+               THEN CASE WHEN local_date > session_date THEN session_date ELSE prev_td END
+             WHEN extract(hour FROM local_ts) * 60 + extract(minute FROM local_ts) >= settle_min
+               THEN session_date
+             ELSE prev_td END) AS ok
+    FROM oi_probe
+  ) g
+),
 bad AS (
   SELECT (SELECT count(*) FROM dim_verdict WHERE unhealthy)
        + (SELECT count(*) FROM us_verdict WHERE bar_unhealthy)
@@ -421,7 +514,8 @@ bad AS (
        + (SELECT count(*) FROM opt_verdict WHERE snapshot_unhealthy)
        + (SELECT count(*) FROM earn_verdict WHERE unhealthy)
        + (SELECT count(*) FROM disk_verdict WHERE unhealthy)
-       + (SELECT count(*) FROM ghost_contract WHERE n > 0) AS n
+       + (SELECT count(*) FROM ghost_contract WHERE n > 0)
+       + (SELECT count(*) FROM oi_verdict WHERE unhealthy) AS n
 )
 SELECT
   ((SELECT n FROM bad) > 0)::int AS exit_code,
@@ -467,4 +561,9 @@ SELECT
   || ' | 幽灵合约=' || (SELECT n FROM ghost_contract)
   || coalesce('(' || nullif((SELECT symbols FROM ghost_contract), '') || ')', '')
   || CASE WHEN (SELECT n FROM ghost_contract) > 0 THEN '⚠跨市场' ELSE '' END
+  -- #262 OI 归属标签：**判红**。`⚠OI标签` 是本条专属标记词。分母 = 窗口内被判定的行数，
+  -- 分子 = 标签不符的行数；括号里是 `市场:session/source` 三元组（定位到是哪一轮写的）。
+  || ' | oi归属=' || (SELECT bad_rows || '/' || judged FROM oi_verdict)
+  || coalesce('(' || nullif((SELECT tags FROM oi_verdict), '') || ')', '')
+  || CASE WHEN (SELECT unhealthy FROM oi_verdict) THEN '⚠OI标签' ELSE '' END
   AS summary;

@@ -151,6 +151,12 @@ const MARKET_SESSION: Record<
  * **本表的旧名**。该 migration 已应用, 改它的注释会炸 Prisma checksum ⇒ 刻意不动; 从那句话
  * grep 过来的人落在这里。它说的那条纪律**依然成立**: 给别的市场填上非 `null` 时, MUST 同时
  * 补一条同形的清理 migration。
+ *
+ * 🚨 **本表的取值如今有第三处表达** (#262): `ops/jobs/marketdata-table-health.sql` 的判据 ⑫
+ * 在 SQL 里复刻了 {@link oiRefreshedAtEod} 的三档判定 (`oi_zone` 那张 VALUES 表), 用来核对库里
+ * 已经落下的 `oi_as_of` 标签。它**调不到本函数** —— 探针是纯 SELECT、跑在采集进程之外, 那正是
+ * 它的存在理由 (FR-051)。⇒ **改本表 MUST 同步改那条判据**, 否则表现是「探针天天红而代码是对的」
+ * 或反过来「探针绿而库里的标签已经漂了」, **两种都不报错**。
  */
 const MARKET_OI_SETTLE_LOCAL_MINUTE: Record<string, number | null> = {
   cn: null,
