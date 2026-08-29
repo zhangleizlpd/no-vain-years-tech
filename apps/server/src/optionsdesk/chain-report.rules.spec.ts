@@ -30,7 +30,8 @@ import {
 //    且避开 check-optionsdesk-rule-constants 不变量 #1 的档位系数子串扫描（spec 文件在其扫描面内）。
 
 const SPOT = new Prisma.Decimal('100');
-const context: RecallContext = { spot: SPOT };
+// 067: W = 120 > spot ⇒ spot < W 域 (axis 退化为 spot), 本文件既有断言取值全数不变。
+const context: RecallContext = { spot: SPOT, w: new Prisma.Decimal('120') };
 
 const band = (strike: string) => classifyOtmBand(SPOT, new Prisma.Decimal(strike));
 
@@ -158,7 +159,7 @@ describe('chain-report.rules — 骨架 (FR-005, 🚨 Guardrail 2)', () => {
     // 「过权利金门槛之后的整条链」(FR-005)；同一条前提也撑着 use case 里
     // 「进得了全腿 ⇔ 过了两道一律门槛」那句推断。
     // 🚨 将来给全腿加第七维检索条件而不回来改这里 ⇒ 骨架会**静默变小**，网格照常渲染。
-    const defaults = defaultCriteria('all', { spot: SPOT, qualityCeiling: SPOT });
+    const defaults = defaultCriteria('all', { ...context, qualityCeiling: SPOT });
     const constrained = RETRIEVAL_CRITERION_KEYS.filter((key) => defaults[key] !== null);
     expect([...constrained].sort()).toEqual(['livenessMin', 'premiumMin']);
   });

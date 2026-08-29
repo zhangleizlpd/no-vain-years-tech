@@ -100,6 +100,16 @@ const LEGS: LegFixture[] = [
 ];
 
 /**
+ * 067: 收租默认上界换轴为 axis = min(spot, W=120) ⇒ 上界 = min{K ≥ 120} (120) ∧ 123.6 取严
+ * = **120**, C-D (K=130) 因此越界 —— 「收窄 DTE 段把短腿放进收租」那两条用例需要一条**只**差
+ * 在 DTE 段上的短腿, 用本变体 (K=118) 顶替, 保住断言测的仍是 DTE 维度而非上界。
+ * 🚫 不改 LEGS 里的 C-D 本尊: 它的周化 1.09% / 年化 57% 被十来处档位断言引用着。
+ */
+const LEGS_SHORT_WITHIN_CEILING: LegFixture[] = LEGS.map((leg) =>
+  leg.code === 'C-D' ? { ...leg, strike: '118' } : leg,
+);
+
+/**
  * vendor 到期周期 (`marketdata.option_contract.expiration_cycle`) —— 月度链标的唯一判据输入。
  * 按**到期日**给: 它现实中就是到期日级属性, 这样写让 fixture 造不出「同一到期日两条腿标不一样」。
  */
@@ -1011,10 +1021,12 @@ describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
   });
 
   it('用户覆盖只作用于请求的那个视角, 且计数只出在被收窄的维度上 (FR-029)', async () => {
-    const plain = await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW);
+    // 067: 用 K=118 的短腿变体 —— C-D 本尊 (K=130) 已越收租新默认上界, 撑不起「放进来」那半。
+    const legs = LEGS_SHORT_WITHIN_CEILING;
+    const plain = await makeUseCase(makePrisma({}, legs)).execute(SYMBOL, 'rent', NOW);
     // 收租段 `[30,365]` → `[1,50]`: 上界收窄踢掉 C-A / C-B (DTE 164), 下界放宽放进 C-D (DTE 10)
     // ⇒ 成员**有进有出**, 而三态照样唯一 (判据是「是否产生排除」, 见 `CriterionState`)。
-    const narrowed = await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW, {
+    const narrowed = await makeUseCase(makePrisma({}, legs)).execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { dteBand: { min: 1, max: 50 } },
     });
@@ -1196,10 +1208,16 @@ describe('get-legs.usecase — 表达层截断与三个计数 (053 T002)', () =>
 
   it('🚨 收窄后 `memberCount > matchedCount`, 且它**不是**边际计数加总 (Guardrail 12)', async () => {
     // 收租段 `[30,365]` → `[1,50]`: 上界收窄踢掉 C-A / C-B, 下界放宽放进 C-D ⇒ 有进有出。
-    const view = await makeUseCase(makePrisma()).execute(SYMBOL, 'rent', NOW, {
-      perspective: 'rent',
-      criteria: { dteBand: { min: 1, max: 50 } },
-    });
+    // 067: 用 K=118 短腿变体 (C-D 本尊已越收租新默认上界, 见 LEGS_SHORT_WITHIN_CEILING)。
+    const view = await makeUseCase(makePrisma({}, LEGS_SHORT_WITHIN_CEILING)).execute(
+      SYMBOL,
+      'rent',
+      NOW,
+      {
+        perspective: 'rent',
+        criteria: { dteBand: { min: 1, max: 50 } },
+      },
+    );
 
     expect(view.matchedCount).toBe(1);
     // 🚨 判别性: 边际口径的加总在这里给出 `1 + 2 = 3`, 而无覆盖口径的真值是 **2** ——

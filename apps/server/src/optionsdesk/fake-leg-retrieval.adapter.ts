@@ -46,7 +46,7 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
   retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
     const seeded = this.chains.get(query.symbol);
     if (seeded === undefined) return Promise.resolve(null);
-    const context: RecallContext = { spot: seeded.chain.spot };
+    const context: RecallContext = { spot: seeded.chain.spot, w: seeded.w };
     const outcome = recallCandidates(
       context,
       query.perspectives,
@@ -71,5 +71,10 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
 /** 一条种子链。`legs` 的 `dteDays` 由测试直接给 —— 假实现不接时钟 (钉住的是判据, 不是日历)。 */
 export interface FakeLegChain {
   readonly chain: LegChainMeta;
+  /**
+   * 愿买价 W (067) —— 测试面**显式给数** (真实现经 anchor 点查走 `resolveEffectiveAnchorValues`
+   * + `computeW` 单点派生; 假实现不接库, 在这里模拟那次点查就是「测我刚写的那份 mock」)。
+   */
+  readonly w: RecallContext['w'];
   readonly legs: readonly LegChainRow[];
 }

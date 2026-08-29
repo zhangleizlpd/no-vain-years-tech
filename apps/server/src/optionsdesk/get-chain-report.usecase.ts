@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import type { PriceKind } from '../marketdata/marketdata.types';
+import { computeW } from './anchor.rules';
 import { dateOnlyOf } from './date-only';
 import { monthlyChainExpiries } from './leg-mark.rules';
 import {
@@ -222,7 +223,8 @@ export class GetChainReportUseCase {
       const snapshot = await this.retrieval.retrieveChain({ symbol, now, realtime });
       if (snapshot === null) return empty('chain_not_ready');
       const { chain, legs } = snapshot;
-      const context: RecallContext = { spot: chain.spot };
+      // 067: W 从同函数域已持有的生效 V 派生 (computeW 单点, FR-002), **零新查询** (plan D2)。
+      const context: RecallContext = { spot: chain.spot, w: computeW(detail.anchor.effective.v) };
 
       // 月度链标 —— 判据与选约表**同一个纯函数** (`leg-mark.rules.ts`), 零 I/O (#45)。
       // 📌 原先这里要跨 ctx 查一次交易日历, 于是有一条「两个消费方 MUST NOT 各查一份」的纪律

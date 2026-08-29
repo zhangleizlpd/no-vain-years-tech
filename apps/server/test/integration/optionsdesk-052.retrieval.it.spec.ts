@@ -130,6 +130,20 @@ describe('052 检索层 (Testcontainers PG)', () => {
         },
       });
     }
+    // 067 起检索 adapter 必经 anchor 点查派生 W (无锚 ⇒ 「链未就绪」) ⇒ 种子必须带锚。
+    // V = 170 ⇒ W = 136 > spot ⇒ axis 退化为 spot: 本文件对象是候选上限, 锚放恒等域零口径漂移。
+    await prisma.anchor.create({
+      data: {
+        ticker: SYMBOL,
+        market: SYMBOL.split(':')[0]!,
+        v: '170',
+        asof: dateOf('2026-06-30'),
+        method: 'dcf',
+        confidence: '8',
+        confidenceSource: 'manual',
+        lLevelEffective: 'L2',
+      },
+    });
     return instrumentId;
   }
 
@@ -224,11 +238,13 @@ describe('052 检索层 (Testcontainers PG)', () => {
         },
       });
     }
+    // 067: V = 170 ⇒ W = 136 > spot ⇒ axis 退化为 spot, 上界仍 = 132.40 × 1.03 = 136.372 ——
+    // 本文件既有断言逐值照旧 (换轴自身的分支归 064 IT「067 换轴双域」组)。
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
         market: SYMBOL.split(':')[0]!,
-        v: '150',
+        v: '170',
         asof: dateOf('2026-06-30'),
         method: 'dcf',
         confidence: '8',
@@ -274,19 +290,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
   });
 
   it('🚨 触及状态一路上浮到 use case 视图 (FR-028: 不依赖读日志)', async () => {
-    await seedChain(6);
-    await prisma.anchor.create({
-      data: {
-        ticker: SYMBOL,
-        market: SYMBOL.split(':')[0]!,
-        v: '150',
-        asof: dateOf('2026-06-30'),
-        method: 'dcf',
-        confidence: '8',
-        confidenceSource: 'manual',
-        lLevelEffective: 'L2',
-      },
-    });
+    await seedChain(6); // 锚随 seedChain 落 (067 起检索必经锚派生 W)
     const view = await new GetLegsUseCase(
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
@@ -408,7 +412,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
   async function seedLegs(
     legs: readonly SeedLeg[],
     spot: string = SPOT,
-    anchorV = '150',
+    // 067: 缺省锚放恒等域 (W = 136 > spot ⇒ axis 退化为 spot), 既有断言零口径漂移。
+    anchorV = '170',
   ): Promise<void> {
     const instrumentId = await seedInstrument();
     for (const leg of legs) {
@@ -625,7 +630,9 @@ describe('052 检索层 (Testcontainers PG)', () => {
   ];
 
   it('🚨 SC-002: 缺陷链上收租集内**零条**三位数年化的深实值腿 —— 而它仍在全腿 (沉底不砍腿)', async () => {
-    await seedLegs(KBR_LEGS, KBR_SPOT, '45');
+    // 067: V 取 48 ⇒ W = 38.4 > spot 37.56 ⇒ axis 退化为 spot (恒等域) —— 本条钉的是
+    // 「深实值进不了收租」, 上界口径与换轴前逐值一致。
+    await seedLegs(KBR_LEGS, KBR_SPOT, '48');
     const view = await useCaseOf().execute(SYMBOL, 'rent', NOW);
     const inAll = await useCaseOf().execute(SYMBOL, 'all', NOW);
 
