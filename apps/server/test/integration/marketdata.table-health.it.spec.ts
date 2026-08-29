@@ -208,6 +208,9 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
       await prisma.dailyBar.create({ data: barOf(id, d) });
       await prisma.underlyingIvDaily.create({ data: { instrumentId: id, date: d } });
     }
+    // 🚨 判据 ⑦ 自 #262 交付面 ③ 起**市场通用** ⇒ hk 侧也必须有阶梯, 否则基线就是「hk 空工作集」
+    //    判红。**只造合约不造快照**: ⑧ 仍只判 us(理由见谓词该段), hk 快照由 08:00 完整性探针管。
+    await seedOptionLadder('hk', '00700', instIds.get('hk:00700')!, [FAR_EXPIRY_DAYS]);
     // 指数维度不挂锚闸：工作集是常量，与上面的 need_sync 白名单无关。
     for (const code of US_INDEX_CODES) {
       await prisma.usIndexDaily.create({ data: { indexCode: code, date: d, close: 20 } });
@@ -215,7 +218,7 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     // 047 M2b 三个新维度。链发现 / 快照的工作集 = us 锚里**已经有合约的那些**（见谓词该段）。
     for (const code of US_WHITELIST) {
       const id = instIds.get(`us:${code}`)!;
-      await seedOptionLadder(code, id, [FAR_EXPIRY_DAYS], d);
+      await seedOptionLadder('us', code, id, [FAR_EXPIRY_DAYS], d);
       await prisma.earningsEvent.create({
         data: {
           instrumentId: id,
@@ -232,6 +235,7 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
    * 决定，谓词判它 ≥ +120d）；`sessionDates` = 要落快照的交易日。
    */
   async function seedOptionLadder(
+    market: 'us' | 'hk',
     code: string,
     instrumentId: bigint,
     expiryOffsets: number[],
@@ -240,8 +244,8 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     for (const offset of expiryOffsets) {
       const contract = await prisma.optionContract.create({
         data: {
-          market: 'us',
-          code: `US.${code}${offset}P100000`,
+          market,
+          code: `${market.toUpperCase()}.${code}${offset}P100000`,
           root: code,
           underlyingInstrumentId: instrumentId,
           expiryDate: daysAhead(offset),
@@ -483,7 +487,7 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
 
     const { exitCode, summary } = await runPredicate();
     expect(exitCode).toBe(1);
-    expect(summary).toContain('option_contract=1/2@≥+120d⚠阶梯截断');
+    expect(summary).toContain('option_contract=hk:1/1,us:1/2@≥+120d⚠阶梯截断');
     // 快照那条不该被连坐（合约还在、当日快照还在）→ 坐实两条判据各判各的。
     expect(summary).toContain('option_daily_snapshot=2/2');
   });
@@ -495,7 +499,7 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
 
     const { exitCode, summary } = await runPredicate();
     expect(exitCode).toBe(1);
-    expect(summary).toContain('option_contract=0/0');
+    expect(summary).toContain('option_contract=hk:0/0,us:0/0');
   });
 
   // ── ⑩ 047 M2b option_daily_snapshot: 数据年龄 (OR) ──────────────────────────────────────
@@ -509,7 +513,7 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     expect(exitCode).toBe(1);
     expect(summary).toMatch(/option_daily_snapshot=1\/2@[\d-]+⚠掉队/);
     // 合约表没动 → 阶梯那条仍绿。
-    expect(summary).toContain('option_contract=2/2');
+    expect(summary).toContain('option_contract=hk:1/1,us:2/2');
   });
 
   // ── #179 词根撞名: 只报数, 不判红 ──────────────────────────────────────────────────────
@@ -614,7 +618,9 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
   // ── ⑫ 047 M2b 磁盘水位 (FR-052a) ────────────────────────────────────────────────────────
   /** 把快照铺到最近 `days` 个自然日上（日历已登记 15 天全为交易日 → 交易日数 = days）。 */
   async function seedSnapshotHistory(days: number): Promise<void> {
-    const contract = await prisma.optionContract.findFirstOrThrow();
+    // 🚨 必须钉死 market: 基线自 #262 交付面 ③ 起也造 hk 阶梯, 裸 findFirst 可能抓到 hk 合约,
+    //    而本夹具按 **us** 口径写 oi_as_of(上一交易日) ⇒ 会被判据 ⑫ 正确地判红, 表现成本用例假红。
+    const contract = await prisma.optionContract.findFirstOrThrow({ where: { market: 'us' } });
     await prisma.optionDailySnapshot.createMany({
       data: Array.from({ length: days }, (_, i) => ({
         contractId: contract.id,
@@ -794,5 +800,61 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     const { exitCode, summary } = await runPredicate();
     expect(exitCode).toBe(1);
     expect(summary).toContain('⚠OI标签');
+  });
+
+  // ── ⑭ #262 交付面 ③ 补的两块空白：⑦ 扩 hk + ⑬ 零哨兵 ──────────────────────────────────
+
+  it('🚨 hk 侧阶梯被截到 +30d (us 完好) → 不健康 exit 1, 且摘要指认到 hk', async () => {
+    // 港股期权 2026-08-23 上线后判据 ⑦ 一直是 us-only ⇒ 港股阶梯截断此前零探针,
+    // 而 08:00 完整性探针补不上: 它的分母取自基线日**已有的**合约集, 阶梯右端缺失它看不见。
+    await seedAllFresh();
+    await prisma.optionContract.updateMany({
+      where: { market: 'hk' },
+      data: { expiryDate: daysAhead(30) },
+    });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('option_contract=hk:0/1,us:2/2@≥+120d⚠阶梯截断');
+  });
+
+  it('🚨 hk 合约整个消失 (us 完好) → 不健康 exit 1 —— **不被健康市场平均掉**', async () => {
+    // 🚨 这条守的是「按 market 分组」本身。只按整体聚合时 hk 的 0 会被 us 的 2 平均掉判绿 ——
+    //    044 探针那条「不被健康市场平均掉」的教训, 在期权面同样成立。
+    await seedAllFresh();
+    await prisma.optionContract.deleteMany({ where: { market: 'hk' } });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('option_contract=hk:0/0,us:2/2@≥+120d⚠阶梯截断');
+  });
+
+  it('🚨 盘口带内零哨兵 (bid,bid_size) 成对为 0 残留 → 不健康 exit 1 (ADR-0067)', async () => {
+    // 富途不用 null 表达「没有」, 用带内哨兵 0 ⇒ 哨兵原样落库会变成**看起来有效的报价**。
+    // 采集端 `normalizeQuoteSide` 是唯一防线且只有一个生产调用方 ⇒ 第二源接入时会静默复发。
+    await seedAllFresh();
+    const row = await prisma.optionDailySnapshot.findFirstOrThrow();
+    await prisma.optionDailySnapshot.update({
+      where: { id: row.id },
+      data: { bid: 0, bidSize: 0 },
+    });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('零哨兵=1(bid)');
+  });
+
+  it('单侧零价但 size 非 0 → 健康 exit 0 (OPRA 明写零价可以是合法报价, MUST NOT 单列判)', async () => {
+    // 🚨 守的是**不假红**: 只看价格会静默吃掉真实的零价买盘。判据必须成对。
+    await seedAllFresh();
+    const row = await prisma.optionDailySnapshot.findFirstOrThrow();
+    await prisma.optionDailySnapshot.update({
+      where: { id: row.id },
+      data: { bid: 0, bidSize: 5 },
+    });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(0);
+    expect(summary).toContain('零哨兵=0');
   });
 });

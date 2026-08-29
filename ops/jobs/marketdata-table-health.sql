@@ -39,6 +39,8 @@
 --   ⑩ 磁盘水位：可用空间 < 实测日均增长 × 90 天（047 FR-052a）
 --   ⑪ 跨市场幽灵合约：同一合约标识同时挂在 us 与 hk 标的名下（#199；与「词根撞名报数」是两件事）
 --   ⑫ OI 归属标签漂移：按合约**真实市场**重算的 `oi_as_of` 与库里的值不符（#262；市场通用）
+--   ⑬ 带内零哨兵残留：`(bid,bid_size)`/`(ask,ask_size)` 成对为 0，或 `last`/`prev_close`/
+--      `underlying_spot` 为 0（#262 交付面 ③ / ADR-0067 —— 那不是价格，是「没有这个价」）
 --
 -- ═══ 为什么是「逐票哨兵 EXISTS」而不是「全表 max(date) + 行数下界」═══
 -- 🚨 **性能是硬约束，不是优化偏好**：被监控表的索引一律 `(instrument_id, date)` 前导，**没有任何
@@ -318,10 +320,22 @@ idx_verdict AS (
   FROM idx_probe
 ),
 -- ── 047 M2b：期权链两个标的级维度 ────────────────────────────────────────────────────────
--- 工作集 = us `need_sync` 锚里**已经有合约的那些**（见文件头「047 M2b 三个新维度」段）。
+-- 工作集 = `need_sync` 锚里**已经有合约的那些**（见文件头「047 M2b 三个新维度」段）。
 -- 一趟扫 instrument，三个 EXISTS 各走 (underlying_instrument_id, …) 前导索引。
+--
+-- 🚨 **⑦ 与 ⑧ 的市场作用面蓄意不同，别顺手统一**（#262 交付面 ③ 盘点的产出）:
+--   · ⑦ 到期阶梯 = **us + hk**。港股期权 2026-08-23 上线后这条一直是 us-only ⇒ 港股的
+--     「窗序列跑到一半 budget 耗尽、阶梯被截断」**零探针**。`marketdata-snapshot-integrity`
+--     补不上这个洞: 它的分母取自基线日**已有的**合约集, 阶梯右端缺失它看不见 (那个文件头
+--     写的「两个探针分工」反过来同样成立)。空工作集同理 —— 它判「无对象」不告警。
+--   · ⑧ 快照数据年龄 = **仍只判 us**。港股快照停摆已由 08:00 完整性探针**日频**覆盖
+--     (#267 市场通用, 分母为 0 即红) ⇒ 扩到 4h 只把检出从 ~24h 缩到 ~4h, 却要为 hk 另立
+--     一个 lag 常量 (港股夜链当日 23:00 收口, 与 us 的 lag 2 不同源)。性价比不成立。
+--     🚫 将来若真要扩, **先实测 hk 的 lag**, 别照抄 `us_expected`。
+--   · 120d 阈值对 hk **实测有余量**, 无需另立: 2026-08-29 prod 实测两只 hk 锚的阶梯右端
+--     均为 2027-06-29 (**304 天 / 8 个到期日**), 而 us 锚是 174–265 天。
 opt_probe AS (
-  SELECT i.code,
+  SELECT i.market, i.code,
          EXISTS (SELECT 1 FROM marketdata.option_contract c
                  WHERE c.underlying_instrument_id = i.id) AS has_contracts,
          -- ⑦ 前向到期阶梯右端（120d，理由见文件头；🚫 别改成 updated_at，稳态零写入）。
@@ -334,20 +348,33 @@ opt_probe AS (
                  WHERE c.underlying_instrument_id = i.id
                    AND s.session_date >= (SELECT expected_day FROM us_expected)) AS snapshot_fresh
   FROM marketdata.instrument i
-  WHERE i.market = 'us' AND i.need_sync
+  WHERE i.market IN ('us', 'hk') AND i.need_sync
 ),
+-- ⑦ **逐市场**判定。🚨 由固定市场清单 LEFT JOIN 驱动（同文件头「沉默 ≠ 健康」那条）——
+--    某市场的锚整个消失时仍必须出一行判红，而不是因为 GROUP BY 没有该组就静默放行。
+-- 🚨 **必须按 market 分组，不能只按整体聚合**：一个市场的锚整体挂掉会被另一个市场的健康值
+--    平均掉判绿 —— 同 `dim_verdict` 那条教训（044 探针的「不被健康市场平均掉」）。
+opt_markets(market) AS (VALUES ('us'), ('hk')),
+ladder_verdict AS (
+  SELECT m.market,
+         count(p.code) FILTER (WHERE p.has_contracts) AS workset,
+         count(p.code) FILTER (WHERE p.has_contracts AND p.ladder_ok) AS ok_cnt,
+         -- 空工作集（该市场一只锚都没有合约）本身是要抓的签名 → 判红，同 us_equity_bar。
+         -- ⚠️ 推论：**装机时序**同文件头那条 —— 先确认链发现在 prod 跑出过一轮，再装本谓词。
+         (count(p.code) FILTER (WHERE p.has_contracts) = 0
+          OR count(p.code) FILTER (WHERE p.has_contracts AND NOT p.ladder_ok) > 0) AS unhealthy
+  FROM opt_markets m
+  LEFT JOIN opt_probe p ON p.market = m.market
+  GROUP BY m.market
+),
+-- ⑧ 仍只判 us（理由见上方 🚨 段）。工作集与 expected_day 均沿用原口径，逐点不变。
 opt_verdict AS (
   SELECT count(*) FILTER (WHERE has_contracts) AS workset,
-         count(*) FILTER (WHERE has_contracts AND ladder_ok) AS ladder_ok_cnt,
          count(*) FILTER (WHERE has_contracts AND snapshot_fresh) AS snapshot_fresh_cnt,
-         -- 空工作集（一只锚都没有合约）本身是要抓的签名 → 两条都判红，同 us_equity_bar。
-         -- ⚠️ 推论：**装机时序**同文件头那条 —— 先确认链发现在 prod 跑出过一轮，再装本谓词。
-         (count(*) FILTER (WHERE has_contracts) = 0
-          OR count(*) FILTER (WHERE has_contracts AND NOT ladder_ok) > 0) AS contract_unhealthy,
          (count(*) FILTER (WHERE has_contracts) = 0
           OR count(*) FILTER (WHERE has_contracts AND NOT snapshot_fresh) > 0) AS snapshot_unhealthy,
          (SELECT expected_day FROM us_expected) AS expected_day
-  FROM opt_probe
+  FROM opt_probe WHERE market = 'us'
 ),
 -- ── #179：HK 合约词根 ∩ 美股标的代码（vendor 按词根串市场的**前提条件**）─────────────────
 -- 富途在美股方向按**词根**解析标的、忽略市场前缀 ⇒ 请求 `US.<root>` 会掺回同词根的 HK 合约
@@ -475,7 +502,17 @@ oi_prev AS MATERIALIZED (
 oi_probe AS (
   SELECT c.market, s.session_date, s.oi_as_of, s.source, p.prev_td, z.settle_min,
          (s.quote_as_of AT TIME ZONE z.zone)        AS local_ts,
-         (s.quote_as_of AT TIME ZONE z.zone)::date  AS local_date
+         (s.quote_as_of AT TIME ZONE z.zone)::date  AS local_date,
+         -- ⑬ 带内零哨兵（ADR-0067）。**蓄意折进本趟扫描**: 与 ⑫ 同表、同窗口、同 JOIN,
+         -- 单独再扫一遍就是白付一次 28 万行的代价。判据与采集端 `normalizeQuoteSide` /
+         -- `tradedPriceOrNull` 逐字同构 —— 🚨 盘口价**必须成对判**（OPRA 明写零价可以是合法
+         -- 报价, 只看价格会静默吃掉真实的零价买盘）; 成交价类**允许单列判**（富途书面确认
+         -- 「期权成交价恒为正值, 返回的 0 一律表示无最后成交价」, #258)。
+         CASE WHEN s.bid = 0 AND s.bid_size = 0 THEN 'bid'
+              WHEN s.ask = 0 AND s.ask_size = 0 THEN 'ask'
+              WHEN s.last = 0                   THEN 'last'
+              WHEN s.prev_close = 0             THEN 'prev_close'
+              WHEN s.underlying_spot = 0        THEN 'underlying_spot' END AS sentinel_col
   FROM marketdata.option_daily_snapshot s
   JOIN marketdata.option_contract c ON c.id = s.contract_id
   JOIN oi_zone z ON z.market = c.market
@@ -505,17 +542,25 @@ oi_verdict AS (
     FROM oi_probe
   ) g
 ),
+-- ⑬ 判定面与 ⑫ 完全相同（同一 `oi_probe`）⇒ 覆盖边界也相同: 窗口外的旧行不判。
+-- `string_agg` 天然跳过 NULL ⇒ 干净行不进 `cols`, 无需再加 FILTER。
+sentinel_verdict AS (
+  SELECT count(*) FILTER (WHERE sentinel_col IS NOT NULL) AS n,
+         coalesce(string_agg(DISTINCT sentinel_col, ',' ORDER BY sentinel_col), '') AS cols
+  FROM oi_probe
+),
 bad AS (
   SELECT (SELECT count(*) FROM dim_verdict WHERE unhealthy)
        + (SELECT count(*) FROM us_verdict WHERE bar_unhealthy)
        + (SELECT count(*) FROM us_verdict WHERE iv_unhealthy)
        + (SELECT count(*) FROM idx_verdict WHERE unhealthy)
-       + (SELECT count(*) FROM opt_verdict WHERE contract_unhealthy)
+       + (SELECT count(*) FROM ladder_verdict WHERE unhealthy)
        + (SELECT count(*) FROM opt_verdict WHERE snapshot_unhealthy)
        + (SELECT count(*) FROM earn_verdict WHERE unhealthy)
        + (SELECT count(*) FROM disk_verdict WHERE unhealthy)
        + (SELECT count(*) FROM ghost_contract WHERE n > 0)
-       + (SELECT count(*) FROM oi_verdict WHERE unhealthy) AS n
+       + (SELECT count(*) FROM oi_verdict WHERE unhealthy)
+       + (SELECT count(*) FROM sentinel_verdict WHERE n > 0) AS n
 )
 SELECT
   ((SELECT n FROM bad) > 0)::int AS exit_code,
@@ -539,8 +584,11 @@ SELECT
   || CASE WHEN (SELECT unhealthy FROM idx_verdict) THEN '⚠缺数' ELSE '' END
   -- 047 M2b 四条。`⚠阶梯截断` = 到期阶梯右端不足 120d · `⚠视野` = 财报前向视野塌陷或停止观察
   -- · `⚠水位` = 可撑天数不足 90d（标记词各自专属，别与上面的 ⚠陈旧/⚠掉队/⚠缺数 混用）。
-  || ' | option_contract=' || (SELECT ladder_ok_cnt || '/' || workset FROM opt_verdict) || '@≥+120d'
-  || CASE WHEN (SELECT contract_unhealthy FROM opt_verdict) THEN '⚠阶梯截断' ELSE '' END
+  -- ⑦ 逐市场报数（`us:N/M,hk:N/M`）—— 只报总数会让「某个市场整体挂掉」看不出是哪一个。
+  || ' | option_contract='
+  || (SELECT string_agg(market || ':' || ok_cnt || '/' || workset, ',' ORDER BY market)
+      FROM ladder_verdict) || '@≥+120d'
+  || CASE WHEN (SELECT bool_or(unhealthy) FROM ladder_verdict) THEN '⚠阶梯截断' ELSE '' END
   || ' | option_daily_snapshot=' || (SELECT snapshot_fresh_cnt || '/' || workset FROM opt_verdict)
   || coalesce('@' || (SELECT expected_day::text FROM opt_verdict), '@日历缺失')
   || CASE WHEN (SELECT snapshot_unhealthy FROM opt_verdict) THEN '⚠掉队' ELSE '' END
@@ -566,4 +614,9 @@ SELECT
   || ' | oi归属=' || (SELECT bad_rows || '/' || judged FROM oi_verdict)
   || coalesce('(' || nullif((SELECT tags FROM oi_verdict), '') || ')', '')
   || CASE WHEN (SELECT unhealthy FROM oi_verdict) THEN '⚠OI标签' ELSE '' END
+  -- ⑬ 零哨兵残留：**判红**。`⚠哨兵残留` 是本条专属标记词；括号里是命中的列名（定位到是
+  -- 哪一类哨兵漏了归一化，盘口 / 成交价两类的修法不同）。
+  || ' | 零哨兵=' || (SELECT n FROM sentinel_verdict)
+  || coalesce('(' || nullif((SELECT cols FROM sentinel_verdict), '') || ')', '')
+  || CASE WHEN (SELECT n FROM sentinel_verdict) > 0 THEN '⚠哨兵残留' ELSE '' END
   AS summary;
