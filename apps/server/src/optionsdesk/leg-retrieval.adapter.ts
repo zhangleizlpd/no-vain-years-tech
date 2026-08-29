@@ -16,7 +16,13 @@ import {
 } from '../marketdata/trading-calendar.port';
 import { parseAnchorTicker } from './anchor.rules';
 import { INTRADAY_FRESHNESS_SECONDS, isIntradayFresh } from './intraday-spot.rules';
-import { legWindowFor, windowTripwire, withinWindow, type LegWindow } from './leg-window.rules';
+import {
+  WINDOW_SUPPORTED_MARKETS,
+  legWindowFor,
+  windowTripwire,
+  withinWindow,
+  type LegWindow,
+} from './leg-window.rules';
 import { recallCandidates, type RecallCandidate, type RecallContext } from './leg-recall.rules';
 import type {
   LegChainMeta,
@@ -746,6 +752,21 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     const gate = await this.resolveRealtimeGate(target);
     if (gate === 'closed') return eodClose(null);
     if (gate === 'unknown') return eodClose('gate_unknown');
+
+    // ①b 该市场尚无候选范围派生能力 ⇒ **零外呼**整体回落。`legWindowFor` 对未支持市场
+    // MUST throw (FR-008, 判据本身正确且不动), 但在读路径上放它抛会一路冒到 use case 的宽
+    // catch 判成 `read_failed` —— 把「该市场还没接实时」呈现成「读故障」, 整表打红。
+    // 🚨 **必须在闸之后判**: 闸 `'closed'` 时是正常收盘档 (降级标恒 `null`), 挪到闸前会让
+    // 港股用户在休市时段天天看见降级 —— T007a「永远为真的告警」的翻版。
+    // 📌 语义与 mock 档「本环境无实时源」同类 ⇒ 复用 `source_unavailable`, 🚫 不新造第四态
+    // (扩值域要动契约与呈现, 归 P2 的 market 参数化整体处理)。
+    if (!(WINDOW_SUPPORTED_MARKETS as readonly string[]).includes(target.market)) {
+      this.logger.warn(
+        `市场 '${target.market}' 尚未支持实时候选范围派生, 本次整体回落收盘档 (064 FR-011): ` +
+          target.symbol,
+      );
+      return eodClose('source_unavailable');
+    }
 
     // ② 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落, 仍是零外呼 (`state_branch` 14)。
     // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。

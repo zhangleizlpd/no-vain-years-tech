@@ -116,10 +116,12 @@ class SpySnapshotReadPort implements OptionSnapshotPort {
 class FakeMarketStatePort implements MarketStatePort {
   session: MarketSession = 'regular';
   fail: Error | null = null;
+  /** P0a hk guard 用例的追加市场 (默认空 —— 既有用例只看 us, 行为零变化)。 */
+  extra: MarketSessionState[] = [];
 
   getMarketSessions(): Promise<MarketSessionState[]> {
     if (this.fail !== null) return Promise.reject(this.fail);
-    return Promise.resolve([{ market: 'us', session: this.session }]);
+    return Promise.resolve([{ market: 'us', session: this.session }, ...this.extra]);
   }
 }
 
@@ -217,6 +219,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     readPort.hang = false;
     marketState.session = 'regular';
     marketState.fail = null;
+    marketState.extra = [];
     await prisma.optionDailySnapshot.deleteMany();
     await prisma.optionContract.deleteMany();
     await prisma.instrument.deleteMany();
@@ -1722,5 +1725,120 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     expect(unreachable.chain.priceKind).toBe('eod_close');
     expect(warnings.length).toBeGreaterThan(0);
     expect(degradeLogs()).toHaveLength(0);
+  });
+
+  // ── P0a hk guard: 实时窗未支持的市场整体回落, 不再 throw → read_failed ──────
+  //
+  // 现状缺陷: `legWindowFor` 对未支持市场 MUST throw (FR-008, 判据本身正确), 但读路径上这个
+  // throw 会一路冒到 `get-legs.usecase.ts` 的宽 catch 判成 `read_failed` —— 港股锚在港股盘中
+  // (闸判开 + 盘中基准新鲜) 整表呈现「读故障」, 而不是降级到收盘档。
+  describe('P0a: hk 锚开态下不抛, 整体回落收盘档', () => {
+    const HK_SYMBOL = 'hk:00700';
+
+    async function seedHkChain(): Promise<void> {
+      const instrument = await prisma.instrument.create({
+        data: {
+          market: 'hk',
+          code: '00700',
+          name: '腾讯控股',
+          type: 'stock',
+          currency: 'HKD',
+          status: 'active',
+          needSync: true,
+        },
+        select: { id: true },
+      });
+      const contract = await prisma.optionContract.create({
+        data: {
+          market: 'hk',
+          code: 'HK.TCH260918P100000',
+          root: 'TCH',
+          underlyingInstrumentId: instrument.id,
+          expiryDate: new Date(dateOf(TODAY).getTime() + 38 * 86_400_000),
+          strikePrice: '95',
+          optionType: 'PUT',
+          isStandard: true,
+          expirationCycle: 'MONTH',
+        },
+        select: { id: true },
+      });
+      await prisma.optionDailySnapshot.create({
+        data: {
+          contractId: contract.id,
+          sessionDate: dateOf(TODAY),
+          source: 'eod',
+          quoteAsOf: new Date(`${TODAY}T08:31:07Z`),
+          oiAsOf: dateOf(TODAY),
+          bid: '2.10',
+          ask: '2.30',
+          bidSize: '10',
+          askSize: '12',
+          delta: '-0.30',
+          iv: '25.5',
+          openInterest: '500',
+          netOpenInterest: '400',
+          volume: '80',
+          underlyingSpot: SPOT,
+          greeksComplete: true,
+        },
+      });
+      await prisma.anchor.create({
+        data: {
+          ticker: HK_SYMBOL,
+          market: 'hk',
+          v: '150',
+          asof: dateOf('2026-06-30'),
+          method: 'dcf',
+          confidence: '8',
+          confidenceSource: 'manual',
+          lLevelEffective: 'L2',
+          // 盘中基准**新鲜** —— 066 T10 起 hk 已接实时源, 这正是触发缺陷的现实前置。
+          intradayPrice: SPOT,
+          intradayAt: FRESH_BASIS.at,
+        },
+      });
+    }
+
+    it('🚨 hk 开态 + 新鲜基准 ⇒ 不抛、整表收盘档、链级标 source_unavailable、零外呼', async () => {
+      await seedHkChain();
+      marketState.extra = [{ market: 'hk', session: 'regular' }];
+      const port = moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT);
+
+      // guard 之前本行 reject ([leg-window] 市场 'hk' 尚未支持) —— 本用例先红后绿 (P0a verify)。
+      const result = await port.retrieveCandidates({
+        symbol: HK_SYMBOL,
+        now: NOW,
+        perspectives: LEG_TABS,
+        candidateCap: RECALL_CANDIDATE_CAP,
+        override: null,
+        realtime: true,
+      });
+      if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
+      // 闸已判开 + 调用方已开实时 + 无窗派生能力 ⇒ 「本该实时却没给成」是**真降级** (T007a),
+      // 语义与 mock 档「本环境无实时源」同类 ⇒ 复用 source_unavailable, 不新造第四态 (值域动
+      // 契约, 归 P2)。
+      expect(result.chain.realtimeDegrade).toBe('source_unavailable');
+      expect(result.chain.priceKind).toBe('eod_close');
+      expect(readPort.calls).toHaveLength(0);
+    });
+
+    it('🚨 hk 收盘时段 ⇒ 正常收盘档 (降级标恒 null) —— guard 必须在闸**之后**, 别把常态染成告警', async () => {
+      await seedHkChain();
+      marketState.extra = [{ market: 'hk', session: 'other' }];
+      const port = moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT);
+
+      const result = await port.retrieveCandidates({
+        symbol: HK_SYMBOL,
+        now: NOW,
+        perspectives: LEG_TABS,
+        candidateCap: RECALL_CANDIDATE_CAP,
+        override: null,
+        realtime: true,
+      });
+      if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
+      expect(result.chain.realtimeDegrade).toBeNull();
+      expect(result.chain.priceKind).toBe('eod_close');
+      expect(readPort.calls).toHaveLength(0);
+    });
   });
 });
