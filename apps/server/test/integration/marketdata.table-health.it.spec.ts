@@ -256,8 +256,11 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
             contractId: contract.id,
             sessionDate,
             source: 'eod',
-            quoteAsOf: sessionDate,
-            oiAsOf: sessionDate,
+            // 🚨 三个时点列按**真实写路径**造, 别图省事全填 sessionDate（#262 判据 ⑫ 会当场判红,
+            //    而那正是它存在的意义）: us 的 OI 隔日发布 ⇒ `eod` 路径 `oi_as_of` = 上一交易日;
+            //    `quote_as_of` 取 session 当日 20:00 UTC（= ET 16:00 收盘后）让市场当地日期落在 session 日。
+            quoteAsOf: new Date(sessionDate.getTime() + 20 * 3_600_000),
+            oiAsOf: new Date(sessionDate.getTime() - DAY_MS),
             greeksComplete: true,
           },
         });
@@ -617,8 +620,9 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
         contractId: contract.id,
         sessionDate: daysAgo(i),
         source: 'eod',
-        quoteAsOf: daysAgo(i),
-        oiAsOf: daysAgo(i),
+        // 同 seedOptionLadder：us `eod` 的 oi_as_of = 上一交易日（判据 ⑫）。
+        quoteAsOf: new Date(daysAgo(i).getTime() + 20 * 3_600_000),
+        oiAsOf: daysAgo(i + 1),
         greeksComplete: true,
       })),
       skipDuplicates: true,
@@ -650,5 +654,145 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     const { exitCode, summary } = await runPredicate(1); // 余量极低也不该红
     expect(exitCode).toBe(0);
     expect(summary).toContain('样本不足');
+  });
+
+  // ── ⑬ #262 OI 归属标签一致性（谓词判据 ⑫）──────────────────────────────────────────────
+  // 判据 = 按合约的**真实市场**重算 `oi_as_of` 应该是什么, 与库里的值比对, 不符即红。
+  //
+  // 🚨 本组用例的价值在**两面**, 缺一不可：
+  //   · 标错会不会红 —— 少了它, 一个 `SELECT false` 也能通过（#255 那 1110 行就是这么静默入库的）;
+  //   · 合法形态会不会**假红** —— hk 有两种都合法且答案相反的形态（当晚定稿前 / 后），
+  //     判据若不吃采集时刻, 必然冤枉其中一种, 而假红会训练出「这条可以忽略」。
+
+  /**
+   * 造一张 hk 合约 + 一行**指定形态**的快照。`quoteAtHkt` 是采集时刻的港股当地墙钟
+   * （HKT 恒 UTC+8、无 DST ⇒ 直接折 8 小时），它决定判据落在定稿线的哪一侧。
+   */
+  async function seedHkSnapshot(opts: {
+    code: string;
+    sessionAgo: number;
+    source: string;
+    quoteDayAgo: number;
+    quoteAtHkt: `${number}:${number}`;
+    oiAgo: number;
+  }): Promise<void> {
+    const contract = await prisma.optionContract.create({
+      data: {
+        market: 'hk',
+        code: opts.code,
+        root: 'TCH',
+        underlyingInstrumentId: instIds.get('hk:00700')!,
+        expiryDate: daysAhead(FAR_EXPIRY_DAYS),
+        strikePrice: 650,
+        optionType: 'PUT',
+        isStandard: true,
+      },
+    });
+    const [hh, mm] = opts.quoteAtHkt.split(':').map(Number);
+    await prisma.optionDailySnapshot.create({
+      data: {
+        contractId: contract.id,
+        sessionDate: daysAgo(opts.sessionAgo),
+        source: opts.source,
+        quoteAsOf: new Date(
+          daysAgo(opts.quoteDayAgo).getTime() + (hh - 8) * 3_600_000 + mm * 60_000,
+        ),
+        oiAsOf: daysAgo(opts.oiAgo),
+        greeksComplete: true,
+      },
+    });
+  }
+
+  it('🚨 #255 形态: hk 跨日采集(次日 08:00)却仍把 oi_as_of 退一天 → 不健康 exit 1', async () => {
+    // prod 实撞 1110 行: 港股合约混进美股分母 → 被美股补救器按**美股**语义重采写库。
+    // 采集日已跨过 session 日 ⇒ OI 必已定稿 ⇒ 应等于 session_date, 退一天就是标错。
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 1,
+      source: 'eod',
+      quoteDayAgo: 0,
+      quoteAtHkt: '08:00',
+      oiAgo: 2,
+    });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('⚠OI标签');
+    // 指认到「哪一轮写的」而不只是报个数 —— 缺口要能定位到 (市场, session, source)。
+    expect(summary).toMatch(/oi归属=1\/\d+\(hk:[\d-]+\/eod\)/);
+  });
+
+  it('hk 夜链稳态 (当日 23:00, 已过定稿线, oi_as_of = session_date) → 健康 exit 0', async () => {
+    // 2026-08-28 起的现役形态: 链发现进稳态后夜链当日内收口 ⇒ source=eod 且采集日 = session 日。
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 1,
+      source: 'eod',
+      quoteDayAgo: 1,
+      quoteAtHkt: '23:00',
+      oiAgo: 1,
+    });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(0);
+    expect(summary).not.toContain('⚠OI标签');
+  });
+
+  it('hk 建锚冷启动窗口 (当日 17:00, 定稿线之前, oi_as_of = 上一交易日) → 健康 exit 0', async () => {
+    // 🚨 **这条守的是不假红**: 港股收盘写闸 16:10 开、OI 21:30 定稿 ⇒ 中间 5h20m 内建锚触发的
+    //    冷启动拿到的仍是上一场的 OI, 退一天是**对的**。判据若不吃采集时刻, 这一格会被冤枉,
+    //    而每有人在盘后建一次港股锚就红一次 = 训练出「这条可以忽略」。
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 1,
+      source: 'eod',
+      quoteDayAgo: 1,
+      quoteAtHkt: '17:00',
+      oiAgo: 2,
+    });
+
+    expect((await runPredicate()).exitCode).toBe(0);
+  });
+
+  it('🚨 hk 定稿线之前采却把 oi_as_of 标成当天 → 不健康 exit 1 (数字与标签双错的方向)', async () => {
+    // 与上一条只差 oiAgo 一格, 答案相反 —— 这一格是 `oiRefreshedAtEod` 吃 `now` 的全部理由:
+    // 标成当天 = 把上一场的持仓量冒充本场, 且 createMany(skipDuplicates) 让当晚正确的写入被挡掉。
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 1,
+      source: 'eod',
+      quoteDayAgo: 1,
+      quoteAtHkt: '17:00',
+      oiAgo: 1,
+    });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('⚠OI标签');
+  });
+
+  it('🚨 us 的 eod 行把 oi_as_of 标成 session_date → 不健康 exit 1 (判据是市场通用的)', async () => {
+    // us 不在「收盘当晚定稿」之列 ⇒ eod 路径恒退到上一交易日。把它抹平成 session_date
+    // 「永远不会红」, 但活跃度排名与 UI 的 asOf 全错一天。
+    await seedAllFresh();
+    await prisma.optionDailySnapshot.updateMany({ data: { oiAsOf: daysAgo(0) } });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('⚠OI标签');
+  });
+
+  it('🚨 日历给不出「上一交易日」→ 不健康 exit 1 (fail-closed, 不因算不出而放行)', async () => {
+    // 沉默 ≠ 健康: 基准不可判定时判红, 而不是让 NULL 比较悄悄落进「没问题」那一侧。
+    await seedAllFresh();
+    await prisma.tradingDay.deleteMany({ where: { date: { lt: daysAgo(0) } } });
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('⚠OI标签');
   });
 });
