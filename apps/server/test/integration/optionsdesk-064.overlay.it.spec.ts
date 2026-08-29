@@ -11,7 +11,10 @@ import { Prisma } from '../../src/generated/prisma/client';
 import { GetLegsUseCase } from '../../src/optionsdesk/get-legs.usecase';
 import { GetChainReportUseCase } from '../../src/optionsdesk/get-chain-report.usecase';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
-import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
+import {
+  RECALL_CANDIDATE_CAP,
+  type RetrievalOverride,
+} from '../../src/optionsdesk/leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
   REALTIME_CHAIN_DEGRADE_KINDS,
@@ -327,9 +330,16 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
    * @param opts.basis 定窗基准 (T004b) —— 缺省 {@link FRESH_BASIS}。
    * @param opts.extraLegs 额外腿 (T004b 的口径切换样本)。🚨 **MUST NOT 加进 {@link LEGS}** ——
    *   那份种子是基线夹具的输入面, 动它等于让 `SC-005` 那条逐字符断言恒红。
+   * @param opts.v 锚的估值 V (067) —— 缺省 `'150'` = 既有基线的 spot < W 域 (W=120 > spot=100,
+   *   axis 退化为 spot, 全部既有用例逐字符不变); 067 换轴双域组喂低 V 走 spot > W 域。
    */
   async function seedChain(
-    opts: { snapshots?: boolean; basis?: SeedBasis; extraLegs?: readonly SeedLeg[] } = {},
+    opts: {
+      snapshots?: boolean;
+      basis?: SeedBasis;
+      extraLegs?: readonly SeedLeg[];
+      v?: string;
+    } = {},
   ): Promise<void> {
     const instrument = await prisma.instrument.create({
       data: {
@@ -387,7 +397,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       data: {
         ticker: SYMBOL,
         market: SYMBOL.split(':')[0]!,
-        v: '150',
+        v: opts.v ?? '150',
         asof: dateOf('2026-06-30'),
         method: 'dcf',
         confidence: '8',
@@ -1732,6 +1742,164 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   // 现状缺陷: `legWindowFor` 对未支持市场 MUST throw (FR-008, 判据本身正确), 但读路径上这个
   // throw 会一路冒到 `get-legs.usecase.ts` 的宽 catch 判成 `read_failed` —— 港股锚在港股盘中
   // (闸判开 + 盘中基准新鲜) 整表呈现「读故障」, 而不是降级到收盘档。
+  describe('067 换轴双域: axis = min(spot, W) (FR-002 / FR-005 / FR-006 / FR-008)', () => {
+    /**
+     * 既有各组用例的锚恒为 V=150 (W=120 > spot=100 ⇒ axis 退化为 spot, state_branch 1) ——
+     * 那份 golden 基线逐字符不变就是 US3 零回归的机器证据。本组把 V 压下来, 走的才是换轴
+     * 真正的新分支 (state_branches 3/4/8): W 由 adapter 内的 anchor 点查经
+     * `resolveEffectiveAnchorValues` + `computeW` 单点派生 (FR-002), 判据仍是
+     * `resolveQualityCeiling` 一处 (FR-006)。
+     */
+    const retrieve = (override: RetrievalOverride | null = null, realtime = false) =>
+      moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT).retrieveCandidates({
+        symbol: SYMBOL,
+        now: NOW,
+        perspectives: LEG_TABS,
+        candidateCap: RECALL_CANDIDATE_CAP,
+        override,
+        realtime,
+      });
+
+    const tabCodes = (
+      result: Awaited<ReturnType<typeof retrieve>>,
+      tab: (typeof LEG_TABS)[number],
+    ): string[] => {
+      if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
+      return result.candidates.filter((c) => c.tabs.includes(tab)).map((c) => c.leg.code);
+    };
+
+    /** 收租新轴内的对照腿 (K=75 < W=80) —— 让「收紧后仍有候选」非平凡。 */
+    const RENT_IN: SeedLeg = {
+      code: 'L-067-IN',
+      dte: 35,
+      strike: '75',
+      bid: '2.00',
+      ask: '2.10',
+      oi: '900',
+      vol: '40',
+      iv: '21',
+    };
+
+    /** 落在 (W×1.03, spot×1.03] = (82.4, 103] 的判别腿 —— 旧轴放进默认候选, 新轴挡下。 */
+    const AXIS_EDGE: SeedLeg = {
+      code: 'L-067-EDGE',
+      dte: 35,
+      strike: '83',
+      bid: '2.00',
+      ask: '2.10',
+      oi: '900',
+      vol: '40',
+      iv: '22',
+    };
+
+    it('🚨 US1-AS1 / state_branch 3: 低 V 锚 (W < spot) ⇒ rent 默认上界按 W 锚定, (W×1.03, spot×1.03] 的腿被挡下', async () => {
+      await seedChain({ v: '100', extraLegs: [RENT_IN, AXIS_EDGE] });
+      const result = await retrieve();
+      if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+      // FR-008: 下发的 rent 默认值反映新轴 —— 结构项 min{K ≥ 80} = 80 与比例项 80 × 1.03 =
+      // 82.4 取严 ⇒ 80; 🚫 不再是 spot 轴的 103。断言侧的 80 是 0.8 × V=100 的展开值,
+      // 实装 MUST 走 computeW 单点 (FR-002), 这里只对结果。
+      const w = new Prisma.Decimal('80');
+      expect(result.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('80');
+      expect(result.criteriaByTab.rent.defaults.strikeMax?.lessThanOrEqualTo(w.times('1.03'))).toBe(
+        true,
+      );
+
+      // 判别腿 (83 ∈ (82.4, 103]) 不在收租候选; 新轴内的对照腿在 ⇒ 收紧不是清空。
+      expect(tabCodes(result, 'rent')).toEqual([RENT_IN.code]);
+      // 只收租收紧 (FR-003 / US3): 同一条判别腿在全腿与建仓照常。
+      expect(tabCodes(result, 'all')).toContain(AXIS_EDGE.code);
+      expect(tabCodes(result, 'build')).toContain(AXIS_EDGE.code);
+
+      // FR-005「保留既有边际计数语义」(052 FR-029): 系统默认值下的排除**不出计数** —— 默认值
+      // 本身摆在控件里, 排除归因于 strikeMax 这一维而非新错误态; 也不污染两个既有门槛计数
+      // (权利金仍只数 L-PENNY; L-WIDE 对 rent 已是价差+上界双维不过 ⇒ 按既有 sole-failure
+      // 语义不计入 rent 的流动性排除数, 只计 build 那一维)。
+      expect(result.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+        state: 'default',
+        excludedCount: 0,
+      });
+      expect(result.removedByPremiumFloor).toBe(1);
+      expect(result.excludedFromIntentTabsByTab).toEqual({ build: 1, rent: 0 });
+    });
+
+    it('🚨 US2-AS1 / state_branch 4 / FR-005: spot > 1.143V ⇒ rent 默认候选为空, 呈现为既有「有链无候选」形态非错误', async () => {
+      // V=80 ⇒ W=64: W×1.03 = 65.92 低于链上全部行权价 ⇒ 结构项 min{K ≥ 64} = 80 更松,
+      // 比例项接管且挡下全部 (state_branch 9 的轴替换版在真栈上的形态)。
+      await seedChain({ v: '80' });
+      const result = await retrieve();
+      if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+      expect(result.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('65.92');
+      expect(tabCodes(result, 'rent')).toEqual([]);
+      // 空的是收租一个视角, 不是链 —— 其余视角照常有货。
+      expect(tabCodes(result, 'all').length).toBeGreaterThan(0);
+
+      // FR-005: 读端呈现沿用既有「条件下无候选」—— state 仍 available, 🚫 MUST NOT 是错误态。
+      const view = await moduleRef.get(GetLegsUseCase).execute(SYMBOL, 'rent', NOW);
+      expect(view.state).toBe('available');
+      expect(view.legs).toEqual([]);
+    });
+
+    it('🚨 US3-AS2 / state_branch 8 / FR-006: 实时开态 axis = min(实时 spot, W) —— 同一判据单点自动同轴', async () => {
+      // V=127 ⇒ W=101.6 落在库内 spot (100) 与实时 spot (104.25) **之间** ⇒ 两档的 axis 分叉:
+      // 收盘档 axis = 100 (上界 103), 实时档 axis = W = 101.6 (上界 101.6 × 1.03 = 104.648)。
+      // 🚨 三个候选值互不相同 (103 / 104.648 / 实时 spot 轴的 107.3775) —— 谁被取用一眼可辨,
+      // 这正是「用实时 spot 与库内 spot 拉开」的判别性设计。
+      await seedChain({ v: '127' });
+      readPort.respond = realtimeBatch();
+
+      const eod = await retrieve(null, false);
+      const live = await retrieve(null, true);
+      if (eod === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+      expect(eod.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('103');
+      expect(live.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('104.648');
+      expect(live.chain.spot.toString()).toBe(new Prisma.Decimal(REALTIME_SPOT).toString());
+    });
+
+    it('🚨 US2-AS2 / state_branch 7: 覆盖 strikeMax 放宽到 spot 附近 ⇒ 候选按覆盖出现, 放宽能力不受换轴影响', async () => {
+      await seedChain({ v: '100', extraLegs: [RENT_IN, AXIS_EDGE] });
+      const widened = await retrieve({
+        perspective: 'rent',
+        criteria: { strikeMax: new Prisma.Decimal('103') },
+      });
+      if (widened === null) throw new Error('种子链应当命中 —— 断言前置失效');
+
+      // 覆盖值原样生效 (不经 axis 处理), 新默认下被挡的判别腿按覆盖出现。
+      expect(widened.criteriaByTab.rent.effective.strikeMax?.toString()).toBe('103');
+      expect(tabCodes(widened, 'rent')).toEqual(
+        expect.arrayContaining([RENT_IN.code, AXIS_EDGE.code, 'L-OK']),
+      );
+      expect(widened.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+        state: 'widened',
+        excludedCount: 0,
+      });
+
+      // 053 FR-009: memberCount 的二次判定与覆盖臂共用同一 context (同一个 W) ——
+      // 无覆盖口径的成员数与默认检索逐值相同。
+      const plain = await retrieve();
+      if (plain === null) throw new Error('种子链应当命中 —— 断言前置失效');
+      expect(widened.memberCount).toBe(plain.candidates.length);
+    });
+
+    it('🚨 Edge 2 防退化: 改 v_manual 后重新检索, rent 默认上界随新 W 变化 (无缓存滞留)', async () => {
+      await seedChain({ v: '100' });
+      const before = await retrieve();
+      if (before === null) throw new Error('种子链应当命中 —— 断言前置失效');
+      expect(before.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('80');
+
+      // 生效 V 走 v_manual 优先 (resolveEffectiveAnchorValues 单点, FR-002) ⇒ W = 72,
+      // 上界 = 72 × 1.03 = 74.16 (结构项 min{K ≥ 72} = 80 更松)。将来有人给 W 加缓存或把
+      // 派生挪出单点, 本臂当场红。
+      await prisma.anchor.updateMany({ where: { ticker: SYMBOL }, data: { vManual: '90' } });
+      const after = await retrieve();
+      if (after === null) throw new Error('种子链应当命中 —— 断言前置失效');
+      expect(after.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('74.16');
+    });
+  });
+
   describe('P0a: hk 锚开态下不抛, 整体回落收盘档', () => {
     const HK_SYMBOL = 'hk:00700';
 

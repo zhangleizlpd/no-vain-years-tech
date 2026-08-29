@@ -37,8 +37,12 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
   const PREV_SESSION = '2026-08-03';
 
   const SYMBOL = 'us:PEP';
-  /** V = 150 ⇒ W = 120; spot 132.40 落 [W, V) = 卖put区。 */
-  const V = '150';
+  /**
+   * 067 起 V 取 170 ⇒ W = 136 > spot 132.40 ⇒ 成色轴 axis = min(spot, W) 退化为 spot ——
+   * 本文件的对象是流动性排除计数, 与换轴无关, 锚放**恒等域**让全部既有断言逐值照旧
+   * (重叠区腿 K=125 在 W=120 下会双维不过而失去 sole-failure 归因, 正是要避开的串台)。
+   */
+  const V = '170';
   const SPOT = '132.4000';
 
   /** DTE 10 —— 只进建仓段 `[1,49]`。 */

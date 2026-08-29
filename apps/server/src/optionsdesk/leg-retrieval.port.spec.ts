@@ -67,7 +67,8 @@ async function retrieve(
   candidateCap: number = RECALL_CANDIDATE_CAP,
   override: RetrievalOverride | null = null,
 ): Promise<LegRetrievalResult> {
-  const seed: FakeLegChain = { chain: chainMeta, legs };
+  // 067: W = 120 > spot = 110 ⇒ spot < W 域 (axis 退化为 spot), 本文件既有断言取值全数不变。
+  const seed: FakeLegChain = { chain: chainMeta, w: D('120'), legs };
   const port = new FakeLegRetrievalAdapter(new Map([[SYMBOL, seed]]));
   const result = await port.retrieveCandidates({
     symbol: SYMBOL,

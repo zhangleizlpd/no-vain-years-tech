@@ -43,7 +43,12 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
   const PREV_SESSION = '2026-08-03';
 
   const SYMBOL = 'us:PEP';
-  /** V = 150 ⇒ W = 120; spot 132.40 落 [W, V) = 卖put区。050 下锚轴已不参与成员判定。 */
+  /**
+   * V = 150 ⇒ W = 120; spot 132.40 落 [W, V) = 卖put区。050 下锚轴已不参与成员判定。
+   * 📌 067 起收租默认上界按 axis = min(spot, W) = 120 锚定 (结构项 min{K ≥ 120} = 120 与
+   * 120 × 1.03 取严 ⇒ 120) —— 本文件测 DTE / greeks 归属的腿一律放在 **K ≤ 120** 内,
+   * 免得上界替那些判据作答 (⑦ 断言 `view.w` 故 V 不挪恒等域)。
+   */
   const V = '150';
   const SPOT = '132.4000';
 
@@ -198,11 +203,11 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
       ask: '3.70',
       delta: '-0.52',
     });
-    // US1-AS2 DTE 38 落重叠区 ⇒ 建仓 + 收租**同时**进。
+    // US1-AS2 DTE 38 落重叠区 ⇒ 建仓 + 收租**同时**进。K = 118 ≤ 收租新默认上界 (067)。
     codes.overlap = await seedLeg(id, {
       root: 'PEP',
       expiry: OVERLAP_EXPIRY,
-      strike: '125',
+      strike: '118',
       bid: '2.00',
       ask: '2.10',
       delta: '-0.35',
@@ -211,7 +216,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
     codes.greeksMissing = await seedLeg(id, {
       root: 'PEP',
       expiry: OVERLAP_EXPIRY,
-      strike: '124',
+      strike: '117',
       bid: '1.80',
       ask: '1.90',
       delta: null,

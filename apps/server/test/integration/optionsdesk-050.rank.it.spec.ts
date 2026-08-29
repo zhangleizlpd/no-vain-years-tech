@@ -30,8 +30,12 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
 
   const SYMBOL = 'us:PEP';
   const SPOT = '132.4000';
-  /** V = 150 ⇒ W = 120; spot 132.40 落 [W, V) = 卖put区。意图与本片排序无关, 钉住免得漂。 */
-  const V = '150';
+  /**
+   * 067 起 V 取 170 ⇒ W = 136 > spot 132.40 ⇒ 成色轴 axis = min(spot, W) 退化为 spot ——
+   * 本文件的对象是精排口径, 与换轴无关, 锚放**恒等域**让全部既有断言逐值照旧
+   * (换轴自身的分支归 `leg-recall.rules.spec.ts` 067 组与 064 IT「067 换轴双域」组)。
+   */
+  const V = '170';
 
   const dateOf = (isoDay: string): Date => new Date(`${isoDay}T00:00:00Z`);
 

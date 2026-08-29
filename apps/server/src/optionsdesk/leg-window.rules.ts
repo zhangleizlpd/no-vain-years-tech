@@ -64,9 +64,10 @@ export const STRIKE_ENVELOPE_FLOOR_SPOT_RATIO = new Prisma.Decimal('0.7');
 /**
  * strike 上界比例 —— 同 {@link STRIKE_ENVELOPE_FLOOR_SPOT_RATIO}, **包络而非等价**。
  *
- * 收租侧的成色上界 (`resolveQualityCeiling`) 是「spot 之上最近一档行权价」与比例项取严, 建仓侧
- * 由有效成本硬门槛 `K − bid < spot` 挡住 —— 两者都在 spot 附近收口, 但都是**逐链 / 逐腿**才解得
- * 出的量。⇒ 这里取一个略高于 spot 的固定比例把它们整个罩住。
+ * 收租侧的成色上界 (`resolveQualityCeiling`) 是「axis 之上最近一档行权价」与比例项取严
+ * (067 起 `axis = min(spot, W)` ≤ spot ⇒ 仍在 spot 之下收口), 建仓侧由有效成本硬门槛
+ * `K − bid < spot` 挡住 —— 两者都是**逐链 / 逐腿**才解得出的量。⇒ 这里取一个略高于 spot 的
+ * 固定比例把它们整个罩住。
  */
 export const STRIKE_ENVELOPE_CEILING_SPOT_RATIO = new Prisma.Decimal('1.05');
 

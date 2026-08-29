@@ -11,6 +11,7 @@ import {
   type UnderlyingDetail,
   type UnderlyingIvReadout,
 } from './get-underlying-detail.usecase';
+import { computeW } from './anchor.rules';
 import { activityVolume, computeEffectiveCostVsWPct, computeLegRates } from './leg-derive.rules';
 import { RECALL_CANDIDATE_CAP } from './leg-recall.rules';
 import type { LegChainMeta, LegChainRow } from './leg-retrieval.port';
@@ -209,7 +210,8 @@ function useCaseOf(
   registered = true,
 ): GetChainReportUseCase {
   const chains = new Map<string, FakeLegChain>();
-  if (registered) chains.set(SYMBOL, { chain: CHAIN, legs });
+  // 067: W = computeW(V=150) = 120 > spot = 100 ⇒ spot < W 域, 本文件既有断言取值全数不变。
+  if (registered) chains.set(SYMBOL, { chain: CHAIN, w: computeW(V), legs });
   return new GetChainReportUseCase(detailStub(detailOver), new FakeLegRetrievalAdapter(chains));
 }
 
@@ -384,7 +386,7 @@ describe('get-chain-report.usecase — 列的召回段覆盖 (FR-009 / FR-009a, 
     const report = await new GetChainReportUseCase(
       detailStub(),
       new FakeLegRetrievalAdapter(
-        new Map<string, FakeLegChain>([[SYMBOL, { chain: CHAIN, legs }]]),
+        new Map<string, FakeLegChain>([[SYMBOL, { chain: CHAIN, w: computeW(V), legs }]]),
       ),
     ).execute(SYMBOL, NOW);
     expect(report.columns.every((c) => !c.isMonthlyChain)).toBe(true);

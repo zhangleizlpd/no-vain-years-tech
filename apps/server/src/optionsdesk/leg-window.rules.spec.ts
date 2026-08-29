@@ -35,7 +35,8 @@ function leg(over: Partial<RecallLegInput> = {}): RecallLegInput {
  * 是那一处的判决。测试里手搓一份「能过判据」的集合就等于把这条纪律在验收面上放掉。
  */
 function recalled(legs: readonly RecallLegInput[]): readonly RecallCandidate<RecallLegInput>[] {
-  return recallCandidates({ spot: SPOT }, ['all'], legs, RECALL_CANDIDATE_CAP).candidates;
+  // 067: 全腿视角不消费成色上界, w 只为 context 类型完备 —— 取 spot=W 等值域 (axis 不变)。
+  return recallCandidates({ spot: SPOT, w: SPOT }, ['all'], legs, RECALL_CANDIDATE_CAP).candidates;
 }
 
 /** 手搓判决 —— 只用于窗边界闭区间那条 (与判据无关, 不需要跑召回)。 */

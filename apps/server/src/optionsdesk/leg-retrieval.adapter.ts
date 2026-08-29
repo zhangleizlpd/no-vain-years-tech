@@ -14,7 +14,8 @@ import {
   TRADING_CALENDAR_PORT,
   type TradingCalendarPort,
 } from '../marketdata/trading-calendar.port';
-import { parseAnchorTicker } from './anchor.rules';
+import { computeW, parseAnchorTicker, type LLevel } from './anchor.rules';
+import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import { INTRADAY_FRESHNESS_SECONDS, isIntradayFresh } from './intraday-spot.rules';
 import {
   WINDOW_SUPPORTED_MARKETS,
@@ -221,7 +222,12 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     if (loaded === null) return null;
     const { chain, legs } = loaded.snapshot;
 
-    const context: RecallContext = { spot: chain.spot };
+    const w = await this.resolveW(query.symbol);
+    if (w === null) return null;
+
+    // 📌 实时档下 `chain.spot` 已是 overlay 后的**实时值** (loadChain 尾部覆盖) ⇒
+    // `axis = min(实时 spot, W)` 自动成立 (067 plan D3): 无第二处轴、无 realtime 分支。
+    const context: RecallContext = { spot: chain.spot, w };
     const outcome = recallCandidates(
       context,
       query.perspectives,
@@ -243,6 +249,45 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
           : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
               .length,
     };
+  }
+
+  /**
+   * 067 plan D2 —— 愿买价 W: 收租成色上界锚定轴 `axis = min(spot, W)` 的另一半输入。
+   *
+   * 🚨 **W 派生零第二份** (FR-002): 必经 `resolveEffectiveAnchorValues` (v_manual 优先语义
+   * 单点) + `computeW` (`W_COEFFICIENT` 单点), 🚫 MUST NOT 在这里手写 COALESCE 或自乘系数。
+   * 每次检索现查现算 (spec Edge Case 2: v_manual 改后下一次检索即生效, 无缓存滞留)。
+   *
+   * 🚨 **`anchor` 是本 ctx 自有表, 这次读是 intra-ctx** —— 🚫 MUST NOT 挂 `CROSS-CONTEXT-READ`
+   * (同 {@link resolveWindow} 头上那条: 假注释会让 `check-server-moat` 的注释审计链失真)。
+   * 📌 +1 次 ticker 唯一索引点查, 亚毫秒级, 不动 p95 预算; select 只取
+   * `resolveEffectiveAnchorValues` 所需五列。
+   *
+   * 锚行缺失 ⇒ `null` (调用方按「链未就绪」返, 与既有形态同, 🚫 不造新错误态): 两个读端在进
+   * port 之前已对未建锚标的 404 (`ANCHOR_NOT_FOUND_FOR_SYMBOL`), 本分支结构上够不到 ——
+   * fail-closed 而非猜一个轴 (spec Edge Case 3「W 恒可派生」的前提正是锚在)。
+   */
+  private async resolveW(symbol: string): Promise<Prisma.Decimal | null> {
+    const anchor = await this.prisma.anchor.findUnique({
+      where: { ticker: symbol },
+      select: {
+        v: true,
+        confidence: true,
+        vManual: true,
+        lLevelManual: true,
+        positionCapManual: true,
+      },
+    });
+    if (anchor === null) return null;
+    const effective = resolveEffectiveAnchorValues(
+      { v: anchor.v, confidence: anchor.confidence },
+      {
+        vManual: anchor.vManual,
+        lLevelManual: anchor.lLevelManual as LLevel | null,
+        positionCapManual: anchor.positionCapManual,
+      },
+    );
+    return computeW(effective.v);
   }
 
   /**
@@ -475,10 +520,13 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 📌 **本基线下的呈现面窄一圈, 且是窗的形状**: 窗是 `strike ∈ [0.7, 1.05] × spot` ∧
    * `DTE ∈ [两视角召回段的并集]`, 窗外的腿这一次**根本没被问过价** ⇒ 整条不呈现。影响只落在
    * **全腿视角** (它本就不设 DTE 段与行权价上界); 两个意图视角的召回段本就是窗的来源, 收不窄。
-   * 🚨 **收租的成色上界不受影响, 这点是算出来的不是指望的**: 上界 = `min{K ≥ spot}` 与
-   * `spot × (1 + 0.03)` 取严, 而窗的行权价上沿是 `spot × 1.05` ⇒ 比例项恒 ≤ 窗沿。网格密时
-   * 结构项落在窗内、原样保留; 网格疏到窗内无档时结构项在两个集合上分别是「窗外那一档」与
-   * `null`, 而两者与比例项取严后**同为比例项** ⇒ 逐点等价。
+   * 🚨 **收租的成色上界不受影响, 这点是算出来的不是指望的**: 上界 = `min{K ≥ axis}` 与
+   * `axis × (1 + 0.03)` 取严 (067 起 `axis = min(spot, W)` ≤ spot), 而窗的行权价上沿是
+   * `spot × 1.05` ⇒ 比例项恒 ≤ 窗沿。网格密时结构项落在窗内、原样保留; 网格疏到窗内无档时
+   * 结构项在两个集合上分别是「窗外那一档」与 `null`, 而两者与比例项取严后**同为比例项**
+   * ⇒ 逐点等价。📌 067 后多出一个数值角落: axis 深低于窗下沿 (W < 0.7 × spot) 时结构项可能落
+   * 在窗外更低处, 上界**数值**可差 < 3% —— 但那时两个值都低于窗内全部行权价, 收租**成员集**
+   * 仍逐点相同 (差只出现在下发的默认值上, 且该域正是「太贵 ⇒ 默认空」的空态域)。
    * 📌 **`windowTripwire` 在本基线下结构性失效**: 窗外的腿不进候选池, 绊线于是恒报零。可接受
    * —— 它守的是包络的**长期**漂移, 而本基线是**当天自愈**的过渡态 (当晚收盘轮写完基线, 次日
    * 即走库内那条路)。🚫 MUST NOT 因此把窗外的空行留在结果里充数。
