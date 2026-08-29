@@ -15,8 +15,10 @@ import { OptionSnapshotCoverageCheck } from './option-snapshot-coverage.check.js
  * ③ **大到期日次日不许假红** (SC-002 第 ③ 向): 上一交易日在、当日已到期的腿**不进分母**。
  *    只验「会响」证不了「不乱响」, 而每月假红一次的告警等于没有告警
  * ④ **分母为空 = 无对象 ≠ 0%** (零锚 / 首日 / 整批到期): 判成 0% 会让零锚场景天天红
- * ⑤ **`evaluate()` 不告警、`check()` 才告警**: 两级补救 (T022) 要在补救成功时**不**升 ERROR,
- *    合成一个方法就没法既判定又不响
+ * ⑤ **`evaluate()` 判定与 `alertIfDegraded()` 告警是分开的两步**: 两级补救 (T022) 要在补救
+ *    成功时**不**升 ERROR, 合成一个方法就没法既判定又不响。
+ *    🚫 #262: 曾有过一个 `check()` 把两者合起来 —— **生产零调用方、只有测试在调**, 已删。
+ *    本文件的用例因此显式写两行, 让「此刻绕过了补救」在测试代码里也看得见
  */
 
 /** `YYYY-MM-DD` → `@db.Date` 列的 UTC 零点 Date。 */
@@ -268,7 +270,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...pepMon, ...viciMon, ...carriedTo(pepMon, TUE)], 0.9);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded.map((u) => u.symbol)).toEqual(['us:VICI']);
@@ -286,7 +289,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...pepMon, ...survived]);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report.status).toBe('degraded');
       expect(report.degraded[0]).toMatchObject({ symbol: 'us:PEP', expected: 5, covered: 3 });
@@ -309,7 +313,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...expiring, ...surviving, ...carriedTo(surviving, TUE)]);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report.status).toBe('ok');
       expect(report).toMatchObject({ expected: 40, covered: 40 });
@@ -324,7 +329,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([...expiringToday]); // 06-16 一条都没采到
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({ status: 'degraded', expected: 12, covered: 0 });
       expect(err).toHaveBeenCalled();
@@ -337,7 +343,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck([]);
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({ status: 'no_subject', baselineDate: null, expected: 0 });
       expect(err).not.toHaveBeenCalled();
@@ -348,7 +355,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(chain(PEP, MON, MON, 30));
       const err = spyError();
 
-      const report = await check.check('us', TUE);
+      const report = await check.evaluate('us', TUE);
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({ status: 'no_subject', baselineDate: MON, expected: 0 });
       expect(err).not.toHaveBeenCalled();
@@ -361,7 +369,8 @@ describe('OptionSnapshotCoverageCheck', () => {
       const check = makeCheck(pepMon); // 06-16 与 06-17 都没采
       const err = spyError();
 
-      const report = await check.check('us', '2026-06-17');
+      const report = await check.evaluate('us', '2026-06-17');
+      check.alertIfDegraded(report);
 
       expect(report).toMatchObject({
         status: 'degraded',
@@ -388,7 +397,7 @@ describe('OptionSnapshotCoverageCheck', () => {
     });
   });
 
-  describe('🚨 evaluate() 纯判定 / check() 才告警 (两级补救要用得上)', () => {
+  describe('🚨 evaluate() 纯判定 / alertIfDegraded() 才告警 (两级补救要用得上)', () => {
     it('evaluate() 判 degraded 但**不**落 ERROR log', async () => {
       const pepMon = chain(PEP, MON, '2026-07-17', 4);
       const check = makeCheck(pepMon);
