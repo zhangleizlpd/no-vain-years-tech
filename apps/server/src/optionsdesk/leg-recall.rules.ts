@@ -196,6 +196,17 @@ export interface RecallLegInput {
 export interface RecallContext {
   /** vendor 随链下发的标的价, **未复权** (沿 047 纪律)。有效成本判据的右操作数。 */
   spot: Prisma.Decimal;
+  /**
+   * 愿买价 W (067, ADR-0068 P1) —— 收租成色上界锚定轴 `axis = min(spot, w)` 的另一半输入
+   * ({@link resolveQualityCeiling})。
+   *
+   * 🚨 **必填不可选** (067 plan D1): 可选 + 缺省回退 spot = 静默旧轴 —— 测试全绿而 prod 错轴,
+   * fail-closed 纪律禁的正是这个形态。派生**单点**在 `anchor-cascade.ts`
+   * (`resolveEffectiveAnchorValues`, v_manual 优先语义) + `anchor.rules.ts` (`computeW`,
+   * `W_COEFFICIENT` 唯一落点); 本层只消费, 🚫 各构造点 MUST NOT 手写 `vManual ?? v` 或自乘
+   * 该系数 (FR-002: W 派生零第二份)。
+   */
+  w: Prisma.Decimal;
 }
 
 /**
@@ -332,10 +343,19 @@ export function passesLivenessMin(
 }
 
 /**
- * 收租**成色上界** (052 FR-005): 「spot 之上最近一档行权价」与 `spot × (1+X)` **取严**。`O(n)`。
+ * 收租**成色上界** (052 FR-005, 067 起换轴): 「axis 之上最近一档行权价」与 `axis × (1+X)`
+ * **取严**, 其中 **`axis = min(spot, W)`** (067 FR-001, ADR-0068 P1)。`O(n)`。
+ *
+ * 换轴的经济语义: 成色回答的是「离**计划买价**多远」而非「离现价多远」—— 接货意愿由愿买价 W
+ * (`W_COEFFICIENT` × 有效 V) 定义, spot 显著高于 W 时按 spot 锚定会把「按高于愿买价接货」的
+ * 腿放进默认候选。spot ≤ W 时 axis 退化为 spot, 与换轴前逐值相同 (state_branch 1/2)。
+ *
+ * 🚨 **axis 的 `min` 全仓恰好出现在本函数这一处** (067 SC-003 机器判据): 调用前算好传入会让
+ * `min` 散在各构造点, 单点性靠纪律不靠结构 (plan D1 备选否决 ①)。形状与取严逻辑不变, 仅换轴
+ * (FR-001 末句)。
  *
  * 两项都要, 缺一不可:
- * · 结构项 `min{K ≥ spot}` 是成色的定义 —— 收租卖的是租金, 不是折价接货, 至多轻微实值一档。
+ * · 结构项 `min{K ≥ axis}` 是成色的定义 —— 收租卖的是租金, 不是折价接货, 至多轻微实值一档。
  * · 比例项是**稀疏网格的兜底** —— 实测 `us:KBR` spot `37.56` 的最近一档是 `40` (`+6.50%`),
  *   网格再疏 (如 `37.5 → 45`) 结构项就形同虚设, 单靠它挡不住。
  *
@@ -347,17 +367,20 @@ export function passesLivenessMin(
  * 算会让远月上界松到 `+3.5% ~ +6.6%` (`us:PSKY` 15 个到期日里 9 个如此)。取链级还因为 T016 的
  * X 标定分布就是按链取的 —— 两处口径 MUST 同一, 否则标出来的数配不上实装的判据。
  *
- * 链上无 `K ≥ spot` 的档 (spot 高于全部行权价) ⇒ 结构项无定义 ⇒ **退化为仅比例项** (spec Edge
- * Case)。🚫 MUST NOT 在此返 `null` 让调用方"没上界就全放行": 那会让最该被挡的深度实值全进来。
+ * 链上无 `K ≥ axis` 的档 (axis 高于全部行权价) ⇒ 结构项无定义 ⇒ **退化为仅比例项** (spec Edge
+ * Case, 067 轴替换后语义保留)。🚫 MUST NOT 在此返 `null` 让调用方"没上界就全放行": 那会让最该
+ * 被挡的深度实值全进来。
  */
 export function resolveQualityCeiling(
   spot: Prisma.Decimal,
+  w: Prisma.Decimal,
   legs: readonly RecallLegInput[],
 ): Prisma.Decimal {
-  const ratioCeiling = spot.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
+  const axis = Prisma.Decimal.min(spot, w);
+  const ratioCeiling = axis.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
   let structural: Prisma.Decimal | null = null;
   for (const leg of legs) {
-    if (leg.strike.lessThan(spot)) continue;
+    if (leg.strike.lessThan(axis)) continue;
     if (structural === null || leg.strike.lessThan(structural)) structural = leg.strike;
   }
   if (structural === null) return ratioCeiling;
@@ -643,7 +666,8 @@ export function recallCandidates<T extends RecallLegInput>(
   // 报价无关。放到循环里或放到门槛之后都会让上界随报价漂移 —— 而漂移后候选集照样出得来。
   const chain: RecallChainContext = {
     spot: context.spot,
-    qualityCeiling: resolveQualityCeiling(context.spot, legs),
+    w: context.w,
+    qualityCeiling: resolveQualityCeiling(context.spot, context.w, legs),
   };
 
   // 三视角的系统默认值 + 本次生效值 (052 T010)。覆盖**只落在一个视角**上, 其余恒走默认值。

@@ -32,8 +32,13 @@ import { LEG_TABS, type LegTab } from './leg-tab.rules';
 
 const D = (v: string) => new Prisma.Decimal(v);
 
-/** spot = 110 ⇒ 权利金门槛 = max(绝对下限, 110 × 比例)，两侧取值都由常量派生，不手抄。 */
-const context: RecallContext = { spot: D('110') };
+/**
+ * spot = 110 ⇒ 权利金门槛 = max(绝对下限, 110 × 比例)，两侧取值都由常量派生，不手抄。
+ *
+ * 📌 067 起 context 必带愿买价 `w`。基线取 **spot < W 域** (W=120 > spot ⇒ axis 退化为 spot,
+ * state_branch 1)：既有各组断言的取值全数不变 —— 换轴自身的分支在「067 换轴」那组里逐条验。
+ */
+const context: RecallContext = { spot: D('110'), w: D('120') };
 
 /**
  * 期限段 / 有效成本 / 流动性三组断言用的链级上下文 —— **成色上界取足够高使其不参与判定**。
@@ -41,7 +46,7 @@ const context: RecallContext = { spot: D('110') };
  * 🚨 蓄意不用真实上界：那样一条断言变红时分不清是哪道判据挂的，而成色自己的边界在下面
  * 「成色条件」那组里逐条验（含闭区间端点），不靠这里兼职。
  */
-const chain: RecallChainContext = { spot: context.spot, qualityCeiling: D('9999') };
+const chain: RecallChainContext = { ...context, qualityCeiling: D('9999') };
 
 /**
  * 成员判定的**唯一**入口（052 T010）：硬门槛 + 六维检索条件，逐视角判。
@@ -238,23 +243,27 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
   const strikes = (values: string[]) => values.map((v) => leg({ strike: D(v) }));
 
   it('结构项占优: 密网格下上界 = spot 之上最近一档 (110), 比例项 (113.3) 更松故不接管', () => {
-    const ceiling = resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120']));
+    const ceiling = resolveQualityCeiling(
+      context.spot,
+      context.w,
+      strikes(['100', '105', '110', '120']),
+    );
     expect(ceiling.equals(D('110'))).toBe(true);
     expect(ceiling.lessThan(ratioCeiling)).toBe(true);
   });
 
   it('稀疏网格下由比例项接管 —— 最近一档 130 太远, 上界收到 spot × (1+X)', () => {
-    const ceiling = resolveQualityCeiling(context.spot, strikes(['90', '100', '130']));
+    const ceiling = resolveQualityCeiling(context.spot, context.w, strikes(['90', '100', '130']));
     expect(ceiling.equals(ratioCeiling)).toBe(true);
   });
 
   it('链上无 ≥ spot 的档 ⇒ 结构项无定义 ⇒ 退化为仅比例项 (🚫 不是"没上界故全放行")', () => {
-    const ceiling = resolveQualityCeiling(context.spot, strikes(['90', '100', '105']));
+    const ceiling = resolveQualityCeiling(context.spot, context.w, strikes(['90', '100', '105']));
     expect(ceiling.equals(ratioCeiling)).toBe(true);
   });
 
   it('恰等于 spot 的档就是「spot 之上最近一档」—— 闭区间在上界这一侧也含端点', () => {
-    const ceiling = resolveQualityCeiling(context.spot, strikes(['105', '110']));
+    const ceiling = resolveQualityCeiling(context.spot, context.w, strikes(['105', '110']));
     expect(ceiling.equals(context.spot)).toBe(true);
     expect(passesQualityCeiling(ceiling, ceiling)).toBe(true);
     expect(passesQualityCeiling(ceiling.plus('0.01'), ceiling)).toBe(false);
@@ -262,8 +271,12 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
 
   it('高于上界不进收租, 恰等于上界进收租', () => {
     const gridded: RecallChainContext = {
-      spot: context.spot,
-      qualityCeiling: resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120'])),
+      ...context,
+      qualityCeiling: resolveQualityCeiling(
+        context.spot,
+        context.w,
+        strikes(['100', '105', '110', '120']),
+      ),
     };
     expect(tabsOf(gridded, leg({ dteDays: 35, strike: D('110') }))).toContain('rent');
     expect(tabsOf(gridded, leg({ dteDays: 35, strike: D('112') }))).not.toContain('rent');
@@ -271,8 +284,12 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
 
   it('🚨 同一条腿高于成色上界仍进建仓、仍在全腿 (052 FR-006 / FR-007: 只收租设成色)', () => {
     const gridded: RecallChainContext = {
-      spot: context.spot,
-      qualityCeiling: resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120'])),
+      ...context,
+      qualityCeiling: resolveQualityCeiling(
+        context.spot,
+        context.w,
+        strikes(['100', '105', '110', '120']),
+      ),
     };
     // K=115 高于上界 110；有效成本 115 − 6 = 109 **<** spot ⇒ 建仓判据照过。
     const overCeiling = leg({ dteDays: 35, strike: D('115'), bid: D('6'), ask: D('6.2') });
@@ -281,8 +298,12 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
 
   it('🚫 被成色挡下的腿 MUST NOT 计进流动性排除数 —— 它本来就进不了收租', () => {
     const gridded: RecallChainContext = {
-      spot: context.spot,
-      qualityCeiling: resolveQualityCeiling(context.spot, strikes(['100', '105', '110', '120'])),
+      ...context,
+      qualityCeiling: resolveQualityCeiling(
+        context.spot,
+        context.w,
+        strikes(['100', '105', '110', '120']),
+      ),
     };
     // DTE=164 只够收租段；价差宽到出局；但 K=120 已被成色挡在收租之外。
     const wideAndRich = leg({ dteDays: 164, strike: D('120'), bid: D('2'), ask: D('20') });
@@ -304,6 +325,112 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
     expect(outcome.removedByPremiumFloor).toBe(1);
     expect(outcome.candidates.map((c) => c.leg.code)).toEqual(['B']);
     expect(outcome.candidates[0]?.tabs).not.toContain('rent');
+  });
+});
+
+describe('leg-recall.rules — 067 换轴: axis = min(spot, W) (FR-001 / FR-003 / FR-004)', () => {
+  /**
+   * 067 (ADR-0068 P1): 收租成色上界的锚定轴从纯 spot 换为 `axis = min(spot, W)` —— 接货意愿由
+   * 愿买价 W 定义, 不由现价定义。spot ≤ W 时 axis 退化为 spot, 与换轴前逐值相同 (US3 回归网)。
+   */
+  const spot = context.spot;
+  /** 比例项按 axis 锚定 —— 由常量派生不手抄 (体例同上面「成色条件」那组)。 */
+  const ratioOf = (axis: Prisma.Decimal) => axis.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
+  const strikes = (values: string[]) => values.map((v) => leg({ strike: D(v) }));
+
+  it('① spot < W ⇒ axis 退化为 spot, 上界与换轴前逐值相同 (state_branch 1)', () => {
+    // 密网格: 结构项 min{K ≥ 110} = 110 占优 —— 与旧轴 (052 基线) 逐值同。
+    const dense = resolveQualityCeiling(spot, D('120'), strikes(['100', '105', '110', '120']));
+    expect(dense.equals(D('110'))).toBe(true);
+    // 稀疏网格: 比例项 spot × (1+X) 接管 —— 同样与旧轴逐值同。
+    const sparse = resolveQualityCeiling(spot, D('120'), strikes(['90', '100', '130']));
+    expect(sparse.equals(ratioOf(spot))).toBe(true);
+  });
+
+  it('② spot = W ⇒ min 两支取等值, 上界与换轴前相同 (边界不分叉, state_branch 2)', () => {
+    const ceiling = resolveQualityCeiling(spot, spot, strikes(['100', '105', '110', '120']));
+    expect(ceiling.equals(D('110'))).toBe(true);
+  });
+
+  it('③ spot > W ⇒ 结构项 = min{K ≥ W} 与比例项 W × (1+X) 取严 (state_branch 3)', () => {
+    // W = 80: 结构项 min{K ≥ 80} = 82, 比例项 82.4 更松 ⇒ 82 —— 🚫 不再是 spot 轴的 110。
+    const structural = resolveQualityCeiling(spot, D('80'), strikes(['75', '82', '90', '110']));
+    expect(structural.equals(D('82'))).toBe(true);
+    // 稀疏网格: 最近一档 90 高于 W × 1.03 ⇒ 比例项接管。
+    const sparse = resolveQualityCeiling(spot, D('80'), strikes(['75', '90', '110']));
+    expect(sparse.equals(ratioOf(D('80')))).toBe(true);
+  });
+
+  it('④ axis 高于全部行权价 ⇒ 结构项无定义, 退化为仅比例项 axis × (1+X) (state_branch 9)', () => {
+    const ceiling = resolveQualityCeiling(spot, D('80'), strikes(['60', '70', '75']));
+    // axis 版的既有 Edge Case: 兜底取 W × 1.03, 🚫 不是 spot × 1.03, 更不是"没上界全放行"。
+    expect(ceiling.equals(ratioOf(D('80')))).toBe(true);
+    expect(ceiling.lessThan(ratioOf(spot))).toBe(true);
+  });
+
+  it('⑤ FR-003 结构锚点: 同批腿下 W 取两极值, build 与全腿候选逐值相同 (state_branch 5/6)', () => {
+    // 四条腿盖住三个归属面: 重叠区两条 / 只建仓段一条 / 只收租段一条。
+    const batch = [
+      { ...leg({ strike: D('90') }), code: 'K90' },
+      { ...leg({ strike: D('105') }), code: 'K105' },
+      { ...leg({ dteDays: 10, strike: D('95') }), code: 'BUILD-ONLY' },
+      { ...leg({ dteDays: 200, strike: D('100') }), code: 'RENT-ONLY' },
+    ];
+    const run = (w: Prisma.Decimal) =>
+      recallCandidates({ spot, w }, LEG_TABS, batch, RECALL_CANDIDATE_CAP);
+    const members = (outcome: ReturnType<typeof run>, tab: LegTab) =>
+      outcome.candidates.filter((c) => c.tabs.includes(tab)).map((c) => c.leg.code);
+    // 两极值蓄意荒谬 (spot × 10 / spot × 0.1): 只要 build/全腿对 W 有一丝依赖, 这里就会翻。
+    const hi = run(spot.times(10));
+    const lo = run(spot.times('0.1'));
+    expect(members(hi, 'build')).toEqual(members(lo, 'build'));
+    expect(members(hi, 'all')).toEqual(members(lo, 'all'));
+    expect(hi.criteriaByTab.build).toEqual(lo.criteriaByTab.build);
+    expect(hi.criteriaByTab.all).toEqual(lo.criteriaByTab.all);
+    // 🚨 判别性反面: 同一对极值在**收租**视角必须拉开 —— 否则上面四条只是「W 根本没接线」的
+    // 平凡绿 (对旧实现, 本条红)。W = 11 时上界收到 11.33, 收租清空; W = 1100 时 axis = spot。
+    expect(members(hi, 'rent')).not.toEqual(members(lo, 'rent'));
+  });
+
+  it('⑥ 覆盖 strikeMax 原样生效, 三态相对**新**默认判定 (state_branch 7 / FR-004)', () => {
+    const w = D('80');
+    // 网格同时含新旧两轴的结构档: 新默认 = min{K ≥ 80} = 82 与 82.4 取严 ⇒ 82; 旧轴默认本应 110。
+    const batch = [
+      { ...leg({ strike: D('82') }), code: 'K82' },
+      { ...leg({ strike: D('90') }), code: 'K90' },
+      { ...leg({ strike: D('100') }), code: 'K100' },
+      { ...leg({ strike: D('105') }), code: 'K105' },
+      { ...leg({ strike: D('110') }), code: 'K110' },
+    ];
+    const run = (override: RetrievalOverride | null = null) =>
+      recallCandidates({ spot, w }, LEG_TABS, batch, RECALL_CANDIDATE_CAP, override);
+    const rentOf = (outcome: ReturnType<typeof run>) =>
+      outcome.candidates.filter((c) => c.tabs.includes('rent')).map((c) => c.leg.code);
+
+    // 未覆盖 ⇒ default, 且控件里摆的默认值已按新轴 (W 锚定) —— 「覆盖恰等于新默认 ⇒ default」
+    // 的既有边界语义由契约落地: 客户端只回传改过的维 (`criteriaQueryParams` 不回传默认值),
+    // 等值即缺键, 缺键 = 未覆盖 ⇒ 本断言就是它在判据层的形态。
+    const plain = run();
+    expect(plain.criteriaByTab.rent.defaults.strikeMax?.equals(D('82'))).toBe(true);
+    expect(plain.criteriaByTab.rent.outcomes.strikeMax.state).toBe('default');
+    expect(rentOf(plain)).toEqual(['K82']);
+
+    // 覆盖值原样生效 (不经 axis 处理), 放宽能力不受换轴影响; 三态相对新默认 82 是放宽 ——
+    // 对旧实现 (默认 110) 同一覆盖是收窄, 本断言红。
+    const widened = run({ perspective: 'rent', criteria: { strikeMax: D('100') } });
+    expect(widened.criteriaByTab.rent.effective.strikeMax?.equals(D('100'))).toBe(true);
+    expect(rentOf(widened)).toEqual(['K82', 'K90', 'K100']);
+    expect(widened.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+      state: 'widened',
+      excludedCount: 0,
+    });
+
+    // 相对新默认收窄 ⇒ narrowed, 边际计数按新默认口径 (只有 K82 在默认下放行且被 81 挡下)。
+    const narrowed = run({ perspective: 'rent', criteria: { strikeMax: D('81') } });
+    expect(narrowed.criteriaByTab.rent.outcomes.strikeMax).toEqual({
+      state: 'narrowed',
+      excludedCount: 1,
+    });
   });
 });
 
@@ -463,7 +590,7 @@ describe('leg-recall.rules — Δ 已降级为标 (FR-009)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('leg-recall.rules — 每视角的系统默认值 (052 FR-011, T010 六维度表)', () => {
-  const gridded: RecallChainContext = { spot: context.spot, qualityCeiling: D('114.4') };
+  const gridded: RecallChainContext = { ...context, qualityCeiling: D('114.4') };
   const defaults = defaultCriteriaByTab(gridded);
 
   it('🚨 行权价上界只收租设 —— 全腿是参照视角 (FR-006), 建仓由有效成本硬门槛等价挡住 (FR-007)', () => {
@@ -493,8 +620,10 @@ describe('leg-recall.rules — 每视角的系统默认值 (052 FR-011, T010 六
   });
 
   it('🚨 权利金下限随 spot 变 —— 这正是「客户端 MUST NOT 自算默认值」的理由 (FR-011)', () => {
+    const richSpot = PREMIUM_FLOOR.absolute.div(PREMIUM_FLOOR.spotRatio).times(2);
     const rich = defaultCriteriaByTab({
-      spot: PREMIUM_FLOOR.absolute.div(PREMIUM_FLOOR.spotRatio).times(2),
+      spot: richSpot,
+      w: richSpot,
       qualityCeiling: D('9999'),
     });
     expect(rich.all.premiumMin?.greaterThan(defaults.all.premiumMin!)).toBe(true);
