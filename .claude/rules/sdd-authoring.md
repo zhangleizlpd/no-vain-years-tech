@@ -6,6 +6,8 @@ paths:
 # SDD 产出物撰写细则（path-triggered，触及 `specs/**` 自动加载）
 
 > canonical 内容自 `docs/conventions/sdd.md` 移驻（always-load 瘦身，2026-08-03）：mockup-first 前端流程 + design/ 留迹 + 反模式清单只在写 spec / plan / tasks / design 时相关，path-trigger 按需装载。SDD 标准流程 / frontmatter / review gate 仍在 sdd.md（always-load）。
+>
+> ⚠️ **本 rule 的 path-trigger 在「新 feature 首次 Write spec/plan」时不触发**（Write 新文件不装载 path rule）——那个时刻的提醒由 `scripts/hooks/pretooluse-convention-rubric.sh` 的「SDD 产物闸」注入（2026-08-29 067 实撞后补，机制同 docs 命名闸）。
 
 ## 前端 UI 工作流（统一 mockup-first）
 
