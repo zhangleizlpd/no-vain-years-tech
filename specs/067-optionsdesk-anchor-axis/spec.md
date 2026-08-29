@@ -2,7 +2,7 @@
 feature_id: 067-optionsdesk-anchor-axis
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: planned
+status: tasks-ready
 created_at: '2026-08-29'
 updated_at: '2026-08-29'
 spec_kit_version: '>=0.8.5,<0.10.0'
@@ -30,7 +30,7 @@ state_branches:
 
 **Feature Branch**: `067-optionsdesk-anchor-axis`
 **Created**: 2026-08-29
-**Status**: Draft
+**Status**: Tasks-ready（2026-08-29；clarify 0 问——歧义已在当日设计对焦与 ADR-0068 清零；analyze 3 条发现已闭合）
 **里程碑**: [ADR-0068](../../docs/adr/0068-realtime-narrow-recall-two-stage.md) 实施序列的 **P1 片**（纯 server；P2 两段式召回与 P3 清链行军的共同前置）
 
 ## 背景
