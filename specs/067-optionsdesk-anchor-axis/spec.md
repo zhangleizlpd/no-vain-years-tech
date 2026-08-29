@@ -2,7 +2,7 @@
 feature_id: 067-optionsdesk-anchor-axis
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: tasks-ready
+status: implemented
 created_at: '2026-08-29'
 updated_at: '2026-08-29'
 spec_kit_version: '>=0.8.5,<0.10.0'
@@ -17,7 +17,7 @@ agent_friction_observed: false
 state_branches:
   - 'spot < W（axis = spot）∧ 收租视角 → 成色上界与换轴前逐值相同, 候选零变化'
   - 'spot = W → axis 两支取等值, 上界与换轴前相同（边界不分叉, min 无需分支）'
-  - 'spot > W（axis = W）∧ 收租视角 → 系统默认上界收紧（结构项与比例项均按 W 锚定取严）, 被收紧挡下的腿计入既有边际计数'
+  - 'spot > W（axis = W）∧ 收租视角 → 系统默认上界收紧（结构项与比例项均按 W 锚定取严）, 被收紧挡下的腿走既有边际计数机制（默认值下不显示计数, per 052 FR-029）'
   - 'spot > 1.143V ∧ 收租视角 ∧ 未覆盖 strikeMax → 默认候选可为空, 呈现沿用既有空态与计数, MUST NOT 呈现为错误'
   - 'build 视角 → 零变化（默认恒不设 strikeMax, 成色上界结构上不被消费）'
   - '全腿视角 → 零变化（同上, 默认不设 strikeMax）'
@@ -30,7 +30,7 @@ state_branches:
 
 **Feature Branch**: `067-optionsdesk-anchor-axis`
 **Created**: 2026-08-29
-**Status**: Tasks-ready（2026-08-29；clarify 0 问——歧义已在当日设计对焦与 ADR-0068 清零；analyze 3 条发现已闭合）
+**Status**: Implemented（2026-08-29；clarify 0 问——歧义已在当日设计对焦与 ADR-0068 清零；analyze 3 条发现已闭合；标定实测见文末）
 **里程碑**: [ADR-0068](../../docs/adr/0068-realtime-narrow-recall-two-stage.md) 实施序列的 **P1 片**（纯 server；P2 两段式召回与 P3 清链行军的共同前置）
 
 ## 背景
@@ -47,11 +47,11 @@ ADR-0068 决策已定：锚定轴换为 **axis = min(spot, W)**，且离线档�
 
 **Why this priority**: 这是换轴的全部理由——成色的经济语义从「离现价多远」修正为「离计划买价多远」。它同时是 P2/P3 复用的判据基础，先于一切实时改造。
 
-**Independent Test**: 取一只 spot > W 的锚，收租视角默认请求：断言下发的默认 strikeMax 按 W 锚定（结构项「W 之上最近一档」与 W × 1.03 取严），且高于该上界的腿不在候选、计入边际计数。
+**Independent Test**: 取一只 spot > W 的锚，收租视角默认请求：断言下发的默认 strikeMax 按 W 锚定（结构项「W 之上最近一档」与 W × 1.03 取严），且高于该上界的腿不在候选（边际计数走既有机制, 默认值下不显示——052 FR-029）。
 
 **Acceptance Scenarios**:
 
-1. **Given** 锚的 spot > W 且链上有行权价落在 (W×1.03, spot×1.03] 区间，**When** 收租视角以系统默认值检索，**Then** 该区间的腿不在候选集内，且被收紧挡下的条数计入既有 strikeMax 边际计数
+1. **Given** 锚的 spot > W 且链上有行权价落在 (W×1.03, spot×1.03] 区间，**When** 收租视角以系统默认值检索，**Then** 该区间的腿不在候选集内，且被收紧挡下的腿走既有 strikeMax 边际计数机制（默认值下不显示计数, per 052 FR-029）
 2. **Given** 锚的 spot < W，**When** 收租视角以系统默认值检索，**Then** 候选集与换轴前逐值相同（axis 退化为 spot）
 3. **Given** 锚的 spot = W，**When** 收租视角检索，**Then** 上界与换轴前相同（等值不分叉）
 4. **Given** 用户在抽屉里覆盖了 strikeMax，**When** 检索，**Then** 覆盖值原样生效，三态相对新默认值判定
@@ -64,7 +64,7 @@ ADR-0068 决策已定：锚定轴换为 **axis = min(spot, W)**，且离线档�
 
 **Why this priority**: 空态是换轴的诚实后果（dev 实测约三成锚落在此区），必须显式接受并钉住呈现语义，否则会被当回归修掉。
 
-**Independent Test**: 取一只 spot > 1.143V 的锚，收租默认请求：断言候选为空、响应为既有「有链无候选」形态（非错误态）、边际计数如实说明被挡原因。
+**Independent Test**: 取一只 spot > 1.143V 的锚，收租默认请求：断言候选为空、响应为既有「有链无候选」形态（非错误态）、边际计数语义与既有一致（默认值下不显示）。
 
 **Acceptance Scenarios**:
 
@@ -121,6 +121,37 @@ build 与全腿视角、以及实时档 overlay 路径，在换轴后行为与�
 - **SC-002**: build 与全腿视角在同一对比中响应逐值不变（零回归的机器判据）。
 - **SC-003**: 全仓恰好一处 axis 定义与一处 W 派生（`rg` 可数：0.8 系数仍仅existing单点一处；min(spot, W) 仅判据单点一处）。
 - **SC-004**: 收租空态锚（spot > 1.143V）的响应为既有空态结构，错误率零新增。
+
+## 标定实测（T004，2026-08-29）
+
+**数据面**：dev 库真实链，`2026-08-28` 那一期，**109 只 us 锚全部就绪** / 43751 条适格认沽腿。腿集合与 prod **完全同源** —— 脚本直接实例化 `PrismaLegRetrievalAdapter` 调 `retrieveChain`（纯收盘档，光学 port 全空），零分析端复现；旧轴以 `w = 10^15` 模拟（axis 退化为 spot，与换轴前实现逐值等价 —— 正是 FR-003 的结构性依据）。污染哨兵：109 票 108 个不同 spot，唯一碰撞是 `BILI`/`PCG` 真同价 `16.60`（052 那次 mock 签名是 12 票共用一个 spot，此处不是）。脚本进 scratchpad 不入仓（一次性取证）。
+
+### 域分布与对账（SC-001 / SC-002）
+
+| 口径 | 旧轴  | 新轴      | Δ         |
+| ---- | ----- | --------- | --------- |
+| 全腿 | 18453 | **18453** | 0         |
+| 建仓 | 2762  | **2762**  | 0         |
+| 收租 | 2927  | **852**   | **−2075** |
+
+- 域分布：spot<W **17** / spot=W **0** / spot>W **92**（84% 的锚落在换轴域）。
+- **SC-001**：spot<W 的 17 只锚收租候选**逐值不变**（合约码集合逐锚比对）且上界等值 —— PASS；spot>W 的 92 只锚逐锚断言 `qcNew ≤ W×1.03` 零违规，收紧挡下合计 **2075** 条。
+- **SC-002**：build 与全腿在全部 109 只锚上候选集**逐值不变** —— PASS。
+
+### 与 ADR-0068 证据面对照
+
+- spot > 1.143V：**28/109 只（26%）**—— 与「约三成」吻合。
+- 其中默认候选为 0：**22/28**。**6 只例外**（`AVGO`/`CRCL`/`GOOGL`/`NFLX`/`ORCL`/`SMCI`，收紧后仍剩 1–19 条）——全部是高 IV 票：深度价外腿的实际 bid 仍站上权利金门槛。与 Assumptions「1.143V 是推导常数，用于预期管理非实装参数」一致 —— 它推导自门槛**可行域下沿**（比例地板），答不了「实际权利金有多厚」。空态语义（FR-005）不受影响：呈现为既有「条件下无候选」形态由 IT 臂②钉住。
+
+### SC-003 单点判据（机器输出留档）
+
+- `rg -n "0\.8" apps/server/src/optionsdesk/ --glob '!*.spec.ts'` → 仅 `anchor.rules.ts` 一个文件命中（`W_COEFFICIENT` 定义及其注释）。
+- `rg -n "Decimal\.min" apps/server/src/` → 仅 `leg-recall.rules.ts:379`（`resolveQualityCeiling` 内 axis 定义）一处。
+- 📌 附带观察（pre-existing，不属本片）：`get-radar.usecase.ts:297` 的 SQL 内有一份 `COALESCE(v_manual, v) × W_COEFFICIENT`（060 radar 期既有）—— 用常量非字面量，rg 判据不违规，但 v_manual 优先语义在 SQL 侧有一份既有复制，收敛归后续片。
+
+### 措辞对齐留痕（2026-08-29 user 裁决）
+
+US1-AS1 / US1·US2 Independent Test / state_branch 3 原文「计入既有边际计数」与 052 FR-029（默认值下 MUST NOT 显示排除计数）+ 本 spec FR-005（保留既有边际计数语义）冲突。裁决：**保持既有语义** —— 默认值收窄挡下的腿走既有计数机制，`state:'default'` 下计数不呈现（IT 断言 `excludedCount:0` 且不污染两个既有门槛计数）；上述措辞已就地对齐。
 
 ## Assumptions
 
