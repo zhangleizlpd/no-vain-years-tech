@@ -6,6 +6,7 @@
  * OpenAPI spec version: 1.0
  */
 import type { LegGateCountsResponse } from './legGateCountsResponse';
+import type { LegMarchStrikeResponse } from './legMarchStrikeResponse';
 import type { LegResponse } from './legResponse';
 import type { LegTableResponseAsOfFreshnessTier } from './legTableResponseAsOfFreshnessTier';
 import type { LegTableResponseBasis } from './legTableResponseBasis';
@@ -76,4 +77,6 @@ export interface LegTableResponse {
   displayLimit: number | null;
   /** 触及召回层候选上限 K 时被切掉多少条 (052 FR-028); 未触及恒 0。🚨 **它是保险丝熔断不是判据挡下** ⇒ 蓄意不进 gateCounts, 呈现侧 MUST 与截断计数**不同款** (053 FR-019c): 前者该调容量、后者该调展示。非零时 matchedCount 可能不完整, 提示 MUST 说明这一点 */
   candidateCapDropped: number;
+  /** 069 每 K 行军判决与逐档审计, 按行权价升序 (FR-009 / FR-014)。🚨 **仅「实时开态 ∧ 收租视角」有值, 其余恒 null** (FR-017 / FR-019): 离线档 (含实时整体回落收盘档) / 建仓 / 全腿视角没有这个概念 —— null 不是「算了但为空」。🚨 判决是行上叠加标注 (FR-018): legs 的行序与内容不因它变, 客户端 MUST NOT 按判决重排 */
+  march: LegMarchStrikeResponse[] | null;
 }

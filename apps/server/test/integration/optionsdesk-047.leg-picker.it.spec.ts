@@ -83,6 +83,7 @@ describe('047 T029 选约表读端 (Testcontainers PG, 真过滤谓词)', () => 
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       new DbTradingCalendarAdapter(prisma),
+      { marchPhiTier: 'good', marchMode: 'phi' },
     );
   }, 180_000);
 

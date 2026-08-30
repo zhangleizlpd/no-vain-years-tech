@@ -53,6 +53,7 @@ import { coarseRank } from './leg-coarse.rules';
 import {
   RECALL_CANDIDATE_CAP,
   RETRIEVAL_CRITERION_KEYS,
+  crossedRemovalsWithinCriteria,
   relativeSpread,
   type CriterionOutcome,
   type PerspectiveCriteria,
@@ -63,10 +64,24 @@ import {
 import {
   LEG_RETRIEVAL_PORT,
   type LegCandidate,
+  type LegChainRow,
   type LegRetrievalPort,
   type LegRetrievalResult,
   type RealtimeChainDegradeKind,
 } from './leg-retrieval.port';
+import {
+  cleanFwdChain,
+  marchEvidence,
+  type FwdLadderLeg,
+  type MarchAuditEntry,
+} from './leg-fwd-chain.rules';
+import {
+  marchSelect,
+  resolveMarchParams,
+  type MarchParams,
+  type MarchVerdict,
+} from './leg-march.rules';
+import { optionsdeskConfig, type OptionsdeskConfig } from '../config/optionsdesk.config';
 import {
   classifyLegTier,
   type LegBasis,
@@ -271,6 +286,34 @@ export interface LegGateCounts {
   excludedFromIntentTabs: number;
 }
 
+/** 069 每 K 净链小结 (plan D3「段内/净链/剔/并/标」五计数, 弹层题头的数据源)。 */
+export interface LegMarchSummaryView {
+  /** 段内进入清链的档数 = 收租候选 + 护栏剔除腿 (带外横档是非候选, 不计)。 */
+  readonly ladderCount: number;
+  /** 净链节点数 (合并段计 1)。 */
+  readonly netChainCount: number;
+  /** 被剔出净链的档数 (#1 报价异常 + #13 不可算 + #2 凹陷弹出)。 */
+  readonly removedCount: number;
+  /** 共线并段除名档数 (#4)。 */
+  readonly mergedCount: number;
+  /** 劣档标数 (凹 #2 / 陈 #3 / 并 #4, 只标不删口径 —— 与 removed 是两个口径, 可重叠)。 */
+  readonly markedCount: number;
+}
+
+/**
+ * 069 每 K 行军判决 + 逐档审计 (FR-009 / FR-014)。**行上叠加标注, 不改行序** (FR-018) ——
+ * 判决作用于**候选集** (表达层截断前), 表内被截掉的档在弹层仍可解释。
+ */
+export interface LegMarchStrikeView {
+  readonly strike: Prisma.Decimal;
+  readonly verdict: MarchVerdict;
+  /** `verdict === 'recommended'` 时 = 推荐档 DTE, 其余恒 null。 */
+  readonly recommendedDteDays: number | null;
+  readonly summary: LegMarchSummaryView;
+  /** 逐档一条 (FR-014 零无原因排除), DTE 升序; 文案格式化归 mobile (Guardrail 6)。 */
+  readonly audits: readonly MarchAuditEntry[];
+}
+
 export interface LegTableView {
   symbol: string;
   /**
@@ -391,6 +434,14 @@ export interface LegTableView {
    * 客户端自算就是同一判据两处各一份 —— 而两边都算得出数, 漂移只在换日那一刻才看得见。
    */
   criteria: PerspectiveCriteria;
+  /**
+   * 069 每 K 行军判决与审计 (FR-009 / FR-014), 按行权价升序。
+   *
+   * 🚨 **只在「实时开态 ∧ 收租视角」有值, 其余恒 `null`** (FR-017 离线零改动 / FR-019 建仓
+   * 零改动的缺省语义): 离线档 (含实时请求整体回落收盘档) / 建仓 / 全腿视角 MUST NOT 出现
+   * 判决 —— `null` 表达「本视角/本档位没有这个概念」, 不是「算了但为空」。
+   */
+  march: LegMarchStrikeView[] | null;
 }
 
 @Injectable()
@@ -406,6 +457,8 @@ export class GetLegsUseCase {
     // 只取「最近一场已收盘交易日」当陈旧度基准 —— 062 T010 起该判据多了「覆盖声明」一维,
     // 自己直查会漂 (漂了只让档位悄悄错一档, 不报错)。零写。
     @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+    // 069 行军选档旋钮 (clarify Q3): φ 档界选择 + θ 模式, server 配置 only、UI 不暴露。
+    @Inject(optionsdeskConfig.KEY) private readonly optionsdesk: OptionsdeskConfig,
   ) {}
 
   /**
@@ -502,6 +555,8 @@ export class GetLegsUseCase {
       // 🚫 没有 spot 就**解不出**依赖它的条件, MUST NOT 猜一个默认值填进去 (spec Edge Case):
       // 六维全 `null` 表达的是「没有值」, 不是「不限」—— 这一屏本来就没有表可看 (`state` 已说明)。
       criteria: unresolvedCriteria(),
+      // 069: 空壳恒 null —— 连链都没有, 更没有判决 (与「收租实时但整梯无可成交」是两回事)。
+      march: null,
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -582,6 +637,18 @@ export class GetLegsUseCase {
           rentDepth,
           displayLimit,
         ),
+        // 069 行军选档 (FR-009): 只挂「实时开态 ∧ 收租视角」—— 实时请求整体回落收盘档时
+        // `chain.priceKind === 'eod_close'` ⇒ 恒 null (FR-017 离线零改动的机器语义)。判决在
+        // **排序旁路**装配: 吃的是候选集 (截断前), 不碰 legs 行序 (FR-018)。
+        march:
+          perspective === 'rent' && chain.priceKind === 'realtime'
+            ? assembleMarchByStrike(
+                pool,
+                retrieval.removedByCrossedQuote,
+                retrieval.criteriaByTab.rent.effective,
+                resolveMarchParams(this.optionsdesk.marchPhiTier, this.optionsdesk.marchMode),
+              )
+            : null,
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -843,4 +910,105 @@ function unresolvedCriteria(): PerspectiveCriteria {
   for (const key of RETRIEVAL_CRITERION_KEYS)
     outcomes[key] = { state: 'default', excludedCount: 0 };
   return { defaults: blank, effective: blank, outcomes };
+}
+
+/**
+ * 069 按 K 分组装配行军判决 (plan D2 接线点的纯函数半)。`O(n log n)` (按 K 分桶 + 逐 K 清链
+ * 行军; n = 候选数)。
+ *
+ * · 输入三路: 收租候选 (带外横档拆出记 #12, 非候选不进净链) + 护栏剔除腿 (#1, 只收「若非
+ *   交叉本会是收租成员」的那批 —— 判据**复用** `failedCriteria` 单点, 不另写第二份成员谓词)
+ *   + 全部经 T002–T005 管道。
+ * · FR-014 恰一条: 净链上带 #3 (绝对支配) 标的档同时会被行军给出条目 —— 清链家族**优先**
+ *   (疑似陈旧比「合格非停点」更有行动价值), 行军条目对已有清链条目的档让位。
+ * · 全梯被护栏剔空的 K 照样出判决 (净链空 ⇒ untradable, clarify Q2), 逐档 #1 就位。
+ */
+function assembleMarchByStrike(
+  pool: readonly LegCandidate[],
+  crossedLegs: readonly LegChainRow[],
+  rentCriteria: RetrievalCriteria,
+  params: MarchParams,
+): LegMarchStrikeView[] {
+  interface StrikeBucket {
+    readonly strike: Prisma.Decimal;
+    readonly ladder: FwdLadderLeg[];
+    readonly extraAudits: MarchAuditEntry[];
+    crossedCount: number;
+  }
+  const buckets = new Map<string, StrikeBucket>();
+  const bucketOf = (strike: Prisma.Decimal): StrikeBucket => {
+    const key = strike.toString();
+    const existing = buckets.get(key);
+    if (existing !== undefined) return existing;
+    const created: StrikeBucket = { strike, ladder: [], extraAudits: [], crossedCount: 0 };
+    buckets.set(key, created);
+    return created;
+  };
+
+  for (const { leg } of pool) {
+    const bucket = bucketOf(leg.strike);
+    if (leg.bandStatus === 'out') {
+      // #12 带外横档: 保留比价、非候选 ⇒ 进审计不进净链。带下限不随行下发 ⇒ 证据只带 |Δ|
+      // (bandFloor 恒 null, 「不知道」不伪造)。
+      bucket.extraAudits.push({
+        category: 'band_out',
+        dteDays: leg.dteDays,
+        mergedIntoDteDays: null,
+        evidence: marchEvidence({
+          absDelta: leg.delta === null ? null : new Prisma.Decimal(Math.abs(leg.delta)),
+        }),
+      });
+      continue;
+    }
+    bucket.ladder.push({
+      dteDays: leg.dteDays,
+      bid: leg.bid,
+      ask: leg.ask,
+      openInterest: leg.openInterest,
+    });
+  }
+
+  // 审计面只收「若非交叉本会是收租成员」的剔除腿 —— 作用域判定住召回层
+  // (crossedRemovalsWithinCriteria, 守卫 #7: 成员判据单点), 本层只消费结果。
+  for (const leg of crossedRemovalsWithinCriteria(rentCriteria, crossedLegs)) {
+    const bucket = bucketOf(leg.strike);
+    bucket.crossedCount += 1;
+    bucket.extraAudits.push({
+      category: 'crossed_quote',
+      dteDays: leg.dteDays,
+      mergedIntoDteDays: null,
+      evidence: marchEvidence({ bid: leg.bid, ask: leg.ask }),
+    });
+  }
+
+  const views = [...buckets.values()].map((bucket): LegMarchStrikeView => {
+    const clean = cleanFwdChain(bucket.strike, bucket.ladder);
+    const decision = marchSelect(clean.chain, params);
+    const cleanDtes = new Set(clean.audits.map((a) => a.dteDays));
+    const audits = [
+      ...bucket.extraAudits,
+      ...clean.audits,
+      ...decision.audits.filter((a) => !cleanDtes.has(a.dteDays)),
+    ]
+      // 合并段内成员当选停点时 (段内回退), 其 #4 条目让位 —— 推荐档零条目 (FR-014)。
+      .filter((a) => a.dteDays !== decision.recommendedDteDays)
+      .sort((a, b) => a.dteDays - b.dteDays);
+    const countOf = (...categories: MarchAuditEntry['category'][]) =>
+      clean.audits.filter((a) => categories.includes(a.category)).length;
+    return {
+      strike: bucket.strike,
+      verdict: decision.verdict,
+      recommendedDteDays: decision.recommendedDteDays,
+      summary: {
+        ladderCount: bucket.ladder.length + bucket.crossedCount,
+        netChainCount: clean.chain.length,
+        removedCount: bucket.crossedCount + countOf('quote_missing', 'concave_dominated'),
+        mergedCount: countOf('collinear_merged'),
+        markedCount: countOf('concave_dominated', 'absolute_dominated', 'collinear_merged'),
+      },
+      audits,
+    };
+  });
+  views.sort((a, b) => a.strike.comparedTo(b.strike));
+  return views;
 }

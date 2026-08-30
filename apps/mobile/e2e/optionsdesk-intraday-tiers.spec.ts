@@ -355,6 +355,8 @@ function project(canonical: CanonicalTable, perspective: LegPerspective): LegTab
   const legs = [...regime.legs];
   return {
     symbol,
+    // 069 契约增量: 每 K 行军判决 —— 仅实时收租有值, mock 基线取缺省 null。
+    march: null,
     perspective,
     state: 'available',
     // 区块头那一行答的是「库内快照属于哪个业务日」—— 实时档下它照旧是那个交易日

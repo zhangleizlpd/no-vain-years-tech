@@ -183,6 +183,10 @@ services:
       # `marketdata.config.ts` 的枚举校验 → boot 抛。**这是本行唯一的用途, 别"顺手"补回兜底。**
       # (本文件另有 6 处注释拿「同 MARKETDATA_PROVIDER 静默陷阱」当范例引用 —— 范例本尊即此行。)
       MARKETDATA_PROVIDER: ${MARKETDATA_PROVIDER}
+      # 069 行军选档策略旋钮 —— 默认在 compose 兜底 (:-good / :-phi): 变量缺失时容器拿到
+      # 真默认而非空串 (空串会被 config 层 fail-fast 拦, 同 MARKETDATA_PROVIDER 静默陷阱)。
+      OPTIONSDESK_MARCH_PHI_TIER: ${OPTIONSDESK_MARCH_PHI_TIER:-good}
+      OPTIONSDESK_MARCH_MODE: ${OPTIONSDESK_MARCH_MODE:-phi}
       MARKETDATA_TICK_ENABLED: ${MARKETDATA_TICK_ENABLED:-false}
       # #210 vendor lane 灰度 flag: 与上一行同形态 (enum+default, :-false 兜底永不空串)。
       # 漏映射的后果同 2026-06-04 那次: 改了 .env.production 却发现灰度翻不开, 且无任何报错。

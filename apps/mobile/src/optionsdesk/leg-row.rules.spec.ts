@@ -6,10 +6,16 @@
 //   · Δ 恒读 `absDelta`（053 FR-034 删了 σ 距列后它是该量的唯一呈现）
 //   · 12 列宽度合计 = 716，首列 88 渲在横向滚动**之外**（天然钉住，不依赖 sticky）
 import { describe, expect, it } from 'vitest';
-import type { LegResponse } from '@nvy/api-client';
+import type {
+  LegMarchStrikeResponse,
+  MarchAuditEvidenceResponse,
+  LegResponse,
+} from '@nvy/api-client';
 
 import {
   legRowBandOut,
+  legRowInferiorMark,
+  legRowMarchRecommended,
   LEG_SCROLL_REGION_WIDTH,
   LEG_STICKY_COL_WIDTH,
   LEG_TABLE_COLUMNS,
@@ -347,5 +353,146 @@ describe('legRowBandOut — 068 带外横档判定 (FR-009 呈现侧)', () => {
 
   it('null (离线档 / 实时 Δ 缺失) ⇒ 不打标 —— 无带语义的行不冒充带外', () => {
     expect(legRowBandOut(null)).toBe(false);
+  });
+});
+
+describe('leg-row.rules — 069 行军行内标注 (T008, FR-016 / FR-019)', () => {
+  const evidence = (
+    over: Partial<MarchAuditEvidenceResponse> = {},
+  ): MarchAuditEvidenceResponse => ({
+    bid: null,
+    ask: null,
+    fwd: null,
+    fwdOut: null,
+    premium: null,
+    premiumShorter: null,
+    chordDistanceTicks: null,
+    phi: null,
+    decay: null,
+    decayCap: null,
+    annualized: null,
+    tierFloor: null,
+    recommendedDteDays: null,
+    oi: null,
+    oiMin: null,
+    absDelta: null,
+    bandFloor: null,
+    ...over,
+  });
+
+  const strikeView = (over: Partial<LegMarchStrikeResponse> = {}): LegMarchStrikeResponse => ({
+    strike: '92.0000',
+    verdict: 'recommended',
+    recommendedDteDays: 180,
+    summary: { ladderCount: 3, netChainCount: 3, removedCount: 0, mergedCount: 0, markedCount: 0 },
+    audits: [],
+    ...over,
+  });
+
+  const row = (strike: string, dteDays: number) => ({ strike, dteDays });
+
+  it('① 推荐章: 恰在 (推荐 K, 推荐档 DTE) 的行为真 —— 同 K 别档 / 非推荐判决 / 别 K 皆假', () => {
+    const march = [strikeView()];
+    expect(legRowMarchRecommended(row('92.0000', 180), march)).toBe(true);
+    expect(legRowMarchRecommended(row('92.0000', 90), march)).toBe(false);
+    expect(legRowMarchRecommended(row('96.0000', 180), march)).toBe(false);
+    expect(
+      legRowMarchRecommended(row('92.0000', 180), [
+        strikeView({ verdict: 'no_qualified', recommendedDteDays: null }),
+      ]),
+    ).toBe(false);
+    // 防御臂: 违约输入 (非 recommended 却带推荐档) 也不亮章 —— 判据看判决, 不只看字段有值
+    expect(
+      legRowMarchRecommended(row('92.0000', 180), [strikeView({ verdict: 'untradable' })]),
+    ).toBe(false);
+  });
+
+  it('②③④ 劣档三类微标: 清链家族类目 → 凹/陈/并; 行军家族类目不上行内标', () => {
+    const march = [
+      strikeView({
+        audits: [
+          {
+            dteDays: 45,
+            mergedIntoDteDays: null,
+            category: 'concave_dominated',
+            evidence: evidence(),
+          },
+          {
+            dteDays: 90,
+            mergedIntoDteDays: null,
+            category: 'absolute_dominated',
+            evidence: evidence(),
+          },
+          {
+            dteDays: 120,
+            mergedIntoDteDays: 180,
+            category: 'collinear_merged',
+            evidence: evidence(),
+          },
+          {
+            dteDays: 240,
+            mergedIntoDteDays: null,
+            category: 'fwd_below_phi',
+            evidence: evidence(),
+          },
+        ],
+      }),
+    ];
+    expect(legRowInferiorMark(row('92.0000', 45), march)).toBe('concave');
+    expect(legRowInferiorMark(row('92.0000', 90), march)).toBe('stale');
+    expect(legRowInferiorMark(row('92.0000', 120), march)).toBe('merged');
+    expect(legRowInferiorMark(row('92.0000', 240), march)).toBeNull();
+    expect(legRowInferiorMark(row('92.0000', 180), march)).toBeNull();
+  });
+
+  it('⑤ 建仓/全腿/离线 (march=null) 恒无章无标 (FR-019 结构保证)', () => {
+    expect(legRowMarchRecommended(row('92.0000', 180), null)).toBe(false);
+    expect(legRowInferiorMark(row('92.0000', 45), null)).toBeNull();
+  });
+
+  it('文案映射: 13 类逐条 (键集穷举 = 契约枚举; 证据 → 「fwd 6.0% < φ 15%」式)', () => {
+    const reasons = OPTIONSDESK_COPY.march.reasons;
+    expect(Object.keys(reasons)).toHaveLength(13);
+    expect(reasons.crossed_quote(evidence({ bid: '0.5200', ask: '0.4800' }))).toBe(
+      '报价交叉 买 0.52 ≥ 卖 0.48',
+    );
+    expect(reasons.concave_dominated(evidence({ fwd: '0.041000', fwdOut: '0.063000' }))).toBe(
+      '凹陷支配 进档 4.1% < 出档 6.3%',
+    );
+    expect(
+      reasons.absolute_dominated(evidence({ premium: '1.1900', premiumShorter: '1.3500' })),
+    ).toBe('疑似陈旧报价 权利金 1.19 ≤ 更短档 1.35');
+    expect(reasons.collinear_merged(evidence({ chordDistanceTicks: '0.3000' }))).toBe(
+      '与相邻档共线并段 垂距 0.30 tick < 1 tick',
+    );
+    expect(reasons.fwd_below_phi(evidence({ fwd: '0.060000', phi: '0.150000' }))).toBe(
+      '远期费率 6.0% < φ 15.0%',
+    );
+    expect(
+      reasons.decay_rebound_above_beta(evidence({ decay: '0.000900', decayCap: '0.000660' })),
+    ).toBe('衰减回升 0.09%/日 > 前段上限 0.07%/日');
+    expect(
+      reasons.decay_above_gamma_cap(evidence({ decay: '0.003300', decayCap: '0.002200' })),
+    ).toBe('衰减超绝对帽 0.33%/日 > γ 0.22%/日');
+    expect(
+      reasons.tier_floor_failed(evidence({ annualized: '0.142000', tierFloor: '0.150000' })),
+    ).toBe('年化 14.2% < 档界 15.0%');
+    expect(reasons.qualified_not_stop(evidence({ recommendedDteDays: 152 }))).toBe(
+      '合格，推荐档 152d 更长',
+    );
+    expect(reasons.qualified_not_stop(evidence())).toBe('合格，被更长档胜出');
+    expect(reasons.stop_oi_below_min(evidence({ oi: 3, oiMin: 50 }))).toBe(
+      '持仓 3 < 下限 50，沿净链回退',
+    );
+    expect(reasons.ladder_oi_all_below_min(evidence({ oi: 8, oiMin: 50 }))).toBe(
+      '持仓 8 < 下限 50，全梯无过闸',
+    );
+    expect(reasons.band_out(evidence({ absDelta: '0.0800' }))).toBe(
+      '预测带外 |Δ| 0.08，保留供比价',
+    );
+    expect(reasons.quote_missing(evidence())).toBe('缺买价，费率不可算');
+    expect(reasons.quote_missing(evidence({ bid: '120.0000' }))).toBe('缺相邻基准，远期费率不可算');
+    // 证据缺失一律占位, 不伪造数字
+    expect(reasons.fwd_below_phi(evidence())).toBe('远期费率 — < φ —');
   });
 });

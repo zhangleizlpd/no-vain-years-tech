@@ -93,6 +93,8 @@ import {
 import { LegPickerTabs } from './leg-picker-tabs';
 import { LegMembershipNotice } from './leg-membership-notice';
 import { LegRow } from './leg-row';
+import { MarchAuditSheet } from './march-audit-sheet';
+import { marchStrikeOf } from './leg-row.rules';
 import { LEG_SCROLL_REGION_WIDTH, LEG_STICKY_COL_WIDTH } from './leg-row.rules';
 import { LegTableHeader } from './leg-table-header';
 import { LegTierBar } from './leg-tier-bar';
@@ -142,6 +144,9 @@ export function UnderlyingDetailScreen({
   // 🚨 064 FR-009：**区块级**档位与时点是链级字段 ⇒ 读 `chain`（当前视角那份还在飞时它回退到
   //    已到手的任一视角，MUST NOT 因为换了个视角就把档位条闪成「未就绪」）。
   const blockPriceKind = legTable.chain?.priceKind ?? null;
+  // 069: 审计弹层选中的 K (行权价 4dp 串) —— null = 未开。march 为 null 时行上无入口,
+  // 本状态结构性到不了非 null (FR-019)。
+  const [auditStrike, setAuditStrike] = useState<string | null>(null);
   // 逐行降级的条数 —— 腿是**视角级**的 ⇒ 读 `table` 不读 `chain`（回退期那份腿属于别的视角）。
   // 📌 记忆化同 `openCriteria`：它进的是 sticky section header，滚动期间每帧都会读到。
   const eodRowCount = useMemo(
@@ -426,7 +431,18 @@ export function UnderlyingDetailScreen({
                 renderItem={({ item }) => (
                   // 🚨 053 起档位与活跃标都在 `item` 自己身上（契约按视角收窄成标量）——
                   //    这里再也没有「取哪一格」这一步，故也传不错。
-                  <LegRow leg={item} tx={tx} today={detail.today} blockPriceKind={blockPriceKind} />
+                  <LegRow
+                    leg={item}
+                    tx={tx}
+                    today={detail.today}
+                    blockPriceKind={blockPriceKind}
+                    march={legTable.table?.march ?? null}
+                    onOpenAudit={
+                      marchStrikeOf(item, legTable.table?.march ?? null) === null
+                        ? null
+                        : () => setAuditStrike(item.strike)
+                    }
+                  />
                 )}
                 renderSectionFooter={() => (
                   // 🚨 三样东西同落非常驻区（051 FR-010a）：就地说明 + 两个门槛计数 + 空态解释。
@@ -487,6 +503,16 @@ export function UnderlyingDetailScreen({
             onClose={() => setCriteriaOpen(false)}
           />
         ) : null}
+        {/* 069: 每 K 审计弹层 —— 选中 K 且 march 仍在手 (视角/档位切换后失配即静默收起)。 */}
+        {(() => {
+          const auditView =
+            auditStrike === null
+              ? null
+              : (legTable.table?.march?.find((m) => m.strike === auditStrike) ?? null);
+          return auditView === null ? null : (
+            <MarchAuditSheet strikeView={auditView} onClose={() => setAuditStrike(null)} />
+          );
+        })()}
       </GestureHandlerRootView>
     </SafeAreaView>
   );

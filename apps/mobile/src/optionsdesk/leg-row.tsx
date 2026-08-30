@@ -14,8 +14,8 @@
 //    那是「已出局」的中性灰，不属于四档色阶。判定与 class 全在 `leg-picker-copy.ts`。
 // 🚨 **四档是费率质量档不是涨跌** ⇒ 本文件零处 `quote-*`。
 // 🚫 **动作列是建议标签不是按钮** —— 中性 tag，无 `onPress`、无选中态（见上方 FR-012 段）。
-import { Text, View } from 'react-native';
-import type { LegResponse } from '@nvy/api-client';
+import { Pressable, Text, View } from 'react-native';
+import type { LegMarchStrikeResponse, LegResponse } from '@nvy/api-client';
 import type { SharedValue } from 'react-native-reanimated';
 
 import { LegColumnPane } from './leg-column-pane';
@@ -23,6 +23,8 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
 import {
   LEG_ACTION_TAG_CLASS,
+  LEG_MARCH_BADGE_EMPHASIS,
+  LEG_MARCH_ROW_CLASS,
   LEG_STICKY_BADGE_BASE,
   LEG_STICKY_BADGE_BORDER,
   legActionLabel,
@@ -34,7 +36,7 @@ import {
 } from './leg-picker-copy';
 import { LEG_ROW_HEIGHT, LegStickyCell, legColumnWidth } from './leg-table-header';
 import { legRowEodMarked, type LegBlockPriceKind } from './leg-tier-bar.rules';
-import { legRowBandOut } from './leg-row.rules';
+import { legRowBandOut, legRowInferiorMark, legRowMarchRecommended } from './leg-row.rules';
 import {
   LEG_SCROLL_REGION_WIDTH,
   costCell,
@@ -62,6 +64,20 @@ export interface LegRowProps {
    *    契约未到手 ⇒ `null`（等价于不标）。
    */
   blockPriceKind: LegBlockPriceKind | null;
+  /**
+   * 069 每 K 行军判决（FR-016/FR-019）—— 建仓 / 全腿 / 离线契约恒 `null` ⇒ 推荐章与劣标
+   * 结构性不出现。🚫 判据只从契约来（`leg-row.rules.ts` 两个纯函数），本组件零反推。
+   */
+  march: readonly LegMarchStrikeResponse[] | null;
+  /**
+   * 069 审计弹层入口（FR-014 / plan D5）：轻点收租行打开该 K 的期限判决。`null` = 无入口
+   *（建仓 / 全腿 / 离线，FR-019）。
+   *
+   * 📌 **与 047 FR-012「行不可点」的边界**：那条禁的是「选腿 → 创建许愿单」类的动作入口与
+   * 选中态 —— 本入口是**只读弹层**，无选中态、无写路径；实现期已核对行上原无 onPress /
+   * 手势冲突（横滑 pan 在 `LegColumnPane` 内层，tap 不与之抢）。
+   */
+  onOpenAudit: (() => void) | null;
 }
 
 /**
@@ -71,7 +87,7 @@ export interface LegRowProps {
  *    量从 by-tab 映射收窄成**本次视角**的标量 ⇒ 原本靠 `tab` prop「取哪一格」的两个入参随之
  *    退役，调用方少两个可以传错的东西。
  */
-export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
+export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: LegRowProps) {
   // 🚨 档位在本行有**四个消费点**（bid 底色 / 行底 / 动作两处 / 费率副标）⇒ 这里取一次，
   //    四处共用同一个值（同源，不会 drift）。
   const tier = leg.tier;
@@ -86,12 +102,22 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
   const eodMarked = legRowEodMarked(blockPriceKind, leg.priceKind);
   // 068 FR-009: 带外横档 —— 判据只从契约 bandStatus 来, 打标不删行 (比价用途)。
   const bandOut = legRowBandOut(leg.bandStatus);
+  // 069 FR-016: 推荐章与劣档微标 —— 只在收租实时 (march 非 null) 有值, 判据在 rules 纯函数。
+  const marchRecommended = legRowMarchRecommended(leg, march);
+  const inferiorMark = legRowInferiorMark(leg, march);
 
   return (
-    <View
-      className={`flex-row border-b border-line-soft ${legRowToneClass(tier)}`}
+    <Pressable
+      // 069: 推荐行底 (primary-soft) 盖过档位 tone —— 推荐行的行级信号优先 (FR-016)。
+      // 入口只在收租实时 (onOpenAudit 非 null) 生效; disabled 态下不设 button 语义, 与 047
+      // 「行不可点」的既有形态逐字一致。
+      className={`flex-row border-b border-line-soft ${marchRecommended ? LEG_MARCH_ROW_CLASS : legRowToneClass(tier)}`}
       style={{ height: LEG_ROW_HEIGHT }}
       testID={`optionsdesk-detail-leg-row-${leg.code}`}
+      onPress={onOpenAudit ?? undefined}
+      disabled={onOpenAudit === null}
+      accessibilityRole={onOpenAudit === null ? undefined : 'button'}
+      accessibilityHint={onOpenAudit === null ? undefined : OPTIONSDESK_COPY.march.rowA11yHint}
     >
       {/* ── 首列：行权价 / 到期（横滑之外 ⇒ 钉住）───────────────────────── */}
       {/* 🚨 两个标各贴各的量（FR-014a）：「贴合」贴行权价、「月」贴到期日 —— 月度链是**到期日**
@@ -132,6 +158,25 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
               testID={`optionsdesk-detail-leg-band-out-${leg.code}`}
             >
               {COPY.bandOutBadge}
+            </Text>
+          ) : null}
+          {/* 069 行军推荐章 (FR-016): primary 章 —— 复用同一 badge 载体, 叠 brand 强调面。
+              🚨 与 050 带内「贴合」标语义不同可并存: 贴合说 Δ 贴合意图, 荐说期限行军胜出。 */}
+          {marchRecommended ? (
+            <Text
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.march} ${LEG_MARCH_BADGE_EMPHASIS}`}
+              testID={`optionsdesk-detail-leg-march-${leg.code}`}
+            >
+              {OPTIONSDESK_COPY.march.recommendBadge}
+            </Text>
+          ) : null}
+          {/* 069 劣档三类微标 (凹/陈/并, FR-004 只标不删不重排): 弱描边参照语义。 */}
+          {inferiorMark !== null ? (
+            <Text
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.inferior}`}
+              testID={`optionsdesk-detail-leg-inferior-${leg.code}`}
+            >
+              {OPTIONSDESK_COPY.march.inferiorMarks[inferiorMark]}
             </Text>
           ) : null}
         </View>
@@ -178,7 +223,8 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
               // 🚨 档位色**只上买侧的价**；卖侧与两个量一律 muted，染上会被读成「它们也参与判档」。
               // 🚨 064：本行未取到实时时，买侧的价**降为次级墨色** —— 档位判定仍成立（server 拿
               //    收盘值判的），但这个数不是此刻的，不该以档位色的权重出现在一片实时数里。
-              priceClass={`font-semibold ${eodMarked || bandOut ? 'text-ink-muted' : bidTone.text}`}
+              // 069: 劣档行同走灰显 (凹/陈/并 —— 报价几何有问题, 档位色权重让位)。
+              priceClass={`font-semibold ${eodMarked || bandOut || inferiorMark !== null ? 'text-ink-muted' : bidTone.text}`}
             />
             <QuoteSide
               price={leg.ask === null ? COPY.noValue : formatPriceText(leg.ask)}
@@ -243,7 +289,7 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
           testID={`optionsdesk-detail-leg-action-${leg.code}`}
         />
       </LegColumnPane>
-    </View>
+    </Pressable>
   );
 }
 

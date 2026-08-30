@@ -43,6 +43,8 @@ import {
 import { RADAR_PAGE_SIZE_DEFAULT, RADAR_PAGE_SIZE_MAX } from './radar-cursor';
 import { EARNINGS_MARKS } from './earnings-mark.rules';
 import { LEG_TABLE_STATES, type LegTableView } from './get-legs.usecase';
+import { MARCH_EXCLUSION_CATEGORIES, type MarchAuditEvidence } from './leg-fwd-chain.rules';
+import { MARCH_VERDICTS } from './leg-march.rules';
 import { CHAIN_REPORT_CELL_STATES } from './chain-report.rules';
 import {
   CHAIN_REPORT_STATES,
@@ -1764,6 +1766,217 @@ export class LegGateCountsResponse {
   excludedFromIntentTabs!: number;
 }
 
+/** 069 每 K 净链小结 (plan D3「段内/净链/剔/并/标」五计数, 弹层题头数据源)。 */
+export class LegMarchSummaryResponse {
+  @ApiProperty({
+    description: '段内进入清链的档数 (收租候选 + 护栏剔除; 带外横档不计)',
+    example: 5,
+  })
+  ladderCount!: number;
+
+  @ApiProperty({ description: '净链节点数 (合并段计 1)', example: 3 })
+  netChainCount!: number;
+
+  @ApiProperty({
+    description: '被剔出净链的档数 (#1 报价异常 + #13 不可算 + #2 凹陷弹出)',
+    example: 1,
+  })
+  removedCount!: number;
+
+  @ApiProperty({ description: '共线并段除名档数 (#4)', example: 1 })
+  mergedCount!: number;
+
+  @ApiProperty({
+    description:
+      '劣档标数 (凹 #2 / 陈 #3 / 并 #4, 只标不删口径 —— 与 removedCount 是两个口径, 可重叠)',
+    example: 2,
+  })
+  markedCount!: number;
+}
+
+/**
+ * 069 逐档审计的结构化数值证据 (FR-014 / FR-015) —— **按类目取用, 其余恒 null**。
+ * 🚨 server 只出数值不拼文案 (plan Guardrail 6): 「fwd 6.0% < φ 15%」的格式化归客户端
+ * `optionsdesk-copy.ts`。费率类 6 位小数 (同费率列), 价格/比例类 4 位。
+ */
+export class MarchAuditEvidenceResponse {
+  @ApiProperty({
+    description: '#1/#13: 买价 (缺失时 null 本身即证据)',
+    type: 'string',
+    nullable: true,
+    example: '0.5200',
+  })
+  bid!: string | null;
+
+  @ApiProperty({ description: '#1: 卖价', type: 'string', nullable: true, example: '0.4800' })
+  ask!: string | null;
+
+  @ApiProperty({
+    description: '#2 进 X 的 fwd / #5 该档水平 fwd (年化小数)',
+    type: 'string',
+    nullable: true,
+    example: '0.060000',
+  })
+  fwd!: string | null;
+
+  @ApiProperty({
+    description: '#2 出 X 的 fwd (凹陷对比另一半)',
+    type: 'string',
+    nullable: true,
+    example: '0.063000',
+  })
+  fwdOut!: string | null;
+
+  @ApiProperty({
+    description: '#3: 本档总权利金',
+    type: 'string',
+    nullable: true,
+    example: '1.1900',
+  })
+  premium!: string | null;
+
+  @ApiProperty({
+    description: '#3: 支配它的更短档总权利金',
+    type: 'string',
+    nullable: true,
+    example: '1.3500',
+  })
+  premiumShorter!: string | null;
+
+  @ApiProperty({
+    description: '#4: 节点对弦垂距 (tick 单位, 阈值恒 1 tick)',
+    type: 'string',
+    nullable: true,
+    example: '0.3000',
+  })
+  chordDistanceTicks!: string | null;
+
+  @ApiProperty({
+    description: '#5: φ 行军水平线 (年化小数)',
+    type: 'string',
+    nullable: true,
+    example: '0.150000',
+  })
+  phi!: string | null;
+
+  @ApiProperty({
+    description: '#6/#7: 每日衰减实测值',
+    type: 'string',
+    nullable: true,
+    example: '0.000900',
+  })
+  decay!: string | null;
+
+  @ApiProperty({
+    description: '#6: β×前段 / #7: γ 绝对帽 (衰减上界)',
+    type: 'string',
+    nullable: true,
+    example: '0.000600',
+  })
+  decayCap!: string | null;
+
+  @ApiProperty({ description: '#8: 该档年化', type: 'string', nullable: true, example: '0.142000' })
+  annualized!: string | null;
+
+  @ApiProperty({
+    description: '#8: 档界终检下限',
+    type: 'string',
+    nullable: true,
+    example: '0.150000',
+  })
+  tierFloor!: string | null;
+
+  @ApiProperty({
+    description: '#9: 胜出它的推荐档 DTE',
+    type: 'number',
+    nullable: true,
+    example: 152,
+  })
+  recommendedDteDays!: number | null;
+
+  @ApiProperty({
+    description: '#10: 停点档 OI / #11: 该档 OI (张)',
+    type: 'number',
+    nullable: true,
+    example: 3,
+  })
+  oi!: number | null;
+
+  @ApiProperty({
+    description: '#10/#11: OI_MIN (收租可成交口径)',
+    type: 'number',
+    nullable: true,
+    example: 50,
+  })
+  oiMin!: number | null;
+
+  @ApiProperty({ description: '#12: 该腿 |Δ|', type: 'string', nullable: true, example: '0.0800' })
+  absDelta!: string | null;
+
+  @ApiProperty({
+    description: '#12: Δ 带下限 (行上不携带 ⇒ 恒 null, 不伪造)',
+    type: 'string',
+    nullable: true,
+    example: null,
+  })
+  bandFloor!: string | null;
+}
+
+/** 069 逐档审计条目 (FR-014): 每个被剔/被标/未推荐档恰一条, 零「无原因排除」。 */
+export class LegMarchAuditResponse {
+  @ApiProperty({ description: '条目归属档 DTE (合并段条目 = 段尾档)', example: 90 })
+  dteDays!: number;
+
+  @ApiProperty({
+    description: '#4 共线除名: 并入的合并段段尾 DTE; 其余类目恒 null',
+    type: 'number',
+    nullable: true,
+    example: null,
+  })
+  mergedIntoDteDays!: number | null;
+
+  @ApiProperty({
+    description:
+      '13 类四家族去除原因 (FR-015, 前后端严格一致 —— 经生成链传导, 零手抄): ' +
+      'A 清链 #1-#4 / B 行军 #5-#9 / C 可成交 #10-#11 / D 呈现-召回边界 #12-#13',
+    enum: [...MARCH_EXCLUSION_CATEGORIES],
+    example: 'fwd_below_phi',
+  })
+  category!: string;
+
+  @ApiProperty({ description: '结构化数值证据 (按类目取用)', type: MarchAuditEvidenceResponse })
+  evidence!: MarchAuditEvidenceResponse;
+}
+
+/** 069 每 K 行军判决 (FR-009): 行上叠加标注, 不改行序 (FR-018)。 */
+export class LegMarchStrikeResponse {
+  @ApiProperty({ description: '行权价 K (与 LegResponse.strike 同定标)', example: '92.0000' })
+  strike!: string;
+
+  @ApiProperty({
+    description:
+      '三态判决: recommended 推荐档 / no_qualified 无合格档 / untradable 整梯无可成交 —— ' +
+      '后两者是**诚实空态非错误** (FR-016), 成因逐档看 audits (clarify Q2)',
+    enum: [...MARCH_VERDICTS],
+    example: 'recommended',
+  })
+  verdict!: string;
+
+  @ApiProperty({
+    description: '推荐档 DTE (前向路径每天 ≥ φ 的最长档); 非 recommended 恒 null',
+    type: 'number',
+    nullable: true,
+    example: 180,
+  })
+  recommendedDteDays!: number | null;
+
+  @ApiProperty({ description: '净链小结五计数', type: LegMarchSummaryResponse })
+  summary!: LegMarchSummaryResponse;
+
+  @ApiProperty({ description: '逐档审计, DTE 升序', type: [LegMarchAuditResponse] })
+  audits!: LegMarchAuditResponse[];
+}
+
 export class LegTableResponse {
   @ApiProperty({ description: 'canonical `market:code`', example: 'us:PEP' })
   symbol!: string;
@@ -2025,6 +2238,17 @@ export class LegTableResponse {
     example: 0,
   })
   candidateCapDropped!: number;
+
+  @ApiProperty({
+    description:
+      '069 每 K 行军判决与逐档审计, 按行权价升序 (FR-009 / FR-014)。' +
+      '🚨 **仅「实时开态 ∧ 收租视角」有值, 其余恒 null** (FR-017 / FR-019): 离线档 (含实时' +
+      '整体回落收盘档) / 建仓 / 全腿视角没有这个概念 —— null 不是「算了但为空」。' +
+      '🚨 判决是行上叠加标注 (FR-018): legs 的行序与内容不因它变, 客户端 MUST NOT 按判决重排',
+    type: [LegMarchStrikeResponse],
+    nullable: true,
+  })
+  march!: LegMarchStrikeResponse[] | null;
 }
 
 /**
@@ -2129,6 +2353,45 @@ function toLegActivityResponse(mark: ActivityMark | null): LegActivityResponse |
     : { isRoundStrike: mark.isRoundStrike, isTopRanked: mark.isTopRanked, label: mark.label };
 }
 
+function toMarchEvidenceResponse(evidence: MarchAuditEvidence): MarchAuditEvidenceResponse {
+  const rate6 = (v: Prisma.Decimal | null): string | null => (v === null ? null : v.toFixed(6));
+  return {
+    bid: decimal4(evidence.bid),
+    ask: decimal4(evidence.ask),
+    fwd: rate6(evidence.fwd),
+    fwdOut: rate6(evidence.fwdOut),
+    premium: decimal4(evidence.premium),
+    premiumShorter: decimal4(evidence.premiumShorter),
+    chordDistanceTicks: decimal4(evidence.chordDistanceTicks),
+    phi: rate6(evidence.phi),
+    decay: rate6(evidence.decay),
+    decayCap: rate6(evidence.decayCap),
+    annualized: rate6(evidence.annualized),
+    tierFloor: rate6(evidence.tierFloor),
+    recommendedDteDays: evidence.recommendedDteDays,
+    oi: evidence.oi,
+    oiMin: evidence.oiMin,
+    absDelta: decimal4(evidence.absDelta),
+    bandFloor: decimal4(evidence.bandFloor),
+  };
+}
+
+function toMarchResponse(march: LegTableView['march']): LegMarchStrikeResponse[] | null {
+  if (march === null) return null;
+  return march.map((strikeView) => ({
+    strike: strikeView.strike.toFixed(4),
+    verdict: strikeView.verdict,
+    recommendedDteDays: strikeView.recommendedDteDays,
+    summary: { ...strikeView.summary },
+    audits: strikeView.audits.map((entry) => ({
+      dteDays: entry.dteDays,
+      mergedIntoDteDays: entry.mergedIntoDteDays,
+      category: entry.category,
+      evidence: toMarchEvidenceResponse(entry.evidence),
+    })),
+  }));
+}
+
 export function toLegTableResponse(view: LegTableView): LegTableResponse {
   return {
     symbol: view.symbol,
@@ -2209,6 +2472,7 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     memberCount: view.memberCount,
     displayLimit: view.displayLimit,
     candidateCapDropped: view.candidateCapDropped,
+    march: toMarchResponse(view.march),
   };
 }
 

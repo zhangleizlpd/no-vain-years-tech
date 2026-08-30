@@ -65,6 +65,7 @@ describe('051 T001 流动性排除计数按视角拆分 (Testcontainers PG, 逐�
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
+      { marchPhiTier: 'good', marchMode: 'phi' },
     );
   }, 180_000);
 

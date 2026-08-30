@@ -38,6 +38,7 @@ import {
   agentBridgeConfig,
   researchOssConfig,
   guestUploadConfig,
+  optionsdeskConfig,
 } from './index.js';
 
 // @nestjs/config registerAs returns a callable factory; invoking it runs the
@@ -69,6 +70,7 @@ const FACTORIES: ReadonlyArray<readonly [string, () => unknown]> = [
   ['agentBridge', agentBridgeConfig],
   ['researchOss', researchOssConfig],
   ['guestUpload', guestUploadConfig],
+  ['optionsdesk', optionsdeskConfig],
 ];
 
 function main(): void {

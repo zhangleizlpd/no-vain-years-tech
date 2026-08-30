@@ -448,6 +448,8 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'intent',
       'lLevel',
       'legs',
+      // 069 FR-009/FR-014：每 K 行军判决与审计（收盘档恒 null，非 null 分支归 069 IT）。
+      'march',
       // 053 FR-005/FR-015：截断之前的条数 / 无覆盖口径下的候选数。
       'matchedCount',
       'memberCount',
