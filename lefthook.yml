@@ -84,6 +84,9 @@ pre-commit:
       # Prettier 重写 staged 文件并 re-stage (stage_fixed: true)。
       # 与其他 pre-commit 命令并行运行 — Prettier 仅改格式（空白/换行/引号），
       # tasks-md-drift / no-bad-mocks / docs-organization-drift 都不读会变的内容。
+      # 🚨 但 preset 的 spec-/adr-frontmatter-check **读的正是会被重写的 .md 内容** ⇒ 真有竞态:
+      # 撞上时报「全部 frontmatter 字段 undefined」的假红,重跑即绿。判据与处置见
+      # docs/conventions/local-verification.md §3。
       glob: '*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc,md,yml,yaml}'
       run: pnpm exec prettier --write {staged_files}
       stage_fixed: true
