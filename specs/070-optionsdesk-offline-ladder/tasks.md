@@ -61,7 +61,19 @@ updated_at: '2026-08-30'
 
 - [X] T005 [Mobile] **报价异常微标 + 弹层口径行 + 模式文案**（FR-003, FR-004, FR-009 呈现, FR-011; plan §D4; state_branches 6/7; US2/US3）：`leg-row.rules.ts` 增「报价异常」微标判定纯函数（该行到期日命中 audits #1 ⇒ 出标；判定不知档位——实时口径交叉腿不在行集合，分支天然离线专属）+ `leg-row.tsx` 微标渲染（若既有劣标槽可复用则零 tsx 改动）；`march-audit.rules.ts` / `march-audit-sheet.tsx` 题头：① 口径行——`blockPriceKind==='eod_close'` 时「基于 {quoteAsOf} 收盘」（FR-003；13 类逐条**不加**尾缀，Guardrail 5 口径一次说清）② φ/闸读数行 mode-aware——`marchMode` 为 θ 时换模式标示文案（默认 φ 态零新元素 = 零噪音）；新文案集中 `optionsdesk-copy.ts`（禁感叹号、中性语气）。vitest **先红后绿**五臂：① #1 命中 ⇒ 微标 / 不命中 ⇒ 无 / `march=null` ⇒ 恒无 ② 口径行文案 = 收盘日期格式化（realtime 口径 ⇒ 无口径行）③ θ 模式 ⇒ 标示文案、φ/null ⇒ 读数行原样 ④ 新 copy 键快照 ⑤ 建仓/全腿行恒无微标（`march=null` 结构护航）→ verify: `pnpm exec nx test mobile` 绿；🚫 `~/ui` 零组件 render 测（分层纪律）
 
-- [ ] T006 [Mobile] **hermetic e2e + 空态三支核对**（FR-001 呈现, FR-010, SC-005; plan §D4; state_branches 1/6/7/8; US1/US3）：Playwright Expo Web hermetic e2e（mockJson 挡网络）**先红后绿**五断言：① mock 离线收租响应（march 有值）→ 收租行推荐章可见 + 劣档微标可见 + 轻点开弹层（离线点亮 golden path）② 弹层题头「基于 …收盘」口径行文本可见 ③ mock `marchMode`=θ → 弹层模式标示出现；默认 mock → 零新元素 ④ mock 含 #1 条目 → 该行报价异常微标可见 ⑤ mock 意图空态 → 051 空态文案原样呈现（非错误红）。**空态三支核对**（FR-010，Guardrail 7）：`optionsdesk-copy.ts:289` 两分支 + :684 第三支逐支 grep 对照「规则内无腿」语义 → 结论（零改动 / 微调 + 理由）落本条验收记录 → verify: e2e 绿（新文件首跑 `--skip-nx-cache`）；核对结论三支逐条列出
+- [X] T006 [Mobile] **hermetic e2e + 空态三支核对**（FR-001 呈现, FR-010, SC-005; plan §D4; state_branches 1/6/7/8; US1/US3）：Playwright Expo Web hermetic e2e（mockJson 挡网络）**先红后绿**五断言：① mock 离线收租响应（march 有值）→ 收租行推荐章可见 + 劣档微标可见 + 轻点开弹层（离线点亮 golden path）② 弹层题头「基于 …收盘」口径行文本可见 ③ mock `marchMode`=θ → 弹层模式标示出现；默认 mock → 零新元素 ④ mock 含 #1 条目 → 该行报价异常微标可见 ⑤ mock 意图空态 → 051 空态文案原样呈现（非错误红）。**空态三支核对**（FR-010，Guardrail 7）：`optionsdesk-copy.ts:289` 两分支 + :684 第三支逐支 grep 对照「规则内无腿」语义 → 结论（零改动 / 微调 + 理由）落本条验收记录 → verify: e2e 绿（新文件首跑 `--skip-nx-cache`）；核对结论三支逐条列出
+
+  **空态三支核对记录（FR-010，2026-08-31 逐支 grep 实证）—— 结论：三支零改动。**
+
+  | 支 | 文案落点 | 判据落点 | 离线档是否成立 | 判决 |
+  | --- | --- | --- | --- | --- |
+  | ① 被流动性门槛挡下 | `optionsdesk-copy.ts:296` `emptyBlockedByGate` + `:298` CTA | `leg-picker.rules.ts:461` `excludedFromIntentTabs > 0` | 成立。计数源 `leg-recall.rules.ts:862` 只收 `relativeSpreadMax` 命中，与档位正交 | 零改动 |
+  | ② 规则内无腿（068 defer 正主） | `optionsdesk-copy.ts:305` `emptyNoneReason.rent` + `:309` tail | 同上，`excluded === 0` 分支（`:471`） | 成立。收租支判据只有期限段（DTE），与报价档位正交 | 零改动 |
+  | ③ 条件收紧到空 | `optionsdesk-copy.ts:687-689` `criteria.emptyTitle/emptyText/emptyResetCta` | `leg-picker.rules.ts:445` `criteriaOverrideCount(criteria) > 0` | 成立。判据是用户覆盖数，与档位正交 | 零改动 |
+
+  三条零改动理由（逐条可查，非通读）：① `legEmptyState` 签名不含 `priceKind`/`quoteAsOf` —— 三支判据结构上与档位正交；② 三支文案 `rg -n '实时|此刻|盘中'` 于该三段**零命中**，无实时档专属措辞可失真；③ 070 剔→标不改支 ① 的 n —— 交叉腿相对价差为负、恒 ≤ 任何上界（`leg-recall.rules.ts:252` `isCrossedQuote` 头注 + `passesRelativeSpreadMax`），结构上进不了 `excludedByLiquidity`，故「报价太宽被流动性门槛挡在意图视角之外」在离线档仍逐字精确。
+
+  FR-010 的「口径标注昨收」由**档位条**承载（`LegTierBar` 在区块头、不随空态消失）—— 空态块本身不复述档位（同一句话第二处必 drift）；机器判据 = T006 ⑤ 臂的 `optionsdesk-detail-leg-tier-stamp` 断言。
 
 - [ ] T007 [P] [Contract-Smoke] **契约冒烟：离线真落 + 069 臂语义更新**（FR-002, FR-012 契约面; plan §D5; US1/US3）：**新建** `070-offline-ladder.contract.ts`——生成的 `@nvy/api-client` 打 testcontainers 真 server（mock provider 档）：① us 收盘收租 `march` 真落（判决 + 至少一条带数值审计条目）+ `marchMode` 有值 ② 建仓/全腿 `march` 恒缺省 ③ 专属 ticker + 末尾自清理；**更新** `069-chain-march.contract.ts` ①臂：「收盘档 march 恒缺省」→「us 收盘收租有值」（契约语义随本片演进，PR 描述记录，Guardrail 3 例外条款）→ verify: `MARKETDATA_PROVIDER=mock RUN_REAL_BACKEND_SMOKE=true pnpm exec nx run mobile:contract-smoke` 绿（红绿时序：新断言先落——T003 regen 前 typecheck 红，regen 后转绿）
 
