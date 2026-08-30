@@ -5,10 +5,13 @@
  * happy path：**建锚 → 灌一期收盘快照 → 拉三个视角的选约表**。
  *
  * 🚨 本片两条只有端到端才验得到的靶心：
- *   1. **`march` 收盘档恒 `null` 且是真 `null` 不是缺字段**（FR-017 离线零改动的契约证据）：
- *      `JSON.stringify` 会把 `undefined` 整键删掉 —— 客户端读到 `undefined` 走「没接这根线」，
- *      与「离线档没有判决语义」是两个状态。判据取 `'march' in table`（缺字段当场红）。
- *      三个视角同验（建仓/全腿 = FR-019 的契约面半）。
+ *   1. **`march` 是真值不是缺字段**（`JSON.stringify` 会把 `undefined` 整键删掉 —— 客户端读到
+ *      `undefined` 走「没接这根线」，与「这个视角没有判决语义」是两个状态；判据取
+ *      `'march' in table`，缺字段当场红）。⚠️ **值面语义随 070 演进**：069 期三视角在收盘档
+ *      恒 `null`；070 把门控从「实时开态 ∧ 收租」放宽为「us 市场锚 ∧ 收租」后，**收租视角
+ *      收盘档有值**（那正是 070 要修的病根），建仓 / 全腿仍恒 `null`（FR-012 零改动）。
+ *      🚫 这不是基线造假：判据本身没松，只是它现在断言的是**放宽后的**那份契约（070 tasks
+ *      Guardrail 3 唯一例外条款，PR 描述记录）。判决形态面归 `070-offline-ladder.contract.ts`。
  *   2. **13 类枚举在生成物上逐字存在**（T007 regen 的机器证据；FR-015 前后端一致经生成链传导）：
  *      期望清单按 spec FR-015 表逐条写死 —— server 单点改类目而 regen 没跑，这里当场红。
  *
@@ -72,7 +75,7 @@ interface SeedQuote {
   readonly delta: string;
 }
 
-/** 同 K 两档（DTE 60/120, 收租段）—— K 梯形态齐全, 离线下仍不该长出判决。 */
+/** 同 K 两档（DTE 60/120, 收租段）—— K 梯形态齐全, 供收租视角判决 / 另两视角守恒。 */
 const SEED: readonly SeedQuote[] = [
   {
     code: 'US.NVYM.M',
@@ -101,16 +104,17 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
   try {
     anchorId = await createAnchor(cfg);
 
-    // ── 靶心 1: 三个视角收盘档 march 恒真 null（FR-017 / FR-019 契约面）──────
+    // ── 靶心 1: march 键恒在；值面按 070 放宽后的门控分视角（收租有值 / 另两恒 null）──
     for (const perspective of ['rent', 'build', 'all'] as const) {
       const table = await legs(cfg, perspective);
       assert.equal(table.state, 'available', `${perspective} 应就绪, got ${table.state}`);
       assert.ok('march' in table, `${perspective} 缺 march 键 —— undefined 被序列化吞掉了`);
-      assert.equal(
-        table.march,
-        null,
-        `${perspective} 收盘档 march MUST 真 null（离线/建仓/全腿零改动）`,
-      );
+      if (perspective === 'rent') {
+        // 070 FR-001: us 锚收租在收盘档也点亮 —— 这一臂从「恒缺省」翻面成「MUST 有值」。
+        assert.notEqual(table.march, null, 'us 收盘收租 march MUST 真落（070 门控放宽）');
+      } else {
+        assert.equal(table.march, null, `${perspective} march MUST 真 null（建仓/全腿零改动）`);
+      }
     }
 
     // ── 靶心 2: 13 类枚举与三态判决在生成物上逐字存在（生成链传导的机器证据）──

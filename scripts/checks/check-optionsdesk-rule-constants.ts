@@ -2,7 +2,7 @@
 /**
  * check-optionsdesk-rule-constants.ts — optionsdesk **可调策略参数单点**的机器守门。
  *
- * 九条不变量。#8 以外的扫描面是 `apps/server/src/optionsdesk/`，**第八条扫的是客户端**：
+ * 十一条不变量。#8 以外的扫描面是 `apps/server/src/optionsdesk/`，**第八条扫的是客户端**：
  *
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
@@ -16,6 +16,7 @@
  * | 8 | **客户端零处自算检索条件默认值** | **词表 + 算式形状**扫描 | 052 FR-011 / Guardrail 6 |
  * | 9 | 068 窗判据只住 `leg-delta-surface` / `leg-window` | **形状**扫描 ×2 + pad **子串** | 068 FR-002 / SC-004 |
  * | 10 | 069 行军形状参数 β/γ 只住 `leg-march.rules.ts` | 字面量**子串扫描** | 069 FR-010 / plan D4 |
+ * | 11 | 070 窗与 fwd 管道互不渗透 | 模块引用**子串扫描** | 070 FR-007 / ADR-0068 sunset #6 |
  *
  * 🚨 **#5/#6/#7 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
  * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
@@ -376,6 +377,38 @@ export function windowSelfProbe(
   );
   if (namedHit.length > 0) {
     return '内联系数判据反例臂失灵：具名常量乘法被判违规 —— 判据会恒红';
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 070 不变量 #11 —— 窗与 fwd 管道互不渗透（模块引用子串扫描, FR-007 结构闸）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 069 特征加工层：净链/清链的唯一落点 —— 与行军层同为 070 离线读路径接触的 fwd 管道面。 */
+const FWD_CHAIN_RULES_FILE = 'leg-fwd-chain.rules.ts';
+
+/**
+ * fwd 管道文件里的**任何** `leg-window` 模块引用即违规 —— 比 import 行扫描更严：静态 import /
+ * re-export / 动态 `import()` / 字符串拼路径全在一网内（扫描在 stripComments 之后，注释里的
+ * 文档引用不误伤）。现状两文件零命中 —— 本闸钉的是方向（ADR-0068 决策 1「窗不进离线」的机器
+ * 化，sunset #6 消费），不是修复现状。
+ *
+ * 📌 蓄意只钉 `leg-window`（plan §D3）：`leg-delta-surface` 的 Δ 带是打标语义（呈现），窗判据
+ * 单点归 #9 守；两段式召回的入口在 adapter（非 rules 纯函数面），eslint boundaries 管不到
+ * 模块内 ⇒ 本闸与 #9 两分支合成「窗与 fwd 管道互不渗透」的完整表达。
+ */
+export const WINDOW_MODULE_REF_RE = /\bleg-window\b/g;
+
+/** 同 {@link selfProbe} 一族：正反两臂各验一次，判据形状失灵即显式报错，不许平凡绿。 */
+export function fwdIsolationSelfProbe(): string | null {
+  const positive = "import { bootstrapWindowFor } from './leg-window.rules';";
+  if (findShapeHits(positive, WINDOW_MODULE_REF_RE).length === 0) {
+    return '窗引用判据正例臂失灵：leg-window import 未被命中 —— 判据已变平凡绿';
+  }
+  const negative = "import { marchEvidence } from './leg-fwd-chain.rules';";
+  if (findShapeHits(negative, WINDOW_MODULE_REF_RE).length > 0) {
+    return '窗引用判据反例臂失灵：fwd 管道自身文件名被判违规 —— 判据会恒红';
   }
   return null;
 }
@@ -902,6 +935,37 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 070 不变量 #11 —— 窗与 fwd 管道互不渗透 (FR-007 结构闸) ────────────────
+  const isolationProbeFailure = fwdIsolationSelfProbe();
+  if (isolationProbeFailure) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: 结构闸探针失败 —— ${isolationProbeFailure}`,
+    );
+    process.exit(1);
+  }
+  const fwdPipelineFiles = [FWD_CHAIN_RULES_FILE, MARCH_RULES_FILE].map((name) => {
+    const path = join(ctxPath, name);
+    if (!existsSync(path)) {
+      console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${name}`);
+      process.exit(1);
+    }
+    return { name, source: readFileSync(path, 'utf8') };
+  });
+  const windowRefOffenders = findShapeOffenders(fwdPipelineFiles, WINDOW_MODULE_REF_RE);
+  if (windowRefOffenders.length > 0) {
+    console.error(
+      '❌ check-optionsdesk-rule-constants failed —— fwd 管道引用了 K-窗模块（070 FR-007 结构闸）：\n',
+    );
+    for (const { name, hits } of windowRefOffenders) {
+      console.error(`  - ${CTX_DIR}/${name}: ${hits.length} 处 leg-window 引用`);
+    }
+    console.error(
+      '\nFix: 「窗不进离线」是 ADR-0068 决策 1 的机器化 —— 清链/行军是口径无关纯函数, 离线读路径' +
+        '\n     靠它们保持宽视野; 引窗即定位侵蚀。窗语义只住检索层实时窄路径, 🚫 MUST NOT 放宽本闸。',
+    );
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
@@ -910,6 +974,7 @@ function main(): void {
       `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec；` +
       `六维成员判据零外溢；窗判据（Δ 带形状 / 内联系数形状 / pad '${pad}'）只住 ${DELTA_SURFACE_FILE} / ${WINDOW_RULES_FILE}；` +
       `行军参数 (${marchThresholds.join(' / ')}) 只住 ${MARCH_RULES_FILE}；` +
+      `fwd 管道 (${FWD_CHAIN_RULES_FILE} / ${MARCH_RULES_FILE}) 零 leg-window 引用；` +
       `${MOBILE_CTX_DIR} 的 ${mobileFiles.length} 个文件零处自算默认值。`,
   );
 }

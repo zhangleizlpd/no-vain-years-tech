@@ -177,6 +177,7 @@ describe('chain-report.rules — 骨架 (FR-005, 🚨 Guardrail 2)', () => {
       ['all', 'build', 'rent'],
       legs,
       legs.length,
+      'remove',
       null,
     ).candidates;
 

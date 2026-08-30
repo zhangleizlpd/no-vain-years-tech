@@ -448,8 +448,10 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'intent',
       'lLevel',
       'legs',
-      // 069 FR-009/FR-014：每 K 行军判决与审计（收盘档恒 null，非 null 分支归 069 IT）。
+      // 069 FR-009/FR-014：每 K 行军判决与审计（070 起 us 收租在收盘档也有值）。
       'march',
+      // 070 FR-009：行军模式的被动标示（链级唯一，与 march 同生共死）。
+      'marchMode',
       // 053 FR-005/FR-015：截断之前的条数 / 无覆盖口径下的候选数。
       'matchedCount',
       'memberCount',

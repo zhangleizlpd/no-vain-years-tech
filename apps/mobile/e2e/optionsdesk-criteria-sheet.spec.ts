@@ -387,6 +387,8 @@ function makeTable(params: URLSearchParams, perspective: LegTab): LegTableRespon
     symbol: SYMBOL,
     // 069 契约增量: 每 K 行军判决 —— 仅实时收租有值, mock 基线取缺省 null。
     march: null,
+    // 070 契约增量: 行军模式标示 —— 与 march 同生共死, 基线随之 null。
+    marchMode: null,
     // 053 FR-005：原样回显请求参数 —— 迟到的那一发靠它认领。
     perspective,
     state: 'available',

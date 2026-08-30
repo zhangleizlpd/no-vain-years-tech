@@ -405,17 +405,19 @@ describe('069 清链与行军选档 (Testcontainers PG + Redis, 真 DI 容器)',
     expect(all.march).toBeNull();
   });
 
-  it('④ 离线 (收盘档) 响应新字段恒缺省 —— 含实时请求整体回落收盘档 (FR-017)', async () => {
+  it('④ 离线 (收盘档) 响应判决点亮 —— 069 FR-017「恒缺省」自 070 门控放宽起作废 (070 FR-001)', async () => {
+    // 070 语义演进臂: 本臂原断言「离线/回落恒 null」, 070 把门控放宽为「收租 ∧ us」后离线随之
+    // 点亮 —— 离线面的完整断言在 optionsdesk-070.offline-ladder.it.spec.ts, 这里只钉档位与点亮。
     await seedChain();
 
     const offline = await rent(false);
     expect(offline.priceKind).toBe('eod_close');
-    expect(offline.march).toBeNull();
-    // 实时请求但闸判 closed ⇒ 整体回落收盘档 ⇒ 同样恒缺省 (「实时开态」才有判决)。
+    expect(offline.march).not.toBeNull();
+    // 实时请求但闸判 closed ⇒ 整体回落收盘档 ⇒ 随离线口径一并点亮 (070 plan §D1 裁决)。
     marketState.session = 'other';
     const fallback = await rent(true);
     expect(fallback.priceKind).toBe('eod_close');
-    expect(fallback.march).toBeNull();
+    expect(fallback.march).not.toBeNull();
   });
 
   it('⑤ bootstrap 宽窗候选照常清链行军 (state_branch 16)', async () => {

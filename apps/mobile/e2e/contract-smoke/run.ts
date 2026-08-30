@@ -20,6 +20,7 @@ import { bootRealBackend, type RealBackendCtx } from '../_support/real-backend-h
 import * as optionsdeskIntradayLegQuotes from './064-intraday-leg-quotes.contract';
 import * as optionsdeskTwoStageRecall from './068-two-stage-recall.contract';
 import * as optionsdeskChainMarch from './069-chain-march.contract';
+import * as optionsdeskOfflineLadder from './070-offline-ladder.contract';
 import * as alert from './alert.contract';
 import * as alertIndicators from './alert-indicators.contract';
 import * as alertPush from './alert-push.contract';
@@ -79,6 +80,7 @@ const SPECS: readonly ContractSpec[] = [
   optionsdeskIntradayLegQuotes,
   optionsdeskTwoStageRecall,
   optionsdeskChainMarch,
+  optionsdeskOfflineLadder,
   portfolioHoldings,
 ];
 

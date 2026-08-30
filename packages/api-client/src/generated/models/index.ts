@@ -167,6 +167,7 @@ export * from './legTableResponseAsOfFreshnessTier';
 export * from './legTableResponseBasis';
 export * from './legTableResponseIntent';
 export * from './legTableResponseLLevel';
+export * from './legTableResponseMarchMode';
 export * from './legTableResponsePerspective';
 export * from './legTableResponsePositionBucket';
 export * from './legTableResponsePositionBucketSource';

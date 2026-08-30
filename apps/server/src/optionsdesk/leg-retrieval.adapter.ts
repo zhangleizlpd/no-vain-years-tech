@@ -23,6 +23,7 @@ import { type LegTab } from './leg-tab.rules';
 import {
   BUILD_RECALL_DTE,
   RENT_RECALL_DTE,
+  crossedQuoteDisposalOf,
   recallCandidates,
   type LegIntentTab,
   type RecallContext,
@@ -228,11 +229,15 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     const w = await this.resolveW(query.symbol);
     if (w === null) return null;
     const context: RecallContext = { spot: chain.spot, w };
+    // 070 剔→标 (FR-006): 处置按**链级实际口径**分派 —— 本路恒收盘档 ⇒ `retain` (交叉腿保留
+    // 照常成行, 留痕列表供 #1 审计与净链除名)。🚫 MUST NOT 改拿 `query.realtime` 反推。
+    const disposal = crossedQuoteDisposalOf(chain.priceKind);
     const outcome = recallCandidates(
       context,
       query.perspectives,
       legs,
       query.candidateCap,
+      disposal,
       query.override,
     );
     return {
@@ -242,8 +247,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       memberCount:
         query.override === null
           ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
-              .length,
+          : recallCandidates(context, query.perspectives, legs, query.candidateCap, disposal)
+              .candidates.length,
     };
   }
 
@@ -510,6 +515,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       query.perspectives,
       answered,
       query.candidateCap,
+      crossedQuoteDisposalOf(chain.priceKind),
       query.override,
     );
     return {
@@ -518,8 +524,13 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       memberCount:
         query.override === null
           ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, answered, query.candidateCap).candidates
-              .length,
+          : recallCandidates(
+              context,
+              query.perspectives,
+              answered,
+              query.candidateCap,
+              crossedQuoteDisposalOf(chain.priceKind),
+            ).candidates.length,
     };
   }
 

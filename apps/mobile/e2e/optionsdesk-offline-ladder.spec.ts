@@ -4,6 +4,7 @@ import type {
   LegMarchStrikeResponse,
   LegResponse,
   LegTableResponse,
+  LegTableResponseMarchMode,
 } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
@@ -16,29 +17,34 @@ import {
   type LegPerspective,
 } from './_support/optionsdesk-fixtures';
 
-// 069 T009 — 每 K 审计弹层的 hermetic UI e2e（Playwright Expo Web；样板 =
-// `optionsdesk-intraday-tiers.spec.ts` 的 mock 骨架）。
+// 070 T006 — 离线档收租阶梯的 hermetic UI e2e（Playwright Expo Web；骨架 =
+// `optionsdesk-march-audit.spec.ts` 的 069 mock，差别只在**链级档位换成收盘档**）。
 //
-// 覆盖（逐条对应 tasks.md T009 六断言）：
-//   ① 轻点收租行开弹层，逐档行数 = mock 审计条目数
-//   ② 推荐态弹层含推荐 chip + 数值证据文本
-//   ③ 无合格档呈现诚实空态（非错误组件、中性文案）
-//   ④ 整梯无可成交**双成因判别**（OI 文案 vs 报价异常文案，clarify Q2）
-//   ⑤ 建仓行轻点不开弹层（march=null ⇒ 无入口，FR-019）
-//   ⑥ 表内可见性：收租行推荐章 + 劣档行灰显微标（US3-AS3）
+// 覆盖（逐条对应 tasks.md T006 五断言）：
+//   ① 离线点亮 golden path：收租行推荐章 + 劣档微标可见，轻点开弹层
+//   ② 弹层题头口径行「基于 {交易日} 收盘」可见（FR-003）
+//   ③ marchMode=θ ⇒ 模式标示出现；默认 φ ⇒ 零新元素且 φ 读数原样（FR-009）
+//   ④ 审计含 #1 条目 ⇒ 该行「叉」微标可见且行不消失（FR-004 只标不删）
+//   ⑤ 意图空态 ⇒ 051 文案原样呈现，非错误组件（FR-010）
 //
 // ── mock 纪律 ────────────────────────────────────────────────────────────────
-//   march 只随 rent 视角下发（契约语义：实时开态 ∧ 收租视角），build/all 恒 null ——
-//   ⑤ 的判据正是「无 march ⇒ 行上结构性无入口」，🚫 不许在 mock 里给 build 也发一份。
+//   🚨 handler 是 (请求参数 × 本 test 的配置) → 响应的**纯函数**，🚫 零 callCount 分支。
+//      模式 / 空态是**每个 test 自己装的一份 mock**（`installMock(page, config)`），不是同一份
+//      mock 按调用次序变脸。
+//   🚨 契约镜像：march 只随 `perspective=rent` 下发（us 锚 ∧ 收租，档位已退出门控，070 FR-001），
+//      `marchMode` 与 march 同生共死；建仓 / 全腿恒 null。零候选时 server 仍给 `march: []`
+//      （`marchBlock` 对空 pool 装配出空数组），🚫 不许在 mock 里写成 null 冒充「离线没点亮」。
+//   🚨 链级 `priceKind: 'eod_close'` ∧ `quoteAsOf` = 交易日 `YYYY-MM-DD`（064「粒度即档位」）——
+//      逐腿 `priceKind` 同为收盘 ⇒ 行级「收」标恒不出（整表收盘时逐行打标只是噪点）。
 
 const ME_URL = '**/api/v1/accounts/me';
 const REFRESH_URL = '**/api/v1/accounts/refresh-token';
 const OPTIONSDESK_RE = /\/api\/v1\/optionsdesk\//;
 const BARS_RE = /\/api\/v1\/marketdata\/instruments\//;
 
-const SEED_ACCOUNT_ID = 'acc-e2e-069';
-const SEED_ACCESS_TOKEN = 'access-e2e-069';
-const SEED_REFRESH_TOKEN = 'refresh-e2e-069';
+const SEED_ACCOUNT_ID = 'acc-e2e-070';
+const SEED_ACCESS_TOKEN = 'access-e2e-070';
+const SEED_REFRESH_TOKEN = 'refresh-e2e-070';
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -56,7 +62,7 @@ const seedAuthStore = `
         accessToken: '${SEED_ACCESS_TOKEN}',
         refreshToken: '${SEED_REFRESH_TOKEN}',
         displayName: '小明',
-        phone: '+8613900139069',
+        phone: '+8613900139070',
       },
       version: 0,
     }),
@@ -72,30 +78,32 @@ function ymd(d: Date): string {
   return `${d.getFullYear()}-${mm}-${dd}`;
 }
 const TODAY = ymd(new Date());
+/** 离线档的基准交易日 —— 口径行与档位条读的都是它。 */
 const SESSION_DAY = ymd(new Date(Date.now() - 86_400_000));
 
 // ════════════════════════════════════════════════════════════════════════════
-// 屏内文案（`optionsdesk-copy.ts` march 段逐字；改文案就该在这里红）
+// 屏内文案（`optionsdesk-copy.ts` 逐字；改文案就该在这里红）
 // ════════════════════════════════════════════════════════════════════════════
 
 const COPY = {
   recommendBadge: '荐',
   staleMark: '陈',
+  crossedMark: '叉',
   verdictRecommended: '推荐档',
-  verdictNoQualified: '无合格档',
-  emptyNoQualified: '这一梯的前向费率未达到再投资线，暂无值得锁的期限',
-  emptyUntradable: '这一梯当前没有可成交的档位，成因见逐档说明',
+  basisEodClose: `基于 ${SESSION_DAY} 收盘`,
   phiReadout: '再投资线 φ 15.0%',
-  evidenceFwdBelowPhi: '远期费率 6.0% < φ 15.0%',
-  evidenceOiGate: '持仓 8 < 下限 50，全梯无过闸',
+  modeTheta: '选档判据 · 自身年化最大',
   evidenceCrossed: '报价交叉 买 3 ≥ 卖 2.9',
+  // 051 意图空态「规则内无腿」那一支（FR-010 核对结论 = 零改动，此处逐字守）
+  emptyRentTitle: '收租视角暂无候选',
+  emptyRentText: '这只票没有一条腿落在收租视角的期限段内。换一只票，或改看另一个视角。',
 } as const;
 
 // ════════════════════════════════════════════════════════════════════════════
 // canonical 数据
 // ════════════════════════════════════════════════════════════════════════════
 
-const SYMBOL = 'us:MAR';
+const SYMBOL = 'us:OFF';
 
 const ANCHOR: AnchorResponse = {
   id: 'anchor-1',
@@ -121,11 +129,11 @@ const ANCHOR: AnchorResponse = {
   willingSellRent: '100.00',
   zone: 'buy',
   lastClose: '88.00',
-  lastCloseDate: TODAY,
+  lastCloseDate: SESSION_DAY,
   quoteFreshnessTier: 'CURRENT',
   spot: '88.00',
   priceKind: 'eod_close',
-  spotAsOf: TODAY,
+  spotAsOf: SESSION_DAY,
   distanceToWPct: '10.0',
   breachStartedOn: null,
   reviewFlagOn: false,
@@ -165,7 +173,8 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike'> = {
   isMonthlyChain: false,
   earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
   greeksComplete: true,
-  priceKind: 'realtime',
+  // 🚨 离线档：逐腿与链级同为收盘 ⇒ 行级「收」标恒不出（064 FR-009）。
+  priceKind: 'eod_close',
   bandStatus: 'in',
 };
 
@@ -173,18 +182,16 @@ function leg(code: string, strike: string, over: Partial<LegResponse> = {}): Leg
   return { ...LEG_BASE, code, strike, ...over };
 }
 
-const L1 = 'MAR261218P75000';
-const L2 = 'MAR261218P72500';
-const L3 = 'MAR261218P70000';
-const L4 = 'MAR261218P67500';
-const L5 = 'MAR261218P65000';
+const L1 = 'OFF261218P75000';
+const L2 = 'OFF261218P72500';
+const L3 = 'OFF261218P70000';
 
 const LEGS: readonly LegResponse[] = [
   leg(L1, '75.00'),
-  leg(L2, '72.50'),
+  // 🚨 交叉报价腿**照常在行集合里**（070 FR-006 剔→标）—— 收盘口径下召回层保留它，
+  //    行上以「叉」微标示意、净链除名由 #1 审计承担。
+  leg(L2, '72.50', quoted('3.00', '2.90')),
   leg(L3, '70.00'),
-  leg(L4, '67.50'),
-  leg(L5, '65.00'),
 ];
 
 const emptyEvidence = {
@@ -207,7 +214,7 @@ const emptyEvidence = {
   bandFloor: null,
 } as const;
 
-/** 五个 K 的行军判决（= server 的 march 契约镜像；仅 rent 视角下发）。 */
+/** 三个 K 的离线行军判决（= server march 契约镜像；审计 DTE 与各自行的 DTE 对齐才上行内微标）。 */
 const MARCH: readonly LegMarchStrikeResponse[] = [
   {
     strike: '75.00',
@@ -230,55 +237,22 @@ const MARCH: readonly LegMarchStrikeResponse[] = [
     ],
   },
   {
+    // 交叉报价腿：#1 留痕 + 净链除名，行仍在表内（FR-006 成员不变）。
     strike: '72.50',
-    verdict: 'no_qualified',
+    verdict: 'untradable',
     recommendedDteDays: null,
-    summary: { ladderCount: 1, netChainCount: 1, removedCount: 0, mergedCount: 0, markedCount: 0 },
+    summary: { ladderCount: 1, netChainCount: 0, removedCount: 1, mergedCount: 0, markedCount: 1 },
     audits: [
       {
         dteDays: 180,
         mergedIntoDteDays: null,
-        category: 'fwd_below_phi',
-        evidence: { ...emptyEvidence, fwd: '0.100000', phi: '0.150000' },
+        category: 'crossed_quote',
+        evidence: { ...emptyEvidence, bid: '3.0000', ask: '2.9000' },
       },
     ],
   },
   {
     strike: '70.00',
-    verdict: 'untradable',
-    recommendedDteDays: null,
-    summary: { ladderCount: 1, netChainCount: 1, removedCount: 0, mergedCount: 0, markedCount: 0 },
-    audits: [
-      {
-        dteDays: 180,
-        mergedIntoDteDays: null,
-        category: 'ladder_oi_all_below_min',
-        evidence: { ...emptyEvidence, oi: 8, oiMin: 50 },
-      },
-    ],
-  },
-  {
-    strike: '67.50',
-    verdict: 'untradable',
-    recommendedDteDays: null,
-    summary: { ladderCount: 2, netChainCount: 0, removedCount: 2, mergedCount: 0, markedCount: 0 },
-    audits: [
-      {
-        dteDays: 60,
-        mergedIntoDteDays: null,
-        category: 'crossed_quote',
-        evidence: { ...emptyEvidence, bid: '3.0000', ask: '2.9000' },
-      },
-      {
-        dteDays: 120,
-        mergedIntoDteDays: null,
-        category: 'crossed_quote',
-        evidence: { ...emptyEvidence, bid: '5.0000', ask: '4.9000' },
-      },
-    ],
-  },
-  {
-    strike: '65.00',
     verdict: 'no_qualified',
     recommendedDteDays: null,
     summary: { ladderCount: 1, netChainCount: 1, removedCount: 0, mergedCount: 0, markedCount: 1 },
@@ -293,20 +267,32 @@ const MARCH: readonly LegMarchStrikeResponse[] = [
   },
 ];
 
-/** 一份契约响应 —— march 只随 rent 下发（⑤ 的判据）。 */
-function project(perspective: LegPerspective): LegTableResponse {
+/** 本次 test 要的那一份世界（🚫 不是调用序开关：一个 test 装一份，全程恒定）。 */
+interface MockConfig {
+  /** server 配置项的镜像；`march` 非 null 时恒有值（同生共死）。 */
+  readonly marchMode: Exclude<LegTableResponseMarchMode, null>;
+  /** true = 收租视角门槛后零候选（FR-010 空态面）。 */
+  readonly emptyRent: boolean;
+}
+
+const DEFAULT_CONFIG: MockConfig = { marchMode: 'phi', emptyRent: false };
+
+function project(perspective: LegPerspective, config: MockConfig): LegTableResponse {
+  const isRent = perspective === 'rent';
+  const legs = isRent && config.emptyRent ? [] : [...LEGS];
   return {
     symbol: SYMBOL,
-    march: perspective === 'rent' ? [...MARCH] : null,
-    // 070 契约增量: 模式标示与 march 同生共死 —— 有判决即有模式 (默认 phi 态, 呈现零噪音)。
-    marchMode: perspective === 'rent' ? 'phi' : null,
+    // us 锚 ∧ 收租 ⇒ 离线也点亮；零候选时是**空数组**不是 null（`marchBlock` 结构）。
+    march: isRent ? (config.emptyRent ? [] : [...MARCH]) : null,
+    marchMode: isRent ? config.marchMode : null,
     perspective,
     state: 'available',
     asOf: SESSION_DAY,
     asOfFreshnessTier: 'CURRENT',
-    priceKind: 'realtime',
+    // ── 离线档三件套（链级） ──────────────────────────────────────────
+    priceKind: 'eod_close',
     realtimeDegrade: null,
-    quoteAsOf: new Date().toISOString(),
+    quoteAsOf: SESSION_DAY,
     oiAsOf: SESSION_DAY,
     source: 'eod',
     spot: '82.40',
@@ -318,12 +304,14 @@ function project(perspective: LegPerspective): LegTableResponse {
     positionBucketSetAt: `${TODAY}T01:00:00.000Z`,
     intent: 'rent',
     rentDepth: 'deep',
-    legs: [...LEGS],
+    legs,
+    // 🚨 空态走「本来就没有」那一支（excluded = 0）—— 070 剔→标不改这个数：交叉腿的
+    //    相对价差为负、恒 ≤ 上界 ⇒ 它压根不会被点差闸计进来（`passesRelativeSpreadMax` 头注）。
     gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
     basis: BASIS_BY_PERSPECTIVE[perspective],
     criteria: emptyPerspectiveCriteria(),
-    matchedCount: LEGS.length,
-    memberCount: LEGS.length,
+    matchedCount: legs.length,
+    memberCount: legs.length,
     displayLimit: null,
     candidateCapDropped: 0,
   };
@@ -333,7 +321,7 @@ function project(perspective: LegPerspective): LegTableResponse {
 // hermetic mock
 // ════════════════════════════════════════════════════════════════════════════
 
-async function installMock(page: Page): Promise<void> {
+async function installMock(page: Page, config: MockConfig = DEFAULT_CONFIG): Promise<void> {
   await page.route(OPTIONSDESK_RE, async (route: Route) => {
     const req = route.request();
     if (req.method() === 'OPTIONS')
@@ -350,7 +338,7 @@ async function installMock(page: Page): Promise<void> {
     if (/\/optionsdesk\/underlyings\/(.+)\/legs$/.test(url.pathname)) {
       const perspective = perspectiveOf(url);
       if (perspective === null) return void (await json(400, PERSPECTIVE_REQUIRED_400));
-      return void (await json(200, project(perspective)));
+      return void (await json(200, project(perspective, config)));
     }
     if (/\/optionsdesk\/underlyings\/(.+)$/.test(url.pathname)) {
       return void (await json(200, {
@@ -394,7 +382,7 @@ test.beforeEach(async ({ page }) => {
     200,
     {
       accountId: SEED_ACCOUNT_ID,
-      phone: '+8613900139069',
+      phone: '+8613900139070',
       displayName: '小明',
       bio: null,
       status: 'ACTIVE',
@@ -406,7 +394,6 @@ test.beforeEach(async ({ page }) => {
     accessToken: SEED_ACCESS_TOKEN,
     refreshToken: SEED_REFRESH_TOKEN,
   });
-  await installMock(page);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -417,7 +404,6 @@ async function openRentTable(page: Page): Promise<void> {
   await page.goto(`/optionsdesk/underlying/${encodeURIComponent(SYMBOL)}`);
   await expect(page.getByTestId('optionsdesk-detail-leg-header')).toBeVisible({ timeout: 90_000 });
   await page.getByTestId('optionsdesk-detail-leg-tab-rent').tap();
-  await expect(page.getByTestId(`optionsdesk-detail-leg-row-${L1}`)).toBeVisible();
 }
 
 const sheet = (page: Page) => page.getByTestId('optionsdesk-march-audit-sheet');
@@ -427,93 +413,105 @@ async function openAudit(page: Page, code: string): Promise<void> {
   await expect(sheet(page)).toBeVisible();
 }
 
-async function closeAudit(page: Page): Promise<void> {
-  await page.getByTestId('optionsdesk-march-audit-backdrop').tap();
-  await expect(sheet(page)).toHaveCount(0);
-}
-
 // ════════════════════════════════════════════════════════════════════════════
-// 六断言
+// 五断言
 // ════════════════════════════════════════════════════════════════════════════
 
-test('069 T009 ①② — 轻点收租行开弹层：逐档行数 = mock 审计条目数；推荐 chip + 数值证据 + φ 读数', async ({
+test('070 T006 ① — 离线档收租点亮：推荐章 + 劣档微标可见，轻点开弹层（golden path）', async ({
   page,
 }) => {
+  await installMock(page);
   await openRentTable(page);
-  await openAudit(page, L1);
+  await expect(page.getByTestId(`optionsdesk-detail-leg-row-${L1}`)).toBeVisible();
 
-  // ① 行数 = '75.00' 的两条审计
-  await expect(page.locator('[data-testid^="optionsdesk-march-audit-row-"]')).toHaveCount(2);
-  // ② 推荐态: chip + 推荐档读数 + 数值证据文本 + φ 只读读数
+  // 收盘档下推荐章照亮 —— 这正是本片要修的「晚上看不到推荐」。
+  await expect(page.getByTestId(`optionsdesk-detail-leg-march-${L1}`)).toHaveText(
+    COPY.recommendBadge,
+  );
+  await expect(page.getByTestId(`optionsdesk-detail-leg-inferior-${L3}`)).toHaveText(
+    COPY.staleMark,
+  );
+  // 无审计条目的行不长标（微标不是行级装饰）
+  await expect(page.getByTestId(`optionsdesk-detail-leg-inferior-${L1}`)).toHaveCount(0);
+
+  await openAudit(page, L1);
   await expect(page.getByTestId('optionsdesk-march-audit-verdict')).toHaveText(
     COPY.verdictRecommended,
   );
   await expect(page.getByTestId('optionsdesk-march-audit-recommended')).toHaveText('180d');
-  await expect(page.getByTestId('optionsdesk-march-audit-row-90')).toContainText(
-    COPY.evidenceFwdBelowPhi,
-  );
+});
+
+test('070 T006 ② — 弹层题头口径行「基于 {交易日} 收盘」可见（FR-003）', async ({ page }) => {
+  await installMock(page);
+  await openRentTable(page);
+  await openAudit(page, L1);
+
+  await expect(page.getByTestId('optionsdesk-march-audit-basis')).toHaveText(COPY.basisEodClose);
+  // 🚨 口径行只写交易日：一个冒号都不许有（时分秒渗进来就是「昨收伪装成刚才」）。
+  await expect(page.getByTestId('optionsdesk-march-audit-basis')).not.toContainText(':');
+  // 口径在题头一次说清 ⇒ 逐档行**不加**昨收尾缀（FR-004）
+  await expect(page.getByTestId('optionsdesk-march-audit-row-90')).not.toContainText('收盘');
+});
+
+test('070 T006 ③ — θ 模式呈被动标示；默认 φ 模式零新元素、φ 读数原样（FR-009）', async ({
+  page,
+}) => {
+  await installMock(page, { marchMode: 'theta', emptyRent: false });
+  await openRentTable(page);
+  await openAudit(page, L1);
+
+  await expect(page.getByTestId('optionsdesk-march-audit-mode')).toHaveText(COPY.modeTheta);
+  // θ 下判据是年化 argmax ⇒ 再投资线读数收起（两行并存 = 静默混用两模式语义）
+  await expect(page.getByTestId('optionsdesk-march-audit-phi')).toHaveCount(0);
+  // 🚫 模式是 server 配置的被动标示 —— 弹层内 MUST NOT 出现任何切换入口
+  await expect(sheet(page)).not.toContainText('切换');
+});
+
+test('070 T006 ③ 反面 — 默认 φ 配置：弹层零模式标示，φ 读数照渲（零噪音）', async ({ page }) => {
+  await installMock(page);
+  await openRentTable(page);
+  await openAudit(page, L1);
+
+  await expect(page.getByTestId('optionsdesk-march-audit-mode')).toHaveCount(0);
   await expect(page.getByTestId('optionsdesk-march-audit-phi')).toHaveText(COPY.phiReadout);
 });
 
-test('069 T009 ③ — 无合格档呈现诚实空态（中性文案，非错误组件），逐档停止原因照渲', async ({
+test('070 T006 ④ — 审计含 #1 ⇒ 该行「叉」微标可见且行照常在表内（FR-004 只标不删）', async ({
   page,
 }) => {
+  await installMock(page);
   await openRentTable(page);
+  await expect(page.getByTestId(`optionsdesk-detail-leg-row-${L2}`)).toBeVisible();
+
+  await expect(page.getByTestId(`optionsdesk-detail-leg-inferior-${L2}`)).toHaveText(
+    COPY.crossedMark,
+  );
+  // 弹层里同一条 #1 带数值证据 —— 行上一个字、弹层里一整句，两处同源
   await openAudit(page, L2);
-
-  await expect(page.getByTestId('optionsdesk-march-audit-verdict')).toHaveText(
-    COPY.verdictNoQualified,
-  );
-  await expect(page.getByTestId('optionsdesk-march-audit-empty')).toHaveText(COPY.emptyNoQualified);
-  // 逐档给出停止原因（US3-AS2: 首档 fwd 与 φ 的数值对比）
-  await expect(page.getByTestId('optionsdesk-march-audit-row-180')).toContainText('远期费率');
-});
-
-test('069 T009 ④ — 整梯无可成交双成因判别：OI 文案 vs 报价异常文案（clarify Q2）', async ({
-  page,
-}) => {
-  await openRentTable(page);
-
-  // 成因 A: OI 不过闸
-  await openAudit(page, L3);
-  await expect(page.getByTestId('optionsdesk-march-audit-empty')).toHaveText(COPY.emptyUntradable);
   await expect(page.getByTestId('optionsdesk-march-audit-row-180')).toContainText(
-    COPY.evidenceOiGate,
-  );
-  await closeAudit(page);
-
-  // 成因 B: 全梯报价剔空 —— 同一判决、逐档文案可分
-  await openAudit(page, L4);
-  await expect(page.getByTestId('optionsdesk-march-audit-empty')).toHaveText(COPY.emptyUntradable);
-  await expect(page.getByTestId('optionsdesk-march-audit-row-60')).toContainText(
     COPY.evidenceCrossed,
   );
-  await expect(sheet(page)).not.toContainText('持仓');
 });
 
-test('069 T009 ⑤ — 建仓行轻点不开弹层（march=null ⇒ 结构性无入口，FR-019）', async ({ page }) => {
-  await page.goto(`/optionsdesk/underlying/${encodeURIComponent(SYMBOL)}`);
-  await expect(page.getByTestId('optionsdesk-detail-leg-header')).toBeVisible({ timeout: 90_000 });
-  await page.getByTestId('optionsdesk-detail-leg-tab-build').tap();
-  await expect(page.getByTestId(`optionsdesk-detail-leg-row-${L1}`)).toBeVisible();
-
-  await page.getByTestId(`optionsdesk-detail-leg-row-${L1}`).tap();
-  await expect(sheet(page)).toHaveCount(0);
-});
-
-test('069 T009 ⑥ — 表内可见性：收租行推荐章可见；劣档行灰显微标可见且行不消失（US3-AS3）', async ({
+test('070 T006 ⑤ — 离线档门槛后零候选：051 空态文案原样呈现，非错误组件（FR-010）', async ({
   page,
 }) => {
+  await installMock(page, { marchMode: 'phi', emptyRent: true });
   await openRentTable(page);
 
-  await expect(page.getByTestId(`optionsdesk-detail-leg-march-${L1}`)).toHaveText(
-    COPY.recommendBadge,
+  const empty = page.getByTestId('optionsdesk-detail-leg-empty');
+  await expect(empty).toBeVisible();
+  await expect(empty).toContainText(COPY.emptyRentTitle);
+  await expect(empty).toContainText(COPY.emptyRentText);
+  // 「本来就没有」那一支不给入口（没有可去看的腿），也不是「你切没的」那一支
+  await expect(page.getByTestId('optionsdesk-detail-leg-empty-cta')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-detail-leg-empty-reset')).toHaveCount(0);
+  // 🚨 诚实空态不是错误：零错误语气词、无弹层可开
+  await expect(empty).not.toContainText(/失败|错误|重试/);
+  await expect(sheet(page)).toHaveCount(0);
+  // 🚨 FR-010「口径标注昨收」的承载 = 档位条（它在区块头里，**不随空态消失**）——
+  //    空态块本身不复述档位（同一句话第二处 = 两处必 drift）。
+  await expect(page.getByTestId('optionsdesk-detail-leg-tier-stamp')).toHaveText(
+    SESSION_DAY.slice(5),
   );
-  await expect(page.getByTestId(`optionsdesk-detail-leg-inferior-${L5}`)).toHaveText(
-    COPY.staleMark,
-  );
-  // 只标不删: 劣档行照常在表内
-  await expect(page.getByTestId(`optionsdesk-detail-leg-row-${L5}`)).toBeVisible();
-  // 无劣标的行不长标
-  await expect(page.getByTestId(`optionsdesk-detail-leg-inferior-${L2}`)).toHaveCount(0);
 });

@@ -510,7 +510,17 @@ export function UnderlyingDetailScreen({
               ? null
               : (legTable.table?.march?.find((m) => m.strike === auditStrike) ?? null);
           return auditView === null ? null : (
-            <MarchAuditSheet strikeView={auditView} onClose={() => setAuditStrike(null)} />
+            <MarchAuditSheet
+              strikeView={auditView}
+              // 070: 口径与时点读**链级**那份 (同 `blockPriceKind` 的来源, 回退期不闪);
+              //      模式与 `march` 同生共死 ⇒ 读**视角级** `table`, 🚫 不从回退链拿。
+              block={{
+                priceKind: blockPriceKind,
+                quoteAsOf: legTable.chain?.quoteAsOf ?? null,
+                marchMode: legTable.table?.marchMode ?? null,
+              }}
+              onClose={() => setAuditStrike(null)}
+            />
           );
         })()}
       </GestureHandlerRootView>

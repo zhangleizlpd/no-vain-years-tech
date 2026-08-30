@@ -1,4 +1,4 @@
-import { recallCandidates, type RecallContext } from './leg-recall.rules';
+import { crossedQuoteDisposalOf, recallCandidates, type RecallContext } from './leg-recall.rules';
 import type {
   LegChainMeta,
   LegChainQuery,
@@ -47,11 +47,15 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
     const seeded = this.chains.get(query.symbol);
     if (seeded === undefined) return Promise.resolve(null);
     const context: RecallContext = { spot: seeded.chain.spot, w: seeded.w };
+    // 070 剔→标: 与 Prisma 实现同一条映射 —— 处置由**种子链的口径**说了算 (想验哪种处置就
+    // 种哪一档), 🚫 MUST NOT 在这里写死: 那会让假实现驱动的判据测永远测不到 retain 分支。
+    const disposal = crossedQuoteDisposalOf(seeded.chain.priceKind);
     const outcome = recallCandidates(
       context,
       query.perspectives,
       seeded.legs,
       query.candidateCap,
+      disposal,
       query.override,
     );
     return Promise.resolve({
@@ -62,7 +66,7 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
       memberCount:
         query.override === null
           ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap)
+          : recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap, disposal)
               .candidates.length,
     });
   }

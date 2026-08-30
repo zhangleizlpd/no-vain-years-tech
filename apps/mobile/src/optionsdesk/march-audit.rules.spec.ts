@@ -55,7 +55,7 @@ const strikeView = (over: Partial<LegMarchStrikeResponse> = {}): LegMarchStrikeR
   ...over,
 });
 
-describe('march-audit.rules — 弹层内容组装 (T009, FR-014 / FR-016)', () => {
+describe('march-audit.rules — 弹层内容组装 (069 T009 FR-014/FR-016 · 070 T005 FR-003/FR-009)', () => {
   it('家族归组: Record 穷举 13 类 → 恰四家族 (A4/B5/C2/D2)', () => {
     const counts = new Map<string, number>();
     for (const family of Object.values(MARCH_FAMILY_OF_CATEGORY)) {
@@ -156,5 +156,94 @@ describe('march-audit.rules — 弹层内容组装 (T009, FR-014 / FR-016)', () 
 
   it('⑤ 建仓 / 全腿 / 离线 (strikeView=null) ⇒ null, 无弹层可开 (FR-019)', () => {
     expect(marchAuditSheetView(null)).toBeNull();
+  });
+
+  it('070 ② 口径行: 收盘档 ⇒ 「基于 {交易日} 收盘」; 实时档 / 时点形态不对 / 缺省上下文 ⇒ 不渲', () => {
+    const eod = marchAuditSheetView(strikeView(), {
+      priceKind: 'eod_close',
+      quoteAsOf: '2026-08-28',
+      marchMode: 'phi',
+    })!;
+    expect(eod.basisLine).toBe('基于 2026-08-28 收盘');
+    expect(eod.basisLine).toBe(OPTIONSDESK_COPY.march.basisEodClose('2026-08-28'));
+    // 🚨 实时档零口径行: 这一批就是此刻的盘口, 写「基于…收盘」正是 064 要防的反向伪装。
+    expect(
+      marchAuditSheetView(strikeView(), {
+        priceKind: 'realtime',
+        quoteAsOf: '2026-08-28T21:47:32.000Z',
+        marchMode: 'phi',
+      })!.basisLine,
+    ).toBeNull();
+    // 🚨 反例: 档位说收盘、时点却是个时刻 ⇒ 只取交易日部分, 时分秒一个都不许渗出
+    //    (同 `formatQuoteSessionDay` 那条纪律)。
+    const contradictory = marchAuditSheetView(strikeView(), {
+      priceKind: 'eod_close',
+      quoteAsOf: '2026-08-28T21:47:32.000Z',
+      marchMode: 'phi',
+    })!;
+    expect(contradictory.basisLine).toBe('基于 2026-08-28 收盘');
+    expect(contradictory.basisLine).not.toContain(':');
+    // 形态不对 / 缺时点 / 069 既有调用体例 (不传上下文) ⇒ 一律不渲, 绝不渲染裸 null
+    expect(
+      marchAuditSheetView(strikeView(), {
+        priceKind: 'eod_close',
+        quoteAsOf: '2026/08/28',
+        marchMode: 'phi',
+      })!.basisLine,
+    ).toBeNull();
+    expect(
+      marchAuditSheetView(strikeView(), {
+        priceKind: 'eod_close',
+        quoteAsOf: null,
+        marchMode: 'phi',
+      })!.basisLine,
+    ).toBeNull();
+    expect(marchAuditSheetView(strikeView())!.basisLine).toBeNull();
+  });
+
+  it('070 ③ 模式标示: θ ⇒ 标示行 + φ 读数收起; φ / 缺省 ⇒ 读数行原样、零新元素', () => {
+    const withPhi = strikeView({
+      audits: [
+        audit(90, 'fwd_below_phi', { evidence: evidence({ fwd: '0.060000', phi: '0.150000' }) }),
+      ],
+    });
+    const phiView = marchAuditSheetView(withPhi, {
+      priceKind: 'eod_close',
+      quoteAsOf: '2026-08-28',
+      marchMode: 'phi',
+    })!;
+    expect(phiView.phiLine).toBe('再投资线 φ 15.0%');
+    // 默认 φ 态**零新元素** = 零噪音 (FR-009)
+    expect(phiView.modeLine).toBeNull();
+
+    const thetaView = marchAuditSheetView(withPhi, {
+      priceKind: 'eod_close',
+      quoteAsOf: '2026-08-28',
+      marchMode: 'theta',
+    })!;
+    expect(thetaView.modeLine).toBe(OPTIONSDESK_COPY.march.modeThetaReadout);
+    // 🚨 θ 下判据是年化 argmax 不是再投资线 ⇒ φ 读数 MUST 收起, 否则就是静默混用两模式语义。
+    expect(thetaView.phiLine).toBeNull();
+
+    // 069 既有调用体例 (不传上下文) 与 φ 态逐字段同值 —— 「实时档零既有行为改动」的机器判据
+    const legacy = marchAuditSheetView(withPhi)!;
+    expect(legacy.modeLine).toBeNull();
+    expect(legacy.phiLine).toBe(phiView.phiLine);
+    expect(legacy.rows).toEqual(phiView.rows);
+  });
+
+  it('070 ④ 新 copy 键: 微标四类键集 + 中性语气 (禁感叹号, 「异常/失败」留给真故障)', () => {
+    const copy = OPTIONSDESK_COPY.march;
+    expect(copy.basisEodClose('2026-08-28')).toBe('基于 2026-08-28 收盘');
+    expect(copy.modeThetaReadout).toBe('选档判据 · 自身年化最大');
+    // 微标键集 = 清链家族四类 (契约加类而这里漏配 ⇒ leg-row.tsx 索引处编译红)
+    expect(Object.keys(copy.inferiorMarks)).toEqual(['concave', 'stale', 'merged', 'crossed']);
+    for (const text of [
+      copy.basisEodClose('2026-08-28'),
+      copy.modeThetaReadout,
+      copy.inferiorMarks.crossed,
+    ]) {
+      expect(text).not.toMatch(/[!！]|失败|异常|错误/);
+    }
   });
 });

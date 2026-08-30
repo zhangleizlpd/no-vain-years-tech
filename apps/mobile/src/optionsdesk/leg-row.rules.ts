@@ -245,8 +245,10 @@ export function deltaCell(leg: Pick<LegResponse, 'absDelta' | 'greeksComplete'>)
 
 // ═══════════════════ ④ 069 行军行内标注（FR-016 / FR-019） ═══════════════════
 
-/** 069 三类劣档灰显微标（凹 #2 / 陈 #3 / 并 #4，FR-004 只标不删）。 */
-export type LegInferiorMarkKind = 'concave' | 'stale' | 'merged';
+/**
+ * 劣档灰显微标（凹 #2 / 陈 #3 / 并 #4，069 FR-004 只标不删；叉 #1 070 FR-004 补齐清链家族）。
+ */
+export type LegInferiorMarkKind = 'concave' | 'stale' | 'merged' | 'crossed';
 
 /**
  * 该行所属 K 的行军块。O(K)。
@@ -283,9 +285,14 @@ export function legRowMarchRecommended(
 }
 
 /**
- * 069 劣档三类微标（FR-004 / FR-016）：从该 K 审计条目的**清链家族**类目映射。O(K + 档)。
- * 其余类目（行军 / 可成交 / 边界家族）不上行内微标 —— 它们的去处是审计弹层，行内只标
- * 「这档的报价几何有问题」那三类。无条目 ⇒ `null`。
+ * 劣档微标（069 FR-004/FR-016 三类 + 070 FR-004 第四类）：从该 K 审计条目的**清链家族**
+ * 类目映射 —— 家族全集恰四类，本函数现与 `MARCH_FAMILY_OF_CATEGORY` 的 `chain_clean` 半边
+ * 一一对齐。O(K + 档)。其余类目（行军 / 可成交 / 边界家族）不上行内微标 —— 它们的去处是审计
+ * 弹层，行内只标「这档的报价几何有问题」那几类。无条目 ⇒ `null`。
+ *
+ * 🚨 **#1 交叉报价分支天然是离线专属**（070 FR-006）：实时口径下交叉腿在召回层就被剔出候选，
+ * 压根不成行 ⇒ 判定函数**无需知道档位**，🚫 MUST NOT 为它加 `priceKind` 入参反推档位
+ * （usecase 侧同一条纪律：处置按口径分派、判据不反推）。
  */
 export function legRowInferiorMark(
   leg: Pick<LegResponse, 'strike' | 'dteDays'>,
@@ -300,6 +307,8 @@ export function legRowInferiorMark(
       return 'stale';
     case 'collinear_merged':
       return 'merged';
+    case 'crossed_quote':
+      return 'crossed';
     default:
       return null;
   }
