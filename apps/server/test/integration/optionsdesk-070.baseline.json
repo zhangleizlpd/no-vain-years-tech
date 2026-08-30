@@ -1,0 +1,1104 @@
+{
+  "usRent": {
+    "symbol": "us:MCH",
+    "perspective": "rent",
+    "state": "available",
+    "asOf": "2026-08-10T00:00:00.000Z",
+    "priceKind": "eod_close",
+    "realtimeDegrade": null,
+    "quoteAsOf": "2026-08-10T20:31:07.000Z",
+    "oiAsOf": "2026-08-07T00:00:00.000Z",
+    "lastClosedSession": "2026-08-10",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "MCH-M-92-45",
+        "strike": "92",
+        "expiryDate": "2026-09-25T00:00:00.000Z",
+        "dteDays": 45,
+        "bid": "2.7",
+        "ask": "2.9",
+        "contractPremium": "270",
+        "relativeSpread": "0.071428571428571428571",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.030235162374020156775",
+        "weeklyRate": "0.0047032474804031354984",
+        "annualizedRate": "0.24524076147816349384",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "89.3",
+        "effectiveCostVsWPct": "-25.583333333333333333",
+        "absDelta": 0.2,
+        "sigmaDistance": 0.8416212327266185,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "10800",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-92-90",
+        "strike": "92",
+        "expiryDate": "2026-11-09T00:00:00.000Z",
+        "dteDays": 90,
+        "bid": "4.5",
+        "ask": "4.7",
+        "contractPremium": "450",
+        "relativeSpread": "0.043478260869565217391",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.051428571428571428571",
+        "weeklyRate": "0.004",
+        "annualizedRate": "0.20857142857142857142",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "87.5",
+        "effectiveCostVsWPct": "-27.083333333333333333",
+        "absDelta": 0.25,
+        "sigmaDistance": 0.6744897502234225,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "18000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-96-60",
+        "strike": "96",
+        "expiryDate": "2026-10-10T00:00:00.000Z",
+        "dteDays": 60,
+        "bid": "3",
+        "ask": "3.2",
+        "contractPremium": "300",
+        "relativeSpread": "0.064516129032258064516",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.032258064516129032258",
+        "weeklyRate": "0.0037634408602150537635",
+        "annualizedRate": "0.19623655913978494623",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "93",
+        "effectiveCostVsWPct": "-22.5",
+        "absDelta": 0.4,
+        "sigmaDistance": 0.2533471028599986,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "12000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-92-180",
+        "strike": "92",
+        "expiryDate": "2027-02-07T00:00:00.000Z",
+        "dteDays": 180,
+        "bid": "7.5",
+        "ask": "7.7",
+        "contractPremium": "750",
+        "relativeSpread": "0.026315789473684210526",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.088757396449704142012",
+        "weeklyRate": "0.0034516765285996055227",
+        "annualizedRate": "0.17998027613412228797",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "84.5",
+        "effectiveCostVsWPct": "-29.583333333333333333",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "30000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-96-120",
+        "strike": "96",
+        "expiryDate": "2026-12-09T00:00:00.000Z",
+        "dteDays": 120,
+        "bid": "5",
+        "ask": "5.2",
+        "contractPremium": "500",
+        "relativeSpread": "0.039215686274509803922",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.054945054945054945055",
+        "weeklyRate": "0.0032051282051282051283",
+        "annualizedRate": "0.16712454212454212454",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "91",
+        "effectiveCostVsWPct": "-24.166666666666666667",
+        "absDelta": 0.45,
+        "sigmaDistance": 0.12566134687610298,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "20000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-88-60",
+        "strike": "88",
+        "expiryDate": "2026-10-10T00:00:00.000Z",
+        "dteDays": 60,
+        "bid": "1.55",
+        "ask": "1.75",
+        "contractPremium": "155",
+        "relativeSpread": "0.12121212121212121212",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.017929438982070561018",
+        "weeklyRate": "0.0020917678812415654522",
+        "annualizedRate": "0.10907075380759591286",
+        "tier": "acceptable",
+        "askRate": null,
+        "effectiveCost": "86.45",
+        "effectiveCostVsWPct": "-27.958333333333333333",
+        "absDelta": 0.15,
+        "sigmaDistance": 1.036433390655823,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "6200",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 0,
+      "excludedFromIntentTabs": 0
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 6,
+    "memberCount": 6,
+    "displayLimit": null,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": "103",
+        "dteBand": {
+          "min": 30,
+          "max": 365
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": "103",
+        "dteBand": {
+          "min": 30,
+          "max": 365
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  },
+  "usBuild": {
+    "symbol": "us:MCH",
+    "perspective": "build",
+    "state": "available",
+    "asOf": "2026-08-10T00:00:00.000Z",
+    "priceKind": "eod_close",
+    "realtimeDegrade": null,
+    "quoteAsOf": "2026-08-10T20:31:07.000Z",
+    "oiAsOf": "2026-08-07T00:00:00.000Z",
+    "lastClosedSession": "2026-08-10",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "MCH-M-92-45",
+        "strike": "92",
+        "expiryDate": "2026-09-25T00:00:00.000Z",
+        "dteDays": 45,
+        "bid": "2.7",
+        "ask": "2.9",
+        "contractPremium": "270",
+        "relativeSpread": "0.071428571428571428571",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "weekly",
+        "periodRate": "0.030235162374020156775",
+        "weeklyRate": "0.0047032474804031354984",
+        "annualizedRate": "0.24524076147816349384",
+        "tier": "dead",
+        "askRate": null,
+        "effectiveCost": "89.3",
+        "effectiveCostVsWPct": "-25.583333333333333333",
+        "absDelta": 0.2,
+        "sigmaDistance": 0.8416212327266185,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "10800",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 0,
+      "excludedFromIntentTabs": 0
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 1,
+    "memberCount": 1,
+    "displayLimit": null,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": {
+          "min": 1,
+          "max": 49
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": {
+          "min": 1,
+          "max": 49
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  },
+  "usAll": {
+    "symbol": "us:MCH",
+    "perspective": "all",
+    "state": "available",
+    "asOf": "2026-08-10T00:00:00.000Z",
+    "priceKind": "eod_close",
+    "realtimeDegrade": null,
+    "quoteAsOf": "2026-08-10T20:31:07.000Z",
+    "oiAsOf": "2026-08-07T00:00:00.000Z",
+    "lastClosedSession": "2026-08-10",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "MCH-M-92-45",
+        "strike": "92",
+        "expiryDate": "2026-09-25T00:00:00.000Z",
+        "dteDays": 45,
+        "bid": "2.7",
+        "ask": "2.9",
+        "contractPremium": "270",
+        "relativeSpread": "0.071428571428571428571",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.030235162374020156775",
+        "weeklyRate": "0.0047032474804031354984",
+        "annualizedRate": "0.24524076147816349384",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "89.3",
+        "effectiveCostVsWPct": "-25.583333333333333333",
+        "absDelta": 0.2,
+        "sigmaDistance": 0.8416212327266185,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "10800",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-92-90",
+        "strike": "92",
+        "expiryDate": "2026-11-09T00:00:00.000Z",
+        "dteDays": 90,
+        "bid": "4.5",
+        "ask": "4.7",
+        "contractPremium": "450",
+        "relativeSpread": "0.043478260869565217391",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.051428571428571428571",
+        "weeklyRate": "0.004",
+        "annualizedRate": "0.20857142857142857142",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "87.5",
+        "effectiveCostVsWPct": "-27.083333333333333333",
+        "absDelta": 0.25,
+        "sigmaDistance": 0.6744897502234225,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "18000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-96-60",
+        "strike": "96",
+        "expiryDate": "2026-10-10T00:00:00.000Z",
+        "dteDays": 60,
+        "bid": "3",
+        "ask": "3.2",
+        "contractPremium": "300",
+        "relativeSpread": "0.064516129032258064516",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.032258064516129032258",
+        "weeklyRate": "0.0037634408602150537635",
+        "annualizedRate": "0.19623655913978494623",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "93",
+        "effectiveCostVsWPct": "-22.5",
+        "absDelta": 0.4,
+        "sigmaDistance": 0.2533471028599986,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "12000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-92-180",
+        "strike": "92",
+        "expiryDate": "2027-02-07T00:00:00.000Z",
+        "dteDays": 180,
+        "bid": "7.5",
+        "ask": "7.7",
+        "contractPremium": "750",
+        "relativeSpread": "0.026315789473684210526",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.088757396449704142012",
+        "weeklyRate": "0.0034516765285996055227",
+        "annualizedRate": "0.17998027613412228797",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "84.5",
+        "effectiveCostVsWPct": "-29.583333333333333333",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "30000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-96-120",
+        "strike": "96",
+        "expiryDate": "2026-12-09T00:00:00.000Z",
+        "dteDays": 120,
+        "bid": "5",
+        "ask": "5.2",
+        "contractPremium": "500",
+        "relativeSpread": "0.039215686274509803922",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.054945054945054945055",
+        "weeklyRate": "0.0032051282051282051283",
+        "annualizedRate": "0.16712454212454212454",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "91",
+        "effectiveCostVsWPct": "-24.166666666666666667",
+        "absDelta": 0.45,
+        "sigmaDistance": 0.12566134687610298,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "20000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MCH-M-88-60",
+        "strike": "88",
+        "expiryDate": "2026-10-10T00:00:00.000Z",
+        "dteDays": 60,
+        "bid": "1.55",
+        "ask": "1.75",
+        "contractPremium": "155",
+        "relativeSpread": "0.12121212121212121212",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.017929438982070561018",
+        "weeklyRate": "0.0020917678812415654522",
+        "annualizedRate": "0.10907075380759591286",
+        "tier": "acceptable",
+        "askRate": null,
+        "effectiveCost": "86.45",
+        "effectiveCostVsWPct": "-27.958333333333333333",
+        "absDelta": 0.15,
+        "sigmaDistance": 1.036433390655823,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "6200",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 0,
+      "excludedFromIntentTabs": 0
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 6,
+    "memberCount": 6,
+    "displayLimit": null,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": null,
+        "relativeSpreadMax": null
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": null,
+        "dteBand": null,
+        "relativeSpreadMax": null
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  },
+  "hkRent": {
+    "symbol": "hk:MHK",
+    "perspective": "rent",
+    "state": "available",
+    "asOf": "2026-08-10T00:00:00.000Z",
+    "priceKind": "eod_close",
+    "realtimeDegrade": null,
+    "quoteAsOf": "2026-08-10T20:31:07.000Z",
+    "oiAsOf": "2026-08-07T00:00:00.000Z",
+    "lastClosedSession": "2026-08-11",
+    "source": "eod",
+    "spot": "100",
+    "w": "120",
+    "zone": "buy",
+    "lLevel": "L2",
+    "positionBucket": null,
+    "positionBucketSource": null,
+    "positionBucketSetAt": null,
+    "intent": "pending",
+    "rentDepth": null,
+    "legs": [
+      {
+        "code": "MHK-M-92-45",
+        "strike": "92",
+        "expiryDate": "2026-09-25T00:00:00.000Z",
+        "dteDays": 44,
+        "bid": "2.7",
+        "ask": "2.9",
+        "contractPremium": "270",
+        "relativeSpread": "0.071428571428571428571",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.030235162374020156775",
+        "weeklyRate": "0.0048101394685941158507",
+        "annualizedRate": "0.25081441514812175507",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "89.3",
+        "effectiveCostVsWPct": "-25.583333333333333333",
+        "absDelta": 0.2,
+        "sigmaDistance": 0.8416212327266185,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "10800",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MHK-M-92-90",
+        "strike": "92",
+        "expiryDate": "2026-11-09T00:00:00.000Z",
+        "dteDays": 89,
+        "bid": "4.5",
+        "ask": "4.7",
+        "contractPremium": "450",
+        "relativeSpread": "0.043478260869565217391",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.051428571428571428571",
+        "weeklyRate": "0.0040449438202247191011",
+        "annualizedRate": "0.21091492776886035312",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "87.5",
+        "effectiveCostVsWPct": "-27.083333333333333333",
+        "absDelta": 0.25,
+        "sigmaDistance": 0.6744897502234225,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "18000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MHK-M-96-60",
+        "strike": "96",
+        "expiryDate": "2026-10-10T00:00:00.000Z",
+        "dteDays": 59,
+        "bid": "3",
+        "ask": "3.2",
+        "contractPremium": "300",
+        "relativeSpread": "0.064516129032258064516",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.032258064516129032258",
+        "weeklyRate": "0.0038272279934390377256",
+        "annualizedRate": "0.19956260251503553854",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "93",
+        "effectiveCostVsWPct": "-22.5",
+        "absDelta": 0.4,
+        "sigmaDistance": 0.2533471028599986,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "12000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MHK-M-92-180",
+        "strike": "92",
+        "expiryDate": "2027-02-07T00:00:00.000Z",
+        "dteDays": 179,
+        "bid": "7.5",
+        "ask": "7.7",
+        "contractPremium": "750",
+        "relativeSpread": "0.026315789473684210526",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.088757396449704142012",
+        "weeklyRate": "0.0034709596376979273412",
+        "annualizedRate": "0.18098575253710621136",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "84.5",
+        "effectiveCostVsWPct": "-29.583333333333333333",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "30000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MHK-M-96-120",
+        "strike": "96",
+        "expiryDate": "2026-12-09T00:00:00.000Z",
+        "dteDays": 119,
+        "bid": "5",
+        "ask": "5.2",
+        "contractPremium": "500",
+        "relativeSpread": "0.039215686274509803922",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.054945054945054945055",
+        "weeklyRate": "0.0032320620555914673562",
+        "annualizedRate": "0.16852895004155508357",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "91",
+        "effectiveCostVsWPct": "-24.166666666666666667",
+        "absDelta": 0.45,
+        "sigmaDistance": 0.12566134687610298,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "20000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      },
+      {
+        "code": "MHK-M-88-60",
+        "strike": "88",
+        "expiryDate": "2026-10-10T00:00:00.000Z",
+        "dteDays": 59,
+        "bid": "1.55",
+        "ask": "1.75",
+        "contractPremium": "155",
+        "relativeSpread": "0.12121212121212121212",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.017929438982070561018",
+        "weeklyRate": "0.0021272215741439648666",
+        "annualizedRate": "0.11091941065179245376",
+        "tier": "acceptable",
+        "askRate": null,
+        "effectiveCost": "86.45",
+        "effectiveCostVsWPct": "-27.958333333333333333",
+        "absDelta": 0.15,
+        "sigmaDistance": 1.036433390655823,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "6200",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": true,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true,
+        "bandStatus": null,
+        "priceKind": "eod_close"
+      }
+    ],
+    "gateCounts": {
+      "removedByPremiumFloor": 0,
+      "excludedFromIntentTabs": 0
+    },
+    "candidateCapDropped": 0,
+    "matchedCount": 6,
+    "memberCount": 6,
+    "displayLimit": null,
+    "criteria": {
+      "defaults": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": "103",
+        "dteBand": {
+          "min": 30,
+          "max": 365
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "effective": {
+        "strikeMin": null,
+        "premiumMin": "0.2",
+        "livenessMin": {
+          "oi": 1,
+          "volume": 1
+        },
+        "strikeMax": "103",
+        "dteBand": {
+          "min": 30,
+          "max": 365
+        },
+        "relativeSpreadMax": "0.35"
+      },
+      "outcomes": {
+        "strikeMax": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "strikeMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "dteBand": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "premiumMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "livenessMin": {
+          "state": "default",
+          "excludedCount": 0
+        },
+        "relativeSpreadMax": {
+          "state": "default",
+          "excludedCount": 0
+        }
+      }
+    }
+  }
+}

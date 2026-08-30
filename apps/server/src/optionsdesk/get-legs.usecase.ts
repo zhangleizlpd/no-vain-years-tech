@@ -54,6 +54,7 @@ import {
   RECALL_CANDIDATE_CAP,
   RETRIEVAL_CRITERION_KEYS,
   crossedRemovalsWithinCriteria,
+  isCrossedQuote,
   relativeSpread,
   type CriterionOutcome,
   type PerspectiveCriteria,
@@ -78,6 +79,7 @@ import {
 import {
   marchSelect,
   resolveMarchParams,
+  type MarchMode,
   type MarchParams,
   type MarchVerdict,
 } from './leg-march.rules';
@@ -437,11 +439,22 @@ export interface LegTableView {
   /**
    * 069 每 K 行军判决与审计 (FR-009 / FR-014), 按行权价升序。
    *
-   * 🚨 **只在「实时开态 ∧ 收租视角」有值, 其余恒 `null`** (FR-017 离线零改动 / FR-019 建仓
-   * 零改动的缺省语义): 离线档 (含实时请求整体回落收盘档) / 建仓 / 全腿视角 MUST NOT 出现
-   * 判决 —— `null` 表达「本视角/本档位没有这个概念」, 不是「算了但为空」。
+   * 🚨 **只在「收租视角 ∧ us 市场锚」有值, 其余恒 `null`** (070 FR-001 门控放宽, P4): 069 的
+   * 「实时开态才有判决」整条作废 —— 离线档 (含实时请求整体回落收盘档) 随本片点亮, 处置口径由
+   * 召回层按 `chain.priceKind` 分派 (剔→标, plan §D1)。hk 锚收租 / 建仓 / 全腿恒 `null`
+   * (069 参数系 us 标定; 建仓行军与接货目标反向) —— `null` 表达「本视角/本市场没有这个概念」,
+   * 不是「算了但为空」。
    */
   march: LegMarchStrikeView[] | null;
+  /**
+   * 070 行军模式**被动标示** (FR-009 的 view 半, 契约面归 DTO): φ=意图档界 / θ=年化 argmax,
+   * 值来自 server config (`optionsdeskConfig.marchMode`), UI 不暴露切换。**链级唯一** —— 模式
+   * 是一次请求一个, 挂逐 K 冗余且给「同响应两模式」留不可能态 (plan §D2)。
+   *
+   * 🚨 与 {@link march} 同生共死: `march === null` 时恒 `null` —— 没有判决就没有模式可标,
+   * 独立有值等于把 config 泄漏成语义, 而客户端拿它换文案时照样渲染得出来。
+   */
+  marchMode: MarchMode | null;
 }
 
 @Injectable()
@@ -555,8 +568,10 @@ export class GetLegsUseCase {
       // 🚫 没有 spot 就**解不出**依赖它的条件, MUST NOT 猜一个默认值填进去 (spec Edge Case):
       // 六维全 `null` 表达的是「没有值」, 不是「不限」—— 这一屏本来就没有表可看 (`state` 已说明)。
       criteria: unresolvedCriteria(),
-      // 069: 空壳恒 null —— 连链都没有, 更没有判决 (与「收租实时但整梯无可成交」是两回事)。
+      // 069: 空壳恒 null —— 连链都没有, 更没有判决 (与「收租但整梯无可成交」是两回事)。
       march: null,
+      // 070: 与 march 同生共死 —— 无判决就无模式标示。
+      marchMode: null,
     });
 
     const parsed = parseAnchorTicker(symbol);
@@ -637,18 +652,12 @@ export class GetLegsUseCase {
           rentDepth,
           displayLimit,
         ),
-        // 069 行军选档 (FR-009): 只挂「实时开态 ∧ 收租视角」—— 实时请求整体回落收盘档时
-        // `chain.priceKind === 'eod_close'` ⇒ 恒 null (FR-017 离线零改动的机器语义)。判决在
-        // **排序旁路**装配: 吃的是候选集 (截断前), 不碰 legs 行序 (FR-018)。
-        march:
-          perspective === 'rent' && chain.priceKind === 'realtime'
-            ? assembleMarchByStrike(
-                pool,
-                retrieval.removedByCrossedQuote,
-                retrieval.criteriaByTab.rent.effective,
-                resolveMarchParams(this.optionsdesk.marchPhiTier, this.optionsdesk.marchMode),
-              )
-            : null,
+        // 069 行军选档 (FR-009) → 070 门控放宽 (FR-001, P4): 「收租视角 ∧ us 市场锚」——
+        // 档位退出门控, 只决定召回层的处置口径 (剔→标按 chain.priceKind 分派, plan §D1);
+        // 实时请求整体回落收盘档随离线口径一并点亮 (回落态呈现即收盘档语义)。hk 恒 null
+        // (069 四参数系 us 收盘分布标定, clarify 裁决)。判决仍在**排序旁路**装配: 吃的是
+        // 候选集 (截断前), 不碰 legs 行序 (FR-013 / 069 FR-018)。
+        ...this.marchBlock(perspective, parsed.market, retrieval, pool),
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -676,6 +685,33 @@ export class GetLegsUseCase {
       select: { earningsDate: true },
     });
     return earnings.map((e) => dateOnlyOf(e.earningsDate));
+  }
+
+  /**
+   * 070 行军判决块 (FR-001 门控放宽): `收租 ∧ us` 有值, 其余恒双 null。
+   *
+   * 🚨 **门控不看档位** —— 处置口径 (剔→标) 已在召回层按 `chain.priceKind` 落定 (plan §D1),
+   * 判决对两档吃的是同一批候选 + 同一份留痕; 🚫 MUST NOT 在这里按 `realtime` 入参或档位再设
+   * 一道闸 (反推档位正是 usecase 上方那条既有禁令要拦的)。
+   * 🚨 `marchMode` 与 `march` 同出同 null: 分开产出会让「无判决但有模式标示」这个不可能态
+   * 变成可能, 而它渲染得出来。
+   */
+  private marchBlock(
+    perspective: LegTab,
+    market: string,
+    retrieval: LegRetrievalResult,
+    pool: readonly LegCandidate[],
+  ): Pick<LegTableView, 'march' | 'marchMode'> {
+    if (perspective !== 'rent' || market !== 'us') return { march: null, marchMode: null };
+    return {
+      march: assembleMarchByStrike(
+        pool,
+        retrieval.removedByCrossedQuote,
+        retrieval.criteriaByTab.rent.effective,
+        resolveMarchParams(this.optionsdesk.marchPhiTier, this.optionsdesk.marchMode),
+      ),
+      marchMode: this.optionsdesk.marchMode,
+    };
   }
 
   /**
@@ -946,6 +982,10 @@ function assembleMarchByStrike(
   };
 
   for (const { leg } of pool) {
+    // 070 剔→标: 收盘口径下交叉腿保留在 pool (照常成行), 但 MUST NOT 进 fwd 阶梯 —— 净链除名
+    // 与 #1 审计归下方护栏留痕那一路 (进这里会双计 `ladderCount` 且拿交叉价污染 fwd)。判据仍
+    // 是 `isCrossedQuote` 单点; 实时口径下交叉腿结构上不在 pool, 本分支恒不触发。
+    if (isCrossedQuote(leg.bid, leg.ask)) continue;
     const bucket = bucketOf(leg.strike);
     if (leg.bandStatus === 'out') {
       // #12 带外横档: 保留比价、非候选 ⇒ 进审计不进净链。带下限不随行下发 ⇒ 证据只带 |Δ|
