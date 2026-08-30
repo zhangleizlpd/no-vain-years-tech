@@ -15,6 +15,7 @@
  * | 7 | 六维成员判据只住 `leg-recall.rules.ts` | **词表**扫描 | 052 FR-003 |
  * | 8 | **客户端零处自算检索条件默认值** | **词表 + 算式形状**扫描 | 052 FR-011 / Guardrail 6 |
  * | 9 | 068 窗判据只住 `leg-delta-surface` / `leg-window` | **形状**扫描 ×2 + pad **子串** | 068 FR-002 / SC-004 |
+ * | 10 | 069 行军形状参数 β/γ 只住 `leg-march.rules.ts` | 字面量**子串扫描** | 069 FR-010 / plan D4 |
  *
  * 🚨 **#5/#6/#7 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
  * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
@@ -66,6 +67,13 @@ const RULES_FILE = 'anchor.rules.ts';
 const RECALL_RULES_FILE = 'leg-recall.rules.ts';
 /** 050 打标层：两组 Δ 带的唯一落点。 */
 const MARK_RULES_FILE = 'leg-mark.rules.ts';
+/** 069 行军层：β/γ 形状参数的唯一落点（不变量 #10）。 */
+const MARCH_RULES_FILE = 'leg-march.rules.ts';
+/**
+ * 行军层可入子串扫描的小数参数个数（β / γ）—— `RENT_MARCH_OI_MIN` 是整数，进不了子串扫描
+ * （同 #2「整数当子串扫会把行号 / 数组下标全扫成违规」那条限制），单点性靠 review 守。
+ */
+const MARCH_THRESHOLD_COUNT = 2;
 /** 052 检索 port：接口只暴露业务语义（FR-031）。 */
 const RETRIEVAL_PORT_FILE = 'leg-retrieval.port.ts';
 /** 052 粗排层：当前为恒等函数，函数体零判据（FR-004 / ADR-0064 决策 1）。 */
@@ -209,6 +217,43 @@ export function recallSelfProbe(recallSource: string, thresholds: string[]): str
   const missing = thresholds.filter((t) => !code.includes(t));
   if (missing.length > 0) {
     return `${RECALL_RULES_FILE} 自身不含 ${missing.join(' / ')} —— 抽取与扫描口径不一致`;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 069 不变量 #10 —— 行军形状参数（子串扫描，被禁字面量自 leg-march.rules.ts 派生）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 从 `leg-march.rules.ts` 源码抽出 β/γ 两个小数参数（体例同 {@link extractRecallThresholds}）。 */
+export function extractMarchThresholds(marchSource: string): string[] {
+  const code = stripComments(marchSource);
+  const patterns = [
+    /export\s+const\s+MARCH_DECAY_REBOUND_BETA\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
+    /export\s+const\s+MARCH_DECAY_ABSOLUTE_CAP_GAMMA\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/,
+  ];
+  return patterns.map((re) => re.exec(code)?.[1]).filter((v): v is string => v !== undefined);
+}
+
+/** 同 {@link recallSelfProbe}：数量 + 整数不可扫 + 自身命中三道自检。 */
+export function marchSelfProbe(marchSource: string, thresholds: string[]): string | null {
+  if (thresholds.length !== MARCH_THRESHOLD_COUNT) {
+    return (
+      `只从 ${MARCH_RULES_FILE} 抽到 ${thresholds.length} / ${MARCH_THRESHOLD_COUNT} 个行军参数 ` +
+      `—— 常量写法变了？检查已变成平凡绿，必须先修抽取`
+    );
+  }
+  const integral = thresholds.filter((t) => !t.includes('.'));
+  if (integral.length > 0) {
+    return (
+      `行军参数 ${integral.join(' / ')} 被写成整数 —— 整数当子串扫会把行号 / 数组下标全扫成违规。` +
+      `MUST 写成带小数点的形态（如 '2.0'），🚫 MUST NOT 放宽本检查`
+    );
+  }
+  const code = stripComments(marchSource);
+  const missing = thresholds.filter((t) => !code.includes(t));
+  if (missing.length > 0) {
+    return `${MARCH_RULES_FILE} 自身不含 ${missing.join(' / ')} —— 抽取与扫描口径不一致`;
   }
   return null;
 }
@@ -826,6 +871,37 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 069 不变量 #10 —— 行军形状参数 β/γ 只住 leg-march.rules.ts ─────────────
+  const marchPath = join(ctxPath, MARCH_RULES_FILE);
+  if (!existsSync(marchPath)) {
+    console.error(`❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${MARCH_RULES_FILE}`);
+    process.exit(1);
+  }
+  const marchSource = readFileSync(marchPath, 'utf8');
+  const marchThresholds = extractMarchThresholds(marchSource);
+  const marchProbeFailure = marchSelfProbe(marchSource, marchThresholds);
+  if (marchProbeFailure) {
+    console.error(`❌ check-optionsdesk-rule-constants: 行军参数探针失败 —— ${marchProbeFailure}`);
+    process.exit(1);
+  }
+  const marchOffenders = findOffenders(
+    nonSpec.filter((f) => f.name !== MARCH_RULES_FILE),
+    [...new Set(marchThresholds)],
+  );
+  if (marchOffenders.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— 行军参数被硬编码在 ${MARCH_RULES_FILE} 以外：\n`,
+    );
+    for (const { name, literals } of marchOffenders) {
+      console.error(`  - ${CTX_DIR}/${name}: ${literals.join(' / ')}`);
+    }
+    console.error(
+      `\nFix: 从 ${MARCH_RULES_FILE} import 常量（β/γ 是 T011 标定要调的策略参数）。撞值时改取值，` +
+        '\n     🚫 MUST NOT 放宽本检查（同 #2 那条纪律）。',
+    );
+    process.exit(1);
+  }
+
   console.log(
     `✅ check-optionsdesk-rule-constants: ${siblings.length} 个同级 .ts 零命中 —— ` +
       `档位系数 (${forbidden.join(' / ')}) 只住在 ${RULES_FILE}；` +
@@ -833,6 +909,7 @@ function main(): void {
       `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
       `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec；` +
       `六维成员判据零外溢；窗判据（Δ 带形状 / 内联系数形状 / pad '${pad}'）只住 ${DELTA_SURFACE_FILE} / ${WINDOW_RULES_FILE}；` +
+      `行军参数 (${marchThresholds.join(' / ')}) 只住 ${MARCH_RULES_FILE}；` +
       `${MOBILE_CTX_DIR} 的 ${mobileFiles.length} 个文件零处自算默认值。`,
   );
 }

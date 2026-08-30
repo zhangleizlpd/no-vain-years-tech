@@ -11,6 +11,7 @@ import {
   coarseProbe,
   DTE_BOUND_RE,
   extractCoefficients,
+  extractMarchThresholds,
   extractRecallThresholds,
   findOffenders,
   findShapeHits,
@@ -18,6 +19,7 @@ import {
   findStorageVocab,
   MEMBERSHIP_PREDICATE_RE,
   membershipProbe,
+  marchSelfProbe,
   recallSelfProbe,
   selfProbe,
   shapePatternProbe,
@@ -444,5 +446,40 @@ describe('068 不变量 #9 —— 窗判据单点', () => {
     expect(
       findShapeHits('.times(QUALITY_CEILING_SPOT_RATIO.plus(1))', INLINE_COEFFICIENT_RE),
     ).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 069 不变量 #10 —— 行军形状参数
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 镜像 leg-march.rules.ts 的两处参数声明（只留检查关心的形状；取值蓄意与实装不同）。 */
+const MARCH_SOURCE = `
+import { Prisma } from '../generated/prisma/client';
+
+/** 形状条件的衰减比例帽 β。 */
+export const MARCH_DECAY_REBOUND_BETA = new Prisma.Decimal('1.7');
+
+/** 形状条件的绝对帽 γ。 */
+export const MARCH_DECAY_ABSOLUTE_CAP_GAMMA = new Prisma.Decimal('0.004');
+`;
+
+describe('extractMarchThresholds —— 069 不变量 #10', () => {
+  it('抽出 β / γ 两个参数', () => {
+    expect(extractMarchThresholds(MARCH_SOURCE)).toEqual(['1.7', '0.004']);
+  });
+
+  it('常量改名 ⇒ 抽取缺项, 探针报「平凡绿」', () => {
+    const renamed = MARCH_SOURCE.replace('MARCH_DECAY_REBOUND_BETA', 'BETA_RENAMED');
+    expect(marchSelfProbe(renamed, extractMarchThresholds(renamed))).toMatch(/平凡绿/);
+  });
+
+  it('参数写成整数 ⇒ 探针硬拦 (整数不可子串扫)', () => {
+    const integral = MARCH_SOURCE.replace("'1.7'", "'2'");
+    expect(marchSelfProbe(integral, extractMarchThresholds(integral))).toMatch(/整数/);
+  });
+
+  it('健康源自检通过', () => {
+    expect(marchSelfProbe(MARCH_SOURCE, extractMarchThresholds(MARCH_SOURCE))).toBeNull();
   });
 });
