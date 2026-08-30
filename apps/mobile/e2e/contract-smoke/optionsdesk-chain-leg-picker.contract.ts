@@ -1485,6 +1485,8 @@ function assertLegKeySetClosed(leg: LegResponse): void {
       'turnover',
       'volume',
       'weeklyRate',
+      // 071 FR-005：宽价差机会标 —— 这条腿是从点差维度的机会支进来的（收租视角以外恒 false）。
+      'wideSpreadOpportunity',
     ],
     `legs[${leg.code}]: 腿级键集封闭 —— 每腿 tabs / tierByTab / activityByTab 确实不再出现（SC-002）`,
   );

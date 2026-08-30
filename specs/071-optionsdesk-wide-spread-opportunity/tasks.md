@@ -75,10 +75,10 @@ updated_at: '2026-08-31'
 
 - [X] T009 [Server-IT] **state_branches 穷举**（US1/US2/US3; state_branches 1–9）：新建 `optionsdesk-071.wide-spread.it.spec.ts`，真 DI + Testcontainers，9 条分支各一 `it()`（含建仓排除、全腿不触发、交叉报价、离线/实时同判据、覆盖上界后标不变） → verify: `pnpm nx test server --testPathPattern=optionsdesk-071` 全绿
 
-- [ ] T010 [Contract-Smoke] **契约冒烟**（FR-005 / SC-005）：新建 `071-wide-spread.contract.ts`，断言收租响应带标行同时给得出 `bid` / `ask` / `relativeSpread` → verify: 契约冒烟套件绿
+- [X] T010 [Contract-Smoke] **契约冒烟**（FR-005 / SC-005）：新建 `071-wide-spread.contract.ts`，断言收租响应带标行同时给得出 `bid` / `ask` / `relativeSpread` → verify: 契约冒烟套件绿
 
 - [X] T011 [Server] **SC-003 回放留档**（SC-003 / SC-004）：用 local-only 取证脚本对 `2026-08-28` 全量复跑，确认候选 852 → 930、推荐 70 → 75、零丢失 → verify: 数字回写 spec §标定实测；与本文 spec 表逐值一致
 
-- [ ] T012 [Docs] **ADR-0068 amend + issue 收口**（plan §D6）：§决策 3 加机会支一条（判据 / 档界引用 / 收租限定 / 两档一律）、§7 修订表加行、§后果补 P5；issue #298 四条待办勾掉并注明落点 → verify: 交叉引用可达；`docs/` 相关链接无死链
+- [X] T012 [Docs] **ADR-0068 amend + issue 收口**（plan §D6）：§决策 3 加机会支一条（判据 / 档界引用 / 收租限定 / 两档一律）、§7 修订表加行、§后果补 P5；issue #298 四条待办勾掉并注明落点 → verify: 交叉引用可达；`docs/` 相关链接无死链
 
-- [ ] T013 [Gate] **全量回归 + PR**：`pnpm nx affected -t typecheck test lint` → verify: 全绿；PR body 走模板、`Closes #298`
+- [X] T013 [Gate] **全量回归 + PR**：`pnpm nx affected -t typecheck test lint` → verify: 全绿；PR body 走模板、`Closes #298`

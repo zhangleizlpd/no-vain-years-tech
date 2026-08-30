@@ -80,7 +80,8 @@ const BASELINE_PATH = join(process.cwd(), 'test/integration/optionsdesk-070.base
 const WRITE_BASELINE = process.env.NVY_070_WRITE_BASELINE === '1';
 
 /**
- * 🚨 **`march` (069 既有键, 本片离线从恒 null 转有值) / `marchMode` (本片新增键) 逐个剔除**:
+ * 🚨 **`march` (069 既有键, 本片离线从恒 null 转有值) / `marchMode` (本片新增键) /
+ * `wideSpreadOpportunity` (071 新增腿级键) 逐个剔除**:
  * 它们是本 feature 的蓄意产出而不是回归。⇒ 基线夹具**保持冻结**在 070 接线之前那一份, 断言退成
  * 「除了这两个蓄意变动的键, 其余逐字符相同」—— 这正是 FR-012「既有字段逐值不变」与 FR-006
  * 「成员集恒等」的机器化 (`legs` 数组含在其中 ⇒ 行集合与行序一并钉死)。
@@ -91,7 +92,8 @@ function stable(value: unknown): string {
   return JSON.stringify(
     value,
     (key, v: unknown) => {
-      if (key === 'march' || key === 'marchMode') return undefined;
+      if (key === 'march' || key === 'marchMode' || key === 'wideSpreadOpportunity')
+        return undefined;
       return typeof v === 'bigint' ? v.toString() : v;
     },
     2,

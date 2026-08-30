@@ -257,7 +257,10 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
     // 深度实值: K=150 > spot ⇒ 收租被**成色上界**挡 (上界 136.372); 建仓过得去 (成本 132 < spot)。
     { code: 'P-ITM', dte: 35, strike: '150', bid: '18.00', ask: '19.00', oi: '900', vol: '40' },
     // 价差宽: rel = 3 / 4.5 = 0.667 > 0.35 ⇒ 被**流动性门槛**挡出两个意图视角。
-    { code: 'P-WIDE', dte: 35, strike: '120', bid: '3.00', ask: '6.00', oi: '900', vol: '40' },
+    // 🚨 `bid` 蓄意压到 1.00（年化 < 收租 good 档界）—— 071 起 bid 年化达档的宽价差腿走
+    // **机会支**进收租候选（071 FR-001），那样这条腿就不再「被流动性门槛挡下」，本组断言的
+    // 判据面会被换掉；机会支自身的分支在 optionsdesk-071.wide-spread.it.spec.ts 逐条验。
+    { code: 'P-WIDE', dte: 35, strike: '120', bid: '1.00', ask: '6.00', oi: '900', vol: '40' },
     // DTE 400: 两个意图**期限段**都够不着。
     { code: 'P-LONG', dte: 400, strike: '118', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
     // 对照: 各条件全过。

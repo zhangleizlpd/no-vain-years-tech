@@ -200,7 +200,10 @@ describe('052 检索层 (Testcontainers PG)', () => {
       //    建仓过得去 (有效成本 150 − 18 = 132 < spot)。年化虚高 —— 正是本片要压下去的那类。
       { code: 'P-ITM', dte: 35, strike: '150', bid: '18.00', ask: '19.00', oi: '900', vol: '40' },
       // ② 价差宽: rel = 3 / 4.5 = 0.667 > 0.35 ⇒ 被**流动性门槛**挡出两个意图视角。
-      { code: 'P-WIDE', dte: 35, strike: '120', bid: '3.00', ask: '6.00', oi: '900', vol: '40' },
+      // 🚨 `bid` 蓄意压到 1.00（年化 < 收租 good 档界）—— 071 起 bid 年化达档的宽价差腿走
+      // **机会支**进收租候选（071 FR-001），那样这条腿就不再「被流动性门槛挡下」，本组断言的
+      // 判据面会被换掉；机会支自身的分支在 optionsdesk-071.wide-spread.it.spec.ts 逐条验。
+      { code: 'P-WIDE', dte: 35, strike: '120', bid: '1.00', ask: '6.00', oi: '900', vol: '40' },
       // ③ DTE 400: 两个意图**期限段**都够不着。
       { code: 'P-LONG', dte: 400, strike: '118', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
       // ④ 对照: 各条件全过。
@@ -493,7 +496,10 @@ describe('052 检索层 (Testcontainers PG)', () => {
     // ⑨ 权利金低于下限 (spot 132.40 ⇒ 下限 0.2383) ⇒ **整条移出**, 三视角都看不见。
     { code: 'G-CHEAP', dte: 35, strike: '120', bid: '0.01', ask: '0.05', oi: '900', vol: '40' },
     // ⑩⑪ 相对价差 3 / 4.5 = 0.667 > 0.35 ⇒ 出两个意图视角, **仍在全腿**。
-    { code: 'G-WIDE', dte: 35, strike: '119', bid: '3.00', ask: '6.00', oi: '900', vol: '40' },
+    // 🚨 `bid` 蓄意压到 1.00（年化 < 收租 good 档界）—— 071 起 bid 年化达档的宽价差腿走
+    // **机会支**进收租候选（071 FR-001），那样这条腿就不再「被流动性门槛挡下」，本组断言的
+    // 判据面会被换掉；机会支自身的分支在 optionsdesk-071.wide-spread.it.spec.ts 逐条验。
+    { code: 'G-WIDE', dte: 35, strike: '119', bid: '1.00', ask: '6.00', oi: '900', vol: '40' },
     // Edge Case: greeks 缺失 ⇒ 照常进候选 (Δ 已降级为打标量, 继承 050 FR-009)。
     { code: 'G-NOGREEKS', dte: 35, strike: '117', bid: '3.00', ask: '3.20', oi: '900', vol: '40', greeksComplete: false }, // prettier-ignore
     // 对照: 各条件全过。

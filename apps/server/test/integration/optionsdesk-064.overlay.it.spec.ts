@@ -70,6 +70,15 @@ import type { LegChainSnapshot } from '../../src/optionsdesk/leg-retrieval.port'
  * `optionsdesk-064.baseline.json` 是**在 T003 动 src 之前**跑本文件、由
  * `NVY_064_WRITE_BASELINE=1` 写出的一份快照。之后它只读不写: 任何一处输出变了都会在这里逐字符
  * 红。要重新生成 (仅当**蓄意**改变输出契约时) 就带那个 env 再跑一次, 并在 PR 里说明为什么。
+ *
+ * ⚠️ **2026-08-31 (071) 唯一一次重生成**, 理由与逐行核对留档:
+ * 本夹具的 `L-WIDE` (K=85 / bid 3 / ask 6 / DTE 35) 相对价差 0.667 > 上界、而 bid 年化 38.2%
+ * **达收租 good 档** ⇒ 071 的宽价差机会支正是为它这类腿开的, 它自此进收租候选。这不是回归,
+ * 是本片蓄意改变的成员语义 (ADR-0068 §决策 7)。
+ * 🚨 **重生成前逐行核对过 diff**: 全部改动 = `legs:rent` 增 `L-WIDE` 一行 + 由它直接派生的四个
+ * 数 (`excludedFromIntentTabs 1→0` / `matchedCount`、`memberCount 1→2` / 该 tier 桶的
+ * `legCount`、`best`、`runnerUp`)。**既有字段的值零改动** —— `SC-005` 要的那个问题在本次仍有
+ * 答案。🚫 下次再撞上别照抄这条: 先看 diff 是不是同样只含「本片蓄意语义」的直接派生。
  */
 
 /** 本批实时报价的**我方采集时刻** (信封 `as_of`) —— 与库内 `quote_as_of` 蓄意不同刻。 */
@@ -127,7 +136,7 @@ const WRITE_BASELINE = process.env.NVY_064_WRITE_BASELINE === '1';
  * `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。
  *
  * 🚨 **`priceKind` (064 T007) / `realtimeDegrade` (064 T007a) / `bandStatus` (068 T007) /
- * `march` (069 T006) / `marchMode` (070 T002) 逐个
+ * `march` (069 T006) / `marchMode` (070 T002) / `wideSpreadOpportunity` (071 T006) 逐个
  * 剔除**: 蓄意给两个读端点的出参**新增**的键, 它们是各自 feature 的产出而不是回归。⇒ 基线夹具
  * **保持冻结**在 064 之前那一份, 断言退成「除了这两个蓄意新增的键, 其余逐字符相同」。
  * 🚫 **MUST NOT 改成重新生成一份基线** —— 重生成会把「既有字段的值有没有被改动」这个问题一起
@@ -143,7 +152,8 @@ function stable(value: unknown): string {
         key === 'realtimeDegrade' ||
         key === 'bandStatus' ||
         key === 'march' ||
-        key === 'marchMode'
+        key === 'marchMode' ||
+        key === 'wideSpreadOpportunity'
       )
         return undefined;
       return typeof v === 'bigint' ? v.toString() : v;
