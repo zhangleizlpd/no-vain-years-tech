@@ -20,17 +20,22 @@ export interface DeltaBand {
 }
 
 /**
- * 建仓/收租两带 + pad —— **占位值, 标定在 068 T010** (回放判据: 零漏腿定 pad, 带下限 =
- * 权利金地板可行域下沿)。🚫 MUST NOT 在第二处出现这些数字 (进 `check-optionsdesk-rule-constants`
- * 守卫表, 同 052 阈值纪律)。
+ * 建仓/收租两带 + pad —— **2026-08-30 T010 全量回放定稿** (109 锚双期, 判据与分布见 spec
+ * §标定实测; 带即规则口径 = user 裁决):
+ * · build [0.10, 0.45] —— 窄执行带: 深实值折价接货腿 (|Δ|>0.45) 归离线宽视野, 盘中不进窄表。
+ * · rent [0.03, 0.62] —— 上探到成色上界隐含 Δ (贴 min(spot,W)×1.03 的轻实值腿 Δ≈0.5-0.57),
+ *   下探过真候选 p01 (0.032); 更深的边缘深虚 (实测仅 4 条 |Δ|<0.024) 蓄意不含。
+ * · pad 0.025 —— sticky moneyness 双期漂移零漏的标定值。
+ * 🚫 MUST NOT 在第二处出现这些参数 (`check-optionsdesk-rule-constants` #9 形状扫守带对象,
+ * pad 子串扫; 调参只改这里)。
  */
 export const BUILD_DELTA_BAND: DeltaBand = {
   lower: new Prisma.Decimal('0.10'),
   upper: new Prisma.Decimal('0.45'),
 };
 export const RENT_DELTA_BAND: DeltaBand = {
-  lower: new Prisma.Decimal('0.05'),
-  upper: new Prisma.Decimal('0.32'),
+  lower: new Prisma.Decimal('0.03'),
+  upper: new Prisma.Decimal('0.62'),
 };
 export const MONEYNESS_PAD_RATIO = new Prisma.Decimal('0.025');
 

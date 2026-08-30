@@ -522,7 +522,12 @@ function main(): void {
     process.exit(1);
   }
 
-  const offenders = findOffenders(siblings, forbidden);
+  // 📌 #1 的面同样豁免 `leg-delta-surface.rules.ts`（068 T010 撞值登记, 与下方 #2 同一条理由）:
+  // rent 带上界 0.62 含子串 0.6（ZONE_FLOOR_COEFFICIENT）—— 取值巧合, 该文件参数由 #9 守。
+  const offenders = findOffenders(
+    siblings.filter((f) => f.name !== DELTA_SURFACE_FILE),
+    forbidden,
+  );
   if (offenders.length > 0) {
     console.error(
       `❌ check-optionsdesk-rule-constants failed —— 档位系数被硬编码在 ${RULES_FILE} 以外：\n`,
@@ -559,7 +564,13 @@ function main(): void {
 
   // 🚨 扫描面排除 `*.spec.ts`（与上面 #1 的不对称是蓄意的，理由见文件头）。
   const nonSpec = siblings.filter((f) => !f.name.endsWith('.spec.ts'));
-  const outsideRecall = nonSpec.filter((f) => f.name !== RECALL_RULES_FILE);
+  // 📌 #2 的面显式豁免 `leg-delta-surface.rules.ts`（068 T010 撞值登记）：rent 带下界 0.03 与
+  // `QUALITY_CEILING_SPOT_RATIO` 同值是**两个独立参数的取值巧合**（同 052「LIQUIDITY_TIER_BOUNDS[1]
+  // 与 ACTIVITY_ABSOLUTE_FLOOR 同为 100」先例）——该文件自身的参数由 #9 形状扫 + pad 子串守，
+  // 🚫 MUST NOT 因巧合把其一改成引用另一个。
+  const outsideRecall = nonSpec.filter(
+    (f) => f.name !== RECALL_RULES_FILE && f.name !== DELTA_SURFACE_FILE,
+  );
 
   const thresholdOffenders = findOffenders(outsideRecall, [...new Set(thresholds)]);
   if (thresholdOffenders.length > 0) {

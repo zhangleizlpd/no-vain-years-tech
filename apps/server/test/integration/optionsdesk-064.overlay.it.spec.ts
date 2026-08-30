@@ -126,8 +126,8 @@ const WRITE_BASELINE = process.env.NVY_064_WRITE_BASELINE === '1';
 /**
  * `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。
  *
- * 🚨 **`priceKind` (064 T007) 与 `realtimeDegrade` (064 T007a) 逐个剔除**: `FR-009` / `FR-010`
- * 蓄意给两个读端点的出参**新增**了这两个键, 它们是本 feature 的产出而不是回归。⇒ 基线夹具
+ * 🚨 **`priceKind` (064 T007) / `realtimeDegrade` (064 T007a) / `bandStatus` (068 T007) 逐个
+ * 剔除**: 蓄意给两个读端点的出参**新增**的键, 它们是各自 feature 的产出而不是回归。⇒ 基线夹具
  * **保持冻结**在 064 之前那一份, 断言退成「除了这两个蓄意新增的键, 其余逐字符相同」。
  * 🚫 **MUST NOT 改成重新生成一份基线** —— 重生成会把「既有字段的值有没有被改动」这个问题一起
  * 抹掉 (新旧两份都是本次跑出来的, 逐字符自然相同), 而 `SC-005` 要的正是那个问题的答案。
@@ -137,7 +137,8 @@ function stable(value: unknown): string {
   return JSON.stringify(
     value,
     (key, v: unknown) => {
-      if (key === 'priceKind' || key === 'realtimeDegrade') return undefined;
+      if (key === 'priceKind' || key === 'realtimeDegrade' || key === 'bandStatus')
+        return undefined;
       return typeof v === 'bigint' ? v.toString() : v;
     },
     2,

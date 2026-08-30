@@ -160,9 +160,10 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
   }
 
   /**
-   * 五条腿铺出一个可判别的昨日 Δ 面 (昨日 spot = 100, |Δ| 随 K 升单调升):
-   * K=80 |Δ|=0.06 (带下) / K=88 |Δ|=0.15 (带内) / K=92 |Δ|=0.25 (带内) /
-   * K=96 |Δ|=0.42 (带上) / K=104 |Δ|=0.60 (深度带外)。DTE 全落收租段。
+   * 五条腿铺出一个可判别的昨日 Δ 面 (昨日 spot = 100, |Δ| 随 K 升单调升; 定稿带 rent
+   * [0.03, 0.62] / build [0.10, 0.45]):
+   * K=80 |Δ|=0.02 (双带带下) / K=88 |Δ|=0.15 (双带带内) / K=92 |Δ|=0.25 (双带带内) /
+   * K=96 |Δ|=0.55 (仅 rent 带内) / K=104 |Δ|=0.70 (双带带外)。DTE 全落收租段。
    */
   const LEGS: readonly SeedLeg[] = [
     {
@@ -173,7 +174,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       ask: '1.00',
       oi: '900',
       vol: '40',
-      delta: '-0.06',
+      delta: '-0.02',
     },
     {
       code: 'T-88',
@@ -203,7 +204,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       ask: '3.10',
       oi: '900',
       vol: '40',
-      delta: '-0.42',
+      delta: '-0.55',
     },
     {
       code: 'T-104',
@@ -213,7 +214,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       ask: '5.60',
       oi: '900',
       vol: '40',
-      delta: '-0.60',
+      delta: '-0.70',
     },
   ];
 
@@ -453,10 +454,10 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       const result = await retrieve(true);
       expect(result).not.toBeNull();
       expect(readPort.calls).toHaveLength(1);
-      // RENT 带 [0.05, 0.32] 对昨日面 {80:0.06, 88:0.15, 92:0.25, 96:0.42, 104:0.60}
-      // ⇒ 落带 K = {80, 88, 92}, 包络 ±pad 后 96/104 仍在窗外。
-      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['T-80', 'T-88', 'T-92']);
-      expect(codesOf(result!)).toEqual(['T-80', 'T-88', 'T-92']);
+      // RENT 带 [0.03, 0.62] 对昨日面 {80:0.02, 88:0.15, 92:0.25, 96:0.55, 104:0.70}
+      // ⇒ 落带 K = {88, 92, 96}, 包络 ±pad 后 80/104 仍在窗外 (104 另被 W 帽外的比例项罩住)。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['T-88', 'T-92', 'T-96']);
+      expect(codesOf(result!)).toEqual(['T-88', 'T-92', 'T-96']);
       // 第二段吃实时值: 链级 spot = 批内标的行 (非库内 spot / 非定窗基准)。
       expect(result!.chain.priceKind).toBe('realtime');
       expect(result!.chain.spot.toString()).toBe(new Prisma.Decimal(REALTIME_SPOT).toString());
@@ -468,25 +469,25 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
     it('② 带标: 同批实时 Δ 落带 ⇒ in, 未落 ⇒ out 且**仍在候选中** (打标不删)', async () => {
       await seedChain({ basis: FRESH_BASIS });
       readPort.respond = realtimeBatch({
-        'T-80': { delta: '-0.04' },
         'T-88': { delta: '-0.20' },
-        'T-92': { delta: '-0.31' },
+        'T-92': { delta: '-0.65' },
+        'T-96': { delta: '-0.30' },
       });
 
       const result = await retrieve(true);
       const byCode = new Map(result!.candidates.map((c) => [c.leg.code, c.leg]));
-      expect(byCode.get('T-80')?.bandStatus).toBe('out');
+      expect(byCode.get('T-92')?.bandStatus).toBe('out');
       expect(byCode.get('T-88')?.bandStatus).toBe('in');
-      expect(byCode.get('T-92')?.bandStatus).toBe('in');
-      expect(byCode.has('T-80')).toBe(true);
+      expect(byCode.get('T-96')?.bandStatus).toBe('in');
+      expect(byCode.has('T-92')).toBe(true);
     });
 
     it('③ 规则内无腿 ⇒ 既有「有链无候选」形态非错误 (branch 12)', async () => {
       await seedChain({ basis: FRESH_BASIS });
       readPort.respond = realtimeBatch({
-        'T-80': { bid: '0.01', ask: '0.03' },
         'T-88': { bid: '0.01', ask: '0.03' },
         'T-92': { bid: '0.01', ask: '0.03' },
+        'T-96': { bid: '0.01', ask: '0.03' },
       });
 
       const result = await retrieve(true);
@@ -510,9 +511,9 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(build).not.toBeNull();
       expect(rent).not.toBeNull();
       expect(readPort.calls).toHaveLength(2);
-      // BUILD 带 [0.10, 0.45] ⇒ {88, 92, 96}; RENT 带 [0.05, 0.32] ⇒ {80, 88, 92}。
-      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['O-88', 'O-92', 'O-96']);
-      expect([...readPort.calls[1].contractCodes].sort()).toEqual(['O-80', 'O-88', 'O-92']);
+      // BUILD 带 [0.10, 0.45] ⇒ {88, 92}; RENT 带 [0.03, 0.62] ⇒ {88, 92, 96}。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['O-88', 'O-92']);
+      expect([...readPort.calls[1].contractCodes].sort()).toEqual(['O-88', 'O-92', 'O-96']);
       expect(build!.chain.quoteAsOf.getTime()).not.toBe(rent!.chain.quoteAsOf.getTime());
     });
 
@@ -521,7 +522,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       readPort.respond = realtimeBatch({}, REALTIME_SPOT, ['T-88']);
 
       const result = await retrieve(true);
-      expect(codesOf(result!)).toEqual(['T-80', 'T-92']);
+      expect(codesOf(result!)).toEqual(['T-92', 'T-96']);
       // 没被回答的腿 MUST NOT 被计成「被门槛移出」—— 那是「真实、可读、且完全错的数」。
       expect(result!.removedByPremiumFloor).toBe(0);
       expect(warnings.some((line) => line.includes('partial_miss'))).toBe(true);
@@ -533,10 +534,10 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
 
       const override: RetrievalOverride = {
         perspective: 'rent',
-        criteria: { strikeMax: new Prisma.Decimal('85') },
+        criteria: { strikeMax: new Prisma.Decimal('90') },
       };
       const result = await retrieve(true, 'rent', override);
-      expect(codesOf(result!)).toEqual(['T-80']);
+      expect(codesOf(result!)).toEqual(['T-88']);
       expect(result!.memberCount).toBe(3);
       expect(result!.criteriaByTab.rent.outcomes.strikeMax.state).toBe('narrowed');
     });
@@ -652,7 +653,10 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       const cap = w.times(new Prisma.Decimal('1.03'));
       const strikeMax = result!.criteriaByTab.rent.defaults.strikeMax;
       expect(strikeMax).not.toBeNull();
-      expect(strikeMax!.toString()).toBe(cap.toString());
+      // axis = min(104.25, 96) = 96; 结构项 min{K ≥ 96} = 96 (T-96 在窗内) < 比例项 98.88
+      // ⇒ 上界取严落在 W 本身 —— 实时 spot 没有夺走轴 (067 branch 8 的判别点)。
+      expect(strikeMax!.toString()).toBe(w.toString());
+      expect(strikeMax!.lessThanOrEqualTo(cap)).toBe(true);
     });
   });
 });
