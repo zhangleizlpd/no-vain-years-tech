@@ -256,6 +256,8 @@ describe('leg-fwd-chain.rules — tick 推断 + 共线合并 (T004, FR-003)', ()
     );
     expect(chain.map((n) => n.dteDays)).toEqual([30, 90]);
     expect(chain[1].memberDteDays).toEqual([60, 90]);
+    // 成员 OI 与成员 DTE 逐位对齐 (停点闸段内回退的输入, T011 GDDY 回归)
+    expect(chain[1].memberOpenInterest).toEqual([100, 100]);
     // 合并值 = 子段时间加权: (fwd_AB×30 + fwd_BC×30) / 60, 与终态段 fwd 逐值一致
     const weighted = built.rungs[0].fwd.times(30).plus(built.rungs[1].fwd.times(30)).div(60);
     expect(chain[1].fwd.minus(weighted).abs().toNumber()).toBeLessThan(1e-12);

@@ -24,19 +24,33 @@ import { TIER_FLOORS_BY_BASIS, type LegTierWithFloor } from './leg-tier.rules';
 /**
  * 形状条件的衰减比例帽 β (FR-006): 延伸要求每日衰减不回升 —— `δᵢ ≤ β × δᵢ₋₁`。
  *
- * ⚠️ **T005 占位值, T011 收盘全量标定后定稿** (SC-007; 带分布依据注释再替换)。
- * 🚨 取值避开既有阈值/档界的**子串**撞车 (守门脚本认值不认名): `1.65` 实测全 ctx 零命中。
+ * ✅ **T011 实测标定值** (2026-08-30, dev 库 `2026-08-28` 收盘全量: 111 锚 / 319 条收租 K 梯 /
+ * 净链相邻段衰减比值 48 个样本)。分布是**双模**: 正常延伸簇 ≤ 1.229 (37 个) 与回升尾
+ * ≥ 1.714 (11 个), 取两模间隙 `[1.229, 1.714]` 的**中点 1.47** (距两侧各 ~0.24 —— 同
+ * `QUALITY_CEILING_SPOT_RATIO` 那条「取中点防刀口」纪律)。
+ * 📌 尾部比值最大 18.8×, 其成因是**基准段为亚 tick 噪声斜率时的除法放大** —— 生产形态下
+ * 共线并段先行, 噪声基准大多已被并掉; 标定分布本身取自并段后的净链, 口径同生产。
+ * 🚨 改值避开既有阈值/档界**子串**撞车 (守门脚本认值不认名): `1.47` 实测全 ctx 零命中。
  */
-export const MARCH_DECAY_REBOUND_BETA = new Prisma.Decimal('1.65');
+export const MARCH_DECAY_REBOUND_BETA = new Prisma.Decimal('1.47');
 
 /**
  * 形状条件的绝对帽 γ (FR-006): 前段衰减 ≤ 0 (平/回升) 时比例帽无基准, 退化为
- * `δᵢ ≤ γ` (量纲: 年化费率 / 日历日)。⚠️ T005 占位值, T011 定稿; `0.0022` 零撞车。
+ * `δᵢ ≤ γ` (量纲: 年化费率 / 日历日)。
+ *
+ * ✅ **T011 定稿维持 `0.0022`, 并把「为什么标不动」写死在这里** (2026-08-30): 该分支在生产
+ * 管道**结构上不可达** —— 凸包保证净链 fwd 严格递减 ⇒ 前段衰减恒 > 0 (回放 319 梯实证
+ * 触发样本 = 0), 它是给手构链 / 未来 mid 口径重算留的防御值, 分布无从标定也无需标定。
+ * 🚫 MUST NOT 因不可达而删除: 删掉后「前段 ≤ 0」输入直接除负数比例帽, 静默反向。
  */
 export const MARCH_DECAY_ABSOLUTE_CAP_GAMMA = new Prisma.Decimal('0.0022');
 
 /**
- * 停点可成交闸的收租 OI 口径下限 (FR-008)。张数, 整数。⚠️ T005 占位值, T011 定稿。
+ * 停点可成交闸的收租 OI 口径下限 (FR-008)。张数, 整数。
+ *
+ * ✅ **T011 定稿维持 `50`** (2026-08-30, 同一数据面): 回放 70 个推荐停点的 OI 分布
+ * p5=69 / p25=194 / p50=641, `< 50` 者 0 个 —— 取 50 落在观测下沿之下 (不误杀现役推荐),
+ * 同时拦得住实抓的 `OI=1` 段尾档 (us:GDDY 90P 175d, 经段内回退落 140d/OI 192)。
  *
  * 📌 整数进不了守门脚本的阈值子串扫描 (同 `OPEN_INTEREST_FLOOR` 那条限制) —— 单点性靠
  * review 与本文件唯一导出守。🚨 它与召回层活性条件的 `OPEN_INTEREST_FLOOR`(=1) 是**两个
@@ -148,56 +162,75 @@ export function marchSelect(chain: readonly NetChainNode[], params: MarchParams)
       );
   }
 
-  // ── 停点闸 (FR-008): 沿候选序找首个过闸档; OI = null 是「没采到」按不过闸处置 ──
-  const gateFailed: number[] = [];
-  let winner: number | null = null;
-  for (const idx of candidateOrder) {
-    const oi = chain[idx].openInterest;
-    if (oi !== null && oi >= params.oiMin) {
-      winner = idx;
-      break;
+  // ── 停点闸 (FR-008): 沿候选序找首个过闸档; OI = null 是「没采到」按不过闸处置。
+  // 合并段**段内回退** (T011 标定实抓 us:GDDY 90P): 共线成员费率等值 ⇒ 段尾不过闸时沿段内
+  // 成员从长到短找首个过闸者作停点 —— 丢这半会让并段开关反转判决 (SC-002 无损性)。
+  // 弃档逐**成员**记 #10 (FR-014 恰一条: 成员是真实档)。
+  interface MemberGateFail {
+    readonly nodeIndex: number;
+    readonly dteDays: number;
+    readonly oi: number | null;
+  }
+  const gateFailed: MemberGateFail[] = [];
+  const failedNodes = new Set<number>();
+  let winner: { readonly nodeIndex: number; readonly dteDays: number } | null = null;
+  outer: for (const idx of candidateOrder) {
+    const node = chain[idx];
+    for (let m = node.memberDteDays.length - 1; m >= 0; m -= 1) {
+      const oi = node.memberOpenInterest[m] ?? null;
+      if (oi !== null && oi >= params.oiMin) {
+        winner = { nodeIndex: idx, dteDays: node.memberDteDays[m] };
+        break outer;
+      }
+      gateFailed.push({ nodeIndex: idx, dteDays: node.memberDteDays[m], oi });
     }
-    gateFailed.push(idx);
+    failedNodes.add(idx);
   }
 
+  const memberEntry = (
+    fail: MemberGateFail,
+    category: 'stop_oi_below_min' | 'ladder_oi_all_below_min',
+  ) => {
+    audits.push({
+      category,
+      dteDays: fail.dteDays,
+      mergedIntoDteDays: null,
+      evidence: marchEvidence({ oi: fail.oi, oiMin: params.oiMin }),
+    });
+  };
+
   if (winner === null) {
-    // 整梯无过闸 ⇒ 整梯无可成交; 每个合格候选恰一条 #11 (弹层双成因判别的 OI 半, clarify Q2)。
-    for (const idx of gateFailed) {
-      entry(chain[idx], 'ladder_oi_all_below_min', {
-        oi: chain[idx].openInterest,
-        oiMin: params.oiMin,
-      });
-    }
+    // 整梯无过闸 ⇒ 整梯无可成交; 每个合格候选档恰一条 #11 (弹层双成因判别的 OI 半, clarify Q2)。
+    for (const fail of gateFailed) memberEntry(fail, 'ladder_oi_all_below_min');
+    sortAudits(audits);
     return { verdict: 'untradable', recommendedDteDays: null, audits };
   }
 
   // ── 档界终检 (FR-008 末道): φ 模式下合格档年化 = 各段 fwd 的时间加权 ≥ φ, 结构上恒过 ——
   // 本分支的现实作用面是 θ 模式 (argmax 也够不到档界 ⇒ 全链皆够不到)。
-  if (chain[winner].annualized.lessThan(params.phi)) {
+  if (chain[winner.nodeIndex].annualized.lessThan(params.phi)) {
+    const failedDtes = new Set(gateFailed.map((f) => f.dteDays));
     for (const idx of candidateOrder) {
-      if (gateFailed.includes(idx)) continue;
+      if (failedNodes.has(idx)) continue;
+      if (failedDtes.has(chain[idx].dteDays)) continue; // 段尾成员已记 #10, 不叠 #8 (恰一条)
       entry(chain[idx], 'tier_floor_failed', {
         annualized: chain[idx].annualized,
         tierFloor: params.phi,
       });
     }
-    for (const idx of gateFailed) {
-      entry(chain[idx], 'stop_oi_below_min', { oi: chain[idx].openInterest, oiMin: params.oiMin });
-    }
+    for (const fail of gateFailed) memberEntry(fail, 'stop_oi_below_min');
     sortAudits(audits);
     return { verdict: 'no_qualified', recommendedDteDays: null, audits };
   }
 
-  // ── 判决 + 其余候选的条目: 回退弃档 #10, 未及停点的合格档 #9 ──
-  for (const idx of gateFailed) {
-    entry(chain[idx], 'stop_oi_below_min', { oi: chain[idx].openInterest, oiMin: params.oiMin });
-  }
+  // ── 判决 + 其余候选的条目: 回退弃档逐成员 #10, 未及停点的合格档 #9 ──
+  for (const fail of gateFailed) memberEntry(fail, 'stop_oi_below_min');
   for (const idx of candidateOrder) {
-    if (idx === winner || gateFailed.includes(idx)) continue;
-    entry(chain[idx], 'qualified_not_stop', { recommendedDteDays: chain[winner].dteDays });
+    if (idx === winner.nodeIndex || failedNodes.has(idx)) continue;
+    entry(chain[idx], 'qualified_not_stop', { recommendedDteDays: winner.dteDays });
   }
   sortAudits(audits);
-  return { verdict: 'recommended', recommendedDteDays: chain[winner].dteDays, audits };
+  return { verdict: 'recommended', recommendedDteDays: winner.dteDays, audits };
 }
 
 /** 审计按 DTE 升序 —— 弹层逐档行的稳定次序。 */

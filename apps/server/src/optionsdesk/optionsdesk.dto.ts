@@ -1831,7 +1831,7 @@ export class MarchAuditEvidenceResponse {
     description: '#3: 本档总权利金',
     type: 'string',
     nullable: true,
-    example: '1.2000',
+    example: '1.1900',
   })
   premium!: string | null;
 

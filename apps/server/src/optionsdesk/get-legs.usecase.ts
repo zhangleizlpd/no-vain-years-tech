@@ -989,7 +989,10 @@ function assembleMarchByStrike(
       ...bucket.extraAudits,
       ...clean.audits,
       ...decision.audits.filter((a) => !cleanDtes.has(a.dteDays)),
-    ].sort((a, b) => a.dteDays - b.dteDays);
+    ]
+      // 合并段内成员当选停点时 (段内回退), 其 #4 条目让位 —— 推荐档零条目 (FR-014)。
+      .filter((a) => a.dteDays !== decision.recommendedDteDays)
+      .sort((a, b) => a.dteDays - b.dteDays);
     const countOf = (...categories: MarchAuditEntry['category'][]) =>
       clean.audits.filter((a) => categories.includes(a.category)).length;
     return {

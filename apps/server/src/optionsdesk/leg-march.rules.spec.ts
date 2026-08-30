@@ -26,6 +26,7 @@ const D = (v: string | number) => new Prisma.Decimal(v);
 const node = (dteDays: number, fwd: string, over: Partial<NetChainNode> = {}): NetChainNode => ({
   dteDays,
   memberDteDays: [dteDays],
+  memberOpenInterest: [over.openInterest !== undefined ? over.openInterest : 100],
   bid: D('2'),
   ask: null,
   openInterest: 100,
@@ -119,14 +120,40 @@ describe('leg-march.rules — 行军 + 停点闸 + 三态判决 (T005, FR-006..F
   it('⑤ 回退穿已合并段: 合并段作单节点一步落到段尾', () => {
     const chain = [
       node(30, '0.25'),
-      node(90, '0.18', { memberDteDays: [60, 90] }),
+      node(90, '0.18', { memberDteDays: [60, 90], memberOpenInterest: [100, 100] }),
       node(120, '0.16', { openInterest: 3 }),
     ];
     const decision = marchSelect(chain, params());
     expect(decision.recommendedDteDays).toBe(90);
     expect(decision.audits.find((a) => a.dteDays === 120)?.category).toBe('stop_oi_below_min');
-    // 合并段内档 (60) 不产生任何行军条目 —— 段是单节点, 不拆开逐档判
+    // 合并段内档 (60) 不产生任何行军条目 —— 段整体过闸, 不拆开逐档判
     expect(decision.audits.some((a) => a.dteDays === 60)).toBe(false);
+  });
+
+  it('⑤b 合并段段内回退: 段尾成员不过闸 ⇒ 落段内更短过闸成员 (共线等值; T011 GDDY 实抓回归)', () => {
+    const chain = [
+      node(175, '0.178', {
+        memberDteDays: [140, 175],
+        memberOpenInterest: [192, 1],
+        annualized: D('0.178'),
+      }),
+    ];
+    const decision = marchSelect(chain, params());
+    expect(decision.verdict).toBe('recommended');
+    expect(decision.recommendedDteDays).toBe(140);
+    const tail = decision.audits.find((a) => a.dteDays === 175);
+    expect(tail?.category).toBe('stop_oi_below_min');
+    expect(tail?.evidence.oi).toBe(1);
+    // 段内全员不过闸 ⇒ 逐成员 #11
+    const allFail = marchSelect(
+      [node(175, '0.178', { memberDteDays: [140, 175], memberOpenInterest: [2, 1] })],
+      params(),
+    );
+    expect(allFail.verdict).toBe('untradable');
+    expect(allFail.audits.map((a) => [a.dteDays, a.category])).toEqual([
+      [140, 'ladder_oi_all_below_min'],
+      [175, 'ladder_oi_all_below_min'],
+    ]);
   });
 
   it('⑥ 整梯无过闸 ⇒ untradable, 合格档逐条 #11 (含 OI=null 按没采到不过闸)', () => {

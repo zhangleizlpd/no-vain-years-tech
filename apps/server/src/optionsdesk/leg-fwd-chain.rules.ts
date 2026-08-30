@@ -299,6 +299,12 @@ export interface NetChainNode {
   readonly dteDays: number;
   /** 段覆盖的全部档 DTE 升序 —— T004 共线合并前恒单元素。 */
   readonly memberDteDays: readonly number[];
+  /**
+   * 与 {@link memberDteDays} 逐位对齐的成员 OI —— 停点闸的**段内回退**输入 (T011 标定实抓:
+   * us:GDDY 90P 的 140d/175d 共线并段只带段尾 OI=1, 闸拦下后无处回退, 并段开关判决反转 ——
+   * 共线 = 费率等值 ⇒ 段内任一过闸成员都是合法停点, 丢成员 OI 就丢了无损性 SC-002)。
+   */
+  readonly memberOpenInterest: readonly (number | null)[];
   readonly bid: Prisma.Decimal;
   readonly ask: Prisma.Decimal | null;
   readonly openInterest: number | null;
@@ -407,6 +413,7 @@ export function convexCleanLadder(nodes: readonly FwdLadderNode[]): ConvexCleanR
   const chain: NetChainNode[] = stack.map((node, i) => ({
     dteDays: node.dteDays,
     memberDteDays: [node.dteDays],
+    memberOpenInterest: [node.openInterest],
     bid: node.bid,
     ask: node.ask,
     openInterest: node.openInterest,
@@ -507,8 +514,13 @@ export function mergeCollinearNodes(
   interface Segment {
     readonly node: NetChainNode;
     members: number[];
+    memberOi: (number | null)[];
   }
-  const segments: Segment[] = chain.map((node) => ({ node, members: [...node.memberDteDays] }));
+  const segments: Segment[] = chain.map((node) => ({
+    node,
+    members: [...node.memberDteDays],
+    memberOi: [...node.memberOpenInterest],
+  }));
   /** 除名档 dte → 除名时的垂距 (tick 单位), 供 #4 证据。 */
   const removalTicks = new Map<number, Prisma.Decimal>();
 
@@ -534,6 +546,7 @@ export function mergeCollinearNodes(
       if (!deviation.lessThan(tick.div(reserveScale))) continue;
       removalTicks.set(mid.node.dteDays, deviation.times(reserveScale).div(tick));
       right.members = [...mid.members, ...right.members];
+      right.memberOi = [...mid.memberOi, ...right.memberOi];
       segments.splice(i, 1);
       changed = true;
       i -= 1;
@@ -548,6 +561,7 @@ export function mergeCollinearNodes(
   const mergedChain: NetChainNode[] = segments.map((segment, i) => ({
     ...segment.node,
     memberDteDays: segment.members,
+    memberOpenInterest: segment.memberOi,
     fwd: slope(i === 0 ? null : segments[i - 1].node, segment.node),
   }));
 
