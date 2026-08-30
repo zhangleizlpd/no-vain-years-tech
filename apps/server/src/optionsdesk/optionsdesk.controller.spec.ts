@@ -3,6 +3,8 @@ import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify
 import { JwtService } from '@nestjs/jwt';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { SwaggerModule, type OpenAPIObject } from '@nestjs/swagger';
+import { MARCH_EXCLUSION_CATEGORIES } from './leg-fwd-chain.rules';
+import { MARCH_VERDICTS } from './leg-march.rules';
 import { Test } from '@nestjs/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
@@ -545,6 +547,54 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       expect(props.bandStatus.type).toBe('string');
       expect(props.bandStatus.nullable).toBe(true);
       expect(props.bandStatus.enum).toEqual(['in', 'out']);
+    });
+
+    it('🚨 069 march: LegTableResponse 增 per-K 判决/审计 (nullable 缺省; 13 类枚举经生成链逐字传导)', () => {
+      interface SchemaShape {
+        properties: Record<string, { type?: string; nullable?: boolean; enum?: string[] }>;
+      }
+      const tableProps = (document.components!.schemas!.LegTableResponse as SchemaShape).properties;
+      expect(tableProps.march).toBeDefined();
+      expect(tableProps.march.nullable).toBe(true);
+
+      const strikeProps = (document.components!.schemas!.LegMarchStrikeResponse as SchemaShape)
+        .properties;
+      expect(strikeProps.verdict.enum).toEqual([...MARCH_VERDICTS]);
+      expect(strikeProps.recommendedDteDays.nullable).toBe(true);
+
+      const auditProps = (document.components!.schemas!.LegMarchAuditResponse as SchemaShape)
+        .properties;
+      // 13 类枚举逐字 = MarchExclusionCategory 单点 (Guardrail 5: 经装饰器 → openapi → orval
+      // 生成链传导, 前后端零手抄)。
+      expect(auditProps.category.enum).toEqual([...MARCH_EXCLUSION_CATEGORIES]);
+      expect(auditProps.mergedIntoDteDays.nullable).toBe(true);
+
+      // 证据袋全部 nullable string 显式 type:'string' (orval objectmap 坑, Guardrail 6)。
+      const evidenceProps = (
+        document.components!.schemas!.MarchAuditEvidenceResponse as SchemaShape
+      ).properties;
+      for (const field of [
+        'bid',
+        'ask',
+        'fwd',
+        'fwdOut',
+        'premium',
+        'premiumShorter',
+        'chordDistanceTicks',
+        'phi',
+        'decay',
+        'decayCap',
+        'annualized',
+        'tierFloor',
+        'absDelta',
+        'bandFloor',
+      ]) {
+        expect(evidenceProps[field].type).toBe('string');
+        expect(evidenceProps[field].nullable).toBe(true);
+      }
+      for (const field of ['recommendedDteDays', 'oi', 'oiMin']) {
+        expect(evidenceProps[field].nullable).toBe(true);
+      }
     });
 
     it('🚨 nullable string 字段显式 type:string —— 否则 orval 误生 objectmap', () => {

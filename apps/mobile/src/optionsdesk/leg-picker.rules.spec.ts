@@ -118,6 +118,8 @@ function criteria(): PerspectiveCriteriaResponse {
 function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
   return {
     symbol: 'us:PEP',
+    // 069 契约增量: 每 K 行军判决 —— 仅实时收租有值, mock 基线取缺省 null。
+    march: null,
     // 053 契约增量：本次作答的视角，原样回显请求参数（迟到的那一发靠它认领，FR-008）。
     perspective: 'all',
     state: 'available',

@@ -337,6 +337,8 @@ function makeLegTable(
 ): CanonicalTable {
   return {
     symbol,
+    // 069 契约增量: 每 K 行军判决 —— 仅实时收租有值, mock 基线取缺省 null。
+    march: null,
     state: 'available',
     asOf: TODAY,
     asOfFreshnessTier: 'CURRENT',
