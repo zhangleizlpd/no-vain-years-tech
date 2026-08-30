@@ -2,7 +2,7 @@
 feature_id: 070-optionsdesk-offline-ladder
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: planned
 created_at: '2026-08-30'
 updated_at: '2026-08-30'
 spec_kit_version: '>=0.8.5,<0.10.0'
