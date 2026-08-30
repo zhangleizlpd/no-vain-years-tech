@@ -93,7 +93,7 @@ describe('leg-delta-surface.rules — K-梯形窗 (068 FR-002 / FR-003 / FR-004)
     if (outcome.kind !== 'window') throw new Error('expected window');
     const ks = outcome.windowKs.map((k) => k.toString());
     expect(ks).toContain('85');
-    // E1 落带集缩到 {90, 95} ⇒ 包络下沿抬到 90×(1−pad) = 88.2 > 85 ⇒ E1 对 85 预测带外
+    // E1 落带集缩到 {90, 95} ⇒ 包络下沿抬到 90×(1−pad) = 87.75 > 85 ⇒ E1 对 85 预测带外
     expect(outcome.bandPrediction.get(`85|${iso(E1)}`)).toBe(false);
     expect(outcome.bandPrediction.get(`85|${iso(E2)}`)).toBe(true);
   });
@@ -113,7 +113,7 @@ describe('leg-delta-surface.rules — K-梯形窗 (068 FR-002 / FR-003 / FR-004)
     const build = ksOf(
       resolveDeltaSurfaceWindow(input({ band: { lower: D('0.20'), upper: D('0.45') } })),
     );
-    // 收租带下探 0.05 ⇒ 80 进 (E1@80=0.05 落带); 建仓带下沿 0.20 ⇒ 包络下沿 88.2, 80/85 不进
+    // 收租带下探 0.05 ⇒ 80 进 (E1@80=0.05 落带); 建仓带下沿 0.20 ⇒ 包络下沿 87.75, 80/85 不进
     expect(rent).toContain('80');
     expect(build).not.toContain('80');
     expect(build).toContain('95');

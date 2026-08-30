@@ -26,9 +26,9 @@ export const BUILD_DELTA_BAND: DeltaBand = {
 };
 export const RENT_DELTA_BAND: DeltaBand = {
   lower: new Prisma.Decimal('0.05'),
-  upper: new Prisma.Decimal('0.35'),
+  upper: new Prisma.Decimal('0.32'),
 };
-export const MONEYNESS_PAD_RATIO = new Prisma.Decimal('0.02');
+export const MONEYNESS_PAD_RATIO = new Prisma.Decimal('0.025');
 
 /** 昨日面的一行: (K, 到期日) 的收盘 Δ。`delta = null` = vendor 未给 (部分缺失, 不参与包络)。 */
 export interface DeltaFaceRow {

@@ -2,7 +2,7 @@
 /**
  * check-optionsdesk-rule-constants.ts — optionsdesk **可调策略参数单点**的机器守门。
  *
- * 八条不变量。前七条的扫描面是 `apps/server/src/optionsdesk/`，**第八条扫的是客户端**：
+ * 九条不变量。#8 以外的扫描面是 `apps/server/src/optionsdesk/`，**第八条扫的是客户端**：
  *
  * | # | 不变量 | 判据形态 | 出处 |
  * | - | ------ | -------- | ---- |
@@ -14,6 +14,7 @@
  * | 6 | 粗排层恒等 + 五层入口各有 spec | **词表**扫描 + 文件存在 | 052 FR-004 / SC-010 |
  * | 7 | 六维成员判据只住 `leg-recall.rules.ts` | **词表**扫描 | 052 FR-003 |
  * | 8 | **客户端零处自算检索条件默认值** | **词表 + 算式形状**扫描 | 052 FR-011 / Guardrail 6 |
+ * | 9 | 068 窗判据只住 `leg-delta-surface` / `leg-window` | **形状**扫描 ×2 + pad **子串** | 068 FR-002 / SC-004 |
  *
  * 🚨 **#5/#6/#7 为什么在这里而不在各自的 `*.spec.ts`**：它们要读源码，而 Small 档禁磁盘
  * I/O（testing.md）⇒ 治理扫描一律归 `scripts/checks/`。同 #1 当年从 `anchor.rules.spec.ts`
@@ -263,6 +264,73 @@ export function shapePatternProbe(): string | null {
   const bandHit = findShapeHits('export const B = { min: 0.4, max: 0.55 };', BAND_LITERAL_RE);
   if (bandHit.length === 0) {
     return '带判据正例臂失灵：`{ min: 0.4, max: 0.55 }` 未被命中 —— 判据已变平凡绿';
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 068 不变量 #9 —— 窗判据单点（Δ 带形状 / 内联系数形状 / pad 子串）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 068 K-梯形窗：两条 Δ 带 + pad 的唯一落点。 */
+const DELTA_SURFACE_FILE = 'leg-delta-surface.rules.ts';
+/** 068 bootstrap 宽窗：两个矩形包络比例的唯一落点。 */
+const WINDOW_RULES_FILE = 'leg-window.rules.ts';
+
+/**
+ * Δ 带对象形状 —— `lower:` / `upper:` 直挂 Decimal 字面量。
+ *
+ * 🚨 **带取值不走子串扫描是被撞值逼的**（同 #4 的理由）：带取值与 `leg-tier` 档界 /
+ * `LIQUIDITY_MAX_RELATIVE_SPREAD` 等既有小数高频撞值，子串扫认值不认名会把无辜文件报成违规。
+ * ⇒ 扫「第二份带对象」这个**形状**：出 `leg-delta-surface.rules.ts` 即红，值随标定怎么调都拦得住。
+ */
+export const DELTA_BAND_SHAPE_RE = /\b(?:lower|upper):\s*new\s+Prisma\.Decimal\(/g;
+
+/**
+ * 内联系数乘法形状 —— `.times(new Prisma.Decimal('…'))`。
+ *
+ * bootstrap 两比例（0.7 / 1.05）没法子串扫（`0.7` 撞遍全 ctx 的注释与示例串），改拦它们被
+ * **抄走时必然出现的形状**：系数乘法 MUST 消费具名常量，内联字面量即第二份策略参数。
+ * 实测现役全 ctx（含 rules 文件）零命中，扫描面不设豁免。
+ */
+export const INLINE_COEFFICIENT_RE = /\.times\(\s*new\s+Prisma\.Decimal\(\s*'[\d.]+'\s*\)\s*\)/g;
+
+/** pad 是唯一可子串扫的窗参数（取值全 ctx 唯一，无撞值面）。 */
+export function extractPadRatio(deltaSurfaceSource: string): string | undefined {
+  const code = stripComments(deltaSurfaceSource);
+  return /export\s+const\s+MONEYNESS_PAD_RATIO\s*=\s*new\s+Prisma\.Decimal\(\s*'([\d.]+)'\s*\)/.exec(
+    code,
+  )?.[1];
+}
+
+/** 同 {@link selfProbe} 一族：抽取失配 / 带形状在源文件里消失 ⇒ 显式报错，不许平凡绿。 */
+export function windowSelfProbe(
+  deltaSurfaceSource: string,
+  pad: string | undefined,
+): string | null {
+  if (pad === undefined) {
+    return `没能从 ${DELTA_SURFACE_FILE} 抽出 MONEYNESS_PAD_RATIO —— 常量写法变了？检查已变成平凡绿`;
+  }
+  if (!pad.includes('.')) {
+    return `pad '${pad}' 被写成整数 —— 整数当子串扫会把行号全扫成违规，MUST 写成带小数点形态`;
+  }
+  const bandShapes = findShapeHits(deltaSurfaceSource, DELTA_BAND_SHAPE_RE);
+  if (bandShapes.length < 4) {
+    return (
+      `${DELTA_SURFACE_FILE} 自身只命中 ${bandShapes.length} / 4 个带形状（两带 × lower/upper）` +
+      '—— 带写法变了？形状判据已变成平凡绿'
+    );
+  }
+  const inlineHit = findShapeHits(".times(new Prisma.Decimal('0.7'))", INLINE_COEFFICIENT_RE);
+  if (inlineHit.length === 0) {
+    return '内联系数判据正例臂失灵：`.times(new Prisma.Decimal(…))` 未被命中 —— 判据已变平凡绿';
+  }
+  const namedHit = findShapeHits(
+    'axis.times(QUALITY_CEILING_SPOT_RATIO.plus(1))',
+    INLINE_COEFFICIENT_RE,
+  );
+  if (namedHit.length > 0) {
+    return '内联系数判据反例臂失灵：具名常量乘法被判违规 —— 判据会恒红';
   }
   return null;
 }
@@ -544,6 +612,69 @@ function main(): void {
     process.exit(1);
   }
 
+  // ── 068 不变量 #9 ──────────────────────────────────────────────────────────
+  const deltaSurfacePath = join(ctxPath, DELTA_SURFACE_FILE);
+  const windowRulesPath = join(ctxPath, WINDOW_RULES_FILE);
+  if (!existsSync(deltaSurfacePath) || !existsSync(windowRulesPath)) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants: 找不到 ${CTX_DIR}/${DELTA_SURFACE_FILE} 或 ${WINDOW_RULES_FILE}`,
+    );
+    process.exit(1);
+  }
+  const deltaSurfaceSource = readFileSync(deltaSurfacePath, 'utf8');
+  const pad = extractPadRatio(deltaSurfaceSource);
+  const windowProbeFailure = windowSelfProbe(deltaSurfaceSource, pad);
+  if (windowProbeFailure) {
+    console.error(`❌ check-optionsdesk-rule-constants: 窗判据探针失败 —— ${windowProbeFailure}`);
+    process.exit(1);
+  }
+
+  const bandShapeOffenders = findShapeOffenders(
+    nonSpec.filter((f) => f.name !== DELTA_SURFACE_FILE),
+    DELTA_BAND_SHAPE_RE,
+  );
+  if (bandShapeOffenders.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— Δ 带对象出现在 ${DELTA_SURFACE_FILE} 以外：\n`,
+    );
+    for (const { name, hits } of bandShapeOffenders) {
+      console.error(`  - ${CTX_DIR}/${name}: ${hits.join(' / ')}`);
+    }
+    console.error(
+      `\nFix: 从 ${DELTA_SURFACE_FILE} import 带常量 —— Δ 带是可标定策略参数，第二份带对象 = 调参漏改点。`,
+    );
+    process.exit(1);
+  }
+
+  const inlineCoefficientOffenders = findShapeOffenders(nonSpec, INLINE_COEFFICIENT_RE);
+  if (inlineCoefficientOffenders.length > 0) {
+    console.error(
+      '❌ check-optionsdesk-rule-constants failed —— 内联系数乘法（`.times(new Prisma.Decimal(…))`）：\n',
+    );
+    for (const { name, hits } of inlineCoefficientOffenders) {
+      console.error(`  - ${CTX_DIR}/${name}: ${hits.join(' / ')}`);
+    }
+    console.error(
+      '\nFix: 系数乘法 MUST 消费具名常量（bootstrap 比例 / Δ 带 / 档位系数各住其 rules 文件），' +
+        '\n     内联字面量就是第二份策略参数 —— 0.7 这类短串没法子串扫，这个形状是它唯一的机器守卫。',
+    );
+    process.exit(1);
+  }
+
+  const padOffenders = findOffenders(
+    nonSpec.filter((f) => f.name !== DELTA_SURFACE_FILE),
+    [pad as string],
+  );
+  if (padOffenders.length > 0) {
+    console.error(
+      `❌ check-optionsdesk-rule-constants failed —— pad 被硬编码在 ${DELTA_SURFACE_FILE} 以外：\n`,
+    );
+    for (const { name, literals } of padOffenders) {
+      console.error(`  - ${CTX_DIR}/${name}: ${literals.join(' / ')}`);
+    }
+    process.exit(1);
+  }
+
   // ── 052 不变量 #5 ──────────────────────────────────────────────────────────
   const portPath = join(ctxPath, RETRIEVAL_PORT_FILE);
   if (!existsSync(portPath)) {
@@ -690,7 +821,8 @@ function main(): void {
       `门槛阈值 (${[...new Set(thresholds)].join(' / ')}) 与三段 DTE 界只住 ${RECALL_RULES_FILE}；` +
       `闭区间带只住 ${RECALL_RULES_FILE} / ${MARK_RULES_FILE}（后三条扫 ${outsideRecall.length} 个非-spec 文件）；` +
       `${RETRIEVAL_PORT_FILE} 零存储侧词汇；${COARSE_RULES_FILE} 恒等且 ${LAYER_ENTRY_FILES.length} 个层入口各有 spec；` +
-      `六维成员判据零外溢；${MOBILE_CTX_DIR} 的 ${mobileFiles.length} 个文件零处自算默认值。`,
+      `六维成员判据零外溢；窗判据（Δ 带形状 / 内联系数形状 / pad '${pad}'）只住 ${DELTA_SURFACE_FILE} / ${WINDOW_RULES_FILE}；` +
+      `${MOBILE_CTX_DIR} 的 ${mobileFiles.length} 个文件零处自算默认值。`,
   );
 }
 

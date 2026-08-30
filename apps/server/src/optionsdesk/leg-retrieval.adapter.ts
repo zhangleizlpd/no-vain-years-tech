@@ -19,12 +19,11 @@ import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import { INTRADAY_FRESHNESS_SECONDS, isIntradayFresh } from './intraday-spot.rules';
 import {
   WINDOW_SUPPORTED_MARKETS,
-  legWindowFor,
-  windowTripwire,
+  bootstrapWindowFor,
   withinWindow,
   type LegWindow,
 } from './leg-window.rules';
-import { recallCandidates, type RecallCandidate, type RecallContext } from './leg-recall.rules';
+import { recallCandidates, type RecallContext } from './leg-recall.rules';
 import type {
   LegChainMeta,
   LegChainQuery,
@@ -41,9 +40,8 @@ import type {
  * {@link PrismaLegRetrievalAdapter} 内部的取链产出 —— 快照 + 本次实际用过的窗 (064 T004b)。
  *
  * 🚨 窗**不上浮到 port 出参**: 它是「该问哪些合约此刻的价」这件事的内部细节, 对调用方零语义。
- * 它存在只为一个用途 —— 喂 `windowTripwire` (064 `FR-007`), 而绊线的调用点必须在召回**之后**
- * (入参是召回的判决, 不是裸腿)。收盘档 / 基准不可用时恒为 `null`: 没发生实时取数就没有窗,
- * 也就无所谓漂移。
+ * 068 起它只服务圈码 (召回第一段); 064 的绊线已随覆盖范式退役 (窗漏腿的守卫改由标定回放承担)。
+ * 收盘档 / 基准不可用时恒为 `null`: 没发生实时取数就没有窗。
  */
 interface LoadedChain {
   readonly snapshot: LegChainSnapshot;
@@ -235,9 +233,6 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       query.candidateCap,
       query.override,
     );
-    // 064 FR-007: 绊线在**召回之后**求值 —— 它问的是「窗排除掉的那些腿里, 有没有本来能进候选的」,
-    // 而「能不能进候选」只有召回答得了 (判据单点)。
-    this.reportWindowDrift(query.symbol, outcome.candidates, loaded.window);
     return {
       chain,
       ...outcome,
@@ -448,7 +443,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    *
    * 🚨 `market` 必填 (#263): DTE 基准是**该锚所属交易所的今天**。此前 `daysToExpiry` 内部写死
    * `'us'`, 而 `IMPORTABLE_MARKETS` 含 `hk` 且本方法所在的 `db_snapshot` 基线路径**不经过**
-   * `legWindowFor` 那道「未支持市场即抛」的闸 ⇒ 港股锚一路用美股基准算完、不会红。港股与宿主
+   * `bootstrapWindowFor` 那道「未支持市场即抛」的闸 ⇒ 港股锚一路用美股基准算完、不会红。港股与宿主
    * 同为 UTC+8, 北京上午 ET 尚未翻日 ⇒ 那段窗口里每条腿的 `dteDays` 恒偏 1 天, 而建仓腿
    * `DTE ≤ 14` / 收租腿 `DTE ∈ [150,365]` 两条带判据直接读它。
    *
@@ -527,7 +522,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * ⇒ 逐点等价。📌 067 后多出一个数值角落: axis 深低于窗下沿 (W < 0.7 × spot) 时结构项可能落
    * 在窗外更低处, 上界**数值**可差 < 3% —— 但那时两个值都低于窗内全部行权价, 收租**成员集**
    * 仍逐点相同 (差只出现在下发的默认值上, 且该域正是「太贵 ⇒ 默认空」的空态域)。
-   * 📌 **`windowTripwire` 在本基线下结构性失效**: 窗外的腿不进候选池, 绊线于是恒报零。可接受
+   * 📌 窗外的腿在本基线下不进候选池 (068 起绊线已整体退役)。可接受
    * —— 它守的是包络的**长期**漂移, 而本基线是**当天自愈**的过渡态 (当晚收盘轮写完基线, 次日
    * 即走库内那条路)。🚫 MUST NOT 因此把窗外的空行留在结果里充数。
    *
@@ -693,32 +688,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       return { window: null, basisAt: anchor.intradayAt };
     }
     return {
-      window: legWindowFor(target.market, anchor.intradayPrice),
+      window: bootstrapWindowFor(target.market, anchor.intradayPrice),
       basisAt: anchor.intradayAt,
     };
-  }
-
-  /**
-   * `FR-007` 的绊线留痕 —— 「被窗排除、却能通过召回判据」的腿。窗为 `null` (收盘档) ⇒ 无事发生。
-   *
-   * 🚨 报出来的不是「候选集算错了」而是「**包络该放宽了**」: 那两个 strike 比例是经验余量,
-   * 判据一旦调松 (门槛下调 / 成色上界放宽) 窗就可能比判据窄, 而窄掉的那批腿照常出现在结果里,
-   * 只是带着收盘档的价 —— 响应上看不出任何异常。`O(n)`。
-   */
-  private reportWindowDrift(
-    symbol: string,
-    candidates: readonly RecallCandidate<LegChainRow>[],
-    window: LegWindow | null,
-  ): void {
-    if (window === null) return;
-    const drifted = windowTripwire(candidates, window);
-    if (drifted.length === 0) return;
-    this.logger.warn(
-      `候选范围包络漂移 (064 FR-007): ${symbol} 有 ${drifted.length} 条腿落在窗外却能过召回判据 ` +
-        `—— 本次它们只拿到收盘档。窗 strike [${window.strikeMin.toString()}, ` +
-        `${window.strikeMax.toString()}] / DTE [${window.dteMin}, ${window.dteMax}]; ` +
-        `腿: ${drifted.map(({ leg }) => leg.code).join(' / ')}`,
-    );
   }
 
   /**
@@ -801,7 +773,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     if (gate === 'closed') return eodClose(null);
     if (gate === 'unknown') return eodClose('gate_unknown');
 
-    // ①b 该市场尚无候选范围派生能力 ⇒ **零外呼**整体回落。`legWindowFor` 对未支持市场
+    // ①b 该市场尚无候选范围派生能力 ⇒ **零外呼**整体回落。`bootstrapWindowFor` 对未支持市场
     // MUST throw (FR-008, 判据本身正确且不动), 但在读路径上放它抛会一路冒到 use case 的宽
     // catch 判成 `read_failed` —— 把「该市场还没接实时」呈现成「读故障」, 整表打红。
     // 🚨 **必须在闸之后判**: 闸 `'closed'` 时是正常收盘档 (降级标恒 `null`), 挪到闸前会让
