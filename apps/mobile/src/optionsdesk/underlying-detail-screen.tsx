@@ -426,7 +426,13 @@ export function UnderlyingDetailScreen({
                 renderItem={({ item }) => (
                   // 🚨 053 起档位与活跃标都在 `item` 自己身上（契约按视角收窄成标量）——
                   //    这里再也没有「取哪一格」这一步，故也传不错。
-                  <LegRow leg={item} tx={tx} today={detail.today} blockPriceKind={blockPriceKind} />
+                  <LegRow
+                    leg={item}
+                    tx={tx}
+                    today={detail.today}
+                    blockPriceKind={blockPriceKind}
+                    march={legTable.table?.march ?? null}
+                  />
                 )}
                 renderSectionFooter={() => (
                   // 🚨 三样东西同落非常驻区（051 FR-010a）：就地说明 + 两个门槛计数 + 空态解释。

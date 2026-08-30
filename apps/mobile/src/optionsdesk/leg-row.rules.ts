@@ -12,7 +12,7 @@
 //
 // 🚨 **量纲故意不同，别统一**：三个费率是**小数比例**（`toFixed(6)`），
 //    `effectiveCostVsWPct` 是**百分数**（`toFixed(2)`）。
-import type { LegResponse, LegResponseBasis } from '@nvy/api-client';
+import type { LegMarchStrikeResponse, LegResponse, LegResponseBasis } from '@nvy/api-client';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
@@ -241,4 +241,66 @@ export function costCell(
 export function deltaCell(leg: Pick<LegResponse, 'absDelta' | 'greeksComplete'>): string {
   if (isGapRow(leg) || leg.absDelta === null) return COPY.noValue;
   return leg.absDelta.toFixed(2);
+}
+
+// ═══════════════════ ④ 069 行军行内标注（FR-016 / FR-019） ═══════════════════
+
+/** 069 三类劣档灰显微标（凹 #2 / 陈 #3 / 并 #4，FR-004 只标不删）。 */
+export type LegInferiorMarkKind = 'concave' | 'stale' | 'merged';
+
+/**
+ * 该行所属 K 的行军块。O(K)。
+ *
+ * 🚨 **同 K 判定 = 字符串相等**：`LegResponse.strike` 与 `LegMarchStrikeResponse.strike`
+ * 服务端同为 `toFixed(4)` 序列化 ⇒ 逐字符同值，🚫 MUST NOT 在客户端 parse 成数字再比
+ * （浮点化是第二份口径）。`march = null`（建仓 / 全腿 / 离线）⇒ 恒 `null`。
+ */
+export function marchStrikeOf(
+  leg: Pick<LegResponse, 'strike'>,
+  march: readonly LegMarchStrikeResponse[] | null,
+): LegMarchStrikeResponse | null {
+  if (march === null) return null;
+  return march.find((strikeView) => strikeView.strike === leg.strike) ?? null;
+}
+
+/**
+ * 069 推荐章判定（FR-016）：该行是否是其 K 的行军推荐档。O(K)。
+ *
+ * 🚨 **判据只从契约 `march` 来**（ADR-0064 不变量 ②「客户端 MUST NOT 反推」）——
+ * 🚫 不拿行上的费率对 φ 重演行军：判据是服务端标定参数 + 净链形状，客户端第二份必漂移。
+ * `march = null` ⇒ 恒 `false`（FR-019 建仓行恒无章的结构保证）。
+ */
+export function legRowMarchRecommended(
+  leg: Pick<LegResponse, 'strike' | 'dteDays'>,
+  march: readonly LegMarchStrikeResponse[] | null,
+): boolean {
+  const strikeView = marchStrikeOf(leg, march);
+  return (
+    strikeView !== null &&
+    strikeView.verdict === 'recommended' &&
+    strikeView.recommendedDteDays === leg.dteDays
+  );
+}
+
+/**
+ * 069 劣档三类微标（FR-004 / FR-016）：从该 K 审计条目的**清链家族**类目映射。O(K + 档)。
+ * 其余类目（行军 / 可成交 / 边界家族）不上行内微标 —— 它们的去处是审计弹层，行内只标
+ * 「这档的报价几何有问题」那三类。无条目 ⇒ `null`。
+ */
+export function legRowInferiorMark(
+  leg: Pick<LegResponse, 'strike' | 'dteDays'>,
+  march: readonly LegMarchStrikeResponse[] | null,
+): LegInferiorMarkKind | null {
+  const strikeView = marchStrikeOf(leg, march);
+  const entry = strikeView?.audits.find((audit) => audit.dteDays === leg.dteDays);
+  switch (entry?.category) {
+    case 'concave_dominated':
+      return 'concave';
+    case 'absolute_dominated':
+      return 'stale';
+    case 'collinear_merged':
+      return 'merged';
+    default:
+      return null;
+  }
 }

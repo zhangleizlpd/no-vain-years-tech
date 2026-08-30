@@ -129,7 +129,7 @@ export function legRateCell(
  * 📌 `eod` 是 064 的行级档位标 —— **复用这套既有载体**，🚫 不新建组件、🚫 不新开一列
  *    （mockup overflow 探针实证：挂进 bid/ask 列会把报价块顶出 7px）。
  */
-export type LegStickyBadge = 'fit' | 'monthly' | 'eod' | 'band';
+export type LegStickyBadge = 'fit' | 'monthly' | 'eod' | 'band' | 'march' | 'inferior';
 
 /**
  * 两个标的**共用载体**（FR-014b）—— 8px 描边短文字标。两者只在描边色上分权重，
@@ -150,7 +150,21 @@ export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> =
   eod: 'border-line-strong',
   // 068 带外横档标：中性弱描边 —— 「预测带外」是参照语义不是问题行，权重低于「收」。
   band: 'border-line',
+  // 069 行军推荐章：brand（primary）描边 —— 蓄意避开 ok 绿（同 fit 标那条 FR-011a 理由：
+  // 绿会被读成「建议买入」，而它说的是「按 φ+形状行军这是该 K 值得锁的最长期限」）。
+  march: 'border-brand-400',
+  // 069 劣档微标（凹/陈/并）：中性弱描边 —— 「报价几何有问题」是参照不是告警，权重同带外。
+  inferior: 'border-line',
 };
+
+/**
+ * 069 推荐章的强调面（primary 章，FR-016）—— 在共用载体上叠 brand 墨色 + soft 底：
+ * 单靠描边色分不出「推荐」应有的权重，而它是本行唯一允许抬权重的标。
+ */
+export const LEG_MARCH_BADGE_EMPHASIS = 'bg-brand-soft font-semibold text-brand-600';
+
+/** 069 推荐行底（primary-soft，FR-016）—— 盖过档位 tone（推荐行的行级信号优先）。 */
+export const LEG_MARCH_ROW_CLASS = 'bg-brand-soft';
 
 // ═══════════════ 财报 chip：五形态 + null，三个「无标」不许合并 ═══════════════
 
@@ -325,6 +339,7 @@ export function legPickerClassNames(): string[] {
   for (const tone of Object.values(CHIP_TONE)) out.push(tone.container, tone.text);
   out.push(LEG_TIER_UNJUDGED_TONE.container, LEG_TIER_UNJUDGED_TONE.text);
   out.push(LEG_STICKY_BADGE_BASE, ...Object.values(LEG_STICKY_BADGE_BORDER));
+  out.push(LEG_MARCH_BADGE_EMPHASIS, LEG_MARCH_ROW_CLASS);
   out.push(legRowToneClass('dead'));
   out.push(...Object.values(AS_OF_TONE));
   return out;

@@ -1,5 +1,5 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
-import type { OptionsdeskControllerRadarMarket } from '@nvy/api-client';
+import type { MarchAuditEvidenceResponse, OptionsdeskControllerRadarMarket } from '@nvy/api-client';
 
 export const OPTIONSDESK_COPY = {
   /** 雷达屏题头（= 期权台 tab 落地屏）。 */
@@ -1018,4 +1018,124 @@ export const OPTIONSDESK_COPY = {
     unknown: '保存失败，请稍后再试',
     loadFailed: '锚加载失败',
   },
+
+  /**
+   * 069 清链与行军选档（FR-014/FR-015/FR-016，mockup 帧①③④⑤）。
+   *
+   * 🚨 **文案单点在此，server 只下发结构化数值**（plan Guardrail 6）：13 类原因的格式化函数
+   * 吃契约证据袋、吐一行文本 —— 措辞演进零契约变更。语气纪律（FR-016）：中性、禁感叹号、
+   * 两个空态是**诚实空态不是错误** —— 禁错误红语气词（「失败」「异常」保留给真故障）。
+   */
+  march: {
+    /** 收租行推荐章（FR-016）—— 单字，载体同「贴合」标。 */
+    recommendBadge: '荐',
+    /** 三类劣档灰显微标（凹 #2 / 陈 #3 / 并 #4，只标不删）。 */
+    inferiorMarks: {
+      concave: '凹',
+      stale: '陈',
+      merged: '并',
+    },
+    /** 三态判决（FR-009）。 */
+    verdicts: {
+      recommended: '推荐档',
+      no_qualified: '无合格档',
+      untradable: '整梯无可成交',
+    },
+    /** 两类诚实空态的预期管理文案（FR-016，中性灰非错误）。 */
+    emptyNoQualified: '这一梯的前向费率未达到再投资线，暂无值得锁的期限',
+    emptyUntradable: '这一梯当前没有可成交的档位，成因见逐档说明',
+    /** 弹层题头（T009 消费）。 */
+    sheetTitle: (strike: string) => `${strike} 的期限判决`,
+    /** 净链小结（「段内/净链/剔/并/标」五计数 → 一行）。 */
+    chainSummary: (s: {
+      ladderCount: number;
+      netChainCount: number;
+      removedCount: number;
+      mergedCount: number;
+      markedCount: number;
+    }) =>
+      `段内 ${s.ladderCount} 档 · 净链 ${s.netChainCount} · 剔 ${s.removedCount} · 并 ${s.mergedCount} · 标 ${s.markedCount}`,
+    /** φ 与停点闸的只读读数行（T009 消费；数值来自审计证据，无证据时不渲）。 */
+    phiReadout: (phi: string) => `再投资线 φ ${phi}`,
+    /**
+     * 13 类原因文案（FR-015 表逐条）：契约证据 → 「fwd 6.0% < φ 15%」式一行。
+     * 🚨 键集 = `LegMarchAuditResponseCategory` 全集（Record 穷举 —— 契约加类不加文案 = 编译红）。
+     * 证据缺失一律「—」占位（「不知道」不伪造数字，046 纪律）。
+     */
+    reasons: {
+      crossed_quote: (e: MarchAuditEvidenceResponse) =>
+        `报价交叉 买 ${marchPrice(e.bid)} ≥ 卖 ${marchPrice(e.ask)}`,
+      concave_dominated: (e: MarchAuditEvidenceResponse) =>
+        `凹陷支配 进档 ${marchPct(e.fwd)} < 出档 ${marchPct(e.fwdOut)}`,
+      absolute_dominated: (e: MarchAuditEvidenceResponse) =>
+        `疑似陈旧报价 权利金 ${marchPrice(e.premium)} ≤ 更短档 ${marchPrice(e.premiumShorter)}`,
+      collinear_merged: (e: MarchAuditEvidenceResponse) =>
+        `与相邻档共线并段 垂距 ${marchTicks(e.chordDistanceTicks)} < 1 tick`,
+      fwd_below_phi: (e: MarchAuditEvidenceResponse) =>
+        `远期费率 ${marchPct(e.fwd)} < φ ${marchPct(e.phi)}`,
+      decay_rebound_above_beta: (e: MarchAuditEvidenceResponse) =>
+        `衰减回升 ${marchDaily(e.decay)} > 前段上限 ${marchDaily(e.decayCap)}`,
+      decay_above_gamma_cap: (e: MarchAuditEvidenceResponse) =>
+        `衰减超绝对帽 ${marchDaily(e.decay)} > γ ${marchDaily(e.decayCap)}`,
+      tier_floor_failed: (e: MarchAuditEvidenceResponse) =>
+        `年化 ${marchPct(e.annualized)} < 档界 ${marchPct(e.tierFloor)}`,
+      qualified_not_stop: (e: MarchAuditEvidenceResponse) =>
+        e.recommendedDteDays === null
+          ? '合格，被更长档胜出'
+          : `合格，推荐档 ${e.recommendedDteDays}d 更长`,
+      stop_oi_below_min: (e: MarchAuditEvidenceResponse) =>
+        `持仓 ${marchCount(e.oi)} < 下限 ${marchCount(e.oiMin)}，沿净链回退`,
+      ladder_oi_all_below_min: (e: MarchAuditEvidenceResponse) =>
+        `持仓 ${marchCount(e.oi)} < 下限 ${marchCount(e.oiMin)}，全梯无过闸`,
+      band_out: (e: MarchAuditEvidenceResponse) =>
+        `预测带外 |Δ| ${marchPlain(e.absDelta)}，保留供比价`,
+      quote_missing: (e: MarchAuditEvidenceResponse) =>
+        e.bid === null ? '缺买价，费率不可算' : '缺相邻基准，远期费率不可算',
+    },
+  },
 } as const;
+
+// ═══════════════ 069 march 证据格式化（仅本段消费；缺值一律「—」） ═══════════════
+
+const MARCH_NO_VALUE = '—';
+
+function marchFinite(raw: string | null): number | null {
+  if (raw === null || raw === '') return null;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 年化小数比例 → 1 位百分数（`0.060000` → `6.0%`）。 */
+function marchPct(raw: string | null): string {
+  const n = marchFinite(raw);
+  return n === null ? MARCH_NO_VALUE : `${(n * 100).toFixed(1)}%`;
+}
+
+/** 每日衰减（年化费率/日，量级 ~1e-4）→ 2 位百分数每日（`0.000900` → `0.09%/日`）。 */
+function marchDaily(raw: string | null): string {
+  const n = marchFinite(raw);
+  return n === null ? MARCH_NO_VALUE : `${(n * 100).toFixed(2)}%/日`;
+}
+
+/** 价格 → 尾零收干净（`0.5200` → `0.52`）。 */
+function marchPrice(raw: string | null): string {
+  const n = marchFinite(raw);
+  return n === null ? MARCH_NO_VALUE : `${Number(n.toFixed(4))}`;
+}
+
+/** 垂距（tick 单位）→ 2 位 + 单位。 */
+function marchTicks(raw: string | null): string {
+  const n = marchFinite(raw);
+  return n === null ? MARCH_NO_VALUE : `${n.toFixed(2)} tick`;
+}
+
+/** 整数计数（OI 等）。 */
+function marchCount(value: number | null): string {
+  return value === null ? MARCH_NO_VALUE : value.toLocaleString('en-US');
+}
+
+/** 已定标小数原样收尾零（|Δ| 等）。 */
+function marchPlain(raw: string | null): string {
+  const n = marchFinite(raw);
+  return n === null ? MARCH_NO_VALUE : `${Number(n.toFixed(4))}`;
+}
