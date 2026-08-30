@@ -286,3 +286,135 @@ export function buildFwdLadder(
 
   return { nodes, rungs, audits };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 凸包剔劣 + 劣档标 (T003, ADR-0068 决策 3 步骤 2/4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 净链上一个档 (或 T004 起的合并段)。凸包终态不变量: 沿链 `fwd` **严格单调递减**。
+ */
+export interface NetChainNode {
+  /** 段尾档 DTE (未合并时即该档)。 */
+  readonly dteDays: number;
+  /** 段覆盖的全部档 DTE 升序 —— T004 共线合并前恒单元素。 */
+  readonly memberDteDays: readonly number[];
+  readonly bid: Prisma.Decimal;
+  readonly ask: Prisma.Decimal | null;
+  readonly openInterest: number | null;
+  readonly cumRateDays: Prisma.Decimal;
+  readonly annualized: Prisma.Decimal;
+  /**
+   * 进入本档的边际费率: 链头 = 自原点 (T=0, cum=0) 的斜率 (**恒等于该档年化**), 其余 =
+   * 与前一保留档的边际。原点入锚让「链头首档即劣」也可被凸包与行军统一处置。
+   */
+  readonly fwd: Prisma.Decimal;
+}
+
+/** 凸包清链产物 —— 净链 + 弹出/被标档的审计条目 (#2 / #3) 同源一趟产出。 */
+export interface ConvexCleanResult {
+  readonly chain: readonly NetChainNode[];
+  /**
+   * #2 凹陷支配 (弹出) / #3 绝对支配 (弹出或**在链被标**) 条目 —— 只标不删 (FR-004):
+   * 弹出档带类目与数值证据留在这里, 表达层据此灰显而非让档消失。按 DTE 升序。
+   */
+  readonly audits: readonly MarchAuditEntry[];
+}
+
+/**
+ * 凸包栈扫描剔劣 + 劣档标 (FR-002 / FR-004)。
+ *
+ * 复杂度**摊还 `O(n)`**: 每档至多入栈一次、出栈一次 —— `while` 级联弹出的总次数被入栈数
+ * 界住 (栈扫描摊还分析)。🚨 `while` MUST NOT 误写 `if`: 弹出 X 后前档可能仍劣, 单步弹出在
+ * 深级联输入下留下非单调链 (同名 spec 以该构造输入锁死)。
+ *
+ * · 弹出判据: `fwd(进X) < fwd(出X)` (严格小于 —— 相等是共线, 归 T004 合并, 不弹)。
+ * · 原点 (T=0, cum=0) 为固定锚: 链头档的「进」= 自身年化 ⇒ 链头也可被弹 (首档即凹陷)。
+ * · 绝对支配 (FR-004): 总权利金 ≤ **任一**更短档 (bid 口径, running max 判) ⇒ 类目 #3
+ *   (附疑似陈旧语义) —— 弹出档命中时 #3 **优先于** #2 (更精准的病因; FR-014 恰一条);
+ *   未被弹出的支配档 (典型: 链尾负 fwd) **留在净链**只挂 #3 条目。
+ */
+export function convexCleanLadder(nodes: readonly FwdLadderNode[]): ConvexCleanResult {
+  // 绝对支配预扫 (running max): dte → 支配它的最强更短档权利金。O(n)。
+  const dominatorOf = new Map<number, Prisma.Decimal>();
+  let maxShorterPremium: Prisma.Decimal | null = null;
+  for (const node of nodes) {
+    if (maxShorterPremium !== null && node.bid.lessThanOrEqualTo(maxShorterPremium)) {
+      dominatorOf.set(node.dteDays, maxShorterPremium);
+    }
+    if (maxShorterPremium === null || node.bid.greaterThan(maxShorterPremium)) {
+      maxShorterPremium = node.bid;
+    }
+  }
+
+  // (prev → node) 斜率; prev = null 即原点锚 (T=0, cum=0) ⇒ 斜率 = 该档年化。
+  const slope = (prev: FwdLadderNode | null, node: FwdLadderNode): Prisma.Decimal =>
+    prev === null
+      ? node.annualized
+      : node.cumRateDays.minus(prev.cumRateDays).div(node.dteDays - prev.dteDays);
+
+  const audits: MarchAuditEntry[] = [];
+  const markDominatedOrConcave = (
+    node: FwdLadderNode,
+    into: Prisma.Decimal,
+    out: Prisma.Decimal,
+  ) => {
+    const dominator = dominatorOf.get(node.dteDays);
+    audits.push(
+      dominator === undefined
+        ? {
+            category: 'concave_dominated',
+            dteDays: node.dteDays,
+            mergedIntoDteDays: null,
+            evidence: marchEvidence({ fwd: into, fwdOut: out }),
+          }
+        : {
+            category: 'absolute_dominated',
+            dteDays: node.dteDays,
+            mergedIntoDteDays: null,
+            evidence: marchEvidence({ premium: node.bid, premiumShorter: dominator }),
+          },
+    );
+  };
+
+  // 凸包栈扫描, 摊还 O(n) (每档至多入/出栈各一次)。🚨 while 不是 if: 弹出后前档可能仍劣。
+  const stack: FwdLadderNode[] = [];
+  for (const incoming of nodes) {
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      const below = stack.length >= 2 ? stack[stack.length - 2] : null;
+      const into = slope(below, top);
+      const out = slope(top, incoming);
+      if (!into.lessThan(out)) break; // 相等 = 共线, 归 T004 合并, 不弹
+      stack.pop();
+      markDominatedOrConcave(top, into, out);
+    }
+    stack.push(incoming);
+  }
+
+  // 幸存的绝对支配档 (典型: 链尾负 fwd 无「出」不可弹) —— 留在净链, 只挂 #3 (只标不删)。
+  for (const survivor of stack) {
+    const dominator = dominatorOf.get(survivor.dteDays);
+    if (dominator === undefined) continue;
+    audits.push({
+      category: 'absolute_dominated',
+      dteDays: survivor.dteDays,
+      mergedIntoDteDays: null,
+      evidence: marchEvidence({ premium: survivor.bid, premiumShorter: dominator }),
+    });
+  }
+
+  const chain: NetChainNode[] = stack.map((node, i) => ({
+    dteDays: node.dteDays,
+    memberDteDays: [node.dteDays],
+    bid: node.bid,
+    ask: node.ask,
+    openInterest: node.openInterest,
+    cumRateDays: node.cumRateDays,
+    annualized: node.annualized,
+    fwd: slope(i === 0 ? null : stack[i - 1], node),
+  }));
+
+  audits.sort((a, b) => a.dteDays - b.dteDays);
+  return { chain, audits };
+}
