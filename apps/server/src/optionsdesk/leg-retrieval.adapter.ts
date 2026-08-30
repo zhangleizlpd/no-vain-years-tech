@@ -8,6 +8,7 @@ import {
   OPTION_SNAPSHOT_READ_PORT,
   type OptionSnapshotBatch,
   type OptionSnapshotPort,
+  type OptionSnapshotRow,
 } from '../marketdata/option-snapshot.port';
 import { MARKET_STATE_PORT, type MarketStatePort } from '../marketdata/market-state.port';
 import {
@@ -23,7 +24,21 @@ import {
   withinWindow,
   type LegWindow,
 } from './leg-window.rules';
-import { recallCandidates, type RecallContext } from './leg-recall.rules';
+import { type LegTab } from './leg-tab.rules';
+import {
+  BUILD_RECALL_DTE,
+  RENT_RECALL_DTE,
+  recallCandidates,
+  type LegIntentTab,
+  type RecallContext,
+} from './leg-recall.rules';
+import {
+  DELTA_BAND_BY_INTENT,
+  MONEYNESS_PAD_RATIO,
+  resolveDeltaSurfaceWindow,
+  withinDeltaBand,
+  type DeltaFaceRow,
+} from './leg-delta-surface.rules';
 import type {
   LegChainMeta,
   LegChainQuery,
@@ -147,6 +162,9 @@ type RealtimeGate = 'open' | 'closed' | 'unknown';
  * 三类留痕的行首 tag —— 日志聚合按它捞行、按 `kind` 分组。🚫 MUST NOT 在第二处手写这个串
  * (聚合器与产出方各写一份, 改一处就静默漏掉一半的行)。
  */
+/** 068 FR-013 窗规模观测 (analyze G2) —— 正常规模也留痕, IT 与运维靠它读窗码数。 */
+export const WINDOW_SIZE_LOG_TAG = '[068] window-size';
+
 export const REALTIME_DEGRADE_LOG_TAG = '[064] realtime-degraded';
 
 /**
@@ -217,15 +235,32 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   ) {}
 
   async retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
-    const loaded = await this.loadChainWithWindow(query);
+    // 068 两段式 dispatch: 实时 ∧ 单意图视角 ∧ 读取口在绑 ⇒ 窄召回; 其余一律收盘档。
+    if (query.realtime && this.snapshots !== null) {
+      const intent = this.soleIntentView(query.perspectives);
+      if (intent !== null) return this.retrieveRealtimeNarrow(query, intent, this.snapshots);
+    }
+    // 离线 / 全腿 / 防御性多视角 / 读取口未绑定 ⇒ 收盘档 (零 vendor 外呼, FR-014 / Q1 裁决)。
+    return this.retrieveClosing(query, null);
+  }
+
+  /**
+   * 收盘档装配 —— 离线正路与实时回落**共用**: 走离线唯一路径 {@link loadChainWithWindow}
+   * (`realtime` 恒 `false` ⇒ 零外呼), 回落时附既有降级标 (值域零扩张, 068 Q2 裁决)。
+   */
+  private async retrieveClosing(
+    query: LegRetrievalQuery,
+    degrade: RealtimeChainDegradeKind | null,
+  ): Promise<LegRetrievalResult | null> {
+    const loaded = await this.loadChainWithWindow({
+      symbol: query.symbol,
+      now: query.now,
+      realtime: false,
+    });
     if (loaded === null) return null;
     const { chain, legs } = loaded.snapshot;
-
     const w = await this.resolveW(query.symbol);
     if (w === null) return null;
-
-    // 📌 实时档下 `chain.spot` 已是 overlay 后的**实时值** (loadChain 尾部覆盖) ⇒
-    // `axis = min(实时 spot, W)` 自动成立 (067 plan D3): 无第二处轴、无 realtime 分支。
     const context: RecallContext = { spot: chain.spot, w };
     const outcome = recallCandidates(
       context,
@@ -235,14 +270,285 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       query.override,
     );
     return {
-      chain,
+      chain: degrade === null ? chain : { ...chain, realtimeDegrade: degrade },
       ...outcome,
-      // 053 FR-009: 无覆盖口径的成员数 —— 对**同一批已在内存的 `legs`** 再判一次, 零额外 DB
-      // 往返 (上面三次查询与它无关)。语义与三条禁忌见 `LegRetrievalResult.memberCount`。
+      // 053 FR-009: 无覆盖口径的成员数 —— 语义与三条禁忌见 `LegRetrievalResult.memberCount`。
       memberCount:
         query.override === null
           ? outcome.candidates.length
           : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
+              .length,
+    };
+  }
+
+  /** 窄召回只服务单意图视角 (068 Q1 裁决); 其余形态 fail-closed 到收盘档 (FR-014)。 */
+  private soleIntentView(perspectives: readonly LegTab[]): LegIntentTab | null {
+    if (perspectives.length !== 1) return null;
+    const only = perspectives[0];
+    return only === 'build' || only === 'rent' ? only : null;
+  }
+
+  /**
+   * 068 (ADR-0068 P2) —— 实时**窄召回**主装配, 两段式。
+   *
+   * 第一段 (选码): 闸 → #286 guard → 三级基准 (D3) → 昨日 Δ 面库内批读 (零外呼) →
+   * K-梯形窗 (`leg-delta-surface.rules.ts` 单点) → 圈码; 整面无 Δ / 零快照期 ⇒ bootstrap
+   * 宽窗 (FR-004 唯一矩形场景)。
+   * 第二段 (判腿): 同批实时值组链 → 与离线档**同一个** {@link recallCandidates} 入口 (FR-005),
+   * 判腿后按同批实时 Δ 打 `bandStatus` (呈现语义, 不进成员判定)。
+   *
+   * 🚨 回落面全走 {@link retrieveClosing} + 既有降级标 —— 值域零扩张 (Q2 裁决)。
+   * 🚨 骨架 (K / 到期日 / 周期 / OI / `oiAsOf`) 取库内最近一期 (D4「DB 只出骨架 + OI」);
+   * 报价七值 + Δ + iv **只认实时批** —— 缺行 ⇒ 整条不进第二段且不污染门槛计数
+   * (混合口径是 064 四缺口之一, 🚫 MUST NOT 复活)。
+   *
+   * 复杂度: 2 闸调用 + ≤2 次外呼 (补发 ≤1 + 主批 1) + 4 次库内查询 + `O(n)` 组链。
+   */
+  private async retrieveRealtimeNarrow(
+    query: LegRetrievalQuery,
+    intent: LegIntentTab,
+    snapshots: OptionSnapshotPort,
+  ): Promise<LegRetrievalResult | null> {
+    const parsed = parseAnchorTicker(query.symbol);
+    if (parsed === null) return null;
+    // ⚠️ 写死 'us' 沿 #274 (与 loadChainWithWindow 同款已知缺陷, 🚫 不顺手修)。
+    const marketDate = exchangeCalendarDate('us', query.now);
+    const target = { symbol: query.symbol, market: parsed.market, marketDate, now: query.now };
+
+    const gate = await this.resolveRealtimeGate(target);
+    if (gate === 'closed') return this.retrieveClosing(query, null);
+    if (gate === 'unknown') return this.retrieveClosing(query, 'gate_unknown');
+    // #286: guard 在闸**之后**、定窗之前 —— 挪到闸前 = 休市时段天天见降级。
+    if (!(WINDOW_SUPPORTED_MARKETS as readonly string[]).includes(parsed.market)) {
+      this.logger.warn(
+        `${REALTIME_DEGRADE_LOG_TAG} ${query.symbol} 市场 '${parsed.market}' 未支持窗派生, 零外呼回落收盘档 (#286)`,
+      );
+      return this.retrieveClosing(query, 'source_unavailable');
+    }
+    const basis = await this.resolveWindowBasis(target);
+    if (basis.spot === null) {
+      this.warnDegraded('window_basis_stale', query.symbol, {
+        basisAt: basis.basisAt === null ? null : basis.basisAt.toISOString(),
+        freshnessSeconds: INTRADAY_FRESHNESS_SECONDS,
+      });
+      return this.retrieveClosing(query, 'window_basis_stale');
+    }
+    const w = await this.resolveW(query.symbol);
+    if (w === null) return null;
+
+    // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (Q7-B) —— 同离线共同根, 蓄意独立成路
+    // (Guardrail 1: 离线零改动是结构性的, 🚫 不与 loadChainWithWindow 共函数体)。
+    const instrument = await this.prisma.instrument.findUnique({
+      where: { market_code: { market: parsed.market, code: parsed.code } },
+      select: { id: true },
+    });
+    if (instrument === null) return null;
+    // CROSS-CONTEXT-READ: marketdata.option_contract 只读直查 (Q7-B) —— 适格认沽合约集。
+    const contracts = await this.prisma.optionContract.findMany({
+      where: {
+        underlyingInstrumentId: instrument.id,
+        optionType: 'PUT',
+        isStandard: true,
+        expiryDate: { gt: utcMidnight(marketDate) },
+      },
+      select: { id: true, code: true, expiryDate: true, strikePrice: true, expirationCycle: true },
+    });
+    if (contracts.length === 0) return null;
+
+    // 意图 DTE 段过滤 —— 段语义单点在召回常量 (窗只圈段内, FR-002)。
+    const seg = intent === 'rent' ? RENT_RECALL_DTE : BUILD_RECALL_DTE;
+    const dteByExpiry = new Map<string, number>();
+    const dteOf = (expiry: Date): number => {
+      const key = expiry.toISOString().slice(0, 10);
+      let dte = dteByExpiry.get(key);
+      if (dte === undefined) {
+        dte = daysToExpiry({ expiry, now: query.now, exchange: parsed.market });
+        dteByExpiry.set(key, dte);
+      }
+      return dte;
+    };
+    const inSegment = contracts.filter((c) => {
+      const dte = dteOf(c.expiryDate);
+      return dte >= seg.min && dte <= seg.max;
+    });
+
+    const contractIds = inSegment.map((c) => c.id);
+    let latest: { sessionDate: Date } | null = null;
+    if (contractIds.length > 0) {
+      // CROSS-CONTEXT-READ: marketdata.option_daily_snapshot 只读直查 (Q7-B) —— 最近一期定位
+      // (昨日 Δ 面的归属期)。
+      latest = await this.prisma.optionDailySnapshot.findFirst({
+        where: { contractId: { in: contractIds } },
+        orderBy: { sessionDate: 'desc' },
+        select: { sessionDate: true },
+      });
+    }
+    let snapRows: OptionDailySnapshot[] = [];
+    if (latest !== null) {
+      // CROSS-CONTEXT-READ: marketdata.option_daily_snapshot 只读直查 (Q7-B) —— 该期全量 =
+      // 昨日 Δ 面 + OI 骨架; 同合约多来源按 quote_as_of 取新 (与离线 dedupe 同口径)。
+      snapRows = await this.prisma.optionDailySnapshot.findMany({
+        where: { contractId: { in: contractIds }, sessionDate: latest.sessionDate },
+      });
+    }
+    const freshest = new Map<string, (typeof snapRows)[number]>();
+    for (const row of snapRows) {
+      const key = row.contractId.toString();
+      const kept = freshest.get(key);
+      if (kept === undefined || row.quoteAsOf.getTime() > kept.quoteAsOf.getTime()) {
+        freshest.set(key, row);
+      }
+    }
+    const previousSpot =
+      [...freshest.values()].map((row) => row.underlyingSpot).find((v) => v !== null) ?? null;
+
+    // 第一段选码: Δ 面 → K-梯形窗; 无面 ⇒ bootstrap (次日有面自动转梯形, 无第二个判据点)。
+    // 🚨 昨日 `underlyingSpot` 只作 moneyness 折算分母 (Guardrail 3), 🚫 MUST NOT 当今日基准。
+    const surface =
+      previousSpot === null
+        ? ({ kind: 'bootstrap' } as const)
+        : resolveDeltaSurfaceWindow({
+            faceRows: inSegment.map(
+              (c): DeltaFaceRow => ({
+                strike: c.strikePrice,
+                expiryDate: c.expiryDate,
+                delta: freshest.get(c.id.toString())?.delta ?? null,
+              }),
+            ),
+            previousSpot,
+            spot: basis.spot,
+            band: DELTA_BAND_BY_INTENT[intent],
+            pad: MONEYNESS_PAD_RATIO,
+            w: intent === 'rent' ? w : null,
+          });
+    let windowed: typeof inSegment;
+    if (surface.kind === 'bootstrap') {
+      const wide = bootstrapWindowFor(parsed.market, basis.spot);
+      windowed = inSegment.filter(
+        (c) =>
+          c.strikePrice.greaterThanOrEqualTo(wide.strikeMin) &&
+          c.strikePrice.lessThanOrEqualTo(wide.strikeMax),
+      );
+    } else {
+      const ks = new Set(surface.windowKs.map((k) => k.toString()));
+      windowed = inSegment.filter((c) => ks.has(c.strikePrice.toString()));
+    }
+    this.logger.log(
+      `${WINDOW_SIZE_LOG_TAG} ${query.symbol} ${intent} codes=${windowed.length} shape=${surface.kind}`,
+    );
+    if (windowed.length > OPTION_SNAPSHOT_MAX_CONTRACT_CODES) {
+      this.warnDegraded('window_over_cap', query.symbol, {
+        windowed: windowed.length,
+        cap: OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
+      });
+      return this.retrieveClosing(query, 'window_over_cap');
+    }
+
+    // 一次批取 (FR-013: 主批恒 1; 零码 ⇒ 零外呼, 空态由第二段自然产出)。
+    let batch: OptionSnapshotBatch | null = null;
+    if (windowed.length > 0) {
+      batch = await this.fetchQuotes(
+        snapshots,
+        target,
+        windowed.map((c) => c.code),
+      );
+      if (batch === null) return this.retrieveClosing(query, 'source_unavailable');
+    }
+
+    // 组链。spot / quoteAsOf 取批内标的行与信封 (与腿报价同批同刻, 067 axis 输入同源)。
+    const quoteByCode = new Map<string, OptionSnapshotRow>();
+    let spot = basis.spot;
+    let quoteAsOf = basis.basisAt ?? query.now;
+    if (batch !== null) {
+      for (const row of batch.rows) {
+        if (row.isOption) quoteByCode.set(row.code, row);
+        else spot = vendorDecimal(row.last) ?? spot;
+      }
+      quoteAsOf = batch.asOf;
+    }
+    const band = DELTA_BAND_BY_INTENT[intent];
+    const skeleton = this.toLegRows(
+      windowed.map((c) => ({ contract: c, snapshot: freshest.get(c.id.toString()) ?? null })),
+      query.now,
+      parsed.market,
+    );
+    const answered: LegChainRow[] = [];
+    let missing = 0;
+    for (const leg of skeleton) {
+      const quote = quoteByCode.get(leg.code);
+      const bid = quote === undefined ? null : vendorDecimal(quote.bid);
+      const ask = quote === undefined ? null : vendorDecimal(quote.ask);
+      // 买卖价皆空 ⇒ 整行按「未取到实时」处理 (064 同款判据) —— 窄路径下没有收盘值可落。
+      if (quote === undefined || (bid === null && ask === null)) {
+        missing += 1;
+        continue;
+      }
+      const deltaDec = vendorDecimal(quote.delta);
+      answered.push({
+        ...leg,
+        bid,
+        ask,
+        bidSize: vendorNumber(quote.bidSize),
+        askSize: vendorNumber(quote.askSize),
+        delta: deltaDec === null ? null : deltaDec.toNumber(),
+        iv: vendorNumber(quote.iv),
+        volume: vendorNumber(quote.volume),
+        greeksComplete: quote.greeksComplete ?? false,
+        priceKind: 'realtime',
+        bandStatus: deltaDec === null ? null : withinDeltaBand(deltaDec, band) ? 'in' : 'out',
+      });
+    }
+    if (missing > 0) {
+      this.warnDegraded('partial_miss', query.symbol, { missing, requested: windowed.length });
+    }
+
+    // 链级 meta = 骨架期; 零快照期沿实时基线归属口径 (sessionDate = 交易所今天,
+    // oiAsOf = 最近已收盘交易日, 日历答不出 ⇒ 放弃不猜)。
+    let sessionDate: Date;
+    let oiAsOf: Date;
+    let source: string;
+    if (latest !== null && freshest.size > 0) {
+      const newest = [...freshest.values()].reduce((a, b) =>
+        b.quoteAsOf.getTime() > a.quoteAsOf.getTime() ? b : a,
+      );
+      sessionDate = latest.sessionDate;
+      oiAsOf = newest.oiAsOf;
+      source = newest.source;
+    } else {
+      if (this.tradingCalendar === null) return null;
+      const lastClosed = await this.tradingCalendar.lastClosedSession(parsed.market, query.now);
+      if (lastClosed === null) return null;
+      sessionDate = utcMidnight(marketDate);
+      oiAsOf = utcMidnight(lastClosed);
+      source = REALTIME_BASELINE_SOURCE;
+    }
+    const chain: LegChainMeta = {
+      marketDate,
+      sessionDate,
+      quoteAsOf,
+      oiAsOf,
+      source,
+      spot,
+      priceKind: 'realtime',
+      realtimeDegrade: null,
+    };
+
+    // 第二段: 同一判据入口, 仅输入换实时值 (FR-005 / branch 11)。
+    const context: RecallContext = { spot, w };
+    const outcome = recallCandidates(
+      context,
+      query.perspectives,
+      answered,
+      query.candidateCap,
+      query.override,
+    );
+    return {
+      chain,
+      ...outcome,
+      memberCount:
+        query.override === null
+          ? outcome.candidates.length
+          : recallCandidates(context, query.perspectives, answered, query.candidateCap).candidates
               .length,
     };
   }
@@ -488,6 +794,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         // {@link overlayRealtimeQuotes} 逐行改写 (T004a)。🚫 MUST NOT 在下游任何一层「补标」:
         // 补标点有第二个,「这个数是什么时候的」就有两个答案, 而两个答案都渲染得出来。
         priceKind: 'eod_close',
+        // 068: 带标只在实时窄路径由同批实时 Δ 打; 库内读出的收盘档恒无带语义。
+        bandStatus: null,
       };
     });
   }

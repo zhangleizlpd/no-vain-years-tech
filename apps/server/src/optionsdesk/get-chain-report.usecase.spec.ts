@@ -161,6 +161,7 @@ const CYCLE_BY_EXPIRY: Readonly<Record<string, string>> = {
 function rowOf(fixture: Fixture): LegChainRow {
   return {
     code: fixture.code,
+    bandStatus: null,
     expiryDate: day(fixture.expiry),
     expirationCycle: CYCLE_BY_EXPIRY[fixture.expiry] ?? null,
     dteDays: fixture.dteDays,

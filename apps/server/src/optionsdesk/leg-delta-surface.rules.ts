@@ -1,5 +1,9 @@
 import { Prisma } from '../generated/prisma/client';
-import { QUALITY_CEILING_SPOT_RATIO, resolveCeilingAxis } from './leg-recall.rules';
+import {
+  QUALITY_CEILING_SPOT_RATIO,
+  resolveCeilingAxis,
+  type LegIntentTab,
+} from './leg-recall.rules';
 
 /**
  * 068 (ADR-0068 P2) —— 实时窄召回**第一段**的选码判据: 昨日 Δ 面 (sticky moneyness 查表) →
@@ -29,6 +33,18 @@ export const RENT_DELTA_BAND: DeltaBand = {
   upper: new Prisma.Decimal('0.32'),
 };
 export const MONEYNESS_PAD_RATIO = new Prisma.Decimal('0.025');
+
+/** 意图 → 带 的唯一映射 (adapter 按请求视角取, 🚫 MUST NOT 在别处再写一份 switch)。 */
+export const DELTA_BAND_BY_INTENT: Readonly<Record<LegIntentTab, DeltaBand>> = {
+  build: BUILD_DELTA_BAND,
+  rent: RENT_DELTA_BAND,
+};
+
+/** |Δ| 落带判定 (闭区间) —— 第一段预测与第二段带标共用的**单点**。`O(1)`。 */
+export function withinDeltaBand(delta: Prisma.Decimal, band: DeltaBand): boolean {
+  const abs = delta.abs();
+  return abs.greaterThanOrEqualTo(band.lower) && abs.lessThanOrEqualTo(band.upper);
+}
 
 /** 昨日面的一行: (K, 到期日) 的收盘 Δ。`delta = null` = vendor 未给 (部分缺失, 不参与包络)。 */
 export interface DeltaFaceRow {
@@ -83,8 +99,7 @@ export function resolveDeltaSurfaceWindow(input: DeltaSurfaceInput): DeltaSurfac
   // 逐到期日的落带 K 区间 (昨日 K 口径)
   const inBandByExpiry = new Map<string, { lo: Prisma.Decimal; hi: Prisma.Decimal }>();
   for (const row of readable) {
-    const abs = (row.delta as Prisma.Decimal).abs();
-    if (abs.lessThan(band.lower) || abs.greaterThan(band.upper)) continue;
+    if (!withinDeltaBand(row.delta as Prisma.Decimal, band)) continue;
     const key = isoDate(row.expiryDate);
     const kept = inBandByExpiry.get(key);
     if (kept === undefined) {

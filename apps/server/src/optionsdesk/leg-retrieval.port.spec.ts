@@ -43,6 +43,7 @@ const chainMeta: LegChainMeta = {
 function row(over: Partial<LegChainRow> = {}): LegChainRow {
   return {
     code: 'C-BASE',
+    bandStatus: null,
     expiryDate: new Date('2026-09-08T00:00:00.000Z'),
     dteDays: 35,
     strike: D('100'),

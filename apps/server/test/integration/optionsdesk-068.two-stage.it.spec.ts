@@ -6,7 +6,10 @@ import { AppModule } from '../../src/app/app.module';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { PrismaService } from '../../src/security/prisma.service';
 import { Prisma } from '../../src/generated/prisma/client';
-import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
+import {
+  RECALL_CANDIDATE_CAP,
+  type RetrievalOverride,
+} from '../../src/optionsdesk/leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
   type LegRetrievalPort,
@@ -76,6 +79,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
   let readPort: SpySnapshotReadPort;
   let marketState: FakeMarketStatePort;
   const warnings: string[] = [];
+  const infos: string[] = [];
 
   /** 请求时刻 = 2026-08-11 ET 12:00 (盘中) ⇒ 交易所的今天恒为 2026-08-11。 */
   const NOW = new Date('2026-08-11T16:00:00.000Z');
@@ -112,6 +116,9 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
     vi.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => {
       warnings.push(typeof message === 'string' ? message : JSON.stringify(message));
     });
+    vi.spyOn(Logger.prototype, 'log').mockImplementation((message: unknown) => {
+      infos.push(typeof message === 'string' ? message : JSON.stringify(message));
+    });
   }, 180_000);
 
   afterAll(async () => {
@@ -122,6 +129,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
 
   beforeEach(async () => {
     warnings.length = 0;
+    infos.length = 0;
     readPort.calls.length = 0;
     readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
     readPort.fail = null;
@@ -349,23 +357,30 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       Record<string, Partial<Omit<OptionSnapshotRow, 'code' | 'isOption'>>>
     > = {},
     spot: string = REALTIME_SPOT,
+    omit: readonly string[] = [],
   ): (q: OptionSnapshotQuery) => OptionSnapshotBatch {
     return (query) => ({
       asOf: REALTIME_AS_OF,
       rows: [
         underlyingRow(spot),
-        ...query.contractCodes.map((code) => optionRow(code, rowsByCode[code] ?? {})),
+        ...query.contractCodes
+          .filter((code) => !omit.includes(code))
+          .map((code) => optionRow(code, rowsByCode[code] ?? {})),
       ],
     });
   }
 
-  function retrieve(realtime: boolean): Promise<LegRetrievalResult | null> {
+  function retrieve(
+    realtime: boolean,
+    view: 'build' | 'rent' | 'all' = 'rent',
+    override: RetrievalOverride | null = null,
+  ): Promise<LegRetrievalResult | null> {
     return moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT).retrieveCandidates({
       symbol: SYMBOL,
       now: NOW,
-      perspectives: ['rent'],
+      perspectives: [view],
       candidateCap: RECALL_CANDIDATE_CAP,
-      override: null,
+      override,
       realtime,
     });
   }
@@ -410,6 +425,107 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(result!.chain.priceKind).toBe('eod_close');
       // 回落产物 = 收盘档全量 (五条腿都在, 值取库内) —— 不是空态不是错误。
       expect(result!.chain.spot.toString()).toBe(new Prisma.Decimal(EOD_SPOT).toString());
+    });
+  });
+
+  // ── T005 · 窄路径主装配 (FR-001/002/005/008/009/010/013; branches 1/9/11/12/13) ──
+
+  describe('T005 实时窄路径主装配 loadRealtimeNarrowChain', () => {
+    const codesOf = (result: LegRetrievalResult) => result.candidates.map((c) => c.leg.code).sort();
+
+    it('① 主路: 外呼码集 = K-梯形窗产物 (任一到期日落带 × 段内全部到期日), 计数恒 1, 判腿走同一入口', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(1);
+      // RENT 带 [0.05, 0.32] 对昨日面 {80:0.06, 88:0.15, 92:0.25, 96:0.42, 104:0.60}
+      // ⇒ 落带 K = {80, 88, 92}, 包络 ±pad 后 96/104 仍在窗外。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['T-80', 'T-88', 'T-92']);
+      expect(codesOf(result!)).toEqual(['T-80', 'T-88', 'T-92']);
+      // 第二段吃实时值: 链级 spot = 批内标的行 (非库内 spot / 非定窗基准)。
+      expect(result!.chain.priceKind).toBe('realtime');
+      expect(result!.chain.spot.toString()).toBe(new Prisma.Decimal(REALTIME_SPOT).toString());
+      expect(result!.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
+      // FR-013 窗规模可观测 (analyze G2)。
+      expect(infos.some((line) => line.includes('[068] window-size'))).toBe(true);
+    });
+
+    it('② 带标: 同批实时 Δ 落带 ⇒ in, 未落 ⇒ out 且**仍在候选中** (打标不删)', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch({
+        'T-80': { delta: '-0.04' },
+        'T-88': { delta: '-0.20' },
+        'T-92': { delta: '-0.31' },
+      });
+
+      const result = await retrieve(true);
+      const byCode = new Map(result!.candidates.map((c) => [c.leg.code, c.leg]));
+      expect(byCode.get('T-80')?.bandStatus).toBe('out');
+      expect(byCode.get('T-88')?.bandStatus).toBe('in');
+      expect(byCode.get('T-92')?.bandStatus).toBe('in');
+      expect(byCode.has('T-80')).toBe(true);
+    });
+
+    it('③ 规则内无腿 ⇒ 既有「有链无候选」形态非错误 (branch 12)', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch({
+        'T-80': { bid: '0.01', ask: '0.03' },
+        'T-88': { bid: '0.01', ask: '0.03' },
+        'T-92': { bid: '0.01', ask: '0.03' },
+      });
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      expect(result!.candidates).toHaveLength(0);
+      expect(result!.chain.realtimeDegrade).toBeNull();
+      expect(result!.criteriaByTab.rent).toBeDefined();
+      expect(result!.removedByPremiumFloor).toBe(3);
+    });
+
+    it('④ 两意图视角两次请求 ⇒ 两窗两外呼两个 quoteAsOf (branch 9)', async () => {
+      const OLEGS = LEGS.map((leg) => ({ ...leg, dte: 35, code: leg.code.replace('T-', 'O-') }));
+      await seedChain({ basis: FRESH_BASIS, legs: OLEGS });
+      readPort.respond = (query) => ({
+        asOf: new Date(REALTIME_AS_OF.getTime() + readPort.calls.length * 1000),
+        rows: [underlyingRow(REALTIME_SPOT), ...query.contractCodes.map((code) => optionRow(code))],
+      });
+
+      const build = await retrieve(true, 'build');
+      const rent = await retrieve(true, 'rent');
+      expect(build).not.toBeNull();
+      expect(rent).not.toBeNull();
+      expect(readPort.calls).toHaveLength(2);
+      // BUILD 带 [0.10, 0.45] ⇒ {88, 92, 96}; RENT 带 [0.05, 0.32] ⇒ {80, 88, 92}。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['O-88', 'O-92', 'O-96']);
+      expect([...readPort.calls[1].contractCodes].sort()).toEqual(['O-80', 'O-88', 'O-92']);
+      expect(build!.chain.quoteAsOf.getTime()).not.toBe(rent!.chain.quoteAsOf.getTime());
+    });
+
+    it('⑤ 实时批部分缺行 ⇒ 缺失腿不进候选且不污染门槛计数, partial_miss 留痕 (Edge 2)', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch({}, REALTIME_SPOT, ['T-88']);
+
+      const result = await retrieve(true);
+      expect(codesOf(result!)).toEqual(['T-80', 'T-92']);
+      // 没被回答的腿 MUST NOT 被计成「被门槛移出」—— 那是「真实、可读、且完全错的数」。
+      expect(result!.removedByPremiumFloor).toBe(0);
+      expect(warnings.some((line) => line.includes('partial_miss'))).toBe(true);
+    });
+
+    it('⑥ 覆盖在窄路径原样生效: strikeMax 收窄 ⇒ 候选按覆盖出现, 三态 narrowed, memberCount 无覆盖口径 (US3-AS4)', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch();
+
+      const override: RetrievalOverride = {
+        perspective: 'rent',
+        criteria: { strikeMax: new Prisma.Decimal('85') },
+      };
+      const result = await retrieve(true, 'rent', override);
+      expect(codesOf(result!)).toEqual(['T-80']);
+      expect(result!.memberCount).toBe(3);
+      expect(result!.criteriaByTab.rent.outcomes.strikeMax.state).toBe('narrowed');
     });
   });
 });
