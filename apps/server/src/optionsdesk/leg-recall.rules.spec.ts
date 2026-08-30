@@ -12,6 +12,7 @@ import {
   RETRIEVAL_CRITERION_KEYS,
   defaultCriteriaByTab,
   failedCriteria,
+  isCrossedQuote,
   passesEffectiveCostGate,
   passesHardGates,
   passesLivenessMin,
@@ -853,5 +854,45 @@ describe('leg-recall.rules — 068 T001 axis 单点抽取 (FR-003 前置)', () =
     expect(resolveQualityCeiling(spot, w, legs).toString()).toBe(
       resolveQualityCeiling(axis, axis, legs).toString(),
     );
+  });
+});
+
+describe('leg-recall.rules — 069 报价护栏全域前置 (FR-001)', () => {
+  const recall = (legs: readonly RecallLegInput[]) =>
+    recallCandidates(context, LEG_TABS, legs, RECALL_CANDIDATE_CAP);
+
+  it('① 交叉报价 (bid > ask) 整条剔出候选, 腿原样留痕供审计 #1', () => {
+    const crossed = leg({ bid: D('0.52'), ask: D('0.48') });
+    const normal = leg();
+    const outcome = recall([crossed, normal]);
+    expect(outcome.candidates.map((c) => c.leg)).toEqual([normal]);
+    expect(outcome.removedByCrossedQuote).toEqual([crossed]);
+  });
+
+  it('② 锁定报价 (bid = ask) 同样剔出 —— ask ≤ bid 的闭端; 单侧缺失不判交叉 (null 不顶 0)', () => {
+    const locked = leg({ bid: D('2'), ask: D('2') });
+    expect(recall([locked]).removedByCrossedQuote).toEqual([locked]);
+    expect(isCrossedQuote(null, D('2'))).toBe(false);
+    expect(isCrossedQuote(D('2'), null)).toBe(false);
+  });
+
+  it('③ 回归: 交叉报价的负 relativeSpread 本会放行点差闸 —— 护栏前置后它到不了那道闸', () => {
+    const crossed = leg({ bid: D('2.1'), ask: D('2') });
+    // 缺口的直接证据: 负价差 ≤ 上界 ⇒ 点差闸自己挡不住交叉报价, 挡下它的只能是前置护栏
+    expect(passesRelativeSpreadMax(crossed.bid, crossed.ask, LIQUIDITY_MAX_RELATIVE_SPREAD)).toBe(
+      true,
+    );
+    const outcome = recall([crossed]);
+    expect(outcome.candidates).toEqual([]);
+    expect(outcome.removedByCrossedQuote).toEqual([crossed]);
+  });
+
+  it('④ 建仓视角同样剔除 (意图无关数据质量闸) —— 交叉腿连全腿 Tab 也不可见', () => {
+    const crossed = leg({ dteDays: 10, bid: D('3'), ask: D('2.5') });
+    // 前置确认: 除护栏外其余判据全过 (有效成本 97 < 110、权利金、活性) —— 挡下它的只能是护栏
+    expect(tabsOf(chain, crossed)).toEqual(['all', 'build']);
+    const outcome = recall([crossed]);
+    expect(outcome.candidates).toEqual([]);
+    expect(outcome.removedByCrossedQuote).toEqual([crossed]);
   });
 });

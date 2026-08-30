@@ -51,7 +51,7 @@ updated_at: '2026-08-30'
 
 ## Tasks
 
-- [ ] T001 [P] [Server] **报价护栏全域前置**（FR-001; plan §D2; state_branches 1; US1）：`leg-recall.rules.ts` 在流动性闸（`relativeSpread` :284 消费处）之前加 crossed-quote 护栏：`ask ≤ bid ⇒ 剔出候选` 并以结构化留痕返回（`{code, bid, ask}` 列表，供上游拼审计 #1）；三个视角一律生效。同名 spec **先红后绿**四臂：① 交叉报价剔出（bid > ask）② 锁定报价剔出（bid = ask）③ 负 `relativeSpread` 放行路径回归——构造 bid>ask 腿断言其**到不了**点差闸 ④ 建仓视角同样剔除（全域证据）→ verify: 四臂先红 → `pnpm exec nx test server` 绿；定向变异（护栏条件反写 `<`）四臂红留档
+- [X] T001 [P] [Server] **报价护栏全域前置**（FR-001; plan §D2; state_branches 1; US1）：`leg-recall.rules.ts` 在流动性闸（`relativeSpread` :284 消费处）之前加 crossed-quote 护栏：`ask ≤ bid ⇒ 剔出候选` 并以结构化留痕返回（`{code, bid, ask}` 列表，供上游拼审计 #1）；三个视角一律生效。同名 spec **先红后绿**四臂：① 交叉报价剔出（bid > ask）② 锁定报价剔出（bid = ask）③ 负 `relativeSpread` 放行路径回归——构造 bid>ask 腿断言其**到不了**点差闸 ④ 建仓视角同样剔除（全域证据）→ verify: 四臂先红 → `pnpm exec nx test server` 绿；定向变异（护栏条件反写 `<`）四臂红留档
 
 - [ ] T002 [Server] **fwd 链构造 + 13 类枚举地基**（FR-005 部分, FR-015 枚举; plan §D1; US1）：**新建** `leg-fwd-chain.rules.ts`——`MarchExclusionCategory` 13 类四家族枚举（spec FR-015 表逐条，单点）+ 审计条目结构化类型（类目 + 数值证据字段，nullable per 类目）+ 收租段每 K 到期日梯 → fwd 链构造（相邻档边际费率 = 权利金差/(K−P 准备金口径)/时间差折年；`K−P ≤ 0` / 权利金缺失 ⇒ #13 报价缺失条目非伪造 0）。同名 spec **先红后绿**四臂：① 恒等式性质 `年化₂ = [T₁·年化₁ + (T₂−T₁)·fwd]/T₂` 随机三组逐值 ② 单档梯 fwd 链退化（无相邻档 ⇒ 空链非异常）③ 权利金缺失档 ⇒ #13 条目 + 不进链 ④ 枚举恰 13 成员四家族（编译期 + 运行时双证）→ verify: 四臂先红 → 绿；`rg -n 'MarchExclusionCategory' apps/server/src/` 定义恰一处
 

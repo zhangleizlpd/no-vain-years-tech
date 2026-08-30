@@ -246,6 +246,23 @@ export function relativeSpread(
 }
 
 /**
+ * 069 报价护栏 (FR-001): 交叉/锁定报价 `ask ≤ bid` 判定。`O(1)`。
+ *
+ * 🚨 它 MUST 前置于点差闸 ({@link passesRelativeSpreadMax}): 交叉报价的 {@link relativeSpread}
+ * 为负, 恒 ≤ 任何上界 ⇒ 点差闸对最坏的报价反而放行 (069 实测缺口, 本护栏在源头闭合)。它是
+ * **意图无关的数据质量闸, 全部视角一律** (069 收租 scope 的唯一例外, clarify Q4) —— 施加点在
+ * {@link recallCandidates} 入口, 连全腿 Tab 也不留: 交叉报价是坏数据不是差流动性, 以任何视角
+ * 呈现都是把垃圾报价当行情。
+ *
+ * 任一侧缺失 ⇒ 不判交叉 (「不知道」走既有 fail-closed 路径: 权利金 / 点差闸各自挡), 🚫 MUST
+ * NOT 拿 null 顶 0 参与比较 (同 {@link passesPremiumMin} 对 `bid` 的纪律)。
+ */
+export function isCrossedQuote(bid: Prisma.Decimal | null, ask: Prisma.Decimal | null): boolean {
+  if (bid === null || ask === null) return false;
+  return ask.lessThanOrEqualTo(bid);
+}
+
+/**
  * 权利金下限的**系统默认值** (FR-005): `max(绝对下限, spot × 比例)`。`O(1)`。
  *
  * 🚨 **它依赖 spot ⇒ MUST 由服务端解出并下发** (052 FR-011): 客户端自算即「同一判据两处各算
@@ -615,6 +632,14 @@ export interface RecallCandidate<T extends RecallLegInput> {
 /** 召回层的产出: 候选集 + 两道门槛各自挡下多少条 (FR-008 / 051 FR-006a 两个计数的数据源)。 */
 export interface RecallOutcome<T extends RecallLegInput> {
   readonly candidates: readonly RecallCandidate<T>[];
+  /**
+   * 069 报价护栏 (FR-001) 剔除的腿 —— **原样留痕**, 供上游拼每 K 审计条目 #1 (报价异常,
+   * 证据 = 腿上的 bid/ask)。恒有值, 无剔除时为空数组。
+   *
+   * 🚨 与流动性门槛「腿仍在全腿可见」不同, 这批腿**整条移出候选** (三视角一律) —— 信息不丢
+   * 的责任由审计条目承接; 🚫 MUST NOT 退化成计数: 审计要逐腿的 bid/ask, 条数拼不出证据。
+   */
+  readonly removedByCrossedQuote: readonly T[];
   readonly removedByPremiumFloor: number;
   readonly excludedFromIntentTabs: number;
   readonly excludedFromIntentTabsByTab: Readonly<Record<LegIntentTab, number>>;
@@ -654,7 +679,9 @@ export interface RecallOutcome<T extends RecallLegInput> {
  * `candidateCap` = 本次的候选上限 (052 FR-027)。**必填而非可选** —— 给个默认值就等于「忘传时
  * 静默无上限」, 而那正是保险丝最需要生效的那一刻 (调用方今天只有 port 的两个实现)。
  *
- * 复杂度 `O(n)`: 一遍求成色上界 (链级, 见 {@link resolveQualityCeiling}) + 一遍逐腿 `O(1)` 判据;
+ * 复杂度 `O(n)`: 一遍报价护栏 (069 FR-001, {@link isCrossedQuote} 整条移出且留痕) + 一遍求
+ * 成色上界 (链级, 见 {@link resolveQualityCeiling}, 网格含被护栏剔的腿 —— 合约属性与报价无关)
+ * + 一遍逐腿 `O(1)` 判据;
  * **仅在触及上限时**多一次 `O(n log n)` 排序 (见 {@link capCandidates})。
  * 前两遍**不可合成一遍** —— 上界要先于任何一条腿的判定成型。
  */
@@ -679,6 +706,15 @@ export function recallCandidates<T extends RecallLegInput>(
     qualityCeiling: resolveQualityCeiling(context.spot, context.w, legs),
   };
 
+  // 069 报价护栏 (FR-001): 前置于一切逐腿判据、三视角一律 ({@link isCrossedQuote})。放在成色
+  // 上界**之后**过滤 —— 行权价网格是合约属性, 与报价好坏无关 (上文纪律), 护栏只决定谁进候选。
+  const removedByCrossedQuote: T[] = [];
+  const guardedLegs: T[] = [];
+  for (const leg of legs) {
+    if (isCrossedQuote(leg.bid, leg.ask)) removedByCrossedQuote.push(leg);
+    else guardedLegs.push(leg);
+  }
+
   // 三视角的系统默认值 + 本次生效值 (052 T010)。覆盖**只落在一个视角**上, 其余恒走默认值。
   const defaults = defaultCriteriaByTab(chain);
   const overridden = overriddenKeysOf(override);
@@ -694,7 +730,7 @@ export function recallCandidates<T extends RecallLegInput>(
   };
 
   const pass: RecallPass = { chain, requested, defaults, effective, overridden };
-  for (const leg of legs) {
+  for (const leg of guardedLegs) {
     const verdict = evaluateLeg(pass, leg);
     if (verdict.tabs.length > 0) candidates.push({ leg, tabs: verdict.tabs });
     if (verdict.premiumBlockedEverywhere) removedByPremiumFloor += 1;
@@ -712,6 +748,7 @@ export function recallCandidates<T extends RecallLegInput>(
   const kept = capCandidates(candidates, candidateCap);
   return {
     candidates: kept,
+    removedByCrossedQuote,
     removedByPremiumFloor,
     excludedFromIntentTabs,
     excludedFromIntentTabsByTab,
