@@ -17,31 +17,22 @@ import {
 } from '../../src/optionsdesk/leg-recall.rules';
 import {
   LEG_RETRIEVAL_PORT,
-  REALTIME_CHAIN_DEGRADE_KINDS,
   type LegRetrievalPort,
   type RealtimeChainDegradeKind,
-  type RealtimeDegradeKind,
 } from '../../src/optionsdesk/leg-retrieval.port';
 import {
-  OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
   OPTION_SNAPSHOT_READ_PORT,
   type OptionSnapshotBatch,
   type OptionSnapshotPort,
   type OptionSnapshotQuery,
   type OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
-import { REALTIME_DEGRADE_LOG_TAG } from '../../src/optionsdesk/leg-retrieval.adapter';
-import { INTRADAY_FRESHNESS_SECONDS } from '../../src/optionsdesk/intraday-spot.rules';
 import {
   MARKET_STATE_PORT,
   type MarketSession,
   type MarketSessionState,
   type MarketStatePort,
 } from '../../src/marketdata/market-state.port';
-import {
-  TRADING_CALENDAR_PORT,
-  type TradingCalendarPort,
-} from '../../src/marketdata/trading-calendar.port';
 import type { LegChainSnapshot } from '../../src/optionsdesk/leg-retrieval.port';
 
 /**
@@ -131,11 +122,6 @@ class FakeMarketStatePort implements MarketStatePort {
 /** `nx test server` 的 cwd 恒为 `apps/server` (同本目录其余 IT 的 `SERVER_DIR` 体例)。 */
 const BASELINE_PATH = join(process.cwd(), 'test/integration/optionsdesk-064.baseline.json');
 const WRITE_BASELINE = process.env.NVY_064_WRITE_BASELINE === '1';
-
-/** vendor 侧金额串的规范形 —— 尾零归一, 用于与 `Decimal.toString()` 对比。 */
-function decimalText(value: string | null): string | undefined {
-  return value === null ? undefined : new Prisma.Decimal(value).toString();
-}
 
 /**
  * `bigint` 是 `JSON.stringify` 的硬错; 其余 (Date / Decimal) 各自的 `toJSON` 已经稳定。
@@ -311,18 +297,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
   }
 
   const FRESH_BASIS: SeedBasis = { price: SPOT, at: new Date(NOW.getTime() - 10_000) };
-
-  /**
-   * **真正的盘中时刻** (ET 12:00) —— 实时独载基线那组专用。
-   *
-   * 🚨 与 {@link NOW} (ET 16:00) 的差别是判别性的, 不是风格: 16:00 已到常规收盘分钟数 ⇒
-   * `sessionWatermark` 当场翻到**当天**, 于是「最近一个已收盘交易日」= 今天 = `sessionDate`,
-   * 那条「两个时点不同天」的断言就恒绿。挪到 12:00 之后水位仍停在昨天, `oiAsOf` 与
-   * `sessionDate` 才真的分得开 —— 而这正是实时独载基线最容易写错的那一格。
-   * 📌 仍落在同一个 ET 日历日内 ⇒ `exchangeCalendarDate` 与逐腿 DTE 与 {@link NOW} 一致。
-   */
-  const INTRADAY_NOW = new Date('2026-08-11T16:00:00.000Z');
-  const INTRADAY_BASIS: SeedBasis = { price: SPOT, at: new Date(INTRADAY_NOW.getTime() - 10_000) };
 
   /**
    * @param opts.snapshots `false` ⇒ 只落合约集不落快照行 (`state_branch` 9 的输入:
@@ -668,133 +642,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       .get<LegRetrievalPort>(LEG_RETRIEVAL_PORT)
       .retrieveChain({ symbol: SYMBOL, now: NOW, realtime });
 
-  it('🚨 `FR-001` / `FR-002` / `state_branch` 1: 七列取到实时值, 逐行 `priceKind=realtime`, 区块时刻取信封 `asOf`', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    // 一次请求 = 一次外呼, 且 `contractCodes` 取自**已组装的 legs** (库内链行的 code)。
-    expect(readPort.calls).toHaveLength(1);
-    expect(readPort.calls[0].underlyingSymbol).toBe(SYMBOL);
-    expect([...readPort.calls[0].contractCodes].sort()).toEqual(LEGS.map((l) => l.code).sort());
-
-    expect(snapshot.chain.priceKind).toBe('realtime');
-    // 🚨 区块时刻是**我方采集时刻** (`FR-010`), 🚫 不是库内 `quote_as_of`, 也不是行内
-    // `vendorUpdateTime` (那是最后成交时刻)。
-    expect(snapshot.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
-
-    for (const leg of snapshot.legs) {
-      const expected = REALTIME_BY_CODE[leg.code];
-      expect(leg.priceKind).toBe('realtime');
-      // 经 `Decimal` 归一后再比 —— 直接比字符串会被尾零绊住 ('1.90' vs '1.9'), 那不是口径差异。
-      expect(leg.bid?.toString()).toBe(decimalText(expected.bid));
-      expect(leg.ask?.toString()).toBe(decimalText(expected.ask));
-      expect(leg.bidSize).toBe(Number(expected.bidSize));
-      expect(leg.askSize).toBe(Number(expected.askSize));
-      expect(leg.delta).toBe(Number(expected.delta));
-      expect(leg.iv).toBe(Number(expected.iv));
-      expect(leg.volume).toBe(Number(expected.volume));
-    }
-  });
-
-  it('🚨 `FR-004` / `SC-006` 反例: OI 三列在两档下**逐字节相同** —— 实时批喂的是不同的数', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-
-    const closed = await chainOf(false);
-    const live = await chainOf(true);
-    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    // 反例装置自检: 实时批给的 OI **确实**与库内不同, 否则下面那条断言恒绿 = 等于没写。
-    for (const leg of LEGS) {
-      expect(REALTIME_BY_CODE[leg.code].openInterest).not.toBe(leg.oi);
-    }
-
-    const oiOf = (snap: NonNullable<Awaited<ReturnType<typeof chainOf>>>) =>
-      snap.legs.map((leg) => `${leg.code}:${String(leg.openInterest)}`).sort();
-    expect(oiOf(live)).toEqual(oiOf(closed));
-    expect(live.chain.oiAsOf).toEqual(closed.chain.oiAsOf);
-    // 🚨 归属日 MUST NOT 被标成当天 (`SC-006`) —— 种子里 OI 归属 T−1。
-    expect(live.chain.oiAsOf).toEqual(dateOf(PREV_SESSION));
-
-    // 🚨 **Guardrail 6 的结构判据**: `netOpenInterest` 根本不在腿的写入面上 —— 它不是「覆盖时
-    // 跳过了」, 而是压根没有这个字段可覆盖。把它加进返回类型再在 overlay 里跳过, 等于把一条
-    // 编译期保证降级成一条注释。
-    for (const leg of live.legs) expect(Object.keys(leg)).not.toContain('netOpenInterest');
-  });
-
-  /**
-   * `greeksComplete` 的两条反例样本 —— 报价六维照抄 `L-OK` (三视角全进), **只在库内那个标上
-   * 分头取值**, 于是「标翻没翻」不会被成员变化掩盖。行权价错开一档只为不与 `L-OK` 同格。
-   */
-  const GREEKS_WAKE: SeedLeg = {
-    code: 'L-GREEKS-WAKE',
-    dte: 35,
-    strike: '91',
-    bid: '2.00',
-    ask: '2.10',
-    oi: '900',
-    vol: '40',
-    iv: '20',
-    // 昨收深实值腿 bid 跌破内在价值 ⇒ IV 无解, 是数学固有现象不是采集故障
-    // (`option-snapshot.port.ts`: 实测 2150 行里 227 行是这个形态)。
-    greeksComplete: false,
-  };
-
-  const GREEKS_FADE: SeedLeg = {
-    ...GREEKS_WAKE,
-    code: 'L-GREEKS-FADE',
-    strike: '92',
-    greeksComplete: true,
-  };
-
-  it('🚨 `FR-002` 反例 (假阴): 昨收 greeks 缺失、此刻实时给全了 ⇒ 标跟着两格一起翻, Δ 不被掐掉', async () => {
-    await seedChain({ extraLegs: [GREEKS_WAKE] });
-    readPort.respond = realtimeBatch();
-
-    const closed = await chainOf(false);
-    const live = await chainOf(true);
-    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    // 反例装置自检: 库内那个标**确实**是 false, 否则下面两条恒绿 = 等于没写。
-    expect(closed.legs.find((leg) => leg.code === GREEKS_WAKE.code)?.greeksComplete).toBe(false);
-
-    const leg = live.legs.find((row) => row.code === GREEKS_WAKE.code);
-    expect(leg?.delta).toBe(-0.37);
-    expect(leg?.greeksComplete).toBe(true);
-
-    // 🚨 用户可见的那一半: 标不跟着翻的话, `get-legs.usecase.ts` 的
-    // `deriveDeltaColumns(greeksComplete ? delta : null)` 会把已经在手里的 Δ 掐成 `null`
-    // ⇒ Δ 与 σ 距空着、不判档不着色 (FR-007 的「数据不全」形态被误触发)。
-    const table = await moduleRef
-      .get(GetLegsUseCase)
-      .execute(SYMBOL, 'all', NOW, null, undefined, true);
-    const row = table.legs.find((view) => view.code === GREEKS_WAKE.code);
-    expect(row?.greeksComplete).toBe(true);
-    expect(row?.absDelta).toBeCloseTo(0.37, 10);
-  });
-
-  it('🚨 `FR-002` 反例 (假阳): 昨收 greeks 齐全、此刻实时两格皆空 ⇒ 标翻成 `false`, 不下发「齐全」的假话', async () => {
-    await seedChain({ extraLegs: [GREEKS_FADE] });
-    readPort.respond = realtimeBatch();
-
-    const closed = await chainOf(false);
-    const live = await chainOf(true);
-    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    expect(closed.legs.find((leg) => leg.code === GREEKS_FADE.code)?.greeksComplete).toBe(true);
-
-    const leg = live.legs.find((row) => row.code === GREEKS_FADE.code);
-    // 前置: 这一行**确实被覆盖过** (买卖价来自实时) ⇒ 排除 `state_branch` 11 那条
-    // 「买卖价皆空 ⇒ 整行按未取到处理」的路径, 否则本条测的就不是标而是那条分支。
-    expect(leg?.priceKind).toBe('realtime');
-    expect(leg?.bid?.toString()).toBe(decimalText('2.55'));
-    expect(leg?.delta).toBeNull();
-    expect(leg?.greeksComplete).toBe(false);
-  });
-
   it('🚨 `state_branch` 9 改写后仍成立的那一半: 库内零快照行 + **关态** ⇒ 未就绪且零外呼', async () => {
     await seedChain({ snapshots: false });
     readPort.respond = realtimeBatch();
@@ -806,303 +653,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
 
   // ── 实时独载基线 (库内零快照行 + 开态) ───────────────────────────────────────
 
-  const chainAt = (now: Date, realtime: boolean) =>
-    moduleRef
-      .get<LegRetrievalPort>(LEG_RETRIEVAL_PORT)
-      .retrieveChain({ symbol: SYMBOL, now, realtime });
-
-  /**
-   * 库内零快照 + 盘中基准新鲜 —— 实时独载基线的完整前置。
-   *
-   * 📌 **日历不必种**: 本文件删掉了 `MARKETDATA_PROVIDER` ⇒ `TRADING_CALENDAR_PORT` 绑的是
-   * mock 那一份 (`marketdata.module.ts` 的 `cfg.kind === 'mock' ? mock : Db...`), 它**不查库**
-   * —— `classify` 与 `lastClosedSession` 都按「周一~周五」现算, 恒不返 `null`。往 `trading_day`
-   * 里种行对本文件零作用, 种了反而会让人以为日历是从库里来的。
-   * ⇒ ET 12:00 的水位停在 {@link PREV_SESSION}（工作日），于是「最近已收盘交易日」与「交易所的
-   * 今天」天然是两天 —— 那条「两个时点不同天」的断言因此是判别性的。
-   */
-  async function seedRealtimeBaseline(extraLegs: readonly SeedLeg[] = []): Promise<void> {
-    await seedChain({ snapshots: false, basis: INTRADAY_BASIS, extraLegs });
-    readPort.respond = realtimeBatch();
-  }
-
-  it('🚨 盘中新锚 (库内零快照行 + 开态): 这一批实时**自己当基线**成链, 整表 `realtime`', async () => {
-    await seedRealtimeBaseline();
-
-    const snapshot = await chainAt(INTRADAY_NOW, true);
-    if (snapshot === null) throw new Error('实时独载基线应当成链 —— 断言前置失效');
-
-    expect(readPort.calls).toHaveLength(1);
-    expect(snapshot.legs).toHaveLength(LEGS.length);
-    expect(snapshot.chain.priceKind).toBe('realtime');
-    expect(snapshot.legs.map((leg) => leg.priceKind)).toEqual(snapshot.legs.map(() => 'realtime'));
-    // 🚨 占位值 MUST 被整体改写掉 —— 荒谬值一眼可辨: spot=0 / 时刻 1970。
-    expect(snapshot.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
-    expect(snapshot.chain.spot.toString()).toBe(decimalText(REALTIME_SPOT));
-
-    // 🚨 **两个时点不是同一天**: 报价归属正在进行的这一场, OI 归属最近一个已收盘交易日。
-    expect(snapshot.chain.sessionDate).toEqual(dateOf(TODAY));
-    expect(snapshot.chain.oiAsOf).toEqual(dateOf(PREV_SESSION));
-    // 「这批数从哪来」如实标出 —— 呈现侧靠 `source !== 'eod'` 渲「来源 realtime」。
-    expect(snapshot.chain.source).toBe('realtime');
-  });
-
-  it('🚨 `FR-004` 的另一半: 实时基线下 OI **来自同一批实时** (库内基线那条断言方向相反, 两条并存)', async () => {
-    await seedRealtimeBaseline();
-
-    const snapshot = await chainAt(INTRADAY_NOW, true);
-    if (snapshot === null) throw new Error('实时独载基线应当成链 —— 断言前置失效');
-
-    // 装置自检: 库内**根本没有** OI 可留 —— 这正是本基线与 `db_snapshot` 的分野。
-    for (const leg of snapshot.legs) {
-      expect(leg.openInterest).toBe(Number(REALTIME_BY_CODE[leg.code].openInterest));
-    }
-    // 🚨 反向钉死: 库内基线下同一批实时 OI **一个都不能进来** (既有 `SC-006` 那条覆盖此点),
-    // 于是「OI 归谁写」由 baseline 单值决定, 而不是由「这一格空不空」决定。
-    await prisma.optionDailySnapshot.deleteMany();
-    await prisma.optionContract.deleteMany();
-    await prisma.instrument.deleteMany();
-    await prisma.anchorChange.deleteMany();
-    await prisma.anchor.deleteMany();
-    await seedChain({ basis: INTRADAY_BASIS });
-    const withDb = await chainAt(INTRADAY_NOW, true);
-    if (withDb === null) throw new Error('库内基线应当命中 —— 断言前置失效');
-    for (const leg of withDb.legs) {
-      const seeded = LEGS.find((l) => l.code === leg.code);
-      expect(leg.openInterest).toBe(Number(seeded?.oi));
-    }
-  });
-
-  it('🚨 没拿到实时值的腿**整条丢弃**, 🚫 不让它去撑大「被权利金门槛移出」那个数', async () => {
-    // `L-NOQUOTE` 不在 `REALTIME_BY_CODE` 里 ⇒ 替身不会为它回一行 (= 停牌 / 刚摘牌的形态)。
-    const NO_QUOTE: SeedLeg = {
-      code: 'L-NOQUOTE',
-      dte: 35,
-      strike: '93',
-      bid: '2.00',
-      ask: '2.10',
-      oi: '900',
-      vol: '40',
-      iv: '20',
-    };
-    await seedRealtimeBaseline([NO_QUOTE]);
-
-    const snapshot = await chainAt(INTRADAY_NOW, true);
-    if (snapshot === null) throw new Error('实时独载基线应当成链 —— 断言前置失效');
-    expect(snapshot.legs.map((leg) => leg.code)).not.toContain(NO_QUOTE.code);
-
-    // 🚨 用户可见的那一半: 留着它的话, 这条从未被问过价的腿会被权利金门槛(bid 为空)挡下,
-    // 屏上于是多出「被权利金门槛移出」的一条 —— 一个真实、可读、且完全错的数。
-    const table = await moduleRef
-      .get(GetLegsUseCase)
-      .execute(SYMBOL, 'all', INTRADAY_NOW, null, undefined, true);
-    expect(table.legs.map((leg) => leg.code)).not.toContain(NO_QUOTE.code);
-    expect(table.gateCounts.removedByPremiumFloor).toBe(
-      // 只剩 `L-PENNY` 那条**真的**被门槛挡下的 (实时 bid 0.09 < 门槛)。
-      1,
-    );
-  });
-
-  it('🚨 日历答不出「最近已收盘交易日」⇒ 放弃 (不猜归属日) 且**零外呼**', async () => {
-    await seedRealtimeBaseline();
-    // 🚨 只 stub 这一个方法、只在这一条用例内 —— 🚫 MUST NOT 改 `.overrideProvider()`:
-    // 文件头写明日历不可 override (`GetLegsUseCase` 也在用它, 换掉会改动基线夹具的输出)。
-    // 打在**端口实例**上而不是 mock 类上: 那个实例就是 adapter 手里的那一个。
-    const calendar = moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT);
-    const stub = vi.spyOn(calendar, 'lastClosedSession').mockResolvedValue(null);
-    try {
-      expect(await chainAt(INTRADAY_NOW, true)).toBeNull();
-      // 归属日都定不下来就不该去问价 —— 外呼在这里发出去是白烧配额。
-      expect(readPort.calls).toHaveLength(0);
-    } finally {
-      stub.mockRestore();
-    }
-  });
-
-  it('🚨 四条整体回落路径在实时基线下**一律未就绪**, 占位值一个都逃不出去', async () => {
-    /**
-     * 每条路径配一个**期望外呼次数** —— 🚨 少了它这条用例就不判别: 若 `seedRealtimeBaseline`
-     * 哪天坏了 (比如骨架压根组不出来), 四条会**在同一个更靠前的地方**一起返 `null`, 而断言
-     * 全绿。次数把「走到了哪一格」钉住: 前三条零外呼, 源不可达那条必须已经问过一次。
-     */
-    const arrange: Readonly<Record<string, { calls: number; prepare: () => Promise<void> }>> = {
-      // ① 两闸: 非常规交易状态 ⇒ 正常收盘档, 但本基线没有收盘档可落。
-      'gate closed': {
-        calls: 0,
-        prepare: async () => {
-          marketState.session = 'other';
-        },
-      },
-      // ② 两闸自身故障 ⇒ fail-closed。
-      'gate unknown': {
-        calls: 0,
-        prepare: async () => {
-          marketState.fail = new Error('futu shim 5xx');
-        },
-      },
-      // ③ 定窗基准陈旧 (超出 061 的新鲜度闸)。
-      'window basis stale': {
-        calls: 0,
-        prepare: async () => {
-          await prisma.anchor.update({
-            where: { ticker: SYMBOL },
-            data: { intradayAt: new Date(INTRADAY_NOW.getTime() - 3 * 3600_000) },
-          });
-        },
-      },
-      // ④ 源不可达 —— **闸已判开、窗也定出来了**, 故这一条必然已经外呼过一次。
-      'source unavailable': {
-        calls: 1,
-        prepare: async () => {
-          readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
-        },
-      },
-    };
-
-    for (const [name, { calls, prepare }] of Object.entries(arrange)) {
-      await prisma.optionContract.deleteMany();
-      await prisma.instrument.deleteMany();
-      await prisma.anchorChange.deleteMany();
-      await prisma.anchor.deleteMany();
-      marketState.session = 'regular';
-      marketState.fail = null;
-      readPort.fail = null;
-      readPort.calls.length = 0;
-      await seedRealtimeBaseline();
-      await prepare();
-
-      expect(await chainAt(INTRADAY_NOW, true), `回落路径「${name}」应判未就绪`).toBeNull();
-      expect(readPort.calls, `回落路径「${name}」的外呼次数`).toHaveLength(calls);
-    }
-  });
-
-  it('🚨 `state_branch` 10: 返回集里库内不存在的合约被忽略 (盘中新挂, 当日不呈现)', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch(['US.PEP260918P130000-GHOST']);
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(snapshot.legs).toHaveLength(LEGS.length);
-    expect(snapshot.legs.map((leg) => leg.code)).not.toContain('US.PEP260918P130000-GHOST');
-  });
-
   // ── T004b 开态: 两个标的现价 + 召回口径 ────────────────────────────────────
-
-  /**
-   * 口径切换样本 —— 收盘权利金**低于**门槛 (`0.10 < 0.20`)、此刻**高于** (`0.45`)。
-   * 两档的相对价差都远在流动性门槛之内 ⇒ 成员变化只可能由权利金那一维解释 (`SC-008`)。
-   */
-  const WAKE: SeedLeg = {
-    code: 'L-WAKE',
-    dte: 35,
-    strike: '88',
-    bid: '0.10',
-    ask: '0.13',
-    oi: '900',
-    vol: '40',
-    iv: '24',
-  };
-
-  /** 反向样本 —— 收盘 `0.30` 过门槛、此刻 `0.05` 过不了。 */
-  const FADE: SeedLeg = {
-    code: 'L-FADE',
-    dte: 35,
-    strike: '86',
-    bid: '0.30',
-    ask: '0.34',
-    oi: '900',
-    vol: '40',
-    iv: '23',
-  };
-
-  const candidatesOf = (realtime: boolean) =>
-    moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT).retrieveCandidates({
-      symbol: SYMBOL,
-      now: NOW,
-      perspectives: LEG_TABS,
-      candidateCap: RECALL_CANDIDATE_CAP,
-      override: null,
-      realtime,
-    });
-
-  function codesOf(result: Awaited<ReturnType<typeof candidatesOf>>): string[] {
-    if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    return result.candidates.map(({ leg }) => leg.code);
-  }
-
-  it('🚨 US2-AS1 / `SC-008`: 收盘权利金低于门槛、此刻高于门槛的腿 —— 实时档下**进**候选集', async () => {
-    await seedChain({ extraLegs: [WAKE] });
-    readPort.respond = realtimeBatch();
-
-    // 关态臂先立: 它证明这条腿在收盘口径下确实进不来 —— 否则下面那条断言恒绿。
-    expect(codesOf(await candidatesOf(false))).not.toContain(WAKE.code);
-    expect(codesOf(await candidatesOf(true))).toContain(WAKE.code);
-  });
-
-  it('🚨 US2-AS2 / `SC-008`: 收盘能过判据、此刻过不了的腿 —— 实时档下**不在**候选集', async () => {
-    await seedChain({ extraLegs: [FADE] });
-    readPort.respond = realtimeBatch();
-
-    expect(codesOf(await candidatesOf(false))).toContain(FADE.code);
-    expect(codesOf(await candidatesOf(true))).not.toContain(FADE.code);
-  });
-
-  it('🚨 US2-AS4: 跳空日 —— 窗的行权价区间跟着**盘中基准**动, 不跟库内收盘价', async () => {
-    // 盘中基准比库内收盘价 (100) 低 20% ⇒ 窗 [56, 84]: 四条种子腿里只有行权价 80 那条落在窗内。
-    await seedChain({ basis: { price: '80', at: FRESH_BASIS.at } });
-    readPort.respond = realtimeBatch();
-
-    await chainOf(true);
-    expect(readPort.calls).toHaveLength(1);
-    expect([...readPort.calls[0].contractCodes].sort()).toEqual(['L-PENNY']);
-
-    // 🚨 反例臂: 同一批腿在基准 100 下窗是 [70, 105], 四条全进。窗若照着收盘价定, 两条断言必红一条。
-    readPort.calls.length = 0;
-    await prisma.anchor.updateMany({ where: { ticker: SYMBOL }, data: { intradayPrice: SPOT } });
-    await chainOf(true);
-    expect([...readPort.calls[0].contractCodes].sort()).toEqual(LEGS.map((l) => l.code).sort());
-  });
-
-  it('🚨 US2-AS3 / `FR-017`: 候选集与整条链拿到**同一个**报价时刻', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-
-    const candidates = await candidatesOf(true);
-    const chain = await chainOf(true);
-    if (candidates === null || chain === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    expect(candidates.chain.quoteAsOf).toEqual(chain.chain.quoteAsOf);
-    expect(candidates.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
-    expect(candidates.chain.priceKind).toBe('realtime');
-    expect(candidates.chain.spot.toString()).toBe(chain.chain.spot.toString());
-  });
-
-  it('🚨 `SC-003`: 一次候选集检索 ⇒ 对读取口的调用次数 = 1 (标的自身随同一批回来)', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-
-    await candidatesOf(true);
-    expect(readPort.calls).toHaveLength(1);
-    // 入参只给 canonical 标的 + 合约码: 「把标的并进同一批」由 adapter 内部承担, 不是调用方自律。
-    expect(readPort.calls[0].underlyingSymbol).toBe(SYMBOL);
-  });
-
-  it('🚨 `FR-006a` 反例: 表头 spot 取返回集里 `isOption:false` 那行 —— 既不是定窗基准也不是库内收盘价', async () => {
-    // 三个数互不相同 (基准 96 / 库内 100 / 同刻 104.25) ⇒ 断言分得出取的到底是哪一个。
-    await seedChain({ basis: { price: '96', at: FRESH_BASIS.at } });
-    readPort.respond = realtimeBatch();
-
-    const live = await chainOf(true);
-    if (live === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(live.chain.spot.toString()).toBe(new Prisma.Decimal(REALTIME_SPOT).toString());
-    expect(live.chain.spot.toString()).not.toBe(new Prisma.Decimal('96').toString());
-    expect(live.chain.spot.toString()).not.toBe(new Prisma.Decimal(SPOT).toString());
-
-    // 关态下它仍是库内那一份 —— 实时值一个字节都不该渗到收盘档上。
-    const closed = await chainOf(false);
-    if (closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(closed.chain.spot.toString()).toBe(new Prisma.Decimal(SPOT).toString());
-  });
 
   // ── T005 降级六路径 ───────────────────────────────────────────────────────
 
@@ -1130,23 +681,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     ];
     return values.filter((v) => v === '' || v === 0 || (v instanceof Prisma.Decimal && v.isZero()))
       .length;
-  }
-
-  /** 收盘档那一份的逐行七列指纹 —— 降级后必须与它**逐字节相同** (`FR-011`: 禁清空既有值)。 */
-  function quoteFingerprint(snapshot: LegChainSnapshot): string[] {
-    return snapshot.legs.map((leg) =>
-      [
-        leg.code,
-        leg.priceKind,
-        String(leg.bid?.toString()),
-        String(leg.ask?.toString()),
-        String(leg.bidSize),
-        String(leg.askSize),
-        String(leg.delta),
-        String(leg.iv),
-        String(leg.volume),
-      ].join('|'),
-    );
   }
 
   it('🚨 `state_branch` 3a: 美股非常规交易状态 ⇒ **零外呼** + 整表收盘档', async () => {
@@ -1179,192 +713,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     expect(zeroOrBlankCount(snapshot)).toBe(0);
   });
 
-  it('🚨 `state_branch` 4a: 源不可达 (读取口抛) ⇒ 整体回落收盘档, 值一个不动', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-    const closed = await chainOf(false);
-    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(readPort.calls).toHaveLength(1);
-    expect(snapshot.chain.priceKind).toBe('eod_close');
-    expect(quoteFingerprint(snapshot)).toEqual(quoteFingerprint(closed));
-    expect(zeroOrBlankCount(snapshot)).toBe(0);
-  });
-
-  it('🚨 `state_branch` 4b: 源超时 (永不 settle) ⇒ 请求级超时切断并回落收盘档', async () => {
-    await seedChain();
-    const closed = await chainOf(false);
-    readPort.hang = true;
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(readPort.calls).toHaveLength(1);
-    expect(snapshot.chain.priceKind).toBe('eod_close');
-    expect(quoteFingerprint(snapshot)).toEqual(quoteFingerprint(closed));
-    expect(zeroOrBlankCount(snapshot)).toBe(0);
-  }, 30_000);
-
-  it('🚨 `state_branch` 5: 部分合约未在返回集 ⇒ **逐行**保留收盘值; 两种档位必须**都出现**', async () => {
-    await seedChain();
-    const missing = 'L-BUILD';
-    readPort.respond = (query) => {
-      const full = realtimeBatch()(query);
-      return { asOf: full.asOf, rows: full.rows.filter((row) => row.code !== missing) };
-    };
-    const closed = await chainOf(false);
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    // 🚨 分布断言: 全 `eod_close` = 页级一刀切, 全 `realtime` = 缺失被吞 —— 两种错都渲染得出
-    // 一张完整的表, 只有「两种都在」才说明逐行成立。
-    expect(new Set(snapshot.legs.map((leg) => leg.priceKind))).toEqual(
-      new Set(['realtime', 'eod_close']),
-    );
-    const missed = snapshot.legs.find((leg) => leg.code === missing);
-    const closedMissed = closed.legs.find((leg) => leg.code === missing);
-    if (missed === undefined || closedMissed === undefined) throw new Error('断言前置失效');
-    expect(missed.priceKind).toBe('eod_close');
-    expect(missed.bid?.toString()).toBe(closedMissed.bid?.toString());
-    expect(missed.ask?.toString()).toBe(closedMissed.ask?.toString());
-    // 链级仍是实时档 (本批确实取到了) —— 区块条与行级角标读的是两个数。
-    expect(snapshot.chain.priceKind).toBe('realtime');
-    expect(zeroOrBlankCount(snapshot)).toBe(0);
-  });
-
-  it('🚨 `state_branch` 11: 单腿买价 / 卖价皆空 ⇒ **整行**按未取到处理, 🚫 不拼半实时半昨收', async () => {
-    await seedChain();
-    const blanked = 'L-WIDE';
-    readPort.respond = (query) => {
-      const full = realtimeBatch()(query);
-      return {
-        asOf: full.asOf,
-        rows: full.rows.map((row) => (row.code === blanked ? { ...row, bid: null, ask: '' } : row)),
-      };
-    };
-    const closed = await chainOf(false);
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null || closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    const row = snapshot.legs.find((leg) => leg.code === blanked);
-    const closedRow = closed.legs.find((leg) => leg.code === blanked);
-    if (row === undefined || closedRow === undefined) throw new Error('断言前置失效');
-    expect(row.priceKind).toBe('eod_close');
-    // 🚨 整行 —— 不是只把 bid/ask 留下: 其余五列也 MUST 是收盘那一份 (半实时的行没有任何一个
-    // 时刻能解释它)。
-    expect(quoteFingerprint({ chain: snapshot.chain, legs: [row] })).toEqual(
-      quoteFingerprint({ chain: closed.chain, legs: [closedRow] }),
-    );
-    expect(zeroOrBlankCount(snapshot)).toBe(0);
-  });
-
-  it('🚨 `state_branch` 14: 定窗基准陈旧 (超出 061 的新鲜度闸) ⇒ 零外呼 + 整体回落', async () => {
-    // 91 秒前的一拍 —— 闸是 3 × 30 s 且**闭区间**, 故这一拍必判陈旧。
-    await seedChain({ basis: { price: SPOT, at: new Date(NOW.getTime() - 91_000) } });
-    readPort.respond = realtimeBatch();
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(readPort.calls).toHaveLength(0);
-    expect(snapshot.chain.priceKind).toBe('eod_close');
-    expect(zeroOrBlankCount(snapshot)).toBe(0);
-  });
-
-  it('🚨 `state_branch` 14 反例: 基准整列缺失 (当日首拍之前) ⇒ 同样零外呼 + 回落', async () => {
-    await seedChain({ basis: { price: null, at: null } });
-    readPort.respond = realtimeBatch();
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(readPort.calls).toHaveLength(0);
-    expect(snapshot.chain.priceKind).toBe('eod_close');
-  });
-
-  it('🚨 `state_branch` 6 / `FR-012`: 返回集里标的行缺 spot ⇒ 显式「未就绪」, 🚫 不拿收盘价顶替', async () => {
-    await seedChain();
-    // 标的行在, 但它的价是空 —— 「链坏了」MUST NOT 看起来像正常。
-    readPort.respond = (query) => {
-      const full = realtimeBatch()(query);
-      return {
-        asOf: full.asOf,
-        rows: full.rows.map((row) => (row.isOption ? row : { ...row, last: null })),
-      };
-    };
-
-    expect(await chainOf(true)).toBeNull();
-    // 关态不受影响 —— 未就绪只属于这一次实时取数。
-    expect(await chainOf(false)).not.toBeNull();
-  });
-
-  it('🚨 `FR-011` fail-closed: 市场状态取不到 (源故障) ⇒ 不猜「开着市」, 零外呼', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-    marketState.fail = new Error('futu shim 5xx');
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(readPort.calls).toHaveLength(0);
-    expect(snapshot.chain.priceKind).toBe('eod_close');
-  });
-
-  it('🚨 `SC-004` 扫描断言: 四类降级路径**逐条**跑一遍, 被置 0 / 空串的项数合计 = 0', async () => {
-    await seedChain();
-    const closed = await chainOf(false);
-    if (closed === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    const degradations: { readonly name: string; readonly arm: () => void }[] = [
-      {
-        name: '非常规交易状态',
-        arm: () => {
-          marketState.session = 'other';
-        },
-      },
-      {
-        name: '源不可达',
-        arm: () => {
-          readPort.fail = new Error('boom');
-        },
-      },
-      {
-        name: '部分合约未返回',
-        arm: () => {
-          readPort.respond = (query) => {
-            const full = realtimeBatch()(query);
-            return { asOf: full.asOf, rows: full.rows.filter((row) => row.code !== 'L-OK') };
-          };
-        },
-      },
-      {
-        name: '单腿关键报价为空',
-        arm: () => {
-          readPort.respond = (query) => {
-            const full = realtimeBatch()(query);
-            return {
-              asOf: full.asOf,
-              rows: full.rows.map((row) => (row.isOption ? { ...row, bid: null, ask: null } : row)),
-            };
-          };
-        },
-      },
-    ];
-
-    let zeros = 0;
-    for (const { name, arm } of degradations) {
-      marketState.session = 'regular';
-      marketState.fail = null;
-      readPort.fail = null;
-      readPort.respond = realtimeBatch();
-      arm();
-      const snapshot = await chainOf(true);
-      if (snapshot === null) throw new Error(`降级路径「${name}」不该把链判成未就绪`);
-      zeros += zeroOrBlankCount(snapshot);
-      // 每一条路径都 MUST 留下可辨的档位 (`SC-004` 的另一半: 用户判得出这不是实时的)。
-      expect(snapshot.legs.some((leg) => leg.priceKind === 'eod_close')).toBe(true);
-    }
-    expect(zeros).toBe(0);
-  });
-
   // ── T005 收尾: 把 `realtime` 真正打开 (plan D6) ────────────────────────────
 
   it('🚨 plan D6: authed 读端显式传 `true` ⇒ 外呼发生; 不传 (默认 / 非 authed 读路径) ⇒ 恒 0', async () => {
@@ -1373,188 +721,22 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     const legs = moduleRef.get(GetLegsUseCase);
 
     // 默认态 = fail-closed: 省略开关的调用方**结构上**不外呼 (`FR-015` / `FR-016`)。
-    await legs.execute(SYMBOL, 'all', NOW);
+    await legs.execute(SYMBOL, 'rent', NOW);
     expect(readPort.calls).toHaveLength(0);
 
-    // authed controller 传的就是这一路 (`optionsdesk.controller.ts` 的 `legs` / `chainReport`)。
-    const view = await legs.execute(SYMBOL, 'all', NOW, null, undefined, true);
+    // authed controller 传的就是这一路; 068 起窄召回只服务意图视角 (Q1 裁决) ⇒ 用 rent 证通底。
+    const view = await legs.execute(SYMBOL, 'rent', NOW, null, undefined, true);
     expect(readPort.calls).toHaveLength(1);
     // 实时那一批确实一路走到了视图上 (区块时刻 = 信封 `asOf`, 不是库内 `quote_as_of`)。
-    // 📌 档位字段本身的出参归 T007 的 DTO 层, 这里只证「开关真的通到底了」。
     expect(view.quoteAsOf).toEqual(REALTIME_AS_OF);
 
+    // 068 Q4: 链报表实时开态回落收盘档 ⇒ 传 true 也**零外呼** (P3 按净链重建实时报表)。
     const report = moduleRef.get(GetChainReportUseCase);
     await report.execute(SYMBOL, NOW, true);
-    expect(readPort.calls).toHaveLength(2);
+    expect(readPort.calls).toHaveLength(1);
   });
 
   // ── T006 超上限 fail-closed + 三类特有失败留痕 ─────────────────────────────
-
-  /** 一条本片特有失败的结构化留痕 (`FR-023`) —— 类别字段在 `kind` 上, 可直接聚合。 */
-  interface DegradeLog {
-    readonly kind: RealtimeDegradeKind;
-    readonly symbol: string;
-    readonly [field: string]: unknown;
-  }
-
-  /**
-   * 从**全量** warn 里捞出本片的结构化留痕并解开 payload。
-   *
-   * 🚨 断言的是**类别字段的值**, 不是「日志非空」(`SC-010`): 「有 warn」在任何一条降级路径上
-   * 都成立 —— 拿它当判据等于把三类失败与其余降级混成一堆, 而聚合出来的图照样画得出来。
-   */
-  function degradeLogs(): DegradeLog[] {
-    return warnings
-      .filter((line) => line.startsWith(REALTIME_DEGRADE_LOG_TAG))
-      .map((line) => JSON.parse(line.slice(REALTIME_DEGRADE_LOG_TAG.length)) as DegradeLog);
-  }
-
-  /**
-   * 🚨 **真造**出一批窗内腿把单批上限撑破 (`FR-018` / `state_branch` 7)。
-   *
-   * 🚫 蓄意**不把 `OPTION_SNAPSHOT_MAX_CONTRACT_CODES` stub 成小值**: 那样绿只证明「我塞进去的
-   * 小数被读到了」, 而真正要守的是「窗真的圈出四百条时会不会去外呼」—— 上限是从
-   * `option-snapshot.port.ts` import 的同一个常量, 拿它当条数造种子, 反例 (截断实现) 才落在
-   * 管道能看见的地方。造数走 `createMany` (两条 INSERT), 不是四百次往返。
-   *
-   * 行权价全部落在窗 `[0.7 × 100, 1.05 × 100]` 之内、DTE 35 落在窗的 DTE 段内 ⇒ 连同
-   * {@link LEGS} 四条一起, 窗内条数 = 上限 + 4 > 上限。
-   */
-  async function seedOverCapLegs(): Promise<void> {
-    const instrument = await prisma.instrument.findFirstOrThrow({
-      where: { market: 'us', code: 'PEP' },
-      select: { id: true },
-    });
-    const expiry = new Date(dateOf(TODAY).getTime() + 35 * 86_400_000);
-    const bulk = Array.from({ length: OPTION_SNAPSHOT_MAX_CONTRACT_CODES }, (_unused, i) => ({
-      code: `L-BULK-${String(i).padStart(3, '0')}`,
-      // 70.10 → 101.94, 步长 0.08: 四百个互不相同的行权价, 全部在窗内。
-      strike: (70.1 + i * 0.08).toFixed(2),
-    }));
-    await prisma.optionContract.createMany({
-      data: bulk.map((leg) => ({
-        market: 'us',
-        code: leg.code,
-        root: 'PEP',
-        underlyingInstrumentId: instrument.id,
-        expiryDate: expiry,
-        strikePrice: leg.strike,
-        optionType: 'PUT',
-        isStandard: true,
-        expirationCycle: 'WEEK',
-      })),
-    });
-    const created = await prisma.optionContract.findMany({
-      where: { underlyingInstrumentId: instrument.id, code: { startsWith: 'L-BULK-' } },
-      select: { id: true },
-    });
-    await prisma.optionDailySnapshot.createMany({
-      data: created.map((contract) => ({
-        contractId: contract.id,
-        sessionDate: dateOf(TODAY),
-        source: 'eod',
-        quoteAsOf: new Date(`${TODAY}T20:31:07Z`),
-        oiAsOf: dateOf(PREV_SESSION),
-        // 收盘档下**过得了**两道门槛 ⇒ 它们是候选; 实时档若真取到 (见 `pennyBatch`) 就全掉出去。
-        bid: '2.00',
-        ask: '2.10',
-        bidSize: '25',
-        askSize: '26',
-        delta: '-0.30',
-        iv: '20',
-        openInterest: '900',
-        netOpenInterest: '111',
-        volume: '40',
-        underlyingSpot: SPOT,
-        greeksComplete: true,
-      })),
-    });
-  }
-
-  /**
-   * 🚨 截断实现的**反例装置**: 对**每一个**被问到的 code 都回一个过不了权利金门槛的报价。
-   *
-   * 于是「悄悄截断到前 N 条」这种实现会真的发一次外呼、真的把那 N 条腿的权利金改成一分钱,
-   * 候选集条数当场塌下来 —— 若只喂与库内同值的报价, 「fail-closed 还是截断」两种实现的输出
-   * 完全一样, 那条条数断言就恒绿 = 等于没写。
-   */
-  const pennyBatch = (query: OptionSnapshotQuery): OptionSnapshotBatch => ({
-    asOf: REALTIME_AS_OF,
-    rows: [
-      underlyingRow(REALTIME_SPOT),
-      ...query.contractCodes.map(
-        (code): OptionSnapshotRow => ({
-          code,
-          isOption: true,
-          ...realtimeRow({ bid: '0.01', ask: '0.02' }),
-        }),
-      ),
-    ],
-  });
-
-  it('🚨 `FR-018` / `state_branch` 7: 窗内条数超单批上限 ⇒ 整表收盘档 + 零外呼, 候选集条数与关态**相同**', async () => {
-    await seedChain();
-    await seedOverCapLegs();
-    readPort.respond = pennyBatch;
-
-    const closed = await candidatesOf(false);
-    const live = await candidatesOf(true);
-    if (closed === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-    // ① 零外呼 —— 截断实现在这里就会红 (它得先问过才知道该截多少)。
-    expect(readPort.calls).toHaveLength(0);
-    // ② 整表回落收盘档 (本仓的「降级标记」就是档位本身, 没有第二个 flag)。
-    expect(live.chain.priceKind).toBe('eod_close');
-    const chain = await chainOf(true);
-    if (chain === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(chain.legs.map((leg) => leg.priceKind)).toEqual(chain.legs.map(() => 'eod_close'));
-    // ③ 🚨 候选集条数与关态**相同** —— 这条才咬得住 fail-closed 与截断的差别: 截掉一截的话,
-    //    被截掉的那批拿的是 `pennyBatch` 的报价, 权利金门槛会把它们全踢出候选。
-    expect(live.candidates.length).toBe(closed.candidates.length);
-    expect(live.candidates.length).toBeGreaterThan(OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
-  }, 60_000);
-
-  it('🚨 `FR-023` `window_over_cap`: 留痕带窗内条数与上限, 且上限取自 marketdata 那个常量', async () => {
-    await seedChain();
-    await seedOverCapLegs();
-    readPort.respond = pennyBatch;
-
-    await chainOf(true);
-    const logs = degradeLogs();
-    expect(logs.map((log) => log.kind)).toEqual(['window_over_cap']);
-    expect(logs[0].cap).toBe(OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
-    // 判别性自检: 窗内条数**确实**超了上限 (否则这条用例测的根本不是超限路径)。
-    expect(logs[0].windowCodes).toBeGreaterThan(OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
-    expect(logs[0].symbol).toBe(SYMBOL);
-  }, 60_000);
-
-  it('🚨 `FR-023` `window_basis_stale`: 留痕带基准时刻与判据阈值', async () => {
-    const staleAt = new Date(NOW.getTime() - 91_000);
-    await seedChain({ basis: { price: SPOT, at: staleAt } });
-    readPort.respond = realtimeBatch();
-
-    await chainOf(true);
-    const logs = degradeLogs();
-    expect(logs.map((log) => log.kind)).toEqual(['window_basis_stale']);
-    expect(logs[0].basisAt).toBe(staleAt.toISOString());
-    // 阈值取自 061 的单点 —— 🚫 留痕里 MUST NOT 手写第二个 90。
-    expect(logs[0].freshnessSeconds).toBe(INTRADAY_FRESHNESS_SECONDS);
-  });
-
-  it('🚨 `FR-023` `partial_miss`: 留痕带缺失条数 (与实际缺的条数一致)', async () => {
-    await seedChain();
-    const missing = ['L-BUILD', 'L-WIDE'];
-    readPort.respond = (query) => {
-      const full = realtimeBatch()(query);
-      return { asOf: full.asOf, rows: full.rows.filter((row) => !missing.includes(row.code)) };
-    };
-
-    await chainOf(true);
-    const logs = degradeLogs();
-    expect(logs.map((log) => log.kind)).toEqual(['partial_miss']);
-    expect(logs[0].missing).toBe(missing.length);
-    expect(logs[0].requested).toBe(LEGS.length);
-  });
 
   // ── T007a 链级降级信号出契约 ────────────────────────────────────────────────
 
@@ -1599,84 +781,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
     expect(readPort.calls).toHaveLength(0);
   });
 
-  it('🚨 T007a ②: 源不可达 / 超时 ⇒ `source_unavailable` (盘中源挂了 MUST 与正常盘后分得开)', async () => {
-    await seedChain();
-    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
-
-    const unreachable = await chainOf(true);
-    if (unreachable === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(tierOf(unreachable)).toEqual({ priceKind: 'eod_close', degrade: 'source_unavailable' });
-
-    // 超时那一半走同一个类别 —— 对用户是同一件事 (此刻的盘口没拿到), 区分留在日志里。
-    readPort.fail = null;
-    readPort.hang = true;
-    const timedOut = await chainOf(true);
-    if (timedOut === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(tierOf(timedOut)).toEqual({ priceKind: 'eod_close', degrade: 'source_unavailable' });
-  }, 30_000);
-
-  it('🚨 T007a ②: 两闸自身故障 ⇒ `gate_unknown` (不知道该不该给实时 ≠ 今天休市)', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-    marketState.fail = new Error('futu shim 5xx');
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    // 🚨 与上面那条「非常规时段」的输出**逐字段对照**: 档位相同、降级标相反。两者若合成一个
-    // 布尔闸 (今天的 `isRealtimeSessionOpen`), 这一条与 ①a 必有一条红。
-    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: 'gate_unknown' });
-    expect(readPort.calls).toHaveLength(0);
-  });
-
-  it('🚨 T007a ③: 定窗基准陈旧 ⇒ `window_basis_stale`', async () => {
-    await seedChain({ basis: { price: SPOT, at: new Date(NOW.getTime() - 91_000) } });
-    readPort.respond = realtimeBatch();
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: 'window_basis_stale' });
-  });
-
-  it('🚨 T007a ④: 窗内条数超单批上限 ⇒ `window_over_cap`', async () => {
-    await seedChain();
-    await seedOverCapLegs();
-    readPort.respond = pennyBatch;
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(tierOf(snapshot)).toEqual({ priceKind: 'eod_close', degrade: 'window_over_cap' });
-  }, 60_000);
-
-  it('🚨 T007a ⑤: 部分合约未返回 ⇒ **链级 null** 且行级两种 `priceKind` 都出现', async () => {
-    await seedChain();
-    const missing = 'L-BUILD';
-    readPort.respond = (query) => {
-      const full = realtimeBatch()(query);
-      return { asOf: full.asOf, rows: full.rows.filter((row) => row.code !== missing) };
-    };
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    // 🚨 部分缺失是**逐行**降级 —— 把整块拉成告警态会让 `state_branch` 5 当场作废, 而那张表
-    // 照样渲染得出来。值域上 `partial_miss` 结构性够不着链级字段 (`Exclude<>`), 这里是它的运行时证。
-    expect(tierOf(snapshot)).toEqual({ priceKind: 'realtime', degrade: null });
-    expect(new Set(snapshot.legs.map((leg) => leg.priceKind))).toEqual(
-      new Set(['realtime', 'eod_close']),
-    );
-    // 留痕面照旧记这一类 (`FR-023`) —— 契约面不报 ≠ 运维面看不见。
-    expect(degradeLogs().map((log) => log.kind)).toEqual(['partial_miss']);
-  });
-
-  it('🚨 T007a ⑤ 反例: 全部合约都返回 ⇒ 降级标 null 且**没有**行级 `eod_close`', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-
-    const snapshot = await chainOf(true);
-    if (snapshot === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(tierOf(snapshot)).toEqual({ priceKind: 'realtime', degrade: null });
-    expect(new Set(snapshot.legs.map((leg) => leg.priceKind))).toEqual(new Set(['realtime']));
-  });
-
   it('🚨 T007a ⑥: 关态 ⇒ 降级标恒 null 且外呼计数仍 = 0', async () => {
     await seedChain();
     readPort.respond = realtimeBatch();
@@ -1692,49 +796,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       expect((view as { realtimeDegrade: unknown }).realtimeDegrade, name).toBeNull();
     }
     expect(readPort.calls).toHaveLength(0);
-  });
-
-  it('🚨 T007a: 降级标一路上浮到**两个读端点的视图**, 且值域可聚合 (客户端据它分叉告警态)', async () => {
-    await seedChain();
-    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
-
-    const view = await moduleRef
-      .get(GetLegsUseCase)
-      .execute(SYMBOL, 'rent', NOW, null, undefined, true);
-    const report = await moduleRef.get(GetChainReportUseCase).execute(SYMBOL, NOW, true);
-    // 🚨 两个读端点出**同一个**值域与同一份判定 —— 各出各的会让同一事实在两屏上有两种读法。
-    expect(view.realtimeDegrade).toBe('source_unavailable');
-    expect(report.realtimeDegrade).toBe('source_unavailable');
-    expect(view.priceKind).toBe('eod_close');
-    // 值域是**契约面**声明的那一份 (swagger `enum:` 取的同一个数组) ⇒ 客户端按类别分叉不会漏。
-    expect(REALTIME_CHAIN_DEGRADE_KINDS).toContain(view.realtimeDegrade);
-    // 🚨 逐行的 `partial_miss` 结构性不在链级值域里 (`Exclude<>` 的运行时证)。
-    const chainLevel: readonly RealtimeDegradeKind[] = REALTIME_CHAIN_DEGRADE_KINDS;
-    expect(chainLevel).not.toContain('partial_miss');
-  });
-
-  it('🚨 `SC-010` 反例: 降级了但不属于三类 (闸判定失败 / 源不可达) ⇒ **不被**错误归类', async () => {
-    await seedChain();
-    readPort.respond = realtimeBatch();
-
-    // ① 两闸自身故障 ⇒ fail-closed 收盘档。它是 `FR-011` 的路径, 不是本片特有的三类之一。
-    marketState.fail = new Error('futu shim 5xx');
-    const gated = await chainOf(true);
-    if (gated === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(gated.chain.priceKind).toBe('eod_close');
-    // 判别性前提: 这条路径**确实**留下了 warn —— 否则「没有被归类」只是因为管道里什么都没有。
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(degradeLogs()).toHaveLength(0);
-
-    // ② 源不可达 ⇒ 整体回落。同样留 warn, 同样不属三类。
-    warnings.length = 0;
-    marketState.fail = null;
-    readPort.fail = new Error('shim unreachable (ECONNREFUSED)');
-    const unreachable = await chainOf(true);
-    if (unreachable === null) throw new Error('种子链应当命中 —— 断言前置失效');
-    expect(unreachable.chain.priceKind).toBe('eod_close');
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(degradeLogs()).toHaveLength(0);
   });
 
   // ── P0a hk guard: 实时窗未支持的市场整体回落, 不再 throw → read_failed ──────
@@ -1840,23 +901,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       const view = await moduleRef.get(GetLegsUseCase).execute(SYMBOL, 'rent', NOW);
       expect(view.state).toBe('available');
       expect(view.legs).toEqual([]);
-    });
-
-    it('🚨 US3-AS2 / state_branch 8 / FR-006: 实时开态 axis = min(实时 spot, W) —— 同一判据单点自动同轴', async () => {
-      // V=127 ⇒ W=101.6 落在库内 spot (100) 与实时 spot (104.25) **之间** ⇒ 两档的 axis 分叉:
-      // 收盘档 axis = 100 (上界 103), 实时档 axis = W = 101.6 (上界 101.6 × 1.03 = 104.648)。
-      // 🚨 三个候选值互不相同 (103 / 104.648 / 实时 spot 轴的 107.3775) —— 谁被取用一眼可辨,
-      // 这正是「用实时 spot 与库内 spot 拉开」的判别性设计。
-      await seedChain({ v: '127' });
-      readPort.respond = realtimeBatch();
-
-      const eod = await retrieve(null, false);
-      const live = await retrieve(null, true);
-      if (eod === null || live === null) throw new Error('种子链应当命中 —— 断言前置失效');
-
-      expect(eod.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('103');
-      expect(live.criteriaByTab.rent.defaults.strikeMax?.toString()).toBe('104.648');
-      expect(live.chain.spot.toString()).toBe(new Prisma.Decimal(REALTIME_SPOT).toString());
     });
 
     it('🚨 US2-AS2 / state_branch 7: 覆盖 strikeMax 放宽到 spot 附近 ⇒ 候选按覆盖出现, 放宽能力不受换轴影响', async () => {
@@ -1966,29 +1010,6 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
         },
       });
     }
-
-    it('🚨 hk 开态 + 新鲜基准 ⇒ 不抛、整表收盘档、链级标 source_unavailable、零外呼', async () => {
-      await seedHkChain();
-      marketState.extra = [{ market: 'hk', session: 'regular' }];
-      const port = moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT);
-
-      // guard 之前本行 reject ([leg-window] 市场 'hk' 尚未支持) —— 本用例先红后绿 (P0a verify)。
-      const result = await port.retrieveCandidates({
-        symbol: HK_SYMBOL,
-        now: NOW,
-        perspectives: LEG_TABS,
-        candidateCap: RECALL_CANDIDATE_CAP,
-        override: null,
-        realtime: true,
-      });
-      if (result === null) throw new Error('种子链应当命中 —— 断言前置失效');
-      // 闸已判开 + 调用方已开实时 + 无窗派生能力 ⇒ 「本该实时却没给成」是**真降级** (T007a),
-      // 语义与 mock 档「本环境无实时源」同类 ⇒ 复用 source_unavailable, 不新造第四态 (值域动
-      // 契约, 归 P2)。
-      expect(result.chain.realtimeDegrade).toBe('source_unavailable');
-      expect(result.chain.priceKind).toBe('eod_close');
-      expect(readPort.calls).toHaveLength(0);
-    });
 
     it('🚨 hk 收盘时段 ⇒ 正常收盘档 (降级标恒 null) —— guard 必须在闸**之后**, 别把常态染成告警', async () => {
       await seedHkChain();

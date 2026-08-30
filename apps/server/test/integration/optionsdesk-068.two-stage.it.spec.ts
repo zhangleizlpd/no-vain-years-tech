@@ -66,8 +66,10 @@ class SpySnapshotReadPort implements OptionSnapshotPort {
 class FakeMarketStatePort implements MarketStatePort {
   session: MarketSession = 'regular';
   extra: MarketSessionState[] = [];
+  fail: Error | null = null;
 
   getMarketSessions(): Promise<MarketSessionState[]> {
+    if (this.fail !== null) return Promise.reject(this.fail);
     return Promise.resolve([{ market: 'us', session: this.session }, ...this.extra]);
   }
 }
@@ -135,6 +137,7 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
     readPort.fail = null;
     marketState.session = 'regular';
     marketState.extra = [];
+    marketState.fail = null;
     await prisma.optionDailySnapshot.deleteMany();
     await prisma.optionContract.deleteMany();
     await prisma.instrument.deleteMany();
@@ -224,13 +227,22 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
   const STALE_BASIS: SeedBasis = { price: EOD_SPOT, at: new Date(NOW.getTime() - 600_000) };
 
   async function seedChain(
-    opts: { snapshots?: boolean; basis?: SeedBasis; v?: string; legs?: readonly SeedLeg[] } = {},
+    opts: {
+      snapshots?: boolean;
+      basis?: SeedBasis;
+      v?: string;
+      legs?: readonly SeedLeg[];
+      market?: string;
+      code?: string;
+    } = {},
   ): Promise<void> {
+    const market = opts.market ?? 'us';
+    const code = opts.code ?? 'TWR';
     const instrument = await prisma.instrument.create({
       data: {
-        market: 'us',
-        code: 'TWR',
-        name: 'TWR Inc.',
+        market,
+        code,
+        name: `${code} Inc.`,
         type: 'stock',
         currency: 'USD',
         status: 'active',
@@ -242,9 +254,9 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       const expiry = new Date(dateOf(TODAY).getTime() + leg.dte * 86_400_000);
       const contract = await prisma.optionContract.create({
         data: {
-          market: 'us',
+          market,
           code: leg.code,
-          root: 'TWR',
+          root: code,
           underlyingInstrumentId: instrument.id,
           expiryDate: expiry,
           strikePrice: leg.strike,
@@ -279,8 +291,8 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
     const basis = opts.basis ?? FRESH_BASIS;
     await prisma.anchor.create({
       data: {
-        ticker: SYMBOL,
-        market: 'us',
+        ticker: `${market}:${code}`,
+        market,
         v: opts.v ?? '150',
         asof: dateOf('2026-06-30'),
         method: 'dcf',
@@ -374,9 +386,10 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
     realtime: boolean,
     view: 'build' | 'rent' | 'all' = 'rent',
     override: RetrievalOverride | null = null,
+    symbol: string = SYMBOL,
   ): Promise<LegRetrievalResult | null> {
     return moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT).retrieveCandidates({
-      symbol: SYMBOL,
+      symbol,
       now: NOW,
       perspectives: [view],
       candidateCap: RECALL_CANDIDATE_CAP,
@@ -526,6 +539,120 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(codesOf(result!)).toEqual(['T-80']);
       expect(result!.memberCount).toBe(3);
       expect(result!.criteriaByTab.rent.outcomes.strikeMax.state).toBe('narrowed');
+    });
+  });
+
+  // ── T006 · 回落面 + 退役收口 (FR-001/004/007/011/013/014; branches 2/7/8/10) ──
+
+  describe('T006 回落面 + overlay 退役收口', () => {
+    it('① bootstrap: 库内零快照期 ⇒ 矩形宽窗走同一管道, 实时批成链 (branch 2)', async () => {
+      await seedChain({ snapshots: false, basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch({ 'T-88': { openInterest: '321' } });
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(1);
+      // 矩形 [0.7, 1.05] × 100 罩住五条腿 (80~104)。
+      expect(readPort.calls[0].contractCodes).toHaveLength(5);
+      expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
+      expect(result!.chain.priceKind).toBe('realtime');
+      expect(result!.chain.source).toBe('realtime');
+      // 归属口径: sessionDate = 交易所今天, oiAsOf = 最近已收盘交易日 (周一 08-10)。
+      expect(result!.chain.sessionDate.toISOString().slice(0, 10)).toBe(TODAY);
+      expect(result!.chain.oiAsOf.toISOString().slice(0, 10)).toBe(PREV_SESSION);
+      // bootstrap 下 OI 取实时批 (064 实时基线口径承接) —— 库内无骨架 OI 可落。
+      const t88 = result!.candidates.find((c) => c.leg.code === 'T-88');
+      expect(t88?.leg.openInterest).toBe(321);
+    });
+
+    it('② 未支持市场 (hk): 闸后 guard ⇒ 零外呼回落收盘档 + source_unavailable (#286 回归网, branch 7)', async () => {
+      await seedChain({ market: 'hk', code: '0700' });
+      marketState.extra = [{ market: 'hk', session: 'regular' }];
+
+      const result = await retrieve(true, 'rent', null, 'hk:0700');
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(0);
+      expect(result!.chain.realtimeDegrade).toBe('source_unavailable');
+      expect(result!.chain.priceKind).toBe('eod_close');
+      expect(result!.candidates.length).toBeGreaterThan(0);
+    });
+
+    it('③ 闸 closed (盘前) ⇒ 与离线响应逐值相同且零外呼 (branch 8, 离线零改动机器判据)', async () => {
+      await seedChain();
+      marketState.session = 'other';
+
+      const realtime = await retrieve(true);
+      const offline = await retrieve(false);
+      expect(readPort.calls).toHaveLength(0);
+      expect(JSON.stringify(realtime)).toBe(JSON.stringify(offline));
+      expect(realtime!.chain.realtimeDegrade).toBeNull();
+    });
+
+    it('④ 实时开态 + 全腿视角 ⇒ 零外呼、与离线逐值相同、priceKind 标口径 (branch 10, Q1 裁决)', async () => {
+      await seedChain();
+
+      const realtime = await retrieve(true, 'all');
+      const offline = await retrieve(false, 'all');
+      expect(readPort.calls).toHaveLength(0);
+      expect(JSON.stringify(realtime)).toBe(JSON.stringify(offline));
+      expect(realtime!.chain.priceKind).toBe('eod_close');
+    });
+
+    it('⑤ 窗码数 > 单批上限 ⇒ 零外呼回落收盘档 + window_over_cap (Edge 5 回归网, analyze G3)', async () => {
+      const wide: SeedLeg[] = Array.from({ length: 401 }, (_, i) => ({
+        code: `W-${i}`,
+        dte: 60,
+        strike: (80 + i * 0.03).toFixed(2),
+        bid: '2.00',
+        ask: '2.10',
+        oi: '900',
+        vol: '40',
+        delta: '-0.20',
+      }));
+      await seedChain({ legs: wide });
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(0);
+      expect(result!.chain.realtimeDegrade).toBe('window_over_cap');
+      expect(result!.chain.priceKind).toBe('eod_close');
+    });
+
+    it('⑥ 主批源不可达 ⇒ 回落收盘档 + source_unavailable (盘中源挂 ≠ 正常盘后)', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.fail = new Error('vendor down');
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      // 基准新鲜 ⇒ 无补发, 唯一一次外呼是失败的主批。
+      expect(readPort.calls).toHaveLength(1);
+      expect(result!.chain.realtimeDegrade).toBe('source_unavailable');
+      expect(result!.chain.priceKind).toBe('eod_close');
+      expect(result!.chain.spot.toString()).toBe(new Prisma.Decimal(EOD_SPOT).toString());
+    });
+
+    it('⑧ 两闸自身故障 ⇒ gate_unknown 回落收盘档 (不知道该不该给实时 ≠ 今天休市)', async () => {
+      await seedChain();
+      marketState.fail = new Error('market state source down');
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(0);
+      expect(result!.chain.realtimeDegrade).toBe('gate_unknown');
+      expect(result!.chain.priceKind).toBe('eod_close');
+    });
+
+    it('⑦ 067 branch 8 承接: 实时窄路径 axis = min(实时 spot, W) —— 低 V 锚 rent 默认上界按 W 锚定', async () => {
+      await seedChain({ v: '120' }); // W = 96 < 实时 spot 104.25 ⇒ axis = 96
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true);
+      const w = new Prisma.Decimal('96');
+      const cap = w.times(new Prisma.Decimal('1.03'));
+      const strikeMax = result!.criteriaByTab.rent.defaults.strikeMax;
+      expect(strikeMax).not.toBeNull();
+      expect(strikeMax!.toString()).toBe(cap.toString());
     });
   });
 });

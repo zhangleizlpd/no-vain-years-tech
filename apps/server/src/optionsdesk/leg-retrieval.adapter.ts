@@ -18,12 +18,7 @@ import {
 import { computeW, parseAnchorTicker, type LLevel } from './anchor.rules';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import { INTRADAY_FRESHNESS_SECONDS, isIntradayFresh } from './intraday-spot.rules';
-import {
-  WINDOW_SUPPORTED_MARKETS,
-  bootstrapWindowFor,
-  withinWindow,
-  type LegWindow,
-} from './leg-window.rules';
+import { WINDOW_SUPPORTED_MARKETS, bootstrapWindowFor } from './leg-window.rules';
 import { type LegTab } from './leg-tab.rules';
 import {
   BUILD_RECALL_DTE,
@@ -52,18 +47,6 @@ import type {
 } from './leg-retrieval.port';
 
 /**
- * {@link PrismaLegRetrievalAdapter} 内部的取链产出 —— 快照 + 本次实际用过的窗 (064 T004b)。
- *
- * 🚨 窗**不上浮到 port 出参**: 它是「该问哪些合约此刻的价」这件事的内部细节, 对调用方零语义。
- * 068 起它只服务圈码 (召回第一段); 064 的绊线已随覆盖范式退役 (窗漏腿的守卫改由标定回放承担)。
- * 收盘档 / 基准不可用时恒为 `null`: 没发生实时取数就没有窗。
- */
-interface LoadedChain {
-  readonly snapshot: LegChainSnapshot;
-  readonly window: LegWindow | null;
-}
-
-/**
  * {@link PrismaLegRetrievalAdapter.resolveWindow} 的出参 —— 窗 + **它是按哪一刻的基准定的**
  * (064 T006)。
  *
@@ -79,23 +62,6 @@ interface ResolvedBasis {
   readonly basisAt: Date | null;
 }
 
-/**
- * **这条链的基线来自哪一批** —— 库内那期收盘快照, 还是这一次实时取回的那一批。
- *
- * 🚨 **颗粒度是「整条链」而不是「单个空格」, 这是本类型存在的全部理由**: 单元格级的「空就补」
- * 看起来更省事, 但两批 OI 的**归属日不同** —— 库内那期若只有 `eod` 行 (当日盘前兜底没跑),
- * 它的 `oi_as_of` 是 T−2; 而此刻实时取回的 OI 已在盘前翻新, 归属 T−1。逐格填就会把一个 T−1
- * 的数放进一张标着 T−2 的表里, **整页渲染正常、数字真实、只是差一天**。
- * ⇒ 一条链的 OI 要么整批来自库内、要么整批来自实时批, 两者的归属日各自由构造对齐。
- *
- * 本值同时决定两件**同源**的事 (故是一个参数而不是两个):
- * | | `db_snapshot` | `realtime_batch` |
- * | --- | --- | --- |
- * | 整体回落时落到哪 | 收盘档 (值一个不动) | **未就绪 `null`** —— 没有收盘档可落 |
- * | OI 由谁写 | 库内 (`FR-004` 原文不动) | 同一批实时 |
- */
-type ChainBaseline = 'db_snapshot' | 'realtime_batch';
-
 /** {@link PrismaLegRetrievalAdapter.toLegRows} 用到的合约列 —— 链的**骨架**, 与报价无关。 */
 type ChainContractRow = Pick<
   OptionContract,
@@ -103,7 +69,7 @@ type ChainContractRow = Pick<
 >;
 
 /**
- * {@link ChainBaseline} 为 `realtime_batch` 时链级 `source` 的取值 —— 与库内那两个
+ * 窄召回 bootstrap (库内零快照期) 时链级 `source` 的取值 (068) —— 与库内那两个
  * (`eod` / `premarket_backfill`) 并列的第三种「这批数从哪来」。
  *
  * 📌 呈现侧**零改动**: `underlying-detail-screen.tsx` 的判据是 `source !== 'eod'` 就渲
@@ -245,20 +211,20 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   }
 
   /**
-   * 收盘档装配 —— 离线正路与实时回落**共用**: 走离线唯一路径 {@link loadChainWithWindow}
+   * 收盘档装配 —— 离线正路与实时回落**共用**: 走离线唯一路径 {@link loadClosingChain}
    * (`realtime` 恒 `false` ⇒ 零外呼), 回落时附既有降级标 (值域零扩张, 068 Q2 裁决)。
    */
   private async retrieveClosing(
     query: LegRetrievalQuery,
     degrade: RealtimeChainDegradeKind | null,
   ): Promise<LegRetrievalResult | null> {
-    const loaded = await this.loadChainWithWindow({
+    const snapshot = await this.loadClosingChain({
       symbol: query.symbol,
       now: query.now,
       realtime: false,
     });
-    if (loaded === null) return null;
-    const { chain, legs } = loaded.snapshot;
+    if (snapshot === null) return null;
+    const { chain, legs } = snapshot;
     const w = await this.resolveW(query.symbol);
     if (w === null) return null;
     const context: RecallContext = { spot: chain.spot, w };
@@ -311,7 +277,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   ): Promise<LegRetrievalResult | null> {
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
-    // ⚠️ 写死 'us' 沿 #274 (与 loadChainWithWindow 同款已知缺陷, 🚫 不顺手修)。
+    // ⚠️ 写死 'us' 沿 #274 (与 loadClosingChain 同款已知缺陷, 🚫 不顺手修)。
     const marketDate = exchangeCalendarDate('us', query.now);
     const target = { symbol: query.symbol, market: parsed.market, marketDate, now: query.now };
 
@@ -337,7 +303,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     if (w === null) return null;
 
     // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (Q7-B) —— 同离线共同根, 蓄意独立成路
-    // (Guardrail 1: 离线零改动是结构性的, 🚫 不与 loadChainWithWindow 共函数体)。
+    // (Guardrail 1: 离线零改动是结构性的, 🚫 不与 loadClosingChain 共函数体)。
     const instrument = await this.prisma.instrument.findUnique({
       where: { market_code: { market: parsed.market, code: parsed.code } },
       select: { id: true },
@@ -467,6 +433,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       quoteAsOf = batch.asOf;
     }
     const band = DELTA_BAND_BY_INTENT[intent];
+    // bootstrap (库内零快照) 下 OI 取实时批 —— 064 实时基线定过的口径 (整批同源 +
+    // `oiAsOf` = 最近已收盘交易日); 库内基线下 OI **不**被实时批覆盖 (064 FR-004 原样)。
+    const oiFromBatch = freshest.size === 0;
     const skeleton = this.toLegRows(
       windowed.map((c) => ({ contract: c, snapshot: freshest.get(c.id.toString()) ?? null })),
       query.now,
@@ -493,6 +462,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         delta: deltaDec === null ? null : deltaDec.toNumber(),
         iv: vendorNumber(quote.iv),
         volume: vendorNumber(quote.volume),
+        openInterest: oiFromBatch ? vendorNumber(quote.openInterest) : leg.openInterest,
         greeksComplete: quote.greeksComplete ?? false,
         priceKind: 'realtime',
         bandStatus: deltaDec === null ? null : withinDeltaBand(deltaDec, band) ? 'in' : 'out',
@@ -597,13 +567,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * ({@link loadChain} 单点), 差别只在这里不把结果喂进 `recallCandidates`。
    */
   retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
-    return this.loadChain(query);
-  }
-
-  /** {@link loadChainWithWindow} 的窄出口 —— 窗是内部细节, 不出这个类。 */
-  private async loadChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
-    const loaded = await this.loadChainWithWindow(query);
-    return loaded === null ? null : loaded.snapshot;
+    // 068 Q4 裁决: 实时开态链报表回落收盘档 (宽视野归离线, P3 按净链重建实时报表) ——
+    // 本路径恒走离线装配, `realtime` 入参在此惰化, 零外呼零降级标 (与全腿视角同形态)。
+    return this.loadClosingChain(query);
   }
 
   /**
@@ -613,21 +579,14 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 查得出数据, 只是可能落在不同的快照期上 —— 而那时报表的骨架与选约表的候选集会对不上, 且
    * 界面上一切正常。
    *
-   * ## 🚨 两个基线, 按「库内那期在不在」二选一 (见 {@link ChainBaseline})
+   * ## 068 起本方法 = **离线唯一路径**, 恒零外呼 (FR-011)
    *
-   * `latest !== null` ⇒ 库内快照当基线, 实时值走尾部覆盖 (064 原样);
-   * `latest === null` ⇒ **这一批实时自己就是基线** ({@link loadRealtimeBaselineChain})。
-   *
-   * 后者改写了 064 的 `state_branch` 9 (「库内无任何链快照行 ⇒ 维持未就绪, MUST NOT 靠实时值
-   * 单独成链」)。改的理由是那条分支盖住了一个真实缺口: 盘中建的新锚, 合约链**当场就补上了**
-   * (冷启动第一相不受盘中判据约束), 缺的只有「上一交易日的收盘快照」—— 而那份快照盘中根本取
-   * 不到 (vendor 的 snapshot 接口不吃时间参数), 要等当晚收盘轮。于是整个美股交易时段里, 这只
-   * 锚的选约表与链报表都是「未就绪」, 而此刻的真实盘口一直是可取的。
-   * 📌 那条禁令**当时是对的**: 064 没有把 OI 与归属日在实时基线下的口径定下来, 靠实时值成链
-   * 就会得到一张归属日说不清的表。本片把口径定死 (整批 OI 同源 + `oiAsOf` 取最近已收盘交易日)
-   * 之后, 禁令的前提才消失。
+   * 064 的「离线档 + 报价覆盖」范式已退役: overlay 插点摘除、实时独载基线删除。实时窄召回
+   * 是独立方法 {@link retrieveRealtimeNarrow}; 盘中新锚 (库内零快照期) 由其 bootstrap 宽窗
+   * 服务, 本路径对该形态回归 064 前语义 (未就绪)。`query.realtime` 在本方法内**惰化**
+   * (调用方恒传 `false`, 或经 {@link retrieveChain} 的 Q4 回落)。
    */
-  private async loadChainWithWindow(query: LegChainQuery): Promise<LoadedChain | null> {
+  private async loadClosingChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
     // 064 T003: `query.realtime` 是**每次请求**的显式开关 (`FR-015` fail-closed, 无默认值)。
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
@@ -669,10 +628,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       orderBy: { sessionDate: 'desc' },
       select: { sessionDate: true },
     });
-    // 🚨 库内一期都没有 ⇒ 换基线, 不再直接判「未就绪」(见方法头「两个基线」段)。
-    if (latest === null) {
-      return this.loadRealtimeBaselineChain(query, parsed.market, marketDate, contracts);
-    }
+    // 068: 库内一期都没有 ⇒ 未就绪 —— 064 实时独载基线已随 overlay 范式退役; 盘中新锚
+    // 由窄召回的 bootstrap 宽窗服务 (retrieveRealtimeNarrow), 本路径回归 064 前语义。
+    if (latest === null) return null;
 
     // CROSS-CONTEXT-READ: marketdata.option_daily_snapshot 只读直查 (Q7-B) —— 该期全部行。
     // 幂等键第三段是**来源** (047 FR-040) ⇒ 同一合约同一交易日可能有 eod 与 premarket_backfill
@@ -720,31 +678,15 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       // 互相推导, 而开关为真时最常见的结局恰恰是**正常的**收盘档 (非交易时段)。
       realtimeDegrade: null,
     };
-    // 🚨 **overlay 的插点就在这里** —— `legs` 已组装、`return` 之前, 见类文件头。关态 (或读取口
-    // 未绑定) 时**一行都不执行**, 结果与 064 之前逐字节相同 (FR-016 / SC-005)。
-    // 🚨 这两条**都不算降级** (T007a): 未开实时是调用方的选择; 读取口整个没绑定则连闸都没判过,
-    // 「本该外呼」这个前提结构上不成立。📌 mock 档下读取口是**绑定着的**降级实现 (见 T002), 但
-    // 那条路轮不到它: `MARKET_STATE_PORT` 经 `collectionPort` 注册, mock 下是 054 的拒绝壳 ⇒
-    // `resolveRealtimeGate()` 一调即抛, 判 `'unknown'` 后**在发起 fetch 之前**就 fail-closed,
-    // 于是 mock 档实际标的是 `gate_unknown` 而非 `source_unavailable` (T012 契约冒烟实跑证实)。
-    // 🚫 MUST NOT 在这里预置一个降级标充数。
-    if (!query.realtime || this.snapshots === null) {
-      return { snapshot: { chain, legs }, window: null };
-    }
-    return this.overlayRealtimeQuotes(
-      this.snapshots,
-      { symbol: query.symbol, market: parsed.market, marketDate, now: query.now },
-      chain,
-      legs,
-      'db_snapshot',
-    );
+    // 068: overlay 插点已随范式退役 —— 本方法自此是**离线唯一路径**, 恒零外呼 (FR-011)。
+    return { chain, legs };
   }
 
   /**
-   * `contract ⋈ snapshot?` → 腿行 —— **两个基线共用的唯一装配点**。
+   * `contract ⋈ snapshot?` → 腿行 —— **离线路径与窄召回骨架共用的唯一装配点**。
    *
-   * 🚨 `snapshot === null` = {@link ChainBaseline} 为 `realtime_batch` 时的**骨架行**: 报价列
-   * 与 OI 全空、`greeksComplete` 取 `false`, 由 {@link applyRealtimeBatch} 逐行填上。
+   * 🚨 `snapshot === null` = 窄召回下「窗内合约无最近一期快照行」的**骨架行**: 报价列与 OI
+   * 全空、`greeksComplete` 取 `false`, 由 {@link retrieveRealtimeNarrow} 以同批实时值改写。
    * 🚫 **MUST NOT 为骨架另写一份字面量**: 两份字面量必漂移, 而漂移的表现是「某一列在新锚上
    * 永远是空的」—— 那张表照样渲染得出来, 没有任何断言会红。
    *
@@ -790,103 +732,14 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         // 🚫 vendor 原样带出, 不归一化大小写、不回落默认值 —— 判据是白名单 `=== 'MONTH'`,
         // 在这里「顺手」规整会让「vendor 换了取值」这件事在打标层看不出来 (`leg-mark.rules.ts`)。
         expirationCycle: contract.expirationCycle,
-        // 064 T003: 库里读出来的就是收盘档 —— 这里是**唯一**的落点, 实时档由
-        // {@link overlayRealtimeQuotes} 逐行改写 (T004a)。🚫 MUST NOT 在下游任何一层「补标」:
-        // 补标点有第二个,「这个数是什么时候的」就有两个答案, 而两个答案都渲染得出来。
+        // 库里读出来的就是收盘档 —— 这里是**唯一**的落点, 实时行由
+        // {@link retrieveRealtimeNarrow} 组链时逐行改写 (068)。🚫 MUST NOT 在下游任何一层
+        // 「补标」: 补标点有第二个,「这个数是什么时候的」就有两个答案, 而两个答案都渲染得出来。
         priceKind: 'eod_close',
         // 068: 带标只在实时窄路径由同批实时 Δ 打; 库内读出的收盘档恒无带语义。
         bandStatus: null,
       };
     });
-  }
-
-  /**
-   * **实时独载基线** —— 库内一期快照都没有时, 这一批实时报价**自己就是基线**
-   * (改写 064 `state_branch` 9, 理由见 {@link loadChainWithWindow} 方法头)。
-   *
-   * 触发形态实际上只有一个: **盘中新建的锚**。冷启动第一相 (链发现 + 日线) 不受盘中判据约束
-   * ⇒ 合约表当场就有行; 第二相的期权快照撞盘中闸落 `intraday_skipped` ⇒ 快照表零行, 要等当晚
-   * 收盘轮。于是整个美股交易时段里这只锚都答「未就绪」, 而此刻的真实盘口一直取得到。
-   *
-   * 🚨 **`oiAsOf` 取最近一个已收盘交易日, 与实时 OI 的归属由构造对齐**: 美股期权 OI 盘前更新、
-   * 盘中冻结 ⇒ 此刻取回的那个数归属的正是上一场收盘 (与 marketdata
-   * `resolveSnapshotAttribution` 在
-   * 同一时点上的取值逐字相同)。日历答不出这一天 ⇒ **放弃, 不猜** —— 猜错就是一整页 OI 顶着
-   * 错误的归属日, 而整页渲染正常。
-   * 🚨 **`sessionDate` 取交易所的今天**: 屏上的报价列全部来自此刻, 归属**正在进行的这一场**。
-   * 🚫 MUST NOT 退回上一场 —— 那会让区块级 `asOf` 与它标注的那批数差一整天。新鲜度档因此判
-   * `CURRENT`(`freshness-tier.ts` 是 `asOf >= lastClosedSession`), 与它文件头写明的「夜间管线
-   * 刚落库完最新一场时 asOf 可以比上界还新」同属一档, 不是新开的口子。
-   * 🚨 **拿不到实时值 ⇒ 仍返 `null`(未就绪)**: 四条整体回落路径 (两闸不成立 / 基准陈旧 /
-   * 源不可达 / 标的现价缺失) 在本基线下都没有收盘档可落, 结局与本片上线前**逐字节相同**。
-   * 🚫 MUST NOT 端出一张全空的表 —— 那与「链坏了」在屏上分不开。
-   *
-   * 📌 **本基线下的呈现面窄一圈, 且是窗的形状**: 窗是 `strike ∈ [0.7, 1.05] × spot` ∧
-   * `DTE ∈ [两视角召回段的并集]`, 窗外的腿这一次**根本没被问过价** ⇒ 整条不呈现。影响只落在
-   * **全腿视角** (它本就不设 DTE 段与行权价上界); 两个意图视角的召回段本就是窗的来源, 收不窄。
-   * 🚨 **收租的成色上界不受影响, 这点是算出来的不是指望的**: 上界 = `min{K ≥ axis}` 与
-   * `axis × (1 + 0.03)` 取严 (067 起 `axis = min(spot, W)` ≤ spot), 而窗的行权价上沿是
-   * `spot × 1.05` ⇒ 比例项恒 ≤ 窗沿。网格密时结构项落在窗内、原样保留; 网格疏到窗内无档时
-   * 结构项在两个集合上分别是「窗外那一档」与 `null`, 而两者与比例项取严后**同为比例项**
-   * ⇒ 逐点等价。📌 067 后多出一个数值角落: axis 深低于窗下沿 (W < 0.7 × spot) 时结构项可能落
-   * 在窗外更低处, 上界**数值**可差 < 3% —— 但那时两个值都低于窗内全部行权价, 收租**成员集**
-   * 仍逐点相同 (差只出现在下发的默认值上, 且该域正是「太贵 ⇒ 默认空」的空态域)。
-   * 📌 窗外的腿在本基线下不进候选池 (068 起绊线已整体退役)。可接受
-   * —— 它守的是包络的**长期**漂移, 而本基线是**当天自愈**的过渡态 (当晚收盘轮写完基线, 次日
-   * 即走库内那条路)。🚫 MUST NOT 因此把窗外的空行留在结果里充数。
-   *
-   * 复杂度: 1 次日历调用 + overlay 那一趟 (1 次自有表点查 + ≤1 次外呼 + `O(n)`)。DB 查询次数
-   * 比库内基线**少一次** —— 该期全量那一查跳过了。
-   */
-  private async loadRealtimeBaselineChain(
-    query: LegChainQuery,
-    market: string,
-    marketDate: string,
-    contracts: readonly ChainContractRow[],
-  ): Promise<LoadedChain | null> {
-    // 关态 / 读取口未绑定 ⇒ 压根没有第二个数据源, 结局同 064 之前 (零外呼 + 未就绪)。
-    if (!query.realtime || this.snapshots === null) return null;
-    // 🚫 归属日不猜 (见方法头)。日历端口未绑定时两闸本就判 `unknown` ⇒ 两条路殊途同归。
-    if (this.tradingCalendar === null) return null;
-    const oiAsOf = await this.tradingCalendar.lastClosedSession(market, query.now);
-    if (oiAsOf === null) return null;
-
-    const legs = this.toLegRows(
-      contracts.map((contract) => ({ contract, snapshot: null })),
-      query.now,
-      market,
-    );
-    const chain: LegChainMeta = {
-      marketDate,
-      sessionDate: utcMidnight(marketDate),
-      oiAsOf: utcMidnight(oiAsOf),
-      source: REALTIME_BASELINE_SOURCE,
-      // 🚨 下面两格是**占位**: 它们由 {@link applyRealtimeBatch} 成功那一支整体改写, 而失败的
-      // 每一支都返 `null` ⇒ 结构上逃不出去 (有反例钉死这一点)。
-      // 🚨 取值蓄意选**荒谬值而不是看着合理的数**: 万一哪天真漏出去, `spot = 0` 会让权利金门槛
-      //    当场崩、时刻显示 1970 —— 一眼可见; 填个「合理」的数则会渲染出一张看起来正常的错表。
-      quoteAsOf: new Date(0),
-      spot: new Prisma.Decimal(0),
-      priceKind: 'eod_close',
-      realtimeDegrade: null,
-    };
-    const loaded = await this.overlayRealtimeQuotes(
-      this.snapshots,
-      { symbol: query.symbol, market, marketDate, now: query.now },
-      chain,
-      legs,
-      'realtime_batch',
-    );
-    if (loaded === null) return null;
-
-    // 🚨 **没拿到实时值的行整条丢弃** —— 本基线下它们没有任何可回落的值。留着的话它们会被权利金
-    // 门槛挡下并计进 `removedByPremiumFloor`, 屏上于是出现「被权利金门槛移出 N 条」, 而那 N 条
-    // **根本没被问过价**: 一个真实、可读、且完全错的数。
-    // 📌 判据取 `priceKind` 而非「bid 是不是空」: 前者是 overlay 的判决 (窗外 / 停牌 / 买卖价
-    //    皆空 三种情形它都留 `eod_close`), 后者会把「vendor 说此刻确实没有买价」也一并算进来。
-    const quoted = loaded.snapshot.legs.filter((leg) => leg.priceKind === 'realtime');
-    if (quoted.length === 0) return null;
-    return { snapshot: { chain: loaded.snapshot.chain, legs: quoted }, window: loaded.window };
   }
 
   /**
@@ -973,9 +826,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 护城河审计链完全靠这类注释承载 (`check-server-moat.ts` 按 import 来源与表归属判 ctx)。
    *
    * 🚨 **基准与判据用的现价是两个数, 🚫 MUST NOT 合并** (plan D5): 这里的基准只圈「问哪些合约」,
-   * 容得下一个采集周期 (≤30 s) 的滞后; 判据与表头吃的那个必须与腿报价**同刻**, 它随本批一起回来
-   * ({@link overlayRealtimeQuotes} 里的 `isOption: false` 那行)。拿这个去喂判据 =「按此刻筛」不成立;
-   * 拿那个来定窗 = 得先发一次请求才能知道该请求哪些合约。
+   * 容得下一个采集周期 (≤30 s) 的滞后; 判据与表头吃的那个必须与腿报价**同刻**, 它随主批一起回来
+   * ({@link retrieveRealtimeNarrow} 组链时取 `isOption: false` 那行)。拿这个去喂判据 =「按此刻筛」
+   * 不成立; 拿那个来定窗 = 得先发一次请求才能知道该请求哪些合约。
    *
    * 复杂度: 1 次自有表点查 + `O(1)` 派生。
    */
@@ -1011,162 +864,6 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   }
 
   /**
-   * 用**此刻**的报价覆盖库内收盘档 —— 七个值 + 描述其中两个的那一个标 (064 FR-001 / FR-002)。
-   *
-   * 🚨 **写入面 = 七个值**: `bid` / `ask` / `bidSize` / `askSize` / `delta` / `iv` / `volume`。
-   * 派生量 (成交额 / 单笔权利金 / 价差及其相对值) 由下游从这七个值现算 ⇒ 自动成为实时口径,
-   * 🚫 MUST NOT 为它们另设覆盖路径 (FR-003: 派生量有第二个来源就等于同一个数在两处各算一份)。
-   * 🚨 **外加 `greeksComplete` —— 它不是第八个值, 是描述 `delta` / `iv` 这两格的标**, 故必须
-   * 跟着那两格一起翻。留着库内那个, 就是让一个标去描述**一批已经不在屏上的数**, 两个方向都坏
-   * 且都渲染得出来:
-   * · 昨收深实值腿 IV 无解 (库内 `false`)、此刻实时给全了 ⇒ `get-legs.usecase.ts` 的
-   *   `deriveDeltaColumns(greeksComplete ? delta : null)` 把值掐掉 ⇒ Δ 与 σ 距空着、不判档不
-   *   着色 (FR-007 的「数据不全」形态被误触发), 而数据就在手里;
-   * · 昨收齐全 (库内 `true`)、此刻实时的 Δ/IV 皆空 ⇒ 契约上下发「greeks 齐全」而两格是 `null`。
-   * 📌 与下面 OI 那条**判据相反且不冲突**: OI 盘中冻结 ⇒ 此刻取回的与库内**是同一个数**, 覆不
-   * 覆盖都一样, 故按 FR-004 不纳入; `greeksComplete` 描述的两格**已经被换掉了**, 不跟就是错的。
-   * 🚨 **持仓量在库内基线下恒取库内** (FR-004 / plan D8)。依据是实测: 美股期权 OI 盘前更新、
-   * 盘中冻结 ⇒ 此刻取回的与库内是同一个数。
-   * ⚠️ **这条保证的强度在实时独载基线落地时降了一档, 记在这里免得被误读**: 064 原实现让
-   * `openInterest` **根本不出现在下面的字面量里**, 于是「不被覆盖」是编译期事实; 现在它出现了,
-   * 只是按 {@link ChainBaseline} 分两支 —— 「库内基线下不被覆盖」自此由**反例测试**承载
-   * (`optionsdesk-064.overlay.it.spec.ts` 的 `FR-004` / `SC-006`: 实时批喂与库内不同的 OI, 断言
-   * 两档逐字节相同)。换来的是「一条链的 OI 只有一个来源」这件事在**两个基线上都成立**, 而
-   * 「空就填」那种写法两头都保不住。
-   * 🚨 `netOpenInterest` / `oiAsOf` 的编译期保证**原样保留**: 它们根本不在 {@link LegChainRow}
-   * 上。🚫 MUST NOT 为了与 OI「对称」把它们纳入再跳过。
-   * 🚨 **不自己解信封**: 经读取口拿已解析好的 `OptionSnapshotBatch` (信封单点已由 PR #116 收口)。
-   * 若发现自己在写第二处 `res?.rows` / `as_of` 解析, 说明走错了路。
-   *
-   * 📌 返回集里**库内不存在的合约直接忽略** (`state_branch` 10, 盘中新挂 —— 本片不在盘中重跑
-   * 链发现, 次日收盘采集自然补上): 按库内 `legs` 逐条去查返回集, 多出来的那些结构上够不着。
-   *
-   * 🚨 **问的只是窗内那批** (064 T004b): `contractCodes` 由 {@link resolveWindow} 圈出,
-   * 🚫 MUST NOT 把整条链一股脑塞进去 —— 单批有硬上限 (`OPTION_SNAPSHOT_MAX_CONTRACT_CODES`),
-   * 超了 shim **整批 400 拒绝**。窗外的腿照常留在结果里, 只是带着收盘档的价 (逐行档位, FR-009)。
-   * 🚨 **表头 / 链级 spot 取返回集里 `isOption: false` 那行** (`FR-006a`) —— 🚫 MUST NOT 用
-   * {@link resolveWindow} 那个定窗基准: 判据吃的数与呈现的数必须与腿报价同刻, 否则「按此刻筛」
-   * 这句话当场不成立, 而两个数都渲染得出来。
-   *
-   * 🚨 **四条降级路径全部收在这一段** (064 T005 / `FR-011`): 两闸不成立 / 基准不可用 / 取回失败
-   * 三条**整体**回落收盘档 (原样返回 `legs`, 一个值都不动), 第四条 (部分合约未返回 · 单腿关键
-   * 报价为空) 由 {@link applyRealtimeBatch} **逐行**处理。🚫 MUST NOT 回落成 0 / 清空既有值:
-   * 0 在买卖价上读作「有人挂到 0」, 与「没取到」是两件事, 而两者在屏上都显示得出来。
-   *
-   * 复杂度: ≤1 次外呼 + `O(m)` 建索引 + `O(n)` 逐腿覆盖 (m = 返回行数, n = 库内腿数)。
-   */
-  private async overlayRealtimeQuotes(
-    port: OptionSnapshotPort,
-    target: {
-      readonly symbol: string;
-      readonly market: string;
-      readonly marketDate: string;
-      readonly now: Date;
-    },
-    chain: LegChainMeta,
-    legs: readonly LegChainRow[],
-    baseline: ChainBaseline,
-  ): Promise<LoadedChain | null> {
-    /**
-     * 整体回落路径的共同落点 —— 值一个不动, 只在 meta 上说清**本该给实时却没给成**没有。
-     *
-     * 🚨 `null` 那一支与关态**逐字节相同** (`realtimeDegrade` 在 `chain` 上已是 `null`, 展开
-     * 不改键序也不改值); 非 `null` 那一支只多这一个字段的取值。
-     *
-     * 🚨 **`realtime_batch` 基线下没有收盘档可落 ⇒ 一律 `null`(未就绪)**: 那时 `legs` 是一批
-     * 报价全空的骨架, 端出去与「链坏了」在屏上分不开; 而 `chain` 上的 `spot` / `quoteAsOf`
-     * 还是占位值 —— 本支是它们**唯一**可能的逃逸口, 堵死在这里。
-     */
-    const eodClose = (realtimeDegrade: RealtimeChainDegradeKind | null): LoadedChain | null =>
-      baseline === 'realtime_batch'
-        ? null
-        : { snapshot: { chain: { ...chain, realtimeDegrade }, legs }, window: null };
-
-    // ① 非常规交易状态 / 当日非交易日 ⇒ **零外呼** (`state_branch` 3)。
-    // 🚨 `'closed'` 是**正常收盘档**, 降级标恒 `null` —— 北京白天美股休市, 天天如此。给它刷上
-    // 降级 = 造一个永远为真的告警, 真出事那天它也就不再有人看 (T007a 的核心反例)。
-    // 🚨 `'unknown'` 相反: 外呼同样没发, 但我们**不知道**此刻该不该发 ⇒ 如实标降级。
-    const gate = await this.resolveRealtimeGate(target);
-    if (gate === 'closed') return eodClose(null);
-    if (gate === 'unknown') return eodClose('gate_unknown');
-
-    // ①b 该市场尚无候选范围派生能力 ⇒ **零外呼**整体回落。`bootstrapWindowFor` 对未支持市场
-    // MUST throw (FR-008, 判据本身正确且不动), 但在读路径上放它抛会一路冒到 use case 的宽
-    // catch 判成 `read_failed` —— 把「该市场还没接实时」呈现成「读故障」, 整表打红。
-    // 🚨 **必须在闸之后判**: 闸 `'closed'` 时是正常收盘档 (降级标恒 `null`), 挪到闸前会让
-    // 港股用户在休市时段天天看见降级 —— T007a「永远为真的告警」的翻版。
-    // 📌 语义与 mock 档「本环境无实时源」同类 ⇒ 复用 `source_unavailable`, 🚫 不新造第四态
-    // (扩值域要动契约与呈现, 归 P2 的 market 参数化整体处理)。
-    if (!(WINDOW_SUPPORTED_MARKETS as readonly string[]).includes(target.market)) {
-      this.logger.warn(
-        `市场 '${target.market}' 尚未支持实时候选范围派生, 本次整体回落收盘档 (064 FR-011): ` +
-          target.symbol,
-      );
-      return eodClose('source_unavailable');
-    }
-
-    // ② 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落, 仍是零外呼 (`state_branch` 14)。
-    // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。
-    const basis = await this.resolveWindowBasis(target);
-    const basisAt = basis.basisAt;
-    const window = basis.spot === null ? null : bootstrapWindowFor(target.market, basis.spot);
-    if (window === null) {
-      this.warnDegraded('window_basis_stale', target.symbol, {
-        basisAt: basisAt === null ? null : basisAt.toISOString(),
-        // 🚫 阈值取 061 的派生单点, MUST NOT 在留痕里手写第二个 90 —— 调参那天日志会开始骗人。
-        freshnessSeconds: INTRADAY_FRESHNESS_SECONDS,
-      });
-      return eodClose('window_basis_stale');
-    }
-
-    // ③ 窗内条数超单批上限 ⇒ **整体回落 + 零外呼** (`FR-018` / `state_branch` 7, plan §分批)。
-    // 🚫 **MUST NOT 截断到前 `OPTION_SNAPSHOT_MAX_CONTRACT_CODES` 条**: 少一截的候选集**外表
-    // 完全正常** —— 被裁掉的那批带着收盘档的价照常渲染, 用户无从知道自己看的是一个残缺的口径。
-    // fail-closed 至少把整表都标成收盘档, 那是说得清的一句话。
-    // 🚫 MUST NOT 在本 ctx 再写一个 399 / 400 —— 上限单点在 `option-snapshot.port.ts`
-    // (它是 `shim 400 上限 − 标的自身那行`, 两处各写一份会在改批量那天静默撞 400 整批被拒)。
-    const windowed = legs.filter((leg) => withinWindow(leg, window));
-    if (windowed.length > OPTION_SNAPSHOT_MAX_CONTRACT_CODES) {
-      this.warnDegraded('window_over_cap', target.symbol, {
-        windowCodes: windowed.length,
-        cap: OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
-      });
-      return eodClose('window_over_cap');
-    }
-    const contractCodes = windowed.map((leg) => leg.code);
-
-    // ④ 源不可达 / 超时 ⇒ 整体回落 (`state_branch` 4)。**闸已判开** ⇒ 这一路必是降级:
-    // 北京 22:00 美股盘中源挂了, 界面若与正常盘后长得一样, 用户就又一次拿着昨天的盘口做决定。
-    const batch = await this.fetchQuotes(port, target, contractCodes);
-    if (batch === null) return eodClose('source_unavailable');
-
-    // ⑤ 标的现价缺失 ⇒ 显式「未就绪」(`state_branch` 6 / FR-012), 🚫 MUST NOT 拿收盘价顶替:
-    // 顶替会让「链坏了」看起来像正常, 正是本仓反复吃亏的那类静默。
-    const applied = applyRealtimeBatch(chain, legs, batch, baseline);
-    if (applied === null) return null;
-    this.reportPartialMiss(target.symbol, contractCodes, batch);
-    return { snapshot: applied, window };
-  }
-
-  /**
-   * 问了但没回来的那几条 (064 `FR-023` `partial_miss`, `state_branch` 5)。零缺失 ⇒ 不留痕。
-   *
-   * 🚨 判据是「**请求里有、返回集里没有**」而不是「这一行没被覆盖」: 后者会把
-   * `state_branch` 11 (行回来了但买卖价皆空) 一并算进来, 而那是另一回事 —— vendor 给了这一行、
-   * 只是此刻没有盘口。两者混成一个数, 「实时源今天漏了多少合约」就再也问不出来。`O(m + n)`。
-   */
-  private reportPartialMiss(
-    symbol: string,
-    requested: readonly string[],
-    batch: OptionSnapshotBatch,
-  ): void {
-    const returned = new Set(batch.rows.filter((row) => row.isOption).map((row) => row.code));
-    const missing = requested.filter((code) => !returned.has(code)).length;
-    if (missing === 0) return;
-    this.warnDegraded('partial_miss', symbol, { missing, requested: requested.length });
-  }
-
-  /**
    * 三类**本片特有**失败的结构化留痕 (064 `FR-023`, plan D11) —— 单点。
    *
    * 行首是 {@link REALTIME_DEGRADE_LOG_TAG}, 其后是一段 JSON, 类别在 `kind` 上 ⇒ 聚合器
@@ -1186,79 +883,6 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   ): void {
     this.logger.warn(`${REALTIME_DEGRADE_LOG_TAG} ${JSON.stringify({ kind, symbol, ...detail })}`);
   }
-}
-
-/**
- * 一批实时报价 → 覆盖后的链 (064 T004a 的七列 + T005 的**逐行**降级)。标的现价缺失 ⇒ `null`
- * (「未就绪」, `state_branch` 6)。纯函数, `O(m + n)`。
- *
- * 🚨 **逐行档位不是页级一刀切** (FR-009 / `state_branch` 5 / 11): 返回集里少了几个合约是常态
- * (停牌 / 刚摘牌), 那几条保留收盘值并标 `'eod_close'`, 其余照常标 `'realtime'`。整页统一降级与
- * 整页统一标实时**都渲染得出一张完整的表**, 只有逐行标才分得出来。
- *
- * 🚨 **`baseline` 只多管一件事: OI 归谁写** (见 {@link ChainBaseline})。`db_snapshot` 下 OI
- * 恒取库内 (FR-004 一字不动); `realtime_batch` 下库内**没有**这个数, 由同一批实时写入 ——
- * 而那一批的归属日与本链的 `oiAsOf` 由构造对齐。🚫 MUST NOT 把它降级成「库内为空就填」的
- * 单元格级规则: 那会在 `db_snapshot` 基线上把一个 T−1 的 OI 放进标着 T−2 的表里, 而整页渲染
- * 正常、数字真实、只是差一天。
- */
-function applyRealtimeBatch(
-  chain: LegChainMeta,
-  legs: readonly LegChainRow[],
-  batch: OptionSnapshotBatch,
-  baseline: ChainBaseline,
-): LegChainSnapshot | null {
-  const quoteByCode = new Map<string, (typeof batch.rows)[number]>();
-  let spot: Prisma.Decimal | null = null;
-  for (const row of batch.rows) {
-    if (row.isOption) {
-      quoteByCode.set(row.code, row);
-      continue;
-    }
-    // 标的自身那行: spot 落在 `last` 上 (同 047 采集侧口径 `sync-option-snapshot.usecase.ts`)。
-    spot = vendorDecimal(row.last) ?? spot;
-  }
-  if (spot === null) return null;
-
-  return {
-    // 区块级时刻取**信封的采集时刻** (FR-010) —— 🚫 MUST NOT 用行内 `vendorUpdateTime` 顶替:
-    // 那是最后成交时刻, 低流动性腿上它可以停在上周 (`OptionSnapshotRow.vendorUpdateTime`)。
-    // 🚨 `realtimeDegrade` 原样保持 `null` (T007a): 本批**取到了**实时值, 返回集里少几个合约是
-    // 逐行的事 (那几行标 `'eod_close'`), 🚫 MUST NOT 因此把整块拉成降级态 —— 值域上
-    // `partial_miss` 结构性够不着链级字段, 这里只是把「为什么」写下来。
-    chain: { ...chain, quoteAsOf: batch.asOf, priceKind: 'realtime', spot },
-    legs: legs.map((leg) => {
-      const quote = quoteByCode.get(leg.code);
-      // 未在返回集内 (窗外 / 停牌 / 刚摘牌) ⇒ 保留收盘值与收盘档 (`state_branch` 5)。
-      if (quote === undefined) return leg;
-      const bid = vendorDecimal(quote.bid);
-      const ask = vendorDecimal(quote.ask);
-      // 🚨 买卖价**皆空 ⇒ 整行按「未取到实时」处理** (`state_branch` 11): 🚫 MUST NOT 逐字段拼出
-      // 一行半实时半昨收的数据 —— 那种行没有任何一个时刻能解释它; 更 MUST NOT 把空当成 0。
-      if (bid === null && ask === null) return leg;
-      return {
-        ...leg,
-        bid,
-        ask,
-        bidSize: vendorNumber(quote.bidSize),
-        askSize: vendorNumber(quote.askSize),
-        delta: vendorNumber(quote.delta),
-        // 🚫 原样带出, 不换算 —— 与库内那条同源纪律 (`LegChainRow.iv`)。
-        iv: vendorNumber(quote.iv),
-        volume: vendorNumber(quote.volume),
-        // 🚨 标跟着它描述的那两格走 (见方法头)。`??` 只是把端口的 `boolean | null` 收成
-        // `boolean` —— `null ⟺ 非期权行`, 而 `quoteByCode` 只装 `isOption` 的行 ⇒ 右支结构上
-        // 够不着。🚫 MUST NOT 把它读成「vendor 没给就沿用库内」的兜底策略, 那是另一回事。
-        greeksComplete: quote.greeksComplete ?? leg.greeksComplete,
-        // 🚨 OI **只在实时基线下由这一批写**; 库内基线下 `leg.openInterest` 原样留下 (FR-004)。
-        // 三元的两支各自成立, 🚫 MUST NOT 合并成 `?? leg.openInterest` 那种「空就填」——
-        // 见函数头对 `baseline` 那段。
-        openInterest:
-          baseline === 'realtime_batch' ? vendorNumber(quote.openInterest) : leg.openInterest,
-        priceKind: 'realtime',
-      };
-    }),
-  };
 }
 
 /**
