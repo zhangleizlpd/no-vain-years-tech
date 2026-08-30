@@ -1,7 +1,7 @@
 ---
 feature_id: 070-optionsdesk-offline-ladder
 spec_ref: ./spec.md
-status: drafted
+status: approved
 created_at: '2026-08-30'
 updated_at: '2026-08-30'
 adr_refs: ['0043', '0062', '0064', '0066', '0067', '0068']
