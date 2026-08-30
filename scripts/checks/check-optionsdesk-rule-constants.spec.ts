@@ -17,7 +17,9 @@ import {
   findShapeHits,
   findShapeOffenders,
   findStorageVocab,
+  fwdIsolationSelfProbe,
   MEMBERSHIP_PREDICATE_RE,
+  WINDOW_MODULE_REF_RE,
   membershipProbe,
   marchSelfProbe,
   recallSelfProbe,
@@ -463,6 +465,38 @@ export const MARCH_DECAY_REBOUND_BETA = new Prisma.Decimal('1.7');
 /** 形状条件的绝对帽 γ。 */
 export const MARCH_DECAY_ABSOLUTE_CAP_GAMMA = new Prisma.Decimal('0.004');
 `;
+
+describe('070 不变量 #11 —— 窗与 fwd 管道互不渗透', () => {
+  it('WINDOW_MODULE_REF_RE: 静态 import / re-export / 动态 import 的 leg-window 引用全命中', () => {
+    for (const src of [
+      "import { bootstrapWindowFor } from './leg-window.rules';",
+      "export * from './leg-window.rules';",
+      "const w = await import('./leg-window.rules');",
+    ]) {
+      expect(findShapeHits(src, WINDOW_MODULE_REF_RE).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('🚨 反例臂: fwd 管道自身文件名与相邻模块不许误伤 —— 否则闸恒红', () => {
+    for (const src of [
+      "import { marchEvidence } from './leg-fwd-chain.rules';",
+      "import { resolveMarchParams } from './leg-march.rules';",
+      "import { resolveDeltaSurfaceWindow } from './leg-delta-surface.rules';",
+    ]) {
+      expect(findShapeHits(src, WINDOW_MODULE_REF_RE)).toEqual([]);
+    }
+  });
+
+  it('注释里提到 leg-window 是**正确的文档**, 不是违规 (扫描在 stripComments 之后)', () => {
+    const src =
+      '// 窗判据单点住 leg-window.rules.ts (#9), 本文件禁引 —— 见结构闸 #11\nconst x = 1;';
+    expect(findShapeHits(stripComments(src), WINDOW_MODULE_REF_RE)).toEqual([]);
+  });
+
+  it('fwdIsolationSelfProbe: 现役正反两臂均通过', () => {
+    expect(fwdIsolationSelfProbe()).toBeNull();
+  });
+});
 
 describe('extractMarchThresholds —— 069 不变量 #10', () => {
   it('抽出 β / γ 两个参数', () => {
