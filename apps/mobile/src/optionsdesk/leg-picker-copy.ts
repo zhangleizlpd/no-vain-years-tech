@@ -129,7 +129,7 @@ export function legRateCell(
  * 📌 `eod` 是 064 的行级档位标 —— **复用这套既有载体**，🚫 不新建组件、🚫 不新开一列
  *    （mockup overflow 探针实证：挂进 bid/ask 列会把报价块顶出 7px）。
  */
-export type LegStickyBadge = 'fit' | 'monthly' | 'eod';
+export type LegStickyBadge = 'fit' | 'monthly' | 'eod' | 'band';
 
 /**
  * 两个标的**共用载体**（FR-014b）—— 8px 描边短文字标。两者只在描边色上分权重，
@@ -148,6 +148,8 @@ export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> =
   // 064 行级档位标：中性强描边（mockup `.eodchip` 逐值）。🚨 **蓄意不上 warning 色** ——
   // 「这一行是收盘值」是事实陈述不是告警，告警底色留给区块条的未就绪那一档。
   eod: 'border-line-strong',
+  // 068 带外横档标：中性弱描边 —— 「预测带外」是参照语义不是问题行，权重低于「收」。
+  band: 'border-line',
 };
 
 // ═══════════════ 财报 chip：五形态 + null，三个「无标」不许合并 ═══════════════

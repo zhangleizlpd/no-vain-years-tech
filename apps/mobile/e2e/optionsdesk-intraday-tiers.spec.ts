@@ -242,6 +242,7 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike'> = {
   earningsMark: { mark: 'covered', bufferShortfallDays: null, lastEarningsDate: '2026-10-28' },
   greeksComplete: true,
   priceKind: 'eod_close',
+  bandStatus: null,
 };
 
 function leg(code: string, strike: string, over: Partial<LegResponse> = {}): LegResponse {

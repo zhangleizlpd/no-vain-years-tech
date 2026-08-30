@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   BAND_LITERAL_RE,
   CLIENT_DEFAULT_COMPUTE_RE,
+  DELTA_BAND_SHAPE_RE,
+  INLINE_COEFFICIENT_RE,
+  extractPadRatio,
+  windowSelfProbe,
   clientDefaultProbe,
   COARSE_DECISION_RE,
   coarseProbe,
@@ -396,5 +400,49 @@ describe('stripComments', () => {
 
   it('不把字符串里的 https:// 拦腰截断', () => {
     expect(stripComments("const u = 'https://x.example/v1';")).toContain("'https://x.example/v1'");
+  });
+});
+
+describe('068 不变量 #9 —— 窗判据单点', () => {
+  const DELTA_SOURCE = [
+    'export const BUILD_DELTA_BAND: DeltaBand = {',
+    "  lower: new Prisma.Decimal('0.10'),",
+    "  upper: new Prisma.Decimal('0.45'),",
+    '};',
+    'export const RENT_DELTA_BAND: DeltaBand = {',
+    "  lower: new Prisma.Decimal('0.05'),",
+    "  upper: new Prisma.Decimal('0.32'),",
+    '};',
+    "export const MONEYNESS_PAD_RATIO = new Prisma.Decimal('0.025');",
+  ].join('\n');
+
+  it('extractPadRatio 抽出 pad; 常量改名 ⇒ undefined + 探针报平凡绿', () => {
+    expect(extractPadRatio(DELTA_SOURCE)).toBe('0.025');
+    const renamed = DELTA_SOURCE.replace('MONEYNESS_PAD_RATIO', 'PAD');
+    expect(extractPadRatio(renamed)).toBeUndefined();
+    expect(windowSelfProbe(renamed, extractPadRatio(renamed))).toMatch(/平凡绿/);
+  });
+
+  it('windowSelfProbe: 带形状少于 4 个 ⇒ 报形状判据平凡绿; 完整源 ⇒ null', () => {
+    const oneBand = DELTA_SOURCE.split('\n').slice(4).join('\n');
+    expect(windowSelfProbe(oneBand, '0.025')).toMatch(/形状/);
+    expect(windowSelfProbe(DELTA_SOURCE, '0.025')).toBeNull();
+  });
+
+  it('DELTA_BAND_SHAPE_RE: 命中 lower/upper 直挂 Decimal, 不命中 {min,max} 与 lowerBound', () => {
+    expect(findShapeHits("lower: new Prisma.Decimal('0.1')", DELTA_BAND_SHAPE_RE)).toHaveLength(1);
+    expect(findShapeHits('{ min: 0.4, max: 0.55 }', DELTA_BAND_SHAPE_RE)).toHaveLength(0);
+    expect(
+      findShapeHits("lowerBound: new Prisma.Decimal('0.1')", DELTA_BAND_SHAPE_RE),
+    ).toHaveLength(0);
+  });
+
+  it('INLINE_COEFFICIENT_RE: 命中内联 Decimal 乘法, 不命中具名常量乘法', () => {
+    expect(findShapeHits(".times(new Prisma.Decimal('0.7'))", INLINE_COEFFICIENT_RE)).toHaveLength(
+      1,
+    );
+    expect(
+      findShapeHits('.times(QUALITY_CEILING_SPOT_RATIO.plus(1))', INLINE_COEFFICIENT_RE),
+    ).toHaveLength(0);
   });
 });

@@ -34,6 +34,7 @@ import {
 } from './leg-picker-copy';
 import { LEG_ROW_HEIGHT, LegStickyCell, legColumnWidth } from './leg-table-header';
 import { legRowEodMarked, type LegBlockPriceKind } from './leg-tier-bar.rules';
+import { legRowBandOut } from './leg-row.rules';
 import {
   LEG_SCROLL_REGION_WIDTH,
   costCell,
@@ -83,6 +84,8 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
   // 🚨 064 FR-009：**只在「区块实时、本行收盘」时**为真 —— 整表收盘档时逐行打标只是噪点，
   //    而把 bid 数字全体降灰还会吃掉 053 的四档色（档位色只着 bid 单元格，是那一片的全部信号）。
   const eodMarked = legRowEodMarked(blockPriceKind, leg.priceKind);
+  // 068 FR-009: 带外横档 —— 判据只从契约 bandStatus 来, 打标不删行 (比价用途)。
+  const bandOut = legRowBandOut(leg.bandStatus);
 
   return (
     <View
@@ -119,6 +122,16 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
               testID={`optionsdesk-detail-leg-eod-${leg.code}`}
             >
               {COPY.eodBadge}
+            </Text>
+          ) : null}
+          {/* 068 带外横档标：复用同一条 badge 载体, 弱描边 —— 「预测带外」是参照不是告警。
+              🚨 灰阶只弱化 bid 数字 (同「收」的处置), 🚫 不隐藏不折叠不沉底。 */}
+          {bandOut ? (
+            <Text
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.band}`}
+              testID={`optionsdesk-detail-leg-band-out-${leg.code}`}
+            >
+              {COPY.bandOutBadge}
             </Text>
           ) : null}
         </View>
@@ -165,7 +178,7 @@ export function LegRow({ leg, tx, today, blockPriceKind }: LegRowProps) {
               // 🚨 档位色**只上买侧的价**；卖侧与两个量一律 muted，染上会被读成「它们也参与判档」。
               // 🚨 064：本行未取到实时时，买侧的价**降为次级墨色** —— 档位判定仍成立（server 拿
               //    收盘值判的），但这个数不是此刻的，不该以档位色的权重出现在一片实时数里。
-              priceClass={`font-semibold ${eodMarked ? 'text-ink-muted' : bidTone.text}`}
+              priceClass={`font-semibold ${eodMarked || bandOut ? 'text-ink-muted' : bidTone.text}`}
             />
             <QuoteSide
               price={leg.ask === null ? COPY.noValue : formatPriceText(leg.ask)}

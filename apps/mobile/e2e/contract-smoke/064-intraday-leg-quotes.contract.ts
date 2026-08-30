@@ -26,8 +26,8 @@
  *
  * 📌 **本环境下实时档结构上取不到，这是正确行为，不是缺陷**：harness 恒钉 `MARKETDATA_PROVIDER=mock`
  *    （见 `real-backend-harness.ts`），而 `MARKET_STATE_PORT` 在 mock 档下是 054 的**拒绝壳**
- *    （一调即抛）⇒ `resolveRealtimeGate` 落 `'unknown'` ⇒ 零外呼、整表收盘档、链级标
- *    `gate_unknown`。⇒ 本片断言顺着它写。
+ *    （一调即抛）⇒ 意图视角的窄召回落 `gate_unknown` 回落；**本文件打的 all 视角 068 起按
+ *    Q1 裁决直落收盘档、闸没判 ⇒ 降级标恒 null**。⇒ 本片断言顺着它写（非 null 分支归 068 那份）。
  *    🚫 **MUST NOT** 为了「让实时档出现」去改 provider 档位或塞真 vendor 凭据 —— 那会让这条
  *    冒烟从「契约形状对不对」变成「真行情源通不通」，而后者归 `RUN_MARKETDATA_IT` 那道门。
  *
@@ -48,7 +48,6 @@ import assert from 'node:assert/strict';
 import {
   LegResponsePriceKind,
   LegTableResponsePriceKind,
-  LegTableResponseRealtimeDegrade,
   optionsdeskControllerCreate,
   optionsdeskControllerLegs,
   optionsdeskControllerRemove,
@@ -242,15 +241,14 @@ function assertAsOfGranularity(view: LegTableResponse, today: string, oiDay: str
  *    后者是常态，前者是「我们不知道」。
  */
 function assertDegradeNullableEnum(view: LegTableResponse): void {
-  const kinds = Object.values(LegTableResponseRealtimeDegrade);
-  assert.ok(
-    view.realtimeDegrade !== null && kinds.includes(view.realtimeDegrade),
-    `降级标必须是四值之一的字面量, got ${String(view.realtimeDegrade)}`,
-  );
+  // 068 Q1 起本文件的 all 视角**直落收盘档、闸根本没判** ⇒ 降级标恒真 null（键在、值 null，
+  // 不是缺字段）。非 null 分支（gate_unknown 字面量取生成常量）随窄召回移到意图视角 ——
+  // 判据在 `068-two-stage-recall.contract.ts` 的 rent 那一份。
+  assert.ok('realtimeDegrade' in view, '降级标键不见了 —— undefined 被序列化吞掉');
   assert.equal(
     view.realtimeDegrade,
-    LegTableResponseRealtimeDegrade.gate_unknown,
-    '两闸在 mock 档下判不出时段 ⇒ 应如实标 gate_unknown（🚫 不是 source_unavailable：外呼压根没发出去）',
+    null,
+    '068 起全腿视角实时开态直落收盘档（Q1 裁决）⇒ 降级标 MUST 真 null',
   );
 }
 

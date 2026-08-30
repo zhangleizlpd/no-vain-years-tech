@@ -96,6 +96,13 @@ export interface LegChainRow extends RecallLegInput {
   readonly askSize: number | null;
   readonly delta: number | null;
   /**
+   * 068 带标 (呈现语义, ADR-0068 P2): 同批实时 Δ 落意图带 ⇒ `'in'` (执行目标), 未落 ⇒ `'out'`
+   * (带外横档, 保留供比价)。离线档 / 实时 Δ 缺失 ⇒ `null`。
+   * 🚨 只描述不筛选 —— 成员判定单点在 `leg-recall.rules.ts`, 带标在判腿**之后**打。
+   */
+  readonly bandStatus: 'in' | 'out' | null;
+
+  /**
    * 隐含波动率, vendor 原样的**百分数** (`25.5` = 25.5%)。055 平值 IV 期限结构曲线的输入。
    *
    * 🚨 **🚫 MUST NOT 在任何一层再 ×100** —— 落库时就不做二次换算 (`schema.prisma`:「换算一次

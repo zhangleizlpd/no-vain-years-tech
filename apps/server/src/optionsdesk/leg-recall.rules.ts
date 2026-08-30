@@ -343,6 +343,15 @@ export function passesLivenessMin(
 }
 
 /**
+ * 成色锚定轴 `axis = min(spot, W)` 的**全仓唯一落点** (067 SC-003 机器判据承接, 068 T001 抽出):
+ * {@link resolveQualityCeiling} 与实时 K-梯形窗的收租帽 (068 FR-003) 共同消费。
+ * 🚫 各消费点 MUST NOT 自写 `Decimal.min(spot, w)` —— `rg "Decimal\.min"` 仍恰好本处一命中。
+ */
+export function resolveCeilingAxis(spot: Prisma.Decimal, w: Prisma.Decimal): Prisma.Decimal {
+  return Prisma.Decimal.min(spot, w);
+}
+
+/**
  * 收租**成色上界** (052 FR-005, 067 起换轴): 「axis 之上最近一档行权价」与 `axis × (1+X)`
  * **取严**, 其中 **`axis = min(spot, W)`** (067 FR-001, ADR-0068 P1)。`O(n)`。
  *
@@ -350,9 +359,9 @@ export function passesLivenessMin(
  * (`W_COEFFICIENT` × 有效 V) 定义, spot 显著高于 W 时按 spot 锚定会把「按高于愿买价接货」的
  * 腿放进默认候选。spot ≤ W 时 axis 退化为 spot, 与换轴前逐值相同 (state_branch 1/2)。
  *
- * 🚨 **axis 的 `min` 全仓恰好出现在本函数这一处** (067 SC-003 机器判据): 调用前算好传入会让
- * `min` 散在各构造点, 单点性靠纪律不靠结构 (plan D1 备选否决 ①)。形状与取严逻辑不变, 仅换轴
- * (FR-001 末句)。
+ * 🚨 **axis 的 `min` 全仓恰好出现在 {@link resolveCeilingAxis} 一处** (067 SC-003 机器判据,
+ * 068 T001 抽出供实时窗收租帽共用): 调用前算好传入会让 `min` 散在各构造点, 单点性靠纪律不靠
+ * 结构 (plan D1 备选否决 ①)。形状与取严逻辑不变, 仅换轴 (FR-001 末句)。
  *
  * 两项都要, 缺一不可:
  * · 结构项 `min{K ≥ axis}` 是成色的定义 —— 收租卖的是租金, 不是折价接货, 至多轻微实值一档。
@@ -376,7 +385,7 @@ export function resolveQualityCeiling(
   w: Prisma.Decimal,
   legs: readonly RecallLegInput[],
 ): Prisma.Decimal {
-  const axis = Prisma.Decimal.min(spot, w);
+  const axis = resolveCeilingAxis(spot, w);
   const ratioCeiling = axis.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
   let structural: Prisma.Decimal | null = null;
   for (const leg of legs) {

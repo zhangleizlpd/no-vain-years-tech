@@ -449,6 +449,7 @@ function makeLegTable(
       // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
       // `as const` 与同数组里的 `tier` 同理 —— 这个数组没有上下文类型, 不钉住会宽成 string。
       priceKind: 'eod_close' as const,
+      bandStatus: null,
     },
   ];
   return {
