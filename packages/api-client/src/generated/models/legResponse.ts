@@ -73,4 +73,6 @@ export interface LegResponse {
   priceKind: LegResponsePriceKind;
   /** 068 带标 (呈现语义): in = 同批实时 Δ 落意图带 (执行目标) / out = 带外横档 (保留供比价)。离线档 / 实时 Δ 缺失 ⇒ null。🚨 只描述不筛选 —— 客户端 MUST NOT 拿它当过滤器隐藏行, 带外横档的存在就是它的功能 (比价) */
   bandStatus: LegResponseBandStatus;
+  /** 071 宽价差机会标: 这条腿是从相对价差维度的**机会支**进来的 —— 市场很宽 (相对价差 > 系统默认上界) 但按 bid 卖出仍达收租 good 档年化。🚨 它是**机会标不是风险标** —— 呈现 MUST NOT 做成劝阻式告警 (不降灰 / 不折叠 / 不沉底); 同一行的 relativeSpread 与 bid/ask 三列就是它的证据面。🚨 判据在服务端召回层单点 (isWideSpreadOpportunity) —— 客户端 MUST NOT 由 relativeSpread 与档界自推 (同一判据两处各一份, 两边都算得出布尔、都不会红)。📌 收租视角以外恒 false (机会支收租限定); 与 bandStatus 各自独立、可同时成立 */
+  wideSpreadOpportunity: boolean;
 }

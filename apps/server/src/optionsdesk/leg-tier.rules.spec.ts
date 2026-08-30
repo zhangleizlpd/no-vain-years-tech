@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
-import { LEG_TIERS, TIER_FLOORS_BY_BASIS, classifyLegTier, tierBands } from './leg-tier.rules';
+import {
+  LEG_TIERS,
+  TIER_FLOORS_BY_BASIS,
+  classifyLegTier,
+  tierBands,
+  tierFloor,
+} from './leg-tier.rules';
 
 // 全部费率入参一律**小数比例**量纲 (0.15 = 15%), 与 anchor.rules.ts 的 POSITION_CAP_BY_L_LEVEL 同口径。
 // 六个边界真值 (plan D-SOT-1): 年化 15 / 10 / 5%, 周化 2 / 1 / 0.6%。
@@ -156,5 +162,23 @@ describe('leg-tier.rules — 边界外与退化输入', () => {
     for (const rate of ['0.5', '0.15', '0.1', '0.05', '0']) {
       expect(LEG_TIERS).toContain(classifyLegTier(rate, 'annualized', null).tier);
     }
+  });
+});
+
+describe('leg-tier.rules — 071 T001 档界查表单点 (tierFloor)', () => {
+  it('两口径三档逐值 = 档表本尊 (同一实例, 不是等值副本)', () => {
+    for (const basis of ['annualized', 'weekly'] as const) {
+      for (const band of TIER_FLOORS_BY_BASIS[basis]) {
+        expect(tierFloor(basis, band.tier)).toBe(band.floor);
+      }
+    }
+  });
+
+  it('🚨 口径不可互串: 同一档在两口径上取值不同 —— 传错 basis 必须换来另一个数而不是同一个', () => {
+    expect(tierFloor('annualized', 'good').equals(tierFloor('weekly', 'good'))).toBe(false);
+  });
+
+  it('🚫 未知档抛错不回落 —— 回落会让「配置写错」表现为「阈值悄悄变了」', () => {
+    expect(() => tierFloor('annualized', 'nope' as never)).toThrow(/unknown annualized tier/);
   });
 });

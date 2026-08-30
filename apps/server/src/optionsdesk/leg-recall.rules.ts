@@ -1,6 +1,8 @@
 import { Prisma } from '../generated/prisma/client';
 import type { PriceKind } from '../marketdata/marketdata.types';
+import { computeLegRates } from './leg-derive.rules';
 import { LEG_TABS, type LegTab } from './leg-tab.rules';
+import { tierFloor, type LegTierWithFloor } from './leg-tier.rules';
 
 /**
  * 050 optionsdesk **召回层**判据纯函数 (ADR-0043 §4, plan D-RECALL-1)。无 I/O、无 DI。
@@ -327,6 +329,58 @@ export function passesRelativeSpreadMax(
 }
 
 /**
+ * 071 宽价差机会闸的档界档位 (FR-002): **收租年化 good 档**。
+ *
+ * 🚨 **它是 `leg-tier.rules.ts` 档表的引用, 不是一个新阈值** —— 全仓零新增数值字面量, 策略 SoT
+ * 改档界本闸自动跟随。🚫 MUST NOT 写成 `new Prisma.Decimal('0.15')`: 那会当场撞
+ * `check-optionsdesk-rule-constants` 的档界子串扫描 (守门脚本认值不认名)。
+ *
+ * 🚨 **🚫 MUST NOT 改用行军 φ 的可配置旋钮** (`optionsdeskConfig.marchPhiTier`): 召回**成员集**
+ * 若随 server 配置变,「今天候选为什么少了三十条」的答案就变成「有人改了环境变量」, 而候选表
+ * 照样渲染得出来。φ 是再投资率旋钮 (「多担这段时间挣不挣得够」), 本闸是质量下限 (「砸 bid 也
+ * 达档吗」) —— 两个问题恰好同源于一张档表, 不是同一个旋钮。
+ */
+export const WIDE_SPREAD_OPPORTUNITY_TIER: LegTierWithFloor = 'good';
+
+/** 机会支的 bid 年化下限 —— {@link WIDE_SPREAD_OPPORTUNITY_TIER} 在年化口径上的档界。 */
+export const WIDE_SPREAD_OPPORTUNITY_FLOOR = tierFloor('annualized', WIDE_SPREAD_OPPORTUNITY_TIER);
+
+/**
+ * 071 **宽价差机会支** (FR-002 / FR-004): 按 `bid` 卖出即达收租 good 档 ⇒ 这条腿值得看,
+ * 哪怕市场很宽。`O(1)`。
+ *
+ * 它是相对价差维度的**第二条通过路径**, 与主支 ({@link passesRelativeSpreadMax}) 在
+ * {@link failsCriterion} 处 OR 合成 —— 形态同 {@link passesLivenessMin} 的「OI 或当日成交」:
+ * 一个维度、两条支撑。🚫 **MUST NOT 做成第七个检索维度**: `RETRIEVAL_CRITERION_KEYS` 是
+ * 「有控件、可覆盖」的穷举清单, 加键就是加抽屉控件 + 三态 + 边际计数, 而本闸没有控件也不该有
+ * (系统对「什么算机会」的固定判断)。
+ *
+ * 🚨 **本谓词只答「机会成不成立」, 不答「点差过不过」** —— 两支各自纯粹, 合成在维度判定处一处
+ * 完成。这样成员判据 (主支 ∨ 机会支) 与标的判据 (主支不过 ∧ 机会支成立) 读的是同两个布尔,
+ * 不会各算一份。
+ *
+ * 🚫 **无 `bid` 判 `false`, MUST NOT 拿 0 顶** (同 {@link passesPremiumMin} 的纪律): 「不知道」
+ * 与「知道且很低」处置同归、路径必须不同。费率恒经 `leg-derive.rules.ts` 的 `computeLegRates`
+ * 单点 (ADR-0064 不变量 ③), 🚫 本文件 MUST NOT 手写 `P/(K−P)`。
+ *
+ * 📌 **标定 (2026-08-31, 109 只 us 锚 / `2026-08-28` 收盘全量)**: 捡漏池 (仅因主支出局的收租腿)
+ * 1121 条, bid 年化 p50 仅 2.9% ⇒ 池子本身以噪声为主; 过 good 档的 78 条才是机会面
+ * (`us:PCG K=16.5 DTE 35` 年化 39.4% / OI 301)。08-29 对焦另拟的 `abs_spread` 下限**已否决**:
+ * 年化闸一上它在 `$0.30` 之前零筛除 ⇒ 两个旋钮坍缩成一个, 留着就是一个标不出谷底的旋钮。
+ */
+export function isWideSpreadOpportunity(leg: RecallLegInput): boolean {
+  // 🚨 **算不出相对价差 ⇒ 机会支不成立** (FR-004): 缺 `ask` 时「市场有多宽」根本无从谈起,
+  // 而本支的整句话是「市场**很宽**但 bid 仍够厚」—— 少了前半句它就变成一条无条件的权利金
+  // 逃生舱, 会把所有单边报价的厚腿放进意图 Tab。主支对该形态的 fail-closed 纪律
+  // ({@link passesRelativeSpreadMax}) MUST 原样成立: 没有卖价就无法确认这条腿挂得出去。
+  if (relativeSpread(leg.bid, leg.ask) === null) return false;
+  if (leg.bid === null) return false;
+  const rates = computeLegRates({ strike: leg.strike, premium: leg.bid, dteDays: leg.dteDays });
+  if (rates === null) return false;
+  return rates.annualizedRate.greaterThanOrEqualTo(WIDE_SPREAD_OPPORTUNITY_FLOOR);
+}
+
+/**
  * 有效成本硬判据 (FR-004): 被指派后的持仓成本 `K − bid` **严格低于**当前 spot。`O(1)`。
  *
  * 严格小于而非 `≤`: 成本持平时「用 put 代替直接买」没有任何优势, 只多出被指派的不确定性。
@@ -597,6 +651,7 @@ export function defaultCriteriaByTab(
  * 算变成运行时才知道的事。
  */
 function failsCriterion(
+  tab: LegTab,
   key: RetrievalCriterionKey,
   criteria: RetrievalCriteria,
   leg: RecallLegInput,
@@ -616,9 +671,13 @@ function failsCriterion(
         !passesLivenessMin(leg.openInterest, leg.volume, criteria.livenessMin)
       );
     case 'relativeSpreadMax':
+      // 071 FR-001: 一个维度、两条支撑 —— 主支 (点差上界) 不过时机会支接管 (收租限定,
+      // {@link isWideSpreadOpportunity})。🚨 `tab` 必须入参: 靠调用方守约「只在收租传」等于
+      // 把「哪个视角能捡漏」变成运行时才知道的事, 而建仓表照样渲染得出来 (FR-003)。
       return (
         criteria.relativeSpreadMax !== null &&
-        !passesRelativeSpreadMax(leg.bid, leg.ask, criteria.relativeSpreadMax)
+        !passesRelativeSpreadMax(leg.bid, leg.ask, criteria.relativeSpreadMax) &&
+        !(tab === 'rent' && isWideSpreadOpportunity(leg))
       );
   }
 }
@@ -628,12 +687,16 @@ function failsCriterion(
  *
  * 🚨 **返回集合而不是布尔**: 计数要的是「仅因这一个维度出局」(边际口径), 一个布尔答不了
  * 「是不是只差这一条」。候选集归属与六个维度的计数由它**一次求值**同源派生。
+ *
+ * 🚨 **071 起吃 `tab`**: 点差维度的机会支只作用收租 (FR-003), 而维度判据 MUST 自己封死值域 ——
+ * 同 `leg-mark.rules.ts` 的 `isRecommended` 那条「纯函数不依赖调用方守约」纪律。
  */
 export function failedCriteria(
+  tab: LegTab,
   criteria: RetrievalCriteria,
   leg: RecallLegInput,
 ): RetrievalCriterionKey[] {
-  return RETRIEVAL_CRITERION_KEYS.filter((key) => failsCriterion(key, criteria, leg));
+  return RETRIEVAL_CRITERION_KEYS.filter((key) => failsCriterion(tab, key, criteria, leg));
 }
 
 /**
@@ -642,13 +705,15 @@ export function failedCriteria(
  *
  * 🚨 **住本文件是成员判据单点纪律的要求** (052 FR-003, 守卫 #7 机器强制): 判定用的就是
  * {@link failedCriteria} 本尊 —— 在召回层之外调它 = 第二个成员判定点; 交叉报价的负点差在
- * 点差闸恒放行 ⇒ 不会被点差维误排, 六维整套跑是安全的。
+ * 点差闸恒放行 ⇒ 不会被点差维误排, 六维整套跑是安全的 (071 的机会支同理够不到: 主支恒过 ⇒
+ * 第二支结构上不参与判定)。`tab` 随 071 入参, 调用点传 `'rent'` —— 审计作用域本就是收租成员。
  */
 export function crossedRemovalsWithinCriteria<T extends RecallLegInput>(
+  tab: LegTab,
   criteria: RetrievalCriteria,
   removed: readonly T[],
 ): readonly T[] {
-  return removed.filter((leg) => failedCriteria(criteria, leg).length === 0);
+  return removed.filter((leg) => failedCriteria(tab, criteria, leg).length === 0);
 }
 
 /**
@@ -666,6 +731,17 @@ export interface RecallCandidate<T extends RecallLegInput> {
   readonly leg: T;
   /** 非空, 且恒为请求视角的子集。 */
   readonly tabs: readonly LegTab[];
+  /**
+   * 071 **宽价差机会标** (FR-005 / FR-006): 这条腿是从点差维度的**机会支**进来的 ——
+   * 市场很宽 (`rel > 系统默认上界`) 但按 `bid` 卖出仍达收租 good 档。
+   *
+   * 🚨 **判据取「系统默认值下的主支」不过, 而不是「本次实际被挡下」** (FR-006): 用户把点差
+   * 上界覆盖成「不限」时主支恒过 ⇒ 按实际口径写这个标会当场消失, 而那还是同一条腿 —— 标会
+   * 随控件闪烁, 且闪烁看着完全合理。成员判定照旧按 `effective` 走, 两者读同一个
+   * {@link passesRelativeSpreadMax}, 不新增第三个谓词。
+   * 📌 建仓 / 全腿视角恒 `false` (机会支收租限定, FR-003)。
+   */
+  readonly wideSpreadOpportunity: boolean;
 }
 
 /** 召回层的产出: 候选集 + 两道门槛各自挡下多少条 (FR-008 / 051 FR-006a 两个计数的数据源)。 */
@@ -782,7 +858,13 @@ export function recallCandidates<T extends RecallLegInput>(
   const pass: RecallPass = { chain, requested, defaults, effective, overridden };
   for (const leg of guardedLegs) {
     const verdict = evaluateLeg(pass, leg);
-    if (verdict.tabs.length > 0) candidates.push({ leg, tabs: verdict.tabs });
+    if (verdict.tabs.length > 0) {
+      candidates.push({
+        leg,
+        tabs: verdict.tabs,
+        wideSpreadOpportunity: verdict.wideSpreadOpportunity,
+      });
+    }
     if (verdict.premiumBlockedEverywhere) removedByPremiumFloor += 1;
     for (const hit of verdict.marginalHits) excludedByCriterion[hit.tab][hit.key] += 1;
     // 🚨 标量与两个分视角数在**同一次求值**上累加: 标量按「非空」加 1, 分视角按「里面的每个
@@ -829,6 +911,8 @@ interface LegVerdict {
   readonly premiumBlockedEverywhere: boolean;
   /** 052 边际计数命中的 (视角, 维度) 对。 */
   readonly marginalHits: readonly { readonly tab: LegTab; readonly key: RetrievalCriterionKey }[];
+  /** 071 宽价差机会标 —— 语义见 {@link RecallCandidate.wideSpreadOpportunity}。 */
+  readonly wideSpreadOpportunity: boolean;
 }
 
 /**
@@ -843,9 +927,21 @@ function evaluateLeg(pass: RecallPass, leg: RecallLegInput): LegVerdict {
   const marginalHits: { tab: LegTab; key: RetrievalCriterionKey }[] = [];
   let evaluatedTabs = 0;
   let premiumBlockedTabs = 0;
+  let wideSpreadOpportunity = false;
 
   for (const tab of LEG_TABS) {
     if (!pass.requested.has(tab)) continue;
+    // 071 FR-006: 标按**系统默认值下**的主支判 —— 见 `RecallCandidate.wideSpreadOpportunity`。
+    // 放在成员判定之前算: 它描述的是「这条腿是怎么进来的」, 与它这次进没进来是两件事。
+    const systemMax = pass.defaults[tab].relativeSpreadMax;
+    if (
+      tab === 'rent' &&
+      systemMax !== null &&
+      !passesRelativeSpreadMax(leg.bid, leg.ask, systemMax) &&
+      isWideSpreadOpportunity(leg)
+    ) {
+      wideSpreadOpportunity = true;
+    }
     const verdict = evaluateTab(tab, pass.chain, pass.effective[tab], leg);
     evaluatedTabs += 1;
     if (verdict.premiumBlocked) premiumBlockedTabs += 1;
@@ -860,7 +956,7 @@ function evaluateLeg(pass: RecallPass, leg: RecallLegInput): LegVerdict {
     // 051 的流动性数与是否被用户覆盖无关; 052 的边际计数只数**用户覆盖过**且默认值下放行的维度
     // (否则把这一维换回默认它仍进不来 ⇒ 「当前条件之外还有它」不成立)。
     if (key === 'relativeSpreadMax' && tab !== 'all') excludedByLiquidity.push(tab);
-    if (pass.overridden[tab].has(key) && !failsCriterion(key, pass.defaults[tab], leg)) {
+    if (pass.overridden[tab].has(key) && !failsCriterion(tab, key, pass.defaults[tab], leg)) {
       marginalHits.push({ tab, key });
     }
   }
@@ -870,6 +966,7 @@ function evaluateLeg(pass: RecallPass, leg: RecallLegInput): LegVerdict {
     excludedByLiquidity,
     premiumBlockedEverywhere: evaluatedTabs > 0 && premiumBlockedTabs === evaluatedTabs,
     marginalHits,
+    wideSpreadOpportunity,
   };
 }
 
@@ -893,7 +990,7 @@ function evaluateTab(
   criteria: RetrievalCriteria,
   leg: RecallLegInput,
 ): LegTabVerdict {
-  const failed = failedCriteria(criteria, leg);
+  const failed = failedCriteria(tab, criteria, leg);
   const hard = passesHardGates(tab, chain, leg);
   return {
     passes: hard && failed.length === 0,

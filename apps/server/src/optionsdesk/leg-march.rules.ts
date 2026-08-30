@@ -1,13 +1,13 @@
 import { Prisma } from '../generated/prisma/client';
 import { marchEvidence, type MarchAuditEntry, type NetChainNode } from './leg-fwd-chain.rules';
-import { TIER_FLOORS_BY_BASIS, type LegTierWithFloor } from './leg-tier.rules';
+import { tierFloor, type LegTierWithFloor } from './leg-tier.rules';
 
 /**
  * 069 optionsdesk **精排层**行军选档纯函数 (ADR-0068 决策 4, plan D1)。无 I/O、无 DI。
  * θ 相关层: 消费特征加工层 (`leg-fwd-chain.rules.ts`) 的净链, 产出每 K 三态判决。
  *
  * 🚨 **φ 禁新造数值** (FR-010 / ADR-0064 不变量 ③): φ = 收租年化档界**引用**
- * ({@link resolveMarchPhi} → `leg-tier.rules.ts` `TIER_FLOORS_BY_BASIS.annualized`),
+ * ({@link resolveMarchPhi} → `leg-tier.rules.ts` `tierFloor`, 档表 `TIER_FLOORS_BY_BASIS.annualized`),
  * 「可配置」= 选用哪个档界, 档界数值恰好一处不破。
  *
  * 🚨 **签名无财报入参** (FR-012 结构保证): 段内事件溢价灌在 fwd 里由行军自动伺服 ——
@@ -73,9 +73,7 @@ export type MarchVerdict = (typeof MARCH_VERDICTS)[number];
  * 默认档界 `good` (0.15), 选用哪个档界走 server 配置 (T006 接线; UI 不暴露, clarify Q3)。
  */
 export function resolveMarchPhi(tier: LegTierWithFloor): Prisma.Decimal {
-  const band = TIER_FLOORS_BY_BASIS.annualized.find((b) => b.tier === tier);
-  if (band === undefined) throw new Error(`unknown annualized tier: ${tier}`);
-  return band.floor;
+  return tierFloor('annualized', tier);
 }
 
 /** 一次行军的全部旋钮 —— φ 兼作档界终检下限 (同一档界旋钮的两个消费点)。 */

@@ -61,11 +61,11 @@ updated_at: '2026-08-31'
 
 ### Phase 2 · 读路径与契约
 
-- [ ] T005 [Server] **标透传到行视图**（FR-005, plan §D4; US1）：`get-legs.usecase.ts` 的 `deriveLegs` 逐腿透传 `wideSpreadOpportunity` 到 `LegRowView`，零重算 → verify: `get-legs.usecase.spec.ts` 加达档宽价差 fixture（`G-WIDE-OPP`）断言进收租 Tab 且标为真；既有 `G-WIDE`（不达档）断言逐字保留仍绿
+- [X] T005 [Server] **标透传到行视图**（FR-005, plan §D4; US1）：`get-legs.usecase.ts` 的 `deriveLegs` 逐腿透传 `wideSpreadOpportunity` 到 `LegRowView`，零重算 → verify: `get-legs.usecase.spec.ts` 加达档宽价差 fixture（`G-WIDE-OPP`）断言进收租 Tab 且标为真；既有 `G-WIDE`（不达档）断言逐字保留仍绿
 
-- [ ] T006 [Contract] **DTO + openapi + api-client**（FR-005, plan §D6）：`LegResponse` 加 `wideSpreadOpportunity: boolean`（`@ApiProperty` 显式 `type: 'boolean'`）；`node dist/main.js` 正路导出 openapi；`packages/api-client` regen → verify: `pnpm nx run server:export-openapi` 后 `git diff` 只含该字段；api-client 类型含新字段；typecheck 绿
+- [X] T006 [Contract] **DTO + openapi + api-client**（FR-005, plan §D6）：`LegResponse` 加 `wideSpreadOpportunity: boolean`（`@ApiProperty` 显式 `type: 'boolean'`）；`node dist/main.js` 正路导出 openapi；`packages/api-client` regen → verify: `pnpm nx run server:export-openapi` 后 `git diff` 只含该字段；api-client 类型含新字段；typecheck 绿
 
-- [ ] T007 [Gate] **结构闸词表**（SC-001, plan §D6）：`check-optionsdesk-rule-constants.ts` 的 `MEMBERSHIP_PREDICATE_RE` 加 `isWideSpreadOpportunity`；确认 `RECALL_THRESHOLD_COUNT` 维持 4 → verify: `pnpm tsx scripts/checks/check-optionsdesk-rule-constants.ts` 绿；把谓词调用抄进 `get-legs.usecase.ts` 必红（定向变异后回滚）
+- [X] T007 [Gate] **结构闸词表**（SC-001, plan §D6）：`check-optionsdesk-rule-constants.ts` 的 `MEMBERSHIP_PREDICATE_RE` 加 `isWideSpreadOpportunity`；确认 `RECALL_THRESHOLD_COUNT` 维持 4 → verify: `pnpm tsx scripts/checks/check-optionsdesk-rule-constants.ts` 绿；把谓词调用抄进 `get-legs.usecase.ts` 必红（定向变异后回滚）
 
 ### Phase 3 · 呈现
 
@@ -77,7 +77,7 @@ updated_at: '2026-08-31'
 
 - [ ] T010 [Contract-Smoke] **契约冒烟**（FR-005 / SC-005）：新建 `071-wide-spread.contract.ts`，断言收租响应带标行同时给得出 `bid` / `ask` / `relativeSpread` → verify: 契约冒烟套件绿
 
-- [ ] T011 [Server] **SC-003 回放留档**（SC-003 / SC-004）：用 local-only 取证脚本对 `2026-08-28` 全量复跑，确认候选 852 → 930、推荐 70 → 75、零丢失 → verify: 数字回写 spec §标定实测；与本文 spec 表逐值一致
+- [X] T011 [Server] **SC-003 回放留档**（SC-003 / SC-004）：用 local-only 取证脚本对 `2026-08-28` 全量复跑，确认候选 852 → 930、推荐 70 → 75、零丢失 → verify: 数字回写 spec §标定实测；与本文 spec 表逐值一致
 
 - [ ] T012 [Docs] **ADR-0068 amend + issue 收口**（plan §D6）：§决策 3 加机会支一条（判据 / 档界引用 / 收租限定 / 两档一律）、§7 修订表加行、§后果补 P5；issue #298 四条待办勾掉并注明落点 → verify: 交叉引用可达；`docs/` 相关链接无死链
 
