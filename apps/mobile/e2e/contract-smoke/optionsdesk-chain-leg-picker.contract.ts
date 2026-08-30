@@ -1452,6 +1452,8 @@ function assertLegKeySetClosed(leg: LegResponse): void {
       'ask',
       'askRate',
       'askSize',
+      // 068 FR-009：带标（呈现语义, 离线恒 null）。
+      'bandStatus',
       'basis',
       'bid',
       'bidSize',
