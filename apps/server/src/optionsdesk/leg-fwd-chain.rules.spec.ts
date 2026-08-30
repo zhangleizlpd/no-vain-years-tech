@@ -36,7 +36,7 @@ describe('leg-fwd-chain.rules — fwd 链构造 (T002, FR-005)', () => {
       {
         strike: '52.5',
         legs: [
-          [30, '0.83'],
+          [30, '0.93'],
           [91, '1.92'],
           [152, '2.71'],
         ],
@@ -178,19 +178,19 @@ describe('leg-fwd-chain.rules — 凸包剔劣 + 劣档三类标 (T003, FR-002 /
     // 形态 A: 中段支配档被凸包弹出 ⇒ 类目取 #3 (优先于 #2), 证据 = 权利金对比
     const popped = clean('100', [
       [30, '1.35'],
-      [90, '1.20'],
+      [90, '1.19'],
       [150, '2.80'],
     ]);
     expect(popped.chain.map((n) => n.dteDays)).toEqual([30, 150]);
     expect(popped.audits).toHaveLength(1);
     expect(popped.audits[0].category).toBe('absolute_dominated');
     expect(popped.audits[0].dteDays).toBe(90);
-    expect(popped.audits[0].evidence.premium?.equals(D('1.20'))).toBe(true);
+    expect(popped.audits[0].evidence.premium?.equals(D('1.19'))).toBe(true);
     expect(popped.audits[0].evidence.premiumShorter?.equals(D('1.35'))).toBe(true);
     // 形态 B: 链尾支配档无「出」不可弹 ⇒ 留在净链 (只标不删), 同样恰一条 #3
     const tail = clean('100', [
       [30, '1.35'],
-      [90, '1.20'],
+      [90, '1.19'],
     ]);
     expect(tail.chain.map((n) => n.dteDays)).toEqual([30, 90]);
     expect(tail.chain[1].fwd.isNegative()).toBe(true);
