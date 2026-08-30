@@ -980,6 +980,7 @@ function emptyLegTable(): LegTableView {
   return {
     symbol: 'us:AOS',
     perspective: 'all',
+    march: null,
     state: 'chain_not_ready',
     asOf: null,
     // 064: 空壳一个实时值都没取到 ⇒ 恒收盘档 (本 fixture 只验通道层, 档位判据归 use case)。

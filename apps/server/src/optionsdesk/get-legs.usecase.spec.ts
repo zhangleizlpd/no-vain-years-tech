@@ -198,7 +198,10 @@ function makeUseCase(
   calendar: ReturnType<typeof tradingCalendar> = tradingCalendar(),
 ) {
   const service = prisma as unknown as PrismaService;
-  return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service), calendar);
+  return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service), calendar, {
+    marchPhiTier: 'good',
+    marchMode: 'phi',
+  });
 }
 
 describe('get-legs.usecase — 全量适格腿, 零分页零截断 (FR-005/008, Guardrail 7)', () => {
@@ -1235,15 +1238,13 @@ describe('get-legs.usecase — 表达层截断与三个计数 (053 T002)', () =>
 
     // 🚨 **必须带覆盖** —— 无覆盖时实现直接短路, 「只查一次」是平凡真; 只有第二趟判定真的
     // 跑起来, 这条断言才在守「第二次判定用的是同一批已在内存的行」。
-    const view = await new GetLegsUseCase(service, adapter, tradingCalendar()).execute(
-      SYMBOL,
-      'rent',
-      NOW,
-      {
-        perspective: 'rent',
-        criteria: { dteBand: { min: 1, max: 50 } },
-      },
-    );
+    const view = await new GetLegsUseCase(service, adapter, tradingCalendar(), {
+      marchPhiTier: 'good',
+      marchMode: 'phi',
+    }).execute(SYMBOL, 'rent', NOW, {
+      perspective: 'rent',
+      criteria: { dteBand: { min: 1, max: 50 } },
+    });
 
     expect(view.memberCount).toBeGreaterThan(view.matchedCount);
     expect(retrieveSpy).toHaveBeenCalledTimes(1);

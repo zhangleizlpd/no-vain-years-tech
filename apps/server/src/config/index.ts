@@ -24,4 +24,5 @@ export {
   type MarketdataConfig,
   type MarketdataSyncConfig,
 } from './marketdata.config.js';
+export { optionsdeskConfig, type OptionsdeskConfig } from './optionsdesk.config.js';
 export { parseOrigins } from './parse-origins.js';

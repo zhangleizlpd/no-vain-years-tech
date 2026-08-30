@@ -72,6 +72,7 @@ describe('050 T005 召回集合 (Testcontainers PG, 成员逐条相等)', () => 
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
+      { marchPhiTier: 'good', marchMode: 'phi' },
     );
   }, 180_000);
 

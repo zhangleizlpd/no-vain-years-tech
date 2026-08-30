@@ -11,6 +11,7 @@ import {
   RENT_RECALL_DTE,
   RETRIEVAL_CRITERION_KEYS,
   defaultCriteriaByTab,
+  crossedRemovalsWithinCriteria,
   failedCriteria,
   isCrossedQuote,
   passesEffectiveCostGate,
@@ -885,6 +886,15 @@ describe('leg-recall.rules — 069 报价护栏全域前置 (FR-001)', () => {
     const outcome = recall([crossed]);
     expect(outcome.candidates).toEqual([]);
     expect(outcome.removedByCrossedQuote).toEqual([crossed]);
+  });
+
+  it('⑤ 审计作用域: 剔除腿按六维单点复判 —— 本会入围的留痕, 本就进不来的不冒充 (FR-014)', () => {
+    const criteria = defaultCriteriaByTab(chain).rent;
+    const wouldBeMember = leg({ bid: D('2.1'), ask: D('2') });
+    const outOfBand = leg({ dteDays: 400, bid: D('2.1'), ask: D('2') });
+    expect(crossedRemovalsWithinCriteria(criteria, [wouldBeMember, outOfBand])).toEqual([
+      wouldBeMember,
+    ]);
   });
 
   it('④ 建仓视角同样剔除 (意图无关数据质量闸) —— 交叉腿连全腿 Tab 也不可见', () => {

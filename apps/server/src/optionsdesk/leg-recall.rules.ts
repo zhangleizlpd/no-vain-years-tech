@@ -613,6 +613,21 @@ export function failedCriteria(
 }
 
 /**
+ * 069: 护栏剔除腿中「若非交叉本会通过该套条件」的那批 —— 每 K 审计条目 #1 的作用域判定
+ * (FR-001 / FR-014: 审计只为「本会是成员」的剔除腿留痕, 带外垃圾不冒充收租档)。`O(n)`。
+ *
+ * 🚨 **住本文件是成员判据单点纪律的要求** (052 FR-003, 守卫 #7 机器强制): 判定用的就是
+ * {@link failedCriteria} 本尊 —— 在召回层之外调它 = 第二个成员判定点; 交叉报价的负点差在
+ * 点差闸恒放行 ⇒ 不会被点差维误排, 六维整套跑是安全的。
+ */
+export function crossedRemovalsWithinCriteria<T extends RecallLegInput>(
+  criteria: RetrievalCriteria,
+  removed: readonly T[],
+): readonly T[] {
+  return removed.filter((leg) => failedCriteria(criteria, leg).length === 0);
+}
+
+/**
  * 该视角的**硬门槛** (FR-002: 无控件、不可调)。`O(1)`。
  *
  * 本片只有一条: 建仓的有效成本。全腿与收租无硬门槛 —— 收租的成色是**检索条件**不是硬门槛

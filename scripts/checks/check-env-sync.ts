@@ -89,6 +89,10 @@ const ALLOWLIST = new Set([
   // (ALIYUN_ACCESS_KEY_ID/SECRET/SIGN_NAME/TEMPLATE_CODE 已在 .env.example。)
   'RUN_SMS_IT',
   'SMS_IT_PHONE',
+  // 069 行军选档策略旋钮 (optionsdesk.config.ts): 有 schema 默认 (good / phi), UI 不暴露,
+  // prod 走默认 ⇒ optional 归 ALLOWLIST 不进 .env.example (默认值真相在 .config.ts)。
+  'OPTIONSDESK_MARCH_PHI_TIER',
+  'OPTIONSDESK_MARCH_MODE',
   // Expo build-time public var (apps/mobile/src/core/api/setup.ts). EXPO_PUBLIC_*
   // is an Expo framework prefix baked into the web bundle at export; mobile has
   // no server-style .env/.env.example pair, so it is declared here.
