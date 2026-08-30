@@ -20,6 +20,7 @@ import {
   passesRelativeSpreadMax,
   recallCandidates,
   relativeSpread,
+  resolveCeilingAxis,
   resolvePremiumFloor,
   resolveQualityCeiling,
   type LegIntentTab,
@@ -832,5 +833,25 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
       state: 'widened',
       excludedCount: 0,
     });
+  });
+});
+
+describe('leg-recall.rules — 068 T001 axis 单点抽取 (FR-003 前置)', () => {
+  const strikes = (values: string[]) => values.map((v) => leg({ strike: D(v) }));
+
+  it('resolveCeilingAxis 三分支逐值: spot < w ⇒ spot / spot = w ⇒ 等值 / spot > w ⇒ w', () => {
+    expect(resolveCeilingAxis(D('100'), D('120')).toString()).toBe('100');
+    expect(resolveCeilingAxis(D('100'), D('100')).toString()).toBe('100');
+    expect(resolveCeilingAxis(D('100'), D('80')).toString()).toBe('80');
+  });
+
+  it('resolveQualityCeiling 恒等消费 axis: (spot, w) 与 (axis, axis) 逐值相同 (重构等价性)', () => {
+    const spot = D('100');
+    const w = D('80');
+    const axis = resolveCeilingAxis(spot, w);
+    const legs = strikes(['75', '82', '90', '103', '110']);
+    expect(resolveQualityCeiling(spot, w, legs).toString()).toBe(
+      resolveQualityCeiling(axis, axis, legs).toString(),
+    );
   });
 });
