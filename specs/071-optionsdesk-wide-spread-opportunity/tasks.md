@@ -69,7 +69,7 @@ updated_at: '2026-08-31'
 
 ### Phase 3 · 呈现
 
-- [ ] T008 [Mobile] **行内微标**（FR-010 / FR-011, plan §D7; US1）：`LegStickyBadge` 加 `'wide'`（`border-tag-teal`）、`optionsdesk-copy.ts` 加 `wideSpreadBadge: '宽'`、`leg-row.rules.ts` 加 `legRowWideSpread`、`leg-row.tsx` 复用既有 badge 载体渲染 → verify: `pnpm nx test mobile --testPathPattern=leg-row.rules.spec` + `leg-picker-copy.spec`（描边不撞 fit / brand / quote 红绿；safelist 含新 class）；变异（判据改读 `relativeSpread` 自推）在 rules spec 必红
+- [X] T008 [Mobile] **行内微标**（FR-010 / FR-011, plan §D7; US1）：`LegStickyBadge` 加 `'wide'`（`border-tag-teal`）、`optionsdesk-copy.ts` 加 `wideSpreadBadge: '宽'`、`leg-row.rules.ts` 加 `legRowWideSpread`、`leg-row.tsx` 复用既有 badge 载体渲染 → verify: `pnpm nx test mobile --testPathPattern=leg-row.rules.spec` + `leg-picker-copy.spec`（描边不撞 fit / brand / quote 红绿；safelist 含新 class）；变异（判据改读 `relativeSpread` 自推）在 rules spec 必红
 
 ### Phase 4 · 集成与验收
 

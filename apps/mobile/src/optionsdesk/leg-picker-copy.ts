@@ -129,7 +129,7 @@ export function legRateCell(
  * 📌 `eod` 是 064 的行级档位标 —— **复用这套既有载体**，🚫 不新建组件、🚫 不新开一列
  *    （mockup overflow 探针实证：挂进 bid/ask 列会把报价块顶出 7px）。
  */
-export type LegStickyBadge = 'fit' | 'monthly' | 'eod' | 'band' | 'march' | 'inferior';
+export type LegStickyBadge = 'fit' | 'monthly' | 'eod' | 'band' | 'march' | 'inferior' | 'wide';
 
 /**
  * 两个标的**共用载体**（FR-014b）—— 8px 描边短文字标。两者只在描边色上分权重，
@@ -155,6 +155,10 @@ export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> =
   march: 'border-brand-400',
   // 069 劣档微标（凹/陈/并）：中性弱描边 —— 「报价几何有问题」是参照不是告警，权重同带外。
   inferior: 'border-line',
+  // 071 宽价差机会标：tag-teal 描边 —— 蓄意避开三处。① quote 红绿（它不是涨跌）；
+  // ② `fit` 的 tag-purple（贴合说 Δ，本标说「怎么进来的」，两标可同现于一行，撞色就分不出）；
+  // ③ brand（推荐章是本行唯一允许抬权重的标，稀释它等于把「荐」讲小了）。
+  wide: 'border-tag-teal',
 };
 
 /**

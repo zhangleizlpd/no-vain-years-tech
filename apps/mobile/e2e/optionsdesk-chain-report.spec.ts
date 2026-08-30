@@ -450,6 +450,7 @@ function makeLegTable(
       // `as const` 与同数组里的 `tier` 同理 —— 这个数组没有上下文类型, 不钉住会宽成 string。
       priceKind: 'eod_close' as const,
       bandStatus: null,
+      wideSpreadOpportunity: false,
     },
   ];
   return {

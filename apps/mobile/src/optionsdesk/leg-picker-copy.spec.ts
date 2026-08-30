@@ -66,6 +66,7 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     // 064 `FR-009`: 逐行档位。夹具默认收盘档 —— 实时档的呈现分支由 T008 各自的用例喂。
     priceKind: 'eod_close',
     bandStatus: null,
+    wideSpreadOpportunity: false,
     ...overrides,
   };
 }
@@ -321,6 +322,19 @@ describe('🚨 051 FR-014b —— 推荐标与月度链标**同载体、以视�
       expect(label).toMatch(/^[一-龥]+$/u);
     }
     expect(COPY.fitBadge).not.toBe(COPY.monthlyBadge);
+  });
+
+  it('🚨 071 —— 宽价差机会标与另外三个可同现的标**互不撞色**（撞了就分不出哪枚在说什么）', () => {
+    // 一行上可同时出现: 贴合(fit, Δ 落带) / 荐(march, 期限胜出) / 宽(wide, 怎么进来的)。
+    // 三者语义正交 ⇒ 描边必须两两不同; `wide` 另 MUST NOT 落 quote 涨跌色（它不是涨跌）。
+    for (const other of ['fit', 'march'] as const) {
+      expect(LEG_STICKY_BADGE_BORDER.wide).not.toBe(LEG_STICKY_BADGE_BORDER[other]);
+    }
+    expect(LEG_STICKY_BADGE_BORDER.wide).not.toMatch(/\bquote-(up|down)\b/);
+    // 机会标不是告警 ⇒ 不许落 err / warn 色。
+    expect(LEG_STICKY_BADGE_BORDER.wide).not.toMatch(/\b(err|warn)\b/);
+    // 文案是认得出来的汉字（同月度链标那条 mockup 实证纪律）。
+    expect(COPY.wideSpreadBadge).toMatch(/^[一-龥]+$/u);
   });
 
   it('🚨 FR-011a —— 推荐标 MUST NOT 用 success / 绿系（会被读成「建议买入」）', () => {

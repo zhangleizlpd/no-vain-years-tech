@@ -299,6 +299,7 @@ const DEFAULT_BOOK: readonly CanonicalLeg[] = [
       // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
       priceKind: 'eod_close',
       bandStatus: null,
+      wideSpreadOpportunity: false,
     },
   },
   {
@@ -334,6 +335,7 @@ const DEFAULT_BOOK: readonly CanonicalLeg[] = [
       // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
       priceKind: 'eod_close',
       bandStatus: null,
+      wideSpreadOpportunity: false,
     },
   },
 ];

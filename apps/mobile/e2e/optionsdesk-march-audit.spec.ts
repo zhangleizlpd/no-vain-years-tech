@@ -167,6 +167,7 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike'> = {
   greeksComplete: true,
   priceKind: 'realtime',
   bandStatus: 'in',
+  wideSpreadOpportunity: false,
 };
 
 function leg(code: string, strike: string, over: Partial<LegResponse> = {}): LegResponse {
