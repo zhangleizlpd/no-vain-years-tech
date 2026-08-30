@@ -1044,6 +1044,10 @@ export const OPTIONSDESK_COPY = {
     /** 两类诚实空态的预期管理文案（FR-016，中性灰非错误）。 */
     emptyNoQualified: '这一梯的前向费率未达到再投资线，暂无值得锁的期限',
     emptyUntradable: '这一梯当前没有可成交的档位，成因见逐档说明',
+    /** 弹层遮罩的 a11y 名（点击关闭）。 */
+    closeA11y: '关闭期限判决',
+    /** 收租行入口的 a11y 提示（plan D5）。 */
+    rowA11yHint: '轻点查看该行权价的期限判决',
     /** 弹层题头（T009 消费）。 */
     sheetTitle: (strike: string) => `${strike} 的期限判决`,
     /** 净链小结（「段内/净链/剔/并/标」五计数 → 一行）。 */
@@ -1055,8 +1059,8 @@ export const OPTIONSDESK_COPY = {
       markedCount: number;
     }) =>
       `段内 ${s.ladderCount} 档 · 净链 ${s.netChainCount} · 剔 ${s.removedCount} · 并 ${s.mergedCount} · 标 ${s.markedCount}`,
-    /** φ 与停点闸的只读读数行（T009 消费；数值来自审计证据，无证据时不渲）。 */
-    phiReadout: (phi: string) => `再投资线 φ ${phi}`,
+    /** φ 只读读数行（T009 消费；入参 = 契约证据里的年化小数比例串，无证据时不渲）。 */
+    phiReadout: (phi: string) => `再投资线 φ ${marchPct(phi)}`,
     /**
      * 13 类原因文案（FR-015 表逐条）：契约证据 → 「fwd 6.0% < φ 15%」式一行。
      * 🚨 键集 = `LegMarchAuditResponseCategory` 全集（Record 穷举 —— 契约加类不加文案 = 编译红）。

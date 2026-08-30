@@ -14,7 +14,7 @@
 //    那是「已出局」的中性灰，不属于四档色阶。判定与 class 全在 `leg-picker-copy.ts`。
 // 🚨 **四档是费率质量档不是涨跌** ⇒ 本文件零处 `quote-*`。
 // 🚫 **动作列是建议标签不是按钮** —— 中性 tag，无 `onPress`、无选中态（见上方 FR-012 段）。
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import type { LegMarchStrikeResponse, LegResponse } from '@nvy/api-client';
 import type { SharedValue } from 'react-native-reanimated';
 
@@ -69,6 +69,15 @@ export interface LegRowProps {
    * 结构性不出现。🚫 判据只从契约来（`leg-row.rules.ts` 两个纯函数），本组件零反推。
    */
   march: readonly LegMarchStrikeResponse[] | null;
+  /**
+   * 069 审计弹层入口（FR-014 / plan D5）：轻点收租行打开该 K 的期限判决。`null` = 无入口
+   *（建仓 / 全腿 / 离线，FR-019）。
+   *
+   * 📌 **与 047 FR-012「行不可点」的边界**：那条禁的是「选腿 → 创建许愿单」类的动作入口与
+   * 选中态 —— 本入口是**只读弹层**，无选中态、无写路径；实现期已核对行上原无 onPress /
+   * 手势冲突（横滑 pan 在 `LegColumnPane` 内层，tap 不与之抢）。
+   */
+  onOpenAudit: (() => void) | null;
 }
 
 /**
@@ -78,7 +87,7 @@ export interface LegRowProps {
  *    量从 by-tab 映射收窄成**本次视角**的标量 ⇒ 原本靠 `tab` prop「取哪一格」的两个入参随之
  *    退役，调用方少两个可以传错的东西。
  */
-export function LegRow({ leg, tx, today, blockPriceKind, march }: LegRowProps) {
+export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: LegRowProps) {
   // 🚨 档位在本行有**四个消费点**（bid 底色 / 行底 / 动作两处 / 费率副标）⇒ 这里取一次，
   //    四处共用同一个值（同源，不会 drift）。
   const tier = leg.tier;
@@ -98,11 +107,17 @@ export function LegRow({ leg, tx, today, blockPriceKind, march }: LegRowProps) {
   const inferiorMark = legRowInferiorMark(leg, march);
 
   return (
-    <View
+    <Pressable
       // 069: 推荐行底 (primary-soft) 盖过档位 tone —— 推荐行的行级信号优先 (FR-016)。
+      // 入口只在收租实时 (onOpenAudit 非 null) 生效; disabled 态下不设 button 语义, 与 047
+      // 「行不可点」的既有形态逐字一致。
       className={`flex-row border-b border-line-soft ${marchRecommended ? LEG_MARCH_ROW_CLASS : legRowToneClass(tier)}`}
       style={{ height: LEG_ROW_HEIGHT }}
       testID={`optionsdesk-detail-leg-row-${leg.code}`}
+      onPress={onOpenAudit ?? undefined}
+      disabled={onOpenAudit === null}
+      accessibilityRole={onOpenAudit === null ? undefined : 'button'}
+      accessibilityHint={onOpenAudit === null ? undefined : OPTIONSDESK_COPY.march.rowA11yHint}
     >
       {/* ── 首列：行权价 / 到期（横滑之外 ⇒ 钉住）───────────────────────── */}
       {/* 🚨 两个标各贴各的量（FR-014a）：「贴合」贴行权价、「月」贴到期日 —— 月度链是**到期日**
@@ -274,7 +289,7 @@ export function LegRow({ leg, tx, today, blockPriceKind, march }: LegRowProps) {
           testID={`optionsdesk-detail-leg-action-${leg.code}`}
         />
       </LegColumnPane>
-    </View>
+    </Pressable>
   );
 }
 
