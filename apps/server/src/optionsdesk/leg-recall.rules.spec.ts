@@ -11,6 +11,7 @@ import {
   RENT_RECALL_DTE,
   RETRIEVAL_CRITERION_KEYS,
   defaultCriteriaByTab,
+  crossedQuoteDisposalOf,
   crossedRemovalsWithinCriteria,
   failedCriteria,
   isCrossedQuote,
@@ -323,6 +324,7 @@ describe('leg-recall.rules — 成色条件 (052 FR-005 / FR-006 / FR-007)', () 
       ['all', 'build', 'rent'],
       [a, b],
       RECALL_CANDIDATE_CAP,
+      'remove',
     );
 
     expect(outcome.removedByPremiumFloor).toBe(1);
@@ -380,7 +382,7 @@ describe('leg-recall.rules — 067 换轴: axis = min(spot, W) (FR-001 / FR-003 
       { ...leg({ dteDays: 200, strike: D('100') }), code: 'RENT-ONLY' },
     ];
     const run = (w: Prisma.Decimal) =>
-      recallCandidates({ spot, w }, LEG_TABS, batch, RECALL_CANDIDATE_CAP);
+      recallCandidates({ spot, w }, LEG_TABS, batch, RECALL_CANDIDATE_CAP, 'remove');
     const members = (outcome: ReturnType<typeof run>, tab: LegTab) =>
       outcome.candidates.filter((c) => c.tabs.includes(tab)).map((c) => c.leg.code);
     // 两极值蓄意荒谬 (spot × 10 / spot × 0.1): 只要 build/全腿对 W 有一丝依赖, 这里就会翻。
@@ -406,7 +408,7 @@ describe('leg-recall.rules — 067 换轴: axis = min(spot, W) (FR-001 / FR-003 
       { ...leg({ strike: D('110') }), code: 'K110' },
     ];
     const run = (override: RetrievalOverride | null = null) =>
-      recallCandidates({ spot, w }, LEG_TABS, batch, RECALL_CANDIDATE_CAP, override);
+      recallCandidates({ spot, w }, LEG_TABS, batch, RECALL_CANDIDATE_CAP, 'remove', override);
     const rentOf = (outcome: ReturnType<typeof run>) =>
       outcome.candidates.filter((c) => c.tabs.includes('rent')).map((c) => c.leg.code);
 
@@ -443,7 +445,8 @@ describe('leg-recall.rules — 活性条件 (052 FR-008 / FR-009)', () => {
   const FLOOR = { oi: OPEN_INTEREST_FLOOR, volume: VOLUME_FLOOR };
   /** 只跑活性这一道：其余判据全宽松通过，被移出就只可能是它挡的。 */
   const survives = (over: Partial<RecallLegInput>) =>
-    recallCandidates(context, allTabs, [leg(over)], RECALL_CANDIDATE_CAP).candidates.length === 1;
+    recallCandidates(context, allTabs, [leg(over)], RECALL_CANDIDATE_CAP, 'remove').candidates
+      .length === 1;
 
   it('🚨 成交那一支参数化后与改造前**逐字等价** —— 默认下限 1 ⟺ 原来的 `volume > 0`', () => {
     // 成交量是整数张数 ⇒ `> 0` 与 `>= 1` 在值域上同一。这条守的是「参数化没改判据」。
@@ -486,12 +489,14 @@ describe('leg-recall.rules — 活性条件 (052 FR-008 / FR-009)', () => {
   it('三视角行为一致 —— 逐个视角单独请求, 死腿一个都进不去', () => {
     const dead = leg({ openInterest: 0, volume: 0 });
     for (const tab of allTabs) {
-      expect(recallCandidates(context, [tab], [dead], RECALL_CANDIDATE_CAP).candidates).toEqual([]);
+      expect(
+        recallCandidates(context, [tab], [dead], RECALL_CANDIDATE_CAP, 'remove').candidates,
+      ).toEqual([]);
     }
     // 活腿反过来：三个视角各自都拿得到它（DTE=35 落重叠区）。
     for (const tab of allTabs) {
       expect(
-        recallCandidates(context, [tab], [leg()], RECALL_CANDIDATE_CAP).candidates,
+        recallCandidates(context, [tab], [leg()], RECALL_CANDIDATE_CAP, 'remove').candidates,
       ).toHaveLength(1);
     }
   });
@@ -499,7 +504,7 @@ describe('leg-recall.rules — 活性条件 (052 FR-008 / FR-009)', () => {
   it('🚨 持仓量条件 MUST 排在权利金门槛之后 —— 否则 051 已 ship 的排除数会静默变小', () => {
     // 这条腿两道都不过（bid 0.01 低于门槛、OI=0 且无成交）。它 MUST 计进权利金那个数。
     const both = leg({ bid: D('0.01'), openInterest: 0, volume: 0 });
-    const outcome = recallCandidates(context, allTabs, [both], RECALL_CANDIDATE_CAP);
+    const outcome = recallCandidates(context, allTabs, [both], RECALL_CANDIDATE_CAP, 'remove');
     expect(outcome.removedByPremiumFloor).toBe(1);
     expect(outcome.candidates).toEqual([]);
   });
@@ -510,6 +515,7 @@ describe('leg-recall.rules — 活性条件 (052 FR-008 / FR-009)', () => {
       allTabs,
       [leg({ openInterest: 0, volume: 0 })],
       RECALL_CANDIDATE_CAP,
+      'remove',
     );
     expect(outcome.removedByPremiumFloor).toBe(0);
     expect(outcome.candidates).toEqual([]);
@@ -528,19 +534,19 @@ describe('leg-recall.rules — 召回层候选上限 K (052 FR-027 / FR-028)', (
     Array.from({ length: n }, (_, i) => leg({ dteDays: 30 + i, strike: D(String(90 - i)) }));
 
   it('候选数 < K ⇒ 不截, 切掉数为 0', () => {
-    const outcome = recallCandidates(context, allTabs, chainOf(3), 5);
+    const outcome = recallCandidates(context, allTabs, chainOf(3), 5, 'remove');
     expect(outcome.candidates).toHaveLength(3);
     expect(outcome.droppedByCandidateCap).toBe(0);
   });
 
   it('候选数**恰等于** K ⇒ 不截 (边界取「超过才切」)', () => {
-    const outcome = recallCandidates(context, allTabs, chainOf(5), 5);
+    const outcome = recallCandidates(context, allTabs, chainOf(5), 5, 'remove');
     expect(outcome.candidates).toHaveLength(5);
     expect(outcome.droppedByCandidateCap).toBe(0);
   });
 
   it('候选数 > K ⇒ 截到 K, 且切掉多少条**可读** (🚫 不是只落日志)', () => {
-    const outcome = recallCandidates(context, allTabs, chainOf(8), 5);
+    const outcome = recallCandidates(context, allTabs, chainOf(8), 5, 'remove');
     expect(outcome.candidates).toHaveLength(5);
     expect(outcome.droppedByCandidateCap).toBe(3);
   });
@@ -549,7 +555,7 @@ describe('leg-recall.rules — 召回层候选上限 K (052 FR-027 / FR-028)', (
     const legs = chainOf(8);
     const shuffled = [...legs].reverse();
     const keptOf = (input: readonly RecallLegInput[]) =>
-      recallCandidates(context, allTabs, input, 5).candidates.map((c) => c.leg.dteDays);
+      recallCandidates(context, allTabs, input, 5, 'remove').candidates.map((c) => c.leg.dteDays);
     expect(keptOf(shuffled)).toEqual(keptOf(legs));
     // 键是「日历顺序」而非好坏：留下的是 DTE 最小的那 5 条。
     expect(keptOf(legs)).toEqual([30, 31, 32, 33, 34]);
@@ -559,7 +565,13 @@ describe('leg-recall.rules — 召回层候选上限 K (052 FR-027 / FR-028)', (
     // 一条权利金不过 + 一条流动性挡在意图外 + 8 条合格腿，K=2。
     const rejected = leg({ bid: D('0.01') });
     const wide = leg({ dteDays: 35, ask: D('20') });
-    const outcome = recallCandidates(context, allTabs, [rejected, wide, ...chainOf(8)], 2);
+    const outcome = recallCandidates(
+      context,
+      allTabs,
+      [rejected, wide, ...chainOf(8)],
+      2,
+      'remove',
+    );
     expect(outcome.candidates).toHaveLength(2);
     expect(outcome.droppedByCandidateCap).toBe(7); // 8 条合格 + wide 也进候选（全腿）= 9 → 留 2
     expect(outcome.removedByPremiumFloor).toBe(1);
@@ -569,7 +581,7 @@ describe('leg-recall.rules — 召回层候选上限 K (052 FR-027 / FR-028)', (
   it('🚨 K 与表达层的 N 是两个独立参数 —— 本片零处把 K 当"给用户看几条"用', () => {
     // 053 会引入表达层的 N。这条断言守的是"别共用一个常量"：K 是保险丝，量级远高于任何
     // 可能的 N（当前最大链 758 行）。共用会让"调给用户看几条"顺手改掉召回容量。
-    expect(RECALL_CANDIDATE_CAP).toBeGreaterThan(758);
+    expect(RECALL_CANDIDATE_CAP, 'remove').toBeGreaterThan(758);
   });
 });
 
@@ -699,7 +711,7 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
     { ...leg({ strike: D('120') }), code: 'K120' },
   ];
   const run = (override: RetrievalOverride | null = null) =>
-    recallCandidates(context, LEG_TABS, chainLegs, RECALL_CANDIDATE_CAP, override);
+    recallCandidates(context, LEG_TABS, chainLegs, RECALL_CANDIDATE_CAP, 'remove', override);
   const codesIn = (outcome: ReturnType<typeof run>, tab: LegTab) =>
     outcome.candidates.filter((c) => c.tabs.includes(tab)).map((c) => c.leg.code);
 
@@ -781,6 +793,7 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
       LEG_TABS,
       chainLegs.map((l) => ({ ...l, volume: 0 })),
       RECALL_CANDIDATE_CAP,
+      'remove',
       {
         perspective: 'rent',
         criteria: { strikeMax: D('97'), livenessMin: { oi: 200, volume: 200 } },
@@ -809,6 +822,7 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
       LEG_TABS,
       withLong,
       RECALL_CANDIDATE_CAP,
+      'remove',
       // 下界 30 → 1 是放宽, 上界 365 → 40 是收窄。
       { perspective: 'rent', criteria: { dteBand: { min: 1, max: 40 } } },
     );
@@ -821,13 +835,20 @@ describe('leg-recall.rules — 用户覆盖 + 三态 + 边际计数 (052 FR-012 
   it('🚨 放宽权利金下限后那条腿不再是「整条移出」—— 051 的排除数随之减 1', () => {
     const cheap = { ...leg({ strike: D('100'), bid: D('0.01'), ask: D('0.011') }), code: 'CHEAP' };
     const withCheap = [...chainLegs, cheap];
-    const plain = recallCandidates(context, LEG_TABS, withCheap, RECALL_CANDIDATE_CAP);
+    const plain = recallCandidates(context, LEG_TABS, withCheap, RECALL_CANDIDATE_CAP, 'remove');
     expect(plain.removedByPremiumFloor).toBe(1);
 
-    const loosened = recallCandidates(context, LEG_TABS, withCheap, RECALL_CANDIDATE_CAP, {
-      perspective: 'rent',
-      criteria: { premiumMin: D('0.001') },
-    });
+    const loosened = recallCandidates(
+      context,
+      LEG_TABS,
+      withCheap,
+      RECALL_CANDIDATE_CAP,
+      'remove',
+      {
+        perspective: 'rent',
+        criteria: { premiumMin: D('0.001') },
+      },
+    );
     // 它进得了收租 ⇒ 不再是「三视角都看不见」⇒ 那个数不该再记它 (051 展示值的语义未变)。
     expect(loosened.removedByPremiumFloor).toBe(0);
     expect(loosened.candidates.map((c) => c.leg.code)).toContain('CHEAP');
@@ -859,8 +880,15 @@ describe('leg-recall.rules — 068 T001 axis 单点抽取 (FR-003 前置)', () =
 });
 
 describe('leg-recall.rules — 069 报价护栏全域前置 (FR-001)', () => {
+  // 070 起处置按口径分派 —— 本组四臂即「realtime 口径维持剔出」的回归护航 (070 T001 臂 ②)。
   const recall = (legs: readonly RecallLegInput[]) =>
-    recallCandidates(context, LEG_TABS, legs, RECALL_CANDIDATE_CAP);
+    recallCandidates(
+      context,
+      LEG_TABS,
+      legs,
+      RECALL_CANDIDATE_CAP,
+      crossedQuoteDisposalOf('realtime'),
+    );
 
   it('① 交叉报价 (bid > ask) 整条剔出候选, 腿原样留痕供审计 #1', () => {
     const crossed = leg({ bid: D('0.52'), ask: D('0.48') });
@@ -904,5 +932,43 @@ describe('leg-recall.rules — 069 报价护栏全域前置 (FR-001)', () => {
     const outcome = recall([crossed]);
     expect(outcome.candidates).toEqual([]);
     expect(outcome.removedByCrossedQuote).toEqual([crossed]);
+  });
+});
+
+describe('leg-recall.rules — 070 剔→标处置按口径参数化 (FR-006)', () => {
+  const recall = (legs: readonly RecallLegInput[], disposal: 'remove' | 'retain') =>
+    recallCandidates(context, LEG_TABS, legs, RECALL_CANDIDATE_CAP, disposal);
+
+  it('① 收盘口径: 交叉腿保留在候选 (照常派生成行) 且仍进留痕列表 —— 剔降为标', () => {
+    const crossed = leg({ bid: D('0.52'), ask: D('0.48') });
+    const normal = leg();
+    const outcome = recall([crossed, normal], crossedQuoteDisposalOf('eod_close'));
+    // 保留 ≠ 白名单: 交叉腿照常走全套判据 (bid 0.52 过权利金门槛、负点差恒过点差闸) ⇒ 进候选。
+    expect(outcome.candidates.map((c) => c.leg)).toEqual([crossed, normal]);
+    expect(outcome.removedByCrossedQuote).toEqual([crossed]);
+  });
+
+  it('② realtime 口径: 交叉腿剔出候选 —— 069 原语义经映射单点原样保住 (回归护航)', () => {
+    const crossed = leg({ bid: D('0.52'), ask: D('0.48') });
+    const normal = leg();
+    const outcome = recall([crossed, normal], crossedQuoteDisposalOf('realtime'));
+    expect(outcome.candidates.map((c) => c.leg)).toEqual([normal]);
+    expect(outcome.removedByCrossedQuote).toEqual([crossed]);
+  });
+
+  it('③ 两口径留痕列表逐腿一致 —— 判据单点, 处置只改「判中之后腿去哪」不改判定', () => {
+    const batch = [
+      leg({ bid: D('0.52'), ask: D('0.48') }),
+      leg(),
+      leg({ dteDays: 40, bid: D('2'), ask: D('2') }),
+    ];
+    expect(recall(batch, 'retain').removedByCrossedQuote).toEqual(
+      recall(batch, 'remove').removedByCrossedQuote,
+    );
+  });
+
+  it('④ 收盘口径无交叉样本: 全部出参与处置参数无关 (恒等护航)', () => {
+    const batch = [leg(), leg({ dteDays: 40 })];
+    expect(recall(batch, 'retain')).toEqual(recall(batch, 'remove'));
   });
 });

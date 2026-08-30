@@ -1,4 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
+import type { PriceKind } from '../marketdata/marketdata.types';
 import { LEG_TABS, type LegTab } from './leg-tab.rules';
 
 /**
@@ -251,8 +252,10 @@ export function relativeSpread(
  * 🚨 它 MUST 前置于点差闸 ({@link passesRelativeSpreadMax}): 交叉报价的 {@link relativeSpread}
  * 为负, 恒 ≤ 任何上界 ⇒ 点差闸对最坏的报价反而放行 (069 实测缺口, 本护栏在源头闭合)。它是
  * **意图无关的数据质量闸, 全部视角一律** (069 收租 scope 的唯一例外, clarify Q4) —— 施加点在
- * {@link recallCandidates} 入口, 连全腿 Tab 也不留: 交叉报价是坏数据不是差流动性, 以任何视角
- * 呈现都是把垃圾报价当行情。
+ * {@link recallCandidates} 入口。判中之后的**处置**自 070 起按口径分派
+ * ({@link crossedQuoteDisposalOf}): 实时口径连全腿 Tab 也不留 (交叉报价是坏数据不是差流动性,
+ * 以任何视角呈现都是把垃圾报价当行情); 收盘口径剔降为标 (FR-006 成员不变, 呈现保留 + 净链
+ * 除名 + 审计 #1 留痕)。
  *
  * 任一侧缺失 ⇒ 不判交叉 (「不知道」走既有 fail-closed 路径: 权利金 / 点差闸各自挡), 🚫 MUST
  * NOT 拿 null 顶 0 参与比较 (同 {@link passesPremiumMin} 对 `bid` 的纪律)。
@@ -260,6 +263,27 @@ export function relativeSpread(
 export function isCrossedQuote(bid: Prisma.Decimal | null, ask: Prisma.Decimal | null): boolean {
   if (bid === null || ask === null) return false;
   return ask.lessThanOrEqualTo(bid);
+}
+
+/**
+ * 交叉报价的两种**处置** (070 FR-006): `remove` = 整条移出候选 (069 原语义) / `retain` = 剔降为
+ * 标 —— 腿保留在候选照常派生成行, 同时进护栏留痕列表供审计 #1 与净链除名。判据仍是
+ * {@link isCrossedQuote} 单点, 两种处置只改「判中之后腿去哪」, 不改判定本身。
+ */
+export type CrossedQuoteDisposal = 'remove' | 'retain';
+
+/**
+ * 口径 → 处置的**唯一**映射 (070 FR-006 / plan §D1): 实时口径维持剔出 —— 盘中窄召回把垃圾报价
+ * 当行情呈现是坏数据不是差流动性 (069 原理由); 收盘口径剔降为标 —— 离线宽视野的价值主张是成员
+ * 不变, 报价异常档保持可见、净链除名、审计留痕。
+ *
+ * 🚨 调用方 MUST 拿**链级实际口径** (`chain.priceKind`) 来查, 🚫 MUST NOT 由 `realtime` 入参
+ * 反推 (实时请求整体回落收盘档时两者相反, 而反推出来的处置照样跑得通)。
+ * 📌 {@link recallCandidates} 的处置参数蓄意**必填无默认**: 忘传 = 静默沿用剔除语义, 离线成员
+ * 被悄悄吞掉而不会红 —— 正是本参数要收口的那类潜伏面 (同 `candidateCap` 必填的理由)。
+ */
+export function crossedQuoteDisposalOf(priceKind: PriceKind): CrossedQuoteDisposal {
+  return priceKind === 'realtime' ? 'remove' : 'retain';
 }
 
 /**
@@ -648,11 +672,14 @@ export interface RecallCandidate<T extends RecallLegInput> {
 export interface RecallOutcome<T extends RecallLegInput> {
   readonly candidates: readonly RecallCandidate<T>[];
   /**
-   * 069 报价护栏 (FR-001) 剔除的腿 —— **原样留痕**, 供上游拼每 K 审计条目 #1 (报价异常,
-   * 证据 = 腿上的 bid/ask)。恒有值, 无剔除时为空数组。
+   * 069 报价护栏 (FR-001) 判中的腿 —— **原样留痕**, 供上游拼每 K 审计条目 #1 (报价异常,
+   * 证据 = 腿上的 bid/ask)。恒有值, 无判中时为空数组。
    *
-   * 🚨 与流动性门槛「腿仍在全腿可见」不同, 这批腿**整条移出候选** (三视角一律) —— 信息不丢
-   * 的责任由审计条目承接; 🚫 MUST NOT 退化成计数: 审计要逐腿的 bid/ask, 条数拼不出证据。
+   * 🚨 与流动性门槛「腿仍在全腿可见」不同, `remove` 处置下这批腿**整条移出候选** (三视角一律)
+   * —— 信息不丢的责任由审计条目承接; 🚫 MUST NOT 退化成计数: 审计要逐腿的 bid/ask, 条数拼不出
+   * 证据。070 起 `retain` 处置 ({@link CrossedQuoteDisposal}) 下这批腿**并未移出** —— 保留在
+   * 候选照常派生成行, 本列表收敛为「护栏留痕」(#1 审计与净链除名都吃它); 字段名沿 069 出参
+   * 形状不改, 改名会白牵动 port 与两个实现。**两种处置下本列表逐腿一致** (判据单点的证据)。
    */
   readonly removedByCrossedQuote: readonly T[];
   readonly removedByPremiumFloor: number;
@@ -694,7 +721,8 @@ export interface RecallOutcome<T extends RecallLegInput> {
  * `candidateCap` = 本次的候选上限 (052 FR-027)。**必填而非可选** —— 给个默认值就等于「忘传时
  * 静默无上限」, 而那正是保险丝最需要生效的那一刻 (调用方今天只有 port 的两个实现)。
  *
- * 复杂度 `O(n)`: 一遍报价护栏 (069 FR-001, {@link isCrossedQuote} 整条移出且留痕) + 一遍求
+ * 复杂度 `O(n)`: 一遍报价护栏 (069 FR-001, {@link isCrossedQuote} 判中留痕, 处置按
+ * `crossedQuoteDisposal` 分派) + 一遍求
  * 成色上界 (链级, 见 {@link resolveQualityCeiling}, 网格含被护栏剔的腿 —— 合约属性与报价无关)
  * + 一遍逐腿 `O(1)` 判据;
  * **仅在触及上限时**多一次 `O(n log n)` 排序 (见 {@link capCandidates})。
@@ -705,6 +733,7 @@ export function recallCandidates<T extends RecallLegInput>(
   perspectives: readonly LegTab[],
   legs: readonly T[],
   candidateCap: number,
+  crossedQuoteDisposal: CrossedQuoteDisposal,
   override: RetrievalOverride | null = null,
 ): RecallOutcome<T> {
   const requested = new Set(perspectives);
@@ -722,12 +751,18 @@ export function recallCandidates<T extends RecallLegInput>(
   };
 
   // 069 报价护栏 (FR-001): 前置于一切逐腿判据、三视角一律 ({@link isCrossedQuote})。放在成色
-  // 上界**之后**过滤 —— 行权价网格是合约属性, 与报价好坏无关 (上文纪律), 护栏只决定谁进候选。
+  // 上界**之后**过滤 —— 行权价网格是合约属性, 与报价好坏无关 (上文纪律)。070 起判据单点不动,
+  // **处置**随口径分派 ({@link crossedQuoteDisposalOf}): `remove` 整条移出 (069 原语义);
+  // `retain` 剔降为标 —— 腿留在池里照常走全套判据, 留痕列表两种处置下逐腿一致。
   const removedByCrossedQuote: T[] = [];
   const guardedLegs: T[] = [];
   for (const leg of legs) {
-    if (isCrossedQuote(leg.bid, leg.ask)) removedByCrossedQuote.push(leg);
-    else guardedLegs.push(leg);
+    if (!isCrossedQuote(leg.bid, leg.ask)) {
+      guardedLegs.push(leg);
+      continue;
+    }
+    removedByCrossedQuote.push(leg);
+    if (crossedQuoteDisposal === 'retain') guardedLegs.push(leg);
   }
 
   // 三视角的系统默认值 + 本次生效值 (052 T010)。覆盖**只落在一个视角**上, 其余恒走默认值。

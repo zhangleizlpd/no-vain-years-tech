@@ -23,6 +23,7 @@ import { type LegTab } from './leg-tab.rules';
 import {
   BUILD_RECALL_DTE,
   RENT_RECALL_DTE,
+  crossedQuoteDisposalOf,
   recallCandidates,
   type LegIntentTab,
   type RecallContext,
@@ -233,6 +234,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       query.perspectives,
       legs,
       query.candidateCap,
+      'remove',
       query.override,
     );
     return {
@@ -242,8 +244,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       memberCount:
         query.override === null
           ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, legs, query.candidateCap).candidates
-              .length,
+          : recallCandidates(context, query.perspectives, legs, query.candidateCap, 'remove')
+              .candidates.length,
     };
   }
 
@@ -510,6 +512,7 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       query.perspectives,
       answered,
       query.candidateCap,
+      crossedQuoteDisposalOf(chain.priceKind),
       query.override,
     );
     return {
@@ -518,8 +521,13 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       memberCount:
         query.override === null
           ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, answered, query.candidateCap).candidates
-              .length,
+          : recallCandidates(
+              context,
+              query.perspectives,
+              answered,
+              query.candidateCap,
+              crossedQuoteDisposalOf(chain.priceKind),
+            ).candidates.length,
     };
   }
 

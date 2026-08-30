@@ -52,6 +52,7 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
       query.perspectives,
       seeded.legs,
       query.candidateCap,
+      'remove',
       query.override,
     );
     return Promise.resolve({
@@ -62,7 +63,7 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
       memberCount:
         query.override === null
           ? outcome.candidates.length
-          : recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap)
+          : recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap, 'remove')
               .candidates.length,
     });
   }

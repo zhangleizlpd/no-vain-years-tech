@@ -271,7 +271,9 @@ export class GetChainReportUseCase {
     // 🚨 `candidateCap` 传 `legs.length` = **本次显式不设上限** (Guardrail 1): `RECALL_CANDIDATE_CAP`
     // 那道保险丝是给下游排序 / 表达限流的, 而格数由行列数决定、与腿数无关, 天然有界。沿用它等于
     // 给报表塞进一个 FR-005 明令不能有的截断, 且今天最大链 825 条**碰不到 ⇒ 真出问题时不会红**。
-    const outcome = recallCandidates(context, LEG_TABS, legs, legs.length, null);
+    // 070: 处置同骨架恒 `remove` (理由见 `chainReportSkeleton` 内注) —— 两次召回口径不同,
+    // 但护栏处置 MUST 同一份, 否则骨架与归属集在交叉腿上互相矛盾。
+    const outcome = recallCandidates(context, LEG_TABS, legs, legs.length, 'remove', null);
     const tabsByLeg = new Map<LegChainRow, readonly LegTab[]>();
     for (const candidate of outcome.candidates) tabsByLeg.set(candidate.leg, candidate.tabs);
     const inSkeleton = new Set(skeleton);

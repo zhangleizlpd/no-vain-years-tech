@@ -452,6 +452,9 @@ export function chainReportSkeleton<T extends RecallLegInput>(
     SKELETON_PERSPECTIVES,
     legs,
     legs.length,
+    // 070: 网格恒 `remove` —— 报表不装配 march ⇒ 「标」(#1 审计) 无处落, 剔→标只归选约表;
+    // 保留会让交叉腿以无任何异常标的格出现, 正是 069 护栏要拦的「垃圾报价当行情」。
+    'remove',
     SKELETON_OVERRIDE,
   );
   return outcome.candidates.map((candidate) => candidate.leg);
