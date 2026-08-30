@@ -73,7 +73,7 @@ updated_at: '2026-08-31'
 
 ### Phase 4 · 集成与验收
 
-- [ ] T009 [Server-IT] **state_branches 穷举**（US1/US2/US3; state_branches 1–9）：新建 `optionsdesk-071.wide-spread.it.spec.ts`，真 DI + Testcontainers，9 条分支各一 `it()`（含建仓排除、全腿不触发、交叉报价、离线/实时同判据、覆盖上界后标不变） → verify: `pnpm nx test server --testPathPattern=optionsdesk-071` 全绿
+- [X] T009 [Server-IT] **state_branches 穷举**（US1/US2/US3; state_branches 1–9）：新建 `optionsdesk-071.wide-spread.it.spec.ts`，真 DI + Testcontainers，9 条分支各一 `it()`（含建仓排除、全腿不触发、交叉报价、离线/实时同判据、覆盖上界后标不变） → verify: `pnpm nx test server --testPathPattern=optionsdesk-071` 全绿
 
 - [ ] T010 [Contract-Smoke] **契约冒烟**（FR-005 / SC-005）：新建 `071-wide-spread.contract.ts`，断言收租响应带标行同时给得出 `bid` / `ask` / `relativeSpread` → verify: 契约冒烟套件绿
 

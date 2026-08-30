@@ -677,9 +677,33 @@ function failsCriterion(
       return (
         criteria.relativeSpreadMax !== null &&
         !passesRelativeSpreadMax(leg.bid, leg.ask, criteria.relativeSpreadMax) &&
-        !(tab === 'rent' && isWideSpreadOpportunity(leg))
+        !wideSpreadOpportunityApplies(tab, criteria.relativeSpreadMax, leg)
       );
   }
+}
+
+/**
+ * 机会支在这一套条件下**作不作用** (FR-003 / 071 clarify)。`O(1)`。
+ *
+ * 两个前提缺一不可:
+ * 1. **收租视角** —— 建仓的档界口径是周化, 且建仓不跑行军, 本片蓄意排除 (spec 建仓面排除判据)。
+ * 2. **用户没有把这一维收得比系统默认值更严** —— 拖动价差上界往紧里调是一句明确的话:
+ *    「我只要窄市场」。机会支若照样放行, 这个控件就对一类腿失效了, 而**表照样渲染得出来**
+ *    (071 IT ⑤ 臂实撞: 收到 0.05 时 `rel = 0.065` 的窄腿仍被机会支捞回来)。
+ *
+ * 🚨 **判据取「不比默认值严」而不是「有没有被覆盖」**: 后者会让「显式填一个与默认值相同的数」
+ * 与「压根没动过」给出不同的成员集 —— 同一个上界两种结果, 而两种都解释得通。
+ * 📌 放宽 / 不限时本支恒作用但**恒无效果** (主支已经放行) —— 保留它是为了让上面那条判据是
+ * 单调的一句话, 不是三个分支。
+ */
+function wideSpreadOpportunityApplies(
+  tab: LegTab,
+  relativeSpreadMax: Prisma.Decimal,
+  leg: RecallLegInput,
+): boolean {
+  if (tab !== 'rent') return false;
+  if (relativeSpreadMax.lessThan(LIQUIDITY_MAX_RELATIVE_SPREAD)) return false;
+  return isWideSpreadOpportunity(leg);
 }
 
 /**

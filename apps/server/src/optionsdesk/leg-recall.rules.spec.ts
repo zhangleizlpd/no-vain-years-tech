@@ -1065,13 +1065,25 @@ describe('leg-recall.rules — 071 机会标与流动性计数 (FR-005 / FR-006 
     expect(outcome.candidates[0].wideSpreadOpportunity).toBe(true);
   });
 
-  it('用户收窄上界 ⇒ 机会支不随控件动, 放行且带标 (state_branch 8)', () => {
+  it('🚨 用户把上界**收窄** ⇒ 机会支让位, 腿出局 (state_branch 8)', () => {
     const narrowed: RetrievalOverride = {
       perspective: 'rent',
       criteria: { relativeSpreadMax: D('0.05') },
     };
-    const outcome = recall([opportunity], narrowed);
-    expect(outcome.candidates.map((c) => c.wideSpreadOpportunity)).toEqual([true]);
+    // 拖动上界往紧里调是一句明确的话「我只要窄市场」—— 机会支照样放行, 这个控件就对一类腿
+    // 失效了, 而表照样渲染得出来。
+    expect(recall([opportunity], narrowed).candidates).toEqual([]);
+  });
+
+  it('🚨 显式填一个**等于默认值**的上界 ⇒ 机会支仍在 —— 判据是「不比默认严」不是「有没有覆盖」', () => {
+    const explicitDefault: RetrievalOverride = {
+      perspective: 'rent',
+      criteria: { relativeSpreadMax: LIQUIDITY_MAX_RELATIVE_SPREAD },
+    };
+    // 按「有没有覆盖」写会让同一个上界给出两种成员集 (手填 vs 没动), 而两种都解释得通。
+    expect(recall([opportunity], explicitDefault).candidates.map((c) => c.leg)).toEqual([
+      opportunity,
+    ]);
   });
 
   it('放行腿 MUST NOT 计入「被流动性门槛挡下」的两个数 (FR-007)', () => {
