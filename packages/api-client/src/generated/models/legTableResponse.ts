@@ -12,6 +12,7 @@ import type { LegTableResponseAsOfFreshnessTier } from './legTableResponseAsOfFr
 import type { LegTableResponseBasis } from './legTableResponseBasis';
 import type { LegTableResponseIntent } from './legTableResponseIntent';
 import type { LegTableResponseLLevel } from './legTableResponseLLevel';
+import type { LegTableResponseMarchMode } from './legTableResponseMarchMode';
 import type { LegTableResponsePerspective } from './legTableResponsePerspective';
 import type { LegTableResponsePositionBucket } from './legTableResponsePositionBucket';
 import type { LegTableResponsePositionBucketSource } from './legTableResponsePositionBucketSource';
@@ -77,6 +78,8 @@ export interface LegTableResponse {
   displayLimit: number | null;
   /** 触及召回层候选上限 K 时被切掉多少条 (052 FR-028); 未触及恒 0。🚨 **它是保险丝熔断不是判据挡下** ⇒ 蓄意不进 gateCounts, 呈现侧 MUST 与截断计数**不同款** (053 FR-019c): 前者该调容量、后者该调展示。非零时 matchedCount 可能不完整, 提示 MUST 说明这一点 */
   candidateCapDropped: number;
-  /** 069 每 K 行军判决与逐档审计, 按行权价升序 (FR-009 / FR-014)。🚨 **仅「实时开态 ∧ 收租视角」有值, 其余恒 null** (FR-017 / FR-019): 离线档 (含实时整体回落收盘档) / 建仓 / 全腿视角没有这个概念 —— null 不是「算了但为空」。🚨 判决是行上叠加标注 (FR-018): legs 的行序与内容不因它变, 客户端 MUST NOT 按判决重排 */
+  /** 069 每 K 行军判决与逐档审计, 按行权价升序 (069 FR-009 / FR-014)。🚨 **仅「收租视角 ∧ us 市场锚」有值, 其余恒 null** (070 FR-001 门控放宽, 两档一律): 离线档与实时整体回落收盘档随 070 点亮 —— 数值基准由 priceKind/quoteAsOf 如实上报; hk 锚收租 / 建仓 / 全腿视角没有这个概念, null 不是「算了但为空」。🚨 判决是行上叠加标注 (069 FR-018): legs 的行序与内容不因它变, 客户端 MUST NOT 按判决重排 */
   march: LegMarchStrikeResponse[] | null;
+  /** 070 行军模式**被动标示** (FR-009): phi = 意图档界行军 (默认) / theta = 自身年化 argmax。值来自 server 配置, UI MUST NOT 提供切换入口; **链级唯一** —— 一次响应一个模式, 不挂逐 K。🚨 与 march 同生共死: march 为 null 时恒 null (无判决就无模式可标)。客户端只在 theta 时出模式标示文案, phi 默认态零噪音 */
+  marchMode: LegTableResponseMarchMode;
 }

@@ -4,7 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { SwaggerModule, type OpenAPIObject } from '@nestjs/swagger';
 import { MARCH_EXCLUSION_CATEGORIES } from './leg-fwd-chain.rules';
-import { MARCH_VERDICTS } from './leg-march.rules';
+import { MARCH_MODES, MARCH_VERDICTS } from './leg-march.rules';
 import { Test } from '@nestjs/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
@@ -595,6 +595,20 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       for (const field of ['recommendedDteDays', 'oi', 'oiMin']) {
         expect(evidenceProps[field].nullable).toBe(true);
       }
+    });
+
+    it('🚨 070 marchMode: LegTableResponse 增链级 nullable 模式标示 (phi/theta 枚举; 无判决恒 null)', () => {
+      const tableProps = (
+        document.components!.schemas!.LegTableResponse as {
+          properties: Record<string, { type?: string; nullable?: boolean; enum?: string[] }>;
+        }
+      ).properties;
+      expect(tableProps.marchMode).toBeDefined();
+      // 012 纪律: nullable 标量必须显式 type (否则 orval 误生 objectmap)。
+      expect(tableProps.marchMode.type).toBe('string');
+      expect(tableProps.marchMode.nullable).toBe(true);
+      // 两值枚举经装饰器 → openapi → orval 生成链传导, 前后端零手抄 (FR-009)。
+      expect(tableProps.marchMode.enum).toEqual([...MARCH_MODES]);
     });
 
     it('🚨 nullable string 字段显式 type:string —— 否则 orval 误生 objectmap', () => {

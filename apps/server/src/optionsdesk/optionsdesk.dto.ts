@@ -44,7 +44,7 @@ import { RADAR_PAGE_SIZE_DEFAULT, RADAR_PAGE_SIZE_MAX } from './radar-cursor';
 import { EARNINGS_MARKS } from './earnings-mark.rules';
 import { LEG_TABLE_STATES, type LegTableView } from './get-legs.usecase';
 import { MARCH_EXCLUSION_CATEGORIES, type MarchAuditEvidence } from './leg-fwd-chain.rules';
-import { MARCH_VERDICTS } from './leg-march.rules';
+import { MARCH_MODES, MARCH_VERDICTS } from './leg-march.rules';
 import { CHAIN_REPORT_CELL_STATES } from './chain-report.rules';
 import {
   CHAIN_REPORT_STATES,
@@ -2241,14 +2241,28 @@ export class LegTableResponse {
 
   @ApiProperty({
     description:
-      '069 每 K 行军判决与逐档审计, 按行权价升序 (FR-009 / FR-014)。' +
-      '🚨 **仅「实时开态 ∧ 收租视角」有值, 其余恒 null** (FR-017 / FR-019): 离线档 (含实时' +
-      '整体回落收盘档) / 建仓 / 全腿视角没有这个概念 —— null 不是「算了但为空」。' +
-      '🚨 判决是行上叠加标注 (FR-018): legs 的行序与内容不因它变, 客户端 MUST NOT 按判决重排',
+      '069 每 K 行军判决与逐档审计, 按行权价升序 (069 FR-009 / FR-014)。' +
+      '🚨 **仅「收租视角 ∧ us 市场锚」有值, 其余恒 null** (070 FR-001 门控放宽, 两档一律): ' +
+      '离线档与实时整体回落收盘档随 070 点亮 —— 数值基准由 priceKind/quoteAsOf 如实上报; ' +
+      'hk 锚收租 / 建仓 / 全腿视角没有这个概念, null 不是「算了但为空」。' +
+      '🚨 判决是行上叠加标注 (069 FR-018): legs 的行序与内容不因它变, 客户端 MUST NOT 按判决重排',
     type: [LegMarchStrikeResponse],
     nullable: true,
   })
   march!: LegMarchStrikeResponse[] | null;
+
+  @ApiProperty({
+    description:
+      '070 行军模式**被动标示** (FR-009): phi = 意图档界行军 (默认) / theta = 自身年化 argmax。' +
+      '值来自 server 配置, UI MUST NOT 提供切换入口; **链级唯一** —— 一次响应一个模式, ' +
+      '不挂逐 K。🚨 与 march 同生共死: march 为 null 时恒 null (无判决就无模式可标)。' +
+      '客户端只在 theta 时出模式标示文案, phi 默认态零噪音',
+    enum: [...MARCH_MODES],
+    type: 'string',
+    nullable: true,
+    example: 'phi',
+  })
+  marchMode!: string | null;
 }
 
 /**
@@ -2473,6 +2487,7 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     displayLimit: view.displayLimit,
     candidateCapDropped: view.candidateCapDropped,
     march: toMarchResponse(view.march),
+    marchMode: view.marchMode,
   };
 }
 

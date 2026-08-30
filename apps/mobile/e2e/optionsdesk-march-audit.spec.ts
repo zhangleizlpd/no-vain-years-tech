@@ -298,6 +298,8 @@ function project(perspective: LegPerspective): LegTableResponse {
   return {
     symbol: SYMBOL,
     march: perspective === 'rent' ? [...MARCH] : null,
+    // 070 契约增量: 模式标示与 march 同生共死 —— 有判决即有模式 (默认 phi 态, 呈现零噪音)。
+    marchMode: perspective === 'rent' ? 'phi' : null,
     perspective,
     state: 'available',
     asOf: SESSION_DAY,
