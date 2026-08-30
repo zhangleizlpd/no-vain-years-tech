@@ -2,7 +2,7 @@
 feature_id: 071-optionsdesk-wide-spread-opportunity
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: implemented
 created_at: '2026-08-31'
 updated_at: '2026-08-31'
 spec_kit_version: '>=0.8.5,<0.10.0'
@@ -30,7 +30,7 @@ state_branches:
 
 **Feature Branch**: `071-optionsdesk-wide-spread-opportunity`
 **Created**: 2026-08-31
-**Status**: Clarified（2026-08-31；四项决断经 2026-08-31 全量重扫定案，见文末标定实测）
+**Status**: Implemented（2026-08-31；四项决断经全量重扫定案 + impl 期 1 项裁决回写：机会支在用户收窄该维度时让位）
 **里程碑**: [ADR-0068](../../docs/adr/0068-realtime-narrow-recall-two-stage.md) 实施序列的 **P5 片**（补片；P1 = 067 / P2 = 068 / P3 = 069 / P4 = 070 均已 ship）。收口 issue #298。
 
 ## 背景

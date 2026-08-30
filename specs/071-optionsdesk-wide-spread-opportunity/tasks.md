@@ -2,7 +2,7 @@
 feature_id: 071-optionsdesk-wide-spread-opportunity
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: drafted
+status: completed
 created_at: '2026-08-31'
 updated_at: '2026-08-31'
 ---
