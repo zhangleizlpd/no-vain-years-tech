@@ -136,6 +136,10 @@ const ALLOWLIST = new Set([
   // application config。🚨 重生成会连带抹掉「既有字段的值有没有被改动」这个判据 —— 那正是
   // SC-005 要答的, 故仅在契约蓄意变更且人工确认后才用。
   'NVY_064_WRITE_BASELINE',
+  // 070 SC-002 golden 基线夹具的一次性重生成开关 (optionsdesk-070.offline-ladder.it.spec.ts)。
+  // 同 064 那条: 平时恒不设 ⇒ 夹具只读; 置 1 才写出四视图快照。vitest gate, 非 application
+  // config。🚨 重生成会抹掉「既有字段逐值不变」这个判据 —— 那正是 FR-012 要答的。
+  'NVY_070_WRITE_BASELINE',
   // Optional server config WITH a schema .default() in apps/server/src/config/*.config.ts —
   // the default (and its rationale) is the single source of truth in the .config.ts itself,
   // so these are NOT duplicated in .env.example. Set via env only to override. Adding a NEW
