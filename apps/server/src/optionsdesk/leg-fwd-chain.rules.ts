@@ -418,3 +418,186 @@ export function convexCleanLadder(nodes: readonly FwdLadderNode[]): ConvexCleanR
   audits.sort((a, b) => a.dteDays - b.dteDays);
   return { chain, audits };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// tick 推断 + 共线合并 (T004, ADR-0068 决策 3 步骤 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 美股期权标准报价档 (plan D1 tick 决策的 fallback 半): premium < $3 ⇒ 0.05 / ≥ $3 ⇒ 0.10。
+ * penny 名单**蓄意不维护** —— 推断优先, 标准档只兜底; penny 票的细粒度由报价自身推出来。
+ */
+export const STANDARD_TICK_BREAKPOINT = new Prisma.Decimal('3');
+export const STANDARD_TICK_BELOW_BREAKPOINT = new Prisma.Decimal('0.05');
+export const STANDARD_TICK_ABOVE_BREAKPOINT = new Prisma.Decimal('0.10');
+
+const DECIMAL_ZERO = new Prisma.Decimal(0);
+
+/** 有限小数的 Euclid 最大公约 —— 报价是有限位小数, `mod` 精确, 必收敛。`O(log)`。 */
+function gcdDecimal(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
+  let x = a.abs();
+  let y = b.abs();
+  while (!y.isZero()) {
+    const r = x.mod(y);
+    x = y;
+    y = r;
+  }
+  return x;
+}
+
+/**
+ * tick 推断 (plan D1 tick 决策): 梯内全部 bid/ask 的**最小正增量公约粒度** —— 去重排序后取
+ * 相邻差的 Euclid 公约。tick 是**观测量不是旋钮** (FR-003 判据零自由参数不破)。`O(n log n)`。
+ *
+ * · 可推断 ⇒ `min(公约粒度, 标准档)`。🚨 **钳到标准档是敏感方向逼出来的**: 共线阈值
+ *   `tick/(K−bid)` 随 tick 放大 ⇒ tick 高估 = **过度合并** = 伪装混合的入口 —— 疏报价梯
+ *   (仅两三个远离的报价) 推出的"粒度"是证据不足的高估, 只许往细调 (发现 penny 粒度),
+ *   不许往粗调。⚠️ plan §D1 那句「tick 高估 ⇒ 少合并」方向写反了, 同名 spec ⑤ 臂以
+ *   两跑对照把真实方向钉死 (069 impl 期勘误, 判据本体不变)。
+ * · 不可推断 (可用报价 < 2 个) ⇒ 标准档兜底, 分界看**梯内最小正报价** (取最细的适用档,
+ *   同一保守方向); 全梯无报价 ⇒ 0.05 (最细档, 此时链也为空, tick 不参与任何判定)。
+ */
+export function inferLadderTick(legs: readonly FwdLadderLeg[]): Prisma.Decimal {
+  const quotes: Prisma.Decimal[] = [];
+  for (const leg of legs) {
+    if (leg.bid !== null && leg.bid.greaterThan(DECIMAL_ZERO)) quotes.push(leg.bid);
+    if (leg.ask !== null && leg.ask.greaterThan(DECIMAL_ZERO)) quotes.push(leg.ask);
+  }
+  quotes.sort((a, b) => a.comparedTo(b));
+  const unique = quotes.filter((q, i) => i === 0 || !q.equals(quotes[i - 1]));
+
+  const standard =
+    unique.length > 0 && unique[0].lessThan(STANDARD_TICK_BREAKPOINT)
+      ? STANDARD_TICK_BELOW_BREAKPOINT
+      : unique.length > 0
+        ? STANDARD_TICK_ABOVE_BREAKPOINT
+        : STANDARD_TICK_BELOW_BREAKPOINT;
+
+  if (unique.length < 2) return standard;
+  let granularity = unique[1].minus(unique[0]);
+  for (let i = 2; i < unique.length; i += 1) {
+    granularity = gcdDecimal(granularity, unique[i].minus(unique[i - 1]));
+  }
+  return granularity.lessThan(standard) ? granularity : standard;
+}
+
+/** 共线合并产物 —— 合并后净链 + #4 除名条目 (mergedIntoDteDays = **终态**段尾, 经吸收传递)。 */
+export interface CollinearMergeResult {
+  readonly chain: readonly NetChainNode[];
+  readonly audits: readonly MarchAuditEntry[];
+}
+
+/**
+ * tick-分辨率共线合并 (FR-003)。复杂度最坏 `O(n²)` (逐轮扫描到不动点; 梯长 ≤ 十几, 实际远小),
+ * 每轮 `O(n)`。
+ *
+ * · 判共线: 节点对弦**纵向**垂距 `d < tick/(K−bid)` (d 取 periodRate 量纲 = cum 偏差 / 365)。
+ *   取纵向而非斜向 —— 报价噪声只沿费率轴作用, 斜垂距混量纲无定义; 「凸起可被一个最小报价
+ *   单位翻转」对应的正是纵向偏差。原点 (T=0, cum=0) 与凸包同锚 ⇒ 链头也可并入其后继。
+ * · 除名并段: 节点除名、其 `memberDteDays` 并入右邻; 合并 fwd = 子段时间加权平均 —— 由
+ *   cum 差商**代数保证** (`(cumC − cumA)/(T_C − T_A)` 即加权均值), 不另算。吸收可传递
+ *   (连续 ≥ 3 共线), 终值与除名次序无关 (加权平均可结合, spec Edge Case)。
+ * · 非共线段 MUST NOT 合并 (伪装混合否决) —— 判据只有上式一条, 零自由参数。
+ */
+export function mergeCollinearNodes(
+  strike: Prisma.Decimal,
+  chain: readonly NetChainNode[],
+  tick: Prisma.Decimal,
+): CollinearMergeResult {
+  interface Segment {
+    readonly node: NetChainNode;
+    members: number[];
+  }
+  const segments: Segment[] = chain.map((node) => ({ node, members: [...node.memberDteDays] }));
+  /** 除名档 dte → 除名时的垂距 (tick 单位), 供 #4 证据。 */
+  const removalTicks = new Map<number, Prisma.Decimal>();
+
+  // 逐轮扫到不动点 —— 除名让新邻接对成形, 连续共线段经吸收传递收敛; 加权平均可结合 ⇒
+  // 终值与除名次序无关。末档永不除名 (无右邻; 它是段尾可交易档)。
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i + 1 < segments.length; i += 1) {
+      const left = i === 0 ? null : segments[i - 1].node;
+      const mid = segments[i];
+      const right = segments[i + 1];
+      const leftCum = left === null ? DECIMAL_ZERO : left.cumRateDays;
+      const leftDte = left === null ? 0 : left.dteDays;
+      const chordCum = leftCum.plus(
+        right.node.cumRateDays
+          .minus(leftCum)
+          .times(mid.node.dteDays - leftDte)
+          .div(right.node.dteDays - leftDte),
+      );
+      const deviation = mid.node.cumRateDays.minus(chordCum).abs().div(DAYS_PER_YEAR);
+      const reserveScale = strike.minus(mid.node.bid);
+      if (!deviation.lessThan(tick.div(reserveScale))) continue;
+      removalTicks.set(mid.node.dteDays, deviation.times(reserveScale).div(tick));
+      right.members = [...mid.members, ...right.members];
+      segments.splice(i, 1);
+      changed = true;
+      i -= 1;
+    }
+  }
+
+  const slope = (prev: NetChainNode | null, node: NetChainNode): Prisma.Decimal =>
+    prev === null
+      ? node.annualized
+      : node.cumRateDays.minus(prev.cumRateDays).div(node.dteDays - prev.dteDays);
+
+  const mergedChain: NetChainNode[] = segments.map((segment, i) => ({
+    ...segment.node,
+    memberDteDays: segment.members,
+    fwd: slope(i === 0 ? null : segments[i - 1].node, segment.node),
+  }));
+
+  // #4 条目在终态生成 —— mergedIntoDteDays 经吸收传递后恒指**幸存**段尾, 不指中途又被
+  // 除名的档 (FR-014: 条目要能在弹层里指到一个真实存在的行)。
+  const audits: MarchAuditEntry[] = [];
+  for (const segment of segments) {
+    for (const member of segment.members) {
+      if (member === segment.node.dteDays) continue;
+      audits.push({
+        category: 'collinear_merged',
+        dteDays: member,
+        mergedIntoDteDays: segment.node.dteDays,
+        evidence: marchEvidence({ chordDistanceTicks: removalTicks.get(member) ?? null }),
+      });
+    }
+  }
+  audits.sort((a, b) => a.dteDays - b.dteDays);
+  return { chain: mergedChain, audits };
+}
+
+/** 清链管道组合产物 (T006 接线的单入口): 净链 + A/D 家族审计 + 本梯 tick。 */
+export interface CleanFwdChainResult {
+  readonly chain: readonly NetChainNode[];
+  readonly audits: readonly MarchAuditEntry[];
+  readonly tick: Prisma.Decimal;
+}
+
+/**
+ * 清链管道组合入口: 组梯 (#13) → 凸包 (#2/#3) → tick 推断 → 共线合并 (#4)。
+ * 报价护栏 (#1) 在召回层已前置 (`leg-recall.rules.ts`), 不在此重复。
+ *
+ * 📌 同档 #3 与 #4 并发时**保留 #3** (疑似陈旧比并段更有行动价值; FR-014 恰一条) ——
+ * 该档仍出现在段尾的 `memberDteDays` 里, 并段事实不丢。
+ */
+export function cleanFwdChain(
+  strike: Prisma.Decimal,
+  legs: readonly FwdLadderLeg[],
+): CleanFwdChainResult {
+  const built = buildFwdLadder(strike, legs);
+  const hulled = convexCleanLadder(built.nodes);
+  const tick = inferLadderTick(legs);
+  const merged = mergeCollinearNodes(strike, hulled.chain, tick);
+
+  const keptByDte = new Map<number, MarchAuditEntry>();
+  for (const entry of [...built.audits, ...hulled.audits, ...merged.audits]) {
+    const existing = keptByDte.get(entry.dteDays);
+    if (existing !== undefined && existing.category === 'absolute_dominated') continue;
+    keptByDte.set(entry.dteDays, entry);
+  }
+  const audits = [...keptByDte.values()].sort((a, b) => a.dteDays - b.dteDays);
+  return { chain: merged.chain, audits, tick };
+}

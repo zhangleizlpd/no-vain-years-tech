@@ -7,6 +7,8 @@ import {
   MARCH_EXCLUSION_FAMILY_OF,
   buildFwdLadder,
   convexCleanLadder,
+  inferLadderTick,
+  mergeCollinearNodes,
   type FwdLadderLeg,
 } from './leg-fwd-chain.rules';
 
@@ -221,5 +223,133 @@ describe('leg-fwd-chain.rules — 凸包剔劣 + 劣档三类标 (T003, FR-002 /
     expect(
       chain.every((n) => n.memberDteDays.length === 1 && n.memberDteDays[0] === n.dteDays),
     ).toBe(true);
+  });
+});
+
+describe('leg-fwd-chain.rules — tick 推断 + 共线合并 (T004, FR-003)', () => {
+  const legsOf = (pairs: [number, string][], over: Partial<FwdLadderLeg> = {}) =>
+    pairs.map(([d, b]) => rung(d, b, over));
+
+  /** 由目标 cum (费率·天) 反解 bid: P = K·c/(365+c) ⇒ periodRate×365 恰为 c —— 曲线形状可控。 */
+  const bidForCum = (cum: string) => D('100').times(cum).div(D('365').plus(cum));
+
+  const ladderFromCums = (pairs: [number, string][]): FwdLadderLeg[] =>
+    pairs.map(([d, c]) => ({ dteDays: d, bid: bidForCum(c), ask: null, openInterest: 100 }));
+
+  const hullChain = (strike: string, pairs: [number, string][]) =>
+    convexCleanLadder(buildFwdLadder(D(strike), legsOf(pairs)).nodes).chain;
+
+  it('① 垂距恰低于阈值 ⇒ 除名并段, 合并 fwd = 子段时间加权平均 (手算对照)', () => {
+    // B(60d) 落 A(30d)—C(90d) 弦上方 +0.002 rate-days (凹形微凸: 凸包保留, 偏差远低于 1 tick)
+    const built = buildFwdLadder(
+      D('100'),
+      ladderFromCums([
+        [30, '7.5'],
+        [60, '11.402'],
+        [90, '15.3'],
+      ]),
+    );
+    const { chain, audits } = mergeCollinearNodes(
+      D('100'),
+      convexCleanLadder(built.nodes).chain,
+      D('0.05'),
+    );
+    expect(chain.map((n) => n.dteDays)).toEqual([30, 90]);
+    expect(chain[1].memberDteDays).toEqual([60, 90]);
+    // 合并值 = 子段时间加权: (fwd_AB×30 + fwd_BC×30) / 60, 与终态段 fwd 逐值一致
+    const weighted = built.rungs[0].fwd.times(30).plus(built.rungs[1].fwd.times(30)).div(60);
+    expect(chain[1].fwd.minus(weighted).abs().toNumber()).toBeLessThan(1e-12);
+    expect(audits).toHaveLength(1);
+    expect(audits[0].category).toBe('collinear_merged');
+    expect(audits[0].dteDays).toBe(60);
+    expect(audits[0].mergedIntoDteDays).toBe(90);
+    expect(audits[0].evidence.chordDistanceTicks!.lessThan(D('1'))).toBe(true);
+  });
+
+  it('② 垂距不低于阈值 ⇒ 禁合并 (伪装混合否决: 30d@20% + 150d@8% 不得调和出单段 10%)', () => {
+    // cum: 30d → 6 (头段 20%), 180d → 18 (后 150 天 @8%); 头档对 原点—180d 弦的偏差是真信号
+    const chain = hullChain('100', [
+      [30, '1.617'],
+      [180, '4.70'],
+    ]);
+    const { chain: merged, audits } = mergeCollinearNodes(D('100'), chain, D('0.10'));
+    expect(audits).toEqual([]);
+    expect(merged.map((n) => n.dteDays)).toEqual([30, 180]);
+    // 未被调和: 头段仍 ~20%, 后段仍 ~8%, 不存在 ~10% 的单一混合段
+    expect(merged[0].fwd.toNumber()).toBeCloseTo(0.2, 2);
+    expect(merged[1].fwd.toNumber()).toBeCloseTo(0.08, 2);
+  });
+
+  it('③ 连续 ≥ 3 节点共线 ⇒ 跨段吸收传递, 终值与除名次序无关 (= 整段直接差商)', () => {
+    // 60/90/120d 沿 30d—150d 直线 (斜率 0.12) 上方 +3/4/3 毫 rate-days 的凹形微凸 ——
+    // 凸包全保留 (斜率仍严格递减), 而三点对各自局部弦的偏差全部低于 1 tick
+    const built = buildFwdLadder(
+      D('100'),
+      ladderFromCums([
+        [30, '7.5'],
+        [60, '11.103'],
+        [90, '14.704'],
+        [120, '18.303'],
+        [150, '21.9'],
+      ]),
+    );
+    const { chain, audits } = mergeCollinearNodes(
+      D('100'),
+      convexCleanLadder(built.nodes).chain,
+      D('0.05'),
+    );
+    expect(chain.map((n) => n.dteDays)).toEqual([30, 150]);
+    expect(chain[1].memberDteDays).toEqual([60, 90, 120, 150]);
+    // 次序无关的机器形态: 终值 = 整段一步差商 (加权平均可结合 ⇒ 任何除名次序同值)
+    const direct = chain[1].cumRateDays.minus(chain[0].cumRateDays).div(120);
+    expect(chain[1].fwd.minus(direct).abs().toNumber()).toBeLessThan(1e-12);
+    expect(audits.map((a) => a.dteDays)).toEqual([60, 90, 120]);
+    expect(
+      audits.every((a) => a.category === 'collinear_merged' && a.mergedIntoDteDays === 150),
+    ).toBe(true);
+  });
+
+  it('④ tick 推断: 混合 0.05/0.10 报价梯 ⇒ 公约粒度 0.05', () => {
+    const tick = inferLadderTick(
+      legsOf([
+        [30, '1.85'],
+        [60, '2.40'],
+        [90, '3.10'],
+      ]),
+    );
+    expect(tick.equals(D('0.05'))).toBe(true);
+  });
+
+  it('⑤ tick 不可推断 ⇒ 标准档兜底; 疏网格高估 ⇒ 钳回标准档 (高估方向 = 过度合并, 两跑对照钉死)', () => {
+    // (a) 不可推断: 单一报价按 $3 分界取标准档; 全无报价取最细档
+    expect(inferLadderTick([rung(30, '2.50', { ask: null })]).equals(D('0.05'))).toBe(true);
+    expect(inferLadderTick([rung(30, '4.40', { ask: null })]).equals(D('0.10'))).toBe(true);
+    expect(inferLadderTick([rung(30, '1', { bid: null, ask: null })]).equals(D('0.05'))).toBe(true);
+    // (b) 疏网格推出 1.00 (证据不足的高估) ⇒ 钳回标准档 0.10
+    const sparse = inferLadderTick([
+      rung(30, '3.20', { ask: null }),
+      rung(90, '4.20', { ask: null }),
+    ]);
+    expect(sparse.equals(D('0.10'))).toBe(true);
+    // (c) 敏感方向: 同一构造 (B 偏离弦 ~5e-3 rate) 在 tick=1.00 下会被并段、0.10 下不会 ——
+    //     tick 高估 ⇒ 阈值放大 ⇒ 多合并, 这正是钳住的理由 (plan §D1 括注方向勘误的机器留档)
+    const midOff = convexCleanLadder(
+      buildFwdLadder(
+        D('100'),
+        ladderFromCums([
+          [30, '7.5'],
+          [60, '13.2'],
+          [90, '15.3'],
+        ]),
+      ).nodes,
+    ).chain;
+    const coarse = mergeCollinearNodes(D('100'), midOff, D('1.00'));
+    const fine = mergeCollinearNodes(D('100'), midOff, D('0.10'));
+    expect(coarse.chain.some((n) => n.dteDays === 60)).toBe(false);
+    expect(coarse.audits.some((a) => a.category === 'collinear_merged' && a.dteDays === 60)).toBe(
+      true,
+    );
+    expect(fine.chain.map((n) => n.dteDays)).toEqual([30, 60, 90]);
+    expect(fine.audits).toEqual([]);
   });
 });
