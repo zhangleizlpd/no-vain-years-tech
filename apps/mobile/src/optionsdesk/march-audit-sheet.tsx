@@ -11,7 +11,11 @@
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import type { LegMarchStrikeResponse } from '@nvy/api-client';
 
-import { marchAuditSheetView, type MarchFamilyKind } from './march-audit.rules';
+import {
+  marchAuditSheetView,
+  type MarchAuditBlockContext,
+  type MarchFamilyKind,
+} from './march-audit.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 
 const COPY = OPTIONSDESK_COPY.march;
@@ -31,12 +35,17 @@ const FAMILY_BAR_CLASS: Readonly<Record<MarchFamilyKind, string>> = {
 export interface MarchAuditSheetProps {
   /** 被点开的那个 K 的行军块；调用方保证非 null 才渲本组件。 */
   strikeView: LegMarchStrikeResponse;
+  /**
+   * 070：链级口径与行军模式（题头口径行 / 模式标示的唯一来源）。
+   * 🚨 **必填** —— 缺省会让离线弹层静默丢掉口径行（FR-003），故让漏接线在编译期就红。
+   */
+  block: MarchAuditBlockContext;
   onClose: () => void;
 }
 
 /** 每 K 审计弹层。复杂度 O(档数)。 */
-export function MarchAuditSheet({ strikeView, onClose }: MarchAuditSheetProps) {
-  const view = marchAuditSheetView(strikeView);
+export function MarchAuditSheet({ strikeView, block, onClose }: MarchAuditSheetProps) {
+  const view = marchAuditSheetView(strikeView, block);
   if (view === null) return null;
 
   return (
@@ -82,6 +91,14 @@ export function MarchAuditSheet({ strikeView, onClose }: MarchAuditSheetProps) {
             ) : null}
           </View>
 
+          {/* ── 070 口径行：这一梯的判决建立在哪一天的收盘上（FR-003）────────
+              🚨 收盘档才渲：13 类逐条目因此**不加**昨收尾缀，口径在题头一次说清（FR-004）。 */}
+          {view.basisLine !== null ? (
+            <Text className="text-[11px] text-ink-muted" testID="optionsdesk-march-audit-basis">
+              {view.basisLine}
+            </Text>
+          ) : null}
+
           {/* ── 净链小结 + φ 只读读数（数值全来自契约，零本地计算）──────── */}
           <Text
             className="font-mono text-[10px] text-ink-muted"
@@ -95,6 +112,16 @@ export function MarchAuditSheet({ strikeView, onClose }: MarchAuditSheetProps) {
               testID="optionsdesk-march-audit-phi"
             >
               {view.phiLine}
+            </Text>
+          ) : null}
+          {/* ── 070 θ 模式被动标示（FR-009）：默认 φ 态恒不渲 ⇒ 零噪音；
+              入口只在 server 配置，🚫 这里 MUST NOT 出现任何切换控件。 */}
+          {view.modeLine !== null ? (
+            <Text
+              className="font-mono text-[10px] text-ink-muted"
+              testID="optionsdesk-march-audit-mode"
+            >
+              {view.modeLine}
             </Text>
           ) : null}
 

@@ -4,13 +4,18 @@
 //
 // 🚨 **一切判定只从契约 `march` 来**（ADR-0064 不变量 ②）：本文件零处对 φ / 净链形状重算，
 //    证据 → 文本走 `optionsdesk-copy.ts` 的 13 类格式化单点（server 零拼串, plan Guardrail 6）。
+//
+// 070 T005 补两行题头（FR-003 口径行 / FR-009 模式标示）—— 同样零判定：口径与模式都是**链级
+// 契约字段**原样呈现，🚫 MUST NOT 由 `march` 内容反推「这是不是离线档」。
 import type {
   LegMarchAuditResponse,
   LegMarchAuditResponseCategory,
   LegMarchStrikeResponse,
   LegMarchStrikeResponseVerdict,
+  LegTableResponseMarchMode,
 } from '@nvy/api-client';
 
+import type { LegBlockPriceKind } from './leg-tier-bar.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 
 const COPY = OPTIONSDESK_COPY.march;
@@ -62,13 +67,54 @@ export interface MarchAuditSheetView {
   readonly verdictLabel: string;
   /** 推荐态的档读数（`180d`）；其余判决恒 `null`。 */
   readonly recommendedLabel: string | null;
+  /**
+   * 070 口径行（FR-003）：收盘档 ⇒ 「基于 {交易日} 收盘」；实时档 / 时点形态不对 ⇒ `null` 不渲。
+   * 这一行是**全弹层的口径承载**，13 类逐条目因此不加昨收尾缀（FR-004）。
+   */
+  readonly basisLine: string | null;
   /** 净链小结一行（段内/净链/剔/并/标 五计数）。 */
   readonly summaryLine: string;
-  /** φ 只读读数（取自审计证据里的 φ / 档界，逐条扫首个有值者；全缺 ⇒ `null` 不渲）。 */
+  /**
+   * φ 只读读数（取自审计证据里的 φ / 档界，逐条扫首个有值者；全缺 ⇒ `null` 不渲）。
+   * 🚨 θ 模式下恒 `null` —— 那一轮的判据是年化 argmax，把再投资线继续渲在那儿就是两模式混用。
+   */
   readonly phiLine: string | null;
+  /** 070 模式标示（FR-009）：θ 模式一行；默认 φ 模式恒 `null`（零新元素 = 零噪音）。 */
+  readonly modeLine: string | null;
   /** 两类诚实空态文案（FR-016，中性非错误）；推荐态恒 `null`。 */
   readonly emptyText: string | null;
   readonly rows: readonly MarchAuditRowView[];
+}
+
+/**
+ * 070 弹层的**区块级口径上下文**（链级三字段，全部原样来自契约）。
+ * 069 既有调用点不传 ⇒ 走 {@link NO_BLOCK_CONTEXT}：无口径行、无模式标示、φ 读数原样。
+ */
+export interface MarchAuditBlockContext {
+  readonly priceKind: LegBlockPriceKind | null;
+  /** 链级时点：收盘档 = 交易日 `YYYY-MM-DD`，实时档 = ISO 时刻（064 FR-010「粒度即档位」）。 */
+  readonly quoteAsOf: string | null;
+  readonly marchMode: LegTableResponseMarchMode;
+}
+
+const NO_BLOCK_CONTEXT: MarchAuditBlockContext = {
+  priceKind: null,
+  quoteAsOf: null,
+  marchMode: null,
+};
+
+/**
+ * 口径行（FR-003）。收盘档且时点解得出交易日才渲，其余一律 `null`。O(1)。
+ *
+ * 🚨 **形态不对宁可不渲**（同 `formatQuoteSessionDay` 那条）：`new Date('2026-08-28')` 解得出
+ * 一个像模像样的时刻，一旦让时分秒渗进这一行，「昨收」就伪装成了「刚才」。此处只取日期部分 ——
+ * 🚨 与档位条的短形 `MM-DD` 刻意不同：弹层要的是**可追溯到哪一天**（FR-003），年份不能丢。
+ */
+function basisLineOf(block: MarchAuditBlockContext): string | null {
+  if (block.priceKind !== 'eod_close' || block.quoteAsOf === null) return null;
+  return /^\d{4}-\d{2}-\d{2}/.test(block.quoteAsOf)
+    ? COPY.basisEodClose(block.quoteAsOf.slice(0, 10))
+    : null;
 }
 
 /** 尾零收干净的行权价（`92.0000` → `92`）。 */
@@ -89,17 +135,22 @@ function rowOf(entry: LegMarchAuditResponse): MarchAuditRowView {
 }
 
 /**
- * 该 K 的行军块 → 弹层内容（FR-014）。`strikeView = null`（建仓 / 全腿 / 离线，或该 K 无
- * 判决）⇒ `null` = 无弹层可开（FR-019 的结构保证 —— 入口判定与内容组装同一个来源）。O(档)。
+ * 该 K 的行军块 → 弹层内容（FR-014）。`strikeView = null`（建仓 / 全腿，或该 K 无判决）
+ * ⇒ `null` = 无弹层可开（FR-019 的结构保证 —— 入口判定与内容组装同一个来源）。O(档)。
+ *
+ * 070：`block` 带链级口径与模式（省略 ⇒ 两行皆不渲、φ 读数原样，069 既有调用体例逐字段不变）。
  */
 export function marchAuditSheetView(
   strikeView: LegMarchStrikeResponse | null,
+  block: MarchAuditBlockContext = NO_BLOCK_CONTEXT,
 ): MarchAuditSheetView | null {
   if (strikeView === null) return null;
-  const phiRaw =
-    strikeView.audits
-      .map((entry) => entry.evidence.phi ?? entry.evidence.tierFloor)
-      .find((value) => value !== null) ?? null;
+  const isTheta = block.marchMode === 'theta';
+  const phiRaw = isTheta
+    ? null
+    : (strikeView.audits
+        .map((entry) => entry.evidence.phi ?? entry.evidence.tierFloor)
+        .find((value) => value !== null) ?? null);
   return {
     title: COPY.sheetTitle(trimStrike(strikeView.strike)),
     verdict: strikeView.verdict,
@@ -108,8 +159,10 @@ export function marchAuditSheetView(
       strikeView.verdict === 'recommended' && strikeView.recommendedDteDays !== null
         ? `${strikeView.recommendedDteDays}d`
         : null,
+    basisLine: basisLineOf(block),
     summaryLine: COPY.chainSummary(strikeView.summary),
     phiLine: phiRaw === null ? null : COPY.phiReadout(phiRaw),
+    modeLine: isTheta ? COPY.modeThetaReadout : null,
     emptyText:
       strikeView.verdict === 'no_qualified'
         ? COPY.emptyNoQualified

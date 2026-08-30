@@ -356,7 +356,7 @@ describe('legRowBandOut — 068 带外横档判定 (FR-009 呈现侧)', () => {
   });
 });
 
-describe('leg-row.rules — 069 行军行内标注 (T008, FR-016 / FR-019)', () => {
+describe('leg-row.rules — 行军行内标注 (069 T008 FR-016/FR-019 · 070 T005 FR-004)', () => {
   const evidence = (
     over: Partial<MarchAuditEvidenceResponse> = {},
   ): MarchAuditEvidenceResponse => ({
@@ -448,6 +448,38 @@ describe('leg-row.rules — 069 行军行内标注 (T008, FR-016 / FR-019)', () 
   it('⑤ 建仓/全腿/离线 (march=null) 恒无章无标 (FR-019 结构保证)', () => {
     expect(legRowMarchRecommended(row('92.0000', 180), null)).toBe(false);
     expect(legRowInferiorMark(row('92.0000', 45), null)).toBeNull();
+  });
+
+  it('070 ⑥ 报价异常微标: 该行 DTE 命中 #1 crossed_quote ⇒ 出「叉」标; 别档 / 别 K 不出', () => {
+    // 🚨 离线专属分支天然成立: 实时口径下交叉腿被召回层剔出 pool ⇒ 根本不在行集合 (070 T001),
+    //    故判定函数**无需知道档位** —— 命中 #1 就是「这行是收盘口径下被标出来的交叉腿」。
+    const march = [
+      strikeView({
+        audits: [
+          {
+            dteDays: 60,
+            mergedIntoDteDays: null,
+            category: 'crossed_quote',
+            evidence: evidence({ bid: '3.0000', ask: '2.9000' }),
+          },
+          {
+            dteDays: 90,
+            mergedIntoDteDays: null,
+            category: 'fwd_below_phi',
+            evidence: evidence(),
+          },
+        ],
+      }),
+    ];
+    expect(legRowInferiorMark(row('92.0000', 60), march)).toBe('crossed');
+    // 行军家族仍不上行内标 (069 分工不变: 行内只标报价几何四类)
+    expect(legRowInferiorMark(row('92.0000', 90), march)).toBeNull();
+    expect(legRowInferiorMark(row('96.0000', 60), march)).toBeNull();
+    expect(OPTIONSDESK_COPY.march.inferiorMarks.crossed).toBe('叉');
+  });
+
+  it('070 ⑦ 建仓 / 全腿 (march=null) 恒无报价异常标 —— 与凹/陈/并同一条结构护航', () => {
+    expect(legRowInferiorMark(row('92.0000', 60), null)).toBeNull();
   });
 
   it('文案映射: 13 类逐条 (键集穷举 = 契约枚举; 证据 → 「fwd 6.0% < φ 15%」式)', () => {
