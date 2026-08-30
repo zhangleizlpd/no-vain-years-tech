@@ -1579,6 +1579,18 @@ export class LegResponse {
     example: 'realtime',
   })
   priceKind!: string;
+
+  @ApiProperty({
+    description:
+      '068 带标 (呈现语义): in = 同批实时 Δ 落意图带 (执行目标) / out = 带外横档 (保留供比价)。' +
+      '离线档 / 实时 Δ 缺失 ⇒ null。🚨 只描述不筛选 —— 客户端 MUST NOT 拿它当过滤器隐藏行, ' +
+      '带外横档的存在就是它的功能 (比价)',
+    enum: ['in', 'out'],
+    type: 'string',
+    nullable: true,
+    example: 'in',
+  })
+  bandStatus!: string | null;
 }
 
 /** DTE 段 —— 一个维度、值是闭区间 (052 T010 六维表第 3 项)。 */
@@ -2182,6 +2194,7 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
       greeksComplete: leg.greeksComplete,
       // 🚫 逐行原样带出, MUST NOT 拿 `view.priceKind` 填 —— 部分缺失时两者本就不同 (FR-009)。
       priceKind: leg.priceKind,
+      bandStatus: leg.bandStatus,
     })),
     gateCounts: {
       removedByPremiumFloor: view.gateCounts.removedByPremiumFloor,

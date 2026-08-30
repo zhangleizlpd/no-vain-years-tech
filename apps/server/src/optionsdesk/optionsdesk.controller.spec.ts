@@ -535,6 +535,18 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       expect(document.paths['/api/v1/optionsdesk/anchors']!.post!.responses['409']).toBeDefined();
     });
 
+    it('🚨 068 bandStatus: LegResponse 增 nullable 枚举带标 (in/out; 离线恒 null)', () => {
+      const props = (
+        document.components!.schemas!.LegResponse as {
+          properties: Record<string, { type?: string; nullable?: boolean; enum?: string[] }>;
+        }
+      ).properties;
+      expect(props.bandStatus).toBeDefined();
+      expect(props.bandStatus.type).toBe('string');
+      expect(props.bandStatus.nullable).toBe(true);
+      expect(props.bandStatus.enum).toEqual(['in', 'out']);
+    });
+
     it('🚨 nullable string 字段显式 type:string —— 否则 orval 误生 objectmap', () => {
       const props = (
         document.components!.schemas!.AnchorResponse as {
@@ -709,6 +721,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       earningsMark: null,
       greeksComplete: true,
       priceKind,
+      bandStatus: null,
     };
   }
 

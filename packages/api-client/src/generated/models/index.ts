@@ -153,6 +153,7 @@ export * from './legEarningsMarkResponse';
 export * from './legEarningsMarkResponseMark';
 export * from './legGateCountsResponse';
 export * from './legResponse';
+export * from './legResponseBandStatus';
 export * from './legResponseBasis';
 export * from './legResponsePriceKind';
 export * from './legResponseTier';

@@ -236,6 +236,8 @@ export interface LegView {
    * **都渲染得出一张完整的表**, 只有逐行标才分得出来。
    */
   priceKind: PriceKind;
+  /** 068 带标 —— 原样从 `LegChainRow.bandStatus` 带上来, 本层零加工 (呈现语义, 判据在检索层)。 */
+  bandStatus: 'in' | 'out' | null;
 }
 
 /**
@@ -712,6 +714,7 @@ export class GetLegsUseCase {
         isMonthlyChain: monthlyExpiries.has(dateOnlyOf(expiryDate)),
         earningsMark: marks.get(dateOnlyOf(expiryDate)) ?? null,
         greeksComplete: row.greeksComplete,
+        bandStatus: row.bandStatus,
         // 064 `FR-009`: 逐行档位原样带出 —— 🚫 MUST NOT 拿链级那个数填 (部分缺失时两者不同)。
         priceKind: row.priceKind,
       } satisfies LegView;

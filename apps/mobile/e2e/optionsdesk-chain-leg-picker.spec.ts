@@ -271,6 +271,7 @@ const LEG_BASE: Omit<LegResponse, 'code'> = {
   greeksComplete: true,
   // 064 `FR-009`: 档位。mock 后端默认收盘档, 实时档的呈现分支归 T011 自己的用例。
   priceKind: 'eod_close',
+  bandStatus: null,
 };
 
 /** 缺省成员视角（= 收租腿基线的归属）。 */

@@ -7,6 +7,7 @@
  */
 import type { LegActivityResponse } from './legActivityResponse';
 import type { LegEarningsMarkResponse } from './legEarningsMarkResponse';
+import type { LegResponseBandStatus } from './legResponseBandStatus';
 import type { LegResponseBasis } from './legResponseBasis';
 import type { LegResponsePriceKind } from './legResponsePriceKind';
 import type { LegResponseTier } from './legResponseTier';
@@ -70,4 +71,6 @@ export interface LegResponse {
   greeksComplete: boolean;
   /** **本行**数值的时间口径 (064 FR-009): realtime = 上面七列 (bid/ask/挂牌量/Δ/IV/成交量) 取自**此刻**的盘口; eod_close = 保留库内收盘档。🚨 **逐行成立, 与区块级那个 priceKind 不是同一个数** —— 实时源返回集里少几个合约是常态 (停牌 / 刚摘牌), 那几行标 eod_close 而区块级仍是 realtime。🚫 呈现侧 MUST NOT 拿区块级档位给每一行着色: 整页统一标实时与整页统一降级**都渲染得出一张完整的表**, 只有逐行标才分得出来 */
   priceKind: LegResponsePriceKind;
+  /** 068 带标 (呈现语义): in = 同批实时 Δ 落意图带 (执行目标) / out = 带外横档 (保留供比价)。离线档 / 实时 Δ 缺失 ⇒ null。🚨 只描述不筛选 —— 客户端 MUST NOT 拿它当过滤器隐藏行, 带外横档的存在就是它的功能 (比价) */
+  bandStatus: LegResponseBandStatus;
 }
