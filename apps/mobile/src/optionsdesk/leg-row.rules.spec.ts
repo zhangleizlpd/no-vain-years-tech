@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { LegResponse } from '@nvy/api-client';
 
 import {
+  legRowBandOut,
   LEG_SCROLL_REGION_WIDTH,
   LEG_STICKY_COL_WIDTH,
   LEG_TABLE_COLUMNS,
@@ -332,5 +333,19 @@ describe('费率百分数的精度随口径走（窄列可读，且不虚增有�
     expect(formatRatePct(null, 'weekly')).toBeNull();
     expect(formatRatePct('', 'weekly')).toBeNull();
     expect(formatRatePct('abc', 'annualized')).toBeNull();
+  });
+});
+
+describe('legRowBandOut — 068 带外横档判定 (FR-009 呈现侧)', () => {
+  it('out ⇒ 打「带外」标 (保留供比价, 不删不藏)', () => {
+    expect(legRowBandOut('out')).toBe(true);
+  });
+
+  it('in ⇒ 不打标 —— 带内是默认呈现 (执行目标), 逐行加标只是噪点 (052 FR-029 同款纪律)', () => {
+    expect(legRowBandOut('in')).toBe(false);
+  });
+
+  it('null (离线档 / 实时 Δ 缺失) ⇒ 不打标 —— 无带语义的行不冒充带外', () => {
+    expect(legRowBandOut(null)).toBe(false);
   });
 });

@@ -165,6 +165,18 @@ function isGapRow(leg: Pick<LegResponse, 'greeksComplete'>): boolean {
   return !leg.greeksComplete;
 }
 
+/**
+ * 068 带外横档判定（FR-009 呈现侧）。复杂度 O(1)。
+ *
+ * 🚨 **判据只从契约 `bandStatus` 来**（ADR-0064 不变量 ②「客户端 MUST NOT 反推」）——
+ * 🚫 不拿 `absDelta` 对带界重算一遍：带界是服务端标定参数，客户端算第二份必漂移。
+ * 🚨 只有 `'out'` 打标：带内是默认呈现（执行目标），逐行加「带内」标只是噪点；`null`
+ * （离线档 / 实时 Δ 缺失）无带语义，不冒充带外。打标不删行 —— 横档的存在就是它的功能（比价）。
+ */
+export function legRowBandOut(bandStatus: LegResponse['bandStatus']): boolean {
+  return bandStatus === 'out';
+}
+
 /** 行权价（本片只含认沽 ⇒ 恒 `P`）。O(1)。 */
 export function strikeLabel(leg: Pick<LegResponse, 'strike'>): string {
   return `${trimZeros(leg.strike)} P`;

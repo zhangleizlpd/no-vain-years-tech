@@ -110,6 +110,7 @@ const COPY = {
   rateBasisAnnualized: '年化',
   fitBadge: '贴合',
   monthlyBadge: '月',
+  bandOutBadge: '带外',
   actionPlaceOco: '挂 OCO',
   actionHold: '暂不挂',
   rowTotal: (total: number) => `共 ${total} 行`,
@@ -768,6 +769,37 @@ test('051 T011 — SC-005：推荐标在其所属的**每个**视角同值（标
       0,
     );
   }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 068 T008 —— 带外横档标（FR-009 呈现侧：打标不删行，判据只从契约来）
+// ════════════════════════════════════════════════════════════════════════════
+
+test('068 T008 — bandStatus=out 打「带外」标；in / null 不打（带内是默认呈现，行照常在表内）', async ({
+  page,
+}) => {
+  const banded: typeof tableA = {
+    ...tableA,
+    book: tableA.book.map((entry) => ({
+      ...entry,
+      leg: {
+        ...entry.leg,
+        bandStatus:
+          entry.leg.code === C1 ? ('out' as const) : entry.leg.code === C2 ? ('in' as const) : null,
+      },
+    })),
+  };
+  await installLegMock(page, { [SYMBOL_A]: banded });
+  await openDetail(page, SYMBOL_A);
+  await gotoTab(page, 'all', VIEW_A.all);
+
+  await expect(page.getByTestId(`optionsdesk-detail-leg-band-out-${C1}`)).toHaveText(
+    COPY.bandOutBadge,
+  );
+  // 打标不删行 —— 带外横档的存在就是它的功能（比价）。
+  await expect(page.getByTestId(rowId(C1))).toBeVisible();
+  await expect(page.getByTestId(`optionsdesk-detail-leg-band-out-${C2}`)).toHaveCount(0);
+  await expect(page.getByTestId(`optionsdesk-detail-leg-band-out-${C3}`)).toHaveCount(0);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
