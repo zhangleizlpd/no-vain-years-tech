@@ -57,9 +57,10 @@ interface LoadedChain {
  * (都是一张收盘档的表)。只报一个 `null` 的话, 聚合出来的那条曲线分不出「熔断传导过来了」还是
  * 「这只锚今天根本没进过 tick」。
  */
-interface ResolvedWindow {
-  readonly window: LegWindow | null;
-  /** 定窗基准的采集时刻; 锚不存在 / 该列从未写过 ⇒ `null`。 */
+interface ResolvedBasis {
+  /** 窗基准 spot (三级降级产物); 三级全落空 ⇒ `null` (调用方标 `window_basis_stale` 回落)。 */
+  readonly spot: Prisma.Decimal | null;
+  /** 基准的采集时刻 (一级 = tick 时刻, 二级 = 补发批 `asOf`); 锚不存在 / 该列从未写过 ⇒ `null`。 */
   readonly basisAt: Date | null;
 }
 
@@ -670,27 +671,35 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    *
    * 复杂度: 1 次自有表点查 + `O(1)` 派生。
    */
-  private async resolveWindow(target: {
+  private async resolveWindowBasis(target: {
     readonly symbol: string;
-    readonly market: string;
     readonly now: Date;
-  }): Promise<ResolvedWindow> {
+  }): Promise<ResolvedBasis> {
     const anchor = await this.prisma.anchor.findUnique({
       where: { ticker: target.symbol },
       select: { intradayPrice: true, intradayAt: true },
     });
-    if (anchor === null || anchor.intradayPrice === null) {
-      return { window: null, basisAt: anchor?.intradayAt ?? null };
-    }
+    // 一级: 盘中基准新鲜 (068 FR-006 / state_branch 4)。
     // 🚨 新鲜度闸复用 061 的单点 {@link isIntradayFresh} —— 🚫 MUST NOT 在这里再判一次「多久算旧」:
     // 两处阈值必漂移, 而漂移的表现是「窗按一个已经没人维护的价定出来」, 结果照样渲染得出来。
-    if (!isIntradayFresh(anchor.intradayAt, target.now)) {
-      return { window: null, basisAt: anchor.intradayAt };
+    if (
+      anchor !== null &&
+      anchor.intradayPrice !== null &&
+      isIntradayFresh(anchor.intradayAt, target.now)
+    ) {
+      return { spot: anchor.intradayPrice, basisAt: anchor.intradayAt };
     }
-    return {
-      window: bootstrapWindowFor(target.market, anchor.intradayPrice),
-      basisAt: anchor.intradayAt,
-    };
+    // 二级: 实时补一发 (068 FR-006 / state_branch 5) —— 空码批只取标的自身那行。
+    // 🚫 MUST NOT 新造 TTL 缓存 (第二个会漂移的 spot 真相源); 补发至多一次 (FR-013 预算)。
+    if (this.snapshots !== null) {
+      const batch = await this.fetchQuotes(this.snapshots, target, []);
+      const last = batch?.rows.find((row) => !row.isOption)?.last ?? null;
+      if (batch !== null && last !== null) {
+        return { spot: new Prisma.Decimal(last), basisAt: batch.asOf };
+      }
+    }
+    // 三级: 显式落空 (state_branch 6) —— 🚫 MUST NOT 拿昨收定窗 (陈旧轴), 调用方零再外呼回落。
+    return { spot: null, basisAt: anchor?.intradayAt ?? null };
   }
 
   /**
@@ -790,7 +799,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
 
     // ② 定窗基准缺失 / 陈旧 ⇒ 窗无从定起 ⇒ 整体回落, 仍是零外呼 (`state_branch` 14)。
     // 🚫 MUST NOT 退而用收盘价定出一个窗来: 那是拿昨天的边界去圈今天的合约, 且外表看不出来。
-    const { window, basisAt } = await this.resolveWindow(target);
+    const basis = await this.resolveWindowBasis(target);
+    const basisAt = basis.basisAt;
+    const window = basis.spot === null ? null : bootstrapWindowFor(target.market, basis.spot);
     if (window === null) {
       this.warnDegraded('window_basis_stale', target.symbol, {
         basisAt: basisAt === null ? null : basisAt.toISOString(),
