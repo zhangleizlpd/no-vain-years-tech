@@ -129,14 +129,25 @@ harness 的 plan mode → agent 写了 `docs/private/plans/2026-08/08-31-anchor-
   且 MUST 删除其「待办」栏。
 - **FR-012**: 置已读 MUST 跟随「消息栏是否为当前激活栏」，MUST NOT 跟随路由 focus
   （否则停在审批栏也会把所有预警静默置已读）。
+- **FR-013**: 两条采纳路径（App 审批面与 `ops/bin/anchor-approve.sh`）MUST 写出**形状一致**的
+  `CONSUMED` 行 —— 即脚本也 MUST 回填 `consumed_anchor_id`。
+  🚨 这是本片**新造出来的**风险：`consumed_anchor_id` 是 072 引入的，脚本不回填的话，
+  「有锚但没有 submission 指向它」那条孤儿锚检出查询会被**每一条脚本处置过的行**喂出假阳性，
+  而那条查询正是 FR-004 半截态可观测性的唯一兑现方式。
 
 ## Success Criteria
 
-- 47 条积压可以完全在 App 内处置完，不需要开一次 psql。
-- 在 approve use case 里写一句 `prisma.anchor.update` ⇒ 探针 `EXIT=1` 并点名行号。
-- 冷启动值域加第 11 档而不归类 ⇒ 穷尽性单测当场红。
-- 采纳/驳回后列表当场刷新，**不需要重启 App**。
-- 公开构建下审批与消息两栏均不可见、深链被重定向。
+> 稳定标识 —— tasks / plan 一律按 `SC-00N` 引用（体例同 071 的 `SC-003`）。
+
+- **SC-001**: 47 条积压可以完全在 App 内处置完，**不需要开一次 psql**。
+- **SC-002**: 在 approve use case 里写一句 `prisma.anchor.update` ⇒ 探针 `EXIT=1` 并点名行号；
+  撤销后回 `EXIT=0`。
+- **SC-003**: 冷启动值域加第 11 档而不归类 ⇒ 穷尽性单测当场红。
+- **SC-004**: 采纳 / 驳回后列表当场刷新，**不需要重启 App**（验证顺序必须是先访问列表再操作，
+  反序是假绿）。
+- **SC-005**: 公开构建（`FEATURE_MARKETS_ENABLED=false`）下审批与消息两栏均不可见、深链被重定向。
+- **SC-006**: 脚本与 App 两条采纳路径写出的 `CONSUMED` 行形状一致 ⇒ 孤儿锚检出查询零假阳性
+  （FR-013 的可验形式）。
 
 ## Clarifications
 

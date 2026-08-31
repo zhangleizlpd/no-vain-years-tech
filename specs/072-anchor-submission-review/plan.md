@@ -32,13 +32,24 @@ context7_verified: []
 
 ## Constitution Check _(mandatory gate)_
 
-- [x] **Passed（含两处显式偏离，已在 spec / PR body / ADR-0069 三处留痕）**：
-  ① **单 feature 单 PR 被拆成两个** —— PR #312（schema + 探针 + 文档 + server API + 契约 regen）
-  与后续 mobile PR。契约三件套（server impl + api-client regen + mobile 消费）**本应同 PR**；
-  本片把 regen 与 server 同 PR（客户端不 stale），mobile 消费滞后一个 PR。
-  ② **未走 specify→clarify→plan 前置** —— 见 spec §过程留痕。
-- TDD 红绿闭环：每条新判据都做了定向变异留档（见 tasks 各 `verify`）。
-- 扁平 / 贫血 / 护城河：零新表以外的结构变化，跨 ctx 面只多一个 marketdata 读端点方法。
+- [ ] **Failed —— 4 条 CRITICAL，由 `/speckit-analyze`（2026-08-31 补跑）判定。**
+
+  🚨 **本节此前自评 `[x] Passed` 是错的**：它一边描述违规一边勾通过。Constitution 冲突按定义
+  即 CRITICAL，**不得稀释、重释或默默忽略**（analyze skill 的 Constitution Authority 条款）。
+  自评为 Passed 的 Check 比没有 Check 更有害 —— 它让后来者以为这道门走过了。
+
+  | # | 违背 | 原文 | 处置 |
+  | --- | --- | --- | --- |
+  | C1 | **Principle V 单 PR** | 「跨端 feature **也走单 PR** …… 全部同 PR 原子 merge」；且「旧『跨端两段式（PR1 server / PR2 mobile）』自 v1.3.0（2026-06-13）**退役**」 | ✅ **已处置**：mobile 并入 PR #312，恢复单 PR |
+  | C2 | **Principle I Mockup 卡点** | 「前端 UI feature 在 clarify 与 plan 之间**强制**插一步 Mockup……跳过 Mockup 直接 plan = 违规」 | ⏳ mobile 动工前补 `/mockup-gen 072` |
+  | C3 | **Principle II Test-First**（NON-NEGOTIABLE） | 「测试必须先写，看到 RED 才写实现」；「禁反模式：写完 impl 再补测试」 | ❌ 已发生不可回溯（T006/T012 等先 impl 后测）。缓解：每条判据都做了定向变异证明能红。T014 起严格红→绿 |
+  | C4 | **Principle I 禁跳步**（NON-NEGOTIABLE） | 「直接跳到 implement 等于绕过 spec 一致性保障」 | ❌ 已发生（五步全跳）。补跑 specify/plan/tasks/analyze 三件套 + 本节 |
+  | C5 | **Principle III 原子 task** | 「禁反模式：多 task 合一 commit / 写完 impl 喊 /commit 事后再开 PR 改 tasks.md」 | ❌ 已发生（4 个 commit 承载 13 个 task）。T014 起每 task 独立 commit + 当场翻 `[X]` |
+
+- 其余原则**通过**：扁平 / 贫血 / 护城河零违背（Principle IV）；类型同步链跑了完整两步
+  （Principle V 的 Nx 链部分）；Quality Gates 的 required checks 全绿。
+- ⚠️ Quality Gates #4「AI agent default auto-merge」按其**明示例外**（不可逆操作）未挂 —— migration
+  含 prod 数据变更，PR body 已 flag 建议人工合并。这一条是**合规的例外**，不是违规。
 
 ## Phase 0 Research Gates _(mandatory)_
 
