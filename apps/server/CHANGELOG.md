@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.43.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.42.0...server-v0.43.0) (2026-08-31)
+
+
+### Features
+
+* **optionsdesk:** 锚待审箱审批线上化 —— 服务端 5 端点 + 「我的」三栏改版 ([#312](https://github.com/zhangleizlpd/no-vain-years-tech/issues/312)) ([f6104ec](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f6104eccafe050ab1871ec8117a4335fa2728ee0))
+
 ## [0.42.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.41.2...server-v0.42.0) (2026-08-31)
 
 
