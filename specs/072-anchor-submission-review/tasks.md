@@ -111,6 +111,8 @@ updated_at: '2026-08-31'
   🚨 **分档只认服务端的 `needsAttention`**（判据与那十个值同处一点）。e2e 里特意让一条 `backfilled` 带 `needsAttention=true` —— 抄名单的实现会把它掉进「已完成」，而线上的表现正是**某个永久缺口在界面上悄悄降级**。这条数据在真实系统里不该出现，它存在的唯一目的就是让「抄名单」这个错误可被证伪。
   📌 「本批新锚」取自待审箱 `status=CONSUMED` 行的 `consumedAnchorId`，**不另存本地清单** —— 本地清单会在换设备 / 清缓存后凭空消失，而那正是「我上次采纳的锚跑成什么了」最需要它的时候。
   📌 缺席（服务端查不到该 anchorId）在屏上是「还有 N 只在排队 · 未出结局」，既不叫失败也不叫未知（sb-18）。
-- [ ] T022 [Contract-Smoke] **契约冒烟**：`apps/mobile/e2e/contract-smoke/072-anchor-submission.contract.ts` 覆盖屏上解构的每个字段 → verify: `check-contract-smoke-drift.ts` 绿。
+- [X] T022 [Contract-Smoke] **契约冒烟**：`072-anchor-submission.contract.ts` —— 403 准入 → 提权 → 列表/详情逐字段 → 采纳真落锚 → 驳回 skipped → 冷启动读面；注册进 `run.ts`，并给 `check-contract-smoke-drift.ts` 的 `PREFIX_TO_MODULE` 补 `anchorSubmission → optionsdesk`（缺映射本身就会告警）→ verify: `RUN_REAL_BACKEND_SMOKE=true nx run mobile:contract-smoke` **30/30 passed**（真 server + testcontainers PG）。
+  🚨 **它当场揪出两处我凭空假设的契约**，而 hermetic e2e 永远戳不穿（那边的响应是我自己造的）：① `account.id` 是 BigInt 自增，我按 uuid 拼 SQL；② approve / reject 都是 `@HttpCode(200)`（处置一条已存在的待审，不是造新资源），我按 201 断言。**这两次红就是这条 spec「能红」的实证**，不是补出来的变异。
+  📌 靶心四条：admin-only 是真的（同一 token 提权前 403、提权后通 —— 客户端那一位只管渲染）；屏上解构的每个键真的在响应里（`instrumentName` / `asofSuggested` / `note` 断的是**键在**而非值非空 —— null 与 undefined 在屏上处置完全不同）；采纳后 `consumedAnchorId` 回指落成的锚（FR-013 孤儿检出的前提）；冷启动对还没出行的锚**不返回该行**（sb-18 缺席即排队）。
 - [ ] T023 [Gate] **state_branches 覆盖补齐**（plan §Gate 0.4 的 partially-deferred 项）：20 条分支逐条对上 IT/e2e 的 `it()` → verify: 覆盖表进 PR body，届时那个 hard-gate checkbox 才是真的。
 - [ ] T024 [Docs] **`anchor-approve.sh` 降级为 break-glass**（FR-013; SC-006）：`mark_consumed()` 补写 `consumed_anchor_id`（否则两条路径写出形状不同的 CONSUMED 行，孤儿锚检出假阳性）；「八种 outcome」改十种；`watch` 注释「这四种」改五种 → verify: `shellcheck` 绿。
