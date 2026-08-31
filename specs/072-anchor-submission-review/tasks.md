@@ -93,7 +93,12 @@ updated_at: '2026-08-31'
   🚨 **实现期撞到 spec 洞，已停下请示并定案（2026-08-31）**：FR-012 只写了「不许跟路由 focus 走」，没回答「**默认**落在消息栏算不算激活」。第一版按「挂载即置已读」写，被两条测试当场揪出：① 新写的 FR-012 用例 —— admin 停在审批栏却已发出置已读（冷启动种子不持久化 `isAdmin`，首帧按非 admin 渲染，消息栏短暂成为默认栏）；② 既有 `alert.spec` 未读角标 —— App 落地屏就是「我的」，非 admin 的默认栏正是消息栏 ⇒ **开一次 App 就把 021 的未读红点清光**。**定案：只有用户主动点选消息栏才置已读**（`selected` 而非 `active`），默认落栏不算。
   ⚠️ 只断「零置已读」，**不断**「列表一次都没拉」—— 冷启动那一帧消息栏会短暂挂载并拉一次 EP6（sb-20 本就接受「审批栏要等 /me 落地才出现」）。那是无副作用的读；连它一起断 = 断一条本设计没做出的保证。
   🔁 `MessageCenterScreen` 根加 `testID="alert-message-center"`：同一份卡片列表现在有两个宿主，而「我的」屏在 tab navigator 里仍挂着 ⇒ 裸 `getByText('预警触发')` 双命中且 `.first()` 先命中被 `aria-hidden` 的那份（实撞 `Expected visible / Received hidden`）。`alert.spec` 三条卡片断言随之钉进那一屏。
-- [ ] T018 [Mobile] **审批列表 + 内嵌面板**（FR-001; SC-001; US1）：行首「中文名 + 代号」、disposition/asof 徽标、多选批量驳回 → verify: hermetic e2e。
+- [X] T018 [Mobile] **审批列表 + 内嵌面板**（FR-001; SC-001; US1）：`anchor-submission.rules.ts`（徽标 / 事实行 / 市场筛 / 多选判定）+ `anchor-submission-row.tsx`（两宿主共用）+ `anchor-submission-panel.tsx`（「我的」审批栏，limit 4 + 「查看全部」）+ `anchor-submission-list-screen.tsx`（全屏 + 多选批量驳回）+ 路由常量与薄 route → verify: 单测 **14 条**；hermetic e2e **3 条**（面板徽标 / 批量驳回 skipped / chips 切走不参与驳回）；全量 markets-ON **258 passed**、markets-OFF **5 passed**。三发变异各红在对的用例：`UNKNOWN` 折进 `OK` ⇒ **2 红**；`visibleSelection` 忽略可见性 ⇒ **3 红**；屏内接线绕过它（直接 `[...selected]`）⇒ e2e **1 红**（「已选 2 项」）。
+  🚨 **看不见的选中项不许被驳回**：切市场 chip 会让已选行离开视野，而驳回是写操作 —— 「屏上选了 1 条、实际驳回 2 条」是不可接受的偏差。判据 `visibleSelection` 单独成函数就是为了能被变异证伪。
+  🚨 `skipped` 逐条成句（FR-007）：e2e 里用 `consumeExternally()` 模拟「这一行在别的设备上被处置掉了」—— 那是一个**真实事件**，不是「第 N 次调用换一份答案」（mock 仍是契约镜像）。
+  ⚠️ 待审箱路由挂在 `/(app)/optionsdesk/` 下并在 `markets-feature-gate.spec.ts` 追了第 12 条深链：「我的」那两栏靠**渲染门**，深链靠**路由门**，两道门盖的是同一件事的两个入口，缺一个就等于没门。`optionsdesk-routes.spec.ts` 另加了「不长在 (tabs) 下」的结构断言。
+  ⚠️ 两个坑留痕：① `@nvy/api-client` 的**运行时**枚举常量在 mobile vitest 下解析不到（`Failed to resolve entry`），整个 spec 文件 0 用例跑起来**而 exit code 照样是 1** —— 在变异语境下极易读成「断言生效」；判据文件一律 `import type` + 字面量。② 同一条待审在内嵌面板与全屏列表各渲一次，profile 屏在栈里仍挂着 ⇒ 行定位必须钉进容器（`optionsdesk-submission-panel` / `-list`），否则 strict mode 双命中。
+  🔁 T016/T017 里断「审批内容即将推出」的两条 e2e 已按当时的标注改断面板容器；profile.spec 补 pin 待审箱边界（空箱）。
 - [ ] T019 [Mobile] **审批详情 + 复述闸 + 三出口对话框**（FR-002, FR-005; US2, US3; state_branches 5–7,10,11）：RHF + zod（4 字段 + 审核备注）；`refresh` 时逐条列出会被冲掉的人工位；`asofSuggested` 为 null 时**不出现**「改送」出口 → verify: e2e 覆盖三出口。
 - [ ] T020 [Mobile] **缓存失效包装 hook**（SC-004; US4）：approve/reject 复用 `useInvalidateAnchorQueries` → verify: e2e **先访问列表**再采纳再返回（反序是假绿）。
 - [ ] T021 [Mobile] **冷启动结局面板**（FR-009; US5; state_branches 17,18）：十档全显、五档置顶；缺席 = 排队中 → verify: 单测覆盖「缺席不等于失败」。

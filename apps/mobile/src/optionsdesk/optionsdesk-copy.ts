@@ -924,6 +924,60 @@ export const OPTIONSDESK_COPY = {
     loadFailed: '锚列表加载失败，请下拉重试',
   },
 
+  /** 072 T018 —— 锚待审箱（「我的」审批栏内嵌面板 + 全屏列表，mockup 帧 ① / ⑤⑥⑦）。 */
+  anchorSubmission: {
+    title: '待审估值',
+    /** 内嵌面板段头 + 去全屏列表的入口。 */
+    panelTitle: '待审估值',
+    seeAll: '查看全部',
+    /** 市场 chips（单选，体例同锚管理）。 */
+    filterAll: '全部',
+    filterUs: '美股',
+    filterHk: '港股',
+    /** 计数条：`共 45 条待审 · 提交方 friend2`；提交方缺失时只出前半句。 */
+    pendingCount: (n: number) => `共 ${n} 条待审`,
+    submitterSuffix: (who: string) => ` · 提交方 ${who}`,
+    /**
+     * 🚨 截断提示必须显式呈现（server 的 `truncated`）—— 不分页 + 硬上限的组合下，
+     * 「屏上就这些」与「屏上只是前 500 条」是两件事，人得知道自己看到的不是全部。
+     */
+    truncated: '条数触到单次上限，仅显示前一批；处置掉一些后余下的会自动出现。',
+    /** 处置徽标（判据在 anchor-submission.rules.ts）。 */
+    dispositionCreate: '将建锚',
+    dispositionRefresh: '将覆盖既有锚',
+    /** 口径日五档里的四档可疑态；OK 不出徽标。 */
+    asofToday: '口径日是今天',
+    asofFuture: '口径日在未来',
+    asofNonTrading: '口径日落在非交易日',
+    asofUnknown: '口径日日历未覆盖',
+    hasNote: '有附言',
+    vPrefix: (v: string) => `V ${v}`,
+    asofPrefix: (asof: string) => `口径日 ${asof}`,
+    /** 多选批量驳回（采纳不可批量 —— 判据是副作用数量，FR-007）。 */
+    select: '选择',
+    cancelSelect: '取消',
+    selectTitle: '选择要驳回的',
+    selectedCount: (n: number) => `已选 ${n} 项`,
+    clearSelection: '全不选',
+    reject: '驳回',
+    rejectConfirmTitle: (n: number) => `驳回选中的 ${n} 条？`,
+    rejectConfirmMessage: '驳回后这些估值不再出现在待审箱；提交方可以改好再投一次。',
+    rejectCancel: '再想想',
+    /**
+     * 🚨 `skipped` 必须逐条落到人眼里（FR-007 明禁「折成一句 ok」）—— 那些行是在别的设备上、
+     * 或被 anchor-approve.sh 处置掉的，人必须知道有行在自己脚下动过。
+     */
+    rejectDone: (n: number) => `已驳回 ${n} 条`,
+    rejectSkipped: (n: number) => `${n} 条在你操作前已被处置，未重复驳回`,
+    rejectFailed: '驳回失败，请重试',
+    dismissNotice: '知道了',
+    emptyTitle: '待审箱已清空',
+    emptyHint: '友方投递的新估值会自动出现在这里，无需手动刷新。',
+    emptyFiltered: '该市场当前没有待审条目',
+    loadFailed: '待审箱加载失败，请重试',
+    retry: '重试',
+  },
+
   /** 锚表单屏（T022，mockup 帧 ⑥⑦⑧）。 */
   anchorForm: {
     createTitle: '新建锚',

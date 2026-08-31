@@ -26,6 +26,8 @@ const REFRESH_URL = '**/api/v1/accounts/refresh-token';
 // 072 T017：「我的」消息栏内嵌的是预警消息中心（EP6 列表 / EP8 置已读）。
 const MESSAGES_URL = '**/api/v1/alert/messages';
 const MARK_READ_URL = '**/api/v1/alert/messages/mark-read';
+// 072 T018：admin 的默认栏是审批栏，进 tab 即拉待审箱（EP: 列出待审估值）。
+const SUBMISSIONS_URL = '**/api/v1/optionsdesk/anchor-submissions';
 
 const SCREENSHOT_DIR = 'playwright-report/screenshots';
 
@@ -116,6 +118,9 @@ test.beforeEach(async ({ page }) => {
   // 的理由 pin 其 boot 边界（空列表 → 渲染空态，无需真后端）。需要真数据的用例自己覆盖注册。
   await mockJson(page, MESSAGES_URL, 200, { messages: [], nextCursor: null }, 'GET');
   await mockJson(page, MARK_READ_URL, 200, { unread: 0 }, 'POST');
+  // 同上：pin 待审箱边界（空箱 → 渲空态）。待审箱的真行为归
+  // optionsdesk-anchor-submissions.spec.ts，本文件只管三栏结构。
+  await mockJson(page, SUBMISSIONS_URL, 200, { items: [], total: 0, truncated: false }, 'GET');
 
   page.on('console', (msg) => {
     if (msg.type() === 'error') console.log('[browser-console]', msg.text());
@@ -207,9 +212,9 @@ test('072 US6 — admin 的「我的」：三栏全出、默认落审批栏', as
   await expect(page.getByRole('tab', { name: '审批' })).toBeVisible();
   await expect(page.getByRole('tab', { name: '消息' })).toBeVisible();
   await expect(page.getByRole('tab', { name: '知识库' })).toBeVisible();
-  // 默认栏 = 审批（admin 是唯一有活要干的人）。
-  // 🔁 T018 把审批栏换成真列表后，这条改断列表容器而不是占位文案。
-  await expect(page.getByText('审批内容即将推出')).toBeVisible();
+  // 默认栏 = 审批（admin 是唯一有活要干的人）。断的是**面板容器**而不是文案：
+  // 待审箱的行/徽标/驳回归 optionsdesk-anchor-submissions.spec.ts，这里只认「哪一栏在渲」。
+  await expect(page.getByTestId('optionsdesk-submission-panel')).toBeVisible();
 
   await page.getByRole('tab', { name: '消息' }).tap();
   await expect(page.getByText('暂无提醒消息')).toBeVisible();
@@ -260,7 +265,7 @@ test('072 FR-012 — 置已读只跟随消息栏激活：停在审批栏不清�
   });
 
   await waitForBootedRoot(page);
-  await expect(page.getByText('审批内容即将推出')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-submission-panel')).toBeVisible();
 
   // 停在审批栏 ⇒ 一发置已读都没有。
   // ⚠️ 只断置已读，**不断**「列表一次都没拉」：冷启动种子不持久化 isAdmin，首帧按非 admin

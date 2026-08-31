@@ -55,3 +55,14 @@ export const OPTIONSDESK_UNDERLYING_PATHNAME = '/(app)/optionsdesk/underlying/[s
 export function optionsdeskChainReportRoute(symbol: string) {
   return `/(app)/optionsdesk/chain-report/${encodeURIComponent(symbol)}` as const;
 }
+
+// ── 072 T018：锚待审箱（FR-001 / US1） ──────────────────────────────────────
+//
+// 🚨 同样长在 `/(app)/optionsdesk/` 下 —— 待审箱读的是估值锚的上游，与期权台同族且
+//    同档合规门控（继承 `_layout` 那道 `MarketsRouteGuard`）。挂到 `/(app)/profile/…`
+//    之类的地方 = 逃出门控且不会红：「我的」页那两栏靠渲染门，而深链靠路由门，两道门
+//    盖的是同一件事的两个入口，缺一个就等于没门。
+
+/** 待审估值列表（「我的」审批栏「查看全部」进入）。 */
+export const OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE =
+  '/(app)/optionsdesk/anchor-submissions' as const;

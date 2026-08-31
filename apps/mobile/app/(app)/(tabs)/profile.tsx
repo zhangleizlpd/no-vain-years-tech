@@ -31,6 +31,7 @@ import { useState } from 'react';
 import Svg, { Circle, Defs, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import { AlertMessageTab } from '~/alert';
 import { DrawerMenuButton } from '~/core/app-shell-drawer';
+import { AnchorSubmissionPanel, OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE } from '~/optionsdesk';
 import { useMe } from '~/core/api/use-me';
 import { FEATURE_MARKETS_ENABLED } from '~/core/feature-flags';
 import { ossThumbCacheKey, ossThumbUrl } from '~/profile-image/oss-image';
@@ -60,6 +61,8 @@ const COPY = {
 
 // 内嵌消息栏的截断条数（mockup 帧 ②）——「查看全部」通向全屏消息中心。
 const MESSAGE_PANEL_LIMIT = 3;
+// 内嵌审批栏的截断条数（mockup 帧 ①）——「查看全部」通向全屏待审列表。
+const REVIEW_PANEL_LIMIT = 4;
 
 const FOLLOWING_COUNT = 5;
 const FOLLOWERS_COUNT = 12;
@@ -363,6 +366,8 @@ export default function ProfileScreen() {
   const pushSettings = () => router.push('/(app)/settings');
   // 072 T017：消息栏「查看全部」→ 全屏消息中心（021 屏 6，同一份卡片列表的另一个宿主）。
   const pushMessages = () => router.push('/(app)/alert/messages');
+  // 072 T018：审批栏「查看全部」→ 全屏待审列表（期权台二级页栈，继承 MarketsRouteGuard）。
+  const pushSubmissions = () => router.push(OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE);
 
   return (
     <View style={{ flex: 1, backgroundColor: tokens.colors.surface.DEFAULT }}>
@@ -385,10 +390,12 @@ export default function ProfileScreen() {
           {/* 🚨 ScrollView 恒三子节点（Hero / SlideTabs / 内容）—— stickyHeaderIndices 按位置
               索引，任何一个子节点被条件渲染掉都会让 sticky 头静默移位。内容分发在这层之内。 */}
           <View className="bg-surface min-h-[260px]">
-            {/* 消息栏**只在激活时挂载**（公开构建里它不可见 ⇒ 不挂载 ⇒ 零 alert 请求）；
-                但**置已读另判**：只有用户主动点选该栏才发（FR-012 + 08-31 决策），
-                否则开一次 App 落在「我的」就把未读清光了。审批栏 → T018。 */}
-            {activeTab === 'messages' ? (
+            {/* 两个受控栏**只在激活时挂载**（公开构建里它们不可见 ⇒ 不挂载 ⇒ 零 alert /
+                零 optionsdesk 请求）；消息栏的**置已读另判**：只有用户主动点选该栏才发
+                （FR-012 + 08-31 决策），否则开一次 App 落在「我的」就把未读清光了。 */}
+            {activeTab === 'review' ? (
+              <AnchorSubmissionPanel limit={REVIEW_PANEL_LIMIT} onSeeAll={pushSubmissions} />
+            ) : activeTab === 'messages' ? (
               <AlertMessageTab
                 limit={MESSAGE_PANEL_LIMIT}
                 userActivated={shouldMarkMessagesRead(selectedTab, activeTab)}

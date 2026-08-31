@@ -2,6 +2,10 @@
 // app/ 树下只放薄 route，屏体与逻辑全在本目录（per fe-directory-structure）。
 export { RadarScreen } from './radar-screen';
 export { AnchorListScreen } from './anchor-list-screen';
+// 072 T018：锚待审箱（「我的」审批栏内嵌面板 + 全屏列表 + 批量驳回）
+export { AnchorSubmissionListScreen } from './anchor-submission-list-screen';
+export { AnchorSubmissionPanel, type AnchorSubmissionPanelProps } from './anchor-submission-panel';
+export { AnchorSubmissionRow, type AnchorSubmissionRowProps } from './anchor-submission-row';
 export { AnchorFormScreen } from './anchor-form-screen';
 export { OPTIONSDESK_COPY } from './optionsdesk-copy';
 export { ZoneBand, type ZoneBandProps } from './zone-band';
@@ -37,6 +41,7 @@ export { LEG_PICKER_TABS, type LegPickerTab } from './leg-picker.rules';
 export { LEG_TIER_LEGEND, type LegEarningsChip, type LegCellTone } from './leg-picker-copy';
 export {
   OPTIONSDESK_RADAR_ROUTE,
+  OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
