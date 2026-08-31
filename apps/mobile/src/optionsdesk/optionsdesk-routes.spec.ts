@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   optionsdeskAnchorSubmissionRoute,
+  OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
   OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
@@ -39,6 +40,7 @@ const ALL_ROUTES = [
   OPTIONSDESK_UNDERLYING_PATHNAME,
   OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
   optionsdeskAnchorSubmissionRoute('142'),
+  OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
 ];
 
 describe('046 T023 —— 两个新屏的路由常量', () => {

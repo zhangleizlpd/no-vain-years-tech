@@ -1038,6 +1038,23 @@ export const OPTIONSDESK_COPY = {
     networkFailed: '网络不可用，请稍后重试',
     rateLimited: '操作太频繁，请稍后再试',
     detailLoadFailed: '待审详情加载失败，请重试',
+
+    // ── T021 冷启动结局面板（mockup 帧 ⑭；FR-009 / US5） ──
+    coldStartTitle: '冷启动结局',
+    coldStartEntry: '冷启动结局',
+    coldStartBatch: (n: number) => `本批 ${n} 只新锚`,
+    coldStartSettled: (settled: number, total: number) => `${settled} / ${total} 已出结局`,
+    /** 🚨 sb-18：没出结局 = 排队中或正在跑，**不是失败**（十档结局全是终态）。 */
+    coldStartQueueHint: '队列串行（一次跑一只，分钟级）。还没出结局 = 排队中或正在跑，不是失败。',
+    coldStartPending: (n: number) => `还有 ${n} 只在排队 · 未出结局`,
+    /** 🚨 分档判据在服务端（needsAttention），呈现层不抄名单。 */
+    coldStartAttentionGroup: (n: number) => `需人工介入 · ${n}`,
+    coldStartAttentionHint: '期权 EOD 无跨日补救，这些是补不回来的窟窿。',
+    coldStartDoneGroup: (n: number) => `已完成 · ${n}`,
+    coldStartSessionPrefix: (day: string) => `目标交易日 ${day}`,
+    coldStartNoSession: '未定位到交易日',
+    coldStartEmpty: '还没有采纳过的锚 —— 采纳一条会新建锚的待审后，这里会出现它的冷启动结局。',
+    coldStartLoadFailed: '冷启动结局加载失败，请重试',
   },
 
   /** 锚表单屏（T022，mockup 帧 ⑥⑦⑧）。 */

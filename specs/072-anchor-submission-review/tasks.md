@@ -107,7 +107,10 @@ updated_at: '2026-08-31'
   🚨 **第一版 e2e 是我自己判掉的假绿**：用 `page.goto('/optionsdesk/anchors')` 观察 —— 而 `page.goto` 在 web 上是整页重载，react-query 缓存直接清空，失效做没做都会绿。改成全程 App 内导航后才可证伪。「先访问列表再采纳」（tasks 原文点名的反序陷阱）与「不许整页重载」是同一个陷阱的两面。
   📌 最硬的一条断言落在**「我的」审批栏面板**的计数上：它在 tab navigator 里全程没有重挂，计数变了就只可能是失效触发的重取 —— 重挂 / 冷取都解释不了。本仓 `staleTime=30s`，30 秒内重挂不会自动重取，这是列表那条断言也成立的前提。
   ⚠️ **锚列表 / 雷达那两把 key 没有可证伪的覆盖**：要在 App 内到达锚列表得先过雷达屏（那套 mock 另有一整份），本 task 未搭。它们与待审箱同一个判据、同一处代码，但「少失效一处」的失败模式在这里**测不出来** —— 如实记一条覆盖不到，而不是拿一条恒真断言冒充。
-- [ ] T021 [Mobile] **冷启动结局面板**（FR-009; US5; state_branches 17,18）：十档全显、五档置顶；缺席 = 排队中 → verify: 单测覆盖「缺席不等于失败」。
+- [X] T021 [Mobile] **冷启动结局面板**（FR-009; US5; state_branches 17,18）：`anchor-cold-start.rules.ts`（进度 / 分档 / 取批）+ `anchor-cold-start-screen.tsx`（十档 `outcome` **原样呈现**、需人工介入置顶、排队中单列）→ verify: 单测 **11 条** + e2e 1 条；全量 markets-ON **265 passed**、markets-OFF **5 passed**（深链第 14 条）。三发变异各红在对的用例：「缺席即视为已出结局」⇒ 单测 **2 红**；客户端自己抄一份 outcome 名单 ⇒ 单测 **2 红** + e2e **1 红**。
+  🚨 **分档只认服务端的 `needsAttention`**（判据与那十个值同处一点）。e2e 里特意让一条 `backfilled` 带 `needsAttention=true` —— 抄名单的实现会把它掉进「已完成」，而线上的表现正是**某个永久缺口在界面上悄悄降级**。这条数据在真实系统里不该出现，它存在的唯一目的就是让「抄名单」这个错误可被证伪。
+  📌 「本批新锚」取自待审箱 `status=CONSUMED` 行的 `consumedAnchorId`，**不另存本地清单** —— 本地清单会在换设备 / 清缓存后凭空消失，而那正是「我上次采纳的锚跑成什么了」最需要它的时候。
+  📌 缺席（服务端查不到该 anchorId）在屏上是「还有 N 只在排队 · 未出结局」，既不叫失败也不叫未知（sb-18）。
 - [ ] T022 [Contract-Smoke] **契约冒烟**：`apps/mobile/e2e/contract-smoke/072-anchor-submission.contract.ts` 覆盖屏上解构的每个字段 → verify: `check-contract-smoke-drift.ts` 绿。
 - [ ] T023 [Gate] **state_branches 覆盖补齐**（plan §Gate 0.4 的 partially-deferred 项）：20 条分支逐条对上 IT/e2e 的 `it()` → verify: 覆盖表进 PR body，届时那个 hard-gate checkbox 才是真的。
 - [ ] T024 [Docs] **`anchor-approve.sh` 降级为 break-glass**（FR-013; SC-006）：`mark_consumed()` 补写 `consumed_anchor_id`（否则两条路径写出形状不同的 CONSUMED 行，孤儿锚检出假阳性）；「八种 outcome」改十种；`watch` 注释「这四种」改五种 → verify: `shellcheck` 绿。

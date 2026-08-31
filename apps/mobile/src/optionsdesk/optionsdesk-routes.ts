@@ -75,3 +75,6 @@ export const OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE =
 export function optionsdeskAnchorSubmissionRoute(id: string) {
   return `/(app)/optionsdesk/anchor-submission/${id}` as const;
 }
+
+/** 冷启动结局（072 T021；待审列表题头 / 采纳回执进入）。同栈，继承同一道 MarketsRouteGuard。 */
+export const OPTIONSDESK_ANCHOR_COLD_START_ROUTE = '/(app)/optionsdesk/anchor-cold-start' as const;

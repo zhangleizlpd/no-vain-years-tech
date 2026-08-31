@@ -14,9 +14,9 @@ import { mockJson } from './_support/api-mock';
 //      072 起还有「我的」页的审批 / 消息两栏（`tab-panel` —— 无自己的路由，门控是渲染门）。
 //   2. deep-link 守卫：MARKETS_SURFACES 全部 13 受控面里的 8 个可路由面，直达 URL 全被
 //      MarketsRouteGuard 弹回安全屏（投资/行情/预警/期权台 → /profile；设置子页 → /settings）。
-//      面数 8 但深链 13 条 —— optionsdesk 二级页栈是**一个** route-stack 面，栈内六条路由
-//      （锚管理 / 温度计 / 标的详情 / 链分析报表 / 锚待审箱 / 待审详情）各戳一次，验的是
-//      「栈内新增路由自动继承那道守卫」。新增栈内路由时**必须**在这里追一条：
+//      面数 8 但深链 14 条 —— optionsdesk 二级页栈是**一个** route-stack 面，栈内七条路由
+//      （锚管理 / 温度计 / 标的详情 / 链分析报表 / 锚待审箱 / 待审详情 / 冷启动结局）各戳
+//      一次，验的是「栈内新增路由自动继承那道守卫」。新增栈内路由时**必须**在这里追一条：
 //      那是它继承关系唯一的机械载体。
 //   3. 合规核心（最硬）：整个 walkthrough 内**零** marketdata-family 网络请求 —— 公开版
 //      绝不向后端拉任何交易所行情/持仓/预警数据（方向 B 的法务底线：避「行情来源授权书」墙）。
@@ -154,6 +154,11 @@ const GATED_DEEPLINKS: { path: string; redirectsTo: RegExp; note: string }[] = [
     redirectsTo: /\/profile$/,
     note: '待审详情（栈内新增路由，072 T019）',
   },
+  {
+    path: '/optionsdesk/anchor-cold-start',
+    redirectsTo: /\/profile$/,
+    note: '冷启动结局（栈内新增路由，072 T021）',
+  },
   { path: '/settings/stock-market', redirectsTo: /\/settings$/, note: '证券市场（route）' },
   { path: '/settings/broker-accounts', redirectsTo: /\/settings$/, note: '券商账户（route）' },
   { path: '/settings/broker-accounts/bind', redirectsTo: /\/settings$/, note: '券商绑定（route）' },
@@ -204,7 +209,7 @@ test('markets-OFF — 投资 Tab 隐藏 + 设置无投资 Card，且零 markets 
 
 // ─── 2. deep-link 守卫：全部受控面直达被弹回 ─────────────────────────────────
 
-test('markets-OFF — 13 条 markets 深链全部 MarketsRouteGuard 弹回安全屏', async ({ page }) => {
+test('markets-OFF — 14 条 markets 深链全部 MarketsRouteGuard 弹回安全屏', async ({ page }) => {
   const leaked = trackMarketsRequests(page);
 
   for (const { path, redirectsTo, note } of GATED_DEEPLINKS) {

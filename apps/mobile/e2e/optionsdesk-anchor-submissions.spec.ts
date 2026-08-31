@@ -670,3 +670,89 @@ test('072 T020 — 采纳后待审箱当场刷新，不需要重启 App（SC-004
   // 它的计数变了就只可能是失效触发的重取 —— 重挂/冷取都解释不了。
   await expect(panelCount).toHaveText(String(SEED_ROWS.length - 1));
 });
+
+// ─── T021 冷启动结局：十档全显 / 五档置顶 / 缺席=排队中（FR-009, US5） ────────────
+
+test('072 T021 — 冷启动结局：需人工介入置顶、缺席算排队中而非失败（sb-17, sb-18）', async ({
+  page,
+}) => {
+  // 三条已采纳（各带 consumedAnchorId），但只有两条出了结局 —— 第三条还在队列里。
+  await page.route('**/api/v1/optionsdesk/anchor-submissions**', async (route: Route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS')
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    const consumed = ['a1', 'a2', 'a3'].map((anchorId, i) => ({
+      id: String(10 + i),
+      submitter: 'friend2',
+      ticker: `us:C${i}`,
+      instrumentName: null,
+      market: 'us',
+      v: '1.0000',
+      asof: '2026-08-28',
+      method: 'dcf',
+      confidence: '6.00',
+      note: null,
+      reviewNote: null,
+      status: 'CONSUMED',
+      consumedAnchorId: anchorId,
+      disposition: 'create',
+      asofFlag: 'OK',
+      asofSuggested: null,
+      asofNeedsAck: false,
+      createdAt: '2026-08-31T02:00:00.000Z',
+      updatedAt: '2026-08-31T02:00:00.000Z',
+    }));
+    return void (await fulfill(route, 200, {
+      items: consumed,
+      total: consumed.length,
+      truncated: false,
+    }));
+  });
+
+  await page.route('**/api/v1/marketdata/anchor-cold-start**', async (route: Route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS')
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    return void (await fulfill(route, 200, {
+      items: [
+        {
+          anchorId: 'a1',
+          ticker: 'us:C0',
+          outcome: 'backfilled',
+          reason: '已补齐，真采了并落了库。',
+          targetSession: '2026-08-28',
+          lastRunAt: '2026-08-31T03:00:00.000Z',
+          // 🚨 故意让一条 `backfilled` 带 needsAttention=true：分档若被客户端按 outcome
+          // 名单抄了一份，这条就会掉进「已完成」——而线上的表现是永久缺口悄悄降级。
+          needsAttention: true,
+        },
+        {
+          anchorId: 'a2',
+          ticker: 'us:C1',
+          outcome: 'no_option_chain',
+          reason: '该标的根本没有挂牌期权 —— 终态、非错误、不告警。',
+          targetSession: '2026-08-28',
+          lastRunAt: '2026-08-31T03:01:00.000Z',
+          needsAttention: false,
+        },
+      ],
+    }));
+  });
+
+  await page.goto('/optionsdesk/anchor-cold-start');
+  await expect(page.getByTestId('optionsdesk-cold-start-list')).toBeVisible({ timeout: 90_000 });
+
+  // 进度：3 只问出去、2 只出了结局。
+  await expect(page.getByTestId('optionsdesk-cold-start-progress')).toHaveText('2 / 3 已出结局');
+  // 🚨 缺席那一只是「排队中」，不是失败 —— 屏上必须这么说。
+  await expect(page.getByTestId('optionsdesk-cold-start-pending')).toContainText('1 只在排队');
+
+  // 分档只认服务端 needsAttention：backfilled 也能进「需人工介入」。
+  await expect(page.getByTestId('optionsdesk-cold-start-attention-group')).toContainText('· 1');
+  await expect(page.getByTestId('optionsdesk-cold-start-done-group')).toContainText('· 1');
+  // outcome 原样呈现（十档两两互异、禁折叠）。
+  await expect(page.getByTestId('optionsdesk-cold-start-outcome-us:C0')).toHaveText('backfilled');
+  await expect(page.getByTestId('optionsdesk-cold-start-outcome-us:C1')).toHaveText(
+    'no_option_chain',
+  );
+});

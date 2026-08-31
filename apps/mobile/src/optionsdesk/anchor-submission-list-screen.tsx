@@ -14,7 +14,10 @@ import {
   type SubmissionMarketFilter,
 } from './anchor-submission.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { optionsdeskAnchorSubmissionRoute } from './optionsdesk-routes';
+import {
+  optionsdeskAnchorSubmissionRoute,
+  OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
+} from './optionsdesk-routes';
 import { useAnchorSubmissions, useRejectAnchorSubmissions } from './use-anchor-submissions';
 
 const COPY = OPTIONSDESK_COPY.anchorSubmission;
@@ -98,6 +101,17 @@ export function AnchorSubmissionListScreen() {
       />
 
       <View className="flex-1 bg-surface-sunken">
+        {/* 冷启动结局入口（072 T021）—— 采纳过的锚跑成什么了，在这条线上唯一能看到的地方。 */}
+        <Pressable
+          onPress={() => router.push(OPTIONSDESK_ANCHOR_COLD_START_ROUTE)}
+          accessibilityRole="button"
+          accessibilityLabel={COPY.coldStartEntry}
+          testID="optionsdesk-submission-cold-start-entry"
+          className="border-b border-line-soft bg-surface px-md py-sm"
+        >
+          <Text className="text-sm text-brand-500">{`${COPY.coldStartEntry} ›`}</Text>
+        </Pressable>
+
         {/* 市场 chips（单选）。横滑容器包一层 View 约束 frame（NativeWind web 坑）。 */}
         <View className="px-md py-sm">
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
