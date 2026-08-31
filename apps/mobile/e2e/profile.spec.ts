@@ -60,6 +60,8 @@ test.beforeEach(async ({ page }) => {
       displayName: SEED_DISPLAY_NAME,
       status: 'ACTIVE',
       createdAt: '2026-05-25T00:00:00.000Z',
+      // 072：契约必填位。默认非管理员 —— 管理员那格由下面的 admin 用例自己覆盖 stub。
+      isAdmin: false,
     },
     'GET',
   );
@@ -141,22 +143,56 @@ test('US5 — onboarded cold boot lands on (tabs)/profile with hero rendered', a
   await page.screenshot({ path: `${SCREENSHOT_DIR}/us5-profile-landing.png`, fullPage: true });
 });
 
-test('US7 — slide tabs default 笔记 + tap 图谱 switches active state', async ({ page }) => {
+// 072 T016 —— 三栏由「笔记 / 图谱 / 知识库」改版为「审批 / 消息 / 知识库」（FR-011 / US6）。
+//
+// 🚫 **别用 `aria-selected` 断哪一栏激活**：`react-native-web` 整个不认 `accessibilityState`
+//    （本仓 optionsdesk-chain-leg-picker.spec.ts 实撞并留档）。这里用「内容区渲的是哪一栏的
+//    占位文案」作功能面判据 —— 它同时验了默认栏与内容分发两件事。
+test('072 US6 — 非 admin 的「我的」：无审批栏、默认落消息栏、可切知识库', async ({ page }) => {
   await waitForBootedRoot(page);
   await expect(page.getByText(SEED_DISPLAY_NAME)).toBeVisible();
 
-  // Initial state — 笔记 active, content placeholder copy reflects it.
-  await expect(page.getByText('笔记内容即将推出')).toBeVisible();
-
-  const graphTab = page.getByRole('tab', { name: '图谱' });
-  await graphTab.tap();
-
-  await expect(page.getByText('图谱内容即将推出')).toBeVisible();
-  await page.screenshot({ path: `${SCREENSHOT_DIR}/us7-slide-tab-graph.png`, fullPage: true });
+  // sb-20：客户端 isAdmin=false ⇒ 审批栏整栏不渲染（服务端另有 AdminOnlyGuard 兜权限）。
+  await expect(page.getByRole('tab', { name: '审批' })).toHaveCount(0);
+  // 默认栏 = 可见集合首项 = 消息。
+  await expect(page.getByText('消息内容即将推出')).toBeVisible();
 
   const kbTab = page.getByRole('tab', { name: '知识库' });
   await kbTab.tap();
   await expect(page.getByText('知识库内容即将推出')).toBeVisible();
+  await page.screenshot({ path: `${SCREENSHOT_DIR}/us7-slide-tab-kb.png`, fullPage: true });
+});
+
+test('072 US6 — admin 的「我的」：三栏全出、默认落审批栏', async ({ page }) => {
+  // 覆盖 beforeEach 的 /me stub（Playwright 后注册的 handler 先匹配）。冷启动种子里
+  // isAdmin 不持久化 ⇒ 首帧按非 admin 渲染，/me 落地后当帧翻成三栏 —— 渲染期派生的实况。
+  await mockJson(
+    page,
+    ME_URL,
+    200,
+    {
+      accountId: SEED_ACCOUNT_ID,
+      phone: SEED_PHONE,
+      displayName: SEED_DISPLAY_NAME,
+      status: 'ACTIVE',
+      createdAt: '2026-05-25T00:00:00.000Z',
+      isAdmin: true,
+    },
+    'GET',
+  );
+
+  await waitForBootedRoot(page);
+  await expect(page.getByText(SEED_DISPLAY_NAME)).toBeVisible();
+
+  await expect(page.getByRole('tab', { name: '审批' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '消息' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '知识库' })).toBeVisible();
+  // 默认栏 = 审批（admin 是唯一有活要干的人）。
+  // 🔁 T018 把审批栏换成真列表后，这条改断列表容器而不是占位文案。
+  await expect(page.getByText('审批内容即将推出')).toBeVisible();
+
+  await page.getByRole('tab', { name: '消息' }).tap();
+  await expect(page.getByText('消息内容即将推出')).toBeVisible();
 });
 
 test('US8 — TopNav ⚙️ press triggers router.push for /(app)/settings', async ({ page }) => {
