@@ -4,6 +4,7 @@ import { PrismaService } from '../security/prisma.service';
 import { OUTBOX_PUBLISHER, type OutboxPublisher } from '../security/outbox/outbox-publisher.port';
 import { computeW, mapConfidenceToLLevel, type LLevel } from './anchor.rules';
 import { buildCreationChange, type AnchorChangeSource } from './anchor-history';
+import { resolveInstrumentName } from './instrument-name';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
 import { EnsureLatestEodBarUseCase } from '../marketdata/ensure-latest-eod-bar.usecase';
 import {
@@ -92,6 +93,13 @@ export interface AnchorWriteResult extends Omit<
    * 供不上, 这个字段就变成「有时候可信」—— 那比没有更危险 (消费方无从分辨)。
    */
   lastClosedSession: string | null;
+  /**
+   * 标的名 (`marketdata.instrument.name`; 未注册 ⇒ `null`), 由 `resolveInstrumentName` 取。
+   *
+   * 🚨 写侧带它的理由与上面那条**逐字同构**: 只有读端填、写侧回显不填的话, `null` 就同时
+   * 表示「这票没注册」和「这个端点没查」。
+   */
+  instrumentName: string | null;
 }
 
 export interface CreateAnchorInput {
@@ -202,10 +210,11 @@ export function shanghaiDateOnly(now: Date): Date {
   return new Date(`${ymd}T00:00:00.000Z`);
 }
 
-/** 贫血 row → 写侧响应投影 (含 EC-10 派生标记 + FR-020 新鲜度基准)。 */
+/** 贫血 row → 写侧响应投影 (含 EC-10 派生标记 + FR-020 新鲜度基准 + D13 标的名)。 */
 export function toAnchorWriteResult(
   row: AnchorRow,
   lastClosedSession: string | null,
+  instrumentName: string | null,
 ): AnchorWriteResult {
   return {
     ...row,
@@ -214,6 +223,7 @@ export function toAnchorWriteResult(
     lLevelManual: row.lLevelManual as LLevel | null,
     overdueAgainstAsof: isOverdueAgainstAsof(row.nextReview, row.asof),
     lastClosedSession,
+    instrumentName,
   };
 }
 
@@ -315,6 +325,7 @@ export class CreateAnchorUseCase {
       return toAnchorWriteResult(
         await this.seedLastClose(row, lastClosedSession),
         lastClosedSession,
+        await resolveInstrumentName(this.prisma, row.ticker),
       );
     } catch (err) {
       if (isP2002(err)) {

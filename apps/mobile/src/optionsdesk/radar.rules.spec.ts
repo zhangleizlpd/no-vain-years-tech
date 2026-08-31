@@ -33,6 +33,7 @@ function row(over: Partial<RadarRowAnchor> = {}): RadarRowAnchor {
   return {
     id: '1',
     ticker: 'us:CPB',
+    name: '金宝汤',
     lLevelEffective: 'L2',
     zone: 'buy',
     quoteFreshnessTier: 'CURRENT',
@@ -130,8 +131,21 @@ describe('radarRowFields — 每行恰好 5 字段（SC-002 / plan D13）', () =
     expect(Object.keys(fields)).toHaveLength(5);
   });
 
-  it('标的标识 = ticker + code 同一字段（「这是哪只票」算一个信息维度）', () => {
-    expect(radarRowFields(row()).identity).toEqual({ code: 'CPB', ticker: 'us:CPB' });
+  it('标的标识 = 标的名 + ticker 同一字段（「这是哪只票」算一个信息维度）', () => {
+    expect(radarRowFields(row()).identity).toEqual({ primary: '金宝汤', ticker: 'us:CPB' });
+  });
+
+  it('🚨 主位是标的名而非代号（plan D13：港股代号人读不出是哪只票）', () => {
+    const fields = radarRowFields(row({ ticker: 'hk:01024', name: '快手-W' }));
+    expect(fields.identity.primary).toBe('快手-W');
+    // 代号这一维没丢：副位的 canonical ticker 恒在。
+    expect(fields.identity.ticker).toBe('hk:01024');
+  });
+
+  it('名字取不到（未在行情库注册）⇒ 退回代号，MUST NOT 拼假名字', () => {
+    expect(radarRowFields(row({ ticker: 'hk:01024', name: null })).identity.primary).toBe('01024');
+    // 空串与 null 同处置 —— 两者都不是「这票就叫这个」。
+    expect(radarRowFields(row({ ticker: 'hk:01024', name: '' })).identity.primary).toBe('01024');
   });
 
   it('spot 串**不重复**距 W（标题行已有一份，plan D13 明令删）', () => {

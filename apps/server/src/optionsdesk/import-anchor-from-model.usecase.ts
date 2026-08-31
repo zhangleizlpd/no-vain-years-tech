@@ -14,6 +14,7 @@ import {
   assertImportableTicker,
 } from './anchor-import.rules';
 import { buildAnchorChange, toAnchorSnapshot } from './anchor-history';
+import { resolveInstrumentName } from './instrument-name';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
 import {
   CreateAnchorUseCase,
@@ -155,6 +156,7 @@ export class ImportAnchorFromModelUseCase {
         anchor: toAnchorWriteResult(
           existing,
           await resolveLastClosedSessionForTicker(this.calendar, existing.ticker),
+          await resolveInstrumentName(this.prisma, existing.ticker),
         ),
         fallbackEntries: [],
       };
@@ -205,6 +207,7 @@ export class ImportAnchorFromModelUseCase {
       anchor: toAnchorWriteResult(
         row,
         await resolveLastClosedSessionForTicker(this.calendar, row.ticker),
+        await resolveInstrumentName(this.prisma, row.ticker),
       ),
       fallbackEntries,
     };

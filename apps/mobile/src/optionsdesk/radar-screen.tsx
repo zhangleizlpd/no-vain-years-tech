@@ -3,8 +3,10 @@
 // 五态（常态 / 全体不动区 / 行情降级 / 零锚 / 筛选无结果）+ 多选筛选 chips + 下拉增量加载
 // + 新鲜度条。判定与文案见 `radar.rules.ts` / server 下发的 `emptyStateMessage`。
 //
-// 🚨 **每行恰好 5 字段**（plan D13）：标的标识（ticker + code）/ 距 W% / 四区间色带 / spot / 徽标。
+// 🚨 **每行恰好 5 字段**（plan D13）：标的标识（标的名 + ticker）/ 距 W% / 四区间色带 / spot / 徽标。
 //    spot 串**不重复**「· 距 W xx%」—— 标题行已有一份。
+//    主位是**标的名**（D13 原文「ticker + 中文名」）；名字取不到才退回代号 —— 判据在
+//    `radar.rules.ts` 的 `identityPrimary`，屏这层不重判。
 // 🚨 **SC-002 下拉增量加载，全程无页码控件**（游标分页天然不支持跳页）。
 // 🚨 **不渲染顶部四视图 seg**（FR-020：其余三视图依赖期权链数据，本片只交付标的视图，
 //    渲染 seg 会造出三个永远空的 Tab）。
@@ -303,9 +305,12 @@ function RadarRow({ anchor, onPress }: RadarRowProps) {
       testID={`optionsdesk-radar-row-${anchor.ticker}`}
       className="gap-sm rounded-md border border-line bg-surface px-md py-sm"
     >
-      {/* ① 标的标识（ticker + code 同一维度） + ② 距 W% */}
+      {/* ① 标的标识（标的名 + ticker 同一维度） + ② 距 W% */}
       <View className="flex-row items-baseline gap-sm">
-        <Text className="text-base font-bold text-ink">{fields.identity.code}</Text>
+        {/* 🚨 主位挂 `shrink`：名字长到挤不下时**它先截**，MUST NOT 把距 W% 顶出屏外。 */}
+        <Text className="shrink text-base font-bold text-ink" numberOfLines={1}>
+          {fields.identity.primary}
+        </Text>
         <Text className="flex-1 text-xs text-ink-subtle" numberOfLines={1}>
           {fields.identity.ticker}
         </Text>

@@ -542,6 +542,18 @@ export class AnchorResponse {
   @ApiProperty({ description: 'canonical `market:code`', example: 'us:AOS' })
   ticker!: string;
 
+  @ApiProperty({
+    description:
+      '标的名 (取自行情库 `marketdata.instrument.name`); 该 ticker 未在行情库注册 ⇒ null, ' +
+      '呈现侧退回代号 —— **MUST NOT** 拿 ticker 拼一个假名字, 那会让「名字没同步上」和' +
+      '「这票就叫这个」在屏上分不开。🚨 **每一个回锚的端点都供得上**(读端 + 写侧回显), ' +
+      '故 null 只有一个含义 = 未注册',
+    type: 'string',
+    nullable: true,
+    example: 'A.O.史密斯',
+  })
+  name!: string | null;
+
   @ApiProperty({ description: '**生效** V = COALESCE(v_manual, v)', example: '50.0000' })
   v!: string;
 
@@ -1129,6 +1141,7 @@ export function toAnchorResponse(view: AnchorView): AnchorResponse {
   return {
     id: row.id.toString(),
     ticker: row.ticker,
+    name: view.instrumentName,
     v: effective.v.toFixed(4),
     vModel: row.v.toFixed(4),
     asof: dateOnly(row.asof)!,
@@ -1182,7 +1195,7 @@ export function toAnchorListResponse(views: readonly AnchorView[]): AnchorListRe
  * 「建锚 / 改锚 / 复审同屏返回的派生值」与「列表 / 详情读到的」逐项同源 (FR-003a ①)。
  */
 export function toAnchorWriteResponse(result: AnchorWriteResult): AnchorResponse {
-  return toAnchorResponse(toAnchorView(result, result.lastClosedSession));
+  return toAnchorResponse(toAnchorView(result, result.lastClosedSession, result.instrumentName));
 }
 
 /** 雷达页 → 响应。行投影与锚列表**同一个** `toAnchorResponse` (派生口径单点, 无第二套形状)。 */

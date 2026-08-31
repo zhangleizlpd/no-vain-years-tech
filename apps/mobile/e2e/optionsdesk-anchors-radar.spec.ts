@@ -124,6 +124,8 @@ const DERIVED_CAP: Record<string, string | null> = {
 };
 
 const ANCHOR_BASE: Omit<AnchorResponse, 'id' | 'ticker'> = {
+  // D13 标的名: 行首主位就是它 —— 逐行覆写在 `makeAnchor` 的入参里。
+  name: null,
   v: '100.00',
   vModel: '100.00',
   asof: '2026-07-01',
@@ -668,6 +670,30 @@ test('045 雷达 — 常态同屏承载「单票行情缺失」与「锚逾期�
 
   // 新鲜度条：数值必带 asOf 档位（FR-016）。本组数据最新 asOf = 当日。
   await expect(page.getByTestId('optionsdesk-radar-freshness-CURRENT')).toBeVisible();
+});
+
+test('045 plan D13 — 行首主位是标的名；名字缺失才退回代号（代号人读不出是哪只票）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', name: 'A.O.史密斯', distanceToWPct: '-4.5' }),
+    // 未在行情库注册 ⇒ server 下发 null ⇒ 退回代号（045 初版的样子）。
+    makeAnchor({ id: '2', ticker: 'us:PEP', name: null, distanceToWPct: '6.0' }),
+  ]);
+  await gotoOptionsdesk(page);
+
+  await expect(page.getByTestId('optionsdesk-radar-list')).toBeVisible({ timeout: 30_000 });
+
+  // 🚨 这条钉的是「响应 → 屏上文字」那一段：rules 层的判据由单测覆盖，但「屏读的是哪个
+  //    字段」tsc 拦不住 —— 主位改回渲染 ticker 也照样编译得过。
+  const aosRow = page.getByTestId('optionsdesk-radar-row-us:AOS');
+  await expect(aosRow.getByText('A.O.史密斯', { exact: true })).toBeVisible();
+  // 代号这一维没丢：副位的 canonical ticker 恒在。
+  await expect(aosRow.getByText('us:AOS', { exact: true })).toBeVisible();
+
+  const pepRow = page.getByTestId('optionsdesk-radar-row-us:PEP');
+  await expect(pepRow.getByText('PEP', { exact: true })).toBeVisible();
+  await expect(pepRow.getByText('us:PEP', { exact: true })).toBeVisible();
 });
 
 test('045 雷达 — 全体不动区：行照常渲染 + 顶部提示，不退化成空白页（SC-006）', async ({ page }) => {

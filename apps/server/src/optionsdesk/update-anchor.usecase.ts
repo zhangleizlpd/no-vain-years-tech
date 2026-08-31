@@ -10,6 +10,7 @@ import {
   type AnchorManualState,
 } from './anchor-cascade';
 import { buildAnchorChange, toAnchorSnapshot, type AnchorChangeSource } from './anchor-history';
+import { resolveInstrumentName } from './instrument-name';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
 import {
   assertUsableV,
@@ -191,10 +192,11 @@ export class UpdateAnchorUseCase {
       }
       return (await tx.anchor.findUniqueOrThrow({ where: { id: anchorId } })) as AnchorRow;
     });
-    // 新鲜度基准在 tx 外取 (只读、与本次写无因果) —— 别把跨 ctx 读拖进写事务。
+    // 新鲜度基准与标的名都在 tx 外取 (只读、与本次写无因果) —— 别把跨 ctx 读拖进写事务。
     return toAnchorWriteResult(
       row,
       await resolveLastClosedSessionForTicker(this.calendar, row.ticker),
+      await resolveInstrumentName(this.prisma, row.ticker),
     );
   }
 }

@@ -129,6 +129,8 @@ const YESTERDAY = ymdMinusDays(TODAY, 1);
 // ════════════════════════════════════════════════════════════════════════════
 
 const ANCHOR_BASE: Omit<AnchorResponse, 'id' | 'ticker'> = {
+  // D13 标的名: 本片不涉及行首呈现 ⇒ 取「未注册」(null), 屏上退回代号 = 045 初版的样子。
+  name: null,
   v: '100.00',
   vModel: '100.00',
   asof: '2026-07-01',

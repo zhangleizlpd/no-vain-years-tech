@@ -1,6 +1,7 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service';
 import type { AnchorRow } from './create-anchor.usecase';
+import { resolveInstrumentName } from './instrument-name';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
 import {
@@ -34,6 +35,10 @@ export class GetAnchorUseCase {
     if (row === null) {
       throw new NotFoundException('ANCHOR_NOT_FOUND');
     }
-    return toAnchorView(row, await resolveLastClosedSessionForTicker(this.calendar, row.ticker));
+    return toAnchorView(
+      row,
+      await resolveLastClosedSessionForTicker(this.calendar, row.ticker),
+      await resolveInstrumentName(this.prisma, row.ticker),
+    );
   }
 }
