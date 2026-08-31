@@ -19,6 +19,7 @@ import { formatAsOfLabel } from '~/format/as-of';
 import type { FreshnessTier } from './underlying-detail.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { formatPriceText } from './price-format.rules';
+import { underlyingDisplayName } from './underlying-identity.rules';
 
 const COPY = OPTIONSDESK_COPY.radar;
 
@@ -233,22 +234,6 @@ function hasQuote(a: Pick<RadarRowAnchor, 'spotAsOf'>): boolean {
   return a.spotAsOf !== null;
 }
 
-/** canonical `market:code` → 展示用 code（解析失败退回原串，不丢信息）。 */
-function tickerCode(ticker: string): string {
-  return ticker.split(':')[1] ?? ticker;
-}
-
-/**
- * 行首主位 = **标的名**（plan D13：「标的标识（ticker + 中文名）」的中文名那一半）。
- *
- * 🚨 名字取不到（该 ticker 未在行情库注册，server 下发 `null`）⇒ **退回代号**，退化成 045
- * 初版的样子。MUST NOT 拿 ticker 拼一个假名字 —— 那会让「名字没同步上」和「这票就叫这个」
- * 在屏上分不开。副位的 canonical ticker 恒在，代号这一维不因主位换名而丢失。
- */
-export function identityPrimary(a: Pick<RadarRowAnchor, 'name' | 'ticker'>): string {
-  return a.name !== null && a.name.length > 0 ? a.name : tickerCode(a.ticker);
-}
-
 /**
  * spot 串 = **生效 spot**（实时 / 收盘由 server 裁决，本层不重判）。
  * 🚨 **不带「· 距 W xx%」**（标题行已有一份，plan D13 明令删的真冗余）。
@@ -281,7 +266,7 @@ export function distanceToWTone(
 
 export function radarRowFields(anchor: RadarRowAnchor): RadarRowFields {
   return {
-    identity: { primary: identityPrimary(anchor), ticker: anchor.ticker },
+    identity: { primary: underlyingDisplayName(anchor), ticker: anchor.ticker },
     distanceToW: formatDistanceToW(anchor),
     band: {
       w: anchor.w,

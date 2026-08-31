@@ -696,6 +696,26 @@ test('045 plan D13 — 行首主位是标的名；名字缺失才退回代号（
   await expect(pepRow.getByText('us:PEP', { exact: true })).toBeVisible();
 });
 
+test('045 plan D13 — 锚管理列表行首是标的名；名字缺失才退回代号', async ({ page }) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'hk:01024', name: '快手-W' }),
+    // 未在行情库注册 ⇒ server 下发 null ⇒ 退回代号。
+    makeAnchor({ id: '2', ticker: 'hk:00700', name: null }),
+  ]);
+  await gotoOptionsdesk(page);
+  await page.getByTestId('optionsdesk-anchors-button').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-list')).toBeVisible({ timeout: 30_000 });
+
+  // 🚨 与雷达那条同理：判据归 `underlying-identity.rules` 单测，这里钉「行首读的是哪个字段」。
+  const kuaishou = page.getByTestId('optionsdesk-anchor-row-hk:01024');
+  await expect(kuaishou.getByText('快手-W', { exact: true })).toBeVisible();
+  await expect(kuaishou.getByText('hk:01024', { exact: true })).toBeVisible(); // 代号维没丢
+
+  const tencent = page.getByTestId('optionsdesk-anchor-row-hk:00700');
+  await expect(tencent.getByText('00700', { exact: true })).toBeVisible();
+  await expect(tencent.getByText('hk:00700', { exact: true })).toBeVisible();
+});
+
 test('045 雷达 — 全体不动区：行照常渲染 + 顶部提示，不退化成空白页（SC-006）', async ({ page }) => {
   await installOptionsdeskMock(page, [
     makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '12.0' }),

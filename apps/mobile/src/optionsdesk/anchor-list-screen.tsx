@@ -24,6 +24,7 @@ import {
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { OPTIONSDESK_ANCHOR_NEW_ROUTE, optionsdeskAnchorEditRoute } from './optionsdesk-routes';
 import { formatPriceText } from './price-format.rules';
+import { underlyingDisplayName } from './underlying-identity.rules';
 
 const COPY = OPTIONSDESK_COPY.anchorList;
 
@@ -157,7 +158,6 @@ interface AnchorCardProps {
 function AnchorCard({ anchor, today, onPress }: AnchorCardProps) {
   const state = anchorRowState(anchor);
   const overdueDays = daysOverdue(anchor.nextReview, today);
-  const code = anchor.ticker.split(':')[1] ?? anchor.ticker;
 
   return (
     <Pressable
@@ -170,7 +170,11 @@ function AnchorCard({ anchor, today, onPress }: AnchorCardProps) {
       }`}
     >
       <View className="flex-row items-center gap-sm">
-        <Text className="text-base font-semibold text-ink">{code}</Text>
+        {/* 主位 = 标的名（045 plan D13，判据与雷达 / 详情题头共用一份）；名字取不到才退回代号。
+            🚨 挂 `shrink`：名字长到挤不下时**它先截**，MUST NOT 把右侧 L 层徽标顶出屏外。 */}
+        <Text className="shrink text-base font-semibold text-ink" numberOfLines={1}>
+          {underlyingDisplayName(anchor)}
+        </Text>
         <Text className="flex-1 text-xs text-ink-muted" numberOfLines={1}>
           {anchor.ticker}
         </Text>
