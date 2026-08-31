@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.42.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.41.2...server-v0.42.0) (2026-08-31)
+
+
+### Features
+
+* **optionsdesk:** 071 港股接实时档三件 —— 时段表恢复两段·窗白名单加 hk·实时基准换市场 ([#310](https://github.com/zhangleizlpd/no-vain-years-tech/issues/310)) ([998389c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/998389cb989a3c16cde725f953b37350990aa903))
+
 ## [0.41.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.41.1...server-v0.41.2) (2026-08-31)
 
 
