@@ -21,10 +21,14 @@ import { BUILD_RECALL_DTE, RENT_RECALL_DTE, type RecallLegInput } from './leg-re
  */
 
 /**
- * 已支持的市场 (064 FR-008 沿用)。**今天只有美股**, 但派生一开始就按市场取参 —— 将来判据按
- * 市场分表时只需在这里加数据, 不必重写派生逻辑 (同 061 §4.5 tick 分组预埋)。
+ * 已支持的市场 (064 FR-008 沿用; 071 FR-001 加 `hk`)。派生一开始就按市场取参 —— 加市场只需
+ * 在这里加数据、不重写派生逻辑 (同 061 §4.5 tick 分组预埋), 071 接港股时**照此兑现**:
+ * `bootstrapWindowFor` / `isSupportedMarket` 的函数体零改动。
+ *
+ * 🚨 **加市场前先确认它的 bootstrap 下界站得住** —— 见 {@link STRIKE_ENVELOPE_FLOOR_SPOT_RATIO}
+ * 那条已知缺陷。白名单只管「派生逻辑认不认这个市场」, 不保证参数对它成立。
  */
-export const WINDOW_SUPPORTED_MARKETS = ['us'] as const;
+export const WINDOW_SUPPORTED_MARKETS = ['us', 'hk'] as const;
 
 export type WindowMarket = (typeof WINDOW_SUPPORTED_MARKETS)[number];
 
@@ -48,6 +52,20 @@ export const WINDOW_DTE_MAX = Math.max(BUILD_RECALL_DTE.max, RENT_RECALL_DTE.max
  * 权利金在美股常规时段几乎必然落到门槛之下 ⇒ 问了也是白问。宁宽不可窄 —— bootstrap 只发生
  * 在新锚首日, 宽一点的代价是一次外呼多问几十条码, 窄的代价是首日候选静默缺腿。
  * 进 `check-optionsdesk-rule-constants` 守卫表 (068), 🚫 第二处出现该字面量即红。
+ *
+ * ## 🚨 已知缺陷 (2026-08-31 实证, 蓄意保留, issue #308)
+ *
+ * 本比例是 **spot 的固定比例**, 而收租成色上界是 **W 派生**的 (`axis = min(spot, W)`,
+ * `W = 0.8 × V` ⇒ 上界 ≈ `0.824 × V/spot × spot`)。⇒ 锚的 `V` 相对 spot 偏低到一定程度时,
+ * **下界会高过上界**, bootstrap 首日的收租候选**恒为空集**。
+ *
+ * 实测踩中的不止港股: `hk:00700` 上界 0.681×spot、**`us:APA` 上界 0.635×spot —— 美股今天
+ * 就在犯**; `us:AFL` (0.708) 与 `hk:09988` (0.724) 是贴边。⇒ **这不是港股标定问题**, 是 067
+ * 引 W-axis 之后遗留、068 把矩形窗降格成 bootstrap 时没重新核过的结构性缺口。
+ *
+ * 🚫 **MUST NOT 在这里悄悄调一个数**: 往下调会改动**美股**的 bootstrap 窗 (撞 071 SC-004
+ * 「美股逐值零变化」), 往 per-market 表转需要港股实测取证 (071 T003/T004②, 数据 2026-09-02
+ * 到齐)。两条路都是显式决策, 不是顺手改。
  */
 export const STRIKE_ENVELOPE_FLOOR_SPOT_RATIO = new Prisma.Decimal('0.7');
 

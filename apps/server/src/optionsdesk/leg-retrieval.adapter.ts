@@ -282,8 +282,19 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
   ): Promise<LegRetrievalResult | null> {
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
-    // ⚠️ 写死 'us' 沿 #274 (与 loadClosingChain 同款已知缺陷, 🚫 不顺手修)。
-    const marketDate = exchangeCalendarDate('us', query.now);
+    // 🚨 业务日基准取**本链自己的市场** (071 FR-004)。此前写死 `'us'` (沿 #274):
+    // 港股**周一盘中**会折算出**美股的周日**, 而 hk 周末无 `trading_day` 行、
+    // `calendar_coverage.hk` 又覆盖该日 ⇒ `classifyTradingDay` 返 `non-trading` ⇒ 闸判休市
+    // ⇒ 静默 `retrieveClosing(query, null)`, **零降级标**。
+    // ⇒ 周二至周五坏成一条红字 (`source_unavailable`), **周一坏成一张看起来完全正常的收盘档表**
+    //   —— 后者没有任何外部可观测信号, 由 `optionsdesk-071.hk-realtime.it.spec.ts` 臂①/④ 钉住
+    //   (时刻夹具 = 港股周一 10:00 ∧ 美股周日 22:00; 改回 `'us'` 那两条当场红)。
+    //
+    // 🚫 **`loadClosingChain` 的同款写死 MUST NOT 一起改** (071 Guardrail 1) —— 两处证据面不同:
+    // 本处换基准对候选集**零改变** (DTE=0 的排除单点在 `leg-recall.rules.ts` 的
+    // `BUILD_RECALL_DTE.min = 1`, 读端已滤), 而离线那处会改**用户可见的腿集合**。顺手改了不会
+    // 红, 只会让离线腿集合悄悄变 ⇒ 同文件臂③ 把「离线仍用美股折算日」钉成机器判据。
+    const marketDate = exchangeCalendarDate(parsed.market, query.now);
     const target = { symbol: query.symbol, market: parsed.market, marketDate, now: query.now };
 
     const gate = await this.resolveRealtimeGate(target);

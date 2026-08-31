@@ -70,15 +70,52 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     });
   });
 
-  describe('hk — 单段 [09:30,16:00] HKT (午休蓄意不建模, 见 rules 文件 hk 登记处的注释)', () => {
-    it('开收盘含端点; 午休判 true —— 「午休算场内」正是本简化的核心语义', () => {
+  describe('hk — 两段 [09:30,12:00] + [13:00,16:00] HKT (午休显式建模, 071 FR-017)', () => {
+    it('🚨 开收盘含端点; **午休判 false** —— 「此刻不能成交」才是本谓词的语义', () => {
       expect(isWithinTradingSession('hk', at(9, 29))).toBe(false); // 盘前
       expect(isWithinTradingSession('hk', at(9, 30))).toBe(true); // 开盘
-      expect(isWithinTradingSession('hk', at(12))).toBe(true); // 港交所上午收
-      expect(isWithinTradingSession('hk', at(12, 30))).toBe(true); // 午休正中 —— 单段下算场内
+      expect(isWithinTradingSession('hk', at(12))).toBe(true); // 港交所上午收 (闭区间含端点)
+      expect(isWithinTradingSession('hk', at(12, 1))).toBe(false); // 午休 —— 两段化后判 false
+      expect(isWithinTradingSession('hk', at(12, 30))).toBe(false); // 午休正中
+      expect(isWithinTradingSession('hk', at(12, 59))).toBe(false); // 午休末
       expect(isWithinTradingSession('hk', at(13))).toBe(true); // 港交所午开
       expect(isWithinTradingSession('hk', at(16))).toBe(true); // 收盘
       expect(isWithinTradingSession('hk', at(16, 1))).toBe(false); // 盘后
+    });
+
+    /**
+     * 🚨 **臂④ —— 跨段谓词逐点不变** (071 T002)。两段化只该动 {@link isWithinTradingSession};
+     * 其余三个都经 `spanOf` 取 min(open)/max(close), 两段与单段同为 09:30/16:00 ⇒ **结构保证
+     * 逐点相等**。本臂把那个结构保证钉成断言: 谁哪天把 `spanOf` 改成逐段判, 这里当场红。
+     * 🚫 期望值**硬编码**而非从实现反算 —— 从实现算等于拿被测对象当基线, 改坏了两边一起变。
+     */
+    it('🚨 两段化后 isSessionUnderway / isCloseWriteBlocked / sessionCloseMinutes 全天 1440 分钟逐点不变', () => {
+      expect(sessionCloseMinutes('hk', 'unknown')).toBe(at(16));
+      expect(sessionCloseMinutes('hk', 'whole')).toBe(at(16));
+      expect(sessionCloseMinutes('hk', 'half')).toBe(at(12)); // 半日市只开上午, 走 halfDaySegments
+      for (let m = 0; m < 24 * 60; m += 1) {
+        // 「该场进行中」= [开盘, 收盘) —— **午休仍算场内**, 敏感档的闸取值零变化 (FR-011)。
+        expect(isSessionUnderway('hk', m, 'unknown')).toBe(m >= at(9, 30) && m < at(16));
+        // 「不可以收盘口径落库」= [开盘, 收盘 + buffer)，hk buffer = 10 (CAS 16:08–16:10)。
+        expect(isCloseWriteBlocked('hk', m, 'unknown')).toBe(m >= at(9, 30) && m < at(16, 10));
+      }
+    });
+
+    /**
+     * 🚨 **臂⑤ —— cn / us 零变化**。本次只改 hk 那一行, 但「只改了一行」是意图不是证据:
+     * `segmentsFor` / `spanOf` 是共用的, 手滑改到共用路径上会静默波及另外两个市场。
+     */
+    it('🚨 cn / us 全天 1440 分钟逐点零变化 (共用路径没被波及)', () => {
+      for (let m = 0; m < 24 * 60; m += 1) {
+        // cn 本就是两段 [09:30,11:30] + [13:00,15:00]
+        expect(isWithinTradingSession('cn', m)).toBe(
+          (m >= at(9, 30) && m <= at(11, 30)) || (m >= at(13) && m <= at(15)),
+        );
+        expect(isSessionUnderway('cn', m, 'unknown')).toBe(m >= at(9, 30) && m < at(15));
+        // us 单段 [09:30,16:00] ET, 真的无午休
+        expect(isWithinTradingSession('us', m)).toBe(m >= at(9, 30) && m <= at(16));
+        expect(isSessionUnderway('us', m, 'unknown')).toBe(m >= at(9, 30) && m < at(16));
+      }
     });
 
     it('marketNow(hk): HKT 恒 UTC+8 无 DST', () => {
@@ -101,8 +138,10 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
       expect(isSessionUnderway('cn', at(12), 'unknown')).toBe(true);
     });
 
-    it('📌 hk 已合并单段 ⇒ 两谓词在它身上不再分道 (分道只剩 cn 一处)', () => {
-      expect(isWithinTradingSession('hk', at(12, 30))).toBe(true);
+    it('🚨 hk 午休: 两谓词**分道** —— 与 cn 同构 (071 FR-017 恢复两段后)', () => {
+      // 「此刻能不能成交」: 午休不能 ⇒ false。
+      expect(isWithinTradingSession('hk', at(12, 30))).toBe(false);
+      // 「这一场收了没有」: 没收 ⇒ true。**敏感档的闸取的是这一个**, 取值与单段时代相同。
       expect(isSessionUnderway('hk', at(12, 30), 'unknown')).toBe(true);
     });
 
@@ -159,13 +198,19 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
     });
 
     /**
-     * 📌 **两谓词的分道如今只剩 `cn` 一个市场**: us 本就无午休, hk 已合并单段 ⇒ 它俩身上逐分钟
-     * 等价。这条断言把这件事钉住 —— 谁把 hk 改回两段式, 这里第一个红, 逼他先回去读 FR-011。
+     * 📌 **两谓词的分道现在是 `cn` + `hk` 两个市场**(071 FR-017 起): us 真的无午休 ⇒ 只在收盘
+     * 那一分钟分叉; hk 恢复两段后**多了午休整段**这个分叉面。
+     *
+     * ⚠️ 本条曾是一道绊线, 原注释写「谁把 hk 改回两段式, 这里第一个红, 逼他先回去读 FR-011」。
+     * **它按设计红了, 而且是被读过之后才翻的** —— FR-011 说的是「敏感档的闸 MUST 用
+     * {@link isSessionUnderway}」, 那条**原样成立**: 上面臂④ 已逐分钟钉住 `isSessionUnderway`
+     * 在 hk 上取值零变化。绊线要拦的是「顺手两段化、把闸的语义一起改掉」, 而不是两段化本身。
      */
-    it('📌 us / hk 均为单段 ⇒ 两个谓词除**收盘那一分钟**外全天逐分钟等价 (分道只剩 cn)', () => {
+    it('📌 us 除**收盘那一分钟**外逐分钟等价; hk 另有**午休整段**分叉 (071 起)', () => {
       // 🚨 #187 后续起两者刻意取不同侧: `isWithinTradingSession` 问「能不能成交」(收盘集合
       //    竞价就在收盘那一刻成交 ⇒ side="both"), `isSessionUnderway` 问「这一场收了没有」
       //    (归属口径 ⇒ side="left")。⇒ 收盘分钟必然分叉, 其余分钟仍等价。
+      let hkLunchDiverged = 0;
       for (let m = 0; m < 24 * 60; m += 1) {
         if (m === sessionCloseMinutes('us', 'unknown')) {
           expect(isSessionUnderway('us', m, 'unknown')).toBe(false);
@@ -175,8 +220,17 @@ describe('market-session.rules — per-market 连续竞价时段表 (060 T001)',
           continue;
         }
         expect(isSessionUnderway('us', m, 'unknown')).toBe(isWithinTradingSession('us', m));
+        // hk 午休 (12:00, 13:00) 开区间: 场内 true / 可成交 false ⇒ 分道。
+        if (m > at(12) && m < at(13)) {
+          expect(isSessionUnderway('hk', m, 'unknown')).toBe(true);
+          expect(isWithinTradingSession('hk', m)).toBe(false);
+          hkLunchDiverged += 1;
+          continue;
+        }
         expect(isSessionUnderway('hk', m, 'unknown')).toBe(isWithinTradingSession('hk', m));
       }
+      // 🚨 计数钉死分叉面的**大小**: 只写「午休分道」而不数分钟数, 段界写错一格照样绿。
+      expect(hkLunchDiverged).toBe(59); // 12:01 … 12:59
     });
   });
 
