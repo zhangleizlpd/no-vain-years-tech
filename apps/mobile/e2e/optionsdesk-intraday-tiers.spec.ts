@@ -243,6 +243,7 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike'> = {
   greeksComplete: true,
   priceKind: 'eod_close',
   bandStatus: null,
+  wideSpreadOpportunity: false,
 };
 
 function leg(code: string, strike: string, over: Partial<LegResponse> = {}): LegResponse {

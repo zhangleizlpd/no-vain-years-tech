@@ -416,6 +416,30 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     ...base,
   };
 
+  /**
+   * 071 机会支的两条反例 —— **同 K 网格、同到期日, 只差 bid**（⇒ 变量恰好一个）。
+   * V=150 ⇒ W=120、spot 132.40 ⇒ axis = min(spot, W) = 120；网格上 `≥ axis` 的最近一档就是 120
+   * ⇒ 成色上界 = 120（比例项 123.6 更松, 取严）。两条腿都落 `K ≤ 120` 与收租段 `[30,365]` 内。
+   * · `G-WIDE-OPP`  bid 3 / ask 9 ⇒ 相对价差 1.00、bid 年化 3/117 × 365/42 = **22.3%** ≥ good 档
+   * · `G-WIDE-THIN` bid 1 / ask 9 ⇒ 相对价差 1.60、bid 年化 1/114 × 365/42 = **7.6%**  < good 档
+   */
+  const wideOpp: LegFixture = {
+    code: 'G-WIDE-OPP',
+    strike: '120',
+    expiry: '2026-09-15',
+    bid: '3.00',
+    ask: '9.00',
+    ...base,
+  };
+  const wideThin: LegFixture = {
+    code: 'G-WIDE-THIN',
+    strike: '115',
+    expiry: '2026-09-15',
+    bid: '1.00',
+    ask: '9.00',
+    ...base,
+  };
+
   const tableOf = (legs: LegFixture[], perspective: 'all' | 'build' | 'rent' = 'all') =>
     makeUseCase(makePrisma({}, legs)).execute(SYMBOL, perspective, NOW);
 
@@ -445,6 +469,28 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     expect(reachable?.bid?.toString()).toBe('3');
     // 全腿视角不设价差上界 (052 FR-010) ⇒ 它在这个视角下压根不算「被排除」。
     expect(inAll.gateCounts.excludedFromIntentTabs).toBe(0);
+  });
+
+  it('071: 宽价差 ∧ bid 年化达档 ⇒ 进收租视角并带机会标; 不达档的同形态腿逐字沿旧语义出局', async () => {
+    const inRent = await tableOf([ok, wideOpp, wideThin], 'rent');
+
+    // 达档的那条从机会支进来了 —— 它在 071 之前压根不在这个视角里。
+    expect(inRent.legs.map((l) => l.code)).toEqual(['G-WIDE-OPP']);
+    expect(inRent.legs[0].wideSpreadOpportunity).toBe(true);
+    // 🚨 放行腿 MUST NOT 再计入「被流动性门槛挡下」—— 它已经不是被挡下的腿 (FR-007);
+    // 这个 1 是 `G-WIDE-THIN` 一条 (`G-OK` 同时不过期限段与成色 ⇒ 边际口径下哪一维都不计它)。
+    expect(inRent.gateCounts.excludedFromIntentTabs).toBe(1);
+  });
+
+  it('071: 机会支收租限定 —— 同一条腿在建仓视角仍被点差闸挡下 (FR-003)', async () => {
+    // DTE 42 同时落建仓段 [1,49] 与收租段 [30,365] ⇒ 视角是**唯一**变量, 期限段不参与。
+    const inBuild = await tableOf([ok, wideOpp], 'build');
+
+    expect(inBuild.legs.map((l) => l.code)).toEqual(['G-OK']);
+    expect(inBuild.gateCounts.excludedFromIntentTabs).toBe(1);
+    // 全腿视角照常可达, 且**不带**机会标 (机会支在该视角不成立)。
+    const inAll = await tableOf([ok, wideOpp], 'all');
+    expect(inAll.legs.find((l) => l.code === 'G-WIDE-OPP')?.wideSpreadOpportunity).toBe(false);
   });
 
   it('期限段本就不合格的腿**不计入**流动性排除 —— 那个数是流动性信号, 不是「哪儿都没进」的总数', async () => {

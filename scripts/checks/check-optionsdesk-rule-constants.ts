@@ -510,9 +510,12 @@ export function coarseProbe(): string | null {
  * 而两处的口径迟早分叉（且分叉后候选数、计数、名次全都算得出来）。
  * 📌 `resolvePremiumFloor` / `resolveQualityCeiling` **不在表内**：它们解的是**默认值**不是成员，
  * 下发默认值本来就要在 use case 侧读得到。
+ * 📌 071 起 `isWideSpreadOpportunity` 入表：它是相对价差维度的**第二条通过路径**（同一个维度、
+ * 两条支撑），落在别处调用与在别处写 `passesRelativeSpreadMax` 是同一种病 —— 成员集合谁说了
+ * 算变成运行时才知道的事。呈现侧要这个语义走契约上的布尔字段，🚫 不许自己再判一次。
  */
 export const MEMBERSHIP_PREDICATE_RE =
-  /\b(failedCriteria|passesPremiumMin|passesOpenInterestMin|passesRelativeSpreadMax|passesQualityCeiling|passesEffectiveCostGate|passesHardGates)\s*\(/g;
+  /\b(failedCriteria|passesPremiumMin|passesOpenInterestMin|passesRelativeSpreadMax|passesQualityCeiling|passesEffectiveCostGate|passesHardGates|isWideSpreadOpportunity)\s*\(/g;
 
 /** 词表判据的**两侧**探针（同 {@link shapePatternProbe} 的理由）。 */
 export function membershipProbe(): string | null {

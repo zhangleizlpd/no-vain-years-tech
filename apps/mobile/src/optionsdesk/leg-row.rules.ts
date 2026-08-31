@@ -177,6 +177,22 @@ export function legRowBandOut(bandStatus: LegResponse['bandStatus']): boolean {
   return bandStatus === 'out';
 }
 
+/**
+ * 071 宽价差机会标判定（FR-010 呈现侧）。复杂度 O(1)。
+ *
+ * 🚨 **判据只从契约布尔来**（ADR-0064 不变量 ②）—— 🚫 MUST NOT 拿 `relativeSpread` 与
+ * 年化档界在客户端重算一遍：档界是服务端的策略参数（`leg-tier.rules.ts` 单点），客户端算
+ * 第二份必漂移，而**两边都算得出布尔、都不会红**。
+ * 🚨 **只标不改行**：不降灰、不折叠、不沉底 —— 它是机会标；「价差有多宽」由同一行的价差列
+ * 如实呈现，本标只回答「它凭什么还在这张意图表里」。
+ * 📌 与 {@link legRowBandOut} 各自独立、可同现：带外说 Δ 落不落带，本标说这条腿怎么进来的。
+ */
+export function legRowWideSpread(
+  wideSpreadOpportunity: LegResponse['wideSpreadOpportunity'],
+): boolean {
+  return wideSpreadOpportunity;
+}
+
 /** 行权价（本片只含认沽 ⇒ 恒 `P`）。O(1)。 */
 export function strikeLabel(leg: Pick<LegResponse, 'strike'>): string {
   return `${trimZeros(leg.strike)} P`;

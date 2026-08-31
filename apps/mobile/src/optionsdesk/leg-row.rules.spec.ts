@@ -16,6 +16,7 @@ import {
   legRowBandOut,
   legRowInferiorMark,
   legRowMarchRecommended,
+  legRowWideSpread,
   LEG_SCROLL_REGION_WIDTH,
   LEG_STICKY_COL_WIDTH,
   LEG_TABLE_COLUMNS,
@@ -74,6 +75,7 @@ function leg(overrides: Partial<LegResponse> = {}): LegResponse {
     // 064 `FR-009`: 逐行档位。夹具默认收盘档 —— 实时档的呈现分支由 T008 各自的用例喂。
     priceKind: 'eod_close',
     bandStatus: null,
+    wideSpreadOpportunity: false,
     ...overrides,
   };
 }
@@ -353,6 +355,22 @@ describe('legRowBandOut — 068 带外横档判定 (FR-009 呈现侧)', () => {
 
   it('null (离线档 / 实时 Δ 缺失) ⇒ 不打标 —— 无带语义的行不冒充带外', () => {
     expect(legRowBandOut(null)).toBe(false);
+  });
+});
+
+describe('legRowWideSpread — 071 宽价差机会标判定 (FR-010 呈现侧)', () => {
+  it('契约布尔为真 ⇒ 打「宽」标', () => {
+    expect(legRowWideSpread(true)).toBe(true);
+  });
+
+  it('为假 ⇒ 不打标 —— 常规腿逐行加标只是噪点 (同 legRowBandOut 那条纪律)', () => {
+    expect(legRowWideSpread(false)).toBe(false);
+  });
+
+  it('🚨 判据只吃契约布尔 —— arity 恒 1, 结构上拿不到 relativeSpread 与档界就无从自推', () => {
+    // 客户端一旦自算, 档界会有第二份且必漂移, 而两边都算得出布尔、都不会红。
+    // 这条断言是那道禁令的**机械判据**: 想在客户端重算必须先改签名, review 看得见。
+    expect(legRowWideSpread.length).toBe(1);
   });
 });
 

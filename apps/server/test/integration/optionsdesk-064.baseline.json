@@ -373,6 +373,44 @@
     "rentDepth": null,
     "legs": [
       {
+        "code": "L-WIDE",
+        "strike": "85",
+        "expiryDate": "2026-09-15T00:00:00.000Z",
+        "dteDays": 35,
+        "bid": "3",
+        "ask": "6",
+        "contractPremium": "300",
+        "relativeSpread": "0.66666666666666666667",
+        "bidSize": 25,
+        "askSize": 26,
+        "basis": "annualized",
+        "periodRate": "0.036585365853658536585",
+        "weeklyRate": "0.0073170731707317073171",
+        "annualizedRate": "0.38153310104529616726",
+        "tier": "good",
+        "askRate": null,
+        "effectiveCost": "82",
+        "effectiveCostVsWPct": "-31.666666666666666667",
+        "absDelta": 0.3,
+        "sigmaDistance": 0.5244005132792953,
+        "openInterest": 900,
+        "volume": 40,
+        "turnover": "12000",
+        "activity": {
+          "isRoundStrike": true,
+          "isTopRanked": true,
+          "label": "round_strike"
+        },
+        "isRecommended": false,
+        "isMonthlyChain": false,
+        "earningsMark": {
+          "mark": "no_date",
+          "bufferShortfallDays": null,
+          "lastEarningsDate": null
+        },
+        "greeksComplete": true
+      },
+      {
         "code": "L-OK",
         "strike": "90",
         "expiryDate": "2026-09-15T00:00:00.000Z",
@@ -413,11 +451,11 @@
     ],
     "gateCounts": {
       "removedByPremiumFloor": 1,
-      "excludedFromIntentTabs": 1
+      "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
-    "matchedCount": 1,
-    "memberCount": 1,
+    "matchedCount": 2,
+    "memberCount": 2,
     "displayLimit": 80,
     "criteria": {
       "defaults": {
@@ -739,9 +777,9 @@
           },
           {
             "state": "valued",
-            "legCount": 1,
-            "best": "0.23701298701298701299",
-            "runnerUp": null
+            "legCount": 2,
+            "best": "0.38153310104529616726",
+            "runnerUp": "0.23701298701298701299"
           }
         ],
         [

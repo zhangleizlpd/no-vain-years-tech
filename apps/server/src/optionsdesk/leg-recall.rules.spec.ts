@@ -15,6 +15,7 @@ import {
   crossedRemovalsWithinCriteria,
   failedCriteria,
   isCrossedQuote,
+  isWideSpreadOpportunity,
   passesEffectiveCostGate,
   passesHardGates,
   passesLivenessMin,
@@ -26,6 +27,8 @@ import {
   resolveCeilingAxis,
   resolvePremiumFloor,
   resolveQualityCeiling,
+  WIDE_SPREAD_OPPORTUNITY_FLOOR,
+  WIDE_SPREAD_OPPORTUNITY_TIER,
   type LegIntentTab,
   type RecallChainContext,
   type RecallContext,
@@ -33,6 +36,7 @@ import {
   type RetrievalOverride,
 } from './leg-recall.rules';
 import { LEG_TABS, type LegTab } from './leg-tab.rules';
+import { TIER_FLOORS_BY_BASIS } from './leg-tier.rules';
 
 const D = (v: string) => new Prisma.Decimal(v);
 
@@ -63,7 +67,7 @@ const chain: RecallChainContext = { ...context, qualityCeiling: D('9999') };
 const tabsOf = (c: RecallChainContext, l: RecallLegInput): LegTab[] => {
   const criteria = defaultCriteriaByTab(c);
   return LEG_TABS.filter(
-    (tab) => passesHardGates(tab, c, l) && failedCriteria(criteria[tab], l).length === 0,
+    (tab) => passesHardGates(tab, c, l) && failedCriteria(tab, criteria[tab], l).length === 0,
   );
 };
 
@@ -73,7 +77,7 @@ const excludedByLiquidity = (c: RecallChainContext, l: RecallLegInput): LegInten
   return (['build', 'rent'] as const).filter(
     (tab) =>
       passesHardGates(tab, c, l) &&
-      failedCriteria(criteria[tab], l).join(',') === 'relativeSpreadMax',
+      failedCriteria(tab, criteria[tab], l).join(',') === 'relativeSpreadMax',
   );
 };
 
@@ -210,7 +214,10 @@ describe('leg-recall.rules — 相对价差与流动性门槛 (FR-006)', () => {
 
 describe('leg-recall.rules — 两个流动性排除数的共同判据 (FR-008 / 051 FR-006a)', () => {
   it('只数「本来进得去、被流动性门槛挡下」的腿, 并**点名是哪几个视角**', () => {
-    const wide = leg({ dteDays: 35, ask: D('20') });
+    // 🚨 `bid` 蓄意压到 1（年化 10.5% < good 档界）—— 071 起 bid 年化达档的宽价差腿走**机会支**
+    // 进收租候选（FR-001），那样这条腿就不再「被流动性门槛挡下」，本组断言的判据面会被换掉。
+    // 机会支自身的分支在「071 宽价差机会支」那组里逐条验，这里要的是**不达档**的那一类。
+    const wide = leg({ dteDays: 35, bid: D('1'), ask: D('20') });
     expect(tabsOf(chain, wide)).toEqual(['all']);
     // 🚨 DTE=35 落重叠区 ⇒ 一条腿让**两个**视角各少一条, 而全表标量只记 1 次。
     // 这就是 051 SC-012 取不等式 (`标量 ≤ build + rent`) 而非等号的根: 断言写成
@@ -220,13 +227,19 @@ describe('leg-recall.rules — 两个流动性排除数的共同判据 (FR-008 /
 
   it('只够一个视角的腿只让那一个视角减少 —— 两个数各自独立, 不是同一个数的两份拷贝', () => {
     // DTE=164 只在收租段 `[30,365]` 内, 建仓段 `[1,49]` 够不着。
-    expect(excludedByLiquidity(chain, leg({ dteDays: 164, ask: D('20') }))).toEqual(['rent']);
+    expect(excludedByLiquidity(chain, leg({ dteDays: 164, bid: D('1'), ask: D('20') }))).toEqual([
+      'rent',
+    ]);
     // DTE=10 反过来: 只在建仓段内。
-    expect(excludedByLiquidity(chain, leg({ dteDays: 10, ask: D('20') }))).toEqual(['build']);
+    expect(excludedByLiquidity(chain, leg({ dteDays: 10, bid: D('1'), ask: D('20') }))).toEqual([
+      'build',
+    ]);
   });
 
   it('🚫 期限段本就不合格的腿 MUST NOT 计入 —— 它不是被流动性门槛挡下的', () => {
-    expect(excludedByLiquidity(chain, leg({ dteDays: 400, ask: D('20') }))).toEqual([]);
+    expect(excludedByLiquidity(chain, leg({ dteDays: 400, bid: D('1'), ask: D('20') }))).toEqual(
+      [],
+    );
   });
 
   it('🚫 有效成本不过的腿 MUST NOT 计进建仓数 —— 它本来就进不了建仓, 与流动性无关', () => {
@@ -656,33 +669,39 @@ describe('leg-recall.rules — 单维度判据 failedCriteria (052 FR-003: 成�
   };
 
   it('六维全不限 ⇒ 一条腿都挡不下 (空数组)', () => {
-    expect(failedCriteria(blank, leg())).toEqual([]);
-    expect(failedCriteria(blank, leg({ bid: null, ask: null, openInterest: null }))).toEqual([]);
+    expect(failedCriteria('build', blank, leg())).toEqual([]);
+    expect(
+      failedCriteria('build', blank, leg({ bid: null, ask: null, openInterest: null })),
+    ).toEqual([]);
   });
 
   it('行权价上下界均取闭区间 —— 恰等于端点仍在内', () => {
-    expect(failedCriteria({ ...blank, strikeMax: D('100') }, leg({ strike: D('100') }))).toEqual(
-      [],
-    );
-    expect(failedCriteria({ ...blank, strikeMax: D('100') }, leg({ strike: D('100.01') }))).toEqual(
-      ['strikeMax'],
-    );
-    expect(failedCriteria({ ...blank, strikeMin: D('100') }, leg({ strike: D('100') }))).toEqual(
-      [],
-    );
-    expect(failedCriteria({ ...blank, strikeMin: D('100') }, leg({ strike: D('99.99') }))).toEqual([
-      'strikeMin',
-    ]);
+    expect(
+      failedCriteria('build', { ...blank, strikeMax: D('100') }, leg({ strike: D('100') })),
+    ).toEqual([]);
+    expect(
+      failedCriteria('build', { ...blank, strikeMax: D('100') }, leg({ strike: D('100.01') })),
+    ).toEqual(['strikeMax']);
+    expect(
+      failedCriteria('build', { ...blank, strikeMin: D('100') }, leg({ strike: D('100') })),
+    ).toEqual([]);
+    expect(
+      failedCriteria('build', { ...blank, strikeMin: D('100') }, leg({ strike: D('99.99') })),
+    ).toEqual(['strikeMin']);
   });
 
   it('DTE 段取闭区间; 持仓量的免死条款不随下限被覆盖而失效', () => {
     const band = { ...blank, dteBand: { min: 10, max: 20 } };
-    expect(failedCriteria(band, leg({ dteDays: 10 }))).toEqual([]);
-    expect(failedCriteria(band, leg({ dteDays: 9 }))).toEqual(['dteBand']);
+    expect(failedCriteria('build', band, leg({ dteDays: 10 }))).toEqual([]);
+    expect(failedCriteria('build', band, leg({ dteDays: 9 }))).toEqual(['dteBand']);
     // 🚨 用户调的是「持仓多少算够」, 不是「要不要看新挂档」—— OI=0 但当日有成交仍进。
     const strictOi = { ...blank, livenessMin: { oi: 9999, volume: 9999 } };
-    expect(failedCriteria(strictOi, leg({ openInterest: 0, volume: 1 }))).toEqual(['livenessMin']);
-    expect(failedCriteria(strictOi, leg({ openInterest: 0, volume: 0 }))).toEqual(['livenessMin']);
+    expect(failedCriteria('build', strictOi, leg({ openInterest: 0, volume: 1 }))).toEqual([
+      'livenessMin',
+    ]);
+    expect(failedCriteria('build', strictOi, leg({ openInterest: 0, volume: 0 }))).toEqual([
+      'livenessMin',
+    ]);
   });
 
   it('🚨 返回的是集合不是布尔 —— 「只差这一条」与「差好几条」在计数上是两件事', () => {
@@ -692,11 +711,9 @@ describe('leg-recall.rules — 单维度判据 failedCriteria (052 FR-003: 成�
       livenessMin: { oi: 9999, volume: 9999 },
       premiumMin: D('50'),
     };
-    expect(failedCriteria(strict, leg({ strike: D('100'), openInterest: 1, volume: 0 }))).toEqual([
-      'strikeMax',
-      'premiumMin',
-      'livenessMin',
-    ]);
+    expect(
+      failedCriteria('build', strict, leg({ strike: D('100'), openInterest: 1, volume: 0 })),
+    ).toEqual(['strikeMax', 'premiumMin', 'livenessMin']);
   });
 });
 
@@ -920,7 +937,7 @@ describe('leg-recall.rules — 069 报价护栏全域前置 (FR-001)', () => {
     const criteria = defaultCriteriaByTab(chain).rent;
     const wouldBeMember = leg({ bid: D('2.1'), ask: D('2') });
     const outOfBand = leg({ dteDays: 400, bid: D('2.1'), ask: D('2') });
-    expect(crossedRemovalsWithinCriteria(criteria, [wouldBeMember, outOfBand])).toEqual([
+    expect(crossedRemovalsWithinCriteria('rent', criteria, [wouldBeMember, outOfBand])).toEqual([
       wouldBeMember,
     ]);
   });
@@ -970,5 +987,109 @@ describe('leg-recall.rules — 070 剔→标处置按口径参数化 (FR-006)', 
   it('④ 收盘口径无交叉样本: 全部出参与处置参数无关 (恒等护航)', () => {
     const batch = [leg(), leg({ dteDays: 40 })];
     expect(recall(batch, 'retain')).toEqual(recall(batch, 'remove'));
+  });
+});
+
+describe('leg-recall.rules — 071 宽价差机会支 (FR-001 / FR-002 / FR-003 / FR-004)', () => {
+  /**
+   * 基线腿 spot=110 / K=100 / DTE=35 ⇒ `bid` 与 bid 年化的换算:
+   * `年化 = bid/(100−bid) × 365/35`。⇒ bid `2` ⇒ 21.3%（达 good 档 15%）;
+   * bid `1` ⇒ 10.5%（不达档）。两个取值贯穿本组, 不再逐条重算。
+   */
+  const wideAsk = D('20');
+
+  it('档界是档表引用而非新阈值 (FR-002) —— 全仓零新增数值字面量', () => {
+    expect(WIDE_SPREAD_OPPORTUNITY_TIER).toBe('good');
+    expect(WIDE_SPREAD_OPPORTUNITY_FLOOR.equals(TIER_FLOORS_BY_BASIS.annualized[0].floor)).toBe(
+      true,
+    );
+  });
+
+  it('谓词四臂: 达档 ⇒ 真; 不达档 / 无 bid / 无 ask / 准备金 ≤ 0 ⇒ 假 (FR-004)', () => {
+    expect(isWideSpreadOpportunity(leg({ bid: D('2'), ask: wideAsk }))).toBe(true);
+    expect(isWideSpreadOpportunity(leg({ bid: D('1'), ask: wideAsk }))).toBe(false);
+    expect(isWideSpreadOpportunity(leg({ bid: null, ask: wideAsk }))).toBe(false);
+    // 🚨 无 ask ⇒ 「市场有多宽」无从谈起 —— 机会支 MUST NOT 退化成无条件权利金逃生舱。
+    expect(isWideSpreadOpportunity(leg({ bid: D('2'), ask: null }))).toBe(false);
+    // 权利金吃掉整个行权价 ⇒ 费率无定义 ⇒ 不成立 (禁伪造 0)。
+    expect(isWideSpreadOpportunity(leg({ strike: D('2'), bid: D('2'), ask: wideAsk }))).toBe(false);
+  });
+
+  it('边界含端点: 恰好等于档界的腿成立, 差一分不成立', () => {
+    // 反解 bid: 年化 = bid/(K−bid) × 365/DTE = 档界。取 DTE=365 ⇒ 年化 = bid/(100−bid)
+    // ⇒ bid = 100×φ/(1+φ)。φ=0.15 ⇒ bid = 13.0434782608695652173913…（无穷循环）
+    // ⇒ 改用 K=115 / DTE=365: bid=15 ⇒ 15/100 = 0.15 恰好等于档界, 零截断误差。
+    const atFloor = leg({ strike: D('115'), dteDays: 365, bid: D('15'), ask: D('60') });
+    expect(isWideSpreadOpportunity(atFloor)).toBe(true);
+    expect(isWideSpreadOpportunity({ ...atFloor, bid: D('14.99') })).toBe(false);
+  });
+
+  it('维度第二支只作用收租 (FR-003) —— 建仓同形态腿仍出局', () => {
+    // DTE=35 落建仓段 [1,49] 与收租段 [30,365] 的重叠区 ⇒ 同一条腿同时够得着两个视角,
+    // 视角差因此是**唯一**变量 (期限段不参与)。
+    const opportunity = leg({ dteDays: 35, bid: D('2'), ask: wideAsk });
+    expect(failedCriteria('rent', defaultCriteriaByTab(chain).rent, opportunity)).toEqual([]);
+    expect(failedCriteria('build', defaultCriteriaByTab(chain).build, opportunity)).toEqual([
+      'relativeSpreadMax',
+    ]);
+    expect(tabsOf(chain, opportunity)).toEqual(['all', 'rent']);
+  });
+
+  it('不达档的宽价差腿逐字沿既有语义出局 (US3 零回归)', () => {
+    const thin = leg({ dteDays: 35, bid: D('1'), ask: wideAsk });
+    expect(failedCriteria('rent', defaultCriteriaByTab(chain).rent, thin)).toEqual([
+      'relativeSpreadMax',
+    ]);
+    expect(tabsOf(chain, thin)).toEqual(['all']);
+  });
+});
+
+describe('leg-recall.rules — 071 机会标与流动性计数 (FR-005 / FR-006 / FR-007)', () => {
+  const opportunity = leg({ dteDays: 35, bid: D('2'), ask: D('20') });
+  const thin = leg({ dteDays: 164, bid: D('1'), ask: D('20') });
+  const recall = (legs: readonly RecallLegInput[], override: RetrievalOverride | null = null) =>
+    recallCandidates(context, ['rent'], legs, RECALL_CANDIDATE_CAP, 'retain', override);
+
+  it('放行腿带标, 常规腿不带 (FR-005)', () => {
+    const outcome = recall([opportunity, leg()]);
+    expect(outcome.candidates.map((c) => c.wideSpreadOpportunity)).toEqual([true, false]);
+  });
+
+  it('🚨 标按**系统默认值**下的主支判 —— 用户把上界放到「不限」时标不消失 (FR-006)', () => {
+    const widened: RetrievalOverride = {
+      perspective: 'rent',
+      criteria: { relativeSpreadMax: null },
+    };
+    const outcome = recall([opportunity], widened);
+    // 主支此时恒过 ⇒ 若判据写成「本次实际被挡下」, 这条断言会红 —— 而那条腿还是同一条腿。
+    expect(outcome.candidates[0].wideSpreadOpportunity).toBe(true);
+  });
+
+  it('🚨 用户把上界**收窄** ⇒ 机会支让位, 腿出局 (state_branch 8)', () => {
+    const narrowed: RetrievalOverride = {
+      perspective: 'rent',
+      criteria: { relativeSpreadMax: D('0.05') },
+    };
+    // 拖动上界往紧里调是一句明确的话「我只要窄市场」—— 机会支照样放行, 这个控件就对一类腿
+    // 失效了, 而表照样渲染得出来。
+    expect(recall([opportunity], narrowed).candidates).toEqual([]);
+  });
+
+  it('🚨 显式填一个**等于默认值**的上界 ⇒ 机会支仍在 —— 判据是「不比默认严」不是「有没有覆盖」', () => {
+    const explicitDefault: RetrievalOverride = {
+      perspective: 'rent',
+      criteria: { relativeSpreadMax: LIQUIDITY_MAX_RELATIVE_SPREAD },
+    };
+    // 按「有没有覆盖」写会让同一个上界给出两种成员集 (手填 vs 没动), 而两种都解释得通。
+    expect(recall([opportunity], explicitDefault).candidates.map((c) => c.leg)).toEqual([
+      opportunity,
+    ]);
+  });
+
+  it('放行腿 MUST NOT 计入「被流动性门槛挡下」的两个数 (FR-007)', () => {
+    const outcome = recall([opportunity, thin]);
+    // 进得来的那条不是被挡下的腿; 不达档的那条照旧计数。
+    expect(outcome.excludedFromIntentTabs).toBe(1);
+    expect(outcome.excludedFromIntentTabsByTab.rent).toBe(1);
   });
 });

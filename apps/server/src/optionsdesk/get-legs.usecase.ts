@@ -255,6 +255,17 @@ export interface LegView {
   priceKind: PriceKind;
   /** 068 带标 —— 原样从 `LegChainRow.bandStatus` 带上来, 本层零加工 (呈现语义, 判据在检索层)。 */
   bandStatus: 'in' | 'out' | null;
+  /**
+   * 071 宽价差机会标 —— 原样从候选集的 `RecallCandidate.wideSpreadOpportunity` 带上来,
+   * 本层**零加工**。语义 = 「这条腿是从点差维度的机会支进来的」。
+   *
+   * 🚨 **🚫 MUST NOT 在这里由 `relativeSpread` 与档界重算**: 那就是同一判据两处各一份, 而
+   * 两边都算得出布尔、都不会红 (ADR-0064 不变量 ③ / 052 FR-003)。判据单点在
+   * `leg-recall.rules.ts` 的 `isWideSpreadOpportunity`。
+   * 📌 与 {@link LegView.bandStatus} 各自独立: 带标答「Δ 落不落意图带」, 本标答「怎么进来的」,
+   * 可同时成立 (071 FR-011)。
+   */
+  wideSpreadOpportunity: boolean;
 }
 
 /**
@@ -756,7 +767,7 @@ export class GetLegsUseCase {
     // `perspective` 一个视角判定过 ⇒ `tabs.includes('build')` 与 `perspective === 'build'` 逐字
     // 等价, 而后者读得出「口径跟视角走」这件事。全腿视角恒年化的例外仍由 `BASIS_BY_TAB` 单点持有。
     const basis: LegBasis = BASIS_BY_TAB[perspective];
-    const legs = pool.map(({ leg: row }) => {
+    const legs = pool.map(({ leg: row, wideSpreadOpportunity }) => {
       const { code, expiryDate, dteDays, strike } = row;
       const delta = row.delta === null ? null : Math.abs(row.delta);
       const { absDelta, sigmaDistance } = deriveDeltaColumns(row.greeksComplete ? delta : null);
@@ -818,6 +829,8 @@ export class GetLegsUseCase {
         earningsMark: marks.get(dateOnlyOf(expiryDate)) ?? null,
         greeksComplete: row.greeksComplete,
         bandStatus: row.bandStatus,
+        // 071: 机会标随候选集原样带出 —— 判据在召回层单点, 本层零重算 (见 `LegView`)。
+        wideSpreadOpportunity,
         // 064 `FR-009`: 逐行档位原样带出 —— 🚫 MUST NOT 拿链级那个数填 (部分缺失时两者不同)。
         priceKind: row.priceKind,
       } satisfies LegView;
@@ -1010,7 +1023,7 @@ function assembleMarchByStrike(
 
   // 审计面只收「若非交叉本会是收租成员」的剔除腿 —— 作用域判定住召回层
   // (crossedRemovalsWithinCriteria, 守卫 #7: 成员判据单点), 本层只消费结果。
-  for (const leg of crossedRemovalsWithinCriteria(rentCriteria, crossedLegs)) {
+  for (const leg of crossedRemovalsWithinCriteria('rent', rentCriteria, crossedLegs)) {
     const bucket = bucketOf(leg.strike);
     bucket.crossedCount += 1;
     bucket.extraAudits.push({

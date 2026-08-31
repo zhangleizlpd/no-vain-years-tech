@@ -786,6 +786,7 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       greeksComplete: true,
       priceKind,
       bandStatus: null,
+      wideSpreadOpportunity: false,
     };
   }
 

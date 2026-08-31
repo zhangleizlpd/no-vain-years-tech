@@ -127,6 +127,23 @@ export function classifyLegTier(
 }
 
 /**
+ * 某口径某档的**下界** —— 档表的唯一查表入口。`O(档数)` = `O(1)`, 档表仅 3 行。
+ *
+ * 🚨 **抽出来是因为消费点从一个变成了两个** (071 T001): 069 行军的 φ
+ * (`leg-march.rules.ts` `resolveMarchPhi`) 与 071 的宽价差机会闸 (`leg-recall.rules.ts`)
+ * 都要「收租年化 good 档界」这个数。各写一份 `.find()` **不会红** —— 两份都查得出数, 只是
+ * 档表改结构时可能只改到一处, 而另一处照样返回一个看着合理的阈值。
+ *
+ * 🚫 **未知档抛错不回落** (承 `resolveMarchPhi` 原语义): 回落到某个默认档会让「配置写错」
+ * 表现为「阈值悄悄变了」—— 判决照样出得来、数字照样有。
+ */
+export function tierFloor(basis: LegBasis, tier: LegTierWithFloor): Prisma.Decimal {
+  const band = TIER_FLOORS_BY_BASIS[basis].find((b) => b.tier === tier);
+  if (band === undefined) throw new Error(`unknown ${basis} tier: ${tier}`);
+  return band.floor;
+}
+
+/**
  * 四档的完整区间 (呈现侧图例文案的唯一数值来源, D-SOT-1「图例从同一常量派生, 不手抄」)。
  * 相邻两段首尾相接 ⇒ 图例与 {@link classifyLegTier} 永不打架。`O(1)`。
  */

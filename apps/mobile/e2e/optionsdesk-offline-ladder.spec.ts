@@ -176,6 +176,7 @@ const LEG_BASE: Omit<LegResponse, 'code' | 'strike'> = {
   // 🚨 离线档：逐腿与链级同为收盘 ⇒ 行级「收」标恒不出（064 FR-009）。
   priceKind: 'eod_close',
   bandStatus: 'in',
+  wideSpreadOpportunity: false,
 };
 
 function leg(code: string, strike: string, over: Partial<LegResponse> = {}): LegResponse {

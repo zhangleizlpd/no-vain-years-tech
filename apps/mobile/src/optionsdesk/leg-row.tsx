@@ -36,7 +36,12 @@ import {
 } from './leg-picker-copy';
 import { LEG_ROW_HEIGHT, LegStickyCell, legColumnWidth } from './leg-table-header';
 import { legRowEodMarked, type LegBlockPriceKind } from './leg-tier-bar.rules';
-import { legRowBandOut, legRowInferiorMark, legRowMarchRecommended } from './leg-row.rules';
+import {
+  legRowBandOut,
+  legRowInferiorMark,
+  legRowMarchRecommended,
+  legRowWideSpread,
+} from './leg-row.rules';
 import {
   LEG_SCROLL_REGION_WIDTH,
   costCell,
@@ -102,6 +107,8 @@ export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: L
   const eodMarked = legRowEodMarked(blockPriceKind, leg.priceKind);
   // 068 FR-009: 带外横档 —— 判据只从契约 bandStatus 来, 打标不删行 (比价用途)。
   const bandOut = legRowBandOut(leg.bandStatus);
+  // 071 FR-010: 宽价差机会标 —— 同样只从契约布尔来, 客户端零重算。
+  const wideSpread = legRowWideSpread(leg.wideSpreadOpportunity);
   // 069 FR-016: 推荐章与劣档微标 —— 只在收租实时 (march 非 null) 有值, 判据在 rules 纯函数。
   const marchRecommended = legRowMarchRecommended(leg, march);
   const inferiorMark = legRowInferiorMark(leg, march);
@@ -158,6 +165,16 @@ export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: L
               testID={`optionsdesk-detail-leg-band-out-${leg.code}`}
             >
               {COPY.bandOutBadge}
+            </Text>
+          ) : null}
+          {/* 071 宽价差机会标: 复用同一条 badge 载体, teal 描边 —— 「市场宽但砸 bid 仍达好档」
+              是机会不是告警。🚫 不降灰不折叠不沉底; 价差有多宽由同行的价差列如实说。 */}
+          {wideSpread ? (
+            <Text
+              className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.wide}`}
+              testID={`optionsdesk-detail-leg-wide-spread-${leg.code}`}
+            >
+              {COPY.wideSpreadBadge}
             </Text>
           ) : null}
           {/* 069 行军推荐章 (FR-016): primary 章 —— 复用同一 badge 载体, 叠 brand 强调面。
