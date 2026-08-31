@@ -18,7 +18,14 @@ import {
 import { Prisma } from '../generated/prisma/client';
 import { ANCHOR_ZONES, L_LEVELS, type LLevel } from './anchor.rules';
 import { ANCHOR_MANUAL_SLOTS } from './anchor-cascade';
-import { ANCHOR_SUBMISSION_STATUSES, IMPORTABLE_MARKETS } from './anchor-import.rules';
+import {
+  ANCHOR_SUBMISSION_STATUSES,
+  IMPORTABLE_MARKETS,
+  type AnchorSubmissionStatus,
+  type ImportableMarket,
+} from './anchor-import.rules';
+import { ANCHOR_SUBMISSION_ASOF_FLAGS } from './anchor-submission.rules';
+import type { AnchorSubmissionView } from './list-anchor-submissions.usecase';
 import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
 import { PRICE_KINDS, type PriceKind } from '../marketdata/marketdata.types';
@@ -3102,5 +3109,312 @@ export function toAnchorSubmissionResponse(row: {
     ticker: row.ticker,
     status: row.status,
     createdAt: row.createdAt.toISOString(),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 072 锚待审箱审阅面 (admin-only)
+//
+// 🚨 **不复用上面的 `AnchorSubmissionResponse`** —— 那个是**访客提交回执**, 字段刻意只有
+// id / submitter / ticker / status / createdAt (FR-013「只回执, 不回读」: 提交方看不到锚,
+// 也看不到自己此前提交过什么)。往它上面加 v / asof / method / confidence 就等于把值回给了
+// 访客口。本段是独立的一族, 只挂 admin 端点。
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class AnchorSubmissionListQuery {
+  @ApiPropertyOptional({
+    description: '按处置状态筛;缺省 = PENDING (待审箱本身)',
+    enum: [...ANCHOR_SUBMISSION_STATUSES],
+    example: 'PENDING',
+  })
+  @IsOptional()
+  @IsIn([...ANCHOR_SUBMISSION_STATUSES])
+  status?: AnchorSubmissionStatus;
+
+  @ApiPropertyOptional({
+    description: '按市场筛 (ticker 前缀);缺省 = 不筛',
+    enum: [...IMPORTABLE_MARKETS],
+    example: 'us',
+  })
+  @IsOptional()
+  @IsIn([...IMPORTABLE_MARKETS])
+  market?: ImportableMarket;
+}
+
+export class AnchorSubmissionReviewResponse {
+  @ApiProperty({ description: '待审条目 id (数字串)', example: '155' })
+  id!: string;
+
+  @ApiProperty({ description: '提交方 (归属, 不作授权)', example: 'friend2' })
+  submitter!: string;
+
+  @ApiProperty({ description: 'canonical `market:code`', example: 'us:CFG' })
+  ticker!: string;
+
+  @ApiProperty({
+    description:
+      '标的名。未注册 / ticker 不可解析 ⇒ null,呈现层退回代号 —— MUST NOT 拿 ticker 拼假名字 ' +
+      '(那会让「名字没同步上」与「这票就叫这个」在屏上分不开)。',
+    type: 'string',
+    nullable: true,
+    example: 'Citizens Financial Group',
+  })
+  instrumentName!: string | null;
+
+  @ApiProperty({ description: '市场段', enum: [...IMPORTABLE_MARKETS], example: 'us' })
+  market!: string;
+
+  @ApiProperty({ description: '每股内在价值 (字符串, 永不经 JS number)', example: '49.3400' })
+  v!: string;
+
+  @ApiProperty({ description: '估值口径日 `YYYY-MM-DD`', example: '2026-08-30' })
+  asof!: string;
+
+  @ApiProperty({ description: '估值方法名', example: 'weighted' })
+  method!: string;
+
+  @ApiProperty({ description: '10 分制置信度 (字符串)', example: '6.00' })
+  confidence!: string;
+
+  @ApiProperty({
+    description: '提交方的估值理由 (只读) —— 决定采不采纳的唯一定性输入',
+    type: 'string',
+    nullable: true,
+    example: '按 2026Q2 业绩上修',
+  })
+  note!: string | null;
+
+  @ApiProperty({
+    description: '审阅方的处置附言 (与上面 note 是两个人写的两件事, 不合并)',
+    type: 'string',
+    nullable: true,
+    example: null,
+  })
+  reviewNote!: string | null;
+
+  @ApiProperty({ enum: [...ANCHOR_SUBMISSION_STATUSES], example: 'PENDING' })
+  status!: string;
+
+  @ApiProperty({
+    description: '采纳时落成的锚 id;未采纳 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: null,
+  })
+  consumedAnchorId!: string | null;
+
+  @ApiProperty({
+    description:
+      '采纳这条会新建锚还是刷新既有锚。🚨 refresh **不是更温和的 create**:它会冲掉三处人工位 ' +
+      '并把 confidence_source 翻成 model(此后置信度在 App 里改不动)。',
+    enum: ['create', 'refresh'],
+    example: 'create',
+  })
+  disposition!: string;
+
+  @ApiProperty({
+    description:
+      'asof 可信度五档。FUTURE=那天收盘价还不存在;NON_TRADING=日历说不开市(含节假日);' +
+      'UNKNOWN=日历没填到那一段(**不等于没问题**);TODAY=就是今天(仅警告, 服务端判不了收没收盘);OK。',
+    enum: [...ANCHOR_SUBMISSION_ASOF_FLAGS],
+    example: 'OK',
+  })
+  asofFlag!: string;
+
+  @ApiProperty({
+    description: '需要改期时的建议日 (该市场早于 asof 的最近交易日);日历解不出 ⇒ null,**不猜**',
+    type: 'string',
+    nullable: true,
+    example: null,
+  })
+  asofSuggested!: string | null;
+
+  @ApiProperty({ description: '该档是否必须显式确认才放行采纳', example: false })
+  asofNeedsAck!: boolean;
+
+  @ApiProperty({ description: '收件时刻 (ISO-8601)', example: '2026-08-30T01:30:00.000Z' })
+  createdAt!: string;
+
+  @ApiProperty({ description: '最后处置/更新时刻 (ISO-8601)', example: '2026-08-30T01:30:00.000Z' })
+  updatedAt!: string;
+}
+
+export class AnchorSubmissionReviewListResponse {
+  @ApiProperty({ description: '待审条目 (id 升序)', type: [AnchorSubmissionReviewResponse] })
+  items!: AnchorSubmissionReviewResponse[];
+
+  @ApiProperty({ description: '本次返回条数', example: 45 })
+  total!: number;
+
+  @ApiProperty({
+    description:
+      '是否触到单次上限而被截断 (不分页, 上限是常识性防护)。true 时呈现层 MUST 显式告诉用户。',
+    example: false,
+  })
+  truncated!: boolean;
+}
+
+export class AnchorSubmissionDetailResponse extends AnchorSubmissionReviewResponse {
+  @ApiProperty({
+    description:
+      '采纳会冲掉哪些人工位 —— 与真实写入路径共用同一个纯函数算出, 不可能漂。willBeNoop 时恒为空。',
+    type: [AnchorFallbackEntryResponse],
+  })
+  fallbackPreview!: AnchorFallbackEntryResponse[];
+
+  @ApiProperty({
+    description:
+      '本次采纳会不会**什么都不写**(四个模型事实全等且来源已是 model)。true 时 fallbackPreview ' +
+      '为空 —— 少了这一位, 逐值相同的提交会被预览成「将清掉你的 3 处人工位」, 一个什么都不写的 ' +
+      '操作配最吓人的警告。',
+    example: false,
+  })
+  willBeNoop!: boolean;
+
+  @ApiProperty({
+    description: "既有锚的置信度来源;'model' 意味着置信度在 App 里本就改不动。无锚 ⇒ null",
+    type: 'string',
+    nullable: true,
+    example: null,
+  })
+  existingConfidenceSource!: string | null;
+}
+
+export class ApproveAnchorSubmissionRequest {
+  @ApiPropertyOptional({ description: '审核修正后的 V;省略 = 沿用提交值', example: '49.34' })
+  @IsOptional()
+  @IsNumberString()
+  v?: string;
+
+  @ApiPropertyOptional({ description: '审核修正后的口径日 `YYYY-MM-DD`', example: '2026-08-28' })
+  @IsOptional()
+  @IsDateString()
+  asof?: string;
+
+  @ApiPropertyOptional({ description: '审核修正后的方法名', example: 'dcf' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(32)
+  method?: string;
+
+  @ApiPropertyOptional({ description: '审核修正后的置信度 (10 分制)', example: '7.5' })
+  @IsOptional()
+  @IsNumberString()
+  confidence?: string;
+
+  @ApiPropertyOptional({ description: '本次处置的批注', example: '口径日按前一交易日改送' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  reviewNote?: string;
+
+  @ApiPropertyOptional({
+    description:
+      '可疑 asof 的显式确认。缺省 ⇒ 撞上 FUTURE/NON_TRADING/UNKNOWN 时 409 ASOF_SUSPECT。' +
+      "'shift'=改送建议日(解不出则 409 ASOF_SHIFT_UNRESOLVABLE, **不猜**);'accept'=原样发。",
+    enum: ['shift', 'accept'],
+    example: 'shift',
+  })
+  @IsOptional()
+  @IsIn(['shift', 'accept'])
+  asofAck?: 'shift' | 'accept';
+}
+
+export class ApproveAnchorSubmissionResponse {
+  @ApiProperty({
+    description:
+      'create=新建了锚(⇒ 当日采集要为它多做一整轮历史回填);update=刷新了既有锚;noop=值全等, 什么都没写',
+    enum: ['create', 'update', 'noop'],
+    example: 'create',
+  })
+  action!: string;
+
+  @ApiProperty({ description: '落成/命中的锚 id', example: '42' })
+  anchorId!: string;
+
+  @ApiProperty({ description: 'canonical `market:code`', example: 'us:CFG' })
+  ticker!: string;
+
+  @ApiProperty({
+    description: '真正落库的口径日 —— 与提交行不同即说明被改过 (审核方改的或 shift 改的)',
+    example: '2026-08-28',
+  })
+  appliedAsof!: string;
+
+  @ApiProperty({ enum: [...ANCHOR_SUBMISSION_ASOF_FLAGS], example: 'OK' })
+  asofFlag!: string;
+
+  @ApiProperty({
+    description: '本次真正冲掉的人工位, 逐条列出。**禁静默回落** —— 为空是正常的。',
+    type: [AnchorFallbackEntryResponse],
+  })
+  fallbackEntries!: AnchorFallbackEntryResponse[];
+
+  @ApiProperty({
+    description:
+      '收件箱状态是否成功翻成 CONSUMED。**false 不是失败** —— 锚已经写了, 只是并发处置抢跑 ' +
+      '导致状态没翻。此时 MUST 提示人工核对, 且 MUST NOT 重试(会写第二遍)。',
+    example: true,
+  })
+  statusFlipped!: boolean;
+
+  @ApiProperty({
+    description: 'action=create ⇒ 会排一个冷启动 job (分钟级, worker concurrency=1 串行)',
+    example: true,
+  })
+  coldStartExpected!: boolean;
+}
+
+export class RejectAnchorSubmissionsRequest {
+  @ApiProperty({ description: '要驳回的待审条目 id (数字串数组)', example: ['155', '156'] })
+  @IsDefined()
+  @IsString({ each: true })
+  ids!: string[];
+
+  @ApiPropertyOptional({ description: '驳回理由', example: '口径日不可信且无法改期' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  reviewNote?: string;
+}
+
+export class RejectAnchorSubmissionsResponse {
+  @ApiProperty({ description: '实际被驳回的条数', example: 2 })
+  rejected!: number;
+
+  @ApiProperty({
+    description:
+      '未被驳回的 id (已非 PENDING 或不存在)。**MUST NOT 折成一句 ok** —— 那些行是在别的设备上 ' +
+      '或被 anchor-approve.sh 处置掉的, 人必须知道有行在自己脚下动过。',
+    type: [String],
+    example: [],
+  })
+  skipped!: string[];
+}
+
+export function toAnchorSubmissionReviewResponse(
+  view: AnchorSubmissionView,
+): AnchorSubmissionReviewResponse {
+  return {
+    id: view.id.toString(),
+    submitter: view.submitter,
+    ticker: view.ticker,
+    instrumentName: view.instrumentName,
+    market: view.market,
+    v: view.v.toString(),
+    asof: view.asof,
+    method: view.method,
+    confidence: view.confidence.toString(),
+    note: view.note,
+    reviewNote: view.reviewNote,
+    status: view.status,
+    consumedAnchorId: view.consumedAnchorId === null ? null : view.consumedAnchorId.toString(),
+    disposition: view.disposition,
+    asofFlag: view.asofFlag,
+    asofSuggested: view.asofSuggested,
+    asofNeedsAck: view.asofNeedsAck,
+    createdAt: view.createdAt.toISOString(),
+    updatedAt: view.updatedAt.toISOString(),
   };
 }

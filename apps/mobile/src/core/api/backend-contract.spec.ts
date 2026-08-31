@@ -33,6 +33,7 @@ const ME_PROFILE_STUB = {
   status: 'ACTIVE',
   createdAt: '2026-05-25T00:00:00.000Z',
   wechatBound: false,
+  isAdmin: false,
 } satisfies AccountProfileResponse;
 
 // Login (phone-sms-auth) AND refresh-token both return PhoneSmsAuthResponse

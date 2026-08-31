@@ -235,6 +235,8 @@ const MARKETDATA_THROTTLERS: ThrottlerOptions[] = (
     ['mktdata-quote-account', 120],
     ['mktdata-detail-account', 60],
     ['mktdata-bars-account', 60],
+    // 072: 冷启动结局轮询 —— 采纳后盯队列, 比其它读桶宽一档。
+    ['mktdata-coldstart-account', 180],
   ] as const
 ).map(([name, limit]) => ({
   name,
@@ -362,6 +364,8 @@ const OPTIONSDESK_THROTTLERS: ThrottlerOptions[] = (
   [
     ['optionsdesk-read-account', 120],
     ['optionsdesk-write-account', 30],
+    // 072 采纳: 6/60s —— 下游冷启动是分钟级串行队列, 见 throttler-skip-buckets 该桶注释。
+    ['optionsdesk-approve-account', 6],
   ] as const
 ).map(([name, limit]) => ({
   name,

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { COLD_START_CAPABILITY, COLD_START_OUTCOME } from './anchor-cold-start.rules.js';
+import {
+  COLD_START_CAPABILITY,
+  COLD_START_NEEDS_ATTENTION,
+  COLD_START_OUTCOME,
+  COLD_START_OUTCOMES,
+  coldStartNeedsAttention,
+} from './anchor-cold-start.rules.js';
 
 /*
  * 🚫 **本文件曾经还测 `resolveSnapshotSpec`（快照三元组决策表 + 与 remediation 的等值回归）。**
@@ -65,5 +71,47 @@ describe('COLD_START_OUTCOME —— FR-027 结局零折叠 (SC-009); 066 FR-014 
     expect(COLD_START_OUTCOME.NO_OPTION_CHAIN).not.toBe(COLD_START_OUTCOME.MARKET_NOT_ENABLED);
     // 零 migration 的前提: `anchor_cold_start_run.outcome` 是 VarChar(32) 且无 CHECK 约束。
     expect(COLD_START_OUTCOME.NO_OPTION_CHAIN.length).toBeLessThanOrEqual(32);
+  });
+});
+
+describe('COLD_START_NEEDS_ATTENTION — 结局分档 (072)', () => {
+  // 🚨 **本文件最要紧的一条**: 加了第 11 个结局却忘了归类 → 当场红。
+  // 没有它, 新结局会静默落进「不需要人管」那一侧, 而那正是永久缺口被漏掉的形状。
+  it('每一个结局都被显式归类, 不多不少', () => {
+    const attention = COLD_START_OUTCOMES.filter((o) => COLD_START_NEEDS_ATTENTION.has(o));
+    const routine = COLD_START_OUTCOMES.filter((o) => !COLD_START_NEEDS_ATTENTION.has(o));
+    expect(new Set([...attention, ...routine])).toEqual(new Set(COLD_START_OUTCOMES));
+    expect(COLD_START_OUTCOMES).toHaveLength(10);
+    expect(attention).toHaveLength(5);
+  });
+
+  it('五档永久缺口 → 需人工介入', () => {
+    for (const outcome of [
+      'retry_exhausted',
+      'backfill_incomplete',
+      'calendar_missing',
+      'session_unregistered',
+      'ticker_unresolved',
+    ]) {
+      expect(coldStartNeedsAttention(outcome)).toBe(true);
+    }
+  });
+
+  // no_option_chain 是 066 从 backfill_incomplete 里**拆出来**的 —— 港股大多数标的没挂牌期权,
+  // 混在一起会让每只无期权的港股锚都产一条需人工介入的假警报。
+  it('「本就不该做」与「做成了」→ 不需要人管 (含 no_option_chain)', () => {
+    for (const outcome of [
+      'backfilled',
+      'already_present',
+      'no_option_chain',
+      'intraday_skipped',
+      'market_not_enabled',
+    ]) {
+      expect(coldStartNeedsAttention(outcome)).toBe(false);
+    }
+  });
+
+  it('未知字符串 → fail-safe 按需要人管处理', () => {
+    expect(coldStartNeedsAttention('something_new')).toBe(true);
   });
 });
