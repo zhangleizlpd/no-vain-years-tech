@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.41.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.41.1...server-v0.41.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **marketdata:** 港股兜底轮落 eod source + 硬门三态假修复闸 ([#306](https://github.com/zhangleizlpd/no-vain-years-tech/issues/306)) ([318522d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/318522d57c5e0dadaf8103a285cf2eebece639ed))
+
 ## [0.41.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.41.0...server-v0.41.1) (2026-08-31)
 
 
