@@ -25,7 +25,7 @@ import { Prisma } from '../generated/prisma/client.js';
  * 带走整批的落库 —— 而这批就是当日仅有的一次采集机会。⇒ 本文件**没有任何 throw**;
  * 「拒了哪些行、为什么」由 {@link OptionSnapshotVerdict} 带回, 上抬 ERROR 归调用方 (T016)。
  *
- * ## 缺失字段一律**跳过对应的门**, 不当违规
+ * ## 缺失字段一律**跳过对应的门**, 不当违规 —— 但**跳过这件事本身要留痕** (2026-08-31)
  *
  * greeks 整块缺失的深实值腿 (实测 227/2150 行) 必须照常入库 (FR-007: 「MUST NOT 被筛除 ——
  * 决策带由 |Δ| 定义, 缺 Δ 即被筛没且无人知晓」)。同理 `underlying_spot` 缺失 ⇒ 算不出内在
@@ -135,6 +135,25 @@ export interface OptionSnapshotVerdict {
   admitted: boolean;
   /** **不短路**: 一行撞多条门就全列出, 一次采集把问题看全。 */
   violations: readonly OptionSnapshotViolation[];
+  /**
+   * 本行**无从判定**的门 —— 判据适用, 但这一行缺输入 (缺 `bid`/`ask`/`Δ`/`underlyingSpot`)。
+   * 恒有值, 全判得动时为空数组。
+   *
+   * 🚨 **它与「`violations` 为空」不是一回事** (2026-08-31 收口): 空 `violations` 有两种成因
+   * ——「判过了, 过了」与「压根没判成」, 而**下游把后者当成前者**正是那条把好数据换成坏数据
+   * 的补救链的病根: hk:00700 两条深实值 PUT 在收盘轮撞 `ask_below_intrinsic` 被拒 ⇒ 判该票
+   * 未完整 ⇒ 次日 08:30 盘前兜底重采, 而港股 09:00 才开始竞价 ⇒ **`ask` 全为 null ⇒ 门 ④
+   * 根本没跑** ⇒ 零违规 ⇒ 判「补回了」。**空数据反而比有瑕疵的数据更"合格"**, 补救于是
+   * 「成功」并把那 2 条腿以 vendor 无盘口时退化算出的 greeks 写进库。
+   *
+   * 📌 **本字段 MUST NOT 影响 `admitted`** —— 无从判定仍照常入库: 无盘口行携带 OI 与合约骨架,
+   * 而快照漏采即永久缺口 (vendor 不提供历史期权快照)。它只让「没判成」这件事**对调用方可见**,
+   * 处置权在调用方 (同本文件「返回逐行判定而不抛异常」的分工)。
+   *
+   * 📌 **非标合约的门 ④ 不进本列表**: 那是判据**不适用** (交割物不是 100 股标的 ⇒ 内在价值
+   * 没有定义), 不是「缺输入判不了」。两者混在一起会让非标合约恒「未判」, 把信号淹掉。
+   */
+  unjudged: readonly OptionSnapshotViolationCode[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +189,8 @@ export function intrinsicValue(
  */
 export function checkOptionSnapshotRow(row: OptionSnapshotGuardRow): OptionSnapshotVerdict {
   const violations: OptionSnapshotViolation[] = [];
+  /** 见 {@link OptionSnapshotVerdict.unjudged} —— 缺输入 ⇒ 该门没跑, 与「跑了且过了」分开记。 */
+  const unjudged: OptionSnapshotViolationCode[] = [];
 
   const bid = row.bid === null ? null : D(row.bid);
   const ask = row.ask === null ? null : D(row.ask);
@@ -177,14 +198,19 @@ export function checkOptionSnapshotRow(row: OptionSnapshotGuardRow): OptionSnaps
   const spot = row.underlyingSpot === null ? null : D(row.underlyingSpot);
 
   // ① bid ≤ ask (边界闭: 锁价盘口 bid == ask 是正常态)。
-  if (bid !== null && ask !== null && bid.greaterThan(ask)) {
+  if (bid === null || ask === null) {
+    unjudged.push('bid_above_ask');
+  } else if (bid.greaterThan(ask)) {
     violations.push({
       code: 'bid_above_ask',
       reason: `盘口交叉: bid ${bid.toString()} > ask ${ask.toString()}`,
     });
   }
 
-  if (delta !== null) {
+  if (delta === null) {
+    // 门 ② 与 ③ 同一个入参 ⇒ 缺 Δ 时两条一起没跑。
+    unjudged.push('delta_sign', 'delta_out_of_range');
+  } else {
     // ② PUT Δ ≤ 0 / CALL Δ ≥ 0 —— 两侧方向相反 (Δ = 0 两侧都合法, 深虚腿取值)。
     const signViolated = row.optionSide === 'PUT' ? delta.greaterThan(ZERO) : delta.lessThan(ZERO);
     if (signViolated) {
@@ -203,8 +229,17 @@ export function checkOptionSnapshotRow(row: OptionSnapshotGuardRow): OptionSnaps
   }
 
   // ④ 无套利下界 —— 🚨 用 `ask` 不用 `bid` (FR-044, 见文件头 706 行实证)。
-  // 🚨 非标合约整条跳过 (#186): 交割物不是 100 股标的 ⇒ 内在价值**算不出**, 不是「违规」。
-  if (ask !== null && spot !== null && row.isStandard) {
+  // 🚨 三分支, 🚫 MUST NOT 合并成一个 `if`:
+  //   · 非标合约 (#186) ⇒ 判据**不适用** (交割物不是 100 股标的, 内在价值没有定义) —— 既不违规
+  //     也不进 `unjudged`;
+  //   · 标准合约但缺 `ask` / `spot` ⇒ **无从判定**, 进 `unjudged` (港股闭市做市商全撤单时这是
+  //     常态, 而正是它让补救链把空数据当成"合格"—— 见 {@link OptionSnapshotVerdict.unjudged});
+  //   · 两者齐备 ⇒ 真判。
+  if (!row.isStandard) {
+    // 不适用 —— 蓄意什么都不记。
+  } else if (ask === null || spot === null) {
+    unjudged.push('ask_below_intrinsic');
+  } else {
     const intrinsic = intrinsicValue(row.optionSide, D(row.strikePrice), spot);
     const floor = intrinsic.minus(INTRINSIC_VALUE_TOLERANCE);
     if (ask.lessThan(floor)) {
@@ -218,7 +253,12 @@ export function checkOptionSnapshotRow(row: OptionSnapshotGuardRow): OptionSnaps
     }
   }
 
-  return { contractCode: row.contractCode, admitted: violations.length === 0, violations };
+  return {
+    contractCode: row.contractCode,
+    admitted: violations.length === 0,
+    violations,
+    unjudged,
+  };
 }
 
 /**

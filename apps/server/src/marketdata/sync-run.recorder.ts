@@ -67,7 +67,19 @@ export type SyncRunFinding =
    * 标的未匹配 (「持续升高 = universe 枚举漏了一类标的」) 与财报改期 (「不是失败, 是本维度
    * 存在的理由」)。
    */
-  | { kind: 'notice'; step: string; detail: Record<string, unknown> };
+  | { kind: 'notice'; step: string; detail: Record<string, unknown> }
+  /**
+   * 本轮某些合约的**某条门没跑成** (2026-08-31) —— 判据适用但该行缺输入 (无盘口 / 无 Δ /
+   * 无 spot), 见 `option-snapshot-guard.rules.ts` 的 `OptionSnapshotVerdict.unjudged`。
+   *
+   * 🚨 **只记调用方点名盯的那几个合约** (`SnapshotCollectionSpec.unjudgedWatch`), 🚫 MUST NOT
+   * 全量记: 港股闭市时做市商全撤单, 七成腿的门 ① / ④ 都判不动 —— 全量记会把本列撑成几千个码
+   * 的 JSON, 且把真正要看的那几条淹掉。「盯谁」由补救链决定 (它知道上一轮谁被硬门拒了)。
+   *
+   * 它要答的问题只有一个: **这一轮是真把那条腿判过了才放行, 还是压根没判成**。两者都表现为
+   * 「零违规」, 而补救链据此宣布「补回了」—— 空数据于是比有瑕疵的数据更"合格"。
+   */
+  | { kind: 'unjudged'; symbol: string; step: string; contracts: string[]; gates: string[] };
 
 /** 单次同步执行的派发统计 + 本轮 findings (SyncRun 收尾写入)。 */
 export interface SyncRunStats {

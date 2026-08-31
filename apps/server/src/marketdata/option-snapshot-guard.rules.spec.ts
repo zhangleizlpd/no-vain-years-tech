@@ -46,6 +46,55 @@ function callRow(overrides: Partial<OptionSnapshotGuardRow> = {}): OptionSnapsho
 const codesOf = (row: OptionSnapshotGuardRow) =>
   checkOptionSnapshotRow(row).violations.map((v) => v.code);
 
+const unjudgedOf = (row: OptionSnapshotGuardRow) =>
+  [...checkOptionSnapshotRow(row).unjudged].sort();
+
+describe('🚨 三态: 「判过了且过了」与「压根没判成」MUST 分得开 (2026-08-31 收口)', () => {
+  it('全字段齐备且合规 → unjudged 为空 (恒有值, 不是 undefined)', () => {
+    expect(checkOptionSnapshotRow(putRow()).unjudged).toEqual([]);
+  });
+
+  it('🚨 港股闭市形态: 标准合约无盘口 → 仍放行入库, 但门 ① / ④ 记为**无从判定**', () => {
+    // 这就是那条把好数据换成坏数据的补救链的病根形态: 收盘轮撞 `ask_below_intrinsic` 被拒的腿,
+    // 次日 08:30 盘前重采时港股 09:00 才竞价 ⇒ ask 全为 null ⇒ 门 ④ **根本没跑** ⇒ 零违规
+    // ⇒ 补救判「补回了」。空数据反而比有瑕疵的数据更"合格"。
+    const verdict = checkOptionSnapshotRow(putRow({ bid: null, ask: null }));
+    // 📌 入库行为**不变** —— 无盘口行携带 OI 与合约骨架, 漏采即永久缺口。
+    expect(verdict.admitted).toBe(true);
+    expect(verdict.violations).toEqual([]);
+    // 而「零违规」的成因在这里显式可读。
+    expect([...verdict.unjudged].sort()).toEqual(['ask_below_intrinsic', 'bid_above_ask']);
+  });
+
+  it('只缺 ask → 门 ① 与门 ④ 都判不动 (两条都吃 ask)', () => {
+    expect(unjudgedOf(putRow({ ask: null }))).toEqual(['ask_below_intrinsic', 'bid_above_ask']);
+  });
+
+  it('只缺 underlyingSpot → 只有门 ④ 判不动, 门 ① 照判', () => {
+    expect(unjudgedOf(putRow({ underlyingSpot: null }))).toEqual(['ask_below_intrinsic']);
+  });
+
+  it('缺 Δ → 门 ② 与门 ③ **一起**判不动 (同一个入参)', () => {
+    expect(unjudgedOf(putRow({ delta: null }))).toEqual(['delta_out_of_range', 'delta_sign']);
+  });
+
+  it('🚨 非标合约的门 ④ **不进** unjudged —— 那是「不适用」不是「无从判定」', () => {
+    // 交割物不是 100 股标的 ⇒ 内在价值**没有定义**, 与「缺一格输入所以算不了」是两回事。
+    // 混在一起会让非标合约恒「未判」, 把真正的信号淹掉 (#186 实拒 238 行全落在调整后合约上)。
+    expect(unjudgedOf(putRow({ isStandard: false }))).toEqual([]);
+    // 而同一张非标合约**缺 ask** 时, 门 ① 仍照常记未判 —— 门 ① 与交割物无关。
+    expect(unjudgedOf(putRow({ isStandard: false, ask: null }))).toEqual(['bid_above_ask']);
+  });
+
+  it('unjudged MUST NOT 影响 admitted —— 真违规才拦', () => {
+    // 无盘口 (门 ①④ 未判) + Δ 符号非法 (门 ② 判得动且违规) ⇒ 拦, 且两个列表各记各的。
+    const verdict = checkOptionSnapshotRow(putRow({ bid: null, ask: null, delta: '0.42' }));
+    expect(verdict.admitted).toBe(false);
+    expect(verdict.violations.map((v) => v.code)).toEqual(['delta_sign']);
+    expect([...verdict.unjudged].sort()).toEqual(['ask_below_intrinsic', 'bid_above_ask']);
+  });
+});
+
 describe('checkOptionSnapshotRow — 门 ①「bid ≤ ask」(FR-043)', () => {
   it('bid < ask → 放行', () => {
     expect(checkOptionSnapshotRow(putRow()).admitted).toBe(true);
