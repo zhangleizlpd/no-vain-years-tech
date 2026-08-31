@@ -103,7 +103,10 @@ updated_at: '2026-08-31'
   🚨 **载荷只带改过的字段**：全量回传也能工作，但 `appliedAsof ≠ 提交行 asof` 是「这条被审核方改过」的唯一痕迹，四个字段一律回传等于把痕迹抹平。
   ⚠️ **服务端 409 里的 `asofFlag` / `asofSuggested` 到不了客户端** —— `ProblemDetailFilter` 只透传白名单（`code` / `freezeUntil` / `retryAfterSeconds` / `invalidAttributes`），045 EC-7 已在 `anchor-form.rules.ts` 踩过同一处。⇒ 建议日一律取自**详情响应**；审核方改过口径日时我们没有新的建议日，此时按「解不出」渲染（只剩「按原日期照发」），与「不猜」同一个态度。e2e 的 mock **如实镜像**这一点（409 只回 `code`），否则测试会为一条客户端根本收不到的字段建立信心。approve use case 里那句「客户端据此隐掉改送出口」的注释与实际不符，已就地更正。
   ⚠️ 过程坑：一条「python 编辑 + nx 验证」的复合命令因带 `| head` 被 PreToolUse hook **整条**拒绝 —— 编辑压根没落盘，而随后单跑的 typecheck 照样绿（什么都没改）。是 e2e 探针里「tap 后 URL 没变」把它揪出来的。**hook 拒绝 = 整条命令没执行**，别只当成「验证被拦」。
-- [ ] T020 [Mobile] **缓存失效包装 hook**（SC-004; US4）：approve/reject 复用 `useInvalidateAnchorQueries` → verify: e2e **先访问列表**再采纳再返回（反序是假绿）。
+- [X] T020 [Mobile] **缓存失效包装 hook**（SC-004; US4）：`useInvalidateAnchorQueries` 收「处置后该刷什么」于一处（待审箱 + 锚列表 + 雷达，均传**前缀键**故所有筛选变体一并失效），approve / reject 共用 → verify: e2e **全程 App 内导航**、先取一次列表再采纳；变异（去掉待审箱那把 key）⇒ **2 红**（T018 批量驳回那条 + 本条）。全量 markets-ON **264 passed**。
+  🚨 **第一版 e2e 是我自己判掉的假绿**：用 `page.goto('/optionsdesk/anchors')` 观察 —— 而 `page.goto` 在 web 上是整页重载，react-query 缓存直接清空，失效做没做都会绿。改成全程 App 内导航后才可证伪。「先访问列表再采纳」（tasks 原文点名的反序陷阱）与「不许整页重载」是同一个陷阱的两面。
+  📌 最硬的一条断言落在**「我的」审批栏面板**的计数上：它在 tab navigator 里全程没有重挂，计数变了就只可能是失效触发的重取 —— 重挂 / 冷取都解释不了。本仓 `staleTime=30s`，30 秒内重挂不会自动重取，这是列表那条断言也成立的前提。
+  ⚠️ **锚列表 / 雷达那两把 key 没有可证伪的覆盖**：要在 App 内到达锚列表得先过雷达屏（那套 mock 另有一整份），本 task 未搭。它们与待审箱同一个判据、同一处代码，但「少失效一处」的失败模式在这里**测不出来** —— 如实记一条覆盖不到，而不是拿一条恒真断言冒充。
 - [ ] T021 [Mobile] **冷启动结局面板**（FR-009; US5; state_branches 17,18）：十档全显、五档置顶；缺席 = 排队中 → verify: 单测覆盖「缺席不等于失败」。
 - [ ] T022 [Contract-Smoke] **契约冒烟**：`apps/mobile/e2e/contract-smoke/072-anchor-submission.contract.ts` 覆盖屏上解构的每个字段 → verify: `check-contract-smoke-drift.ts` 绿。
 - [ ] T023 [Gate] **state_branches 覆盖补齐**（plan §Gate 0.4 的 partially-deferred 项）：20 条分支逐条对上 IT/e2e 的 `it()` → verify: 覆盖表进 PR body，届时那个 hard-gate checkbox 才是真的。

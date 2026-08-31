@@ -3,6 +3,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   getAnchorSubmissionControllerGetOneQueryKey,
   getAnchorSubmissionControllerListQueryKey,
+  getOptionsdeskControllerListQueryKey,
+  getOptionsdeskControllerRadarQueryKey,
   useAnchorSubmissionControllerApprove,
   useAnchorSubmissionControllerGetOne,
   useAnchorSubmissionControllerList,
@@ -30,6 +32,30 @@ export interface AnchorSubmissionsView {
   refetch: () => void;
 }
 
+/**
+ * 072 T020 — 处置一条待审后**该失效哪些缓存**的单一处（SC-004 / US4）。
+ *
+ * 采纳与驳回共用它，理由不是「代码复用」而是**判据只此一处**：一条待审被处置后，屏上会
+ * 陈旧的不止待审箱自己 —— 采纳会落锚，锚列表与击球区雷达都在读那张表。少失效一处的表现
+ * 是「要重启 App 才看得到」，而那正是 SC-004 要根除的东西；散在两个 mutation 里迟早分叉。
+ *
+ * 🚨 传的是**前缀键**（不带 params）—— react-query 按前缀匹配，故所有筛选变体一并失效。
+ * 只失效「当前那组 params」的话，切一下 chip 就能看到旧数据。
+ *
+ * ⚠️ 驳回不写锚，按说只需失效待审箱；这里仍然一起失效，代价是一次多余的读、收益是
+ * 「处置后该刷什么」不因动作不同而分叉。真要按动作细分，得先有一个能证伪它的测试。
+ */
+export function useInvalidateAnchorQueries() {
+  const queryClient = useQueryClient();
+  return useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: getAnchorSubmissionControllerListQueryKey() }),
+      queryClient.invalidateQueries({ queryKey: getOptionsdeskControllerListQueryKey() }),
+      queryClient.invalidateQueries({ queryKey: getOptionsdeskControllerRadarQueryKey() }),
+    ]);
+  }, [queryClient]);
+}
+
 /** 待审箱列表（缺省 status=PENDING，即待审箱本身）。 */
 export function useAnchorSubmissions(): AnchorSubmissionsView {
   const query = useAnchorSubmissionControllerList();
@@ -51,7 +77,7 @@ export function useAnchorSubmissions(): AnchorSubmissionsView {
  * 进依赖数组会自激重入（见 alert/use-alert-messages.ts 那条真机实证）。
  */
 export function useRejectAnchorSubmissions() {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateAnchorQueries();
   const { mutateAsync } = useAnchorSubmissionControllerReject();
 
   return useCallback(
@@ -62,14 +88,12 @@ export function useRejectAnchorSubmissions() {
       const res = await mutateAsync({
         data: { ids: [...ids], ...(reviewNote ? { reviewNote } : {}) },
       });
-      // 驳回改的是列表可见字段（status）⇒ 必失效列表 query key，否则列表陈旧到重启
+      // 驳回改的是列表可见字段（status）⇒ 必失效，否则列表陈旧到重启
       // （staleTime + tab 常驻不重挂 + refetchOnWindowFocus:false，无触发器重取）。
-      await queryClient.invalidateQueries({
-        queryKey: getAnchorSubmissionControllerListQueryKey(),
-      });
+      await invalidate();
       return res.data;
     },
-    [mutateAsync, queryClient],
+    [mutateAsync, invalidate],
   );
 }
 
@@ -95,19 +119,20 @@ export function useAnchorSubmissionDetail(id: string): {
  */
 export function useApproveAnchorSubmission(id: string) {
   const queryClient = useQueryClient();
+  const invalidate = useInvalidateAnchorQueries();
   const { mutateAsync } = useAnchorSubmissionControllerApprove();
 
   return useCallback(
     async (data: ApproveAnchorSubmissionRequest): Promise<ApproveAnchorSubmissionResponse> => {
       const res = await mutateAsync({ id, data });
-      await queryClient.invalidateQueries({
-        queryKey: getAnchorSubmissionControllerListQueryKey(),
-      });
+      // 采纳落锚 ⇒ 待审箱 + 锚列表 + 雷达一起失效（判据在 useInvalidateAnchorQueries）；
+      // 本条详情另失效，否则退回来还看得见刚被处置掉的那份预览。
+      await invalidate();
       await queryClient.invalidateQueries({
         queryKey: getAnchorSubmissionControllerGetOneQueryKey(id),
       });
       return res.data;
     },
-    [id, mutateAsync, queryClient],
+    [id, mutateAsync, invalidate, queryClient],
   );
 }

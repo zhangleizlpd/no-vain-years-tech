@@ -207,6 +207,41 @@ interface SubmissionMock {
   approvePayloads: () => { id: string; body: Record<string, unknown> }[];
 }
 
+/**
+ * 锚表 mock（T020 SC-004 用）：采纳一条待审会往锚表里加一行。
+ *
+ * 🚨 **必须先访问锚列表再采纳**，否则是假绿 —— 采纳后才第一次进锚列表的话，那次是冷取，
+ * 无论失效有没有做都会看到新锚。缓存失效只有在「已经取过一次」的前提下才可证伪。
+ */
+async function installAnchorListMock(page: Page, anchors: { id: string; ticker: string }[]) {
+  await page.route('**/api/v1/optionsdesk/anchors**', async (route: Route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS')
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    return void (await fulfill(route, 200, {
+      items: anchors.map((a) => ({
+        id: a.id,
+        ticker: a.ticker,
+        name: null,
+        v: '49.3400',
+        w: '39.4720',
+        asof: '2026-08-30',
+        method: 'weighted',
+        confidence: '6.00',
+        confidenceSource: 'model',
+        lLevelEffective: 'L3',
+        nextReview: null,
+        excluded: false,
+        excludeReason: null,
+        overdue: false,
+        createdAt: '2026-08-31T02:00:00.000Z',
+        updatedAt: '2026-08-31T02:00:00.000Z',
+      })),
+      total: anchors.length,
+    }));
+  });
+}
+
 async function installSubmissionMock(page: Page, seed: MockSubmission[]): Promise<SubmissionMock> {
   const rows = seed.map((r) => ({ ...r }));
   const rejectPayloads: { ids: string[] }[] = [];
@@ -601,4 +636,37 @@ test('072 T019 — 半截态回执：锚已写但状态没翻，明说不要重�
   // 🚨 半截态**不是失败**：锚已写入照常显示，另起一段说状态没翻 + 不要重试。
   await expect(receipt).toContainText('锚已写入');
   await expect(page.getByTestId('optionsdesk-submission-receipt-half')).toContainText('不要重试');
+});
+
+// ─── T020 缓存失效：处置后当场刷新（SC-004, US4） ────────────────────────────────
+
+test('072 T020 — 采纳后待审箱当场刷新，不需要重启 App（SC-004, US4）', async ({ page }) => {
+  await installSubmissionMock(page, SEED_ROWS);
+
+  // 🚨 **全程 App 内导航，一次 page.goto 都不能有**：`page.goto` 在 web 上是整页重载，
+  // react-query 缓存直接清空 ⇒ 无论失效有没有做都会看到新数据，那是一条恒真断言。
+  // 同理「先访问列表再采纳」的顺序也是判据本身：先取一次进缓存，才谈得上失效。
+  // 本仓 staleTime=30s ⇒ 30 秒内重挂**不会**自动重取，故「刷新了」只能由失效解释。
+  await page.goto('/');
+  const panelCount = page.getByTestId('optionsdesk-submission-panel-count');
+  await expect(panelCount).toHaveText(String(SEED_ROWS.length), { timeout: 90_000 });
+
+  await page.getByTestId('optionsdesk-submission-see-all').tap();
+  const list = page.getByTestId('optionsdesk-submission-list');
+  await expect(list.getByTestId('optionsdesk-submission-row-us:CFG')).toBeVisible();
+
+  // 采纳（口径日 OK ⇒ 不过闸，直接出回执）→「知道了」→ 退回列表。
+  await list.getByTestId('optionsdesk-submission-row-us:CFG').tap();
+  await expect(page.getByTestId('optionsdesk-submission-detail')).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('optionsdesk-submission-detail-approve').tap();
+  await expect(page.getByTestId('optionsdesk-submission-receipt')).toBeVisible();
+  await page.getByTestId('optionsdesk-submission-receipt-done').tap();
+
+  // 列表当场少了那一条（这一屏是重挂的，但 staleTime 内不会自动重取 ⇒ 只能是失效生效）。
+  await expect(list.getByTestId('optionsdesk-submission-row-us:CFG')).toHaveCount(0);
+  await expect(list.getByTestId('optionsdesk-submission-row-hk:02359')).toBeVisible();
+
+  // 🚨 更硬的一条：「我的」审批栏面板**全程没有重挂**（它在 tab navigator 里一直挂着），
+  // 它的计数变了就只可能是失效触发的重取 —— 重挂/冷取都解释不了。
+  await expect(panelCount).toHaveText(String(SEED_ROWS.length - 1));
 });

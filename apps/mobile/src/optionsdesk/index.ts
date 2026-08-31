@@ -6,6 +6,8 @@ export { AnchorListScreen } from './anchor-list-screen';
 export { AnchorSubmissionListScreen } from './anchor-submission-list-screen';
 export { AnchorSubmissionPanel, type AnchorSubmissionPanelProps } from './anchor-submission-panel';
 export { AnchorSubmissionRow, type AnchorSubmissionRowProps } from './anchor-submission-row';
+// 072 T020：处置后该失效哪些缓存的单一处（采纳 / 驳回共用）
+export { useInvalidateAnchorQueries } from './use-anchor-submissions';
 // 072 T019：审批详情 + 复述闸 + 三出口
 export { AnchorSubmissionDetailScreen } from './anchor-submission-detail-screen';
 export { AnchorFormScreen } from './anchor-form-screen';
