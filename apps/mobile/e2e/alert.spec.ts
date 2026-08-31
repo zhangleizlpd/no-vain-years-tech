@@ -673,17 +673,21 @@ test('021 alert — 工具栏三 icon/消息中心未读→清零/无 tab 行（
   // （072 FR-011），而只剩一栏的 tab 行是个 onChange 恒 undefined 的空控件 ⇒ 一并移除。
   // 判据从「待办被禁用」翻成「tab 行根本不存在」——后者才是删干净的证据。
   await page.getByRole('button', { name: '消息通知' }).tap();
-  await expect(page.getByText('预警触发').first()).toBeVisible({ timeout: 10_000 });
+  // 🔁 072 T017：同一份卡片列表有了第二个宿主（「我的」页消息栏），而「我的」屏在 tab
+  // navigator 里**仍挂着** ⇒ 裸 page.getByText('预警触发') 双命中，且 .first() 先命中
+  // 被 aria-hidden 的那份（实撞：Expected visible / Received hidden）。断言一律钉进本屏。
+  const center = page.getByTestId('alert-message-center');
+  await expect(center.getByText('预警触发').first()).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole('tab', { name: '待办' })).toHaveCount(0);
   await expect(page.getByRole('tab', { name: '提醒' })).toHaveCount(0);
-  await expect(page.getByText('预警触发')).toHaveCount(2);
+  await expect(center.getByText('预警触发')).toHaveCount(2);
   await expect(
-    page.getByText(
+    center.getByText(
       '旭升集团(603305) 触发预警：股价跌到 13.00 元（今日最低 12.80 元）；日跌幅超 7.00%（今日 -7.43%）。',
     ),
   ).toBeVisible();
   await expect(
-    page.getByText('贵州茅台(600519) 触发预警：股价涨到 1700.00 元（今日最高 1712.00 元）。'),
+    center.getByText('贵州茅台(600519) 触发预警：股价涨到 1700.00 元（今日最高 1712.00 元）。'),
   ).toBeVisible();
   // 进入即置已读（plan D6 屏级水位线）。
   await expect.poll(() => alert.markReadCount()).toBeGreaterThan(0);

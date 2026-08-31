@@ -27,7 +27,9 @@ export function MessageCenterScreen() {
   );
 
   return (
-    <View className="flex-1 bg-surface-sunken">
+    // testID 是叠屏下的定位锚：072 T017 起同一份卡片列表有了第二个宿主（「我的」页消息栏），
+    // 它在导航栈里仍挂着 ⇒ 裸 getByText('预警触发') 会双命中，且先命中被 aria-hidden 的那份。
+    <View testID="alert-message-center" className="flex-1 bg-surface-sunken">
       <ScrollView className="flex-1">
         <AlertMessagePanel messages={messages} status={status} onRetry={() => void refetch()} />
       </ScrollView>

@@ -89,7 +89,10 @@ updated_at: '2026-08-31'
   ⚠️ **「面板从各自 feature 目录 import」这半条没做**：审批面板归 T018、消息面接线归 T017，本 task 三栏内容仍是占位（`TabPlaceholder`）。admin 那条 e2e 现在断的是「审批内容即将推出」，T018 落真列表时改断列表容器 —— 已在用例里标注。
   ⚠️ **「ScrollView 恒三子节点」是结构性保证，不是被测出来的**：三个子节点（Hero / SlideTabs / 内容）均无条件渲染，过滤只发生在 `SlideTabs` 内部。sticky 本身在 web e2e 下**验不出来** —— 视口 720 高于本屏内容 ~590，页面根本不可滚，写出来的断言会恒真。宁可留一条「验不到」也不交付恒真断言。
   ⚠️ **background 跑 e2e 时 harness 报的退出码是 0，而 nx 实为 `Failed tasks`**（两发变异都撞上）—— 正是 local-verification §3「exit code 会说谎」；判据只能 grep 终态串。
-- [ ] T017 [Mobile] **消息面接线 + `markRead` 改判据**（FR-012; plan §D8）：只在消息栏激活时置已读，只解构 `mutateAsync` → verify: e2e —— 停在审批栏时未读**不清零**，切到消息栏才清。
+- [X] T017 [Mobile] **消息面接线 + `markRead` 改判据**（FR-012; plan §D8）：新建 `alert-message-tab.tsx`（内嵌宿主：`useAlertMessages` + 段头「提醒 / 查看全部 ›」+ `limit=3`，与全屏 `MessageCenterScreen` 共用 T014 那份 `AlertMessagePanel`）；置已读判据抽成 `shouldMarkMessagesRead(selected, active)` 纯函数 → verify: 单测 **4 条**；e2e 三条（停在审批栏不清 / 切过去才清 / 默认落栏不清）。三发变异各红在对的用例：忽略 `selected` ⇒ 「默认落栏」1 红；丢掉 `active` 合取 ⇒ 「选过但已不可见」1 红；**接线**改成 `activeTab === 'messages'` ⇒ e2e **2 红**。全量 markets-ON **255 passed** / markets-OFF **5 passed**。
+  🚨 **实现期撞到 spec 洞，已停下请示并定案（2026-08-31）**：FR-012 只写了「不许跟路由 focus 走」，没回答「**默认**落在消息栏算不算激活」。第一版按「挂载即置已读」写，被两条测试当场揪出：① 新写的 FR-012 用例 —— admin 停在审批栏却已发出置已读（冷启动种子不持久化 `isAdmin`，首帧按非 admin 渲染，消息栏短暂成为默认栏）；② 既有 `alert.spec` 未读角标 —— App 落地屏就是「我的」，非 admin 的默认栏正是消息栏 ⇒ **开一次 App 就把 021 的未读红点清光**。**定案：只有用户主动点选消息栏才置已读**（`selected` 而非 `active`），默认落栏不算。
+  ⚠️ 只断「零置已读」，**不断**「列表一次都没拉」—— 冷启动那一帧消息栏会短暂挂载并拉一次 EP6（sb-20 本就接受「审批栏要等 /me 落地才出现」）。那是无副作用的读；连它一起断 = 断一条本设计没做出的保证。
+  🔁 `MessageCenterScreen` 根加 `testID="alert-message-center"`：同一份卡片列表现在有两个宿主，而「我的」屏在 tab navigator 里仍挂着 ⇒ 裸 `getByText('预警触发')` 双命中且 `.first()` 先命中被 `aria-hidden` 的那份（实撞 `Expected visible / Received hidden`）。`alert.spec` 三条卡片断言随之钉进那一屏。
 - [ ] T018 [Mobile] **审批列表 + 内嵌面板**（FR-001; SC-001; US1）：行首「中文名 + 代号」、disposition/asof 徽标、多选批量驳回 → verify: hermetic e2e。
 - [ ] T019 [Mobile] **审批详情 + 复述闸 + 三出口对话框**（FR-002, FR-005; US2, US3; state_branches 5–7,10,11）：RHF + zod（4 字段 + 审核备注）；`refresh` 时逐条列出会被冲掉的人工位；`asofSuggested` 为 null 时**不出现**「改送」出口 → verify: e2e 覆盖三出口。
 - [ ] T020 [Mobile] **缓存失效包装 hook**（SC-004; US4）：approve/reject 复用 `useInvalidateAnchorQueries` → verify: e2e **先访问列表**再采纳再返回（反序是假绿）。

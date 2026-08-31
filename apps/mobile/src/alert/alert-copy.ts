@@ -372,6 +372,9 @@ export const ALERT_COPY = {
   /** 屏 6 消息通知（正文格式化文案见 formatMessageBody）。 */
   messages: {
     title: '消息通知',
+    /** 072 T017：「我的」页消息栏的段头 + 去全屏消息中心的入口。 */
+    panelTitle: '提醒',
+    seeAll: '查看全部',
     cardTitle: '预警触发',
     bodyInfix: ' 触发预警：',
     actualLow: '今日最低',

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   defaultProfileTab,
   resolveActiveProfileTab,
+  shouldMarkMessagesRead,
   visibleProfileTabs,
 } from './profile-tabs.rules';
 
@@ -86,5 +87,24 @@ describe('resolveActiveProfileTab — 渲染期派生，不靠 useEffect 纠偏'
 
   it('markets off 下即便选中态是消息 → 回落知识库（sb-19 不留后门）', () => {
     expect(resolveActiveProfileTab('messages', ['kb'])).toBe('kb');
+  });
+});
+
+describe('shouldMarkMessagesRead — 置已读只跟随「主动点选」（FR-012）', () => {
+  it('用户点了消息栏 → 置已读', () => {
+    expect(shouldMarkMessagesRead('messages', 'messages')).toBe(true);
+  });
+
+  it('**默认**落在消息栏（没点过）→ 不置已读 —— 冷启动落地屏就是「我的」，否则开一次 App 就清光', () => {
+    expect(shouldMarkMessagesRead(null, 'messages')).toBe(false);
+  });
+
+  it('点的是别的栏 → 不置已读（停在审批栏不清零）', () => {
+    expect(shouldMarkMessagesRead('review', 'review')).toBe(false);
+    expect(shouldMarkMessagesRead('kb', 'kb')).toBe(false);
+  });
+
+  it('点过消息栏但它已不可见（markets 翻 off / isAdmin 翻 false 后回落）→ 不置已读', () => {
+    expect(shouldMarkMessagesRead('messages', 'kb')).toBe(false);
   });
 });

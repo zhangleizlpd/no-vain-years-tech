@@ -29,6 +29,7 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import Svg, { Circle, Defs, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
+import { AlertMessageTab } from '~/alert';
 import { DrawerMenuButton } from '~/core/app-shell-drawer';
 import { useMe } from '~/core/api/use-me';
 import { FEATURE_MARKETS_ENABLED } from '~/core/feature-flags';
@@ -36,6 +37,7 @@ import { ossThumbCacheKey, ossThumbUrl } from '~/profile-image/oss-image';
 import { useProfileImageEditor } from '~/profile-image/use-profile-image-editor';
 import {
   resolveActiveProfileTab,
+  shouldMarkMessagesRead,
   visibleProfileTabs,
   type ProfileTabKey,
 } from '~/profile/profile-tabs.rules';
@@ -55,6 +57,9 @@ const COPY = {
   tabs: { review: '审批', messages: '消息', kb: '知识库' } satisfies Record<ProfileTabKey, string>,
   tabPlaceholderSuffix: '内容即将推出',
 };
+
+// 内嵌消息栏的截断条数（mockup 帧 ②）——「查看全部」通向全屏消息中心。
+const MESSAGE_PANEL_LIMIT = 3;
 
 const FOLLOWING_COUNT = 5;
 const FOLLOWERS_COUNT = 12;
@@ -356,6 +361,8 @@ export default function ProfileScreen() {
 
   // FR-017: settings stack at /(app)/settings — route now built (006-account-settings-shell).
   const pushSettings = () => router.push('/(app)/settings');
+  // 072 T017：消息栏「查看全部」→ 全屏消息中心（021 屏 6，同一份卡片列表的另一个宿主）。
+  const pushMessages = () => router.push('/(app)/alert/messages');
 
   return (
     <View style={{ flex: 1, backgroundColor: tokens.colors.surface.DEFAULT }}>
@@ -378,7 +385,18 @@ export default function ProfileScreen() {
           {/* 🚨 ScrollView 恒三子节点（Hero / SlideTabs / 内容）—— stickyHeaderIndices 按位置
               索引，任何一个子节点被条件渲染掉都会让 sticky 头静默移位。内容分发在这层之内。 */}
           <View className="bg-surface min-h-[260px]">
-            <TabPlaceholder tab={activeTab} />
+            {/* 消息栏**只在激活时挂载**（公开构建里它不可见 ⇒ 不挂载 ⇒ 零 alert 请求）；
+                但**置已读另判**：只有用户主动点选该栏才发（FR-012 + 08-31 决策），
+                否则开一次 App 落在「我的」就把未读清光了。审批栏 → T018。 */}
+            {activeTab === 'messages' ? (
+              <AlertMessageTab
+                limit={MESSAGE_PANEL_LIMIT}
+                userActivated={shouldMarkMessagesRead(selectedTab, activeTab)}
+                onSeeAll={pushMessages}
+              />
+            ) : (
+              <TabPlaceholder tab={activeTab} />
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>

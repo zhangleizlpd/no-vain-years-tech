@@ -52,6 +52,25 @@ export function defaultProfileTab(opts: ProfileTabVisibility): ProfileTabKey {
 }
 
 /**
+ * 置已读的触发判据（072 FR-012；2026-08-31 决策）——「**用户主动点选**消息栏」才算激活，
+ * 「默认落在消息栏」不算。
+ *
+ * 判据必须是 `selected` 而不是 `active`：App 冷启动落地屏就是「我的」，而非管理员的默认栏
+ * 正是消息栏 ⇒ 用 `active` 的话，**开一次 App 就把所有预警清成已读**，021 那个信封未读红点
+ * 从此形同虚设；admin 更糟 —— 冷启动种子不持久化 `isAdmin`，首帧按非 admin 渲染，
+ * 消息栏会短暂成为激活栏，未读在他看到任何东西之前就没了。
+ *
+ * 仍要合取 `active`：`selected` 可能已经不可见（markets 翻 off / isAdmin 翻 false），
+ * 那时激活栏已经回落到别处，用户并没有在看消息。
+ */
+export function shouldMarkMessagesRead(
+  selected: ProfileTabKey | null,
+  active: ProfileTabKey,
+): boolean {
+  return selected === 'messages' && active === 'messages';
+}
+
+/**
  * 渲染期把「用户选过的栏」派生成「这一帧真正激活的栏」。
  *
  * ⚠️ 回落**必须发生在渲染期**，不能靠 `useEffect` 纠偏：`isAdmin` 会在 /me 落地那一刻
