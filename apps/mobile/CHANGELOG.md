@@ -2,6 +2,16 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.15.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.14.0...mobile-v0.15.0) (2026-08-31)
+
+
+### Features
+
+* **optionsdesk:** 068 实时窄召回两段式重建 —— 窗即召回, ADR-0068 P2 片 ([#291](https://github.com/zhangleizlpd/no-vain-years-tech/issues/291)) ([ed98d28](https://github.com/zhangleizlpd/no-vain-years-tech/commit/ed98d28d3018fa38eb0f28a731f6f0c99a01b1fc))
+* **optionsdesk:** 069 清链与行军选档 —— 凸包净链+φ形状行军+逐档可解释, ADR-0068 P3 片 ([#293](https://github.com/zhangleizlpd/no-vain-years-tech/issues/293)) ([4d5d083](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4d5d0837dd02facaa674734f4bd305fea0e567f0))
+* **optionsdesk:** 070 离线档收租阶梯 —— 意图视角切 fwd 阶梯呈现、计划/执行同口径 ([#295](https://github.com/zhangleizlpd/no-vain-years-tech/issues/295)) ([c5be461](https://github.com/zhangleizlpd/no-vain-years-tech/commit/c5be4611dc914fc84ddd9ba9ac28b606cf80a7b8))
+* **optionsdesk:** 071 宽价差机会标 —— 收租点差闸放行「砸 bid 也达档」的宽市场腿 ([#300](https://github.com/zhangleizlpd/no-vain-years-tech/issues/300)) ([5a2883e](https://github.com/zhangleizlpd/no-vain-years-tech/commit/5a2883e6368a34eabe9f63193355bc51e90eb980))
+
 ## [0.14.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.13.0...mobile-v0.14.0) (2026-08-23)
 
 
