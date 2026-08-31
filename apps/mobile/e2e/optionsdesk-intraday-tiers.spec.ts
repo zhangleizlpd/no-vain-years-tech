@@ -142,7 +142,7 @@ const COPY = {
   tierLive: '实时',
   tierEod: '收盘档',
   tierBusyFirstLoad: '正在取此刻报价',
-  tierEodReason: '美股非常规交易时段',
+  tierEodReason: '非常规交易时段',
   tierDegradeSourceDown: '🚨 盘中取不到实时源，勿据此下单',
   tierDegradeOverCap: '合约过多超出单批上限，可收窄条件重试',
   tierDegradeBasisStale: '标的盘中价未更新，定不出取价范围',
