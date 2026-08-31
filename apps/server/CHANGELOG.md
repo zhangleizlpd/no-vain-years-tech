@@ -2,6 +2,29 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.41.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.40.0...server-v0.41.0) (2026-08-31)
+
+
+### Features
+
+* **marketdata:** [#262](https://github.com/zhangleizlpd/no-vain-years-tech/issues/262) oi_as_of 不变式落成常驻守卫 —— 判据 ⑫ 重算标签, 市场通用 ([#283](https://github.com/zhangleizlpd/no-vain-years-tech/issues/283)) ([e8cc580](https://github.com/zhangleizlpd/no-vain-years-tech/commit/e8cc58031faa423188791ec310b6d57cc7c98efc)), closes [#255](https://github.com/zhangleizlpd/no-vain-years-tech/issues/255)
+* **marketdata:** [#262](https://github.com/zhangleizlpd/no-vain-years-tech/issues/262) 交付面 ③ 补两块探针空白 —— 判据 ⑬ 零哨兵残留 + ⑦ 到期阶梯扩港股 ([#285](https://github.com/zhangleizlpd/no-vain-years-tech/issues/285)) ([da9302a](https://github.com/zhangleizlpd/no-vain-years-tech/commit/da9302a2fd61367a29529e591778c930ee6ec02a)), closes [#284](https://github.com/zhangleizlpd/no-vain-years-tech/issues/284)
+* **optionsdesk:** 067 收租成色上界换轴 —— axis=min(spot,W), ADR-0068 P1 片 ([#290](https://github.com/zhangleizlpd/no-vain-years-tech/issues/290)) ([4df3f59](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4df3f59d64b873d3c566b0eca371ecf34628662e))
+* **optionsdesk:** 068 实时窄召回两段式重建 —— 窗即召回, ADR-0068 P2 片 ([#291](https://github.com/zhangleizlpd/no-vain-years-tech/issues/291)) ([ed98d28](https://github.com/zhangleizlpd/no-vain-years-tech/commit/ed98d28d3018fa38eb0f28a731f6f0c99a01b1fc))
+* **optionsdesk:** 069 清链与行军选档 —— 凸包净链+φ形状行军+逐档可解释, ADR-0068 P3 片 ([#293](https://github.com/zhangleizlpd/no-vain-years-tech/issues/293)) ([4d5d083](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4d5d0837dd02facaa674734f4bd305fea0e567f0))
+* **optionsdesk:** 070 离线档收租阶梯 —— 意图视角切 fwd 阶梯呈现、计划/执行同口径 ([#295](https://github.com/zhangleizlpd/no-vain-years-tech/issues/295)) ([c5be461](https://github.com/zhangleizlpd/no-vain-years-tech/commit/c5be4611dc914fc84ddd9ba9ac28b606cf80a7b8))
+* **optionsdesk:** 071 宽价差机会标 —— 收租点差闸放行「砸 bid 也达档」的宽市场腿 ([#300](https://github.com/zhangleizlpd/no-vain-years-tech/issues/300)) ([5a2883e](https://github.com/zhangleizlpd/no-vain-years-tech/commit/5a2883e6368a34eabe9f63193355bc51e90eb980))
+
+
+### Bug Fixes
+
+* **optionsdesk:** hk 锚盘中实时请求不再 read_failed —— 未支持市场零外呼回落收盘档并标 source_unavailable ([#286](https://github.com/zhangleizlpd/no-vain-years-tech/issues/286)) ([0424595](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0424595b6ffdfae28ba9d6e5b876132f3caa5298))
+
+
+### Code Refactoring
+
+* **marketdata:** [#262](https://github.com/zhangleizlpd/no-vain-years-tech/issues/262) 守卫② 删掉零调用方的 check() —— 它让「违反 FR-046」变得可构造 ([#280](https://github.com/zhangleizlpd/no-vain-years-tech/issues/280)) ([884ca10](https://github.com/zhangleizlpd/no-vain-years-tech/commit/884ca1088caef4d8dd021b0e2acd4d3fbf112a5c))
+
 ## [0.40.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.39.3...server-v0.40.0) (2026-08-28)
 
 
