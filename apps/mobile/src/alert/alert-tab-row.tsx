@@ -1,7 +1,9 @@
 import { Pressable, Text, View } from 'react-native';
 
-// 顶部 tab 行（021 屏 4 自选/搜索、屏 5 单 A股、屏 6 提醒/待办 disabled 共用，
-// mockup AlertScreens TabRow 翻 RN）：等分 + 选中底部短横条（brand），disabled 灰不可点。
+// 顶部 tab 行（021 屏 4 自选/搜索、屏 5 单 A股 共用，mockup AlertScreens TabRow 翻 RN）：
+// 等分 + 选中底部短横条（brand），disabled 灰不可点。
+// 🔁 072 T014 起**屏 6 消息中心不再是调用方**（「待办」整栏退役，单栏 tab 行无意义）。
+// `disabled` 目前无调用方传入,保留是因为它是本组件的通用能力、不是 072 造出来的 orphan。
 // presentational — 切换交互走 Playwright（mono 测试分层）。
 
 export interface AlertTab {

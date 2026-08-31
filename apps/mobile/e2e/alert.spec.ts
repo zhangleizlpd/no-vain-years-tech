@@ -12,7 +12,7 @@ import { keypadBackspace, keypadConfirm, keypadType } from './_support/keypad';
 //   toggle（EP4 PATCH enabled）+ 对象选择：自选 tab 多选/全选/去添加→批量 EP3（2 标的）、
 //   搜索 tab 015 /search 直进单只 EP3。
 // Test 3（US3/US6）：工具栏三 icon（放大镜=既有添加入口 / 铃→全部预警 / 信封+unread 红点）
-//   + 消息中心（提醒 tab 默认 / 待办 disabled / 正文快照渲染）+ 进入即 EP8 mark-read（D6）
+//   + 消息中心（无 tab 行 / 正文快照渲染，072 T014 删「待办」）+ 进入即 EP8 mark-read（D6）
 //   → 返回角标清零（focus refetch EP7）。
 //
 // alert 8 端点走单一 stateful page.route（mutation 改内存集 + 失效重拉，镜像 server 契约）；
@@ -629,7 +629,7 @@ test('021 alert — 全部预警分组/下钻/就地 toggle/对象选择批量+�
   await page.screenshot({ path: `${SCREENSHOT_DIR}/alert-all-alerts-flow.png`, fullPage: true });
 });
 
-test('021 alert — 工具栏三 icon/消息中心未读→清零/待办 disabled（hermetic）', async ({ page }) => {
+test('021 alert — 工具栏三 icon/消息中心未读→清零/无 tab 行（hermetic）', async ({ page }) => {
   await installMarketMocks(page);
   const alert = await installAlertMock(page, {
     messages: [
@@ -668,10 +668,14 @@ test('021 alert — 工具栏三 icon/消息中心未读→清零/待办 disable
   await expect(page.getByRole('textbox', { name: '添加自选' })).toBeVisible({ timeout: 10_000 });
   await page.getByRole('button', { name: '关闭' }).tap();
 
-  // ── 信封 → 屏 6：提醒 tab 默认 + 待办 disabled + 正文快照渲染（FR-M06）──
+  // ── 信封 → 屏 6：正文快照渲染（FR-M06）──
+  // 🔁 072 T014：原断言是「提醒 tab 默认 + 待办 disabled」。「待办」已整栏删除
+  // （072 FR-011），而只剩一栏的 tab 行是个 onChange 恒 undefined 的空控件 ⇒ 一并移除。
+  // 判据从「待办被禁用」翻成「tab 行根本不存在」——后者才是删干净的证据。
   await page.getByRole('button', { name: '消息通知' }).tap();
-  await expect(page.getByRole('tab', { name: '提醒' })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole('tab', { name: '待办' })).toBeDisabled();
+  await expect(page.getByText('预警触发').first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('tab', { name: '待办' })).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: '提醒' })).toHaveCount(0);
   await expect(page.getByText('预警触发')).toHaveCount(2);
   await expect(
     page.getByText(

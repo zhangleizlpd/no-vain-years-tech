@@ -63,12 +63,12 @@ updated_at: '2026-08-31'
 
 ## Phase 4 — 移动端（前置，尚未实装）
 
-- [ ] T025 [Gate] **补 Mockup baseline**（plan §Constitution Check C2）：`/mockup-gen 072` 产
+- [X] T025 [Gate] **补 Mockup baseline**（plan §Constitution Check C2）：`/mockup-gen 072` 产
   `specs/072-anchor-submission-review/design/`（gitignored，local-only —— 截图里可能有真实持仓 /
   手机号，「像素里的 PII」没有扫描器能抓）→ verify: `design/` 存在且含本片四个新面的 preview。
   🚨 **这是 T014 起所有 mobile task 的前置卡点**：Principle I「跳过 Mockup 直接 plan = 违规」。
 
-- [ ] T014 [Mobile] **删「待办」栏 + 抽出可内嵌消息列表**（FR-011; plan §D8）：`message-center-screen.tsx` 去掉单项 `AlertTabRow`；卡片列表抽成无滚动器的 `AlertMessagePanel`；清理 `alert-copy.ts` 的 `tabRemind`/`tabTodo` 两个 orphan；`alert-tab-row.tsx` 头注释去掉屏 6 → verify: 改写 `alert.spec.ts` 中「待办 disabled」用例；`nx lint mobile` 无新 orphan。
+- [X] T014 [Mobile] **删「待办」栏 + 抽出可内嵌消息列表**（FR-011; plan §D8）：`message-center-screen.tsx` 去掉单项 `AlertTabRow`；卡片列表抽成无滚动器的 `AlertMessagePanel`；清理 `alert-copy.ts` 的 `tabRemind`/`tabTodo` 两个 orphan；`alert-tab-row.tsx` 头注释去掉屏 6 → verify: 改写 `alert.spec.ts` 中「待办 disabled」用例；`nx lint mobile` 无新 orphan。
 - [ ] T015 [Mobile] **三栏可见性纯函数**（FR-011; plan §D8; state_branches 19,20; US6）：`profile-tabs.rules.ts` 的 `visibleProfileTabs` / `defaultProfileTab`；渲染期派生 activeTab，**不用 `useEffect`** → verify: 单测覆盖 markets×isAdmin 四象限；让它忽略 `marketsEnabled` ⇒ 合规用例红。
 - [ ] T016 [Mobile] **`profile.tsx` 三栏改版**（FR-011; SC-005; US6）：`审批/消息/知识库`；面板从各自 feature 目录 import；`MARKETS_SURFACES` 登记两个新受控面 → verify: ScrollView 恒三子节点（sticky 索引不移位）；`markets-feature-gate.spec.ts` 扩断言。
 - [ ] T017 [Mobile] **消息面接线 + `markRead` 改判据**（FR-012; plan §D8）：只在消息栏激活时置已读，只解构 `mutateAsync` → verify: e2e —— 停在审批栏时未读**不清零**，切到消息栏才清。

@@ -372,8 +372,6 @@ export const ALERT_COPY = {
   /** 屏 6 消息通知（正文格式化文案见 formatMessageBody）。 */
   messages: {
     title: '消息通知',
-    tabRemind: '提醒',
-    tabTodo: '待办',
     cardTitle: '预警触发',
     bodyInfix: ' 触发预警：',
     actualLow: '今日最低',
