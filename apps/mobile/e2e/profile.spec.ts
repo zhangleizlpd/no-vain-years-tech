@@ -23,6 +23,11 @@ const SEED_PHONE = '+8613800138000';
 
 const ME_URL = '**/api/v1/accounts/me';
 const REFRESH_URL = '**/api/v1/accounts/refresh-token';
+// 072 T017：「我的」消息栏内嵌的是预警消息中心（EP6 列表 / EP8 置已读）。
+const MESSAGES_URL = '**/api/v1/alert/messages';
+const MARK_READ_URL = '**/api/v1/alert/messages/mark-read';
+// 072 T018：admin 的默认栏是审批栏，进 tab 即拉待审箱（EP: 列出待审估值）。
+const SUBMISSIONS_URL = '**/api/v1/optionsdesk/anchor-submissions';
 
 const SCREENSHOT_DIR = 'playwright-report/screenshots';
 
@@ -60,6 +65,8 @@ test.beforeEach(async ({ page }) => {
       displayName: SEED_DISPLAY_NAME,
       status: 'ACTIVE',
       createdAt: '2026-05-25T00:00:00.000Z',
+      // 072：契约必填位。默认非管理员 —— 管理员那格由下面的 admin 用例自己覆盖 stub。
+      isAdmin: false,
     },
     'GET',
   );
@@ -107,6 +114,14 @@ test.beforeEach(async ({ page }) => {
   // stub 的理由 pin 其 boot 边界（空 items → 渲染空态，无需真后端，套件保持 hermetic）。
   await mockJson(page, '**/api/v1/ideation/sessions', 200, { items: [] }, 'GET');
 
+  // 072 T017 后「我的」默认栏就是消息栏（非 admin）→ 进 tab 即拉 EP6 + 发 EP8；同 /me stub
+  // 的理由 pin 其 boot 边界（空列表 → 渲染空态，无需真后端）。需要真数据的用例自己覆盖注册。
+  await mockJson(page, MESSAGES_URL, 200, { messages: [], nextCursor: null }, 'GET');
+  await mockJson(page, MARK_READ_URL, 200, { unread: 0 }, 'POST');
+  // 同上：pin 待审箱边界（空箱 → 渲空态）。待审箱的真行为归
+  // optionsdesk-anchor-submissions.spec.ts，本文件只管三栏结构。
+  await mockJson(page, SUBMISSIONS_URL, 200, { items: [], total: 0, truncated: false }, 'GET');
+
   page.on('console', (msg) => {
     if (msg.type() === 'error') console.log('[browser-console]', msg.text());
   });
@@ -141,22 +156,132 @@ test('US5 — onboarded cold boot lands on (tabs)/profile with hero rendered', a
   await page.screenshot({ path: `${SCREENSHOT_DIR}/us5-profile-landing.png`, fullPage: true });
 });
 
-test('US7 — slide tabs default 笔记 + tap 图谱 switches active state', async ({ page }) => {
+// 072 T016 —— 三栏由「笔记 / 图谱 / 知识库」改版为「审批 / 消息 / 知识库」（FR-011 / US6）。
+//
+// 🚫 **别用 `aria-selected` 断哪一栏激活**：`react-native-web` 整个不认 `accessibilityState`
+//    （本仓 optionsdesk-chain-leg-picker.spec.ts 实撞并留档）。这里用「内容区渲的是哪一栏的
+//    占位文案」作功能面判据 —— 它同时验了默认栏与内容分发两件事。
+test('072 US6 — 非 admin 的「我的」：无审批栏、默认落消息栏、可切知识库', async ({ page }) => {
+  // FR-012 的另一半（08-31 决策）：**默认**落在消息栏不算「主动点选」⇒ 不置已读。
+  // 落地屏就是「我的」，这里若发了，等于开一次 App 就把 021 的未读红点清光。
+  const markRead: string[] = [];
+  page.on('request', (req) => {
+    if (req.method() === 'POST' && /\/alert\/messages\/mark-read/.test(req.url())) {
+      markRead.push(req.url());
+    }
+  });
+
   await waitForBootedRoot(page);
   await expect(page.getByText(SEED_DISPLAY_NAME)).toBeVisible();
 
-  // Initial state — 笔记 active, content placeholder copy reflects it.
-  await expect(page.getByText('笔记内容即将推出')).toBeVisible();
+  // sb-20：客户端 isAdmin=false ⇒ 审批栏整栏不渲染（服务端另有 AdminOnlyGuard 兜权限）。
+  await expect(page.getByRole('tab', { name: '审批' })).toHaveCount(0);
+  // 默认栏 = 可见集合首项 = 消息，且渲的是真消息面（T017 接线；此处 stub 是空列表）。
+  await expect(page.getByText('提醒', { exact: true })).toBeVisible();
+  await expect(page.getByText('暂无提醒消息')).toBeVisible();
 
-  const graphTab = page.getByRole('tab', { name: '图谱' });
-  await graphTab.tap();
-
-  await expect(page.getByText('图谱内容即将推出')).toBeVisible();
-  await page.screenshot({ path: `${SCREENSHOT_DIR}/us7-slide-tab-graph.png`, fullPage: true });
+  expect(markRead, `默认落在消息栏就发了置已读:\n${markRead.join('\n')}`).toEqual([]);
 
   const kbTab = page.getByRole('tab', { name: '知识库' });
   await kbTab.tap();
   await expect(page.getByText('知识库内容即将推出')).toBeVisible();
+  await page.screenshot({ path: `${SCREENSHOT_DIR}/us7-slide-tab-kb.png`, fullPage: true });
+});
+
+test('072 US6 — admin 的「我的」：三栏全出、默认落审批栏', async ({ page }) => {
+  // 覆盖 beforeEach 的 /me stub（Playwright 后注册的 handler 先匹配）。冷启动种子里
+  // isAdmin 不持久化 ⇒ 首帧按非 admin 渲染，/me 落地后当帧翻成三栏 —— 渲染期派生的实况。
+  await mockJson(
+    page,
+    ME_URL,
+    200,
+    {
+      accountId: SEED_ACCOUNT_ID,
+      phone: SEED_PHONE,
+      displayName: SEED_DISPLAY_NAME,
+      status: 'ACTIVE',
+      createdAt: '2026-05-25T00:00:00.000Z',
+      isAdmin: true,
+    },
+    'GET',
+  );
+
+  await waitForBootedRoot(page);
+  await expect(page.getByText(SEED_DISPLAY_NAME)).toBeVisible();
+
+  await expect(page.getByRole('tab', { name: '审批' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '消息' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '知识库' })).toBeVisible();
+  // 默认栏 = 审批（admin 是唯一有活要干的人）。断的是**面板容器**而不是文案：
+  // 待审箱的行/徽标/驳回归 optionsdesk-anchor-submissions.spec.ts，这里只认「哪一栏在渲」。
+  await expect(page.getByTestId('optionsdesk-submission-panel')).toBeVisible();
+
+  await page.getByRole('tab', { name: '消息' }).tap();
+  await expect(page.getByText('暂无提醒消息')).toBeVisible();
+});
+
+// 072 T017 / FR-012 —— 置已读的触发判据。
+//
+// 判据是「用户**主动点选**了消息栏」，既不是路由 focus，也不是「它恰好是激活栏」：
+// 前者会让停在审批栏的人被静默清零，后者会让开一次 App 落在「我的」就清光（落地屏正是它）。
+// admin 默认落审批栏，正好是「停在别的栏」的现场。
+//
+// 观察面选**请求**而不是未读角标：角标要等 EP7 refetch 才翻，中间隔着缓存与时序；
+// 「EP8 到底发没发」才是这条 FR 的直接证据。采集端全开（记下每一发），过滤放断言端。
+test('072 FR-012 — 置已读只跟随消息栏激活：停在审批栏不清零，切过去才清', async ({ page }) => {
+  await mockJson(
+    page,
+    ME_URL,
+    200,
+    {
+      accountId: SEED_ACCOUNT_ID,
+      phone: SEED_PHONE,
+      displayName: SEED_DISPLAY_NAME,
+      status: 'ACTIVE',
+      createdAt: '2026-05-25T00:00:00.000Z',
+      isAdmin: true,
+    },
+    'GET',
+  );
+  // 4 条 —— 比内嵌栏的 limit(3) 多一条，好验截断真的生效。
+  const messages = [1, 2, 3, 4].map((n) => ({
+    id: `m-${n}`,
+    market: 'cn',
+    code: '600519',
+    instrumentName: '贵州茅台',
+    tradeDate: '2026-06-04',
+    conditions: [{ type: 'PRICE_RISE_TO', threshold: '1700.00', actual: '1712.00' }],
+    note: null,
+    triggeredAt: `2026-06-0${n}T15:05:00+08:00`,
+    unread: true,
+  }));
+  await mockJson(page, MESSAGES_URL, 200, { messages, nextCursor: null }, 'GET');
+
+  const markRead: string[] = [];
+  page.on('request', (req) => {
+    if (req.method() === 'POST' && /\/alert\/messages\/mark-read/.test(req.url())) {
+      markRead.push(req.url());
+    }
+  });
+
+  await waitForBootedRoot(page);
+  await expect(page.getByTestId('optionsdesk-submission-panel')).toBeVisible();
+
+  // 停在审批栏 ⇒ 一发置已读都没有。
+  // ⚠️ 只断置已读，**不断**「列表一次都没拉」：冷启动种子不持久化 isAdmin，首帧按非 admin
+  // 渲染时消息栏会短暂挂载并拉一次 EP6（sb-20 明确接受「审批栏要等 /me 落地才出现」）。
+  // 那是一次无副作用的读；把它一起断掉等于断一条本设计没做出的保证。
+  expect(markRead, `停在审批栏却发了置已读:\n${markRead.join('\n')}`).toEqual([]);
+
+  await page.getByRole('tab', { name: '消息' }).tap();
+  await expect(
+    page
+      .getByText('贵州茅台(600519) 触发预警：股价涨到 1700.00 元（今日最高 1712.00 元）。')
+      .first(),
+  ).toBeVisible();
+  // limit=3（mockup 帧 ②）：第 4 条被截掉，其余走「查看全部」进全屏消息中心。
+  await expect(page.getByText('预警触发')).toHaveCount(3);
+  await expect.poll(() => markRead.length).toBeGreaterThan(0);
 });
 
 test('US8 — TopNav ⚙️ press triggers router.push for /(app)/settings', async ({ page }) => {

@@ -168,7 +168,16 @@ function tradingCalendar(days: readonly string[] = TRADING_DAYS) {
     const cutoff = sessionWatermark(market, now, 'unknown');
     return [...days].reverse().find((d) => d <= cutoff) ?? null;
   });
-  return { classify: async (): Promise<'trading'> => 'trading', lastClosedSession };
+  // 072: 用同一份 days 夹具答「严格早于 date 的上一个交易日」—— 本文件不验它,
+  // 但让它自洽比返 null 更不容易误导后来加用例的人。
+  const previousTradingDay = vi.fn(
+    async (_market: string, date: string) => [...days].reverse().find((d) => d < date) ?? null,
+  );
+  return {
+    classify: async (): Promise<'trading'> => 'trading',
+    lastClosedSession,
+    previousTradingDay,
+  };
 }
 
 function makePrisma(overrides: Record<string, unknown> = {}, legs: LegFixture[] = LEGS) {

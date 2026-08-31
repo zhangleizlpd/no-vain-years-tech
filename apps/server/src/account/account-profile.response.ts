@@ -84,4 +84,12 @@ export class AccountProfileResponse {
     example: false,
   })
   wechatBound!: boolean;
+
+  @ApiProperty({
+    description:
+      '是否为系统管理员 (072)。**仅供客户端决定要不要渲染管理入口** —— 真正的授权在服务端 ' +
+      'AdminOnlyGuard,客户端把它改成 true 也拿不到任何管理端点的数据。',
+    example: false,
+  })
+  isAdmin!: boolean;
 }

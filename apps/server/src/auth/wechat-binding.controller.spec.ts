@@ -25,7 +25,7 @@ describe('WechatBindingController', () => {
     it('调 usecase(req.user.accountId, body.authCode) + 返回 void (201)', async () => {
       const { controller, bindExecute } = build();
       const res = await controller.bindWechatForMe(
-        { user: { accountId: 99n } },
+        { user: { accountId: 99n, isAdmin: false } },
         { authCode: 'wx_auth_code_xxx' },
       );
       expect(bindExecute).toHaveBeenCalledWith(99n, 'wx_auth_code_xxx');
@@ -36,7 +36,7 @@ describe('WechatBindingController', () => {
       const { controller, bindExecute } = build();
       bindExecute.mockRejectedValue(new WechatAlreadyBoundException());
       await expect(
-        controller.bindWechatForMe({ user: { accountId: 1n } }, { authCode: 'x' }),
+        controller.bindWechatForMe({ user: { accountId: 1n, isAdmin: false } }, { authCode: 'x' }),
       ).rejects.toBeInstanceOf(WechatAlreadyBoundException);
     });
   });
@@ -44,7 +44,9 @@ describe('WechatBindingController', () => {
   describe('EP2 sendUnbindCodeForMe', () => {
     it('调 usecase(req.user.accountId) + 返回 void (204)', async () => {
       const { controller, sendUnbindExecute } = build();
-      const res = await controller.sendUnbindCodeForMe({ user: { accountId: 99n } });
+      const res = await controller.sendUnbindCodeForMe({
+        user: { accountId: 99n, isAdmin: false },
+      });
       expect(sendUnbindExecute).toHaveBeenCalledWith(99n);
       expect(res).toBeUndefined();
     });
@@ -54,7 +56,7 @@ describe('WechatBindingController', () => {
     it('调 usecase(req.user.accountId, body.code) + 返回 void (204)', async () => {
       const { controller, unbindExecute } = build();
       const res = await controller.unbindWechatForMe(
-        { user: { accountId: 99n } },
+        { user: { accountId: 99n, isAdmin: false } },
         { code: '123456' },
       );
       expect(unbindExecute).toHaveBeenCalledWith(99n, '123456');

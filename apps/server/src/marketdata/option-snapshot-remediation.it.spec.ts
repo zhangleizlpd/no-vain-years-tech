@@ -141,6 +141,10 @@ const alwaysTradingCalendar: TradingCalendarPort = {
   async lastClosedSession(): Promise<string | null> {
     return null;
   },
+  // 072: 本文件不验 asof 改期建议。
+  async previousTradingDay(): Promise<string | null> {
+    return null;
+  },
 };
 
 describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集口)', () => {

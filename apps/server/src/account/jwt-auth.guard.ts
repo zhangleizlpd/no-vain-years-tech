@@ -5,6 +5,13 @@ import { isActive } from './account.rules';
 
 export interface AuthenticatedUser {
   accountId: bigint;
+  /**
+   * 072: 系统管理员标。由本 guard 从**已经加载的** account 行填 ⇒ 零额外查询。
+   * 消费方是 `AdminOnlyGuard`;业务端点一律只读 `accountId`。
+   * ⚠️ `auth/jwt-access.guard.ts` 里有个**同名但不同**的 `AuthenticatedUser` —— 那个刻意
+   * 跳过账号行查询 (否则 FROZEN 账号撤不了设备), 填不了本字段, 也**不该**挂 AdminOnlyGuard。
+   */
+  isAdmin: boolean;
 }
 
 /**
@@ -12,7 +19,8 @@ export interface AuthenticatedUser {
  * Any failure (missing header / invalid / expired / non-ACTIVE) → unified 401,
  * reason not disclosed (anti-enumeration, per US4).
  *
- * On success sets request.user = { accountId } for downstream controllers.
+ * On success sets request.user = { accountId, isAdmin } for downstream controllers
+ * (isAdmin 白拿 —— 上面那次 findUnique 本就把整行读回来了, per 072)。
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -52,7 +60,7 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
-    request.user = { accountId };
+    request.user = { accountId, isAdmin: account.isAdmin };
     return true;
   }
 

@@ -39,7 +39,7 @@ function build() {
   return { controller, listExecute, bindExecute, deleteExecute };
 }
 
-const REQ = { user: { accountId: 42n } };
+const REQ = { user: { accountId: 42n, isAdmin: false } };
 
 describe('BrokerAccountsController', () => {
   it('GET → 200 默认置顶 + 已绑列表 (delegates accountId)', async () => {

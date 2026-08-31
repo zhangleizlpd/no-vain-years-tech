@@ -929,6 +929,139 @@ export const OPTIONSDESK_COPY = {
     loadFailed: '锚列表加载失败，请下拉重试',
   },
 
+  /** 072 T018 —— 锚待审箱（「我的」审批栏内嵌面板 + 全屏列表，mockup 帧 ① / ⑤⑥⑦）。 */
+  anchorSubmission: {
+    title: '待审估值',
+    /** 内嵌面板段头 + 去全屏列表的入口。 */
+    panelTitle: '待审估值',
+    seeAll: '查看全部',
+    /** 市场 chips（单选，体例同锚管理）。 */
+    filterAll: '全部',
+    filterUs: '美股',
+    filterHk: '港股',
+    /** 计数条：`共 45 条待审 · 提交方 friend2`；提交方缺失时只出前半句。 */
+    pendingCount: (n: number) => `共 ${n} 条待审`,
+    submitterSuffix: (who: string) => ` · 提交方 ${who}`,
+    /**
+     * 🚨 截断提示必须显式呈现（server 的 `truncated`）—— 不分页 + 硬上限的组合下，
+     * 「屏上就这些」与「屏上只是前 500 条」是两件事，人得知道自己看到的不是全部。
+     */
+    truncated: '条数触到单次上限，仅显示前一批；处置掉一些后余下的会自动出现。',
+    /** 处置徽标（判据在 anchor-submission.rules.ts）。 */
+    dispositionCreate: '将建锚',
+    dispositionRefresh: '将覆盖既有锚',
+    /** 口径日五档里的四档可疑态；OK 不出徽标。 */
+    asofToday: '口径日是今天',
+    asofFuture: '口径日在未来',
+    asofNonTrading: '口径日落在非交易日',
+    asofUnknown: '口径日日历未覆盖',
+    hasNote: '有附言',
+    vPrefix: (v: string) => `V ${v}`,
+    asofPrefix: (asof: string) => `口径日 ${asof}`,
+    /** 多选批量驳回（采纳不可批量 —— 判据是副作用数量，FR-007）。 */
+    select: '选择',
+    cancelSelect: '取消',
+    selectTitle: '选择要驳回的',
+    selectedCount: (n: number) => `已选 ${n} 项`,
+    clearSelection: '全不选',
+    reject: '驳回',
+    rejectConfirmTitle: (n: number) => `驳回选中的 ${n} 条？`,
+    rejectConfirmMessage: '驳回后这些估值不再出现在待审箱；提交方可以改好再投一次。',
+    rejectCancel: '再想想',
+    /**
+     * 🚨 `skipped` 必须逐条落到人眼里（FR-007 明禁「折成一句 ok」）—— 那些行是在别的设备上、
+     * 或被 anchor-approve.sh 处置掉的，人必须知道有行在自己脚下动过。
+     */
+    rejectDone: (n: number) => `已驳回 ${n} 条`,
+    rejectSkipped: (n: number) => `${n} 条在你操作前已被处置，未重复驳回`,
+    rejectFailed: '驳回失败，请重试',
+    dismissNotice: '知道了',
+    emptyTitle: '待审箱已清空',
+    emptyHint: '友方投递的新估值会自动出现在这里，无需手动刷新。',
+    emptyFiltered: '该市场当前没有待审条目',
+    loadFailed: '待审箱加载失败，请重试',
+    retry: '重试',
+
+    // ── T019 审批详情（mockup 帧 ⑧⑨⑩）+ 口径日闸三出口（帧 ⑪⑫）+ 采纳回执（帧 ⑬） ──
+    detailTitle: '审核估值',
+    tickerLocked: '标的不可修改',
+    submittedBy: (who: string) => `${who} 投递`,
+    submitterNote: '提交方附言',
+    editableSection: '可修正的四个字段',
+    vLabel: '每股 V',
+    asofLabel: '口径日',
+    methodLabel: '方法',
+    confidenceLabel: '置信度',
+    confidenceUnit: '/ 10',
+    reviewNoteLabel: '审核备注（可选）',
+    reviewNotePlaceholder: '写给未来的自己：为什么采纳 / 驳回',
+    /** 🚨 refresh 的最重警告：逐条列出会被冲掉的人工位（sb-10）。 */
+    fallbackTitle: (n: number) => `采纳会冲掉你手动调过的 ${n} 处`,
+    fallbackHint: '这些是你自己设的值，采纳后按模型值回落，且不可撤销。',
+    fallbackConfidenceHint: '并把置信度来源翻成 model —— 此后该锚的置信度在 App 里改不动。',
+    fallbackNoValue: '—',
+    /** 🚨 sb-11：什么都不写的操作 MUST 配零警告，否则就是在训练人闭眼点确认。 */
+    noopTitle: '本次采纳不会写入任何内容',
+    noopHint: '四个模型事实与现有锚逐值相同，且来源已是 model。人工位一处都不会动。',
+    approve: '采纳',
+    approveRefresh: '采纳并覆盖',
+    approveNoop: '采纳（无写入）',
+    rejectOne: '驳回',
+    rejectOneConfirmTitle: '驳回这条估值？',
+    /** 口径日闸（帧 ⑪⑫）。 */
+    asofGateTitle: '这个口径日不可信',
+    asofGateUnknownTitle: '这个口径日判不了',
+    asofGateRestateTicker: '标的',
+    asofGateWarn:
+      '改的是「估值口径日」这条溯源信息，不是 V —— 只有当提交方确属「把批次日当成口径日」时才成立。',
+    asofGateNoSuggestion:
+      '日历解不出该日之前的最近交易日，系统不会替你猜一个。要么按原日期照发并自负其责，要么驳回让提交方重投。',
+    asofExitShift: (day: string) => `改送前一交易日 ${day}`,
+    asofExitAccept: '按原日期照发',
+    asofExitCancel: '取消',
+    asofShiftUnresolvable: '日历解不出前一交易日，系统不猜 —— 请改用「按原日期照发」或驳回。',
+    /** 采纳回执（帧 ⑬）。 */
+    receiptTitle: '采纳结果',
+    receiptWritten: '锚已写入',
+    receiptActionLabel: '动作',
+    receiptActionCreate: 'create（新建锚）',
+    receiptActionUpdate: 'update（刷新既有锚）',
+    receiptActionNoop: 'noop（值全等，未写入）',
+    receiptAnchorId: '锚 id',
+    receiptAppliedAsof: '落库口径日',
+    receiptColdStart: '冷启动',
+    receiptColdStartQueued: '已排队',
+    receiptColdStartNone: '不涉及',
+    /** 🚨 sb-13：statusFlipped=false **不是失败**，且 MUST NOT 重试（会写第二遍锚）。 */
+    receiptHalfTitle: '但收件箱状态没翻转',
+    receiptHalfHint:
+      '这条待审仍是待审 —— 多半是另一台设备或脚本同时处置了它。不要重试采纳（会再写一遍锚）。请人工核对该条与这个锚 id 的对应关系。',
+    receiptFallbackTitle: (n: number) => `本次真正冲掉了 ${n} 处人工位`,
+    receiptDone: '知道了',
+    notPending: '这条待审已被别处处置过（不是不存在）—— 刷新后再看。',
+    approveFailed: '采纳失败，请重试',
+    networkFailed: '网络不可用，请稍后重试',
+    rateLimited: '操作太频繁，请稍后再试',
+    detailLoadFailed: '待审详情加载失败，请重试',
+
+    // ── T021 冷启动结局面板（mockup 帧 ⑭；FR-009 / US5） ──
+    coldStartTitle: '冷启动结局',
+    coldStartEntry: '冷启动结局',
+    coldStartBatch: (n: number) => `本批 ${n} 只新锚`,
+    coldStartSettled: (settled: number, total: number) => `${settled} / ${total} 已出结局`,
+    /** 🚨 sb-18：没出结局 = 排队中或正在跑，**不是失败**（十档结局全是终态）。 */
+    coldStartQueueHint: '队列串行（一次跑一只，分钟级）。还没出结局 = 排队中或正在跑，不是失败。',
+    coldStartPending: (n: number) => `还有 ${n} 只在排队 · 未出结局`,
+    /** 🚨 分档判据在服务端（needsAttention），呈现层不抄名单。 */
+    coldStartAttentionGroup: (n: number) => `需人工介入 · ${n}`,
+    coldStartAttentionHint: '期权 EOD 无跨日补救，这些是补不回来的窟窿。',
+    coldStartDoneGroup: (n: number) => `已完成 · ${n}`,
+    coldStartSessionPrefix: (day: string) => `目标交易日 ${day}`,
+    coldStartNoSession: '未定位到交易日',
+    coldStartEmpty: '还没有采纳过的锚 —— 采纳一条会新建锚的待审后，这里会出现它的冷启动结局。',
+    coldStartLoadFailed: '冷启动结局加载失败，请重试',
+  },
+
   /** 锚表单屏（T022，mockup 帧 ⑥⑦⑧）。 */
   anchorForm: {
     createTitle: '新建锚',

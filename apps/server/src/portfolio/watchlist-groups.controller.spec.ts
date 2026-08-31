@@ -67,7 +67,7 @@ function build() {
   };
 }
 
-const REQ = { user: { accountId: 42n } };
+const REQ = { user: { accountId: 42n, isAdmin: false } };
 
 describe('WatchlistGroupsController', () => {
   it('GET → delegates accountId, 返 groups', async () => {

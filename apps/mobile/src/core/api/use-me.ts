@@ -61,6 +61,12 @@ export function useMe() {
           createdAt: '',
           // 冷启动种子未持久化绑定态; 由即时后台 refetch 回填真值 (同 bio/gender)。
           wechatBound: false,
+          // 072: 同上 —— 未持久化, 回落 false。**fail-safe 方向**: 冷启动那一瞬当作非管理员,
+          // 审批入口在 /me 落地后才出现; 反过来(乐观当 true)会闪出一个随即消失的管理入口,
+          // 且真非管理员点进去只会吃 403。
+          // 🚨 客户端这一位只管**要不要渲染入口**;授权在服务端 AdminOnlyGuard,
+          // 改成 true 也拿不到任何管理端点的数据。
+          isAdmin: false,
         }
       : null;
 

@@ -128,3 +128,40 @@ describe('check-server-moat — Check 2 跨业务 ctx 注入注释', () => {
     expect(scanSourceFiles(sf, SCHEMA)).toHaveLength(0);
   });
 });
+
+describe('check-server-moat — Check 3 单写路径白名单 (072)', () => {
+  // anchor 归 optionsdesk (MODEL_OWNERSHIP), 且在 WRITE_ALLOWLIST 里登记了写者名单。
+  const ANCHOR_SCHEMA = new Set(['anchor']);
+
+  it('登记在册的写者写 anchor → 0 违规', () => {
+    const sf = mk({
+      '/apps/server/src/optionsdesk/create-anchor.usecase.ts': `
+        class A { run(tx: any) { return tx.anchor.create({ data: {} }); } }`,
+    });
+    expect(scanSourceFiles(sf, ANCHOR_SCHEMA)).toHaveLength(0);
+  });
+
+  it('未登记的同 ctx 文件写 anchor → moat-single-writer (059 FR-012 的机器化)', () => {
+    const sf = mk({
+      '/apps/server/src/optionsdesk/approve-anchor-submission.usecase.ts': `
+        class A { run(p: any) { return p.anchor.update({ where: {}, data: {} }); } }`,
+    });
+    expect(scanSourceFiles(sf, ANCHOR_SCHEMA).map((v) => v.rule)).toEqual(['moat-single-writer']);
+  });
+
+  it('未登记的文件**读** anchor → 0 违规 (本检查只管写)', () => {
+    const sf = mk({
+      '/apps/server/src/optionsdesk/list-anchor-submissions.usecase.ts': `
+        class A { run(p: any) { return p.anchor.findMany({ where: {} }); } }`,
+    });
+    expect(scanSourceFiles(sf, ANCHOR_SCHEMA)).toHaveLength(0);
+  });
+
+  it('未在 WRITE_ALLOWLIST 登记的 model, 其同 ctx 写不受本检查约束', () => {
+    const sf = mk({
+      '/apps/server/src/account/whatever.usecase.ts': `
+        class A { run(p: any) { return p.account.update({ where: {}, data: {} }); } }`,
+    });
+    expect(scanSourceFiles(sf, new Set(['account']))).toHaveLength(0);
+  });
+});

@@ -11,6 +11,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  optionsdeskAnchorSubmissionRoute,
+  OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
+  OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_RADAR_ROUTE,
@@ -35,6 +38,9 @@ const ALL_ROUTES = [
   optionsdeskUnderlyingRoute('us:AAPL'),
   optionsdeskChainReportRoute('us:AAPL'),
   OPTIONSDESK_UNDERLYING_PATHNAME,
+  OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
+  optionsdeskAnchorSubmissionRoute('142'),
+  OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
 ];
 
 describe('046 T023 —— 两个新屏的路由常量', () => {
@@ -73,6 +79,32 @@ describe('055 T016 —— 下钻落点的动态段模板', () => {
   it('模板留着动态段本身，🚫 不是拼好的具体路径', () => {
     expect(OPTIONSDESK_UNDERLYING_PATHNAME).toContain('[symbol]');
     expect(OPTIONSDESK_UNDERLYING_PATHNAME).not.toContain('%');
+  });
+});
+
+describe('072 T018 —— 锚待审箱的路由常量', () => {
+  it('待审箱挂在期权台二级页栈下（⇒ 继承 _layout 的 route-stack 门，sb-19）', () => {
+    expect(OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE).toBe('/(app)/optionsdesk/anchor-submissions');
+  });
+
+  // 🚨 「我的」审批栏靠渲染门（visibleProfileTabs），深链靠路由门 —— 两道门盖的是同一件事的
+  //    两个入口。把待审箱挂到 (tabs) 或 profile 底下 = 只剩渲染门，深链直达就能绕过去。
+  it('🚨 待审箱不长在 (tabs) 下（那样深链会绕过 MarketsRouteGuard）', () => {
+    expect(OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE).not.toContain('(tabs)');
+  });
+});
+
+describe('072 T019 —— 待审详情的路由常量', () => {
+  it('详情同样在期权台二级页栈下', () => {
+    expect(optionsdeskAnchorSubmissionRoute('142')).toBe(
+      '/(app)/optionsdesk/anchor-submission/142',
+    );
+  });
+
+  // id 是数字串、不含冒号 ⇒ 不该被转义（照抄 underlying 那条的 encodeURIComponent 会让
+  // 「要不要解码」在两条路由上分叉）。
+  it('id 不做转义', () => {
+    expect(optionsdeskAnchorSubmissionRoute('142')).not.toContain('%');
   });
 });
 

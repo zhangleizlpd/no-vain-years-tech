@@ -147,3 +147,54 @@ export function assertImportableConfidence(confidence: string | Prisma.Decimal):
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 「这次导入什么都没改」的判据 (FR-006)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** {@link isImportNoop} 要比的锚侧字段 —— 结构化窄类型, 使本文件不依赖任何 use case。 */
+export interface ImportComparableAnchor {
+  v: Prisma.Decimal;
+  asof: Date;
+  method: string;
+  confidence: Prisma.Decimal;
+  confidenceSource: string;
+}
+
+/** {@link isImportNoop} 要比的入参侧字段。 */
+export interface ImportComparableInput {
+  v: string | Prisma.Decimal;
+  asof: Date;
+  method: string;
+  confidence: string | Prisma.Decimal;
+}
+
+/** UTC 午夜折平 —— `@db.Date` 列读回来就是这个基准, 只比日期不比时刻。 */
+function utcDateOnly(at: Date): Date {
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
+}
+
+/**
+ * 四个模型事实全等 **且**来源已是 `model` ⇒ 本次导入什么都不会写 (FR-006)。
+ *
+ * 🚨 比的是**值**不是字符串: `'50'` 与 `'50.00'` 是同一个估值, 按字符串比会让每天的例行导入
+ * 都写一遍库、并顺手冲掉三处人工位。
+ *
+ * 🚨 为什么把 `confidence_source` 也算进来: 手工锚的数字恰好与模型一致时, 这次导入**确实
+ * 改了东西** —— 它把 provenance 翻成 model (FR-002 的 MUST)。判成 noop 会让那只锚继续显示
+ * 「人工来源、可编辑」, 与实际写入路径不符。
+ *
+ * 📌 **072 起它从 use case 私有函数搬到这里**, 因为**读侧也要用**: 审批详情页要在采纳**之前**
+ * 告诉人「这次会不会真的写」。没有它, 一条与现有锚逐值相同的提交会被预览成
+ * 「将刷新, 并清掉你的 3 处人工位」—— 一个**什么都不会写**的操作配上最吓人的警告,
+ * 而那正是训练人闭眼点确认的机制。
+ */
+export function isImportNoop(row: ImportComparableAnchor, input: ImportComparableInput): boolean {
+  return (
+    row.confidenceSource === 'model' &&
+    row.v.equals(new Prisma.Decimal(input.v)) &&
+    row.confidence.equals(new Prisma.Decimal(input.confidence)) &&
+    utcDateOnly(row.asof).getTime() === utcDateOnly(input.asof).getTime() &&
+    row.method === input.method
+  );
+}

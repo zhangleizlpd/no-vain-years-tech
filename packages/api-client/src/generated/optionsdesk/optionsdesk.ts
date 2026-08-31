@@ -36,7 +36,12 @@ import type {
   AnchorListResponse,
   AnchorPointInTimeResponse,
   AnchorResponse,
+  AnchorSubmissionControllerListParams,
+  AnchorSubmissionDetailResponse,
   AnchorSubmissionResponse,
+  AnchorSubmissionReviewListResponse,
+  ApproveAnchorSubmissionRequest,
+  ApproveAnchorSubmissionResponse,
   ChainReportResponse,
   CreateAnchorRequest,
   LegTableResponse,
@@ -50,6 +55,8 @@ import type {
   PositionBucketResponse,
   ProblemDetailResponse,
   RadarResponse,
+  RejectAnchorSubmissionsRequest,
+  RejectAnchorSubmissionsResponse,
   ReviewAnchorRequest,
   SetPositionBucketRequest,
   SubmitAnchorRequest,
@@ -1250,4 +1257,311 @@ export const useOptionsdeskGuestControllerSubmit = <TError = AxiosError<ProblemD
         TContext
       > => {
       return useMutation(getOptionsdeskGuestControllerSubmitMutationOptions(options), queryClient);
+    }
+    /**
+ * 默认 status=PENDING。每行带 disposition / asofFlag / asofSuggested / 标的名 —— 这四样是 anchor-approve.sh plan 那条 SQL 的判断力搬上线, 少一样人就得回去开 psql。**不分页**。
+ * @summary 列出待审估值 (admin)
+ */
+export const anchorSubmissionControllerList = (
+    params?: AnchorSubmissionControllerListParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<AnchorSubmissionReviewListResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/anchor-submissions`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getAnchorSubmissionControllerListQueryKey = (params?: AnchorSubmissionControllerListParams,) => {
+    return [
+    `/api/v1/optionsdesk/anchor-submissions`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getAnchorSubmissionControllerListQueryOptions = <TData = Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError = AxiosError<ProblemDetailResponse>>(params?: AnchorSubmissionControllerListParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getAnchorSubmissionControllerListQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof anchorSubmissionControllerList>>> = ({ signal }) => anchorSubmissionControllerList(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type AnchorSubmissionControllerListQueryResult = NonNullable<Awaited<ReturnType<typeof anchorSubmissionControllerList>>>
+export type AnchorSubmissionControllerListQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useAnchorSubmissionControllerList<TData = Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: undefined |  AnchorSubmissionControllerListParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof anchorSubmissionControllerList>>,
+          TError,
+          Awaited<ReturnType<typeof anchorSubmissionControllerList>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useAnchorSubmissionControllerList<TData = Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError = AxiosError<ProblemDetailResponse>>(
+ params?: AnchorSubmissionControllerListParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof anchorSubmissionControllerList>>,
+          TError,
+          Awaited<ReturnType<typeof anchorSubmissionControllerList>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useAnchorSubmissionControllerList<TData = Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError = AxiosError<ProblemDetailResponse>>(
+ params?: AnchorSubmissionControllerListParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary 列出待审估值 (admin)
+ */
+
+export function useAnchorSubmissionControllerList<TData = Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError = AxiosError<ProblemDetailResponse>>(
+ params?: AnchorSubmissionControllerListParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerList>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getAnchorSubmissionControllerListQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * 比列表多两样: fallbackPreview(采纳会冲掉哪些人工位, 与真实写入路径共用同一个纯函数) 与 willBeNoop(本次采纳会不会什么都不写)。
+ * @summary 待审详情 + 采纳前预览 (admin)
+ */
+export const anchorSubmissionControllerGetOne = (
+    id: string, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<AnchorSubmissionDetailResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/anchor-submissions/${id}`,options
+    );
+  }
+
+
+
+
+export const getAnchorSubmissionControllerGetOneQueryKey = (id: string,) => {
+    return [
+    `/api/v1/optionsdesk/anchor-submissions/${id}`
+    ] as const;
+    }
+
+
+export const getAnchorSubmissionControllerGetOneQueryOptions = <TData = Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError = AxiosError<ProblemDetailResponse>>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getAnchorSubmissionControllerGetOneQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>> = ({ signal }) => anchorSubmissionControllerGetOne(id, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type AnchorSubmissionControllerGetOneQueryResult = NonNullable<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>>
+export type AnchorSubmissionControllerGetOneQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useAnchorSubmissionControllerGetOne<TData = Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>,
+          TError,
+          Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useAnchorSubmissionControllerGetOne<TData = Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>,
+          TError,
+          Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useAnchorSubmissionControllerGetOne<TData = Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary 待审详情 + 采纳前预览 (admin)
+ */
+
+export function useAnchorSubmissionControllerGetOne<TData = Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof anchorSubmissionControllerGetOne>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getAnchorSubmissionControllerGetOneQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * 经**与本人导入完全相同的路径**落锚 (FR-012: 系统 MUST NOT 存在第二条写锚路径)。限流 6/60s 是**节流不是防滥用** —— 每条 action=create 会排一个分钟级、串行的真 vendor 冷启动。
+ * @summary 采纳一条待审估值 (admin)
+ */
+export const anchorSubmissionControllerApprove = (
+    id: string,
+    approveAnchorSubmissionRequest: ApproveAnchorSubmissionRequest, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<ApproveAnchorSubmissionResponse>> => {
+
+
+    return axios.post(
+      `/api/v1/optionsdesk/anchor-submissions/${id}/approve`,
+      approveAnchorSubmissionRequest,options
+    );
+  }
+
+
+
+export const getAnchorSubmissionControllerApproveMutationOptions = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof anchorSubmissionControllerApprove>>, TError,{id: string;data: ApproveAnchorSubmissionRequest}, TContext>, axios?: AxiosRequestConfig}
+): UseMutationOptions<Awaited<ReturnType<typeof anchorSubmissionControllerApprove>>, TError,{id: string;data: ApproveAnchorSubmissionRequest}, TContext> => {
+
+const mutationKey = ['anchorSubmissionControllerApprove'];
+const {mutation: mutationOptions, axios: axiosOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, axios: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof anchorSubmissionControllerApprove>>, {id: string;data: ApproveAnchorSubmissionRequest}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  anchorSubmissionControllerApprove(id,data,axiosOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AnchorSubmissionControllerApproveMutationResult = NonNullable<Awaited<ReturnType<typeof anchorSubmissionControllerApprove>>>
+    export type AnchorSubmissionControllerApproveMutationBody = ApproveAnchorSubmissionRequest
+    export type AnchorSubmissionControllerApproveMutationError = AxiosError<ProblemDetailResponse>
+
+    /**
+ * @summary 采纳一条待审估值 (admin)
+ */
+export const useAnchorSubmissionControllerApprove = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof anchorSubmissionControllerApprove>>, TError,{id: string;data: ApproveAnchorSubmissionRequest}, TContext>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof anchorSubmissionControllerApprove>>,
+        TError,
+        {id: string;data: ApproveAnchorSubmissionRequest},
+        TContext
+      > => {
+      return useMutation(getAnchorSubmissionControllerApproveMutationOptions(options), queryClient);
+    }
+    /**
+ * **驳回可以批量而采纳不行**: 驳回零副作用(不写锚/不发事件/不打 vendor/不排冷启动), 采纳每条都有三个副作用且都要人过一遍闸。别为「对称」把两者合并。
+ * @summary 批量驳回待审估值 (admin)
+ */
+export const anchorSubmissionControllerReject = (
+    rejectAnchorSubmissionsRequest: RejectAnchorSubmissionsRequest, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<RejectAnchorSubmissionsResponse>> => {
+
+
+    return axios.post(
+      `/api/v1/optionsdesk/anchor-submissions/reject`,
+      rejectAnchorSubmissionsRequest,options
+    );
+  }
+
+
+
+export const getAnchorSubmissionControllerRejectMutationOptions = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof anchorSubmissionControllerReject>>, TError,{data: RejectAnchorSubmissionsRequest}, TContext>, axios?: AxiosRequestConfig}
+): UseMutationOptions<Awaited<ReturnType<typeof anchorSubmissionControllerReject>>, TError,{data: RejectAnchorSubmissionsRequest}, TContext> => {
+
+const mutationKey = ['anchorSubmissionControllerReject'];
+const {mutation: mutationOptions, axios: axiosOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, axios: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof anchorSubmissionControllerReject>>, {data: RejectAnchorSubmissionsRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  anchorSubmissionControllerReject(data,axiosOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AnchorSubmissionControllerRejectMutationResult = NonNullable<Awaited<ReturnType<typeof anchorSubmissionControllerReject>>>
+    export type AnchorSubmissionControllerRejectMutationBody = RejectAnchorSubmissionsRequest
+    export type AnchorSubmissionControllerRejectMutationError = AxiosError<ProblemDetailResponse>
+
+    /**
+ * @summary 批量驳回待审估值 (admin)
+ */
+export const useAnchorSubmissionControllerReject = <TError = AxiosError<ProblemDetailResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof anchorSubmissionControllerReject>>, TError,{data: RejectAnchorSubmissionsRequest}, TContext>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof anchorSubmissionControllerReject>>,
+        TError,
+        {data: RejectAnchorSubmissionsRequest},
+        TContext
+      > => {
+      return useMutation(getAnchorSubmissionControllerRejectMutationOptions(options), queryClient);
     }

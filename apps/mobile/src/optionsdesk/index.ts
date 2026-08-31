@@ -2,6 +2,16 @@
 // app/ 树下只放薄 route，屏体与逻辑全在本目录（per fe-directory-structure）。
 export { RadarScreen } from './radar-screen';
 export { AnchorListScreen } from './anchor-list-screen';
+// 072 T018：锚待审箱（「我的」审批栏内嵌面板 + 全屏列表 + 批量驳回）
+export { AnchorSubmissionListScreen } from './anchor-submission-list-screen';
+export { AnchorSubmissionPanel, type AnchorSubmissionPanelProps } from './anchor-submission-panel';
+export { AnchorSubmissionRow, type AnchorSubmissionRowProps } from './anchor-submission-row';
+// 072 T021：冷启动结局面板（十档全显 / 五档置顶 / 缺席=排队中）
+export { AnchorColdStartScreen } from './anchor-cold-start-screen';
+// 072 T020：处置后该失效哪些缓存的单一处（采纳 / 驳回共用）
+export { useInvalidateAnchorQueries } from './use-anchor-submissions';
+// 072 T019：审批详情 + 复述闸 + 三出口
+export { AnchorSubmissionDetailScreen } from './anchor-submission-detail-screen';
 export { AnchorFormScreen } from './anchor-form-screen';
 export { OPTIONSDESK_COPY } from './optionsdesk-copy';
 export { ZoneBand, type ZoneBandProps } from './zone-band';
@@ -37,6 +47,8 @@ export { LEG_PICKER_TABS, type LegPickerTab } from './leg-picker.rules';
 export { LEG_TIER_LEGEND, type LegEarningsChip, type LegCellTone } from './leg-picker-copy';
 export {
   OPTIONSDESK_RADAR_ROUTE,
+  OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
+  OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,

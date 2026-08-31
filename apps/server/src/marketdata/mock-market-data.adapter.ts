@@ -195,6 +195,20 @@ export class MockMarketDataAdapter
     return null;
   }
 
+  /**
+   * 072: 严格早于 `date` 的最近一个「工作日」。同 {@link lastClosedSession} 一样
+   * **不建模节假日与半日市** —— 编出来的假期会让测试绿在一个现实中不存在的形状上。
+   */
+  async previousTradingDay(_market: string, date: string): Promise<string | null> {
+    let cursor = new Date(`${date}T00:00:00Z`);
+    for (let i = 0; i < 7; i++) {
+      cursor = new Date(cursor.getTime() - 86_400_000); // 先退一天 —— 契约是**严格早于**
+      const day = cursor.getUTCDay();
+      if (day >= 1 && day <= 5) return cursor.toISOString().slice(0, 10);
+    }
+    return null;
+  }
+
   async fetchTradingDates(
     _market: string,
     from: string,

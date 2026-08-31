@@ -188,9 +188,11 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // CROSS-CONTEXT-READ 注释。anchorChange.anchorId 无 FK relation (删锚不级联删痕迹, FR-031)。
   anchor: 'optionsdesk',
   anchorChange: 'optionsdesk',
-  // anchorSubmission 归 optionsdesk (059 锚待审收件箱, FR-011)。提交端点独占写 (R1 自有表),
-  // **零读取面**: 审阅走 DB 直连, 采纳 = 本人经导入口重放一次 ⇒ 本表到锚表**没有代码路径**,
-  // 那正是 FR-012「系统 MUST NOT 存在第二条写锚路径」的结构性保证。跨 ctx 面 = 0。
+  // anchorSubmission 归 optionsdesk (059 锚待审收件箱, FR-011)。R1 自有表, 跨 ctx 面 = 0。
+  // ⚠️ 059 原注在此写「**零读取面** + 本表到锚表没有代码路径 ⇒ FR-012 的结构性保证」——
+  // **072 已反转**: 审批面搬进 App 后那条边存在了。FR-012 本身不变, 但保证方式换成了
+  // 「只有一条边且指向 ImportAnchorFromModelUseCase」的委托纪律, 而那条纪律的机器强制
+  // 就在本文件下方的 WRITE_ALLOWLIST (Check 3)。详见 ADR-0069。
   anchorSubmission: 'optionsdesk',
   // researchReport 归 research (057, 第 11 bounded context; ADR-0065 研报库)。投递 UC 独占
   // 读写 (R1 自有表)。**跨 ctx 面 = 0**: symbol 存归一后的 `market:code` 裸字符串, 不建到
@@ -199,6 +201,51 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 也不该反向读他 ctx 的表; 出现任一方向即是设计漂移, 探针会红。
   researchReport: 'research',
 };
+
+/**
+ * Check 3 — **ctx 内部**的单写路径白名单 (072)。
+ *
+ * MODEL_OWNERSHIP 那两条 (Check 1) 管的是**跨 ctx**; 同 ctx 内谁写自己的表一律放行 (R1)。
+ * 对绝大多数表这是对的 —— 但 `anchor` 是全仓唯一一个把「只有一条写路径」写进 **spec MUST**
+ * 的表 (059 FR-012「系统 MUST NOT 存在第二条写锚路径」)。
+ *
+ * 059 当时靠**拓扑**保证它: 待审表 `anchor_submission` 到锚表根本没有代码路径。072 建了线上
+ * 审批端点之后那条拓扑保证没了 —— 采纳 use case 就在 optionsdesk 内, 直写 `prisma.anchor`
+ * 属**同 ctx R1**, Check 1 看不见。**一条纪律不是一个保证**, 所以在这里把保证买回来。
+ *
+ * 语义: 登记在册的 model, 其**写操作**只允许出现在列出的文件里; 未登记的 model 不受本检查
+ * 约束 (不做全仓白名单 —— 那会立刻过期, 并给每个正当的新写者制造摩擦)。
+ * 读操作不受约束。
+ *
+ * 🚨 往这张表里加文件之前先问: 这个新写者是不是本该委托 `ImportAnchorFromModelUseCase` /
+ * `CreateAnchorUseCase`? 绝大多数情况下答案是「是」, 那就别加。
+ */
+const WRITE_ALLOWLIST: Record<string, readonly string[]> = {
+  anchor: [
+    'optionsdesk/create-anchor.usecase.ts',
+    'optionsdesk/update-anchor.usecase.ts',
+    'optionsdesk/delete-anchor.usecase.ts',
+    'optionsdesk/import-anchor-from-model.usecase.ts',
+    'optionsdesk/review-anchor.usecase.ts',
+    'optionsdesk/set-position-bucket.usecase.ts',
+    'optionsdesk/sync-anchor-quote.ts',
+    'optionsdesk/sync-anchor-intraday.ts',
+    // ⚠️ 读路径里的写: 雷达在算的同时推进 breach_started_on 状态机 (FR-013「红标不是一次比较
+    // 是个状态机」), 条件 UPDATE + affected-count。**只写那一列**, 不碰估值事实
+    // (v/asof/method/confidence/confidence_source) ⇒ 与 FR-012 的「第二条写锚路径」无关。
+    'optionsdesk/get-radar.usecase.ts',
+  ],
+};
+
+/**
+ * ⚠️ 本白名单的粒度是「**谁能写 anchor 这张表**」, 不是「谁能写估值事实那几列」。
+ * 后者更精确, 但要 AST 解析 `data:` 对象的键集 —— 为边际收益换一堆解析复杂度, 不划算
+ * (Senior Engineer Test)。代价是像 get-radar 这种「只写派生状态列」的正当写者也得登记;
+ * 收益是**每一个写者都是一次显式的、被 review 过的决定**, 这正是本检查要买的东西。
+ *
+ * 📌 名单的真值可随时用 AST 复算 (把 anchor 的数组临时清空跑一次, 报出来的就是全集),
+ * 别靠手工 grep 维护 —— 2026-08-31 首次落地时手工清单就漏了 get-radar 那条。
+ */
 
 const WRITE_OPS = new Set([
   'create',
@@ -247,7 +294,12 @@ const BUSINESS_CTX = new Set([
 interface Violation {
   file: string;
   line: number;
-  rule: 'moat-write' | 'moat-read' | 'moat-unmapped' | 'cross-ctx-annotation';
+  rule:
+    | 'moat-write'
+    | 'moat-read'
+    | 'moat-unmapped'
+    | 'moat-single-writer'
+    | 'cross-ctx-annotation';
   message: string;
 }
 
@@ -344,6 +396,9 @@ function checkDataMoat(
   violations: Violation[],
 ): void {
   const filePath = sf.getFilePath();
+  // WRITE_ALLOWLIST 的条目写成 `<ctx>/<file>.ts` 后缀 → 用 posix 化的绝对路径做 endsWith 比对
+  // (绝对路径前缀随 checkout 位置变, 后缀不变)。
+  const relPath = filePath.replace(/\\/g, '/');
   for (const call of sf.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     const callee = call.getExpression();
     if (!Node.isPropertyAccessExpression(callee)) continue;
@@ -365,7 +420,19 @@ function checkDataMoat(
       });
       continue;
     }
-    if (fileCtx === owner) continue; // 自有表, 合法
+    if (fileCtx === owner) {
+      // Check 3 — 自有表合法, 但登记在 WRITE_ALLOWLIST 的 model 另受「单写路径」约束 (072)。
+      const allowed = WRITE_ALLOWLIST[accessor];
+      if (allowed && WRITE_OPS.has(op) && !allowed.some((suffix) => relPath.endsWith(suffix))) {
+        violations.push({
+          file: filePath,
+          line,
+          rule: 'moat-single-writer',
+          message: `'${accessor}.${op}()' 出现在未登记的写者里 — ${accessor} 是单写路径 model (059 FR-012「系统 MUST NOT 存在第二条写锚路径」)。要么委托既有写者 (锚: ImportAnchorFromModelUseCase / CreateAnchorUseCase), 要么在 check-server-moat.ts 的 WRITE_ALLOWLIST 显式登记并说明为什么它必须是第 N 条写路径`,
+        });
+      }
+      continue;
+    }
 
     if (WRITE_OPS.has(op)) {
       violations.push({

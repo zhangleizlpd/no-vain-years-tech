@@ -20,6 +20,7 @@ import { AnonymizeFrozenAccountsScheduler } from './anonymize-frozen-accounts.sc
 import { AccountProfileController } from './account-profile.controller.js';
 import { AccountIdThrottlerGuard } from './account-id-throttler.guard.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { AdminOnlyGuard } from './admin-only.guard.js';
 
 /**
  * Account bounded context (per ADR-0032 + post-A-002 retro + ADR-0043 扁平贫血).
@@ -62,10 +63,13 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
     AnonymizeFrozenAccountsScheduler,
     JwtAuthGuard,
     AccountIdThrottlerGuard,
+    AdminOnlyGuard,
   ],
   exports: [
     JwtAuthGuard,
     AccountIdThrottlerGuard,
+    // 072 系统维护面准入闸 —— optionsdesk 的审批 controller 挂它 (类级)。
+    AdminOnlyGuard,
     InspectAccountStatusUseCase,
     InspectAccountStatusByIdUseCase,
     CommitPhoneLoginUseCase,

@@ -152,3 +152,34 @@ export function isColdStartEnabled(market: string): boolean {
   if (capability === undefined) return false;
   return capability.optionChain || capability.optionSnapshot;
 }
+
+/** 值域数组形态 —— 供穷尽性断言与 DTO enum 用。 */
+export const COLD_START_OUTCOMES = Object.values(COLD_START_OUTCOME);
+
+/**
+ * 「这个结局要不要人管」—— 五档需人工介入 (072)。
+ *
+ * 🚨 **必须与上面那十个值住在同一处, MUST NOT 在 App 侧抄一份**:
+ * {@link COLD_START_OUTCOME} 的头注释花了整段论证十档不许折叠, 理由是「本就不该做」与
+ * 「该做没做成」的处置完全相反 —— **本分档就是那同一个判断**。抄到 `apps/mobile` 去,
+ * 等第 11 个结局落地那天必然漂 (066 加第 10 个只隔了几个月), 而漂的表现是某个永久缺口
+ * 在界面上悄悄降级成「已完成」。
+ *
+ * 五档的共同点: 期权 EOD **无跨日补救** ⇒ 它们盖住的都是**永久缺口**。
+ * 反面三档 (`market_not_enabled` / `already_present` / `intraday_skipped`) 与
+ * `no_option_chain` / `backfilled` 都是「本就不该做」或「做成了」, 不该有人管。
+ */
+export const COLD_START_NEEDS_ATTENTION: ReadonlySet<ColdStartOutcome> = new Set([
+  COLD_START_OUTCOME.RETRY_EXHAUSTED,
+  COLD_START_OUTCOME.BACKFILL_INCOMPLETE,
+  COLD_START_OUTCOME.CALENDAR_MISSING,
+  COLD_START_OUTCOME.SESSION_UNREGISTERED,
+  COLD_START_OUTCOME.TICKER_UNRESOLVED,
+]);
+
+/** 结局是否需要人工介入;未知字符串按**需要**处理 (fail-safe: 宁可多看一眼)。 */
+export function coldStartNeedsAttention(outcome: string): boolean {
+  return !COLD_START_OUTCOMES.includes(outcome as ColdStartOutcome)
+    ? true
+    : COLD_START_NEEDS_ATTENTION.has(outcome as ColdStartOutcome);
+}

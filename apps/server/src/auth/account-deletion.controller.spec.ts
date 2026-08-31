@@ -20,7 +20,9 @@ describe('AccountDeletionController', () => {
   describe('EP1 sendDeletionCodeForMe', () => {
     it('调 usecase(req.user.accountId) + 返回 void (204)', async () => {
       const { controller, sendExecute } = build();
-      const res = await controller.sendDeletionCodeForMe({ user: { accountId: 99n } });
+      const res = await controller.sendDeletionCodeForMe({
+        user: { accountId: 99n, isAdmin: false },
+      });
       expect(sendExecute).toHaveBeenCalledWith(99n);
       expect(res).toBeUndefined();
     });
@@ -28,9 +30,9 @@ describe('AccountDeletionController', () => {
     it('usecase 抛 (反枚举 401 / 503) → 控制器透传, 不吞', async () => {
       const { controller, sendExecute } = build();
       sendExecute.mockRejectedValue(new Error('mapped-by-usecase'));
-      await expect(controller.sendDeletionCodeForMe({ user: { accountId: 1n } })).rejects.toThrow(
-        'mapped-by-usecase',
-      );
+      await expect(
+        controller.sendDeletionCodeForMe({ user: { accountId: 1n, isAdmin: false } }),
+      ).rejects.toThrow('mapped-by-usecase');
     });
   });
 
@@ -38,7 +40,7 @@ describe('AccountDeletionController', () => {
     it('调 usecase(req.user.accountId, body.code) + 返回 void (204)', async () => {
       const { controller, deleteExecute } = build();
       const res = await controller.submitDeletionForMe(
-        { user: { accountId: 99n } },
+        { user: { accountId: 99n, isAdmin: false } },
         { code: '123456' },
       );
       expect(deleteExecute).toHaveBeenCalledWith(99n, '123456');
@@ -49,7 +51,10 @@ describe('AccountDeletionController', () => {
       const { controller, deleteExecute } = build();
       deleteExecute.mockRejectedValue(new Error('INVALID_DELETION_CODE'));
       await expect(
-        controller.submitDeletionForMe({ user: { accountId: 1n } }, { code: '000000' }),
+        controller.submitDeletionForMe(
+          { user: { accountId: 1n, isAdmin: false } },
+          { code: '000000' },
+        ),
       ).rejects.toThrow('INVALID_DELETION_CODE');
     });
   });

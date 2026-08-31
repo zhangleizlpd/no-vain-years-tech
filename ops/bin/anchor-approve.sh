@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # 按市场审批 optionsdesk.anchor_submission 待审箱 —— 三动词 plan / apply / watch。
 #
-# 为什么是一个确定性脚本, 而不是让模型跑 curl 循环 (这条判据别删):
+# 🔻 **072 起降级为 break-glass**: 日常审批走 App 的「我的 · 审批」栏 (5 个 admin-only 端点,
+#    ADR-0069)。本脚本保留给「App 不可达 / 要批量灌几十条 / 要在 ledger 里留一份离线痕迹」
+#    这三类场景 —— 它们仍然只有脚本做得到 (限频节流 + 断点续跑 + ledger)。
+#    🚨 两条路径 MUST 写出**形状一致**的 CONSUMED 行 (FR-013): 见下方 mark_consumed —— 少写
+#    consumed_anchor_id 会让孤儿锚检出查询把每一条脚本处置过的行喂成假阳性。
+#
+# 下面这段是「为什么是脚本而不是让模型跑 curl 循环」的判据 (这条判据别删):
 #   · 直写口限频 **6 次/分** 且是漏桶 nodelay (429 当场拒不排队) ⇒ 上百条必须节流 + 退避
 #     + 断点续跑, 这三件事靠模型自觉必漂;
 #   · 一次 `action=create` 会让 prod 当日采集为该标的多做一整轮历史回填 (冷启动 worker
@@ -216,9 +222,19 @@ import_one() {
     "$CHANNEL_BASE/anchor-import?ticker=$1"
 }
 
+# 🚨 072 FR-013: 必须连 consumed_anchor_id 一起写。App 的采纳路径写的是**带回指**的
+#    CONSUMED 行, 这里不写就成了两种形状 —— 而「有锚但没有 submission 指向它」那条孤儿锚
+#    检出查询会把**每一条脚本处置过的行**喂成假阳性, 那条查询正是 FR-004 半截态可观测性的
+#    唯一兑现方式。anchor_id 解不出时宁可留 NULL (照实), 也不编一个。
 mark_consumed() {
+  # $1 submission id  $2 anchor id ('null' / 空 = 解不出)
+  local anchor_expr='NULL'
+  case "${2:-}" in
+    ''|null|'-') anchor_expr='NULL' ;;
+    *) anchor_expr="$2" ;;
+  esac
   psql_tsv "UPDATE optionsdesk.anchor_submission
-            SET status = 'CONSUMED', updated_at = now()
+            SET status = 'CONSUMED', consumed_anchor_id = $anchor_expr, updated_at = now()
             WHERE id = $1 AND status = 'PENDING'
             RETURNING id;"
 }
@@ -381,7 +397,7 @@ EOF
     fi
 
     # 翻 CONSUMED 严格后置于导入成功 —— 反过来会在导入失败时把条目从待审箱里弄丢。
-    if [ -z "$(mark_consumed "$id")" ]; then
+    if [ -z "$(mark_consumed "$id" "$anchor_id")" ]; then
       log "      ⚠ submission id=$id 的 status 未翻转 (可能已非 PENDING), 请人工核对"
     fi
   done <<EOF
@@ -545,7 +561,8 @@ EOF
 
 # ── watch ────────────────────────────────────────────────────────────────────
 # 冷启动的**唯一结局面**是 marketdata.anchor_cold_start_run (一锚一行, PK=anchor_id)。
-# 「还没出行」= 排队中或正在跑; 八种 outcome 全是终态。
+# 「还没出行」= 排队中或正在跑; 十种 outcome 全是终态 (072 起口径与 server 的
+# anchor-cold-start.rules.ts 对齐 —— 那里是分档判据的单一处)。
 cmd_watch() {
   local market="$1"; shift; require_market "$market"
   while [ $# -gt 0 ]; do
@@ -587,8 +604,10 @@ cmd_watch() {
         { printf "%-10s %-20s %-11s %-12s %s\n", $1,$2,$3,$4,$5 }'
       rule
       printf '%s\n' "$rows" | awk -F"$SEP" '{c[$2]++} END {for (o in c) printf "  %-22s %s\n", o, c[o]}'
-      # 这四种是「做了但没成」或「判不了」⇒ 要人管; 与「本就不该做」(market_not_enabled /
-      # already_present / intraday_skipped) 语义相反, FR-027 明禁折叠成一类。
+      # 下面正则里那**五种**是「做了但没成」或「判不了」⇒ 要人管; 与「本就不该做」
+      # (market_not_enabled / already_present / intraday_skipped / no_option_chain) 语义相反,
+      # FR-027 明禁折叠成一类。名单与 server 的 COLD_START_NEEDS_ATTENTION 同源, 改一处必改两处
+      # (脚本已降级为 break-glass, App 侧走 /marketdata/anchor-cold-start 的 needsAttention)。
       local attention
       attention="$(printf '%s\n' "$rows" | awk -F"$SEP" '$2 ~ /^(retry_exhausted|backfill_incomplete|calendar_missing|session_unregistered|ticker_unresolved)$/')"
       if [ -n "$attention" ]; then

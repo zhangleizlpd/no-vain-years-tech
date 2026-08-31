@@ -23,6 +23,10 @@ import { SyncAnchorIntradayUseCase } from './sync-anchor-intraday.js';
 import { SyncAnchorIntradayScheduler } from './sync-anchor-intraday.scheduler.js';
 import { OptionsdeskController } from './optionsdesk.controller.js';
 import { OptionsdeskGuestController } from './optionsdesk-guest.controller.js';
+import { AnchorSubmissionController } from './anchor-submission.controller.js';
+import { ListAnchorSubmissionsUseCase } from './list-anchor-submissions.usecase.js';
+import { ApproveAnchorSubmissionUseCase } from './approve-anchor-submission.usecase.js';
+import { RejectAnchorSubmissionsUseCase } from './reject-anchor-submissions.usecase.js';
 import { ImportAnchorFromModelUseCase } from './import-anchor-from-model.usecase.js';
 import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase.js';
 
@@ -50,8 +54,14 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
   // 方向仍单向: marketdata 对锚表零感知。ESLint boundaries 本就放行 optionsdesk → marketdata。
   imports: [SecurityModule, AccountModule, MarketdataModule],
   // 059 guest 面**另起一个 controller**: 上面那个是类级 JwtAuthGuard, 类级 guard 摘不掉。
-  controllers: [OptionsdeskController, OptionsdeskGuestController],
+  // 072 审批面**另起第三个 controller**: 类级 AdminOnlyGuard 是构造上的保证,
+  // 挂在上面那个共享 controller 上逐方法加 guard 则是会被未来某个 PR 悄悄漏掉的纪律。
+  controllers: [OptionsdeskController, OptionsdeskGuestController, AnchorSubmissionController],
   providers: [
+    // 072 待审箱审阅面
+    ListAnchorSubmissionsUseCase,
+    ApproveAnchorSubmissionUseCase,
+    RejectAnchorSubmissionsUseCase,
     CreateAnchorUseCase,
     UpdateAnchorUseCase,
     DeleteAnchorUseCase,

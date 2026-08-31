@@ -29,4 +29,6 @@ export interface AccountProfileResponse {
   createdAt: string;
   /** Whether a WeChat account is bound (010 FR-S07). MUST NOT expose openid — boolean only. */
   wechatBound: boolean;
+  /** 是否为系统管理员 (072)。**仅供客户端决定要不要渲染管理入口** —— 真正的授权在服务端 AdminOnlyGuard,客户端把它改成 true 也拿不到任何管理端点的数据。 */
+  isAdmin: boolean;
 }

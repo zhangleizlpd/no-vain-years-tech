@@ -138,6 +138,10 @@ export const MKTDATA_SEARCH_BUCKET: Record<string, boolean> = { 'mktdata-search-
 export const MKTDATA_QUOTE_BUCKET: Record<string, boolean> = { 'mktdata-quote-account': true };
 export const MKTDATA_DETAIL_BUCKET: Record<string, boolean> = { 'mktdata-detail-account': true };
 export const MKTDATA_BARS_BUCKET: Record<string, boolean> = { 'mktdata-bars-account': true };
+// 072 冷启动结局读端点 —— 采纳后要在串行队列排空前轮询, 故限额比其它读桶宽一档。
+export const MKTDATA_COLDSTART_BUCKET: Record<string, boolean> = {
+  'mktdata-coldstart-account': true,
+};
 
 /** 015 全部 marketdata 桶 —— 既有 (001-012) 路由 spread 此跳过新桶 (marketdata EP 内部 spread 同组其余桶)。 */
 export const MARKETDATA_ALL: Record<string, boolean> = {
@@ -145,6 +149,7 @@ export const MARKETDATA_ALL: Record<string, boolean> = {
   ...MKTDATA_QUOTE_BUCKET,
   ...MKTDATA_DETAIL_BUCKET,
   ...MKTDATA_BARS_BUCKET,
+  ...MKTDATA_COLDSTART_BUCKET,
 };
 
 // 013 自选列表分组 / 自选项 (EP1-EP9) — 均 per-account (AccountIdThrottlerGuard 先填
@@ -228,8 +233,25 @@ export const OPTIONSDESK_WRITE_BUCKET: Record<string, boolean> = {
   'optionsdesk-write-account': true,
 };
 
+/**
+ * 072 采纳桶 —— **6 次/分, 蓄意远严于 write 桶的 30**。
+ *
+ * 它不是「防滥用」而是**节流**: 每次 `action=create` 的采纳会排一个冷启动 job, 而那是
+ * 分钟级、`concurrency=1` 的真 vendor 外呼。用 write 桶的 30/分, 手快的人一分钟能排进 30 个
+ * 冷启动、把队列堵到几小时后。
+ *
+ * 📌 这个数字直接继承 `ops/bin/anchor-approve.sh` 的 `PACE_SECONDS=11`
+ * (「直写口 6 次/分的漏桶 ⇒ 每 10 秒补一格」) —— **本桶就是那个 shell 常量的线上替身**,
+ * 把约束从脚本挪进系统。改它前先想清楚下游那条串行队列。
+ */
+export const OPTIONSDESK_APPROVE_BUCKET: Record<string, boolean> = {
+  'optionsdesk-approve-account': true,
+};
+
 /** 045 全部 optionsdesk 桶 —— 既有 (001-032) 路由 spread 此跳过新桶。 */
 export const OPTIONSDESK_ALL: Record<string, boolean> = {
   ...OPTIONSDESK_READ_BUCKET,
   ...OPTIONSDESK_WRITE_BUCKET,
+  // 折进组常量 ⇒ 既有路由靠 skipExcept(OPTIONSDESK_ALL) 自动跳过新桶, 其它 controller 零改动。
+  ...OPTIONSDESK_APPROVE_BUCKET,
 };

@@ -55,3 +55,26 @@ export const OPTIONSDESK_UNDERLYING_PATHNAME = '/(app)/optionsdesk/underlying/[s
 export function optionsdeskChainReportRoute(symbol: string) {
   return `/(app)/optionsdesk/chain-report/${encodeURIComponent(symbol)}` as const;
 }
+
+// ── 072 T018：锚待审箱（FR-001 / US1） ──────────────────────────────────────
+//
+// 🚨 同样长在 `/(app)/optionsdesk/` 下 —— 待审箱读的是估值锚的上游，与期权台同族且
+//    同档合规门控（继承 `_layout` 那道 `MarketsRouteGuard`）。挂到 `/(app)/profile/…`
+//    之类的地方 = 逃出门控且不会红：「我的」页那两栏靠渲染门，而深链靠路由门，两道门
+//    盖的是同一件事的两个入口，缺一个就等于没门。
+
+/** 待审估值列表（「我的」审批栏「查看全部」进入）。 */
+export const OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE =
+  '/(app)/optionsdesk/anchor-submissions' as const;
+
+/**
+ * 待审详情（列表行 / 内嵌面板行点击进入）。`id` 是数字串，不含冒号，**无需转义** ——
+ * 与 `underlying/[symbol]` 那条刻意不同，别照抄 `encodeURIComponent`（那会让 id 在
+ * 服务端多一层解码假设）。
+ */
+export function optionsdeskAnchorSubmissionRoute(id: string) {
+  return `/(app)/optionsdesk/anchor-submission/${id}` as const;
+}
+
+/** 冷启动结局（072 T021；待审列表题头 / 采纳回执进入）。同栈，继承同一道 MarketsRouteGuard。 */
+export const OPTIONSDESK_ANCHOR_COLD_START_ROUTE = '/(app)/optionsdesk/anchor-cold-start' as const;

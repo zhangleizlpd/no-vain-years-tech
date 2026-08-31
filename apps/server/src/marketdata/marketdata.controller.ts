@@ -8,6 +8,11 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import {
+  GetAnchorColdStartRunsUseCase,
+  COLD_START_RUN_QUERY_CAP,
+} from './get-anchor-cold-start-runs.usecase.js';
+import { AnchorColdStartRunListResponse } from './anchor-cold-start-run.response.js';
 import { JwtAuthGuard } from '../account/jwt-auth.guard.js';
 import { AccountIdThrottlerGuard } from '../account/account-id-throttler.guard.js';
 import { ProblemDetailResponse } from '../security/problem-detail.response.js';
@@ -32,6 +37,7 @@ import {
   MKTDATA_QUOTE_BUCKET,
   MKTDATA_DETAIL_BUCKET,
   MKTDATA_BARS_BUCKET,
+  MKTDATA_COLDSTART_BUCKET,
   OPTIONSDESK_ALL,
 } from '../security/throttler-skip-buckets.js';
 import { ADJUSTS, BAR_PERIODS, type Adjust, type BarPeriod } from './marketdata.types.js';
@@ -98,7 +104,53 @@ export class MarketdataController {
     private readonly barsUseCase: GetInstrumentBarsUseCase,
     private readonly quotesUseCase: GetQuotesUseCase,
     private readonly searchUseCase: SearchInstrumentsUseCase,
+    private readonly coldStartRunsUseCase: GetAnchorColdStartRunsUseCase,
   ) {}
+
+  /**
+   * 072 冷启动结局 —— 采纳后盯队列用。R1: marketdata 读自己的 `anchor_cold_start_run`。
+   *
+   * 🚨 **查不到的 id 就是不返回**, 且这有语义:「还没出行」= 排队中或正在跑 (十档结局全是终态)。
+   * 呈现层据此算「N/M 已出结局」——**MUST NOT** 期待服务端补占位, 也 MUST NOT 把缺席当失败。
+   */
+  @Get('anchor-cold-start')
+  @HttpCode(200)
+  @SkipThrottle(skipExcept(MKTDATA_COLDSTART_BUCKET))
+  @Throttle({ 'mktdata-coldstart-account': { limit: 180, ttl: 60_000 } })
+  @ApiQuery({
+    name: 'anchorIds',
+    required: true,
+    description: `逗号分隔的锚 id;单次上限 ${COLD_START_RUN_QUERY_CAP}`,
+    example: '42,43',
+  })
+  @ApiOperation({ summary: '批量查锚的冷启动结局' })
+  @ApiResponse({ status: 200, type: AnchorColdStartRunListResponse })
+  @ApiResponse({ status: 401, type: ProblemDetailResponse })
+  async anchorColdStart(
+    @Query('anchorIds') anchorIds: string,
+  ): Promise<AnchorColdStartRunListResponse> {
+    const ids = (anchorIds ?? '')
+      .split(',')
+      .map((raw) => raw.trim())
+      .filter((raw) => raw !== '');
+    if (ids.some((raw) => !/^\d+$/.test(raw))) {
+      throw new FormValidationException([
+        { field: 'anchorIds', messages: ['must be comma-separated numeric anchor ids'] },
+      ]);
+    }
+    const views = await this.coldStartRunsUseCase.execute(ids.map((raw) => BigInt(raw)));
+    return {
+      items: views.map((view) => ({
+        anchorId: view.anchorId.toString(),
+        ticker: view.ticker,
+        outcome: view.outcome,
+        reason: view.reason,
+        targetSession: view.targetSession === null ? null : dateOnly(view.targetSession),
+        lastRunAt: view.lastRunAt.toISOString(),
+        needsAttention: view.needsAttention,
+      })),
+    };
+  }
 
   @Get('search')
   @HttpCode(200)
@@ -308,4 +360,10 @@ function assertDate(field: string, raw: string | undefined): void {
   if (raw !== undefined && raw !== '' && !DATE_RE.test(raw)) {
     throw new FormValidationException([{ field, messages: ['must be YYYY-MM-DD'] }]);
   }
+}
+
+/** `@db.Date` 列 → `YYYY-MM-DD`。🚨 MUST NOT 用 `.toISOString()`(会带 T00:00:00.000Z 并在
+ *  非 UTC 渲染时差一天) —— 同 optionsdesk/date-only.ts 的判据。 */
+function dateOnly(at: Date): string {
+  return at.toISOString().slice(0, 10);
 }

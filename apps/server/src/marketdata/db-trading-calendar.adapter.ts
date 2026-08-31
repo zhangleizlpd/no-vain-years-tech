@@ -89,4 +89,34 @@ export class DbTradingCalendarAdapter implements TradingCalendarPort {
     if (!isWithinCoverage(coverage, cutoff)) return null;
     return dayRow === null ? null : dayRow.date.toISOString().slice(0, 10);
   }
+
+  /**
+   * 严格早于 `date` 的最近一个交易日 (072)。语义与不可判定口径见端口注释。
+   *
+   * 🚨 覆盖闸判的是 **`date` 本身**在不在声明区间内, 而不是查出来那一行:
+   * `date` 若落在声明之外 (含「声明表还没建」), 「比它早的最大交易日」只反映**填到哪儿**,
+   * 不是真的前一场 ⇒ 必须返 `null`。这与 {@link lastClosedSession} 拿 cutoff 判是同一条判据。
+   *
+   * 复杂度: 2 次索引查询 (并发; 一次唯一索引点查 + 一次 `(market,date)` 倒序 limit-1)。
+   */
+  async previousTradingDay(market: string, date: string): Promise<string | null> {
+    const [coverageRow, dayRow] = await Promise.all([
+      this.prisma.calendarCoverage.findUnique({ where: { market } }),
+      this.prisma.tradingDay.findFirst({
+        // lt 而非 lte —— 端口契约是「严格早于」。
+        where: { market, date: { lt: new Date(`${date}T00:00:00Z`) } },
+        orderBy: { date: 'desc' },
+        select: { date: true },
+      }),
+    ]);
+    const coverage: CalendarCoverageRange | null =
+      coverageRow === null
+        ? null
+        : {
+            from: coverageRow.coveredFrom.toISOString().slice(0, 10),
+            to: coverageRow.coveredTo.toISOString().slice(0, 10),
+          };
+    if (!isWithinCoverage(coverage, date)) return null;
+    return dayRow === null ? null : dayRow.date.toISOString().slice(0, 10);
+  }
 }

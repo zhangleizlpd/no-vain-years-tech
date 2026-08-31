@@ -10,6 +10,11 @@
 //
 // FR-029: no PNG/SVG image assets — avatar uses 👤 emoji fallback, background
 // uses SVG gradient stand-in for the blurred photo (M2 mockup swaps real).
+//
+// 🔁 072 T016（FR-011 / SC-005 / US6）：三栏由「笔记 / 图谱 / 知识库」改版为
+// 「审批 / 消息 / 知识库」。可见性判定不在本屏 —— 它是 markets 合规位 × isAdmin 的四象限，
+// 收在 `~/profile/profile-tabs.rules`（那里有四象限单测；散在这里的 && 验不了「markets off
+// ∧ admin」那格）。本屏只做两件事：把判定结果喂给 SlideTabs、按激活栏分发内容。
 
 import {
   type NativeScrollEvent,
@@ -24,10 +29,19 @@ import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import Svg, { Circle, Defs, G, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
+import { AlertMessageTab } from '~/alert';
 import { DrawerMenuButton } from '~/core/app-shell-drawer';
+import { AnchorSubmissionPanel, OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE } from '~/optionsdesk';
 import { useMe } from '~/core/api/use-me';
+import { FEATURE_MARKETS_ENABLED } from '~/core/feature-flags';
 import { ossThumbCacheKey, ossThumbUrl } from '~/profile-image/oss-image';
 import { useProfileImageEditor } from '~/profile-image/use-profile-image-editor';
+import {
+  resolveActiveProfileTab,
+  shouldMarkMessagesRead,
+  visibleProfileTabs,
+  type ProfileTabKey,
+} from '~/profile/profile-tabs.rules';
 import { tokens } from '~/theme';
 
 const AVATAR_THUMB = { width: 200, height: 200 };
@@ -39,17 +53,16 @@ const COPY = {
   fans: '粉丝',
   topNavSearchLabel: '搜索',
   topNavSettingsLabel: '设置',
-  tabs: { notes: '笔记', graph: '图谱', kb: '知识库' },
+  // `satisfies Record<ProfileTabKey, string>` —— 加栏漏文案当场编译红
+  // （体例同 optionsdesk-copy.ts 的市场文案表）。
+  tabs: { review: '审批', messages: '消息', kb: '知识库' } satisfies Record<ProfileTabKey, string>,
   tabPlaceholderSuffix: '内容即将推出',
 };
 
-type TabKey = 'notes' | 'graph' | 'kb';
-
-const TABS: { key: TabKey; label: string }[] = [
-  { key: 'notes', label: COPY.tabs.notes },
-  { key: 'graph', label: COPY.tabs.graph },
-  { key: 'kb', label: COPY.tabs.kb },
-];
+// 内嵌消息栏的截断条数（mockup 帧 ②）——「查看全部」通向全屏消息中心。
+const MESSAGE_PANEL_LIMIT = 3;
+// 内嵌审批栏的截断条数（mockup 帧 ①）——「查看全部」通向全屏待审列表。
+const REVIEW_PANEL_LIMIT = 4;
 
 const FOLLOWING_COUNT = 5;
 const FOLLOWERS_COUNT = 12;
@@ -194,23 +207,36 @@ function TopNav({ onBlur, onSettingsPress }: { onBlur: boolean; onSettingsPress:
   );
 }
 
-function SlideTabs({ active, onChange }: { active: TabKey; onChange: (k: TabKey) => void }) {
+function SlideTabs({
+  tabs,
+  active,
+  onChange,
+}: {
+  tabs: readonly ProfileTabKey[];
+  active: ProfileTabKey;
+  onChange: (k: ProfileTabKey) => void;
+}) {
   // Tap-only state machine (CL-005 fallback — swipe gesture deferred to a
   // future spec batch once mockup decides indicator + gesture treatment).
   // No animated indicator per FR-022 / ADR-0017 (占位 UI 禁自定义动画) —
   // active state communicated through bold + ink color shift only.
+  //
+  // 🚨 072 plan §D8：可见性过滤发生在**本组件内部**。父 ScrollView 的
+  // `stickyHeaderIndices={[1]}` 按**位置索引**取 sticky 头 —— 把整行条件渲染掉会让
+  // sticky 静默落到内容块上（不报错、只是行为错），故 tab 行恒渲染、只是栏数变。
   return (
     <View className="bg-surface border-b border-line-soft">
       <View className="flex-row self-center pt-2">
-        {TABS.map((t) => {
-          const on = t.key === active;
+        {tabs.map((key) => {
+          const on = key === active;
+          const label = COPY.tabs[key];
           return (
             <Pressable
-              key={t.key}
-              onPress={() => onChange(t.key)}
+              key={key}
+              onPress={() => onChange(key)}
               accessibilityRole="tab"
               accessibilityState={{ selected: on }}
-              accessibilityLabel={t.label}
+              accessibilityLabel={label}
               className="w-[88px] items-center pb-3"
             >
               <Text
@@ -218,7 +244,7 @@ function SlideTabs({ active, onChange }: { active: TabKey; onChange: (k: TabKey)
                   on ? 'text-base font-semibold text-ink' : 'text-base font-medium text-ink-muted'
                 }
               >
-                {t.label}
+                {label}
               </Text>
             </Pressable>
           );
@@ -228,7 +254,7 @@ function SlideTabs({ active, onChange }: { active: TabKey; onChange: (k: TabKey)
   );
 }
 
-function TabPlaceholder({ tab }: { tab: TabKey }) {
+function TabPlaceholder({ tab }: { tab: ProfileTabKey }) {
   const copy = `${COPY.tabs[tab]}${COPY.tabPlaceholderSuffix}`;
   return (
     <View className="flex-1 items-center justify-center py-2xl gap-3">
@@ -316,7 +342,16 @@ export default function ProfileScreen() {
   const displayName = profile?.displayName ?? null;
   const avatarUrl = profile?.avatarUrl ?? null;
   const backgroundImageUrl = profile?.backgroundImageUrl ?? null;
-  const [activeTab, setActiveTab] = useState<TabKey>('notes');
+  // 三栏可见性 = markets 合规位 × isAdmin 四象限（判定在 ~/profile/profile-tabs.rules）。
+  // `selectedTab` 存的是**用户点过什么**，不是「当前渲什么」—— 后者每帧从可见集合重新派生：
+  // /me 落地那一刻 isAdmin 会从冷启动种子翻真值（反向亦然），用 useEffect 纠偏会先把不该
+  // 渲的面渲出去一帧再收回。
+  const visibleTabs = visibleProfileTabs({
+    marketsEnabled: FEATURE_MARKETS_ENABLED,
+    isAdmin: profile?.isAdmin,
+  });
+  const [selectedTab, setSelectedTab] = useState<ProfileTabKey | null>(null);
+  const activeTab = resolveActiveProfileTab(selectedTab, visibleTabs);
   const [scrollY, setScrollY] = useState(0);
   const isSticky = scrollY >= STICKY_THRESHOLD;
   // 浮动顶栏吃 top inset（edge-to-edge Android：绝对定位浮层不受 SafeAreaView
@@ -329,6 +364,10 @@ export default function ProfileScreen() {
 
   // FR-017: settings stack at /(app)/settings — route now built (006-account-settings-shell).
   const pushSettings = () => router.push('/(app)/settings');
+  // 072 T017：消息栏「查看全部」→ 全屏消息中心（021 屏 6，同一份卡片列表的另一个宿主）。
+  const pushMessages = () => router.push('/(app)/alert/messages');
+  // 072 T018：审批栏「查看全部」→ 全屏待审列表（期权台二级页栈，继承 MarketsRouteGuard）。
+  const pushSubmissions = () => router.push(OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE);
 
   return (
     <View style={{ flex: 1, backgroundColor: tokens.colors.surface.DEFAULT }}>
@@ -347,9 +386,24 @@ export default function ProfileScreen() {
             onAvatarPress={avatarEditor.open}
             onBackgroundPress={backgroundEditor.open}
           />
-          <SlideTabs active={activeTab} onChange={setActiveTab} />
+          <SlideTabs tabs={visibleTabs} active={activeTab} onChange={setSelectedTab} />
+          {/* 🚨 ScrollView 恒三子节点（Hero / SlideTabs / 内容）—— stickyHeaderIndices 按位置
+              索引，任何一个子节点被条件渲染掉都会让 sticky 头静默移位。内容分发在这层之内。 */}
           <View className="bg-surface min-h-[260px]">
-            <TabPlaceholder tab={activeTab} />
+            {/* 两个受控栏**只在激活时挂载**（公开构建里它们不可见 ⇒ 不挂载 ⇒ 零 alert /
+                零 optionsdesk 请求）；消息栏的**置已读另判**：只有用户主动点选该栏才发
+                （FR-012 + 08-31 决策），否则开一次 App 落在「我的」就把未读清光了。 */}
+            {activeTab === 'review' ? (
+              <AnchorSubmissionPanel limit={REVIEW_PANEL_LIMIT} onSeeAll={pushSubmissions} />
+            ) : activeTab === 'messages' ? (
+              <AlertMessageTab
+                limit={MESSAGE_PANEL_LIMIT}
+                userActivated={shouldMarkMessagesRead(selectedTab, activeTab)}
+                onSeeAll={pushMessages}
+              />
+            ) : (
+              <TabPlaceholder tab={activeTab} />
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>

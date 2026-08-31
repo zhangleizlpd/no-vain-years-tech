@@ -29,7 +29,7 @@ function build() {
   return { controller, updateExecute, deleteExecute };
 }
 
-const REQ = { user: { accountId: 42n } };
+const REQ = { user: { accountId: 42n, isAdmin: false } };
 
 describe('WatchlistItemsController', () => {
   it('PATCH :itemId → 透传 (accountId, itemId 原样, body)', async () => {

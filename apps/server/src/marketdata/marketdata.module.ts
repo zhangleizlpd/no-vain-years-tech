@@ -86,6 +86,7 @@ import { OptionSnapshotCoverageCheck } from './option-snapshot-coverage.check.js
 import { OptionSnapshotRemediation } from './option-snapshot-remediation.js';
 import { marketdataQueueRedisProviders } from './marketdata-queue-connection.js';
 import { MarketdataController } from './marketdata.controller.js';
+import { GetAnchorColdStartRunsUseCase } from './get-anchor-cold-start-runs.usecase.js';
 import { MarketdataGuestController } from './marketdata-guest.controller.js';
 import { INSTRUMENT_SEARCH_PORT } from './instrument-search.port.js';
 import {
@@ -265,6 +266,8 @@ function collectionPort<T extends object>(
   // guest 面 (方法级 GuestUploadAuthGuard, 零用户 principal)。刻意分文件, 别合并。
   controllers: [MarketdataController, MarketdataGuestController],
   providers: [
+    // 072 冷启动结局读侧 (R1 自有表)
+    GetAnchorColdStartRunsUseCase,
     MockMarketDataAdapter,
     { provide: LIXINGER_HTTP_CLIENT, useFactory: () => new VendorHttpClient(LIXINGER_PROFILE) },
     { provide: EASTMONEY_HTTP_CLIENT, useFactory: () => new VendorHttpClient(EASTMONEY_PROFILE) },

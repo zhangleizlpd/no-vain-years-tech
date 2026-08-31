@@ -28,11 +28,13 @@ import type {
 } from 'axios';
 
 import type {
+  AnchorColdStartRunListResponse,
   DailyBarListResponse,
   InstrumentBasicsResponse,
   InstrumentCodeListResponse,
   InstrumentDetailResponse,
   InstrumentSearchResponse,
+  MarketdataControllerAnchorColdStartParams,
   MarketdataControllerBarsParams,
   MarketdataControllerQuoteParams,
   MarketdataControllerSearchParams,
@@ -46,6 +48,98 @@ import type {
 type AwaitedInput<T> = PromiseLike<T> | T;
 
       type Awaited<O> = O extends AwaitedInput<infer T> ? T : never;
+
+
+
+
+/**
+ * @summary 批量查锚的冷启动结局
+ */
+export const marketdataControllerAnchorColdStart = (
+    params: MarketdataControllerAnchorColdStartParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<AnchorColdStartRunListResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/marketdata/anchor-cold-start`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getMarketdataControllerAnchorColdStartQueryKey = (params?: MarketdataControllerAnchorColdStartParams,) => {
+    return [
+    `/api/v1/marketdata/anchor-cold-start`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getMarketdataControllerAnchorColdStartQueryOptions = <TData = Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError = AxiosError<ProblemDetailResponse>>(params: MarketdataControllerAnchorColdStartParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getMarketdataControllerAnchorColdStartQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>> = ({ signal }) => marketdataControllerAnchorColdStart(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type MarketdataControllerAnchorColdStartQueryResult = NonNullable<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>>
+export type MarketdataControllerAnchorColdStartQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useMarketdataControllerAnchorColdStart<TData = Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataControllerAnchorColdStartParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>,
+          TError,
+          Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useMarketdataControllerAnchorColdStart<TData = Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataControllerAnchorColdStartParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>,
+          TError,
+          Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useMarketdataControllerAnchorColdStart<TData = Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataControllerAnchorColdStartParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary 批量查锚的冷启动结局
+ */
+
+export function useMarketdataControllerAnchorColdStart<TData = Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: MarketdataControllerAnchorColdStartParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof marketdataControllerAnchorColdStart>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getMarketdataControllerAnchorColdStartQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
 
 
 

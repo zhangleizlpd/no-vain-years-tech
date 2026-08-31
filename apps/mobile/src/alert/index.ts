@@ -59,6 +59,10 @@ export { AlertEditScreen, type AlertEditScreenProps } from './alert-edit-screen'
 export { AddConditionScreen } from './add-condition-screen';
 // T019 屏 5/4：共用 tab 行 + 对象选择纯函数 + 全部预警/对象选择屏。
 export { AlertTabRow, type AlertTab, type AlertTabRowProps } from './alert-tab-row';
+// 072 T014: 消息卡片列表（全屏消息中心与「我的」页消息栏共用；无滚动器、不碰置已读）
+export { AlertMessagePanel, type AlertMessagePanelProps } from './alert-message-panel';
+// 072 T017: 「我的」页消息栏的内嵌宿主（挂载 = 该栏激活 ⇒ 置已读；FR-012）
+export { AlertMessageTab, type AlertMessageTabProps } from './alert-message-tab';
 export { splitNameHighlight, type NameSegment } from './target-select.helpers';
 export { AllAlertsScreen } from './all-alerts-screen';
 export { TargetSelectScreen } from './target-select-screen';

@@ -28,6 +28,18 @@ model Account {
   backgroundObjectKey String?      @map("background_object_key") @db.VarChar(512)
   freezeUntil         DateTime?    @map("freeze_until") @db.Timestamptz(6)
   previousPhoneHash   String?      @map("previous_phone_hash") @db.VarChar(64)
+  /// 系统管理员标 (072) —— 面向**系统维护面**(锚待审箱审批等)的准入,与业务数据归属正交:
+  /// 它只决定「能不能进这个面」,不参与任何按 accountId 的数据过滤(锚域本就无 account_id 列)。
+  /// 🚨 `@default(false)` 是**构造上的 fail-safe, 必须保持**: 永不 `@default(true)`、永不写
+  /// 「第一个注册的账号自动是 admin」那类启发式(它只会错一次 —— 在 prod, 且不可逆)。
+  /// 没人被提权 = 没人能审批, 这正是正确的失败方向。
+  /// 🚨 **提权按 account id 手工执行, 永不按 phone**: id 无识别力, 手机号是 PII, 按它写就意味着
+  /// 手机号要进 runbook / commit / 模型上下文之一 (information-boundary.md 点名后者是进公开仓的
+  /// 写放大器)。migration 里**不写任何 seed**;「哪个账号是 admin」这个状态留在 docs/private/。
+  /// 📌 不做 `role` 表/枚举: 仓内零 RBAC, 第二个角色还不存在 —— 真长出来再走
+  /// expand-migrate-contract。同理暂不加 `anchor_submission.reviewed_by`,
+  /// **退役条件 = 第二个账号拿到 is_admin=true 那天**。
+  isAdmin             Boolean      @default(false) @map("is_admin")
   credentials         Credential[]
 
   @@index([freezeUntil], map: "idx_account_freeze_until_active", where: raw("(((status)::text = 'FROZEN'::text) AND (freeze_until IS NOT NULL))"))
@@ -1945,19 +1957,37 @@ model AnchorChange {
 // 锚的待审收件箱 (059 FR-011)。**其他访客**送进来的估值只落这里, 锚表零变化 —— 直写锚是
 // 本人一个人的权限, 判据在通道层 (nginx 按访客名分流), 服务端再按第二把 token 独立拒一次。
 //
-// 🚨 一行 = 一次提交, **不是**一只标的的当前待审值: 同一访客同一标的提交两次是两行 (归属与
-// 时序完整), 采纳与否由人逐行判断。故**无唯一键** —— 幂等在这里是错的语义。
+// ─── 以下三条被 072 反转, 原文保留是为了让「为什么当初那样定」不丢 (ADR-0069) ───
 //
-// 🚨 **零审阅面**是刻意的 (plan §6): 不做审核 UI / 审批端点 / 转正 CLI。审阅 = DB 直连看,
-// 采纳 = 本人用自己的凭证把同样的值经导入口**重放一次** ⇒ FR-012「系统 MUST NOT 存在第二条
-// 写锚路径」由「本表根本没有通向锚表的代码路径」在结构上保证, 而不是靠纪律。
+// 🚨 ~~一行 = 一次提交…故**无唯一键**, 幂等在这里是错的语义~~ → **072 反转**。
+// 原判据防的是「把两份**不同**的估值折成一份」; 它防不住、也不该防「同一份估值被误投两次」。
+// 08-31 直查 prod 定案: PENDING 里 distinct (submitter,ticker,asof)=45 而 distinct 完整五元组
+// **也是 45**, 「同 (ticker,asof) 但估值不同」的组数 = **0** ⇒ 存量每一组重复都是逐值全等的
+// 误投, 加唯一键零信息损失。
+// 现口径: `(ticker, asof)` **partial unique WHERE status='PENDING'` ——「同一个 (标的, 口径日)
+// 同时最多一条待审」。
+// 🚨 **必须 partial, 不能全表唯一**: 全表唯一会让「驳回后重投一份修正版」永久不可能, 而那
+// 恰是驳回之后最该发生的事。
+// 🚨 **键里不含 `submitter`** (蓄意): 锚表 `ticker` 本就唯一, 两个访客对同一 (标的,口径日) 的
+// 分歧是**一个要人裁决的冲突**, 不是两条独立待办。接第二个访客那天这会变成真实取舍, 届时重估。
+// ⚠️ 生成的客户端把它建模成**全表**复合唯一 (`"id" | "ticker_asof"`), **谓词在类型系统里消失**
+// ⇒ 读写**必须自己写出 `status: 'PENDING'` 条件**, 且 **MUST NOT 用 `upsert`** (PG 对部分索引
+// 要求 ON CONFLICT 带同样谓词, 否则运行时报 no unique or exclusion constraint matching)。
 //
-// status 三态 'PENDING' | 'CONSUMED' | 'REJECTED' 是**人工处置的留痕**, 不是状态机: 本片
-// 只写 PENDING, 另两态由本人处置后手工置 (贫血字符串无枚举表, 同 research_report.status 体例)。
+// 🚨 ~~**零审阅面**是刻意的: 不做审核 UI / 审批端点 / 转正 CLI~~ → **072 反转**。
+// 现口径: 审批面搬进 App (admin-only)。FR-012「系统 MUST NOT 存在第二条写锚路径」**不变**,
+// 但保证方式从「本表到锚表没有代码路径」这条**拓扑性质**, 换成「只有一条边且指向同一个
+// use case」的**委托纪律**: `ApproveAnchorSubmissionUseCase` MUST 委托
+// `ImportAnchorFromModelUseCase`, MUST NOT 自己碰 `prisma.anchor.*`。
+// 🚨 纪律不是保证 ⇒ 机器强制在 `scripts/checks/check-server-moat.ts` 的 `WRITE_ALLOWLIST`
+// (Check 3): 锚表的写操作只允许出现在登记在册的文件里。改这条前先读那段注释。
 //
-// **索引只建 PK**: 日均个位数条目, 在 status 上撒 B-tree 是 cargo cult —— 全表扫十几行比走
-// 索引还快, 而每条索引都要在写路径上维护。按真实查询形状建才对 (同 research_report 那条判据),
-// 真到每天十几条要按标的/状态检索时再说。
+// status 三态 'PENDING' | 'CONSUMED' | 'REJECTED' 是**人工处置的留痕**, 不是状态机。
+// 072 起 CONSUMED / REJECTED 由审批端点写 (此前无任何写者, prod 里 REJECTED 恒为 0)。
+//
+// 🚨 ~~**索引只建 PK**~~ → **072 部分反转**: 除 PK 外只多上面那条 partial unique, 它是
+// **约束**不是查询加速器。原判据针对**查询索引**依然成立 (全表百余行, 按 status/market 筛
+// 走全表扫比索引探针还快), 故不加第二条查询索引。
 model AnchorSubmission {
   id        BigInt @id @default(autoincrement())
   /// 提交方 = guest-proxy 无条件覆写的 `X-Guest` 头值。**仅作归属, 绝不作授权**
@@ -1976,9 +2006,23 @@ model AnchorSubmission {
   note   String? @db.VarChar(512)
   status String  @db.VarChar(16)
 
+  /// 审阅方的处置附言 (072) —— 与上面 `note` 是**两个人写的两件事**, MUST NOT 合并:
+  /// `note` 是判断依据 (提交方为什么这么估), `review_note` 是处置留痕 (我为什么采纳/驳回)。
+  /// 覆盖 `note` 会毁掉「一行 = 一次提交」的归属完整性。宽度与 `note` 取齐。
+  reviewNote String? @map("review_note") @db.VarChar(512)
+
+  /// 采纳时落成的那只锚 (072)。**逻辑引用, 无声明 FK** —— 同 `anchor_change.anchor_id` 体例:
+  /// 删锚 MUST NOT 级联删或阻塞这条处置留痕。
+  /// 存在理由: 采纳是「先导入、后翻状态」两步, 中间那个窗口里导入成功而翻转失败时, 该行仍是
+  /// PENDING 且与从未处理过的行**一模一样** (直写口无幂等 ⇒ 下轮会重导)。有了本列, 那种半截态
+  /// 的检出收敛成一条 LEFT JOIN (「有锚但没有 submission 指向它」), 而不是拿 ledger.tsv 按
+  /// ticker 对账。
+  consumedAnchorId BigInt? @map("consumed_anchor_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  @@unique([ticker, asof], map: "uk_anchor_submission_pending_ticker_asof", where: raw("((status)::text = 'PENDING'::text)"))
   @@map("anchor_submission")
   @@schema("optionsdesk")
 }

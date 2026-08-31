@@ -53,6 +53,7 @@ export const PREFIX_TO_MODULE: Readonly<Record<string, string>> = {
   mockupRecord: 'ideation',
   mockupList: 'ideation',
   optionsdesk: 'optionsdesk',
+  anchorSubmission: 'optionsdesk',
 };
 
 export interface ContractSpec {

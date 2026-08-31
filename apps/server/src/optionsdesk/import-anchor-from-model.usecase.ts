@@ -1,5 +1,4 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { type LLevel } from './anchor.rules';
 import {
@@ -12,6 +11,7 @@ import {
   ANCHOR_IMPORT_INVALID_PREFIX,
   assertImportableConfidence,
   assertImportableTicker,
+  isImportNoop,
 } from './anchor-import.rules';
 import { buildAnchorChange, toAnchorSnapshot } from './anchor-history';
 import { resolveInstrumentName } from './instrument-name';
@@ -20,7 +20,6 @@ import {
   CreateAnchorUseCase,
   assertUsableV,
   toAnchorWriteResult,
-  toUtcDateOnly,
   type AnchorDecimalInput,
   type AnchorRow,
   type AnchorWriteResult,
@@ -93,26 +92,6 @@ export function assertImportableAnchorFacts(ticker: string, confidence: AnchorDe
   }
 }
 
-/**
- * 「这次导入什么都没改」的判据 (FR-006)。四个模型事实全等 **且**来源已是 model。
- *
- * 🚨 比的是**值**不是字符串: `'50'` 与 `'50.00'` 是同一个估值, 按字符串比会让每天的例行导入
- * 都写一遍库、并顺手冲掉三处人工位。
- *
- * 🚨 为什么把 `confidence_source` 也算进来: 手工锚的数字恰好与模型一致时, 这次导入**确实
- * 改了东西** —— 它把 provenance 翻成 model (FR-002 的 MUST)。判成 noop 会让那只锚继续显示
- * 「人工来源、可编辑」, 与实际写入路径不符。
- */
-function isUnchangedByImport(row: AnchorRow, input: ImportAnchorFromModelInput): boolean {
-  return (
-    row.confidenceSource === 'model' &&
-    row.v.equals(new Prisma.Decimal(input.v)) &&
-    row.confidence.equals(new Prisma.Decimal(input.confidence)) &&
-    toUtcDateOnly(row.asof).getTime() === toUtcDateOnly(input.asof).getTime() &&
-    row.method === input.method
-  );
-}
-
 @Injectable()
 export class ImportAnchorFromModelUseCase {
   constructor(
@@ -150,7 +129,7 @@ export class ImportAnchorFromModelUseCase {
 
     // 🚨 noop 短路**必须在算差异报告之前** (Guardrail 4): 顺序反了会先算一遍回落报告再发现
     // 不用写, 白算且日志里出现「回落了」的假信号。
-    if (isUnchangedByImport(existing, input)) {
+    if (isImportNoop(existing, input)) {
       return {
         action: 'noop',
         anchor: toAnchorWriteResult(
