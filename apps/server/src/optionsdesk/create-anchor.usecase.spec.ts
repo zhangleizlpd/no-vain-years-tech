@@ -28,6 +28,7 @@ interface PrismaMock {
   ensureBar: EnsureLatestEodBarUseCase;
   ensureBarExecute: Fn;
   anchorUpdate: Fn;
+  instrumentFindUnique: Fn;
 }
 
 function buildPrismaMock(): PrismaMock {
@@ -42,11 +43,15 @@ function buildPrismaMock(): PrismaMock {
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
   const calendar = stubTradingCalendar();
   const anchorUpdate = vi.fn();
+  // D13 标的名: 默认真名 —— 写侧回显带名这件事本身有断言钉着 (见 § 写侧回显)。
+  const instrumentFindUnique = vi.fn().mockResolvedValue({ name: 'A.O.史密斯' });
   const ensureBarExecute = vi.fn().mockResolvedValue(null);
   const ensureBar = { execute: ensureBarExecute } as unknown as EnsureLatestEodBarUseCase;
   const prisma = {
     anchor: { findUnique, create, updateMany, update: anchorUpdate },
     anchorChange: { create: changeCreate },
+    // D13 标的名: 写侧回显也供得上 (与 lastClosedSession 同纪律, 见 AnchorWriteResult 注释)。
+    instrument: { findUnique: instrumentFindUnique },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
   } as unknown as PrismaService;
   return {
@@ -62,6 +67,7 @@ function buildPrismaMock(): PrismaMock {
     ensureBar,
     ensureBarExecute,
     anchorUpdate,
+    instrumentFindUnique,
   };
 }
 
@@ -187,6 +193,35 @@ describe('CreateAnchorUseCase — 建锚即一次确认', () => {
   it('breach_started_on 不在建锚期写入 (判据要 spot, 归雷达状态机)', async () => {
     await useCase.execute(validInput);
     expect(Object.keys(m.create.mock.calls[0]![0].data)).not.toContain('breachStartedOn');
+  });
+});
+
+// 045 plan D13: 行首「标的标识」的中文名那一半 —— 写侧回显也供得上。
+describe('CreateAnchorUseCase — D13 标的名', () => {
+  let m: PrismaMock;
+  let useCase: CreateAnchorUseCase;
+
+  beforeEach(() => {
+    m = buildPrismaMock();
+    useCase = new CreateAnchorUseCase(m.prisma, m.outbox, m.ensureBar, m.calendar);
+    m.findUnique.mockResolvedValue(null);
+    m.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) =>
+      anchorRow(data),
+    );
+  });
+
+  it('建锚回显带标的名 (🚨 只有读端填的话, null 就同时表示「没注册」和「没查」)', async () => {
+    const result = await useCase.execute(validInput);
+    expect(result.instrumentName).toBe('A.O.史密斯');
+    expect(m.instrumentFindUnique).toHaveBeenCalledWith({
+      where: { market_code: { market: 'us', code: 'AOS' } },
+      select: { name: true },
+    });
+  });
+
+  it('该 ticker 未在行情库注册 ⇒ null, MUST NOT 拿 ticker 拼假名字', async () => {
+    m.instrumentFindUnique.mockResolvedValue(null);
+    expect((await useCase.execute(validInput)).instrumentName).toBeNull();
   });
 });
 

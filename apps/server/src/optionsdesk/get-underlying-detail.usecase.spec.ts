@@ -217,13 +217,15 @@ describe('GetUnderlyingDetailUseCase — 跨 ctx 只读直查纪律 (FR-032, Q7-
     expect(Object.keys(args.select).sort()).toEqual(['date', 'iv', 'ivPercentile']);
   });
 
-  it('读端零写: 三次调用全是 find*, 无任何 update / upsert / create', async () => {
+  it('读端零写: 四次调用全是 find*, 无任何 update / upsert / create', async () => {
     const m = buildPrismaMock();
     const useCase = new GetUnderlyingDetailUseCase(m.prisma, m.calendar);
     await useCase.execute('us:PEP');
     // mock 上只挂了 find* —— 若实现里出现任何写调用会立刻 TypeError
     expect(m.anchorFindUnique).toHaveBeenCalledTimes(1);
-    expect(m.instrumentFindUnique).toHaveBeenCalledTimes(1);
+    // 🚨 instrument 被问**两次**是蓄意的: 一次取 D13 标的名 (锚卡的), 一次取 IV 寻址的 id。
+    //    合并成一次 = 让名字继承 IV 那段 try/catch 的降级语义 —— IV 读挂了连名字一起没。
+    expect(m.instrumentFindUnique).toHaveBeenCalledTimes(2);
     expect(m.ivFindFirst).toHaveBeenCalledTimes(1);
   });
 

@@ -148,6 +148,8 @@ const ANCHOR_ID = 'anchor-053';
 const ANCHOR: AnchorResponse = {
   id: ANCHOR_ID,
   ticker: SYMBOL,
+  // D13 标的名: 本片不涉及行首呈现 ⇒ 取「未注册」(null), 屏上退回代号 = 045 初版的样子。
+  name: null,
   v: '160.00',
   vModel: '160.00',
   asof: '2026-07-01',

@@ -18,6 +18,8 @@ export interface AnchorResponse {
   id: string;
   /** canonical `market:code` */
   ticker: string;
+  /** 标的名 (取自行情库 `marketdata.instrument.name`); 该 ticker 未在行情库注册 ⇒ null, 呈现侧退回代号 —— **MUST NOT** 拿 ticker 拼一个假名字, 那会让「名字没同步上」和「这票就叫这个」在屏上分不开。🚨 **每一个回锚的端点都供得上**(读端 + 写侧回显), 故 null 只有一个含义 = 未注册 */
+  name: string | null;
   /** **生效** V = COALESCE(v_manual, v) */
   v: string;
   /** 模型/基准 V (人工位撤销后回落到它) */

@@ -170,8 +170,8 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    listExecute.mockResolvedValue([toAnchorView(anchorRow, null)]);
-    getExecute.mockResolvedValue(toAnchorView(anchorRow, null));
+    listExecute.mockResolvedValue([toAnchorView(anchorRow, null, 'A.O.史密斯')]);
+    getExecute.mockResolvedValue(toAnchorView(anchorRow, null, 'A.O.史密斯'));
     createExecute.mockResolvedValue(writeResult);
     updateExecute.mockResolvedValue(writeResult);
     reviewExecute.mockResolvedValue(writeResult);
@@ -225,6 +225,8 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       expect(body.total).toBe(1);
       expect(body.items[0].excluded).toBe(true);
       expect(body.items[0].excludeReason).toBe('暂不交易');
+      // 045 plan D13: 标的名走通道到底 (行首「标的标识」的中文名那一半)。
+      expect(body.items[0].name).toBe('A.O.史密斯');
     });
 
     it('?pendingReview=true → 查询串转真布尔传进 usecase (待复审清单)', async () => {

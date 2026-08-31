@@ -248,6 +248,8 @@ interface PrismaMock {
   queryRaw: Fn;
   findMany: Fn;
   updateMany: Fn;
+  /** D13 标的名的批量取数 (`marketdata.instrument`)。 */
+  instrumentFindMany: Fn;
   /**
    * 覆盖「取一页键」那条查询的返回。061 T019 起 `$queryRaw` 服务**两条**查询 (空态计数 +
    * 取页键), 直接 `queryRaw.mockResolvedValue(...)` 会把计数查询一并顶掉 ⇒ 改走这个入口。
@@ -308,8 +310,21 @@ function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
   // FR-020 新鲜度基准: 默认「交易日历无行」⇒ fail-open 判 CURRENT ——
   // 既有断言不受影响; 需要判 STALE 的用例自己 mockResolvedValue 一行。
   const calendar = stubTradingCalendar();
+  // D13 标的名: 批量一次 findMany, 谓词按市场分组 —— 只回被问到的那些票
+  // (cn 一律不回 = 「这票没在行情库注册」, 供退回代号那条用例)。
+  const instrumentFindMany = vi.fn(
+    async (args: { where: { OR: { market: string; code: { in: string[] } }[] } }) =>
+      args.where.OR.filter((group) => group.market !== 'cn').flatMap((group) =>
+        group.code.in.map((code) => ({
+          market: group.market,
+          code,
+          name: `${group.market}-${code} 的名字`,
+        })),
+      ),
+  );
   const prisma = {
     anchor: { findMany, updateMany },
+    instrument: { findMany: instrumentFindMany },
     $queryRaw: queryRaw,
   } as unknown as PrismaService;
   return {
@@ -317,6 +332,7 @@ function buildPrismaMock(rows = [anchorRow()]): PrismaMock {
     queryRaw,
     findMany,
     updateMany,
+    instrumentFindMany,
     calendar,
     setPageKeys: (keys) => {
       pageKeys = keys;
@@ -475,6 +491,32 @@ describe('GetRadarUseCase — SQL 端排序/筛选 + keyset 分页 (FR-010/033/0
     const page = await useCase.execute();
 
     expect(page.items.map((i) => i.row.id)).toEqual([8n, 7n]);
+  });
+
+  // ── 045 plan D13 标的名 (行首「标的标识」的中文名那一半) ───────────────────
+
+  it('每行带标的名, 且整页**一次** findMany 取 (逐行点查会放大成 N 次往返)', async () => {
+    const rows = [anchorRow({ id: 7n }), anchorRow({ id: 8n, ticker: 'hk:00700' })];
+    m = buildPrismaMock(rows);
+    m.setPageKeys([
+      { anchor_id: '7', distance_text: '-10' },
+      { anchor_id: '8', distance_text: '-5' },
+    ]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+
+    const page = await useCase.execute();
+
+    expect(page.items.map((i) => i.instrumentName)).toEqual(['us-AOS 的名字', 'hk-00700 的名字']);
+    expect(m.instrumentFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('未在行情库注册的票 ⇒ instrumentName 为 null (呈现侧退回代号, 不伪造)', async () => {
+    // mock 对 cn 一律不回行 = 「这票没注册」。
+    m = buildPrismaMock([anchorRow({ id: 9n, ticker: 'cn:600519' })]);
+    m.setPageKeys([{ anchor_id: '9', distance_text: '-10' }]);
+    useCase = new GetRadarUseCase(m.prisma, m.calendar);
+
+    expect((await useCase.execute()).items[0]!.instrumentName).toBeNull();
   });
 
   // ── 061 盘中价接入 (FR-008 / FR-009 / FR-014 / FR-015) ─────────────────────

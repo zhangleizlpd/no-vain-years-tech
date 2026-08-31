@@ -68,6 +68,7 @@ function anchor(over: Partial<AnchorResponse> = {}): AnchorResponse {
   return {
     id: '1',
     ticker: 'us:PEP',
+    name: '百事可乐',
     v: '100.00',
     vModel: '100.00',
     asof: '2026-07-18',

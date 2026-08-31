@@ -5,6 +5,7 @@ import { W_COEFFICIENT, isBelowW, type LLevel } from './anchor.rules';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import { IMPORTABLE_MARKETS } from './anchor-import.rules';
 import { shanghaiDateOnly, toUtcDateOnly, type AnchorRow } from './create-anchor.usecase';
+import { resolveInstrumentNames } from './instrument-name';
 import { intradayFreshnessCutoff } from './intraday-spot.rules';
 import { sessionOf, toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { marketsOfTickers, resolveLastClosedSessions } from './last-closed-session';
@@ -632,13 +633,26 @@ export class GetRadarUseCase {
       this.calendar,
       marketsOfTickers(rows.map((r) => r.ticker)),
     );
+    // 本页标的名批量取一次 (一次 findMany) —— 逐行点查会把一页放大成 N 次往返。
+    const names = await resolveInstrumentNames(
+      this.prisma,
+      rows.map((r) => r.ticker),
+    );
     // 键查询与水合之间被并发删除的行直接跳过 (整页照常返回, 不 500)。
     return (
       keys
         .map((key) => byId.get(key.anchor_id))
         .filter((row): row is AnchorRow => row !== undefined)
         // `now` 由 execute 一次性取: 与 SQL 的 cutoff 同一时点 ⇒ 排序与档位不会在闸的边界分叉。
-        .map((row) => toAnchorView(row, sessionOf(sessions, row.ticker), today, now))
+        .map((row) =>
+          toAnchorView(
+            row,
+            sessionOf(sessions, row.ticker),
+            names.get(row.ticker) ?? null,
+            today,
+            now,
+          ),
+        )
     );
   }
 }

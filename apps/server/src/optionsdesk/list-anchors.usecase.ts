@@ -16,6 +16,7 @@ import {
 import { resolveEffectiveAnchorValues, type AnchorEffectiveValues } from './anchor-cascade';
 import { resolveAnchorSpot, type AnchorSpot } from './intraday-spot.rules';
 import { shanghaiDateOnly, type AnchorRow } from './create-anchor.usecase';
+import { resolveInstrumentNames } from './instrument-name';
 import { marketsOfTickers, resolveLastClosedSessions } from './last-closed-session';
 import { isAnchorOverdue, isAnchorReviewFlagOn } from './review-anchor.usecase';
 import {
@@ -83,18 +84,29 @@ export interface AnchorView {
    * 这个跟**市场**走 (数据的业务日)。
    */
   lastClosedSession: string | null;
+  /**
+   * 标的名 (`marketdata.instrument.name`; 未注册 ⇒ `null`), 由调用方经
+   * `resolveInstrumentNames` / `resolveInstrumentName` 取后传入 —— 045 plan D13 的行首
+   * 「标的标识 = ticker + 中文名」缺的那一半。
+   *
+   * 🚨 与 `lastClosedSession` 同纪律: **每一个回锚的端点都供得上**。少一个端点供不上,
+   * `null` 就同时表示「这票没注册」和「这个端点没查」, 消费方无从分辨。
+   */
+  instrumentName: string | null;
 }
 
 /**
  * 锚行 → 读侧投影。派生全部走 `anchor.rules` / `anchor-cascade` 单点口径。O(1)。
  *
- * 🚨 `lastClosedSession` **无默认值、必须显式传**（哪怕传 `null`）—— 给它一个默认值等于让
- * 新调用点静默走 fail-open「恒当期」，那正是 FR-020 这条信号最怕的失效形态：不报错、只是
- * 永远不说陈旧。要 fail-open 就在调用点显式写 `null`。
+ * 🚨 `lastClosedSession` 与 `instrumentName` **都无默认值、必须显式传**（哪怕传 `null`）——
+ * 给它们默认值等于让新调用点静默走 fail-open：前者「恒当期」（FR-020 最怕的失效形态：不报错、
+ * 只是永远不说陈旧），后者「这票恒无名」（屏上退回代号，同样不报错）。要 fail-open 就在调用点
+ * 显式写 `null`。
  */
 export function toAnchorView(
   row: AnchorRow,
   lastClosedSession: string | null,
+  instrumentName: string | null,
   today: Date = shanghaiDateOnly(new Date()),
   now: Date = new Date(),
 ): AnchorView {
@@ -138,6 +150,7 @@ export function toAnchorView(
       breachStartedOn: row.breachStartedOn,
     }),
     lastClosedSession,
+    instrumentName,
   };
 }
 
@@ -173,7 +186,14 @@ export class ListAnchorsUseCase {
       this.calendar,
       marketsOfTickers(rows.map((r) => r.ticker)),
     );
-    return rows.map((row) => toAnchorView(row, sessionOf(sessions, row.ticker), today));
+    // 标的名整表批量取一次 (一次 findMany) —— 逐行点查会在 ~1000 行的锚表上放大成 1000 次往返。
+    const names = await resolveInstrumentNames(
+      this.prisma,
+      rows.map((r) => r.ticker),
+    );
+    return rows.map((row) =>
+      toAnchorView(row, sessionOf(sessions, row.ticker), names.get(row.ticker) ?? null, today),
+    );
   }
 }
 

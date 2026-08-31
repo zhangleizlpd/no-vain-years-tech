@@ -73,6 +73,8 @@ function buildPrismaMock(row: Record<string, unknown> = baseRow): PrismaMock {
   const calendar = stubTradingCalendar();
   const prisma = {
     anchor: { findUnique },
+    // D13 标的名: 本文件断言与它无关 ⇒ 默认「未注册」(null), 不影响既有用例。
+    instrument: { findUnique: vi.fn().mockResolvedValue(null) },
     $transaction: vi.fn(async (cb: (client: unknown) => unknown) => cb(tx)),
   } as unknown as PrismaService;
   return { prisma, findUnique, updateMany, findUniqueOrThrow, changeCreate, calendar };

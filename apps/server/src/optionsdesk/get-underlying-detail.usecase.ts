@@ -3,6 +3,7 @@ import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { parseAnchorTicker } from './anchor.rules';
 import type { AnchorRow } from './create-anchor.usecase';
+import { resolveInstrumentName } from './instrument-name';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { resolveLastClosedSessionForTicker } from './last-closed-session';
 import {
@@ -126,7 +127,10 @@ export class GetUnderlyingDetailUseCase {
    * @throws NotFoundException 该 symbol 尚未建锚 (FR-011)。非法形态折叠进同一分支 ——
    *   与「没建锚」不可区分, 不给第二套校验面 (体例同 controller 的 `parseAnchorId`)。
    *
-   * 复杂度: 三次点查 (锚唯一键 / instrument 唯一键 / IV 唯一键前缀 desc 取一), O(1) 往返。
+   * 复杂度: 四次点查 (锚唯一键 / instrument 唯一键取 D13 标的名 / instrument 唯一键取 IV
+   * 寻址 id / IV 唯一键前缀 desc 取一), O(1) 往返。⚠️ instrument 问两次是**蓄意**的:
+   * 合并成一次等于把标的名塞进 `readIvSafely` 的 try/catch 降级射程 —— IV 读挂了连锚卡的
+   * 名字一起没, 而那两件事的可用性本该互不牵连。
    */
   async execute(symbol: string, now: Date = new Date()): Promise<UnderlyingDetail> {
     const row = (await this.prisma.anchor.findUnique({
@@ -141,7 +145,11 @@ export class GetUnderlyingDetailUseCase {
     const lastClosedSession = await resolveLastClosedSessionForTicker(this.calendar, symbol, now);
     return {
       symbol,
-      anchor: toAnchorView(row, lastClosedSession),
+      anchor: toAnchorView(
+        row,
+        lastClosedSession,
+        await resolveInstrumentName(this.prisma, symbol),
+      ),
       iv: await this.readIvSafely(symbol),
       lastClosedSession,
     };
