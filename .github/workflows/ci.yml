@@ -23,15 +23,18 @@ on:
     types: [opened, synchronize, reopened, edited]
 
 # 🚨 与上面的 `edited` **成对出现，不可只加一半**：release-please 更新 Release PR 时会在
-# **同一秒**触发两个事件，两轮各自跑满。`pr-validation.yml` 那边的实测代价是每天白烧约
-# 39 分钟 runner（见该文件同名段），本文件的 job 便宜得多但形状一样。
+# **同一秒**触发 `synchronize` + `edited` 两个事件，两轮形状相同。key 末尾的
+# `github.event.action` 把它们拆成两道、各自跑完 —— 不拆则互相取消，且取消掉哪一轮是
+# race，掐中后创建的那轮会让最新 check suite 停在 `cancelled`、PR 永久 `BLOCKED`
+# （2026-08-31 #304 实证，完整推导见 `pr-validation.yml` 同名段）。
+# push→main 上 `github.event.action` 为空，key 退化成 `CI-<sha>-`，仍每次自成一组。
 #
 # 🚨 group key 里的 `|| github.sha` **不能省**：本 workflow 还跑在 `push: main` 上，那里
 # `github.event.pull_request` 为 null —— 直接抄 pr-validation 的 key 会让**所有 main push
 # 落进同一个组互相取消**，即「合入 B 把 A 那轮 CI 掐掉」，而 main 上的绿是发版前的最后一道
 # 存证。用 sha 兜底后每次 push 自成一组，cancel-in-progress 只在同一个 PR 内生效。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event.action }}
   cancel-in-progress: true
 
 permissions:

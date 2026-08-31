@@ -26,22 +26,30 @@ name: PR Validation
 # author can recover from a body regression without close+reopen dance.
 # Trade-off: title / body / any PR-field edit triggers full pipeline.
 # DO NOT skip heavy steps on `edited` events via
-# `if: github.event.action != 'edited'` — branch protection takes the
-# latest check run for the head SHA, so a green `edited` run would
-# silently overwrite a red `synchronize` run and let bad code merge.
+# `if: github.event.action != 'edited'` — branch protection resolves each
+# required context to the latest **check suite** for the head SHA (not the
+# latest check run — see the concurrency note below), so a green `edited`
+# run would silently overwrite a red `synchronize` run and let bad code merge.
 
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, edited]
 
-# 同一个 PR 只保留最新一轮；旧的立刻取消。
-# 🚨 不加这段的实测代价（2026-08-02）：release-please 机器人更新 Release PR 时会在**同一秒**
-# 触发两个事件，两轮各自跑满 —— `19m20s + 20m09s`、`18m26s + 14m52s`，每天两次，
-# 白烧约 39 分钟 runner 时间。上面「不要在 edited 上跳过重步骤」的告诫依然成立：
-# 这里取消的是**同一 head ref 的旧运行**，最新一轮仍是完整跑，分支保护取的也是它。
+# 同一个 PR、**同一类事件**只保留最新一轮；旧的立刻取消。
+# 🚨 group key 里的 `github.event.action` **不能省**（2026-08-31 #304 实证）：
+# release-please 更新 Release PR 时在**同一秒**触发 `synchronize` + `edited` 两个事件。
+# key 不含 action 时两轮落进同一组互相取消，而**取消掉哪一轮是 race**：#292 掐掉了先创建
+# 的那轮 → 正常合入；#304 反过来掐掉了**后**创建的那轮 → 5 个 required context 的最新
+# check suite 停在 `cancelled`，PR 已 APPROVED 仍永久 `BLOCKED`，只能人工
+# `gh run rerun <被取消的 run id>` 才爬起来。**每条 Release PR 约五五开。**
+# 按 action 拆道后两轮各成一组、都跑完 → 不论哪个 suite 更新都是绿，卡死概率归 0；
+# 「连推 commit 取消上一轮」的原意完整保留（连续 push 同为 `synchronize`，仍在同一道）。
+# 代价：Release PR 每次更新多跑一轮。本仓 public，标准 runner **不计费**（`actions/runs/
+# {id}/timing` 实测 `billable.UBUNTU.total_ms = 0`），只多约 2 分钟墙钟 —— 2026-08-02
+# 记的「白烧 39 分钟 runner」是 mega-job 时代（19m/轮）的账，现在整套 4.3 job-min。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action }}
   cancel-in-progress: true
 
 permissions:
