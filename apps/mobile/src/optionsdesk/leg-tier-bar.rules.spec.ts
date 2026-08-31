@@ -354,6 +354,18 @@ describe('🚨 FR-011 收盘档一分为二：正常休市 vs「本该给实时�
     expect(view.reason).not.toContain('实时源');
   });
 
+  it('🚨 中性态的原因 MUST NOT 带市场名 —— 071 起港股锚同走本支，写死「美股」会对它说错话', () => {
+    const view = eodWith(null);
+
+    // 064 写这句时读路径只有美股，港股锚是「未支持市场」走降级支、到不了这里；071 把港股接进
+    // 实时档后 hk 收盘的 `realtimeDegrade` 恒 `null` ⇒ 同走本支。而港股收盘时美股常常正开着
+    // ⇒ 带市场名的那一版**对两个市场都不成立**。遍历页签标签而非写死两个词：加市场时
+    // `marketTabs` 由 `satisfies Record<...>` 逼着补文案，这条断言随之自动覆盖新市场。
+    for (const label of Object.values(OPTIONSDESK_COPY.radar.marketTabs)) {
+      expect(view.reason).not.toContain(label);
+    }
+  });
+
   it('四类降级各自给出**具体原因**，非空且两两不同（一句通用文案 = 说了等于没说）', () => {
     const reasons = DEGRADE_KINDS.map((kind) => eodWith(kind).reason);
 
