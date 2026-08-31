@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.41.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.41.0...server-v0.41.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **optionsdesk:** 雷达行首显示标的名而非代号 —— 补上 045 plan D13 缺的中文名那一半 ([#302](https://github.com/zhangleizlpd/no-vain-years-tech/issues/302)) ([388a130](https://github.com/zhangleizlpd/no-vain-years-tech/commit/388a130f6e1616a43b0771610cc0bdefa5821dc0))
+
 ## [0.41.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.40.0...server-v0.41.0) (2026-08-31)
 
 
