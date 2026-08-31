@@ -1,10 +1,16 @@
 import { useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
+  getAnchorSubmissionControllerGetOneQueryKey,
   getAnchorSubmissionControllerListQueryKey,
+  useAnchorSubmissionControllerApprove,
+  useAnchorSubmissionControllerGetOne,
   useAnchorSubmissionControllerList,
   useAnchorSubmissionControllerReject,
+  type AnchorSubmissionDetailResponse,
   type AnchorSubmissionReviewResponse,
+  type ApproveAnchorSubmissionRequest,
+  type ApproveAnchorSubmissionResponse,
   type RejectAnchorSubmissionsResponse,
 } from '@nvy/api-client';
 
@@ -64,5 +70,44 @@ export function useRejectAnchorSubmissions() {
       return res.data;
     },
     [mutateAsync, queryClient],
+  );
+}
+
+/** 待审详情（比列表多 `fallbackPreview` 与 `willBeNoop` —— 采纳前预览，FR-002）。 */
+export function useAnchorSubmissionDetail(id: string): {
+  detail: AnchorSubmissionDetailResponse | null;
+  status: SubmissionsStatus;
+  refetch: () => void;
+} {
+  const query = useAnchorSubmissionControllerGetOne(id);
+  return {
+    detail: query.data?.data ?? null,
+    status: (query.isPending ? 'loading' : query.isError ? 'error' : 'ready') as SubmissionsStatus,
+    refetch: () => void query.refetch(),
+  };
+}
+
+/**
+ * 采纳（FR-003：经 `ImportAnchorFromModelUseCase` 落锚，客户端只是发起方）。
+ *
+ * 🚨 **不吞 409**：口径日闸（ASOF_SUSPECT）与「已被处置过」都靠 throw 传给调用方，
+ * 由屏上的三出口对话框接手。在这里 catch 掉等于把 fail-closed 闸变成静默放行。
+ */
+export function useApproveAnchorSubmission(id: string) {
+  const queryClient = useQueryClient();
+  const { mutateAsync } = useAnchorSubmissionControllerApprove();
+
+  return useCallback(
+    async (data: ApproveAnchorSubmissionRequest): Promise<ApproveAnchorSubmissionResponse> => {
+      const res = await mutateAsync({ id, data });
+      await queryClient.invalidateQueries({
+        queryKey: getAnchorSubmissionControllerListQueryKey(),
+      });
+      await queryClient.invalidateQueries({
+        queryKey: getAnchorSubmissionControllerGetOneQueryKey(id),
+      });
+      return res.data;
+    },
+    [id, mutateAsync, queryClient],
   );
 }

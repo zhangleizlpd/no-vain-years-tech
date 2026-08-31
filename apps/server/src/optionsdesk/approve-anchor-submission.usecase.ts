@@ -166,7 +166,12 @@ export class ApproveAnchorSubmissionUseCase {
       throw new ConflictException({
         code: 'ASOF_SUSPECT',
         asofFlag: flag,
-        asofSuggested: suggested, // null = 日历解不出, 客户端据此隐掉「改送前一交易日」那个出口
+        // ⚠️ 072 T019 实测：这两个扩展字段**到不了客户端** —— `ProblemDetailFilter` 只透传
+        // code / freezeUntil / retryAfterSeconds / invalidAttributes 四个白名单字段
+        // (045 EC-7 在 anchor-form.rules.ts 已踩过同一处)。客户端的「改送前一交易日」出口
+        // 因此取详情响应里的 asofSuggested; 审核方改过口径日时它没有新的建议日, 按「解不出」
+        // 渲染 —— 与这里的「不猜」同一个态度。留着这两个字段是给日志与将来放宽白名单用。
+        asofSuggested: suggested,
       });
     }
 

@@ -976,6 +976,68 @@ export const OPTIONSDESK_COPY = {
     emptyFiltered: '该市场当前没有待审条目',
     loadFailed: '待审箱加载失败，请重试',
     retry: '重试',
+
+    // ── T019 审批详情（mockup 帧 ⑧⑨⑩）+ 口径日闸三出口（帧 ⑪⑫）+ 采纳回执（帧 ⑬） ──
+    detailTitle: '审核估值',
+    tickerLocked: '标的不可修改',
+    submittedBy: (who: string) => `${who} 投递`,
+    submitterNote: '提交方附言',
+    editableSection: '可修正的四个字段',
+    vLabel: '每股 V',
+    asofLabel: '口径日',
+    methodLabel: '方法',
+    confidenceLabel: '置信度',
+    confidenceUnit: '/ 10',
+    reviewNoteLabel: '审核备注（可选）',
+    reviewNotePlaceholder: '写给未来的自己：为什么采纳 / 驳回',
+    /** 🚨 refresh 的最重警告：逐条列出会被冲掉的人工位（sb-10）。 */
+    fallbackTitle: (n: number) => `采纳会冲掉你手动调过的 ${n} 处`,
+    fallbackHint: '这些是你自己设的值，采纳后按模型值回落，且不可撤销。',
+    fallbackConfidenceHint: '并把置信度来源翻成 model —— 此后该锚的置信度在 App 里改不动。',
+    fallbackNoValue: '—',
+    /** 🚨 sb-11：什么都不写的操作 MUST 配零警告，否则就是在训练人闭眼点确认。 */
+    noopTitle: '本次采纳不会写入任何内容',
+    noopHint: '四个模型事实与现有锚逐值相同，且来源已是 model。人工位一处都不会动。',
+    approve: '采纳',
+    approveRefresh: '采纳并覆盖',
+    approveNoop: '采纳（无写入）',
+    rejectOne: '驳回',
+    rejectOneConfirmTitle: '驳回这条估值？',
+    /** 口径日闸（帧 ⑪⑫）。 */
+    asofGateTitle: '这个口径日不可信',
+    asofGateUnknownTitle: '这个口径日判不了',
+    asofGateRestateTicker: '标的',
+    asofGateWarn:
+      '改的是「估值口径日」这条溯源信息，不是 V —— 只有当提交方确属「把批次日当成口径日」时才成立。',
+    asofGateNoSuggestion:
+      '日历解不出该日之前的最近交易日，系统不会替你猜一个。要么按原日期照发并自负其责，要么驳回让提交方重投。',
+    asofExitShift: (day: string) => `改送前一交易日 ${day}`,
+    asofExitAccept: '按原日期照发',
+    asofExitCancel: '取消',
+    asofShiftUnresolvable: '日历解不出前一交易日，系统不猜 —— 请改用「按原日期照发」或驳回。',
+    /** 采纳回执（帧 ⑬）。 */
+    receiptTitle: '采纳结果',
+    receiptWritten: '锚已写入',
+    receiptActionLabel: '动作',
+    receiptActionCreate: 'create（新建锚）',
+    receiptActionUpdate: 'update（刷新既有锚）',
+    receiptActionNoop: 'noop（值全等，未写入）',
+    receiptAnchorId: '锚 id',
+    receiptAppliedAsof: '落库口径日',
+    receiptColdStart: '冷启动',
+    receiptColdStartQueued: '已排队',
+    receiptColdStartNone: '不涉及',
+    /** 🚨 sb-13：statusFlipped=false **不是失败**，且 MUST NOT 重试（会写第二遍锚）。 */
+    receiptHalfTitle: '但收件箱状态没翻转',
+    receiptHalfHint:
+      '这条待审仍是待审 —— 多半是另一台设备或脚本同时处置了它。不要重试采纳（会再写一遍锚）。请人工核对该条与这个锚 id 的对应关系。',
+    receiptFallbackTitle: (n: number) => `本次真正冲掉了 ${n} 处人工位`,
+    receiptDone: '知道了',
+    notPending: '这条待审已被别处处置过（不是不存在）—— 刷新后再看。',
+    approveFailed: '采纳失败，请重试',
+    networkFailed: '网络不可用，请稍后重试',
+    rateLimited: '操作太频繁，请稍后再试',
+    detailLoadFailed: '待审详情加载失败，请重试',
   },
 
   /** 锚表单屏（T022，mockup 帧 ⑥⑦⑧）。 */

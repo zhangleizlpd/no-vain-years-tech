@@ -66,3 +66,12 @@ export function optionsdeskChainReportRoute(symbol: string) {
 /** 待审估值列表（「我的」审批栏「查看全部」进入）。 */
 export const OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE =
   '/(app)/optionsdesk/anchor-submissions' as const;
+
+/**
+ * 待审详情（列表行 / 内嵌面板行点击进入）。`id` 是数字串，不含冒号，**无需转义** ——
+ * 与 `underlying/[symbol]` 那条刻意不同，别照抄 `encodeURIComponent`（那会让 id 在
+ * 服务端多一层解码假设）。
+ */
+export function optionsdeskAnchorSubmissionRoute(id: string) {
+  return `/(app)/optionsdesk/anchor-submission/${id}` as const;
+}

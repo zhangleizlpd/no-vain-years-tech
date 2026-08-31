@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import type { RejectAnchorSubmissionsResponse } from '@nvy/api-client';
 
 import { ConfirmModal, ErrorRow, SafeAreaView, Spinner } from '~/ui';
@@ -14,6 +14,7 @@ import {
   type SubmissionMarketFilter,
 } from './anchor-submission.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { optionsdeskAnchorSubmissionRoute } from './optionsdesk-routes';
 import { useAnchorSubmissions, useRejectAnchorSubmissions } from './use-anchor-submissions';
 
 const COPY = OPTIONSDESK_COPY.anchorSubmission;
@@ -31,6 +32,7 @@ const FILTER_LABEL: Record<SubmissionMarketFilter, string> = {
  * status，采纳会落锚、冲人工位、排冷启动。故本屏只有批量驳回，采纳一律逐条进详情（T019）。
  */
 export function AnchorSubmissionListScreen() {
+  const router = useRouter();
   const { items, total, truncated, status, refetch } = useAnchorSubmissions();
   const reject = useRejectAnchorSubmissions();
 
@@ -214,10 +216,9 @@ export function AnchorSubmissionListScreen() {
                   item={item}
                   selected={selecting ? selected.has(item.id) : undefined}
                   onPress={
-                    // 非多选态的行点击进详情 → T019（本 task 只出列表与批量驳回）。
                     selecting
                       ? () => setSelected((cur) => toggleSubmissionSelection(cur, item.id))
-                      : undefined
+                      : () => router.push(optionsdeskAnchorSubmissionRoute(item.id))
                   }
                 />
               ))}

@@ -1,9 +1,11 @@
 import { Pressable, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 
 import { ErrorRow, Spinner } from '~/ui';
 import { AnchorSubmissionRow } from './anchor-submission-row';
 import { useAnchorSubmissions } from './use-anchor-submissions';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { optionsdeskAnchorSubmissionRoute } from './optionsdesk-routes';
 
 const COPY = OPTIONSDESK_COPY.anchorSubmission;
 
@@ -22,6 +24,7 @@ export interface AnchorSubmissionPanelProps {
 }
 
 export function AnchorSubmissionPanel({ limit, onSeeAll }: AnchorSubmissionPanelProps) {
+  const router = useRouter();
   const { items, total, status, refetch } = useAnchorSubmissions();
 
   return (
@@ -66,8 +69,11 @@ export function AnchorSubmissionPanel({ limit, onSeeAll }: AnchorSubmissionPanel
       ) : (
         <View className="px-md pt-sm gap-sm">
           {items.slice(0, limit).map((item) => (
-            // 行点击进详情 → T019（本 task 只出列表与徽标）。
-            <AnchorSubmissionRow key={item.id} item={item} />
+            <AnchorSubmissionRow
+              key={item.id}
+              item={item}
+              onPress={() => router.push(optionsdeskAnchorSubmissionRoute(item.id))}
+            />
           ))}
         </View>
       )}
