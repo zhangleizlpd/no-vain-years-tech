@@ -115,4 +115,6 @@ updated_at: '2026-08-31'
   🚨 **它当场揪出两处我凭空假设的契约**，而 hermetic e2e 永远戳不穿（那边的响应是我自己造的）：① `account.id` 是 BigInt 自增，我按 uuid 拼 SQL；② approve / reject 都是 `@HttpCode(200)`（处置一条已存在的待审，不是造新资源），我按 201 断言。**这两次红就是这条 spec「能红」的实证**，不是补出来的变异。
   📌 靶心四条：admin-only 是真的（同一 token 提权前 403、提权后通 —— 客户端那一位只管渲染）；屏上解构的每个键真的在响应里（`instrumentName` / `asofSuggested` / `note` 断的是**键在**而非值非空 —— null 与 undefined 在屏上处置完全不同）；采纳后 `consumedAnchorId` 回指落成的锚（FR-013 孤儿检出的前提）；冷启动对还没出行的锚**不返回该行**（sb-18 缺席即排队）。
 - [ ] T023 [Gate] **state_branches 覆盖补齐**（plan §Gate 0.4 的 partially-deferred 项）：20 条分支逐条对上 IT/e2e 的 `it()` → verify: 覆盖表进 PR body，届时那个 hard-gate checkbox 才是真的。
-- [ ] T024 [Docs] **`anchor-approve.sh` 降级为 break-glass**（FR-013; SC-006）：`mark_consumed()` 补写 `consumed_anchor_id`（否则两条路径写出形状不同的 CONSUMED 行，孤儿锚检出假阳性）；「八种 outcome」改十种；`watch` 注释「这四种」改五种 → verify: `shellcheck` 绿。
+- [X] T024 [Docs] **`anchor-approve.sh` 降级为 break-glass**（FR-013; SC-006）：文件头写明「日常审批走 App，脚本保留给 App 不可达 / 批量灌 / 要离线 ledger 三类场景」；`mark_consumed()` 接第二个参数并写 `consumed_anchor_id`（解不出时**留 NULL 而不是编一个**）；「八种 outcome」→ 十种并点明与 server `anchor-cold-start.rules.ts` 同源；`watch` 的「这四种」→ 五种（正则本来就是五个，只有注释落后）→ verify: `shellcheck` **零输出 EXIT=0**、`bash -n` 绿。
+  🚨 SC-006 的真正兑现点是 `consumed_anchor_id`：两条采纳路径写出形状不同的 CONSUMED 行时，「有锚但没有 submission 指向它」那条孤儿锚检出会被**每一条脚本处置过的行**喂成假阳性 —— 而那条查询正是 FR-004 半截态可观测性的唯一兑现方式。
+  ⚠️ 「脚本与 server 的需人工名单同源」目前**只靠注释**（脚本里是一条 awk 正则，server 里是 `COLD_START_NEEDS_ATTENTION`）—— 没有机器强制。脚本已降级为 break-glass，App 侧走 `needsAttention` 不抄名单，故未为此加闸；如实记一条。
