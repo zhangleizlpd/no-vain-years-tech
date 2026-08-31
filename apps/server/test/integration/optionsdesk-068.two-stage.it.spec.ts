@@ -566,16 +566,55 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(t88?.leg.openInterest).toBe(321);
     });
 
-    it('② 未支持市场 (hk): 闸后 guard ⇒ 零外呼回落收盘档 + source_unavailable (#286 回归网, branch 7)', async () => {
+    /**
+     * 🚨 **反例样本已从 `hk` 迁到 `cn`** (071 T004① 的必然波及, plan §D6 预告)。
+     *
+     * 本臂原先拿 hk 当「未支持市场」的被试对象, 而 071 把 hk 接进 `WINDOW_SUPPORTED_MARKETS`
+     * ⇒ 它**失去被试对象**: 断言照旧写着「零外呼」, 实际走了实时 ⇒ 当场红 (这是好事; 坏的是
+     * 有人顺手把断言删掉而不是换样本)。`IMPORTABLE_MARKETS = ['us','hk']` 没有第三个市场 ⇒
+     * `cn` 建不了锚, 但本臂经 `seedChain` **直接播种、不经建锚校验**, 而 `parseAnchorTicker`
+     * 也不挑市场 ⇒ cn 走得到闸后那道 guard, 且更贴它真正要守的那一面 (调用方闸失效时兜住)。
+     *
+     * 📌 #286 要钉的是**顺序**: guard 在闸**之后**。挪到闸前 = 休市时段天天见降级标。
+     */
+    it('② 未支持市场的 IT 反例**已结构性不可构造** —— 降级理由做成会失效的断言 (#286)', async () => {
+      // 🚨 `parseAnchorTicker` 不挑市场, 但**建锚落库有 DB CHECK 约束** `ck_anchor_market`
+      //    ⇒ 拿不到第三个市场的锚 ⇒ 闸后那道 guard 在 IT 层没有被试对象。
+      //    T006b-⑥ 预写的降级分支就是这一条: 降为 `bootstrapWindowFor` 的纯函数 throw 单测
+      //    (`src/optionsdesk/leg-window.rules.spec.ts` 的「非已支持市场 (cn) → throw」)。
+      await expect(
+        prisma.anchor.create({
+          data: {
+            ticker: 'cn:000001',
+            market: 'cn',
+            v: '150',
+            asof: dateOf('2026-06-30'),
+            method: 'dcf',
+            confidence: '8',
+            confidenceSource: 'manual',
+            lLevelEffective: 'L2',
+          },
+        }),
+      ).rejects.toThrow(/ck_anchor_market/);
+
+      // 🚨 **本断言的真正作用是「哪天它不再成立就来提醒你」**: 谁把 `ck_anchor_market` 放宽到
+      //    第三个市场, 这里当场红 —— 那一刻 IT 层重新有了被试对象, MUST 回来把真正的反例臂
+      //    (闸开 + 白名单不含它 ⇒ 零外呼 + source_unavailable) 恢复回去, 而不是删掉本条。
+      //    🚫 MUST NOT 把它当成「已经测过 guard 了」—— guard 的**顺序** (闸后而非闸前, #286)
+      //    在 IT 层目前**无覆盖**, 这是知情的空缺, 不是遗漏。
+    });
+
+    it('②b hk 已接实时 ⇒ 同一条路径上它是**正例**而不再是反例 (071 FR-001)', async () => {
       await seedChain({ market: 'hk', code: '0700' });
       marketState.extra = [{ market: 'hk', session: 'regular' }];
+      readPort.respond = realtimeBatch();
 
       const result = await retrieve(true, 'rent', null, 'hk:0700');
       expect(result).not.toBeNull();
-      expect(readPort.calls).toHaveLength(0);
-      expect(result!.chain.realtimeDegrade).toBe('source_unavailable');
-      expect(result!.chain.priceKind).toBe('eod_close');
-      expect(result!.candidates.length).toBeGreaterThan(0);
+      // 闸开 + 白名单放行 ⇒ 真的问了 vendor, 且不该有任何降级标。
+      expect(readPort.calls.length).toBeGreaterThan(0);
+      expect(result!.chain.realtimeDegrade).toBeNull();
+      expect(result!.chain.priceKind).toBe('realtime');
     });
 
     it('③ 闸 closed (盘前) ⇒ 与离线响应逐值相同且零外呼 (branch 8, 离线零改动机器判据)', async () => {
