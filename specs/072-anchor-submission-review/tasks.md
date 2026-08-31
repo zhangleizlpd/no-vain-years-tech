@@ -2,9 +2,9 @@
 feature_id: 072-anchor-submission-review
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: in-progress
+status: done
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-01'
 ---
 
 # Tasks: 072-anchor-submission-review（锚待审箱审批线上化 + 「我的」三栏改版）
@@ -114,7 +114,9 @@ updated_at: '2026-08-31'
 - [X] T022 [Contract-Smoke] **契约冒烟**：`072-anchor-submission.contract.ts` —— 403 准入 → 提权 → 列表/详情逐字段 → 采纳真落锚 → 驳回 skipped → 冷启动读面；注册进 `run.ts`，并给 `check-contract-smoke-drift.ts` 的 `PREFIX_TO_MODULE` 补 `anchorSubmission → optionsdesk`（缺映射本身就会告警）→ verify: `RUN_REAL_BACKEND_SMOKE=true nx run mobile:contract-smoke` **30/30 passed**（真 server + testcontainers PG）。
   🚨 **它当场揪出两处我凭空假设的契约**，而 hermetic e2e 永远戳不穿（那边的响应是我自己造的）：① `account.id` 是 BigInt 自增，我按 uuid 拼 SQL；② approve / reject 都是 `@HttpCode(200)`（处置一条已存在的待审，不是造新资源），我按 201 断言。**这两次红就是这条 spec「能红」的实证**，不是补出来的变异。
   📌 靶心四条：admin-only 是真的（同一 token 提权前 403、提权后通 —— 客户端那一位只管渲染）；屏上解构的每个键真的在响应里（`instrumentName` / `asofSuggested` / `note` 断的是**键在**而非值非空 —— null 与 undefined 在屏上处置完全不同）；采纳后 `consumedAnchorId` 回指落成的锚（FR-013 孤儿检出的前提）；冷启动对还没出行的锚**不返回该行**（sb-18 缺席即排队）。
-- [ ] T023 [Gate] **state_branches 覆盖补齐**（plan §Gate 0.4 的 partially-deferred 项）：20 条分支逐条对上 IT/e2e 的 `it()` → verify: 覆盖表进 PR body，届时那个 hard-gate checkbox 才是真的。
+- [X] T023 [Gate] **state_branches 覆盖补齐**（plan §Gate 0.4 的 partially-deferred 项）：20 条分支逐条对上具体 `it()`，覆盖表写进 PR #312 body，并把那处「第 3 项 vacuously 满足（无 spec ⇒ 无 state_branches）」的注释换成真覆盖表 → verify: 全量 PR 门 `nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` **EXIT=0**（server **5751 passed / 86 skipped**、mobile **1874 passed**、api-client **298 passed**）；`scripts/checks/*.ts` 全扫 **19/19 绿**（三个必带参数的裸跑报 usage，不计入）。spec frontmatter 同步：`status: implementing → implemented`、`updated_at → 2026-09-01`。
+  📌 表里 sb-1 / sb-2 / sb-3 三档**共用同一条 `asofNeedsAcknowledgement` 判据** —— 闸行为由其中一档代表、分类由 `rules.spec` 逐档证同族。这一点在表头写明了：逐档再抄一遍闸断言只会制造「测得多」的错觉。
+  ⚠️ 覆盖表只回答「每条分支有没有被断言到」，**不等于**这 20 条都在同一层被验。跨层的分布（server 单测 / IT / mobile 单测 / hermetic e2e / 契约冒烟）逐条写在表里，reviewer 可据此判某条的证据强度。
 - [X] T024 [Docs] **`anchor-approve.sh` 降级为 break-glass**（FR-013; SC-006）：文件头写明「日常审批走 App，脚本保留给 App 不可达 / 批量灌 / 要离线 ledger 三类场景」；`mark_consumed()` 接第二个参数并写 `consumed_anchor_id`（解不出时**留 NULL 而不是编一个**）；「八种 outcome」→ 十种并点明与 server `anchor-cold-start.rules.ts` 同源；`watch` 的「这四种」→ 五种（正则本来就是五个，只有注释落后）→ verify: `shellcheck` **零输出 EXIT=0**、`bash -n` 绿。
   🚨 SC-006 的真正兑现点是 `consumed_anchor_id`：两条采纳路径写出形状不同的 CONSUMED 行时，「有锚但没有 submission 指向它」那条孤儿锚检出会被**每一条脚本处置过的行**喂成假阳性 —— 而那条查询正是 FR-004 半截态可观测性的唯一兑现方式。
   ⚠️ 「脚本与 server 的需人工名单同源」目前**只靠注释**（脚本里是一条 awk 正则，server 里是 `COLD_START_NEEDS_ATTENTION`）—— 没有机器强制。脚本已降级为 break-glass，App 侧走 `needsAttention` 不抄名单，故未为此加闸；如实记一条。

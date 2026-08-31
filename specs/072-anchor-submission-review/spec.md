@@ -2,9 +2,9 @@
 feature_id: 072-anchor-submission-review
 modules: [optionsdesk, account, marketdata, alert]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-01'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
