@@ -109,6 +109,7 @@ import {
   type LegBlockState,
   type LegSection,
 } from './underlying-detail.rules';
+import { tickerCode, underlyingDisplayName } from './underlying-identity.rules';
 import { useLegTable } from './use-leg-table';
 import { useUnderlyingDetail } from './use-underlying-detail';
 
@@ -226,8 +227,11 @@ export function UnderlyingDetailScreen({
   // 横滑可视宽 = 容器实测宽 − 首列宽。首帧 0 ⇒ 一帧不可滑，无感。
   const viewportW = useSharedValue(0);
   const pan = useLegColumnPan({ tx, viewportW, contentWidth: LEG_SCROLL_REGION_WIDTH });
-  // canonical `market:code` → 展示用 code（解析失败退回原串，不丢信息）。
-  const code = symbol.split(':')[1] ?? symbol;
+  // 题头 = 标的名（045 plan D13，判据与雷达 / 锚列表共用一份）。
+  // ⚠️ 名字只在锚卡到手后才知道 ⇒ 未到手期间（加载中 / 无锚）先呈代号，到手后升级成名字。
+  //    这是**渐进增强**不是闪烁 bug：先给一个真信息（代号）好过先给空题头。
+  const title =
+    detail.detail === null ? tickerCode(symbol) : underlyingDisplayName(detail.detail.anchor);
 
   const handleTableLayout = (event: LayoutChangeEvent) => {
     const nextViewportW = Math.max(0, event.nativeEvent.layout.width - LEG_STICKY_COL_WIDTH);
@@ -240,7 +244,7 @@ export function UnderlyingDetailScreen({
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
-      <Stack.Screen options={{ title: code }} />
+      <Stack.Screen options={{ title }} />
 
       {/* 🚨 屏自包裹手势根 —— 仓内根 `_layout` 不全局挂（同 `~/ui/SwipeRow` 自包裹范式）。 */}
       <GestureHandlerRootView style={{ flex: 1 }}>

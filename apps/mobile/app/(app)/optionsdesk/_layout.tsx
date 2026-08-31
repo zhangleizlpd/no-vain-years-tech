@@ -28,7 +28,8 @@ export default function OptionsdeskLayout() {
           name="anchor/[id]"
           options={{ headerLeft: makeHeaderBackOrParent('/(app)/optionsdesk/anchors') }}
         />
-        {/* 046 T023 两个新屏：title 由屏内 Stack.Screen 设（详情页题头 = 标的 code）；
+        {/* 046 T023 两个新屏：title 由屏内 Stack.Screen 设（详情页题头 = 标的名，045 plan D13；
+            锚卡到手前先呈代号）；
             这里只兜住 web 硬刷新时栈底为空的 headerLeft 回落（→ 雷达 tab 落地屏）。 */}
         <Stack.Screen
           name="thermometer"

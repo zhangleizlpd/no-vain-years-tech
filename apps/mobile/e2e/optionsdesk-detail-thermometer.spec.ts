@@ -782,6 +782,29 @@ test('046 T028 — 从雷达点该行 → 进标的详情，三块（锚卡 / �
   await expect(page.getByTestId('optionsdesk-radar-notice')).toHaveCount(0);
 });
 
+test('045 plan D13 — 详情题头是标的名；名字缺失才退回代号（代号人读不出是哪只票）', async ({
+  page,
+}) => {
+  await installDeskMock(page, {
+    anchors: [
+      makeAnchor({ id: '1', ticker: 'hk:01024', name: '快手-W' }),
+      // 未在行情库注册 ⇒ server 下发 null ⇒ 题头退回代号（046 初版的样子）。
+      makeAnchor({ id: '2', ticker: 'hk:00700', name: null }),
+    ],
+    iv: { 'hk:01024': makeIv(), 'hk:00700': makeIv() },
+  });
+
+  // 🚨 这条钉的是「响应 → 题头文字」那一段：判据由 `underlying-identity.rules` 单测覆盖，
+  //    但「题头读的是哪个字段」tsc 拦不住 —— 读回 symbol 也照样编译得过。
+  await page.goto(detailUrl('hk:01024'));
+  await expect(page.getByTestId('optionsdesk-detail-anchor-card')).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText('快手-W', { exact: true }).first()).toBeVisible();
+
+  await page.goto(detailUrl('hk:00700'));
+  await expect(page.getByTestId('optionsdesk-detail-anchor-card')).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText('00700', { exact: true }).first()).toBeVisible();
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // ② T021 详情常态 —— 三块各带各自 asOf（FR-020 / SC-002）+ 全景入口
 // ════════════════════════════════════════════════════════════════════════════
