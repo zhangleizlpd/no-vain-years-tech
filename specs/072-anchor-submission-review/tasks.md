@@ -81,7 +81,9 @@ updated_at: '2026-08-31'
   🚨 **这是 T014 起所有 mobile task 的前置卡点**：Principle I「跳过 Mockup 直接 plan = 违规」。
 
 - [X] T014 [Mobile] **删「待办」栏 + 抽出可内嵌消息列表**（FR-011; plan §D8）：`message-center-screen.tsx` 去掉单项 `AlertTabRow`；卡片列表抽成无滚动器的 `AlertMessagePanel`；清理 `alert-copy.ts` 的 `tabRemind`/`tabTodo` 两个 orphan；`alert-tab-row.tsx` 头注释去掉屏 6 → verify: 改写 `alert.spec.ts` 中「待办 disabled」用例；`nx lint mobile` 无新 orphan。
-- [ ] T015 [Mobile] **三栏可见性纯函数**（FR-011; plan §D8; state_branches 19,20; US6）：`profile-tabs.rules.ts` 的 `visibleProfileTabs` / `defaultProfileTab`；渲染期派生 activeTab，**不用 `useEffect`** → verify: 单测覆盖 markets×isAdmin 四象限；让它忽略 `marketsEnabled` ⇒ 合规用例红。
+- [X] T015 [Mobile] **三栏可见性纯函数**（FR-011; plan §D8; state_branches 19,20; US6）：`profile-tabs.rules.ts` 的 `visibleProfileTabs` / `defaultProfileTab`，外加 `resolveActiveProfileTab`（渲染期派生 activeTab，**不用 `useEffect`** —— 派生本身是判定，留在 JSX 里就没有单点可验）→ verify: `profile-tabs.rules.spec.ts` **13 条**（四象限 + `isAdmin` 未知 fail-closed + 默认栏 + 三条回落）。三发变异各自命中且**都真跑到了断言**（非 typecheck 拦停）：删 markets 闸 ⇒ **3 红**（含 sb-19 那条合规用例）；`isAdmin === true` 改 `!== false` ⇒ **1 红**（/me 未落地那一瞬会闪出管理入口）；回落改成「总是保留 selected」⇒ **2 红**。
+  ⚠️ 合规闸判在权限闸**之上** —— markets off 时 `isAdmin` 不参与判定；只测 admin 维度的话，一个漏判 `marketsEnabled` 的实现照样四象限里三格全绿。
+  可见集合的返回类型写成以 `'kb'` 收尾的**非空元组**（`noUncheckedIndexedAccess` 下普通数组取 `[0]` 带 `undefined`）—— 「知识库恒可见」这条不变量因此编进类型，取首项的两处都不需要一个永远走不到的兜底分支。
 - [ ] T016 [Mobile] **`profile.tsx` 三栏改版**（FR-011; SC-005; US6）：`审批/消息/知识库`；面板从各自 feature 目录 import；`MARKETS_SURFACES` 登记两个新受控面 → verify: ScrollView 恒三子节点（sticky 索引不移位）；`markets-feature-gate.spec.ts` 扩断言。
 - [ ] T017 [Mobile] **消息面接线 + `markRead` 改判据**（FR-012; plan §D8）：只在消息栏激活时置已读，只解构 `mutateAsync` → verify: e2e —— 停在审批栏时未读**不清零**，切到消息栏才清。
 - [ ] T018 [Mobile] **审批列表 + 内嵌面板**（FR-001; SC-001; US1）：行首「中文名 + 代号」、disposition/asof 徽标、多选批量驳回 → verify: hermetic e2e。
