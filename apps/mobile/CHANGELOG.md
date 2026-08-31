@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.15.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.15.0...mobile-v0.15.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **optionsdesk:** 锚管理列表与详情题头同样显示标的名 —— D13 判据收敛成单点 ([#305](https://github.com/zhangleizlpd/no-vain-years-tech/issues/305)) ([b726228](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b726228a20008215c4372b99e335df78b3fbca66))
+* **optionsdesk:** 雷达行首显示标的名而非代号 —— 补上 045 plan D13 缺的中文名那一半 ([#302](https://github.com/zhangleizlpd/no-vain-years-tech/issues/302)) ([388a130](https://github.com/zhangleizlpd/no-vain-years-tech/commit/388a130f6e1616a43b0771610cc0bdefa5821dc0))
+
 ## [0.15.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.14.0...mobile-v0.15.0) (2026-08-31)
 
 
