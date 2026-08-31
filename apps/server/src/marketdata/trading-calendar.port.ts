@@ -1,6 +1,16 @@
 import type { TradingDayStatus } from './trading-day.rules.js';
 
 /**
+ * 三态判定的值域 —— 经**本端口**再导出。
+ *
+ * 🚨 消费方 (optionsdesk 等业务 ctx) MUST 从这里取, **不要** 直接 import
+ * `marketdata/trading-day.rules`: `eslint-plugin-boundaries` 明禁
+ * `optionsdesk → marketdata-rules` (rule index 11)。端口是这条依赖的**唯一合法入口**,
+ * 而值域只有一份 —— 这里只是把它摆到边界上, 不是抄第二份。
+ */
+export type { TradingDayStatus };
+
+/**
  * 交易日历端口 (FR-S01, US6)。判断交易日 / backfill 迭代。
  * 本 feature 仅落接口 + Mock; live adapter → 016 (D1: 建议 Lixinger trade-day 同源)。
  *

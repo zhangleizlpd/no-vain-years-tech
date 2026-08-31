@@ -1,4 +1,5 @@
-import type { TradingDayStatus } from '../marketdata/trading-day.rules';
+// 经端口取三态值域 —— boundaries 禁 optionsdesk 直依赖 marketdata-rules (rule index 11)。
+import type { TradingDayStatus } from '../marketdata/trading-calendar.port';
 
 /**
  * 锚待审箱的**判据层** (072)。纯函数、零 I/O、无 DI (ADR-0043 §4)。
