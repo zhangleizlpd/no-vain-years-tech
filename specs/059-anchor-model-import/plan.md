@@ -169,7 +169,9 @@ ADR-0065 反对的是**给投递方一个能过 `JwtAuthGuard` 的宽口子**，
 
 🚨 `scripts/checks/check-server-moat.ts` 的 `MODEL_OWNERSHIP` **必须登记** `anchorSubmission: 'optionsdesk'`，否则 `moat-unmapped` 硬拒（ADR-0062 Consequences 已写明这条）。
 
-**零审核面**：不做审核 UI / 转正 CLI / 审批端点。采纳动作 = 本人用自己的凭证把同样的值重放一次 —— 这保证了 spec FR-012「系统 MUST NOT 存在第二条写锚路径」。
+~~**零审核面**：不做审核 UI / 转正 CLI / 审批端点。采纳动作 = 本人用自己的凭证把同样的值重放一次 —— 这保证了 spec FR-012「系统 MUST NOT 存在第二条写锚路径」。~~
+
+> **⚠️ 本节已被 072 反转（superseded by [ADR-0069](../../docs/adr/0069-anchor-submission-review-surface.md)）。** 审批面已搬进 App（admin-only）。**FR-012 本身不变**：采纳仍然只经 `ImportAnchorFromModelUseCase` 落锚。变的是保证方式 —— 从「本表到锚表没有代码路径」这条拓扑性质，换成「只有一条边且指向同一个 use case」的委托纪律，并由 `scripts/checks/check-server-moat.ts` 的 `WRITE_ALLOWLIST`（Check 3）机器强制。本段原文保留，是为了让「当初为什么选零审核面」不丢。
 
 ### §7 两个写侧校验洞必须在本片补（仅新端点）
 
