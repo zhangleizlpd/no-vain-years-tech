@@ -13,8 +13,16 @@ updated_at: '2026-08-31'
 **Branch**: `072-anchor-submission-review`（单分支单 PR #312 —— mobile 已按 Principle V 并入，stacked 分支已废弃）
 **病根一句话**：059 刻意不做审阅面，代价是这条流程从没上线过 —— 08-31 直查 prod，47 条 PENDING 躺着、`REJECTED` 恒为 0、还有 2 组逐值全等的重复投递。
 
-> 🚨 **T001–T012 是补写的**（实装在前、tasks 在后，见 spec §过程留痕）。它们的 `[X]` 依据是
-> PR #312 里**真实跑过**的验证，不是回填打勾。T013 起为正常前置。
+> 🚨 **T001–T013 是补写的**（实装在前、tasks 在后，见 spec §过程留痕）。T014 起为正常前置。
+>
+> 🚨 **更正（review 后）**：这段原本写着「它们的 `[X]` 依据是 PR #312 里真实跑过的验证」——
+> **那句话高估了覆盖**。当时真正被测的只有两个纯函数文件、guard 与 moat 探针；四个 use case
+> 与 controller **一行单测都没有**，也没有 072 IT。「server unit 5697 passed」证明的是套件通过，
+> 与这些新文件有没有被覆盖无关（正是「**通过数对得上 ≠ 新测试跑了**」那条）。
+>
+> 验证已于 review 后补齐（各 task 的 `verify:` 已重写），并因此**当场揪出两个真 bug**。
+> 补测**从 `spec.md` 的 FR / `state_branches` 写起、动手前不重读实现** —— 照着实现写测试
+> 会把 bug 一起固化成断言。每条补的测试都做了定向变异证明能红。
 
 ## Format
 
@@ -53,12 +61,16 @@ updated_at: '2026-08-31'
 
 ## Phase 3 — 审批 API
 
-- [X] T007 [Server] **待审读侧 + 采纳前预览**（FR-001, FR-002; state_branches 9–11）：`list-anchor-submissions.usecase.ts`（含 `getDetail`）；`isImportNoop` 从 use case 私有搬进 `anchor-import.rules.ts` 供读侧复用 → verify: `import-anchor-from-model` 既有 43 条单测全绿（搬移行为保持）。
-- [X] T008 [Server] **采纳 use case**（FR-003, FR-004, FR-005, FR-006; plan §D4; state_branches 5–8,12,13）：委托 import、先导入后翻状态、409 三态 → verify: T001 的探针红绿即其护栏。
-- [X] T009 [P] [Server] **批量驳回**（FR-007; state_branches 14）：`REJECTED` 仓里第一个写者 → verify: `status:'PENDING'` 谓词即幂等；`skipped` 不折叠。
-- [X] T010 [Server] **审批 controller（类级 `AdminOnlyGuard`）+ 限流桶 6/60s**（FR-010; plan §D7）→ verify: 桶折进 `OPTIONSDESK_ALL` ⇒ 其它 controller 零改动。
+- [X] T007 [Server] **待审读侧 + 采纳前预览**（FR-001, FR-002; state_branches 9–11）：`list-anchor-submissions.usecase.ts`（含 `getDetail`）；`isImportNoop` 从 use case 私有搬进 `anchor-import.rules.ts` 供读侧复用 → verify: `list-anchor-submissions.usecase.spec.ts` **13 条**（截断/筛选/N+1 单次批量/disposition/asofFlag/预览四态）；变异「`asof` 改 `toISOString()`」⇒ **4 红**；`import-anchor-from-model` 既有 43 条全绿（搬移行为保持）。
+- [X] T008 [Server] **采纳 use case**（FR-003, FR-004, FR-005, FR-006; plan §D4; state_branches 5–8,12,13）：委托 import、先导入后翻状态、409 三态 → verify: `approve-anchor-submission.usecase.spec.ts` **14 条** + T001 探针红绿。三发变异各自命中：调换导入/翻转顺序 ⇒ **2 红**；`unknown` 从 asof 闸放行 ⇒ **1 红**；直写 `prisma.anchor` ⇒ **1 红**。
+  ⚠️ 顺序断言写的是**序列本身**（`['import','flip']`）而不是「两个都被调过」—— 后者在顺序颠倒时照样绿，等于没测。
+- [X] T009 [P] [Server] **批量驳回**（FR-007; state_branches 14）：`REJECTED` 仓里第一个写者 → verify: `reject-anchor-submissions.usecase.spec.ts` **8 条**（用**行为 fake** 而非桩 —— 桩会把 bug 一起固化成断言）。
+  🐞 **review 揪出的真 bug**：`findMany` 排在 `updateMany` **之后** ⇒ 读到更新**后**状态 ⇒ 早已 REJECTED 的行被误报成本次成功驳回，正是 FR-007 明禁的「折成一句 ok」。已改成**先读后写、按前置状态判**，并立不变量 `rejected + skipped === 去重 id 数`。
+- [X] T010 [Server] **审批 controller（类级 `AdminOnlyGuard`）+ 限流桶 6/60s**（FR-010; plan §D7）→ verify: `anchor-submission.controller.spec.ts` **7 条**，含**类级 guard 元数据断言**；变异「把 `AdminOnlyGuard` 从类装饰器摘掉」⇒ **2 红**。
+  ⚠️ 第一次变异被 typecheck 拦住（unused import）、**测试根本没跑** —— 没跑到的变异证明不了任何事；改成连 import 一起删才是有效变异。
+  🐞 **review 揪出的真 bug**：本 controller 自建的 `skipExcept` 漏了 `EXISTING_BUCKETS`，只 spread 了 `OPTIONSDESK_ALL` ⇒ 4 个端点不跳过 `DEFAULT` 与其它 feature 的桶，限流静默偏离设计。已改为**复用**兄弟 controller 导出的 `skipExcept`（不造第三份表）。
 - [X] T011 [P] [Server] **投递口幂等**（FR-008; plan §D5; state_branches 15,16）：find-then-write + P2002 兜并发 → verify: **实测 `upsert` 运行时炸**（`no unique or exclusion constraint matching`），故禁用。
-- [X] T012 [Server] **冷启动读面 + attention 分档**（FR-009; SC-003; plan §D6; state_branches 17,18; US5）→ verify: 塞进第 11 个 outcome 不归类 ⇒ 穷尽闸两条红。
+- [X] T012 [Server] **冷启动读面 + attention 分档**（FR-009; SC-003; plan §D6; state_branches 17,18; US5）→ verify: `anchor-cold-start.rules.spec.ts` 穷尽闸（塞第 11 个 outcome 不归类 ⇒ **2 红**）+ `get-anchor-cold-start-runs.usecase.spec.ts` **5 条**（五档 needsAttention / 缺席不补占位 / 去重截顶）。
 - [X] T013 [Contract] **契约同步**：`nx run server:export-openapi` **然后** `nx affected -t generate` → verify: `git diff --stat packages/api-client/src/generated` 非空（435 行）—— 这正是「只跑第二步会拿 stale json 且全绿」的判据。
 
 ## Phase 4 — 移动端（前置，尚未实装）

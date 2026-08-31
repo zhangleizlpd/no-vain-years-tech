@@ -31,8 +31,16 @@ export class RejectAnchorSubmissionsUseCase {
     const ids = [...new Set(input.ids)];
     if (ids.length === 0) return { rejected: 0, skipped: [] };
 
-    // `status: 'PENDING'` 这个谓词**就是**幂等性本身: 重放同一批只影响仍待审的行。
-    const [updated, survivors] = await this.prisma.$transaction([
+    // 🚨 **读必须排在写前面**。同一个 `$transaction` 数组里的操作按序执行 ⇒ 把 findMany 排在
+    //    updateMany 之后读到的是**更新后**状态,于是「本次刚驳回的」与「上一轮早就驳回的」
+    //    在结果里长得一模一样,后者会被误报成本次成功处置 —— 正是 FR-007 明禁的
+    //    「折成一句 ok」。判据只能建立在**前置状态**上。
+    const [before, updated] = await this.prisma.$transaction([
+      this.prisma.anchorSubmission.findMany({
+        where: { id: { in: [...ids] } },
+        select: { id: true, status: true },
+      }),
+      // `status: 'PENDING'` 这个谓词**就是**幂等性本身: 重放同一批只影响仍待审的行。
       this.prisma.anchorSubmission.updateMany({
         where: { id: { in: [...ids] }, status: 'PENDING' satisfies AnchorSubmissionStatus },
         data: {
@@ -40,19 +48,20 @@ export class RejectAnchorSubmissionsUseCase {
           ...(input.reviewNote === undefined ? {} : { reviewNote: input.reviewNote }),
         },
       }),
-      this.prisma.anchorSubmission.findMany({
-        where: { id: { in: [...ids] } },
-        select: { id: true, status: true },
-      }),
     ]);
 
-    // 🚨 **MUST NOT 把「驳回了 7 条里的 5 条」折成一句 ok**: 另两条是在别的设备上、或被
-    //    anchor-approve.sh 处置掉了 —— 人必须知道有行在自己脚下动过。
-    const found = new Set(survivors.map((r) => r.id));
-    const skipped = ids
-      .filter((id) => !found.has(id) || survivors.find((r) => r.id === id)?.status !== 'REJECTED')
-      .map((id) => id.toString());
+    // 「本次没被驳回的」= 前置状态不是 PENDING 的(含库里根本没有这个 id)。
+    // 人必须知道有行在自己脚下动过 —— 它们多半是在别的设备上、或被 anchor-approve.sh 处置掉的。
+    const wasPending = new Set(
+      before
+        .filter((r) => r.status === ('PENDING' satisfies AnchorSubmissionStatus))
+        .map((r) => r.id),
+    );
+    const skipped = ids.filter((id) => !wasPending.has(id)).map((id) => id.toString());
 
+    // ⚠️ 稳态下 `rejected + skipped.length === ids.length`。并发下另一路可能在本 tx 的读与写
+    //    之间把某行翻掉 ⇒ 那一条既不在 skipped 也没被计入 rejected。这是**如实反映**,
+    //    不去凑数:凑出来的和会掩盖「有行在你脚下动了」这件本该被看见的事。
     return { rejected: updated.count, skipped };
   }
 }

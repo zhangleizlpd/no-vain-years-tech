@@ -104,7 +104,7 @@ const EXISTING_BUCKETS: Record<string, boolean> = {
  * 某 optionsdesk EP 的 @SkipThrottle 集 = 既有全部桶 + optionsdesk 同组「除己」其余桶
  * (own 由 @Throttle 单独启用; @Throttle 不会反 un-skip, 故 own 必须不在 skip 集内)。
  */
-function skipExcept(own: Record<string, boolean>): Record<string, boolean> {
+export function skipExcept(own: Record<string, boolean>): Record<string, boolean> {
   const skip: Record<string, boolean> = { ...EXISTING_BUCKETS, ...OPTIONSDESK_ALL };
   for (const key of Object.keys(own)) delete skip[key];
   return skip;

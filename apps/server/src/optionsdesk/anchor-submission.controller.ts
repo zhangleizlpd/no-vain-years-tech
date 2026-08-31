@@ -15,11 +15,15 @@ import { AdminOnlyGuard } from '../account/admin-only.guard';
 import { AccountIdThrottlerGuard } from '../account/account-id-throttler.guard';
 import { JwtAuthGuard } from '../account/jwt-auth.guard';
 import {
-  OPTIONSDESK_ALL,
   OPTIONSDESK_APPROVE_BUCKET,
   OPTIONSDESK_READ_BUCKET,
   OPTIONSDESK_WRITE_BUCKET,
 } from '../security/throttler-skip-buckets';
+// 🚨 **复用**兄弟 controller 的 skipExcept, 不在本文件另建一份 EXISTING_BUCKETS:
+// 那张表列的是「其它 feature 的全部桶」, 抄第二份 = 日后新增 feature 桶要改两处,
+// 漏一处的表现是本面的请求被静默计进 DEFAULT 与别人的桶(不崩、不报错、无人会红)。
+// 初版正是漏了它 —— 只 spread 了 OPTIONSDESK_ALL。
+import { skipExcept } from './optionsdesk.controller';
 import { ProblemDetailResponse } from '../security/problem-detail.response';
 import { ApproveAnchorSubmissionUseCase } from './approve-anchor-submission.usecase';
 import {
@@ -37,13 +41,6 @@ import {
   RejectAnchorSubmissionsResponse,
   toAnchorSubmissionReviewResponse,
 } from './optionsdesk.dto';
-
-/** 跳过同组其余桶, 只让本 EP 自己的桶生效 (体例同 optionsdesk.controller.ts)。 */
-function skipExcept(bucket: Record<string, boolean>): Record<string, boolean> {
-  const skip: Record<string, boolean> = { ...OPTIONSDESK_ALL };
-  for (const key of Object.keys(bucket)) skip[key] = false;
-  return skip;
-}
 
 function parseSubmissionId(raw: string): bigint {
   if (!/^\d+$/.test(raw)) throw new NotFoundException('SUBMISSION_NOT_FOUND');
