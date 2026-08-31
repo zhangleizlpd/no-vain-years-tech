@@ -156,8 +156,26 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       expect(await prisma.anchorSubmission.count()).toBe(3);
     });
 
-    it('同一提交方同一标的可提交多次（一行 = 一次提交，刻意无唯一键）', async () => {
+    // 🔁 072 反转 059：本用例原名「同一提交方同一标的可提交多次（刻意无唯一键）」。
+    // 反转依据是实测而非偏好：08-31 直查 prod，PENDING 里 distinct (submitter,ticker,asof)
+    // 与 distinct **完整五元组**同为 45，「同 (ticker,asof) 但估值不同」的组数 = 0
+    // ⇒ 存量每一组重复都是逐值全等的误投。判据全文见 ADR-0069。
+    it('同一 (ticker, asof) 同时只能有一条 PENDING（072 partial unique）', async () => {
       await prisma.anchorSubmission.create({ data: submissionSeed });
+      await expect(
+        prisma.anchorSubmission.create({ data: { ...submissionSeed, v: '160' } }),
+      ).rejects.toThrow();
+      expect(await prisma.anchorSubmission.count()).toBe(1);
+    });
+
+    // 🚨 partial（而非全表唯一）的**全部意义**就在这条：驳回之后必须还能重投一份修正版。
+    // 全表唯一会把这条正当路径永久堵死，而那恰是驳回之后最该发生的事。
+    it('处置完（非 PENDING）之后，同一 (ticker, asof) 可以再投一条', async () => {
+      const first = await prisma.anchorSubmission.create({ data: submissionSeed });
+      await prisma.anchorSubmission.update({
+        where: { id: first.id },
+        data: { status: 'REJECTED' },
+      });
       await prisma.anchorSubmission.create({ data: { ...submissionSeed, v: '160' } });
       expect(await prisma.anchorSubmission.count()).toBe(2);
     });
@@ -167,12 +185,22 @@ describe('059 锚模型导入通道 IT (Testcontainers PG)', () => {
       expect(row.note).toBeNull();
     });
 
-    it('索引只有 PK（日均个位数，status 上撒 B-tree 是 cargo cult）', async () => {
-      const rows = await prisma.$queryRawUnsafe<{ indexname: string }[]>(
-        `SELECT indexname FROM pg_indexes
-          WHERE schemaname = 'optionsdesk' AND tablename = 'anchor_submission'`,
+    // 🔁 072 部分反转 059：除 PK 外只多**一条 partial unique**，它是**约束**不是查询加速器。
+    // 059 那句「status 上撒 B-tree 是 cargo cult」针对**查询索引**依然成立（全表百余行，
+    // 按 status/market 筛走全表扫比索引探针还快）⇒ 本断言仍然拒绝第三条索引。
+    it('索引 = PK + (ticker,asof) partial unique，不多不少', async () => {
+      const rows = await prisma.$queryRawUnsafe<{ indexname: string; indexdef: string }[]>(
+        `SELECT indexname, indexdef FROM pg_indexes
+          WHERE schemaname = 'optionsdesk' AND tablename = 'anchor_submission'
+          ORDER BY indexname`,
       );
-      expect(rows.map((r) => r.indexname)).toEqual(['anchor_submission_pkey']);
+      expect(rows.map((r) => r.indexname)).toEqual([
+        'anchor_submission_pkey',
+        'uk_anchor_submission_pending_ticker_asof',
+      ]);
+      // 谓词必须真落库 —— 少了它就退化成全表唯一，而上一条用例的正当路径会被堵死。
+      const partial = rows.find((r) => r.indexname === 'uk_anchor_submission_pending_ticker_asof');
+      expect(partial?.indexdef).toMatch(/WHERE \(\(status\)::text = 'PENDING'::text\)/);
     });
   });
 

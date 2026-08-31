@@ -77,7 +77,11 @@ function build(
     m.prisma,
     { fetchQuotes } as unknown as RealtimeQuotePort,
     { getMarketSessions } as unknown as MarketStatePort,
-    { classify, lastClosedSession: async () => null } as unknown as TradingCalendarPort,
+    {
+      classify,
+      lastClosedSession: async () => null,
+      previousTradingDay: async () => null,
+    } as unknown as TradingCalendarPort,
   );
   return { useCase, m, fetchQuotes, getMarketSessions, classify };
 }
@@ -323,6 +327,7 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
       {
         classify: vi.fn().mockResolvedValue('trading' satisfies TradingDayStatus),
         lastClosedSession: async () => null,
+        previousTradingDay: async () => null,
       },
     );
 

@@ -3637,7 +3637,11 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       try {
         const { registry, spies } = buildUnderlyingIvFakes({
           // 盘中闸的两个条件缺一不可, `todayIsTradingDay` 这一格只有真日历给得出。
-          tradingCalendar: { classify: async () => 'trading', lastClosedSession: async () => null },
+          tradingCalendar: {
+            classify: async () => 'trading',
+            lastClosedSession: async () => null,
+            previousTradingDay: async () => null,
+          },
         });
 
         const { stats } = await registry.execute('underlying_iv_daily', {

@@ -44,7 +44,7 @@ function build() {
   return { controller, getExecute, updateExecute };
 }
 
-const REQ = { user: { accountId: 42n } };
+const REQ = { user: { accountId: 42n, isAdmin: false } };
 
 describe('MarketPreferencesController', () => {
   it('GET → 200 返回全量态 (delegates accountId)', async () => {

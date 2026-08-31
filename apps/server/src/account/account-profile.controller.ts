@@ -135,6 +135,9 @@ export class AccountProfileController {
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
+      // 072: 取自 guard 已解析的 req.user —— JwtAuthGuard 本请求已读过同一行 account,
+      // 五个端点的 result 类型各异(仅 getProfile 是 AccountProfileResult), 统一走这里最省。
+      isAdmin: req.user.isAdmin,
     };
   }
 
@@ -208,6 +211,9 @@ export class AccountProfileController {
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
+      // 072: 取自 guard 已解析的 req.user —— JwtAuthGuard 本请求已读过同一行 account,
+      // 五个端点的 result 类型各异(仅 getProfile 是 AccountProfileResult), 统一走这里最省。
+      isAdmin: req.user.isAdmin,
     };
   }
 
@@ -278,6 +284,9 @@ export class AccountProfileController {
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
+      // 072: 取自 guard 已解析的 req.user —— JwtAuthGuard 本请求已读过同一行 account,
+      // 五个端点的 result 类型各异(仅 getProfile 是 AccountProfileResult), 统一走这里最省。
+      isAdmin: req.user.isAdmin,
     };
   }
 
@@ -348,6 +357,9 @@ export class AccountProfileController {
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
+      // 072: 取自 guard 已解析的 req.user —— JwtAuthGuard 本请求已读过同一行 account,
+      // 五个端点的 result 类型各异(仅 getProfile 是 AccountProfileResult), 统一走这里最省。
+      isAdmin: req.user.isAdmin,
     };
   }
 
@@ -484,6 +496,9 @@ export class AccountProfileController {
       status: result.status,
       createdAt: result.createdAt,
       wechatBound: (await this.inspectWechatBinding.execute(req.user.accountId)).bound,
+      // 072: 取自 guard 已解析的 req.user —— JwtAuthGuard 本请求已读过同一行 account,
+      // 五个端点的 result 类型各异(仅 getProfile 是 AccountProfileResult), 统一走这里最省。
+      isAdmin: req.user.isAdmin,
     };
   }
 }

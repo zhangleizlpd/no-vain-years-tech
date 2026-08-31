@@ -16,6 +16,10 @@ function stubCalendar(sessions: Record<string, string | null>) {
       return 'trading';
     },
     lastClosedSession,
+    // 072: 本文件只验 lastClosedSession 的取数与缓存, 不碰改期建议。
+    async previousTradingDay(): Promise<string | null> {
+      return null;
+    },
   };
   return { calendar, lastClosedSession };
 }

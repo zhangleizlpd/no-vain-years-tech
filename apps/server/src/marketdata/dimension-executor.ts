@@ -713,6 +713,7 @@ const NULL_EARNINGS_CALENDAR: EarningsCalendarPort = {
 const NULL_TRADING_CALENDAR: TradingCalendarPort = {
   classify: async () => 'unknown',
   lastClosedSession: async () => null,
+  previousTradingDay: async () => null,
 };
 
 /**

@@ -16,13 +16,22 @@ export interface TradingCalendarStub extends TradingCalendarPort {
   /** 把基准日改成确定值（体例同旧 `tradingDayFindFirst.mockResolvedValue({ date })`）。 */
   setLastClosed(date: string | null): void;
   setStatus(status: TradingDayStatus): void;
+  /** 072: 把「某日之前的上一个交易日」改成确定值（默认 null = 不可判定）。 */
+  setPreviousTradingDay(date: string | null): void;
 }
 
 export function stubTradingCalendar(
-  init: { status?: TradingDayStatus; lastClosed?: string | null } = {},
+  init: {
+    status?: TradingDayStatus;
+    lastClosed?: string | null;
+    previousTradingDay?: string | null;
+  } = {},
 ): TradingCalendarStub {
   let status: TradingDayStatus = init.status ?? 'trading';
   let lastClosed: string | null = init.lastClosed ?? null;
+  // 072: 默认 null = 「不可判定」—— 与 lastClosed 同一条默认理由: 让不关心它的用例保持零变化,
+  // 且**不可判定是安全侧**(调用方契约是「不许猜」)。要断言改期建议的用例显式 set。
+  let previousTradingDay: string | null = init.previousTradingDay ?? null;
   return {
     async classify(): Promise<TradingDayStatus> {
       return status;
@@ -30,11 +39,17 @@ export function stubTradingCalendar(
     async lastClosedSession(): Promise<string | null> {
       return lastClosed;
     },
+    async previousTradingDay(): Promise<string | null> {
+      return previousTradingDay;
+    },
     setLastClosed(date: string | null): void {
       lastClosed = date;
     },
     setStatus(next: TradingDayStatus): void {
       status = next;
+    },
+    setPreviousTradingDay(date: string | null): void {
+      previousTradingDay = date;
     },
   };
 }

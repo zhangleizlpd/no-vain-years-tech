@@ -51,19 +51,19 @@ function build(bound: boolean, cfg: OssConfig = ALIYUN_CFG) {
 describe('AccountProfileController GET /me — wechatBound (010 FR-S07)', () => {
   it('绑定存在 → wechatBound:true', async () => {
     const { controller } = build(true);
-    const res = await controller.getProfile({ user: { accountId: 99n } });
+    const res = await controller.getProfile({ user: { accountId: 99n, isAdmin: false } });
     expect(res.wechatBound).toBe(true);
   });
 
   it('无绑定 → wechatBound:false', async () => {
     const { controller } = build(false);
-    const res = await controller.getProfile({ user: { accountId: 99n } });
+    const res = await controller.getProfile({ user: { accountId: 99n, isAdmin: false } });
     expect(res.wechatBound).toBe(false);
   });
 
   it('响应 MUST NOT 含 openid 任何字段 (FR-S07 仅暴露 boolean)', async () => {
     const { controller } = build(true);
-    const res = await controller.getProfile({ user: { accountId: 99n } });
+    const res = await controller.getProfile({ user: { accountId: 99n, isAdmin: false } });
     expect(Object.keys(res)).not.toContain('openid');
     expect(JSON.stringify(res)).not.toContain('openid');
   });
@@ -73,7 +73,7 @@ describe('AccountProfileController GET /me — wechatBound (010 FR-S07)', () => 
 describe('AccountProfileController GET /me — objectKey → 展示 URL 派生', () => {
   it('OSS 已配置 → avatarUrl 是默认域名下的完整 URL', async () => {
     const { controller } = build(true);
-    const res = await controller.getProfile({ user: { accountId: 99n } });
+    const res = await controller.getProfile({ user: { accountId: 99n, isAdmin: false } });
     expect(res.avatarUrl).toBe(
       `https://nvy-profile-images.oss-cn-shanghai.aliyuncs.com/${AVATAR_KEY}`,
     );
@@ -85,7 +85,7 @@ describe('AccountProfileController GET /me — objectKey → 展示 URL 派生',
       ...ALIYUN_CFG,
       publicBaseUrl: 'https://img.shintongtech.com',
     });
-    const res = await controller.getProfile({ user: { accountId: 99n } });
+    const res = await controller.getProfile({ user: { accountId: 99n, isAdmin: false } });
     expect(res.avatarUrl).toBe(`https://img.shintongtech.com/${AVATAR_KEY}`);
   });
 
@@ -93,7 +93,7 @@ describe('AccountProfileController GET /me — objectKey → 展示 URL 派生',
   // 得到一个指向本站的 404 —— 那比「没有头像」更难查: 用户看到碎图, 服务端日志干净。
   it('OSS unconfigured → avatarUrl 为 null，绝不泄漏裸 objectKey（反例）', async () => {
     const { controller } = build(true, { kind: 'unconfigured' });
-    const res = await controller.getProfile({ user: { accountId: 99n } });
+    const res = await controller.getProfile({ user: { accountId: 99n, isAdmin: false } });
     expect(res.avatarUrl).toBeNull();
     expect(JSON.stringify(res)).not.toContain(AVATAR_KEY);
   });

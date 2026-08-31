@@ -47,6 +47,7 @@ const CFG: MarketdataSyncConfig = {
 const calendarOpen: TradingCalendarPort = {
   classify: async () => 'trading',
   lastClosedSession: async () => null,
+  previousTradingDay: async () => null,
 };
 
 const CODES = ['000001', '000002', '000003', '000004', '000005'];
