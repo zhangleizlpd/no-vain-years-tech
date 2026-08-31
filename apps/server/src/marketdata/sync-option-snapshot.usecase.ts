@@ -101,6 +101,15 @@ export interface SnapshotCollectionSpec {
    * 拿 `sessionDate` 当基准会让豁免线在补采路径上系统性偏一天且永远不会红 (Guardrail 18)。
    */
   now: Date;
+  /**
+   * **点名盯住的合约码** —— 这几条若本轮某条门「没判成」(缺输入), 落进 `stats.findings` 的
+   * `kind: 'unjudged'` (2026-08-31)。缺省 / 空 ⇒ 不记。
+   *
+   * 🚨 **蓄意做成白名单而不是全量**: 港股闭市时七成腿的门 ① / ④ 都判不动, 全量记等于把
+   * findings 撑爆并淹掉信号。谁值得盯只有**补救链**知道 —— 它手上有「上一轮被硬门拒了谁」。
+   * 🚫 MUST NOT 拿它去影响入库: 它是**留痕**不是判据, 入库与否只看 `verdict.admitted`。
+   */
+  unjudgedWatch?: readonly string[];
 }
 
 /** 三个时点列 + 来源, 逐行落库前已解析完毕。 */
@@ -337,7 +346,14 @@ export class SyncOptionSnapshotUseCase {
       }
       const symbol = `${inst.market}:${inst.code}`;
       try {
-        const synced = await this.syncUnderlying(inst.id, symbol, ctx, stats, anomalyRows);
+        const synced = await this.syncUnderlying(
+          inst.id,
+          symbol,
+          ctx,
+          stats,
+          anomalyRows,
+          spec.unjudgedWatch,
+        );
         if (synced) stats.ok++;
         else stats.skipped++;
       } catch (err) {
@@ -371,6 +387,8 @@ export class SyncOptionSnapshotUseCase {
     ctx: ResolvedSnapshotContext,
     stats: SyncRunStats,
     anomalyRows: OptionAnomalyRow[],
+    /** 点名盯「门没判成」的合约码, 见 {@link SnapshotCollectionSpec.unjudgedWatch}。 */
+    unjudgedWatch: readonly string[] | undefined,
   ): Promise<boolean> {
     const contracts: WorkingContract[] = await this.prisma.optionContract.findMany({
       // FR-028a: 判据是 **≥** 当前交易日 —— 当日到期的合约当日仍可取快照。
@@ -433,6 +451,7 @@ export class SyncOptionSnapshotUseCase {
 
       const verdicts = checkOptionSnapshotRows(guardRows);
       this.reportRejected(symbol, verdicts, stats);
+      this.reportUnjudged(symbol, verdicts, stats, unjudgedWatch);
 
       const persistable = optionRows.filter((_, i) => verdicts[i].admitted);
       const spotOf = (row: OptionSnapshotRow) => spotByCode.get(row.underlyingCode ?? '') ?? null;
@@ -494,6 +513,36 @@ export class SyncOptionSnapshotUseCase {
    * 失败并触发降级告警。`findings` 作审计明细通道是既有用法 (同
    * `SyncRunRecorder.recordSkippedWithReason`)。FR-043 要的「ERROR」是这条 log。
    */
+  /**
+   * 点名合约的「某条门没判成」留痕 (2026-08-31)。**零副作用**: 不改入库、不改 `stats` 的四个
+   * 计数, 只往 `findings` 加一条。名单为空 ⇒ 直接返回, 正常轮零开销。
+   *
+   * 复杂度 `O(n)` (n = 本批行数), 名单用 `Set` 查。
+   */
+  private reportUnjudged(
+    symbol: string,
+    verdicts: OptionSnapshotVerdict[],
+    stats: SyncRunStats,
+    watch: readonly string[] | undefined,
+  ): void {
+    if (watch === undefined || watch.length === 0) return;
+    const watched = new Set(watch);
+    const hit = verdicts.filter((v) => watched.has(v.contractCode) && v.unjudged.length > 0);
+    if (hit.length === 0) return;
+    const gates = [...new Set(hit.flatMap((v) => [...v.unjudged]))].sort();
+    this.logger.warn(
+      `[option-snapshot] 点名合约的门**没判成** (缺输入, 非违规; 仍入库): ${symbol} ` +
+        `${hit.length} 条 门=${gates.join('/')} ${hit.map((v) => v.contractCode).join(', ')}`,
+    );
+    stats.findings.push({
+      kind: 'unjudged',
+      symbol,
+      step: 'option_snapshot_guard',
+      contracts: hit.map((v) => v.contractCode),
+      gates,
+    });
+  }
+
   private reportRejected(
     symbol: string,
     verdicts: OptionSnapshotVerdict[],

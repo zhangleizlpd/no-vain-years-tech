@@ -13,10 +13,12 @@ import {
   type SyncRunStats,
 } from './sync-run.recorder.js';
 import {
+  SNAPSHOT_SOURCE_EOD,
   SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
   SyncOptionSnapshotUseCase,
   type SnapshotCollectionSpec,
 } from './sync-option-snapshot.usecase.js';
+import { oiRefreshedAtEod } from './market-session.rules.js';
 import { exchangeCalendarDate } from './session-clock.js';
 import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
@@ -31,7 +33,7 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * | us | ① 当日重试 | 08:00 (夜间采集窗之后) | 与正常路径**同源**: 归属整份取自 `resolveSnapshotAttribution` (该时点 ⇒ `source=eod` · `oi_as_of` = 上一交易日) | 只 WARN, 挂着等 ② |
  * | us | ② 次日盘前兜底 | 18:00 (= ET 05:00/06:00, 落在盘前 04:00–09:30 内) | `source=premarket_backfill` · `session_date` = **被补的那天** · `oi_as_of` = `session_date` | **升 ERROR** |
  * | hk | ① 当日重试 | **23:40** (= HKT 23:40; 夜链 23:00 起, 约 40s 跑完) | 判据在该时点给 `source=eod` · `oi_as_of` = `session_date` (hk 的 OI 21:30 已定稿) | 只 WARN, 挂着等 ② |
- * | hk | ② 次日盘前兜底 | **08:30** (= HKT 08:30, 09:00 竞价前) | `source=premarket_backfill` · `oi_as_of` = `session_date` | **升 ERROR** |
+ * | hk | ② 次日盘前兜底 | **08:30** (= HKT 08:30, 09:00 竞价前) | `source=`**`eod`** (OI 当晚定稿 ⇒ 两 source 的 `oi_as_of` 逐值相同, 见 {@link backfillPremarket}) · `oi_as_of` = `session_date` | **升 ERROR** |
  *
  * ## 🚨 hk ① 级钉在 23:40 而不是跨过午夜 (#255)
  *
@@ -200,7 +202,7 @@ export class OptionSnapshotRemediation {
   constructor(
     private readonly coverage: OptionSnapshotCoverageCheck,
     private readonly snapshot: SyncOptionSnapshotUseCase,
-    prisma: PrismaService,
+    private readonly prisma: PrismaService,
     @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
     private readonly recorder: SyncRunRecorder,
   ) {
@@ -299,7 +301,12 @@ export class OptionSnapshotRemediation {
       return this.idle(market, 'same_day_retry', sessionDate, calendar, `覆盖率 ${before.status}`);
     }
 
-    const after = await this.recollect(market, before, attribution.spec, 'same_day_retry');
+    const { report: after } = await this.recollect(
+      market,
+      before,
+      attribution.spec,
+      'same_day_retry',
+    );
     const attempted = before.degraded.map((u) => u.symbol);
     if (after.status !== 'degraded') {
       this.logger.warn(
@@ -386,24 +393,86 @@ export class OptionSnapshotRemediation {
       );
     }
 
-    const after = await this.recollect(
+    // 🚨 本级**落库 source** 由 {@link oiRefreshedAtEod} 派生, 🚫 MUST NOT 新开一张 per-market
+    // 表 (2026-08-31 收口): `source` 第三段与 `eod` 分开的**唯一**理由是承载 OI vintage, 而
+    // 「这个市场的 vintage 到底有没有差别」这个事实早已登记在 `MARKET_OI_SETTLE_LOCAL_MINUTE`
+    // —— 再写一份 per-market 表就是同一事实两处各存一份, 调参那天必漂。
+    //
+    // 当晚定稿的市场 (hk) 两个 source 的 `oi_as_of` **逐值相同** ⇒ `source` 不承载任何信息,
+    // 却让唯一键 `(contract_id, session_date, source)` 不再碰撞 ⇒ 本级平行写**整条链**, 而读侧
+    // 「按 quote_as_of 取新」恒选中这份**闭市采**的行。2026-08-31 实证: hk:00700 为补 2 条被
+    // 无套利守卫拒掉的腿重写了 **1110 行** (放大 555×), 而那批 greeks 是 vendor 在无盘口时
+    // 退化用陈旧 `last` 反解出来的 (IV 30.7 vs 同日 `eod` 行 40.4, 与次日实时 40.4 对不上)。
+    // ⇒ 定稿市场落 `eod` ⇒ 撞唯一键 ⇒ `createMany(skipDuplicates)` 挡掉已有行, **只补真缺的**;
+    //   整场零行的日子 (hk 2026-08-24/25/26) 无行可撞, 照旧全量兜底 —— 两种缺口形态自动分流,
+    //   不需要第二条判据。
+    //
+    // 🚫 仍然 MUST NOT 改成走 `resolveSnapshotAttribution` 推导 —— 上一节那条禁令原样成立:
+    // 判据层在日历 `unknown` 那天会给出 `eod`, 把痕悄悄擦掉。本式**不读日历**, 只查
+    // `MARKET_OI_SETTLE_LOCAL_MINUTE` + 一次时区折算, 且与写库侧 (`sync-option-snapshot.usecase`
+    // 的 `oiFinalizedAtSessionClose`) 调的是**同一个函数**, 两处同源、改坏任一边单测立刻红。
+    // 📌 未登记市场 `oiRefreshedAtEod` 返 `false` ⇒ 沿用 `premarket_backfill` (保守方向): 新市场
+    //   若其 OI 盘前才翻新, 合并 source 会把两种 vintage 混成一个标签 —— 数字与标签双错且不报错。
+    // 📌 FR-052 的「这天是靠兜底续命的」那条痕**不丢**, 载体换成 `sync_run.triggered_by =
+    //   'premarket_backfill'`: 同样是落库行 (T025a 的独立探针一样数得到), 且**不参与唯一键**。
+    const writeSource = oiRefreshedAtEod(market, sessionDate, now)
+      ? SNAPSHOT_SOURCE_EOD
+      : SNAPSHOT_SOURCE_PREMARKET_BACKFILL;
+    // 🚨 **假修复闸** (2026-08-31, A′): 上一轮被硬门拒掉的合约, 重采**修不了** —— 拒的是内容
+    // (`ask` 相对内在价值的偏差是持续的, 不是 vendor 抖动), 同样的报价再采一次还是同样被拒。
+    // 而港股 08:30 盘前**无盘口** ⇒ 门 ④ 的输入缺失 ⇒ 那条门根本没跑 ⇒ 零违规 ⇒ 行落库 ⇒
+    // 覆盖率数字达标 ⇒ 判「补回了」。**空数据反而比有瑕疵的数据更"合格"**, 而这一级正是靠它
+    // 宣布成功的 (prod 2026-08-28 场实撞: hk:00700 两条深实值 PUT 撞 `ask_below_intrinsic`,
+    // ① 级 23:40 重采仍被拒 `written=0`, ② 级 08:30 写入后判 recovered, ERROR 被吞成 WARN)。
+    //
+    // ⇒ 把「上一轮拒了谁」点名交给采集侧盯住 (`unjudgedWatch`), 本轮它们若仍是**没判成**的行,
+    //   就不算修复。🚫 MUST NOT 退化成「本轮有任何 unjudged 行就判失败」: 港股闭市七成腿的门
+    //   ①/④ 都判不动, 那样会让 hk 恒红 —— 判别器是**上一轮被拒**这个交集, 不是 unjudged 本身。
+    const priorRejected = await this.priorGuardRejections(market, sessionDate);
+    const focus = [...new Set(before.degraded.flatMap((u) => u.missingContractCodes))].filter(
+      (code) => priorRejected.has(code),
+    );
+
+    const { report: after, stats } = await this.recollect(
       market,
       before,
       {
         sessionDate,
-        mode: SNAPSHOT_SOURCE_PREMARKET_BACKFILL,
+        mode: writeSource,
         marketScope: [market],
         now,
+        unjudgedWatch: focus,
       },
       'premarket_backfill',
     );
     const attempted = before.degraded.map((u) => u.symbol);
+    const falselyRecovered = stats.findings.flatMap((f) =>
+      f.kind === 'unjudged' ? f.contracts : [],
+    );
+    if (falselyRecovered.length > 0) {
+      // 覆盖率可能已经"达标"了, 所以这条 ERROR 不能等 `alertIfDegraded` 去发 —— 它看的是数字。
+      this.logger.error(
+        `[option-snapshot-remediation] ${market} ② 级**假修复**: ${sessionDate} 的 ` +
+          `${falselyRecovered.length} 条合约上一轮被硬门拒, 本轮只拿到「门没判成」的行 ` +
+          `(缺盘口 ⇒ 无套利下界根本没跑) ⇒ 缺口未修, 覆盖率数字不作数: ` +
+          `${falselyRecovered.join(', ')}`,
+      );
+      return {
+        market,
+        level: 'premarket_backfill',
+        calendar,
+        sessionDate,
+        status: 'still_missing',
+        attempted,
+        stillMissing: after.degraded.map((u) => u.symbol),
+      };
+    }
     if (after.status !== 'degraded') {
       // 降级 MUST 留痕 + 告警 (FR-052), 但**不是** ERROR —— 缺口已补上。留痕的权威形态是
       // 落库行的 `source`, 本条 log 只是让它当场可见。
       this.logger.warn(
         `[option-snapshot-remediation] ${market} ② 次日盘前兜底补回 ${sessionDate} (source=` +
-          `${SNAPSHOT_SOURCE_PREMARKET_BACKFILL}, 本日数据来自兜底补采): ${attempted.join(', ')}`,
+          `${writeSource}, 本日数据来自兜底补采): ${attempted.join(', ')}`,
       );
       return {
         market,
@@ -455,7 +524,7 @@ export class OptionSnapshotRemediation {
     before: OptionCoverageReport,
     spec: SnapshotCollectionSpec,
     level: RemediationLevel,
-  ): Promise<OptionCoverageReport> {
+  ): Promise<{ report: OptionCoverageReport; stats: SyncRunStats }> {
     const stats: SyncRunStats = emptyStats();
     const runId = await this.recorder.start(snapshotSyncType(market), {
       // 🚨 两级各报自己是谁 —— 判据侧「只有 tick 算一轮」(#202) 据此把补救轮排除在计数外。
@@ -478,7 +547,40 @@ export class OptionSnapshotRemediation {
           `${JSON.stringify(stats.findings)}`,
       );
     }
-    return this.coverage.evaluate(market, spec.sessionDate);
+    // 🚨 连 `stats` 一起返回 —— 复判只看覆盖率数字是分不出「真补回了」与「靠没判成的行凑够
+    // 了行数」的 (见 {@link backfillPremarket} 的假修复判据), 而那个信息只活在本轮的 findings 里。
+    return { report: await this.coverage.evaluate(market, spec.sessionDate), stats };
+  }
+
+  /**
+   * 同一 `(sync_type, as_of)` 下**既往轮**被落库前硬门拒掉的合约码 (2026-08-31, A′)。
+   *
+   * 🚨 它答的是「这条腿到底是**没采到**还是**采到了被拒**」—— 覆盖率只数逐合约行数, 两者
+   * 长得一模一样 (都是「该合约当日无行」), 而处置**完全相反**: 没采到 ⇒ 重采能救; 被拒 ⇒
+   * 内容问题, 重采一万次也是同样的报价、同样被拒。判别信息只活在 `sync_run.findings` 里。
+   *
+   * 📌 本级跑在自己的 `SyncRun` 行**开出来之前**调用 ⇒ 读到的恒是既往轮 (夜链 + ① 级)。
+   * 📌 `findings` 是 `Json?`, 形状的单一来源是 `SyncRunFinding` —— 这里只按 `kind` 取, 拿不准
+   *    的行一律跳过 (历史行可能是旧形状), 🚫 MUST NOT 因为一条读不懂的 finding 就炸掉本级。
+   *
+   * 复杂度: 一次按 `(sync_type, as_of)` 的索引查询 + `O(findings)` 展平。
+   */
+  private async priorGuardRejections(market: string, sessionDate: string): Promise<Set<string>> {
+    const runs = await this.prisma.syncRun.findMany({
+      where: { syncType: snapshotSyncType(market), asOf: new Date(`${sessionDate}T00:00:00Z`) },
+      select: { findings: true },
+    });
+    const rejected = new Set<string>();
+    for (const run of runs) {
+      if (!Array.isArray(run.findings)) continue;
+      for (const raw of run.findings) {
+        if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const entry = raw as { kind?: unknown; contracts?: unknown };
+        if (entry.kind !== 'reject' || !Array.isArray(entry.contracts)) continue;
+        for (const code of entry.contracts) if (typeof code === 'string') rejected.add(code);
+      }
+    }
+    return rejected;
   }
 
   /**

@@ -36,8 +36,10 @@ import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
  *    白打一轮全链快照, 且给每天的数据都盖上「靠兜底续命」的痕
  * ② **二级成功不升 ERROR, 但 MUST 留痕 + 告警** (FR-052): 「一直靠兜底续命」被静默掉, 与
  *    「没有兜底」一样危险
- * ③ **留痕形态是可被 SQL 读到的行状态** (`source = premarket_backfill`), **不是只落 log** ——
- *    T025a 那条独立进程的探针不读 app 的 log
+ * ③ **留痕形态是可被 SQL 读到的行状态**, **不是只落 log** —— T025a 那条独立进程的探针不读 app
+ *    的 log。⚠️ 载体**按市场分**: OI 隔日翻新的市场 (us) 靠行的 `source = premarket_backfill`;
+ *    OI 当晚定稿的市场 (hk) 的行落 `source = eod` (换回唯一键去重), 痕改由
+ *    `sync_run.triggered_by` 承载 —— 同样是落库行, 且不参与唯一键 (2026-08-31 收口)
  * ④ **补采行 `oi_as_of = session_date`**, 与正常路径的「上一交易日」**方向相反** (Guardrail 6):
  *    盘前 OI 已翻新, 正是被补那天的真值。抄成一样不会红, 但两条路径产出的 OI 差一天
  * ⑤ **两级都失败才升 ERROR** (FR-046), 且非交易日两级都不跑 —— 周末照跑会把「今天本来就没有
@@ -62,6 +64,9 @@ const PEP_CONTRACT_CODE = 'US.PEP260717P130000';
 
 /** 港股 ① 级的时刻: 23:40 HKT 周一 = 15:40 UTC ⇒ 仍在**同一港股日历日**内 (#255)。 */
 const HK_SAME_DAY_RETRY_AT = new Date('2026-06-15T15:40:00Z');
+
+/** 港股 ② 级的时刻: 08:30 HKT 周二 = 00:30 UTC ⇒ 港股当地已跨日, 待补的是上一交易日周一。 */
+const HK_PREMARKET_AT = new Date('2026-06-16T00:30:00Z');
 
 const day = (s: string): Date => new Date(`${s}T00:00:00Z`);
 
@@ -158,6 +163,10 @@ function makeHarness(
   verdicts: OptionCoverageReport[],
   tradingDays = TRADING_DAYS,
   underlyingLast = '128.40',
+  /** 既往轮被落库前硬门拒掉的合约码 (喂 `sync_run.findings`) —— 假修复闸的判别器输入。 */
+  priorRejected: readonly string[] = [],
+  /** 端点是否返闭市形态 (两侧盘口 `null`), 见 {@link quoteRow}。 */
+  quoteless = false,
 ): Harness {
   const queries: OptionSnapshotQuery[] = [];
   const persisted: Record<string, unknown>[] = [];
@@ -166,7 +175,7 @@ function makeHarness(
   const port: OptionSnapshotPort = {
     getSnapshots: vi.fn(async (q: OptionSnapshotQuery) => {
       queries.push({ ...q, contractCodes: [...q.contractCodes] });
-      const rows: OptionSnapshotRow[] = q.contractCodes.map((code) => quoteRow(code));
+      const rows: OptionSnapshotRow[] = q.contractCodes.map((code) => quoteRow(code, quoteless));
       rows.push(underlyingRow(underlyingLast));
       return { asOf: new Date('2026-06-16T10:02:11Z'), rows };
     }),
@@ -222,6 +231,28 @@ function makeHarness(
       // #181 归属判据要今天的 session 形态；本片不测半日市，恒 `whole`。
       findUnique: vi.fn(async () => ({ sessionKind: 'whole' })),
     },
+    // 既往轮的 findings —— ② 级据此分辨「没采到」与「采到了被硬门拒」(2026-08-31 A′)。
+    syncRun: {
+      findMany: vi.fn(async () =>
+        priorRejected.length === 0
+          ? []
+          : [
+              {
+                findings: [
+                  {
+                    kind: 'reject',
+                    symbol: 'us:PEP',
+                    step: 'option_snapshot_guard',
+                    rejected: priorRejected.length,
+                    contracts: [...priorRejected],
+                    violations: ['ask_below_intrinsic'],
+                    violationSamples: [`${priorRejected[0]}: ask 低于无套利下界`],
+                  },
+                ],
+              },
+            ],
+      ),
+    },
   } as unknown as PrismaService;
 
   const classifyCalls: [string, string][] = [];
@@ -254,15 +285,19 @@ function makeHarness(
   };
 }
 
-function quoteRow(code: string): OptionSnapshotRow {
+/**
+ * @param quoteless 闭市形态: 做市商全撤单 ⇒ 端点两侧盘口都返 `null`。门 ① / ④ 于是**判不动**,
+ *        而不是「判了且过了」—— 假修复闸盯的就是这个差别。
+ */
+function quoteRow(code: string, quoteless = false): OptionSnapshotRow {
   return {
     code,
     isOption: true,
     underlyingCode: 'US.PEP',
-    bid: '2.30',
-    ask: '2.40',
-    bidSize: '45',
-    askSize: '60',
+    bid: quoteless ? null : '2.30',
+    ask: quoteless ? null : '2.40',
+    bidSize: quoteless ? null : '45',
+    askSize: quoteless ? null : '60',
     last: '2.35',
     prevClose: '2.28',
     iv: '21.4',
@@ -461,6 +496,74 @@ describe('OptionSnapshotRemediation', () => {
       warn.mockRestore();
     });
 
+    it('🚨 假修复闸: 上一轮被硬门拒的腿, 这一轮只拿到「门没判成」的行 ⇒ 覆盖率达标也不算修复', async () => {
+      // prod 2026-08-28 场实撞的形态: hk:00700 两条深实值 PUT 撞 `ask_below_intrinsic` 被拒 ⇒
+      // 判该票未完整 ⇒ ② 级 08:30 盘前重采, 而港股 09:00 才竞价 ⇒ ask 全为 null ⇒ 门 ④ **根本
+      // 没跑** ⇒ 零违规 ⇒ 行落库 ⇒ 覆盖率数字达标 ⇒ 判「补回了」, ERROR 被吞成 WARN。
+      // 而那批行的 greeks 是 vendor 无盘口时退化用陈旧 `last` 反解的, 比缺着还坏。
+      const h = makeHarness(
+        [report('degraded'), report('ok')], // ← 复判说"达标"
+        TRADING_DAYS,
+        '128.40',
+        [PEP_CONTRACT_CODE], // ← 上一轮该合约是**被拒**, 不是没采到
+        true, // ← 闭市: 端点两侧盘口都返 null
+      );
+      const err = spyLog('error');
+      const warn = spyLog('warn');
+
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
+      warn.mockRestore();
+
+      // 🚨 覆盖率说达标, 本级仍判未修复 —— 判别器是「上一轮被拒 ∧ 本轮没判成」的交集。
+      expect(outcome.status).toBe('still_missing');
+      expect(String(err.mock.calls.at(-1)?.[0])).toContain('假修复');
+      expect(String(err.mock.calls.at(-1)?.[0])).toContain(PEP_CONTRACT_CODE);
+      err.mockRestore();
+    });
+
+    it('🚨 假修复闸 MUST NOT 恒红: 上一轮**没采到**(非被拒) ⇒ 无盘口行照样算补回', async () => {
+      // 这条是上一条的对偶, 也是这个闸唯一的失败模式: 港股闭市七成腿的门 ①/④ 本就判不动,
+      // 若判据退化成「本轮有任何 unjudged 行就判失败」, hk 会**天天红**。
+      // hk 2026-08-24/25/26 就是这个形态: eod 轮整场零行, 兜底写的 2200 行里七成无盘口 ——
+      // 那时任何数据都好过没有, MUST 判 recovered。
+      const h = makeHarness(
+        [report('degraded'), report('ok')],
+        TRADING_DAYS,
+        '128.40',
+        [], // ← 既往轮**没有** reject 记录 ⇒ 是「没采到」不是「被拒」
+        true, // ← 同样闭市无盘口
+      );
+      const err = spyLog('error');
+      const warn = spyLog('warn');
+
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
+      warn.mockRestore();
+
+      expect(outcome.status).toBe('recovered');
+      expect(err).not.toHaveBeenCalled();
+      err.mockRestore();
+    });
+
+    it('🚨 假修复闸 MUST NOT 误伤真修复: 上一轮被拒但这一轮**判过了且过了** ⇒ 算补回', async () => {
+      // us ② 级跑在 ET 盘前窗内, 那时**有真报价** ⇒ 被拒的腿可能这一轮就合规了。
+      const h = makeHarness(
+        [report('degraded'), report('ok')],
+        TRADING_DAYS,
+        '128.40',
+        [PEP_CONTRACT_CODE], // ← 上一轮被拒
+        false, // ← 但这一轮有盘口 ⇒ 门 ④ 真判过且过了
+      );
+      const err = spyLog('error');
+      const warn = spyLog('warn');
+
+      const outcome = await h.remediation.backfillPremarket('us', PREMARKET_AT);
+      warn.mockRestore();
+
+      expect(outcome.status).toBe('recovered');
+      expect(err).not.toHaveBeenCalled();
+      err.mockRestore();
+    });
+
     it('🚨 两级都失败 → 升 ERROR 且**指明哪一票哪一天**', async () => {
       const h = makeHarness([report('degraded'), report('degraded')]);
       const err = spyLog('error');
@@ -552,7 +655,12 @@ describe('OptionSnapshotRemediation', () => {
 
       const expected = expectedSpec(PREMARKET_AT);
       expect(collect).toHaveBeenCalledTimes(1);
-      expect(collect.mock.calls[0][1]).toEqual(expected.spec);
+      // 📌 `unjudgedWatch` **不属于归属语义** —— 它是留痕参数 (点名盯哪几个合约的门没判成),
+      //    与 `session_date` / `source` / `oi_as_of` 三个时点列无关。剔出后仍做**等值**回归
+      //    (不是 `toMatchObject`), 这样归属三元组多一格 / 少一格照旧当场红。
+      const { unjudgedWatch, ...attributionSpec } = collect.mock.calls[0][1];
+      expect(attributionSpec).toEqual(expected.spec);
+      expect(unjudgedWatch).toEqual([]);
       // ② 级的 oi_as_of **= session_date** (盘前 OI 已翻新), 与 ① 级差一天且 MUST NOT 抹平。
       expect(expected.oiAsOf).toBe(SESSION);
     });
@@ -580,6 +688,31 @@ describe('OptionSnapshotRemediation', () => {
       });
       // 覆盖率判据必须收到市场 —— 少这一格就是本 issue 的病根本身。
       expect(h.evaluate.mock.calls[0][0]).toBe('hk');
+    });
+
+    it('🚨 hk ② 级: OI 当晚定稿 ⇒ 落 source=`eod` 撞唯一键**只补真缺的**, 不再平行写整链', async () => {
+      const h = makeHarness([hkReport('degraded'), hkReport('ok')]);
+      const warn = spyLog('warn');
+
+      const outcome = await h.remediation.backfillPremarket('hk', HK_PREMARKET_AT);
+      warn.mockRestore();
+
+      expect(outcome).toMatchObject({ market: 'hk', status: 'recovered', sessionDate: SESSION });
+      // 🚨 本条的全部价值 (2026-08-31 收口): `source` 第三段与 `eod` 分开的**唯一**理由是承载
+      //    OI vintage, 而 hk 的 OI 在 D 日 21:30 已定稿 ⇒ 两个 source 的 `oi_as_of` **逐值相同**
+      //    ⇒ 分叉不承载任何信息, 却让唯一键 `(contract_id, session_date, source)` 不再碰撞 ⇒
+      //    本级平行写**整条链**, 而读侧「按 quote_as_of 取新」恒选中这份**闭市采**的行。
+      //    prod 实撞 (2026-08-28 场): hk:00700 为补 2 条被无套利守卫拒掉的腿重写了 1110 行,
+      //    那批 greeks 是 vendor 无盘口时退化用陈旧 `last` 反解的 (IV 30.7 vs 同日 eod 行 40.4)。
+      expect(h.persisted[0]).toMatchObject({
+        source: 'eod',
+        sessionDate: day(SESSION),
+        oiAsOf: day(SESSION),
+      });
+      // 📌 FR-052 那条痕**不丢**, 只是换了载体: 行的 `source` 不再标它, `sync_run.triggered_by`
+      //    标它 —— 同样是落库行 (独立探针一样数得到), 且不参与唯一键。
+      expect(h.runs.map((r) => r.origin.triggeredBy)).toEqual(['premarket_backfill']);
+      expect(h.runs.map((r) => r.syncType)).toEqual(['sync:hk_option_daily_snapshot']);
     });
 
     it('hk 非交易日 → 两级都零外呼 (日历闸按 hk 问, 不是按 us)', async () => {
