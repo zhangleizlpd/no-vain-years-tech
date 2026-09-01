@@ -41,21 +41,42 @@ const CODE = 'NVYS';
 const SYMBOL = `${MARKET}:${CODE}`;
 const SUBMITTER = 'contract-smoke';
 
-/** 口径日取「昨天」，避开 FUTURE / TODAY 两档（本片验的不是日闸，那归 server 单测）。 */
-function ymdDaysAgo(days: number): string {
-  const d = new Date(Date.now() - days * 86_400_000);
+/**
+ * 倒数第 `n` 个**工作日**（UTC 轴，`YYYY-MM-DD`），`n` 从 1 起。
+ *
+ * 🚨 **数的是工作日，不是日历天**。口径日闸的判官是 `MockMarketDataAdapter.classify()`
+ * —— harness 恒钉 `MARKETDATA_PROVIDER=mock`，而 `marketdata.module.ts` 的
+ * `TRADING_CALENDAR_PORT` 在 mock 下绑 Mock 单例（**不读 `marketdata.trading_day` 表**），
+ * 判据只是对日期串取 `getUTCDay()` 看落不落在周一~周五。日历天回退有 2/7 概率落到周末
+ * ⇒ `asofFlag=NON_TRADING` ⇒ 采纳被 fail-closed 闸挡成 409 `ASOF_SUSPECT`
+ * （2026-09-01 夜跑实撞：那天 UTC 是周二，D-3 = 08-29 周六）。本函数与 mock 同源判周一~
+ * 周五，逐点等价。
+ *
+ * 🚨 **不能写成「日历天回退后再 snap 回最近工作日」**：周三跑时 D-3(周日) 与 D-4(周六) 会
+ * snap 成同一个周五，两条待审的 `asof` 撞车 —— 而第二条正是靠 `asof` 从列表里认出来的。
+ *
+ * `n ≥ 1` 恒早于 UTC 今天，交易所当地今天又不早于 UTC 昨天 ⇒ `FUTURE` / `TODAY` 两档够不着
+ * （本片验的不是日闸，那归 server 单测）。复杂度 O(n)。
+ */
+function nthWeekdayBack(n: number): string {
+  const d = new Date();
+  let left = n;
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const day = d.getUTCDay();
+    if (day >= 1 && day <= 5) left -= 1;
+  }
   return d.toISOString().slice(0, 10);
 }
 
-const ASOF_MAIN = ymdDaysAgo(3);
-const ASOF_SECOND = ymdDaysAgo(4);
-const ASOF_THIRD = ymdDaysAgo(5);
+const ASOF_MAIN = nthWeekdayBack(3);
+const ASOF_SECOND = nthWeekdayBack(4);
 
 export async function run(ctx: RealBackendCtx): Promise<void> {
   const cfg: Cfg = { baseURL: ctx.api, headers: { authorization: `Bearer ${ctx.accessToken}` } };
 
   await cleanup(ctx);
-  await seedInstrumentAndCalendar(ctx);
+  await seedInstrument(ctx);
 
   let anchorId: string | null = null;
   try {
@@ -197,18 +218,19 @@ function assertRowShape(row: AnchorSubmissionReviewResponse): void {
   assert.equal(row.submitter, SUBMITTER, 'submitter 应原样回显（归属，不作授权）');
 }
 
-async function seedInstrumentAndCalendar(ctx: RealBackendCtx): Promise<void> {
+/**
+ * 只铺标的。`instrumentName` 由列表读它回填（缺行则该字段为 null，屏上少一行名字）。
+ *
+ * 🚨 **蓄意不铺 `marketdata.trading_day`**：harness 下日历口走 Mock 单例，那张表**没有任何
+ * 读者**（判据见 {@link nthWeekdayBack}）—— 铺了也只是往一次性库里写三行死数据。而且它铺的
+ * 是「D-3/D-4/D-5 一律算交易日」，撞上周末就等于宣布周六开市，会让本片绿在一个现实中不存在
+ * 的日历上；那正是 mock 拒绝建模节假日的同一条理由。要让口径日落在交易日，靠上面那个函数
+ * 挑对日子，不靠给日历塞答案。
+ */
+async function seedInstrument(ctx: RealBackendCtx): Promise<void> {
   await ctx.execSql(
     `INSERT INTO marketdata.instrument (market, code, name, type, currency, status)
      VALUES ('${MARKET}', '${CODE}', '072 契约冒烟 待审箱', 'stock', 'USD', 'listed')
-     ON CONFLICT DO NOTHING`,
-  );
-  // 口径日闸要日历答得出「那天开不开市」；三个用到的日子都铺成交易日，避免撞可疑档。
-  await ctx.execSql(
-    `INSERT INTO marketdata.trading_day (market, date)
-     VALUES ('${MARKET}', DATE '${ASOF_MAIN}'),
-            ('${MARKET}', DATE '${ASOF_SECOND}'),
-            ('${MARKET}', DATE '${ASOF_THIRD}')
      ON CONFLICT DO NOTHING`,
   );
 }
