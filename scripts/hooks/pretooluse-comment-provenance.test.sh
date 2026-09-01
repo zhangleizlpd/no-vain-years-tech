@@ -48,6 +48,22 @@ assert() {
         FAILED=1
       fi
       ;;
+    pub-pr)
+      if printf '%s' "$out" | grep -q '你正在发布\*\*对外留存\*\*的文字：PR 正文'; then
+        echo "✅ $name"
+      else
+        echo "❌ $name — 应注入发布 rubric（PR），实际: ${out:-<empty>}"
+        FAILED=1
+      fi
+      ;;
+    pub-commit)
+      if printf '%s' "$out" | grep -q '你正在发布\*\*对外留存\*\*的文字：commit message'; then
+        echo "✅ $name"
+      else
+        echo "❌ $name — 应注入发布 rubric（commit），实际: ${out:-<empty>}"
+        FAILED=1
+      fi
+      ;;
     silent)
       if [ -z "$out" ]; then
         echo "✅ $name"
@@ -109,6 +125,27 @@ cmd_case "多文件一条命令：两个都已标记 ⇒ 静默" d3 \
   "cat apps/server/src/marketdata/b.rules.ts apps/server/src/marketdata/a.adapter.ts" silent
 cmd_case "多文件：其中一个是新的 ⇒ 仍注入" d3 \
   "cat apps/server/src/marketdata/a.adapter.ts apps/server/src/marketdata/c.port.ts" bash
+
+echo "── 对外发布通道（PR 正文 / commit message）─────────────────"
+cmd_case "gh-bot pr create（绝对路径形式）" p1 "/Users/x/.nvy/bin/gh-bot pr create --title t --body-file /tmp/b.md" pub-pr
+cmd_case "裸 gh pr create" p2 "gh pr create --fill" pub-pr
+cmd_case "gh pr edit 改 body" p3 "gh pr edit 327 --body-file /tmp/fixed.md" pub-pr
+cmd_case "git-bot commit" p4 "/Users/x/.nvy/bin/git-bot commit -F -" pub-commit
+cmd_case "裸 git commit" p5 "git commit -m hello" pub-commit
+cmd_case "gh pr checks 不该命中" p6 "gh-bot pr checks 327" silent
+cmd_case "gh pr merge 不该命中" p7 "gh-bot pr merge 327 --auto --squash" silent
+cmd_case "散文里的 commit 一词不该命中（判据收紧的回归）" p8 "echo the commit is already merged" silent
+cmd_case "散文里的 pr create 不该命中" p9 "echo run pr create later" silent
+
+echo "── 通道优先级 & 发布去重 ───────────────────────────────────"
+cmd_case "同时含覆盖面路径与 pr create ⇒ 路径 rubric 优先" x1 \
+  "gh pr create --body-file apps/server/src/marketdata/futu.adapter.ts" bash
+cmd_case "两个不同 PR 各注入一次 1/2" x2 "gh pr create --title aaa" pub-pr
+cmd_case "两个不同 PR 各注入一次 2/2" x2 "gh pr create --title bbb" pub-pr
+cmd_case "同一条 PR 命令重试 ⇒ 静默" x3 "gh pr create --title same" pub-pr
+cmd_case "同一条 PR 命令重试 ⇒ 静默(2nd)" x3 "gh pr create --title same" silent
+cmd_case "commit 一个 session 只注入一次 1/2" x4 "git commit -m first" pub-commit
+cmd_case "commit 一个 session 只注入一次 2/2" x4 "git commit -m second" silent
 
 echo "── fail-open ────────────────────────────────────────────────"
 assert "既无 file_path 也无 command" '{"session_id":"f1","tool_input":{}}' silent
