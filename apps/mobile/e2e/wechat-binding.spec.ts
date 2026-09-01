@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './_support/fixtures';
 
 import { mockJson } from './_support/api-mock';
 
