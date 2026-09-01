@@ -6,6 +6,7 @@ import type {
   WorkingInstrument,
 } from './dimension-executor.js';
 import { oiRefreshedAtEod } from './market-session.rules.js';
+import { OptionSnapshotCoverageCheck } from './option-snapshot-coverage.check.js';
 import {
   OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
   OPTION_SNAPSHOT_PORT,
@@ -112,6 +113,14 @@ export class SyncOptionOiSettleUseCase {
      * ⇒ 直接调它的 `collect`, 连硬门与幂等键一起继承。
      */
     private readonly snapshotCollector: SyncOptionSnapshotUseCase,
+    /**
+     * 轮2 收尾的覆盖率判定 (T008)。
+     *
+     * **尾部可选**而非必填: `DimensionExecutorRegistry` 的默认实参形态要求本类能在没有
+     * Nest 容器的情况下被直实例化 (同 `anchorGate` 的先例) —— 不传 ⇒ 收尾只报「轮2 自身
+     * 失败」那一条, 不判覆盖率。生产经 `MarketdataModule` DI 注真实例。
+     */
+    private readonly coverage?: OptionSnapshotCoverageCheck,
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
   }
@@ -204,7 +213,52 @@ export class SyncOptionOiSettleUseCase {
     if (backfill.length > 0 && !budgetExhausted) {
       budgetExhausted = await this.backfillMissingRows(backfill, attribution, stats);
     }
+    await this.reportOutcome(market, sessionDate, stats);
     return budgetExhausted;
+  }
+
+  /**
+   * 轮2 收尾的**一级制**告警 (FR-014 / FR-021, plan §D5)。
+   *
+   * 港股两级补救的触发点已随 073 退役 ⇒ 这条线上不再有「① 级只 WARN 挂着等 ②」那条阶梯。
+   * 轮2 是当日最后一次机会, 不达标就**直接 ERROR**。
+   *
+   * ## 🚨 两条 ERROR 各管一件事, MUST NOT 合并成一条
+   *
+   * | 条件 | 它说的是 | 覆盖率判据看得见吗 |
+   * | --- | --- | --- |
+   * | `stats.failed > 0` | 行**在**, 但 OI **没回填成** | ❌ 看不见 |
+   * | 覆盖率 degraded | 行**缺**了 | ✅ 就是它 |
+   *
+   * 第一条不是冗余: `option-snapshot-coverage.check.ts` 数的是「这个合约今天有没有行」
+   * (`collected.has(row.contractId)`), 对 OI 的**新鲜度**完全无输出 ⇒ 主轮成功而轮2 整轮挂掉
+   * 时它恒判 `ok`, 只靠它这一条就是**静默**。而「OI 静默停在隔日口径」正是本片要消灭的东西。
+   *
+   * ## 🚨 本 ERROR 当前**无接收端** (#209 仍开着)
+   *
+   * 落进容器 stdout (30MB 环, 无投递, 部署即滚) + `sync_run.findings`。**没有人会被叫醒。**
+   * 🚫 别因为「报了 ERROR」就以为这件事有人管 —— 本片让语义更诚实, 但触达是另一条线上的事。
+   *
+   * 复杂度: 一次覆盖率判定 (两趟以 `session_date` 为入口的索引查询), 与工作集大小无关。
+   */
+  private async reportOutcome(
+    market: string,
+    sessionDate: string,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    if (stats.failed > 0) {
+      this.logger.error(
+        `[option-oi-settle] ${market} ${sessionDate} 的 OI 回填未完成: ${stats.failed} 只标的失败 ` +
+          `⇒ 这些票的 OI 仍停在隔日口径, 且当日不可回补 (供应方不提供历史快照)。` +
+          `⚠️ 覆盖率判据看不见这件事 —— 它数的是「行在不在」, 不是「OI 新不新」`,
+      );
+    }
+    if (this.coverage === undefined) return;
+    const report = await this.coverage.evaluate(market, sessionDate);
+    // 一级制: 判完立刻响。🚫 这里**不是** `option-snapshot-coverage.check.ts` 注释里禁的那种
+    // 「判完就响」的便利入口 —— 那条禁的是绕过 FR-046 的两级补救, 而港股这条线上的两级
+    // 已经没有了, 轮2 之后不存在「等下一级」。显式写两行, 让「我此刻就响」在 diff 里看得见。
+    this.coverage.alertIfDegraded(report, '轮2 OI 回填之后 (一级制, 没有下一级了)');
   }
 
   /**

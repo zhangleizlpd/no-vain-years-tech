@@ -1,8 +1,13 @@
 import { Logger } from '@nestjs/common';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import type { MarketdataSyncConfig } from '../config/marketdata.config.js';
 import { Prisma } from '../generated/prisma/client.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { ExecutorInput, ExecutorSyncDimensionRow } from './dimension-executor.js';
+import {
+  OptionSnapshotCoverageCheck,
+  type OptionCoverageReport,
+} from './option-snapshot-coverage.check.js';
 import type {
   OptionSnapshotPort,
   OptionSnapshotQuery,
@@ -116,6 +121,34 @@ function underlyingRow(): OptionSnapshotRow {
   };
 }
 
+/** 轮2 收尾那次覆盖率判定的返回 —— 只有 `status` / `degraded` 参与 `alertIfDegraded`。 */
+function coverageReport(status: 'ok' | 'degraded'): OptionCoverageReport {
+  const degraded =
+    status === 'degraded'
+      ? [
+          {
+            instrumentId: TCH.id,
+            symbol: 'hk:00700',
+            expected: 2,
+            covered: 1,
+            missingContractCodes: ['HK.TCH260924C600000'],
+            degraded: true,
+          },
+        ]
+      : [];
+  return {
+    market: 'hk',
+    sessionDate: SESSION_DATE,
+    baselineDate: '2026-08-31',
+    threshold: 1,
+    status,
+    expected: 2,
+    covered: status === 'degraded' ? 1 : 2,
+    underlyings: degraded,
+    degraded,
+  };
+}
+
 /** 一次 `updateMany` 的入参 (段 a 的判定面: where 三段 + data 三列)。 */
 interface RecordedUpdate {
   where: Record<string, unknown>;
@@ -146,6 +179,8 @@ function makeHarness(opts: {
   existing?: string[];
   premarketOnly?: string[];
   rowsFor?: (q: OptionSnapshotQuery) => OptionSnapshotRow[];
+  /** 轮2 收尾那次覆盖率判定的结论 (T008)。不传 ⇒ 不装覆盖率检查 (等价于早期形态)。 */
+  coverage?: 'ok' | 'degraded';
 }): Harness {
   const queries: OptionSnapshotQuery[] = [];
   const updates: RecordedUpdate[] = [];
@@ -235,8 +270,20 @@ function makeHarness(opts: {
   // 断言「调了它」, 而那句话对这两条一点保护都没有。
   const collector = new SyncOptionSnapshotUseCase(port, prisma, calendar);
 
+  // 🚨 只把**读库那半段** (`evaluate`) 换成剧本; `alertIfDegraded` 走真实现 —— 「升不升
+  // ERROR」正是 T008 的被测面, 换成 spy 就只能断言「调了那个方法」而不是「真的响了」。
+  // (体例照抄 `option-snapshot-remediation.spec.ts` 的同一处。)
+  let coverage: OptionSnapshotCoverageCheck | undefined;
+  if (opts.coverage !== undefined) {
+    coverage = new OptionSnapshotCoverageCheck(prisma, {
+      optionCoverageThreshold: 1,
+    } as unknown as MarketdataSyncConfig);
+    const status = opts.coverage;
+    vi.spyOn(coverage, 'evaluate').mockImplementation(async () => coverageReport(status));
+  }
+
   return {
-    useCase: new SyncOptionOiSettleUseCase(port, prisma, calendar, collector),
+    useCase: new SyncOptionOiSettleUseCase(port, prisma, calendar, collector, coverage),
     queries,
     updates,
     existingWhere,
@@ -245,11 +292,31 @@ function makeHarness(opts: {
   };
 }
 
+/** `Logger.prototype.error` / `.warn` 的 spy —— 只关心第一个实参 (日志正文)。 */
+type LogSpy = { mock: { calls: unknown[][] } };
+
+/** 某个 spy 收到的全部日志正文拼成一段, 供 `toContain` 判定。 */
+const loggedBy = (spy: LogSpy): string => spy.mock.calls.map((c) => String(c[0])).join('\n');
+
+/** 覆盖率告警**没有**落在 WARN 那一档 —— 阶梯退役后它只许出现在 ERROR 上。 */
+function warnsHaveNoCoverageAlert(spy: LogSpy): boolean {
+  return !loggedBy(spy).includes('逐合约覆盖率跌破阈值');
+}
+
 const TCH_CONTRACTS = {
   '3': [contractRow('HK.TCH260924P600000'), contractRow('HK.TCH260924C600000')],
 };
 
 describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
+  // 🚨 用例内的 `err.mockRestore()` **不够**: 断言一旦抛出, 那行就不执行, 而
+  // `vi.spyOn` 对已被 spy 的方法返回**同一个 mock** ⇒ 下一个用例拿到的是带着上一个用例
+  // 调用历史的 spy, 于是「不该出现的那条日志」凭空出现。
+  // 2026-09-01 实撞: T008 的变异臂里, 一条本该只红两个用例的变异红了三个 —— 第三个是被
+  // 上一个用例的日志污染的。**恒真的清理必须挂在 afterEach 上, 不能靠 happy path 那一行。**
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('🚨 ① 定稿判据是入口闸 (plan §D3 / state_branch 8)', () => {
     it('定稿为真 (21:40 ≥ 21:30) → 三列被更新, 且 oi_as_of = session_date', async () => {
       const h = makeHarness({
@@ -455,6 +522,111 @@ describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
       expect(h.createManyArgs).toHaveLength(0);
       // 只有段 a 那一次批次调用。
       expect(h.queries).toHaveLength(1);
+    });
+  });
+
+  /**
+   * 073 T008 告警**一级制** (FR-014 / FR-021, plan §D5)。
+   *
+   * 退役两级补救之后, 港股这条线上不再有「① 级只 WARN 挂着等 ②」那条阶梯 —— 轮2 是最后一次
+   * 机会, 不达标就**直接 ERROR**。
+   *
+   * 🚨 两条 ERROR **各管一件事, 不可合并**:
+   * · 覆盖率不达标 ⇒ 行**缺**了 (FR-014 / FR-021);
+   * · 轮2 自身失败 ⇒ 行**在**但 OI **没回填**。覆盖率判据数的是「这个合约今天有没有行」
+   *   (`option-snapshot-coverage.check.ts` 的 `collected.has(row.contractId)`), 它对 OI 新鲜度
+   *   **完全无输出** ⇒ 主轮成功而轮2 失败时它恒判 ok, 靠它一条会**静默**。
+   */
+  describe('🚨 073 T008 告警一级制 (FR-014 / FR-021)', () => {
+    const errorsOf = loggedBy;
+
+    it('① 覆盖率达标 ∧ 轮2 全成功 → **静默** (每日一次的检查天然不重复告警)', async () => {
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000', 'HK.TCH260924C600000'],
+        coverage: 'ok',
+      });
+      const err = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      expect(err).not.toHaveBeenCalled();
+      err.mockRestore();
+    });
+
+    it('🚨 ② 轮2 之后覆盖率仍不达标 → **ERROR**, 不是 WARN (阶梯已退役)', async () => {
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000', 'HK.TCH260924C600000'],
+        coverage: 'degraded',
+      });
+      const err = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      expect(errorsOf(err)).toContain('逐合约覆盖率跌破阈值');
+      // 🚨 判的是「响在 ERROR 那一档」: 旧阶梯把同一件事记在 WARN 上等第二级, 而第二级已经没了。
+      expect(warnsHaveNoCoverageAlert(warn)).toBe(true);
+      err.mockRestore();
+      warn.mockRestore();
+    });
+
+    it('🚨 ③ 主轮成功 (覆盖率达标) ∧ 轮2 失败 → 仍 ERROR + 落 findings, **不静默**', async () => {
+      // 🚨 这条是覆盖率判据**够不到**的那一格: 行都在 (主轮写的), 缺的是 OI 回填,
+      //    而覆盖率数的是行存在 ⇒ 只靠它, 轮2 整轮挂掉也一声不吭。
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000', 'HK.TCH260924C600000'],
+        coverage: 'ok',
+        rowsFor: () => {
+          throw new Error('futu shim 502');
+        },
+      });
+      const err = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const stats = emptyStats();
+
+      await h.useCase.run([TCH], DIM, stats, makeInput(hkt(SESSION_DATE, '21:40')));
+
+      expect(stats.failed).toBe(1);
+      expect(stats.findings).toHaveLength(1);
+      expect(errorsOf(err)).toContain('OI 回填未完成');
+      err.mockRestore();
+    });
+
+    it('🚨 ④ 两轮双失败 (行缺 + 轮2 挂) → 两条 ERROR 各报各的 (FR-021)', async () => {
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000'],
+        coverage: 'degraded',
+        rowsFor: () => {
+          throw new Error('futu shim 502');
+        },
+      });
+      const err = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      const logged = errorsOf(err);
+      expect(logged).toContain('OI 回填未完成');
+      expect(logged).toContain('逐合约覆盖率跌破阈值');
+      err.mockRestore();
+    });
+
+    it('🚨 定稿判据为假 → 整轮短路, **不**跑覆盖率判定 (什么都没做就不该判它)', async () => {
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000'],
+        coverage: 'degraded',
+      });
+      const err = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '20:00')));
+
+      const logged = errorsOf(err);
+      expect(logged).toContain('OI 尚未定稿');
+      expect(logged).not.toContain('逐合约覆盖率跌破阈值');
+      err.mockRestore();
     });
   });
 

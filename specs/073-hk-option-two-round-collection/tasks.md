@@ -76,7 +76,7 @@ updated_at: '2026-09-01'
 
 - [X] T007 [Server] **退役港股两级补救**（FR-013; plan §D4; state_branches 9/10; US3）：删 `option-snapshot-remediation.ts:225`（hk ① 23:40）与 `:231`（hk ② 08:30）两个 `@Cron` 方法；`retrySameDay` / `backfillPremarket` 本体与美股两条 cron（`:213` / `:219`）**一字不动**（Guardrail 7）→ verify: 同名 spec 先红后绿 —— ① 新断言「`option-snapshot-remediation` 上不存在任何 hk 触发点」② 既有**美股**补救测试全绿、逐值不变；🚨 清理由本 task 产生的 orphan（若 `retrySameDay('hk')` 后再无调用方，其 hk 分支的 dead code MUST 一并清；预先存在的 dead code 只 mention 不删）
 
-- [ ] T008 [Server] **告警一级制**（FR-014, FR-021; plan §D5; state_branches 9/10/12/13; US3）：轮2 跑完后跑一次 `OptionSnapshotCoverageCheck`（阈值 `:152` 与计数口径 `:205` **只读不改**），不达标 ⇒ **直接 ERROR**；删掉港股路径上「① 级只 WARN 挂着等 ②」那条阶梯的表达（`:326` 注释所述分支）；🚨 代码注释 MUST 写明「本 ERROR 当前无接收端（#209）」，否则下一个人以为报了就有人管 → verify: 同名 spec 四臂先红后绿 ① 达标 ⇒ 静默 ② 不达标 ⇒ ERROR（不是 WARN）③ 主轮成功 ∧ 轮2 失败 ⇒ 留痕不静默 ④ 两轮双失败 ⇒ ERROR（FR-021）
+- [X] T008 [Server] **告警一级制**（FR-014, FR-021; plan §D5; state_branches 9/10/12/13; US3）：轮2 跑完后跑一次 `OptionSnapshotCoverageCheck`（阈值 `:152` 与计数口径 `:205` **只读不改**），不达标 ⇒ **直接 ERROR**；删掉港股路径上「① 级只 WARN 挂着等 ②」那条阶梯的表达（`:326` 注释所述分支 —— 📌 impl 期实况：该阶梯在 `retrySameDay` 里是 **market 参数化**的，没有独立的 hk 分支；T007 删掉两个 hk 触发点之后港股路径已整体不存在，故此处**无代码可删**，「一级制」由轮2 收尾直接 ERROR 实现）；🚨 代码注释 MUST 写明「本 ERROR 当前无接收端（#209）」，否则下一个人以为报了就有人管 → verify: 同名 spec 四臂先红后绿 ① 达标 ⇒ 静默 ② 不达标 ⇒ ERROR（不是 WARN）③ 主轮成功 ∧ 轮2 失败 ⇒ 留痕不静默 ④ 两轮双失败 ⇒ ERROR（FR-021）
 
 - [ ] T009 [Server] **抓价时刻可观测 + 越界告警**（FR-022, SC-008; plan §D8; US1）：在 `market-session.rules.ts` 新增**单点**的 per-market「盘口台阶上界」常量（注释 MUST 写明它是**样本期结论**、不是物理常数，并写明重标条件 —— 同 `MARKET_OI_SETTLE_LOCAL_MINUTE` 的处理方式）；主轮结束后取本轮 `max(quote_as_of)` 折算交易所当地分钟，越界即告警 → verify: 同名 spec 三臂先红后绿 ① 落在台阶内 ⇒ 静默 ② 越界 ⇒ 告警 ③ **告警面与采集成败分离**（采集 `failed=0` 但越界仍告警）；🚨 SC-008 要求**造一次反例证明它能红**（人为放大工作集使抓价时刻越界）
 
