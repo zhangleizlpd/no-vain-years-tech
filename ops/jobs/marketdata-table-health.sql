@@ -150,11 +150,13 @@
 --   ❌ **那个「分钟」没有交易所证据**：只有一次内部采样把它夹在 (16:30, 21:30] 内，取的是
 --      窗口上沿（保守侧：猜早了是「数字与标签双错」，猜晚了只是标签偏早、一条 UPDATE 可订正）。
 --      本轮独立验到的上界是 22:04（vendor 实时已是 D 口径）/ 22:10（HKEX 报表已在线）。
---   📌 **但它对当前所有生产行的判决不敏感**：三条采集路径（夜链 23:00 · ① 级 23:40 ·
---      ② 级次日 08:30）全部落在任何候选边界**之后** ⇒ 常量取 [16:30, 23:00) 内任何值，判决相同。
---      唯一会落进 16:10–21:29 的是**建锚冷启动**，而 `anchor_cold_start_run` 全表 hk 三条
---      （15:45 / 22:02 / 22:07）**无一落在该窗口**。⇒ 该窗口今天是空的，日后若被打中，本条
---      在那一档会与代码一起错（**不会误报**，只是看不见），修法是先验实边界再改上面那张登记表。
+--   🔻 **073 起这个「不敏感」不再成立，别照旧读**。原文是：三条采集路径（夜链 23:00 ·
+--      ① 级 23:40 · ② 级次日 08:30）全落在任何候选边界之后 ⇒ 常量取 [16:30, 23:00) 内任何值
+--      判决相同；唯一会落进 16:10–21:29 的只有建锚冷启动，而实测三条无一落在该窗口。
+--      073 把港股采集拆两轮之后，**轮 2 的 cron 21:40 与本常量只差 10 分钟**，且判据 ⑫ 的
+--      「同日采集」那一档直接拿本常量与**探针自己的时刻**比 ⇒ 常量取值现在**会**改判决：
+--      取值若被调到 21:40 之后，每晚 21:40–常量 之间跑的那次探针会把已回填的行判红。
+--      ⇒ 改 `MARKET_OI_SETTLE_LOCAL_MINUTE` 时，MUST 连同轮 2 的 cron 一起看（#324）。
 --
 -- ═══ 覆盖边界与性能（两者是同一个决定）═══
 -- 🚨 窗口 = **最近 3 个交易日**（`oi_prev` 的 `rn <= 3`）。`option_daily_snapshot` 是全库增长
@@ -190,7 +192,14 @@
 WITH today AS (
   -- 业务「今天」锚在 Asia/Shanghai（与 app 的 marketDateFor 对齐；容器 TZ 若为 UTC 会差 8h，
   -- 而阈值以「交易日」为单位、余量 ≥1 天，该偏移不影响判定）。
-  SELECT (now() AT TIME ZONE 'Asia/Shanghai')::date AS d
+  --
+  -- 🚨 `ts` 是**全谓词唯一的时间输入**（判据 ⑫ 自 073 起要问「轮 2 的时刻到了没」，见那一段）。
+  --    行尾那个标记是 IT 的替换锚，体例同 `:avail_kb`：生产恒取 `now()`，IT 把它钉成固定时刻，
+  --    否则「今天这一场」那一档的用例结果会随**跑测试的钟点**漂。
+  --    🚫 不要为它加 psql 变量 —— 那要求 `marketdata-table-health.sh` 传一个判断进来，
+  --       而那个脚本的铁律是「只传观测值，零判断」。
+  SELECT n AS ts, (n AT TIME ZONE 'Asia/Shanghai')::date AS d
+  FROM (SELECT now() /* :probe_now */) AS s(n)
 ),
 -- 🚨 **加新维度进本谓词的时序**：先确认该维度已在 prod **跑出过至少一轮数据**，再把改动装到
 --    77（`cp ops/jobs/marketdata-table-health.{sh,sql} …`）。反过来 = 装机即假红，每 4h 推一条，直到首跑。
@@ -501,8 +510,14 @@ oi_prev AS MATERIALIZED (
 ),
 oi_probe AS (
   SELECT c.market, s.session_date, s.oi_as_of, s.source, p.prev_td, z.settle_min,
-         (s.quote_as_of AT TIME ZONE z.zone)        AS local_ts,
+         -- 073：只剩**日期**这一格还在用（判「跨没跨日采」）。原先还取当日分钟去比定稿线，
+         -- 那一步随模型变更移到下面的 `now_min` —— 采集时刻不再决定 OI 标签。
          (s.quote_as_of AT TIME ZONE z.zone)::date  AS local_date,
+         -- 073：`oi_as_of` 的写手不再是这次采集（见 oi_verdict 上方那段）⇒ 判据要问的是
+         -- 「**现在**过没过定稿线」，故把探针自己的时刻也折成该市场当地日期 + 当日分钟。
+         (t.ts AT TIME ZONE z.zone)::date           AS today_local,
+         extract(hour FROM (t.ts AT TIME ZONE z.zone)) * 60
+           + extract(minute FROM (t.ts AT TIME ZONE z.zone)) AS now_min,
          -- ⑬ 带内零哨兵（ADR-0067）。**蓄意折进本趟扫描**: 与 ⑫ 同表、同窗口、同 JOIN,
          -- 单独再扫一遍就是白付一次 28 万行的代价。判据与采集端 `normalizeQuoteSide` /
          -- `tradedPriceOrNull` 逐字同构 —— 🚨 盘口价**必须成对判**（OPRA 明写零价可以是合法
@@ -517,13 +532,40 @@ oi_probe AS (
   JOIN marketdata.option_contract c ON c.id = s.contract_id
   JOIN oi_zone z ON z.market = c.market
   JOIN oi_prev p ON p.market = c.market AND p.session_date = s.session_date AND p.rn <= 3
+  CROSS JOIN today t
   WHERE s.session_date >= (SELECT min(session_date) FROM oi_prev WHERE rn <= 3)
 ),
--- 应然值 = 写路径 (`sync-option-snapshot.usecase.ts` 的 `oiFinalizedAtSessionClose`) 的 SQL 复刻：
+-- 应然值 = 写路径的 SQL 复刻。
+--
+-- ══ 🚨 073 起模型变了：`oi_as_of` 不再是 `quote_as_of` 的函数 ═══════════════════════════
+-- 港股期权采集自 073 拆成**两轮**，两轮写的是同一行的不同列：
+--   · 主轮 **16:20**（收盘定稿缓冲解除后，抢做市商还没撤走的盘口）→ 写 `quote_as_of` 与全部报价列；
+--     该时刻**早于** OI 定稿线，故它给 `oi_as_of` 落的是**上一交易日**；
+--   · 轮 2 **21:40**（OI 定稿后）→ 只 UPDATE `open_interest` / `net_open_interest` / `oi_as_of`，
+--     **不碰** `quote_as_of`（碰了就等于拿 21:40 的盘口盖掉 16:20 抢到的那份 = 本片的全部意义）。
+-- ⇒ 稳态行的形状是「`quote_as_of` 在定稿线**之前**，而 `oi_as_of` = `session_date`」。
+--    改造前的判据从 `quote_as_of` 推 `oi_as_of`，会把这个**正确**形状逐行判红（约 1.8 万行/晚）。
+--
+-- ⇒ 同日采集的行改问**探针自己的时刻**：「轮 2 的时刻到了没」。跨日采集与 us 两档逐字不变。
+--
+-- 🚨 **换来的不只是不假红，还多了一张网**：073 引入的新故障模式是「轮 2 静默没跑」——
+--    表现就是过去某一场的 hk `eod` 行**集体停在上一交易日**。旧判据对它完全无输出（那些行
+--    的 `quote_as_of` 本来就在定稿线之前，旧模型认为退一天是对的）；新判据当场红。
+--
+-- ⚠️ **同时明确丢掉一格检出力，别当遗漏**：同日采集、定稿线之前就把 `oi_as_of` 标成当天的行，
+--    在**过完那一天之后**与「轮 2 正常回填过」的行**逐列同形**，本判据分辨不了。
+--    · 当天之内仍然判得出（下面 `now_min` 那一档）；
+--    · 结构上它也自愈：轮 2 的 UPDATE 会用定稿后的真值覆盖 OI 三列；
+--    · 要连过完那天也判得出，唯一办法是给表加一列记「OI 是哪一刻写的」（如 `oi_written_at`），
+--      那是一次 expand migration + 写路径两处改，073 明确不做。
+--
+-- 逐档：
 --   非 eod（盘前补采）        ⇒ 恒 session_date（已跨进下一场的盘前，OI 必已翻新）
 --   该市场不在当晚定稿        ⇒ 上一交易日（us）
---   采集日 ≠ session 日       ⇒ 更晚即已定稿 → session_date；更早（不该出现）→ 上一交易日
---   同日且已过定稿时刻        ⇒ session_date，否则上一交易日
+--   采集日 > session 日       ⇒ session_date（跨日采，OI 必已定稿）
+--   采集日 < session 日       ⇒ 上一交易日（不该出现，保持原判）
+--   同日采集 + 已过完那一天   ⇒ session_date（轮 2 该跑过了；没跑就是新故障模式，判红）
+--   同日采集 + 今天已过定稿线 ⇒ session_date，否则上一交易日
 oi_verdict AS (
   SELECT count(*) AS judged,
          count(*) FILTER (WHERE NOT ok) AS bad_rows,
@@ -534,10 +576,10 @@ oi_verdict AS (
            oi_as_of IS NOT DISTINCT FROM (CASE
              WHEN source <> 'eod' THEN session_date
              WHEN settle_min IS NULL THEN prev_td
-             WHEN local_date <> session_date
-               THEN CASE WHEN local_date > session_date THEN session_date ELSE prev_td END
-             WHEN extract(hour FROM local_ts) * 60 + extract(minute FROM local_ts) >= settle_min
-               THEN session_date
+             WHEN local_date > session_date THEN session_date
+             WHEN local_date < session_date THEN prev_td
+             WHEN today_local > session_date THEN session_date
+             WHEN now_min >= settle_min THEN session_date
              ELSE prev_td END) AS ok
     FROM oi_probe
   ) g

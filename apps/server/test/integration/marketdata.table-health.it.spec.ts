@@ -132,11 +132,29 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
    * 「另写一份 SQL」：谓词仍是**读同一个文件**跑，判据一个字都不在本文件里。
    * 默认给一个极大值 ⇒ 除磁盘用例外，其余用例的判定与磁盘那条无关。
    */
-  async function runPredicate(availKb = 1_000_000_000): Promise<{
+  // @param probeNowHkt 把谓词的时间锚钉成「Asia/Shanghai 今天的这个墙钟」。
+  //   判据 ⑫ 自 073 起要问「轮 2 的时刻到了没」⇒ 不钉的话那一档的用例结果随**跑测试的钟点**漂
+  //   (17:00 跑绿、22:00 跑红)。替换锚 = 谓词里 `now()` 行尾那个含 `:probe_now` 的块注释。
+  //   不传 ⇒ 用真 `now()`, 与改造前逐字一致 (其余 16 条用例因此零改动)。
+  // ⚠️ 本段蓄意用 `//` 而非 JSDoc: 锚的字面量里带块注释结束符, 写进 `/** */` 会把它提前闭合,
+  //    表现是从这里开始整个文件的 TS 解析全乱 (一次 70+ 条 TS1005/TS1443 的级联)。
+  async function runPredicate(
+    availKb = 1_000_000_000,
+    probeNowHkt?: `${number}:${number}`,
+  ): Promise<{
     exitCode: number;
     summary: string;
   }> {
-    const sql = PREDICATE_SQL.replaceAll(':avail_kb', String(availKb));
+    let sql = PREDICATE_SQL.replaceAll(':avail_kb', String(availKb));
+    if (probeNowHkt !== undefined) {
+      const [hh, mm] = probeNowHkt.split(':').map(Number);
+      const pinned = new Date(daysAgo(0).getTime() + (hh - 8) * 3_600_000 + mm * 60_000);
+      const marker = 'now() /* :probe_now */';
+      // 🚨 标记必须真的在谓词里 —— 谓词改写后标记一旦消失, 替换会静默失效, 于是所有
+      //    「钉住时刻」的用例都退回真 now() 并**随钟点漂**, 而它们看起来照样在跑。
+      expect(sql, '谓词里的 :probe_now 替换锚不见了').toContain(marker);
+      sql = sql.replace(marker, `timestamptz '${pinned.toISOString()}'`);
+    }
     const rows = await prisma.$queryRawUnsafe<{ exit_code: number; summary: string }[]>(sql);
     // 契约（bash 零逻辑的前提）：恒单行两列 → bash 侧单次 `read` 读完，无需循环 = 无逻辑。
     expect(rows).toHaveLength(1);
@@ -746,34 +764,90 @@ describe('marketdata 表级数据健康谓词 (Testcontainers PG, 与 marketdata
     expect(summary).not.toContain('⚠OI标签');
   });
 
-  it('hk 建锚冷启动窗口 (当日 17:00, 定稿线之前, oi_as_of = 上一交易日) → 健康 exit 0', async () => {
-    // 🚨 **这条守的是不假红**: 港股收盘写闸 16:10 开、OI 21:30 定稿 ⇒ 中间 5h20m 内建锚触发的
-    //    冷启动拿到的仍是上一场的 OI, 退一天是**对的**。判据若不吃采集时刻, 这一格会被冤枉,
-    //    而每有人在盘后建一次港股锚就红一次 = 训练出「这条可以忽略」。
+  it('hk 定稿线之前的那一档 (当日 17:00 采, 探针也在 17:00 跑, oi_as_of = 上一交易日) → 健康 exit 0', async () => {
+    // 🚨 **这条守的是不假红**: 港股收盘写闸 16:10 开、OI 21:30 定稿 ⇒ 中间 5h20m 里 (073 的主轮
+    //    16:20、以及任何时刻建锚触发的冷启动) 拿到的仍是上一场的 OI, 退一天是**对的**。
+    //    判据若不吃时刻, 这一格会被冤枉, 而它每个港股交易日都会出现一次 = 训练出「这条可以忽略」。
+    // 📌 073 起用例改成**今天这一场** + 钉住探针时刻: 过完那一天之后轮 2 该已回填, 同一形状
+    //    的应然值就翻成 session_date 了 (见下面那条)。
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 0,
+      source: 'eod',
+      quoteDayAgo: 0,
+      quoteAtHkt: '16:20',
+      oiAgo: 1,
+    });
+
+    expect((await runPredicate(undefined, '17:00')).exitCode).toBe(0);
+  });
+
+  it('🚨 hk 定稿线之前就把 oi_as_of 标成当天 → 不健康 exit 1 (数字与标签双错的方向)', async () => {
+    // 与上一条只差 oiAgo 一格, 答案相反 —— 这一格是 `oiRefreshedAtEod` 吃 `now` 的全部理由:
+    // 标成当天 = 把上一场的持仓量冒充本场。
+    // ⚠️ 判得出的**窗口只有当天**: 过完这一天之后, 本形状与「轮 2 正常回填过」逐列同形,
+    //    本判据分辨不了 (谓词 oi_verdict 上方那条 ⚠️ 已把这格缺口写在明处)。
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 0,
+      source: 'eod',
+      quoteDayAgo: 0,
+      quoteAtHkt: '16:20',
+      oiAgo: 0,
+    });
+
+    const { exitCode, summary } = await runPredicate(undefined, '17:00');
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('⚠OI标签');
+  });
+
+  // ── 073 两轮采集的三条形态 ────────────────────────────────────────────────────────────
+  // 主轮 16:20 写报价 (那一刻 OI 未定稿 ⇒ oi_as_of 退一天) → 轮 2 21:40 只把 OI 三列改成当天。
+  // ⇒ 稳态行的形状是「quote_as_of 在定稿线**之前**, 而 oi_as_of = session_date」。
+  //   改造前的判据从 quote_as_of 推 oi_as_of, 会把这个**正确**形状逐行判红 (约 1.8 万行/晚)。
+
+  it('073 两轮稳态 · 当天 (16:20 采 → 21:40 回填, 探针 22:00 跑) → 健康 exit 0', async () => {
+    await seedAllFresh();
+    await seedHkSnapshot({
+      code: 'HK.TCH260929P650000',
+      sessionAgo: 0,
+      source: 'eod',
+      quoteDayAgo: 0,
+      quoteAtHkt: '16:20',
+      oiAgo: 0,
+    });
+
+    expect((await runPredicate(undefined, '22:00')).exitCode).toBe(0);
+  });
+
+  it('073 两轮稳态 · 过去的场 (次日再看, 同一形状) → 健康 exit 0', async () => {
     await seedAllFresh();
     await seedHkSnapshot({
       code: 'HK.TCH260929P650000',
       sessionAgo: 1,
       source: 'eod',
       quoteDayAgo: 1,
-      quoteAtHkt: '17:00',
-      oiAgo: 2,
+      quoteAtHkt: '16:20',
+      oiAgo: 1,
     });
 
     expect((await runPredicate()).exitCode).toBe(0);
   });
 
-  it('🚨 hk 定稿线之前采却把 oi_as_of 标成当天 → 不健康 exit 1 (数字与标签双错的方向)', async () => {
-    // 与上一条只差 oiAgo 一格, 答案相反 —— 这一格是 `oiRefreshedAtEod` 吃 `now` 的全部理由:
-    // 标成当天 = 把上一场的持仓量冒充本场, 且 createMany(skipDuplicates) 让当晚正确的写入被挡掉。
+  it('🚨 073 新故障模式: 轮 2 静默没跑 → 过去的场停在上一交易日 → 不健康 exit 1', async () => {
+    // 🚨 **这条是本次改判据换来的净增检出力**: 旧模型对它完全无输出 —— 那些行的 quote_as_of
+    //    本来就在定稿线之前, 旧模型认为「退一天」正是对的。而轮 2 没跑恰恰是 073 引入的
+    //    新故障模式, 且它**不自愈**: vendor 不提供历史交易日的期权快照。
     await seedAllFresh();
     await seedHkSnapshot({
       code: 'HK.TCH260929P650000',
       sessionAgo: 1,
       source: 'eod',
       quoteDayAgo: 1,
-      quoteAtHkt: '17:00',
-      oiAgo: 1,
+      quoteAtHkt: '16:20',
+      oiAgo: 2,
     });
 
     const { exitCode, summary } = await runPredicate();
