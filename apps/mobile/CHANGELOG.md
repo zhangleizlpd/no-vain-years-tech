@@ -2,6 +2,20 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.16.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.15.1...mobile-v0.16.0) (2026-09-01)
+
+
+### Features
+
+* **optionsdesk:** 收租精排前置 Δ 带内闸 + 推荐标改称「Δ带内」—— 意图对齐的腿整体在前，措辞与序同源 ([#319](https://github.com/zhangleizlpd/no-vain-years-tech/issues/319)) ([4a412eb](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4a412ebaa12a3bd57d79dbb34a1e200a8c592e84))
+* **optionsdesk:** 锚待审箱审批线上化 —— 服务端 5 端点 + 「我的」三栏改版 ([#312](https://github.com/zhangleizlpd/no-vain-years-tech/issues/312)) ([f6104ec](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f6104eccafe050ab1871ec8117a4335fa2728ee0))
+
+
+### Bug Fixes
+
+* **optionsdesk:** 中性收盘档的原因去掉市场名 —— 港股锚不再被告知「美股非常规交易时段」 ([#313](https://github.com/zhangleizlpd/no-vain-years-tech/issues/313)) ([113ad38](https://github.com/zhangleizlpd/no-vain-years-tech/commit/113ad3842a3dfb45afc1b0bf6607b0826568fd39))
+* **optionsdesk:** 待审条目行去掉「有附言」标记 ([#318](https://github.com/zhangleizlpd/no-vain-years-tech/issues/318)) ([54ba233](https://github.com/zhangleizlpd/no-vain-years-tech/commit/54ba23357da869fef21972aad1d536be76f12227))
+
 ## [0.15.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.15.0...mobile-v0.15.1) (2026-08-31)
 
 
