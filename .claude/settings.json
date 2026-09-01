@@ -50,6 +50,10 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pretooluse-convention-rubric.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/pretooluse-comment-provenance.sh\""
           }
         ]
       }
