@@ -2,10 +2,7 @@ import { Pressable, Text, View } from 'react-native';
 import type { AnchorSubmissionReviewResponse } from '@nvy/api-client';
 
 import { asofBadgeLabel, DISPOSITION_LABEL, submissionFactsLine } from './anchor-submission.rules';
-import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { underlyingDisplayName } from './underlying-identity.rules';
-
-const COPY = OPTIONSDESK_COPY.anchorSubmission;
 
 /**
  * 072 T018 — 待审条目行。两个宿主共用：「我的」审批栏内嵌面板 + 全屏列表（含多选态）。
@@ -76,29 +73,15 @@ export function AnchorSubmissionRow({ item, onPress, selected }: AnchorSubmissio
               testID={`optionsdesk-submission-asof-${item.ticker}`}
             />
           ) : null}
-          {item.note ? <Badge text={COPY.hasNote} tone="muted" /> : null}
         </View>
       </View>
     </Pressable>
   );
 }
 
-function Badge({
-  text,
-  tone,
-  testID,
-}: {
-  text: string;
-  tone: 'info' | 'warn' | 'muted';
-  testID?: string;
-}) {
-  const skin =
-    tone === 'warn'
-      ? 'border-warn bg-warn-soft'
-      : tone === 'info'
-        ? 'border-brand-500 bg-brand-soft'
-        : 'border-line bg-surface-sunken';
-  const ink = tone === 'warn' ? 'text-warn' : tone === 'info' ? 'text-brand-500' : 'text-ink-muted';
+function Badge({ text, tone, testID }: { text: string; tone: 'info' | 'warn'; testID?: string }) {
+  const skin = tone === 'warn' ? 'border-warn bg-warn-soft' : 'border-brand-500 bg-brand-soft';
+  const ink = tone === 'warn' ? 'text-warn' : 'text-brand-500';
   return (
     <View testID={testID} className={`rounded-sm border px-xs ${skin}`}>
       <Text className={`text-xs ${ink}`}>{text}</Text>
