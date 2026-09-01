@@ -87,7 +87,18 @@ updated_at: '2026-09-01'
   ③ **ERROR + `notice` finding 双落**（user 定夺 ERROR 级）：日志只进容器 stdout（30MB 环、无投递）⇒ 只抬 ERROR 事后不可判（同 #261 取舍）。🚨 注释已写明本 ERROR 当前无接收端（#209）。
   📌 顺带收掉 **T006 欠的那条上界断言**（IT 里 `📌 随 T009 落地后补` 那处）；变异留档三条：M1 上界改 16:00 ⇒ 「静默」臂判红（证明它不是空跑）· M2 `max`→`min` ⇒ 两条告警臂零输出 · M3 上界改 16:10 ⇒ IT 窗口断言判红。M1 顺带暴露新块的**测试隔离缺陷**（断言抛出 ⇒ 行末 `mockRestore()` 不执行，`vi.spyOn` 对已 spy 方法返同一 mock ⇒ 下一例凭空多红），清理已挂 `afterEach`（与 T008 同款，全绿时完全不可见）；另给既有用例「hk 缺日历不抬 ERROR」显式喂一个台阶内的采集时刻，免被本告警串台（默认 `COLLECTED_AT` 是 us 常量，折成港股当地已是次日 12:31）。
 
-- [ ] T010 [Gate] **美股零变化**（FR-018, SC-005; state_branches 14）：不写新断言，跑既有美股面全量 —— `pnpm nx test server`（含 `option-snapshot-remediation.spec.ts` / `sync-option-snapshot.usecase.spec.ts` / `sync-asof.rules.spec.ts` / `market-session.rules.spec.ts`）→ verify: 全绿且**零测试被修改**（`git diff --stat` 对美股相关 spec 文件应为空）；🚨 Testing Invariant 4：美股零变化由**既有测试全绿**承担，MUST NOT 新写一条「美股没变」的断言
+- [X] T010 [Gate] **美股零变化**（FR-018, SC-005; state_branches 14）：不写新断言，跑既有美股面全量 —— `pnpm nx test server`（含 `option-snapshot-remediation.spec.ts` / `sync-option-snapshot.usecase.spec.ts` / `sync-asof.rules.spec.ts` / `market-session.rules.spec.ts`）→ verify: 全绿且**零测试被修改**（`git diff --stat` 对美股相关 spec 文件应为空）；🚨 Testing Invariant 4：美股零变化由**既有测试全绿**承担，MUST NOT 新写一条「美股没变」的断言；
+  🚨 **验收线的字面判据不成立，已换成实质判据（2026-09-01）**：原文要求「`git diff --stat` 对美股相关 spec 文件应为空」，而本片**确实动了其中三个**（T007 / T009 / T001 各自的新臂都落在这些文件里）。⇒ 逐行取证换成「**零个既有美股断言被改写或删除**」，四个文件对 merge-base 的删除行合计 **4 条**，逐条归属：
+
+  | 文件 | 增 | 删 | 删的是什么 |
+  | --- | --- | --- | --- |
+  | `market-session.rules.spec.ts` | +49 | 0 | —（T009 新 describe，只碰 hk 与 null 市场） |
+  | `sync-asof.rules.spec.ts` | +4 | 0 | —（T001 新键一臂） |
+  | `option-snapshot-remediation.spec.ts` | +76 | −1 | 一条 `describe` **标题改名**（加「073 起 hk 无触发点」后缀），断言体零改动 |
+  | `sync-option-snapshot.usecase.spec.ts` | +139 | −3 | ① import 加 `afterEach` ② harness 的端点 `asOf` 由常量改成可选函数（**默认值不变**）③ 一条 **hk** 用例的夹具显式喂一个台阶内的采集时刻 |
+
+  生产侧同查：本片改过的 8 个 server 文件里，`us` 的每一处出现都是**注释**或新表的 `us: null`；`option-snapshot-remediation.ts` 的非注释删除行**恰好**是两个 hk `@Cron` 方法（8 行），美股两条 cron 与`retrySameDay` / `backfillPremarket` 本体一字未动（Guardrail 7）。台阶告警对美股恒静默（`quoteLadderEndMinute('us') = null`，rules spec 有专臂钉），且盘前兜底那条路根本不传采集时刻收集器。
+  → 全量：`nx run-many -t typecheck,lint,test -p server` **5812 passed / 0 failed**；四个美股面文件单独跑 **142 passed**。
 
 - [X] T011 [Server-IT] **半日市与非交易日归属**（FR-019, SC-006; state_branches 2/4/5; US1-AS3）：在 T005 的 IT 文件补三臂 —— ① 半日市当天 16:20 ⇒ `sessionWatermark` 仍判**当日**、正常落库、零告警 ② 非交易日 ⇒ 主轮与轮2 均不触发 ③ 常规交易日 16:20 ⇒ 采集业务日 = 当日（state_branch 2 的正面） → verify: 三臂先红后绿；🚨 半日市那臂 MUST 用**真日历行**构造（`trading_day` + `calendar_coverage`），不许 mock 日历口径；
   📌 **impl 期登记（2026-09-01）**：① 🚨 **半日市那臂在 16:20 上判不出 half/whole** —— 两种收盘时刻（12:00 / 16:00）之下 16:20 都已过收盘，即便日历口径整个没接那一臂照样绿。⇒ 补了控制组 **⑥b**：hk 当地 **12:20**（`kind=half` ⇒ 已收+缓冲 ⇒ 可写；落 `unknown`/`whole` ⇒ 回落常规时段，而 12:20 正在**午休**里、`isSessionUnderway` 含午休 ⇒ 判「场内」⇒ 零落库）。**M9 实证**：把 `todaySessionKind` 钉死成 `unknown` ⇒ **只有 ⑥b 判红、⑥ 照绿** —— 原臂单独就是空跑，这条不是补充是必需。② 臂 ⑦「非交易日不触发」的落点**不在 use case** ——归属判据在周六照样返 `collect`（归到上一场）；真闸在 `SyncTickDriver.tradingDayGate`。本臂组合生产的两个单点（`resolveAsOfForDimension` → `isTradingDayGateOpen`）逐句同序，并配正向控制组（常规日必须**开**），防「覆盖声明缺失 ⇒ 全 non-trading」那种布景错冒充判据。**M10 实证**：把 `sessionWatermark` 改成恒退一天 ⇒ 周六 asOf 变周五、闸放行，臂 ⑦ 判红（连同 ①②③⑤⑥⑥b⑧ 共 8 条）—— 那正是「每个周末白烧一轮 vendor 配额且没有任何东西会红」。③ 日历端口在本组走**真** `DbTradingCalendarAdapter`（前两批用 `stubTradingCalendar`）；`calendar_coverage` 是承重的 ——缺它则三态落 `unknown`、闸 fail-open 放行（062 判据），臂 ⑦ 会红得像代码坏了。④ 布景坑留痕：`seedChain` 的到期日原写死 2026-09-18，而半日市那两臂在 12 月 ⇒ 工作集口径 `expiry_date >= session_date` 把整条链滤空，表现是「零落库」看着像归属判错。到期日已参数化并在注释里写明。
