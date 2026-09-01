@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route } from './_support/fixtures';
 
 // T024 — Expo Web e2e for 003-tokens US7 透明续期 (SC-C04).
 //

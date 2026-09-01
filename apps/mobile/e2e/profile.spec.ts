@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_support/fixtures';
 
 import { mockJson } from './_support/api-mock';
 

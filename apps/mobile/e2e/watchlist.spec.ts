@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from './_support/fixtures';
 
 import { mockJson } from './_support/api-mock';
 

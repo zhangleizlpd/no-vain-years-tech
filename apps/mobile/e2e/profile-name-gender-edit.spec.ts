@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route } from './_support/fixtures';
 
 // 008-profile-name-gender-edit — Expo Web e2e：昵称编辑 + 性别设置 + 资料卡行重排。
 // 承接 007 的 seed/auth/mock 范式（account-security-refactor.spec.ts）。

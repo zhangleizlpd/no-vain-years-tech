@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route } from './_support/fixtures';
 
 // 009-profile-image-upload — Expo Web e2e：头像 / 主页背景图 换图（US3）+ 显示（US4）。
 // 承接 007/008 seed/auth/mock 范式（account-security-refactor.spec.ts）。
