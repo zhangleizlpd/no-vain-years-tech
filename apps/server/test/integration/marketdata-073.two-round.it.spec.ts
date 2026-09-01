@@ -7,6 +7,7 @@ import { runMigrateDeploy } from '../_support/run-migrate';
 import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 import { PrismaService } from '../../src/security/prisma.service';
 import { marketdataSyncConfig } from '../../src/config/marketdata.config';
+import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
 import { OptionSnapshotCoverageCheck } from '../../src/marketdata/option-snapshot-coverage.check';
 import type {
   ExecutorSyncDimensionRow,
@@ -23,6 +24,8 @@ import type {
   OptionSnapshotRow,
 } from '../../src/marketdata/option-snapshot.port';
 import { emptyStats } from '../../src/marketdata/sync-run.recorder';
+import { resolveAsOfForDimension } from '../../src/marketdata/sync-asof.rules';
+import { isTradingDayGateOpen } from '../../src/marketdata/trading-day-gate';
 import { SyncOptionOiSettleUseCase } from '../../src/marketdata/sync-option-oi-settle.usecase';
 import { SyncOptionSnapshotUseCase } from '../../src/marketdata/sync-option-snapshot.usecase';
 import { computeNext } from '../../src/marketdata/sync-tick-driver';
@@ -252,6 +255,13 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
     const MAIN_QUOTE_AS_OF = new Date(`${SESSION}T08:28:00Z`);
     /** 轮2 自己的抓价时刻 (hk 当地 21:41) —— 段 b 补出来的行才会带它。 */
     const SETTLE_QUOTE_AS_OF = new Date(`${SESSION}T13:41:00Z`);
+    /** HKEX 半日市 (2026-12-24 平安夜, 只开上午 12:00 收) 与它的上一交易日。 */
+    const HALF_DAY = '2026-12-24';
+    const HALF_DAY_PREV = '2026-12-23';
+    /** 半日市那两臂用的到期日 —— 必须晚于 12-24, 否则整条链被工作集口径滤掉。 */
+    const HALF_DAY_EXPIRY = '2027-01-15';
+    /** 2026-09-05 周六 —— 非交易日 (日历里**不建行**, 由覆盖声明把它判成 non-trading)。 */
+    const NON_TRADING_DAY = '2026-09-05';
 
     const day = (s: string) => new Date(`${s}T00:00:00Z`);
 
@@ -321,13 +331,27 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       await prisma.optionContract.deleteMany();
       await prisma.instrument.deleteMany();
       await prisma.tradingDay.deleteMany();
+      await prisma.calendarCoverage.deleteMany();
       // 归属判据要两天: 本场 (= session_date 的来源) 与它的上一交易日 (主轮 oi_as_of 的来源)。
+      // T011: 另加半日市那天与它的上一交易日 —— 🚨 **真日历行**, 不许 mock 日历口径。
       await prisma.tradingDay.createMany({
-        data: [PREV_SESSION, SESSION].map((d) => ({
+        data: [
+          { market: 'hk', date: day(PREV_SESSION), sessionKind: 'whole' },
+          { market: 'hk', date: day(SESSION), sessionKind: 'whole' },
+          { market: 'hk', date: day(HALF_DAY_PREV), sessionKind: 'whole' },
+          // 2026-12-24 平安夜 —— HKEX 半日市 (只开上午, 12:00 收)。
+          { market: 'hk', date: day(HALF_DAY), sessionKind: 'half' },
+        ],
+      });
+      // 🚨 覆盖声明缺席 ⇒ 三态落 `unknown` ⇒ 交易日闸 fail-open **放行** (062 的判据),
+      //    「非交易日不触发」那一臂就会红得像是代码坏了。周六**不建行**正是它的真实形态。
+      await prisma.calendarCoverage.create({
+        data: {
           market: 'hk',
-          date: day(d),
-          sessionKind: 'whole',
-        })),
+          coveredFrom: day('2026-08-01'),
+          coveredTo: day('2026-12-31'),
+          servedBy: 'futu',
+        },
       });
       // 🚨 维度行取**库里那一行** (migration 落的), 不是手搓字面量 —— 轮2 只读 marketScope,
       //    而 marketScope 写错正是 066 那次「掺进 us 撞 scope 日历 throw」的形态。
@@ -342,6 +366,12 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       count: number,
       /** 合约码词根 —— `option_contract` 的唯一键是 `(market, code)`, 两只票必须各用各的。 */
       root = 'TCH',
+      /**
+       * 到期日。🚨 **必须晚于被测那一场**: 工作集口径是 `expiry_date >= session_date`
+       * (FR-028a), 拿一个已到期的链去跑半日市 (12 月) 那两臂, 表现是「零外呼零落库」——
+       * 看起来像归属判错, 实际是布景错。
+       */
+      expiry = '2026-09-18',
     ): Promise<{ instrument: WorkingInstrument; contracts: { id: bigint; code: string }[] }> {
       const inst = await prisma.instrument.create({
         data: {
@@ -356,7 +386,7 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       });
       const contracts: { id: bigint; code: string }[] = [];
       for (let i = 0; i < count; i++) {
-        const contractCode = `HK.${root}260918P${100 + i}000`;
+        const contractCode = `HK.${root}${expiry.replaceAll('-', '').slice(2)}P${100 + i}000`;
         const row = await prisma.optionContract.create({
           data: {
             market: 'hk',
@@ -364,7 +394,7 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
             root,
             underlyingInstrumentId: inst.id,
             // 到期日远于 session_date ⇒ 落在工作集口径 (`expiry_date >= session_date`) 内。
-            expiryDate: day('2026-09-18'),
+            expiryDate: day(expiry),
             strikePrice: 100 + i,
             optionType: 'PUT',
             isStandard: true,
@@ -397,14 +427,14 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       seedSnapshotRows(contracts, SESSION);
 
     /** 轮2 时刻的端点替身: 期权行 + 标的自身那行 (spot 与主轮同源, 同批下发不另发调用)。 */
-    function settlePort(): OptionSnapshotPort {
+    function settlePort(asOf: Date = SETTLE_QUOTE_AS_OF): OptionSnapshotPort {
       return {
         getSnapshots: async (q: OptionSnapshotQuery) => {
           // 标的自身那行的 code 按**被问的那只票**派生 —— 段 b 会拿另一只票来问, 写死一个
           // 就成了「所有票共用一个 spot」, 而 spot 是硬门 ④ 的输入。
           const underlyingCode = `HK.${q.underlyingSymbol.split(':')[1]}`;
           return {
-            asOf: SETTLE_QUOTE_AS_OF,
+            asOf,
             rows: [
               ...q.contractCodes.map(
                 (code): OptionSnapshotRow => ({
@@ -621,6 +651,132 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       expect(stats.failed).toBe(0);
       // 2 行 UPDATE（段 a）+ 3 行 INSERT（段 b）—— 两段的对象集不相交, 加起来恰是全集。
       expect(stats.written).toBe(5);
+    });
+
+    // ── T011: 半日市与非交易日归属（FR-019 / SC-006, state_branches 2/4/5）────────────
+    //
+    // 🚨 三臂**全部用真日历行** (`trading_day.session_kind` + `calendar_coverage`), 日历端口
+    //    走 `DbTradingCalendarAdapter` 而不是 `stubTradingCalendar` —— 本片要证的正是「口径
+    //    真的从库里那两张表读出来」, 拿替身喂一个 `half` 进去等于把判据自己当答案。
+
+    /** 主轮那个 use case (段 b 之外, 本组直接跑它) —— 日历走真适配器。 */
+    function buildMainRound(port: OptionSnapshotPort): SyncOptionSnapshotUseCase {
+      return new SyncOptionSnapshotUseCase(port, prisma, new DbTradingCalendarAdapter(prisma));
+    }
+
+    /** 主轮维度行 (16:20 那一拍) —— 同样取库里 migration 落的那一行。 */
+    async function mainRoundDim(): Promise<ExecutorSyncDimensionRow> {
+      return (await prisma.syncDimension.findUniqueOrThrow({
+        where: { dimensionKey: HK_SNAPSHOT },
+      })) as ExecutorSyncDimensionRow;
+    }
+
+    it('🚨 ⑥ 半日市当天 16:20 → 归属**当日**、正常落库、零告警 (FR-019 / SC-006)', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const { instrument, contracts } = await seedChain('00700', 2, 'TCH', HALF_DAY_EXPIRY);
+
+      const stats = emptyStats();
+      await buildMainRound(settlePort(new Date(`${HALF_DAY}T08:28:00Z`))).run(
+        [instrument],
+        await mainRoundDim(),
+        stats,
+        { mode: 'delta', asOf: HALF_DAY, now: new Date(`${HALF_DAY}T08:20:00Z`) }, // hk 16:20
+      );
+
+      const rows = await readSnapshots();
+      expect(rows).toHaveLength(contracts.length);
+      for (const row of rows) {
+        // SC-006: 错误归属行数 = 0。归到 12-23 就是把半日市那一场的数据挂到前一天名下。
+        expect(row.sessionDate).toEqual(day(HALF_DAY));
+        expect(row.source).toBe('eod');
+        // 主轮 16:20 时 OI 尚未定稿 (21:30) ⇒ 标签退到上一交易日, 轮2 晚上再来修。
+        expect(row.oiAsOf).toEqual(day(HALF_DAY_PREV));
+      }
+      expect(stats.failed).toBe(0);
+      // 「零告警」含**盘口台阶越界**那条 (T009): 台阶上界登记的是当地**绝对时刻** 16:30, 与
+      // `kind` 正交 (同 `MARKET_OI_SETTLE_LOCAL_MINUTE` 的理由) ⇒ 半日市当天抓价 16:28 照样
+      // 判在台阶内。⚠️ 那天的盘口其实已塌了 4 小时 —— 那是 spec `已知代价 #1`「半日市约
+      // 5 天/年无收益」, **蓄意接受**, 不是本告警漏报。
+      expect(errSpy.mock.calls.map((c) => String(c[0]))).toEqual([]);
+      errSpy.mockRestore();
+    });
+
+    it('🚨 ⑥b 半日市的 `session_kind` 真的被读了 —— 12:20 那一格是唯一能分叉的探针', async () => {
+      // 🚨 上一臂在 16:20 上**判不出** half 与 whole: 两种收盘时刻 (12:00 / 16:00) 之下
+      //    16:20 都已过收盘 ⇒ 即便日历口径整个没接, 那一臂照样绿。真正分叉的只有这一格:
+      //      · kind = half  ⇒ 12:00 收 + 10min 缓冲 ⇒ 12:20 可写, 归属当日;
+      //      · kind 落 unknown / whole ⇒ 回落常规时段, 而 12:20 正落在**午休**里 ——
+      //        `isSessionUnderway` 含午休 ⇒ 判「场内」⇒ decision=skip ⇒ **零落库**。
+      const { instrument } = await seedChain('00700', 2, 'TCH', HALF_DAY_EXPIRY);
+
+      const stats = emptyStats();
+      await buildMainRound(settlePort(new Date(`${HALF_DAY}T04:28:00Z`))).run(
+        [instrument],
+        await mainRoundDim(),
+        stats,
+        { mode: 'delta', asOf: HALF_DAY, now: new Date(`${HALF_DAY}T04:20:00Z`) }, // hk 12:20
+      );
+
+      const rows = await readSnapshots();
+      expect(rows, '半日市 12:20 零落库 ⇒ session_kind 没从真日历行读出来').toHaveLength(2);
+      expect(rows[0].sessionDate).toEqual(day(HALF_DAY));
+      expect(stats.skipped).toBe(0);
+    });
+
+    it('🚨 ⑦ 非交易日 → 主轮两维与轮2 的交易日闸**全关** (state_branch 5)', async () => {
+      const calendar = new DbTradingCalendarAdapter(prisma);
+      const dims = await prisma.syncDimension.findMany({
+        where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT, HK_OI_SETTLE] } },
+        select: { dimensionKey: true, marketScope: true },
+      });
+      expect(dims).toHaveLength(3);
+
+      for (const d of dims) {
+        // 组合的是生产的两个单点: asOf 求值 (`sync-asof.rules`) → 交易日闸 (`trading-day-gate`),
+        // 与 `SyncTickDriver.tradingDayGate` 逐句同序。🚨 三个维度的 asOf 口径都是
+        // `last-completed-session`, 而周六 16:20 的水位是**周六自己** (纯时钟函数, 不问日历)
+        // ⇒ 闸拿周六去问日历, 答 non-trading ⇒ 短路不组 flow。
+        // 若有人把口径改成「退到上一交易日」, 闸就会拿周五去问、答 trading ⇒ 每个周末白烧
+        // 一轮 vendor 配额, 而**没有任何东西会红** —— 本臂就是那条绊线。
+        const saturday = resolveAsOfForDimension(d, new Date(`${NON_TRADING_DAY}T08:20:00Z`));
+        expect(saturday, `${d.dimensionKey} 的周六 asOf 不是周六自己`).toBe(NON_TRADING_DAY);
+        expect(
+          await isTradingDayGateOpen(calendar, 'hk', saturday),
+          `${d.dimensionKey} 在非交易日闸放行了`,
+        ).toBe(false);
+
+        // 正向控制组: 同一条路径在常规交易日必须**开**。少了它, 上面那个 false 可能来自
+        // 「覆盖声明缺失 ⇒ 全 non-trading」之类的布景错, 而不是判据本身。
+        const monday = resolveAsOfForDimension(d, new Date(`${SESSION}T08:20:00Z`));
+        expect(monday).toBe(SESSION);
+        expect(await isTradingDayGateOpen(calendar, 'hk', monday)).toBe(true);
+      }
+    });
+
+    it('🚨 ⑧ 常规交易日 16:20 → 采集业务日 = **当日** (state_branch 2 的正面)', async () => {
+      const { instrument, contracts } = await seedChain('00700', 2);
+
+      const stats = emptyStats();
+      await buildMainRound(settlePort(new Date(`${SESSION}T08:28:00Z`))).run(
+        [instrument],
+        await mainRoundDim(),
+        stats,
+        { mode: 'delta', asOf: SESSION, now: new Date(`${SESSION}T08:20:00Z`) }, // hk 16:20
+      );
+
+      const rows = await readSnapshots();
+      expect(rows).toHaveLength(contracts.length);
+      for (const row of rows) {
+        // 🚨 前移到 16:20 之后这一格才成立: 改动前那轮跑 23:30, 归属同样是当日但**盘口已塌**。
+        //    本臂钉的是「前移没有把归属带偏一天」, 不是「归属第一次对了」。
+        expect(row.sessionDate).toEqual(day(SESSION));
+        expect(row.source).toBe('eod');
+        expect(row.oiAsOf).toEqual(day(PREV_SESSION));
+        // 抓的就是 16:28 那份盘口 —— 本片的收益全在这一列上。
+        expect(row.quoteAsOf.getTime()).toBe(new Date(`${SESSION}T08:28:00Z`).getTime());
+      }
+      expect(stats.ok).toBe(1);
+      expect(stats.failed).toBe(0);
     });
   });
 });
