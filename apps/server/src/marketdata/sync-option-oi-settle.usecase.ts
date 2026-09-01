@@ -13,8 +13,9 @@ import {
   type OptionSnapshotPort,
 } from './option-snapshot.port.js';
 import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
-import { SNAPSHOT_SOURCE_EOD } from './sync-option-snapshot.usecase.js';
-import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
+import type { SnapshotAttribution } from './snapshot-session-attribution.rules.js';
+import { SNAPSHOT_SOURCE_EOD, SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
+import { addWritten, emptyStats, type SyncRunStats } from './sync-run.recorder.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 /**
@@ -73,6 +74,14 @@ interface SettleContract {
   code: string;
 }
 
+/** 单票分流的结论 —— 两段各自的对象集是否非空。 */
+interface SettleOutcome {
+  /** 段 a 真的发过 UPDATE。 */
+  updated: boolean;
+  /** 本票有主轮**整行缺失**的合约 ⇒ 交给段 b。 */
+  needsBackfill: boolean;
+}
+
 /** `YYYY-MM-DD` → `@db.Date` 列的 UTC 零点 Date。 */
 const toDateOnly = (s: string): Date => new Date(`${s}T00:00:00Z`);
 
@@ -94,6 +103,15 @@ export class SyncOptionOiSettleUseCase {
     @Inject(OPTION_SNAPSHOT_PORT) private readonly snapshot: OptionSnapshotPort,
     private readonly prisma: PrismaService,
     @Inject(TRADING_CALENDAR_PORT) calendar: TradingCalendarPort,
+    /**
+     * 段 b 的**唯一**执行体 (plan §D3)。
+     *
+     * 🚨 **MUST NOT 在本类里另抄一份 vendor 行 → DB 行的映射** —— 与
+     * `ensure-latest-eod-bar.usecase.ts` 头部那条「两份必漂」同一条纪律。补漏要写的是一整行
+     * (三个时点列 + 报价 + greeks + 硬门 + 异常监控), 抄过来就是第二份实现, 且**漂了不报错**。
+     * ⇒ 直接调它的 `collect`, 连硬门与幂等键一起继承。
+     */
+    private readonly snapshotCollector: SyncOptionSnapshotUseCase,
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
   }
@@ -147,6 +165,8 @@ export class SyncOptionOiSettleUseCase {
     }
 
     let budgetExhausted = false;
+    /** 段 b 的对象集 —— 有主轮整行缺失合约的票 (先分流, 循环结束后一次性补)。 */
+    const backfill: WorkingInstrument[] = [];
     for (const inst of instruments) {
       stats.scanned++;
       if (budgetExhausted) {
@@ -155,8 +175,14 @@ export class SyncOptionOiSettleUseCase {
       }
       const symbol = `${inst.market}:${inst.code}`;
       try {
-        const touched = await this.settleUnderlying(inst.id, symbol, sessionDate, stats);
-        if (touched) stats.ok++;
+        const outcome = await this.settleUnderlying(inst.id, symbol, sessionDate, stats);
+        if (outcome.needsBackfill) {
+          // 🚨 这一票的 ok / skipped **蓄意不在这里记** —— 段 b 的 `collect` 本就 per-instrument
+          // 记, 两边都记会把同一只票数两遍。`scanned` 反过来只在这里记 (见下面的合并处)。
+          backfill.push(inst);
+          continue;
+        }
+        if (outcome.updated) stats.ok++;
         else stats.skipped++;
       } catch (err) {
         if (err instanceof OptionSnapshotBudgetExhaustedError) {
@@ -174,20 +200,76 @@ export class SyncOptionOiSettleUseCase {
         });
       }
     }
+
+    if (backfill.length > 0 && !budgetExhausted) {
+      budgetExhausted = await this.backfillMissingRows(backfill, attribution, stats);
+    }
+    return budgetExhausted;
+  }
+
+  /**
+   * 段 b: 主轮整行缺失的合约 → 复用主轮采集本体补整行 (FR-009 / FR-010, plan §D3)。
+   *
+   * ## 🚨 `source` 硬编码 `eod`, MUST NOT 交给判据层推导
+   *
+   * 判据层在「已跨进下一个交易日」那一档会给 `premarket_backfill` (misfire 把本轮推过午夜时
+   * 就会撞上)。而段 b 落哪个 `source` 不是结论、是**身份**: 唯一键
+   * `(contract_id, session_date, source)` 必须与段 a 面对的那批行**碰撞**, 才能让
+   * `createMany(skipDuplicates)` 天然挡住重写。换成另一个取值 ⇒ 不碰撞 ⇒ 整条链被平行写出
+   * 第二份, 正是 #306 修掉的 555× 放大形态。
+   *
+   * ⚠️ 与 `option-snapshot-remediation.ts` ① 级的「`spec` 原样喂下去」**方向相反**, 别照抄那条:
+   * 那一级的 `mode` 是结论 (它可能真的被推迟到次日盘前), 本段的 `mode` 是身份。同一份判据的
+   * 两种正确用法, 判据是「这个取值承载的是路径还是归属」。
+   *
+   * ## 🚨 `collect` 会把整条链重打一遍, 这是**已知代价**
+   *
+   * `collect` 的粒度是「标的」而非「合约」—— 它按票取全部未到期合约再分批外呼。段 a 已经打过
+   * 的那些合约会被再打一次 (落库侧由 `skipDuplicates` 挡住, 不会重写)。用**合约级**的补漏换
+   * 掉这次重打, 代价是在本类里复制一份行映射 + 硬门 + 异常监控 —— 那是本文件顶上明令禁止的
+   * 那件事。⇒ 取重打。港股稳态单票 ~6 次外呼、全轮 ~38s, 且落在 21:40 的空窗。
+   *
+   * 复杂度: 同 `SyncOptionSnapshotUseCase.collect`。
+   */
+  private async backfillMissingRows(
+    instruments: WorkingInstrument[],
+    attribution: Extract<SnapshotAttribution, { decision: 'collect' }>,
+    stats: SyncRunStats,
+  ): Promise<boolean> {
+    this.logger.warn(
+      `[option-oi-settle] 段 b 补漏: ${instruments.length} 只票有主轮整行缺失的合约 ` +
+        `(${instruments.map((i) => `${i.market}:${i.code}`).join(', ')})`,
+    );
+    // 🚨 子 stats: `collect` 的 `scanned` 与本轮循环的 `scanned` 数的是同一批票, 合并会翻倍。
+    // 其余四项 (ok / skipped / failed / written / findings) 才是它独有的结论。
+    const sub = emptyStats();
+    const budgetExhausted = await this.snapshotCollector.collect(
+      instruments,
+      { ...attribution.spec, mode: SNAPSHOT_SOURCE_EOD },
+      sub,
+    );
+    stats.ok += sub.ok;
+    stats.skipped += sub.skipped;
+    stats.failed += sub.failed;
+    stats.findings.push(...sub.findings);
+    addWritten(stats, sub.written ?? 0);
     return budgetExhausted;
   }
 
   /**
    * 单票: 取工作集 → 查当日已有的 `eod` 行 → **分流** → 段 a 定向 UPDATE。
    *
-   * 返 `false` = 本票无可做的事 (无合约 / 当日一行都没有) ⇒ 调用方计 skipped。
+   * 🚨 **两段的对象集在这里被切成不相交的两半** (Guardrail 2): `settled` = 已有行的合约,
+   * `missing` = 整行缺失的合约, 二者按同一次存在性查询分出来。🚫 MUST NOT 退化成
+   * 「先全量 createMany 再全量 UPDATE」—— 那对已有行是 no-op、对新行是双写, 看起来也对,
+   * 但两段的语义就此搅在一起。
    */
   private async settleUnderlying(
     instrumentId: bigint,
     symbol: string,
     sessionDate: string,
     stats: SyncRunStats,
-  ): Promise<boolean> {
+  ): Promise<SettleOutcome> {
     const contracts: SettleContract[] = await this.prisma.optionContract.findMany({
       // 口径与主轮逐字一致 (FR-028a: 当日到期的合约当日仍可取快照)。
       where: {
@@ -200,17 +282,21 @@ export class SyncOptionOiSettleUseCase {
     if (contracts.length === 0) {
       // 与主轮同口径: 无合约 ≠ 失败 (港股绝大多数标的没有挂牌期权)。
       this.logger.log(`跳过 OI 回填 (库中零未到期期权合约): ${symbol}`);
-      return false;
+      return { updated: false, needsBackfill: false };
     }
 
-    const settled = await this.loadPersistedContracts(contracts, sessionDate);
-    if (settled.length === 0) {
-      // 主轮在本票上一行都没写 ⇒ 段 a 无对象。补漏归段 b (073 T003)。
-      this.logger.warn(`OI 回填无对象 (主轮当日在本票上零行): ${symbol}`);
-      return false;
+    const persisted = await this.loadPersistedContractIds(contracts, sessionDate);
+    const settled = contracts.filter((c) => persisted.has(c.id));
+    const missing = contracts.length - settled.length;
+    if (settled.length > 0) {
+      await this.refreshOpenInterest(symbol, settled, sessionDate, stats);
     }
-    await this.refreshOpenInterest(symbol, settled, sessionDate, stats);
-    return true;
+    if (missing > 0) {
+      this.logger.warn(
+        `主轮当日在本票上缺 ${missing}/${contracts.length} 个合约的整行 ⇒ 转段 b 补漏: ${symbol}`,
+      );
+    }
+    return { updated: settled.length > 0, needsBackfill: missing > 0 };
   }
 
   /**
@@ -221,10 +307,10 @@ export class SyncOptionOiSettleUseCase {
    *
    * 复杂度: 1 次唯一索引 `(contract_id, session_date, source)` 上的 `IN` 查询。
    */
-  private async loadPersistedContracts(
+  private async loadPersistedContractIds(
     contracts: SettleContract[],
     sessionDate: string,
-  ): Promise<SettleContract[]> {
+  ): Promise<ReadonlySet<bigint>> {
     const rows = await this.prisma.optionDailySnapshot.findMany({
       where: {
         contractId: { in: contracts.map((c) => c.id) },
@@ -233,8 +319,7 @@ export class SyncOptionOiSettleUseCase {
       },
       select: { contractId: true },
     });
-    const persisted = new Set(rows.map((r) => r.contractId));
-    return contracts.filter((c) => persisted.has(c.id));
+    return new Set(rows.map((r) => r.contractId));
   }
 
   /**

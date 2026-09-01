@@ -58,7 +58,7 @@ updated_at: '2026-09-01'
 
 - [X] T002 [Server] **轮2 段 a：定向 UPDATE 三列 + 定稿判据闸**（FR-006, FR-007, FR-008, FR-011; plan §D3; state_branches 6/8; US2）：新建 `sync-option-oi-settle.usecase.ts`，取当前快照后对已存在的 `(contract_id, session_date, source='eod')` 行**只**写 `open_interest` / `net_open_interest` / `oi_as_of`；起手 MUST 调 `oiRefreshedAtEod(market, sessionDate, now)`，返 `false` ⇒ 整轮**跳过 OI 写入**、计 `skipped`、落结构化 ERROR 留痕 → verify: 同名 spec 四臂**先红后绿** ① 定稿为真 ⇒ 三列被更新且 `oi_as_of = session_date` ② 定稿为假 ⇒ 零写入 + 留痕 ③ UPDATE 的 where **含** `source='eod'`（构造一条 `premarket_backfill` 行，断言它未被触及，Guardrail 6）④ 报价列与 greeks 逐值不变；🚨 变异留档：把 `oiRefreshedAtEod` 调用注掉 ⇒ 臂 ② 必红
 
-- [ ] T003 [Server] **轮2 段 b：补漏行**（FR-009, FR-010; plan §D3; state_branches 7/11; US3）：对主轮整行缺失的合约，复用 `sync-option-snapshot.usecase.ts` 的行映射构造完整行，走 `createMany(skipDuplicates)`（`:476` 同款），`source` 落 `SNAPSHOT_SOURCE_EOD`（`:75`）→ verify: 同名 spec 三臂先红后绿 ① 主轮已写的合约**不被重写**（`quote_as_of` 逐值不变，幂等键挡住）② 主轮缺失的合约补出完整行 ③ 主轮整场零行 ⇒ 走全量兜底；🚨 **段 a 与段 b MUST 对不相交的合约集**（先查已存在集合再分流，Guardrail 2）—— 断言两段处理的 id 集合交集为空
+- [X] T003 [Server] **轮2 段 b：补漏行**（FR-009, FR-010; plan §D3; state_branches 7/11; US3）：对主轮整行缺失的合约，复用 `sync-option-snapshot.usecase.ts` 的行映射构造完整行，走 `createMany(skipDuplicates)`（`:476` 同款），`source` 落 `SNAPSHOT_SOURCE_EOD`（`:75`）→ verify: 同名 spec 三臂先红后绿 ① 主轮已写的合约**不被重写**（`quote_as_of` 逐值不变，幂等键挡住）② 主轮缺失的合约补出完整行 ③ 主轮整场零行 ⇒ 走全量兜底；🚨 **段 a 与段 b MUST 对不相交的合约集**（先查已存在集合再分流，Guardrail 2）—— 断言两段处理的 id 集合交集为空
 
 - [ ] T004 [Server] **轮2 接线到 executor**（FR-006; plan §D2; state_branches 6; US2）：`dimension-executor.ts` 按 `:1046` / `:1051` 同款注册 `hk_option_oi_settle` 的 `factExecutor` → verify: `dimension-executor.spec.ts` 注册表断言绿；`pnpm nx test server` 该文件全绿
 

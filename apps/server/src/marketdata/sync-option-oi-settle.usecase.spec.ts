@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { describe, it, expect, vi } from 'vitest';
+import { Prisma } from '../generated/prisma/client.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { ExecutorInput, ExecutorSyncDimensionRow } from './dimension-executor.js';
 import type {
@@ -8,6 +9,7 @@ import type {
   OptionSnapshotRow,
 } from './option-snapshot.port.js';
 import { emptyStats } from './sync-run.recorder.js';
+import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { SyncOptionOiSettleUseCase } from './sync-option-oi-settle.usecase.js';
 import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
@@ -50,11 +52,25 @@ const TCH = { id: 3n, market: 'hk', code: '00700' };
 /** `YYYY-MM-DD` → `@db.Date` 列的 UTC 零点 Date。 */
 const day = (s: string) => new Date(`${s}T00:00:00Z`);
 
-/** code → 稳定合约 id (同一 code 反复取到同一个 id, 断言里可直接复用)。 */
+/**
+ * code → 稳定合约 id (同一 code 反复取到同一个 id, 断言里可直接复用)。
+ *
+ * 形状是**主轮工作集的全集**而不是轮2 自己那两列 —— 段 b 直调
+ * `SyncOptionSnapshotUseCase.collect`, 它要读行权价 / 买卖方向 / 非标标记喂硬门。
+ * 全为 PUT + 行权价远低于 spot ⇒ 门 ④ (无套利下界) 恒过, 本文件的红只会来自轮2 自己的逻辑。
+ */
 const contractIds = new Map<string, bigint>();
-function contractRow(code: string) {
+function contractRow(code: string, strike = '600') {
   if (!contractIds.has(code)) contractIds.set(code, BigInt(contractIds.size + 1));
-  return { id: contractIds.get(code) as bigint, code };
+  return {
+    id: contractIds.get(code) as bigint,
+    code,
+    optionType: 'PUT',
+    strikePrice: new Prisma.Decimal(strike),
+    expiryDate: day('2026-09-24'),
+    root: 'TCH',
+    isStandard: true,
+  };
 }
 
 /** 一行期权快照 (adapter 已归一化后的形态)。轮2 只读其中两列 OI。 */
@@ -85,6 +101,21 @@ function quoteRow(code: string, extra: Partial<OptionSnapshotRow> = {}): OptionS
   };
 }
 
+/** 标的自身那行 (spot 的来源, 与期权行同批返回; 段 b 的硬门 ④ 要读它)。 */
+function underlyingRow(): OptionSnapshotRow {
+  return {
+    ...quoteRow('HK.00700'),
+    isOption: false,
+    underlyingCode: null,
+    // 远高于两个行权价 ⇒ PUT 内在价值恒 0, 门 ④ 恒过。
+    last: '700',
+    bid: null,
+    ask: null,
+    delta: null,
+    greeksComplete: null,
+  };
+}
+
 /** 一次 `updateMany` 的入参 (段 a 的判定面: where 三段 + data 三列)。 */
 interface RecordedUpdate {
   where: Record<string, unknown>;
@@ -97,6 +128,10 @@ interface Harness {
   updates: RecordedUpdate[];
   /** 段 a 分流前那次「当日已有哪些 eod 行」的查询入参。 */
   existingWhere: unknown[];
+  /** 段 b 真正落库的行 (替身已按唯一键模拟 `skipDuplicates`)。 */
+  inserted: Record<string, unknown>[];
+  /** 段 b 递给 `createMany` 的原始 data (含被幂等键挡掉的那些)。 */
+  createManyArgs: { data: Record<string, unknown>[]; skipDuplicates?: boolean }[];
 }
 
 /**
@@ -132,7 +167,9 @@ function makeHarness(opts: {
       queries.push(q);
       return {
         asOf: hkt(SESSION_DATE, '21:40'),
-        rows: opts.rowsFor ? opts.rowsFor(q) : q.contractCodes.map((c) => quoteRow(c)),
+        rows: opts.rowsFor
+          ? opts.rowsFor(q)
+          : [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()],
       };
     }),
   };
@@ -144,11 +181,35 @@ function makeHarness(opts: {
     return Promise.resolve({ count: 1 });
   });
 
+  const inserted: Record<string, unknown>[] = [];
+  const createManyArgs: { data: Record<string, unknown>[]; skipDuplicates?: boolean }[] = [];
+  const createMany = vi.fn(
+    async (args: { data: Record<string, unknown>[]; skipDuplicates?: boolean }) => {
+      createManyArgs.push(args);
+      // 🚨 替身**真的模拟唯一键** `(contract_id, session_date, source)` —— 否则「主轮已写的
+      // 合约不被重写」这条只能靠读代码, 而它恰恰是段 b 最容易踩坏的那条 (#306 的 555× 放大)。
+      const admitted = args.skipDuplicates
+        ? args.data.filter(
+            (r) =>
+              !snapshotRows.some((s) => s.contractId === r.contractId && s.source === r.source),
+          )
+        : args.data;
+      inserted.push(...admitted);
+      for (const r of admitted) {
+        snapshotRows.push({ contractId: r.contractId as bigint, source: String(r.source) });
+      }
+      return { count: admitted.length };
+    },
+  );
+
   const calendar = stubTradingCalendar({ status: 'trading' });
   const prisma = {
     optionContract: {
       findMany: vi.fn(async (args: { where: { underlyingInstrumentId?: bigint } }) => {
         return opts.contracts?.[String(args.where.underlyingInstrumentId)] ?? [];
+      }),
+      count: vi.fn(async (args: { where: { underlyingInstrumentId: bigint } }) => {
+        return opts.contracts?.[String(args.where.underlyingInstrumentId)]?.length ?? 0;
       }),
     },
     optionDailySnapshot: {
@@ -157,6 +218,7 @@ function makeHarness(opts: {
         return snapshotRows.filter((r) => r.source === args.where.source);
       }),
       updateMany,
+      createMany,
     },
     $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
     tradingDay: {
@@ -168,11 +230,18 @@ function makeHarness(opts: {
     },
   } as unknown as PrismaService;
 
+  // 🚨 段 b 的执行体注**真**的 `SyncOptionSnapshotUseCase` (同一份 port + prisma 替身), 不是
+  // spy —— 本文件要证的「不重写已有行 / 补出的是完整行」全在它的落库形态里, 换成 spy 就只能
+  // 断言「调了它」, 而那句话对这两条一点保护都没有。
+  const collector = new SyncOptionSnapshotUseCase(port, prisma, calendar);
+
   return {
-    useCase: new SyncOptionOiSettleUseCase(port, prisma, calendar),
+    useCase: new SyncOptionOiSettleUseCase(port, prisma, calendar, collector),
     queries,
     updates,
     existingWhere,
+    inserted,
+    createManyArgs,
   };
 }
 
@@ -253,7 +322,8 @@ describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
 
       await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
 
-      expect(h.queries.flatMap((q) => q.contractCodes)).toEqual(['HK.TCH260924P600000']);
+      // `queries[0]` = 段 a 的批次 (段 b 随后还会为补漏重打整条链, 见下面的 describe)。
+      expect(h.queries[0].contractCodes).toEqual(['HK.TCH260924P600000']);
       expect(h.updates.map((u) => u.where.contractId)).toEqual([
         contractRow('HK.TCH260924P600000').id,
       ]);
@@ -290,19 +360,19 @@ describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
 
       await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
 
-      expect(h.queries.flatMap((q) => q.contractCodes)).toEqual(['HK.TCH260924P600000']);
+      expect(h.queries[0].contractCodes).toEqual(['HK.TCH260924P600000']);
       expect(h.updates).toHaveLength(1);
     });
 
-    it('该票当日一行都没有 → 段 a 零外呼 (无对象, 不是失败)', async () => {
+    it('该票当日一行都没有 → 段 a 零 UPDATE (无对象), 整票转段 b', async () => {
       const h = makeHarness({ contracts: TCH_CONTRACTS, existing: [] });
       const stats = emptyStats();
 
       await h.useCase.run([TCH], DIM, stats, makeInput(hkt(SESSION_DATE, '21:40')));
 
-      expect(h.queries).toHaveLength(0);
       expect(h.updates).toHaveLength(0);
-      expect(stats.written).toBe(0);
+      // 段 b 把两条全补出来 ⇒ written 记的是段 b 的落库行数, 不是 0。
+      expect(stats.written).toBe(2);
     });
 
     it('库中零合约 → 零外呼、计 skipped (hard 依赖链发现, 同主轮口径)', async () => {
@@ -313,6 +383,78 @@ describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
 
       expect(h.queries).toHaveLength(0);
       expect(stats).toMatchObject({ scanned: 1, ok: 0, skipped: 1, failed: 0 });
+    });
+  });
+
+  describe('🚨 段 b: 主轮整行缺失的合约补整行 (073 T003, FR-009/FR-010)', () => {
+    it('① 主轮已写的合约**不被重写** —— 幂等键挡住, 报价列一个字节都没动', async () => {
+      const h = makeHarness({ contracts: TCH_CONTRACTS, existing: ['HK.TCH260924P600000'] });
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      // `createMany` 递进去的是整条链 (collect 的粒度是标的), 但真正落库的只有缺的那条。
+      expect(h.createManyArgs.every((a) => a.skipDuplicates === true)).toBe(true);
+      expect(h.inserted.map((r) => r.contractId)).toEqual([contractRow('HK.TCH260924C600000').id]);
+    });
+
+    it('② 主轮缺失的合约补出**完整行** (报价 + greeks + 三个时点列)', async () => {
+      const h = makeHarness({ contracts: TCH_CONTRACTS, existing: ['HK.TCH260924P600000'] });
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      expect(h.inserted).toHaveLength(1);
+      expect(h.inserted[0]).toMatchObject({
+        contractId: contractRow('HK.TCH260924C600000').id,
+        sessionDate: day(SESSION_DATE),
+        // 🚨 段 b MUST 落 eod —— 新开一个 source 会让唯一键不再碰撞, 平行写出第二条整链。
+        source: 'eod',
+        // hk 的 OI 收盘当晚定稿 ⇒ 补出来的行 oi_as_of 与段 a 的 UPDATE 同值。
+        oiAsOf: day(SESSION_DATE),
+        quoteAsOf: hkt(SESSION_DATE, '21:40'),
+        bid: '2.30',
+        ask: '2.40',
+        delta: '-0.31',
+        openInterest: '3120',
+        underlyingSpot: '700',
+      });
+    });
+
+    it('③ 主轮整场零行 → 段 b 走全量兜底 (state_branch 11)', async () => {
+      const h = makeHarness({ contracts: TCH_CONTRACTS, existing: [] });
+      const stats = emptyStats();
+
+      await h.useCase.run([TCH], DIM, stats, makeInput(hkt(SESSION_DATE, '21:40')));
+
+      expect(h.inserted.map((r) => r.contractId).sort()).toEqual(
+        [contractRow('HK.TCH260924P600000').id, contractRow('HK.TCH260924C600000').id].sort(),
+      );
+      // 该票只被数一次: 循环记 scanned, ok / skipped 交给 collect。
+      expect(stats).toMatchObject({ scanned: 1, ok: 1, failed: 0, written: 2 });
+    });
+
+    it('🚨 ④ 两段处理的合约 id 集合**交集为空** (Guardrail 2)', async () => {
+      const h = makeHarness({ contracts: TCH_CONTRACTS, existing: ['HK.TCH260924P600000'] });
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      const segA = new Set(h.updates.map((u) => String(u.where.contractId)));
+      const segB = new Set(h.inserted.map((r) => String(r.contractId)));
+      expect(segA.size).toBeGreaterThan(0);
+      expect(segB.size).toBeGreaterThan(0);
+      expect([...segA].filter((id) => segB.has(id))).toEqual([]);
+    });
+
+    it('主轮一行不缺 → 段 b **零外呼**, 一次 createMany 都不发', async () => {
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000', 'HK.TCH260924C600000'],
+      });
+
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+
+      expect(h.createManyArgs).toHaveLength(0);
+      // 只有段 a 那一次批次调用。
+      expect(h.queries).toHaveLength(1);
     });
   });
 
