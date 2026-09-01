@@ -15,7 +15,7 @@
 --
 -- #209 排查(2026-08-27)发现: 三个既有数据探针的谓词**全部只碰 `marketdata` schema** ⇒
 -- `optionsdesk` / `alert` / `public.outbox_event` / `account` / `research` / `ideation`
--- **零进程外监控**。而 `optionsdesk/sync-anchor-quote.scheduler.ts` 的失败路径是
+-- **零进程外监控**。而 `optionsdesk/sync-anchor-last-close.scheduler.ts` 的失败路径是
 -- `catch → logger.error → return null`, **不落 `sync_run`**(不在 marketdata 同步框架内) ⇒
 -- 纯真空: 日志没有接收端, 数据侧也没人看。
 --
@@ -53,8 +53,13 @@ WITH today AS (
   -- 业务「今天」锚在 Asia/Shanghai(同 table-health; 阈值以交易日为单位, 容器 TZ 偏移不影响)。
   SELECT (now() AT TIME ZONE 'Asia/Shanghai')::date AS d
 ),
--- 允许锚落后多少个**交易日**(非自然日, 长假不误报)。收盘价投影跟随各市场收盘, 取 2 与
--- table-health 的日线哨兵同值。
+-- 允许锚落后多少个**交易日**(非自然日, 长假不误报)。取 2 与 table-health 的日线哨兵同值。
+--
+-- 🚨 ADR-0070 后**上游换人但阈值不变**: 收盘价改由 `sync-anchor-last-close` 在各市场收盘后
+-- 直查 vendor 写入(hk 16:10 / us 16:15 当地), 比原来的 daily_bar 每小时投影**更早**到货
+-- ⇒ 2 个交易日的余量只增不减。真正的变化是**补采窗按交易所当地日历日封口**: 某一场窗内
+-- 一直失败就不再追那一场(跨午夜即放弃), 于是「掉队」从「投影慢了」变成「那一场彻底没采到」
+-- —— 判据面不变, 但它现在指向的是一个**更值得看**的故障。
 lag_cfg(max_lag_trading_days) AS (VALUES (2)),
 -- 各市场按日期倒序编号的交易日(rn=1 = 最近一个 <= today 的交易日)。trading_day 是小表, pkey 覆盖。
 cal AS (

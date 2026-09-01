@@ -228,7 +228,7 @@ const WRITE_ALLOWLIST: Record<string, readonly string[]> = {
     'optionsdesk/import-anchor-from-model.usecase.ts',
     'optionsdesk/review-anchor.usecase.ts',
     'optionsdesk/set-position-bucket.usecase.ts',
-    'optionsdesk/sync-anchor-quote.ts',
+    'optionsdesk/sync-anchor-last-close.ts',
     'optionsdesk/sync-anchor-intraday.ts',
     // ⚠️ 读路径里的写: 雷达在算的同时推进 breach_started_on 状态机 (FR-013「红标不是一次比较
     // 是个状态机」), 条件 UPDATE + affected-count。**只写那一列**, 不碰估值事实

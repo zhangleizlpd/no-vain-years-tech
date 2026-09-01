@@ -7,7 +7,6 @@ import { classifyZone, computeDistanceToWPct, computeW } from '../../src/options
 import { CreateAnchorUseCase } from '../../src/optionsdesk/create-anchor.usecase';
 import { ReviewAnchorUseCase } from '../../src/optionsdesk/review-anchor.usecase';
 import { ListAnchorsUseCase } from '../../src/optionsdesk/list-anchors.usecase';
-import { SyncAnchorQuoteUseCase } from '../../src/optionsdesk/sync-anchor-quote';
 import {
   GetRadarUseCase,
   RADAR_EMPTY_STATE_MESSAGES,
@@ -16,7 +15,7 @@ import {
 import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 
 // 045 T014 US2 集成 IT (**SC-006**) —— 真 PG 端到端: **IT 内塞真行 us `Instrument` + `DailyBar`**
-// (spec 明定的验收方式, 不碰任何 vendor) → `last_close` 单向投影 → 雷达读端返真值。
+// (spec 明定的验收方式, 不碰任何 vendor) → 夹具把 bar 抄进 `last_close` → 雷达读端返真值。
 //
 // 覆盖 state_branch: 正常进雷达 / 逾期红标行不隐藏 / excluded 不进雷达 / 复核锚四条 /
 // 色带区间三条 / 行情三档 (当日·陈旧·不可得) / 空态两条 / 游标分页 / 并列 tiebreaker /
@@ -29,7 +28,6 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
   let createAnchor: CreateAnchorUseCase;
   let reviewAnchor: ReviewAnchorUseCase;
   let listAnchors: ListAnchorsUseCase;
-  let syncQuote: SyncAnchorQuoteUseCase;
   let getRadar: GetRadarUseCase;
 
   /** V = 50 ⇒ W = 40 (由 rules 派生, 本文件零档位字面量, SC-005)。 */
@@ -58,7 +56,6 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     );
     reviewAnchor = new ReviewAnchorUseCase(prisma, stubTradingCalendar());
     listAnchors = new ListAnchorsUseCase(prisma, stubTradingCalendar());
-    syncQuote = new SyncAnchorQuoteUseCase(prisma);
     getRadar = new GetRadarUseCase(prisma, stubTradingCalendar());
   }, 180_000);
 
@@ -147,6 +144,41 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     return created.id;
   }
 
+  /**
+   * 把 `daily_bar` 抄进锚的 `last_close` / `last_close_date` —— **纯夹具, 不是生产写手的副本**。
+   *
+   * 🚨 ADR-0070 起 `last_close` 由 `sync-anchor-last-close.ts` 在收盘后直查 vendor 写入, 与
+   * `daily_bar` 再无关系。本文件的验证面是**雷达读端的落库口径与 SQL 语义** (排序 / 分区 /
+   * 空态 / 色带 / 游标), 它只要求「锚上有一个收盘价且日期对得上」—— 那个价由谁写是上游的事。
+   * 让 IT 去驱动真写手要连带伪造 vendor 端口与收盘后时钟, 会把一个读端 IT 变成写手 IT; 而写手
+   * 自己的三闸与写入语义已由 `sync-anchor-last-close.spec.ts` 的四条变异用例钉住。
+   */
+  async function projectLastClose(): Promise<{ updated: number }> {
+    const anchors = await prisma.anchor.findMany({ select: { id: true, ticker: true } });
+    let updated = 0;
+    for (const a of anchors) {
+      const [market, code] = a.ticker.split(':');
+      const instrument = await prisma.instrument.findUnique({
+        where: { market_code: { market, code } },
+        select: { id: true },
+      });
+      if (instrument === null) continue;
+      const bar = await prisma.dailyBar.findFirst({
+        where: { instrumentId: instrument.id, adjust: 'none' },
+        orderBy: { tradeDate: 'desc' },
+        select: { tradeDate: true, close: true },
+      });
+      if (bar === null) continue;
+      // tradeDate 是 `@db.Date` ⇒ 读出来已是 UTC 午夜, 与 last_close_date 同口径, 直接写。
+      await prisma.anchor.updateMany({
+        where: { id: a.id },
+        data: { lastClose: bar.close, lastCloseDate: bar.tradeDate },
+      });
+      updated += 1;
+    }
+    return { updated };
+  }
+
   /** 把锚「变老」—— 建锚当日回填的 last_reviewed_on 会压住红标, 复核锚场景须先退回过去。 */
   async function backdateAnchor(id: bigint, on: Date): Promise<void> {
     await prisma.anchor.update({
@@ -164,8 +196,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       const tradeDate = day('2026-07-31');
       await seedAnchor({ code: 'AOS', close: '36', tradeDate });
 
-      const report = await syncQuote.execute();
-      expect(report.projections[0]).toMatchObject({ ticker: 'us:AOS', asOf: '2026-07-31' });
+      await projectLastClose();
 
       const page = await getRadar.execute();
       const view = page.items[0]!;
@@ -177,12 +208,12 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       expect(view.zone).toBe(classifyZone(V, '36'));
     });
 
-    it('🚨 last_close 单向: 投影 + 雷达读全程不反写 marketdata.daily_bar', async () => {
+    it('🚨 雷达读端零写 marketdata.daily_bar (ADR-0070 后 last_close 已非 daily_bar 投影, 读端零写这条不变)', async () => {
       const tradeDate = day('2026-07-31');
       await seedAnchor({ code: 'AOS', close: '36', tradeDate });
       const before = await prisma.dailyBar.findMany({ orderBy: { id: 'asc' } });
 
-      await syncQuote.execute();
+      await projectLastClose();
       await getRadar.execute();
 
       const after = await prisma.dailyBar.findMany({ orderBy: { id: 'asc' } });
@@ -195,9 +226,9 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       await seedAnchor({ code: 'NEW' }); // instrument 已注册但无任何 bar
       await seedAnchor({ code: 'GHOST', unregistered: true }); // 连 instrument 都没有
 
-      const report = await syncQuote.execute();
-      expect(report.projections.every((p) => p.hasData === false)).toBe(true);
-      expect(report.updated).toBe(0);
+      // 两只都取不到 bar (一只无行情、一只连 instrument 都没有) ⇒ **一行都不该写**。
+      const { updated } = await projectLastClose();
+      expect(updated).toBe(0);
 
       const page = await getRadar.execute();
       expect(tickerOf(page).sort()).toEqual(['us:GHOST', 'us:NEW']); // 行未被剔除
@@ -215,7 +246,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       await seedAnchor({ code: 'STALE', close: '36', tradeDate: day('2026-01-05') });
       await seedAnchor({ code: 'NODATA' });
 
-      await syncQuote.execute();
+      await projectLastClose();
       const page = await getRadar.execute();
       const byTicker = new Map(page.items.map((i) => [i.row.ticker, i]));
 
@@ -232,7 +263,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
   describe('基础语义: 进雷达 / 逾期 / excluded / 色带区间', () => {
     it('锚存在 ∧ 未逾期 ∧ 未 excluded → 正常进雷达, 派生值齐备', async () => {
       await seedAnchor({ code: 'AOS', close: '36' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       const view = page.items[0]!;
@@ -244,7 +275,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     it('逾期锚 → 行**不隐藏**, overdue 标记为真 (红标是提醒不是过滤器)', async () => {
       await seedAnchor({ code: 'OLD', close: '36', nextReview: day('2020-01-01') });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(tickerOf(page)).toEqual(['us:OLD']);
@@ -254,7 +285,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('🚨 Guardrail 12: excluded 不进雷达, 但在锚列表可见并带 excludeReason', async () => {
       await seedAnchor({ code: 'AOS', close: '36' });
       await seedAnchor({ code: 'SKIP', close: '30', excluded: true });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(tickerOf(page)).toEqual(['us:AOS']);
@@ -269,7 +300,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       await seedAnchor({ code: 'DEEP', close: '25' }); // < 内段下界
       await seedAnchor({ code: 'BUY', close: '36' }); // 下界 ~ W
       await seedAnchor({ code: 'THIN', close: '45' }); // W ~ V
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       const zones = new Map(page.items.map((i) => [i.row.ticker, i.zone]));
@@ -285,7 +316,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('① spot 由上穿下 → 本轮起点落库 + 红标亮', async () => {
       const id = await seedAnchor({ code: 'AOS', close: '36', tradeDate: day('2026-07-31') });
       await backdateAnchor(id, day('2026-05-01'));
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(isoDay(page.items[0]!.row.breachStartedOn!)).toBe('2026-07-31');
@@ -295,7 +326,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('② 完成一次定期复审 → 红标解除, 但区间徽标照常 (EC-12, 唯一解除动作)', async () => {
       const id = await seedAnchor({ code: 'AOS', close: '36', tradeDate: day('2026-07-31') });
       await backdateAnchor(id, day('2026-05-01'));
-      await syncQuote.execute();
+      await projectLastClose();
       await getRadar.execute(); // 置起点
 
       await reviewAnchor.execute(id, day('2099-01-01'));
@@ -309,7 +340,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('③ spot 回到 W 上方 → 起点清空; 再跌破 = 新一轮, 红标重新亮 (EC-13)', async () => {
       const id = await seedAnchor({ code: 'AOS', close: '36', tradeDate: day('2026-07-20') });
       await backdateAnchor(id, day('2026-05-01'));
-      await syncQuote.execute();
+      await projectLastClose();
       await getRadar.execute();
       await reviewAnchor.execute(id, day('2099-01-01')); // 本轮已复审 ⇒ 红标灭
       // 复审动作按定义盖**今日**戳; 本 fixture 的 bar 是历史日期, 把复审日倒回轮次当时,
@@ -319,14 +350,14 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       // 回到 W 上方
       const instrument = await prisma.instrument.findFirstOrThrow({ where: { code: 'AOS' } });
       await seedBar(instrument.id, day('2026-07-22'), '45');
-      await syncQuote.execute();
+      await projectLastClose();
       const cleared = await getRadar.execute();
       expect(cleared.items[0]!.row.breachStartedOn).toBeNull();
       expect(cleared.items[0]!.reviewFlagOn).toBe(false);
 
       // 新一轮跌破 (起点晚于最近复审) ⇒ 红标重新亮
       await seedBar(instrument.id, day('2026-07-23'), '30');
-      await syncQuote.execute();
+      await projectLastClose();
       const relit = await getRadar.execute();
       expect(isoDay(relit.items[0]!.row.breachStartedOn!)).toBe('2026-07-23');
       expect(relit.items[0]!.reviewFlagOn).toBe(true);
@@ -335,7 +366,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('④ 行情不可用期间 → 起点既不推进也不清空, 红标维持上一次可判定状态', async () => {
       const id = await seedAnchor({ code: 'AOS', close: '36', tradeDate: day('2026-07-31') });
       await backdateAnchor(id, day('2026-05-01'));
-      await syncQuote.execute();
+      await projectLastClose();
       await getRadar.execute();
 
       // 行情不可用: 把投影清掉 (模拟从未采到 / 采集中断), 起点保持
@@ -352,7 +383,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     it('建锚时 spot 已在 W 之下 → 本轮起点 = 建锚当日, 且当日不误亮红标 (建锚即一次确认)', async () => {
       await seedAnchor({ code: 'AOS', close: '30', tradeDate: day('2026-07-20') }); // bar 比锚老
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(isoDay(page.items[0]!.row.breachStartedOn!)).toBe(isoDay(todayUtc()));
@@ -373,7 +404,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       ] as const) {
         await seedAnchor({ code, close });
       }
-      await syncQuote.execute();
+      await projectLastClose();
 
       const seen: string[] = [];
       let cursor: string | null = null;
@@ -401,7 +432,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       for (const code of ['T1', 'T2', 'T3']) {
         await seedAnchor({ code, close: '36' }); // 同 V 同 close ⇒ 距 W% 完全并列
       }
-      await syncQuote.execute();
+      await projectLastClose();
 
       const ids: bigint[] = [];
       let cursor: string | null = null;
@@ -422,7 +453,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       await seedAnchor({ code: 'M1', close: '32', confidence: '8' }); // L2
       await seedAnchor({ code: 'M2', close: '34', confidence: '8' }); // L2
       await seedAnchor({ code: 'L1X', close: '36', confidence: '2' }); // L4
-      await syncQuote.execute();
+      await projectLastClose();
 
       const filter = { lLevels: ['L2'] as const };
       const first = await getRadar.execute({ limit: 1, filter });
@@ -437,7 +468,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('待复审 / 跌破 W 两个筛选各自在 SQL 端生效', async () => {
       await seedAnchor({ code: 'DUE', close: '45', nextReview: day('2020-01-01') });
       await seedAnchor({ code: 'BELOW', close: '30' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const overdue = await getRadar.execute({ filter: { pendingReview: true } });
       expect(tickerOf(overdue)).toEqual(['us:DUE']);
@@ -449,7 +480,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('跌破 W 筛选不把「行情不可用」的行算作跌破 (禁伪造)', async () => {
       await seedAnchor({ code: 'NODATA' });
       await seedAnchor({ code: 'BELOW', close: '30' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const below = await getRadar.execute({ filter: { belowW: true } });
       expect(tickerOf(below)).toEqual(['us:BELOW']);
@@ -469,7 +500,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('② 全体不动区 → all_idle + 「今日无解」文案, 且行**照常渲染**', async () => {
       await seedAnchor({ code: 'HIGH1', close: '45' });
       await seedAnchor({ code: 'HIGH2', close: '48' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(page.items).toHaveLength(2); // 行不隐藏
@@ -480,7 +511,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('③ 单票行情缺失 → 该行降级但其余行正常, 不整页降级 (与 all_idle 不混淆)', async () => {
       await seedAnchor({ code: 'OK', close: '30' });
       await seedAnchor({ code: 'MISSING' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(page.items).toHaveLength(2);
@@ -493,7 +524,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     it('④ 锚逾期 → 行内 overdue 标记, 与前三态互不混淆', async () => {
       await seedAnchor({ code: 'DUE', close: '30', nextReview: day('2020-01-01') });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute();
       expect(page.emptyState).toBeNull();
@@ -503,7 +534,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     it('筛选后为空 → filtered_empty (与零锚 / 不动区文案互不复用)', async () => {
       await seedAnchor({ code: 'AOS', close: '30', confidence: '8' }); // L2
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute({ filter: { lLevels: ['L1'] } });
       expect(page.items).toHaveLength(0);
@@ -520,7 +551,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
     it('hk 作用域只回 hk; 两个作用域的并集 = 不带作用域的全集、交集为空 (SC-003)', async () => {
       await seedAnchor({ code: 'AOS', close: '36' });
       await seedAnchor({ code: '00700', market: 'hk', close: '45' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const hk = await getRadar.execute({ market: 'hk' });
       const us = await getRadar.execute({ market: 'us' });
@@ -537,7 +568,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
       await seedAnchor({ code: 'AOS', close: '36' }); // < W = 40 ⇒ 可动
       await seedAnchor({ code: 'CPB', close: '30' }); // < W ⇒ 可动
       await seedAnchor({ code: '00700', market: 'hk', close: '45' }); // > W ⇒ 不动
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute({ market: 'hk' });
 
@@ -553,7 +584,7 @@ describe('045 optionsdesk US2 雷达集成 IT (Testcontainers PG)', () => {
 
     it('state_branch 4: 港股无锚而库中另有美股锚 → zero_anchors_in_market (引导切市场)', async () => {
       await seedAnchor({ code: 'AOS', close: '36' });
-      await syncQuote.execute();
+      await projectLastClose();
 
       const page = await getRadar.execute({ market: 'hk' });
 

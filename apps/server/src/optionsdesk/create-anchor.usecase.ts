@@ -342,7 +342,7 @@ export class CreateAnchorUseCase {
   /**
    * 建锚即取一次最近收盘 —— 让新锚**不经过**「行情不可用」那段窗口 (2026-08-18)。
    *
-   * ## 为什么不能只「投影 `daily_bar`」
+   * ## 为什么建锚这一步要**自己打一次源**, 不能只等收盘后那一拍
    *
    * EOD 采集的工作集由**已有的锚**派生 ⇒ 全新标的在成为锚之前根本没被采过, 建锚那一刻库里一根
    * 日线都没有, 投影只会投出 `null`。锚要有价得先有 EOD, EOD 要被采得先有锚 —— 是个死循环。
@@ -351,7 +351,7 @@ export class CreateAnchorUseCase {
    * ## 🚨 best-effort —— 失败**绝不**影响建锚这件事
    *
    * 锚已经在上面的 tx 里提交了。这一步失败 (vendor 挂 / 超时 / 该标的没数据) 只是退回旧行为:
-   * 等 `SyncAnchorQuoteUseCase` 每小时 `:30` 那轮补上。往外抛会让调用方以为建锚失败而重试,
+   * 等 `SyncAnchorLastCloseUseCase` 在该市场**收盘后那一拍**补上。往外抛会让调用方以为建锚失败而重试,
    * 而重试撞 `uk_anchor_ticker` 只会收到 409 —— 一次真实成功被包装成两次失败。
    */
   private async seedLastClose(
@@ -366,7 +366,7 @@ export class CreateAnchorUseCase {
         where: { id: row.id },
         data: {
           lastClose: bar.close,
-          // 与 `sync-anchor-quote.ts` 同口径: 交易日按 UTC 零点存, 免时区漂。
+          // 与 `sync-anchor-last-close.ts` 同口径: 交易日按 UTC 零点存, 免时区漂。
           lastCloseDate: new Date(`${bar.tradeDate}T00:00:00.000Z`),
         },
       })) as AnchorRow;

@@ -537,7 +537,7 @@ describe('CreateAnchorUseCase — 建锚即取最近收盘 (best-effort)', () =>
     expect(m.anchorUpdate).toHaveBeenCalledTimes(1);
     const written = m.anchorUpdate.mock.calls[0][0] as { data: Record<string, unknown> };
     expect(written.data.lastClose).toBe('86.94');
-    // 交易日按 UTC 零点存 —— 与 sync-anchor-quote 同口径, 免时区漂。
+    // 交易日按 UTC 零点存 —— 与 sync-anchor-last-close 同口径, 免时区漂。
     expect(written.data.lastCloseDate).toEqual(new Date('2026-08-17T00:00:00.000Z'));
     expect(result.lastClose).toBe('86.94');
   });

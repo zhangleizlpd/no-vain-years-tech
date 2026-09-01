@@ -167,7 +167,7 @@ export class GetUnderlyingDetailUseCase {
     if (parsed === null) return noIv('missing');
     try {
       // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 锚 ticker → 标的
-      // id 寻址, 读法同 `sync-anchor-quote.ts`。零写、零 @Inject() 对方 use case (Q7-C)。
+      // id 寻址, 读法同 `instrument-name.ts`。零写、零 @Inject() 对方 use case (Q7-C)。
       const instrument = await this.prisma.instrument.findUnique({
         where: { market_code: { market: parsed.market, code: parsed.code } },
         select: { id: true },

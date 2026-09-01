@@ -9,12 +9,12 @@ import { parseAnchorTicker } from './anchor.rules';
  * 人读不出是哪只票。本文件补的就是那一半。
  *
  * 🚨 **跨 ctx 只读直查 (catalog Q7-B)**: 走 `PrismaService` 直查 `marketdata.instrument`,
- * **禁 `@Inject()` marketdata 的 use case** (Q7-C), 读法与 `sync-anchor-quote.ts` 的
- * instrument 寻址逐字同形。`// CROSS-CONTEXT-READ:` 注释必须挂在 **prisma 调用语句正上方**
+ * **禁 `@Inject()` marketdata 的 use case** (Q7-C)。本文件是本 ctx 里 `instrument` 单点寻址的
+ * **范例落点** (`get-thermometer` / `get-underlying-detail` 的注释指向这里)。`// CROSS-CONTEXT-READ:` 注释必须挂在 **prisma 调用语句正上方**
  * —— `scripts/checks/check-server-moat.ts` 的 AST 探针只认那一处 (挂 import 上方不被采信)。
  *
  * 🚫 **单向**: 名字的唯一真相源是 `marketdata.instrument.name` (universe 同步维护), 本 ctx
- * 零写、也 MUST NOT 把它投影进锚表 —— 锚表投影 `last_close` 是为了让距 W% 成为同表可排序
+ * 零写、也 MUST NOT 把它落进锚表 —— 锚表持 `last_close` 是为了让距 W% 成为同表可排序
  * 表达式 (plan D4 的唯一理由), 名字既不参与排序也不参与筛选, 落列只会多一份会漂的副本。
  *
  * 降级纪律: 未注册 instrument / ticker 不可解析 ⇒ `null`, 由呈现层退回代号。**MUST NOT** 拿

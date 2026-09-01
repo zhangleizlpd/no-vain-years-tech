@@ -133,8 +133,8 @@ describe('#209 app-state-health 谓词 (Testcontainers PG)', () => {
   });
 
   it('🚨 判据①: **全部** active 锚的收盘价掉队 → exit 1 (整体停摆)', async () => {
-    // 这正是 sync-anchor-quote.scheduler 的真实故障形态: catch → logger.error → return null,
-    // 不落 sync_run ⇒ 此前没有任何东西看得见。
+    // 这正是 sync-anchor-last-close.scheduler 的真实故障形态: catch → logger.error → return null,
+    // 不落 sync_run ⇒ 除本谓词外没有任何东西看得见。
     await seedCalendar('us');
     await seedAnchor('us:AAA', 'us', 5);
     await seedAnchor('us:BBB', 'us', 7);

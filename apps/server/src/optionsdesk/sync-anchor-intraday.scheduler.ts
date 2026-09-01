@@ -18,7 +18,8 @@ import {
  *
  * 🚨 **进程内 `@Cron`, 不引 BullMQ** (plan D6): `optionsdesk` 一套 queue/worker/connection
  * 都没有 (那些全在 `alert`), 为一个 30 秒 tick 从零搭 BullMQ 拓扑是过度设计。熔断计数用
- * Redis 即可。形态照本 ctx 既有的 `sync-anchor-quote.scheduler.ts`。
+ * Redis 即可。形态照当时本 ctx 既有的 `sync-anchor-quote.scheduler.ts` (已随 ADR-0070 删除;
+ * 今天的同侪是 `sync-anchor-last-close.scheduler.ts` —— 它**不接熔断**, 理由见其文件头)。
  *
  * ⚠️ **已知代价 (与既有 scheduler 同一前提, 非本片新引入)**: 进程内 `@Cron` 在多实例部署下
  * 会重复触发。现状单实例, 且本 tick 幂等 (覆盖写同一批列, 最后写赢), 重复的代价只是多一次

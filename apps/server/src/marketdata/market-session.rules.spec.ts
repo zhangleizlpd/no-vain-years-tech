@@ -386,11 +386,25 @@ describe('🚨 边界一致性: market-session 与 session-clock 在收盘分钟
 
 describe('🚨 收盘定稿缓冲 —— 从「闭区间的副作用」拆成显式参数 (#187 后续 P0-3)', () => {
   it('缓冲默认 1 分钟 = 拆出来之前的等效值 ⇒ 未分叉的市场行为逐点不变', () => {
-    // 🚨 us 留在默认值上是**有理由的空缺**, 不是漏填: 美股收盘竞价的官方价何时进到本供应方
-    // 的快照里没实测过。别照着 hk 编一个 (rules 文件 CLOSE_SETTLE_BUFFER_MINUTES 注释)。
-    for (const market of ['cn', 'us']) {
-      expect(closeSettleBufferMinutes(market)).toBe(1);
+    // 🚨 cn 留在默认值上是**有理由的空缺**, 不是漏填: 期权采集尚未开通, 没有消费方也就没有
+    // 定稿证据可取。别照着 hk / us 编一个 (rules 文件 CLOSE_SETTLE_BUFFER_MINUTES 注释)。
+    expect(closeSettleBufferMinutes('cn')).toBe(1);
+    // 未登记市场同样落默认值。
+    expect(closeSettleBufferMinutes('xx')).toBe(1);
+  });
+
+  it('🚨 us = 15 分钟 —— Nasdaq NOCP 收盘后 15 分钟才由 network processor 正式下发', () => {
+    expect(closeSettleBufferMinutes('us')).toBe(15);
+
+    const close = sessionCloseMinutes('us', 'whole') as number;
+    // 16:01 (原 buffer=1 的放行点) 到 16:14 全程仍拒写。⚠️ 与 hk 那条的**风险形态不同**:
+    // Nasdaq Closing Cross 的价 16:00 就定了、即时打印, 16:15 那一步改的是「官方 Consolidated
+    // Last Sale Price」这个身份而非价本身 ⇒ 本条买的是**余量**, 不是像 hk 那样在补一个「官方
+    // 收盘价此刻根本不存在」的硬缺口。
+    for (let m = close + 1; m <= close + 14; m++) {
+      expect(isCloseWriteBlocked('us', m, 'whole')).toBe(true);
     }
+    expect(isCloseWriteBlocked('us', close + 15, 'whole')).toBe(false);
   });
 
   it('🚨 hk = 10 分钟 —— HKEX CAS 16:08–16:10 随机收市, 官方收盘价最早 16:10 才存在', () => {
