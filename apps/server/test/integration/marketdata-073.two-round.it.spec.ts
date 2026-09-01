@@ -7,6 +7,7 @@ import { PrismaService } from '../../src/security/prisma.service';
 import {
   closeSettleBufferMinutes,
   oiRefreshedAtEod,
+  quoteLadderEndMinute,
 } from '../../src/marketdata/market-session.rules';
 import { computeNext } from '../../src/marketdata/sync-tick-driver';
 
@@ -94,7 +95,7 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
     });
   });
 
-  it('🚨 主轮两维前移后仍晚于收盘定稿缓冲解除 (16:10) —— 早于它写入会被 close-write 闸挡下', async () => {
+  it('🚨 主轮两维前移后落在写入窗 [16:10, 16:30] 内 —— 早于下界撞 close-write 闸, 晚于上界盘口已塌', async () => {
     const rows = await prisma.syncDimension.findMany({
       where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT] } },
       select: { dimensionKey: true, cronExpr: true },
@@ -121,9 +122,20 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
           `(收盘 16:00 + ${bufferMinutes}min) —— 那一刻官方收盘价还不存在`,
       ).toBeGreaterThanOrEqual(lowerBoundMs);
     }
-    // 📌 **上界断言随 073 T009 的「盘口台阶上界」常量落地后补在这里** —— 那个常量是样本期
-    //    结论 (不是物理常数), 单点定义在 `market-session.rules.ts`。在它存在之前写一个字面量
-    //    上界, 等于把一个待定的判据钉成事实。这不是遗漏。
+    // 上界 = 盘口台阶上界 (073 T009, FR-022)。同样取自单点常量而不是字面量 16:30 ——
+    // T012 的补样本会把断点夹紧并**重标**它, 那时本例必须跟着动。
+    // 🚨 断的是**触发时刻**落在窗内, 不含链发现耗时: 耗时是随锚集增长的变量, 由主轮收尾的
+    //    抓价时刻越界告警 (FR-022) 盯着, 两条判据各管一段, MUST NOT 在这里合成一个数。
+    const ladderEndMinute = quoteLadderEndMinute('hk') as number;
+    expect(ladderEndMinute, '港股台阶上界未登记 ⇒ 主轮时刻失去上界约束').not.toBeNull();
+    const upperBoundMs = hkMidnightMs + ladderEndMinute * 60_000;
+    for (const row of rows) {
+      expect(
+        computeNext(row.cronExpr, now).getTime(),
+        `${row.dimensionKey} 的 cron "${row.cronExpr}" 触发晚于盘口台阶上界 ` +
+          `(收盘后 ${ladderEndMinute - HK_CLOSE_MINUTE} 分钟) —— 抓价时刻必然已滑出台阶`,
+      ).toBeLessThanOrEqual(upperBoundMs);
+    }
   });
 
   it('🚨 主轮两维仍在**同一 tick** (依赖边只在同一 tick 内装配, ADR-0049 §3)', async () => {

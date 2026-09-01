@@ -23,7 +23,12 @@ import {
 import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
 import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
 import type { SnapshotAttribution } from './snapshot-session-attribution.rules.js';
-import { oiRefreshedAtEod } from './market-session.rules.js';
+import {
+  marketNow,
+  oiRefreshedAtEod,
+  quoteCapturedWithinLadder,
+  quoteLadderEndMinute,
+} from './market-session.rules.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 
 /**
@@ -125,6 +130,11 @@ const toDateOnly = (s: string): Date => new Date(`${s}T00:00:00Z`);
 /** UTC `Date` → `YYYY-MM-DD`。 */
 const toIsoDate = (d: Date): string => d.toISOString().slice(0, 10);
 
+/** 当地当日分钟数 → `HH:MM` (只给告警文案用; 判据一律比分钟数, 别拿字符串比大小)。 */
+const hhmm = (minutesOfDay: number): string =>
+  `${String(Math.floor(minutesOfDay / 60)).padStart(2, '0')}:` +
+  `${String(minutesOfDay % 60).padStart(2, '0')}`;
+
 /** 切片成 size 大小的块 (同 `sync-option-contract.usecase.ts` 的同名私有 helper)。 */
 function chunked<T>(items: T[], size: number): T[][] {
   const out: T[][] = [];
@@ -224,7 +234,66 @@ export class SyncOptionSnapshotUseCase {
       return false;
     }
     // 🚨 spec **原样**喂下去, 别在这里重算任何一格 —— 重算就是第二处判据。
-    return this.collect(instruments, attribution.spec, stats);
+    const captureTimes: Date[] = [];
+    const budgetExhausted = await this.collect(instruments, attribution.spec, stats, captureTimes);
+    this.reportLateCapture(dim.marketScope[0], attribution.spec.sessionDate, captureTimes, stats);
+    return budgetExhausted;
+  }
+
+  /**
+   * FR-022: 本轮 `max(quote_as_of)` 折成交易所当地分钟, 越过**盘口台阶上界**即告警
+   * (073 T009)。判据与常量单点定义在 {@link quoteCapturedWithinLadder}。
+   *
+   * ## 🚨 挂在 {@link run} 上而**不是** {@link collect} 里 —— 位置就是判据的一部分
+   *
+   * `collect` 还服务两条**非主轮**路径: ② 级盘前兜底 (`premarket_backfill`, 跑在 us 盘前) 与
+   * 锚首建冷启动 (用户行为触发, 落点不受 cron 约束)。它们的抓价时刻本就不在任何收盘台阶内 ⇒
+   * 挂进 `collect` 等于给这两条路每次都产一条假红, 而假红的代价是把真信号淹掉。
+   * FR-022 盯的是**主轮**, 而 `run` 就是主轮唯一的入口 (维度 executor 只走它)。
+   *
+   * ## 🚨 告警面与采集成败**分离** (FR-022)
+   *
+   * 本方法不看 `stats.failed` / `stats.ok`。要抓的**唯一**形态正是「采集全绿、覆盖率全绿,
+   * 而抓价时刻悄悄滑出台阶」—— 带内腿有价率于是退回改动前的水平, 却没有任何计数会变红。
+   * 反过来也一样: 采集失败自有它的 findings, 不由本条代报。
+   *
+   * 🚨 **本 ERROR 当前无接收端** (#209) —— 日志只进容器 stdout (30MB 环, 无投递)。故除了抬
+   * ERROR 还落一条 `notice` finding: 没有它, 这条告警事后不可判 (同 #261 的取舍)。
+   *
+   * 复杂度 O(批数)。
+   */
+  private reportLateCapture(
+    market: string,
+    sessionDate: string,
+    captureTimes: Date[],
+    stats: SyncRunStats,
+  ): void {
+    // 零外呼的一轮 (零锚 / 合约表空 / 盘中闸跳过) 没有抓价时刻可判 —— 不是「没越界」。
+    if (captureTimes.length === 0) return;
+    const latest = new Date(Math.max(...captureTimes.map((t) => t.getTime())));
+    if (quoteCapturedWithinLadder(market, sessionDate, latest)) return;
+    // 判 false 蕴含「该市场登记了台阶上界且登记了时段」⇒ 下面两个调用都取得到值、不会抛。
+    const ladderEndMinute = quoteLadderEndMinute(market) as number;
+    const { dateOnly, minutesOfDay } = marketNow(market, latest);
+    this.logger.error(
+      `[option-snapshot] 抓价时刻越过盘口台阶上界: ${market} ${sessionDate} 本轮 ` +
+        `max(quote_as_of) = 当地 ${dateOnly} ${hhmm(minutesOfDay)}, 上界 ${hhmm(ladderEndMinute)} ` +
+        `—— 采集本身没失败, 掉的是**盘口档位**: 带内腿有价率会静静退回改动前的水平 (FR-022)。` +
+        `处置由人定 (拆批 / 链发现提前 / 降低发现频次), MUST NOT 直接把上界往后调`,
+    );
+    stats.findings.push({
+      kind: 'notice',
+      step: 'quote_ladder',
+      detail: {
+        market,
+        sessionDate,
+        capturedAt: latest.toISOString(),
+        capturedLocalDate: dateOnly,
+        capturedLocalMinute: minutesOfDay,
+        ladderEndMinute,
+        batches: captureTimes.length,
+      },
+    });
   }
 
   /**
@@ -286,6 +355,12 @@ export class SyncOptionSnapshotUseCase {
     instruments: WorkingInstrument[],
     spec: SnapshotCollectionSpec,
     stats: SyncRunStats,
+    /**
+     * 073 T009: 逐批 envelope `as_of` 的收集器 (缺省 ⇒ 不收集)。主轮由 {@link run} 传进来判
+     * 盘口台阶; 盘前兜底与冷启动两条路**不传** —— 它们的抓价时刻本就不在台阶内, 见
+     * {@link SyncOptionSnapshotUseCase.reportLateCapture}。
+     */
+    captureTimes?: Date[],
   ): Promise<boolean> {
     // 🚨 fail-closed: 工作集里每一只标的都必须属于本次声明的市场 (#255)。
     //
@@ -353,6 +428,7 @@ export class SyncOptionSnapshotUseCase {
           stats,
           anomalyRows,
           spec.unjudgedWatch,
+          captureTimes,
         );
         if (synced) stats.ok++;
         else stats.skipped++;
@@ -389,6 +465,8 @@ export class SyncOptionSnapshotUseCase {
     anomalyRows: OptionAnomalyRow[],
     /** 点名盯「门没判成」的合约码, 见 {@link SnapshotCollectionSpec.unjudgedWatch}。 */
     unjudgedWatch: readonly string[] | undefined,
+    /** 逐批 envelope `as_of` 的收集器 (073 T009), 见 {@link SyncOptionSnapshotUseCase.collect}。 */
+    captureTimes: Date[] | undefined,
   ): Promise<boolean> {
     const contracts: WorkingContract[] = await this.prisma.optionContract.findMany({
       // FR-028a: 判据是 **≥** 当前交易日 —— 当日到期的合约当日仍可取快照。
@@ -433,6 +511,9 @@ export class SyncOptionSnapshotUseCase {
         underlyingSymbol: symbol,
         contractCodes: batch.map((c) => c.code),
       }); // HTTP (事务外)
+      // FR-022: 落库的 `quote_as_of` 就是它 ⇒ 台阶判据取的是**真的写进去的那个值**, 不是
+      // 「本轮开始的时刻 + 估算耗时」那种会与库里对不上的复算。
+      captureTimes?.push(asOf);
 
       // 标的自身那行就在同一批里 (spot 不另发调用); 期权行经 `underlyingCode` 关联它。
       const spotByCode = new Map(rows.filter((r) => !r.isOption).map((r) => [r.code, r.last]));

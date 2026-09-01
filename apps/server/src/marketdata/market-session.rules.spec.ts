@@ -8,6 +8,8 @@ import {
   isWithinTradingSession,
   marketNow,
   oiRefreshedAtEod,
+  quoteCapturedWithinLadder,
+  quoteLadderEndMinute,
   sessionCloseMinutes,
 } from './market-session.rules.js';
 import { isSessionComplete, sessionWatermark } from './session-clock.js';
@@ -467,5 +469,52 @@ describe('🚨 收盘定稿缓冲 —— 从「闭区间的副作用」拆成显
     expect(() => isSessionUnderway('xx', 600, 'whole')).toThrow(/未登记盘中时段/);
     expect(() => isWithinCloseSettleBuffer('xx', 600, 'whole')).toThrow(/未登记盘中时段/);
     expect(() => isCloseWriteBlocked('xx', 600, 'whole')).toThrow(/未登记盘中时段/);
+  });
+});
+
+describe('🚨 盘口台阶上界 —— 抓价时刻越界即告警 (073 T009, FR-022)', () => {
+  /** 2026-08-21 是周五、hk 常规交易日; 港股恒 UTC+8 无 DST ⇒ 偏移量写死安全。 */
+  const HK_SESSION = '2026-08-21';
+  const hkAt = (dayIso: string, hhmm: string) => new Date(`${dayIso}T${hhmm}:00+08:00`);
+
+  it('🚨 hk = 16:30 —— 实测**仍好**的最后一格; 端点含在台阶内', () => {
+    expect(quoteLadderEndMinute('hk')).toBe(at(16, 30));
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt(HK_SESSION, '16:30'))).toBe(true);
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt(HK_SESSION, '16:31'))).toBe(false);
+  });
+
+  it('🚨🚨 本片治的就是这一格: 主轮 16:2x 在台阶内, 而旧的 23:30 那轮早已滑出', () => {
+    // 稳态实测 (2026-08-31, 28 锚): 16:20 触发 + 519s ⇒ 抓价落 16:28.6。
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt(HK_SESSION, '16:28'))).toBe(true);
+    // 改动前的落点 —— 收租召回集在这一档只剩 54.8% 有买价, 而它**从来不会红**。
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt(HK_SESSION, '23:30'))).toBe(false);
+  });
+
+  it('🚨 跨过 session 那天 ⇒ 恒越界, **不比分钟数**', () => {
+    // 只比当日分钟数会把「被挤过午夜的长链」判成台阶内 (01:30 < 16:30) —— 而那正是
+    // 最该报的一档 (#181 的长链形态)。与 oiRefreshedAtEod 第 2 档同源、方向相反。
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt('2026-08-22', '01:30'))).toBe(false);
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt('2026-08-22', '10:00'))).toBe(false);
+  });
+
+  it('早于 session 那天 ⇒ 不判越界 —— 本条抓的唯一形态是「太晚」', () => {
+    expect(quoteCapturedWithinLadder('hk', HK_SESSION, hkAt('2026-08-20', '23:59'))).toBe(true);
+  });
+
+  it('🚨 us / cn 未实测 ⇒ null, 恒判台阶内 (不猜一个上界出来, 否则每晚一条假红)', () => {
+    expect(quoteLadderEndMinute('us')).toBeNull();
+    expect(quoteLadderEndMinute('cn')).toBeNull();
+    // 美股主轮跑在 us 收盘后, 折成当地分钟远晚于任何港股台阶 —— 借用 hk 的值就是纯噪声。
+    expect(quoteCapturedWithinLadder('us', HK_SESSION, hkAt(HK_SESSION, '23:30'))).toBe(true);
+    expect(quoteCapturedWithinLadder('cn', HK_SESSION, hkAt('2026-08-22', '10:00'))).toBe(true);
+  });
+
+  it('🚨 未登记市场返 true 而**不抛** —— 与 marketNow/isSessionUnderway 蓄意不同', () => {
+    // 本谓词的返回值只决定「要不要多打一条 ERROR」, 不决定任何一行怎么写 ⇒ 为一条告警
+    // 把整轮采集炸掉, 方向反了 (同 oiRefreshedAtEod 那条契约)。
+    const captured = hkAt(HK_SESSION, '23:30');
+    expect(quoteCapturedWithinLadder('sg', HK_SESSION, captured)).toBe(true);
+    expect(() => quoteCapturedWithinLadder('sg', HK_SESSION, captured)).not.toThrow();
+    expect(quoteLadderEndMinute('sg')).toBeNull();
   });
 });
