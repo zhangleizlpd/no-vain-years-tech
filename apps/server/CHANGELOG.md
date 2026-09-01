@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.44.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.43.0...server-v0.44.0) (2026-09-01)
+
+
+### Features
+
+* **marketdata:** 港股期权采集拆两轮 —— 报价轮前移 16:20, OI 轮独立排 21:40 ([#330](https://github.com/zhangleizlpd/no-vain-years-tech/issues/330)) ([5790a77](https://github.com/zhangleizlpd/no-vain-years-tech/commit/5790a777b6395e7d3ba2a4aab9e7d88d0fb457fc))
+* **optionsdesk:** 收租精排前置 Δ 带内闸 + 推荐标改称「Δ带内」—— 意图对齐的腿整体在前，措辞与序同源 ([#319](https://github.com/zhangleizlpd/no-vain-years-tech/issues/319)) ([4a412eb](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4a412ebaa12a3bd57d79dbb34a1e200a8c592e84))
+* **optionsdesk:** 锚收盘价换同源写手 —— 收盘后直查 vendor 三闸取交集, 去掉 daily_bar 每小时投影 ([#325](https://github.com/zhangleizlpd/no-vain-years-tech/issues/325)) ([0370c0d](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0370c0d8711a309fdd0f3bc98b168caf59e61538)), closes [#323](https://github.com/zhangleizlpd/no-vain-years-tech/issues/323)
+
 ## [0.43.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.42.0...server-v0.43.0) (2026-08-31)
 
 
