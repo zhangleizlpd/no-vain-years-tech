@@ -955,7 +955,6 @@ export const OPTIONSDESK_COPY = {
     asofFuture: '口径日在未来',
     asofNonTrading: '口径日落在非交易日',
     asofUnknown: '口径日日历未覆盖',
-    hasNote: '有附言',
     vPrefix: (v: string) => `V ${v}`,
     asofPrefix: (asof: string) => `口径日 ${asof}`,
     /** 多选批量驳回（采纳不可批量 —— 判据是副作用数量，FR-007）。 */
