@@ -73,5 +73,13 @@ CoT 也无法脱离误导性文本。一条无出处的断言会**主动**把下
 「有没有出处」是**语义判定**：本仓三版文本探针的假阳率见实测记录 §1，与 `claude-md-audit`
 skill 维度 5 的既有结论一致 —— **禁做成正则硬拦**。
 
-⇒ 守卫形态是**写入时刻注入自检**（`PreToolUse(Write|Edit)` hook），不是 blocking check；
-`.claude/rules/*.md` 的 path-scoped 注入**在 Write / Edit 时不触发**，覆盖不到增量。
+⇒ 守卫形态是**注入自检**，不是 blocking check。**三层，覆盖的是三个不同时刻**：
+
+| 时刻               | 机制                                                                                                   | 覆盖                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| **构思注释之前**   | `.claude/rules/comment-provenance-sync.md`（path-scoped，Read 命中即注入）                             | 改既有文件的主流路径（Read → Edit）                     |
+| 已构思完、落盘之前 | `scripts/hooks/pretooluse-comment-provenance.sh`（`PreToolUse(Write\|Edit)`，按 (session, 文件) 去重） | **新建文件**（path rule 此时不触发）+ 未先 Read 就 Edit |
+| 事后               | 无                                                                                                     | 语义属性，禁做成正则（见 §5 开头）                      |
+
+🚨 **第一层才是根上那道** —— hook 注入时注释文本已经写好了，它问的是「回去对一遍」；
+path rule 在 Read 命中时注入，那时还没动笔。hook 是**兜底**不是主力。
