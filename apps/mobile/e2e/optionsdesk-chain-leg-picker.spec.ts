@@ -161,7 +161,7 @@ const COPY = {
   noNewPositionWarning: '不开新仓 —— 该标的落在不动区或 L4。以下腿数据照常全量呈现，仅供查看。',
   sourceBackfillPrefix: '来源 ',
   bucketUnsetHint: '选一次水位档以定位意图',
-  fitBadge: '贴合',
+  fitBadge: 'Δ带内',
   rentDepthUnionNote: (badge: string) =>
     `水位未选 → 收租视角的腿与选了水位时完全相同，差别只在于全表零「${badge}」标。`,
   bucketManual: '人工输入',

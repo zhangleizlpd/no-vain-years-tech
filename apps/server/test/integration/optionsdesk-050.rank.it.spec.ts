@@ -248,7 +248,7 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
   });
 
   // ── ① 三份有序列表各自按折算费率降序 (US4-AS1) ──────────────────────────────
-  it('① US4-AS1: 三份有序列表各自按该 Tab 口径的折算费率**降序**, client 不必重排', async () => {
+  it('① US4-AS1: 三份有序列表各自按该 Tab 口径的折算费率**降序** (意图视角为分层键的组内降序), client 不必重排', async () => {
     const codes = await seedAll();
     const views = await viewsOf();
     const view = views.all;
@@ -267,10 +267,14 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
       codes.overlap,
       codes.shortLow,
     ]);
+    // 🚨 **2026-09-01 收租序由 `[longHigh, overlap, rentOnly]` 翻成 `[rentOnly, …]`, 是首键使然
+    // 不是回归**: `layeredRanker` 前置了 Δ 带内闸。本数据集锚水位 `gte_two_thirds` ⇒
+    // `rentDepth = deep` ⇒ 推荐带 `[0.05,0.15]`, 收租三条成员的 |Δ| = 0.30 / 0.25 / **0.15**
+    // ⇒ 只有 `rentOnly` 落在带内, 于是它整体在前 —— 尽管它的年化 12.3% 是三条里最低的。
     expect(views.rent.legs.map((l) => l.code)).toEqual([
+      codes.rentOnly,
       codes.longHigh,
       codes.overlap,
-      codes.rentOnly,
     ]);
     expect(view.legs.map((l) => l.code)).toEqual([
       codes.shortHigh,
@@ -283,11 +287,21 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     expect(views.build.legs.map((l) => l.code)).not.toEqual(view.legs.map((l) => l.code));
     expect(views.rent.legs.map((l) => l.code)).not.toEqual(view.legs.map((l) => l.code));
 
-    // 全量核对: 每份列表相邻两行的费率单调不增。
+    // 全量核对: 每份列表**同一 Δ 带内状态**的相邻两行费率单调不增, 且带内那组整体在前。
+    // 🚨 **2026-09-01 由「全表单调不增」改成「组内单调不增 + 组间不交错」**: 首键前置后, 跨组
+    // 那一处 (带内末行 → 带外首行) 蓄意允许费率抬头 —— 那正是首键存在的理由。判据没有变松:
+    // 分组旗标是**从响应里读出来的** (`isRecommended`, 与屏上那枚标同一个量), 组内单调与组间
+    // 不交错两条合起来仍逐行钉死整份序; 谁把首键悄悄撤了, 「组间不交错」当场红。
     for (const tab of LEG_TABS) {
       const perTab = views[tab];
+      const inBand = perTab.legs.map((leg) => leg.isRecommended);
+      // 🚫 全腿视角**不吃这个键** (`allLegsRanker` 的首键是实值沉底) ⇒ 组间那条只施于意图视角。
+      if (tab !== 'all') {
+        expect([tab, inBand]).toEqual([tab, [...inBand].sort((a, b) => Number(b) - Number(a))]);
+      }
       const rates = perTab.legs.map((leg) => rateOf(perTab, leg.code, tab));
       for (let i = 1; i < rates.length; i += 1) {
+        if (tab !== 'all' && inBand[i - 1] !== inBand[i]) continue;
         expect([tab, i, rates[i - 1] >= rates[i]]).toEqual([tab, i, true]);
       }
     }
@@ -314,12 +328,15 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     const id = await seedInstrument('PEP');
     // 同到期日同 bid、只有行权价差一档 ⇒ 费率不同; 故这里蓄意造**费率相同**的两条:
     // K 与 P 成比例 ⇒ P/(K−P) 相同。K=120/P=3 与 K=40/P=1 的期间费率都是 1/39。
+    // 🚨 **两条腿的 |Δ| 蓄意同时落在 `deep` 带 `[0.05,0.15]` 内** (2026-09-01 改, `high` 原为
+    // -0.30): 否则新的 Δ 带内首键会先把它们分开, 本条要验的**身份键 tie-break 就再也验不到了**
+    // —— 这里修的是夹具而不是期望值, 改期望值等于让测试迁就实现、把守的东西丢掉。
     const high = await seedLeg(id, {
       expiry: '2026-09-11',
       strike: '120',
       bid: '3.00',
       ask: '3.10',
-      delta: '-0.30',
+      delta: '-0.15',
     });
     const low = await seedLeg(id, {
       expiry: '2026-09-11',
@@ -336,6 +353,11 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
     expect(legOf(first, high)?.annualizedRate?.toString()).toBe(
       legOf(first, low)?.annualizedRate?.toString(),
     );
+    // 夹具自证: 两条同处带内 ⇒ 首键平, 后面那句「主键分不出」才成立 (Δ 漂出带外时当场红)。
+    expect([legOf(first, high)?.isRecommended, legOf(first, low)?.isRecommended]).toEqual([
+      true,
+      true,
+    ]);
     // 主键分不出 → 身份键: 同到期日 ⇒ 行权价降序 ⇒ K=120 在前。
     expect(first.legs.map((l) => l.code)).toEqual([high, low]);
     expect(second.legs.map((l) => l.code)).toEqual(first.legs.map((l) => l.code));

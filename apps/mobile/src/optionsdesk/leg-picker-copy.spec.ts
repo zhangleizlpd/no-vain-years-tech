@@ -315,17 +315,22 @@ describe('🚨 051 FR-014b —— 推荐标与月度链标**同载体、以视�
     expect(LEG_STICKY_BADGE_BASE).toContain('text-[8px]');
   });
 
-  it('🚨 MUST NOT 退化成纯几何符号 —— 两个标的字都是**认得出来的汉字**', () => {
+  it('🚨 MUST NOT 退化成纯几何符号 —— 两个标**都至少带一个认得出来的汉字**', () => {
     // 判据来自 mockup 实证：月度链标初版是空心方块，spec 作者本人评审时仍需发问「这是什么」。
-    // 空串 / ■ / ◆ 这类形态在这里当场红。
+    // 空串 / ■ / ◆ / 纯拉丁这类形态在这里当场红。
+    // 🚨 **2026-09-01 由「每个字符都是汉字」放宽到「至少含一个汉字」**（user 定，是放宽守卫故
+    //    在此写明理由）：这条拦的是「看不懂它在说什么」，不是「不许出现符号」。`fitBadge` 改成
+    //    「Δ带内」后主体仍是汉字、`Δ` 只作限定词（同屏那一列的列头副标本就写着 Δ 带判据，读者
+    //    已见过该符号），却撞上了旧实现的**全称**量词 —— 那是实现比意图窄，不是文案越界。
+    //    放宽后本条仍拦得住原目标形态：空串 / 纯几何符号 / 纯拉丁一个都过不去。
     for (const label of [COPY.fitBadge, COPY.monthlyBadge]) {
-      expect(label).toMatch(/^[一-龥]+$/u);
+      expect(label).toMatch(/[一-龥]/u);
     }
     expect(COPY.fitBadge).not.toBe(COPY.monthlyBadge);
   });
 
   it('🚨 071 —— 宽价差机会标与另外三个可同现的标**互不撞色**（撞了就分不出哪枚在说什么）', () => {
-    // 一行上可同时出现: 贴合(fit, Δ 落带) / 荐(march, 期限胜出) / 宽(wide, 怎么进来的)。
+    // 一行上可同时出现: Δ带内(fit, Δ 落带) / 荐(march, 期限胜出) / 宽(wide, 怎么进来的)。
     // 三者语义正交 ⇒ 描边必须两两不同; `wide` 另 MUST NOT 落 quote 涨跌色（它不是涨跌）。
     for (const other of ['fit', 'march'] as const) {
       expect(LEG_STICKY_BADGE_BORDER.wide).not.toBe(LEG_STICKY_BADGE_BORDER[other]);

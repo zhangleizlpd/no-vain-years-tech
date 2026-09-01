@@ -589,7 +589,7 @@ function assertLegEngineContract(views: PerspectiveViews): void {
   assert.equal(
     legOf(views.all, NO_GREEKS).isRecommended,
     false,
-    'legs: greeks 缺失恒不带推荐标（Δ 算不出来就没有「贴合当前意图」可言）',
+    'legs: greeks 缺失恒不带推荐标（Δ 算不出来就谈不上落没落在意图带内）',
   );
 }
 

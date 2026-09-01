@@ -125,7 +125,7 @@ const YESTERDAY = ymd(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
 const COPY = {
   tabs: { all: '全腿视角', build: '建仓视角', rent: '收租视角' },
-  fitBadge: '贴合',
+  fitBadge: 'Δ带内',
   rowTotal: (total: number) => `共 ${total} 行`,
   rowTotalNarrowed: (matched: number, member: number) => `筛后 ${matched} · 全量 ${member}`,
   /** 截断计数第 3 条（`FR-016`）+ 指向抽屉的收窄指引（`FR-017`，两句是一整条）。 */
@@ -1019,7 +1019,7 @@ test('053 T010 — sb15 / SC-013：用户**停在建仓视角**改水位 ⇒ 三
   page,
 }) => {
   // 起手在 `moderate` 档（水位 1/3~2/3）⇒ 全表零推荐标；改到 `gte_two_thirds` ⇒ `deep` 档，
-  // 两条标的级腿同时贴合。意图两侧都是 `rent` ⇒ 手点的建仓视角**不会被弹走**（FR-016 只在
+  // 两条标的级腿的 Δ 同时落在意图带内。意图两侧都是 `rent` ⇒ 手点的建仓视角**不会被弹走**（FR-016 只在
   // 意图真变时让位），于是「三视角有没有一起失效」在同一屏上就看得见。
   const chain = makeChain({ bucket: 'one_to_two_thirds' });
   const mock = await installMock(page, chain);

@@ -108,7 +108,7 @@ const COPY = {
   rateBasisWeekly: '周化',
   rateBasisWeeklySub: '折年参照',
   rateBasisAnnualized: '年化',
-  fitBadge: '贴合',
+  fitBadge: 'Δ带内',
   monthlyBadge: '月',
   bandOutBadge: '带外',
   actionPlaceOco: '挂 OCO',
