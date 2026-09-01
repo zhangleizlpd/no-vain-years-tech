@@ -1,0 +1,315 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../security/prisma.service.js';
+import type {
+  ExecutorInput,
+  ExecutorSyncDimensionRow,
+  WorkingInstrument,
+} from './dimension-executor.js';
+import { oiRefreshedAtEod } from './market-session.rules.js';
+import {
+  OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
+  OPTION_SNAPSHOT_PORT,
+  OptionSnapshotBudgetExhaustedError,
+  type OptionSnapshotPort,
+} from './option-snapshot.port.js';
+import { SnapshotSessionAttributionLookup } from './snapshot-session-attribution.lookup.js';
+import { SNAPSHOT_SOURCE_EOD } from './sync-option-snapshot.usecase.js';
+import { addWritten, type SyncRunStats } from './sync-run.recorder.js';
+import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
+
+/**
+ * 轮2 —— 港股期权「OI 定稿回填」维度 use case (073 T002/T003, FR-006…FR-011, plan §D3)。
+ *
+ * ## 它为什么是一个独立的轮次
+ *
+ * 报价与 OI 的**最优采集时刻不是同一个**: 做市商盘口在港股收盘后阶梯式撤走 (16:2x 那一档
+ * 只有 11.5% 的腿缺买价, 到 23:00 变成 45.2%), 而未平仓量要等清算侧 21:30 才定稿。原先一轮
+ * 打包采集只能二选一, 073 把它拆成主轮 16:20 抢报价 + 本轮 21:40 补 OI。
+ *
+ * ## 两段写, 且 MUST 对**不相交**的合约集 (Guardrail 2)
+ *
+ * | 段 | 对象 | 动作 |
+ * | --- | --- | --- |
+ * | a | 主轮已写的行 `(contract_id, session_date, source='eod')` | **定向 UPDATE 三列**: `open_interest` / `net_open_interest` / `oi_as_of` |
+ * | b | 主轮整行缺失的合约 | 复用主轮的采集本体补整行 (073 T003) |
+ *
+ * 🚫 **MUST NOT 写成「先全量 createMany 再全量 UPDATE」** —— 那对已有行是 no-op、对新行是
+ * 双写, 看起来也对, 但把两段的语义搅在一起, 日后改一段必踩另一段。⇒ **先查已存在集合再分流**。
+ *
+ * ## 🚨 起手 MUST 调 `oiRefreshedAtEod`, 而不是靠 cron 时刻推定 (plan §D3)
+ *
+ * 本轮的 cron 排在 21:40, 静态看恒在 21:30 的定稿时刻之后 ⇒ **漏掉这道闸在稳态下永远不会红**。
+ * 而 `option-snapshot-remediation.ts` 的 #187 注释记着他们正是从「正确性靠 cron 时刻成立,
+ * 不是靠判据」那个形态重构走的: 有人挪一次时刻 (或 misfire 补触发落在定稿之前), 抓到的就是
+ * D−1 的 OI 而标签写 D —— **数字与标签双错, 且不报错**。
+ *
+ * 🚫 判据为假时正确动作是**不写**, 不是「写个近似值」(Testing Invariant 2)。
+ *
+ * ## 🚨 MUST NOT 为本轮新开 `source` 取值
+ *
+ * `market-session.rules.ts` 明文「OI 归属与 `source` 正交」。新开一个 `oi_settle` 会让唯一键
+ * `(contract_id, session_date, source)` 不再碰撞, 于是段 b 平行写出整条链的第二份 —— 正是
+ * #306 修掉的 555× 放大形态。⇒ 两段一律落 {@link SNAPSHOT_SOURCE_EOD}。
+ *
+ * ## 🚫 MUST NOT 重跑链发现
+ *
+ * 工作集取自 `option_contract` 表 (主轮当天已填)。重跑一遍是 453 秒的纯浪费, 且会在 21:40
+ * 制造一个新的限频尖峰。
+ */
+
+/**
+ * 单个 `$transaction` 批里的 UPDATE 条数配额。
+ *
+ * 段 a 是**逐合约**的定向 UPDATE (每行的 OI 值各不相同 ⇒ 一条 `updateMany` 盖不住多行),
+ * 港股稳态单轮约 1.8 万行 ⇒ 裸 `await` 一条一条发就是 1.8 万次往返。按此配额切片、每片一个
+ * 数组式 `$transaction`, 把往返压到 O(n / 500) 次, 同时封顶单事务时长 (避 Prisma 默认 5s
+ * 超时) —— 与 `dimension-executor.ts` 回填侧「每 BACKFILL_ROW_CHUNK 行一 $transaction」同款。
+ */
+const OI_UPDATE_CHUNK = 500;
+
+/** 工作集投影: id 建定位键, code 做批次键。轮2 不读行权价 / 到期日以外的任何列。 */
+interface SettleContract {
+  id: bigint;
+  code: string;
+}
+
+/** `YYYY-MM-DD` → `@db.Date` 列的 UTC 零点 Date。 */
+const toDateOnly = (s: string): Date => new Date(`${s}T00:00:00Z`);
+
+/** 切片成 size 大小的块 (同 `sync-option-snapshot.usecase.ts` 的同名私有 helper)。 */
+function chunked<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+@Injectable()
+export class SyncOptionOiSettleUseCase {
+  private readonly logger = new Logger(SyncOptionOiSettleUseCase.name);
+
+  /** 归属判据的**唯一**取数入口 (#187) —— 与主轮 / 补救链读同一份日历事实。 */
+  private readonly attribution: SnapshotSessionAttributionLookup;
+
+  constructor(
+    @Inject(OPTION_SNAPSHOT_PORT) private readonly snapshot: OptionSnapshotPort,
+    private readonly prisma: PrismaService,
+    @Inject(TRADING_CALENDAR_PORT) calendar: TradingCalendarPort,
+  ) {
+    this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
+  }
+
+  /**
+   * 逐票回填 OI。返 `true` = vendor 预算耗尽 (顺延信号, `ExecutorResult.budgetExhausted`)。
+   *
+   * **per-instrument 隔离** (016 四支柱): 单票失败计 `failed` + `findings` 后继续下一只,
+   * 不整轮塌; **HTTP 在事务外**。
+   *
+   * 复杂度: O(工作集) 次合约表查询 + O(工作集) 次已存在行查询 + Σ O(合约数 / 399) 次快照
+   * 调用 + O(合约数 / 500) 次批量 UPDATE。
+   */
+  async run(
+    instruments: WorkingInstrument[],
+    dim: ExecutorSyncDimensionRow,
+    stats: SyncRunStats,
+    input: ExecutorInput,
+  ): Promise<boolean> {
+    // #138: 声明写路径 —— 让空工作集 / 判据短路的一轮报 0 而非 null。
+    addWritten(stats, 0);
+    const market = this.singleMarket(dim);
+    // 🚨 归属走判据层, 与主轮同源 (#181/#187): 本轮虽然只改三列, 但那三列里的 `oi_as_of`
+    // 与定位行用的 `session_date` 都是**业务日**, 拿日历日会在队列延迟跨午夜时整批错一天。
+    const attribution = await this.attribution.resolve(market, input.now);
+    if (attribution.decision === 'skip') {
+      stats.skipped += instruments.length;
+      this.logger.warn(`[option-oi-settle] 该场进行中, 本轮不采 (端点此刻返盘中态): ${market}`);
+      return false;
+    }
+    if (attribution.decision === 'abandon') {
+      stats.skipped += instruments.length;
+      this.logger.error(
+        `[option-oi-settle] 交易日历查不到 ${market} 上一个已收盘交易日 ⇒ 判不出归属, ` +
+          `放弃本轮 (MUST NOT 猜日子)`,
+      );
+      return false;
+    }
+    const sessionDate = attribution.spec.sessionDate;
+
+    // 🚨 plan §D3 的那道闸: 定稿判据为假 ⇒ 整轮跳过 OI 写入并留痕。
+    // 🚫 MUST NOT 换成「反正 cron 排在 21:40」那种时刻推定 —— 见类注释。
+    if (!oiRefreshedAtEod(market, sessionDate, input.now)) {
+      stats.skipped += instruments.length;
+      this.logger.error(
+        `[option-oi-settle] ${market} ${sessionDate} 的 OI 尚未定稿 (本轮执行时刻早于定稿 ` +
+          `时刻) ⇒ 整轮跳过 OI 写入。此刻端点返的仍是上一场的持仓量, 写进去就是「数字与` +
+          `标签双错」且不可逆 (供应方不提供历史快照)`,
+      );
+      return false;
+    }
+
+    let budgetExhausted = false;
+    for (const inst of instruments) {
+      stats.scanned++;
+      if (budgetExhausted) {
+        stats.skipped++;
+        continue;
+      }
+      const symbol = `${inst.market}:${inst.code}`;
+      try {
+        const touched = await this.settleUnderlying(inst.id, symbol, sessionDate, stats);
+        if (touched) stats.ok++;
+        else stats.skipped++;
+      } catch (err) {
+        if (err instanceof OptionSnapshotBudgetExhaustedError) {
+          budgetExhausted = true;
+          stats.skipped++;
+          this.logger.warn(`OI 回填限频顺延 (剩余标的下一窗续跑): ${symbol}`);
+          continue;
+        }
+        stats.failed++;
+        stats.findings.push({
+          kind: 'failure',
+          symbol,
+          step: 'hk_option_oi_settle',
+          error: String(err),
+        });
+      }
+    }
+    return budgetExhausted;
+  }
+
+  /**
+   * 单票: 取工作集 → 查当日已有的 `eod` 行 → **分流** → 段 a 定向 UPDATE。
+   *
+   * 返 `false` = 本票无可做的事 (无合约 / 当日一行都没有) ⇒ 调用方计 skipped。
+   */
+  private async settleUnderlying(
+    instrumentId: bigint,
+    symbol: string,
+    sessionDate: string,
+    stats: SyncRunStats,
+  ): Promise<boolean> {
+    const contracts: SettleContract[] = await this.prisma.optionContract.findMany({
+      // 口径与主轮逐字一致 (FR-028a: 当日到期的合约当日仍可取快照)。
+      where: {
+        underlyingInstrumentId: instrumentId,
+        expiryDate: { gte: toDateOnly(sessionDate) },
+      },
+      select: { id: true, code: true },
+      orderBy: { id: 'asc' },
+    });
+    if (contracts.length === 0) {
+      // 与主轮同口径: 无合约 ≠ 失败 (港股绝大多数标的没有挂牌期权)。
+      this.logger.log(`跳过 OI 回填 (库中零未到期期权合约): ${symbol}`);
+      return false;
+    }
+
+    const settled = await this.loadPersistedContracts(contracts, sessionDate);
+    if (settled.length === 0) {
+      // 主轮在本票上一行都没写 ⇒ 段 a 无对象。补漏归段 b (073 T003)。
+      this.logger.warn(`OI 回填无对象 (主轮当日在本票上零行): ${symbol}`);
+      return false;
+    }
+    await this.refreshOpenInterest(symbol, settled, sessionDate, stats);
+    return true;
+  }
+
+  /**
+   * 分流的**唯一**判据: 当日已落 `source='eod'` 行的那些合约。
+   *
+   * 🚨 谓词里的 `source` 不是装饰 —— 美股那侧仍在产 `premarket_backfill` 行, 不限定会把它们
+   * 一起捞进段 a 的对象集 (Guardrail 6 的读侧半边)。
+   *
+   * 复杂度: 1 次唯一索引 `(contract_id, session_date, source)` 上的 `IN` 查询。
+   */
+  private async loadPersistedContracts(
+    contracts: SettleContract[],
+    sessionDate: string,
+  ): Promise<SettleContract[]> {
+    const rows = await this.prisma.optionDailySnapshot.findMany({
+      where: {
+        contractId: { in: contracts.map((c) => c.id) },
+        sessionDate: toDateOnly(sessionDate),
+        source: SNAPSHOT_SOURCE_EOD,
+      },
+      select: { contractId: true },
+    });
+    const persisted = new Set(rows.map((r) => r.contractId));
+    return contracts.filter((c) => persisted.has(c.id));
+  }
+
+  /**
+   * 段 a: 打一遍快照端口取定稿后的 OI, 对已存在的行**只**写三列。
+   *
+   * 🚨 `oi_as_of` 恒 `= sessionDate` —— 本方法只在定稿判据为真时被调到 (run 的入口闸),
+   * 此刻端点返的就是 `sessionDate` 这一场自己的真值, 不必也不该退到上一交易日。
+   *
+   * 🚫 **MUST NOT 顺手把报价列一起刷新**: 21:40 的盘口正是本片要躲开的那份 (收租召回集
+   * 45.2% 的腿在那个时刻拿不到买价), 刷进去等于把主轮 16:20 抢到的那份盖掉 —— 而抢那份是
+   * 本片存在的全部理由。SC-004 钉的就是这条。
+   */
+  private async refreshOpenInterest(
+    symbol: string,
+    contracts: SettleContract[],
+    sessionDate: string,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    const oiAsOf = toDateOnly(sessionDate);
+    for (const batch of chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES)) {
+      const byCode = new Map(batch.map((c) => [c.code, c]));
+      const { rows } = await this.snapshot.getSnapshots({
+        underlyingSymbol: symbol,
+        contractCodes: batch.map((c) => c.code),
+      }); // HTTP (事务外)
+
+      const updates = rows
+        .filter((row) => row.isOption)
+        .map((row) => {
+          const contract = byCode.get(row.code);
+          if (contract === undefined) {
+            // 与主轮同一条闸: 落到别的合约名下比没落更难发现。
+            throw new Error(
+              `[option-oi-settle] 快照行不在本批请求内 (契约变更 / 批次错配?): 请求 ${symbol} ` +
+                `${batch.length} 个合约, 却收到 ${row.code}`,
+            );
+          }
+          return {
+            where: {
+              contractId: contract.id,
+              sessionDate: oiAsOf,
+              source: SNAPSHOT_SOURCE_EOD,
+            },
+            // 🚨 三列, 一个不多。数值全程 string 直传 Decimal 列 (FR-S08); 缺失恒 null。
+            data: {
+              openInterest: row.openInterest,
+              netOpenInterest: row.netOpenInterest,
+              oiAsOf,
+            },
+          };
+        });
+
+      for (const chunk of chunked(updates, OI_UPDATE_CHUNK)) {
+        const results = await this.prisma.$transaction(
+          chunk.map((u) => this.prisma.optionDailySnapshot.updateMany(u)),
+        );
+        addWritten(
+          stats,
+          results.reduce((n, r) => n + r.count, 0),
+        );
+      }
+    }
+  }
+
+  /**
+   * 单市场 scope 守卫 —— 与主轮逐字同源: 定稿判据问的是「**这个市场**的 OI 定稿没有」,
+   * 混 scope 没有单一答案。fail-closed 抛而不是挑第一个。
+   */
+  private singleMarket(dim: ExecutorSyncDimensionRow): string {
+    if (dim.marketScope.length !== 1) {
+      throw new Error(
+        `[option-oi-settle] 定稿判据要求单市场 scope, 收到 ${JSON.stringify(dim.marketScope)} ` +
+          `(混 scope 请拆成各自的维度)`,
+      );
+    }
+    return dim.marketScope[0];
+  }
+}
