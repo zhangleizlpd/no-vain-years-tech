@@ -62,7 +62,9 @@ updated_at: '2026-09-01'
 
 - [ ] T004 [Server] **轮2 接线到 executor**（FR-006; plan §D2; state_branches 6; US2）：`dimension-executor.ts` 按 `:1046` / `:1051` 同款注册 `hk_option_oi_settle` 的 `factExecutor` → verify: `dimension-executor.spec.ts` 注册表断言绿；`pnpm nx test server` 该文件全绿
 
-- [ ] T005 [Server-IT] **轮2 两段写的真库验证**（SC-003, SC-004, SC-007; plan §D3; state_branches 6/7/8/11; US2/US3）：新建 `marketdata-073.two-round.it.spec.ts`，Testcontainers 真库跑五臂 —— ① 主轮写行 → 轮2 → 三列更新且其余列**逐值不变**（逐字段对拍，不是抽查）② 主轮缺一批 → 轮2 补齐 ③ 定稿判据假 ⇒ 零写入 ④ 无期权链的锚**不判红**（Edge Case 7）⑤ 锚在两轮之间新建 ⇒ 走整行缺失分支 → verify: 五臂先红后绿；🚨 **MUST NOT 用 mock 顶替真库**（Testing Invariant 3 —— 「只改三列」这条只有真库能证）；执行走 `pnpm nx test server <file>`（🚫 禁 `vitest --root`，找不到 schema）
+- [ ] T005 [Server-IT] **轮2 两段写的真库验证**（SC-003, SC-004, SC-007; plan §D3; state_branches 6/7/8; US2/US3）：新建 `marketdata-073.two-round.it.spec.ts`，Testcontainers 真库跑三臂 —— ① 主轮写行 → 轮2 → 三列更新且其余列**逐值不变**（逐字段对拍，不是抽查）② 主轮缺一批 → 轮2 补齐 ③ 定稿判据假 ⇒ 零写入 → verify: 三臂先红后绿；🚨 **MUST NOT 用 mock 顶替真库**（Testing Invariant 3 —— 「只改三列」这条只有真库能证）；执行走 `pnpm nx test server <file>`（🚫 禁 `vitest --root`，找不到 schema）
+
+- [ ] T005b [Server-IT] **轮2 的两条边界臂**（state_branches 11; US3; Edge Case「无期权链的锚」/「锚集在两轮之间变化」）：在 T005 的 IT 文件续两臂 —— ① 无期权链的锚**不判红**（该类标的 IV 与期权链恒无值，与采集时刻无关）② 锚在主轮与轮2 之间新建 ⇒ 走「整行缺失」分支补全量 → verify: 两臂先红后绿；📌 **从 T005 拆出**（Constitution §III：五臂一条超 30min–2h 上界），两条 task 同文件、可连续提交
 
 - [ ] T006 [Server] **migration：三维度前移 16:20 + 轮2 seed + 沿革留痕**（FR-001, FR-002, FR-003, FR-004, FR-005, FR-012, FR-016; plan §D1/§D2/§D9; state_branches 1/2/3; US1）：新建 migration，data-only —— ① `UPDATE sync_dimension SET cron_expr='0 20 16 * * *'` for `hk_option_contract` / `hk_option_daily_snapshot`（IV 那行见 T009）② **同 migration** `SET next_fire_at = NULL`（Guardrail 1）③ `INSERT` 轮2 行：`cron_expr='0 40 21 * * *'` · `market_scope={hk}` · `vendor=futu` · `queue_lane=futu` · `priority=5` · `retry_max=3` · `history_depth=NULL` · `enabled=true` ④ 注释写明**为什么不连依赖边**（Guardrail 2）⑤ 注释写「沿革留痕：`20260827_1957` 的『港股零补救』前提已于 08-28（#265）失效；不改回 hard 的**结论仍成立**，理由改为『轮2 已承担补漏且档位严格更优』」（Guardrail 8）→ verify: `pnpm prisma migrate dev` 落地；`dimension-executor.spec.ts` 补一条**字典序相邻性**断言（`hk_option_contract` < `hk_option_daily_snapshot`，同 priority 下顺序由此保证，FR-002）；补一条**时刻在窗内**断言（16:20 落在 `[closeSettleBufferMinutes('hk') 解除, 台阶上界]` 内，FR-003/FR-004）；🚫 **不动** `20260827_1957`（Guardrail 8）
 
@@ -78,25 +80,27 @@ updated_at: '2026-09-01'
 
 - [ ] T012 [Ops] **探针补样本 + IV 定型结论收口**（FR-017, FR-020; plan §D6）：取回 2026-09-01 两条探针（`hk-iv-2026-09-01.jsonl` 网格 15:30→22:47 / `hk-post-close-2026-09-01.jsonl` 同 08-31 网格），并与生产 23:00 那轮写进 `marketdata.underlying_iv_daily` 的行对拍（**23:00 那个点白捡，不采**）；继续挂 09-02 / 09-03 / **09-04（到期周）** 三天 → verify: ① IV 逐格差异表落 `docs/private/plans/2026-09/`，结论「从哪一格起不再变」写进 spec `## Assumptions` ② 盘后曲线第 2–4 个交易日的台阶时刻与 08-31 对拍，一致/不一致都写明 ③ 🚨 **收尾必删 `~/nvy-probe`**，且 MUST 等原始件取回归档之后
 
-- [ ] T013 [Server] **（条件）IV 维度前移 —— 仅当 T012 证明其读数在 16:2x 已定型**（FR-017; plan §D6; state_branches 1）：把 `hk_underlying_iv_daily` 的 `cron_expr` 一并改 `'0 20 16 * * *'`（并入 T006 的 migration 或另开一条），同 migration 置 `next_fire_at = NULL` → verify: 字典序相邻性断言扩到三键（`hk_option_contract` < `hk_option_daily_snapshot` < `hk_underlying_iv_daily`）；**未定型 ⇒ 本条标注「不适用」并写明理由，🚫 禁静默删除**；⚠️ 前移会让 FR-034 双算对表的 WARN 基线平移（阈值照 23:00 标定），MUST 观察一轮再决定要不要重标
+- [ ] T013 [Server] **（条件）IV 维度前移 —— 仅当 T012 证明其读数在 16:2x 已定型**（FR-017; plan §D6; state_branches 1）：把 `hk_underlying_iv_daily` 的 `cron_expr` 一并改 `'0 20 16 * * *'`，同 migration 置 `next_fire_at = NULL`。🚨 **并入还是另开取决于 T006 的 migration 应用了没有**：**未应用** ⇒ 可直接并入 T006 那条；**已在任何环境应用过** ⇒ MUST 另开一条 —— 改已应用的 migration 会炸 Prisma checksum（Guardrail 8 同源） → verify: 字典序相邻性断言扩到三键（`hk_option_contract` < `hk_option_daily_snapshot` < `hk_underlying_iv_daily`）；**未定型 ⇒ 本条标注「不适用」并写明理由，🚫 禁静默删除**；⚠️ 前移会让 FR-034 双算对表的 WARN 基线平移（阈值照 23:00 标定），MUST 观察一轮再决定要不要重标
 
 - [ ] T014 [Ops] **上线后按验收线核一轮**（SC-001, SC-001b, SC-002; US1-AS1/AS2）：上线后取一个港股交易日，按**仓内正规召回口径**核 —— ① 收租召回集（`RENT_RECALL_DTE` × `RENT_DELTA_BAND`）有买价比例 ≥ 80% ② 建仓召回集（`BUILD_RECALL_DTE` × `BUILD_DELTA_BAND`）≥ 95% ③ 与改动前同批腿对拍，反向丢失条数 = 0 → verify: 三个数落 spec `## Assumptions`；🚨 口径 MUST 取仓内常量、**禁自造**（本片 clarify 期已因自造口径把验收线定成不可达，见 spec `## Clarifications`）
 
 - [ ] T015 [Docs] **ADR-0047 消费注记 + spec 结论回写**（FR-020）：`docs/adr/0047-marketdata-pluggable-data-access.md` 补注记 —— 其 FR-046 两级补救在**港股半边**已由本片退役、改一级制，美股半边逐字不动；spec `## Assumptions` 的样本期段更新为最终样本天数 → verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；ADR 链接可达
 
-- [ ] T016 [Gate] **PR 门**：`pnpm nx affected -t lint,typecheck,test,build` 全绿 + 治理脚本全扫 → verify: 按终态串判定，**不只看 exit code**；PR body 按 `.github/pull_request_template.md` 全段复刻，hard-gate 三 checkbox 核实落地
+- [ ] T016 [Gate] **读侧扫描：确认无人假设「有 D 日期权快照 ⇒ 有 D 日日线」**（spec `## Assumptions · 已知代价 #2`）：主轮前移后，当日期权数据将比当日日线（22:00，理杏仁）**早约 5.7 小时**落库，顺序与改动前相反。采集侧 plan 期已验证零耦合（期权采集路径零 `daily_bar` 读取）；**读侧未穷尽扫描**，本 task 补上 —— 逐个 grep `daily_bar` / `dailyBar` 的消费方，确认没有哪一处依赖「两者同日到齐」→ verify: 扫描结果逐条落 PR body；命中即评估影响并起 follow-up issue，零命中也要**写明扫了哪些路径**（否则下一个人无从判断这条扫过没有）；📌 本条是 analyze 期抓出的零覆盖 —— spec 明写「列为实施时必扫项」而 tasks 原先无人承载
+
+- [ ] T017 [Gate] **PR 门**：`pnpm nx affected -t lint,typecheck,test,build` 全绿 + 治理脚本全扫 → verify: 按终态串判定，**不只看 exit code**；PR body 按 `.github/pull_request_template.md` 全段复刻，hard-gate 三 checkbox 核实落地
 
 ## 依赖与并行
 
 ```text
-T001 ─┬─> T002 ─┬─> T004 ──> T005 ──> T011
-      └─> T003 ─┘                      │
-T006 ────────────────────────────────> │  (migration 与代码可并行开发, IT 需两者都在)
-T007 [P] ──────────────────────────────┤
-T008 ──────────────────────────────────┤
-T009 [P] ──────────────────────────────┘
+T001 ─┬─> T002 ─┬─> T004 ──> T005 ──> T005b ──> T011
+      └─> T003 ─┘                                │
+T006 ─────────────────────────────────────────>  │  (migration 与代码可并行开发, IT 需两者都在)
+T007 [P] ────────────────────────────────────────┤
+T008 ────────────────────────────────────────────┤
+T009 [P] ────────────────────────────────────────┘
 T012 (Ops, 全程并行) ──> T013 (条件)
-T005 + T011 + T010 ──> T014 (上线后) ──> T015 ──> T016
+T005b + T011 + T010 ──> T014 (上线后) ──> T015 ──> T016 (读侧扫描) ──> T017 (PR 门)
 ```
 
 - **可并行**：T007（补救退役，独立文件）· T009（越界告警，独立文件）· T012（探针，仓外）
@@ -147,9 +151,9 @@ T005 + T011 + T010 ──> T014 (上线后) ──> T015 ──> T016
 | 撤单早于主轮时刻 | **蓄意零 impl 覆盖** —— 它是 spec 显式接受的残余风险（断点分钟在网格盲区内），缓解由 T003 的补漏 + T009 的越界告警承担，**不为它写断言** |
 | 主轮跑得比预期久 | T009 |
 | 当日盘中新挂牌的行权价 | T006（链发现在主轮内、先于快照） |
-| 锚集在两轮之间变化 | T005 ⑤ |
+| 锚集在两轮之间变化 | T005b ② |
 | 有人把轮2 时刻改到定稿之前 | T002 ② · T005 ③ |
-| 无期权链的锚 | T005 ④ |
+| 无期权链的锚 | T005b ① |
 
 ## Acceptance Scenario 覆盖预检（🚨 标准矩阵**够不到**这一层，046 曾两轮全漏）
 
@@ -166,6 +170,27 @@ T005 + T011 + T010 ──> T014 (上线后) ──> T015 ──> T016
 | US3-AS3 覆盖率仍不达标 ⇒ 直接 ERROR | T008 ② |
 
 **零覆盖：无。**
+
+## Assumptions·已知代价 覆盖预检（🚨 标准矩阵**够不到**这一层 —— C1 就是从这里漏掉的）
+
+标准三矩阵扫的是 `state_branches` / Edge Case / SC，**不含 `## Assumptions` 里的「已知代价」**。而已知代价里可以躺着**实施义务**（本片第 2 条就明写「列为实施时必扫项」），零覆盖且零告警。故单列。
+
+| # | 已知代价 | 落在 |
+| --- | --- | --- |
+| 1 | 半日市约 5 天/年无收益 | T011 ① |
+| 2 | 落库顺序反转 → **读侧必扫** | **T016**（analyze 期抓出的零覆盖，原先无人承载） |
+| 3 | 告警今天仍无接收端（#209） | T008（代码注释 MUST 写明） |
+| 4 | 重试深度 3 → 2 | T008 ④ |
+
+**零覆盖：无。**
+
+## 蓄意零覆盖登记（写明「故意的」，否则下轮 analyze 会补假 task）
+
+| 项 | 为什么零覆盖是对的 |
+| --- | --- |
+| plan **§D7**（与 ADR-0070 时序相容） | 它是一条**已核过、无需动作**的结论：#325 首拍 16:10 早于主轮，且已核 `hk` 收盘缓冲仍为 10。核过即完成，不产出代码行 ⇒ 不该有 task |
+| **T017**（PR 门）未挂 FR/SC | 流程闸，不映射任何需求。它验的是「门全绿」，不是某条 FR |
+| Edge Case「撤单早于主轮时刻」 | spec 显式接受的残余风险（断点分钟在网格盲区内）。缓解由 T003 补漏 + T009 越界告警承担，**不为它写断言** |
 
 ## Implementation Strategy
 
