@@ -30,6 +30,25 @@
 # ⚠️ 归一的代价：worktree 里的同名相对路径与主树共用 marker，先命中的那个会抑制后一个。
 # 非阻塞 rubric，且 worktree 子 agent 与主树本就少有同文件重合 —— 接受。
 #
+# ── 对外发布通道（第三批加）────────────────────────────────────────────────────────
+# PR 正文与 commit message **不是仓内文件**，但它们同属一类载体：长期留存、被后续读者与
+# agent 读到，且 release-please 把 commit subject 抄进 CHANGELOG（CHANGELOG.md 里就有一条
+# 未带指针的 CAS 断言）。
+# EVIDENCE: 2026-09-01 实测本 session transcript —— PR body 正文落在 `.tool_input.command`
+# 里命中 5 次、commit message 3 次、**写给用户的聊天正文 0 次**（实测记录 §10）。
+# ⇒ 前两者可拦，聊天正文结构性不可拦（无工具调用 ⇒ 无 PreToolUse）。
+#
+# 🚨 **两条去重策略刻意不同**，理由是频率不同：
+#   - PR create/edit：按**整条命令的 hash** 去重 ⇒ 一个 session 里两个不同 PR 各注入一次，
+#     同一条命令重试则静默。频率本就低（一次 PR 一次），值得每次都摆。
+#   - commit：按**固定键**去重 ⇒ 一个 session 只注入一次。活跃 session 里 commit 十几次，
+#     每次都注入就是刷屏，而刷屏会把规约训练成墙纸。
+#
+# ⚠️ **已知弱点：命令里「提到」覆盖面路径也算命中**（`git log -- <path>`、把路径当字符串处理、
+# 甚至 `rg` 的输出被回显）。本 hook 不做「这条命令是不是真在读写它」的分类 —— 那正是被反复证否
+# 的检测思路。代价是那次提及**消耗掉该文件的去重槽**，同 session 内之后真去改它就不再注入了。
+# ⇒ 排查「改了覆盖面文件却没收到 rubric」时，先看本 session 早前有没有命令提过该路径。
+#
 # 契约同 pretooluse-local-verify-guard.sh：additionalContext + exit 0 = 注入且放行。
 # NEVER blocks；任何解析失败一律静默放行（fail-open）。故无 `set -e` / 无 `set -u`。
 
@@ -80,8 +99,21 @@ else
     is_covered "$tok" && candidates="$candidates $(normalize "$tok")"
   done
   set +f
+  # 路径没命中 → 再看是不是「对外发布」动作（见头部「对外发布通道」）。
+  # 空白压成单个再做子串匹配：`~/.nvy/bin/gh-bot` 里的 `~` 已被 scrub 成空格，
+  # 故 `*gh-bot pr create*` 对裸命令与绝对路径两种写法都成立。
+  if [ -z "${candidates// /}" ]; then
+    squeezed=$(printf '%s' "$scrubbed" | tr -s ' ')
+    # 🚨 判据必须带上**动词前面那个命令名**。首版写的是 `*" commit "*` / `*" pr create "*`,
+    # 太松：任何含「commit」一词的命令都命中，而 commit 通道**一个 session 只有一个去重槽** ⇒
+    # 一次误命中就把真 commit 那次的槽烧掉，表现是「该提醒的时候没提醒」且不报错。
+    case "$squeezed" in
+      *"gh pr create"*|*"gh-bot pr create"*|*"gh pr edit"*|*"gh-bot pr edit"*) publish=pr ;;
+      *"git commit"*|*"git-bot commit"*)                                      publish=commit ;;
+    esac
+  fi
 fi
-[ -n "${candidates// /}" ] || exit 0
+[ -n "${candidates// /}" ] || [ -n "${publish:-}" ] || exit 0
 
 # ── (session, 仓相对路径) 去重 ──────────────────────────────────────────────
 sid=$("$JQ" -r '.session_id // empty' <<<"$input" 2>/dev/null) || sid=""
@@ -89,17 +121,56 @@ sid=$("$JQ" -r '.session_id // empty' <<<"$input" 2>/dev/null) || sid=""
 mark_dir="${TMPDIR:-/tmp}/nvy-comment-provenance/${sid//[^A-Za-z0-9_-]/_}"
 mkdir -p "$mark_dir" 2>/dev/null || exit 0
 
-# 一条命令可能带多个覆盖面文件：全部标记，但只注入一次（注入 N 份同样的 rubric = 刷屏）。
+mark_once() {   # $1 = 去重键的原文；已标记过返回 1
+  local m; m="$mark_dir/$(printf '%s' "$1" | shasum | cut -d' ' -f1)"
+  [ -e "$m" ] && return 1
+  : > "$m" 2>/dev/null || return 1
+  return 0
+}
+
 fresh=0
-set -f
-for path in $candidates; do
-  mark="$mark_dir/$(printf '%s' "$path" | shasum | cut -d' ' -f1)"
-  [ -e "$mark" ] && continue
-  : > "$mark" 2>/dev/null || continue
-  fresh=1
-done
-set +f
-[ "$fresh" -eq 1 ] || exit 0   # 本 session 这些文件都注入过 → 静默放行
+if [ -n "${publish:-}" ]; then
+  # PR 按整条命令去重（两个不同 PR 各一次）；commit 按固定键（一个 session 一次）。见头部。
+  if [ "$publish" = pr ]; then key="publish-pr:$cmd"; else key="publish-commit"; fi
+  mark_once "$key" && fresh=1
+else
+  # 一条命令可能带多个覆盖面文件：全部标记，但只注入一次（注入 N 份同样的 rubric = 刷屏）。
+  set -f
+  for path in $candidates; do mark_once "$path" && fresh=1; done
+  set +f
+fi
+[ "$fresh" -eq 1 ] || exit 0   # 本 session 已注入过 → 静默放行
+
+# ── 对外发布通道的 rubric ──────────────────────────────────────────────────
+# 🚨 与下面那份**刻意不同文**：那份管代码注释（读者是下一个改这个文件的人），这份管对外散文
+# （读者是 review 的人、翻归档的人、以及读 CHANGELOG 的人）。合成一份会两头都不贴切。
+if [ -n "${publish:-}" ]; then
+  if [ "$publish" = pr ]; then
+    what="PR 正文"
+  else
+    what="commit message（release-please 会把 subject 抄进 CHANGELOG）"
+  fi
+  read -r -d '' PUBRUBRIC <<'TXT2'
+🚨 出处闸 — 你正在发布**对外留存**的文字：@@WHAT@@。
+
+它与代码注释同属一类载体：长期留存、被后续的人与 agent 读到。同一条纪律照用：
+
+① 文中关于 **vendor / 交易所 / 第三方平台运行时行为**的断言，此刻能指出出处吗？
+   • 能 → 带上指针（一手 URL / fixture / spec 路径 / ADR / FR / 具名实验 / 实测日期+**观测值**）
+   • 不能 → 去验证 → **不写（默认）** → 非写不可才明说「未验证」
+② 🚨 **复述仓内已有结论时，指针要跟着走** —— 本仓两条独立证据链都在最后一跳掉了指针
+   （docs/conventions/comment-provenance.md §3）：证据在 spec / 探针里完整，复述进正文时只剩结论。
+   做不到就点名来源方（「某某 2026-09-01 直查 prod」），**MUST NOT 写成无主语的「实测」**。
+③ 🚨 **别升格证据等级** —— 「单日探针观测到 X」复述成「X 是交易所规格」，是本仓实撞过的形态。
+④ 🚫 MUST NOT 用自评置信度代替出处（「大概 / 应该是 / 比较确定」）。二元：给得出出处，或直说未验证。
+⑤ **现在改成本为零** —— 发出去之后，它就是别人引用的依据了。
+
+完整约定：docs/conventions/comment-provenance.md
+TXT2
+  "$JQ" -n --arg ctx "${PUBRUBRIC//@@WHAT@@/$what}" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$ctx}}' 2>/dev/null || exit 0
+  exit 0
+fi
 
 # 通道决定第一行的措辞；其余逐字同文，避免两份 rubric 各自漂移。
 if [ -n "$fp" ]; then
