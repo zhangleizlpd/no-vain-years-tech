@@ -111,7 +111,25 @@ updated_at: '2026-09-01'
 
 - [ ] T015 [Docs] **ADR-0047 消费注记 + spec 结论回写**（FR-020）：`docs/adr/0047-marketdata-pluggable-data-access.md` 补注记 —— 其 FR-046 两级补救在**港股半边**已由本片退役、改一级制，美股半边逐字不动；spec `## Assumptions` 的样本期段更新为最终样本天数 → verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；ADR 链接可达
 
-- [ ] T016 [Gate] **读侧扫描：确认无人假设「有 D 日期权快照 ⇒ 有 D 日日线」**（spec `## Assumptions · 已知代价 #2`）：主轮前移后，当日期权数据将比当日日线（22:00，理杏仁）**早约 5.7 小时**落库，顺序与改动前相反。采集侧 plan 期已验证零耦合（期权采集路径零 `daily_bar` 读取）；**读侧未穷尽扫描**，本 task 补上 —— 逐个 grep `daily_bar` / `dailyBar` 的消费方，确认没有哪一处依赖「两者同日到齐」→ verify: 扫描结果逐条落 PR body；命中即评估影响并起 follow-up issue，零命中也要**写明扫了哪些路径**（否则下一个人无从判断这条扫过没有）；📌 本条是 analyze 期抓出的零覆盖 —— spec 明写「列为实施时必扫项」而 tasks 原先无人承载
+- [X] T016 [Gate] **读侧扫描：确认无人假设「有 D 日期权快照 ⇒ 有 D 日日线」**（spec `## Assumptions · 已知代价 #2`）：主轮前移后，当日期权数据将比当日日线（22:00，理杏仁）**早约 5.7 小时**落库，顺序与改动前相反。采集侧 plan 期已验证零耦合（期权采集路径零 `daily_bar` 读取）；**读侧未穷尽扫描**，本 task 补上 —— 逐个 grep `daily_bar` / `dailyBar` 的消费方，确认没有哪一处依赖「两者同日到齐」→ verify: 扫描结果逐条落 PR body；命中即评估影响并起 follow-up issue，零命中也要**写明扫了哪些路径**（否则下一个人无从判断这条扫过没有）；📌 本条是 analyze 期抓出的零覆盖 —— spec 明写「列为实施时必扫项」而 tasks 原先无人承载；
+  ✅ **扫描结果（2026-09-01）：零命中。** 结论可收敛成一句可证的话 —— **「有 D 日期权快照 ⇒ 有 D 日日线」这个假设在生产读侧无处可落，因为两份数据没有共同消费方。**
+
+  **口径**：全仓 `rg 'dailyBar|daily_bar'` 命中 120 个文件，去掉 spec / docs / 测试 / migration / 生成物后，读写面 **19 个**（15 个 server 生产 TS + 3 个 ops 探针/报表 + 1 个 dev 同步脚本），逐个读过。
+
+  | 分类 | 文件 | 判定 |
+  | --- | --- | --- |
+  | **期权侧零日线读** | `optionsdesk/**` 全模块 | 生产代码里 `daily_bar` 只出现 **2 行注释**（`sync-anchor-last-close.ts`，描述 ADR-0070 已退役的那条每小时投影）⇒ 唯一持有期权数据的 bounded context **一行日线都不读** |
+  | **日线侧零期权读** | `alert/evaluate-alerts.usecase` · `alert-evaluation.rules` · `get-instrument-detail` · `get-instrument-bars` · `eod-backed-quote.adapter` · `anchor-factors` · `sync-universe` · `futu-eod-bar.adapter` · `ensure-latest-eod-bar` | 对 `optionDailySnapshot` / `optionContract` **零引用**（grep 实证）⇒ 无从假设同日到齐。📌 `anchor-factors.ts` 的「锚」是**复权因子锚**不是期权锚，别被名字骗过去 |
+  | **两者都碰、逐个清掉** | `anchor-cold-start.usecase` / `.rules` | **日线已不在判据内**（#159 明写：「拿它当闸只会让『日线恰好没落上』误挡住真正要补的快照」）—— 本片担心的那个耦合，那次已经拆过 |
+  | | `dimension-executor` · `marketdata-backfill.cli` · `sync-asof.rules` | 写侧 / 回填游标 / 口径表注释；日线只作**复权重建**的前置，与期权无跨表判据 |
+  | **探针与报表** | `marketdata-table-health.sql` | 判据 ②（us 日线掉队）与 ⑧（us 期权快照掉队）是**两条独立的逐维度判据**，无合取；且都是 us 面，本片改的是 hk |
+  | | `marketdata-sync-report.sh` · `app-state-health.sql` | 前者逐表行数、无跨表判断；后者只在**沿革注释**里提日线（ADR-0070 后上游已换人） |
+  | **dev 同步脚本** | `marketdata-dev-sync/sync.sh` | **刻意解耦**：注释明写「不值得为它把 optionsdesk 的近窗绑到 `marketdata.daily_bar` 的交易日集合上」，两个窗口各走各的天数 |
+  | **前端 / 契约** | `apps/mobile/**` · `packages/api-client` | 无任何文件同时消费日线与期权/锚（grep 实证）；e2e 契约种子只种日线、零期权 |
+
+  **另核**：`sync_dependency` 全部 migration 里**零条边牵涉 `eod_bar`**（期权维度的上游只有 `universe` 与 `hk_option_contract`）⇒ 采集侧的解耦不只是「路径上没读」，是**编排层也没连**。全仓亦无 SQL VIEW（`CREATE VIEW` 零命中），不存在藏在视图里的 join。
+
+  🚨 **扫描边界（写明，否则下一个人无从判断扫过没有）**：本次只扫 **main 可达**的代码。冻结在未合分支 `048-optionsdesk-radar-aggregate-views` 上的聚合视图**不在扫描面内** —— 该分支上 `sync-anchor-quote.ts` （`daily_bar` 每小时投影）仍在，而 main 已由 ADR-0070 换成同源实时写手 ⇒ **048 解冻时必须重扫这一格**，且它要解决的是「与 main 的 stale 冲突」，不是本片引入的新耦合。⇒ 零命中，**不起 follow-up issue**；边界这条随 PR body 一起交待。
 
 - [ ] T017 [Gate] **PR 门**：`pnpm nx affected -t lint,typecheck,test,build` 全绿 + 治理脚本全扫 → verify: 按终态串判定，**不只看 exit code**；PR body 按 `.github/pull_request_template.md` 全段复刻，hard-gate 三 checkbox 核实落地
 
