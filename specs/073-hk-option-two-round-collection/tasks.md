@@ -134,7 +134,11 @@ updated_at: '2026-09-01'
 
   🚨 **扫描边界（写明，否则下一个人无从判断扫过没有）**：本次只扫 **main 可达**的代码。冻结在未合分支 `048-optionsdesk-radar-aggregate-views` 上的聚合视图**不在扫描面内** —— 该分支上 `sync-anchor-quote.ts` （`daily_bar` 每小时投影）仍在，而 main 已由 ADR-0070 换成同源实时写手 ⇒ **048 解冻时必须重扫这一格**，且它要解决的是「与 main 的 stale 冲突」，不是本片引入的新耦合。⇒ 零命中，**不起 follow-up issue**；边界这条随 PR body 一起交待。
 
-- [ ] T017 [Gate] **PR 门**：`pnpm nx affected -t lint,typecheck,test,build` 全绿 + 治理脚本全扫 → verify: 按终态串判定，**不只看 exit code**；PR body 按 `.github/pull_request_template.md` 全段复刻，hard-gate 三 checkbox 核实落地
+- [X] T017 [Gate] **PR 门**：`pnpm nx affected -t lint,typecheck,test,build` 全绿 + 治理脚本全扫 → verify: 按终态串判定，**不只看 exit code**；PR body 按 `.github/pull_request_template.md` 全段复刻，hard-gate 三 checkbox 核实落地；
+  🚨 **核 checkbox ③ 时抓出一个真缺口，已当场补掉（2026-09-01，user 定夺「先补再开 PR」）**：14 条 `state_branches` 里 **9 / 10 / 12 / 13**（告警一级制四态）此前**只有 unit 覆盖**（`sync-option-oi-settle.usecase.spec.ts` 的 T008 四臂，mock prisma + 注入 coverage），而 checkbox 与 spec schema 注释都写的是 **integration test**。ADR-0040 不信 unit-only 的理由正落在这里：覆盖率判据的分母来自「基线日那批行 ⋈ 当日行」**两趟真 SQL**，mock 里那两趟是被测方自己编的答案 ⇒ 「达标 / 不达标」由夹具决定而不是由库里的行决定。⇒ 073 IT 续 4 臂（13 → 17 → **21**）。两处判据面因此被真库钉住：① 缺口**必须落在工作集之外**的票上才构造得出「轮2 之后仍不达标」——落在工作集内会被段 b 当场补掉（那正是轮2 存在的意义）；② `state_branch 12` 证的是**覆盖率判据在那一格是瞎的**（行全在 ⇒ 它照判 ok），这就是「两条 ERROR 各管一件事、MUST NOT 合并」的机器证明。
+  变异留档三条：**M11** `alertIfDegraded` 的 ERROR 降 WARN ⇒ sb 10 / 13 判红（「是 ERROR 不是 WARN」）· **M12** 停掉 `stats.failed > 0` 那条 ERROR ⇒ sb 12 / 13 判红（证第一条不冗余）· **M13** 删 `status !== 'degraded'` 守卫改恒告警 ⇒ 三条「断言**没有**告警」的臂判红（④ / sb 9 / sb 12）。⚠️ M13 首版写成比对一个不存在的 status 字面量，被 TS2367 挡住 —— **变异变成编译错就证不了断言**，与 T005b 的 M8 同一形态、本片第二次踩。
+  🚨 **M13 顺带照出本 IT 文件的测试隔离缺陷**（断言抛出 ⇒ 行末 `mockRestore()` 不执行 ⇒ `vi.spyOn` 返同一 mock ⇒ 下一例带历史、失败级联、变异不可归因）：修前 M13 红 6 条、修后红 3 条，中间三条全是污染。清理已挂 `afterEach`。**同一形态在 073 内第三次**（T008 / T009 / 本条）⇒ 新写 spy 块一律先挂 `afterEach`，别用行末 restore。
+  → 门的终态串：`nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` **Successfully ran targets … for 4 projects**（5816 passed / 0 failed）；`scripts/checks/*.ts` 全扫 **18 ✅ / 0 ❌**；`check-commit-msg-parseable --range origin/main..HEAD` ✅（18 条）。
 
 ## 依赖与并行
 
@@ -164,11 +168,11 @@ T005b + T011 + T010 ──> T014 (上线后) ──> T015 ──> T016 (读侧�
 | 6 | 轮2 已写行 ⇒ 只更新三列 | T002 · T005 ① |
 | 7 | 轮2 整行缺失 ⇒ 补行 | T003 · T005 ② |
 | 8 | 定稿判据假 ⇒ 跳过留痕 | T002 ② · T005 ③ |
-| 9 | 覆盖率达标 ⇒ 静默 | T008 ① |
-| 10 | 覆盖率不达标 ⇒ ERROR | T008 ② |
+| 9 | 覆盖率达标 ⇒ 静默 | T008 ① · **T017 补 IT** |
+| 10 | 覆盖率不达标 ⇒ ERROR | T008 ② · **T017 补 IT** |
 | 11 | 主轮失败 ∧ 轮2 成功 ⇒ 全量兜底 | T003 ③ |
-| 12 | 主轮成功 ∧ 轮2 失败 ⇒ 留痕 | T008 ③ |
-| 13 | 双失败 ⇒ ERROR | T008 ④ |
+| 12 | 主轮成功 ∧ 轮2 失败 ⇒ 留痕 | T008 ③ · **T017 补 IT** |
+| 13 | 双失败 ⇒ ERROR | T008 ④ · **T017 补 IT** |
 | 14 | 美股逐值零变化 | T010 |
 
 **零覆盖：无。**

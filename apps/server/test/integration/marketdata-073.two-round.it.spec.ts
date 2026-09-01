@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Logger } from '@nestjs/common';
-import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { setupEmptyDb } from '../_support/isolated-db';
 import { runMigrateDeploy } from '../_support/run-migrate';
 import { stubTradingCalendar } from '../_support/trading-calendar-stub';
@@ -246,6 +246,12 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
    * ⇒ 三臂都先把主轮那份写进库, 再跑轮2, 再把整行读回来逐字段比。
    */
   describe('轮2 两段写 —— 只有真库能证「只改三列」(T005)', () => {
+    // 🚨 spy 清理挂 afterEach 而不是各用例末尾的 `mockRestore()`: 断言抛出时那一行**不执行**,
+    //    而 `vi.spyOn` 对已 spy 的方法返回**同一个 mock** ⇒ 下一个用例拿到带历史的 spy, 失败
+    //    级联、变异结果不可归因。全绿时这个缺陷完全不可见 —— 本文件是做 M13 变异时才照出来的
+    //    (073 T009 / T008 已各撞过一次, 同一形态第三次)。
+    afterEach(() => vi.restoreAllMocks());
+
     /** 样本期那天 (2026-08-31 周一); 上一交易日 08-28 周五。 */
     const SESSION = '2026-08-31';
     const PREV_SESSION = '2026-08-28';
@@ -613,7 +619,6 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       //    但「无链的票没被判红」就没被证过 —— 必须先证报告**真的有对象**。
       expect(report.underlyings.map((u) => u.symbol)).toEqual(['hk:00700']);
       expect(report.degraded).toEqual([]);
-      errSpy.mockRestore();
     });
 
     it('🚨 ⑤ 锚在两轮之间新建 → 整条链走「整行缺失」分支补全量', async () => {
@@ -698,7 +703,6 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       // 判在台阶内。⚠️ 那天的盘口其实已塌了 4 小时 —— 那是 spec `已知代价 #1`「半日市约
       // 5 天/年无收益」, **蓄意接受**, 不是本告警漏报。
       expect(errSpy.mock.calls.map((c) => String(c[0]))).toEqual([]);
-      errSpy.mockRestore();
     });
 
     it('🚨 ⑥b 半日市的 `session_kind` 真的被读了 —— 12:20 那一格是唯一能分叉的探针', async () => {
@@ -777,6 +781,138 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       }
       expect(stats.ok).toBe(1);
       expect(stats.failed).toBe(0);
+    });
+
+    // ── 告警一级制四态上 IT（state_branches 9 / 10 / 12 / 13）──────────────────────────
+    //
+    // 🚨 这四条此前**只有 unit 覆盖**（`sync-option-oi-settle.usecase.spec.ts` 的 T008 四臂，
+    //    mock prisma + 注入 coverage）。ADR-0040 的 hard gate 要求 `state_branches` 落在
+    //    **integration test**，而它不信 unit-only 的理由正落在这里：覆盖率判据的分母来自
+    //    「基线日那批行 ⋈ 当日行」**两趟真 SQL**，mock 里那两趟是被测方自己编的答案 ——
+    //    「达标 / 不达标」于是由夹具决定而不是由库里的行决定。
+
+    /** 打谁抛谁 —— 模拟轮2 对某只票整只失败（vendor 5xx / shim 挂）。 */
+    function failingPortFor(symbols: string[]): OptionSnapshotPort {
+      const healthy = settlePort();
+      return {
+        getSnapshots: async (q: OptionSnapshotQuery) => {
+          if (symbols.includes(q.underlyingSymbol)) {
+            throw new Error(`vendor 500: ${q.underlyingSymbol}`);
+          }
+          return healthy.getSnapshots(q);
+        },
+      };
+    }
+
+    const messagesOf = (spy: { mock: { calls: unknown[][] } }) =>
+      spy.mock.calls.map((c) => String(c[0]));
+    /** 覆盖率那条（「行缺了」）。 */
+    const coverageErrors = (spy: { mock: { calls: unknown[][] } }) =>
+      messagesOf(spy).filter((m) => m.includes('[option-snapshot-coverage]'));
+    /** 轮2 自身那条（「行在, 但 OI 没回填成」）。 */
+    const settleErrors = (spy: { mock: { calls: unknown[][] } }) =>
+      messagesOf(spy).filter((m) => m.includes('OI 回填未完成'));
+
+    const newCoverage = () => new OptionSnapshotCoverageCheck(prisma, marketdataSyncConfig());
+    const roundTwoInput = { mode: 'delta' as const, asOf: SESSION, now: ROUND_TWO_NOW };
+
+    it('🚨 state_branch 9: 覆盖率达标 ∧ 轮2 全成功 → **静默**', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const { instrument, contracts } = await seedChain('00700', 2);
+      await seedSnapshotRows(contracts, PREV_SESSION); // 基线日 = 分母的来源
+      await seedSnapshotRows(contracts, SESSION); // 主轮当日写全
+
+      const coverage = newCoverage();
+      const stats = emptyStats();
+      await buildRoundTwo(settlePort(), coverage).run([instrument], dim, stats, roundTwoInput);
+
+      expect(stats.failed).toBe(0);
+      expect(messagesOf(errSpy)).toEqual([]);
+      // 🚨 非空证明：分母为空时报告落 `no_subject`、同样不告警 ⇒ 上面那句会变成恒绿的空跑。
+      const report = await coverage.evaluate('hk', SESSION);
+      expect(report.status).toBe('ok');
+      expect(report.expected).toBe(2);
+    });
+
+    it('🚨 state_branch 10: 轮2 之后覆盖率**仍**不达标 → ERROR, 不是 WARN（阶梯已退役）', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const inWorkset = await seedChain('00700', 2);
+      await seedSnapshotRows(inWorkset.contracts, PREV_SESSION);
+      await seedSnapshotRows(inWorkset.contracts, SESSION);
+      // 🚨 缺口必须落在**工作集之外**的票上：落在工作集内会被段 b 当场补掉 —— 那正是轮2 存在
+      //    的意义 ⇒「轮2 跑完仍不达标」这一格在工作集内**构造不出来**。形态对应「那只锚今天
+      //    压根没进工作集」（冷启动没跑成 / 被择出）。
+      const outside = await seedChain('00388', 2, 'HKEX');
+      await seedSnapshotRows(outside.contracts, PREV_SESSION); // 基线日在, 当日缺
+
+      const stats = emptyStats();
+      await buildRoundTwo(settlePort(), newCoverage()).run(
+        [inWorkset.instrument],
+        dim,
+        stats,
+        roundTwoInput,
+      );
+
+      // 轮2 自己全成功（它只被派了 00700）⇒ 唯一的红来自覆盖率那条。
+      expect(stats.failed).toBe(0);
+      expect(settleErrors(errSpy)).toEqual([]);
+      const degraded = coverageErrors(errSpy);
+      expect(degraded).toHaveLength(1);
+      expect(degraded[0], '逐票明细缺了缺口那只票 ⇒ 只报全局比值时整票消失读不出来').toContain(
+        'hk:00388',
+      );
+      // 「是 ERROR 不是 WARN」：同一条判据的文本不许出现在 warn 通道上（一级制的全部内容）。
+      expect(messagesOf(warnSpy).filter((m) => m.includes('[option-snapshot-coverage]'))).toEqual(
+        [],
+      );
+    });
+
+    it('🚨 state_branch 12: 主轮成功（覆盖率达标）∧ 轮2 失败 → 仍 ERROR + 留痕, **不静默**', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const { instrument, contracts } = await seedChain('00700', 2);
+      await seedSnapshotRows(contracts, PREV_SESSION);
+      await seedSnapshotRows(contracts, SESSION); // 行都在 ⇒ 覆盖率判据看什么都对
+
+      const stats = emptyStats();
+      await buildRoundTwo(failingPortFor(['hk:00700']), newCoverage()).run(
+        [instrument],
+        dim,
+        stats,
+        roundTwoInput,
+      );
+
+      expect(stats.failed).toBe(1);
+      // 🚨 本臂的全部价值：**覆盖率判据在这一格是瞎的** —— 它数的是「行在不在」而不是「OI 新
+      //    不新」，行全在 ⇒ 它照判 ok。只靠它这一条，「OI 静默停在隔日口径」就没有任何输出，
+      //    而那正是本片要消灭的东西 ⇒ 两条 ERROR 各管一件事、MUST NOT 合并。
+      expect(coverageErrors(errSpy)).toEqual([]);
+      expect(settleErrors(errSpy)).toHaveLength(1);
+      expect(stats.findings.filter((f) => f.kind === 'failure')).toHaveLength(1);
+    });
+
+    it('🚨 state_branch 13: 两轮双失败（行缺 ∧ 轮2 挂）→ 两条 ERROR **各报各的**', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      // 段 b 补漏那条 WARN 只是噪声, 静音不断言。
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const { instrument, contracts } = await seedChain('00700', 2);
+      // 只有基线日 ⇒ 主轮当日整场零行（第一次失败）。
+      await seedSnapshotRows(contracts, PREV_SESSION);
+
+      const stats = emptyStats();
+      await buildRoundTwo(failingPortFor(['hk:00700']), newCoverage()).run(
+        [instrument],
+        dim,
+        stats,
+        roundTwoInput,
+      );
+
+      // 段 b 想补, 但端点挂了（第二次失败）⇒ 当日港股期权快照成永久缺口（vendor 不提供历史）。
+      expect(stats.failed).toBeGreaterThan(0);
+      expect(await readSnapshots()).toHaveLength(contracts.length); // 只剩基线日那批
+      // 两条各说各的一件事：一条「OI 没回填成」, 一条「行缺了」。合并成一条就分不出该找谁。
+      expect(settleErrors(errSpy)).toHaveLength(1);
+      expect(coverageErrors(errSpy)).toHaveLength(1);
     });
   });
 });
