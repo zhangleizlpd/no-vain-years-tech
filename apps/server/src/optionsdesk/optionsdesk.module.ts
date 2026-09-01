@@ -17,8 +17,8 @@ import { GetLegsUseCase } from './get-legs.usecase.js';
 import { GetChainReportUseCase } from './get-chain-report.usecase.js';
 import { LEG_RETRIEVAL_PORT } from './leg-retrieval.port.js';
 import { PrismaLegRetrievalAdapter } from './leg-retrieval.adapter.js';
-import { SyncAnchorQuoteUseCase } from './sync-anchor-quote.js';
-import { SyncAnchorQuoteScheduler } from './sync-anchor-quote.scheduler.js';
+import { SyncAnchorLastCloseUseCase } from './sync-anchor-last-close.js';
+import { SyncAnchorLastCloseScheduler } from './sync-anchor-last-close.scheduler.js';
 import { SyncAnchorIntradayUseCase } from './sync-anchor-intraday.js';
 import { SyncAnchorIntradayScheduler } from './sync-anchor-intraday.scheduler.js';
 import { OptionsdeskController } from './optionsdesk.controller.js';
@@ -91,10 +91,10 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
     ImportAnchorFromModelUseCase,
     // 059 待审收件箱写端 —— **不 import 任何锚写侧 use case**, 结构上保证「不存在第二条写锚路径」。
     SubmitAnchorFromGuestUseCase,
-    SyncAnchorQuoteUseCase,
+    SyncAnchorLastCloseUseCase,
     // 上一行那个 use case 的**触发器** —— 没有它 `last_close` 投影在 prod 永不执行
     // (045 T012 只定义了怎么算、没定义谁来调), 雷达的距 W% / zone / 复核锚红标全部出不了真值。
-    SyncAnchorQuoteScheduler,
+    SyncAnchorLastCloseScheduler,
     // 061 盘中价投影 —— 与上面那条**并列的第二列**, 不是替代: `last_close` 仍是当日收盘的
     // 权威值与一切降级的落脚点 (FR-015), 盘中两列只在 90 秒新鲜度闸内接管排序与呈现。
     SyncAnchorIntradayUseCase,

@@ -381,6 +381,16 @@ const DEFAULT_CLOSE_SETTLE_BUFFER_MINUTES = 1;
 const CLOSE_SETTLE_BUFFER_MINUTES: Record<string, number> = {
   // HKEX CAS 16:08–16:10 随机收市，撮合在其后 ⇒ 官方收盘价最早 16:10 才存在。
   hk: 10,
+  // 🚨 **Nasdaq NOCP 在收盘后 15 分钟才由 network processor 正式下发**为官方 Consolidated
+  // Last Sale Price（Nasdaq《Opening and Closing Crosses》FAQ）。Closing Cross 本身 16:00 ET
+  // 执行、价格即时打印，NYSE 侧同样是 16:00 单笔撮合带 sale condition 8「Closing Prints」即时
+  // 上带 ⇒ **16:15 那一步改的是「官方性」不是价**，故 15 分钟是带余量的、不是卡在边界上。
+  //
+  // ⚠️ 这条与 `hk` 的 10 是**同一档证据**（都出自交易所公开规格），但 `hk` 另有一份 fixture
+  // 旁证（标的行 `update_time` = 16:07:49），**`us` 没有** —— 它测的是「交易所何时下发」，
+  // 不是「本供应方的快照何时反映」。那段残留缺口目前由「价在 16:00 就定了」这条性质兜着；
+  // 真要收口得实取一轮 ET 16:01/16:05/16:15/16:30 的 `last_price` 做对照。
+  us: 15,
 };
 
 /** 该市场的定稿缓冲分钟数。复杂度 O(1)。 */

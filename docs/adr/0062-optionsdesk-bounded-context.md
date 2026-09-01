@@ -188,7 +188,7 @@ trigger 原文 = 「盘中实时 spot 上线（雷达/详情不再以 `last_clos
 
 061 的盘中 tick 走进程内 `@Cron('*/30 * * * * *')`（`apps/server/src/optionsdesk/sync-anchor-intraday.scheduler.ts`），**不引 BullMQ** —— 本 ctx 一套 queue / worker / connection 都没有，为一个 30 秒 tick 从零搭 BullMQ 拓扑过不了 Senior Engineer Test；熔断计数用 Redis 即可，不需要 queue。
 
-⚠️ **已知代价**：进程内 `@Cron` 在**多实例部署**下会重复触发。这与本 ctx 既有的 `sync-anchor-quote.scheduler.ts`（045 起就是 `@Cron`）**同一前提，不是 061 新引入的**。现状单实例部署；且本 tick **幂等**（覆盖写锚表同一批列，最后写赢），重复触发的代价只是多一次 vendor 调用（配额余量 60×）。
+⚠️ **已知代价**：进程内 `@Cron` 在**多实例部署**下会重复触发。这与本 ctx 既有的 `sync-anchor-quote.scheduler.ts`（045 起就是 `@Cron`）**同一前提，不是 061 新引入的**（📌 2026-09-01 注：该文件已随 [ADR-0070](0070-anchor-last-close-same-source-writer.md) 删除，接替它的 `sync-anchor-last-close.scheduler.ts` 同样是进程内 `@Cron` ⇒ 本句的论据不变）。现状单实例部署；且本 tick **幂等**（覆盖写锚表同一批列，最后写赢），重复触发的代价只是多一次 vendor 调用（配额余量 60×）。
 
 ⇒ **真正的绊线是部署形态**：哪天 server 变多实例 / 蓝绿并存，这里要么加分布式锁、要么迁 BullMQ repeatable，且**两条 scheduler 一起迁**（只迁一条会留下更难读的半截状态）。在那之前不预造。
 

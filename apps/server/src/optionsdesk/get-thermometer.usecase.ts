@@ -275,7 +275,7 @@ export class GetThermometerUseCase {
         .filter((p): p is { market: string; code: string } => p !== null);
 
       // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 锚 ticker → 标的 id
-      // 批量寻址, 读法同 `sync-anchor-quote.ts` 的单点版。零写、零 @Inject() 对方 use case (Q7-C)。
+      // 批量寻址, 读法同 `instrument-name.ts` 的单点版。零写、零 @Inject() 对方 use case (Q7-C)。
       const instruments =
         pairs.length === 0
           ? []

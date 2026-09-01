@@ -60,7 +60,7 @@ import { parseAnchorTicker } from './anchor.rules';
  * 单锚失败不回滚同批其余 (spec `state_branch` 8)。
  *
  * 🚨 **只写自有两列**, 且**两列不入 `anchor_change` 痕迹表** —— 同 `last_close` 的既有规矩
- * (`sync-anchor-quote.ts` 文件头)。每 30 秒一条行情噪声灌进痕迹会把 PIT 回放淹没。
+ * (`sync-anchor-last-close.ts` 文件头)。每 30 秒一条行情噪声灌进痕迹会把 PIT 回放淹没。
  *
  * 🚨 **部分标的缺失 → 保留旧值**: 响应里没有的 ticker 一律跳过, 既不写 `null` 也不写 `0`
  * (spec `state_branch` 7)。0 在距 W% 里是个有意义的强信号, 拿它表达「没数据」会被读反。
@@ -415,7 +415,7 @@ export class SyncAnchorIntradayUseCase {
 /**
  * 锚按 market 分组。**不成形的 ticker 归空串这一组** —— 它在任何一拍都拿不到 session
  * (⇒ 恒 `unknown` ⇒ 恒被时段闸挡下), 于是走同一条 fail-closed 路径, 不需要第二条分支,
- * 也**不猜**它属于哪个市场 (与 `sync-anchor-quote.ts` 对非法 ticker 的处置同向)。O(n)。
+ * 也**不猜**它属于哪个市场 (与 `sync-anchor-last-close.ts` 对非法 ticker 的处置同向)。O(n)。
  */
 function groupByMarket(anchors: readonly AnchorIntradayRef[]): Map<string, AnchorIntradayRef[]> {
   const groups = new Map<string, AnchorIntradayRef[]>();

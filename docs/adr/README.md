@@ -93,6 +93,7 @@
 | 0067 | Vendor 缺失语义 — 带内哨兵在 adapter 边界归一为 null,成对判据 + 不可判定列显式登记      | apps/server                                      | Accepted   |
 | 0068 | 实时窄召回两段式与选档理论 — 窗即召回,凸包清链,φ+形状行军,精排扩为排序+选档             | apps/server, apps/mobile                         | Accepted   |
 | 0069 | 锚待审箱审阅面 — 用探针换回 FR-012 的结构性保证,并给待审箱加 partial 唯一键             | apps/server, apps/mobile                         | Accepted   |
+| 0070 | 锚收盘价换同源写手 — 收盘后直查 vendor 三闸取交集,去掉 daily_bar 每小时投影             | apps/server                                      | Accepted   |
 
 (0021 历史空缺,跳过编号 — 详 commit 历史)
 

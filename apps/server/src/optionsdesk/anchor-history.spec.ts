@@ -96,7 +96,7 @@ describe('anchor-history — 痕迹构造 (FR-031 一行 = 一次变更)', () =>
     expect(change!.beforeValues).toEqual({ lLevelManual: 'L3' });
   });
 
-  it('🚨 行情投影列不进痕迹: last_close / last_close_date 是 daily_bar 单向投影不是锚事实', () => {
+  it('🚨 行情列不进痕迹: last_close / last_close_date 是外部行情不是锚事实', () => {
     expect([...ANCHOR_TRACKED_FIELDS]).not.toContain('lastClose');
     expect([...ANCHOR_TRACKED_FIELDS]).not.toContain('lastCloseDate');
     expect(buildAnchorChange(before, { lastClose: D('99') }, 'manual')).toBeNull();

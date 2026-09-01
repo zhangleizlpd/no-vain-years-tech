@@ -3,6 +3,7 @@ import {
   exchangeCalendarDate,
   exchangeCalendarDateForScope,
   isSessionComplete,
+  isWithinPostCloseWindow,
   sessionWatermark,
   sessionWatermarkForScope,
   userToday,
@@ -194,5 +195,80 @@ describe('userToday — 人工节奏跟**用户所在地**走, 与市场无关',
   it('返 Asia/Shanghai 的 YYYY-MM-DD', () => {
     expect(userToday(new Date('2026-06-03T18:00:00Z'))).toBe('2026-06-04'); // 北京 02:00
     expect(userToday(new Date('2026-06-03T10:00:00Z'))).toBe('2026-06-03'); // 北京 18:00
+  });
+});
+
+describe('isWithinPostCloseWindow — 锚收盘价补采窗 (ADR-0070 三闸之二)', () => {
+  const HK = '2026-09-01'; // 周二
+  const D = (iso: string) => new Date(iso);
+
+  describe('定稿缓冲: 港股窗恰好开在 CAS 随机收市之后', () => {
+    it('16:09 HKT 仍在缓冲内 ⇒ 不采 (官方收盘价此刻还不存在)', () => {
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-01T08:09:00Z'), 'unknown')).toBe(false);
+    });
+
+    it('16:10 HKT 窗开 —— 边界取 `[close, close+buffer)` 的右开端', () => {
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-01T08:10:00Z'), 'unknown')).toBe(true);
+    });
+
+    it('美股缓冲 15 分钟 (Nasdaq NOCP) ⇒ 16:15 ET 开窗, DST 两侧同值', () => {
+      // 夏令 EDT(UTC-4): 16:14 未开 / 16:15 开
+      expect(
+        isWithinPostCloseWindow('us', '2026-07-14', D('2026-07-14T20:14:00Z'), 'unknown'),
+      ).toBe(false);
+      expect(
+        isWithinPostCloseWindow('us', '2026-07-14', D('2026-07-14T20:15:00Z'), 'unknown'),
+      ).toBe(true);
+      // 冬令 EST(UTC-5): 同样 16:14 / 16:15, 偏移差一小时由 Intl 处理
+      expect(
+        isWithinPostCloseWindow('us', '2026-01-14', D('2026-01-14T21:14:00Z'), 'unknown'),
+      ).toBe(false);
+      expect(
+        isWithinPostCloseWindow('us', '2026-01-14', D('2026-01-14T21:15:00Z'), 'unknown'),
+      ).toBe(true);
+    });
+  });
+
+  describe('🚨 同日窗 —— 跨午夜即放弃这一场 (本谓词存在的全部理由)', () => {
+    it('窗内末刻 23:59 HKT 仍可补', () => {
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-01T15:59:00Z'), 'unknown')).toBe(true);
+    });
+
+    it('🚨 次日 00:01 HKT 对昨天那一场 ⇒ 出窗。少了这条, D+1 盘中重试会把 D+1 的盘中价写成 D 的收盘价, 且日期列还是对的 ⇒ 没有断言会红', () => {
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-01T16:01:00Z'), 'unknown')).toBe(false);
+      // D+1 盘中 11:00 HKT —— 那一刻目标 session 仍是 D (D+1 未收盘), 正是危险的一刻
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-02T03:00:00Z'), 'unknown')).toBe(false);
+    });
+  });
+
+  describe('🚨 这一场收了没有 —— 开盘前 isCloseWriteBlocked 同样返 false, 必须另有一道', () => {
+    it('08:00 HKT 对「今天」⇒ 今天还没开盘, MUST NOT 判成窗开', () => {
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-01T00:00:00Z'), 'unknown')).toBe(false);
+    });
+
+    it('盘中 11:00 HKT 对「今天」同样不开窗', () => {
+      expect(isWithinPostCloseWindow('hk', HK, D('2026-09-01T03:00:00Z'), 'unknown')).toBe(false);
+    });
+  });
+
+  describe('🚨 kind 必须与调用点求目标 session 时传的那个一致', () => {
+    it('港股半日市 12:10: kind=half 窗已开, kind=unknown 尚未 —— 生产两处同传 unknown 故这个错构造不出来', () => {
+      const at1210 = D('2026-09-01T04:10:00Z');
+      expect(isWithinPostCloseWindow('hk', HK, at1210, 'half')).toBe(true);
+      expect(isWithinPostCloseWindow('hk', HK, at1210, 'unknown')).toBe(false);
+    });
+
+    it('美股半日市 13:30 ET (期权 13:15 收 + 缓冲 15): 同款分叉', () => {
+      const at1330 = D('2026-07-14T17:30:00Z');
+      expect(isWithinPostCloseWindow('us', '2026-07-14', at1330, 'half')).toBe(true);
+      expect(isWithinPostCloseWindow('us', '2026-07-14', at1330, 'unknown')).toBe(false);
+    });
+  });
+
+  it('⚠️ 未登记市场 ⇒ false 且**不抛** (极性与 sessionWatermark 的 fail-open 回落刻意相反)', () => {
+    expect(() =>
+      isWithinPostCloseWindow('xx', HK, D('2026-09-01T08:10:00Z'), 'unknown'),
+    ).not.toThrow();
+    expect(isWithinPostCloseWindow('xx', HK, D('2026-09-01T08:10:00Z'), 'unknown')).toBe(false);
   });
 });

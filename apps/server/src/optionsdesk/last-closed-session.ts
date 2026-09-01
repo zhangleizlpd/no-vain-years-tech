@@ -49,7 +49,7 @@ export async function resolveLastClosedSessions(
 
 /**
  * 单个锚 ticker (`market:code`) 的「最近一个已收盘交易日」。ticker 不合法 ⇒ `null`
- * (与 `sync-anchor-quote` 对不可解析 ticker 的处置同向: 不猜市场)。
+ * (与 `sync-anchor-last-close` 对不可解析 ticker 的处置同向: 不猜市场)。
  */
 export async function resolveLastClosedSessionForTicker(
   calendar: TradingCalendarPort,

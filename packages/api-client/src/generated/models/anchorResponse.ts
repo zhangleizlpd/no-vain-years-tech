@@ -60,7 +60,7 @@ export interface AnchorResponse {
   willingSellRent: string;
   /** spot 所在区间; 行情不可用 ⇒ null (禁伪造) */
   zone: AnchorResponseZone;
-  /** spot = 最新未复权收盘价 (daily_bar 单向投影); 行情不可用 ⇒ null */
+  /** spot = 最近一场已收盘交易日的收盘价 (收盘后直查行情源, 与期权数据同源); 行情不可用 ⇒ null */
   lastClose: string | null;
   /** 行情 asOf (YYYY-MM-DD; 呈现「数据截至 X · 收盘」) */
   lastCloseDate: string | null;

@@ -15,7 +15,7 @@ import { resolveEffectiveAnchorValues, type AnchorManualState } from './anchor-c
  * **一行痕迹 = 一次变更**, 不是一行一字段 (FR-031 原文是「本次变更的字段集」): 一条含
  * `changed_fields` 字段集 + `before_values` 改前值 + `source`。写入与主行变更**同一个 tx**。
  *
- * 🚨 **`last_close` / `last_close_date` 不进痕迹**: 它们是 `marketdata.daily_bar` 的单向投影
+ * 🚨 **`last_close` / `last_close_date` 不进痕迹**: 它们是收盘后从 vendor 抄来的行情事实
  * (FR-036), 不是锚事实 —— 若纳入, 每日行情同步都会刷一行「变更」, 把真正的估值变更淹掉,
  * 且 PIT 还原的语义会从「当时的估值口径」滑成「当时的行情」。
  *

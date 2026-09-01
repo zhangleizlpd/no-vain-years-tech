@@ -649,7 +649,8 @@ export class AnchorResponse {
   zone!: string | null;
 
   @ApiProperty({
-    description: 'spot = 最新未复权收盘价 (daily_bar 单向投影); 行情不可用 ⇒ null',
+    description:
+      'spot = 最近一场已收盘交易日的收盘价 (收盘后直查行情源, 与期权数据同源); 行情不可用 ⇒ null',
     type: 'string',
     nullable: true,
     example: '36.0000',

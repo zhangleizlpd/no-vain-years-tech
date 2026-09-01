@@ -18,7 +18,7 @@
 # 它为什么存在（判据全在谓词里，此处仅复述供人读）：
 #   #209 排查（2026-08-27）发现三个既有数据探针的谓词**全部只碰 `marketdata` schema` ⇒
 #   `optionsdesk` / `alert` / `public.outbox_event` 等**零进程外监控**。而
-#   `optionsdesk/sync-anchor-quote.scheduler.ts` 的失败路径是 `catch → logger.error → return null`，
+#   `optionsdesk/sync-anchor-last-close.scheduler.ts` 的失败路径是 `catch → logger.error → return null`，
 #   **不落 `sync_run`**（不在 marketdata 同步框架内）⇒ 纯真空：日志没有接收端，数据侧也没人看。
 #
 # **不经 app 进程**（结构性要求，同 044 / table-health）：直读 PG —— app 整个挂掉、数据自然陈旧

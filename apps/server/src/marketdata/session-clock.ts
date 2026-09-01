@@ -23,7 +23,7 @@
  * 需要「最近一个已收盘**交易日**」时, 拿本层的水位去 `trading_day` 取 `≤ 水位` 的最大交易日
  * (见 `TradingCalendarPort.lastClosedSession`), 日历不可用则**回落到本层结果**。
  */
-import { sessionCloseMinutes } from './market-session.rules.js';
+import { isCloseWriteBlocked, sessionCloseMinutes } from './market-session.rules.js';
 import type { SessionKindStatus } from './trading-day.rules.js';
 
 /**
@@ -270,4 +270,52 @@ export function isSessionComplete(
  */
 export function userToday(now: Date): string {
   return dateInTimeZone(now, DEFAULT_TIME_ZONE);
+}
+
+/**
+ * **收盘后补采窗**: `sessionDate` 那一场已收盘且过了定稿缓冲, 且 `now` 仍落在该场的交易所
+ * 当地日历日之内。锚收盘价补采 (ADR-0070) 的三闸之一。
+ *
+ * 🚨 **「同日窗」这后半条挡的是一个静默写错数的形状**: 补采以「`last_close_date` 落后于目标
+ * session」为工作集判据, 而目标 session 由 {@link sessionWatermark} 给出 —— D+1 开盘后它
+ * **仍停在 D** (D+1 尚未收盘)。⇒ D 那场采失败的锚, 到 D+1 盘中重试时会拿到 **D+1 的盘中
+ * 实时价**, 写进「D 的收盘价」那一列, 而日期列还是对的 **⇒ 没有任何断言会红**。
+ * 窗按交易所当地日历日封口: 跨过午夜即放弃这一场、保留旧值, 等下一场。
+ *
+ * 🚨 **定稿缓冲不在本文件里另起一个数** —— 直接走 {@link isCloseWriteBlocked}, 与期权快照
+ * 写闸同一个口径 (`hk` 的 10 分钟来自 HKEX CAS 16:08–16:10 随机收市的交易所规格)。本消费方
+ * 「多等几分钟零成本」的确是真的, 但那不构成在第二处写一个更大的数的理由: 那边明写着
+ * 「要动它得先有那个市场的定稿证据」, 而**绕过一条判据去自持一份, 正是它想拦的事**。
+ *
+ * 🚨 **`kind` 必须与调用点求目标 session 时传的那个一致**: 目标 session 走
+ * `TradingCalendarPort.lastClosedSession` (内部钉死 `'unknown'` ⇒ 按常规收盘翻转)。这里若改传
+ * `'half'`, 半日市当天 12:10 窗就开了, 而那一刻目标 session 还停在**昨天** ⇒ 拿今天的价写昨天
+ * 那一行。两处同 `kind` 时这个错构造不出来 —— 不是风格问题, 是判据的一半。
+ *
+ * ⚠️ 半日市的代价是**晚采不是错采**: 12:00 收、16:10 才补, 取到的仍是 12:00 那个收盘价。
+ * 一年约 5 天, 不特判。
+ *
+ * ⚠️ **未登记市场 ⇒ `false` (fail-closed), 与 {@link sessionWatermark} 的 fail-open 回落
+ * 极性刻意相反**: 本函数每一个 `false` 都只意味着「这一拍不采」(下一拍还会来), 是安全侧;
+ * 而直接调 `isCloseWriteBlocked` 会**抛** —— 那是把一个配置事实升级成一拍异常。
+ *
+ * 复杂度 O(段数)。
+ */
+export function isWithinPostCloseWindow(
+  market: string,
+  sessionDate: string,
+  now: Date,
+  kind: SessionKindStatus,
+): boolean {
+  const { date, minutesOfDay } = timeInTimeZone(now, exchangeTimeZone(market));
+  // 同日窗 —— 跨过交易所当地午夜即出窗 (见上「静默写错数」那段)。
+  if (date !== sessionDate) return false;
+  // 未登记市场先行短路 (见上极性说明); 登记了才敢问写闸。
+  if (sessionCloseMinutes(market, kind) === undefined) return false;
+  // 🚨 这一场**收了没有** —— 少了它, 开盘之前 (m < 首段开盘) `isCloseWriteBlocked` 同样返
+  // `false` (它只挡「场内」与「缓冲内」两段), 于是港股早上 08:00 会被判成「今天的收盘后补采窗
+  // 开着」。经预期调用方不可达 (那一刻目标 session 还是昨天, 已被同日窗挡下), 但那是**调用顺序
+  // 兜出来的安全**, 不是本谓词自己的性质。
+  if (!isSessionComplete(market, sessionDate, now, kind)) return false;
+  return !isCloseWriteBlocked(market, minutesOfDay, kind);
 }
