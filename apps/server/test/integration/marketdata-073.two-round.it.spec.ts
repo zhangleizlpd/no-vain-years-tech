@@ -1,10 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { setupEmptyDb } from '../_support/isolated-db';
 import { runMigrateDeploy } from '../_support/run-migrate';
 import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 import { PrismaService } from '../../src/security/prisma.service';
+import { marketdataSyncConfig } from '../../src/config/marketdata.config';
+import { OptionSnapshotCoverageCheck } from '../../src/marketdata/option-snapshot-coverage.check';
 import type {
   ExecutorSyncDimensionRow,
   WorkingInstrument,
@@ -249,7 +252,6 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
     const MAIN_QUOTE_AS_OF = new Date(`${SESSION}T08:28:00Z`);
     /** 轮2 自己的抓价时刻 (hk 当地 21:41) —— 段 b 补出来的行才会带它。 */
     const SETTLE_QUOTE_AS_OF = new Date(`${SESSION}T13:41:00Z`);
-    const UNDERLYING_CODE = 'HK.00700';
 
     const day = (s: string) => new Date(`${s}T00:00:00Z`);
 
@@ -338,6 +340,8 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
     async function seedChain(
       code: string,
       count: number,
+      /** 合约码词根 —— `option_contract` 的唯一键是 `(market, code)`, 两只票必须各用各的。 */
+      root = 'TCH',
     ): Promise<{ instrument: WorkingInstrument; contracts: { id: bigint; code: string }[] }> {
       const inst = await prisma.instrument.create({
         data: {
@@ -352,12 +356,12 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       });
       const contracts: { id: bigint; code: string }[] = [];
       for (let i = 0; i < count; i++) {
-        const contractCode = `HK.TCH260918P${100 + i}000`;
+        const contractCode = `HK.${root}260918P${100 + i}000`;
         const row = await prisma.optionContract.create({
           data: {
             market: 'hk',
             code: contractCode,
-            root: 'TCH',
+            root,
             underlyingInstrumentId: inst.id,
             // 到期日远于 session_date ⇒ 落在工作集口径 (`expiry_date >= session_date`) 内。
             expiryDate: day('2026-09-18'),
@@ -371,54 +375,72 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       return { instrument: { id: inst.id, market: 'hk', code }, contracts };
     }
 
-    /** 把主轮那一轮的行写进库 (只给 `codes` 里点名的合约 —— 其余的就是「主轮整行缺失」)。 */
-    async function seedMainRoundRows(contracts: { id: bigint; code: string }[]): Promise<void> {
+    /**
+     * 把「主轮那一轮」的行写进库。只给点名的合约 —— 其余的就是「主轮整行缺失」。
+     * `sessionDate` 可指定: T005b 的覆盖率基线日要往前一天也铺一份。
+     */
+    async function seedSnapshotRows(
+      contracts: { id: bigint; code: string }[],
+      sessionDate: string,
+    ): Promise<void> {
       await prisma.optionDailySnapshot.createMany({
         data: contracts.map((c) => ({
           ...MAIN_ROUND_ROW,
           contractId: c.id,
-          sessionDate: day(SESSION),
+          sessionDate: day(sessionDate),
           source: 'eod',
         })),
       });
     }
 
+    const seedMainRoundRows = (contracts: { id: bigint; code: string }[]) =>
+      seedSnapshotRows(contracts, SESSION);
+
     /** 轮2 时刻的端点替身: 期权行 + 标的自身那行 (spot 与主轮同源, 同批下发不另发调用)。 */
     function settlePort(): OptionSnapshotPort {
       return {
-        getSnapshots: async (q: OptionSnapshotQuery) => ({
-          asOf: SETTLE_QUOTE_AS_OF,
-          rows: [
-            ...q.contractCodes.map(
-              (code): OptionSnapshotRow => ({
+        getSnapshots: async (q: OptionSnapshotQuery) => {
+          // 标的自身那行的 code 按**被问的那只票**派生 —— 段 b 会拿另一只票来问, 写死一个
+          // 就成了「所有票共用一个 spot」, 而 spot 是硬门 ④ 的输入。
+          const underlyingCode = `HK.${q.underlyingSymbol.split(':')[1]}`;
+          return {
+            asOf: SETTLE_QUOTE_AS_OF,
+            rows: [
+              ...q.contractCodes.map(
+                (code): OptionSnapshotRow => ({
+                  ...SETTLE_VENDOR_ROW,
+                  code,
+                  isOption: true,
+                  underlyingCode,
+                }),
+              ),
+              {
                 ...SETTLE_VENDOR_ROW,
-                code,
-                isOption: true,
-                underlyingCode: UNDERLYING_CODE,
-              }),
-            ),
-            {
-              ...SETTLE_VENDOR_ROW,
-              code: UNDERLYING_CODE,
-              isOption: false,
-              underlyingCode: null,
-              last: '148.21',
-              bid: null,
-              ask: null,
-              delta: null,
-              greeksComplete: null,
-            },
-          ],
-        }),
+                code: underlyingCode,
+                isOption: false,
+                underlyingCode: null,
+                last: '148.21',
+                bid: null,
+                ask: null,
+                delta: null,
+                greeksComplete: null,
+              },
+            ],
+          };
+        },
       };
     }
 
-    function buildRoundTwo(port: OptionSnapshotPort): SyncOptionOiSettleUseCase {
+    function buildRoundTwo(
+      port: OptionSnapshotPort,
+      /** T005b: 注真覆盖率判据 —— 「不判红」只有在它真的在跑时才是个结论。 */
+      coverage?: OptionSnapshotCoverageCheck,
+    ): SyncOptionOiSettleUseCase {
       const calendar = stubTradingCalendar({ status: 'trading' });
       // 🚨 段 b 的执行体是**主轮那个 use case 的真实例**, 不是替身 —— 「不另抄一份行映射」
       //    这条纪律只有真的调它才成立 (plan §D3 Guardrail 3)。
       const collector = new SyncOptionSnapshotUseCase(port, prisma, calendar);
-      return new SyncOptionOiSettleUseCase(port, prisma, calendar, collector);
+      return new SyncOptionOiSettleUseCase(port, prisma, calendar, collector, coverage);
     }
 
     /** 整表读回 (按合约 id 排序), 供逐字段对拍。 */
@@ -521,6 +543,84 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       expect(stats.skipped).toBe(1);
       expect(stats.ok).toBe(0);
       expect(stats.failed).toBe(0);
+    });
+
+    // ── T005b: 两条边界臂（Edge Case「无期权链的锚」/「锚集在两轮之间变化」）──────────
+    //
+    // 🚨 两条都**只在真库上有意义**: 前者的「不判红」判据是覆盖率检查那两趟 SQL 的名册口径
+    //    (`instrument … optionContracts: { some: 未到期 }`), 后者要的是唯一键在整条链上一次
+    //    也没碰撞 —— mock 里两者都不存在。
+
+    it('🚨 ④ 无期权链的锚 → 计 skipped, 且覆盖率**不判红**（该类标的期权链恒无值）', async () => {
+      const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const withChain = await seedChain('00700', 2);
+      // 港股绝大多数标的没有挂牌期权 —— 它进工作集是正常态, 不是缺口。
+      const chainless = await seedChain('09999', 0);
+      // 基线日 = 有快照行的、早于本场的最近一天。🚨 少了它覆盖率报告落 `no_subject`,
+      //    本例就变成「拿一个空报告断言没告警」= 恒真的空跑。
+      await seedSnapshotRows(withChain.contracts, PREV_SESSION);
+      await seedSnapshotRows(withChain.contracts, SESSION);
+
+      const coverage = new OptionSnapshotCoverageCheck(prisma, marketdataSyncConfig());
+      const stats = emptyStats();
+      await buildRoundTwo(settlePort(), coverage).run(
+        [withChain.instrument, chainless.instrument],
+        dim,
+        stats,
+        { mode: 'delta', asOf: SESSION, now: ROUND_TWO_NOW },
+      );
+
+      // 无链的票: 零外呼、计 skipped、**不计 failed**（计 failed 会把常态说成故障）。
+      expect(stats.failed).toBe(0);
+      expect(stats.ok).toBe(1);
+      expect(stats.skipped).toBe(1);
+      expect(errSpy.mock.calls.map((c) => String(c[0]))).toEqual([]);
+
+      // 判据本体: 名册按「有未到期合约」取, 无链的票压根不进分母, 更不进 absent 那一层。
+      const report = await coverage.evaluate('hk', SESSION);
+      expect(report.status).toBe('ok');
+      // 🚨 非空断言在前: 报告若落 `no_subject`（分母为空）, 上面那句同样是 'ok' 之外的值,
+      //    但「无链的票没被判红」就没被证过 —— 必须先证报告**真的有对象**。
+      expect(report.underlyings.map((u) => u.symbol)).toEqual(['hk:00700']);
+      expect(report.degraded).toEqual([]);
+      errSpy.mockRestore();
+    });
+
+    it('🚨 ⑤ 锚在两轮之间新建 → 整条链走「整行缺失」分支补全量', async () => {
+      const existing = await seedChain('00700', 2);
+      await seedSnapshotRows(existing.contracts, SESSION);
+      // 主轮跑完之后才建的锚: 链发现（冷启动）已把合约填进库, 但当日**一行快照都没有**。
+      const fresh = await seedChain('00388', 3, 'HKEX');
+
+      const stats = emptyStats();
+      await buildRoundTwo(settlePort()).run([existing.instrument, fresh.instrument], dim, stats, {
+        mode: 'delta',
+        asOf: SESSION,
+        now: ROUND_TWO_NOW,
+      });
+
+      const after = await readSnapshots();
+      expect(after).toHaveLength(5);
+      const byContract = new Map(after.map((r) => [r.contractId, r]));
+      // 新锚的整条链被补全: 三张合约各一行, 时点列按轮2 的时刻与定稿口径落。
+      for (const c of fresh.contracts) {
+        const row = byContract.get(c.id);
+        expect(row?.source, `新锚的合约 ${c.code} 没被补出来`).toBe('eod');
+        expect(row?.sessionDate).toEqual(day(SESSION));
+        expect(row?.quoteAsOf.getTime()).toBe(SETTLE_QUOTE_AS_OF.getTime());
+        expect(row?.oiAsOf).toEqual(day(SESSION));
+        expect(row?.openInterest?.toString()).toBe('9999');
+      }
+      // 老锚仍走段 a: 报价逐值不变, 只有 OI 三列换新。
+      for (const c of existing.contracts) {
+        const row = byContract.get(c.id);
+        expect(row?.quoteAsOf.getTime()).toBe(MAIN_QUOTE_AS_OF.getTime());
+        expect(row?.openInterest?.toString()).toBe('9999');
+        expect(row?.oiAsOf).toEqual(day(SESSION));
+      }
+      expect(stats.failed).toBe(0);
+      // 2 行 UPDATE（段 a）+ 3 行 INSERT（段 b）—— 两段的对象集不相交, 加起来恰是全集。
+      expect(stats.written).toBe(5);
     });
   });
 });
