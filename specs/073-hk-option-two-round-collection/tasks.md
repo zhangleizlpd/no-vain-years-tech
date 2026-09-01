@@ -68,7 +68,8 @@ updated_at: '2026-09-01'
 
 - [X] T004 [Server] **轮2 接线到 executor**（FR-006; plan §D2; state_branches 6; US2）：`dimension-executor.ts` 按 `:1046` / `:1051` 同款注册 `hk_option_oi_settle` 的 `factExecutor` → verify: `dimension-executor.spec.ts` 注册表断言绿；`pnpm nx test server` 该文件全绿
 
-- [ ] T005 [Server-IT] **轮2 两段写的真库验证**（SC-003, SC-004, SC-007; plan §D3; state_branches 6/7/8; US2/US3）：新建 `marketdata-073.two-round.it.spec.ts`，Testcontainers 真库跑三臂 —— ① 主轮写行 → 轮2 → 三列更新且其余列**逐值不变**（逐字段对拍，不是抽查）② 主轮缺一批 → 轮2 补齐 ③ 定稿判据假 ⇒ 零写入 → verify: 三臂先红后绿；🚨 **MUST NOT 用 mock 顶替真库**（Testing Invariant 3 —— 「只改三列」这条只有真库能证）；执行走 `pnpm nx test server <file>`（🚫 禁 `vitest --root`，找不到 schema）
+- [X] T005 [Server-IT] **轮2 两段写的真库验证**（SC-003, SC-004, SC-007; plan §D3; state_branches 6/7/8; US2/US3）：新建 `marketdata-073.two-round.it.spec.ts`，Testcontainers 真库跑三臂 —— ① 主轮写行 → 轮2 → 三列更新且其余列**逐值不变**（逐字段对拍，不是抽查）② 主轮缺一批 → 轮2 补齐 ③ 定稿判据假 ⇒ 零写入 → verify: 三臂先红后绿；🚨 **MUST NOT 用 mock 顶替真库**（Testing Invariant 3 —— 「只改三列」这条只有真库能证）；执行走 `pnpm nx test server <file>`（🚫 禁 `vitest --root`，找不到 schema）；
+  📌 **impl 期偏离登记（2026-09-01）**：① 文件**不是本 task 新建的** —— T006 已建（那条 migration 的断言要它），本 task 是在其中续一个嵌套 describe，共用同一个空库 + `migrate deploy`。② 三臂**首跑即绿**（被测实现是 T002/T003 已落地的）⇒ 不存在「先红」相位，「它能红」改由**定向变异**承担，三条各钉一臂：M4 段 a 的 `data` 多写一列 `bid` ⇒ 臂 ① 逐字段对拍判红（`轮2 改了它不该改的列: bid`，臂 ② 一并红）· M5 段 b 换成 `premarket_backfill` ⇒ 唯一键不再碰撞，库里 3 行变 **5 行**，臂 ② 判红（#306 那个 555× 放大形态的缩微版）· M6 注掉 `oiRefreshedAtEod` 闸 ⇒ 臂 ③ 判红。③ 维度行取**库里 migration 落的那一行**而不是手搓字面量；段 b 的执行体用**主轮 use case 的真实例**（Guardrail 3「不另抄一份行映射」只有真的调它才成立）。
 
 - [ ] T005b [Server-IT] **轮2 的两条边界臂**（state_branches 11; US3; Edge Case「无期权链的锚」/「锚集在两轮之间变化」）：在 T005 的 IT 文件续两臂 —— ① 无期权链的锚**不判红**（该类标的 IV 与期权链恒无值，与采集时刻无关）② 锚在主轮与轮2 之间新建 ⇒ 走「整行缺失」分支补全量 → verify: 两臂先红后绿；📌 **从 T005 拆出**（Constitution §III：五臂一条超 30min–2h 上界），两条 task 同文件、可连续提交
 
