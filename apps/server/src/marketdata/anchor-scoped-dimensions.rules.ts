@@ -54,6 +54,11 @@ export const ANCHOR_SCOPED_DIMENSIONS: readonly string[] = [
   'hk_underlying_iv_daily',
   'hk_option_contract',
   'hk_option_daily_snapshot',
+  // 073 T001 轮2 OI 定稿回填: 工作集 = **主轮同一批锚的合约** (`option_contract` 表), 同为
+  // per-code 快照接口 ⇒ 与 `hk_option_daily_snapshot` 同档。
+  // 🚨 漏登记**不会红** —— 港股 `needSync` 恒 true (见上文), 表现是 21:40 那轮对整个港股
+  // universe 发请求。
+  'hk_option_oi_settle',
 ];
 
 /**

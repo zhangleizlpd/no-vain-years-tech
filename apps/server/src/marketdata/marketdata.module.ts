@@ -68,6 +68,7 @@ import { GetInstrumentBasicsUseCase } from './get-instrument-basics.usecase.js';
 import { SyncRunRecorder } from './sync-run.recorder.js';
 import { SyncUniverseUseCase } from './sync-universe.usecase.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
+import { SyncOptionOiSettleUseCase } from './sync-option-oi-settle.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { SyncEarningsEventUseCase } from './sync-earnings-event.usecase.js';
 import { SyncProfileUseCase } from './sync-profile.usecase.js';
@@ -607,6 +608,9 @@ function collectionPort<T extends object>(
     SyncOptionContractUseCase,
     // 047 T016 逐日快照维度 use case (同上, 尾部第 31 位)。
     SyncOptionSnapshotUseCase,
+    // 073 T004 轮2「OI 定稿回填」维度 use case (同上, 尾部第 34 位)。它把上一行注进来跑段 b
+    // 的补漏 —— 那是**同一个 ctx 内**的复用, 不是跨 ctx 注入。
+    SyncOptionOiSettleUseCase,
     // 047 T019 财报日历维度 use case (同上, 尾部第 32 位)。🚨 它**不接受工作集入参** ——
     // 市场级接口, 工作集是固定前向时间窗序列, 不挂锚闸 (FR-035a)。
     SyncEarningsEventUseCase,

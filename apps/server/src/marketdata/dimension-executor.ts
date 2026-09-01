@@ -79,6 +79,7 @@ import { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
 import { SyncUniverseUseCase } from './sync-universe.usecase.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import type { OptionChainPort } from './option-chain.port.js';
+import { SyncOptionOiSettleUseCase } from './sync-option-oi-settle.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { OptionSnapshotPort } from './option-snapshot.port.js';
 import { SyncEarningsEventUseCase } from './sync-earnings-event.usecase.js';
@@ -174,6 +175,16 @@ export const DIMENSION_KEYS = [
   'hk_option_contract',
   'hk_option_daily_snapshot',
   'hk_underlying_iv_daily',
+  // ── 073 T001 轮2「OI 定稿回填」(migration <ts>_hk_option_two_round_collection, plan §D2) ──
+  // 主轮三行前移到 16:20 抢做市商还没撤走的盘口, 但港股 OI 要 21:30 才定稿 ⇒ 拆出本维度
+  // 单独排在 21:40。
+  // 🚫 **蓄意不给它连 `hk_option_daily_snapshot → hk_option_oi_settle` 的依赖边**: 两者在
+  //    **不同 tick** (16:20 vs 21:40), 而 ADR-0049 §3 的边只在同一 tick 内装配 —— 连了是一条
+  //    永远装不上的空话, 正是 `20260827_1957` 花一整条 migration 修掉的形态。轮2 对主轮的依赖
+  //    靠**数据**表达 (主轮没写行 ⇒ 轮2 走段 b 补漏), 不靠调度图。
+  // 它同为**锚作用域**维度, 已登记在 `anchor-scoped-dimensions.rules.ts` —— 漏登记不会红,
+  // 表现是 21:40 那轮的工作集变成整个港股 universe。
+  'hk_option_oi_settle',
 ] as const;
 
 /** 维度键全集 (016 起; 017 executor 注册表/worker named job/tick won 集共用)。 */
@@ -842,6 +853,14 @@ export class DimensionExecutorRegistry {
     // (`NULL_TRADING_CALENDAR` 上方那条同源禁令)。生产经 MarketdataModule DI 注真 adapter。
     @Inject(TRADING_CALENDAR_PORT)
     tradingCalendar: TradingCalendarPort = NULL_TRADING_CALENDAR,
+    // 073 T004 轮2 OI 定稿回填 use case (尾部第 34 位, 同上三位的理由与默认值形态: 真实例 +
+    // null-object 端口 ⇒ 不触及本维度的既有测试零改动通过)。生产经 MarketdataModule DI 注真实例。
+    private readonly syncOptionOiSettle: SyncOptionOiSettleUseCase = new SyncOptionOiSettleUseCase(
+      NULL_OPTION_SNAPSHOT,
+      prisma,
+      NULL_TRADING_CALENDAR,
+      new SyncOptionSnapshotUseCase(NULL_OPTION_SNAPSHOT, prisma, NULL_TRADING_CALENDAR),
+    ),
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, tradingCalendar);
     this.executors = new Map(
@@ -1051,6 +1070,13 @@ export class DimensionExecutorRegistry {
         'hk_underlying_iv_daily',
         (instruments, dim, stats, input) =>
           this.syncUnderlyingIvDaily(instruments, dim, stats, input),
+      ),
+      // 073 T004 轮2: 与上面三条同款路由 —— 工作集经 `factExecutor` 的锚闸取到主轮同一批票,
+      // 搬运逻辑全在 use case 里。🚫 同样**不要在这里另写一份**。
+      hk_option_oi_settle: this.factExecutor(
+        'hk_option_oi_settle',
+        (instruments, dim, stats, input) =>
+          this.syncOptionOiSettle.run(instruments, dim, stats, input),
       ),
     };
   }

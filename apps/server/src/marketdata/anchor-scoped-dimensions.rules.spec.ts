@@ -17,6 +17,10 @@ describe('066 T02 锚作用域维度登记表', () => {
       expect([...ANCHOR_SCOPED_DIMENSIONS].sort()).toEqual([
         'hk_option_contract',
         'hk_option_daily_snapshot',
+        // 073 T001: 轮2 的工作集与主轮**同一批锚的合约** ⇒ 与 hk_option_daily_snapshot 同档。
+        // 🚨 漏登记不会红, 表现是 21:40 那轮的工作集变成**整个港股 universe** (港股 needSync
+        // 恒 true, 见本文件被测模块的类注释)。
+        'hk_option_oi_settle',
         'hk_underlying_iv_daily',
         'option_contract',
         'option_daily_snapshot',

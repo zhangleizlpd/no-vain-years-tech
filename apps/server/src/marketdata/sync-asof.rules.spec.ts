@@ -30,6 +30,10 @@ describe('AS_OF_BASIS_BY_DIMENSION — 口径必须逐维度显式声明', () =>
     expect([...closedSession].sort()).toEqual([
       'eod_bar',
       'hk_option_daily_snapshot',
+      // 073 T001: 轮2 与主轮**采的是同一场**, 口径必须同档 —— 取 `calendar-day` 会在 21:40
+      // 跨午夜 misfire 那一刻把 session_date 求成次日, 于是段 a 的 UPDATE 一行都定位不到
+      // (`updateMany` 匹配 0 行), 表现是「跑了、绿了、OI 一个字没改」。
+      'hk_option_oi_settle',
       'hk_underlying_iv_daily',
       'option_daily_snapshot',
       'underlying_iv_daily',

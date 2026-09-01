@@ -163,6 +163,7 @@ describe('019 T004 executor 注册表路由 (switch 退役 → Map)', () => {
       'hk_option_contract', // 066 T04 港股链合约发现 (独立维度而非给 option_contract 扩 scope, plan §A1)
       'hk_option_daily_snapshot', // 066 T04 港股全链逐日快照 (seed 时 enabled=false, FR-016)
       'hk_underlying_iv_daily', // 066 T04 港股标的级 IV 日快照 (history_depth 1095, FR-018)
+      'hk_option_oi_settle', // 073 T001 轮2: OI 定稿后回填 (21:40, 与主轮 16:20 不同 tick)
     ]);
   });
 
@@ -4552,6 +4553,11 @@ const LIVE_SEED_PRIORITIES = new Map<string, number>([
   ['hk_option_contract', 5],
   ['hk_option_daily_snapshot', 5],
   ['hk_underlying_iv_daily', 5],
+  // 073 T006 轮2 (migration 20260901_1502_split_hk_option_collection_into_two_rounds)。
+  // priority 5 同族。⚠️ 它与主轮**不在同一 tick** (21:40 vs 16:20) ⇒ priority 对两轮之间的
+  // 顺序没有任何作用, 填 5 只是与同族一致, 别读成「它排在谁后面」。它**零入边零出边**
+  // (刻意不连依赖边, 见该 migration 的裁决段)。
+  ['hk_option_oi_settle', 5],
 ]);
 
 /** seed 现状快照 (marketdata.sync_dependency; 末三条 = 047 本片新增)。 */
@@ -4612,6 +4618,8 @@ const LIVE_SEED_FUTU_LANE = new Set<string>([
   'earnings_event',
   'hk_option_contract',
   'hk_option_daily_snapshot',
+  // 073 T006: 轮2 也打 futu shim ⇒ 必须登记, 漏登记会落回 default lane 与理杏仁夜间链排队。
+  'hk_option_oi_settle',
   'hk_underlying_iv_daily',
   'option_contract',
   'option_daily_snapshot',
