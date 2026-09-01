@@ -31,8 +31,9 @@ sunset_trigger: |
 后果不只是洁癖：腿表算 moneyness 用快照行里的 `underlying_spot`（futu），雷达算距 W% 用
 `last_close`（理杏仁）。两个数有差异时两处对不齐，**且没有任何地方会报**。
 
-**投影本身没坏** —— 2026-09-01 prod 实测：hk 锚 27/28 的 `last_close_date` 落在最近交易日
-（剩 1 条 `hk:06117` 大概率停牌）。坏的是**到货时刻与源**，不是准确性。
+**投影本身没坏** —— 维护者 2026-09-01 直查 prod 的基线（原文见 issue #323「现状基线」段，
+**非本 ADR 作者复算**）：hk 锚 27/28 的 `last_close_date` 落在最近交易日，剩 1 条 `hk:06117`
+判断为停牌。坏的是**到货时刻与源**，不是准确性。
 
 ## Decision
 
@@ -68,10 +69,12 @@ sunset_trigger: |
 `closeSettleBufferMinutes` 原有 `hk: 10`（HKEX CAS 16:08–16:10 随机收市），`us` 走默认 `1`，
 而那张表自己写着「美股收盘竞价的官方价何时进到本供应方的快照里，**没实测过**」。
 
-本 ADR 给 `us` 补 **15**，依据同为交易所公开规格：**Nasdaq NOCP 在收盘后 15 分钟才由
-network processor 正式下发**为官方 Consolidated Last Sale Price；NYSE 侧 16:00 单笔撮合带
-sale condition 8「Closing Prints」即时上带。⇒ 16:15 那一步改的是「官方性」不是价，故 15 分钟
-是带余量的。
+本 ADR 给 `us` 补 **15**，依据同为交易所公开规格（2026-09-01 检索交易所文档取得，**未做
+线上实取**）：**Nasdaq NOCP 在收盘后 15 分钟才由 network processor 正式下发**为官方
+Consolidated Last Sale Price（[Nasdaq《The Nasdaq Opening and Closing Crosses》FAQ](https://www.nasdaqtrader.com/content/productsservices/Trading/ClosingCrossfaq.pdf)）；
+NYSE 侧 16:00 单笔撮合、带 sale condition 8「Closing Prints」即时上综合行情带
+（[NYSE Closing Auction 说明](https://www.nyse.com/article/nyse-closing-auction-insiders-guide)）。
+⇒ 16:15 那一步改的是「官方性」不是价，故 15 分钟是带余量的。
 
 ⚠️ **残留缺口显式记下**：这测的是「交易所何时下发」，不是「富途快照何时反映」。`hk` 那条另有
 fixture 旁证（标的行 `update_time` = 16:07:49），**`us` 没有**。
@@ -106,7 +109,18 @@ fixture 旁证（标的行 `update_time` = 16:07:49），**`us` 没有**。
 | 市场 | 收盘 → 进锚表（前）         | 收盘 → 进锚表（后）                                   |
 | ---- | --------------------------- | ----------------------------------------------------- |
 | hk   | 6.5 小时（22:30 HKT）       | **10–20 分钟**（16:10 起）                            |
-| us   | 约 2 小时（ET 17:30/18:30） | 15–25 分钟（16:15 起）—— 落在北京凌晨，**对用户无感** |
+| us   | 约 2 小时（ET 17:00/18:00） | 15–25 分钟（16:15 起）—— 落在北京凌晨，**对用户无感** |
+
+📌 **这张表每格的来源**（数字长得一样，来源等级不一样，别一并当实测）：
+
+- 「前」列 hk 的 22:30：取自 issue #323 的链路描述，未复算。
+- 「前」列 us 的 ET 17:00/18:00：由 `us_equity_bar` 的 cron `0 0 6 * * *`（Asia/Shanghai）
+  **换算**而来 —— cron 值查实于
+  `apps/server/prisma/migrations/20260731_2230_seed_us_equity_bar_dimension/migration.sql:36`
+  （同一行也钉住 `provider = 'futu'`，即「us 早已同源」那条判断的出处）；仓内无任何后续
+  migration 改过它的 `cron_expr`（已逐条查）。北京 06:00 = 前一日 18:00 EDT / 17:00 EST。
+- 「后」列两格是**本 ADR 的设计属性推算**，不是观测：窗开时刻 = 收盘 + 定稿缓冲，最坏再加一个
+  10 分钟 tick 间隔。**上线后第一场真收盘之前，这两格没有任何实测支撑。**
 
 ⇒ 本 ADR 的真实收益**几乎全在 hk**。us 一并切换是为了消除「两个市场两条写路径」这个会漂的
 形态，不是为了它自己的时效。
@@ -119,7 +133,7 @@ fixture 旁证（标的行 `update_time` = 16:07:49），**`us` 没有**。
   （`daily_bar` 无写入时间戳列，查不到历史证据，只能起探针），且会动整条港股日线链，影响面
   远大于锚价。
 - **D：us 保持 `daily_bar` 投影，只切 hk。** us 确实没有本 ADR 要修的两个病根（已同源、且
-  `us_equity_bar` 采在 ET 17:00/18:00 远在竞价之后）。否决理由是它要求两个写手各带一张市场
+  `us_equity_bar` 采在 ET 17:00/18:00 远在竞价之后 —— 两条的出处同上「这张表每格的来源」）。否决理由是它要求两个写手各带一张市场
   白名单，而**一旦漂成重叠，每小时 `:30` 那轮会把新写手刚写的富途收盘价盖回理杏仁的，且盖写
   不报错**。用一张共享路由表可以堵住，但那是为一个没有收益的现状差异付结构性利息。
 
