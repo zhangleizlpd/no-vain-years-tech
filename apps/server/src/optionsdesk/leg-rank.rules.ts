@@ -11,7 +11,8 @@ import { type LegBasis } from './leg-tier.rules';
  * **固定映射**取值 (布尔 `0`/`1` 是其二值特例), 不参与 min-max (FR-019 / FR-019a)。
  *
  * 🚨 **字段现在就算全, 哪怕当前排序一项都用不到** (FR-019): 050 时唯一的 ranker 只读 `rate`
- * 一项, 052 的 {@link layeredRanker} 用到了其中三项 (流动性档 / 费率 / DTE)。备着其余项的理由
+ * 一项, 052 的 {@link layeredRanker} 用到其中三项 (流动性档 / 费率 / DTE),
+ * 2026-09-01 起加上 Δ 带内共四项。备着其余项的理由
  * 是将来切加权评分时**零改动** —— 不变量的驱动力是「切换时发现某个量拿不到」。
  *
  * 🚨 **归一化基准是候选集内的相对量 ⇒ 特征值不可跨请求比较, 也不可跨 Tab 比较** —— 同一条腿
@@ -449,14 +450,51 @@ export const allLegsRanker: LegRanker = (a, b) => {
 /**
  * **意图视角的分层排序器** (052 FR-017 / FR-018 / FR-019, plan D-RANK-1)。`O(1)`/比较。
  *
- * 三级键, lexicographic:
+ * 四级键, lexicographic:
  * ```text
- * 流动性档 (离散, 高档在前) → 档内折算费率降序 → 费率打平带内**长期优先**
+ * Δ 带内 (离散) → 流动性档 (离散, 高档在前) → 档内折算费率降序 → 费率打平带内**长期优先**
  * ```
+ *
+ * 🚨 **为什么 `isDeltaInIntentBand` 是首键** (2026-09-01 定, user 裁决): 052 给收租挡深度实值
+ * 靠的是**召回层成色上界**而非排序 (那是与全腿视角的分工: 全腿 MUST NOT 砍腿 ⇒ 只能靠
+ * {@link allLegsRanker} 的 `isInTheMoney` 沉底; 收租能砍 ⇒ 门槛挡)。但成色上界的结构项是
+ * `min{K ≥ axis}` —— 它**蓄意放行「至多轻微实值一档」**(`leg-recall.rules.ts` 的
+ * `resolveQualityCeiling`), 而那一档没有任何后续判据兜着:
+ * 实测 `us:PDD` spot `84.26` / axis `84.26` ⇒ 上界恰为 `85`, `85 P` 闭区间通过, 其
+ * `|Δ| = 0.42` **超出收租 near_atm 带 `[0.30,0.40]`**(⇒ 拿不到 Δ 带内标), 却因年化 `16.6%`
+ * 全场最高 + 流动性档高而**排在第一行** —— 三条打了标的 `80 P` 反在其后。
+ * ⇒ 「允许进候选」与「值得首推」是两件事, 门槛答前者、本键答后者。这与 052 让深度实值
+ * **留在候选集里但不占前排**是同一条原则, 只是从全腿视角推广到意图视角。
+ * 📌 语义上它读的就是 {@link isRecommended} 的判定 (`rankingInputOf` 里
+ * `isDeltaInIntentBand: leg.isRecommended`) ⇒ **屏上带「Δ 带内」标的腿整体在前**, 判据单点不破。
+ *
+ * 🚨 **本键只答「Δ 形态符不符合当前意图」, 🚫 MUST NOT 被改造成「这笔值不值得做」** (2026-09-01
+ * user 裁定)。后者由档位标如实说、由人判断 —— 深度虚值还能给高收益是**机会不是异常**, 照实
+ * 排在前面即可。带内组内仍按其后三级键 (流动性档 → 费率降序 → 长期优先), 故带内最厚的那条在首行。
+ * 📌 **同日两条链实测, 一正一反, 一起看才是完整判据** (同到期 2027-06-17 / DTE 290, 收租 `deep`
+ * 带 `[0.05,0.15]`):
+ * - `us:MSTR` (标的 IV 77.6, spot 132.94): 带内 6 条**全部过流动性闸**, 首行 `K=80`
+ *   (`|Δ| 0.135` / 年化 `15.95%` / `good`)。同数据纯费率降序的首行是 `K=130`
+ *   (`|Δ| 0.343` / 年化 `39.41%`) —— **形态不符** `deep` 意图 (太贴 ATM), 本键正是为让它让位。
+ * - `us:PDD` (标的 IV 27.8, spot 84.00): 带内仅 `K=60` 一条过闸, 年化 `4.00%` ⇒ 首行是**死档**。
+ *   这是**诚实结果不是缺陷**: 那条链的这一档就只值这些, 档位标已标 `dead`。
+ * ⇒ **`deep` 带判出什么档由标的 IV 决定, 不是 `deep` 带自身的性质** —— 🚫 因此 MUST NOT 反过来
+ * 拿「带内腿看起来都是死档」当理由去调档界或给死档补沉底键: 低 IV 票上那只是巧合, 高 IV 票上
+ * 当场不成立 (上面 MSTR 那行即反例)。
+ *
+ * 🚫 **行军判决 MUST NOT 进本 ranker** (069 FR-018): 选档是**逐 K** 判决 (每个行权价各自选一个
+ * 推荐 DTE, 目标函数 = 边际时间费率 vs 再投资率), 该量**在 K 内可比、跨 K 无可比性** ⇒ 拿二值
+ * 判决当键就是让不可比的量做全局竞争。069 把它定位成「行上叠加标注, 不是重排」并配审计弹层,
+ * 那条定位**本片不动**; 069 IT 臂 ② (φ/θ 两判决态行序逐行相同) 随之继续成立 —— 本键与判决
+ * 态无关。将来若真要让期限偏好进排序, 正确做法是把边际时间费率做成**跨 K 可比的连续特征**,
+ * 不是把判决装进来 (2026-09-01 讨论留痕)。
  *
  * 🚨 **候选数 < {@link RANK_TIERING_MIN_CANDIDATES} 时降级为纯费率降序** (FR-019): 薄链上档内
  * 没有足够多腿可比收益, 分档会退化成「按流动性排」—— 而那时**排得出顺序、看不出错**。边界取
  * **严格小于**, 恰好等于阈值仍分档。
+ * 📌 **降级只降「档内那一层」, 首键照吃** (2026-09-01): Δ 带内前置于降级分支之外 ⇒ 候选 9 条
+ * 与 10 条之间不会出现「一边看意图对齐、一边不看」的行为突变。{@link rateDescendingRanker}
+ * 本体**零改动** —— 它的 FR-021 单主键与 FR-022 `grep -i dte` 零命中两条机械判据逐字仍成立。
  *
  * 🚨 **本 ranker 读 `dteDays` 是 052 FR-018 的授权, 不是违反 050 FR-022**: 050 禁的是拿 DTE 当
  * **排序主键**或实现「离理想 DTE 越近越靠前」(那会让年化 20% 的 60 天腿排在年化 8% 的 35 天腿
@@ -467,14 +505,22 @@ export const allLegsRanker: LegRanker = (a, b) => {
  * 全部价值就在于它不需要权重 —— 加一个 `0.3 × 流动性 + 0.7 × 费率` 就把这个性质丢了。
  */
 export function layeredRanker(candidateCount: number): LegRanker {
-  if (candidateCount < RANK_TIERING_MIN_CANDIDATES) return rateDescendingRanker;
+  const withinTier: LegRanker =
+    candidateCount < RANK_TIERING_MIN_CANDIDATES
+      ? rateDescendingRanker
+      : (a, b) => {
+          const byTier = b.liquidityTier - a.liquidityTier;
+          if (byTier !== 0) return byTier;
+          const byRate = b.rate - a.rate;
+          if (Math.abs(byRate) > RATE_TIE_BAND) return byRate;
+          // 打平带内: 长期优先。仍分不出 ⇒ 返 0, 由 `rankLegs` 的身份键兜底 (确定性在那一层保住)。
+          return b.dteDays - a.dteDays;
+        };
   return (a, b) => {
-    const byTier = b.liquidityTier - a.liquidityTier;
-    if (byTier !== 0) return byTier;
-    const byRate = b.rate - a.rate;
-    if (Math.abs(byRate) > RATE_TIE_BAND) return byRate;
-    // 打平带内: 长期优先。仍分不出 ⇒ 返 0, 由 `rankLegs` 的身份键兜底 (确定性在那一层保住)。
-    return b.dteDays - a.dteDays;
+    // 🚨 **意图对齐闸**: Δ 落在当前意图档带内的腿整体在前 (见函数头「为什么它是首键」)。
+    const byBand = b.isDeltaInIntentBand - a.isDeltaInIntentBand;
+    if (byBand !== 0) return byBand;
+    return withinTier(a, b);
   };
 }
 

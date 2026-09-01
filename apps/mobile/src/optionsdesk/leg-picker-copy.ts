@@ -122,7 +122,7 @@ export function legRateCell(
   return ask === null ? base : { primary: base.primary, secondary: COPY.rateAskRef(ask) };
 }
 
-// ═══════════════ 钉住列的两个标：贴合（推荐）+ 月（月度链） ═══════════════
+// ═══════════════ 钉住列的两个标：Δ 带内（Δ 落带）+ 月（月度链） ═══════════════
 
 /**
  * 钉住列的三个标（051 FR-014a：推荐标随行权价、月度链标随到期日；064 起「收」标随行权价）。
@@ -140,7 +140,7 @@ export const LEG_STICKY_BADGE_BASE = 'rounded-sm border px-0.5 text-[8px] text-i
 /**
  * 描边色 = 两个标唯一的差别。
  * 🚨 推荐标**蓄意避开 ok / success 绿系**（FR-011a）—— 绿会被读成「建议买入」，而它说的只是
- *    「Δ 贴合当前意图」；取 tag 调色板的 purple，与四档色阶不撞。月度链标取中性描边（更弱）。
+ *    「Δ 落在当前意图带内」；取 tag 调色板的 purple，与四档色阶不撞。月度链标取中性描边（更弱）。
  */
 export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> = {
   fit: 'border-tag-purple',
@@ -156,7 +156,7 @@ export const LEG_STICKY_BADGE_BORDER: Readonly<Record<LegStickyBadge, string>> =
   // 069 劣档微标（凹/陈/并）：中性弱描边 —— 「报价几何有问题」是参照不是告警，权重同带外。
   inferior: 'border-line',
   // 071 宽价差机会标：tag-teal 描边 —— 蓄意避开三处。① quote 红绿（它不是涨跌）；
-  // ② `fit` 的 tag-purple（贴合说 Δ，本标说「怎么进来的」，两标可同现于一行，撞色就分不出）；
+  // ② `fit` 的 tag-purple（Δ 带内说 Δ，本标说「怎么进来的」，两标可同现于一行，撞色就分不出）；
   // ③ brand（推荐章是本行唯一允许抬权重的标，稀释它等于把「荐」讲小了）。
   wide: 'border-tag-teal',
 };

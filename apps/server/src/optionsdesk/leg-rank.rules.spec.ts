@@ -325,15 +325,55 @@ describe('leg-rank.rules — 分层排序 lexicographic (052 FR-017 / FR-018 / F
     ).toBeGreaterThan(0);
   });
 
-  it('降级后就是 `rateDescendingRanker` 本体 —— 不是另写一份同义实现', () => {
-    expect(layeredRanker(RANK_TIERING_MIN_CANDIDATES - 1)).toBe(rateDescendingRanker);
+  it('降级分支**委托**给 `rateDescendingRanker` —— 不是另写一份同义实现', () => {
+    // 🚨 **2026-09-01 由「引用相等」翻成「行为等价」, 理由在此**: 首键 `isDeltaInIntentBand`
+    //    前置于降级分支**之外**(见 `layeredRanker` 函数头「降级只降档内那一层」) ⇒ 工厂恒返
+    //    包装函数, `toBe` 不再成立。翻它的是那条前置本身, **不是实现走样** —— 委托关系改用
+    //    「带内相同时与 `rateDescendingRanker` 逐对同号」钉住, 谁把降级分支换成别的实现照样红。
+    const degraded = layeredRanker(RANK_TIERING_MIN_CANDIDATES - 1);
+    const pairs: ReadonlyArray<readonly [RankingFeatures, RankingFeatures]> = [
+      [featuresOf({ rate: 0.9 }), featuresOf({ rate: 0.2 })],
+      [featuresOf({ rate: 0.2 }), featuresOf({ rate: 0.9 })],
+      // 费率相同而流动性档不同 ⇒ 降级下档位失声, 两者同为 0。
+      [featuresOf({ rate: 0.5, liquidityTier: 1 }), featuresOf({ rate: 0.5, liquidityTier: 0 })],
+    ];
+    for (const [a, b] of pairs) {
+      expect(Math.sign(degraded(a, b))).toBe(Math.sign(rateDescendingRanker(a, b)));
+    }
+  });
+
+  it('🚨 Δ 带内的腿整体在前 —— 跨档时费率与流动性再好也压不过 (2026-09-01 首键)', () => {
+    // 实测原型 (us:PDD, spot 84.26): `85 P` 的 |Δ|=0.42 超出收租 near_atm 带 [0.30,0.40] ⇒ 带外,
+    // 却因年化 16.6% 全场最高 + 流动性档高而排第一行; 三条带内的 `80 P` (|Δ|∈[0.34,0.35]) 反在
+    // 其后。本键就是为拦这个 —— 「允许进候选」(召回成色上界放行轻微实值一档) 与「值得首推」
+    // 是两件事。
+    const bandOutBest = featuresOf({ isDeltaInIntentBand: 0, liquidityTier: 1, rate: 0.99 });
+    const bandInWorst = featuresOf({ isDeltaInIntentBand: 1, liquidityTier: 0, rate: 0.1 });
+    expect(layered(bandInWorst, bandOutBest)).toBeLessThan(0);
+    expect(layered(bandOutBest, bandInWorst)).toBeGreaterThan(0);
+  });
+
+  it('🚨 降级分支同样吃首键 —— 候选 9 条与 10 条之间不出现行为突变', () => {
+    const degraded = layeredRanker(RANK_TIERING_MIN_CANDIDATES - 1);
+    const bandOutRich = featuresOf({ isDeltaInIntentBand: 0, rate: 0.99 });
+    const bandInPoor = featuresOf({ isDeltaInIntentBand: 1, rate: 0.1 });
+    expect(degraded(bandInPoor, bandOutRich)).toBeLessThan(0);
+  });
+
+  it('Δ 带内相同 ⇒ 首键让位, 其后三级键逐字照旧 (本片对既有键序零改动)', () => {
+    const thick = featuresOf({ isDeltaInIntentBand: 1, liquidityTier: 1, rate: 0.1 });
+    const thin = featuresOf({ isDeltaInIntentBand: 1, liquidityTier: 0, rate: 0.99 });
+    expect(layered(thick, thin)).toBeLessThan(0);
   });
 
   it('🚨 FR-022 机械判据: ranker 函数体扫不到腿的**原始**字段名', () => {
     // 类型层已保证 ranker 的入参只有特征集 (`LegRanker` 签名); 这条扫描防的是**闭包捕获**
     // 外部腿数据 —— 那绕得过类型。
     // 📌 `strike` 蓄意不入表: `strikeDiscount` 是合法特征 (052 FR-020), 入表会让判据恒红。
-    const body = layered.toString().toLowerCase();
+    // 🚨 **扫的是工厂 `layeredRanker` 而非 `layered` 实例** (2026-09-01): 首键前置后三级键落进
+    //    闭包, `layered.toString()` 只剩外层两行 —— 照样绿, 但**扫不到内层**, 守卫成摆设。
+    //    取工厂全文可同时覆盖分档与降级两个分支。
+    const body = layeredRanker.toString().toLowerCase();
     for (const raw of ['bid', 'ask', '.code', 'expirydate', 'greeks']) {
       expect([raw, body.includes(raw)]).toEqual([raw, false]);
     }

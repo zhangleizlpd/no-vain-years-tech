@@ -127,7 +127,7 @@ export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: L
       accessibilityHint={onOpenAudit === null ? undefined : OPTIONSDESK_COPY.march.rowA11yHint}
     >
       {/* ── 首列：行权价 / 到期（横滑之外 ⇒ 钉住）───────────────────────── */}
-      {/* 🚨 两个标各贴各的量（FR-014a）：「贴合」贴行权价、「月」贴到期日 —— 月度链是**到期日**
+      {/* 🚨 两个标各贴各的量（FR-014a）：「Δ 带内」贴行权价、「月」贴到期日 —— 月度链是**到期日**
           的属性，贴错行会读成「这个行权价是月度的」。两者同载体、只在描边色上分权重（FR-014b）。 */}
       <LegStickyCell
         className="justify-center border-r border-line px-1.5"
@@ -178,7 +178,7 @@ export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: L
             </Text>
           ) : null}
           {/* 069 行军推荐章 (FR-016): primary 章 —— 复用同一 badge 载体, 叠 brand 强调面。
-              🚨 与 050 带内「贴合」标语义不同可并存: 贴合说 Δ 贴合意图, 荐说期限行军胜出。 */}
+              🚨 与 050 的「Δ 带内」标语义不同可并存: 前者说 Δ 落在意图带内, 荐说期限行军胜出。 */}
           {marchRecommended ? (
             <Text
               className={`${LEG_STICKY_BADGE_BASE} ${LEG_STICKY_BADGE_BORDER.march} ${LEG_MARCH_BADGE_EMPHASIS}`}

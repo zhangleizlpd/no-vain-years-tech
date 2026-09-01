@@ -776,15 +776,18 @@ describe('get-legs.usecase — 打标零拦截 + 排名基准 = 该 Tab 召回�
  *
  * 默认数据集在 050 判据下的归属与费率:
  *
- * | 腿    | DTE | 视角归属       | 周化   | 年化    |
- * | ----- | --- | -------------- | ------ | ------- |
- * | `C-C` | 17  | all + build    | 4.06%  | 211.5%  |
- * | `C-D` | 10  | all + build    | 1.09%  | 57.0%   |
- * | `C-A` | 164 | all + rent     | —      | 11.7%   |
- * | `C-B` | 164 | all + rent     | —      | 1.1%    |
+ * | 腿    | DTE | 视角归属       | 周化   | 年化    | \|Δ\|  | 收租 Δ 带内 |
+ * | ----- | --- | -------------- | ------ | ------- | ----- | ----------- |
+ * | `C-C` | 17  | all + build    | 4.06%  | 211.5%  | (缺)  | 否 (无 Δ)   |
+ * | `C-D` | 10  | all + build    | 1.09%  | 57.0%   | 0.45  | 否          |
+ * | `C-A` | 164 | all + rent     | —      | 11.7%   | 0.30  | 否          |
+ * | `C-B` | 164 | all + rent     | —      | 1.1%    | 0.05  | **是**      |
  *
  * 🚨 这份数据的判别性在于 **精排序 (费率键) 与 047 的 legacy 档位载体序逐行不同** ——
  * 「`legs[]` 悄悄退回档位序」一旦发生, 下面那条断言立刻红。
+ * 📌 末列: 锚水位 `gte_two_thirds` ⇒ `rentDepth = deep` ⇒ 推荐带 `[0.05,0.15]`
+ * (`RENT_RECOMMEND_ABS_DELTA_BANDS`), 四条腿里**只有 `C-B` 落在带内** —— 2026-09-01 起
+ * 它是 `layeredRanker` 的首键, 收租视角的期望序因此不再是纯费率降序。
  */
 describe('get-legs.usecase — 单视角有序列表 + 视角级档位 (FR-021a/FR-023/FR-024, T012)', () => {
   it('每个视角按**该视角口径**的折算费率降序, 且 `legs[]` 自己就是那份序 (053 FR-005)', async () => {
@@ -799,7 +802,14 @@ describe('get-legs.usecase — 单视角有序列表 + 视角级档位 (FR-021a/
     expect(await orderOf('all')).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
     // 建仓视角走周化 —— 单调变换 ⇒ 与年化同序, 但成员只有两条 (且 2 < 分档降级阈值 ⇒ 纯费率降序)。
     expect(await orderOf('build')).toEqual(['C-C', 'C-D']);
-    expect(await orderOf('rent')).toEqual(['C-A', 'C-B']);
+    // 🚨 **2026-09-01 收租视角由 `['C-A','C-B']` 翻成 `['C-B','C-A']`, 是首键使然不是回归**:
+    // `layeredRanker` 前置了 Δ 带内闸 —— 本数据集 `rentDepth = deep` 带 `[0.05,0.15]`, 只有
+    // `C-B` (|Δ| 0.05) 落带内, `C-A` (|Δ| 0.30) 在带外 ⇒ 带内那条整体在前。
+    // 📌 `C-B` 年化 1.1% 是**死档**却排在 11.7% 的 `C-A` 之前 —— **这是对的, 不是待修的代价**:
+    // 首键只答「Δ 形态符不符合当前意图」, 「这笔值不值得做」由档位标如实说, 由人判断
+    // (2026-09-01 user 裁定, 见 `layeredRanker` 函数头「带内组内怎么排」)。本夹具收租带内
+    // 只有 `C-B` 一条 ⇒ 首行只能是它; 带内有多条时组内仍按费率降序, 最厚的那条在首行。
+    expect(await orderOf('rent')).toEqual(['C-B', 'C-A']);
   });
 
   it('🚨 `legs[]` 是**精排序**而非 047 的 legacy 档位载体序 (053 FR-005 的语义翻转)', async () => {
@@ -895,7 +905,8 @@ describe('optionsdesk.dto — 六个新字段过 wire (FR-027/FR-019b, T014)', (
       (await responseOf(LEGS, {}, perspective)).legs.map((l) => l.code);
     expect(await order('all')).toEqual(['C-D', 'C-A', 'C-B', 'C-C']);
     expect(await order('build')).toEqual(['C-C', 'C-D']);
-    expect(await order('rent')).toEqual(['C-A', 'C-B']);
+    // 收租序由 Δ 带内首键决定 (只有 C-B 落 `deep` 带) —— 推导见 T012 那条排序断言。
+    expect(await order('rent')).toEqual(['C-B', 'C-A']);
   });
 
   it('🚨 `perspective` 原样回显 —— 迟到的响应靠它认领 (FR-005 / FR-008)', async () => {
@@ -1089,7 +1100,8 @@ describe('get-legs.usecase — 检索条件下发与覆盖 (052 T010)', () => {
       criteria: { dteBand: { min: 1, max: 50 } },
     });
 
-    expect(plain.legs.map((l) => l.code)).toEqual(['C-A', 'C-B']);
+    // 序同上 (Δ 带内首键: C-B 在带内、C-A 在带外); 本条验的是**成员**有进有出, 序只是顺带。
+    expect(plain.legs.map((l) => l.code)).toEqual(['C-B', 'C-A']);
     expect(narrowed.legs.map((l) => l.code)).toEqual(['C-D']);
     expect(narrowed.criteria.outcomes.dteBand).toEqual({ state: 'narrowed', excludedCount: 2 });
     // 🚫 未被动过的维度不出计数 —— 默认值本身就摆在控件里, 第二次告知是噪音。
