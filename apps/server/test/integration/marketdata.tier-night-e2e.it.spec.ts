@@ -259,6 +259,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
       'fundamental',
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
+      'hk_option_oi_settle', // 073 T006
       'hk_underlying_iv_daily', // 066 T04
       'hot_snapshot', // 040
       'index_membership', // 039

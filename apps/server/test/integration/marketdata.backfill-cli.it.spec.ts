@@ -223,7 +223,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
     }
   });
 
-  it('② 缺省全维度 → 组 flow 跑全 31 维度 (6 核心 + 039 5 + 040 2 + 041 4 + 042 3 + 043 2 港股维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度, 贴旧全管线) + 退出码 0 + per-dim SyncRun', async () => {
+  it('② 缺省全维度 → 组 flow 跑全 32 维度 (6 核心 + 039 5 + 040 2 + 041 4 + 042 3 + 043 2 港股维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度 + 073 hk_option_oi_settle, 贴旧全管线) + 退出码 0 + per-dim SyncRun', async () => {
     const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
     const worker = new MarketdataSyncWorker(
       lifecycle.client,
@@ -256,6 +256,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
           'sync:fundamental',
           'sync:hk_option_contract', // 066 T04
           'sync:hk_option_daily_snapshot', // 066 T04
+          'sync:hk_option_oi_settle', // 073 T006
           'sync:hk_underlying_iv_daily', // 066 T04
           'sync:financial',
           'sync:eod_bar',

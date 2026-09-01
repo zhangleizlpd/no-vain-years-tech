@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Prisma } from '../generated/prisma/client.js';
 import type { PrismaService } from '../security/prisma.service.js';
 import type { ExecutorInput, ExecutorSyncDimensionRow } from './dimension-executor.js';
@@ -146,6 +146,13 @@ function makeHarness(opts: {
   calendarStatus?: 'trading' | 'non-trading' | 'unknown';
   /** #181: 今天的 session 形态（半日市收盘时刻提前）。 */
   todayKind?: 'whole' | 'half' | 'unknown';
+  /**
+   * 073 T009: 第 `callIndex` 批的 envelope `as_of`（默认恒为 {@link COLLECTED_AT}）。
+   *
+   * 传函数即可模拟「**工作集越大 ⇒ 抓价时刻越晚**」这条因果 —— SC-008 要的反例正是靠放大
+   * 工作集造出来的，而不是直接手填一个越界的时刻（后者证明不了那条因果还连着）。
+   */
+  asOfFor?: (callIndex: number) => Date;
 }): Harness {
   const queries: OptionSnapshotQuery[] = [];
   const contractWhere: unknown[] = [];
@@ -163,7 +170,7 @@ function makeHarness(opts: {
       const rows = opts.rowsFor
         ? opts.rowsFor(q)
         : [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()];
-      return { asOf: COLLECTED_AT, rows };
+      return { asOf: opts.asOfFor ? opts.asOfFor(queries.length - 1) : COLLECTED_AT, rows };
     }),
   };
 
@@ -371,7 +378,14 @@ describe('SyncOptionSnapshotUseCase', () => {
     it('hk 的日历即使缺 `< session_date` 的行也不受影响（那条查询压根不发）', async () => {
       // us 侧同样的输入会走兜底 + 抬 ERROR（见上面那条）。hk 不查上一交易日 ⇒ 无兜底、无 ERROR。
       const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-      const h = makeHarness({ contracts: TCH_CONTRACTS, prevTradingDay: null });
+      // 📌 073 T009 起 hk 主轮还会判一次**抓价时刻越界**（另一条 ERROR）。本例盯的是「缺日历
+      //    不抬 ERROR」这一件事 ⇒ 显式给一个落在盘口台阶内的采集时刻，让断言不被那条串台。
+      //    （默认的 `COLLECTED_AT` 是 us 用例的常量，折成港股当地已是次日 12:31。）
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        prevTradingDay: null,
+        asOfFor: () => new Date('2026-09-18T08:28:00Z'), // = hk 当地 16:28，台阶内
+      });
 
       await h.useCase.run([TCH], HK_DIM, emptyStats(), hkEodNight);
 
@@ -962,5 +976,124 @@ describe('SyncOptionSnapshotUseCase — 归属判据 (#181)', () => {
     // 🚫 不是「过滤掉再继续」：一次外呼都不该发生，否则等于静默少采一批票。
     expect(h.queries).toHaveLength(0);
     expect(h.createMany).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 🚨 抓价时刻越界告警 (073 T009, FR-022 / SC-008)。
+ *
+ * 盯的是**主轮**这一条路：本轮 `max(quote_as_of)` 折成交易所当地分钟，越过盘口台阶上界即
+ * ERROR。它要抓的形态**只有一个** —— 采集全绿、覆盖率全绿，而抓价时刻悄悄滑出台阶，带内腿
+ * 有价率于是退回改动前的水平，**没有任何东西会变红**。
+ *
+ * 🚨 反例靠**放大工作集**造（SC-008 明写「MUST 造一次证明它能红」）：链发现耗时 ≈ 锚数 ×
+ * 到期日数 × 限频间隔，锚集一周内 3 → 28 ⇒ 抓价时刻随锚数线性右移。手填一个越界的时刻也能
+ * 让断言绿，但证明不了「工作集长大 ⇒ 越界」这条因果还连着，而那条因果才是本告警存在的理由。
+ */
+describe('SyncOptionSnapshotUseCase — 抓价时刻越界告警 (073 T009)', () => {
+  // 🚨 清理挂 afterEach 而不是各用例末尾的 `mockRestore()`: 断言抛出时那一行**不执行**, 而
+  //    `vi.spyOn` 对已 spy 的方法返回**同一个 mock** ⇒ 下一个用例拿到带历史的 spy, 凭空多红
+  //    一条。全绿时这个缺陷完全不可见, 只有做变异时才现形 (073 T008 同款)。
+  afterEach(() => vi.restoreAllMocks());
+
+  const HK_SESSION = '2026-09-18';
+  const hkAt = (hhmm: string) => new Date(`${HK_SESSION}T${hhmm}:00+08:00`);
+  /** 073 主轮：hk 当地 16:20 触发（收盘 16:00 + 定稿缓冲 10min 之后）。 */
+  const hkMainRound: ExecutorInput = { mode: 'delta', asOf: HK_SESSION, now: hkAt('16:20') };
+
+  /** N 个 hk 标的，每只 1 张合约 —— 一只标的 = 一次端口调用 = 工作集的一格。 */
+  function hkWorkload(count: number) {
+    const instruments = Array.from({ length: count }, (_, i) => ({
+      id: BigInt(100 + i),
+      market: 'hk',
+      code: `0${700 + i}`,
+    }));
+    const contracts = Object.fromEntries(
+      instruments.map((inst) => [
+        String(inst.id),
+        [contractRow(`HK.T${inst.code}260918P130000`, { root: 'TCH' })],
+      ]),
+    );
+    return { instruments, contracts };
+  }
+
+  /** 第 i 批的抓价时刻 = 主轮触发 + (i+1) × 3 分钟（每锚 3 分钟，比实测的 18.5s 夸张，形态同构）。 */
+  const asOfAfterMinutesPerAnchor = (i: number) =>
+    new Date(hkAt('16:20').getTime() + (i + 1) * 3 * 60_000);
+
+  const ladderErrors = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('台阶上界'));
+
+  it('① 抓价时刻落在台阶内 → **静默**（28 锚的稳态就在这一档）', async () => {
+    const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const { instruments, contracts } = hkWorkload(2); // 末批抓价 16:26，台阶内
+    const h = makeHarness({ contracts, asOfFor: asOfAfterMinutesPerAnchor });
+    const stats = emptyStats();
+
+    await h.useCase.run(instruments, HK_DIM, stats, hkMainRound);
+
+    expect(ladderErrors(errSpy)).toEqual([]);
+    expect(stats.findings.filter((f) => f.kind === 'notice')).toEqual([]);
+  });
+
+  it('🚨 ② 工作集放大到抓价时刻越界 → 告警（SC-008 的反例，同一段代码只多了几只标的）', async () => {
+    const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const { instruments, contracts } = hkWorkload(4); // 末批抓价 16:32，越界
+    const h = makeHarness({ contracts, asOfFor: asOfAfterMinutesPerAnchor });
+    const stats = emptyStats();
+
+    await h.useCase.run(instruments, HK_DIM, stats, hkMainRound);
+
+    const errors = ladderErrors(errSpy);
+    expect(errors).toHaveLength(1);
+    // 报的是**本轮 max**（末批 16:32）而不是首批（16:23）—— 取错聚合方向会让越界恒不可见。
+    expect(errors[0]).toMatch(/16:32/);
+    expect(errors[0]).toMatch(/16:30/);
+    // 🚨 日志只进容器 stdout（30MB 环、无投递）⇒ 事后不可判。留痕落 findings 才能回溯（#261 同源）。
+    expect(
+      stats.findings.filter((f) => f.kind === 'notice' && f.step === 'quote_ladder'),
+    ).toHaveLength(1);
+  });
+
+  it('🚨 ③ 告警面与采集成败**分离** —— 采集 failed=0 照样报，采集失败也不代它报', async () => {
+    const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    // (a) 全票采成 + 越界 ⇒ 仍告警。这正是本条要抓的**唯一**形态：没有任何计数会变红。
+    const big = hkWorkload(4);
+    const okStats = emptyStats();
+    await makeHarness({ contracts: big.contracts, asOfFor: asOfAfterMinutesPerAnchor }).useCase.run(
+      big.instruments,
+      HK_DIM,
+      okStats,
+      hkMainRound,
+    );
+    expect(okStats.failed).toBe(0);
+    expect(okStats.ok).toBe(4);
+    expect(ladderErrors(errSpy)).toHaveLength(1);
+
+    // (b) 反向：采集真的失败了，但抓价时刻在台阶内 ⇒ **不**点亮台阶那条告警。
+    errSpy.mockClear();
+    const small = hkWorkload(2);
+    const failStats = emptyStats();
+    const h = makeHarness({
+      contracts: small.contracts,
+      asOfFor: () => hkAt('16:28'),
+      rowsFor: (q) => {
+        if (q.underlyingSymbol === 'hk:0701') throw new OptionSnapshotRejectedError('400 永久拒绝');
+        return [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()];
+      },
+    });
+    await h.useCase.run(small.instruments, HK_DIM, failStats, hkMainRound);
+
+    expect(failStats.failed).toBe(1);
+    expect(ladderErrors(errSpy)).toEqual([]);
+  });
+
+  it('零外呼的一轮（零锚 / 合约表空）→ 没有抓价时刻可判，不报也不炸', async () => {
+    const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const stats = emptyStats();
+
+    await makeHarness({}).useCase.run([], HK_DIM, stats, hkMainRound);
+
+    expect(ladderErrors(errSpy)).toEqual([]);
   });
 });

@@ -32,29 +32,24 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * | --- | --- | --- | --- | --- |
  * | us | ① 当日重试 | 08:00 (夜间采集窗之后) | 与正常路径**同源**: 归属整份取自 `resolveSnapshotAttribution` (该时点 ⇒ `source=eod` · `oi_as_of` = 上一交易日) | 只 WARN, 挂着等 ② |
  * | us | ② 次日盘前兜底 | 18:00 (= ET 05:00/06:00, 落在盘前 04:00–09:30 内) | `source=premarket_backfill` · `session_date` = **被补的那天** · `oi_as_of` = `session_date` | **升 ERROR** |
- * | hk | ① 当日重试 | **23:40** (= HKT 23:40; 夜链 23:00 起, 约 40s 跑完) | 判据在该时点给 `source=eod` · `oi_as_of` = `session_date` (hk 的 OI 21:30 已定稿) | 只 WARN, 挂着等 ② |
- * | hk | ② 次日盘前兜底 | **08:30** (= HKT 08:30, 09:00 竞价前) | `source=`**`eod`** (OI 当晚定稿 ⇒ 两 source 的 `oi_as_of` 逐值相同, 见 {@link backfillPremarket}) · `oi_as_of` = `session_date` | **升 ERROR** |
  *
- * ## 🚨 hk ① 级钉在 23:40 而不是跨过午夜 (#255)
+ * ## 🚨 港股两档已于 073 退役 —— 本类**只服务美股**了
  *
- * 两个时刻都能补上缺口, 但落库形态不同, 差别全在**同不同一个港股日历日**:
+ * 原先还有 hk ① 级 23:40 与 hk ② 级 08:30 两档。073 把港股期权采集拆成两轮 (主轮 16:20 抢
+ * 盘口 + 轮2 21:40 回填定稿后的 OI) 之后, **轮2 自带补漏** (`sync-option-oi-settle.usecase.ts`
+ * 的段 b), 且档位严格优于那两档: 同日、同 session、同 `source = eod`, 不留
+ * `premarket_backfill` 痕, 并与 OI 回填共用同一轮外呼。
  *
- * · **23:40 (选中)** —— 仍是同一日历日 ⇒ `crossedIntoNextSession` 为假 ⇒ 判据给 `mode=eod`,
- *   与 23:00 夜链**同 source** ⇒ 撞唯一键 `(contract_id, session_date, 'eod')` ⇒ 夜链已写过的
- *   行被 `createMany(skipDuplicates)` 天然挡掉, **只有真缺的那几张会落库**。
- * · 00:30 (否决) —— 已跨日 ⇒ 判据给 `mode=premarket_backfill` ⇒ 每一轮重采都给数据盖上
- *   「这天是靠兜底续命的」那条痕。而 FR-052 那条痕的意义正在于稀有, **天天有等于没有**
- *   (同下一节「二级起手先复判」的判据, 只是换了个触发面)。
+ * 🚨 **退役的是触发点, 不是机制**: {@link retrySameDay} / {@link backfillPremarket} 仍是
+ * market 参数化的, 传 `'hk'` 进去语义照旧正确 (「按市场分派」那组单测仍在, 它们钉的
+ * 「hk 的 OI 当晚定稿 ⇒ `oi_as_of` = `session_date`, 与 us 方向相反」这条不对称性,
+ * 如今是轮2 的承重判据)。⇒ 🚫 **MUST NOT 因为「hk 没人调了」去删这两个方法或它们的 hk 用例。**
  *
- * ⚠️ 两个时刻都在 hk 的 close-write 闸之外 (收盘 16:00 + settle buffer 10min = 16:10)。
+ * ⚠️ 代价已知并接受 (clarify 期裁决): 港股重试深度从 3 (夜链 + 两级) 降到 **2** (主轮 + 轮2)。
  *
- * ## 🚨 hk ② 级存在的理由与 us **不同**, 别照抄论证
- *
- * us 的 ② 级是**等 OI 翻新**: 「T 日的 OI 要 T+1 盘前才发布」是美股清算所的行为。hk 的 OI 在
- * D 日收盘当晚 21:30 就已定稿 (066 T09 / `MARKET_OI_SETTLE_LOCAL_MINUTE`) ⇒ 对 hk 而言 ② 级
- * **买不到任何 OI 正确性**, 它留下来只为两件事: 再补一次, 以及 FR-046 的「两级都失败才升
- * ERROR」需要有个第二级。⇒ 🚫 将来若有人想「hk 反正 OI 已定稿, 把 ② 级砍了」, 砍掉的是
- * **ERROR 升级路径**, 不是一次冗余重采。
+ * 📌 那两档退役前的时刻论证 (① 级为什么钉 23:40 不跨午夜 / ② 级对 hk 买不到 OI 正确性) 已随
+ *    触发点一并移除 —— 它们论证的是**已不存在的时刻**, 留着会让下一个人以为那两档还在。
+ *    要翻旧账去 git 史 (本注释改动的那个 commit)。
  *
  * ## 🚨 二级起手先复判 —— 一级救回了就**零外呼**
  *
@@ -83,24 +78,25 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * (`state_branch` 6)。改前那个「无记录 ⇒ 非交易日」的布尔正是二级兜底静默死掉的成因:
  * 它每天在北京 18:00 判「今天不是美股交易日」, 而那一刻今天那一行还没落库。
  *
- * ## 🚨 时区字面量只许一个 —— hk 的两档也写 `Asia/Shanghai`
+ * ## 🚨 时区字面量只许一个 —— 两档都写 `Asia/Shanghai`
  *
  * `@Cron` 的 `timeZone` 必须是静态值, 而「每个市场一个时区字面量」就是一张 market → 时区表的
  * 形状 —— 全仓只允许有一份 (ADR-0066 §3, `MARKET_SESSION`), `check-time-semantics` 机器强制。
  * 🚫 也**不能**改成从那张表取: `marketTimeZone('us')` 会给 `America/New_York`, 而 us 两档的
  * 08:00 / 18:00 本就是**北京时刻**(挑出来是为了落在 ET 的正确窗口内), 换成 ET 是行为改变。
  *
- * ⇒ 四档统一用运维视角的 `Asia/Shanghai`。对 hk 这**恰好**等价: 两地同为 UTC+8 且都不实行
- * 夏令时 (香港 1979 年、内地 1991 年后再未实行)。
- * 📌 万一哪天其中一边变了, 这里必须拆成两个时区 —— 而拆的那一刻 `check-time-semantics` 会
- * 当场红并要求你去动 `MARKET_SESSION`。**那道红是这个简化的安全网, 不是它的障碍。**
+ * ⇒ 统一用运维视角的 `Asia/Shanghai`。📌 073 退役港股两档之前, 这条对 hk 是**恰好**等价的
+ *    (两地同为 UTC+8 且均不实行夏令时); 将来若再给别的 UTC+8 市场接触发点, 那个「恰好」要重新
+ *    确认一次, 而不是照抄。
  *
  * ## 🚨 每个市场一套 cron, 而不是一个 cron 循环市场
  *
- * `@Cron` 表达式是**静态**的, 而两个市场的正确时刻由各自的收盘 / 定稿 / 开市决定, 差了 9 个
- * 小时。写成「一个 cron 里 for (const m of MARKETS)」等于让其中一个市场跑在别人的时刻上 ——
+ * `@Cron` 表达式是**静态**的, 而各市场的正确时刻由各自的收盘 / 定稿 / 开市决定, 相差数小时。
+ * 写成「一个 cron 里 for (const m of MARKETS)」等于让其中一个市场跑在别人的时刻上 ——
  * 那正是 #255 的病根 (拿一个市场的语义去处理另一个市场) 换了个形态复发。⇒ 每档一个方法、
  * 时刻直接写在装饰器上, 看得见。
+ * 📌 073 退役 hk 两档后本类只剩美股两档, 但这条纪律**不因此作废**: 它管的是「再接一个市场时
+ *    该怎么接」。
  *
  * ## 周末的时序 (看起来晚, 但仍然正确)
  *
@@ -221,17 +217,14 @@ export class OptionSnapshotRemediation {
     await this.backfillPremarket('us', new Date());
   }
 
-  /** hk ① 级: 每日 23:40 (= HKT 23:40) —— 夜链 23:00 起、约 40s 跑完; 时刻论证见类注释。 */
-  @Cron('0 40 23 * * *', { timeZone: 'Asia/Shanghai' })
-  async handleHkSameDayRetryCron(): Promise<void> {
-    await this.retrySameDay('hk', new Date());
-  }
-
-  /** hk ② 级: 每日 08:30 (= HKT 08:30) —— 09:00 竞价前; 它的存在理由与 us 不同, 见类注释。 */
-  @Cron('0 30 8 * * *', { timeZone: 'Asia/Shanghai' })
-  async handleHkPremarketBackfillCron(): Promise<void> {
-    await this.backfillPremarket('hk', new Date());
-  }
+  // 🚨 **港股两个触发点已于 073 退役** (FR-013, 原为 hk ① 级 23:40 / hk ② 级 08:30)。
+  //    退役的是**触发点**, 不是机制: 下面两个方法本体与美股两条 cron 一字未动, 传 `'hk'`
+  //    进去语义仍然正确 (见「按市场分派」那组单测)。
+  //    港股的补漏改由 073 轮2 (`sync-option-oi-settle.usecase.ts` 段 b) 承担, 档位**严格更优**:
+  //    同日、同 session、同 `source = eod`, 不留 `premarket_backfill` 痕, 且它与 OI 回填共用
+  //    同一轮外呼。
+  //    ⚠️ 代价已知并接受: 港股的重试深度从 3 (夜链 + 两级) 降到 2 (主轮 + 轮2)。clarify 期裁决。
+  //    🚫 **别顺手补回来一个** —— 「零个 hk 触发点」有机械断言钉着 (同名 spec 顶部)。
 
   /**
    * ① 当日重试: 复采**最近一个已收盘 session** 里覆盖率不达标的那几票。

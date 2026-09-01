@@ -150,13 +150,20 @@ describe('066 T04 港股期权三维度 seed (Testcontainers PG migrate deploy)'
   //    真正的解法是拆 vendor lane (#210 PR-1), 不是把 cron 再往后挪 —— 后者正是
   //    `cross-timezone-date-semantics.md` 那条 📌「别指望把 cron 挪到安全时刻」禁止的动作。
   //    本例仍然有价值: 它守的是**下界** (港股 OI 21:30 定稿) 与**上界** (不许溢出到次日)。
-  it('FR-015 三行 cron 的下一触发时刻均晚于同日 22:00 (Shanghai)、早于次日 00:00', async () => {
+  // 🚨 **073 起本例只管 `hk_underlying_iv_daily` 一行。**
+  //
+  // 链发现与快照已于 073 前移到 **16:20** (收盘直后抢做市商还没撤走的盘口, 实测 23:00 那一档
+  // 收租召回集 45.2% 的腿拿不到买价、16:2x 只有 11.5%)。它们的新窗口断言在
+  // `marketdata-073.two-round.it.spec.ts` —— **判据换了, 不是这条被放宽了**: 那边守的下界是
+  // 「收盘定稿缓冲解除」(16:10) 而不是本例的「22:00 锚点之后」, 两条窗口互不包含。
+  // 📌 IV 那行留在 23:00 是条件项 (073 FR-017/T013): 该字段 vendor 侧盘中分钟级更新, 前移的
+  //    前提是探针证明 16:2x 的读数已定型。结论落地前本例继续守着它。
+  it('FR-015 标的 IV 行 cron 的下一触发时刻晚于同日 22:00 (Shanghai)、早于次日 00:00', async () => {
     const rows = await prisma.syncDimension.findMany({
-      where: { dimensionKey: { in: [HK_CHAIN, HK_SNAPSHOT, HK_IV] } },
+      where: { dimensionKey: HK_IV },
       select: { dimensionKey: true, cronExpr: true },
-      orderBy: { dimensionKey: 'asc' },
     });
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(1);
 
     // 取一个「当天 22:00 之前」的时刻当 now, 让 computeNext 一定落在同一个自然日内。
     // 2026-08-24 是周一 (非交易日会不会跑由 tick 的交易日闸管, 与 cron 表达式无关)。

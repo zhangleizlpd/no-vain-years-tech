@@ -399,6 +399,85 @@ export function closeSettleBufferMinutes(market: string): number {
 }
 
 /**
+ * 收盘后**盘口台阶**的上界（该市场当地绝对分钟）—— 过了它，做市商的报价档位已经掉到下一级
+ * 台阶上，同一批腿的有买价比例阶跃式下滑。
+ *
+ * ## 🚨 它是**样本期结论**，不是物理常数
+ *
+ * 样本期 = **2026-08-31 一个交易日 × 3 个标的**（全链 3463 条腿，盘后 20 格）。实测盘口是
+ * **阶梯式**撤走的、台阶内逐格数值完全相同；按仓内正规收租召回口径，收盘后 0–30 分钟有买价
+ * 比例 **88.5%**，收盘后 45 分钟–2 小时掉到 **59.9%**。断点的确切分钟**落在采样盲区**
+ * `(16:30, 16:45)`（网格 15 分钟看不见）⇒ 本表取的是**实测仍好的最后一格 16:30**。
+ *
+ * ## 🚨 取盲区的**下界**，与 {@link oiRefreshedAtEod} 那张表刻意相反
+ *
+ * 那张表取实测窗口的**上界**，因为它猜错的方向是「把上一场的 OI 标成当天的」= 数字与标签
+ * 双错且不可回补；本表猜错的方向只是**告警早报**（假红，可判读）。反过来取 16:45 等于把一个
+ * **实测已坏**的档位当成上界，而漏报的形态正是 FR-022 存在的理由 —— 数据照采、覆盖率照绿，
+ * 只有带内腿有价率悄悄退回改动前，**没有任何东西会变红**。
+ * ⇒ 两处共同的纪律不是「取上界」，而是「取值方向选**猜错也不产生静默错误**的那一侧」。
+ *
+ * ## 🚨 重标条件（写在明处，否则下一个人不知道它能不能动）
+ *
+ * ① 073 T012 的补样本（09-02 / 09-03 / **09-04 到期周**）把断点夹进更窄的区间 ⇒ 按新的
+ *    「实测仍好的最后一格」重标；② 供应方 / 做市商的盘后撤单行为变化（换 vendor、HKEX 改
+ *    规则）⇒ 整条曲线重测，别微调一个数。
+ *
+ * 🚫 **MUST NOT 因为「告警太吵」把它往后调** —— 吵是结论不是噪声。稳态抓价时刻落在
+ * 16:28.6（16:20 触发 + 实测 519s / 28 锚），余量约 2 分钟；按每锚 18.5s 线性外推，
+ * **约 35 个锚**就会开始报。那一刻该做的是拆批 / 链发现提前 / 降低发现频次（由人定，见
+ * spec `## Clarifications`），不是改这个数。
+ *
+ * ## 🚨 `null` = 没实测过的市场不猜
+ *
+ * `us` / `cn` 至今零样本。借 `hk` 的值会让美股主轮（跑在 us 收盘后、折成当地分钟远晚于任何
+ * 港股台阶）每晚产一条假红，而假红的代价是把真信号淹掉 —— 正是本条要避免的那件事。
+ *
+ * 📌 与 {@link closeSettleBufferMinutes} 是**同一个写入窗的两端**：那个是下界（早于它官方
+ * 收盘价还不存在），本表是上界（晚于它盘口已经塌了）。港股的窗因此是 `[16:10, 16:30]`，
+ * 主轮 16:20 落在正中 —— 两端都由证据钉着，中间没有余量可挥霍。
+ */
+const MARKET_QUOTE_LADDER_END_LOCAL_MINUTE: Record<string, number | null> = {
+  cn: null,
+  us: null,
+  hk: 16 * 60 + 30,
+};
+
+/** 该市场盘口台阶的上界（当地分钟）；`null` = 未实测 ⇒ 不判。复杂度 O(1)。 */
+export function quoteLadderEndMinute(market: string): number | null {
+  return MARKET_QUOTE_LADDER_END_LOCAL_MINUTE[market] ?? null;
+}
+
+/**
+ * 这一批快照的**抓价时刻**（落库的 `quote_as_of`，即端口 envelope 的 `as_of`）还在
+ * `sessionDate` 那一场的盘口台阶内吗（073 T009，FR-022）。纯查表 + 一次时区折算，零 I/O。
+ * 复杂度 O(1)。
+ *
+ * 三档判定，顺序即优先级（与 {@link oiRefreshedAtEod} 同构，**第 2 档方向相反**）：
+ * 1. 本表无值（`null` / 未登记市场）⇒ `true`，该市场不判；
+ * 2. 抓价时刻的当地日期**已跨过** `sessionDate` ⇒ `false`。被挤过午夜的长链正是最该报的
+ *    一档，而只比当日分钟数会把它判成「台阶内」（01:30 < 16:30）。日期**早于** `sessionDate`
+ *    ⇒ `true`：本条抓的唯一形态是「太晚」；
+ * 3. 同一天 ⇒ 比当日分钟数，**两端皆闭**（`minutesOfDay` 是分钟标签，`990` 代表
+ *    `[16:30:00, 16:31:00)`，而实测仍好的最后一格就是它）。
+ *
+ * 🚨 返回值只决定「要不要多打一条 ERROR」，**不决定任何一行怎么写** ⇒ 未登记市场返 `true`
+ * 而不抛（同 {@link oiRefreshedAtEod} 的契约）：为一条告警把整轮采集炸掉，方向反了。
+ */
+export function quoteCapturedWithinLadder(
+  market: string,
+  sessionDate: string,
+  capturedAt: Date,
+): boolean {
+  const ladderEnd = MARKET_QUOTE_LADDER_END_LOCAL_MINUTE[market];
+  if (ladderEnd === undefined || ladderEnd === null) return true;
+  if (!isSessionRegistered(market)) return true;
+  const { dateOnly, minutesOfDay } = marketNow(market, capturedAt);
+  if (dateOnly !== sessionDate) return dateOnly < sessionDate;
+  return minutesOfDay <= ladderEnd;
+}
+
+/**
  * 该市场当日的这一场**是否进行中** —— 自首段开盘至末段收盘，**含**中间的休息段（午休）。
  * 复杂度 O(段数)。
  *

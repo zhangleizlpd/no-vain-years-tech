@@ -68,7 +68,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     ]);
   });
 
-  it('SyncDimension seed 31 维度行存在 (6 核心 + 039 5 港股量化维度 + 040 volatility/hot_snapshot + 041 4 事件流维度 + 042 3 报告期维度 + 043 2 分类文本维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度)', async () => {
+  it('SyncDimension seed 32 维度行存在 (6 核心 + 039 5 港股量化维度 + 040 volatility/hot_snapshot + 041 4 事件流维度 + 042 3 报告期维度 + 043 2 分类文本维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度 + 073 hk_option_oi_settle)', async () => {
     const dims = await prisma.syncDimension.findMany({
       // priority desc, key asc 二级序: 040 volatility(4)/hot_snapshot(3) 与 039 short_selling(4)/
       // connect_holding(3) 撞 priority 值 → 加 dimensionKey asc 二级键定死平局序 (与派生执行序 tie-break 同);
@@ -96,6 +96,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'eod_bar',
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
+      'hk_option_oi_settle', // 073 T006 轮2 (priority 5, 'hk_option_daily_snapshot' < 它 < 'hk_underlying_iv_daily')
       'hk_underlying_iv_daily', // 066 T04
       'option_contract', // 047 priority 5 (撞 eod_bar → key 后置: 'eod_bar' < 'option_contract')
       'option_daily_snapshot', // 047 priority 5 (hard 边 option_contract→option_daily_snapshot 的相邻性由此 key 序保证)
@@ -170,20 +171,23 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       '0 0 6 * * *',
     );
     expect(dims.find((d) => d.dimensionKey === 'earnings_event')?.cronExpr).toBe('0 0 6 * * *');
-    // 066 三个港股期权维度排 **23:00** 而不是 22:00 —— 22:00 是仓里既有的港股锚点
-    // (eod_bar + 18 个理杏仁 cn/hk 维度全在这一刻)。
+    // 073 起港股期权采集**拆两轮**: 链发现 + 快照 16:20 抢做市商还没撤走的盘口, OI 21:40
+    // 单独回填 (清算侧 21:30 才定稿)。IV 那行仍留 23:00 —— 前移是条件项 (FR-017), 前提是
+    // 探针证明它 16:2x 的读数已定型。
     // 🚨 原注释在这里写「concurrency=1 ⇒ 那批要占用队列一段时间, 23:00 是留给它的余量」——
     //    **该前提已被证伪** (#210): 那批实测跑到次日 00:34, 港股三维连续三晚执行在午夜后。
-    //    解法是拆 vendor lane, 不是继续往后挪 cron。23:00 保留是因为它满足真正的下界
-    //    (港股 OI 21:30 定稿) 与上界 (不溢出到次日)。
-    // 🚨 这里是**写死字符串**的一档 (故意的): 本文件钉的是 seed 现状快照。FR-015 那条「性质」
-    //    断言 (解析 cron 断下一触发晚于同日 22:00) 在
-    //    `marketdata-066.hk-dimension-seed.it.spec.ts` —— 两层各管一件事。
+    //    解法是拆 vendor lane, 不是继续往后挪 cron。
+    // 🚨 这里是**写死字符串**的一档 (故意的): 本文件钉的是 seed 现状快照。那条「性质」断言
+    //    (解析 cron 断下一触发落在收盘定稿缓冲解除之后 / OI 定稿之后) 在
+    //    `marketdata-073.two-round.it.spec.ts` —— 两层各管一件事。
     expect(dims.find((d) => d.dimensionKey === 'hk_option_contract')?.cronExpr).toBe(
-      '0 0 23 * * *',
+      '0 20 16 * * *',
     );
     expect(dims.find((d) => d.dimensionKey === 'hk_option_daily_snapshot')?.cronExpr).toBe(
-      '0 0 23 * * *', // #210: 与链发现同一时刻 = 同一 tick, 依赖边才装得上
+      '0 20 16 * * *', // #210: 与链发现同一时刻 = 同一 tick, 依赖边才装得上
+    );
+    expect(dims.find((d) => d.dimensionKey === 'hk_option_oi_settle')?.cronExpr).toBe(
+      '0 40 21 * * *', // 073: OI 定稿 (21:30) 之后
     );
     expect(dims.find((d) => d.dimensionKey === 'hk_underlying_iv_daily')?.cronExpr).toBe(
       '0 0 23 * * *',
@@ -209,8 +213,9 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
               'option_contract', // 047 清晨 06:00 档 (值已由上方显式断言钉死)
               'option_daily_snapshot', // 047 清晨 06:30 档 (值已由上方显式断言钉死)
               'earnings_event', // 047 清晨 06:00 档 (值已由上方显式断言钉死)
-              'hk_option_contract', // 066 港股 23:00 档 (值已由上方显式断言钉死)
-              'hk_option_daily_snapshot', // 066 港股 23:30 档 (值已由上方显式断言钉死)
+              'hk_option_contract', // 073 港股主轮 16:20 档 (值已由上方显式断言钉死)
+              'hk_option_daily_snapshot', // 073 港股主轮 16:20 档 (值已由上方显式断言钉死)
+              'hk_option_oi_settle', // 073 港股轮2 21:40 档 (值已由上方显式断言钉死)
               'hk_underlying_iv_daily', // 066 港股 23:00 档 (值已由上方显式断言钉死)
             ].includes(d.dimensionKey),
         )
@@ -243,12 +248,14 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       // scope 值相同、角色不同, 故下面另有一条「恰为 ['hk']」的更强断言。
       'hk_option_contract', // 066
       'hk_option_daily_snapshot', // 066
+      'hk_option_oi_settle', // 073
       'hk_underlying_iv_daily', // 066
     ];
-    /** 066 三行的 scope 必须**恰为** {hk}: 掺进 us 会在 tick 求业务日期时当场 throw。 */
+    /** 066+073 四行的 scope 必须**恰为** {hk}: 掺进 us 会在 tick 求业务日期时当场 throw。 */
     const hkOptionDims = [
       'hk_option_contract',
       'hk_option_daily_snapshot',
+      'hk_option_oi_settle',
       'hk_underlying_iv_daily',
     ];
     // sellput-viz: marketScope = {us} —— 与港股维度一样「不含 cn」, 但它也**不含 hk**,

@@ -680,6 +680,7 @@ describe('020 T007 因子跃变锚定 (corp 捕获 → transient → AdjustmentF
         'eod_bar',
         'hk_option_contract', // 066 T04
         'hk_option_daily_snapshot', // 066 T04
+        'hk_option_oi_settle', // 073 T006
         'hk_underlying_iv_daily', // 066 T04
         'option_contract', // 047 (priority 5 撞 eod_bar → key 字典序: 'eod_bar' < 'option_contract')
         'option_daily_snapshot', // 047 (priority 5; hard 边 option_contract→option_daily_snapshot 要求两者相邻, 由 key 字典序天然满足)

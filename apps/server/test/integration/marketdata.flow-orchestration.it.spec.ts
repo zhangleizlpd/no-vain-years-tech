@@ -187,6 +187,7 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       'sync:eod_bar',
       'sync:hk_option_contract', // 066 T04
       'sync:hk_option_daily_snapshot', // 066 T04
+      'sync:hk_option_oi_settle', // 073 T006
       'sync:hk_underlying_iv_daily', // 066 T04
       'sync:option_contract', // 047 (priority 5, 'eod_bar' < 'option_contract')
       'sync:option_daily_snapshot', // 047 (priority 5; hard 边要求紧邻上游 option_contract, 由 key 字典序天然满足)
@@ -243,6 +244,7 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       'fundamental',
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
+      'hk_option_oi_settle', // 073 T006
       'hk_underlying_iv_daily', // 066 T04
       'hot_snapshot', // 040
       'index_membership', // 039

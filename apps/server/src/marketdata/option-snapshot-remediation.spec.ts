@@ -339,6 +339,66 @@ function underlyingRow(last = '128.40'): OptionSnapshotRow {
 const spyLog = (level: 'error' | 'warn'): ReturnType<typeof vi.spyOn> =>
   vi.spyOn(Logger.prototype, level).mockImplementation(() => undefined);
 
+/**
+ * `@Cron` 落在方法上的元数据键 —— `@nestjs/schedule` 的 `SCHEDULE_CRON_OPTIONS`。
+ *
+ * 🚨 它**不从 package 的 index 导出** (只在 `dist/schedule.constants` 里), 故此处用字面量。
+ * 字面量的风险是「键改名 ⇒ 一个都查不到 ⇒ 下面那条『零个 hk 触发点』变成恒真的假绿」。
+ * ⇒ 正向控制与负向断言**必须成对**: 先断「美股那两个查得到」, 键失效时那条先红。
+ */
+const CRON_METADATA_KEY = 'SCHEDULE_CRON_OPTIONS';
+
+interface CronHandler {
+  method: string;
+  cronTime: string;
+  timeZone?: string;
+}
+
+/** 本类上所有挂了 `@Cron` 的方法 (定义序)。 */
+function cronHandlers(): CronHandler[] {
+  const proto = OptionSnapshotRemediation.prototype as unknown as Record<string, object>;
+  return Object.getOwnPropertyNames(proto)
+    .filter((name) => name !== 'constructor')
+    .map((name) => ({
+      name,
+      meta: Reflect.getMetadata(CRON_METADATA_KEY, proto[name]) as
+        | { cronTime: string; timeZone?: string }
+        | undefined,
+    }))
+    .filter((x): x is { name: string; meta: { cronTime: string; timeZone?: string } } => {
+      return x.meta !== undefined;
+    })
+    .map((x) => ({ method: x.name, cronTime: x.meta.cronTime, timeZone: x.meta.timeZone }));
+}
+
+/**
+ * 073 T007: 港股两级补救**退役**（FR-013）。
+ *
+ * 退役的是**港股的两个触发点**, 不是机制 —— `retrySameDay` / `backfillPremarket` 本体与美股
+ * 两条 cron 一字不动 (Guardrail 7)。港股那边补漏由 073 轮2 的段 b 承担, 档位严格更优:
+ * 同日、同 session、同 `source`, 且不留 `premarket_backfill` 痕。
+ *
+ * 🚨 为什么要一条**机械**断言而不是「删了就完了」: hk 那两档的时刻论证 (23:40 钉在同一日历日 /
+ * ② 级存在的理由与 us 不同) 在类注释里写了几十行, 谁读了都容易顺手「补回来一个」。这条断言
+ * 让「本类上又出现了 hk 触发点」当场红。
+ */
+describe('🚨 073 T007 港股两级补救退役: 本类上零个 hk 触发点', () => {
+  it('正向控制: 恰好剩美股那两条 cron (查得到 ⇒ 元数据键没失效, 下面那条才有意义)', () => {
+    expect(cronHandlers()).toEqual([
+      { method: 'handleUsSameDayRetryCron', cronTime: '0 0 8 * * *', timeZone: 'Asia/Shanghai' },
+      {
+        method: 'handleUsPremarketBackfillCron',
+        cronTime: '0 0 18 * * *',
+        timeZone: 'Asia/Shanghai',
+      },
+    ]);
+  });
+
+  it('🚨 零个 hk 触发点 (23:40 ① 级 / 08:30 ② 级均已退役)', () => {
+    expect(cronHandlers().filter((h) => /hk/i.test(h.method))).toEqual([]);
+  });
+});
+
 describe('OptionSnapshotRemediation', () => {
   describe('① 当日重试', () => {
     it('覆盖率达标 → 零外呼、零落库 (正常日不该有任何补救动作)', async () => {
@@ -669,7 +729,21 @@ describe('OptionSnapshotRemediation', () => {
 
   // #255: 本片此前写死 `US_MARKET_SCOPE = ['us']`, 而覆盖率判据又不带市场谓词 ⇒ 港股票混进
   // 美股补救的分母, 被拿 `marketScope: ['us']` 重采并按美股归属语义写库。
-  describe('🚨 按市场分派 (#255)', () => {
+  /**
+   * 🚨 **073 起港股没有触发点了, 但这组用例蓄意保留** —— 它们不是「生产上永不发生的组合」。
+   *
+   * 两条理由:
+   * ① 被测的是**方法本体**, 而方法本体仍是市场参数化的活代码 (美股两条 cron 天天在调)。
+   *    传 `'hk'` 走的是同一条代码路径, 这组用例钉的是那条路径在 hk 参数下的正确性 ——
+   *    删掉等于把「市场分派」这件事的唯一反例组撤了, 而 #255 的病根正是「拿一个市场的语义
+   *    去处理另一个市场」。
+   * ② 它们钉的那条不对称性 (**hk 的 OI 在 D 日收盘当晚定稿 ⇒ `oi_as_of` = `session_date`,
+   *    与 us 方向相反**) 如今是 073 轮2 的**承重判据** —— 轮2 的整个存在理由就是「等 OI 定稿
+   *    再回填」。这里是它在补救链一侧的第二处表达。
+   *
+   * 📌 用例名里的「① 级 / ② 级」如今指的是**方法档位**, 不再对应任何 cron 时刻。
+   */
+  describe('🚨 按市场分派 (#255；073 起 hk 无触发点, 见本 describe 上方注释)', () => {
     it('hk ① 级: 归属按港股自己的清算行为算 ⇒ oi_as_of = session_date, 与 us 方向相反', async () => {
       const h = makeHarness([hkReport('degraded'), hkReport('ok')]);
       const warn = spyLog('warn');

@@ -248,6 +248,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
       'fundamental',
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
+      'hk_option_oi_settle', // 073 T006
       'hk_underlying_iv_daily', // 066 T04
       'hot_snapshot', // 040
       'index_membership', // 039
@@ -357,6 +358,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
       'fundamental',
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
+      'hk_option_oi_settle', // 073 T006
       'hk_underlying_iv_daily', // 066 T04
       'hot_snapshot', // 040
       'index_membership', // 039

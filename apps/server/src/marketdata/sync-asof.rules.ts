@@ -96,6 +96,10 @@ export const AS_OF_BASIS_BY_DIMENSION: Record<DimensionKey, AsOfBasis> = {
   hk_option_contract: 'calendar-day',
   hk_option_daily_snapshot: 'last-completed-session',
   hk_underlying_iv_daily: 'last-completed-session',
+  // 073 T001 轮2: 与 `hk_option_daily_snapshot` **同档**, 因为两轮采的是**同一场**。
+  // 🚨 取 `calendar-day` 会在 21:40 那轮被 misfire 推过午夜时把业务日求成次日, 于是段 a 的
+  // `updateMany` 一行都定位不到 —— 表现是「跑了、绿了、OI 一个字没改」, 不报错。
+  hk_option_oi_settle: 'last-completed-session',
 };
 
 /** {@link resolveAsOfForDimension} 的入参 —— 贫血投影, 两列都取自 `sync_dimension` 行。 */
