@@ -28,6 +28,9 @@ import { assertUsableV, type AnchorDecimalInput } from './create-anchor.usecase'
  * (ON CONFLICT 必须带同样的谓词), 报 `no unique or exclusion constraint matching the
  * ON CONFLICT specification`。**类型全绿、运行时失败**, 单测的 mock Prisma 抓不到。
  * ⇒ 写成显式两段, 且**自己写出 `status: 'PENDING'` 条件**(类型系统不会替你带上)。
+ * 结构性旁证: 谓词只活在 `schema.prisma` 的 `where: raw("((status)::text = 'PENDING'::text)")`
+ * 与 migration `20260831_1741` 的 `CREATE UNIQUE INDEX ... WHERE status = 'PENDING'` 里,
+ * 生成的 client 侧只剩一个无谓词的 `ticker_asof` 复合唯一。
  */
 export interface SubmitAnchorFromGuestInput {
   /** 通道无条件覆写的 `X-Guest` 头值。**仅作归属, 绝不作授权**。 */

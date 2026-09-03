@@ -12,8 +12,14 @@ import {
  *
  * ## 三个「写错了不会红、但真环境必崩」的点
  *
- * 1. **`file` 必须最后 append** —— OSS **忽略 `file` 之后的所有字段**，签名字段排在它后面
- *    等于没传，表现是 403 而报错完全不指向这里。
+ * 1. **`file` 必须最后 append** —— 签名字段排在它后面等于没传，表现是 403 而报错完全不
+ *    指向这里。
+ *    EVIDENCE: 顺序要求是**官方明文** ——「file 必须为最后一个表单域」「除 file 以外的其他
+ *    表单域无顺序要求」, https://help.aliyun.com/zh/oss/developer-reference/postobject
+ *    (2026-09-03 复核)。
+ *    ASSUMED: 「OSS **忽略** `file` 之后的所有字段」这个**机制**解释**文档未记载**, 是我们
+ *    从 403 反推的。它错了不影响该怎么写 (顺序要求本身是明文), 但**别拿它去论证别的
+ *    multipart 行为** —— 比如「那就把校验字段也放后面反正会被忽略」。
  * 2. **必须是带 `type` 的 `Blob`，不能是裸 `Buffer`** —— part 的 Content-Type 来自 Blob 的
  *    `type`，传裸 Buffer 会让该 part 没有 content-type，于是 policy 的 `$content-type`
  *    条件不满足 ⇒ 同样 403、同样不指向这里。

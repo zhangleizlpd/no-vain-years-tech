@@ -62,7 +62,7 @@ async function serialize(init: RequestInit): Promise<{ contentType: string; body
 }
 
 describe('OssPostObjectAdapter — 上线字节形状', () => {
-  it('① `file` 是 multipart 的最后一段（OSS 忽略 file 之后的所有字段）', async () => {
+  it('① `file` 是 multipart 的最后一段（官方明文: file 必须为最后一个表单域）', async () => {
     let captured: RequestInit | undefined;
     stubFetch(async (_url, init) => {
       captured = init;

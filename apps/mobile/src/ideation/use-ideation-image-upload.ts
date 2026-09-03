@@ -4,7 +4,8 @@
 // 一次性 scope 受限凭证 + 不碰图片字节。与 profile-image 的唯一差异 = **签名 EP 换 ideation
 // 凭证 fn**（`attachmentCredentialControllerIssue(sessionId, {contentType})`，T008 生成）：
 //   1. 凭证 EP 拿 PostObject 凭证 { host, objectKey, fields }（后端算 V4 签名）
-//   2. 组 FormData（fields.* 先 append、`file` 字段**必须最后** —— OSS 忽略 file 之后的字段）
+//   2. 组 FormData（fields.* 先 append、`file` 字段**必须最后** —— OSS 官方明文的顺序要求,
+//      出处见 server `integrations/oss/oss-post-object.adapter.ts` 的 EVIDENCE）
 //   3. fetch(host, POST) 直传 OSS（native {uri,name,type} / web Blob）
 //   4. 返回 objectKey（带图 turn 用 attachmentKeys 引用，T012/T014 发送时调）
 //
@@ -86,7 +87,8 @@ export function mapIdeationUploadError(error: unknown): string {
   return TOAST.unknown;
 }
 
-// 组 PostObject 表单。fields.* 全部先 append、`file` **最后**（OSS 忽略 file 之后的字段）。
+// 组 PostObject 表单。fields.* 全部先 append、`file` **最后**
+// （OSS 官方明文的顺序要求, 出处见 server `oss-post-object.adapter.ts` 的 EVIDENCE）。
 // 与 profile-image buildUploadFormData 同构（OSS PostObject 表单规格不因业务模块而异）。
 export function buildIdeationUploadFormData(
   fields: AttachmentCredentialFieldsResponse,

@@ -75,6 +75,9 @@ describe('SyncAnchorLastCloseScheduler', () => {
   it('🚨 cron 由间隔常量**派生**, 不写第二份 10', () => {
     expect(LAST_CLOSE_TICK_CRON).toBe(`0 */${LAST_CLOSE_TICK_INTERVAL_MINUTES} * * * *`);
     // 6 段秒级 cron —— 段数写错会让 @nestjs/schedule 按分钟级解析, 静默改变触发频率。
+    // 出处: @nestjs/schedule@6.1.3 → cron@4.4.0, 其 README「use an additional slot for
+    // seconds (leaving it off will default to 0 and match the Unix behavior)」——
+    // 少一段不报错, 秒位默认 0 而已, 于是频率从「每 N 分钟」变成「每 N 小时的第 N 分」。
     expect(LAST_CLOSE_TICK_CRON.split(' ')).toHaveLength(6);
   });
 });

@@ -79,7 +79,7 @@ function makeDeps(overrides: Partial<UploadFlowDeps> = {}): UploadFlowDeps {
 }
 
 describe('buildUploadFormData — PostObject 字段序', () => {
-  it('fields.* 全部先 append、`file` 字段最后一个（OSS 忽略 file 之后字段）', () => {
+  it('fields.* 全部先 append、`file` 字段最后一个（OSS 官方明文的顺序要求）', () => {
     // spy on append 记录顺序（RN FormData 的 TS 类型无 DOM 的 keys() 迭代器）。
     const appendSpy = vi.spyOn(FormData.prototype, 'append');
     buildUploadFormData(FIELDS, WEB_IMAGE);
