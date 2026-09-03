@@ -8,6 +8,10 @@ import {
   OptionSnapshotCoverageCheck,
   type OptionCoverageReport,
 } from './option-snapshot-coverage.check.js';
+import {
+  OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
+  OptionSnapshotBudgetExhaustedError,
+} from './option-snapshot.port.js';
 import type {
   OptionSnapshotPort,
   OptionSnapshotQuery,
@@ -450,6 +454,62 @@ describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
 
       expect(h.queries).toHaveLength(0);
       expect(stats).toMatchObject({ scanned: 1, ok: 0, skipped: 1, failed: 0 });
+    });
+  });
+
+  describe('🚨 批与批彼此隔离 (与主轮 syncUnderlying 同源)', () => {
+    it('段 a 中间批失败 → 后续批照常采, 只丢中毒那一批 (整票仍计 failed)', async () => {
+      // 2026-09-02 prod 实形: 主轮与轮2 **同一颗**码 (`HK.ALB260904C103000` → 502) 各挂一次,
+      // 两处批循环都没有 try/catch ⇒ 该票剩余批全不跑。修在两处, 判据同源。
+      const codes = Array.from(
+        { length: 2 * OPTION_SNAPSHOT_MAX_CONTRACT_CODES + 1 },
+        (_, i) => `HK.TCH260924P${String(600000 + i).padStart(6, '0')}`,
+      );
+      let call = 0;
+      const h = makeHarness({
+        contracts: { '3': codes.map((c) => contractRow(c)) },
+        existing: codes,
+        rowsFor: (q) => {
+          call++;
+          if (call === 2) throw new Error('502 未知股票 HK.TCH260924P600399');
+          return [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()];
+        },
+      });
+      const stats = emptyStats();
+
+      await h.useCase.run([TCH], DIM, stats, makeInput(hkt(SESSION_DATE, '21:40')));
+
+      // 第 3 批仍被请求 (改前是 2 —— 异常冲出了 refreshOpenInterest)
+      expect(h.queries).toHaveLength(3);
+      expect(h.updates).toHaveLength(OPTION_SNAPSHOT_MAX_CONTRACT_CODES + 1);
+      // 整票仍失败: 吞掉它 = 把硬失败降级成静默的部分成功
+      expect(stats.failed).toBe(1);
+      expect(JSON.stringify(stats.findings)).toContain('未知股票');
+    });
+
+    it('🚨 429 落在中间批 → 立刻顺延, MUST NOT 继续打后续批 (批级容错不适用于限频)', async () => {
+      const codes = Array.from(
+        { length: 2 * OPTION_SNAPSHOT_MAX_CONTRACT_CODES + 1 },
+        (_, i) => `HK.TCH260924P${String(600000 + i).padStart(6, '0')}`,
+      );
+      let call = 0;
+      const h = makeHarness({
+        contracts: { '3': codes.map((c) => contractRow(c)) },
+        existing: codes,
+        rowsFor: (q) => {
+          call++;
+          if (call === 2) throw new OptionSnapshotBudgetExhaustedError('option-snapshot hk:00700');
+          return [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()];
+        },
+      });
+      const stats = emptyStats();
+
+      await h.useCase.run([TCH], DIM, stats, makeInput(hkt(SESSION_DATE, '21:40')));
+
+      // 继续打第 3 批 = 无视顺延信号, 只会把同一个 429 再要一遍并白吃 worker 的重试次数
+      expect(h.queries).toHaveLength(2);
+      expect(stats.failed).toBe(0);
+      expect(stats.skipped).toBe(1);
     });
   });
 

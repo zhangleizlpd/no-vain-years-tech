@@ -393,48 +393,72 @@ export class SyncOptionOiSettleUseCase {
     stats: SyncRunStats,
   ): Promise<void> {
     const oiAsOf = toDateOnly(sessionDate);
-    for (const batch of chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES)) {
-      const byCode = new Map(batch.map((c) => [c.code, c]));
-      const { rows } = await this.snapshot.getSnapshots({
-        underlyingSymbol: symbol,
-        contractCodes: batch.map((c) => c.code),
-      }); // HTTP (事务外)
+    // 🚨 批与批**彼此隔离** —— 判据、理由与失败语义同主轮
+    // {@link SyncOptionSnapshotUseCase.syncUnderlying}, 那里有完整论证, 此处只留指针不复述。
+    // EVIDENCE: 2026-09-02 prod 同一颗坏码 (`HK.ALB260904C103000` → 502) 让主轮与轮2 **各挂
+    // 一次**, 两处批循环当时都没有 try/catch ⇒ 该票剩余批全不跑。修必须落两处, 少一处等于没修。
+    const batches = chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
+    const batchFailures: string[] = [];
+    let batchIndex = 0;
+    for (const batch of batches) {
+      batchIndex++;
+      try {
+        const byCode = new Map(batch.map((c) => [c.code, c]));
+        const { rows } = await this.snapshot.getSnapshots({
+          underlyingSymbol: symbol,
+          contractCodes: batch.map((c) => c.code),
+        }); // HTTP (事务外)
 
-      const updates = rows
-        .filter((row) => row.isOption)
-        .map((row) => {
-          const contract = byCode.get(row.code);
-          if (contract === undefined) {
-            // 与主轮同一条闸: 落到别的合约名下比没落更难发现。
-            throw new Error(
-              `[option-oi-settle] 快照行不在本批请求内 (契约变更 / 批次错配?): 请求 ${symbol} ` +
-                `${batch.length} 个合约, 却收到 ${row.code}`,
-            );
-          }
-          return {
-            where: {
-              contractId: contract.id,
-              sessionDate: oiAsOf,
-              source: SNAPSHOT_SOURCE_EOD,
-            },
-            // 🚨 三列, 一个不多。数值全程 string 直传 Decimal 列 (FR-S08); 缺失恒 null。
-            data: {
-              openInterest: row.openInterest,
-              netOpenInterest: row.netOpenInterest,
-              oiAsOf,
-            },
-          };
-        });
+        const updates = rows
+          .filter((row) => row.isOption)
+          .map((row) => {
+            const contract = byCode.get(row.code);
+            if (contract === undefined) {
+              // 与主轮同一条闸: 落到别的合约名下比没落更难发现。
+              throw new Error(
+                `[option-oi-settle] 快照行不在本批请求内 (契约变更 / 批次错配?): 请求 ${symbol} ` +
+                  `${batch.length} 个合约, 却收到 ${row.code}`,
+              );
+            }
+            return {
+              where: {
+                contractId: contract.id,
+                sessionDate: oiAsOf,
+                source: SNAPSHOT_SOURCE_EOD,
+              },
+              // 🚨 三列, 一个不多。数值全程 string 直传 Decimal 列 (FR-S08); 缺失恒 null。
+              data: {
+                openInterest: row.openInterest,
+                netOpenInterest: row.netOpenInterest,
+                oiAsOf,
+              },
+            };
+          });
 
-      for (const chunk of chunked(updates, OI_UPDATE_CHUNK)) {
-        const results = await this.prisma.$transaction(
-          chunk.map((u) => this.prisma.optionDailySnapshot.updateMany(u)),
-        );
-        addWritten(
-          stats,
-          results.reduce((n, r) => n + r.count, 0),
+        for (const chunk of chunked(updates, OI_UPDATE_CHUNK)) {
+          const results = await this.prisma.$transaction(
+            chunk.map((u) => this.prisma.optionDailySnapshot.updateMany(u)),
+          );
+          addWritten(
+            stats,
+            results.reduce((n, r) => n + r.count, 0),
+          );
+        }
+      } catch (err) {
+        // 429 原样上抛: 顺延信号不是本批的失败 (同主轮, 别在这里另写一套判据)。
+        if (err instanceof OptionSnapshotBudgetExhaustedError) throw err;
+        batchFailures.push(`批 ${batchIndex}/${batches.length}: ${String(err)}`);
+        this.logger.error(
+          `[option-oi-settle] 单批失败, 该票剩余批继续: ${symbol} ` +
+            `批 ${batchIndex}/${batches.length} (${batch.length} 个合约) —— ${String(err)}`,
         );
       }
+    }
+    if (batchFailures.length > 0) {
+      throw new Error(
+        `[option-oi-settle] ${symbol} ${batchFailures.length}/${batches.length} 批失败 ` +
+          `(其余批已回填): ${batchFailures.join(' | ')}`,
+      );
     }
   }
 
