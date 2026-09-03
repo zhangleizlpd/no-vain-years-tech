@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -267,6 +267,92 @@ describe('074 锚域搜索 IT (共享 PG + 收窄 boot + 真 HTTP)', () => {
       const hit = items.find((i) => i.ticker === 'hk:01024');
       expect(hit).toBeDefined();
       expect(hit!.name).toBe('01024');
+    });
+  });
+
+  // ── T004: 协议与边界六臂 ───────────────────────────────────────────────────
+
+  describe('T004 协议与边界 (FR-011, plan D1/D4, state_branches 1/3, Edge)', () => {
+    it('① 🚨 路由防吞: /anchors/search 返 200 搜索响应, 不被 anchors/:id 吞成 404', async () => {
+      // 钉住「search 是可达的独立路由」: 一旦它从路由表上消失 / 改名 / 前缀漂移, 这个 URL 会
+      // 落进 `anchors/:id` → parseAnchorId('search') 折叠 404 —— typecheck / controller 单测
+      // 两边全绿, 只有这一臂能抓 (变异证红: @Get 改 'anchors/searchX' ⇒ 本臂 404 红)。
+      // ⚠️ 实测订正 (2026-09-04 本 IT 变异): plan D1 设想的「声明序在 :id 之后即被吞」在当前
+      // Fastify (find-my-way) 上**未复现** —— 静态段优先于参数段, 挪后仍 200。本臂钉的是
+      // 200 语义本身, 不锚定 router 的实现细节。
+      const res = await search('x');
+      expect(res.statusCode).toBe(200);
+      expect(Array.isArray(itemsOf(res))).toBe(true);
+    });
+
+    it('② 排序三键: 代码精确命中排第一 → 相似度 → 代码序 (FR-011)', async () => {
+      // 四票同吃 code ILIKE 'AOS%' 前缀路:
+      //   AOS  = 代码精确命中 (第一键);
+      //   AOSA 名含 'AOS' ⇒ trgm 相似度 > 0 (第二键);
+      //   AOSB / AOSC 同名 ⇒ 相似度并列, 靠 i.code ASC 拆序 (第三键)。
+      for (const [code, name] of [
+        ['AOSC', '平凡二号'],
+        ['AOSB', '平凡二号'],
+        ['AOSA', 'AOS Group'],
+        ['AOS', '平凡一号'],
+      ] as const) {
+        await seedInstrument({ market: 'us', code, name });
+        await seedAnchor(`us:${code}`);
+      }
+
+      expect(tickersOf(await search('AOS'))).toEqual(['us:AOS', 'us:AOSA', 'us:AOSB', 'us:AOSC']);
+    });
+
+    it('③ 命中数 > 20 ⇒ 截断到 20 (FR-011 单页上限, 无翻页)', async () => {
+      for (let n = 1; n <= 21; n++) {
+        const code = `Q${String(n).padStart(2, '0')}`;
+        await seedInstrument({ market: 'us', code, name: `占位${code}` });
+        await seedAnchor(`us:${code}`);
+      }
+
+      const res = await search('Q');
+      expect(res.statusCode).toBe(200);
+      expect(itemsOf(res)).toHaveLength(20);
+    });
+
+    it('④ `%` / `_` 字面匹配 (Edge「元字符字面」—— escapeLike + ESCAPE 在真 PG 上的落点)', async () => {
+      await seedSearchUniverse();
+      await seedInstrument({ market: 'us', code: 'PCT', name: 'A%B特殊' });
+      await seedAnchor('us:PCT');
+      await seedInstrument({ market: 'us', code: 'UND', name: 'X_Y特殊' });
+      await seedAnchor('us:UND');
+
+      // 字面语义的强断言: 裸 '%' / '_' 只命中名字**真含**该字符的行。若转义被拆掉
+      // (对齐回参照 adapter), '%' 变 ILIKE 通配 ⇒ 整个夹具域全命中, 这两条当场红。
+      expect(tickersOf(await search('A%B'))).toEqual(['us:PCT']);
+      expect(tickersOf(await search('%'))).toEqual(['us:PCT']);
+      expect(tickersOf(await search('_'))).toEqual(['us:UND']);
+    });
+
+    it('⑤ 超长 q 按 64 字符截断后正常匹配, 不 500 (Edge「超长输入」)', async () => {
+      const longName = 'Y'.repeat(80); // varchar(128) 内
+      await seedInstrument({ market: 'us', code: 'LONG', name: longName });
+      await seedAnchor('us:LONG');
+
+      const res = await search('Y'.repeat(100)); // 截断后 64 个 Y, 是 80 个 Y 的子串
+      expect(res.statusCode).toBe(200);
+      expect(tickersOf(res)).toContain('us:LONG');
+    });
+
+    it('⑥ q 空 / 纯空白 / 缺参 ⇒ items: [] 且零 SQL (state_branch 1 服务端半边)', async () => {
+      await seedSearchUniverse();
+
+      const spy = vi.spyOn(prisma, '$queryRaw');
+      try {
+        for (const res of [await search(''), await search('   '), await search()]) {
+          expect(res.statusCode).toBe(200);
+          expect(itemsOf(res)).toEqual([]);
+        }
+        // 短路发生在 use case 入口 —— 空输入连一条 SQL 都不该发。
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

@@ -474,9 +474,12 @@ export class OptionsdeskController {
     return toAnchorListResponse(views);
   }
 
-  // 🚨 074 路由声明序: 本方法 MUST 声明在 `@Get('anchors/:id')` **之前** —— Nest 按声明序
-  // 匹配, 放它后面 `search` 会被 `:id` 吞掉走 parseAnchorId → 404, 且 typecheck / 单测全绿,
-  // 只有 IT 的「路由防吞」臂能抓 (plan D1)。
+  // 🚨 074 路由声明序: 本方法声明在 `@Get('anchors/:id')` **之前** (plan D1 的防吞纪律)。
+  // ⚠️ plan D1 的前提已被实测**订正** (2026-09-04, optionsdesk-074 IT 变异: 把本方法整块挪到
+  // :id 之后 ⇒ 12/12 仍绿): 当前 Fastify adapter (find-my-way) 静态段优先于参数段, 声明序
+  // 并不决定 `search` vs `:id` 的胜负。声明序仍保留在 :id 之前 —— 作为不依赖 router 实现
+  // 细节的防御性体例; 「/anchors/search 必须 200 而非落进 :id 折叠 404」的真保护是 IT 的
+  // 路由防吞臂 (该臂已用「路由改名 ⇒ 落 :id ⇒ 404」变异证明能红)。
   @Get('anchors/search')
   @HttpCode(200)
   @SkipThrottle(skipExcept(OPTIONSDESK_READ_BUCKET))
