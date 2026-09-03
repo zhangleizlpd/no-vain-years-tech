@@ -325,10 +325,11 @@ export class SyncOptionOiSettleUseCase {
     stats: SyncRunStats,
   ): Promise<SettleOutcome> {
     const contracts: SettleContract[] = await this.prisma.optionContract.findMany({
-      // 口径与主轮逐字一致 (FR-028a: 当日到期的合约当日仍可取快照)。
+      // 口径与主轮逐字一致 (FR-028a: 当日到期的合约当日仍可取快照; 软下架的码同样排除, 见主轮)。
       where: {
         underlyingInstrumentId: instrumentId,
         expiryDate: { gte: toDateOnly(sessionDate) },
+        withdrawnAt: null,
       },
       select: { id: true, code: true },
       orderBy: { id: 'asc' },

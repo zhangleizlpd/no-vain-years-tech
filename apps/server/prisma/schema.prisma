@@ -1128,6 +1128,15 @@ model OptionContract {
   expirationCycle        String?  @map("expiration_cycle") @db.VarChar(16)
   settlementMode         String?  @map("settlement_mode") @db.VarChar(16)
   isStandard             Boolean  @map("is_standard")
+  // vendor 已不再挂牌本合约的软下架戳 (null = 仍挂牌, 正常采)。链发现每轮在**成功**取到该标的
+  // 全量到期日阶梯后对账: DB 里 expiry ≥ 当日、但已不在 vendor 当前阶梯里的合约置本列; 阶梯里
+  // 重新出现则清回 null (自愈, 见 sync-option-contract.usecase.ts reconcileListingState)。
+  // 快照 / OI 两轮的工作集过滤本列 IS NULL, 覆盖率判据的分母同步排除 —— 一个 vendor 已删的码
+  // 留在工作集里会毒掉整批 snapshot 调用 (EVIDENCE: 2026-09-02 prod hk:09988 的
+  // `HK.ALB260904C103000` → get_market_snapshot 502「未知股票」, 详见 #334 与本列引入的 fix)。
+  // 🚨 软下架不删行: option_daily_snapshot 对本表是 onDelete:Cascade, 物理删会连历史快照一起没,
+  //   而 vendor 不补历史 ⇒ 自造永久缺口。
+  withdrawnAt            DateTime? @map("withdrawn_at") @db.Timestamptz(6)
   createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

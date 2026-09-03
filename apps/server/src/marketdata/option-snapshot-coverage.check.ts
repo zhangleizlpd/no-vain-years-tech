@@ -160,7 +160,13 @@ export class OptionSnapshotCoverageCheck {
       where: {
         sessionDate: toDateOnly(baselineDate),
         // #255: 市场谓词钉在**标的**上, 见文件头「每一处取数都必须带 market」。
-        contract: { expiryDate: { gte: toDateOnly(sessionDate) }, underlying: { market } },
+        // withdrawnAt: null —— 软下架的合约 (vendor 已删) 不进分母: 我们**刻意**不再采它, 记成缺口
+        // 会让「昨天还在采、今天被摘」的合约在当日判 degraded (假 ERROR)。见 `withdrawn_at` 列注释。
+        contract: {
+          expiryDate: { gte: toDateOnly(sessionDate) },
+          underlying: { market },
+          withdrawnAt: null,
+        },
       },
       select: {
         contractId: true,
@@ -299,7 +305,9 @@ export class OptionSnapshotCoverageCheck {
     presentUnderlyings: ReadonlySet<bigint>,
     alreadyCounted: ReadonlyMap<string, CoverageAccumulator>,
   ): Promise<UnderlyingCoverage[]> {
-    const unexpired = { expiryDate: { gte: toDateOnly(sessionDate) } };
+    // withdrawnAt: null —— 只有**仍挂牌**的未到期合约才算「该采」。一票的未到期合约若全被软下架,
+    // 它无可采 ⇒ 不该进名册, 否则每天判它 absent (假 ERROR)。与分母同源 (见上 baselineRows 注释)。
+    const unexpired = { expiryDate: { gte: toDateOnly(sessionDate) }, withdrawnAt: null };
     const roster = await this.prisma.instrument.findMany({
       where: { market, needSync: true, optionContracts: { some: unexpired } },
       select: { id: true, market: true, code: true },

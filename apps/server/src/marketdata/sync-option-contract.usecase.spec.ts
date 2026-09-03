@@ -64,6 +64,7 @@ interface Harness {
   windowCalls: OptionChainWindowQuery[];
   createMany: ReturnType<typeof vi.fn>;
   instrumentUpsert: ReturnType<typeof vi.fn>;
+  updateMany: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -79,6 +80,8 @@ function makeHarness(opts: {
   ) => OptionContractStatic[] | Promise<OptionContractStatic[]>;
   anchors?: string[];
   existing?: string[];
+  /** 挂牌对账 `updateMany` 的返回行数 (withdraw = 置 withdrawnAt; restore = 清回 null)。 */
+  reconcileCounts?: { withdraw?: number; restore?: number };
 }): Harness {
   const ladder = opts.ladder ?? {};
   const expiryCalls: string[] = [];
@@ -103,6 +106,15 @@ function makeHarness(opts: {
 
   const createMany = vi.fn(async (args: { data: unknown[] }) => ({ count: args.data.length }));
   const instrumentUpsert = vi.fn(async () => ({}));
+  // 对账两条 updateMany 由 `data.withdrawnAt` 区分: Date ⇒ withdraw, null ⇒ restore。
+  const updateMany = vi.fn(async (args: { data: { withdrawnAt: Date | null } }) => {
+    const isWithdraw = args.data.withdrawnAt !== null;
+    return {
+      count: isWithdraw
+        ? (opts.reconcileCounts?.withdraw ?? 0)
+        : (opts.reconcileCounts?.restore ?? 0),
+    };
+  });
   const prisma = {
     anchor: { findMany: vi.fn(async () => (opts.anchors ?? []).map((ticker) => ({ ticker }))) },
     instrument: {
@@ -111,7 +123,7 @@ function makeHarness(opts: {
       ),
       upsert: instrumentUpsert,
     },
-    optionContract: { createMany },
+    optionContract: { createMany, updateMany },
   } as unknown as PrismaService;
 
   return {
@@ -120,6 +132,7 @@ function makeHarness(opts: {
     windowCalls,
     createMany,
     instrumentUpsert,
+    updateMany,
   };
 }
 
@@ -285,6 +298,71 @@ describe('SyncOptionContractUseCase', () => {
     it('两侧集合一致 → 不抛', async () => {
       const h = makeHarness({ ladder: { 'us:PEP': ['2026-09-18'] } });
       await expect(h.useCase.run([PEP], DIM, emptyStats(), makeInput())).resolves.toBe(false);
+    });
+  });
+
+  describe('🚨 挂牌状态对账 —— 软下架 vendor 已删的码 (withdrawn_at, #334 后续)', () => {
+    // 死码毒批病根: vendor 已不认的码留在工作集 ⇒ 整批 snapshot 502。对账在链发现里摘掉它。
+    const usDate = '2026-09-18';
+    const bizDate = usDate; // us 业务日 = 入参日 (beijing6am 折算)
+
+    it('gap.ok 时对账两条 updateMany —— withdraw 谓词 = 未到期 ∧ 不在阶梯 ∧ 尚未 withdrawn', async () => {
+      const h = makeHarness({ ladder: { 'us:PEP': [usDate] } });
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate));
+
+      const withdraw = h.updateMany.mock.calls.find(
+        (c) => (c[0] as { data: { withdrawnAt: unknown } }).data.withdrawnAt !== null,
+      )?.[0] as { where: Record<string, any>; data: { withdrawnAt: Date } } | undefined;
+      expect(withdraw).toBeDefined();
+      expect(withdraw!.where.underlyingInstrumentId).toBe(PEP.id);
+      expect(withdraw!.where.withdrawnAt).toBeNull();
+      // 未到期闸 + 不在 vendor 当前阶梯的到期日 (notIn)。
+      expect(withdraw!.where.expiryDate.gte).toEqual(new Date(`${bizDate}T00:00:00Z`));
+      expect(withdraw!.where.expiryDate.notIn).toEqual([new Date(`${usDate}T00:00:00Z`)]);
+      expect(withdraw!.data.withdrawnAt).toBeInstanceOf(Date);
+    });
+
+    it('gap.ok 时 restore 谓词 = 在阶梯 ∧ 当前 withdrawn → 清回 null (vendor 认回来即复采)', async () => {
+      const h = makeHarness({ ladder: { 'us:PEP': [usDate] } });
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate));
+
+      const restore = h.updateMany.mock.calls.find(
+        (c) => (c[0] as { data: { withdrawnAt: unknown } }).data.withdrawnAt === null,
+      )?.[0] as { where: Record<string, any>; data: { withdrawnAt: null } } | undefined;
+      expect(restore).toBeDefined();
+      expect(restore!.where.underlyingInstrumentId).toBe(PEP.id);
+      expect(restore!.where.expiryDate.in).toEqual([new Date(`${usDate}T00:00:00Z`)]);
+      expect(restore!.where.withdrawnAt).toEqual({ not: null });
+    });
+
+    it('🚨 gap≠ok (链差集) → 一条 updateMany 都不发 —— 差集时 discovered 不是权威阶梯, 摘会误摘真合约', async () => {
+      // 与「gapCheck 差集 MUST 上抛」同一场景: 阶梯有 10-16 但链没返回它。
+      const h = makeHarness({
+        ladder: { 'us:PEP': [usDate, '2026-10-16'] },
+        chainFor: (q) => (q.start === usDate ? [contract('US.PEP260918P130000', usDate)] : []),
+      });
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate)).catch(() => undefined);
+      expect(h.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('对账发生变动 (withdraw / restore 任一 > 0) → 落 notice finding; 稳态零变动 → 无 finding', async () => {
+      const changed = makeHarness({
+        ladder: { 'us:PEP': [usDate] },
+        reconcileCounts: { withdraw: 3 },
+      });
+      const s1 = emptyStats();
+      await changed.useCase.run([PEP], DIM, s1, makeInput(usDate));
+      const notice = s1.findings.find((f) => f.kind === 'notice');
+      expect(notice).toMatchObject({
+        kind: 'notice',
+        step: 'option_contract_listing',
+        detail: { symbol: 'us:PEP', withdrawn: 3, restored: 0 },
+      });
+
+      const steady = makeHarness({ ladder: { 'us:PEP': [usDate] } }); // 默认 counts 全 0
+      const s2 = emptyStats();
+      await steady.useCase.run([PEP], DIM, s2, makeInput(usDate));
+      expect(s2.findings.some((f) => f.kind === 'notice')).toBe(false);
     });
   });
 

@@ -165,6 +165,8 @@ interface Harness {
   updates: RecordedUpdate[];
   /** 段 a 分流前那次「当日已有哪些 eod 行」的查询入参。 */
   existingWhere: unknown[];
+  /** 工作集 (`option_contract.findMany`) 查询入参 —— 验软下架过滤。 */
+  contractWhere: { underlyingInstrumentId?: bigint; withdrawnAt?: null }[];
   /** 段 b 真正落库的行 (替身已按唯一键模拟 `skipDuplicates`)。 */
   inserted: Record<string, unknown>[];
   /** 段 b 递给 `createMany` 的原始 data (含被幂等键挡掉的那些)。 */
@@ -189,6 +191,7 @@ function makeHarness(opts: {
   const queries: OptionSnapshotQuery[] = [];
   const updates: RecordedUpdate[] = [];
   const existingWhere: unknown[] = [];
+  const contractWhere: { underlyingInstrumentId?: bigint; withdrawnAt?: null }[] = [];
   const allContracts = Object.values(opts.contracts ?? {}).flat();
   const idOf = (code: string) => allContracts.find((c) => c.code === code)?.id;
   // 库里当日的快照行 (按 source 分两类) —— 替身**按 source 过滤**, 于是「分流谓词漏掉
@@ -245,6 +248,7 @@ function makeHarness(opts: {
   const prisma = {
     optionContract: {
       findMany: vi.fn(async (args: { where: { underlyingInstrumentId?: bigint } }) => {
+        contractWhere.push(args.where);
         return opts.contracts?.[String(args.where.underlyingInstrumentId)] ?? [];
       }),
       count: vi.fn(async (args: { where: { underlyingInstrumentId: bigint } }) => {
@@ -291,6 +295,7 @@ function makeHarness(opts: {
     queries,
     updates,
     existingWhere,
+    contractWhere,
     inserted,
     createManyArgs,
   };
@@ -319,6 +324,18 @@ describe('SyncOptionOiSettleUseCase (073 轮2 段 a: OI 定稿回填)', () => {
   // 上一个用例的日志污染的。**恒真的清理必须挂在 afterEach 上, 不能靠 happy path 那一行。**
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe('🚨 工作集排除软下架合约 (withdrawn_at, #334 后续)', () => {
+    it('工作集查询带 withdrawnAt: null —— 与主轮同口径, 死码不进轮2 批', async () => {
+      const h = makeHarness({
+        contracts: TCH_CONTRACTS,
+        existing: ['HK.TCH260924P600000', 'HK.TCH260924C600000'],
+      });
+      await h.useCase.run([TCH], DIM, emptyStats(), makeInput(hkt(SESSION_DATE, '21:40')));
+      const workingSet = h.contractWhere.find((w) => w.underlyingInstrumentId !== undefined);
+      expect(workingSet).toMatchObject({ withdrawnAt: null });
+    });
   });
 
   describe('🚨 ① 定稿判据是入口闸 (plan §D3 / state_branch 8)', () => {

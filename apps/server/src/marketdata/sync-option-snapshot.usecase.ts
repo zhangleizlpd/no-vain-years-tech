@@ -477,6 +477,9 @@ export class SyncOptionSnapshotUseCase {
       where: {
         underlyingInstrumentId: instrumentId,
         expiryDate: { gte: toDateOnly(ctx.sessionDate) },
+        // 软下架的码 (vendor 已不认) 排除出工作集 —— 留着会毒掉整批 snapshot 调用 (见下方批循环
+        // 注释与 `option_contract.withdrawn_at` 列注释)。链发现每轮对账置/清此列 (自愈)。
+        withdrawnAt: null,
       },
       select: {
         id: true,
@@ -523,6 +526,10 @@ export class SyncOptionSnapshotUseCase {
     //    (EVIDENCE: 2026-09-03 08:00 prod findings 的 `us:CNC` 那条
     //    `Error: Execution prevented because the circuit breaker is open`)。
     //    而本片要救的形态恰恰相反 —— 单颗坏码只毒一批, 连不成 5 连败, 熔断器不该也不会开。
+    // 📌 **两层防御, 本 try/catch 是下层**: 上面工作集的 `withdrawnAt: null` 已把「vendor 已删的码」
+    //    (如 09988 那颗撞词根的 ALB) 挡在批外, 递归的结构性毒批因此根本不发生。本层兜的是**残余**
+    //    的**瞬态** 502 —— 链里正常返回、只在快照端点偶发拒绝的码, 工作集卫生看不到, 靠这层隔离。
+    //    (软下架机制见 `option_contract.withdrawn_at` 列注释与 sync-option-contract 的对账。)
     const batches = chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
     const batchFailures: string[] = [];
     let batchIndex = 0;

@@ -89,6 +89,8 @@ describe('047 optionsdesk M2b schema expand (Testcontainers PG migrate deploy)',
     // expiry_date 本身就是权威判据, 再存一份布尔即双写必 drift; 乘数则表达不了非标合约的
     // 「整股 + 零碎股现金找零 + 特别现金分配」混合物。两者都是**加了也不会红**的列 ⇒ 这里
     // 钉死整张表的列集, 让任何多出来的列当场撞红 (比 NOT LIKE 之类的模糊断言拦得住更多形态)。
+    // 📌 withdrawn_at 是**正当**新列 (软下架 vendor 已删的码, #334 后续): vendor 挂牌面的可变态,
+    //    不是「是否已到期」那种 expiry_date 的冗余双写。列语义见 schema 上的注释。
     const cols = await prisma.$queryRawUnsafe<{ column_name: string }[]>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'marketdata' AND table_name = 'option_contract'
@@ -108,6 +110,7 @@ describe('047 optionsdesk M2b schema expand (Testcontainers PG migrate deploy)',
       'strike_price',
       'underlying_instrument_id',
       'updated_at',
+      'withdrawn_at',
     ]);
   });
 
