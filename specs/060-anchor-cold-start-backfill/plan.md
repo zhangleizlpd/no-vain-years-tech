@@ -269,6 +269,7 @@ await this.outboxPublisher.publish(tx, 'optionsdesk.anchor-created', { anchorId,
 - **不新增任何 `@Cron`**（触发全靠事件）。
 - **不动** `FUTU_PREFIX_TO_MARKET`（当前只有 `US:'us'`）、期权维度的 `market_scope={us}`、`ANCHOR_GATED_MARKETS=['us']` —— 那三处是并行 HK 集成的地盘，同时改会撞车。hk 在本片只体现为：时段表登记了它，且「哪些市场支持哪些补数内容」的登记表里 hk 是**空表项**（走到冷启动 = 显式 no-op + 结局 `market_not_enabled`）。
 - **不纳入 `underlying_iv_daily`**（spec Out of Scope）：代码自己把它归为「可重拉」（`his_volatility` 3 年滑动窗），且落库是 `upsert` 不是 `skipDuplicates` ⇒ 夜间轮自动覆盖修正。它也没有独立 use case（内联在 `dimension-executor.ts:2602`），纳入就要在 3000 行热路径上做抽取重构。
+  - 🚨 **订正（2026-09-03）**：括号里的「3 年滑动窗」应为**固定数据纪元**（见 046 FR-024 订正注记）。「可重拉」这个归类不变。
 - **不建人工触发入口**（CLI / 端点）。
 
 ## Complexity Tracking

@@ -167,10 +167,6 @@ export class FutuEarningsCalendarAdapter implements EarningsCalendarPort {
    * **一次外呼都不发**。
    *
    * 判据全在本地已知 ⇒ 打出去只是白烧一次限频配额换同一个 400。复杂度 O(1)。
-   *
-   * ASSUMED: 「被拒的那次 400 也会计进 vendor 侧限频统计」——**未验证**, 本仓无实测也无文档
-   * 支持 (只查到「分页只有首页计入限频统计」, 那是另一回事)。它错了不影响本闸该不该在:
-   * 「白烧一次自己的配额」这条理由单独就成立。⇒ 别拿它去论证别处。
    */
   private assertWindowWithinCap(query: EarningsCalendarWindowQuery, ctx: string): void {
     if (!ISO_DATE_RE.test(query.start) || !ISO_DATE_RE.test(query.end)) {
