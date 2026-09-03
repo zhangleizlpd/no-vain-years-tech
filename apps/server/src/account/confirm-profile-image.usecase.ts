@@ -78,8 +78,12 @@ export class ConfirmProfileImageUseCase {
     // HEAD 校验 (plan D3): 对象必须真存在 + content-type 合白名单, 否则拒不落库。
     const probed = await this.probe.head(publicUrl);
     // 🚨 「查不出来」必须先于「不存在」判 —— 否则 OSS 侧一次 5xx / 网络抖动 / 桶被停用
-    // (欠费停用返回 403 而非 404) 都会变成 4xx「你上传的对象不存在」,对一个上传成功的
-    // 用户说谎,而且把可重试的上游故障报成了客户端错误。
+    // 都会变成 4xx「你上传的对象不存在」,对一个上传成功的用户说谎,而且把可重试的上游
+    // 故障报成了客户端错误。
+    // ASSUMED: 「欠费停用返回 403 而非 404」—— **未验证**, 本仓没有停用过桶的实测, 阿里云
+    // 文档也没查到逐场景的状态码表。它错了不会让本判据失效: indeterminate 优先本就是对
+    // 「一切分不清的上游故障」的处置, 403 归哪一类都走同一条安全路径。⇒ 别拿它去论证别的
+    // OSS 状态码行为。
     if (probed.indeterminate) {
       throw new ServiceUnavailableException(
         'OBJECT_PROBE_UNAVAILABLE: cannot verify the uploaded object right now',

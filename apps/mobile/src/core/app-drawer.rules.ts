@@ -22,9 +22,12 @@ const IDEATION_FULLSCREEN_SEGMENTS = ['[id]', 'image-viewer', 'image-annotate'];
  *     内的嵌套 stack（灵感）。返回箭头一律由 navigator header 出，屏内不重复渲（FR-024）。
  *  3. 其余（即 (tabs) 直属屏）→ `hamburger`：一级 tab 屏开全局抽屉（FR-023）。
  *
- * ⚠️ 默认分支**故意 fail-open 到 hamburger** —— tab 根屏的 segments 形态随 expo-router 版本
- * 可能是 `['(app)','(tabs)']` 或 `['(app)','(tabs)','index']`，穷举 tab 名会在改名时静默丢汉堡；
- * 反过来「非 (tabs) 即 back」是结构性判据，不随 tab 集合变动。
+ * ⚠️ 默认分支**故意 fail-open 到 hamburger** —— 穷举 tab 名会在改名时静默丢汉堡；反过来
+ * 「非 (tabs) 即 back」是结构性判据，不随 tab 集合变动。
+ * ASSUMED: 「tab 根屏的 segments 尾段可能是 `['(app)','(tabs)']` 也可能带 `'index'`，随
+ * expo-router 版本变」—— 本仓**没有跨版本实测**。写在这里是因为本函数**刻意不依赖它**：
+ * 判据只看 `includes('(tabs)')`，两种形态都命中。⇒ 它错了本函数照样对；但别拿它去论证
+ * 别处该怎么读 segments。
  */
 export function headerLeadingFor(segments: readonly string[]): HeaderLeading {
   const last = segments[segments.length - 1] ?? '';
