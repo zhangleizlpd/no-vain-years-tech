@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.44.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.44.0...server-v0.44.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **marketdata:** 期权快照批级隔离 —— 一颗 vendor 已不认的码不再毒死整票剩余批 ([#334](https://github.com/zhangleizlpd/no-vain-years-tech/issues/334)) ([c10ef93](https://github.com/zhangleizlpd/no-vain-years-tech/commit/c10ef93c1b2bb51b2e20a6b571863fce93bd4bdd))
+* **marketdata:** 软下架 vendor 已删的期权码 —— 死码不再进快照工作集毒批 ([#334](https://github.com/zhangleizlpd/no-vain-years-tech/issues/334) 后续) ([#338](https://github.com/zhangleizlpd/no-vain-years-tech/issues/338)) ([f06d03a](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f06d03a7359a8ed98e36155e9dbbf9d9fdb9a5ce))
+
 ## [0.44.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.43.0...server-v0.44.0) (2026-09-01)
 
 
