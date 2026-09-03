@@ -45,6 +45,7 @@ import { ListAnchorsUseCase } from './list-anchors.usecase';
 import { GetAnchorUseCase } from './get-anchor.usecase';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase';
 import { GetRadarUseCase } from './get-radar.usecase';
+import { SearchAnchorsUseCase } from './search-anchors.usecase';
 import { GetUnderlyingDetailUseCase } from './get-underlying-detail.usecase';
 import { GetThermometerUseCase } from './get-thermometer.usecase';
 import { GetLegsUseCase } from './get-legs.usecase';
@@ -53,6 +54,8 @@ import {
   AnchorListResponse,
   AnchorPointInTimeResponse,
   AnchorResponse,
+  AnchorSearchQuery,
+  AnchorSearchResponse,
   ChainReportResponse,
   CreateAnchorRequest,
   GetAnchorAtQuery,
@@ -68,6 +71,7 @@ import {
   UnderlyingDetailResponse,
   UpdateAnchorRequest,
   toAnchorListResponse,
+  toAnchorSearchResponse,
   toChainReportResponse,
   toLegTableResponse,
   toRequestedPerspective,
@@ -132,6 +136,7 @@ function toOptionalDate(value: string | null | undefined): Date | null | undefin
 /**
  * POST   /api/v1/optionsdesk/anchors            建锚 (EC-7 重复 ticker → 409)
  * GET    /api/v1/optionsdesk/anchors            锚列表 (待复审 / 已排除筛选)
+ * GET    /api/v1/optionsdesk/anchors/search     锚域模糊搜索 (074, 声明序在 {id} 之前)
  * GET    /api/v1/optionsdesk/anchors/{id}       单锚详情
  * PATCH  /api/v1/optionsdesk/anchors/{id}       改锚 (含人工位置值 / 撤销回落)
  * DELETE /api/v1/optionsdesk/anchors/{id}       删锚 (痕迹保留, 不级联)
@@ -170,6 +175,7 @@ export class OptionsdeskController {
     private readonly getAnchor: GetAnchorUseCase,
     private readonly getAnchorAt: GetAnchorAtUseCase,
     private readonly getRadar: GetRadarUseCase,
+    private readonly searchAnchors: SearchAnchorsUseCase,
     private readonly getUnderlyingDetail: GetUnderlyingDetailUseCase,
     private readonly getThermometer: GetThermometerUseCase,
     private readonly getLegs: GetLegsUseCase,
@@ -466,6 +472,38 @@ export class OptionsdeskController {
       excluded: query.excluded,
     });
     return toAnchorListResponse(views);
+  }
+
+  // 🚨 074 路由声明序: 本方法 MUST 声明在 `@Get('anchors/:id')` **之前** —— Nest 按声明序
+  // 匹配, 放它后面 `search` 会被 `:id` 吞掉走 parseAnchorId → 404, 且 typecheck / 单测全绿,
+  // 只有 IT 的「路由防吞」臂能抓 (plan D1)。
+  @Get('anchors/search')
+  @HttpCode(200)
+  @SkipThrottle(skipExcept(OPTIONSDESK_READ_BUCKET))
+  @Throttle({ 'optionsdesk-read-account': { limit: 120, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Fuzzy-search anchored underlyings (074)',
+    description:
+      'Searches ONLY underlyings that have an anchor — the join IS the domain check: an ' +
+      'instrument without an anchor never appears (FR-004), and there is deliberately no ' +
+      '"create an anchor" side door in this surface. Excluded anchors match as usual with no ' +
+      'extra marker (the domain criterion is "has an anchor", not "shows on the radar"), and ' +
+      'the search is cross-market — never constrained by the current market tab or L-level ' +
+      'filters (FR-005). Matching accepts Chinese name / pinyin abbreviation / full pinyin / ' +
+      'exchange code / canonical ticker prefix; `%` and `_` in the query match literally. ' +
+      'Rows order by exact code hit, then similarity, then code, capped at one page with no ' +
+      'pagination control (FR-011). An empty or whitespace-only q returns an empty items array ' +
+      '(200, no SQL issued) — an empty search box is a normal state, not a validation error.',
+  })
+  @ApiResponse({ status: 200, description: 'Search hits', type: AnchorSearchResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthenticated / account not ACTIVE',
+    type: ProblemDetailResponse,
+  })
+  @ApiResponse({ status: 429, description: 'Rate limit (120/60s)', type: ProblemDetailResponse })
+  async search(@Query() query: AnchorSearchQuery): Promise<AnchorSearchResponse> {
+    return toAnchorSearchResponse(await this.searchAnchors.execute(query.q));
   }
 
   @Get('anchors/:id')

@@ -11,6 +11,7 @@ import { GetAnchorAtUseCase } from './get-anchor-at.usecase.js';
 import { ListAnchorsUseCase } from './list-anchors.usecase.js';
 import { GetAnchorUseCase } from './get-anchor.usecase.js';
 import { GetRadarUseCase } from './get-radar.usecase.js';
+import { SearchAnchorsUseCase } from './search-anchors.usecase.js';
 import { GetUnderlyingDetailUseCase } from './get-underlying-detail.usecase.js';
 import { GetThermometerUseCase } from './get-thermometer.usecase.js';
 import { GetLegsUseCase } from './get-legs.usecase.js';
@@ -72,6 +73,9 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
     GetAnchorUseCase,
     GetAnchorAtUseCase,
     GetRadarUseCase,
+    // 074 锚域模糊搜索读端 —— 锚表 JOIN marketdata.instrument (Q7-B 只读直查, 谓词复刻
+    // local-instrument-search 三路 + ticker 前缀第四路)。
+    SearchAnchorsUseCase,
     // 046 T015 详情读端 —— 唯一新增的跨 ctx 读边 (marketdata 的 IV 日快照, Q7-B 只读直查)。
     GetUnderlyingDetailUseCase,
     // 046 T017 温度计读端 —— 同上再加 marketdata 的指数日线 (VIX/VVIX), 同为 Q7-B 只读直查。
