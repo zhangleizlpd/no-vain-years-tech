@@ -456,6 +456,9 @@ export class SyncOptionSnapshotUseCase {
    * 单票: 取工作集 → 切批 → 逐批打端口 → 过硬门 → 落库。
    *
    * 返 `false` = 该票**无合约**(hard 依赖链发现未满足) ⇒ 调用方计 skipped 且本函数零外呼。
+   *
+   * 🚨 **抛** = 至少一批失败 (末尾聚合一次抛出)。此时失败批之外的行**已经落库** —— 「部分
+   * 落库 + 整票 failed」是刻意的组合, 理由见循环内两处注释。429 不进聚合, 原样上抛。
    */
   private async syncUnderlying(
     instrumentId: bigint,
@@ -505,66 +508,110 @@ export class SyncOptionSnapshotUseCase {
       return false;
     }
 
-    for (const batch of chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES)) {
-      const byCode = new Map(batch.map((c) => [c.code, c]));
-      const { asOf, rows } = await this.snapshot.getSnapshots({
-        underlyingSymbol: symbol,
-        contractCodes: batch.map((c) => c.code),
-      }); // HTTP (事务外)
-      // FR-022: 落库的 `quote_as_of` 就是它 ⇒ 台阶判据取的是**真的写进去的那个值**, 不是
-      // 「本轮开始的时刻 + 估算耗时」那种会与库里对不上的复算。
-      captureTimes?.push(asOf);
+    // 🚨 批与批之间**彼此隔离**: 一批失败 MUST NOT 带走同一票的后续批。
+    // EVIDENCE: 改前本循环无 try/catch, 异常直接冲出 syncUnderlying —— 2026-09-02 prod
+    // hk:09988 因工作集里一颗 vendor 已不认的码 (`HK.ALB260904C103000` → 502「未知股票」)
+    // 整批挂掉, 该票写到 798 行即戛然而止; 与 08-31 的 1188 行相比丢 390 张, 其中含
+    // 09-04 / 09-11 两个**最近到期日整列**。期权快照漏采即永久缺口 (vendor 不提供历史
+    // 交易日的期权快照) ⇒ 一颗坏码的代价 MUST 收敛到它自己那一批。
+    // 📌 同款处置早已写在取证探针里 (`ops/bin/hk-option-post-close-probe.py` 的
+    //    `snapshot_tick`: 「一批 400 条挂掉不该让同一拍的其余批陪葬」), 本处是把它补进生产链路。
+    // 📌 「vendor 整个挂掉时, 这不就从每票 1 发变成每票 N 发了?」—— 熔断器兜住这一档:
+    //    `vendor-http-client.ts` 的 `circuitBreaker(ConsecutiveBreaker(5), halfOpenAfter 10s)`
+    //    连续 5 次 5xx/网络错即打开, 之后的批**在本地被拒**、不落到 vendor 上
+    //    (EVIDENCE: 2026-09-03 08:00 prod findings 的 `us:CNC` 那条
+    //    `Error: Execution prevented because the circuit breaker is open`)。
+    //    而本片要救的形态恰恰相反 —— 单颗坏码只毒一批, 连不成 5 连败, 熔断器不该也不会开。
+    const batches = chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
+    const batchFailures: string[] = [];
+    let batchIndex = 0;
+    for (const batch of batches) {
+      batchIndex++;
+      try {
+        const byCode = new Map(batch.map((c) => [c.code, c]));
+        const { asOf, rows } = await this.snapshot.getSnapshots({
+          underlyingSymbol: symbol,
+          contractCodes: batch.map((c) => c.code),
+        }); // HTTP (事务外)
+        // FR-022: 落库的 `quote_as_of` 就是它 ⇒ 台阶判据取的是**真的写进去的那个值**, 不是
+        // 「本轮开始的时刻 + 估算耗时」那种会与库里对不上的复算。
+        captureTimes?.push(asOf);
 
-      // 标的自身那行就在同一批里 (spot 不另发调用); 期权行经 `underlyingCode` 关联它。
-      const spotByCode = new Map(rows.filter((r) => !r.isOption).map((r) => [r.code, r.last]));
-      const optionRows = rows.filter((r) => r.isOption);
-      const guardRows = optionRows.map((row) => {
-        const contract = byCode.get(row.code);
-        if (contract === undefined) {
-          // 落到别的合约名下比没落更难发现 (同链发现的「合约归属错配」闸)。
-          throw new Error(
-            `[option-snapshot] 快照行不在本批请求内 (契约变更 / 批次错配?): 请求 ${symbol} ` +
-              `${batch.length} 个合约, 却收到 ${row.code}`,
+        // 标的自身那行就在同一批里 (spot 不另发调用); 期权行经 `underlyingCode` 关联它。
+        const spotByCode = new Map(rows.filter((r) => !r.isOption).map((r) => [r.code, r.last]));
+        const optionRows = rows.filter((r) => r.isOption);
+        const guardRows = optionRows.map((row) => {
+          const contract = byCode.get(row.code);
+          if (contract === undefined) {
+            // 落到别的合约名下比没落更难发现 (同链发现的「合约归属错配」闸)。
+            throw new Error(
+              `[option-snapshot] 快照行不在本批请求内 (契约变更 / 批次错配?): 请求 ${symbol} ` +
+                `${batch.length} 个合约, 却收到 ${row.code}`,
+            );
+          }
+          return this.toGuardRow(row, contract, spotByCode);
+        });
+
+        const verdicts = checkOptionSnapshotRows(guardRows);
+        this.reportRejected(symbol, verdicts, stats);
+        this.reportUnjudged(symbol, verdicts, stats, unjudgedWatch);
+
+        const persistable = optionRows.filter((_, i) => verdicts[i].admitted);
+        const spotOf = (row: OptionSnapshotRow) => spotByCode.get(row.underlyingCode ?? '') ?? null;
+        const data = persistable.map((row) =>
+          this.toSnapshotRow(row, byCode.get(row.code) as WorkingContract, {
+            ...ctx,
+            quoteAsOf: asOf,
+            spot: spotOf(row),
+          }),
+        );
+        // 🚨 异常监控的判定面 = **落库行** (T024a): 被硬门拒的行已由 reportRejected 出过 ERROR,
+        // 再进 WARN 就是同一件事报两遍; 且它们不会进快照历史 ⇒ 拿它们报 ③ 会让「记忆面」与
+        // 「判定面」永久错位 (那个 root 天天报, 而 T024 的 ③ 恰恰是为了只报一次)。
+        for (const row of persistable) {
+          anomalyRows.push(
+            this.toAnomalyRow(row, byCode.get(row.code) as WorkingContract, spotOf(row)),
           );
         }
-        return this.toGuardRow(row, contract, spotByCode);
-      });
-
-      const verdicts = checkOptionSnapshotRows(guardRows);
-      this.reportRejected(symbol, verdicts, stats);
-      this.reportUnjudged(symbol, verdicts, stats, unjudgedWatch);
-
-      const persistable = optionRows.filter((_, i) => verdicts[i].admitted);
-      const spotOf = (row: OptionSnapshotRow) => spotByCode.get(row.underlyingCode ?? '') ?? null;
-      const data = persistable.map((row) =>
-        this.toSnapshotRow(row, byCode.get(row.code) as WorkingContract, {
-          ...ctx,
-          quoteAsOf: asOf,
-          spot: spotOf(row),
-        }),
+        for (const chunk of chunked(data, SNAPSHOT_ROW_CHUNK)) {
+          addWritten(
+            stats,
+            (
+              await this.prisma.optionDailySnapshot.createMany({
+                data: chunk,
+                skipDuplicates: true,
+              })
+            ).count,
+          );
+        }
+        if (optionRows.length < batch.length) {
+          // 覆盖率核对是 FR-045 (另 task) 的事; 这里只留可 grep 的痕, 不自建第二套判据。
+          this.logger.warn(
+            `快照行数少于请求合约数 (停牌 / 刚摘牌?): ${symbol} ` +
+              `请求 ${batch.length} 收到 ${optionRows.length}`,
+          );
+        }
+      } catch (err) {
+        // 🚨 429 **原样上抛**: 它是顺延信号而非本批的失败 (port 契约
+        // `OptionSnapshotBudgetExhaustedError`)。限频下继续打后续批 = 无视顺延, 只会把同一个
+        // 429 再要一遍, 且白吃 worker 的重试次数 —— 批级容错不适用于这一档。
+        if (err instanceof OptionSnapshotBudgetExhaustedError) throw err;
+        batchFailures.push(`批 ${batchIndex}/${batches.length}: ${String(err)}`);
+        this.logger.error(
+          `[option-snapshot] 单批失败, 该票剩余批继续: ${symbol} ` +
+            `批 ${batchIndex}/${batches.length} (${batch.length} 个合约) —— ${String(err)}`,
+        );
+      }
+    }
+    // 🚨 有批失败 ⇒ 整票**仍报 failed** (调用方 catch 计 failed + 落 findings)。就地吞掉等于
+    // 把硬失败降级成「静默的部分成功」: `sync_run` 显示全绿, 而逐合约覆盖率探针的**基线日**
+    // 会把这次缺口吸收成新常态 —— 2026-09-03 实测, hk:09988 缺 390 张两天后探针判
+    // `798/798 达标`, 缺口从此再也不会红。
+    if (batchFailures.length > 0) {
+      throw new Error(
+        `[option-snapshot] ${symbol} ${batchFailures.length}/${batches.length} 批失败 ` +
+          `(其余批已落库): ${batchFailures.join(' | ')}`,
       );
-      // 🚨 异常监控的判定面 = **落库行** (T024a): 被硬门拒的行已由 reportRejected 出过 ERROR,
-      // 再进 WARN 就是同一件事报两遍; 且它们不会进快照历史 ⇒ 拿它们报 ③ 会让「记忆面」与
-      // 「判定面」永久错位 (那个 root 天天报, 而 T024 的 ③ 恰恰是为了只报一次)。
-      for (const row of persistable) {
-        anomalyRows.push(
-          this.toAnomalyRow(row, byCode.get(row.code) as WorkingContract, spotOf(row)),
-        );
-      }
-      for (const chunk of chunked(data, SNAPSHOT_ROW_CHUNK)) {
-        addWritten(
-          stats,
-          (await this.prisma.optionDailySnapshot.createMany({ data: chunk, skipDuplicates: true }))
-            .count,
-        );
-      }
-      if (optionRows.length < batch.length) {
-        // 覆盖率核对是 FR-045 (另 task) 的事; 这里只留可 grep 的痕, 不自建第二套判据。
-        this.logger.warn(
-          `快照行数少于请求合约数 (停牌 / 刚摘牌?): ${symbol} ` +
-            `请求 ${batch.length} 收到 ${optionRows.length}`,
-        );
-      }
     }
     return true;
   }

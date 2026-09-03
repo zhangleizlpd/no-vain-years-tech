@@ -18,7 +18,7 @@ import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 /**
  * 逐日快照维度 use case 单测 (047 T016, Small —— mock port + mock prisma, 零容器)。
  *
- * 🚨 本文件盯的五条都是「盲写会踩、且踩了不会红」的坑:
+ * 🚨 本文件盯的六条都是「盲写会踩、且踩了不会红」的坑:
  * ① **hard 依赖链发现** (FR-031): 合约表无行 ⇒ **零外呼**, 不是「请求了但返回空」
  * ② **`oi_as_of` = 上一交易日** (Guardrail 6 / plan D-DATA-4): 美股期权 OI 在**盘前**更新 ⇒
  *    T 日收盘后采的快照, 其 OI 是 **T−1 日**的。归到 `session_date` **永远不会红**, 但活跃度
@@ -27,6 +27,7 @@ import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
  *    停牌腿会把采集时刻说成上周)
  * ④ 硬门违规行**逐行**拒绝 + ERROR, 其余行照常入库 (整批回滚 = 当日唯一一次采集机会全丢)
  * ⑤ 批量上限切在调用方 (shim > 400 codes 直接 400, 绝不截断)
+ * ⑥ **一批失败不带走同一票的后续批** —— 但整票仍报 failed (容错 ≠ 把硬失败降级成静默部分成功)
  */
 
 /** 北京 06:00 = us 维度 cron 时刻; 入参就是它对应的 **us 业务日**。 */
@@ -721,6 +722,61 @@ describe('SyncOptionSnapshotUseCase', () => {
 
       expect(stats.failed).toBe(1);
       expect(persistedRows(h.createMany)).toHaveLength(0);
+    });
+
+    it('🚨 中间批失败 → 后续批照常采, 只丢中毒那一批 (整票仍计 failed)', async () => {
+      // prod 2026-09-02 hk:09988 实形: 工作集里一颗 vendor 已不认的码让整批 502, 而当时
+      // 批循环无 try/catch ⇒ 该票**剩余的批全部没跑**, 实测丢 390 行 (798 写完即戛然而止)。
+      const codes = Array.from(
+        { length: 2 * OPTION_SNAPSHOT_MAX_CONTRACT_CODES + 1 },
+        (_, i) => `US.PEP260918P${String(130000 + i).padStart(6, '0')}`,
+      );
+      let call = 0;
+      const h = makeHarness({
+        contracts: { '1': codes.map((c) => contractRow(c)) },
+        rowsFor: (q) => {
+          call++;
+          if (call === 2) throw new Error('502 未知股票 US.PEP260918P130399');
+          return [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()];
+        },
+      });
+      const stats = emptyStats();
+
+      await h.useCase.run([PEP], DIM, stats, makeInput());
+
+      // ① 第 3 批仍被请求 —— 本条要钉的就是它 (改前是 2, 因为异常冲出了整个 syncUnderlying)
+      expect(h.queries).toHaveLength(3);
+      // ② 第 1 + 3 批的行照常落库; 丢的只有中毒那一批
+      expect(persistedRows(h.createMany)).toHaveLength(OPTION_SNAPSHOT_MAX_CONTRACT_CODES + 1);
+      // ③ 但整票**仍是失败** —— 吞掉它等于把硬失败降级成静默的部分成功, 覆盖率探针也就看不见
+      expect(stats.failed).toBe(1);
+      expect(stats.ok).toBe(0);
+      expect(JSON.stringify(stats.findings)).toContain('未知股票');
+    });
+
+    it('🚨 429 落在中间批 → 立刻顺延, MUST NOT 继续打后续批 (批级容错不适用于限频)', async () => {
+      const codes = Array.from(
+        { length: 2 * OPTION_SNAPSHOT_MAX_CONTRACT_CODES + 1 },
+        (_, i) => `US.PEP260918P${String(130000 + i).padStart(6, '0')}`,
+      );
+      let call = 0;
+      const h = makeHarness({
+        contracts: { '1': codes.map((c) => contractRow(c)) },
+        rowsFor: (q) => {
+          call++;
+          if (call === 2) throw new OptionSnapshotBudgetExhaustedError('option-snapshot us:PEP');
+          return [...q.contractCodes.map((c) => quoteRow(c)), underlyingRow()];
+        },
+      });
+      const stats = emptyStats();
+
+      const budgetExhausted = await h.useCase.run([PEP], DIM, stats, makeInput());
+
+      expect(budgetExhausted).toBe(true);
+      // 限频下继续打第 3 批 = 无视顺延信号, 只会把同一个 429 再要一遍
+      expect(h.queries).toHaveLength(2);
+      expect(stats.failed).toBe(0);
+      expect(stats.skipped).toBe(1);
     });
   });
 
