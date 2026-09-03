@@ -364,6 +364,12 @@ export function sessionCloseMinutes(market: string, kind: SessionKindStatus): nu
  * 📌 半日市**同样成立**且同样是 10：CAS 整体平移到 12:00–12:10，而本函数按 market 取值、
  * 由调用方叠加在该 `kind` 的收盘分钟上 ⇒ 不必按 kind 再分叉。
  *
+ * EVIDENCE: CAS 四段与半日市平移均出自 HKEX 官方 —— 全日「参考价定盘 16:00–16:01 · 输单
+ * 16:01–16:06 · 不可取消 16:06–16:08 · **随机收市 16:08–16:10**」, 半日市整体平移为
+ * 「12:00–12:01 · 12:01–12:06 · 12:06–12:08 · **12:08–12:10**」。出处 (2026-09-03 复核):
+ * https://www.hkex.com.hk/Services/Trading/Securities/Overview/Trading-Mechanism?sc_lang=en
+ * https://www.hkex.com.hk/Global/Exchange/FAQ/Securities-Market/Trading/CAS?sc_lang=en
+ *
  * 🚫 **MUST NOT 把它调大来「稳一点」**：每多一分钟就是采集窗口少一分钟，而现役 cron 全部落在
  * 收盘后数小时 ⇒ 调大对正常路径零收益，只会让**事件驱动**路径（锚首建冷启动）更容易落
  * `intraday_skipped`（终态不重试）。要动它得先有那个市场的定稿证据 —— `hk` 那条给出的正是

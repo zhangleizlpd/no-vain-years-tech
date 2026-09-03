@@ -323,9 +323,11 @@ describe.skipIf(!ENABLED)('富途标的级 IV 历史序列真 vendor IT (env-gat
     ).rejects.toBeInstanceOf(VendorHttpError);
   }, 60_000);
 
-  it('🚨 约 3 年滑动窗深度边界仍在原处 (FR-024 「今天不拉、明年就没了」的前提)', async () => {
-    // 实测 2026-07-29: US.PEP 776 行回到 2023-06-26。若 4 年前那一整年真能取到且从 from 开始，
-    // 说明窗深变了 —— 那时该做的是**复核 FR-024 的回填深度**，不是删断言。
+  it('🚨 历史深度的底仍在原处 (固定数据纪元的前提; 变了 ⇒ 复核 FR-024 回填深度)', async () => {
+    // 实测: 2026-07-29 US.PEP 776 行回到 2023-06-26; 2026-08-22 港股触底 2023-06-27 (065 探针)。
+    // 底在 24 天里没动 ⇒ 固定纪元而非滑动窗 (出处见 `underlying-iv.rules.ts` 的 EVIDENCE)。
+    // 若 4 年前那一整年真能取到且从 from 开始，说明底变了 —— 那时该做的是**复核 FR-024 的回填
+    // 深度**，不是删断言。
     const from = `${year - 4}-01-01`;
     const out = await iv.getIvHistoryRange({ symbol: 'us:PEP', from, to: `${year - 4}-12-31` });
     expect(out.length === 0 || out[0].date > from).toBe(true);

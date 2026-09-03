@@ -3142,7 +3142,8 @@ export class DimensionExecutorRegistry {
           error: String(err),
         });
         // 🚨 FR-030 告警等级 = 「**可重拉**」, 刻意**不照抄期权链的「当日必须叫醒人」**:
-        // 这一档 IV 读数在 `his_volatility` 的 3 年滑动窗里还留着, 次日重跑 / 回填都能补回来;
+        // 这一档 IV 读数在 `his_volatility` 的历史序列里还留着 (固定纪元、非滑动窗, 出处见
+        // `underlying-iv.rules.ts` 的 EVIDENCE), 次日重跑 / 回填都能补回来;
         // 期权链 EOD 是漏采即**永久**缺口, 才配那个等级。把两者混同会让告警面失去分辨力。
         // 「不破坏已落历史」在结构上成立: 失败发生在 tx 外的 HTTP 段, 没有任何写路径被触及。
         this.logger.warn(
@@ -3464,11 +3465,12 @@ export class DimensionExecutorRegistry {
   /**
    * 046 T009 `his_volatility` 历史序列回填 → `underlying_iv_history` (FR-024)。
    *
-   * ## 🚨 首次上线**拉满 vendor 上限 (约 3 年, 维度行 `history_depth = 1095`)**
+   * ## 🚨 首次上线**拉满 vendor 可回看的全部历史 (维度行 `history_depth = 1095`)**
    *
-   * 不是只拉 IVP 所需的 252 交易日下限。决定性理由是**不可逆性**: `his_volatility` 的 3 年是
-   * **滑动窗** —— 今天不拉, 明年再想要中间那段就**永久没有了**(与期权 EOD「漏采即永久缺口」
-   * 同形, 只是窗口更宽)。成本可忽略: 12 只 × 4 页 ≈ 48 次, 一次性。
+   * 不是只拉 IVP 所需的 252 交易日下限。理由是**拉满无害且一次性成本可忽略** (12 只 × 4 页
+   * ≈ 48 次)。🚨 **不是**「滑动窗、今天不拉明年就没了」—— 那条紧迫性论证已被实测证伪, 出处见
+   * `underlying-iv.rules.ts` 的 EVIDENCE (底是固定数据纪元)。别照着期权 EOD 那条「漏采即永久
+   * 缺口」的不对称性套过来, 两者不同形。
    *
    * ## 分页只有一份实现
    *

@@ -3736,7 +3736,8 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
       // 失败发生在 tx 外的 HTTP 段 ⇒ 零写路径被触及 (「不破坏已落历史」的单测半边;
       // 真 DB 半边归 T011 IT)。
       expect(spies.ivUpsert).not.toHaveBeenCalled();
-      // 告警等级 = 可重拉 (his_volatility 3 年滑动窗里还留着这一档读数), 不照抄期权链的
+      // 告警等级 = 可重拉 (his_volatility 历史序列里还留着这一档读数; 固定纪元非滑窗, 出处见
+      // `underlying-iv.rules.ts` 的 EVIDENCE), 不照抄期权链的
       // 「当日必须叫醒人」—— 那条是漏采即永久缺口才配的等级。
       const msgs = warn.mock.calls.map((c) => String(c[0]));
       expect(msgs.some((m) => m.includes('underlying_iv_daily') && m.includes('可重拉'))).toBe(
@@ -3750,8 +3751,9 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
 
 // 046 T009 US3: underlying_iv_daily 的 **backfill 分支** = `his_volatility` 历史序列回填。
 // 与 delta 分支同住一个维度但取数形态完全不同 (区间分页 vs 批量快照), 故单独一个 describe。
-// 🚨 首次上线**拉满 vendor 上限约 3 年** (history_depth=1095): 那 3 年是**滑动窗**, 今天不拉、
-// 明年再要中间那段就永久没了 —— 所以本组断言盯的是「窗口不重不漏」而不只是「跑通了」。
+// 🚨 首次上线**拉满 vendor 可回看的全部历史** (history_depth=1095)。本组断言盯的是「窗口不重
+// 不漏」而不只是「跑通了」—— 拉满的理由是成本可忽略, **不是**「滑动窗、明年就没了」(那条已被
+// 实测证伪, 出处见 `underlying-iv.rules.ts` 的 EVIDENCE)。
 describe('046 T009 underlying_iv_daily backfill (his_volatility ≤364 天分页, 拉满 3 年)', () => {
   const NOW = new Date('2026-06-05T14:00:00Z');
   const AS_OF = '2026-06-05';
