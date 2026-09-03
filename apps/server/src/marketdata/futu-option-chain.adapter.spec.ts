@@ -131,7 +131,8 @@ describe('FutuOptionChainAdapter', () => {
     });
 
     it('🚨 066 T11 链请求参数**恰为** code/start/end/option_type —— 不传 option_cond_type / data_filter (FR-015)', async () => {
-      // 采集端一旦筛就**丢证据且不可回补**: vendor 不提供历史交易日的链快照, 今天没取到的
+      // 采集端一旦筛就**丢证据且不可回补**: vendor 不提供历史交易日的链快照, 出处见
+      // `option-chain.port.ts`, 今天没取到的
       // 那些腿明天补不回来。筛是**读取面**的事 (shim 支持这两个参数, 采集面刻意不用)。
       const { http, calls } = makeShim([chainRow('US.PEP260918P130000', 130)]);
       await makeAdapter(http).getChainWindow({

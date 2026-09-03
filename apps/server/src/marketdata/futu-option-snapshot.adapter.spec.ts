@@ -516,7 +516,8 @@ describe('066 T17 FutuOptionSnapshotAdapter — vendor 时间戳按行所属市�
  * 本块只断**解析层**三件事: ⓐ 行不丢 ⓑ 标记带上 ⓒ 值落 `null`。
  *
  * 📌 丢行的后果: 「腿在但算不出档」与「这条腿今天整行没采到」变得不可区分 —— 前者是数学固有
- * 现象、后者是真缺口, 而 vendor 不提供历史交易日的期权快照, 丢一行就是永久缺席。
+ * 现象、后者是真缺口, 而 vendor 不提供历史交易日的期权快照, 出处见 `option-snapshot.port.ts`,
+ * 丢一行就是永久缺席。
  */
 /** 缺失形态: `blank` = 键在值为 null (shim 已判定并标记) / `absent` = 键整块缺席。 */
 type GreeksMissingShape = 'blank' | 'absent';

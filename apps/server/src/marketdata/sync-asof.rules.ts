@@ -48,7 +48,8 @@ export type AsOfBasis = (typeof AS_OF_BASIS)[number];
  *   `(contract_id, session_date, source)`)。⚠️ **本格当前不改变它的行为**: 它的
  *   `session_date` 取自**执行时刻**的 `exchangeCalendarDateForScope`, 不取 `asOf`。它的真闸是
  *   `manual-sync-session-guard` 的 `isSessionComplete` —— 「这一场还没收盘就别采」, 因为
- *   vendor 不提供历史交易日的链快照 ⇒ 正确动作是**拒绝执行**而不是订正日期。列在这里是让
+ *   vendor 不提供历史交易日的链快照, 出处见 `option-chain.port.ts` ⇒
+ * 正确动作是**拒绝执行**而不是订正日期。列在这里是让
  *   口径**声明为真**, 别让下一个人以为它是 `calendar-day`。
  *
  * 其余 24 个维度保持 `calendar-day` 的两类理由：

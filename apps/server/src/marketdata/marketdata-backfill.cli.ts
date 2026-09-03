@@ -179,7 +179,8 @@ export async function executeBackfill(
   // 🚨 时点闸 (2026-08-17 prod 实撞), 排在入队之前。理由与维度集见
   // manual-sync-session-guard.ts 的文件头。
   // 📌 **backfill 模式同样受约束**: `option_daily_snapshot` 的采集路径**无 mode 分支** ——
-  // backfill 下落的仍是 `source='eod'` 的**当日**行 (vendor 不提供历史交易日的期权快照),
+  // backfill 下落的仍是 `source='eod'` 的**当日**行 (vendor 不提供历史交易日的期权快照, 出处见
+  // `option-snapshot.port.ts`),
   // 所以「回填」这个词在这个维度上不构成豁免理由。
   assertClosedSessionForManualSync(rows, now);
 

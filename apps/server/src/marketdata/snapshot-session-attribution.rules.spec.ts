@@ -87,7 +87,8 @@ describe('resolveSnapshotAttribution', () => {
       // 本格是**建锚冷启动**的落点 —— 它由用户行为触发，落在 D 日 16:10–21:30 之间时，
       // 端点返的仍是 D−1 的 OI。判据若不吃 `now`，这一格会把 D−1 的持仓量标成 D：
       // 数字与标签**双错**，且 `createMany(skipDuplicates)` 让当晚 23:30 那轮正确的写入被
-      // 静默跳过 ⇒ 那一场的 OI 从此拿不回来（供应方不提供历史快照）。
+      // 静默跳过 ⇒ 那一场的 OI 从此拿不回来（供应方不提供历史快照, 出处见
+      // `option-snapshot.port.ts`）。
       // 📌 `spec` 三元组**逐点不变** —— 治的是标签，不是挡写（2026-08-25 定案）。
       const r = resolveSnapshotAttribution({
         ...base,

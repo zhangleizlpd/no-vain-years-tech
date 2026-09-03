@@ -44,7 +44,7 @@ const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * 这里取**更严的那种读法**（含首尾计数 ≤30 ⇒ 端点差 ≤29），与同目录
  * `underlying-iv.rules.ts` 的 `HIS_VOLATILITY_MAX_SPAN_DAYS` 同口径：猜严了成本是多切一页
  * （一次调用），猜宽了则整轮链发现被 vendor 4xx 打断、当日快照全无 —— 而**期权快照漏采即
- * 永久缺口**（vendor 不提供历史交易日的链快照）。不对称性一边倒。
+ * 永久缺口**（vendor 不提供历史交易日的链快照, 出处见 `option-chain.port.ts`）。不对称性一边倒。
  *
  * 🚫 这是 vendor 侧的硬约束，MUST NOT 与 `ratelimit.py` 的 10 次/30s 限频混为一谈（那条是
  * 官方真值，本片一个字不改）。
