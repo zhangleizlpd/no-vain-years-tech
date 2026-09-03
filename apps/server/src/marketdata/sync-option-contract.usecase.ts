@@ -281,10 +281,64 @@ export class SyncOptionContractUseCase {
     }
 
     const gap = gapCheckExpiryDates([...discovered], expiryDates);
-    return gap.ok
-      ? null
-      : `${symbol} 权威列表有而未发现=[${gap.missingFromDiscovered.join(',')}] ` +
-          `发现了但不在列表=[${gap.unexpectedInDiscovered.join(',')}]`;
+    if (!gap.ok) {
+      // 🚨 差集 = 分窗或 vendor 侧不自洽 ⇒ **不对账下架状态**: 此时 discovered 不是 vendor 的
+      // 权威阶梯 (少了 / 多了到期日), 拿它当「vendor 现存清单」去摘会误摘真合约。
+      return (
+        `${symbol} 权威列表有而未发现=[${gap.missingFromDiscovered.join(',')}] ` +
+        `发现了但不在列表=[${gap.unexpectedInDiscovered.join(',')}]`
+      );
+    }
+    await this.reconcileListingState(instrumentId, symbol, businessDate, discovered, stats);
+    return null;
+  }
+
+  /**
+   * 挂牌状态对账 (软下架, 见 `schema.prisma` 的 `OptionContract.withdrawnAt` 注释)。
+   *
+   * **只在 gap.ok 的干净轮调用** —— 此刻 `discovered` == vendor 权威阶梯 (gapCheck 已核), 故:
+   * · DB 里 expiry ≥ 当日、expiry 不在 `discovered` 里的合约 → vendor 已删该到期列 → 置 withdrawnAt;
+   * · expiry 在 `discovered` 里、当前 withdrawn 的合约 → vendor 认回来了 → 清 withdrawnAt (自愈复采)。
+   *
+   * 收敛的是「一颗 vendor 已不认的码毒掉整批 snapshot」这个形态 (2026-09-02 hk:09988, #334): 摘掉
+   * 之后死码不进快照 / OI 两轮的工作集, 也不进覆盖率分母。软戳不删行 —— 历史快照 onDelete:Cascade,
+   * 物理删会连历史一起没且 vendor 不补 (schema 列注释)。
+   *
+   * 复杂度: 两条 `updateMany` (窄谓词, 走 `ix_option_contract_underlying_expiry`)。稳态零变动 ⇒
+   * 两条各 0 行, 无 finding。
+   */
+  private async reconcileListingState(
+    instrumentId: bigint,
+    symbol: string,
+    businessDate: string,
+    discovered: ReadonlySet<string>,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    const liveExpiries = [...discovered].map(toDateOnly);
+    const withdrawn = await this.prisma.optionContract.updateMany({
+      where: {
+        underlyingInstrumentId: instrumentId,
+        expiryDate: { gte: toDateOnly(businessDate), notIn: liveExpiries },
+        withdrawnAt: null,
+      },
+      data: { withdrawnAt: new Date() },
+    });
+    const restored = await this.prisma.optionContract.updateMany({
+      where: {
+        underlyingInstrumentId: instrumentId,
+        expiryDate: { in: liveExpiries },
+        withdrawnAt: { not: null },
+      },
+      data: { withdrawnAt: null },
+    });
+    if (withdrawn.count > 0 || restored.count > 0) {
+      // notice (非失败, 值得人看): 下架 / 复采是 vendor 挂牌面变化的可观测信号, 不改本轮判定。
+      stats.findings.push({
+        kind: 'notice',
+        step: 'option_contract_listing',
+        detail: { symbol, withdrawn: withdrawn.count, restored: restored.count },
+      });
+    }
   }
 
   /**

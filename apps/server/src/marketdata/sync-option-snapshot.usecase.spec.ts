@@ -303,15 +303,17 @@ describe('SyncOptionSnapshotUseCase', () => {
       expect(stats).toMatchObject({ scanned: 0, failed: 0 });
     });
 
-    it('工作集 = 该票「到期日 ≥ 当前 us 交易日」的全部合约 (FR-028a: ≥ 不是 >)', async () => {
+    it('工作集 = 该票「到期日 ≥ 当前 us 交易日」∧ 未软下架的全部合约 (FR-028a: ≥ 不是 >)', async () => {
       // 当日到期的合约当日仍可取快照 (官方「结束日期请输入今天或未来的日期」); 写成 `>`
       // 只在到期日当天整批静默丢腿。业务日期按 **us 时区** —— 用上海日会每周固定丢周五。
+      // withdrawnAt: null —— vendor 已删的码排除出工作集, 否则毒掉整批 snapshot 调用 (#334 后续)。
       const h = makeHarness({ contracts: PEP_CONTRACTS });
       await h.useCase.run([PEP], DIM, emptyStats(), makeInput('2026-06-12'));
 
       expect(h.contractWhere[0]).toMatchObject({
         underlyingInstrumentId: 1n,
         expiryDate: { gte: day('2026-06-12') },
+        withdrawnAt: null,
       });
     });
   });

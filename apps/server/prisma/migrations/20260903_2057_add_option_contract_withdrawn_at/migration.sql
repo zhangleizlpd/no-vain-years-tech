@@ -1,0 +1,29 @@
+-- option_contract 加软下架戳 withdrawn_at —— expand-only (加一列 nullable, 无回填, 可回滚)。
+-- 单 PR 合规 (ADR-0035 + migration-rules.md §2: 非破坏性 expand)。
+--
+-- ══ 病根: vendor 已删的码留在工作集里, 毒掉整批 snapshot 调用 ═══════════════════════════
+-- 快照 / OI 两轮的工作集 = DB 里 expiry ≥ 当日的全部合约 (option_contract insert-only, 只增不删)。
+-- 富途按「词根串市场」: 港股 09988(阿里) 的助记符 ALB 与美股 Albemarle 逐字节撞
+--   (EVIDENCE: futu-option-chain.adapter.ts 类注释 + 2026-08-25 三臂实测 US.ALB 136 行 56 行属 09988)。
+-- vendor 某天起把 09988 的 09-04/09-11 到期列返成 US.ALB ⇒ dropForeignMarketRows 丢弃 ⇒ 那两列的
+--   真港股合约今天发现不到; 但**早先已入库**的那颗 `ALB260904C103000` 仍躺在工作集里, 拿它调
+--   get_market_snapshot 整个请求 502「未知股票」⇒ 同批 399 颗合法腿一起拿不到报价。
+--   (EVIDENCE: 2026-09-02 prod hk:09988 sync_run findings + 09988 连三日只写 798/1188 行; 详见 #334。)
+-- #334 已把「毒批连坐后续批」收敛到「只毒本批」, 本列再进一步: 让死码根本不进 snapshot 调用。
+--
+-- ══ 语义 (自愈, 双向) ══════════════════════════════════════════════════════════════════
+-- null      = 仍挂牌, 正常采。
+-- 非 null   = vendor 当前到期日阶梯里已无此合约的软下架戳 (值 = 对账时刻, 仅审计用)。
+-- 链发现每轮**成功**取到该标的全量阶梯后对账 (sync-option-contract.usecase.ts reconcileListingState):
+--   · DB 里 expiry ≥ 当日、但已不在当前阶梯里的 → 置 withdrawn_at;
+--   · 阶梯里重新出现的 → 清回 null (vendor 认回来了, 自动复采)。
+-- 🚨 对账**只在该标的链发现整轮 gap.ok 时执行** —— 链调用失败/差集时一律不动, 否则一次链抖动
+--   会把整票误判成下架 (与 sync-option-snapshot.usecase.ts:43「链失败不许静默变空采集」同源顾虑)。
+--
+-- ══ 🚨 为什么是软戳而不是 DELETE ══════════════════════════════════════════════════════
+-- option_daily_snapshot 对 option_contract 是 onDelete:Cascade ⇒ 物理删合约会连历史快照一起删,
+-- 而 vendor 不提供历史交易日的期权快照 ⇒ 删 = 自造永久缺口。软戳保历史、且可无损复采。
+--
+-- 📌 不新建索引: 工作集查询已走 ix_option_contract_underlying_expiry (underlying + expiry),
+--    withdrawn_at IS NULL 在 per-underlying 的小结果集上内存过滤即可, 单列低选择性建索引是负收益。
+ALTER TABLE "marketdata"."option_contract" ADD COLUMN "withdrawn_at" TIMESTAMPTZ(6);
