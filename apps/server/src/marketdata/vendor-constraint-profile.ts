@@ -22,6 +22,8 @@ export interface VendorConstraintProfile {
   retry: { maxAttempts: number };
   /**
    * 命中 429 (限频) 后, 重试前的最小固定等待 (ms)。理杏仁分钟级封禁 → ≥60s;
+   *    出处: p0 探针 2026-07-11 —— 硬限速每分钟 1000 次 / 每秒 36 次, 任一超即 429;
+   *    master F4 记「服务端每分钟自检」, ≥60s 由此而来。
    * 无 SLA 的逆向源 (东财) 取小值, 失败交 FallbackChain 兜底。
    */
   transientWaitMs: number;
@@ -35,6 +37,7 @@ export interface VendorConstraintProfile {
    *
    * **取值口径 = 上限保护, 不是 SLA 目标**: 宁可放过慢请求, 也不误杀正常的大区间查询
    * (富途 kline 一次可拉 10 年日线)。故按 vendor 的**最慢正常请求**留足余量取值, 与
+   *    出处: p3b E38 实测 —— 单票 2,584 行 / 2016-04-21..2026-07-31。
    * `transientWaitMs` 的立意无关 —— 后者管"被限频后等多久", 本值管"多久算它死了"。
    */
   timeoutMs: number;

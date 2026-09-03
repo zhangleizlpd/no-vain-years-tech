@@ -150,7 +150,8 @@ const MARKET_SESSION: Record<
  * 吗」。那个形状对**夜间 cron** 成立 (hk 跑 23:30, 恒在定稿之后), 对**事件驱动**路径不成立:
  * 锚首建冷启动由用户行为触发, 落在 D 日 16:00–21:30 之间时, 端点返的仍是 **D−1 的 OI**, 而
  * 静态判据照样把它标成 D ⇒ 数字与标签**双错**, 且 `createMany(skipDuplicates)` 会让当晚 23:30
- * 那轮**正确的**写入被静默跳过 —— 那一场的 OI 从此拿不回来 (供应方不提供历史快照)。
+ * 那轮**正确的**写入被静默跳过 —— 那一场的 OI 从此拿不回来 (供应方不提供历史快照, 出处见
+ * `option-snapshot.port.ts`)。
  * 066 spec 的实测结论只把推论走到了 cron 那条路; 本表补上第二条。
  *
  * 🚨 **`null` 是刻意的 fail-safe, 不是省事**: 猜「已定稿」而实际是 T+1 ⇒ 把上一场的 OI 标成
@@ -362,6 +363,12 @@ export function sessionCloseMinutes(market: string, kind: SessionKindStatus): nu
  * 是 `16:07:49`，不是 16:00。
  * 📌 半日市**同样成立**且同样是 10：CAS 整体平移到 12:00–12:10，而本函数按 market 取值、
  * 由调用方叠加在该 `kind` 的收盘分钟上 ⇒ 不必按 kind 再分叉。
+ *
+ * EVIDENCE: CAS 四段与半日市平移均出自 HKEX 官方 —— 全日「参考价定盘 16:00–16:01 · 输单
+ * 16:01–16:06 · 不可取消 16:06–16:08 · **随机收市 16:08–16:10**」, 半日市整体平移为
+ * 「12:00–12:01 · 12:01–12:06 · 12:06–12:08 · **12:08–12:10**」。出处 (2026-09-03 复核):
+ * https://www.hkex.com.hk/Services/Trading/Securities/Overview/Trading-Mechanism?sc_lang=en
+ * https://www.hkex.com.hk/Global/Exchange/FAQ/Securities-Market/Trading/CAS?sc_lang=en
  *
  * 🚫 **MUST NOT 把它调大来「稳一点」**：每多一分钟就是采集窗口少一分钟，而现役 cron 全部落在
  * 收盘后数小时 ⇒ 调大对正常路径零收益，只会让**事件驱动**路径（锚首建冷启动）更容易落

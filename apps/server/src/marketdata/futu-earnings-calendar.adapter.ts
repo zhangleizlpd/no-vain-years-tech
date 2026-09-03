@@ -166,8 +166,7 @@ export class FutuEarningsCalendarAdapter implements EarningsCalendarPort {
    * 窗宽 / 日期形态的**本地**前置闸：不合规直接抛 {@link EarningsCalendarRejectedError}，
    * **一次外呼都不发**。
    *
-   * 判据全在本地已知 ⇒ 打出去只是白烧一次限频配额换同一个 400，而那次 400 还会在 vendor 侧
-   * 的限频统计里留下一笔。复杂度 O(1)。
+   * 判据全在本地已知 ⇒ 打出去只是白烧一次限频配额换同一个 400。复杂度 O(1)。
    */
   private assertWindowWithinCap(query: EarningsCalendarWindowQuery, ctx: string): void {
     if (!ISO_DATE_RE.test(query.start) || !ISO_DATE_RE.test(query.end)) {

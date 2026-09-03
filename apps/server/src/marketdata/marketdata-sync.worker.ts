@@ -160,7 +160,10 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
    * ⇒ 失败走 WARN, 且收敛到行时打一行 log (0 行是稳态, 不打)。
    */
   private async convergeInterruptedRuns(jobId: string | undefined, reason: string): Promise<void> {
-    // 理论上恒非空 (bullmq 入队即分配 id); 类型上可选, 故守住 —— 空串会让 where 命中一片空。
+    // 类型上可选, 故守住 —— 空串会让 where 命中一片空。
+    // ASSUMED: 「bullmq 入队即分配 id, 故此处恒非空」——**未验证**, 本仓无实测也未查文档。
+    // 正因如此这道守卫不能省: 它错了就是 where 命中一片空、把别的 run 一起收敛掉, 而守住
+    // 之后错不错都无所谓。⇒ 🚫 别据此把这个 guard 删了「简化」。
     if (jobId === undefined || jobId === '') return;
     try {
       const converged = await this.runRecorder.convergeInterrupted(jobId, reason);

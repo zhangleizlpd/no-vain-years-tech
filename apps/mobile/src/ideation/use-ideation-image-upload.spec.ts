@@ -92,7 +92,7 @@ describe('压缩参数（对齐 M3 + size 上限）', () => {
 });
 
 describe('buildIdeationUploadFormData', () => {
-  it('fields.* 先 append、file 最后（OSS 忽略 file 之后字段）', () => {
+  it('fields.* 先 append、file 最后（OSS 官方明文的顺序要求）', () => {
     const form = buildIdeationUploadFormData(FIELDS, WEB_PROCESSED);
     const entries = [
       ...(form as unknown as { entries: () => Iterable<[string, unknown]> }).entries(),

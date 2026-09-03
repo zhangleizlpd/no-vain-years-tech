@@ -16,6 +16,18 @@
  * 按 {@link OPTION_SNAPSHOT_MAX_CONTRACT_CODES} 做 —— 同一段边界逻辑写两遍必漂移 (同
  * `option-chain.port.ts` 对 ≤30 天窗的处置)。adapter 侧只做**前置拒绝**(零外呼), 不替调用方切。
  *
+ * ## 为什么「快照漏采即永久缺口」
+ *
+ * EVIDENCE: 富途 `get_market_snapshot` 不提供历史交易日的快照 —— 官方文档参数表**唯一入参是
+ * `code_list`**, 无任何日期 / 交易日 / as-of 维度 ⇒ 结构上问不出过去某一日。出处
+ * https://openapi.futunn.com/futu-api-doc/quote/get-market-snapshot.html (2026-09-03 复核)。
+ *
+ * 🚨 **这条是从参数表得出的结构性结论, 不是文档明文** —— 该页并没有写「不支持历史」这句话
+ * (明文只在链那侧, 见 `option-chain.port.ts` 的 EVIDENCE)。它失效的形态是 vendor 悄悄加了一个
+ * 日期入参: 那时「漏采即永久缺口」这条不对称性整个松掉, 而它支撑的一串处置 (脏行照常入库 /
+ * 拒绝执行而非订正日期 / backfill 只落当日行) 会全部失去理由, **且不会有任何断言变红**。
+ * 本模块多处复述此结论, **指针以此处为准**。
+ *
  * ## 失败语义显式 —— **镜像** `option-chain.port.ts` 那一对, 不新造第三套
  *
  * | 结局 | 错误 | 调用方处置 |

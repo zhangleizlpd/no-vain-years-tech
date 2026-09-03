@@ -55,7 +55,7 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  *
  * 端口不接受筛选入参, adapter 也不提供「只要 PUT」的旁路。链接口**一次返双边、调用数完全
  * 不变**, 在这里滤掉一分钱不省, 却会给 CALL 侧留下**不可回补**的永久缺口 (vendor 不提供
- * 历史交易日的链快照)。M4 的 wheel / CC 要 CALL 时买不回来。
+ * 历史交易日的链快照, 出处见 `option-chain.port.ts`)。M4 的 wheel / CC 要 CALL 时买不回来。
  *
  * ## 🚨 非标合约照常返回 (Guardrail 4 / p3b E7·E19·E20)
  *
@@ -169,7 +169,13 @@ function splitFutuCode(code: string): { market: string; symbol: string } | null 
     : { market, symbol: code.slice(dot + 1) };
 }
 
-/** 日期列（实测可带时间后缀）→ `YYYY-MM-DD`；不合形态返 null 交调用方 throw。 */
+/**
+ * 日期列 → `YYYY-MM-DD`；不合形态返 null 交调用方 throw。
+ *
+ * EVIDENCE: 截前 10 位是**容错**, 不是已知需求 —— 仓内 272 处 `strike_time` 观测值全部是裸
+ * `YYYY-MM-DD`（`__fixtures__/hk-option-chain-00700-2026-08-23.json` 等, 2026-09-03 全仓复算）,
+ * **零个带时间后缀的样本**。此前这里写的是「实测可带时间后缀」, 与现有证据相反, 已删。
+ */
 function dateOrNull(v: unknown): string | null {
   const date = (typeof v === 'string' ? v : '').slice(0, 10);
   return ISO_DATE_RE.test(date) ? date : null;

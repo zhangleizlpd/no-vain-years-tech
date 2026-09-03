@@ -76,6 +76,7 @@ updated_at: 2026-08-03
 - [X] T008 [Server] **`underlying_iv_daily` 维度 executor**（FR-023/FR-026/FR-028/FR-029/FR-030/FR-031, plan D1）：`dimension-executor.ts` 加该维度 —— 走 `factExecutor` 路径（工作集 = `loadActiveInstruments`，**已含 `need_sync = true`** ⇒ 无锚不采、加第 13 只锚零代码自动纳入）；**业务日期按 A′**（`marketDateFor`，us 时区）；落库幂等 upsert；vendor 不可达 → 记失败 + 按「可重拉」等级告警（**不照抄期权链的当日必醒**，FR-030）→ verify: `dimension-executor.spec.ts` 加 case（⚠️ 该文件住 `src/` 且非 `.it.` ⇒ 在 `unit` project，**零容器是机器强制的硬不变量** —— 依据是 `.claude/rules/test-taxonomy-trigger.md` 的**七条不变量**，选错**会红**，**不属 Guardrail 面**）——**只放纯逻辑**：工作集构造只含开闸标的 + A′ 求值用 us 时区不是 `shanghaiToday`；**「失败不破坏已落历史」需真 DB ⇒ 归 T011 的 IT**，禁往这个 unit spec 里塞容器或共享 PG helper
 
 - [X] T009 [Server] **`his_volatility` 回填 + 首次拉满 3 年**（FR-024, plan D7）：回填路径接 `marketdata-backfill.cli.ts`（沿 `us_equity_bar` 形态）；用 T004 的窗口切分按 ≤364 天分页；**首次上线拉满 vendor 上限（约 3 年）**——理由写进代码注释：`his_volatility` 的 3 年是**滑动窗**，今天不拉明年那段就永久没了 → verify: `marketdata-backfill.cli.spec.ts` 加 case —— 3 年区间产出的请求数与窗口边界正确 + 分页结果合并后**逐日无重无漏** + 额度估算不再复现 `us_equity_bar` 那次「报 350,760 实跑 7」的高估
+  - 🚨 **订正（2026-09-03）**：T009 里「理由写进代码注释：3 年是滑动窗」那部分已按实测订正 ——底是固定数据纪元而非滑动窗，代码注释已改（见 `underlying-iv.rules.ts` 的 EVIDENCE）。任务本身的产出与验收不变。
 
 - [X] T010 [Server] **IVP 双算对表 → 采集侧告警**（FR-034/FR-035, plan D4）：采集 `underlying_iv_daily` 时顺带由历史序列自算一次分位（T004 的纯函数），与 `overview` 直读值比对，按三档进告警面。🚨 **只进告警，不进 API 响应、不进 UI** —— 显示值恒为 `overview` 直读值（**FR-035 显示口径单源**）；**窗口不足时跳过对表且不告警**（缺窗口不是口径漂移，state_branch 已列）。存在理由写进注释：富途聚合规则未文档化，这是唯一能发现它改规则的信号 → verify: 单测覆盖三档 + 窗口不足跳过；**断言响应 DTO 里不含自算值**（防它顺着 DTO 漏进 UI）
 

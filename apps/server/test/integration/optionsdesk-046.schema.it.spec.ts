@@ -207,7 +207,9 @@ describe('046 marketdata M2a schema expand (Testcontainers PG migrate deploy)', 
     expect(dims[0]?.cronExpr).toBe('0 0 6 * * *');
     expect(dims[1]?.cronExpr).toBe('0 0 10 * * *');
     expect(dims.map((d) => d.marketScope)).toEqual([['us'], ['us']]);
-    // 标的级: overview 批量上限 500 codes + his_volatility 滑动窗约 3 年 (首次拉满, FR-024)。
+    // 标的级: overview 批量上限 500 codes (出处见 futu-shim `app.py` 的 OVERVIEW_MAX_CODES)
+    // + his_volatility 首次拉满可回看全部历史 (FR-024; 底是固定纪元非滑窗, 出处见
+    // `underlying-iv.rules.ts` 的 EVIDENCE)。
     expect(dims[0]?.batchSize).toBe(500);
     expect(dims[0]?.historyDepth).toBe(1095);
     // 指数级: 覆盖式全量文件, **没有「回填区间」这个概念** ⇒ history_depth 恒 NULL。

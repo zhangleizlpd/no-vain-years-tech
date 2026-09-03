@@ -45,7 +45,8 @@ export function IvpSegmentBar({
   ivPercentile,
   testID = 'optionsdesk-ivp-bar',
 }: IvpSegmentBarProps) {
-  // 位置百分比只在有值时求；越界值钳到 [0,100]（vendor 分位理论上不会越界，钳制是兜底）。
+  // 位置百分比只在有值时求；越界值钳到 [0,100]。钳制是**无条件兜底** —— 不依赖任何关于
+  // vendor 分位值域的假设（本仓没有该值域的实测, 也不需要有: 越界与否都渲染正确）。
   const markPct = ivPercentile === null ? null : Math.min(100, Math.max(0, ivPercentile));
 
   return (

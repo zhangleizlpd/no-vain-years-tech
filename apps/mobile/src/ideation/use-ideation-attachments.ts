@@ -78,7 +78,14 @@ export function useIdeationAttachments(fireToast: (msg: string) => void): UseIde
     // MEDIA_LIBRARY 读权限**（picker 不靠它）。而 expo-image-picker 的
     // requestMediaLibraryPermissionsAsync 在 API 29–32 仍会申请其 manifest 里 maxSdkVersion=28
     // 的 WRITE_EXTERNAL_STORAGE → 该权限在 API≥29 已不可授予 → 聚合恒返 not-granted → 旧的
-    // `if(!granted) return` 把选图永久卡死（真机 Mate50 / API 31 实证）。故移除权限前置门直接调起。
+    // `if(!granted) return` 把选图永久卡死。故移除权限前置门直接调起。
+    // EVIDENCE: 机制的一半有官方明文 —— `writeOnly` 「Defaults to false」(= 同时请求读**和写**),
+    // 且权限表把 WRITE_EXTERNAL_STORAGE 列为「automatically added through AndroidManifest.xml」,
+    // https://docs.expo.dev/versions/latest/sdk/imagepicker/ (2026-09-03 复核)。
+    // 卡死这一半是**实测**: 真机 Mate50 / **API 31** 复现。
+    // 🚨 但「API 29–32」这个**区间是外推** —— 实测只有 31 这一个点, 29/30/32 是按
+    // 「maxSdkVersion=28 + API≥29 不可授予」的机制推的, 文档没有逐版本记载。要拿它论证
+    // 别的 API 级行为之前, 先补那一级的实测。
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: 'images',
       allowsMultipleSelection: true,

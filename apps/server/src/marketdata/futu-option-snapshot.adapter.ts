@@ -202,7 +202,8 @@ function collectInconsistent(
  * 单行 `option-snapshot` → {@link OptionSnapshotRow}。
  *
  * **坏行 throw、不跳过**: 唯一的必填是 `code` —— 没有它这行无从归属, 而静默丢一行 = 那条腿
- * 当日的快照永久缺席 (vendor 不提供历史交易日的期权快照), 且完整性核对的分子跟着少一个,
+ * 当日的快照永久缺席 (vendor 不提供历史交易日的期权快照, 出处见 `option-snapshot.port.ts`),
+ * 且完整性核对的分子跟着少一个,
  * 缺口自我掩盖。其余字段缺失一律 `null` (缺 greeks 是固有现象, 见类注释)。
  */
 function parseSnapshotRow(

@@ -14,6 +14,7 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  *
  * GET `<shim>/universe?market=US`，Bearer 鉴权。shim 侧默认 `types=STOCK,ETF` 并按 `code` 去重 ——
  * 🚨 **必须 STOCK ∪ ETF 合并**：富途把 `US.VICI`（REIT）的 `stock_type` 分类成 **`ETF`**，只查
+ * ⇒ 出处: p3b E31; 夹具 `services/futu-shim/tests/test_mappers.py`。
  * STOCK 会静默丢掉我们自己的锚。**并集在 shim 侧完成**，本 adapter 不重复该逻辑，只消费结果。
  *
  * ★ **本机实测（2026-07-31，经 77 → B↔C 隧道打真接口）**，以下每条都影响了本文件的取舍：

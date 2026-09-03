@@ -30,7 +30,10 @@ export interface ClaimedEvent {
  * claimable = `status='pending'` (从未 claim) 或 (`status='claimed'` 且租约已过期) —— 后者
  * 是 worker claim 后未在租约内 result/ack 的重投递 (可见性超时)。`FOR UPDATE SKIP LOCKED`
  * 让并发 poll 各自跳过被锁行 → 各拿不同事件, 零重复投递 (Prisma 原生 API 不支持 SKIP
- * LOCKED, 故走 $queryRaw; 全仓首例)。单语句 UPDATE...WHERE id=(SELECT...FOR UPDATE SKIP
+ * LOCKED, 故走 $queryRaw; 全仓首例 —— EVIDENCE: 生成的 client
+ * `apps/server/src/generated/prisma` (Prisma 7.8.0) 里 `skipLocked` / `skip locked` **零命中**,
+ * 2026-09-03 复算; 升 Prisma 大版本时值得回来复查一次)。
+ * 单语句 UPDATE...WHERE id=(SELECT...FOR UPDATE SKIP
  * LOCKED LIMIT 1) RETURNING = 隐式事务内原子 claim。
  *
  * 委托 token (拉取层鉴权): claim 时即时签, **不落表** (避免在队列里坐等过期, mirror IM

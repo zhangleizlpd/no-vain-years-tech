@@ -42,13 +42,15 @@ export type AsOfBasis = (typeof AS_OF_BASIS)[number];
  *
  * - `eod_bar` / `us_equity_bar` —— `asOf` 是 vendor 区间请求的**右端**。盘中问「今天」时,
  *   富途会返一根**进行中**的日 K (理杏仁返空数组 ⇒ 同一个错只在 us 显形, 2026-08-19 取证),
+ * ⇒ 出处: `08-19-time-semantics-unification` §4.5 取证。
  *   落库后被 `skipDuplicates` 焊死。右端退到已收盘 session ⇒ 根本不去问那一天。
  * - `underlying_iv_daily` —— 同为 session 粒度; 落库是 upsert 故可自愈, 但没有理由先写错。
  * - `option_daily_snapshot` —— session 粒度且**不可逆** (`createMany(skipDuplicates)` on
  *   `(contract_id, session_date, source)`)。⚠️ **本格当前不改变它的行为**: 它的
  *   `session_date` 取自**执行时刻**的 `exchangeCalendarDateForScope`, 不取 `asOf`。它的真闸是
  *   `manual-sync-session-guard` 的 `isSessionComplete` —— 「这一场还没收盘就别采」, 因为
- *   vendor 不提供历史交易日的链快照 ⇒ 正确动作是**拒绝执行**而不是订正日期。列在这里是让
+ *   vendor 不提供历史交易日的链快照, 出处见 `option-chain.port.ts` ⇒
+ * 正确动作是**拒绝执行**而不是订正日期。列在这里是让
  *   口径**声明为真**, 别让下一个人以为它是 `calendar-day`。
  *
  * 其余 24 个维度保持 `calendar-day` 的两类理由：

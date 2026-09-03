@@ -11,6 +11,12 @@
 // 2. **build-time 内联**：`process.env.EXPO_PUBLIC_*` 的**点访问**会被 Metro 在打包时替换为
 //    字面常量（沿 src/core/api/setup.ts 既有模式）。括号访问 `process.env['…']` 不会内联 —
 //    勿改写法。因为是 bundle 常量，OTA（eas update）无法翻转它 → 公开构建恒 off。
+//    EVIDENCE: Expo 官方明文 —— 「Every environment variable must be statically
+//    referenced as a property of `process.env` using JavaScript's dot notation for it
+//    to be inlined」，且「`process.env['EXPO_PUBLIC_KEY']` or `const {EXPO_PUBLIC_X} =
+//    process.env` is invalid and will not be inlined」。
+//    https://docs.expo.dev/guides/environment-variables/ (2026-09-03 复核)。
+//    🚨 解构赋值同样不内联 —— 这条本文件此前没写，改这行时最容易顺手踩。
 //
 // 注入点（per profile / target，见 06-14 plan §Deploy 绑定）：
 //   - EAS production（公开/商店）           → "false"

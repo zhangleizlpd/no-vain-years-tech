@@ -93,7 +93,8 @@ export interface ChainReportColumn {
    */
   readonly isMonthlyChain: boolean;
   /**
-   * 该到期日的平值隐含波动率, vendor 原样百分数; 插值不可得 ⇒ `null` ⇒ 曲线该点**断开**
+   * 该到期日的平值隐含波动率, vendor 原样百分数 (**不是**小数 —— p3b E39 首跑实测 12 行的
+   * `iv` 值域 26.5–68.8); 插值不可得 ⇒ `null` ⇒ 曲线该点**断开**
    * (FR-023, 🚫 MUST NOT 以任何形式填充)。
    */
   readonly atmIv: number | null;

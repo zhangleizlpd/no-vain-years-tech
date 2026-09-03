@@ -45,6 +45,7 @@ const FUNDAMENTAL_METRICS = [
 /**
  * 按 market 取合法 fundamental metricsList。hk 剔除 `cmc`（cn 有效但 hk 无效, 理杏仁
  * all-or-nothing 会拒整请求）；cn 用全量。分位字段（pe_ttm.y3.cvpos 等）hk 全下发, 保留。
+ * ⇒ 出处: #670, 同 `lixinger-financials.adapter.ts`。
  */
 function fundamentalMetricsFor(market: string): string[] {
   return market === 'hk'

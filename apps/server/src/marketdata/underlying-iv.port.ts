@@ -84,6 +84,7 @@ export interface UnderlyingIvPort {
 
   /**
    * 单只标的的 IV/HV 日序列, 按 `date` **升序**返回 (vendor 侧是降序, 由 adapter 翻正)。
+   *    出处: `07-29-futu-option-api-inventory` 记 `his_volatility` 返回按日期降序。
    *
    * 🚨 **单次调用 = 单个窗口**, adapter 不做区间切分: vendor 单次跨度上限由 shim 侧硬校验
    * (超限 400, 不静默截断), 切分是回填侧的事 (`splitBackfillWindows`, T004)。同一段逻辑

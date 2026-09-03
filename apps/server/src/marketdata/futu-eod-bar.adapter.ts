@@ -58,6 +58,10 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * schema 注释写 `prev_close`「理杏仁 ex_rights 不下发 → 落库永远 null，**列保留供未来实时
  * 源**」。富途下发 `last_close` 真值 ⇒ 那个"未来"就是这里。
  *
+ * EVIDENCE: 同一张 `marketdata.daily_bar` 里 us 行 **1927/1927 全有 `prev_close`**, 而 cn/hk
+ * (理杏仁源) **0/176631** —— 本机 dev 库 `mbw_poc` 2026-09-03 复算, 口径与观测值同见
+ * `lixinger-eod-bar.adapter.ts` 的 EVIDENCE。
+ *
  * 真端点 / 真隧道 / 富途历史视野边界由 env-gated 真 vendor IT 校真
  * (`marketdata.futu-shim.vendor`, `RUN_MARKETDATA_IT`)。
  */

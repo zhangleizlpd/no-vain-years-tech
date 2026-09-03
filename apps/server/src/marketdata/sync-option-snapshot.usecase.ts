@@ -60,7 +60,8 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  *
  * `checkOptionSnapshotRows` 从不抛异常, ERROR 的上抬归本 use case。违规行不入库、同批其余行
  * 照常入库 —— 整批回滚会让一条脏行带走**当日唯一一次采集机会** (vendor 不提供历史交易日的
- * 期权快照), 且「MUST NOT 破坏已落历史」在 append-only + `skipDuplicates` 下天然成立。
+ * 期权快照, 出处见 `option-snapshot.port.ts`), 且「MUST NOT 破坏已落历史」在 append-only +
+ * `skipDuplicates` 下天然成立。
  *
  * ## 幂等 (FR-037) = `createMany(skipDuplicates)` on `(contract_id, session_date, source)`
  *
@@ -347,7 +348,7 @@ export class SyncOptionSnapshotUseCase {
    * 建锚时, 端点返的仍是 **D−1 的 OI**, 而静态判据照样标 D ⇒ 数字与标签双错。
    * 🚨 更要命的是它**不可回补**: 本处 `createMany(skipDuplicates)` 的唯一键是
    * `(contract_id, session_date, source)` ⇒ 冷启动先落的那批行会让当晚 23:30 那轮**正确的**
-   * 写入被静默跳过, 而供应方不提供历史快照。
+   * 写入被静默跳过, 而供应方不提供历史快照, 出处见 `option-snapshot.port.ts`。
    * 📌 与之相对, `underlying_spot` 在同一时刻的偏早 (港股 CAS 撮合前的最后成交价) **不治** ——
    * `quote_as_of` 已如实记录采集时刻, 那个偏差是**披露过的**; 而 OI 标签没有任何列在披露它。
    */

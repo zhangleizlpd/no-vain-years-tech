@@ -38,7 +38,8 @@ import { exchangeCalendarDateForScope } from './session-clock.js';
  *
  * 不设行权价带、不设到期日上限 (含 LEAPS, FR-032)、不滤边 (端口层根本没有 `optionType` 入参,
  * 真正的 `option_type=ALL` 由 adapter 写死)、非标合约照常落库只打 `is_standard` 标 (FR-033)。
- * 判据都是同一条不对称性: **快照漏采即永久缺口** (vendor 不提供历史交易日的链快照), 而链接口
+ * 判据都是同一条不对称性: **快照漏采即永久缺口** (vendor 不提供历史交易日的链快照, 出处见
+ * `option-chain.port.ts`), 而链接口
  * 一次返双边、调用数完全不变。排除只发生在下游选约层。
  *
  * ## 🚨 业务日期按 us 市场时区 (FR-036 / plan D-DATA-10)

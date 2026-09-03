@@ -518,9 +518,18 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
         """Daily IV / HV / underlying-price series for one underlying. Backs the
         `underlying_iv_history` backfill and the IVP self-computation.
 
-        Depth is ~3 years and it is a **sliding** window (measured 2026-07-29 on
-        US.PEP: 776 rows back to 2023-06-26), which is why the first backfill
-        pulls the whole thing — a year not fetched today is gone next year.
+        Depth is ~3 years and the floor behaves like a **fixed epoch**, not a
+        sliding window. EVIDENCE: US.PEP bottomed at 2023-06-26 (776 rows,
+        measured 2026-07-29); HK bottomed at 2023-06-27 when re-probed 24 days
+        later (2026-08-22, probe 065 — the 2022-08-25..2023-08-23 window returns
+        only 41 rows starting at 2023-06-27, the one before it is empty). A
+        3-year sliding window would have moved the floor to ~2023-08-22 by then,
+        and the two markets would not sit one day apart. Futu documents neither
+        the lookback depth nor a retention policy — only the 364-day per-call
+        span. The first backfill still pulls everything, but because that is
+        cheap and harmless, NOT because "a year not fetched today is gone next
+        year" — that urgency argument is refuted; see
+        apps/server/src/marketdata/underlying-iv.rules.ts for the canonical note.
 
         🚨 A window wider than `HIS_VOL_MAX_SPAN_DAYS` is refused, never clipped;
         see that constant for why the SDK will not do it for us.

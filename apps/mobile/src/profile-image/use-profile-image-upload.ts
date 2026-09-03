@@ -3,7 +3,8 @@
 // 架构 = client 直传 Aliyun OSS（PostObject 表单直传），后端只签发一次性 scope 受限
 // 凭证 + 不碰图片字节（plan § API Contracts EP1/EP2）。一次上传 = 4 步串行：
 //   1. EP1 拿 PostObject 凭证 { host, objectKey, fields }（后端算 V4 签名）
-//   2. 组 FormData（fields.* 先 append、`file` 字段**必须最后** —— OSS 忽略 file 之后的字段）
+//   2. 组 FormData（fields.* 先 append、`file` 字段**必须最后** —— OSS 官方明文的顺序要求,
+//      出处见 server `integrations/oss/oss-post-object.adapter.ts` 的 EVIDENCE）
 //   3. fetch(host, POST) 直传 OSS（native {uri,name,type} / web Blob）
 //   4. EP2 confirm(objectKey) 落库 → invalidate /me（hero / 资料卡随 useMe 刷新）
 //
@@ -104,7 +105,8 @@ export function validateImageFile(
   }
 }
 
-// 组 PostObject 表单。fields.* 全部先 append、`file` **最后**（OSS 忽略 file 之后的字段）。
+// 组 PostObject 表单。fields.* 全部先 append、`file` **最后**
+// （OSS 官方明文的顺序要求, 出处见 server `oss-post-object.adapter.ts` 的 EVIDENCE）。
 export function buildUploadFormData(
   fields: UploadCredentialFieldsResponse,
   processed: ProcessedImage,
