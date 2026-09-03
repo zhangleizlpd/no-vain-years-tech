@@ -31,7 +31,14 @@ function lixPctToString(v: unknown): string | null {
  *
  * 数据点字段 `date/open/high/low/close/volume/amount/change/to_r` 已求证 (实测 ex_rights 响应)。
  * `change` = **官方涨跌幅小数** (已含除权除息调整, 非相邻收盘差) → ×100 存 changePct;
- * `to_r` = 换手率 → turnoverRate。理杏仁不下发 prevClose → null (官方昨收由读侧 close+changePct 反推)。
+ * `to_r` = 换手率 → turnoverRate。理杏仁不下发 prevClose → null (官方昨收由读侧 close+changePct
+ * 反推)。
+ *
+ * EVIDENCE: 「不下发 prevClose」按库内实收行复算 —— 本机 dev 库 `mbw_poc` 2026-09-03,
+ * `marketdata.daily_bar` join `instrument` 分市场统计: cn **0/123907**、hk **0/52724** 行有
+ * `prev_close`; 同一张表的 us (富途源) 是 **1927/1927 全有**。⇒ 空值是**源侧不下发**, 不是
+ * 我们映射漏了。反向的 `change_pct` 也吻合: cn/hk 有 (113098 / 43916), us 恒 null。
+ * ⚠️ 这是**本机 dev 库**快照, 不是 prod 复算 —— 同源同管线, 严格说是旁证。
  *
  * 这是**摄取侧** live 实现: 016 同步管线调它灌 PG DailyBar;读端点 (报价/详情/K线)
  * 读 PG, 不在请求路径直打理杏仁。

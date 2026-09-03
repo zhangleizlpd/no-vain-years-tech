@@ -34,6 +34,7 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * ## 分批在这里, 切窗不在这里
  *
  * `overview` 单批上限 500 codes 是 **vendor 硬限**, shim 侧超限返 400。批量拆分是「把一次
+ * ⇒ 出处: futu-shim `app.py` 的 `OVERVIEW_MAX_CODES` (official, p3b E9)。
  * 逻辑调用翻译成 vendor 能接受的物理调用」= 协议翻译, 属 adapter 的活。
  *
  * 而 `his-vol` 的 ≤364 天跨度上限**不在这里切**: 回填的窗口序列由 `splitBackfillWindows`

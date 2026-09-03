@@ -24,6 +24,7 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  *   **electronic retrieval system** … the Materials without Cboe's prior written consent」;
  *   官方免费的**只有历史文件** (= 本 adapter 在用的这两个), 盘中/实时的官方通路是付费
  *   Cboe Global Indices Feed, **无免费档**。风险来自 ToS 合同条款而非 robots.txt ——
+ * ⇒ 出处: p3b E24 (三条官方页面证据)。
  *   `robots.txt` 恰恰**没有**禁这些路径, 所以「爬得动」不构成任何许可信号。
  *
  * ⇒ 本 adapter 能发起的 URL 全集 = {@link CBOE_HISTORY_CSV_URLS} 里那两条, 穷举且由单测

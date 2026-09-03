@@ -122,6 +122,7 @@ function previousCalendarDay(date: string): string {
  *
  * 🚨 **它不回答「这一场收了没有」** —— 那是 {@link sessionWatermark}。拿本函数当采集业务日
  * 用, 就是 #103 的病灶: 盘中触发 ⇒ 拿到一根**尚未收盘**的日 K (富途会返「进行中」的 K 线,
+ * ⇒ 出处: `08-19-time-semantics-unification` §4.5 取证 (该文同时记「仓内零处记录这条」)。
  * 理杏仁返空数组 —— 所以同一个错只在 us 显形), 落库即半根, 且写路径 `skipDuplicates`
  * 让它**永久驻留**。
  *

@@ -258,6 +258,7 @@ export interface VolatilityPoint {
  * 热度快照抓取入参 (某 hot type × 一组 stockCodes)。理杏仁 `/{market}/company/hot/{type}` 请求体
  * **`stockCodes[]` 数组** (与波动率单数 stockCode 相反! param 契约每端点单独确认, p3 探查报告实测)
  * + **无日期** (快照忽略请求日期永返最新)。executor per-stock 传单只 symbol (DTO 无 symbol 无法批量
+ * ⇒ 出处同上: p3 探针 2026-07-14 §3。
  * 映射回标的), 对 `HOT_TYPES` 循环每 type 一次请求。
  */
 export interface HotSnapshotQuery {

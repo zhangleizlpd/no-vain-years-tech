@@ -42,6 +42,7 @@ export type AsOfBasis = (typeof AS_OF_BASIS)[number];
  *
  * - `eod_bar` / `us_equity_bar` —— `asOf` 是 vendor 区间请求的**右端**。盘中问「今天」时,
  *   富途会返一根**进行中**的日 K (理杏仁返空数组 ⇒ 同一个错只在 us 显形, 2026-08-19 取证),
+ * ⇒ 出处: `08-19-time-semantics-unification` §4.5 取证。
  *   落库后被 `skipDuplicates` 焊死。右端退到已收盘 session ⇒ 根本不去问那一天。
  * - `underlying_iv_daily` —— 同为 session 粒度; 落库是 upsert 故可自愈, 但没有理由先写错。
  * - `option_daily_snapshot` —— session 粒度且**不可逆** (`createMany(skipDuplicates)` on

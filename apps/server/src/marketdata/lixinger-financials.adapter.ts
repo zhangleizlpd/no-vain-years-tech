@@ -29,6 +29,8 @@ const NON_FINANCIAL_FS_METRICS = ['q.ps.gp_m.t'] as const; // 毛利率, 仅 non
 /**
  * 按 market + fsType 取该类公司合法的 fs metricsList。金融类无毛利率；hk 剔除 BPS
  * `q.bs.tetoshopc_ps.t`（cn 有效但 hk 无效, 理杏仁 all-or-nothing 会拒整请求）。
+ * ⇒ 出处: #670 / `07-11-hk-marketdata-sync-master` ⑦ —— 含任一 hk 无效 metric ⇒ 整请求
+ *   `code=0` 静默返 0 行 (不崩不报错), mock 测与默认 skip 的真 IT 都覆盖不到。
  */
 function fsMetricsFor(market: string, fsType: FsType): string[] {
   const base =
