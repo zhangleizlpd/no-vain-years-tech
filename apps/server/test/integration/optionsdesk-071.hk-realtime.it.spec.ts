@@ -162,7 +162,31 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     { code: 'X-96', expiry: '2026-10-29', strike: '96', delta: '-0.55' },
   ];
 
-  /** 港股交易日历: 上周四五 + 本周一有行, 周末**无行**; 覆盖声明含整段 ⇒ 周末 = 确认非交易日。 */
+  /**
+   * T006a-② 的**近月**腿 —— DTE 24 (`2026-08-31` → `2026-09-24`) ⇒ 只落建仓段 `[1,49]`,
+   * 收租段 `[30,365]` 够不着; 而 {@link LEGS} 的远月腿 DTE 59 反之。两意图的窗因此**不相交**,
+   * 「两视角各按自己的落带圈码」才有一条不会被巧合满足的判据。
+   * 🚨 蓄意不进 {@link LEGS}: 那会改掉既有五臂的夹具面 (放行路径新增前先扫既有夹具的纪律)。
+   */
+  const NEAR_LEGS: readonly SeedLeg[] = [
+    { code: 'N-90', expiry: '2026-09-24', strike: '90', delta: '-0.18' },
+    { code: 'N-94', expiry: '2026-09-24', strike: '94', delta: '-0.32' },
+  ];
+
+  /**
+   * 港股交易日历: 上周四五 + 本周一有行, 周末**无行**; 覆盖声明含整段 ⇒ 周末 = 确认非交易日。
+   *
+   * 🚨 **本 IT 里这两张表并不驱动实时闸的日历那一半** —— `TRADING_CALENDAR_PORT` 在
+   * `MARKETDATA_PROVIDER=mock` 档绑的是 `MockMarketDataAdapter`（`marketdata.module.ts` 的
+   * `useFactory`: `cfg.kind === 'mock' ? mock : new DbTradingCalendarAdapter(prisma)`），它的
+   * `classify` 是**星期判据**（周一~周五 = `trading`），从不查 `trading_day`。
+   * EVIDENCE: 2026-09-04 —— T006a-⑥ 初版删掉 `trading_day` 的 `2026-08-31` 行（`deleteMany`
+   * 实返 `count=1`）后闸**仍判开市**、`priceKind` 仍是 `'realtime'`；改用「把时刻挪到周六」
+   * 才驱动得动那一闸。
+   * ⇒ 要驱动日历闸只能换**时刻**（星期几），🚫 改这两张表是无效 arrange，且它会**长得像通过**。
+   * 📌 播种保留不动: 周末无行这件事与 mock 的星期判据同向，周一效应臂（臂①/④）两种口径下
+   * 答案一致；且换成 live 档时它就是真判据。
+   */
   async function seedCalendar(): Promise<void> {
     for (const date of ['2026-08-27', PREV_SESSION, HK_TODAY]) {
       await prisma.tradingDay.create({ data: { market: 'hk', date: day(date) } });
@@ -176,7 +200,7 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     });
   }
 
-  async function seedChain(): Promise<void> {
+  async function seedChain(extra: readonly SeedLeg[] = []): Promise<void> {
     await seedCalendar();
     const instrument = await prisma.instrument.create({
       data: {
@@ -190,7 +214,7 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
       },
       select: { id: true },
     });
-    for (const leg of LEGS) {
+    for (const leg of [...LEGS, ...extra]) {
       const contract = await prisma.optionContract.create({
         data: {
           market: 'hk',
@@ -307,10 +331,11 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
   function retrieve(
     realtime: boolean,
     view: 'build' | 'rent' | 'all' = 'rent',
+    now: Date = NOW,
   ): Promise<LegRetrievalResult | null> {
     return moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT).retrieveCandidates({
       symbol: SYMBOL,
-      now: NOW,
+      now,
       perspectives: [view],
       candidateCap: RECALL_CANDIDATE_CAP,
       override: null,
@@ -405,5 +430,187 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     // 这里剩 X-96; 断言它仍在, 免得「一条都没问」也让上面那条 not.toContain 通过)。
     expect(requested).toContain('X-96');
     expect(result?.candidates.map((c) => c.leg.code) ?? []).not.toContain('X-92');
+  });
+
+  // ══ T006a 正常态 + 意图分叉 + 时段态 (FR-007 / FR-008 / FR-016; SC-001 / SC-005) ══════════
+  //
+  // 🚨 七臂全部 **fixture 播种**, 🚫 不依赖任何真锚的当下形态 (FR-016) —— 全库仅一只港股锚能
+  //    真正跑通收租路径, 拿它当被试对象等于让断言随行情漂。
+  // 🚨 时段三臂 (④⑤⑥) 的判据**同为「零外呼 + 收盘档 + 零降级标」, 但关闸的机制三样**:
+  //    ④ 供应方报非常规 · ⑤ 同 ④ 但本地日历仍说是交易日 (半日市下午由供应方挡, 闸不读半日标)
+  //    · ⑥ 供应方仍报 regular 而日历说非交易日 (两闸取交集的存在理由)。
+  //    只断言结局不区分机制的话, 删掉任意一闸都还有两臂是绿的。
+
+  // ── T006a-① 正常实时态 (state_branch 1; SC-001) ────────────────────────────
+
+  it('🚨 T006a-① 盘中 ∧ 基准新鲜 ⇒ 实时窄召回: 时点 = 本批采集时刻 (SC-001) ∧ 零降级标', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const result = await retrieve(true);
+
+    expect(result?.chain.priceKind).toBe('realtime');
+    // 🚨 SC-001「数据时点与请求时刻的间隔不超过一次请求往返」的机器判据 = 时点**与本批同源**,
+    //    而不是「离 NOW 足够近」—— 后者要挑一个毫秒阈值, 而任何阈值都是编的。
+    expect(result?.chain.quoteAsOf.toISOString()).toBe(REALTIME_AS_OF.toISOString());
+    // 秒级**时刻**而非交易日: 收盘档那一路的 quoteAsOf 落在 PREV_SESSION 当天。
+    expect(result?.chain.quoteAsOf.getTime()).toBeGreaterThan(day(HK_TODAY).getTime());
+    // 🚨 正常实时档 MUST NOT 带降级标 —— 它与 priceKind 答的是两个问题, 不许互相推导。
+    expect(result?.chain.realtimeDegrade).toBeNull();
+    // 腿行的报价取自**本次**外呼返回的值 (夹具里实时 bid 2.40 ≠ 库内收盘 bid 1.60)。
+    expect(result?.candidates.length ?? 0).toBeGreaterThan(0);
+    for (const c of result?.candidates ?? []) {
+      expect(c.leg.priceKind).toBe('realtime');
+      expect(c.leg.bid?.toString()).toBe('2.4');
+    }
+  });
+
+  // ── T006a-② 意图分叉 (US1-AS2; state_branch 1) ─────────────────────────────
+
+  it('🚨 T006a-② 建仓视角同样走实时, 且两视角的窗**不是同一个** (各按自己的预测落带圈码)', async () => {
+    await seedChain(NEAR_LEGS);
+    readPort.respond = realtimeBatch();
+
+    const rent = await retrieve(true, 'rent');
+    const rentCodes = readPort.calls.flatMap((c) => c.contractCodes);
+    readPort.calls.length = 0;
+    const build = await retrieve(true, 'build');
+    const buildCodes = readPort.calls.flatMap((c) => c.contractCodes);
+
+    expect(rent?.chain.priceKind).toBe('realtime');
+    expect(build?.chain.priceKind).toBe('realtime');
+    // 🚨 判据落在**外呼出参**上而不是候选集: 窗是第一段的产物, 候选集是第二段判腿之后的东西 ——
+    //    只比候选集的话, 差异会被第二段的门槛混进来, 分不清「窗不同」还是「判腿不同」。
+    expect(rentCodes.length).toBeGreaterThan(0);
+    expect(buildCodes.length).toBeGreaterThan(0);
+    expect(new Set(buildCodes)).not.toEqual(new Set(rentCodes));
+    // 本夹具下两窗**不相交**: 近月 DTE 24 只落建仓段, 远月 DTE 59 只落收租段。
+    expect(rentCodes).not.toContain('N-90');
+    expect(rentCodes).not.toContain('N-94');
+    expect(buildCodes).not.toContain('X-88');
+    expect(buildCodes).not.toContain('X-96');
+  });
+
+  // ── T006a-③ 报价覆盖对拍 (SC-005; state_branch 1) ──────────────────────────
+
+  it('🚨 T006a-③ 报价覆盖对拍 (SC-005): 供应方返 M 条 ⇒ 带实时报价的腿恰好 M 条, 不多不少', async () => {
+    await seedChain();
+
+    // 第一趟: 全量回放 ⇒ 拿到「窗内 N 条全被应答」时的基线。
+    readPort.respond = realtimeBatch();
+    const full = await retrieve(true);
+    const requested = readPort.calls.flatMap((c) => c.contractCodes);
+    const fullCodes = (full?.candidates ?? []).map((c) => c.leg.code);
+
+    // 第二趟: 同一夹具, 供应方**少返一条** (停牌 / 刚摘牌的形态) ⇒ M = N − 1。
+    readPort.calls.length = 0;
+    const dropped = requested[0];
+    readPort.respond = (q) => ({
+      asOf: REALTIME_AS_OF,
+      rows: [
+        underlyingRow('104.25'),
+        ...q.contractCodes.filter((code) => code !== dropped).map((code) => optionRow(code)),
+      ],
+    });
+    const partial = await retrieve(true);
+    const partialCodes = (partial?.candidates ?? []).map((c) => c.leg.code);
+
+    // 分母必须 > 1, 否则「少返一条」退化成「一条都没返」, 下面两条断言恒真。
+    expect(requested.length).toBeGreaterThan(1);
+    // 🚨 不少: 全应答时窗内每条都成行 —— 没有腿因为我们的取数方式凭空丢掉。
+    expect(fullCodes).toHaveLength(requested.length);
+    // 🚨 不多: 少返一条就正好少一行, 且少的**就是那一条** —— 没有凭空造出来的行。
+    expect(partialCodes).toHaveLength(requested.length - 1);
+    expect(partialCodes).not.toContain(dropped);
+    expect(new Set(partialCodes)).toEqual(new Set(fullCodes.filter((c) => c !== dropped)));
+    // 窄路径下缺行是**整条落下**而非落成收盘值 —— 混合口径是 064 蓄意杜绝的形态。
+    for (const c of partial?.candidates ?? []) expect(c.leg.priceKind).toBe('realtime');
+    // 逐行缺失是**行级**降级, 链级仍是实时 (值域蓄意排除 partial_miss)。
+    expect(partial?.chain.priceKind).toBe('realtime');
+    expect(partial?.chain.realtimeDegrade).toBeNull();
+  });
+
+  // ── T006a-④ 午休 (state_branch 2; FR-008) ──────────────────────────────────
+
+  it('🚨 T006a-④ 港股午休 ⇒ 中性收盘档 + 零对外呼 + **零降级标** (天天发生的常态不是告警)', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    // 供应方报非常规时段 (归一后的三态之一) —— 本 ctx 只见归一值, 不认 vendor 原始串。
+    marketState.sessions = [{ market: 'hk', session: 'other' }];
+
+    const result = await retrieve(true);
+
+    expect(result?.chain.priceKind).toBe('eod_close');
+    expect(readPort.calls).toHaveLength(0);
+    // 🚨 这一条是本臂的全部价值: 午休每个交易日都发生, 标成降级 = 造一条永远为真的告警,
+    //    于是真出事那天它也不再有人看。
+    expect(result?.chain.realtimeDegrade).toBeNull();
+  });
+
+  // ── T006a-⑤ 半日市下午 (state_branch 5) ────────────────────────────────────
+
+  it('🚨 T006a-⑤ 半日市下午 ⇒ 由**供应方状态**判非开市; 本地日历仍说今天是交易日, 闸不读半日标', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    marketState.sessions = [{ market: 'hk', session: 'other' }];
+
+    const closed = await retrieve(true);
+
+    expect(closed?.chain.priceKind).toBe('eod_close');
+    expect(readPort.calls).toHaveLength(0);
+    expect(closed?.chain.realtimeDegrade).toBeNull();
+
+    // 🚨 差分才是判据: **同一份库状态**下把供应方状态翻回常规就走实时 ⇒ 关闸的确实是供应方
+    //    那一闸, 而不是日历或别的什么。半日市在本地日历里仍是一条普通的交易日行 (plan §D3:
+    //    实时闸只读日历的 trading / non-trading 二分, 从不读 session_kind)。
+    readPort.calls.length = 0;
+    marketState.sessions = [{ market: 'hk', session: 'regular' }];
+    const open = await retrieve(true);
+    expect(open?.chain.priceKind).toBe('realtime');
+    expect(readPort.calls.length).toBeGreaterThan(0);
+  });
+
+  // ── T006a-⑥ 非交易日 (state_branch 4) ──────────────────────────────────────
+
+  it('🚨 T006a-⑥ 日历判非交易日 ⇒ 零外呼, **即便供应方仍报常规时段** (两闸取交集的存在理由)', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+    // 🚨 供应方**不**翻转 —— 节假日 / 周末里 vendor 报的时段状态未必跟着变, 少了日历闸就照样
+    //    外呼。本臂驱动的是**日历**那一闸, 与 ④⑤ 的机制正交。
+    marketState.sessions = [{ market: 'hk', session: 'regular' }];
+
+    // 港股当地的**周六** 10:00 (= 同刻 UTC 02:00)。
+    const saturday = new Date('2026-08-29T02:00:00.000Z');
+    const result = await retrieve(true, 'rent', saturday);
+
+    expect(result).not.toBeNull();
+    expect(result?.chain.priceKind).toBe('eod_close');
+    expect(readPort.calls).toHaveLength(0);
+    // 非交易日是常态不是故障 ⇒ 恒零降级标 (与 gate_unknown / source_unavailable 那两条路分得开)。
+    expect(result?.chain.realtimeDegrade).toBeNull();
+
+    // 🚨 差分: 同一份库状态 + 同一个供应方状态, 只把时刻挪回**周一**就走实时
+    //    ⇒ 关闸的确实是日历那一闸。
+    readPort.calls.length = 0;
+    const monday = await retrieve(true, 'rent', NOW);
+    expect(monday?.chain.priceKind).toBe('realtime');
+    expect(readPort.calls.length).toBeGreaterThan(0);
+  });
+
+  // ── T006a-⑦ 全腿视角 (state_branch 13) ─────────────────────────────────────
+
+  it('🚨 T006a-⑦ 全腿视角 ⇒ 回落收盘档全量 + 零对外呼, 即使调用方开了实时', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const result = await retrieve(true, 'all');
+
+    // 窄召回只服务单意图视角 (068 Q1 裁决), 其余形态 fail-closed 到收盘档。
+    expect(result?.chain.priceKind).toBe('eod_close');
+    expect(readPort.calls).toHaveLength(0);
+    // 🚨 这不是降级 —— 全腿视角本就按收盘档全量呈现, 标降级等于告诉用户「出问题了」。
+    expect(result?.chain.realtimeDegrade).toBeNull();
+    // 「全量」= 收盘档那一路的成员判定照常出候选, 不是空表。
+    expect(result?.candidates.length ?? 0).toBeGreaterThan(0);
   });
 });
