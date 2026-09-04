@@ -2,9 +2,9 @@
 feature_id: 073-hk-option-two-round-collection
 modules: [marketdata]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-09-01'
-updated_at: '2026-09-03'
+updated_at: '2026-09-04'
 # ADR-0035 §4 可选字段：本片的 data-only migration 反查锚。
 migration_refs: ['20260901_1502_split_hk_option_collection_into_two_rounds']
 spec_kit_version: '>=0.8.5,<0.10.0'
