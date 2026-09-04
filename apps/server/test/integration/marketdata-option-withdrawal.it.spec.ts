@@ -246,6 +246,85 @@ describe('期权合约软下架 withdrawn_at (Testcontainers PG)', () => {
       expect(await withdrawnAtOf(b1.id)).toBeNull();
       expect(stats.findings.some((f) => f.kind === 'notice')).toBe(false);
     });
+
+    it('🚨 到期列仍在阶梯、列内个别 code 被 vendor 撤掉 → 只摘那几个 code, 同列其它行不动', async () => {
+      const instId = await seedInstrument('09988');
+      // 本臂钉的是**到期日级对账够不到**的那个形态: FAR_B 这一列 vendor 仍在给 (阶梯有、链也返回),
+      // 只是列里少了 B2 / B3。
+      // EVIDENCE: 2026-09-04 prod 实测 hk:09988 的 2026-09-11 列 —— vendor 认 24 个、库里 96 个,
+      // 72 个已撤的码因「该列仍在阶梯」而逃过对账 (withdrawn_at 全库 0 行); 同轮 vendor 新给的
+      // 87/88/89 档 12 行照常写入 ⇒ 加法执行、减法没有 (issue #342 / FutunnOpen/py-futu-api#261)。
+      const b1 = await seedContract(instId, 'ALB', 'HK.ALBB1', FAR_B);
+      const b2 = await seedContract(instId, 'ALB', 'HK.ALBB2', FAR_B);
+      const b3 = await seedContract(instId, 'ALB', 'HK.ALBB3', FAR_B);
+
+      const chain = stubChain(
+        { 'hk:09988': [FAR_B] },
+        { 'hk:09988': [chainRow('hk:09988', 'ALB', 'HK.ALBB1', FAR_B)] },
+      );
+      const stats = emptyStats();
+      await new SyncOptionContractUseCase(chain, prisma).collect(
+        [{ id: instId, market: 'hk', code: '09988' }],
+        { businessDate: FIXED_TODAY },
+        stats,
+      );
+
+      expect(await withdrawnAtOf(b1.id)).toBeNull();
+      expect(await withdrawnAtOf(b2.id)).toBeInstanceOf(Date);
+      expect(await withdrawnAtOf(b3.id)).toBeInstanceOf(Date);
+      expect(stats.findings).toContainEqual(
+        expect.objectContaining({
+          kind: 'notice',
+          step: 'option_contract_listing',
+          detail: expect.objectContaining({ symbol: 'hk:09988', withdrawn: 2, restored: 0 }),
+        }),
+      );
+    });
+
+    it('🚨 已摘的码下一轮 vendor 仍不给 → 保持摘: 同列的 restore MUST NOT 把它清回来 (否则逐轮震荡)', async () => {
+      const instId = await seedInstrument('09988');
+      // B2 是上一轮摘的, 它的到期列 FAR_B **仍在**阶梯里 —— restore 谓词若停在到期日级
+      // (`expiryDate in liveExpiries`), 这一轮就会把 B2 清回 null, 下一轮再摘, 逐轮反复。
+      const b1 = await seedContract(instId, 'ALB', 'HK.ALBB1', FAR_B);
+      const b2 = await seedContract(instId, 'ALB', 'HK.ALBB2', FAR_B, true);
+
+      const chain = stubChain(
+        { 'hk:09988': [FAR_B] },
+        { 'hk:09988': [chainRow('hk:09988', 'ALB', 'HK.ALBB1', FAR_B)] },
+      );
+      const stats = emptyStats();
+      await new SyncOptionContractUseCase(chain, prisma).collect(
+        [{ id: instId, market: 'hk', code: '09988' }],
+        { businessDate: FIXED_TODAY },
+        stats,
+      );
+
+      expect(await withdrawnAtOf(b1.id)).toBeNull();
+      expect(await withdrawnAtOf(b2.id)).toBeInstanceOf(Date);
+      // 稳态零变动 ⇒ 无 notice (摘过的不再重复计数, 也没被误清)。
+      expect(stats.findings.some((f) => f.kind === 'notice')).toBe(false);
+    });
+
+    it('🚨 已摘的码 vendor 单独认回来 (链重新返回该 code) → 清回 null, 自愈到合约级', async () => {
+      const instId = await seedInstrument('09988');
+      const b2 = await seedContract(instId, 'ALB', 'HK.ALBB2', FAR_B, true);
+
+      const chain = stubChain(
+        { 'hk:09988': [FAR_B] },
+        { 'hk:09988': [chainRow('hk:09988', 'ALB', 'HK.ALBB2', FAR_B)] },
+      );
+      const stats = emptyStats();
+      await new SyncOptionContractUseCase(chain, prisma).collect(
+        [{ id: instId, market: 'hk', code: '09988' }],
+        { businessDate: FIXED_TODAY },
+        stats,
+      );
+
+      expect(await withdrawnAtOf(b2.id)).toBeNull();
+      expect(stats.findings).toContainEqual(
+        expect.objectContaining({ detail: expect.objectContaining({ restored: 1 }) }),
+      );
+    });
   });
 
   describe('覆盖率判据排除软下架合约 (evaluate, 真库)', () => {

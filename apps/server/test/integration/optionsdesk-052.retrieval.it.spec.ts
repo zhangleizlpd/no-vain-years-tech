@@ -412,6 +412,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
     readonly optionType?: 'PUT' | 'CALL';
     readonly isStandard?: boolean;
     readonly greeksComplete?: boolean;
+    /** 已软下架 (vendor 不再挂牌该码, marketdata 链发现对账置的戳)。 */
+    readonly withdrawn?: boolean;
   }
 
   /**
@@ -441,6 +443,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
           strikePrice: leg.strike,
           optionType: leg.optionType ?? 'PUT',
           isStandard: leg.isStandard ?? true,
+          withdrawnAt: leg.withdrawn === true ? new Date(`${TODAY}T00:00:00Z`) : null,
         },
         select: { id: true },
       });
@@ -489,6 +492,9 @@ describe('052 检索层 (Testcontainers PG)', () => {
     { code: 'H-NONSTD', dte: 35, strike: '125', bid: '3.00', ask: '3.20', oi: '900', vol: '40', isStandard: false }, // prettier-ignore
     // ③ 到期日 == 当日 —— 通用硬门槛「到期日 > 当日」(与完整性分母的 `≥` 蓄意不同, 050 FR-010)。
     { code: 'H-EXPIRED', dte: 0, strike: '124', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
+    // ③b 已软下架 —— 通用硬门槛「仍挂牌」: vendor 已不认的码不可交易, 不该出现在选约表。
+    // 它有**完整的历史快照**(下架前采的), 所以不设本门槛时它会照常成行, 且看不出异常。
+    { code: 'H-WITHDRAWN', dte: 35, strike: '123', bid: '3.00', ask: '3.20', oi: '900', vol: '40', withdrawn: true }, // prettier-ignore
     // ④ 有效成本**恰等于** spot: 150 − 17.60 = 132.40 ⇒ 不进建仓 (严格小于)。DTE 20 ⇒ 够不着收租段。
     { code: 'G-COSTTIE', dte: 20, strike: '150', bid: '17.60', ask: '18.00', oi: '900', vol: '40' }, // prettier-ignore
     // ⑤ K 高于 spot 但有效成本仍低于它: 150.5 − 18.11 = 132.39 < 132.40 ⇒ 进建仓 (FR-007: 建仓不设行权价上界)。
@@ -506,7 +512,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     { code: 'G-OK', dte: 35, strike: '115', bid: '3.00', ask: '3.20', oi: '900', vol: '40' },
   ];
 
-  it('🚨 通用硬门槛 (仅认沽 / 仅标准 / 到期日 > 当日) 在读端就滤掉 —— 成员逐条相等, 三条一条没漏', async () => {
+  it('🚨 通用硬门槛 (仅认沽 / 仅标准 / 到期日 > 当日 / 仍挂牌) 在读端就滤掉 —— 成员逐条相等, 四条一条没漏', async () => {
     await seedLegs(GATE_LEGS);
     const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
     // 🚫 MUST NOT 写 `length` 比较: 「少了三条」对「滤错了哪三条」没有分辨力。

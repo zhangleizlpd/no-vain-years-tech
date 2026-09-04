@@ -250,6 +250,10 @@ export class SyncOptionContractUseCase {
     const expiryDates = ladder.map((e) => e.expiryDate).filter((d) => d >= businessDate);
     const windows = planOptionChainWindows(expiryDates);
     const discovered = new Set<string>();
+    // 对账吃的是**合约级**清单: 「到期列还在、列里个别行权价被撤」只有 code 集合看得见
+    // (判据见 reconcileListingState 的 EVIDENCE)。`discovered` 仍只喂 gapCheck —— 它对的是
+    // 到期日阶梯, 两者粒度不同, 🚫 MUST NOT 合并成一个集合。
+    const discoveredCodes = new Set<string>();
 
     for (const window of windows) {
       // 单次调用 = 单个窗 (切分在 planOptionChainWindows, 不在 adapter 也不在这里重实现)。
@@ -269,6 +273,7 @@ export class SyncOptionContractUseCase {
           );
         }
         discovered.add(c.expiryDate);
+        discoveredCodes.add(c.code);
         rows.push(contractRow(instrumentId, c));
       }
       for (const chunk of chunked(rows, CONTRACT_ROW_CHUNK)) {
@@ -289,36 +294,51 @@ export class SyncOptionContractUseCase {
         `发现了但不在列表=[${gap.unexpectedInDiscovered.join(',')}]`
       );
     }
-    await this.reconcileListingState(instrumentId, symbol, businessDate, discovered, stats);
+    await this.reconcileListingState(instrumentId, symbol, businessDate, discoveredCodes, stats);
     return null;
   }
 
   /**
    * 挂牌状态对账 (软下架, 见 `schema.prisma` 的 `OptionContract.withdrawnAt` 注释)。
    *
-   * **只在 gap.ok 的干净轮调用** —— 此刻 `discovered` == vendor 权威阶梯 (gapCheck 已核), 故:
-   * · DB 里 expiry ≥ 当日、expiry 不在 `discovered` 里的合约 → vendor 已删该到期列 → 置 withdrawnAt;
-   * · expiry 在 `discovered` 里、当前 withdrawn 的合约 → vendor 认回来了 → 清 withdrawnAt (自愈复采)。
+   * **只在 gap.ok 的干净轮调用** —— 此刻 `discoveredCodes` == vendor 本轮给出的合约全集 (gapCheck
+   * 已核到期日阶梯与链返回逐个对上), 故:
+   * · DB 里 expiry ≥ 当日、code 不在 `discoveredCodes` 里的合约 → vendor 已不认 → 置 withdrawnAt;
+   * · code 在 `discoveredCodes` 里、当前 withdrawn 的合约 → vendor 认回来了 → 清 withdrawnAt (自愈复采)。
    *
    * 收敛的是「一颗 vendor 已不认的码毒掉整批 snapshot」这个形态 (2026-09-02 hk:09988, #334): 摘掉
    * 之后死码不进快照 / OI 两轮的工作集, 也不进覆盖率分母。软戳不删行 —— 历史快照 onDelete:Cascade,
    * 物理删会连历史一起没且 vendor 不补 (schema 列注释)。
    *
-   * 复杂度: 两条 `updateMany` (窄谓词, 走 `ix_option_contract_underlying_expiry`)。稳态零变动 ⇒
-   * 两条各 0 行, 无 finding。
+   * 🚨 **判据是 code 不是 expiry。** 到期日级只摘得掉「整条到期列消失」, 摘不掉「列还在、列里个别
+   * 行权价被撤」—— 而后者正是实际发生的形态。
+   * EVIDENCE: 2026-09-04 我方 prod + 券商网关双面实测 hk:09988 —— `option-expirations` 返回的阶梯
+   * 仍含 2026-09-11 列, 但该列 vendor 只认 24 个 code, 库里有 96 个; 09-04 列同形态 90 个 ⇒ 共 162
+   * 个已撤的码全部逃过到期日级对账 (`withdrawn_at` 全库 0 行 / 125152)。同一轮 vendor 新给的
+   * 87/88/89 档 12 行照常写入 ⇒ 加法执行、减法没有。死码进工作集会让 `get_market_snapshot` 整批
+   * 一票否决 (400 码批因 1 个死码整批失败), 读侧表现为建仓视角回落收盘档
+   * (issue #342 / FutunnOpen/py-futu-api#261)。
+   *
+   * 🚨 **两条谓词 MUST 同为 code 级。** restore 若停在到期日级 (`expiryDate in liveExpiries`), 刚摘
+   * 掉的码会因「它那一列还在阶梯里」被下一轮清回, 逐轮摘/清震荡 (IT 有专臂钉住)。
+   *
+   * 复杂度: 两条 `updateMany`, 各 `O(n)` (n = 该票未到期合约数; 2026-09-04 prod 实测单票上限 4602
+   * = us 最大票, hk 1246)。`code` 谓词的参数表 = 本轮发现的 code 数, 同量级, 远低于 PG 参数上限。
+   * 稳态零变动 ⇒ 两条各 0 行, 无 finding。
    */
   private async reconcileListingState(
     instrumentId: bigint,
     symbol: string,
     businessDate: string,
-    discovered: ReadonlySet<string>,
+    discoveredCodes: ReadonlySet<string>,
     stats: SyncRunStats,
   ): Promise<void> {
-    const liveExpiries = [...discovered].map(toDateOnly);
+    const liveCodes = [...discoveredCodes];
     const withdrawn = await this.prisma.optionContract.updateMany({
       where: {
         underlyingInstrumentId: instrumentId,
-        expiryDate: { gte: toDateOnly(businessDate), notIn: liveExpiries },
+        expiryDate: { gte: toDateOnly(businessDate) },
+        code: { notIn: liveCodes },
         withdrawnAt: null,
       },
       data: { withdrawnAt: new Date() },
@@ -326,7 +346,7 @@ export class SyncOptionContractUseCase {
     const restored = await this.prisma.optionContract.updateMany({
       where: {
         underlyingInstrumentId: instrumentId,
-        expiryDate: { in: liveExpiries },
+        code: { in: liveCodes },
         withdrawnAt: { not: null },
       },
       data: { withdrawnAt: null },

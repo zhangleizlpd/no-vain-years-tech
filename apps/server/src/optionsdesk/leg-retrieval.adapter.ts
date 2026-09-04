@@ -332,6 +332,12 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         optionType: 'PUT',
         isStandard: true,
         expiryDate: { gt: utcMidnight(marketDate) },
+        // 🚨 vendor 已不认的码 MUST NOT 进实时批 —— 一颗就让整批报价调用一票否决。
+        // EVIDENCE: 2026-09-04 prod 快照轮实撞 hk:09988 批 3/4 (399 合约) 因单个死码
+        // `ALB260904C103000` 整批 502 (`get_market_snapshot` 不逐码降级), 读侧表现为本视角
+        // 整体回落收盘档。与采集侧工作集 (`sync-option-snapshot.usecase.ts`) 同一道谓词;
+        // 戳由链发现对账在 gap.ok 的干净轮置/清 (`sync-option-contract.usecase.ts`)。
+        withdrawnAt: null,
       },
       select: { id: true, code: true, expiryDate: true, strikePrice: true, expirationCycle: true },
     });
@@ -627,15 +633,19 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     if (instrument === null) return null;
 
     // CROSS-CONTEXT-READ: marketdata.option_contract 只读直查 (Q7-B) —— 该标的的**适格**认沽
-    // 合约集。两个过滤都在 SQL 端: `is_standard` (047 FR-008 非标不进选约表, 但采集侧照常落库
+    // 合约集。三个过滤都在 SQL 端: `is_standard` (047 FR-008 非标不进选约表, 但采集侧照常落库
     // FR-033) + 到期日 **>** 当日 (047 FR-028a 已到期腿不可交易; 🚨 与完整性分母的 `≥` 故意
-    // 不同, 047 Guardrail 7)。本片呈现面只含认沽, 采集侧的 CALL 照常在库里。
+    // 不同, 047 Guardrail 7) + `withdrawn_at IS NULL` (vendor 已不再挂牌的码不可交易)。
+    // 🚨 软下架这一道**与实时路径同闸** —— 只加在那一边会让同一只锚盘中看不见某腿、收盘后又
+    // 冒出来。死码的历史快照仍在库里, 不设本谓词它会照常成行且看不出异常。
+    // 本片呈现面只含认沽, 采集侧的 CALL 照常在库里。
     const contracts = await this.prisma.optionContract.findMany({
       where: {
         underlyingInstrumentId: instrument.id,
         optionType: 'PUT',
         isStandard: true,
         expiryDate: { gt: utcMidnight(marketDate) },
+        withdrawnAt: null,
       },
       // `expirationCycle` 是月度链标的判据输入 (#45) —— **同一次查询多带一列**, 零额外往返。
       select: { id: true, code: true, expiryDate: true, strikePrice: true, expirationCycle: true },

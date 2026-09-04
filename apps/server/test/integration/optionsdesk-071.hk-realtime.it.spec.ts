@@ -380,4 +380,30 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     expect(readPort.calls).toHaveLength(0);
     expect(offline?.chain.priceKind).toBe('eod_close');
   });
+
+  // ── 软下架的码不进实时批 (#342; 毒批防线) ──────────────────────────────────
+
+  it('🚨 已软下架的码 MUST NOT 进实时报价批 —— 一颗死码就让整批一票否决, 表现为整体回落收盘档', async () => {
+    await seedChain();
+    // X-92 被 vendor 撤下 (链发现对账已置戳)。它的昨日快照仍在库里 ⇒ 不设谓词时它照常成行。
+    // EVIDENCE: 2026-09-04 prod 快照轮实撞 hk:09988 批 3/4 (399 合约) 因单个死码
+    // `ALB260904C103000` 整批 502 —— vendor 的批量报价口不逐码降级, 整批拒。
+    await prisma.optionContract.updateMany({
+      where: { code: 'X-92' },
+      data: { withdrawnAt: new Date(`${PREV_SESSION}T16:20:00Z`) },
+    });
+    readPort.respond = realtimeBatch();
+
+    const result = await retrieve(true);
+
+    expect(result?.chain.priceKind).toBe('realtime');
+    // 🚨 判据落在**请求出参**上, 不是结果集: 死码只要进了 codes, 真 vendor 那边整批就废了 ——
+    // 而 stub 会老老实实回放它, 结果集看不出任何异常 (正是线上那次没被任何断言拦住的原因)。
+    const requested = readPort.calls.flatMap((c) => c.contractCodes);
+    expect(requested).not.toContain('X-92');
+    // 同窗其余腿照常问 —— 摘掉死码 MUST NOT 顺手把工作集缩没 (窄召回的窗本就只圈落带内的码,
+    // 这里剩 X-96; 断言它仍在, 免得「一条都没问」也让上面那条 not.toContain 通过)。
+    expect(requested).toContain('X-96');
+    expect(result?.candidates.map((c) => c.leg.code) ?? []).not.toContain('X-92');
+  });
 });
