@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.45.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.45.0...server-v0.45.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **core:** 活列死码根因修复 —— 挂牌对账下沉到合约级 + 读路径过滤软下架 ([#345](https://github.com/zhangleizlpd/no-vain-years-tech/issues/345)) ([1837b72](https://github.com/zhangleizlpd/no-vain-years-tech/commit/1837b728365cf56697c6d7c0382127ad4d7490bb))
+
 ## [0.45.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.44.1...server-v0.45.0) (2026-09-04)
 
 
