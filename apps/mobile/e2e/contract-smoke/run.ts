@@ -23,6 +23,7 @@ import * as optionsdeskChainMarch from './069-chain-march.contract';
 import * as optionsdeskOfflineLadder from './070-offline-ladder.contract';
 import * as optionsdeskWideSpread from './071-wide-spread.contract';
 import * as optionsdeskAnchorSubmission from './072-anchor-submission.contract';
+import * as optionsdeskAnchorSearch from './074-anchor-search.contract';
 import * as alert from './alert.contract';
 import * as alertIndicators from './alert-indicators.contract';
 import * as alertPush from './alert-push.contract';
@@ -85,6 +86,7 @@ const SPECS: readonly ContractSpec[] = [
   optionsdeskOfflineLadder,
   optionsdeskWideSpread,
   optionsdeskAnchorSubmission,
+  optionsdeskAnchorSearch,
   portfolioHoldings,
 ];
 
