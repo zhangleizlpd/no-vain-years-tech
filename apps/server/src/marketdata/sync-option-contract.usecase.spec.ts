@@ -306,7 +306,10 @@ describe('SyncOptionContractUseCase', () => {
     const usDate = '2026-09-18';
     const bizDate = usDate; // us 业务日 = 入参日 (beijing6am 折算)
 
-    it('gap.ok 时对账两条 updateMany —— withdraw 谓词 = 未到期 ∧ 不在阶梯 ∧ 尚未 withdrawn', async () => {
+    /** 默认 harness 那一窗返回的唯一合约 code (见 makeHarness 的 getChainWindow 兜底)。 */
+    const liveCode = `US.PEP${usDate.replaceAll('-', '')}P130000`;
+
+    it('gap.ok 时对账两条 updateMany —— withdraw 谓词 = 未到期 ∧ code 不在本轮链清单 ∧ 尚未 withdrawn', async () => {
       const h = makeHarness({ ladder: { 'us:PEP': [usDate] } });
       await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate));
 
@@ -316,13 +319,15 @@ describe('SyncOptionContractUseCase', () => {
       expect(withdraw).toBeDefined();
       expect(withdraw!.where.underlyingInstrumentId).toBe(PEP.id);
       expect(withdraw!.where.withdrawnAt).toBeNull();
-      // 未到期闸 + 不在 vendor 当前阶梯的到期日 (notIn)。
-      expect(withdraw!.where.expiryDate.gte).toEqual(new Date(`${bizDate}T00:00:00Z`));
-      expect(withdraw!.where.expiryDate.notIn).toEqual([new Date(`${usDate}T00:00:00Z`)]);
+      // 🚨 expiry 只剩「未到期闸」这一个职责 —— 它**不再**充当「是否已下架」的判据: 到期列还在、
+      // 列内个别行权价被撤时, `expiryDate.notIn` 恒不命中 (2026-09-04 hk:09988 实证, 见 use case
+      // 的 EVIDENCE)。断言它只有 gte, 把回退钉死。
+      expect(withdraw!.where.expiryDate).toEqual({ gte: new Date(`${bizDate}T00:00:00Z`) });
+      expect(withdraw!.where.code).toEqual({ notIn: [liveCode] });
       expect(withdraw!.data.withdrawnAt).toBeInstanceOf(Date);
     });
 
-    it('gap.ok 时 restore 谓词 = 在阶梯 ∧ 当前 withdrawn → 清回 null (vendor 认回来即复采)', async () => {
+    it('gap.ok 时 restore 谓词 = code 在本轮链清单 ∧ 当前 withdrawn → 清回 null (vendor 认回来即复采)', async () => {
       const h = makeHarness({ ladder: { 'us:PEP': [usDate] } });
       await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate));
 
@@ -331,8 +336,11 @@ describe('SyncOptionContractUseCase', () => {
       )?.[0] as { where: Record<string, any>; data: { withdrawnAt: null } } | undefined;
       expect(restore).toBeDefined();
       expect(restore!.where.underlyingInstrumentId).toBe(PEP.id);
-      expect(restore!.where.expiryDate.in).toEqual([new Date(`${usDate}T00:00:00Z`)]);
+      expect(restore!.where.code).toEqual({ in: [liveCode] });
       expect(restore!.where.withdrawnAt).toEqual({ not: null });
+      // 🚨 restore MUST NOT 带 expiry 级谓词 —— 带了就会把刚摘掉的码 (它那一列还在阶梯里) 清回,
+      // 与 withdraw 逐轮对打。
+      expect(restore!.where.expiryDate).toBeUndefined();
     });
 
     it('🚨 gap≠ok (链差集) → 一条 updateMany 都不发 —— 差集时 discovered 不是权威阶梯, 摘会误摘真合约', async () => {
