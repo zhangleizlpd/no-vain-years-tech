@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.45.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.44.1...server-v0.45.0) (2026-09-04)
+
+
+### Features
+
+* **optionsdesk:** 雷达页锚搜索 —— 题头搜索入口 + 底部浮层按名称直达锚详情 ([#339](https://github.com/zhangleizlpd/no-vain-years-tech/issues/339)) ([142436e](https://github.com/zhangleizlpd/no-vain-years-tech/commit/142436ef9ca1a46ba36f75b04a7ba846ea5215f3))
+
 ## [0.44.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.44.0...server-v0.44.1) (2026-09-03)
 
 
