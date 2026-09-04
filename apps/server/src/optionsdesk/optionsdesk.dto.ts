@@ -34,6 +34,7 @@ import { ANCHOR_CONFIDENCE_SOURCES } from './create-anchor.usecase';
 import type { AnchorWriteResult } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
 import { RADAR_EMPTY_STATES, type RadarPage } from './get-radar.usecase';
+import { ANCHOR_SEARCH_PAGE_LIMIT, type AnchorSearchHit } from './search-anchors.usecase';
 import {
   UNDERLYING_IV_STATES,
   type UnderlyingDetail,
@@ -422,6 +423,26 @@ export class RadarQueryDto {
   @ValidateIf((o: RadarQueryDto) => o.market !== undefined || o.cursor != null)
   @IsIn([...IMPORTABLE_MARKETS])
   market?: string;
+}
+
+/**
+ * GET /api/v1/optionsdesk/anchors/search 查询串 (074 FR-003, plan D1)。
+ *
+ * 🚨 **没有 `@MaxLength` / `@IsNotEmpty`**: 空与超长是搜索框的**常态分支**不是校验错误 ——
+ * 校验器会把它们判成 400, 而契约是空 ⇒ `items: []`、超长 ⇒ use case 内按 64 截断继续搜
+ * (Edge「超长输入」: 宁静默收窄不报错)。归一化单点在 `anchor-search.rules.ts`。
+ */
+export class AnchorSearchQuery {
+  @ApiPropertyOptional({
+    description:
+      '搜索串: 中文名 / 拼音简拼 / 拼音全拼 / 交易所代码 / canonical ticker 前缀任一形态。' +
+      '`%` `_` 按**字面**匹配 (Edge「元字符字面」); 空 / 纯空白 ⇒ `items: []` (非 400); ' +
+      '超长按 64 字符截断',
+    example: '腾讯',
+  })
+  @IsOptional()
+  @IsString()
+  q?: string;
 }
 
 /**
@@ -853,6 +874,41 @@ export class RadarResponse {
 }
 
 /**
+ * 074 搜索提示行 —— **恰好三字段** (FR-006 服务端半边): 标的标识两半 + 徽标。
+ * 🚫 MUST NOT 加行情类数值 (现价 / 距 W% 等) —— 定位场景只答「是哪只」, 数据归详情页。
+ * 无 nullable 字段: `name` 由 JOIN `marketdata.instrument` 保证非空 (占位行 = 代号, 照实,
+ * plan D5), 不触发 nullable string 显式 type 纪律。
+ */
+export class AnchorSearchItem {
+  @ApiProperty({ description: 'canonical `market:code`', example: 'hk:00700' })
+  ticker!: string;
+
+  @ApiProperty({
+    description: '标的名 (marketdata.instrument.name 单源; 注册表占位行照实回代号, 不拼假名)',
+    example: '腾讯控股',
+  })
+  name!: string;
+
+  @ApiProperty({
+    description: '生效 L 层 (提示行徽标, 视觉与雷达行同源)',
+    enum: [...L_LEVELS],
+    example: 'L2',
+  })
+  lLevelEffective!: string;
+}
+
+export class AnchorSearchResponse {
+  @ApiProperty({
+    description:
+      `命中行 (代码精确命中 → 相似度 → 代码序; 上限 ${ANCHOR_SEARCH_PAGE_LIMIT}, 无翻页 —— ` +
+      '细化输入即可收窄)。搜索域 = 已建锚标的, 含 excluded (域判据是「有没有锚」, FR-004); ' +
+      '跨市场全量, 不受页签与 L 级筛选约束 (FR-005)。零命中 = 空数组 (200, 非 404)',
+    type: [AnchorSearchItem],
+  })
+  items!: AnchorSearchItem[];
+}
+
+/**
  * 单标的 IV 读数 (046 详情读端 / FR-012 / FR-014 / FR-020 / FR-035)。
  *
  * 🚨 **命名口径 (FR-035)**: `aggregateIv` = 富途**标的聚合 IV** 直读值。字段名与描述里
@@ -1220,6 +1276,17 @@ export function toRadarResponse(page: RadarPage): RadarResponse {
       market,
       baseTotal: counts.baseTotal,
       actionableTotal: counts.actionableTotal,
+    })),
+  };
+}
+
+/** 搜索命中 → 响应 (074)。hit 已是三字段贫血行, 原样投影。 */
+export function toAnchorSearchResponse(hits: readonly AnchorSearchHit[]): AnchorSearchResponse {
+  return {
+    items: hits.map((hit) => ({
+      ticker: hit.ticker,
+      name: hit.name,
+      lLevelEffective: hit.lLevelEffective,
     })),
   };
 }

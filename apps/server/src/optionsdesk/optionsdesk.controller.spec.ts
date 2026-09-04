@@ -11,6 +11,8 @@ import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../security/prisma.service';
 import { REDIS_CLIENT } from '../security/redis.token';
 import { buildOpenApiConfig } from '../openapi.config';
+import { L_LEVELS } from './anchor.rules';
+import { OptionsdeskController } from './optionsdesk.controller';
 import { OptionsdeskModule } from './optionsdesk.module';
 import { CreateAnchorUseCase } from './create-anchor.usecase';
 import { UpdateAnchorUseCase } from './update-anchor.usecase';
@@ -642,6 +644,45 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
       };
       expect(schema.properties.items!.type).toBe('array');
       expect(schema.properties.items!.items!.$ref).toContain('AnchorResponse');
+    });
+  });
+
+  describe('074 锚搜索 — 通道层契约 (T002)', () => {
+    it('search 方法挂 read 桶 throttle (120/60s), 自己的桶不在 skip 集', () => {
+      // metadata key = 'THROTTLER:LIMIT' 等前缀 + 桶名 —— @nestjs/throttler@6.5.0
+      // dist/throttler.decorator.js 的 setThrottlerMetadata 实观 (常量不从包根导出, 只能字面拼)。
+      const handler = OptionsdeskController.prototype.search;
+      expect(Reflect.getMetadata('THROTTLER:LIMIToptionsdesk-read-account', handler)).toBe(120);
+      expect(Reflect.getMetadata('THROTTLER:TTLoptionsdesk-read-account', handler)).toBe(60_000);
+      // skipExcept(own) 的两半: 自己的桶 MUST NOT 被 skip (@Throttle 不会反 un-skip),
+      // 同组其余桶 (write) 必须被 skip。
+      expect(
+        Reflect.getMetadata('THROTTLER:SKIPoptionsdesk-read-account', handler),
+      ).toBeUndefined();
+      expect(Reflect.getMetadata('THROTTLER:SKIPoptionsdesk-write-account', handler)).toBe(true);
+    });
+
+    it('swagger: /anchors/search 带 q query 参数 + AnchorSearchResponse 响应型 (item 三字段封闭)', () => {
+      const op = document.paths['/api/v1/optionsdesk/anchors/search']!.get!;
+      const params = (op.parameters ?? []) as { name: string; in: string; required?: boolean }[];
+      const q = params.find((p) => p.name === 'q');
+      expect(q).toBeDefined();
+      expect(q!.in).toBe('query');
+      // 空 q 是常态分支 (⇒ items: []) 而非校验错误 ⇒ 参数必须是可省略的。
+      expect(q!.required).not.toBe(true);
+
+      const ok = op.responses['200'] as {
+        content?: Record<string, { schema?: { $ref?: string } }>;
+      };
+      expect(ok.content!['application/json']!.schema!.$ref).toContain('AnchorSearchResponse');
+
+      // FR-006 服务端半边: 恰好三字段, 不下发行情数值; 徽标枚举与雷达同源 (L_LEVELS)。
+      const item = document.components!.schemas!.AnchorSearchItem as {
+        properties: Record<string, { enum?: string[] }>;
+        required?: string[];
+      };
+      expect(Object.keys(item.properties)).toEqual(['ticker', 'name', 'lLevelEffective']);
+      expect(item.properties.lLevelEffective.enum).toEqual([...L_LEVELS]);
     });
   });
 
