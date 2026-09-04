@@ -17,11 +17,7 @@
 import { FlatList, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import Svg, { Circle, Path } from 'react-native-svg';
-import type {
-  AnchorResponse,
-  AnchorResponseLLevelEffective,
-  AnchorResponseZone,
-} from '@nvy/api-client';
+import type { AnchorResponse, AnchorResponseZone } from '@nvy/api-client';
 
 import { DrawerMenuButton } from '~/core/app-shell-drawer';
 import { colors } from '~/theme';
@@ -30,6 +26,7 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { RadarMarketTabs } from './radar-market-tabs';
 import {
   distanceToWTone,
+  L_LEVEL_BADGE,
   radarRowFields,
   type RadarBadge,
   type RadarFilterKey,
@@ -54,13 +51,6 @@ const FILTER_LABEL: Record<RadarFilterKey, string> = {
   L4: 'L4',
   pendingReview: COPY.filterPendingReview,
   belowW: COPY.filterBelowW,
-};
-
-const L_LEVEL_BADGE: Record<AnchorResponseLLevelEffective, string> = {
-  L1: 'bg-tag-blue',
-  L2: 'bg-tag-purple',
-  L3: 'bg-tag-teal',
-  L4: 'bg-tag-gray',
 };
 
 const ZONE_BADGE: Record<NonNullable<AnchorResponseZone>, string> = {

@@ -11,6 +11,7 @@
 // 🚨 **FR-014 徽标只能取自 `RADAR_BADGE_ORDER` 白名单**，衍生徽标（达标腿数 / 直接买主案）无处可生。
 import type {
   AnchorResponse,
+  AnchorResponseLLevelEffective,
   OptionsdeskControllerRadarMarket,
   RadarResponseEmptyState,
 } from '@nvy/api-client';
@@ -164,6 +165,18 @@ export function radarViewState(page: Pick<RadarPageLike, 'items' | 'emptyState'>
 }
 
 // ─────────────────────────── 徽标（FR-014） ───────────────────────────
+
+/**
+ * L 层徽标底色（074 D9 自 `radar-screen.tsx` 迁入）—— 雷达行与搜索提示行同 import，
+ * 徽标视觉单源（074 FR-006「徽标视觉与雷达行一致」）。
+ * 🚨 必须是 `Record` 穷举：server 加 L 档时当场 tsc 红，`Partial` 会静默漏色。
+ */
+export const L_LEVEL_BADGE: Record<AnchorResponseLLevelEffective, string> = {
+  L1: 'bg-tag-blue',
+  L2: 'bg-tag-purple',
+  L3: 'bg-tag-teal',
+  L4: 'bg-tag-gray',
+};
 
 /** 渲染顺序纪律：L 层 → 区间 / 锚逾期 → 复核锚 / 提醒类。**白名单，禁衍生徽标**。 */
 export const RADAR_BADGE_ORDER = [
