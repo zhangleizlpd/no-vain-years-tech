@@ -6,8 +6,10 @@ import { AppModule } from '../../src/app/app.module';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { PrismaService } from '../../src/security/prisma.service';
 import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
+import { REALTIME_DEGRADE_LOG_TAG } from '../../src/optionsdesk/leg-retrieval.adapter';
 import {
   LEG_RETRIEVAL_PORT,
+  REALTIME_CHAIN_DEGRADE_KINDS,
   type LegRetrievalPort,
   type LegRetrievalResult,
 } from '../../src/optionsdesk/leg-retrieval.port';
@@ -83,6 +85,7 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
   let prisma: PrismaService;
   let readPort: SpySnapshotReadPort;
   let marketState: FakeMarketStatePort;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   /** 🚨 港股周一 10:00 (盘中) = 美股周日 22:00 (ET)。见文件头「时刻夹具怎么选的」。 */
   const NOW = new Date('2026-08-31T02:00:00.000Z');
@@ -117,7 +120,8 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
       // 🚨 交易日历**不 override** —— 病灶正是「闸拿错日期去问日历」, override 掉就测不到了。
       .compile();
     prisma = moduleRef.get(PrismaService);
-    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    // 🚨 留住 warn 的引用 —— T006b-③ 要断言「不抬告警」, 那只能对着调用记录问。
+    warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   }, 180_000);
 
@@ -127,10 +131,15 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     await stores.drop();
   });
 
-  beforeEach(async () => {
-    readPort.calls.length = 0;
-    readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
-    marketState.sessions = [{ market: 'hk', session: 'regular' }];
+  /**
+   * 清空本文件播的全部表。
+   *
+   * 🚨 抽成函数是因为 T006b 的 ①/③ 两臂要在**同一个 `it()` 内**重播一次夹具 (它们的判据是
+   * 「同一批合约, 换一个前提, 结局不同」的差分) —— 表清单抄第二份必漂移, 而漏掉一张的表现是
+   * `Unique constraint failed`, 那种红**看起来像被测代码坏了**
+   * (2026-09-04 实撞: 第一版漏了 `trading_day` / `calendar_coverage` 两张)。
+   */
+  async function resetSeededTables(): Promise<void> {
     await prisma.optionDailySnapshot.deleteMany();
     await prisma.optionContract.deleteMany();
     await prisma.instrument.deleteMany();
@@ -138,6 +147,14 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     await prisma.anchor.deleteMany();
     await prisma.$executeRawUnsafe('TRUNCATE marketdata.trading_day RESTART IDENTITY CASCADE');
     await prisma.calendarCoverage.deleteMany();
+  }
+
+  beforeEach(async () => {
+    readPort.calls.length = 0;
+    readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
+    warnSpy.mockClear();
+    marketState.sessions = [{ market: 'hk', session: 'regular' }];
+    await resetSeededTables();
   });
 
   // ── 造数 ──────────────────────────────────────────────────────────────────
@@ -174,6 +191,25 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
   ];
 
   /**
+   * T006b-① 的**深虚**腿 —— 两条都远在梯形窗之外, 用来把 bootstrap 兜底窗的**两侧**同时钉住。
+   * 定窗基准 spot = `104.25` (锚的盘中价), 港股 bootstrap 下界比例 `0.6` / 上界 `1.05`:
+   *
+   * | 腿 | `K/spot` | `0.6×spot = 62.55` | `0.7×spot = 72.98` (美股那档) |
+   * | --- | --- | --- | --- |
+   * | `D-70` | 0.671 | **在窗内** | 在窗**外** |
+   * | `D-60` | 0.576 | 在窗外 | 在窗外 |
+   *
+   * ⇒ `D-70` 被问到 = 港股取的确实是 `0.6` 那一项 (退回 `0.7` 当场红);
+   *   `D-60` 不被问到 = 「宁宽」也仍然有边, 不是把下界一路放空。
+   * 🚨 两条的昨日 `|Δ|` 都低于收租带下界 `0.03` ⇒ 有昨日面时它们**本就不在梯形窗内**,
+   *    这正是本臂差分的另一半 (同一份合约, 有面 ⇒ 不问; 无面 ⇒ 问)。
+   */
+  const DEEP_OTM_LEGS: readonly SeedLeg[] = [
+    { code: 'D-70', expiry: '2026-10-29', strike: '70', delta: '-0.02' },
+    { code: 'D-60', expiry: '2026-10-29', strike: '60', delta: '-0.01' },
+  ];
+
+  /**
    * 港股交易日历: 上周四五 + 本周一有行, 周末**无行**; 覆盖声明含整段 ⇒ 周末 = 确认非交易日。
    *
    * 🚨 **本 IT 里这两张表并不驱动实时闸的日历那一半** —— `TRADING_CALENDAR_PORT` 在
@@ -200,7 +236,31 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     });
   }
 
-  async function seedChain(extra: readonly SeedLeg[] = []): Promise<void> {
+  /**
+   * T006b 用的三个开关。默认值**逐项等于 T005 / T006a 立这个函数时的行为** —— 既有臂一个字
+   * 不用改, 新臂只挑自己要偏离的那一项。
+   */
+  interface SeedOptions {
+    /** `false` ⇒ 只建合约、**不写昨日快照** = 「新锚首日无昨日预测面」(T006b-①)。 */
+    readonly snapshots?: boolean;
+    /** 锚的盘中基准时刻; `null` ⇒ 连同价一起不写 = 三级基准链第一级必落空 (T006b-④)。 */
+    readonly intradayAt?: Date | null;
+    /**
+     * `false` ⇒ 建锚**与标的**、但一条期权合约都不建 = 「没有任何挂牌期权的港股锚」(T006b-③)。
+     * 🚨 标的行仍要建 —— 生产里那只锚的标的是在册的, 缺的只是期权合约。连标的一起省掉的话
+     *    `null` 其实来自「查不到 instrument」那条更早的分支, 臂就测到别的东西上去了。
+     */
+    readonly contracts?: boolean;
+  }
+
+  async function seedChain(
+    extra: readonly SeedLeg[] = [],
+    options: SeedOptions = {},
+  ): Promise<void> {
+    const withSnapshots = options.snapshots ?? true;
+    const withContracts = options.contracts ?? true;
+    const intradayAt =
+      options.intradayAt === undefined ? new Date(NOW.getTime() - 30_000) : options.intradayAt;
     await seedCalendar();
     const instrument = await prisma.instrument.create({
       data: {
@@ -214,7 +274,7 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
       },
       select: { id: true },
     });
-    for (const leg of [...LEGS, ...extra]) {
+    for (const leg of withContracts ? [...LEGS, ...extra] : []) {
       const contract = await prisma.optionContract.create({
         data: {
           market: 'hk',
@@ -229,6 +289,7 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
         },
         select: { id: true },
       });
+      if (!withSnapshots) continue;
       await prisma.optionDailySnapshot.create({
         data: {
           contractId: contract.id,
@@ -250,6 +311,11 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
         },
       });
     }
+    await seedAnchor(intradayAt);
+  }
+
+  /** 建锚。`intradayAt === null` ⇒ 盘中价与时刻都不写 ⇒ 三级基准链第一级必落空。 */
+  async function seedAnchor(intradayAt: Date | null): Promise<void> {
     await prisma.anchor.create({
       data: {
         ticker: SYMBOL,
@@ -260,9 +326,9 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
         confidence: '8',
         confidenceSource: 'manual',
         lLevelEffective: 'L2',
-        // 基准新鲜 (相对 NOW 只差 30s) ⇒ 三级基准链第一级命中, 不补发。
-        intradayPrice: '104.25',
-        intradayAt: new Date(NOW.getTime() - 30_000),
+        // 默认基准新鲜 (相对 NOW 只差 30s) ⇒ 三级基准链第一级命中, 不补发。
+        intradayPrice: intradayAt === null ? null : '104.25',
+        intradayAt,
       },
     });
   }
@@ -612,5 +678,146 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     expect(result?.chain.realtimeDegrade).toBeNull();
     // 「全量」= 收盘档那一路的成员判定照常出候选, 不是空表。
     expect(result?.candidates.length ?? 0).toBeGreaterThan(0);
+  });
+
+  // ══ T006b 空态 / 降级态 / 守卫 (FR-009 / FR-010 / FR-011 / FR-016) ═══════════════════════
+  //
+  // 🚨 本组的四个结局**两两可区分**是全部价值所在: 「规则内无腿」「没有挂牌期权」「实时不可用」
+  //    「源不可用」在用户那里是四件事, 而它们都长成「这张表没给我实时价」。合并任意两个都不会红。
+
+  // ── T006b-① 新锚首日无昨日面 ⇒ bootstrap 兜底窗 (state_branch 8; FR-002 落值的端到端判据) ──
+
+  it('🚨 T006b-① 无昨日 Δ 面 ⇒ 走 bootstrap 矩形窗, 且窗**两侧**都按港股取值 (下界 0.6)', async () => {
+    // 建合约但**不写昨日快照** = 盘中新建锚当天的形态 (建锚冷启动在连续竞价时段蓄意不写快照)。
+    await seedChain(DEEP_OTM_LEGS, { snapshots: false });
+    readPort.respond = realtimeBatch();
+
+    const boot = await retrieve(true);
+    const bootCodes = readPort.calls.flatMap((c) => c.contractCodes);
+
+    expect(boot?.chain.priceKind).toBe('realtime');
+    // 🚨 `D-70` (K/spot = 0.671) 只有港股那档下界 0.6 圈得进; 退回美股的 0.7 (= 72.98) 当场红。
+    expect(bootCodes).toContain('D-70');
+    // 🚨 「宁宽」不等于无边: `D-60` (0.576) 仍在窗外 —— 少了这条, 把下界改成 0 也能通过上一条。
+    expect(bootCodes).not.toContain('D-60');
+    // 兜底窗是**矩形**: 段内、界内的常规腿一条不落。
+    expect(bootCodes).toEqual(expect.arrayContaining(['X-88', 'X-92', 'X-96']));
+
+    // 🚨 差分: 同一批合约, 只要昨日面在, `D-70` 就**不该**被问 —— 它的昨日 |Δ| = 0.02 低于收租
+    //    带下界 0.03, 梯形窗圈不到它。⇒ 上面那条确实是在验 bootstrap 那一支, 不是「反正都会问」。
+    await resetSeededTables();
+    await seedChain(DEEP_OTM_LEGS);
+    readPort.calls.length = 0;
+    const surfaced = await retrieve(true);
+    const surfacedCodes = readPort.calls.flatMap((c) => c.contractCodes);
+    expect(surfaced?.chain.priceKind).toBe('realtime');
+    expect(surfacedCodes).not.toContain('D-70');
+    expect(surfacedCodes).not.toContain('D-60');
+
+    // 📌 EC3「兜底窗圈出的码数超单批上限」**不在本臂造夹具** —— T003 §3 已按 10 个 session ×
+    //    22 只标的证明本样本期不可达 (最大 234 vs 上限 399, 余量 165), 结论转论证。
+    //    🚫 那不等于「它不会发生」: 挂牌阶梯变密或下界再降都会改变它, 届时这里要补显式处置臂。
+  });
+
+  // ── T006b-② 窗内无腿 ⇒ 「规则内无腿」空态 (state_branch 9) ──────────────────
+
+  it('🚨 T006b-② 窗内有码但无腿过判据 ⇒ 诚实空态 (非降级非错误), 且**答得出为什么空**', async () => {
+    await seedChain();
+    // 窗照常圈到码、供应方也照常应答, 但每条腿的买价都低于权利金门槛
+    // (门槛 = max(spot×0.0018, 0.20) = 0.20 > 0.01) ⇒ 判腿这一段把它们全挡下。
+    readPort.respond = (q) => ({
+      asOf: REALTIME_AS_OF,
+      rows: [
+        underlyingRow('104.25'),
+        ...q.contractCodes.map((code) => ({ ...optionRow(code), bid: '0.01', ask: '0.02' })),
+      ],
+    });
+
+    const result = await retrieve(true);
+
+    expect(result).not.toBeNull();
+    // 🚨 空态**不是**降级也不是错误: 实时口径拿到了、只是规则内没有腿。
+    expect(result?.chain.priceKind).toBe('realtime');
+    expect(result?.chain.realtimeDegrade).toBeNull();
+    expect(result?.candidates).toHaveLength(0);
+    // 🚨 「为什么空」必须答得出来 —— 出参带着被哪一道门槛挡下、挡了几条; 一张没有理由的空表
+    //    与「今天没采到数据」在用户那里长得一模一样。
+    expect(result?.removedByPremiumFloor ?? 0).toBeGreaterThan(0);
+    // arrange 守卫: 确实问过 vendor (否则空态是「压根没去问」造成的, 那是另一条分支)。
+    expect(readPort.calls.flatMap((c) => c.contractCodes).length).toBeGreaterThan(0);
+  });
+
+  // ── T006b-③ 无挂牌期权的港股锚 (Edge Case 1) ───────────────────────────────
+
+  it('🚨 T006b-③ 锚没有任何挂牌期权 ⇒ 既有终态、不抬告警, 且与「有期权但今天没采到」可区分', async () => {
+    await seedChain([], { contracts: false });
+    readPort.respond = realtimeBatch();
+
+    const noChain = await retrieve(true);
+
+    // 既有终态 = 无链可给 (本 port 的表达就是 `null`), 🚫 不是空候选集也不是降级态。
+    expect(noChain).toBeNull();
+    expect(readPort.calls).toHaveLength(0);
+    // 🚨 不抬告警: 「这只票没有期权」是常态, 打降级留痕等于把一个正常形态报成故障。
+    //    tag 取生产侧常量而不是抄一份字面量 —— 抄的那份改了不会红。
+    const degradeWarns = warnSpy.mock.calls.filter((args: readonly unknown[]) =>
+      String(args[0]).includes(REALTIME_DEGRADE_LOG_TAG),
+    );
+    expect(degradeWarns).toHaveLength(0);
+
+    // 🚨 与「有期权但今天没采到」可区分: 后者**有链**(走 bootstrap 兜底窗), 不是 null。
+    await resetSeededTables();
+    await seedChain([], { snapshots: false });
+    const notCollected = await retrieve(true);
+    expect(notCollected).not.toBeNull();
+    expect(notCollected?.chain.priceKind).toBe('realtime');
+  });
+
+  // ── T006b-④ 基准既不新鲜也补不到 ⇒ 「实时不可用」(state_branch 6) ───────────
+
+  it('🚨 T006b-④ 定窗基准落空 ⇒ `window_basis_stale` 而**不是** `source_unavailable`', async () => {
+    // 一级: 锚不带盘中价 ⇒ 新鲜度闸必不命中; 二级: 补发那一批里没有标的行 ⇒ 补不到。
+    await seedChain([], { intradayAt: null });
+    readPort.respond = () => ({ asOf: REALTIME_AS_OF, rows: [] });
+
+    const result = await retrieve(true);
+
+    expect(result?.chain.priceKind).toBe('eod_close');
+    expect(result?.chain.realtimeDegrade).toBe('window_basis_stale');
+    // 🚨 与源故障可区分 —— 两者对用户是两件事: 「我们的基准太旧」vs「供应方挂了」。
+    expect(result?.chain.realtimeDegrade).not.toBe('source_unavailable');
+    // 🚫 MUST NOT 拿昨收定窗: 落空就落空, 不许拿一根陈旧的轴硬算一个窗出来。
+    const requestedCodes = readPort.calls.flatMap((c) => c.contractCodes);
+    expect(requestedCodes).toHaveLength(0);
+  });
+
+  // ── T006b-⑤ 供应方取数失败 ⇒ 「源不可用」(state_branch 7) ───────────────────
+
+  it('🚨 T006b-⑤ 供应方取数抛错 ⇒ 整体回落收盘档并标 `source_unavailable`', async () => {
+    await seedChain();
+    readPort.respond = () => {
+      throw new Error('vendor 报价口不可达 (夹具)');
+    };
+
+    const result = await retrieve(true);
+
+    expect(result?.chain.priceKind).toBe('eod_close');
+    expect(result?.chain.realtimeDegrade).toBe('source_unavailable');
+    expect(result?.chain.realtimeDegrade).not.toBe('window_basis_stale');
+    // 真去问过 (与 ④ 的「零外呼」正好相反) —— 这一对差分把两条路彻底分开。
+    expect(readPort.calls.length).toBeGreaterThan(0);
+  });
+
+  // ── T006b-⑦ 降级值域不扩张 (FR-010 机器判据) ───────────────────────────────
+
+  it('🚨 T006b-⑦ 链级降级值域恒为四值 —— 「市场未支持」MUST NOT 升格成第五个状态', async () => {
+    // 🚨 蓄意写成字面量而不是从常量派生: 本条是**绊线**, 谁加第五个值它就第一个红, 逼他先回去
+    //    读 FR-010 (扩值域要连带动契约值域、四条穷举文案与前端的穷举映射)。
+    expect([...REALTIME_CHAIN_DEGRADE_KINDS]).toEqual([
+      'window_over_cap',
+      'window_basis_stale',
+      'source_unavailable',
+      'gate_unknown',
+    ]);
   });
 });
