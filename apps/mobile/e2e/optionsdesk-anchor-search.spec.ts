@@ -10,6 +10,12 @@ import { mockJson } from './_support/api-mock';
 //          「没搜过 ≠ 搜不到」）
 //   T007-② 取消 / 遮罩关闭浮层
 //   T007-③ 关闭后雷达页签与已选筛选 chips 原状（sb-9）
+//   T008-① 「阿里」双市场两行三字段，行内无行情数值；excluded 照常命中零标记（sb-3/6）
+//   T008-② 零命中空态主副两行，结果区**无任何按钮**（sb-4 零 CTA）
+//   T008-③ 500 → 浮层内错误行 + 重试点通重取（sb-7）
+//   T008-④ 点行 → 关浮层 + 落 underlying 路由（sb-8）
+//   T008-⑤ 连续输入防抖：只发最后一次；开浮层未输入零请求；清空后旧词结果不闪回（sb-1/2）
+//   T008-⑥ hk 页签 + L1 筛选下搜出美股 L3 锚（sb-10 UI 半边）
 //
 // ── hermetic mock 纪律（同 golden optionsdesk-anchors-radar.spec.ts）──────────
 //   handler = `(request, canonical 锚集合) → response` 纯函数：市场作用域 / 筛选 / 空态四分
@@ -123,12 +129,31 @@ const EMPTY_STATE_MESSAGES = {
   all_idle: '今日无解，空仓是常态',
 } as const;
 
+interface OptionsdeskSearchMock {
+  /** 每次 `GET /anchors/search` 的 `q`（按到达序）—— 防抖 / enabled 门的机械观测面。 */
+  searchRequests: () => readonly string[];
+  /** 搜索链路故障开关（canonical 状态，同 golden spec `setDistance` 体例）：true ⇒ 恒 500。 */
+  setSearchDown: (down: boolean) => void;
+}
+
 /**
- * 期权台 hermetic mock —— `GET /radar` 按 server 口径复算（作用域 / 筛选 / 空态四分 /
- * 距 W 升序）。fixture 恒小于一页 ⇒ 单页返回（分页契约归 golden radar spec，此处不重验）。
+ * 期权台 hermetic mock：
+ *  · `GET /radar` 按 server 口径复算（作用域 / 筛选 / 空态四分 / 距 W 升序）。fixture 恒小于
+ *    一页 ⇒ 单页返回（分页契约归 golden radar spec，此处不重验）。
+ *  · `GET /anchors/search` 按 server 口径复算（074 D3）：域 = 全部锚**含 excluded**、跨市场
+ *    不吃页签 / 筛选参数；四路匹配（代码前缀 / 全 ticker 前缀 / 名与拼音子串）；代码精确
+ *    命中排第一 → 代码序；LIMIT 20。trgm 相似路不镜像（容错字行为归 server IT）。
+ *  · `GET /underlyings/:sym` 恒 404 —— 行点击后详情屏的取数；本 spec 只验「落到 underlying
+ *    路由」，详情屏行为归 046/047 spec。给 404 保 hermetic（fallback 会泄漏 :3000）。
  */
-async function installOptionsdeskMock(page: Page, seed: AnchorResponse[]): Promise<void> {
+async function installOptionsdeskMock(
+  page: Page,
+  seed: AnchorResponse[],
+  pinyin: Record<string, { abbr: string; full: string }> = {},
+): Promise<OptionsdeskSearchMock> {
   const anchors = seed.map((a) => ({ ...a }));
+  const searchCalls: string[] = [];
+  let searchDown = false;
 
   await page.route(OPTIONSDESK_RE, async (route: Route) => {
     const req = route.request();
@@ -143,6 +168,47 @@ async function installOptionsdeskMock(page: Page, seed: AnchorResponse[]): Promi
         headers: JSON_HEADERS,
         body: JSON.stringify(body),
       });
+
+    // ── GET /optionsdesk/anchors/search（074；声明序无关 —— 这里按最长路径先判）──
+    if (url.pathname.endsWith('/optionsdesk/anchors/search')) {
+      const q = (url.searchParams.get('q') ?? '').trim().slice(0, 64);
+      searchCalls.push(q);
+      if (searchDown) return void (await json(500, { code: 'INTERNAL' }));
+      if (q.length === 0) return void (await json(200, { items: [] }));
+      const lower = q.toLowerCase();
+      const codeOf = (t: string) => t.split(':')[1] ?? '';
+      // 域 = 全部锚（**含 excluded**，FR-004）；无 market / L 级参数可吃（FR-005）。
+      const hits = anchors.filter((a) => {
+        const code = codeOf(a.ticker);
+        const name = a.name ?? code;
+        const py = pinyin[a.ticker];
+        return (
+          code.toLowerCase().startsWith(lower) ||
+          a.ticker.toLowerCase().startsWith(lower) ||
+          name.includes(q) ||
+          (py !== undefined &&
+            (py.abbr.toLowerCase().includes(lower) || py.full.toLowerCase().includes(lower)))
+        );
+      });
+      const items = [...hits]
+        .sort((x, y) => {
+          const ex = codeOf(x.ticker).toLowerCase() === lower ? 0 : 1;
+          const ey = codeOf(y.ticker).toLowerCase() === lower ? 0 : 1;
+          if (ex !== ey) return ex - ey;
+          return codeOf(x.ticker).localeCompare(codeOf(y.ticker));
+        })
+        .slice(0, 20)
+        .map((a) => ({
+          ticker: a.ticker,
+          name: a.name ?? codeOf(a.ticker),
+          lLevelEffective: a.lLevelEffective,
+        }));
+      return void (await json(200, { items }));
+    }
+
+    // ── GET /optionsdesk/underlyings/:sym —— 行点击后的详情屏取数，见函数头注释。──
+    if (url.pathname.includes('/optionsdesk/underlyings/'))
+      return void (await json(404, { code: 'ANCHOR_NOT_FOUND' }));
 
     if (url.pathname.endsWith('/optionsdesk/radar')) {
       const lLevels = new Set(
@@ -207,6 +273,13 @@ async function installOptionsdeskMock(page: Page, seed: AnchorResponse[]): Promi
 
     await route.fallback();
   });
+
+  return {
+    searchRequests: () => searchCalls,
+    setSearchDown: (down) => {
+      searchDown = down;
+    },
+  };
 }
 
 test.beforeEach(async ({ page }) => {
@@ -341,4 +414,165 @@ test('074 T007-③ 关闭浮层后雷达原状：hk 页签 + L3 筛选组合保�
   await expect(page.getByTestId('optionsdesk-radar-empty-filtered')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-radar-row-us:PEP')).toHaveCount(0);
   await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T008 — 结果区五态 + 取数 + 行点击直达
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 搜索场景的 canonical 集合：同名跨市场（且 hk 侧 excluded）+ 一只 hk 常规锚。 */
+function searchSeed(): AnchorResponse[] {
+  return [
+    makeAnchor({ id: '1', ticker: 'us:AOS', name: 'A.O.史密斯', lLevelEffective: 'L2' }),
+    makeAnchor({ id: '2', ticker: 'us:BABA', name: '阿里巴巴', lLevelEffective: 'L3' }),
+    // 交易意愿已关闭：不上雷达列表，但**照常进搜索域**（sb-6 / Clarifications 2026-09-03）。
+    makeAnchor({
+      id: '3',
+      ticker: 'hk:09988',
+      name: '阿里巴巴-W',
+      lLevelEffective: 'L2',
+      excluded: true,
+      excludeReason: '暂不交易',
+    }),
+    makeAnchor({ id: '4', ticker: 'hk:00700', name: '腾讯控股', lLevelEffective: 'L2' }),
+  ];
+}
+
+const SEARCH_PINYIN: Record<string, { abbr: string; full: string }> = {
+  'us:BABA': { abbr: 'albb', full: 'alibaba' },
+  'hk:09988': { abbr: 'albb', full: 'alibaba' },
+  'hk:00700': { abbr: 'txkg', full: 'tengxunkonggu' },
+};
+
+test('074 T008-① 输入「阿里」→ 双市场两行三字段；行内无行情数值；excluded 照常命中零额外标记（sb-3/6）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, searchSeed(), SEARCH_PINYIN);
+  await gotoOptionsdesk(page);
+  await openSearchSheet(page);
+
+  await page.getByTestId('optionsdesk-anchor-search-input').fill('阿里');
+  const babaRow = page.getByTestId('optionsdesk-anchor-search-row-us:BABA');
+  await expect(babaRow).toBeVisible({ timeout: 15_000 });
+  // 跨市场双命中（无 market 过滤）—— excluded 的 hk 行也在（搜索正是它的主要入口）。
+  const hkRow = page.getByTestId('optionsdesk-anchor-search-row-hk:09988');
+  await expect(hkRow).toBeVisible();
+
+  // 三字段：名主位 / mono canonical ticker / 生效 L 级徽标（FR-006）。
+  await expect(babaRow.getByText('阿里巴巴', { exact: true })).toBeVisible();
+  await expect(babaRow.getByText('us:BABA', { exact: true })).toBeVisible();
+  await expect(babaRow.getByText('L3', { exact: true })).toBeVisible();
+
+  // 行内**无行情数值**（FR-006 后半）：spot / 距 W 的任何形态都不许在。
+  await expect(babaRow.getByText(/88\.00|距 W/)).toHaveCount(0);
+
+  // excluded 行零额外标记（sb-6 UI 半边）：三字段照常，无「排除 / 暂不交易」类字样。
+  await expect(hkRow.getByText('阿里巴巴-W', { exact: true })).toBeVisible();
+  await expect(hkRow.getByText('L2', { exact: true })).toBeVisible();
+  await expect(hkRow.getByText(/排除|暂不交易/)).toHaveCount(0);
+});
+
+test('074 T008-② 零命中 → 空态主副两行；结果区无任何按钮（sb-4 零 CTA）', async ({ page }) => {
+  await installOptionsdeskMock(page, searchSeed(), SEARCH_PINYIN);
+  await gotoOptionsdesk(page);
+  await openSearchSheet(page);
+
+  await page.getByTestId('optionsdesk-anchor-search-input').fill('不存在的名字');
+  const empty = page.getByTestId('optionsdesk-anchor-search-empty');
+  await expect(empty).toBeVisible({ timeout: 15_000 });
+  await expect(empty.getByText('没有匹配的锚')).toBeVisible();
+  await expect(empty.getByText('只能搜到已建锚的标的')).toBeVisible();
+
+  // 零 CTA：结果区里**一个按钮都不许有**（不提供建锚等旁路，FR-004 / sb-4）。
+  const results = page.getByTestId('optionsdesk-anchor-search-results');
+  await expect(results.getByRole('button')).toHaveCount(0);
+  await expect(results.getByText('去建锚')).toHaveCount(0);
+});
+
+test('074 T008-③ 搜索失败 → 浮层内错误行 + 重试点通重取；浮层不关（sb-7）', async ({ page }) => {
+  const mock = await installOptionsdeskMock(page, searchSeed(), SEARCH_PINYIN);
+  await gotoOptionsdesk(page);
+  await openSearchSheet(page);
+
+  mock.setSearchDown(true);
+  await page.getByTestId('optionsdesk-anchor-search-input').fill('阿里');
+  // react-query retry:1 → 首发 + 1 重试都 500 后才判 error（~1s backoff）。
+  const errorRow = page.getByTestId('optionsdesk-anchor-search-error');
+  await expect(errorRow).toBeVisible({ timeout: 20_000 });
+  await expect(errorRow.getByText('搜索失败')).toBeVisible();
+  // 浮层不关、不整屏报错（sb-7）。
+  await expect(page.getByTestId('optionsdesk-anchor-search-sheet')).toBeVisible();
+
+  // 链路恢复（canonical 状态翻回）→ 点重试 → 真的重取并渲出命中。
+  const failedCalls = mock.searchRequests().length;
+  mock.setSearchDown(false);
+  await page.getByTestId('optionsdesk-anchor-search-retry').tap();
+  await expect(page.getByTestId('optionsdesk-anchor-search-row-us:BABA')).toBeVisible({
+    timeout: 15_000,
+  });
+  expect(mock.searchRequests().length).toBeGreaterThan(failedCalls);
+});
+
+test('074 T008-④ 点命中行 → 关浮层 + 直达该标的 underlying 路由（sb-8）', async ({ page }) => {
+  await installOptionsdeskMock(page, searchSeed(), SEARCH_PINYIN);
+  await gotoOptionsdesk(page);
+  await openSearchSheet(page);
+
+  await page.getByTestId('optionsdesk-anchor-search-input').fill('阿里巴巴');
+  const babaRow = page.getByTestId('optionsdesk-anchor-search-row-us:BABA');
+  await expect(babaRow).toBeVisible({ timeout: 15_000 });
+  await babaRow.tap();
+
+  // Modal 关 + 落 underlying 路由（与雷达行同目的地；push 走 encodeURIComponent，web 地址栏
+  // 把路径段解码回 `us:BABA` 展示 —— 两种形态都算落对了地方）。
+  await expect(page.getByTestId('optionsdesk-anchor-search-sheet')).toHaveCount(0);
+  await expect(page).toHaveURL(/\/optionsdesk\/underlying\/us(%3A|:)BABA/, { timeout: 30_000 });
+});
+
+test('074 T008-⑤ 防抖：开浮层零请求；连续输入只发最后一次；清空后旧词结果不闪回（sb-1/2）', async ({
+  page,
+}) => {
+  const mock = await installOptionsdeskMock(page, searchSeed(), SEARCH_PINYIN);
+  await gotoOptionsdesk(page);
+  await openSearchSheet(page);
+
+  // 开浮层、未输入：**零请求**（enabled 门的机械观测面 —— 变异「摘掉 enabled」在此与末断言红）。
+  expect(mock.searchRequests()).toHaveLength(0);
+
+  // 逐字连打（间隔 < 250ms 防抖窗）→ 只有最后一次生效。
+  await page
+    .getByTestId('optionsdesk-anchor-search-input')
+    .pressSequentially('阿里巴巴', { delay: 60 });
+  await expect(page.getByTestId('optionsdesk-anchor-search-row-us:BABA')).toBeVisible({
+    timeout: 15_000,
+  });
+  expect(mock.searchRequests()).toEqual(['阿里巴巴']);
+
+  // 清空 → 结果区回真空白（旧词结果不许滞留），且不再发请求（空输入不发起，sb-1）。
+  await page.getByTestId('optionsdesk-anchor-search-clear').tap();
+  await expect(page.locator('[data-testid^="optionsdesk-anchor-search-row-"]')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-anchor-search-results')).toHaveText('');
+  expect(mock.searchRequests()).toEqual(['阿里巴巴']);
+});
+
+test('074 T008-⑥ hk 页签 + L1 筛选下照常搜出美股 L3 锚（sb-10 UI 半边）', async ({ page }) => {
+  await installOptionsdeskMock(page, searchSeed(), SEARCH_PINYIN);
+  await gotoOptionsdesk(page);
+
+  // 把雷达镜头收到最窄：hk 页签 + L1 筛选（hk 无 L1 ⇒ 筛选空态）。
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({
+    timeout: 20_000,
+  });
+  await page.getByTestId('optionsdesk-radar-filter-L1').tap();
+  await expect(page.getByTestId('optionsdesk-radar-empty-filtered')).toBeVisible({
+    timeout: 20_000,
+  });
+
+  // 搜索不吃页签 / 筛选：美股 L3 锚照常命中（sb-10）。
+  await openSearchSheet(page);
+  await page.getByTestId('optionsdesk-anchor-search-input').fill('阿里巴巴');
+  const babaRow = page.getByTestId('optionsdesk-anchor-search-row-us:BABA');
+  await expect(babaRow).toBeVisible({ timeout: 15_000 });
+  await expect(babaRow.getByText('L3', { exact: true })).toBeVisible();
 });
