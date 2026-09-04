@@ -14,6 +14,7 @@
 //    **行点击进该票的标的详情**（046 T028 / US1-AS1）。045 那版后两者是灰置 /「即将可用」轻
 //    提示 —— 那是**以「详情页与温度计页尚不存在」为前提**的占位，T021/T022 落地后前提失效，
 //    页内不再留该占位（机械防线在 `radar.rules.spec.ts`：雷达文案子树深走零命中）。
+import { useState } from 'react';
 import { FlatList, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import Svg, { Circle, Path } from 'react-native-svg';
@@ -22,6 +23,7 @@ import type { AnchorResponse, AnchorResponseZone } from '@nvy/api-client';
 import { DrawerMenuButton } from '~/core/app-shell-drawer';
 import { colors } from '~/theme';
 import { ErrorRow, SafeAreaView, Spinner } from '~/ui';
+import { AnchorSearchSheet } from './anchor-search-sheet';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { RadarMarketTabs } from './radar-market-tabs';
 import {
@@ -71,6 +73,8 @@ const FRESHNESS_TONE: Record<RadarFreshnessTier, string> = {
 export function RadarScreen() {
   const router = useRouter();
   const radar = useRadar();
+  // 074：锚搜索浮层开合。浮层不触碰 useRadar ⇒ 开关不惊动页签 / 筛选（sb-9）。
+  const [searchOpen, setSearchOpen] = useState(false);
 
   return (
     <SafeAreaView edges={['top']} className="flex-1 bg-surface">
@@ -100,6 +104,17 @@ export function RadarScreen() {
           >
             {/* 046 T023：真入口 ⇒ 去掉 045 的灰置调（`text-ink-subtle` 是「不可点」的视觉信号）。 */}
             <Text className="text-base">🌡</Text>
+          </Pressable>
+          {/* 074 D6：题头右排第三入口 —— 锚搜索浮层（次序 ⚙ 🌡 🔍；实装无底色，
+              mockup 帧 ① 的淡蓝底仅为标注）。 */}
+          <Pressable
+            className="h-10 w-10 items-center justify-center rounded-full"
+            onPress={() => setSearchOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={COPY.searchEntry}
+            testID="optionsdesk-radar-search-button"
+          >
+            <SearchGlyph />
           </Pressable>
         </View>
       </View>
@@ -154,6 +169,9 @@ export function RadarScreen() {
       <View className="flex-1 bg-surface-sunken">
         <RadarBody radar={radar} router={router} />
       </View>
+
+      {/* 074：锚搜索浮层（盖 Tab 栏必用 Modal，组件内已是；FR-002）。 */}
+      <AnchorSearchSheet visible={searchOpen} onClose={() => setSearchOpen(false)} />
     </SafeAreaView>
   );
 }
@@ -353,6 +371,25 @@ function badgeTone(badge: RadarBadge, anchor: AnchorResponse): { box: string; te
 }
 
 // ─────────────────────────── icons（屏内一次性，不抽 ~/ui） ───────────────────────────
+
+/** 074 D6：放大镜。形态抄「我的」页 IconSearch（circle + line），体例同 GearGlyph。 */
+function SearchGlyph() {
+  return (
+    <Svg
+      width={21}
+      height={21}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={colors.ink.muted}
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <Circle cx={11} cy={11} r={7} />
+      <Path d="M20 20 L16 16" />
+    </Svg>
+  );
+}
 
 function GearGlyph() {
   return (

@@ -71,6 +71,25 @@ export const OPTIONSDESK_COPY = {
       us: '美股',
       hk: '港股',
     } satisfies Record<OptionsdeskControllerRadarMarket, string>,
+
+    // ── 锚搜索浮层（074 FR-001 / FR-009 / FR-010，plan D10） ──────────────
+    /** 题头 🔍 的 a11y 名（真入口：开锚搜索浮层）；也是浮层标题。 */
+    searchEntry: '搜索锚',
+    searchPlaceholder: '名称 / 代码 / 拼音',
+    searchCancel: '取消',
+    /** 清空输入叉的 a11y 名。 */
+    searchClear: '清空',
+    /** loading 行（五态之 loading，T008）。 */
+    searchLoading: '搜索中…',
+    /**
+     * 零命中空态主副两行（sb-4，零 CTA）。🚨 **空输入 ≠ 零命中**（sb-1）：空输入恒真空白，
+     * 这两行只在「搜过且没搜到」时出现 —— 副行就是在解释「搜索域 = 已建锚」这条边界。
+     */
+    searchEmptyTitle: '没有匹配的锚',
+    searchEmptyHint: '只能搜到已建锚的标的',
+    /** 失败行 + 重试（sb-7：浮层内提示，不关浮层）。 */
+    searchFailed: '搜索失败',
+    searchRetry: '重试',
   },
 
   /**
