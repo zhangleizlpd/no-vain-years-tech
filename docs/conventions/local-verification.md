@@ -58,6 +58,38 @@ env -u OSS_ACCESS_KEY_ID -u OSS_ACCESS_KEY_SECRET <VAR> PORT=3099 \
 | **CI `gate-checks` 那一批治理脚本**              | `scripts/checks/*.ts` 全扫，见 §2.1                                                         | 🚨 上面那条 `nx affected` 门**不覆盖**它们 —— gate-checks job 另跑约 18 个 check 脚本；只跑 affected 门就推，仍可能被打红                                                                                  |
 | **用「CI 那样干净」的 env 重跑任一条上面的命令** | `scripts/local-verify-as-ci.sh <上面任一命令>`（`--list` 只看泄漏清单，不跑）               | 按 `apps/server/.env.example` 的键集把**本机泄漏的 server env 全 unset** 再跑（键集派生、不硬编码）。**本地绿而 CI 红时先跑它**，判据见 §3 同名行。⚠️ 只覆盖 env 这一个维度，核数 / Docker 资源仍是本机的  |
 
+### 2.0 契约冒烟做定向变异：别跑全套，起一个临时单 spec runner
+
+新写 / 改一条 `apps/mobile/e2e/contract-smoke/*.contract.ts` 之后要证明它「能红」（定向变异，
+per [`.claude/rules/implement-task-closure.md`](../../.claude/rules/implement-task-closure.md)），
+**MUST NOT 每轮跑上面那条全套命令** —— 它顺序跑全部 spec，且会把无关 spec 的既有红混进判断。
+
+同目录临时写一个单 spec runner（跑完即删，🚫 不入库），照 `run.ts` 的形状但 `SPECS` 只有一条：
+
+```ts
+import { bootRealBackend } from '../_support/real-backend-harness';
+import * as only from './NNN-xxx.contract';
+// boot → only.run(ctx) → finally ctx.teardown() → process.exit(failed)
+```
+
+```bash
+pnpm nx build server                                        # 变异后必须重建, 否则跑的是旧 dist
+pnpm -C apps/mobile exec tsx e2e/contract-smoke/_mutation-run.ts
+```
+
+🟢 2026-09-05 实证（071 T008）：单 spec 一轮 **9.4 s**（testcontainers PG+Redis 起停 +
+`prisma migrate deploy` + 真 server boot + 程序化登录全含），同日全套一轮约 7 min。
+⇒ **成本大头是 boot 不是 spec 数**，省下的是那几十次业务往返。
+
+两个会让变异「假幸存」的坑：
+
+1. **忘了 `nx build server`** —— 同日实撞：build `exit 1`（变异撞 TS）而 run `exit 0`，跑的是
+   上一轮的 dist，读起来像「变异幸存 ⇒ 断言没覆盖到」。⇒ build 与 run **分两条命令发**、
+   各自看 exit code（同 §3「exit code 会说谎」）。
+2. **变异点要挑编译得过的那一处** —— 同日实撞：`WINDOW_SUPPORTED_MARKETS` 去掉 `'hk'` 被
+   `Record<WindowMarket, …>` 的 per-market 表当场 `TS2353` 拦下。改挑**消费点**（守卫函数体 /
+   DTO 投影 / use case 门控行）。
+
 ### 2.1 推之前把 `scripts/checks/` 全扫一遍
 
 `nx affected -t lint typecheck test build runtime-smoke` 只覆盖 lint / typecheck / test / build /
