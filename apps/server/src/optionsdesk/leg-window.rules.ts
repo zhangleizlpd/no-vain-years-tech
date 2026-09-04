@@ -46,32 +46,57 @@ export const WINDOW_DTE_MIN = Math.min(BUILD_RECALL_DTE.min, RENT_RECALL_DTE.min
 export const WINDOW_DTE_MAX = Math.max(BUILD_RECALL_DTE.max, RENT_RECALL_DTE.max);
 
 /**
- * bootstrap 宽窗 strike 下界比例 —— **068 起 bootstrap 专用** (非实时主路参数)。
+ * bootstrap 宽窗 strike 下界比例 —— **068 起 bootstrap 专用** (非实时主路参数), **071 T004②
+ * 起 per-market**。
  *
- * 无昨日 Δ 面时两条边都给不出 Δ 带包络, 只能退回经验矩形: 深虚到 spot 的七成以下时, 认沽
- * 权利金在美股常规时段几乎必然落到门槛之下 ⇒ 问了也是白问。宁宽不可窄 —— bootstrap 只发生
- * 在新锚首日, 宽一点的代价是一次外呼多问几十条码, 窄的代价是首日候选静默缺腿。
- * 进 `check-optionsdesk-rule-constants` 守卫表 (068), 🚫 第二处出现该字面量即红。
+ * 无昨日 Δ 面时两条边都给不出 Δ 带包络, 只能退回经验矩形: 深虚到某个比例以下时, 认沽权利金
+ * 几乎必然落到门槛之下 ⇒ 问了也是白问。宁宽不可窄 —— bootstrap 只在「T-1 整期该标的零带价
+ * 数据」时走 (新锚首日 / vendor 整票挂掉), 宽一点的代价是一次外呼多问几十条码, 窄的代价是
+ * 首日候选静默缺腿。
+ * 🚨 守卫拦的是**内联形状**不是字面量 —— `check-optionsdesk-rule-constants` 不变量 #9 明写
+ * 「bootstrap 两比例没法子串扫(`0.7` 撞遍全 ctx 的注释与示例串), 改拦它们被内联的形状」⇒
+ * 系数乘法 MUST 消费本表, 写成 `.times(new Prisma.Decimal('…'))` 即违规。
  *
- * ## 🚨 已知缺陷 (2026-08-31 实证, 蓄意保留, issue #308)
+ * ## 两市取值的出处
+ *
+ * · `us` **0.7 逐值不动** —— 071 SC-004「美股逐值零变化」; 本片只加 hk 这一项。
+ * · `hk` **0.6** —— EVIDENCE: 2026-09-04 我方直查 prod 22 只港股标的收租段 (DTE 30–365) 的
+ *   `K/spot` 分档, 在**有买价的腿**里过权利金门槛的比例: `[0.60,0.65)` **30.8%** ·
+ *   `[0.65,0.70)` 31.6% · `[0.55,0.60)` 掉到 10.5% · `[0.40,0.50)` **0%** ⇒ 拐点在 0.55/0.60
+ *   之间。同向的第二份样本: 2026-08-31 我方盘中实时全链快照 (hk:00700) 分档过门槛率
+ *   `[0.60,0.65)` 43.3% · `[0.65,0.70)` 55.6% —— 实时口径系统性更高, 趋势一致。
+ *   ⚠️ 落值当天只有 EOD 口径的多标的样本(低档带价腿仅 72 条), 实时口径的多标的复核待 09-07。
+ *   码数不是约束: 同日实测降到 0.5 时最大单票 (`hk:00005`) 也只有 185 条, 远低于 vendor 每批
+ *   400 码上限。
+ *
+ * ## 🚨 已知缺陷: per-market 化只是缓解, 不是根治 (issue #308)
  *
  * 本比例是 **spot 的固定比例**, 而收租成色上界是 **W 派生**的 (`axis = min(spot, W)`,
  * `W = 0.8 × V` ⇒ 上界 ≈ `0.824 × V/spot × spot`)。⇒ 锚的 `V` 相对 spot 偏低到一定程度时,
  * **下界会高过上界**, bootstrap 首日的收租候选**恒为空集**。
  *
- * 实测踩中的不止港股: `hk:00700` 上界 0.681×spot、**`us:APA` 上界 0.635×spot —— 美股今天
- * 就在犯**; `us:AFL` (0.708) 与 `hk:09988` (0.724) 是贴边。⇒ **这不是港股标定问题**, 是 067
+ * EVIDENCE: 2026-09-04 我方直查 prod 全部 28 只港股锚 —— 下界 0.7 时 **8 只**恒空; 落 0.6 后
+ * 剩 **3 只** (`hk:00005` 上界 0.428×spot · `hk:03690` 0.434 · `hk:01810` 0.464)。美股同形态
+ * **未修** (`us:APA` 0.635×spot, 受 SC-004 约束本片不动)。⇒ **这不是港股标定问题**, 是 067
  * 引 W-axis 之后遗留、068 把矩形窗降格成 bootstrap 时没重新核过的结构性缺口。
  *
- * 🚫 **MUST NOT 在这里悄悄调一个数**: 往下调会改动**美股**的 bootstrap 窗 (撞 071 SC-004
- * 「美股逐值零变化」), 往 per-market 表转需要港股实测取证 (071 T003/T004②, 数据 2026-09-02
- * 到齐)。两条路都是显式决策, 不是顺手改。
+ * 🚫 **MUST NOT 靠继续调低下界去追它** —— 同日 EOD 分档实测 `[0.40,0.45)` 档条件通过率 0%
+ * (7 条带价腿全部低于门槛), 再低就是纯浪费外呼。根治要动上界的 W 派生形态, 归 #308。
  */
-export const STRIKE_ENVELOPE_FLOOR_SPOT_RATIO = new Prisma.Decimal('0.7');
+export const STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET: Readonly<
+  Record<WindowMarket, Prisma.Decimal>
+> = {
+  us: new Prisma.Decimal('0.7'),
+  hk: new Prisma.Decimal('0.6'),
+};
 
 /**
- * bootstrap 宽窗 strike 上界比例 —— 同 {@link STRIKE_ENVELOPE_FLOOR_SPOT_RATIO}, bootstrap
- * 专用。略高于 spot, 把收租成色上界与建仓有效成本的定义域整个罩住。
+ * bootstrap 宽窗 strike 上界比例 —— 同 {@link STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET},
+ * bootstrap 专用。略高于 spot, 把收租成色上界与建仓有效成本的定义域整个罩住。
+ *
+ * 🚨 **蓄意保持单值, 不随下界一起 per-market 化** (071 T004③): 它的成立是**构造性**的 ——
+ * 收租成色上界 = `min(spot, W) × 1.03` ≤ `spot × 1.03` < `spot × 1.05`, 建仓有效成本的定义域
+ * 同样以 spot 为轴 ⇒ 1.05 罩住两者与市场无关, 分市场只会引入一份没有判据支撑的第二个数。
  */
 export const STRIKE_ENVELOPE_CEILING_SPOT_RATIO = new Prisma.Decimal('1.05');
 
@@ -81,7 +106,7 @@ export interface LegWindow {
   readonly optionType: 'PUT';
   readonly dteMin: number;
   readonly dteMax: number;
-  /** `spot × ` {@link STRIKE_ENVELOPE_FLOOR_SPOT_RATIO}。 */
+  /** `spot × ` {@link STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET} 里**该市场那一项**。 */
   readonly strikeMin: Prisma.Decimal;
   /** `spot × ` {@link STRIKE_ENVELOPE_CEILING_SPOT_RATIO}。 */
   readonly strikeMax: Prisma.Decimal;
@@ -110,7 +135,7 @@ export function bootstrapWindowFor(market: string, spot: Prisma.Decimal): LegWin
     optionType: 'PUT',
     dteMin: WINDOW_DTE_MIN,
     dteMax: WINDOW_DTE_MAX,
-    strikeMin: spot.times(STRIKE_ENVELOPE_FLOOR_SPOT_RATIO),
+    strikeMin: spot.times(STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET[market]),
     strikeMax: spot.times(STRIKE_ENVELOPE_CEILING_SPOT_RATIO),
     isStandard: true,
   };

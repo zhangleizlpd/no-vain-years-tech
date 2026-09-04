@@ -75,17 +75,40 @@ describe('bootstrapWindowFor —— bootstrap 宽窗由召回常量派生 (068 F
    * 🚨 **美股逐值零变化** (071 SC-004)。071 只往白名单加数据、不动派生逻辑 ⇒ us 的窗必须
    * 逐值不动。期望值**硬编码**: 从常量反算等于拿被测对象当基线。
    */
-  it('🚨 us 逐值不变, 且 hk 当前与 us 同比例 (下界尚未 per-market 化, 见 T004②)', () => {
+  it('🚨 us 逐值不变 (SC-004); hk 走自己的下界 —— 下界 per-market、上界仍单值 (T004②③)', () => {
     const us = bootstrapWindowFor('us', SPOT);
     const hk = bootstrapWindowFor('hk', SPOT);
-    expect(us.strikeMin.toString()).toBe('70'); // 100 × 0.7
+    expect(us.strikeMin.toString()).toBe('70'); // 100 × 0.7 —— 美股逐值不动
     expect(us.strikeMax.toString()).toBe('105'); // 100 × 1.05
-    // ⚠️ **已知缺陷, 蓄意在本片保留**: 下界是 spot 的固定比例, 而收租成色上界是 W 派生
-    //    (≈ 0.824 × V/spot) ⇒ 锚的 V 相对 spot 偏低时下界会**高过**上界 ⇒ bootstrap 首日
-    //    收租候选恒空。实测踩中: hk:00700 (0.681×spot) 与 **us:APA (0.635×spot, 美股今天
-    //    就在犯)** —— 不是港股特有。取证与处置挂 issue #308, 🚫 MUST NOT 在这里悄悄改一个数。
-    expect(hk.strikeMin.toString()).toBe('70');
-    expect(hk.strikeMax.toString()).toBe('105');
+    expect(hk.strikeMin.toString()).toBe('60'); // 100 × 0.6 —— 071 T004② 落值
+    expect(hk.strikeMax.toString()).toBe('105'); // 上界**蓄意**保持单值 (T004③)
+    // 判据分野钉死: 下界两市不同、上界两市相同。写成两条 equals 而非只断言取值 —— 只断言
+    // 取值时, 有人把上界也 per-market 化并让两市恰好同值, 这条不会红。
+    expect(hk.strikeMin.equals(us.strikeMin)).toBe(false);
+    expect(hk.strikeMax.equals(us.strikeMax)).toBe(true);
+  });
+
+  /**
+   * 🚨 **下界与成色上界的碰撞是结构性缺陷, per-market 化只是缓解、不是根治** (issue #308)。
+   *
+   * 收租成色上界 = `axis × 1.03`, `axis = min(spot, W)`, `W = 0.8 × V` ⇒ `V` 相对 spot 偏低时
+   * 上界 ≈ `0.824 × V/spot × spot` 会**低过**下界 ⇒ bootstrap 首日收租候选恒空。
+   *
+   * EVIDENCE: 2026-09-04 我方直查 prod 全部 28 只港股锚 —— 按 `0.824×V < 下界×spot` 判, 下界
+   * 0.7 时 8 只恒空; 落 0.6 后剩 3 只 (`hk:00005` 上界 0.428×spot · `hk:03690` 0.434 ·
+   * `hk:01810` 0.464)。美股同形态未修 (`us:APA` 0.635×spot), 本片受 SC-004 约束不动美股。
+   * 🚫 **MUST NOT 靠继续调低下界去追它** —— 2026-09-04 EOD 分档实测 `[0.40,0.45)` 档条件
+   * 通过率 **0%** (7 条带价腿全部低于权利金门槛), 再低就是纯浪费外呼。根治要动的是上界的
+   * W 派生形态, 归 #308。
+   */
+  it('🚨 落 0.6 后仍有锚会撞上界 —— 本条钉住「缓解不是根治」, 防止有人据此关掉 #308', () => {
+    const hk = bootstrapWindowFor('hk', SPOT);
+    // hk:00005 那类: 上界 0.428 × spot < 下界 0.6 × spot ⇒ 窗内无解, 仍恒空。
+    const ceilingOf00005 = SPOT.times(new Prisma.Decimal('0.428'));
+    expect(hk.strikeMin.greaterThan(ceilingOf00005)).toBe(true);
+    // hk:00941 那类 (上界 0.681): 0.6 < 0.681 ⇒ 窗内有解, 这批是本次落值救回来的。
+    const ceilingOf00941 = SPOT.times(new Prisma.Decimal('0.681'));
+    expect(hk.strikeMin.lessThan(ceilingOf00941)).toBe(true);
   });
 
   it('🚨 windowTripwire 已随 064 覆盖范式退役 —— 绊线导出不复存在 (068 D1 退役清单)', async () => {
