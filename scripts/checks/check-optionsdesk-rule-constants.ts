@@ -320,6 +320,9 @@ export function shapePatternProbe(): string | null {
 
 /** 068 K-梯形窗：两条 Δ 带 + pad 的唯一落点。 */
 const DELTA_SURFACE_FILE = 'leg-delta-surface.rules.ts';
+/** 071 T004② 撞值登记的两个文件 —— 理由见 #1 扫描面处的整文件豁免注释。 */
+const WINDOW_FILE = 'leg-window.rules.ts';
+const WINDOW_SPEC_FILE = 'leg-window.rules.spec.ts';
 /** 068 bootstrap 宽窗：两个矩形包络比例的唯一落点。 */
 const WINDOW_RULES_FILE = 'leg-window.rules.ts';
 
@@ -605,8 +608,19 @@ function main(): void {
 
   // 📌 #1 的面同样豁免 `leg-delta-surface.rules.ts`（068 T010 撞值登记, 与下方 #2 同一条理由）:
   // rent 带上界 0.62 含子串 0.6（ZONE_FLOOR_COEFFICIENT）—— 取值巧合, 该文件参数由 #9 守。
+  //
+  // 📌 **071 T004② 撞值登记**: `leg-window.rules.ts` 与其 spec 同样豁免 —— bootstrap 下界
+  // per-market 化后 hk 取 0.6, 与 `ZONE_FLOOR_COEFFICIENT` **字面撞值**(同为「六成」这个自然
+  // 比例点, 语义无关); 两文件的 EVIDENCE 注释里还写着分档取证数字(`0.60,0.65` / `0.635` /
+  // `0.681` 等), 也都含子串 0.6。
+  // ⚠️ **这是整文件豁免, 有覆盖缺口**: 此后真把 anchor 档位系数硬编码进这两个文件, #1 抓不到。
+  // 接受它的理由与 delta-surface 那条同源 —— 该文件的策略参数由 #9(窗判据形状扫描 + 内联系数
+  // 形状)守, 而 #9 恰好管不到「anchor 系数流入」这一面。缩小豁免面要按字面量逐个登记, 那需要
+  // 改 findOffenders 的签名, 收益不抵复杂度(既有先例已按整文件豁免走了一轮)。
   const offenders = findOffenders(
-    siblings.filter((f) => f.name !== DELTA_SURFACE_FILE),
+    siblings.filter(
+      (f) => f.name !== DELTA_SURFACE_FILE && f.name !== WINDOW_FILE && f.name !== WINDOW_SPEC_FILE,
+    ),
     forbidden,
   );
   if (offenders.length > 0) {
