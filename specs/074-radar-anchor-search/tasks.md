@@ -27,7 +27,7 @@ A task is a 30min–2h single-commit unit of work. Status semantics:
 
 ## API Client
 
-- [ ] T005 [Contract] **契约同步**（plan §D11; Constitution §V）：`nx run server:export-openapi` **然后** `nx affected -t generate` → verify: `git diff --stat packages/api-client/src/generated` 非空且含 anchorSearch 相关产物；全仓 grep mock 工厂确认无手写 mock 需镜像新类型（`rg -l "AnchorSearchResponse|searchAnchors" apps/ packages/ --glob '!**/generated/**'` 结果逐条过目）
+- [X] T005 [Contract] **契约同步**（plan §D11; Constitution §V）：`nx run server:export-openapi` **然后** `nx affected -t generate` → verify: `git diff --stat packages/api-client/src/generated` 非空且含 anchorSearch 相关产物；全仓 grep mock 工厂确认无手写 mock 需镜像新类型（`rg -l "AnchorSearchResponse|searchAnchors" apps/ packages/ --glob '!**/generated/**'` 结果逐条过目）
 
 ## Mobile
 

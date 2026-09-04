@@ -36,6 +36,7 @@ import type {
   AnchorListResponse,
   AnchorPointInTimeResponse,
   AnchorResponse,
+  AnchorSearchResponse,
   AnchorSubmissionControllerListParams,
   AnchorSubmissionDetailResponse,
   AnchorSubmissionResponse,
@@ -50,6 +51,7 @@ import type {
   OptionsdeskControllerLegsParams,
   OptionsdeskControllerListParams,
   OptionsdeskControllerRadarParams,
+  OptionsdeskControllerSearchParams,
   OptionsdeskGuestControllerModelImportParams,
   OptionsdeskGuestControllerSubmitParams,
   PositionBucketResponse,
@@ -682,6 +684,99 @@ export function useOptionsdeskControllerList<TData = Awaited<ReturnType<typeof o
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getOptionsdeskControllerListQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * Searches ONLY underlyings that have an anchor — the join IS the domain check: an instrument without an anchor never appears (FR-004), and there is deliberately no "create an anchor" side door in this surface. Excluded anchors match as usual with no extra marker (the domain criterion is "has an anchor", not "shows on the radar"), and the search is cross-market — never constrained by the current market tab or L-level filters (FR-005). Matching accepts Chinese name / pinyin abbreviation / full pinyin / exchange code / canonical ticker prefix; `%` and `_` in the query match literally. Rows order by exact code hit, then similarity, then code, capped at one page with no pagination control (FR-011). An empty or whitespace-only q returns an empty items array (200, no SQL issued) — an empty search box is a normal state, not a validation error.
+ * @summary Fuzzy-search anchored underlyings (074)
+ */
+export const optionsdeskControllerSearch = (
+    params?: OptionsdeskControllerSearchParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<AnchorSearchResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/anchors/search`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getOptionsdeskControllerSearchQueryKey = (params?: OptionsdeskControllerSearchParams,) => {
+    return [
+    `/api/v1/optionsdesk/anchors/search`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getOptionsdeskControllerSearchQueryOptions = <TData = Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError = AxiosError<ProblemDetailResponse>>(params?: OptionsdeskControllerSearchParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getOptionsdeskControllerSearchQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof optionsdeskControllerSearch>>> = ({ signal }) => optionsdeskControllerSearch(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type OptionsdeskControllerSearchQueryResult = NonNullable<Awaited<ReturnType<typeof optionsdeskControllerSearch>>>
+export type OptionsdeskControllerSearchQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useOptionsdeskControllerSearch<TData = Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: undefined |  OptionsdeskControllerSearchParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof optionsdeskControllerSearch>>,
+          TError,
+          Awaited<ReturnType<typeof optionsdeskControllerSearch>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useOptionsdeskControllerSearch<TData = Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError = AxiosError<ProblemDetailResponse>>(
+ params?: OptionsdeskControllerSearchParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof optionsdeskControllerSearch>>,
+          TError,
+          Awaited<ReturnType<typeof optionsdeskControllerSearch>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useOptionsdeskControllerSearch<TData = Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError = AxiosError<ProblemDetailResponse>>(
+ params?: OptionsdeskControllerSearchParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Fuzzy-search anchored underlyings (074)
+ */
+
+export function useOptionsdeskControllerSearch<TData = Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError = AxiosError<ProblemDetailResponse>>(
+ params?: OptionsdeskControllerSearchParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof optionsdeskControllerSearch>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getOptionsdeskControllerSearchQueryOptions(params,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
