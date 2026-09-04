@@ -2,9 +2,9 @@
 feature_id: 074-radar-anchor-search
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: not-started
+status: completed
 created_at: '2026-09-03'
-updated_at: '2026-09-03'
+updated_at: '2026-09-04'
 ---
 
 # Tasks: 雷达页锚搜索 —— 题头搜索入口 + 底部浮层按名称直达锚详情
@@ -43,4 +43,4 @@ A task is a 30min–2h single-commit unit of work. Status semantics:
 
 - [X] T010 [Gate] **SC-002 全量命中率核对 + SC-003 时延采样**（SC-002, SC-003; plan §D12）：一次性脚本（scratchpad，不入仓）对 dev 库全量锚（当前 140）逐只跑中文名 / 交易所代码 / 拼音简拼三形态搜索，断言每形态命中率 100%；**同一趟逐查询计时**，全量（~420 次）时延 p95 < 1s（SC-003 的验证手段——analyze C1 补），超线即归因（谓词 / planner）；任一 miss 即列名单归因（拼音列缺失 / 名字占位 / 转义）并修复后重跑 → verify: 三个 100% 数字 + p95 时延 + 采样明细贴 PR body；spec `## Assumptions` 若与实测口径有出入同步订正
 
-- [ ] T011 [Gate] **PR 门 + 覆盖对账 + frontmatter 收口**（SC-001–SC-004）：`pnpm nx affected -t lint,typecheck,test,build,runtime-smoke --base=origin/main` 全绿（按终态串判定，不只看 exit code）+ `scripts/checks/*.ts` 治理脚本全扫绿（含 `check-server-moat.ts` / `check-test-size.ts` / `check-spec-frontmatters.ts`）；spec `state_branches` 10 条对照 plan §测试映射逐条 grep 到具体 `it()`，覆盖表落 PR body —— 表中 Edge「并发增删快照」一行标注**故意不测**（spec 已定快照语义为规格、无 buildable 面，analyze I1），免得下轮 analyze 再当缺口补 task；spec frontmatter `status: implementing → implemented`、`updated_at` 刷新；PR body 按模板全段复刻，hard-gate 三 checkbox 落实 → verify: 全绿证据串贴 PR body
+- [X] T011 [Gate] **PR 门 + 覆盖对账 + frontmatter 收口**（SC-001–SC-004）：`pnpm nx affected -t lint,typecheck,test,build,runtime-smoke --base=origin/main` 全绿（按终态串判定，不只看 exit code）+ `scripts/checks/*.ts` 治理脚本全扫绿（含 `check-server-moat.ts` / `check-test-size.ts` / `check-spec-frontmatters.ts`）；spec `state_branches` 10 条对照 plan §测试映射逐条 grep 到具体 `it()`，覆盖表落 PR body —— 表中 Edge「并发增删快照」一行标注**故意不测**（spec 已定快照语义为规格、无 buildable 面，analyze I1），免得下轮 analyze 再当缺口补 task；spec frontmatter `status: implementing → implemented`、`updated_at` 刷新；PR body 按模板全段复刻，hard-gate 三 checkbox 落实 → verify: 全绿证据串贴 PR body

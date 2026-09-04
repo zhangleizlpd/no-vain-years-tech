@@ -2,7 +2,7 @@
 feature_id: 074-radar-anchor-search
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-09-03'
 updated_at: '2026-09-04'
 spec_kit_version: '>=0.8.5,<0.10.0'
