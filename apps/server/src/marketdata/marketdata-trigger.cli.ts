@@ -18,7 +18,6 @@ import {
   assembleSyncFlow,
   assertHardEdgesWithinLane,
   deriveExecutionOrder,
-  NO_SYNC_STAGGER,
   type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
@@ -298,9 +297,7 @@ export async function executeTrigger(
       inputsByLane.set(lane, bucket);
     }
     for (const [lane, inputs] of inputsByLane) {
-      // 075 T005: **人工触发显式不错开** —— 人在命令行敲下去那一刻的语义就是「立刻跑」,
-      // 空等一个为夜间自动轮次设的间隔纯属浪费 (取值表只服务 tick)。
-      const tree = assembleSyncFlow(inputs, edges, executionOrder, NO_SYNC_STAGGER);
+      const tree = assembleSyncFlow(inputs, edges, executionOrder);
       roots.push({ job: (await deps.syncQueue.enqueueFlow(tree)).job, lane });
     }
   } else {

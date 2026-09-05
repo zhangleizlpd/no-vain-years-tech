@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
 import { coldStartUnused } from '../_support/cold-start-stub';
-import { startStaggerPromoter } from '../_support/stagger-promoter';
 import { QueueEvents } from 'bullmq';
 import { Prisma } from '../../src/generated/prisma/client';
 import { PrismaService } from '../../src/security/prisma.service';
@@ -137,7 +136,6 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
   let prisma: PrismaService;
   let lifecycle: QueueRedisLifecycle;
   let queue: MarketdataSyncQueue;
-  let stopStaggerPromoter: (() => void) | undefined;
 
   let stores: Awaited<ReturnType<typeof setupIsolatedStores>>;
 
@@ -150,13 +148,9 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
     await prisma.$connect();
     lifecycle = new QueueRedisLifecycle(stores.redisUrl);
     queue = new MarketdataSyncQueue(lifecycle.client, CFG);
-    // 075 T005: 采集错开的 delay 在跑的过程中才落到 delayed 集 —— 这里只把它提前, 不碰
-    // 重试 backoff / 预算顺延 (判据见 _support/stagger-promoter.ts)。
-    stopStaggerPromoter = startStaggerPromoter(queue.queue);
   }, 180_000);
 
   afterAll(async () => {
-    stopStaggerPromoter?.();
     await queue?.onModuleDestroy();
     lifecycle?.onApplicationShutdown();
     await prisma?.$disconnect();

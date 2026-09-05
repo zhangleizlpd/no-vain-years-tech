@@ -26,7 +26,6 @@ import {
   assembleSyncFlow,
   assertHardEdgesWithinLane,
   deriveExecutionOrder,
-  NO_SYNC_STAGGER,
   type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
@@ -230,8 +229,7 @@ export async function executeBackfill(
       inputsByLane.set(lane, bucket);
     }
     for (const [lane, inputs] of inputsByLane) {
-      // 075 T005: 回填同样是**人工触发** ⇒ 显式不错开 (同 marketdata-trigger.cli.ts)。
-      const tree = assembleSyncFlow(inputs, edges, executionOrder, NO_SYNC_STAGGER);
+      const tree = assembleSyncFlow(inputs, edges, executionOrder);
       roots.push({ job: (await deps.syncQueue.enqueueFlow(tree)).job, lane });
     }
   } else {

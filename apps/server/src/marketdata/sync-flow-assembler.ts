@@ -69,108 +69,6 @@ export interface FlowDimensionInput {
   queueName: string;
 }
 
-/** 分钟 → 毫秒 (下方取值表的可读性; BullMQ `delay` 的单位是 ms)。 */
-const MINUTE_MS = 60_000;
-
-/**
- * 一条**逐市场**的错开规则: 下游在其上游**完成之后**再等 `delayMs` 才起跑 (075 FR-014)。
- *
- * 匹配靠 `upstream`/`downstream` **键对** —— 判据是「装配时这个 parent 是否真的把它声明的
- * 上游包成了 immediate child」, 而**不是**「这个维度是不是某条规则的下游」: 后者会在上游
- * 本轮未 won 时让下游 (此刻是链根) 白等一个间隔 (FR-017, 见 assembleSyncFlow 内那段 🚨)。
- */
-export interface SyncStaggerRule {
-  /** 市场标签: 只进错误信息与可读性, 匹配不看它。 */
-  market: string;
-  upstream: string;
-  downstream: string;
-  /** 错开间隔 (ms)。0 = 不错开 ⇒ 装出的树与本片改动前**逐字段相同** (FR-019a)。 */
-  delayMs: number;
-  /** 该对维度的上界 (ms); `delayMs` 超过它 = 装配期 throw。出处见 MARKET_SYNC_STAGGER。 */
-  maxDelayMs: number;
-}
-
-export type SyncStaggerSpec = readonly SyncStaggerRule[];
-
-/**
- * 「链发现 → 快照」两对维度的错开取值表 (075 T005; FR-014 / FR-019 / FR-019a / FR-023)。
- *
- * 🚫 **蓄意不新增配置列 / migration** (075 spec Assumptions): 仓内无运行时配置面, 改
- *    `sync_dimension` 的行值同样要 migration + 一次部署 ⇒ 新增列买不到「免部署调参」。
- *
- * ── 取值 ────────────────────────────────────────────────────────────────────────
- * **美股 30 分钟** —— 不是新拍的数: 2026-08-27 把两对维度合并到同一拍**之前**, 港股快照
- *   相对其链发现原有的错开量就是 30 分钟。出处 = `20260823_1015_seed_hk_option_dimensions/
- *   migration.sql:46`「`cron '0 30 23 * * *'` 比链发现晚 30 分钟」。有先例、方向偏宽。
- * **港股 0** —— 🚨 **不是「不需要」, 是「没观测」**: 内存采样窗 (08:00 CST 停) 与港股采集窗
- *   (16:20 CST) 从不重叠, 港股那一侧从来没被采样覆盖过。取 0 ⇒ 行为与本片改动前逐项相同。
- *   重开判据**三选一**写死在 `specs/075-marketdata-sync-memory-footprint/spec.md` 的
- *   Assumptions「港股重开的判据」(① 采样覆盖过一次港股窗且回落时长非平凡 ② 港股窗内观测到
- *   内存压力信号 ③ 港股单轮写入量进入美股当前量级) —— 满足任一即调离 0, 且**只改这一行的
- *   取值**。🚫 MUST NOT 把这个 0 读成「量过了、不需要」。
- *
- * ── 上界 ────────────────────────────────────────────────────────────────────────
- * 口径 = **同市场下一轮采集的 cron 间隔的一半**; 另一半留给上游自身的执行时长 —— delay 从
- * 上游**完成**时刻起算, 下游实际起跑 = tick + 上游时长 + delay (FR-018 ②)。
- *   - 美股: 06:00 (`option_contract` / `option_daily_snapshot`) → 10:00 (`us_index_daily`,
- *     同 `{us}` scope 的下一轮) = 4h ⇒ 上界 2h。三个 cron 值由
- *     `test/integration/marketdata.schema-016.it.spec.ts` 逐条钉死。
- *   - 港股: 16:20 (主轮两维度) → 21:40 (`hk_option_oi_settle`) = 5h20m ⇒ 上界 2h40m。
- *     两个 cron 见 `20260901_1502_split_hk_option_collection_into_two_rounds/migration.sql`。
- * 📌 FR-018 ① (下游起跑仍落在当日采集归属窗内) 在上述上界内自动成立: 两市取满上界后仍在
- *    **同一日历日**内, 且 `asOf` 是 tick 时刻就物化进 job payload 的
- *    (`sync-tick-driver.ts` 的 `asOfByKey`), 延后起跑改不了它。
- */
-export const MARKET_SYNC_STAGGER: SyncStaggerSpec = [
-  {
-    market: 'us',
-    upstream: 'option_contract',
-    downstream: 'option_daily_snapshot',
-    delayMs: 30 * MINUTE_MS,
-    maxDelayMs: 120 * MINUTE_MS,
-  },
-  {
-    market: 'hk',
-    upstream: 'hk_option_contract',
-    downstream: 'hk_option_daily_snapshot',
-    delayMs: 0,
-    maxDelayMs: 160 * MINUTE_MS,
-  },
-];
-
-/**
- * 「不错开」—— **人工触发**路径显式传它 (`marketdata-trigger.cli.ts` /
- * `marketdata-backfill.cli.ts`): 人在命令行敲下去那一刻的语义就是「立刻跑」, 让它空等一个
- * 为夜间自动轮次设的间隔是纯浪费。
- */
-export const NO_SYNC_STAGGER: SyncStaggerSpec = [];
-
-/**
- * 错开取值上界核验 —— 违反 MUST 在**装配期** throw (FR-018), 与 `assertEdgesExpressible`
- * 同一层、同一纪律。
- *
- * 🚨 运行期静默偏移的后果是**采成另一天**: 不报错、不会红, 只是数据归错了日子。⇒ 这里宁可
- *    让整轮走 `sync-tick-driver` 既有的 catch → 结构化 ERROR 出口, 也不放行。
- * **全表逐条校验**, 不只校验本轮 won 的那一对 —— 一张配错的表在任何一轮都是错的。
- */
-function assertStaggerWithinBound(spec: SyncStaggerSpec): void {
-  for (const r of spec) {
-    if (!Number.isInteger(r.delayMs) || r.delayMs < 0) {
-      throw new Error(
-        `错开间隔 ${r.upstream}→${r.downstream} (market=${r.market}) 非法: ` +
-          `delayMs=${r.delayMs} 必须是非负整数毫秒`,
-      );
-    }
-    if (r.delayMs > r.maxDelayMs) {
-      throw new Error(
-        `错开间隔 ${r.upstream}→${r.downstream} (market=${r.market}) 超上界: ` +
-          `delayMs=${r.delayMs} > maxDelayMs=${r.maxDelayMs} — 会把下游推出当日采集归属窗 / ` +
-          `与同市场后续采集轮次次序颠倒, 拒绝装配`,
-      );
-    }
-  }
-}
-
 /**
  * DAG→单亲嵌套链树装配器 (017 T012, plan D3 ⚠️)。
  *
@@ -184,11 +82,6 @@ function assertStaggerWithinBound(spec: SyncStaggerSpec): void {
  *   3. 不可表达拓扑**必须 throw** (禁静默错装, 任意 DAG 装配 = 管理界面 feature 的 seam):
  *      环 / 边方向与全序倒流 / hard 边在 won 链非相邻 (失败传播绕不过中间节点)。
  *
- * `stagger` (075 T005) —— 🚨 **必填, 蓄意不给默认值**: 同 `FlowDimensionInput.queueName` 那条
- * 的理由 —— 给了默认值, 将来新加的入队路径会**静默**不错开, 而「内存峰又叠回去」正是 075 要
- * 根除的东西。必填 ⇒ 漏传是 typecheck 红。自动轮次传 `MARKET_SYNC_STAGGER`, 人工触发
- * (两个 CLI) 传 `NO_SYNC_STAGGER`。
- *
  * 语义核对 (spec FR-S09): universe 失败 → profile child=ignore → 全下游照跑 (soft 传递成立);
  * profile 失败 → fundamental failParent (hard); universe 不 due (周二) → 链从 profile 起,
  * 下游当根照跑。纯函数无副作用; 复杂度 O(V+E) (环检 DFS + 链装配线性)。
@@ -197,17 +90,14 @@ export function assembleSyncFlow(
   dimensions: FlowDimensionInput[],
   edges: SyncDependencyEdge[],
   executionOrder: readonly string[],
-  stagger: SyncStaggerSpec,
 ): FlowJob {
   // won 链 = won 集按全序排序; chain[i-1] 是 chain[i] 的 child。全序由调用点
   // deriveExecutionOrder(edges, priority) 派生注入 (019 T005, 常量退役)。
   const chain = sortedWonChain(dimensions, executionOrder);
   assertSingleLane(chain);
   assertEdgesExpressible(edges, chain, executionOrder);
-  assertStaggerWithinBound(stagger);
 
   const edgeByPair = new Map(edges.map((e) => [`${e.upstream}→${e.downstream}`, e]));
-  const staggerByPair = new Map(stagger.map((r) => [`${r.upstream}→${r.downstream}`, r]));
   const toNode = (d: FlowDimensionInput): FlowJob => ({
     name: dimensionJobName(d.payload.dimensionKey),
     queueName: d.queueName,
@@ -229,19 +119,7 @@ export function assembleSyncFlow(
         ? { failParentOnFailure: true }
         : { ignoreDependencyOnFailure: true }),
     };
-    // 075 T005 错开落点: 仅当**这个 parent 真的把它在错开表里声明的上游包成了 immediate
-    // child** 时才合入 delay (键对 `prevKey→d`, prevKey 就是刚被包进去的 child)。
-    // 🚨 反面 = 无条件挂在「下游维度」的 opts 上: 上游本轮未 won 时下游成**链根**, BullMQ
-    //    对无 children 的 job 从**入队时刻**起算 delay ⇒ 白等一个间隔 (FR-017)。
-    // 📌 用的是 BullMQ 的 `delay` 字段 —— 与 `MarketdataSyncQueue.jobOpts({ delayMs })` 同一
-    //    通道、同一语义 (🚫 不另造第二条 delay 通道, 两份必漂)。
-    const parent = toNode(d);
-    const rule = staggerByPair.get(`${prevKey}→${d.payload.dimensionKey}`);
-    // delayMs = 0 ⇒ **一个字段都不加**: FR-019a 要求取 0 的市场装出的树逐字段相同。
-    if (rule !== undefined && rule.delayMs > 0) {
-      parent.opts = { ...parent.opts, delay: rule.delayMs };
-    }
-    node = { ...parent, children: [node] };
+    node = { ...toNode(d), children: [node] };
     prevKey = d.payload.dimensionKey;
   }
   return node;

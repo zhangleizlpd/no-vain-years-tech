@@ -4,11 +4,8 @@ import {
   assembleSyncFlow,
   assertHardEdgesWithinLane,
   deriveExecutionOrder,
-  MARKET_SYNC_STAGGER,
-  NO_SYNC_STAGGER,
   type FlowDimensionInput,
   type SyncDependencyEdge,
-  type SyncStaggerSpec,
 } from './sync-flow-assembler.js';
 import type { DimensionKey } from './dimension-executor.js';
 import { MARKETDATA_SYNC_FUTU_QUEUE, MARKETDATA_SYNC_QUEUE } from './marketdata-sync.queue.js';
@@ -154,7 +151,6 @@ describe('019 T011 hard 边 corp→eod + 派生序变更 (D8)', () => {
       T011_ORDER.map((k) => dim(k as DimensionKey)),
       T011_EDGES,
       T011_ORDER,
-      NO_SYNC_STAGGER,
     );
     const chain = chainFromRoot(root);
     expect(chain.map((n) => n.name)).toEqual([
@@ -171,7 +167,7 @@ describe('019 T011 hard 边 corp→eod + 派生序变更 (D8)', () => {
   });
 
   it('corp 未 won 时 eod 照跑不阻塞 (hard 边仅同 won 生效, FR-S08)', () => {
-    const root = assembleSyncFlow([dim('eod_bar')], T011_EDGES, T011_ORDER, NO_SYNC_STAGGER);
+    const root = assembleSyncFlow([dim('eod_bar')], T011_EDGES, T011_ORDER);
     expect(root.name).toBe('sync:eod_bar');
     expect(root.children ?? []).toHaveLength(0);
     expect(root.opts?.failParentOnFailure).toBeUndefined();
@@ -183,7 +179,6 @@ describe('019 T011 hard 边 corp→eod + 派生序变更 (D8)', () => {
         ['corporate_action', 'eod_bar'].map((k) => dim(k as DimensionKey)),
         T011_EDGES,
         T011_ORDER,
-        NO_SYNC_STAGGER,
       ),
     );
     expect(chain.map((n) => n.name)).toEqual(['sync:eod_bar', 'sync:corporate_action']);
@@ -197,7 +192,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
       ORDER.map((k) => dim(k as DimensionKey)),
       SEED_EDGES,
       ORDER,
-      NO_SYNC_STAGGER,
     );
     const chain = chainFromRoot(root);
     // root → 最深 child = 全序倒排 (后继为 parent)。
@@ -238,7 +232,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         ORDER.map((k) => dim(k as DimensionKey)),
         SEED_EDGES,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     );
     for (const n of chain.slice(1)) {
@@ -262,7 +255,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         won.map((k) => dim(k)),
         SEED_EDGES,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     );
     expect(chain.map((n) => n.name)).toEqual([
@@ -276,7 +268,7 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
   });
 
   it('单维度退化: 单 job 无 children、不挂边 opts', () => {
-    const root = assembleSyncFlow([dim('eod_bar')], SEED_EDGES, ORDER, NO_SYNC_STAGGER);
+    const root = assembleSyncFlow([dim('eod_bar')], SEED_EDGES, ORDER);
     expect(root.name).toBe('sync:eod_bar');
     expect(root.children ?? []).toHaveLength(0);
     expect(root.opts?.failParentOnFailure).toBeUndefined();
@@ -290,7 +282,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         ['profile', 'fundamental'].map((k) => dim(k as DimensionKey)),
         SEED_EDGES,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     );
     expect(chain.map((n) => n.name)).toEqual(['sync:fundamental', 'sync:profile']);
@@ -308,7 +299,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         ORDER.map((k) => dim(k as DimensionKey)),
         edges,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     ).toThrow(/hard/);
   });
@@ -323,7 +313,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         ORDER.map((k) => dim(k as DimensionKey)),
         edges,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     ).toThrow(/环/);
   });
@@ -338,7 +327,6 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         ORDER.map((k) => dim(k as DimensionKey)),
         edges,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     ).toThrow(/全序|方向|环/);
   });
@@ -354,13 +342,12 @@ describe('017 T012 sync-flow-assembler (DAG→单亲嵌套链树, D3; 019 T005 �
         ],
         SEED_EDGES,
         ORDER,
-        NO_SYNC_STAGGER,
       ),
     ).toThrow(/未知维度/);
-    expect(() =>
-      assembleSyncFlow([dim('eod_bar'), dim('eod_bar')], SEED_EDGES, ORDER, NO_SYNC_STAGGER),
-    ).toThrow(/重复/);
-    expect(() => assembleSyncFlow([], SEED_EDGES, ORDER, NO_SYNC_STAGGER)).toThrow(/空/);
+    expect(() => assembleSyncFlow([dim('eod_bar'), dim('eod_bar')], SEED_EDGES, ORDER)).toThrow(
+      /重复/,
+    );
+    expect(() => assembleSyncFlow([], SEED_EDGES, ORDER)).toThrow(/空/);
   });
 });
 
@@ -373,12 +360,7 @@ describe('#210 一棵树只能属于一条 lane', () => {
 
   it('混入两条 lane ⇒ throw —— 跨 lane 的 parent-child 等待 = 队头阻塞换了个地方', () => {
     expect(() =>
-      assembleSyncFlow(
-        [dim('universe'), dim('profile', 3, MARKETDATA_SYNC_FUTU_QUEUE)],
-        [],
-        ORDER,
-        NO_SYNC_STAGGER,
-      ),
+      assembleSyncFlow([dim('universe'), dim('profile', 3, MARKETDATA_SYNC_FUTU_QUEUE)], [], ORDER),
     ).toThrow(/跨 lane/);
   });
 
@@ -390,7 +372,6 @@ describe('#210 一棵树只能属于一条 lane', () => {
       ],
       [],
       ORDER,
-      NO_SYNC_STAGGER,
     );
     const names: string[] = [];
     for (let node: FlowJob | undefined = tree; node !== undefined; node = node.children?.[0]) {
@@ -438,130 +419,5 @@ describe('assertHardEdgesWithinLane (#210)', () => {
       ['hk_option_contract', 'futu'],
     ]);
     expect(() => assertHardEdgesWithinLane(soft, lanes)).not.toThrow();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 075 T005 逐市场采集错开 (FR-014 / FR-015 / FR-017 / FR-018 / FR-019 / FR-019a /
-// FR-019b / FR-023; state_branches 13/14/15/16; US2 / US3)
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe('075 T005 错开落在装配期 (判据 = 这个 parent 真把它声明的上游包成了 immediate child)', () => {
-  /** 现役两对「链发现 → 快照」+ universe 的 soft 边 (mode 取自 20260827_1957: 美股 hard / 港股 soft)。 */
-  const STAGGER_EDGES: SyncDependencyEdge[] = [
-    { upstream: 'universe', downstream: 'option_contract', mode: 'soft' },
-    { upstream: 'option_contract', downstream: 'option_daily_snapshot', mode: 'hard' },
-    { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'soft' },
-  ];
-  const STAGGER_PRIORITIES = new Map<string, number>([
-    ['universe', 10],
-    ['hk_option_contract', 5],
-    ['hk_option_daily_snapshot', 5],
-    ['option_contract', 5],
-    ['option_daily_snapshot', 5],
-  ]);
-  const S_ORDER = deriveExecutionOrder(STAGGER_EDGES, STAGGER_PRIORITIES);
-  const MINUTE = 60_000;
-  const ruleOf = (market: string) => MARKET_SYNC_STAGGER.find((r) => r.market === market)!;
-  const usWon = () => [dim('option_contract'), dim('option_daily_snapshot')];
-  const hkWon = () => [dim('hk_option_contract'), dim('hk_option_daily_snapshot')];
-
-  it('① 上游 won 且链上相邻 ⇒ 下游 parent 带 delay (FR-014, sb 14 正面)', () => {
-    // 取值本身也钉一遍: 30 分钟的出处见 MARKET_SYNC_STAGGER 的 doc (FR-023)。
-    expect(ruleOf('us').delayMs).toBe(30 * MINUTE);
-    const root = assembleSyncFlow(usWon(), STAGGER_EDGES, S_ORDER, MARKET_SYNC_STAGGER);
-    expect(root.name).toBe('sync:option_daily_snapshot');
-    expect(root.children?.[0]?.name).toBe('sync:option_contract'); // parent 真包住了上游。
-    expect(root.opts?.delay).toBe(30 * MINUTE);
-    // 上游 (child) 自己不带 delay —— 它是这条链上先跑的那个。
-    expect(root.children?.[0]?.opts?.delay).toBeUndefined();
-  });
-
-  // 🚨 这条是本 task 的**反面判据**: 落点若改回「无条件挂在下游维度的 opts 上」, BullMQ 对
-  //    无 children 的 job 从**入队时刻**起算 delay ⇒ 链根白等一个间隔 (FR-017 直接违反)。
-  it('② 上游本轮未 won ⇒ 下游不带 delay, 不空等 (FR-017, sb 13)', () => {
-    // (a) 下游独自成链根 (无 children)。
-    const lone = assembleSyncFlow(
-      [dim('option_daily_snapshot')],
-      STAGGER_EDGES,
-      S_ORDER,
-      MARKET_SYNC_STAGGER,
-    );
-    expect(lone.children ?? []).toHaveLength(0);
-    expect(lone.opts?.delay).toBeUndefined();
-    // (b) 下游 won 但它包住的 immediate child 不是它声明的上游 (是 universe)。
-    const root = assembleSyncFlow(
-      [dim('universe'), dim('option_daily_snapshot')],
-      STAGGER_EDGES,
-      S_ORDER,
-      MARKET_SYNC_STAGGER,
-    );
-    expect(root.children?.[0]?.name).toBe('sync:universe');
-    expect(root.opts?.delay).toBeUndefined();
-  });
-
-  it('③ 取值 0 的市场 (港股当前) ⇒ 装出的树与「不错开」逐字段相同 (FR-019a, sb 15)', () => {
-    expect(ruleOf('hk').delayMs).toBe(0);
-    const withTable = assembleSyncFlow(hkWon(), STAGGER_EDGES, S_ORDER, MARKET_SYNC_STAGGER);
-    const without = assembleSyncFlow(hkWon(), STAGGER_EDGES, S_ORDER, NO_SYNC_STAGGER);
-    expect(withTable).toEqual(without);
-    // 「逐字段相同」= 连 `delay` 这个 key 都不许多出来 (写 delay:0 会让 opts 多一个字段)。
-    expect(Object.keys(withTable.opts ?? {})).not.toContain('delay');
-  });
-
-  it('④ 一市改值不影响另一市 (FR-019b, sb 16)', () => {
-    const hkOpened: SyncStaggerSpec = MARKET_SYNC_STAGGER.map((r) =>
-      r.market === 'hk' ? { ...r, delayMs: 10 * MINUTE } : r,
-    );
-    expect(assembleSyncFlow(usWon(), STAGGER_EDGES, S_ORDER, hkOpened)).toEqual(
-      assembleSyncFlow(usWon(), STAGGER_EDGES, S_ORDER, MARKET_SYNC_STAGGER),
-    );
-    const usZeroed: SyncStaggerSpec = MARKET_SYNC_STAGGER.map((r) =>
-      r.market === 'us' ? { ...r, delayMs: 0 } : r,
-    );
-    expect(assembleSyncFlow(hkWon(), STAGGER_EDGES, S_ORDER, usZeroed)).toEqual(
-      assembleSyncFlow(hkWon(), STAGGER_EDGES, S_ORDER, MARKET_SYNC_STAGGER),
-    );
-  });
-
-  it('⑤ 取值超上界 ⇒ 装配期 throw, 不运行期静默偏移 (FR-018, sb 14 反面)', () => {
-    const tooLong: SyncStaggerSpec = MARKET_SYNC_STAGGER.map((r) =>
-      r.market === 'us' ? { ...r, delayMs: r.maxDelayMs + 1 } : r,
-    );
-    expect(() => assembleSyncFlow(usWon(), STAGGER_EDGES, S_ORDER, tooLong)).toThrow(/上界/);
-    // 全表校验: 违规那对本轮**没 won** 也要拒 —— 一张配错的表在任何一轮都是错的。
-    expect(() => assembleSyncFlow([dim('universe')], STAGGER_EDGES, S_ORDER, tooLong)).toThrow(
-      /上界/,
-    );
-    // 负值 / 非整数毫秒同样拒 (delay 不是「负着跑」, 那是配置损坏)。
-    for (const bad of [-1, 1.5, Number.NaN]) {
-      const broken: SyncStaggerSpec = [{ ...ruleOf('us'), delayMs: bad }];
-      expect(() => assembleSyncFlow([dim('universe')], STAGGER_EDGES, S_ORDER, broken)).toThrow(
-        /非负整数/,
-      );
-    }
-  });
-
-  // US3-AS2: 这条来自 Acceptance Scenario 层 (analyze 的三张矩阵扫不到), 故显式挂账。
-  it('⑥ 港股取值改成非 0 ⇒ 按与美股同一套语义生效, 且改动面只有取值本身 (US3-AS2)', () => {
-    const HK_TRIAL_MS = 20 * MINUTE;
-    const hkOpened: SyncStaggerSpec = MARKET_SYNC_STAGGER.map((r) =>
-      r.market === 'hk' ? { ...r, delayMs: HK_TRIAL_MS } : r,
-    );
-    // 「只改取值那一行」的机器判据: 把 delayMs 抹平后整张表与现役表逐字段相同。
-    const strip = (s: SyncStaggerSpec) => s.map((r) => ({ ...r, delayMs: 0 }));
-    expect(strip(hkOpened)).toEqual(strip(MARKET_SYNC_STAGGER));
-    const root = assembleSyncFlow(hkWon(), STAGGER_EDGES, S_ORDER, hkOpened);
-    expect(root.name).toBe('sync:hk_option_daily_snapshot');
-    expect(root.children?.[0]?.name).toBe('sync:hk_option_contract');
-    expect(root.opts?.delay).toBe(HK_TRIAL_MS);
-    // 同一套语义 = 臂 ② 对港股同样成立 (上游未 won 不空等), 不是「美股专用」的另一条路径。
-    const lone = assembleSyncFlow(
-      [dim('hk_option_daily_snapshot')],
-      STAGGER_EDGES,
-      S_ORDER,
-      hkOpened,
-    );
-    expect(lone.opts?.delay).toBeUndefined();
   });
 });

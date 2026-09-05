@@ -16,7 +16,6 @@ import {
   assembleSyncFlow,
   assertHardEdgesWithinLane,
   deriveExecutionOrder,
-  MARKET_SYNC_STAGGER,
   type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
@@ -157,17 +156,9 @@ export class SyncTickDriver {
         });
         inputsByLane.set(lane, bucket);
       }
-      // 075 T005 错开: 取值表交给**装配期**注入 —— 🚫 MUST NOT 在上面那段 `jobOpts` 里给
-      // 下游维度一律填 `delayMs`: 上游本轮未 won 时下游会成为**链根**, 而 BullMQ 对无
-      // children 的 job 从**入队时刻**起算 delay ⇒ 白等一个间隔 (FR-017)。
       for (const inputs of inputsByLane.values()) {
         await this.syncQueue.enqueueFlow(
-          assembleSyncFlow(
-            inputs,
-            edges as SyncDependencyEdge[],
-            executionOrder,
-            MARKET_SYNC_STAGGER,
-          ),
+          assembleSyncFlow(inputs, edges as SyncDependencyEdge[], executionOrder),
         );
       }
       return { ...claim, fired: toFire.map((w) => w.dimensionKey) };
