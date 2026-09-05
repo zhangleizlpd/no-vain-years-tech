@@ -2,6 +2,19 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.46.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.45.1...server-v0.46.0) (2026-09-05)
+
+
+### Features
+
+* **optionsdesk:** 071 bootstrap 下界转 per-market —— 港股落 0.6 + 取参结论落档 ([#349](https://github.com/zhangleizlpd/no-vain-years-tech/issues/349)) ([599c17a](https://github.com/zhangleizlpd/no-vain-years-tech/commit/599c17a88cb0e336a3ba857d70dd6e9373883687))
+* **optionsdesk:** 071 T007 行军门控去掉 market 维 —— 三判据全过, 港股收租与美股同门 ([#356](https://github.com/zhangleizlpd/no-vain-years-tech/issues/356)) ([bfe1157](https://github.com/zhangleizlpd/no-vain-years-tech/commit/bfe1157dda144fd780ec56a409475ac7878b5c6c))
+
+
+### Bug Fixes
+
+* **repo:** prod 内存防护四闸 —— app 容器 mem_limit + V8 堆上限 + BullMQ 失锁两道闸 ([#360](https://github.com/zhangleizlpd/no-vain-years-tech/issues/360)) ([8f4a6f7](https://github.com/zhangleizlpd/no-vain-years-tech/commit/8f4a6f714b8b67f260615cd3ceb04c71adace987))
+
 ## [0.45.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.45.0...server-v0.45.1) (2026-09-04)
 
 
