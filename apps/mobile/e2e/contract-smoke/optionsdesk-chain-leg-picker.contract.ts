@@ -1343,13 +1343,18 @@ async function assertBucketWriteAndPersistence(
   assert.equal(after.intent, 'rent', '水位选定 ⇒ 意图从「待定」落到收租');
   assert.equal(after.rentDepth, 'deep', '买区 + L2 + ≥2/3 ⇒ 收租深度档收到最深一档');
   // 📌 053：每腿 `tabs` 与那份 `tabOrder` 都已删 ⇒ 「成员集合不变」的唯一表达就是**每个视角
-  //    那份 `legs[]` 逐条不变**（顺序也在内 —— 精排入参里没有水位）。原来的两条断言在此合成一条，
-  //    覆盖面反而更全：它连「另两个视角的成员」也一并钉住了。
+  //    那份 `legs[]` 的 code 集合不变**。
+  // 🚨 **「顺序也在内」那半已于 2026-09-05 拆出**（#319 起不再成立，nightly #317 实撞）：#319 给
+  //    `layeredRanker` 加了首键 `isDeltaInIntentBand`（`leg-rank.rules.ts` 的 `byBand`），而该键
+  //    = 推荐标 = `isRecommended(intent, rentDepth, absDelta)`（`get-legs.usecase.ts` 的
+  //    `rankingInputOf`）⇒ **水位经 `rentDepth` 进了精排入参**。它没有回到召回层：成员集合仍与
+  //    水位无关，动的只有意图视角的**行序**。⇒ 成员集合改按集合比，行序改由下面三条正面钉住。
+  //    🚫 MUST NOT 退回成「顺序也不变」—— 那条现在与 #319 的设计直接矛盾，改绿只能靠改生产。
   for (const perspective of PERSPECTIVES) {
     assert.deepEqual(
-      afterViews[perspective].legs.map((leg) => leg.code),
-      before[perspective].legs.map((leg) => leg.code),
-      `legs(${perspective}): 050 起成员集合与顺序 MUST NOT 因水位而变（Δ 已不在召回入参里）`,
+      [...afterViews[perspective].legs.map((leg) => leg.code)].sort(),
+      [...before[perspective].legs.map((leg) => leg.code)].sort(),
+      `legs(${perspective}): 050 起成员集合 MUST NOT 因水位而变（Δ 不在召回入参里）`,
     );
     assert.deepEqual(
       afterViews[perspective].gateCounts,
@@ -1357,6 +1362,26 @@ async function assertBucketWriteAndPersistence(
       `legs(${perspective}).gateCounts: 两道门槛都不吃水位 ⇒ 计数一个数都不动`,
     );
   }
+
+  // ②b 🎯 **行序随 Δ 带翻面**（#319 的契约面；上面那条拆出来的另一半）。三条一起才有判别性：
+  //     单独钉「带内在前」会在 `byBand` 被拆掉时**假绿** —— 带内那条恰好因费率也排第一。
+  const beforeRentMarks = before.rent.legs.map((leg) => leg.isRecommended);
+  assert.ok(
+    beforeRentMarks.every((mark) => mark === false),
+    '水位未选（rentDepth === null）⇒ 收租视角一条标都不打（`leg-mark.rules.ts` 判定序第 4 条），' +
+      '这是下面两条的前提：首键在选水位前后**确实翻了面**',
+  );
+  const afterRentMarks = afterViews.rent.legs.map((leg) => leg.isRecommended);
+  assert.ok(
+    afterRentMarks.some((mark) => mark === true),
+    '水位选定 ⇒ 收租视角至少一条落进 deep 带 —— 一条都没有的话下面那条单调断言恒真',
+  );
+  assert.deepEqual(
+    afterRentMarks,
+    [...afterRentMarks].sort((a, b) => Number(b) - Number(a)),
+    'legs(rent): 带「Δ带内」标的腿 MUST 整体在前（`layeredRanker` 首键 `byBand`）—— ' +
+      '拆掉首键时本条当场红（本夹具下 deep 带内的是 DTE 更长那条，纯费率序把它排在后面）',
+  );
 
   // ③ 零拦截语义：视角归属只影响某一屏出不出现，**腿一条都没少**，财报标亦不受牵动。
   assert.deepEqual(
