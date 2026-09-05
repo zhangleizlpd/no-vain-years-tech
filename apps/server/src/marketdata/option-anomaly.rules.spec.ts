@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   IV_OUTLIER_PERCENT,
+  MAX_SAMPLE_ITEMS,
   SHORT_DTE_EXEMPT_DAYS,
+  createOptionAnomalyAccumulator,
   detectOptionAnomalies,
   type OptionAnomalyRow,
 } from './option-anomaly.rules.js';
@@ -251,5 +253,207 @@ describe('detectOptionAnomalies —— ③ 新的非标 root 进复核名单 (FR
       nonStandard('AAA1', 'US.AAA1260918P010000'),
     ]);
     expect(report.newNonStandardRoots).toEqual(['AAA1', 'ZZZ1']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 075 T001 —— 增量累加器：切批喂与一次喂完的差分臂
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ACC_INIT = { now: NOW, exchange: 'us', knownNonStandardRoots: [] as readonly string[] };
+
+/**
+ * 把同一序列按给定切点**连续分割**后逐批喂进一个累加器，出整轮结论。
+ * `cuts` 为空 ⇒ 一次喂完 (N = 1)。输入序不变 ⇒ 样本序在各臂之间可比。
+ */
+function reportBySplits(rows: readonly OptionAnomalyRow[], cuts: readonly number[]) {
+  const acc = createOptionAnomalyAccumulator(ACC_INIT);
+  let prev = 0;
+  for (const cut of [...cuts, rows.length]) {
+    acc.feed(rows.slice(prev, cut));
+    prev = cut;
+  }
+  return acc.report();
+}
+
+/** 前段行数 = 2 条非标 + 3 条实值 —— 整轮**拿得到 greeks 的行全在这里**。 */
+const USABLE_LEAD = 5;
+/** 后段虚值缺 greeks 的行数, 蓄意 > `MAX_SAMPLE_ITEMS`, 让样本截断也进差分面。 */
+const MISSING_TAIL = 25;
+
+/**
+ * 差分臂的混合序列：三条判据 + 样本截断 + 跨批 root 去重各有代表行, 且**前 5 行全部拿得到
+ * greeks、其后一行都拿不到** —— 于是「切在第 5 行」这一刀正好横切 FR-005 的全域判据。
+ *
+ * 🚨 **前段蓄意一条虚值标准腿都不放**（只放非标与实值腿）: 全域判据的三个合取项之一是
+ * 「虚值区**全部**缺失」, 前段若混进一条 greeks 齐全的虚值腿, 该项恒假 ⇒ 判据无论用整轮域
+ * 还是逐批域都走不到那条分支, 差分臂就照样绿 —— 这份 fixture 的第一版正是这么空跑的。
+ */
+function mixedRows(): OptionAnomalyRow[] {
+  const rows: OptionAnomalyRow[] = [];
+  // 非标两条 (greeks 齐全 ⇒ 计 usableAnywhere, 但判不出实值/虚值 ⇒ 计 unclassified)。
+  rows.push(
+    otmPut({
+      contractCode: 'US.VICI1260918P030000',
+      root: 'VICI1',
+      isStandard: false,
+      strikePrice: '30',
+    }),
+  );
+  rows.push(
+    otmPut({
+      contractCode: 'US.ZZZ1260918P010000',
+      root: 'ZZZ1',
+      isStandard: false,
+      strikePrice: '10',
+    }),
+  );
+  // 实值三条 (K 200/210/220 ≫ spot 140), greeks 齐全 ⇒ 计 usableAnywhere 但不进虚值判定面。
+  // 其中两条挂宽 IV: 一条 DTE = 60 (离群), 一条 DTE = 1 (短 DTE 豁免) —— IV 两个计数器都非零
+  // (② 的判定与实值/虚值无关)。
+  rows.push(otmPut({ contractCode: 'US.PEP260918P200000', strikePrice: '200' }));
+  rows.push(
+    otmPut({
+      contractCode: 'US.PEP261006P210000',
+      strikePrice: '210',
+      expiryDate: '2026-10-06',
+      iv: '600',
+    }),
+  );
+  rows.push(
+    otmPut({
+      contractCode: 'US.PEP260808P220000',
+      strikePrice: '220',
+      expiryDate: '2026-08-08',
+      iv: '600',
+    }),
+  );
+
+  for (let i = 0; i < MISSING_TAIL; i++) {
+    const strike = 100 + i;
+    rows.push(
+      otmPut({
+        contractCode: `US.PEP260918P${strike}000`,
+        strikePrice: String(strike),
+        ...ZERO_GREEKS,
+      }),
+    );
+  }
+  rows.push(deepItmPutWithoutGreeks());
+  // 同一个 VICI1 在**后一批**再出现一次 —— 跨批去重的正面样本。
+  rows.push(
+    otmPut({
+      contractCode: 'US.VICI1260918P035000',
+      root: 'VICI1',
+      isStandard: false,
+      strikePrice: '35',
+      iv: null,
+      delta: null,
+      gamma: null,
+      vega: null,
+      theta: null,
+    }),
+  );
+  return rows;
+}
+
+/**
+ * 🚨 **变异留档（075 T001，sabotage 臂 per testing.md §7.1）** —— 这一段断言能不能红是有实证的：
+ *
+ * · 改坏处：`option-anomaly.rules.ts` 的 `feed()` 首行插 `state.usableAnywhere = 0;`
+ *   （= 把 FR-005 的全域判据从整轮域退化成逐批域）
+ * · 读数：**1 failed | 26 passed** —— 红的正是下面第一条差分臂，实际结论变成误报的
+ *   `greeks_batch_unavailable`；**20 条既有单测全绿**（它们只走一次性入口 ⇒ 单批 ⇒ 看不见这个退化，
+ *   这正是差分臂非加不可的理由）
+ * · 还原后：**27 passed**
+ * · 复跑：`pnpm nx test server src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache`
+ */
+describe('createOptionAnomalyAccumulator —— 切批喂结论恒等 (075 FR-001 / FR-004 / FR-004a)', () => {
+  it('🚨 差分臂: 一次喂完 vs 切批喂 (含横切全域判据的那一刀) 结论逐字段相同', () => {
+    const rows = mixedRows();
+    const oneShot = reportBySplits(rows, []);
+
+    // 先钉住「量到的是满载」—— 三条判据 / 样本截断 / 跨批 root 去重都真的发生了。否则下面
+    // 几臂可能在比较两份空结论 (恒等而零判别力, testing.md §7)。
+    expect(oneShot.findings.map((f) => f.code)).toEqual([
+      'otm_greeks_unavailable',
+      'iv_outlier',
+      'new_nonstandard_root',
+    ]);
+    expect(oneShot.metrics).toEqual({
+      rows: rows.length,
+      // 🚨 虚值判定面**全部缺失** (subjects === unavailable) —— 这是全域判据三个合取项里的
+      // 一项, 少了它那条分支永远走不到, 差分臂就失去判别力 (见 mixedRows 的文件内注释)。
+      greeksSubjects: MISSING_TAIL,
+      greeksUnavailable: MISSING_TAIL,
+      greeksUnclassified: 3,
+      ivEvaluated: USABLE_LEAD,
+      ivOutliers: 1,
+      ivShortDteExempt: 1,
+    });
+    expect(oneShot.findings[0]?.samples).toHaveLength(MAX_SAMPLE_ITEMS);
+    expect(oneShot.newNonStandardRoots).toEqual(['VICI1', 'ZZZ1']);
+
+    // 🚨 这一刀横切 FR-005: 可用 greeks 全落第一批、缺失全落第二批。整轮口径 ⇒
+    // otm_greeks_unavailable; 退化成逐批口径 ⇒ 末批零可用 ⇒ 误报 greeks_batch_unavailable。
+    expect(reportBySplits(rows, [USABLE_LEAD])).toEqual(oneShot);
+    // 逐行喂 (N = 行数) 与不等长三刀 —— 切法不改变结论。
+    expect(reportBySplits(rows, [...rows.keys()].slice(1))).toEqual(oneShot);
+    expect(reportBySplits(rows, [3, 11, 30])).toEqual(oneShot);
+  });
+
+  it('一次性入口是薄封装 —— detectOptionAnomalies 与累加器一次喂完逐字段相同 (FR-004a)', () => {
+    const rows = mixedRows();
+    expect(detectOptionAnomalies({ ...ACC_INIT, rows })).toEqual(reportBySplits(rows, []));
+  });
+
+  it('🚨 整轮零可用 greeks 切成 3 批 → 仍只出**一条**批级 WARN (FR-005, sb 2)', () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      otmPut({ contractCode: `US.PEP260918P1${20 + i}000`, ...ZERO_GREEKS }),
+    );
+    const split = reportBySplits(rows, [2, 4]);
+    expect(split.findings.map((f) => f.code)).toEqual(['greeks_batch_unavailable']);
+    expect(split.findings[0]?.affected).toBe(rows.length);
+    expect(split).toEqual(reportBySplits(rows, []));
+  });
+
+  it('新非标 root 跨批去重, 整轮只报一次 (FR-009, sb 7)', () => {
+    const nonStd = (root: string, contractCode: string) =>
+      otmPut({ root, contractCode, isStandard: false });
+    const rows = [
+      nonStd('VICI1', 'US.VICI1260918P030000'),
+      otmPut(),
+      nonStd('VICI1', 'US.VICI1260918P035000'),
+      nonStd('AAA1', 'US.AAA1260918P010000'),
+    ];
+    const split = reportBySplits(rows, [2]);
+    expect(split.newNonStandardRoots).toEqual(['AAA1', 'VICI1']);
+    expect(split.findings.find((f) => f.code === 'new_nonstandard_root')?.affected).toBe(2);
+  });
+
+  it(`样本截到 ${MAX_SAMPLE_ITEMS} 而 affected 仍是全量, 切批不改样本序 (FR-011, sb 10)`, () => {
+    const rows = mixedRows();
+    const codes = rows.filter((r) => r.iv === '0').map((r) => r.contractCode);
+    const finding = reportBySplits(rows, [USABLE_LEAD]).findings[0];
+    expect(finding?.affected).toBe(MISSING_TAIL);
+    expect(finding?.samples).toEqual(codes.slice(0, MAX_SAMPLE_ITEMS));
+  });
+
+  it('一批不喂 / 只喂空批 → 与空输入的一次性调用逐字段相同 (FR-010, sb 8)', () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    const empty = detectOptionAnomalies({ ...ACC_INIT, rows: [] });
+    expect(createOptionAnomalyAccumulator(ACC_INIT).report()).toEqual(empty);
+    acc.feed([]);
+    acc.feed([]);
+    expect(acc.report()).toEqual(empty);
+  });
+
+  it('report() 幂等 —— 连调两次结论相同, 之后仍可继续 feed', () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    acc.feed([otmPut({ iv: null })]);
+    const first = acc.report();
+    expect(acc.report()).toEqual(first);
+    acc.feed([otmPut()]);
+    expect(acc.report().metrics.rows).toBe(2);
   });
 });

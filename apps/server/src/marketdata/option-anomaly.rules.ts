@@ -84,8 +84,13 @@ export const IV_OUTLIER_PERCENT = new Prisma.Decimal(500);
  */
 export const SHORT_DTE_EXEMPT_DAYS = 2;
 
-/** 每条 finding 最多列几个样本（`affected` 仍是全量计数）。 */
-const MAX_SAMPLE_ITEMS = 20;
+/**
+ * 每条 finding 最多列几个样本（`affected` 仍是全量计数）。
+ *
+ * 🚨 它同时是**常驻 O(1) 的前提之一**（075 FR-002 / FR-011）：累加器的样本数组收到这个数就
+ * 不再收，全量计数由独立的标量计数器承担 —— 样本数组若无上界，整轮的常驻又会随行数线性长。
+ */
+export const MAX_SAMPLE_ITEMS = 20;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型
@@ -149,8 +154,11 @@ export interface OptionAnomalyRow {
   theta: Decimalish | null;
 }
 
-export interface OptionAnomalyInput {
-  rows: readonly OptionAnomalyRow[];
+/**
+ * 累加器的初始化参数 = {@link OptionAnomalyInput} 去掉 `rows` 的那一半。**整轮确定一次**，
+ * 喂多少批都不变（FR-012：DTE 基准交易所在整轮层面确定并对全轮一致）。
+ */
+export interface OptionAnomalyAccumulatorInit {
   /** **请求时刻**（绝对时刻）。DTE 基准由 {@link daysToExpiry} 折成 {@link exchange} 的今天。 */
   now: Date;
   /**
@@ -161,6 +169,10 @@ export interface OptionAnomalyInput {
   exchange: string;
   /** 已见过的非标 root（调用方持久化）。 */
   knownNonStandardRoots: readonly string[];
+}
+
+export interface OptionAnomalyInput extends OptionAnomalyAccumulatorInit {
+  rows: readonly OptionAnomalyRow[];
 }
 
 export interface OptionAnomalyReport {
@@ -208,114 +220,225 @@ function moneynessOf(row: OptionAnomalyRow): 'itm' | 'otm' | null {
   return intrinsic.greaterThan(ZERO) ? 'itm' : 'otm';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 累加器（增量喂入，075 T001）
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * 三条异常监控一次扫完。**永不抛异常**（`expiryDate` 形态非法除外 —— 那是调用方喂错了基准，
- * 见 {@link daysToExpiry}，静默吞掉等于让 DTE 悄悄错一天）。
+ * 累加器在整轮里的**全部累计状态**：贫血数据（ADR-0043），每个字段的规模都与已喂入行数
+ * **无关** —— 计数器是标量、样本数组有 {@link MAX_SAMPLE_ITEMS} 上界、root 集的基数是
+ * 「不同非标 root 数」（天然小基数）。
  *
- * 复杂度 **O(n)**：单趟遍历，每行常数次 Decimal 比较 + 一次 `daysToExpiry`；末尾一次排序
- * 只作用在新 root 集合（基数 ≪ n）。n = 本批快照行数。
+ * 🚨 **MUST NOT 出现任何 {@link OptionAnomalyRow} 引用**（075 FR-002 / FR-003）。存了行就等于
+ * 没改：整轮 9.7 万行攒在中间数组里、实测常驻 74.8 MB，正是 075 要根除的东西。
+ * 这条由 `option-anomaly.rules.spec.ts` 的**结构遍历断言**每次回归钉住 —— 该断言要遍历得到这
+ * 份状态，故本类型与 {@link OptionAnomalyAccumulator.state} 一并对外可见。
+ */
+export interface OptionAnomalyAccumulatorState {
+  /** DTE 基准的绝对时刻（整轮一份，来自 init）。 */
+  readonly now: Date;
+  /** 整轮唯一的交易所（整轮一份，来自 init）。 */
+  readonly exchange: string;
+  /** 已见过的非标 root（整轮一份，来自 init）。 */
+  readonly knownRoots: ReadonlySet<string>;
+  /** 已喂入的行数（上下文计数，不参与判定）。 */
+  rows: number;
+  greeksSubjects: number;
+  greeksUnclassified: number;
+  /** 虚值区 greeks 缺失的**全量**计数（样本另存，见 {@link otmMissingSamples}）。 */
+  greeksUnavailable: number;
+  /** 🚨 **整轮**拿到过可用 greeks 的行数 —— 全域降级判据的求值域就是它（FR-005）。 */
+  usableAnywhere: number;
+  ivEvaluated: number;
+  /** IV 离群的**全量**计数（样本另存，见 {@link ivOutlierSamples}）。 */
+  ivOutliers: number;
+  ivShortDteExempt: number;
+  /** 虚值区 greeks 缺失的合约 code 样本，输入序、截到 {@link MAX_SAMPLE_ITEMS}。 */
+  otmMissingSamples: string[];
+  /** IV 离群的合约 code 样本，输入序、截到 {@link MAX_SAMPLE_ITEMS}。 */
+  ivOutlierSamples: string[];
+  /** 本轮新见的非标 root（跨批去重）。 */
+  freshRoots: Set<string>;
+}
+
+export interface OptionAnomalyAccumulator {
+  /**
+   * 喂一批行。**返回后 MUST NOT 再引用 `rows` 或其中任何一行** —— 调用方释放即可回收。
+   * 可以喂任意多批，也可以一批都不喂。
+   */
+  feed(rows: readonly OptionAnomalyRow[]): void;
+  /** 出**整轮**结论。幂等：不改状态，可多次调用（后续还能继续 `feed`）。 */
+  report(): OptionAnomalyReport;
+  /**
+   * 累计状态的只读引用。🚨 **只为 FR-021① 的结构断言而暴露**（见
+   * {@link OptionAnomalyAccumulatorState}）—— 生产代码 MUST NOT 读它，更 MUST NOT 写它。
+   */
+  readonly state: OptionAnomalyAccumulatorState;
+}
+
+/** 样本数组的固定上界（FR-011）：满了就不再收，全量计数由独立的标量计数器承担。 */
+function pushSample(samples: string[], code: string): void {
+  if (samples.length < MAX_SAMPLE_ITEMS) samples.push(code);
+}
+
+/**
+ * 三条异常监控的**增量累加器**（075 FR-001）。🚫 **闭包工厂，不是 class**（ADR-0043
+ * zero-class；同文件 `greeksUsable` / `moneynessOf` 都是模块级纯函数，沿用同一形态）。
+ *
+ * `feed` **永不抛异常**（`expiryDate` 形态非法除外 —— 那是调用方喂错了基准，见
+ * {@link daysToExpiry}，静默吞掉等于让 DTE 悄悄错一天）。
+ *
+ * 🚨 **全域判据的求值域是整轮，不是单批**：`report()` 里那条「零可用 greeks ⇒ 全域降级单条」
+ * 读的是**跨全部批次**累计的 {@link OptionAnomalyAccumulatorState.usableAnywhere}。退化成逐批
+ * 求值不报错、不会红，只会让休市时段的一次采集从 1 条 WARN 变成 N 条假 WARN —— 正是这条判据
+ * 本身要防的那件事（FR-005；差分臂见 `option-anomaly.rules.spec.ts`）。
+ *
+ * 复杂度：`feed` **O(m)**（m = 本批行数，每行常数次 Decimal 比较 + 至多一次 `daysToExpiry`）；
+ * `report()` **O(k log k)**（k = 本轮新非标 root 数，≪ n）。**常驻空间 O(1)** —— 与整轮行数 n
+ * 无关，这是本次改造的全部收益来源。
+ */
+export function createOptionAnomalyAccumulator(
+  init: OptionAnomalyAccumulatorInit,
+): OptionAnomalyAccumulator {
+  const state: OptionAnomalyAccumulatorState = {
+    now: init.now,
+    exchange: init.exchange,
+    knownRoots: new Set(init.knownNonStandardRoots),
+    rows: 0,
+    greeksSubjects: 0,
+    greeksUnclassified: 0,
+    greeksUnavailable: 0,
+    usableAnywhere: 0,
+    ivEvaluated: 0,
+    ivOutliers: 0,
+    ivShortDteExempt: 0,
+    otmMissingSamples: [],
+    ivOutlierSamples: [],
+    freshRoots: new Set<string>(),
+  };
+
+  function feed(rows: readonly OptionAnomalyRow[]): void {
+    for (const row of rows) {
+      state.rows++;
+
+      // ① greeks
+      const usable = greeksUsable(row);
+      if (usable) state.usableAnywhere++;
+      const moneyness = moneynessOf(row);
+      if (moneyness === null) {
+        state.greeksUnclassified++;
+      } else if (moneyness === 'otm') {
+        state.greeksSubjects++;
+        if (!usable) {
+          state.greeksUnavailable++;
+          pushSample(state.otmMissingSamples, row.contractCode);
+        }
+      }
+      // moneyness === 'itm' ⇒ 既不计对象也不计缺失（数学固有现象，见文件头 ①）
+
+      // ② IV 离群（只判拿得到的 IV：缺失 / 零占位不是离群）
+      if (row.iv !== null && D(row.iv).greaterThan(ZERO)) {
+        state.ivEvaluated++;
+        if (D(row.iv).greaterThan(IV_OUTLIER_PERCENT)) {
+          const dte = daysToExpiry({
+            expiry: row.expiryDate,
+            now: state.now,
+            exchange: state.exchange,
+          });
+          if (dte <= SHORT_DTE_EXEMPT_DAYS) state.ivShortDteExempt++;
+          else {
+            state.ivOutliers++;
+            pushSample(state.ivOutlierSamples, row.contractCode);
+          }
+        }
+      }
+
+      // ③ 新的非标 root
+      if (!row.isStandard && !state.knownRoots.has(row.root)) state.freshRoots.add(row.root);
+    }
+    // 循环结束 ⇒ `rows` 与其中每一行不再被本闭包引用（FR-003）。
+  }
+
+  function report(): OptionAnomalyReport {
+    const findings: OptionAnomalyFinding[] = [];
+
+    // 全域降级与逐腿异常**互斥**：整轮一条可用 greeks 都没有 ⇒ 不是这几条腿的问题。
+    if (
+      state.greeksSubjects > 0 &&
+      state.greeksUnavailable === state.greeksSubjects &&
+      state.usableAnywhere === 0
+    ) {
+      findings.push({
+        code: 'greeks_batch_unavailable',
+        reason:
+          `整批零可用 greeks（虚值区 ${state.greeksSubjects} 行全缺，且全批无任一行拿到 greeks）：` +
+          `疑似休市时段快照或 vendor 全域降级，本轮逐腿判定不成立`,
+        affected: state.greeksSubjects,
+        samples: state.otmMissingSamples.slice(0, MAX_SAMPLE_ITEMS),
+      });
+    } else if (state.greeksUnavailable > 0) {
+      findings.push({
+        code: 'otm_greeks_unavailable',
+        reason:
+          `虚值区 greeks 缺失 ${state.greeksUnavailable}/${state.greeksSubjects} 行` +
+          `（实值区缺失是数学固有现象，已排除在判定面外）`,
+        affected: state.greeksUnavailable,
+        samples: state.otmMissingSamples.slice(0, MAX_SAMPLE_ITEMS),
+      });
+    }
+
+    if (state.ivOutliers > 0) {
+      findings.push({
+        code: 'iv_outlier',
+        reason:
+          `IV 超过 ${IV_OUTLIER_PERCENT.toString()}% 的行 ${state.ivOutliers} 条` +
+          `（DTE ≤ ${SHORT_DTE_EXEMPT_DAYS} 的 ${state.ivShortDteExempt} 条已按短 DTE 豁免）`,
+        affected: state.ivOutliers,
+        samples: state.ivOutlierSamples.slice(0, MAX_SAMPLE_ITEMS),
+      });
+    }
+
+    const newNonStandardRoots = [...state.freshRoots].sort();
+    if (newNonStandardRoots.length > 0) {
+      findings.push({
+        code: 'new_nonstandard_root',
+        reason:
+          `出现未见过的非标 root ${newNonStandardRoots.length} 个：` +
+          `通常意味着某白名单票发生了并购类公司行为，需人工复核`,
+        affected: newNonStandardRoots.length,
+        samples: newNonStandardRoots.slice(0, MAX_SAMPLE_ITEMS),
+      });
+    }
+
+    return {
+      findings,
+      newNonStandardRoots,
+      metrics: {
+        rows: state.rows,
+        greeksSubjects: state.greeksSubjects,
+        greeksUnavailable: state.greeksUnavailable,
+        greeksUnclassified: state.greeksUnclassified,
+        ivEvaluated: state.ivEvaluated,
+        ivOutliers: state.ivOutliers,
+        ivShortDteExempt: state.ivShortDteExempt,
+      },
+    };
+  }
+
+  return { feed, report, state };
+}
+
+/**
+ * 三条异常监控一次扫完 —— **{@link createOptionAnomalyAccumulator} 的薄封装**（075 FR-004a）。
+ *
+ * 保留它不是为了向后兼容：挂在它上面的 20 条既有单测是这套判据唯一的回归网，与本次形态改造
+ * 同时重写就失去了对拍基准。
+ *
+ * 复杂度 **O(n)**（n = 本批行数）；🚨 常驻仍是 **O(n)** —— 因为调用方在这里把整批行都攥在手里。
+ * 大批量场景 MUST 直接用累加器分批喂。
  */
 export function detectOptionAnomalies(input: OptionAnomalyInput): OptionAnomalyReport {
-  const otmMissingCodes: string[] = [];
-  let greeksSubjects = 0;
-  let greeksUnclassified = 0;
-  let usableAnywhere = 0;
-
-  const ivOutlierCodes: string[] = [];
-  let ivEvaluated = 0;
-  let ivShortDteExempt = 0;
-
-  const knownRoots = new Set(input.knownNonStandardRoots);
-  const freshRoots = new Set<string>();
-
-  for (const row of input.rows) {
-    // ① greeks
-    const usable = greeksUsable(row);
-    if (usable) usableAnywhere++;
-    const moneyness = moneynessOf(row);
-    if (moneyness === null) {
-      greeksUnclassified++;
-    } else if (moneyness === 'otm') {
-      greeksSubjects++;
-      if (!usable) otmMissingCodes.push(row.contractCode);
-    }
-    // moneyness === 'itm' ⇒ 既不计对象也不计缺失（数学固有现象，见文件头 ①）
-
-    // ② IV 离群（只判拿得到的 IV：缺失 / 零占位不是离群）
-    if (row.iv !== null && D(row.iv).greaterThan(ZERO)) {
-      ivEvaluated++;
-      if (D(row.iv).greaterThan(IV_OUTLIER_PERCENT)) {
-        const dte = daysToExpiry({
-          expiry: row.expiryDate,
-          now: input.now,
-          exchange: input.exchange,
-        });
-        if (dte <= SHORT_DTE_EXEMPT_DAYS) ivShortDteExempt++;
-        else ivOutlierCodes.push(row.contractCode);
-      }
-    }
-
-    // ③ 新的非标 root
-    if (!row.isStandard && !knownRoots.has(row.root)) freshRoots.add(row.root);
-  }
-
-  const findings: OptionAnomalyFinding[] = [];
-
-  // 全域降级与逐腿异常**互斥**：批内一条可用 greeks 都没有 ⇒ 不是这几条腿的问题。
-  if (greeksSubjects > 0 && otmMissingCodes.length === greeksSubjects && usableAnywhere === 0) {
-    findings.push({
-      code: 'greeks_batch_unavailable',
-      reason:
-        `整批零可用 greeks（虚值区 ${greeksSubjects} 行全缺，且全批无任一行拿到 greeks）：` +
-        `疑似休市时段快照或 vendor 全域降级，本轮逐腿判定不成立`,
-      affected: greeksSubjects,
-      samples: otmMissingCodes.slice(0, MAX_SAMPLE_ITEMS),
-    });
-  } else if (otmMissingCodes.length > 0) {
-    findings.push({
-      code: 'otm_greeks_unavailable',
-      reason:
-        `虚值区 greeks 缺失 ${otmMissingCodes.length}/${greeksSubjects} 行` +
-        `（实值区缺失是数学固有现象，已排除在判定面外）`,
-      affected: otmMissingCodes.length,
-      samples: otmMissingCodes.slice(0, MAX_SAMPLE_ITEMS),
-    });
-  }
-
-  if (ivOutlierCodes.length > 0) {
-    findings.push({
-      code: 'iv_outlier',
-      reason:
-        `IV 超过 ${IV_OUTLIER_PERCENT.toString()}% 的行 ${ivOutlierCodes.length} 条` +
-        `（DTE ≤ ${SHORT_DTE_EXEMPT_DAYS} 的 ${ivShortDteExempt} 条已按短 DTE 豁免）`,
-      affected: ivOutlierCodes.length,
-      samples: ivOutlierCodes.slice(0, MAX_SAMPLE_ITEMS),
-    });
-  }
-
-  const newNonStandardRoots = [...freshRoots].sort();
-  if (newNonStandardRoots.length > 0) {
-    findings.push({
-      code: 'new_nonstandard_root',
-      reason:
-        `出现未见过的非标 root ${newNonStandardRoots.length} 个：` +
-        `通常意味着某白名单票发生了并购类公司行为，需人工复核`,
-      affected: newNonStandardRoots.length,
-      samples: newNonStandardRoots.slice(0, MAX_SAMPLE_ITEMS),
-    });
-  }
-
-  return {
-    findings,
-    newNonStandardRoots,
-    metrics: {
-      rows: input.rows.length,
-      greeksSubjects,
-      greeksUnavailable: otmMissingCodes.length,
-      greeksUnclassified,
-      ivEvaluated,
-      ivOutliers: ivOutlierCodes.length,
-      ivShortDteExempt,
-    },
-  };
+  const acc = createOptionAnomalyAccumulator(input);
+  acc.feed(input.rows);
+  return acc.report();
 }
