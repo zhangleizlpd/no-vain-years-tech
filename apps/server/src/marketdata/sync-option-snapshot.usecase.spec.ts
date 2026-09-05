@@ -12,7 +12,7 @@ import {
   type OptionSnapshotRow,
 } from './option-snapshot.port.js';
 import { emptyStats } from './sync-run.recorder.js';
-import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
+import { anomalyDteExchange, SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
 /**
@@ -928,6 +928,156 @@ describe('SyncOptionSnapshotUseCase', () => {
 
       expect(anomalyCodes(warnSpy)).toEqual([]);
       warnSpy.mockRestore();
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 075 T004: 调用侧从「整轮攒一个数组」改成「逐批喂累加器」+ 累加器懒创建
+    //
+    // 🚨 这四臂盯的全是**改造前后必须逐点相同**的语义 (FR-013 / Guardrail 3), 故它们在改造前
+    // 也绿 —— 「能红」由**定向变异**证明, 每臂的变异体写在它自己的注释里 (testing.md §7)。
+    // ─────────────────────────────────────────────────────────────────────────
+    describe('🚨 075 T004: 增量喂入的调用侧语义', () => {
+      /** 某条 code 的完整 WARN 文案 (`affected` 与样本都只出现在这里)。 */
+      function anomalyWarn(spy: { mock: { calls: unknown[][] } }, code: string): string {
+        return spy.mock.calls
+          .map((c) => String(c[0]))
+          .find((m) => m.startsWith(`[option-anomaly] ${code}`)) as string;
+      }
+
+      /** 第三只 us 标的 —— 用来证明「中间那票失败」不吃掉它**后面**那票的行 (sb 9)。 */
+      const KO = { id: 4n, market: 'us', code: 'KO' };
+      /** 虚值缺 greeks (真异常, 进 ① 的分子)。 */
+      const MISSING_PEP = 'US.PEP260918P130000';
+      const MISSING_KO = 'US.KO260918P130000';
+      /** 虚值且 greeks 齐活 —— 只为让 `usableAnywhere > 0`, 否则 ① 会走「全域降级」那一支。 */
+      const USABLE_PEP = 'US.PEP260918P120000';
+      const FAILED_LEG = 'US.VICI260918P30000';
+
+      it('① 全轮零落库行 ⇒ 零 finding、零抛 —— 累加器懒创建 (sb 8, FR-010)', async () => {
+        // 🚨 判据挑**空 marketScope** 这一路: 改造前 DTE 基准的空 scope 守卫判在「零行早退」
+        // 之后, 零行那条路上根本走不到它。累加器若改成**急切创建** (在循环之前就建), 这一轮会
+        // 凭空多抛一个异常 —— 那是行为回归, 而不是「更早发现问题」。
+        // 🚨 变异: 把 `feedAnomalies` 里的懒创建提到 `for (const inst of instruments)` 之前
+        //    ⇒ 本臂红 (rejects with 「判不出 DTE 基准交易所」)。
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const h = makeHarness({ contracts: {} });
+
+        await expect(
+          h.useCase.collect(
+            [],
+            {
+              sessionDate: '2026-09-18',
+              mode: 'eod',
+              marketScope: [],
+              now: new Date('2026-09-18T22:00:00Z'),
+            },
+            emptyStats(),
+          ),
+        ).resolves.toBe(false);
+
+        expect(anomalyCodes(warnSpy)).toEqual([]);
+        warnSpy.mockRestore();
+      });
+
+      it('② 中间一票整票失败 ⇒ 已喂入的行仍进结论, 未采的不进 (sb 9)', async () => {
+        // 判定面 ≡ **本轮落库行**: 失败票一行都没落 ⇒ 它一行都不该进; 而它前后两票落的行**都**
+        // 该在同一条结论里 (域是整轮, 不是「最后一票」)。
+        // 🚨 变异: 把懒创建的 `??=` 改成无条件 `=` (等价于逐批 / 逐票各建一个累加器)
+        //    ⇒ 本臂红 (只剩 KO 那 1 条, 文案变 `(1 条)` 且不含 PEP 的码)。
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        const h = makeHarness({
+          contracts: {
+            '1': [contractRow(MISSING_PEP), contractRow(USABLE_PEP)],
+            '2': [contractRow(FAILED_LEG, { strikePrice: new Prisma.Decimal('30') })],
+            '4': [contractRow(MISSING_KO)],
+          },
+          rowsFor: (q) => {
+            // 中间那票: vendor 侧整批挂掉 ⇒ 整票 failed, 零落库行。
+            if (q.underlyingSymbol === 'us:VICI') throw new Error('502 未知股票 (整票失败)');
+            const under = q.underlyingSymbol === 'us:PEP' ? 'US.PEP' : 'US.KO';
+            const overrides: Record<string, Partial<OptionSnapshotRow>> = {
+              [MISSING_PEP]: NO_GREEKS,
+              [MISSING_KO]: NO_GREEKS,
+              [USABLE_PEP]: FULL_GREEKS,
+            };
+            return [
+              ...q.contractCodes.map((c) =>
+                quoteRow(c, { underlyingCode: under, ...overrides[c] }),
+              ),
+              underlyingRow(under),
+            ];
+          },
+        });
+        const stats = emptyStats();
+
+        await h.useCase.run([PEP, VICI, KO], DIM, stats, makeInput('2026-09-18'));
+
+        expect(stats).toMatchObject({ ok: 2, failed: 1 });
+        const warn = anomalyWarn(warnSpy, 'otm_greeks_unavailable');
+        errSpy.mockRestore();
+        warnSpy.mockRestore();
+
+        // 两票各一条, 分母是三条虚值腿 (含那条 greeks 齐活的)。
+        expect(warn).toContain('(2 条)');
+        expect(warn).toContain('2/3 行');
+        expect(warn).toContain(MISSING_PEP);
+        expect(warn).toContain(MISSING_KO);
+        // 失败票一行都没采到 ⇒ 一行都不该出现在结论里。
+        expect(warn).not.toContain(FAILED_LEG);
+      });
+
+      it('③ 判定面仍恒等于 persistable —— 被硬门拒的行不进 WARN 面', async () => {
+        // 被拒的行已由 `reportRejected` 出过 ERROR, 再进 WARN 就是同一件事报两遍; 且它们不进
+        // 快照历史 ⇒ 拿它们报 ③ 会让「记忆面」与「判定面」永久错位。
+        // 🚨 变异: 把喂入源从 `persistable` 换成 `optionRows`
+        //    ⇒ 本臂红 (文案变 `(2 条)` 且含被拒的码)。
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const errSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+        const REJECTED = 'US.PEP260918P135000';
+        const h = makeHarness({
+          contracts: {
+            '1': [
+              contractRow(REJECTED, { strikePrice: new Prisma.Decimal('135') }),
+              contractRow(MISSING_PEP),
+              contractRow(USABLE_PEP),
+            ],
+          },
+          rowsFor: (q) => {
+            const overrides: Record<string, Partial<OptionSnapshotRow>> = {
+              // 盘口交叉 ⇒ 硬门拒; 同时也是「虚值缺 greeks」, 放行就会多报一条。
+              [REJECTED]: { bid: '9.90', ask: '2.40', ...NO_GREEKS },
+              [MISSING_PEP]: NO_GREEKS,
+              [USABLE_PEP]: FULL_GREEKS,
+            };
+            return [...q.contractCodes.map((c) => quoteRow(c, overrides[c])), underlyingRow()];
+          },
+        });
+
+        await h.useCase.run([PEP], DIM, emptyStats(), makeInput('2026-09-18'));
+
+        expect(persistedRows(h.createMany)).toHaveLength(2);
+        const warn = anomalyWarn(warnSpy, 'otm_greeks_unavailable');
+        errSpy.mockRestore();
+        warnSpy.mockRestore();
+
+        expect(warn).toContain('(1 条)');
+        expect(warn).toContain('1/2 行');
+        expect(warn).toContain(MISSING_PEP);
+        expect(warn).not.toContain(REJECTED);
+      });
+
+      // 🚨 本臂直接打 {@link anomalyDteExchange}: 该守卫经公开入口**不可达** (`collect` 的
+      // `foreign` 守卫先抛, 而工作集为空时又根本没有行要判), 走 `collect` 只能测到 `foreign`
+      // 那一道 —— 换句话说, 从公开入口写这条臂必然空跑。它是纵深防御的第二层, 值在「有人把
+      // 上游两道闸拆了的时候仍然抛」, 故按纯函数直测。
+      // 🚨 变异: 把 `exchange === undefined` 那支改成回落 `'us'` ⇒ 本臂红。
+      it('④ 空 marketScope + 有行 ⇒ 仍抛, MUST NOT 静默回落宿主时区', () => {
+        expect(() => anomalyDteExchange([], 3)).toThrow(/判不出 DTE 基准交易所/);
+        // 有行数才有意义: 文案要能让人事后判「抛的时候有多少行等着判」。
+        expect(() => anomalyDteExchange([], 3)).toThrow(/3 行/);
+        expect(anomalyDteExchange(['hk'], 3)).toBe('hk');
+      });
     });
   });
 });
