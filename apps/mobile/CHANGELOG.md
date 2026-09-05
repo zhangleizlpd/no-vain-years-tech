@@ -2,6 +2,18 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.19.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.18.0...mobile-v0.19.0) (2026-09-05)
+
+
+### Features
+
+* **optionsdesk:** 链缺席拆成两个 state —— 「还没采到」与「交易所根本没挂」不再共用一个值 ([#365](https://github.com/zhangleizlpd/no-vain-years-tech/issues/365)) ([232636f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/232636f421f025f7efdb7baa119769651601471b)), closes [#361](https://github.com/zhangleizlpd/no-vain-years-tech/issues/361)
+
+
+### Bug Fixes
+
+* **optionsdesk:** chain_not_ready 文案去掉假承诺 —— 「补完就有内容」对无挂牌期权的锚永不成立 ([#362](https://github.com/zhangleizlpd/no-vain-years-tech/issues/362)) ([0a56114](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0a56114e4dde18a53bc026f34ae5edd02b193fce))
+
 ## [0.18.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.17.0...mobile-v0.18.0) (2026-09-05)
 
 
