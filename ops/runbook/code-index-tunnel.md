@@ -35,7 +35,9 @@ app                              index
 
 ## 前置：安全组（你在两账号控制台改，我做不了）
 
-阿里云安全组由控制台管（SWAS 与 OS 层 ufw 不兼容，见 ADR-0026 § A-Tight v2「SWAS bootstrap」行）。两条入方向规则：
+阿里云安全组由控制台管。两条入方向规则：
+
+> 📌 **本行原写「SWAS 与 OS 层 ufw 不兼容，见 ADR-0026」—— 该前提已于 2026-07-31 实测推翻**：62 与 77 都是标准 ECS（fleet 内现已无 SWAS 实例），防火墙是**安全组**，OS 层 **ufw 可用**。仍走控制台改安全组是运维习惯与云边界优先，不是因为 ufw 不能用。判据见 [`host-inventory.md` §备注](../../docs/private/runbook/host-inventory.md)（local-only）。
 
 1. **62（账号 A 控制台）**：入方向放行 **UDP 51820**，源 = `$NVY_APP_HOST/32`（仅 `app`）。**不要**放行 TCP 7700 公网（保持拦）。
 2. **77（账号 B 控制台）**：入方向放行 **UDP 51820**，源 = `$NVY_INDEX_HOST/32`（仅 `index`）。

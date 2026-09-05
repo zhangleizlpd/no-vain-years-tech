@@ -12,7 +12,7 @@ name: Build & Push Image
 # .env.production / docker-compose.tight.yml don't need to change image
 # reference URL at cutover.
 #
-# ACR was chosen over ghcr.io because deploy (SWAS pulling) latency
+# ACR was chosen over ghcr.io because deploy (ECS pulling) latency
 # dominates user-perceived deploy time, and ACR intranet pull (~5s for
 # 180MB) is 100x faster than ghcr.io's international-link pull (no
 # docker-mirror covers ghcr.io).
@@ -110,8 +110,8 @@ jobs:
           # GHA cache speeds up subsequent runs (Docker layer reuse).
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Single architecture — SWAS is amd64. Multi-arch later if we
-          # need ARM-based SWAS or local Apple Silicon dev push.
+          # Single architecture — ECS is amd64. Multi-arch later if we
+          # need ARM-based ECS or local Apple Silicon dev push.
           platforms: linux/amd64
           # 🚨 **关掉 attestation，否则 ACR 拒收整次 push**（2026-08-14 实撞，v0.25.0 发版当场）：
           #   `denied: unknown manifest class for application/vnd.oci.empty.v1+json`
