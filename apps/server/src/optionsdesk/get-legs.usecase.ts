@@ -668,7 +668,7 @@ export class GetLegsUseCase {
         // 实时请求整体回落收盘档随离线口径一并点亮 (回落态呈现即收盘档语义)。hk 恒 null
         // (069 四参数系 us 收盘分布标定, clarify 裁决)。判决仍在**排序旁路**装配: 吃的是
         // 候选集 (截断前), 不碰 legs 行序 (FR-013 / 069 FR-018)。
-        ...this.marchBlock(perspective, parsed.market, retrieval, pool),
+        ...this.marchBlock(perspective, retrieval, pool),
       };
     } catch (err) {
       this.logger.warn(`选约表跨 ctx 读降级 (${symbol}, 锚派生照常返回): ${String(err)}`);
@@ -699,7 +699,16 @@ export class GetLegsUseCase {
   }
 
   /**
-   * 070 行军判决块 (FR-001 门控放宽): `收租 ∧ us` 有值, 其余恒双 null。
+   * 070 行军判决块 (FR-001 门控放宽): **收租视角**有值, 另两个视角恒双 null。
+   *
+   * 🚨 **market 维已于 2026-09-05 从门控里去掉** (071 T007, user 裁决): 该维原本挡的是「行军参数
+   * 在港股适不适用」这个未判定的问题, 不是任何一条业务规则。T007 三条判据在四天 × 两市真锚回放上
+   * 全过 —— 形状类条件的判据面 (δᵢ/δᵢ₋₁ 分布) 两市 17.0% vs 16.9% 几乎逐点重合、流动性下限致
+   * 整梯清零 hk 0.0% vs us 11.8%、φ 是无量纲年化门槛故量纲上货币无关 —— 判定它适用, 门控随之
+   * 收敛回单一维度。三张对照表与射程限制在 `specs/071-optionsdesk-hk-realtime-recall/spec.md`
+   * 的「行军参数适用性判定」节。
+   * 🚫 **MUST NOT 因此推广成「所有市场都适用」**: 判定只覆盖 hk, 而 `IMPORTABLE_MARKETS` 眼下
+   * 也只有两个值; 将来接第三个市场要重跑同一套判据, 不是自动继承。
    *
    * 🚨 **门控不看档位** —— 处置口径 (剔→标) 已在召回层按 `chain.priceKind` 落定 (plan §D1),
    * 判决对两档吃的是同一批候选 + 同一份留痕; 🚫 MUST NOT 在这里按 `realtime` 入参或档位再设
@@ -709,11 +718,10 @@ export class GetLegsUseCase {
    */
   private marchBlock(
     perspective: LegTab,
-    market: string,
     retrieval: LegRetrievalResult,
     pool: readonly LegCandidate[],
   ): Pick<LegTableView, 'march' | 'marchMode'> {
-    if (perspective !== 'rent' || market !== 'us') return { march: null, marchMode: null };
+    if (perspective !== 'rent') return { march: null, marchMode: null };
     return {
       march: assembleMarchByStrike(
         pool,
