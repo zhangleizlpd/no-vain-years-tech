@@ -8,6 +8,13 @@ import { DbOptionChainDiscoveryAdapter } from './db-option-chain-discovery.adapt
  *
  * 🚨 stub 真的按 `where` 过滤、真的按 `orderBy` 排序 —— 否则「筛掉了没筛掉」根本断言不出来,
  * 整份 spec 会变成一句「adapter 会调 prisma」。三条判据各自都有一条**只有它能拦住**的臂。
+ *
+ * 🚨 **种子里的 `syncType` 一律写死 `sync:` 前缀的字面量, 🚫 MUST NOT 复用实现侧的
+ * `dimensionSyncType()`** —— 用同一个函数造种子, 测的就只是「实现和自己一致」, 前缀写错时
+ * 两边一起错、七条断言全绿。本 spec 初版正是这么写的, 直到直查 prod 才发现读侧在拿裸维度键
+ * 查一张全部带前缀的表, 恒零行。
+ * EVIDENCE: 2026-09-05 直查 prod `marketdata.sync_run` 近 30 天 29 个 `sync_type` 全部形如
+ * `sync:<dim>`（`sync:hk_option_contract` 9 轮 / `sync:option_contract` 58 轮）。
  */
 
 interface RunRow {
@@ -63,7 +70,7 @@ describe('DbOptionChainDiscoveryAdapter', () => {
     const adapter = new DbOptionChainDiscoveryAdapter(
       prismaWith([
         run({
-          syncType: 'hk_option_contract',
+          syncType: 'sync:hk_option_contract',
           startedAt: '2026-09-04T15:20:00Z',
           finishedAt: '2026-09-04T15:41:00Z',
         }),
@@ -77,7 +84,11 @@ describe('DbOptionChainDiscoveryAdapter', () => {
   it('🚨 只有「限频顺延」的轮 (status=success ∧ skipped>0) ⇒ null —— deriveStatus 只看 failed, 顺延掉一半标的的轮照样报 success', async () => {
     const adapter = new DbOptionChainDiscoveryAdapter(
       prismaWith([
-        run({ syncType: 'hk_option_contract', startedAt: '2026-09-04T15:20:00Z', skipped: 17 }),
+        run({
+          syncType: 'sync:hk_option_contract',
+          startedAt: '2026-09-04T15:20:00Z',
+          skipped: 17,
+        }),
       ]),
     );
     await expect(adapter.lastCompleteDiscoveryAt('hk')).resolves.toBeNull();
@@ -87,7 +98,7 @@ describe('DbOptionChainDiscoveryAdapter', () => {
     const adapter = new DbOptionChainDiscoveryAdapter(
       prismaWith([
         run({
-          syncType: 'hk_option_contract',
+          syncType: 'sync:hk_option_contract',
           startedAt: '2026-09-04T15:20:00Z',
           status: 'partial',
         }),
@@ -101,7 +112,7 @@ describe('DbOptionChainDiscoveryAdapter', () => {
       prismaWith([
         run({ syncType: 'us_x', startedAt: '2026-09-04T15:20:00Z' }),
         run({
-          syncType: 'option_contract',
+          syncType: 'sync:option_contract',
           startedAt: '2026-09-04T22:00:00Z',
           finishedAt: '2026-09-04T23:30:00Z',
         }),
@@ -115,9 +126,9 @@ describe('DbOptionChainDiscoveryAdapter', () => {
   it('多轮 ⇒ 取最近的那一轮', async () => {
     const adapter = new DbOptionChainDiscoveryAdapter(
       prismaWith([
-        run({ syncType: 'hk_option_contract', startedAt: '2026-09-01T15:20:00Z' }),
-        run({ syncType: 'hk_option_contract', startedAt: '2026-09-04T15:20:00Z' }),
-        run({ syncType: 'hk_option_contract', startedAt: '2026-09-02T15:20:00Z' }),
+        run({ syncType: 'sync:hk_option_contract', startedAt: '2026-09-01T15:20:00Z' }),
+        run({ syncType: 'sync:hk_option_contract', startedAt: '2026-09-04T15:20:00Z' }),
+        run({ syncType: 'sync:hk_option_contract', startedAt: '2026-09-02T15:20:00Z' }),
       ]),
     );
     await expect(adapter.lastCompleteDiscoveryAt('hk')).resolves.toEqual(
@@ -127,9 +138,17 @@ describe('DbOptionChainDiscoveryAdapter', () => {
 
   it('🚨 两个市场各取自己的维度键, 不串 —— us 有轮不让 hk 变成「问过了」', async () => {
     const adapter = new DbOptionChainDiscoveryAdapter(
-      prismaWith([run({ syncType: 'option_contract', startedAt: '2026-09-04T22:00:00Z' })]),
+      prismaWith([run({ syncType: 'sync:option_contract', startedAt: '2026-09-04T22:00:00Z' })]),
     );
     await expect(adapter.lastCompleteDiscoveryAt('us')).resolves.not.toBeNull();
+    await expect(adapter.lastCompleteDiscoveryAt('hk')).resolves.toBeNull();
+  });
+
+  it('🚨 拿**裸维度键**存的行查不到 —— `sync_run.sync_type` 是 `sync:<dim>`, 前缀丢了就恒零行', async () => {
+    const adapter = new DbOptionChainDiscoveryAdapter(
+      // 🚨 蓄意用**错误**的裸键播种: 读侧若也用裸键, 这条会「绿」, 而生产里那张表一条都匹配不上。
+      prismaWith([run({ syncType: 'hk_option_contract', startedAt: '2026-09-04T15:20:00Z' })]),
+    );
     await expect(adapter.lastCompleteDiscoveryAt('hk')).resolves.toBeNull();
   });
 
