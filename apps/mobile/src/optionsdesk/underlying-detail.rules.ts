@@ -655,7 +655,8 @@ export function legRowTotal(sections: readonly LegSection[]): number {
 
 /**
  * 选约区块的四态。**没有「整页」这一档**（与 ① 同纪律）：本区块自己降级，046 三块照常渲染。
- * `chain_not_ready`（采集还没轮到，是**事实**）与 `read_failed`（跨 ctx 读故障）**蓄意分开** ——
+ * `chain_not_ready`（表里还没有内容，是**事实**）与 `read_failed`（跨 ctx 读故障）**蓄意分开** ——
+ * 🚨 前者盖着「采集还没轮到」与「该标的根本没有挂牌期权」两种成因，后者永远不会有内容（#361）。
  * 值域与 server 契约的 `LegTableResponse.state` 逐字对齐，只多一个客户端侧的 `loading`。
  */
 export type LegBlockState = 'loading' | LegTableResponseState;
