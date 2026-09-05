@@ -1,0 +1,396 @@
+/**
+ * 071 港股实时窄召回接线 —— **港股 symbol 下的选约表在契约层与美股零形状差异**（SC-007）的
+ * 契约冒烟（Constitution §V 两层之二）。
+ *
+ * 用**生成的** `@nvy/api-client` 打 harness boot 的真 server（testcontainers PG），跑一条
+ * happy path：**建两只逐字段等值的锚（`us:NVYE` / `hk:NVYE`）→ 各灌一份等值的收盘快照 →
+ * 分别拉收租 / 建仓两个视角**，再把两市的四份响应两两对形。
+ *
+ * 🚨 本片三条只有端到端才验得到的靶心：
+ *   1. **港股 symbol 下的选约表在两个意图视角上真的走得通**（FR-015：该覆盖今天为零）——
+ *      200 + 非空腿 + 两市落**同一个**降级标。降级标取 `gate_unknown`（mock 档下
+ *      `MARKET_STATE_PORT` 是 054 拒绝壳 ⇒ 两闸自身故障），两市同值本身就是「港股没有被
+ *      塞进某条自己的分支」的可序列化证据。
+ *   2. **逐字段同形，且断言本身不分市场**（SC-007 的机器判据）：{@link shapeLines} 把响应压成
+ *      「路径 → kind 集合」再 `deepEqual`，多一个键 / 少一个键 / 某字段只在港股上恒 `null`
+ *      三种漂移一次全拦。其中「键被吞掉」只有真序列化才验得到 —— `JSON.stringify` 会把
+ *      `undefined` 整键删掉，而客户端读到 `undefined` 走的是「没接这根线」那条路。
+ *   3. **`march` / `marchMode` 是仅有的两处蓄意差异**（069/070 门控 = `收租 ∧ us`，见
+ *      `get-legs.usecase.ts` 的 `marchBlock`）：它们**不进对形**，改由 {@link assertMarchGate}
+ *      单独钉住，且那是一条**绊线** —— T007 放开港股收租门控那天它第一个红，逼改的人回来把
+ *      这一处差异一起翻面（tasks.md T007 已写明「放开时门控改动须有 IT 臂 + 070 臂④ 同步翻面」）。
+ *
+ * 🚨 **本环境验不到「港股接上了实时档」，如实登记**：mock 档下 `MARKET_STATE_PORT` 是 054 拒绝壳
+ *    ⇒ 闸恒 `unknown`，而 `leg-retrieval.adapter.ts` 的 `retrieveRealtimeNarrow` 在**闸判之后
+ *    立刻回落**（`gate === 'unknown'` 那行早于 #286 的市场 guard、早于定窗基准）⇒ 071 改的那三处
+ *    （业务日基准换市场 / 窗白名单加 `hk` / bootstrap 下界 per-market）在这里**结构上执行不到**，
+ *    两市的 `gate_unknown` 在 071 之前就是这个值。🚫 MUST NOT 把上面靶心 1 读成「实时接线的证据」，
+ *    也 MUST NOT 塞真凭据来凑 —— 实时接线的判据在 server IT（`optionsdesk-071.hk-realtime.it.spec.ts`
+ *    的 13 臂，DI 替身喂真闸态）与部署后真时段抽查（T010 / issue #314）。本文件守的是**契约面**：
+ *    回落之后两市仍逐字段同形。
+ *
+ * 边界与幂等：专属 ticker `us:NVYE` / `hk:NVYE`（两市**同码**是刻意的 —— 唯一的变量就是市场段，
+ * 避开既有 NVYA..NVYD / NVYG..NVYZ）；marketdata 三张事实表靠 `ctx.execSql` 直插，锚走公开写
+ * 端点建 / 末尾 DELETE 自清理。
+ */
+import assert from 'node:assert/strict';
+import {
+  LegTableResponsePriceKind,
+  LegTableResponseRealtimeDegrade,
+  LegTableResponseState,
+  optionsdeskControllerCreate,
+  optionsdeskControllerLegs,
+  optionsdeskControllerRemove,
+} from '@nvy/api-client';
+import type { LegTableResponse, OptionsdeskControllerLegsPerspective } from '@nvy/api-client';
+
+import type { RealBackendCtx } from '../_support/real-backend-harness';
+
+export const name = 'optionsdesk-hk-realtime (071)';
+
+type Cfg = { baseURL: string; headers: Record<string, string> };
+
+/** 两市**同码** —— 对形时唯一的自变量必须只有市场段。 */
+const CODE = 'NVYE';
+const US = { market: 'us', currency: 'USD' } as const;
+const HK = { market: 'hk', currency: 'HKD' } as const;
+const symbolOf = (market: string): string => `${market}:${CODE}`;
+
+const V = '100.0000';
+const CONFIDENCE = '8.0';
+/** spot 70 ⇒ W = 80 ⇒ axis = min(70, 80) = 70 ⇒ 成色上界 72.1（下面三条 K 全在其下）。 */
+const SPOT = '70.0000';
+const QUOTE_TIME = 'T20:15:00.000Z';
+
+interface SeedQuote {
+  readonly suffix: string;
+  readonly strike: string;
+  readonly dte: number;
+  readonly bid: string;
+  readonly ask: string;
+  readonly delta: string;
+}
+
+/**
+ * 三条腿把**两个意图段各自铺满**（`BUILD_RECALL_DTE = [1,49]` / `RENT_RECALL_DTE = [30,365]`，
+ * 两段不相交）：
+ *
+ * | 腿   | K  | DTE | 落哪个视角 |
+ * | ---- | -- | --- | ---------- |
+ * | `NEAR` | 65 |  24 | 建仓       |
+ * | `MID`  | 65 |  60 | 收租       |
+ * | `FAR`  | 60 | 120 | 收租       |
+ *
+ * 🚨 **两个视角都必须非空**：对形是逐字段比 kind，`legs` 空了那一半的 `legs[].*` 整片路径
+ * 就不存在 —— 两市同时空的话对形照样绿，而那是一条什么都没验到的恒真断言。
+ * 📌 DTE 基准是**每市各自的今天**（`toLegRows` 已按 `parsed.market` 参数化），港股与美股的
+ * 折算日相差至多一天 ⇒ 上表三条离两段边界都还有 ≥ 6 天余量，不会因跑测时刻而换段。
+ */
+const SEED: readonly SeedQuote[] = [
+  {
+    suffix: 'NEAR',
+    strike: '65.0000',
+    dte: 24,
+    bid: '1.0000',
+    ask: '1.0500',
+    delta: '-0.25000000',
+  },
+  { suffix: 'MID', strike: '65.0000', dte: 60, bid: '2.0000', ask: '2.1000', delta: '-0.20000000' },
+  {
+    suffix: 'FAR',
+    strike: '60.0000',
+    dte: 120,
+    bid: '3.0000',
+    ask: '3.2000',
+    delta: '-0.15000000',
+  },
+];
+
+/** T008-① 逐视角对形的两个意图视角（`all` 不走窄召回，归 068 那片）。 */
+const PERSPECTIVES: readonly OptionsdeskControllerLegsPerspective[] = ['rent', 'build'];
+
+export async function run(ctx: RealBackendCtx): Promise<void> {
+  const cfg: Cfg = { baseURL: ctx.api, headers: { authorization: `Bearer ${ctx.accessToken}` } };
+  // 🚨 两市共用**一个**基准日: 离线路径的业务日基准至今写死 `'us'`（#274 / 071 Guardrail 1，
+  // 本片蓄意不动）⇒ 港股那份也按美股折算日落库, 夹具才真的逐字段等值。
+  const today = exchangeToday(new Date());
+
+  await seed(ctx, US.market, US.currency, today);
+  await seed(ctx, HK.market, HK.currency, today);
+
+  const anchorIds: string[] = [];
+  try {
+    for (const market of [US.market, HK.market]) {
+      anchorIds.push(await createAnchor(cfg, market, today));
+    }
+
+    for (const perspective of PERSPECTIVES) {
+      // ── 靶心 1: 同一套断言换 market 即可跑, 零分支 (SC-007 的「无分支」半) ──────────
+      const us = await legs(cfg, US.market, perspective);
+      const hk = await legs(cfg, HK.market, perspective);
+      assertTableInvariants(us, US.market, perspective);
+      assertTableInvariants(hk, HK.market, perspective);
+
+      // ── 靶心 2: 逐字段对形 ────────────────────────────────────────────────────
+      const usShape = shapeLines(us);
+      const hkShape = shapeLines(hk);
+      assert.deepEqual(
+        hkShape,
+        usShape,
+        `${perspective} 视角两市形状不同 (SC-007):\n` +
+          `  仅美股有: ${usShape.filter((l) => !hkShape.includes(l)).join(' | ') || '—'}\n` +
+          `  仅港股有: ${hkShape.filter((l) => !usShape.includes(l)).join(' | ') || '—'}`,
+      );
+
+      // ── 靶心 3: 仅有的两处蓄意差异, 单独钉 + 绊线 ────────────────────────────────
+      assertMarchGate(us, hk, perspective);
+    }
+
+    // ── T008-②: 降级值域仍是四值 (FR-010 值域不扩的机器判据) ─────────────────────
+    assert.deepEqual(
+      Object.values(LegTableResponseRealtimeDegrade).sort(),
+      ['gate_unknown', 'source_unavailable', 'window_basis_stale', 'window_over_cap'],
+      '降级值域不再是四值 —— 前端那份穷举 Record 会漏掉新值且不报错 (FR-010)',
+    );
+  } finally {
+    for (const anchorId of anchorIds) {
+      const del = await optionsdeskControllerRemove(anchorId, cfg);
+      assert.equal(del.status, 204, `cleanup delete expected 204, got ${del.status}`);
+    }
+    await deleteSeed(ctx, US.market);
+    await deleteSeed(ctx, HK.market);
+  }
+}
+
+/**
+ * **与市场无关**的逐份不变量 —— SC-007「同一套断言换 market 即可跑」的字面兑现:
+ * 本函数体内没有任何 `market === …` 分支, 两市各调一次。
+ */
+function assertTableInvariants(
+  table: LegTableResponse,
+  market: string,
+  perspective: OptionsdeskControllerLegsPerspective,
+): void {
+  const symbol = symbolOf(market);
+  assert.equal(table.symbol, symbol);
+  assert.equal(table.perspective, perspective, `${symbol} ${perspective} 视角回显不符`);
+  assert.equal(
+    table.state,
+    LegTableResponseState.available,
+    `${symbol} ${perspective} 应就绪, got ${table.state}`,
+  );
+  assert.ok(table.legs.length > 0, `${symbol} ${perspective} 零腿 —— 对形会退化成恒真断言`);
+  assert.equal(
+    table.priceKind,
+    LegTableResponsePriceKind.eod_close,
+    `${symbol} ${perspective} mock 档取不到实时, MUST 回落收盘档`,
+  );
+  // 🚨 靶心 1 的落点: 两市**同值**。`null` 意味着这个市场压根没走到闸那一步（意图视角本该
+  // 走窄召回, 见 `retrieveCandidates` 的 dispatch）; `source_unavailable` 意味着它走到了闸后
+  // 那道 #286 市场 guard 才回落。两个错值都渲染得出一张完整的收盘表, 只有钉住具体那一档才分得开。
+  assert.equal(
+    table.realtimeDegrade,
+    LegTableResponseRealtimeDegrade.gate_unknown,
+    `${symbol} ${perspective} 走窄召回、mock 档两闸自身故障 ⇒ MUST 标 gate_unknown, ` +
+      `got ${table.realtimeDegrade}`,
+  );
+  for (const leg of table.legs) {
+    // `undefined` 会被 JSON.stringify 整键删掉 ⇒ 客户端读到的是「没接这根线」而非「无带语义」。
+    assert.ok('bandStatus' in leg, `${symbol} ${leg.code} 缺 bandStatus 键`);
+    assert.equal(
+      leg.priceKind,
+      LegTableResponsePriceKind.eod_close,
+      `${symbol} ${leg.code} 行级档`,
+    );
+  }
+}
+
+/**
+ * `march` / `marchMode` 门控 = `收租 ∧ us`（069 FR / 070 FR-001；实现单点在
+ * `get-legs.usecase.ts` 的 `marchBlock`）—— 全仓仅此两个字段在两市上蓄意不同形。
+ *
+ * 🚨 **这是一条绊线**: T007 判定三条判据全过、放开港股收租门控那天, 下面第二组断言第一个红,
+ * 逼改的人回来把本处一并翻面（tasks.md T007: 「放开时门控改动须有 IT 臂 + 070 臂④ 同步翻面」）。
+ * 🚫 MUST NOT 改成「港股宽松放行」（如只断言键在）—— 那样门控放开与否都绿, 绊线失效。
+ */
+function assertMarchGate(
+  us: LegTableResponse,
+  hk: LegTableResponse,
+  perspective: OptionsdeskControllerLegsPerspective,
+): void {
+  const usHasMarch = perspective === 'rent';
+  assert.equal(
+    us.march === null,
+    !usHasMarch,
+    `us ${perspective} 的 march 门控不符 (收租 ∧ us 有值, 其余恒 null)`,
+  );
+  assert.equal(us.marchMode === null, us.march === null, 'us march 与 marchMode MUST 同生共死');
+  assert.equal(
+    hk.march,
+    null,
+    `hk ${perspective} 的 march 非 null —— 若这是 T007 放开门控的结果, ` +
+      `请把本函数与 070 臂④、tasks.md 覆盖预检表一并翻面, 🚫 别只把这条断言删掉`,
+  );
+  assert.equal(hk.marchMode, null, 'hk march 与 marchMode MUST 同生共死');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 逐字段形状签名
+// ─────────────────────────────────────────────────────────────────────────────
+
+type Kind = 'null' | 'string' | 'number' | 'boolean' | 'array' | 'object';
+
+function kindOf(value: unknown): Kind {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  const primitive = typeof value;
+  if (primitive === 'string' || primitive === 'number' || primitive === 'boolean') return primitive;
+  return 'object';
+}
+
+/**
+ * 响应 → 「路径 → 该路径出现过的 kind 集合」。数组元素**并到同一条路径** `x[]` ⇒ 元素之间的
+ * 字段差异（某一腿少一个键）也会落进签名, 不会因为只看 `legs[0]` 而漏掉。
+ *
+ * 复杂度 `O(n)`（n = 响应的标量节点数），递归深度 = 响应嵌套深度（当前 3 层）。
+ */
+function shapeSignature(
+  value: unknown,
+  path = '',
+  into = new Map<string, Set<Kind>>(),
+): Map<string, Set<Kind>> {
+  const kind = kindOf(value);
+  const kinds = into.get(path) ?? new Set<Kind>();
+  kinds.add(kind);
+  into.set(path, kinds);
+  if (kind === 'array') {
+    for (const item of value as readonly unknown[]) shapeSignature(item, `${path}[]`, into);
+  } else if (kind === 'object') {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      shapeSignature(child, path === '' ? key : `${path}.${key}`, into);
+    }
+  }
+  return into;
+}
+
+/** 门控字段的路径（{@link assertMarchGate} 单独钉，不进对形）。 */
+function isMarchGated(path: string): boolean {
+  return path === 'marchMode' || path === 'march' || path.startsWith('march[');
+}
+
+function shapeLines(table: LegTableResponse): readonly string[] {
+  return [...shapeSignature(table).entries()]
+    .filter(([path]) => path !== '' && !isMarchGated(path))
+    .map(([path, kinds]) => `${path}: ${[...kinds].sort().join('|')}`)
+    .sort();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 夹具
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function legs(
+  cfg: Cfg,
+  market: string,
+  perspective: OptionsdeskControllerLegsPerspective,
+): Promise<LegTableResponse> {
+  const symbol = symbolOf(market);
+  const res = await optionsdeskControllerLegs(symbol, { perspective }, cfg);
+  assert.equal(res.status, 200, `legs ${symbol} ${perspective} expected 200, got ${res.status}`);
+  return res.data;
+}
+
+async function seed(
+  ctx: RealBackendCtx,
+  market: string,
+  currency: string,
+  today: string,
+): Promise<void> {
+  await deleteSeed(ctx, market); // 防上轮异常退出未走 cleanup
+
+  await ctx.execSql(
+    `INSERT INTO marketdata.instrument (market, code, name, type, currency, status)
+     VALUES ('${market}', '${CODE}', '071 契约冒烟 港股实时接线', 'stock', '${currency}', 'listed')`,
+  );
+  const iid = `(SELECT id FROM marketdata.instrument WHERE market = '${market}' AND code = '${CODE}')`;
+
+  await ctx.execSql(
+    `INSERT INTO marketdata.trading_day (market, date)
+     SELECT '${market}', g::date
+     FROM generate_series(DATE '${plusDays(today, -10)}', DATE '${plusDays(today, 10)}', INTERVAL '1 day') AS g
+     ON CONFLICT DO NOTHING`,
+  );
+
+  const contracts = SEED.map(
+    (s) =>
+      `('${market}', '${contractCode(market, s.suffix)}', '${CODE}', ${iid}, ` +
+      `DATE '${plusDays(today, s.dte)}', ${s.strike}, 'PUT', true)`,
+  ).join(',\n       ');
+  await ctx.execSql(
+    `INSERT INTO marketdata.option_contract
+       (market, code, root, underlying_instrument_id, expiry_date, strike_price, option_type, is_standard)
+     VALUES
+       ${contracts}`,
+  );
+  const cid = (code: string): string =>
+    `(SELECT id FROM marketdata.option_contract WHERE market = '${market}' AND code = '${code}')`;
+
+  const snapshots = SEED.map(
+    (s) =>
+      `(${cid(contractCode(market, s.suffix))}, DATE '${today}', 'eod', ` +
+      `TIMESTAMPTZ '${today}${QUOTE_TIME}', DATE '${plusDays(today, -1)}', ` +
+      `${s.bid}, ${s.ask}, 20, 21, 0.25000000, ${s.delta}, 900, 40, ${SPOT}, true)`,
+  ).join(',\n       ');
+  await ctx.execSql(
+    `INSERT INTO marketdata.option_daily_snapshot
+       (contract_id, session_date, source, quote_as_of, oi_as_of, bid, ask, bid_size, ask_size,
+        iv, delta, open_interest, volume, underlying_spot, greeks_complete)
+     VALUES
+       ${snapshots}`,
+  );
+}
+
+/** vendor 合约码体例同 068（`US.NVYW.M`）—— 市场段大写。 */
+function contractCode(market: string, suffix: string): string {
+  return `${market.toUpperCase()}.${CODE}.${suffix}`;
+}
+
+async function deleteSeed(ctx: RealBackendCtx, market: string): Promise<void> {
+  // instrument 删除 CASCADE 带走 option_contract → option_daily_snapshot。
+  await ctx.execSql(
+    `DELETE FROM marketdata.instrument WHERE market = '${market}' AND code = '${CODE}'`,
+  );
+}
+
+async function createAnchor(cfg: Cfg, market: string, today: string): Promise<string> {
+  const symbol = symbolOf(market);
+  const created = await optionsdeskControllerCreate(
+    {
+      ticker: symbol,
+      v: V,
+      asof: plusDays(today, -30),
+      method: 'DCF · 071 契约冒烟',
+      confidence: CONFIDENCE,
+      nextReview: plusDays(today, 120),
+    },
+    cfg,
+  );
+  assert.equal(created.status, 201, `create ${symbol} expected 201, got ${created.status}`);
+  return created.data.id;
+}
+
+/** 「交易所的今天」（`America/New_York`）—— 与离线读路径的 `exchangeCalendarDate('us', now)` 同口径。 */
+function exchangeToday(now: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+function plusDays(dateOnly: string, days: number): string {
+  return new Date(Date.parse(`${dateOnly}T00:00:00Z`) + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}

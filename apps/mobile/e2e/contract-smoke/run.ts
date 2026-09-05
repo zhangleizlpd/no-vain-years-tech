@@ -21,6 +21,7 @@ import * as optionsdeskIntradayLegQuotes from './064-intraday-leg-quotes.contrac
 import * as optionsdeskTwoStageRecall from './068-two-stage-recall.contract';
 import * as optionsdeskChainMarch from './069-chain-march.contract';
 import * as optionsdeskOfflineLadder from './070-offline-ladder.contract';
+import * as optionsdeskHkRealtime from './071-hk-realtime.contract';
 import * as optionsdeskWideSpread from './071-wide-spread.contract';
 import * as optionsdeskAnchorSubmission from './072-anchor-submission.contract';
 import * as optionsdeskAnchorSearch from './074-anchor-search.contract';
@@ -85,6 +86,7 @@ const SPECS: readonly ContractSpec[] = [
   optionsdeskChainMarch,
   optionsdeskOfflineLadder,
   optionsdeskWideSpread,
+  optionsdeskHkRealtime,
   optionsdeskAnchorSubmission,
   optionsdeskAnchorSearch,
   portfolioHoldings,
