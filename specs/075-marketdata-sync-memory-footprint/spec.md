@@ -2,7 +2,7 @@
 feature_id: 075-marketdata-sync-memory-footprint
 modules: [marketdata]
 owners: ['@zhangleizlpd']
-status: clarified
+status: planned
 created_at: '2026-09-05'
 updated_at: '2026-09-05'
 spec_kit_version: '>=0.8.5,<0.10.0'
