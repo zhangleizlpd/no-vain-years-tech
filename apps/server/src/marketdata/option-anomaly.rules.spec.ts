@@ -587,3 +587,168 @@ describe('createOptionAnomalyAccumulator —— 常驻结构不随行数增长 (
     expect(acc.state.freshRoots.size).toBe(roots.length);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 075 T003 —— 判定侧常驻的实测读数（env-gated，默认 skip）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 🚨 **075 T003 的跑法与三组实测读数（2026-09-05，本机 macOS / Node，SC-001 + SC-003）**
+ *
+ * 本块默认 skip（Small 档的默认执行路径不受影响）。单跑：
+ *
+ * ```
+ * NODE_OPTIONS='--expose-gc' RUN_PERF_IT=true pnpm nx test server \
+ *   src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache
+ * ```
+ *
+ * **① 正臂（当前实现）** — `33 passed`：
+ * `small=[211312, 33168, 12264, 243544, 23024, 22688, 22688, 22688, 22688]`
+ * `large=[31144, 29840, 31136, 22688, 22688, 23192, 22688, 22688, 22688]`
+ * ⇒ 两臂中位数同为 **22688 B（22 KB）**，比值 **1**，10 万行常驻 22 KB ≪ 1 MB。
+ *
+ * **② 对照臂 —— out-of-test sabotage（testing.md §7.1；不常驻，故读数只能写在这里）** ⇒ `FAIL`：
+ * 改坏处 = `option-anomaly.rules.ts` 的 `OptionAnomalyAccumulatorState` 加
+ * `heldRows: OptionAnomalyRow[]`（初值 `[]`）、`feed()` 里加一行 `state.heldRows.push(...rows)`
+ * —— 等价于 T001 之前那个「整轮攒着不放」的持有语义。同一判据下读数：
+ * `smallMedian=1867176 B` / `largeMedian=18589872 B` ⇒ 比值 **9.956 ≈ 10×**，且 18.6 MB ≫ 1 MB
+ * ⇒ **两条断言都判红**（`3 failed | 30 passed`，另两条红的是 T002 臂 ①，同一改坏处）。
+ * 🚨 缺这一臂就只是「一直绿着却什么也没量到」——它是本块唯一的判别力来源。
+ *
+ * **③ 「根本没跑」臂** — 只给 `RUN_PERF_IT=true`、不给 `--expose-gc`：
+ * `32 passed | 1 skipped` + 一行 `[075 T003] 🚨 SKIPPED …` 的 stderr。
+ * ⇒ 「过了」与「没跑」在计数与输出上都能区分（Guardrail 10 / testing.md §7）。
+ */
+
+/** 单跑本块（🚨 两个开关缺一都不跑：`RUN_PERF_IT` 门控、`--expose-gc` 提供 `global.gc`）。 */
+const T003_RERUN =
+  "NODE_OPTIONS='--expose-gc' RUN_PERF_IT=true pnpm nx test server " +
+  'src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache';
+
+const RUN_PERF = process.env.RUN_PERF_IT === 'true';
+const forceGc = (globalThis as { gc?: () => void }).gc;
+const HAS_GC = typeof forceGc === 'function';
+
+// 🚨 「没跑」与「过了」必须在数据上能区分（Guardrail 10 / testing.md §7「恒有输出 = 恒无输出」）。
+// 本仓 `--expose-gc` 零先例, 而拿不到 `global.gc` 时读数全是噪声、断言却照样绿 —— 故这里既让
+// vitest 把整块记成 **skipped**（不是 passed）, 又打一行**可见输出**说明为什么。
+if (RUN_PERF && !HAS_GC) {
+  console.warn(
+    `[075 T003] 🚨 SKIPPED —— RUN_PERF_IT 开着但拿不到 global.gc（本进程没带 --expose-gc）, ` +
+      `此时堆读数全是噪声, 本块拒绝出数。复跑: ${T003_RERUN}`,
+  );
+}
+
+const PERF_BATCH = 1_000;
+/** SC-001 的两个档位：1 万 → 10 万（10×）。 */
+const PERF_SMALL_ROWS = 10_000;
+const PERF_LARGE_ROWS = 100_000;
+/** 取中位数抗单次抖动；堆读数不是正态的，均值会被一次 GC 时机差异带偏。首轮丢弃（暖机）。 */
+const PERF_REPS = 9;
+/** SC-003：9.7 万行的一轮里判定侧常驻 < 1 MB（改动前实测 74.8 MB）。 */
+const RESIDENT_BUDGET_BYTES = 1024 * 1024;
+/**
+ * 比值的**分母下限**（噪声带）。
+ *
+ * 🚨 为什么需要它：改造后两臂的真实常驻都只有几 KB（状态 = 十来个标量 + 两个 ≤20 的样本数组
+ * + 一个小 root 集），**远在 `heapUsed` 的噪声带以内**。2026-09-05 本机实测单次读数
+ * `small=[260560, 8488, 32584, 34752, 221224]` / `large=[32384, 30600, 31680, 30440, 22760]`
+ * —— 直接相除会拿两个噪声数作比，随时能算出 > 2 的假红。⇒ 两臂都先与本下限取大：两臂都落在
+ * 噪声带内 ⇒ 比值恒 1（判为「不随行数增长」）；只要有一臂真的长出了噪声带，比值立刻回到真实倍数。
+ *
+ * 🚨 它**不削弱判别力**：对照臂（`feed` 把行存回状态）的两臂分别约 5 MB / 50 MB，都比本下限
+ * 高一到两个数量级 ⇒ 比值仍是那个 ≈10×（实测见文件内的对照臂留档）。取 128 KB 是「实测噪声
+ * 中位数（约 32 KB）的 4 倍」且远低于 SC-003 的 1 MB 预算。
+ */
+const NOISE_FLOOR_BYTES = 128 * 1024;
+
+/** 造一条判定用的行。每 7 条留一条 greeks 缺失 ⇒ 计数器与样本数组这两条路径都真的走到。 */
+function perfRow(i: number): OptionAnomalyRow {
+  const missing = i % 7 === 0;
+  return {
+    contractCode: `US.PEP260918P${100000 + i}`,
+    optionSide: 'PUT',
+    root: 'PEP',
+    isStandard: true,
+    expiryDate: '2026-09-18',
+    strikePrice: String(100 + (i % 39)),
+    underlyingSpot: '140',
+    iv: missing ? null : '21.4',
+    delta: missing ? null : '-0.18',
+    gamma: missing ? null : '0.012',
+    vega: missing ? null : '0.21',
+    theta: missing ? null : '-0.03',
+  };
+}
+
+/**
+ * 喂完 `rowCount` 行、且**累加器仍活着**时的堆增量（字节）。
+ *
+ * 每批只在批内构造数组、喂完即出作用域 —— 与调用侧的用法同构（T004）。故量到的是
+ * 「判定侧留下了什么」, 而不是「这一轮一共 new 了多少对象」。
+ */
+function residentBytes(rowCount: number): number {
+  forceGc!();
+  forceGc!();
+  const before = process.memoryUsage().heapUsed;
+  const acc = createOptionAnomalyAccumulator(ACC_INIT);
+  for (let fed = 0; fed < rowCount; fed += PERF_BATCH) {
+    const batch: OptionAnomalyRow[] = [];
+    for (let i = 0; i < PERF_BATCH; i++) batch.push(perfRow(fed + i));
+    acc.feed(batch);
+  }
+  forceGc!();
+  forceGc!();
+  const after = process.memoryUsage().heapUsed;
+  // 🚨 `acc` MUST 活到 `after` 之后, 否则量的是它已被回收的那个堆 —— 那样两臂都是 0, 恒绿。
+  // 顺带钉住**满载**: 判定真的跑了、样本数组真的被喂满 —— 否则「什么都没判」也会很省内存。
+  if (acc.state.rows !== rowCount) throw new Error(`accumulator lost rows: ${acc.state.rows}`);
+  if (
+    acc.state.greeksUnavailable === 0 ||
+    acc.state.otmMissingSamples.length !== MAX_SAMPLE_ITEMS
+  ) {
+    throw new Error(`degenerate run: unavailable=${acc.state.greeksUnavailable}`);
+  }
+  return after - before;
+}
+
+const medianOf = (xs: readonly number[]): number =>
+  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+
+describe.skipIf(!RUN_PERF || !HAS_GC)(
+  '075 T003 判定侧常驻实测 (RUN_PERF_IT + --expose-gc, 默认 skip)',
+  () => {
+    it(`10× 行数 (${PERF_SMALL_ROWS} → ${PERF_LARGE_ROWS}) ⇒ 常驻增幅 < 2× (SC-001) 且 < 1 MB (SC-003)`, () => {
+      // 首轮丢弃: 冷 JIT + 首次 GC 的堆重排会给第一发读数注入几百 KB 的假常驻。
+      residentBytes(PERF_SMALL_ROWS);
+      const small: number[] = [];
+      const large: number[] = [];
+      for (let rep = 0; rep < PERF_REPS; rep++) {
+        small.push(residentBytes(PERF_SMALL_ROWS));
+        large.push(residentBytes(PERF_LARGE_ROWS));
+      }
+      const smallMedian = medianOf(small);
+      const largeMedian = medianOf(large);
+      const ratio =
+        Math.max(largeMedian, NOISE_FLOOR_BYTES) / Math.max(smallMedian, NOISE_FLOOR_BYTES);
+      console.log(
+        '[075 T003] resident',
+        JSON.stringify({
+          smallRows: PERF_SMALL_ROWS,
+          largeRows: PERF_LARGE_ROWS,
+          reps: PERF_REPS,
+          smallSamples: small,
+          largeSamples: large,
+          smallMedianBytes: smallMedian,
+          largeMedianBytes: largeMedian,
+          noiseFloorBytes: NOISE_FLOOR_BYTES,
+          ratio: Number(ratio.toFixed(3)),
+          budgetBytes: RESIDENT_BUDGET_BYTES,
+        }),
+      );
+
+      expect(largeMedian).toBeLessThan(RESIDENT_BUDGET_BYTES);
+      expect(ratio).toBeLessThan(2);
+    }, 300_000);
+  },
+);
