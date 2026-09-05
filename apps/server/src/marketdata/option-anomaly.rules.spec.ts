@@ -1,3 +1,14 @@
+/**
+ * 075 T002 —— 「喂完的行不再被引用」这层断言为什么走**结构遍历**而不是 `WeakRef`（二选一的留档）：
+ *
+ * `WeakRef` + 可达性那条在本仓的默认执行路径上**恒绿**：拿不到 `global.gc`（本仓 `--expose-gc`
+ * 零先例，vitest 默认不开）时 GC 不会在断言之前发生，`deref()` 必然还拿得到对象 ⇒ 累加器有没有
+ * 持有那批行，断言都过。而 FR-021① 要的正是一条**确定性、每次回归都跑**的判据 —— 区分不了
+ * 「过」与「根本没跑」的断言不满足它（testing.md §7「恒有输出 = 恒无输出」）。
+ *
+ * ⇒ 走结构遍历：把累加器的累计状态当对象图走一遍，断言里面找不到任何一条喂入的行。代价是
+ * 累加器要把 `state` 作为只读引用暴露出来（`option-anomaly.rules.ts` 已就此写明用途）。
+ */
 import { describe, it, expect } from 'vitest';
 import {
   IV_OUTLIER_PERCENT,
@@ -455,5 +466,124 @@ describe('createOptionAnomalyAccumulator —— 切批喂结论恒等 (075 FR-00
     expect(acc.report()).toEqual(first);
     acc.feed([otmPut()]);
     expect(acc.report().metrics.rows).toBe(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 075 T002 —— 常驻结构断言（确定性, 每次回归都跑; 选型理由见文件头）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 从 `root` 出发走对象图, 收集**可达的对象引用**（函数与原始值不收）。数组 / `Set` / `Map`
+ * 的元素也走进去 —— 行若被换个壳存回状态里, 也照样会被这一趟遍历撞见。
+ *
+ * 复杂度 **O(V + E)**（V = 可达对象数, E = 引用边数）: 每个对象靠 `seen` 只入栈一次, 环安全。
+ */
+function reachableObjects(root: unknown): Set<object> {
+  const seen = new Set<object>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === null || typeof node !== 'object') continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    if (Array.isArray(node)) stack.push(...node);
+    else if (node instanceof Set) stack.push(...node);
+    else if (node instanceof Map) stack.push(...node.keys(), ...node.values());
+    else stack.push(...Object.values(node));
+  }
+  return seen;
+}
+
+/** n 条虚值缺 greeks 的行（合约 code 互不相同）—— 只用来把计数器 / 样本数组喂满。 */
+function missingRows(n: number, salt = 0): OptionAnomalyRow[] {
+  return Array.from({ length: n }, (_, i) =>
+    otmPut({ contractCode: `US.PEP260918P${salt}-${i}`, ...ZERO_GREEKS }),
+  );
+}
+
+/**
+ * 🚨 **变异留档（075 T002，sabotage 臂 per testing.md §7.1）**：
+ *
+ * · 改坏处：`option-anomaly.rules.ts` 的 `OptionAnomalyAccumulatorState` 加一个
+ *   `heldRows: OptionAnomalyRow[]`（初值 `[]`），`feed()` 里加一行 `state.heldRows.push(...rows)`
+ * · 读数：**2 failed | 30 passed** —— 红的正是臂 ① 的两条（行对象可达 / 可达对象数随行数长）；
+ *   臂 ②③ 与 20 条既有单测**全绿** ⇒ 只有臂 ① 够得到「持有」这件事，其余观察面看不见它
+ * · 还原后：**32 passed**
+ * · 复跑：`pnpm nx test server src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache`
+ */
+describe('createOptionAnomalyAccumulator —— 常驻结构不随行数增长 (075 FR-002 / FR-003 / FR-021①)', () => {
+  it('🚨 ① 喂完的行不再被累加器可达 —— 状态对象图里一条行都找不到 (FR-003)', () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    const first = mixedRows();
+    acc.feed(first);
+    // 再喂一批: 排除「只有最后一批被留着」这种只在末批可见的持有形态。
+    acc.feed(missingRows(30, 1));
+
+    const reachable = reachableObjects(acc.state);
+    // ⓐ identity: 喂进去的那些行对象本身, 以及承载它们的那个数组。
+    for (const row of first) expect(reachable.has(row)).toBe(false);
+    expect(reachable.has(first)).toBe(false);
+    // ⓑ 形状: 换个壳存回去也算持有 —— 可达集里 MUST NOT 有任何「长得像行」的对象。
+    const rowShaped = [...reachable].filter((o) => 'contractCode' in o && 'strikePrice' in o);
+    expect(rowShaped).toEqual([]);
+  });
+
+  it('🚨 ① 续: 可达对象数与已喂入行数无关 (10 倍行 ⇒ 同一组容器对象)', () => {
+    const small = createOptionAnomalyAccumulator(ACC_INIT);
+    small.feed(missingRows(50));
+    const large = createOptionAnomalyAccumulator(ACC_INIT);
+    for (let batch = 0; batch < 10; batch++) large.feed(missingRows(50, batch));
+
+    expect(large.state.rows).toBe(10 * small.state.rows);
+    expect(reachableObjects(large.state).size).toBe(reachableObjects(small.state).size);
+  });
+
+  it(`② 样本数组恒 ≤ ${MAX_SAMPLE_ITEMS}, 喂 10 倍行数不变; affected 仍是全量 (FR-011)`, () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    acc.feed(missingRows(50));
+    const capped = acc.state.otmMissingSamples.length;
+    for (let batch = 1; batch < 10; batch++) acc.feed(missingRows(50, batch));
+
+    expect(capped).toBe(MAX_SAMPLE_ITEMS);
+    expect(acc.state.otmMissingSamples).toHaveLength(MAX_SAMPLE_ITEMS);
+    // 上界只截样本, 没把计数一起截掉 —— 否则 `affected` 会静默从 500 变成 20。
+    expect(acc.state.greeksUnavailable).toBe(500);
+    expect(acc.report().findings[0]?.affected).toBe(500);
+  });
+
+  it(`② 续: IV 离群样本同样有上界 ${MAX_SAMPLE_ITEMS}`, () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    for (let batch = 0; batch < 5; batch++) {
+      acc.feed(
+        Array.from({ length: 50 }, (_, i) =>
+          otmPut({
+            contractCode: `US.PEP261006P${batch}-${i}`,
+            expiryDate: '2026-10-06',
+            iv: '600',
+          }),
+        ),
+      );
+    }
+    expect(acc.state.ivOutlierSamples).toHaveLength(MAX_SAMPLE_ITEMS);
+    expect(acc.state.ivOutliers).toBe(250);
+  });
+
+  it('③ freshRoots 基数只随**不同 root 数**增长, 与行数无关 (FR-009)', () => {
+    const roots = ['AAA1', 'VICI1', 'ZZZ1'];
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    for (let batch = 0; batch < 20; batch++) {
+      acc.feed(
+        Array.from({ length: 100 }, (_, i) =>
+          otmPut({
+            root: roots[i % roots.length],
+            contractCode: `US.NS${batch}-${i}`,
+            isStandard: false,
+          }),
+        ),
+      );
+    }
+    expect(acc.state.rows).toBe(2000);
+    expect(acc.state.freshRoots.size).toBe(roots.length);
   });
 });
