@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.18.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.17.0...mobile-v0.18.0) (2026-09-05)
+
+
+### Features
+
+* **optionsdesk:** 071 T007 行军门控去掉 market 维 —— 三判据全过, 港股收租与美股同门 ([#356](https://github.com/zhangleizlpd/no-vain-years-tech/issues/356)) ([bfe1157](https://github.com/zhangleizlpd/no-vain-years-tech/commit/bfe1157dda144fd780ec56a409475ac7878b5c6c))
+
 ## [0.17.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.16.0...mobile-v0.17.0) (2026-09-04)
 
 
