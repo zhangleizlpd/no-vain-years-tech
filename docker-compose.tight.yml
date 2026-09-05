@@ -1,8 +1,8 @@
-# Production compose for M1 A-Tight v2 (per ADR-0026) — single SWAS 2c4g
+# Production compose for M1 A-Tight v2 (per ADR-0026) — single ECS 2c2g
 # hosting NestJS app + PostgreSQL + Redis + Nginx. Replaces meta-server
 # docker-compose.tight.yml (project name `mbw-tight`) when mono cuts over.
 #
-# Usage on the production SWAS:
+# Usage on the production ECS:
 #   docker compose -f docker-compose.tight.yml --env-file .env.production up -d
 #   docker compose -f docker-compose.tight.yml --env-file .env.production ps
 #   docker compose -f docker-compose.tight.yml --env-file .env.production logs -f app
@@ -22,7 +22,7 @@
 #   committed                         ~1.46 GB-1.96 GB (vs meta 2.86 GB)
 #   free for page cache + spike       ~2.04-2.54 GB (vs meta 1.14 GB)
 #
-# 不挂数据盘 (per ADR-0026): PG/Redis data 落 SWAS 系统盘 (named volume),
+# 不挂数据盘 (per ADR-0026): PG/Redis data 落 ECS 系统盘 (named volume),
 # 保护机制 = pg_dump → mbw-oss daily 备份。
 
 name: nvy-tight
@@ -50,7 +50,12 @@ services:
       POSTGRES_USER: ${DB_USERNAME:-mbw}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     command:
-      # Single 4GB SWAS shared with Node + Redis + nginx + OS,
+      # 🚨 **下面这组取值是按 4GB 机器定的，而 prod（77）实际只有 2GB**（`ecs.e-c1m1.large`
+      # 2c2g，见 host-inventory）。原注释写「Single 4GB」是 2026-05 立 ADR-0026 时的形态，
+      # 迁到 77 之后规格减半、这组参数**没跟着复核** —— 2026-09-05 该机因内存不足触发
+      # swap/换页把磁盘 IO 打满、操作系统夯住（阿里云侧诊断结论），这组取值是嫌疑之一。
+      # 🚫 本次**只订正注释、不动取值** —— 改 PG 内存参数是生产变更，须先拿稳态内存水位
+      # （各容器 RSS + swap 使用）再定，不能拍脑袋。复核前请勿把本段当作「已经调好了」。
       # can't afford 384MB shared_buffers.
       - 'postgres'
       - '-c'
@@ -286,9 +291,9 @@ services:
       - '80:80'
       - '443:443'
     volumes:
-      # Reverse proxy config + Let's Encrypt cert dirs on SWAS host.
+      # Reverse proxy config + Let's Encrypt cert dirs on ECS host.
       # User-side prep: copy meta-server's ops/host/nginx/conf.d/ + certbot
-      # /etc/letsencrypt/ to mono SWAS path (per ADR-0026 § A-Tight v2 继承
+      # /etc/letsencrypt/ to mono ECS path (per ADR-0026 § A-Tight v2 继承
       # Nginx 复用 meta nginx 配 + 证书).
       # 🚨 bind 源路径 2026-08-07 从 ./ops/nginx/conf.d 改到这里（ops/ 重排，宿主机级配置
       #    归 ops/host/）。docker 对不存在的 bind 源会**自动建空目录而不报错** ⇒ 路径写错

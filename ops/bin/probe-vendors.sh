@@ -10,8 +10,8 @@
 # 新增 provider = 在下方 NODE 段的 `VENDORS` 加一个条目 (代表性轻量调用 + ok 判定)。
 #
 # Runs on the production ECS host (需 docker 访问运行中的 app 容器):
-#   本机$ ssh admin@<swas> 'bash -s' < ops/bin/probe-vendors.sh            # 探全部
-#   本机$ ssh admin@<swas> 'bash -s eastmoney' < ops/bin/probe-vendors.sh  # 只探东财
+#   本机$ ssh "$NVY_APP_SSH" 'bash -s' < ops/bin/probe-vendors.sh            # 探全部
+#   本机$ ssh "$NVY_APP_SSH" 'bash -s eastmoney' < ops/bin/probe-vendors.sh  # 只探东财
 #   ECS$  ./ops/bin/probe-vendors.sh [eastmoney|lixinger|all]
 #
 # Env overrides:

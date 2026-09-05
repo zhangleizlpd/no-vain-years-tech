@@ -1,5 +1,11 @@
 name: Deploy
 
+# 🚨 **prod 主机是标准 ECS，不是 SWAS**。本文件历史上通篇写作 "SWAS"，那是 2026-05 立
+# ADR-0026 时的形态；2026-07-31 实测推翻（fleet 内现已无 SWAS 实例），但当时只订正了
+# private runbook、没扫到本文件 —— 2026-09-05 排查一次 prod 事故时，正是这里的注释把人
+# 引去查 SWAS API / SWAS 控制台，白绕一圈。措辞已于当日统一订正。
+# 权威：docs/private/runbook/host-inventory.md（fleet SoT，含实例 ID / 账号 / 规格）。
+#
 # Per ADR-0026 § Cutover. Triggered when build-image.yml succeeds (auto
 # deploy after a server-vX.Y.Z release tag **or after a hotfix dispatch**),
 # or manually via workflow_dispatch (pick a tag to deploy).
@@ -8,8 +14,8 @@ name: Deploy
 # ref 名推断**（issue #53：dispatch 时 head_branch 是分支名，deploy 会去 pull 一个
 # 不存在的 `...:main`）。手动 dispatch 走 inputs.tag。
 #
-# Steps run on the production SWAS via SSH (per ADR-0026 § D6):
-#   1. git fetch + reset --hard origin/main on SWAS (default; pulls the full
+# Steps run on the production ECS via SSH (per ADR-0026 § D6):
+#   1. git fetch + reset --hard origin/main on ECS (default; pulls the full
 #      orchestration — compose / .env.production / nginx — atomically；
 #      密文不在其中，常驻主机 /etc/nvy/secrets.enc.env)
 #   2. export MBW_VERSION=<target tag> (compose reads shell env ahead of --env-file,
@@ -20,7 +26,7 @@ name: Deploy
 #      → up -d --force-recreate app
 #   4. Wait up to 120s for healthcheck; on failure AUTO-ROLLBACK to .last-good-tag
 #      (ops/bin/rollback-prod.sh) to restore uptime, then exit 1
-#   5. Final smoke via public HTTPS (api.shintongtech.com, 同 SWAS, 无备案);
+#   5. Final smoke via public HTTPS (api.shintongtech.com, 同 ECS, 无备案);
 #      on success record the tag in .last-good-tag (the rollback baseline)
 #   6. `sudo -n bash ops/jobs/install.sh` —— 把宿主定时任务（探针 / 备份 / 看门狗）同步到
 #      本次 reset 下来的代码树。幂等、无条件跑，排在最后所以失败不碰回滚基线。
@@ -31,7 +37,7 @@ name: Deploy
 # 不在本 workflow 内自动化 (避免 destructive op CI 触发风险)。
 #
 # Rollback: automatic to .last-good-tag on failed healthcheck; manual any-time via
-# `ops/bin/rollback-prod.sh <tag>` on the SWAS host (deploy-in-reverse).
+# `ops/bin/rollback-prod.sh <tag>` on the ECS host (deploy-in-reverse).
 
 on:
   workflow_run:
@@ -51,7 +57,7 @@ on:
         # 仅当 GFW 极端抖动 + 本次为纯镜像修复(未改任何编排文件)时传 true 跳过 reset,
         # 直接用磁盘上现有的 compose/.env.production。密文不受本开关影响 —— 它常驻
         # /etc/nvy/secrets.enc.env,从来不经 git。
-        description: 'Skip git fetch + reset on SWAS (default FALSE = full git-driven; set true ONLY for an image-only hotfix when GFW is blocking and no orchestration file changed)'
+        description: 'Skip git fetch + reset on ECS (default FALSE = full git-driven; set true ONLY for an image-only hotfix when GFW is blocking and no orchestration file changed)'
         required: false
         type: boolean
         default: false
@@ -64,7 +70,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy to production SWAS
+    name: Deploy to production ECS
     runs-on: ubuntu-latest
     # 仓已公开 ⇒ 「GH 账号被攻破 → push main → 直接上 prod」这条链对所有人可见。
     # environment 挂 required_reviewers,把它切成需要人工 approve。⚠️ 保护规则配在
@@ -146,16 +152,16 @@ jobs:
           SKIP_GIT_FETCH="$4"
           ACR_REGISTRY="$5"
 
-          # mono SWAS clone path (per ADR-0026 § Cutover; user side prep).
+          # mono ECS clone path (per ADR-0026 § Cutover; user side prep).
           cd /home/admin/no-vain-years-mono
 
           # Refresh compose configs / runbook (in case main moved while build ran).
-          # SWAS → GitHub goes via international link — TLS抖 is common. Retry 3 × 5s
+          # ECS → GitHub goes via international link — TLS抖 is common. Retry 3 × 5s
           # before giving up. Pass skip_git_fetch=true via workflow_dispatch when
           # GFW is being aggressive AND orchestration files didn't change in this
-          # release (image-only fix); the local working tree on SWAS keeps being used.
+          # release (image-only fix); the local working tree on ECS keeps being used.
           if [ "$SKIP_GIT_FETCH" = "true" ]; then
-            echo "::warning::git fetch skipped — using orchestration files currently on SWAS disk"
+            echo "::warning::git fetch skipped — using orchestration files currently on ECS disk"
             # 密文不再来自 git（仓已公开 → secrets.enc.env untracked，per
             # docs/conventions/information-boundary.md）。它常驻主机 /etc/nvy/，与本分支
             # 是否 fetch 无关 —— 原先这里的 `git checkout origin/main -- secrets.enc.env`
@@ -288,7 +294,7 @@ jobs:
           fi
 
           # Final smoke via public HTTPS (validates nginx + Let's Encrypt + reverse-proxy + DNS).
-          # 企业域名 api.shintongtech.com (同 SWAS;无备案,旧域 xiaocaishen.me 已硬切退役).
+          # 企业域名 api.shintongtech.com (同 ECS;无备案,旧域 xiaocaishen.me 已硬切退役).
           curl -fsS --retry 3 https://api.shintongtech.com/healthz/live
 
           # Record this tag as the last verified-healthy baseline — the rollback
@@ -339,7 +345,7 @@ jobs:
             fi
           } || echo "::warning::image GC 失败 —— 不影响本次部署，但磁盘会持续累积，请人工看一眼"
 
-          # Cleanup: remove docker login creds from SWAS user home.
+          # Cleanup: remove docker login creds from ECS user home.
           docker logout "$ACR_REGISTRY" >/dev/null 2>&1 || true
 
           echo "✅ Deploy of $TAG completed."
