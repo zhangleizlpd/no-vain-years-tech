@@ -190,6 +190,18 @@ export const DIMENSION_KEYS = [
 /** 维度键全集 (016 起; 017 executor 注册表/worker named job/tick won 集共用)。 */
 export type DimensionKey = (typeof DIMENSION_KEYS)[number];
 
+/**
+ * 维度键 → `sync_run.sync_type` 的**唯一拼法**（`sync:<key>`）。
+ *
+ * 🚨 **写侧与读侧 MUST 共用本函数**，🚫 别在别处再拼一次字符串。抽它出来是因为读侧曾按裸
+ * 维度键去查 `sync_run` —— 查询恒零行、恒返 `null`，于是消费方**永远走 fail-closed 分支**，
+ * 单测全绿、CI 全绿、生产静默 no-op。
+ * EVIDENCE: 2026-09-05 直查 prod `marketdata.sync_run` 近 30 天 29 个 `sync_type`，全部带
+ * `sync:` 前缀（`sync:hk_option_contract` 9 轮 / `sync:option_contract` 58 轮）；而当时读侧
+ * 查的是 `'hk_option_contract'`，命中 **0 行**。
+ */
+export const dimensionSyncType = (key: DimensionKey): string => `sync:${key}`;
+
 export type SyncMode = 'delta' | 'backfill';
 
 /**
@@ -1132,7 +1144,7 @@ export class DimensionExecutorRegistry {
     input: ExecutorInput,
     origin: Omit<SyncRunOrigin, 'asOf'> = {},
   ): Promise<ExecutorResult> {
-    const syncType = `sync:${key}`;
+    const syncType = dimensionSyncType(key);
     // 🚨 `asOf` 由本方法从 `input.asOf` 填, **不收调用方的第二份** —— 落库的业务日与采集本体
     //   实际用的必须是同一个值, 开第二个口子就会漂 (#202; 同 anchor-driven-sync-gate 那条绊线)。
     const runId = await this.recorder.start(syncType, { ...origin, asOf: input.asOf });

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service.js';
-import type { DimensionKey } from './dimension-executor.js';
+import { dimensionSyncType, type DimensionKey } from './dimension-executor.js';
 import type { OptionChainDiscoveryPort } from './option-chain-discovery.port.js';
 
 /**
@@ -35,8 +35,13 @@ export class DbOptionChainDiscoveryAdapter implements OptionChainDiscoveryPort {
    * 就命中 (k=1); 最坏情形是该维度连续多轮顺延, 扫过那几轮。**不落全表扫**。
    */
   async lastCompleteDiscoveryAt(market: string): Promise<Date | null> {
-    const syncType = CHAIN_DISCOVERY_DIMENSION[market];
-    if (syncType === undefined) return null;
+    const key = CHAIN_DISCOVERY_DIMENSION[market];
+    if (key === undefined) return null;
+    // 🚨 **必须经 `dimensionSyncType` 拼**, 🚫 MUST NOT 拿裸维度键去查 —— `sync_run.sync_type`
+    //    存的是 `sync:<key>`。裸键查出来恒零行 ⇒ 本方法恒返 `null` ⇒ 消费方永远走 fail-closed,
+    //    而那条路径**在测试里长得和「确实没跑过」一模一样** (2026-09-05 实撞: 单测 7 条全绿、
+    //    CI 全绿、合并进 main, 直到直查 prod 才发现该 feature 是个 no-op)。
+    const syncType = dimensionSyncType(key);
     const row = await this.prisma.syncRun.findFirst({
       // 🚨 `skipped: 0` 与 `status: 'success'` **不是同一条判据**: 前者拦「限频顺延, 这一轮
       //    没问全」, 后者拦「有标的取数失败」。只写后者会让一只每晚都被顺延的锚被判成无期权。
