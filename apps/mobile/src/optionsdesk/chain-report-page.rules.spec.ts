@@ -7,7 +7,7 @@
 //       而三个计数还在页脚上，读起来像界面坏了；
 //    ③ 网格读失败把页头一起拖下水 —— IV 分位明明读得到（它是另一条链路的四态）。
 import { describe, expect, it } from 'vitest';
-import type { ChainReportGateCountsResponse } from '@nvy/api-client';
+import type { ChainReportGateCountsResponse, ChainReportResponseState } from '@nvy/api-client';
 
 import { composeChainReport, type ChainReportPageState } from './chain-report-page.rules';
 
@@ -42,7 +42,9 @@ const EMPTY_COUNTS: ChainReportGateCountsResponse = {
 function pageOf(input: {
   isPending?: boolean;
   isError?: boolean;
-  state?: 'available' | 'chain_not_ready' | 'read_failed';
+  // 🚨 **从契约取, 🚫 别手抄值域** —— 手抄的那份在 #361 加值时不会红, 只会让新态的用例
+  //    编译不过 (2026-09-05 实撞)。契约加值时这里自动跟上。
+  state?: ChainReportResponseState;
   spot?: string | null;
   gateCounts?: ChainReportGateCountsResponse;
   noReport?: boolean;
@@ -61,12 +63,13 @@ function pageOf(input: {
   });
 }
 
-describe('055 T017 —— 五种降级态各自可判', () => {
+describe('055 T017 —— 六种降级态各自可判', () => {
   const cases: readonly [string, ChainReportPageState, Parameters<typeof pageOf>[0]][] = [
     ['加载', 'loading', { isPending: true, noReport: true }],
     ['取数失败', 'read_failed', { isError: true, noReport: true }],
     ['服务端说读故障', 'read_failed', { state: 'read_failed' }],
     ['链未就绪', 'chain_not_ready', { state: 'chain_not_ready' }],
+    ['该标的没有挂牌期权', 'no_listed_options', { state: 'no_listed_options' }],
     ['现价缺失', 'no_spot', { spot: null }],
     ['全被门槛挡下', 'all_gated', { gateCounts: ALL_GATED }],
     ['常态', 'ready', {}],
@@ -78,9 +81,9 @@ describe('055 T017 —— 五种降级态各自可判', () => {
     });
   }
 
-  it('六种页态两两不同（没有两个分支塌进同一个字符串）', () => {
+  it('七种页态两两不同（没有两个分支塌进同一个字符串）', () => {
     const states = new Set(cases.map(([, expected]) => expected));
-    expect(states.size).toBe(6);
+    expect(states.size).toBe(7);
   });
 });
 
@@ -106,6 +109,35 @@ describe('🚨 055 T017 —— 「链未就绪」与「全被门槛挡下」可�
 
   it('🚨 链上一条腿都没有 ⇒ **不说**「全被门槛挡下」（那句话会是假的）', () => {
     expect(pageOf({ gateCounts: EMPTY_COUNTS }).page).toBe('ready');
+  });
+});
+
+describe('🚨 #361 —— 「还没采到」与「根本没有挂牌期权」可分辨', () => {
+  const notReady = pageOf({ state: 'chain_not_ready' });
+  const noListed = pageOf({ state: 'no_listed_options' });
+
+  it('🚨 两者不是同一个页态 —— 一个该等、一个该走，合并之后处置说不清', () => {
+    expect(noListed.page).not.toBe(notReady.page);
+  });
+
+  it('🚨 两者文案两两不同（🚫 不许同一句话配两个页态）', () => {
+    expect(noListed.notice?.title).not.toBe(notReady.notice?.title);
+    expect(noListed.notice?.text).not.toBe(notReady.notice?.text);
+  });
+
+  it('🚨 没有挂牌期权那支**不给重试** —— 它是事实不是故障，重试一百次也一样', () => {
+    expect(noListed.notice?.retry).toBe(false);
+  });
+
+  it('同形：都不画网格、都不出「全被门槛挡下」那句 —— 换的是成因不是形态', () => {
+    expect(noListed.grid).toBe(false);
+    expect(noListed.gatedBanner).toBeNull();
+    expect(noListed.header).toBe(notReady.header);
+  });
+
+  it('🚫 文案里不出现「稍后 / 重试 / 正在」这类把终态说回过程态的时间词', () => {
+    const text = `${noListed.notice?.title ?? ''}${noListed.notice?.text ?? ''}`;
+    for (const word of ['稍后', '重试', '正在']) expect(text).not.toContain(word);
   });
 });
 

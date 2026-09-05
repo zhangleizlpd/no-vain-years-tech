@@ -768,6 +768,16 @@ describe('选约区块 —— 四态（区块自降级，046 三块照常）', (
     expect(legBlockState(OK, 'chain_not_ready')).not.toBe(legBlockState(OK, 'read_failed'));
   });
 
+  it('🚨 #361 no_listed_options 逐字透传, 与另外两支两两不同 —— 一个该等、一个该走', () => {
+    expect(legBlockState(OK, 'no_listed_options')).toBe('no_listed_options');
+    expect(legBlockState(OK, 'no_listed_options')).not.toBe(legBlockState(OK, 'chain_not_ready'));
+    expect(legBlockState(OK, 'no_listed_options')).not.toBe(legBlockState(OK, 'read_failed'));
+  });
+
+  it('🚨 请求失败压过一切 —— 就算 server 说没有挂牌期权, 这一次也是**读故障**', () => {
+    expect(legBlockState(FAILED, 'no_listed_options')).toBe('read_failed');
+  });
+
   it('成功且状态齐 → 逐字透传 server 的 state', () => {
     expect(legBlockState(OK, 'available')).toBe('available');
   });

@@ -153,7 +153,10 @@ export interface UseLegTableResult {
    *    只认当前视角那一份的话，切视角那一拍 `intent` 变 `null`、视角退回全腿、又切回来。
    */
   chain: LegTableResponse | null;
-  /** 区块四态（loading / available / chain_not_ready / read_failed）—— 无「整页」这一档。 */
+  /**
+   * 区块五态（loading / available / chain_not_ready / no_listed_options / read_failed）——
+   * 无「整页」这一档。三种「没有表可看」两两不同，判据见 `underlying-detail.rules.ts`。
+   */
   block: LegBlockState;
   /** 当前生效 Tab（手点值优先，意图一变让位给新的默认落位，见 `resolveLegTab`）。 */
   tab: LegPickerTab;

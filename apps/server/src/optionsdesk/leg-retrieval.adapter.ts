@@ -12,6 +12,10 @@ import {
 } from '../marketdata/option-snapshot.port';
 import { MARKET_STATE_PORT, type MarketStatePort } from '../marketdata/market-state.port';
 import {
+  OPTION_CHAIN_DISCOVERY_PORT,
+  type OptionChainDiscoveryPort,
+} from '../marketdata/option-chain-discovery.port';
+import {
   TRADING_CALENDAR_PORT,
   type TradingCalendarPort,
 } from '../marketdata/trading-calendar.port';
@@ -36,6 +40,7 @@ import {
   type DeltaFaceRow,
 } from './leg-delta-surface.rules';
 import type {
+  ChainAbsenceReason,
   LegChainMeta,
   LegChainQuery,
   LegChainRow,
@@ -199,7 +204,64 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     @Optional()
     @Inject(TRADING_CALENDAR_PORT)
     private readonly tradingCalendar: TradingCalendarPort | null = null,
+    // CROSS-CONTEXT-SYNC: 注入 marketdata 的链发现进度端口 (#361, 同上的 port token + interface)。
+    // 只服务 {@link chainAbsenceReason} 一处 —— 分「链还没采到」与「该标的根本没有挂牌期权」。
+    // 🚨 **可空且空 = fail-closed**: 解析不到时恒判 `not_ready`, 即 #361 之前的行为逐字不变。
+    @Optional()
+    @Inject(OPTION_CHAIN_DISCOVERY_PORT)
+    private readonly chainDiscovery: OptionChainDiscoveryPort | null = null,
   ) {}
+
+  /**
+   * 链缺席的成因 (#361)。判据链一句话: **合约计数为 0 ∧ 链发现在建锚之后把工作集问全过至少
+   * 一次** ⇒ 交易所没给这只标的挂期权; 其余一律 `not_ready`。
+   *
+   * 🚨 **合约计数在这里蓄意零过滤** —— 与 {@link loadClosingChain} 的三道过滤
+   * (`PUT` / `isStandard` / 未到期 / 未下架) **故意不同**: 那三道答的是「这张表现在能摆哪些腿」,
+   * 本方法答的是「这只标的**存不存在**挂牌期权」。拿过滤后的计数来判, 一只期权全部到期、
+   * 新一批还没挂出来的票会被判成「永远不会有」—— 把一个时点状态说成永久事实。
+   *
+   * 🚨 **`<=` 不是 `<`**: 建锚与那一轮同刻开始时, 工作集**未必**已含这只锚 (装载与建锚事务无
+   * happens-before 关系) ⇒ 同刻算「没问过」, 落安全侧。
+   *
+   * 复杂度: 3 次点查 (锚 / 标的 / 合约计数) + 1 次端口查询, 且**只在链未就绪时才被调到**。
+   */
+  async chainAbsenceReason(query: LegChainQuery): Promise<ChainAbsenceReason> {
+    const parsed = parseAnchorTicker(query.symbol);
+    if (parsed === null || this.chainDiscovery === null) return 'not_ready';
+
+    // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 同 loadClosingChain
+    // 的寻址方式, 零写、零 @Inject() 对方 use case。本 ctx 自己的 anchor 与它并发发出。
+    // 🚨 注释 MUST 挂在**整条语句**上方而不是数组元素上 —— `check-server-moat` 取的是该调用最近
+    //    的 Statement 祖先, 挂在元素上等于没挂 (2026-09-05 实撞, 四个 schema IT 一起红)。
+    const [anchor, instrument] = await Promise.all([
+      this.prisma.anchor.findUnique({
+        where: { ticker: query.symbol },
+        select: { createdAt: true },
+      }),
+      this.prisma.instrument.findUnique({
+        where: { market_code: { market: parsed.market, code: parsed.code } },
+        select: { id: true },
+      }),
+    ]);
+    // 锚不在 / 标的还没进 universe ⇒ 都还没到「能判有没有期权」那一步。
+    if (anchor === null || instrument === null) return 'not_ready';
+
+    // CROSS-CONTEXT-READ: marketdata.option_contract 只读直查 (catalog Q7-B) —— **零过滤计数**,
+    // 判据见本方法文档。
+    const contracts = await this.prisma.optionContract.count({
+      where: { underlyingInstrumentId: instrument.id },
+    });
+    if (contracts > 0) return 'not_ready';
+
+    const discoveredAt = await this.chainDiscovery.lastCompleteDiscoveryAt(parsed.market);
+    // 🚨 逐毫秒显式比, 🚫 MUST NOT 写成 `discoveredAt <= anchor.createdAt` —— 那个写法在
+    //    右侧不是 Date 时会静默算出 `false`, 于是**掉进 `no_listed_options`**, 即把「判不出来」
+    //    说成「永远不会有」。这里宁可 `.getTime()` 当场抛 (由上层 catch 收成 `read_failed`,
+    //    是个响的失败) 也不静默滑向危险的那一侧。
+    if (discoveredAt === null) return 'not_ready';
+    return discoveredAt.getTime() > anchor.createdAt.getTime() ? 'no_listed_options' : 'not_ready';
+  }
 
   async retrieveCandidates(query: LegRetrievalQuery): Promise<LegRetrievalResult | null> {
     // 068 两段式 dispatch: 实时 ∧ 单意图视角 ∧ 读取口在绑 ⇒ 窄召回; 其余一律收盘档。

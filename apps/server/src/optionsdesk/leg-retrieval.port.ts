@@ -279,6 +279,18 @@ export interface LegChainSnapshot {
   readonly legs: readonly LegChainRow[];
 }
 
+/**
+ * 链缺席的成因 (#361)。**两两互异, 零折叠** —— 同 `COLD_START_OUTCOME` 的立论:
+ * 折叠之后消费方再也分不出「等得到」和「等不到」, 而这两件事的处置完全相反。
+ *
+ * 📌 命名沿业内既有分法: HL7 FHIR 的 `data-absent-reason` 码表把同一条界线划在
+ * `temp-unknown`「有理由预期它将来会有」与 `not-applicable`「这个元素对该主体不存在」之间;
+ * DNS 则是 `NODATA` (名字在, 没这个类型的记录) 与 `NXDOMAIN` (名字压根不存在), 见 RFC 2308。
+ * EVIDENCE: https://hl7.org/fhir/R4/codesystem-data-absent-reason.html ·
+ * https://www.rfc-editor.org/rfc/rfc2308
+ */
+export type ChainAbsenceReason = 'not_ready' | 'no_listed_options';
+
 export interface LegRetrievalPort {
   /**
    * 取该标的当前的候选集。
@@ -306,4 +318,30 @@ export interface LegRetrievalPort {
    * 结果喂进召回就直接返回。
    */
   retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null>;
+
+  /**
+   * 上面两个方法返回 `null` 之后, **那个 `null` 是哪一种** (#361)。
+   *
+   * - `not_ready` —— 会有的, 只是还没到 (采集还没轮到 / 标的没进 instrument / 快照缺标的价);
+   * - `no_listed_options` —— **该标的在交易所根本没有挂牌期权**, 永远不会有。
+   *
+   * 🚨 **为什么必须分开**: 两者对用户是**相反**的两件事 —— 一个该等, 一个该走。合成一个值之后,
+   * 呈现层只能挑一支写文案, 于是对另一支撒谎 (2026-09-05 实撞: 原文案「该标的的链正在补……补完
+   * 这张表就有内容」对 6 个无挂牌期权的锚是**两次假承诺**, 处置见 #362)。这与 `null` 和「空集」
+   * 不许合并是同一条纪律, 只是又下沉了一层。
+   *
+   * 🚨 **蓄意不是布尔** (`hasNoOptions(): boolean`) —— 判据同 `TradingCalendarPort.classify`
+   * 删掉 `isTradingDay` 那条: 布尔必然把「还没判出来」折进某一侧, 而那一侧是谁全看实现心情。
+   * 返值域两两互异, 加第三种成因时编译器把每个消费点逼出来。
+   *
+   * 🚨 **判据 MUST 是「链发现问过这只锚了吗」而不是「合约计数为 0」** —— 后者是 closed-world
+   * assumption: 新建锚在链发现跑之前同样是 0 条。实现取 marketdata 的
+   * `OPTION_CHAIN_DISCOVERY_PORT`, 拿它与本锚的建锚时刻比。
+   * 🚫 **拿不准时 MUST 返 `not_ready`** (fail-closed): 把「还没采到」说成「永远不会有」是让用户
+   * 放弃一只本该等的标的, 比反过来贵。
+   *
+   * 📌 **只在 `null` 之后问**, 不在正常路径上多付一次查询。两次查询之间合约若真的出现了,
+   * 本方法在自己那一刻重判 ⇒ 返 `not_ready`, 落在安全侧, 不构成 TOCTOU 缺陷。
+   */
+  chainAbsenceReason(query: LegChainQuery): Promise<ChainAbsenceReason>;
 }

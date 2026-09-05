@@ -9,6 +9,7 @@ import { RECALL_CANDIDATE_CAP } from '../../src/optionsdesk/leg-recall.rules';
 import { BASIS_BY_TAB, DISPLAY_LIMIT_BY_PERSPECTIVE } from '../../src/optionsdesk/leg-rank.rules';
 import { LEG_TABS } from '../../src/optionsdesk/leg-tab.rules';
 import type {
+  ChainAbsenceReason,
   LegChainQuery,
   LegChainSnapshot,
   LegRetrievalPort,
@@ -139,6 +140,11 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
     // 加任何加工 (它不在本 IT 的验收面内, 加工了会让「换的只是保险丝」这句话不再成立)。
     retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {
       return this.inner.retrieveChain(query);
+    }
+
+    // #361 起 port 多一个「链缺席成因」方法。同上原样透传。
+    chainAbsenceReason(query: LegChainQuery): Promise<ChainAbsenceReason> {
+      return this.inner.chainAbsenceReason(query);
     }
   }
 
@@ -545,6 +551,9 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
       // 选约表走不到这个方法 (它是 055 报表的入口), 但 port 契约要求实现 —— 同样炸, 免得
       // 「哪个方法炸了」变成本分支的隐含前提。
       retrieveChain: () => Promise.reject(new Error('marketdata read blew up')),
+      // #361: 读故障路径**根本走不到成因判定** —— `read_failed` 由抛出决定, use case 在
+      // catch 里就分派完了。这里同样炸, 理由同上一条。
+      chainAbsenceReason: () => Promise.reject(new Error('marketdata read blew up')),
     };
     const view = await new GetLegsUseCase(prisma, exploding, stubTradingCalendar(), {
       marchPhiTier: 'good',

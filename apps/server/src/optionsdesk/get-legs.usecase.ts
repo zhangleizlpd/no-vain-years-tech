@@ -146,8 +146,23 @@ export const LEG_TABLE_STATES = [
   /**
    * 链数据未就绪 —— 该标的还没进 `Instrument` / 还没采到合约或快照 / 快照缺标的价。
    * 与 `read_failed` **蓄意分开**: 前者是事实 (采集还没轮到), 后者是故障。
+   *
+   * 🚨 **本值自 #361 起收窄成「会有的, 只是还没到」这一支** —— 「该标的根本没有挂牌期权」
+   * 已拆去 {@link LEG_TABLE_STATES} 的 `no_listed_options`。两者合用一个值的那段时间里,
+   * 呈现层只能挑一支写文案, 于是对另一支撒谎 (#362 修的正是那句假承诺)。
    */
   'chain_not_ready',
+  /**
+   * **该标的在交易所根本没有挂牌期权** (#361) —— 终态, 非错误, **别等**。
+   *
+   * 🚨 它与 `chain_not_ready` 的差别不是程度而是**方向**: 后者该等, 本值该走。这与
+   * `COLD_START_OUTCOME` 里 `no_option_chain` 和 `backfill_incomplete` 不许折叠是同一条立论,
+   * 也与 HL7 FHIR `data-absent-reason` 把 `temp-unknown` 与 `not-applicable` 分开同形。
+   *
+   * 🚨 **判据不是「合约计数为 0」** —— 那是 closed-world assumption (新建锚在链发现跑之前
+   * 同样是 0)。判据经 `LegRetrievalPort.chainAbsenceReason`, 那里是 canonical。
+   */
+  'no_listed_options',
   /** 跨 ctx 读失败降级 —— 锚派生的那半边照常返回 (照抄 046 的降级纪律)。 */
   'read_failed',
 ] as const;
@@ -606,7 +621,12 @@ export class GetLegsUseCase {
         // 来源推断: 那会让「将来加一种访问方式」静默改变外呼行为。
         realtime,
       });
-      if (retrieval === null) return empty('chain_not_ready');
+      if (retrieval === null) {
+        // #361: 链不在 ⇒ **再问一次「哪一种不在」**。🚨 只在这条已经降级的路径上多付一次查询,
+        //       正常路径零额外成本 (判据与代价的权衡见 `chainAbsenceReason` 的文档)。
+        const reason = await this.retrieval.chainAbsenceReason({ symbol, now, realtime });
+        return empty(reason === 'no_listed_options' ? 'no_listed_options' : 'chain_not_ready');
+      }
       const chain = retrieval.chain;
 
       // 🚫 **MUST NOT 传省略 `now`** —— 默认值会让本端点的注入时钟对新鲜度基准失效 (测试里

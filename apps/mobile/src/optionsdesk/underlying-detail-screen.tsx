@@ -635,9 +635,9 @@ function LegBlockHeader({
 /**
  * 区块四态的显式呈现。**四态没有一个是「隐藏这一块」** —— 零适格腿也照常显示面板
  * （FR-021：空 Tab 可进入、不隐藏不置灰）。
- * 🚨 `chain_not_ready`（表里还没有内容，是事实）与 `read_failed`（读故障）**MUST NOT 合并**。
- * 🚨 前者盖着**两种成因**：「采集还没轮到」与「该标的根本没有挂牌期权」（后者永远不会有
- *    内容）。二者共用一个 state 是已知缺口，跟踪 #361 —— 文案已改成对两支都为真。
+ * 🚨 三种「没有表可看」**MUST NOT 合并**：`chain_not_ready`（会有的，还没采到）/
+ *    `no_listed_options`（交易所根本没挂，永远不会有，#361）/ `read_failed`（读故障）。
+ *    前两者对用户是**相反**的两件事 —— 一个该等、一个该走。
  * 📌 T034 接手扩文案（「说明何时会有」）与数据缺口体系，本槽位结构不变。
  */
 function LegBlockNotice({
@@ -705,6 +705,16 @@ function LegBlockNotice({
     return (
       <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-chain_not_ready">
         <Text className="text-xs text-ink-muted">{LEG_COPY.chainNotReady}</Text>
+      </View>
+    );
+  }
+  // #361: 同属数据缺口体系（虚线 + `surface-sunken`），🚫 MUST NOT 转红标 —— 「这只标的没有
+  //       挂牌期权」是**事实**不是故障，红标会让用户以为是我们坏了。
+  //       testID 独立成一个 ⇒ e2e 能钉住「呈现的是哪一支」，而不是只验文案串。
+  if (state === 'no_listed_options') {
+    return (
+      <View className={GAP_NOTICE_CLASS} testID="optionsdesk-detail-leg-no_listed_options">
+        <Text className="text-xs text-ink-muted">{LEG_COPY.noListedOptions}</Text>
       </View>
     );
   }

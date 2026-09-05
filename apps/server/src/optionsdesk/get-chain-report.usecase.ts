@@ -59,8 +59,20 @@ import {
  * **读端零写**, 且**不推进任何状态**。
  */
 
-/** 屏级状态。三值与选约表同源 (`chain_not_ready` 是事实、`read_failed` 是故障, 蓄意分开)。 */
-export const CHAIN_REPORT_STATES = ['available', 'chain_not_ready', 'read_failed'] as const;
+/**
+ * 屏级状态。**四值与选约表同源**, 逐值对齐 `LEG_TABLE_STATES` (判据与不许折叠的理由都写在
+ * 那边, 此处不复述第二份): `chain_not_ready` 是事实、`no_listed_options` 是终态、
+ * `read_failed` 是故障。
+ *
+ * 🚨 **两屏 MUST 同源** —— 同一只锚在详情屏与报表屏拿到不同的状态, 是「每个数字都对、只是
+ * 不属于同一件事」那类静默的又一种形态。
+ */
+export const CHAIN_REPORT_STATES = [
+  'available',
+  'chain_not_ready',
+  'no_listed_options',
+  'read_failed',
+] as const;
 
 export type ChainReportState = (typeof CHAIN_REPORT_STATES)[number];
 
@@ -222,7 +234,11 @@ export class GetChainReportUseCase {
       // (骨架含被活性挡下的; 格态要分「无合约」与「有腿但太便宜」)。
       // 064 `FR-015`: 实时开关由调用方显式传到底, 本方法原样转发 (纪律与理由同 `get-legs`)。
       const snapshot = await this.retrieval.retrieveChain({ symbol, now, realtime });
-      if (snapshot === null) return empty('chain_not_ready');
+      if (snapshot === null) {
+        // #361: 同 `get-legs` —— 链不在时再问一次「哪一种不在」, 只在降级路径上多付这一次。
+        const reason = await this.retrieval.chainAbsenceReason({ symbol, now, realtime });
+        return empty(reason === 'no_listed_options' ? 'no_listed_options' : 'chain_not_ready');
+      }
       const { chain, legs } = snapshot;
       // 067: W 从同函数域已持有的生效 V 派生 (computeW 单点, FR-002), **零新查询** (plan D2)。
       const context: RecallContext = { spot: chain.spot, w: computeW(detail.anchor.effective.v) };

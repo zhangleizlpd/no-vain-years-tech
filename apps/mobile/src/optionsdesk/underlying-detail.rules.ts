@@ -654,10 +654,14 @@ export function legRowTotal(sections: readonly LegSection[]): number {
 }
 
 /**
- * 选约区块的四态。**没有「整页」这一档**（与 ① 同纪律）：本区块自己降级，046 三块照常渲染。
- * `chain_not_ready`（表里还没有内容，是**事实**）与 `read_failed`（跨 ctx 读故障）**蓄意分开** ——
- * 🚨 前者盖着「采集还没轮到」与「该标的根本没有挂牌期权」两种成因，后者永远不会有内容（#361）。
- * 值域与 server 契约的 `LegTableResponse.state` 逐字对齐，只多一个客户端侧的 `loading`。
+ * 选约区块的五态。**没有「整页」这一档**（与 ① 同纪律）：本区块自己降级，046 三块照常渲染。
+ * 三种「没有表可看」**两两蓄意分开**（#361 起）：
+ * - `chain_not_ready` —— 会有的，只是还没采到（**该等**）；
+ * - `no_listed_options` —— 该标的在交易所根本没有挂牌期权（终态，**该走**）；
+ * - `read_failed` —— 跨 ctx 读故障（可重试）。
+ * 🚨 前两者对用户是**相反**的两件事，合并之后呈现层只能挑一支写文案、于是对另一支撒谎
+ *    （#362 修的正是那句假承诺）。值域与 server 契约的 `LegTableResponse.state` 逐字对齐，
+ *    只多一个客户端侧的 `loading`。
  */
 export type LegBlockState = 'loading' | LegTableResponseState;
 
@@ -665,7 +669,7 @@ export type LegBlockState = 'loading' | LegTableResponseState;
  * 请求成败 × 契约状态 → 区块呈现态。复杂度 O(1)。
  *
  * 🚨 **零适格腿不是一个 state** —— 那是 `available` + 空 `data`（空 Tab MUST 可进入、
- *    面板不隐藏不置灰，FR-021）。判空走 {@link legRowTotal}，别再造第五态。
+ *    面板不隐藏不置灰，FR-021）。判空走 {@link legRowTotal}，别再造一个态。
  */
 export function legBlockState(
   side: SideStatus,
