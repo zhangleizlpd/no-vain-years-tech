@@ -102,6 +102,22 @@ services:
       retries: 5
 
   app:
+    # 🧠 容器内存硬闸 —— 2026-09-05 整机夯死 5h08m 的直接产物。
+    # 事故形态：`sync:option_daily_snapshot` 一轮写 97648 行、进程内存 +294 MB，而彼时整机
+    # 只剩 345 MB 可用（上一个维度 06:00–06:44 刚跑完、尚未回落）⇒ 无 swap，内核只能反复丢
+    # page cache → major page fault → 磁盘 IO 打满 → 操作系统整体夯住，SSH 进不去，靠人工重启。
+    # EVIDENCE: `sar -r`（kbmemused 764084→1064948 KB，kbbuffers 13.7→0.4 MB）+
+    #           `journalctl -b -1` 的 `systemd-resolved: Under memory pressure, flushing caches`。
+    #
+    # 🚨 **本行限的是容器、保的是主机**：不设 ⇒ 容器看得到整机内存，app 一撑爆就是全机失联；
+    #    设了 ⇒ 最坏是 app 自己被 OOM kill + restart，postgres / redis / nginx / SSH 全都还在。
+    #    「app 挂一轮」远好过「整机夯到人工介入」—— 这是本行的全部理由，别为跑得顺手把它拆掉。
+    # 取值依据（2026-09-05 重启后稳态实测）：整机 1612 MB；app 190 + postgres 444 + redis 17 +
+    #    nginx 9 + guest-proxy 5 = 665 MB，加 OS·dockerd ≈ 280 MB。给 app 封顶 640 MB 后仍余
+    #    约 220 MB 供 page cache（事故当时只剩 51 MB）。
+    # ⚠️ **采集轮的内存峰值尚未实测** —— 已知的只有稳态那 190 MB。本值是保守估计，等下一轮
+    #    06:00 采集的曲线出来后校准（连同下面 NODE_OPTIONS 一起，两者必须同步调）。
+    mem_limit: 640m
     # ⏱ 优雅关停宽限期（#824）。默认只有 10s，而本应用关停要等 BullMQ Worker 把 in-flight
     # job 跑完（单个关停点 10s × 单 provider 内串行 2 次 = 20s 最坏，见 apps/server/src/main.ts
     # 的 enableShutdownHooks 注释）—— 用默认值等于「看起来在优雅关停，实际 10s 就被 SIGKILL」。
@@ -134,6 +150,16 @@ services:
     environment:
       # App (per apps/server/src/config/app.config.ts)
       NODE_ENV: production
+      # 🚨 V8 老生代上限 —— 与上面的 `mem_limit` **必须成对**，单独设任何一个都不成立：
+      #   · 只设 mem_limit：Node 20+ 读 cgroup 定默认堆 ≈ 容器内存的一半，且**不逼近上限就不
+      #     积极 GC** ⇒ 它一路涨到被内核 SIGKILL（容器 OOM），JS 侧一个字都留不下。
+      #   · 只设堆上限：非堆（原生 addon / Buffer / 代码页）不受管，整机仍可能被撑爆。
+      # 448 = mem_limit 640m 的 70%，余下约 192 MB 留给非堆。容器内只有 `node dist/main.js`
+      # 单进程（Prisma 引擎也在这一份 RSS 里，2026-09-05 `ps -A` 实测：稳态 190 MB 单进程）。
+      # 这个间距的用途：让**堆**先撞上限抛 `JavaScript heap out of memory`（有堆栈、可定位），
+      # 而不是让内核先 SIGKILL（退出码 137，无任何线索）。
+      # ⚠️ 同 mem_limit：采集轮峰值未实测，下一轮 06:00 曲线出来后两者一起校准。
+      NODE_OPTIONS: --max-old-space-size=448
       PORT: 3000
       LOG_LEVEL: ${LOG_LEVEL:-info}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}

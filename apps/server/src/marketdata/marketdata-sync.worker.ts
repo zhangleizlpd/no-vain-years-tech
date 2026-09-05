@@ -43,6 +43,42 @@ function isColdStartJob(job: Job<MarketdataSyncJobPayload>): job is Job<AnchorCo
 }
 
 /**
+ * 锁续期窗口 (bullmq 默认 30 s → 10 min)。
+ *
+ * 🚨 **不是按 job 时长定的**: 锁由 worker 每 `lockDuration/2` 自动续一次, job 跑多久都不该
+ * 失锁。它要覆盖的是**event loop 被连续堵住的最长时间** —— 续期定时器排在 event loop 上,
+ * 进程一卡, 续期就跟着卡。
+ *
+ * 2026-09-05 那次整机内存耗尽, 进程被磁盘 IO 拖到分钟级无响应, 30 s 默认值当场失锁, bullmq
+ * 判 stalled 后把同一个 job 重投 ⇒ 「内存压力 → 失锁 → 重投 → 又跑一遍 → 更大内存压力」的
+ * 正反馈环。本值与下面的 `maxStalledCount` 是这个环的两道闸, 成对存在。
+ * EVIDENCE: `docker logs` 的 `Missing lock for job …` × 2 (moveToFinished / moveToDelayed);
+ *           `marketdata.sync_run` 里同一 `bull_job_id` 出现两行 (06:44:31 起 / 06:51:53 起)。
+ *
+ * 代价 (已知且接受): 真僵死 (worker 进程没了) 的 job 要等满 10 min 才被 stalled checker 发现。
+ * 恢复慢一轮, 远好过把机器夯到人工重启。
+ */
+const WORKER_LOCK_DURATION_MS = 600_000;
+
+/**
+ * stalled job 允许被救回 `wait` 的次数 (bullmq 默认 1 → 0) = **失锁一次就不再跑第二遍**,
+ * 上面那个正反馈环的另一道闸。
+ *
+ * 📌 bullmq 5.78.0 的真实语义与「僵死不重投」的直觉说法**不同**, 记在这里免得下次误判:
+ * 超过本值时 job **仍会被放回 `wait`**, 只是先在 job hash 上写下 `defa` (deferred failure);
+ * worker 下次取到它, 在**跑 processor 之前**就以 `UnrecoverableError` 直接失败。
+ * ⇒ 「重投一次」发生了、「重跑一次」没有 —— 那一轮的活确实不会被执行第二遍, 而 `failed`
+ * 事件照常发出, 本类 `onJobFailed` 会收敛僵尸 `sync_run` 行并打 ERROR (不是静默丢)。
+ * EVIDENCE: bullmq 5.78.0 源码 —— `scripts/moveStalledJobsToWait-8.js` (`stc` 自增 → 写
+ *           `defa` → 仍走 moveJobToWait); `classes/job.js` (`defa` → `deferredFailure`;
+ *           `shouldRetryJob` 见 UnrecoverableError 恒返 false); `classes/worker.js`
+ *           (取到 job 先查 `getUnrecoverableErrorMessage`, 命中即抛, 不进 processor)。
+ *
+ * 代价 (已知且接受): 被判 stalled 的那一轮不会自动补, 等下一次调度或手动补采。
+ */
+const WORKER_MAX_STALLED_COUNT = 0;
+
+/**
  * 维度 worker (017 T009, ADR-0049 执行层): 裸 `new Worker` 消费 `marketdata-sync` queue,
  * 按 job.name (`sync:<dim>`) 路由 `DimensionExecutorRegistry` per-dim 路径 (自管
  * `sync:<dim>` SyncRun + bullJobId)。失败隔离: 单维度 job 失败只影响自身 attempts,
@@ -93,6 +129,9 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
         new Worker<MarketdataSyncJobPayload>(queueName, (job) => this.process(job, lane), {
           connection: this.connection,
           concurrency: 1,
+          // 内存压力下的 stalled 正反馈环两道闸 —— 理由与实测见两个常量各自的注释。
+          lockDuration: WORKER_LOCK_DURATION_MS,
+          maxStalledCount: WORKER_MAX_STALLED_COUNT,
         }),
       );
       const events = new QueueEvents(queueName, { connection: this.connection });
