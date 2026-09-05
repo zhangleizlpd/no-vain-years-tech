@@ -2,6 +2,18 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.47.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.46.0...server-v0.47.0) (2026-09-05)
+
+
+### Features
+
+* **optionsdesk:** 链缺席拆成两个 state —— 「还没采到」与「交易所根本没挂」不再共用一个值 ([#365](https://github.com/zhangleizlpd/no-vain-years-tech/issues/365)) ([232636f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/232636f421f025f7efdb7baa119769651601471b)), closes [#361](https://github.com/zhangleizlpd/no-vain-years-tech/issues/361)
+
+
+### Bug Fixes
+
+* **marketdata:** 链发现进度端口查错 sync_type —— 少了 `sync:` 前缀, [#365](https://github.com/zhangleizlpd/no-vain-years-tech/issues/365) 在 prod 上是个 no-op ([#367](https://github.com/zhangleizlpd/no-vain-years-tech/issues/367)) ([3ca1e47](https://github.com/zhangleizlpd/no-vain-years-tech/commit/3ca1e47839396ddb848fcf5e8961741da7a88f81))
+
 ## [0.46.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.45.1...server-v0.46.0) (2026-09-05)
 
 
