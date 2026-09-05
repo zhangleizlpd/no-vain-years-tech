@@ -41,7 +41,7 @@ import {
  * 🚫 禁自起 Testcontainers。
  *
  * 📌 分工: 剔→标处置的四臂在 `leg-recall.rules.spec.ts` (070 T001) 已穷举; 本文件管**接线面**:
- * 门控放宽后判决挂在哪些请求上 (收租 ∧ us, 两档一律)、离线成员不变 (golden)、行为闸三臂
+ * 门控放宽后判决挂在哪些请求上 (收租视角, 两档一律; 071 T007 起两市一律)、离线成员不变 (golden)、行为闸三臂
  * (剔→标 / 零外呼 / 零 #12)、回落收盘档点亮、`marchMode` 传导。
  *
  * ## 基线夹具怎么来的 (golden file)
@@ -98,6 +98,22 @@ function stable(value: unknown): string {
     },
     2,
   );
+}
+
+/**
+ * 判决**面**（{@link stable} 剔掉的那半里除 DTE 之外的部分）—— 两市同构夹具下对拍用（臂④）。
+ *
+ * 🚨 **DTE 蓄意不进来**: 两市的「今天」本就差一天（本文件请求时刻 = 2026-08-11 12:00 ET =
+ * 08-12 00:00 HKT），`daysToExpiry` 按市场取参（#263）⇒ hk 每个 DTE 恒比 us 少 1。把它塞进
+ * 对拍等于要求两市共用一个「今天」，那是 ADR-0066 明令禁止的。差 1 由臂④ 单独钉一条。
+ */
+function verdictFace(view: LegTableView): unknown {
+  return view.march!.map((strikeView) => ({
+    strike: strikeView.strike.toString(),
+    verdict: strikeView.verdict,
+    summary: strikeView.summary,
+    auditCategories: strikeView.audits.map((a) => a.category),
+  }));
 }
 
 describe('070 离线档收租阶梯 (Testcontainers PG + Redis, 真 DI 容器)', () => {
@@ -404,13 +420,29 @@ describe('070 离线档收租阶梯 (Testcontainers PG + Redis, 真 DI 容器)',
     }
   });
 
-  it('④ hk 收租离线: march 恒 null + 响应 golden 零 diff (FR-001 排除 / FR-012)', async () => {
+  it('④ hk 收租离线: march 与 us 逐值同形 + 其余字段 golden 零 diff (071 T007 门控放开 / FR-012)', async () => {
     await seedChain();
     await seedHkChain();
     const hk = await view(HK_SYMBOL, 'rent');
-    expect(hk.march).toBeNull();
-    expect(hk.marchMode).toBeNull();
+    expect(hk.march).not.toBeNull();
+    expect(hk.marchMode).toBe('phi');
+
+    // 🚨 **翻面自 2026-09-05**(071 T007, user 裁决三条判据全过): 本臂原文是「hk 收租 march 恒
+    //    null」——那条挡的是「行军参数在港股适不适用」这个当时未判定的问题, 判定完门控里的 market
+    //    维就没有留下的理由了 (判据与射程见 071 spec「行军参数适用性判定」节)。
+    // 🚨 断言取「判决面与 us 逐值相同」而不是「非 null」: 两市夹具**逐字段同构**——
+    //    `seedInstrumentChain` 只换 market / code / currency, `LEGS`(K 与 DTE 与报价) /
+    //    `EOD_SPOT` / 锚 `v` 全同 ⇒ 同一条管道 MUST 给出同一份判决。门控放开却让港股走进另一条
+    //    判据时,「非 null」照样绿, 本条红。
+    const us = await rent();
+    expect(verdictFace(hk)).toEqual(verdictFace(us));
+    // 📌 **DTE 差一天是对的**（见 {@link verdictFace} 注释）: 两市「今天」不同 ⇒ 港股这边恒少 1。
+    //    单独钉住它, 免得下一个人看见 `verdictFace` 不含 DTE 以为那一维没人管。
+    expect(marchOf(hk, '92')!.recommendedDteDays).toBe(marchOf(us, '92')!.recommendedDteDays! - 1);
+
     if (!WRITE_BASELINE) {
+      // 📌 `stable` 蓄意剔掉 `march` / `marchMode` ⇒ 本条比的正是「除新点亮的判决块外, 其余字段
+      //    一个都没动」, 基线夹具因此**无需重写**。
       expect(stable(hk)).toBe(stable(readBaseline().hkRent));
     }
   });

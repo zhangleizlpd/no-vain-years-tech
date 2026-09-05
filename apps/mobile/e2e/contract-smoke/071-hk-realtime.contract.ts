@@ -15,10 +15,10 @@
  *      「路径 → kind 集合」再 `deepEqual`，多一个键 / 少一个键 / 某字段只在港股上恒 `null`
  *      三种漂移一次全拦。其中「键被吞掉」只有真序列化才验得到 —— `JSON.stringify` 会把
  *      `undefined` 整键删掉，而客户端读到 `undefined` 走的是「没接这根线」那条路。
- *   3. **`march` / `marchMode` 是仅有的两处蓄意差异**（069/070 门控 = `收租 ∧ us`，见
- *      `get-legs.usecase.ts` 的 `marchBlock`）：它们**不进对形**，改由 {@link assertMarchGate}
- *      单独钉住，且那是一条**绊线** —— T007 放开港股收租门控那天它第一个红，逼改的人回来把
- *      这一处差异一起翻面（tasks.md T007 已写明「放开时门控改动须有 IT 臂 + 070 臂④ 同步翻面」）。
+ *   3. **`march` / `marchMode` 由 {@link assertMarchGate} 单独钉，不进对形**：071 T007 放开
+ *      门控（2026-09-05）之后两市在这两个字段上**已不再蓄意不同形**，门控 = 收租视角、两市一律；
+ *      豁免留下的理由换成了「判决块的内部形状随三态判决而变」（详见该函数注释）。绊线也随之
+ *      换了方向 —— 现在钉的是「港股**有**判决块」，谁把 `market` 维加回门控当场红。
  *
  * 🚨 **本环境验不到「港股接上了实时档」，如实登记**：mock 档下 `MARKET_STATE_PORT` 是 054 拒绝壳
  *    ⇒ 闸恒 `unknown`，而 `leg-retrieval.adapter.ts` 的 `retrieveRealtimeNarrow` 在**闸判之后
@@ -206,32 +206,39 @@ function assertTableInvariants(
 }
 
 /**
- * `march` / `marchMode` 门控 = `收租 ∧ us`（069 FR / 070 FR-001；实现单点在
- * `get-legs.usecase.ts` 的 `marchBlock`）—— 全仓仅此两个字段在两市上蓄意不同形。
+ * `march` / `marchMode` 门控 = **收租视角**（069 FR / 070 FR-001 / 071 T007；实现单点在
+ * `get-legs.usecase.ts` 的 `marchBlock`）。
  *
- * 🚨 **这是一条绊线**: T007 判定三条判据全过、放开港股收租门控那天, 下面第二组断言第一个红,
- * 逼改的人回来把本处一并翻面（tasks.md T007: 「放开时门控改动须有 IT 臂 + 070 臂④ 同步翻面」）。
- * 🚫 MUST NOT 改成「港股宽松放行」（如只断言键在）—— 那样门控放开与否都绿, 绊线失效。
+ * 🚨 **2026-09-05 翻面**（071 T007，user 裁决三条判据全过）：门控原为 `收租 ∧ us`，`market` 维
+ * 挡的是「行军参数在港股适不适用」这个当时未判定的问题；判定完它就没有留下的理由了（判据与
+ * 射程见 071 spec「行军参数适用性判定」节）。
+ * 📌 **翻面后 {@link isMarchGated} 的豁免仍留着**，理由换了：不再是「两市蓄意不同形」，而是
+ * `march` 的内部形状**随三态判决而变**（`recommendedDteDays` 只在 `recommended` 时是数字、
+ * 其余两态恒 `null`；空候选时整个数组是 `[]` ⇒ 连 `march[]` 那一层路径都不存在）。把它塞进
+ * 逐路径对形，会把「两市链数据不同」报成契约漂移。⇒ 形状与门控都由本函数钉。
+ *
+ * 🚨 **绊线换了方向, 不是撤了**: 现在 hk 那两条断言钉的是「港股**有**判决块」—— 谁把 market 维
+ * 加回门控, 这里第三条当场红。🚫 MUST NOT 改成「两市都只断言键在」: 那样门控怎么改都绿。
  */
 function assertMarchGate(
   us: LegTableResponse,
   hk: LegTableResponse,
   perspective: OptionsdeskControllerLegsPerspective,
 ): void {
-  const usHasMarch = perspective === 'rent';
+  const hasMarch = perspective === 'rent';
   assert.equal(
     us.march === null,
-    !usHasMarch,
-    `us ${perspective} 的 march 门控不符 (收租 ∧ us 有值, 其余恒 null)`,
+    !hasMarch,
+    `us ${perspective} 的 march 门控不符 (收租视角有值, 其余恒 null)`,
   );
   assert.equal(us.marchMode === null, us.march === null, 'us march 与 marchMode MUST 同生共死');
   assert.equal(
-    hk.march,
-    null,
-    `hk ${perspective} 的 march 非 null —— 若这是 T007 放开门控的结果, ` +
-      `请把本函数与 070 臂④、tasks.md 覆盖预检表一并翻面, 🚫 别只把这条断言删掉`,
+    hk.march === null,
+    !hasMarch,
+    `hk ${perspective} 的 march 门控不符 —— 071 T007 起港股与美股走同一道门控 ` +
+      `(收租视角有值, 其余恒 null); 若这是把 market 维加回门控的结果, 请连同 070 臂④ 一起改回`,
   );
-  assert.equal(hk.marchMode, null, 'hk march 与 marchMode MUST 同生共死');
+  assert.equal(hk.marchMode === null, hk.march === null, 'hk march 与 marchMode MUST 同生共死');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

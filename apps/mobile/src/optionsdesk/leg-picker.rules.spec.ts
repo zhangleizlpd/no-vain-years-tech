@@ -119,7 +119,7 @@ function criteria(): PerspectiveCriteriaResponse {
 function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
   return {
     symbol: 'us:PEP',
-    // 069 契约增量: 每 K 行军判决 (070 起门控放宽为收租 ∧ us) —— mock 基线取缺省 null。
+    // 069 契约增量: 每 K 行军判决 (门控 = 收租视角; 071 T007 起两市一律) —— mock 基线取缺省 null。
     march: null,
     // 070 契约增量: 行军模式标示 —— 与 march 同生共死, 基线随之 null。
     marchMode: null,
