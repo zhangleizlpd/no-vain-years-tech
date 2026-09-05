@@ -216,6 +216,14 @@ function useCaseOf(
   return new GetChainReportUseCase(detailStub(detailOver), new FakeLegRetrievalAdapter(chains));
 }
 
+/** #361: 未注册链 **且**该标的在交易所没有挂牌期权 —— 与 `registered = false` 是两条分支。 */
+function useCaseNoListedOptions(): GetChainReportUseCase {
+  return new GetChainReportUseCase(
+    detailStub({}),
+    new FakeLegRetrievalAdapter(new Map(), new Set([SYMBOL])),
+  );
+}
+
 const view = (over: Parameters<typeof detailStub>[0] = {}): Promise<ChainReportView> =>
   useCaseOf(LEGS.map(rowOf), over).execute(SYMBOL, NOW);
 
@@ -456,6 +464,14 @@ describe('get-chain-report.usecase — 链级读数与降级 (FR-031 / FR-033, s
     await expect(useCaseOf(LEGS.map(rowOf), { throws: true }).execute(SYMBOL, NOW)).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it('🚨 #361 该标的没有挂牌期权 ⇒ no_listed_options, **不是** chain_not_ready —— 报表屏与选约表同源', async () => {
+    const report = await useCaseNoListedOptions().execute(SYMBOL, NOW);
+    expect(report.state).toBe('no_listed_options');
+    expect(report.rows).toEqual([]);
+    // 与 `chain_not_ready` 同降级形态 —— 换的是成因不是形态, 页头 IV 照常。
+    expect(report.iv.state).toBe('available');
   });
 
   it('🚨 链未就绪 ⇒ 网格空但页头 IV 照常 —— 两条链路各自独立降级', async () => {

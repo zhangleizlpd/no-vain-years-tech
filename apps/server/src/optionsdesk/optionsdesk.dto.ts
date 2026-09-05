@@ -2094,7 +2094,8 @@ export class LegTableResponse {
 
   @ApiProperty({
     description:
-      '区块状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开',
+      '区块状态。三种「没有表可看」蓄意不折叠: chain_not_ready (会有的, 还没采到) / ' +
+      'no_listed_options (该标的在交易所根本没有挂牌期权, 终态、别等) / read_failed (跨 ctx 读故障)',
     enum: [...LEG_TABLE_STATES],
     example: 'available',
   })
@@ -2820,7 +2821,8 @@ export class ChainReportResponse {
 
   @ApiProperty({
     description:
-      '屏级状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开',
+      '屏级状态。四值与选约表同源, 三种「没有表可看」蓄意不折叠: chain_not_ready (会有的, 还没采到) / ' +
+      'no_listed_options (该标的在交易所根本没有挂牌期权, 终态、别等) / read_failed (跨 ctx 读故障)',
     enum: [...CHAIN_REPORT_STATES],
     example: 'available',
   })

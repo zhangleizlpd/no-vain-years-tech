@@ -29,6 +29,8 @@ const date = (v: string) => new Date(`${v}T00:00:00.000Z`);
 const anchorRow = {
   id: 1n,
   ticker: SYMBOL,
+  // #361: `chainAbsenceReason` 拿它与链发现时刻比 —— 早于下面那轮发现, 于是「问过这只锚了」。
+  createdAt: new Date('2026-07-01T00:00:00Z'),
   v: D('150'),
   confidence: D('8'),
   vManual: null,
@@ -527,6 +529,71 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
 
     expect(view.state).toBe('chain_not_ready');
     expect(view.gateCounts).toEqual({ removedByPremiumFloor: 0, excludedFromIntentTabs: 0 });
+  });
+});
+
+describe('get-legs.usecase — #361 链缺席的两种成因', () => {
+  /** 链发现进度端口替身。`at = null` ⇒ 从没问全过。 */
+  const discovery = (at: string | null) => ({
+    lastCompleteDiscoveryAt: vi.fn(async () => (at === null ? null : new Date(at))),
+  });
+
+  /** 合约表整体为空 —— 触发 `loadClosingChain` 的 `contracts.length === 0` 那条 return null。 */
+  const noContracts = () => ({
+    optionContract: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+    },
+  });
+
+  const useCaseWith = (prisma: ReturnType<typeof makePrisma>, at: string | null) => {
+    const service = prisma as unknown as PrismaService;
+    return new GetLegsUseCase(
+      service,
+      new PrismaLegRetrievalAdapter(service, null, null, null, discovery(at)),
+      tradingCalendar(),
+      { marchPhiTier: 'good', marchMode: 'phi' },
+    );
+  };
+
+  it('🚨 零合约 ∧ 建锚后链发现问全过 ⇒ no_listed_options (交易所没给这只挂期权, 终态)', async () => {
+    const view = await useCaseWith(makePrisma(noContracts()), '2026-08-04T22:00:00Z').execute(
+      SYMBOL,
+      'all',
+      NOW,
+    );
+    expect(view.state).toBe('no_listed_options');
+    expect(view.legs).toEqual([]);
+    // 锚派生的那半边照常返回 —— 与 chain_not_ready 同纪律, 换个成因不换降级形态。
+    expect(view.w.toString()).toBe('120');
+  });
+
+  it('🚨 零合约 ∧ 链发现从没问全过 ⇒ chain_not_ready —— closed-world assumption 的正面反例', async () => {
+    const view = await useCaseWith(makePrisma(noContracts()), null).execute(SYMBOL, 'all', NOW);
+    expect(view.state).toBe('chain_not_ready');
+  });
+
+  it('🚨 零合约 ∧ 链发现那轮**早于**建锚 ⇒ chain_not_ready (那轮的工作集里没有这只锚)', async () => {
+    const view = await useCaseWith(makePrisma(noContracts()), '2026-06-01T22:00:00Z').execute(
+      SYMBOL,
+      'all',
+      NOW,
+    );
+    expect(view.state).toBe('chain_not_ready');
+  });
+
+  it('🚨 标的还没进 instrument ⇒ chain_not_ready, **即便**链发现问全过 —— 还没到能判有没有期权那一步', async () => {
+    const prisma = makePrisma({
+      ...noContracts(),
+      instrument: { findUnique: vi.fn().mockResolvedValue(null) },
+    });
+    const view = await useCaseWith(prisma, '2026-08-04T22:00:00Z').execute(SYMBOL, 'all', NOW);
+    expect(view.state).toBe('chain_not_ready');
+  });
+
+  it('🚨 链发现端口未绑定 ⇒ 恒 chain_not_ready (fail-closed, #361 之前的行为逐字不变)', async () => {
+    const view = await makeUseCase(makePrisma(noContracts())).execute(SYMBOL, 'all', NOW);
+    expect(view.state).toBe('chain_not_ready');
   });
 });
 

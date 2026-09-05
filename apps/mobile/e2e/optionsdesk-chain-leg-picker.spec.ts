@@ -155,7 +155,9 @@ const COPY = {
   snapshotPrefix: '快照 ',
   rowTotal: (n: number) => `共 ${n} 行`,
   chainNotReady:
-    '期权链数据未就绪 —— 新建的锚会自动触发一次补数，无需操作；若该标的在交易所没有挂牌期权，这里会持续为空。',
+    '期权链数据未就绪 —— 该标的的链正在补，新建的锚会自动触发一次补数，无需操作。补完之后这里要么出表，要么明确告诉你这只标的没有挂牌期权。',
+  noListedOptions:
+    '该标的没有挂牌期权 —— 交易所没有为它挂出期权合约，所以这里不会有可选的腿。锚的估值与雷达档位照常可用。',
   empty: '该 Tab 暂无适格腿 —— 面板照常可读',
   disclaimer: '触发 ≠ 开仓 —— 人工终决',
   noNewPositionWarning: '不开新仓 —— 该标的落在不动区或 L4。以下腿数据照常全量呈现，仅供查看。',
@@ -1144,7 +1146,11 @@ test('047 T035 — 未就绪 vs 零适格腿：两帧文案不同、都不是空
   page,
 }) => {
   await installLegMock(page, {
-    anchors: [makeAnchor({ id: '1', ticker: 'us:AOS' }), makeAnchor({ id: '2', ticker: 'us:PEP' })],
+    anchors: [
+      makeAnchor({ id: '1', ticker: 'us:AOS' }),
+      makeAnchor({ id: '2', ticker: 'us:PEP' }),
+      makeAnchor({ id: '3', ticker: 'hk:00291' }),
+    ],
     legs: {
       // 采集还没轮到 —— 是**事实**，不是故障。
       'us:AOS': makeLegTable('us:AOS', [], {
@@ -1155,8 +1161,19 @@ test('047 T035 — 未就绪 vs 零适格腿：两帧文案不同、都不是空
         oiAsOf: null,
         source: null,
       }),
-      // 有当期快照，但这只票一条适格腿都没有 —— `available` + 空集合，**不是第五态**。
+      // 有当期快照，但这只票一条适格腿都没有 —— `available` + 空集合，**不是一个 state**。
       'us:PEP': makeLegTable('us:PEP', []),
+      // #361: 交易所根本没给这只挂期权 —— 与上面「还没轮到」**方向相反**，一个该等一个该走。
+      // 🚨 取真实样本 hk:00291（华润啤酒）：HKEX《The List of Stock Option Classes Available
+      //    for Trading》(2026-09-01, 154 classes) 里按代码与中英名双角度均无它。
+      'hk:00291': makeLegTable('hk:00291', [], {
+        state: 'no_listed_options',
+        asOf: null,
+        asOfFreshnessTier: 'UNAVAILABLE',
+        quoteAsOf: null,
+        oiAsOf: null,
+        source: null,
+      }),
     },
   });
 
@@ -1189,6 +1206,21 @@ test('047 T035 — 未就绪 vs 零适格腿：两帧文案不同、都不是空
     await expect(page.getByTestId('optionsdesk-detail-leg-table-header')).toBeVisible();
     await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(0));
   }
+
+  // ── #361 没有挂牌期权：第三句文案，与「未就绪」两两不同 ────────────────
+  await openDetail(page, 'hk:00291');
+  await expect(page.getByTestId('optionsdesk-detail-leg-no_listed_options')).toHaveText(
+    COPY.noListedOptions,
+  );
+  // 🚨 **另外两支一个都不许同时在** —— 合并回去的表现正是这里多出一个。
+  await expect(page.getByTestId('optionsdesk-detail-leg-chain_not_ready')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-detail-leg-empty')).toHaveCount(0);
+  await expect(page.getByTestId('optionsdesk-detail-leg-read_failed')).toHaveCount(0);
+  // 🚨 终态**不给重试** —— 它是事实不是故障。
+  await expect(page.getByTestId('optionsdesk-detail-leg-retry')).toHaveCount(0);
+  // 面板照常可读（同「未就绪」帧的纪律：换成因不换形态）。
+  await expect(page.getByTestId('optionsdesk-detail-leg-tabs')).toBeVisible();
+  await expect(page.getByTestId('optionsdesk-detail-leg-table-header')).toBeVisible();
 });
 
 // ════════════════════════════════════════════════════════════════════════════

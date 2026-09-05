@@ -25,13 +25,16 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 const COPY = OPTIONSDESK_COPY.chainReport;
 
 /**
- * 屏级页态。**六态**（五种降级 + 常态），两两不同。
+ * 屏级页态。**七态**（六种降级 + 常态），两两不同。
  * 📌 `all_gated` 是降级态里唯一一个**网格照画**的 —— 它描述的是数据形态，不是「读不到」。
+ * 🚨 `chain_not_ready`（会有的，还没采到）与 `no_listed_options`（交易所根本没挂，永远不会有）
+ *    **蓄意分开**（#361）：两者对用户是相反的两件事，一个该等、一个该走。
  */
 export type ChainReportPageState =
   | 'loading'
   | 'read_failed'
   | 'chain_not_ready'
+  | 'no_listed_options'
   | 'no_spot'
   | 'all_gated'
   | 'ready';
@@ -116,6 +119,22 @@ export function composeChainReport(input: ChainReportCompositionInput): ChainRep
       header,
       grid: false,
       notice: notice(COPY.degraded.chainNotReady.title, COPY.degraded.chainNotReady.text, false),
+      gatedBanner: null,
+    };
+  }
+
+  // #361: 与上一支**同形不同因** —— 页态、网格、重试位全部一致，只有文案两两不同。
+  // 🚫 MUST NOT 合并成一支再按 state 挑文案：那等于把「两两不同」降级成一句约定。
+  if (report.state === 'no_listed_options') {
+    return {
+      page: 'no_listed_options',
+      header,
+      grid: false,
+      notice: notice(
+        COPY.degraded.noListedOptions.title,
+        COPY.degraded.noListedOptions.text,
+        false,
+      ),
       gatedBanner: null,
     };
   }

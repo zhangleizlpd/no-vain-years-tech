@@ -38,6 +38,7 @@ import { LixingerEmployeeAdapter } from './lixinger-employee.adapter.js';
 import { LixingerIndustryClassificationAdapter } from './lixinger-industry-classification.adapter.js';
 import { LixingerAnnouncementAdapter } from './lixinger-announcement.adapter.js';
 import { DbTradingCalendarAdapter } from './db-trading-calendar.adapter.js';
+import { DbOptionChainDiscoveryAdapter } from './db-option-chain-discovery.adapter.js';
 import { LixingerCompanyProfileAdapter } from './lixinger-company-profile.adapter.js';
 import { EastmoneySearchAdapter } from './eastmoney-search.adapter.js';
 import { EastmoneyUniverseAdapter } from './eastmoney-universe.adapter.js';
@@ -96,6 +97,7 @@ import {
 } from './instrument-universe.port.js';
 import { COMPANY_PROFILE_PORT, type CompanyProfilePort } from './company-profile.port.js';
 import { TRADING_CALENDAR_PORT } from './trading-calendar.port.js';
+import { OPTION_CHAIN_DISCOVERY_PORT } from './option-chain-discovery.port.js';
 import {
   TRADING_CALENDAR_FORWARD_SOURCE,
   TRADING_CALENDAR_SOURCE,
@@ -679,6 +681,14 @@ function collectionPort<T extends object>(
         cfg.kind === 'mock' ? mock : new DbTradingCalendarAdapter(prisma),
     },
 
+    // ── 链发现进度端口 (#361): 回答「链发现最近一次把工作集问全是什么时候」。──
+    //
+    //    🚨 **蓄意没有 mock 分支**, 判据同 `INSTRUMENT_SEARCH_PORT`: 它不伪造任何数据, 直查
+    //    本 ctx 自己的 `sync_run` 表。零 env 下没跑过维度 ⇒ 表里无行 ⇒ 恒返 `null` ⇒ 调用方
+    //    fail-closed 判「还没采到」—— 那正是零 env 下的**事实**, 不需要一个 Mock 去编。
+    DbOptionChainDiscoveryAdapter,
+    { provide: OPTION_CHAIN_DISCOVERY_PORT, useExisting: DbOptionChainDiscoveryAdapter },
+
     // ── 交易日历源 (044 T008 + sellput-viz Phase 1 #5): kind=live → 按市场路由到各自的
     //    fallback 链; kind=mock → Mock (周一~周五)。TradingCalendarSyncService 的写入源,
     //    与上面 TRADING_CALENDAR_PORT (读表) 解耦。
@@ -793,11 +803,17 @@ function collectionPort<T extends object>(
   // 边变成 `check-server-moat` 扫得见的 `CROSS-CONTEXT-SYNC` 注入点的唯一走法。撞到
   // `marketdata-rules` 的 boundaries lint 红说明接法走偏了 (该注入却写成了 import), 修法是回到
   // 端口, **MUST NOT 动 allowlist**。
+  //
+  // 📌 **第六个口子 (#361)**: `OPTION_CHAIN_DISCOVERY_PORT` —— 选约表要分开「链还没采到」与
+  // 「该标的根本没有挂牌期权」, 而分开这两件事需要的事实 (链发现有没有为这只锚问过 vendor)
+  // 只有本 ctx 知道。开这个口子的替代方案是让 optionsdesk 直查 `sync_run`, 那是把选约表的
+  // 状态语义绑在采集器的运维表 schema 上 (catalog Q7-B 明写直查是「临时」档) ⇒ 走 Q7-D 端口。
   exports: [
     REALTIME_QUOTE_PORT,
     MARKET_STATE_PORT,
     TRADING_CALENDAR_PORT,
     OPTION_SNAPSHOT_READ_PORT,
+    OPTION_CHAIN_DISCOVERY_PORT,
     EnsureLatestEodBarUseCase,
   ],
 })

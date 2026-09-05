@@ -28,7 +28,7 @@ export interface LegTableResponse {
   symbol: string;
   /** 🚨 **本次作答的视角**, 原样回显请求参数 (053 FR-005)。三视角是三次飞行中的请求, 迟到的那一发靠它认领 (FR-008) —— 靠调用点记忆的话, 覆盖错了**照样渲染得出来一张表** */
   perspective: LegTableResponsePerspective;
-  /** 区块状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开 */
+  /** 区块状态。三种「没有表可看」蓄意不折叠: chain_not_ready (会有的, 还没采到) / no_listed_options (该标的在交易所根本没有挂牌期权, 终态、别等) / read_failed (跨 ctx 读故障) */
   state: LegTableResponseState;
   /** 区块级 asOf = 快照归属交易日 (YYYY-MM-DD)。🚨 **实时独载基线下它是「交易所的今天」**: 库内一期快照都没有时 (新锚盘中首访), 屏上的报价列全部来自此刻 ⇒ 归属的是**正在进行的这一场**, 而非上一场收盘。此时 source=realtime, 且 oiAsOf 仍是最近一个已收盘交易日 (两者依旧不同天) */
   asOf: string | null;

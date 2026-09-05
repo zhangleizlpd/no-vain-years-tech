@@ -1,5 +1,6 @@
 import { crossedQuoteDisposalOf, recallCandidates, type RecallContext } from './leg-recall.rules';
 import type {
+  ChainAbsenceReason,
   LegChainMeta,
   LegChainQuery,
   LegChainRow,
@@ -33,7 +34,28 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
    *   🚨 种子 MUST 给全量而非「已合格的那批」—— 否则两道门槛的排除计数恒为 0, 断言变平凡绿。
    *   未登记的标的 ⇒ `null` (链未就绪), 与「链在但候选为空」是两条分支。
    */
-  constructor(private readonly chains: ReadonlyMap<string, FakeLegChain>) {}
+  /**
+   * @param noListedOptions 这些标的的「链未就绪」成因是 **`no_listed_options`** (#361) ——
+   *   即交易所根本没给它挂期权。未列入的标的一律 `not_ready`。
+   *   🚨 **蓄意与 `chains` 分成两个入参而不是在种子里加一个字段**: 本成因只在链**不在**
+   *   `chains` 里时才有意义, 塞进 `FakeLegChain` 会造出「链在、却说它没有挂牌期权」这种
+   *   构造得出来但现实里不存在的组合, 而测试会照样绿。
+   */
+  constructor(
+    private readonly chains: ReadonlyMap<string, FakeLegChain>,
+    private readonly noListedOptions: ReadonlySet<string> = new Set(),
+  ) {}
+
+  /**
+   * 链缺席的成因 (#361)。🚨 **种子里有链就恒 `not_ready`** —— 与真实现同向: 那边一旦合约计数
+   * 非 0 就直接返 `not_ready`, 轮不到问链发现。
+   */
+  chainAbsenceReason(query: LegChainQuery): Promise<ChainAbsenceReason> {
+    if (this.chains.has(query.symbol)) return Promise.resolve('not_ready');
+    return Promise.resolve(
+      this.noListedOptions.has(query.symbol) ? 'no_listed_options' : 'not_ready',
+    );
+  }
 
   /** 整条链 —— 种子原样回放。判据一条不跑, 与 Prisma 实现同形 (那边也只是不喂进召回)。 */
   retrieveChain(query: LegChainQuery): Promise<LegChainSnapshot | null> {

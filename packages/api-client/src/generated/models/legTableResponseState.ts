@@ -7,7 +7,7 @@
  */
 
 /**
- * 区块状态。chain_not_ready (采集还没轮到, 是事实) 与 read_failed (跨 ctx 读故障) 蓄意分开
+ * 区块状态。三种「没有表可看」蓄意不折叠: chain_not_ready (会有的, 还没采到) / no_listed_options (该标的在交易所根本没有挂牌期权, 终态、别等) / read_failed (跨 ctx 读故障)
  */
 export type LegTableResponseState = typeof LegTableResponseState[keyof typeof LegTableResponseState];
 
@@ -15,5 +15,6 @@ export type LegTableResponseState = typeof LegTableResponseState[keyof typeof Le
 export const LegTableResponseState = {
   available: 'available',
   chain_not_ready: 'chain_not_ready',
+  no_listed_options: 'no_listed_options',
   read_failed: 'read_failed',
 } as const;
