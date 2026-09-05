@@ -13,6 +13,7 @@ import {
   assembleSyncFlow,
   assertHardEdgesWithinLane,
   deriveExecutionOrder,
+  NO_SYNC_STAGGER,
   type FlowDimensionInput,
   type SyncDependencyEdge,
 } from './sync-flow-assembler.js';
@@ -4673,7 +4674,12 @@ describe('#210 期权链→快照的失败传播语义 (按 seed 现状装配)',
       opts: {},
       queueName: 'marketdata-sync-futu',
     });
-    const tree = assembleSyncFlow([input(contract), input(snapshot)], LIVE_SEED_EDGES, order);
+    const tree = assembleSyncFlow(
+      [input(contract), input(snapshot)],
+      LIVE_SEED_EDGES,
+      order,
+      NO_SYNC_STAGGER,
+    );
     expect(tree.name).toContain(snapshot); // 快照是 root ⇒ 它等链发现跑完
     const child = tree.children?.[0];
     expect(child?.name).toContain(contract);
@@ -4729,14 +4735,14 @@ describe('#210 期权链→快照的失败传播语义 (按 seed 现状装配)',
         queueName: 'marketdata-sync-futu',
       }),
     );
-    expect(() => assembleSyncFlow(inputs, LIVE_SEED_EDGES, order)).not.toThrow();
+    expect(() => assembleSyncFlow(inputs, LIVE_SEED_EDGES, order, NO_SYNC_STAGGER)).not.toThrow();
 
     // 链是「后继当 parent、前驱当 child」⇒ 最深的 child 最先执行, 递归收上来即执行序。
     const execOrder = (node: FlowJob): string[] => {
       const child = node.children?.[0];
       return child === undefined ? [node.name] : [...execOrder(child), node.name];
     };
-    const exec = execOrder(assembleSyncFlow(inputs, LIVE_SEED_EDGES, order));
+    const exec = execOrder(assembleSyncFlow(inputs, LIVE_SEED_EDGES, order, NO_SYNC_STAGGER));
     const contract = exec.findIndex((n) => n.includes('option_contract'));
     const snapshot = exec.findIndex((n) => n.includes('option_daily_snapshot'));
     expect(contract).toBeGreaterThanOrEqual(0);

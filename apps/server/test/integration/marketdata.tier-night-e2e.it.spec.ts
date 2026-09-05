@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
 import { coldStartUnused } from '../_support/cold-start-stub';
+import { startStaggerPromoter } from '../_support/stagger-promoter';
 import { QueueEvents } from 'bullmq';
 import { PrismaService } from '../../src/security/prisma.service';
 import { MockMarketDataAdapter } from '../../src/marketdata/mock-market-data.adapter';
@@ -138,6 +139,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
   let prisma: PrismaService;
   let lifecycle: QueueRedisLifecycle;
   let queue: MarketdataSyncQueue;
+  let stopStaggerPromoter: (() => void) | undefined;
   let driver: SyncTickDriver;
 
   let stores: Awaited<ReturnType<typeof setupIsolatedStores>>;
@@ -151,6 +153,9 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
     await prisma.$connect();
     lifecycle = new QueueRedisLifecycle(stores.redisUrl);
     queue = new MarketdataSyncQueue(lifecycle.client, CFG);
+    // 075 T005: 采集错开的 delay 在跑的过程中才落到 delayed 集 —— 这里只把它提前, 不碰
+    // 重试 backoff / 预算顺延 (判据见 _support/stagger-promoter.ts)。
+    stopStaggerPromoter = startStaggerPromoter(queue.queue);
     driver = new SyncTickDriver(
       prisma,
       queue,
@@ -162,6 +167,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
   }, 180_000);
 
   afterAll(async () => {
+    stopStaggerPromoter?.();
     await queue?.onModuleDestroy();
     lifecycle?.onApplicationShutdown();
     await prisma?.$disconnect();
