@@ -390,6 +390,9 @@ export function UnderlyingDetailScreen({
                     {/* 🚨 064 档位条：叠在 Tab 行与 12 列表头之间（mockup 帧 ①~⑤）。
                         它与上面那条区块头**各答一个问题**，MUST NOT 合并 —— 详见组件文件头。 */}
                     <LegTierBar
+                      // 🚨 #361：没有挂牌期权的标的整条不渲染 —— 判定在 `legQuoteTierApplies`，
+                      //    🚫 MUST NOT 在这里就地写第二份判据（屏层的判定 vitest 够不到）。
+                      block={legTable.block}
                       priceKind={blockPriceKind}
                       quoteAsOf={legTable.chain?.quoteAsOf ?? null}
                       eodRowCount={eodRowCount}

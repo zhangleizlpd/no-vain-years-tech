@@ -1191,6 +1191,9 @@ test('047 T035 — 未就绪 vs 零适格腿：两帧文案不同、都不是空
   await expect(page.getByTestId('optionsdesk-detail-leg-tabs')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-table-header')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-count')).toHaveText(COPY.rowTotal(0));
+  // 🚨 #361 反例：**这一帧的档位条必须还在** —— 「还没采到」是过程态，「未就绪 / 下拉可重试」
+  //    对它成立，下拉真可能把链取来。下面那帧才是该关的那一格。
+  await expect(page.getByTestId('optionsdesk-detail-leg-tier')).toBeVisible();
 
   // ── 零适格腿：另一句文案，三个 Tab 全部可进入（US3-AS4）────────────────
   await openDetail(page, 'us:PEP');
@@ -1221,6 +1224,12 @@ test('047 T035 — 未就绪 vs 零适格腿：两帧文案不同、都不是空
   // 面板照常可读（同「未就绪」帧的纪律：换成因不换形态）。
   await expect(page.getByTestId('optionsdesk-detail-leg-tabs')).toBeVisible();
   await expect(page.getByTestId('optionsdesk-detail-leg-table-header')).toBeVisible();
+  // 🚨 #361 收尾：档位条**整条不出现**。没有挂牌期权就没有「这一批」报价，它无题可答；
+  //    留着的话它落兜底支渲成「未就绪 · 下拉可重试」，而下拉永远取不来 —— 与 #362 拔掉的
+  //    那句假承诺同病，且就压在上面那句正确文案的正上方，两句话当场打架。
+  await expect(page.getByTestId('optionsdesk-detail-leg-tier')).toHaveCount(0);
+  // 🚫 连带的刷新按钮也不该在（终态不给无效动作）。
+  await expect(page.getByTestId('optionsdesk-detail-leg-tier-refresh')).toHaveCount(0);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
