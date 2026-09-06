@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security advisories
-    url: https://github.com/zhangleizlpd/no-vain-years/security/advisories/new
+    url: https://github.com/zhangleizlpd/no-vain-years-tech/security/advisories/new
     about: 安全漏洞请走 GitHub Security Advisories（不要在 issue 公开）

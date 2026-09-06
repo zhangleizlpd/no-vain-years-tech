@@ -77,7 +77,7 @@ git switch main && git pull --ff-only && git switch -c NNN-slug   # 已存在则
 ### c. 全 task 绿 → 开 PR + auto-merge
 
 1. `git push -u origin NNN-slug`。
-2. `gh pr create --repo zhangleizlpd/no-vain-years`：
+2. `gh pr create --repo <owner/repo>` —— `<owner/repo>` 取自 `git remote get-url origin`，🚫 不从本文抄（见铁律 5）：
    - 🚨 body **必走仓库模板** `.github/pull_request_template.md`（CI 严格 regex 扫部署 gate 3-checkbox，缺/未勾全红——见 `docs/conventions/pr-creation-protocol.md`）。
    - title 走 Conventional Commits（`feat(<scope>): NNN <feature 一句话>`）。
 3. **接 auto-merge**（per git-workflow 默认）：`gh pr merge <num> --repo ... --auto --squash --delete-branch`。
@@ -202,7 +202,7 @@ PR ship（或撞 stop 终止）后给 user：
 2. 🚨 **按上下文关联度分组派单**（≤5 task/组 且 ≤~90 轮预算，先到先切；合并微 task、拆失控大 task），**不 1-task-1-agent**——省固定预载重复税 + 组内复用已读文件（cache_read 是主成本，见 § 1.b）。
 3. 🚨 子 agent 上下文**全新**，只拿 brief，不继承本对话。
 4. 🚨 分支操作前**每次** rev-parse 实证，禁信 snapshot；base 必须最新 main。
-5. 🚨 `gh` 命令**必带** `--repo zhangleizlpd/no-vain-years`。
+5. 🚨 `gh` 命令**必带** `--repo`，取值**从 `git remote get-url origin` 当场实证**（🚫 **MUST NOT 从本文或记忆里抄一个仓名**）。本机同时配着指向旧仓的第二个 remote，而旧仓**未归档、仍可写** ⇒ 抄错**不报错**，只会把 PR 静默开进旧仓（🟢 2026-09-06 实撞：本条原先就写死了那个旧仓名）。
 6. 🚨 auto-merge 启用后**禁止**再 push 新 commit。
 7. 🚨 每 task **各自** atomic commit，**禁** 多 task 合一（组内多 task 也各自 commit——分组省预载，不改 commit 粒度）。
 8. 🚨 单 feature = 单分支 = 单 PR，**不做**跨 PR 接力。
