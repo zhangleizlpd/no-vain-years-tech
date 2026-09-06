@@ -2,9 +2,9 @@
 feature_id: 075-marketdata-sync-memory-footprint
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: not-started
+status: completed
 created_at: '2026-09-05'
-updated_at: '2026-09-05'
+updated_at: '2026-09-06'
 ---
 
 # Tasks: 075-marketdata-sync-memory-footprint（采集轮次内存足迹治本 —— 异常监控增量化 + 链发现与快照错开峰值）
