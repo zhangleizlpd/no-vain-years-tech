@@ -15,10 +15,12 @@ import {
   legQuoteColumnSubs,
   legQuotePhase,
   legQuoteTier,
+  legQuoteTierApplies,
   legRowEodMarked,
   legTierBarClassNames,
 } from './leg-tier-bar.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import type { LegBlockState } from './underlying-detail.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
@@ -418,5 +420,39 @@ describe('🚨 FR-011 收盘档一分为二：正常休市 vs「本该给实时�
       expect(name).not.toContain('quote-');
       expect(name).not.toContain('info');
     }
+  });
+});
+
+/**
+ * 五态各自「该不该出档位条」（`Record` 而非 `Partial<Record>` —— 契约给 `state` 加一格时，
+ * 「新那格要不要出这条」这个问题**必须过本文件**，漏答即编译红。同 `alert-copy` 的穷举纪律）。
+ */
+const APPLIES_BY_BLOCK: Readonly<Record<LegBlockState, boolean>> = {
+  loading: true,
+  available: true,
+  chain_not_ready: true,
+  no_listed_options: false,
+  read_failed: true,
+};
+
+describe('🚨 #361 档位条的适用面 —— 没有挂牌期权就没有「这一批」', () => {
+  it('`no_listed_options` ⇒ 不适用：交易所没挂过合约，就没有任何报价批次可报时点', () => {
+    expect(legQuoteTierApplies('no_listed_options')).toBe(false);
+  });
+
+  it('🚨 反例：另外四态一个都不许被顺手关掉 —— 「未就绪 / 下拉可重试」对它们都成立', () => {
+    // `chain_not_ready` 该等（下拉真可能取来）/ `read_failed` 该重试 / `loading` 走在途态 /
+    // `available` 有真时点 —— 收敛成「都不出」等于把 #365 刚拆开的两支又合回去。
+    for (const block of ['loading', 'available', 'chain_not_ready', 'read_failed'] as const) {
+      expect(legQuoteTierApplies(block)).toBe(true);
+    }
+  });
+
+  it('五态逐个对表，且**只有一格**是 false（多关一格 = 把能重试的路也堵了）', () => {
+    for (const [block, expected] of Object.entries(APPLIES_BY_BLOCK)) {
+      expect(legQuoteTierApplies(block as LegBlockState)).toBe(expected);
+    }
+
+    expect(Object.values(APPLIES_BY_BLOCK).filter((applies) => !applies)).toHaveLength(1);
   });
 });

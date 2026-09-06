@@ -116,6 +116,23 @@ export function legQuotePhase(block: LegBlockState, isRefreshing: boolean): LegQ
   return isRefreshing ? 'refreshing' : 'settled';
 }
 
+/**
+ * 档位条**适不适用于**这个区块态（#361 收尾）。复杂度 O(1)。
+ *
+ * 🚨 `no_listed_options` 是唯一一个「这一批」根本不存在的态 —— 交易所没为它挂过合约，于是
+ *    没有任何报价批次，档位条要答的那个问题（「这一批报价取于何时」）本身不成立。不拦的话它
+ *    落到 {@link legQuoteTier} 的兜底支，渲成「未就绪 · 下拉可重试」，而下拉**永远**取不来 ——
+ *    与 #362 从文案里拔掉的那句假承诺同病：把终态说成过程态，还配一个不会有结果的动作。
+ * 🚫 **MUST NOT 改成给它一句自己的终态文案** —— 紧挨着的区块通知已经说了「该标的没有挂牌
+ *    期权」（`LEG_COPY.noListedOptions`），档位条再说一遍只是把同一句话说两遍。
+ * 📌 **其余四态一个不动**：`chain_not_ready` 该等（下拉真可能取来）、`read_failed` 该重试、
+ *    `loading` 走在途态、`available` 有真时点 —— 「未就绪 / 下拉可重试」对它们都成立，
+ *    顺手收敛才是新 bug。
+ */
+export function legQuoteTierApplies(block: LegBlockState): boolean {
+  return block !== 'no_listed_options';
+}
+
 export interface LegQuoteTierInput {
   /** 区块级档位；契约未到手 ⇒ `null`（**不默认成收盘档**，那是替服务端作答）。 */
   readonly priceKind: LegBlockPriceKind | null;

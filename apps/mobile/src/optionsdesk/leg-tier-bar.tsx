@@ -16,13 +16,28 @@ import { Pressable, Text, View } from 'react-native';
 
 import { Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
-import { legQuoteTier, type LegBlockPriceKind, type LegQuoteTierInput } from './leg-tier-bar.rules';
+import {
+  legQuoteTier,
+  legQuoteTierApplies,
+  type LegBlockPriceKind,
+  type LegQuoteTierInput,
+} from './leg-tier-bar.rules';
+import type { LegBlockState } from './underlying-detail.rules';
 
 const COPY = OPTIONSDESK_COPY.legPicker;
 
 export interface LegTierBarProps extends LegQuoteTierInput {
   /** 区块级档位；契约未到手 ⇒ `null`（落显式「未就绪」，**不默认成收盘档**）。 */
   priceKind: LegBlockPriceKind | null;
+  /**
+   * 区块态（#361 收尾）——「这条档位条该不该存在」的判据，判定在
+   * {@link legQuoteTierApplies}。
+   *
+   * 🚨 **蓄意必填**：给个默认值的话，哪天有新调用方接漏了这根线，它拿到的是「照常渲染」——
+   *    而那正是本片要消灭的那一格（对着一只没有挂牌期权的标的说「下拉可重试」）。
+   *    必填让「忘了接」当场编译红。
+   */
+  block: LegBlockState;
   /**
    * 手动刷新（064 T009）。🚫 **无自动轮询**（spec Assumption）⇒ 推进时点全靠人。
    * 📌 与下拉刷新是**同一个操作的两个入口**：RN Web 的 `RefreshControl` 没有下拉行为，
@@ -33,6 +48,7 @@ export interface LegTierBarProps extends LegQuoteTierInput {
 
 /** 档位条。复杂度 O(1)。 */
 export function LegTierBar({
+  block,
   priceKind,
   quoteAsOf,
   eodRowCount,
@@ -40,6 +56,9 @@ export function LegTierBar({
   phase,
   onRefresh,
 }: LegTierBarProps) {
+  // 🚨 整条不渲染（#361）—— 没有挂牌期权就没有「这一批」，档位条无题可答。同屏先例：
+  //    成员变化条无变化时整条不出现、报表入口未建锚时整行不出现。
+  if (!legQuoteTierApplies(block)) return null;
   const view = legQuoteTier({ priceKind, quoteAsOf, eodRowCount, realtimeDegrade, phase });
   const busy = view.variant === 'busy';
   return (
