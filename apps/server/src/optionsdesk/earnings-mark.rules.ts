@@ -87,7 +87,11 @@ export const EARNINGS_BUFFER_MIN_DAYS = 7;
 export interface EarningsCalendarContext {
   /** canonical `market:code` —— 回显用, **不参与判定** (一个 context 只服务一个标的)。 */
   symbol: string;
-  /** 交易所的今天 (`exchangeCalendarDate('us', now)`, canonical = cross-timezone-date-semantics §3)。 */
+  /**
+   * 交易所的今天 (`exchangeCalendarDate(<该锚所属市场>, now)`, canonical =
+   * cross-timezone-date-semantics §3)。📌 实参**随锚的市场走**, 不是写死 `'us'` —— 实时路径自
+   * 071 FR-004、离线路径自本次修复起两处都取 `parsed.market`。
+   */
   today: string;
   /**
    * 财报日历当前覆盖窗右端 = `today + EARNINGS_FORWARD_HORIZON_DAYS`。
