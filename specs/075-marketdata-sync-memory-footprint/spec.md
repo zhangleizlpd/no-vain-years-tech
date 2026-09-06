@@ -206,6 +206,8 @@ state_branches:
   ③ 单轮写入量爬升到让 US1 之后的剩余增长（当前推断约 219 MB）重新逼近起跑基线 —— 判据是**实测**的下游起跑基线减去实测增长，不是按 +10%/周 外推的估算。
   🚫 **MUST NOT** 拿事故当晚那次 345 MB 的读数去满足 ①：那正是被本次降级判定为过期的那一条。判据要的是**改动后**的观测。
 
+  📦 **重开时有现成夹具，不必从头写**（2026-09-06 归档）：那一轮的三臂真 Redis IT 从未入库，整份留在 `docs/private/plans/2026-09/09-05-075-us2-stagger-redis-it-deferred.ts`（local-only）—— 自起 `RedisContainer` + `FlowProducer` 装一亲一子 + 轮询终态那套夹具**可直接取用**；文件头写明了它为什么在那、臂 ③ 为什么是**故意红**的（断言的正是被证伪的旧前提，原样入仓即恒红），以及拷回源码树的重跑命令。⚠️ 只取夹具：🚫 **MUST NOT 照抄它的被测形状** —— 那正是下面这条形状约束判死的那一个。
+
   🚨 **重开时的形状约束（业内标准形状；MUST NOT 再把 `delay` 挂在依赖边上）**：「**等待」是一个节点，不是依赖边的属性**。`178ce17d` 那版把 `delay` 挂在 parent 的 `opts` 上，等于把「等待」编码成了边的属性 —— 而在 BullMQ 里 parent 的 `delay` 与它的失败传播共用同一条 Lua 路径，两者因此**在实现层面拆不开**（三重证据见 [`plan.md`](./plan.md) §B）。业内三个参照：
   - **Apache Airflow**：在上下游之间插一个 `TimeDeltaSensor` **任务节点**，边仍是普通 `all_success`；上游失败 ⇒ 下游立刻 `upstream_failed`，**不等 sensor**。
   - **AWS Step Functions**：显式 `Wait` **state**（一个状态，不是 task 的属性）；其 best-practice 明确反对「让 task 挂着干等」。
