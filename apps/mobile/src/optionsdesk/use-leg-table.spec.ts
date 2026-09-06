@@ -281,22 +281,29 @@ describe('064 T010 —— 成员变化提示（FR-021）', () => {
   const SUBJECT = 'US:PG';
   const AS_OF = '2026-08-18';
 
-  function table(codes: readonly string[]): Record<string, unknown> {
+  /** 一批腿的口径三元 —— 缺省 = 常态实时档（①–⑥ 六条原样不受影响）。 */
+  interface Basis {
+    readonly state?: string;
+    readonly priceKind?: string;
+    readonly intent?: string;
+  }
+
+  function table(codes: readonly string[], basis: Basis = {}): Record<string, unknown> {
     return {
-      intent: 'rent',
-      state: 'available',
+      intent: basis.intent ?? 'rent',
+      state: basis.state ?? 'available',
       legs: codes.map((code) => ({ code })),
       criteria: null,
       positionBucket: null,
       asOf: AS_OF,
-      priceKind: 'realtime',
+      priceKind: basis.priceKind ?? 'realtime',
       quoteAsOf: '2026-08-19T21:47:32',
     };
   }
 
   /** 三份同批 —— 视角解析不参与，测出来的变化只可能来自差集本身。 */
-  function seed(codes: readonly string[]): void {
-    const one = table(codes);
+  function seed(codes: readonly string[], basis: Basis = {}): void {
+    const one = table(codes, basis);
     h.legsByPerspective = { all: one, build: one, rent: one };
   }
 
@@ -363,5 +370,76 @@ describe('064 T010 —— 成员变化提示（FR-021）', () => {
     act(() => result.current.dismissMembershipChange());
 
     expect(result.current.membershipChange).toBeNull();
+  });
+
+  // ── #140 口径可比性：不同口径的两批**不可比**，差集不是判据结论 ──────────────
+  //
+  // 🚨 下面五条**必须把 `intent` 逐轮钉死**，否则测的不是本条判据：`intent` 一变
+  //    `resolveLegTab` 就让位给新的默认落位（`leg-picker.rules.ts`），`tab` 跟着变、
+  //    `membershipKey` 于是**因为 tab 而不同** —— 断言照样绿，但绿的原因是错的。
+  // 📌 钉死也是**忠于现场**的：2026-08-22 真机那次全程 `intent: 'pending'`（该标的库内零快照
+  //    ⇒ 全腿视角恒 `chain_not_ready`，而 `intent` 取自 `chainSource` 的固定序首项）。
+
+  it('⑦ 档位切换（表非空）⇒ 不报 —— 实时窄召回与离线宽视野是两把尺子，差集不是判据结论', () => {
+    seed(['A', 'B'], { priceKind: 'realtime' });
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'C', 'D'], { priceKind: 'eod_close' });
+    rerender();
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('⑧ 实时独载基线收盘落空 ⇒ 不报 —— 一个报价都没拿到，判据无从评起', () => {
+    seed(['A', 'B', 'C'], { intent: 'pending', priceKind: 'realtime' });
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed([], { intent: 'pending', state: 'chain_not_ready', priceKind: 'eod_close' });
+    rerender();
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('⑨ 读故障空壳 ⇒ 不报 —— 空壳恒发 eod_close，`priceKind` 逐字不变，只有 `state` 分得开', () => {
+    // 🚨 **失败隔离下的偏态现场**（FR-022）：只有当前视角那一份挂了，全腿那份仍在
+    //    ⇒ `intent` 取自全腿 = 'rent' 不变 ⇒ `tab` 不动。这是本条唯一有意义的形态：
+    //    三份一起挂时 `intent` 会转 'pending'、`tab` 让位，差集本就不会算。
+    const good = table(['A', 'B', 'C'], { priceKind: 'eod_close' });
+    h.legsByPerspective = { all: good, build: good, rent: good };
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    h.legsByPerspective = {
+      all: good,
+      build: good,
+      rent: table([], { intent: 'pending', state: 'read_failed', priceKind: 'eod_close' }),
+    };
+    rerender();
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('⑩ 空档期后恢复供数 ⇒ 不报 —— 基准已随空壳换过，不会报出跨越空档期的假增量', () => {
+    seed([], { intent: 'pending', state: 'chain_not_ready', priceKind: 'eod_close' });
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'C'], { intent: 'pending', priceKind: 'realtime' });
+    rerender();
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('⑪ 换线之后**基准是新那批** ⇒ 同口径内的下一轮照常报（FR-021 没被顺手废掉）', () => {
+    seed(['A', 'B'], { priceKind: 'realtime' });
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'C', 'D'], { priceKind: 'eod_close' });
+    rerender();
+    expect(result.current.membershipChange).toBeNull();
+
+    seed(['A', 'B', 'C'], { priceKind: 'eod_close' });
+    rerender();
+
+    // 🚨 判据能分辨「基准换没换」：基准若仍停在换线前的 `A,B`，这里会得出「1 条新进」。
+    expect(result.current.membershipChange).toEqual({ entered: 0, left: 1 });
   });
 });
