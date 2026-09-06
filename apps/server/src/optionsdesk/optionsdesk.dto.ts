@@ -1471,11 +1471,11 @@ export class LegResponse {
 
   @ApiProperty({
     description:
-      '**单笔权利金** = `bid × 合约乘数` (053 FR-032) —— 卖出一张 put 实际收到多少钱。' +
-      '🚨 **服务端算**, 🚫 客户端 MUST NOT 自己乘一次: 合约乘数是**市场规则不是合约属性** ' +
-      '(故也不落库), 服务端已持有那一份 (成交额在用它) ⇒ 客户端再乘就是同一判据两处各算一份, ' +
-      '而两边都乘得出数。📌 口径取 bid 而非 mid/ask —— 与档位判据同一个数 (FR-018)。' +
-      '无 bid → null, MUST NOT 当 0',
+      '**单笔权利金** = `bid × 该合约的股数` (053 FR-032 / 076 FR-012) —— 卖出一张 put 实际收到多少钱。' +
+      '股数是**合约主数据**, 随链发现落库, 港股逐标的不同 (150 / 200 / 400 / 500 / 1000 / 2000 都有); ' +
+      '股数未落库 / 非标合约 ⇒ null。🚨 **服务端算**, 🚫 客户端 MUST NOT 自己乘一次: ' +
+      '客户端手上没有那个数, 拿 100 当市场常量会把港股整列算错 1.5 到 20 倍, 而两边都乘得出数。' +
+      '📌 口径取 bid 而非 mid/ask —— 与档位判据同一个数 (FR-018)。无 bid → null, MUST NOT 当 0',
     type: 'string',
     nullable: true,
     example: '145.00',
@@ -1610,7 +1610,8 @@ export class LegResponse {
 
   @ApiProperty({
     description:
-      '成交额 = Vol × 权利金 × 100。🚨 **口径随 volume 分两档** (064 FR-013): priceKind=realtime ' +
+      '成交额 = Vol × 权利金 × **该合约的股数** (076 FR-012) —— 股数是合约主数据, 港股逐标的不同; ' +
+      '股数未落库 / 非标合约 ⇒ null。🚨 **口径随 volume 分两档** (064 FR-013): priceKind=realtime ' +
       '⇒ 至该时刻的累计成交额; priceKind=eod_close ⇒ 当日全天成交额。📌 成交额高 ≠ 真流动',
     type: 'string',
     nullable: true,
