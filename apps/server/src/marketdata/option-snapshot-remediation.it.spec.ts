@@ -100,6 +100,8 @@ const optionRow = (
   turnover: '161000.00',
   vendorUpdateTime: new Date('2026-08-12T19:59:00Z'),
   greeksComplete: true,
+  // 076: 本文件不判股数 —— null = 「vendor 没给」, 与库值一起构成「无从比对」那一档。
+  contractSize: null,
   ...overrides,
 });
 

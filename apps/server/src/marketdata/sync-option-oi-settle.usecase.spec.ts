@@ -106,6 +106,8 @@ function quoteRow(code: string, extra: Partial<OptionSnapshotRow> = {}): OptionS
     turnover: '283940',
     vendorUpdateTime: new Date(`${SESSION_DATE}T08:00:00Z`),
     greeksComplete: true,
+    // 076: 本文件不判股数 —— null = 「vendor 没给」, 与库值一起构成「无从比对」那一档。
+    contractSize: null,
     ...extra,
   };
 }

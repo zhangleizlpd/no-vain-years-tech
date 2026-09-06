@@ -592,6 +592,8 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       turnover: '123456.78',
       vendorUpdateTime: new Date('2026-08-04T13:00:00.000Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
       ...over,
     };
   }
@@ -632,6 +634,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       turnover: null,
       vendorUpdateTime: new Date('2026-08-11T17:45:00.000Z'),
       greeksComplete: null,
+      contractSize: null,
     };
   }
 

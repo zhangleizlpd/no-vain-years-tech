@@ -370,6 +370,8 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
       turnover: null,
       vendorUpdateTime: null,
       greeksComplete: false,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     };
   }
 
@@ -397,6 +399,7 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
       turnover: null,
       vendorUpdateTime: REALTIME_AS_OF,
       greeksComplete: null,
+      contractSize: null,
     };
   }
 

@@ -436,6 +436,69 @@ describe('066 T01 FutuOptionSnapshotAdapter — 港股 (hk) 接入', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 076 T004 — 每张合约的股数 (`contractSize`): 期权行取 vendor `lot_size`, 正股行恒 null
+// ---------------------------------------------------------------------------
+/**
+ * 本列在快照这条路上是**纯对账、零写源** (FR-008) —— 库里的股数只由链发现写。它要答的问题
+ * 只有一个: 供应方今天说的这张合约多少股, 与库里那个数一样吗。
+ *
+ * 🚨 判别性全在**标的行**: 实取的 00700 里期权行与正股行的 `lot_size` 恰好都是 100
+ * (`option_owner_lot_multiplier = 1`), 「照抄整份响应」与「按行别取」在期权列上产出相同的
+ * 结果 —— 只有标的行分得开 (板手数 100 vs 不适用 null)。港股逐标的不同, 09988 那类
+ * `板手 × 5` 的票上取错行会直接把股数说小 5 倍 (spec 取证 §1)。
+ */
+describe('076 FutuOptionSnapshotAdapter — 每张合约的股数 (只作对账)', () => {
+  it('① 132 张期权行 ⇒ 100; 标的行 ⇒ null (同名字段在那行是**板手数**, FR-003)', async () => {
+    const { batch } = await replayHkSnapshot();
+
+    const options = batch.rows.filter((r) => r.isOption);
+    expect(options).toHaveLength(132);
+    expect(uniq(options.map((r) => r.contractSize))).toEqual([100]);
+  });
+
+  it('② 标的行的 `lot_size` 同为 100 却 MUST 落 null —— 这是「取错行」唯一分得开的地方', async () => {
+    // 先量原始面: 正股行**给了**一个 100 (它是板手数)。照抄的话下一行断言会拿到 100。
+    expect(HK_UNDERLYING_RAW.lot_size).toBe(100);
+
+    const { batch } = await replayHkSnapshot();
+
+    const underlying = batch.rows.find((r) => !r.isOption) as (typeof batch.rows)[number];
+    expect(underlying.code).toBe('HK.00700');
+    expect(underlying.contractSize).toBeNull();
+  });
+
+  it('③ 缺失 / 哨兵 / 非整数 / ≤ 0 一律 null (脏值会被读端直接乘进单笔权利金)', async () => {
+    const dirty = [
+      snapshotRow('US.A'), // 整个字段缺席 (本仓 mock 行本就不带 lot_size)
+      snapshotRow('US.B', { lot_size: 'N/A' }),
+      snapshotRow('US.C', { lot_size: 5.5 }),
+      snapshotRow('US.D', { lot_size: 0 }),
+      snapshotRow('US.E', { lot_size: -100 }),
+      snapshotRow('US.F', { lot_size: '500' }), // 负控制: 数字字符串是合法的, MUST NOT 一起丢
+    ];
+    const { http } = makeShim([...dirty, UNDERLYING_ROW]);
+
+    const { rows } = await makeAdapter(http).getSnapshots({
+      underlyingSymbol: 'us:PEP',
+      contractCodes: dirty.map((r) => r.code),
+    });
+
+    const byCode = new Map(rows.map((r) => [r.code, r.contractSize]));
+    expect([...byCode.entries()]).toEqual([
+      ['US.A', null],
+      ['US.B', null],
+      ['US.C', null],
+      ['US.D', null],
+      ['US.E', null],
+      ['US.F', 500],
+      ['US.PEP', null],
+    ]);
+    // 🚫 脏值只让**这一列**落 null —— 整行照常返回 (丢行 = 那条腿当日快照永久缺席)。
+    expect(rows).toHaveLength(7);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 066 T17 — vendor 时间戳按**行所属市场**解析 (FR-005a, plan §A13)
 // ---------------------------------------------------------------------------
 /**

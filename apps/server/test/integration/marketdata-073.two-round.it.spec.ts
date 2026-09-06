@@ -328,6 +328,8 @@ describe('073 两轮采集 seed + 时刻窗口 (Testcontainers PG migrate deploy
       turnover: '999999',
       vendorUpdateTime: new Date(`${SESSION}T13:39:00Z`),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     };
 
     let dim: ExecutorSyncDimensionRow;

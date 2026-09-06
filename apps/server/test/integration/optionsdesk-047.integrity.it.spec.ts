@@ -126,6 +126,8 @@ describe('047 T023 完整性核对 + 两级补救 (Testcontainers PG, 真判据 
       turnover: '283940',
       vendorUpdateTime: new Date('2026-06-16T20:00:00Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     };
   }
 

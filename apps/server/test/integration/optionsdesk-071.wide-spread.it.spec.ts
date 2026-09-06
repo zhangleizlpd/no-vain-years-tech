@@ -255,6 +255,8 @@ describe('071 宽价差机会支 (Testcontainers PG + Redis, 真 DI 容器)', ()
       turnover: null,
       vendorUpdateTime: new Date('2026-08-11T15:59:55.000Z'),
       greeksComplete: null,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     };
     return (query) => ({
       asOf: REALTIME_AS_OF,
@@ -286,6 +288,7 @@ describe('071 宽价差机会支 (Testcontainers PG + Redis, 真 DI 容器)', ()
               turnover: null,
               vendorUpdateTime: new Date('2026-08-11T15:59:58.000Z'),
               greeksComplete: true,
+              contractSize: null,
             },
           ];
         }),

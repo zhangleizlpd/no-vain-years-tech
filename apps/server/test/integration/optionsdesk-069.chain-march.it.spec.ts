@@ -263,6 +263,8 @@ describe('069 清链与行军选档 (Testcontainers PG + Redis, 真 DI 容器)',
       turnover: null,
       vendorUpdateTime: new Date('2026-08-11T15:59:58.000Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
       ...over,
     };
   }
@@ -290,6 +292,7 @@ describe('069 清链与行军选档 (Testcontainers PG + Redis, 真 DI 容器)',
       turnover: null,
       vendorUpdateTime: new Date('2026-08-11T15:59:55.000Z'),
       greeksComplete: null,
+      contractSize: null,
     };
   }
 
