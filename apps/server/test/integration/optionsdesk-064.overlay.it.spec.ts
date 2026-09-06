@@ -79,6 +79,10 @@ import type { LegChainSnapshot } from '../../src/optionsdesk/leg-retrieval.port'
  * 数 (`excludedFromIntentTabs 1→0` / `matchedCount`、`memberCount 1→2` / 该 tier 桶的
  * `legCount`、`best`、`runnerUp`)。**既有字段的值零改动** —— `SC-005` 要的那个问题在本次仍有
  * 答案。🚫 下次再撞上别照抄这条: 先看 diff 是不是同样只含「本片蓄意语义」的直接派生。
+ *
+ * 📌 **2026-09-06 (#378) 手工补 3 行, 非重生成**: `legs:all` / `legs:build` / `legs:rent` 各在
+ * `source` 后插 `"windowShape": null` —— 契约新增的候选面标识, 收盘档恒 `null`。既有字段的值
+ * 零改动; `chain-report` 不带该字段, 未动。
  */
 
 /** 本批实时报价的**我方采集时刻** (信封 `as_of`) —— 与库内 `quote_as_of` 蓄意不同刻。 */

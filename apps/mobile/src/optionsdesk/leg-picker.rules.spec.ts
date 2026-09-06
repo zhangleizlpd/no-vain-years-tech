@@ -135,6 +135,8 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
     quoteAsOf: '2026-08-04',
     oiAsOf: '2026-08-03',
     source: 'eod',
+    // #378 契约增量: 候选面标识。夹具默认收盘档 ⇒ 无窗 ⇒ null。
+    windowShape: null,
     spot: '145.20',
     w: '136.00',
     zone: 'buy',

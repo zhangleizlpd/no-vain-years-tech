@@ -474,6 +474,9 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'state',
       'symbol',
       'w',
+      // #378：候选面标识（bootstrap / window / null）—— 客户端成员变化比较线的第三个口径分量。
+      //    同 realtimeDegrade：nullable ≠ 可缺席，收盘档也必须以 null 在键集里出现。
+      'windowShape',
       'zone',
     ],
     'legs: 响应键集封闭 —— 无 lastClosedSession 泄漏, 且 by-tab 结构确实不再出现（SC-002）',

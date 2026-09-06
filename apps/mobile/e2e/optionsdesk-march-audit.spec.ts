@@ -312,6 +312,8 @@ function project(perspective: LegPerspective): LegTableResponse {
     quoteAsOf: new Date().toISOString(),
     oiAsOf: SESSION_DAY,
     source: 'eod',
+    // #378 契约增量: 候选面标识。
+    windowShape: 'window',
     spot: '82.40',
     w: '80.00',
     zone: 'buy',

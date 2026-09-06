@@ -1099,6 +1099,7 @@ function emptyLegTable(): LegTableView {
     oiAsOf: null,
     lastClosedSession: null,
     source: null,
+    windowShape: null,
     spot: null,
     w: new Prisma.Decimal('40'),
     zone: null,

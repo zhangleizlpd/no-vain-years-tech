@@ -35,6 +35,7 @@ const CHAIN: LegChainMeta = {
   spot: SPOT,
   priceKind: 'eod_close',
   realtimeDegrade: null,
+  windowShape: null,
 };
 
 interface Fixture {

@@ -574,6 +574,8 @@ function projectTable(
     realtimeDegrade: null,
     oiAsOf: TODAY,
     source: 'eod',
+    // #378 契约增量: 候选面标识。
+    windowShape: null,
     spot: '132.40',
     w: '128.00',
     zone: 'buy',

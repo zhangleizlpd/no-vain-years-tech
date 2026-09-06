@@ -200,6 +200,7 @@ export * from './legTableResponsePriceKind';
 export * from './legTableResponseRealtimeDegrade';
 export * from './legTableResponseRentDepth';
 export * from './legTableResponseState';
+export * from './legTableResponseWindowShape';
 export * from './legTableResponseZone';
 export * from './livenessFloorResponse';
 export * from './marchAuditEvidenceResponse';

@@ -582,6 +582,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       quoteAsOf,
       oiAsOf,
       source,
+      // #378: 候选面标识如实上报 —— 与上面 window-size 日志的 `shape=` 是同一个值, 客户端拿它
+      // 判「相邻两批可比吗」。🚫 MUST NOT 由 `source` 推 (整面零 Δ 时二者分岔, 见 port 注)。
+      windowShape: surface.kind,
       spot,
       priceKind: 'realtime',
       realtimeDegrade: null,
@@ -782,6 +785,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
       quoteAsOf: newest.quoteAsOf,
       oiAsOf: newest.oiAsOf,
       source: newest.source,
+      // 收盘档无窗 (离线宽视野, 段内全量) ⇒ 恒 `null` (#378)。
+      windowShape: null,
       spot,
       priceKind: 'eod_close',
       // 064 T007a: 库内读出来的那一份**不是降级** —— 降级标只由本方法尾部的 overlay 按「本该
