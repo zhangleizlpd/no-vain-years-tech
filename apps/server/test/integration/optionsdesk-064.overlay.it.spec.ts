@@ -362,6 +362,8 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
           optionType: 'PUT',
           isStandard: true,
           expirationCycle: 'WEEK',
+          // 076: 美股标准合约的实测股数 (spec「取证」§2 PoC-A) ⇒ 本文件的 golden 基线逐值不变。
+          contractSize: 100,
         },
         select: { id: true },
       });

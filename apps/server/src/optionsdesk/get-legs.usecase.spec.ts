@@ -124,6 +124,9 @@ function contractsOf(legs: LegFixture[]) {
     expiryDate: date(leg.expiry),
     strikePrice: D(leg.strike),
     expirationCycle: MONTHLY_EXPIRIES.has(leg.expiry) ? 'MONTH' : 'WEEK',
+    // 076: 一张合约多少股。本文件是美股链 (`us:PEP`), 供应方给标准美股合约实测恒 100
+    // (EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§2 PoC-A) ⇒ 两个派生列逐值不动。
+    contractSize: 100,
   }));
 }
 

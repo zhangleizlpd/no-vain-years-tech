@@ -123,6 +123,17 @@ export interface LegChainRow extends RecallLegInput {
    */
   readonly expirationCycle: string | null;
   /**
+   * 076 一张合约对应的正股股数 (`marketdata.option_contract.contract_size`) —— 单笔权利金与
+   * 成交额两个派生值的乘数。**合约主数据, 随腿走**, 与报价无关。
+   *
+   * 🚨 `null` = 「不知道这张合约多少股」, 有三种来路: 非标 (调整后) 合约恒 `null`、标准合约但
+   * 供应方本轮给的值缺失 / 非正整数、该行还没被任何一轮链发现覆盖到 (首轮回填前)。
+   * 🚫 **消费方 MUST NOT 回落 100 或任何常量** (FR-009): 港股每张合约的股数逐标的不同
+   * (EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§1, 22 只有链港股锚里 21 只不是
+   * 100), 回落出来的是一个看起来正常的错数 —— 两个派生值一起显式为 `null` 才看得出来。
+   */
+  readonly contractSize: number | null;
+  /**
    * 本行数值的**时间口径** (064 `FR-009`), 复用 marketdata 既有 {@link PriceKind}
    * (`'eod_close' | 'realtime'`)。
    *

@@ -105,6 +105,11 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
   const SYMBOL = 'hk:TCX';
   const UNDERLYING_CODE = 'HK.TCX';
   const EOD_SPOT = '100.0000';
+  /**
+   * 076 本夹具链上每张合约的正股股数。取 `500` 而非 `100` 是刻意的 —— 港股每张合约的股数逐标的
+   * 不同, 用 100 会让「股数没被带出来」与「带出来了」在断言上长得一样。
+   */
+  const HK_CONTRACT_SIZE = 500;
 
   const day = (iso: string): Date => new Date(`${iso}T00:00:00Z`);
 
@@ -292,6 +297,9 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
           optionType: 'PUT',
           isStandard: true,
           expirationCycle: 'MONTH',
+          // 076: 一张合约的正股股数。取 500 是港股实测分布里最常见的一档 (7/22 只锚)
+          // —— EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§1。
+          contractSize: HK_CONTRACT_SIZE,
         },
         select: { id: true },
       });
@@ -568,6 +576,27 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     for (const c of result?.candidates ?? []) {
       expect(c.leg.priceKind).toBe('realtime');
       expect(c.leg.bid?.toString()).toBe('2.4');
+    }
+  });
+
+  // ── 076 实时窄路径带出合约股数 (076 FR-011; state_branch 8) ─────────────────
+
+  it('🚨 076 实时窄路径的 answered 行**自动携带**合约股数 —— 骨架行展开, 零额外改写点', async () => {
+    await seedChain();
+    readPort.respond = realtimeBatch();
+
+    const result = await retrieve(true);
+
+    // 前置: 确实走的是实时那条路 (回落收盘档时本臂验的就不是窄路径了)。
+    expect(result?.chain.priceKind).toBe('realtime');
+    expect(result?.candidates.length ?? 0).toBeGreaterThan(0);
+    // 🚨 钉的是**结构论断** (plan §D5): `answered` 行由骨架行 `{ ...leg, … }` 展开, 于是合约主
+    //    数据这一类字段无需在实时分支再列一遍。本臂红 = 这个结构假设不成立 (有人把展开换成了
+    //    逐字段列举), 那时该改的是那一处, 不是骨架。
+    for (const c of result?.candidates ?? []) {
+      expect([c.leg.code, c.leg.contractSize]).toEqual([c.leg.code, HK_CONTRACT_SIZE]);
+      // 判别性: 实时分支确实改写过这一行 (bid 取本批 2.40 ≠ 库内收盘 1.60), 股数却原样穿过。
+      expect(c.leg.priceKind).toBe('realtime');
     }
   });
 

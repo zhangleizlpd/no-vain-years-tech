@@ -177,6 +177,8 @@ function rowOf(fixture: Fixture): LegChainRow {
     volume: fixture.volume,
     greeksComplete: true,
     priceKind: 'eod_close',
+    // 076: 本片 (链体检) 不消费股数, 给一个美股标准合约的实测值 (100) 占位即可。
+    contractSize: 100,
   };
 }
 
