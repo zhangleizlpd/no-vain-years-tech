@@ -85,12 +85,18 @@ describe('047 optionsdesk M2b schema expand (Testcontainers PG migrate deploy)',
     ).toEqual(['position_bucket_manual:YES:null', 'position_bucket_set_at:YES:null']);
   });
 
-  it('🚫 合约表**无「是否已到期」列**, 也无合约乘数列 (FR-028a / FR-028 反向断言)', async () => {
-    // expiry_date 本身就是权威判据, 再存一份布尔即双写必 drift; 乘数则表达不了非标合约的
-    // 「整股 + 零碎股现金找零 + 特别现金分配」混合物。两者都是**加了也不会红**的列 ⇒ 这里
-    // 钉死整张表的列集, 让任何多出来的列当场撞红 (比 NOT LIKE 之类的模糊断言拦得住更多形态)。
+  it('🚫 合约表**无「是否已到期」列**; contract_size 在册 (076 FR-013 supersede FR-028)', async () => {
+    // expiry_date 本身就是权威判据, 再存一份布尔即双写必 drift —— 「是否已到期」这一半的反向
+    // 断言原样保留。它是**加了也不会红**的列 ⇒ 这里钉死整张表的列集, 让任何多出来的列当场撞红
+    // (比 NOT LIKE 之类的模糊断言拦得住更多形态)。
+    // 📌 2026-09 本臂被翻: contract_size 是**正当**新列 —— 047 FR-028「MUST NOT 存合约乘数」被
+    //    076 FR-013 supersede 掉「一律不存」这半: **标准**合约存供应方 lot_size (港股每张合约的
+    //    正股股数逐标的不同 150–2000, 读端按 100 常量算 ⇒ 22 只有链港股锚里 21 只静默错数);
+    //    **非标仍恒 null** —— 非标交割的是「整股 + 零碎股现金找零 + 特别现金分配」混合物, 一个
+    //    乘数表达不了, 那半禁令原样成立 (供应方对非标照报 100, 采了就是把错数当真值)。
+    //    (EVIDENCE: specs/076-option-contract-size/spec.md 「取证」§1 三式互证 22/22 + §2 PoC-A。)
     // 📌 withdrawn_at 是**正当**新列 (软下架 vendor 已删的码, #334 后续): vendor 挂牌面的可变态,
-    //    不是「是否已到期」那种 expiry_date 的冗余双写。列语义见 schema 上的注释。
+    //    不是「是否已到期」那种 expiry_date 的冗余双写。两列语义均见 schema 上的注释。
     const cols = await prisma.$queryRawUnsafe<{ column_name: string }[]>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'marketdata' AND table_name = 'option_contract'
@@ -98,6 +104,7 @@ describe('047 optionsdesk M2b schema expand (Testcontainers PG migrate deploy)',
     );
     expect(cols.map((c) => c.column_name)).toEqual([
       'code',
+      'contract_size',
       'created_at',
       'expiration_cycle',
       'expiry_date',

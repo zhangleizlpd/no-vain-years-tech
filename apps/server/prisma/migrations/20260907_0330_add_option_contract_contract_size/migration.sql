@@ -1,0 +1,38 @@
+-- option_contract 加合约股数 contract_size —— expand-only (加一列 nullable, 无回填, 可回滚)。
+-- 单 PR 合规 (ADR-0035 + migration-rules.md §2: 非破坏性 expand)。
+--
+-- ══ 病根: 读端把「一张合约 = 100 股」当市场常量, 港股 21/22 只锚静默错数 ═══════════════
+-- 选约表的「单笔权利金」= 买价 × 合约股数, 「成交额」= 成交量 × 买价 × 合约股数。这个乘数此前
+-- 是代码里的美股常量 100 (leg-derive.rules.ts US_OPTION_CONTRACT_MULTIPLIER), 而**港股每张合约
+-- 的正股股数逐标的不同**: 2026-09-06 直查 prod 的 28 只港股锚, 有期权链的 22 只里只有 00700 是
+-- 100 股, 其余 21 只在 150 到 2000 股之间 ⇒ 屏上的单笔权利金偏小 1.5 到 20 倍, 且每一行都同样
+-- 错, 没有任何一处会红。
+--   (EVIDENCE: specs/076-option-contract-size/spec.md 「取证」§1 —— 合约行 lot_size = 正股行
+--   lot_size × option_owner_lot_multiplier = option_contract_nominal_value ÷ 正股 last_price
+--   三式互证 22/22 零不一致, 并与交易所圈告 EQD/08/26 附表逐只核对一致。)
+--
+-- ══ 语义 ═══════════════════════════════════════════════════════════════════════════════
+-- 非 null = 一张**标准**合约对应的正股股数 (供应方 lot_size; 港股 150–2000 逐标的不同, 美股实测
+--           恒 100)。
+-- null    = ① 非标合约 (调整后合约) —— 恒 null, 🚫 MUST NOT 采信供应方给非标的数: 实测美股非标
+--              APTV1 照报 100 (EVIDENCE: spec 「取证」§2 PoC-A), 与 OCC 调整后交割物「整股 + 零碎
+--              股现金找零 + 特别现金分配」不符, 采了就是把错数当真值;
+--           ② 标准合约但供应方本轮给的值缺失 / 是哨兵串 / 非正整数 —— 记空 + 写日志, 本行其余
+--              字段照常落库 (采集不因一列缺值丢整行);
+--           ③ 尚未被任何一轮链发现覆盖到的存量行 (见下)。
+-- 读端 null ⇒ 单笔权利金 / 成交额两个数都是显式空, 🚫 MUST NOT 回落 100 或任何常量 (076 Q2:
+--   窗口只有一轮采集, 兜底 100 就是把错数再显示一天, 且 IT 抓不到「为什么不是 null」)。
+--
+-- ══ 🚨 为什么本 migration 不回填 ═══════════════════════════════════════════════════════
+-- 值只有供应方有, migration 打不了 vendor ⇒ 这里无论如何回填不出真值, 填 100 就是把「美股常量」
+-- 这个病根搬进 DDL。回填由链发现的对账步自然完成: 链发现是纯 insert (createMany skipDuplicates,
+-- 幂等靠唯一键挡重), 新合约首次入库即带值; 存量未到期行由 sync-option-contract.usecase.ts 的
+-- reconcileListingState 第三步在**整轮 gap.ok** 时按 code 更新 (与软下架对账同一道闸 —— 一次链
+-- 抖动不许把整票写成空), 部署后第一轮成功链发现 (港股主轮 16:20 HKT / 美股夜轮) 即全量回填。
+-- 📌 已到期合约**永久为空, 不回填** (076 Q1 裁决): 读端只取未到期合约, 历史行不进选约表; 且回填
+--    要打供应方, 而供应方对已到期码未必认。对账步谓词 expiry_date >= 业务日天然排除。
+--
+-- 📌 不新建索引: 本列从不进 WHERE / ORDER BY —— 写侧走既有 uk_option_contract_market_code (按 code
+--    更新), 读侧是「某标的 + 到期日区间」取回来的小结果集上的一个投影列
+--    (ix_option_contract_underlying_expiry 已覆盖)。为投影列建索引是纯负收益 (每次写多维护一棵树)。
+ALTER TABLE "marketdata"."option_contract" ADD COLUMN "contract_size" INTEGER;

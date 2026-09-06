@@ -1099,10 +1099,13 @@ model CalendarCoverage {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 期权合约静态属性 (FR-028): 链发现维度落的一行 = 一个合约。唯一 (market, code)。
-// 🚫 **MUST NOT 存合约乘数 lot_size** (FR-028 / p3b D5): 非标合约 (调整后合约) 交割的是
-//   「整股 + 零碎股现金找零 + 特别现金分配」混合物, 不是一个乘数能表达的 —— 换个乘数并不能
-//   让年化 / 有效成本变正确。落 is_standard 一个布尔即可, 排除只发生在**选约层**, 采集端
-//   照常全采落库 (证据不可回补, FR-008 / FR-033)。
+// 🚫 **非标合约 MUST NOT 存合约乘数 lot_size** (FR-028 / p3b D5, 理由原文保留): 非标合约
+//   (调整后合约) 交割的是「整股 + 零碎股现金找零 + 特别现金分配」混合物, 不是一个乘数能表达
+//   的 —— 换个乘数并不能让年化 / 有效成本变正确。落 is_standard 一个布尔即可, 排除只发生在
+//   **选约层**, 采集端照常全采落库 (证据不可回补, FR-008 / FR-033)。
+// 📌 2026-09: **标准合约 MUST 存 contract_size** —— 076 FR-013 supersede 047 FR-028 的「一律不存」
+//   这半 (非标不存那半仍成立)。港股每张合约的正股股数逐标的不同 (150–2000), 读端按 100 常量算
+//   单笔权利金 ⇒ 22 只有链港股锚里 21 只静默错数。列语义见下方 contract_size。
 // 🚫 **MUST NOT 加「是否已到期」状态列** (FR-028a): expiry_date 本身就是权威判据, 再存一份
 //   布尔即双写必 drift。已到期合约**永久保留** (快照行指向它, M4 归因要回看已了结的腿)。
 //   ⚠️ 两处过滤判据故意不同, 别统一: 快照采集工作集 = `expiry_date >= 当前交易日`
@@ -1128,6 +1131,16 @@ model OptionContract {
   expirationCycle        String?  @map("expiration_cycle") @db.VarChar(16)
   settlementMode         String?  @map("settlement_mode") @db.VarChar(16)
   isStandard             Boolean  @map("is_standard")
+  // 一张标准合约对应的正股股数 = 供应方 lot_size (港股逐标的不同 150–2000, 美股实测恒 100)。
+  //   (EVIDENCE: specs/076-option-contract-size/spec.md 「取证」§1 —— 22 只有链港股锚三式互证
+  //   22/22 零不一致, 与交易所圈告 EQD/08/26 附表逐只核对一致; §2 PoC-A 美股标准 PEP = 100。)
+  // 🚫 **非标合约恒 null** —— 供应方对非标照报 100 (EVIDENCE: 同上 §2 PoC-A 实测非标 APTV1 报
+  //   lot_size 100 / option_contract_multiplier 100), 与 OCC 调整后交割物「整股 + 零碎股现金找零
+  //   + 特别现金分配」不符 ⇒ 采了就是把错数当真值。
+  // 📌 **已到期合约不回填** (076 Q1 裁决): 读端只取未到期合约, 历史行不进选约表; 回填要打供应方,
+  //   而供应方对已到期码未必认。写手只有链发现一处 (insert 带值 + reconcileListingState 对账步
+  //   回填 / 更新, 谓词 expiry_date >= 业务日天然排除已到期行); 快照轮只比对不写。
+  contractSize           Int?     @map("contract_size")
   // vendor 已不再挂牌本合约的软下架戳 (null = 仍挂牌, 正常采)。链发现每轮在**成功**取到该标的
   // 全量到期日阶梯后对账: DB 里 expiry ≥ 当日、但已不在 vendor 当前阶梯里的合约置本列; 阶梯里
   // 重新出现则清回 null (自愈, 见 sync-option-contract.usecase.ts reconcileListingState)。

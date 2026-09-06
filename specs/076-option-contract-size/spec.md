@@ -5,6 +5,8 @@ owners: ['@zhangleizlpd']
 status: draft
 created_at: '2026-09-06'
 updated_at: '2026-09-06'
+# ADR-0035 §4 可选字段：本片的 expand-only migration 反查锚。
+migration_refs: ['20260907_0330_add_option_contract_contract_size']
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
