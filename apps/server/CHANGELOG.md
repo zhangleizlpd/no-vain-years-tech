@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.48.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.47.0...server-v0.48.0) (2026-09-06)
+
+
+### Features
+
+* **marketdata:** 075 采集轮次内存足迹治本 —— 异常监控改增量累加器, 常驻由 O(n) 降到 O(1) ([#368](https://github.com/zhangleizlpd/no-vain-years-tech/issues/368)) ([0fd5055](https://github.com/zhangleizlpd/no-vain-years-tech/commit/0fd50552b2848301f05950d8f4b461869d178a6f))
+
 ## [0.47.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.46.0...server-v0.47.0) (2026-09-05)
 
 
