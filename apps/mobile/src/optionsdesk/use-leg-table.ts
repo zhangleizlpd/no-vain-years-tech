@@ -332,9 +332,29 @@ export function useLegTable(symbol: string): UseLegTableResult {
   const sections = useMemo(() => buildLegSections(legs), [legs]);
 
   // ── 064 FR-021 成员变化（差集只在客户端算，plan §D9）─────────────────────────
-  // 🚨 **比的是「同一个视角 + 同一份条件」的相邻两批** —— 视角 / 条件一变就是另一条比较线，
-  //    此时只换基准、不报变化（那时成员变了是用户自己动的手）。
-  const membershipKey = `${tab}::${JSON.stringify(criteriaByPerspective[tab]?.params ?? null)}`;
+  // 🚨 **比的是「同一个视角 + 同一份条件 + 同一个口径」的相邻两批** —— 三者任一变就是另一条
+  //    比较线，此时只换基准、不报变化。视角 / 条件变了是用户自己动的手；**口径变了是尺子换了**，
+  //    而「N 条已不满足」这句话的前提是本轮真按同一把尺子评过判据（见 `membershipLeft` 的注）。
+  //    前提不成立时它不是提示，是一句假话 —— 且规模是整表（#140，2026-08-22 真机 80 条）。
+  //
+  // 🚨 **口径 = `state` + `priceKind`，两个都要、缺一不可**（#140）—— 它们各挡各的一跳：
+  //    · `priceKind` 挡**档位切换**（实时窄召回 ↔ 离线宽视野）：两条路候选面不同、价格不同，
+  //      但 `state` 双方都是 `available`、**表都是满的** ⇒ 只有它分得开；
+  //    · `state` 挡**有表 → 空壳**：空壳恒发 `priceKind: 'eod_close'`（server 那侧写死，理由是
+  //      「一个实时值都没取到 ⇒ MUST NOT 自称实时」）⇒ 离线正常档 → `read_failed` 空壳这一跳
+  //      在 `priceKind` 上**逐字不变**，只有它分得开。而 `read_failed` 是**跨 ctx 读异常被
+  //      catch 收成的 200 空壳** ⇒ `isSuccess` 为真、`legs` 为空，不并进 key 就报满表「已不满足」。
+  //
+  // 🚫 **MUST NOT 顺手把 `source` 也并进来**（#140 裁决）：它确实能多挡一跳（零快照期的
+  //    bootstrap 宽窗 → 次日 K-梯形窗，那一跳 `state` / `priceKind` 都不变），但它在**同一个
+  //    离线档内**也随快照期滚动翻值（`eod` ↔ `premarket_backfill`）⇒ 会吞掉一次真实的成员变化。
+  //    那是把误报换成漏报，而 `SC-009` 钉的正是漏报。残留的那一跳单列在 #140，别在这里凑。
+  const membershipKey = [
+    tab,
+    JSON.stringify(criteriaByPerspective[tab]?.params ?? null),
+    table?.state ?? '',
+    table?.priceKind ?? '',
+  ].join('::');
   // 🚫 上一轮的成员集合走 `useRef` 而非 `useState`：它不参与渲染，进 state 会白激一次 render。
   const previousMembership = useRef<{ key: string; legs: readonly LegResponse[] } | null>(null);
   const [membershipChange, setMembershipChange] = useState<LegMembershipChange | null>(null);
