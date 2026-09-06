@@ -6,7 +6,11 @@ import type {
   ExecutorSyncDimensionRow,
   WorkingInstrument,
 } from './dimension-executor.js';
-import { detectOptionAnomalies, type OptionAnomalyRow } from './option-anomaly.rules.js';
+import {
+  createOptionAnomalyAccumulator,
+  type OptionAnomalyAccumulator,
+  type OptionAnomalyRow,
+} from './option-anomaly.rules.js';
 import {
   checkOptionSnapshotRows,
   type OptionSide,
@@ -157,6 +161,29 @@ function previousWeekday(date: string): string {
     d.setUTCDate(d.getUTCDate() - 1);
   } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
   return toIsoDate(d);
+}
+
+/**
+ * 异常监控 ② 的 **DTE 基准交易所** = 本轮市场的今天 (#263), 从 scope 派生而非写死 `'us'`。
+ *
+ * 单市场 scope 是本维度族的前提 ({@link SyncOptionSnapshotUseCase.collect} 的 `foreign` 守卫 +
+ * `resolveAttribution` 的 `length !== 1` 双闸), 故取第 0 个即答案。仍显式挡空数组:
+ * `exchangeCalendarDate` 对未登记市场**fail-open 回落宿主时区** (那条 fail-open 是 meta 维度空
+ * scope 要的、刻意如此) ⇒ 传 undefined 进去不抛, 只静默拿到上海的今天; 而港股与上海同为 UTC+8
+ * ⇒ 连港股样本都验不出这个错。
+ *
+ * 🚨 **导出只为可测** (075 T004): 上面那道双闸让本守卫经公开入口**不可达** —— 不导出就只剩
+ * 「读代码确认它还在」, 而那不是回归网。唯一的生产调用点是 `collect` 里累加器的懒创建,
+ * 🚫 MUST NOT 在别处调。O(1)。
+ */
+export function anomalyDteExchange(marketScope: readonly string[], pendingRows: number): string {
+  const [exchange] = marketScope;
+  if (exchange === undefined) {
+    throw new Error(
+      `[option-snapshot] 空 marketScope 判不出 DTE 基准交易所 (异常监控 ② 的 ${pendingRows} 行无从起算)`,
+    );
+  }
+  return exchange;
 }
 
 /**
@@ -408,9 +435,28 @@ export class SyncOptionSnapshotUseCase {
     // 🚨 T024a: 「已见过的非标 root」MUST 在**本轮落库之前**取一次 —— 载体就是快照历史本身,
     // 落完再取会把本轮刚落的行读成「见过」, ③ 于是永不触发且永远不会红 (见 loadKnownNonStandardRoots)。
     const knownNonStandardRoots = await this.loadKnownNonStandardRoots();
-    // 全轮累积一批再判 (不逐票判): ① 的「整批零可用 greeks = 全域降级」需要看到**全域**,
-    // 逐票判会把休市时段的一次采集变成 N 条假 WARN, 正是 T024 要避免的那件事。
-    const anomalyRows: OptionAnomalyRow[] = [];
+    // 全轮**一个**累加器 (075 T004): ① 的「整批零可用 greeks = 全域降级」需要看到**全域**,
+    // 逐票各建一个会把休市时段的一次采集变成 N 条假 WARN, 正是 T024 要避免的那件事。
+    //
+    // 🚨 **懒创建 —— 第一次拿到非空批时才建**: DTE 基准交易所必须在 `feed` 之前定下来, 而空
+    // marketScope 的守卫今天判在**零落库行早退之后** (见 {@link anomalyDteExchange} 与改动前
+    // `reportAnomalies` 的同一处注释)。急切创建会让「全轮零落库行」的一轮凭空多抛一个异常,
+    // 那是行为回归 (FR-010)。
+    //
+    // ⚠️ **一处不等价, 显式接受** (075 plan §A): 空 scope 的 throw 从「全部标的跑完之后」提前
+    // 到「第一批」—— 抛之前少写若干行。该守卫按上方 `foreign` 守卫 + `resolveAttribution` 的
+    // `length !== 1` 双闸本就不可达, 差异是理论上的。**写在这里是因为不写的话, 下一个人会把
+    // 「throw 位置变了」当成漏改。**
+    let anomalies: OptionAnomalyAccumulator | null = null;
+    const feedAnomalies = (rows: readonly OptionAnomalyRow[]): void => {
+      if (rows.length === 0) return;
+      anomalies ??= createOptionAnomalyAccumulator({
+        now: spec.now,
+        exchange: anomalyDteExchange(spec.marketScope, rows.length),
+        knownNonStandardRoots,
+      });
+      anomalies.feed(rows);
+    };
     let budgetExhausted = false;
 
     for (const inst of instruments) {
@@ -427,7 +473,7 @@ export class SyncOptionSnapshotUseCase {
           symbol,
           ctx,
           stats,
-          anomalyRows,
+          feedAnomalies,
           spec.unjudgedWatch,
           captureTimes,
         );
@@ -449,7 +495,7 @@ export class SyncOptionSnapshotUseCase {
         });
       }
     }
-    this.reportAnomalies(anomalyRows, knownNonStandardRoots, spec.now, spec.marketScope);
+    this.reportAnomalies(anomalies);
     return budgetExhausted;
   }
 
@@ -466,7 +512,11 @@ export class SyncOptionSnapshotUseCase {
     symbol: string,
     ctx: ResolvedSnapshotContext,
     stats: SyncRunStats,
-    anomalyRows: OptionAnomalyRow[],
+    /**
+     * 把**一批**判定入参交给全轮累加器 (075 T004)。返回后本函数即不再持有该批 —— 调用方那侧
+     * 的懒创建与全域语义见 {@link SyncOptionSnapshotUseCase.collect}。
+     */
+    feedAnomalies: (rows: readonly OptionAnomalyRow[]) => void,
     /** 点名盯「门没判成」的合约码, 见 {@link SnapshotCollectionSpec.unjudgedWatch}。 */
     unjudgedWatch: readonly string[] | undefined,
     /** 逐批 envelope `as_of` 的收集器 (073 T009), 见 {@link SyncOptionSnapshotUseCase.collect}。 */
@@ -576,11 +626,15 @@ export class SyncOptionSnapshotUseCase {
         // 🚨 异常监控的判定面 = **落库行** (T024a): 被硬门拒的行已由 reportRejected 出过 ERROR,
         // 再进 WARN 就是同一件事报两遍; 且它们不会进快照历史 ⇒ 拿它们报 ③ 会让「记忆面」与
         // 「判定面」永久错位 (那个 root 天天报, 而 T024 的 ③ 恰恰是为了只报一次)。
-        for (const row of persistable) {
-          anomalyRows.push(
+        // 🚨 **批内**数组 (075 T004 / FR-003): `feedAnomalies` 返回后它即出作用域 ⇒ 本批的判定
+        // 入参随即可回收。🚫 MUST NOT 把它挂到函数外的变量上 —— 那正是改造前整轮攒 9.7 万行
+        // 的形态 —— 整轮 9.7 万行, 实测判定侧常驻 74.8 MB, 而事故当晚整机缺口只有 51 MB
+        // (读数出处: `specs/075-marketdata-sync-memory-footprint/spec.md`)。
+        feedAnomalies(
+          persistable.map((row) =>
             this.toAnomalyRow(row, byCode.get(row.code) as WorkingContract, spotOf(row)),
-          );
-        }
+          ),
+        );
         for (const chunk of chunked(data, SNAPSHOT_ROW_CHUNK)) {
           addWritten(
             stats,
@@ -762,29 +816,14 @@ export class SyncOptionSnapshotUseCase {
    *   **但必须等读侧先改**: 反过来先动这里, 只是往一条仍然没人读的 JSON 里多塞一种形态。
    *   (第二个 🚫「不碰当日触达」与 #209 无关, 那条线照旧。)
    *
-   * 复杂度 O(n)，n = 本轮落库行数 (判定单趟遍历, findings 基数为常数)。
+   * 复杂度: 判定本身已在 `feed` 时逐批摊完, 本方法只出结论 —— `report()` 为 O(k log k)
+   * (k = 本轮新非标 root 数, ≪ 落库行数), findings 基数为常数。
    */
-  private reportAnomalies(
-    rows: OptionAnomalyRow[],
-    knownNonStandardRoots: string[],
-    now: Date,
-    marketScope: readonly string[],
-  ): void {
-    // 零落库行 ⇒ 无判定对象。判一遍会拿空批算出「零可用 greeks」之类的空洞结论。
-    if (rows.length === 0) return;
-    // 🚨 #263: DTE 基准 = **本轮市场**的今天, 从 scope 派生而非写死 `'us'`。单市场 scope 是本
-    // 维度族的前提 (`collect()` 的 `foreign` 守卫 + `resolveAttribution` 的 `length !== 1` 双闸),
-    // 故取第 0 个即答案。仍显式挡空数组: `exchangeCalendarDate` 对未登记市场**fail-open 回落
-    // 宿主时区** (那条 fail-open 是 meta 维度空 scope 要的、刻意如此) ⇒ 传 undefined 进去不抛,
-    // 只静默拿到上海的今天; 而港股与上海同为 UTC+8 ⇒ 连港股样本都验不出这个错。
-    // 🚨 判据放在**零行早退之后**: 空批本来就无判定对象, 在那条路上新抛异常是行为回归。
-    const [exchange] = marketScope;
-    if (exchange === undefined) {
-      throw new Error(
-        `[option-snapshot] 空 marketScope 判不出 DTE 基准交易所 (异常监控 ② 的 ${rows.length} 行无从起算)`,
-      );
-    }
-    const report = detectOptionAnomalies({ rows, now, exchange, knownNonStandardRoots });
+  private reportAnomalies(anomalies: OptionAnomalyAccumulator | null): void {
+    // 🚨 `null` = 全轮一批非空行都没喂进来 ⇒ 累加器根本没建 (懒创建), 无判定对象。判一遍会拿
+    // 空批算出「零可用 greeks」之类的空洞结论 —— 与改动前 `rows.length === 0` 早退同一谓词。
+    if (anomalies === null) return;
+    const report = anomalies.report();
     for (const finding of report.findings) {
       this.logger.warn(
         `[option-anomaly] ${finding.code} (${finding.affected} 条): ${finding.reason}` +

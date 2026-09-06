@@ -1,7 +1,20 @@
+/**
+ * 075 T002 —— 「喂完的行不再被引用」这层断言为什么走**结构遍历**而不是 `WeakRef`（二选一的留档）：
+ *
+ * `WeakRef` + 可达性那条在本仓的默认执行路径上**恒绿**：拿不到 `global.gc`（本仓 `--expose-gc`
+ * 零先例，vitest 默认不开）时 GC 不会在断言之前发生，`deref()` 必然还拿得到对象 ⇒ 累加器有没有
+ * 持有那批行，断言都过。而 FR-021① 要的正是一条**确定性、每次回归都跑**的判据 —— 区分不了
+ * 「过」与「根本没跑」的断言不满足它（testing.md §7「恒有输出 = 恒无输出」）。
+ *
+ * ⇒ 走结构遍历：把累加器的累计状态当对象图走一遍，断言里面找不到任何一条喂入的行。代价是
+ * 累加器要把 `state` 作为只读引用暴露出来（`option-anomaly.rules.ts` 已就此写明用途）。
+ */
 import { describe, it, expect } from 'vitest';
 import {
   IV_OUTLIER_PERCENT,
+  MAX_SAMPLE_ITEMS,
   SHORT_DTE_EXEMPT_DAYS,
+  createOptionAnomalyAccumulator,
   detectOptionAnomalies,
   type OptionAnomalyRow,
 } from './option-anomaly.rules.js';
@@ -253,3 +266,489 @@ describe('detectOptionAnomalies —— ③ 新的非标 root 进复核名单 (FR
     expect(report.newNonStandardRoots).toEqual(['AAA1', 'ZZZ1']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 075 T001 —— 增量累加器：切批喂与一次喂完的差分臂
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ACC_INIT = { now: NOW, exchange: 'us', knownNonStandardRoots: [] as readonly string[] };
+
+/**
+ * 把同一序列按给定切点**连续分割**后逐批喂进一个累加器，出整轮结论。
+ * `cuts` 为空 ⇒ 一次喂完 (N = 1)。输入序不变 ⇒ 样本序在各臂之间可比。
+ */
+function reportBySplits(rows: readonly OptionAnomalyRow[], cuts: readonly number[]) {
+  const acc = createOptionAnomalyAccumulator(ACC_INIT);
+  let prev = 0;
+  for (const cut of [...cuts, rows.length]) {
+    acc.feed(rows.slice(prev, cut));
+    prev = cut;
+  }
+  return acc.report();
+}
+
+/** 前段行数 = 2 条非标 + 3 条实值 —— 整轮**拿得到 greeks 的行全在这里**。 */
+const USABLE_LEAD = 5;
+/** 后段虚值缺 greeks 的行数, 蓄意 > `MAX_SAMPLE_ITEMS`, 让样本截断也进差分面。 */
+const MISSING_TAIL = 25;
+
+/**
+ * 差分臂的混合序列：三条判据 + 样本截断 + 跨批 root 去重各有代表行, 且**前 5 行全部拿得到
+ * greeks、其后一行都拿不到** —— 于是「切在第 5 行」这一刀正好横切 FR-005 的全域判据。
+ *
+ * 🚨 **前段蓄意一条虚值标准腿都不放**（只放非标与实值腿）: 全域判据的三个合取项之一是
+ * 「虚值区**全部**缺失」, 前段若混进一条 greeks 齐全的虚值腿, 该项恒假 ⇒ 判据无论用整轮域
+ * 还是逐批域都走不到那条分支, 差分臂就照样绿 —— 这份 fixture 的第一版正是这么空跑的。
+ */
+function mixedRows(): OptionAnomalyRow[] {
+  const rows: OptionAnomalyRow[] = [];
+  // 非标两条 (greeks 齐全 ⇒ 计 usableAnywhere, 但判不出实值/虚值 ⇒ 计 unclassified)。
+  rows.push(
+    otmPut({
+      contractCode: 'US.VICI1260918P030000',
+      root: 'VICI1',
+      isStandard: false,
+      strikePrice: '30',
+    }),
+  );
+  rows.push(
+    otmPut({
+      contractCode: 'US.ZZZ1260918P010000',
+      root: 'ZZZ1',
+      isStandard: false,
+      strikePrice: '10',
+    }),
+  );
+  // 实值三条 (K 200/210/220 ≫ spot 140), greeks 齐全 ⇒ 计 usableAnywhere 但不进虚值判定面。
+  // 其中两条挂宽 IV: 一条 DTE = 60 (离群), 一条 DTE = 1 (短 DTE 豁免) —— IV 两个计数器都非零
+  // (② 的判定与实值/虚值无关)。
+  rows.push(otmPut({ contractCode: 'US.PEP260918P200000', strikePrice: '200' }));
+  rows.push(
+    otmPut({
+      contractCode: 'US.PEP261006P210000',
+      strikePrice: '210',
+      expiryDate: '2026-10-06',
+      iv: '600',
+    }),
+  );
+  rows.push(
+    otmPut({
+      contractCode: 'US.PEP260808P220000',
+      strikePrice: '220',
+      expiryDate: '2026-08-08',
+      iv: '600',
+    }),
+  );
+
+  for (let i = 0; i < MISSING_TAIL; i++) {
+    const strike = 100 + i;
+    rows.push(
+      otmPut({
+        contractCode: `US.PEP260918P${strike}000`,
+        strikePrice: String(strike),
+        ...ZERO_GREEKS,
+      }),
+    );
+  }
+  rows.push(deepItmPutWithoutGreeks());
+  // 同一个 VICI1 在**后一批**再出现一次 —— 跨批去重的正面样本。
+  rows.push(
+    otmPut({
+      contractCode: 'US.VICI1260918P035000',
+      root: 'VICI1',
+      isStandard: false,
+      strikePrice: '35',
+      iv: null,
+      delta: null,
+      gamma: null,
+      vega: null,
+      theta: null,
+    }),
+  );
+  return rows;
+}
+
+/**
+ * 🚨 **变异留档（075 T001，sabotage 臂 per testing.md §7.1）** —— 这一段断言能不能红是有实证的：
+ *
+ * · 改坏处：`option-anomaly.rules.ts` 的 `feed()` 首行插 `state.usableAnywhere = 0;`
+ *   （= 把 FR-005 的全域判据从整轮域退化成逐批域）
+ * · 读数：**1 failed | 26 passed** —— 红的正是下面第一条差分臂，实际结论变成误报的
+ *   `greeks_batch_unavailable`；**20 条既有单测全绿**（它们只走一次性入口 ⇒ 单批 ⇒ 看不见这个退化，
+ *   这正是差分臂非加不可的理由）
+ * · 还原后：**27 passed**
+ * · 复跑：`pnpm nx test server src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache`
+ */
+describe('createOptionAnomalyAccumulator —— 切批喂结论恒等 (075 FR-001 / FR-004 / FR-004a)', () => {
+  it('🚨 差分臂: 一次喂完 vs 切批喂 (含横切全域判据的那一刀) 结论逐字段相同', () => {
+    const rows = mixedRows();
+    const oneShot = reportBySplits(rows, []);
+
+    // 先钉住「量到的是满载」—— 三条判据 / 样本截断 / 跨批 root 去重都真的发生了。否则下面
+    // 几臂可能在比较两份空结论 (恒等而零判别力, testing.md §7)。
+    expect(oneShot.findings.map((f) => f.code)).toEqual([
+      'otm_greeks_unavailable',
+      'iv_outlier',
+      'new_nonstandard_root',
+    ]);
+    expect(oneShot.metrics).toEqual({
+      rows: rows.length,
+      // 🚨 虚值判定面**全部缺失** (subjects === unavailable) —— 这是全域判据三个合取项里的
+      // 一项, 少了它那条分支永远走不到, 差分臂就失去判别力 (见 mixedRows 的文件内注释)。
+      greeksSubjects: MISSING_TAIL,
+      greeksUnavailable: MISSING_TAIL,
+      greeksUnclassified: 3,
+      ivEvaluated: USABLE_LEAD,
+      ivOutliers: 1,
+      ivShortDteExempt: 1,
+    });
+    expect(oneShot.findings[0]?.samples).toHaveLength(MAX_SAMPLE_ITEMS);
+    expect(oneShot.newNonStandardRoots).toEqual(['VICI1', 'ZZZ1']);
+
+    // 🚨 这一刀横切 FR-005: 可用 greeks 全落第一批、缺失全落第二批。整轮口径 ⇒
+    // otm_greeks_unavailable; 退化成逐批口径 ⇒ 末批零可用 ⇒ 误报 greeks_batch_unavailable。
+    expect(reportBySplits(rows, [USABLE_LEAD])).toEqual(oneShot);
+    // 逐行喂 (N = 行数) 与不等长三刀 —— 切法不改变结论。
+    expect(reportBySplits(rows, [...rows.keys()].slice(1))).toEqual(oneShot);
+    expect(reportBySplits(rows, [3, 11, 30])).toEqual(oneShot);
+  });
+
+  it('一次性入口是薄封装 —— detectOptionAnomalies 与累加器一次喂完逐字段相同 (FR-004a)', () => {
+    const rows = mixedRows();
+    expect(detectOptionAnomalies({ ...ACC_INIT, rows })).toEqual(reportBySplits(rows, []));
+  });
+
+  it('🚨 整轮零可用 greeks 切成 3 批 → 仍只出**一条**批级 WARN (FR-005, sb 2)', () => {
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      otmPut({ contractCode: `US.PEP260918P1${20 + i}000`, ...ZERO_GREEKS }),
+    );
+    const split = reportBySplits(rows, [2, 4]);
+    expect(split.findings.map((f) => f.code)).toEqual(['greeks_batch_unavailable']);
+    expect(split.findings[0]?.affected).toBe(rows.length);
+    expect(split).toEqual(reportBySplits(rows, []));
+  });
+
+  it('新非标 root 跨批去重, 整轮只报一次 (FR-009, sb 7)', () => {
+    const nonStd = (root: string, contractCode: string) =>
+      otmPut({ root, contractCode, isStandard: false });
+    const rows = [
+      nonStd('VICI1', 'US.VICI1260918P030000'),
+      otmPut(),
+      nonStd('VICI1', 'US.VICI1260918P035000'),
+      nonStd('AAA1', 'US.AAA1260918P010000'),
+    ];
+    const split = reportBySplits(rows, [2]);
+    expect(split.newNonStandardRoots).toEqual(['AAA1', 'VICI1']);
+    expect(split.findings.find((f) => f.code === 'new_nonstandard_root')?.affected).toBe(2);
+  });
+
+  it(`样本截到 ${MAX_SAMPLE_ITEMS} 而 affected 仍是全量, 切批不改样本序 (FR-011, sb 10)`, () => {
+    const rows = mixedRows();
+    const codes = rows.filter((r) => r.iv === '0').map((r) => r.contractCode);
+    const finding = reportBySplits(rows, [USABLE_LEAD]).findings[0];
+    expect(finding?.affected).toBe(MISSING_TAIL);
+    expect(finding?.samples).toEqual(codes.slice(0, MAX_SAMPLE_ITEMS));
+  });
+
+  it('一批不喂 / 只喂空批 → 与空输入的一次性调用逐字段相同 (FR-010, sb 8)', () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    const empty = detectOptionAnomalies({ ...ACC_INIT, rows: [] });
+    expect(createOptionAnomalyAccumulator(ACC_INIT).report()).toEqual(empty);
+    acc.feed([]);
+    acc.feed([]);
+    expect(acc.report()).toEqual(empty);
+  });
+
+  it('report() 幂等 —— 连调两次结论相同, 之后仍可继续 feed', () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    acc.feed([otmPut({ iv: null })]);
+    const first = acc.report();
+    expect(acc.report()).toEqual(first);
+    acc.feed([otmPut()]);
+    expect(acc.report().metrics.rows).toBe(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 075 T002 —— 常驻结构断言（确定性, 每次回归都跑; 选型理由见文件头）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 从 `root` 出发走对象图, 收集**可达的对象引用**（函数与原始值不收）。数组 / `Set` / `Map`
+ * 的元素也走进去 —— 行若被换个壳存回状态里, 也照样会被这一趟遍历撞见。
+ *
+ * 复杂度 **O(V + E)**（V = 可达对象数, E = 引用边数）: 每个对象靠 `seen` 只入栈一次, 环安全。
+ */
+function reachableObjects(root: unknown): Set<object> {
+  const seen = new Set<object>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === null || typeof node !== 'object') continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    if (Array.isArray(node)) stack.push(...node);
+    else if (node instanceof Set) stack.push(...node);
+    else if (node instanceof Map) stack.push(...node.keys(), ...node.values());
+    else stack.push(...Object.values(node));
+  }
+  return seen;
+}
+
+/** n 条虚值缺 greeks 的行（合约 code 互不相同）—— 只用来把计数器 / 样本数组喂满。 */
+function missingRows(n: number, salt = 0): OptionAnomalyRow[] {
+  return Array.from({ length: n }, (_, i) =>
+    otmPut({ contractCode: `US.PEP260918P${salt}-${i}`, ...ZERO_GREEKS }),
+  );
+}
+
+/**
+ * 🚨 **变异留档（075 T002，sabotage 臂 per testing.md §7.1）**：
+ *
+ * · 改坏处：`option-anomaly.rules.ts` 的 `OptionAnomalyAccumulatorState` 加一个
+ *   `heldRows: OptionAnomalyRow[]`（初值 `[]`），`feed()` 里加一行 `state.heldRows.push(...rows)`
+ * · 读数：**2 failed | 30 passed** —— 红的正是臂 ① 的两条（行对象可达 / 可达对象数随行数长）；
+ *   臂 ②③ 与 20 条既有单测**全绿** ⇒ 只有臂 ① 够得到「持有」这件事，其余观察面看不见它
+ * · 还原后：**32 passed**
+ * · 复跑：`pnpm nx test server src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache`
+ */
+describe('createOptionAnomalyAccumulator —— 常驻结构不随行数增长 (075 FR-002 / FR-003 / FR-021①)', () => {
+  it('🚨 ① 喂完的行不再被累加器可达 —— 状态对象图里一条行都找不到 (FR-003)', () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    const first = mixedRows();
+    acc.feed(first);
+    // 再喂一批: 排除「只有最后一批被留着」这种只在末批可见的持有形态。
+    acc.feed(missingRows(30, 1));
+
+    const reachable = reachableObjects(acc.state);
+    // ⓐ identity: 喂进去的那些行对象本身, 以及承载它们的那个数组。
+    for (const row of first) expect(reachable.has(row)).toBe(false);
+    expect(reachable.has(first)).toBe(false);
+    // ⓑ 形状: 换个壳存回去也算持有 —— 可达集里 MUST NOT 有任何「长得像行」的对象。
+    const rowShaped = [...reachable].filter((o) => 'contractCode' in o && 'strikePrice' in o);
+    expect(rowShaped).toEqual([]);
+  });
+
+  it('🚨 ① 续: 可达对象数与已喂入行数无关 (10 倍行 ⇒ 同一组容器对象)', () => {
+    const small = createOptionAnomalyAccumulator(ACC_INIT);
+    small.feed(missingRows(50));
+    const large = createOptionAnomalyAccumulator(ACC_INIT);
+    for (let batch = 0; batch < 10; batch++) large.feed(missingRows(50, batch));
+
+    expect(large.state.rows).toBe(10 * small.state.rows);
+    expect(reachableObjects(large.state).size).toBe(reachableObjects(small.state).size);
+  });
+
+  it(`② 样本数组恒 ≤ ${MAX_SAMPLE_ITEMS}, 喂 10 倍行数不变; affected 仍是全量 (FR-011)`, () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    acc.feed(missingRows(50));
+    const capped = acc.state.otmMissingSamples.length;
+    for (let batch = 1; batch < 10; batch++) acc.feed(missingRows(50, batch));
+
+    expect(capped).toBe(MAX_SAMPLE_ITEMS);
+    expect(acc.state.otmMissingSamples).toHaveLength(MAX_SAMPLE_ITEMS);
+    // 上界只截样本, 没把计数一起截掉 —— 否则 `affected` 会静默从 500 变成 20。
+    expect(acc.state.greeksUnavailable).toBe(500);
+    expect(acc.report().findings[0]?.affected).toBe(500);
+  });
+
+  it(`② 续: IV 离群样本同样有上界 ${MAX_SAMPLE_ITEMS}`, () => {
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    for (let batch = 0; batch < 5; batch++) {
+      acc.feed(
+        Array.from({ length: 50 }, (_, i) =>
+          otmPut({
+            contractCode: `US.PEP261006P${batch}-${i}`,
+            expiryDate: '2026-10-06',
+            iv: '600',
+          }),
+        ),
+      );
+    }
+    expect(acc.state.ivOutlierSamples).toHaveLength(MAX_SAMPLE_ITEMS);
+    expect(acc.state.ivOutliers).toBe(250);
+  });
+
+  it('③ freshRoots 基数只随**不同 root 数**增长, 与行数无关 (FR-009)', () => {
+    const roots = ['AAA1', 'VICI1', 'ZZZ1'];
+    const acc = createOptionAnomalyAccumulator(ACC_INIT);
+    for (let batch = 0; batch < 20; batch++) {
+      acc.feed(
+        Array.from({ length: 100 }, (_, i) =>
+          otmPut({
+            root: roots[i % roots.length],
+            contractCode: `US.NS${batch}-${i}`,
+            isStandard: false,
+          }),
+        ),
+      );
+    }
+    expect(acc.state.rows).toBe(2000);
+    expect(acc.state.freshRoots.size).toBe(roots.length);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 075 T003 —— 判定侧常驻的实测读数（env-gated，默认 skip）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 🚨 **075 T003 的跑法与三组实测读数（2026-09-05，本机 macOS / Node，SC-001 + SC-003）**
+ *
+ * 本块默认 skip（Small 档的默认执行路径不受影响）。单跑：
+ *
+ * ```
+ * NODE_OPTIONS='--expose-gc' RUN_PERF_IT=true pnpm nx test server \
+ *   src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache
+ * ```
+ *
+ * **① 正臂（当前实现）** — `33 passed`：
+ * `small=[211312, 33168, 12264, 243544, 23024, 22688, 22688, 22688, 22688]`
+ * `large=[31144, 29840, 31136, 22688, 22688, 23192, 22688, 22688, 22688]`
+ * ⇒ 两臂中位数同为 **22688 B（22 KB）**，比值 **1**，10 万行常驻 22 KB ≪ 1 MB。
+ *
+ * **② 对照臂 —— out-of-test sabotage（testing.md §7.1；不常驻，故读数只能写在这里）** ⇒ `FAIL`：
+ * 改坏处 = `option-anomaly.rules.ts` 的 `OptionAnomalyAccumulatorState` 加
+ * `heldRows: OptionAnomalyRow[]`（初值 `[]`）、`feed()` 里加一行 `state.heldRows.push(...rows)`
+ * —— 等价于 T001 之前那个「整轮攒着不放」的持有语义。同一判据下读数：
+ * `smallMedian=1867176 B` / `largeMedian=18589872 B` ⇒ 比值 **9.956 ≈ 10×**，且 18.6 MB ≫ 1 MB
+ * ⇒ **两条断言都判红**（`3 failed | 30 passed`，另两条红的是 T002 臂 ①，同一改坏处）。
+ * 🚨 缺这一臂就只是「一直绿着却什么也没量到」——它是本块唯一的判别力来源。
+ *
+ * **③ 「根本没跑」臂** — 只给 `RUN_PERF_IT=true`、不给 `--expose-gc`：
+ * `32 passed | 1 skipped` + 一行 `[075 T003] 🚨 SKIPPED …` 的 stderr。
+ * ⇒ 「过了」与「没跑」在计数与输出上都能区分（Guardrail 10 / testing.md §7）。
+ */
+
+/** 单跑本块（🚨 两个开关缺一都不跑：`RUN_PERF_IT` 门控、`--expose-gc` 提供 `global.gc`）。 */
+const T003_RERUN =
+  "NODE_OPTIONS='--expose-gc' RUN_PERF_IT=true pnpm nx test server " +
+  'src/marketdata/option-anomaly.rules.spec.ts --skip-nx-cache';
+
+const RUN_PERF = process.env.RUN_PERF_IT === 'true';
+const forceGc = (globalThis as { gc?: () => void }).gc;
+const HAS_GC = typeof forceGc === 'function';
+
+// 🚨 「没跑」与「过了」必须在数据上能区分（Guardrail 10 / testing.md §7「恒有输出 = 恒无输出」）。
+// 本仓 `--expose-gc` 零先例, 而拿不到 `global.gc` 时读数全是噪声、断言却照样绿 —— 故这里既让
+// vitest 把整块记成 **skipped**（不是 passed）, 又打一行**可见输出**说明为什么。
+if (RUN_PERF && !HAS_GC) {
+  console.warn(
+    `[075 T003] 🚨 SKIPPED —— RUN_PERF_IT 开着但拿不到 global.gc（本进程没带 --expose-gc）, ` +
+      `此时堆读数全是噪声, 本块拒绝出数。复跑: ${T003_RERUN}`,
+  );
+}
+
+const PERF_BATCH = 1_000;
+/** SC-001 的两个档位：1 万 → 10 万（10×）。 */
+const PERF_SMALL_ROWS = 10_000;
+const PERF_LARGE_ROWS = 100_000;
+/** 取中位数抗单次抖动；堆读数不是正态的，均值会被一次 GC 时机差异带偏。首轮丢弃（暖机）。 */
+const PERF_REPS = 9;
+/** SC-003：9.7 万行的一轮里判定侧常驻 < 1 MB（改动前实测 74.8 MB）。 */
+const RESIDENT_BUDGET_BYTES = 1024 * 1024;
+/**
+ * 比值的**分母下限**（噪声带）。
+ *
+ * 🚨 为什么需要它：改造后两臂的真实常驻都只有几 KB（状态 = 十来个标量 + 两个 ≤20 的样本数组
+ * + 一个小 root 集），**远在 `heapUsed` 的噪声带以内**。2026-09-05 本机实测单次读数
+ * `small=[260560, 8488, 32584, 34752, 221224]` / `large=[32384, 30600, 31680, 30440, 22760]`
+ * —— 直接相除会拿两个噪声数作比，随时能算出 > 2 的假红。⇒ 两臂都先与本下限取大：两臂都落在
+ * 噪声带内 ⇒ 比值恒 1（判为「不随行数增长」）；只要有一臂真的长出了噪声带，比值立刻回到真实倍数。
+ *
+ * 🚨 它**不削弱判别力**：对照臂（`feed` 把行存回状态）的两臂分别约 5 MB / 50 MB，都比本下限
+ * 高一到两个数量级 ⇒ 比值仍是那个 ≈10×（实测见文件内的对照臂留档）。取 128 KB 是「实测噪声
+ * 中位数（约 32 KB）的 4 倍」且远低于 SC-003 的 1 MB 预算。
+ */
+const NOISE_FLOOR_BYTES = 128 * 1024;
+
+/** 造一条判定用的行。每 7 条留一条 greeks 缺失 ⇒ 计数器与样本数组这两条路径都真的走到。 */
+function perfRow(i: number): OptionAnomalyRow {
+  const missing = i % 7 === 0;
+  return {
+    contractCode: `US.PEP260918P${100000 + i}`,
+    optionSide: 'PUT',
+    root: 'PEP',
+    isStandard: true,
+    expiryDate: '2026-09-18',
+    strikePrice: String(100 + (i % 39)),
+    underlyingSpot: '140',
+    iv: missing ? null : '21.4',
+    delta: missing ? null : '-0.18',
+    gamma: missing ? null : '0.012',
+    vega: missing ? null : '0.21',
+    theta: missing ? null : '-0.03',
+  };
+}
+
+/**
+ * 喂完 `rowCount` 行、且**累加器仍活着**时的堆增量（字节）。
+ *
+ * 每批只在批内构造数组、喂完即出作用域 —— 与调用侧的用法同构（T004）。故量到的是
+ * 「判定侧留下了什么」, 而不是「这一轮一共 new 了多少对象」。
+ */
+function residentBytes(rowCount: number): number {
+  forceGc!();
+  forceGc!();
+  const before = process.memoryUsage().heapUsed;
+  const acc = createOptionAnomalyAccumulator(ACC_INIT);
+  for (let fed = 0; fed < rowCount; fed += PERF_BATCH) {
+    const batch: OptionAnomalyRow[] = [];
+    for (let i = 0; i < PERF_BATCH; i++) batch.push(perfRow(fed + i));
+    acc.feed(batch);
+  }
+  forceGc!();
+  forceGc!();
+  const after = process.memoryUsage().heapUsed;
+  // 🚨 `acc` MUST 活到 `after` 之后, 否则量的是它已被回收的那个堆 —— 那样两臂都是 0, 恒绿。
+  // 顺带钉住**满载**: 判定真的跑了、样本数组真的被喂满 —— 否则「什么都没判」也会很省内存。
+  if (acc.state.rows !== rowCount) throw new Error(`accumulator lost rows: ${acc.state.rows}`);
+  if (
+    acc.state.greeksUnavailable === 0 ||
+    acc.state.otmMissingSamples.length !== MAX_SAMPLE_ITEMS
+  ) {
+    throw new Error(`degenerate run: unavailable=${acc.state.greeksUnavailable}`);
+  }
+  return after - before;
+}
+
+const medianOf = (xs: readonly number[]): number =>
+  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+
+describe.skipIf(!RUN_PERF || !HAS_GC)(
+  '075 T003 判定侧常驻实测 (RUN_PERF_IT + --expose-gc, 默认 skip)',
+  () => {
+    it(`10× 行数 (${PERF_SMALL_ROWS} → ${PERF_LARGE_ROWS}) ⇒ 常驻增幅 < 2× (SC-001) 且 < 1 MB (SC-003)`, () => {
+      // 首轮丢弃: 冷 JIT + 首次 GC 的堆重排会给第一发读数注入几百 KB 的假常驻。
+      residentBytes(PERF_SMALL_ROWS);
+      const small: number[] = [];
+      const large: number[] = [];
+      for (let rep = 0; rep < PERF_REPS; rep++) {
+        small.push(residentBytes(PERF_SMALL_ROWS));
+        large.push(residentBytes(PERF_LARGE_ROWS));
+      }
+      const smallMedian = medianOf(small);
+      const largeMedian = medianOf(large);
+      const ratio =
+        Math.max(largeMedian, NOISE_FLOOR_BYTES) / Math.max(smallMedian, NOISE_FLOOR_BYTES);
+      console.log(
+        '[075 T003] resident',
+        JSON.stringify({
+          smallRows: PERF_SMALL_ROWS,
+          largeRows: PERF_LARGE_ROWS,
+          reps: PERF_REPS,
+          smallSamples: small,
+          largeSamples: large,
+          smallMedianBytes: smallMedian,
+          largeMedianBytes: largeMedian,
+          noiseFloorBytes: NOISE_FLOOR_BYTES,
+          ratio: Number(ratio.toFixed(3)),
+          budgetBytes: RESIDENT_BUDGET_BYTES,
+        }),
+      );
+
+      expect(largeMedian).toBeLessThan(RESIDENT_BUDGET_BYTES);
+      expect(ratio).toBeLessThan(2);
+    }, 300_000);
+  },
+);
