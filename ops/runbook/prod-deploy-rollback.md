@@ -147,18 +147,21 @@ EOF
 chmod 600 ~/.ssh/config
 
 # 3. .pub 注册为 repo read-only Deploy Key（在有 gh 的机器上，凭 .pub 内容）：
-#    gh repo deploy-key add ~/.ssh/prod_github_deploy.pub --title "77-prod-readonly" -R zhangleizlpd/no-vain-years
+#    gh repo deploy-key add ~/.ssh/prod_github_deploy.pub --title "77-prod-readonly" -R zhangleizlpd/no-vain-years-tech
 #    （读写均可省，本 key 只读 fetch；与 62 的 code_index_deploy 是不同 key，同仓允许多 deploy key）
 
 # 4. checkout remote 改 SSH
 cd /home/admin/no-vain-years-mono
-git remote set-url origin git@github.com:zhangleizlpd/no-vain-years.git
+git remote set-url origin git@github.com:zhangleizlpd/no-vain-years-tech.git
 
 # 5. 验证
-ssh -T git@github.com           # → "Hi zhangleizlpd/no-vain-years! You've successfully authenticated..."
+ssh -T git@github.com           # → "Hi zhangleizlpd/no-vain-years-tech! You've successfully authenticated, but GitHub does not provide shell access."
 git fetch origin main           # 应秒回、无 3×5s 重试
 ```
 
+> 🟢 **2026-09-06 对 prod 实查核过**（`git -C <checkout> remote -v` + `ssh -T git@github.com`）：`origin` 与 deploy key 均已在 `no-vain-years-tech`，上面三处仓名此前仍写着旧仓名、是**文档 stale 而非 prod 配错**，本次按实测订正。
+> ⚠️ 旧仓 `archived: false`（**仍可写**）⇒ 仓名抄错这类问题**不会报错**，只会静默作用在错的仓上 —— 照本节配新机时，仓名请以 `git remote get-url origin` 为准，别从记忆里取。
+>
 > ⚠️ **deploy key 唯一性**：同一 SSH key 不能同时作多个 repo 的 deploy key，但**同一 repo 可挂多个 deploy key** —— 77 用独立新 key，与 62 `code_index_deploy` 并存于本仓 Deploy Keys，互不冲突。
 > ⚠️ 此设置**与 `APP_SSH_KEY` 无关**：`APP_SSH_KEY`（GitHub secret）是 **GH runner → SSH 进 77** 的钥匙；本节是 **77 → SSH 拉 GitHub** 的钥匙，两条独立链路。
 > 设置前 `deploy.yml` 的 secrets 拉取仍可工作（HTTPS，flaky，失败回退磁盘副本）；设置后才稳。故 `deploy.yml` 改动可先合、host 设置后补。
