@@ -29,7 +29,7 @@ import type { AnchorSubmissionView } from './list-anchor-submissions.usecase';
 import type { ImportAnchorFromModelResult } from './import-anchor-from-model.usecase';
 import { FRESHNESS_TIERS, freshnessTier } from '../marketdata/freshness-tier';
 import { PRICE_KINDS, type PriceKind } from '../marketdata/marketdata.types';
-import { REALTIME_CHAIN_DEGRADE_KINDS } from './leg-retrieval.port';
+import { LEG_WINDOW_SHAPES, REALTIME_CHAIN_DEGRADE_KINDS } from './leg-retrieval.port';
 import { ANCHOR_CONFIDENCE_SOURCES } from './create-anchor.usecase';
 import type { AnchorWriteResult } from './create-anchor.usecase';
 import { toAnchorView, type AnchorView } from './list-anchors.usecase';
@@ -2197,6 +2197,21 @@ export class LegTableResponse {
   source!: string | null;
 
   @ApiProperty({
+    description:
+      '**候选面标识** (#378) —— 本批腿从哪种选码窗召回: bootstrap = 库内无昨日 Δ 面时的矩形宽窗 ' +
+      '(零快照期 / 整面零 Δ); window = 昨日 Δ 面派生的 K-梯形窗; null = 收盘档无窗 (离线宽视野)。' +
+      '🚨 客户端「相邻两批的成员差集可不可比」MUST 以本字段 (连同 state / priceKind) 为线 —— ' +
+      'bootstrap → window 那一跳 state / priceKind / 条件全部逐字不变而候选面整个换掉, ' +
+      '差集在那时不是判据结论, 是换了把尺子圈码。' +
+      '🚫 MUST NOT 由 source 反推 (有快照但整面零 Δ 时形状是 bootstrap 而 source 是 eod)',
+    enum: [...LEG_WINDOW_SHAPES],
+    type: 'string',
+    nullable: true,
+    example: 'window',
+  })
+  windowShape!: string | null;
+
+  @ApiProperty({
     description: 'vendor 随链下发的标的价, **未复权**',
     type: 'string',
     nullable: true,
@@ -2523,6 +2538,7 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     quoteAsOf: quoteAsOfText(view.priceKind, view.asOf, view.quoteAsOf),
     oiAsOf: dateOnly(view.oiAsOf),
     source: view.source,
+    windowShape: view.windowShape,
     spot: decimal4(view.spot),
     w: view.w.toFixed(4),
     zone: view.zone,

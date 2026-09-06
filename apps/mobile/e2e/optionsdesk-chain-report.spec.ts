@@ -472,6 +472,8 @@ function makeLegTable(
     realtimeDegrade: null,
     oiAsOf: asOf,
     source: 'eod',
+    // #378 契约增量: 候选面标识。
+    windowShape: null,
     spot: SPOT.toFixed(2),
     w: anchor.w,
     zone: anchor.zone,

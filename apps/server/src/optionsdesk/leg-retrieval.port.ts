@@ -1,4 +1,5 @@
 import type { PriceKind } from '../marketdata/marketdata.types';
+import type { DeltaSurfaceOutcome } from './leg-delta-surface.rules';
 import type {
   RecallCandidate,
   RecallContext,
@@ -150,6 +151,17 @@ export interface LegChainMeta {
   readonly oiAsOf: Date;
   /** 快照来源 (`eod` / `premarket_backfill`) —— 「靠兜底续命」要看得见。 */
   readonly source: string;
+  /**
+   * **候选面标识** (#378) —— 本批腿是从哪种**选码窗**召回的: 契约面与日志面
+   * (`[068] window-size … shape=`) 的**同一个**值域; 收盘档无窗 (离线宽视野) ⇒ `null`。
+   *
+   * 🚨 它是客户端「相邻两批可比吗」的**定义**, 不是代理: `source` / `priceKind` / `state` 各背
+   * 别的职责, 与「候选面换没换」只是碰巧同构 —— 零快照期的 bootstrap 矩形窗 → 次日 K-梯形窗
+   * 那一跳, 三者逐字不变而成员集整个换掉 (#378 开单人的探针: 60 → 42 条, 报「18 条已不满足」)。
+   * 🚫 MUST NOT 由 `source === 'realtime'` 反推: 有快照但整面零 Δ 读数时形状仍是 bootstrap,
+   * 而 `source` 取的是快照那一期的 `eod` / `premarket_backfill`。
+   */
+  readonly windowShape: LegWindowShape | null;
   /** vendor 随链下发的标的价, **未复权**; 与召回上下文同型 (十进制金额, 不降 `number`)。 */
   readonly spot: RecallContext['spot'];
   /**
@@ -222,6 +234,19 @@ export const REALTIME_CHAIN_DEGRADE_KINDS: readonly RealtimeChainDegradeKind[] =
   'source_unavailable',
   'gate_unknown',
 ] as const;
+
+/**
+ * {@link LegChainMeta.windowShape} 的值域 = 召回第一段的窗形状 (`leg-delta-surface.rules.ts` 的
+ * `DeltaSurfaceOutcome['kind']`) —— 🚫 禁另抄一份字面量: 两套会让「bootstrap」在日志与契约里
+ * 有两个来源。
+ */
+export type LegWindowShape = DeltaSurfaceOutcome['kind'];
+
+/**
+ * {@link LegWindowShape} 的运行时值域 (体例同 {@link REALTIME_CHAIN_DEGRADE_KINDS}) —— swagger
+ * `enum:` 要一个真数组。类型标注绑住它, 与 wire 值域不会各写各的。
+ */
+export const LEG_WINDOW_SHAPES: readonly LegWindowShape[] = ['bootstrap', 'window'] as const;
 
 /** 一条候选 —— 层间传递的单元 (召回吐出、粗排合并、特征加工与精排消费)。 */
 export type LegCandidate = RecallCandidate<LegChainRow>;

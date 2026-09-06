@@ -460,6 +460,8 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(codesOf(result!)).toEqual(['T-88', 'T-92', 'T-96']);
       // 第二段吃实时值: 链级 spot = 批内标的行 (非库内 spot / 非定窗基准)。
       expect(result!.chain.priceKind).toBe('realtime');
+      // #378: 候选面标识随链上报 —— 有面 ⇒ 梯形窗 (与下方 window-size 日志的 shape= 同值)。
+      expect(result!.chain.windowShape).toBe('window');
       expect(result!.chain.spot.toString()).toBe(new Prisma.Decimal(REALTIME_SPOT).toString());
       expect(result!.chain.quoteAsOf).toEqual(REALTIME_AS_OF);
       // FR-013 窗规模可观测 (analyze G2)。
@@ -558,6 +560,8 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
       expect(result!.chain.priceKind).toBe('realtime');
       expect(result!.chain.source).toBe('realtime');
+      // #378: 零快照期 ⇒ 候选面标识 = bootstrap —— 客户端靠它把这一轮与次日梯形窗那一轮判成不可比。
+      expect(result!.chain.windowShape).toBe('bootstrap');
       // 归属口径: sessionDate = 交易所今天, oiAsOf = 最近已收盘交易日 (周一 08-10)。
       expect(result!.chain.sessionDate.toISOString().slice(0, 10)).toBe(TODAY);
       expect(result!.chain.oiAsOf.toISOString().slice(0, 10)).toBe(PREV_SESSION);

@@ -20,6 +20,7 @@ import type { LegTableResponsePriceKind } from './legTableResponsePriceKind';
 import type { LegTableResponseRealtimeDegrade } from './legTableResponseRealtimeDegrade';
 import type { LegTableResponseRentDepth } from './legTableResponseRentDepth';
 import type { LegTableResponseState } from './legTableResponseState';
+import type { LegTableResponseWindowShape } from './legTableResponseWindowShape';
 import type { LegTableResponseZone } from './legTableResponseZone';
 import type { PerspectiveCriteriaResponse } from './perspectiveCriteriaResponse';
 
@@ -44,6 +45,8 @@ export interface LegTableResponse {
   oiAsOf: string | null;
   /** 这批数从哪来 (eod / premarket_backfill / realtime) —— 「一直靠兜底续命」要看得见。realtime = **实时独载基线**: 库内一期收盘快照都没有, 整条链由这一次实时取回撑起 (新锚盘中首访的形态, 当晚收盘轮跑完即自愈) */
   source: string | null;
+  /** **候选面标识** (#378) —— 本批腿从哪种选码窗召回: bootstrap = 库内无昨日 Δ 面时的矩形宽窗 (零快照期 / 整面零 Δ); window = 昨日 Δ 面派生的 K-梯形窗; null = 收盘档无窗 (离线宽视野)。🚨 客户端「相邻两批的成员差集可不可比」MUST 以本字段 (连同 state / priceKind) 为线 —— bootstrap → window 那一跳 state / priceKind / 条件全部逐字不变而候选面整个换掉, 差集在那时不是判据结论, 是换了把尺子圈码。🚫 MUST NOT 由 source 反推 (有快照但整面零 Δ 时形状是 bootstrap 而 source 是 eod) */
+  windowShape: LegTableResponseWindowShape;
   /** vendor 随链下发的标的价, **未复权** */
   spot: string | null;
   /** W = 愿买价锚 (045 派生, 本端点不重算) */

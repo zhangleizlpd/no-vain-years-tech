@@ -373,6 +373,8 @@ function makeLegTable(
     // 🚨 与 asOf 差一天 —— OI 列 MUST 用它（FR-013 / Guardrail 6）。
     oiAsOf: YESTERDAY,
     source: 'eod',
+    // #378 契约增量: 候选面标识。
+    windowShape: null,
     spot: '82.40',
     w: anchor.w,
     zone: anchor.zone,

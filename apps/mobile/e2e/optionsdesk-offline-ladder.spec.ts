@@ -298,6 +298,8 @@ function project(perspective: LegPerspective, config: MockConfig): LegTableRespo
     quoteAsOf: SESSION_DAY,
     oiAsOf: SESSION_DAY,
     source: 'eod',
+    // #378 契约增量: 候选面标识。
+    windowShape: null,
     spot: '82.40',
     w: '80.00',
     zone: 'buy',

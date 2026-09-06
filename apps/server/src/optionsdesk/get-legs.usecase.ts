@@ -68,6 +68,7 @@ import {
   type LegChainRow,
   type LegRetrievalPort,
   type LegRetrievalResult,
+  type LegWindowShape,
   type RealtimeChainDegradeKind,
 } from './leg-retrieval.port';
 import {
@@ -391,6 +392,11 @@ export interface LegTableView {
   lastClosedSession: string | null;
   /** 快照来源 (`eod` / `premarket_backfill`, FR-040) —— 「靠兜底续命」要看得见。 */
   source: string | null;
+  /**
+   * **候选面标识** (#378) —— 检索层如实上报, 本层零加工; 空壳 / 收盘档恒 `null`。
+   * 语义与「为什么不能由 `source` 推」见 `LegChainMeta.windowShape`。
+   */
+  windowShape: LegWindowShape | null;
   /** vendor 随链下发的标的价, **未复权** (Guardrail 14)。 */
   spot: Prisma.Decimal | null;
 
@@ -569,6 +575,8 @@ export class GetLegsUseCase {
       // 无 `asOf` 就没有可判的东西 (恒 `UNAVAILABLE`) ⇒ 不白跑一次日历查询。
       lastClosedSession: null,
       source: null,
+      // 空壳没召回过 ⇒ 没有候选面可言 (#378)。
+      windowShape: null,
       spot: null,
       w,
       zone: null,
@@ -665,6 +673,8 @@ export class GetLegsUseCase {
         oiAsOf: chain.oiAsOf,
         lastClosedSession,
         source: chain.source,
+        // #378: 候选面标识原样带出 —— 🚫 MUST NOT 在这里由 `source` / `priceKind` 反推。
+        windowShape: chain.windowShape,
         spot: chain.spot,
         zone,
         intent,

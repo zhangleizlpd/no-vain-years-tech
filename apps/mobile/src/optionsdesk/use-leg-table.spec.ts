@@ -286,6 +286,8 @@ describe('064 T010 —— 成员变化提示（FR-021）', () => {
     readonly state?: string;
     readonly priceKind?: string;
     readonly intent?: string;
+    /** #378 候选面标识；缺省 = 有面的 K-梯形窗（实时常态）。`null` = 收盘档无窗。 */
+    readonly windowShape?: string | null;
   }
 
   function table(codes: readonly string[], basis: Basis = {}): Record<string, unknown> {
@@ -297,6 +299,7 @@ describe('064 T010 —— 成员变化提示（FR-021）', () => {
       positionBucket: null,
       asOf: AS_OF,
       priceKind: basis.priceKind ?? 'realtime',
+      windowShape: basis.windowShape === undefined ? 'window' : basis.windowShape,
       quoteAsOf: '2026-08-19T21:47:32',
     };
   }
@@ -440,6 +443,35 @@ describe('064 T010 —— 成员变化提示（FR-021）', () => {
     rerender();
 
     // 🚨 判据能分辨「基准换没换」：基准若仍停在换线前的 `A,B`，这里会得出「1 条新进」。
+    expect(result.current.membershipChange).toEqual({ entered: 0, left: 1 });
+  });
+
+  // ── #378 候选面切换：bootstrap 矩形窗 ↔ K-梯形窗 —— `state` / `priceKind` 都拦不住的那一跳 ──
+
+  it('⑫ bootstrap 宽窗 → 次日 K-梯形窗 ⇒ 不报 —— 两轮都是 available / realtime，只有选码窗换了', () => {
+    // 📌 忠于 #378 开单人的探针现场：两轮 `state` / `priceKind` 逐字相同，成员集 60 → 42。
+    //    这里缩成 5 → 3：矩形窗罩住的 D / E 在梯形窗里出窗，不是「不满足判据」。
+    seed(['A', 'B', 'C', 'D', 'E'], { windowShape: 'bootstrap' });
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'C'], { windowShape: 'window' });
+    rerender();
+
+    expect(result.current.membershipChange).toBeNull();
+  });
+
+  it('⑬ 同一候选面内的相邻两轮 ⇒ 照常报（反向守卫：并进 key 的是形状，不是「有没有变过」）', () => {
+    seed(['A', 'B', 'C', 'D', 'E'], { windowShape: 'bootstrap' });
+    const { result, rerender } = renderHook(() => useLegTable(SUBJECT));
+
+    seed(['A', 'B', 'C'], { windowShape: 'window' });
+    rerender();
+    expect(result.current.membershipChange).toBeNull();
+
+    // 梯形窗内的下一轮：基准已是换窗后的 `A,B,C`，少一条就该被告知（FR-021 没被顺手废掉）。
+    seed(['A', 'B'], { windowShape: 'window' });
+    rerender();
+
     expect(result.current.membershipChange).toEqual({ entered: 0, left: 1 });
   });
 });
