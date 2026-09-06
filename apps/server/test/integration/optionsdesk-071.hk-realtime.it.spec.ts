@@ -91,7 +91,13 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
   const NOW = new Date('2026-08-31T02:00:00.000Z');
   /** 港股当地日历日 —— 修好之后实时路径该用的那个。 */
   const HK_TODAY = '2026-08-31';
-  /** 美股折算日 (周日) —— 病灶用的那个, 同时也是**离线路径至今仍在用**的那个 (Guardrail 1)。 */
+  /**
+   * 美股折算日 (周日) —— 病灶用的那个。
+   * 📌 071 当时它还兼任「离线路径仍在用的那个」(Guardrail 1 的绊线锚点); 离线基准补齐后**两条
+   * 路径都不再用它**, 它在本文件里的角色收窄为**反例锚**: 臂③/③b 断言 `not.toBe(US_TODAY)`,
+   * 钉住「基准没有退回美股」。🚫 MUST NOT 因为「没人用了」把它删掉 —— 删了那两条断言就只剩
+   * 「等于港股日」这一半, 而拿任何一个恒定值都能过。
+   */
   const US_TODAY = '2026-08-30';
   /** 昨日 Δ 面所在的交易日 = 上周五。 */
   const PREV_SESSION = '2026-08-28';
@@ -456,20 +462,54 @@ describe('071 港股实时窄召回接线 (Testcontainers PG + Redis, 真 DI 容
     }
   });
 
-  // ── 臂③ 离线路径零变化 (FR-006; Guardrail 1 —— `:608` 本片禁改) ─────────────
+  // ── 臂③ 离线路径的业务日基准同样取该锚市场 ─────────────────────────────────
 
-  it('🚨 臂③ 离线路径的业务日基准**仍是美股折算日** —— `:608` 没被顺手一起改', async () => {
+  it('🚨 臂③ 离线路径的业务日基准 = **该锚市场的今天**, 与实时那处同一条纪律', async () => {
     await seedChain();
 
     const offline = await retrieve(false);
 
     expect(offline).not.toBeNull();
-    // 🚨 反直觉但**刻意**: 离线那处换基准会改用户可见的腿集合 (plan §D1c), 归后续片。
-    //    这一条把「只改了实时那一处」钉成机器判据 —— 顺手改了不会红, 只会让离线腿集合悄悄变。
-    expect(offline?.chain.marketDate).toBe(US_TODAY);
+    // 🚨 **本臂已于「离线基准修复」翻面, 翻它是蓄意的**: 原文钉的是「离线**仍是**美股折算日」
+    //    (`expect(...).toBe(US_TODAY)`), 那是 071 Guardrail 1 刻意设的绊线 —— 当时实时与离线
+    //    分两片走, 绊线保证「顺手把离线也改了」当场红。离线这半现已补齐 ⇒ 绊线的使命结束,
+    //    翻面而不是删除: 留着这一条继续钉住「基准取 `parsed.market`」这个正向判据。
+    //    🚫 MUST NOT 因为「它以前是 US_TODAY」就把它改回去 —— 那是把修复本身回退掉。
+    expect(offline?.chain.marketDate).toBe(HK_TODAY);
+    expect(offline?.chain.marketDate).not.toBe(US_TODAY);
     // 离线路径**零对外呼**。
     expect(readPort.calls).toHaveLength(0);
     expect(offline?.chain.priceKind).toBe('eod_close');
+  });
+
+  it('🚨 臂③b 离线腿集合在**同一个港股交易日内恒定** —— 不再随 ET 午夜跳变', async () => {
+    await seedChain();
+
+    // 同一个港股交易日 (2026-08-31) 的两个时点, 跨过 ET 午夜 (= 北京 12:00, EDT):
+    //   · 港股上午 10:00 HKT = `NOW` (02:00Z) ⇒ 美股折算日还是 08-30
+    //   · 港股下午 14:00 HKT (06:00Z)        ⇒ 美股折算日追平到 08-31
+    // 改前这两个时点的 `marketDate` 不同 ⇒ `expiryDate > marketDate` 这道过滤对**当天到期腿**
+    // (`X-DTE0`, 到期日 = `HK_TODAY`) 给出相反答案 ⇒ 全腿视角的成员集在北京 12:00 无业务事件地
+    // 变一次。EVIDENCE: 我方 2026-09-06 按 `Intl` 复算这两个时点 —— 02:00Z 得 us=2026-08-30、
+    // 06:00Z 得 us=2026-08-31, 而 hk 两次都是 2026-08-31。
+    const hkAfternoon = new Date('2026-08-31T06:00:00.000Z');
+    // 🚨 视角取 `all`: 它的 `dteBand` 恒 `null`, 是唯一看得见当天到期腿的视角 —— 收租/建仓的
+    //    召回段下界 (`RENT_RECALL_DTE.min = 30` / `BUILD_RECALL_DTE.min = 1`) 已单点排除 DTE=0,
+    //    拿它们做判据的话本臂对基准**恒绿**, 即使基准是错的。
+    const morning = await retrieve(false, 'all');
+    const afternoon = await retrieve(false, 'all', hkAfternoon);
+
+    const codesOf = (r: LegRetrievalResult | null) =>
+      (r?.candidates.map((c) => c.leg.code) ?? []).slice().sort();
+
+    expect(morning?.chain.marketDate).toBe(HK_TODAY);
+    expect(afternoon?.chain.marketDate).toBe(HK_TODAY);
+    // 成员集逐值相同 —— 这一条才是本臂的靶心 (只比 `marketDate` 的话, 拿一个恒定但**错**的
+    // 基准也能过)。
+    expect(codesOf(morning)).toEqual(codesOf(afternoon));
+    // 且当天到期的腿两个时点都**不在**集合里 (`>` 这条 policy 本片不动, 两市同构地全天隐藏)。
+    expect(codesOf(morning)).not.toContain('X-DTE0');
+    expect(codesOf(afternoon)).not.toContain('X-DTE0');
   });
 
   // ── 软下架的码不进实时批 (#342; 毒批防线) ──────────────────────────────────

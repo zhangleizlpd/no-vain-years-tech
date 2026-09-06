@@ -680,11 +680,28 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
     // 064 T003: `query.realtime` 是**每次请求**的显式开关 (`FR-015` fail-closed, 无默认值)。
     const parsed = parseAnchorTicker(query.symbol);
     if (parsed === null) return null;
-    // ⚠️ **写死 `'us'` 是已知缺陷, 跟踪在 #274** —— `parsed.market` 就在上一行, 但换基准会改变
-    // 用户可见的腿集合 (它喂 `expiryDate > marketDate` 这道 FR-028a 过滤 + 返回的 `chain.marketDate`),
-    // 先要答「港股当天到期、尚未收盘的腿该不该滤掉」这个语义问题。#263 只参数化了同文件的 DTE
-    // 基准 (`toLegRows`), 🚫 MUST NOT 顺手把这一行一起改掉 —— 两处判据面不同, 证据面也不同。
-    const marketDate = exchangeCalendarDate('us', query.now);
+    // 🚨 业务日基准取**本链自己的市场** —— 与实时那处 (071 FR-004) 同一条纪律, 本片补齐离线这半。
+    //
+    // 此前写死 `'us'` (沿 #274; 该单只修了实时那处便按 completed 关闭, 离线这半自此无人跟踪)。
+    // 它喂两处: `expiryDate > marketDate` 这道 FR-028a 过滤 + 返回的 `chain.marketDate`
+    // (后者再喂财报标的「今天」基准与链报表口径日)。
+    //
+    // ⚠️ 病灶不是「差一天」, 是**同一个港股交易日内腿集合会自己跳变一次**: 港股与宿主同为
+    // UTC+8, 而 ET 午夜落在北京 12:00 (EDT) ⇒ 港股上午算出的 `marketDate` 是港股的昨天、
+    // 下午才追平。EVIDENCE: 我方 2026-09-06 按 `Intl` 复算 2026-09-11 (港股到期日, prod 实查
+    // 1312 张在挂合约) 的四个时点 —— 09:30 / 11:59 HKT 得 us=09-10 ⇒ 当天到期腿**显示**;
+    // 13:00 / 16:00 HKT 得 us=09-11 ⇒ **隐藏**。同一天同一批数据, 全腿视角的成员集在北京
+    // 12:00 无业务事件地变一次。⇒ 待答的那个语义问题 (「当天到期腿该不该滤掉」) 现状答案是
+    // 「上午该、下午不该」, 而那不可能是任何一个正确答案。
+    //
+    // 🚫 本片**只换基准, 不动 `>` 这条 policy** —— 「当天到期、尚未收盘的腿该不该进全腿视角」
+    // 是先于本片存在、且**两市同等适用**的产品问题 (美股侧基准本就正确, 一直是全天隐藏),
+    // MUST NOT 由一个时区修复顺带裁决。换基准后两市行为同构, 该问题原样留着。
+    //
+    // 📌 影响面只有全腿视角: 收租/建仓的召回段 DTE 下界 (`RENT_RECALL_DTE.min = 30` /
+    // `BUILD_RECALL_DTE.min = 1`) 已单点排除 DTE=0, 而全腿的 `dteBand` 恒 `null`。
+    // 美股逐值零变化是**结构保证**: `parsed.market === 'us'` 时本行与改前是同一次调用。
+    const marketDate = exchangeCalendarDate(parsed.market, query.now);
 
     // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 锚 ticker → 标的 id
     // 寻址, 读法同 `get-underlying-detail.usecase.ts`。零写、零 @Inject() 对方 use case (Q7-C)。
