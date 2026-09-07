@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.50.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.49.0...server-v0.50.0) (2026-09-07)
+
+
+### Features
+
+* **optionsdesk:** 077 收租候选窗由「码数预算」决定 —— 零 Δ 面的静默缺腿由构造消掉 ([#382](https://github.com/zhangleizlpd/no-vain-years-tech/issues/382)) ([3daa3c5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/3daa3c5846b181394233dbcd74a9a3cfa1359ceb))
+
 ## [0.49.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.48.0...server-v0.49.0) (2026-09-07)
 
 
