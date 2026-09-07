@@ -24,14 +24,14 @@ context7_verified: []
 
 ## Constitution Check _(mandatory gate)_
 
-- [x] **Passed** —— 逐条核对：**I SDD** 走完 specify → clarify（3 问已裁决）→ 本 plan；**II TDD** 每个 task 先红后绿 + 定向变异证红（见 Testing Invariants）；**III 原子 task** 拆分见 tasks 阶段，判据是「30min-2h 且可单独 commit」；**IV 模块边界** 全部改动落在 `apps/server/src/optionsdesk/` 内，判据进 `*.rules.ts` 纯函数（ADR-0043），零跨 context 访问；**V 类型同步链** 契约有变（`gateCounts` 加字段）⇒ 走 `api-contract.md` 的 regen 链，不手写镜像。
+- [x] **Passed** —— 逐条核对：**I SDD** 走完 specify → clarify（3 问已裁决）→ 本 plan；**II TDD** 每个 task 先红后绿 + 定向变异证红（见 Testing Invariants）；**III 原子 task** 拆分见 tasks 阶段，判据是「30min-2h 且可单独 commit」；**IV 模块边界** 全部改动落在 `apps/server/src/optionsdesk/` 内，判据进 `*.rules.ts` 纯函数（ADR-0043），零跨 context 访问；**V 类型同步链** 契约有变（`LegTableResponse` 加**顶层**计数字段，见 §契约与前端）⇒ 走 `api-contract.md` 的 regen 链，不手写镜像。
 
 ## Phase 0 Research Gates _(mandatory)_
 
 ### Gate 0.1 — Integration Smoke Gate
 
 - [x] **Server**: 本片**不新增 endpoint**，改的是 `/optionsdesk/underlyings/{symbol}/legs` 的内部候选面派生。既有 IT（`optionsdesk-071.hk-realtime.it.spec.ts` 等）已覆盖该端点的真启动路径；本片新增的臂挂进同一批。
-- [x] **Mobile / Web**: P1 无 UI 改动（腿多了几条，表照常渲染）；**P2 有** —— `gateCounts` 第三条计数行需在真机 / 模拟器走一次。
+- [x] **Mobile / Web**: P1 无 UI 改动（腿多了几条，表照常渲染）；**P2 有** —— 新增的那条裁剪计数行需在真机 / 模拟器走一次。
 - [x] **Evidence**: ⚠️ **两类结构上验不到，只能真时段真机验**：① 零 Δ 面本身只在**新锚首日**触发（近 30 天 prod 1447 个「标的×session」整面零 Δ **0 次**）⇒ 无法按需构造，只能等下一次建锚；② 预算裁剪在今日数据上恒不触发（收租窗最大 293 < 上限 399）⇒ 屏上那条计数**没有自然触发场景**。⇒ 两者的自动化断言只能落在夹具层，spec `web_compat_notes` 已写明。真机证据挂到下一次建锚。
 
 ### Gate 0.2 — Cross-stack Vendor Intersection 6Q Card
@@ -100,15 +100,19 @@ Clarifications Q3 裁决。实现要点：
 
 1. 按行权价分组（同档的多个到期日归一组）
 2. 档按 `|K − axis|` 升序（同一标的内 axis 是常量 ⇒ 绝对差与相对比排序等价，随便哪个，但**只写一种**）
+   - 🚨 **同距并列必须有确定性次级键**：`FR-008` 说「确定性由裁剪单位保证」，那消的是**同档内**的并列；**跨档等距**（axis 两侧对称，如 axis=100 时 K=98 与 K=102）是档为原子之后的**残余并列**，仍会出现。上游 `findMany` 无 `orderBy` ⇒ 输入顺序由 DB 决定、不保证稳定 ⇒ 不定次级键则 `FR-008` 不成立。**裁决：同距取行权价较小者优先**（更深虚 = 收租更保守，与「宁少不多」的裁剪方向一致），配一条断言
 3. 逐档累加该档的合约数，**下一档会超预算就停**；跨在边界上的那一档整档不纳入
-4. 🚫 **MUST NOT 以合约码为单位裁** —— 同档不同到期日的档距**完全相同**，那是常态；以码为单位会让裁剪线落在档内部，屏上出现同一行权价「10 月实时价 / 12 月昨收价」而无任何解释（未入窗的腿不消失，保留收盘档 `priceKind`）
+4. 🚫 **MUST NOT 以合约码为单位裁** —— 同档不同到期日的档距**完全相同**，那是常态；以码为单位会让裁剪线落在档内部，屏上出现同一行权价「10 月有行、12 月整行没有」而无任何解释（窄召回骨架只由入窗合约装配，`leg-retrieval.adapter.ts:531-535`；未入窗的腿**整行不出现**，且 bootstrap 场景库内无收盘档可落 —— 这比 spec Q3 原稿写的「保留收盘档价」更糟，结论因此更成立）
 
 #### 契约与前端
 
-- `LegTableResponse.gateCounts` 加**第三个**计数字段（现有两个：`removedByPremiumFloor` / `excludedFromIntentTabs`）。命名与既有两个同族。
-- mobile `leg-picker.rules.ts` 的 `legGateCountLines()` 加**第三条** `LegGateCountLine`，文案挂 `optionsdesk-copy.ts`（与 `gatePremiumFloor` / `gateLiquidity` 并列）。语义是「仍在全腿视角」那一支。
+🚨 **本节 2026-09-07 tasks 期改写** —— 原稿把计数落在 `gateCounts` 上，与代码里一条明写裁决相撞（判据见 spec Clarifications Q2 📌 ②）。现落法：
+
+- 计数走 **`LegTableResponse` 顶层字段**（`candidateCapDropped` 的同族兄弟），🚫 **MUST NOT 进 `gateCounts`**：`get-legs.usecase.ts:428-433` 已裁定「保险丝熔断了」这一族蓄意不进 `LegGateCounts`（那两个数答「判据挡下了什么」），本片的预算裁剪是供应方容量上限、不是判据。`optionsdesk-051.gate-counts.it.spec.ts:363` 的 `toEqual` 是这条的机器判据 —— 塞进去当场红。
+- mobile 侧仿 `legCandidateCapLine`（`leg-picker.rules.ts:408-412`）新增一个返回 `LegGateCountLine | null` 的函数：**计数为 0 ⇒ 返 null、整条不渲染**。🚫 MUST NOT 塞进 `legGateCountLines()` 的返回数组 —— 那两条恒渲染（0 时出「移出 0 条」），而预算裁剪实测恒不触发，塞进去等于屏上常驻一行恒为 0 的噪声。文案挂 `optionsdesk-copy.ts`（与 `candidateCap` 同族），**无 note 后缀**（「· 仍在全腿视角」已由 spec Q2 📌 ① 撤掉，理由：bootstrap 场景下全腿视角结构上「未就绪」）。
+- 屏上「与两道门槛的计数并列」（`FR-007` ②）由**同一版面区块 + 同一行形态**（`LegGateCountLine`）兑现 —— 与 `legTruncationLine` / `legCandidateCapLine` 既有落法一致，`underlying-detail-screen.tsx` 多接一个 prop、不改版面。
 - 走 `docs/conventions/api-contract.md` 的 regen 链（openapi → `@nvy/api-client`），**MUST NOT 手写镜像**。
-- 🚨 **新增 public 字段必 grep 三类手写镜像**：mock 工厂 / golden JSON 基线 / contract-smoke 闭合键集 —— 它们不自动跟随，affected 门绿不代表它们绿（#379 实撞）。
+- 🚨 **新增 public 字段必 grep 三类手写镜像**（#379 实撞；本片已逐个查实，落点见 tasks Path Conventions）：contract-smoke **顶层闭合键集**（`optionsdesk-chain-leg-picker.contract.ts:441-487`，按字典序插在 `basis` 与 `candidateCapDropped` 之间）· **golden JSON 基线**（`optionsdesk-064.baseline.json` 3 处 / `optionsdesk-070.baseline.json` 4 处，与 `candidateCapDropped` 同位补 `0`）· mobile e2e **mock 工厂** 7 处（typecheck 逼得出，但**基线与键集逼不出** —— 那两类是 affected 门绿也不绿的一面）。
 
 #### 守卫与既有护栏
 
