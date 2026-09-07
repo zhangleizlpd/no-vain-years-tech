@@ -429,6 +429,7 @@ function makeTable(params: URLSearchParams, perspective: LegTab): LegTableRespon
     // 本文件不验截断（归 T010）：不设阈值 ⇒ 零截断；候选上限亦未触及。
     displayLimit: null,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
   };
 }
 

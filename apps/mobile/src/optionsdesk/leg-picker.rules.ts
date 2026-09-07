@@ -264,7 +264,7 @@ export function legPickerNotices(
  *    只能是空承诺 ⇒ 恒 `goTab: null`。MUST NOT 为了对称把两条做成一样。
  */
 export interface LegGateCountLine {
-  key: 'premium_floor' | 'liquidity';
+  key: 'premium_floor' | 'liquidity' | 'batch_cap';
   text: string;
   goTab: LegPickerTab | null;
   /** 这一行报的数本身 —— 降权判据读它（FR-008），呈现层不从文案里往回抠数字。 */
@@ -410,6 +410,30 @@ export function legCandidateCapLine(
 ): LegCandidateCapLine | null {
   if (table === null || table.candidateCapDropped <= 0) return null;
   return { dropped: table.candidateCapDropped, text: COPY.candidateCap(table.candidateCapDropped) };
+}
+
+/**
+ * 预算裁剪计数（077 FR-007 ②）。复杂度 O(1)。
+ *
+ * 🚨 **与 {@link legCandidateCapLine} 同族的保险丝、却与两条门槛计数同版面**：FR-007 ② 要的是
+ *    「既有排除计数惯用法 · 同一版面区块、同一行形态」⇒ 返回 {@link LegGateCountLine}，由屏上
+ *    的 `LegGateLine` 零改动复用；🚫 MUST NOT 像 `K` 熔断那样在区块外另起一块。
+ * 🚨 **MUST NOT 塞进 {@link legGateCountLines} 的返回数组**（Guardrail 8）：那两条恒渲染（为 0
+ *    时出「移出 0 条」），而预算裁剪实测恒不触发 ⇒ 混进去等于屏上常驻一行恒为 0 的噪声。
+ * 🚨 **MUST NOT 进 {@link legGateCountsQuiet} 的判据**：那函数答的是「两个门槛数皆 0 要不要降
+ *    权」，而本行**不为 0 才出现** —— 进去只会让降权逻辑自相矛盾。
+ * 📌 恒 `goTab: null`：被裁掉的档在 bootstrap 分支哪个视角都取不到实时，给入口是空承诺。
+ */
+export function legBatchCapLine(
+  table: Pick<LegTableResponse, 'batchCapTrimmed'> | null,
+): LegGateCountLine | null {
+  if (table === null || table.batchCapTrimmed <= 0) return null;
+  return {
+    key: 'batch_cap',
+    text: COPY.batchCapTrimmed(table.batchCapTrimmed),
+    goTab: null,
+    count: table.batchCapTrimmed,
+  };
 }
 
 // ═══════════════ 意图视角空态（051 FR-009 / SC-013） ═══════════════

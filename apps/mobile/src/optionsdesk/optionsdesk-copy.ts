@@ -302,6 +302,18 @@ export const OPTIONSDESK_COPY = {
     /** 在全腿视角说：它们**就在本视角内** ⇒ 改口且不给入口（去全腿视角的入口在这里是死链）。 */
     gateLiquidityNoteAll: ' · 仅全腿视角可见',
 
+    // ── 预算裁剪计数（077 FR-007 ②，mockup 帧 ② 逐字）──────────────────────
+    /**
+     * 收租窗口的码数超过单批上限时被整档裁掉的档数 —— 与上面两条门槛计数**同一版面区块、同一
+     * 行形态**（FR-007 ②），但语义是 {@link candidateCap} 那一族的**保险丝**：处置是调容量。
+     * 🚨 **无 note 后缀**（Guardrail 9）：🚫 MUST NOT 学 {@link gateLiquidityNoteIntent} 补一句
+     *    「· 仍在全腿视角」—— 裁剪只在 bootstrap 分支（零 Δ 面）发生，那时离线路径必返 null、
+     *    全腿视角结构上恒「未就绪」，那半句是**空承诺**（spec Clarifications Q2 📌 ①）。
+     * 📌 也不做「计数为 0 时只报数」的 {@link gatePremiumFloorNote} 那套 —— 本条为 0 时**整条不
+     *    渲染**（判据在 `legBatchCapLine`），落不到 0 这个入参上。
+     */
+    batchCapTrimmed: (n: number) => `超单批上限，${n} 条未取实时`,
+
     // ── 表达层截断计数 · 第 3 条（053 FR-016/FR-017/FR-018，plan D-UI-1）──────────
     /**
      * 🚨 **只带新信息**：报「已显示多少」与「还剩多少没显示」，🚫 MUST NOT 复述「符合条件 N 条」

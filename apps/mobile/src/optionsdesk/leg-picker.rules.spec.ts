@@ -29,6 +29,7 @@ import {
   intentBasisLine,
   intentLabel,
   isManualBucket,
+  legBatchCapLine,
   legCandidateCapLine,
   legEmptyState,
   legGateCountLines,
@@ -160,6 +161,8 @@ function table(overrides: Partial<LegTableResponse> = {}): LegTableResponse {
     memberCount: 0,
     displayLimit: null,
     candidateCapDropped: 0,
+    // 077 契约增量：预算裁剪计数。基线取「未裁剪」—— 它是计数不是「未知」，恒不为 null。
+    batchCapTrimmed: 0,
     ...overrides,
   };
 }
@@ -688,5 +691,36 @@ describe('🚨 053 FR-019c —— 候选上限 `K` 的异常位（与截断计�
       'all',
     ).map((g) => g.key);
     expect(gateKeys).toEqual(['premium_floor', 'liquidity']);
+  });
+});
+
+describe('🚨 077 FR-007 ② —— 预算裁剪计数行（保险丝款，与两条门槛计数同版面区块）', () => {
+  it('① 未裁剪（0）⇒ null ⇒ **整条不渲染**（Guardrail 8：屏上不许常驻一行恒为 0 的噪声）', () => {
+    expect(legBatchCapLine(table({ batchCapTrimmed: 0 }))).toBeNull();
+  });
+
+  it('② 裁剪发生 ⇒ 报出被裁的档数，且**恒无入口**（那些腿哪个视角都看不到）', () => {
+    const line = legBatchCapLine(table({ batchCapTrimmed: 52 }));
+    expect(line?.key).toBe('batch_cap');
+    expect(line?.count).toBe(52);
+    expect(line?.text).toBe(COPY.batchCapTrimmed(52));
+    expect(line?.text).toContain('52');
+    // 🚫 Guardrail 9：无「· 仍在全腿视角」那类 note 后缀 —— bootstrap 场景下全腿视角结构上
+    //    「未就绪」，那半句是空承诺（spec Clarifications Q2 📌 ①）。
+    expect(line?.text).not.toContain(COPY.gateLiquidityNoteIntent);
+    expect(line?.goTab).toBeNull();
+  });
+
+  it('③ 契约未到手（table === null）⇒ null —— 与 `legCandidateCapLine` 同族形态', () => {
+    expect(legBatchCapLine(null)).toBeNull();
+  });
+
+  it('🚨 ④ Guardrail 8 —— **MUST NOT 混进 `legGateCountLines()` 的返回数组**（那两条恒渲染）', () => {
+    const lines = legGateCountLines(
+      { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
+      'rent',
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines.map((line) => line.key)).toEqual(['premium_floor', 'liquidity']);
   });
 });

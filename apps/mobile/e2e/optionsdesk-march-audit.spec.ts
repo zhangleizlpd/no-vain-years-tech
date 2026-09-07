@@ -331,6 +331,7 @@ function project(perspective: LegPerspective): LegTableResponse {
     memberCount: LEGS.length,
     displayLimit: null,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
   };
 }
 

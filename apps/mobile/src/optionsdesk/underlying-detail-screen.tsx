@@ -76,6 +76,7 @@ import {
 } from './leg-criteria.rules';
 import { LEG_TIER_LEGEND, legAsOfLabel } from './leg-picker-copy';
 import {
+  legBatchCapLine,
   legCandidateCapLine,
   legEmptyState,
   legGateCountLines,
@@ -466,6 +467,9 @@ export function UnderlyingDetailScreen({
                     //    `chain` —— 截断阈值与 `K` 触及都是视角级的量。
                     truncation={legTruncationLine(legTable.table)}
                     candidateCap={legCandidateCapLine(legTable.table)}
+                    // 🚨 077 FR-007 ②：预算裁剪计数与上面两条门槛计数**同一版面区块**，
+                    //    但走独立 prop —— 它不进 `legGateCountLines()` 的数组（那两条恒渲染）。
+                    batchCap={legBatchCapLine(legTable.table)}
                     // 🚨 空态按**该视角自己的**排除数分支（051 FR-009 / SC-013）；
                     //    条件收窄出来的空是第三支，入口是「复位」而不是换视角（052 Edge Case）。
                     empty={legEmptyState(
@@ -651,6 +655,7 @@ function LegBlockNotice({
   criteria,
   truncation,
   candidateCap,
+  batchCap,
   empty,
   onRetry,
   asOfMismatch,
@@ -669,6 +674,8 @@ function LegBlockNotice({
   truncation: LegTruncationLine | null;
   /** 候选上限 `K` 的异常位（053 FR-019c）。`null` ⇒ 未触及，**整块不出现**（SC-016）。 */
   candidateCap: LegCandidateCapLine | null;
+  /** 预算裁剪计数（077 FR-007 ②）。`null` ⇒ 未裁剪，**整条不渲染**（Guardrail 8）。 */
+  batchCap: LegGateCountLine | null;
   empty: LegEmptyState;
   onRetry: () => void;
   asOfMismatch: boolean;
@@ -796,6 +803,14 @@ function LegBlockNotice({
           <Text className="text-[10px] text-ink-muted" testID="optionsdesk-detail-leg-truncated">
             {truncation.text}
           </Text>
+        )}
+        {/* 🚨 077 FR-007 ②：预算裁剪计数落在**本区块内**（mockup `design/handoff.md` 钉死的渲染
+            序：`gates.map` → `criteria.map` → `truncation` → 本条），🚫 MUST NOT 学下面的 `K`
+            熔断在区块外另起一块 —— FR-007 ② 要的正是「同一版面区块、同一行形态」。
+            📌 `quiet` 恒传 `false`：降权答的是「两个门槛数皆 0 要不要缩」，而本条**不为 0 才
+               出现**，跟着降权会把真数据缩成 9px。判据留在 `legGateCountsQuiet` 那边不动。 */}
+        {batchCap === null ? null : (
+          <LegGateLine gate={batchCap} quiet={false} onSelectTab={onSelectTab} />
         )}
       </View>
 
