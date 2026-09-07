@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: implementing
 created_at: '2026-08-22'
-updated_at: '2026-08-24'
+updated_at: '2026-09-07'
 ---
 
 # Tasks: 066-hk-option-cold-start（港股期权接入与锚冷启动开通港股）
@@ -146,9 +146,11 @@ updated_at: '2026-08-24'
 
     ⇒ **只有 21:30–23:59 那一档能验到 T09 的分叉在新写入上生效** —— 其余三档要么不写、要么被 `crossedIntoNextSession` 短路。这正是 T09 那条 📌 里记的「生产证据不含新写入走分叉」的**唯一补法**，⇒ 本实验一次收两笔。
 
-    🚨 **再叠一层队列约束**：冷启动走 outbox（`optionsdesk.anchor-created` → `AnchorColdStartSubscriber` → `enqueueColdStart`），进的是与夜间维度**同一条并发为 1** 的 `marketdata-sync` 队列，而 **15 个维度全部挤在 22:00**（10:00–22:00 之间零触发）。22:00 之后建锚会被压在长链后面、很可能被推过午夜，落回短路档。⇒ **黄金窗口 = 交易日 21:30–21:59**，分叉已生效且队列空。
+    🚨 **再叠一层队列约束**：冷启动走 outbox（`optionsdesk.anchor-created` → `AnchorColdStartSubscriber` → `enqueueColdStart`），进的是与夜间维度**同一条并发为 1** 的 `marketdata-sync` 队列，而 **15 个维度全部挤在 22:00**（10:00–22:00 之间零触发）。22:00 之后建锚会被压在长链后面、很可能被推过午夜，落回短路档。⇒ **黄金窗口 = 交易日 21:30–21:38**，分叉已生效且队列空。
 
-    **预注册判据**（先写死，事后不许改口径）：`outcome = backfilled` · `target_session` = 当日 · `source = eod` · **`oi_as_of` = 当日**（若为前一交易日 ⇒ 分叉没生效，这是核心判别）· 合约数与快照行数相等且 > 0 · `SC-003` 覆盖标的数 3 → 4 且仍远小于 2791。⚠️ 若执行滑出窗口导致 `source = premarket_backfill`，本次**作废而非失败**，改日重跑。
+    🚨 **上界 2026-09-07 实查收窄：原写 `21:59`，已失效。** 上面那段只算了 default lane 上 22:00 那批，写于 futu lane 拆出来之前。实查两条：① `enqueueColdStart` **恒落 futu lane**（`marketdata-sync.queue.ts` 的 `resolveLane('futu')`；prod 实查 `MARKETDATA_FUTU_LANE_ENABLED=true`）；② **`hk_option_oi_settle` 同在 futu lane**，`sync_dimension.cron_expr = '0 40 21 * * *'` = **21:40 HKT**（cron 时区基准由 `next_fire_at` 实证：该列的 `Asia/Hong_Kong` 投影与 `cron_expr` 逐行逐字吻合）。该维度历史耗时 **59 / 77 / 116 / 121 秒**（`marketdata.sync_run` id 971 / 947 / 919 / 894，2026-09-01…09-04 各轮，status 均 `partial`）⇒ 占用 futu lane 至约 21:42。⇒ **21:40 之后建锚会排在它后面**，窗口实际只有 `21:30–21:38`。
+
+    **预注册判据**（先写死，事后不许改口径）：`outcome = backfilled` · `target_session` = 当日 · `source = eod` · **`oi_as_of` = 当日**（若为前一交易日 ⇒ 分叉没生效，这是核心判别）· 合约数与快照行数相等且 > 0 · `SC-003` 覆盖标的数 **22 → 23** 且仍远小于 hk universe（🚨 **2026-09-07 订正：原写「3 → 4 / 2791」已陈旧** —— 那是 2026-08-26 全仓仅 3 只港股锚时的数。prod 实查：港股锚 28 只、其中**有未到期标准合约的 22 只**，hk universe **2793** 只。照原数对拍会拿错期望值）。⚠️ 若执行滑出窗口导致 `source = premarket_backfill`，本次**作废而非失败**，改日重跑。
 
     ⚠️ **`v`（每股内在价值）MUST 由维护者提供** —— `/anchor-import` 明令「不要从你自己的知识里补任何数值，也不要从上下文里推断」。且这**不是一只测试锚**：它会真进锚表、进 L 层与仓位上限推导、并永久进入每晚采集工作集 ⇒ 选一只本来就要建锚的票，别为实验编一个 V。
 
