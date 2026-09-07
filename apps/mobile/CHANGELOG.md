@@ -2,6 +2,20 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.20.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.19.0...mobile-v0.20.0) (2026-09-07)
+
+
+### Features
+
+* **marketdata:** 076 期权合约股数落库 —— 单笔权利金与成交额按每张合约的真实股数算 ([#380](https://github.com/zhangleizlpd/no-vain-years-tech/issues/380)) ([6e50bf3](https://github.com/zhangleizlpd/no-vain-years-tech/commit/6e50bf32453ee974ff1a82b203ac9fa7d131c5d0))
+
+
+### Bug Fixes
+
+* **optionsdesk:** 成员变化提示的比较线并入口径 —— 换了尺子的两批不再当判据结论播报 ([#377](https://github.com/zhangleizlpd/no-vain-years-tech/issues/377)) ([b313f22](https://github.com/zhangleizlpd/no-vain-years-tech/commit/b313f229163b215bae9449961ed8329a5bd0e694)), closes [#140](https://github.com/zhangleizlpd/no-vain-years-tech/issues/140)
+* **optionsdesk:** 无挂牌期权的锚整条不渲染档位条 —— 「下拉可重试」对终态是句假话 ([#371](https://github.com/zhangleizlpd/no-vain-years-tech/issues/371)) ([a8d801f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a8d801f08309deb7c6c5422e0c829527b0f12386)), closes [#361](https://github.com/zhangleizlpd/no-vain-years-tech/issues/361)
+* **optionsdesk:** 选约表契约带出候选面标识 —— bootstrap 宽窗到 K-梯形窗那一跳不再报假成员变化 ([#379](https://github.com/zhangleizlpd/no-vain-years-tech/issues/379)) ([05a7ee3](https://github.com/zhangleizlpd/no-vain-years-tech/commit/05a7ee3660f749e2f557809e08fb3b858ab54318)), closes [#378](https://github.com/zhangleizlpd/no-vain-years-tech/issues/378)
+
 ## [0.19.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.18.0...mobile-v0.19.0) (2026-09-05)
 
 
