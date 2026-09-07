@@ -232,18 +232,24 @@ async function seed(ctx: RealBackendCtx, today: string): Promise<void> {
   // 合约集 —— 后三条是**读端 SQL 必须滤掉**的对照组（认购 / 非标 / 当日到期）。
   // 🚨 行权价一律取 spot(70) 下方的虚值认沽 ⇒ 内在价值恒 0，不触「内在价值 > ask」那类自洽硬门。
   await ctx.execSql(
+    // 🚨 末列 = `contract_size` (076 FR-012): 两个派生列 (单笔权利金 / 成交额) 自 076 起乘的是
+    // **合约自带的股数**而不是写死的 100 ⇒ 不播这一列, 下面 `assertNewFieldsRoundTrip` 的期望值
+    // 全部落 null。本片是美股夹具, 标准合约恒 100 (spec 076「取证」§2 PoC-A) ⇒ 期望值不变。
     `INSERT INTO marketdata.option_contract
-       (market, code, root, underlying_instrument_id, expiry_date, strike_price, option_type, is_standard)
+       (market, code, root, underlying_instrument_id, expiry_date, strike_price, option_type,
+        is_standard, contract_size)
      VALUES
-       ('${MARKET}', '${RENT_DROP}', '${CODE_CHAIN}', ${iid}, DATE '${d(180)}', 65.0000, 'PUT', true),
-       ('${MARKET}', '${RENT_STAY}', '${CODE_CHAIN}', ${iid}, DATE '${d(200)}', 60.0000, 'PUT', true),
-       ('${MARKET}', '${BUILD}', '${CODE_CHAIN}', ${iid}, DATE '${d(10)}', 68.5000, 'PUT', true),
-       ('${MARKET}', '${NO_BID}', '${CODE_CHAIN}', ${iid}, DATE '${d(160)}', 45.0000, 'PUT', true),
-       ('${MARKET}', '${NO_GREEKS}', '${CODE_CHAIN}', ${iid}, DATE '${d(220)}', 55.0000, 'PUT', true),
-       ('${MARKET}', '${LIQ_BLOCKED}', '${CODE_CHAIN}', ${iid}, DATE '${d(40)}', 60.0000, 'PUT', true),
-       ('${MARKET}', '${EXPIRES_TODAY}', '${CODE_CHAIN}', ${iid}, DATE '${today}', 70.0000, 'PUT', true),
-       ('${MARKET}', '${NON_STANDARD}', '${CODE_CHAIN}', ${iid}, DATE '${d(190)}', 62.0000, 'PUT', false),
-       ('${MARKET}', '${CALL_LEG}', '${CODE_CHAIN}', ${iid}, DATE '${d(200)}', 75.0000, 'CALL', true)`,
+       ('${MARKET}', '${RENT_DROP}', '${CODE_CHAIN}', ${iid}, DATE '${d(180)}', 65.0000, 'PUT', true, 100),
+       ('${MARKET}', '${RENT_STAY}', '${CODE_CHAIN}', ${iid}, DATE '${d(200)}', 60.0000, 'PUT', true, 100),
+       ('${MARKET}', '${BUILD}', '${CODE_CHAIN}', ${iid}, DATE '${d(10)}', 68.5000, 'PUT', true, 100),
+       ('${MARKET}', '${NO_BID}', '${CODE_CHAIN}', ${iid}, DATE '${d(160)}', 45.0000, 'PUT', true, 100),
+       ('${MARKET}', '${NO_GREEKS}', '${CODE_CHAIN}', ${iid}, DATE '${d(220)}', 55.0000, 'PUT', true, 100),
+       ('${MARKET}', '${LIQ_BLOCKED}', '${CODE_CHAIN}', ${iid}, DATE '${d(40)}', 60.0000, 'PUT', true, 100),
+       ('${MARKET}', '${EXPIRES_TODAY}', '${CODE_CHAIN}', ${iid}, DATE '${today}', 70.0000, 'PUT', true, 100),
+       -- 非标合约的股数**恒 NULL** (076 FR-002): 供应方对非标照样报 100 (PoC-A 实测 APTV1),
+       -- 而调整后系列的交割物已不是「100 股正股」⇒ 信那个数就是把错数显示得像真的。
+       ('${MARKET}', '${NON_STANDARD}', '${CODE_CHAIN}', ${iid}, DATE '${d(190)}', 62.0000, 'PUT', false, NULL),
+       ('${MARKET}', '${CALL_LEG}', '${CODE_CHAIN}', ${iid}, DATE '${d(200)}', 75.0000, 'CALL', true, 100)`,
   );
   const cid = (code: string): string =>
     `(SELECT id FROM marketdata.option_contract WHERE market = '${MARKET}' AND code = '${code}')`;

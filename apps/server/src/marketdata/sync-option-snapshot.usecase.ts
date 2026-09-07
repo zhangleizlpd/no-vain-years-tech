@@ -81,6 +81,14 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  */
 const SNAPSHOT_ROW_CHUNK = 500;
 
+/**
+ * 「库值 ≠ 快照值」逐票留几条样本 (076 FR-008)。样本是给人看「差多少」的, 不是明细通道 ——
+ * 资本调整会把该票**整串**未到期合约一起改股数 (港股实测单票未到期合约上限 4602 张), 全量记
+ * 会把 `sync_run.findings` 那一列撑成几千个码的 JSON 并淹掉别的 finding (同 `unjudged` 那条
+ * 「白名单而非全量」的取舍)。要看全量去查 `option_contract.contract_size`。
+ */
+const CONTRACT_SIZE_MISMATCH_SAMPLES = 5;
+
 /** 收盘后正常采集 (FR-040 幂等键第三段的两个活值之一)。 */
 export const SNAPSHOT_SOURCE_EOD = 'eod';
 
@@ -120,6 +128,12 @@ export interface SnapshotCollectionSpec {
    * 🚫 MUST NOT 拿它去影响入库: 它是**留痕**不是判据, 入库与否只看 `verdict.admitted`。
    */
   unjudgedWatch?: readonly string[];
+}
+
+/** 逐票的股数对账累加器 (076 FR-008): 全量计数 + 封顶样本。 */
+interface ContractSizeTally {
+  mismatched: number;
+  samples: string[];
 }
 
 /** 三个时点列 + 来源, 逐行落库前已解析完毕。 */
@@ -202,6 +216,11 @@ interface WorkingContract {
   root: string;
   isStandard: boolean;
   expiryDate: Date;
+  /**
+   * 076 FR-008: 与快照行的 `lot_size` 对账用。**只读不写** —— 唯一写手是链发现的对账步。
+   * 非标合约与尚未回填的行恒 null ⇒ 无从比对, 不是「不一致」。
+   */
+  contractSize: number | null;
 }
 
 @Injectable()
@@ -539,6 +558,7 @@ export class SyncOptionSnapshotUseCase {
         root: true,
         isStandard: true,
         expiryDate: true,
+        contractSize: true,
       },
       orderBy: { id: 'asc' },
     });
@@ -582,6 +602,8 @@ export class SyncOptionSnapshotUseCase {
     //    (软下架机制见 `option_contract.withdrawn_at` 列注释与 sync-option-contract 的对账。)
     const batches = chunked(contracts, OPTION_SNAPSHOT_MAX_CONTRACT_CODES);
     const batchFailures: string[] = [];
+    // 076 FR-008: 股数对账的**逐票**累加器 (批级的数没有意义 —— 资本调整改的是整票)。
+    const contractSizeTally: ContractSizeTally = { mismatched: 0, samples: [] };
     let batchIndex = 0;
     for (const batch of batches) {
       batchIndex++;
@@ -609,6 +631,8 @@ export class SyncOptionSnapshotUseCase {
           }
           return this.toGuardRow(row, contract, spotByCode);
         });
+
+        this.collectContractSizeMismatches(optionRows, byCode, contractSizeTally);
 
         const verdicts = checkOptionSnapshotRows(guardRows);
         this.reportRejected(symbol, verdicts, stats);
@@ -665,6 +689,19 @@ export class SyncOptionSnapshotUseCase {
         );
       }
     }
+    // 076 FR-008: 留痕在批失败守卫**之前** —— 已成功的批里比出来的不一致是真结论, 让它跟着
+    // 整票的 throw 一起丢掉, 等于资本调整撞上一次 vendor 抖动就永久失声。
+    if (contractSizeTally.mismatched > 0) {
+      stats.findings.push({
+        kind: 'notice',
+        step: 'option_contract_size_mismatch',
+        detail: {
+          symbol,
+          mismatched: contractSizeTally.mismatched,
+          samples: contractSizeTally.samples,
+        },
+      });
+    }
     // 🚨 有批失败 ⇒ 整票**仍报 failed** (调用方 catch 计 failed + 落 findings)。就地吞掉等于
     // 把硬失败降级成「静默的部分成功」: `sync_run` 显示全绿, 而逐合约覆盖率探针的**基线日**
     // 会把这次缺口吸收成新常态 —— 2026-09-03 实测, hk:09988 缺 390 张两天后探针判
@@ -676,6 +713,40 @@ export class SyncOptionSnapshotUseCase {
       );
     }
     return true;
+  }
+
+  /**
+   * 🚨 076 FR-008: 本批的股数**只比不写** —— 库里那一列的唯一写手是链发现的对账步
+   * (`sync-option-contract.usecase.ts`)。就地写会让库值在两个口径之间来回跳: 快照轮每天跑、
+   * 链发现只在整轮干净时更新, 而两者不一致时**没有任何判据**看得见谁对。
+   *
+   * 它是资本调整期的运行期信号 —— D3 的更新只在链发现整轮干净时发生, 链连着几天不干净而供应方
+   * 已改了股数时, 本方法是唯一还在逐日看这个数的路径。
+   *
+   * 🚫 MUST NOT 写库、MUST NOT 影响这些行入库: 只往 `tally` 里加。复杂度 O(本批行数), 零 I/O。
+   */
+  private collectContractSizeMismatches(
+    optionRows: readonly OptionSnapshotRow[],
+    byCode: Map<string, WorkingContract>,
+    tally: ContractSizeTally,
+  ): void {
+    for (const row of optionRows) {
+      const contract = byCode.get(row.code) as WorkingContract;
+      // 四项全中才算不一致。非标合约的库值恒 null (FR-002), 未回填的也是 null ⇒ 两侧任一 null
+      // 都是「无从比对」而不是「对不上」—— 拿它留痕会让首轮回填前每票每天各响一条。
+      if (
+        !contract.isStandard ||
+        contract.contractSize === null ||
+        row.contractSize === null ||
+        contract.contractSize === row.contractSize
+      ) {
+        continue;
+      }
+      tally.mismatched++;
+      if (tally.samples.length < CONTRACT_SIZE_MISMATCH_SAMPLES) {
+        tally.samples.push(`${row.code}: 库 ${contract.contractSize} ≠ 快照 ${row.contractSize}`);
+      }
+    }
   }
 
   /** 端口行 + 合约行 → 硬门入参。行权价与买卖方向取**库内**合约行 (落库归属的就是它)。 */

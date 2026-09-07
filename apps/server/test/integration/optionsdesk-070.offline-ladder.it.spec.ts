@@ -232,6 +232,10 @@ describe('070 离线档收租阶梯 (Testcontainers PG + Redis, 真 DI 容器)',
           optionType: 'PUT',
           isStandard: true,
           expirationCycle: 'MONTH',
+          // 076: 两市同码夹具**同取 100** —— 本文件的判据面是行军梯与门控, 不是股数; 取 100 让
+          // golden 基线 (`optionsdesk-070.baseline.json`) 逐值不变。港股真实股数逐标的不同这件事
+          // 由 052 / 071 的专臂钉 (spec「取证」§1)。
+          contractSize: 100,
         },
         select: { id: true },
       });

@@ -835,9 +835,10 @@ export class GetLegsUseCase {
         dteDays,
         bid: row.bid,
         ask: row.ask,
-        // 两个派生值都在**服务端单点**算 (053 FR-032): 前者服务端已持有合约乘数, 后者直接复用
-        // 召回层那一份判据函数 —— 客户端各算一份就是同一判据两处落点 (ADR-0064 不变量 ③)。
-        contractPremium: computeContractPremium(row.bid),
+        // 两个派生值都在**服务端单点**算 (053 FR-032): 前者吃的是合约行自带的股数
+        // (076 FR-011, 逐合约不同, `null` ⇒ 显式空不回落), 后者直接复用召回层那一份判据函数
+        // —— 客户端各算一份就是同一判据两处落点 (ADR-0064 不变量 ③)。
+        contractPremium: computeContractPremium(row.bid, row.contractSize),
         relativeSpread: relativeSpread(row.bid, row.ask),
         bidSize: row.bidSize,
         askSize: row.askSize,
@@ -856,7 +857,7 @@ export class GetLegsUseCase {
         sigmaDistance,
         openInterest: row.openInterest,
         volume: row.volume,
-        turnover: computeTurnover(row.volume, row.bid),
+        turnover: computeTurnover(row.volume, row.bid, row.contractSize),
         // 排名要以**整个候选集**为分母 ⇒ 逐腿这一趟只占位, 真值在下面一次性贴回。
         activity: null as ActivityMark | null,
         // 🚨 打标**零拦截** (FR-018): 下面两个标只是往腿上贴属性, MUST NOT 参与成员判定 ——

@@ -11,7 +11,7 @@ import {
   type OptionSnapshotQuery,
   type OptionSnapshotRow,
 } from './option-snapshot.port.js';
-import { emptyStats } from './sync-run.recorder.js';
+import { emptyStats, type SyncRunFinding } from './sync-run.recorder.js';
 import { anomalyDteExchange, SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { stubTradingCalendar } from '../../test/_support/trading-calendar-stub';
 
@@ -64,6 +64,8 @@ function contractRow(code: string, extra: Record<string, unknown> = {}) {
     // T024a: 异常监控 ③ 的判定面 —— root 是 vendor 字面词根 (`VICI` vs 调整后的 `VICI1`)。
     root: 'PEP',
     isStandard: true,
+    // 076 FR-008: 库内股数。缺省 null = 尚未回填 ⇒ 与快照行「无从比对」。
+    contractSize: null,
     ...extra,
   };
 }
@@ -93,6 +95,8 @@ function quoteRow(code: string, extra: Partial<OptionSnapshotRow> = {}): OptionS
     // vendor 时间戳 = 最后成交时刻, 与本批采集时刻是两回事 (p3b E33)。
     vendorUpdateTime: new Date('2026-09-18T20:00:00Z'),
     greeksComplete: true,
+    // 076 FR-008: 缺省 null = vendor 没给股数 ⇒ 无从比对。要造不一致的用例显式传 `contractSize`。
+    contractSize: null,
     ...extra,
   };
 }
@@ -1303,5 +1307,102 @@ describe('SyncOptionSnapshotUseCase — 抓价时刻越界告警 (073 T009)', ()
     await makeHarness({}).useCase.run([], HK_DIM, stats, hkMainRound);
 
     expect(ladderErrors(errSpy)).toEqual([]);
+  });
+});
+
+/**
+ * 🚨 合约股数**只比不写** (076 T004, FR-008)。
+ *
+ * 股数的唯一写手是链发现的对账步 —— 快照轮每天跑、链发现只在整轮干净时更新, 两个写手会让库值
+ * 在两个口径之间来回跳, 而不一致时**没有任何判据**看得见谁对。快照轮在这条路上的价值只有一个:
+ * 链发现连续不干净 (vendor 抖动) 而供应方已改了股数时, 它是唯一还在逐日看这个数的路径。
+ *
+ * ⇒ 本 describe 的两个方向都得验: 不一致**留痕**, 以及「无从比对」的三种形态**不留痕** ——
+ * 后者是首轮回填前的常态 (全库 null), 报错了就是每票每天一条噪音。
+ */
+describe('SyncOptionSnapshotUseCase — 合约股数只比不写 (076 T004)', () => {
+  const sizeNotices = (stats: ReturnType<typeof emptyStats>) =>
+    stats.findings.filter(
+      (f): f is Extract<SyncRunFinding, { kind: 'notice' }> =>
+        f.kind === 'notice' && f.step === 'option_contract_size_mismatch',
+    );
+
+  /** 一票一张合约: 库值 `dbSize`, 快照行报 `vendorSize`。 */
+  function harnessWith(dbSize: number | null, vendorSize: number | null, isStandard = true) {
+    const code = 'US.PEP260918P130000';
+    return {
+      code,
+      h: makeHarness({
+        contracts: { '1': [contractRow(code, { contractSize: dbSize, isStandard })] },
+        rowsFor: (q) => [
+          ...q.contractCodes.map((c) => quoteRow(c, { contractSize: vendorSize })),
+          underlyingRow(),
+        ],
+      }),
+    };
+  }
+
+  it('① 库内 500 / 快照 1000 → notice 一条 (带样本), 且该行**照常入库**', async () => {
+    const { code, h } = harnessWith(500, 1000);
+    const stats = emptyStats();
+
+    await h.useCase.run([PEP], DIM, stats, makeInput());
+
+    const notices = sizeNotices(stats);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      kind: 'notice',
+      step: 'option_contract_size_mismatch',
+      detail: { symbol: 'us:PEP', mismatched: 1 },
+    });
+    // 样本要答的是「差多少」—— 只给个 code 事后判不了是回填口径变了还是资本调整。
+    const samples = notices[0].detail.samples as string[];
+    expect(samples).toHaveLength(1);
+    expect(samples[0]).toContain(code);
+    expect(samples[0]).toContain('500');
+    expect(samples[0]).toContain('1000');
+    // 🚫 不影响入库、不改本轮结局 (它是 notice, 不是 reject/failure)。
+    expect(persistedRows(h.createMany).map((r) => r.contractId)).toEqual([
+      contractIds.get(code) as bigint,
+    ]);
+    expect(stats).toMatchObject({ ok: 1, failed: 0 });
+  });
+
+  // 假阳性守卫: 首轮回填前**全库 null**, 这一档若留痕就是每票每天一条噪音, 把真信号淹掉。
+  it.each([
+    ['库值 null (尚未回填)', null, 1000, true],
+    ['快照值 null (vendor 没给)', 500, null, true],
+    ['两者相等 (稳态)', 500, 500, true],
+    ['非标合约 (库值恒 null, 供应方仍报 100)', null, 100, false],
+  ] as const)('② %s → 零 finding', async (_name, dbSize, vendorSize, isStandard) => {
+    const { h } = harnessWith(dbSize, vendorSize, isStandard);
+    const stats = emptyStats();
+
+    await h.useCase.run([PEP], DIM, stats, makeInput());
+
+    expect(sizeNotices(stats)).toEqual([]);
+    expect(stats).toMatchObject({ ok: 1, failed: 0 });
+  });
+
+  // 资本调整改的是该票**整串**未到期合约 ⇒ 计数必须给全量, 样本按 `CONTRACT_SIZE_MISMATCH_SAMPLES`
+  // 封顶 (全量记会把 findings 那一列撑成几千个码的 JSON 并淹掉别的 finding)。
+  it('③ 7 张同时不一致 → mismatched 记 7, samples 封顶 5', async () => {
+    const codes = Array.from({ length: 7 }, (_, i) => `US.PEP260918P1300${10 + i}`);
+    const h = makeHarness({
+      contracts: { '1': codes.map((c) => contractRow(c, { contractSize: 500 })) },
+      rowsFor: (q) => [
+        ...q.contractCodes.map((c) => quoteRow(c, { contractSize: 1000 })),
+        underlyingRow(),
+      ],
+    });
+    const stats = emptyStats();
+
+    await h.useCase.run([PEP], DIM, stats, makeInput());
+
+    const notices = sizeNotices(stats);
+    expect(notices).toHaveLength(1);
+    expect(notices[0].detail.mismatched).toBe(7);
+    expect(notices[0].detail.samples as string[]).toHaveLength(5);
+    expect(persistedRows(h.createMany)).toHaveLength(7);
   });
 });

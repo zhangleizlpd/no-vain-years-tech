@@ -270,6 +270,8 @@ describe('062 T006 交易日历读端口三态 (Testcontainers PG, 真 DbTrading
       turnover: '161000.00',
       vendorUpdateTime: new Date('2026-08-18T20:00:00Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     });
 
     /** 测试内 stub 采集口（扮演 live vendor）；`calls` 供「零外呼」断言。 */

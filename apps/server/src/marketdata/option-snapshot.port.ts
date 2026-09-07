@@ -146,6 +146,20 @@ export interface OptionSnapshotRow {
    * 字段时由 adapter 按六个 greeks/IV 字段现算 (标 `false` 会被读作「这只票 greeks 缺失」)。
    */
   greeksComplete: boolean | null;
+  /**
+   * 一张合约的正股股数 (vendor `lot_size`)。**非期权行恒 null** —— 正股行的同名字段是**板手
+   * 数**, 不是每张合约股数 (FR-003)。
+   *
+   * 🚨 **只作对账、MUST NOT 作写源** (076 FR-008): 股数的唯一写手是链发现
+   * (`sync-option-contract.usecase.ts` 的对账步)。快照轮拿它比库值、不一致只留痕 —— 两个写手
+   * 必漂移, 而库值在两个口径间来回跳没有任何判据看得见。
+   *
+   * EVIDENCE: 期权行 `lot_size` = 一张合约的正股股数; 正股行的同名字段是板手数 (fixture
+   * `__fixtures__/hk-option-snapshot-00700-2026-08-23.json` 的 `option_valid: false` 行给 100
+   * = HK.00700 的板手, 美股正股行给 1) —— `specs/076-option-contract-size/spec.md`「取证」
+   * §1 与 §2 PoC-A。
+   */
+  contractSize: number | null;
 }
 
 export interface OptionSnapshotBatch {

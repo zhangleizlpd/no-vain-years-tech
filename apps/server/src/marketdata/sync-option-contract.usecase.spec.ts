@@ -54,6 +54,7 @@ function contract(
     expirationCycle: 'MONTH',
     settlementMode: 'PM',
     isStandard: true,
+    contractSize: 100,
     ...extra,
   };
 }
@@ -65,6 +66,7 @@ interface Harness {
   createMany: ReturnType<typeof vi.fn>;
   instrumentUpsert: ReturnType<typeof vi.fn>;
   updateMany: ReturnType<typeof vi.fn>;
+  contractFindMany: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -82,6 +84,8 @@ function makeHarness(opts: {
   existing?: string[];
   /** 挂牌对账 `updateMany` 的返回行数 (withdraw = 置 withdrawnAt; restore = 清回 null)。 */
   reconcileCounts?: { withdraw?: number; restore?: number };
+  /** 076: 库里该票**未到期且未软下架**的行 (股数对账步的 `findMany` 结果)。缺省空 = 首次建仓。 */
+  existingContracts?: { code: string; contractSize: number | null }[];
 }): Harness {
   const ladder = opts.ladder ?? {};
   const expiryCalls: string[] = [];
@@ -106,15 +110,18 @@ function makeHarness(opts: {
 
   const createMany = vi.fn(async (args: { data: unknown[] }) => ({ count: args.data.length }));
   const instrumentUpsert = vi.fn(async () => ({}));
-  // 对账两条 updateMany 由 `data.withdrawnAt` 区分: Date ⇒ withdraw, null ⇒ restore。
-  const updateMany = vi.fn(async (args: { data: { withdrawnAt: Date | null } }) => {
-    const isWithdraw = args.data.withdrawnAt !== null;
+  // 对账三条 updateMany: 挂牌两条由 `data.withdrawnAt` 区分 (Date ⇒ withdraw, null ⇒ restore),
+  // 股数那条根本没有这个键 —— 🚨 用 `!== null` 单判会把它误认成 withdraw (076 T003 实撞)。
+  const updateMany = vi.fn(async (args: { data: { withdrawnAt?: Date | null } }) => {
+    if (!('withdrawnAt' in args.data)) return { count: 0 };
     return {
-      count: isWithdraw
-        ? (opts.reconcileCounts?.withdraw ?? 0)
-        : (opts.reconcileCounts?.restore ?? 0),
+      count:
+        args.data.withdrawnAt !== null
+          ? (opts.reconcileCounts?.withdraw ?? 0)
+          : (opts.reconcileCounts?.restore ?? 0),
     };
   });
+  const contractFindMany = vi.fn(async () => opts.existingContracts ?? []);
   const prisma = {
     anchor: { findMany: vi.fn(async () => (opts.anchors ?? []).map((ticker) => ({ ticker }))) },
     instrument: {
@@ -123,7 +130,7 @@ function makeHarness(opts: {
       ),
       upsert: instrumentUpsert,
     },
-    optionContract: { createMany, updateMany },
+    optionContract: { createMany, updateMany, findMany: contractFindMany },
   } as unknown as PrismaService;
 
   return {
@@ -133,6 +140,7 @@ function makeHarness(opts: {
     createMany,
     instrumentUpsert,
     updateMany,
+    contractFindMany,
   };
 }
 
@@ -371,6 +379,79 @@ describe('SyncOptionContractUseCase', () => {
       const s2 = emptyStats();
       await steady.useCase.run([PEP], DIM, s2, makeInput(usDate));
       expect(s2.findings.some((f) => f.kind === 'notice')).toBe(false);
+    });
+  });
+
+  /**
+   * 076 T003 —— 每张股数的写路径。新合约由 `createMany` 首次入库即带值; **既有行**的回填 /
+   * 更新只落在对账步的第三条 `updateMany`。
+   *
+   * 🚨 `createMany(skipDuplicates)` **不**改成逐行 upsert (Guardrail 1): 那会让每晚多付约
+   * 2.5 万条 UPDATE 去重写一堆不会变的静态列。真库侧「改的是不是那几行」由
+   * `marketdata-option-withdrawal.it.spec.ts` 的五臂钉。
+   */
+  describe('🚨 每张股数落库与对账 (076 T003)', () => {
+    const usDate = '2026-09-18';
+    const liveCode = `US.PEP${usDate.replaceAll('-', '')}P130000`;
+
+    it('新合约 createMany 行带 contract_size —— 首次入库即有值, 不等下一轮回填', async () => {
+      const h = makeHarness({ ladder: { 'us:PEP': [usDate] } });
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate));
+
+      const rows = persistedRows(h.createMany);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ code: liveCode, contractSize: 100 });
+    });
+
+    it('非标合约的 null 原样落库 —— 🚫 MUST NOT 在写路径回落 100 (FR-002 的第二道)', async () => {
+      const h = makeHarness({
+        ladder: { 'us:PEP': [usDate] },
+        chainFor: () => [contract(liveCode, usDate, { isStandard: false, contractSize: null })],
+      });
+      await h.useCase.run([PEP], DIM, emptyStats(), makeInput(usDate));
+
+      expect(persistedRows(h.createMany)[0]).toMatchObject({ contractSize: null });
+    });
+
+    it('库内 null / 本轮 100 → 第三条 updateMany 按新值分组回填 + notice (filled 与 changed 分开记)', async () => {
+      const h = makeHarness({
+        ladder: { 'us:PEP': [usDate] },
+        existingContracts: [{ code: liveCode, contractSize: null }],
+      });
+      const stats = emptyStats();
+      await h.useCase.run([PEP], DIM, stats, makeInput(usDate));
+
+      // 对账步的第三条写: data 里只有 contractSize, 没有 withdrawnAt。
+      const sizeWrite = h.updateMany.mock.calls
+        .map((c) => c[0] as { where: Record<string, any>; data: Record<string, unknown> })
+        .find((a) => !('withdrawnAt' in a.data));
+      expect(sizeWrite).toBeDefined();
+      expect(sizeWrite!.data).toEqual({ contractSize: 100 });
+      expect(sizeWrite!.where.code).toEqual({ in: [liveCode] });
+
+      // 🚨 filled (null → 值, 首轮回填) 与 changed (值 → 另一值, 资本调整信号) 分开记 ——
+      // 合成一个数就分不出「首轮回填十几万行」与「某票某天变了 300 行」。
+      expect(stats.findings).toContainEqual({
+        kind: 'notice',
+        step: 'option_contract_size',
+        detail: { symbol: 'us:PEP', filled: 1, changed: 0 },
+      });
+    });
+
+    it('库值已等于本轮值 → 第三条 updateMany 不发、无 finding (稳态零写)', async () => {
+      const h = makeHarness({
+        ladder: { 'us:PEP': [usDate] },
+        existingContracts: [{ code: liveCode, contractSize: 100 }],
+      });
+      const stats = emptyStats();
+      await h.useCase.run([PEP], DIM, stats, makeInput(usDate));
+
+      expect(
+        h.updateMany.mock.calls.some(
+          (c) => !('withdrawnAt' in (c[0] as { data: Record<string, unknown> }).data),
+        ),
+      ).toBe(false);
+      expect(stats.findings.some((f) => f.kind === 'notice')).toBe(false);
     });
   });
 

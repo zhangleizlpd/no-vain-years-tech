@@ -71,7 +71,7 @@ interface ResolvedBasis {
 /** {@link PrismaLegRetrievalAdapter.toLegRows} 用到的合约列 —— 链的**骨架**, 与报价无关。 */
 type ChainContractRow = Pick<
   OptionContract,
-  'code' | 'expiryDate' | 'strikePrice' | 'expirationCycle'
+  'code' | 'expiryDate' | 'strikePrice' | 'expirationCycle' | 'contractSize'
 >;
 
 /**
@@ -401,7 +401,15 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         // 戳由链发现对账在 gap.ok 的干净轮置/清 (`sync-option-contract.usecase.ts`)。
         withdrawnAt: null,
       },
-      select: { id: true, code: true, expiryDate: true, strikePrice: true, expirationCycle: true },
+      select: {
+        id: true,
+        code: true,
+        expiryDate: true,
+        strikePrice: true,
+        expirationCycle: true,
+        // 076: 合约主数据, **同一次查询多带一列**, 零额外往返 (体例同 expirationCycle)。
+        contractSize: true,
+      },
     });
     if (contracts.length === 0) return null;
 
@@ -730,7 +738,15 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         withdrawnAt: null,
       },
       // `expirationCycle` 是月度链标的判据输入 (#45) —— **同一次查询多带一列**, 零额外往返。
-      select: { id: true, code: true, expiryDate: true, strikePrice: true, expirationCycle: true },
+      select: {
+        id: true,
+        code: true,
+        expiryDate: true,
+        strikePrice: true,
+        expirationCycle: true,
+        // 076: 合约主数据, **同一次查询多带一列**, 零额外往返 (体例同 expirationCycle)。
+        contractSize: true,
+      },
     });
     if (contracts.length === 0) return null;
 
@@ -848,6 +864,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
         // 🚫 vendor 原样带出, 不归一化大小写、不回落默认值 —— 判据是白名单 `=== 'MONTH'`,
         // 在这里「顺手」规整会让「vendor 换了取值」这件事在打标层看不出来 (`leg-mark.rules.ts`)。
         expirationCycle: contract.expirationCycle,
+        // 076: 合约主数据原样带出 —— 🚫 MUST NOT 在这里给 `null` 兜一个 100 (FR-009)。
+        // 实时窄路径的 `answered` 行由骨架行展开 (`{ ...leg, … }`) ⇒ 自动携带, 零第二个落点。
+        contractSize: contract.contractSize,
         // 库里读出来的就是收盘档 —— 这里是**唯一**的落点, 实时行由
         // {@link retrieveRealtimeNarrow} 组链时逐行改写 (068)。🚫 MUST NOT 在下游任何一层
         // 「补标」: 补标点有第二个,「这个数是什么时候的」就有两个答案, 而两个答案都渲染得出来。

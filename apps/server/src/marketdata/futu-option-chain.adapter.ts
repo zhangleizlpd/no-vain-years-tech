@@ -129,6 +129,25 @@ function numOrNull(v: unknown): number | null {
 }
 
 /**
+ * 有限**正整数** → number；其余（缺失 / 带外哨兵 / 非整数 / ≤ 0）→ null。
+ *
+ * 两段判：先由 {@link numToString} 挡住带外缺失与字符串哨兵（`Number('N/A')` 为 NaN），再校
+ * 「正整数」—— 股数是「一张合约多少股」，0 / 负 / 小数一律是脏值，而它会被读端直接乘进单笔
+ * 权利金（076 FR-005）。
+ *
+ * 📌 与 `futu-option-snapshot.adapter.ts` 的同名函数形态一致，蓄意**各留一份**：两个 adapter
+ * 之间没有既有的共享层，为一个 4 行纯函数新开一处公共模块是把耦合面换个地方，不是消除它。
+ *
+ * 复杂度 O(1)。
+ */
+function positiveIntOrNull(v: unknown): number | null {
+  const s = numToString(v);
+  if (s === null) return null;
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
  * vendor 在**字符串列**上表达「没有值」用的字面量哨兵。
  *
  * 🚨 它不是一个取值 —— 网关侧 `clean_value` 只处理空值 / 非有限数、字符串原样透传
@@ -255,6 +274,23 @@ function parseChainRow(row: unknown, ctx: string): OptionContractStatic {
   }
 
   const root = parts[1];
+  const isStandard = isStandardContract(strOrNull(raw.option_standard_type), root);
+  // 🚨 **非标恒 null, MUST NOT 信供应方给非标的数** (076 FR-002): 调整后合约的交割物根本
+  // 表达不了 (`VICI1` 是 90 股 + 现金找零), 而供应方照报 100 —— 落下去就是一个「看起来正常
+  // 的错数」, 且会被读端直接乘进单笔权利金, 没有一处会红。
+  // EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§2 PoC-A —— 非标 APTV1 的
+  // `lot_size` / `option_contract_multiplier` 均为 100, 与 OCC 调整后交割物不符。
+  // 🚫 此处**不**再判一次跨市场混入 (076 FR-004): 那由 `dropForeignMarketRows` 在整窗行集上
+  // 结构性承接, 同一个问题写两遍必漂移。
+  const contractSize = isStandard ? positiveIntOrNull(raw.lot_size) : null;
+  if (isStandard && contractSize === null) {
+    // 留痕但**不丢行** (076 FR-005): 采集因一列缺值丢整行 = 那条腿的快照永久缺席, 代价远大于
+    // 一列为空。本层没有采集轮上下文, 所以是 logger 一条 warn 而不是 findings。
+    CHAIN_LOGGER.warn(
+      `[option-chain] ${ctx} 标准合约取不到每张股数 (lot_size=${JSON.stringify(raw.lot_size)}), ` +
+        `contract_size 落 null, 该行照常入库: ${code}`,
+    );
+  }
   return {
     market: contract.market,
     // 原样含市场前缀 —— 这串正是喂回 /option-snapshot 的键 (schema 幂等键 (market, code) 同口径)。
@@ -267,7 +303,8 @@ function parseChainRow(row: unknown, ctx: string): OptionContractStatic {
     // vendor 原样存 (WEEK / MONTH · PM / AM): 换算一次就再也说不清库里那个值是谁的口径。
     expirationCycle: strOrNull(raw.expiration_cycle),
     settlementMode: strOrNull(raw.option_settlement_mode),
-    isStandard: isStandardContract(strOrNull(raw.option_standard_type), root),
+    isStandard,
+    contractSize,
   };
 }
 

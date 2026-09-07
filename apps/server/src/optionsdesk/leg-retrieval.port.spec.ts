@@ -59,6 +59,8 @@ function row(over: Partial<LegChainRow> = {}): LegChainRow {
     greeksComplete: true,
     expirationCycle: 'WEEK',
     priceKind: 'eod_close',
+    // 076: 召回判据不吃股数 (它只进两个派生列), 基线腿给美股标准合约的实测值 100。
+    contractSize: 100,
     ...over,
   };
 }

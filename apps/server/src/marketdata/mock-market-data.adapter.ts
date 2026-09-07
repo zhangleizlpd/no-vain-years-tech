@@ -872,6 +872,9 @@ export class MockMarketDataAdapter
         expirationCycle: 'MONTH',
         settlementMode: 'PM',
         isStandard: true,
+        // 美股标准合约实测恒 100 (076 取证 §2 PoC-A) —— mock 也照供应方口径给, 否则零 env 的
+        // IT 会把「读端拿不到股数」测成常态。
+        contractSize: 100,
       }));
     });
   }
@@ -908,6 +911,9 @@ export class MockMarketDataAdapter
         turnover: '283940',
         vendorUpdateTime: new Date('2026-09-18T20:00:00Z'),
         greeksComplete: true,
+        // 076: 美股标准合约每张 100 股 (spec 取证 §2 PoC-A 实测 PEP `lot_size 100`)。
+        // 🚫 快照轮**只比不写** (FR-008) —— 这个数进不了库, 只喂对账。
+        contractSize: 100,
       };
     });
     // 标的自身那行: greeks 不适用 ⇒ null (标 false 会被读作「这只票 greeks 缺失」)。
@@ -933,6 +939,8 @@ export class MockMarketDataAdapter
       turnover: '400000000',
       vendorUpdateTime: new Date('2026-09-18T20:00:00Z'),
       greeksComplete: null,
+      // 正股行恒 null: 同名 vendor 字段在那行是板手数, 不是每张合约股数 (FR-003)。
+      contractSize: null,
     });
     return { asOf: new Date(), rows };
   }

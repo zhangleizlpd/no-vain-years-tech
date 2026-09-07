@@ -170,6 +170,8 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
       turnover: '283940',
       vendorUpdateTime: new Date('2026-08-14T20:00:00Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     };
   }
 

@@ -414,6 +414,12 @@ describe('052 检索层 (Testcontainers PG)', () => {
     readonly greeksComplete?: boolean;
     /** 已软下架 (vendor 不再挂牌该码, marketdata 链发现对账置的戳)。 */
     readonly withdrawn?: boolean;
+    /**
+     * 076 一张合约对应的正股股数 (`option_contract.contract_size`)。缺省 `100` —— 本文件是
+     * 美股链 (`us:PEP`), 供应方实测给标准美股合约恒 100 ⇒ 既有臂逐值不动。
+     * 显式 `null` = 「这一列还没被任何一轮链发现覆盖到」。
+     */
+    readonly contractSize?: number | null;
   }
 
   /**
@@ -444,6 +450,8 @@ describe('052 检索层 (Testcontainers PG)', () => {
           optionType: leg.optionType ?? 'PUT',
           isStandard: leg.isStandard ?? true,
           withdrawnAt: leg.withdrawn === true ? new Date(`${TODAY}T00:00:00Z`) : null,
+          // 🚫 `?? 100` 在这里是错的 —— 显式 `null` 正是要播的那个形态 (未回填)。
+          contractSize: leg.contractSize === undefined ? 100 : leg.contractSize,
         },
         select: { id: true },
       });
@@ -713,5 +721,61 @@ describe('052 检索层 (Testcontainers PG)', () => {
       state: 'narrowed',
       excludedCount: 1,
     });
+  });
+
+  /**
+   * 076 靶场 —— **三条腿只差 `contract_size` 一列**, 报价 / 成交量 / DTE 逐字相同。
+   *
+   * 🚨 只差一列是刻意的: 两个派生列的差异 MUST 全部且仅由股数解释。任何一条腿在别处也不同的话,
+   * 断言红了分不清是股数吃错了还是别的判据动了。
+   *
+   * 📌 股数取值出处: 港股每张合约的正股股数逐标的不同, 500 是 09988 等 7 只锚的实测值; 美股标准
+   * 合约实测恒 100 (EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§1 / §2 PoC-A)。
+   */
+  const SIZE_LEGS: readonly SeedLeg[] = [
+    // ① 港股形态: 一张 500 股。两个派生列 = 100 股那条的 5 倍。
+    { code: 'S-HK500', dte: 35, strike: '116', bid: '3.00', ask: '3.20', oi: '900', vol: '40', contractSize: 500 }, // prettier-ignore
+    // ② 首轮回填前的形态: 这一列还没被任何一轮链发现覆盖到 (FR-009 / state_branch 11)。
+    { code: 'S-NOSIZE', dte: 35, strike: '115', bid: '3.00', ask: '3.20', oi: '900', vol: '40', contractSize: null }, // prettier-ignore
+    // ③ 美股形态: 一张 100 股 —— 076 前的写死常量就是这个数, 用来钉逐值零变化。
+    { code: 'S-US100', dte: 35, strike: '114', bid: '3.00', ask: '3.20', oi: '900', vol: '40', contractSize: 100 }, // prettier-ignore
+  ];
+
+  it('🚨 076-① 股数 500 的合约: 单笔权利金 = bid × 500、成交额 = Vol × bid × 500 (FR-011)', async () => {
+    await seedLegs(SIZE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
+    const leg = view.legs.find((l) => l.code === 'S-HK500');
+    // 🚫 MUST NOT 从被测函数算期望值 —— 手算: bid 3.00 × 500 = 1500; 40 × 3.00 × 500 = 60000。
+    expect(leg?.contractPremium?.toString()).toBe('1500');
+    expect(leg?.turnover?.toString()).toBe('60000');
+    // 判别性: 同一份数据下 100 股那条恰好是它的 1/5 —— 若股数没真进来, 两条会一样。
+    const us = view.legs.find((l) => l.code === 'S-US100');
+    expect(leg?.contractPremium?.div(5).toString()).toBe(us?.contractPremium?.toString());
+  });
+
+  it('🚨 076-② 股数未落库 ⇒ 两个派生列显式 null, 🚫 不回落 100; 其余列照常、这一屏照常可用', async () => {
+    await seedLegs(SIZE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
+    const leg = view.legs.find((l) => l.code === 'S-NOSIZE');
+    expect(leg?.contractPremium).toBeNull();
+    expect(leg?.turnover).toBeNull();
+    // 🚨 「这一行的两个数不知道」MUST NOT 升格成「这条腿不见了」或「这一屏坏了」——
+    //    首轮回填窗口内整张表都是这个形态, 它必须是一张能看的表 (FR-009 / EC7)。
+    expect(view.state).toBe('available');
+    expect(view.legs.map((l) => l.code).sort()).toEqual(['S-HK500', 'S-NOSIZE', 'S-US100']);
+    expect(leg?.bid?.toString()).toBe('3');
+    expect(leg?.volume).toBe(40);
+    expect(leg?.annualizedRate).not.toBeNull();
+  });
+
+  it('🚨 076-③ 股数 100 的美股合约: 两个派生列与 076 前的基线**逐值相同** (FR-010)', async () => {
+    await seedLegs(SIZE_LEGS);
+    const view = await useCaseOf().execute(SYMBOL, 'all', NOW);
+    const leg = view.legs.find((l) => l.code === 'S-US100');
+    // 🚨 基线**写死**在这里, 🚫 MUST NOT 从 `computeContractPremium` / `computeTurnover` 现算 ——
+    //    从被测函数取期望值是同义反复: 常量换成入参这件事改错了, 它照样绿。
+    //    076 前的口径 = bid × 100 与 Vol × bid × 100 ⇒ 3.00 × 100 = 300; 40 × 3.00 × 100 = 12000。
+    expect(leg?.contractPremium?.toString()).toBe('300');
+    expect(leg?.turnover?.toString()).toBe('12000');
   });
 });

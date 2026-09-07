@@ -115,6 +115,9 @@ function contractRow(
     expirationCycle: c.expirationCycle,
     settlementMode: c.settlementMode,
     isStandard: c.isStandard,
+    // 每张合约的正股股数 (076 FR-006): 新合约首次入库即有值, 不必等下一轮回填。标准合约取
+    // 供应方 `lot_size`、非标恒 null, 判据全在 `futu-option-chain.adapter.ts` 的取值单点。
+    contractSize: c.contractSize,
   };
 }
 
@@ -253,7 +256,9 @@ export class SyncOptionContractUseCase {
     // 对账吃的是**合约级**清单: 「到期列还在、列里个别行权价被撤」只有 code 集合看得见
     // (判据见 reconcileListingState 的 EVIDENCE)。`discovered` 仍只喂 gapCheck —— 它对的是
     // 到期日阶梯, 两者粒度不同, 🚫 MUST NOT 合并成一个集合。
-    const discoveredCodes = new Set<string>();
+    // 076 T003: 由 Set 扩成 Map (code → 本轮股数), 键集与此前逐字相同 —— 挂牌对账那两条
+    // 谓词照旧取 `[...keys()]`, 逻辑零变化; 值只喂新增的股数对账步。
+    const sizeByCode = new Map<string, number | null>();
 
     for (const window of windows) {
       // 单次调用 = 单个窗 (切分在 planOptionChainWindows, 不在 adapter 也不在这里重实现)。
@@ -273,7 +278,7 @@ export class SyncOptionContractUseCase {
           );
         }
         discovered.add(c.expiryDate);
-        discoveredCodes.add(c.code);
+        sizeByCode.set(c.code, c.contractSize);
         rows.push(contractRow(instrumentId, c));
       }
       for (const chunk of chunked(rows, CONTRACT_ROW_CHUNK)) {
@@ -294,17 +299,18 @@ export class SyncOptionContractUseCase {
         `发现了但不在列表=[${gap.unexpectedInDiscovered.join(',')}]`
       );
     }
-    await this.reconcileListingState(instrumentId, symbol, businessDate, discoveredCodes, stats);
+    await this.reconcileListingState(instrumentId, symbol, businessDate, sizeByCode, stats);
     return null;
   }
 
   /**
    * 挂牌状态对账 (软下架, 见 `schema.prisma` 的 `OptionContract.withdrawnAt` 注释)。
    *
-   * **只在 gap.ok 的干净轮调用** —— 此刻 `discoveredCodes` == vendor 本轮给出的合约全集 (gapCheck
-   * 已核到期日阶梯与链返回逐个对上), 故:
-   * · DB 里 expiry ≥ 当日、code 不在 `discoveredCodes` 里的合约 → vendor 已不认 → 置 withdrawnAt;
-   * · code 在 `discoveredCodes` 里、当前 withdrawn 的合约 → vendor 认回来了 → 清 withdrawnAt (自愈复采)。
+   * **只在 gap.ok 的干净轮调用** —— 此刻 `sizeByCode` 的键集 == vendor 本轮给出的合约全集
+   * (gapCheck 已核到期日阶梯与链返回逐个对上), 故:
+   * · DB 里 expiry ≥ 当日、code 不在键集里的合约 → vendor 已不认 → 置 withdrawnAt;
+   * · code 在键集里、当前 withdrawn 的合约 → vendor 认回来了 → 清 withdrawnAt (自愈复采);
+   * · 第三步 (076 FR-006): 未到期 ∧ 未下架的行, 股数与本轮不符 → 按新值分组改写 + 一条 notice。
    *
    * 收敛的是「一颗 vendor 已不认的码毒掉整批 snapshot」这个形态 (2026-09-02 hk:09988, #334): 摘掉
    * 之后死码不进快照 / OI 两轮的工作集, 也不进覆盖率分母。软戳不删行 —— 历史快照 onDelete:Cascade,
@@ -330,10 +336,10 @@ export class SyncOptionContractUseCase {
     instrumentId: bigint,
     symbol: string,
     businessDate: string,
-    discoveredCodes: ReadonlySet<string>,
+    sizeByCode: ReadonlyMap<string, number | null>,
     stats: SyncRunStats,
   ): Promise<void> {
-    const liveCodes = [...discoveredCodes];
+    const liveCodes = [...sizeByCode.keys()];
     const withdrawn = await this.prisma.optionContract.updateMany({
       where: {
         underlyingInstrumentId: instrumentId,
@@ -357,6 +363,79 @@ export class SyncOptionContractUseCase {
         kind: 'notice',
         step: 'option_contract_listing',
         detail: { symbol, withdrawn: withdrawn.count, restored: restored.count },
+      });
+    }
+    await this.reconcileContractSize(instrumentId, symbol, businessDate, sizeByCode, stats);
+  }
+
+  /**
+   * 每张合约股数的回填 / 更新 (076 FR-006, `reconcileListingState` 的第三步)。
+   *
+   * 🚨 **为什么不在 insert 路径解决**: 链发现是 `createMany(skipDuplicates)` 的纯 insert
+   * (见上文「幂等」节), 部署那天已在库里的十几万行**永远**不会被它碰到 —— 新列不在这里补就
+   * 一直空着。而改成逐行 upsert 要每晚多付约 2.5 万条 UPDATE 去重写一堆不会变的静态列。
+   *
+   * 🚨 **只在 gap.ok 的干净轮跑** (FR-007): 本函数由 `reconcileListingState` 末尾调用, 与软
+   * 下架同闸。挪到 gap 判定之前, 一次链抖动 (本轮只返回了半条链) 就会拿残缺的清单去写整票 ——
+   * 而写空的那批在读端表现为「两个数显示为空」, 与「还没回填过」长得一模一样, 没有一处会红。
+   *
+   * 已到期的合约**不回填** (Q1 裁决): 由 `expiryDate ≥ businessDate` 谓词天然排除, 不另立判据。
+   *
+   * 非标合约本轮是 null, 库里若有值会被**回写 null** —— 这是对的: 股数的写手只有链发现这一处,
+   * 库值 MUST 跟本轮供应方一致 (留着旧值会被读端乘进单笔权利金)。
+   *
+   * 复杂度: 一次 `findMany` + O(n) 内存比对 (n = 该票未到期未下架合约数, 2026-09-04 prod 实测
+   * 单票上限 4602), 写语句数 = 本轮出现的**不同股数个数** (今日样本每票 1 个, 资本调整期最多 2
+   * 个) ⇒ 每票常数条 `updateMany`, 稳态零条。
+   */
+  private async reconcileContractSize(
+    instrumentId: bigint,
+    symbol: string,
+    businessDate: string,
+    sizeByCode: ReadonlyMap<string, number | null>,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    const live = await this.prisma.optionContract.findMany({
+      where: {
+        underlyingInstrumentId: instrumentId,
+        expiryDate: { gte: toDateOnly(businessDate) },
+        withdrawnAt: null,
+      },
+      select: { code: true, contractSize: true },
+    });
+
+    const codesByNewSize = new Map<number | null, string[]>();
+    let filled = 0;
+    let changed = 0;
+    for (const row of live) {
+      // 🚨 `has` 而非 `get(...) ?? null`: 本轮没给出的 code 与「本轮给出的是 null」在 Map 上
+      // 都读成 nullish, 混为一谈会把它们一起写空。(软下架那步跑在前面, 走到这里的行本应全在
+      // 键集内; 这条闸挡的是「将来有人把两步的谓词改得不同步」。)
+      if (!sizeByCode.has(row.code)) continue;
+      const next = sizeByCode.get(row.code) ?? null;
+      if (next === row.contractSize) continue;
+      if (row.contractSize === null) filled += 1;
+      else changed += 1;
+      const bucket = codesByNewSize.get(next);
+      if (bucket === undefined) codesByNewSize.set(next, [row.code]);
+      else bucket.push(row.code);
+    }
+
+    for (const [contractSize, codes] of codesByNewSize) {
+      await this.prisma.optionContract.updateMany({
+        where: { underlyingInstrumentId: instrumentId, code: { in: codes } },
+        data: { contractSize },
+      });
+    }
+
+    if (filled > 0 || changed > 0) {
+      // 🚨 两个数分开记: `filled` (null → 值) 是部署后首轮的一次性回填, 量级六位数、属预期;
+      // `changed` (值 → 另一值) 是交易所改了这只票的股数, 是本片存在的理由。合成一个数,
+      // 「某票某天变了 300 行」就永远淹在「首轮回填十几万行」里。
+      stats.findings.push({
+        kind: 'notice',
+        step: 'option_contract_size',
+        detail: { symbol, filled, changed },
       });
     }
   }

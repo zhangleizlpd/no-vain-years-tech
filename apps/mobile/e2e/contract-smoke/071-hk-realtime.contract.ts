@@ -52,8 +52,14 @@ type Cfg = { baseURL: string; headers: Record<string, string> };
 
 /** 两市**同码** —— 对形时唯一的自变量必须只有市场段。 */
 const CODE = 'NVYE';
-const US = { market: 'us', currency: 'USD' } as const;
-const HK = { market: 'hk', currency: 'HKD' } as const;
+/**
+ * 076 FR-012: 每张合约的股数 —— **两市蓄意取不同值**。它是本片唯一一处「两市不等值」的夹具:
+ * 美股标准合约恒 100, 港股逐标的不同 (真锚里 150 / 200 / 400 / 500 / 1000 / 2000 都有,
+ * 出处 `specs/076-option-contract-size/spec.md` 「取证」§1)。两市都播 100 的话,
+ * 「单笔权利金按合约股数算」与「按 100 这个市场常量算」在契约面上恒等 ⇒ 那条断言什么都没验到。
+ */
+const US = { market: 'us', currency: 'USD', contractSize: 100 } as const;
+const HK = { market: 'hk', currency: 'HKD', contractSize: 500 } as const;
 const symbolOf = (market: string): string => `${market}:${CODE}`;
 
 const V = '100.0000';
@@ -115,8 +121,8 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
   // 本片蓄意不动）⇒ 港股那份也按美股折算日落库, 夹具才真的逐字段等值。
   const today = exchangeToday(new Date());
 
-  await seed(ctx, US.market, US.currency, today);
-  await seed(ctx, HK.market, HK.currency, today);
+  await seed(ctx, US, today);
+  await seed(ctx, HK, today);
 
   const anchorIds: string[] = [];
   try {
@@ -144,6 +150,10 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
 
       // ── 靶心 3: 仅有的两处蓄意差异, 单独钉 + 绊线 ────────────────────────────────
       assertMarchGate(us, hk, perspective);
+
+      // ── 076: 单笔权利金按**该合约的股数**算, 两市各一臂 (FR-012 / SC-001) ────────
+      assertContractPremiumPerShare(us, US.contractSize, perspective);
+      assertContractPremiumPerShare(hk, HK.contractSize, perspective);
     }
 
     // ── T008-②: 降级值域仍是四值 (FR-010 值域不扩的机器判据) ─────────────────────
@@ -241,6 +251,37 @@ function assertMarchGate(
   assert.equal(hk.marchMode === null, hk.march === null, 'hk march 与 marchMode MUST 同生共死');
 }
 
+/**
+ * 076 FR-012: `contractPremium ÷ bid` **恒等于该合约的股数**。
+ *
+ * 🚨 判别性来自两市播了不同的股数 (us 100 / hk 500): 改动前那两个派生值乘的是写死的市场常量
+ * `US_OPTION_CONTRACT_MULTIPLIER = 100`, 港股这一臂于是会拿到 100 而不是 500 —— 这是整条链
+ * (链发现落库 → 读端带出 → 派生 → 契约) 在契约面上**唯一**看得见的落点。
+ * 🚫 MUST NOT 改成「两市都断言 = 100」或「只断言非 null」: 前者把病根写进判据, 后者恒真。
+ *
+ * 📌 用 `Number` 相除而不是比字符串: 序列化后的小数位数是 Decimal 的表示细节, 不是本条要钉的
+ * 东西 (要钉的是那个倍数); 夹具三条腿的 bid 都是 1 / 2 / 3 的整数值, 除法在二进制里精确。
+ */
+function assertContractPremiumPerShare(
+  table: LegTableResponse,
+  contractSize: number,
+  perspective: OptionsdeskControllerLegsPerspective,
+): void {
+  for (const leg of table.legs) {
+    assert.ok(
+      leg.bid !== null && leg.contractPremium !== null,
+      `${table.symbol} ${perspective} ${leg.code}: 夹具三条腿都有 bid ⇒ 两列 MUST NOT 为 null ` +
+        `(null 意味着合约股数没落库 / 判成了非标, 那是另一档结局)`,
+    );
+    assert.equal(
+      Number(leg.contractPremium) / Number(leg.bid),
+      contractSize,
+      `${table.symbol} ${perspective} ${leg.code}: 单笔权利金 ÷ bid MUST = 该合约股数 ` +
+        `${contractSize}, got ${leg.contractPremium} ÷ ${leg.bid}`,
+    );
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 逐字段形状签名
 // ─────────────────────────────────────────────────────────────────────────────
@@ -309,8 +350,7 @@ async function legs(
 
 async function seed(
   ctx: RealBackendCtx,
-  market: string,
-  currency: string,
+  { market, currency, contractSize }: { market: string; currency: string; contractSize: number },
   today: string,
 ): Promise<void> {
   await deleteSeed(ctx, market); // 防上轮异常退出未走 cleanup
@@ -331,11 +371,12 @@ async function seed(
   const contracts = SEED.map(
     (s) =>
       `('${market}', '${contractCode(market, s.suffix)}', '${CODE}', ${iid}, ` +
-      `DATE '${plusDays(today, s.dte)}', ${s.strike}, 'PUT', true)`,
+      `DATE '${plusDays(today, s.dte)}', ${s.strike}, 'PUT', true, ${contractSize})`,
   ).join(',\n       ');
   await ctx.execSql(
     `INSERT INTO marketdata.option_contract
-       (market, code, root, underlying_instrument_id, expiry_date, strike_price, option_type, is_standard)
+       (market, code, root, underlying_instrument_id, expiry_date, strike_price, option_type,
+        is_standard, contract_size)
      VALUES
        ${contracts}`,
   );

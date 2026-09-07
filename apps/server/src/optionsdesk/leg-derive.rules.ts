@@ -34,12 +34,17 @@ export const DAYS_PER_WEEK = 7;
 export const DAYS_PER_YEAR = 365;
 
 /**
- * 美股期权合约乘数 (成交额 = `Vol × 权利金 × 100`, plan D-SOT-5)。
+ * 📌 **本文件不再持有「一张合约多少股」的常量** (076 FR-013): 它是**合约属性**而不是市场规则,
+ * 随链发现逐合约落库 (`marketdata.option_contract.contract_size`), 由调用方当入参传进来; 非标
+ * (调整后) 合约恒 `null`, 未被任何一轮链发现覆盖到的存量行也是 `null`。
  *
- * 🚨 它**蓄意不落库** (FR-028a 同源纪律: 合约表 MUST NOT 存合约乘数) —— 乘数是市场规则不是
- * 合约属性, 双写必 drift。派生时从这里取。
+ * 🚨 它此前是这里的常量 `100`, 而那个数只对美股成立: 港股每张合约的正股股数**逐标的不同**。
+ * EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§1 —— 2026-09-06 直查供应方链端点,
+ * 28 只港股锚里有链的 22 只只有 00700 是 100 股, 其余 21 只落在 150 / 200 / 400 / 500 / 1000 /
+ * 2000 六档 (合约行 `lot_size` = 正股 `lot_size` × `option_owner_lot_multiplier`
+ * = `option_contract_nominal_value` ÷ 正股 `last_price` 三式互证 22/22 零不一致, 并与交易所圈告
+ * EQD/08/26 附表逐只核对一致); 美股标准合约实测恒 100 (同 §2 PoC-A)。
  */
-export const US_OPTION_CONTRACT_MULTIPLIER = 100;
 
 /** 活跃度 Top N 的 N (plan D-SOT-5「取前 3」)。052 起它是**每个到期日**内的 N (FR-023)。 */
 export const ACTIVITY_TOP_RANK_COUNT = 3;
@@ -349,31 +354,40 @@ export function markActivity(rows: readonly ActivityInput[]): ActivityMark[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 成交额 = `Vol × 权利金 × 合约乘数` (plan D-SOT-5)。`O(1)`。
+ * 成交额 = `Vol × 权利金 × 该合约的股数` (plan D-SOT-5; 076 FR-011)。`O(1)`。
  *
  * 📌 口径注常驻: **成交额高 ≠ 真流动** (可能是一两笔大单), 与 `OI` (会 stale) / `Vol` (反映当下)
  * 三者互补看。缺 `Vol` 或缺权利金 → `null`, MUST NOT 当 0 —— 0 成交与「不知道成交多少」是两件事。
+ * 🚨 `contractSize` 为 `null` (非标 / 未落库) 同样 → `null`, 🚫 **MUST NOT 回落 100 或任何常量**
+ * (076 FR-009): 回落出来的是一个看起来正常的错数, 而它对港股 21/22 只锚都是错的。
  */
 export function computeTurnover(
   volume: number | null,
   premium: Decimalish | null,
+  contractSize: number | null,
 ): Prisma.Decimal | null {
   if (volume === null || !Number.isFinite(volume) || premium === null) return null;
-  return D(premium).times(volume).times(US_OPTION_CONTRACT_MULTIPLIER);
+  if (contractSize === null) return null;
+  return D(premium).times(volume).times(contractSize);
 }
 
 /**
- * **单笔权利金** = `bid × 合约乘数` —— 卖出一张 put 实际收到多少钱 (053 FR-032)。`O(1)`。
+ * **单笔权利金** = `bid × 该合约的股数` —— 卖出一张 put 实际收到多少钱 (053 FR-032)。`O(1)`。
  *
- * 🚨 **MUST 由服务端算并下发, 🚫 MUST NOT 由客户端乘一次** (ADR-0064 不变量 ③): 合约乘数是
- * **市场规则不是合约属性** (故它也蓄意不落库, 见 {@link US_OPTION_CONTRACT_MULTIPLIER}) ——
- * 服务端已持有这一份 (成交额在用它), 客户端再乘就是同一判据两处各算一份, 而**两边都乘得出数**:
- * 将来接入乘数非 100 的市场时, 漂移只在那一刻才看得见。
+ * 🚨 **MUST 由服务端算并下发, 🚫 MUST NOT 由客户端乘一次** (ADR-0064 不变量 ③): 股数是**合约
+ * 主数据**, 服务端已随腿持有这一份 (成交额吃的是同一个入参), 客户端再乘就是同一判据两处各算一
+ * 份, 而**两边都乘得出数** —— 那正是 076 之前的病根形态: 一个写死的 100 在港股每一行都错, 却没有
+ * 一处会红。
  *
  * 📌 口径取 `bid` 而非 mid/ask —— 与档位判据同一个数 (FR-018: 档位恒由 `bid` 价定)。用 mid 会
  * 让「屏幕上这条腿能收多少钱」比「它凭什么判成这个档」乐观一档, 而两个数都是真的。
  * 无 `bid` → `null`, 🚫 MUST NOT 当 0 (那是「白送」的意思, 与「没有买盘」是两件事)。
+ * `contractSize` 为 `null` 同样 → `null` (076 FR-009, 同 {@link computeTurnover} 的纪律)。
  */
-export function computeContractPremium(bid: Decimalish | null): Prisma.Decimal | null {
-  return bid === null ? null : D(bid).times(US_OPTION_CONTRACT_MULTIPLIER);
+export function computeContractPremium(
+  bid: Decimalish | null,
+  contractSize: number | null,
+): Prisma.Decimal | null {
+  if (bid === null || contractSize === null) return null;
+  return D(bid).times(contractSize);
 }

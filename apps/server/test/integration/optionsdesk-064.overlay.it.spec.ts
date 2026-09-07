@@ -362,6 +362,8 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
           optionType: 'PUT',
           isStandard: true,
           expirationCycle: 'WEEK',
+          // 076: 美股标准合约的实测股数 (spec「取证」§2 PoC-A) ⇒ 本文件的 golden 基线逐值不变。
+          contractSize: 100,
         },
         select: { id: true },
       });
@@ -590,6 +592,8 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       turnover: '123456.78',
       vendorUpdateTime: new Date('2026-08-04T13:00:00.000Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
       ...over,
     };
   }
@@ -630,6 +634,7 @@ describe('064 实时开关关态 · 逐字节等价 (Testcontainers PG + Redis, 
       turnover: null,
       vendorUpdateTime: new Date('2026-08-11T17:45:00.000Z'),
       greeksComplete: null,
+      contractSize: null,
     };
   }
 

@@ -96,6 +96,23 @@ function numToString(v: unknown): string | null {
   return null;
 }
 
+/**
+ * 有限**正整数** → number；其余 (缺失 / 带外哨兵 / 非整数 / ≤ 0) → null。
+ *
+ * 两段判: 先由 {@link numToString} 挡住带外缺失与字符串哨兵 (`Number('N/A')` 为 NaN), 再校
+ * 「正整数」—— 股数是「一张合约多少股」, 0 / 负 / 小数一律是脏值, 而它会被读端直接乘进单笔
+ * 权利金 (076 FR-005)。
+ *
+ * 📌 T002 (链发现 adapter) 落地后会出现同形态的第二处, 届时可考虑抽公共 helper; 此刻那边还
+ * 没有, 🚫 不为将来的复用去改另一个 adapter。
+ */
+function positiveIntOrNull(v: unknown): number | null {
+  const s = numToString(v);
+  if (s === null) return null;
+  const n = Number(s);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 function asRecord(row: unknown): Record<string, unknown> {
   return row !== null && typeof row === 'object' ? (row as Record<string, unknown>) : {};
 }
@@ -253,6 +270,15 @@ function parseSnapshotRow(
     turnover: numToString(raw.turnover),
     vendorUpdateTime: vendorTimeToDate(raw.update_time, market),
     greeksComplete: greeksCompleteOf(raw, isOption),
+    // 🚨 **只期权行取** (076 FR-003): 正股行的同名字段是板手数 —— 取错了每张美股合约会被
+    // 算成 1 股。判据复用本文件既有的 `isOption` (`option_valid`) 而不是另立一条
+    // `option_type !== 'N/A'`: 同一个问题写两遍必漂移, 而实取里两者对同一行同判 (标的行
+    // `option_valid: false` ∧ `option_type: 'N/A'`)。
+    // EVIDENCE: 期权行 `lot_size` = 每张合约正股股数, 正股行是板手数 —— fixture
+    // `__fixtures__/hk-option-snapshot-00700-2026-08-23.json` (HK.00700 标的行 `lot_size` 100
+    // = 该股板手, 132 期权行同为 100) 与 `specs/076-option-contract-size/spec.md`「取证」
+    // §2 PoC-A (美股正股行 `lot_size = 1`)。
+    contractSize: isOption ? positiveIntOrNull(raw.lot_size) : null,
   };
 }
 

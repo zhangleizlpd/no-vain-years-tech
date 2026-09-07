@@ -313,6 +313,8 @@ function quoteRow(code: string, quoteless = false): OptionSnapshotRow {
     turnover: '283940',
     vendorUpdateTime: new Date('2026-06-15T20:00:00Z'),
     greeksComplete: true,
+    // 076: 本文件不判股数 —— null = 「vendor 没给」, 与库值一起构成「无从比对」那一档。
+    contractSize: null,
   };
 }
 

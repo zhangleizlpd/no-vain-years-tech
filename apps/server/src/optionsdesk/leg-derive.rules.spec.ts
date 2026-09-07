@@ -5,7 +5,6 @@ import {
   ACTIVITY_TOP_RANK_COUNT,
   DAYS_PER_WEEK,
   DAYS_PER_YEAR,
-  US_OPTION_CONTRACT_MULTIPLIER,
   computeEffectiveCost,
   computeEffectiveCostVsWPct,
   computeLegRates,
@@ -372,22 +371,31 @@ describe('leg-derive.rules — 活跃度是同到期日内的相对排名 (plan 
 });
 
 describe('leg-derive.rules — 成交额 (plan D-SOT-5)', () => {
-  it('成交额 = Vol × 权利金 × 合约乘数', () => {
-    expect(computeTurnover(12, '3.5')?.toString()).toBe('4200');
-    expect(US_OPTION_CONTRACT_MULTIPLIER).toBe(100);
+  it('成交额 = Vol × 权利金 × 该合约股数', () => {
+    expect(computeTurnover(12, '3.5', 100)?.toString()).toBe('4200');
+  });
+
+  it('🚨 076: 股数逐合约不同 —— 港股 500 股的合约乘的就是 500, 不是任何写死的常量', () => {
+    expect(computeTurnover(12, '3.5', 500)?.toString()).toBe('21000');
+  });
+
+  it('🚨 076 FR-009: 股数未落库 (null) → null, 🚫 MUST NOT 回落 100', () => {
+    // 回落常量会把「不知道这张合约多少股」显示成一个看起来正常的数, 而它对港股 21/22 只锚
+    // 是错的 (EVIDENCE: specs/076-option-contract-size/spec.md 「取证」§1)。
+    expect(computeTurnover(12, '3.5', null)).toBeNull();
   });
 
   it('零成交 → 0 (真值就是 0, 与「缺数据」不同)', () => {
-    expect(computeTurnover(0, '3.5')?.toString()).toBe('0');
+    expect(computeTurnover(0, '3.5', 100)?.toString()).toBe('0');
   });
 
   it('Vol 缺失 → null, MUST NOT 当 0', () => {
-    expect(computeTurnover(null, '3.5')).toBeNull();
-    expect(computeTurnover(12, null)).toBeNull();
+    expect(computeTurnover(null, '3.5', 100)).toBeNull();
+    expect(computeTurnover(12, null, 100)).toBeNull();
   });
 
   it('返回 Decimal 而非 number —— 金额不进二进制浮点', () => {
-    expect(Prisma.Decimal.isDecimal(computeTurnover(12, '3.5') as Prisma.Decimal)).toBe(true);
+    expect(Prisma.Decimal.isDecimal(computeTurnover(12, '3.5', 100) as Prisma.Decimal)).toBe(true);
   });
 });
 
@@ -398,23 +406,32 @@ describe('leg-derive.rules — 成交额 (plan D-SOT-5)', () => {
  * `rg` 扫「mobile 侧零处乘合约乘数」守 (T004 verify), 这里守的是「服务端这一份算得对」。
  */
 describe('leg-derive.rules — 单笔权利金 (053 FR-032)', () => {
-  it('单笔权利金 = bid × 合约乘数, 且乘的是**同一份常量** (不新造第二份)', () => {
-    expect(computeContractPremium('1.45')?.toString()).toBe('145');
-    // 🚨 判别性: 与成交额共用同一个常量 —— 若有人在这里另写一个 100, 改乘数时只会改动一处而
-    // 两个数各自照样出得来。用「成交额 ÷ Vol == 单笔权利金」把这层共享钉成可验证的。
-    const turnover = computeTurnover(12, '1.45')!;
-    expect(turnover.div(12).toString()).toBe(computeContractPremium('1.45')!.toString());
-    expect(US_OPTION_CONTRACT_MULTIPLIER).toBe(100);
+  it('单笔权利金 = bid × 该合约股数, 且乘的是**同一份入参** (不新造第二份)', () => {
+    expect(computeContractPremium('1.45', 100)?.toString()).toBe('145');
+    // 🚨 判别性: 与成交额吃同一个股数 —— 若有人在这里另写一份, 换股数时只会改动一处而两个数
+    // 各自照样出得来。用「成交额 ÷ Vol == 单笔权利金」把这层共享钉成可验证的。
+    const turnover = computeTurnover(12, '1.45', 100)!;
+    expect(turnover.div(12).toString()).toBe(computeContractPremium('1.45', 100)!.toString());
+  });
+
+  it('🚨 076: 港股 500 股合约 ⇒ 单笔权利金 = bid × 500, 且与成交额同源 (÷ Vol 相等)', () => {
+    expect(computeContractPremium('1.45', 500)?.toString()).toBe('725');
+    const turnover = computeTurnover(12, '1.45', 500)!;
+    expect(turnover.div(12).toString()).toBe(computeContractPremium('1.45', 500)!.toString());
+  });
+
+  it('🚨 076 FR-009: 股数未落库 (null) → null, 🚫 MUST NOT 回落 100', () => {
+    expect(computeContractPremium('1.45', null)).toBeNull();
   });
 
   it('无 bid → null, 🚫 MUST NOT 当 0 (「没有买盘」不是「白送」)', () => {
-    expect(computeContractPremium(null)).toBeNull();
+    expect(computeContractPremium(null, 100)).toBeNull();
     // 对照: bid 真的是 0 时结果是 0 —— 两者在类型上就分得开。
-    expect(computeContractPremium('0')?.toString()).toBe('0');
+    expect(computeContractPremium('0', 100)?.toString()).toBe('0');
   });
 
   it('小数不进二进制浮点 —— 0.1 × 100 恒为 10 而不是 10.000000000000002', () => {
-    const premium = computeContractPremium('0.1');
+    const premium = computeContractPremium('0.1', 100);
     expect(Prisma.Decimal.isDecimal(premium as Prisma.Decimal)).toBe(true);
     expect(premium?.toString()).toBe('10');
   });

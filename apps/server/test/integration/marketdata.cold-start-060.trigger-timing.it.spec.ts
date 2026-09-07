@@ -152,6 +152,8 @@ describe('060 T010 冷启动触发 / 时点归属 / 幂等 (Testcontainers PG + 
       turnover: '283940',
       vendorUpdateTime: new Date('2026-08-14T20:00:00Z'),
       greeksComplete: true,
+      // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+      contractSize: null,
     };
   }
 

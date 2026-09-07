@@ -103,6 +103,7 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
       expirationCycle: 'MONTH',
       settlementMode: 'PM',
       isStandard: true,
+      contractSize: 100,
       ...over,
     };
   }
@@ -178,6 +179,8 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
           turnover: '283940',
           vendorUpdateTime: new Date('2026-06-12T20:00:00Z'),
           greeksComplete: true,
+          // 076: 本文件不判股数 —— null = vendor 没给 ⇒「无从比对」那一档 (FR-008)。
+          contractSize: null,
           ...this.overrides.get(code),
         };
       });
@@ -203,6 +206,7 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
         turnover: '400000000',
         vendorUpdateTime: new Date('2026-06-12T20:00:00Z'),
         greeksComplete: null,
+        contractSize: null,
       });
       return { asOf: this.asOf, rows };
     }
