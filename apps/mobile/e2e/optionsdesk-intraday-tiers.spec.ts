@@ -394,6 +394,7 @@ function project(canonical: CanonicalTable, perspective: LegPerspective): LegTab
     memberCount: legs.length,
     displayLimit: null,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
   };
 }
 

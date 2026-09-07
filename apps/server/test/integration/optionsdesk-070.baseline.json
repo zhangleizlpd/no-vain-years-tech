@@ -267,6 +267,7 @@
       "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 6,
     "memberCount": 6,
     "displayLimit": null,
@@ -395,6 +396,7 @@
       "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 1,
     "memberCount": 1,
     "displayLimit": null,
@@ -723,6 +725,7 @@
       "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 6,
     "memberCount": 6,
     "displayLimit": null,
@@ -1045,6 +1048,7 @@
       "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 6,
     "memberCount": 6,
     "displayLimit": null,

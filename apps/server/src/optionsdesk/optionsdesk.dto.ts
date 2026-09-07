@@ -2360,6 +2360,17 @@ export class LegTableResponse {
 
   @ApiProperty({
     description:
+      '本轮候选码数超**供应方单批上限**, 被按行权价档裁掉多少条 —— 这些腿本轮**未去问实时价** ' +
+      '(077 FR-007); 未裁剪恒 0。🚨 **与 candidateCapDropped 同族的保险丝** ⇒ 同样蓄意不进 ' +
+      'gateCounts: 那两个数答「判据挡下了什么」, 本数答「供应方一次只让问这么多」, 两者处置' +
+      '完全不同。EVIDENCE: 上限取值单点 marketdata/option-snapshot.port.ts:95',
+    type: 'integer',
+    example: 0,
+  })
+  batchCapTrimmed!: number;
+
+  @ApiProperty({
+    description:
       '069 每 K 行军判决与逐档审计, 按行权价升序 (069 FR-009 / FR-014)。' +
       '🚨 **仅「收租视角 ∧ us 市场锚」有值, 其余恒 null** (070 FR-001 门控放宽, 两档一律): ' +
       '离线档与实时整体回落收盘档随 070 点亮 —— 数值基准由 priceKind/quoteAsOf 如实上报; ' +
@@ -2607,6 +2618,7 @@ export function toLegTableResponse(view: LegTableView): LegTableResponse {
     memberCount: view.memberCount,
     displayLimit: view.displayLimit,
     candidateCapDropped: view.candidateCapDropped,
+    batchCapTrimmed: view.batchCapTrimmed,
     march: toMarchResponse(view.march),
     marchMode: view.marchMode,
   };

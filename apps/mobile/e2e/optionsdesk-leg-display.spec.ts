@@ -121,6 +121,8 @@ const COPY = {
   gateLiquidity: (n: number) => `流动性门槛排除 ${n} 条`,
   gateLiquidityNoteIntent: ' · 仍在全腿视角',
   gateLiquidityNoteAll: ' · 仅全腿视角可见',
+  /** 077 FR-007 ②：预算裁剪计数 —— **无 note 后缀**（Guardrail 9），故这里也只有一句。 */
+  batchCapTrimmed: (n: number) => `超单批上限，${n} 条未取实时`,
   emptyIntentTitle: { build: '建仓视角暂无候选', rent: '收租视角暂无候选' },
   emptyBlockedByGate: (n: number) =>
     `这只票有 ${n} 条腿在该视角的期限段内合格，但报价太宽，被流动性门槛挡在意图视角之外。`,
@@ -341,6 +343,7 @@ function project(canonical: CanonicalTable, perspective: LegPerspective): LegTab
     memberCount: legs.length,
     displayLimit: null,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
     ...canonical.over,
   };
 }
@@ -572,6 +575,7 @@ test.setTimeout(180_000);
 
 const SYMBOL_A = 'us:PEP';
 const SYMBOL_B = 'us:KO';
+const SYMBOL_C = 'us:KDP';
 
 async function openDetail(page: Page, symbol: string): Promise<void> {
   await page.goto(`/optionsdesk/underlying/${encodeURIComponent(symbol)}`);
@@ -649,6 +653,13 @@ const fitId = (code: string) => `optionsdesk-detail-leg-fit-${code}`;
 
 const tableA = makeTable(SYMBOL_A, BOOK_A, { removedByPremiumFloor: PREMIUM_REMOVED });
 const tableB = makeTable(SYMBOL_B, BOOK_B);
+/**
+ * 册 C —— 077 FR-007 ② 的**唯一可验路径**：预算裁剪只在 bootstrap 分支（整面零 Δ）发生，
+ * 近 30 天 prod 1447 个「标的×session」里 0 次（spec 取证 §6）⇒ 屏上那条**没有自然触发场景**，
+ * 只能靠 mock 播值验。腿册与 A 同（本条不验成员与序），差别只在这一个标量。
+ */
+const BATCH_TRIMMED = 7;
+const tableC = makeTable(SYMBOL_C, BOOK_A, { over: { batchCapTrimmed: BATCH_TRIMMED } });
 
 /**
  * 从派生结果里读期望值 —— **不在 test 里手抄一份**（手抄的那份与 mock 漂移时两边都不会红）。
@@ -675,6 +686,7 @@ const GATES_A = {
   excludedIn: (tab: LegTab) => VIEW_A[tab].gateCounts.excludedFromIntentTabs,
 };
 const GATES_B = { excludedIn: (tab: LegTab) => VIEW_B[tab].gateCounts.excludedFromIntentTabs };
+const VIEW_C_RENT = project(tableC, 'rent');
 
 // ════════════════════════════════════════════════════════════════════════════
 // ① SC-001 —— 渲染序 = 服务端下发的数组序，逐行相同且切换后不变
@@ -905,4 +917,46 @@ test('051 T011 — SC-004 / SC-013：两种空态文案互不相同；建仓空�
 
   // ④ SC-004：两种情形的文案**互不相同**（用户据此该做的事完全不同）。
   expect(buildText).not.toBe(rentText);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ⑥ 077 FR-007 ② —— 预算裁剪计数：同区块同形态；未裁剪时**整条不渲染**
+// ════════════════════════════════════════════════════════════════════════════
+
+test('077 T005 — FR-007 ②：裁剪发生 ⇒ 计数行落在两条门槛计数**同一区块**且逐字对得上；未裁剪 ⇒ 整条不渲染', async ({
+  page,
+}) => {
+  await installLegMock(page, { [SYMBOL_A]: tableA, [SYMBOL_C]: tableC });
+  const line = page.getByTestId('optionsdesk-detail-leg-gate-batch_cap');
+
+  // ① 播 7 ⇒ 该行出现，文案与 `optionsdesk-copy.ts` 逐字相同且报的就是那个数。
+  await openDetail(page, SYMBOL_C);
+  await gotoTab(page, 'rent', VIEW_C_RENT);
+  await expect(line).toHaveText(COPY.batchCapTrimmed(BATCH_TRIMMED));
+  await expect(line).toContainText(String(BATCH_TRIMMED));
+
+  // ② 🚨 「同一版面区块」是 FR-007 ② 的字面要求 —— 断言它在 `…-leg-gates` **之内**，
+  //    🚫 而不是像 `K` 熔断那样在区块外另起一块（另起一块也能让上面那条 toHaveText 绿）。
+  await expect(
+    page.locator(
+      '[data-testid="optionsdesk-detail-leg-gates"] [data-testid="optionsdesk-detail-leg-gate-batch_cap"]',
+    ),
+    '裁剪计数不在两条门槛计数那个区块内 —— FR-007 ② 要的是同一版面区块',
+  ).toHaveCount(1);
+
+  // ③ 「同一行形态」：与权利金那条一样**恒无入口** —— 被裁掉的档在 bootstrap 分支哪个视角
+  //    都取不到实时，给入口只能是空承诺（Guardrail 9 撤掉 note 后缀是同一条理由）。
+  await expect(
+    page.locator('[data-testid="optionsdesk-detail-leg-gate-batch_cap"][role="button"]'),
+    '裁剪计数带了入口 —— 被裁的档不在任何一个视角里，入口只能是空承诺',
+  ).toHaveCount(0);
+  await expect(line).not.toContainText(COPY.gateLiquidityNoteIntent);
+
+  // ④ 播 0 ⇒ 该 testID **不存在**（Guardrail 8）——🚨 判据是「不渲染」而不是「渲染成 0 条」：
+  //    裁剪实测恒不触发，做成恒渲染就是屏上常驻一行恒为 0 的噪声。
+  await openDetail(page, SYMBOL_A);
+  await gotoTab(page, 'rent', VIEW_A.rent);
+  // 前提自检：gates 区块本身渲出来了 —— 否则「找不到」只是没渲染到，判别性归零。
+  await expect(page.getByTestId('optionsdesk-detail-leg-gate-premium_floor')).toBeVisible();
+  await expect(line, '未裁剪时仍渲染出裁剪计数行 —— 那是一行恒为 0 的噪声').toHaveCount(0);
 });

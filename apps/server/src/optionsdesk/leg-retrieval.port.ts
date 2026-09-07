@@ -281,6 +281,18 @@ export interface LegRetrievalResult extends RecallOutcome<LegChainRow> {
    * 📌 未覆盖任何条件时它恒等于 `candidates.length` (实现直接短路, 不白跑第二趟)。
    */
   readonly memberCount: number;
+  /**
+   * 077 FR-007 —— 本轮候选码数超**供应方单批上限**时, 被按行权价档裁掉多少条合约码。这些腿
+   * 本轮**未去问实时价**。未裁剪恒 `0` —— 它是计数不是「未知」。
+   *
+   * EVIDENCE: 上限取值单点 = `marketdata/option-snapshot.port.ts:95`
+   * (`OPTION_SNAPSHOT_MAX_CONTRACT_CODES`) —— 本字段只报数, 🚫 MUST NOT 在这里重定义上限。
+   *
+   * 🚨 **它蓄意不进 `gateCounts`**: 那两个数答「判据挡下了什么」, 本数答「供应方一次只让问
+   * 这么多」—— 两者处置完全不同 (前者调条件, 后者是容量), 见 `get-legs.usecase.ts` 里
+   * `LegTableView.candidateCapDropped` 那条同款裁决。
+   */
+  readonly batchCapTrimmed: number;
 }
 
 /**

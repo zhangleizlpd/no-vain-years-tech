@@ -551,15 +551,19 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
   // ── T006 · 回落面 + 退役收口 (FR-001/004/007/011/013/014; branches 2/7/8/10) ──
 
   describe('T006 回落面 + overlay 退役收口', () => {
-    it('① bootstrap: 库内零快照期 ⇒ 矩形宽窗走同一管道, 实时批成链 (branch 2)', async () => {
+    it('① bootstrap: 库内零快照期 ⇒ 收租预算窗走同一管道, 实时批成链 (branch 2)', async () => {
       await seedChain({ snapshots: false, basis: FRESH_BASIS });
       readPort.respond = realtimeBatch({ 'T-88': { openInterest: '321' } });
 
       const result = await retrieve(true);
       expect(result).not.toBeNull();
       expect(readPort.calls).toHaveLength(1);
-      // 矩形 [0.7, 1.05] × 100 罩住五条腿 (80~104)。
-      expect(readPort.calls[0].contractCodes).toHaveLength(5);
+      // 🚨 **077 翻绊线 (5 → 4)**: 本臂此前断言 5 码 —— 那是 064 矩形 [0.7, 1.05] × 100 罩住的
+      //    五条腿 (80~104)。077 起零 Δ 面的**收租**支改走 `rentBootstrapBudgetWindow`:
+      //    axis = min(spot 100, W 120) = 100、上界 = 100 × 1.03 = 103 ⇒ K=104 出局、**4 码**。
+      //    行权价下界随之消失 (077 FR-003), 但本夹具最低档 K=80 本就在旧矩形内 ⇒ 本臂只看得见
+      //    上界那一半; 「下界消失」那一半由 `leg-window.rules.spec.ts` 的 077 臂① 承接。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['T-80', 'T-88', 'T-92', 'T-96']);
       expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
       expect(result!.chain.priceKind).toBe('realtime');
       expect(result!.chain.source).toBe('realtime');
@@ -703,6 +707,216 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       // ⇒ 上界取严落在 W 本身 —— 实时 spot 没有夺走轴 (067 branch 8 的判别点)。
       expect(strikeMax!.toString()).toBe(w.toString());
       expect(strikeMax!.lessThanOrEqualTo(cap)).toBe(true);
+    });
+  });
+
+  // ── 077 T002 · 零 Δ 面收租预算窗 (FR-003/006/007①/009/010; branches 2/3/5/6/7/8/9) ──
+
+  /**
+   * 077 (「068 未完成的那一半」) —— 零 Δ 面 (`previousSpot === null`) 的**收租**支从 064 矩形窗
+   * 换成「语义过滤 → 按行权价档预算裁剪」。本组钉三件事:
+   * ① 换掉的**只有**收租那一支 (建仓 / 全腿 / 正常日 Δ 面逐值零变化);
+   * ② 两市同一形态 (新函数不吃 `market`);
+   * ③ 裁剪与「本就没有」两种空/少的形态不混。
+   *
+   * 📌 上面 T006-① 是同一支的正面主臂 (077 翻过绊线, 5 → 4 码), 与本组同源。
+   */
+  describe('077 零 Δ 面收租预算窗', () => {
+    const codesOf = (result: LegRetrievalResult) => result.candidates.map((c) => c.leg.code).sort();
+
+    /**
+     * 🚨 建仓召回段是 `BUILD_RECALL_DTE = [1, 49]`, 而既有 `LEGS` 全是 `dte: 60` ⇒ 建仓的
+     * `inSegment` 会是**空集**, 照抄夹具得到的是一条平凡绿 (零码时两条分支产出相同)。
+     * ⇒ 建仓臂必须另铺短腿。
+     */
+    const BUILD_LEGS: readonly SeedLeg[] = LEGS.map((leg) => ({
+      ...leg,
+      dte: 35,
+      code: leg.code.replace('T-', 'B-'),
+    }));
+
+    it('① 建仓 bootstrap 仍是 064 矩形宽窗 —— 077 一字不动 (branch 7, FR-009)', async () => {
+      await seedChain({ snapshots: false, basis: FRESH_BASIS, legs: BUILD_LEGS });
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true, 'build');
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(1);
+      // 矩形 [0.7, 1.05] × 100 = [70, 105] 罩住五条腿 (80~104) —— **含 K=104**。
+      // 🚨 收租那条上界 (100 × 1.03 = 103) 若被顺手接到建仓, 这里当场掉到 4 码。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual([
+        'B-104',
+        'B-80',
+        'B-88',
+        'B-92',
+        'B-96',
+      ]);
+      expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
+    });
+
+    /**
+     * 🚨 **本臂是 071 T006b-① 翻掉的那条端到端判据在建仓侧的落点** —— 别当成臂① 的重复。
+     *
+     * 071 T006b-① 原先用**收租** + 零 Δ 面证「adapter 把对的 `market` 喂进了
+     * `bootstrapWindowFor`、下界 `0.6` 真的作用到发给 vendor 的码集上」。077 后收租支没有行权价
+     * 下界 ⇒ 那一臂再也承载不了这条判据, 而 077 臂① 是**美股**建仓臂 (钉的是 `0.7`), 替不了它。
+     * ⇒ 若不补本臂, `STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET.hk` 就只剩
+     * `leg-window.rules.spec.ts` 的**落值**单测, 端到端一条不剩 (翻绊线 MUST NOT 净减少机器判据)。
+     *
+     * 判别性靠两条深虚腿夹出 `0.6` 与 `0.7` 之间那条缝 (定窗基准 spot = 100):
+     *
+     * | 腿 | `K/spot` | hk 下界 `0.6×100 = 60` | us 下界 `0.7×100 = 70` |
+     * | --- | --- | --- | --- |
+     * | `B-65` | 0.65 | **在窗内** | 在窗**外** |
+     * | `B-55` | 0.55 | 在窗外 | 在窗外 |
+     */
+    const HK_BUILD_LEGS: readonly SeedLeg[] = [
+      ...BUILD_LEGS,
+      {
+        code: 'B-65',
+        dte: 35,
+        strike: '65',
+        bid: '0.30',
+        ask: '0.40',
+        oi: '900',
+        vol: '40',
+        delta: '-0.01',
+      },
+      {
+        code: 'B-55',
+        dte: 35,
+        strike: '55',
+        bid: '0.10',
+        ask: '0.20',
+        oi: '900',
+        vol: '40',
+        delta: '-0.01',
+      },
+    ];
+
+    it('①b hk 建仓 bootstrap 的矩形窗**两侧都按港股取值** (下界 0.6; branch 7, 071 FR-002 端到端)', async () => {
+      await seedChain({
+        snapshots: false,
+        basis: FRESH_BASIS,
+        market: 'hk',
+        code: '0700',
+        legs: HK_BUILD_LEGS,
+      });
+      marketState.extra = [{ market: 'hk', session: 'regular' }];
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true, 'build', null, 'hk:0700');
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(1);
+      const codes = [...readPort.calls[0].contractCodes].sort();
+      // 🚨 `B-65` (0.65) 只有港股那档下界 0.6 圈得进 —— adapter 把 `market` 硬写成 `'us'`
+      //    (下界 70) 当场红。这正是 071 T006b-① 翻掉后无处承接的那一条。
+      expect(codes).toContain('B-65');
+      // 🚨 「宁宽」不等于无边: `B-55` (0.55) 仍在窗外 —— 少了这条, 把下界改成 0 也能过上一条。
+      expect(codes).not.toContain('B-55');
+      // 上界仍是两市单值的 1.05 × 100 = 105 ⇒ 常规腿 (含 K=104) 一条不落。
+      expect(codes).toEqual(
+        expect.arrayContaining(['B-104', 'B-80', 'B-88', 'B-92', 'B-96', 'B-65']),
+      );
+      expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
+    });
+
+    it('② hk 锚零 Δ 面走**同一个**预算窗 —— 两市同一形态 (branch 9, FR-010)', async () => {
+      await seedChain({ snapshots: false, market: 'hk', code: '0700' });
+      marketState.extra = [{ market: 'hk', session: 'regular' }];
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true, 'rent', null, 'hk:0700');
+      expect(result).not.toBeNull();
+      // 新函数不吃 `market` ⇒ 与 T006-① 的美股臂**逐值同一个集合**: axis = min(100, 120) = 100、
+      // 上界 103。🚫 谁为港股另开一条分支 (如沿用 hk 的 0.6 下界), 两臂当场分岔。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['T-80', 'T-88', 'T-92', 'T-96']);
+      expect(result!.chain.realtimeDegrade).toBeNull();
+      expect(result!.chain.priceKind).toBe('realtime');
+      expect(result!.chain.windowShape).toBe('bootstrap');
+    });
+
+    it('③ 非零 Δ 面 (正常日) 收租候选逐值零变化 —— 预算窗 MUST NOT 溢到 Δ 带支 (branch 6, FR-006)', async () => {
+      await seedChain({ basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      // RENT 带 [0.03, 0.62] 对昨日面 ⇒ 落带 K = {88, 92, 96}, 与 077 之前逐值相同。
+      // 🚨 预算窗只有上界 (103) 没有下界 ⇒ 它若被接到 `else` 分支, K=80 会一并入窗、当场多一码。
+      expect([...readPort.calls[0].contractCodes].sort()).toEqual(['T-88', 'T-92', 'T-96']);
+      expect(codesOf(result!)).toEqual(['T-88', 'T-92', 'T-96']);
+      expect(result!.chain.windowShape).toBe('window');
+    });
+
+    it('④ 全腿视角在零 Δ 面上仍零外呼、与离线逐值相同 (branch 8, FR-009)', async () => {
+      await seedChain({ snapshots: false, basis: FRESH_BASIS });
+      readPort.respond = realtimeBatch();
+
+      const realtime = await retrieve(true, 'all');
+      const offline = await retrieve(false, 'all');
+      // 全腿在 `retrieveCandidates` 就被 `soleIntentView` 分流到收盘档 ⇒ **结构上到不了**
+      // bootstrap 分支; 而零快照期下收盘档本就「未就绪」⇒ 两侧同为 null, 且一次外呼都没有。
+      expect(readPort.calls).toHaveLength(0);
+      expect(JSON.stringify(realtime)).toBe(JSON.stringify(offline));
+      expect(realtime).toBeNull();
+      // 🚨 判别性: 同一份夹具上收租视角**确实**走得通实时 bootstrap ⇒ 上面那个 null 不是
+      //    「夹具没数据」的平凡绿。
+      const rent = await retrieve(true, 'rent');
+      expect(rent).not.toBeNull();
+      expect(readPort.calls).toHaveLength(1);
+    });
+
+    it('⑤ 码数超预算 ⇒ 按档裁剪后**仍呈实时档**, 服务端留 trimmed= 记录 (branch 2, FR-007 ①)', async () => {
+      // 401 个相异行权价, 最高 100.00 全部落在上界 103 之下 ⇒ 语义过滤一条不滤, 只有预算在裁。
+      const dense: SeedLeg[] = Array.from({ length: 401 }, (_, i) => ({
+        code: `D-${i}`,
+        dte: 60,
+        strike: (80 + i * 0.05).toFixed(2),
+        bid: '2.00',
+        ask: '2.10',
+        oi: '900',
+        vol: '40',
+        delta: '-0.20',
+      }));
+      await seedChain({ snapshots: false, basis: FRESH_BASIS, legs: dense });
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true);
+      expect(result).not.toBeNull();
+      // 每档 1 码 ⇒ 按 |K − axis| 升序纳入 399 档、裁掉 2 (预算是闭区间, 恰好等于上限不裁)。
+      expect(readPort.calls).toHaveLength(1);
+      expect(readPort.calls[0].contractCodes).toHaveLength(399);
+      // 🚨 裁剪**不是**降级: 收租侧 `window_over_cap` 由构造不可达 (预算做进了窗定义本身),
+      //    整表 MUST NOT 掉回收盘档。
+      expect(result!.chain.realtimeDegrade).toBeNull();
+      expect(result!.chain.priceKind).toBe('realtime');
+      expect(
+        infos.some(
+          (line) =>
+            line.includes('[068] window-size') &&
+            line.includes('trimmed=2') &&
+            line.includes('before=401'),
+        ),
+      ).toBe(true);
+    });
+
+    it('⑥ 语义过滤后零码 ⇒ 空态而非错误 / 降级, 零外呼 (branch 3, US3-AS1)', async () => {
+      // V=90 ⇒ W = 0.8 × 90 = 72、axis = min(spot 100, 72) = 72、上界 = 72 × 1.03 = 74.16
+      // ⇒ 低于最低行权价 80 ⇒ 一档都不入窗。
+      await seedChain({ snapshots: false, basis: FRESH_BASIS, v: '90' });
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true);
+      // 零码 ⇒ 主批不发 (068 FR-013「零码 ⇒ 零外呼」)。
+      expect(readPort.calls).toHaveLength(0);
+      // 🚨 「有链无候选」是既有的**非错误**形态 —— MUST NOT 收成 null / 降级标 / 收盘档。
+      //    本臂是 branch 3 唯一的响应形态断言 (纯函数臂只证得了它吐空集)。
+      expect(result).not.toBeNull();
+      expect(result!.candidates).toHaveLength(0);
+      expect(result!.chain.realtimeDegrade).toBeNull();
+      expect(result!.chain.priceKind).toBe('realtime');
+      expect(result!.chain.windowShape).toBe('bootstrap');
     });
   });
 });

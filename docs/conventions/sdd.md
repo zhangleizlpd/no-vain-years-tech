@@ -34,4 +34,4 @@ use case 内部决策留 `plan.md`；跨模块 / 不可逆决策才抽出独立 
 
 ## 反模式
 
-→ `.claude/rules/sdd-authoring.md` § 反模式（6 条 canonical，触及 `specs/**` 自动注入）。
+→ `.claude/rules/sdd-authoring.md` § 反模式（触及 `specs/**` 自动注入）。

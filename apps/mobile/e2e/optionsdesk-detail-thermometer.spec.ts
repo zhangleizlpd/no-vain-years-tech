@@ -397,6 +397,7 @@ function makeLegTable(
     memberCount: legs.length,
     displayLimit: null,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
   };
 }
 

@@ -1112,6 +1112,7 @@ function emptyLegTable(): LegTableView {
     legs: [],
     gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
     matchedCount: 0,
     memberCount: 0,
     displayLimit: DISPLAY_LIMIT_BY_PERSPECTIVE.all,

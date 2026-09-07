@@ -330,6 +330,7 @@ interface CanonicalTable extends Omit<
   | 'memberCount'
   | 'displayLimit'
   | 'candidateCapDropped'
+  | 'batchCapTrimmed'
 > {
   book: readonly CanonicalLeg[];
 }
@@ -396,6 +397,7 @@ function projectTable(canonical: CanonicalTable, perspective: LegPerspective): L
     memberCount: legs.length,
     displayLimit: null,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
   };
 }
 

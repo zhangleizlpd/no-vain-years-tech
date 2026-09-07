@@ -595,6 +595,7 @@ function projectTable(
     memberCount: recall(perspective, DEFAULT_CRITERIA).length,
     displayLimit: chain.displayLimit,
     candidateCapDropped: 0,
+    batchCapTrimmed: 0,
   };
 }
 

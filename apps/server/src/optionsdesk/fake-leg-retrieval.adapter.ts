@@ -90,6 +90,9 @@ export class FakeLegRetrievalAdapter implements LegRetrievalPort {
           ? outcome.candidates.length
           : recallCandidates(context, query.perspectives, seeded.legs, query.candidateCap, disposal)
               .candidates.length,
+      // 077 FR-007: 假实现不打供应方 ⇒ 没有单批上限可撞, 恒 0 (语义见
+      // `LegRetrievalResult.batchCapTrimmed`)。
+      batchCapTrimmed: 0,
     });
   }
 }
