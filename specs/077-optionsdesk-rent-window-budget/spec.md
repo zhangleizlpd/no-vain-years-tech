@@ -2,7 +2,7 @@
 feature_id: 077-optionsdesk-rent-window-budget
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: clarified
+status: planned
 created_at: '2026-09-07'
 updated_at: '2026-09-07'
 spec_kit_version: '>=0.8.5,<0.10.0'
