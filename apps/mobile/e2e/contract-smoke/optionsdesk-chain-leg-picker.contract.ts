@@ -444,6 +444,8 @@ function assertBlockShape(table: LegTableResponse, today: string): void {
       'asOfFreshnessTier',
       // 050 的顶层增量（051 T012 起在此立账）；053 起收窄成标量。
       'basis',
+      // 077 FR-007：预算裁剪计数 —— 与 `candidateCapDropped` 同族的**保险丝**，不是门槛计数。
+      'batchCapTrimmed',
       // 053 FR-019c：候选上限 K 的触及数（异常位，与截断计数不同款）。
       'candidateCapDropped',
       // 052 T011 的顶层增量（T014 起在此立账）；053 起只发本视角那一份。
@@ -729,6 +731,14 @@ function assertNewFieldsRoundTrip(views: PerspectiveViews): void {
       view.candidateCapDropped,
       0,
       `legs(${perspective}).candidateCapDropped: 未触及候选上限 ⇒ 0（它是计数不是「未知」）`,
+    );
+    // 077 FR-007：同族的第二根保险丝 —— 供应方单批码数上限。本片跑在 mock provider 下
+    //    ⇒ 恒收盘档、结构上不走实时快照那一批（预算窗只裁那一批）⇒ 恒 0；
+    //    且它同样是**数**不是 null（键在册由上面的键集封闭断言另行钉住）。
+    assert.equal(
+      view.batchCapTrimmed,
+      0,
+      `legs(${perspective}).batchCapTrimmed: 收盘档路径不走预算裁剪窗 ⇒ 0（它是计数不是「未知」）`,
     );
   }
 }
