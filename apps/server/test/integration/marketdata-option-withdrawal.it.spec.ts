@@ -58,6 +58,7 @@ function chainRow(
     expirationCycle: 'MONTH',
     settlementMode: 'PM',
     isStandard: true,
+    contractSize: 500,
   };
 }
 

@@ -54,6 +54,7 @@ function contract(
     expirationCycle: 'MONTH',
     settlementMode: 'PM',
     isStandard: true,
+    contractSize: 100,
     ...extra,
   };
 }

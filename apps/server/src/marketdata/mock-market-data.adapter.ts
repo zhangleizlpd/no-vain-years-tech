@@ -872,6 +872,9 @@ export class MockMarketDataAdapter
         expirationCycle: 'MONTH',
         settlementMode: 'PM',
         isStandard: true,
+        // 美股标准合约实测恒 100 (076 取证 §2 PoC-A) —— mock 也照供应方口径给, 否则零 env 的
+        // IT 会把「读端拿不到股数」测成常态。
+        contractSize: 100,
       }));
     });
   }

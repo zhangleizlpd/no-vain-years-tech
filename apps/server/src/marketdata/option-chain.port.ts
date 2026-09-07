@@ -55,8 +55,9 @@ export interface OptionExpiry {
  * 一个合约的静态属性 (`get_option_chain` 一行)。与 `marketdata.option_contract` 逐列对应,
  * 便于采集侧 1:1 落库。
  *
- * 🚫 **不含合约乘数** —— schema 明写 MUST NOT 存 (FR-028a): 非标合约的乘数根本表达不了
- * (`VICI1` 是 90 股 + 现金找零), 存一个 100 反而制造「看起来正常的错数」。
+ * **含标准合约的每张股数; 非标恒 null** (076 FR-013 supersede 047 FR-028a) —— 非标合约的
+ * 交割物根本表达不了 (`VICI1` 是 90 股 + 现金找零), 而供应方对非标照报 100, 存下来就是
+ * 「看起来正常的错数」。
  */
 export interface OptionContractStatic {
   /** canonical market (`us`)。 */
@@ -89,6 +90,20 @@ export interface OptionContractStatic {
    * 判据见 adapter 的 `isStandardContract`。
    */
   isStandard: boolean;
+  /**
+   * 一张合约对应的正股股数 (vendor `lot_size`)。**标准合约有值, 非标恒 null** (076 FR-002)。
+   *
+   * 🚨 它是**合约属性不是市场常量**: 港股逐标的不同 (实测 100 / 150 / 200 / 400 / 500 /
+   * 1000 / 2000), 美股实测恒 100。读端把它直接乘进单笔权利金与成交额, 所以缺值 MUST 落 null
+   * 而不是回落任何常量 (076 FR-009)。
+   *
+   * EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§1 —— 22 只港股锚三式互证
+   * (合约行 `lot_size` = 正股行 `lot_size` × `option_owner_lot_multiplier` =
+   * `option_contract_nominal_value` ÷ 正股 `last_price`) 22/22 零不一致, 并与交易所圈告
+   * EQD/08/26 附表逐只核对一致; 同节 §2 PoC-A: 供应方对**非标** APTV1 照报 100, 与 OCC
+   * 调整后交割物不符 ⇒ 非标一律不信。
+   */
+  contractSize: number | null;
 }
 
 /** 单窗链查询。`start` / `end` 闭区间, 且**恒取真实到期日本身** (分窗纯函数的产出)。 */

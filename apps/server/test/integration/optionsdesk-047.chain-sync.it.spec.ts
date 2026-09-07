@@ -103,6 +103,7 @@ describe('047 T017 链发现 + 逐日快照采集 (Testcontainers PG, 真锚闸 
       expirationCycle: 'MONTH',
       settlementMode: 'PM',
       isStandard: true,
+      contractSize: 100,
       ...over,
     };
   }

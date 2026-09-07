@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Logger } from '@nestjs/common';
 import { describe, it, expect, vi } from 'vitest';
 import { FutuOptionChainAdapter } from './futu-option-chain.adapter.js';
 import { OptionChainBudgetExhaustedError, OptionChainRejectedError } from './option-chain.port.js';
@@ -170,6 +171,7 @@ describe('FutuOptionChainAdapter', () => {
         expirationCycle: 'MONTH',
         settlementMode: 'PM',
         isStandard: true,
+        contractSize: 100,
       });
     });
 
@@ -470,6 +472,7 @@ describe('066 T01 FutuOptionChainAdapter — 港股 (hk) 接入', () => {
         expirationCycle: 'MONTH',
         settlementMode: null,
         isStandard: true,
+        contractSize: 100,
       });
     });
 
@@ -505,6 +508,122 @@ describe('066 T01 FutuOptionChainAdapter — 港股 (hk) 接入', () => {
         expirationCycle: null,
         daysToExpiry: 5,
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 076 T002 — 合约每张股数 (contractSize; FR-001 / FR-002 / FR-004 / FR-005)
+// ---------------------------------------------------------------------------
+/**
+ * 病根: 读端此前把「一张合约 = 100 股」当**市场常量**, 而每张合约的正股股数是**合约属性** ——
+ * 港股逐标的不同 (取证 §1 实测 100 / 150 / 200 / 400 / 500 / 1000 / 2000)。取值单点就是本
+ * adapter 的一行映射, 所以判据也全落在这里。
+ *
+ * 两份真夹具各钉一半, 缺一不可:
+ * - `hk-option-chain-00700` (132 行): `lot_size` 全 100 —— 港股也有 100 的, 「港股 ≠ 100」
+ *   这句话本身不能当判据。
+ * - `hk-option-chain-09988` (354 行): 282 行 500 + **混进 72 行 `US.ALB`** (词根撞名的美国
+ *   Albemarle 期权, 其 `lot_size` 是 100) —— 一份夹具同时钉「标准合约落供应方值」与
+ *   「跨市场混入行不进返回集」。混入行若漏进来, 这只港股票会有 72 行被写成 100。
+ */
+const HK_9988_CHAIN = JSON.parse(
+  readFileSync(join(__dirname, '__fixtures__', 'hk-option-chain-09988-2026-09-07.json'), 'utf8'),
+) as ChainFixture;
+const HK_9988_ROWS = HK_9988_CHAIN.response.rows;
+const HK_9988_WINDOW = { symbol: 'hk:09988', start: '2026-09-07', end: '2026-10-06' } as const;
+
+describe('076 T002 FutuOptionChainAdapter — 合约每张股数 (contractSize)', () => {
+  describe('真夹具回放', () => {
+    it('① 00700 实取 132 行 ⇒ contractSize 全 100 (原始行 lot_size 也全 100)', async () => {
+      // 两层分开断: 先量 vendor 给了什么, 再断解析结果 —— 少了前一层, 「全 100」可以在
+      // adapter 根本没读这一列的情况下照样绿 (它守的会是一条不存在的路径)。
+      expect(uniq(HK_ROWS.map((r) => r.lot_size))).toEqual([100]);
+
+      const { out } = await replayHkChain();
+
+      expect(out).toHaveLength(132);
+      expect(uniq(out.map((c) => c.contractSize))).toEqual([100]);
+    });
+
+    it('② 09988 实取 354 行 ⇒ 返回 282 行全 500, 且一行 US. 前缀都不剩 (FR-004)', async () => {
+      expect(HK_9988_CHAIN.requested).toMatchObject({ code: 'HK.09988', option_type: 'ALL' });
+      expect(HK_9988_CHAIN.response.count).toBe(354);
+      expect(HK_9988_ROWS).toHaveLength(354);
+      // vendor 按词根串市场: 72 行是美国 Albemarle 的期权, 它们的 lot_size 是 100。
+      expect(HK_9988_ROWS.filter((r) => !String(r.code).startsWith('HK.'))).toHaveLength(72);
+      expect([...new Set(HK_9988_ROWS.map((r) => r.lot_size))].sort()).toEqual([100, 500]);
+
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const { http } = makeShim(HK_9988_ROWS);
+      const out = await makeAdapter(http).getChainWindow(HK_9988_WINDOW);
+      warn.mockRestore();
+
+      // 🚨 混入行由既有的 `dropForeignMarketRows` 在到达写路径之前剔除, FR-004 是**结构保证**;
+      // 本臂只钉「混入行不出现在返回集」, 🚫 不在取值处造第二道过滤 (同一个问题写两遍必漂移)。
+      expect(out).toHaveLength(282);
+      expect(out.some((c) => c.code.startsWith('US.'))).toBe(false);
+      expect(uniq(out.map((c) => c.underlyingSymbol))).toEqual(['hk:09988']);
+      // 500 而不是 100 —— 屏上这只票每一行的单笔权利金此前都少算 5 倍, 且每行错得一样齐。
+      expect(uniq(out.map((c) => c.contractSize))).toEqual([500]);
+      expect(uniq(out.map((c) => c.isStandard))).toEqual([true]);
+    });
+  });
+
+  describe('构造行 (真夹具里造不出的形态)', () => {
+    it('③ 非标 ∧ vendor 照报 lot_size 100 ⇒ null (FR-002: 非标一律不信供应方)', async () => {
+      // EVIDENCE: `specs/076-option-contract-size/spec.md`「取证」§2 PoC-A —— 非标 APTV1 的
+      // `lot_size` / `option_contract_multiplier` 都是 100, 与 OCC 调整后交割物不符。落一个
+      // 100 就是把「表达不了」写成一个看起来正常的错数, 而它会被读端直接乘进单笔权利金。
+      const { http } = makeShim([
+        chainRow('US.VICI1260918P30000', 30, {
+          stock_owner: 'US.VICI',
+          option_standard_type: 'NON_STANDARD',
+          lot_size: 100,
+        }),
+      ]);
+      const [contract] = await makeAdapter(http).getChainWindow({ ...WINDOW, symbol: 'us:VICI' });
+
+      expect(contract.isStandard).toBe(false);
+      expect(contract.contractSize).toBeNull();
+    });
+
+    it.each([
+      ['字段缺失', undefined],
+      ["字符串哨兵 'N/A'", 'N/A'],
+      ['非整数 5.5', 5.5],
+    ])(
+      '④ 标准 ∧ lot_size %s ⇒ null + WARN 一条, 整行照常返回 (FR-005)',
+      async (_label, lotSize) => {
+        const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+        const row: Record<string, unknown> = { ...chainRow('US.PEP260918P130000', 130) };
+        if (lotSize === undefined) delete row.lot_size;
+        else row.lot_size = lotSize;
+
+        const { http } = makeShim([row]);
+        const out = await makeAdapter(http).getChainWindow(WINDOW);
+
+        // 🚨 采集 MUST NOT 因一列缺值丢整行 —— 丢了这条腿的快照就永久缺席。
+        expect(out).toHaveLength(1);
+        expect(out[0].code).toBe('US.PEP260918P130000');
+        expect(out[0].contractSize).toBeNull();
+        // 留痕是 adapter logger 一条 warn (此层无采集轮上下文, 不进 findings)。
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0][0])).toContain('US.PEP260918P130000');
+        warn.mockRestore();
+      },
+    );
+
+    it('⑤ 美股标准行 lot_size 100 ⇒ 100, 且不抬 WARN (报警器不刷屏)', async () => {
+      // 美股的 100 自此**来自供应方**而不是代码常量 (FR-010 的逐值零变化是数据保证)。
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const { http } = makeShim([chainRow('US.PEP260918P130000', 130)]);
+
+      const [contract] = await makeAdapter(http).getChainWindow(WINDOW);
+
+      expect(contract.contractSize).toBe(100);
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
   });
 });
