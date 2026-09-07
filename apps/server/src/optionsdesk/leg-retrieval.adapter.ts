@@ -22,7 +22,11 @@ import {
 import { computeW, parseAnchorTicker, type LLevel } from './anchor.rules';
 import { resolveEffectiveAnchorValues } from './anchor-cascade';
 import { INTRADAY_FRESHNESS_SECONDS, isIntradayFresh } from './intraday-spot.rules';
-import { WINDOW_SUPPORTED_MARKETS, bootstrapWindowFor } from './leg-window.rules';
+import {
+  WINDOW_SUPPORTED_MARKETS,
+  bootstrapWindowFor,
+  rentBootstrapBudgetWindow,
+} from './leg-window.rules';
 import { type LegTab } from './leg-tab.rules';
 import {
   BUILD_RECALL_DTE,
@@ -325,8 +329,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
    * 068 (ADR-0068 P2) —— 实时**窄召回**主装配, 两段式。
    *
    * 第一段 (选码): 闸 → #286 guard → 三级基准 (D3) → 昨日 Δ 面库内批读 (零外呼) →
-   * K-梯形窗 (`leg-delta-surface.rules.ts` 单点) → 圈码; 整面无 Δ / 零快照期 ⇒ bootstrap
-   * 宽窗 (FR-004 唯一矩形场景)。
+   * K-梯形窗 (`leg-delta-surface.rules.ts` 单点) → 圈码; 整面无 Δ / 零快照期 ⇒ bootstrap 支,
+   * 077 起该支按 `intent` 分叉 —— **收租**走 `rentBootstrapBudgetWindow` (语义过滤 + 预算裁剪),
+   * **建仓**仍是 `bootstrapWindowFor` 的矩形宽窗 (FR-004 唯一矩形场景, 077 一字不动)。
    * 第二段 (判腿): 同批实时值组链 → 与离线档**同一个** {@link recallCandidates} 入口 (FR-005),
    * 判腿后按同批实时 Δ 打 `bandStatus` (呈现语义, 不进成员判定)。
    *
@@ -480,19 +485,47 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
             w: intent === 'rent' ? w : null,
           });
     let windowed: typeof inSegment;
+    // 077 FR-007 ①: 本轮被**预算**裁掉的合约码条数 (未裁剪恒 0) —— 见下方分叉里的语义。
+    let batchCapTrimmed = 0;
     if (surface.kind === 'bootstrap') {
-      const wide = bootstrapWindowFor(parsed.market, basis.spot);
-      windowed = inSegment.filter(
-        (c) =>
-          c.strikePrice.greaterThanOrEqualTo(wide.strikeMin) &&
-          c.strikePrice.lessThanOrEqualTo(wide.strikeMax),
-      );
+      // 077 (ADR-0068 §决策 2 未完成的那一半): bootstrap 支按 `intent` 分叉。`intent` 的类型是
+      // `LegIntentTab = Exclude<LegTab, 'all'>` ⇒ 二分叉穷尽 (全腿视角在 `retrieveCandidates`
+      // 就被 `soleIntentView` 分流到收盘档, 结构上到不了这里)。
+      if (intent === 'rent') {
+        // 收租: 「语义过滤 (无行权价下界, FR-003) → 按行权价档预算裁剪」。预算上限**只消费不
+        // 重定义** —— EVIDENCE: 供应方单批合约码上限的取值单点是
+        // `marketdata/option-snapshot.port.ts:95` (`OPTION_SNAPSHOT_MAX_CONTRACT_CODES`)。
+        const selection = rentBootstrapBudgetWindow({
+          strikes: inSegment.map((c) => c.strikePrice),
+          spot: basis.spot,
+          w,
+          budget: OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
+        });
+        windowed = inSegment.filter((c) => selection.strikes.has(c.strikePrice.toString()));
+        batchCapTrimmed = selection.trimmed;
+      } else {
+        // 🚫 **建仓一字不动** (077 FR-009 / SC-004): 建仓无行权价上界
+        // (`leg-recall.rules.ts` 的 `strikeMax: null`), 其定义域由有效成本硬门槛在**取价之后**
+        // 承接 ⇒ 没有可用于语义过滤的上界, 矩形宽窗仍是它唯一的 bootstrap 形态。
+        const wide = bootstrapWindowFor(parsed.market, basis.spot);
+        windowed = inSegment.filter(
+          (c) =>
+            c.strikePrice.greaterThanOrEqualTo(wide.strikeMin) &&
+            c.strikePrice.lessThanOrEqualTo(wide.strikeMax),
+        );
+      }
     } else {
       const ks = new Set(surface.windowKs.map((k) => k.toString()));
       windowed = inSegment.filter((c) => ks.has(c.strikePrice.toString()));
     }
+    // 077 FR-007 ①: 裁剪**真发生**时才补两个字段 (标的与意图该行已有)。🚫 未裁剪时不改原行
+    // 形态 —— 既有 `shape=bootstrap` 断言按整行子串匹配, 无故加字段会误伤。
+    const trimmedSuffix =
+      batchCapTrimmed > 0
+        ? ` trimmed=${batchCapTrimmed} before=${windowed.length + batchCapTrimmed}`
+        : '';
     this.logger.log(
-      `${WINDOW_SIZE_LOG_TAG} ${query.symbol} ${intent} codes=${windowed.length} shape=${surface.kind}`,
+      `${WINDOW_SIZE_LOG_TAG} ${query.symbol} ${intent} codes=${windowed.length} shape=${surface.kind}${trimmedSuffix}`,
     );
     if (windowed.length > OPTION_SNAPSHOT_MAX_CONTRACT_CODES) {
       this.warnDegraded('window_over_cap', query.symbol, {
