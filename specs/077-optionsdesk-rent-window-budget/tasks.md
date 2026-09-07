@@ -60,7 +60,7 @@ updated_at: '2026-09-07'
 
 ## Tasks
 
-- [ ] T001 [Server] **新纯函数 `rentBootstrapBudgetWindow` 落 `leg-window.rules.ts` + 建仓比例表注释改写**（FR-001, FR-002, FR-004, FR-005, FR-008, FR-010, FR-011; plan §落点与分叉 / §预算裁剪; state_branches 1/2/3/4; US1/US2/US3）：新增导出
+- [X] T001 [Server] **新纯函数 `rentBootstrapBudgetWindow` 落 `leg-window.rules.ts` + 建仓比例表注释改写**（FR-001, FR-002, FR-004, FR-005, FR-008, FR-010, FR-011; plan §落点与分叉 / §预算裁剪; state_branches 1/2/3/4; US1/US2/US3）：新增导出
 
   ```ts
   export interface RentBootstrapWindowSelection {

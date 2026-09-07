@@ -1,5 +1,11 @@
 import { Prisma } from '../generated/prisma/client';
-import { BUILD_RECALL_DTE, RENT_RECALL_DTE, type RecallLegInput } from './leg-recall.rules';
+import {
+  BUILD_RECALL_DTE,
+  QUALITY_CEILING_SPOT_RATIO,
+  RENT_RECALL_DTE,
+  resolveCeilingAxis,
+  type RecallLegInput,
+} from './leg-recall.rules';
 
 /**
  * optionsdesk **bootstrap 宽窗**派生纯函数 (068 起降格, ADR-0068 §决策 2)。无 I/O、无 DI、零
@@ -17,7 +23,8 @@ import { BUILD_RECALL_DTE, RENT_RECALL_DTE, type RecallLegInput } from './leg-re
  * 🚨 **窗永不进离线档** (068 FR-011): 离线档的价值主张是宽视野, 本文件任何导出 MUST NOT 被
  * 离线读路径消费。
  *
- * 复杂度: {@link bootstrapWindowFor} `O(1)`; {@link withinWindow} `O(1)`。
+ * 复杂度: {@link bootstrapWindowFor} `O(1)`; {@link withinWindow} `O(1)`;
+ * {@link rentBootstrapBudgetWindow} `O(n + m log m)` (n = 合约数, m = 相异行权价档数)。
  */
 
 /**
@@ -82,6 +89,11 @@ export const WINDOW_DTE_MAX = Math.max(BUILD_RECALL_DTE.max, RENT_RECALL_DTE.max
  *
  * 🚫 **MUST NOT 靠继续调低下界去追它** —— 同日 EOD 分档实测 `[0.40,0.45)` 档条件通过率 0%
  * (7 条带价腿全部低于门槛), 再低就是纯浪费外呼。根治要动上界的 W 派生形态, 归 #308。
+ *
+ * 📌 **077 起收租不再消费本表** (零 Δ 面收租改走 {@link rentBootstrapBudgetWindow}, 无行权价
+ * 下界 ⇒ 该支的「下界高过上界 ⇒ 恒空」由构造消失); 本表自此**只服务建仓**, 两个取值**未随
+ * 077 重新标定** (077 `FR-011`)。#308 的根治项 (上界 W 派生形态)**仍开着** —— 美股建仓侧
+ * 同形态未修。
  */
 export const STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET: Readonly<
   Record<WindowMarket, Prisma.Decimal>
@@ -158,4 +170,87 @@ export function withinWindow(leg: RecallLegInput, window: LegWindow): boolean {
     leg.strike.greaterThanOrEqualTo(window.strikeMin) &&
     leg.strike.lessThanOrEqualTo(window.strikeMax)
   );
+}
+
+/** {@link rentBootstrapBudgetWindow} 的产物: 入窗的行权价档 + 被**预算**裁掉的合约码条数。 */
+export interface RentBootstrapWindowSelection {
+  /** 入窗的行权价键 (`Prisma.Decimal.toString()`, 与 Δ 带支的 `windowKs` 同款键形态)。 */
+  readonly strikes: ReadonlySet<string>;
+  /** 被**预算**裁掉的合约码条数 —— 077 `FR-007` 屏上计数的唯一数据源。未裁剪恒 0。 */
+  readonly trimmed: number;
+}
+
+/**
+ * **收租** bootstrap 候选窗 (077 FR-001, ADR-0068 §决策 2 未完成的那一半)。`O(n + m log m)`,
+ * n = 入参合约数、m = 相异行权价档数 —— 分组计数 `O(n)`, 档排序 `O(m log m)`, 逐档累加 `O(m)`。
+ *
+ * 两段, 顺序固定:
+ * ① **语义过滤** —— 只留 `K ≤ axis × (1 + 成色比例)`, **无行权价下界** (077 FR-003)。
+ * ② **预算裁剪** —— 档按 `|K − axis|` 升序逐档纳入, 下一档会超预算即停 (077 FR-001)。
+ *
+ * 🚨 **上界只取成色上界的比例项, 不取完整上界**: 完整上界还含结构项 `min{K ≥ axis}`
+ * (`resolveQualityCeiling`, `leg-recall.rules.ts`), 而结构项要先知道链上有哪些档 —— 窗的作用
+ * 正是决定去问哪些档。比例项是完整上界的**超集** (`min(a,b) ≤ b`) ⇒ 窗不会漏掉判据可能接受
+ * 的腿, 方向安全。
+ * 📌 正常日那一支 (`leg-delta-surface.rules.ts` 的收租帽) 已是同一口径, 本片与它同构。
+ *
+ * 🚨 **裁剪以行权价档为原子, 🚫 MUST NOT 以合约码为单位** (077 FR-008 / Clarifications Q3):
+ * 同档不同到期日的档距**完全相同**, 那是常态而非罕见并列 ⇒ 按码裁会让裁剪线落进档内部, 而
+ * 窄召回骨架只由入窗合约装配 (`leg-retrieval.adapter.ts:531-535`) ⇒ 屏上出现同一行权价「10 月
+ * 有行、12 月整行没有」且无任何解释。跨在预算边界上的那一档整档不纳入 —— **预算蓄意用不满**。
+ *
+ * 🚨 **同距并列取 `K` 较小者** (077 EC5): 档为原子只消掉**同档内**并列; 跨档等距 (axis 两侧
+ * 对称) 是残余并列, 而上游取合约的 `findMany` 无 `orderBy` ⇒ 不定次级键则两次求解可能不同序,
+ * `FR-008` 不成立。取较小者 = 更深虚 = 收租更保守, 与「宁少不多」的裁剪方向一致。
+ *
+ * 🚨 **被 ① 滤掉的 MUST NOT 计进 {@link RentBootstrapWindowSelection.trimmed}** —— 那是判据
+ * 挡下的, 不是预算裁的; 混在一起屏上那个数就没法解释。「上界之下一档都没有」的正确形态是
+ * `strikes` 空 ∧ `trimmed = 0` (077 EC2), **不是**「被裁 N 条」。
+ *
+ * `budget` 由调用方给, 取供应方单批合约码上限 (077 FR-002 单一来源)。
+ * EVIDENCE: 该上限的取值单点是 `marketdata/option-snapshot.port.ts:95`
+ * (`OPTION_SNAPSHOT_MAX_CONTRACT_CODES`) —— 🚫 本文件 MUST NOT 另立第二个数。
+ */
+export function rentBootstrapBudgetWindow(input: {
+  /** 一个合约一项, 同档重复出现 (即 `inSegment.map((c) => c.strikePrice)`)。 */
+  readonly strikes: readonly Prisma.Decimal[];
+  readonly spot: Prisma.Decimal;
+  /** 愿买价 W (`W_COEFFICIENT × 有效 V`) —— 与 spot 一起经 {@link resolveCeilingAxis} 定轴。 */
+  readonly w: Prisma.Decimal;
+  readonly budget: number;
+}): RentBootstrapWindowSelection {
+  // 🚫 MUST NOT 自写 `Decimal.min(spot, w)` —— axis 的 min 是全仓单点 (067 SC-003 机器判据)。
+  const axis = resolveCeilingAxis(input.spot, input.w);
+  // 🚫 MUST NOT 写 `1.03` 字面量 —— 比例经 052 单点, 内联形状由不变量 #9 硬拦。
+  const ceiling = axis.times(QUALITY_CEILING_SPOT_RATIO.plus(1));
+
+  // ① 语义过滤后按档分组计码数, `O(n)`。键取 `toString()` (与 Δ 带支 `windowKs` 同款)。
+  const byStrike = new Map<string, { readonly strike: Prisma.Decimal; count: number }>();
+  let eligible = 0;
+  for (const strike of input.strikes) {
+    if (strike.greaterThan(ceiling)) continue;
+    eligible += 1;
+    const key = strike.toString();
+    const bucket = byStrike.get(key);
+    if (bucket === undefined) byStrike.set(key, { strike, count: 1 });
+    else bucket.count += 1;
+  }
+
+  // ② 档按 |K − axis| 升序, 同距取 K 较小者, `O(m log m)`。
+  const buckets = [...byStrike.values()].sort((a, b) => {
+    const byDistance = a.strike.minus(axis).abs().comparedTo(b.strike.minus(axis).abs());
+    return byDistance !== 0 ? byDistance : a.strike.comparedTo(b.strike);
+  });
+
+  // ③ 逐档累加, 下一档会超预算即停 (闭区间: 恰好等于预算不裁)。
+  const strikes = new Set<string>();
+  let used = 0;
+  for (const bucket of buckets) {
+    if (used + bucket.count > input.budget) break;
+    used += bucket.count;
+    strikes.add(bucket.strike.toString());
+  }
+
+  // ④ 只数「过了 ① 却没进 ②」的那批。
+  return { strikes, trimmed: eligible - used };
 }
