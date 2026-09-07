@@ -754,6 +754,73 @@ describe('068 两段式窄召回 (Testcontainers PG + Redis, 真 DI 容器)', ()
       expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
     });
 
+    /**
+     * 🚨 **本臂是 071 T006b-① 翻掉的那条端到端判据在建仓侧的落点** —— 别当成臂① 的重复。
+     *
+     * 071 T006b-① 原先用**收租** + 零 Δ 面证「adapter 把对的 `market` 喂进了
+     * `bootstrapWindowFor`、下界 `0.6` 真的作用到发给 vendor 的码集上」。077 后收租支没有行权价
+     * 下界 ⇒ 那一臂再也承载不了这条判据, 而 077 臂① 是**美股**建仓臂 (钉的是 `0.7`), 替不了它。
+     * ⇒ 若不补本臂, `STRIKE_ENVELOPE_FLOOR_SPOT_RATIO_BY_MARKET.hk` 就只剩
+     * `leg-window.rules.spec.ts` 的**落值**单测, 端到端一条不剩 (翻绊线 MUST NOT 净减少机器判据)。
+     *
+     * 判别性靠两条深虚腿夹出 `0.6` 与 `0.7` 之间那条缝 (定窗基准 spot = 100):
+     *
+     * | 腿 | `K/spot` | hk 下界 `0.6×100 = 60` | us 下界 `0.7×100 = 70` |
+     * | --- | --- | --- | --- |
+     * | `B-65` | 0.65 | **在窗内** | 在窗**外** |
+     * | `B-55` | 0.55 | 在窗外 | 在窗外 |
+     */
+    const HK_BUILD_LEGS: readonly SeedLeg[] = [
+      ...BUILD_LEGS,
+      {
+        code: 'B-65',
+        dte: 35,
+        strike: '65',
+        bid: '0.30',
+        ask: '0.40',
+        oi: '900',
+        vol: '40',
+        delta: '-0.01',
+      },
+      {
+        code: 'B-55',
+        dte: 35,
+        strike: '55',
+        bid: '0.10',
+        ask: '0.20',
+        oi: '900',
+        vol: '40',
+        delta: '-0.01',
+      },
+    ];
+
+    it('①b hk 建仓 bootstrap 的矩形窗**两侧都按港股取值** (下界 0.6; branch 7, 071 FR-002 端到端)', async () => {
+      await seedChain({
+        snapshots: false,
+        basis: FRESH_BASIS,
+        market: 'hk',
+        code: '0700',
+        legs: HK_BUILD_LEGS,
+      });
+      marketState.extra = [{ market: 'hk', session: 'regular' }];
+      readPort.respond = realtimeBatch();
+
+      const result = await retrieve(true, 'build', null, 'hk:0700');
+      expect(result).not.toBeNull();
+      expect(readPort.calls).toHaveLength(1);
+      const codes = [...readPort.calls[0].contractCodes].sort();
+      // 🚨 `B-65` (0.65) 只有港股那档下界 0.6 圈得进 —— adapter 把 `market` 硬写成 `'us'`
+      //    (下界 70) 当场红。这正是 071 T006b-① 翻掉后无处承接的那一条。
+      expect(codes).toContain('B-65');
+      // 🚨 「宁宽」不等于无边: `B-55` (0.55) 仍在窗外 —— 少了这条, 把下界改成 0 也能过上一条。
+      expect(codes).not.toContain('B-55');
+      // 上界仍是两市单值的 1.05 × 100 = 105 ⇒ 常规腿 (含 K=104) 一条不落。
+      expect(codes).toEqual(
+        expect.arrayContaining(['B-104', 'B-80', 'B-88', 'B-92', 'B-96', 'B-65']),
+      );
+      expect(infos.some((line) => line.includes('shape=bootstrap'))).toBe(true);
+    });
+
     it('② hk 锚零 Δ 面走**同一个**预算窗 —— 两市同一形态 (branch 9, FR-010)', async () => {
       await seedChain({ snapshots: false, market: 'hk', code: '0700' });
       marketState.extra = [{ market: 'hk', session: 'regular' }];
