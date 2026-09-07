@@ -139,6 +139,7 @@
       "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 3,
     "memberCount": 3,
     "displayLimit": null,
@@ -295,6 +296,7 @@
       "excludedFromIntentTabs": 1
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 2,
     "memberCount": 2,
     "displayLimit": 80,
@@ -457,6 +459,7 @@
       "excludedFromIntentTabs": 0
     },
     "candidateCapDropped": 0,
+    "batchCapTrimmed": 0,
     "matchedCount": 2,
     "memberCount": 2,
     "displayLimit": 80,

@@ -433,6 +433,14 @@ export interface LegTableView {
    */
   candidateCapDropped: number;
   /**
+   * 077 FR-007: 本轮候选码数超**供应方单批上限**, 被按行权价档裁掉多少条 —— 这些腿本轮
+   * **未去问实时价**。未裁剪恒 `0`。
+   *
+   * 🚨 **与 {@link candidateCapDropped} 同族**: 都是保险丝熔断而不是判据挡下 ⇒ 同样蓄意不进
+   * {@link LegGateCounts}。语义与上限出处见 `LegRetrievalResult.batchCapTrimmed`。
+   */
+  batchCapTrimmed: number;
+  /**
    * 本次条件下**该视角**的成员数 —— 表达层截断**之前**的条数 (053 FR-005 / FR-015)。
    *
    * 🚨 **实际显示条数 `D` 蓄意不下发** (053 Guardrail 11): 它恒等于 `legs.length`, 「其余
@@ -593,6 +601,8 @@ export class GetLegsUseCase {
       gateCounts: { removedByPremiumFloor: 0, excludedFromIntentTabs: 0 },
       // 没有链就没有候选可切 —— 取 0 而非 null (它是计数不是「未知」, 同上面三个数)。
       candidateCapDropped: 0,
+      // 没有链就没有码可裁 —— 同上, 取 0 而非 null (它是计数不是「未知」)。
+      batchCapTrimmed: 0,
       // 没有链就没有成员 —— 同上, 两个数取 0 而非 null。
       matchedCount: 0,
       memberCount: 0,
@@ -655,6 +665,8 @@ export class GetLegsUseCase {
         ...empty('available'),
         // 触及候选上限的留痕 (052 FR-028): 随候选集从召回层一路上浮, 不经日志。
         candidateCapDropped: retrieval.droppedByCandidateCap,
+        // 077 FR-007 的预算裁剪计数 (同族保险丝): 同样随候选集从检索层一路上浮, 不经日志。
+        batchCapTrimmed: retrieval.batchCapTrimmed,
         // 无覆盖口径的成员数 (053 FR-009): 同样随候选集上浮 —— 被当前条件挡下的链行只存在于
         // 检索层内部, 在这里重算取不回那些行 (🚫 更不许为它多查一次库)。
         memberCount: retrieval.memberCount,

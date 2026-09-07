@@ -315,6 +315,9 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
           ? outcome.candidates.length
           : recallCandidates(context, query.perspectives, legs, query.candidateCap, disposal)
               .candidates.length,
+      // 077 FR-007: 本路整链取回、不走预算裁剪窗 ⇒ 恒 0 (预算上限只约束实时快照那一批,
+      // EVIDENCE: `marketdata/option-snapshot.port.ts:95`)。
+      batchCapTrimmed: 0,
     };
   }
 
@@ -654,6 +657,8 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
               query.candidateCap,
               crossedQuoteDisposalOf(chain.priceKind),
             ).candidates.length,
+      // 077 FR-007: 预算裁剪计数随候选集上浮 —— 语义见 `LegRetrievalResult.batchCapTrimmed`。
+      batchCapTrimmed,
     };
   }
 
