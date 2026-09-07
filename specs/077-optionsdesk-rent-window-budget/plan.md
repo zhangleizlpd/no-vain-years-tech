@@ -112,7 +112,7 @@ Clarifications Q3 裁决。实现要点：
 - mobile 侧仿 `legCandidateCapLine`（`leg-picker.rules.ts:408-412`）新增一个返回 `LegGateCountLine | null` 的函数：**计数为 0 ⇒ 返 null、整条不渲染**。🚫 MUST NOT 塞进 `legGateCountLines()` 的返回数组 —— 那两条恒渲染（0 时出「移出 0 条」），而预算裁剪实测恒不触发，塞进去等于屏上常驻一行恒为 0 的噪声。文案挂 `optionsdesk-copy.ts`（与 `candidateCap` 同族），**无 note 后缀**（「· 仍在全腿视角」已由 spec Q2 📌 ① 撤掉，理由：bootstrap 场景下全腿视角结构上「未就绪」）。
 - 屏上「与两道门槛的计数并列」（`FR-007` ②）由**同一版面区块 + 同一行形态**（`LegGateCountLine`）兑现 —— 与 `legTruncationLine` / `legCandidateCapLine` 既有落法一致，`underlying-detail-screen.tsx` 多接一个 prop、不改版面。
 - 走 `docs/conventions/api-contract.md` 的 regen 链（openapi → `@nvy/api-client`），**MUST NOT 手写镜像**。
-- 🚨 **新增 public 字段必 grep 三类手写镜像**（#379 实撞；本片已逐个查实，落点见 tasks Path Conventions）：contract-smoke **顶层闭合键集**（`optionsdesk-chain-leg-picker.contract.ts:441-487`，按字典序插在 `basis` 与 `candidateCapDropped` 之间）· **golden JSON 基线**（`optionsdesk-064.baseline.json` 3 处 / `optionsdesk-070.baseline.json` 4 处，与 `candidateCapDropped` 同位补 `0`）· mobile e2e **mock 工厂** 7 处（typecheck 逼得出，但**基线与键集逼不出** —— 那两类是 affected 门绿也不绿的一面）。
+- 🚨 **新增 public 字段必 grep 三类手写镜像**（#379 实撞；本片已逐个查实，落点见 tasks Path Conventions）：contract-smoke **顶层闭合键集**（`optionsdesk-chain-leg-picker.contract.ts:441-487`，按字典序插在 `basis` 与 `candidateCapDropped` 之间）· **golden JSON 基线**（`optionsdesk-064.baseline.json` 3 处 / `optionsdesk-070.baseline.json` 4 处，与 `candidateCapDropped` 同位补 `0`）· mobile **mock 工厂** 10 处（9 个 e2e spec + `leg-picker.rules.spec.ts`；都标了 `LegTableResponse` ⇒ typecheck 逼得出，但要跑 `mobile:typecheck` 而非 `test`）。🚨 **基线与闭合键集两类 typecheck 逼不出** —— 那是 `nx affected` 门绿也不绿的一面。数量一律实时 grep（`rg -l candidateCapDropped apps/mobile`），别抄这里的数。
 
 #### 守卫与既有护栏
 
