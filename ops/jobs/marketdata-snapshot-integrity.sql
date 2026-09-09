@@ -272,6 +272,17 @@ per_underlying AS (
 --     与采集侧同源；**删锚**后下一轮闸置 false ⇒ 该票自动离开名册。不挂它 = 删锚变永久假红。
 --     🚫 MUST NOT 改读 `optionsdesk.anchor.excluded`：`excluded` 是**交易**意愿不是采集意愿
 --     （FR-028 / Guardrail 8），prod 现有 3 只 `excluded=true` 的锚**照常在采**。
+--     🚨 **上面那条理由只对 us 成立**：闸的 `ANCHOR_GATED_MARKETS = ['us']`，它一行都不碰 hk
+--     ⇒ hk 的 `need_sync` 恒 true（2026-09-09 prod：hk **2795 true / 0 false**），本谓词对 hk
+--     **零收窄**。而本文件的 `markets` CTE 明列 `('hk', …)` ⇒ 名册这一层**确实覆盖 hk**。
+--     今天 hk 没出错靠的是下面那条限定 + 「hk 无锚却有未到期合约的标的 = **0 只**」（同日实测）
+--     —— **巧合对齐，不是结构保证**：删一只 hk 锚 → 该票停采（锚作用域维度）却仍留在名册
+--     ⇒ 每天一条判不掉的假红，与 `us:KO`（#388）逐字同构。
+--     ⇒ 结构正解是名册与采集侧共用同一个工作集判据（server 侧 = `loadWorkingSet`，已按
+--     `isAnchorScopedDimension` 分流）。SQL 这侧调不到它，改法只能是把该分流规则**复刻**过来
+--     —— 复刻即第二份必漂，所以现在**刻意不动**，先把前提写明。🚫 别顺手改成
+--     `EXISTS (SELECT 1 FROM optionsdesk.anchor …)`：锚表若加软失效状态（invalid），
+--     存在性判据当场又错一遍。
 --   · **有未到期合约** —— 合约全到期的票本就无可采，留在名册里 = 每天假红一次。
 --
 -- 🚨 `baseline_day IS NULL` 时**整层不判**：全表无更早快照 = 采集尚未跑过第一轮，

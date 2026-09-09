@@ -280,6 +280,14 @@ dim_verdict AS (
 -- 工作集同源 = `need_sync` 白名单（个位数、且每只都是 045 雷达锚定标的）⇒ **只扫一遍
 -- instrument**，两张事实表各出一列 `*_fresh`。判定语义**相反**（bar = OR / iv = AND），
 -- 完整理由见文件头「覆盖边界」，改之前先读那段。
+--
+-- 📌 **这两个维度其实分属两类，共用 `need_sync` 是因为在 us 上两类恰好等价**：
+--   · `us_equity_bar` **不在** `ANCHOR_SCOPED_DIMENSIONS` ⇒ `need_sync` 就是它真正的工作集判据；
+--   · `underlying_iv_daily` **在**表里（066 T02 起采集侧取的是**锚集**，`needSync` 已退出谓词）
+--     ⇒ 这里挂 `need_sync` 是个**代理**，成立的唯一理由是闸让 us 侧 `need_sync ≡ 有锚`
+--     （2026-09-09 prod 实测双向差集各 **0**：112 锚 : 112 true）。
+--   ⇒ 本 CTE 是 **us-only**，所以今天两条都对；但**别照抄这个写法去覆盖 hk**（那一侧
+--     `need_sync` 恒真，见下方 `opt_probe` 那段的 🚨）。
 us_expected AS (
   SELECT (SELECT c.date FROM cal c WHERE c.market = 'us' AND c.rn = 3) AS expected_day  -- lag 2
 ),
@@ -331,6 +339,19 @@ idx_verdict AS (
 -- ── 047 M2b：期权链两个标的级维度 ────────────────────────────────────────────────────────
 -- 工作集 = `need_sync` 锚里**已经有合约的那些**（见文件头「047 M2b 三个新维度」段）。
 -- 一趟扫 instrument，三个 EXISTS 各走 (underlying_instrument_id, …) 前导索引。
+--
+-- 🚨 **`need_sync` 在本 CTE 里对 hk 是恒真谓词**（2026-09-09 prod：hk **2795 true / 0 false**）
+--    —— 闸 `ANCHOR_GATED_MARKETS = ['us']` 一行都不碰港股。而本 CTE 的市场面是 `('us','hk')`
+--    ⇒ **港股这一侧没有任何工作集收窄**，今天不出错靠的是 `has_contracts` 加上「hk 无锚却有
+--    合约的标的 = **0 只**」（同日实测），是**巧合对齐，不是结构保证**。
+--    删一只 hk 锚 → 该票停采（锚作用域维度，见 `anchor-scoped-dimensions.rules.ts`），但
+--    `need_sync` 仍 true、`has_contracts` 仍 true ⇒ 永远留在 `opt_probe` 里，且阶梯右端不再
+--    前移 ⇒ ⑦ 一旦跌破 120d 就是**永久 🔴、无任何采集动作能修**（同 `us:KO` / #388；跌破所需
+--    时间可据下文那条 2026-08-29 的 hk 阶梯右端实测推算）。
+--    ⇒ 结构正解 = 名册与采集侧**共用同一个工作集判据**（server 侧是 `loadWorkingSet`，已按
+--    `isAnchorScopedDimension` 分流）。SQL 这侧调不到它，复刻那套分流规则即第二份必漂 ⇒
+--    **现在刻意不动，先把前提写明**。🚫 别顺手改成 `EXISTS (SELECT 1 FROM optionsdesk.anchor …)`
+--    ：锚表若加软失效状态（invalid），存在性判据当场又错一遍。
 --
 -- 🚨 **⑦ 与 ⑧ 的市场作用面蓄意不同，别顺手统一**（#262 交付面 ③ 盘点的产出）:
 --   · ⑦ 到期阶梯 = **us + hk**。港股期权 2026-08-23 上线后这条一直是 us-only ⇒ 港股的

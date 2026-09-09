@@ -40,7 +40,14 @@ export function parseGateTicker(ticker: string): { market: string; code: string 
  *
  * **方向铁律**: marketdata 是底座、optionsdesk 是业务 —— **底座不依赖业务**。故 optionsdesk
  * MUST NOT 被注册进 `SyncDimension` / executor 钩子 (FR-029), 是采集侧**主动拉**锚表 (跨 ctx
- * 只读直查, catalog Q7-B, ADR-0062 已记)。本文件是 045 唯一一条 marketdata → optionsdesk 读边。
+ * 只读直查, catalog Q7-B, ADR-0062 已记)。本文件是 045 首开的那条 marketdata → optionsdesk 读边。
+ *
+ * 🚨 **但它已不是唯一那条** (066 起): 同一条逻辑读边今天有 3 个物理调用点 —— 本文件的
+ * `anchoredCodesByMarket()` / `dimension-executor.ts` 的 `loadAnchoredInstruments()` (锚作用域
+ * 维度取工作集) / `sync-option-contract.usecase.ts` 的 seed 兜底。护城河判据是「**每条都带**
+ * `// CROSS-CONTEXT-READ:`」(`check-server-moat.ts` 的 `moat-read` 规则), **不是**「只许一条」
+ * ⇒ 新增调用点本身合规。⚠️ 此处旧注原写「唯一一条」, 从 066 到 2026-09-09 一直是错的、且
+ * **没有任何闸会因为它过期而红** —— 别再把条数写进注释, 要数就现场 grep `CROSS-CONTEXT-READ`。
  *
  * 🚨 **降级纪律** (FR-029, 照抄 `sync-tier-recalc.ts` 的 D4 降级段): 整方法 try/catch 全包,
  * 锚表读取 / 落库异常一律 `logger.warn` + 返 `null`, **不上抛** —— 上抛会被 executor 顶层

@@ -290,6 +290,17 @@ export class OptionSnapshotCoverageCheck {
    *   同源; **删锚**后下一轮闸置 false ⇒ 该票自动离开名册。不挂它 = 删锚变永久假红。
    *   🚫 MUST NOT 改读 `anchor.excluded`: 那是**交易**意愿不是采集意愿 (FR-028 / Guardrail 8),
    *   prod 现有 3 只 `excluded=true` 的锚**照常在采**。
+   *   🚨 **上面那条理由只对 us 成立** —— 闸的 `ANCHOR_GATED_MARKETS = ['us']`, 它一行都不碰
+   *   hk ⇒ hk 的 `needSync` 恒 true (2026-09-09 prod: hk **2795 true / 0 false**), 本谓词对
+   *   hk **零收窄**。而本 check **确实服务 hk** (`hk_option_oi_settle` 经
+   *   `sync-option-oi-settle.usecase.ts` 调 `evaluate(market, …)`)。今天 hk 没出错, 靠的是下面
+   *   那条限定 + 「hk 无锚却有未到期合约的标的 = **0 只**」(同日实测) —— 那是**巧合对齐不是
+   *   结构保证**: 删一只 hk 锚 → 该票停采 (锚作用域维度, 见 `anchor-scoped-dimensions.rules.ts`)
+   *   却仍留在名册 ⇒ 每天判 absent 的永久假红, 与 `us:KO` (#388) 逐字同构。
+   *   ⇒ 结构正解是名册改取 `loadWorkingSet(该维度)` —— 它已按 `isAnchorScopedDimension` 分流,
+   *   us/hk、锚作用域/市场级成员制一处判完。未做的原因: 本方法入参只有 `market`, 拿不到
+   *   `dimensionKey`。🚫 也 MUST NOT 改成自己 `EXISTS(optionsdesk.anchor)` —— 锚表若加软失效
+   *   状态 (invalid), 存在性判据当场又错一遍, 而 `loadWorkingSet` 自动跟随。
    * · **有未到期合约** —— 合约全到期的票本就无可采, 留在名册里 = 每天假红一次。
    *
    * 📌 `expected` 取**库内未到期合约数**而非历史分母: 缺席是**二值**的, 这个数只用来说明
