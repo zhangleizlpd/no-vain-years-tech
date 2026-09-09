@@ -182,10 +182,15 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 后续管理控制台维护。账号无关全局配置, 无跨 ctx (本 ctx 独占)。
   promptConfig: 'ideation',
   // anchor / anchorChange 归 optionsdesk (045, 第 10 bounded context; ADR-0062 期权台)。
-  // 锚 CRUD / 复审 / 雷达读 / 痕迹写 UC 独占读写 (R1 自有表)。跨 ctx 面 = **双向各一条 Q7-B
-  // 只读直查**: ① optionsdesk 读 marketdata 的 instrument/dailyBar 回填 last_close 单向投影;
-  // ② marketdata 采集闸读 anchor 的 ticker 集合刷自有 Instrument.needSync —— 两处均须
-  // CROSS-CONTEXT-READ 注释。anchorChange.anchorId 无 FK relation (删锚不级联删痕迹, FR-031)。
+  // 锚 CRUD / 复审 / 雷达读 / 痕迹写 UC 独占读写 (R1 自有表)。跨 ctx 面 = **双向 Q7-B 只读直查**:
+  // ① optionsdesk 读 marketdata 的 instrument/dailyBar 回填 last_close 单向投影;
+  // ② marketdata 读 anchor 的 ticker 集合 —— 采集闸刷自有 Instrument.needSync
+  //    (anchor-driven-sync-gate.ts) + 锚作用域维度取工作集 (dimension-executor.ts 的
+  //    loadAnchoredInstruments, 066 起) + seed 兜底 (sync-option-contract.usecase.ts)。
+  //    ⚠️ 此处旧注写「双向**各一条**」, 066 加了第二、三个调用点后就错了 —— 本 Check 判的是
+  //    「每处都带 CROSS-CONTEXT-READ 注释」(下方 moat-read), **从不判条数**, 所以那句话过期
+  //    也不会红。⇒ 别在注释里承诺条数; 要数就现场 grep CROSS-CONTEXT-READ。
+  // 均须 CROSS-CONTEXT-READ 注释。anchorChange.anchorId 无 FK relation (删锚不级联删痕迹, FR-031)。
   anchor: 'optionsdesk',
   anchorChange: 'optionsdesk',
   // anchorSubmission 归 optionsdesk (059 锚待审收件箱, FR-011)。R1 自有表, 跨 ctx 面 = 0。
