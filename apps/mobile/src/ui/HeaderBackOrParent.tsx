@@ -14,9 +14,14 @@
 //
 // That same anchor makes `canGoBack` true on a deep link (e.g. /optionsdesk/thermometer),
 // so back alone would pop to the synthesized (tabs) = the home tab, not the parent.
-// Discriminator (probed on web): an ancestor container route entered by an in-app
-// push/navigate carries `params.screen`; one rebuilt from the URL never does ⇒ no
-// `params.screen` on the route back would pop = deep link ⇒ replace to parent instead.
+// Discriminator: the ancestor container route back would pop has no `params.screen`
+// ⇒ treat as deep link ⇒ replace to parent instead.
+// EVIDENCE: deep link ⇒ (app) routes [(tabs) with no state/params, container], canGoBack
+// true, back lands on "/"; in-app entry ⇒ container carries `params.screen` —— 2026-09-13
+// Playwright Expo Web probe (PR #403): deep /optionsdesk/thermometer and /settings had no
+// params.screen, 5 in-app paths (incl. cold start with no tab tap) had 'thermometer' /
+// 'index'. Library side: @react-navigation/core@7.17.4 useNavigationBuilder.tsx:294/677
+// reads params.screen to seed / switch the nested navigator. Native not verified.
 //
 // Factory injects the parent href per screen; pass the route one level up.
 import { HeaderBackButton } from '@react-navigation/elements';
