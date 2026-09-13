@@ -329,7 +329,7 @@ describe('🚨 051 FR-014b —— 推荐标与月度链标**同载体、以视�
     expect(COPY.fitBadge).not.toBe(COPY.monthlyBadge);
   });
 
-  it('🚨 071 —— 宽价差机会标与另外三个可同现的标**互不撞色**（撞了就分不出哪枚在说什么）', () => {
+  it('🚨 078 —— 宽价差机会标与另外三个可同现的标**互不撞色**（撞了就分不出哪枚在说什么）', () => {
     // 一行上可同时出现: Δ带内(fit, Δ 落带) / 荐(march, 期限胜出) / 宽(wide, 怎么进来的)。
     // 三者语义正交 ⇒ 描边必须两两不同; `wide` 另 MUST NOT 落 quote 涨跌色（它不是涨跌）。
     for (const other of ['fit', 'march'] as const) {

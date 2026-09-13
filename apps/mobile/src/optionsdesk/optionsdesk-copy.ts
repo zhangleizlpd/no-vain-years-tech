@@ -476,7 +476,7 @@ export const OPTIONSDESK_COPY = {
     /** 068 带外横档（bandStatus='out'）—— 同批实时 Δ 未落意图带，保留供比价。 */
     bandOutBadge: '带外',
     /**
-     * 071 宽价差机会标（`wideSpreadOpportunity`）—— 市场很宽，但**按买价卖出仍达好档年化**。
+     * 078 宽价差机会标（`wideSpreadOpportunity`）—— 市场很宽，但**按买价卖出仍达好档年化**。
      *
      * 🚨 **是机会标不是风险标**：文案取中性名词「宽」，🚫 MUST NOT 写成「慎」「差」这类劝阻词
      * ——「价差宽」这件事同一行的价差列已经如实说了，这枚标要说的是**它凭什么还在这张表里**。

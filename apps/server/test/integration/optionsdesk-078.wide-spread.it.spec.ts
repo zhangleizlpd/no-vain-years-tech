@@ -31,7 +31,7 @@ import {
 } from '../../src/marketdata/market-state.port';
 
 /**
- * 071 (ADR-0068 P5) —— 宽价差机会支的路径级 IT (T009, spec `state_branches` 九臂)。
+ * 078 (ADR-0068 P5) —— 宽价差机会支的路径级 IT (T009, spec `state_branches` 九臂)。
  *
  * ## 为什么必须要真 PG + 真 DI 容器
  *
@@ -66,7 +66,7 @@ class FakeMarketStatePort implements MarketStatePort {
   }
 }
 
-describe('071 宽价差机会支 (Testcontainers PG + Redis, 真 DI 容器)', () => {
+describe('078 宽价差机会支 (Testcontainers PG + Redis, 真 DI 容器)', () => {
   let stores: Awaited<ReturnType<typeof setupIsolatedStores>>;
   let moduleRef: TestingModule;
   let prisma: PrismaService;
@@ -93,8 +93,8 @@ describe('071 宽价差机会支 (Testcontainers PG + Redis, 真 DI 容器)', ()
     stores = await setupIsolatedStores();
     process.env.DATABASE_URL = stores.databaseUrl;
     process.env.REDIS_URL = stores.redisUrl;
-    process.env.AUTH_JWT_SECRET = 'optionsdesk-071-wide-spread-jwt-secret-min-32b';
-    process.env.SMS_CODE_HMAC_SECRET = 'optionsdesk-071-wide-spread-hmac-32bytes';
+    process.env.AUTH_JWT_SECRET = 'optionsdesk-078-wide-spread-jwt-secret-min-32b';
+    process.env.SMS_CODE_HMAC_SECRET = 'optionsdesk-078-wide-spread-hmac-32bytes';
     delete process.env.MARKETDATA_PROVIDER;
 
     readPort = new SpySnapshotReadPort();
@@ -327,7 +327,7 @@ describe('071 宽价差机会支 (Testcontainers PG + Redis, 真 DI 容器)', ()
     await seedChain();
     const marks = marksOf(await retrieve(false));
 
-    // 放行的两条 —— 它们在 071 之前压根不在收租候选里。
+    // 放行的两条 —— 它们在 078 之前压根不在收租候选里。
     expect(marks['W-OPP']).toBe(true);
     expect(marks['W-DUAL']).toBe(true);
     // 🚨 年化同样达档但主支就过 ⇒ **无标**: 标不是「年化 ≥ 档」的同义词。

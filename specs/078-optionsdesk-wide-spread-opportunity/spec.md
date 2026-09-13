@@ -1,10 +1,10 @@
 ---
-feature_id: 071-optionsdesk-wide-spread-opportunity
+feature_id: 078-optionsdesk-wide-spread-opportunity
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
 status: implemented
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-13'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
@@ -32,6 +32,12 @@ state_branches:
 **Created**: 2026-08-31
 **Status**: Implemented（2026-08-31；四项决断经全量重扫定案 + impl 期 1 项裁决回写：机会支在用户收窄该维度时让位）
 **里程碑**: [ADR-0068](../../docs/adr/0068-realtime-narrow-recall-two-stage.md) 实施序列的 **P5 片**（补片；P1 = 067 / P2 = 068 / P3 = 069 / P4 = 070 均已 ship）。收口 issue #298。
+
+> 📌 **改名留痕（2026-09-13）**：本片原编号 `071`，与 [`071-optionsdesk-hk-realtime-recall`](../071-optionsdesk-hk-realtime-recall/spec.md) 撞号 —— 两者同日合入（本片 [#300](https://github.com/zhangleizlpd/no-vain-years-tech/pull/300) 08:41，对方 [#310](https://github.com/zhangleizlpd/no-vain-years-tech/pull/310) 18:05）。定案让 `071` 归对方：仓内既有的「071」引用（issue [#314](https://github.com/zhangleizlpd/no-vain-years-tech/issues/314)、`specs/077-optionsdesk-rent-window-budget/tasks.md`、`get-legs.usecase.ts` / `leg-recall.rules.ts` 两处源码注释）**一律指对方**，改对方的代价高于改本片。本片改 `078`，源码 / 测试 / ADR 里指本片的「071」同批扫成「078」。
+>
+> 🚫 **`063` 那个编号空洞 MUST NOT 拿来回填**（本次差点踩）——它在 `specs/` 里确实从未出现过，但 `063` 已被一条 **local-only plan** 占着：`063 Phase 1`（`asOf` 逐维度求值）/ `Phase 2`（半日市 `session_kind` 三态）/ `Phase 3.1`（`daily_bar` 尾窗）/ `Phase 3.3`（`written` 计数）/ `Phase 3.4`（vendor `update_time`），绑 [ADR-0066](../../docs/adr/0066-time-semantics-ubiquitous-language.md)，在仓内有 **79 处引用 / 44 个文件**（含 generated Prisma models 的 schema 注释）。plan 归 `docs/private/`（gitignored）⇒ **只查 `specs/` 判不出某个号空不空，必须同时 grep 代码**。
+>
+> ⚠️ **上面那行 `Feature Branch` 保留旧名不是笔误** —— 合入 PR [#300](https://github.com/zhangleizlpd/no-vain-years-tech/pull/300) 的 feature 分支实际就叫 `071-optionsdesk-wide-spread-opportunity`，写成 `078-…` 会是一条 git 里查无实据的假断言。**查本片历史（分支 / PR / commit）请按旧名检索**，ADR-0024 的 branch ↔ dir ↔ PR 三位一体在本片这条历史上就此断开。
 
 ## 背景
 

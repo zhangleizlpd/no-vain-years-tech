@@ -1,12 +1,12 @@
 /**
- * 071 宽价差机会标 —— `wideSpreadOpportunity` 在**收盘档收租视角**真落的契约冒烟
+ * 078 宽价差机会标 —— `wideSpreadOpportunity` 在**收盘档收租视角**真落的契约冒烟
  * （Constitution §V 两层之二）。
  *
  * 用**生成的** `@nvy/api-client` 打 harness boot 的真 server（testcontainers PG），跑一条
  * happy path：**建锚 → 灌一期收盘快照（三条判别腿）→ 拉收租 / 全腿两个视角**。
  *
  * 🚨 本片三条只有端到端才验得到的靶心：
- *   1. **机会腿真进收租视角且带标**（FR-001/FR-005）：071 之前 `rel > 0.35` 的腿在这个视角
+ *   1. **机会腿真进收租视角且带标**（FR-001/FR-005）：078 之前 `rel > 0.35` 的腿在这个视角
  *      上压根不存在 —— 「它在不在」这件事跨了召回层、use case、DTO 三段，只有真响应答得了。
  *   2. **标可解释**（SC-005）：带标行 MUST 同时给得出 `bid` / `ask` / `relativeSpread`，
  *      且 `relativeSpread > 0.35` —— 标本身只说「怎么进来的」，证据要人能从屏幕上反推。
@@ -31,7 +31,7 @@ import type { LegResponse, LegTableResponse } from '@nvy/api-client';
 
 import type { RealBackendCtx } from '../_support/real-backend-harness';
 
-export const name = 'optionsdesk-wide-spread (071)';
+export const name = 'optionsdesk-wide-spread (078)';
 
 type Cfg = { baseURL: string; headers: Record<string, string> };
 
@@ -108,7 +108,7 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
     const rent = await legs(cfg, 'rent');
     assert.equal(rent.state, 'available', `收租视角应就绪, got ${rent.state}`);
     const opp = legOf(rent, 'US.NVYY.OPP');
-    assert.ok(opp, '机会腿不在收租视角 —— 071 放行没生效（071 之前它本就不在，别读成"没回归"）');
+    assert.ok(opp, '机会腿不在收租视角 —— 078 放行没生效（078 之前它本就不在，别读成"没回归"）');
     assert.ok(
       'wideSpreadOpportunity' in opp,
       '腿缺 wideSpreadOpportunity 键 —— undefined 被序列化吞掉了',
@@ -169,7 +169,7 @@ async function seed(ctx: RealBackendCtx, today: string): Promise<void> {
 
   await ctx.execSql(
     `INSERT INTO marketdata.instrument (market, code, name, type, currency, status)
-     VALUES ('${MARKET}', '${CODE}', '071 契约冒烟 宽价差机会', 'stock', 'USD', 'listed')`,
+     VALUES ('${MARKET}', '${CODE}', '078 契约冒烟 宽价差机会', 'stock', 'USD', 'listed')`,
   );
   const iid = `(SELECT id FROM marketdata.instrument WHERE market = '${MARKET}' AND code = '${CODE}')`;
 
@@ -222,7 +222,7 @@ async function createAnchor(cfg: Cfg): Promise<string> {
       ticker: SYMBOL,
       v: V,
       asof: plusDays(today, -30),
-      method: 'DCF · 071 契约冒烟',
+      method: 'DCF · 078 契约冒烟',
       confidence: CONFIDENCE,
       nextReview: plusDays(today, 120),
     },

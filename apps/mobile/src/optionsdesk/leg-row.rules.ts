@@ -178,7 +178,7 @@ export function legRowBandOut(bandStatus: LegResponse['bandStatus']): boolean {
 }
 
 /**
- * 071 宽价差机会标判定（FR-010 呈现侧）。复杂度 O(1)。
+ * 078 宽价差机会标判定（FR-010 呈现侧）。复杂度 O(1)。
  *
  * 🚨 **判据只从契约布尔来**（ADR-0064 不变量 ②）—— 🚫 MUST NOT 拿 `relativeSpread` 与
  * 年化档界在客户端重算一遍：档界是服务端的策略参数（`leg-tier.rules.ts` 单点），客户端算

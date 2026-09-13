@@ -214,9 +214,9 @@ describe('leg-recall.rules — 相对价差与流动性门槛 (FR-006)', () => {
 
 describe('leg-recall.rules — 两个流动性排除数的共同判据 (FR-008 / 051 FR-006a)', () => {
   it('只数「本来进得去、被流动性门槛挡下」的腿, 并**点名是哪几个视角**', () => {
-    // 🚨 `bid` 蓄意压到 1（年化 10.5% < good 档界）—— 071 起 bid 年化达档的宽价差腿走**机会支**
+    // 🚨 `bid` 蓄意压到 1（年化 10.5% < good 档界）—— 078 起 bid 年化达档的宽价差腿走**机会支**
     // 进收租候选（FR-001），那样这条腿就不再「被流动性门槛挡下」，本组断言的判据面会被换掉。
-    // 机会支自身的分支在「071 宽价差机会支」那组里逐条验，这里要的是**不达档**的那一类。
+    // 机会支自身的分支在「078 宽价差机会支」那组里逐条验，这里要的是**不达档**的那一类。
     const wide = leg({ dteDays: 35, bid: D('1'), ask: D('20') });
     expect(tabsOf(chain, wide)).toEqual(['all']);
     // 🚨 DTE=35 落重叠区 ⇒ 一条腿让**两个**视角各少一条, 而全表标量只记 1 次。
@@ -990,7 +990,7 @@ describe('leg-recall.rules — 070 剔→标处置按口径参数化 (FR-006)', 
   });
 });
 
-describe('leg-recall.rules — 071 宽价差机会支 (FR-001 / FR-002 / FR-003 / FR-004)', () => {
+describe('leg-recall.rules — 078 宽价差机会支 (FR-001 / FR-002 / FR-003 / FR-004)', () => {
   /**
    * 基线腿 spot=110 / K=100 / DTE=35 ⇒ `bid` 与 bid 年化的换算:
    * `年化 = bid/(100−bid) × 365/35`。⇒ bid `2` ⇒ 21.3%（达 good 档 15%）;
@@ -1044,7 +1044,7 @@ describe('leg-recall.rules — 071 宽价差机会支 (FR-001 / FR-002 / FR-003 
   });
 });
 
-describe('leg-recall.rules — 071 机会标与流动性计数 (FR-005 / FR-006 / FR-007)', () => {
+describe('leg-recall.rules — 078 机会标与流动性计数 (FR-005 / FR-006 / FR-007)', () => {
   const opportunity = leg({ dteDays: 35, bid: D('2'), ask: D('20') });
   const thin = leg({ dteDays: 164, bid: D('1'), ask: D('20') });
   const recall = (legs: readonly RecallLegInput[], override: RetrievalOverride | null = null) =>
