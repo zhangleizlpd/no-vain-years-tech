@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   alignedPeriodKey,
   datePeriodKey,
+  fiscalYearEndMonthFromFutuPair,
   isAlignedPeriodKey,
   parseAnnouncementTitlePeriod,
   parseDayMonthYear,
+  resolveAnnouncementPeriod,
   resolveBoardListPeriod,
-  resolveFiscalYearEndMonth,
   resolveFutuPeriod,
   textPeriodKey,
 } from './earnings-period.rules.js';
@@ -167,6 +168,8 @@ describe('parseAnnouncementTitlePeriod — 交易所业绩公告标题 → 期�
     ['2025年3月31日止第一季度業績公告及第一季度股息公告', '2025-03-31', 'quarterly'],
     ['2025年六月底止季度業績公告', '2025-06-30', 'quarterly'],
     ['2024年十二月底止季度業績公告', '2024-12-31', 'quarterly'],
+    // 🚨 先认「半年度」再认「年度」(FR-027)
+    ['截至2025年6月30日止半年度業績', '2025-06-30', 'interim'],
   ])('%s ⇒ %s / %s', (title, end, kind) => {
     expect(parseAnnouncementTitlePeriod(title)).toEqual({ periodEnd: end, reportKind: kind });
   });
@@ -181,117 +184,118 @@ describe('parseAnnouncementTitlePeriod — 交易所业绩公告标题 → 期�
   });
 });
 
-describe('resolveFiscalYearEndMonth — 🚫 不默认 12 月结年 (plan §D4 富途侧)', () => {
-  it('① 取该公司交易所年度业绩标题期末日 (多份取最近一份)', () => {
+const pair = (
+  futuPeriodText: string,
+  futuDate: string,
+  filingDate: string,
+  filingPeriodEnd: string,
+) => ({
+  futuPeriodText,
+  futuDate,
+  filingDate,
+  filingPeriodEnd,
+});
+
+describe('fiscalYearEndMonthFromFutuPair — 单条富途配对反推财年结束月 (档案 futu_pairing 路)', () => {
+  it('阿里 2026Q1 @2025-08-29 ↔ 刊发 2025-08-29 截至 2025-06-30 ⇒ 3 月', () => {
     expect(
-      resolveFiscalYearEndMonth({ annualPeriodEnds: ['2025-03-31', '2026-03-31'], pairs: [] }),
+      fiscalYearEndMonthFromFutuPair(pair('2026Q1', '2025-08-29', '2025-08-29', '2025-06-30')),
     ).toBe(3);
   });
 
-  it('② 无年度标题时按历史配对反推: 阿里 2026Q1 @2025-08-29 ↔ 刊发 2025-08-29 截至 2025-06-30 ⇒ 3 月', () => {
+  it('公布日相差 1 天仍可配对', () => {
     expect(
-      resolveFiscalYearEndMonth({
-        annualPeriodEnds: [],
-        pairs: [
-          {
-            futuPeriodText: '2026Q1',
-            futuDate: '2025-08-29',
-            filingDate: '2025-08-29',
-            filingPeriodEnd: '2025-06-30',
-          },
-        ],
-      }),
-    ).toBe(3);
-  });
-
-  it('② 公布日相差 1 天仍可配对', () => {
-    expect(
-      resolveFiscalYearEndMonth({
-        annualPeriodEnds: [],
-        pairs: [
-          {
-            futuPeriodText: '2024Q4',
-            futuDate: '2024-09-03',
-            filingDate: '2024-09-04',
-            filingPeriodEnd: '2024-06-30',
-          },
-        ],
-      }),
+      fiscalYearEndMonthFromFutuPair(pair('2024Q4', '2024-09-03', '2024-09-04', '2024-06-30')),
     ).toBe(6);
   });
 
-  it('② 公布日相差 2 天 ⇒ 不配对 ⇒ null', () => {
+  it('公布日相差 2 天 ⇒ 不配对 ⇒ null', () => {
     expect(
-      resolveFiscalYearEndMonth({
-        annualPeriodEnds: [],
-        pairs: [
-          {
-            futuPeriodText: '2024Q4',
-            futuDate: '2024-09-03',
-            filingDate: '2024-09-05',
-            filingPeriodEnd: '2024-06-30',
-          },
-        ],
+      fiscalYearEndMonthFromFutuPair(pair('2024Q4', '2024-09-03', '2024-09-05', '2024-06-30')),
+    ).toBeNull();
+  });
+
+  it('标签年份与期末日推不出 1–12 月 ⇒ null', () => {
+    expect(
+      fiscalYearEndMonthFromFutuPair(pair('2026Q1', '2026-08-20', '2026-08-20', '2026-06-30')),
+    ).toBeNull();
+  });
+});
+
+describe('resolveAnnouncementPeriod — 标题不带期末日: 年份 + 类型 + 财年档案 + 刊发时限 (FR-027)', () => {
+  it.each([
+    ['12 月结年 中期', '二零二五年中期業績公告', '2025-08-26', 12, '2025-06-30', 'interim'],
+    [
+      '3 月结年 中期 (hk:01429 形态)',
+      '二零二四年中期業績公告',
+      '2024-11-29',
+      3,
+      '2024-09-30',
+      'interim',
+    ],
+    ['12 月结年 年度', '2024年度業績公告', '2025-03-20', 12, '2024-12-31', 'annual'],
+    [
+      '季报期末后 50 天 (hk:09961 形态)',
+      '2025年第一季度業績公告',
+      '2025-05-20',
+      12,
+      '2025-03-31',
+      'quarterly',
+    ],
+    ['3 月结年 第三季', '2025年第三季度業績公告', '2026-02-10', 3, '2025-12-31', 'quarterly'],
+    ['跨年写法只取财年结束年', '2024/25年度中期業績公告', '2024-11-20', 3, '2024-09-30', 'interim'],
+  ])('%s: %s @%s 财年 %i 月结 ⇒ %s', (_label, title, date, fy, end, kind) => {
+    expect(
+      resolveAnnouncementPeriod(title, { announceDate: date, fiscalYearEndMonth: fy }),
+    ).toEqual({
+      periodEnd: end,
+      reportKind: kind,
+    });
+  });
+
+  it('期末后 6 个月的延期年度业绩 ⇒ null (超时限, 调用方落 D:)', () => {
+    expect(
+      resolveAnnouncementPeriod('2024年度業績公告', {
+        announceDate: '2025-06-30',
+        fiscalYearEndMonth: 12,
       }),
     ).toBeNull();
   });
 
-  it('② 配对之间结论矛盾 ⇒ null (不猜)', () => {
+  it('刊发日早于或等于候选期末日 ⇒ null (区间左开)', () => {
     expect(
-      resolveFiscalYearEndMonth({
-        annualPeriodEnds: [],
-        pairs: [
-          {
-            futuPeriodText: '2026Q1',
-            futuDate: '2025-08-29',
-            filingDate: '2025-08-29',
-            filingPeriodEnd: '2025-06-30',
-          },
-          {
-            futuPeriodText: '2026Q2',
-            futuDate: '2026-08-20',
-            filingDate: '2026-08-20',
-            filingPeriodEnd: '2026-06-30',
-          },
-        ],
+      resolveAnnouncementPeriod('二零二五年中期業績公告', {
+        announceDate: '2025-06-30',
+        fiscalYearEndMonth: 12,
       }),
     ).toBeNull();
   });
 
-  it('② 标签年份与期末日推不出 1–12 月 ⇒ 该配对作废', () => {
+  it('🚫 财年未知 ⇒ null, 不代入 12', () => {
     expect(
-      resolveFiscalYearEndMonth({
-        annualPeriodEnds: [],
-        pairs: [
-          {
-            futuPeriodText: '2026Q1',
-            futuDate: '2026-08-20',
-            filingDate: '2026-08-20',
-            filingPeriodEnd: '2026-06-30',
-          },
-        ],
+      resolveAnnouncementPeriod('二零二五年中期業績公告', {
+        announceDate: '2025-08-26',
+        fiscalYearEndMonth: null,
       }),
     ).toBeNull();
   });
 
-  it('① 优先于 ②', () => {
+  it('标题带显式期末日 ⇒ 直接取, 与财年档案无关', () => {
     expect(
-      resolveFiscalYearEndMonth({
-        annualPeriodEnds: ['2025-12-31'],
-        pairs: [
-          {
-            futuPeriodText: '2026Q1',
-            futuDate: '2025-08-29',
-            filingDate: '2025-08-29',
-            filingPeriodEnd: '2025-06-30',
-          },
-        ],
+      resolveAnnouncementPeriod('截至2025年6月30日止半年度業績公告', {
+        announceDate: '2025-08-26',
+        fiscalYearEndMonth: null,
       }),
-    ).toBe(12);
+    ).toEqual({ periodEnd: '2025-06-30', reportKind: 'interim' });
   });
 
-  it('都无 ⇒ null', () => {
-    expect(resolveFiscalYearEndMonth({ annualPeriodEnds: [], pairs: [] })).toBeNull();
+  it.each([
+    ['认不出类型', '2025年業務更新'],
+    ['无年份', '中期業績公告'],
+  ])('%s ⇒ null', (_label, title) => {
+    expect(
+      resolveAnnouncementPeriod(title, { announceDate: '2025-08-26', fiscalYearEndMonth: 12 }),
+    ).toBeNull();
   });
 });
 
@@ -379,10 +383,8 @@ describe('跨来源同一次财报落同一 P: 键 (FR-015)', () => {
       market: 'hk',
       periodText: '2026Q2',
       earningsDate: '2026-08-20',
-      fiscalYearEndMonth: resolveFiscalYearEndMonth({
-        annualPeriodEnds: ['2025-12-31'],
-        pairs: [],
-      }),
+      // 财年档案值 (earnings_fiscal_profile)。
+      fiscalYearEndMonth: 12,
     });
     const board = resolveBoardListPeriod(BOARD, '截至30/06/26止6個月', '中期業績');
     const title = parseAnnouncementTitlePeriod('截至二零二六年六月三十日止六個月的中期業績公告');

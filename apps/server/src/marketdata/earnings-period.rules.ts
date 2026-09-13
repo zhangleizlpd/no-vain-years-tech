@@ -6,8 +6,10 @@
  * | 来源 | 原文 | 换算 |
  * | --- | --- | --- |
  * | 港交所董事會會議通知清单 | 期間列「截至30/06/26止6個月」「年度31/03/25」… + 目的列 | {@link resolveBoardListPeriod} |
- * | 交易所业绩公告 | 标题「截至二零二六年六月三十日止六個月…」「2025年六月底止季度…」 | {@link parseAnnouncementTitlePeriod} |
- * | 富途财报日历 | `period_text`「2027Q1」(按公司财年) | {@link resolveFiscalYearEndMonth} → {@link resolveFutuPeriod} |
+ * | 交易所业绩公告 | 标题「截至二零二六年六月三十日止六個月…」「2025年六月底止季度…」「二零二五年中期業績公告」 | {@link parseAnnouncementTitlePeriod} / {@link resolveAnnouncementPeriod} |
+ * | 富途财报日历 | `period_text`「2027Q1」(按公司财年) | {@link resolveFutuPeriod} |
+ *
+ * 财年结束月一律由调用方传入财年档案值 (`earnings-fiscal-profile.rules.ts`，FR-026)，🚫 换算时现推。
  *
  * ## `period_key` 三形态 (plan §D3，列非空)
  *
@@ -288,8 +290,10 @@ function kindFromTitleRemainder(rest: string): EarningsReportKind | null {
     const kind = kindFromMonths(months);
     if (kind !== null) return kind;
   }
+  // 🚨 先认「半年度 / 中期 / 上半年」再认「年度 / 全年」(FR-027)：「止半年度業績」含「年度」，
+  // 反过来会判成年度，财年结束月被推成 6 月且不报错 (spec 取证：prod 近 2 年 37 条)。
+  if (/半年度|中期|上半年/.test(rest)) return 'interim';
   if (/年度|全年/.test(rest)) return 'annual';
-  if (/中期|上半年/.test(rest)) return 'interim';
   if (rest.includes('季')) return 'quarterly';
   return null;
 }
@@ -323,6 +327,126 @@ export function parseAnnouncementTitlePeriod(title: string): AnnouncementTitlePe
   return null;
 }
 
+/**
+ * 刊发时限 (月)：期末日之后多少个月内刊发才认作该期。候选期末日只取「刊发日 − 期末日 ∈ (0, 时限]」者。
+ * EVIDENCE: 上市规则 13.49 年度 3 个月、中期 2 个月；季度取 3 个月 —— 取 1 个月时 `hk:09961` 季报
+ * (期末后第 49–50 天刊发) 4 次超窗 (spec.md 取证「刊发事实与事件对齐」，2026-09-13 本机回放)。
+ */
+export const PUBLICATION_DEADLINE_MONTHS: Readonly<Record<EarningsReportKind, number>> = {
+  annual: 3,
+  interim: 2,
+  quarterly: 3,
+};
+
+/** 标题不带期末日时的报告部分；季度需区分第一 / 第三季才定得出期末月。 */
+type TitleReportPart = 'annual' | 'interim' | 'q1' | 'q3';
+
+/** 该部分期末月相对财年结束月的月数偏移。 */
+const PART_MONTH_OFFSET: Readonly<Record<TitleReportPart, number>> = {
+  annual: 0,
+  interim: -6,
+  q1: -9,
+  q3: -3,
+};
+
+const PART_KIND: Readonly<Record<TitleReportPart, EarningsReportKind>> = {
+  annual: 'annual',
+  interim: 'interim',
+  q1: 'quarterly',
+  q3: 'quarterly',
+};
+
+/** 🚨 与 {@link kindFromTitleRemainder} 同序：先认中期再认年度 (FR-027)。 */
+function titleReportPart(title: string): TitleReportPart | null {
+  if (/半年度|中期|上半年|半年/.test(title)) return 'interim';
+  if (/第一季|首季|一季度|第1季/.test(title)) return 'q1';
+  if (/第三季|首三季|前三季|首3季|三季度/.test(title)) return 'q3';
+  if (/全年|年度|年業績|末期/.test(title)) return 'annual';
+  return null;
+}
+
+const TITLE_FISCAL_YEAR_PAIR = new RegExp(
+  `${TITLE_YEAR}年?[╱/／至及-]([0-9]{2,4}|[零〇○O一二三四五六七八九]{2,4})年?`,
+);
+const TITLE_FIRST_YEAR = new RegExp(TITLE_YEAR);
+
+/**
+ * 标题里的财年年份。「2024/25年度」这类跨年写法 ⇒ 财年结束年确定 (只一个候选)；
+ * 单个年份 ⇒ 公司可能按财年开始年或结束年命名，由调用方各出一个候选。
+ */
+function titleFiscalYear(title: string): { year: number; isEndYear: boolean } | null {
+  const text = title.replace(/&#x2f;/gi, '/').replace(/\s+/g, '');
+  const pair = TITLE_FISCAL_YEAR_PAIR.exec(text);
+  if (pair !== null) {
+    const start = parseTitleYear(pair[1]);
+    let end = /^[0-9]+$/.test(pair[2]) ? Number(pair[2]) : parseTitleYear(pair[2]);
+    if (end < 100) end += Math.floor(start / 100) * 100;
+    if (end === start + 1) return { year: end, isEndYear: true };
+  }
+  const first = TITLE_FIRST_YEAR.exec(text);
+  if (first === null) return null;
+  const year = parseTitleYear(first[1]);
+  return Number.isInteger(year) ? { year, isEndYear: false } : null;
+}
+
+function monthEndFromAbsolute(absMonth: number): string | null {
+  return monthEndIso(Math.floor(absMonth / 12), (absMonth % 12) + 1);
+}
+
+/**
+ * 刊发事实标题 → 期末日与类型 (FR-027)。标题带显式期末日 ⇒ 同 {@link parseAnnouncementTitlePeriod}；
+ * 否则候选期末日 = 标题年份 + 报告类型 + 财年结束月 (单个年份在非 12 月结年时按两种命名习惯各得一个候选)，
+ * 只取「刊发日 − 期末日 ∈ (0, 时限]」({@link PUBLICATION_DEADLINE_MONTHS}) 的唯一者。
+ * 两个候选相隔 12 个月而时限 < 12 个月 ⇒ 至多一个落窗。
+ *
+ * 无唯一候选 / 认不出类型或年份 / 🚫 财年结束月未知 (null，🚫 代入 12) ⇒ null，由调用方落 `D:` 键并计数。
+ * 财年结束月 MUST 来自财年档案 (`earnings-fiscal-profile.rules.ts`)，🚫 换算时现推。
+ */
+export function resolveAnnouncementPeriod(
+  title: string,
+  input: { readonly announceDate: string; readonly fiscalYearEndMonth: number | null },
+): AnnouncementTitlePeriod | null {
+  const explicit = parseAnnouncementTitlePeriod(title);
+  if (explicit !== null) return explicit;
+
+  const fy = input.fiscalYearEndMonth;
+  if (fy === null || !Number.isInteger(fy) || fy < 1 || fy > 12) return null;
+  if (parseIsoDate(input.announceDate) === null) return null;
+  const part = titleReportPart(title);
+  const year = titleFiscalYear(title);
+  if (part === null || year === null) return null;
+
+  const endYears = year.isEndYear || fy === 12 ? [year.year] : [year.year, year.year + 1];
+  const inWindow = candidatesInWindow(part, endYears, fy, input.announceDate);
+  if (inWindow.length !== 1) return null;
+  return { periodEnd: inWindow[0], reportKind: PART_KIND[part] };
+}
+
+/** 各财年结束年的候选期末日中，刊发日落在 (期末日, 期末日 + 时限] 内的那些 (去重)。 */
+function candidatesInWindow(
+  part: TitleReportPart,
+  endYears: readonly number[],
+  fiscalYearEndMonth: number,
+  announceDate: string,
+): string[] {
+  const deadline = PUBLICATION_DEADLINE_MONTHS[PART_KIND[part]];
+  const inWindow = new Set<string>();
+  for (const endYear of endYears) {
+    const absMonth = endYear * 12 + (fiscalYearEndMonth - 1) + PART_MONTH_OFFSET[part];
+    const candidate = monthEndFromAbsolute(absMonth);
+    const lastDay = monthEndFromAbsolute(absMonth + deadline);
+    if (
+      candidate !== null &&
+      lastDay !== null &&
+      candidate < announceDate &&
+      announceDate <= lastDay
+    ) {
+      inWindow.add(candidate);
+    }
+  }
+  return [...inWindow];
+}
+
 // ─── ③ 富途 period_text ───────────────────────────────────────────────────
 
 const FUTU_FISCAL_QUARTER = /^(\d{4})Q([1-4])$/;
@@ -345,8 +469,11 @@ function fiscalQuarterEnd(
   return monthEndIso(Math.floor(absMonth / 12), (absMonth % 12) + 1);
 }
 
-/** 一条配对反推的财年结束月；公布日相差 > 1 天或推不出 1–12 月 ⇒ null。 */
-function fiscalYearEndMonthFromPair(pair: FutuFilingPair): number | null {
+/**
+ * 一条「富途观测 ↔ 交易所刊发事实」配对反推的财年结束月；公布日相差 > 1 天或推不出 1–12 月 ⇒ null。
+ * 多条配对怎么合、与其他来源怎么对账在财年档案 (`earnings-fiscal-profile.rules.ts`)。
+ */
+export function fiscalYearEndMonthFromFutuPair(pair: FutuFilingPair): number | null {
   const m = FUTU_FISCAL_QUARTER.exec(pair.futuPeriodText?.trim() ?? '');
   const futuDate = parseIsoDate(pair.futuDate);
   const filingDate = parseIsoDate(pair.filingDate);
@@ -361,28 +488,7 @@ function fiscalYearEndMonthFromPair(pair: FutuFilingPair): number | null {
 }
 
 /**
- * 公司财年结束月，按序取：① 该公司交易所年度业绩标题期末日 (多份取最近一份)；
- * ② 历史配对反推 (全部有效配对结论一致才采信，矛盾 ⇒ null)；③ 都无 ⇒ null。🚫 默认 12。
- */
-export function resolveFiscalYearEndMonth(input: {
-  readonly annualPeriodEnds: readonly string[];
-  readonly pairs: readonly FutuFilingPair[];
-}): number | null {
-  const annual = input.annualPeriodEnds
-    .map(parseIsoDate)
-    .filter((d): d is CalendarDate => d !== null)
-    .sort((a, b) => dayNumber(a) - dayNumber(b))
-    .at(-1);
-  if (annual !== undefined) return annual.month;
-
-  const months = new Set(
-    input.pairs.map(fiscalYearEndMonthFromPair).filter((m): m is number => m !== null),
-  );
-  return months.size === 1 ? [...months][0] : null;
-}
-
-/**
- * 富途 `period_text` → 报告期。港股且财年结束月已知 ⇒ `P:`；港股财年未知、美股 (无第二来源)、
+ * 富途 `period_text` → 报告期。财年结束月由调用方传入财年档案值。港股且财年结束月已知 ⇒ `P:`；港股财年未知、美股 (无第二来源)、
  * 非 `YYYYQn` 原文 ⇒ `T:`；原文缺失 (null / 空白 / `N/A`) ⇒ `D:<来源>:<财报日>`。
  */
 export function resolveFutuPeriod(
