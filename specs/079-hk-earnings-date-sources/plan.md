@@ -96,7 +96,7 @@ context7_verified: []
 新表设计意图（字段形状以 `schema.prisma` 为准）：
 
 1. **`earnings_date_observation`**（来源观测，PIT）：唯一键 `(source, instrument_id, period_key)`。市场、报告类型、统一期末日（可空）、来源原文报告期、公布日（可空）、取值口径（`filed` / `explicit` / `structured` / `meeting`）、会议日、公布时刻、刊发日、凭据指针（公告链接 / 清单页首日期）、首次 / 最近观测时刻、上一个日期与变更时刻、刊发后回填的偏差天数（FR-019）。清单观测的「最近观测时刻」即最近一次出现在清单的运行时刻（FR-020a）。
-2. **`earnings_date_event`**（合并后事件）：唯一键 `(instrument_id, period_key)`。状态（`confirmed` / `unconfirmed` / `conflict` / `notified_undated` / `overdue` / `published`）、公布日及口径、冲突候选日期、公布时刻、确认日期及口径（`announced` / `first_seen`）、参与来源、报告类型与期末日、逾期起算时刻、`revision` 整数（乐观并发，D8）。
+2. **`earnings_date_event`**（合并后事件）：唯一键 `(instrument_id, period_key)`。状态（`confirmed` / `unconfirmed` / `conflict` / `notified_undated` / `overdue` / `published` / `superseded`——`superseded` 为 impl 期追加，见 D8「已通知日期未知」）、公布日及口径、冲突候选日期、公布时刻、确认日期及口径（`announced` / `first_seen`）、参与来源、报告类型与期末日、逾期起算时刻、`revision` 整数（乐观并发，D8）。
 3. **`earnings_date_event_log`**（事件流水，append-only）：状态迁移、取值变更、冲突产生 / 解除、逾期产生 / 解除、清单行提前消失（FR-013 / FR-014 / FR-016 / FR-019a）。
 4. **`earnings_meeting_lag`**（会议 → 刊发间隔）：唯一键 `(instrument_id, report_kind)`；最近一次间隔天数、来源期末日、观测时刻（FR-010）。
 5. **`earnings_fiscal_profile`**（财年档案，FR-026，spec Session（七）追加）：唯一键 `instrument_id`；财年结束月（1–12）、得出来源（`annual_title` / `dividend_title` / `board_list` / `futu_pairing` / `manual`）、凭据、确定时刻、更新时刻。没有行 = 未知。migration ① 已落地，本表走独立 expand-only migration ③ `<yyyymmdd_hhmm>_create_earnings_fiscal_profile`（只含表）。
@@ -161,7 +161,7 @@ context7_verified: []
   - **可解释差异**（FR-014）：仅近似口径、差 ≥ 2 天，且结构化日期 = 清单会议日、会议日推定 = 会议日 + 间隔 ⇒ 取推定值，写流水不发冲突。
   - **冲突**（FR-014）：精确口径间任何不一致；或近似口径差 ≥ 2 天且不可解释 ⇒ `conflict`。近似差 1 天 ⇒ 优先级取值、写流水。
   - **确认**（FR-011 / FR-012 / FR-021）：有「仅已公告」来源观测 ⇒ `confirmed`；只有 `unconfirmed` 来源 ⇒ `unconfirmed`，🚫 永不升级。确认日期 = 对应会前通知信号的刊发日（`announced`）：同标的、刊发日 ∈ `[事件日期 − 120 天, 事件日期]` 且晚于该标的上一次刊发事实的信号中**最早**的一个；无对应信号 ⇒ 给出日期的来源首次观测的交易所当地日期（`first_seen`）。🚨 **确认日期只前移不回退**：既有口径为 `announced` 时，本轮算不出对应信号 ⇒ 保留既有值（FR-012）；既有为 `first_seen`、本轮找到更早的通知 ⇒ 前移并改口径。
-  - **已通知日期未知**（FR-017）：会前通知信号刊发后满 2 个交易日、该标的无任何未刊发事件带日期：该标的曾有清单观测 ⇒ `notified_undated` + finding；否则只计数。之后任一来源给出日期即转确认，确认日期取该信号刊发日。
+  - **已通知日期未知**（FR-017）：会前通知信号刊发后满 2 个交易日、该标的无任何未刊发事件带日期：该标的曾有清单观测 ⇒ `notified_undated` + finding；否则只计数。之后任一来源给出日期即转确认，确认日期取该信号刊发日。🚨 **占位事件（impl 期 T014 定，spec Session（七）第 2 问）**：会前通知不带报告期 ⇒ 迁入时建占位事件，键 `D:notice_undated:<通知刊发日>`（🚫 用 `D:hkex_announcement:<日期>`——与公告来源给无期末日刊发生成的兜底键同形，通知与刊发同日即撞键）；该标的有非 published 事件拿到日期、`selectPendingNotice` 不再返回这份通知时，占位事件迁为 `superseded`，流水 detail 指向接手事件 id；🚫 删除（流水级联删除，`schema.prisma` `EarningsDateEventLog` 外键）。占位事件与 `superseded` 事件 🚫 进入逐事件合并与逾期扫描——零观测、保留 `confirmedDate` 的占位事件进合并会被静默算成 `confirmed`。
   - **刊发覆盖**（FR-019）：出现 `filed` ⇒ `published`，回填各来源各口径偏差；有会议日时更新 `earnings_meeting_lag`。
   - **逾期**（FR-019a）：非 `published` 且公布日之后满 2 个交易日 ⇒ `overdue`。交易日数用 `trading_day` 三态计数（`trading-day.rules.ts:91` 判据）；区间含 `unknown` ⇒ 不判，发 `unjudged`。`TradingCalendarPort`（`trading-calendar.port.ts:23-70`）新增「区间交易日数」方法，写法照 `previousTradingDay` 覆盖闸（`db-trading-calendar.adapter.ts:102-121`）。
 - **触发点**：① 港股日常运行（全量重算当天有观测或信号变化的事件 + 逾期扫描 + 未知日期扫描）；② 美股钩子写入观测后的增量合并（只算本批美股 `(instrument, period_key)`，D9）。两者市场不重叠；事件行仍带 `revision` 条件更新（CLI 回填与定时运行可能重叠）：读观测与事件 → 计算 → `updateMany where { id, revision }` → 命中 0 行则重读重算，最多 3 次（`docs/conventions/server-impl-playbook.md` 条件 UPDATE + affected-count）；🚫 不用 `SELECT … FOR UPDATE`。
