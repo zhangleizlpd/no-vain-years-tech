@@ -37,7 +37,24 @@ describe('assembleEarningsDateSources', () => {
       'futu_calendar',
       'hkex_announcement',
     ]);
-    expect(got[1]).toBe(FULL_REGISTRY.futu_calendar);
+    expect(got[1].source).toBe(FULL_REGISTRY.futu_calendar);
+  });
+
+  it('🚨 装配名取注册表键, 不读实例 name (mock 拒绝壳上任何属性都是函数)', () => {
+    const refusingShell = new Proxy({} as EarningsDateSource, {
+      get: () => () => {
+        throw new Error('refused');
+      },
+    });
+    const got = assembleEarningsDateSources(['hkex_board_meeting_list'], {
+      ...FULL_REGISTRY,
+      hkex_board_meeting_list: refusingShell,
+    });
+    // 🚫 toEqual: 深比较会读 Proxy 属性并触发拒绝。
+    expect(got).toHaveLength(1);
+    expect(got[0].name).toBe('hkex_board_meeting_list');
+    expect(got[0].source).toBe(refusingShell);
+    expect(typeof got[0].source.name).toBe('function');
   });
 
   it('去掉一个来源 ⇒ 数组只剩另两个', () => {

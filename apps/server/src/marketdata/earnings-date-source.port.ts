@@ -10,7 +10,7 @@ import type { BoardListCounts } from './hkex-board-meeting-list.rules.js';
  *
  * ## DI: 注入的是**来源数组**, 不是单个端口
  *
- * token {@link EARNINGS_DATE_SOURCES} 绑定 `EarningsDateSource[]`, 由 `marketdata.module.ts`
+ * token {@link EARNINGS_DATE_SOURCES} 绑定 `AssembledEarningsDateSource[]`, 由 `marketdata.module.ts`
  * 按非密 env `EARNINGS_DATE_SOURCES` 经 {@link assembleEarningsDateSources} 组装。
  *
  * ## 失败语义: `collect` 失败**直接抛**
@@ -20,7 +20,7 @@ import type { BoardListCounts } from './hkex-board-meeting-list.rules.js';
  * 改版 / 换地址 / 停更就此静默。
  */
 
-/** DI token —— 绑定 `EarningsDateSource[]`。 */
+/** DI token —— 绑定 `AssembledEarningsDateSource[]`。 */
 export const EARNINGS_DATE_SOURCES = Symbol('EARNINGS_DATE_SOURCES');
 
 /**
@@ -138,7 +138,10 @@ export interface EarningsListedPeriodKey {
 }
 
 export interface EarningsDateSource {
-  /** 稳定来源名 (见 {@link EARNINGS_DATE_SOURCE_NAMES}); 落库与 finding `symbol` 用它。 */
+  /**
+   * 稳定来源名 (见 {@link EARNINGS_DATE_SOURCE_NAMES})。落库与 finding `symbol` 取装配名
+   * ({@link AssembledEarningsDateSource.name}), 🚫 读本字段 (mock 拒绝壳上它是函数)。
+   */
   readonly name: string;
   /** 该来源对 `market` 的能力; 不支持该市场返回 null。 */
   capabilities(market: string): EarningsDateSourceCapabilities | null;
@@ -162,6 +165,18 @@ function isEarningsDateSourceName(name: string): name is EarningsDateSourceName 
 }
 
 /**
+ * 装配后的一个来源 = 装配名 + 实例。
+ *
+ * 🚨 落库的 `source` 列与 finding 的 `symbol = source:<来源名>` MUST 取这里的 `name` (注册表键),
+ * 🚫 读 `source.name`: `kind=mock` 下实例是拒绝壳 Proxy (`refusing-collection.adapter.ts`), 任何属性
+ * 都读出一个函数 ⇒ 来源失败 finding 会写成 `source:() => { throw … }`, 日报上认不出是哪个来源。
+ */
+export interface AssembledEarningsDateSource {
+  readonly name: EarningsDateSourceName;
+  readonly source: EarningsDateSource;
+}
+
+/**
  * 按配置顺序从「来源名 → 实例」表取出启用的来源。O(n), n = 启用名个数。
  *
  * - 未知名 ⇒ 抛 {@link UnknownEarningsDateSourceError}; 重复名 / 空清单 ⇒ 抛。
@@ -171,12 +186,12 @@ function isEarningsDateSourceName(name: string): name is EarningsDateSourceName 
 export function assembleEarningsDateSources(
   enabled: readonly string[],
   registry: Readonly<Record<EarningsDateSourceName, EarningsDateSource>>,
-): EarningsDateSource[] {
+): AssembledEarningsDateSource[] {
   if (enabled.length === 0) {
     throw new Error('EARNINGS_DATE_SOURCES 为空 —— 零来源的维度每轮空跑且全绿, 至少启用一个来源。');
   }
   const seen = new Set<EarningsDateSourceName>();
-  const sources: EarningsDateSource[] = [];
+  const sources: AssembledEarningsDateSource[] = [];
   for (const name of enabled) {
     if (!isEarningsDateSourceName(name)) throw new UnknownEarningsDateSourceError(name);
     if (seen.has(name)) {
@@ -185,7 +200,7 @@ export function assembleEarningsDateSources(
       );
     }
     seen.add(name);
-    sources.push(registry[name]);
+    sources.push({ name, source: registry[name] });
   }
   return sources;
 }

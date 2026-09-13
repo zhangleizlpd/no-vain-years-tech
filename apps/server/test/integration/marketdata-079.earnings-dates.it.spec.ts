@@ -14,6 +14,32 @@ import {
   executeFiscalProfileSet,
   parseFiscalProfileArgs,
 } from '../../src/marketdata/marketdata-fiscal-profile.cli';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type {
+  EarningsCalendarEvent,
+  EarningsCalendarPort,
+} from '../../src/marketdata/earnings-calendar.port';
+import {
+  assembleEarningsDateSources,
+  EARNINGS_DATE_SOURCE_NAMES,
+} from '../../src/marketdata/earnings-date-source.port';
+import { FutuCalendarSource } from '../../src/marketdata/futu-calendar.source';
+import { HkexBoardMeetingListSource } from '../../src/marketdata/hkex-board-meeting-list.source';
+import { parseBoardMeetingList } from '../../src/marketdata/hkex-board-meeting-list.rules';
+import { HKEXNEWS_PROFILE } from '../../src/marketdata/hkexnews.constraint-profile';
+import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
+import {
+  VendorHttpClient,
+  type VendorHttpClientDeps,
+} from '../../src/marketdata/vendor-http-client';
+import {
+  deriveStatus,
+  emptyStats,
+  SyncRunRecorder,
+  type SyncRunStats,
+} from '../../src/marketdata/sync-run.recorder';
+import { SyncEarningsDatesUseCase } from '../../src/marketdata/sync-earnings-dates.usecase';
 
 // 079 港股财报日期主 IT。
 //
@@ -380,5 +406,228 @@ describe('079 T011 来源 B 交易所公告 (Testcontainers PG)', () => {
       ['P:2025-06-30', '2025-08-26'],
     ]);
     expect(backfill.noticeSignals.map((s) => s.noticeDate)).toEqual(['2025-08-01']);
+  });
+});
+
+// T013 合并用例采集段 (FR-013 / FR-018 / FR-020a / FR-025, plan §D8 / §D10; state_branches 17 / 21 / 22)。
+// 为什么必须真 PG + 真来源: 「失败来源零写入、其余来源照写」「两轮改期留痕」是观测表唯一键 upsert 的落库
+// 语义; 陈旧 / 不可判走真 `trading_day` + 覆盖声明。富途用假日历端口、清单用真 VendorHttpClient + 假 fetch
+// (fixture 同 T003), 公告来源读真 announcement 表。运行状态经真 SyncRunRecorder 落 sync_run。
+describe('079 T013 合并用例采集段: 来源隔离 + 失败三件套 + 观测落库', () => {
+  const BOARD_LIST_PAGE = readFileSync(
+    join(
+      __dirname,
+      '../../src/marketdata/__fixtures__/hkex-board-meeting-list/ebmn_c-2026-09-13.htm',
+    ),
+    'utf8',
+  );
+  const FUTU = 'futu_calendar';
+  const ANNOUNCEMENT = 'hkex_announcement';
+  const BOARD_LIST = 'hkex_board_meeting_list';
+  /** 页首 10/09/2026: 业务日 09-11 ⇒ 1 个交易日 (新鲜); 09-16 ⇒ 4 个 (陈旧); 10-02 ⇒ 覆盖外 (不可判)。 */
+  const FRI_0911 = new Date('2026-09-11T20:00:00+08:00');
+  const SAT_0912 = new Date('2026-09-12T20:00:00+08:00');
+  const WED_0916 = new Date('2026-09-16T20:00:00+08:00');
+  const FRI_1002 = new Date('2026-10-02T20:00:00+08:00');
+  let tencentId: bigint;
+
+  beforeAll(async () => {
+    tencentId = (await instrument('hk', '00700')).id;
+    for (const code of new Set(parseBoardMeetingList(BOARD_LIST_PAGE).rows.map((r) => r.code))) {
+      await instrument('hk', code);
+    }
+    const septemberWeekdays = Array.from(
+      { length: 30 },
+      (_, i) => `2026-09-${String(i + 1).padStart(2, '0')}`,
+    ).filter((d) => ![0, 6].includes(new Date(`${d}T00:00:00Z`).getUTCDay()));
+    await prisma.tradingDay.createMany({
+      data: septemberWeekdays.map((d) => ({ market: 'hk', date: day(d) })),
+      skipDuplicates: true,
+    });
+    await prisma.calendarCoverage.upsert({
+      where: { market: 'hk' },
+      create: {
+        market: 'hk',
+        coveredFrom: day('2026-01-01'),
+        coveredTo: day('2026-09-30'),
+        servedBy: 'seed',
+      },
+      update: { coveredFrom: day('2026-01-01'), coveredTo: day('2026-09-30') },
+    });
+  });
+
+  beforeEach(async () => {
+    await prisma.earningsDateObservation.deleteMany();
+  });
+
+  const futuEvent = (earningsDate: string): EarningsCalendarEvent => ({
+    underlyingSymbol: 'hk:00700',
+    earningsDate,
+    pubType: 'AFTER',
+    periodText: '2026 Q3',
+    epsActual: null,
+    epsPredict: null,
+    publicationTime: null,
+  });
+
+  function buildUseCase(opts: { futu: () => EarningsCalendarEvent[]; boardListStatus?: number }) {
+    const calendar = {
+      getWindow: async ({ start, end }: { start: string; end: string }) =>
+        opts.futu().filter((e) => e.earningsDate >= start && e.earningsDate <= end),
+    } as unknown as EarningsCalendarPort;
+    const status = opts.boardListStatus ?? 200;
+    const fetch = async () => ({
+      status,
+      ok: status === 200,
+      json: async () => ({}),
+      text: async () => (status === 200 ? BOARD_LIST_PAGE : 'Not Found'),
+      headers: { get: () => null },
+    });
+    const http = new VendorHttpClient(HKEXNEWS_PROFILE, {
+      fetch: fetch as unknown as VendorHttpClientDeps['fetch'],
+      sleep: async () => undefined,
+    });
+    return new SyncEarningsDatesUseCase(
+      prisma,
+      assembleEarningsDateSources([...EARNINGS_DATE_SOURCE_NAMES], {
+        futu_calendar: new FutuCalendarSource(calendar, prisma),
+        hkex_announcement: new HkexAnnouncementSource(prisma),
+        hkex_board_meeting_list: new HkexBoardMeetingListSource(
+          http,
+          prisma,
+          new DbTradingCalendarAdapter(prisma),
+        ),
+      }),
+    );
+  }
+
+  async function runRecorded(useCase: SyncEarningsDatesUseCase, now: Date) {
+    const recorder = new SyncRunRecorder(prisma);
+    const stats: SyncRunStats = emptyStats();
+    const id = await recorder.start('hk_earnings_date');
+    await useCase.runHk(stats, { now, mode: 'daily' });
+    await recorder.finish(id, deriveStatus(stats), stats);
+    const run = await prisma.syncRun.findUniqueOrThrow({ where: { id }, select: { status: true } });
+    return { stats, status: run.status };
+  }
+
+  const observations = (source: string) =>
+    prisma.earningsDateObservation.count({ where: { source } });
+  const seedInterimFiling = (date: string) =>
+    announce(tencentId, date, '截至2026年6月30日止六個月之中期業績公告', ['fs_main']);
+
+  it('① 清单抛错 (404) ⇒ partial + 来源失败 finding + 清单观测 0 条; 富途与公告观测照写', async () => {
+    await seedInterimFiling('2026-09-09');
+    const { stats, status } = await runRecorded(
+      buildUseCase({ futu: () => [futuEvent('2026-09-20')], boardListStatus: 404 }),
+      FRI_0911,
+    );
+
+    expect(await observations(FUTU)).toBeGreaterThan(0);
+    expect(await observations(ANNOUNCEMENT)).toBeGreaterThan(0);
+    expect(stats.findings).toContainEqual(
+      expect.objectContaining({
+        kind: 'failure',
+        symbol: `source:${BOARD_LIST}`,
+        step: 'earnings_date_source',
+        error: expect.stringContaining('404'),
+      }),
+    );
+    expect(status).toBe('partial');
+    expect(stats).toMatchObject({ scanned: 3, ok: 2, failed: 1 });
+    expect(await observations(BOARD_LIST)).toBe(0);
+  });
+
+  it('② 富途抛错 ⇒ partial + 来源失败 finding + 富途观测 0 条; 清单与公告观测照写', async () => {
+    await seedInterimFiling('2026-09-09');
+    const { stats, status } = await runRecorded(
+      buildUseCase({
+        futu: () => {
+          throw new Error('futu shim down');
+        },
+      }),
+      FRI_0911,
+    );
+
+    expect(await observations(BOARD_LIST)).toBeGreaterThan(0);
+    expect(await observations(ANNOUNCEMENT)).toBeGreaterThan(0);
+    expect(stats.findings).toContainEqual(
+      expect.objectContaining({
+        kind: 'failure',
+        symbol: `source:${FUTU}`,
+        step: 'earnings_date_source',
+        error: expect.stringContaining('futu shim down'),
+      }),
+    );
+    expect(status).toBe('partial');
+    expect(stats).toMatchObject({ ok: 2, failed: 1 });
+    expect(await observations(FUTU)).toBe(0);
+  });
+
+  it('③ 清单页首落后 4 个交易日 (stale: true) ⇒ partial + stale finding, 清单观测照写', async () => {
+    const { stats, status } = await runRecorded(
+      buildUseCase({ futu: () => [futuEvent('2026-09-20')] }),
+      WED_0916,
+    );
+
+    expect(await observations(BOARD_LIST)).toBeGreaterThan(0);
+    expect(stats.findings).toContainEqual(
+      expect.objectContaining({
+        kind: 'failure',
+        symbol: `source:${BOARD_LIST}`,
+        step: 'earnings_board_list_stale',
+      }),
+    );
+    expect(stats.findings.some((f) => 'step' in f && f.step === 'earnings_date_source')).toBe(
+      false,
+    );
+    expect(stats).toMatchObject({ ok: 3, failed: 1 });
+    expect(status).toBe('partial');
+  });
+
+  it('④ 陈旧判定区间落在日历覆盖外 (stale: unknown) ⇒ success + calendar unknown finding, 🚫 计失败', async () => {
+    const { stats, status } = await runRecorded(
+      buildUseCase({ futu: () => [futuEvent('2026-10-10')] }),
+      FRI_1002,
+    );
+
+    expect(await observations(BOARD_LIST)).toBeGreaterThan(0);
+    expect(await observations(FUTU)).toBeGreaterThan(0);
+    expect(stats.findings).toContainEqual(
+      expect.objectContaining({
+        kind: 'unjudged',
+        symbol: `source:${BOARD_LIST}`,
+        step: 'earnings_date_calendar_unknown',
+      }),
+    );
+    expect(status).toBe('success');
+    expect(stats).toMatchObject({ ok: 3, failed: 0 });
+  });
+
+  it('⑤ 同一观测两轮日期不同 ⇒ 上一个日期与变更时刻落库, 首次观测不动; 清单最近观测时刻 = 本轮', async () => {
+    let futuDate = '2026-09-20';
+    const useCase = buildUseCase({ futu: () => [futuEvent(futuDate)] });
+    await runRecorded(useCase, FRI_0911);
+    futuDate = '2026-09-22';
+    await runRecorded(useCase, SAT_0912);
+
+    const rows = await prisma.earningsDateObservation.findMany({
+      where: { source: FUTU, instrumentId: tencentId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      announceDate: day('2026-09-22'),
+      prevDate: day('2026-09-20'),
+      dateChangedAt: SAT_0912,
+      firstSeenAt: FRI_0911,
+      lastSeenAt: SAT_0912,
+    });
+    const listRows = await prisma.earningsDateObservation.findMany({
+      where: { source: BOARD_LIST },
+    });
+    expect(listRows.length).toBeGreaterThan(0);
+    expect(listRows.every((r) => r.lastSeenAt.getTime() === SAT_0912.getTime())).toBe(true);
+    expect(listRows.every((r) => r.firstSeenAt.getTime() === FRI_0911.getTime())).toBe(true);
+    expect(listRows.every((r) => r.prevDate === null)).toBe(true);
   });
 });
