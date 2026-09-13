@@ -8,6 +8,10 @@ import { mockJson } from './_support/api-mock';
 //   T003 ① 深链进入 ⇒ 标题 + 美股页签选中（sb 3；同时是 `testIdPrefix` 的 RED）
 //        ② 深链进入后 header 返回 ⇒ 回期权台 tab（sb 10）
 //        ③ 切港股 ⇒ 港股选中、无错误文案（sb 11 前半）
+//   T004 ① 默认「持仓」段选中 + 占位标题（sb 3）
+//        ② 选「订单」后切港股 ⇒ 分段不被弹回（sb 6 / Edge）
+//        ③ 选港股后切「报表」⇒ 市场不被弹回（sb 7 / Edge）
+//        ④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字眼与错误文案（sb 8 / sb 11 后半）
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
 //   🚨 **只 mock `/me` + refresh**（App 级登录态前置，不属本页依赖）；其余 `/api/**` 一律走
@@ -180,4 +184,112 @@ test('081 T003③ 切到港股 ⇒ 港股为选中样式、页面无错误文案
   await page.getByTestId('optionsdesk-trading-account-market-tab-hk').tap();
   await expectExactlyOneSelected(page, marketTabIds(), 'optionsdesk-trading-account-market-tab-hk');
   await expectNoErrorText(page);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T004 —— 胶囊分段 + 三类占位
+// ════════════════════════════════════════════════════════════════════════════
+
+const SEGMENTS = ['positions', 'orders', 'reports'] as const;
+type Segment = (typeof SEGMENTS)[number];
+
+/** 占位标题逐字（copy SoT = `optionsdesk-copy.ts` `tradingAccount.placeholder`）。 */
+const PLACEHOLDER_TITLE: Record<Segment, string> = {
+  positions: '持仓 · 建设中',
+  orders: '订单 · 建设中',
+  reports: '报表 · 建设中',
+};
+
+/** 「有数据面」的空态字眼（FR-007：占位只说建设中，不许冒充空数据）。 */
+const EMPTY_DATA_TEXT_RE = /暂无|空仓|无数据/;
+
+function segmentId(segment: Segment): string {
+  return `optionsdesk-trading-account-segment-${segment}`;
+}
+
+function segmentIds(): string[] {
+  return SEGMENTS.map(segmentId);
+}
+
+function marketTabId(market: (typeof MARKETS)[number]): string {
+  return `optionsdesk-trading-account-market-tab-${market}`;
+}
+
+/** 本屏内恰呈该分段的占位标题，另两段的标题不出现（收窄到屏根，防雷达 tab 屏 DOM 双命中）。 */
+async function expectPlaceholderOf(page: Page, segment: Segment): Promise<void> {
+  const screen = page.getByTestId(SCREEN);
+  await expect(screen.getByText(PLACEHOLDER_TITLE[segment], { exact: true })).toBeVisible();
+  for (const other of SEGMENTS) {
+    if (other !== segment) {
+      await expect(screen.getByText(PLACEHOLDER_TITLE[other], { exact: true })).toHaveCount(0);
+    }
+  }
+}
+
+/** 市场页签与分段**各恰一个**为选中样式（Edge「不出现两个同时选中」）。 */
+async function expectSelection(
+  page: Page,
+  market: (typeof MARKETS)[number],
+  segment: Segment,
+): Promise<void> {
+  await expectExactlyOneSelected(page, marketTabIds(), marketTabId(market));
+  await expectExactlyOneSelected(page, segmentIds(), segmentId(segment));
+}
+
+test('081 T004① 默认「持仓」段为选中样式 + 标题「持仓 · 建设中」（sb 3 / FR-003）', async ({
+  page,
+}) => {
+  await gotoTradingAccount(page);
+
+  await expect(page.getByTestId(segmentId('positions'))).toBeVisible();
+  await expectSelection(page, 'us', 'positions');
+  await expectPlaceholderOf(page, 'positions');
+});
+
+test('081 T004② 选「订单」后切港股 ⇒ 仍「订单」，市场与分段各恰一个选中（sb 6 / Edge）', async ({
+  page,
+}) => {
+  await gotoTradingAccount(page);
+
+  await expect(page.getByTestId(segmentId('orders'))).toBeVisible();
+  await page.getByTestId(segmentId('orders')).tap();
+  await expectPlaceholderOf(page, 'orders');
+  await page.getByTestId(marketTabId('hk')).tap();
+
+  await expectSelection(page, 'hk', 'orders');
+  await expectPlaceholderOf(page, 'orders');
+});
+
+test('081 T004③ 选港股后切「报表」⇒ 港股仍选中，市场与分段各恰一个选中（sb 7 / Edge）', async ({
+  page,
+}) => {
+  await gotoTradingAccount(page);
+
+  await expect(page.getByTestId(segmentId('reports'))).toBeVisible();
+  await page.getByTestId(marketTabId('hk')).tap();
+  await expectExactlyOneSelected(page, marketTabIds(), marketTabId('hk'));
+  await page.getByTestId(segmentId('reports')).tap();
+
+  await expectSelection(page, 'hk', 'reports');
+  await expectPlaceholderOf(page, 'reports');
+});
+
+test('081 T004④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字眼与错误文案（sb 8 / sb 11 / SC-002 / SC-003）', async ({
+  page,
+}) => {
+  await gotoTradingAccount(page);
+  await expect(page.getByTestId(segmentId('positions'))).toBeVisible();
+  const screen = page.getByTestId(SCREEN);
+
+  for (const market of MARKETS) {
+    await page.getByTestId(marketTabId(market)).tap();
+    for (const segment of SEGMENTS) {
+      await page.getByTestId(segmentId(segment)).tap();
+
+      await expectSelection(page, market, segment);
+      await expectPlaceholderOf(page, segment);
+      await expect(screen.getByText(EMPTY_DATA_TEXT_RE)).toHaveCount(0);
+      await expectNoErrorText(page);
+    }
+  }
 });
