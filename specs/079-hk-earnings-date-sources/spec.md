@@ -2,7 +2,7 @@
 feature_id: 079-hk-earnings-date-sources
 modules: [marketdata]
 owners: ['@zhangleizlpd']
-status: planned
+status: tasks-ready
 created_at: '2026-09-13'
 updated_at: '2026-09-13'
 spec_kit_version: '>=0.8.5,<0.10.0'
