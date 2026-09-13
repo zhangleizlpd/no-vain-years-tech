@@ -2,9 +2,9 @@
 feature_id: 066-hk-option-cold-start
 modules: [marketdata, optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-08-22'
-updated_at: '2026-08-26'
+updated_at: '2026-09-13'
 migration_refs:
   - 20260823_1015_seed_hk_option_dimensions
   - 20260823_1615_enable_hk_option_daily_snapshot
