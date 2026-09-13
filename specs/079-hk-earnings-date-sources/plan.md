@@ -12,7 +12,7 @@ context7_verified: []
 
 ## Summary _(mandatory)_
 
-在 `marketdata` 内新建一层「财报日期」：三个可插拔来源各自产出**带口径的观测** —— 富途财报日历（结构化日期）、交易所公告（业绩刊发事实 + 按标题识别的会前通知信号，复用现役 `announcement` 维度已采数据）、港交所「董事會會議通知」清单（主板会议日，每日一次 GET）—— 纯函数合并成「一个公布日 + 取值口径 + 状态」的事件。港股由新维度 `hk_earnings_date` 每日跑，美股由现役 `earnings_event` 采集**顺带**落观测（零新增调用）。**不获取、不解析公告 PDF**（spec Session（五）采纳方案 B）。清单取数失败 / 地址跳转 / 结构异常 / 页面陈旧一律响亮失败：不写入任何清单观测，计入运行失败数，次日 09:00 运行日报在飞书标红；事件进入逾期未刊发或已通知日期未知的那一轮同样计入运行失败数并标红（停留不重复计，spec Session（六））。全部新表只归 `marketdata`，期权台读端一行不动。
+在 `marketdata` 内新建一层「财报日期」：三个可插拔来源各自产出**带口径的观测** —— 富途财报日历（结构化日期）、交易所公告（业绩刊发事实 + 按标题识别的会前通知信号，复用现役 `announcement` 维度已采数据）、港交所「董事會會議通知」清单（主板会议日，每日一次 GET）—— 纯函数合并成「一个公布日 + 取值口径 + 状态」的事件。港股由新维度 `hk_earnings_date` 每日跑，美股由现役 `earnings_event` 采集**顺带**落观测（零新增调用）。**不获取、不解析公告 PDF**（spec Session（五）采纳方案 B）。清单取数失败 / 地址跳转 / 结构异常 / 页面陈旧一律响亮失败：不写入任何清单观测，计入运行失败数，次日 09:00 运行日报在飞书标红；事件进入逾期未刊发或已通知日期未知的那一轮同样计入运行失败数并标红（停留不重复计，spec Session（六））。刊发事实按「标的 + 期末日」对齐同期事件：标题不带期末日时由财年档案（每只港股锚一行，冷启动与每日运行反推、推不出人工补录）换算，逾期与已通知日期未知只对有档案的港股标的判定（spec Session（七））。全部新表只归 `marketdata`，期权台读端一行不动。
 
 ## Dependencies & Defensive Additions _(Cargo-cult 防火墙)_
 
@@ -37,7 +37,7 @@ context7_verified: []
 
 | #   | Question | Answer |
 | --- | --- | --- |
-| Q1 | 长期维护信号 | 港交所官方页面；Wayback 最早存档 2024-02-03，至 2026-09 仍在用、结构未变（8 份可解析快照与当日页面同构）。无接口承诺（「僅供參考」）。 |
+| Q1 | 长期维护信号 | 港交所官方页面；Wayback 最早存档 2024-02-03，至 2026-09 仍在用、结构未变（7 份可解析快照与当日页面同构）。无接口承诺（「僅供參考」）。 |
 | Q2 | 已装工具能否等价覆盖 | 否。富途港股日历只给已公告日期、有缺漏、无会议日（spec 取证）；理杏仁公告只有标题与链接，日期在 PDF 正文里。清单是唯一免费、结构化给出主板会议日的来源。 |
 | Q3 | 与现栈兼容 | 静态 UTF-8 HTML（`<meta charset=utf-8>`），`VendorHttpClient.requestText` 已支持文本读取（`vendor-http-client.ts:106-123`，`text` 为可选字段）；客户端只需给 `VendorRequest` 加一个可选 `redirect` 透传给 fetch（D7）。plan 期实测 Node fetch `redirect: 'manual'`：`http://www3.hkexnews.hk/…` → 301 + `location`；不存在页面 → 404；正常 https 页面 → 200。prod 应用主机 HTTP 200、约 1.5 秒。 |
 | Q4 | LLM 覆盖度 | 无库；解析规则全部由取证归纳（D7），以入仓 fixture 固化。 |
@@ -99,6 +99,7 @@ context7_verified: []
 2. **`earnings_date_event`**（合并后事件）：唯一键 `(instrument_id, period_key)`。状态（`confirmed` / `unconfirmed` / `conflict` / `notified_undated` / `overdue` / `published`）、公布日及口径、冲突候选日期、公布时刻、确认日期及口径（`announced` / `first_seen`）、参与来源、报告类型与期末日、逾期起算时刻、`revision` 整数（乐观并发，D8）。
 3. **`earnings_date_event_log`**（事件流水，append-only）：状态迁移、取值变更、冲突产生 / 解除、逾期产生 / 解除、清单行提前消失（FR-013 / FR-014 / FR-016 / FR-019a）。
 4. **`earnings_meeting_lag`**（会议 → 刊发间隔）：唯一键 `(instrument_id, report_kind)`；最近一次间隔天数、来源期末日、观测时刻（FR-010）。
+5. **`earnings_fiscal_profile`**（财年档案，FR-026，spec Session（七）追加）：唯一键 `instrument_id`；财年结束月（1–12）、得出来源（`annual_title` / `dividend_title` / `board_list` / `futu_pairing` / `manual`）、凭据、确定时刻、更新时刻。没有行 = 未知。migration ① 已落地，本表走独立 expand-only migration ③ `<yyyymmdd_hhmm>_create_earnings_fiscal_profile`（只含表）。
 
 - **会前通知信号不单独建表**：由来源 B 每轮从 `marketdata.announcement` 按标题在 120 天窗口内现算（本 ctx 表、有 `(instrument_id, date)` 索引 `schema.prisma:915`），合并时按标的与日期窗口匹配（D8）。
 - **`period_key` 三种形态，列非空**（`.claude/rules/migration-rules.md:96-98`）：`P:<期末日>`（可跨来源对齐）/ `T:<来源>:<原文报告期>`（来源内稳定）/ `D:<来源>:<日期>`（兜底）。只有 `P:` 参与跨来源合并（FR-015）。
@@ -111,6 +112,11 @@ context7_verified: []
 - 交易所公告侧：从业绩公告标题取期末日与类型 ——「截至YYYY年M月D日止（三個月 / 六個月 / 九個月 / 年度）」「YYYY年M月底止季度」，阿拉伯与中文数字；取到即 `P:`。
 - 富途侧：原文 `period_text` 按**公司财年**记（阿里 `2027Q1` = 截至 2026-06-30，spec 取证）。财年结束月按序取：① 该公司交易所年度业绩公告标题期末日；② 历史配对（同公司富途观测与交易所刊发事实公布日相差 ≤ 1 天时反推）；③ 都没有 ⇒ `T:` 键，独立事件并计数（FR-015）。🚫 MUST NOT 默认 12 月结年。
 - 美股：无第二来源，一律 `T:` 键。
+- 🚨 **impl 期修订（spec Session（七），FR-026 / FR-027）**：
+  - 报告类型先认「半年度 / 中期 / 上半年」再认「年度 / 全年」（T001 实现把「截至…止半年度業績」判为年度，prod 近 2 年 37 条）。
+  - 财年结束月一律读 `earnings_fiscal_profile`（D13），不再在换算时现推；`resolveFiscalYearEndMonth` 的两条路（年度标题期末日、富途配对）迁为档案反推的其中两路。
+  - 标题不带期末日 ⇒ 候选期末日 = 标题年份 + 报告类型 + 财年结束月（标题年份按两种财年命名习惯各得一个候选），只取「刊发日 − 期末日 ∈ (0, 时限]」者：年度 3 个月、中期 2 个月、季度 3 个月（取 1 个月时 `hk:09961` 季报 4 次超窗，spec 取证）；两个候选相隔 12 个月而时限 < 12 个月 ⇒ 至多一个落窗；无候选落窗 ⇒ `D:` 键并计数。
+  - 无财年档案 ⇒ 标题不带期末日的刊发与富途 `period_text` 均不换算 ⇒ `D:` / `T:` 键（FR-015），不猜。
 
 **D5 · 来源 A：富途财报日历 `futu-calendar.source.ts`（FR-003）**
 
@@ -144,7 +150,7 @@ context7_verified: []
 - **观测**：口径 `meeting`，会议日 = 行日期，凭据 = 页首日期；来源语义「仅已公告」（FR-011）。
 - **陈旧**：页首日期距业务日超过 2 个交易日（`trading_day` 区间计数，D8 同一方法）⇒ 与解析失败同档：`earnings_board_list_stale` failure finding + 运行失败数 +1（D10），解析出的行照常入库（页面停更时旧会议日仍然有效）。区间含 `unknown` 或缺行 ⇒ `earnings_date_calendar_unknown` unjudged finding，🚫 不计失败、🚫 不静默跳过（FR-025）。**阈值依据**（plan 期实测 8 份快照，页首日期到抓取时刻之间的交易日数）：0 / 0 / 1 / 1 / 1 / 1 / 2 / 1，唯一的 2 出现在 2026-03-13 07:02（香港时间）当天页面更新之前；采集在 23:30 运行 ⇒ 样本内零误报、余量 1 个交易日；上线首月观察陈旧告警，出现误报再放宽。
 - **提前消失**（FR-016）：上一轮在清单、本轮不在、且会议日 > 本轮页首日期、且同标的同期无新日期 ⇒ 流水记「清单消失」+ `earnings_board_list_dropped` finding，观测保留最后日期、🚫 不删、🚫 不撤销确认。仅在本轮清单解析成功时判定（解析失败的轮次不判消失）。
-- **缺失语义三问**：① 无会议 = 不列行；纯股息行 = 有会议无业绩；② 「未列」分不清「公司未发通知 / 清单漏收 / 页面滞后 / 创业板不在清单」—— 由 FR-017（仅对曾出现在清单的标的告警）+ 富途兜底；③ 写法由 8 份 Wayback 快照 + 当日页面（1776 行）归纳 ⇒ 运行时不变量 = 每轮 `earnings_board_list_scan`（页首日期、数据行、业绩行、股息行、跳过代码、`T:` 键数）。
+- **缺失语义三问**：① 无会议 = 不列行；纯股息行 = 有会议无业绩；② 「未列」分不清「公司未发通知 / 清单漏收 / 页面滞后 / 创业板不在清单」—— 由 FR-017（仅对曾出现在清单的标的告警）+ 富途兜底；③ 写法由 7 份可解析 Wayback 快照 + 当日页面（1776 行）归纳 ⇒ 运行时不变量 = 每轮 `earnings_board_list_scan`（页首日期、数据行、业绩行、股息行、跳过代码、`T:` 键数）。
 - **依据（PoC）**：会议日落在快照时段内的锚表港股会前通知 16 份，清单收录 16 / 16 且会议日一致；清单会议日 + 富途回放锚表两年逐日一致 172 / 176（spec 取证）。
 
 **D8 · 合并 `earnings-date-merge.rules.ts`（纯函数）+ `sync-earnings-dates.usecase.ts`（FR-008 ~ FR-019a 逐条见下）**
@@ -185,6 +191,9 @@ context7_verified: []
 | `earnings_board_list_scan` | notice | 每轮：页首日期、数据行、业绩行、纯股息行、跳过代码、`T:` 键数、本轮会前通知信号数 |
 | `earnings_board_list_stale` | failure（计入 `stats.failed`） | 页首日期距业务日超过 2 个交易日 |
 | `earnings_board_list_dropped` | notice | 清单行在会议日前消失且无新日期 |
+| `earnings_date_fiscal_unknown` | notice | 每轮一条：因无财年档案未判定逾期 / 已通知日期未知的事件数 + 至多 20 个样例代码（🚫 逐事件一条） |
+| `earnings_fiscal_profile_pending` | notice | 缺档案的港股锚：推不出 / 来源矛盾，逐只列代码与原因 |
+| `earnings_fiscal_profile_conflict` | notice | 年度业绩标题显式期末日与既有档案矛盾（含公告链接），档案不覆盖 |
 
 - 🚨 **飞书标红链路（owner 要求改版 / 换地址 / 停更必须经飞书告警）**：`failure` 类发现项本身**不改**运行状态（`sync-run.recorder.ts:23-24` 明写「不蕴含计入 `stats.failed`」）⇒ 来源失败与清单陈旧的写入点 MUST 同时 `stats.failed += 1`（`symbol` 取 `source:<来源名>`）。运行状态判定 `failed > 0` 且有 ok / skipped ⇒ `partial`（`sync-run.recorder.ts:326-327`）⇒ 日报脚本 `partial` ⇒ `problems=1` ⇒ 非零退出（`ops/jobs/marketdata-sync-report.sh:151` / `:345`）⇒ `nvy-run-reported` 推飞书 🔴，正文取输出末 80 行（`ops/jobs/systemd/marketdata-sync-report.service:33`，覆盖全部 33 个维度逐行 + `↳` 发现项摘要行），09:00 触发（`marketdata-sync-report.timer:7`）。冲突 / 清单行消失 / 未对齐仍只进摘要、不标红，与现役口径一致。
 - 🚨 **逾期与已通知日期未知的标红口径（spec Session（六））**：kind 仍为 `notice`（`failure` 是续跑 / 重试的来源，`sync-run.recorder.ts:21-22`），但事件由他态迁入 `overdue` / `notified_undated` 的那一轮每个事件 `stats.failed += 1`（与该计数「按标的」的粒度一致，`sync-run.recorder.ts:31-32`）。迁入判定以事件既有状态为输入、在合并纯函数内完成（T005 只在迁入时产出 finding）；🚫 按「本轮扫描到该状态」计 —— 延期刊发的公司会让日报连日标红。
@@ -224,13 +233,27 @@ context7_verified: []
 | 22 | 清单陈旧 → 计入运行失败、观测照用；日历不可判 → 无法判定、不标红 | 079 IT（页首日期落后 3 个交易日：`partial` + stale finding + 该页行照常入库；区间含 `unknown`：`success` + `earnings_date_calendar_unknown`） |
 | 23 | 美股进层 `unconfirmed`；现役逐字节不变 | `sync-earnings-event.usecase.spec.ts`（记录器抛错时 `stats` / findings / 调用数不变）+ `optionsdesk-047.earnings-pit.it.spec.ts` 加臂（`earnings_event` 行与 `sync_run` 与基线逐字节相同；**先断言新表美股事件数 > 0**，再断言全部 `unconfirmed`） |
 | 24 | 港股打标读不到本片产出 | 079 IT 调期权台既有取腿用例：新表有 `confirmed` 港股事件，收租腿仍「无日期」 |
+| 25 | 标题不带期末日 → 年份 + 类型 + 财年 + 刊发时限取唯一候选 | `earnings-period.rules.spec.ts`（12 月 / 3 月结年、年度 / 中期 / 季度、超窗 ⇒ `D:`、「半年度」判中期）+ T024 对齐回放 |
+| 26 | 无财年档案 → 逾期与已通知日期未知记无法判定、不标红 | merge spec + 079 IT（无档案标的过公布日 2 个交易日：非 `overdue`、`earnings_date_fiscal_unknown` 计数 > 0；同轮有档案的对照标的已迁入 `overdue`） |
+| 27 | 冷启动 / 每日运行反推财年，矛盾或推不出 → 不写、待补 | `earnings-fiscal-profile.rules.spec.ts` + 079 IT（一致 ⇒ 写入；矛盾 ⇒ 无行 + pending；冷启动内反推抛错 ⇒ 冷启动结局不变） |
+| 28 | 年度标题显式期末日与档案矛盾 → 告警、不覆盖 | 079 IT |
 
 其余测试面：
 
 - **`hkex-board-meeting-list.rules.spec.ts`**（Small，入仓 fixture `src/marketdata/__fixtures__/hkex-board-meeting-list/`：当日页面 + 一份多行 / 多期 / 人民币柜台 / 纯股息行齐全的 Wayback 快照，均为港交所公开页面）：页首日期、全部数据行逐行解析、目的与期间每类写法（spec 取证列出的形态各至少一例）、`日/月/年` 与两位年份、三类结构异常变异（删页首日期 / 删表头 / 破坏一行列数）。
 - 真 vendor（Large，`RUN_MARKETDATA_IT` 门控，默认 skip）：`marketdata.futu-shim.vendor.spec.ts` 加港股财报日历用例；新增 `marketdata.hkexnews.vendor.spec.ts`（取当日清单页并过解析纯函数）。impl 期手动跑并贴输出。
 - **飞书标红面**：`apps/server/test/integration/marketdata.sync-report-digest.it.spec.ts` 加一臂 —— 种一条 `hk_earnings_date` 的 `partial` 运行（含 `earnings_date_source` failure finding），断言日报输出该维度行为非成功图标、`↳` 摘要含 `failure×1{earnings_date_source}` 形态、脚本退出码非零；定向变异：写入点不加 `stats.failed` ⇒ 079 IT 的 `partial` 断言必红；另一臂种只含冲突 / 清单行消失 notice 的 `success` 运行 ⇒ 退出码 0。逾期与已通知日期未知的计数由 079 IT 断言（#11 / #14），日报脚本只读运行状态、不按 step 判红。
-- **SC-001 / SC-003 数据验收**：回填完成后与上线 30 天后，在 prod 跑只读核对，结果回填 spec；tasks 期立独立 `[Ops]` task + issue + 到期日。SC-004 以本机 evidence 目录的回放脚本在 impl 期复跑一次（输入改为新规则实现的纯函数）。
+- **SC-001 / SC-003 数据验收**：回填完成后与上线 30 天后，在 prod 跑只读核对，结果回填 spec；tasks 期立独立 `[Ops]` task + issue + 到期日。SC-004 以本机 evidence 目录的回放脚本在 impl 期复跑一次（输入改为新规则实现的纯函数）。SC-013 / SC-014 同在 T024 回放（本机 `align-verify/` 脚本改接已实现的纯函数，财年真值 `align-verify/hkex/fye_truth.json`）。
+
+**D13 · 财年档案（FR-026 / FR-027 / FR-028；spec Session（七））**
+
+- **纯函数** `earnings-fiscal-profile.rules.ts`：输入某标的近 2 年公告标题（含 `types`）、清单年度行、富途配对；输出 `{ month, source, evidence }` 或 `{ pending: 'none' | 'conflict', detail }`。四路：年度业绩标题显式期末日；年度股息公告期末日（报告类型对得上、标题不含「更新」—— `hk:02628` 同日「中期股息（更新）」属上一期，spec 取证）；清单「年度DD/MM/YY」行；富途配对。各路一致才出值，矛盾 ⇒ `conflict`，全无 ⇒ `none`。
+- **用例** `sync-earnings-fiscal-profile.usecase.ts`（直注 `PrismaService`，读本 ctx `announcement` / `earnings_date_observation`，写 `earnings_fiscal_profile`）：
+  1. 建锚冷启动：`AnchorColdStartUseCase` 在 Instrument 行就位之后（`anchor-cold-start.usecase.ts:28-37` 第 3 步后）对港股锚调一次；🚨 包 `try/catch` 只 `logger.warn`，🚫 改变冷启动结局与运行记录值域。
+  2. 每日 `hk_earnings_date` 运行起手：对缺档案的港股锚反推（覆盖存量锚，无需单独回填），对已有档案的锚检查年度标题显式期末日是否矛盾（`earnings_fiscal_profile_conflict`，不覆盖）。
+  3. 人工补录 CLI `marketdata-fiscal-profile.cli.ts --set <ticker>=<月>`（写 `source = 'manual'`，幂等）；prod 执行属写操作，命令先呈维护者确认。
+- 锚集合沿用 marketdata 已有的只读锚 ticker 口径（`loadAnchoredInstruments`，`check-server-moat.ts` 登记的「marketdata 读 anchor 的 ticker 集合」边），🚫 新增跨 ctx 写。
+- **判定范围**（FR-028）：D8 的逾期与已通知日期未知扫描只扫 `market = 'hk'`（美股无刊发事实来源，扫到会全部判逾期），且只对有档案的标的迁入状态；无档案的计入每轮一条 `earnings_date_fiscal_unknown`。
 
 ### 🚨 Impl Guardrails（并发 / 安全 / 前端）
 
@@ -238,6 +261,7 @@ context7_verified: []
 - **时间语义**：业务日一律 `exchangeCalendarDate(market, now)`，单市场；公布日与清单日期是交易所当地日期；🚨 清单日期 MUST 自行按 `日/月/年` 拆解，🚫 MUST NOT 交给 `new Date('10/09/2026')` 或任何按「月/日」解析的工具；交易日数查日历三态（Rule A / B）。
 - **响亮失败**：清单解析任何不变量破坏、取数非 200、地址跳转、页面陈旧 ⇒ 来源失败 finding + `stats.failed += 1`；🚫 MUST NOT 捕获后返回空数组（那等于宣布「今天没有会议」）；🚫 MUST NOT 跟随重定向（换地址会被静默吞掉）；🚫 MUST NOT 只写 finding 不计失败数（日报为绿，飞书不标红）。
 - **状态迁移标红**：`overdue` / `notified_undated` 只在迁入那一轮 `stats.failed += 1`；🚫 停留轮次再计；🚫 把 kind 改成 `failure`。
+- **财年档案**：🚫 无档案时按 12 月代入；🚫 来源矛盾时择一写入；🚫 冷启动内反推失败影响冷启动结局；🚫 逾期扫描扫到美股。
 - **安全**：清单 URL 为常量；不触鉴权 / PII。
 - **配额**：富途只多港股每日约 38 次日历调用（推断）；港交所清单每日 1 次请求。
 - **美股零回归绊线**：D9 钩子四条约束；`optionsdesk-047.earnings-pit.it.spec.ts` 基线对比臂先红后绿。
@@ -270,6 +294,9 @@ context7_verified: []
 20. 会前通知信号沿用刊发事实的 7 天窗口 —— 否：事件重算时找不到更早的通知，确认时刻静默回退（analyze I1）。
 21. 美股钩子只写观测、不触发合并 —— 否：美股事件恒为 0 行，SC-008 的断言空真（analyze C1）。
 22. 逾期 / 已通知日期未知在停留期间每轮都计入运行失败 —— 否：延期刊发的公司会让日报连日标红，新故障被淹没；与复权因子闸「只看近 48h 新增、存量只报数」同一取舍（`ops/jobs/marketdata-sync-report.sh:212-213`）。
+23. 港交所报价接口的 `fiscal_year_end` 作档案来源 —— 否：非公开接口、需从页面抓 token、条款未核实；impl 期验证中仅作真值取过 50 次。人工补录量过大时可作为新增来源（`source` 列可扩展）。
+24. 刊发事实按「同标的、公布日附近」邻近配对兜底 —— 否：业内未见出处；真延迟的公司若在附近发了别的业绩类公告会被掩盖。
+25. 逾期分两级（公司公布日 / 监管截止日）—— 暂不：登记后续；本片维持公司公布日 + 2 个交易日。
 
 **既有事实核录**（2026-09-13 plan 期逐项 grep / 只读核查，行号锚消费点）：
 
