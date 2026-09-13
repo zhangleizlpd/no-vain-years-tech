@@ -40,7 +40,7 @@ state_branches:
 **Feature Branch**: `057-research-report-guest-ingest`
 **Created**: 2026-08-15
 **Status**: Tasks-ready
-**Input**: 见 `docs/private/plans/streamed-soaring-stallman.md`（本机私有，未公开）
+**Input**: 见 `docs/private/plans/2026-08/08-15-057-research-report-pdf-upload.md`（本机私有，未公开）
 
 > 本片是 [PRD §3.8 研报库](../../docs/prd/portfolio/portfolio-master-prd.md) 的第一个 use case。研报库在 PRD 里与 §3.5 预警管理、§3.6 笔记管理同级，而 §3.5 已落成独立 bounded context `alert` —— 本片据此立第 11 个 context `research`。
 >
