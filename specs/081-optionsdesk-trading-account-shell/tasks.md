@@ -24,7 +24,7 @@ Clear 检查点批次建议：T001–T003 / T004–T005 / T006–T007 / T008–T
 
 - [X] T002 [Mobile] **进程内选择 store**（FR-004, FR-005, FR-006; plan §D5; state_branches 4/5/6/7; US1/US2）：新建 `apps/mobile/src/optionsdesk/trading-account-store.ts` —— zustand `create()`，**不挂 `persist`**（先例 `src/ideation/annotate-send-store.ts`），状态 `{ market, segment }` 初值取 `DEFAULT_TRADING_ACCOUNT_SELECTION`，动作 `selectMarket(m)` / `selectSegment(s)` 各只改自己那一维；🚨 本 store MUST NOT 读写 `useRadar`（FR-006 结构性保证）→ verify: 新建 `trading-account-store.spec.ts` 先红后绿（`beforeEach` 用 `setState(DEFAULT…)` 复位）—— ① 初值 = 默认 ② `selectMarket('hk')` 后 segment 不变 ③ `selectSegment('reports')` 后 market 不变 ④ 连续交替切换终态 = 最后一次选择；变异留档：`selectMarket` 顺手把 segment 复位为 positions ⇒ 臂 ② 红；`pnpm nx test mobile` 绿
 
-- [ ] T003 [Mobile] **路由 + 屏骨架 + 市场页签前缀 + 深链返回**（FR-002, FR-004, FR-008, FR-010; plan §D0/§D1/§D7/§D10; state_branches 3/10/11; US1）：
+- [X] T003 [Mobile] **路由 + 屏骨架 + 市场页签前缀 + 深链返回**（FR-002, FR-004, FR-008, FR-010; plan §D0/§D1/§D7/§D10; state_branches 3/10/11; US1）：
   - `radar-market-tabs.tsx` 新增可选 prop `testIdPrefix`（默认 `'optionsdesk-radar-market'`），容器 / 页签 / 圆点三处 testID 改由前缀拼出 —— 🚨 默认值下三个 testID 与现状**逐字相同**（`optionsdesk-radar-market-tabs` / `-tab-${m}` / `-dot-${m}`）；文件头注释补一行说明该 prop
   - `optionsdesk-routes.ts` 加 `OPTIONSDESK_TRADING_ACCOUNT_ROUTE = '/(app)/optionsdesk/trading-account' as const`（JSDoc：入口 = 雷达题头钱包图标）并入 `optionsdesk-routes.spec.ts` 的 `ALL_ROUTES` + 新 describe 块
   - 新建薄路由 `apps/mobile/app/(app)/optionsdesk/trading-account.tsx`（只渲染 `<TradingAccountScreen />`）；`app/(app)/optionsdesk/_layout.tsx` 显式声明 `<Stack.Screen name="trading-account" options={{ headerLeft: makeHeaderBackOrParent('/(app)/(tabs)/optionsdesk') }} />`
