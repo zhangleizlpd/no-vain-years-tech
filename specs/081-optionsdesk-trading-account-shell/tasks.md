@@ -37,7 +37,7 @@ Clear 检查点批次建议：T001–T003 / T004–T005 / T006–T007 / T008–T
 
 - [X] T006 [Mobile] **离开再进记忆 / 刷新回默认 / 与雷达互不影响**（FR-004, FR-006; plan §D5; state_branches 4/5/9; SC-004/SC-005; US1）：不改实现代码（行为由 T002 store + T003 路由承担），补齐导航层证据 → verify: T003 的 e2e 续三臂先红后绿（先写断言、在 store 被临时换成组件内 `useState` 的变异下看到红）—— ① 选「港股 · 订单」→ 返回雷达 → 再点入口 ⇒ 仍「港股 · 订单」（sb 4 / SC-005）② `page.reload()` 后深链进入 ⇒ 回默认「美股 · 持仓」（sb 5）③ 雷达停美股 → 进页切港股 → 返回 ⇒ 雷达 `optionsdesk-radar-market-tab-us` 仍为选中样式（sb 9 / SC-004）；变异留档：`trading-account-screen.tsx` 临时改用组件内 `useState` 代替 store ⇒ 臂 ① 红（push 屏卸载即丢），恢复后绿
 
-- [ ] T007 [P] [Mobile-E2E] **markets-OFF 深链门控**（FR-009; plan §D2; state_branches 2）：`apps/mobile/e2e/markets-feature-gate.spec.ts` 的 `GATED_DEEPLINKS` 表加 `/optionsdesk/trading-account`（期望重定向到 `/profile`，note 注明 081 交易账户页挂在 optionsdesk 栈下、门控靠继承）；同步文件头注释里的面数 / 深链条数 / 栈内路由条数（现写「面数 8 但深链 14 条」「栈内七条路由」，`markets-feature-gate.spec.ts:17` 起）；**不新增** `MARKETS_SURFACES` 条目（plan §D2 取证）→ verify: `nx run mobile:e2e-public` 全绿；变异留档：临时去掉 `app/(app)/optionsdesk/_layout.tsx` 的 `MarketsRouteGuard` 包裹 ⇒ 新条目红（未被重定向），恢复后绿（仅依赖 T003 的路由存在，可与 T004–T006 并行）
+- [X] T007 [P] [Mobile-E2E] **markets-OFF 深链门控**（FR-009; plan §D2; state_branches 2）：`apps/mobile/e2e/markets-feature-gate.spec.ts` 的 `GATED_DEEPLINKS` 表加 `/optionsdesk/trading-account`（期望重定向到 `/profile`，note 注明 081 交易账户页挂在 optionsdesk 栈下、门控靠继承）；同步文件头注释里的面数 / 深链条数 / 栈内路由条数（现写「面数 8 但深链 14 条」「栈内七条路由」，`markets-feature-gate.spec.ts:17` 起）；**不新增** `MARKETS_SURFACES` 条目（plan §D2 取证）→ verify: `nx run mobile:e2e-public` 全绿；变异留档：临时去掉 `app/(app)/optionsdesk/_layout.tsx` 的 `MarketsRouteGuard` 包裹 ⇒ 新条目红（未被重定向），恢复后绿（仅依赖 T003 的路由存在，可与 T004–T006 并行）
 
 ## E2E / Gate
 
