@@ -15,6 +15,9 @@ import { mockJson } from './_support/api-mock';
 //        ④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字眼与错误文案（sb 8 / sb 11 后半）
 //   T005 ① 雷达点钱包入口 ⇒ 进交易账户页，且从雷达起恰 3 次点击到达「港股 · 报表」（sb 1 / SC-001）
 //        ② 360×800 视口：题头标题与 4 个入口按钮 boundingBox 两两不相交、每个按钮宽 ≥40（FR-001 / SC-006）
+//   T006 ① 选「港股 · 订单」→ header 返回雷达 → 再点入口 ⇒ 仍「港股 · 订单」（sb 4 / SC-005）
+//        ② `page.reload()` 后深链进入 ⇒ 回默认「美股 · 持仓」（sb 5）
+//        ③ 雷达停美股 → 进页切港股 → 返回 ⇒ 雷达美股页签仍为选中样式（sb 9 / SC-004）
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
 //   🚨 **只 mock `/me` + refresh**（App 级登录态前置，不属本页依赖）；其余 `/api/**` 一律走
@@ -435,4 +438,77 @@ test('081 T005② 360×800 视口：题头标题与 4 个入口按钮互不遮�
       expect(intersects(a.box, b.box), `${a.name} 与 ${b.name} 相交`).toBe(false);
     }
   }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T006 —— 离开再进记忆 / 刷新回默认 / 与雷达互不影响（行为由 T002 store + T003 路由承担）
+// ════════════════════════════════════════════════════════════════════════════
+
+function radarMarketTabIds(): string[] {
+  return MARKETS.map((m) => `optionsdesk-radar-market-tab-${m}`);
+}
+
+/** 从雷达点钱包入口进页（本屏根可见为止）。 */
+async function enterFromRadar(page: Page): Promise<void> {
+  await page.getByTestId(RADAR_TRADING_ACCOUNT_BUTTON).tap();
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+}
+
+/** header 返回雷达，且本屏**已卸载**（push 屏返回即卸载 —— 记忆臂要验的正是跨卸载）。 */
+async function backToRadar(page: Page): Promise<void> {
+  await headerBack(page);
+  await expect(page).toHaveURL(/\/optionsdesk\/?$/, { timeout: 30_000 });
+  await expect(page.getByTestId(SCREEN)).toHaveCount(0);
+}
+
+test('081 T006① 选「港股 · 订单」→ 返回雷达 → 再点入口 ⇒ 仍「港股 · 订单」（sb 4 / SC-005 / FR-004）', async ({
+  page,
+}) => {
+  await installRadarMock(page);
+  await gotoRadar(page);
+  await enterFromRadar(page);
+
+  await page.getByTestId(marketTabId('hk')).tap();
+  await page.getByTestId(segmentId('orders')).tap();
+  await expectSelection(page, 'hk', 'orders');
+
+  await backToRadar(page);
+  await enterFromRadar(page);
+
+  await expectSelection(page, 'hk', 'orders');
+  await expectPlaceholderOf(page, 'orders');
+});
+
+test('081 T006② 选「港股 · 订单」后 page.reload() 深链进入 ⇒ 回默认「美股 · 持仓」（sb 5 / FR-004）', async ({
+  page,
+}) => {
+  await gotoTradingAccount(page);
+  await expect(page.getByTestId(segmentId('orders'))).toBeVisible();
+  await page.getByTestId(marketTabId('hk')).tap();
+  await page.getByTestId(segmentId('orders')).tap();
+  await expectSelection(page, 'hk', 'orders');
+
+  // 硬刷新 = 进程重启（spec Assumptions）；刷新后的落点就是深链 URL 本身。
+  await page.reload();
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account$/);
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByTestId(segmentId('positions'))).toBeVisible();
+
+  await expectSelection(page, 'us', 'positions');
+  await expectPlaceholderOf(page, 'positions');
+});
+
+test('081 T006③ 雷达停美股 → 进页切港股 → 返回 ⇒ 雷达美股页签仍为选中样式（sb 9 / SC-004 / FR-006）', async ({
+  page,
+}) => {
+  await installRadarMock(page);
+  await gotoRadar(page);
+  await expectExactlyOneSelected(page, radarMarketTabIds(), 'optionsdesk-radar-market-tab-us');
+
+  await enterFromRadar(page);
+  await page.getByTestId(marketTabId('hk')).tap();
+  await expectExactlyOneSelected(page, marketTabIds(), marketTabId('hk'));
+
+  await backToRadar(page);
+  await expectExactlyOneSelected(page, radarMarketTabIds(), 'optionsdesk-radar-market-tab-us');
 });
