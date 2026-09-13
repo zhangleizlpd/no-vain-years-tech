@@ -36,7 +36,7 @@ state_branches:
 
 **Feature Branch**: `071-optionsdesk-hk-realtime-recall`
 **Created**: 2026-08-31
-**Status**: Clarified（2026-08-31；specify 期 1 项由代码证据自解 + clarify 期 5 项裁决已回写）
+**Status**: Implemented（2026-08-31；specify 期 1 项由代码证据自解 + clarify 期 5 项裁决已回写）
 **Input**: 港股期权实时窄召回接线（optionsdesk 读端）——数据面已就位、读侧仍是美股独占，港股锚盘中被守卫挡回收盘档并渲成降级红字
 
 ## User Scenarios & Testing _(mandatory)_
