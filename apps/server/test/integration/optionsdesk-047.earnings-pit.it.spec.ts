@@ -76,6 +76,7 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
       periodText: 'Q2 2026',
       epsActual: null,
       epsPredict: '2.31',
+      publicationTime: null,
       ...over,
     };
   }

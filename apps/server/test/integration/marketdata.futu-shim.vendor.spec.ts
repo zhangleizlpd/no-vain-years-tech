@@ -640,6 +640,26 @@ describe.skipIf(!ENABLED)('富途期权链四端点真 vendor IT (env-gated, 默
     expect(out.some((e) => e.epsPredict !== null)).toBe(true);
   }, 180_000);
 
+  it('⑤ /earnings-calendar hk (079 T010): 港股窗返 hk:<code> + 字段形态', async () => {
+    // 窗取港股中期业绩刊发高峰 (8 月下旬): 港股前向行稀疏 (spec.md 取证: 往后 364 天仅 54 行),
+    // 取未来窗合法为空, 断言不了「端点通了」。
+    const start = '2026-08-24';
+    const out = await earnings.getWindow({
+      market: 'hk',
+      start,
+      end: addUtcDays(start, OBSERVED_EARNINGS_MAX_ENDPOINT_DIFF),
+    });
+
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.every((e) => e.underlyingSymbol.startsWith('hk:'))).toBe(true);
+    expect(out.every((e) => iso.test(e.earningsDate) && e.earningsDate >= start)).toBe(true);
+    // `earnings_timestamp` 的真实形态 (带不带时区偏移) 未经实测 —— 打印样本供复核 publicationTime 映射。
+    console.log(
+      `[079 T010] hk ${start}: ${out.length} 行, publicationTime 非空 ` +
+        `${out.filter((e) => e.publicationTime !== null).length}, 样本 ${JSON.stringify(out.slice(0, 3))}`,
+    );
+  }, 180_000);
+
   it('🚨 /earnings-calendar 真实窗宽上限 = 端点差 6，不是常量写的 7 (已知缺陷的回归锚)', async () => {
     // ── 实测证据（2026-08-07，经 77 → wg1 打真 shim）───────────────────────────────
     //   端点差 5 / 6 → 200；端点差 7 → **502 `NN_ProtoRet_SvrFailed`**；端点差 8 → shim 自己

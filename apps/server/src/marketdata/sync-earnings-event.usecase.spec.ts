@@ -78,6 +78,7 @@ function event(
     periodText: 'Q3 2026',
     epsActual: null,
     epsPredict: '2.31',
+    publicationTime: null,
     ...extra,
   };
 }

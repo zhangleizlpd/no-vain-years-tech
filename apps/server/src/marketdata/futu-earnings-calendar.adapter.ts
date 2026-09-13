@@ -30,10 +30,12 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * {@link EarningsCalendarRejectedError} —— 两者对调用方的处置完全一致 (计 failed 继续下一窗,
  * 重试无意义), 分成两个类型只会让调用方多写一个分支去表达同一件事。
  *
- * ## 只承担 us
+ * ## 只承担 us / hk
  *
- * 期权面只覆盖美股锚 (FR-032 / FR-036), 非 us market **直接抛、零外呼** —— 静默返空会被同步
- * 管线记成「那个市场今天没有财报」, 一次成功的空采集比一次响亮的失败难发现得多。
+ * us 供期权面 (FR-032 / FR-036); hk 供 079 港股财报日期来源 A (`futu-calendar.source.ts`) ——
+ * `earnings_event` 维度的 scope 仍只有 us, 放开 adapter 不改变现役落库。其余 market **直接抛、
+ * 零外呼** —— 静默返空会被同步管线记成「那个市场今天没有财报」, 一次成功的空采集比一次响亮的
+ * 失败难发现得多。
  *
  * ## 分窗不在这里
  *
@@ -52,15 +54,21 @@ import type { VendorHttpClient } from './vendor-http-client.js';
  * —— ⚠️ 该门恒 skip, 「测试全绿」对真契约不构成证据。
  */
 
-/** canonical market → 富途 market 参数。**只有 us**（期权面只覆盖美股锚）。 */
+/** canonical market → 富途 market 参数。us（期权面）+ hk（079 港股财报日期来源 A）。 */
 const MARKET_TO_FUTU_MARKET: Record<string, string> = {
   us: 'US',
+  hk: 'HK',
 };
 
 /** 富途 code 前缀 → canonical market（上表的反向，`security` 列翻译用）。 */
 const FUTU_PREFIX_TO_MARKET: Record<string, string> = {
   US: 'us',
+  HK: 'hk',
 };
+
+/** 自带偏移 (`Z` / `±HH:MM`) 的 ISO 时刻；墙钟串 (无偏移) 不在此列。 */
+const OFFSET_TIMESTAMP_RE =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -91,6 +99,18 @@ function dateOrNull(v: unknown): string | null {
   return ISO_DATE_RE.test(date) ? date : null;
 }
 
+/**
+ * `earnings_timestamp` → 公布时刻。只收自带偏移的时刻; 无偏移墙钟串 / 缺失 / 非字符串 → null。
+ * 不按交易所时区补偏移: 该列在 vendor 侧是哪个时区的墙钟无实测出处 (仿真行只是作者造的形态),
+ * 补错了时刻静默偏移且不报错; null 只让「公布时刻」缺席, 取值 / 确认 / 逾期都不读它。
+ */
+function instantOrNull(v: unknown): Date | null {
+  const text = typeof v === 'string' ? v.trim() : '';
+  if (!OFFSET_TIMESTAMP_RE.test(text)) return null;
+  const ms = Date.parse(text.replace(' ', 'T'));
+  return Number.isFinite(ms) ? new Date(ms) : null;
+}
+
 /** 富途 `security`（`US.PEP`）→ canonical `us:PEP`；前缀缺失或非已知市场 → null。 */
 function toCanonicalSymbol(security: string): string | null {
   const dot = security.indexOf('.');
@@ -119,7 +139,7 @@ function parseEarningsRow(row: unknown, ctx: string): EarningsCalendarEvent {
 
   if (underlyingSymbol === null || earningsDate === null || pubType === null) {
     throw new Error(
-      `[futu] earnings-calendar 行不合契约 (须 security=<US>.<code> + earnings_date=YYYY-MM-DD ` +
+      `[futu] earnings-calendar 行不合契约 (须 security=<US|HK>.<code> + earnings_date=YYYY-MM-DD ` +
         `+ 非空 pub_type; 契约变更?): ${ctx} 行=${JSON.stringify(row)}`,
     );
   }
@@ -133,6 +153,7 @@ function parseEarningsRow(row: unknown, ctx: string): EarningsCalendarEvent {
     // 金融数值全程 string (FR-S08); 未公布恒 null, 禁 0 冒充。
     epsActual: numToString(raw.eps_actual),
     epsPredict: numToString(raw.eps_predict),
+    publicationTime: instantOrNull(raw.earnings_timestamp),
   };
 }
 
@@ -185,11 +206,11 @@ export class FutuEarningsCalendarAdapter implements EarningsCalendarPort {
     }
   }
 
-  /** canonical market → 富途 market 参数；非 us 直接抛（零外呼）。 */
+  /** canonical market → 富途 market 参数；us / hk 以外直接抛（零外呼）。 */
   private futuMarket(market: string): string {
     const futuMarket = MARKET_TO_FUTU_MARKET[market];
     if (futuMarket === undefined) {
-      throw new Error(`[futu] earnings-calendar 不支持 market "${market}" (本源仅承担 us)`);
+      throw new Error(`[futu] earnings-calendar 不支持 market "${market}" (本源仅承担 us / hk)`);
     }
     return futuMarket;
   }

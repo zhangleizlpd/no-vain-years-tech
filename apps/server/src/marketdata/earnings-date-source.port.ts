@@ -102,6 +102,11 @@ export interface EarningsDateCollectResult {
   readonly noticeSignals: readonly EarningsNoticeSignal[];
   /** 主表查不到而跳过的代码数 (监控信号, 🚫 为保 FK 改幂等键)。 */
   readonly skippedUnknownInstruments: number;
+  /**
+   * 富途来源 (079 T010): 本轮去重后公布日 ≥ 业务日的行数, **含主表外代码** —— plan §D5 缺失语义③
+   * 的运行时不变量 (港股前向行天然稀疏, 塌到 0 要能被 notice 看见)。其余来源不给。
+   */
+  readonly forwardRows?: number;
 }
 
 export interface EarningsDateSource {

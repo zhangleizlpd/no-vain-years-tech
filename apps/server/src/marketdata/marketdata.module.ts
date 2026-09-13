@@ -154,7 +154,12 @@ import {
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import { EARNINGS_CALENDAR_PORT, type EarningsCalendarPort } from './earnings-calendar.port.js';
 import { FutuEarningsCalendarAdapter } from './futu-earnings-calendar.adapter.js';
-import { assembleEarningsDateSources, EARNINGS_DATE_SOURCES } from './earnings-date-source.port.js';
+import {
+  assembleEarningsDateSources,
+  EARNINGS_DATE_SOURCES,
+  type EarningsDateSource,
+} from './earnings-date-source.port.js';
+import { FutuCalendarSource } from './futu-calendar.source.js';
 import { REALTIME_QUOTE_PORT, type RealtimeQuotePort } from './realtime-quote.port.js';
 import { FutuRealtimeQuoteAdapter } from './futu-realtime-quote.adapter.js';
 import { MarketRoutedRealtimeQuoteAdapter } from './market-routed-realtime-quote.adapter.js';
@@ -199,6 +204,8 @@ const FUTU_EARNINGS_CALENDAR_HTTP_CLIENT = Symbol('FUTU_EARNINGS_CALENDAR_HTTP_C
  * client (服务端是单一桶), 异 capability 各起各的。
  */
 const FUTU_MARKET_STATE_HTTP_CLIENT = Symbol('FUTU_MARKET_STATE_HTTP_CLIENT');
+/** 079 T010 财报日期来源 A 实例 token (经 `collectionPort` 绑定, kind=mock 得拒绝壳)。 */
+const FUTU_CALENDAR_EARNINGS_DATE_SOURCE = Symbol('FUTU_CALENDAR_EARNINGS_DATE_SOURCE');
 
 /** `kind=live` 下 config 的收窄形态 —— `collectionPort` 的 `live` 回调只在这一支被调。 */
 type LiveMarketdataConfig = Extract<MarketdataConfig, { kind: 'live' }>;
@@ -404,12 +411,19 @@ function collectionPort<T extends object>(
     // 而不是少跑一个来源。每个来源实例由各自 token 经 `collectionPort()` 绑定 (kind=mock 得拒绝壳),
     // 在 T010 / T011 / T012 逐个接入并替换下面的 `null`; 接入前 `null` = 已知但尚未接线, 不进数组。
     // 🚫 为占位造假来源进 prod 路径。
+    // 079 T010 来源 A: 复用上面的 `EARNINGS_CALENDAR_PORT` 实例 (同一 shim capability 同一个桶,
+    // 🚫 另 new adapter —— 多一个客户端令牌桶 = 上游允许值翻倍)。
+    collectionPort<EarningsDateSource>(FUTU_CALENDAR_EARNINGS_DATE_SOURCE, {
+      inject: [EARNINGS_CALENDAR_PORT, PrismaService],
+      live: (_cfg, calendar: EarningsCalendarPort, prisma: PrismaService) =>
+        new FutuCalendarSource(calendar, prisma),
+    }),
     {
       provide: EARNINGS_DATE_SOURCES,
-      inject: [earningsDateSourcesConfig.KEY],
-      useFactory: (sourcesCfg: EarningsDateSourcesConfig) =>
+      inject: [earningsDateSourcesConfig.KEY, FUTU_CALENDAR_EARNINGS_DATE_SOURCE],
+      useFactory: (sourcesCfg: EarningsDateSourcesConfig, futuCalendar: EarningsDateSource) =>
         assembleEarningsDateSources(sourcesCfg.names, {
-          futu_calendar: null,
+          futu_calendar: futuCalendar,
           hkex_announcement: null,
           hkex_board_meeting_list: null,
         }),

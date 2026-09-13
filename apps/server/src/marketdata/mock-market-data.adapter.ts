@@ -986,6 +986,7 @@ export class MockMarketDataAdapter
         // 尚未公布 ⇒ actual 为 null, 只有预期值 (FR-026 三态里的「预估」形态)。
         epsActual: null,
         epsPredict: '2.31',
+        publicationTime: null,
       },
       {
         // 库里没有的标的 (universe 尚未枚举到 / OTC): FK 撞不上 ⇒ 应被跳过并计数。
@@ -995,6 +996,7 @@ export class MockMarketDataAdapter
         periodText: 'Q3 2026',
         epsActual: null,
         epsPredict: null,
+        publicationTime: null,
       },
     ];
   }

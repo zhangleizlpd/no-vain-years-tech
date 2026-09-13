@@ -131,18 +131,24 @@ export interface EarningsWindow {
  * 复杂度 O(视野 / 窗宽) = 31 个窗 (端点差 6 ⇒ 含首尾 7 天/窗)。
  */
 export function planEarningsWindows(businessDate: string): EarningsWindow[] {
+  return planEarningsWindowsBetween(
+    businessDate,
+    addDays(businessDate, EARNINGS_FORWARD_HORIZON_DAYS),
+  );
+}
+
+/**
+ * 任意闭区间 `[from, to]` → 合规窗序列 (079 T010 港股来源复用: 日常起点前移 7 天、回填 730 天)。
+ * 步长 / 共享端点 / 末窗夹紧与 {@link planEarningsWindows} 同一实现 (那条是本函数的特例)。
+ * `to < from` ⇒ 空序列。复杂度 O((to − from) / 窗宽)。
+ */
+export function planEarningsWindowsBetween(from: string, to: string): EarningsWindow[] {
+  const spanDays = Math.round((toDateOnly(to).getTime() - toDateOnly(from).getTime()) / 86_400_000);
   const windows: EarningsWindow[] = [];
-  for (
-    let offset = 0;
-    offset < EARNINGS_FORWARD_HORIZON_DAYS;
-    offset += EARNINGS_CALENDAR_MAX_WINDOW_SPAN_DAYS
-  ) {
+  for (let offset = 0; offset < spanDays; offset += EARNINGS_CALENDAR_MAX_WINDOW_SPAN_DAYS) {
     windows.push({
-      start: addDays(businessDate, offset),
-      end: addDays(
-        businessDate,
-        Math.min(offset + EARNINGS_CALENDAR_MAX_WINDOW_SPAN_DAYS, EARNINGS_FORWARD_HORIZON_DAYS),
-      ),
+      start: addDays(from, offset),
+      end: addDays(from, Math.min(offset + EARNINGS_CALENDAR_MAX_WINDOW_SPAN_DAYS, spanDays)),
     });
   }
   return windows;
