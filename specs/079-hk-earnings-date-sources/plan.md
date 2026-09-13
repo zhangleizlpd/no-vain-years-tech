@@ -12,13 +12,13 @@ context7_verified: []
 
 ## Summary _(mandatory)_
 
-在 `marketdata` 内新建一层「财报日期」：可插拔来源（富途财报日历 / 交易所公告）各自产出**带口径的观测**，纯函数合并成「一个公布日 + 取值口径 + 状态」的事件。港股由新维度 `hk_earnings_date` 每日跑，美股由现役 `earnings_event` 采集**顺带**落观测（零新增调用）。交易所公告复用现役 `announcement` 维度已采数据；会前通知正文走**异步文档流水线**：采集运行只写任务行并入队，独立队列 + 独立 worker 取 PDF，CPU 解析放进单个受限 worker 线程（超时 / 超内存可强制回收），临时失败指数退避重试，任务状态落库并经现有日报链告警（FR-025）。全部新表只归 `marketdata`，期权台读端一行不动。
+在 `marketdata` 内新建一层「财报日期」：可插拔来源（富途财报日历 / 交易所公告）各自产出**带口径的观测**，纯函数合并成「一个公布日 + 取值口径 + 状态」的事件。港股由新维度 `hk_earnings_date` 每日跑，美股由现役 `earnings_event` 采集**顺带**落观测（零新增调用）。交易所公告复用现役 `announcement` 维度已采数据；会前通知的正文获取与解析**只覆盖锚表内港股**（结构化日历与业绩刊发事实仍覆盖全部港股，D6）；会前通知正文走**异步文档流水线**：采集运行只写任务行并入队，独立队列 + 独立 worker 取 PDF，CPU 解析放进单个受限 worker 线程（超时 / 超内存可强制回收），临时失败指数退避重试，任务状态落库并经现有日报链告警（FR-025）。全部新表只归 `marketdata`，期权台读端一行不动。
 
 ## Dependencies & Defensive Additions _(Cargo-cult 防火墙)_
 
 | 引入的依赖 / Polyfill / Defensive Import | 目的 | Fact-check 锚点 |
 | --- | --- | --- |
-| `pdfjs-dist@6.3.289`（Apache-2.0，服务端运行时依赖） | 从港交所会前通知 PDF 提取正文 | plan 期 PoC（2026-09-13，本机 scratchpad，不入仓）：45 份真实通知 + 1 份未发生，**带 CMap** 46/46 中文可读、日期集合与 poppler `pdftotext` 逐份一致、均 17 ms/份；**不带 CMap** 20/46 份中文整段丢失。`npm view pdfjs-dist@6.3.289` license = Apache-2.0、unpacked 34 MB（`cmaps/` 1.6 MB、`standard_fonts/` 816 KB）。 |
+| `pdfjs-dist@6.3.289`（Apache-2.0，服务端运行时依赖） | 从港交所会前通知 PDF 提取正文 | plan 期 PoC（2026-09-13，本机 scratchpad，不入仓）：45 份真实通知 + 1 份未发生，**带 CMap** 46/46 中文可读、日期集合与 poppler `pdftotext` 逐份一致、均 17 ms/份；**不带 CMap** 20/46 份中文整段丢失。兼容性 PoC（同日）：全市场 247 份分层样本 42 种生成工具、解析异常 0、与 `pdftotext` 逐份一致；锚表内港股两年 425 份候选解析失败 0（D6）。`npm view pdfjs-dist@6.3.289` license = Apache-2.0、unpacked 34 MB（`cmaps/` 1.6 MB、`standard_fonts/` 816 KB）。 |
 | （不引入）`node:worker_threads` 内置模块 | 解析线程隔离 | Node 内置；PoC 见 D7。 |
 
 ## Constitution Check _(mandatory gate)_
@@ -31,7 +31,7 @@ context7_verified: []
 
 - [x] **Server**: 无新 endpoint。Testcontainers 真 DI IT：`marketdata-079.earnings-dates.it.spec.ts`（维度、合并、逾期、零回归、打标隔离）+ `marketdata-079.document-pipeline.it.spec.ts`（PG + Redis：入队去重、重试、永久失败、重试耗尽落库、清扫重投、增量合并）；`pdf-text-thread.it.spec.ts`（真 pdfjs + 真 worker 线程：CMap、超时回收、OOM 隔离）。真 vendor 契约由 `RUN_MARKETDATA_IT` 门控用例手动跑并贴输出。
 - [x] **Mobile / Web**: N/A —— 零 UI、零契约变更（FR-022）。
-- [x] **Evidence**: specify 期 prod 只读取证见 spec「取证」段；plan 期 PoC（PDF 解析 / worker 线程 / BullMQ 队列行为 / 线程 OOM 隔离）数字见 D7。
+- [x] **Evidence**: specify 期 prod 只读取证见 spec「取证」段；plan 期 PoC（PDF 解析 / worker 线程 / BullMQ 队列行为 / 线程 OOM 隔离）数字见 D7；正文兼容性与识别 / 取日期规则回放见 D6。
 
 ### Gate 0.2 — Cross-stack Vendor Intersection 6Q Card
 
@@ -44,7 +44,7 @@ context7_verified: []
 | Q5 | 解耦成本 | 只在线程脚本内使用，对外一个 `extractPdfText(bytes)` 消息协议，替换 < 1 天。 |
 | Q6 | 风险面 | Apache-2.0；npm 国内可达；输入限定港交所域名白名单 + 5 MB 上限。历史漏洞 CVE-2024-4367（字体渲染可执行任意 JS，推断在 4.2.67 修复，**未验证**）—— 仅文本提取、`isEvalSupported: false`、跑在无 DI 的受限线程内；impl 期查 advisory 核实所选版本不受影响。 |
 
-**Evidence**: PoC 脚本与结果留在本机 scratchpad；数字见 Dependencies 表与 D7。
+**Evidence**: PoC 脚本与结果归档在本机 `docs/private/evidence/079-hk-earnings-date-sources/`（gitignored，不入仓）；数字见 Dependencies 表、D6 与 D7。
 
 ### Gate 0.3 — Legacy → Mono Delta Sweep Checklist
 
@@ -99,7 +99,7 @@ context7_verified: []
 1. **`earnings_date_observation`**（来源观测，PIT）：唯一键 `(source, instrument_id, period_key)`。市场、报告类型、统一期末日（可空）、来源原文报告期、公布日（可空）、取值口径（`filed` / `explicit` / `structured` / `meeting`）、会议日、公布时刻、刊发日、凭据指针、首次 / 最近观测时刻、上一个公布日与变更时刻、刊发后回填的偏差天数（FR-019）。
 2. **`earnings_date_event`**（合并后事件）：唯一键 `(instrument_id, period_key)`。状态（`confirmed` / `unconfirmed` / `conflict` / `notified_unparsed` / `overdue` / `published`）、公布日及口径、冲突候选日期、公布时刻、确认日期及口径（`announced` / `first_seen`）、参与来源、报告类型与期末日、逾期起算时刻、**`revision` 整数**（乐观并发，D8）。
 3. **`earnings_date_event_log`**（事件流水，append-only）：状态迁移、取值变更、冲突产生 / 解除、逾期产生 / 解除（FR-013 / FR-014 / FR-019a）。
-4. **`earnings_notice_task`**（文档任务台账 = 异步流水线的**真相源**）：唯一键 `(announcement_id, extractor_version)`。状态 `pending` / `parsed` / `unparsed`（文档本身不可解析，终态）/ `failed`（临时失败重试耗尽）；尝试次数、清扫轮次、最后错误与错误类别（`transient` / `permanent`）、入队 / 开始 / 结束时刻、解析耗时与文本长度；提取结果（会议日、明写公布日、公布句时区、期末日、报告类型）。同一份 PDF 同一提取器版本只处理一次；回填中断续跑跳过终态行（FR-020a）；提取规则升级改版本号即重跑。
+4. **`earnings_notice_task`**（文档任务台账 = 异步流水线的**真相源**）：唯一键 `(announcement_id, extractor_version)`。状态 `pending` / `parsed` / `not_notice`（正文判定不是会前通知，终态，只计数，FR-005）/ `unparsed`（标题属于通知写法但取不到日期，或文档本身不可解析，终态）/ `failed`（临时失败重试耗尽）；尝试次数、清扫轮次、最后错误与错误类别（`transient` / `permanent`）、入队 / 开始 / 结束时刻、解析耗时与文本长度；提取结果（会议日、明写公布日、公布句时区、期末日、报告类型）。同一份 PDF 同一提取器版本只处理一次；回填中断续跑跳过终态行（FR-020a）；提取规则升级改版本号即重跑。
 5. **`earnings_meeting_lag`**（会议 → 刊发间隔）：唯一键 `(instrument_id, report_kind)`；最近一次间隔天数、来源期末日、观测时刻（FR-010）。
 
 - **`period_key` 三种形态，列非空**（`.claude/rules/migration-rules.md:96-98`）：`P:<期末日>`（可跨来源对齐）/ `T:<来源>:<原文报告期>`（来源内稳定）/ `D:<来源>:<公布日>`（兜底）。只有 `P:` 参与跨来源合并（FR-015）。
@@ -123,10 +123,28 @@ context7_verified: []
 **D6 · 来源 B：交易所公告 `hkex-announcement.source.ts`**
 
 - 读 `marketdata.announcement`（本 ctx 表，零新增理杏仁调用，FR-004）。日常窗口 `[业务日 − 7, 业务日]`，与现役 7 天回看一致（`20260801_2248_add_sync_dimension_delta_lookback/migration.sql:30-31`）。
-- **业绩公告**（`types` 含 `fs_main`）→ 刊发事实观测（同步产出，无 PDF）：公布日 = 公告日期（`+08:00` 当地日期，`lixinger-announcement.adapter.ts:19-21`），口径 `filed`，报告期取自标题。
-- **会前通知**：`earnings-notice.rules.ts` 标题分类（单一维护点，FR-005）—— 纳入 spec 取证全部写法，排除「決議」「董事名單」「委任」等；命中后在 `earnings_notice_task` 登记 `pending`（已有终态行则跳过），交给 D7。已 `parsed` 的任务结果在 `collect` 里转成观测：明写公布日 ⇒ `explicit`；只有会议日 ⇒ `meeting`；`unparsed` / `failed` ⇒ 事件态 `notified_unparsed`（FR-017）。
-- **正文日期 `earnings-notice-date.rules.ts`**（纯函数，线程外调用）：按句切分；「公佈 / 公布 / 發佈 / 刊發」+「業績 / 盈利」句取明写公布日，「舉行 / 召開」+「會議」句取会议日；另要求正文出现业绩 / 盈利审批字样作第二道闸；阿拉伯数字、中文数字、缺「日」字；时区只认**同一句**内标注 —— 当地或未标注 ⇒ 交易所当地日期；标注他时区且无时刻 ⇒ `unparsed`，🚫 不猜（FR-006）。电话会句不参与。
-- **缺失语义三问**：① 公告不存在 = 不下发行；正文日期缺失 = 无文本层或写法未覆盖；② 「无通知」分不清「未发 / 漏采」—— 由 FR-019a 逾期兜底；③ 45 份实测归纳 ⇒ 运行时不变量 = D10 提取失败率与积压 notice。
+- **业绩公告**（`types` 含 `fs_main`）→ 刊发事实观测（同步产出，无 PDF，**全部港股**）：公布日 = 公告日期（`+08:00` 当地日期，`lixinger-announcement.adapter.ts:19-21`），口径 `filed`，报告期取自标题。
+  - 🚨 「補充」类排除 MUST 窄：`hk:09992` 2026-08-20 的真实中期业绩刊发标题是「…中期業績公告及授出獎勵之補充公告」（prod 只读），按「含補充即排除」会漏掉刊发、事后误报逾期（FR-019a）；只排除不含「業績公告 / 業績公佈」本体的补充 / 更正公告。
+  - A+H 公司的季度报告另以 `all` 类型的「海外監管公告」刊发，锚表内港股两年 22 份**同日均有** `fs_main` 行（prod 只读导出）⇒ 只认 `fs_main` 不漏；🚫 不要为此放宽到按标题认 `all` 类（会把「…業績公告日期」「盈利公布及審議會否派發股息」这类**通知**认成刊发，PoC 实撞）。
+- **作用域（FR-024）**：刊发事实与富途覆盖全部港股；**会前通知的登记、取 PDF、正文判定与取日期只对锚表内港股**。
+  - 锚集读法与锚作用域维度**同一条**既有只读路径：`prisma.anchor.findMany({ select: { ticker: true } })` + `anchoredCodesForScope(tickers, ['hk'])`（`anchor-scoped-dimensions.rules.ts:90-107`；先例 `dimension-executor.ts:381-404`），注入点标 `CROSS-CONTEXT-READ`。
+  - 🚨 零锚 MUST 提前返回空集 —— 空 `OR: []` 在 Prisma 里匹配全表（`dimension-executor.ts:394-396`），会把「零锚」翻成「全港股取 PDF」且不会红（D12 #27 定向变异钉住）。
+  - 🚫 `hk_earnings_date` 维度本身**不**进 `ANCHOR_SCOPED_DIMENSIONS`：富途与刊发事实是市场级数据，收窄只会让新锚丢历史公布日；只有通知这一步按锚收窄。
+- **滚动登记（FR-020a）**：每轮对锚表内港股登记 ① 近 120 天的预筛候选（通知提前量实测上限 85 天）② 近 730 天内每类报告最近 1 次会前通知（初始间隔）。任务唯一键 `(announcement_id, extractor_version)` 保证幂等 ⇒ 新增锚下一轮自动补齐，**无单独的正文回填入口**；删锚后不再登记，已有行保留。首轮量级 ≤ 425 份（29 只锚两年候选总数）。
+- **会前通知识别 = 预筛 + 正文判定 + 强标题兜底**（FR-005，单一维护点 `earnings-notice.rules.ts`）：
+  1. 预筛：标题匹配 `董事會|董事会|委員會會議|委员会会议|業績公告日期|业绩公告日期|盈利公布|審議會否派發`（PoC 导出口径），且 `types` 不含 `fs_main`（业绩公告本身不进候选；PoC 中 4 份被此条排掉）。
+  2. 正文判定（线程外，在 `earnings-notice-date.rules.ts` 取完日期后）：正文含业绩审批字样（業績 / 盈利 / 財務報表）且取到未来的会议日或公布日 ⇒ 会前通知，不看标题。
+  3. 判定不成立：标题属于**强通知写法**（spec 取证列出的全部写法：董事會會議召開日期 / 通告 / 通知 / 日期、董事會召開日期、召開董事會的日期、業績公告日期、盈利公布及審議、審議會否派發、委員會會議日期、董事會委任的委員會會議）⇒ `unparsed`（FR-017，告警）；否则 ⇒ `not_notice`（终态，只计数）。
+  4. 依据（锚表内 29 只港股两年，PoC）：候选 425 份 → 通知 181 份、误判 0；181 份全部属于强写法，正文判定与强标题在存量上完全一致 ⇒ 正文判定的价值是兜住**未来**的新写法。「只凭正文有无业绩字样判未解析」会误报 61 份（决议 / 董事名单 / 海外监管公告），已否决（备选 18）。
+- **正文日期 `earnings-notice-date.rules.ts`**（纯函数，线程外调用；规则按锚表回放迭代定稿）：
+  - 🚨 先 `text.normalize('NFKC')` 再去空白：PDF 文字层会把「年」「行」输出为 CJK 兼容汉字（U+F98E / U+FA08），不规范化日期**静默**取不到（PoC 实撞 `hk:00178` / `hk:02888` / `hk:03319`）；NFKC 顺带归一全角数字与括号。
+  - 日期：`YYYY年M月D日`；年份四位阿拉伯或中文（零 / 〇 / ○），月日阿拉伯或中文（含不带「十」的「二九」）；缺「日」字、「號 / 曰」。只取晚于通知刊发日、且不晚于 200 天的日期；「將於 / 謹訂於」后的日期早于通知日时按年份笔误 +1 年校正（限 120 天内）。
+  - 角色 = **日期之后同句内最近的动词**：`舉行 / 召開 / 審議 / 表決` ⇒ 会议日；`公佈 / 公布 / 發佈 / 刊發 / 刊登 / 發表 / 上傳 / 刊載 / 登載` ⇒ 明写公布日（前一句至本句须含业绩 / 公告字样）。排除：会议动词之后是「股東 / 說明會 / 發佈會 / 電話會議 / 直播」，或日期前 20 字内有「股東」（决议公告的「股東大會擬於…召開」）；公布动词之后紧跟「會議」。
+  - 改期：日期前紧邻「更改為 / 改至 / 延期至 / 押後至 / 推遲至」且同句无动词 ⇒ 承接会议日角色；正文含改期字样 ⇒ 取最后一个同角色日期，否则取第一个。同一期多份通知以通知刊发日最新的为准（D8 按 FR-016 记改期）。
+  - 时区：只认**同一句**内标注 —— 「美東日期（美國東部時間）/ 香港日期（香港時間）」并列时取香港那个（PoC `hk:09688`）；当地或未标注 ⇒ 交易所当地日期；只标注他时区、无并列当地日期且无时刻 ⇒ `unparsed`，🚫 不猜（FR-006）。电话会句不参与。
+  - 锚表回放（29 只、两年）：取出的公布日与刊发日逐日一致 174 / 177（明写 21 / 21），余 3 次 `hk:00857` 周五开会、周日刊发，由 FR-010 间隔承接。全市场 247 份样本作对照：已知标题写法的主板 83 / 84、创业板 89 / 90 精确或在「会议日 → 下一交易日」内，余下均为其后另发延期通知。
+  - impl 期把回放中每类写法固化为 `earnings-notice-date.rules.spec.ts` 的**原句字符串**用例（不入仓 PDF），含上面每条排除规则的反例句。
+- **缺失语义三问**：① 公告不存在 = 不下发行；正文日期缺失 = 无文本层或写法未覆盖；② 「无通知」分不清「未发 / 漏采 / 公司不为该类报告发通知（`hk:00941` 一、三季度）」—— 无通知的期不产生事件（除非富途有），刊发后由 FR-019 落刊发事实；③ 锚表两年回放归纳 ⇒ 运行时不变量 = D10 提取失败率、非通知数与积压 notice。
 
 **D7 · 正文获取与解析：异步文档流水线（FR-025）**
 
@@ -154,7 +172,7 @@ context7_verified: []
 
 **分层与数据流**
 
-1. **生产者**（`hk_earnings_date` 维度的日常 / 回填运行）：分类会前通知 → `earnings_notice_task` 以唯一键插入 `pending`（已存在即跳过）→ `addBulk` 入队。`jobId = hkex-notice:<announcement_id>:v<extractor_version>`（仓内现无 `jobId` 用法，本片首用；PoC 证去重）。**运行不等待解析**，只合并已完成的观测。
+1. **生产者**（`hk_earnings_date` 维度的日常运行）：锚表内港股的预筛候选（D6 滚动登记窗口）→ `earnings_notice_task` 以唯一键插入 `pending`（已存在即跳过；是否会前通知由 worker 取正文后判定）→ `addBulk` 入队。`jobId = hkex-notice:<announcement_id>:v<extractor_version>`（仓内现无 `jobId` 用法，本片首用；PoC 证去重）。**运行不等待解析**，只合并已完成的观测。
 2. **独立队列 `marketdata-document` + `HkexDocumentWorker`**：手写 `Queue` / `Worker`，与现有 4 个队列同形（`marketdata-sync.queue.ts` / `marketdata-sync.worker.ts`）；复用 `MARKETDATA_QUEUE_REDIS` 连接（`marketdata-queue-connection.ts:6`）；`MARKETDATA_WORKER_DISABLED` 时不启动（同 `marketdata-sync.worker.ts:119`，CLI 进程据此不消费）；🚫 不挂到 `marketdata-sync` 的 default / futu lane —— 文档积压 MUST NOT 阻塞维度采集，反之亦然。并发 **1**（640 MB 容器内存预算）。
 3. **处理器（主线程，持 DI）**：读任务行 → 非 `pending` 或版本不符 ⇒ 直接完成（幂等）→ 经 `HKEX_DOCUMENT_PORT` 取 PDF（I/O，不占 CPU）→ 交给 `PdfTextThread` 解析 → 调 `earnings-notice-date.rules.ts` → **同一事务**写任务行终态 + 写观测 → 事务外触发该 `(instrument, period_key)` 的增量合并（D8）。
 4. **`PdfTextThread`**（`pdf-text.thread.ts` 纯函数线程脚本 + `pdf-text-thread.pool.ts` 主线程侧管理器）：单个常驻 worker 线程；`resourceLimits.maxOldGenerationSizeMb` **96**（PoC 堆峰值 65 MB + 余量；上限取值见下方内存预算）；PDF 字节用 `transferList` 传入；单份超时 **30 s**；超时 / `ERR_WORKER_OUT_OF_MEMORY` / 线程异常退出 ⇒ `terminate()` 并重建，本次抛 `DocumentExtractTimeoutError` / `DocumentExtractCrashedError`。线程内 🚨 MUST 传 `cMapUrl` + `cMapPacked: true` + `standardFontDataUrl`（路径由 `require.resolve('pdfjs-dist/package.json')` 求得）、`isEvalSupported: false`、`disableFontFace: true`、`useSystemFonts: false`，`finally` 里 `loadingTask.destroy()`。🚫 MUST NOT 安装 `unpdf`（worker 版本冲突）。
@@ -183,7 +201,7 @@ context7_verified: []
 **内存预算（风险，上线前闸门）**
 
 - 主进程 V8 老生代上限 448 MB + 线程上限 96 MB + 新生代 / 原生内存 已接近 640 MB 容器上限（推断，未实测）；而 compose 注释写明采集轮内存峰值本就未实测（`docker-compose.tight.yml:118` / `:161`）。
-- ⇒ impl 期立一条 `[Ops]` task：用生产镜像 + 生产 compose 限额，在回填量级（数千份通知）下跑文档 worker，`docker stats` 记录 RSS 峰值；超过 560 MB 则先下调线程上限或把文档 worker 与夜间采集错峰，**不达标不开回填**。
+- ⇒ impl 期立一条 `[Ops]` task：用生产镜像 + 生产 compose 限额，在首轮登记量级（锚表内港股约 425 份候选）下跑文档 worker，`docker stats` 记录 RSS 峰值；超过 560 MB 则先下调线程上限或把文档 worker 与夜间采集错峰，**不达标不合并**（首轮日常运行即会登记文档）。
 - 并发恒为 1、线程恒为 1；🚫 MUST NOT 为了提速把并发调大。
 
 **D8 · 合并 `earnings-date-merge.rules.ts`（纯函数）+ `sync-earnings-dates.usecase.ts`**
@@ -207,7 +225,7 @@ context7_verified: []
 - **注册触点**（073 同形，commit `5790a777`）：`DIMENSION_KEYS`（`dimension-executor.ts:187`）；asOf 表（`sync-asof.rules.ts:65-105`）；executor 注册与构造器尾部默认值（仿 `earnings_event` 非 factExecutor 写法 `:1057-1062`）；**不**进锚作用域表，并在 `anchor-scoped-dimensions.rules.spec.ts` 加反向断言；拓扑守卫 `dimension-executor.spec.ts:4521-4630`；写死维度清单的 IT（`marketdata.schema-016`、`backfill-cli`、`tick-driver`、`adjustment-factor`、`flow-orchestration`、`tier-night-e2e`、`night-e2e-019`、`marketdata-066.hk-dimension-seed`、`sync-schema-gate`、`test-dimension-registration`）；`ops/jobs/marketdata-table-health.sql` 与 `marketdata-sync-report.sql` 纳入新维度。
 - 🚨 **不把 `hk` 加进 `earnings_event` 的 scope**：跨时区 scope 在 `exchangeCalendarDateForScope` 直接抛（`session-clock.ts:163-172`）。
 - **美股钩子**（FR-021，零新增调用）：`SyncEarningsEventUseCase` 构造器尾部加可选观测记录器（默认空实现，照 `dimension-executor.ts:853` 默认值写法），在既有写入完成后（`sync-earnings-event.usecase.ts:245` 之后、`return` 之前）用 `observed` 调用一次。约束：① 包 `try/catch`，失败只 `logger.warn`，🚫 不改 `stats` / `findings` / `written`、不让异常冒出 `run()`（否则 `sync_run` 与重试行为改变，`dimension-executor.ts:1160-1163`）；② 两处提前 return（`:218` / `:221`）不调用；③ 429 顺延时部分数据照样落；④ 既有 Small spec 的 Prisma 替身不含新表（`sync-earnings-event.usecase.spec.ts:131-146`），默认空记录器保证不受影响。美股不涉及文档流水线。
-- **回填**（FR-020a）：经既有回填 CLI（`marketdata-trigger.cli.ts`）以 `mode=backfill` 跑 `hk_earnings_date`：富途 730 天窗；交易所侧两年业绩公告（零 PDF）+ 每家公司每类报告最近 1 次会前通知**登记为文档任务**（CLI 进程只入队，不消费，`MARKETDATA_WORKER_DISABLED=1`，`marketdata-trigger.cli.ts:330`）；由应用进程内的文档 worker 按限频慢慢消化，任务台账天然支持中断续跑。量级约 6–8 千份（推断）；按 1 份 / 秒约 2–3 小时（推断）。🚨 prod 执行属于写操作，命令与参数先交维护者确认；执行前 D7 内存闸门必须通过。
+- **回填**：经既有回填 CLI（`marketdata-trigger.cli.ts`）以 `mode=backfill` 跑 `hk_earnings_date`，**只覆盖不取正文的部分**：富途 730 天窗 + 交易所侧两年业绩公告（刊发事实，零 PDF，全部港股）。会前通知正文**不走回填入口**：由 D6 滚动登记在每轮日常运行里对锚表内港股登记（近 120 天 + 每类报告最近 1 次），首轮 ≤ 425 份，按 1 份 / 秒约 7 分钟（推断）；新增锚下一轮自动补上。🚨 prod 执行回填 CLI 属于写操作，命令与参数先交维护者确认。
 
 **D10 · findings 与告警（FR-023 / FR-025）**
 
@@ -220,7 +238,7 @@ context7_verified: []
 | `earnings_date_source` | failure | 某来源 `collect` 抛错（含来源名） |
 | `earnings_date_calendar_unknown` | unjudged | 逾期判定区间日历不可判 |
 | `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0 |
-| `earnings_notice_scan` | notice | 每轮：扫描公告数、会前通知数、排除数、新登记任务数 |
+| `earnings_notice_scan` | notice | 每轮：锚表内港股数、扫描公告数、会前通知数、非通知数、新登记任务数 |
 | `earnings_notice_unparsed` | notice | 自上一轮以来新增 `unparsed`（含公告链接与原因） |
 | `earnings_notice_failed` | failure | 自上一轮以来新增 `failed`（重试耗尽，含最后错误） |
 | `earnings_notice_backlog` | notice | 最老 `pending` 超过 24 小时（worker 停摆 / 积压），含积压数 |
@@ -252,18 +270,21 @@ context7_verified: []
 | 10 | 冲突解除留痕 | 079 IT（两轮） |
 | 11 | 确认时刻取最早刊发日 / 首次观测 | merge spec + 079 IT |
 | 12 | 通知日期未解析 → 显式态 + 告警，有他源则以他源确认 | document-pipeline IT（假文档 port 返无文本层 PDF → `unparsed` → 下一轮 `notified_unparsed` + finding） |
-| 13 | 非会前通知不当确认信号 | `earnings-notice.rules.spec.ts` |
+| 13 | 预筛命中但正文判定不成立、标题非通知写法 → 非通知（只计数） | `earnings-notice.rules.spec.ts`（决议公告「股東大會擬於…召開」、董事名单、委员会职权范围原句 → `not_notice`；强标题取不到日期 → `unparsed`） |
 | 14 | 刊发覆盖 + 偏差统计 + 间隔更新 | merge spec + 079 IT |
 | 15 | 满 2 个交易日未刊发 → 逾期；刊发后解除 | 079 IT（种 `trading_day`，含假日与 `unknown` 臂） |
-| 16 | 改期 → 留痕重判 | 079 IT |
+| 16 | 改期（含同一期后发延期通知取最新）→ 留痕重判 | 079 IT + `earnings-notice-date.rules.spec.ts`（「已更改為…」原句） |
 | 17 | 来源失败隔离 | 079 IT |
 | 18 | 报告期无法对齐 → 独立事件并计数 | `earnings-period.rules.spec.ts` + 079 IT |
 | 19 | 标的不在主表 → 跳过计数 | 079 IT |
-| 20 | 上线回填：最近 1 次通知 → 初始间隔；中断续跑不重复 | document-pipeline IT（回填登记任务 → worker 处理一半停止 → 再启动：终态行不再取 PDF，假文档 port 调用计数） |
+| 20 | 锚表内港股滚动登记：近 120 天通知 + 每类报告最近 1 次；已处理不重复，中断续跑 | document-pipeline IT（登记 → worker 处理一半停止 → 再启动：终态行不再取 PDF，假文档 port 调用计数；第二轮同窗口零新登记） |
 | 21 | 美股进层 `unconfirmed`；现役逐字节不变 | `sync-earnings-event.usecase.spec.ts`（记录器抛错时 `stats` / findings / 调用数不变）+ `optionsdesk-047.earnings-pit.it.spec.ts` 加臂（`earnings_event` 行与 `sync_run` 与基线逐字节相同，新表美股事件全 `unconfirmed`） |
 | 22 | 港股打标读不到本片产出 | 079 IT 调期权台既有取腿用例：新表有 `confirmed` 港股事件，收租腿仍「无日期」 |
 | 23 | 文档解析异步解耦：采集运行不等待；单份失败不阻断他份 | document-pipeline IT（维度运行结束时任务仍 `pending`；一份永久失败、另一份照常 `parsed`） |
 | 24 | 临时失败退避重试 / 永久失败不重试 / 重试耗尽落库告警 / 清扫重投 | document-pipeline IT（按**尝试次数与入队次数**断言，testing.md §7.1）+ 079 IT（`earnings_notice_failed` / `backlog` / `requeued` findings） |
+| 25 | 新增港股锚 → 下一轮补登记；删锚后不再登记、已落保留 | document-pipeline IT（两轮之间插入 / 删除 `optionsdesk.anchor` 行，断言登记数与假文档 port 调用数） |
+| 26 | 非锚港股 → 不取正文，事件只来自结构化日历与刊发事实 | 079 IT（非锚港股有通知类公告：任务行 0、文档 port 调用 0，事件照常由其余两类观测合并） |
+| 27 | 锚表为空 → 零登记、零正文请求，运行成功 | document-pipeline IT（清空锚表；🚨 定向变异：去掉零锚提前返回 ⇒ 登记数变为全部港股候选，必须红） |
 
 其余测试面：
 
@@ -272,7 +293,7 @@ context7_verified: []
 - `vendor-http-client.spec.ts` 加二进制读取臂；港交所文档 adapter spec 加白名单与尺寸上限臂。
 - 真 vendor（Large，`RUN_MARKETDATA_IT` 门控，默认 skip）：`marketdata.futu-shim.vendor.spec.ts` 加港股财报日历用例；新增 `marketdata.hkexnews.vendor.spec.ts`（取一份真实通知并在线程内提取）。impl 期手动跑并贴输出。
 - **容器冒烟**（`[Ops]`）：生产镜像内 `cmaps/` 可读、线程内中文可提取；D7 内存闸门在同一 task 内完成。
-- **SC-001 ~ SC-004 数据验收**：回填完成、文档积压清零后，在 prod 跑一次只读核对，结果回填 spec；tasks 期立独立 `[Ops]` task + issue + 到期日。
+- **SC-001 ~ SC-004 数据验收**：回填完成、首轮文档积压清零后，在 prod 跑一次只读核对，结果回填 spec；tasks 期立独立 `[Ops]` task + issue + 到期日。
 
 ### 🚨 Impl Guardrails（并发 / 安全 / 前端）
 
@@ -282,7 +303,7 @@ context7_verified: []
 - **安全**：港交所域名白名单、5 MB 上限、`isEvalSupported: false`；不触鉴权 / PII。
 - **配额**：富途只多港股每日约 38 次日历调用（推断）；港交所走独立约束档；回填靠 worker 并发 1 + 约束档自然限速。
 - **美股零回归绊线**：D9 钩子四条约束；`optionsdesk-047.earnings-pit.it.spec.ts` 基线对比臂先红后绿。
-- **内存闸门**：D7 未通过前不在 prod 开回填。
+- **内存闸门**：D7 未通过前不合并（首轮日常运行即会登记文档）。
 - **守卫脚本**：`check-server-moat`（5 张新表）、`check-time-semantics`、`check-test-size`（线程与队列测试为 `.it.`；真 vendor 必门控）、`check-env-sync`。
 - **构建产物**：线程脚本在 SWC 转译后的 `dist/` 中 MUST 能按路径加载（按仓内实际模块格式选 `new URL(…, import.meta.url)` 或 `path.join(__dirname, …)`，impl 期先查 `apps/server` 的模块格式再定，容器冒烟兜底）。
 - **Markdown**：spec / tasks 中带下划线的标识符一律包反引号。
@@ -306,6 +327,10 @@ context7_verified: []
 13. **只用 DB 任务表轮询、不用 BullMQ**（仿 `public.agent_queue_event` 的领取模式）—— 否：需要自写退避、失锁回收与调度；BullMQ 已在用且 PoC 证语义满足。任务表仍保留为真相源，BullMQ 只搬运。
 14. **BullMQ 失败事件直接推飞书** —— 否：server 内无飞书通道，现有告警链是「落库 → 日报 → 飞书」（`marketdata-sync-report.sh`），不另开第二条。
 15. 腾讯自选股数据 —— 否（spec Clarifications）。
+16. **全部港股取正文并解析**（原 Session（二）裁决）—— owner 2026-09-13 plan 期改裁决否决：全港股两年预筛候选 19,778 份，创业板笔误与延期更多，而收益只落在锚上；刊发事实与富途仍全港股，不受影响。
+17. **只按标题识别会前通知** —— 否：全市场标题 164 种写法，长尾新写法漏判表现为「没有通知」而非报错；锚规模下对全部预筛候选取正文判定，两年 425 份，成本可忽略。
+18. **只凭正文有无业绩字样判「日期未解析」** —— 否：锚表两年回放会误报 61 份决议 / 董事名单 / 海外监管公告；改为「强标题 + 正文判定不成立」才告警（回放误报 0）。
+19. **把 `hk_earnings_date` 整个维度登记为锚作用域** —— 否：富途日历与刊发事实是市场级数据、零按票调用，收窄只会让新锚丢历史公布日；只有通知这一步按锚收窄（D6）。
 
 **既有事实核录**（2026-09-13 plan 期逐项 grep / 子代理只读核查，行号锚消费点）：
 
@@ -324,6 +349,8 @@ context7_verified: []
 - migration：`.claude/rules/migration-rules.md:96-98`；`lefthook.yml:133-160`；`.github/workflows/pr-validation.yml:125-150`。
 - 镜像：`apps/server/Dockerfile:3`、`:65`。
 - BullMQ：`apps/server/package.json:30`（`^5.78.0`，安装 5.78.0）。
+- 锚作用域：`anchor-scoped-dimensions.rules.ts:44-62`（登记表）/ `:90-107`（`anchoredCodesForScope`）；`dimension-executor.ts:381-404`（锚集只读，零锚提前返回 `:394-396`）；锚表 `schema.prisma:1827-1842`（`ticker` 唯一、`market` 列）；prod 2026-09-13 只读：锚表 `hk` 29 行 / `us` 112 行。
+- 正文兼容性 PoC（2026-09-13）：归档 `docs/private/evidence/079-hk-earnings-date-sources/`（`poc6.mjs` / `poc7.mjs` / `poc8.mjs`、`poc8_results.json.gz`、`hk_anchor_results_like.psv`）；数字见 D6。
 
 ## Complexity Tracking
 
