@@ -12,7 +12,7 @@ context7_verified: []
 
 ## Summary _(mandatory)_
 
-在 `marketdata` 内新建一层「财报日期」：三个可插拔来源各自产出**带口径的观测** —— 富途财报日历（结构化日期）、交易所公告（业绩刊发事实 + 按标题识别的会前通知信号，复用现役 `announcement` 维度已采数据）、港交所「董事會會議通知」清单（主板会议日，每日一次 GET）—— 纯函数合并成「一个公布日 + 取值口径 + 状态」的事件。港股由新维度 `hk_earnings_date` 每日跑，美股由现役 `earnings_event` 采集**顺带**落观测（零新增调用）。**不获取、不解析公告 PDF**（spec Session（五）采纳方案 B）。清单取数失败 / 地址跳转 / 结构异常 / 页面陈旧一律响亮失败：不写入任何清单观测，计入运行失败数，次日 09:00 运行日报在飞书标红。全部新表只归 `marketdata`，期权台读端一行不动。
+在 `marketdata` 内新建一层「财报日期」：三个可插拔来源各自产出**带口径的观测** —— 富途财报日历（结构化日期）、交易所公告（业绩刊发事实 + 按标题识别的会前通知信号，复用现役 `announcement` 维度已采数据）、港交所「董事會會議通知」清单（主板会议日，每日一次 GET）—— 纯函数合并成「一个公布日 + 取值口径 + 状态」的事件。港股由新维度 `hk_earnings_date` 每日跑，美股由现役 `earnings_event` 采集**顺带**落观测（零新增调用）。**不获取、不解析公告 PDF**（spec Session（五）采纳方案 B）。清单取数失败 / 地址跳转 / 结构异常 / 页面陈旧一律响亮失败：不写入任何清单观测，计入运行失败数，次日 09:00 运行日报在飞书标红；事件进入逾期未刊发或已通知日期未知的那一轮同样计入运行失败数并标红（停留不重复计，spec Session（六））。全部新表只归 `marketdata`，期权台读端一行不动。
 
 ## Dependencies & Defensive Additions _(Cargo-cult 防火墙)_
 
@@ -42,7 +42,7 @@ context7_verified: []
 | Q3 | 与现栈兼容 | 静态 UTF-8 HTML（`<meta charset=utf-8>`），`VendorHttpClient.requestText` 已支持文本读取（`vendor-http-client.ts:106-123`，`text` 为可选字段）；客户端只需给 `VendorRequest` 加一个可选 `redirect` 透传给 fetch（D7）。plan 期实测 Node fetch `redirect: 'manual'`：`http://www3.hkexnews.hk/…` → 301 + `location`；不存在页面 → 404；正常 https 页面 → 200。prod 应用主机 HTTP 200、约 1.5 秒。 |
 | Q4 | LLM 覆盖度 | 无库；解析规则全部由取证归纳（D7），以入仓 fixture 固化。 |
 | Q5 | 解耦成本 | 一个 source 文件 + 一个 rules 文件 + 一个约束档；停用改 `EARNINGS_DATE_SOURCES` 配置即可（FR-001）。 |
-| Q6 | 风险面 | 改版 / 换地址 / 停更 / 漏收 —— FR-025 判失败并计入运行失败数 ⇒ 次日飞书日报标红；FR-017 已通知日期未知告警；富途与刊发事实兜底。页面使用条款未核实（推断公开页可读），每日 1 次请求。URL 为代码常量、不来自数据 ⇒ 无 SSRF 面。 |
+| Q6 | 风险面 | 改版 / 换地址 / 停更 / 漏收 —— FR-025 判失败并计入运行失败数 ⇒ 次日飞书日报标红；FR-017 已通知日期未知、FR-019a 逾期在进入状态那一轮标红；富途与刊发事实兜底。页面使用条款未核实（推断公开页可读），每日 1 次请求。URL 为代码常量、不来自数据 ⇒ 无 SSRF 面。 |
 
 **Evidence**: 调研报告要点与 PoC 数字见 spec 取证段；快照与对账脚本归档在本机 evidence 目录 `hkex-board-meeting-list/`。
 
@@ -177,16 +177,18 @@ context7_verified: []
 | step | kind | 触发 |
 | --- | --- | --- |
 | `earnings_date_conflict` | notice | 新进入 `conflict`（含候选日期） |
-| `earnings_date_overdue` | notice | 新进入 `overdue` |
+| `earnings_date_overdue` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `overdue`（含 `period_key`、公布日与口径） |
 | `earnings_date_source` | failure（计入 `stats.failed`） | 某来源 `collect` 抛错（含来源名；清单含 HTTP 状态码 / 跳转目标 / 首个不合法行） |
 | `earnings_date_calendar_unknown` | unjudged | 逾期 / 陈旧判定区间日历不可判 |
 | `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0 |
-| `earnings_notice_undated` | notice | 新进入 `notified_undated`（含公告链接）；另计从未在清单出现标的的未知日期通知数 |
+| `earnings_notice_undated` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `notified_undated`（含公告链接）；另计从未在清单出现标的的未知日期通知数（该计数不计失败） |
 | `earnings_board_list_scan` | notice | 每轮：页首日期、数据行、业绩行、纯股息行、跳过代码、`T:` 键数、本轮会前通知信号数 |
 | `earnings_board_list_stale` | failure（计入 `stats.failed`） | 页首日期距业务日超过 2 个交易日 |
 | `earnings_board_list_dropped` | notice | 清单行在会议日前消失且无新日期 |
 
-- 🚨 **飞书标红链路（owner 要求改版 / 换地址 / 停更必须经飞书告警）**：`failure` 类发现项本身**不改**运行状态（`sync-run.recorder.ts:23-24` 明写「不蕴含计入 `stats.failed`」）⇒ 来源失败与清单陈旧的写入点 MUST 同时 `stats.failed += 1`（`symbol` 取 `source:<来源名>`）。运行状态判定 `failed > 0` 且有 ok / skipped ⇒ `partial`（`sync-run.recorder.ts:326-327`）⇒ 日报脚本 `partial` ⇒ `problems=1` ⇒ 非零退出（`ops/jobs/marketdata-sync-report.sh:151` / `:345`）⇒ `nvy-run-reported` 推飞书 🔴，正文取输出末 80 行（`ops/jobs/systemd/marketdata-sync-report.service:33`，覆盖全部 33 个维度逐行 + `↳` 发现项摘要行），09:00 触发（`marketdata-sync-report.timer:7`）。其余 notice 类（冲突 / 逾期 / 未知日期 / 清单行消失 / 未对齐）只进摘要、不标红，与现役口径一致。
+- 🚨 **飞书标红链路（owner 要求改版 / 换地址 / 停更必须经飞书告警）**：`failure` 类发现项本身**不改**运行状态（`sync-run.recorder.ts:23-24` 明写「不蕴含计入 `stats.failed`」）⇒ 来源失败与清单陈旧的写入点 MUST 同时 `stats.failed += 1`（`symbol` 取 `source:<来源名>`）。运行状态判定 `failed > 0` 且有 ok / skipped ⇒ `partial`（`sync-run.recorder.ts:326-327`）⇒ 日报脚本 `partial` ⇒ `problems=1` ⇒ 非零退出（`ops/jobs/marketdata-sync-report.sh:151` / `:345`）⇒ `nvy-run-reported` 推飞书 🔴，正文取输出末 80 行（`ops/jobs/systemd/marketdata-sync-report.service:33`，覆盖全部 33 个维度逐行 + `↳` 发现项摘要行），09:00 触发（`marketdata-sync-report.timer:7`）。冲突 / 清单行消失 / 未对齐仍只进摘要、不标红，与现役口径一致。
+- 🚨 **逾期与已通知日期未知的标红口径（spec Session（六））**：kind 仍为 `notice`（`failure` 是续跑 / 重试的来源，`sync-run.recorder.ts:21-22`），但事件由他态迁入 `overdue` / `notified_undated` 的那一轮每个事件 `stats.failed += 1`（与该计数「按标的」的粒度一致，`sync-run.recorder.ts:31-32`）。迁入判定以事件既有状态为输入、在合并纯函数内完成（T005 只在迁入时产出 finding）；🚫 按「本轮扫描到该状态」计 —— 延期刊发的公司会让日报连日标红。
+- **计入失败数的连带面**（2026-09-13 核）：① 单轮 `failed ≥ 3` ⇒ `alertIfDegraded` 打 ERROR 日志（调用点 `dimension-executor.ts:1158`，判定 `:3559-3570`，阈值 `:89`），只是日志；② 回填 CLI `failed > 0` ⇒ 退出码 1（`marketdata-trigger.cli.ts:144`），T025 首轮回填时存量未刊发事件集中迁入逾期、退出码 1 属预期，以 findings 为准；③ `T:` / `D:` 键事件（FR-015 无法对齐）等不到同键的刊发事实 ⇒ 公布日过后会迁入逾期一次（推断，未验证数量），finding 带 `period_key` 以区分「对不齐」与「真延期」。
 - 美股钩子失败不进 findings（D9）。
 
 **D11 · 配置**
@@ -208,10 +210,10 @@ context7_verified: []
 | 8 | 近似 ≥ 2 天不可解释 → 冲突 | merge spec（`hk:00960` 形态） |
 | 9 | 冲突解除留痕 | 079 IT（两轮） |
 | 10 | 确认时刻 = 对应通知刊发日（120 天窗口）/ 首次观测；已取刊发日不回退 | merge spec（窗口边界、多通知取最早、上一次刊发之前的通知不算、既有 `announced` 本轮无信号 ⇒ 保留）+ 079 IT（通知第 1 天、富途日期第 30 天出现并改期一次 ⇒ 确认日仍 = 通知刊发日） |
-| 11 | 已通知日期未知：曾在清单 → 告警；从未在清单 → 计数 | merge spec + 079 IT |
+| 11 | 已通知日期未知：曾在清单 → 告警 + 迁入那一轮计入运行失败；从未在清单 → 计数 | merge spec（迁入产出 finding、停留不产出）+ 079 IT（迁入轮 `partial`、次轮 `success`；创业板形态 `success`） |
 | 12 | 带「董事」字样但非通知写法 → 不作信号 | `earnings-notice.rules.spec.ts` |
 | 13 | 刊发覆盖 + 偏差统计 + 间隔更新 | merge spec + 079 IT |
-| 14 | 满 2 个交易日未刊发 → 逾期；刊发后解除 | 079 IT（种 `trading_day`，含假日与 `unknown` 臂） |
+| 14 | 满 2 个交易日未刊发 → 逾期 + 迁入那一轮计入运行失败；刊发后解除 | 079 IT（种 `trading_day`，含假日与 `unknown` 臂；迁入轮 `partial`、次轮仍逾期 `success`） |
 | 15 | 改期（清单两轮会议日变化 / 富途日期变化）→ 留痕重判 | 079 IT（两份 fixture 页面） |
 | 16 | 清单行提前消失 → 保留、告警 | merge spec + 079 IT（第二份页面缺该行；另加「本轮解析失败不判消失」臂） |
 | 17 | 来源失败隔离 | 079 IT |
@@ -227,7 +229,7 @@ context7_verified: []
 
 - **`hkex-board-meeting-list.rules.spec.ts`**（Small，入仓 fixture `src/marketdata/__fixtures__/hkex-board-meeting-list/`：当日页面 + 一份多行 / 多期 / 人民币柜台 / 纯股息行齐全的 Wayback 快照，均为港交所公开页面）：页首日期、全部数据行逐行解析、目的与期间每类写法（spec 取证列出的形态各至少一例）、`日/月/年` 与两位年份、三类结构异常变异（删页首日期 / 删表头 / 破坏一行列数）。
 - 真 vendor（Large，`RUN_MARKETDATA_IT` 门控，默认 skip）：`marketdata.futu-shim.vendor.spec.ts` 加港股财报日历用例；新增 `marketdata.hkexnews.vendor.spec.ts`（取当日清单页并过解析纯函数）。impl 期手动跑并贴输出。
-- **飞书标红面**：`apps/server/test/integration/marketdata.sync-report-digest.it.spec.ts` 加一臂 —— 种一条 `hk_earnings_date` 的 `partial` 运行（含 `earnings_date_source` failure finding），断言日报输出该维度行为非成功图标、`↳` 摘要含 `failure×1{earnings_date_source}` 形态、脚本退出码非零；定向变异：写入点不加 `stats.failed` ⇒ 079 IT 的 `partial` 断言必红。
+- **飞书标红面**：`apps/server/test/integration/marketdata.sync-report-digest.it.spec.ts` 加一臂 —— 种一条 `hk_earnings_date` 的 `partial` 运行（含 `earnings_date_source` failure finding），断言日报输出该维度行为非成功图标、`↳` 摘要含 `failure×1{earnings_date_source}` 形态、脚本退出码非零；定向变异：写入点不加 `stats.failed` ⇒ 079 IT 的 `partial` 断言必红；另一臂种只含冲突 / 清单行消失 notice 的 `success` 运行 ⇒ 退出码 0。逾期与已通知日期未知的计数由 079 IT 断言（#11 / #14），日报脚本只读运行状态、不按 step 判红。
 - **SC-001 / SC-003 数据验收**：回填完成后与上线 30 天后，在 prod 跑只读核对，结果回填 spec；tasks 期立独立 `[Ops]` task + issue + 到期日。SC-004 以本机 evidence 目录的回放脚本在 impl 期复跑一次（输入改为新规则实现的纯函数）。
 
 ### 🚨 Impl Guardrails（并发 / 安全 / 前端）
@@ -235,6 +237,7 @@ context7_verified: []
 - **并发 / 事务**：事件写入用 `revision` 条件更新 + 命中数判定（D8），🚫 不用 `FOR UPDATE`；HTTP 在事务外。
 - **时间语义**：业务日一律 `exchangeCalendarDate(market, now)`，单市场；公布日与清单日期是交易所当地日期；🚨 清单日期 MUST 自行按 `日/月/年` 拆解，🚫 MUST NOT 交给 `new Date('10/09/2026')` 或任何按「月/日」解析的工具；交易日数查日历三态（Rule A / B）。
 - **响亮失败**：清单解析任何不变量破坏、取数非 200、地址跳转、页面陈旧 ⇒ 来源失败 finding + `stats.failed += 1`；🚫 MUST NOT 捕获后返回空数组（那等于宣布「今天没有会议」）；🚫 MUST NOT 跟随重定向（换地址会被静默吞掉）；🚫 MUST NOT 只写 finding 不计失败数（日报为绿，飞书不标红）。
+- **状态迁移标红**：`overdue` / `notified_undated` 只在迁入那一轮 `stats.failed += 1`；🚫 停留轮次再计；🚫 把 kind 改成 `failure`。
 - **安全**：清单 URL 为常量；不触鉴权 / PII。
 - **配额**：富途只多港股每日约 38 次日历调用（推断）；港交所清单每日 1 次请求。
 - **美股零回归绊线**：D9 钩子四条约束；`optionsdesk-047.earnings-pit.it.spec.ts` 基线对比臂先红后绿。
@@ -266,6 +269,7 @@ context7_verified: []
 19. 跟随重定向后按新页面照常解析 —— 否：换地址会被静默吞掉；plan 期实测 `redirect: 'manual'` 可稳定拿到 3xx 与 `location`。
 20. 会前通知信号沿用刊发事实的 7 天窗口 —— 否：事件重算时找不到更早的通知，确认时刻静默回退（analyze I1）。
 21. 美股钩子只写观测、不触发合并 —— 否：美股事件恒为 0 行，SC-008 的断言空真（analyze C1）。
+22. 逾期 / 已通知日期未知在停留期间每轮都计入运行失败 —— 否：延期刊发的公司会让日报连日标红，新故障被淹没；与复权因子闸「只看近 48h 新增、存量只报数」同一取舍（`ops/jobs/marketdata-sync-report.sh:212-213`）。
 
 **既有事实核录**（2026-09-13 plan 期逐项 grep / 只读核查，行号锚消费点）：
 
