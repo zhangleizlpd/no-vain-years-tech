@@ -2,7 +2,7 @@
 feature_id: 081-optionsdesk-trading-account-shell
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-09-13'
 updated_at: '2026-09-13'
 spec_kit_version: '>=0.8.5,<0.10.0'
