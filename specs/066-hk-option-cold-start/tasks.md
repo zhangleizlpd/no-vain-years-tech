@@ -2,9 +2,9 @@
 feature_id: 066-hk-option-cold-start
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: implementing
+status: implemented
 created_at: '2026-08-22'
-updated_at: '2026-09-07'
+updated_at: '2026-09-13'
 ---
 
 # Tasks: 066-hk-option-cold-start（港股期权接入与锚冷启动开通港股）
@@ -99,6 +99,8 @@ updated_at: '2026-09-07'
   - 📌 **2026-08-25 ①②③ 落地**（U2 结论见 T16）：事实位 `oiRefreshedAtEod` 登记在 `market-session.rules.ts`，**与连续竞价时段表分表** —— 那张答「什么时候在交易」，这张答「什么时候能拿到定稿的 OI」，由不同机构按不同节奏定；未实测过的市场一律保守 `false`（猜 `true` 是标签与数字双错，猜 `false` 只是标签偏早、一条 `UPDATE` 可订正）。🚨 **消费方两处，且只有一处真写库**：判据层 `resolveSnapshotAttribution`（#187 起全仓唯一的一份，冷启动已折进它）给出的 `oiAsOf` **只喂单测对表**，真正写进库的是 `sync-option-snapshot.usecase.ts` 的 `collect` 自己按 `spec.mode` 重新派生的那一份 —— 只改判据层会「单测全绿而库里照旧偏一天」。🚨 **`mode` 一行未动**：原 `oiRefreshed` 同时驱动 `mode` 与 `oiAsOf`，分叉只能动后者，故拆名为 `crossedIntoNextSession`（驱动 `mode`）+ 与 `oiRefreshedAtEod` 的并集（驱动 `oiAsOf`）；混用会让「D 日盘后采的」被标成「次日盘前补的」，而覆盖率与补采审计都读 `source`。**③ 重标走 Prisma migration** `20260825_1910_relabel_hk_option_oi_as_of`（照 `20260824_1905_null_out_zero_quote_sentinels` 先例）—— 判据按不变式 `hk ⇒ oi_as_of ≡ session_date` 而非 `source = 'eod'`，幂等、`source` 无关；**在部署时执行 ⇒ 与代码修复同时生效，一次扫完不用补第二遍**。⚠️ 撰写时 prod 实测 523 行，上线前每个交易日 23:30 还会再加约 2,200 行带旧标签的，按不变式写故一并扫掉。→ verify: 变异双向实测过 —— `hk: true→false` 红、`us: false→true` 红（后者含改动前就存在的美股断言 ⇒「逐点不变」真被保护着）；端到端那一格是 `marketdata.cold-start-060.market-outcome.it.spec.ts` 的港股用例（Testcontainers + 真 DI + 真落库），它原本钉的就是分叉前取值、按预期转红后改判；`UPDATE` 的 `WHERE` 已在 prod 用只读 `SELECT count(*)` + `EXPLAIN` 验过命中 523 行
   - 📌 **2026-08-26 收尾：checkbox 翻 `[X]`。** 上面正文那句「⚠️ T09 整条仍未完成：checkbox 留 `[ ]`，剩 ①②③ 等 U2」**已作废** —— ①②③ 于 2026-08-25 随 [#191](https://github.com/zhangleizlpd/no-vain-years-tech/pull/191) 落地并部署（`v0.36.3`）。<br>🚨 **但生产证据有一处边界，别把它说成「全验过了」**：`oiAsOf` 的判据是 `crossedIntoNextSession || oiRefreshedAtEod(market) ? target : tradingDayBeforeTarget`。港股快照维度的 cron 是 23:30，却与其余 20 个维度共用**并发为 1** 的队列，两次实测都被夜间长链推过午夜（08-24 那轮 → 08-25 01:30；08-25 那轮 → 08-26 00:33）⇒ `crossedIntoNextSession` 为真、`||` **左边短路**，**`oiRefreshedAtEod` 这条分叉在新写入上一次都没被走到**。⇒ 分叉当前的生产证据 = 「523 行历史重标（`oi_as_of <> session_date` 计数归 0）」+「美股 `eod` 270450 行逐点未误伤」，**不含**「新写入走分叉」。要验到它需要一轮在 **16:10–23:59 之间真正执行**的港股快照，而这取决于队列而非本 task。📌 顺带记一条形态：港股新写入现在每晚都落 `source = premarket_backfill`（08-24 的 2200 行、08-25 的 2228 行），而该值在设计上是**降级留痕** —— 天天有就失去区分度，是否要调队列优先级 / 给 `mode` 增加可区分取值，留作独立决策。
 
+  - 📌 **2026-09-13 订正上一条的边界 —— 「分叉一次都没被走到」现已不准确，但也还没完全闭合。两点分开说：**<br>① **`oiRefreshedAtEod` 这个谓词本身现已有每日生产证据。** 073 的轮 2（`hk_option_oi_settle`，21:40 HKT）拿它当入口闸（`sync-option-oi-settle.usecase.ts:166`：判据为假则整轮跳过 OI 写入）⇒ 它每个交易日都要为真一次。prod 只读实查 2026-09-01 → 09-11 **9 个连续交易日**的港股 `option_daily_snapshot`：全部 `source = eod` 且 `oi_as_of = session_date`（逐日 16861 / 18006 / 18047 / 18171 / 18380 / 18752 / 18808 / 18870 / 18921 行，**无一行**落在前一交易日）。而主轮 16:2x 写入时 `oiRefreshedAtEod` 必为假（`minutesOfDay` 988 < 1290）⇒ 那批行落库时的 `oi_as_of` 是前一交易日，是轮 2 把它们改写成当日的（`sync-option-oi-settle.usecase.ts:396,427-441` 的定向 UPDATE）—— 这一步**不止是代码推导**：`sync:hk_option_oi_settle` 三轮的 `written` 与同场快照行数**逐字相等**（09-09 / 09-10 / 09-11 = 18808 / 18870 / 18921），即那一整批行确实是它写的。⇒ **档 3（当日分钟数比较）若为假，这 9 天会停在前一交易日上；它没有。**<br>② **仍然没有证据的是更窄的一条** —— `resolveSnapshotAttribution` 里 `crossedIntoNextSession || oiRefreshedAtEod(…)` 的**右操作数决定一行新写入的 `oi_as_of`**（`snapshot-session-attribution.rules.ts:163-166`）。轮 2 虽然调了 `attribution.resolve()`（`:149`），但**只取 `spec.sessionDate`、把 `oiAsOf` 丢掉**，另调谓词并硬写 `oi_as_of = sessionDate`（`:396`）⇒ 那个 `||` 的输出从未落进任何一行。要走到它，需要一次落在**交易日 21:30–23:59** 的新写入（档 3），或一次**非交易日**的新写入（`todayIsTradingDay` 为假 ⇒ `crossedIntoNextSession` 恒假 ⇒ 右操作数经档 2 决定）。<br>📌 连带订正上一条的「要验到它需要一轮在 **16:10–23:59** 之间真正执行的港股快照」：**16:10–21:29 那一段验不到** —— 该段 `oiRefreshedAtEod` 返假，走的仍是左侧口径。<br>⚠️ 两点都**不影响 T09 的 `[X]`**：T09 的交付是那条分叉的代码与单测，生产观测归 T15 的取证面。
+
 - [X] T10 [P] [Server] **港股实时报价两处连改**（`FR-003`, plan §A7）：① `futu-realtime-quote.adapter.ts` 的 `MARKET_TO_FUTU_PREFIX` 加 `hk: 'HK'`；② `marketdata.module.ts:404` 的 `MarketRoutedRealtimeQuoteAdapter` 补 hk 槽位 —— 今天港股锚在每 30 秒的盘中 tick 里落 `unsupported-market`（无实时源路由，属**配置事实**、按纪律不计入熔断），补上槽位这条路才通。🚫 **MUST NOT 动 `market-session.rules.ts`**（排序铁律 6）：盘中采价的闸读的是**供应方的市场时段状态**，归一后只有「常规连续交易时段」准采、午休不在白名单内 ⇒ 天然不采，本地时段表的单段登记与本 task 无关。→ verify: 断 ① 港股连续竞价时段实时价投影到锚（`state_branches` 16）；② **午休时段不采、不把午休盘口标成盘中价**（`state_branches` 17，本 task 的核心回归钉 —— 🚨 断言必须打在**供应方时段状态的归一**这一层，打在本地时段表上验的是另一件事）；③ 非交易日 / 收盘后保留收盘档（`state_branches` 18）；④ **半日市当天下午按提前收盘判定**（`state_branches` 19 —— ⚠️ 供应方在港股半日市 12:00 之后报什么状态**尚未实测**，本条要么补实测、要么在 T15 真锚上收口，**不得凭推断写绿**）；⑤ 既有 cn 盘中告警路径**逐点不变**
 
 - [X] T11 [Server] **港股与美股链发现串行、不争配额**（`FR-015`, plan §A10, §A12）：确认 `hk_option_contract` 与 `option_contract` 在**同一个** `marketdata-sync` 队列上、worker 保持 `concurrency: 1` ⇒ 结构上不可能并发。🚨 **这条对 cron 触发与冷启动触发同样成立** —— 冷启动是全系统唯一的非 cron 触发者、建锚时刻由人决定，「错峰 cron」保证不了不争，单队列串行才是真保证。采集端纪律沿用：链**永远只传** `code/start/end/option_type`，**不传** `option_cond_type` / `data_filter`（采集端一旦筛就丢证据且不可回补，vendor 不提供历史交易日的链快照）。**容量参照**（2026-08-22 生产实测）：21 只美股锚一轮 `option_contract` ≈ **8 分钟**，全程占满 10/30s 的桶；港股是**另一轮串行叠加**，估墙钟按相加不按取最大。→ verify: 断 ① 两个维度 job 入的是同一队列名；② 同时入队时**串行完成**、无一方因配额耗尽而失败（`SC-009`, `state_branches` 20）；③ 链请求参数**不含** `option_cond_type` / `data_filter`（采集端全开的机械断言）
@@ -123,7 +125,7 @@ updated_at: '2026-09-07'
 
   ⇒ T15 改为**在 prod 上跑**（见下），本条随之不再需要。**MUST NOT** 因为「打通了更方便」把它捡回来 —— 方便不是重开那条口子的理由。
 
-- [ ] T15 [E2E] **真港股锚跑通整链**（`SC-001`, `SC-003`, plan §Gate 0.1）：**前置 = `T06` / `T07` 已部署到 prod**（**不是**隧道 —— 见 T14 的撤销说明）。用 **prod** 的 `/anchor-import` 建一只真实港股锚（该 command 原生支持 `hk:`，nginx 那道闸也是 `^(us|hk):`），随后逐条查 **prod 的库**。
+- [X] T15 [E2E] **真港股锚跑通整链**（`SC-001`, `SC-003`, plan §Gate 0.1）：**前置 = `T06` / `T07` 已部署到 prod**（**不是**隧道 —— 见 T14 的撤销说明）。用 **prod** 的 `/anchor-import` 建一只真实港股锚（该 command 原生支持 `hk:`，nginx 那道闸也是 `^(us|hk):`），随后逐条查 **prod 的库**。
 
   🚨 **为什么必须在 prod 跑，而不是本机**：prod 走 wg1 直连 shim + 生产 env；本机即使打通隧道，跑的也是**另一条配置路径**。本 task 的全部价值在「真数据端到端」—— 验在一条**生产上不存在的路**上，绿了也不构成生产链路的证据。这条与 plan `Gate 0.1` 的定位一致：该 gate 在 plan 阶段是「已规划」而非「已完成」，最终由本 task 落证据。
 
@@ -182,6 +184,31 @@ updated_at: '2026-09-07'
   - [#172](https://github.com/zhangleizlpd/no-vain-years-tech/issues/172)（**丢数据**）—— 供应方以 `ask_price=0 ∧ ask_vol=0` 表示「盘口无卖单」，而 `futu-option-snapshot.adapter.ts:87` 的 `numToString` 只滤空值 / 非有限数 ⇒ `0` 当价格放行 ⇒ 实值腿被落库前硬门以 `ask_below_intrinsic` 拒掉 **491/1014 行（永久缺口，vendor 无历史快照）**，虚值腿因内在价值为 0 而碰巧过门、带假 `ask=0` 落库 252 行。**每晚 23:30 会复发**（推断）。📌 与 T01 修的 `settlement_mode` 字面量 `"N/A"` 是**同一类缺陷的数值版**。
   - [#173](https://github.com/zhangleizlpd/no-vain-years-tech/issues/173)（不丢数据）—— 无挂牌期权标的上 `sync-option-snapshot.usecase.ts:289` 抬「链发现未覆盖?」WARN，与冷启动层的「港股常态、非故障」INFO 定性相反；066 开通港股后这一档从罕见变常态。
 
+  📌 **2026-09-13 收口：不建锚，`SC-003` 已由生产数据满足 ⇒ checkbox 翻 `[X]`。** 上面那句「🚨 本 task MUST NOT 就此勾 `[X]` —— 还差两条」的两条现各有归宿：`SC-006` 已于 2026-08-26 拆去 [#203](https://github.com/zhangleizlpd/no-vain-years-tech/issues/203)（本 task 不再收）；`SC-003` 于本日 prod 只读实查**已满足，且是判别式的**。⇒ 本 task 收窄后的全部范围（`SC-001` + `SC-003`）闭合。
+
+  **`SC-003` 的生产证据** —— prod 只读查 `marketdata.sync_run`（`sync_type = 'sync:hk_option_contract'`）：
+
+  | 日期（HKT） | `scanned` | `ok` | `skipped` | `failed` | 同期 `optionsdesk.anchor` 的 `hk:` 行数 |
+  | --- | --- | --- | --- | --- | --- |
+  | 08-27 / 08-28 | 3 | 3 | 0 | 0 | 3 |
+  | 08-31 → 09-07 | 28 | 28 | 0 | 0 | 28 |
+  | 09-08 → 09-11 | **29** | 29 | 0 | 0 | **29** |
+
+  同期港股 universe = 2791 只 ⇒ 覆盖标的数恒等于**锚数**而非 universe，正是 `SC-003` 的字面（spec.md:274）。N 跨过**三个取值**，`scanned = ok + skipped` 逐行成立，`failed` 恒 0。
+
+  🚨 **09-08 那一跳恰好就是预注册的那条「+1」**：锚 142 `hk:01044` 建于 2026-09-08 09:39 HKT（建在盘中 ⇒ `anchor_cold_start_run` 记 `intraday_skipped`，与本条判据正交），当日 16:20 那轮 `scanned` 由 28 变 29，锚数同步 28 → 29 —— 三者差值均为 1。⇒ **判据写于 2026-09-07，而那只锚是 09-08 才建的：预注册先于观测**，不是事后挑一个对得上的口径。
+
+  ⇒ **不为本 task 往 prod 写锚。** 上面整段实验设计（黄金窗口式子 / 四档窗口表 / 预注册判据）**刻意保留不删** —— 它今后的用途是「下次本来就要建一只港股锚时照着挑执行时刻」，不再是本 task 的待办。🚫 **MUST NOT 为了补证据编一只锚**：该段自己写明「选一只本来就要建锚的票，别为实验编一个 V」，且锚会真进 L 层与仓位上限推导、永久进入每晚工作集。📌 顺带记一笔：本日按式子重算窗口，实例化结果仍是 `21:30–21:38`（futu lane 上 21:30 之后最近的定时任务仍是 `hk_option_oi_settle` 的 21:40）—— **这是重算的结果，不是抄 09-07 的**。
+
+  🚨 **本 task 正文有四处已 drift 的状态值，逐条订正（原文保留，不回改历史记录）**：
+
+  1. 上面第 2 条阻塞里的「首发 `hk_option_contract` 23:00 / `hk_option_daily_snapshot` 23:30」**已失效** —— 073 把主轮前移到 **16:20**（migration `20260901_1502_split_hk_option_collection_into_two_rounds`），并新增 21:40 的轮 2 `hk_option_oi_settle`。prod 实查三条 cron 逐字相符。
+  2. 2026-08-26 那段的「有期权合约的**只有 2 只**…= 2228」是当时 3 只锚的状态值 —— 现 29 只锚里 **23 只**有链（`hk_option_daily_snapshot` 逐轮 `ok=23 / skipped=6`），09-11 场快照 **18921** 行。
+  3. 「当前港股锚 = 3（`00700` / `00777` / `09988`）」→ 现 **29** 只。
+  4. `#172` 那条写的「**每晚 23:30 会复发**（推断）」，时刻随主轮前移一并改为 **16:20/16:28** —— 复发这件事本身未复核，仍是推断。
+
+  ⚠️ **本次收口没有新增任何生产写操作**，全部证据来自 prod 只读 SELECT（`sync_run` / `anchor` / `anchor_cold_start_run` / `sync_dimension` / `option_daily_snapshot`）。
+
 ## Polish
 
 - [X] T16 [Manual] **U2 结论回填 + 采样器拆除**〔批 B · [#164](https://github.com/zhangleizlpd/no-vain-years-tech/issues/164)〕（`FR-016`, plan §A6）：**读取时刻 = 2026-08-25（周二）06:00 之后**。🚨 **别读早了**：关键样本是 **2026-08-24（周一）** 那个交易日的四拍，而判据的后半段要用 **周二 06:00 的 `next_open`** 才能把「周一 EOD 那一刻变的」与「周二才变的」分开 —— 周一当天去读只有半份数据，会得出一个看似确定的错结论。（日历已核：08-24 与 08-25 都是港股交易日。）读 `broker-hk:~/nvy-u2/oi-samples.jsonl`，比周六基线（周五终值原点，`HK.TCH260929C530000: oi=10772 net_oi=9568`）与周一 `post_eod` 的差异 —— **周一 23:00 ≠ 基线** ⇒ 22:00 EOD 已把当日 OI 定稿 ⇒ `oiAsOf = D`，T09 要做分叉；**相等而周二才变** ⇒ 现规则逐字适用，T09 只剩翻开关。🚨 `21:30 pre_eod` 与 `23:00 post_eod` 这一对是**把变化钉在 22:00 这个事件上**的关键，缺了它只能说「隔夜变了」，说不出「是 EOD 那一刻变的」。结论写进 spec 的 `## Clarifications`。🚨 **收尾必做**：`crontab -e` 删四行 + `rm -rf ~/nvy-u2`。这是**仓外 crontab**，`.claude/rules/scheduled-tasks-registry.md` 的 path-trigger **够不到**，只有本 task 看着它（脚本自带 `STOP_AFTER=2026-08-29` 兜底，但那只防长跑、不代替清理）。→ verify: spec `## Clarifications` 有带日期与样本量的确定结论；`ssh broker-hk 'crontab -l | grep -c nvy-u2'` 返 0；`~/nvy-u2` 不存在
@@ -219,10 +246,10 @@ updated_at: '2026-09-07'
 | FR-020 | T12 + T13 |
 | SC-001 | T15 ✅ **prod 已验**（2026-08-23，`hk:09988` → `backfilled` + 目标日快照在库） |
 | SC-002 | T02 |
-| SC-003 | T15 ⏳ **未观测** —— 冷启动不走维度工作集，要等港股期权 cron 轮 |
+| SC-003 | T15 ✅ **prod 已验**（2026-09-13 实查 `sync:hk_option_contract` 的 `sync_run`：`scanned` 随锚数 3 → 28 → 29 逐步走，09-08 那一跳恰为 +1；同期 universe 2791 只） |
 | SC-004 | T02 |
 | SC-005 | **T02 verify⑤**（跨维度集合快照对比） |
-| SC-006 | T03 + T15 ⏳ **未走到** —— 2026-08-23 用的两只港股都已在 universe，兜底 seed 路径未执行；要补须另找 universe 未收录的港股建锚 |
+| SC-006 | T03（代码）+ ⏳ **生产验收已于 2026-08-26 拆出本片**，见 [#203](https://github.com/zhangleizlpd/no-vain-years-tech/issues/203) —— 港股 universe 已覆盖全港交所，「未收录标的」按需造不出来，只能等新 IPO 自然发生。**不由 T15 收** |
 | SC-007 | T08 |
 | SC-008 | T10 + T13 |
 | SC-009 | T11 |
