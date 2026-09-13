@@ -160,6 +160,7 @@ import {
   type EarningsDateSource,
 } from './earnings-date-source.port.js';
 import { FutuCalendarSource } from './futu-calendar.source.js';
+import { HkexAnnouncementSource } from './hkex-announcement.source.js';
 import { REALTIME_QUOTE_PORT, type RealtimeQuotePort } from './realtime-quote.port.js';
 import { FutuRealtimeQuoteAdapter } from './futu-realtime-quote.adapter.js';
 import { MarketRoutedRealtimeQuoteAdapter } from './market-routed-realtime-quote.adapter.js';
@@ -206,6 +207,8 @@ const FUTU_EARNINGS_CALENDAR_HTTP_CLIENT = Symbol('FUTU_EARNINGS_CALENDAR_HTTP_C
 const FUTU_MARKET_STATE_HTTP_CLIENT = Symbol('FUTU_MARKET_STATE_HTTP_CLIENT');
 /** 079 T010 财报日期来源 A 实例 token (经 `collectionPort` 绑定, kind=mock 得拒绝壳)。 */
 const FUTU_CALENDAR_EARNINGS_DATE_SOURCE = Symbol('FUTU_CALENDAR_EARNINGS_DATE_SOURCE');
+/** 079 T011 财报日期来源 B 实例 token (同上)。 */
+const HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE = Symbol('HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE');
 
 /** `kind=live` 下 config 的收窄形态 —— `collectionPort` 的 `live` 回调只在这一支被调。 */
 type LiveMarketdataConfig = Extract<MarketdataConfig, { kind: 'live' }>;
@@ -418,13 +421,26 @@ function collectionPort<T extends object>(
       live: (_cfg, calendar: EarningsCalendarPort, prisma: PrismaService) =>
         new FutuCalendarSource(calendar, prisma),
     }),
+    // 079 T011 来源 B: 只读本 ctx `announcement` 表, 零 vendor 调用。
+    collectionPort<EarningsDateSource>(HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE, {
+      inject: [PrismaService],
+      live: (_cfg, prisma: PrismaService) => new HkexAnnouncementSource(prisma),
+    }),
     {
       provide: EARNINGS_DATE_SOURCES,
-      inject: [earningsDateSourcesConfig.KEY, FUTU_CALENDAR_EARNINGS_DATE_SOURCE],
-      useFactory: (sourcesCfg: EarningsDateSourcesConfig, futuCalendar: EarningsDateSource) =>
+      inject: [
+        earningsDateSourcesConfig.KEY,
+        FUTU_CALENDAR_EARNINGS_DATE_SOURCE,
+        HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE,
+      ],
+      useFactory: (
+        sourcesCfg: EarningsDateSourcesConfig,
+        futuCalendar: EarningsDateSource,
+        hkexAnnouncement: EarningsDateSource,
+      ) =>
         assembleEarningsDateSources(sourcesCfg.names, {
           futu_calendar: futuCalendar,
-          hkex_announcement: null,
+          hkex_announcement: hkexAnnouncement,
           hkex_board_meeting_list: null,
         }),
     },

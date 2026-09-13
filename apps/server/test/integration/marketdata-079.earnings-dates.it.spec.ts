@@ -9,6 +9,7 @@ import type { SyncOptionContractUseCase } from '../../src/marketdata/sync-option
 import type { SyncOptionSnapshotUseCase } from '../../src/marketdata/sync-option-snapshot.usecase';
 import type { TradingCalendarPort } from '../../src/marketdata/trading-calendar.port';
 import { SyncEarningsFiscalProfileUseCase } from '../../src/marketdata/sync-earnings-fiscal-profile.usecase';
+import { HkexAnnouncementSource } from '../../src/marketdata/hkex-announcement.source';
 import {
   executeFiscalProfileSet,
   parseFiscalProfileArgs,
@@ -248,5 +249,136 @@ describe('079 T029 人工补录 CLI', () => {
     expect(
       await prisma.earningsFiscalProfile.findMany({ where: { instrumentId: inst.id } }),
     ).toEqual(first);
+  });
+});
+
+// T011 来源 B 交易所公告 (FR-004 / FR-005 / FR-020 / FR-027, plan §D6; state_branches 12 / 19)。
+// 为什么必须真 PG: 两个窗口是对 announcement 表的 date 区间查询 + instrument.market 关联过滤,
+// 端点含不含、美股行滤不滤只有真库说了算; 替身只能复述 where 子句。
+describe('079 T011 来源 B 交易所公告 (Testcontainers PG)', () => {
+  const ANCHORED_TICKER = 'hk:01810';
+  const INTERIM_2026_TITLE = '截至2026年6月30日止六個月之中期業績公告';
+  const source = () => new HkexAnnouncementSource(prisma);
+
+  afterAll(async () => {
+    await prisma.anchor.deleteMany({ where: { ticker: ANCHORED_TICKER } });
+  });
+
+  it('日常: 刊发事实 7 天窗覆盖锚与非锚港股、補充本体被收; 通知信号单独 120 天窗 (含端点); 决议公告只计数', async () => {
+    const anchored = await instrument('hk', '01810');
+    await prisma.anchor.upsert({
+      where: { ticker: ANCHORED_TICKER },
+      create: {
+        ticker: ANCHORED_TICKER,
+        market: 'hk',
+        v: '50',
+        asof: day('2026-06-01'),
+        method: 'dcf',
+        confidence: '8',
+        confidenceSource: 'manual',
+        lLevelEffective: 'L2',
+      },
+      update: {},
+    });
+    const plain = await instrument('hk', '02015');
+    const supplemented = await instrument('hk', '09992');
+    const us = await instrument('us', 'AAPL');
+
+    await announce(plain.id, '2026-09-07', '截至2026年6月30日止六個月中期業績公告', ['fs_main']);
+    await announce(anchored.id, '2026-09-10', INTERIM_2026_TITLE, ['fs_main']);
+    await announce(supplemented.id, '2026-09-11', '有關二零二五年年報的補充公告', ['fs_main']);
+    await announce(supplemented.id, '2026-09-12', `補充公告 ${INTERIM_2026_TITLE}`, ['fs_main']);
+    await announce(anchored.id, '2026-09-05', '截至2026年3月31日止三個月之業績公告', ['fs_main']);
+    await announce(us.id, '2026-09-10', INTERIM_2026_TITLE, ['fs_main']);
+    await announce(anchored.id, '2026-08-14', '董事會會議召開日期', ['all']);
+    await announce(plain.id, '2026-05-16', '董事會會議通知', ['all']);
+    await announce(supplemented.id, '2026-05-15', '董事會會議日期', ['all']);
+    await announce(anchored.id, '2026-09-01', '董事會會議決議公告', ['all']);
+
+    const result = await source().collect({
+      market: 'hk',
+      businessDate: '2026-09-13',
+      now: NOW,
+      mode: 'daily',
+    });
+
+    expect(source().capabilities('hk')).toEqual({
+      forward: null,
+      confirmationSignal: true,
+      publicationFact: true,
+    });
+    expect(source().capabilities('us')).toBeNull();
+    // 09-05 (业务日前 8 天) 在刊发窗外; 美股行被 market 过滤; 不含业绩公告本体的補充不算刊发。
+    expect(
+      result.observations.map((o) => [
+        o.instrumentId,
+        o.periodKey,
+        o.reportKind,
+        o.basis,
+        o.announceDate,
+        o.filedDate,
+      ]),
+    ).toEqual([
+      [plain.id, 'P:2026-06-30', 'interim', 'filed', '2026-09-07', '2026-09-07'],
+      [anchored.id, 'P:2026-06-30', 'interim', 'filed', '2026-09-10', '2026-09-10'],
+      [supplemented.id, 'P:2026-06-30', 'interim', 'filed', '2026-09-12', '2026-09-12'],
+    ]);
+    expect(result.observations.every((o) => o.evidence?.startsWith('https://example.test/'))).toBe(
+      true,
+    );
+    // 业务日前 30 天 / 前 120 天 (窗口端点) 出信号, 前 121 天不出; 决议公告只进 lookalike 计数。
+    expect(result.noticeSignals.map((s) => [s.instrumentId, s.noticeDate, s.title])).toEqual([
+      [plain.id, '2026-05-16', '董事會會議通知'],
+      [anchored.id, '2026-08-14', '董事會會議召開日期'],
+    ]);
+    expect(result.lookalikeNoticeTitles).toBe(1);
+    expect(result.unalignedPublications).toBe(0);
+    // 主表外代码: announcement.instrument_id 外键指向主表 ⇒ 结构上恒 0 (与正向计数同轮断言)。
+    expect(result.skippedUnknownInstruments).toBe(0);
+  });
+
+  it('标题不带期末日: 有档案 (12 月) ⇒ P:2025-06-30; 无档案同标题 ⇒ D: 键并计数 (🚫 代入 12)', async () => {
+    const withProfile = await instrument('hk', '00700');
+    const withoutProfile = await instrument('hk', '00005');
+    await prisma.earningsFiscalProfile.create({
+      data: {
+        instrumentId: withProfile.id,
+        fiscalYearEndMonth: 12,
+        source: 'manual',
+        evidence: 'manual: seed',
+        determinedAt: NOW,
+      },
+    });
+    await announce(withProfile.id, '2025-08-20', '二零二五年中期業績公告', ['fs_main']);
+    await announce(withoutProfile.id, '2025-08-20', '二零二五年中期業績公告', ['fs_main']);
+
+    const result = await source().collect({
+      market: 'hk',
+      businessDate: '2025-08-22',
+      now: NOW,
+      mode: 'daily',
+    });
+
+    expect(result.observations.map((o) => [o.instrumentId, o.periodKey, o.reportKind])).toEqual([
+      [withProfile.id, 'P:2025-06-30', 'interim'],
+      [withoutProfile.id, 'D:hkex_announcement:2025-08-20', null],
+    ]);
+    expect(result.unalignedPublications).toBe(1);
+  });
+
+  it('回填 730 天: 日常窗外的刊发事实与通知信号只在 backfill 下被收', async () => {
+    const inst = await instrument('hk', '02015');
+    await announce(inst.id, '2025-08-26', '截至2025年6月30日止六個月之中期業績公告', ['fs_main']);
+    await announce(inst.id, '2025-08-01', '董事會會議召開日期', ['all']);
+    const request = { market: 'hk', businessDate: '2026-09-13', now: NOW } as const;
+
+    const daily = await source().collect({ ...request, mode: 'daily' });
+    const backfill = await source().collect({ ...request, mode: 'backfill' });
+
+    expect([daily.observations, daily.noticeSignals]).toEqual([[], []]);
+    expect(backfill.observations.map((o) => [o.periodKey, o.announceDate])).toEqual([
+      ['P:2025-06-30', '2025-08-26'],
+    ]);
+    expect(backfill.noticeSignals.map((s) => s.noticeDate)).toEqual(['2025-08-01']);
   });
 });

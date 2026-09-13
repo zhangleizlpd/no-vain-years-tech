@@ -107,6 +107,13 @@ export interface EarningsDateCollectResult {
    * 的运行时不变量 (港股前向行天然稀疏, 塌到 0 要能被 notice 看见)。其余来源不给。
    */
   readonly forwardRows?: number;
+  /**
+   * 交易所公告来源 (079 T011): 本轮刊发事实里换算不出期末日、落 `D:` 键的条数 (无财年档案 / 超刊发
+   * 时限，FR-027)。其余来源不给。
+   */
+  readonly unalignedPublications?: number;
+  /** 交易所公告来源 (079 T011): 信号窗口内「长得像通知」而不作信号的标题数 (`state_branches` 12)。 */
+  readonly lookalikeNoticeTitles?: number;
 }
 
 export interface EarningsDateSource {
