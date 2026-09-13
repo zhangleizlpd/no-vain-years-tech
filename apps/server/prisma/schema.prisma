@@ -1336,7 +1336,8 @@ model EarningsDateObservation {
 }
 
 // 合并后事件。唯一 (instrument_id, period_key)。
-// status: 'confirmed' | 'unconfirmed' | 'conflict' | 'notified_undated' | 'overdue' | 'published'。
+// status: 'confirmed' | 'unconfirmed' | 'conflict' | 'notified_undated' | 'overdue' | 'published' | 'superseded'
+//   (`superseded` = 已并入: 「已通知、日期未知」占位事件 `D:notice_undated:<通知刊发日>` 被接手, 🚫 删除, 079 T014)。
 // 🚨 `revision` 是乐观并发列 (plan §D8): 写入一律 `updateMany where { id, revision }` + affected-count,
 //   命中 0 行重读重算; 🚫 `SELECT … FOR UPDATE`。CLI 回填与定时运行可能重叠。
 model EarningsDateEvent {

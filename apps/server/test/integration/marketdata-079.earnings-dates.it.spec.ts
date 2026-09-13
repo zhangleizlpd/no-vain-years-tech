@@ -23,6 +23,11 @@ import type {
 import {
   assembleEarningsDateSources,
   EARNINGS_DATE_SOURCE_NAMES,
+  type EarningsDateBasis,
+  type EarningsDateCollectResult,
+  type EarningsDateSource,
+  type EarningsDateSourceCapabilities,
+  type EarningsDateSourceObservation,
 } from '../../src/marketdata/earnings-date-source.port';
 import { FutuCalendarSource } from '../../src/marketdata/futu-calendar.source';
 import { HkexBoardMeetingListSource } from '../../src/marketdata/hkex-board-meeting-list.source';
@@ -457,6 +462,8 @@ describe('079 T013 合并用例采集段: 来源隔离 + 失败三件套 + 观�
   });
 
   beforeEach(async () => {
+    // T014 起 runHk 会据观测建事件 ⇒ 事件与观测一起清, 否则上一用例的事件进下一用例的逾期扫描。
+    await prisma.earningsDateEvent.deleteMany();
     await prisma.earningsDateObservation.deleteMany();
   });
 
@@ -498,6 +505,8 @@ describe('079 T013 合并用例采集段: 来源隔离 + 失败三件套 + 观�
           new DbTradingCalendarAdapter(prisma),
         ),
       }),
+      fiscal,
+      new DbTradingCalendarAdapter(prisma),
     );
   }
 
@@ -629,5 +638,382 @@ describe('079 T013 合并用例采集段: 来源隔离 + 失败三件套 + 观�
     expect(listRows.every((r) => r.lastSeenAt.getTime() === SAT_0912.getTime())).toBe(true);
     expect(listRows.every((r) => r.firstSeenAt.getTime() === FRI_0911.getTime())).toBe(true);
     expect(listRows.every((r) => r.prevDate === null)).toBe(true);
+  });
+});
+
+// T014 合并用例 ②: 事件合并编排 + 乐观并发 + 占位事件 + 美股增量入口 (FR-007 / FR-012 / FR-016 / FR-017 /
+// FR-021 / SC-005, plan §D8; state_branches 4 / 9 / 10 / 16)。
+// 为什么必须真 PG: `revision` 条件更新的命中行数、唯一键 (instrument_id, period_key)、流水外键与「事件总数
+// 不减」都是落库语义, 替身只能复述实现; 交易日数走真 trading_day + 覆盖声明。公告来源用真
+// HkexAnnouncementSource (120 天信号窗口在代码路径上), 富途与清单用按轮改写的脚本化假来源 (合并用例只认
+// port 契约, FR-001)。
+const ANNOUNCED_ONLY: EarningsDateSourceCapabilities = {
+  forward: 'announced_only',
+  confirmationSignal: false,
+  publicationFact: false,
+};
+const UNCONFIRMED: EarningsDateSourceCapabilities = { ...ANNOUNCED_ONLY, forward: 'unconfirmed' };
+const ZERO_COUNTS = {
+  dataRows: 0,
+  resultRows: 0,
+  dividendOnlyRows: 0,
+  textPeriodKeyRows: 0,
+  nonStandardMonthRows: 0,
+};
+const INTERIM = 'P:2026-06-30';
+const NOTICE_TITLE = '董事會會議召開日期';
+
+type Round = { current: Partial<EarningsDateCollectResult> };
+
+/** 6–9 月港股工作日 = 交易日 (覆盖声明同 T013 段)。幂等。 */
+async function seedHkTradingDays(): Promise<void> {
+  const days: { market: string; date: Date }[] = [];
+  for (let t = Date.UTC(2026, 5, 1); t <= Date.UTC(2026, 8, 30); t += 86_400_000) {
+    if (![0, 6].includes(new Date(t).getUTCDay())) days.push({ market: 'hk', date: new Date(t) });
+  }
+  await prisma.tradingDay.createMany({ data: days, skipDuplicates: true });
+  await prisma.calendarCoverage.upsert({
+    where: { market: 'hk' },
+    create: {
+      market: 'hk',
+      coveredFrom: day('2026-01-01'),
+      coveredTo: day('2026-09-30'),
+      servedBy: 'seed',
+    },
+    update: { coveredFrom: day('2026-01-01'), coveredTo: day('2026-09-30') },
+  });
+}
+
+async function resetMergeTables(): Promise<void> {
+  await prisma.earningsDateEvent.deleteMany();
+  await prisma.earningsDateObservation.deleteMany();
+  await prisma.earningsMeetingLag.deleteMany();
+}
+
+/** 按轮脚本化的假来源：`round.current` 由用例在两轮之间改写。 */
+const scripted = (
+  capabilities: (market: string) => EarningsDateSourceCapabilities | null,
+  round: Round,
+): EarningsDateSource => ({
+  name: 'scripted',
+  capabilities,
+  collect: async () => ({
+    observations: [],
+    noticeSignals: [],
+    skippedUnknownInstruments: 0,
+    ...round.current,
+  }),
+});
+const hkOnly = (market: string) => (market === 'hk' ? ANNOUNCED_ONLY : null);
+
+const obs = (
+  instrumentId: bigint,
+  basis: EarningsDateBasis,
+  date: string,
+): EarningsDateSourceObservation => ({
+  instrumentId,
+  periodKey: INTERIM,
+  reportKind: 'interim',
+  periodEnd: '2026-06-30',
+  periodText: null,
+  basis,
+  announceDate: basis === 'meeting' ? null : date,
+  meetingDate: basis === 'meeting' ? date : null,
+  publicationTime: null,
+  filedDate: null,
+  evidence: null,
+});
+/** 清单形态: 观测 + 本轮在清单的键 + 页首日期。 */
+const listing = (pageDate: string, observations: EarningsDateSourceObservation[]) => ({
+  observations,
+  listedPeriodKeys: observations.map(({ instrumentId, periodKey }) => ({
+    instrumentId,
+    periodKey,
+  })),
+  boardListScan: { pageDate, counts: ZERO_COUNTS },
+});
+
+const buildMerge = (futu: Round, board: Round, futuCaps = hkOnly) =>
+  new SyncEarningsDatesUseCase(
+    prisma,
+    assembleEarningsDateSources([...EARNINGS_DATE_SOURCE_NAMES], {
+      futu_calendar: scripted(futuCaps, futu),
+      hkex_announcement: new HkexAnnouncementSource(prisma),
+      hkex_board_meeting_list: scripted(hkOnly, board),
+    }),
+    fiscal,
+    new DbTradingCalendarAdapter(prisma),
+  );
+/** 香港当地 `date` 23:30 跑一轮 (业务日 = `date`)。 */
+const at = (date: string) => new Date(`${date}T23:30:00+08:00`);
+const runOn = (useCase: SyncEarningsDatesUseCase, date: string) =>
+  useCase.runHk(emptyStats(), { now: at(date), mode: 'daily' });
+const eventOf = (instrumentId: bigint, periodKey = INTERIM) =>
+  prisma.earningsDateEvent.findUniqueOrThrow({
+    where: { instrumentId_periodKey: { instrumentId, periodKey } },
+    include: { logs: { orderBy: { id: 'asc' } } },
+  });
+
+describe('079 T014 合并用例 ①–④: 事件合并编排 + 乐观并发', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('① 会前通知刊发后、清单首次列出该期那一轮 ⇒ confirmed, 确认日期 = 通知刊发日而非首次观测 (SC-005)', async () => {
+    const inst = await instrument('hk', '06690');
+    await announce(inst.id, '2026-09-01', NOTICE_TITLE, ['all']);
+    const board = { current: listing('2026-09-03', [obs(inst.id, 'meeting', '2026-09-18')]) };
+
+    await runOn(buildMerge({ current: {} }, board), '2026-09-03');
+
+    const listed = await prisma.earningsDateObservation.findFirstOrThrow({
+      where: { instrumentId: inst.id, source: 'hkex_board_meeting_list' },
+    });
+    expect(listed.firstSeenAt).toEqual(at('2026-09-03'));
+    expect(await eventOf(inst.id)).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-18'),
+      announceBasis: 'meeting',
+      confirmedDate: day('2026-09-01'),
+      confirmedBasis: 'announced',
+    });
+    // 该期已由带日期事件承接 ⇒ 不建占位事件 (事件数恰为 1)。
+    expect(await prisma.earningsDateEvent.count({ where: { instrumentId: inst.id } })).toBe(1);
+  });
+
+  it('② 两精确口径冲突 ⇒ conflict + 全部日期可查; 次日一致 ⇒ confirmed + 解除留痕', async () => {
+    const inst = await instrument('hk', '02331');
+    const futu = { current: { observations: [obs(inst.id, 'explicit', '2026-09-20')] } };
+    const board = { current: listing('2026-09-07', [obs(inst.id, 'explicit', '2026-09-22')]) };
+    const useCase = buildMerge(futu, board);
+
+    await runOn(useCase, '2026-09-07');
+    const conflicted = await eventOf(inst.id);
+    expect(conflicted).toMatchObject({ status: 'conflict', announceDate: null });
+    expect(conflicted.conflictCandidates).toEqual([
+      { source: 'futu_calendar', basis: 'explicit', date: '2026-09-20' },
+      { source: 'hkex_board_meeting_list', basis: 'explicit', date: '2026-09-22' },
+    ]);
+
+    board.current = listing('2026-09-08', [obs(inst.id, 'explicit', '2026-09-20')]);
+    await runOn(useCase, '2026-09-08');
+    const resolved = await eventOf(inst.id);
+    expect(resolved).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-20'),
+      conflictCandidates: null,
+    });
+    expect(resolved.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'status_changed',
+        fromStatus: 'conflict',
+        toStatus: 'confirmed',
+        detail: expect.objectContaining({ resolvedCandidates: conflicted.conflictCandidates }),
+      }),
+    );
+  });
+
+  it('③ 通知第 1 天、富途日期第 30 天才出现、第 40 天改期 ⇒ 每轮确认日期都 = 通知刊发日 (排序铁律 4)', async () => {
+    const inst = await instrument('hk', '09618');
+    await announce(inst.id, '2026-07-01', NOTICE_TITLE, ['all']);
+    const futu: Round = { current: {} };
+    const useCase = buildMerge(futu, { current: {} });
+
+    await runOn(useCase, '2026-07-01');
+    expect(await prisma.earningsDateEvent.count({ where: { instrumentId: inst.id } })).toBe(0);
+
+    futu.current = { observations: [obs(inst.id, 'structured', '2026-08-25')] };
+    await runOn(useCase, '2026-07-30');
+    expect(await eventOf(inst.id)).toMatchObject({
+      announceDate: day('2026-08-25'),
+      confirmedDate: day('2026-07-01'),
+      confirmedBasis: 'announced',
+    });
+
+    futu.current = { observations: [obs(inst.id, 'structured', '2026-08-27')] };
+    await runOn(useCase, '2026-08-09');
+    const rescheduled = await eventOf(inst.id);
+    expect(rescheduled).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-08-27'),
+      confirmedDate: day('2026-07-01'),
+      confirmedBasis: 'announced',
+    });
+    expect(rescheduled.logs.map((l) => l.kind)).toContain('date_rescheduled');
+  });
+
+  it('④ 两次合并交错写同一事件 ⇒ revision 冲突重读重算, 确认日期不被旧读覆盖', async () => {
+    const inst = await instrument('hk', '01024');
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-09-25')] } };
+    const useCase = buildMerge(futu, { current: {} });
+    await runOn(useCase, '2026-09-07');
+    const first = await eventOf(inst.id);
+    expect(first).toMatchObject({
+      confirmedDate: day('2026-09-07'),
+      confirmedBasis: 'first_seen',
+      revision: 0,
+    });
+
+    // 交错: 本轮读完事件、进事务之前, 另一轮 (带通知信号) 已把确认日期前移为 announced 并涨了 revision。
+    const original = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
+    const transaction = vi.spyOn(prisma, '$transaction').mockImplementationOnce((async (
+      ...args: unknown[]
+    ) => {
+      await prisma.earningsDateEvent.update({
+        where: { id: first.id },
+        data: {
+          confirmedDate: day('2026-08-20'),
+          confirmedBasis: 'announced',
+          revision: { increment: 1 },
+        },
+      });
+      return original(...args);
+    }) as never);
+    futu.current = { observations: [obs(inst.id, 'structured', '2026-09-26')] };
+    let attempts = 0;
+    try {
+      await runOn(useCase, '2026-09-08');
+    } finally {
+      attempts = transaction.mock.calls.length;
+      transaction.mockRestore();
+    }
+
+    expect(attempts).toBe(2);
+    expect(await eventOf(inst.id)).toMatchObject({
+      announceDate: day('2026-09-26'),
+      confirmedDate: day('2026-08-20'),
+      confirmedBasis: 'announced',
+      revision: 2,
+    });
+  });
+});
+
+describe('079 T014 合并用例 ⑤⑥: 美股增量入口 + 已通知日期未知占位事件', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('⑤ 增量入口传入 2 个美股键 ⇒ 生成 2 个 unconfirmed 事件 (公布日已过也不判逾期)', async () => {
+    const keys = await Promise.all(['NVDA', 'MSFT'].map((code) => instrument('us', code)));
+    const usCaps = (market: string) => (market === 'us' ? UNCONFIRMED : hkOnly(market));
+    const useCase = buildMerge({ current: {} }, { current: {} }, usCaps);
+    const now = new Date('2026-09-08T06:00:00-04:00');
+    const usObservations = keys.map((i) => ({
+      ...obs(i.id, 'structured', '2026-08-20'),
+      periodKey: 'T:futu_calendar:2026 Q3',
+      reportKind: null,
+      periodEnd: null,
+      periodText: '2026 Q3',
+    }));
+    await useCase.recordObservations('futu_calendar', 'us', usObservations, now, emptyStats());
+
+    const summary = await useCase.mergeIncremental({
+      market: 'us',
+      now,
+      keys: usObservations.map(({ instrumentId, periodKey }) => ({ instrumentId, periodKey })),
+    });
+
+    const events = await prisma.earningsDateEvent.findMany({ where: { market: 'us' } });
+    expect(events).toHaveLength(2);
+    expect(summary.eventsWritten).toBe(2);
+    expect(events.every((e) => e.status === 'unconfirmed' && e.confirmedDate === null)).toBe(true);
+  });
+
+  it('⑥ 占位事件: 起手反推财年 → 迁入建 D:notice_undated: 占位 → 停留不进合并 → 被接手迁 superseded, 事件总数不减', async () => {
+    const TICKER = 'hk:02020';
+    const PLACEHOLDER = 'D:notice_undated:2026-09-01';
+    const inst = await instrument('hk', '02020');
+    await prisma.anchor.upsert({
+      where: { ticker: TICKER },
+      create: {
+        ticker: TICKER,
+        market: 'hk',
+        v: '50',
+        asof: day('2026-06-01'),
+        method: 'dcf',
+        confidence: '8',
+        confidenceSource: 'manual',
+        lLevelEffective: 'L2',
+      },
+      update: {},
+    });
+    try {
+      await announce(inst.id, '2026-03-17', '截至2025年12月31日止年度之業績公告', ['fs_main']);
+      await announce(inst.id, '2026-03-17', '截至2025年12月31日止年度的末期股息', ['dividend']);
+      await announce(inst.id, '2026-09-01', NOTICE_TITLE, ['all']);
+      // 曾在清单: 上一期 (年度) 的清单观测。
+      await prisma.earningsDateObservation.create({
+        data: {
+          source: 'hkex_board_meeting_list',
+          instrumentId: inst.id,
+          periodKey: 'P:2025-12-31',
+          market: 'hk',
+          reportKind: 'annual',
+          periodEnd: day('2025-12-31'),
+          basis: 'meeting',
+          meetingDate: day('2026-03-15'),
+          firstSeenAt: day('2026-03-10'),
+          lastSeenAt: day('2026-03-10'),
+        },
+      });
+      const futu: Round = { current: {} };
+      const useCase = buildMerge(futu, { current: {} });
+
+      // 09-01 通知 → 09-03 满 2 个交易日、无任何日期。
+      const entered = await runOn(useCase, '2026-09-03');
+      expect(entered.fiscalProfiles.written).toBe(1);
+      expect(
+        await prisma.earningsFiscalProfile.findUniqueOrThrow({ where: { instrumentId: inst.id } }),
+      ).toMatchObject({ fiscalYearEndMonth: 12 });
+      const placeholder = await eventOf(inst.id, PLACEHOLDER);
+      expect(placeholder).toMatchObject({
+        status: 'notified_undated',
+        confirmedDate: day('2026-09-01'),
+        confirmedBasis: 'announced',
+      });
+      expect(placeholder.logs).toMatchObject([
+        { kind: 'status_changed', fromStatus: null, toStatus: 'notified_undated' },
+      ]);
+      expect(entered.merge.findings).toContainEqual({
+        instrumentId: inst.id,
+        symbol: TICKER,
+        finding: expect.objectContaining({
+          step: 'earnings_notice_undated',
+          countsAsFailure: true,
+        }),
+      });
+
+      // 停留一轮: 🚨 占位事件进逐事件合并会被静默算成 confirmed。
+      const stayed = await runOn(useCase, '2026-09-04');
+      expect(await eventOf(inst.id, PLACEHOLDER)).toMatchObject({
+        status: 'notified_undated',
+        revision: 0,
+      });
+      expect(stayed.merge.findings.map((f) => f.finding.step)).not.toContain(
+        'earnings_notice_undated',
+      );
+
+      // 富途给出该期日期 ⇒ 占位事件被接手。
+      const before = await prisma.earningsDateEvent.count({ where: { instrumentId: inst.id } });
+      futu.current = { observations: [obs(inst.id, 'structured', '2026-09-25')] };
+      await runOn(useCase, '2026-09-07');
+      const successor = await eventOf(inst.id);
+      expect(successor).toMatchObject({
+        status: 'confirmed',
+        confirmedDate: day('2026-09-01'),
+        confirmedBasis: 'announced',
+      });
+      const superseded = await eventOf(inst.id, PLACEHOLDER);
+      expect(superseded.status).toBe('superseded');
+      expect(superseded.logs.at(-1)).toMatchObject({
+        kind: 'status_changed',
+        fromStatus: 'notified_undated',
+        toStatus: 'superseded',
+        detail: { supersededBy: successor.id.toString(), supersededByPeriodKey: INTERIM },
+      });
+      expect(await prisma.earningsDateEvent.count({ where: { instrumentId: inst.id } })).toBe(
+        before + 1,
+      );
+    } finally {
+      await prisma.anchor.deleteMany({ where: { ticker: TICKER } });
+    }
   });
 });

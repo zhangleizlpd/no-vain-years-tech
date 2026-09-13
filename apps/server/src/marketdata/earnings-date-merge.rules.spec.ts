@@ -6,8 +6,10 @@ import type {
 import {
   NOTICE_MATCH_WINDOW_DAYS,
   STATUS_DUE_TRADING_DAYS,
+  isNoticeUndatedPlaceholder,
   judgeNoticeUndated,
   mergeEarningsDateEvent,
+  noticeUndatedPeriodKey,
   selectAnnounceDate,
   selectPendingNotice,
   type EarningsDateCandidate,
@@ -827,14 +829,14 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     expect(r.logs).toEqual([]);
   });
 
-  it('之后任一来源给出日期 ⇒ 解除; 该事件的确认日期取通知刊发日', () => {
+  it('之后任一来源给出日期 ⇒ 占位事件迁为 superseded (🚫 删除); 该事件的确认日期取通知刊发日', () => {
     const r = judgeNoticeUndated(
       undatedInput({ existingStatus: 'notified_undated', hasUnpublishedDatedEvent: true }),
     );
-    expect(r.status).toBeNull();
+    expect(r.status).toBe('superseded');
     expect(r.findings).toEqual([]);
     expect(r.logs).toMatchObject([
-      { kind: 'status_changed', fromStatus: 'notified_undated', toStatus: null },
+      { kind: 'status_changed', fromStatus: 'notified_undated', toStatus: 'superseded' },
     ]);
 
     const dated = mergeEarningsDateEvent(
@@ -869,6 +871,12 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     expect(r.status).toBeNull();
     expect(r.fiscalProfileMissing).toBe(true);
     expect(r.findings).toEqual([]);
+  });
+
+  it('占位事件键 = D:notice_undated:<通知刊发日>, 与公告来源兜底键不同形', () => {
+    expect(noticeUndatedPeriodKey('2026-09-01')).toBe('D:notice_undated:2026-09-01');
+    expect(isNoticeUndatedPlaceholder(noticeUndatedPeriodKey('2026-09-01'))).toBe(true);
+    expect(isNoticeUndatedPlaceholder('D:hkex_announcement:2026-09-01')).toBe(false);
   });
 
   it('待判通知 = 晚于最近一次刊发的通知中最早者', () => {

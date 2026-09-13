@@ -6,7 +6,7 @@
  * 1. {@link mergeEarningsDateEvent} —— 某 `(instrument, period_key)` 事件：取值 / 冲突 / 确认 /
  *    刊发覆盖 / 逾期 / 改期留痕 / 清单行提前消失。输出事件字段 + 流水 + findings 候选。
  * 2. {@link judgeNoticeUndated} —— 某标的：会前通知刊发后满 2 个交易日仍无任何日期 ⇒ 已通知日期未知。
- *    通知不带报告期，状态挂在哪个 `period_key` 上 (占位事件的键与去留) 由用例定。
+ *    通知不带报告期 ⇒ 状态挂在占位事件 ({@link noticeUndatedPeriodKey}) 上；迁出 ⇒ `superseded`。
  *
  * ## 🚫 规则里不出现任何来源名 (FR-001)
  *
@@ -62,14 +62,35 @@ import type {
   EarningsDateSourceObservation,
   EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
+import { datePeriodKey } from './earnings-period.rules.js';
 
+/**
+ * `superseded` (已并入) = 「已通知、日期未知」占位事件被给出日期的事件接手后的终态 (FR-017，spec
+ * Session（七）第 2 问)：🚫 删除占位事件 —— 流水随事件级联删除 (FR-013)。
+ */
 export type EarningsDateEventStatus =
   | 'confirmed'
   | 'unconfirmed'
   | 'conflict'
   | 'notified_undated'
   | 'overdue'
-  | 'published';
+  | 'published'
+  | 'superseded';
+
+/**
+ * 占位事件键前缀：会前通知不带报告期 ⇒ 键 = `D:notice_undated:<通知刊发日>` (plan §D8)。
+ * 🚫 用 `D:hkex_announcement:<日期>` —— 与公告来源无期末日刊发的兜底键同形，通知与刊发同日即撞键。
+ * `notice_undated` 不是任何来源名 ⇒ 观测永远不会落这个键。
+ */
+export const NOTICE_UNDATED_PERIOD_KEY_PREFIX = 'D:notice_undated:';
+
+export function noticeUndatedPeriodKey(noticeDate: string): string {
+  return datePeriodKey('notice_undated', noticeDate);
+}
+
+export function isNoticeUndatedPlaceholder(periodKey: string): boolean {
+  return periodKey.startsWith(NOTICE_UNDATED_PERIOD_KEY_PREFIX);
+}
 
 /** 确认日期口径：`announced` = 会前通知刊发日；`first_seen` = 来源首次观测当地日期。 */
 export type EarningsConfirmedBasis = 'announced' | 'first_seen';
@@ -737,8 +758,11 @@ export interface NoticeUndatedInput {
 
 export interface NoticeUndatedResult {
   readonly pendingNotice: EarningsNoticeSignal | null;
-  /** null ⇒ 该标的本轮不处于已通知日期未知。 */
-  readonly status: 'notified_undated' | null;
+  /**
+   * `notified_undated` ⇒ 迁入或停留；`superseded` ⇒ 既有占位事件本轮迁出 (被接手，用例写流水指向
+   * 接手事件)；null ⇒ 该标的本轮不处于、也未曾处于已通知日期未知。
+   */
+  readonly status: 'notified_undated' | 'superseded' | null;
   readonly logs: readonly EarningsDateEventLogEntry[];
   readonly findings: readonly EarningsDateFinding[];
   /** 从未在清单出现的标的满足条件 ⇒ 只计数 (🚫 计失败、🚫 迁入)。 */
@@ -761,9 +785,9 @@ export function selectPendingNotice(
 function undatedLogs(
   input: NoticeUndatedInput,
   pendingNotice: EarningsNoticeSignal | null,
-  status: 'notified_undated' | null,
+  status: NoticeUndatedResult['status'],
 ): EarningsDateEventLogEntry[] {
-  if ((input.existingStatus === 'notified_undated') === (status !== null)) return [];
+  if ((input.existingStatus === 'notified_undated') === (status === 'notified_undated')) return [];
   return [
     {
       kind: 'status_changed',
@@ -777,7 +801,7 @@ function undatedLogs(
 function undatedFindings(
   input: NoticeUndatedInput,
   pendingNotice: EarningsNoticeSignal | null,
-  status: 'notified_undated' | null,
+  status: NoticeUndatedResult['status'],
   verdict: ElapsedVerdict | null,
 ): EarningsDateFinding[] {
   if (pendingNotice === null) return [];
@@ -823,9 +847,12 @@ export function judgeNoticeUndated(input: NoticeUndatedInput): NoticeUndatedResu
       : judgeElapsed(input.elapsedTradingDays, pendingNotice.noticeDate, input.hasFiscalProfile);
   // 🚨 从未在清单的标的 (清单不覆盖的板块) 只计数 (FR-017)。
   const neverListedUndated = verdict === 'due' && !input.everListed;
-  const status: 'notified_undated' | null =
-    (verdict === 'due' && !neverListedUndated) || (verdict === 'unjudged' && wasUndated)
-      ? 'notified_undated'
+  const undated =
+    (verdict === 'due' && !neverListedUndated) || (verdict === 'unjudged' && wasUndated);
+  const status: NoticeUndatedResult['status'] = undated
+    ? 'notified_undated'
+    : wasUndated
+      ? 'superseded'
       : null;
 
   return {
