@@ -1017,3 +1017,246 @@ describe('079 T014 合并用例 ⑤⑥: 美股增量入口 + 已通知日期未�
     }
   });
 });
+
+// T015 findings 其余出口 + 迁入标红计数 (FR-017 / FR-019a / FR-023 / FR-026 / FR-028 / SC-011, plan §D10;
+// state_branches 11 / 14)。经真 SyncRunRecorder 收尾, 断言落库的 sync_run.status —— 日报只读运行状态、
+// 不按 step 判红, 计数错了飞书就不标红 (或连日标红)。
+const seedProfile = (instrumentId: bigint) =>
+  prisma.earningsFiscalProfile.create({
+    data: {
+      instrumentId,
+      fiscalYearEndMonth: 12,
+      source: 'manual',
+      evidence: 'manual: seed',
+      determinedAt: day('2026-01-01'),
+    },
+  });
+
+/** 一轮 runHk 经真 SyncRunRecorder 收尾 ⇒ 返回 stats 与落库的运行状态。 */
+async function recordedRun(useCase: SyncEarningsDatesUseCase, date: string) {
+  const recorder = new SyncRunRecorder(prisma);
+  const stats: SyncRunStats = emptyStats();
+  const id = await recorder.start('hk_earnings_date');
+  await useCase.runHk(stats, { now: at(date), mode: 'daily' });
+  await recorder.finish(id, deriveStatus(stats), stats);
+  const run = await prisma.syncRun.findUniqueOrThrow({ where: { id }, select: { status: true } });
+  return { stats, status: run.status };
+}
+
+const steps = (stats: SyncRunStats, step: string) =>
+  stats.findings.filter((f) => 'step' in f && f.step === step);
+
+describe('079 T015 迁入标红计数 ①②: overdue / notified_undated 只在迁入那一轮计失败', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('① 事件迁入 overdue ⇒ 该轮 failed = 迁入事件数 + partial; 次轮仍 overdue ⇒ failed 0 + success', async () => {
+    const pair = await Promise.all(['00981', '00992'].map((code) => instrument('hk', code)));
+    for (const i of pair) await seedProfile(i.id);
+    // 公布日 09-07 (周一) → 09-09 满 2 个交易日。
+    const futu: Round = {
+      current: { observations: pair.map((i) => obs(i.id, 'structured', '2026-09-07')) },
+    };
+    const useCase = buildMerge(futu, { current: {} });
+
+    const entered = await recordedRun(useCase, '2026-09-09');
+    const overdue = steps(entered.stats, 'earnings_date_overdue');
+    expect(overdue).toHaveLength(2);
+    expect(overdue).toContainEqual({
+      kind: 'notice',
+      step: 'earnings_date_overdue',
+      detail: expect.objectContaining({ symbol: 'hk:00981', periodKey: INTERIM }),
+    });
+    expect(entered.stats.failed).toBe(overdue.length);
+    expect(entered.status).toBe('partial');
+
+    const stayed = await recordedRun(useCase, '2026-09-10');
+    for (const i of pair) expect((await eventOf(i.id)).status).toBe('overdue');
+    expect(stayed.stats.failed).toBe(0);
+    expect(stayed.status).toBe('success');
+  });
+
+  it('② 曾在清单的标的迁入 notified_undated ⇒ 同形; 从未在清单的同形通知只计数', async () => {
+    const [listed, neverListed] = await Promise.all(
+      ['02382', '08083'].map((code) => instrument('hk', code)),
+    );
+    for (const i of [listed, neverListed]) {
+      await seedProfile(i.id);
+      await announce(i.id, '2026-09-01', NOTICE_TITLE, ['all']);
+    }
+    await prisma.earningsDateObservation.create({
+      data: {
+        source: 'hkex_board_meeting_list',
+        instrumentId: listed.id,
+        periodKey: 'P:2025-12-31',
+        market: 'hk',
+        reportKind: 'annual',
+        periodEnd: day('2025-12-31'),
+        basis: 'meeting',
+        meetingDate: day('2026-03-15'),
+        firstSeenAt: day('2026-03-10'),
+        lastSeenAt: day('2026-03-10'),
+      },
+    });
+    const useCase = buildMerge({ current: {} }, { current: {} });
+
+    const entered = await recordedRun(useCase, '2026-09-03');
+    const undated = steps(entered.stats, 'earnings_notice_undated');
+    expect(undated).toContainEqual({
+      kind: 'notice',
+      step: 'earnings_notice_undated',
+      detail: expect.objectContaining({ symbol: 'hk:02382', noticeDate: '2026-09-01' }),
+    });
+    expect(undated).toContainEqual({
+      kind: 'notice',
+      step: 'earnings_notice_undated',
+      detail: { neverListed: 1, symbols: ['hk:08083'] },
+    });
+    expect(entered.stats.failed).toBe(1);
+    expect(entered.status).toBe('partial');
+
+    const stayed = await recordedRun(useCase, '2026-09-04');
+    expect((await eventOf(listed.id, 'D:notice_undated:2026-09-01')).status).toBe(
+      'notified_undated',
+    );
+    expect(stayed.stats.failed).toBe(0);
+    expect(stayed.status).toBe('success');
+  });
+});
+
+describe('079 T015 findings 出口 ③④: 各 step / kind 与 plan §D10 表一致, 🚫 计失败', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('③ 只有冲突 / 清单行消失 / 未对齐 finding 的一轮 ⇒ 这些 finding 条数 > 0, failed 0 + success', async () => {
+    const [conflicted, dropped, unaligned] = await Promise.all(
+      ['00020', '00268', '00772'].map((code) => instrument('hk', code)),
+    );
+    const futu: Round = {
+      current: { observations: [obs(conflicted.id, 'explicit', '2026-09-20')] },
+    };
+    const board: Round = {
+      current: listing('2026-09-07', [obs(dropped.id, 'meeting', '2026-09-25')]),
+    };
+    const useCase = buildMerge(futu, board);
+    await recordedRun(useCase, '2026-09-07');
+
+    futu.current = {
+      observations: [
+        obs(conflicted.id, 'explicit', '2026-09-20'),
+        {
+          ...obs(unaligned.id, 'structured', '2026-09-30'),
+          periodKey: 'T:futu_calendar:2026 Q3',
+          reportKind: null,
+          periodEnd: null,
+        },
+      ],
+    };
+    board.current = listing('2026-09-08', [obs(conflicted.id, 'explicit', '2026-09-22')]);
+    const { stats, status } = await recordedRun(useCase, '2026-09-08');
+
+    for (const step of [
+      'earnings_date_conflict',
+      'earnings_board_list_dropped',
+      'earnings_date_unaligned',
+    ]) {
+      expect(steps(stats, step).length, step).toBeGreaterThan(0);
+    }
+    expect(steps(stats, 'earnings_date_conflict')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({ symbol: 'hk:00020' }),
+      }),
+    ]);
+    expect(steps(stats, 'earnings_board_list_dropped')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({ symbol: 'hk:00268' }),
+      }),
+    ]);
+    expect(steps(stats, 'earnings_date_unaligned')).toEqual([
+      expect.objectContaining({ kind: 'notice', detail: expect.objectContaining({ count: 1 }) }),
+    ]);
+    expect(steps(stats, 'earnings_board_list_scan')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_board_list_scan',
+        detail: {
+          source: 'hkex_board_meeting_list',
+          pageDate: '2026-09-08',
+          ...ZERO_COUNTS,
+          skippedUnknownInstruments: 0,
+          noticeSignals: 0,
+        },
+      },
+    ]);
+    expect(stats.failed).toBe(0);
+    expect(status).toBe('success');
+  });
+
+  it('④ 财年未知 (每轮一条) / 财年待补 / 财年矛盾 / 逾期日历不可判 ⇒ kind 与 §D10 表一致, 🚫 计失败', async () => {
+    const [pending, conflict, noProfile, beforeCoverage] = await Promise.all(
+      ['03690', '00388', '02318', '00883'].map((code) => instrument('hk', code)),
+    );
+    const anchored = [`hk:${pending.code}`, `hk:${conflict.code}`];
+    for (const ticker of anchored) {
+      await prisma.anchor.upsert({
+        where: { ticker },
+        create: {
+          ticker,
+          market: 'hk',
+          v: '50',
+          asof: day('2026-06-01'),
+          method: 'dcf',
+          confidence: '8',
+          confidenceSource: 'manual',
+          lLevelEffective: 'L2',
+        },
+        update: {},
+      });
+    }
+    try {
+      await seedProfile(conflict.id);
+      await announce(conflict.id, '2026-09-04', '截至2026年6月30日止年度之業績公告', ['fs_main']);
+      // 无档案标的公布日 09-01 已过 4 个交易日; 另一标的公布日落在日历覆盖 (2026-01-01 起) 之前。
+      const futu: Round = {
+        current: {
+          observations: [
+            obs(noProfile.id, 'structured', '2026-09-01'),
+            obs(beforeCoverage.id, 'structured', '2025-12-20'),
+          ],
+        },
+      };
+      const { stats, status } = await recordedRun(buildMerge(futu, { current: {} }), '2026-09-07');
+
+      expect(steps(stats, 'earnings_fiscal_profile_pending')).toEqual([
+        {
+          kind: 'notice',
+          step: 'earnings_fiscal_profile_pending',
+          detail: expect.objectContaining({ symbol: 'hk:03690', pending: 'none' }),
+        },
+      ]);
+      expect(steps(stats, 'earnings_fiscal_profile_conflict')).toEqual([
+        {
+          kind: 'notice',
+          step: 'earnings_fiscal_profile_conflict',
+          detail: expect.objectContaining({ symbol: 'hk:00388' }),
+        },
+      ]);
+      expect(steps(stats, 'earnings_date_fiscal_unknown')).toEqual([
+        {
+          kind: 'notice',
+          step: 'earnings_date_fiscal_unknown',
+          detail: { count: 1, samples: ['hk:02318'] },
+        },
+      ]);
+      expect(steps(stats, 'earnings_date_calendar_unknown')).toEqual([
+        expect.objectContaining({ kind: 'unjudged', symbol: 'hk:00883' }),
+      ]);
+      expect(stats.failed).toBe(0);
+      expect(status).toBe('success');
+    } finally {
+      await prisma.anchor.deleteMany({ where: { ticker: { in: anchored } } });
+    }
+  });
+});

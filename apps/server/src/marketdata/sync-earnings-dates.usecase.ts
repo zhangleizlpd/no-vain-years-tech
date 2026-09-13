@@ -34,6 +34,7 @@ import {
   type EarningsDateSourceObservation,
   type EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
+import { isAlignedPeriodKey } from './earnings-period.rules.js';
 import { exchangeCalendarDate } from './session-clock.js';
 import {
   SyncEarningsFiscalProfileUseCase,
@@ -568,6 +569,101 @@ function pickSuccessor(
   );
 }
 
+// ─── findings 出口 (T015) ─────────────────────────────────────────────────
+
+/** 每轮一条的汇总型 finding 至多列出的样例数 (plan §D10 `earnings_date_fiscal_unknown`)。 */
+export const EARNINGS_FINDING_SAMPLE_LIMIT = 20;
+
+interface MergeReport {
+  readonly outcome: EarningsDatesCollectOutcome;
+  readonly fiscalProfiles: FiscalProfileBatchResult;
+  readonly merge: EarningsDatesMergeSummary;
+  /** 本轮新插入观测的键。 */
+  readonly inserted: readonly EarningsDateEventKey[];
+}
+
+/**
+ * 合并段 findings 出口 (plan §D10 表；采集段的三项在 {@link SyncEarningsDatesUseCase} 采集时已写)。
+ *
+ * 🚨 **标红口径 (spec Session（六）)**：只有规则标了 `countsAsFailure` 的 finding —— 事件**迁入**
+ * `overdue` / `notified_undated` 的那一轮 —— 每条 `stats.failed += 1`，kind 仍为 `notice`
+ * (`failure` 是续跑 / 重试的来源)。停留在该状态的事件规则不产出 finding ⇒ 不再计；🚫 按「本轮扫描到
+ * 该状态」计 —— 延期刊发的公司会让日报连日标红、淹没新故障。冲突 / 未对齐 / 清单行消失 / 日历不可判 /
+ * 财年未知 / 财年待补与矛盾 / 从未在清单的未知日期通知 / 清单扫描计数 🚫 计失败。
+ *
+ * notice 的标的代码放 `detail.symbol` (`SyncRunFinding` 的 notice 无 `symbol` 字段)。
+ * 复杂度 O(findings + 新插入观测数 + 来源数)。
+ */
+function reportMergeFindings(
+  stats: SyncRunStats,
+  { outcome, fiscalProfiles, merge, inserted }: MergeReport,
+): void {
+  const notice = (step: string, detail: Record<string, unknown>) =>
+    stats.findings.push({ kind: 'notice', step, detail });
+
+  for (const { symbol, finding } of merge.findings) {
+    if (finding.countsAsFailure) stats.failed += 1;
+    if (finding.kind === 'notice') {
+      notice(finding.step, { symbol, ...finding.detail });
+      continue;
+    }
+    const { judgement, periodKey, from, to } = finding.detail as {
+      judgement?: string;
+      periodKey?: string;
+      from?: string | null;
+      to?: string | null;
+    };
+    stats.findings.push({
+      kind: 'unjudged',
+      symbol,
+      step: finding.step,
+      contracts: [],
+      gates: [`${judgement ?? '?'}:${periodKey ?? '-'}:${from ?? '?'}..${to ?? '?'}`],
+    });
+  }
+  if (merge.fiscalUnknown.length > 0) {
+    // 每轮一条 (🚫 逐事件一条)：计数 + 至多 20 个样例代码。
+    notice('earnings_date_fiscal_unknown', {
+      count: merge.fiscalUnknown.length,
+      samples: [...new Set(merge.fiscalUnknown)].slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+    });
+  }
+  if (merge.neverListedUndated.length > 0) {
+    // 从未出现在清单的标的 (清单不覆盖的板块)：只计数 (FR-017)。
+    notice('earnings_notice_undated', {
+      neverListed: merge.neverListedUndated.length,
+      symbols: merge.neverListedUndated,
+    });
+  }
+  for (const { ticker, pending, detail } of fiscalProfiles.pending) {
+    notice('earnings_fiscal_profile_pending', { symbol: ticker, pending, reason: detail });
+  }
+  for (const { ticker, detail } of fiscalProfiles.conflicts) {
+    notice('earnings_fiscal_profile_conflict', { symbol: ticker, reason: detail });
+  }
+  const unaligned = inserted.filter((k) => !isAlignedPeriodKey(k.periodKey));
+  if (unaligned.length > 0) {
+    notice('earnings_date_unaligned', {
+      count: unaligned.length,
+      samples: unaligned
+        .slice(0, EARNINGS_FINDING_SAMPLE_LIMIT)
+        .map((k) => `${k.instrumentId} ${k.periodKey}`),
+    });
+  }
+  const noticeSignals = outcome.collected.reduce((n, c) => n + c.result.noticeSignals.length, 0);
+  for (const { name, result } of outcome.collected) {
+    if (result.boardListScan === undefined) continue;
+    // 每轮运行时不变量 (plan §D7 / FR-023)：只计数，🚫 判异常。
+    notice('earnings_board_list_scan', {
+      source: name,
+      pageDate: result.boardListScan.pageDate,
+      ...result.boardListScan.counts,
+      skippedUnknownInstruments: result.skippedUnknownInstruments,
+      noticeSignals,
+    });
+  }
+}
+
 @Injectable()
 export class SyncEarningsDatesUseCase {
   private readonly logger = new Logger(SyncEarningsDatesUseCase.name);
@@ -594,11 +690,20 @@ export class SyncEarningsDatesUseCase {
     const outcome = await this.collect(HK_EARNINGS_DATE_MARKET, stats, request);
     // 🚨 上一轮清单集合须在观测落库之前读：落库后本轮在清单的行最近观测时刻已是本轮。
     const listings = await this.readListingRounds(outcome);
+    const inserted: EarningsDateEventKey[] = [];
     for (const { name, result } of outcome.collected) {
-      await this.recordObservations(name, outcome.market, result.observations, request.now, stats);
+      const keys = await this.recordObservations(
+        name,
+        outcome.market,
+        result.observations,
+        request.now,
+        stats,
+      );
+      inserted.push(...keys);
     }
     const merge = await this.mergeHk(outcome, listings, request.now);
     addWritten(stats, merge.eventsWritten);
+    reportMergeFindings(stats, { outcome, fiscalProfiles, merge, inserted });
     return { ...outcome, fiscalProfiles, merge };
   }
 
@@ -728,6 +833,8 @@ export class SyncEarningsDatesUseCase {
    * 并发两轮同时插同一新行 ⇒ `skipDuplicates` 先写者胜，内容同源同轮等价。
    *
    * 复杂度：1 次读 + O(新行 / 500) 次 createMany + 1 次 updateMany (内容未变的行) + O(内容变化行) 次 update。
+   *
+   * 返回本轮新插入行的键 (T015 `earnings_date_unaligned` 只计「新增」的 `T:` / `D:` 键)。
    */
   async recordObservations(
     source: EarningsDateSourceName,
@@ -735,8 +842,8 @@ export class SyncEarningsDatesUseCase {
     observations: readonly EarningsDateSourceObservation[],
     now: Date,
     stats: SyncRunStats,
-  ): Promise<void> {
-    if (observations.length === 0) return;
+  ): Promise<EarningsDateEventKey[]> {
+    if (observations.length === 0) return [];
     const stored: StoredObservation[] = await this.prisma.earningsDateObservation.findMany({
       where: {
         source,
@@ -761,12 +868,14 @@ export class SyncEarningsDatesUseCase {
     const byKey = new Map(stored.map((row) => [`${row.instrumentId} ${row.periodKey}`, row]));
 
     const inserts: Prisma.EarningsDateObservationCreateManyInput[] = [];
+    const insertedKeys: EarningsDateEventKey[] = [];
     const touchOnly: bigint[] = [];
     const updates: { id: bigint; data: Prisma.EarningsDateObservationUpdateInput }[] = [];
     for (const o of observations) {
       const columns = observationColumns(market, o);
       const row = byKey.get(`${o.instrumentId} ${o.periodKey}`);
       if (row === undefined) {
+        insertedKeys.push({ instrumentId: o.instrumentId, periodKey: o.periodKey });
         inserts.push({
           source,
           instrumentId: o.instrumentId,
@@ -817,6 +926,7 @@ export class SyncEarningsDatesUseCase {
       await this.prisma.earningsDateObservation.update({ where: { id }, data });
       addWritten(stats, 1);
     }
+    return insertedKeys;
   }
 
   /** 列表型来源的本轮 / 上一轮在清单集合。O(列表型来源数) 次读。 */
