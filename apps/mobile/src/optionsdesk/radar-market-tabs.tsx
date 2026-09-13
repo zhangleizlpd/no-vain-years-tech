@@ -14,6 +14,8 @@
 //
 // 🚨 **市场集合取 `RADAR_MARKETS`（从契约派生），MUST NOT 在此写 `['us', 'hk']`** ——
 //    理由见 `radar.rules.ts` 该常量的注释（FR-015 双双漏报）。
+// 📌 081 T003：可选 `testIdPrefix`（默认 `optionsdesk-radar-market`）供交易账户页复用；🚨 默认值下
+//    三个 testID 必须与雷达现状逐字相同，既有 radar e2e 零改动即为回归证据。
 //
 // ── FR-016 小圆点 ────────────────────────────────────────────────────────────
 // 🚫 **不带数量**：市场页签上的数字会被读成「该市场有 N 只锚」而不是「N 只可动」。
@@ -36,11 +38,18 @@ export interface RadarMarketTabsProps {
    * 当前页签自己**不渲**圆点 —— 它的内容就在眼前，圆点是给**别的**页签用的信号。
    */
   actionableMarkets: readonly string[];
+  /** testID 前缀（容器 `-tabs` / 页签 `-tab-${m}` / 圆点 `-dot-${m}`）。默认 = 雷达原前缀。 */
+  testIdPrefix?: string;
 }
 
-export function RadarMarketTabs({ market, onSelect, actionableMarkets }: RadarMarketTabsProps) {
+export function RadarMarketTabs({
+  market,
+  onSelect,
+  actionableMarkets,
+  testIdPrefix = 'optionsdesk-radar-market',
+}: RadarMarketTabsProps) {
   return (
-    <View className="bg-surface" testID="optionsdesk-radar-market-tabs">
+    <View className="bg-surface" testID={`${testIdPrefix}-tabs`}>
       <View className="flex-row items-center border-b border-line">
         {RADAR_MARKETS.map((m) => {
           const on = m === market;
@@ -52,7 +61,7 @@ export function RadarMarketTabs({ market, onSelect, actionableMarkets }: RadarMa
               accessibilityRole="tab"
               accessibilityState={{ selected: on }}
               accessibilityLabel={LABELS[m]}
-              testID={`optionsdesk-radar-market-tab-${m}`}
+              testID={`${testIdPrefix}-tab-${m}`}
               className={`flex-1 items-center py-sm ${on ? 'bg-surface-sunken' : ''}`}
             >
               <View className="flex-row items-center gap-1">
@@ -61,7 +70,7 @@ export function RadarMarketTabs({ market, onSelect, actionableMarkets }: RadarMa
                 </Text>
                 <View
                   className={`h-1.5 w-1.5 rounded-full ${dot ? 'bg-brand-500' : ''}`}
-                  testID={dot ? `optionsdesk-radar-market-dot-${m}` : undefined}
+                  testID={dot ? `${testIdPrefix}-dot-${m}` : undefined}
                 />
               </View>
               {/* 选中短横条；未选用**等高透明占位**，否则选中会把行撑高、切页签时整栏跳一下。 */}

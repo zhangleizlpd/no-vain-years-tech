@@ -25,6 +25,8 @@ export { IvpSegmentBar, type IvpSegmentBarProps } from './ivp-segment-bar';
 // 046 T022 — 波动温度计屏 P7（VIX 表盘 + VVIX / 比值 + 锚定标的 IVP 列表）。
 export { ThermometerScreen } from './thermometer-screen';
 export { VixGauge, type VixGaugeProps } from './vix-gauge';
+// 081 T003 — 交易账户页骨架（市场页签 + 分段占位；零数据面）。
+export { TradingAccountScreen } from './trading-account-screen';
 export {
   useUnderlyingDetail,
   UNDERLYING_DETAIL_QUERY_KEY,
@@ -52,6 +54,7 @@ export {
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
+  OPTIONSDESK_TRADING_ACCOUNT_ROUTE,
   OPTIONSDESK_UNDERLYING_PATHNAME,
   optionsdeskAnchorEditRoute,
   optionsdeskChainReportRoute,

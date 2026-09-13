@@ -78,3 +78,9 @@ export function optionsdeskAnchorSubmissionRoute(id: string) {
 
 /** 冷启动结局（072 T021；待审列表题头 / 采纳回执进入）。同栈，继承同一道 MarketsRouteGuard。 */
 export const OPTIONSDESK_ANCHOR_COLD_START_ROUTE = '/(app)/optionsdesk/anchor-cold-start' as const;
+
+/**
+ * 081 交易账户页（持仓 / 订单 / 报表骨架）。入口 = 雷达题头钱包图标。
+ * 同栈，继承同一道 MarketsRouteGuard（plan §D2，不另登记 `MARKETS_SURFACES`）。
+ */
+export const OPTIONSDESK_TRADING_ACCOUNT_ROUTE = '/(app)/optionsdesk/trading-account' as const;

@@ -34,7 +34,7 @@
     "optionsdesk": {
       "projectName": "nvy/optionsdesk",
       "projectId": "02ec895c-a2a8-4f89-8fc6-a5b050306ac8",
-      "resolvedAt": "2026-08-31",
+      "resolvedAt": "2026-09-13",
       "features": [
         "045",
         "046",
@@ -49,7 +49,8 @@
         "064",
         "069",
         "072",
-        "074"
+        "074",
+        "081"
       ]
     }
   }

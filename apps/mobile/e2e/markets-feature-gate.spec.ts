@@ -14,8 +14,8 @@ import { mockJson } from './_support/api-mock';
 //      072 起还有「我的」页的审批 / 消息两栏（`tab-panel` —— 无自己的路由，门控是渲染门）。
 //   2. deep-link 守卫：MARKETS_SURFACES 全部 13 受控面里的 8 个可路由面，直达 URL 全被
 //      MarketsRouteGuard 弹回安全屏（投资/行情/预警/期权台 → /profile；设置子页 → /settings）。
-//      面数 8 但深链 14 条 —— optionsdesk 二级页栈是**一个** route-stack 面，栈内七条路由
-//      （锚管理 / 温度计 / 标的详情 / 链分析报表 / 锚待审箱 / 待审详情 / 冷启动结局）各戳
+//      面数 8 但深链 15 条 —— optionsdesk 二级页栈是**一个** route-stack 面，栈内八条路由
+//      （锚管理 / 温度计 / 标的详情 / 链分析报表 / 锚待审箱 / 待审详情 / 冷启动结局 / 交易账户）各戳
 //      一次，验的是「栈内新增路由自动继承那道守卫」。新增栈内路由时**必须**在这里追一条：
 //      那是它继承关系唯一的机械载体。
 //   3. 合规核心（最硬）：整个 walkthrough 内**零** marketdata-family 网络请求 —— 公开版
@@ -109,7 +109,7 @@ test.setTimeout(120_000);
 
 // 受控可路由面 → 弹回目标（web-stripped；expo-router 剥 (group)/ 段）。
 // 与 markets-gate.tsx MARKETS_SURFACES 的 8 个 route/route-stack/tab-screen 面对应
-// （optionsdesk 栈一个面 × 三条栈内路由，见文件头第 2 层说明）。
+// （optionsdesk 栈一个面 × 八条栈内路由，见文件头第 2 层说明）。
 const GATED_DEEPLINKS: { path: string; redirectsTo: RegExp; note: string }[] = [
   { path: '/portfolio', redirectsTo: /\/profile$/, note: '投资 Tab 落地屏（tab-screen）' },
   { path: '/portfolio/600519', redirectsTo: /\/profile$/, note: 'portfolio 栈深链（route-stack）' },
@@ -158,6 +158,13 @@ const GATED_DEEPLINKS: { path: string; redirectsTo: RegExp; note: string }[] = [
     path: '/optionsdesk/anchor-cold-start',
     redirectsTo: /\/profile$/,
     note: '冷启动结局（栈内新增路由，072 T021）',
+  },
+  // 081 T007：交易账户页同样只靠继承那道 MarketsRouteGuard（屏内**不另写**判定，
+  // 也不另登记 MARKETS_SURFACES —— route-stack 面已覆盖整栈）。
+  {
+    path: '/optionsdesk/trading-account',
+    redirectsTo: /\/profile$/,
+    note: '交易账户页（栈内新增路由，081 交易账户页挂在 optionsdesk 栈下、门控靠继承）',
   },
   { path: '/settings/stock-market', redirectsTo: /\/settings$/, note: '证券市场（route）' },
   { path: '/settings/broker-accounts', redirectsTo: /\/settings$/, note: '券商账户（route）' },
@@ -209,7 +216,7 @@ test('markets-OFF — 投资 Tab 隐藏 + 设置无投资 Card，且零 markets 
 
 // ─── 2. deep-link 守卫：全部受控面直达被弹回 ─────────────────────────────────
 
-test('markets-OFF — 14 条 markets 深链全部 MarketsRouteGuard 弹回安全屏', async ({ page }) => {
+test('markets-OFF — 15 条 markets 深链全部 MarketsRouteGuard 弹回安全屏', async ({ page }) => {
   const leaked = trackMarketsRequests(page);
 
   for (const { path, redirectsTo, note } of GATED_DEEPLINKS) {

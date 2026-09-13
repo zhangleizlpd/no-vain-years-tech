@@ -39,6 +39,11 @@ export default function OptionsdeskLayout() {
           name="underlying/[symbol]"
           options={{ headerLeft: makeHeaderBackOrParent('/(app)/(tabs)/optionsdesk') }}
         />
+        {/* 081 交易账户页：title 由屏内 Stack.Screen 设；深链无上一页时返回落雷达（FR-010）。 */}
+        <Stack.Screen
+          name="trading-account"
+          options={{ headerLeft: makeHeaderBackOrParent('/(app)/(tabs)/optionsdesk') }}
+        />
       </Stack>
     </MarketsRouteGuard>
   );
