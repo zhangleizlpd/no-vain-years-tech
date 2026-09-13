@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.21.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.20.0...mobile-v0.21.0) (2026-09-13)
+
+
+### Features
+
+* **optionsdesk:** 077 收租候选窗由「码数预算」决定 —— 零 Δ 面的静默缺腿由构造消掉 ([#382](https://github.com/zhangleizlpd/no-vain-years-tech/issues/382)) ([3daa3c5](https://github.com/zhangleizlpd/no-vain-years-tech/commit/3daa3c5846b181394233dbcd74a9a3cfa1359ceb))
+
 ## [0.20.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.19.0...mobile-v0.20.0) (2026-09-07)
 
 
