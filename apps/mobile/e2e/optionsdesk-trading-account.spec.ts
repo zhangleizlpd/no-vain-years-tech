@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from './_support/fixtures';
+import type { RadarResponse } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
 
@@ -12,11 +13,15 @@ import { mockJson } from './_support/api-mock';
 //        ② 选「订单」后切港股 ⇒ 分段不被弹回（sb 6 / Edge）
 //        ③ 选港股后切「报表」⇒ 市场不被弹回（sb 7 / Edge）
 //        ④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字眼与错误文案（sb 8 / sb 11 后半）
+//   T005 ① 雷达点钱包入口 ⇒ 进交易账户页，且从雷达起恰 3 次点击到达「港股 · 报表」（sb 1 / SC-001）
+//        ② 360×800 视口：题头标题与 4 个入口按钮 boundingBox 两两不相交、每个按钮宽 ≥40（FR-001 / SC-006）
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
 //   🚨 **只 mock `/me` + refresh**（App 级登录态前置，不属本页依赖）；其余 `/api/**` 一律走
 //      `_support/fixtures` 的默认 abort ⇒ 「服务端不可达」是本文件每条 test 的**常态**，
 //      FR-008「本页零请求、零错误态」由此天然被每条断言覆盖。
+//   📌 从雷达进入的臂另装 `installRadarMock`（只 `GET /optionsdesk/radar`，雷达首屏渲染前置，
+//      同样不属本页依赖）；本页自身仍零请求。
 //
 // ── 选中态断言：样式自比较 ─────────────────────────────────────────────────────
 //   `react-native-web` 丢弃 `accessibilityState` ⇒ 无 `aria-selected` 可断（正向必红、反向恒真）。
@@ -290,6 +295,144 @@ test('081 T004④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字�
       await expectPlaceholderOf(page, segment);
       await expect(screen.getByText(EMPTY_DATA_TEXT_RE)).toHaveCount(0);
       await expectNoErrorText(page);
+    }
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T005 —— 雷达题头第 4 入口 + 布局修正
+// ════════════════════════════════════════════════════════════════════════════
+
+const RADAR_TITLE = '击球区雷达';
+const RADAR_TRADING_ACCOUNT_BUTTON = 'optionsdesk-radar-trading-account-button';
+/** 题头右排入口，次序 ⚙ 🌡 🔍 钱包（plan §D3）。 */
+const RADAR_HEADER_ENTRY_IDS = [
+  'optionsdesk-anchors-button',
+  'optionsdesk-thermometer-button',
+  'optionsdesk-radar-search-button',
+  RADAR_TRADING_ACCOUNT_BUTTON,
+] as const;
+
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, OPTIONS',
+  'access-control-allow-headers': '*',
+};
+
+/**
+ * 雷达首屏最小 mock（照 `optionsdesk-anchors-radar.spec.ts` `installOptionsdeskMock` 形态最小复刻）。
+ * 只认 `GET /optionsdesk/radar`；canonical 锚集合为空 ⇒ 按 server 空态四分口径恒判 `zero_anchors`
+ * （纯函数，无调用序分支）。其余 optionsdesk 请求 `fallback` 到 fixtures 默认 abort。
+ */
+async function installRadarMock(page: Page): Promise<void> {
+  await page.route(/\/api\/v1\/optionsdesk\/radar/, async (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') {
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    }
+    if (req.method() !== 'GET') return void (await route.fallback());
+    const body: RadarResponse = {
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+      emptyState: 'zero_anchors',
+      emptyStateMessage: '还没有锚 —— 先去锚管理建第一个锚',
+      marketCounts: [],
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify(body),
+    });
+  });
+}
+
+/** 进期权台 tab 雷达（首发吃 Metro 冷打包 ⇒ 长超时锚在 tab bar；照 anchors-radar spec 同名体例）。 */
+async function gotoRadar(page: Page): Promise<void> {
+  await page.goto('/');
+  await expect(page.getByRole('tab', { name: '期权台' })).toBeVisible({ timeout: 90_000 });
+  await page.getByRole('tab', { name: '期权台' }).tap();
+  await expect(page.getByTestId('optionsdesk-anchors-button')).toBeVisible({ timeout: 30_000 });
+}
+
+interface Box {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+async function boxOf(locator: Locator): Promise<Box> {
+  await expect(locator).toBeVisible();
+  const box = await locator.boundingBox();
+  if (!box) throw new Error('boundingBox 不可得');
+  return box;
+}
+
+/** 亚像素容差：布局取小数宽，相邻元素贴边时两框可能差 1e-3 级「重叠」，不是遮挡。 */
+const OVERLAP_EPSILON = 0.5;
+
+function intersects(a: Box, b: Box): boolean {
+  return (
+    a.x + OVERLAP_EPSILON < b.x + b.width &&
+    b.x + OVERLAP_EPSILON < a.x + a.width &&
+    a.y + OVERLAP_EPSILON < b.y + b.height &&
+    b.y + OVERLAP_EPSILON < a.y + a.height
+  );
+}
+
+test('081 T005① 雷达点钱包入口 ⇒ 进交易账户页；从雷达起恰 3 次点击到「港股 · 报表」（sb 1 / SC-001）', async ({
+  page,
+}) => {
+  await installRadarMock(page);
+  await gotoRadar(page);
+
+  // SC-001 数点击：从雷达起的每一次用户点击都经 `tapCounted`，终点断次数恰为 3。
+  let clicks = 0;
+  const tapCounted = async (testId: string): Promise<void> => {
+    await page.getByTestId(testId).tap();
+    clicks += 1;
+  };
+
+  await tapCounted(RADAR_TRADING_ACCOUNT_BUTTON);
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account$/);
+  await expect(page.getByRole('heading', { name: '交易账户' })).toBeVisible();
+
+  await tapCounted(marketTabId('hk'));
+  await tapCounted(segmentId('reports'));
+
+  await expectSelection(page, 'hk', 'reports');
+  await expectPlaceholderOf(page, 'reports');
+  expect(clicks, 'SC-001：从雷达起到达「港股 · 报表」的点击次数').toBe(3);
+});
+
+test('081 T005② 360×800 视口：题头标题与 4 个入口按钮互不遮挡、每个按钮宽 ≥40（FR-001 / SC-006）', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await installRadarMock(page);
+  await gotoRadar(page);
+
+  const boxes: { name: string; box: Box }[] = [
+    { name: RADAR_TITLE, box: await boxOf(page.getByText(RADAR_TITLE, { exact: true })) },
+  ];
+  for (const id of RADAR_HEADER_ENTRY_IDS) {
+    const box = await boxOf(page.getByTestId(id));
+    expect(box.width, `${id} 热区宽度`).toBeGreaterThanOrEqual(40);
+    boxes.push({ name: id, box });
+  }
+
+  expect(boxes).toHaveLength(5);
+  // 横向溢出屏外同样算「看不到」：入口组若按等分宽起排、向右溢出，框两两不相交却被裁掉。
+  for (const { name, box } of boxes) {
+    expect(box.x, `${name} 左缘出屏`).toBeGreaterThanOrEqual(-OVERLAP_EPSILON);
+    expect(box.x + box.width, `${name} 右缘出屏`).toBeLessThanOrEqual(360 + OVERLAP_EPSILON);
+  }
+  for (const [i, a] of boxes.entries()) {
+    for (const b of boxes.slice(i + 1)) {
+      expect(intersects(a.box, b.box), `${a.name} 与 ${b.name} 相交`).toBe(false);
     }
   }
 });

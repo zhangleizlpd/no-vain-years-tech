@@ -17,7 +17,7 @@
 import { useState } from 'react';
 import { FlatList, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import Svg, { Circle, Path } from 'react-native-svg';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import type { AnchorResponse, AnchorResponseZone } from '@nvy/api-client';
 
 import { DrawerMenuButton } from '~/core/app-shell-drawer';
@@ -38,6 +38,7 @@ import {
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_ANCHORS_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
+  OPTIONSDESK_TRADING_ACCOUNT_ROUTE,
   optionsdeskUnderlyingRoute,
 } from './optionsdesk-routes';
 import { useRadar } from './use-radar';
@@ -85,7 +86,9 @@ export function RadarScreen() {
           <DrawerMenuButton testID="optionsdesk-menu-button" />
         </View>
         <Text className="text-base font-semibold text-ink">{OPTIONSDESK_COPY.radarTitle}</Text>
-        <View className="flex-1 flex-row justify-end">
+        {/* 081 D4：右侧入口组按内容宽度（🚫 `flex-1` / `justify-end`）—— 4 个 40px 热区超出等分半边，
+            等分会让入口组向左溢出遮挡标题（FR-001）。代价是标题略离正中，维护者按 mockup 1a 接受。 */}
+        <View className="flex-row">
           <Pressable
             className="h-10 w-10 items-center justify-center rounded-full"
             onPress={() => router.push(OPTIONSDESK_ANCHORS_ROUTE)}
@@ -115,6 +118,16 @@ export function RadarScreen() {
             testID="optionsdesk-radar-search-button"
           >
             <SearchGlyph />
+          </Pressable>
+          {/* 081 D3：题头右排第四入口 —— 交易账户页（次序 ⚙ 🌡 🔍 钱包）。 */}
+          <Pressable
+            className="h-10 w-10 items-center justify-center rounded-full"
+            onPress={() => router.push(OPTIONSDESK_TRADING_ACCOUNT_ROUTE)}
+            accessibilityRole="button"
+            accessibilityLabel={OPTIONSDESK_COPY.tradingAccount.entryA11y}
+            testID="optionsdesk-radar-trading-account-button"
+          >
+            <WalletGlyph />
           </Pressable>
         </View>
       </View>
@@ -387,6 +400,25 @@ function SearchGlyph() {
     >
       <Circle cx={11} cy={11} r={7} />
       <Path d="M20 20 L16 16" />
+    </Svg>
+  );
+}
+
+/** 081 D3：钱包（圆角矩形 + 小圆点），体例同 GearGlyph。 */
+function WalletGlyph() {
+  return (
+    <Svg
+      width={21}
+      height={21}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={colors.ink.muted}
+      strokeWidth={1.7}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <Rect x={3} y={6} width={18} height={13} rx={2.5} />
+      <Circle cx={16.5} cy={12.5} r={1.2} />
     </Svg>
   );
 }
