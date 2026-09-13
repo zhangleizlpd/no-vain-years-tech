@@ -5,7 +5,8 @@ owners: ['@zhangleizlpd']
 status: tasks-ready
 created_at: '2026-09-13'
 updated_at: '2026-09-13'
-migration_refs: ['20260913_2220_create_earnings_date_layer']
+migration_refs:
+  ['20260913_2220_create_earnings_date_layer', '20260913_2321_create_earnings_fiscal_profile']
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 

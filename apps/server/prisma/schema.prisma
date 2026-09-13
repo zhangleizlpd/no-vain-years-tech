@@ -403,6 +403,8 @@ model Instrument {
   earningsDateObservations EarningsDateObservation[]
   earningsDateEvents       EarningsDateEvent[]
   earningsMeetingLags      EarningsMeetingLag[]
+  // 079 财年档案 (FR-026): 每只标的至多一行, 没有行 = 财年未知。
+  earningsFiscalProfile    EarningsFiscalProfile?
 
   @@unique([market, code], map: "uk_instrument_market_code")
   @@map("instrument")
@@ -1405,6 +1407,32 @@ model EarningsMeetingLag {
 
   @@unique([instrumentId, reportKind], map: "uk_earnings_meeting_lag_instrument_kind")
   @@map("earnings_meeting_lag")
+  @@schema("marketdata")
+}
+
+// 财年档案 (FR-026 / FR-027 / plan §D3 第 5 项 / §D13)。一行 = 某标的的财年结束月 + 得出来源 + 凭据。
+// 🚨 **没有行 = 财年未知** —— MUST NOT 按 12 月结年代入: 标题不带期末日的刊发事实与富途 `period_text`
+//   都靠本表换算期末日, 代入 12 会把非 12 月结年的公司静默换算到另一期且不报错。
+// 唯一 instrument_id: 每只标的只有一个当前财年结束月。写入口两个: 反推用例
+//   (`sync-earnings-fiscal-profile.usecase.ts`, 各路一致才写; 已有档案与年度业绩标题矛盾时告警、不覆盖)
+//   与人工补录 CLI (`marketdata-fiscal-profile.cli.ts`, source = 'manual')。
+// 🚨 `source` ('annual_title' | 'dividend_title' | 'board_list' | 'futu_pairing' | 'manual') 与
+//   `fiscal_year_end_month` (1–12) **无 DB 侧 enum/CHECK** —— 同上 4 表的取舍, 值域单一来源在
+//   `earnings-fiscal-profile.rules.ts` (`FiscalProfileSource`), 加值零 migration。
+model EarningsFiscalProfile {
+  id                 BigInt   @id @default(autoincrement())
+  instrumentId       BigInt   @unique(map: "uk_earnings_fiscal_profile_instrument") @map("instrument_id")
+  fiscalYearEndMonth Int      @map("fiscal_year_end_month") @db.SmallInt
+  source             String   @db.VarChar(16)
+  // 凭据: 取值所依据的公告日期 + 标题 + 链接 / 清单行 / 富途配对 / 人工补录说明, 供人工复核。
+  evidence           String   @db.Text
+  // 确定时刻 = 本行财年结束月被确定 (反推写入或人工补录) 的时刻。
+  determinedAt       DateTime @default(now()) @map("determined_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@map("earnings_fiscal_profile")
   @@schema("marketdata")
 }
 

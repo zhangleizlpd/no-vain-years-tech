@@ -13,10 +13,13 @@ const MONO_ROOT = resolve(SERVER_DIR, '../..');
 // ① 四表落 marketdata schema ② 各业务唯一键存在且真去重 (period_key 非空, 唯一键不被 NULL 绕过)
 // ③ MODEL_OWNERSHIP 登记 4 model 归 marketdata + 护城河 0 违规 ④ optionsdesk 零读口 (FR-022)。
 // 纯数据层形态验证 —— 写侧行为 (观测 upsert / 合并 / 流水) 归 T013 / T014。
+// 079 T028 (FR-026, plan §D3 第 5 项): migration ③ 财年档案表 `earnings_fiscal_profile` 同形加臂
+// (唯一键 instrument_id + MODEL_OWNERSHIP 登记); 写侧行为归 T029。
 const TABLES = [
   'earnings_date_event',
   'earnings_date_event_log',
   'earnings_date_observation',
+  'earnings_fiscal_profile',
   'earnings_meeting_lag',
 ] as const;
 
@@ -25,6 +28,7 @@ const ACCESSORS = [
   'earningsDateEvent',
   'earningsDateEventLog',
   'earningsMeetingLag',
+  'earningsFiscalProfile',
 ] as const;
 
 describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrate deploy)', () => {
@@ -76,7 +80,7 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
     expect(err?.code).toBe('P2002');
   };
 
-  it('四表落 marketdata schema', async () => {
+  it('079 各表落 marketdata schema (T008 四表 + T028 财年档案)', async () => {
     const rows = await prisma.$queryRawUnsafe<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'marketdata' AND table_name LIKE 'earnings\\_%'
@@ -88,6 +92,7 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
       'earnings_date_event_log',
       'earnings_date_observation',
       'earnings_event',
+      'earnings_fiscal_profile',
       'earnings_meeting_lag',
     ]);
   });
@@ -108,6 +113,7 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
       earnings_date_event: ['(id)', '(instrument_id, period_key)'],
       earnings_date_event_log: ['(id)'],
       earnings_date_observation: ['(id)', '(source, instrument_id, period_key)'],
+      earnings_fiscal_profile: ['(id)', '(instrument_id)'],
       earnings_meeting_lag: ['(id)', '(instrument_id, report_kind)'],
     });
   });
@@ -207,7 +213,29 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
     expect(await prisma.earningsMeetingLag.count({ where: { instrumentId } })).toBe(2);
   });
 
-  it('MODEL_OWNERSHIP 登记 4 model 归 marketdata + check-server-moat 0 违规', () => {
+  it('财年档案唯一键 (instrument_id): 同标的第二行撞 P2002, 月份 / 来源无 DB CHECK (值域在 TS)', async () => {
+    const data = {
+      instrumentId,
+      fiscalYearEndMonth: 12,
+      source: 'annual_title',
+      evidence: '2026-03-20「截至2025年12月31日止年度之業績公告」',
+    };
+    const row = await prisma.earningsFiscalProfile.create({ data });
+    expect(row.determinedAt).toBeInstanceOf(Date);
+    await expectP2002(
+      prisma.earningsFiscalProfile.create({
+        data: { ...data, fiscalYearEndMonth: 3, source: 'manual' },
+      }),
+    );
+    const checks = await prisma.$queryRawUnsafe<{ conname: string }[]>(
+      `SELECT conname FROM pg_constraint
+        WHERE conrelid = 'marketdata.earnings_fiscal_profile'::regclass AND contype = 'c'`,
+    );
+    expect(checks).toEqual([]);
+    expect(await prisma.earningsFiscalProfile.count({ where: { instrumentId } })).toBe(1);
+  });
+
+  it('MODEL_OWNERSHIP 登记 079 各 model 归 marketdata + check-server-moat 0 违规', () => {
     // ⚠️ 诚实标注: 护城河 Check 1 只扫**被 src/** 访问**的 model —— 本 task 尚无读写者 (T011 / T013
     // 起才有), 故「漏登记 ⇒ moat 红」此刻不会由脚本本身体现。登记断言按源码文本钉住, 不依赖访问面。
     const moatSrc = readFileSync(join(MONO_ROOT, 'scripts/checks/check-server-moat.ts'), 'utf8');
