@@ -1,6 +1,8 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
 import type { MarchAuditEvidenceResponse, OptionsdeskControllerRadarMarket } from '@nvy/api-client';
 
+import type { TradingAccountSegment } from './trading-account.rules';
+
 export const OPTIONSDESK_COPY = {
   /** 雷达屏题头（= 期权台 tab 落地屏）。 */
   radarTitle: '击球区雷达',
@@ -1326,6 +1328,39 @@ export const OPTIONSDESK_COPY = {
       quote_missing: (e: MarchAuditEvidenceResponse) =>
         e.bid === null ? '缺买价，费率不可算' : '缺相邻基准，远期费率不可算',
     },
+  },
+
+  /**
+   * 交易账户页骨架（081 T001，plan §D9 逐字）。值域 / 默认值单点在 `trading-account.rules.ts`。
+   *
+   * 🚨 **占位与市场无关**：两个市场同一分段文案相同，只随分段变 ⇒ 键只有分段一维。
+   * 🚫 MUST NOT 出现「暂无」「空仓」「无数据」—— 本片**没有任何数据通路**，那些词会把「还没建」
+   *    读成「查过了、是零」（与 046 仓位水位 `positionLevelPending` 同一纪律）。
+   *    机械防线在 `trading-account.rules.spec.ts` 臂 ⑤。
+   */
+  tradingAccount: {
+    title: '交易账户',
+    /** 雷达题头入口的 a11y 名。 */
+    entryA11y: '进入交易账户',
+    segments: {
+      positions: '持仓',
+      orders: '订单',
+      reports: '报表',
+    } satisfies Record<TradingAccountSegment, string>,
+    placeholder: {
+      positions: {
+        title: '持仓 · 建设中',
+        body: '上线后在这里按市场查看你在券商的正股与期权持仓，并标注来源券商。',
+      },
+      orders: {
+        title: '订单 · 建设中',
+        body: '上线后在这里按市场查看委托与成交记录。',
+      },
+      reports: {
+        title: '报表 · 建设中',
+        body: '上线后在这里按市场查看持仓与交易的统计报表。',
+      },
+    } satisfies Record<TradingAccountSegment, { title: string; body: string }>,
   },
 } as const;
 
