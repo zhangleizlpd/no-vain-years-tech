@@ -100,7 +100,7 @@ context7_verified: []
 3. **`earnings_date_event_log`**（事件流水，append-only）：状态迁移、取值变更、冲突产生 / 解除、逾期产生 / 解除、清单行提前消失（FR-013 / FR-014 / FR-016 / FR-019a）。
 4. **`earnings_meeting_lag`**（会议 → 刊发间隔）：唯一键 `(instrument_id, report_kind)`；最近一次间隔天数、来源期末日、观测时刻（FR-010）。
 
-- **会前通知信号不单独建表**：由来源 B 每轮从 `marketdata.announcement` 按标题现算（本 ctx 表、有 `(instrument_id, date)` 索引 `schema.prisma:915`），合并时按标的与日期窗口匹配（D8）。
+- **会前通知信号不单独建表**：由来源 B 每轮从 `marketdata.announcement` 按标题在 120 天窗口内现算（本 ctx 表、有 `(instrument_id, date)` 索引 `schema.prisma:915`），合并时按标的与日期窗口匹配（D8）。
 - **`period_key` 三种形态，列非空**（`.claude/rules/migration-rules.md:96-98`）：`P:<期末日>`（可跨来源对齐）/ `T:<来源>:<原文报告期>`（来源内稳定）/ `D:<来源>:<日期>`（兜底）。只有 `P:` 参与跨来源合并（FR-015）。
 - 🚫 **MUST NOT 复用 `earnings_event`**（D1 / FR-021）。
 - **两条 migration**（commit 原子）：① 四张表 `<yyyymmdd_hhmm>_create_earnings_date_layer`；② `hk_earnings_date` 维度 seed + 依赖边 `<yyyymmdd_hhmm>_seed_hk_earnings_date_dimension`，与 D9 全部注册触点**同 commit** —— 先落 seed 会让写死维度清单的 IT 在中间 commit 变红、tick 触发无执行器的维度。命名规则 `lefthook.yml:133-160`。
@@ -122,7 +122,7 @@ context7_verified: []
 
 **D6 · 来源 B：交易所公告 `hkex-announcement.source.ts`（零 PDF；FR-004 / FR-005）**
 
-- 读 `marketdata.announcement`（本 ctx 表，零新增理杏仁调用，FR-004）。日常窗口 `[业务日 − 7, 业务日]`，与现役 7 天回看一致（`20260801_2248_add_sync_dimension_delta_lookback/migration.sql:30-31`）；回填 730 天。
+- 读 `marketdata.announcement`（本 ctx 表，零新增理杏仁调用，FR-004）。刊发事实日常窗口 `[业务日 − 7, 业务日]`，与现役 7 天回看一致（`20260801_2248_add_sync_dimension_delta_lookback/migration.sql:30-31`）；🚨 **会前通知信号窗口单独取 `[业务日 − 120 天, 业务日]`**（与 D8 匹配窗口同一常量）—— 只按 7 天现算时，事件重算会找不到 8–120 天前的通知，确认时刻静默退回首次观测（analyze I1）；查询走 `(instrument_id, date desc)` 索引（`schema.prisma:915`），成本可忽略。回填 730 天。
 - **业绩刊发事实**（`types` 含 `fs_main`）→ `filed` 观测，**全部港股**：公布日 = 公告日期（`+08:00` 当地日期，`lixinger-announcement.adapter.ts:19-21`），报告期取自标题（D4）。
   - 🚨 「補充 / 更正」排除 MUST 窄：只排除不含「業績公告 / 業績公佈」本体的公告（`hk:09992` 2026-08-20 真实刊发标题带「補充公告」，spec 取证）。
   - A+H 公司的季度报告另以 `all` 类型的「海外監管公告」刊发，锚表港股两年 22 份**同日均有** `fs_main` 行 ⇒ 只认 `fs_main` 不漏；🚫 不要放宽到按标题认 `all` 类（会把「…業績公告日期」「盈利公布及審議會否派發股息」这类**通知**认成刊发，PoC 实撞）。
@@ -142,23 +142,23 @@ context7_verified: []
   6. 代码补零到 5 位，按 `hk` + code 查标的主表，查不到（人民币柜台 `8xxxx` 等）⇒ 计数跳过（FR 同现役口径）；
   7. 同页同日同代码多行 ⇒ 按期间各自成观测。
 - **观测**：口径 `meeting`，会议日 = 行日期，凭据 = 页首日期；来源语义「仅已公告」（FR-011）。
-- **陈旧**：页首日期距业务日超过 2 个交易日（`trading_day` 区间计数，D8 同一方法）⇒ 与解析失败同档：`earnings_board_list_stale` failure finding + 运行失败数 +1（D10），解析出的行照常入库（页面停更时旧会议日仍然有效）。
+- **陈旧**：页首日期距业务日超过 2 个交易日（`trading_day` 区间计数，D8 同一方法）⇒ 与解析失败同档：`earnings_board_list_stale` failure finding + 运行失败数 +1（D10），解析出的行照常入库（页面停更时旧会议日仍然有效）。区间含 `unknown` 或缺行 ⇒ `earnings_date_calendar_unknown` unjudged finding，🚫 不计失败、🚫 不静默跳过（FR-025）。**阈值依据**（plan 期实测 8 份快照，页首日期到抓取时刻之间的交易日数）：0 / 0 / 1 / 1 / 1 / 1 / 2 / 1，唯一的 2 出现在 2026-03-13 07:02（香港时间）当天页面更新之前；采集在 23:30 运行 ⇒ 样本内零误报、余量 1 个交易日；上线首月观察陈旧告警，出现误报再放宽。
 - **提前消失**（FR-016）：上一轮在清单、本轮不在、且会议日 > 本轮页首日期、且同标的同期无新日期 ⇒ 流水记「清单消失」+ `earnings_board_list_dropped` finding，观测保留最后日期、🚫 不删、🚫 不撤销确认。仅在本轮清单解析成功时判定（解析失败的轮次不判消失）。
 - **缺失语义三问**：① 无会议 = 不列行；纯股息行 = 有会议无业绩；② 「未列」分不清「公司未发通知 / 清单漏收 / 页面滞后 / 创业板不在清单」—— 由 FR-017（仅对曾出现在清单的标的告警）+ 富途兜底；③ 写法由 8 份 Wayback 快照 + 当日页面（1776 行）归纳 ⇒ 运行时不变量 = 每轮 `earnings_board_list_scan`（页首日期、数据行、业绩行、股息行、跳过代码、`T:` 键数）。
 - **依据（PoC）**：会议日落在快照时段内的锚表港股会前通知 16 份，清单收录 16 / 16 且会议日一致；清单会议日 + 富途回放锚表两年逐日一致 172 / 176（spec 取证）。
 
 **D8 · 合并 `earnings-date-merge.rules.ts`（纯函数）+ `sync-earnings-dates.usecase.ts`（FR-008 ~ FR-019a 逐条见下）**
 
-- 纯函数输入：某 `(instrument, period_key)` 全部观测、来源能力、间隔、该标的会前通知信号、「该标的是否曾有清单观测」、公布日之后已过交易日数（或「日历不可判」）。输出：事件字段、流水、findings。零 I/O。
+- 纯函数输入：某 `(instrument, period_key)` 全部观测、来源能力、间隔、该标的 120 天内会前通知信号、事件既有的确认日期与口径、「该标的是否曾有清单观测」、公布日之后已过交易日数（或「日历不可判」）。输出：事件字段、流水、findings。零 I/O。
 - 规则：
   - **取值**（FR-008 / FR-009 / FR-010）：`filed` > `explicit` > `structured` > `meeting`（会议日 + 间隔，无历史按 0）。首批来源不产出 `explicit`。
   - **可解释差异**（FR-014）：仅近似口径、差 ≥ 2 天，且结构化日期 = 清单会议日、会议日推定 = 会议日 + 间隔 ⇒ 取推定值，写流水不发冲突。
   - **冲突**（FR-014）：精确口径间任何不一致；或近似口径差 ≥ 2 天且不可解释 ⇒ `conflict`。近似差 1 天 ⇒ 优先级取值、写流水。
-  - **确认**（FR-011 / FR-012 / FR-021）：有「仅已公告」来源观测 ⇒ `confirmed`；只有 `unconfirmed` 来源 ⇒ `unconfirmed`，🚫 永不升级。确认日期 = 对应会前通知信号的刊发日（`announced`）：同标的、刊发日 ∈ `[事件日期 − 120 天, 事件日期]` 且晚于该标的上一次刊发事实的信号中**最早**的一个；无对应信号 ⇒ 给出日期的来源首次观测的交易所当地日期（`first_seen`）。
+  - **确认**（FR-011 / FR-012 / FR-021）：有「仅已公告」来源观测 ⇒ `confirmed`；只有 `unconfirmed` 来源 ⇒ `unconfirmed`，🚫 永不升级。确认日期 = 对应会前通知信号的刊发日（`announced`）：同标的、刊发日 ∈ `[事件日期 − 120 天, 事件日期]` 且晚于该标的上一次刊发事实的信号中**最早**的一个；无对应信号 ⇒ 给出日期的来源首次观测的交易所当地日期（`first_seen`）。🚨 **确认日期只前移不回退**：既有口径为 `announced` 时，本轮算不出对应信号 ⇒ 保留既有值（FR-012）；既有为 `first_seen`、本轮找到更早的通知 ⇒ 前移并改口径。
   - **已通知日期未知**（FR-017）：会前通知信号刊发后满 2 个交易日、该标的无任何未刊发事件带日期：该标的曾有清单观测 ⇒ `notified_undated` + finding；否则只计数。之后任一来源给出日期即转确认，确认日期取该信号刊发日。
   - **刊发覆盖**（FR-019）：出现 `filed` ⇒ `published`，回填各来源各口径偏差；有会议日时更新 `earnings_meeting_lag`。
   - **逾期**（FR-019a）：非 `published` 且公布日之后满 2 个交易日 ⇒ `overdue`。交易日数用 `trading_day` 三态计数（`trading-day.rules.ts:91` 判据）；区间含 `unknown` ⇒ 不判，发 `unjudged`。`TradingCalendarPort`（`trading-calendar.port.ts:23-70`）新增「区间交易日数」方法，写法照 `previousTradingDay` 覆盖闸（`db-trading-calendar.adapter.ts:102-121`）。
-- **触发点**：只有日常运行（全量重算当天有观测或信号变化的事件 + 逾期扫描 + 未知日期扫描）。事件行仍带 `revision` 条件更新（CLI 回填与定时运行可能重叠）：读观测与事件 → 计算 → `updateMany where { id, revision }` → 命中 0 行则重读重算，最多 3 次（`docs/conventions/server-impl-playbook.md` 条件 UPDATE + affected-count）；🚫 不用 `SELECT … FOR UPDATE`。
+- **触发点**：① 港股日常运行（全量重算当天有观测或信号变化的事件 + 逾期扫描 + 未知日期扫描）；② 美股钩子写入观测后的增量合并（只算本批美股 `(instrument, period_key)`，D9）。两者市场不重叠；事件行仍带 `revision` 条件更新（CLI 回填与定时运行可能重叠）：读观测与事件 → 计算 → `updateMany where { id, revision }` → 命中 0 行则重读重算，最多 3 次（`docs/conventions/server-impl-playbook.md` 条件 UPDATE + affected-count）；🚫 不用 `SELECT … FOR UPDATE`。
 - 每个事件一个事务（观测 upsert → 事件条件更新 → 流水 insert）；🚫 HTTP 在事务外。
 
 **D9 · 编排：港股维度 + 美股钩子 + 回填（FR-007 / FR-020 / FR-021 / FR-022 / FR-024）**
@@ -167,7 +167,7 @@ context7_verified: []
 - 运行步骤：① 各来源 `collect`（富途 → 公告 → 清单；按来源 try/catch 隔离）② 合并 + 逾期扫描 + 未知日期扫描 ③ findings。
 - **注册触点**（073 同形，commit `5790a777`）：`DIMENSION_KEYS`（`dimension-executor.ts:187`）；asOf 表（`sync-asof.rules.ts:65-105`）；executor 注册与构造器尾部默认值（仿 `earnings_event` 非 factExecutor 写法 `:1057-1062`）；**不**进锚作用域表，并在 `anchor-scoped-dimensions.rules.spec.ts` 加反向断言；拓扑守卫 `dimension-executor.spec.ts:4521-4630`；写死维度清单的 IT（`marketdata.schema-016`、`backfill-cli`、`tick-driver`、`adjustment-factor`、`flow-orchestration`、`tier-night-e2e`、`night-e2e-019`、`marketdata-066.hk-dimension-seed`、`sync-schema-gate`、`test-dimension-registration`）；`ops/jobs/marketdata-table-health.sql` 与 `marketdata-sync-report.sql` 纳入新维度。
 - 🚨 **不把 `hk` 加进 `earnings_event` 的 scope**：跨时区 scope 在 `exchangeCalendarDateForScope` 直接抛（`session-clock.ts:163-172`）。
-- **美股钩子**（FR-021，零新增调用）：`SyncEarningsEventUseCase` 构造器尾部加可选观测记录器（默认空实现，照 `dimension-executor.ts:853` 默认值写法），在既有写入完成后（`sync-earnings-event.usecase.ts:245` 之后、`return` 之前）用 `observed` 调用一次。约束：① 包 `try/catch`，失败只 `logger.warn`，🚫 不改 `stats` / `findings` / `written`、不让异常冒出 `run()`（否则 `sync_run` 与重试行为改变，`dimension-executor.ts:1160-1163`）；② 两处提前 return（`:218` / `:221`）不调用；③ 429 顺延时部分数据照样落；④ 既有 Small spec 的 Prisma 替身不含新表（`sync-earnings-event.usecase.spec.ts:131-146`），默认空记录器保证不受影响。
+- **美股钩子**（FR-021，零新增调用）：`SyncEarningsEventUseCase` 构造器尾部加可选观测记录器（默认空实现，照 `dimension-executor.ts:853` 默认值写法），在既有写入完成后（`sync-earnings-event.usecase.ts:245` 之后、`return` 之前）用 `observed` 调用一次。约束：① 包 `try/catch`，失败只 `logger.warn`，🚫 不改 `stats` / `findings` / `written`、不让异常冒出 `run()`（否则 `sync_run` 与重试行为改变，`dimension-executor.ts:1160-1163`）；② 两处提前 return（`:218` / `:221`）不调用；③ 429 顺延时部分数据照样落；④ 既有 Small spec 的 Prisma 替身不含新表（`sync-earnings-event.usecase.spec.ts:131-146`），默认空记录器保证不受影响。⑤ 🚨 记录器写完观测后**必须**调用合并用例的增量入口生成美股事件（D8 触发点 ②，同一个 `try/catch`）—— 只写观测不合并时美股事件恒为 0 行，「美股事件全为 `unconfirmed`」的断言在空表上照样成立、测不出任何东西（analyze C1）。
 - **回填**（FR-020）：经既有回填 CLI（`marketdata-trigger.cli.ts`）以 `mode=backfill` 跑 `hk_earnings_date`：富途 730 天窗 + 交易所两年业绩刊发事实与会前通知信号；清单只取当日页面（无历史）。🚨 prod 执行属于写操作，命令与参数先交维护者确认。
 
 **D10 · findings 与告警（FR-023 / FR-025）**
@@ -207,7 +207,7 @@ context7_verified: []
 | 7 | 近似 ≥ 2 天可解释 → 取推定、不告警 | merge spec + 079 IT（`hk:00857` 形态） |
 | 8 | 近似 ≥ 2 天不可解释 → 冲突 | merge spec（`hk:00960` 形态） |
 | 9 | 冲突解除留痕 | 079 IT（两轮） |
-| 10 | 确认时刻 = 对应通知刊发日 / 首次观测 | merge spec（窗口边界、多通知取最早、上一次刊发之前的通知不算）+ 079 IT |
+| 10 | 确认时刻 = 对应通知刊发日（120 天窗口）/ 首次观测；已取刊发日不回退 | merge spec（窗口边界、多通知取最早、上一次刊发之前的通知不算、既有 `announced` 本轮无信号 ⇒ 保留）+ 079 IT（通知第 1 天、富途日期第 30 天出现并改期一次 ⇒ 确认日仍 = 通知刊发日） |
 | 11 | 已通知日期未知：曾在清单 → 告警；从未在清单 → 计数 | merge spec + 079 IT |
 | 12 | 带「董事」字样但非通知写法 → 不作信号 | `earnings-notice.rules.spec.ts` |
 | 13 | 刊发覆盖 + 偏差统计 + 间隔更新 | merge spec + 079 IT |
@@ -219,8 +219,8 @@ context7_verified: []
 | 19 | 不在主表（含人民币柜台）→ 跳过计数 | `hkex-board-meeting-list.rules.spec.ts` + 079 IT |
 | 20 | 纯股息行 → 不作事件、计数 | board list rules spec |
 | 21 | 清单取数失败 / 地址跳转 / 结构异常 → 来源失败 + 计入运行失败 + 零写入 | board list rules spec（三类结构变异 fixture）+ `vendor-http-client.spec.ts`（`redirect: 'manual'` 透传；3xx → `VendorHttpError` 且不重试）+ 079 IT（假 fetch 分别返 404 / 301 / 变异页：失败 finding 存在 且 `sync_run.status = partial` 且 `failed ≥ 1` 且 清单观测 0 条 且 其余来源观测 > 0） |
-| 22 | 清单陈旧 → 计入运行失败、观测照用 | 079 IT（页首日期落后 3 个交易日：`partial` + stale finding + 该页行照常入库） |
-| 23 | 美股进层 `unconfirmed`；现役逐字节不变 | `sync-earnings-event.usecase.spec.ts`（记录器抛错时 `stats` / findings / 调用数不变）+ `optionsdesk-047.earnings-pit.it.spec.ts` 加臂（`earnings_event` 行与 `sync_run` 与基线逐字节相同，新表美股事件全 `unconfirmed`） |
+| 22 | 清单陈旧 → 计入运行失败、观测照用；日历不可判 → 无法判定、不标红 | 079 IT（页首日期落后 3 个交易日：`partial` + stale finding + 该页行照常入库；区间含 `unknown`：`success` + `earnings_date_calendar_unknown`） |
+| 23 | 美股进层 `unconfirmed`；现役逐字节不变 | `sync-earnings-event.usecase.spec.ts`（记录器抛错时 `stats` / findings / 调用数不变）+ `optionsdesk-047.earnings-pit.it.spec.ts` 加臂（`earnings_event` 行与 `sync_run` 与基线逐字节相同；**先断言新表美股事件数 > 0**，再断言全部 `unconfirmed`） |
 | 24 | 港股打标读不到本片产出 | 079 IT 调期权台既有取腿用例：新表有 `confirmed` 港股事件，收租腿仍「无日期」 |
 
 其余测试面：
@@ -264,6 +264,8 @@ context7_verified: []
 17. 清单解析异常时沿用上一轮观测、不告警 —— 否：改版会静默吞掉新会议（FR-025）。
 18. 清单失败只写 notice / failure 发现项、不计运行失败数 —— 否：运行状态仍为成功 ⇒ 日报绿色、飞书不标红，owner 明确要求改版 / 换地址 / 停更必须经飞书告警。
 19. 跟随重定向后按新页面照常解析 —— 否：换地址会被静默吞掉；plan 期实测 `redirect: 'manual'` 可稳定拿到 3xx 与 `location`。
+20. 会前通知信号沿用刊发事实的 7 天窗口 —— 否：事件重算时找不到更早的通知，确认时刻静默回退（analyze I1）。
+21. 美股钩子只写观测、不触发合并 —— 否：美股事件恒为 0 行，SC-008 的断言空真（analyze C1）。
 
 **既有事实核录**（2026-09-13 plan 期逐项 grep / 只读核查，行号锚消费点）：
 
