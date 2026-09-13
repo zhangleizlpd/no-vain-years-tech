@@ -1,9 +1,9 @@
 ---
 feature_id: 071-optionsdesk-hk-realtime-recall
 spec_ref: ./spec.md
-status: draft
+status: approved
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-13'
 adr_refs: ['0043', '0062', '0064', '0066', '0067', '0068']
 context7_verified: []
 ---

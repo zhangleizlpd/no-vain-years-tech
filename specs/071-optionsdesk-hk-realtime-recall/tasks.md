@@ -2,9 +2,9 @@
 feature_id: 071-optionsdesk-hk-realtime-recall
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: drafted
+status: in-progress
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-13'
 ---
 
 # Tasks: 071-optionsdesk-hk-realtime-recall（港股期权实时窄召回接线 — 港股锚盘中拿到与美股同构的实时选约表）
