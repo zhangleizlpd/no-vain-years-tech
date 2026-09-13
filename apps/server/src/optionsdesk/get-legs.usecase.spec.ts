@@ -182,6 +182,8 @@ function tradingCalendar(days: readonly string[] = TRADING_DAYS) {
     classify: async (): Promise<'trading'> => 'trading',
     lastClosedSession,
     previousTradingDay,
+    // 079: 本文件不验区间交易日数。
+    countTradingDays: async (): Promise<number | null> => null,
   };
 }
 

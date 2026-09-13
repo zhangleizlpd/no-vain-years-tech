@@ -20,6 +20,10 @@ function stubCalendar(sessions: Record<string, string | null>) {
     async previousTradingDay(): Promise<string | null> {
       return null;
     },
+    // 079: 同上, 不碰区间交易日数。
+    async countTradingDays(): Promise<number | null> {
+      return null;
+    },
   };
   return { calendar, lastClosedSession };
 }

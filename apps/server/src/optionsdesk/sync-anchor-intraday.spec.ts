@@ -328,6 +328,7 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
         classify: vi.fn().mockResolvedValue('trading' satisfies TradingDayStatus),
         lastClosedSession: async () => null,
         previousTradingDay: async () => null,
+        countTradingDays: async () => null,
       },
     );
 

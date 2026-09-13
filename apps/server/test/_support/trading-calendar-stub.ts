@@ -42,6 +42,10 @@ export function stubTradingCalendar(
     async previousTradingDay(): Promise<string | null> {
       return previousTradingDay;
     },
+    // 079: 恒 null = 「不可判定」, 同上默认理由 (不关心它的用例零变化, 不可判定是安全侧)。
+    async countTradingDays(): Promise<number | null> {
+      return null;
+    },
     setLastClosed(date: string | null): void {
       lastClosed = date;
     },

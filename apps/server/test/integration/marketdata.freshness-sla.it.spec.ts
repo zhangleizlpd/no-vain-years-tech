@@ -18,6 +18,7 @@ const weekdayCalendar = (allClosed = false): TradingCalendarPort => ({
   // 062 T010: 本文件只验折龄, 陈旧度基准恒不可判定。
   lastClosedSession: async () => null,
   previousTradingDay: async () => null,
+  countTradingDays: async () => null,
 });
 
 // 019 T017 新鲜度 SLA 检查 IT (US4/FR-S09, SC-S06 四态, PG-only): 超期告警字段齐 /
@@ -154,6 +155,7 @@ describe('019 T017 FreshnessSlaCheck (SC-S06 四态)', () => {
       },
       lastClosedSession: async () => null,
       previousTradingDay: async () => null,
+      countTradingDays: async () => null,
     };
     expect(await build(hkOnlyCalendar).check(NOW)).toEqual(['eod_bar']);
   });
@@ -169,11 +171,13 @@ describe('019 T017 FreshnessSlaCheck (SC-S06 四态)', () => {
       classify: async () => 'unknown',
       lastClosedSession: async () => null,
       previousTradingDay: async () => null,
+      countTradingDays: async () => null,
     };
     const allTrading: TradingCalendarPort = {
       classify: async () => 'trading',
       lastClosedSession: async () => null,
       previousTradingDay: async () => null,
+      countTradingDays: async () => null,
     };
     expect(await build(allUnknown).check(NOW)).toEqual(await build(allTrading).check(NOW));
     // 且**不是**空数组 —— 两边同为 `[]` 时上面那条恒真, 起不到钉子作用。

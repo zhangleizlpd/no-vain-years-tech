@@ -67,4 +67,23 @@ export interface TradingCalendarPort {
    * @param date `YYYY-MM-DD`;返回值严格 `< date` (同日不算)。
    */
   previousTradingDay(market: string, date: string): Promise<string | null>;
+
+  /**
+   * 半开区间 `(fromExclusive, toInclusive]` 内的**交易日数** (079 T006; plan §D7 清单陈旧 /
+   * §D8 逾期)。两端均为该市场交易所当地日期 `YYYY-MM-DD` (ADR-0066)。`null` = **不可判定**,
+   * 调用方 **MUST NOT 当 0**。
+   *
+   * 🚨 **区间内任一天判出 `unknown` ⇒ 整段 `null`** (逐日走 {@link classify} 同一判据):
+   * 只数得出「已知的那几天」的数不是交易日数 —— 覆盖声明之外的空档被当成非交易日数进去,
+   * 逾期会被静默推迟、陈旧页会被判成新鲜, 两者都不报错。
+   *
+   * `fromExclusive >= toInclusive` ⇒ 空区间 ⇒ `0` (没有任何一天需要判定, 不是不可判定)。
+   *
+   * @throws 任一端不是合法 `YYYY-MM-DD` —— 否则逐日迭代静默为空、非法输入被读成「0 个交易日」。
+   */
+  countTradingDays(
+    market: string,
+    fromExclusive: string,
+    toInclusive: string,
+  ): Promise<number | null>;
 }

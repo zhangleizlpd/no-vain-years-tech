@@ -147,6 +147,10 @@ const alwaysTradingCalendar: TradingCalendarPort = {
   async previousTradingDay(): Promise<string | null> {
     return null;
   },
+  // 079: 本文件不验区间交易日数。
+  async countTradingDays(): Promise<number | null> {
+    return null;
+  },
 };
 
 describe('OptionSnapshotRemediation 写库路径 (Testcontainers PG, stub 采集口)', () => {

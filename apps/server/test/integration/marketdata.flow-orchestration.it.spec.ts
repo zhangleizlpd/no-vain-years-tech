@@ -38,6 +38,7 @@ const calendarOpen: TradingCalendarPort = {
   classify: async () => 'trading',
   lastClosedSession: async () => null,
   previousTradingDay: async () => null,
+  countTradingDays: async () => null,
 };
 
 // 017 T016 编排端到端 IT (SC-S04/S05/S07, Testcontainers PG+Redis, mock adapters):

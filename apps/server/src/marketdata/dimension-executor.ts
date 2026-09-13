@@ -737,6 +737,7 @@ const NULL_TRADING_CALENDAR: TradingCalendarPort = {
   classify: async () => 'unknown',
   lastClosedSession: async () => null,
   previousTradingDay: async () => null,
+  countTradingDays: async () => null,
 };
 
 /**

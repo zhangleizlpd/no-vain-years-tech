@@ -209,6 +209,24 @@ export class MockMarketDataAdapter
     return null;
   }
 
+  /**
+   * 079: `(fromExclusive, toInclusive]` 内的「工作日」数。同 {@link previousTradingDay} **不建模
+   * 节假日**, 且恒不返 `null`（不存在「还没填到」）。复杂度 O(区间天数)。
+   */
+  async countTradingDays(
+    _market: string,
+    fromExclusive: string,
+    toInclusive: string,
+  ): Promise<number | null> {
+    const end = Date.parse(`${toInclusive}T00:00:00Z`);
+    let count = 0;
+    for (let t = Date.parse(`${fromExclusive}T00:00:00Z`) + 86_400_000; t <= end; t += 86_400_000) {
+      const day = new Date(t).getUTCDay();
+      if (day >= 1 && day <= 5) count++;
+    }
+    return count;
+  }
+
   async fetchTradingDates(
     _market: string,
     from: string,

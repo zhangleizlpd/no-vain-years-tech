@@ -119,4 +119,63 @@ export class DbTradingCalendarAdapter implements TradingCalendarPort {
     if (!isWithinCoverage(coverage, date)) return null;
     return dayRow === null ? null : dayRow.date.toISOString().slice(0, 10);
   }
+
+  /**
+   * `(fromExclusive, toInclusive]` 内的交易日数 (079 T006)。语义与不可判定口径见端口注释。
+   *
+   * 🚨 **逐日喂 {@link classifyTradingDay}, 不走「count 行数 + 比两端在不在覆盖内」的捷径**:
+   * 「有行即 `trading`, 覆盖之外的有行日照样算」这条优先级是纯函数的语义, 在这里换一种算法
+   * 等于把判据抄第二份 (同 {@link classify} 不短路的理由)。任一天 `unknown` ⇒ 整段 `null`。
+   *
+   * 复杂度: 2 次索引查询 (并发; 一次唯一索引点查 + 一次 `(market,date)` 区间扫描) + O(n) 逐日
+   * 判定, n = 区间日历天数。空区间不发查询。
+   */
+  async countTradingDays(
+    market: string,
+    fromExclusive: string,
+    toInclusive: string,
+  ): Promise<number | null> {
+    const start = isoDateToUtcMs(fromExclusive, 'fromExclusive');
+    const end = isoDateToUtcMs(toInclusive, 'toInclusive');
+    if (start >= end) return 0;
+    const [coverageRow, rows] = await Promise.all([
+      this.prisma.calendarCoverage.findUnique({ where: { market } }),
+      this.prisma.tradingDay.findMany({
+        // gt 而非 gte —— 端口契约是左开右闭。
+        where: { market, date: { gt: new Date(start), lte: new Date(end) } },
+        select: { date: true },
+      }),
+    ]);
+    const coverage: CalendarCoverageRange | null =
+      coverageRow === null
+        ? null
+        : {
+            from: coverageRow.coveredFrom.toISOString().slice(0, 10),
+            to: coverageRow.coveredTo.toISOString().slice(0, 10),
+          };
+    const rowDates = new Set(rows.map((r) => r.date.toISOString().slice(0, 10)));
+    let count = 0;
+    for (let t = start + DAY_MS; t <= end; t += DAY_MS) {
+      const date = new Date(t).toISOString().slice(0, 10);
+      const status = classifyTradingDay({ hasExactRow: rowDates.has(date), coverage, date });
+      if (status === 'unknown') return null;
+      if (status === 'trading') count++;
+    }
+    return count;
+  }
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * `YYYY-MM-DD` → 该日 UTC 午夜的 ms (与 `@db.Date` 列同一口径)。**非法即抛**, 用往返校验
+ * 同时挡住格式不合与 `2026-02-30` 这类溢出日 —— 放过去的话逐日迭代会静默为空, 非法输入被
+ * 读成「0 个交易日」。复杂度 O(1)。
+ */
+function isoDateToUtcMs(date: string, field: string): number {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== date) {
+    throw new Error(`[trading-calendar] 非法日期 ${field}="${date}" (须 YYYY-MM-DD)`);
+  }
+  return ms;
 }

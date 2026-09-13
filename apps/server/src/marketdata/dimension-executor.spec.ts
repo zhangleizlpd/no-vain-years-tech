@@ -3642,6 +3642,7 @@ describe('046 T008 underlying_iv_daily 装配 (批量快照 + 锚闸工作集 + 
             classify: async () => 'trading',
             lastClosedSession: async () => null,
             previousTradingDay: async () => null,
+            countTradingDays: async () => null,
           },
         });
 
