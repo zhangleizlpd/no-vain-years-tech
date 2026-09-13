@@ -21,8 +21,10 @@ export { wechatConfig, type WechatConfig } from './wechat.config.js';
 export {
   marketdataConfig,
   marketdataSyncConfig,
+  earningsDateSourcesConfig,
   type MarketdataConfig,
   type MarketdataSyncConfig,
+  type EarningsDateSourcesConfig,
 } from './marketdata.config.js';
 export { optionsdeskConfig, type OptionsdeskConfig } from './optionsdesk.config.js';
 export { parseOrigins } from './parse-origins.js';

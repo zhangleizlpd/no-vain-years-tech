@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { marketdataConfig } from './marketdata.config.js';
+import { earningsDateSourcesConfig, marketdataConfig } from './marketdata.config.js';
 
 const ENV_KEYS = [
   'MARKETDATA_PROVIDER',
@@ -123,4 +123,40 @@ describe('marketdataConfig discriminated union', () => {
       eastmoneyBaseUrl: 'https://em.test',
     });
   });
+});
+
+// 079 T009 (plan §D11): `EARNINGS_DATE_SOURCES` 逗号分隔的来源名清单。名字合法性 (未知 / 重复)
+// 在装配期由 `assembleEarningsDateSources` 判, 本层只管切分与空串。
+describe('earningsDateSourcesConfig', () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.EARNINGS_DATE_SOURCES;
+    delete process.env.EARNINGS_DATE_SOURCES;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.EARNINGS_DATE_SOURCES;
+    else process.env.EARNINGS_DATE_SOURCES = saved;
+  });
+
+  it('env 缺失 ⇒ 默认三来源', () => {
+    expect(earningsDateSourcesConfig().names).toEqual([
+      'futu_calendar',
+      'hkex_announcement',
+      'hkex_board_meeting_list',
+    ]);
+  });
+
+  it('逗号切分并去首尾空白', () => {
+    process.env.EARNINGS_DATE_SOURCES = ' futu_calendar , hkex_announcement ';
+    expect(earningsDateSourcesConfig().names).toEqual(['futu_calendar', 'hkex_announcement']);
+  });
+
+  // compose 映射带 `:-<默认>` 兜底, 容器拿不到空串; 显式写空 = 配置写坏, 不当作「零来源」。
+  it.each([[''], ['  '], ['futu_calendar,,hkex_announcement']])(
+    '🚨 空串 / 空段 %j ⇒ boot 抛',
+    (raw) => {
+      process.env.EARNINGS_DATE_SOURCES = raw;
+      expect(() => earningsDateSourcesConfig()).toThrow(/EARNINGS_DATE_SOURCES/);
+    },
+  );
 });

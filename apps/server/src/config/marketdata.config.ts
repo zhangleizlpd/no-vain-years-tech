@@ -129,3 +129,29 @@ export const marketdataSyncConfig = registerAs(
       optionCoverageThreshold: process.env.MARKETDATA_OPTION_COVERAGE_THRESHOLD,
     }),
 );
+
+/**
+ * 079 财报日期层启用的来源名清单 (`EARNINGS_DATE_SOURCES` 逗号分隔, 默认三来源全开; plan §D11)。
+ *
+ * 本层只切分并拒空串 / 空段; 名字合法性 (未知 / 重复) 在装配期由 `assembleEarningsDateSources`
+ * 判 —— 合法名单的单一来源在来源 port (`earnings-date-source.port.ts`), 不在 config 复制一份。
+ * 独立成一个 registerAs 而非并入 `marketdataSyncConfig`: 后者的类型被十余个 IT 手写成字面量,
+ * 加必填字段会连带改动它们。
+ */
+const EarningsDateSourcesConfigSchema = z.object({
+  names: z
+    .string()
+    .default('futu_calendar,hkex_announcement,hkex_board_meeting_list')
+    .refine((raw) => raw.split(',').every((name) => name.trim() !== ''), {
+      message: 'EARNINGS_DATE_SOURCES 含空串或空段 —— 至少写一个来源名, 逗号间不留空',
+    })
+    .transform((raw) => raw.split(',').map((name) => name.trim())),
+});
+
+export type EarningsDateSourcesConfig = z.infer<typeof EarningsDateSourcesConfigSchema>;
+
+export const earningsDateSourcesConfig = registerAs(
+  'earningsDateSources',
+  (): EarningsDateSourcesConfig =>
+    EarningsDateSourcesConfigSchema.parse({ names: process.env.EARNINGS_DATE_SOURCES }),
+);

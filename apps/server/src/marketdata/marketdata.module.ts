@@ -2,7 +2,12 @@ import { Module, type FactoryProvider } from '@nestjs/common';
 import { SecurityModule } from '../security/security.module.js';
 import { AccountModule } from '../account/account.module.js';
 import { PrismaService } from '../security/prisma.service.js';
-import { marketdataConfig, type MarketdataConfig } from '../config/marketdata.config.js';
+import {
+  earningsDateSourcesConfig,
+  marketdataConfig,
+  type EarningsDateSourcesConfig,
+  type MarketdataConfig,
+} from '../config/marketdata.config.js';
 import { MockMarketDataAdapter } from './mock-market-data.adapter.js';
 import { refusingCollectionPort } from './refusing-collection.adapter.js';
 import { VendorHttpClient } from './vendor-http-client.js';
@@ -148,6 +153,7 @@ import {
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import { EARNINGS_CALENDAR_PORT, type EarningsCalendarPort } from './earnings-calendar.port.js';
 import { FutuEarningsCalendarAdapter } from './futu-earnings-calendar.adapter.js';
+import { assembleEarningsDateSources, EARNINGS_DATE_SOURCES } from './earnings-date-source.port.js';
 import { REALTIME_QUOTE_PORT, type RealtimeQuotePort } from './realtime-quote.port.js';
 import { FutuRealtimeQuoteAdapter } from './futu-realtime-quote.adapter.js';
 import { MarketRoutedRealtimeQuoteAdapter } from './market-routed-realtime-quote.adapter.js';
@@ -390,6 +396,23 @@ function collectionPort<T extends object>(
       live: (cfg, earningsHttp: VendorHttpClient) =>
         new FutuEarningsCalendarAdapter(earningsHttp, cfg.futuShimUrl, cfg.futuShimToken),
     }),
+
+    // ── 财报日期来源数组 (079 T009, plan §D2 / §D11): 按 `EARNINGS_DATE_SOURCES` 组装 ──
+    //
+    // 未知 / 重复名在 `assembleEarningsDateSources` 里抛 ⇒ provider 实例化失败 ⇒ **boot 失败**,
+    // 而不是少跑一个来源。每个来源实例由各自 token 经 `collectionPort()` 绑定 (kind=mock 得拒绝壳),
+    // 在 T010 / T011 / T012 逐个接入并替换下面的 `null`; 接入前 `null` = 已知但尚未接线, 不进数组。
+    // 🚫 为占位造假来源进 prod 路径。
+    {
+      provide: EARNINGS_DATE_SOURCES,
+      inject: [earningsDateSourcesConfig.KEY],
+      useFactory: (sourcesCfg: EarningsDateSourcesConfig) =>
+        assembleEarningsDateSources(sourcesCfg.names, {
+          futu_calendar: null,
+          hkex_announcement: null,
+          hkex_board_meeting_list: null,
+        }),
+    },
 
     // ── 实时报价端口 (061 T003/T005, FR-001/010/020): kind=live → 富途 shim `/option-snapshot`
     // 的正股行, **按市场路由** ──
