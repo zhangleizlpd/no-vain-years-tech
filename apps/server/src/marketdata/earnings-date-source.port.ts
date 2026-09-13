@@ -1,4 +1,5 @@
 import type { EarningsReportKind } from './earnings-period.rules.js';
+import type { BoardListCounts } from './hkex-board-meeting-list.rules.js';
 
 /**
  * 财报日期来源端口 (079 T009, FR-001 / FR-002 / FR-018, plan §D2)。
@@ -114,6 +115,26 @@ export interface EarningsDateCollectResult {
   readonly unalignedPublications?: number;
   /** 交易所公告来源 (079 T011): 信号窗口内「长得像通知」而不作信号的标题数 (`state_branches` 12)。 */
   readonly lookalikeNoticeTitles?: number;
+  /**
+   * 清单来源 (079 T012): 页首日期陈旧判定 (FR-025)。`true` = 落后业务日超过阈值 (观测照常产出);
+   * `'unknown'` = 交易日历不可判 (🚫 当新鲜、🚫 当陈旧)。其余来源不给。
+   */
+  readonly stale?: EarningsBoardListStaleness;
+  /**
+   * 清单来源 (079 T012): 本轮在清单上的 `(标的, period_key)` 集合 (= 本轮观测的键), 供提前消失判定
+   * (FR-016, T014)。其余来源不给。
+   */
+  readonly listedPeriodKeys?: readonly EarningsListedPeriodKey[];
+  /** 清单来源 (079 T012): 每轮扫描统计 (`earnings_board_list_scan`, T015)。其余来源不给。 */
+  readonly boardListScan?: { readonly pageDate: string; readonly counts: BoardListCounts };
+}
+
+/** 清单陈旧判定的值域 (见 {@link EarningsDateCollectResult.stale})。 */
+export type EarningsBoardListStaleness = boolean | 'unknown';
+
+export interface EarningsListedPeriodKey {
+  readonly instrumentId: bigint;
+  readonly periodKey: string;
 }
 
 export interface EarningsDateSource {
@@ -144,13 +165,12 @@ function isEarningsDateSourceName(name: string): name is EarningsDateSourceName 
  * 按配置顺序从「来源名 → 实例」表取出启用的来源。O(n), n = 启用名个数。
  *
  * - 未知名 ⇒ 抛 {@link UnknownEarningsDateSourceError}; 重复名 / 空清单 ⇒ 抛。
- * - 注册表值为 `null` = **已知但尚未接线**的来源 (079 T010–T012 逐个接入前的中间态) ⇒ 不进数组、
- *   不抛。与「未知名」刻意分开: 前者是本仓还没写完, 后者是配置写错。
- *   🚨 最后一个来源接线后 (T012), 注册表类型应收紧为非空, 让这条分支在类型层消失。
+ * - 注册表 MUST 为全部合法名给出实例: 079 T012 起三个来源均已接线, 类型不再容许 `null`
+ *   (「已知但尚未接线」这一中间态在类型层消失, 漏接一个来源编译即红)。
  */
 export function assembleEarningsDateSources(
   enabled: readonly string[],
-  registry: Readonly<Record<EarningsDateSourceName, EarningsDateSource | null>>,
+  registry: Readonly<Record<EarningsDateSourceName, EarningsDateSource>>,
 ): EarningsDateSource[] {
   if (enabled.length === 0) {
     throw new Error('EARNINGS_DATE_SOURCES 为空 —— 零来源的维度每轮空跑且全绿, 至少启用一个来源。');
@@ -165,8 +185,7 @@ export function assembleEarningsDateSources(
       );
     }
     seen.add(name);
-    const source = registry[name];
-    if (source !== null) sources.push(source);
+    sources.push(registry[name]);
   }
   return sources;
 }

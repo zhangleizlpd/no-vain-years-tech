@@ -62,14 +62,6 @@ describe('assembleEarningsDateSources', () => {
   it('空清单 ⇒ 装配期抛错 (零来源的维度每轮空跑且全绿)', () => {
     expect(() => assembleEarningsDateSources([], FULL_REGISTRY)).toThrow(/EARNINGS_DATE_SOURCES/);
   });
-
-  it('已知名但尚未接线 (注册表值为 null) ⇒ 不进数组、不抛 —— 与未知名是两件事', () => {
-    const got = assembleEarningsDateSources(['futu_calendar', 'hkex_announcement'], {
-      ...FULL_REGISTRY,
-      hkex_announcement: null,
-    });
-    expect(got.map((s) => s.name)).toEqual(['futu_calendar']);
-  });
 });
 
 describe('EARNINGS_DATE_SOURCES 默认值与来源名单一致', () => {

@@ -102,7 +102,9 @@ import {
   type InstrumentUniversePort,
 } from './instrument-universe.port.js';
 import { COMPANY_PROFILE_PORT, type CompanyProfilePort } from './company-profile.port.js';
-import { TRADING_CALENDAR_PORT } from './trading-calendar.port.js';
+import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
+import { HkexBoardMeetingListSource } from './hkex-board-meeting-list.source.js';
+import { HKEXNEWS_PROFILE } from './hkexnews.constraint-profile.js';
 import { OPTION_CHAIN_DISCOVERY_PORT } from './option-chain-discovery.port.js';
 import {
   TRADING_CALENDAR_FORWARD_SOURCE,
@@ -209,6 +211,10 @@ const FUTU_MARKET_STATE_HTTP_CLIENT = Symbol('FUTU_MARKET_STATE_HTTP_CLIENT');
 const FUTU_CALENDAR_EARNINGS_DATE_SOURCE = Symbol('FUTU_CALENDAR_EARNINGS_DATE_SOURCE');
 /** 079 T011 财报日期来源 B 实例 token (同上)。 */
 const HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE = Symbol('HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE');
+/** 079 T012 财报日期来源 C 实例 token (同上)。 */
+const HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE = Symbol(
+  'HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE',
+);
 
 /** `kind=live` 下 config 的收窄形态 —— `collectionPort` 的 `live` 回调只在这一支被调。 */
 type LiveMarketdataConfig = Extract<MarketdataConfig, { kind: 'live' }>;
@@ -412,7 +418,7 @@ function collectionPort<T extends object>(
     //
     // 未知 / 重复名在 `assembleEarningsDateSources` 里抛 ⇒ provider 实例化失败 ⇒ **boot 失败**,
     // 而不是少跑一个来源。每个来源实例由各自 token 经 `collectionPort()` 绑定 (kind=mock 得拒绝壳),
-    // 在 T010 / T011 / T012 逐个接入并替换下面的 `null`; 接入前 `null` = 已知但尚未接线, 不进数组。
+    // 由 T010 / T011 / T012 逐个接入; 三个来源全部接线后注册表类型不再容许 `null`。
     // 🚫 为占位造假来源进 prod 路径。
     // 079 T010 来源 A: 复用上面的 `EARNINGS_CALENDAR_PORT` 实例 (同一 shim capability 同一个桶,
     // 🚫 另 new adapter —— 多一个客户端令牌桶 = 上游允许值翻倍)。
@@ -426,22 +432,31 @@ function collectionPort<T extends object>(
       inject: [PrismaService],
       live: (_cfg, prisma: PrismaService) => new HkexAnnouncementSource(prisma),
     }),
+    // 079 T012 来源 C: 港交所清单。自己一个 VendorHttpClient (hkexnews 约束画像; 限频 / 熔断态与
+    // 其余 vendor 互不连坐), 本 provider 单例 ⇒ 全进程恰一个; 交易日历端口判页首日期陈旧。
+    collectionPort<EarningsDateSource>(HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE, {
+      inject: [PrismaService, TRADING_CALENDAR_PORT],
+      live: (_cfg, prisma: PrismaService, calendar: TradingCalendarPort) =>
+        new HkexBoardMeetingListSource(new VendorHttpClient(HKEXNEWS_PROFILE), prisma, calendar),
+    }),
     {
       provide: EARNINGS_DATE_SOURCES,
       inject: [
         earningsDateSourcesConfig.KEY,
         FUTU_CALENDAR_EARNINGS_DATE_SOURCE,
         HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE,
+        HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE,
       ],
       useFactory: (
         sourcesCfg: EarningsDateSourcesConfig,
         futuCalendar: EarningsDateSource,
         hkexAnnouncement: EarningsDateSource,
+        hkexBoardMeetingList: EarningsDateSource,
       ) =>
         assembleEarningsDateSources(sourcesCfg.names, {
           futu_calendar: futuCalendar,
           hkex_announcement: hkexAnnouncement,
-          hkex_board_meeting_list: null,
+          hkex_board_meeting_list: hkexBoardMeetingList,
         }),
     },
 
