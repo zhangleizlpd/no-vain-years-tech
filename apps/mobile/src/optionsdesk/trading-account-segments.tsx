@@ -34,7 +34,10 @@ export function TradingAccountSegments({ segment, onSelect }: TradingAccountSegm
                 accessibilityState={{ selected: on }}
                 accessibilityLabel={LABELS[s]}
                 testID={`optionsdesk-trading-account-segment-${s}`}
-                className={`flex-1 rounded-full ${on ? 'bg-surface shadow-card' : ''}`}
+                // 🚨 未选段 MUST 带 `shadow-none`：Tailwind `shadow-*` 编译出 `--tw-shadow` CSS 变量，NativeWind
+                //    native 端首帧没设变量的组件后续新增变量会走「upgrade」—— dev 下打印告警时 stringify
+                //    props 触到 react-navigation 默认 context 的 throwing getter ⇒ 红屏（081 T008 真机实证）。
+                className={`flex-1 rounded-full ${on ? 'bg-surface shadow-card' : 'shadow-none'}`}
               >
                 <View className="items-center py-1.5">
                   <Text
