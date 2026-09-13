@@ -42,6 +42,6 @@ Clear 检查点批次建议：T001–T003 / T004–T005 / T006–T007 / T008–T
 
 ## E2E / Gate
 
-- [ ] T008 [Gate] **真机窄屏核题头 + 系统返回手势**（FR-001, FR-004, SC-006; plan Gate 0.1 / §D4; Edge「系统返回手势离开」）：Mate50 dev-client（`run-local-env` 真机模式）打开期权台雷达，确认 ⚙ 🌡 🔍 钱包四入口与标题互不遮挡、各自可单独点中；点钱包进入交易账户页，选「港股 · 订单」后用**安卓系统返回手势**离开，再点入口 ⇒ 仍「港股 · 订单」→ verify: 真机截图三张（雷达题头 / 交易账户页「港股 · 报表」/ 手势返回再进后的「港股 · 订单」）贴 PR body；若真机出现遮挡、误触或记忆丢失，停下回 plan 重议，不在 impl 内自行改方案
+- [X] T008 [Gate] **真机窄屏核题头 + 系统返回手势**（FR-001, FR-004, SC-006; plan Gate 0.1 / §D4; Edge「系统返回手势离开」）：Mate50 dev-client（`run-local-env` 真机模式）打开期权台雷达，确认 ⚙ 🌡 🔍 钱包四入口与标题互不遮挡、各自可单独点中；点钱包进入交易账户页，选「港股 · 订单」后用**安卓系统返回手势**离开，再点入口 ⇒ 仍「港股 · 订单」→ verify: 真机截图三张（雷达题头 / 交易账户页「港股 · 报表」/ 手势返回再进后的「港股 · 订单」）贴 PR body；若真机出现遮挡、误触或记忆丢失，停下回 plan 重议，不在 impl 内自行改方案
 
 - [ ] T009 [Gate] **PR 门 + 覆盖对账 + frontmatter 收口**（SC-001–SC-006）：`pnpm nx affected -t lint,typecheck,test,build,runtime-smoke --base=origin/main` 全绿（按终态串判定，不只看 exit code）+ `scripts/checks/*.ts` 治理脚本全扫绿（含 `check-test-size.ts` / `check-spec-frontmatters.ts`）；spec `state_branches` 11 条、Edge Cases 5 条、SC-001–SC-006 对照 plan §测试映射逐条 grep 到具体 `it()` / `test()` 或真机截图，覆盖表贴 PR body；spec frontmatter `status → implemented`、tasks frontmatter `status → completed`、`updated_at` 刷新；PR body 按模板全段复刻，hard-gate 三 checkbox 落实 → verify: 全绿证据串 + 覆盖表贴 PR body
