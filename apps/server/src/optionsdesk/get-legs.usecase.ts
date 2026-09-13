@@ -272,14 +272,14 @@ export interface LegView {
   /** 068 带标 —— 原样从 `LegChainRow.bandStatus` 带上来, 本层零加工 (呈现语义, 判据在检索层)。 */
   bandStatus: 'in' | 'out' | null;
   /**
-   * 071 宽价差机会标 —— 原样从候选集的 `RecallCandidate.wideSpreadOpportunity` 带上来,
+   * 078 宽价差机会标 —— 原样从候选集的 `RecallCandidate.wideSpreadOpportunity` 带上来,
    * 本层**零加工**。语义 = 「这条腿是从点差维度的机会支进来的」。
    *
    * 🚨 **🚫 MUST NOT 在这里由 `relativeSpread` 与档界重算**: 那就是同一判据两处各一份, 而
    * 两边都算得出布尔、都不会红 (ADR-0064 不变量 ③ / 052 FR-003)。判据单点在
    * `leg-recall.rules.ts` 的 `isWideSpreadOpportunity`。
    * 📌 与 {@link LegView.bandStatus} 各自独立: 带标答「Δ 落不落意图带」, 本标答「怎么进来的」,
-   * 可同时成立 (071 FR-011)。
+   * 可同时成立 (078 FR-011)。
    */
   wideSpreadOpportunity: boolean;
 }
@@ -880,7 +880,7 @@ export class GetLegsUseCase {
         earningsMark: marks.get(dateOnlyOf(expiryDate)) ?? null,
         greeksComplete: row.greeksComplete,
         bandStatus: row.bandStatus,
-        // 071: 机会标随候选集原样带出 —— 判据在召回层单点, 本层零重算 (见 `LegView`)。
+        // 078: 机会标随候选集原样带出 —— 判据在召回层单点, 本层零重算 (见 `LegView`)。
         wideSpreadOpportunity,
         // 064 `FR-009`: 逐行档位原样带出 —— 🚫 MUST NOT 拿链级那个数填 (部分缺失时两者不同)。
         priceKind: row.priceKind,

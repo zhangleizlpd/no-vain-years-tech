@@ -344,7 +344,7 @@ export function passesRelativeSpreadMax(
 }
 
 /**
- * 071 宽价差机会闸的档界档位 (FR-002): **收租年化 good 档**。
+ * 078 宽价差机会闸的档界档位 (FR-002): **收租年化 good 档**。
  *
  * 🚨 **它是 `leg-tier.rules.ts` 档表的引用, 不是一个新阈值** —— 全仓零新增数值字面量, 策略 SoT
  * 改档界本闸自动跟随。🚫 MUST NOT 写成 `new Prisma.Decimal('0.15')`: 那会当场撞
@@ -361,7 +361,7 @@ export const WIDE_SPREAD_OPPORTUNITY_TIER: LegTierWithFloor = 'good';
 export const WIDE_SPREAD_OPPORTUNITY_FLOOR = tierFloor('annualized', WIDE_SPREAD_OPPORTUNITY_TIER);
 
 /**
- * 071 **宽价差机会支** (FR-002 / FR-004): 按 `bid` 卖出即达收租 good 档 ⇒ 这条腿值得看,
+ * 078 **宽价差机会支** (FR-002 / FR-004): 按 `bid` 卖出即达收租 good 档 ⇒ 这条腿值得看,
  * 哪怕市场很宽。`O(1)`。
  *
  * 它是相对价差维度的**第二条通过路径**, 与主支 ({@link passesRelativeSpreadMax}) 在
@@ -686,7 +686,7 @@ function failsCriterion(
         !passesLivenessMin(leg.openInterest, leg.volume, criteria.livenessMin)
       );
     case 'relativeSpreadMax':
-      // 071 FR-001: 一个维度、两条支撑 —— 主支 (点差上界) 不过时机会支接管 (收租限定,
+      // 078 FR-001: 一个维度、两条支撑 —— 主支 (点差上界) 不过时机会支接管 (收租限定,
       // {@link isWideSpreadOpportunity})。🚨 `tab` 必须入参: 靠调用方守约「只在收租传」等于
       // 把「哪个视角能捡漏」变成运行时才知道的事, 而建仓表照样渲染得出来 (FR-003)。
       return (
@@ -698,13 +698,13 @@ function failsCriterion(
 }
 
 /**
- * 机会支在这一套条件下**作不作用** (FR-003 / 071 clarify)。`O(1)`。
+ * 机会支在这一套条件下**作不作用** (FR-003 / 078 clarify)。`O(1)`。
  *
  * 两个前提缺一不可:
  * 1. **收租视角** —— 建仓的档界口径是周化, 且建仓不跑行军, 本片蓄意排除 (spec 建仓面排除判据)。
  * 2. **用户没有把这一维收得比系统默认值更严** —— 拖动价差上界往紧里调是一句明确的话:
  *    「我只要窄市场」。机会支若照样放行, 这个控件就对一类腿失效了, 而**表照样渲染得出来**
- *    (071 IT ⑤ 臂实撞: 收到 0.05 时 `rel = 0.065` 的窄腿仍被机会支捞回来)。
+ *    (078 IT ⑤ 臂实撞: 收到 0.05 时 `rel = 0.065` 的窄腿仍被机会支捞回来)。
  *
  * 🚨 **判据取「不比默认值严」而不是「有没有被覆盖」**: 后者会让「显式填一个与默认值相同的数」
  * 与「压根没动过」给出不同的成员集 —— 同一个上界两种结果, 而两种都解释得通。
@@ -727,7 +727,7 @@ function wideSpreadOpportunityApplies(
  * 🚨 **返回集合而不是布尔**: 计数要的是「仅因这一个维度出局」(边际口径), 一个布尔答不了
  * 「是不是只差这一条」。候选集归属与六个维度的计数由它**一次求值**同源派生。
  *
- * 🚨 **071 起吃 `tab`**: 点差维度的机会支只作用收租 (FR-003), 而维度判据 MUST 自己封死值域 ——
+ * 🚨 **078 起吃 `tab`**: 点差维度的机会支只作用收租 (FR-003), 而维度判据 MUST 自己封死值域 ——
  * 同 `leg-mark.rules.ts` 的 `isRecommended` 那条「纯函数不依赖调用方守约」纪律。
  */
 export function failedCriteria(
@@ -744,8 +744,8 @@ export function failedCriteria(
  *
  * 🚨 **住本文件是成员判据单点纪律的要求** (052 FR-003, 守卫 #7 机器强制): 判定用的就是
  * {@link failedCriteria} 本尊 —— 在召回层之外调它 = 第二个成员判定点; 交叉报价的负点差在
- * 点差闸恒放行 ⇒ 不会被点差维误排, 六维整套跑是安全的 (071 的机会支同理够不到: 主支恒过 ⇒
- * 第二支结构上不参与判定)。`tab` 随 071 入参, 调用点传 `'rent'` —— 审计作用域本就是收租成员。
+ * 点差闸恒放行 ⇒ 不会被点差维误排, 六维整套跑是安全的 (078 的机会支同理够不到: 主支恒过 ⇒
+ * 第二支结构上不参与判定)。`tab` 随 078 入参, 调用点传 `'rent'` —— 审计作用域本就是收租成员。
  */
 export function crossedRemovalsWithinCriteria<T extends RecallLegInput>(
   tab: LegTab,
@@ -771,7 +771,7 @@ export interface RecallCandidate<T extends RecallLegInput> {
   /** 非空, 且恒为请求视角的子集。 */
   readonly tabs: readonly LegTab[];
   /**
-   * 071 **宽价差机会标** (FR-005 / FR-006): 这条腿是从点差维度的**机会支**进来的 ——
+   * 078 **宽价差机会标** (FR-005 / FR-006): 这条腿是从点差维度的**机会支**进来的 ——
    * 市场很宽 (`rel > 系统默认上界`) 但按 `bid` 卖出仍达收租 good 档。
    *
    * 🚨 **判据取「系统默认值下的主支」不过, 而不是「本次实际被挡下」** (FR-006): 用户把点差
@@ -950,7 +950,7 @@ interface LegVerdict {
   readonly premiumBlockedEverywhere: boolean;
   /** 052 边际计数命中的 (视角, 维度) 对。 */
   readonly marginalHits: readonly { readonly tab: LegTab; readonly key: RetrievalCriterionKey }[];
-  /** 071 宽价差机会标 —— 语义见 {@link RecallCandidate.wideSpreadOpportunity}。 */
+  /** 078 宽价差机会标 —— 语义见 {@link RecallCandidate.wideSpreadOpportunity}。 */
   readonly wideSpreadOpportunity: boolean;
 }
 
@@ -970,7 +970,7 @@ function evaluateLeg(pass: RecallPass, leg: RecallLegInput): LegVerdict {
 
   for (const tab of LEG_TABS) {
     if (!pass.requested.has(tab)) continue;
-    // 071 FR-006: 标按**系统默认值下**的主支判 —— 见 `RecallCandidate.wideSpreadOpportunity`。
+    // 078 FR-006: 标按**系统默认值下**的主支判 —— 见 `RecallCandidate.wideSpreadOpportunity`。
     // 放在成员判定之前算: 它描述的是「这条腿是怎么进来的」, 与它这次进没进来是两件事。
     const systemMax = pass.defaults[tab].relativeSpreadMax;
     if (

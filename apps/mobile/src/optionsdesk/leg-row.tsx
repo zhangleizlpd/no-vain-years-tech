@@ -107,7 +107,7 @@ export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: L
   const eodMarked = legRowEodMarked(blockPriceKind, leg.priceKind);
   // 068 FR-009: 带外横档 —— 判据只从契约 bandStatus 来, 打标不删行 (比价用途)。
   const bandOut = legRowBandOut(leg.bandStatus);
-  // 071 FR-010: 宽价差机会标 —— 同样只从契约布尔来, 客户端零重算。
+  // 078 FR-010: 宽价差机会标 —— 同样只从契约布尔来, 客户端零重算。
   const wideSpread = legRowWideSpread(leg.wideSpreadOpportunity);
   // 069 FR-016: 推荐章与劣档微标 —— 只在收租实时 (march 非 null) 有值, 判据在 rules 纯函数。
   const marchRecommended = legRowMarchRecommended(leg, march);
@@ -167,7 +167,7 @@ export function LegRow({ leg, tx, today, blockPriceKind, march, onOpenAudit }: L
               {COPY.bandOutBadge}
             </Text>
           ) : null}
-          {/* 071 宽价差机会标: 复用同一条 badge 载体, teal 描边 —— 「市场宽但砸 bid 仍达好档」
+          {/* 078 宽价差机会标: 复用同一条 badge 载体, teal 描边 —— 「市场宽但砸 bid 仍达好档」
               是机会不是告警。🚫 不降灰不折叠不沉底; 价差有多宽由同行的价差列如实说。 */}
           {wideSpread ? (
             <Text

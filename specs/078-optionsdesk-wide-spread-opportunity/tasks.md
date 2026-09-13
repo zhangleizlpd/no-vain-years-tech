@@ -1,13 +1,13 @@
 ---
-feature_id: 071-optionsdesk-wide-spread-opportunity
+feature_id: 078-optionsdesk-wide-spread-opportunity
 spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: completed
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-13'
 ---
 
-# Tasks: 071-optionsdesk-wide-spread-opportunity（宽价差机会标 — 收租点差闸的机会逃生舱）
+# Tasks: 078-optionsdesk-wide-spread-opportunity（宽价差机会标 — 收租点差闸的机会逃生舱）
 
 **Spec**: [`spec.md`](./spec.md) ｜ **Plan**: [`plan.md`](./plan.md) ｜ **架构 canonical**: [`ADR-0068`](../../docs/adr/0068-realtime-narrow-recall-two-stage.md)（本片 = 其 P5 补片；收口 issue #298）
 **Branch**: `071-optionsdesk-wide-spread-opportunity`
@@ -33,8 +33,8 @@ updated_at: '2026-08-31'
 | DTO 腿级布尔（改） | `apps/server/src/optionsdesk/optionsdesk.dto.ts` |
 | 契约产物（regen） | `apps/server/openapi.json` / `packages/api-client/**` |
 | mobile 行内微标 | `apps/mobile/src/optionsdesk/leg-row.rules.ts` / `leg-row.tsx` / `leg-picker-copy.ts` / `optionsdesk-copy.ts` |
-| Server IT（**新建**） | `apps/server/test/integration/optionsdesk-071.wide-spread.it.spec.ts` |
-| 契约冒烟（**新建**） | `apps/mobile/e2e/contract-smoke/071-wide-spread.contract.ts` |
+| Server IT（**新建**） | `apps/server/test/integration/optionsdesk-078.wide-spread.it.spec.ts` |
+| 契约冒烟（**新建**） | `apps/mobile/e2e/contract-smoke/078-wide-spread.contract.ts` |
 | 结构闸（改：词表加一项，零新常量） | `scripts/checks/check-optionsdesk-rule-constants.ts` |
 | ADR 回写（§决策 3 + §7 + 后果） | `docs/adr/0068-realtime-narrow-recall-two-stage.md` |
 
@@ -73,9 +73,9 @@ updated_at: '2026-08-31'
 
 ### Phase 4 · 集成与验收
 
-- [X] T009 [Server-IT] **state_branches 穷举**（US1/US2/US3; state_branches 1–9）：新建 `optionsdesk-071.wide-spread.it.spec.ts`，真 DI + Testcontainers，9 条分支各一 `it()`（含建仓排除、全腿不触发、交叉报价、离线/实时同判据、覆盖上界后标不变） → verify: `pnpm nx test server --testPathPattern=optionsdesk-071` 全绿
+- [X] T009 [Server-IT] **state_branches 穷举**（US1/US2/US3; state_branches 1–9）：新建 `optionsdesk-078.wide-spread.it.spec.ts`，真 DI + Testcontainers，9 条分支各一 `it()`（含建仓排除、全腿不触发、交叉报价、离线/实时同判据、覆盖上界后标不变） → verify: `pnpm nx test server --testPathPattern=optionsdesk-078` 全绿
 
-- [X] T010 [Contract-Smoke] **契约冒烟**（FR-005 / SC-005）：新建 `071-wide-spread.contract.ts`，断言收租响应带标行同时给得出 `bid` / `ask` / `relativeSpread` → verify: 契约冒烟套件绿
+- [X] T010 [Contract-Smoke] **契约冒烟**（FR-005 / SC-005）：新建 `078-wide-spread.contract.ts`，断言收租响应带标行同时给得出 `bid` / `ask` / `relativeSpread` → verify: 契约冒烟套件绿
 
 - [X] T011 [Server] **SC-003 回放留档**（SC-003 / SC-004）：用 local-only 取证脚本对 `2026-08-28` 全量复跑，确认候选 852 → 930、推荐 70 → 75、零丢失 → verify: 数字回写 spec §标定实测；与本文 spec 表逐值一致
 

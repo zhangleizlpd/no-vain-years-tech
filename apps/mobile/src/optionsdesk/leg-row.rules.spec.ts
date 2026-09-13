@@ -358,7 +358,7 @@ describe('legRowBandOut — 068 带外横档判定 (FR-009 呈现侧)', () => {
   });
 });
 
-describe('legRowWideSpread — 071 宽价差机会标判定 (FR-010 呈现侧)', () => {
+describe('legRowWideSpread — 078 宽价差机会标判定 (FR-010 呈现侧)', () => {
   it('契约布尔为真 ⇒ 打「宽」标', () => {
     expect(legRowWideSpread(true)).toBe(true);
   });

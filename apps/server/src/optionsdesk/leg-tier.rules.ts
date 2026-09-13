@@ -129,8 +129,8 @@ export function classifyLegTier(
 /**
  * 某口径某档的**下界** —— 档表的唯一查表入口。`O(档数)` = `O(1)`, 档表仅 3 行。
  *
- * 🚨 **抽出来是因为消费点从一个变成了两个** (071 T001): 069 行军的 φ
- * (`leg-march.rules.ts` `resolveMarchPhi`) 与 071 的宽价差机会闸 (`leg-recall.rules.ts`)
+ * 🚨 **抽出来是因为消费点从一个变成了两个** (078 T001): 069 行军的 φ
+ * (`leg-march.rules.ts` `resolveMarchPhi`) 与 078 的宽价差机会闸 (`leg-recall.rules.ts`)
  * 都要「收租年化 good 档界」这个数。各写一份 `.find()` **不会红** —— 两份都查得出数, 只是
  * 档表改结构时可能只改到一处, 而另一处照样返回一个看着合理的阈值。
  *

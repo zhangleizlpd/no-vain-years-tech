@@ -110,7 +110,7 @@ describe('leg-retrieval.port — 假实现驱动召回判据, 零容器 (FR-032 
 
   it('流动性门槛只挡意图视角: 腿仍在候选集、仍在全腿, 排除数按视角各记一次', async () => {
     // 宽价差 (bid 1 / ask 8) ⇒ 相对价差远超上界; DTE=35 落重叠区 ⇒ 两个意图视角各被挡一次。
-    // 🚨 `bid` 蓄意压到 1 (年化 10.5% < 收租 good 档界): 071 起 bid 年化达档的宽价差腿走
+    // 🚨 `bid` 蓄意压到 1 (年化 10.5% < 收租 good 档界): 078 起 bid 年化达档的宽价差腿走
     // **机会支**进收租候选, 那样这条腿就不再「被流动性门槛挡下」, 本条断言的判据面会被换掉。
     const result = await retrieve([row({ code: 'C-WIDE', bid: D('1'), ask: D('8') })]);
     expect(result.candidates[0].tabs).toEqual(['all']);

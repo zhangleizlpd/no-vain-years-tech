@@ -1,9 +1,9 @@
 ---
-feature_id: 071-optionsdesk-wide-spread-opportunity
+feature_id: 078-optionsdesk-wide-spread-opportunity
 spec_ref: ./spec.md
 status: approved
 created_at: '2026-08-31'
-updated_at: '2026-08-31'
+updated_at: '2026-09-13'
 adr_refs: ['0043', '0062', '0064', '0068']
 context7_verified: []
 ---

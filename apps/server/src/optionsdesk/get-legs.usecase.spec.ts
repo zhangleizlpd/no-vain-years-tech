@@ -431,7 +431,7 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
   };
 
   /**
-   * 071 机会支的两条反例 —— **同 K 网格、同到期日, 只差 bid**（⇒ 变量恰好一个）。
+   * 078 机会支的两条反例 —— **同 K 网格、同到期日, 只差 bid**（⇒ 变量恰好一个）。
    * V=150 ⇒ W=120、spot 132.40 ⇒ axis = min(spot, W) = 120；网格上 `≥ axis` 的最近一档就是 120
    * ⇒ 成色上界 = 120（比例项 123.6 更松, 取严）。两条腿都落 `K ≤ 120` 与收租段 `[30,365]` 内。
    * · `G-WIDE-OPP`  bid 3 / ask 9 ⇒ 相对价差 1.00、bid 年化 3/117 × 365/42 = **22.3%** ≥ good 档
@@ -485,10 +485,10 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     expect(inAll.gateCounts.excludedFromIntentTabs).toBe(0);
   });
 
-  it('071: 宽价差 ∧ bid 年化达档 ⇒ 进收租视角并带机会标; 不达档的同形态腿逐字沿旧语义出局', async () => {
+  it('078: 宽价差 ∧ bid 年化达档 ⇒ 进收租视角并带机会标; 不达档的同形态腿逐字沿旧语义出局', async () => {
     const inRent = await tableOf([ok, wideOpp, wideThin], 'rent');
 
-    // 达档的那条从机会支进来了 —— 它在 071 之前压根不在这个视角里。
+    // 达档的那条从机会支进来了 —— 它在 078 之前压根不在这个视角里。
     expect(inRent.legs.map((l) => l.code)).toEqual(['G-WIDE-OPP']);
     expect(inRent.legs[0].wideSpreadOpportunity).toBe(true);
     // 🚨 放行腿 MUST NOT 再计入「被流动性门槛挡下」—— 它已经不是被挡下的腿 (FR-007);
@@ -496,7 +496,7 @@ describe('get-legs.usecase — 两道门槛的作用面不对称, 计数互不�
     expect(inRent.gateCounts.excludedFromIntentTabs).toBe(1);
   });
 
-  it('071: 机会支收租限定 —— 同一条腿在建仓视角仍被点差闸挡下 (FR-003)', async () => {
+  it('078: 机会支收租限定 —— 同一条腿在建仓视角仍被点差闸挡下 (FR-003)', async () => {
     // DTE 42 同时落建仓段 [1,49] 与收租段 [30,365] ⇒ 视角是**唯一**变量, 期限段不参与。
     const inBuild = await tableOf([ok, wideOpp], 'build');
 

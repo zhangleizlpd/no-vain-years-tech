@@ -165,7 +165,7 @@ describe('leg-tier.rules — 边界外与退化输入', () => {
   });
 });
 
-describe('leg-tier.rules — 071 T001 档界查表单点 (tierFloor)', () => {
+describe('leg-tier.rules — 078 T001 档界查表单点 (tierFloor)', () => {
   it('两口径三档逐值 = 档表本尊 (同一实例, 不是等值副本)', () => {
     for (const basis of ['annualized', 'weekly'] as const) {
       for (const band of TIER_FLOORS_BY_BASIS[basis]) {
