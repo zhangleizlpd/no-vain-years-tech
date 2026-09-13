@@ -2,13 +2,15 @@
 feature_id: 022-alert-push-delivery
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: ready
+status: blocked-external
 created_at: '2026-06-07'
 ---
 
 # Tasks: 022-alert-push-delivery（预警推送送达 — 极光推送 Android）
 
 **Spec**: [`spec.md`](./spec.md) | **Plan**: [`plan.md`](./plan.md) | **Branch**: `022-alert-push-delivery` | **技术单源**: local-only `docs/experience/2026-06/06-07-jpush-android-poc.md`（PoC #364 实证）
+
+> ⛔ **PR-1 / PR-2 已 ship（T001–T015 全绿）；仅剩 Phase 3 的 T016 / T017 / T018，卡在仓外的外部门槛上 —— 它们是真待办，但现在开不了工。** 卡点与解锁判据见下方 Phase 3 段的 ⛔ 横幅。frontmatter `status` 因此由 `ready` 改为 `blocked-external`（2026-09-13）：`ready` 会让扫描把它读成「可以开工」，而真实状态是「等外部」。
 
 ## Format
 
@@ -69,6 +71,21 @@ created_at: '2026-06-07'
 ## Phase 3: 华为厂商通道 — 杀进程必达（PR-3，外部门槛 gate）
 
 **Goal**：厂商通道接通，SC-002 杀进程必达验收。**前置 = user 线下办理项，工期不可控，与 PR-1/2 解耦。** ⚠️ **交付时机绑定「华为应用市场上架」里程碑，非孤立推送任务（决策 + 完整 ROI/范围分析见 [plan.md](plan.md) D12）**：真实前置是整条合规上架链（备案 → 软著 → 上架 → 厂商通道审核 → 自分类权益）；上架前华为杀进程「必达」兑现不了，仅「重开补达 + 消息中心兜底」；PR-3 范围非纯 mobile（需 server 透传华为 category，见 D12）。
+
+> ⛔ **BLOCKED（复核于 2026-09-13，非遗忘）** —— 下面 3 条一条也开不了工，卡点全在仓外：
+>
+> | 卡点 | 状态（最后一次记录 2026-06-19） |
+> | --- | --- |
+> | 网站 / 域名 ICP 备案 | ✅ 已通过（2026-06-19） |
+> | **App 备案号（`-XA`）** | ⏳ **尚未申请** |
+> | **软著** | ⏳ 进行中（2–3 月长板） |
+> | 华为 AppGallery 上架 → 厂商通道审核 → 自分类权益 | ⏳ 未启（前两项是其前置） |
+>
+> 单一真相源 = `docs/private/plans/2026-06/06-19-website-icp-filing-defer-unblock-checklist.md`（local-only）的 **Tier 2 #4**，那里点名的就是本片的 T016 / T017 / T018。⚠️ 该文件同时记着：上架链的**真正第一约束是行情授权墙**（见同目录合规 master），比 App 备案 / 软著更硬。
+>
+> 📌 **代码侧现状已复核（2026-09-13）**：`apps/mobile/plugins/with-jpush.js` 全文零 `huawei` / `hms` / `agconnect` 命中，仓内无 `agconnect-services.json` ⇒ T017 确未落地；T016 其下无任何打点记录。`docs/private/plans/2026-07` … `2026-09` 三个月内无新的备案 / 软著 / 上架进展记录。
+>
+> 🚫 **MUST NOT 把这 3 条当成「漏做的待办」去推进** —— 交付时机按 [`plan.md`](plan.md) **D12** 绑定「华为应用市场上架」里程碑（2026-06-08 拍板）。过渡期的诚实口径也在 D12：上架前华为杀进程「必达」兑现不了，只到「重开补达 + 消息中心永久兜底」，**对外勿宣称必达**；高优预警的兜底走已激活的阿里云短信。
 
 - [ ] T016 [US2] [Manual] **外部门槛 checklist（user 线下，代码零改动）**：华为开发者账号实名 → AGC 创建应用（包名 `com.shintongtech.novainyears`）+ 开通 Push Kit → 下载 `agconnect-services.json` → 应用市场上架（厂商通道审核前置）→ 预警消息申报**「服务通讯类」**（避开运营消息日限额）→ 极光控制台厂商通道回填华为 AppID/SecretKey。每项完成在本 task 下打点记录
 - [ ] T017 [US2] [Mobile] **with-jpush 华为厂商扩展**：`apps/mobile/plugins/with-jpush.js` 注入华为厂商 gradle 依赖（极光华为厂商插件 + HMS agconnect 插件 + HMS maven repo）+ `agconnect-services.json` 资产注入（T016 产物）——**沿 PoC 教训：只注入 placeholders/gradle 链接，不注入组件声明（AAR manifest merge 自带）**；`npx expo prebuild --platform android --no-install` 检查产物（gradle 依赖/manifest 注入项）后删本地 `android/`（保持 managed）+ EAS 重打 dev/preview APK 装真机

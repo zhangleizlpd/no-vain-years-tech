@@ -2,13 +2,17 @@
 feature_id: 033-ideation-multimodal-input-shell
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: ready
+status: implemented
 created_at: '2026-06-22'
 ---
 
 # Tasks: 033-ideation-multimodal-input-shell（ideation 多模态输入 UI 壳 — B2-1）
 
 **Spec**: [`spec.md`](./spec.md) | **Plan**: [`plan.md`](./plan.md) | **Branch**: `033-ideation-multimodal-input-shell` | **设计源**: [B2 拆分 plan](../../docs/private/plans/2026-06/06-22-ideation-b2-split-b2-1-ui-shell.md) + [mockup](./design/)
+
+> ✅ **本片已收口（2026-06-23）。唯一未勾选的 T009 是永久 ⛔ BLOCKED，不是待办。** 它在 Playwright Expo Web 上**不可达**（平台限制，见该 task 行内论证），2026-06-22 拍板方案 A：FR-009 / SC-004 由 **vitest 逻辑层 + T012 真机**双层达成，不为测试改产线码；T012 已于 2026-06-23 在 Mate50 实证 denied 路径。
+>
+> 📌 **2026-09-13**：T009 的 checkbox 由 `- [ ]` 改为 `- ⛔`，frontmatter `status` 由 `ready` 对齐为 `implemented`（与 [`spec.md`](./spec.md) 一致）。原因是 `/sdd-auto-impl`（`.claude/commands/sdd-auto-impl.md:32`）、`/speckit-implement`（`.claude/skills/speckit-implement/SKILL.md:64-66`）只按 `- [ ] T<N>` 判 pending、读不到行内的 BLOCKED 论证 ⇒ 本片被反复扫成「有待办」。判决与正文不变。
 
 ## Format
 
@@ -67,7 +71,7 @@ created_at: '2026-06-22'
 
 **Goal**：相机/相册权限被拒不崩、有去设置引导。**独立测**：mock 权限 denied → 点摄像头/图片 → toast 引导、不进选图/拍照。
 
-- [ ] T009 [US3] [Mobile-E2E] e2e：mock `request*PermissionsAsync` 返回 denied → 点 图片/摄像头 → `fireToast(permissionDenied)`、不崩、不进入 picker/相机（state_branch 9、SC-004）；受限(limited)态注明交系统 picker（web 仅 mock，真机手验在 T012）→ verify：`nx run mobile:runtime-smoke`（被拒处理逻辑在 T005）—— ⛔ **BLOCKED**：Expo Web 的 `expo-image-picker`（`ExponentImagePicker.web.js`）权限 API **硬编码 `granted:true`**（web 不需权限），且为 bundled ES-module binding 无 `window`/`globalThis` 逃生口 → denied 分支在 Playwright Expo Web **不可达**，无法不改产线代码（加 `__E2E` seam）干净 mock。被拒逻辑已由 **`use-ideation-attachments.spec.ts`（vitest）**覆盖（相册/相机被拒各 1 it：`fireToast(permissionDenied)` + 不拉 picker + 不追加），真机被拒路径手验落 **T012**。**决策（2026-06-22）：采纳方案 A —— 保持 blocked，FR-009/SC-004 由 vitest 逻辑层 + T012 真机双层达成，不为测试改产线码。** ✅ **2026-06-23 更新**：T012 已在 Mate50 真机实证 denied 路径（点图片→系统弹窗→禁止→不崩/不进 picker/toast 引导），**FR-009/SC-004 双层验证闭环完成**（web e2e 仍按 blocked 处理，因 web 平台限制不可达，非缺口）。
+- ⛔ T009 [US3] [Mobile-E2E] e2e：mock `request*PermissionsAsync` 返回 denied → 点 图片/摄像头 → `fireToast(permissionDenied)`、不崩、不进入 picker/相机（state_branch 9、SC-004）；受限(limited)态注明交系统 picker（web 仅 mock，真机手验在 T012）→ verify：`nx run mobile:runtime-smoke`（被拒处理逻辑在 T005）—— ⛔ **BLOCKED**：Expo Web 的 `expo-image-picker`（`ExponentImagePicker.web.js`）权限 API **硬编码 `granted:true`**（web 不需权限），且为 bundled ES-module binding 无 `window`/`globalThis` 逃生口 → denied 分支在 Playwright Expo Web **不可达**，无法不改产线代码（加 `__E2E` seam）干净 mock。被拒逻辑已由 **`use-ideation-attachments.spec.ts`（vitest）**覆盖（`use-ideation-attachments.spec.ts:140` **相机**被拒 1 it：`fireToast(permissionDenied)` + 不拉相机 + 不追加。📌 **2026-09-13 订正**：原文写的「相册/相机各 1 it」与实现不符 —— 相册侧**没有权限前置门**，系统 picker 回传 scoped URI、无需 MEDIA_LIBRARY 读权限，该性质由同文件 `:96` `it('不做相册权限前置门…')` 正面断言 ⇒ spec US3-AS1 的「相册被拒」半边在当前实现下**不可达**，不是漏测），真机被拒路径手验落 **T012**。**决策（2026-06-22）：采纳方案 A —— 保持 blocked，FR-009/SC-004 由 vitest 逻辑层 + T012 真机双层达成，不为测试改产线码。** ✅ **2026-06-23 更新**：T012 已在 Mate50 真机实证 denied 路径（点图片→系统弹窗→禁止→不崩/不进 picker/toast 引导），**FR-009/SC-004 双层验证闭环完成**（web e2e 仍按 blocked 处理，因 web 平台限制不可达，非缺口）。
 
 ---
 
