@@ -378,7 +378,7 @@ export async function loadWorkingSet(
  *
  * 复杂度: 1 次锚表全量读 (只取 ticker 一列) + 1 次 `Instrument` 批查。
  */
-async function loadAnchoredInstruments(
+export async function loadAnchoredInstruments(
   prisma: PrismaService,
   scope: string[],
 ): Promise<WorkingInstrument[]> {
