@@ -904,6 +904,41 @@ test('045 导航 — 二级页（锚管理）渲返回箭头且**不**渲汉堡�
   await expect(page.getByTestId('optionsdesk-menu-button')).toBeVisible({ timeout: 20_000 });
 });
 
+// makeHeaderBackOrParent 深链判据两臂：深链时 (app) 栈底被 initialRouteName 补了一层 (tabs)，
+// canGoBack 恒真 ⇒ 只看它会把返回送到首页 tab。① 深链必须回落 parentHref；② 正常 push 必须仍是
+// 真 back（雷达 tab 不重挂 ⇒ 港股页签仍在，`useRadar` 的 market 是 useState，重挂即回落美股）。
+test('045 导航 — 深链直达二级页（温度计）点返回：落期权台雷达，不落首页 tab', async ({ page }) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '-4.5' }),
+  ]);
+  await page.goto('/optionsdesk/thermometer');
+  await expect(headerBackLocator(page)).toBeVisible({ timeout: 90_000 });
+
+  await headerBack(page);
+  await page.waitForURL(/\/optionsdesk$/, { timeout: 30_000 });
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toBeVisible({ timeout: 30_000 });
+});
+
+test('045 导航 — 雷达切港股 → 🌡 温度计 → 返回：回雷达且港股仍选中（正常 push 仍走真 back）', async ({
+  page,
+}) => {
+  await installOptionsdeskMock(page, [
+    makeAnchor({ id: '1', ticker: 'us:AOS', distanceToWPct: '-4.5' }),
+    makeAnchor({ id: '2', ticker: 'hk:00700', distanceToWPct: '-2.0' }),
+  ]);
+  await gotoOptionsdesk(page);
+  await page.getByTestId('optionsdesk-radar-market-tab-hk').tap();
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+
+  await page.getByTestId('optionsdesk-thermometer-button').tap();
+  await page.waitForURL(/\/optionsdesk\/thermometer$/, { timeout: 30_000 });
+  await headerBack(page);
+
+  await page.waitForURL(/\/optionsdesk$/, { timeout: 30_000 });
+  await expect(page.getByTestId('optionsdesk-radar-row-hk:00700')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('optionsdesk-radar-row-us:AOS')).toHaveCount(0);
+});
+
 test('045 导航 — 灵感全屏子屏无悬空汉堡、无双返回、底部 Tab 栏隐藏（EC-17）', async ({ page }) => {
   await installIdeationMock(page);
 
