@@ -25,6 +25,7 @@ import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request
 from futu import (
@@ -37,12 +38,21 @@ from futu import (
     OptionType,
     SecurityType,
     TradeDateMarket,
+    TrdEnv,
+    TrdMarket,
 )
 
 from . import config, mappers
 from .auth import extract_token, is_authorized
 from .opend import OpenDSupervisor, OpenDUnavailable
 from .ratelimit import RateGate, RateLimitExceeded
+from .trade import (
+    AccountSelectionError,
+    TradeBusy,
+    TradeSupervisor,
+    TradeTimeout,
+    TradeVendorError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +164,16 @@ SNAPSHOT_MAX_CODES = 400
 # `EARNINGS_CALENDAR_MAX_WINDOW_SPAN_DAYS`（两侧同值，各自独立成立：那边是「不发出非法窗」，
 # 这边是「不放行非法窗」）。
 EARNINGS_MAX_SPAN_DAYS = 6
+
+# `/trade/deals` 与 `/trade/orders` 的单次窗跨度上限（自然日，端点差）。
+#
+# EVIDENCE: 上限取值 = 富途历史窗上限，见 plan 082 D2（E4）；SDK 侧 `history_deal_list_query` /
+# `history_order_list_query` 也都以 90 调 `normalize_start_end_date(start, end, 90)`（futu 10.08.6808 源码）。
+# 超窗一律 400（永久），不截断 —— 同 `/his-vol` 的理由：被裁掉的那段在下游读作「那几天没有成交」。
+TRADE_MAX_SPAN_DAYS = 90
+
+#: 交易查询面接受的市场，及其「交易所当地今天」所用的时区（决定是否合并当日接口）。
+EXCHANGE_TIME_ZONES = {TrdMarket.US: "America/New_York", TrdMarket.HK: "Asia/Hong_Kong"}
 
 DATE_FORMAT = "%Y-%m-%d"
 
@@ -283,12 +303,50 @@ def _optional_date(raw: str | None, param: str) -> date | None:
         raise ValueError(f"query param `{param}` must be YYYY-MM-DD, got {raw!r}") from None
 
 
-def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None = None) -> Flask:
+def _exchange_today(market: str) -> date:
+    """The exchange's local calendar date. Time zone resolved per call, not at
+    import: a broken tz database must fail the trade routes, not the quote surface."""
+    return datetime.now(ZoneInfo(EXCHANGE_TIME_ZONES[market])).date()
+
+
+def _require_trade_market(raw: str | None) -> str:
+    market = _require_enum(raw, TrdMarket, "market")
+    if market not in EXCHANGE_TIME_ZONES:
+        raise ValueError(
+            f"unsupported market={raw!r} for trade queries; "
+            f"allowed: {','.join(sorted(EXCHANGE_TIME_ZONES))}"
+        )
+    return market
+
+
+def _required_trade_window() -> tuple[date, date]:
+    start = _optional_date(request.args.get("start"), "start")
+    end = _optional_date(request.args.get("end"), "end")
+    if start is None or end is None:
+        raise ValueError("query params `start` and `end` are both required")
+    if end < start:
+        raise ValueError(f"`end` ({end}) is before `start` ({start})")
+    span_days = (end - start).days
+    if span_days > TRADE_MAX_SPAN_DAYS:
+        raise ValueError(
+            f"window too wide: {span_days} days exceeds {TRADE_MAX_SPAN_DAYS} days per call; "
+            f"split the window caller-side (the shim refuses rather than clipping)"
+        )
+    return start, end
+
+
+def create_app(
+    supervisor: OpenDSupervisor | None = None,
+    gate: RateGate | None = None,
+    trade: TradeSupervisor | None = None,
+) -> Flask:
     app = Flask(__name__)
     opend = supervisor if supervisor is not None else OpenDSupervisor()
     rate_gate = gate if gate is not None else RateGate()
+    trade_supervisor = trade if trade is not None else TradeSupervisor(opend)
     app.config["OPEND"] = opend
     app.config["RATE_GATE"] = rate_gate
+    app.config["TRADE"] = trade_supervisor
 
     @app.before_request
     def _authenticate():
@@ -358,6 +416,29 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
     @app.errorhandler(VendorError)
     def _on_vendor_error(exc: VendorError):
         log.warning("vendor error: %s", exc)
+        return jsonify({"error": "vendor_error", "detail": str(exc)}), 502
+
+    # 🚨 082 交易面的处理器只记固定文案与计数，不格式化请求参数：账户号只活在 `TradeSupervisor`
+    # 内存里，日志与响应都不许带出去（FR-002；`test_trade_error_paths_never_log_the_account_id`）。
+    @app.errorhandler(AccountSelectionError)
+    def _on_account_selection(exc: AccountSelectionError):
+        log.warning("trade account selection failed: matched=%d", exc.matched)
+        return jsonify({"error": "account_selection", "matched": exc.matched}), 409
+
+    @app.errorhandler(TradeTimeout)
+    def _on_trade_timeout(exc: TradeTimeout):
+        log.warning("trade call timed out; trade context discarded")
+        return jsonify({"error": "trade_timeout"}), 503
+
+    @app.errorhandler(TradeBusy)
+    def _on_trade_busy(exc: TradeBusy):
+        log.warning("trade call rejected: concurrency cap full")
+        return jsonify({"error": "trade_busy"}), 503
+
+    @app.errorhandler(TradeVendorError)
+    def _on_trade_vendor_error(exc: TradeVendorError):
+        # The message is redacted of account ids by TradeSupervisor before it is raised.
+        log.warning("trade vendor error: %s", exc)
         return jsonify({"error": "vendor_error", "detail": str(exc)}), 502
 
     @app.errorhandler(ValueError)
@@ -788,6 +869,109 @@ def create_app(supervisor: OpenDSupervisor | None = None, gate: RateGate | None 
                 f"get_global_state(): expected a dict, got {type(state).__name__}"
             )
         return _envelope([dict(state)])
+
+    # ── 082 只读交易查询面 ─────────────────────────────────────────────────
+    #
+    # 限时 / 限并发 / 剔除 `acc_id` 都在 `TradeSupervisor` 里（见 trade.py 模块注释）；路由只做
+    # 参数校验、限频与形状。校验先于限频：400 不该吃掉额度。
+
+    def _merged_window(market, start, end, *, key, market_param, history, today):
+        """History query over `start`..`end`, plus the today query when `end`
+        reaches the exchange's local today, de-duplicated by `key` (plan 082 D2).
+
+        `history` / `today` = `(capability, query)`. Today's rows go first because
+        `dedupe_by` keeps the first occurrence, and the today query is the one sent
+        with `refresh_cache=True`.
+        """
+        reaches_today = end >= _exchange_today(market)
+        rate_gate.check(history[0])
+        if reaches_today:
+            rate_gate.check(today[0])
+        account = trade_supervisor.selected_account()
+        common = {"trd_env": TrdEnv.REAL, "acc_id": account["acc_id"], market_param: market}
+        rows: list[dict[str, Any]] = []
+        if reaches_today:
+            rows.extend(trade_supervisor.call(today[1], refresh_cache=True, **common))
+        rows.extend(
+            trade_supervisor.call(
+                history[1], start=start.isoformat(), end=end.isoformat(), **common
+            )
+        )
+        return mappers.dedupe_by(rows, key)
+
+    @app.get("/trade/accounts")
+    def trade_accounts():
+        """同步对象账户的概要 `{trdmarket_auth, matched}`。
+
+        🚨 不回账户号的任何片段；`acc_id` 不出本进程（FR-002）。连接尾号是所属账号手机号后四位，
+        由维护者建连接时填写，不从这里取（2026-09-14 amend）。选户规则与「命中 ≠ 1 ⇒ 409、绝不任取」
+        见 `trade.select_account`，所以走到这里时 `matched` 恒为 1。
+
+        其余交易路由缓存未命中时的那一发 `get_acc_list` 不另计本 capability：每个交易 context
+        生命周期内至多一发。
+        """
+        rate_gate.check("trade_acc_list")
+        account = trade_supervisor.selected_account()
+        return _envelope(
+            [
+                {
+                    "trdmarket_auth": list(account.get("trdmarket_auth") or []),
+                    "matched": 1,
+                }
+            ]
+        )
+
+    @app.get("/trade/positions")
+    def trade_positions():
+        """选中账户在一个市场（`US` / `HK`）的持仓，`refresh_cache=True` 现取。"""
+        market = _require_trade_market(request.args.get("market"))
+        rate_gate.check("trade_position")
+        account = trade_supervisor.selected_account()
+        rows = trade_supervisor.call(
+            lambda ctx, **kw: ctx.position_list_query(**kw),
+            trd_env=TrdEnv.REAL,
+            acc_id=account["acc_id"],
+            refresh_cache=True,
+            position_market=market,
+        )
+        return _envelope(rows)
+
+    @app.get("/trade/deals")
+    def trade_deals():
+        """选中账户在 `start`..`end` 的成交（历史 + 触及当日时合并当日，按 `deal_id` 去重）。"""
+        market = _require_trade_market(request.args.get("market"))
+        start, end = _required_trade_window()
+        rows = _merged_window(
+            market,
+            start,
+            end,
+            key="deal_id",
+            market_param="deal_market",
+            history=("trade_deal_history", lambda ctx, **kw: ctx.history_deal_list_query(**kw)),
+            today=("trade_deal_today", lambda ctx, **kw: ctx.deal_list_query(**kw)),
+        )
+        return _envelope(rows)
+
+    @app.get("/trade/orders")
+    def trade_orders():
+        """选中账户在 `start`..`end` 的订单（历史 + 触及当日时合并当日，按 `order_id` 去重）。
+
+        EVIDENCE: 「当日」一侧用的 `order_list_query`，官方页名是「查询未完成订单」，介绍原文
+        「查询指定交易业务账户的未完成订单列表（包含未成交订单、24h内已成交或已撤…」
+        （2026-09-14 直取 openapi.futunn.com/futu-api-doc/trade/get-order-list.html）。
+        """
+        market = _require_trade_market(request.args.get("market"))
+        start, end = _required_trade_window()
+        rows = _merged_window(
+            market,
+            start,
+            end,
+            key="order_id",
+            market_param="order_market",
+            history=("trade_order_history", lambda ctx, **kw: ctx.history_order_list_query(**kw)),
+            today=("trade_order_today", lambda ctx, **kw: ctx.order_list_query(**kw)),
+        )
+        return _envelope(rows)
 
     return app
 

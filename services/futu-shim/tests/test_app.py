@@ -2,16 +2,21 @@ import gzip
 import json
 import logging
 import re
+import threading
+from collections import defaultdict
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from futu import RET_OK
 
+from futu_shim import app as app_module
 from futu_shim.app import GZIP_MIN_BYTES, create_app
 from futu_shim.opend import OpenDUnavailable
 from futu_shim.ratelimit import RateGate
+from futu_shim.trade import TradeSupervisor
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -268,6 +273,7 @@ def test_deploy_probe_pattern_sees_every_registered_route():
     declared = set(re.findall(match.group(1), APP_SOURCE.read_text(encoding="utf-8")))
     assert declared, "模式没从 app.py 抽出任何 route —— 提取端已失效"
     assert declared == registered_routes()
+    assert TRADE_ROUTES <= declared, "082 交易路由必须是字面量 @app.get，部署探针才看得见"
 
 
 @pytest.mark.parametrize(
@@ -299,6 +305,14 @@ def test_deploy_probe_pattern_sees_every_registered_route():
         "/option-chain",
         "/option-snapshot",
         "/earnings-calendar",
+        # 082 交易查询面
+        "/trade/accounts",
+        "/trade/positions?market=US",
+        "/trade/deals?market=US&start=2026-09-01&end=2026-09-14",
+        "/trade/orders?market=US&start=2026-09-01&end=2026-09-14",
+        "/trade/positions",
+        "/trade/deals",
+        "/trade/orders",
     ],
 )
 def test_data_routes_reject_missing_or_wrong_token(path):
@@ -307,6 +321,260 @@ def test_data_routes_reject_missing_or_wrong_token(path):
     assert client.get(path, headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get(path, headers={"Authorization": TOKEN}).status_code == 401  # no scheme
     assert supervisor.sessions == 0  # never reached OpenD
+
+
+# ── 082 交易查询面（T002）───────────────────────────────────────────────────
+#
+# 定向变异留档（2026-09-14，临时改坏 → 跑 → 还原 → 全绿）：
+#   a. `_merged_window` 去掉按 id 去重                         → ④ test_window_reaching_today_merges_today_and_dedupes 红
+#   b. `trade.select_account` 命中 ≠ 1 时 log 出候选账户号     → ⑨ test_trade_error_paths_never_log_the_account_id 红
+# 复跑：services/futu-shim/venv/bin/python -m pytest -q services/futu-shim/tests/test_app.py -k trade
+#
+# 🚨 账户号一律明显假值（10 位 9000001xxx；卡号 8000000000 / 7000000000）。选中户用 10 位而非
+# 4 位，是为了让「响应只含末 4 位、不含完整账户号」这条断言有得可红 —— 4 位 id 的末 4 位就是它自己。
+
+TRADE_ROUTES = {"/trade/accounts", "/trade/positions", "/trade/deals", "/trade/orders"}
+SELECTED_ACC_ID = 9000001001
+OTHER_ACC_ID = 9000001011
+EXCHANGE_TODAY = date(2026, 9, 14)
+
+
+def _trade_account(acc_id, trd_env="REAL", acc_status="ACTIVE", auth=("HK", "US")):
+    return {
+        "acc_id": acc_id,
+        "trd_env": trd_env,
+        "acc_type": "MARGIN",
+        "uni_card_num": "7000000000",
+        "card_num": "8000000000",
+        "trdmarket_auth": list(auth),
+        "acc_status": acc_status,
+    }
+
+
+class FakeTradeCtx:
+    """Stands in for OpenSecTradeContext; every query records its kwargs."""
+
+    def __init__(
+        self,
+        accounts=None,
+        positions=None,
+        history_deals=None,
+        today_deals=None,
+        history_orders=None,
+        today_orders=None,
+        hang=None,
+    ):
+        self._accounts = (
+            accounts
+            if accounts is not None
+            else [_trade_account(SELECTED_ACC_ID), _trade_account(1002, trd_env="SIMULATE")]
+        )
+        self._rows = {
+            "position_list_query": positions or [],
+            "history_deal_list_query": history_deals or [],
+            "deal_list_query": today_deals or [],
+            "history_order_list_query": history_orders or [],
+            "order_list_query": today_orders or [],
+        }
+        self._hang = hang
+        self.calls: dict[str, list[dict]] = defaultdict(list)
+
+    def get_acc_list(self):
+        return RET_OK, pd.DataFrame(self._accounts)
+
+    def _answer(self, name, kwargs):
+        self.calls[name].append(kwargs)
+        if self._hang is not None:
+            self._hang.wait()
+        return RET_OK, pd.DataFrame(self._rows[name])
+
+    def position_list_query(self, **kwargs):
+        return self._answer("position_list_query", kwargs)
+
+    def history_deal_list_query(self, **kwargs):
+        return self._answer("history_deal_list_query", kwargs)
+
+    def deal_list_query(self, **kwargs):
+        return self._answer("deal_list_query", kwargs)
+
+    def history_order_list_query(self, **kwargs):
+        return self._answer("history_order_list_query", kwargs)
+
+    def order_list_query(self, **kwargs):
+        return self._answer("order_list_query", kwargs)
+
+    def close(self):
+        pass
+
+
+def build_trade(trade_ctx, gate=None, timeout_s=5.0, max_concurrency=2):
+    supervisor = FakeSupervisor(FakeCtx())
+    trade = TradeSupervisor(
+        supervisor, timeout_s=timeout_s, max_concurrency=max_concurrency,
+        ctx_factory=lambda: trade_ctx,
+    )
+    app = create_app(supervisor, gate, trade)
+    app.config.update(TESTING=True)
+    return app.test_client()
+
+
+@pytest.fixture
+def exchange_today(monkeypatch):
+    monkeypatch.setattr(app_module, "_exchange_today", lambda market: EXCHANGE_TODAY)
+
+
+def test_trade_accounts_rows_carry_only_auth_and_match_count():
+    """⑧ 2026-09-14 amend：行里不带任何账户号片段（连接尾号改为账号手机号后四位，不从券商取）。"""
+    resp = build_trade(FakeTradeCtx()).get("/trade/accounts", headers=AUTH)
+    assert resp.status_code == 200
+    assert set(resp.json) == {"as_of", "count", "rows"}
+    assert [set(row) for row in resp.json["rows"]] == [{"trdmarket_auth", "matched"}]
+    assert resp.json["rows"] == [{"trdmarket_auth": ["HK", "US"], "matched": 1}]
+    body = resp.get_data(as_text=True)
+    for secret in (str(SELECTED_ACC_ID), "8000000000", "7000000000"):
+        assert secret not in body
+
+
+def test_trade_positions_query_the_selected_account_live_and_strip_acc_id():
+    ctx = FakeTradeCtx(positions=[{"code": "US.AAPL", "qty": 1.0, "acc_id": SELECTED_ACC_ID}])
+    resp = build_trade(ctx).get("/trade/positions?market=us", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json["rows"] == [{"code": "US.AAPL", "qty": 1.0}]
+    assert ctx.calls["position_list_query"] == [
+        {"trd_env": "REAL", "acc_id": SELECTED_ACC_ID, "refresh_cache": True, "position_market": "US"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/trade/positions?market=CN",
+        "/trade/deals?market=CN&start=2026-09-01&end=2026-09-14",
+        "/trade/orders?market=CN&start=2026-09-01&end=2026-09-14",
+    ],
+)
+def test_trade_routes_reject_unsupported_market(path, exchange_today):
+    """②"""
+    assert build_trade(FakeTradeCtx()).get(path, headers=AUTH).status_code == 400
+
+
+@pytest.mark.parametrize("kind", ["deals", "orders"])
+def test_trade_window_is_capped_at_90_days(kind, exchange_today):
+    """③ 两侧夹逼：90 天放行、91 天拒绝；缺端点 / 格式错 / 倒序同为 400。"""
+    client = build_trade(FakeTradeCtx())
+    ok = client.get(f"/trade/{kind}?market=US&start=2026-06-16&end=2026-09-14", headers=AUTH)
+    assert ok.status_code == 200
+    for query in (
+        "start=2026-06-15&end=2026-09-14",
+        "end=2026-09-14",
+        "start=2026-09-01&end=20260914",
+        "start=2026-09-14&end=2026-09-01",
+    ):
+        assert client.get(f"/trade/{kind}?market=US&{query}", headers=AUTH).status_code == 400
+
+
+@pytest.mark.parametrize("kind,key", [("deals", "deal_id"), ("orders", "order_id")])
+def test_window_reaching_today_merges_today_and_dedupes(kind, key, exchange_today):
+    """④ `end` = 交易所当地今天 ⇒ 历史 + 当日合并，重复 id 只出现一次。"""
+    singular = kind[:-1]
+    ctx = FakeTradeCtx(
+        **{
+            f"history_{kind}": [{key: "1", "code": "HK.00700"}, {key: "2", "code": "HK.00700"}],
+            f"today_{kind}": [{key: "2", "code": "HK.00700"}, {key: "3", "code": "HK.00700"}],
+        }
+    )
+    resp = build_trade(ctx).get(f"/trade/{kind}?market=HK&start=2026-09-01&end=2026-09-14", headers=AUTH)
+    assert resp.status_code == 200
+    assert sorted(row[key] for row in resp.json["rows"]) == ["1", "2", "3"]
+    common = {"trd_env": "REAL", "acc_id": SELECTED_ACC_ID, f"{singular}_market": "HK"}
+    assert ctx.calls[f"history_{singular}_list_query"] == [
+        {**common, "start": "2026-09-01", "end": "2026-09-14"}
+    ]
+    assert ctx.calls[f"{singular}_list_query"] == [{**common, "refresh_cache": True}]
+
+
+@pytest.mark.parametrize("kind", ["deals", "orders"])
+def test_window_ending_before_today_does_not_call_the_today_query(kind, exchange_today):
+    """⑤"""
+    ctx = FakeTradeCtx()
+    resp = build_trade(ctx).get(f"/trade/{kind}?market=US&start=2026-09-01&end=2026-09-13", headers=AUTH)
+    assert resp.status_code == 200
+    assert len(ctx.calls[f"history_{kind[:-1]}_list_query"]) == 1
+    assert ctx.calls[f"{kind[:-1]}_list_query"] == []
+
+
+def test_account_selection_failure_maps_to_409():
+    """⑥ 两户命中 ⇒ 409 且带命中数。"""
+    accounts = [_trade_account(SELECTED_ACC_ID), _trade_account(OTHER_ACC_ID)]
+    resp = build_trade(FakeTradeCtx(accounts=accounts)).get("/trade/positions?market=US", headers=AUTH)
+    assert resp.status_code == 409
+    assert resp.json == {"error": "account_selection", "matched": 2}
+
+
+def test_trade_timeout_maps_to_503():
+    """⑥"""
+    release = threading.Event()
+    try:
+        resp = build_trade(FakeTradeCtx(hang=release), timeout_s=0.2).get(
+            "/trade/positions?market=US", headers=AUTH
+        )
+    finally:
+        release.set()
+    assert resp.status_code == 503
+    assert resp.json == {"error": "trade_timeout"}
+
+
+def test_trade_busy_maps_to_503():
+    """⑥ 并发满（此处用上限 0 直接造出来）⇒ 503 trade_busy。"""
+    resp = build_trade(FakeTradeCtx(), max_concurrency=0).get("/trade/accounts", headers=AUTH)
+    assert resp.status_code == 503
+    assert resp.json == {"error": "trade_busy"}
+
+
+def test_trade_rate_limit_answers_429_with_retry_after():
+    """⑦"""
+    gate = RateGate(limits={"trade_position": (1, 30)})
+    client = build_trade(FakeTradeCtx(), gate)
+    assert client.get("/trade/positions?market=US", headers=AUTH).status_code == 200
+    refused = client.get("/trade/positions?market=US", headers=AUTH)
+    assert refused.status_code == 429
+    assert refused.json["capability"] == "trade_position"
+    assert int(refused.headers["Retry-After"]) >= 1
+
+
+def test_trade_error_paths_never_log_the_account_id(caplog):
+    """⑨ 409 / 503（超时 + 并发满）/ 429 四条路径的全部日志里没有账户号。
+
+    先断言每条路径**确实留了日志**：一条日志都没抓到时「不含账户号」恒真。
+    """
+    statuses = []
+    with caplog.at_level(logging.DEBUG):
+        accounts = [_trade_account(SELECTED_ACC_ID), _trade_account(OTHER_ACC_ID)]
+        statuses.append(
+            build_trade(FakeTradeCtx(accounts=accounts)).get("/trade/positions?market=US", headers=AUTH).status_code
+        )
+        release = threading.Event()
+        try:
+            statuses.append(
+                build_trade(FakeTradeCtx(hang=release), timeout_s=0.2)
+                .get("/trade/positions?market=US", headers=AUTH)
+                .status_code
+            )
+        finally:
+            release.set()
+        statuses.append(
+            build_trade(FakeTradeCtx(), max_concurrency=0).get("/trade/accounts", headers=AUTH).status_code
+        )
+        client = build_trade(FakeTradeCtx(), RateGate(limits={"trade_position": (1, 30)}))
+        statuses.append(client.get("/trade/positions?market=US", headers=AUTH).status_code)
+        statuses.append(client.get("/trade/positions?market=US", headers=AUTH).status_code)
+
+    assert statuses == [409, 503, 503, 200, 429]
+    logged = [record.getMessage() for record in caplog.records]
+    for marker in ("account selection", "trade call timed out", "trade call rejected", "rate limited"):
+        assert any(marker in message for message in logged), (marker, logged)
+    leaked = [m for m in logged if str(SELECTED_ACC_ID) in m or str(OTHER_ACC_ID) in m]
+    assert leaked == []
 
 
 def test_universe_unions_security_types_and_dedupes():

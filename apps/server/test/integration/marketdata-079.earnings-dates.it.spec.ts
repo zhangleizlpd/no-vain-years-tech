@@ -2096,7 +2096,7 @@ describe('079 T021 港股打标隔离: 期权台取腿读不到本片产出', ()
         prisma,
         new PrismaLegRetrievalAdapter(prisma),
         stubTradingCalendar(),
-        { marchPhiTier: 'good', marchMode: 'phi' },
+        { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
       ).execute(SYMBOL, 'rent', LEGS_NOW);
 
       expect(view.intent).toBe('rent');

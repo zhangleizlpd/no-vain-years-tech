@@ -217,6 +217,7 @@ function makeUseCase(
   return new GetLegsUseCase(service, new PrismaLegRetrievalAdapter(service), calendar, {
     marchPhiTier: 'good',
     marchMode: 'phi',
+    brokerSyncScope: 'anchored',
   });
 }
 
@@ -557,7 +558,7 @@ describe('get-legs.usecase — #361 链缺席的两种成因', () => {
       service,
       new PrismaLegRetrievalAdapter(service, null, null, null, discovery(at)),
       tradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
   };
 
@@ -1380,6 +1381,7 @@ describe('get-legs.usecase — 表达层截断与三个计数 (053 T002)', () =>
     const view = await new GetLegsUseCase(service, adapter, tradingCalendar(), {
       marchPhiTier: 'good',
       marchMode: 'phi',
+      brokerSyncScope: 'anchored',
     }).execute(SYMBOL, 'rent', NOW, {
       perspective: 'rent',
       criteria: { dteBand: { min: 1, max: 50 } },

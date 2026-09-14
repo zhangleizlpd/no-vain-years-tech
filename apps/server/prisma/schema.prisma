@@ -2233,6 +2233,189 @@ model AnchorSubmission {
   @@schema("optionsdesk")
 }
 
+// ─── 券商账户镜像 (082 拉取式同步底座; plan D7, SoT = 本段) ─────────────────────────────
+// 六张 `broker_` 表 = optionsdesk 持有的「期权台范围内的券商镜像」, **不扩** portfolio 的
+// `BrokerAccount` (那是 012 的归属标记表, 语义不同; ADR-0062 复审记录)。
+// 共同约定 (照 portfolio 先例 `BrokerAccount`):
+//   - 五张账号表带 `account_id BigInt` **无 FK relation** (逻辑引用, 无跨 schema FK), 并建以
+//     `account_id` 打头的索引 (FR-001: 每行直接记归属账号, 不经连接行间接推导)。
+//   - `broker_contract_ref` 是公共参考数据, **无** `account_id` (master §12-A2)。
+//   - `connection_id` 同样是逻辑引用无 FK —— 连接行的增删是维护者手工动作 (上线 runbook)。
+//   - 数量 / 金额 `Decimal`; 原始行 `raw Json`; 时间 `Timestamptz(6)` (毫秒精度, D4)。
+//   - 🚨 完整券商账户号 MUST NOT 落任何列, 含 `raw` (FR-002; shim 映射层已剔除 `acc_id`)。
+
+// 券商连接: 一行 = 一个账号 × 一家券商 × 一个证券户。调度器与订阅方**遍历本表**取
+// account_id, 代码中不存在「管理员 ID」常量 (master §12-A3)。
+// `phone_last4` = 所属账号手机号后四位, 上线建连接时由维护者**手填**; 代码 MUST NOT 读
+// `account` 表的手机号, 也不从券商取 (2026-09-14 amend, spec FR-002)。已知代价: 同账号绑
+// 第二个券商户时无法区分、换号后过期 —— 届时改为展示期按 account_id 现查 (spec Key Entities)。
+model BrokerConnection {
+  id         BigInt   @id @default(autoincrement())
+  accountId  BigInt   @map("account_id")
+  /// 券商码 ('futu')。
+  brokerCode String   @map("broker_code") @db.VarChar(16)
+  /// 人读标签 (维护者手填)。
+  label      String   @db.VarChar(64)
+  phoneLast4 String   @map("phone_last4") @db.VarChar(4)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([accountId], map: "ix_broker_connection_account")
+  @@map("broker_connection")
+  @@schema("optionsdesk")
+}
+
+// 券商持仓: 某连接在某市场一个合约的**当前**持仓 (不留每日快照, spec Assumptions)。
+// 一次成功拉取后按 `planPositionSync` 在**一个事务**内整体替换 (FR-014); 拉取失败不进写入。
+// `first_seen_at` 仅插入时写, 更新保留 (FR-014); `opened_at_source` ∈ 'derived' | 'fallback' (D8)。
+model BrokerPosition {
+  id               BigInt   @id @default(autoincrement())
+  accountId        BigInt   @map("account_id")
+  connectionId     BigInt   @map("connection_id")
+  market           String   @db.VarChar(4) // 'us' | 'hk'
+  /// 券商原始代码 (如 `US.AAPL260116C200000`)。
+  code             String   @db.VarChar(64)
+  /// 判定出的正股 canonical `market:code`; null = 未解析 (FR-006 不丢弃)。
+  underlyingTicker String?  @map("underlying_ticker") @db.VarChar(32)
+  /// 带符号: 空头为负 (券商原样); 期权单位为张。
+  qty              Decimal  @db.Decimal(18, 4)
+  marketValue      Decimal? @map("market_value") @db.Decimal(20, 4)
+  /// 摊薄成本; 与 `average_cost` 两个口径都留, 由 p3 选 (D7 / F4)。
+  costPrice        Decimal? @map("cost_price") @db.Decimal(18, 6)
+  averageCost      Decimal? @map("average_cost") @db.Decimal(18, 6)
+  currentPrice     Decimal? @map("current_price") @db.Decimal(18, 6)
+  currency         String?  @db.VarChar(8)
+  firstSeenAt      DateTime @map("first_seen_at") @db.Timestamptz(6)
+  openedAt         DateTime @map("opened_at") @db.Timestamptz(6)
+  openedAtSource   String   @map("opened_at_source") @db.VarChar(8)
+  /// 最近一次成功同步时刻 (FR-015)。
+  syncedAt         DateTime @map("synced_at") @db.Timestamptz(6)
+  raw              Json
+
+  @@unique([connectionId, market, code], map: "uk_broker_position_connection_market_code")
+  @@index([accountId, market], map: "ix_broker_position_account_market")
+  @@map("broker_position")
+  @@schema("optionsdesk")
+}
+
+// 券商成交: 视为不可变 ⇒ 写入只用 `createMany({ skipDuplicates })`, 返回的插入数即对账
+// 「补回条数」(D7)。唯一 `(connection_id, deal_id)` (FR-012)。
+model BrokerDeal {
+  id               BigInt   @id @default(autoincrement())
+  accountId        BigInt   @map("account_id")
+  connectionId     BigInt   @map("connection_id")
+  market           String   @db.VarChar(4) // 'us' | 'hk'
+  dealId           String   @map("deal_id") @db.VarChar(64)
+  orderId          String?  @map("order_id") @db.VarChar(64)
+  code             String   @db.VarChar(64)
+  underlyingTicker String?  @map("underlying_ticker") @db.VarChar(32)
+  /// 'BUY' | 'SELL' | 'SELL_SHORT' | 'BUY_BACK' —— 方向只看本列, `qty` 恒非负。
+  side             String   @db.VarChar(16)
+  qty              Decimal  @db.Decimal(18, 4)
+  price            Decimal  @db.Decimal(18, 6)
+  currency         String   @db.VarChar(8)
+  /// 按交易所时区解析出的绝对时刻 (vendorTimeToDate), 不存日期串。
+  tradedAt         DateTime @map("traded_at") @db.Timestamptz(6)
+  raw              Json
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([connectionId, dealId], map: "uk_broker_deal_connection_deal")
+  @@index([accountId, market], map: "ix_broker_deal_account_market")
+  @@map("broker_deal")
+  @@schema("optionsdesk")
+}
+
+// 券商订单: 一张订单的**最新已知**状态 (终态照常保存, FR-013)。写入 = 先 `createMany
+// ({ skipDuplicates })` 再 `updateMany where vendor_updated_at < incoming` —— 两步都是原子写,
+// 🚫 先查后写 (并发写同一连接撞唯一约束抛 P2002, 会被误判为基础设施失败进入重试; D7)。
+model BrokerOrder {
+  id               BigInt    @id @default(autoincrement())
+  accountId        BigInt    @map("account_id")
+  connectionId     BigInt    @map("connection_id")
+  market           String    @db.VarChar(4) // 'us' | 'hk'
+  orderId          String    @map("order_id") @db.VarChar(64)
+  /// 券商代码; 组合单为券商合成码, **不解析** (各腿见 `combo_leg_codes`; D5)。
+  code             String    @db.VarChar(64)
+  comboLegCodes    String[]  @map("combo_leg_codes")
+  underlyingTicker String?   @map("underlying_ticker") @db.VarChar(32)
+  side             String    @db.VarChar(16)
+  orderType        String?   @map("order_type") @db.VarChar(32)
+  qty              Decimal   @db.Decimal(18, 4)
+  price            Decimal?  @db.Decimal(18, 6)
+  status           String    @db.VarChar(32)
+  currency         String?   @db.VarChar(8)
+  vendorCreatedAt  DateTime? @map("vendor_created_at") @db.Timestamptz(6)
+  /// 新旧判据 (FR-013), 毫秒精度 —— 同秒更新靠毫秒分先后 (D4)。
+  vendorUpdatedAt  DateTime  @map("vendor_updated_at") @db.Timestamptz(6)
+  raw              Json
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([connectionId, orderId], map: "uk_broker_order_connection_order")
+  @@index([accountId, market], map: "ix_broker_order_account_market")
+  @@map("broker_order")
+  @@schema("optionsdesk")
+}
+
+// 合约归属参考: 合约代码 → 正股的判定结果缓存 (D5)。公共参考数据, **无** account_id
+// (master §12-A2)。`source` ∈ 'root_map' | 'stock_owner'。只缓存解析成功的结果 ——
+// 未解析不落行, 下次同步重新判定。
+model BrokerContractRef {
+  market           String   @db.VarChar(4) // 'us' | 'hk'
+  code             String   @db.VarChar(64)
+  underlyingTicker String   @map("underlying_ticker") @db.VarChar(32)
+  source           String   @db.VarChar(16)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([market, code], map: "pk_broker_contract_ref")
+  @@map("broker_contract_ref")
+  @@schema("optionsdesk")
+}
+
+// 同步记录: 一次补齐或对账的执行留痕 (FR-017)。按 E14 **不写** marketdata `sync_run`。
+//   kind   ∈ 'backfill' | 'reconcile' (p2b 追加 'push_gap')
+//   status ∈ 'pending' | 'running' | 'succeeded' | 'failed'
+//   market: 对账必填; 补齐可空 (空 = 目标标的所属市场或全部市场)
+//   target: 单只标的 canonical ticker 或 '*'
+//   trading_date: 对账 = 交易所当地日期; 补齐为空
+//   written / filled: 补齐写入条数 / 对账补回条数
+// 🚨 防重入两层 (D9): 第二层 = 部分唯一索引 `uk_broker_sync_run_reconcile_active` ——
+//   同连接同市场同交易日至多一条 running|succeeded 的对账; 插 running 撞冲突 (P2002) ⇒ 本拍跳过。
+//   ⚠️ 同 `uk_anchor_submission_pending_ticker_asof`: 生成的客户端把它建模成**全表**复合唯一,
+//   谓词在类型里消失 ⇒ MUST NOT 用 `upsert` 命中它。
+// 🚨 `(connection_id, source_event_id)` 唯一 = 订阅方幂等键 (D10)。**必须带 connection_id**:
+//   只按事件 ID 唯一会把第二个连接的记录当成重复静默丢弃。source_event_id 可空 (对账 / 手工
+//   插的补齐), PG 唯一约束对 NULL 互不冲突 —— 这里正是要的语义, 不用哨兵值。
+model BrokerSyncRun {
+  id               BigInt    @id @default(autoincrement())
+  accountId        BigInt    @map("account_id")
+  connectionId     BigInt    @map("connection_id")
+  kind             String    @db.VarChar(16)
+  status           String    @db.VarChar(16)
+  market           String?   @db.VarChar(4)
+  target           String    @db.VarChar(32)
+  windowStart      DateTime? @map("window_start") @db.Timestamptz(6)
+  windowEnd        DateTime? @map("window_end") @db.Timestamptz(6)
+  tradingDate      DateTime? @map("trading_date") @db.Date
+  attempt          Int       @default(0)
+  firstAttemptedAt DateTime? @map("first_attempted_at") @db.Timestamptz(6)
+  nextAttemptAt    DateTime? @map("next_attempt_at") @db.Timestamptz(6)
+  written          Int?
+  filled           Int?
+  error            String?   @db.VarChar(512)
+  startedAt        DateTime? @map("started_at") @db.Timestamptz(6)
+  finishedAt       DateTime? @map("finished_at") @db.Timestamptz(6)
+  sourceEventId    String?   @map("source_event_id") @db.VarChar(64)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([connectionId, sourceEventId], map: "uk_broker_sync_run_connection_source_event")
+  @@unique([connectionId, market, tradingDate], map: "uk_broker_sync_run_reconcile_active", where: raw("(((kind)::text = 'reconcile'::text) AND ((status)::text = ANY (ARRAY[('running'::character varying)::text, ('succeeded'::character varying)::text])))"))
+  @@index([accountId, market], map: "ix_broker_sync_run_account_market")
+  @@map("broker_sync_run")
+  @@schema("optionsdesk")
+}
+
 // 研报归档记录 (057, 第 11 个 bounded context research; ADR-0065)。一行 = 一次投递,
 // 而不是「一份研报」—— 同一字节被两个投递方各投一次是**两行**(US5 归属完整性), 但它们
 // 指向**同一个 object_key**(位置由 content_hash 单独导出, 与投递方无关) ⇒ 对象只存一份。

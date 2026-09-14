@@ -88,6 +88,14 @@ def test_shipped_limits_match_the_measured_evidence():
     # 官方 60/30s (2026-08-01 复核)。**不得为"保守"调低**: 每票 10 年 = 3 页, 调低会让
     # 多票回填在中途 429 并连坐 server 侧熔断 —— 这正是它当初落在 fallback 上时出的事。
     assert LIMITS["history_kline"] == (60, 30)
+    # 082 交易查询面：五个接口的官方页均为「同一账户ID(acc_id) 每 30 秒内最多请求 10 次」
+    # (2026-09-14 直取 openapi.futunn.com)。get-acc-list 页没有「接口限制」小节 ⇒ 兜底档。
+    assert LIMITS["trade_position"] == (10, 30)
+    assert LIMITS["trade_deal_history"] == (10, 30)
+    assert LIMITS["trade_deal_today"] == (10, 30)
+    assert LIMITS["trade_order_history"] == (10, 30)
+    assert LIMITS["trade_order_today"] == (10, 30)
+    assert LIMITS["trade_acc_list"] == FALLBACK_LIMIT
 
 
 def test_option_underlying_capabilities_have_their_own_profile_not_the_fallback():

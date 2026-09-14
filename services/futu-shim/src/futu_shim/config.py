@@ -95,6 +95,17 @@ def health_probe_timeout_s() -> float:
     return float(_env("FUTU_HEALTH_PROBE_TIMEOUT_S", "3") or "3")
 
 
+def trade_call_timeout_s() -> float:
+    """Deadline for one trade-query SDK call (`trade.TradeSupervisor`).
+
+    Like the health probe, this is a liveness bound, not a performance budget: a
+    wedged trade context must give its waitress thread back instead of queueing
+    the quote routes behind it (plan 082 D2 / D13). A timeout discards the
+    context, so the next call starts clean.
+    """
+    return float(_env("FUTU_TRADE_CALL_TIMEOUT_S", "10") or "10")
+
+
 def systemctl_cmd() -> list[str]:
     """Command prefix used to control the OpenD unit.
 

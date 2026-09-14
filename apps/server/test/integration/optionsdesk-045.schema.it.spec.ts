@@ -53,7 +53,18 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
         ORDER BY table_name`,
     );
     // anchor_submission 是 059 加的待审收件箱（同 schema，不新建 namespace）。
-    expect(rows.map((r) => r.table_name)).toEqual(['anchor', 'anchor_change', 'anchor_submission']);
+    // broker_* 六表是 082 加的期权台范围券商镜像（ADR-0062 复审 2026-09-14）。
+    expect(rows.map((r) => r.table_name)).toEqual([
+      'anchor',
+      'anchor_change',
+      'anchor_submission',
+      'broker_connection',
+      'broker_contract_ref',
+      'broker_deal',
+      'broker_order',
+      'broker_position',
+      'broker_sync_run',
+    ]);
   });
 
   it('FR-001 ticker 唯一约束: 重复插撞 P2002 且库内仍只一行', async () => {

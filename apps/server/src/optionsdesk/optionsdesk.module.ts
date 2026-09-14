@@ -30,6 +30,12 @@ import { ApproveAnchorSubmissionUseCase } from './approve-anchor-submission.usec
 import { RejectAnchorSubmissionsUseCase } from './reject-anchor-submissions.usecase.js';
 import { ImportAnchorFromModelUseCase } from './import-anchor-from-model.usecase.js';
 import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase.js';
+import { marketdataConfig } from '../config/marketdata.config';
+import { BROKER_ACCOUNT_PORT } from './broker-account.port.js';
+import { createBrokerAccountPort } from './futu-broker-account.adapter.js';
+import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase.js';
+import { BrokerAccountScheduler } from './broker-account.scheduler.js';
+import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subscriber.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -105,6 +111,21 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
     // 它的触发器 (30 秒 tick + 熔断 + mock 闸 + 收盘补一拍)。mock 档下起手即 return,
     // 零 port 调用 —— dev 机上本 tick 完全静默 (Guardrail 6 第一层防线)。
     SyncAnchorIntradayScheduler,
+    // 082 T012 券商账户 port (plan D3)。按 `marketdataConfig.kind` 绑定: live ⇒ futu adapter (自建
+    // VendorHttpClient); mock ⇒ 调用即抛的拒绝壳 (FR-018, 同 marketdata 采集口 054 纪律 ——
+    // 同步产出必然落库, dev 机上 MUST NOT 造出任何券商数据)。绑定判断收在工厂里, 调用处写不出分支。
+    {
+      provide: BROKER_ACCOUNT_PORT,
+      inject: [marketdataConfig.KEY],
+      useFactory: createBrokerAccountPort,
+    },
+    // 082 T014 券商账户同步 use case (plan D1): 新建锚补齐与开盘前对账共用的唯一入口 ——
+    // 两份实现会在过滤口径 / 幂等写 / 持仓刷新三处各自漂移 (ADR-0043 #1: optionsdesk use case 数 → 20)。
+    SyncBrokerAccountUseCase,
+    // 082 T016 它的触发器 (plan D9): 每分钟一拍 —— 回收卡死记录 → 认领补齐 → 开盘前对账。mock 档起手即 return。
+    BrokerAccountScheduler,
+    // 082 T018 新建锚 → 待执行补齐记录 (plan D10): 与 marketdata 冷启动订阅方挂同一事件, 只插记录不执行。
+    BrokerHistoryBackfillSubscriber,
   ],
 })
 export class OptionsdeskModule {}

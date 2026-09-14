@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   exchangeCalendarDate,
   exchangeCalendarDateForScope,
+  exchangeClock,
   isSessionComplete,
   isWithinPostCloseWindow,
   sessionWatermark,
@@ -40,6 +41,38 @@ describe('exchangeCalendarDate — 交易所当地的日历日 (event-time 的�
 
   it('未登记市场 → 兜底宿主口径 (Asia/Shanghai), 与既有行为一致', () => {
     expect(exchangeCalendarDate('xx', new Date('2026-06-10T07:30:00Z'))).toBe('2026-06-10');
+  });
+});
+
+describe('exchangeClock — 交易所当地的日期 + 当日分钟数 (082 对账到点判定, plan D4)', () => {
+  it('④ us 夏令 EDT: 2026-10-30T13:10Z = ET 09:10 ⇒ 550', () => {
+    expect(exchangeClock('us', new Date('2026-10-30T13:10:00Z'))).toEqual({
+      date: '2026-10-30',
+      minutesOfDay: 550,
+    });
+  });
+
+  it('⑤ us 冬令 EST: 2026-11-02T14:10Z = ET 09:10 ⇒ 550 —— UTC 差一小时, 调用点零特判', () => {
+    expect(exchangeClock('us', new Date('2026-11-02T14:10:00Z'))).toEqual({
+      date: '2026-11-02',
+      minutesOfDay: 550,
+    });
+  });
+
+  it('⑥ hk 跨北京午夜: 15:59Z = 当地 23:59 仍是当天; 16:00Z = 次日 00:00 (h23, 不是 24:00)', () => {
+    expect(exchangeClock('hk', new Date('2026-09-14T15:59:00Z'))).toEqual({
+      date: '2026-09-14',
+      minutesOfDay: 1439,
+    });
+    expect(exchangeClock('hk', new Date('2026-09-14T16:00:00Z'))).toEqual({
+      date: '2026-09-15',
+      minutesOfDay: 0,
+    });
+  });
+
+  it('date 与 exchangeCalendarDate 同源 (同一张时区表)', () => {
+    const now = new Date('2026-08-18T22:00:00Z');
+    expect(exchangeClock('us', now).date).toBe(exchangeCalendarDate('us', now));
   });
 });
 

@@ -82,8 +82,13 @@ const GREEK_FIELDS = [
   'option_rho',
 ] as const;
 
-/** `YYYY-MM-DD HH:mm:ss`(可带 `T` / 毫秒) 的宽松匹配。 */
-const NAIVE_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/;
+/**
+ * `YYYY-MM-DD HH:mm:ss[.f{1,3}]`(可带 `T`) 的宽松匹配, 无尾锚。
+ * 毫秒组可选 (082 plan D4): 截掉毫秒会让同秒两笔成交无法排序。
+ * EVIDENCE: 富途交易时间带毫秒 —— 082 POC-1 原始输出 (2026-09-13, 维护者采集, 计数记于
+ * plan D4): 成交 244/244、订单 `updated_time` 393/393 带毫秒。
+ */
+const NAIVE_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/;
 
 /**
  * 数值 → Decimal-safe string；缺失 / 非有限 → null。
@@ -178,8 +183,12 @@ export function vendorTimeToDate(v: unknown, market: string): Date | null {
     Number(parts[5]),
     Number(parts[6]),
   );
+  // `.9` 是 900 ms 不是 9 ms ⇒ 右补零到 3 位; 不带毫秒 ⇒ 0 (与改前逐值相同)。
+  const ms = parts[7] === undefined ? 0 : Number(parts[7].padEnd(3, '0'));
   // 先当 UTC 读, 再减去该瞬间的本地偏移 (偏移在两侧相差不到一天, 单次校正足够)。
-  return new Date(naiveUtc - timeZoneOffsetMs(naiveUtc, exchangeTimeZone(market)));
+  // 🚨 毫秒在偏移校正**之后**加: `timeZoneOffsetMs` 按整秒重建墙上时刻, 带毫秒的瞬间喂进去
+  // 会让偏移少掉那几毫秒 ⇒ 毫秒被计两遍 (`.936` → 下一秒 `.872`)。
+  return new Date(naiveUtc - timeZoneOffsetMs(naiveUtc, exchangeTimeZone(market)) + ms);
 }
 
 /**

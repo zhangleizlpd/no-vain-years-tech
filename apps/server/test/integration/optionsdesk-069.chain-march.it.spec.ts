@@ -335,7 +335,7 @@ describe('069 清链与行军选档 (Testcontainers PG + Redis, 真 DI 容器)',
       prisma,
       moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT),
       moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT),
-      { marchPhiTier: 'good', marchMode: 'theta' },
+      { marchPhiTier: 'good', marchMode: 'theta', brokerSyncScope: 'anchored' },
     );
 
   // ── 九臂 ──────────────────────────────────────────────────────────────────

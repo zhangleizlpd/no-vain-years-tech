@@ -48,7 +48,7 @@ describe('050 T013 精排层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
   }, 180_000);
 

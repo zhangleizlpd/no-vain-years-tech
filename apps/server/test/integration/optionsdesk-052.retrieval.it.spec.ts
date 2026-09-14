@@ -264,7 +264,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
     const all = await usecase.execute(SYMBOL, 'all', NOW);
     const build = await usecase.execute(SYMBOL, 'build', NOW);
@@ -284,7 +284,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     ).execute(SYMBOL, 'all', NOW);
     // 它在表里 (`legs` 就是全腿视角那份精排序) —— 只是排最后。
     expect(view.legs.at(-1)?.code).toBe('P-ITM');
@@ -300,7 +300,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     ).execute(SYMBOL, 'all', NOW);
     // 真常量量级远高于 6 条 ⇒ 不截。字段本身必须在视图上（断的是"接通了"，不是"切了"）。
     expect(RECALL_CANDIDATE_CAP).toBeGreaterThan(6);
@@ -315,7 +315,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
     const rent = await usecase.execute(SYMBOL, 'rent', NOW);
     const all = await usecase.execute(SYMBOL, 'all', NOW);
@@ -335,7 +335,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
     const plain = await usecase.execute(SYMBOL, 'rent', NOW);
     expect(plain.legs.map((leg) => leg.code)).not.toContain('P-ITM');
@@ -371,7 +371,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
     const plain = await usecase.execute(SYMBOL, 'rent', NOW);
     const widened = await usecase.execute(SYMBOL, 'rent', NOW, {
@@ -398,6 +398,7 @@ describe('052 检索层 (Testcontainers PG)', () => {
     new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma), stubTradingCalendar(), {
       marchPhiTier: 'good',
       marchMode: 'phi',
+      brokerSyncScope: 'anchored',
     });
 
   /** 一条种子腿的全部可变量。T015 的四组种子共用下面的 {@link seedLegs}。 */

@@ -7,7 +7,7 @@ sunset_trigger: |
     ✅ **FIRED 2026-08-18（061）· mitigated** —— §3 追加第 5 条**强一致同步读**边（DI `marketdata` 的 port token）；Consequences 里「雷达价的时效 = 最长延迟一天」那条取舍**已作废并改写**（详见 §复审记录 2026-08-18）
   - **把历史价格序列的读搬进 optionsdesk 端点**（server 端拼序列 ⇒ 须读时复权 ⇒ import `marketdata/*.rules.ts`）→ 触发 ADR-0053 sunset_trigger #2，重审是否升共享 package。⚠️ 「详情要画趋势」这个**需求**已由 046 兑现，但走的是**客户端合成两端点**（optionsdesk 只回锚派生边界、序列由客户端直调 marketdata bars 端点）⇒ 本 trigger 的判据是**读搬到哪一侧**，不是「有没有序列需求」（详见 §复审记录 2026-08-03）
   - 出现第二个消费锚表的 ctx（除 marketdata 采集闸外）→ 锚表从「自有事实 + 一条反向 Q7-B」升级为多消费者读模型，重审是否需投影 / 共享读服务（Q7-A）
-  - 期权台从「锚 + 雷达」扩到**下单 / 持仓联动 / 许愿单自动触发**（P3）→ 与 portfolio 的边界（谁持有仓位事实）重审；本 ADR 的「叶子 ctx、零跨 ctx 写」假设届时失效
+  - 期权台从「锚 + 雷达」扩到**下单 / 持仓联动 / 许愿单自动触发**（P3）→ 与 portfolio 的边界（谁持有仓位事实）重审；本 ADR 的「叶子 ctx、零跨 ctx 写」假设届时失效 ✅ **FIRED 2026-09-14（082）· mitigated** —— 持仓联动落为本 ctx 自持的期权台范围券商镜像，不扩 portfolio（详见 §复审记录 2026-09-14）
   - 锚的估值口径从人工录入转为模型批量产出且需自建估值管线 → 重审是否拆 `valuation` 子 ctx（本 ADR 把「模型 import」按外部输入处理，不建管线）
 ---
 
@@ -191,6 +191,24 @@ trigger 原文 = 「盘中实时 spot 上线（雷达/详情不再以 `last_clos
 ⚠️ **已知代价**：进程内 `@Cron` 在**多实例部署**下会重复触发。这与本 ctx 既有的 `sync-anchor-quote.scheduler.ts`（045 起就是 `@Cron`）**同一前提，不是 061 新引入的**（📌 2026-09-01 注：该文件已随 [ADR-0070](0070-anchor-last-close-same-source-writer.md) 删除，接替它的 `sync-anchor-last-close.scheduler.ts` 同样是进程内 `@Cron` ⇒ 本句的论据不变）。现状单实例部署；且本 tick **幂等**（覆盖写锚表同一批列，最后写赢），重复触发的代价只是多一次 vendor 调用（配额余量 60×）。
 
 ⇒ **真正的绊线是部署形态**：哪天 server 变多实例 / 蓝绿并存，这里要么加分布式锁、要么迁 BullMQ repeatable，且**两条 scheduler 一起迁**（只迁一条会留下更难读的半截状态）。在那之前不预造。
+
+### 2026-09-14 — `sunset_trigger` #4（持仓联动）：fired · mitigated
+
+trigger 原文 = 「期权台从『锚 + 雷达』扩到**下单 / 持仓联动 / 许愿单自动触发**（P3）→ 与 portfolio 的边界（谁持有仓位事实）重审；本 ADR 的『叶子 ctx、零跨 ctx 写』假设届时失效」。
+
+**判定：命中（持仓联动那一半）。** [082](../../specs/082-optionsdesk-broker-pull-sync/spec.md) 让本 ctx 从券商**只读拉取**成交 / 订单 / 当前持仓并落库（新建锚补齐 + 开盘前对账）；券商 port 只有查询方法，下单与许愿单自动触发仍未发生。
+
+**缓解 = optionsdesk 持有「期权台范围内的券商镜像」，不扩 portfolio `BrokerAccount`。** 要点三条：
+
+1. 镜像是本 ctx 的自有表：六张 `broker_` 前缀表建在 `optionsdesk` schema，归属登记在 `scripts/checks/check-server-moat.ts` 的 `MODEL_OWNERSHIP`；portfolio 的 `BrokerAccount`（012 券商账户归属字典）不承载任何仓位事实，本片 portfolio 侧零改动。
+2. vendor 经 port 隔离：同步 use case / 调度器 / 订阅方只认 `BROKER_ACCOUNT_PORT`，futu adapter 在 module 工厂里按 `marketdataConfig.kind` 绑定（mock 档绑定调用即抛的拒绝壳）。
+3. 范围收在期权台内：`BROKER_SYNC_SCOPE` 默认 `anchored`，只留正股在锚集内（或未解析）的成交 / 订单 / 持仓；`full` 才放开到全账户。
+
+**「叶子 ctx、零跨 ctx 写」复判：仍成立。** 082 的写全部落本 ctx 自有表；跨 ctx 面只多一条只读（`resolve-broker-underlying.ts` 读 marketdata 判正股，挂 `CROSS-CONTEXT-READ`）；新建锚 → 补齐走 outbox 订阅方，注册在 security 平台层的注册表上，marketdata 依旧不 import 本 ctx。`check-server-moat` 2026-09-14 输出「0 护城河违规」。
+
+**拆出条件（绊线，撞到即回本节重审「券商镜像拆出独立 ctx 或并入 portfolio」）**：① 范围开关打开（`BROKER_SYNC_SCOPE=full`）**且**出现期权台以外的读取方；② 接入第二家券商。
+
+**同节登记 [ADR-0043](0043-server-flat-module-paradigm.md) `sunset_trigger` #1（单个 bounded context use case 数 > 20）：`accepted-as-is`，未触发、已到阈值。** optionsdesk use case 数 = **20**（2026-09-14 `ls apps/server/src/optionsdesk/*.usecase.ts | grep -v '\.spec\.ts$' | wc -l`；082 只加 `SyncBrokerAccountUseCase` 1 个，补齐与对账共用一个入口，082 plan D1）。⚠️ **下一片 p3 加读接口将越线**，须在其 plan Gate 0.4 复审该 trigger（内部分组或券商镜像拆出评估）。
 
 ## References
 

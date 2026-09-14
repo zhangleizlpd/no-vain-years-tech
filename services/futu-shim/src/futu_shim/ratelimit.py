@@ -58,6 +58,27 @@ LIMITS: dict[str, tuple[int, int]] = {
     # 用量: 盘中投影 tick 每 30 秒打 1 次 ⇒ 兜底档 10 次/30 s 仍有 10 倍余量, 这个数
     # 松紧与否对本片没有任何可观测差别。
     "global_state": (10, 30),
+    # 082 只读交易查询面。EVIDENCE: 2026-09-14 直取 openapi.futunn.com 各接口页「接口限制」,
+    # 原文均为「同一账户ID(acc_id) 每 30 秒内最多请求 10 次查询<X>接口」:
+    #   trade_position      <- futu-api-doc/trade/get-position-list.html (查询持仓)
+    #   trade_deal_history  <- futu-api-doc/trade/get-history-order-fill-list.html (查询历史成交)
+    #   trade_deal_today    <- futu-api-doc/trade/get-order-fill-list.html (查询当日成交)
+    #   trade_order_history <- futu-api-doc/trade/get-history-order-list.html (查询历史订单)
+    #   trade_order_today   <- futu-api-doc/trade/get-order-list.html (查询未完成订单 = order_list_query)
+    # 持仓 / 当日成交 / 未完成订单三页另注「调用此接口，只有在刷新缓存时，才受到限频限制」, 而交易路由
+    # 恒传 refresh_cache=True ⇒ 按计限频处理。官方按**账户**计、本表按 capability 计: shim 只查选中的
+    # 那一个账户, 两种口径等价。当日与历史是不同接口、各有额度 ⇒ 分 key; 同一接口不许拆 key
+    # (见 app.py `/option-chain` 注释)。
+    "trade_position": (10, 30),
+    "trade_deal_history": (10, 30),
+    "trade_deal_today": (10, 30),
+    "trade_order_history": (10, 30),
+    "trade_order_today": (10, 30),
+    # ASSUMED: `get_acc_list` 限频 = 兜底 (10, 30) —— 未验证: 2026-09-14 直取
+    # futu-api-doc/trade/get-acc-list.html, 全页没有「接口限制」小节 (与 `global_state` 同为「查过、
+    # 确实没有」)。错了会怎样: 真值更严 ⇒ vendor 拒绝经 TradeVendorError 显形为 502 (诚实可见);
+    # 真值更宽 ⇒ 只是本闸偏严, 而 /trade/accounts 只在上线建连接时人工打几发, 无可观测差别。
+    "trade_acc_list": (10, 30),
 }
 
 # Strictest limit in LIMITS. Applied to anything not listed above.
