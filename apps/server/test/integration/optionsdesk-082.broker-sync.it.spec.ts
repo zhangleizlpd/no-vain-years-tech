@@ -175,16 +175,31 @@ describe('082 券商同步 use case (上): 成交与订单写入 IT (Testcontain
       .useValue(port)
       .compile();
 
-  const run = (over: Partial<SyncBrokerAccountInput> = {}, uc = sync) =>
-    uc.execute({
-      connectionId: connB,
+  /** 每次执行先建一条 `running` 补齐记录 (T015 契约: 记录由调用方创建); 失败即抛, 让臂直接红。 */
+  const run = async (over: Partial<Omit<SyncBrokerAccountInput, 'runId'>> = {}, uc = sync) => {
+    const connectionId = over.connectionId ?? connB;
+    const { id: runId } = await prisma.brokerSyncRun.create({
+      data: {
+        accountId: connectionId === connA ? ACCOUNT_A : ACCOUNT_B,
+        connectionId,
+        kind: 'backfill',
+        status: 'running',
+        target: over.target ?? '*',
+      },
+    });
+    const outcome = await uc.execute({
+      connectionId,
       markets: ['us'],
       target: '*',
       window: WINDOW,
       mode: 'backfill',
       now: NOW,
       ...over,
+      runId,
     });
+    if (!outcome.ok) throw new Error(`同步失败 (${outcome.failureKind}): ${outcome.error}`);
+    return outcome;
+  };
 
   const dealCodes = async () =>
     (await prisma.brokerDeal.findMany({ orderBy: { dealId: 'asc' } })).map((d) => d.code);
@@ -211,6 +226,8 @@ describe('082 券商同步 use case (上): 成交与订单写入 IT (Testcontain
 
   beforeEach(async () => {
     port.reset();
+    await prisma.brokerSyncRun.deleteMany({});
+    await prisma.brokerPosition.deleteMany({});
     await prisma.brokerDeal.deleteMany({});
     await prisma.brokerOrder.deleteMany({});
     await prisma.brokerContractRef.deleteMany({});
