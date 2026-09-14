@@ -1546,3 +1546,239 @@ describe('079 T017 场景 IT ①: 取值、间隔学习与刊发覆盖 (经维�
     expect(run.status).toBe('success');
   });
 });
+
+// T018 场景 IT ② (FR-016 / FR-017 / FR-019a / FR-028 / SC-011, plan §D12 #11 #14 #15 #16 #26): 状态迁移, 全部经维度
+// 执行, 断言落库的 `sync:hk_earnings_date` 运行状态 (日报只读它判红)。
+/**
+ * T018 日历: 6–10 月工作日为交易日; 🚨 10-01 (周四) 在覆盖内且无行 = 非交易日 (假日); 覆盖声明延到 10-31
+ * ⇒ 11 月起不可判 (unknown)。幂等。
+ */
+async function seedHolidayCalendar(): Promise<void> {
+  await seedHkTradingDays();
+  const october: { market: string; date: Date }[] = [];
+  for (let t = Date.UTC(2026, 9, 2); t <= Date.UTC(2026, 9, 31); t += 86_400_000) {
+    if (![0, 6].includes(new Date(t).getUTCDay()))
+      october.push({ market: 'hk', date: new Date(t) });
+  }
+  await prisma.tradingDay.createMany({ data: october, skipDuplicates: true });
+  await prisma.calendarCoverage.update({
+    where: { market: 'hk' },
+    data: { coveredTo: day('2026-10-31') },
+  });
+}
+
+describe('079 T018 场景 IT ② ①②: 逾期迁入 / 停留 / 解除 + 日历不可判 + 改期 (经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('① 满 2 个交易日未刊发 ⇒ overdue + finding + partial (未转历史); 次轮仍逾期 success; 刊发 ⇒ published', async () => {
+    const inst = await instrument('hk', '00386');
+    await seedProfile(inst.id);
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-09-30')] } };
+    const useCase = buildMerge(futu, { current: {} });
+
+    // 公布日 09-30 (周三) → 10-02 已是 2 个日历日, 但 10-01 假日 ⇒ 只 1 个交易日。
+    const beforeDue = await dimensionRun(useCase, '2026-10-02');
+    expect((await eventOf(inst.id)).status).toBe('confirmed');
+    expect(beforeDue).toMatchObject({ status: 'success', failed: 0 });
+
+    const entered = await dimensionRun(useCase, '2026-10-05');
+    expect(await eventOf(inst.id)).toMatchObject({
+      status: 'overdue',
+      announceDate: day('2026-09-30'),
+      overdueSince: at('2026-10-05'),
+    });
+    expect(runSteps(entered, 'earnings_date_overdue')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({ symbol: 'hk:00386', periodKey: INTERIM }),
+      }),
+    ]);
+    expect(entered).toMatchObject({ status: 'partial', failed: 1 });
+
+    const stayed = await dimensionRun(useCase, '2026-10-06');
+    expect((await eventOf(inst.id)).status).toBe('overdue');
+    expect(runSteps(stayed, 'earnings_date_overdue')).toEqual([]);
+    expect(stayed).toMatchObject({ status: 'success', failed: 0 });
+
+    await announce(inst.id, '2026-10-06', '截至2026年6月30日止六個月之中期業績公告', ['fs_main']);
+    await dimensionRun(useCase, '2026-10-07');
+    const published = await eventOf(inst.id);
+    expect(published).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-10-06'),
+      overdueSince: null,
+    });
+    expect(published.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'status_changed',
+        fromStatus: 'overdue',
+        toStatus: 'published',
+      }),
+    );
+  });
+
+  it('① 逾期判定区间落在日历覆盖外 (unknown) ⇒ 不判: 非 overdue + unjudged finding, success', async () => {
+    const inst = await instrument('hk', '00390');
+    await seedProfile(inst.id);
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-11-02')] } };
+
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-11-04');
+
+    expect(runSteps(run, 'earnings_date_calendar_unknown')).toEqual([
+      expect.objectContaining({ kind: 'unjudged', symbol: 'hk:00390' }),
+    ]);
+    expect((await eventOf(inst.id)).status).toBe('confirmed');
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('② 两份清单页先后运行、同期会议日变化 ⇒ 改期流水 + 旧日期留痕 + 按新日期重判, 🚫 判消失', async () => {
+    const inst = await instrument('hk', '01398');
+    const board: Round = {
+      current: listing('2026-09-07', [obs(inst.id, 'meeting', '2026-09-24')]),
+    };
+    const useCase = buildMerge({ current: {} }, board);
+    await dimensionRun(useCase, '2026-09-07');
+
+    board.current = listing('2026-09-08', [obs(inst.id, 'meeting', '2026-09-25')]);
+    const run = await dimensionRun(useCase, '2026-09-08');
+
+    const rescheduled = await eventOf(inst.id);
+    expect(rescheduled).toMatchObject({ status: 'confirmed', announceDate: day('2026-09-25') });
+    expect(rescheduled.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'date_rescheduled',
+        detail: expect.objectContaining({
+          source: 'hkex_board_meeting_list',
+          previousDate: '2026-09-24',
+          date: '2026-09-25',
+        }),
+      }),
+    );
+    expect(
+      await prisma.earningsDateObservation.findFirstOrThrow({
+        where: { instrumentId: inst.id, source: 'hkex_board_meeting_list' },
+      }),
+    ).toMatchObject({ prevDate: day('2026-09-24'), dateChangedAt: at('2026-09-08') });
+    expect(runSteps(run, 'earnings_board_list_dropped')).toEqual([]);
+  });
+});
+
+describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日期未知 / 无财年档案 (经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('③ 其间插一轮失败页 ⇒ 不判消失; 下一份页缺该行、会议日未到 ⇒ 提前消失 finding、确认保留', async () => {
+    const [dropped, kept] = await Promise.all(['00005', '00011'].map((c) => instrument('hk', c)));
+    const board: Round = {
+      current: listing('2026-09-07', [
+        obs(dropped.id, 'meeting', '2026-09-25'),
+        obs(kept.id, 'meeting', '2026-09-28'),
+      ]),
+    };
+    const useCase = buildMerge({ current: {} }, board);
+    await dimensionRun(useCase, '2026-09-07');
+    const firstSeen = { confirmedDate: day('2026-09-07'), confirmedBasis: 'first_seen' };
+    expect(await eventOf(dropped.id)).toMatchObject({ status: 'confirmed', ...firstSeen });
+
+    // 失败页 (结构异常 ⇒ 来源抛错): 取不到页面 ≠ 行消失。
+    board.current = {
+      get observations(): EarningsDateSourceObservation[] {
+        throw new Error('清单结构异常: 缺页首日期');
+      },
+    };
+    const failedRound = await dimensionRun(useCase, '2026-09-08');
+    expect(runSteps(failedRound, 'earnings_date_source')).toEqual([
+      expect.objectContaining({ kind: 'failure', symbol: 'source:hkex_board_meeting_list' }),
+    ]);
+    expect(failedRound.status).toBe('partial');
+    expect(runSteps(failedRound, 'earnings_board_list_dropped')).toEqual([]);
+
+    board.current = listing('2026-09-09', [obs(kept.id, 'meeting', '2026-09-28')]);
+    const droppedRound = await dimensionRun(useCase, '2026-09-09');
+    expect(runSteps(droppedRound, 'earnings_board_list_dropped')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({ symbol: 'hk:00005', lastDate: '2026-09-25' }),
+      }),
+    ]);
+    const afterDrop = await eventOf(dropped.id);
+    expect(afterDrop).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-25'),
+      ...firstSeen,
+    });
+    expect(afterDrop.logs.filter((l) => l.kind === 'listing_dropped')).toHaveLength(1);
+    expect(droppedRound).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('④ 通知 2 个交易日后仍无日期: 从未在清单的创业板代码 ⇒ 只计数 success; 曾在清单 ⇒ notified_undated + partial', async () => {
+    const [gem, listed] = await Promise.all(['08217', '02269'].map((c) => instrument('hk', c)));
+    for (const i of [gem, listed]) await seedProfile(i.id);
+    const useCase = buildMerge({ current: {} }, { current: {} });
+
+    // 创业板代码、无任何清单观测: 09-01 通知 → 09-03 满 2 个交易日。
+    await announce(gem.id, '2026-09-01', NOTICE_TITLE, ['all']);
+    const gemRound = await dimensionRun(useCase, '2026-09-03');
+    expect(runSteps(gemRound, 'earnings_notice_undated').length).toBeGreaterThan(0);
+    expect(gemRound).toMatchObject({ status: 'success', failed: 0 });
+    expect(runSteps(gemRound, 'earnings_notice_undated')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_notice_undated',
+        detail: { neverListed: 1, symbols: ['hk:08217'] },
+      },
+    ]);
+    expect(await prisma.earningsDateEvent.count({ where: { instrumentId: gem.id } })).toBe(0);
+
+    // 曾在清单: 上一期 (年度) 的清单观测。
+    await prisma.earningsDateObservation.create({
+      data: {
+        source: 'hkex_board_meeting_list',
+        instrumentId: listed.id,
+        periodKey: 'P:2025-12-31',
+        market: 'hk',
+        reportKind: 'annual',
+        periodEnd: day('2025-12-31'),
+        basis: 'meeting',
+        meetingDate: day('2026-03-15'),
+        firstSeenAt: day('2026-03-10'),
+        lastSeenAt: day('2026-03-10'),
+      },
+    });
+    await announce(listed.id, '2026-09-01', NOTICE_TITLE, ['all']);
+    const listedRound = await dimensionRun(useCase, '2026-09-03');
+    expect(await eventOf(listed.id, 'D:notice_undated:2026-09-01')).toMatchObject({
+      status: 'notified_undated',
+    });
+    expect(runSteps(listedRound, 'earnings_notice_undated')).toContainEqual(
+      expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:02269' }) }),
+    );
+    expect(listedRound).toMatchObject({ status: 'partial', failed: 1 });
+  });
+
+  it('⑤ 无财年档案的港股标的过公布日 2 个交易日 ⇒ 非 overdue + fiscal_unknown 计数; 同轮有档案的对照标的已迁入 overdue', async () => {
+    const [control, noProfile] = await Promise.all(
+      ['00267', '00288'].map((c) => instrument('hk', c)),
+    );
+    await seedProfile(control.id);
+    const futu: Round = {
+      current: {
+        observations: [control, noProfile].map((i) => obs(i.id, 'structured', '2026-09-01')),
+      },
+    };
+
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-09-03');
+
+    expect((await eventOf(control.id)).status).toBe('overdue');
+    expect(runSteps(run, 'earnings_date_fiscal_unknown')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_fiscal_unknown',
+        detail: { count: 1, samples: ['hk:00288'] },
+      },
+    ]);
+    expect((await eventOf(noProfile.id)).status).toBe('confirmed');
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+  });
+});
