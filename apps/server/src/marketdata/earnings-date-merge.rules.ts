@@ -74,7 +74,8 @@ import { datePeriodKey, fiscalQuarterOf, isAlignedPeriodKey } from './earnings-p
 
 /**
  * `superseded` (已并入) = 「已通知、日期未知」占位事件被给出日期的事件接手后的终态 (FR-017，spec
- * Session（七）第 2 问)：🚫 删除占位事件 —— 流水随事件级联删除 (FR-013)。
+ * Session（七）第 2 问)：🚫 删除占位事件 —— 流水随事件级联删除 (FR-013)。上线后另用于报告期无法对齐的旧事件被
+ * 同来源同原文报告期的 `P:` 事件接手 (FR-030，{@link selectAlignedSuccessor})。
  */
 export type EarningsDateEventStatus =
   | 'confirmed'
@@ -98,6 +99,51 @@ export function noticeUndatedPeriodKey(noticeDate: string): string {
 
 export function isNoticeUndatedPlaceholder(periodKey: string): boolean {
   return periodKey.startsWith(NOTICE_UNDATED_PERIOD_KEY_PREFIX);
+}
+
+/** FR-030 判据输入：同一标的某条观测的来源、报告期键与原文报告期。 */
+export interface EarningsKeyObservation {
+  readonly source: string;
+  readonly periodKey: string;
+  readonly periodText: string | null;
+}
+
+/** 接手旧非对齐事件的 `P:` 键，及据以配对的来源与原文报告期 (流水留痕)。 */
+export interface AlignedSuccessor {
+  readonly periodKey: string;
+  readonly source: string;
+  readonly periodText: string;
+}
+
+/**
+ * 无法对齐旧事件的接手键 (FR-030，spec Session（八）3a)：未刊发的 `T:` / `D:` 键事件 (占位事件除外)，同一标的有
+ * **同一来源、同一原文报告期** (非空) 的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 该键；否则 null。对应多个 `P:` 键
+ * (如财年档案改过) ⇒ 🚫 猜 (FR-015)；事件已刊发 / 已并入 ⇒ null。
+ * EVIDENCE: 2026-09-14 prod `hk:00939` 8 条 `T:futu_calendar:2024Q3…2026Q2` —— 补财年档案前落 `T:`，补后富途同原文另起
+ * `P:`，旧事件永不收尾、每轮重复计数 (本机 evidence `t026-investigation/report.md` C6)。
+ * 复杂度 O(n)，n = 该标的观测数。
+ */
+export function selectAlignedSuccessor(
+  event: { readonly periodKey: string; readonly status: EarningsDateEventStatus },
+  observations: readonly EarningsKeyObservation[],
+): AlignedSuccessor | null {
+  if (isAlignedPeriodKey(event.periodKey) || isNoticeUndatedPlaceholder(event.periodKey))
+    return null;
+  if (event.status === 'published' || event.status === 'superseded') return null;
+  const pairKey = (source: string, text: string): string => JSON.stringify([source, text]);
+  const own = new Set(
+    observations.flatMap((o) => {
+      const text = o.periodText?.trim() ?? '';
+      return o.periodKey === event.periodKey && text !== '' ? [pairKey(o.source, text)] : [];
+    }),
+  );
+  const matches = observations.flatMap((o) => {
+    const text = o.periodText?.trim() ?? '';
+    return isAlignedPeriodKey(o.periodKey) && text !== '' && own.has(pairKey(o.source, text))
+      ? [{ periodKey: o.periodKey, source: o.source, periodText: text }]
+      : [];
+  });
+  return new Set(matches.map((m) => m.periodKey)).size === 1 ? matches[0] : null;
 }
 
 /** 确认日期口径：`announced` = 会前通知刊发日；`first_seen` = 来源首次观测当地日期。 */

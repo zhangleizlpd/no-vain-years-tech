@@ -10,6 +10,7 @@ import {
   judgeNoticeUndated,
   mergeEarningsDateEvent,
   noticeUndatedPeriodKey,
+  selectAlignedSuccessor,
   selectAnnounceDate,
   selectPendingNotice,
   type EarningsDateCandidate,
@@ -905,6 +906,67 @@ describe('逾期未刊发: 非季报公司的第一 / 第三季不判 (FR-029; s
       q3Event({ elapsedTradingDays: elapsed('2025-10-31', 1, '2025-11-04') }),
     );
     expect(notDue).toMatchObject({ nonQuarterlyReporter: null, findings: [] });
+  });
+});
+
+describe('selectAlignedSuccessor — 无法对齐旧事件的接手键 (FR-030; spec Session（八）3a, 2026-09-14 prod hk:00939)', () => {
+  const T_KEY = 'T:futu_calendar:2024Q3';
+  const keyObs = (source: string, periodKey: string, periodText: string | null) => ({
+    source,
+    periodKey,
+    periodText,
+  });
+  const confirmedT = { periodKey: T_KEY, status: 'confirmed' as const };
+
+  it('🚨 同来源同原文已有 P: 键观测 ⇒ 该 P: 键 (带配对来源与原文留痕)', () => {
+    expect(
+      selectAlignedSuccessor(confirmedT, [
+        keyObs(FUTU, T_KEY, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+        keyObs(ANN, 'P:2024-06-30', '截至2024年6月30日止六個月之中期業績公告'),
+      ]),
+    ).toEqual({ periodKey: 'P:2024-09-30', source: FUTU, periodText: '2024Q3' });
+  });
+
+  it('既有 overdue 的旧事件同样收尾; D: 键同样适用', () => {
+    const d = 'D:futu_calendar:2024-10-30';
+    expect(
+      selectAlignedSuccessor({ periodKey: d, status: 'overdue' }, [
+        keyObs(FUTU, d, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+      ]),
+    ).toMatchObject({ periodKey: 'P:2024-09-30' });
+  });
+
+  it.each([
+    ['来源不同', [keyObs(FUTU, T_KEY, '2024Q3'), keyObs(BOARD, 'P:2024-09-30', '2024Q3')]],
+    ['原文不同', [keyObs(FUTU, T_KEY, '2024Q3'), keyObs(FUTU, 'P:2024-09-30', '2024 Q3')]],
+    ['原文为空', [keyObs(FUTU, T_KEY, null), keyObs(FUTU, 'P:2024-09-30', null)]],
+    [
+      '🚫 同原文对应两个 P: 键 (财年档案改过, 不猜)',
+      [
+        keyObs(FUTU, T_KEY, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+        keyObs(FUTU, 'P:2024-06-30', '2024Q3'),
+      ],
+    ],
+    ['无任何 P: 键观测', [keyObs(FUTU, T_KEY, '2024Q3')]],
+  ])('%s ⇒ null', (_label, observations) => {
+    expect(selectAlignedSuccessor(confirmedT, observations)).toBeNull();
+  });
+
+  it.each([
+    ['已刊发', { periodKey: T_KEY, status: 'published' as const }],
+    ['已并入', { periodKey: T_KEY, status: 'superseded' as const }],
+    ['占位事件', { periodKey: 'D:notice_undated:2024-10-02', status: 'notified_undated' as const }],
+    ['本身是 P: 键', { periodKey: 'P:2024-09-30', status: 'confirmed' as const }],
+  ])('%s ⇒ null', (_label, event) => {
+    expect(
+      selectAlignedSuccessor(event, [
+        keyObs(FUTU, event.periodKey, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+      ]),
+    ).toBeNull();
   });
 });
 

@@ -9,8 +9,10 @@ import {
   mergeEarningsDateEvent,
   NOTICE_UNDATED_PERIOD_KEY_PREFIX,
   noticeUndatedPeriodKey,
+  selectAlignedSuccessor,
   selectAnnounceDate,
   selectPendingNotice,
+  type AlignedSuccessor,
   type EarningsConfirmedBasis,
   type EarningsDateCandidate,
   type EarningsDateEventFields,
@@ -88,6 +90,8 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * 4. 已通知日期未知 (标的级)：迁入 ⇒ 建占位事件 `D:notice_undated:<通知刊发日>`；迁出 ⇒ 占位事件
  *    `superseded`，流水 `detail.supersededBy` 指向接手事件 id。🚫 删除 (流水级联删除，FR-013 / FR-017)。
  *    提供会前通知信号的来源本轮失败 ⇒ 整段不判 (取不到信号 ≠ 通知已被用掉)。
+ * 5. 无法对齐旧事件收尾 (FR-030)：同来源同原文报告期已有 `P:` 键的旧 `T:` / `D:` 事件合并前移出重算集合、接手键并入，
+ *    合并后迁 `superseded`，流水 `detail.supersededBy` 指向接手事件 id。已并入事件 🚫 再进逐事件合并与两类扫描。
  *
  * findings 不在本段写进 `stats`：本段只把规则产出带上标的代码汇总进 {@link EarningsDatesMergeSummary}。
  */
@@ -159,6 +163,13 @@ export interface EarningsDatesMergeSummary {
   readonly nonQuarterlyReporter: readonly string[];
   /** 其中本轮由既有逾期解除的 (FR-029，🚫 计失败)。 */
   readonly nonQuarterlyReleased: readonly string[];
+  /** 本轮迁 `superseded` 的旧非对齐事件 (FR-030)：每个一条 `<symbol> <periodKey>`。 */
+  readonly supersededUnaligned: readonly string[];
+}
+
+/** FR-030 候选：被同来源同原文报告期的 `P:` 键接手的旧非对齐事件。 */
+interface UnalignedSupersede extends EarningsDateEventKey {
+  readonly successor: AlignedSuccessor;
 }
 
 /** 港股日常入口结局 = 采集段结局 + 起手财年档案反推 + 合并段汇总。 */
@@ -288,6 +299,9 @@ function mergeKeySet() {
       if (isNoticeUndatedPlaceholder(periodKey)) return;
       keys.set(eventKey(instrumentId, periodKey), { instrumentId, periodKey });
     },
+    delete({ instrumentId, periodKey }: EarningsDateEventKey): void {
+      keys.delete(eventKey(instrumentId, periodKey));
+    },
     values: (): EarningsDateEventKey[] => [...keys.values()],
   };
 }
@@ -350,6 +364,7 @@ interface MergeAccumulator {
   overdueUnaligned: string[];
   nonQuarterlyReporter: string[];
   nonQuarterlyReleased: string[];
+  supersededUnaligned: string[];
 }
 
 const emptyAccumulator = (): MergeAccumulator => ({
@@ -360,6 +375,7 @@ const emptyAccumulator = (): MergeAccumulator => ({
   overdueUnaligned: [],
   nonQuarterlyReporter: [],
   nonQuarterlyReleased: [],
+  supersededUnaligned: [],
 });
 
 const MERGE_OBSERVATION_SELECT = {
@@ -676,18 +692,7 @@ function reportMergeFindings(
   for (const { ticker, detail } of fiscalProfiles.conflicts) {
     notice('earnings_fiscal_profile_conflict', { symbol: ticker, reason: detail });
   }
-  const unaligned = inserted.filter((k) => !isAlignedPeriodKey(k.periodKey));
-  if (unaligned.length > 0 || merge.overdueUnaligned.length > 0) {
-    notice('earnings_date_unaligned', {
-      count: unaligned.length,
-      samples: unaligned
-        .slice(0, EARNINGS_FINDING_SAMPLE_LIMIT)
-        .map((k) => `${k.instrumentId} ${k.periodKey}`),
-      // 公布日已过、因键无法对齐未判逾期的事件 (FR-028)：同一条里只计数，🚫 计失败。
-      overdueUnjudged: merge.overdueUnaligned.length,
-      overdueUnjudgedSamples: merge.overdueUnaligned.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
-    });
-  }
+  reportUnaligned(stats, merge, inserted);
   const noticeSignals = outcome.collected.reduce((n, c) => n + c.result.noticeSignals.length, 0);
   for (const { name, result } of outcome.collected) {
     if (result.boardListScan === undefined) continue;
@@ -717,6 +722,38 @@ function reportNonQuarterly(stats: SyncRunStats, merge: EarningsDatesMergeSummar
       count: merge.nonQuarterlyReporter.length,
       released: merge.nonQuarterlyReleased.length,
       samples: merge.nonQuarterlyReporter.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+    },
+  });
+}
+
+/**
+ * 报告期无法对齐 (FR-015 / FR-028 / FR-030)：每轮至多一条 `earnings_date_unaligned`，只计数，🚫 计失败 —— 新增
+ * `T:` / `D:` 键观测、公布日已过因键无法对齐未判逾期的事件、本轮迁 `superseded` 的旧事件。O(新插入观测数)。
+ */
+function reportUnaligned(
+  stats: SyncRunStats,
+  merge: EarningsDatesMergeSummary,
+  inserted: readonly EarningsDateEventKey[],
+): void {
+  const unaligned = inserted.filter((k) => !isAlignedPeriodKey(k.periodKey));
+  const superseded = merge.supersededUnaligned;
+  if (unaligned.length === 0 && merge.overdueUnaligned.length === 0 && superseded.length === 0) {
+    return;
+  }
+  stats.findings.push({
+    kind: 'notice',
+    step: 'earnings_date_unaligned',
+    detail: {
+      count: unaligned.length,
+      samples: unaligned
+        .slice(0, EARNINGS_FINDING_SAMPLE_LIMIT)
+        .map((k) => `${k.instrumentId} ${k.periodKey}`),
+      // 公布日已过、因键无法对齐未判逾期的事件 (FR-028)：同一条里只计数，🚫 计失败。
+      overdueUnjudged: merge.overdueUnaligned.length,
+      overdueUnjudgedSamples: merge.overdueUnaligned.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+      // 本轮迁 superseded 的旧非对齐事件 (FR-030)：已移出合并，不在上面的计数里。
+      superseded: superseded.length,
+      supersededSamples: superseded.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
     },
   });
 }
@@ -1047,10 +1084,17 @@ export class SyncEarningsDatesUseCase {
     if (publicationFact) {
       // 逾期扫描只扫具备刊发事实来源的市场 (FR-028：无刊发事实的市场扫到会全部判逾期)。
       const unpublished = await this.prisma.earningsDateEvent.findMany({
-        where: { market, status: { not: 'published' } },
+        // 已并入 (superseded) 是终态：🚫 进逾期扫描 (FR-017 / FR-030)。
+        where: { market, status: { notIn: ['published', 'superseded'] } },
         select: { instrumentId: true, periodKey: true },
       });
       unpublished.forEach(set.add);
+    }
+    // FR-030：被接手的旧非对齐事件移出本轮重算、接手的 P: 键并入 —— 合并后接手事件必已存在，流水才指得到它。
+    const supersede = await this.planUnalignedSupersede(market);
+    for (const candidate of supersede) {
+      set.delete(candidate);
+      set.add({ instrumentId: candidate.instrumentId, periodKey: candidate.successor.periodKey });
     }
     const keys = set.values();
     const ctx = await this.buildContext(
@@ -1067,6 +1111,7 @@ export class SyncEarningsDatesUseCase {
     );
     const acc = emptyAccumulator();
     await this.mergeKeys(ctx, keys, acc);
+    await this.supersedeUnaligned(ctx, supersede, acc);
     if (publicationFact && signalsReliable(outcome)) await this.scanNoticeUndated(ctx, acc);
     return acc;
   }
@@ -1136,10 +1181,12 @@ export class SyncEarningsDatesUseCase {
     acc: MergeAccumulator,
   ): Promise<void> {
     for (const key of keys) {
-      const { written, result } = await this.withRaceRetry(
-        eventKey(key.instrumentId, key.periodKey),
-        () => this.mergeEvent(ctx, key),
+      const merged = await this.withRaceRetry(eventKey(key.instrumentId, key.periodKey), () =>
+        this.mergeEvent(ctx, key),
       );
+      // 已并入事件 (终态) 不重算 —— 本轮观测再次带入其键时在此跳过 (FR-030)。
+      if (merged === null) continue;
+      const { written, result } = merged;
       if (written) acc.eventsWritten += 1;
       const symbol = ctx.symbols.get(key.instrumentId) ?? `${ctx.market}:#${key.instrumentId}`;
       for (const finding of result.findings) {
@@ -1169,11 +1216,24 @@ export class SyncEarningsDatesUseCase {
     }
   }
 
-  /** 单事件一次尝试：读观测 + 事件 → 纯函数 → 一个事务。 */
+  /** 该标的该类报告最近一次「会议 → 刊发」间隔 (FR-010)；报告类型未知或无历史 ⇒ null。 */
+  private async readMeetingLagDays(
+    instrumentId: bigint,
+    reportKind: string | null,
+  ): Promise<number | null> {
+    if (reportKind === null) return null;
+    const lag = await this.prisma.earningsMeetingLag.findUnique({
+      where: { instrumentId_reportKind: { instrumentId, reportKind } },
+      select: { lagDays: true },
+    });
+    return lag?.lagDays ?? null;
+  }
+
+  /** 单事件一次尝试：读观测 + 事件 → 纯函数 → 一个事务。已并入事件 ⇒ null (不重算)。 */
   private async mergeEvent(
     ctx: MergeContext,
     { instrumentId, periodKey }: EarningsDateEventKey,
-  ): Promise<{ written: boolean; result: EarningsDateMergeResult }> {
+  ): Promise<{ written: boolean; result: EarningsDateMergeResult } | null> {
     const [rows, stored] = await Promise.all([
       this.prisma.earningsDateObservation.findMany({
         where: { instrumentId, periodKey },
@@ -1185,15 +1245,9 @@ export class SyncEarningsDatesUseCase {
         select: EVENT_SELECT,
       }),
     ]);
+    if (stored?.status === 'superseded') return null;
     const { reportKind, periodEnd } = eventShape(rows, stored);
-    const lag =
-      reportKind === null
-        ? null
-        : await this.prisma.earningsMeetingLag.findUnique({
-            where: { instrumentId_reportKind: { instrumentId, reportKind } },
-            select: { lagDays: true },
-          });
-    const meetingLagDays = lag?.lagDays ?? null;
+    const meetingLagDays = await this.readMeetingLagDays(instrumentId, reportKind);
     const observations = rows.map((row) => toMergeObservation(ctx, row));
     // 🚨 交易日数 MUST 自规则将判定的那个公布日起算 (规则侧校验 `from`) ⇒ 先按同一输入选日期。
     const selection = selectAnnounceDate(observations, meetingLagDays);
@@ -1303,6 +1357,104 @@ export class SyncEarningsDatesUseCase {
     });
   }
 
+  /**
+   * FR-030 候选：本市场未刊发的非对齐事件 (占位除外) 中，被同来源同原文报告期唯一 `P:` 键接手者 (判据在
+   * {@link selectAlignedSuccessor})。2 次读；复杂度 O(E + O)，E = 未刊发事件数、O = 其标的带原文的观测数。
+   */
+  private async planUnalignedSupersede(market: string): Promise<UnalignedSupersede[]> {
+    const events = (
+      await this.prisma.earningsDateEvent.findMany({
+        where: { market, status: { notIn: ['published', 'superseded'] } },
+        select: { instrumentId: true, periodKey: true, status: true },
+      })
+    ).filter((e) => !isAlignedPeriodKey(e.periodKey) && !isNoticeUndatedPlaceholder(e.periodKey));
+    if (events.length === 0) return [];
+    const rows = await this.prisma.earningsDateObservation.findMany({
+      where: {
+        instrumentId: { in: [...new Set(events.map((e) => e.instrumentId))] },
+        periodText: { not: null },
+      },
+      select: { instrumentId: true, source: true, periodKey: true, periodText: true },
+    });
+    const byInstrument = new Map<bigint, typeof rows>();
+    for (const row of rows) {
+      const list = byInstrument.get(row.instrumentId) ?? [];
+      list.push(row);
+      byInstrument.set(row.instrumentId, list);
+    }
+    return events.flatMap((e) => {
+      const successor = selectAlignedSuccessor(
+        { periodKey: e.periodKey, status: e.status as EarningsDateEventStatus },
+        byInstrument.get(e.instrumentId) ?? [],
+      );
+      return successor === null
+        ? []
+        : [{ instrumentId: e.instrumentId, periodKey: e.periodKey, successor }];
+    });
+  }
+
+  /** FR-030 写入：逐个旧事件迁 `superseded` + 流水指向接手 `P:` 事件。O(候选数) × O(1) 次读写。 */
+  private async supersedeUnaligned(
+    ctx: MergeContext,
+    plan: readonly UnalignedSupersede[],
+    acc: MergeAccumulator,
+  ): Promise<void> {
+    for (const candidate of plan) {
+      const written = await this.withRaceRetry(
+        eventKey(candidate.instrumentId, candidate.periodKey),
+        () => this.supersedeOne(candidate),
+      );
+      if (!written) continue;
+      acc.eventsWritten += 1;
+      const symbol =
+        ctx.symbols.get(candidate.instrumentId) ?? `${ctx.market}:#${candidate.instrumentId}`;
+      acc.supersededUnaligned.push(`${symbol} ${candidate.periodKey}`);
+    }
+  }
+
+  /**
+   * 单个旧事件一次尝试：`updateMany where { id, revision }` 迁 `superseded`、清 `overdueSince` → 流水。
+   * 接手事件不存在 / 旧事件已是终态 ⇒ 本轮不迁 (次轮重判)；命中 0 行 ⇒ 抛竞态由 {@link withRaceRetry} 重读。
+   */
+  private async supersedeOne({
+    instrumentId,
+    periodKey,
+    successor,
+  }: UnalignedSupersede): Promise<boolean> {
+    const [event, target] = await Promise.all([
+      this.prisma.earningsDateEvent.findUnique({
+        where: { instrumentId_periodKey: { instrumentId, periodKey } },
+        select: { id: true, status: true, revision: true },
+      }),
+      this.prisma.earningsDateEvent.findUnique({
+        where: { instrumentId_periodKey: { instrumentId, periodKey: successor.periodKey } },
+        select: { id: true },
+      }),
+    ]);
+    if (event === null || target === null) return false;
+    if (event.status === 'published' || event.status === 'superseded') return false;
+    const log: EarningsDateEventLogEntry = {
+      kind: 'status_changed',
+      fromStatus: event.status as EarningsDateEventStatus,
+      toStatus: 'superseded',
+      detail: {
+        supersededBy: target.id.toString(),
+        supersededByPeriodKey: successor.periodKey,
+        source: successor.source,
+        periodText: successor.periodText,
+      },
+    };
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.earningsDateEvent.updateMany({
+        where: { id: event.id, revision: event.revision },
+        data: { status: 'superseded', overdueSince: null, revision: { increment: 1 } },
+      });
+      if (count === 0) throw new EarningsDateEventRaceError(eventKey(instrumentId, periodKey));
+      await tx.earningsDateEventLog.createMany({ data: logRows(event.id, [log]) });
+    });
+    return true;
+  }
+
   /** 已通知日期未知扫描 (标的级，FR-017)。O(有信号标的数) × O(1) 次读写。 */
   private async scanNoticeUndated(ctx: MergeContext, acc: MergeAccumulator): Promise<void> {
     const instrumentIds = [...ctx.signalsByInstrument.keys()];
@@ -1344,7 +1496,10 @@ export class SyncEarningsDatesUseCase {
         revision: true,
       },
     });
-    const regular = events.filter((e) => !isNoticeUndatedPlaceholder(e.periodKey));
+    // 已并入的旧非对齐事件 (FR-030) 不再是「未刊发带日期事件」，也不当接手事件。
+    const regular = events.filter(
+      (e) => !isNoticeUndatedPlaceholder(e.periodKey) && e.status !== 'superseded',
+    );
     const placeholder =
       events.find(
         (e) => isNoticeUndatedPlaceholder(e.periodKey) && e.status === 'notified_undated',
