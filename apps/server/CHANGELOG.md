@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.51.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.50.0...server-v0.51.0) (2026-09-14)
+
+
+### Features
+
+* **marketdata:** 079 港股财报日期多源采集与确认层 片 1/2 数据层 ([#405](https://github.com/zhangleizlpd/no-vain-years-tech/issues/405)) ([df1b135](https://github.com/zhangleizlpd/no-vain-years-tech/commit/df1b135ba69642ad6530a40ba5edd9aeef97266f))
+
 ## [0.50.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.49.0...server-v0.50.0) (2026-09-07)
 
 
