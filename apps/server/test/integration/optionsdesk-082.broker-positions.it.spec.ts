@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { Client } from 'pg';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { narrowTestModule } from '../_support/narrow-boot';
 import { Prisma } from '../../src/generated/prisma/client';
@@ -51,6 +52,9 @@ for (const key of Object.keys(process.env)) {
  *   `ok: true` (失败被当成确实空仓, 持仓替换照跑); 连带 ⑪ 红 (无 error 日志行, 管道自证断言抓到)。
  * - b `target='*'` 只刷新第一个市场 (持仓循环 `prepared.slice(0, 1)`): 「⑩」红 (港股持仓未刷新), 其余 12 条绿。
  * - 两处均还原 (`cmp` 与备份一致) 后 13/13 绿。
+ * - 2026-09-14 amend 加 ⑫ (写入阶段另开连接锁成交表 → `pg_terminate_backend` 杀掉等锁的写): 判据
+ *   `isTransientDbError` 命中分支改 `return false` ⇒ 仅 ⑫ 红 (`failureKind` 收到 `data`), 其余 13 条绿;
+ *   还原 (`cmp` 一致) 后 14/14 绿。
  */
 
 const NOW = new Date('2026-09-14T15:00:00Z');
@@ -581,5 +585,39 @@ describe('082 券商同步 use case (下): 持仓刷新 / 开仓时间 / 失败�
     expect(lines.some((l) => l.startsWith('warn '))).toBe(true);
     expect(lines.some((l) => l.startsWith('error '))).toBe(true);
     for (const line of lines) expect(line).not.toContain(String(ACCOUNT_ID));
+  });
+
+  it('⑫ 写入阶段 DB 连接被服务端杀掉 ⇒ failureKind infrastructure, 记录照常回写 failed (2026-09-14 amend)', async () => {
+    port.deals = [deal('7001', 'US.PEP', 'BUY', 1, '2026-09-08T14:30:00.000Z')];
+    // 另开连接锁住成交表: use case 的成交写入 (本流程第一次碰这张表) 会停在等锁, 这时只杀「在等锁」的后端。
+    const locker = new Client({ connectionString: db.databaseUrl });
+    const admin = new Client({ connectionString: db.databaseUrl });
+    await locker.connect();
+    await admin.connect();
+    try {
+      await locker.query('BEGIN');
+      await locker.query('LOCK TABLE optionsdesk.broker_deal IN ACCESS EXCLUSIVE MODE');
+      const pending = sync();
+      let killed = 0;
+      for (let i = 0; i < 200 && killed === 0; i++) {
+        const { rows } = await admin.query(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`,
+        );
+        killed = rows.length;
+        if (killed === 0) await new Promise((r) => setTimeout(r, 50));
+      }
+      await locker.query('ROLLBACK');
+      expect(killed).toBe(1);
+
+      const { outcome, run } = await pending;
+
+      expect(outcome).toMatchObject({ ok: false, failureKind: 'infrastructure' });
+      expect(run.status).toBe('failed');
+      expect(await allDeals()).toEqual([]);
+    } finally {
+      await locker.end();
+      await admin.end();
+    }
   });
 });

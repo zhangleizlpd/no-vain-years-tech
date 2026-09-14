@@ -18,6 +18,7 @@ import { planPositionSync, type PositionSyncPlan } from './broker-position-sync.
 import { inBrokerScope } from './broker-scope.rules';
 import { splitTradeWindow } from './broker-sync-slot.rules';
 import { createBrokerUnderlyingResolver, underlyingOfOrder } from './resolve-broker-underlying';
+import { isTransientDbError } from './transient-db-error.rules';
 
 /**
  * `'all-history'` 的起点。EVIDENCE: spec Assumptions —— 维护者 2026-09-14 定上线回填起点
@@ -59,7 +60,10 @@ export interface SyncBrokerAccountResult {
   unresolvedOrders: number;
 }
 
-/** `infrastructure` = `instanceof BrokerInfrastructureError` (可重试); 其余一切 = `data` (port 判别口径)。 */
+/**
+ * `infrastructure` = `instanceof BrokerInfrastructureError` (port 判别口径) 或 DB 连接 / 超时类异常
+ * ({@link isTransientDbError}, 2026-09-14 amend), 均可重试; 其余一切 (含唯一冲突等确定性 DB 错误) = `data`。
+ */
 export type BrokerSyncFailureKind = 'infrastructure' | 'data';
 
 export type SyncBrokerAccountOutcome =
@@ -140,7 +144,9 @@ export class SyncBrokerAccountUseCase {
       ({ result, positions } = await this.sync(input, now));
     } catch (err) {
       const failureKind: BrokerSyncFailureKind =
-        err instanceof BrokerInfrastructureError ? 'infrastructure' : 'data';
+        err instanceof BrokerInfrastructureError || isTransientDbError(err)
+          ? 'infrastructure'
+          : 'data';
       const error = truncateChars(
         err instanceof Error ? err.message : String(err),
         RUN_ERROR_MAX_CHARS,
