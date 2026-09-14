@@ -18,6 +18,27 @@ import {
 import { MarketdataSyncWorker } from '../../src/marketdata/marketdata-sync.worker';
 import { executeBackfill, type BackfillDeps } from '../../src/marketdata/marketdata-backfill.cli';
 import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type {
+  EarningsCalendarPort,
+  EarningsCalendarWindowQuery,
+} from '../../src/marketdata/earnings-calendar.port';
+import {
+  assembleEarningsDateSources,
+  EARNINGS_DATE_SOURCE_NAMES,
+} from '../../src/marketdata/earnings-date-source.port';
+import { FutuCalendarSource } from '../../src/marketdata/futu-calendar.source';
+import { HkexAnnouncementSource } from '../../src/marketdata/hkex-announcement.source';
+import { HkexBoardMeetingListSource } from '../../src/marketdata/hkex-board-meeting-list.source';
+import { HKEXNEWS_PROFILE } from '../../src/marketdata/hkexnews.constraint-profile';
+import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
+import {
+  VendorHttpClient,
+  type VendorHttpClientDeps,
+} from '../../src/marketdata/vendor-http-client';
+import { SyncEarningsDatesUseCase } from '../../src/marketdata/sync-earnings-dates.usecase';
+import { SyncEarningsFiscalProfileUseCase } from '../../src/marketdata/sync-earnings-fiscal-profile.usecase';
 
 const NOW = new Date('2026-06-03T12:00:00Z'); // 周三
 
@@ -360,4 +381,216 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
       await queue.onModuleDestroy();
     }
   });
+
+  // ── ⑤ 079 T023 历史业绩公布日回填 (FR-020 / SC-001, US5 AS1, plan §D9 回填) ──
+  //
+  // 走生产同一条 `executeBackfill --dimension hk_earnings_date` → 入队 (mode=backfill) → worker →
+  // 执行器 → `runHk`, 三来源全真实现: 富途假端口记窗口入参、清单真 VendorHttpClient + 计数假 fetch、
+  // 公告来源读真 `announcement` 表。刊发事实 / 通知信号 / 清单只在观测层与事件层落库, 断言都读库。
+  it('⑤ 079 --dimension hk_earnings_date 回填 → 两年刊发事实在列并标来源 (hk:00005 / 00857 周日 / 09992 補充); 清单只请求 1 次', async () => {
+    const NOW_HK = new Date('2026-09-13T15:30:00Z'); // 香港 23:30 ⇒ 业务日 2026-09-13 (清单 fixture 页首日)
+    const BOARD_LIST_PAGE = readFileSync(
+      join(
+        __dirname,
+        '../../src/marketdata/__fixtures__/hkex-board-meeting-list/ebmn_c-2026-09-13.htm',
+      ),
+      'utf8',
+    );
+    let boardListRequests = 0;
+    // 客户端自带时钟: sleep 推进它 ⇒ 限频 (每秒 1 次) 在假 Date 下仍能放行下一次请求。共用冻结的
+    // Date 时, 多请求的变异会让限频器空转永不放行 (整轮挂死而不是红)。
+    let clientClockMs = NOW_HK.getTime();
+    const http = new VendorHttpClient(HKEXNEWS_PROFILE, {
+      now: () => clientClockMs,
+      fetch: (async () => {
+        boardListRequests += 1;
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({}),
+          text: async () => BOARD_LIST_PAGE,
+          headers: { get: () => null },
+        };
+      }) as unknown as VendorHttpClientDeps['fetch'],
+      sleep: async (ms) => {
+        clientClockMs += ms;
+      },
+    });
+    const futuWindows: EarningsCalendarWindowQuery[] = [];
+    const futu: EarningsCalendarPort = {
+      getWindow: async (query) => {
+        futuWindows.push({ ...query });
+        return [];
+      },
+    };
+    const calendar = new DbTradingCalendarAdapter(prisma);
+    const dates = new SyncEarningsDatesUseCase(
+      prisma,
+      assembleEarningsDateSources([...EARNINGS_DATE_SOURCE_NAMES], {
+        futu_calendar: new FutuCalendarSource(futu, prisma),
+        hkex_announcement: new HkexAnnouncementSource(prisma),
+        hkex_board_meeting_list: new HkexBoardMeetingListSource(http, prisma, calendar),
+      }),
+      new SyncEarningsFiscalProfileUseCase(prisma),
+      calendar,
+    );
+
+    const seedHk = async (code: string): Promise<bigint> => {
+      const { id } = await prisma.instrument.create({
+        data: { market: 'hk', code, name: code, type: 'stock', currency: 'HKD', status: 'active' },
+        select: { id: true },
+      });
+      // 🚨 档案先于公告: 刊发事实按档案对齐 `P:` 键 (无档案的年度 / 中期标题会落 `D:`)。
+      await prisma.earningsFiscalProfile.create({
+        data: { instrumentId: id, fiscalYearEndMonth: 12, source: 'manual', evidence: 'IT seed' },
+      });
+      return id;
+    };
+    let linkSeq = 0;
+    const announce = (instrumentId: bigint, date: string, title: string) =>
+      prisma.announcement.create({
+        data: {
+          instrumentId,
+          date: new Date(`${date}T00:00:00Z`),
+          linkUrl: `https://example.test/${instrumentId}/${++linkSeq}.pdf`,
+          linkText: title,
+          linkType: 'PDF',
+          types: ['fs_main'],
+        },
+      });
+    const hsbc = await seedHk('00005');
+    const petroChina = await seedHk('00857');
+    const popMart = await seedHk('09992');
+    await announce(hsbc, '2026-02-25', '截至2025年12月31日止年度之業績公告');
+    await announce(hsbc, '2026-05-05', '截至2026年3月31日止三個月之業績公告');
+    await announce(petroChina, '2025-03-30', '截至2024年12月31日止年度之業績公告');
+    await announce(petroChina, '2026-03-29', '截至2025年12月31日止年度之業績公告');
+    await announce(petroChina, '2026-08-30', '截至2026年6月30日止六個月之中期業績公告');
+    await announce(
+      popMart,
+      '2026-08-20',
+      '截至2026年6月30日止六個月之中期業績公告及授出獎勵之補充公告',
+    );
+
+    const queue = new MarketdataSyncQueue(lifecycle.client, CFG);
+    const worker = new MarketdataSyncWorker(
+      lifecycle.client,
+      viaEarningsDates(dates),
+      queue,
+      coldStartUnused(),
+      CFG,
+      new SyncRunRecorder(prisma),
+    );
+    const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
+    await events.waitUntilReady();
+    // 🚨 worker 给执行器的 `input.now` 取处理时刻 (`new Date()`), 不是 CLI 的 `now` 入参 ⇒ 只假 Date
+    // 钉住业务日, 否则回填窗随真实日期漂移 (清单页首日 / 730 天窗端点每天变)。定时器保持真实, bullmq 不受影响。
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW_HK);
+    worker.onModuleInit();
+    try {
+      const code = await executeBackfill(
+        buildDeps(queue, events),
+        { dryRun: false, dimension: 'hk_earnings_date', markets: ['hk'] },
+        NOW_HK,
+      );
+
+      expect(code).toBe(0);
+      const runs = await prisma.syncRun.findMany();
+      expect(runs.map((r) => [r.syncType, r.status])).toEqual([
+        ['sync:hk_earnings_date', 'success'],
+      ]);
+      // 🚨 清单无历史: 回填也只取当日页一次 (🚫 按日循环请求 —— 730 天 = 730 次打交易所)。
+      expect(boardListRequests).toBe(1);
+      // mode=backfill 真的到了来源: 富途窗起点 = 业务日 − 730 天 (日常为 − 7)。
+      expect(futuWindows[0]?.start).toBe('2024-09-13');
+
+      const filed = async (instrumentId: bigint) =>
+        (
+          await prisma.earningsDateObservation.findMany({
+            where: { instrumentId, basis: 'filed' },
+            orderBy: { filedDate: 'asc' },
+          })
+        ).map((o) => [o.source, o.periodKey, o.filedDate?.toISOString().slice(0, 10)]);
+
+      // US5 AS1: 来源 A (富途) 缺的两条经交易所刊发事实补齐, 并标来源。
+      expect(await filed(hsbc)).toEqual([
+        ['hkex_announcement', 'P:2025-12-31', '2026-02-25'],
+        ['hkex_announcement', 'P:2026-03-31', '2026-05-05'],
+      ]);
+      // 三个周日刊发日 (2025-03-30 在日常 7 天 / 120 天窗外, 只有回填窗取得到)。
+      const petroChinaFiled = await filed(petroChina);
+      expect(petroChinaFiled).toEqual([
+        ['hkex_announcement', 'P:2024-12-31', '2025-03-30'],
+        ['hkex_announcement', 'P:2025-12-31', '2026-03-29'],
+        ['hkex_announcement', 'P:2026-06-30', '2026-08-30'],
+      ]);
+      expect(
+        petroChinaFiled.map(([, , d]) => new Date(`${String(d)}T00:00:00Z`).getUTCDay()),
+      ).toEqual([0, 0, 0]);
+      // 标题带「補充公告」的真实刊发不被当作補充排除 (FR-004)。
+      expect(await filed(popMart)).toEqual([['hkex_announcement', 'P:2026-06-30', '2026-08-20']]);
+
+      // 历史合并进事件层: 刊发事实覆盖 ⇒ published, 公布日 = 刊发日。
+      const hsbcEvents = await prisma.earningsDateEvent.findMany({
+        where: { instrumentId: hsbc },
+        orderBy: { periodKey: 'asc' },
+      });
+      expect(
+        hsbcEvents.map((e) => [e.periodKey, e.status, e.announceDate?.toISOString().slice(0, 10)]),
+      ).toEqual([
+        ['P:2025-12-31', 'published', '2026-02-25'],
+        ['P:2026-03-31', 'published', '2026-05-05'],
+      ]);
+    } finally {
+      vi.useRealTimers();
+      await worker.onModuleDestroy();
+      await events.close();
+      await queue.onModuleDestroy();
+    }
+  });
+
+  /**
+   * 079 T023: 只装 `hk_earnings_date` 用得到的位置 (prisma / recorder / 第 35 位 use case), 其余留
+   * undefined —— 同 `marketdata-079.earnings-dates.it.spec.ts` 的 `viaDimension`。
+   */
+  function viaEarningsDates(useCase: SyncEarningsDatesUseCase): DimensionExecutorRegistry {
+    return new DimensionExecutorRegistry(
+      undefined as never, // 1 syncUniverse
+      undefined as never, // 2 syncProfile
+      undefined as never, // 3 eodBar
+      undefined as never, // 4 fundamental
+      undefined as never, // 5 financials
+      undefined as never, // 6 corporateAction
+      prisma, // 7
+      new SyncRunRecorder(prisma), // 8
+      undefined as never, // 9 tierRecalc (本维度不走 fact 前置)
+      undefined, // 10 backfillPacer
+      undefined, // 11 shortSelling
+      undefined, // 12 connectHolding
+      undefined, // 13 fundHolding
+      undefined, // 14 fundCompanyHolding
+      undefined, // 15 indexMembership
+      undefined, // 16 volatility
+      undefined, // 17 hotSnapshot
+      undefined, // 18 buyback
+      undefined, // 19 equityChange
+      undefined, // 20 shareholderChange
+      undefined, // 21 allotment
+      undefined, // 22 revenueSegment
+      undefined, // 23 shareholderSnapshot
+      undefined, // 24 employee
+      undefined, // 25 industryClassification
+      undefined, // 26 announcement
+      undefined, // 27 anchorGate
+      undefined, // 28 underlyingIv
+      undefined, // 29 usIndex
+      undefined, // 30 syncOptionContract
+      undefined, // 31 syncOptionSnapshot
+      undefined, // 32 syncEarningsEvent
+      undefined, // 33 tradingCalendar
+      undefined, // 34 syncOptionOiSettle
+      useCase, // 35 syncEarningsDates
+    );
+  }
 });
