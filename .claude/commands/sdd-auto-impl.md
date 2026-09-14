@@ -65,6 +65,7 @@ git switch main && git pull --ff-only && git switch -c NNN-slug   # 已存在则
 2. **收子 agent 结构化结果**：组内**每个 task 一个** fenced ```json 块（契约 § 3），主 agent 逐个解析。
 3. **逐 task 校验 + dispatch 计数 `attempts`**（per task，首派 = 1）。按各 task `status`：
    - `done` → 校验该 task 确 commit（`git log` 见该 task）+ tasks.md 该行 `[X]`。**过** → 记审计（step 6）→ 下个 task。**不过**（commit 缺 / 未翻）→ 该 task 走 🔁 重派（`attempts++`，单独补派该 task 给新子 agent）。
+   - `done` 但子 agent 报告的检查不是全扫（只跑了点名的几个治理脚本）→ 在下一组 brief 里补上全扫要求。
    - `blocked` → **暂停主循环**，把该 task `stop_signal`（类型 + 详情 + 候选方案）抛 user 等决策；答复后塞进重派 brief，`attempts++`。
    - 解析不到 json → 当 `blocked` 停。
    - 🔁 **max-retry 断路器（CRITICAL，per task）**：任一 task `attempts` 达 **3** 仍未拿到「校验过的 `done`」→ **硬停整个主循环**升级 user，不再自动重派。**NEVER 无限重派**（计数型，主 agent 自己数）。
@@ -126,6 +127,12 @@ git switch main && git pull --ff-only && git switch -c NNN-slug   # 已存在则
 - server testcontainers spec 走 `nx test server <file>`（cwd=apps/server），非 `vitest --root`
 - 改 server controller/DTO/openapi 后按 api-contract-trigger 同步 mobile types（同 PR 内 regen）
 - mobile 测试分层：纯逻辑=vitest；UI/render/a11y/交互=Playwright Expo Web e2e（~/ui 不写 vitest）
+- commit 前全扫治理脚本：`scripts/checks/*.ts` 逐个跑（循环写法见 docs/conventions/local-verification.md §2.1），
+  **不许只跑上面点名的几个**（有脚本按子串扫、范围含 spec 文件，测试 fixture 字面量也会撞红）；
+  验证输出别直接 `| tail`（hook 拦），先落文件再截尾
+- 动 `schema.prisma` 加表 / 加列 → grep 既有 `*.schema.it.spec.ts` 里对表集 / 列集的全集断言（`toEqual`），并跑一遍
+- 所有测试 / 脚本一律**前台**执行，每条设 `timeout` ≤ 600000 ms；🚫 禁 `run_in_background` / Monitor / 任何「等通知」写法
+  ——子 agent 停下后不会被唤醒，只会停摆
 
 ## 撞到下列任一 → 不自作主张，该 task 标 status=blocked 上报（见结果契约），组内其余可继续
 1. spec 歧义（多种合理实现，关键行为未定）
