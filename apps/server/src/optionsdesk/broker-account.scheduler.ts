@@ -1,11 +1,20 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { marketdataConfig, type MarketdataConfig } from '../config/marketdata.config';
+import { exchangeCalendarDate, exchangeClock } from '../marketdata/session-clock';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 import { PrismaService } from '../security/prisma.service';
 import { parseAnchorTicker } from './anchor.rules';
 import type { BrokerTradeWindow } from './broker-account.port';
 import type { BrokerMarket } from './broker-code.rules';
-import { decideBackfillAfterInfraFailure } from './broker-sync-slot.rules';
+import {
+  decideBackfillAfterInfraFailure,
+  decideReconcile,
+  type ReconcileInput,
+} from './broker-sync-slot.rules';
 import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase';
 
 /** 心跳 cron job 名 (`SchedulerRegistry.getCronJob` 的键)。 */
@@ -20,7 +29,7 @@ export const RUN_INTERRUPTED_ERROR = '执行中断';
 /** 补齐基础设施故障距首次尝试满 24 小时后的 `error` (停止重试, 由维护者重新触发)。 */
 export const BACKFILL_RETRY_EXHAUSTED_ERROR = '基础设施重试耗尽';
 
-/** `target = '*'` 覆盖的全部市场 (clarify Q3)。 */
+/** `target = '*'` 覆盖的全部市场 (clarify Q3), 也是对账编排逐个判定的市场。 */
 const ALL_MARKETS: readonly BrokerMarket[] = ['us', 'hk'];
 
 /** 一拍的处置结果 (IT 断言点 + 排障出口)。 */
@@ -28,6 +37,8 @@ export type BrokerAccountHeartbeatOutcome =
   | { status: 'skipped-mock' }
   | { status: 'failed'; reason: string }
   | { status: 'ticked'; connections: number; failedConnections: number };
+
+type Connection = { id: bigint; accountId: bigint };
 
 type DueBackfill = {
   id: bigint;
@@ -38,7 +49,7 @@ type DueBackfill = {
 };
 
 /**
- * 082 —— `SyncBrokerAccountUseCase` 的**触发器** (plan D9; FR-009 / FR-010 / FR-017 / FR-018)。
+ * 082 —— `SyncBrokerAccountUseCase` 的**触发器** (plan D9; FR-009 / FR-010 / FR-011 / FR-017 / FR-018)。
  * 每分钟一拍, 对每个连接依次: ① 回收卡死记录 → ② 认领并执行到期的补齐记录 → ③ 开盘前对账编排。
  *
  * 🚨 **防重入两层**: 第一层 `waitForCompletion: true` —— cron 4.4.0 默认不等上一拍的 Promise
@@ -57,6 +68,9 @@ export class BrokerAccountScheduler {
     private readonly prisma: PrismaService,
     private readonly syncBrokerAccount: SyncBrokerAccountUseCase,
     @Inject(marketdataConfig.KEY) private readonly marketdata: MarketdataConfig,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 —— 开盘前对账「本交易日」的
+    // 三态判定 (non-trading 跳过 / unknown 照跑)。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
   ) {}
 
   @Cron('0 * * * * *', {
@@ -76,19 +90,19 @@ export class BrokerAccountScheduler {
     if (this.marketdata.kind === 'mock') return { status: 'skipped-mock' };
 
     try {
-      const connections = await this.prisma.brokerConnection.findMany({
-        select: { id: true },
+      const connections: Connection[] = await this.prisma.brokerConnection.findMany({
+        select: { id: true, accountId: true },
         orderBy: { id: 'asc' },
       });
       let failedConnections = 0;
-      for (const { id } of connections) {
+      for (const connection of connections) {
         try {
-          await this.reclaimStuckRuns(id, now);
-          await this.runDueBackfills(id, now);
-          await this.reconcile();
+          await this.reclaimStuckRuns(connection.id, now);
+          await this.runDueBackfills(connection.id, now);
+          await this.reconcile(connection, now);
         } catch (e) {
           failedConnections++;
-          this.logger.error(`券商心跳: 连接 ${id} 本拍失败: ${errorMessage(e)}`);
+          this.logger.error(`券商心跳: 连接 ${connection.id} 本拍失败: ${errorMessage(e)}`);
         }
       }
       return { status: 'ticked', connections: connections.length, failedConnections };
@@ -200,9 +214,97 @@ export class BrokerAccountScheduler {
     );
   }
 
-  /** 步骤 ③: 开盘前对账编排 (T017)。 */
-  private reconcile(): Promise<void> {
-    return Promise.resolve();
+  /** 步骤 ③: 开盘前对账编排。连接 × 市场各自 try/catch, 一个市场出错不影响另一个 (P5)。 */
+  private async reconcile(connection: Connection, now: Date): Promise<void> {
+    for (const market of ALL_MARKETS) {
+      try {
+        await this.reconcileMarket(connection, market, now);
+      } catch (e) {
+        this.logger.error(
+          `对账编排: 连接 ${connection.id} 市场 ${market} 本拍失败: ${errorMessage(e)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * 一个连接 × 一个市场的对账判定与发起 (plan D9 步骤 3 / 4)。到点**只**看交易所当地
+   * `minutesOfDay` ⇒ 夏令时零特殊代码; 「本交易日」= 交易所当地日期 + 日历三态。
+   *
+   * 结局由 use case 回写; 失败重试由之后各拍的判定 (当日失败数 + 最近失败时刻) 负责, 这里不改状态。
+   * 🚨 插 `running` 记录用 `create` 并捕获 `P2002` —— 部分唯一索引在 Prisma 客户端里被当成全表唯一,
+   * 🚫 `upsert` (失败记录同日可多条, upsert 会把它们改写掉)。
+   */
+  private async reconcileMarket(
+    connection: Connection,
+    market: BrokerMarket,
+    now: Date,
+  ): Promise<void> {
+    const clock = exchangeClock(market, now);
+    const dayStatus = await this.calendar.classify(market, exchangeCalendarDate(market, now));
+    const tradingDate = dateColumn(clock.date);
+    const scope = { connectionId: connection.id, kind: 'reconcile', market };
+    const todays = await this.prisma.brokerSyncRun.findMany({
+      where: { ...scope, tradingDate, status: { in: ['succeeded', 'failed'] } },
+      select: { status: true, finishedAt: true },
+    });
+    const lastSucceeded = await this.prisma.brokerSyncRun.findFirst({
+      where: { ...scope, status: 'succeeded', tradingDate: { not: null } },
+      select: { tradingDate: true },
+      orderBy: { tradingDate: 'desc' },
+    });
+
+    const decision = decideReconcile({
+      market,
+      clock,
+      dayStatus,
+      todaysRuns: tallyTodaysRuns(todays),
+      lastSucceededTradingDate: lastSucceeded?.tradingDate
+        ? calendarDateOf(lastSucceeded.tradingDate)
+        : null,
+      now,
+    });
+    if (decision.action === 'skip') return;
+    if (dayStatus === 'unknown') {
+      this.logger.warn(
+        `市场 ${market} 的交易日历未覆盖 ${clock.date} — 按「未知」照常对账 (连接 ${connection.id})`,
+      );
+    }
+
+    let runId: bigint;
+    try {
+      ({ id: runId } = await this.prisma.brokerSyncRun.create({
+        data: {
+          accountId: connection.accountId,
+          connectionId: connection.id,
+          kind: 'reconcile',
+          status: 'running',
+          market,
+          target: '*',
+          tradingDate,
+          windowStart: dateColumn(decision.windowStart),
+          windowEnd: tradingDate,
+          startedAt: now,
+        },
+        select: { id: true },
+      }));
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+      this.logger.log(
+        `对账 ${market} ${clock.date} 连接 ${connection.id} 已有进行中或已成功的记录, 本拍跳过`,
+      );
+      return;
+    }
+
+    await this.syncBrokerAccount.execute({
+      connectionId: connection.id,
+      markets: [market],
+      target: '*',
+      window: { start: decision.windowStart, end: clock.date },
+      mode: 'reconcile',
+      runId,
+      now,
+    });
   }
 }
 
@@ -214,16 +316,52 @@ function marketsOfTarget(target: string): readonly BrokerMarket[] | null {
   return market === undefined ? null : [market];
 }
 
-/**
- * 记录两端窗口齐全 ⇒ 按窗口; 否则 `'all-history'`。窗口列是 UTC 零点承载的 `YYYY-MM-DD`
- * (写入方以 `T00:00:00Z` 构造), 取回时按 UTC 字段切日期 —— 不做任何时区换算。
- */
+/** 记录两端窗口齐全 ⇒ 按窗口; 否则 `'all-history'`。 */
 function windowOf({ windowStart, windowEnd }: DueBackfill): BrokerTradeWindow | 'all-history' {
   if (windowStart === null || windowEnd === null) return 'all-history';
-  return {
-    start: windowStart.toISOString().slice(0, 10),
-    end: windowEnd.toISOString().slice(0, 10),
-  };
+  return { start: calendarDateOf(windowStart), end: calendarDateOf(windowEnd) };
+}
+
+/**
+ * 当日已结束的对账记录 → 判定输入。`failed` 含卡死回收置为「执行中断」的记录 (其 `finishedAt` =
+ * 回收时刻); 最近失败时刻取 `finishedAt` 最大值。复杂度 O(n)。
+ */
+function tallyTodaysRuns(
+  runs: readonly { status: string; finishedAt: Date | null }[],
+): ReconcileInput['todaysRuns'] {
+  let succeeded = 0;
+  let failed = 0;
+  let lastFailedAt: Date | null = null;
+  for (const { status, finishedAt } of runs) {
+    if (status === 'succeeded') {
+      succeeded++;
+      continue;
+    }
+    failed++;
+    if (finishedAt !== null && (lastFailedAt === null || finishedAt > lastFailedAt)) {
+      lastFailedAt = finishedAt;
+    }
+  }
+  return { succeeded, failed, lastFailedAt };
+}
+
+/**
+ * 交易所当地 `YYYY-MM-DD` ⇄ 日期 / 窗口列的承载值 (UTC 零点)。两向都只搬运日历字段, 不经任何时区:
+ * `@db.Date` 列按 UTC 字段落库, 读回同一天。
+ */
+function dateColumn(date: string): Date {
+  return new Date(`${date}T00:00:00.000Z`);
+}
+
+function calendarDateOf(column: Date): string {
+  return column.toISOString().slice(0, 10);
+}
+
+/** Prisma 唯一约束冲突 (duck-typing 判 code, 同仓 `alert/evaluate-alerts.usecase.ts` 口径)。 */
+function isUniqueViolation(e: unknown): boolean {
+  return (
+    typeof e === 'object' && e !== null && 'code' in e && (e as { code?: unknown }).code === 'P2002'
+  );
 }
 
 function errorMessage(e: unknown): string {

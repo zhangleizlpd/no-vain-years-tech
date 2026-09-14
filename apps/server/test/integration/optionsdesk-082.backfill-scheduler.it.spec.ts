@@ -7,6 +7,7 @@ import { narrowTestModule } from '../_support/narrow-boot';
 import { Prisma } from '../../src/generated/prisma/client';
 import { marketdataConfig, type MarketdataConfig } from '../../src/config/marketdata.config';
 import { MARKETDATA_WORKER_DISABLED } from '../../src/marketdata/marketdata-sync.queue';
+import { TRADING_CALENDAR_PORT } from '../../src/marketdata/trading-calendar.port';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { PrismaService } from '../../src/security/prisma.service';
 import { REDIS_CLIENT } from '../../src/security/redis.token';
@@ -178,6 +179,10 @@ describe('082 券商账户调度器 (上): 心跳骨架 / 卡死回收 / 补齐�
       .useValue(port)
       .overrideProvider(marketdataConfig.KEY)
       .useValue(config)
+      // 对账编排 (T017, 另见 reconcile-scheduler IT) 在本文件恒判非交易日: NOW 时两市场均已过时点,
+      // 不钉死的话每拍都会插对账记录并调 use case, 本文件的 execute 计数断言随之失真。
+      .overrideProvider(TRADING_CALENDAR_PORT)
+      .useValue({ classify: async () => 'non-trading' })
       .compile();
     prisma = moduleRef.get(PrismaService);
     scheduler = moduleRef.get(BrokerAccountScheduler);
