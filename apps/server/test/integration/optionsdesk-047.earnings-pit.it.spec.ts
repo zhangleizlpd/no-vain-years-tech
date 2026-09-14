@@ -11,7 +11,16 @@ import { DimensionExecutorRegistry } from '../../src/marketdata/dimension-execut
 import {
   EARNINGS_FORWARD_HORIZON_DAYS,
   SyncEarningsEventUseCase,
+  type EarningsObservationRecorder,
 } from '../../src/marketdata/sync-earnings-event.usecase';
+import { UsEarningsObservationRecorder } from '../../src/marketdata/us-earnings-observation.recorder';
+import { SyncEarningsDatesUseCase } from '../../src/marketdata/sync-earnings-dates.usecase';
+import { SyncEarningsFiscalProfileUseCase } from '../../src/marketdata/sync-earnings-fiscal-profile.usecase';
+import {
+  FUTU_CALENDAR_SOURCE,
+  FutuCalendarSource,
+} from '../../src/marketdata/futu-calendar.source';
+import { DbTradingCalendarAdapter } from '../../src/marketdata/db-trading-calendar.adapter';
 import { EARNINGS_CALENDAR_MAX_WINDOW_SPAN_DAYS } from '../../src/marketdata/earnings-calendar.port';
 import type {
   EarningsCalendarEvent,
@@ -106,7 +115,7 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
    * 注成别的东西。`anchorGate` 传**真实例**而非 stub —— 本文件要验的正是「锚表在场且为空时,
    * 本维度照样跑」, 把闸换成 stub 等于把被测对象抽掉。
    */
-  function buildRegistry(): DimensionExecutorRegistry {
+  function buildRegistry(recorder?: EarningsObservationRecorder): DimensionExecutorRegistry {
     const mock = new MockMarketDataAdapter();
     return new DimensionExecutorRegistry(
       new SyncUniverseUseCase(mock, prisma),
@@ -140,7 +149,8 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
       undefined, // usIndex → 默认 null-object
       undefined, // syncOptionContract → 默认真实例 + null-object 端口
       undefined, // syncOptionSnapshot → 默认真实例 + null-object 端口
-      new SyncEarningsEventUseCase(calendar, prisma), // 047 T019 (尾部第 32 位)
+      // 047 T019 (尾部第 32 位); 079 T020 记录器缺省 ⇒ 默认空实现 = 本片之前的行为
+      new SyncEarningsEventUseCase(calendar, prisma, recorder),
     );
   }
 
@@ -358,5 +368,86 @@ describe('047 T020 财报日历 PIT (Testcontainers PG, 市场级维度不挂锚
     // `first_seen_at` 是「该日期首次被观察到」那天, **不是**「建锚那天」—— 只落白名单时
     // 这一列的语义会直接变错。
     expect(rows[0].firstSeenAt).toEqual(FRI.now);
+  });
+
+  // ── ⑥ 079 T020 美股钩子: 现役逐字节不变 + 美股事件进层 (FR-021 / SC-008, 排序铁律 5) ──
+  it('⑥ 079 美股钩子: earnings_event 行与 sync_run 与无钩子基线逐字节相同 (含钩子抛错); 美股事件 > 0 且全 unconfirmed', async () => {
+    await seedInstrument('PEP');
+    await seedInstrument('LULU');
+    const fri = [
+      eventOf('us:PEP', '2026-06-25'),
+      eventOf('us:LULU', '2026-06-30', { periodText: 'Q1 2026' }),
+      eventOf('us:NOPE', '2026-06-26'), // 库外标的 ⇒ notice finding
+    ];
+    // 次日: PEP 改期 (原地改 + 改期 finding) / LULU eps 由预估变实际 (字段更新) / 库外标的仍在。
+    const mon = [
+      eventOf('us:PEP', '2026-06-29'),
+      eventOf('us:LULU', '2026-06-30', { periodText: 'Q1 2026', epsActual: '1.02' }),
+      eventOf('us:NOPE', '2026-06-26'),
+    ];
+
+    /**
+     * 两轮 (FRI → MON) 后 `earnings_event` 全部行 + 本维度 `sync_run` 全部行 (status / 计数 /
+     * findings / written …) 的 JSON 序列化。只剔自增 id 与墙钟时刻 (`started_at` / `finished_at`),
+     * 其余列逐字节比 —— PIT 列落的是注入时钟, 本就确定。
+     */
+    const runScenario = async (recorder?: EarningsObservationRecorder): Promise<string> => {
+      await prisma.earningsEvent.deleteMany();
+      await prisma.syncRun.deleteMany();
+      const registry = buildRegistry(recorder);
+      calendar.events = fri;
+      await registry.execute('earnings_event', deltaInput(FRI));
+      calendar.events = mon;
+      await registry.execute('earnings_event', deltaInput(MON));
+      const events = await prisma.earningsEvent.findMany({
+        orderBy: [{ instrumentId: 'asc' }, { earningsDate: 'asc' }],
+      });
+      const runs = await prisma.syncRun.findMany({
+        where: { syncType: 'sync:earnings_event' },
+        orderBy: { id: 'asc' },
+      });
+      return JSON.stringify(
+        {
+          events: events.map(({ id: _id, ...row }) => row),
+          runs: runs.map(({ id: _id, startedAt: _s, finishedAt: _f, ...row }) => row),
+        },
+        (_key, value: unknown) => (typeof value === 'bigint' ? value.toString() : value),
+      );
+    };
+
+    const baseline = await runScenario(); // 默认空记录器 = 本片之前的行为
+    const throwing = await runScenario({
+      record: async () => {
+        throw new Error('观测层写入失败');
+      },
+    });
+    const hooked = await runScenario(
+      new UsEarningsObservationRecorder(
+        prisma,
+        new SyncEarningsDatesUseCase(
+          prisma,
+          [{ name: FUTU_CALENDAR_SOURCE, source: new FutuCalendarSource(calendar, prisma) }],
+          new SyncEarningsFiscalProfileUseCase(prisma),
+          new DbTradingCalendarAdapter(prisma),
+        ),
+      ),
+    );
+
+    expect(JSON.parse(baseline).runs).toHaveLength(2); // 基线非平凡: 两轮都落了 sync_run
+    expect(throwing).toBe(baseline);
+    expect(hooked).toBe(baseline);
+
+    // 🚨 先断事件数 > 0: 钩子只写观测不合并时新表恒 0 行, 下面「全 unconfirmed」在空表上照样成立。
+    const usEvents = await prisma.earningsDateEvent.findMany({
+      where: { instrument: { market: 'us' } },
+    });
+    expect(usEvents.length).toBeGreaterThan(0);
+    expect(usEvents.map((e) => e.status)).toEqual(usEvents.map(() => 'unconfirmed'));
+    expect(await prisma.earningsDateEvent.count({ where: { status: 'confirmed' } })).toBe(0);
+    expect(
+      await prisma.earningsDateObservation.count({
+        where: { source: FUTU_CALENDAR_SOURCE, instrument: { market: 'us' } },
+      }),
+    ).toBe(2); // PEP / LULU 各一期; 库外标的不进层
   });
 });

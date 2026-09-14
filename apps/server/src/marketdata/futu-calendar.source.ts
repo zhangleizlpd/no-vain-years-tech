@@ -157,7 +157,11 @@ export class FutuCalendarSource implements EarningsDateSource {
       for (const event of await this.calendar.getWindow({ market, ...window })) events.push(event);
     }
 
-    const mapped = toSourceObservations(events, market, await this.loadLookup(market));
+    const mapped = toSourceObservations(
+      events,
+      market,
+      await loadFutuObservationLookup(this.prisma, market),
+    );
     return {
       observations: mapped.observations,
       noticeSignals: [],
@@ -165,19 +169,26 @@ export class FutuCalendarSource implements EarningsDateSource {
       forwardRows: dedupeEvents(events).filter((e) => e.earningsDate >= businessDate).length,
     };
   }
+}
 
-  private async loadLookup(market: FutuCalendarMarket): Promise<FutuObservationLookup> {
-    const instruments = await this.prisma.instrument.findMany({
-      where: { market },
-      select: { id: true, code: true },
-    });
-    const profiles = await this.prisma.earningsFiscalProfile.findMany({
-      where: { instrument: { market } },
-      select: { instrumentId: true, fiscalYearEndMonth: true },
-    });
-    return {
-      instrumentIds: new Map(instruments.map((i) => [`${market}:${i.code}`, i.id])),
-      fiscalYearEndMonths: new Map(profiles.map((p) => [p.instrumentId, p.fiscalYearEndMonth])),
-    };
-  }
+/**
+ * {@link toSourceObservations} 的查找表 (标的主表 + 财年档案)。来源 `collect` 与美股钩子 (T020) 共用,
+ * 保证两条路径映射口径同一。复杂度：2 次读。
+ */
+export async function loadFutuObservationLookup(
+  prisma: PrismaService,
+  market: FutuCalendarMarket,
+): Promise<FutuObservationLookup> {
+  const instruments = await prisma.instrument.findMany({
+    where: { market },
+    select: { id: true, code: true },
+  });
+  const profiles = await prisma.earningsFiscalProfile.findMany({
+    where: { instrument: { market } },
+    select: { instrumentId: true, fiscalYearEndMonth: true },
+  });
+  return {
+    instrumentIds: new Map(instruments.map((i) => [`${market}:${i.code}`, i.id])),
+    fiscalYearEndMonths: new Map(profiles.map((p) => [p.instrumentId, p.fiscalYearEndMonth])),
+  };
 }

@@ -154,6 +154,25 @@ export function planEarningsWindowsBetween(from: string, to: string): EarningsWi
   return windows;
 }
 
+/**
+ * 美股钩子观测记录器 (079 T020, FR-021, plan §D9)：拿本轮**已取到**的事件写观测层 + 增量合并。
+ *
+ * 🚨 **接口 + token 而非直注合并用例**：`futu-calendar.source.ts` 已 import 本文件 (窗序列),
+ * 本文件再 import 它 (映射单点 `toSourceObservations`) 会成环 ⇒ 实现放
+ * `us-earnings-observation.recorder.ts`。实现失败直接抛, 由 {@link SyncEarningsEventUseCase}
+ * 唯一的 try/catch 吞掉。
+ */
+export interface EarningsObservationRecorder {
+  record(events: readonly EarningsCalendarEvent[], now: Date): Promise<void>;
+}
+
+export const EARNINGS_OBSERVATION_RECORDER = Symbol('EARNINGS_OBSERVATION_RECORDER');
+
+/** 默认空实现: 既有直调点 (Small spec 的 Prisma 替身不含新表 / registry 默认值) 零感知。 */
+export const NULL_EARNINGS_OBSERVATION_RECORDER: EarningsObservationRecorder = {
+  record: async () => undefined,
+};
+
 /** 库内既有行的最小投影 (diff 只需要身份 + 可变字段)。 */
 interface ExistingEarningsRow {
   id: bigint;
@@ -191,6 +210,10 @@ export class SyncEarningsEventUseCase {
   constructor(
     @Inject(EARNINGS_CALENDAR_PORT) private readonly calendar: EarningsCalendarPort,
     private readonly prisma: PrismaService,
+    // 079 T020 美股钩子 (尾部 + null-object 默认, 同 `dimension-executor.ts` 尾部默认值先例):
+    // 直 new 的既有调用点零改动。生产经 MarketdataModule DI 注真实例。
+    @Inject(EARNINGS_OBSERVATION_RECORDER)
+    private readonly observationRecorder: EarningsObservationRecorder = NULL_EARNINGS_OBSERVATION_RECORDER,
   ) {}
 
   /**
@@ -249,8 +272,25 @@ export class SyncEarningsEventUseCase {
       addWritten(stats, 1); // 改期订正也是落库行 (稳态趋近 0, 非零即真有改期)。
     }
     this.reportDateChanges(changes, stats);
+    // 079 T020: 既有写入全部完成之后。两处提前 return 到不了这里; 429 顺延时已取到的部分照写。
+    await this.recordObservations([...observed.values()], input.now);
 
     return budgetExhausted;
+  }
+
+  /**
+   * 美股钩子 (079 T020, plan §D9)：观测进层 + 增量合并, 零新增 vendor 调用 (只用本轮已取到的事件)。
+   *
+   * 🚨 **唯一的 try/catch, 只 WARN**: 🚫 改 `stats` / findings / written, 🚫 让异常冒出 `run()` ——
+   * 冒出去会把 `earnings_event` 的 `sync_run` 状态与重试行为一起改掉 (registry `execute` 的 catch)。
+   * 钩子失败不进 findings (plan §D9)。
+   */
+  private async recordObservations(events: EarningsCalendarEvent[], now: Date): Promise<void> {
+    try {
+      await this.observationRecorder.record(events, now);
+    } catch (err) {
+      this.logger.warn(`美股财报日期观测进层失败 (现役落库与运行记录不受影响): ${String(err)}`);
+    }
   }
 
   /**

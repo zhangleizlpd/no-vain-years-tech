@@ -15,6 +15,7 @@ import {
   EARNINGS_FORWARD_HORIZON_DAYS,
   planEarningsWindows,
   SyncEarningsEventUseCase,
+  type EarningsObservationRecorder,
 } from './sync-earnings-event.usecase.js';
 
 /**
@@ -118,6 +119,8 @@ function makeHarness(opts: {
   eventsFor?: (q: EarningsCalendarWindowQuery) => EarningsCalendarEvent[];
   instruments?: string[];
   existing?: ReturnType<typeof existingRow>[];
+  /** 079 T020 美股钩子; 缺省 ⇒ 默认空实现。 */
+  recorder?: EarningsObservationRecorder;
 }): Harness {
   const windowCalls: EarningsCalendarWindowQuery[] = [];
   const calendar: EarningsCalendarPort = {
@@ -147,7 +150,7 @@ function makeHarness(opts: {
   } as unknown as PrismaService;
 
   return {
-    useCase: new SyncEarningsEventUseCase(calendar, prisma),
+    useCase: new SyncEarningsEventUseCase(calendar, prisma, opts.recorder),
     windowCalls,
     createMany,
     update,
@@ -428,6 +431,91 @@ describe('SyncEarningsEventUseCase', () => {
       expect(await useCase.run(DIM, stats, makeInput())).toBe(false);
       expect(createMany).not.toHaveBeenCalled();
       expect(stats.scanned).toBe(0);
+    });
+  });
+
+  describe('079 T020 美股钩子: 观测记录器对现役零回归 (FR-021 / SC-008, plan §D9)', () => {
+    /** 同一轮里有新插入 (PEP)、改期 (KO: 既有 08-05 → 08-06, notice finding) 与库外标的 (notice finding)。 */
+    const scenario = {
+      instruments: ['us:PEP', 'us:KO'],
+      existing: [existingRow(1n, 2n, '2026-08-05')],
+      eventsFor: (q: EarningsCalendarWindowQuery) =>
+        q.start === '2026-08-04'
+          ? [event('us:PEP', q.start), event('us:KO', '2026-08-06'), event('us:NOPE', q.start)]
+          : [],
+    };
+    const recorderMock = (impl: () => Promise<void> = async () => undefined) =>
+      vi.fn(async (_events: readonly EarningsCalendarEvent[], _now: Date) => impl());
+
+    it('🚨 记录器抛错 ⇒ 返回值 / stats (含 findings / written) / vendor 调用 / 落库调用与无钩子基线逐项相同', async () => {
+      const baseline = makeHarness(scenario);
+      const baselineStats = emptyStats();
+      const baselineResult = await baseline.useCase.run(DIM, baselineStats, makeInput());
+
+      const record = recorderMock(async () => {
+        throw new Error('观测层写入失败');
+      });
+      const hooked = makeHarness({ ...scenario, recorder: { record } });
+      const hookedStats = emptyStats();
+      const hookedResult = await hooked.useCase.run(DIM, hookedStats, makeInput());
+
+      expect(record).toHaveBeenCalledTimes(1); // 真走到了钩子, 不是没调用才相等
+      expect(baselineStats.findings).toHaveLength(2); // 基线非平凡: 库外标的 + 改期
+      expect(hookedResult).toBe(baselineResult);
+      expect(hookedStats).toEqual(baselineStats);
+      expect(hooked.windowCalls).toEqual(baseline.windowCalls);
+      expect(hooked.createMany.mock.calls).toEqual(baseline.createMany.mock.calls);
+      expect(hooked.update.mock.calls).toEqual(baseline.update.mock.calls);
+    });
+
+    it('既有写入完成之后才调用, 入参 = 本轮已取到的全部事件 + input.now', async () => {
+      const record = recorderMock();
+      const { useCase, createMany, update } = makeHarness({ ...scenario, recorder: { record } });
+      const input = makeInput();
+
+      await useCase.run(DIM, emptyStats(), input);
+
+      expect(record).toHaveBeenCalledTimes(1);
+      const [events, now] = record.mock.calls[0];
+      expect(events.map((e) => e.underlyingSymbol).sort()).toEqual(['us:KO', 'us:NOPE', 'us:PEP']);
+      expect(now).toBe(input.now);
+      expect(record.mock.invocationCallOrder[0]).toBeGreaterThan(
+        Math.max(...createMany.mock.invocationCallOrder, ...update.mock.invocationCallOrder),
+      );
+    });
+
+    it('两处提前 return (零事件 / 全部是库外标的) ⇒ 不调用记录器', async () => {
+      const record = recorderMock();
+      const empty = makeHarness({ instruments: ['us:PEP'], recorder: { record } });
+      const unmatched = makeHarness({
+        instruments: ['us:PEP'],
+        eventsFor: (q) => [event('us:NOPE', q.start)],
+        recorder: { record },
+      });
+
+      await empty.useCase.run(DIM, emptyStats(), makeInput());
+      const unmatchedStats = emptyStats();
+      await unmatched.useCase.run(DIM, unmatchedStats, makeInput());
+
+      expect(unmatchedStats.skipped).toBeGreaterThan(0); // 真到了第二处 return (有事件但全库外)
+      expect(record).not.toHaveBeenCalled();
+    });
+
+    it('429 顺延 ⇒ 已取到的部分事件照样交给记录器, 顺延信号不变', async () => {
+      let calls = 0;
+      const record = recorderMock();
+      const { useCase } = makeHarness({
+        instruments: ['us:PEP'],
+        eventsFor: (q) => {
+          if (++calls > 2) throw new EarningsCalendarBudgetExhaustedError(`${q.start}..${q.end}`);
+          return [event('us:PEP', q.start)];
+        },
+        recorder: { record },
+      });
+
+      expect(await useCase.run(DIM, emptyStats(), makeInput())).toBe(true);
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(record.mock.calls[0][0]).toHaveLength(2);
     });
   });
 });

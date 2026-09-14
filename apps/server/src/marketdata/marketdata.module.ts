@@ -76,7 +76,11 @@ import { SyncUniverseUseCase } from './sync-universe.usecase.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionOiSettleUseCase } from './sync-option-oi-settle.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
-import { SyncEarningsEventUseCase } from './sync-earnings-event.usecase.js';
+import {
+  EARNINGS_OBSERVATION_RECORDER,
+  SyncEarningsEventUseCase,
+} from './sync-earnings-event.usecase.js';
+import { UsEarningsObservationRecorder } from './us-earnings-observation.recorder.js';
 import { SyncProfileUseCase } from './sync-profile.usecase.js';
 import { SyncTierRecalc } from './sync-tier-recalc.js';
 import { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
@@ -686,6 +690,8 @@ function collectionPort<T extends object>(
     // 047 T019 财报日历维度 use case (同上, 尾部第 32 位)。🚨 它**不接受工作集入参** ——
     // 市场级接口, 工作集是固定前向时间窗序列, 不挂锚闸 (FR-035a)。
     SyncEarningsEventUseCase,
+    // 079 T020 美股钩子: 上一行构造器尾部的观测记录器 (本批事件 → 观测层 → 增量合并, 零 vendor 调用)。
+    { provide: EARNINGS_OBSERVATION_RECORDER, useClass: UsEarningsObservationRecorder },
     // profile 富化 use case (T010): 缺 fsType 的 cn 标的 → COMPANY_PROFILE_PORT 解析回写缓存。
     SyncProfileUseCase,
     // syncTier 重算 (018 T001): fact 维度 executor 前置 Q7-B 直查自选并集 → 落 syncTier。
