@@ -120,7 +120,7 @@ updated_at: '2026-09-13'
 
 - [X] T021 [Server] **港股打标隔离**（`FR-022`, `SC-009`, plan §D1）：前置 = T017。079 IT 调期权台既有取腿用例：新表里有 `confirmed` 港股事件时（先断言事件数 > 0），港股收租腿财报标签仍为「无日期」；另加结构断言：`apps/server/src/optionsdesk/` 内零引用本片 4 个新 model。→ verify: 两臂绿；定向变异：往 `earnings_event` 写一行港股 ⇒ 打标臂必红。（`state_branches` 24）
 
-- [ ] T022 [Server] **来源增删演练 + 单源失败隔离**（`FR-001`, `FR-018`, `SC-007`, `SC-010`, plan §D2）：前置 = T016。079 IT：① 配置去掉清单来源跑一轮 ⇒ 正常完成、此前由清单参与确认的事件不删除；恢复 ⇒ 清单重新参与（US4 AS1，`SC-007`）；② 注入只提供刊发事实的假来源、移除真来源 ⇒ 合并 / 口径 / 冲突规则零改动完成，并断言 `earnings-date-merge.rules.ts` 不含来源名字面量（US4 AS2，`SC-010`）；③ 富途来源抛错 ⇒ 其余照常合并、既有确认不撤销、`partial` + failure finding。→ verify: 三臂绿；定向变异：来源异常不隔离 ⇒ ③ 必红。（`state_branches` 17；Edge 13）
+- [X] T022 [Server] **来源增删演练 + 单源失败隔离**（`FR-001`, `FR-018`, `SC-007`, `SC-010`, plan §D2）：前置 = T016。079 IT：① 配置去掉清单来源跑一轮 ⇒ 正常完成、此前由清单参与确认的事件不删除；恢复 ⇒ 清单重新参与（US4 AS1，`SC-007`）；② 注入只提供刊发事实的假来源、移除真来源 ⇒ 合并 / 口径 / 冲突规则零改动完成，并断言 `earnings-date-merge.rules.ts` 不含来源名字面量（US4 AS2，`SC-010`）；③ 富途来源抛错 ⇒ 其余照常合并、既有确认不撤销、`partial` + failure finding。→ verify: 三臂绿；定向变异：来源异常不隔离 ⇒ ③ 必红。（`state_branches` 17；Edge 13）
 
 - [ ] T023 [Server] **历史业绩公布日 + 回填 CLI**（`FR-020`, `SC-001`, plan §D9 回填）：前置 = T016。历史刊发事实合并各来源、覆盖可得范围 ≥ 2 年；`marketdata-trigger.cli.ts` 以 `mode=backfill` 跑 `hk_earnings_date`：富途 730 天窗 + 交易所两年刊发事实与会前通知信号 + 清单当日页（无历史）。→ verify: `marketdata.backfill-cli.it.spec.ts` 加臂：回填后 `hk:00005` 历史含 2026-02-25 / 2026-05-05 并标来源（US5 AS1）、`hk:00857` 三个周日刊发日与 `hk:09992` 補充标题刊发在列；清单请求次数 = 1；定向变异：回填模式按日循环请求清单 ⇒ 请求次数断言必红。
 

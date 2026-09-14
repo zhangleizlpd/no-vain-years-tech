@@ -2086,3 +2086,202 @@ describe('079 T021 港股打标隔离: 期权台取腿读不到本片产出', ()
     expect(scan(join(srcRoot, 'optionsdesk'), optionsdeskFiles)).toEqual([]);
   });
 });
+
+// T022 来源增删演练 + 单源失败隔离 (FR-001 / FR-018 / SC-007 / SC-010, plan §D2; state_branches 17; Edge 13)。
+// 启用集合 = 配置 `EARNINGS_DATE_SOURCES` 的取值, 经生产同一个 `assembleEarningsDateSources` 组装; 全部经维度
+// 执行, 断言落库的 `sync:hk_earnings_date` 运行记录。
+type EarningsSourceName = (typeof EARNINGS_DATE_SOURCE_NAMES)[number];
+const BOARD_LIST_SOURCE: EarningsSourceName = 'hkex_board_meeting_list';
+
+/** 按启用名组装 (实例表同 buildMerge)。 */
+const buildEnabled = (enabled: readonly string[], futu: Round, board: Round) =>
+  new SyncEarningsDatesUseCase(
+    prisma,
+    assembleEarningsDateSources(enabled, {
+      futu_calendar: scripted(hkOnly, futu),
+      hkex_announcement: new HkexAnnouncementSource(prisma),
+      hkex_board_meeting_list: scripted(hkOnly, board),
+    }),
+    fiscal,
+    new DbTradingCalendarAdapter(prisma),
+  );
+
+/** 事件的确认面 —— 「不删不撤」对比用。 */
+const confirmationOf = async (instrumentId: bigint) => {
+  const e = await eventOf(instrumentId);
+  return {
+    id: e.id,
+    status: e.status,
+    announceDate: e.announceDate,
+    confirmedDate: e.confirmedDate,
+    confirmedBasis: e.confirmedBasis,
+  };
+};
+
+describe('079 T022 ①②: 来源增删演练 (经维度运行)', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('① 配置去掉清单来源跑一轮 ⇒ success, 此前由清单确认的事件不删不撤; 恢复 ⇒ 清单重新参与 (SC-007)', async () => {
+    const [listed, futuOnly] = await Promise.all(
+      ['06862', '02899'].map((code) => instrument('hk', code)),
+    );
+    const futu: Round = { current: {} };
+    const board: Round = {
+      current: listing('2026-09-07', [obs(listed.id, 'meeting', '2026-09-24')]),
+    };
+
+    await dimensionRun(buildEnabled(EARNINGS_DATE_SOURCE_NAMES, futu, board), '2026-09-07');
+    const confirmed = await confirmationOf(listed.id);
+    expect(confirmed).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-24'),
+      confirmedDate: day('2026-09-07'),
+      confirmedBasis: 'first_seen',
+    });
+
+    // 停用清单: 富途照常给另一标的日期 ⇒ 本轮不是空跑; 已确认事件照样进逾期扫描被重算。
+    futu.current = { observations: [obs(futuOnly.id, 'structured', '2026-09-28')] };
+    const withoutBoardList = EARNINGS_DATE_SOURCE_NAMES.filter(
+      (name) => name !== BOARD_LIST_SOURCE,
+    );
+    const disabled = await dimensionRun(buildEnabled(withoutBoardList, futu, board), '2026-09-08');
+
+    expect(await prisma.earningsDateEvent.count({ where: { instrumentId: futuOnly.id } })).toBe(1);
+    expect(disabled).toMatchObject({ status: 'success', failed: 0 });
+    expect(await confirmationOf(listed.id)).toEqual(confirmed);
+    expect(
+      await prisma.earningsDateObservation.count({
+        where: { instrumentId: listed.id, source: BOARD_LIST_SOURCE },
+      }),
+    ).toBe(1);
+    expect(runSteps(disabled, 'earnings_board_list_dropped')).toEqual([]);
+
+    // 恢复: 清单改期 ⇒ 清单观测最近出现时刻 = 本轮、事件按新日期重判。
+    board.current = listing('2026-09-09', [obs(listed.id, 'meeting', '2026-09-25')]);
+    const restored = await dimensionRun(
+      buildEnabled(EARNINGS_DATE_SOURCE_NAMES, futu, board),
+      '2026-09-09',
+    );
+
+    expect(
+      await prisma.earningsDateObservation.findFirstOrThrow({
+        where: { instrumentId: listed.id, source: BOARD_LIST_SOURCE },
+      }),
+    ).toMatchObject({ lastSeenAt: at('2026-09-09'), prevDate: day('2026-09-24') });
+    expect(await eventOf(listed.id)).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-25'),
+      confirmedDate: day('2026-09-07'),
+    });
+    expect(restored).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('② 注入只给刊发事实的新来源、移除全部真来源 ⇒ 合并照常完成; 合并规则源码不含来源名 (SC-010)', async () => {
+    const inst = await instrument('hk', '01177');
+    // 生产加源 = 往 port 的 EARNINGS_DATE_SOURCE_NAMES 登记新名 + 模块注册实例 (都不是合并规则);
+    // 本臂直接给装配结果, 名字不在三者之列 ⇒ 合并用例若按来源名分支, 这里就走不通。
+    const HISTORY_ONLY = 'history_only' as string as EarningsSourceName;
+    const historyOnly: EarningsDateSource = {
+      name: HISTORY_ONLY,
+      capabilities: (market) =>
+        market === 'hk'
+          ? { forward: null, confirmationSignal: false, publicationFact: true }
+          : null,
+      collect: async () => ({
+        observations: [{ ...obs(inst.id, 'filed', '2026-09-04'), filedDate: '2026-09-04' }],
+        noticeSignals: [],
+        skippedUnknownInstruments: 0,
+      }),
+    };
+
+    const run = await dimensionRun(
+      new SyncEarningsDatesUseCase(
+        prisma,
+        [{ name: HISTORY_ONLY, source: historyOnly }],
+        fiscal,
+        new DbTradingCalendarAdapter(prisma),
+      ),
+      '2026-09-07',
+    );
+
+    expect(await prisma.earningsDateObservation.count({ where: { source: HISTORY_ONLY } })).toBe(1);
+    expect(await eventOf(inst.id)).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-09-04'),
+      announceBasis: 'filed',
+    });
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+    expect(
+      await prisma.earningsDateObservation.count({
+        where: { source: { in: [...EARNINGS_DATE_SOURCE_NAMES] } },
+      }),
+    ).toBe(0);
+
+    /** 去掉注释后仍出现的来源名 —— 注释里提及某个键形态不算分支。 */
+    const namesInCode = (text: string) => {
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+      return EARNINGS_DATE_SOURCE_NAMES.filter((name) => code.includes(name));
+    };
+    const source = (file: string) =>
+      readFileSync(join(__dirname, '../../src/marketdata', file), 'utf8');
+    // 管道自检: 代码里的字面量扫得到 (port 常量表三者齐)、注释里的提及被剔除。
+    expect(namesInCode(`const s = 'futu_calendar'; // hkex_announcement`)).toEqual([
+      'futu_calendar',
+    ]);
+    expect(namesInCode(source('earnings-date-source.port.ts'))).toEqual([
+      ...EARNINGS_DATE_SOURCE_NAMES,
+    ]);
+    expect(namesInCode(source('earnings-date-merge.rules.ts'))).toEqual([]);
+  });
+});
+
+describe('079 T022 ③: 单源失败隔离 (经维度运行)', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('③ 富途来源抛普通 Error ⇒ partial + 来源失败 finding; 其余来源照常合并, 既有确认不撤销', async () => {
+    const [futuConfirmed, listedLater, filer] = await Promise.all(
+      ['00291', '01928', '02007'].map((code) => instrument('hk', code)),
+    );
+    const futu: Round = {
+      current: { observations: [obs(futuConfirmed.id, 'structured', '2026-09-25')] },
+    };
+    const board: Round = { current: {} };
+    const useCase = buildEnabled(EARNINGS_DATE_SOURCE_NAMES, futu, board);
+    await dimensionRun(useCase, '2026-09-07');
+    const before = await confirmationOf(futuConfirmed.id);
+    expect(before).toMatchObject({ status: 'confirmed', announceDate: day('2026-09-25') });
+
+    // 普通 Error (非 429 顺延) ⇒ 来源失败; 清单与公告本轮各给新东西。
+    futu.current = {
+      get observations(): EarningsDateSourceObservation[] {
+        throw new Error('futu shim down');
+      },
+    };
+    board.current = listing('2026-09-08', [obs(listedLater.id, 'meeting', '2026-09-29')]);
+    await announce(filer.id, '2026-09-08', '截至2026年6月30日止六個月之中期業績公告', ['fs_main']);
+    const run = await dimensionRun(useCase, '2026-09-08');
+
+    // 先断言其余来源照常合并 (正向), 再断言失败形态。
+    expect(await eventOf(listedLater.id)).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-29'),
+    });
+    expect(await eventOf(filer.id)).toMatchObject({ status: 'published', announceBasis: 'filed' });
+    expect(await confirmationOf(futuConfirmed.id)).toEqual(before);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+    expect(runSteps(run, 'earnings_date_source')).toEqual([
+      expect.objectContaining({
+        kind: 'failure',
+        symbol: 'source:futu_calendar',
+        error: expect.stringContaining('futu shim down'),
+      }),
+    ]);
+    expect(
+      await prisma.earningsDateObservation.count({
+        where: { instrumentId: futuConfirmed.id, source: 'futu_calendar' },
+      }),
+    ).toBe(1);
+  });
+});
