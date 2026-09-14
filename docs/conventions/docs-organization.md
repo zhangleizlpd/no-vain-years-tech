@@ -1,6 +1,6 @@
 # Docs 文件组织约定
 
-**约束范围**：`docs/private/plans/`、`docs/improvements/` 与 `docs/experience/`。
+**约束范围**：`docs/private/plans/`、`docs/improvements/` 与 `docs/experience/`；另管 SDD 文档（`specs/NNN-*/`）正文里的数字（见 § SDD 文档里的数字）。
 
 > **两个 local-only 区**（gitignored，不入库；命名与目录约定仍适用于本地文件）：
 >
@@ -57,3 +57,18 @@ docs/experience/                 # local-only（gitignored），结构同上
 **产出顺序（重构 / 优化 session）**：先落 `docs/improvements/` 实测记录，convention 事后从记录**提炼**——同一 session 手边全是「修了几个 / 还剩几秒」的素材时同步写 convention，时点数字必然互渗（2026-08-03 根因分析实证，两次事故均此形态）。
 
 **守卫三层**（防「规约在写作时刻不在场」）：`scripts/hooks/pretooluse-convention-rubric.sh`（Write|Edit 时刻注入自检——新建文件唯一覆盖通道；对 plans / improvements / experience 同一 hook 注入命名规则）+ `.claude/rules/convention-authoring.md`（read/edit 触发摘要）+ `scripts/checks/check-convention-orphan.ts`（全仓零引用的 convention = 红，路由不到等于不存在）。lefthook `docs-organization-drift` 只能拦入仓的 `docs/improvements/` 新文件命名 —— plans / experience 是 gitignored，进不了 staged。
+
+## SDD 文档里的数字
+
+`specs/NNN-*/` 下的 spec / plan / tasks / analysis / checklists 入仓公开，但不是 evergreen 区 —— 一个数能不能写，判据是**它属于哪一类**：
+
+| 类                          | 例                                                        | 怎么写                                                                                                                                      |
+| --------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a) schema 管的生命周期字段 | frontmatter `status` / `updated_at`、tasks `[X]`          | 照写 —— 它们本就是时点状态，由 schema 与 impl 闭环维护                                                                                      |
+| (b) 易变的系统 / 数据状态   | 某 context 当前 use case 数、库里多少行                   | 不写值，写**查法 + 判据**（命令或查询 + 多少算过）；确需快照支撑决策时带日期                                                                |
+| (c) 源自私有数据的观测值    | 账户 / 持仓 / 成交 / 订单相关的数量、条数、代码、起始时间 | 公开文本里**一律不写，带日期也不行**：写定性表述 + 出处（谁、哪天、哪份私有证据），原始数字只放 `docs/private/evidence/<NNN-feature-slug>/` |
+
+- `analysis.md` / `checklists/` 里关于 **spec 自身**的计数（FR 条数、覆盖率）是时点审计产物，不在 (b) 的禁止范围；(c) 仍然适用。
+- **(c) 按来源判，不按形状判**：同样是「几条」，出自公开行情 / vendor 行为时可按 [`comment-provenance.md`](comment-provenance.md) 当出处写；出自自己账户的成交、持仓就是 (c)。私有数据的范围见 [`information-boundary.md`](information-boundary.md) § 个人 / 金融业务数据。
+- **(c) 为什么带日期也不救**：日期能让 (b) 的快照变成永真的历史事实，但 (c) 的问题不在过期，在**发布本身**。
+- 实证锚：2026-09-14 082 实证 —— POC 取到的真实合约 / 股数 / 条数一路流进 tasks、fixture 与 PR。

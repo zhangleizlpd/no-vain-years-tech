@@ -154,6 +154,7 @@ Google ch11 的定义 🟢：
 - **两臂对照才算实证** —— 「跑了绿」不构成证据；必须同时给出「反例存在时它会红」的那一臂。
 - **注意工具自身的假绿** —— 如 nx 对只改 env 的对照实验会命中缓存回放（见 `local-verification.md` §4）。
 - 🚨 **替身数据的「形状」包含长度 / 网络模式 / 链路位置**，不只是取值合法 —— 形状不对，测试绿是运气（**只有从对端真打才看得见**）。
+- 🚨 **fixture 取值一律合成，结构保真靠形状、不靠真值** —— 用一眼可辨的虚构值（合成词根 / 假号前缀，如 `ZQX`、`FAKE…`）满足上一条要的长度 / 字符集 / 前缀结构。🚫 **禁真实账户 / 持仓 / 交易数据，也禁「脱敏真实样本」**：脱敏只去掉个别字段，剩下的仍取自真实账户，而本仓公开（判据见 [`information-boundary.md`](information-boundary.md) § 个人 / 金融业务数据）。外部依据 NIST SP 800-53 PM-25「use placeholder data」（见 §8）。
 - **本节适用面不止「本约定」** —— 任何**会被长期依赖的检查**（部署自检 / 模板占位自检 / 覆盖矩阵）同样适用：**恒有输出 = 恒无输出**，判据必须能区分「过」与「不过」。两类的仓内实例（2026-08-04 一天五例，全是本机全绿、真环境当场崩）见 [08-27 替身形状与恒真检查实例](../improvements/2026-08/08-27-replica-shape-and-tautological-checks.md)。
 - 🚨 **判据的期望源 MUST 独立于被监控数据** —— 「本该有多少」若取自被监控数据自身（如拿昨天的数据当今天的分母），对象整个消失时**期望也一起消失**：聚合器无输入即无输出，那一组根本不出现，于是没有人判它。这是上面那条问题的一个具体形态，且**不报错、只表现为恒绿**。存在性问题必须用一份**独立的名册**判（同 Prometheus `absent(up{job=…})` 里的 `up` 取自服务发现），比例问题才可以用历史基线做分母。
 - 🚨 **「能红」不等于「测对了」——先证前提，再谈阈值** —— 上面几条问的是「它会不会红」；还有一类判据**照常会红**，只是量的不是你以为的东西（两侧本就无法复算、样本里不存在判据默认的那一类）。这类失效**测不出来**，只会让人反复去调阈值。⇒ 立判据时先写下它**压着什么前提**，并确认那个前提现在成立。
@@ -179,10 +180,11 @@ Google ch11 的定义 🟢：
 
 ## 8. 参考来源与证据等级
 
-| 断言                                                                                                                                     | 来源                                                                                                               | 等级                  |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------- |
-| size vs scope 二维、Small/Medium/Large 约束、80/15/5 配比锚                                                                              | [SWE at Google ch11](https://abseil.io/resources/swe-book/html/ch11.html)                                          | 🟢 一手原文           |
-| 「术语叫什么不重要，选定并贯彻才重要」                                                                                                   | [Fowler, Practical Test Pyramid](https://martinfowler.com/articles/practical-test-pyramid.html)                    | 🟢 一手原文           |
-| NestJS 官方结构 = 两个 runner 两个 root（`rootDir:"src"` + `testRegex:".*\.spec\.ts$"` / `rootDir:"."` + `testRegex:"\.e2e-spec\.ts$"`） | [nestjs/typescript-starter](https://github.com/nestjs/typescript-starter) 的 `package.json` + `test/jest-e2e.json` | 🟢 一手配置           |
-| vitest `--project <name>` 过滤、projects 间配置不继承                                                                                    | [Vitest Test Projects](https://v3.vitest.dev/guide/projects)                                                       | 🟢 一手文档           |
-| Google 内部 size 的**时限**（60s/300s/900s）                                                                                             | 仅见二手转述，未取得一手页                                                                                         | 🟠 **二手，故不采纳** |
+| 断言                                                                                                                                               | 来源                                                                                                                   | 等级                  |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| size vs scope 二维、Small/Medium/Large 约束、80/15/5 配比锚                                                                                        | [SWE at Google ch11](https://abseil.io/resources/swe-book/html/ch11.html)                                              | 🟢 一手原文           |
+| 「术语叫什么不重要，选定并贯彻才重要」                                                                                                             | [Fowler, Practical Test Pyramid](https://martinfowler.com/articles/practical-test-pyramid.html)                        | 🟢 一手原文           |
+| NestJS 官方结构 = 两个 runner 两个 root（`rootDir:"src"` + `testRegex:".*\.spec\.ts$"` / `rootDir:"."` + `testRegex:"\.e2e-spec\.ts$"`）           | [nestjs/typescript-starter](https://github.com/nestjs/typescript-starter) 的 `package.json` + `test/jest-e2e.json`     | 🟢 一手配置           |
+| vitest `--project <name>` 过滤、projects 间配置不继承                                                                                              | [Vitest Test Projects](https://v3.vitest.dev/guide/projects)                                                           | 🟢 一手文档           |
+| Google 内部 size 的**时限**（60s/300s/900s）                                                                                                       | 仅见二手转述，未取得一手页                                                                                             | 🟠 **二手，故不采纳** |
+| 测试 / 研究用占位数据而非真实个人信息（「use placeholder data to avoid exposure of personally identifiable information when conducting testing」） | [NIST SP 800-53 r5 PM-25 Discussion](https://csf.tools/reference/nist-sp-800-53/r5/pm/pm-25/)（2026-09-14 核对含该句） | 🟢 一手原文（镜像站） |
