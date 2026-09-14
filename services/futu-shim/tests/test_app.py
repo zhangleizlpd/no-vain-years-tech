@@ -328,6 +328,9 @@ def test_data_routes_reject_missing_or_wrong_token(path):
 # 定向变异留档（2026-09-14，临时改坏 → 跑 → 还原 → 全绿）：
 #   a. `_merged_window` 去掉按 id 去重                         → ④ test_window_reaching_today_merges_today_and_dedupes 红
 #   b. `trade.select_account` 命中 ≠ 1 时 log 出候选账户号     → ⑨ test_trade_error_paths_never_log_the_account_id 红
+# 交易行 ID 数字串（2026-09-14 amend，⑩⑪⑫ 先红后绿；变异后 `cmp` 与备份逐字节相同）：
+#   c. `TradeSupervisor.call` 不经 `_ids_as_digit_strings`      → ⑩ ⑪ ⑫ 红
+#   d. `_merged_window` 当日侧把 id 还原成 int（模拟单侧转换）  → ⑫ 红（④ 两个参数化一并红）
 # 复跑：services/futu-shim/venv/bin/python -m pytest -q services/futu-shim/tests/test_app.py -k trade
 #
 # 🚨 账户号一律明显假值（10 位 9000001xxx；卡号 8000000000 / 7000000000）。选中户用 10 位而非
@@ -491,6 +494,79 @@ def test_window_reaching_today_merges_today_and_dedupes(kind, key, exchange_toda
         {**common, "start": "2026-09-01", "end": "2026-09-14"}
     ]
     assert ctx.calls[f"{singular}_list_query"] == [{**common, "refresh_cache": True}]
+
+
+# 19 位明显假号，> 2**53 − 1（JSON number 到 JS 侧会被舍入）。
+FAKE_DEAL_ID = 1000000000000000001
+FAKE_POSITION_ID = 1000000000000000005
+
+
+def test_trade_deals_emit_deal_id_as_a_digit_string_equal_to_the_sdk_int(exchange_today):
+    """⑩ 2026-09-14 amend：SDK 给 int 的 `deal_id` 在响应里是数字串且与原 int 逐位相等；小号同样转串
+    （同一列不出两种类型）；`qty` / `price` 保持数值。"""
+    ctx = FakeTradeCtx(
+        history_deals=[
+            {"deal_id": FAKE_DEAL_ID, "order_id": "1000000000000000002", "code": "US.AAPL", "qty": 2.0, "price": 1.5},
+            {"deal_id": 7, "order_id": "1000000000000000003", "code": "US.AAPL", "qty": 1.0, "price": 1.5},
+        ]
+    )
+    resp = build_trade(ctx).get("/trade/deals?market=US&start=2026-09-01&end=2026-09-13", headers=AUTH)
+    assert resp.status_code == 200
+    rows = resp.json["rows"]
+    assert [row["deal_id"] for row in rows] == [str(FAKE_DEAL_ID), "7"]
+    assert rows[0]["deal_id"] == "1000000000000000001"
+    assert [row["order_id"] for row in rows] == ["1000000000000000002", "1000000000000000003"]
+    assert all(type(row["qty"]) is float and type(row["price"]) is float for row in rows)
+
+
+def test_trade_positions_emit_integers_beyond_2_pow_53_as_strings_and_leave_the_rest_alone():
+    """⑪ 任一 int 列 |v| > 2**53 − 1 ⇒ 数字串（兜 `position_id` 这类列）；恰为 2**53 − 1 的 int、
+    小 int、float 原样。边界列名是合成的：规则按值判、不认列名。"""
+    ctx = FakeTradeCtx(
+        positions=[
+            {
+                "code": "US.AAPL",
+                "qty": 3,
+                "can_sell_qty": 1.0,
+                "position_id": FAKE_POSITION_ID,
+                "at_safe_limit": 2**53 - 1,
+                "past_safe_limit": 2**53,
+                "negative_past_safe_limit": -(2**53),
+            }
+        ]
+    )
+    resp = build_trade(ctx).get("/trade/positions?market=US", headers=AUTH)
+    assert resp.status_code == 200
+    [row] = resp.json["rows"]
+    assert row == {
+        "code": "US.AAPL",
+        "qty": 3,
+        "can_sell_qty": 1.0,
+        "position_id": "1000000000000000005",
+        "at_safe_limit": 2**53 - 1,
+        "past_safe_limit": str(2**53),
+        "negative_past_safe_limit": str(-(2**53)),
+    }
+    assert type(row["qty"]) is int and type(row["at_safe_limit"]) is int
+    assert type(row["can_sell_qty"]) is float
+
+
+def test_large_deal_id_returned_by_both_today_and_history_appears_once(exchange_today):
+    """⑫ 同一 19 位 `deal_id` 当日与历史两侧都返回 ⇒ 只出现一次：两侧都经 `TradeSupervisor.call`
+    转换，去重键类型一致（一侧 int 一侧 str 会去不了重）。"""
+    ctx = FakeTradeCtx(
+        history_deals=[
+            {"deal_id": FAKE_DEAL_ID, "code": "US.AAPL"},
+            {"deal_id": FAKE_DEAL_ID + 1, "code": "US.AAPL"},
+        ],
+        today_deals=[{"deal_id": FAKE_DEAL_ID, "code": "US.AAPL"}],
+    )
+    resp = build_trade(ctx).get("/trade/deals?market=US&start=2026-09-01&end=2026-09-14", headers=AUTH)
+    assert resp.status_code == 200
+    assert [row["deal_id"] for row in resp.json["rows"]] == [
+        "1000000000000000001",
+        "1000000000000000002",
+    ]
 
 
 @pytest.mark.parametrize("kind", ["deals", "orders"])

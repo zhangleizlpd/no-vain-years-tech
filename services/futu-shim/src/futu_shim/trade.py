@@ -84,6 +84,40 @@ def _strip_account_ids(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return records
 
 
+#: JS `Number.MAX_SAFE_INTEGER`: the largest integer a JSON consumer's `JSON.parse` keeps exact.
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+#: Id columns emitted as digit strings whatever their size, so one column never mixes int and str.
+_ID_FIELDS = frozenset({"deal_id"})
+
+
+def _ids_as_digit_strings(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`deal_id`, and any int cell with `abs > 2**53 - 1` (e.g. `position_id`), -> `str`, in place.
+
+    A rounded id is worse than a missing one: two distinct deals can collapse onto
+    one unique key and the second is silently skipped as a duplicate. The server
+    adapter therefore refuses unsafe JSON numbers and accepts digit strings.
+    Small ints (qty-like) and floats keep their type. Trade rows only: the quote
+    routes do not pass through here, `mappers.clean_value` is untouched.
+
+    EVIDENCE: 维护者 2026-09-13 082 POC-1 原始输出 —— 244 行成交的 `deal_id` 全为 17–19 位 int，
+    244/244 大于 2^53−1（同批 `order_id` 由 SDK 直接给 18 位字符串）。2026-09-14 082 prod 首次全量
+    回填因此失败：`[futu] trade/deals us 2024-09-01..2024-11-30 行缺可用的 deal_id`；同日维护者只读
+    探针 `/trade/deals?market=US&start=2024-09-01&end=2024-11-30` 13 行 `deal_id` 全为 int。
+
+    `/trade/deals` merges today + history rows and de-dupes by `deal_id`; both sides
+    come through `TradeSupervisor.call`, so the key has the same type on both sides.
+    Complexity O(rows × columns).
+    """
+    for record in records:
+        for key, value in record.items():
+            if not isinstance(value, int) or isinstance(value, bool):
+                continue
+            if key in _ID_FIELDS or abs(value) > _MAX_SAFE_INTEGER:
+                record[key] = str(value)
+    return records
+
+
 def select_account(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     """The unique `REAL ∧ ACTIVE ∧ trdmarket_auth ∩ {HK, US} ≠ ∅` account.
 
@@ -128,12 +162,15 @@ class TradeSupervisor:
     # ---- public API ----------------------------------------------------
 
     def call(self, fn: Callable[..., tuple[int, Any]], **kwargs: Any) -> list[dict[str, Any]]:
-        """Run `fn(ctx, **kwargs)` under the deadline and the cap; rows minus `acc_id`.
+        """Run `fn(ctx, **kwargs)` under the deadline and the cap; rows minus `acc_id`,
+        id-like integers as digit strings (`_ids_as_digit_strings`).
 
         `fn` is a callable rather than a method name on purpose: the call site then
         spells the SDK method as an attribute, which the read-only AST guard can see.
         """
-        return _strip_account_ids(mappers.dataframe_to_records(self._invoke(fn, **kwargs)))
+        return _ids_as_digit_strings(
+            _strip_account_ids(mappers.dataframe_to_records(self._invoke(fn, **kwargs)))
+        )
 
     def selected_account(self) -> dict[str, Any]:
         """The sync-target account row (incl. `acc_id`, for in-process use only).
