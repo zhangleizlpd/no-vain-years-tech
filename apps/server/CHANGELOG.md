@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.52.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.51.2...server-v0.52.0) (2026-09-14)
+
+
+### Features
+
+* **optionsdesk:** 082 期权台券商账户拉取式同步底座 ([#416](https://github.com/zhangleizlpd/no-vain-years-tech/issues/416)) ([3729642](https://github.com/zhangleizlpd/no-vain-years-tech/commit/372964288c8a3abd9aaa6cace0f8516c854a18fe))
+
 ## [0.51.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.51.1...server-v0.51.2) (2026-09-14)
 
 
