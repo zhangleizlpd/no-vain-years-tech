@@ -32,12 +32,21 @@ import {
  *
  * 回填两类都取 730 天。失败直接抛 (port 文件头「失败语义」)。
  *
+ * ## 读取：两窗并集只扫一遍，按日期分片
+ *
+ * 两个窗口终点都是业务日 ⇒ 并集 = 较早起点起的那一窗，**只扫一遍**，同一批行按各自窗口起点喂两个
+ * 分类。按 {@link ANNOUNCEMENT_LOAD_CHUNK_DAYS} 天分片读 (相邻片首尾相接、不重叠不留缝)，每片读完
+ * 立即分类、只留命中的行 (刊发候选 / 通知信号；lookalike 只计数)，片结果随即释放。
+ * 为什么分片：回填 730 天窗整窗一次载入 prod 实测 306,615 行，而回填跑在 app 进程自己的 worker 里。
+ * 片按日期升序、片内 `date asc, id asc` ⇒ 拼接顺序与整窗一次读取逐行相同，「同一期取最早刊发」不变。
+ *
  * ## 主表外代码
  *
  * `announcement.instrument_id` 外键指向标的主表 ⇒ 读出的每一行都在主表内，`skippedUnknownInstruments`
  * **结构上恒 0** (主表外代码在理杏仁公告采集侧就取不到行)，不是漏计。
  *
- * 复杂度：3 次读 (刊发窗 / 信号窗公告 + 财年档案) + O(行数) 分类 (每行常数条正则)。
+ * 复杂度：⌈并集窗天数 / 片宽⌉ 次公告读 + 1 次财年档案读 + O(行数) 分类 (每行常数条正则)；
+ * 驻留内存 O(单片行数 + 命中行数)。
  */
 
 export const HKEX_ANNOUNCEMENT_SOURCE: EarningsDateSourceName = 'hkex_announcement';
@@ -49,6 +58,9 @@ export const PUBLICATION_FACT_DAILY_LOOKBACK_DAYS = 7;
 
 /** 回填回看天数 (plan §D9「交易所两年业绩刊发事实与会前通知信号」)。 */
 export const HKEX_ANNOUNCEMENT_BACKFILL_LOOKBACK_DAYS = 730;
+
+/** 公告按日期分片读取的片宽 (天，含端点)。回填 731 天窗 ⇒ 25 片；日常 121 天信号窗 ⇒ 5 片。 */
+export const ANNOUNCEMENT_LOAD_CHUNK_DAYS = 30;
 
 /** `earnings_date_observation.period_text` 列宽 (`VarChar(128)`)。 */
 const PERIOD_TEXT_MAX_CHARS = 128;
@@ -80,7 +92,17 @@ interface AnnouncementRow {
 export class HkexAnnouncementSource implements EarningsDateSource {
   readonly name = HKEX_ANNOUNCEMENT_SOURCE;
 
-  constructor(private readonly prisma: PrismaService) {}
+  /** @param loadChunkDays 分片片宽，仅测试注入 (对照整窗一次读取)；须为正整数。 */
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly loadChunkDays: number = ANNOUNCEMENT_LOAD_CHUNK_DAYS,
+  ) {
+    if (!Number.isInteger(loadChunkDays) || loadChunkDays < 1) {
+      throw new Error(
+        `[${HKEX_ANNOUNCEMENT_SOURCE}] loadChunkDays 须为正整数，收到 ${loadChunkDays}`,
+      );
+    }
+  }
 
   capabilities(market: string): EarningsDateSourceCapabilities | null {
     return market === HKEX_MARKET ? CAPABILITIES : null;
@@ -92,31 +114,45 @@ export class HkexAnnouncementSource implements EarningsDateSource {
       throw new Error(`[${HKEX_ANNOUNCEMENT_SOURCE}] 不支持 market "${market}" (本来源仅 hk)`);
     }
     const backfill = mode === 'backfill';
-    const factRows = await this.loadAnnouncements(
-      addDays(
-        businessDate,
-        -(backfill
-          ? HKEX_ANNOUNCEMENT_BACKFILL_LOOKBACK_DAYS
-          : PUBLICATION_FACT_DAILY_LOOKBACK_DAYS),
-      ),
+    const factFrom = addDays(
       businessDate,
+      -(backfill ? HKEX_ANNOUNCEMENT_BACKFILL_LOOKBACK_DAYS : PUBLICATION_FACT_DAILY_LOOKBACK_DAYS),
     );
-    const signalRows = await this.loadAnnouncements(
-      addDays(
-        businessDate,
-        -(backfill ? HKEX_ANNOUNCEMENT_BACKFILL_LOOKBACK_DAYS : NOTICE_MATCH_WINDOW_DAYS),
-      ),
+    const signalFrom = addDays(
       businessDate,
+      -(backfill ? HKEX_ANNOUNCEMENT_BACKFILL_LOOKBACK_DAYS : NOTICE_MATCH_WINDOW_DAYS),
     );
 
-    const facts = await this.toPublicationFacts(factRows);
-    const signals = toNoticeSignals(signalRows);
+    const publications: AnnouncementRow[] = [];
+    const noticeSignals: EarningsNoticeSignal[] = [];
+    let lookalikeNoticeTitles = 0;
+    // `YYYY-MM-DD` 字典序 = 日历序。
+    let chunkFrom = factFrom < signalFrom ? factFrom : signalFrom;
+    while (chunkFrom <= businessDate) {
+      const chunkEnd = addDays(chunkFrom, this.loadChunkDays - 1);
+      const chunkTo = chunkEnd < businessDate ? chunkEnd : businessDate;
+      const rows = await this.loadAnnouncements(chunkFrom, chunkTo);
+      const signalRows: AnnouncementRow[] = [];
+      for (const row of rows) {
+        const date = isoDate(row.date);
+        if (date >= factFrom && isResultsPublication(row.linkText ?? '', row.types)) {
+          publications.push(row);
+        }
+        if (date >= signalFrom) signalRows.push(row);
+      }
+      const signals = toNoticeSignals(signalRows);
+      for (const signal of signals.noticeSignals) noticeSignals.push(signal);
+      lookalikeNoticeTitles += signals.lookalikeNoticeTitles;
+      chunkFrom = addDays(chunkTo, 1);
+    }
+
+    const facts = await this.toPublicationFacts(publications);
     return {
       observations: facts.observations,
-      noticeSignals: signals.noticeSignals,
+      noticeSignals,
       skippedUnknownInstruments: 0,
       unalignedPublications: facts.unalignedPublications,
-      lookalikeNoticeTitles: signals.lookalikeNoticeTitles,
+      lookalikeNoticeTitles,
     };
   }
 
@@ -138,12 +174,13 @@ export class HkexAnnouncementSource implements EarningsDateSource {
    *
    * 同一 `(标的, period_key)` 多份刊发 (本体 + 補充) 只留**最早**一份：公布日是第一次刊发那天，
    * 补充公告晚几天再出，覆盖进来会把公布日静默推后。
+   *
+   * 入参 = 已按 `isResultsPublication` 筛过、按 `date asc, id asc` 排好的刊发行。
    */
-  private async toPublicationFacts(rows: readonly AnnouncementRow[]): Promise<{
+  private async toPublicationFacts(publications: readonly AnnouncementRow[]): Promise<{
     observations: EarningsDateSourceObservation[];
     unalignedPublications: number;
   }> {
-    const publications = rows.filter((r) => isResultsPublication(r.linkText ?? '', r.types));
     const fiscalYearEndMonths = await this.loadFiscalYearEndMonths(publications);
     const byKey = new Map<string, EarningsDateSourceObservation>();
     let unalignedPublications = 0;
