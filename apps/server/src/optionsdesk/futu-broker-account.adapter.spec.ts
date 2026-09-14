@@ -15,6 +15,11 @@ import { FutuBrokerAccountAdapter, createBrokerAccountPort } from './futu-broker
  * 为负、成交 `qty` 非负、`deal_id` 为数字串、成交行无 `currency`、时间无时区带毫秒。
  * 真端点契约不在本文件的证据范围内。
  *
+ * 成交号 / 订单号用 19 位明显假号的**数字串** (2026-09-14 amend): 即修复后 shim 的输出形态。
+ * EVIDENCE: 真号超安全整数 —— 082 POC-1 (2026-09-13 维护者采集的原始输出) 244/244 行 `deal_id` 为
+ * 17–19 位整数且 > 2^53−1; 2026-09-14 prod 首次回填因 shim 仍输出 JSON number 而报「缺可用的 deal_id」。
+ * 旧 fixture 的 7 位小号覆盖不到这个尺寸, 故 T012 未发现。
+ *
  * 🚨 账户号一律假值 {@link FAKE_ACC_ID} (末 4 位 0000)。
  *
  * 定向变异 (out-of-test sabotage, testing.md §7.1; 2026-09-14 实跑, 每次还原后 `cmp` 与备份逐字节相同):
@@ -22,6 +27,9 @@ import { FutuBrokerAccountAdapter, createBrokerAccountPort } from './futu-broker
  *   b. 成交币种取另一市场的值                          → 1 failed | 9 passed —— 只有 ② 红
  *   c. 409 映射条件改成永不命中 (`=== 4090`)           → 1 failed | 9 passed —— 只有 ⑤ 红
  *   d. 工厂去掉 mock 分支 (`if (false)`)               → 1 failed | 9 passed —— 只有 ⑦ 红
+ *   2026-09-14 amend 补 ⑧ ⑨ 后 (共 12 条, 同法直跑, 还原后 `cmp` 相同):
+ *   e. `idOrNull` number 分支去掉 `isSafeInteger`        → 1 failed | 11 passed —— 只有 ⑧ 红
+ *   f. `idOrNull` 串分支改 `String(Number(s))`            → 2 failed | 10 passed —— ⑨ 与 ③ (断言 19 位 dealId) 红
  *   ⚠️ b / c / d 经 `pnpm -C apps/server exec vitest run <本文件>` 直跑: `nx test server` 先跑
  *   typecheck, 类型不合的变异 (d 丢了 `cfg` 收窄) 会在 tsc 处红而**测试根本没跑**, 那不算证据。
  *   边界规则对照: 在 optionsdesk 新建文件 import `marketdata/marketdata.rules` → eslint
@@ -56,8 +64,8 @@ function deal(extra: Record<string, unknown> = {}) {
     code: 'US.PEP260918P130000',
     stock_name: 'PEP 260918 130.00P',
     deal_market: 'US',
-    deal_id: '5550001',
-    order_id: '7770001',
+    deal_id: '1000000000000000001',
+    order_id: '1000000000000000002',
     qty: 2.0,
     price: 1.85,
     trd_side: 'SELL_SHORT',
@@ -78,7 +86,7 @@ const COMBO_ORDER = {
   trd_side: 'SELL',
   order_type: 'NORMAL',
   order_status: 'FILLED_ALL',
-  order_id: '7770002',
+  order_id: '1000000000000000003',
   qty: 1.0,
   price: 0.95,
   create_time: '2026-09-11 09:40:00.120',
@@ -165,7 +173,7 @@ describe('FutuBrokerAccountAdapter', () => {
     expect(position?.currentPrice?.toString()).toBe('1.05');
     expect(shortDeal?.qty.toString()).toBe('2');
     expect(shortDeal?.side).toBe('SELL_SHORT');
-    expect(shortDeal?.dealId).toBe('5550001');
+    expect(shortDeal?.dealId).toBe('1000000000000000001');
   });
 
   it('④ 组合单订单 ⇒ 解析出两个腿码, 更新时间毫秒保留', async () => {
@@ -174,6 +182,34 @@ describe('FutuBrokerAccountAdapter', () => {
     expect(order?.comboLegCodes).toEqual(['US.PEP260918P120000', 'US.PEP260918P130000']);
     expect(order?.vendorUpdatedAt.toISOString()).toBe('2026-09-11T13:40:01.502Z');
     expect(order?.status).toBe('FILLED_ALL');
+  });
+
+  it('⑧ deal_id 为超过安全整数的 JSON number ⇒ 抛「缺可用的 deal_id」, 不收已丢精度的号', async () => {
+    // shim 修复前的线上形态: JSON 里是 19 位整数字面量, JSON.parse 后已被舍入到另一个号
+    const lossy = JSON.parse('1000000000000000001') as number;
+    expect(String(lossy)).not.toBe('1000000000000000001');
+    const shim = makeShim({ '/trade/deals': [deal({ deal_id: lossy })] });
+    await expect(makeAdapter(shim.http).fetchDeals('us', WINDOW)).rejects.toThrow(
+      '缺可用的 deal_id',
+    );
+  });
+
+  it('⑨ 19 位数字串 ⇒ dealId / orderId 与输入逐位相等, 仅末位不同的两笔成交不撞号', async () => {
+    const shim = makeShim({
+      '/trade/deals': [
+        deal(),
+        deal({ deal_id: '1000000000000000002', order_id: '1000000000000000004' }),
+      ],
+      '/trade/orders': [COMBO_ORDER],
+    });
+    const adapter = makeAdapter(shim.http);
+    const deals = await adapter.fetchDeals('us', WINDOW);
+    expect(deals.map((d) => [d.dealId, d.orderId])).toEqual([
+      ['1000000000000000001', '1000000000000000002'],
+      ['1000000000000000002', '1000000000000000004'],
+    ]);
+    const [order] = await adapter.fetchOrders('us', WINDOW);
+    expect(order?.orderId).toBe('1000000000000000003');
   });
 
   it('⑤ shim 409 ⇒ BrokerAccountSelectionError (数据类, 不可重试)', async () => {
