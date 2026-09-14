@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { HOLDINGS_COPY, parseSymbol, TradeHistoryScreen } from '~/portfolio';
 import { Button, SafeAreaView } from '~/ui';
 
-// 标的交易历史动态路由（025 US3）。param `symbol` = canonical `cn:603915`（014 体例）→
+// 标的交易历史动态路由（025 US3）。param `symbol` = canonical `cn:ZQX`（014 体例）→
 // 解析 market/code；非法 symbol → 占位 + 返回（014 [symbol] 兜底同款）。屏体在 ~/portfolio。
 export default function TradeHistoryRoute() {
   const router = useRouter();

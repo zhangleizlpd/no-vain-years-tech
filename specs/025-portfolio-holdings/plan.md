@@ -138,7 +138,7 @@ ClosedPosition   @@map("closed_position") @@schema("portfolio")
 
 TradeRecord      @@map("trade_record") @@schema("portfolio")
   id | accountId | market VarChar(4)? | code VarChar(16)?（资金行 null）| name VarChar(128)?（XD 前缀保留）
-  category VarChar(16)（normalized enum，见下）| tradeDate Date | tradeTime VarChar(8)?（'14:53:27'，资金行 null）
+  category VarChar(16)（normalized enum，见下）| tradeDate Date | tradeTime VarChar(8)?（'10:21:09'，资金行 null；2026-09-14 amend：示例值改为合成值，原因：公开仓不收录个人金融业务数据，见 information-boundary）
   qty Decimal(18,4)? | price Decimal(18,6)? | amount Decimal(18,2)（发生金额，signed）
   turnover Decimal(18,2)?（成交金额）| fee Decimal(18,2)? | note VarChar(256)?
   raw Json | createdAt
@@ -166,7 +166,7 @@ TradeRecord      @@map("trade_record") @@schema("portfolio")
 
 ### Mobile side（`src/portfolio/` + 2 路由 + 工具栏改造；mockup = design/handoff-claude-design/）
 
-- **路由**：`app/(app)/portfolio/holdings.tsx`（薄 route → `HoldingsScreen`）+ `app/(app)/portfolio/trades/[symbol].tsx`（薄 route，`parseSymbol` 复用 014 canonical `cn:603915` 体例 → `TradeHistoryScreen`）。
+- **路由**：`app/(app)/portfolio/holdings.tsx`（薄 route → `HoldingsScreen`）+ `app/(app)/portfolio/trades/[symbol].tsx`（薄 route，`parseSymbol` 复用 014 canonical `cn:ZQX` 体例 → `TradeHistoryScreen`）。（2026-09-14 amend：示例代码改为合成代码，原因同上）
 - **屏体**（`src/portfolio/`）：`holdings-screen.tsx`（汇总条/双 tab/三变体）+ `trade-history-screen.tsx`（持仓摘要条/倒序流水/月份吸顶）+ `holdings.helpers.ts` 纯函数（浮动盈亏=(现价−unitCost)×qty、总市值聚合、月份分组——vitest 主战场）。视觉按 mockup 翻 RN：复用 `~/theme` token（盈亏色 = `quote.up/down/flat`）+ `~/ui`（MarketBadge / SafeAreaView / Spinner）。
 - **hooks**：`use-holdings.ts` / `use-trades.ts`（orval 生成 hook + React Query）；现价/浮动盈亏 = `use-quote-merge` 既有 hook 对 current 列表二次 merge（013 先例，禁 detail N+1）。
 - **工具栏入口**：`watchlist-main-screen.tsx` 顶部工具栏 bell 旁加钱包 icon（mockup 位序：搜索→铃铛→持仓→消息）→ `router.push('/(app)/portfolio/holdings')`。

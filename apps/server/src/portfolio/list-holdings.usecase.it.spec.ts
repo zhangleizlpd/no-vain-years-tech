@@ -24,12 +24,12 @@ describe('ListHoldingsUseCase (Testcontainers PG)', () => {
     importUC = new ImportHoldingsUseCase(prisma);
     listUC = new ListHoldingsUseCase(prisma);
 
-    // 603915 注册 (quotable true), 601177 故意不注册 (quotable false 降级行)。
+    // ZQX 注册 (quotable true), ZQY 故意不注册 (quotable false 降级行)。
     await prisma.instrument.create({
       data: {
         market: 'cn',
-        code: '603915',
-        name: '国茂股份',
+        code: 'ZQX',
+        name: '合成甲股份',
         type: 'stock',
         currency: 'CNY',
         status: 'active',
@@ -51,42 +51,42 @@ describe('ListHoldingsUseCase (Testcontainers PG)', () => {
     const res = await listUC.execute(accountId);
     expect(res.asOf).toBe(ASOF);
 
-    // current 按 weightPct desc: 601177 (0.66) > 603915 (0.16)。
-    expect(res.current.map((h) => h.code)).toEqual(['601177', '603915']);
-    const gm = res.current[1]!;
-    expect(gm).toMatchObject({
+    // current 按 weightPct desc: ZQY (0.7) > ZQX (0.3)。
+    expect(res.current.map((h) => h.code)).toEqual(['ZQY', 'ZQX']);
+    const main = res.current[1]!;
+    expect(main).toMatchObject({
       market: 'cn',
-      code: '603915',
-      name: '国茂股份',
-      qty: '2000',
-      unitCost: '15.883',
-      weightPct: '0.16',
-      holdDays: 5,
-      cumPnl: '17000.55',
-      cumPnlPct: '0.1022',
+      code: 'ZQX',
+      name: '合成甲股份',
+      qty: '1400',
+      unitCost: '13.45',
+      weightPct: '0.3',
+      holdDays: 8,
+      cumPnl: '2345.6',
+      cumPnlPct: '0.1319',
       quotable: true,
     });
-    expect(gm.id).toMatch(/^\d+$/);
-    // 601177 未注册 → quotable false; `--` 列 → null 穿透。
-    const hc = res.current[0]!;
-    expect(hc.quotable).toBe(false);
-    expect(hc.cumPnl).toBeNull();
-    expect(hc.cumPnlPct).toBeNull();
+    expect(main.id).toMatch(/^\d+$/);
+    // ZQY 未注册 → quotable false; `--` 列 → null 穿透。
+    const second = res.current[0]!;
+    expect(second.quotable).toBe(false);
+    expect(second.cumPnl).toBeNull();
+    expect(second.cumPnlPct).toBeNull();
 
     expect(res.closed).toHaveLength(1);
     expect(res.closed[0]).toMatchObject({
       market: 'cn',
-      code: '603915',
-      name: '国茂股份',
-      openDate: '2025-08-27',
-      closeDate: '2026-05-11',
-      buyAvg: '15.76',
-      sellAvg: '17.26',
-      totalPnl: '15900.35',
-      totalPnlPct: '0.096',
-      fee: '133.25',
-      indexPct: '0.0922',
-      vsIndexPct: '0.0038',
+      code: 'ZQX',
+      name: '合成甲股份',
+      openDate: '2025-09-16',
+      closeDate: '2025-12-18',
+      buyAvg: '10.4',
+      sellAvg: '11.35',
+      totalPnl: '2018.12',
+      totalPnlPct: '0.0941',
+      fee: '16.88',
+      indexPct: '0.0353',
+      vsIndexPct: '0.0588',
     });
   });
 

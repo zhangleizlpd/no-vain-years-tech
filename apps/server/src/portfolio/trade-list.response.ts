@@ -13,14 +13,14 @@ export class TradeItem {
   @ApiProperty({ description: '市场 (V1 cn)', example: 'cn' })
   market!: string;
 
-  @ApiProperty({ description: '标的代码', example: '603915' })
+  @ApiProperty({ description: '标的代码', example: 'ZQX' })
   code!: string;
 
   @ApiProperty({
     description: '标的名称 (XD 前缀保留不清洗); 文件缺失为 null',
     nullable: true,
     type: 'string',
-    example: 'XD国茂股份',
+    example: 'XD合成甲股份',
   })
   name!: string | null;
 
@@ -31,14 +31,14 @@ export class TradeItem {
   })
   category!: TradeCategory;
 
-  @ApiProperty({ description: '成交日期 YYYY-MM-DD', example: '2025-08-27' })
+  @ApiProperty({ description: '成交日期 YYYY-MM-DD', example: '2025-09-16' })
   tradeDate!: string;
 
   @ApiProperty({
     description: "成交时间 'HH:mm:ss'; 文件缺失为 null",
     nullable: true,
     type: 'string',
-    example: '14:53:27',
+    example: '10:21:09',
   })
   tradeTime!: string | null;
 
@@ -46,7 +46,7 @@ export class TradeItem {
     description: '成交数量 (Decimal string); 文件缺失为 null',
     nullable: true,
     type: 'string',
-    example: '6200',
+    example: '1700',
   })
   qty!: string | null;
 
@@ -54,18 +54,18 @@ export class TradeItem {
     description: '成交价格 (Decimal string); 文件缺失为 null',
     nullable: true,
     type: 'string',
-    example: '16.12',
+    example: '10.4',
   })
   price!: string | null;
 
-  @ApiProperty({ description: '发生金额 (signed, Decimal string)', example: '-99900.99' })
+  @ApiProperty({ description: '发生金额 (signed, Decimal string)', example: '-17685.3' })
   amount!: string;
 
   @ApiProperty({
     description: '成交金额 (Decimal string); 文件缺失为 null',
     nullable: true,
     type: 'string',
-    example: '99900',
+    example: '17680',
   })
   turnover!: string | null;
 
@@ -73,7 +73,7 @@ export class TradeItem {
     description: '费用 (Decimal string); 文件缺失为 null',
     nullable: true,
     type: 'string',
-    example: '10.99',
+    example: '5.3',
   })
   fee!: string | null;
 

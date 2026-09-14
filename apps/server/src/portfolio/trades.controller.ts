@@ -70,7 +70,7 @@ export class TradesController {
   @SkipThrottle(EXISTING_BUCKETS)
   @Throttle({ 'portfolio-holdings-read-account': { limit: 120, ttl: 60_000 } })
   @ApiQuery({ name: 'market', description: '市场 (V1 仅 cn)', example: 'cn' })
-  @ApiQuery({ name: 'code', description: '标的代码', example: '603915' })
+  @ApiQuery({ name: 'code', description: '标的代码', example: 'ZQX' })
   @ApiOperation({
     summary: 'List trades of one instrument (EP3)',
     description:

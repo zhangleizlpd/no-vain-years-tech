@@ -16,17 +16,17 @@
  */
 import { join } from 'node:path';
 import type { CellValue } from '../holdings-import.rules';
-import { buildHoldingsXlsx } from './build-holdings-xlsx';
+import { FIXTURE_INSTRUMENTS, buildHoldingsXlsx } from './build-holdings-xlsx';
 
 export const SYNTHETIC_HOLDINGS_XLSX_PATH = join(__dirname, 'synthetic-holdings.xlsx');
 
-/** 流水全量 9 条、同时持仓 + 已清仓的合成标的 (EP3 等值查询锚)。 */
-export const SYNTHETIC_CODE_MAIN = 'ZQX';
-export const SYNTHETIC_NAME_MAIN = '合成甲股份';
+/** 流水全量 9 条、同时持仓 + 已清仓的合成标的 (EP3 等值查询锚)。标识单源于 builder `FIXTURE_INSTRUMENTS`。 */
+export const SYNTHETIC_CODE_MAIN = FIXTURE_INSTRUMENTS.main.code;
+export const SYNTHETIC_NAME_MAIN = FIXTURE_INSTRUMENTS.main.name;
 
 const X = [SYNTHETIC_CODE_MAIN, SYNTHETIC_NAME_MAIN] as const;
-const Y = ['ZQY', '合成乙科技'] as const;
-const R = ['ZQR', '合成逆回购'] as const;
+const Y = [FIXTURE_INSTRUMENTS.second.code, FIXTURE_INSTRUMENTS.second.name] as const;
+const R = [FIXTURE_INSTRUMENTS.repo.code, FIXTURE_INSTRUMENTS.repo.name] as const;
 
 // prettier-ignore
 export const SYNTHETIC_HOLDING_ROWS: CellValue[][] = [

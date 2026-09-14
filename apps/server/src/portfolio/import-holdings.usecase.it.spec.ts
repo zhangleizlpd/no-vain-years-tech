@@ -30,12 +30,12 @@ describe('ImportHoldingsUseCase (Testcontainers PG)', () => {
     prisma = new PrismaService(url);
     uc = new ImportHoldingsUseCase(prisma);
 
-    // 注册 builder fixture 的两只持仓标的 (quotable 批查正例); GC001 故意不注册。
+    // 注册 builder fixture 的两只持仓标的 (quotable 批查正例); ZQR 故意不注册。
     await prisma.instrument.createMany({
       data: (
         [
-          ['603915', '国茂股份'],
-          ['601177', '杭齿前进'],
+          ['ZQX', '合成甲股份'],
+          ['ZQY', '合成乙科技'],
         ] as const
       ).map(([code, name]) => ({
         market: 'cn',
@@ -137,13 +137,13 @@ describe('ImportHoldingsUseCase (Testcontainers PG)', () => {
     const accountId = nextAccountId();
     // prettier-ignore
     const unknownTrade: CellValue[] = [
-      '2026-01-05', '09:31:00', '603915', '国茂股份', '红利入账', '0', '0', '88', '88', '0', '',
+      '2026-01-05', '09:31:00', 'ZQX', '合成甲股份', '红利入账', '0', '0', '88', '88', '0', '',
     ];
     const buf = await buildHoldingsXlsx({ tradeRows: [...FIXTURE_TRADE_ROWS, unknownTrade] });
     const summary = await uc.execute(accountId, buf, ASOF);
 
-    // 601177 行 累计盈亏/累计盈亏率 为 `--` → null 落库 (行不丢)。
-    const degraded = await prisma.holding.findFirst({ where: { accountId, code: '601177' } });
+    // ZQY 行 累计盈亏/累计盈亏率 为 `--` → null 落库 (行不丢)。
+    const degraded = await prisma.holding.findFirst({ where: { accountId, code: 'ZQY' } });
     expect(degraded).not.toBeNull();
     expect(degraded!.cumPnl).toBeNull();
     expect(degraded!.cumPnlPct).toBeNull();
@@ -159,16 +159,16 @@ describe('ImportHoldingsUseCase (Testcontainers PG)', () => {
     expect((unknownRow!.raw as Record<string, string>)['交易类别']).toBe('红利入账');
   });
 
-  it('quotable 批查: 已注册标的 true / 未注册 GC001 false (plan D2 Q7-B)', async () => {
+  it('quotable 批查: 已注册标的 true / 未注册 ZQR false (plan D2 Q7-B)', async () => {
     const accountId = nextAccountId();
-    const gc001: CellValue[] = Array.from({ length: 27 }, () => '');
-    gc001[0] = 'GC001';
-    gc001[1] = '国债逆回购';
-    gc001[16] = '0.05'; // 仓位占比
-    gc001[17] = '10000'; // 持有数量
-    gc001[21] = '100'; // 单位成本
+    const repo: CellValue[] = Array.from({ length: 27 }, () => '');
+    repo[0] = 'ZQR';
+    repo[1] = '合成逆回购';
+    repo[16] = '0.045'; // 仓位占比
+    repo[17] = '10000'; // 持有数量
+    repo[21] = '100'; // 单位成本
     const buf = await buildHoldingsXlsx({
-      holdingRows: [...FIXTURE_HOLDING_ROWS, gc001],
+      holdingRows: [...FIXTURE_HOLDING_ROWS, repo],
     });
     const summary = await uc.execute(accountId, buf, ASOF);
     expect(summary.holdings.imported).toBe(3);
@@ -176,8 +176,8 @@ describe('ImportHoldingsUseCase (Testcontainers PG)', () => {
     const byCode = new Map(
       (await prisma.holding.findMany({ where: { accountId } })).map((r) => [r.code, r.quotable]),
     );
-    expect(byCode.get('603915')).toBe(true);
-    expect(byCode.get('601177')).toBe(true);
-    expect(byCode.get('GC001')).toBe(false);
+    expect(byCode.get('ZQX')).toBe(true);
+    expect(byCode.get('ZQY')).toBe(true);
+    expect(byCode.get('ZQR')).toBe(false);
   });
 });

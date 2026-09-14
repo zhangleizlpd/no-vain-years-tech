@@ -55,20 +55,20 @@ describe('ListTradesUseCase (Testcontainers PG)', () => {
     expect(keys).toEqual(sorted);
   });
 
-  it('builder fixture: 3 笔 603915 倒序 + XD 原始名保留', async () => {
+  it('builder fixture: 3 笔 ZQX 倒序 + XD 原始名保留', async () => {
     const accountId = nextAccountId();
     await importUC.execute(accountId, await buildHoldingsXlsx(), ASOF);
 
-    const { items } = await listUC.execute(accountId, 'cn', '603915');
+    const { items } = await listUC.execute(accountId, 'cn', 'ZQX');
     expect(items.map((t) => t.category)).toEqual(['sell', 'xd', 'buy']);
-    expect(items.map((t) => t.tradeDate)).toEqual(['2026-05-11', '2025-10-23', '2025-08-27']);
-    expect(items[1]!.name).toBe('XD国茂股份'); // XD 前缀保留不清洗
+    expect(items.map((t) => t.tradeDate)).toEqual(['2025-12-18', '2025-11-06', '2025-09-16']);
+    expect(items[1]!.name).toBe('XD合成甲股份'); // XD 前缀保留不清洗
     expect(items[2]).toMatchObject({
-      qty: '6200',
-      price: '16.12',
-      amount: '-99900.99',
-      turnover: '99900',
-      fee: '10.99',
+      qty: '1700',
+      price: '10.4',
+      amount: '-17685.3',
+      turnover: '17680',
+      fee: '5.3',
       note: null,
     });
   });
@@ -86,8 +86,8 @@ describe('ListTradesUseCase (Testcontainers PG)', () => {
     const cashRows = await prisma.tradeRecord.findMany({ where: { accountId, code: null } });
     expect(cashRows).toHaveLength(1);
     expect(cashRows[0]!.category).toBe('cash');
-    // … 但任何标的等值查询都不返回它 (全量扫一遍 603915 结果无 null code 行)。
-    const { items } = await listUC.execute(accountId, 'cn', '603915');
-    expect(items.every((t) => t.code === '603915')).toBe(true);
+    // … 但任何标的等值查询都不返回它 (全量扫一遍 ZQX 结果无 null code 行)。
+    const { items } = await listUC.execute(accountId, 'cn', 'ZQX');
+    expect(items.every((t) => t.code === 'ZQX')).toBe(true);
   });
 });

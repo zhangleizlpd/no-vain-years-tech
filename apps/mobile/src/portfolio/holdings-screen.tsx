@@ -165,7 +165,7 @@ export function HoldingsScreen() {
     );
   }
 
-  // 行点入标的交易历史（canonical `cn:603915` 体例，014 同款）。
+  // 行点入标的交易历史（canonical `cn:ZQX` 体例，014 同款）。
   const openTrades = (market: string, code: string) =>
     router.push(`/(app)/portfolio/trades/${market}:${code}`);
 

@@ -22,7 +22,7 @@ function holdingRow(code: string, name: string, weight: string, qty: string): Ce
   return row;
 }
 
-// 025 T007 US4: 持仓组派生改读路径 (D1) — 导入→组员/GC001 不进组/重导清空/未导入恒空/
+// 025 T007 US4: 持仓组派生改读路径 (D1) — 导入→组员/未注册标的不进组/重导清空/未导入恒空/
 // 写保护零回归。Testcontainers PG。run via `nx test server <file>` (cwd=apps/server)。
 describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
   let prisma: PrismaService;
@@ -44,12 +44,12 @@ describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
     groupsUC = new ListWatchlistGroupsUseCase(prisma);
     addUC = new AddWatchlistItemUseCase(prisma, itemsUC);
 
-    // fixture 两只注册 (quotable true); GC001 / 600519 故意不注册。
+    // fixture 两只注册 (quotable true); ZQR / 600519 故意不注册。
     await prisma.instrument.createMany({
       data: (
         [
-          ['603915', '国茂股份'],
-          ['601177', '杭齿前进'],
+          ['ZQX', '合成甲股份'],
+          ['ZQY', '合成乙科技'],
         ] as const
       ).map(([code, name]) => ({
         market: 'cn',
@@ -69,22 +69,22 @@ describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
 
   const nextAccountId = (): bigint => BigInt(995_000 + ++seq);
 
-  /** 默认 2 行 + GC001 (未注册) — 组员应只剩 quotable 两只, weightPct desc。 */
-  const importWithGc001 = async (accountId: bigint) =>
+  /** 默认 2 行 + ZQR (未注册) — 组员应只剩 quotable 两只, weightPct desc。 */
+  const importWithRepo = async (accountId: bigint) =>
     importUC.execute(
       accountId,
       await buildHoldingsXlsx({
-        holdingRows: [...FIXTURE_HOLDING_ROWS, holdingRow('GC001', '国债逆回购', '0.05', '10000')],
+        holdingRows: [...FIXTURE_HOLDING_ROWS, holdingRow('ZQR', '合成逆回购', '0.045', '10000')],
       }),
       ASOF,
     );
 
-  it('导入后持仓组成员 = quotable 持仓集合 (weightPct desc), GC001 不进组 (SC-003)', async () => {
+  it('导入后持仓组成员 = quotable 持仓集合 (weightPct desc), 未注册 ZQR 不进组 (SC-003)', async () => {
     const accountId = nextAccountId();
-    await importWithGc001(accountId);
+    await importWithRepo(accountId);
 
     const { items } = await itemsUC.execute(accountId, 'holdings');
-    expect(items.map((i) => i.code)).toEqual(['601177', '603915']); // 0.66 > 0.16
+    expect(items.map((i) => i.code)).toEqual(['ZQY', 'ZQX']); // 0.7 > 0.3
     expect(items.map((i) => i.order)).toEqual([0, 1]);
     items.forEach((i) => {
       expect(i.groupId).toBe('holdings');
@@ -102,14 +102,14 @@ describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
 
   it('materialized 真实组行: 数字 groupId 同样派生 + itemCount 同源', async () => {
     const accountId = nextAccountId();
-    await importWithGc001(accountId);
+    await importWithRepo(accountId);
     // 触发 materialize-on-first-write (建系统组真实行)。
-    await addUC.execute(accountId, 'watchlist', 'cn', '603915');
+    await addUC.execute(accountId, 'watchlist', 'cn', 'ZQX');
 
     const row = await prisma.group.findFirst({ where: { accountId, systemKind: 'holdings' } });
     expect(row).not.toBeNull();
     const { items } = await itemsUC.execute(accountId, row!.id.toString());
-    expect(items.map((i) => i.code)).toEqual(['601177', '603915']);
+    expect(items.map((i) => i.code)).toEqual(['ZQY', 'ZQX']);
     expect(items[0]!.groupId).toBe(row!.id.toString());
 
     const { groups } = await groupsUC.execute(accountId);
@@ -120,7 +120,7 @@ describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
 
   it('重导清空: 持仓 sheet 空 → 组员清空 + itemCount 0 (SC-003)', async () => {
     const accountId = nextAccountId();
-    await importWithGc001(accountId);
+    await importWithRepo(accountId);
     expect((await itemsUC.execute(accountId, 'holdings')).items).toHaveLength(2);
 
     await importUC.execute(accountId, await buildHoldingsXlsx({ holdingRows: [] }), ASOF);
@@ -131,11 +131,11 @@ describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
 
   it('qty=0 行不进组 (qty>0 派生谓词)', async () => {
     const accountId = nextAccountId();
-    // 唯一持仓行 = 已注册标的 601177 但 qty=0 (quotable true) → 派生组仍空。
+    // 唯一持仓行 = 已注册标的 ZQY 但 qty=0 (quotable true) → 派生组仍空。
     await importUC.execute(
       accountId,
       await buildHoldingsXlsx({
-        holdingRows: [holdingRow('601177', '杭齿前进', '0', '0')],
+        holdingRows: [holdingRow('ZQY', '合成乙科技', '0', '0')],
       }),
       ASOF,
     );
@@ -151,7 +151,7 @@ describe('Watchlist holdings-group derivation (Testcontainers PG)', () => {
 
   it('写保护不动: add 持仓组仍 422 HOLDINGS_GROUP_READONLY (FR-009, 013 套件另覆盖 update/delete)', async () => {
     const accountId = nextAccountId();
-    await importWithGc001(accountId);
+    await importWithRepo(accountId);
     await expect(addUC.execute(accountId, 'holdings', 'cn', '600519')).rejects.toBeInstanceOf(
       HoldingsGroupReadonlyException,
     );
