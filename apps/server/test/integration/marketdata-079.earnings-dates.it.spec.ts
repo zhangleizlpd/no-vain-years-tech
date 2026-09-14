@@ -1784,6 +1784,61 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
     expect((await eventOf(noProfile.id)).status).toBe('confirmed');
     expect(run).toMatchObject({ status: 'partial', failed: 1 });
   });
+
+  // 2026-09-14 prod hk:00939 形态 (FR-015 / FR-028): 回填时无财年档案 ⇒ 刊发事实落 D: 键, 富途事件是 T: 键,
+  // 两边永远对不上; 后补档案后 T: 事件过公布日曾被成批判逾期、标红。
+  it('⑥ 后补财年档案的标的: 过公布日 2 个交易日的 T: 键未刊发事件 (同日刊发事实在 D: 键) ⇒ 非 overdue、🚫 计失败、overdueUnjudged 计数; 同轮 P: 键对照已迁入 overdue', async () => {
+    const [control, ccb] = await Promise.all(['00688', '00939'].map((c) => instrument('hk', c)));
+    await seedProfile(control.id);
+    const unaligned = 'T:futu_calendar:2026 Q2';
+    const futu: Round = {
+      current: {
+        observations: [
+          obs(control.id, 'structured', '2026-09-01'),
+          {
+            ...obs(ccb.id, 'structured', '2026-09-01'),
+            periodKey: unaligned,
+            reportKind: null,
+            periodEnd: null,
+            periodText: '2026 Q2',
+          },
+        ],
+      },
+    };
+    const useCase = buildMerge(futu, { current: {} });
+
+    // 首轮 (公布日当天) 尚无档案: 标题不带期末日的刊发事实落 D: 键、已刊发。
+    await announce(ccb.id, '2026-09-01', '2026年中期業績公告', ['fs_main']);
+    await dimensionRun(useCase, '2026-09-01');
+    expect(await eventOf(ccb.id, 'D:hkex_announcement:2026-09-01')).toMatchObject({
+      status: 'published',
+    });
+    expect((await eventOf(ccb.id, unaligned)).status).toBe('confirmed');
+
+    await seedProfile(ccb.id);
+    const run = await dimensionRun(useCase, '2026-09-03');
+
+    // 先断言正向: 同轮 P: 键对照迁入 overdue 且计 1 次失败 —— 证明本轮逾期判定确实在跑。
+    expect((await eventOf(control.id)).status).toBe('overdue');
+    expect(runSteps(run, 'earnings_date_overdue')).toEqual([
+      expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:00688' }) }),
+    ]);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+
+    expect(await eventOf(ccb.id, unaligned)).toMatchObject({
+      status: 'confirmed',
+      overdueSince: null,
+    });
+    expect(runSteps(run, 'earnings_date_unaligned')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({
+          overdueUnjudged: 1,
+          overdueUnjudgedSamples: [`hk:00939 ${unaligned}`],
+        }),
+      }),
+    ]);
+  });
 });
 
 // T019 清单失败、陈旧与日历不可判 (FR-025 / SC-012, plan §D12 #21 #22; Edge 13): 飞书标红面端到端。

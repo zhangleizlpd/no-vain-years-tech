@@ -679,6 +679,75 @@ describe('逾期未刊发: 解除 / 财年档案 / 判定范围 (FR-019a / FR-02
   });
 });
 
+describe('逾期未刊发: 只判期末日对齐键 (FR-015 / FR-028; 2026-09-14 prod hk:00939 后补财年档案)', () => {
+  it.each(['T:futu_calendar:2025Q3', 'D:hkex_announcement:2025-10-30'])(
+    '🚨 %s: 有财年档案 + 满 2 个交易日 + 未刊发 ⇒ 不迁入 overdue、0 条计失败 finding、记非对齐',
+    (periodKey) => {
+      const r = mergeEarningsDateEvent(
+        pastEvent({
+          periodKey,
+          elapsedTradingDays: elapsed('2026-09-11', 2),
+          existing: existingConfirmedPast,
+        }),
+      );
+      expect(r.event).toMatchObject({ status: 'confirmed', overdueSince: null });
+      expect(r.findings.filter((f) => f.countsAsFailure)).toEqual([]);
+      expect(r.findings).toEqual([]);
+      expect(r).toMatchObject({ overdueUnaligned: true, fiscalProfileMissing: false });
+    },
+  );
+
+  it('对照 P:2025-09-30 同输入 ⇒ 仍迁入 overdue + 计失败 finding (逾期未被整体关掉)', () => {
+    const r = mergeEarningsDateEvent(
+      pastEvent({
+        periodKey: 'P:2025-09-30',
+        elapsedTradingDays: elapsed('2026-09-11', 2),
+        existing: existingConfirmedPast,
+      }),
+    );
+    expect(r.event).toMatchObject({ status: 'overdue', overdueSince: RUN_AT });
+    expect(r.findings.filter((f) => f.countsAsFailure)).toHaveLength(1);
+    expect(r.overdueUnaligned).toBe(false);
+  });
+
+  it('判定顺序: 日历不可判 / 未到期先于键形态; 键形态先于财年档案 (无档案的非对齐键 🚫 报财年未知)', () => {
+    const key = 'T:futu_calendar:2025Q3';
+    const noProfile = mergeEarningsDateEvent(
+      pastEvent({
+        periodKey: key,
+        elapsedTradingDays: elapsed('2026-09-11', 2),
+        hasFiscalProfile: false,
+      }),
+    );
+    expect(noProfile.event.status).toBe('confirmed');
+    expect(noProfile).toMatchObject({ overdueUnaligned: true, fiscalProfileMissing: false });
+
+    const notDue = mergeEarningsDateEvent(
+      pastEvent({ periodKey: key, elapsedTradingDays: elapsed('2026-09-11', 1) }),
+    );
+    expect(notDue).toMatchObject({ overdueUnaligned: false, findings: [] });
+
+    const unknown = mergeEarningsDateEvent(
+      pastEvent({ periodKey: key, elapsedTradingDays: elapsed('2026-09-11', null) }),
+    );
+    expect(unknown.overdueUnaligned).toBe(false);
+    expect(unknown.findings.map((f) => f.step)).toEqual(['earnings_date_calendar_unknown']);
+  });
+
+  it('既有 overdue 的非对齐事件 ⇒ 保持原状 (不凭空解除)、0 条 finding', () => {
+    const r = mergeEarningsDateEvent(
+      pastEvent({
+        periodKey: 'D:hkex_announcement:2025-10-30',
+        elapsedTradingDays: elapsed('2026-09-11', 5),
+        existing: existingOverdue,
+      }),
+    );
+    expect(r.event).toMatchObject({ status: 'overdue', overdueSince });
+    expect(r.findings).toEqual([]);
+    expect(r.overdueUnaligned).toBe(true);
+  });
+});
+
 describe('清单行提前消失 (FR-016)', () => {
   const listedEvent = (
     presence: ListingPresence,
