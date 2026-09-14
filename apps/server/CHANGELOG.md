@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.51.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.51.0...server-v0.51.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **marketdata:** 079 公告来源回填按日期分片载入并复用同窗读取 消除整窗双载 OOM 风险 ([#409](https://github.com/zhangleizlpd/no-vain-years-tech/issues/409)) ([2c2f923](https://github.com/zhangleizlpd/no-vain-years-tech/commit/2c2f92356da9c290c12a30bc06eb391254cd223d))
+
 ## [0.51.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.50.0...server-v0.51.0) (2026-09-14)
 
 
