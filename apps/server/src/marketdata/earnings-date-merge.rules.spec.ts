@@ -755,7 +755,7 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
   const undatedInput = (overrides: Partial<NoticeUndatedInput>): NoticeUndatedInput => ({
     noticeSignals: [notice('2026-09-01')],
     latestFilingDate: '2026-08-20',
-    hasUnpublishedDatedEvent: false,
+    unpublishedEventDates: [],
     everListed: true,
     hasFiscalProfile: true,
     capabilities: HK_CAPS,
@@ -798,6 +798,30 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     expect(r.findings).toEqual([]);
   });
 
+  it('🚨 该标的有公布日早于通知日的长期 overdue 事件 (期间空白 D: 键) + 新通知满 2 个交易日无日期 ⇒ 迁入 notified_undated', () => {
+    const r = judgeNoticeUndated(undatedInput({ unpublishedEventDates: ['2026-03-20'] }));
+    expect(r.status).toBe('notified_undated');
+    expect(r.findings).toMatchObject([
+      {
+        step: 'earnings_notice_undated',
+        countsAsFailure: true,
+        detail: { noticeDate: '2026-09-01' },
+      },
+    ]);
+  });
+
+  it.each([
+    ['公布日晚于通知日', '2026-09-18'],
+    ['公布日 = 通知日', '2026-09-01'],
+  ])('%s的未刊发事件 ⇒ 日期已由它给出, 不判', (_label, date) => {
+    const r = judgeNoticeUndated(
+      undatedInput({ unpublishedEventDates: ['2026-03-20', date], elapsedTradingDays: null }),
+    );
+    expect(r.status).toBeNull();
+    expect(r.findings).toEqual([]);
+    expect(r.neverListedUndated).toBe(false);
+  });
+
   it('只过 1 个交易日 ⇒ 不判', () => {
     const r = judgeNoticeUndated(undatedInput({ elapsedTradingDays: elapsed('2026-09-01', 1) }));
     expect(r.status).toBeNull();
@@ -831,7 +855,7 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
 
   it('之后任一来源给出日期 ⇒ 占位事件迁为 superseded (🚫 删除); 该事件的确认日期取通知刊发日', () => {
     const r = judgeNoticeUndated(
-      undatedInput({ existingStatus: 'notified_undated', hasUnpublishedDatedEvent: true }),
+      undatedInput({ existingStatus: 'notified_undated', unpublishedEventDates: ['2026-10-15'] }),
     );
     expect(r.status).toBe('superseded');
     expect(r.findings).toEqual([]);

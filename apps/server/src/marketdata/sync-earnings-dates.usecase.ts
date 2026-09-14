@@ -3,6 +3,7 @@ import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../security/prisma.service.js';
 import { EarningsCalendarBudgetExhaustedError } from './earnings-calendar.port.js';
 import {
+  hasDatedEventForNotice,
   isNoticeUndatedPlaceholder,
   judgeNoticeUndated,
   mergeEarningsDateEvent,
@@ -408,6 +409,7 @@ interface UndatedScanEvent {
   readonly periodKey: string;
   readonly status: string;
   readonly announceDate: Date | null;
+  readonly conflictCandidates: Prisma.JsonValue | null;
   readonly revision: number;
 }
 
@@ -1253,16 +1255,32 @@ export class SyncEarningsDatesUseCase {
   ): Promise<{ written: boolean; result: NoticeUndatedResult }> {
     const events: UndatedScanEvent[] = await this.prisma.earningsDateEvent.findMany({
       where: { instrumentId },
-      select: { id: true, periodKey: true, status: true, announceDate: true, revision: true },
+      select: {
+        id: true,
+        periodKey: true,
+        status: true,
+        announceDate: true,
+        conflictCandidates: true,
+        revision: true,
+      },
     });
     const regular = events.filter((e) => !isNoticeUndatedPlaceholder(e.periodKey));
     const placeholder =
       events.find(
         (e) => isNoticeUndatedPlaceholder(e.periodKey) && e.status === 'notified_undated',
       ) ?? null;
-    const hasUnpublishedDatedEvent = regular.some(
-      (e) => e.status !== 'published' && (e.announceDate !== null || e.status === 'conflict'),
-    );
+    // 冲突事件无单一公布日 ⇒ 取候选日期中最晚者。
+    const unpublishedEventDates = regular.flatMap((e) => {
+      if (e.status === 'published') return [];
+      const date =
+        isoDate(e.announceDate) ??
+        (storedCandidates(e.conflictCandidates) ?? [])
+          .map((c) => c.date)
+          .sort()
+          .pop() ??
+        null;
+      return date === null ? [] : [date];
+    });
     const latestFilingDate =
       (ctx.filings.get(instrumentId) ?? [])
         .map((f) => f.date)
@@ -1273,12 +1291,12 @@ export class SyncEarningsDatesUseCase {
     const result = judgeNoticeUndated({
       noticeSignals,
       latestFilingDate,
-      hasUnpublishedDatedEvent,
+      unpublishedEventDates,
       everListed,
       hasFiscalProfile: ctx.fiscalProfiles.has(instrumentId),
       capabilities: ctx.capabilities,
       elapsedTradingDays:
-        pending === null || hasUnpublishedDatedEvent
+        pending === null || hasDatedEventForNotice(unpublishedEventDates, pending.noticeDate)
           ? null
           : {
               from: pending.noticeDate,

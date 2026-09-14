@@ -744,8 +744,11 @@ export interface NoticeUndatedInput {
   readonly noticeSignals: readonly EarningsNoticeSignal[];
   /** 该标的最近一次刊发事实的刊发日；无则 null。不晚于它的通知已被那次刊发「用掉」。 */
   readonly latestFilingDate: string | null;
-  /** 该标的是否有任何**未刊发**且带公布日的事件 —— 有 ⇒ 日期已由那个事件给出。 */
-  readonly hasUnpublishedDatedEvent: boolean;
+  /**
+   * 该标的**未刊发**事件 (占位事件除外) 的公布日；冲突事件取候选日期中最晚者。只有不早于待判通知
+   * 刊发日的才算「日期已由那个事件给出」(见 {@link hasDatedEventForNotice})。
+   */
+  readonly unpublishedEventDates: readonly string[];
   /** 该标的是否曾有清单观测 (清单不覆盖的板块从未出现，FR-017)。 */
   readonly everListed: boolean;
   readonly hasFiscalProfile: boolean;
@@ -780,6 +783,19 @@ export function selectPendingNotice(
     (s) => latestFilingDate === null || dayNumber(s.noticeDate) > dayNumber(latestFilingDate),
   );
   return pending.sort((a, b) => a.noticeDate.localeCompare(b.noticeDate))[0] ?? null;
+}
+
+/**
+ * 通知的日期已由某个未刊发事件给出 = 有公布日 ≥ 通知刊发日的未刊发事件 (FR-017「通知之后仍无任何
+ * 来源给出日期」)。🚨 🚫 按「任一未刊发带日期事件」判：公布日早于通知的是更早一期 (如期间空白、
+ * 永远对不上刊发事实而长期逾期的 `D:` 键事件)，计入 ⇒ 该标的之后每份通知都判不成、静默漏报。
+ * 用例据同一函数决定是否数交易日 ({@link ElapsedTradingDays} 起算校验)。复杂度 O(n)。
+ */
+export function hasDatedEventForNotice(
+  unpublishedEventDates: readonly string[],
+  noticeDate: string,
+): boolean {
+  return unpublishedEventDates.some((d) => dayNumber(d) >= dayNumber(noticeDate));
 }
 
 function undatedLogs(
@@ -837,11 +853,11 @@ function undatedFindings(
 export function judgeNoticeUndated(input: NoticeUndatedInput): NoticeUndatedResult {
   const pendingNotice = selectPendingNotice(input.noticeSignals, input.latestFilingDate);
   const wasUndated = input.existingStatus === 'notified_undated';
-  // 无待判通知 ⇒ 无未知日期态 (公司不为该类报告发通知，Edge 15)；已有未刊发的带日期事件 ⇒
+  // 无待判通知 ⇒ 无未知日期态 (公司不为该类报告发通知，Edge 15)；已有公布日不早于通知的未刊发事件 ⇒
   // 日期已由那个事件给出，其确认日期经 120 天窗口取到该通知刊发日。
   const verdict =
     pendingNotice === null ||
-    input.hasUnpublishedDatedEvent ||
+    hasDatedEventForNotice(input.unpublishedEventDates, pendingNotice.noticeDate) ||
     !marketHasPublicationFact(input.capabilities)
       ? null
       : judgeElapsed(input.elapsedTradingDays, pendingNotice.noticeDate, input.hasFiscalProfile);
