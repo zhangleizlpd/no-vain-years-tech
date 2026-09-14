@@ -68,7 +68,7 @@ describe('017 marketdata scheduler schema expand (Testcontainers PG migrate depl
     expect(cols[0]?.is_nullable).toBe('YES');
   });
 
-  it('seed 31 边: universe→* 全 soft (含 039 5 + 040 2 + 041 4 + 042 3 + 043 2 港股维度 + 046 underlying_iv_daily + 047 option_contract/earnings_event) + profile→fundamental hard + corp→eod hard (019 T011) + option_contract→option_daily_snapshot hard (047 FR-031) + 066 港股三条', async () => {
+  it('seed 33 边: universe→* 全 soft (含 039 5 + 040 2 + 041 4 + 042 3 + 043 2 港股维度 + 046 underlying_iv_daily + 047 option_contract/earnings_event) + profile→fundamental hard + corp→eod hard (019 T011) + option_contract→option_daily_snapshot hard (047 FR-031) + 066 港股三条 + 079 hk_earnings_date 两条 soft', async () => {
     const edges = await prisma.$queryRawUnsafe<
       { upstream: string; downstream: string; mode: string }[]
     >(
@@ -76,6 +76,8 @@ describe('017 marketdata scheduler schema expand (Testcontainers PG migrate depl
        ORDER BY upstream, downstream`,
     );
     expect(edges).toEqual([
+      // 079 T016: 公告来源读 announcement 当天已采的行 ⇒ soft 入边 ('announcement' < 'corporate_action')。
+      { upstream: 'announcement', downstream: 'hk_earnings_date', mode: 'soft' },
       { upstream: 'corporate_action', downstream: 'eod_bar', mode: 'hard' }, // 019 T011 (FR-S08)。
       // 066 T04 / #210: 港股这条**由 hard 降 soft** —— 判据是「能不能补救」而非对称:
       // 美股有 OptionSnapshotRemediation 两级兜底, fail-closed 了还救得回来; 港股零补救且
@@ -99,6 +101,7 @@ describe('017 marketdata scheduler schema expand (Testcontainers PG migrate depl
       { upstream: 'universe', downstream: 'fund_company_holding', mode: 'soft' }, // 039 T001
       { upstream: 'universe', downstream: 'fund_holding', mode: 'soft' }, // 039 T001
       { upstream: 'universe', downstream: 'fundamental', mode: 'soft' },
+      { upstream: 'universe', downstream: 'hk_earnings_date', mode: 'soft' }, // 079 T016 ('fundamental' < 'hk_earnings_date' < 'hk_option_contract')
       // 🚨 066 hk_option_daily_snapshot 同样刻意**无 universe 入边** (理由同下面 047 那条)。
       { upstream: 'universe', downstream: 'hk_option_contract', mode: 'soft' }, // 066 T04 ('fundamental' < 'hk_*' < 'hot_snapshot')
       { upstream: 'universe', downstream: 'hk_underlying_iv_daily', mode: 'soft' }, // 066 T04
@@ -153,6 +156,6 @@ describe('017 marketdata scheduler schema expand (Testcontainers PG migrate depl
     // option_daily_snapshot / hk_option_daily_snapshot 刻意无 universe 入边, 两条
     // *_option_contract→*_option_daily_snapshot 是额外的 hard 边)。066 起边数 31 与维度数 31
     // 仍然相等, 但那是巧合 (各多 3), 派生会把巧合固化成假约束。
-    expect(await prisma.syncDependency.count()).toBe(31); // 017 seed 6 + 019 T011 corp→eod + 039 universe→5 港股维度 + 040 universe→volatility/hot_snapshot + 041 universe→4 事件流维度 + 042 universe→3 报告期维度 + 043 universe→2 分类文本维度 + 046 universe→underlying_iv_daily (us_index_daily 刻意无边) + 047 universe→option_contract/earnings_event + option_contract→option_daily_snapshot hard + 066 universe→hk_option_contract/hk_underlying_iv_daily + hk_option_contract→hk_option_daily_snapshot hard。
+    expect(await prisma.syncDependency.count()).toBe(33); // 079 universe/announcement→hk_earnings_date 两条 soft + 017 seed 6 + 019 T011 corp→eod + 039 universe→5 港股维度 + 040 universe→volatility/hot_snapshot + 041 universe→4 事件流维度 + 042 universe→3 报告期维度 + 043 universe→2 分类文本维度 + 046 universe→underlying_iv_daily (us_index_daily 刻意无边) + 047 universe→option_contract/earnings_event + option_contract→option_daily_snapshot hard + 066 universe→hk_option_contract/hk_underlying_iv_daily + hk_option_contract→hk_option_daily_snapshot hard。
   });
 });

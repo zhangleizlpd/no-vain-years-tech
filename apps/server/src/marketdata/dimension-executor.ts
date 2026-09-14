@@ -2,10 +2,8 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../security/prisma.service.js';
 import { anchorFactorsForInstrument } from './anchor-factors.js';
-import {
-  anchoredCodesForScope,
-  isAnchorScopedDimension,
-} from './anchor-scoped-dimensions.rules.js';
+import { isAnchorScopedDimension } from './anchor-scoped-dimensions.rules.js';
+import { loadAnchoredInstruments } from './anchored-instruments.query.js';
 import { BackfillPacer } from './backfill-pacer.js';
 import { CORPORATE_ACTION_PORT, type CorporateActionPort } from './corporate-action.port.js';
 import { EOD_BAR_PORT, type EodBarPort } from './eod-bar.port.js';
@@ -84,6 +82,8 @@ import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import type { OptionSnapshotPort } from './option-snapshot.port.js';
 import { SyncEarningsEventUseCase } from './sync-earnings-event.usecase.js';
 import type { EarningsCalendarPort } from './earnings-calendar.port.js';
+import { SyncEarningsDatesUseCase } from './sync-earnings-dates.usecase.js';
+import { SyncEarningsFiscalProfileUseCase } from './sync-earnings-fiscal-profile.usecase.js';
 
 /** 本维度 failed 达此阈值 → ERROR log 结构化告警 (016 FAILURE_ALERT_THRESHOLD 同值)。 */
 const FAILURE_ALERT_THRESHOLD = 3;
@@ -185,6 +185,13 @@ export const DIMENSION_KEYS = [
   // 它同为**锚作用域**维度, 已登记在 `anchor-scoped-dimensions.rules.ts` —— 漏登记不会红,
   // 表现是 21:40 那轮的工作集变成整个港股 universe。
   'hk_option_oi_settle',
+  // ── 079 T016 港股财报日期 (migration 20260914_1030_seed_hk_earnings_date_dimension, plan §D9) ──
+  // 🚨 **独立维度而非给 `earnings_event` 扩 scope** —— 上面 066 那段的同一条理由:
+  //    `exchangeCalendarDateForScope` 对 {us,hk} 直接 throw。
+  // 🚫 **不是锚作用域维度, 也不走 factExecutor**: 三个来源各自按市场取数 (富途市场级窗 / 本 ctx
+  //    公告表 / 清单整页), 工作集不是标的集 —— 挂锚闸只会复刻「零锚时静默不采」(`earnings_event`
+  //    那段的同一判据)。反向断言在 `anchor-scoped-dimensions.rules.spec.ts`。
+  'hk_earnings_date',
 ] as const;
 
 /** 维度键全集 (016 起; 017 executor 注册表/worker named job/tick won 集共用)。 */
@@ -367,39 +374,6 @@ export async function loadWorkingSet(
 
   return prisma.instrument.findMany({
     where: { market: { in: scope }, status: 'active', needSync: true },
-    select: { id: true, market: true, code: true },
-    orderBy: [{ syncTier: 'asc' }, { id: 'asc' }],
-  });
-}
-
-/**
- * 锚作用域维度的工作集 = scope 内**有锚**的在市标的。排序与另一支路逐字相同
- * (`syncTier` asc → id asc), 换判据不换消费顺序。
- *
- * 复杂度: 1 次锚表全量读 (只取 ticker 一列) + 1 次 `Instrument` 批查。
- */
-export async function loadAnchoredInstruments(
-  prisma: PrismaService,
-  scope: string[],
-): Promise<WorkingInstrument[]> {
-  // CROSS-CONTEXT-READ: 只读 optionsdesk.anchor 全量 ticker (catalog Q7-B 只读逃生口,
-  // ADR-0062 已记), 算 marketdata 自有的工作集。零写对方表、零 @Inject() 对方 use case
-  // —— 与 `anchor-driven-sync-gate.ts` / `sync-option-contract.usecase.ts` 是**同一条**既有
-  // 只读路径, 不开新口子 (护城河: NEVER 写 tx.<otherTable>.*)。
-  const anchors = await prisma.anchor.findMany({ select: { ticker: true } });
-  const byMarket = anchoredCodesForScope(
-    anchors.map((a) => a.ticker),
-    scope,
-  );
-  // 零锚 ⇒ 空工作集 (SC-002: 零对外请求且判定成功)。**必须提前返回** —— 空 `OR: []` 在
-  // Prisma 里匹配全表, 那会把「零锚」翻成「全量采」, 且不会红。
-  if (byMarket.size === 0) return [];
-
-  return prisma.instrument.findMany({
-    where: {
-      status: 'active',
-      OR: [...byMarket].map(([market, codes]) => ({ market, code: { in: codes } })),
-    },
     select: { id: true, market: true, code: true },
     orderBy: [{ syncTier: 'asc' }, { id: 'asc' }],
   });
@@ -874,6 +848,15 @@ export class DimensionExecutorRegistry {
       NULL_TRADING_CALENDAR,
       new SyncOptionSnapshotUseCase(NULL_OPTION_SNAPSHOT, prisma, NULL_TRADING_CALENDAR),
     ),
+    // 079 T016 港股财报日期 use case (尾部第 35 位, 同上四位的理由与默认值形态: 真实例 + **空来源
+    // 数组** + null-object 日历 ⇒ 不触及本维度的既有测试零改动通过, 跑到时零外呼)。
+    // 生产经 MarketdataModule DI 注真实例 (来源数组经 `EARNINGS_DATE_SOURCES` 装配)。
+    private readonly syncEarningsDates: SyncEarningsDatesUseCase = new SyncEarningsDatesUseCase(
+      prisma,
+      [],
+      new SyncEarningsFiscalProfileUseCase(prisma),
+      NULL_TRADING_CALENDAR,
+    ),
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, tradingCalendar);
     this.executors = new Map(
@@ -1091,6 +1074,19 @@ export class DimensionExecutorRegistry {
         (instruments, dim, stats, input) =>
           this.syncOptionOiSettle.run(instruments, dim, stats, input),
       ),
+      // 079 T016 港股财报日期 (plan §D9)。🚨 **刻意不走 `factExecutor`** —— 与 `earnings_event` 同一
+      // 判据: 工作集不是标的集, 挂锚闸只会复刻「零锚时静默不采」。运行步骤 (① 各来源采集 ② 事件合并
+      // 与逾期 / 未知日期扫描 ③ findings) 全在 `runHk` 里, findings 已写进 `stats` ⇒ 这里只透传。
+      // 业务日由 `runHk` 按 `input.now` 取香港当地日期, **不吃 `input.asOf`** (同 `earnings_event`)。
+      // 返 true = 富途来源 429 顺延 → 重入队且不耗 attempts (deferral ≠ failure)。
+      hk_earnings_date: async (input) => {
+        const stats = emptyStats();
+        const outcome = await this.syncEarningsDates.runHk(stats, {
+          now: input.now,
+          mode: input.mode === 'backfill' ? 'backfill' : 'daily',
+        });
+        return { stats, budgetExhausted: outcome.budgetExhausted };
+      },
     };
   }
 

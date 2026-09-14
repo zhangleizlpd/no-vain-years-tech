@@ -708,6 +708,7 @@ describe('020 T007 因子跃变锚定 (corp 捕获 → transient → AdjustmentF
         'allotment', // 041 (priority 1, 'allotment' < 'fund_company_holding' 前置)
         'announcement', // 043 (priority 1, 'allotment' < 'announcement' < 'fund_company_holding')
         'fund_company_holding',
+        'hk_earnings_date', // 079 T016 (priority 1; soft 入边 announcement ⇒ 其后才进 ready 集, 'fund_company_holding' < 'hk_earnings_date')
         'index_membership',
       ]);
       expect(edges).toContainEqual({

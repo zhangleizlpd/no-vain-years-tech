@@ -164,6 +164,7 @@ describe('019 T004 executor 注册表路由 (switch 退役 → Map)', () => {
       'hk_option_daily_snapshot', // 066 T04 港股全链逐日快照 (seed 时 enabled=false, FR-016)
       'hk_underlying_iv_daily', // 066 T04 港股标的级 IV 日快照 (history_depth 1095, FR-018)
       'hk_option_oi_settle', // 073 T001 轮2: OI 定稿后回填 (21:40, 与主轮 16:20 不同 tick)
+      'hk_earnings_date', // 079 T016 港股财报日期 (**市场级来源, 不挂锚闸**, 23:30 在 announcement 之后)
     ]);
   });
 
@@ -4561,6 +4562,9 @@ const LIVE_SEED_PRIORITIES = new Map<string, number>([
   // 顺序没有任何作用, 填 5 只是与同族一致, 别读成「它排在谁后面」。它**零入边零出边**
   // (刻意不连依赖边, 见该 migration 的裁决段)。
   ['hk_option_oi_settle', 5],
+  // 079 T016 (migration 20260914_1030_seed_hk_earnings_date_dimension)。priority 1 与上游
+  // `announcement` 同档; 两条入边均 soft ⇒ 要等 `announcement` 出队才进 ready 集 (守卫见文末 079 块)。
+  ['hk_earnings_date', 1],
 ]);
 
 /** seed 现状快照 (marketdata.sync_dependency; 末三条 = 047 本片新增)。 */
@@ -4611,6 +4615,9 @@ const LIVE_SEED_EDGES: SyncDependencyEdge[] = [
   // `history_depth = NULL` (vendor 不给历史期权快照) ⇒ 漏采即永久缺口, fail-closed 会把
   // 「漏几张新挂牌合约」换成「整晚全丢且不可回补」。顺序不受影响: soft 边同样给 Kahn 前驱。
   { upstream: 'hk_option_contract', downstream: 'hk_option_daily_snapshot', mode: 'soft' },
+  // 079 T016 新增: 港股财报日期两条 soft 入边 (标的须先注册 / 公告来源读 announcement 当天已采行)。
+  { upstream: 'universe', downstream: 'hk_earnings_date', mode: 'soft' },
+  { upstream: 'announcement', downstream: 'hk_earnings_date', mode: 'soft' },
 ];
 
 /**
@@ -4623,6 +4630,8 @@ const LIVE_SEED_FUTU_LANE = new Set<string>([
   'hk_option_daily_snapshot',
   // 073 T006: 轮2 也打 futu shim ⇒ 必须登记, 漏登记会落回 default lane 与理杏仁夜间链排队。
   'hk_option_oi_settle',
+  // 079 T016: 富途财报日历是三个来源里唯一走共享限频的 ⇒ 登记 futu lane (两条入边均 soft, 跨 lane 合法)。
+  'hk_earnings_date',
   'hk_underlying_iv_daily',
   'option_contract',
   'option_daily_snapshot',
@@ -4829,6 +4838,19 @@ describe('066 T04 港股三维度 seed 的依赖拓扑守卫', () => {
 
   it('港股三行不打乱美股期权那对 hard 边的相邻性 (纯增量: 047 的结论逐点不变)', () => {
     expect(pos('option_daily_snapshot')).toBe(pos('option_contract') + 1);
+  });
+});
+
+// 079 T016 港股财报日期 seed 的依赖拓扑守卫 (plan §D9)。两条入边均 soft、零出边 ⇒ 不受相邻性约束
+// (hard 边相邻性与 lane 同侧已由上面 047 / #210 两块对全量 seed 快照循环覆盖)。这里只钉执行序:
+// 公告来源读的是 `announcement` 当天已采的行, 在同一 flow (回填 CLI 全维度) 里跑反了就少读一天。
+describe('079 T016 港股财报日期 seed 的依赖拓扑守卫', () => {
+  const order = deriveExecutionOrder(LIVE_SEED_EDGES, LIVE_SEED_PRIORITIES);
+  const pos = (key: string): number => order.indexOf(key);
+
+  it('hk_earnings_date 排在 announcement / universe 之后 (soft 边同样给 Kahn 前驱)', () => {
+    expect(pos('hk_earnings_date')).toBeGreaterThan(pos('announcement'));
+    expect(pos('hk_earnings_date')).toBeGreaterThan(pos('universe'));
   });
 });
 

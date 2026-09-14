@@ -204,6 +204,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
           'sync:hk_option_contract', // 066 T04
           'sync:hk_option_daily_snapshot', // 066 T04
           'sync:hk_underlying_iv_daily', // 066 T04
+          'sync:hk_earnings_date', // 079 T016 (universe→hk_earnings_date soft 边在闭包内)
           'sync:financial',
           'sync:eod_bar',
           'sync:corporate_action',

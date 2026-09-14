@@ -258,6 +258,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_earnings_date', // 079 T016 ('fundamental' < 'hk_earnings_date' < 'hk_option_contract')
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
       'hk_option_oi_settle', // 073 T006

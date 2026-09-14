@@ -45,6 +45,7 @@ import {
   type SyncRunStats,
 } from '../../src/marketdata/sync-run.recorder';
 import { SyncEarningsDatesUseCase } from '../../src/marketdata/sync-earnings-dates.usecase';
+import { DimensionExecutorRegistry } from '../../src/marketdata/dimension-executor';
 
 // 079 港股财报日期主 IT。
 //
@@ -1258,5 +1259,87 @@ describe('079 T015 findings 出口 ③④: 各 step / kind 与 plan §D10 表一
     } finally {
       await prisma.anchor.deleteMany({ where: { ticker: { in: anchored } } });
     }
+  });
+});
+
+// T016 维度执行入口 (plan §D9; T017–T019 / T022 经维度运行的臂复用): 走生产同一条
+// `DimensionExecutorRegistry.execute` → 执行器 → `runHk`, 运行记录由注册表自己开 / 收 (`sync:<key>`)。
+// 只装本维度用得到的位置 (prisma / recorder / 第 35 位 use case); 其余留 undefined —— 可选位的
+// 默认值是真实例 + null-object 端口, 前 6 位与 tierRecalc 只被别的维度的执行器闭包引用。
+const viaDimension = (useCase: SyncEarningsDatesUseCase) =>
+  new DimensionExecutorRegistry(
+    undefined as never, // 1 syncUniverse
+    undefined as never, // 2 syncProfile
+    undefined as never, // 3 eodBar
+    undefined as never, // 4 fundamental
+    undefined as never, // 5 financials
+    undefined as never, // 6 corporateAction
+    prisma, // 7
+    new SyncRunRecorder(prisma), // 8
+    undefined as never, // 9 tierRecalc (本维度不走 fact 前置)
+    undefined, // 10 backfillPacer
+    undefined, // 11 shortSelling
+    undefined, // 12 connectHolding
+    undefined, // 13 fundHolding
+    undefined, // 14 fundCompanyHolding
+    undefined, // 15 indexMembership
+    undefined, // 16 volatility
+    undefined, // 17 hotSnapshot
+    undefined, // 18 buyback
+    undefined, // 19 equityChange
+    undefined, // 20 shareholderChange
+    undefined, // 21 allotment
+    undefined, // 22 revenueSegment
+    undefined, // 23 shareholderSnapshot
+    undefined, // 24 employee
+    undefined, // 25 industryClassification
+    undefined, // 26 announcement
+    undefined, // 27 anchorGate
+    undefined, // 28 underlyingIv
+    undefined, // 29 usIndex
+    undefined, // 30 syncOptionContract
+    undefined, // 31 syncOptionSnapshot
+    undefined, // 32 syncEarningsEvent
+    undefined, // 33 tradingCalendar
+    undefined, // 34 syncOptionOiSettle
+    useCase, // 35 syncEarningsDates
+  );
+
+describe('079 T016 经维度执行: DimensionExecutorRegistry.execute(hk_earnings_date) 跑通三来源一轮', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('三来源观测均落库、事件数 > 0、sync:hk_earnings_date 运行记录 success', async () => {
+    const meituan = await instrument('hk', '03690');
+    const xiaomi = await instrument('hk', '01810');
+    await announce(xiaomi.id, '2026-09-09', '截至2026年6月30日止六個月之中期業績公告', ['fs_main']);
+    const registry = viaDimension(
+      buildMerge(
+        { current: { observations: [obs(meituan.id, 'structured', '2026-09-25')] } },
+        { current: listing('2026-09-11', [obs(meituan.id, 'meeting', '2026-09-25')]) },
+      ),
+    );
+
+    const result = await registry.execute('hk_earnings_date', {
+      mode: 'delta',
+      asOf: '2026-09-11',
+      now: at('2026-09-11'),
+    });
+
+    // 先断言有东西: 事件表为空时下面的运行状态断言照样成立, 证明不了执行器真调到了 runHk。
+    expect(await prisma.earningsDateEvent.count()).toBeGreaterThan(0);
+    for (const source of EARNINGS_DATE_SOURCE_NAMES) {
+      expect(
+        await prisma.earningsDateObservation.count({ where: { source } }),
+        `来源 ${source} 本轮零观测`,
+      ).toBeGreaterThan(0);
+    }
+    expect(result.budgetExhausted).toBe(false);
+    const run = await prisma.syncRun.findFirstOrThrow({
+      where: { syncType: 'sync:hk_earnings_date' },
+      orderBy: { id: 'desc' },
+      select: { status: true, failed: true },
+    });
+    expect(run).toEqual({ status: 'success', failed: 0 });
   });
 });

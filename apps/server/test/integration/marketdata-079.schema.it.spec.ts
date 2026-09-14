@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { PrismaService } from '../../src/security/prisma.service';
+import { computeNext } from '../../src/marketdata/sync-tick-driver';
 
 const SERVER_DIR = process.cwd();
 const MONO_ROOT = resolve(SERVER_DIR, '../..');
@@ -264,5 +265,53 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
       return ACCESSORS.some((a) => src.includes(`.${a}.`));
     });
     expect(hits).toEqual([]);
+  });
+
+  // 079 T016 维度 seed ② (plan §D9)。被测对象就是 seed migration ⇒ 同放本文件 (空库 + migrate deploy),
+  // 模板克隆库上断言照样绿、但绿的是模板 (同 marketdata-066.hk-dimension-seed.it.spec.ts 的理由)。
+  it('T016 seed: hk_earnings_date 行取值 + 两条 soft 入边、零出边', async () => {
+    const row = await prisma.syncDimension.findUniqueOrThrow({
+      where: { dimensionKey: 'hk_earnings_date' },
+    });
+    expect(row).toMatchObject({
+      enabled: true,
+      marketScope: ['hk'],
+      queueLane: 'futu',
+      historyDepth: null,
+      nextFireAt: null,
+    });
+    const edges = await prisma.syncDependency.findMany({
+      where: { downstream: 'hk_earnings_date' },
+      select: { upstream: true, downstream: true, mode: true },
+      orderBy: { upstream: 'asc' },
+    });
+    expect(edges).toEqual([
+      { upstream: 'announcement', downstream: 'hk_earnings_date', mode: 'soft' },
+      { upstream: 'universe', downstream: 'hk_earnings_date', mode: 'soft' },
+    ]);
+    expect(await prisma.syncDependency.count({ where: { upstream: 'hk_earnings_date' } })).toBe(0);
+  });
+
+  // 机械断言: 解析两行 cron_expr 比下一触发时刻, 不比字符串 —— 有人把 announcement 挪晚、或把本行挪早,
+  // 字符串断言照绿, 而来源 B 就会读到前一天的公告行。
+  it('T016 cron: 下一触发晚于同日 announcement 那一拍、早于次日 00:00 (Asia/Shanghai)', async () => {
+    const rows = await prisma.syncDimension.findMany({
+      where: { dimensionKey: { in: ['announcement', 'hk_earnings_date'] } },
+      select: { dimensionKey: true, cronExpr: true },
+    });
+    const cron = new Map(rows.map((r) => [r.dimensionKey, r.cronExpr]));
+    expect([...cron.keys()].sort()).toEqual(['announcement', 'hk_earnings_date']);
+
+    const now = new Date('2026-09-14T12:00:00+08:00'); // 周一 12:00 Shanghai, 早于两拍
+    const nextDay0000 = new Date('2026-09-15T00:00:00+08:00');
+    const announcementNext = computeNext(cron.get('announcement') ?? '', now);
+    const next = computeNext(cron.get('hk_earnings_date') ?? '', now);
+    // 前提: announcement 那一拍落在同一自然日内 (否则「晚于它」比的是跨日的两拍)。
+    expect(announcementNext.getTime()).toBeLessThan(nextDay0000.getTime());
+    expect(
+      next.getTime(),
+      `hk_earnings_date "${cron.get('hk_earnings_date')}" 不晚于 announcement "${cron.get('announcement')}"`,
+    ).toBeGreaterThan(announcementNext.getTime());
+    expect(next.getTime(), '溢出到次日 ⇒ 业务日整体错位一天').toBeLessThan(nextDay0000.getTime());
   });
 });

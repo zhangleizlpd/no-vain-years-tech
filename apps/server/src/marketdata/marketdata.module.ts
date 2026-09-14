@@ -82,6 +82,7 @@ import { SyncTierRecalc } from './sync-tier-recalc.js';
 import { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
 import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
 import { SyncEarningsFiscalProfileUseCase } from './sync-earnings-fiscal-profile.usecase.js';
+import { SyncEarningsDatesUseCase } from './sync-earnings-dates.usecase.js';
 import { AnchorColdStartSubscriber } from './anchor-cold-start.subscriber.js';
 import { BackfillPacer, DEFAULT_BACKFILL_PACER_CONFIG } from './backfill-pacer.js';
 import { DimensionExecutorRegistry } from './dimension-executor.js';
@@ -713,6 +714,9 @@ function collectionPort<T extends object>(
     AnchorColdStartUseCase,
     // 079 T029 财年档案反推 (FR-026): 冷启动对港股锚调用 + 每日 hk_earnings_date 运行起手批量补 (T014)。
     SyncEarningsFiscalProfileUseCase,
+    // 079 T016 港股财报日期维度 use case (DimensionExecutorRegistry 尾部第 35 位注入面):
+    // `hk_earnings_date` 执行器调它的 `runHk`; 来源数组经上面的 `EARNINGS_DATE_SOURCES` 注入。
+    SyncEarningsDatesUseCase,
     // 060 T008 建锚事件消费方 (R3 CROSS-CONTEXT-ASYNC 消费端): OnModuleInit 自注册进平台层
     // OutboxSubscriberRegistry, 只做「校验 + 入队」—— relay 是单线 cron, 采集必须异步。
     AnchorColdStartSubscriber,

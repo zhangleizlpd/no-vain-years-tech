@@ -24,7 +24,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     await db.drop();
   });
 
-  it('36 张 marketdata 表全部落库 (015 的 6 + 016 的 3 + 017 依赖边表 + 019 因子表 + 039 5 量化信号表 + 040 volatility/hot 2 表 + 041 4 事件流表 + 042 3 报告期表 + 043 2 分类文本表 + 044 日历心跳表 + 046 标的级 IV 2 表 + 046 美股指数日线表 + 047 链合约/逐日快照/财报日历 3 表 + 060 冷启动运行记录表 + 062 日历覆盖声明表)', async () => {
+  it('41 张 marketdata 表全部落库 (015 的 6 + 016 的 3 + 017 依赖边表 + 019 因子表 + 039 5 量化信号表 + 040 volatility/hot 2 表 + 041 4 事件流表 + 042 3 报告期表 + 043 2 分类文本表 + 044 日历心跳表 + 046 标的级 IV 2 表 + 046 美股指数日线表 + 047 链合约/逐日快照/财报日历 3 表 + 060 冷启动运行记录表 + 062 日历覆盖声明表 + 079 财报日期层 4 表 + 财年档案表)', async () => {
     const rows = await prisma.$queryRawUnsafe<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'marketdata' ORDER BY table_name`,
     );
@@ -39,7 +39,12 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'connect_holding_daily', // 039 T001
       'corporate_action',
       'daily_bar',
+      'earnings_date_event', // 079 T008
+      'earnings_date_event_log', // 079 T008
+      'earnings_date_observation', // 079 T008
       'earnings_event', // 047 T002
+      'earnings_fiscal_profile', // 079 T028
+      'earnings_meeting_lag', // 079 T008
       'employee_snapshot', // 042 T001
       'equity_change', // 041 T001
       'financial_metric',
@@ -68,7 +73,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     ]);
   });
 
-  it('SyncDimension seed 32 维度行存在 (6 核心 + 039 5 港股量化维度 + 040 volatility/hot_snapshot + 041 4 事件流维度 + 042 3 报告期维度 + 043 2 分类文本维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度 + 073 hk_option_oi_settle)', async () => {
+  it('SyncDimension seed 33 维度行存在 (6 核心 + 039 5 港股量化维度 + 040 volatility/hot_snapshot + 041 4 事件流维度 + 042 3 报告期维度 + 043 2 分类文本维度 + sellput-viz us_equity_bar + 046 underlying_iv_daily/us_index_daily + 047 option_contract/option_daily_snapshot/earnings_event + 066 港股期权三维度 + 073 hk_option_oi_settle + 079 hk_earnings_date)', async () => {
     const dims = await prisma.syncDimension.findMany({
       // priority desc, key asc 二级序: 040 volatility(4)/hot_snapshot(3) 与 039 short_selling(4)/
       // connect_holding(3) 撞 priority 值 → 加 dimensionKey asc 二级键定死平局序 (与派生执行序 tie-break 同);
@@ -119,6 +124,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'allotment', // 041 priority 1 ('allotment' < 'fund_company_holding' 前置)
       'announcement', // 043 priority 1 ('allotment' < 'announcement' < 'fund_company_holding')
       'fund_company_holding', // 039 priority 1
+      'hk_earnings_date', // 079 T016 priority 1 ('fund_company_holding' < 'hk_earnings_date')
       'index_membership', // 039 priority 0
     ]);
     // universe 走东财 clist; 其余走理杏仁 (D6 同源)。
@@ -192,6 +198,8 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
     expect(dims.find((d) => d.dimensionKey === 'hk_underlying_iv_daily')?.cronExpr).toBe(
       '0 0 23 * * *',
     );
+    // 079: 港股财报日期 23:30, 须在 announcement 22:00 那拍之后 (性质断言在 marketdata-079.schema.it.spec.ts)。
+    expect(dims.find((d) => d.dimensionKey === 'hk_earnings_date')?.cronExpr).toBe('0 30 23 * * *');
     expect(
       dims
         .filter(
@@ -217,6 +225,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
               'hk_option_daily_snapshot', // 073 港股主轮 16:20 档 (值已由上方显式断言钉死)
               'hk_option_oi_settle', // 073 港股轮2 21:40 档 (值已由上方显式断言钉死)
               'hk_underlying_iv_daily', // 066 港股 23:00 档 (值已由上方显式断言钉死)
+              'hk_earnings_date', // 079 港股 23:30 档 (值由下方显式断言钉死)
             ].includes(d.dimensionKey),
         )
         .every((d) => d.cronExpr === '0 0 22 * * *'),
@@ -250,6 +259,7 @@ describe('016 marketdata sync schema migration (Testcontainers PG migrate deploy
       'hk_option_daily_snapshot', // 066
       'hk_option_oi_settle', // 073
       'hk_underlying_iv_daily', // 066
+      'hk_earnings_date', // 079 (市场级来源, 非锚作用域; scope 同为 {hk})
     ];
     /** 066+073 四行的 scope 必须**恰为** {hk}: 掺进 us 会在 tick 求业务日期时当场 throw。 */
     const hkOptionDims = [

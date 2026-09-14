@@ -32,7 +32,7 @@ describe('015 marketdata schema migration (Testcontainers PG migrate deploy)', (
     expect(rows).toHaveLength(1);
   });
 
-  it('36 张 marketdata 表全部落库 (015 6 事实表 + 016 3 同步配置/审计表 + 017 依赖边表 + 019 因子表 + 039 5 量化信号表 + 040 volatility/hot 2 表 + 041 4 事件流表 + 042 3 报告期表 + 043 2 分类文本表 + 044 日历心跳表 + 046 标的级 IV 2 表 + 046 美股指数日线表 + 047 链合约/逐日快照/财报日历 3 表 + 060 冷启动运行记录表 + 062 日历覆盖声明表)', async () => {
+  it('41 张 marketdata 表全部落库 (015 6 事实表 + 016 3 同步配置/审计表 + 017 依赖边表 + 019 因子表 + 039 5 量化信号表 + 040 volatility/hot 2 表 + 041 4 事件流表 + 042 3 报告期表 + 043 2 分类文本表 + 044 日历心跳表 + 046 标的级 IV 2 表 + 046 美股指数日线表 + 047 链合约/逐日快照/财报日历 3 表 + 060 冷启动运行记录表 + 062 日历覆盖声明表 + 079 财报日期层 4 表 + 财年档案表)', async () => {
     const rows = await prisma.$queryRawUnsafe<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'marketdata' ORDER BY table_name`,
     );
@@ -48,7 +48,12 @@ describe('015 marketdata schema migration (Testcontainers PG migrate deploy)', (
       'connect_holding_daily', // 039 T001
       'corporate_action',
       'daily_bar',
+      'earnings_date_event', // 079 T008
+      'earnings_date_event_log', // 079 T008
+      'earnings_date_observation', // 079 T008
       'earnings_event', // 047 T002
+      'earnings_fiscal_profile', // 079 T028
+      'earnings_meeting_lag', // 079 T008
       'employee_snapshot', // 042 T001
       'equity_change', // 041 T001
       'financial_metric',

@@ -37,6 +37,13 @@ describe('066 T02 锚作用域维度登记表', () => {
       expect(isAnchorScopedDimension('earnings_event')).toBe(false);
     });
 
+    // 079 T016 反向断言 (排序铁律 2): 港股财报日期的三个来源都按市场取数 (富途市场级窗 / 本 ctx
+    // 公告表 / 清单整页), 工作集不是标的集。登记进表不会报错, 表现是零锚时整轮静默不采。
+    it('🚨 hk_earnings_date **不在**表里 —— 市场级来源, 挂锚闸只会让零锚时静默不采', () => {
+      expect(DIMENSION_KEYS).toContain('hk_earnings_date');
+      expect(isAnchorScopedDimension('hk_earnings_date')).toBe(false);
+    });
+
     it('已注册的美股三行都是真维度键 (拼错 = 静默退回旧判据, 不会红)', () => {
       const known = new Set<string>(DIMENSION_KEYS);
       for (const key of ['underlying_iv_daily', 'option_contract', 'option_daily_snapshot']) {

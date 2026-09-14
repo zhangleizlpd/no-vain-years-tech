@@ -247,6 +247,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_earnings_date', // 079 T016 ('fundamental' < 'hk_earnings_date' < 'hk_option_contract')
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
       'hk_option_oi_settle', // 073 T006
@@ -357,6 +358,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_earnings_date', // 079 T016 ('fundamental' < 'hk_earnings_date' < 'hk_option_contract')
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
       'hk_option_oi_settle', // 073 T006

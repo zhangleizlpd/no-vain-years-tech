@@ -102,6 +102,9 @@ export const AS_OF_BASIS_BY_DIMENSION: Record<DimensionKey, AsOfBasis> = {
   // 🚨 取 `calendar-day` 会在 21:40 那轮被 misfire 推过午夜时把业务日求成次日, 于是段 a 的
   // `updateMany` 一行都定位不到 —— 表现是「跑了、绿了、OI 一个字没改」, 不报错。
   hk_option_oi_settle: 'last-completed-session',
+  // 079 T016: 执行器不吃 `asOf` —— 业务日由 `runHk` 按 `input.now` 取香港当地日期 (同
+  // `earnings_event` 的 FR-036 写法), 行日期全来自来源 (公布日 / 刊发日 / 会议日); 无 session 粒度。
+  hk_earnings_date: 'calendar-day',
 };
 
 /** {@link resolveAsOfForDimension} 的入参 —— 贫血投影, 两列都取自 `sync_dimension` 行。 */

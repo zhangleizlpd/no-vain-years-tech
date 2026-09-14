@@ -1,10 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../security/prisma.service.js';
-import {
-  loadAnchoredInstruments,
-  subtractDays,
-  type WorkingInstrument,
-} from './dimension-executor.js';
+import { loadAnchoredInstruments } from './anchored-instruments.query.js';
+import type { WorkingInstrument } from './dimension-executor.js';
 import type { EarningsDateSourceName } from './earnings-date-source.port.js';
 import {
   findFiscalProfileTitleConflict,
@@ -161,12 +158,12 @@ export class SyncEarningsFiscalProfileUseCase {
     instrument: WorkingInstrument,
     now: Date,
   ): Promise<FiscalProfileAnnouncement[]> {
-    const from = subtractDays(
-      exchangeCalendarDate(instrument.market, now),
-      FISCAL_PROFILE_LOOKBACK_DAYS,
-    );
+    // 079 T016: 就地减日而非 import `dimension-executor.ts` 的 `subtractDays` —— 后者会让本文件对
+    // dimension-executor 形成运行期 import 环 (见 anchored-instruments.query.ts 文件头)。同为 UTC 日期运算。
+    const from = new Date(`${exchangeCalendarDate(instrument.market, now)}T00:00:00Z`);
+    from.setUTCDate(from.getUTCDate() - FISCAL_PROFILE_LOOKBACK_DAYS);
     const rows = await this.prisma.announcement.findMany({
-      where: { instrumentId: instrument.id, date: { gte: new Date(`${from}T00:00:00Z`) } },
+      where: { instrumentId: instrument.id, date: { gte: from } },
       select: { date: true, linkText: true, linkUrl: true, types: true },
       orderBy: { date: 'asc' },
     });
