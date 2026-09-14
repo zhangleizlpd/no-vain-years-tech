@@ -1365,3 +1365,184 @@ describe('079 T016 经维度执行: DimensionExecutorRegistry.execute(hk_earning
     expect(run).toEqual({ status: 'success', failed: 0 });
   });
 });
+
+/** 经维度执行跑一轮 (香港当地 `date` 23:30) ⇒ 该轮 `sync:hk_earnings_date` 运行记录 (T017 / T018)。 */
+async function dimensionRun(useCase: SyncEarningsDatesUseCase, date: string) {
+  await viaDimension(useCase).execute('hk_earnings_date', {
+    mode: 'delta',
+    asOf: date,
+    now: at(date),
+  });
+  const run = await prisma.syncRun.findFirstOrThrow({
+    where: { syncType: dimensionSyncType('hk_earnings_date') },
+    orderBy: { id: 'desc' },
+    select: { status: true, failed: true, findings: true },
+  });
+  const findings = (Array.isArray(run.findings) ? run.findings : []) as SyncRunStats['findings'];
+  return { status: run.status, failed: run.failed, findings };
+}
+
+const runSteps = (run: { findings: SyncRunStats['findings'] }, step: string) =>
+  run.findings.filter((f) => 'step' in f && f.step === step);
+
+// T017 场景 IT ① (FR-009 / FR-010 / FR-014 / FR-015 / FR-019 / SC-006, plan §D12 #7 #13 #18): 取值、间隔学习与
+// 刊发覆盖, 全部经维度执行。间隔学习跨两期同类报告 ⇒ ① 用 2025 / 2026 两个中期 (hk:00857 形态)。
+describe('079 T017 场景 IT ①: 取值、间隔学习与刊发覆盖 (经维度运行)', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('① hk:00857 形态: 周五会议 → 周日刊发学到间隔 2; 下一期富途记会议日 ⇒ 取推定 +2, 0 条冲突告警, 差异留痕', async () => {
+    const inst = await instrument('hk', '00857');
+    const meeting2025 = {
+      ...obs(inst.id, 'meeting', '2025-08-22'),
+      periodKey: 'P:2025-06-30',
+      periodEnd: '2025-06-30',
+    };
+    const futu: Round = { current: {} };
+    const board: Round = { current: listing('2025-08-21', [meeting2025]) };
+    const useCase = buildMerge(futu, board);
+
+    await dimensionRun(useCase, '2025-08-21');
+    await announce(inst.id, '2025-08-24', '截至2025年6月30日止六個月之中期業績公告', ['fs_main']);
+    await dimensionRun(useCase, '2025-08-25');
+
+    expect(await eventOf(inst.id, 'P:2025-06-30')).toMatchObject({
+      status: 'published',
+      announceDate: day('2025-08-24'),
+      announceBasis: 'filed',
+    });
+
+    futu.current = { observations: [obs(inst.id, 'structured', '2026-08-28')] };
+    board.current = listing('2026-08-20', [obs(inst.id, 'meeting', '2026-08-28')]);
+    const run = await dimensionRun(useCase, '2026-08-20');
+
+    const next = await eventOf(inst.id);
+    expect(next).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-08-30'),
+      announceBasis: 'meeting',
+      conflictCandidates: null,
+    });
+    expect(next.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'value_changed',
+        detail: expect.objectContaining({
+          reason: 'explainable_meeting_lag',
+          candidates: expect.arrayContaining([
+            { source: 'futu_calendar', basis: 'structured', date: '2026-08-28' },
+            { source: 'hkex_board_meeting_list', basis: 'meeting', date: '2026-08-30' },
+          ]),
+        }),
+      }),
+    );
+    expect(runSteps(run, 'earnings_date_conflict')).toEqual([]);
+    expect(run.status).toBe('success');
+    // 间隔行放最后断言: 定向变异「刊发后不更新间隔」须红在上面的 +2 取值上, 而非提前红在读间隔行。
+    const lag = await prisma.earningsMeetingLag.findUniqueOrThrow({
+      where: { instrumentId_reportKind: { instrumentId: inst.id, reportKind: 'interim' } },
+    });
+    expect(lag).toMatchObject({ lagDays: 2, periodEnd: day('2025-06-30') });
+  });
+
+  it('② 报告期无法对齐 (富途 T: 键 / 无档案标题不带期末日 D: 键) ⇒ 各自独立事件, 🚫 猜测性合并, unaligned 计数', async () => {
+    const inst = await instrument('hk', '09988');
+    await announce(inst.id, '2026-09-09', '2026年中期業績公告', ['fs_main']);
+    const futu: Round = {
+      current: {
+        observations: [
+          {
+            ...obs(inst.id, 'structured', '2026-09-20'),
+            periodKey: 'T:futu_calendar:2026 Q2',
+            reportKind: null,
+            periodEnd: null,
+            periodText: '2026 Q2',
+          },
+        ],
+      },
+    };
+    const board: Round = {
+      current: listing('2026-09-10', [obs(inst.id, 'meeting', '2026-09-18')]),
+    };
+
+    const run = await dimensionRun(buildMerge(futu, board), '2026-09-10');
+
+    const events = await prisma.earningsDateEvent.findMany({
+      where: { instrumentId: inst.id },
+      select: { periodKey: true, status: true, announceDate: true, announceBasis: true },
+      orderBy: { periodKey: 'asc' },
+    });
+    expect(events).toEqual([
+      {
+        periodKey: 'D:hkex_announcement:2026-09-09',
+        status: 'published',
+        announceDate: day('2026-09-09'),
+        announceBasis: 'filed',
+      },
+      {
+        periodKey: INTERIM,
+        status: 'confirmed',
+        announceDate: day('2026-09-18'),
+        announceBasis: 'meeting',
+      },
+      {
+        periodKey: 'T:futu_calendar:2026 Q2',
+        status: 'confirmed',
+        announceDate: day('2026-09-20'),
+        announceBasis: 'structured',
+      },
+    ]);
+    expect(runSteps(run, 'earnings_date_unaligned')).toEqual([
+      expect.objectContaining({ kind: 'notice', detail: expect.objectContaining({ count: 2 }) }),
+    ]);
+    expect(runSteps(run, 'earnings_date_conflict')).toEqual([]);
+  });
+
+  it('③ 刊发覆盖: 刊发日覆盖公布日 (口径 filed) + 各来源刊发前取值偏差 + 间隔更新 (US3 AS1)', async () => {
+    const inst = await instrument('hk', '00175');
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-09-09')] } };
+    const board: Round = {
+      current: listing('2026-09-07', [obs(inst.id, 'meeting', '2026-09-08')]),
+    };
+    const useCase = buildMerge(futu, board);
+
+    await dimensionRun(useCase, '2026-09-07');
+    expect(await eventOf(inst.id)).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-09'),
+      announceBasis: 'structured',
+    });
+
+    await announce(inst.id, '2026-09-10', '截至2026年6月30日止六個月之中期業績公告', ['fs_main']);
+    const run = await dimensionRun(useCase, '2026-09-10');
+
+    const published = await eventOf(inst.id);
+    expect(published).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-09-10'),
+      announceBasis: 'filed',
+    });
+    expect(published.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'status_changed',
+        fromStatus: 'confirmed',
+        toStatus: 'published',
+      }),
+    );
+    expect(
+      await prisma.earningsDateObservation.findMany({
+        where: { instrumentId: inst.id },
+        select: { source: true, deviationDays: true },
+        orderBy: { source: 'asc' },
+      }),
+    ).toEqual([
+      { source: 'futu_calendar', deviationDays: -1 },
+      { source: 'hkex_announcement', deviationDays: null },
+      { source: 'hkex_board_meeting_list', deviationDays: -2 },
+    ]);
+    const lag = await prisma.earningsMeetingLag.findUniqueOrThrow({
+      where: { instrumentId_reportKind: { instrumentId: inst.id, reportKind: 'interim' } },
+    });
+    expect(lag.lagDays).toBe(2);
+    expect(run.status).toBe('success');
+  });
+});
