@@ -2,7 +2,7 @@
 feature_id: 082-optionsdesk-broker-pull-sync
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: tasks-ready
+status: implementing
 created_at: '2026-09-14'
 updated_at: '2026-09-14'
 spec_kit_version: '>=0.8.5,<0.10.0'
