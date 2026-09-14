@@ -151,6 +151,8 @@ export interface EarningsDatesMergeSummary {
   readonly fiscalUnknown: readonly string[];
   /** 从未在清单出现、满足已通知日期未知条件的标的代码 (FR-017：只计数)。 */
   readonly neverListedUndated: readonly string[];
+  /** 公布日已过、因报告期无法对齐 (`T:` / `D:` 键) 未判逾期的事件：每个一条 `<symbol> <periodKey>` (只计数)。 */
+  readonly overdueUnaligned: readonly string[];
 }
 
 /** 港股日常入口结局 = 采集段结局 + 起手财年档案反推 + 合并段汇总。 */
@@ -338,6 +340,7 @@ interface MergeAccumulator {
   findings: EarningsDateMergeFinding[];
   fiscalUnknown: string[];
   neverListedUndated: string[];
+  overdueUnaligned: string[];
 }
 
 const MERGE_OBSERVATION_SELECT = {
@@ -644,12 +647,15 @@ function reportMergeFindings(
     notice('earnings_fiscal_profile_conflict', { symbol: ticker, reason: detail });
   }
   const unaligned = inserted.filter((k) => !isAlignedPeriodKey(k.periodKey));
-  if (unaligned.length > 0) {
+  if (unaligned.length > 0 || merge.overdueUnaligned.length > 0) {
     notice('earnings_date_unaligned', {
       count: unaligned.length,
       samples: unaligned
         .slice(0, EARNINGS_FINDING_SAMPLE_LIMIT)
         .map((k) => `${k.instrumentId} ${k.periodKey}`),
+      // 公布日已过、因键无法对齐未判逾期的事件 (FR-028)：同一条里只计数，🚫 计失败。
+      overdueUnjudged: merge.overdueUnaligned.length,
+      overdueUnjudgedSamples: merge.overdueUnaligned.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
     });
   }
   const noticeSignals = outcome.collected.reduce((n, c) => n + c.result.noticeSignals.length, 0);
@@ -760,6 +766,7 @@ export class SyncEarningsDatesUseCase {
       findings: [],
       fiscalUnknown: [],
       neverListedUndated: [],
+      overdueUnaligned: [],
     };
     await this.mergeKeys(ctx, list, acc);
     return acc;
@@ -1021,6 +1028,7 @@ export class SyncEarningsDatesUseCase {
       findings: [],
       fiscalUnknown: [],
       neverListedUndated: [],
+      overdueUnaligned: [],
     };
     await this.mergeKeys(ctx, keys, acc);
     if (publicationFact && signalsReliable(outcome)) await this.scanNoticeUndated(ctx, acc);
@@ -1088,6 +1096,7 @@ export class SyncEarningsDatesUseCase {
         acc.findings.push({ instrumentId: key.instrumentId, symbol, finding });
       }
       if (result.fiscalProfileMissing) acc.fiscalUnknown.push(symbol);
+      if (result.overdueUnaligned) acc.overdueUnaligned.push(`${symbol} ${key.periodKey}`);
     }
   }
 
