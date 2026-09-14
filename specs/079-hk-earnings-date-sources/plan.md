@@ -189,6 +189,7 @@ context7_verified: []
 | `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0 |
 | `earnings_notice_undated` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `notified_undated`（含公告链接）；另计从未在清单出现标的的未知日期通知数（该计数不计失败） |
 | `earnings_board_list_scan` | notice | 每轮：页首日期、数据行、业绩行、纯股息行、跳过代码、`T:` 键数、本轮会前通知信号数 |
+| `earnings_date_futu_forward_rows` | notice | 每轮：富途港股前向行数（plan §D5 运行时不变量） |
 | `earnings_board_list_stale` | failure（计入 `stats.failed`） | 页首日期距业务日超过 2 个交易日 |
 | `earnings_board_list_dropped` | notice | 清单行在会议日前消失且无新日期 |
 | `earnings_date_fiscal_unknown` | notice | 每轮一条：因无财年档案未判定逾期 / 已通知日期未知的事件数 + 至多 20 个样例代码（🚫 逐事件一条） |

@@ -664,6 +664,22 @@ function reportMergeFindings(
       noticeSignals,
     });
   }
+  reportForwardRows(stats, outcome);
+}
+
+/**
+ * 富途港股前向行数 (plan §D5 缺失语义③ 的每轮运行时不变量)：港股前向行天然稀疏，塌到 0 要能被看见；
+ * 只计数，🚫 计失败。来源本轮失败 ⇒ 不在 `collected` ⇒ 不写 (取不到 ≠ 0 行)。O(来源数)。
+ */
+function reportForwardRows(stats: SyncRunStats, outcome: EarningsDatesCollectOutcome): void {
+  for (const { name, result } of outcome.collected) {
+    if (result.forwardRows === undefined) continue;
+    stats.findings.push({
+      kind: 'notice',
+      step: 'earnings_date_futu_forward_rows',
+      detail: { source: name, forwardRows: result.forwardRows },
+    });
+  }
 }
 
 @Injectable()

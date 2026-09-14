@@ -1260,6 +1260,25 @@ describe('079 T015 findings 出口 ③④: 各 step / kind 与 plan §D10 表一
       await prisma.anchor.deleteMany({ where: { ticker: { in: anchored } } });
     }
   });
+
+  it('⑤ 富途港股前向行数 (plan §D5 运行时不变量) ⇒ 每轮一条 notice、计数 = 来源给出值, 🚫 计失败', async () => {
+    const inst = await instrument('hk', '01211');
+    const futu: Round = {
+      current: { observations: [obs(inst.id, 'structured', '2026-09-25')], forwardRows: 7 },
+    };
+    const { stats, status } = await recordedRun(buildMerge(futu, { current: {} }), '2026-09-08');
+
+    expect(await prisma.earningsDateEvent.count({ where: { instrumentId: inst.id } })).toBe(1);
+    expect(steps(stats, 'earnings_date_futu_forward_rows')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_futu_forward_rows',
+        detail: { source: 'futu_calendar', forwardRows: 7 },
+      },
+    ]);
+    expect(stats.failed).toBe(0);
+    expect(status).toBe('success');
+  });
 });
 
 // T016 维度执行入口 (plan §D9; T017–T019 / T022 经维度运行的臂复用): 走生产同一条
