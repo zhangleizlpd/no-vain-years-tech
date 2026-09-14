@@ -80,11 +80,11 @@ const COMBO_ORDER = {
   order_status: 'FILLED_ALL',
   order_id: '7770002',
   qty: 1.0,
-  price: 0.8,
+  price: 0.95,
   create_time: '2026-09-11 09:40:00.120',
   updated_time: '2026-09-11 09:40:01.502',
   dealt_qty: 1.0,
-  dealt_avg_price: 0.8,
+  dealt_avg_price: 0.95,
   currency: 'USD',
   combo_legs: [
     'ComboLeg(code=US.PEP260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)',
