@@ -5,6 +5,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { narrowTestModule } from '../_support/narrow-boot';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
+import { MARKETDATA_WORKER_DISABLED } from '../../src/marketdata/marketdata-sync.queue';
 import { PrismaService } from '../../src/security/prisma.service';
 import { JwtTokenService } from '../../src/security/jwt-token.service';
 import { REDIS_CLIENT } from '../../src/security/redis.token';
@@ -32,6 +33,9 @@ describe('074 锚域搜索 IT (共享 PG + 收窄 boot + 真 HTTP)', () => {
 
   const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
 
+  /** 进入本文件前的原值, afterAll 还原 (原来没有就 delete)。 */
+  const prevWorkerDisabled = process.env[MARKETDATA_WORKER_DISABLED];
+
   beforeAll(async () => {
     db = await setupIsolatedDb();
     process.env.DATABASE_URL = db.databaseUrl;
@@ -43,6 +47,12 @@ describe('074 锚域搜索 IT (共享 PG + 收窄 boot + 真 HTTP)', () => {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('OSS_')) delete process.env[key];
     }
+    // 本文件不测队列 ⇒ 不起 marketdata worker (先例 marketdata.cold-start-060.trigger-timing)。
+    // 否则 bullmq Worker / QueueEvents 空连 vitest 钉的无人监听 REDIS_URL: 关停吃满 10s 超时,
+    // 且偶发 unhandled rejection 让用例全绿的文件判红。
+    // EVIDENCE: 零监听器 emit('error') 是 bullmq 5.x 缺陷, 6.0.0 起修 (上游提交 e1f86effc5);
+    // 强制复现见 docs/conventions/local-verification.md §3。
+    process.env[MARKETDATA_WORKER_DISABLED] = '1';
 
     const moduleRef: TestingModule = await Test.createTestingModule({
       imports: narrowTestModule([OptionsdeskModule]),
@@ -66,6 +76,8 @@ describe('074 锚域搜索 IT (共享 PG + 收窄 boot + 真 HTTP)', () => {
   }, 180_000);
 
   afterAll(async () => {
+    if (prevWorkerDisabled === undefined) delete process.env[MARKETDATA_WORKER_DISABLED];
+    else process.env[MARKETDATA_WORKER_DISABLED] = prevWorkerDisabled;
     await app?.close();
     await db.drop();
   });
