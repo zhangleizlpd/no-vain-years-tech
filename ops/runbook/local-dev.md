@@ -331,6 +331,50 @@ The chat **input-bar chrome renders even if the session id isn't the logged-in
 account's** (the fetch just returns empty), so any valid `<id>` is enough to verify
 input-composer UI.
 
+### Point the dev client at prod — acceptance checks without a release APK
+
+Some checks only mean anything against **prod** — post-deploy acceptance that needs
+real market hours / real vendor data (e.g. 071 T010, 2026-09-14). If the phone only
+has the dev client, **don't swap in a release APK**: different keystore ⇒
+`adb uninstall` first, which wipes the dev-client setup you'll want back afterwards.
+Point Metro at prod instead:
+
+```bash
+# values = eas.json `internal` profile env — NOT `production`, which ships
+# EXPO_PUBLIC_FEATURE_MARKETS=false and hides the markets surfaces you came to check
+EXPO_PUBLIC_API_BASE_URL=<eas.json internal.env.EXPO_PUBLIC_API_BASE_URL> \
+EXPO_PUBLIC_FEATURE_MARKETS=true \
+EXPO_PUBLIC_OSS_PUBLIC_BASE_URL=<eas.json internal.env.EXPO_PUBLIC_OSS_PUBLIC_BASE_URL> \
+  pnpm -C apps/mobile exec expo start --dev-client --port 8081
+adb reverse tcp:8081 tcp:8081   # Metro only — the API is prod HTTPS, no :3000 reverse
+adb shell am start -a android.intent.action.VIEW \
+  -d "nvy://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081" com.shintongtech.novainyears
+```
+
+What changes vs the local loop:
+
+| Aspect      | Local loop                      | Dev client → prod                                                                                               |
+| ----------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Login code  | server log (`SMS_GATEWAY=mock`) | **real SMS** to the account's phone — the owner types it in; mock `999999` does not apply                       |
+| Data writes | dev Postgres, disposable        | **prod** — keep the session read-only; anything that writes (anchors, orders, settings) is real                 |
+| JS bundle   | your checkout                   | **still your checkout**, not the released bundle ⇒ record "dev client + local JS" in the evidence               |
+| Valid for   | —                               | checks judged on what the **server** returns (tiers, banners, data); a client-side change needs the release APK |
+
+**Timestamps: don't trust the Mac clock.** For "time shown == request time" style
+assertions, align three clocks first — the Mac drifted **30 s** behind on
+2026-09-14 while phone and prod agreed within 1 s:
+
+```bash
+date +%T; adb shell date +%T; curl -sI <prod-api-base> | grep -i '^date:'
+```
+
+Record times off the phone / prod clock, and stamp your own actions (`date` before
+each `input tap`) so they can be corrected by the measured offset.
+
+**Back to local**: `EXPO_PUBLIC_*` is inlined at bundle time — Ctrl-C Metro (or kill
+`:8081`), `adb reverse --remove tcp:8081`, restart Metro with the local API base.
+The app keeps its **prod** session in secure storage until you log out.
+
 ## iOS Simulator — dev client on the same local server
 
 The iOS counterpart of the Mate50 path. The simulator shares the Mac's network,
