@@ -118,6 +118,39 @@ export function decideBackfillAfterInfraFailure({
   return { status: 'pending', nextAttemptAt: new Date(now.getTime() + RETRY_SPACING_MS) };
 }
 
+/**
+ * 单次历史查询的跨度上限 (两端日期之差, 自然日)。EVIDENCE: shim 侧 `TRADE_MAX_SPAN_DAYS = 90`,
+ * `(end - start).days > 90` ⇒ 400 (`services/futu-shim/src/futu_shim/app.py:173` / `:329-330`)。
+ */
+export const TRADE_WINDOW_MAX_SPAN_DAYS = 90;
+
+/**
+ * 历史窗口 (两端含的 `YYYY-MM-DD`) 切成每段跨度 ≤ {@link TRADE_WINDOW_MAX_SPAN_DAYS} 的段,
+ * **相邻段重叠 1 天** (后段 start = 前段 end), 首段 start / 末段 end 与原窗口对齐。
+ *
+ * 重叠的理由: 券商对这两个日期按哪个时区解释未验证 —— 不重叠时, 若解释时区与交易所当地不同,
+ * 段交界处会漏掉一段时刻; 重叠 1 天 + 唯一号去重使结果与之无关 (T014)。
+ *
+ * 复杂度 O(跨度 / 90)。
+ * @throws 日期格式非法, 或 start 晚于 end。
+ */
+export function splitTradeWindow(window: {
+  start: string;
+  end: string;
+}): { start: string; end: string }[] {
+  const end = minusCalendarDays(window.end, 0);
+  let start = minusCalendarDays(window.start, 0);
+  if (start > end) throw new Error(`历史窗口起点晚于终点: ${window.start} > ${window.end}`);
+  const segments: { start: string; end: string }[] = [];
+  for (;;) {
+    const cap = minusCalendarDays(start, -TRADE_WINDOW_MAX_SPAN_DAYS);
+    const segmentEnd = cap < end ? cap : end;
+    segments.push({ start, end: segmentEnd });
+    if (segmentEnd === end) return segments;
+    start = segmentEnd;
+  }
+}
+
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**

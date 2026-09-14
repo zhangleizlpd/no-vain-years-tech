@@ -33,6 +33,7 @@ import { SubmitAnchorFromGuestUseCase } from './submit-anchor-from-guest.usecase
 import { marketdataConfig } from '../config/marketdata.config';
 import { BROKER_ACCOUNT_PORT } from './broker-account.port.js';
 import { createBrokerAccountPort } from './futu-broker-account.adapter.js';
+import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -116,6 +117,9 @@ import { createBrokerAccountPort } from './futu-broker-account.adapter.js';
       inject: [marketdataConfig.KEY],
       useFactory: createBrokerAccountPort,
     },
+    // 082 T014 券商账户同步 use case (plan D1): 新建锚补齐与开盘前对账共用的唯一入口 ——
+    // 两份实现会在过滤口径 / 幂等写 / 持仓刷新三处各自漂移 (ADR-0043 #1: optionsdesk use case 数 → 20)。
+    SyncBrokerAccountUseCase,
   ],
 })
 export class OptionsdeskModule {}
