@@ -27,7 +27,7 @@ describe('parseHoldingsWorkbook — builder 文件 (sharedStrings 路径)', () =
     expect(r.workbook.closed.rows).toHaveLength(1);
     expect(r.workbook.trades.rows).toHaveLength(4);
     // 原值直通 (规范化留给 rules): exceljs 写数字串可能回读为 number
-    expect(String(r.workbook.holdings.rows[0]?.[0])).toBe('603915');
+    expect(String(r.workbook.holdings.rows[0]?.[0])).toBe('ZQX');
     expect(r.workbook.holdings.rows[2]?.[0]).toBe('汇总');
   });
 

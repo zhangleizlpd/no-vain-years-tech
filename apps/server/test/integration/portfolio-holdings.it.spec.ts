@@ -28,7 +28,7 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 //  ④ 超 2MB → 413 (multipart limits 层) 库不变
 //  ⑤ 行级容错摘要可追溯 (SC-005: 汇总行跳过 / `--` 落 null / 未知类别 warning)
 //  ⑥ 持仓组派生闭环 (SC-003: 导入→组员 quotable∧qty>0、清空持仓→组员清空)
-//  ⑦ 清仓后重建仓并存 (国茂股份 current + closed 双在, EP2 wire)
+//  ⑦ 清仓后重建仓并存 (合成标的 ZQX current + closed 双在, EP2 wire)
 //  ⑧ EP3 等值倒序 + 资金行不命中 (wire)
 //  EP1 401 反枚举 / EP1 429 (6/60s) / EP2·EP3 401。
 // multipart 注册镜像 main.ts (limits 2MB / 1 file); beforeEach flushall 隔离限流桶。
@@ -64,12 +64,12 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
     jwt = moduleRef.get(JwtTokenService);
     redis = moduleRef.get(REDIS_CLIENT);
 
-    // fixture 两只注册 marketdata.instrument (quotable=true); GC001 故意不注册。
+    // fixture 两只注册 marketdata.instrument (quotable=true); ZQR 故意不注册。
     await prisma.instrument.createMany({
       data: (
         [
-          ['603915', '国茂股份'],
-          ['601177', '杭齿前进'],
+          ['ZQX', '合成甲股份'],
+          ['ZQY', '合成乙科技'],
         ] as const
       ).map(([code, name]) => ({
         market: 'cn',
@@ -228,8 +228,8 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
       orderBy: { code: 'asc' },
     });
     expect(rows.map((r) => [r.code, r.quotable])).toEqual([
-      ['601177', true],
-      ['603915', true],
+      ['ZQX', true],
+      ['ZQY', true],
     ]);
     expect(rows[0]!.asOf.toISOString().slice(0, 10)).toBe(ASOF);
   });
@@ -301,7 +301,7 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
         tradeRows: [
           ...FIXTURE_TRADE_ROWS,
           // prettier-ignore
-          ['2026-05-13', '10:00:00', '603915', '国茂股份', '神秘操作', '100', '10',
+          ['2026-01-07', '11:06:00', 'ZQX', '合成甲股份', '神秘操作', '100', '10',
             '-1000', '1000', '1', ''],
         ],
       }),
@@ -317,33 +317,33 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
     const unknownRow = await prisma.tradeRecord.findFirst({
       where: { accountId: id, category: 'unknown' },
     });
-    expect(unknownRow?.code).toBe('603915');
+    expect(unknownRow?.code).toBe('ZQX');
 
-    // `--` 字段 (601177 累计盈亏) 按空处理入库
-    const dirty = await prisma.holding.findFirst({ where: { accountId: id, code: '601177' } });
+    // `--` 字段 (ZQY 累计盈亏) 按空处理入库
+    const dirty = await prisma.holding.findFirst({ where: { accountId: id, code: 'ZQY' } });
     expect(dirty?.cumPnl).toBeNull();
     expect(dirty?.cumPnlPct).toBeNull();
   });
 
   // ── ⑥ 持仓组派生闭环 (SC-003) ─────────────────────────────────────────────
-  it('⑥ 导入→组员 (quotable∧qty>0, GC001 不进组); 清空持仓→组员清空 (SC-003)', async () => {
+  it('⑥ 导入→组员 (quotable∧qty>0, 未注册 ZQR 不进组); 清空持仓→组员清空 (SC-003)', async () => {
     const { token } = await activeToken();
-    const withGc001 = await buildHoldingsXlsx({
-      holdingRows: [...FIXTURE_HOLDING_ROWS, holdingRow('GC001', '国债逆回购', '0.05', '10000')],
+    const withRepo = await buildHoldingsXlsx({
+      holdingRows: [...FIXTURE_HOLDING_ROWS, holdingRow('ZQR', '合成逆回购', '0.045', '10000')],
     });
-    expect((await importXlsx(token, withGc001)).statusCode).toBe(200);
+    expect((await importXlsx(token, withRepo)).statusCode).toBe(200);
 
-    // 组员 = quotable 持仓集合 (weightPct desc); GC001 未注册 instrument → 不进组
+    // 组员 = quotable 持仓集合 (weightPct desc); ZQR 未注册 instrument → 不进组
     const items1 = (await getGroupItems(token, 'holdings').then((r) => r.json())) as {
       items: Array<{ code: string }>;
     };
-    expect(items1.items.map((i) => i.code)).toEqual(['601177', '603915']); // 0.66 > 0.16
+    expect(items1.items.map((i) => i.code)).toEqual(['ZQY', 'ZQX']); // 0.7 > 0.3
 
-    // GC001 在持仓列表降级展示 (quotable=false 照常返回)
+    // ZQR 在持仓列表降级展示 (quotable=false 照常返回)
     const holdings = (await getHoldings(token).then((r) => r.json())) as {
       current: Array<{ code: string; quotable: boolean }>;
     };
-    expect(holdings.current.find((h) => h.code === 'GC001')?.quotable).toBe(false);
+    expect(holdings.current.find((h) => h.code === 'ZQR')?.quotable).toBe(false);
 
     // 清空持仓 (持仓 sheet 无有效数据行) → 组员清空, 已清仓/流水照常替换
     expect((await importXlsx(token, await buildHoldingsXlsx({ holdingRows: [] }))).statusCode).toBe(
@@ -364,7 +364,7 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
   });
 
   // ── ⑦ 清仓后重建仓并存 (EP2 wire) ─────────────────────────────────────────
-  it('⑦ EP2: 同标的已清仓历史与当前持仓并存 (国茂股份双在) + asOf 回显', async () => {
+  it('⑦ EP2: 同标的已清仓历史与当前持仓并存 (ZQX 双在) + asOf 回显', async () => {
     const { token } = await activeToken();
     expect((await importXlsx(token, await buildHoldingsXlsx())).statusCode).toBe(200);
 
@@ -376,10 +376,10 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
       closed: Array<{ code: string; closeDate: string }>;
     };
     expect(body.asOf).toBe(ASOF);
-    // 国茂股份 2026-05-11 清仓后重建仓: current 与 closed 双在
-    expect(body.current.map((h) => h.code)).toContain('603915');
+    // ZQX 2025-12-18 清仓后重建仓: current 与 closed 双在
+    expect(body.current.map((h) => h.code)).toContain('ZQX');
     expect(body.closed).toEqual([
-      expect.objectContaining({ code: '603915', closeDate: '2026-05-11' }),
+      expect.objectContaining({ code: 'ZQX', closeDate: '2025-12-18' }),
     ]);
   });
 
@@ -388,16 +388,16 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
     const { token } = await activeToken();
     expect((await importXlsx(token, await buildHoldingsXlsx())).statusCode).toBe(200);
 
-    const res = await getTrades(token, 'cn', '603915');
+    const res = await getTrades(token, 'cn', 'ZQX');
     expect(res.statusCode).toBe(200);
     const { items } = res.json() as {
       items: Array<{ tradeDate: string; category: string }>;
     };
     // 流水 4 行中资金行 (其他, 无代码) 不命中 → 3 行, 成交时间倒序
     expect(items.map((t) => [t.tradeDate, t.category])).toEqual([
-      ['2026-05-11', 'sell'],
-      ['2025-10-23', 'xd'],
-      ['2025-08-27', 'buy'],
+      ['2025-12-18', 'sell'],
+      ['2025-11-06', 'xd'],
+      ['2025-09-16', 'buy'],
     ]);
   });
 
@@ -428,7 +428,7 @@ describe('025 portfolio-holdings (Testcontainers PG + Redis + Fastify)', () => {
     const ep2 = await app.inject({ method: 'GET', url: '/api/v1/portfolio/holdings' });
     const ep3 = await app.inject({
       method: 'GET',
-      url: '/api/v1/portfolio/trades?market=cn&code=603915',
+      url: '/api/v1/portfolio/trades?market=cn&code=ZQX',
     });
     expect(ep2.statusCode).toBe(401);
     expect(ep3.statusCode).toBe(401);

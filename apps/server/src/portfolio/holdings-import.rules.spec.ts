@@ -131,16 +131,16 @@ describe('normalizeCell / parse 基础规范化', () => {
     expect(normalizeCell('  ')).toBeNull();
     expect(normalizeCell(null)).toBeNull();
     expect(normalizeCell(undefined)).toBeNull();
-    expect(normalizeCell(' 国茂股份 ')).toBe('国茂股份');
-    expect(normalizeCell(16.43)).toBe('16.43');
+    expect(normalizeCell(' 合成甲股份 ')).toBe('合成甲股份');
+    expect(normalizeCell(14.25)).toBe('14.25');
   });
 
   it('parseDecimal: 数字串/负数/千分位/number 入参; 不可解析 → null', () => {
-    expect(parseDecimal('15.883')).toBe('15.883');
-    expect(parseDecimal('-1739.34')).toBe('-1739.34');
+    expect(parseDecimal('13.45')).toBe('13.45');
+    expect(parseDecimal('-1750.25')).toBe('-1750.25');
     expect(parseDecimal('1,234.5')).toBe('1234.5');
-    expect(parseDecimal(16.43)).toBe('16.43');
-    expect(parseDecimal('164847')).toBe('164847');
+    expect(parseDecimal(14.25)).toBe('14.25');
+    expect(parseDecimal('135790')).toBe('135790');
     expect(parseDecimal('--')).toBeNull();
     expect(parseDecimal('')).toBeNull();
     expect(parseDecimal('abc')).toBeNull();
@@ -148,21 +148,21 @@ describe('normalizeCell / parse 基础规范化', () => {
 
   it('parseIntStrict: 整数串; 小数/不可解析 → null', () => {
     expect(parseIntStrict('5')).toBe(5);
-    expect(parseIntStrict(166)).toBe(166);
+    expect(parseIntStrict(137)).toBe(137);
     expect(parseIntStrict('5.5')).toBeNull();
     expect(parseIntStrict('--')).toBeNull();
   });
 
   it('parseDateStr: YYYY-MM-DD / 斜杠归一 / Date 对象 (builder fixture); 非法 → null', () => {
-    expect(parseDateStr('2026-05-11')).toBe('2026-05-11');
-    expect(parseDateStr('2026/05/11')).toBe('2026-05-11');
-    expect(parseDateStr(new Date(Date.UTC(2025, 7, 27)))).toBe('2025-08-27');
-    expect(parseDateStr('05-11')).toBeNull();
+    expect(parseDateStr('2025-12-18')).toBe('2025-12-18');
+    expect(parseDateStr('2025/12/18')).toBe('2025-12-18');
+    expect(parseDateStr(new Date(Date.UTC(2025, 8, 16)))).toBe('2025-09-16');
+    expect(parseDateStr('12-18')).toBeNull();
     expect(parseDateStr('--')).toBeNull();
   });
 
   it('parseTimeStr: HH:MM:SS; 空 → null', () => {
-    expect(parseTimeStr('14:53:27')).toBe('14:53:27');
+    expect(parseTimeStr('13:48:36')).toBe('13:48:36');
     expect(parseTimeStr('')).toBeNull();
     expect(parseTimeStr('25:00:00')).toBeNull();
   });
@@ -172,7 +172,7 @@ describe('isSummaryRow 汇总聚合行', () => {
   it('代码列=汇总 → true; 正常代码 → false', () => {
     expect(isSummaryRow('汇总')).toBe(true);
     expect(isSummaryRow(' 汇总 ')).toBe(true);
-    expect(isSummaryRow('603915')).toBe(false);
+    expect(isSummaryRow('ZQX')).toBe(false);
     expect(isSummaryRow(null)).toBe(false);
   });
 });
@@ -196,55 +196,55 @@ describe('mapCategory 交易类别词表', () => {
 
 describe('normalizeHoldingRow 持仓行 (27→8 typed + raw 全保留)', () => {
   const index = resolveOrThrow(HOLDING_HEADERS, HOLDING_COLUMNS);
-  // 真实样本 row2: 国茂股份
+  // 合成样本行 (纯虚构标的与数值, 列形态同真实导出)
   const sampleCells = [
-    '603915',
-    '国茂股份',
-    '32860',
-    '920',
-    '0.0288',
+    'ZQX',
+    '合成甲股份',
+    '19600',
+    '300',
+    '0.0145',
     '',
     '',
     '',
     '',
-    '1094.68',
-    '0.0345',
-    '17055.03',
-    '0.1022',
-    '1094.68',
-    '1094.68',
-    '2124.02',
-    '0.1648',
-    '2000',
-    '5',
-    '0.0288',
-    '16.43',
-    '15.883',
+    '770',
+    '0.0411',
+    '2345.6',
+    '0.1319',
+    '300',
+    '600',
+    '770',
+    '0.3',
+    '1400',
+    '8',
+    '0.0145',
+    '14',
+    '13.45',
     '',
-    '0.0604',
-    '-0.012',
-    '-0.0207',
-    '0.1566',
+    '0.04',
+    '-0.02',
+    '0.08',
+    '0.12',
   ];
 
-  it('真实样本行 → typed 8 字段 + market=cn', () => {
+  it('样本行 → typed 8 字段 + market=cn', () => {
     const r = normalizeHoldingRow(index, HOLDING_HEADERS, sampleCells);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
     expect(r.row).toMatchObject({
       market: 'cn',
-      code: '603915',
-      name: '国茂股份',
-      qty: '2000',
-      unitCost: '15.883',
-      weightPct: '0.1648',
-      holdDays: 5,
-      cumPnl: '17055.03',
-      cumPnlPct: '0.1022',
+      code: 'ZQX',
+      name: '合成甲股份',
+      qty: '1400',
+      unitCost: '13.45',
+      weightPct: '0.3',
+      holdDays: 8,
+      cumPnl: '2345.6',
+      cumPnlPct: '0.1319',
     });
     // raw 全保留 (丢弃的 typed 外列也在)
-    expect(r.row.raw['持有金额']).toBe('32860');
-    expect(r.row.raw['最新价']).toBe('16.43');
+    expect(r.row.raw['持有金额']).toBe('19600');
+    expect(r.row.raw['最新价']).toBe('14');
   });
 
   it('`--` 盈亏字段 → null (行不跳)', () => {
@@ -259,7 +259,7 @@ describe('normalizeHoldingRow 持仓行 (27→8 typed + raw 全保留)', () => {
   });
 
   it('汇总聚合行 → skip 带原因', () => {
-    const cells = ['汇总', '', '164847', '5459.67', '0.0282'];
+    const cells = ['汇总', '', '68600', '-400', '-0.0057'];
     const r = normalizeHoldingRow(index, HOLDING_HEADERS, cells);
     expect(r.kind).toBe('skip');
     if (r.kind !== 'skip') return;
@@ -281,42 +281,42 @@ describe('normalizeHoldingRow 持仓行 (27→8 typed + raw 全保留)', () => {
 
 describe('normalizeClosedPositionRow 已清仓行', () => {
   const index = resolveOrThrow(CLOSED_HEADERS, CLOSED_COLUMNS);
-  // 真实样本 row2: 国茂股份一轮封闭清仓
+  // 合成样本行: 标的甲一轮封闭清仓
   const sampleCells = [
-    '2026-05-11',
-    '603915',
-    '国茂股份',
-    '15960.35',
-    '0.096',
-    '0.0922',
-    '0.0038',
-    '15.76',
-    '17.26',
-    '-0.0483',
-    '166',
-    '133.25',
-    '2025-08-27',
+    '2025-12-18',
+    'ZQX',
+    '合成甲股份',
+    '2018.12',
+    '0.0941',
+    '0.0353',
+    '0.0588',
+    '10.4',
+    '11.35',
+    '-0.1265',
+    '93',
+    '16.88',
+    '2025-09-16',
   ];
 
-  it('真实样本行 → typed 9+2 字段 (清仓距今/持仓天数不入 typed)', () => {
+  it('样本行 → typed 9+2 字段 (清仓距今/持仓天数不入 typed)', () => {
     const r = normalizeClosedPositionRow(index, CLOSED_HEADERS, sampleCells);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
     expect(r.row).toMatchObject({
       market: 'cn',
-      code: '603915',
-      name: '国茂股份',
-      openDate: '2025-08-27',
-      closeDate: '2026-05-11',
-      buyAvg: '15.76',
-      sellAvg: '17.26',
-      totalPnl: '15960.35',
-      totalPnlPct: '0.096',
-      fee: '133.25',
-      indexPct: '0.0922',
-      vsIndexPct: '0.0038',
+      code: 'ZQX',
+      name: '合成甲股份',
+      openDate: '2025-09-16',
+      closeDate: '2025-12-18',
+      buyAvg: '10.4',
+      sellAvg: '11.35',
+      totalPnl: '2018.12',
+      totalPnlPct: '0.0941',
+      fee: '16.88',
+      indexPct: '0.0353',
+      vsIndexPct: '0.0588',
     });
-    expect(r.row.raw['清仓距今']).toBe('-0.0483');
+    expect(r.row.raw['清仓距今']).toBe('-0.1265');
   });
 
   it('必填面缺失 (清仓日期非法) → skip', () => {
@@ -332,16 +332,16 @@ describe('normalizeTradeRow 交易流水行 (11 全存)', () => {
 
   it('买入行 → 全字段 (amount signed)', () => {
     const cells = [
-      '2025-08-27',
-      '14:53:27',
-      '603915',
-      '国茂股份',
+      '2025-09-16',
+      '10:21:09',
+      'ZQX',
+      '合成甲股份',
       '买入',
-      '6200',
-      '16.12',
-      '-99954.99',
-      '99944',
-      '10.99',
+      '1700',
+      '10.4',
+      '-17685.3',
+      '17680',
+      '5.3',
       '',
     ];
     const r = normalizeTradeRow(index, TRADE_HEADERS, cells);
@@ -349,23 +349,23 @@ describe('normalizeTradeRow 交易流水行 (11 全存)', () => {
     if (r.kind !== 'ok') return;
     expect(r.row).toMatchObject({
       market: 'cn',
-      code: '603915',
-      name: '国茂股份',
+      code: 'ZQX',
+      name: '合成甲股份',
       category: 'buy',
-      tradeDate: '2025-08-27',
-      tradeTime: '14:53:27',
-      qty: '6200',
-      price: '16.12',
-      amount: '-99954.99',
-      turnover: '99944',
-      fee: '10.99',
+      tradeDate: '2025-09-16',
+      tradeTime: '10:21:09',
+      qty: '1700',
+      price: '10.4',
+      amount: '-17685.3',
+      turnover: '17680',
+      fee: '5.3',
       note: null,
     });
     expect(r.warnings).toEqual([]);
   });
 
   it('资金转入转出行 (其他, 代码/名称/时间空) → market/code null + cash', () => {
-    const cells = ['2025-08-25', '', '', '', '其他', '0', '0', '100000'];
+    const cells = ['2025-09-12', '', '', '', '其他', '0', '0', '60000'];
     const r = normalizeTradeRow(index, TRADE_HEADERS, cells);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
@@ -374,30 +374,30 @@ describe('normalizeTradeRow 交易流水行 (11 全存)', () => {
       code: null,
       name: null,
       category: 'cash',
-      tradeDate: '2025-08-25',
+      tradeDate: '2025-09-12',
       tradeTime: null,
-      amount: '100000',
+      amount: '60000',
     });
   });
 
   it('除权除息行 XD 前缀名称保留不清洗', () => {
     const cells = [
-      '2025-10-23',
-      '16:00:00',
-      '603915',
-      'XD国茂股份',
+      '2025-11-06',
+      '15:30:00',
+      'ZQX',
+      'XD合成甲股份',
       '除权除息',
       '0',
-      '15.6',
-      '744',
-      '744',
+      '10.9',
+      '420',
+      '420',
       '0',
       '',
     ];
     const r = normalizeTradeRow(index, TRADE_HEADERS, cells);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
-    expect(r.row.name).toBe('XD国茂股份');
+    expect(r.row.name).toBe('XD合成甲股份');
     expect(r.row.category).toBe('xd');
   });
 
@@ -424,7 +424,7 @@ describe('normalizeTradeRow 交易流水行 (11 全存)', () => {
   });
 
   it('必填面缺失 (发生金额空) → skip; 全空行 → skip', () => {
-    const noAmount = ['2025-08-25', '', '', '', '其他', '0', '0', ''];
+    const noAmount = ['2025-09-12', '', '', '', '其他', '0', '0', ''];
     expect(normalizeTradeRow(index, TRADE_HEADERS, noAmount).kind).toBe('skip');
     expect(normalizeTradeRow(index, TRADE_HEADERS, []).kind).toBe('skip');
   });
