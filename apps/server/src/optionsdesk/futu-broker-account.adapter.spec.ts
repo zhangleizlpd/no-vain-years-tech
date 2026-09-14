@@ -15,10 +15,14 @@ import { FutuBrokerAccountAdapter, createBrokerAccountPort } from './futu-broker
  * 为负、成交 `qty` 非负、`deal_id` 为数字串、成交行无 `currency`、时间无时区带毫秒。
  * 真端点契约不在本文件的证据范围内。
  *
- * 成交号 / 订单号用 19 位明显假号的**数字串** (2026-09-14 amend): 即修复后 shim 的输出形态。
+ * 成交号用 19 位明显假号的**数字串** (2026-09-14 amend): 即修复后 shim 的输出形态。
  * EVIDENCE: 真号超安全整数 —— 082 POC-1 (2026-09-13 维护者采集的原始输出) 244/244 行 `deal_id` 为
  * 17–19 位整数且 > 2^53−1; 2026-09-14 prod 首次回填因 shim 仍输出 JSON number 而报「缺可用的 deal_id」。
  * 旧 fixture 的 7 位小号覆盖不到这个尺寸, 故 T012 未发现。
+ *
+ * 订单号 (订单行与成交行上的 `order_id`) 用 18 位「大写字母 + 数字」、首字符为字母的明显假号
+ * (`FAKE…`, 2026-09-14 二次 amend)。EVIDENCE: 2026-09-14 prod 第二次回填报「缺可用的 order_id」;
+ * 形态计数见 adapter `orderIdOrNull` 注释。旧 fixture 的纯数字订单号与真形态不符, 故 T012 与首次 amend 均未发现。
  *
  * 🚨 账户号一律假值 {@link FAKE_ACC_ID} (末 4 位 0000)。
  *
@@ -30,6 +34,10 @@ import { FutuBrokerAccountAdapter, createBrokerAccountPort } from './futu-broker
  *   2026-09-14 amend 补 ⑧ ⑨ 后 (共 12 条, 同法直跑, 还原后 `cmp` 相同):
  *   e. `idOrNull` number 分支去掉 `isSafeInteger`        → 1 failed | 11 passed —— 只有 ⑧ 红
  *   f. `idOrNull` 串分支改 `String(Number(s))`            → 2 failed | 10 passed —— ⑨ 与 ③ (断言 19 位 dealId) 红
+ *   2026-09-14 二次 amend 补 ⑩ ⑪ ⑫ ⑬ 后 (共 18 条; e / f 时的 `idOrNull` 已拆为 `dealIdOrNull` + `orderIdOrNull`):
+ *   先红: 旧实现上跑 → 5 failed | 13 passed —— ④ ⑥ ⑨ ⑩ ⑪ 红; ⑫ ⑬ 绿 (守的是修复前后都该成立的行为)
+ *   g. `ORDER_ID_RE` 改回纯数字 `/^\d+$/`               → 5 failed | 13 passed —— ④ ⑥ ⑨ ⑩ ⑪ 红
+ *   h. `ORDER_ID_RE` 去掉 64 上限 (`{1,64}` → `+`)      → 1 failed | 17 passed —— 只有 ⑫ 的 65 字符臂红
  *   ⚠️ b / c / d 经 `pnpm -C apps/server exec vitest run <本文件>` 直跑: `nx test server` 先跑
  *   typecheck, 类型不合的变异 (d 丢了 `cfg` 收窄) 会在 tsc 处红而**测试根本没跑**, 那不算证据。
  *   边界规则对照: 在 optionsdesk 新建文件 import `marketdata/marketdata.rules` → eslint
@@ -65,7 +73,7 @@ function deal(extra: Record<string, unknown> = {}) {
     stock_name: 'PEP 260918 130.00P',
     deal_market: 'US',
     deal_id: '1000000000000000001',
-    order_id: '1000000000000000002',
+    order_id: 'FAKE00000000000002',
     qty: 2.0,
     price: 1.85,
     trd_side: 'SELL_SHORT',
@@ -86,7 +94,7 @@ const COMBO_ORDER = {
   trd_side: 'SELL',
   order_type: 'NORMAL',
   order_status: 'FILLED_ALL',
-  order_id: '1000000000000000003',
+  order_id: 'FAKE00000000000003',
   qty: 1.0,
   price: 0.95,
   create_time: '2026-09-11 09:40:00.120',
@@ -194,22 +202,51 @@ describe('FutuBrokerAccountAdapter', () => {
     );
   });
 
-  it('⑨ 19 位数字串 ⇒ dealId / orderId 与输入逐位相等, 仅末位不同的两笔成交不撞号', async () => {
+  it('⑨ 19 位数字成交号 ⇒ dealId 与输入逐位相等, 仅末位不同的两笔成交不撞号', async () => {
     const shim = makeShim({
       '/trade/deals': [
         deal(),
-        deal({ deal_id: '1000000000000000002', order_id: '1000000000000000004' }),
+        deal({ deal_id: '1000000000000000002', order_id: 'FAKE00000000000004' }),
       ],
-      '/trade/orders': [COMBO_ORDER],
     });
-    const adapter = makeAdapter(shim.http);
-    const deals = await adapter.fetchDeals('us', WINDOW);
+    const deals = await makeAdapter(shim.http).fetchDeals('us', WINDOW);
     expect(deals.map((d) => [d.dealId, d.orderId])).toEqual([
-      ['1000000000000000001', '1000000000000000002'],
-      ['1000000000000000002', '1000000000000000004'],
+      ['1000000000000000001', 'FAKE00000000000002'],
+      ['1000000000000000002', 'FAKE00000000000004'],
     ]);
-    const [order] = await adapter.fetchOrders('us', WINDOW);
-    expect(order?.orderId).toBe('1000000000000000003');
+  });
+
+  it('⑩ 订单行 18 位字母数字订单号 ⇒ 接受, orderId 与输入逐字相等', async () => {
+    const shim = makeShim({ '/trade/orders': [COMBO_ORDER] });
+    const [order] = await makeAdapter(shim.http).fetchOrders('us', WINDOW);
+    expect(order?.orderId).toBe('FAKE00000000000003');
+  });
+
+  it('⑪ 成交行上的字母数字 order_id ⇒ 保留 (不再静默置 null, 成交 ↔ 订单关联不丢)', async () => {
+    const shim = makeShim({ '/trade/deals': [deal({ order_id: 'FAKE00000000000005' })] });
+    const [row] = await makeAdapter(shim.http).fetchDeals('us', WINDOW);
+    expect(row?.orderId).toBe('FAKE00000000000005');
+  });
+
+  it.each(['FAKE-0001', 'FAKE 0001', 'A'.repeat(65)])(
+    '⑫ 订单号 %j 含标点 / 空白 / 超 64 字符 ⇒ 订单行抛「缺可用的 order_id」, 成交行上为 null',
+    async (bad) => {
+      const orders = makeShim({ '/trade/orders': [{ ...COMBO_ORDER, order_id: bad }] });
+      await expect(makeAdapter(orders.http).fetchOrders('us', WINDOW)).rejects.toThrow(
+        '缺可用的 order_id',
+      );
+      const deals = makeShim({ '/trade/deals': [deal({ order_id: bad })] });
+      const [row] = await makeAdapter(deals.http).fetchDeals('us', WINDOW);
+      expect(row).toBeDefined();
+      expect(row?.orderId).toBeNull();
+    },
+  );
+
+  it('⑬ 成交号仍只收数字: 字母数字 deal_id ⇒ 抛「缺可用的 deal_id」', async () => {
+    const shim = makeShim({ '/trade/deals': [deal({ deal_id: 'FAKE00000000000009' })] });
+    await expect(makeAdapter(shim.http).fetchDeals('us', WINDOW)).rejects.toThrow(
+      '缺可用的 deal_id',
+    );
   });
 
   it('⑤ shim 409 ⇒ BrokerAccountSelectionError (数据类, 不可重试)', async () => {

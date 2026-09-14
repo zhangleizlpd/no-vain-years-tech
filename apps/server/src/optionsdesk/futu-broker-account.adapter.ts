@@ -94,13 +94,31 @@ function decimalOrNull(v: unknown): Prisma.Decimal | null {
 }
 
 /**
- * 券商成交号 / 订单号 → 数字串。JSON number 只收安全整数: 超过 2^53 的号在 JSON 解析时已丢精度,
+ * 券商成交号 → 数字串。JSON number 只收安全整数: 超过 2^53 的号在 JSON 解析时已丢精度,
  * 收下它会让两笔不同成交撞同一个唯一键 ⇒ 宁可 null (必填处随即 throw) 也不落错号。
+ * EVIDENCE: 成交号为纯数字 —— 2026-09-14 本修复实取港机 shim 全窗口 (2024-09-01..2026-09-14, US + HK)
+ * 干跑: 成交行 `deal_id` 245/245 为 17–19 位数字串。
  */
-function idOrNull(v: unknown): string | null {
+function dealIdOrNull(v: unknown): string | null {
   if (typeof v === 'number') return Number.isSafeInteger(v) ? String(v) : null;
   const s = strOrNull(v);
   return s !== null && /^\d+$/.test(s) ? s : null;
+}
+
+/** 订单号形态: 仅字母数字, 长度上限 = 库列宽 `VarChar(64)` (`BrokerOrder.orderId` / `BrokerDeal.orderId`)。 */
+const ORDER_ID_RE = /^[A-Za-z0-9]{1,64}$/;
+
+/**
+ * 券商订单号 → 原样串 (只收串, 不收 JSON number)。不合形态 ⇒ null (订单行必填处随即 throw;
+ * 成交行上可选, 为 null 即不关联)。
+ * EVIDENCE: 订单号**不是纯数字** —— 18 位「大写字母 + 数字」、首字符为字母: 维护者 2026-09-14 港机只读探针
+ * 订单 30/30、成交行 `order_id` 13/13; 082 POC-1 原始输出 (2026-09-13 维护者采集) 订单 393/393 非纯数字;
+ * 2026-09-14 本修复同上全窗口干跑: 订单 397/397、成交行 245/245 的 `order_id` 匹配 `^[A-Za-z0-9]+$` 且长 18。
+ * 按纯数字校验时 prod 回填报「缺可用的 order_id」, 成交行上的订单号则被静默置 null。
+ */
+function orderIdOrNull(v: unknown): string | null {
+  const s = strOrNull(v);
+  return s !== null && ORDER_ID_RE.test(s) ? s : null;
 }
 
 function required<T>(
@@ -145,8 +163,8 @@ function parseDeal(row: unknown, market: BrokerMarket, what: string): BrokerDeal
   }
   return {
     market,
-    dealId: required(idOrNull(r.deal_id), 'deal_id', what, r),
-    orderId: idOrNull(r.order_id),
+    dealId: required(dealIdOrNull(r.deal_id), 'deal_id', what, r),
+    orderId: orderIdOrNull(r.order_id),
     code: required(strOrNull(r.code), 'code', what, r),
     side: side as BrokerTradeSide,
     qty: required(decimalOrNull(r.qty), 'qty', what, r),
@@ -161,7 +179,7 @@ function parseOrder(row: unknown, market: BrokerMarket, what: string): BrokerOrd
   const r = asRecord(row);
   return {
     market,
-    orderId: required(idOrNull(r.order_id), 'order_id', what, r),
+    orderId: required(orderIdOrNull(r.order_id), 'order_id', what, r),
     code: required(strOrNull(r.code), 'code', what, r),
     comboLegCodes: parseComboLegs(r.combo_legs),
     side: required(textOrNull(r.trd_side), 'trd_side', what, r),
