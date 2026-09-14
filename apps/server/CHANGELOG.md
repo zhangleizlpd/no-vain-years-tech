@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.52.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.0...server-v0.52.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **marketdata:** 079 上线后误报修正 刊发认 fs 族标签 非季报公司 Q1/Q3 不判逾期 旧未对齐事件迁已并入 ([#424](https://github.com/zhangleizlpd/no-vain-years-tech/issues/424)) ([a288a1c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a288a1cb932a16b95e08e2835a6fa3a412e9b0e6))
+* **marketdata:** 公告入库对已存在行刷新 types 避免理杏仁事后补标被 skipDuplicates 永久冻结 ([#423](https://github.com/zhangleizlpd/no-vain-years-tech/issues/423)) ([cee2dbe](https://github.com/zhangleizlpd/no-vain-years-tech/commit/cee2dbe18692f7ddd9607b298aba05c9d5da050b))
+* **optionsdesk:** futu-shim 交易行大整数 ID 输出为数字串 ([#421](https://github.com/zhangleizlpd/no-vain-years-tech/issues/421)) ([00972cf](https://github.com/zhangleizlpd/no-vain-years-tech/commit/00972cf19a8346bd6e38d381a892a6d13c3e3eb8))
+
 ## [0.52.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.51.2...server-v0.52.0) (2026-09-14)
 
 
