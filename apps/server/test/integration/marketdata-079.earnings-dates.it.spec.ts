@@ -14,8 +14,11 @@ import {
   executeFiscalProfileSet,
   parseFiscalProfileArgs,
 } from '../../src/marketdata/marketdata-fiscal-profile.cli';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { GetLegsUseCase } from '../../src/optionsdesk/get-legs.usecase';
+import { PrismaLegRetrievalAdapter } from '../../src/optionsdesk/leg-retrieval.adapter';
+import { stubTradingCalendar } from '../_support/trading-calendar-stub';
 import type {
   EarningsCalendarEvent,
   EarningsCalendarPort,
@@ -1937,5 +1940,149 @@ describe('079 T019 清单失败、陈旧与日历不可判 (经维度运行)', (
     );
     expect(runSteps(run, 'earnings_board_list_stale')).toEqual([]);
     expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+});
+
+// T021 港股打标隔离 (FR-022 / SC-009, plan §D1; state_branches 24): 期权台取腿只读 `earnings_event`
+// (`get-legs.usecase.ts` `readEarningsDates`, 按标的过滤、不分市场) ⇒ 本片新表里的 confirmed 港股事件
+// 不得让港股收租腿的财报标离开「无日期」。取腿用例装配 = 直接 new + 真 PrismaLegRetrievalAdapter + 日历替身
+// (体例同 `optionsdesk-050.mark.it.spec.ts`), 港股链形态同 `optionsdesk-070.offline-ladder.it.spec.ts`。
+describe('079 T021 港股打标隔离: 期权台取腿读不到本片产出', () => {
+  const HK_CODE = '06060';
+  const SYMBOL = `hk:${HK_CODE}`;
+  /** 香港周一 10:00 ⇒ 交易所今天 09-14; 收盘快照取上一场 09-11。 */
+  const LEGS_NOW = new Date('2026-09-14T02:00:00Z');
+  const PREV_SESSION = '2026-09-11';
+  /** DTE 45 > 28 ⇒ 收租长腿, 落收租召回段; 事件日 09-25 落打标窗口 [09-14, 10-29] 内。 */
+  const EXPIRY = '2026-10-29';
+  const EVENT_DATE = '2026-09-25';
+
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('新表有 confirmed 港股事件 ⇒ 港股收租腿财报标仍为 no_date', async () => {
+    const inst = await instrument('hk', HK_CODE);
+    await dimensionRun(
+      buildMerge(
+        { current: { observations: [obs(inst.id, 'structured', EVENT_DATE)] } },
+        { current: listing(PREV_SESSION, [obs(inst.id, 'meeting', EVENT_DATE)]) },
+      ),
+      PREV_SESSION,
+    );
+    // 先断言有东西: 新表没有 confirmed 港股事件时, 下面的「无日期」照样成立、测不出隔离。
+    expect(
+      await prisma.earningsDateEvent.count({
+        where: {
+          instrumentId: inst.id,
+          market: 'hk',
+          status: 'confirmed',
+          announceDate: day(EVENT_DATE),
+        },
+      }),
+    ).toBeGreaterThan(0);
+    expect(await prisma.earningsEvent.count({ where: { instrumentId: inst.id } })).toBe(0);
+
+    const contractIds: bigint[] = [];
+    try {
+      for (const [strike, bid, ask, delta] of [
+        ['120', '1.40', '1.50', '-0.20'],
+        ['115', '0.70', '0.80', '-0.10'],
+      ] as const) {
+        const contract = await prisma.optionContract.create({
+          data: {
+            market: 'hk',
+            code: `${HK_CODE}-T021-${strike}`,
+            root: HK_CODE,
+            underlyingInstrumentId: inst.id,
+            expiryDate: day(EXPIRY),
+            strikePrice: strike,
+            optionType: 'PUT',
+            isStandard: true,
+            expirationCycle: 'MONTH',
+            contractSize: 500,
+          },
+          select: { id: true },
+        });
+        contractIds.push(contract.id);
+        await prisma.optionDailySnapshot.create({
+          data: {
+            contractId: contract.id,
+            sessionDate: day(PREV_SESSION),
+            source: 'eod',
+            quoteAsOf: new Date(`${PREV_SESSION}T08:10:00Z`),
+            oiAsOf: day(PREV_SESSION),
+            bid,
+            ask,
+            delta,
+            openInterest: '900',
+            volume: '40',
+            underlyingSpot: '132.4000',
+            greeksComplete: true,
+          },
+        });
+      }
+      // V = 150 ⇒ W = 120, spot 132.40 落卖put区; 水位 ≥ 2/3 ⇒ 收租意图 (同 050 mark IT)。
+      await prisma.anchor.create({
+        data: {
+          ticker: SYMBOL,
+          market: 'hk',
+          v: '150',
+          asof: day('2026-06-30'),
+          method: 'dcf',
+          confidence: '8',
+          confidenceSource: 'manual',
+          lLevelEffective: 'L2',
+          positionBucketManual: 'gte_two_thirds',
+          positionBucketSetAt: new Date('2026-09-01T02:00:00Z'),
+        },
+      });
+
+      const view = await new GetLegsUseCase(
+        prisma,
+        new PrismaLegRetrievalAdapter(prisma),
+        stubTradingCalendar(),
+        { marchPhiTier: 'good', marchMode: 'phi' },
+      ).execute(SYMBOL, 'rent', LEGS_NOW);
+
+      expect(view.intent).toBe('rent');
+      expect(view.legs.length).toBeGreaterThan(0);
+      expect(view.legs.map((l) => [l.code, l.earningsMark?.mark])).toEqual(
+        view.legs.map((l) => [l.code, 'no_date']),
+      );
+    } finally {
+      await prisma.anchor.deleteMany({ where: { ticker: SYMBOL } });
+      await prisma.optionDailySnapshot.deleteMany({ where: { contractId: { in: contractIds } } });
+      await prisma.optionContract.deleteMany({ where: { id: { in: contractIds } } });
+    }
+  });
+
+  it('结构: apps/server/src/optionsdesk/ 零引用本片 5 个新 model (prisma 访问器 / 类型名 / 表名)', () => {
+    const NEW_MODEL_REFERENCE =
+      /\b(?:earningsDate(?:Observation|Event)|earningsMeetingLag|earningsFiscalProfile|EarningsDate(?:Observation|Event)|EarningsMeetingLag|EarningsFiscalProfile|earnings_date_(?:observation|event)|earnings_meeting_lag|earnings_fiscal_profile)/g;
+    const srcRoot = join(__dirname, '../../src');
+    const scan = (dir: string, files: readonly string[]) =>
+      files
+        .filter((f) => f.endsWith('.ts'))
+        .flatMap((f) =>
+          (readFileSync(join(dir, f), 'utf8').match(NEW_MODEL_REFERENCE) ?? []).map(
+            (m) => `${f}: ${m}`,
+          ),
+        );
+    const optionsdeskFiles = readdirSync(join(srcRoot, 'optionsdesk'), {
+      recursive: true,
+      encoding: 'utf8',
+    });
+
+    // 管道自检: 同一扫描对 marketdata 合并用例必有命中 —— 否则「零命中」可能只是没扫到。
+    expect(scan(join(srcRoot, 'marketdata'), ['sync-earnings-dates.usecase.ts'])).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('earningsDateObservation'),
+        expect.stringContaining('earningsDateEvent'),
+        expect.stringContaining('earningsMeetingLag'),
+        expect.stringContaining('earningsFiscalProfile'),
+      ]),
+    );
+    expect(optionsdeskFiles.filter((f) => f.endsWith('.ts')).length).toBeGreaterThan(0);
+    expect(scan(join(srcRoot, 'optionsdesk'), optionsdeskFiles)).toEqual([]);
   });
 });
