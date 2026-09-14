@@ -22,7 +22,7 @@ paths:
 ## 并发 / 事务
 
 - **单行状态转换 = conditional UPDATE + affected-count**（`updateMany where {id,<前置>}` → `count===1` won / `0` lost），READ COMMITTED。**NEVER** 单行上 `SELECT … FOR UPDATE` / Serializable（偏索引 SSI 假冲突，见详版 P2）。
-- **并发 insert 确需 Serializable 时**：catch **P2002 + P2034 双形态**（只 catch P2002 会 flaky，见详版 P3）；⚠️ Prisma 7+adapter-pg 下 P2034 = `DriverAdapterError`（code undefined），检测要兼容。
+- **并发 insert 确需 Serializable 时**：catch **P2002 + P2034 双形态**（只 catch P2002 会 flaky，见详版 P3）；⚠️ Prisma 7+adapter-pg 下写冲突两种形态：写语句处 `P2034`、COMMIT 时 `DriverAdapterError`（code undefined）→ 检测判 P 码或 `cause.kind === 'TransactionWriteConflict'` / SQLSTATE `40001`/`40P01`。
 - **outbox 事件**：`publish(tx, eventType, payload)` —— caller 传 tx，事件行与状态写**同 `$transaction`**，任一失败回滚。
 - **scheduler**：批扫后**逐行独立 tx**（单行失败隔离）；与并发用户操作互斥靠谓词互斥 + 行写锁。
 - **外部 I/O**：split-tx（TX1 PENDING → tx 外调 HTTP → TX2 标结果），**NEVER** tx 内持锁等 HTTP。
