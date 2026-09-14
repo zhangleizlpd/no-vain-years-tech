@@ -35,6 +35,7 @@ import { BROKER_ACCOUNT_PORT } from './broker-account.port.js';
 import { createBrokerAccountPort } from './futu-broker-account.adapter.js';
 import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase.js';
 import { BrokerAccountScheduler } from './broker-account.scheduler.js';
+import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subscriber.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -123,6 +124,8 @@ import { BrokerAccountScheduler } from './broker-account.scheduler.js';
     SyncBrokerAccountUseCase,
     // 082 T016 它的触发器 (plan D9): 每分钟一拍 —— 回收卡死记录 → 认领补齐 → 开盘前对账。mock 档起手即 return。
     BrokerAccountScheduler,
+    // 082 T018 新建锚 → 待执行补齐记录 (plan D10): 与 marketdata 冷启动订阅方挂同一事件, 只插记录不执行。
+    BrokerHistoryBackfillSubscriber,
   ],
 })
 export class OptionsdeskModule {}
