@@ -12,6 +12,12 @@
  *   L2 值层    从 ~/.nvy/fleet.env 的值**派生**精确字面量。只在 dev 机 pre-commit 生效，
  *              纯纵深防御。仓内**不内置 denylist** —— 把真标识符写进仓来做守门等于
  *              再发布一遍。
+ *              同层另读**私有业务数据清单**（$NVY_PRIVATE_VALUES_FILE，默认
+ *              ~/.nvy/private-values.txt，由 ops/bin/gen-private-values.sh 生成）：券商账户 /
+ *              成交 / 订单号、真实持仓的期权合约码、手机号。它们不定位主机，L1 判形状抓不到，
+ *              fleet.env 里也没有。规则 id `private-business-value`，三种模式都跑；
+ *              **不走 allowlist**（私有真值没有「良性」一说）。写入时刻另有同源的
+ *              PreToolUse 闸 scripts/hooks/pretooluse-private-data-guard.sh。
  *
  * 三条设计纪律（每条都有反例撑着，详见 convention）：
  *   1. L1 必须在 CI —— 只挂本地钩子的守门在 CI 上永远 skip，而 CI 才是唯一拦得住 PR
@@ -226,6 +232,77 @@ export function scanForValues(files: Record<string, string>, literals: string[])
   return findings;
 }
 
+/** L2 私有清单的路径 env —— 与 ops/bin/gen-private-values.sh、pretooluse-private-data-guard.sh 同名。 */
+export const PRIVATE_VALUES_ENV = 'NVY_PRIVATE_VALUES_FILE';
+
+/** 短于此长度的值不参与匹配：短数字在仓里到处都是，子串匹配无法可靠区分（误报会教人忽略告警）。
+ *  生成器用同一阈值；这里再兜一道，防手改清单塞进短值。hook 侧同值。 */
+export const PRIVATE_VALUE_MIN_LEN = 8;
+
+const PRIVATE_RULE = 'private-business-value';
+
+export interface PrivateValue {
+  value: string;
+  category: string;
+}
+
+export function privateValuesPath(env: Record<string, string | undefined> = process.env): string {
+  return env[PRIVATE_VALUES_ENV] || join(homedir(), '.nvy', 'private-values.txt');
+}
+
+/** 解析私有清单：每行一个值；`# category: <name>` 开启一个类别分段；其余 `#` 行与空行忽略。 */
+export function parsePrivateValues(text: string): PrivateValue[] {
+  const out: PrivateValue[] = [];
+  const seen = new Set<string>();
+  let category = 'uncategorized';
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) {
+      const m = line.match(/^#\s*category:\s*(\S+)/);
+      if (m) category = m[1];
+      continue;
+    }
+    if (line.length < PRIVATE_VALUE_MIN_LEN || seen.has(line)) continue;
+    seen.add(line);
+    out.push({ value: line, category });
+  }
+  return out;
+}
+
+/**
+ * L2 私有清单扫描。**不接 allowlist** —— 私有真值没有「良性」一说；报告**只给类别、不回显值**
+ * （终端 / CI 日志本身就是二次发布面）。
+ *
+ * 复杂度：O(M × B)，M = 清单值数（数百量级），B = 被扫字节数。先对整个文件做 `includes` 预筛
+ * （V8 对长模式走 Boyer-Moore-Horspool，平均亚线性），只有命中的文件才逐行 × 命中值定位 ——
+ * 常见路径（零命中）不付「行数 × M」的代价。
+ */
+export function scanForPrivateValues(
+  files: Record<string, string>,
+  entries: PrivateValue[],
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const [p, text] of Object.entries(files)) {
+    const present = entries.filter((e) => text.includes(e.value));
+    if (present.length === 0) continue;
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      for (const e of present) {
+        if (!lines[i].includes(e.value)) continue;
+        findings.push({
+          file: p,
+          line: i + 1,
+          rule: PRIVATE_RULE,
+          snippet: `<redacted — 命中私有清单（类别：${e.category}）>`,
+          hint: '私有业务数据真值 → 改用合成值或定性表述，真值只放 docs/private/（本规则不走 allowlist）',
+        });
+      }
+    }
+  }
+  return findings;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,10 +343,28 @@ function readAll(paths: string[]): Record<string, string> {
   return files;
 }
 
-function report(findings: Finding[], scope: string, l2: 'on' | 'off'): void {
+/** L2 私有清单：文件不存在（CI / 未生成）或读不了 → 跳过并**说明**，不把整轮扫描带走。 */
+function loadPrivateValues(): { entries: PrivateValue[]; status: string } {
+  const p = privateValuesPath();
+  if (!existsSync(p)) {
+    return {
+      entries: [],
+      status:
+        'L2 私有清单未配置（未找到 $NVY_PRIVATE_VALUES_FILE / ~/.nvy/private-values.txt；生成：ops/bin/gen-private-values.sh）',
+    };
+  }
+  try {
+    const entries = parsePrivateValues(readFileSync(p, 'utf8'));
+    return { entries, status: `L2 私有清单已启用（${entries.length} 个值）` };
+  } catch {
+    return { entries: [], status: 'L2 私有清单读取失败，已跳过' };
+  }
+}
+
+function report(findings: Finding[], scope: string, l2: 'on' | 'off', privStatus: string): void {
   if (findings.length === 0) {
     console.log(
-      `✅ 标识符边界守门通过（${scope}，L1 结构层${l2 === 'on' ? ' + L2 值层' : '；L2 值层未启用（未找到 ~/.nvy/fleet.env —— CI 上即此态）'}）。`,
+      `✅ 标识符边界守门通过（${scope}，L1 结构层${l2 === 'on' ? ' + L2 值层' : '；L2 值层未启用（未找到 ~/.nvy/fleet.env —— CI 上即此态）'}；${privStatus}）。`,
     );
     return;
   }
@@ -314,7 +409,9 @@ function main(): void {
         ),
       );
     }
-    report(msgFindings, '扫 1 条 commit message', msgL2);
+    const msgPriv = loadPrivateValues();
+    msgFindings.push(...scanForPrivateValues({ '<commit-msg>': text }, msgPriv.entries));
+    report(msgFindings, '扫 1 条 commit message', msgL2, msgPriv.status);
     return;
   }
 
@@ -341,7 +438,15 @@ function main(): void {
     findings.push(...scanForValues(files, deriveValueLiterals(readFileSync(fleetPath, 'utf8'))));
   }
 
-  report(findings, `扫 ${Object.keys(files).length} 个${staged ? '暂存' : ' tracked '}文件`, l2);
+  const priv = loadPrivateValues();
+  findings.push(...scanForPrivateValues(files, priv.entries));
+
+  report(
+    findings,
+    `扫 ${Object.keys(files).length} 个${staged ? '暂存' : ' tracked '}文件`,
+    l2,
+    priv.status,
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

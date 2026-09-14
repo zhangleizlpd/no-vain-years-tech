@@ -6,6 +6,11 @@ import {
   deriveValueLiterals,
   EMPTY_ALLOWLIST,
   isNonPublicIpv4,
+  parsePrivateValues,
+  PRIVATE_VALUE_MIN_LEN,
+  PRIVATE_VALUES_ENV,
+  privateValuesPath,
+  scanForPrivateValues,
   scanForValues,
   scanText,
   trackedPaths,
@@ -264,5 +269,64 @@ describe('E-级 2 的机械化断言 —— 采集端全开', () => {
     expect(paths.some((p) => p.startsWith('.claude/'))).toBe(true);
     expect(paths.some((p) => p.startsWith('ops/'))).toBe(true);
     expect(paths.some((p) => p.startsWith('specs/'))).toBe(true);
+  });
+});
+
+describe('L2 私有清单 —— private-business-value（真值只在仓外，这里全是合成值）', () => {
+  // CLI 三种模式（--staged / --commit-msg / 全仓）端到端接线由
+  // check-identifier-boundary.test.sh 覆盖 —— 要起临时 git 仓与子进程，不进 Small 档 spec。
+  const list = [
+    '# 生成器写的文件头注释',
+    '',
+    '# category: broker-order-id',
+    'SYNTH-ORDER-000042',
+    'SYNTH-ORDER-000042', //           重复值只收一次
+    '# category: option-contract-code',
+    'US.ZZZZ991231C123000\r', //       CRLF 行尾
+    'short7x', //                      短于阈值
+    '  SYNTH-PADDED-VALUE  ', //       首尾空白
+  ].join('\n');
+
+  it('按 `# category:` 分段归类；注释 / 空行 / 重复 / 短值不进清单', () => {
+    expect(parsePrivateValues(list)).toEqual([
+      { value: 'SYNTH-ORDER-000042', category: 'broker-order-id' },
+      { value: 'US.ZZZZ991231C123000', category: 'option-contract-code' },
+      { value: 'SYNTH-PADDED-VALUE', category: 'option-contract-code' },
+    ]);
+  });
+
+  it('🚨 短于阈值的值不参与匹配 —— 短数字在仓里到处都是，子串匹配会误报', () => {
+    expect(PRIVATE_VALUE_MIN_LEN).toBe(8);
+    expect(parsePrivateValues('1234567')).toEqual([]);
+    expect(parsePrivateValues('12345678')).toHaveLength(1);
+  });
+
+  it('🚨 命中行被抓，报告只给类别、不回显值', () => {
+    const hits = scanForPrivateValues(
+      { 'specs/x/tasks.md': 'line1\n合约 US.ZZZZ991231C123000 的持仓\nline3' },
+      parsePrivateValues(list),
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      file: 'specs/x/tasks.md',
+      line: 2,
+      rule: 'private-business-value',
+    });
+    expect(hits[0].snippet).toContain('option-contract-code');
+    // 报告本身不能成为泄漏渠道
+    expect(JSON.stringify(hits)).not.toContain('ZZZZ991231');
+  });
+
+  it('同一行多个值各报一条；零命中文件零输出', () => {
+    const entries = parsePrivateValues(list);
+    expect(
+      scanForPrivateValues({ 'a.md': 'SYNTH-ORDER-000042 / US.ZZZZ991231C123000' }, entries),
+    ).toHaveLength(2);
+    expect(scanForPrivateValues({ 'b.md': '合成的 SYNTH-ORDER 前缀不算' }, entries)).toEqual([]);
+  });
+
+  it('清单路径：env 覆盖优先，缺省落 ~/.nvy/private-values.txt', () => {
+    expect(privateValuesPath({ [PRIVATE_VALUES_ENV]: '/x/pv.txt' })).toBe('/x/pv.txt');
+    expect(privateValuesPath({})).toMatch(/\.nvy\/private-values\.txt$/);
   });
 });
