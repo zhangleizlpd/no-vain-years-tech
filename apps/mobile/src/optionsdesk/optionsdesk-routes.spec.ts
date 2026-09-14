@@ -18,6 +18,7 @@ import {
   OPTIONSDESK_ANCHOR_NEW_ROUTE,
   OPTIONSDESK_RADAR_ROUTE,
   OPTIONSDESK_THERMOMETER_ROUTE,
+  OPTIONSDESK_TRADING_ACCOUNT_ROUTE,
   OPTIONSDESK_UNDERLYING_PATHNAME,
   optionsdeskAnchorEditRoute,
   optionsdeskChainReportRoute,
@@ -41,6 +42,7 @@ const ALL_ROUTES = [
   OPTIONSDESK_ANCHOR_SUBMISSIONS_ROUTE,
   optionsdeskAnchorSubmissionRoute('142'),
   OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
+  OPTIONSDESK_TRADING_ACCOUNT_ROUTE,
 ];
 
 describe('046 T023 —— 两个新屏的路由常量', () => {
@@ -105,6 +107,17 @@ describe('072 T019 —— 待审详情的路由常量', () => {
   // 「要不要解码」在两条路由上分叉）。
   it('id 不做转义', () => {
     expect(optionsdeskAnchorSubmissionRoute('142')).not.toContain('%');
+  });
+});
+
+describe('081 T003 —— 交易账户页的路由常量', () => {
+  it('交易账户挂在期权台二级页栈下（⇒ 继承 _layout 的 route-stack 门，FR-009）', () => {
+    expect(OPTIONSDESK_TRADING_ACCOUNT_ROUTE).toBe('/(app)/optionsdesk/trading-account');
+  });
+
+  // 🚨 push 屏而非 tab：挂到 (tabs) 下 = 只剩渲染门，深链直达会绕过 MarketsRouteGuard。
+  it('🚨 交易账户不长在 (tabs) 下', () => {
+    expect(OPTIONSDESK_TRADING_ACCOUNT_ROUTE).not.toContain('(tabs)');
   });
 });
 

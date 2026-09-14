@@ -12,9 +12,20 @@
 // this is the belt for nested-route refreshes where web canGoBack is unreliable
 // (expo/expo#30977) and no per-level anchor exists.
 //
+// That same anchor makes `canGoBack` true on a deep link (e.g. /optionsdesk/thermometer),
+// so back alone would pop to the synthesized (tabs) = the home tab, not the parent.
+// Discriminator: the ancestor container route back would pop has no `params.screen`
+// ⇒ treat as deep link ⇒ replace to parent instead.
+// EVIDENCE: deep link ⇒ (app) routes [(tabs) with no state/params, container], canGoBack
+// true, back lands on "/"; in-app entry ⇒ container carries `params.screen` —— 2026-09-13
+// Playwright Expo Web probe (PR #403): deep /optionsdesk/thermometer and /settings had no
+// params.screen, 5 in-app paths (incl. cold start with no tab tap) had 'thermometer' /
+// 'index'. Library side: @react-navigation/core@7.17.4 useNavigationBuilder.tsx:294/677
+// reads params.screen to seed / switch the nested navigator. Native not verified.
+//
 // Factory injects the parent href per screen; pass the route one level up.
 import { HeaderBackButton } from '@react-navigation/elements';
-import { router, type Href } from 'expo-router';
+import { router, useNavigation, type Href } from 'expo-router';
 
 // Props native-stack passes to a headerLeft render prop at runtime. The elements
 // package's exported HeaderBackButtonProps omits `canGoBack`, so type it locally.
@@ -24,8 +35,36 @@ interface HeaderLeftRenderProps {
   label?: string;
 }
 
+// Structural slice of the navigation object the walk below reads.
+interface NavigatorLike {
+  getState(): { type: string; index: number; routes: { params?: object }[] } | undefined;
+  getParent(): NavigatorLike | undefined;
+}
+
+// Walk up from the screen's own navigator to the first one that could handle back.
+// Own stack with history → a real page beneath; non-stack (tabs) → defer to canGoBack;
+// ancestor stack with history → deep link iff the container it would pop lacks
+// `params.screen`. O(d), d = navigator nesting depth.
+function backPopsDeepLinkedContainer(navigation: NavigatorLike): boolean {
+  let current: NavigatorLike | undefined = navigation;
+  let isOwnNavigator = true;
+  while (current) {
+    const state = current.getState();
+    if (state === undefined || state.type !== 'stack') return false;
+    if (state.index > 0) {
+      if (isOwnNavigator) return false;
+      const popped = state.routes[state.index]?.params as { screen?: unknown } | undefined;
+      return popped?.screen === undefined;
+    }
+    current = current.getParent();
+    isOwnNavigator = false;
+  }
+  return false;
+}
+
 export function makeHeaderBackOrParent(parentHref: Href) {
   return function HeaderBackOrParent({ tintColor, label, canGoBack }: HeaderLeftRenderProps) {
+    const navigation = useNavigation() as unknown as NavigatorLike;
     return (
       <HeaderBackButton
         tintColor={tintColor}
@@ -33,7 +72,7 @@ export function makeHeaderBackOrParent(parentHref: Href) {
         onPress={() => {
           // Prefer React Navigation's per-navigator flag (reliable in headerLeft
           // render props); fall back to the global router probe only if absent.
-          if (canGoBack ?? router.canGoBack()) {
+          if ((canGoBack ?? router.canGoBack()) && !backPopsDeepLinkedContainer(navigation)) {
             router.back();
           } else {
             router.replace(parentHref);
