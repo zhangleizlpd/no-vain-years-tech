@@ -2612,3 +2612,47 @@ describe('079 state_branches 直接覆盖补齐 #19 #20: 清单主表外代码�
     expect(run).toMatchObject({ status: 'success', failed: 0 });
   });
 });
+
+// T030–T033 上线后误报修正 (spec Session（八）, FR-004 / FR-028 / FR-029 / FR-030): 各复刻一个 2026-09-14 prod
+// 形态 + 对照臂, 全部经维度执行, 断言落库的 `sync:hk_earnings_date` 运行记录。
+describe('079 T030 刊发判定放宽: fs 族标签 + 业绩标题 v3 (hk:09961 形态, 经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('fs,fs_full「第二季度及上半年業績公告」⇒ P: 刊发事实 + 事件 published; 同轮「中期業績報告」对照标的无刊发事实、迁入 overdue + partial', async () => {
+    const [xpeng, control] = await Promise.all(['09961', '00005'].map((c) => instrument('hk', c)));
+    for (const i of [xpeng, control]) await seedProfile(i.id);
+    await announce(xpeng.id, '2026-08-28', '2026 年第二季度及上半年業績公告', ['fs', 'fs_full']);
+    await announce(control.id, '2026-08-28', '2026年中期業績報告', ['fs', 'fs_full']);
+    const futu: Round = {
+      current: { observations: [xpeng, control].map((i) => obs(i.id, 'structured', '2026-08-28')) },
+    };
+
+    // 公布日 08-28 (周五) → 09-01 (周二) = 2 个交易日。
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-09-01');
+
+    // 先断言正向: 对照标的迁入 overdue 且计 1 次失败 —— 证明本轮逾期判定在跑, 下面的 published 不是空转。
+    expect((await eventOf(control.id)).status).toBe('overdue');
+    expect(
+      await prisma.earningsDateObservation.count({
+        where: { instrumentId: control.id, basis: 'filed' },
+      }),
+    ).toBe(0);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+
+    expect(
+      await prisma.earningsDateObservation.findFirstOrThrow({
+        where: { instrumentId: xpeng.id, source: 'hkex_announcement' },
+      }),
+    ).toMatchObject({ periodKey: INTERIM, basis: 'filed', filedDate: day('2026-08-28') });
+    expect(await eventOf(xpeng.id)).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-08-28'),
+      announceBasis: 'filed',
+      overdueSince: null,
+    });
+    expect(runSteps(run, 'earnings_date_overdue')).toEqual([
+      expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:00005' }) }),
+    ]);
+  });
+});
