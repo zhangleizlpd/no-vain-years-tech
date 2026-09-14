@@ -199,6 +199,16 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 「只有一条边且指向 ImportAnchorFromModelUseCase」的委托纪律, 而那条纪律的机器强制
   // 就在本文件下方的 WRITE_ALLOWLIST (Check 3)。详见 ADR-0069。
   anchorSubmission: 'optionsdesk',
+  // broker* 六表归 optionsdesk (082 券商账户拉取式同步; plan D7)。= 期权台范围内的券商镜像,
+  // 不扩 portfolio 的 brokerAccount (ADR-0062 复审记录)。同步 use case / 调度器 / 订阅方独占读写
+  // (R1 自有表); 跨 ctx 面 = optionsdesk 读 marketdata 的 optionContract / instrument 做正股判定
+  // (resolve-broker-underlying.ts, 须 CROSS-CONTEXT-READ), 反向无人读这 6 表。
+  brokerConnection: 'optionsdesk',
+  brokerPosition: 'optionsdesk',
+  brokerDeal: 'optionsdesk',
+  brokerOrder: 'optionsdesk',
+  brokerContractRef: 'optionsdesk',
+  brokerSyncRun: 'optionsdesk',
   // researchReport 归 research (057, 第 11 bounded context; ADR-0065 研报库)。投递 UC 独占
   // 读写 (R1 自有表)。**跨 ctx 面 = 0**: symbol 存归一后的 `market:code` 裸字符串, 不建到
   // marketdata.instrument 的外键、不做存在性校验 —— 校验会拒绝合法新标的, 且会引入本可
