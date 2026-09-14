@@ -2600,12 +2600,23 @@ export class DimensionExecutorRegistry {
   // 043 T008 US2 (照抄 041 syncBuyback 区间形态): mode 分 from —— delta 抓当日 (from=asOf), backfill 回填
   // [asOf−historyDepth(3650, ~10yr), asOf] 多年公告流。delta 跳本目标日已落行的标的 (进度即幂等, 镜像
   // pendingBuybackInstruments); backfill 全标的。per-stock HTTP 在 tx 外 (FR-S10) + per-instrument 隔离
-  // (单股失败不连坐); 行按 BACKFILL_ROW_CHUNK 分批 createMany(skipDuplicates) 幂等 (公告历史某日某文档定值 →
-  // insert-only 语义正确, 避大区间单 tx 撞 5s 超时, 同 syncBuyback)。**本 feature 唯一潜在超大表** (~3M 行/全
+  // (单股失败不连坐); 行按 BACKFILL_ROW_CHUNK 分批 (避大区间单 tx 撞 5s 超时, 同 syncBuyback), 每 chunk 先
+  // createMany(skipDuplicates) 插新行, 再对**已存在且 types 不同**的行集合刷新 types (见
+  // refreshAnnouncementTypes)。**不是 insert-only**: linkText/linkType 定值不动, 但 types 会被 vendor 事后补标。
+  // EVIDENCE: vendor 事后补标 types —— 主 agent 2026-09-14 直查 prod 库存 vs 同日 /hk/company/announcement
+  //   现返 (hk:01007 共 10 条, 7 条一致): 2026/0827/2026082702124_c.pdf「全年業績公告」库 {fs} → vendor
+  //   [fs,fs_main]; 2026/0911/2026091101810_c.pdf「中期業績公告」库 {fs} → [fs,fs_main];
+  //   2026/0911/2026091101722_c.pdf「股東特別大會的投票結果」库 {all} → [m_a_v]。同查: 港股「只有 fs 无任何
+  //   fs_* 子标签」的行 2025-01～2026-07 每月 0–4 条, 2026-08 为 284 条, 2026-09 (至 14 日) 43 条 ——
+  //   旧 insert-only 把首拉时的粗标签永久冻结, 下游 079 认 fs_main (earnings-notice.rules.ts) 因此漏判。
+  // ASSUMED: 补标滞后在每轮重取窗口内 —— 未验证 (09-11 那条 3 天内已补, 08-27 那条滞后未知)。本刷新只覆盖
+  //   本轮 vendor 现返的行 (delta = [asOf−delta_lookback_days, asOf], prod 配 7 天, 主 agent 同日直查
+  //   sync_dimension); 滞后 > 7 天的补标会漏刷, 存量靠一次性 backfill (`--dimension announcement
+  //   --history-depth N`) 修复。**本 feature 唯一潜在超大表** (~3M 行/全
   // 港股 10yr, HK 数据集最大表) → **只存元数据不存 PDF 正文**: 列 linkUrl/linkText/linkType 为 VarChar? 文本
   // 列, types 为 Postgres text[] (string[] 直落, 缺→[])。**NK (instrumentId,date,linkUrl)**: linkUrl 是 HKEX
   // 文档全局唯一 URL (probe 433/433 unique) → 同日不同 linkUrl 各落行 (不折叠丢真行)、同 linkUrl 重同步
-  // skipDuplicates 折叠幂等, **无需 vendorEventId/contentHash** (异于 buyback/shareholder)。**≤10yr 硬上限**
+  // skipDuplicates 折叠不翻倍 (types 另行刷新), **无需 vendorEventId/contentHash** (异于 buyback/shareholder)。**≤10yr 硬上限**
   // (>10yr → 403): backfill from=asOf−3650 天然卡限内, adapter 不构造超 10yr 区间。无公告标的空返回 → 零
   // createMany 不崩。backfill 前 pacer.pace()。
   private async syncAnnouncement(
@@ -2643,13 +2654,16 @@ export class DimensionExecutorRegistry {
           linkType: a.linkType,
           types: a.types, // text[] 列 (string[] 直落, 缺→[])。
         }));
-        // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零 createMany。
+        // 行分批: 每 BACKFILL_ROW_CHUNK 行一 $transaction (封顶 tx 时长/内存); 空返回 → 零写。
         for (const rowChunk of chunked(rows, BACKFILL_ROW_CHUNK)) {
           await this.prisma.$transaction(async (tx) => {
-            addWritten(
-              stats,
-              (await tx.announcement.createMany({ data: rowChunk, skipDuplicates: true })).count,
-            );
+            const inserted = (
+              await tx.announcement.createMany({ data: rowChunk, skipDuplicates: true })
+            ).count;
+            // 整 chunk 全是新插 ⇒ 没有既存行可刷, 省掉 UPDATE 往返。
+            const refreshed =
+              inserted === rowChunk.length ? 0 : await this.refreshAnnouncementTypes(tx, rowChunk);
+            addWritten(stats, inserted + refreshed);
           });
         }
         stats.ok++;
@@ -2672,6 +2686,44 @@ export class DimensionExecutorRegistry {
     });
     const doneSet = new Set(done.map((d) => d.instrumentId));
     return instruments.filter((i) => !doneSet.has(i.id));
+  }
+
+  /**
+   * 公告 `types` 滚动刷新: 本 chunk 中**已存在且 types 不同**的行, 一条集合 UPDATE 改写 types; 返实际
+   * 改写的行数 (计入 `written`, 口径「这一行发生了写吗」—— types 相同的行 `IS DISTINCT FROM` 不命中, 不写不计)。
+   *
+   * **delta 与 backfill 走同一路径都刷**: 两者都是「vendor 现返即权威」, 分模式只会让 backfill 成为唯一
+   * 不刷的入口, 且 backfill 恰是修存量的现成通路。backfill 10yr 全量的额外代价: 每 chunk (≤500 行) 多一次
+   * 往返, PG 端与 createMany(skipDuplicates) 同量级的唯一索引探测; 未变行零写 (无 WAL / 无死元组)。
+   *
+   * 只刷 types: linkText / linkType 不在此次修复的证据面内, 保持首拉值。
+   *
+   * 为什么不是 `INSERT … ON CONFLICT DO UPDATE`: 同一语句内出现重复自然键会整句报错 ("cannot affect row
+   * a second time") → 整只标的计 failed; `UPDATE … FROM (VALUES …)` 遇重复键只取其一, 不崩。
+   *
+   * 复杂度: 1 次往返; PG 端 n 行 VALUES 各走一次 `uk_announcement_instrument_date_link` 探测 → O(n·log N)
+   * (n = chunk 行数 ≤ BACKFILL_ROW_CHUNK, N = 表行数); 绑定参数 4n ≤ 2000, 远低于 PG 65535 上限。
+   */
+  private async refreshAnnouncementTypes(
+    tx: Prisma.TransactionClient,
+    rows: readonly { instrumentId: bigint; date: Date; linkUrl: string; types: string[] }[],
+  ): Promise<number> {
+    if (rows.length === 0) return 0;
+    // date 以 'YYYY-MM-DD' 文本 + ::date 传, 不传 Date —— timestamptz→date 会按会话时区换算, 可能差一天。
+    const values = Prisma.join(
+      rows.map(
+        (r) =>
+          Prisma.sql`(${r.instrumentId}::bigint, ${dateOnlyStr(r.date)}::date, ${r.linkUrl}, ${r.types}::text[])`,
+      ),
+    );
+    return tx.$executeRaw`
+      UPDATE marketdata.announcement AS a
+      SET types = v.types
+      FROM (VALUES ${values}) AS v(instrument_id, date, link_url, types)
+      WHERE a.instrument_id = v.instrument_id
+        AND a.date = v.date
+        AND a.link_url = v.link_url
+        AND a.types IS DISTINCT FROM v.types`;
   }
 
   // ── fundamental: delta 批量拉最新快照 upsert / backfill 逐股区间回填历史 createMany, uk (instrumentId, date) ──

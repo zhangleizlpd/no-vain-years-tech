@@ -311,4 +311,131 @@ describe('043 T009 announcement 公告 (Testcontainers PG, 真 adapter + fake ht
     expect(await prisma.announcement.count({ where: { instrumentId: hkId } })).toBe(4);
     expect(await prisma.announcement.count({ where: { instrumentId: cnId } })).toBe(0);
   });
+
+  // ── ⑦⑧ types 滚动刷新: vendor 事后补标 (同 linkUrl 现返 types 变了) → 既存行 types 被刷新 ──
+  // 形态取自 2026-09-14 主 agent 直查 prod 的 hk:01007 对比 (库 {fs} → vendor [fs,fs_main]; 库 {all} →
+  // [m_a_v]), 见 dimension-executor.ts syncAnnouncement 头注释 EVIDENCE。
+  const STALE_URL = 'https://mock.hkex/2026/0527/stale.pdf';
+  const SAME_URL = 'https://mock.hkex/2026/0528/same.pdf';
+  const NEW_URL = 'https://mock.hkex/2026/0602/new.pdf';
+
+  async function seedExisting(instrumentId: bigint): Promise<void> {
+    await prisma.announcement.createMany({
+      data: [
+        {
+          instrumentId,
+          date: new Date('2026-05-27T00:00:00Z'),
+          linkUrl: STALE_URL,
+          linkText: '全年業績公告',
+          linkType: 'PDF',
+          types: ['fs'], // 首拉时的粗标签
+        },
+        {
+          instrumentId,
+          date: new Date('2026-05-28T00:00:00Z'),
+          linkUrl: SAME_URL,
+          linkText: '翌日披露報表',
+          linkType: 'PDF',
+          types: ['ndd_r'],
+        },
+      ],
+    });
+  }
+
+  const REFRESHED_VENDOR_ROWS: unknown[] = [
+    {
+      date: '2026-05-27T00:00:00+08:00',
+      linkUrl: STALE_URL,
+      linkText: '全年業績公告(更新)', // linkText 变了也不刷 (只刷 types)
+      linkType: 'PDF',
+      types: ['fs', 'fs_main'], // 事后补标
+    },
+    {
+      date: '2026-05-28T00:00:00+08:00',
+      linkUrl: SAME_URL,
+      linkText: '翌日披露報表',
+      linkType: 'PDF',
+      types: ['ndd_r'], // 与库存同值
+    },
+    {
+      date: '2026-06-02T00:00:00+08:00',
+      linkUrl: NEW_URL,
+      linkText: '中期業績公告',
+      linkType: 'PDF',
+      types: ['fs', 'fs_main'],
+    },
+  ];
+
+  /** 行的 xmin (PG 行版本号): 不变 ⇒ 该行未发生写。用来证「同值行不写」, 而非只看计数。 */
+  async function xminOf(linkUrl: string): Promise<string> {
+    const r = await prisma.$queryRaw<{ xmin: string }[]>`
+      SELECT xmin::text AS xmin FROM marketdata.announcement WHERE link_url = ${linkUrl}`;
+    return r[0].xmin;
+  }
+
+  it('⑦ delta (回看 7 天, 同 prod) → 既存行 types 不同则刷新并计 written; 同值行不写不计; 新行照常插入; linkText 不动', async () => {
+    const instId = await seedInst('hk', '01007', '測試公司');
+    await prisma.syncDimension.updateMany({
+      where: { dimensionKey: 'announcement' },
+      data: { deltaLookbackDays: 7 },
+    });
+    await seedExisting(instId);
+    const sameXminBefore = await xminOf(SAME_URL);
+
+    const http = new HkAnnouncementHttp(new Set(['01007']), REFRESHED_VENDOR_ROWS);
+    const { stats } = await buildRegistry(makeAdapter(http)).execute('announcement', {
+      mode: 'delta',
+      asOf: AS_OF,
+      now: NOW,
+    });
+
+    expect(stats).toMatchObject({ scanned: 1, ok: 1, failed: 0 });
+    const stale = await prisma.announcement.findFirstOrThrow({ where: { linkUrl: STALE_URL } });
+    expect(stale.types).toEqual(['fs', 'fs_main']);
+    expect(stale.linkText).toBe('全年業績公告'); // 只刷 types
+    const same = await prisma.announcement.findFirstOrThrow({ where: { linkUrl: SAME_URL } });
+    expect(same.types).toEqual(['ndd_r']);
+    expect(await xminOf(SAME_URL)).toBe(sameXminBefore); // 同值行零写
+    const fresh = await prisma.announcement.findFirstOrThrow({ where: { linkUrl: NEW_URL } });
+    expect(fresh.types).toEqual(['fs', 'fs_main']);
+    // written = 1 插入 (NEW) + 1 刷新 (STALE); SAME 未写不计。
+    expect(stats.written).toBe(2);
+    expect(await prisma.announcement.count({ where: { instrumentId: instId } })).toBe(3);
+  });
+
+  it('⑧ backfill (短 history-depth, 修存量通路) → 冻结 types 刷新并计 written; 重跑零写', async () => {
+    const instId = await seedInst('hk', '01007', '測試公司');
+    await prisma.announcement.create({
+      data: {
+        instrumentId: instId,
+        date: new Date('2026-05-27T00:00:00Z'),
+        linkUrl: STALE_URL,
+        linkText: '股東特別大會的投票結果',
+        linkType: 'PDF',
+        types: ['all'],
+      },
+    });
+    const vendorRows: unknown[] = [
+      {
+        date: '2026-05-27T00:00:00+08:00',
+        linkUrl: STALE_URL,
+        linkText: '股東特別大會的投票結果',
+        linkType: 'PDF',
+        types: ['m_a_v'],
+      },
+    ];
+    const shortBackfill = { ...backfillInput, backfillHistoryDays: 45 };
+
+    const first = await buildRegistry(
+      makeAdapter(new HkAnnouncementHttp(new Set(['01007']), vendorRows)),
+    ).execute('announcement', shortBackfill);
+    expect(first.stats).toMatchObject({ scanned: 1, ok: 1, failed: 0, written: 1 });
+    const row = await prisma.announcement.findFirstOrThrow({ where: { linkUrl: STALE_URL } });
+    expect(row.types).toEqual(['m_a_v']);
+
+    const second = await buildRegistry(
+      makeAdapter(new HkAnnouncementHttp(new Set(['01007']), vendorRows)),
+    ).execute('announcement', shortBackfill);
+    expect(second.stats.written).toBe(0); // 已一致 → 不写不计
+  });
 });

@@ -1436,7 +1436,8 @@ describe('043 T008 announcement 装配 (mode 分 from + 元数据列 + createMan
         },
         announcement: { findMany: anFindMany, createMany: anCreateMany },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
-          fn({ announcement: { createMany: anCreateMany } }),
+          // $executeRaw: chunk 有冲突行 (createMany count < 行数) 时走 types 刷新; 真语义由 043 IT 验。
+          fn({ announcement: { createMany: anCreateMany }, $executeRaw: vi.fn(async () => 0) }),
         ),
       },
       recorder: { start: vi.fn(async () => 1n), finish: vi.fn(async () => undefined) },
