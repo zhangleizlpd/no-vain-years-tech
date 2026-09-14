@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: not-started
 created_at: '2026-09-13'
-updated_at: '2026-09-13'
+updated_at: '2026-09-14'
 ---
 
 # Tasks: 079-hk-earnings-date-sources（港股财报日期多源采集与确认层 · 片 1/2：数据层）
@@ -54,6 +54,7 @@ updated_at: '2026-09-13'
 7. 新表不给 `optionsdesk` 任何读口（FR-022 的结构保证，T008 / T021）。
 8. T003 入仓的 fixture 是港交所公开页面：commit message 写明来源 URL 与抓取日期。
 9. **财年档案先于来源与合并接线**（T027 → T028 → T029 早于 T010–T014）：先接来源、后有档案，存量锚第一轮会成批落 `D:` / `T:` 键并误判逾期（spec Session（七））。
+10. **刊发判定放宽先于非季报判定**（T030 早于 T031）：T031 按刊发事实判「730 天内有无季度业绩刊发」，刊发判定仍只认 `fs_main` 时，只标 `fs` 族标签的真季报会被漏掉，把真季报公司误判为非季报、静默吞掉真实逾期（spec Session（八））。
 
 ## 🗂 推进批次（每批 2–3 个 task 为一个 /clear 检查点；批 ≠ commit，每 task 仍各自 atomic commit）
 
@@ -69,6 +70,7 @@ updated_at: '2026-09-13'
 | G | T019 · T020 · T021 | 清单失败 IT + 美股钩子 + 打标隔离 |
 | H | T022 · T023 | 来源增删演练 + 历史 / 回填 |
 | I | T024 →（合并部署）→ T025 → T026 | 回放闸门与 prod 验收 |
+| J | T030 → T031 → T032 → T033 | 上线后误报修正（spec Session（八）） |
 
 ## Server
 
@@ -124,6 +126,16 @@ updated_at: '2026-09-13'
 
 - [X] T023 [Server] **历史业绩公布日 + 回填 CLI**（`FR-020`, `SC-001`, plan §D9 回填）：前置 = T016。历史刊发事实合并各来源、覆盖可得范围 ≥ 2 年；`marketdata-backfill.cli.ts --dimension hk_earnings_date` 以 `mode=backfill` 跑（impl 期更正：`marketdata-trigger.cli.ts` 恒为 delta）：富途 730 天窗 + 交易所两年刊发事实与会前通知信号 + 清单当日页（无历史）。→ verify: `marketdata.backfill-cli.it.spec.ts` 加臂：回填后 `hk:00005` 历史含 2026-02-25 / 2026-05-05 并标来源（US5 AS1）、`hk:00857` 三个周日刊发日与 `hk:09992` 補充标题刊发在列；清单请求次数 = 1；定向变异：回填模式按日循环请求清单 ⇒ 请求次数断言必红。
 
+### 上线后误报修正（spec Session（八），2026-09-14 prod 取证：现存港股逾期 4 条全为误报、`overdueUnjudged` 11,160）
+
+- [ ] T030 [Server] **刊发事实判定放宽：`fs` 族标签 + 业绩标题规则 v3（2a）**（`FR-004`, `SC-001`, plan §D6）：`earnings-notice.rules.ts` 的 `isResultsPublication`：`types` 含 `fs_main` 照旧；否则 `types` 含 `fs` 族标签（`fs` 或 `fs_` 前缀）且标题命中 v3 ⇒ 刊发。v3 写成具名常量（正向 / 硬排除 / 「報告」软排除 + 业绩公告本体），逐字取自本机 `t026-investigation/q5_replay.ts` 并注明出处；「補充 / 更正」窄排除两路共用。`hkex-announcement.source.ts` 与 `earnings-fiscal-profile.rules.ts` 经同一函数生效、零改动。→ verify: `earnings-notice.rules.spec.ts` 加臂：`hk:09961`「2025 年第二季度及上半年業績公告」`fs,fs_full` ⇒ 刊发；`hk:09999` 业绩公告 + 中期报告合刊 ⇒ 刊发；`hk:00005`「中期業績報告」`fs,fs_full` ⇒ 非刊发；通函 / 董事會會議 / 業績公告日期 / 延遲（`fs`）⇒ 非刊发；同标题 `all` 类 ⇒ 非刊发；无关 `fs` 标题 ⇒ 非刊发；简体与英文各一例；`hk:01188`「澄清公佈…中期業績公佈」钉为刊发；079 IT 复刻 09961 形态：有档案（12 月）标的 `fs,fs_full` 标题 ⇒ `P:2026-06-30` 事件 `published`；同轮「中期業績報告」对照标的迁入 `overdue` + `partial`；本机回放 `q5_dump.psv` 改接新规则 ⇒ 锚新增 2 条（09961 / 09999）、既有最早刊发日变化 0；定向变异：去掉「本体覆盖報告」⇒ 09999 臂红；去掉硬排除 ⇒ 日期通知臂红；族标签路整体去掉 ⇒ 09961 规则臂与 IT 臂红。（`state_branches` 31）
+
+- [ ] T031 [Server] **非季报公司的第一 / 第三季事件不判逾期（1b）**（`FR-019a`, `FR-028`, `FR-029`, `SC-011`, plan §D8 / §D10）：前置 = T030（排序铁律 10）。`earnings-period.rules.ts` 加「期末日 + 财年结束月 → 财季」；`earnings-date-merge.rules.ts`：合并输入 `hasFiscalProfile` 换为 `fiscalYearEndMonth`（null = 无档案）并加 `filings`（该标的刊发事实：刊发日 / 期末日 / 报告类型 / 原文）；`judgeOverdue` 判定顺序 日历不可判 → 未到期 → 键无法对齐 → 无档案 → 非季报公司第一 / 第三季 → 逾期（写进注释）；命中 ⇒ 不迁入，既有 `overdue` 解除回原状态（`status_changed` 流水 `detail.releasedBy`、清 `overdueSince`），结果带 `nonQuarterlyReporter`；季度刊发 = 报告类型季度 / 期末日为第一或第三财季 / 标题带季度写法。`sync-earnings-dates.usecase.ts`：`buildContext` 读档案月与刊发事实的期末日 / 报告类型 / 原文；汇总每轮一条 `earnings_date_non_quarterly` notice（`count` / `released` / 至多 20 个 `<symbol> <periodKey>` 样例，🚫 计失败）。→ verify: merge spec 加臂：`hk:01299` 形态（12 月结年 `P:2025-09-30`，只有中期与年度刊发）⇒ 非 `overdue`、0 条 finding、计数；既有 `overdue` ⇒ 解除为 `confirmed` + 流水 `releasedBy` + `overdueSince` 清空；对照 730 天内有季度刊发（报告类型季度 / 报告类型空的 `P:` 第一季 / 报告类型空的 `D:` 键「第一季度業績公告」各一）⇒ 迁入 `overdue`；中期与年度期末 ⇒ 仍迁入；3 月结年公司 `P:2025-12-31`（第三财季）命中、`P:2025-09-30`（中期）不命中；730 天边界（第 730 天算、第 731 天不算、公布日当天不算）；判定顺序（无档案先报财年未知、日历不可判时既有逾期不解除）；079 IT 复刻 01299 形态：既有 `overdue` 的 Q3 事件经维度运行解除 + 流水 + `earnings_date_non_quarterly` 计数，同轮对照标的（`D:` 键、报告类型空的第一季度刊发事实）迁入 `overdue` + `partial`；定向变异：去掉第一 / 第三季限定 ⇒ 中期臂红；去掉 730 天下界 ⇒ 边界臂红；不看标题 ⇒ `D:` 键对照臂红；既有逾期不解除 ⇒ 解除臂红。（`state_branches` 30）
+
+- [ ] T032 [Server] **无法对齐旧事件收尾：迁已并入并指向 `P:` 事件（3a）**（`FR-015`, `FR-017`, `FR-030`, plan §D3 / §D8）：前置 = T031（同文件）。`earnings-date-merge.rules.ts` 加纯函数：未刊发非对齐事件（占位除外）+ 同标的观测 ⇒ 同来源同原文报告期（非空）的唯一 `P:` 键，否则 null。用例 `mergeHk`：合并前读本市场未刊发非对齐事件与其标的观测，命中的旧键移出本轮重算集合、接手的 `P:` 键并入；合并后按 `revision` 条件更新迁 `superseded`、清 `overdueSince`，流水 `status_changed` 的 `detail` 带 `supersededBy` / `supersededByPeriodKey` / `source` / `periodText`（与占位事件同形）；未刊发扫描排除 `superseded`；已并入事件 🚫 进逐事件合并（观测再次带入也跳过）、🚫 计入已通知日期未知的「未刊发带日期事件」；`earnings_date_unaligned` 带本轮已并入计数与样例。零 schema 变更。→ verify: merge spec 加臂：同来源同原文 ⇒ 该 `P:` 键；来源不同 / 原文不同 / 原文为空 / 对应两个 `P:` 键 / 已刊发 / 已并入 / 占位事件 / 本身是 `P:` ⇒ null；079 IT 复刻 00939 形态：无档案轮落 `T:futu_calendar:2026 Q2`，补档案后富途同原文给 `P:` ⇒ 同一轮 `T:` 事件 `superseded`、流水指向 `P:` 事件 id、`overdueUnjudged` 不再计它，再跑一轮 `revision` 不变；对照：另一标的原文不同的 `T:` 事件保持 `confirmed` 并计入无法对齐计数；定向变异：不比对来源 ⇒ 来源不同臂红；不跳过已并入事件 ⇒ 次轮 `revision` 断言红。（`state_branches` 32）
+
+- [ ] T033 [Server] **无法对齐逾期计数按有无财年档案分列（4a）**（`FR-028`, plan §D10）：前置 = T032（同一 notice）。`earnings_date_unaligned` 的 `overdueUnjudged` 拆为 `overdueUnjudgedWithProfile` / `overdueUnjudgedWithoutProfile`，`overdueUnjudgedSamples` 先取有档案的再补无档案的、合计至多 20；仍 🚫 计失败。日报 `ops/jobs/marketdata-sync-report.sql` 只展示 step 名，不改。→ verify: 079 IT T018 ⑥ 改断言并加无档案对照标的（其观测排在有档案标的之前）：有档案 1、无档案 1、样例首条为有档案标的；定向变异：样例不按有无档案排序 ⇒ 首条断言红；两个数互换 ⇒ 计数断言红。（`state_branches` 29）
+
 ## Manual / Ops
 
 - [X] T024 [Manual] **合并前回放复跑（SC-002 全量 + SC-004 闸门）**（`SC-002`, `SC-004`, `SC-013`, `SC-014`, plan §D12 数据验收）：前置 = T001–T023 全绿。输入全在本机 `docs/private/evidence/079-hk-earnings-date-sources/`（不入仓，CI 不跑）：① 用**已实现的** `hkex-board-meeting-list.rules.ts` 解析 `hkex-board-meeting-list/` 下全部页面（可解析 8 份 = 7 份快照 + 当日页；其余 Wayback 错误页应抛 `BoardListParseError`）⇒ 数据行合计 1776、业绩行与纯股息行分项计数、静默丢弃 0 行（`SC-002`）；② 用已实现的 `earnings-period.rules.ts` 与 `earnings-date-merge.rules.ts` 重算锚表港股两年 176 次有会前通知的刊发（输入：`poc8_results.json.gz` 的会议日代理值与刊发日、`earnings_poc_hk_hist.jsonl.gz` / `earnings_poc.jsonl.gz` 的富途历史、`hk_trading_days.txt`）⇒ 逐日一致率（`SC-004`）。回放脚本放在同一 evidence 目录，命令写进 PR 描述。→ verify: ① 1776 行、0 静默丢弃；② 逐日一致 ≥ 96%（基线 169 / 176，spec Session（七）第 3 问更正；原 97% / 172 为 PoC 口径），其余全部落在「会议日 → 其下一交易日」内或产生冲突、窗口外未告警 0；③ 对齐回放（`align-verify/v_all.ts` 改接已实现的 `earnings-period.rules.ts` / `earnings-fiscal-profile.rules.ts`）一致 ≥ 98%、错期 0（`SC-013`，基线 173 / 176）；④ 29 只锚的财年档案（反推 + 人工值）与 `align-verify/hkex/fye_truth.json` 逐只一致（`SC-014`）；两项结果与命令贴进 PR 描述；**不达标不合并、不接 auto-merge**（排序铁律 6）。
@@ -141,7 +153,7 @@ updated_at: '2026-09-13'
 | FR-001 | T009 + T022 |
 | FR-002 | T004 + T009 + T010 |
 | FR-003 | T010 |
-| FR-004 | T002 + T011 |
+| FR-004 | T002 + T011 + T030 |
 | FR-005 | T002 + T011 |
 | FR-006 | T003 + T012 |
 | FR-007 | T014 + T016 |
@@ -152,12 +164,12 @@ updated_at: '2026-09-13'
 | FR-012 | T004 + T014 |
 | FR-013 | T005 + T008 + T013 |
 | FR-014 | T004 + T017 |
-| FR-015 | T001 + T017 + T027 |
+| FR-015 | T001 + T017 + T027 + T032 |
 | FR-016 | T005 + T014 + T018 |
-| FR-017 | T005 + T015 + T018 |
+| FR-017 | T005 + T015 + T018 + T032 |
 | FR-018 | T009 + T013 + T022 |
 | FR-019 | T005 + T017 |
-| FR-019a | T005 + T006 + T015 + T018 |
+| FR-019a | T005 + T006 + T015 + T018 + T031 |
 | FR-020 | T011 + T023 + T025 |
 | FR-020a | T012 + T013 |
 | FR-021 | T010 + T014 + T020 |
@@ -167,8 +179,10 @@ updated_at: '2026-09-13'
 | FR-025 | T003 + T006 + T007 + T012 + T013 + T015 + T019 |
 | FR-026 | T027 + T028 + T029 + T015 + T025 |
 | FR-027 | T027 + T011 |
-| FR-028 | T005 + T014 + T015 + T018 + T029 |
-| SC-001 | T023（代码）+ T026（prod） |
+| FR-028 | T005 + T014 + T015 + T018 + T029 + T031 + T033 |
+| FR-029 | T031 |
+| FR-030 | T032 |
+| SC-001 | T023 + T030（代码）+ T026（prod） |
 | SC-002 | T003 + T024 |
 | SC-003 | T026 |
 | SC-004 | T024 |
@@ -178,15 +192,15 @@ updated_at: '2026-09-13'
 | SC-008 | T020 |
 | SC-009 | T021 |
 | SC-010 | T022 |
-| SC-011 | T005 + T015 + T018 |
+| SC-011 | T005 + T015 + T018 + T031 |
 | SC-012 | T007 + T015 + T019 |
 | SC-013 | T024 |
 | SC-014 | T029 + T024 |
-| `state_branches` 1–29 | 1 → T004 + T010 ｜ 2 → T004 ｜ 3 → T004 ｜ 4 → T004 + T014 ｜ 5 → T004 ｜ 6 → T004 ｜ 7 → T004 + T017 ｜ 8 → T004 ｜ 9 → T014 ｜ 10 → T004 + T014 ｜ 11 → T005 + T015 + T018 ｜ 12 → T002 + T011 ｜ 13 → T005 + T017 ｜ 14 → T005 + T006 + T015 + T018 ｜ 15 → T005 + T018 ｜ 16 → T005 + T014 + T018 ｜ 17 → T013 + T022 ｜ 18 → T001 + T017 ｜ 19 → T003 + T010 + T011 + T012 ｜ 20 → T003 ｜ 21 → T003 + T007 + T012 + T013 + T015 + T019 ｜ 22 → T006 + T012 + T013 + T015 + T019 ｜ 23 → T020 ｜ 24 → T021 ｜ 25 → T011 + T027 ｜ 26 → T005 + T018 ｜ 27 → T027 + T029 ｜ 28 → T029 ｜ 29 → T005 + T015 + T018 |
+| `state_branches` 1–32 | 1 → T004 + T010 ｜ 2 → T004 ｜ 3 → T004 ｜ 4 → T004 + T014 ｜ 5 → T004 ｜ 6 → T004 ｜ 7 → T004 + T017 ｜ 8 → T004 ｜ 9 → T014 ｜ 10 → T004 + T014 ｜ 11 → T005 + T015 + T018 ｜ 12 → T002 + T011 ｜ 13 → T005 + T017 ｜ 14 → T005 + T006 + T015 + T018 ｜ 15 → T005 + T018 ｜ 16 → T005 + T014 + T018 ｜ 17 → T013 + T022 ｜ 18 → T001 + T017 ｜ 19 → T003 + T010 + T011 + T012 ｜ 20 → T003 ｜ 21 → T003 + T007 + T012 + T013 + T015 + T019 ｜ 22 → T006 + T012 + T013 + T015 + T019 ｜ 23 → T020 ｜ 24 → T021 ｜ 25 → T011 + T027 ｜ 26 → T005 + T018 ｜ 27 → T027 + T029 ｜ 28 → T029 ｜ 29 → T005 + T015 + T018 + T033 ｜ 30 → T031 ｜ 31 → T030 ｜ 32 → T032 |
 | **Acceptance Scenario 13 条** | US1: AS1 → T004 + T014 · AS2 → T004 · AS3 → T004 + T017 · AS4 → T004 + T010；US2: AS1 → T004 · AS2 → T004 + T014 · AS3 → T004 · AS4 → T014；US3: AS1 → T005 + T017 · AS2 → T005 + T017；US4: AS1 → T022 · AS2 → T022；US5: AS1 → T023 |
 | **Edge Case 17 条** | 1 会议日 ≠ 公布日 → T004 ｜ 2 周末 / 假日刊发 → T004 ｜ 3 清单只收主板 → T005 + T018 ｜ 4 清单漏收 / 页面滞后 → T005 + T018 ｜ 5 多日会议 → T003 ｜ 6 同一公司同日多行 → T003 ｜ 7 纯股息行 → T003 ｜ 8 长得像通知 → T002 ｜ 9 报告期对不上 → T001 ｜ 10 改期 → T005 + T018 ｜ 11 清单行提前消失 → T005 + T018 ｜ 12 日期已过仍未刊发 → T005 ｜ 13 来源停服 / 页面改版 / 换地址 → T019 + T022 ｜ 14 无历史间隔 → T005 ｜ 15 公司不为某类报告发通知 → T005 ｜ 16 非主表代码 → T010 + T011 + T012 ｜ 17 美股 → T004 + T020 |
 
-> ⚠️ 本表由脚本枚举 spec 的 `state_branches`（29）/ FR（30）/ SC（14）/ Edge Case（17）/ Acceptance Scenario（13）后逐条对照写成；**本表这次对了，不构成它下次仍对的证据** —— analyze 前先重跑枚举。
+> ⚠️ 本表由脚本枚举 spec 的 `state_branches`（32）/ FR（32）/ SC（14）/ Edge Case（17）/ Acceptance Scenario（13）后逐条对照写成；**本表这次对了，不构成它下次仍对的证据** —— analyze 前先重跑枚举。
 >
 > 📌 **2026-09-13 `/speckit-analyze` 回填 —— 11 条发现全部已修**：C1 美股钩子补增量合并 + 事件数 > 0 前置断言（T014 ⑤ / T020）；I1 会前通知信号独立 120 天窗口 + 确认日期只前移不回退（T004 / T011 / T014 ③，排序铁律 4）；U1 陈旧遇日历不可判记无法判定（T012 / T013 ④ / T019 ⑦）；A1 FR-023 改为只计数；A2 spec 定义「告警 / 标红」并声明其余告警暂不标红（待 owner）；G1 9 份页面全量解析进 T024；K1 原合并用例拆为 T013 / T014、原场景 IT 拆为 T017 / T018（24 → 26）；D1 T015 只写其余 findings；T1 FR-006 补收益资料；S1 陈旧阈值实测依据写入 plan §D7；R1 T024 写明本机数据位置与命令。
 >
@@ -197,3 +211,5 @@ updated_at: '2026-09-13'
 > 📌 **2026-09-14 T017 / T018 前置修正（不翻任何 task 行）**：F1 已通知日期未知只认公布日 ≥ 通知刊发日的未刊发事件（T005 / T014；原判据「任一未刊发带日期事件」会被期间空白 `D:` 键的长期逾期事件永久挡住，FR-017 静默漏报）；F2 findings 出口补 `earnings_date_futu_forward_rows` 每轮 notice（T015；plan §D5 缺失语义③ 的运行时不变量，§D10 表漏列）。
 >
 > 📌 **2026-09-14 上线后修复：逾期只判期末日对齐键（spec Session（七）末问 / FR-028 / `state_branches` 29，不翻任何 task 行）**：prod 核出 `hk:00939` 回填时无财年档案、后补档案后 8 个 `T:` 键事件公布日已过，当晚日跑会成批迁入逾期并标红。修：`T:` / `D:` 键事件不迁入 `overdue`、不计失败、既有逾期不凭空解除，计数进 `earnings_date_unaligned` 的 `overdueUnjudged`（T005 规则臂 / T015 出口 / T018 ⑥ 经维度 IT 复刻 00939 形态 + `P:` 对照）；已通知日期未知（标的级）不变。
+>
+> 📌 **2026-09-14 上线后误报修正（spec Session（八），FR-004 修订 / FR-028 修订 / FR-029 / FR-030 / `state_branches` 30–32）**：主 agent 只读直查 prod，现存港股逾期 4 条全为误报、`overdueUnjudged` 11,160 被无档案标的淹没。新增 T030（2a 刊发判定放宽）→ T031（1b 非季报公司第一 / 第三季不判逾期）→ T032（3a 旧 `T:` / `D:` 事件迁已并入）→ T033（4a 无法对齐计数按有无档案分列），批 J；排序铁律 10。

@@ -3,7 +3,7 @@ feature_id: 079-hk-earnings-date-sources
 spec_ref: ./spec.md
 status: drafted
 created_at: '2026-09-13'
-updated_at: '2026-09-13'
+updated_at: '2026-09-14'
 adr_refs: ['0035', '0043', '0047', '0058', '0062', '0066', '0067']
 context7_verified: []
 ---
@@ -96,7 +96,7 @@ context7_verified: []
 新表设计意图（字段形状以 `schema.prisma` 为准）：
 
 1. **`earnings_date_observation`**（来源观测，PIT）：唯一键 `(source, instrument_id, period_key)`。市场、报告类型、统一期末日（可空）、来源原文报告期、公布日（可空）、取值口径（`filed` / `explicit` / `structured` / `meeting`）、会议日、公布时刻、刊发日、凭据指针（公告链接 / 清单页首日期）、首次 / 最近观测时刻、上一个日期与变更时刻、刊发后回填的偏差天数（FR-019）。清单观测的「最近观测时刻」即最近一次出现在清单的运行时刻（FR-020a）。
-2. **`earnings_date_event`**（合并后事件）：唯一键 `(instrument_id, period_key)`。状态（`confirmed` / `unconfirmed` / `conflict` / `notified_undated` / `overdue` / `published` / `superseded`——`superseded` 为 impl 期追加，见 D8「已通知日期未知」）、公布日及口径、冲突候选日期、公布时刻、确认日期及口径（`announced` / `first_seen`）、参与来源、报告类型与期末日、逾期起算时刻、`revision` 整数（乐观并发，D8）。
+2. **`earnings_date_event`**（合并后事件）：唯一键 `(instrument_id, period_key)`。状态（`confirmed` / `unconfirmed` / `conflict` / `notified_undated` / `overdue` / `published` / `superseded`——`superseded` 为 impl 期追加，见 D8「已通知日期未知」；上线后另用于报告期无法对齐旧事件的收尾，见 D8「无法对齐旧事件收尾」，列无 CHECK、零 migration）、公布日及口径、冲突候选日期、公布时刻、确认日期及口径（`announced` / `first_seen`）、参与来源、报告类型与期末日、逾期起算时刻、`revision` 整数（乐观并发，D8）。
 3. **`earnings_date_event_log`**（事件流水，append-only）：状态迁移、取值变更、冲突产生 / 解除、逾期产生 / 解除、清单行提前消失（FR-013 / FR-014 / FR-016 / FR-019a）。
 4. **`earnings_meeting_lag`**（会议 → 刊发间隔）：唯一键 `(instrument_id, report_kind)`；最近一次间隔天数、来源期末日、观测时刻（FR-010）。
 5. **`earnings_fiscal_profile`**（财年档案，FR-026，spec Session（七）追加）：唯一键 `instrument_id`；财年结束月（1–12）、得出来源（`annual_title` / `dividend_title` / `board_list` / `futu_pairing` / `manual`）、凭据、确定时刻、更新时刻。没有行 = 未知。migration ① 已落地，本表走独立 expand-only migration ③ `<yyyymmdd_hhmm>_create_earnings_fiscal_profile`（只含表）。
@@ -129,9 +129,10 @@ context7_verified: []
 **D6 · 来源 B：交易所公告 `hkex-announcement.source.ts`（零 PDF；FR-004 / FR-005）**
 
 - 读 `marketdata.announcement`（本 ctx 表，零新增理杏仁调用，FR-004）。刊发事实日常窗口 `[业务日 − 7, 业务日]`，与现役 7 天回看一致（`20260801_2248_add_sync_dimension_delta_lookback/migration.sql:30-31`）；🚨 **会前通知信号窗口单独取 `[业务日 − 120 天, 业务日]`**（与 D8 匹配窗口同一常量）—— 只按 7 天现算时，事件重算会找不到 8–120 天前的通知，确认时刻静默退回首次观测（analyze I1）；查询走 `(instrument_id, date desc)` 索引（`schema.prisma:915`），成本可忽略。回填 730 天。
-- **业绩刊发事实**（`types` 含 `fs_main`）→ `filed` 观测，**全部港股**：公布日 = 公告日期（`+08:00` 当地日期，`lixinger-announcement.adapter.ts:19-21`），报告期取自标题（D4）。
-  - 🚨 「補充 / 更正」排除 MUST 窄：只排除不含「業績公告 / 業績公佈」本体的公告（`hk:09992` 2026-08-20 真实刊发标题带「補充公告」，spec 取证）。
-  - A+H 公司的季度报告另以 `all` 类型的「海外監管公告」刊发，锚表港股两年 22 份**同日均有** `fs_main` 行 ⇒ 只认 `fs_main` 不漏；🚫 不要放宽到按标题认 `all` 类（会把「…業績公告日期」「盈利公布及審議會否派發股息」这类**通知**认成刊发，PoC 实撞）。
+- **业绩刊发事实**（`types` 含 `fs_main`；或含 `fs` 族标签且标题命中业绩标题规则 v3，spec Session（八）2a）→ `filed` 观测，**全部港股**：公布日 = 公告日期（`+08:00` 当地日期，`lixinger-announcement.adapter.ts:19-21`），报告期取自标题（D4）。
+  - 🚨 「補充 / 更正」排除 MUST 窄：只排除不含「業績公告 / 業績公佈」本体的公告（`hk:09992` 2026-08-20 真实刊发标题带「補充公告」，spec 取证）。两条判定路共用。
+  - A+H 公司的季度报告另以 `all` 类型的「海外監管公告」刊发，锚表港股两年 22 份**同日均有** `fs_main` 行 ⇒ `all` 类不漏；🚫 不要放宽到按标题认 `all` 类（会把「…業績公告日期」「盈利公布及審議會否派發股息」这类**通知**认成刊发，PoC 实撞）。
+  - 🚨 **`fs` 族标签 + 标题 v3**（上线后修订，spec Session（八）2a / FR-004）：真实业绩公告可能只有 `fs` / `fs_full` 等族标签、没有 `fs_main`（`hk:09961` / `hk:09999` 2025 年中期业绩；2026-08 起「只有 `fs`」的港股公告月增到 284 条）⇒ `types` 含 `fs` 或 `fs_` 前缀标签、且标题命中 v3 也算刊发。v3 三条具名正则逐字取自本机 `t026-investigation/q5_replay.ts`：正向（業績公告 / 業績公佈 / 年度 · 中期 · 全年 · 末期 · 季度業績、「止…業績」、results announcement 等，繁简英）；硬排除（通函 / 通告 / 日期 / 董事會會議 / 延遲 / 延期 / circular / board meeting / delay）；「報告 / 年報 / report」只在标题**不含**「業績公告 / 業績公佈 / results announcement」本体时排除（合刊「…業績公告…及中期報告」放行）。锚回放：新增 2 条（均解到 `P:2025-06-30`）、新误对齐 0、既有最早刊发日变化 0。`hk:01188`「澄清公佈…中期業績公佈」按 v3 算刊发（标题含本体；同期只留最早一份，澄清晚于本体时不改公布日）。财年档案反推（D13）经同一函数取刊发事实，一并生效。
 - **会前通知信号**（FR-005，单一维护点 `earnings-notice.rules.ts`）：标题匹配强通知写法（spec 取证列出的全部写法：董事會會議召開日期 / 通告 / 通知 / 日期、董事會召開日期、召開董事會的日期、業績公告日期、盈利公布及審議、審議會否派發、委員會會議日期、董事會委任的委員會會議）且 `types` 不含 `fs_main` ⇒ 信号 `{ instrument, noticeDate, title, link }`；「決議」「名單」「委任」「職權範圍」「工作細則」等排除。锚表港股两年回放：181 份正文判定为会前通知的公告**全部**属于上述强写法（spec 取证，方案 A PoC），标题规则在存量上不漏。
 - **缺失语义三问**：① 公告不存在 = 不下发行；② 「无通知」分不清「未发 / 漏采 / 公司不为该类报告发通知（`hk:00941` 一、三季度）」—— 无通知不产生任何告警，事件照常由其余来源决定；③ 标题写法由两年回放归纳 ⇒ 运行时不变量 = D10 `earnings_board_list_scan` 里的会前通知信号数与清单行数对照。
 
@@ -164,6 +165,9 @@ context7_verified: []
   - **已通知日期未知**（FR-017）：会前通知信号刊发后满 2 个交易日、该标的无「公布日 ≥ 该通知刊发日」的未刊发事件（冲突事件取候选日期中最晚者；impl 期 F1 修正——按字面「任一未刊发事件带日期」，长期逾期的旧事件会让该标的此后永远判不成已通知日期未知）：该标的曾有清单观测 ⇒ `notified_undated` + finding；否则只计数。之后任一来源给出日期即转确认，确认日期取该信号刊发日。🚨 **占位事件（impl 期 T014 定，spec Session（七）第 2 问）**：会前通知不带报告期 ⇒ 迁入时建占位事件，键 `D:notice_undated:<通知刊发日>`（🚫 用 `D:hkex_announcement:<日期>`——与公告来源给无期末日刊发生成的兜底键同形，通知与刊发同日即撞键）；该标的有非 published 事件拿到日期、`selectPendingNotice` 不再返回这份通知时，占位事件迁为 `superseded`，流水 detail 指向接手事件 id；🚫 删除（流水级联删除，`schema.prisma` `EarningsDateEventLog` 外键）。占位事件与 `superseded` 事件 🚫 进入逐事件合并与逾期扫描——零观测、保留 `confirmedDate` 的占位事件进合并会被静默算成 `confirmed`。
   - **刊发覆盖**（FR-019）：出现 `filed` ⇒ `published`，回填各来源各口径偏差；有会议日时更新 `earnings_meeting_lag`。
   - **逾期**（FR-019a）：非 `published` 且公布日之后满 2 个交易日 ⇒ `overdue`。交易日数用 `trading_day` 三态计数（`trading-day.rules.ts:91` 判据）；区间含 `unknown` ⇒ 不判，发 `unjudged`。`TradingCalendarPort`（`trading-calendar.port.ts:23-70`）新增「区间交易日数」方法，写法照 `previousTradingDay` 覆盖闸（`db-trading-calendar.adapter.ts:102-121`）。
+    - 🚨 **判定顺序**（FR-028 / FR-029，写在 `judgeOverdue` 注释）：日历不可判 → 未到期 → 键无法对齐（`T:` / `D:`）→ 无财年档案 → 非季报公司的第一 / 第三季 → 逾期。前两个「判不了」的分支让既有逾期保持不变；非季报分支是稳定结论，让既有逾期解除回原状态（`status_changed` 流水 `detail.releasedBy = 'non_quarterly_reporter'`、清 `overdueSince`、🚫 计失败）。
+    - **非季报公司**（spec Session（八）1b）：事件期末日按财年档案为第一 / 第三财季（期末月距财年结束月 3 / 9 个月），且该标的 `[公布日 − 730 天, 公布日)` 内无季度业绩刊发事实。季度刊发 = `filed` 观测中报告类型为季度、或期末日为第一 / 第三财季、或原文（标题）带季度写法，任一即算（报告类型为空的 `D:` 键季报靠第三路兜住；宁宽勿窄 —— 误认成季报公司只会照常判逾期）。输入由用例预读（`buildContext` 读档案财年结束月与刊发事实的期末日 / 报告类型 / 原文），判据在合并纯函数。
+  - **无法对齐旧事件收尾**（FR-030，spec Session（八）3a）：本市场未刊发的 `T:` / `D:` 键事件（占位事件除外），同一标的有同一来源、同一原文报告期（非空）的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 迁 `superseded`。编排在港股日常入口的逐事件合并前后：合并前读这批事件与其标的观测，命中的旧键移出本轮重算集合、接手的 `P:` 键并入（保证合并后 `P:` 事件存在）；合并后逐个 `updateMany where { id, revision }` 迁 `superseded`、清 `overdueSince`，流水 `status_changed` 的 `detail` 带 `supersededBy`（`P:` 事件 id）/ `supersededByPeriodKey` / `source` / `periodText`，与占位事件同形。未刊发扫描排除 `superseded`；已并入事件即使本轮观测再次带入也 🚫 进逐事件合并；已通知日期未知扫描的「未刊发带日期事件」排除 `superseded`。
 - **触发点**：① 港股日常运行（全量重算当天有观测或信号变化的事件 + 逾期扫描 + 未知日期扫描）；② 美股钩子写入观测后的增量合并（只算本批美股 `(instrument, period_key)`，D9）。两者市场不重叠；事件行仍带 `revision` 条件更新（CLI 回填与定时运行可能重叠）：读观测与事件 → 计算 → `updateMany where { id, revision }` → 命中 0 行则重读重算，最多 3 次（`docs/conventions/server-impl-playbook.md` 条件 UPDATE + affected-count）；🚫 不用 `SELECT … FOR UPDATE`。
 - 每个事件一个事务（观测 upsert → 事件条件更新 → 流水 insert）；🚫 HTTP 在事务外。
 
@@ -186,7 +190,8 @@ context7_verified: []
 | `earnings_date_overdue` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `overdue`（含 `period_key`、公布日与口径） |
 | `earnings_date_source` | failure（计入 `stats.failed`） | 某来源 `collect` 抛错（含来源名；清单含 HTTP 状态码 / 跳转目标 / 首个不合法行） |
 | `earnings_date_calendar_unknown` | unjudged | 逾期 / 陈旧判定区间日历不可判 |
-| `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0；或公布日已过、因键无法对齐未判逾期的事件数 > 0（`overdueUnjudged` + 至多 20 个 `<代码> <period_key>` 样例，🚫 计失败） |
+| `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0；或公布日已过、因键无法对齐未判逾期的事件数 > 0（按标的有无财年档案分列 `overdueUnjudgedWithProfile` / `overdueUnjudgedWithoutProfile`，`overdueUnjudgedSamples` 先取有档案的、合计至多 20 个 `<代码> <period_key>`，spec Session（八）4a）；或本轮迁 `superseded` 的旧事件数 > 0（`superseded` + 至多 20 个样例，3a）。🚫 计失败 |
+| `earnings_date_non_quarterly` | notice | 每轮一条：公布日已过、因非季报公司的第一 / 第三季未判逾期的事件数（`count`）、其中本轮由既有逾期解除的数（`released`）+ 至多 20 个 `<代码> <period_key>` 样例（spec Session（八）1b，🚫 计失败） |
 | `earnings_notice_undated` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `notified_undated`（含公告链接）；另计从未在清单出现标的的未知日期通知数（该计数不计失败） |
 | `earnings_board_list_scan` | notice | 每轮：页首日期、数据行、业绩行、纯股息行、跳过代码、`T:` 键数、本轮会前通知信号数 |
 | `earnings_date_futu_forward_rows` | notice | 每轮：富途港股前向行数（plan §D5 运行时不变量） |
@@ -198,7 +203,7 @@ context7_verified: []
 
 - 🚨 **飞书标红链路（owner 要求改版 / 换地址 / 停更必须经飞书告警）**：`failure` 类发现项本身**不改**运行状态（`sync-run.recorder.ts:23-24` 明写「不蕴含计入 `stats.failed`」）⇒ 来源失败与清单陈旧的写入点 MUST 同时 `stats.failed += 1`（`symbol` 取 `source:<来源名>`）。运行状态判定 `failed > 0` 且有 ok / skipped ⇒ `partial`（`sync-run.recorder.ts:326-327`）⇒ 日报脚本 `partial` ⇒ `problems=1` ⇒ 非零退出（`ops/jobs/marketdata-sync-report.sh:151` / `:345`）⇒ `nvy-run-reported` 推飞书 🔴，正文取输出末 80 行（`ops/jobs/systemd/marketdata-sync-report.service:33`，覆盖全部 33 个维度逐行 + `↳` 发现项摘要行），09:00 触发（`marketdata-sync-report.timer:7`）。冲突 / 清单行消失 / 未对齐仍只进摘要、不标红，与现役口径一致。
 - 🚨 **逾期与已通知日期未知的标红口径（spec Session（六））**：kind 仍为 `notice`（`failure` 是续跑 / 重试的来源，`sync-run.recorder.ts:21-22`），但事件由他态迁入 `overdue` / `notified_undated` 的那一轮每个事件 `stats.failed += 1`（与该计数「按标的」的粒度一致，`sync-run.recorder.ts:31-32`）。迁入判定以事件既有状态为输入、在合并纯函数内完成（T005 只在迁入时产出 finding）；🚫 按「本轮扫描到该状态」计 —— 延期刊发的公司会让日报连日标红。
-- **计入失败数的连带面**（2026-09-13 核）：① 单轮 `failed ≥ 3` ⇒ `alertIfDegraded` 打 ERROR 日志（调用点 `dimension-executor.ts:1158`，判定 `:3559-3570`，阈值 `:89`），只是日志；② 回填 CLI `failed > 0` ⇒ 退出码 1（`marketdata-backfill.cli.ts`，T023 子 agent 核；plan 期原引 `marketdata-trigger.cli.ts:144` 为 delta 入队的另一个 CLI），T025 首轮回填时存量未刊发事件集中迁入逾期、退出码 1 属预期，以 findings 为准；③ `T:` / `D:` 键事件（FR-015 无法对齐）等不到同键的刊发事实 ⇒ 不判逾期、只计数（2026-09-14 prod `hk:00939` 实证：后补财年档案后 8 个 `T:` 事件会成批迁入逾期，已修），计数进 `earnings_date_unaligned` 的 `overdueUnjudged`。
+- **计入失败数的连带面**（2026-09-13 核）：① 单轮 `failed ≥ 3` ⇒ `alertIfDegraded` 打 ERROR 日志（调用点 `dimension-executor.ts:1158`，判定 `:3559-3570`，阈值 `:89`），只是日志；② 回填 CLI `failed > 0` ⇒ 退出码 1（`marketdata-backfill.cli.ts`，T023 子 agent 核；plan 期原引 `marketdata-trigger.cli.ts:144` 为 delta 入队的另一个 CLI），T025 首轮回填时存量未刊发事件集中迁入逾期、退出码 1 属预期，以 findings 为准；③ `T:` / `D:` 键事件（FR-015 无法对齐）等不到同键的刊发事实 ⇒ 不判逾期、只计数（2026-09-14 prod `hk:00939` 实证：后补财年档案后 8 个 `T:` 事件会成批迁入逾期，已修），计数进 `earnings_date_unaligned` 的 `overdueUnjudged`（上线后按有无财年档案拆成两个数，spec Session（八）4a）；④ 非季报公司的第一 / 第三季事件（FR-029，2026-09-14 prod `hk:01299` 2 条误报）不判逾期、只计数，既有逾期解除也 🚫 计失败；同一事件停留在「只计数」状态时每轮重复计数，与 ③ 同口径。
 - 美股钩子失败不进 findings（D9）。
 
 **D11 · 配置**
