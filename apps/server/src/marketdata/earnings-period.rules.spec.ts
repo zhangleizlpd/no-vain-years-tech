@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   alignedPeriodKey,
   datePeriodKey,
+  fiscalQuarterOf,
   fiscalYearEndMonthFromFutuPair,
   isAlignedPeriodKey,
   parseAnnouncementTitlePeriod,
@@ -395,5 +396,31 @@ describe('跨来源同一次财报落同一 P: 键 (FR-015)', () => {
     expect(board.periodKey).toBe(futu.periodKey);
     expect(announcementKey).toBe(futu.periodKey);
     expect(isAlignedPeriodKey(futu.periodKey)).toBe(true);
+  });
+});
+
+describe('fiscalQuarterOf — 期末日按财年档案换算财季 (FR-029, spec Session（八）1b)', () => {
+  it.each([
+    [12, '2025-03-31', 1],
+    [12, '2025-06-30', 2],
+    [12, '2025-09-30', 3],
+    [12, '2025-12-31', 4],
+    [3, '2025-06-30', 1],
+    [3, '2025-09-30', 2],
+    [3, '2025-12-31', 3],
+    [3, '2026-03-31', 4],
+    [6, '2025-09-30', 1],
+    [6, '2026-03-31', 3],
+  ])('财年结束月 %i、期末 %s ⇒ 第 %i 财季', (fiscalYearEndMonth, periodEnd, quarter) => {
+    expect(fiscalQuarterOf(periodEnd, fiscalYearEndMonth)).toBe(quarter);
+  });
+
+  it.each([
+    ['期末月不在财季边界', '2025-08-31', 12],
+    ['日历上不存在的日期', '2025-02-30', 12],
+    ['非 YYYY-MM-DD', '30/09/25', 12],
+    ['财年结束月越界', '2025-09-30', 13],
+  ])('%s (%s, 财年结束月 %i) ⇒ null', (_label, periodEnd, fiscalYearEndMonth) => {
+    expect(fiscalQuarterOf(periodEnd, fiscalYearEndMonth)).toBeNull();
   });
 });

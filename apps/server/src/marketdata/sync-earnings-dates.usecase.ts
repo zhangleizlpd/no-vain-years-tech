@@ -17,9 +17,11 @@ import {
   type EarningsDateEventLogEntry,
   type EarningsDateEventStatus,
   type EarningsDateFinding,
+  type EarningsDateMergeInput,
   type EarningsDateMergeObservation,
   type EarningsDateMergeResult,
   type EarningsDateSelection,
+  type EarningsFilingFact,
   type ExistingEarningsDateEvent,
   type ListingPresence,
   type NoticeUndatedResult,
@@ -153,6 +155,10 @@ export interface EarningsDatesMergeSummary {
   readonly neverListedUndated: readonly string[];
   /** 公布日已过、因报告期无法对齐 (`T:` / `D:` 键) 未判逾期的事件：每个一条 `<symbol> <periodKey>` (只计数)。 */
   readonly overdueUnaligned: readonly string[];
+  /** 公布日已过、因非季报公司的第一 / 第三季未判逾期的事件 (FR-029)：每个一条 `<symbol> <periodKey>` (只计数)。 */
+  readonly nonQuarterlyReporter: readonly string[];
+  /** 其中本轮由既有逾期解除的 (FR-029，🚫 计失败)。 */
+  readonly nonQuarterlyReleased: readonly string[];
 }
 
 /** 港股日常入口结局 = 采集段结局 + 起手财年档案反推 + 合并段汇总。 */
@@ -309,9 +315,9 @@ interface ListingRound {
   readonly lastRound: ReadonlyMap<string, EarningsDateEventKey>;
 }
 
-interface FilingFact {
+/** 该标的一条刊发事实 = 合并规则的刊发事实 (FR-029) + 报告期键 (确认日期窗口下界用)。 */
+interface FilingFact extends EarningsFilingFact {
   readonly periodKey: string;
-  readonly date: string;
 }
 
 /** 一轮合并共用的输入 (预读一次，逐事件复用)。 */
@@ -323,7 +329,8 @@ interface MergeContext {
   readonly publicationFact: boolean;
   readonly signalsByInstrument: ReadonlyMap<bigint, readonly EarningsNoticeSignal[]>;
   readonly listings: ReadonlyMap<string, ListingRound>;
-  readonly fiscalProfiles: ReadonlySet<bigint>;
+  /** 标的 → 财年档案的财年结束月 (无档案不在表内)。 */
+  readonly fiscalProfiles: ReadonlyMap<bigint, number>;
   readonly filings: ReadonlyMap<bigint, readonly FilingFact[]>;
   readonly symbols: ReadonlyMap<bigint, string>;
   /** 自 `from` 至本轮业务日的交易日数 (左开右闭)，按 `from` memo。 */
@@ -341,7 +348,19 @@ interface MergeAccumulator {
   fiscalUnknown: string[];
   neverListedUndated: string[];
   overdueUnaligned: string[];
+  nonQuarterlyReporter: string[];
+  nonQuarterlyReleased: string[];
 }
+
+const emptyAccumulator = (): MergeAccumulator => ({
+  eventsWritten: 0,
+  findings: [],
+  fiscalUnknown: [],
+  neverListedUndated: [],
+  overdueUnaligned: [],
+  nonQuarterlyReporter: [],
+  nonQuarterlyReleased: [],
+});
 
 const MERGE_OBSERVATION_SELECT = {
   instrumentId: true,
@@ -536,6 +555,17 @@ function logRows(
   }));
 }
 
+/** 合并规则的财年档案与刊发事实输入 (FR-028 / FR-029)：无档案 ⇒ 财年结束月 null。 */
+function fiscalInput(
+  ctx: MergeContext,
+  instrumentId: bigint,
+): Pick<EarningsDateMergeInput, 'fiscalYearEndMonth' | 'filings'> {
+  return {
+    fiscalYearEndMonth: ctx.fiscalProfiles.get(instrumentId) ?? null,
+    filings: ctx.filings.get(instrumentId) ?? [],
+  };
+}
+
 /** 该标的本事件之外、早于本事件日期的最近一次刊发 (确认日期窗口下界，FR-012)。 */
 function previousFilingDate(
   filings: readonly FilingFact[],
@@ -546,8 +576,8 @@ function previousFilingDate(
   if (eventDate === undefined) return null;
   return (
     filings
-      .filter((f) => f.periodKey !== periodKey && f.date < eventDate)
-      .map((f) => f.date)
+      .filter((f) => f.periodKey !== periodKey && f.filedDate < eventDate)
+      .map((f) => f.filedDate)
       .sort()
       .pop() ?? null
   );
@@ -670,7 +700,25 @@ function reportMergeFindings(
       noticeSignals,
     });
   }
+  reportNonQuarterly(stats, merge);
   reportForwardRows(stats, outcome);
+}
+
+/**
+ * 非季报公司的第一 / 第三季 (FR-029，spec Session（八）1b)：每轮一条，只计数，🚫 计失败；`released` = 本轮由既有
+ * 逾期解除的数 (解除本身留在事件流水 `detail.releasedBy`)。O(1)。
+ */
+function reportNonQuarterly(stats: SyncRunStats, merge: EarningsDatesMergeSummary): void {
+  if (merge.nonQuarterlyReporter.length === 0) return;
+  stats.findings.push({
+    kind: 'notice',
+    step: 'earnings_date_non_quarterly',
+    detail: {
+      count: merge.nonQuarterlyReporter.length,
+      released: merge.nonQuarterlyReleased.length,
+      samples: merge.nonQuarterlyReporter.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+    },
+  });
 }
 
 /**
@@ -761,13 +809,7 @@ export class SyncEarningsDatesUseCase {
       },
       list.map((k) => k.instrumentId),
     );
-    const acc: MergeAccumulator = {
-      eventsWritten: 0,
-      findings: [],
-      fiscalUnknown: [],
-      neverListedUndated: [],
-      overdueUnaligned: [],
-    };
+    const acc = emptyAccumulator();
     await this.mergeKeys(ctx, list, acc);
     return acc;
   }
@@ -1023,19 +1065,13 @@ export class SyncEarningsDatesUseCase {
       },
       [...keys.map((k) => k.instrumentId), ...signalsByInstrument.keys()],
     );
-    const acc: MergeAccumulator = {
-      eventsWritten: 0,
-      findings: [],
-      fiscalUnknown: [],
-      neverListedUndated: [],
-      overdueUnaligned: [],
-    };
+    const acc = emptyAccumulator();
     await this.mergeKeys(ctx, keys, acc);
     if (publicationFact && signalsReliable(outcome)) await this.scanNoticeUndated(ctx, acc);
     return acc;
   }
 
-  /** 预读一轮合并共用的输入。3 次读 (档案 / 刊发事实 / 标的代码)。 */
+  /** 预读一轮合并共用的输入。3 次读 (档案财年结束月 / 刊发事实 / 标的代码)。 */
   private async buildContext(
     base: MergeContextBase,
     instrumentIds: readonly bigint[],
@@ -1044,11 +1080,19 @@ export class SyncEarningsDatesUseCase {
     const [profiles, filings, instruments] = await Promise.all([
       this.prisma.earningsFiscalProfile.findMany({
         where: { instrumentId: { in: ids } },
-        select: { instrumentId: true },
+        select: { instrumentId: true, fiscalYearEndMonth: true },
       }),
       this.prisma.earningsDateObservation.findMany({
         where: { instrumentId: { in: ids }, basis: 'filed' },
-        select: { instrumentId: true, periodKey: true, filedDate: true, announceDate: true },
+        select: {
+          instrumentId: true,
+          periodKey: true,
+          filedDate: true,
+          announceDate: true,
+          periodEnd: true,
+          reportKind: true,
+          periodText: true,
+        },
       }),
       this.prisma.instrument.findMany({
         where: { id: { in: ids } },
@@ -1057,16 +1101,22 @@ export class SyncEarningsDatesUseCase {
     ]);
     const filingsByInstrument = new Map<bigint, FilingFact[]>();
     for (const f of filings) {
-      const date = isoDate(f.filedDate ?? f.announceDate);
-      if (date === null) continue;
+      const filedDate = isoDate(f.filedDate ?? f.announceDate);
+      if (filedDate === null) continue;
       const list = filingsByInstrument.get(f.instrumentId) ?? [];
-      list.push({ periodKey: f.periodKey, date });
+      list.push({
+        periodKey: f.periodKey,
+        filedDate,
+        periodEnd: isoDate(f.periodEnd),
+        reportKind: f.reportKind,
+        periodText: f.periodText,
+      });
       filingsByInstrument.set(f.instrumentId, list);
     }
     const tradingDays = new Map<string, Promise<number | null>>();
     return {
       ...base,
-      fiscalProfiles: new Set(profiles.map((p) => p.instrumentId)),
+      fiscalProfiles: new Map(profiles.map((p) => [p.instrumentId, p.fiscalYearEndMonth])),
       filings: filingsByInstrument,
       symbols: new Map(instruments.map((i) => [i.id, `${i.market}:${i.code}`])),
       countTradingDays: (from) => {
@@ -1097,6 +1147,11 @@ export class SyncEarningsDatesUseCase {
       }
       if (result.fiscalProfileMissing) acc.fiscalUnknown.push(symbol);
       if (result.overdueUnaligned) acc.overdueUnaligned.push(`${symbol} ${key.periodKey}`);
+      if (result.nonQuarterlyReporter !== null) {
+        const sample = `${symbol} ${key.periodKey}`;
+        acc.nonQuarterlyReporter.push(sample);
+        if (result.nonQuarterlyReporter.released) acc.nonQuarterlyReleased.push(sample);
+      }
     }
   }
 
@@ -1159,7 +1214,7 @@ export class SyncEarningsDatesUseCase {
       ),
       existing: stored === null ? null : toExistingEvent(stored),
       runAt: ctx.now,
-      hasFiscalProfile: ctx.fiscalProfiles.has(instrumentId),
+      ...fiscalInput(ctx, instrumentId),
       elapsedTradingDays:
         judgedDate === null
           ? null
@@ -1308,7 +1363,7 @@ export class SyncEarningsDatesUseCase {
     });
     const latestFilingDate =
       (ctx.filings.get(instrumentId) ?? [])
-        .map((f) => f.date)
+        .map((f) => f.filedDate)
         .sort()
         .pop() ?? null;
     const noticeSignals = ctx.signalsByInstrument.get(instrumentId) ?? [];

@@ -470,6 +470,23 @@ function fiscalQuarterEnd(
 }
 
 /**
+ * 期末日按财年结束月换算财季：期末月距财年结束月 3 / 6 / 9 / 12 个月 ⇒ 第 1 / 2 / 3 / 4 财季；其余月份、
+ * 非法日期、非法财年结束月 ⇒ null。只看月份 (各来源换算出的期末日均为月末)。
+ * 供 FR-029「非季报公司的第一 / 第三季」判定 (spec Session（八）1b)。
+ */
+export function fiscalQuarterOf(
+  periodEnd: string,
+  fiscalYearEndMonth: number,
+): 1 | 2 | 3 | 4 | null {
+  const end = parseIsoDate(periodEnd);
+  if (end === null || !Number.isInteger(fiscalYearEndMonth)) return null;
+  if (fiscalYearEndMonth < 1 || fiscalYearEndMonth > 12) return null;
+  const monthsAfterYearEnd = (end.month - fiscalYearEndMonth + 12) % 12;
+  if (monthsAfterYearEnd % 3 !== 0) return null;
+  return monthsAfterYearEnd === 0 ? 4 : ((monthsAfterYearEnd / 3) as 1 | 2 | 3);
+}
+
+/**
  * 一条「富途观测 ↔ 交易所刊发事实」配对反推的财年结束月；公布日相差 > 1 天或推不出 1–12 月 ⇒ null。
  * 多条配对怎么合、与其他来源怎么对账在财年档案 (`earnings-fiscal-profile.rules.ts`)。
  */

@@ -2656,3 +2656,103 @@ describe('079 T030 刊发判定放宽: fs 族标签 + 业绩标题 v3 (hk:09961 
     ]);
   });
 });
+
+/** 上一轮落下的刊发事实观测 (T031 季度刊发判定只读 `filed` 口径观测, 与本轮公告窗口无关)。 */
+const seedFiling = (
+  instrumentId: bigint,
+  periodKey: string,
+  filedDate: string,
+  fields: { reportKind: string | null; periodEnd: string | null; periodText: string },
+) =>
+  prisma.earningsDateObservation.create({
+    data: {
+      source: 'hkex_announcement',
+      instrumentId,
+      periodKey,
+      market: 'hk',
+      reportKind: fields.reportKind,
+      periodEnd: fields.periodEnd === null ? null : day(fields.periodEnd),
+      periodText: fields.periodText,
+      basis: 'filed',
+      announceDate: day(filedDate),
+      filedDate: day(filedDate),
+      firstSeenAt: day(filedDate),
+      lastSeenAt: day(filedDate),
+    },
+  });
+
+describe('079 T031 非季报公司的第一 / 第三季不判逾期 (hk:01299 形态, 经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('既有 overdue 的 Q3 事件 (730 天内只有中期刊发) ⇒ 解除回 confirmed + releasedBy 流水 + non_quarterly 计数; 同轮对照 (D: 键、报告类型空的第一季度刊发) 迁入 overdue + partial', async () => {
+    const [aia, control] = await Promise.all(['01299', '00700'].map((c) => instrument('hk', c)));
+    for (const i of [aia, control]) await seedProfile(i.id);
+    const Q3 = 'P:2026-09-30';
+    const q3Observation = (instrumentId: bigint): EarningsDateSourceObservation => ({
+      ...obs(instrumentId, 'structured', '2026-10-15'),
+      periodKey: Q3,
+      reportKind: 'quarterly',
+      periodEnd: '2026-09-30',
+      periodText: '2026Q3',
+    });
+    await seedFiling(aia.id, INTERIM, '2026-08-20', {
+      reportKind: 'interim',
+      periodEnd: '2026-06-30',
+      periodText: '截至2026年6月30日止六個月之中期業績公告',
+    });
+    await seedFiling(control.id, 'D:hkex_announcement:2026-05-15', '2026-05-15', {
+      reportKind: null,
+      periodEnd: null,
+      periodText: '2026年第一季度業績公告',
+    });
+    // prod 形态: 上一轮已迁入 overdue 的 Q3 事件 (富途把非业绩事件列成财报日)。
+    await prisma.earningsDateEvent.create({
+      data: {
+        instrumentId: aia.id,
+        periodKey: Q3,
+        market: 'hk',
+        reportKind: 'quarterly',
+        periodEnd: day('2026-09-30'),
+        status: 'overdue',
+        announceDate: day('2026-10-15'),
+        announceBasis: 'structured',
+        confirmedDate: day('2026-09-01'),
+        confirmedBasis: 'first_seen',
+        sources: ['futu_calendar'],
+        overdueSince: at('2026-10-19'),
+      },
+    });
+    const futu: Round = {
+      current: { observations: [aia, control].map((i) => q3Observation(i.id)) },
+    };
+
+    // 公布日 10-15 (周四) → 10-20 (周二) = 3 个交易日。
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-10-20');
+
+    // 先断言正向: 对照标的 (有季度刊发) 迁入 overdue 且计 1 次失败 —— 证明本轮逾期判定在跑。
+    expect((await eventOf(control.id, Q3)).status).toBe('overdue');
+    expect(runSteps(run, 'earnings_date_overdue')).toEqual([
+      expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:00700' }) }),
+    ]);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+
+    const released = await eventOf(aia.id, Q3);
+    expect(released).toMatchObject({ status: 'confirmed', overdueSince: null });
+    expect(released.logs).toEqual([
+      expect.objectContaining({
+        kind: 'status_changed',
+        fromStatus: 'overdue',
+        toStatus: 'confirmed',
+        detail: expect.objectContaining({ releasedBy: 'non_quarterly_reporter' }),
+      }),
+    ]);
+    expect(runSteps(run, 'earnings_date_non_quarterly')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_non_quarterly',
+        detail: { count: 1, released: 1, samples: [`hk:01299 ${Q3}`] },
+      },
+    ]);
+  });
+});
