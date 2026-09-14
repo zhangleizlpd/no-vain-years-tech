@@ -122,7 +122,7 @@ context7_verified: []
   | `/trade/deals` | `market`, `start`, `end` | `history_deal_list_query(deal_market=…)`；`end` ≥ 当日时再合并 `deal_list_query(refresh_cache=True)` 按 `deal_id` 去重 | `trade_deal_history` / `trade_deal_today` |
   | `/trade/orders` | `market`, `start`, `end` | 同上，`order_market` / `order_id` 去重 | `trade_order_history` / `trade_order_today` |
 
-  `/trade/accounts` 只回 `{last4, trdmarket_auth, matched}`。`start/end` 跨度 > 90 天 ⇒ `400`（富途历史窗上限，E4）。
+  `/trade/accounts` 只回 `{trdmarket_auth, matched}`，不回账户号的任何片段（连接尾号不从 shim 取，见 D7；2026-09-14 amend）。`start/end` 跨度 > 90 天 ⇒ `400`（富途历史窗上限，E4）。
 - **限频**：`ratelimit.py` `LIMITS` 登记上表 capability。持仓 / 历史成交 / 历史订单 = `(10, 30)`，`EVIDENCE` 指富途文档 get-position-list · get-history-order-fill-list · get-history-order-list；当日成交 / 当日订单与账户列表**先查文档再登记**，查不到按兜底 `(10, 30)` 并写 `ASSUMED`（`ratelimit.py:72-80` 先例纪律）。同步 `test_ratelimit.py:83` 的实测对照表。
 - **超时与并发上限**（POC-7「不阻塞」设计的实现面）：交易 SDK 调用经「daemon 线程 + `join(timeout)`」包装（照 `opend.py:307-330` 健康探测），env `FUTU_TRADE_CALL_TIMEOUT_S` 默认 10；超时 ⇒ 丢弃交易 context + `503 {"error":"trade_timeout"}`。交易路由共用一个**并发上限 2** 的 semaphore ⇒ waitress 4 线程里恒至少留 2 条给行情面（`app.py:812` `threads=4` 写死）。🚨 **非阻塞获取**，拿不到立即 `503 {"error":"trade_busy"}`（server 侧 `VendorHttpClient` 按 5xx 退避重试）—— 阻塞等待时排队的请求仍占着 waitress 线程，等于没限。
 - **只读 AST 守卫**：`tests/test_readonly_guard.py` 解析 `src/**/*.py`，出现 `unlock_trade` / `place_order` / `modify_order` / `place_combo_order` / `cancel_all_order` 的 `Attribute` / `Name` 即红（master §5-1）。
@@ -156,7 +156,7 @@ context7_verified: []
 
 六张表均在 `optionsdesk` schema，`broker_` 前缀，全部登记 `check-server-moat.ts` `MODEL_OWNERSHIP`：
 
-- **连接**：一行 = 一个账号 × 一家券商 × 一个证券户；存券商码、人读标签、账户号末 4 位。调度器与订阅方**遍历连接行**取 `account_id`，代码中不存在「管理员 ID」常量（master §12-A3）。
+- **连接**：一行 = 一个账号 × 一家券商 × 一个证券户；存券商码、人读标签、所属账号手机号后四位 `phone_last4`（上线建连接时由维护者手填；代码不读 `account` 表的手机号，也不从券商取 —— 富途三个账户号字段的末 4 位互不相同；2026-09-14 amend）。调度器与订阅方**遍历连接行**取 `account_id`，代码中不存在「管理员 ID」常量（master §12-A3）。
 - **持仓**：唯一 `(connection_id, market, code)`；数量 / 市值 / 两个成本字段（`cost_price` 摊薄、`average_cost`，F4 留给 p3 选）/ 现价用 `Decimal`；`first_seen_at` 仅在插入时写；`opened_at` + `opened_at_source`（`derived` / `fallback`）；`synced_at`；原始行 `raw Json`。
 - **成交**：唯一 `(connection_id, deal_id)`；成交视为不可变 ⇒ `createMany({ skipDuplicates })`，返回的插入数即对账「补回条数」。
 - **订单**：唯一 `(connection_id, order_id)`；`vendor_updated_at` 毫秒精度；写入 = 先 `createMany({ skipDuplicates })` 插入，再对全部入参执行 `updateMany where vendor_updated_at < incoming`（FR-013）—— 两步都是原子写；🚫 先查后写（补齐与对账并发写同一连接时撞唯一约束抛 `P2002`，会被误判为基础设施失败进入重试）。
@@ -219,7 +219,7 @@ context7_verified: []
 
 发版后、首个交易日对账前，由维护者在 prod 执行一次（经既有 prod PG 访问方式，写操作由维护者本人执行）：
 
-1. 插入一条连接行（账号 = 期权台管理员账号，券商 = `futu`，末 4 位取自 shim `/trade/accounts`）。
+1. 插入一条连接行（账号 = 期权台管理员账号，券商 = `futu`，`phone_last4` 由维护者从 prod `account` 表查该账号手机号后四位手填，不取自 shim）。
 2. 插入一条 `backfill` 记录：`status = pending`，`target = '*'`，窗口起点 `2024-09-01`（POC-2）。
 3. 等下一拍调度器认领执行 → 查记录 `succeeded` → 按 SC-001 逐只锚标的与富途 App 核对条数。
 

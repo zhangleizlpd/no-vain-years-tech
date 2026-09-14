@@ -423,11 +423,13 @@ def exchange_today(monkeypatch):
     monkeypatch.setattr(app_module, "_exchange_today", lambda market: EXCHANGE_TODAY)
 
 
-def test_trade_accounts_returns_last4_and_never_the_full_account_number():
-    """⑧"""
+def test_trade_accounts_rows_carry_only_auth_and_match_count():
+    """⑧ 2026-09-14 amend：行里不带任何账户号片段（连接尾号改为账号手机号后四位，不从券商取）。"""
     resp = build_trade(FakeTradeCtx()).get("/trade/accounts", headers=AUTH)
     assert resp.status_code == 200
-    assert resp.json["rows"] == [{"last4": "1001", "trdmarket_auth": ["HK", "US"], "matched": 1}]
+    assert set(resp.json) == {"as_of", "count", "rows"}
+    assert [set(row) for row in resp.json["rows"]] == [{"trdmarket_auth", "matched"}]
+    assert resp.json["rows"] == [{"trdmarket_auth": ["HK", "US"], "matched": 1}]
     body = resp.get_data(as_text=True)
     for secret in (str(SELECTED_ACC_ID), "8000000000", "7000000000"):
         assert secret not in body

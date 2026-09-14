@@ -901,9 +901,10 @@ def create_app(
 
     @app.get("/trade/accounts")
     def trade_accounts():
-        """同步对象账户的概要 `{last4, trdmarket_auth, matched}`。
+        """同步对象账户的概要 `{trdmarket_auth, matched}`。
 
-        🚨 只回末 4 位；完整 `acc_id` 不出本进程（FR-002）。选户规则与「命中 ≠ 1 ⇒ 409、绝不任取」
+        🚨 不回账户号的任何片段；`acc_id` 不出本进程（FR-002）。连接尾号是所属账号手机号后四位，
+        由维护者建连接时填写，不从这里取（2026-09-14 amend）。选户规则与「命中 ≠ 1 ⇒ 409、绝不任取」
         见 `trade.select_account`，所以走到这里时 `matched` 恒为 1。
 
         其余交易路由缓存未命中时的那一发 `get_acc_list` 不另计本 capability：每个交易 context
@@ -914,7 +915,6 @@ def create_app(
         return _envelope(
             [
                 {
-                    "last4": str(account["acc_id"])[-4:],
                     "trdmarket_auth": list(account.get("trdmarket_auth") or []),
                     "matched": 1,
                 }
