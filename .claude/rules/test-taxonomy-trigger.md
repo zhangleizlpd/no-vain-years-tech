@@ -49,3 +49,4 @@ paths:
 - 各类测试跑在哪个环境、吃什么 env、隔离到什么级别、常驻陷阱 → [`docs/conventions/test-environment-matrix.md`](../../docs/conventions/test-environment-matrix.md)
 - 照抄结构的测试样板 → [`docs/conventions/golden-sample-registry.md`](../../docs/conventions/golden-sample-registry.md)
 - 本地怎么跑、哪些失败是环境骗你的 → [`docs/conventions/local-verification.md`](../../docs/conventions/local-verification.md)
+- fixture 取值（合成值；禁真实与「脱敏真实」的账户 / 持仓 / 交易数据）→ [`docs/conventions/testing.md`](../../docs/conventions/testing.md) §7 合成数据条款
