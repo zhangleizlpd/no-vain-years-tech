@@ -3,19 +3,20 @@
  *
  * 用**生成的** @nvy/api-client 函数（Orval，消费端真实代码路径）打**真 server**（harness
  * boot 的 testcontainers 后端）验自有持仓核心链 + 真落库 + 契约对齐：
- *   ① EP1 导入脱敏真实样本 xlsx（**FormData 路径验真**：生成函数自建 FormData，File part
+ *   ① EP1 导入合成导出样本 xlsx（**FormData 路径验真**：生成函数自建 FormData，File part
  *      携带 .xlsx 文件名过 server 扩展校验 + asOf 文本字段同请求）→ 摘要断言
  *      （2 持仓 + 1 汇总 skip + 1 已清仓 + 23 流水，锚同 server IT 样本基线）；
  *   ② EP2 回显：asOf 行级冗余 / current 2 行（字段形态 Decimal string / quotable boolean）
  *      / closed 1 行（日期区间 + 均价）；
- *   ③ EP3 等值 (market, code) 流水：603915 全量 9 条 + 时序倒序 + 未交易标的空 items（200 非 404）；
+ *   ③ EP3 等值 (market, code) 流水：ZQX 全量 9 条 + 时序倒序 + 未交易标的空 items（200 非 404）；
  *   ④ 重导幂等（FR-006 整体替换）：摘要相等 + EP2/EP3 回显不变（行 id 为替换批新发，剥离后比）。
  *
  * 这正是 hermetic Playwright（mock 即假设契约）与 server IT（不经生成客户端、不经真 multipart
  * over HTTP）都覆盖不到的缝——尤其 orval 生成的 FormData 编排（file part 在前 / asOf 字段在后）
  * 与 @fastify/multipart 字段提取的对接。
  *
- * fixture = server 端脱敏真实样本（fs **文件读取**而非跨 project import——mobile-app scope 禁
+ * fixture = server 端合成导出样本（纯合成，生成器 `server/src/portfolio/__fixtures__/synthetic-holdings.ts`；
+ * fs **文件读取**而非跨 project import——mobile-app scope 禁
  * 依赖 server 代码，文件级 reach-across 沿 harness 解析 ../server 先例）。V1 无删除端点
  * （import-only），本 spec 不清理持仓表——注册于 SPECS 末位，不影响前序 spec。
  */
@@ -37,7 +38,7 @@ export const name = 'portfolio-holdings (025)';
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const AS_OF = '2026-06-05';
 const MARKET = 'cn';
-const CODE = '603915';
+const CODE = 'ZQX';
 
 /** 重导幂等比对：行 id 为整体替换批新发（IT 同款剥离），其余字段须逐一相等。 */
 function stripHoldingsIds(body: HoldingsListResponse) {
@@ -64,7 +65,7 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
     'src',
     'portfolio',
     '__fixtures__',
-    'sample-holdings.xlsx',
+    'synthetic-holdings.xlsx',
   );
   const sample = await readFile(samplePath);
   // File（Blob 子类）携带 filename → FormData part 过 server `.xlsx` 扩展校验。
@@ -88,21 +89,21 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
   assert.equal(listed.data.asOf, AS_OF, 'EP2 asOf mirrors import batch (行级冗余, plan D6)');
   assert.equal(listed.data.current.length, 2, 'EP2 current = 2 rows');
   assert.equal(listed.data.closed.length, 1, 'EP2 closed = 1 row');
-  const guomao = listed.data.current.find((h) => h.market === MARKET && h.code === CODE);
-  assert.ok(guomao, '603915 present in current holdings');
-  assert.equal(guomao.name, '国茂股份', 'name from file');
-  assert.match(guomao.qty, /^\d+(\.\d+)?$/, 'qty is a Decimal string');
-  assert.match(guomao.unitCost, /^\d+(\.\d+)?$/, 'unitCost is a Decimal string');
-  assert.equal(typeof guomao.quotable, 'boolean', 'quotable derivation flag present');
+  const held = listed.data.current.find((h) => h.market === MARKET && h.code === CODE);
+  assert.ok(held, `${CODE} present in current holdings`);
+  assert.equal(held.name, '合成甲股份', 'name from file');
+  assert.match(held.qty, /^\d+(\.\d+)?$/, 'qty is a Decimal string');
+  assert.match(held.unitCost, /^\d+(\.\d+)?$/, 'unitCost is a Decimal string');
+  assert.equal(typeof held.quotable, 'boolean', 'quotable derivation flag present');
   const closedRow = listed.data.closed[0];
   assert.ok(closedRow, 'closed row present');
   assert.match(closedRow.openDate, /^\d{4}-\d{2}-\d{2}$/, 'openDate YYYY-MM-DD');
   assert.match(closedRow.closeDate, /^\d{4}-\d{2}-\d{2}$/, 'closeDate YYYY-MM-DD');
 
-  // ③ EP3 等值流水：603915 全量 9 条 + 倒序；未交易标的 → 空 items（200 非 404）。
+  // ③ EP3 等值流水：ZQX 全量 9 条 + 倒序；未交易标的 → 空 items（200 非 404）。
   const trades = await tradesControllerList({ market: MARKET, code: CODE }, cfg);
   assert.equal(trades.status, 200);
-  assert.equal(trades.data.items.length, 9, 'sample: 9 trades for 603915');
+  assert.equal(trades.data.items.length, 9, `sample: 9 trades for ${CODE}`);
   trades.data.items.forEach((t) => {
     assert.equal(t.market, MARKET);
     assert.equal(t.code, CODE);

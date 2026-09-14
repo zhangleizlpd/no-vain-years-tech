@@ -1,15 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupIsolatedDb } from '../../test/_support/isolated-db';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { PrismaService } from '../security/prisma.service';
 import { ImportHoldingsUseCase } from './import-holdings.usecase';
 import { ListTradesUseCase } from './list-trades.usecase';
 import { buildHoldingsXlsx } from './__fixtures__/build-holdings-xlsx';
+import {
+  SYNTHETIC_CODE_MAIN,
+  SYNTHETIC_HOLDINGS_XLSX_PATH,
+} from './__fixtures__/synthetic-holdings';
 
 const ASOF = '2026-06-06';
 
-// 025 T006 US3: EP3 标的流水 UC (国茂全量 9 条时序/未交易空 items/资金行不命中)。
+// 025 T006 US3: EP3 标的流水 UC (合成样本单标的全量 9 条时序/未交易空 items/资金行不命中)。
 // Testcontainers PG。run via `nx test server <file>` (cwd=apps/server) per memory。
 describe('ListTradesUseCase (Testcontainers PG)', () => {
   let prisma: PrismaService;
@@ -35,16 +38,16 @@ describe('ListTradesUseCase (Testcontainers PG)', () => {
 
   const nextAccountId = (): bigint => BigInt(990_000 + ++seq);
 
-  it('真实脱敏样本: 国茂股份全量 9 条, tradeDate desc + tradeTime desc 时序正确 (FR-008)', async () => {
+  it('合成导出样本: ZQX 全量 9 条, tradeDate desc + tradeTime desc 时序正确 (FR-008)', async () => {
     const accountId = nextAccountId();
-    const buf = await readFile(join(__dirname, '__fixtures__', 'sample-holdings.xlsx'));
+    const buf = await readFile(SYNTHETIC_HOLDINGS_XLSX_PATH);
     await importUC.execute(accountId, buf, ASOF);
 
-    const { items } = await listUC.execute(accountId, 'cn', '603915');
+    const { items } = await listUC.execute(accountId, 'cn', SYNTHETIC_CODE_MAIN);
     expect(items).toHaveLength(9);
     items.forEach((t) => {
       expect(t.market).toBe('cn');
-      expect(t.code).toBe('603915');
+      expect(t.code).toBe(SYNTHETIC_CODE_MAIN);
     });
     // 倒序校验: (tradeDate, tradeTime ?? '') 字典序非增 (nulls last 同日殿后)。
     const keys = items.map((t) => `${t.tradeDate} ${t.tradeTime ?? ''}`);

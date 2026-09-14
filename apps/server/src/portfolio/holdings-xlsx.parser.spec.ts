@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   FIXTURE_CLOSED_HEADERS,
@@ -7,6 +6,11 @@ import {
   FIXTURE_TRADE_HEADERS,
   buildHoldingsXlsx,
 } from './__fixtures__/build-holdings-xlsx';
+import {
+  SYNTHETIC_CODE_MAIN,
+  SYNTHETIC_HOLDINGS_XLSX_PATH,
+  buildSyntheticHoldingsXlsx,
+} from './__fixtures__/synthetic-holdings';
 import { SHEET_CLOSED, SHEET_TRADES } from './holdings-import.rules';
 import { parseHoldingsWorkbook } from './holdings-xlsx.parser';
 
@@ -43,9 +47,9 @@ describe('parseHoldingsWorkbook — builder 文件 (sharedStrings 路径)', () =
   });
 });
 
-describe('parseHoldingsWorkbook — 脱敏真实样本 (inlineStr 回归)', () => {
+describe('parseHoldingsWorkbook — 合成导出样本 (真实导出 `t="str"` 编码回归)', () => {
   it('3 sheet 解析: 表头列数 27/13/11 + 行数 3(含汇总)/1/23', async () => {
-    const buf = await readFile(join(__dirname, '__fixtures__', 'sample-holdings.xlsx'));
+    const buf = await readFile(SYNTHETIC_HOLDINGS_XLSX_PATH);
     const r = await parseHoldingsWorkbook(buf);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -57,7 +61,17 @@ describe('parseHoldingsWorkbook — 脱敏真实样本 (inlineStr 回归)', () =
     expect(r.workbook.holdings.rows).toHaveLength(3); // 2 持仓 + 1 汇总
     expect(r.workbook.closed.rows).toHaveLength(1);
     expect(r.workbook.trades.rows).toHaveLength(23);
-    // inlineStr cell 原值直通
-    expect(String(r.workbook.holdings.rows[0]?.[0])).toBe('603915');
+    // str cell 原值直通
+    expect(String(r.workbook.holdings.rows[0]?.[0])).toBe(SYNTHETIC_CODE_MAIN);
+  });
+
+  it('入库文件 = 生成器产物, 且无 sharedStrings 部件 (禁手工改二进制)', async () => {
+    const committed = await readFile(SYNTHETIC_HOLDINGS_XLSX_PATH);
+    // zip 本地文件头里部件名是明文 ⇒ 按字节判部件有无; builder 默认 (sharedStrings) 作正向对照
+    expect(committed.includes('xl/sharedStrings.xml')).toBe(false);
+    expect((await buildHoldingsXlsx()).includes('xl/sharedStrings.xml')).toBe(true);
+    expect(await parseHoldingsWorkbook(committed)).toStrictEqual(
+      await parseHoldingsWorkbook(await buildSyntheticHoldingsXlsx()),
+    );
   });
 });

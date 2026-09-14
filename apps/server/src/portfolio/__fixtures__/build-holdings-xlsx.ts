@@ -1,13 +1,15 @@
 /**
  * 025 测试 fixture 程序化 builder (plan §测试 fixture 双轨之 ①)。
  *
- * exceljs 写测试 xlsx —— 显式 useSharedStrings:true 走 sharedStrings 编码路径,
- * 与脱敏真实样本 (inlineStr) 形成双轨, 两条解析路径都踩 (plan Cross-cutting)。
+ * exceljs 写测试 xlsx —— 默认 useSharedStrings:true 走 sharedStrings 编码路径;
+ * `useSharedStrings:false` 走同花顺真实导出的 `t="str"` 编码 (合成样本
+ * `synthetic-holdings.ts` 用), 两条解析路径都踩 (plan Cross-cutting)。
  * 默认数据集镜像真实样本形态 (表头 27/13/11 列 + 汇总聚合行 + 资金行/XD 行),
  * 金额纯合成。变体 (缺 sheet / `--` / 未知类别) 通过 options 组合。
  *
  * 仅测试消费 (vitest / IT / contract-smoke fixture), 不进 runtime bundle。
  */
+import { PassThrough } from 'node:stream';
 import ExcelJS from 'exceljs';
 import {
   SHEET_CLOSED,
@@ -131,6 +133,80 @@ export const FIXTURE_TRADE_ROWS: CellValue[][] = [
     '106900.55', '107000', '111.45', ''],
 ];
 
+/**
+ * 真实导出的数值列 numFmt (sheet → [格式, 表头[]])，按 2026-09-14 旧样本结构探测照录。
+ * 只套在 number / null 单元格上：null + 样式 = 带样式空格 `<c s=".."/>`（真实导出形态，
+ * exceljs 读回为 Null 而非 Merge）；文本单元格不带样式。默认数据集全为字符串 ⇒ 对既有调用方无影响。
+ */
+const EXPORT_NUM_FMTS: Record<string, [fmt: string, headers: string[]][]> = {
+  [SHEET_HOLDINGS]: [
+    [
+      '0.00;-0.00;0',
+      [
+        '持有金额',
+        '当日盈亏',
+        '组合盈亏',
+        '持有盈亏',
+        '累计盈亏',
+        '本周盈亏',
+        '本月盈亏',
+        '今年盈亏',
+        '最新价',
+      ],
+    ],
+    [
+      '0.00%;-0.00%;0%',
+      [
+        '当日盈亏率',
+        '板块涨幅',
+        '组合涨幅',
+        '持有盈亏率',
+        '累计盈亏率',
+        '仓位占比',
+        '最新涨幅',
+        '回本涨幅',
+        '近1月涨幅',
+        '近3月涨幅',
+        '近6月涨幅',
+        '近1年涨幅',
+      ],
+    ],
+    ['0;-0;0%', ['持有数量']],
+    ['0;-0;0', ['持仓天数']],
+    ['0.000;-0.000;0', ['单位成本']],
+  ],
+  [SHEET_CLOSED]: [
+    ['0.00', ['总盈亏', '交易费用']],
+    ['0.00%', ['盈亏比', '同期大盘', '跑赢大盘', '清仓距今']],
+  ],
+  [SHEET_TRADES]: [['0.00', ['成交金额', '费用']]],
+};
+
+function writeSheet(
+  workbook: ExcelJS.Workbook,
+  sheet: string,
+  headers: string[],
+  rows: CellValue[][],
+): void {
+  const ws = workbook.addWorksheet(sheet);
+  ws.addRow(headers);
+  const fmtByCol = new Map(
+    (EXPORT_NUM_FMTS[sheet] ?? []).flatMap(([fmt, names]) =>
+      names.map((name) => [headers.indexOf(name), fmt] as const),
+    ),
+  );
+  rows.forEach((cells) => {
+    const row = ws.addRow(cells);
+    // forEach 跳过稀疏空位 (undefined = 缺失 cell, 真实导出资金行尾部形态)
+    cells.forEach((v, i) => {
+      const fmt = fmtByCol.get(i);
+      if (fmt !== undefined && (v === null || typeof v === 'number')) {
+        row.getCell(i + 1).numFmt = fmt;
+      }
+    });
+  });
+}
+
 export interface BuildHoldingsXlsxOptions {
   /** 缺 sheet 变体：列出的 sheet 名不写入 (整体 422 路径)。 */
   omitSheets?: string[];
@@ -140,6 +216,8 @@ export interface BuildHoldingsXlsxOptions {
   tradeRows?: CellValue[][];
   /** 持仓 sheet 是否带「汇总」聚合行 (默认 true, 镜像真实导出)。 */
   includeSummaryRow?: boolean;
+  /** 默认 true (exceljs 自产 sharedStrings 路径)；false = 真实导出的 `t="str"` 文本编码。 */
+  useSharedStrings?: boolean;
 }
 
 export async function buildHoldingsXlsx(opts: BuildHoldingsXlsxOptions = {}): Promise<Buffer> {
@@ -149,27 +227,41 @@ export async function buildHoldingsXlsx(opts: BuildHoldingsXlsxOptions = {}): Pr
     closedRows = FIXTURE_CLOSED_ROWS,
     tradeRows = FIXTURE_TRADE_ROWS,
     includeSummaryRow = true,
+    useSharedStrings = true,
   } = opts;
 
-  const workbook = new ExcelJS.Workbook();
+  const fill = (workbook: ExcelJS.Workbook): void => {
+    if (!omitSheets.includes(SHEET_HOLDINGS)) {
+      const rows = includeSummaryRow ? [...holdingRows, FIXTURE_SUMMARY_ROW] : holdingRows;
+      writeSheet(workbook, SHEET_HOLDINGS, FIXTURE_HOLDING_HEADERS, rows);
+    }
+    if (!omitSheets.includes(SHEET_CLOSED)) {
+      writeSheet(workbook, SHEET_CLOSED, FIXTURE_CLOSED_HEADERS, closedRows);
+    }
+    if (!omitSheets.includes(SHEET_TRADES)) {
+      writeSheet(workbook, SHEET_TRADES, FIXTURE_TRADE_HEADERS, tradeRows);
+    }
+  };
 
-  if (!omitSheets.includes(SHEET_HOLDINGS)) {
-    const ws = workbook.addWorksheet(SHEET_HOLDINGS);
-    ws.addRow(FIXTURE_HOLDING_HEADERS);
-    holdingRows.forEach((r) => ws.addRow(r));
-    if (includeSummaryRow) ws.addRow(FIXTURE_SUMMARY_ROW);
-  }
-  if (!omitSheets.includes(SHEET_CLOSED)) {
-    const ws = workbook.addWorksheet(SHEET_CLOSED);
-    ws.addRow(FIXTURE_CLOSED_HEADERS);
-    closedRows.forEach((r) => ws.addRow(r));
-  }
-  if (!omitSheets.includes(SHEET_TRADES)) {
-    const ws = workbook.addWorksheet(SHEET_TRADES);
-    ws.addRow(FIXTURE_TRADE_HEADERS);
-    tradeRows.forEach((r) => ws.addRow(r));
+  if (useSharedStrings) {
+    const workbook = new ExcelJS.Workbook();
+    fill(workbook);
+    const out = await workbook.xlsx.writeBuffer({ useSharedStrings: true });
+    return Buffer.from(out as ArrayBuffer);
   }
 
-  const out = await workbook.xlsx.writeBuffer({ useSharedStrings: true });
-  return Buffer.from(out as ArrayBuffer);
+  // 非流式 Workbook#writeBuffer 不认 useSharedStrings:false，只有流式 WorkbookWriter 写 `t="str"`。
+  // EVIDENCE: exceljs@4.4.0 lib/xlsx/xlsx.js prepareModel 恒传 worksheetOptions.sharedStrings;
+  // 2026-09-14 实测 writeBuffer({ useSharedStrings: false }) 产物仍含 xl/sharedStrings.xml。
+  const sink = new PassThrough();
+  const chunks: Buffer[] = [];
+  sink.on('data', (chunk: Buffer) => chunks.push(chunk)); // 必须消费, 否则背压卡死 commit
+  const writer = new ExcelJS.stream.xlsx.WorkbookWriter({
+    stream: sink,
+    useStyles: true,
+    useSharedStrings: false,
+  });
+  fill(writer);
+  await writer.commit();
+  return Buffer.concat(chunks);
 }
