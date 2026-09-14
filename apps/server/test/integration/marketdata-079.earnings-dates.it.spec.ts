@@ -2285,3 +2285,275 @@ describe('079 T022 ③: 单源失败隔离 (经维度运行)', () => {
     ).toBe(1);
   });
 });
+
+// state_branches 3 / 5 / 6 / 8 直接覆盖 (FR-009 / FR-010 / FR-014 / FR-019, plan §D8): 取值口径优先级、精确 vs 近似、
+// 近似差 1 天、近似差 ≥ 2 天不可解释。T017 各臂只顺带经过这些取值, 这里逐条断言「取谁 + 留痕 + 告不告警」。
+// 装配同 T017 (公告来源读真 announcement 表, 富途与清单脚本化), 全部经维度执行、断言落库的运行记录。
+const INTERIM_FILING_TITLE = '截至2026年6月30日止六個月之中期業績公告';
+
+describe('079 state_branches 直接覆盖补齐 #3 #5 #6 #8: 取值口径与冲突 (经维度运行)', () => {
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  const deviations = (instrumentId: bigint) =>
+    prisma.earningsDateObservation.findMany({
+      where: { instrumentId },
+      select: { source: true, deviationDays: true },
+      orderBy: { source: 'asc' },
+    });
+
+  it('#3 刊发事实 / 结构化 / 会议日推定三口径并存 ⇒ 公布日取刊发事实, 其余取值留痕 (流水候选 + 观测偏差)', async () => {
+    const inst = await instrument('hk', '01833');
+    await announce(inst.id, '2026-09-10', INTERIM_FILING_TITLE, ['fs_main']);
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-09-11')] } };
+    const board: Round = {
+      current: listing('2026-09-10', [obs(inst.id, 'meeting', '2026-09-09')]),
+    };
+
+    const run = await dimensionRun(buildMerge(futu, board), '2026-09-10');
+
+    const event = await eventOf(inst.id);
+    expect(event).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-09-10'),
+      announceBasis: 'filed',
+      conflictCandidates: null,
+    });
+    expect(event.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'value_changed',
+        detail: expect.objectContaining({
+          reason: 'exact_priority',
+          candidates: [
+            { source: 'hkex_announcement', basis: 'filed', date: '2026-09-10' },
+            { source: 'futu_calendar', basis: 'structured', date: '2026-09-11' },
+            { source: 'hkex_board_meeting_list', basis: 'meeting', date: '2026-09-09' },
+          ],
+        }),
+      }),
+    );
+    expect(await deviations(inst.id)).toEqual([
+      { source: 'futu_calendar', deviationDays: 1 },
+      { source: 'hkex_announcement', deviationDays: null },
+      { source: 'hkex_board_meeting_list', deviationDays: -1 },
+    ]);
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('#5 精确口径 (刊发事实 09-10) 与结构化 (09-15) 相差 5 天 ⇒ 取精确口径, 差异留痕, 无冲突告警', async () => {
+    const inst = await instrument('hk', '02688');
+    await announce(inst.id, '2026-09-10', INTERIM_FILING_TITLE, ['fs_main']);
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-09-15')] } };
+
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-09-10');
+
+    // 先断言事件存在且 published: 无事件时下面的「无冲突 finding」照样成立。
+    const event = await eventOf(inst.id);
+    expect(event).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-09-10'),
+      announceBasis: 'filed',
+      conflictCandidates: null,
+    });
+    expect(event.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'value_changed',
+        detail: expect.objectContaining({
+          candidates: [
+            { source: 'hkex_announcement', basis: 'filed', date: '2026-09-10' },
+            { source: 'futu_calendar', basis: 'structured', date: '2026-09-15' },
+          ],
+        }),
+      }),
+    );
+    expect(await deviations(inst.id)).toEqual([
+      { source: 'futu_calendar', deviationDays: 5 },
+      { source: 'hkex_announcement', deviationDays: null },
+    ]);
+    expect(runSteps(run, 'earnings_date_conflict')).toEqual([]);
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('#6 仅近似口径: 结构化 09-25 vs 会议日推定 09-24 (差 1 天) ⇒ 按口径优先级取结构化, 差异留痕, 无冲突告警', async () => {
+    const inst = await instrument('hk', '00316');
+    const futu: Round = { current: { observations: [obs(inst.id, 'structured', '2026-09-25')] } };
+    const board: Round = {
+      current: listing('2026-09-07', [obs(inst.id, 'meeting', '2026-09-24')]),
+    };
+
+    const run = await dimensionRun(buildMerge(futu, board), '2026-09-07');
+
+    // 取的是口径更高的结构化 (较晚那天), 不是较早的会议日推定。
+    const event = await eventOf(inst.id);
+    expect(event).toMatchObject({
+      status: 'confirmed',
+      announceDate: day('2026-09-25'),
+      announceBasis: 'structured',
+      conflictCandidates: null,
+    });
+    expect(event.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'value_changed',
+        detail: expect.objectContaining({
+          reason: 'approx_within_1_day',
+          candidates: [
+            { source: 'futu_calendar', basis: 'structured', date: '2026-09-25' },
+            { source: 'hkex_board_meeting_list', basis: 'meeting', date: '2026-09-24' },
+          ],
+        }),
+      }),
+    );
+    expect(runSteps(run, 'earnings_date_conflict')).toEqual([]);
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('#8 hk:00960 形态: 清单 03-28 vs 富途 03-31、无历史间隔可解释 ⇒ conflict + 全部候选 + 告警 finding, 🚫 计失败', async () => {
+    const ANNUAL_2025 = 'P:2025-12-31';
+    const inst = await instrument('hk', '00960');
+    const annual = (basis: EarningsDateBasis, date: string) => ({
+      ...obs(inst.id, basis, date),
+      periodKey: ANNUAL_2025,
+      reportKind: 'annual' as const,
+      periodEnd: '2025-12-31',
+    });
+    const futu: Round = { current: { observations: [annual('structured', '2026-03-31')] } };
+    const board: Round = { current: listing('2026-03-20', [annual('meeting', '2026-03-28')]) };
+
+    const run = await dimensionRun(buildMerge(futu, board), '2026-03-20');
+
+    const event = await eventOf(inst.id, ANNUAL_2025);
+    expect(event).toMatchObject({ status: 'conflict', announceDate: null, announceBasis: null });
+    const candidates = [
+      { source: 'futu_calendar', basis: 'structured', date: '2026-03-31' },
+      { source: 'hkex_board_meeting_list', basis: 'meeting', date: '2026-03-28' },
+    ];
+    expect(event.conflictCandidates).toEqual(candidates);
+    expect(event.logs).toContainEqual(
+      expect.objectContaining({
+        kind: 'status_changed',
+        toStatus: 'conflict',
+        detail: expect.objectContaining({ candidates }),
+      }),
+    );
+    expect(runSteps(run, 'earnings_date_conflict')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_conflict',
+        detail: { symbol: 'hk:00960', periodKey: ANNUAL_2025, candidates },
+      },
+    ]);
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+});
+
+// state_branches 19 / 20 直接覆盖 (FR-020 / FR-023, plan §D7): 清单来源的「主表外代码跳过计数」与「纯股息行不作财报
+// 事件」。清单用真 HkexBoardMeetingListSource + 真 VendorHttpClient + 假 fetch 喂 fixture (同 T019), 计数经
+// `earnings_board_list_scan` finding 落 sync_run —— 主表外 = 真 instrument 表查不到, 替身只能复述 Map 过滤。
+describe('079 state_branches 直接覆盖补齐 #19 #20: 清单主表外代码与纯股息行 (真清单来源, 经维度运行)', () => {
+  const fixture = (name: string) =>
+    readFileSync(
+      join(__dirname, '../../src/marketdata/__fixtures__/hkex-board-meeting-list', name),
+      'utf8',
+    );
+  const SNAPSHOT_2024 = fixture('ebmn_c-wayback-20240424125921.htm');
+  const PAGE_2026 = fixture('ebmn_c-2026-09-13.htm');
+  const BOARD_LIST = 'hkex_board_meeting_list';
+
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  function buildWithPage(html: string) {
+    const fetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({}),
+      text: async () => html,
+      headers: { get: () => null },
+    });
+    const http = new VendorHttpClient(HKEXNEWS_PROFILE, {
+      fetch: fetch as unknown as VendorHttpClientDeps['fetch'],
+      sleep: async () => undefined,
+    });
+    return new SyncEarningsDatesUseCase(
+      prisma,
+      assembleEarningsDateSources([...EARNINGS_DATE_SOURCE_NAMES], {
+        futu_calendar: scripted(hkOnly, { current: {} }),
+        hkex_announcement: new HkexAnnouncementSource(prisma),
+        hkex_board_meeting_list: new HkexBoardMeetingListSource(
+          http,
+          prisma,
+          new DbTradingCalendarAdapter(prisma),
+        ),
+      }),
+      fiscal,
+      new DbTradingCalendarAdapter(prisma),
+    );
+  }
+
+  const boardListObservations = () =>
+    prisma.earningsDateObservation.count({ where: { source: BOARD_LIST } });
+
+  it('#19 2024-04-24 快照: 人民币柜台 8xxxx 代码不在主表 ⇒ 跳过计数 = 9、零落库; 同轮主表内代码观测照写', async () => {
+    const rows = parseBoardMeetingList(SNAPSHOT_2024).rows;
+    const rmbCodes = [...new Set(rows.filter((r) => r.code.startsWith('8')).map((r) => r.code))];
+    // 手工核对值同 hkex-board-meeting-list.source.spec.ts: 业绩行 218, 其中人民币柜台 9 行, 同标的同期重复 0。
+    expect(rows).toHaveLength(218);
+    expect(rows.filter((r) => rmbCodes.includes(r.code))).toHaveLength(9);
+    for (const code of new Set(rows.map((r) => r.code))) {
+      if (!rmbCodes.includes(code)) await instrument('hk', code);
+    }
+    // 前提: 这些代码确实不在主表 —— 否则「跳过」无从谈起。
+    const rmbInstruments = () =>
+      prisma.instrument.count({ where: { market: 'hk', code: { in: rmbCodes } } });
+    expect(await rmbInstruments()).toBe(0);
+
+    const run = await dimensionRun(buildWithPage(SNAPSHOT_2024), '2024-04-24');
+
+    expect(await boardListObservations()).toBe(218 - 9);
+    expect(runSteps(run, 'earnings_board_list_scan')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({
+          source: BOARD_LIST,
+          pageDate: '2024-04-23',
+          resultRows: 218,
+          skippedUnknownInstruments: 9,
+        }),
+      }),
+    ]);
+    // 不落库: 既不写观测 (上面 209 = 218 − 9), 也不顺手建主表行。
+    expect(await rmbInstruments()).toBe(0);
+  }, 90_000);
+
+  it('#20 当日页纯股息行 (02877 特別中期股息, 标的在主表) ⇒ 该标的零观测零事件, 纯股息计数 1; 同轮业绩行观测照写', async () => {
+    // 前提: 02877 在页面上只此一行 (无同页业绩行) —— 按原文数, 不经解析规则。
+    expect(PAGE_2026.match(/&nbsp;2877</g)).toHaveLength(1);
+    for (const code of new Set(parseBoardMeetingList(PAGE_2026).rows.map((r) => r.code))) {
+      await instrument('hk', code);
+    }
+    const dividendOnly = await instrument('hk', '02877');
+
+    const run = await dimensionRun(buildWithPage(PAGE_2026), '2026-09-11');
+
+    expect(await boardListObservations()).toBe(29);
+    expect(runSteps(run, 'earnings_board_list_scan')).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        detail: expect.objectContaining({
+          pageDate: '2026-09-10',
+          dataRows: 30,
+          resultRows: 29,
+          dividendOnlyRows: 1,
+          skippedUnknownInstruments: 0,
+        }),
+      }),
+    ]);
+    expect(
+      await prisma.earningsDateObservation.count({ where: { instrumentId: dividendOnly.id } }),
+    ).toBe(0);
+    expect(await prisma.earningsDateEvent.count({ where: { instrumentId: dividendOnly.id } })).toBe(
+      0,
+    );
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+});
