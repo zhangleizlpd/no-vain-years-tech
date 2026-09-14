@@ -14,6 +14,10 @@ import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
 import { seedInstrumentCreateData } from './sync-universe.usecase.js';
+import {
+  FISCAL_PROFILE_MARKET,
+  SyncEarningsFiscalProfileUseCase,
+} from './sync-earnings-fiscal-profile.usecase.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
 import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
 
@@ -28,6 +32,7 @@ import { exchangeCalendarDate, sessionWatermark } from './session-clock.js';
  * 1. 解析 market；不可解析 / 未登记时段 / 未开通采集 ⇒ 记结局后返回 (零外呼)
  * 2. 目标交易日定位 (查日历)；查不到 ⇒ calendar_missing + ERROR, 不猜日期
  * 3. Instrument 行缺失 ⇒ seed
+ * 3a. 港股锚: 财年档案反推 (079 T029; 失败只 warn, 不改结局 / 运行记录 / 外呼)
  * 4. AnchorDrivenSyncGate.recalcSafely() 幂等开闸
  * 5. 起手复判：本锚**标的**在目标交易日的数据是否已具备；已具备 ⇒ already_present
  * 6. 不敏感档：**直调链本体** `SyncOptionContractUseCase.collect([这一只])`
@@ -93,6 +98,11 @@ export class AnchorColdStartUseCase {
     private readonly chain: SyncOptionContractUseCase,
     private readonly snapshot: SyncOptionSnapshotUseCase,
     @Inject(TRADING_CALENDAR_PORT) calendar: TradingCalendarPort,
+    // 079 T029 财年档案反推 (FR-026, plan §D13): 尾部第 6 位 + 默认真实例 —— 照 `dimension-executor.ts`
+    // 构造器尾部先例, 既有按位置直实例化本类的 spec / IT 零改动; 生产经 MarketdataModule DI 注入。
+    private readonly fiscalProfile: SyncEarningsFiscalProfileUseCase = new SyncEarningsFiscalProfileUseCase(
+      prisma,
+    ),
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
   }
@@ -153,6 +163,9 @@ export class AnchorColdStartUseCase {
 
     // ── 3. 有锚必有 Instrument 行 (FR-025); 缺行不让整体失败, 补上继续 ──
     const instrumentId = await this.seedInstrument(market, code);
+
+    // ── 3a. 港股锚: 财年档案反推 (079 T029, FR-026) —— 必须在 Instrument 行就位之后 ──
+    await this.syncFiscalProfileSafely({ id: instrumentId, market, code }, ticker, now);
 
     // ── 4. 幂等开闸: 把新锚的 needSync 翻 true。失败自降级返 null, 不上抛 ──
     await this.gate.recalcSafely();
@@ -352,6 +365,29 @@ export class AnchorColdStartUseCase {
     await this.finish(input, COLD_START_OUTCOME.RETRY_EXHAUSTED, {
       reason: `BullMQ attempts 耗尽: ${input.failedReason ?? '(无 failedReason)'}`,
     });
+  }
+
+  /**
+   * 建港股锚时反推一次财年档案 (079 T029, FR-026 / plan §D13 ①)。
+   *
+   * 🚨 **只 `logger.warn`, MUST NOT 上抛**: 本步读本 ctx 公告 / 财报日期观测、写财年档案, 与期权补数
+   * 无关 —— 异常冒出 `run()` 会交 BullMQ 重试整个冷启动、耗尽后落 `retry_exhausted`, 把一件与冷启动
+   * 无关的事翻成冷启动失败。同理不改结局值域与运行记录; 推不出 / 矛盾由每日运行 (T014) 汇报。
+   * 非港股锚直接返回 (FR-028: 首批只有港股有刊发事实来源)。
+   */
+  private async syncFiscalProfileSafely(
+    instrument: { id: bigint; market: string; code: string },
+    ticker: string,
+    now: Date,
+  ): Promise<void> {
+    if (instrument.market !== FISCAL_PROFILE_MARKET) return;
+    try {
+      await this.fiscalProfile.syncInstrument(instrument, now);
+    } catch (err) {
+      this.logger.warn(
+        `[anchor-cold-start] 财年档案反推失败 (不影响冷启动结局): ${ticker} ${String(err)}`,
+      );
+    }
   }
 
   /**

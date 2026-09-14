@@ -60,6 +60,7 @@ describe('016 PR1 sync schema + trading-day gate (Testcontainers PG)', () => {
       classify: vi.fn(async () => 'non-trading' as const),
       lastClosedSession: async () => null,
       previousTradingDay: async () => null,
+      countTradingDays: async () => null,
     };
     const id = await runGated(calendar, vendorWork);
 
@@ -75,6 +76,7 @@ describe('016 PR1 sync schema + trading-day gate (Testcontainers PG)', () => {
       classify: vi.fn(async () => 'trading' as const),
       lastClosedSession: async () => null,
       previousTradingDay: async () => null,
+      countTradingDays: async () => null,
     };
     const id = await runGated(calendar, vendorWork);
 

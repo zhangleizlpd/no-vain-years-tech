@@ -32,6 +32,7 @@ const calendarStub = (open: boolean): TradingCalendarPort => ({
   classify: async () => (open ? 'trading' : 'non-trading'),
   lastClosedSession: async () => null,
   previousTradingDay: async () => null,
+  countTradingDays: async () => null,
 });
 
 /** per-market 交易日 gate stub (S2-T1): 按 market 返开市与否, 未列市场视为休市。 */
@@ -39,6 +40,7 @@ const calendarStubByMarket = (open: Record<string, boolean>): TradingCalendarPor
   classify: async (market: string) => (open[market] === true ? 'trading' : 'non-trading'),
   lastClosedSession: async () => null,
   previousTradingDay: async () => null,
+  countTradingDays: async () => null,
 });
 
 // 017 T013 tick 核心 IT (Testcontainers PG, 控时 = 注入 now + 直接操纵 nextFireAt 列):
@@ -99,6 +101,7 @@ describe('017 T013 SyncTickDriver.claim (NULL 懒初始化 + 抢占 + misfire �
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_earnings_date', // 079 T016 ('fundamental' < 'hk_earnings_date' < 'hk_option_contract')
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
       'hk_option_oi_settle', // 073 T006

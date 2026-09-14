@@ -43,7 +43,7 @@ export function parseGateTicker(ticker: string): { market: string; code: string 
  * 只读直查, catalog Q7-B, ADR-0062 已记)。本文件是 045 首开的那条 marketdata → optionsdesk 读边。
  *
  * 🚨 **但它已不是唯一那条** (066 起): 同一条逻辑读边今天有 3 个物理调用点 —— 本文件的
- * `anchoredCodesByMarket()` / `dimension-executor.ts` 的 `loadAnchoredInstruments()` (锚作用域
+ * `anchoredCodesByMarket()` / `anchored-instruments.query.ts` 的 `loadAnchoredInstruments()` (锚作用域
  * 维度取工作集) / `sync-option-contract.usecase.ts` 的 seed 兜底。护城河判据是「**每条都带**
  * `// CROSS-CONTEXT-READ:`」(`check-server-moat.ts` 的 `moat-read` 规则), **不是**「只许一条」
  * ⇒ 新增调用点本身合规。⚠️ 此处旧注原写「唯一一条」, 从 066 到 2026-09-09 一直是错的、且

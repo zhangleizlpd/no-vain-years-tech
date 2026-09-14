@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setupIsolatedDb } from '../_support/isolated-db';
+import { runMigrateDeploy } from '../_support/run-migrate';
 import { PrismaService } from '../../src/security/prisma.service';
 
 const SERVER_DIR = process.cwd();
@@ -300,5 +303,107 @@ describe('#209 日报 findings 展开判据 (Testcontainers PG)', () => {
     expect(row.findings_digest).not.toMatch(/[\t\n\r]/);
     expect(row.findings_digest.length).toBeLessThanOrEqual(300);
     expect(row.findings_digest).toContain('failure×60');
+  });
+});
+
+/**
+ * 079 T015 **飞书标红面** (plan §D10「飞书标红链路」, FR-023 / SC-012): 真跑 `marketdata-sync-report.sh`
+ * (bash → docker exec psql → PG), 断言 `hk_earnings_date` 维度行的图标、`↳` 摘要与退出码。
+ * 退出码非零 = `nvy-run-reported` 推飞书 🔴 的触发条件 (脚本 `partial` ⇒ `problems=1` ⇒ `exit "$problems"`)。
+ *
+ * 为什么自起 PG 容器 (不走共享库): 被测通路是脚本自己的 `docker exec <容器> psql`, 必须把**容器 ID** 交给
+ * 外部脚本 —— 与 `marketdata.calendar-044.probe-independence.it.spec.ts` 同一类蓄意例外。上面 #209 段只跑
+ * `.sql` 谓词, 看不见图标 / 退出码 (它们在 `.sh` 里)。
+ */
+describe('079 T015 日报标红面: hk_earnings_date 真跑 marketdata-sync-report.sh', () => {
+  const REPORT_SH = resolve(SERVER_DIR, '../../ops/jobs/marketdata-sync-report.sh');
+  const SYNC_TYPE = 'sync:hk_earnings_date';
+  let container: StartedPostgreSqlContainer;
+  let prisma: PrismaService;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer('postgres:16-alpine')
+      .withDatabase('test_mbw')
+      .withUsername('test')
+      .withPassword('test')
+      .start();
+    const url = container.getConnectionUri();
+    runMigrateDeploy(url);
+    prisma = new PrismaService(url);
+  }, 180_000);
+
+  afterAll(async () => {
+    await prisma?.$disconnect();
+    await container?.stop();
+  });
+
+  beforeEach(async () => {
+    await prisma.syncRun.deleteMany({});
+  });
+
+  async function seedRun(status: string, failed: number, findings: unknown[]): Promise<void> {
+    const startedAt = new Date(Date.now() - 120_000);
+    await prisma.syncRun.create({
+      data: {
+        syncType: SYNC_TYPE,
+        status,
+        startedAt,
+        finishedAt: new Date(startedAt.getTime() + 60_000),
+        triggeredBy: 'tick',
+        scanned: 3,
+        ok: 3 - failed,
+        skipped: 0,
+        failed,
+        written: 12,
+        findings: findings as never,
+      },
+    });
+  }
+
+  /** 真跑脚本, 只喂三个接线 env (同 probe-independence); 返回该维度行与其下一行 (`↳` 摘要)。 */
+  function runReport(): { exitCode: number; line: string; digest: string } {
+    const r = spawnSync('bash', [REPORT_SH], {
+      env: {
+        ...process.env,
+        SYNC_REPORT_PG_CONTAINER: container.getId(),
+        SYNC_REPORT_PG_USER: 'test',
+        SYNC_REPORT_PG_DB: 'test_mbw',
+      },
+      encoding: 'utf8',
+    });
+    const lines = (r.stdout ?? '').split('\n');
+    const i = lines.findIndex((l) => l.includes(SYNC_TYPE));
+    return { exitCode: r.status ?? -1, line: lines[i] ?? '', digest: lines[i + 1] ?? '' };
+  }
+
+  it('partial 运行 (含 earnings_date_source failure) ⇒ 非成功图标 + ↳ failure×1{earnings_date_source} + 退出码非零', async () => {
+    await seedRun('partial', 1, [
+      {
+        kind: 'failure',
+        symbol: 'source:hkex_board_meeting_list',
+        step: 'earnings_date_source',
+        error: 'VendorHttpError: 404',
+      },
+    ]);
+
+    const { exitCode, line, digest } = runReport();
+
+    expect(line).toContain('partial');
+    expect(line.startsWith('✅')).toBe(false);
+    expect(digest).toContain('↳ failure×1{earnings_date_source}');
+    expect(exitCode).not.toBe(0);
+  });
+
+  it('success 运行 (只含冲突 / 清单行消失 notice) ⇒ ✅ + 摘要照展开 + 退出码 0', async () => {
+    await seedRun('success', 0, [
+      { kind: 'notice', step: 'earnings_date_conflict', detail: { symbol: 'hk:00020' } },
+      { kind: 'notice', step: 'earnings_board_list_dropped', detail: { symbol: 'hk:00268' } },
+    ]);
+
+    const { exitCode, line, digest } = runReport();
+
+    expect(line.startsWith('✅')).toBe(true);
+    expect(digest).toContain('↳ notice×2{earnings_board_list_dropped,earnings_date_conflict}');
+    expect(exitCode).toBe(0);
   });
 });

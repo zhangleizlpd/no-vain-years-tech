@@ -120,6 +120,17 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   optionContract: 'marketdata',
   optionDailySnapshot: 'marketdata',
   earningsEvent: 'marketdata',
+  // 079 财报日期层 4 表归 marketdata (plan §D1): 来源 / 合并用例独占读写 (R1 自有表, intra
+  // FK→instrument; 流水 FK→事件)。🚫 **跨 ctx 面 = 0, 且必须保持为 0** (FR-022): 期权台读财报
+  // 日期只读 earningsEvent 且不按市场过滤 ⇒ 给这 4 表加任何 CROSS-CONTEXT-READ 就是把港股
+  // 日期漏进收租腿打标。
+  earningsDateObservation: 'marketdata',
+  earningsDateEvent: 'marketdata',
+  earningsDateEventLog: 'marketdata',
+  earningsMeetingLag: 'marketdata',
+  // 079 财年档案 (T028, FR-026) 归 marketdata: 反推用例 + 人工补录 CLI 独占读写 (R1 自有表, intra
+  // FK→instrument)。跨 ctx 面 = 0, 理由同上 4 表 (期权台不得经它读到港股财报期)。
+  earningsFiscalProfile: 'marketdata',
   // 同步配置/审计 3 表 (016): 同步管线 + scheduler + backfill CLI 独占读写 (R1 自有表,
   // intra 叶子无跨 ctx)。未登记则 marketdata 同步代码读自己的新表即 moat-unmapped 硬拒。
   syncDimension: 'marketdata',

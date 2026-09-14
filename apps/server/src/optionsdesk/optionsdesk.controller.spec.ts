@@ -102,7 +102,16 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
   const chainReportExecute = vi.fn();
   const radarExecute = vi.fn();
 
+  /** 进入本文件前的原值, afterAll 还原 (原来没有就 delete)。 */
+  const prevWorkerDisabled = process.env['MARKETDATA_WORKER_DISABLED'];
+
   beforeAll(async () => {
+    // 本文件不测队列 ⇒ 不起 marketdata worker (先例 marketdata.cold-start-060.trigger-timing)。
+    // 否则 bullmq Worker / QueueEvents 空连 vitest 钉的无人监听 REDIS_URL: 关停吃满 10s 超时,
+    // 且偶发 unhandled rejection 让用例全绿的文件判红。字面量而非 import 常量: 同 alert 侧, 不跨 ctx 引内部文件。
+    // EVIDENCE: 零监听器 emit('error') 是 bullmq 5.x 缺陷, 6.0.0 起修 (上游提交 e1f86effc5);
+    // 强制复现见 docs/conventions/local-verification.md §3。
+    process.env['MARKETDATA_WORKER_DISABLED'] = '1';
     const prismaStub = {
       account: {
         findUnique: vi.fn().mockResolvedValue({
@@ -167,6 +176,8 @@ describe('OptionsdeskController — 通道层契约 (FR-001 / FR-004 / FR-005 / 
   }, 60_000);
 
   afterAll(async () => {
+    if (prevWorkerDisabled === undefined) delete process.env['MARKETDATA_WORKER_DISABLED'];
+    else process.env['MARKETDATA_WORKER_DISABLED'] = prevWorkerDisabled;
     await app?.close();
   });
 

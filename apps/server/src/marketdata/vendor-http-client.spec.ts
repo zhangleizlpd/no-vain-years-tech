@@ -12,7 +12,12 @@ import {
 
 type FetchArgs = {
   url: string;
-  init?: { headers?: Record<string, string>; body?: string; signal?: AbortSignal };
+  init?: {
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+    redirect?: 'follow' | 'manual';
+  };
 };
 
 /** 可编程 fetch: 按 status 序列依次返回, 记录每次入参。 */
@@ -247,6 +252,72 @@ describe('VendorHttpClient', () => {
     const out = (await settled) as { err?: unknown };
     expect(out.err).toBeInstanceOf(VendorHttpError);
     expect(calls).toHaveLength(1); // 永久错不重试
+  });
+
+  // ── 079 T007: redirect 透传 ────────────────────────────────────────────────────────────
+  // 港交所清单换地址 MUST 响亮失败 (FR-025): 跟随重定向会把「地址变了」静默吞掉。
+
+  it('传 redirect: manual → 假 fetch 原样收到该参数', async () => {
+    const { fetch, calls } = makeFetchWithBody([200], '<html></html>');
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const p = client.requestText({ url: 'https://x', redirect: 'manual' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    expect(calls[0].init?.redirect).toBe('manual');
+  });
+
+  it('🚨 负控制: 不传 redirect → init 里**没有** redirect 这个键 (不是 redirect: undefined)', async () => {
+    const { fetch, calls } = makeFetch([200]);
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const p = client.request({ url: 'https://x' });
+    await vi.runAllTimersAsync();
+    await p;
+
+    expect(Object.keys(calls[0].init ?? {})).not.toContain('redirect');
+  });
+
+  it('🚨 301 + Location → VendorHttpError 带新地址, 只调 1 次 (永久错不重试)', async () => {
+    const fetch = vi.fn(async () => ({
+      status: 301,
+      ok: false,
+      json: async () => ({}),
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === 'location' ? 'https://new.example/ebmn_c.htm' : null,
+      },
+    }));
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const settled = client.requestText({ url: 'https://x', redirect: 'manual' }).then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+    const { err } = await settled;
+
+    expect(err).toBeInstanceOf(VendorHttpError);
+    expect((err as VendorHttpError).status).toBe(301);
+    expect((err as VendorHttpError).location).toBe('https://new.example/ebmn_c.htm');
+    expect(String(err)).toContain('https://new.example/ebmn_c.htm');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('负控制: 404 无 Location → message 逐字不变、location 为 undefined', async () => {
+    const { fetch } = makeFetch([404]);
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const settled = client.request({ url: 'https://x' }).then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+    const { err } = await settled;
+
+    expect((err as VendorHttpError).location).toBeUndefined();
+    expect(String(err)).toBe(`VendorHttpError: [${EASTMONEY_PROFILE.vendor}] vendor HTTP 404`);
   });
 
   it('网络异常 (fetch reject) → 包成 TransientVendorError 并重试', async () => {

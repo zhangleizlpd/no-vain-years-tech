@@ -25,6 +25,7 @@ describe('isTradingDayGateOpen', () => {
         classify: spy,
         lastClosedSession: async () => null,
         previousTradingDay: async () => null,
+        countTradingDays: async () => null,
       },
       spy,
     };

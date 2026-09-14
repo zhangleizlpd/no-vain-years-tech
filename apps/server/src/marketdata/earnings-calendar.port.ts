@@ -112,6 +112,13 @@ export interface EarningsCalendarEvent {
   epsActual: string | null;
   /** 每股收益**预期值**; 缺失 null。 */
   epsPredict: string | null;
+  /**
+   * 公布时刻 (vendor `earnings_timestamp`, 079 T010 / FR-008「公布时刻可得时一并记录」)。
+   *
+   * 只收**自带时区偏移**的时刻; 不带偏移的墙钟串 (`2026-08-06 07:00:00`) / 缺失 ⇒ null ——
+   * 时区猜错会让时刻静默偏移 8–13 小时且不报错。美股 `earnings_event` 不落本字段 (写入列不变)。
+   */
+  publicationTime: Date | null;
 }
 
 /**

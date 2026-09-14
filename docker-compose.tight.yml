@@ -224,6 +224,9 @@ services:
       # #210 vendor lane 灰度 flag: 与上一行同形态 (enum+default, :-false 兜底永不空串)。
       # 漏映射的后果同 2026-06-04 那次: 改了 .env.production 却发现灰度翻不开, 且无任何报错。
       MARKETDATA_FUTU_LANE_ENABLED: ${MARKETDATA_FUTU_LANE_ENABLED:-false}
+      # 079 财报日期来源清单: 默认在 compose 兜底 (:-三来源), 变量缺失时容器拿到真默认而非空串
+      # (空串会被 config 层 fail-fast 拦, 同 MARKETDATA_PROVIDER 静默陷阱)。
+      EARNINGS_DATE_SOURCES: ${EARNINGS_DATE_SOURCES:-futu_calendar,hkex_announcement,hkex_board_meeting_list}
       LIXINGER_TOKEN: ${LIXINGER_TOKEN:-}
       # 富途 shim (港机 OpenD 薄壳, 经 B↔C WireGuard 隧道; sellput-viz Phase 1)。live 下
       # 承担 US 交易日历 L1。两者无 schema .default() → live 必填, :- 兜底只保 mock 下不空串崩。

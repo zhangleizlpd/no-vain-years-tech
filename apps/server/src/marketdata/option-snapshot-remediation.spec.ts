@@ -264,6 +264,7 @@ function makeHarness(
     // 062 T010: 本文件不验陈旧度基准 (那条归 optionsdesk-062.calendar IT)。
     lastClosedSession: async () => null,
     previousTradingDay: async () => null,
+    countTradingDays: async () => null,
   };
 
   const coverage = new OptionSnapshotCoverageCheck(prisma, {
