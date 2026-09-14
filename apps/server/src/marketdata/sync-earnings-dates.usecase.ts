@@ -157,8 +157,12 @@ export interface EarningsDatesMergeSummary {
   readonly fiscalUnknown: readonly string[];
   /** 从未在清单出现、满足已通知日期未知条件的标的代码 (FR-017：只计数)。 */
   readonly neverListedUndated: readonly string[];
-  /** 公布日已过、因报告期无法对齐 (`T:` / `D:` 键) 未判逾期的事件：每个一条 `<symbol> <periodKey>` (只计数)。 */
-  readonly overdueUnaligned: readonly string[];
+  /**
+   * 公布日已过、因报告期无法对齐 (`T:` / `D:` 键) 未判逾期的事件：每个一条 `<symbol> <periodKey>` (只计数)，
+   * 按标的有无财年档案分列 (FR-028，spec Session（八）4a)。
+   */
+  readonly overdueUnalignedWithProfile: readonly string[];
+  readonly overdueUnalignedWithoutProfile: readonly string[];
   /** 公布日已过、因非季报公司的第一 / 第三季未判逾期的事件 (FR-029)：每个一条 `<symbol> <periodKey>` (只计数)。 */
   readonly nonQuarterlyReporter: readonly string[];
   /** 其中本轮由既有逾期解除的 (FR-029，🚫 计失败)。 */
@@ -361,7 +365,8 @@ interface MergeAccumulator {
   findings: EarningsDateMergeFinding[];
   fiscalUnknown: string[];
   neverListedUndated: string[];
-  overdueUnaligned: string[];
+  overdueUnalignedWithProfile: string[];
+  overdueUnalignedWithoutProfile: string[];
   nonQuarterlyReporter: string[];
   nonQuarterlyReleased: string[];
   supersededUnaligned: string[];
@@ -372,7 +377,8 @@ const emptyAccumulator = (): MergeAccumulator => ({
   findings: [],
   fiscalUnknown: [],
   neverListedUndated: [],
-  overdueUnaligned: [],
+  overdueUnalignedWithProfile: [],
+  overdueUnalignedWithoutProfile: [],
   nonQuarterlyReporter: [],
   nonQuarterlyReleased: [],
   supersededUnaligned: [],
@@ -737,9 +743,9 @@ function reportUnaligned(
 ): void {
   const unaligned = inserted.filter((k) => !isAlignedPeriodKey(k.periodKey));
   const superseded = merge.supersededUnaligned;
-  if (unaligned.length === 0 && merge.overdueUnaligned.length === 0 && superseded.length === 0) {
-    return;
-  }
+  // 按有无财年档案分列、样例先取有档案的 (spec Session（八）4a)：无档案标的的上万条会淹没有档案的少数几条。
+  const overdue = [...merge.overdueUnalignedWithProfile, ...merge.overdueUnalignedWithoutProfile];
+  if (unaligned.length === 0 && overdue.length === 0 && superseded.length === 0) return;
   stats.findings.push({
     kind: 'notice',
     step: 'earnings_date_unaligned',
@@ -749,8 +755,9 @@ function reportUnaligned(
         .slice(0, EARNINGS_FINDING_SAMPLE_LIMIT)
         .map((k) => `${k.instrumentId} ${k.periodKey}`),
       // 公布日已过、因键无法对齐未判逾期的事件 (FR-028)：同一条里只计数，🚫 计失败。
-      overdueUnjudged: merge.overdueUnaligned.length,
-      overdueUnjudgedSamples: merge.overdueUnaligned.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+      overdueUnjudgedWithProfile: merge.overdueUnalignedWithProfile.length,
+      overdueUnjudgedWithoutProfile: merge.overdueUnalignedWithoutProfile.length,
+      overdueUnjudgedSamples: overdue.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
       // 本轮迁 superseded 的旧非对齐事件 (FR-030)：已移出合并，不在上面的计数里。
       superseded: superseded.length,
       supersededSamples: superseded.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
@@ -1193,7 +1200,12 @@ export class SyncEarningsDatesUseCase {
         acc.findings.push({ instrumentId: key.instrumentId, symbol, finding });
       }
       if (result.fiscalProfileMissing) acc.fiscalUnknown.push(symbol);
-      if (result.overdueUnaligned) acc.overdueUnaligned.push(`${symbol} ${key.periodKey}`);
+      if (result.overdueUnaligned) {
+        const bucket = ctx.fiscalProfiles.has(key.instrumentId)
+          ? acc.overdueUnalignedWithProfile
+          : acc.overdueUnalignedWithoutProfile;
+        bucket.push(`${symbol} ${key.periodKey}`);
+      }
       if (result.nonQuarterlyReporter !== null) {
         const sample = `${symbol} ${key.periodKey}`;
         acc.nonQuarterlyReporter.push(sample);

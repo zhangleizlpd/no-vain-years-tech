@@ -1788,20 +1788,26 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
   // 2026-09-14 prod hk:00939 形态 (FR-015 / FR-028): 回填时无财年档案 ⇒ 刊发事实落 D: 键, 富途事件是 T: 键,
   // 两边永远对不上; 后补档案后 T: 事件过公布日曾被成批判逾期、标红。
   it('⑥ 后补财年档案的标的: 过公布日 2 个交易日的 T: 键未刊发事件 (同日刊发事实在 D: 键) ⇒ 非 overdue、🚫 计失败、overdueUnjudged 计数; 同轮 P: 键对照已迁入 overdue', async () => {
-    const [control, ccb] = await Promise.all(['00688', '00939'].map((c) => instrument('hk', c)));
+    const [control, ccb, noProfileA, noProfileB] = await Promise.all(
+      ['00688', '00939', '02628', '03968'].map((c) => instrument('hk', c)),
+    );
     await seedProfile(control.id);
     const unaligned = 'T:futu_calendar:2026 Q2';
+    const unalignedObs = (instrumentId: bigint): EarningsDateSourceObservation => ({
+      ...obs(instrumentId, 'structured', '2026-09-01'),
+      periodKey: unaligned,
+      reportKind: null,
+      periodEnd: null,
+      periodText: '2026 Q2',
+    });
     const futu: Round = {
       current: {
         observations: [
           obs(control.id, 'structured', '2026-09-01'),
-          {
-            ...obs(ccb.id, 'structured', '2026-09-01'),
-            periodKey: unaligned,
-            reportKind: null,
-            periodEnd: null,
-            periodText: '2026 Q2',
-          },
+          // T033 (4a): 两只始终无档案的标的排在前面 —— 样例若不按有无档案排序, 首条会是它们; 1 : 2 不对称让两数互换可见。
+          unalignedObs(noProfileA.id),
+          unalignedObs(noProfileB.id),
+          unalignedObs(ccb.id),
         ],
       },
     };
@@ -1833,8 +1839,13 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
       expect.objectContaining({
         kind: 'notice',
         detail: expect.objectContaining({
-          overdueUnjudged: 1,
-          overdueUnjudgedSamples: [`hk:00939 ${unaligned}`],
+          overdueUnjudgedWithProfile: 1,
+          overdueUnjudgedWithoutProfile: 2,
+          overdueUnjudgedSamples: [
+            `hk:00939 ${unaligned}`,
+            `hk:02628 ${unaligned}`,
+            `hk:03968 ${unaligned}`,
+          ],
         }),
       }),
     ]);
@@ -2803,7 +2814,8 @@ describe('079 T032 无法对齐旧事件收尾: 迁已并入并指向 P: 事件 
     expect(runSteps(run, 'earnings_date_unaligned')).toEqual([
       expect.objectContaining({
         detail: expect.objectContaining({
-          overdueUnjudged: 1,
+          overdueUnjudgedWithProfile: 0,
+          overdueUnjudgedWithoutProfile: 1,
           overdueUnjudgedSamples: [`hk:01398 ${T_CONTROL}`],
           superseded: 1,
           supersededSamples: [`hk:00939 ${T_CCB}`],
@@ -2835,7 +2847,8 @@ describe('079 T032 无法对齐旧事件收尾: 迁已并入并指向 P: 事件 
     expect(runSteps(again, 'earnings_date_unaligned')).toEqual([
       expect.objectContaining({
         detail: expect.objectContaining({
-          overdueUnjudged: 1,
+          overdueUnjudgedWithProfile: 0,
+          overdueUnjudgedWithoutProfile: 1,
           overdueUnjudgedSamples: [`hk:01398 ${T_CONTROL}`],
           superseded: 0,
         }),
