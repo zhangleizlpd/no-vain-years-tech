@@ -47,15 +47,12 @@ def _acc(acc_id, trd_env, acc_status, auth, acc_type="MARGIN"):
 
 
 def poc1_shaped_accounts():
-    """照 POC-1 的形态造 10 户：1 综合户 + 4 模拟 + 5 停用（含 HKFUND / USFUND 各 1）。"""
+    """照 POC-1 的形态造各型账户：实盘可用 1 户 + 模拟 + 停用（含 HKFUND / USFUND 两型基金户）。"""
     return [
         _acc(1001, "REAL", "ACTIVE", ["HK", "US", "HKCC"]),
         _acc(1002, "SIMULATE", "ACTIVE", ["HK"], acc_type="CASH"),
-        _acc(1003, "SIMULATE", "ACTIVE", ["US"], acc_type="CASH"),
-        _acc(1004, "SIMULATE", "ACTIVE", ["HK"]),
         _acc(1005, "SIMULATE", "ACTIVE", ["US"]),
         _acc(1006, "REAL", "DISABLED", ["HK"]),
-        _acc(1007, "REAL", "DISABLED", ["US"]),
         _acc(1008, "REAL", "DISABLED", ["HK", "US"], acc_type="CASH"),
         _acc(1009, "REAL", "DISABLED", ["HKFUND"], acc_type="CASH"),
         _acc(1010, "REAL", "DISABLED", ["USFUND"], acc_type="CASH"),
@@ -152,7 +149,7 @@ def build(*ctxs, opend=None, timeout_s=5.0, max_concurrency=2):
 
 
 def test_poc1_shaped_accounts_select_the_single_real_active_account():
-    """① 10 户里恰一个 实盘 ∧ 可用 ∧ 有 HK/US 权限 ⇒ 选中它。"""
+    """① 各型账户里恰一个 实盘 ∧ 可用 ∧ 有 HK/US 权限 ⇒ 选中它。"""
     trade, _ = build(FakeTradeCtx())
     account = trade.selected_account()
     assert account["acc_id"] == 1001

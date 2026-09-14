@@ -91,7 +91,7 @@ export function parseBrokerCode(code: string): ParsedBrokerCode | null {
  * 组合单腿串 → 各腿券商代码 (保持顺序)。**不**解析组合单的合成 `code` (FR-007)。
  *
  * 入参收 `unknown`: 直接喂 vendor 行字段。EVIDENCE: `combo_legs` 为字符串数组、每腿一条
- * `ComboLeg(code=US.PEP260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)` —— 082 POC-1
+ * `ComboLeg(code=US.ZQY260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)` —— 082 POC-1
  * 原始输出 (2026-09-13)。拼成单串的形态同样可解; 其余 (null / `N/A` / 非串) ⇒ `[]`。
  *
  * 复杂度 O(len)。

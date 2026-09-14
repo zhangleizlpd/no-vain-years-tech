@@ -100,10 +100,10 @@ def _ids_as_digit_strings(records: list[dict[str, Any]]) -> list[dict[str, Any]]
     Small ints (qty-like) and floats keep their type. Trade rows only: the quote
     routes do not pass through here, `mappers.clean_value` is untouched.
 
-    EVIDENCE: 维护者 2026-09-13 082 POC-1 原始输出 —— 244 行成交的 `deal_id` 全为 17–19 位 int，
-    244/244 大于 2^53−1（同批 `order_id` 由 SDK 直接给 18 位字符串）。2026-09-14 082 prod 首次全量
+    EVIDENCE: 维护者 2026-09-13 082 POC-1 原始输出 —— 成交行的 `deal_id` 全为 17–19 位 int，
+    且全部大于 2^53−1（同批 `order_id` 由 SDK 直接给 18 位字符串）。2026-09-14 082 prod 首次全量
     回填因此失败：`[futu] trade/deals us 2024-09-01..2024-11-30 行缺可用的 deal_id`；同日维护者只读
-    探针 `/trade/deals?market=US&start=2024-09-01&end=2024-11-30` 13 行 `deal_id` 全为 int。
+    探针 `/trade/deals?market=US&start=2024-09-01&end=2024-11-30` 返回行的 `deal_id` 全为 int。
 
     `/trade/deals` merges today + history rows and de-dupes by `deal_id`; both sides
     come through `TradeSupervisor.call`, so the key has the same type on both sides.
@@ -121,9 +121,9 @@ def _ids_as_digit_strings(records: list[dict[str, Any]]) -> list[dict[str, Any]]
 def select_account(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     """The unique `REAL ∧ ACTIVE ∧ trdmarket_auth ∩ {HK, US} ≠ ∅` account.
 
-    EVIDENCE: 维护者 2026-09-13 POC-1 实跑 `get_acc_list` 原始输出 —— 10 个账户；
+    EVIDENCE: 维护者 2026-09-13 POC-1 实跑 `get_acc_list` 原始输出 —— 实盘、模拟、停用与基金户并存；
     `acc_type` 值域只有 `MARGIN` / `CASH`（没有可判的基金值，故**不按 `acc_type` 写条件**）；
-    两个基金户的 `trdmarket_auth` 分别只含 `HKFUND` / `USFUND`，对其查持仓返回「基金账户
+    基金户的 `trdmarket_auth` 只含 `HKFUND` 或 `USFUND`，对其查持仓返回「基金账户
     不支持查询持仓」⇒ 基金户由权限字段自然排除。
 
     🚨 Match count != 1 is an error, never "take the first": with two candidates

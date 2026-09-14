@@ -22,7 +22,7 @@ import { isTransientDbError } from './transient-db-error.rules';
 
 /**
  * `'all-history'` 的起点。EVIDENCE: spec Assumptions —— 维护者 2026-09-14 定上线回填起点
- * 2024-09-01, 实测可回溯的最早成交与订单在 2024-10 前后。
+ * 2024-09-01, 覆盖 2026-09-13 实测可回溯的全部成交与订单。
  */
 export const BROKER_HISTORY_START = '2024-09-01';
 
