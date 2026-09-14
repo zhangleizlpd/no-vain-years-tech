@@ -61,8 +61,9 @@ export interface SyncBrokerAccountResult {
 }
 
 /**
- * `infrastructure` = `instanceof BrokerInfrastructureError` (port 判别口径) 或 DB 连接 / 超时类异常
- * ({@link isTransientDbError}, 2026-09-14 amend), 均可重试; 其余一切 (含唯一冲突等确定性 DB 错误) = `data`。
+ * `infrastructure` = `instanceof BrokerInfrastructureError` (port 判别口径) 或 DB 连接 / 超时 / 连接数耗尽 /
+ * 事务写冲突类异常 ({@link isTransientDbError}, 2026-09-14 amend), 均可重试; 其余一切 (含唯一冲突、语句超时、
+ * 交互式事务超时等) = `data`。
  */
 export type BrokerSyncFailureKind = 'infrastructure' | 'data';
 

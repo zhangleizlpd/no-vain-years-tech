@@ -119,8 +119,9 @@ export class BrokerAccountSelectionError extends Error {
  * 基础设施类失败 (网络 / 超时 / 5xx / 429 且客户端重试已用尽 / 熔断开启)。**可重试** ——
  * 调度器按 `decideBackfillAfterInfraFailure` 延迟重试 (plan D9)。
  *
- * 🚨 **判别口径 = `instanceof BrokerInfrastructureError`, 其余一切错误均按数据类处理**
- * (409 选户 / 400 参数 / 401 鉴权 / 响应形状或行解析异常) ⇒ 立即 `failed`、不重试。
+ * 🚨 **port 层错误的判别口径 = `instanceof BrokerInfrastructureError`, port 抛出的其余错误均按数据类处理**
+ * (409 选户 / 400 参数 / 401 鉴权 / 响应形状或行解析异常) ⇒ 立即 `failed`、不重试。仅指 port 层错误;
+ * use case 另按 `isTransientDbError` 把 DB 连接 / 连接数耗尽 / 事务写冲突归基础设施。
  * 反方向更坏: 把确定性的永久错当基础设施失败, 会让同一个错连续重试 24 小时。
  */
 export class BrokerInfrastructureError extends Error {
