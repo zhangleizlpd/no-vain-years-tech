@@ -30,7 +30,7 @@
 
 并发创建唯一行（如 find-or-create）若用 Serializable，须 catch **两种**形态：`P2002`（唯一约束撞）→ tx 内 fallback 读已存在行；`P2034`（写冲突 / 序列化失败，整 tx abort）→ **外层 retry 整个 tx**。只 catch P2002 → ~50% flaky。
 
-- ⚠️ **Prisma 7 + adapter-pg 下 P2034 现为 `DriverAdapterError`（`code` undefined）** → 只查 `code === 'P2034'` 会漏。检测要兼容两形态。
+- ⚠️ **Prisma 7 + adapter-pg 下写冲突有两种顶层形态，取决于冲突在哪一步暴露**：tx 内写语句处 → `P2034`（SQLSTATE 在 `meta.driverAdapterError.cause`）；交互事务 COMMIT 时（及模型写撞死锁 `40P01`）→ `DriverAdapterError`（`code` undefined、无 P 码，SQLSTATE 在 `cause`）→ 只查 `code === 'P2034'` 会漏。检测要兼容两形态：判 P 码，或 `cause.kind === 'TransactionWriteConflict'`，或 SQLSTATE `40001` / `40P01`（raw 查询写则为 `P2010`，SQLSTATE 同在 `meta.driverAdapterError.cause`）。🟢 2026-09-14 feature 082 子 agent 隔离库探针，PG 16.13 + adapter-pg 7.8.0。
 - **实证锚**：旧仓 #165。优先仍走 P1（多数 case 用 affected-count，不碰 Serializable）。
 
 ### P4 — transactional outbox：`publish(tx, …)` 同 tx 原子
