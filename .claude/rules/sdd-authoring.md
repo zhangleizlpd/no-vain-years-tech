@@ -37,7 +37,7 @@ specs/NNN-<feature-slug>/
 
 **代码是真相源**：mockup drift 不算 bug — `design/` 是历史决策留痕，不要求与最终 RN 代码逐 pixel 同步。
 
-🚨 **`design/` 不入库**（`.gitignore` `specs/*/design/`，2026-08-08 决定）：本仓面向公开，而 design bundle 装的是真机截图，截图里可能有真实账户 / 持仓 / 手机号 —— 「像素里的 PII」没有任何扫描器能抓（per [`information-boundary.md`](../../docs/conventions/information-boundary.md)）。留迹价值不变，`/mockup-gen` 照常写这里，只是留在本机。**历史 spec / plan 里对 `design/` 的引用是冻结决策记录，不回改**（同本节下方 retire 注记的处理方式）。
+🚨 **`design/` 不入库**（`.gitignore` `specs/*/design/`，2026-08-08 决定）：本仓面向公开，而 design bundle 装的是真机截图，截图里可能有真实账户 / 持仓 / 手机号 —— 「像素里的 PII」没有任何扫描器能抓（per [`information-boundary.md`](../../docs/conventions/information-boundary.md)）。留迹价值不变，`/mockup-gen` 照常写这里，只是留在本机。**历史 spec / plan 里对 `design/` 的引用是冻结决策记录，不回改**（同本节下方 retire 注记的处理方式）。⚠️ **例外：冻结文档里含私有业务数据时，隐私优先于「不回改」** —— 允许换成合成值或定性表述并原位追加 amend 注记，决策正文不动（per [`information-boundary.md`](../../docs/conventions/information-boundary.md) § 个人 / 金融业务数据）。
 
 > **历史概念已 retire**：旧版「类 1 / 2 / 3 UI 类别 + 占位 UI 4 边界 + `// PHASE 1 PLACEHOLDER` banner」已于 Constitution v1.2.0（2026-06-02）统一为本 mockup-first 流程。历史 spec / plan 中对其的引用为**冻结决策记录**，不回改。
 
@@ -54,3 +54,4 @@ specs/NNN-<feature-slug>/
 
 - ❌ plan 阶段多造 `research.md` / `data-model.md` / `quickstart.md` / `contracts/` — mono plan 阶段产物 = **仅 `plan.md`**（prose-only，data model SoT=`schema.prisma` / API SoT=swagger 装饰器，plan 模板首行「Do NOT mirror」）。⚠️ `.claude/skills/speckit-plan/SKILL.md` 是 **vanilla 上游**、Phase 0/1 会明写「Generate research.md/data-model.md/quickstart.md」——**抵住 SKILL 字面步骤，以本约定为准**（镜像 SoT 的 doc 必 drift = SDD 反模式；2026-07-11 038 实证跟 SKILL 字面多造 3 文件被抓，此前 37 spec 全 0）
 - ❌ **验证多源合并 / 对齐方案的 PoC 只验「取值准」、不回放生产合并键** —— 判据：凡方案含 join / 对齐 / 去重，PoC 回放必须用实现里的合并键（如「标的 + 期末日 `period_key`」）配对，报告分开写「取值准确率」与「键对齐率」；SC 基线必须用与 FR 同一套规则算，别用反推口径。实证锚：2026-09-14 079（港股财报日期）plan 期 PoC 按「同标的时间先后 + 120 天窗」配对得逐日一致 172/176，impl 期按期末日键合并时锚表 68/176 次刊发因标题不写期末日对不上同期事件（会误判逾期标红），被迫 impl 期新增财年档案表与 3 个 task（spec Session 七）；同一 PoC 反推口径与 FR-014 冲突规则不相容，使 SC-004 在合并前回放闸门失守（169/176 vs 172）。
+- ❌ **SDD 正文写私有业务数据的观测值** — 账户 / 持仓 / 成交 / 订单相关的真实代码、数量、条数、起始时间，**带日期也不行**：写定性表述 + 出处（谁、哪天、哪份 `docs/private/evidence/`），原始数字只留在那里。易变的系统 / 数据状态写「查法 + 判据」而非值；frontmatter `status` 与 tasks `[X]` 照写。三分类判据 → [`docs-organization.md` § SDD 文档里的数字](../../docs/conventions/docs-organization.md)；私有数据归属 → [`information-boundary.md`](../../docs/conventions/information-boundary.md)。

@@ -127,6 +127,7 @@ git switch main && git pull --ff-only && git switch -c NNN-slug   # 已存在则
 - server testcontainers spec 走 `nx test server <file>`（cwd=apps/server），非 `vitest --root`
 - 改 server controller/DTO/openapi 后按 api-contract-trigger 同步 mobile types（同 PR 内 regen）
 - mobile 测试分层：纯逻辑=vitest；UI/render/a11y/交互=Playwright Expo Web e2e（~/ui 不写 vitest）
+- fixture 用合成值；SDD 正文、commit、PR 不写私有业务数据（账户 / 持仓 / 交易的真实代码、数量、条数），见 docs/conventions/information-boundary.md
 - commit 前全扫治理脚本：`scripts/checks/*.ts` 逐个跑（循环写法见 docs/conventions/local-verification.md §2.1），
   **不许只跑上面点名的几个**（有脚本按子串扫、范围含 spec 文件，测试 fixture 字面量也会撞红）；
   验证输出别直接 `| tail`（hook 拦），先落文件再截尾

@@ -374,7 +374,7 @@ function report(findings: Finding[], scope: string, l2: 'on' | 'off', privStatus
     console.error(`      ${f.hint}`);
   }
   console.error(
-    `\n判据 SoT：docs/conventions/information-boundary.md（三层归属 + 5 问自检）。` +
+    `\n判据 SoT：docs/conventions/information-boundary.md（三层归属 + 6 问自检）。` +
       `\n确属良性 → 登记 ${ALLOWLIST_REL} 并写理由（**按值登记，永不按路径**）。` +
       `\n紧急出口：git commit --no-verify（但 CI 那一层绕不过）。`,
   );
