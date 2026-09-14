@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.51.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.51.1...server-v0.51.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **marketdata:** 079 逾期只判期末日对齐键事件，避免后补财年档案的历史 T:/D: 事件成批误报 ([#412](https://github.com/zhangleizlpd/no-vain-years-tech/issues/412)) ([3e09f53](https://github.com/zhangleizlpd/no-vain-years-tech/commit/3e09f53c6841f0fa8f56dd380727f8e3633979c3))
+
 ## [0.51.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.51.0...server-v0.51.1) (2026-09-14)
 
 
