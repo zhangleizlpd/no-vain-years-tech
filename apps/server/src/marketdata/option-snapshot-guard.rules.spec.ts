@@ -358,7 +358,7 @@ describe('checkOptionSnapshotRows — 批量逐行判定 (O(n))', () => {
  * ## 磁盘读取的例外说明（分类学 Small = 禁磁盘 I/O）
  *
  * 读的是**同仓 colocate 的只读静态 fixture**，单进程内、零容器零网络，与
- * `portfolio/holdings-xlsx.parser.spec.ts` 读 `__fixtures__/sample-holdings.xlsx` 同形态。
+ * `portfolio/holdings-xlsx.parser.spec.ts` 读 `__fixtures__/synthetic-holdings.xlsx` 同形态。
  *
  * ## fixture 出处
  *

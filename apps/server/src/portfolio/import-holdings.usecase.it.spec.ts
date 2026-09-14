@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupIsolatedDb } from '../../test/_support/isolated-db';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { PrismaService } from '../security/prisma.service';
 import { ImportHoldingsUseCase } from './import-holdings.usecase';
 import { HoldingsFileInvalidException } from './holdings-file-invalid.exception';
@@ -11,6 +10,7 @@ import {
   FIXTURE_HOLDING_ROWS,
   FIXTURE_TRADE_ROWS,
 } from './__fixtures__/build-holdings-xlsx';
+import { SYNTHETIC_HOLDINGS_XLSX_PATH } from './__fixtures__/synthetic-holdings';
 
 const ASOF = '2026-06-06';
 
@@ -77,9 +77,9 @@ describe('ImportHoldingsUseCase (Testcontainers PG)', () => {
     };
   };
 
-  it('真实脱敏样本: 2 持仓 + 1 已清仓 + 23 流水入库, 汇总行 skip 留痕 (SC-001 数据面)', async () => {
+  it('合成导出样本: 2 持仓 + 1 已清仓 + 23 流水入库, 汇总行 skip 留痕 (SC-001 数据面)', async () => {
     const accountId = nextAccountId();
-    const buf = await readFile(join(__dirname, '__fixtures__', 'sample-holdings.xlsx'));
+    const buf = await readFile(SYNTHETIC_HOLDINGS_XLSX_PATH);
     const summary = await uc.execute(accountId, buf, ASOF);
 
     expect(summary.asOf).toBe(ASOF);

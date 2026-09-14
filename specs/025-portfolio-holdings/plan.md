@@ -196,7 +196,7 @@ TradeRecord      @@map("trade_record") @@schema("portfolio")
 | **D5** | category 词表 | 7 实测值 normalized enum + `unknown` 兜底（摘要警示不丢行）；原始中文保留 raw | ✅ 默认接受 |
 | **D6** | EP2 形态 | 单端点返 current+closed 双数组（双 tab 一次取，V1 量级无分页）；asOf 表级语义行级冗余 | ✅ 默认接受 |
 | **D7** | 同步工具语言 | **TS + tsx + 复用 playwright 依赖**（connectOverCDP），不引 Python/ws 新工具链；token 持久化 `~/.nvy/`（chmod 600，refresh 轮转回写） | ⚠️ 请 review |
-| **D8** | 真实样本入库 | 脱敏副本入 fixtures（inlineStr 回归）+ 程序化 builder 双轨；脱敏尺度（金额是否打散）impl 时 user 拍板 | ⚠️ 请 review |
+| **D8** | 真实样本入库 | 脱敏副本入 fixtures（inlineStr 回归）+ 程序化 builder 双轨；脱敏尺度（金额是否打散）impl 时 user 拍板（2026-09-14 amend：脱敏真实样本已移除，改为生成器产出的纯合成 `synthetic-holdings.xlsx`，结构探测实为 `t="str"` 编码而非 inlineStr；见 PR「test(portfolio): 持仓 xlsx 样本与交易测试改用纯合成数据」） | ⚠️ 请 review |
 
 ## Complexity Tracking
 
