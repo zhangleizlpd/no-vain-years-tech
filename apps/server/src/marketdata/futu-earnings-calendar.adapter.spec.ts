@@ -125,6 +125,8 @@ describe('FutuEarningsCalendarAdapter', () => {
         // 一个「已公布且 EPS 为零」的假事实。
         epsActual: null,
         epsPredict: '2.31',
+        // 仿真行 `earnings_timestamp` 是无偏移的墙钟串 ⇒ 时区不猜, 落 null。
+        publicationTime: null,
       });
     });
 
@@ -153,6 +155,21 @@ describe('FutuEarningsCalendarAdapter', () => {
       const [event] = await makeAdapter(http).getWindow(WINDOW);
 
       expect(event.periodText).toBeNull();
+    });
+
+    it('earnings_timestamp → publicationTime (079 T010): 带偏移 ⇒ 该时刻; 无偏移墙钟 / 缺失 ⇒ null (时区不猜)', async () => {
+      const { http } = makeShim([
+        earningsRow('HK.00700', '2026-08-13', { earnings_timestamp: '2026-08-13T16:30:00+08:00' }),
+        earningsRow('HK.09988', '2026-08-28', { earnings_timestamp: '2026-08-28 16:30:00' }),
+        earningsRow('US.PEP', '2026-08-06', { earnings_timestamp: null }),
+      ]);
+      const out = await makeAdapter(http).getWindow(WINDOW);
+
+      expect(out.map((e) => e.publicationTime)).toEqual([
+        new Date('2026-08-13T08:30:00Z'),
+        null,
+        null,
+      ]);
     });
 
     it('日期列带时间后缀照常截成 YYYY-MM-DD', async () => {
@@ -210,10 +227,22 @@ describe('FutuEarningsCalendarAdapter', () => {
       }
     });
 
-    it('非 us market → 直接抛且零外呼 (静默返空会被记成「那个市场今天没有财报」)', async () => {
+    it('hk market (079 T010) → market=HK, `HK.00700` → `hk:00700` (earnings_event scope 仍只有 us)', async () => {
+      const { http, calls } = makeShim([
+        earningsRow('HK.00700', '2026-08-13', { period_text: '2026Q2' }),
+      ]);
+      const out = await makeAdapter(http).getWindow({ ...WINDOW, market: 'hk' });
+
+      expect(new URL(calls[0].url).searchParams.get('market')).toBe('HK');
+      expect(out.map((e) => [e.underlyingSymbol, e.earningsDate, e.periodText])).toEqual([
+        ['hk:00700', '2026-08-13', '2026Q2'],
+      ]);
+    });
+
+    it('us / hk 以外的 market → 直接抛且零外呼 (静默返空会被记成「那个市场今天没有财报」)', async () => {
       const { http, request } = makeShim([]);
-      await expect(makeAdapter(http).getWindow({ ...WINDOW, market: 'hk' })).rejects.toThrow(
-        /仅承担 us/,
+      await expect(makeAdapter(http).getWindow({ ...WINDOW, market: 'cn' })).rejects.toThrow(
+        /仅承担 us \/ hk/,
       );
       expect(request).not.toHaveBeenCalled();
     });

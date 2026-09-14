@@ -38,6 +38,7 @@ const calendarOpen: TradingCalendarPort = {
   classify: async () => 'trading',
   lastClosedSession: async () => null,
   previousTradingDay: async () => null,
+  countTradingDays: async () => null,
 };
 
 // 017 T016 编排端到端 IT (SC-S04/S05/S07, Testcontainers PG+Redis, mock adapters):
@@ -210,6 +211,7 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       'sync:allotment', // 041 (priority 1, 'allotment' < 'fund_company_holding' 前置)
       'sync:announcement', // 043 (priority 1, 'allotment' < 'announcement' < 'fund_company_holding')
       'sync:fund_company_holding',
+      'sync:hk_earnings_date', // 079 T016 (priority 1; soft 入边 announcement ⇒ 其后才进 ready 集, 'fund_company_holding' < 'hk_earnings_date')
       'sync:index_membership',
     ]);
     // 全链落库: universe 3 标的 + 600519 none 1 行 (020 T008 单口径) + per-dim SyncRun 全 success。
@@ -242,6 +244,7 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
       'fund_company_holding', // 039
       'fund_holding', // 039
       'fundamental',
+      'hk_earnings_date', // 079 T016 ('fundamental' < 'hk_earnings_date' < 'hk_option_contract')
       'hk_option_contract', // 066 T04
       'hk_option_daily_snapshot', // 066 T04
       'hk_option_oi_settle', // 073 T006

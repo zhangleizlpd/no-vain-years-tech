@@ -87,13 +87,21 @@ export class TransientVendorError extends Error {
   }
 }
 
-/** 永久 vendor HTTP 错 (4xx 非 429), 不重试 —— 直抛给 adapter/UC。 */
+/**
+ * 永久 vendor HTTP 错 (4xx 非 429; 以及调用方传 `redirect: 'manual'` 时的 3xx), 不重试 ——
+ * 直抛给 adapter/UC。
+ */
 export class VendorHttpError extends Error {
   constructor(
     readonly vendor: string,
     readonly status: number,
+    /**
+     * 3xx 的 `Location` 头 (079 T007)。**进 message**: 换地址时 findings / 日志里要能直接看到
+     * 新地址, 光一个 301 取证不了。无该头 (含全部 4xx) ⇒ `undefined`, message 逐字不变。
+     */
+    readonly location?: string,
   ) {
-    super(`[${vendor}] vendor HTTP ${status}`);
+    super(`[${vendor}] vendor HTTP ${status}${location === undefined ? '' : ` → ${location}`}`);
     this.name = 'VendorHttpError';
   }
 }
@@ -154,6 +162,7 @@ type FetchLike = (
     headers?: Record<string, string>;
     body?: string;
     signal?: AbortSignal;
+    redirect?: 'follow' | 'manual';
   },
 ) => Promise<FetchResponseLike>;
 
@@ -171,6 +180,15 @@ export interface VendorRequest {
   /** adapter 提供的 vendor-specific header (鉴权等), 与 profile.headers 合并; 同名 profile 优先于无意覆盖前者 → 此处请求 header 优先。 */
   headers?: Record<string, string>;
   body?: string;
+  /**
+   * 原样透传给 fetch (079 T007)。**不传 ⇒ fetch 的 init 里没有这个键** (不是 `redirect: undefined`),
+   * 既有调用方逐字节不变。传 `'manual'` 时 3xx 落进「非 ok ⇒ {@link VendorHttpError}」永久错
+   * 通路 (不重试), 新地址在其 `location` 上 —— 给「地址一变就必须响亮失败」的来源用 (FR-025)。
+   *
+   * EVIDENCE: Node fetch 传 `redirect: 'manual'` 时对跳转地址返回 301 + `location` 头 ——
+   * 079 plan §Q3 记录的 plan 作者实测 (本 task 未复算; 本文件单测只钉「拿到 3xx 之后」这一段)。
+   */
+  redirect?: 'follow' | 'manual';
 }
 
 /**
@@ -280,6 +298,8 @@ export class VendorHttpClient {
         method: req.method ?? 'GET',
         headers,
         body: req.body,
+        // 079 T007: 只在调用方显式传了才出现这个键 —— 不传时 init 逐字节同改动前。
+        ...(req.redirect === undefined ? {} : { redirect: req.redirect }),
         // 🚨 signal **必须在 executeOnce 内建** (每次重试一个新的), 不能提到 request()/构造器:
         // AbortSignal 一旦 abort 就永久 abort ⇒ 复用会让第 2 次重试**当场**失败, 重试形同虚设。
         // 超时 abort 抛 DOMException('TimeoutError') → 落进下面的 catch → TransientVendorError
@@ -306,8 +326,13 @@ export class VendorHttpClient {
       );
     }
     if (!res.ok) {
-      // 4xx (非 429) = 永久错 (鉴权/参数), 重试无意义。
-      throw new VendorHttpError(this.profile.vendor, res.status);
+      // 4xx (非 429) = 永久错 (鉴权/参数), 重试无意义。3xx (调用方传 `redirect: 'manual'` 的
+      // 跳转) 同样永久错 —— 地址变了重试也不会变回来; 新地址挂在 `location` 上。
+      const location =
+        res.status >= 300 && res.status < 400
+          ? (res.headers?.get('location') ?? undefined)
+          : undefined;
+      throw new VendorHttpError(this.profile.vendor, res.status, location);
     }
     return readBody(res);
   }

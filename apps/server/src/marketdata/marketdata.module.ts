@@ -2,7 +2,12 @@ import { Module, type FactoryProvider } from '@nestjs/common';
 import { SecurityModule } from '../security/security.module.js';
 import { AccountModule } from '../account/account.module.js';
 import { PrismaService } from '../security/prisma.service.js';
-import { marketdataConfig, type MarketdataConfig } from '../config/marketdata.config.js';
+import {
+  earningsDateSourcesConfig,
+  marketdataConfig,
+  type EarningsDateSourcesConfig,
+  type MarketdataConfig,
+} from '../config/marketdata.config.js';
 import { MockMarketDataAdapter } from './mock-market-data.adapter.js';
 import { refusingCollectionPort } from './refusing-collection.adapter.js';
 import { VendorHttpClient } from './vendor-http-client.js';
@@ -71,11 +76,17 @@ import { SyncUniverseUseCase } from './sync-universe.usecase.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionOiSettleUseCase } from './sync-option-oi-settle.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
-import { SyncEarningsEventUseCase } from './sync-earnings-event.usecase.js';
+import {
+  EARNINGS_OBSERVATION_RECORDER,
+  SyncEarningsEventUseCase,
+} from './sync-earnings-event.usecase.js';
+import { UsEarningsObservationRecorder } from './us-earnings-observation.recorder.js';
 import { SyncProfileUseCase } from './sync-profile.usecase.js';
 import { SyncTierRecalc } from './sync-tier-recalc.js';
 import { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
 import { AnchorColdStartUseCase } from './anchor-cold-start.usecase.js';
+import { SyncEarningsFiscalProfileUseCase } from './sync-earnings-fiscal-profile.usecase.js';
+import { SyncEarningsDatesUseCase } from './sync-earnings-dates.usecase.js';
 import { AnchorColdStartSubscriber } from './anchor-cold-start.subscriber.js';
 import { BackfillPacer, DEFAULT_BACKFILL_PACER_CONFIG } from './backfill-pacer.js';
 import { DimensionExecutorRegistry } from './dimension-executor.js';
@@ -96,7 +107,9 @@ import {
   type InstrumentUniversePort,
 } from './instrument-universe.port.js';
 import { COMPANY_PROFILE_PORT, type CompanyProfilePort } from './company-profile.port.js';
-import { TRADING_CALENDAR_PORT } from './trading-calendar.port.js';
+import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
+import { HkexBoardMeetingListSource } from './hkex-board-meeting-list.source.js';
+import { HKEXNEWS_PROFILE } from './hkexnews.constraint-profile.js';
 import { OPTION_CHAIN_DISCOVERY_PORT } from './option-chain-discovery.port.js';
 import {
   TRADING_CALENDAR_FORWARD_SOURCE,
@@ -148,6 +161,13 @@ import {
 import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
 import { EARNINGS_CALENDAR_PORT, type EarningsCalendarPort } from './earnings-calendar.port.js';
 import { FutuEarningsCalendarAdapter } from './futu-earnings-calendar.adapter.js';
+import {
+  assembleEarningsDateSources,
+  EARNINGS_DATE_SOURCES,
+  type EarningsDateSource,
+} from './earnings-date-source.port.js';
+import { FutuCalendarSource } from './futu-calendar.source.js';
+import { HkexAnnouncementSource } from './hkex-announcement.source.js';
 import { REALTIME_QUOTE_PORT, type RealtimeQuotePort } from './realtime-quote.port.js';
 import { FutuRealtimeQuoteAdapter } from './futu-realtime-quote.adapter.js';
 import { MarketRoutedRealtimeQuoteAdapter } from './market-routed-realtime-quote.adapter.js';
@@ -192,6 +212,14 @@ const FUTU_EARNINGS_CALENDAR_HTTP_CLIENT = Symbol('FUTU_EARNINGS_CALENDAR_HTTP_C
  * client (服务端是单一桶), 异 capability 各起各的。
  */
 const FUTU_MARKET_STATE_HTTP_CLIENT = Symbol('FUTU_MARKET_STATE_HTTP_CLIENT');
+/** 079 T010 财报日期来源 A 实例 token (经 `collectionPort` 绑定, kind=mock 得拒绝壳)。 */
+const FUTU_CALENDAR_EARNINGS_DATE_SOURCE = Symbol('FUTU_CALENDAR_EARNINGS_DATE_SOURCE');
+/** 079 T011 财报日期来源 B 实例 token (同上)。 */
+const HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE = Symbol('HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE');
+/** 079 T012 财报日期来源 C 实例 token (同上)。 */
+const HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE = Symbol(
+  'HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE',
+);
 
 /** `kind=live` 下 config 的收窄形态 —— `collectionPort` 的 `live` 回调只在这一支被调。 */
 type LiveMarketdataConfig = Extract<MarketdataConfig, { kind: 'live' }>;
@@ -390,6 +418,52 @@ function collectionPort<T extends object>(
       live: (cfg, earningsHttp: VendorHttpClient) =>
         new FutuEarningsCalendarAdapter(earningsHttp, cfg.futuShimUrl, cfg.futuShimToken),
     }),
+
+    // ── 财报日期来源数组 (079 T009, plan §D2 / §D11): 按 `EARNINGS_DATE_SOURCES` 组装 ──
+    //
+    // 未知 / 重复名在 `assembleEarningsDateSources` 里抛 ⇒ provider 实例化失败 ⇒ **boot 失败**,
+    // 而不是少跑一个来源。每个来源实例由各自 token 经 `collectionPort()` 绑定 (kind=mock 得拒绝壳),
+    // 由 T010 / T011 / T012 逐个接入; 三个来源全部接线后注册表类型不再容许 `null`。
+    // 🚫 为占位造假来源进 prod 路径。
+    // 079 T010 来源 A: 复用上面的 `EARNINGS_CALENDAR_PORT` 实例 (同一 shim capability 同一个桶,
+    // 🚫 另 new adapter —— 多一个客户端令牌桶 = 上游允许值翻倍)。
+    collectionPort<EarningsDateSource>(FUTU_CALENDAR_EARNINGS_DATE_SOURCE, {
+      inject: [EARNINGS_CALENDAR_PORT, PrismaService],
+      live: (_cfg, calendar: EarningsCalendarPort, prisma: PrismaService) =>
+        new FutuCalendarSource(calendar, prisma),
+    }),
+    // 079 T011 来源 B: 只读本 ctx `announcement` 表, 零 vendor 调用。
+    collectionPort<EarningsDateSource>(HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE, {
+      inject: [PrismaService],
+      live: (_cfg, prisma: PrismaService) => new HkexAnnouncementSource(prisma),
+    }),
+    // 079 T012 来源 C: 港交所清单。自己一个 VendorHttpClient (hkexnews 约束画像; 限频 / 熔断态与
+    // 其余 vendor 互不连坐), 本 provider 单例 ⇒ 全进程恰一个; 交易日历端口判页首日期陈旧。
+    collectionPort<EarningsDateSource>(HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE, {
+      inject: [PrismaService, TRADING_CALENDAR_PORT],
+      live: (_cfg, prisma: PrismaService, calendar: TradingCalendarPort) =>
+        new HkexBoardMeetingListSource(new VendorHttpClient(HKEXNEWS_PROFILE), prisma, calendar),
+    }),
+    {
+      provide: EARNINGS_DATE_SOURCES,
+      inject: [
+        earningsDateSourcesConfig.KEY,
+        FUTU_CALENDAR_EARNINGS_DATE_SOURCE,
+        HKEX_ANNOUNCEMENT_EARNINGS_DATE_SOURCE,
+        HKEX_BOARD_MEETING_LIST_EARNINGS_DATE_SOURCE,
+      ],
+      useFactory: (
+        sourcesCfg: EarningsDateSourcesConfig,
+        futuCalendar: EarningsDateSource,
+        hkexAnnouncement: EarningsDateSource,
+        hkexBoardMeetingList: EarningsDateSource,
+      ) =>
+        assembleEarningsDateSources(sourcesCfg.names, {
+          futu_calendar: futuCalendar,
+          hkex_announcement: hkexAnnouncement,
+          hkex_board_meeting_list: hkexBoardMeetingList,
+        }),
+    },
 
     // ── 实时报价端口 (061 T003/T005, FR-001/010/020): kind=live → 富途 shim `/option-snapshot`
     // 的正股行, **按市场路由** ──
@@ -616,6 +690,8 @@ function collectionPort<T extends object>(
     // 047 T019 财报日历维度 use case (同上, 尾部第 32 位)。🚨 它**不接受工作集入参** ——
     // 市场级接口, 工作集是固定前向时间窗序列, 不挂锚闸 (FR-035a)。
     SyncEarningsEventUseCase,
+    // 079 T020 美股钩子: 上一行构造器尾部的观测记录器 (本批事件 → 观测层 → 增量合并, 零 vendor 调用)。
+    { provide: EARNINGS_OBSERVATION_RECORDER, useClass: UsEarningsObservationRecorder },
     // profile 富化 use case (T010): 缺 fsType 的 cn 标的 → COMPANY_PROFILE_PORT 解析回写缓存。
     SyncProfileUseCase,
     // syncTier 重算 (018 T001): fact 维度 executor 前置 Q7-B 直查自选并集 → 落 syncTier。
@@ -642,6 +718,11 @@ function collectionPort<T extends object>(
     // 060 T005-T007 锚首建冷启动编排: 由 worker 的 `sync:anchor-cold-start` 分支路由
     // (**不**进 DimensionExecutorRegistry —— 它是事件驱动的一次性补数, 不是周期维度)。
     AnchorColdStartUseCase,
+    // 079 T029 财年档案反推 (FR-026): 冷启动对港股锚调用 + 每日 hk_earnings_date 运行起手批量补 (T014)。
+    SyncEarningsFiscalProfileUseCase,
+    // 079 T016 港股财报日期维度 use case (DimensionExecutorRegistry 尾部第 35 位注入面):
+    // `hk_earnings_date` 执行器调它的 `runHk`; 来源数组经上面的 `EARNINGS_DATE_SOURCES` 注入。
+    SyncEarningsDatesUseCase,
     // 060 T008 建锚事件消费方 (R3 CROSS-CONTEXT-ASYNC 消费端): OnModuleInit 自注册进平台层
     // OutboxSubscriberRegistry, 只做「校验 + 入队」—— relay 是单线 cron, 采集必须异步。
     AnchorColdStartSubscriber,

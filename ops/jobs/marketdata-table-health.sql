@@ -660,6 +660,15 @@ SELECT
   || '/新观察' || coalesce((SELECT (last_seen_at AT TIME ZONE 'Asia/Shanghai')::date::text
                             FROM earn_verdict), '无')
   || CASE WHEN (SELECT unhealthy FROM earn_verdict) THEN '⚠视野' ELSE '' END
+  -- 079 港股财报日期 (`hk_earnings_date`)：**报数不判红**（同 #179 词根撞名那条的取舍）。判红口径
+  -- 079 已走运行记录（来源失败 / 清单陈旧 / 迁入逾期 ⇒ `partial` ⇒ 09:00 日报标红），本探针未定
+  -- 数据年龄阈值，只把「港股事件数 / 最近一次观测日」摆出来供人工对照。两表均小（锚级量级），
+  -- `last_seen_at` 无索引的 max() 是 seq scan，每 4h 一次可接受。
+  || ' | hk_earnings_date=事件'
+  || (SELECT count(*) FROM marketdata.earnings_date_event e
+        JOIN marketdata.instrument i ON i.id = e.instrument_id WHERE i.market = 'hk')
+  || '/最近观测' || coalesce((SELECT (max(o.last_seen_at) AT TIME ZONE 'Asia/Shanghai')::date::text
+                              FROM marketdata.earnings_date_observation o), '无')
   || ' | disk='
   || coalesce((SELECT '可撑' || runway_days || 'd(日均' || daily_growth_bytes || 'B)'
                FROM disk_verdict),

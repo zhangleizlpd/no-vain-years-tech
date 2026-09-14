@@ -367,38 +367,44 @@ model Instrument {
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  dailyBars               DailyBar[]
-  fundamentalSnapshots    FundamentalSnapshot[]
-  financialMetrics        FinancialMetric[]
-  corporateActions        CorporateAction[]
-  adjustmentFactors       AdjustmentFactor[]
+  dailyBars                DailyBar[]
+  fundamentalSnapshots     FundamentalSnapshot[]
+  financialMetrics         FinancialMetric[]
+  corporateActions         CorporateAction[]
+  adjustmentFactors        AdjustmentFactor[]
   // 039 港股量化高信号 5 维度反向关系 (做空/南向/所属指数/公募基金持股/基金公司持股)。
-  shortSellingDailies     ShortSellingDaily[]
-  connectHoldingDailies   ConnectHoldingDaily[]
-  indexMemberships        IndexMembership[]
-  fundHoldings            FundHolding[]
-  fundCompanyHoldings     FundCompanyHolding[]
+  shortSellingDailies      ShortSellingDaily[]
+  connectHoldingDailies    ConnectHoldingDaily[]
+  indexMemberships         IndexMembership[]
+  fundHoldings             FundHolding[]
+  fundCompanyHoldings      FundCompanyHolding[]
   // 040 港股波动率 + 热度精选 2 维度反向关系。
-  volatilityDaily         VolatilityDaily[]
-  hotSnapshots            HotSnapshot[]
+  volatilityDaily          VolatilityDaily[]
+  hotSnapshots             HotSnapshot[]
   // 041 港股事件流 4 维度反向关系 (回购/股本变动/股东权益变动/配股)。
-  buybackEvents           BuybackEvent[]
-  equityChanges           EquityChange[]
-  shareholderChanges      ShareholderChange[]
-  allotmentEvents         AllotmentEvent[]
+  buybackEvents            BuybackEvent[]
+  equityChanges            EquityChange[]
+  shareholderChanges       ShareholderChange[]
+  allotmentEvents          AllotmentEvent[]
   // 042 港股报告期 3 维度反向关系 (营收构成/最新股东/员工)。
-  revenueSegments         RevenueSegment[]
-  shareholderSnapshots    ShareholderSnapshot[]
-  employeeSnapshots       EmployeeSnapshot[]
+  revenueSegments          RevenueSegment[]
+  shareholderSnapshots     ShareholderSnapshot[]
+  employeeSnapshots        EmployeeSnapshot[]
   // 043 港股分类文本 2 维度反向关系 (所属行业/公告)。
-  industryClassifications IndustryClassification[]
-  announcements           Announcement[]
+  industryClassifications  IndustryClassification[]
+  announcements            Announcement[]
   // 046 标的级 IV 2 维度反向关系 (日快照 / 历史序列; 指数日线无 instrument 关联)。
-  underlyingIvDailies     UnderlyingIvDaily[]
-  underlyingIvHistories   UnderlyingIvHistory[]
+  underlyingIvDailies      UnderlyingIvDaily[]
+  underlyingIvHistories    UnderlyingIvHistory[]
   // 047 M2b 期权链反向关系 (合约挂标的 / 财报事件挂标的; 逐日快照挂合约不挂标的)。
-  optionContracts         OptionContract[]
-  earningsEvents          EarningsEvent[]
+  optionContracts          OptionContract[]
+  earningsEvents           EarningsEvent[]
+  // 079 财报日期层反向关系 (来源观测 / 合并事件 / 会议→刊发间隔; 事件流水挂事件不挂标的)。
+  earningsDateObservations EarningsDateObservation[]
+  earningsDateEvents       EarningsDateEvent[]
+  earningsMeetingLags      EarningsMeetingLag[]
+  // 079 财年档案 (FR-026): 每只标的至多一行, 没有行 = 财年未知。
+  earningsFiscalProfile    EarningsFiscalProfile?
 
   @@unique([market, code], map: "uk_instrument_market_code")
   @@map("instrument")
@@ -1117,20 +1123,20 @@ model CalendarCoverage {
 //   读路径**都是「某标的 + 到期日区间」, 且合约永久保留 ⇒ 表随时间单调增长 (12 只锚 × 约 2150
 //   合约/票, 周期权每周新挂), seq scan 会随年份线性劣化。O(log n) B-tree 一条覆盖两条路径。
 model OptionContract {
-  id                     BigInt   @id @default(autoincrement())
-  market                 String   @db.VarChar(8)
-  code                   String   @db.VarChar(32)
-  root                   String   @db.VarChar(16)
-  underlyingInstrumentId BigInt   @map("underlying_instrument_id")
-  expiryDate             DateTime @map("expiry_date") @db.Date
-  strikePrice            Decimal  @map("strike_price") @db.Decimal(18, 4)
+  id                     BigInt    @id @default(autoincrement())
+  market                 String    @db.VarChar(8)
+  code                   String    @db.VarChar(32)
+  root                   String    @db.VarChar(16)
+  underlyingInstrumentId BigInt    @map("underlying_instrument_id")
+  expiryDate             DateTime  @map("expiry_date") @db.Date
+  strikePrice            Decimal   @map("strike_price") @db.Decimal(18, 4)
   // 'PUT' | 'CALL' —— 采集端 option_type = ALL **含 CALL** (plan D-DATA-3): 「本片只含认沽」
   // 是**呈现面**的话; 快照漏采即永久缺口, M4 的 wheel / CC 要 CALL 时买不回来。
-  optionType             String   @map("option_type") @db.VarChar(8)
+  optionType             String    @map("option_type") @db.VarChar(8)
   // 到期周期 / 结算方式: vendor 缺字段一律存 null (禁默认值冒充, 同 015 端口层契约)。
-  expirationCycle        String?  @map("expiration_cycle") @db.VarChar(16)
-  settlementMode         String?  @map("settlement_mode") @db.VarChar(16)
-  isStandard             Boolean  @map("is_standard")
+  expirationCycle        String?   @map("expiration_cycle") @db.VarChar(16)
+  settlementMode         String?   @map("settlement_mode") @db.VarChar(16)
+  isStandard             Boolean   @map("is_standard")
   // 一张标准合约对应的正股股数 = 供应方 lot_size (港股逐标的不同 150–2000, 美股实测恒 100)。
   //   (EVIDENCE: specs/076-option-contract-size/spec.md 「取证」§1 —— 22 只有链港股锚三式互证
   //   22/22 零不一致, 与交易所圈告 EQD/08/26 附表逐只核对一致; §2 PoC-A 美股标准 PEP = 100。)
@@ -1140,7 +1146,7 @@ model OptionContract {
   // 📌 **已到期合约不回填** (076 Q1 裁决): 读端只取未到期合约, 历史行不进选约表; 回填要打供应方,
   //   而供应方对已到期码未必认。写手只有链发现一处 (insert 带值 + reconcileListingState 对账步
   //   回填 / 更新, 谓词 expiry_date >= 业务日天然排除已到期行); 快照轮只比对不写。
-  contractSize           Int?     @map("contract_size")
+  contractSize           Int?      @map("contract_size")
   // vendor 已不再挂牌本合约的软下架戳 (null = 仍挂牌, 正常采)。链发现每轮在**成功**取到该标的
   // 全量到期日阶梯后对账: DB 里 expiry ≥ 当日、但已不在 vendor 当前阶梯里的合约置本列; 阶梯里
   // 重新出现则清回 null (自愈, 见 sync-option-contract.usecase.ts reconcileListingState)。
@@ -1150,8 +1156,8 @@ model OptionContract {
   // 🚨 软下架不删行: option_daily_snapshot 对本表是 onDelete:Cascade, 物理删会连历史快照一起没,
   //   而 vendor 不补历史 ⇒ 自造永久缺口。
   withdrawnAt            DateTime? @map("withdrawn_at") @db.Timestamptz(6)
-  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   underlying Instrument            @relation(fields: [underlyingInstrumentId], references: [id], onDelete: Cascade)
   snapshots  OptionDailySnapshot[]
@@ -1261,6 +1267,173 @@ model EarningsEvent {
   @@unique([instrumentId, earningsDate], map: "uk_earnings_event_instrument_date")
   @@index([earningsDate], map: "ix_earnings_event_date")
   @@map("earnings_event")
+  @@schema("marketdata")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 079 财报日期层 4 表 (plan §D3, expand-only)。多来源观测 → 纯函数合并成「一个公布日 + 口径 +
+// 状态」。范式同上: ADR-0043 贫血 row + @map snake_case; instrument_id 同 schema intra FK cascade。
+//
+// 🚫 **MUST NOT 复用 `earnings_event`** (D1 / FR-021), 🚫 不给 optionsdesk 任何读口 (FR-022):
+//   期权台读财报日期只读 `earnings_event` 且不按市场过滤 ⇒ 本层表对它不可见是结构保证。
+//
+// 🚨 **`period_key` 列非空, 三形态** (构造单点 `earnings-period.rules.ts`):
+//   `P:<期末日>` 可跨来源对齐, **只有它参与跨来源合并** / `T:<来源>:<原文报告期>` 来源内稳定 /
+//   `D:<来源>:<日期>` 兜底。非空是为了让唯一键真去重 (PG 视多个 NULL 互异, migration-rules §4)。
+//
+// 🚨 各「值域」列 (source / basis / status / confirmed_basis / report_kind / kind) **无 DB 侧
+//   enum/CHECK** —— 同 `sync_run.status` 的取舍: 值域单一来源在 TS 类型 (来源名 = 来源 port,
+//   口径与状态 = 合并规则 `earnings-date-merge.rules.ts`), 加值零 migration。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 来源观测 (PIT)。一行 = 某来源对某标的某报告期的**当前**说法 + 变更史指针 (FR-013 / FR-020a)。
+// 唯一 (source, instrument_id, period_key): 同一来源对同一期只有一行, 改期就地更新并留旧值。
+// 🚨 任何更新 MUST NOT 覆盖 `first_seen_at` (FR-013「MUST NOT 覆盖掉历史观测」); 改期把旧日期
+//   写进 `prev_date`、时刻写进 `date_changed_at`, 完整序列在事件流水里。
+model EarningsDateObservation {
+  id              BigInt    @id @default(autoincrement())
+  // 稳定来源名: 'futu_calendar' | 'hkex_announcement' | 'hkex_board_meeting_list' (plan §D2)。
+  source          String    @db.VarChar(32)
+  instrumentId    BigInt    @map("instrument_id")
+  // `T:<来源>:<原文报告期>` 最长 ⇒ 128 留足。
+  periodKey       String    @map("period_key") @db.VarChar(128)
+  market          String    @db.VarChar(8)
+  // 'quarterly' | 'interim' | 'annual' (`EarningsReportKind`); 换算不出为 null。
+  reportKind      String?   @map("report_kind") @db.VarChar(16)
+  // 统一期末日; 换算不出为 null (此时 period_key 必非 `P:`)。
+  periodEnd       DateTime? @map("period_end") @db.Date
+  // 来源原文报告期 (富途 `period_text` / 清单期間列 / 公告标题片段), 原样存。
+  periodText      String?   @map("period_text") @db.VarChar(128)
+  // 取值口径: 'filed' | 'explicit' | 'structured' | 'meeting' (合并优先级见 plan §D8)。
+  basis           String    @db.VarChar(16)
+  // 本来源给出的公布日 (交易所当地日期); `meeting` 口径不直接给公布日 ⇒ null, 由合并按间隔推定。
+  announceDate    DateTime? @map("announce_date") @db.Date
+  // 会议日 (`meeting` 口径的承重字段)。
+  meetingDate     DateTime? @map("meeting_date") @db.Date
+  // 公布时刻 (来源给得出时, 如富途 `earnings_timestamp`)。
+  publicationTime DateTime? @map("publication_time") @db.Timestamptz(6)
+  // 刊发日 (`filed` 口径)。
+  filedDate       DateTime? @map("filed_date") @db.Date
+  // 凭据指针: 公告链接 / 清单页首日期 等, 供人工复核回溯。
+  evidence        String?   @db.VarChar(512)
+
+  firstSeenAt   DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  // 清单观测的最近观测时刻 = 最近一次出现在清单的运行时刻 (FR-020a)。
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  // 上一个日期 (本行承重日期列: `meeting` 口径为会议日, 其余为公布日) 与其变更时刻 (FR-016)。
+  prevDate      DateTime? @map("prev_date") @db.Date
+  dateChangedAt DateTime? @map("date_changed_at") @db.Timestamptz(6)
+  // 刊发后回填: 本行取值与刊发日的偏差天数 (FR-019); 未刊发为 null —— null ≠ 0 (0 = 说准了)。
+  deviationDays Int?      @map("deviation_days")
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([source, instrumentId, periodKey], map: "uk_earnings_date_observation_source_instrument_period")
+  // 合并读路径是「某 (标的, period_key) 的全部来源观测」, 唯一键以 source 打头用不上 ⇒ 另建。
+  @@index([instrumentId, periodKey], map: "ix_earnings_date_observation_instrument_period")
+  @@map("earnings_date_observation")
+  @@schema("marketdata")
+}
+
+// 合并后事件。唯一 (instrument_id, period_key)。
+// status: 'confirmed' | 'unconfirmed' | 'conflict' | 'notified_undated' | 'overdue' | 'published' | 'superseded'
+//   (`superseded` = 已并入: 「已通知、日期未知」占位事件 `D:notice_undated:<通知刊发日>` 被接手, 🚫 删除, 079 T014)。
+// 🚨 `revision` 是乐观并发列 (plan §D8): 写入一律 `updateMany where { id, revision }` + affected-count,
+//   命中 0 行重读重算; 🚫 `SELECT … FOR UPDATE`。CLI 回填与定时运行可能重叠。
+model EarningsDateEvent {
+  id                 BigInt    @id @default(autoincrement())
+  instrumentId       BigInt    @map("instrument_id")
+  periodKey          String    @map("period_key") @db.VarChar(128)
+  market             String    @db.VarChar(8)
+  reportKind         String?   @map("report_kind") @db.VarChar(16)
+  periodEnd          DateTime? @map("period_end") @db.Date
+  status             String    @db.VarChar(24)
+  // 公布日及其取值口径 (同观测 `basis` 值域); `conflict` 且无法取值时可为 null。
+  announceDate       DateTime? @map("announce_date") @db.Date
+  announceBasis      String?   @map("announce_basis") @db.VarChar(16)
+  // 冲突候选日期 (含来源与口径), 仅 `conflict` 或冲突解除留痕时非 null。
+  conflictCandidates Json?     @map("conflict_candidates")
+  publicationTime    DateTime? @map("publication_time") @db.Timestamptz(6)
+  // 确认日期及口径: 'announced' (会前通知刊发日) | 'first_seen' (来源首次观测当地日期)。
+  // 🚨 口径为 `announced` 时只前移不回退 (FR-012)。
+  confirmedDate      DateTime? @map("confirmed_date") @db.Date
+  confirmedBasis     String?   @map("confirmed_basis") @db.VarChar(16)
+  // 参与合并的来源名集合。
+  sources            String[]
+  // 逾期起算时刻 (迁入 `overdue` 的那一轮); 解除后置 null, 历史在流水里。
+  overdueSince       DateTime? @map("overdue_since") @db.Timestamptz(6)
+  revision           Int       @default(0)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  instrument Instrument             @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  logs       EarningsDateEventLog[]
+
+  @@unique([instrumentId, periodKey], map: "uk_earnings_date_event_instrument_period")
+  @@map("earnings_date_event")
+  @@schema("marketdata")
+}
+
+// 事件流水 (append-only): 状态迁移 / 取值变更 / 冲突产生与解除 / 逾期产生与解除 / 清单行提前消失
+// (FR-013 / FR-014 / FR-016 / FR-019a)。🚫 update / delete —— 它是事件表「为什么变成这样」的唯一留痕。
+model EarningsDateEventLog {
+  id         BigInt   @id @default(autoincrement())
+  eventId    BigInt   @map("event_id")
+  kind       String   @db.VarChar(32)
+  fromStatus String?  @map("from_status") @db.VarChar(24)
+  toStatus   String?  @map("to_status") @db.VarChar(24)
+  // 变更前后取值 / 候选日期 / 解除前全部日期等, 形状随 kind。
+  detail     Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  event EarningsDateEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt], map: "ix_earnings_date_event_log_event_created")
+  @@map("earnings_date_event_log")
+  @@schema("marketdata")
+}
+
+// 会议 → 刊发间隔 (FR-010 / FR-019)。唯一 (instrument_id, report_kind): 只存**最近一次**,
+// 公布日推定 = 会议日 + lag_days, 无历史按 0 天。清单无历史存档 ⇒ 上线时不回填, 逐次学习。
+model EarningsMeetingLag {
+  id           BigInt    @id @default(autoincrement())
+  instrumentId BigInt    @map("instrument_id")
+  reportKind   String    @map("report_kind") @db.VarChar(16)
+  lagDays      Int       @map("lag_days")
+  // 学到这次间隔的那一期期末日 (`T:` 键事件无期末日 ⇒ null)。
+  periodEnd    DateTime? @map("period_end") @db.Date
+  observedAt   DateTime  @map("observed_at") @db.Timestamptz(6)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, reportKind], map: "uk_earnings_meeting_lag_instrument_kind")
+  @@map("earnings_meeting_lag")
+  @@schema("marketdata")
+}
+
+// 财年档案 (FR-026 / FR-027 / plan §D3 第 5 项 / §D13)。一行 = 某标的的财年结束月 + 得出来源 + 凭据。
+// 🚨 **没有行 = 财年未知** —— MUST NOT 按 12 月结年代入: 标题不带期末日的刊发事实与富途 `period_text`
+//   都靠本表换算期末日, 代入 12 会把非 12 月结年的公司静默换算到另一期且不报错。
+// 唯一 instrument_id: 每只标的只有一个当前财年结束月。写入口两个: 反推用例
+//   (`sync-earnings-fiscal-profile.usecase.ts`, 各路一致才写; 已有档案与年度业绩标题矛盾时告警、不覆盖)
+//   与人工补录 CLI (`marketdata-fiscal-profile.cli.ts`, source = 'manual')。
+// 🚨 `source` ('annual_title' | 'dividend_title' | 'board_list' | 'futu_pairing' | 'manual') 与
+//   `fiscal_year_end_month` (1–12) **无 DB 侧 enum/CHECK** —— 同上 4 表的取舍, 值域单一来源在
+//   `earnings-fiscal-profile.rules.ts` (`FiscalProfileSource`), 加值零 migration。
+model EarningsFiscalProfile {
+  id                 BigInt   @id @default(autoincrement())
+  instrumentId       BigInt   @unique(map: "uk_earnings_fiscal_profile_instrument") @map("instrument_id")
+  fiscalYearEndMonth Int      @map("fiscal_year_end_month") @db.SmallInt
+  source             String   @db.VarChar(16)
+  // 凭据: 取值所依据的公告日期 + 标题 + 链接 / 清单行 / 富途配对 / 人工补录说明, 供人工复核。
+  evidence           String   @db.Text
+  // 确定时刻 = 本行财年结束月被确定 (反推写入或人工补录) 的时刻。
+  determinedAt       DateTime @default(now()) @map("determined_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@map("earnings_fiscal_profile")
   @@schema("marketdata")
 }
 
