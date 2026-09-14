@@ -116,6 +116,7 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
     new GetLegsUseCase(prisma, new PrismaLegRetrievalAdapter(prisma), stubTradingCalendar(), {
       marchPhiTier: 'good',
       marchMode: 'phi',
+      brokerSyncScope: 'anchored',
     });
 
   /**
@@ -153,7 +154,7 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
       prisma,
       new CappedRetrieval(new PrismaLegRetrievalAdapter(prisma), cap),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
 
   const codesOf = (view: LegTableView): string[] => view.legs.map((leg) => leg.code);
@@ -558,6 +559,7 @@ describe('053 查询下沉 · 服务端侧 state branch (Testcontainers PG)', ()
     const view = await new GetLegsUseCase(prisma, exploding, stubTradingCalendar(), {
       marchPhiTier: 'good',
       marchMode: 'phi',
+      brokerSyncScope: 'anchored',
     }).execute(SYMBOL, 'build', NOW);
     // 🚨 两个状态**不可合并**: 前者是事实 (采集还没轮到), 后者是故障 —— 混成一个值会让「缺口」
     // 看起来像「正常的空」。本片新增的字段一个都不许改这条分支的行为。

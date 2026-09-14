@@ -93,6 +93,8 @@ const ALLOWLIST = new Set([
   // prod 走默认 ⇒ optional 归 ALLOWLIST 不进 .env.example (默认值真相在 .config.ts)。
   'OPTIONSDESK_MARCH_PHI_TIER',
   'OPTIONSDESK_MARCH_MODE',
+  // 082 券商同步范围 (optionsdesk.config.ts): schema 默认 anchored, prod 走默认 ⇒ 同上归 ALLOWLIST。
+  'BROKER_SYNC_SCOPE',
   // Expo build-time public var (apps/mobile/src/core/api/setup.ts). EXPO_PUBLIC_*
   // is an Expo framework prefix baked into the web bundle at export; mobile has
   // no server-style .env/.env.example pair, so it is declared here.

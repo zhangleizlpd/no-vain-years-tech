@@ -1,5 +1,6 @@
 import { registerAs } from '@nestjs/config';
 import { z } from 'zod';
+import { BROKER_SYNC_SCOPES } from '../optionsdesk/broker-scope.rules';
 
 /**
  * Optionsdesk 行军选档 config (069 T006, clarify Q3): φ 档界选择 + θ 模式开关。
@@ -16,6 +17,8 @@ import { z } from 'zod';
 const OptionsdeskConfigSchema = z.object({
   marchPhiTier: z.enum(['good', 'acceptable', 'thin']).default('good'),
   marchMode: z.enum(['phi', 'theta']).default('phi'),
+  /** 082 券商同步范围 (plan D11; FR-005)。值域直接取 `broker-scope.rules.ts` 那一份, 不另写字面量。 */
+  brokerSyncScope: z.enum(BROKER_SYNC_SCOPES).default('anchored'),
 });
 
 export type OptionsdeskConfig = z.infer<typeof OptionsdeskConfigSchema>;
@@ -26,5 +29,6 @@ export const optionsdeskConfig = registerAs(
     OptionsdeskConfigSchema.parse({
       marchPhiTier: process.env.OPTIONSDESK_MARCH_PHI_TIER,
       marchMode: process.env.OPTIONSDESK_MARCH_MODE,
+      brokerSyncScope: process.env.BROKER_SYNC_SCOPE,
     }),
 );

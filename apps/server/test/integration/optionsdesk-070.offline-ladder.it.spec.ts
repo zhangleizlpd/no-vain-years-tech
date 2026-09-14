@@ -299,7 +299,7 @@ describe('070 离线档收租阶梯 (Testcontainers PG + Redis, 真 DI 容器)',
       prisma,
       moduleRef.get<LegRetrievalPort>(LEG_RETRIEVAL_PORT),
       moduleRef.get<TradingCalendarPort>(TRADING_CALENDAR_PORT),
-      { marchPhiTier: 'good', marchMode: 'theta' },
+      { marchPhiTier: 'good', marchMode: 'theta', brokerSyncScope: 'anchored' },
     );
 
   const readBaseline = (): {

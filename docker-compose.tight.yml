@@ -218,6 +218,8 @@ services:
       # 真默认而非空串 (空串会被 config 层 fail-fast 拦, 同 MARKETDATA_PROVIDER 静默陷阱)。
       OPTIONSDESK_MARCH_PHI_TIER: ${OPTIONSDESK_MARCH_PHI_TIER:-good}
       OPTIONSDESK_MARCH_MODE: ${OPTIONSDESK_MARCH_MODE:-phi}
+      # 082 券商同步范围 (anchored | full): 同上, :-anchored 兜底, 缺失时不喂空串。
+      BROKER_SYNC_SCOPE: ${BROKER_SYNC_SCOPE:-anchored}
       MARKETDATA_TICK_ENABLED: ${MARKETDATA_TICK_ENABLED:-false}
       # #210 vendor lane 灰度 flag: 与上一行同形态 (enum+default, :-false 兜底永不空串)。
       # 漏映射的后果同 2026-06-04 那次: 改了 .env.production 却发现灰度翻不开, 且无任何报错。

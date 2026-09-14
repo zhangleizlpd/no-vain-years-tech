@@ -8,8 +8,13 @@
  * 由 `broker-code.rules.ts` 产出)。
  */
 
-/** 同步范围: `anchored` = 只收锚标的相关; `full` = 全账户。取值由配置 `BROKER_SYNC_SCOPE` 给出。 */
-export type BrokerSyncScope = 'anchored' | 'full';
+/**
+ * 同步范围值域: `anchored` = 只收锚标的相关; `full` = 全账户。取值由配置 `BROKER_SYNC_SCOPE` 给出,
+ * `config/optionsdesk.config.ts` 的 schema 直接用本数组 —— 值域只此一份, 两处不会漂移。
+ */
+export const BROKER_SYNC_SCOPES = ['anchored', 'full'] as const;
+
+export type BrokerSyncScope = (typeof BROKER_SYNC_SCOPES)[number];
 
 export interface BrokerScopeInput {
   scope: BrokerSyncScope;

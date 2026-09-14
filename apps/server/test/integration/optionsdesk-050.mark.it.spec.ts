@@ -71,7 +71,7 @@ describe('050 T009 打标层 (Testcontainers PG, 真 vendor 到期周期列)', (
       prisma,
       new PrismaLegRetrievalAdapter(prisma),
       stubTradingCalendar(),
-      { marchPhiTier: 'good', marchMode: 'phi' },
+      { marchPhiTier: 'good', marchMode: 'phi', brokerSyncScope: 'anchored' },
     );
   }, 180_000);
 
