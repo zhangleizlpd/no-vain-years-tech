@@ -45,7 +45,10 @@ import {
   type SyncRunStats,
 } from '../../src/marketdata/sync-run.recorder';
 import { SyncEarningsDatesUseCase } from '../../src/marketdata/sync-earnings-dates.usecase';
-import { DimensionExecutorRegistry } from '../../src/marketdata/dimension-executor';
+import {
+  DimensionExecutorRegistry,
+  dimensionSyncType,
+} from '../../src/marketdata/dimension-executor';
 
 // 079 港股财报日期主 IT。
 //
@@ -514,7 +517,7 @@ describe('079 T013 合并用例采集段: 来源隔离 + 失败三件套 + 观�
   async function runRecorded(useCase: SyncEarningsDatesUseCase, now: Date) {
     const recorder = new SyncRunRecorder(prisma);
     const stats: SyncRunStats = emptyStats();
-    const id = await recorder.start('hk_earnings_date');
+    const id = await recorder.start(dimensionSyncType('hk_earnings_date'));
     await useCase.runHk(stats, { now, mode: 'daily' });
     await recorder.finish(id, deriveStatus(stats), stats);
     const run = await prisma.syncRun.findUniqueOrThrow({ where: { id }, select: { status: true } });
@@ -1037,7 +1040,7 @@ const seedProfile = (instrumentId: bigint) =>
 async function recordedRun(useCase: SyncEarningsDatesUseCase, date: string) {
   const recorder = new SyncRunRecorder(prisma);
   const stats: SyncRunStats = emptyStats();
-  const id = await recorder.start('hk_earnings_date');
+  const id = await recorder.start(dimensionSyncType('hk_earnings_date'));
   await useCase.runHk(stats, { now: at(date), mode: 'daily' });
   await recorder.finish(id, deriveStatus(stats), stats);
   const run = await prisma.syncRun.findUniqueOrThrow({ where: { id }, select: { status: true } });
