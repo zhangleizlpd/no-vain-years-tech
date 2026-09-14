@@ -1782,3 +1782,160 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
     expect(run).toMatchObject({ status: 'partial', failed: 1 });
   });
 });
+
+// T019 清单失败、陈旧与日历不可判 (FR-025 / SC-012, plan §D12 #21 #22; Edge 13): 飞书标红面端到端。
+// 清单用真 HkexBoardMeetingListSource + 真 VendorHttpClient + 假 fetch (fixture 同 T003, 结构变异同
+// `hkex-board-meeting-list.rules.spec.ts`), 公告来源读真 announcement 表, 富途脚本化; 全部经维度执行,
+// 断言落库的 `sync:hk_earnings_date` 运行记录 —— 日报只读运行状态判红。
+describe('079 T019 清单失败、陈旧与日历不可判 (经维度运行)', () => {
+  const PAGE = readFileSync(
+    join(
+      __dirname,
+      '../../src/marketdata/__fixtures__/hkex-board-meeting-list/ebmn_c-2026-09-13.htm',
+    ),
+    'utf8',
+  );
+  const NEW_LOCATION = 'https://www3.hkexnews.hk/reports/bmn/moved.htm';
+  const BOARD_LIST = 'hkex_board_meeting_list';
+  let futuInstrumentId: bigint;
+
+  beforeAll(async () => {
+    await seedHolidayCalendar();
+    futuInstrumentId = (await instrument('hk', '00700')).id;
+    for (const code of new Set(parseBoardMeetingList(PAGE).rows.map((r) => r.code))) {
+      await instrument('hk', code);
+    }
+  });
+  beforeEach(resetMergeTables);
+
+  type PageResponse = { status: number; body: string; location?: string };
+
+  const mutatePage = (from: string | RegExp): string => {
+    const html = PAGE.replace(from, '');
+    expect(html).not.toBe(PAGE);
+    return html;
+  };
+
+  function buildWithBoardList(page: PageResponse) {
+    const fetch = async () => ({
+      status: page.status,
+      ok: page.status >= 200 && page.status < 300,
+      json: async () => ({}),
+      text: async () => page.body,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'location' ? (page.location ?? null) : null),
+      },
+    });
+    const http = new VendorHttpClient(HKEXNEWS_PROFILE, {
+      fetch: fetch as unknown as VendorHttpClientDeps['fetch'],
+      sleep: async () => undefined,
+    });
+    const futu: Round = {
+      current: { observations: [obs(futuInstrumentId, 'structured', '2026-11-20')] },
+    };
+    return new SyncEarningsDatesUseCase(
+      prisma,
+      assembleEarningsDateSources([...EARNINGS_DATE_SOURCE_NAMES], {
+        futu_calendar: scripted(hkOnly, futu),
+        hkex_announcement: new HkexAnnouncementSource(prisma),
+        hkex_board_meeting_list: new HkexBoardMeetingListSource(
+          http,
+          prisma,
+          new DbTradingCalendarAdapter(prisma),
+        ),
+      }),
+      fiscal,
+      new DbTradingCalendarAdapter(prisma),
+    );
+  }
+
+  /** 富途观测来自脚本; 公告观测要一条业务日前 7 天内的刊发事实。 */
+  const seedFiling = (date: string) =>
+    announce(futuInstrumentId, date, '截至2026年6月30日止六個月之中期業績公告', ['fs_main']);
+  const observationCount = (source: string) =>
+    prisma.earningsDateObservation.count({ where: { source } });
+
+  it.each([
+    ['① 404', () => ({ status: 404, body: 'Not Found' }), ['404']],
+    [
+      '② 301 + location',
+      () => ({ status: 301, body: '', location: NEW_LOCATION }),
+      ['301', NEW_LOCATION],
+    ],
+    [
+      '③ 缺页首日期',
+      () => ({ status: 200, body: mutatePage('日期 : 10/09/2026') }),
+      ['page_date_missing'],
+    ],
+    [
+      '④ 缺表头',
+      () => ({ status: 200, body: mutatePage(/<tr>(?:(?!<\/tr>)[\s\S])*會議日期[\s\S]*?<\/tr>/) }),
+      ['header_missing'],
+    ],
+    [
+      '⑤ 一行列数被破坏 (攜程那行删掉「期間」格)',
+      () => ({
+        status: 200,
+        body: mutatePage(
+          "<td valign=top><font face='monospace' style='font-size: 12'>截至30/06/26止6個月</font></td>",
+        ),
+      }),
+      ['row_malformed', '首个不合法行'],
+    ],
+  ] as const)(
+    '%s ⇒ partial + failed ≥ 1 + 来源失败 finding 带原因, 清单观测 0 条; 富途与公告观测照写',
+    async (_label, page, reasons) => {
+      // 页首 10/09/2026 → 业务日 09-11 = 1 个交易日 (新鲜): 红只能来自取数 / 解析失败。
+      await seedFiling('2026-09-09');
+
+      const run = await dimensionRun(buildWithBoardList(page()), '2026-09-11');
+
+      expect(await observationCount('futu_calendar')).toBeGreaterThan(0);
+      expect(await observationCount('hkex_announcement')).toBeGreaterThan(0);
+      // 定向变异「清单失败返回空数组」须红在这里 (运行状态), 而非先红在 finding 上。
+      expect(run.status).toBe('partial');
+      expect(run.failed).toBeGreaterThanOrEqual(1);
+      const failures = runSteps(run, 'earnings_date_source');
+      expect(failures).toEqual([
+        expect.objectContaining({ kind: 'failure', symbol: `source:${BOARD_LIST}` }),
+      ]);
+      for (const reason of reasons) {
+        expect(failures[0]).toMatchObject({ error: expect.stringContaining(reason) });
+      }
+      expect(await observationCount(BOARD_LIST)).toBe(0);
+    },
+  );
+
+  it('⑥ 页首日期落后 3 个交易日 ⇒ partial + earnings_board_list_stale, 该页行照常入库', async () => {
+    // (09-10, 09-15] = 09-11 / 09-14 / 09-15 三个交易日 > 阈值 2。
+    await seedFiling('2026-09-09');
+
+    const run = await dimensionRun(buildWithBoardList({ status: 200, body: PAGE }), '2026-09-15');
+
+    expect(await observationCount('futu_calendar')).toBeGreaterThan(0);
+    expect(await observationCount('hkex_announcement')).toBeGreaterThan(0);
+    // 业绩行 29、无人民币柜台 (同 hkex-board-meeting-list.source.spec.ts 当日页用例), 标的已全部入主表。
+    expect(await observationCount(BOARD_LIST)).toBe(29);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+    expect(runSteps(run, 'earnings_board_list_stale')).toEqual([
+      expect.objectContaining({ kind: 'failure', symbol: `source:${BOARD_LIST}` }),
+    ]);
+    expect(runSteps(run, 'earnings_date_source')).toEqual([]);
+  });
+
+  it('⑦ 陈旧判定区间含 unknown ⇒ success + earnings_date_calendar_unknown, 🚫 计失败, 清单观测照写', async () => {
+    // 日历覆盖止于 10-31 ⇒ (09-10, 11-02] 含覆盖外日期 ⇒ 不可判。
+    await seedFiling('2026-10-30');
+
+    const run = await dimensionRun(buildWithBoardList({ status: 200, body: PAGE }), '2026-11-02');
+
+    expect(await observationCount('futu_calendar')).toBeGreaterThan(0);
+    expect(await observationCount('hkex_announcement')).toBeGreaterThan(0);
+    expect(await observationCount(BOARD_LIST)).toBe(29);
+    expect(runSteps(run, 'earnings_date_calendar_unknown')).toContainEqual(
+      expect.objectContaining({ kind: 'unjudged', symbol: `source:${BOARD_LIST}` }),
+    );
+    expect(runSteps(run, 'earnings_board_list_stale')).toEqual([]);
+    expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+});
