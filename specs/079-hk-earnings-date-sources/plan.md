@@ -186,7 +186,7 @@ context7_verified: []
 | `earnings_date_overdue` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `overdue`（含 `period_key`、公布日与口径） |
 | `earnings_date_source` | failure（计入 `stats.failed`） | 某来源 `collect` 抛错（含来源名；清单含 HTTP 状态码 / 跳转目标 / 首个不合法行） |
 | `earnings_date_calendar_unknown` | unjudged | 逾期 / 陈旧判定区间日历不可判 |
-| `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0 |
+| `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0；或公布日已过、因键无法对齐未判逾期的事件数 > 0（`overdueUnjudged` + 至多 20 个 `<代码> <period_key>` 样例，🚫 计失败） |
 | `earnings_notice_undated` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `notified_undated`（含公告链接）；另计从未在清单出现标的的未知日期通知数（该计数不计失败） |
 | `earnings_board_list_scan` | notice | 每轮：页首日期、数据行、业绩行、纯股息行、跳过代码、`T:` 键数、本轮会前通知信号数 |
 | `earnings_date_futu_forward_rows` | notice | 每轮：富途港股前向行数（plan §D5 运行时不变量） |
@@ -198,7 +198,7 @@ context7_verified: []
 
 - 🚨 **飞书标红链路（owner 要求改版 / 换地址 / 停更必须经飞书告警）**：`failure` 类发现项本身**不改**运行状态（`sync-run.recorder.ts:23-24` 明写「不蕴含计入 `stats.failed`」）⇒ 来源失败与清单陈旧的写入点 MUST 同时 `stats.failed += 1`（`symbol` 取 `source:<来源名>`）。运行状态判定 `failed > 0` 且有 ok / skipped ⇒ `partial`（`sync-run.recorder.ts:326-327`）⇒ 日报脚本 `partial` ⇒ `problems=1` ⇒ 非零退出（`ops/jobs/marketdata-sync-report.sh:151` / `:345`）⇒ `nvy-run-reported` 推飞书 🔴，正文取输出末 80 行（`ops/jobs/systemd/marketdata-sync-report.service:33`，覆盖全部 33 个维度逐行 + `↳` 发现项摘要行），09:00 触发（`marketdata-sync-report.timer:7`）。冲突 / 清单行消失 / 未对齐仍只进摘要、不标红，与现役口径一致。
 - 🚨 **逾期与已通知日期未知的标红口径（spec Session（六））**：kind 仍为 `notice`（`failure` 是续跑 / 重试的来源，`sync-run.recorder.ts:21-22`），但事件由他态迁入 `overdue` / `notified_undated` 的那一轮每个事件 `stats.failed += 1`（与该计数「按标的」的粒度一致，`sync-run.recorder.ts:31-32`）。迁入判定以事件既有状态为输入、在合并纯函数内完成（T005 只在迁入时产出 finding）；🚫 按「本轮扫描到该状态」计 —— 延期刊发的公司会让日报连日标红。
-- **计入失败数的连带面**（2026-09-13 核）：① 单轮 `failed ≥ 3` ⇒ `alertIfDegraded` 打 ERROR 日志（调用点 `dimension-executor.ts:1158`，判定 `:3559-3570`，阈值 `:89`），只是日志；② 回填 CLI `failed > 0` ⇒ 退出码 1（`marketdata-backfill.cli.ts`，T023 子 agent 核；plan 期原引 `marketdata-trigger.cli.ts:144` 为 delta 入队的另一个 CLI），T025 首轮回填时存量未刊发事件集中迁入逾期、退出码 1 属预期，以 findings 为准；③ `T:` / `D:` 键事件（FR-015 无法对齐）等不到同键的刊发事实 ⇒ 公布日过后会迁入逾期一次（推断，未验证数量），finding 带 `period_key` 以区分「对不齐」与「真延期」。
+- **计入失败数的连带面**（2026-09-13 核）：① 单轮 `failed ≥ 3` ⇒ `alertIfDegraded` 打 ERROR 日志（调用点 `dimension-executor.ts:1158`，判定 `:3559-3570`，阈值 `:89`），只是日志；② 回填 CLI `failed > 0` ⇒ 退出码 1（`marketdata-backfill.cli.ts`，T023 子 agent 核；plan 期原引 `marketdata-trigger.cli.ts:144` 为 delta 入队的另一个 CLI），T025 首轮回填时存量未刊发事件集中迁入逾期、退出码 1 属预期，以 findings 为准；③ `T:` / `D:` 键事件（FR-015 无法对齐）等不到同键的刊发事实 ⇒ 不判逾期、只计数（2026-09-14 prod `hk:00939` 实证：后补财年档案后 8 个 `T:` 事件会成批迁入逾期，已修），计数进 `earnings_date_unaligned` 的 `overdueUnjudged`。
 - 美股钩子失败不进 findings（D9）。
 
 **D11 · 配置**

@@ -44,6 +44,9 @@
  * - 🚨 **只对「具备刊发事实来源的市场」中有财年档案的标的判定** (FR-028)：市场由来源能力声明
  *   `publicationFact` 判；无档案 ⇒ 不迁入、只报「无法判定」—— 刊发事实对不上同期事件时，
  *   无档案的标的会被成批误判逾期。
+ * - 🚨 **逾期只判期末日对齐键 (`P:`) 的事件** (FR-015 / FR-028)：`T:` / `D:` 键永远等不到同键的刊发事实 ⇒
+ *   不迁入、不计失败、只计数 —— 后补财年档案的标的，其历史未对齐事件会被成批误判逾期 (2026-09-14 prod
+ *   `hk:00939` 8 条实证)。已通知日期未知是标的级判定，🚫 受此限。
  * - 🚨 `overdue` / `notified_undated` 的 finding **只在迁入那一轮**产出 (`countsAsFailure`)：停留也产出 ⇒
  *   延期刊发的公司让日报连日标红、新故障被淹没 (spec Session（六）)。
  * - 清单行提前消失 (上一轮在、本轮页面解析成功而不在、日期晚于页首日期、同期无新日期) ⇒ 留痕 +
@@ -62,7 +65,7 @@ import type {
   EarningsDateSourceObservation,
   EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
-import { datePeriodKey } from './earnings-period.rules.js';
+import { datePeriodKey, isAlignedPeriodKey } from './earnings-period.rules.js';
 
 /**
  * `superseded` (已并入) = 「已通知、日期未知」占位事件被给出日期的事件接手后的终态 (FR-017，spec
@@ -256,6 +259,11 @@ export interface EarningsDateMergeResult {
   readonly findings: readonly EarningsDateFinding[];
   /** 本该判逾期、因无财年档案未判 ⇒ 计入每轮一条 `earnings_date_fiscal_unknown` (🚫 逐事件 finding)。 */
   readonly fiscalProfileMissing: boolean;
+  /**
+   * 公布日已过满门槛、因报告期无法对齐 (`T:` / `D:` 键) 未判逾期 ⇒ 计入每轮一条 `earnings_date_unaligned`
+   * 的 `overdueUnjudged` (🚫 计失败、🚫 逐事件 finding)。
+   */
+  readonly overdueUnaligned: boolean;
   /** 仅迁入 `published` 那一轮非空。 */
   readonly deviations: readonly EarningsDateDeviation[];
   /** 仅迁入 `published` 且有不晚于刊发日的会议日时非 null。 */
@@ -447,6 +455,8 @@ function advanceConfirmation(existing: Confirmation, computed: Confirmation | nu
 // ─── 状态判定 ─────────────────────────────────────────────────────────────
 
 type ElapsedVerdict = 'unjudged' | 'not_due' | 'fiscal_unknown' | 'due';
+/** 逾期专用：`unaligned` = 到期但键非期末日对齐 (FR-015)，永不迁入 `overdue`。 */
+type OverdueVerdict = ElapsedVerdict | 'unaligned';
 
 function marketHasPublicationFact(
   capabilities: ReadonlyMap<string, EarningsDateSourceCapabilities | null>,
@@ -493,7 +503,7 @@ function judgeOverdue(
   input: EarningsDateMergeInput,
   selection: EarningsDateSelection,
   base: EarningsDateEventStatus,
-): { readonly status: EarningsDateEventStatus; readonly verdict: ElapsedVerdict | null } {
+): { readonly status: EarningsDateEventStatus; readonly verdict: OverdueVerdict | null } {
   if (
     (base !== 'confirmed' && base !== 'unconfirmed') ||
     selection.date === null ||
@@ -501,9 +511,16 @@ function judgeOverdue(
   ) {
     return { status: base, verdict: null };
   }
-  const verdict = judgeElapsed(input.elapsedTradingDays, selection.date, input.hasFiscalProfile);
-  // 日历不可判 ⇒ 不判：既有逾期不凭空解除，也不凭空迁入。
-  const stays = verdict === 'unjudged' && input.existing?.status === 'overdue';
+  const elapsed = judgeElapsed(input.elapsedTradingDays, selection.date, input.hasFiscalProfile);
+  // 判定顺序：日历不可判 / 未到期 → 键形态 → 财年档案。日历不可判照报 unjudged (与键无关)；非对齐键
+  // 有无档案都等不到同键刊发事实 ⇒ 记 unaligned、🚫 报财年未知 (补档案也不会让它可判)。
+  const verdict =
+    (elapsed === 'due' || elapsed === 'fiscal_unknown') && !isAlignedPeriodKey(input.periodKey)
+      ? 'unaligned'
+      : elapsed;
+  // 日历不可判 / 非对齐键 ⇒ 不判：既有逾期不凭空解除，也不凭空迁入。
+  const stays =
+    (verdict === 'unjudged' || verdict === 'unaligned') && input.existing?.status === 'overdue';
   return { status: verdict === 'due' || stays ? 'overdue' : base, verdict };
 }
 
@@ -655,7 +672,7 @@ function eventFindings(
   input: EarningsDateMergeInput,
   prior: PriorEvent,
   event: EarningsDateEventFields,
-  verdict: ElapsedVerdict | null,
+  verdict: OverdueVerdict | null,
   drops: readonly ListingDrop[],
 ): EarningsDateFinding[] {
   const findings: EarningsDateFinding[] = [];
@@ -733,6 +750,7 @@ export function mergeEarningsDateEvent(input: EarningsDateMergeInput): EarningsD
     logs: eventLogs(input, prior, event, selection, drops),
     findings: eventFindings(input, prior, event, verdict, drops),
     fiscalProfileMissing: verdict === 'fiscal_unknown',
+    overdueUnaligned: verdict === 'unaligned',
     deviations: filedDate === null ? [] : deviationsOf(input, filedDate),
     meetingLagUpdate: filedDate === null ? null : meetingLagUpdateOf(input.observations, filedDate),
   };
