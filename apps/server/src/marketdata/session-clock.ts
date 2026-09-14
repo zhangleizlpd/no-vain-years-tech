@@ -148,6 +148,19 @@ export function exchangeCalendarDate(market: string, now: Date): string {
 }
 
 /**
+ * 交易所当地的**日期 + 当日分钟数** —— 对账类调度判「到没到点」用 (082 plan D4)。
+ *
+ * 🚨 禁在调用点另写时区换算: 裸 `Intl.DateTimeFormat({ timeZone })` 被 `check-time-semantics`
+ * Rule B 拦; optionsdesk 也不得 import `market-session.rules.ts`。按当地分钟数判到点 ⇒ 夏令时
+ * 切换日调用点零特殊代码 (换算由 Intl 处理)。
+ *
+ * ⚠️ 只答「当地此刻几号、几分」—— 不判交易日 (归 `trading_day`)、不含时段表。复杂度 O(1)。
+ */
+export function exchangeClock(market: string, now: Date): { date: string; minutesOfDay: number } {
+  return timeInTimeZone(now, exchangeTimeZone(market));
+}
+
+/**
  * 一个 `marketScope` 的**共同**日历日。
  *
  * ⚠️ **scope 内各市场必须落在同一业务日** —— 否则没有单一「今天」可言, 直接抛。这同时把

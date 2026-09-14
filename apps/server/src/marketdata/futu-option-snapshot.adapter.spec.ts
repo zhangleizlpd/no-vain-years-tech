@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@nestjs/common';
 import { describe, it, expect, vi } from 'vitest';
-import { FutuOptionSnapshotAdapter } from './futu-option-snapshot.adapter.js';
+import { FutuOptionSnapshotAdapter, vendorTimeToDate } from './futu-option-snapshot.adapter.js';
 import {
   OPTION_SNAPSHOT_MAX_CONTRACT_CODES,
   OptionSnapshotBudgetExhaustedError,
@@ -552,6 +552,71 @@ describe('066 T17 FutuOptionSnapshotAdapter — vendor 时间戳按行所属市�
     expect(ADAPTER_SRC).toMatch(
       /import \{[^}]*exchangeTimeZone[^}]*\} from '\.\/session-clock\.js'/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 082 T004 — `vendorTimeToDate` 保留毫秒 (082 plan D4)
+// ---------------------------------------------------------------------------
+/**
+ * 病灶: 正则只匹配到秒且无尾锚 ⇒ `YYYY-MM-DD HH:MM:SS.fff` 的毫秒被**静默截掉**, 不报错。
+ * 082 券商成交 / 订单时间复用本解析 (plan D4), 截掉毫秒后同秒两笔成交无法排序、订单「只收更晚
+ * 版本」的守卫把同秒两版判为相等。
+ * EVIDENCE: 富途交易时间带毫秒 —— 082 POC-1 原始输出 (2026-09-13, 维护者采集, 计数记于 plan D4):
+ * 成交 244/244、订单 `updated_time` 393/393 带毫秒。
+ *
+ * ② 盯「改前改后逐值相同」, 改前也绿 —— 期望值是改前实现的实跑输出 (先跑绿再动实现)。
+ *
+ * 定向变异 (out-of-test sabotage, testing.md §7.1):
+ *   改坏: `NAIVE_DATETIME_RE` 删掉可选毫秒组 `(?:\.(\d{1,3}))?`
+ *   结果 (2026-09-14 实跑): 6 failed | 61 passed —— ① 2 条 + ③ 4 条红, ② 9 条仍绿;
+ *         还原后 `cmp` 与备份逐字节相同, 本文件 67/67 绿
+ *   复跑: pnpm nx test server src/marketdata/futu-option-snapshot.adapter.spec.ts --skip-nx-cache
+ */
+describe('082 T004 vendorTimeToDate — 毫秒保留, 不带毫秒逐值不变', () => {
+  it('① 带毫秒的美股成交时间 → 毫秒原样保留 (9 月 = EDT)', () => {
+    expect(vendorTimeToDate('2026-09-18 16:20:00.936', 'us')?.toISOString()).toBe(
+      '2026-09-18T20:20:00.936Z',
+    );
+    expect(vendorTimeToDate('2026-09-18T16:20:00.936', 'hk')?.toISOString()).toBe(
+      '2026-09-18T08:20:00.936Z',
+    );
+  });
+
+  it('① 同秒两笔按毫秒可排序 (截掉毫秒 ⇒ 判相等)', () => {
+    const earlier = vendorTimeToDate('2026-09-18 16:20:00.100', 'us') as Date;
+    const later = vendorTimeToDate('2026-09-18 16:20:00.936', 'us') as Date;
+    expect(earlier.getTime()).toBeLessThan(later.getTime());
+  });
+
+  it.each([
+    ['美股 空格分隔', '2026-08-04 16:00:00', 'us', '2026-08-04T20:00:00.000Z'],
+    ['美股 T 分隔', '2026-08-04T16:00:00', 'us', '2026-08-04T20:00:00.000Z'],
+    ['美股 冬令 EST', '2026-01-14 09:30:00', 'us', '2026-01-14T14:30:00.000Z'],
+    ['港股', '2026-08-21 16:07:49', 'hk', '2026-08-21T08:07:49.000Z'],
+    ['尾部带其它字符 (无尾锚)', '2026-08-04 16:00:00+08:00', 'us', '2026-08-04T20:00:00.000Z'],
+  ])('② 不带毫秒 (%s) → 与改前逐值相同', (_label, raw, market, expected) => {
+    expect(vendorTimeToDate(raw, market)?.toISOString()).toBe(expected);
+  });
+
+  it.each([
+    ['非串', 1_700_000_000],
+    ['null', null],
+    ['空串', ''],
+    ['只到分钟', '2026-08-04 16:00'],
+  ])('② 不合形态 (%s) → null, 与改前相同', (_label, raw) => {
+    expect(vendorTimeToDate(raw, 'us')).toBeNull();
+  });
+
+  it.each([
+    ['.9', 900],
+    ['.93', 930],
+    ['.936', 936],
+    ['.007', 7],
+  ])('③ 毫秒位数不足 3 位右补零: %s → %d ms', (fraction, ms) => {
+    const d = vendorTimeToDate(`2026-09-18 16:20:00${fraction}`, 'us') as Date;
+    expect(d.getUTCMilliseconds()).toBe(ms);
+    expect(d.toISOString().slice(0, 19)).toBe('2026-09-18T20:20:00');
   });
 });
 
