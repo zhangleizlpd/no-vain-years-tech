@@ -138,7 +138,7 @@ context7_verified: []
 #### D4 — 时间：复用单一实现，补毫秒
 
 - **成交 / 订单时间解析**复用 `vendorTimeToDate(v, market)`（`marketdata/futu-option-snapshot.adapter.ts:170`，注释明令「别再抄第二份」）。
-- 🚨 **其正则 `NAIVE_DATETIME_RE`（`:86`）只匹配到秒且无尾锚** ⇒ 富途交易时间 `YYYY-MM-DD HH:MM:SS.fff`（POC-1 原始输出：成交 244 / 244、订单 `updated_time` 393 / 393 带毫秒）会被**静默截掉毫秒**。后果：指派的期权平仓与正股成交同秒（F2）无法排序；订单守卫同秒更新判为相等。⇒ 正则加可选毫秒组 `(?:\.(\d{1,3}))?` 并计入 `Date.UTC`。不带毫秒的串结果不变（行情快照 adapter 零影响），在该 adapter 既有 spec 补「带 / 不带毫秒」两例。
+- 🚨 **其正则 `NAIVE_DATETIME_RE`（`:86`）只匹配到秒且无尾锚** ⇒ 富途交易时间 `YYYY-MM-DD HH:MM:SS.fff`（POC-1 原始输出（维护者 2026-09-13 采集）：成交时间与订单 `updated_time` 全部带毫秒）会被**静默截掉毫秒**。后果：指派的期权平仓与正股成交同秒（F2）无法排序；订单守卫同秒更新判为相等。⇒ 正则加可选毫秒组 `(?:\.(\d{1,3}))?` 并计入 `Date.UTC`。不带毫秒的串结果不变（行情快照 adapter 零影响），在该 adapter 既有 spec 补「带 / 不带毫秒」两例。
 - **交易所当地时刻**：`session-clock.ts` 导出新函数 `exchangeClock(market, now) → { date, minutesOfDay }`，薄包装文件内既有私有 `timeInTimeZone(now, exchangeTimeZone(market))`（`:97`）。`session-clock.ts` 在 `check-time-semantics` 的 `TABLE_FILES`（`:62`）内，合规；optionsdesk 不得 import 的是 `market-session.rules.ts` 的 `marketNow`。
 - **轴归属**（`cross-timezone-date-semantics.md` §1）：心跳 cron = processing time，`@Cron('0 * * * * *', { timeZone: 'Asia/Shanghai', waitForCompletion: true })`（时区为仓内唯一允许的字面量；`waitForCompletion` 见 D9）；对账是否到点 = 按交易所当地 `minutesOfDay` 判 ⇒ **夏令时切换不需要任何特殊代码**；「本交易日」= `exchangeCalendarDate` + `TradingCalendarPort.classify`（`non-trading` 跳过、`unknown` 照跑并 warn，照 `sync-anchor-intraday.ts:275-291`）。成交时间存 `Timestamptz` 绝对时刻，不存日期串。
 

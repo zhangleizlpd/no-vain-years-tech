@@ -55,7 +55,7 @@ describe('resolveOpenedAt — 推算 (derived)', () => {
   });
 
   it('③ 空头: SELL_SHORT 开 3、BUY_BACK 部分平 1, 持仓 -2 ⇒ 开仓那笔 (D1)', () => {
-    // 持仓数量带符号: 空头为负 (082 POC-1 原始输出 SHORT 持仓 17/17 行 qty < 0)。
+    // 持仓数量带符号: 空头为负 (082 POC-1 原始输出中 SHORT 持仓的 qty 均 < 0)。
     const deals = [deal('1', D1, 'SELL_SHORT', 3), deal('2', D2, 'BUY_BACK', 1)];
     expect(resolveOpenedAt({ deals, positionQty: dec(-2), firstSeenAt: FIRST_SEEN })).toEqual({
       openedAt: D1,
@@ -91,9 +91,9 @@ describe('resolveOpenedAt — 推算 (derived)', () => {
 });
 
 describe('resolveOpenedAt — 回落 (fallback) 取首次发现时间', () => {
-  it('⑤ 净量 ≠ 持仓 (拆股形态: 成交净 395、持仓 3950) ⇒ fallback', () => {
-    const deals = [deal('1', D1, 'BUY', 395)];
-    expect(resolveOpenedAt({ deals, positionQty: dec(3950), firstSeenAt: FIRST_SEEN })).toEqual({
+  it('⑤ 净量 ≠ 持仓 (拆股形态: 成交净 147、持仓 1470) ⇒ fallback', () => {
+    const deals = [deal('1', D1, 'BUY', 147)];
+    expect(resolveOpenedAt({ deals, positionQty: dec(1470), firstSeenAt: FIRST_SEEN })).toEqual({
       openedAt: FIRST_SEEN,
       source: 'fallback',
     });

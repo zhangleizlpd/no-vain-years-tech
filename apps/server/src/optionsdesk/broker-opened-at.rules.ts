@@ -21,8 +21,8 @@ export interface OpenedAtDeal {
   side: BrokerTradeSide;
   /**
    * 成交数量, 方向由 `side` 给出, 本函数取绝对值。
-   * EVIDENCE: 成交行 `qty` 恒非负、`deal_id` 全为数字 —— 082 POC-1 原始输出 (2026-09-13) 成交 244 行:
-   * `qty < 0` 0 行, `deal_id` 非数字 0 行。
+   * EVIDENCE: 成交行 `qty` 恒非负、`deal_id` 全为数字 —— 082 POC-1 原始输出 (2026-09-13) 全部成交行:
+   * 无 `qty < 0` 的行, 无 `deal_id` 非数字的行。
    */
   qty: Prisma.Decimal;
 }
@@ -32,7 +32,7 @@ export interface OpenedAtInput {
   deals: readonly OpenedAtDeal[];
   /**
    * 券商报告的持仓数量, **带符号** (空头为负)。
-   * EVIDENCE: 082 POC-1 原始输出 (2026-09-13) `position_side = SHORT` 的持仓 17/17 行 `qty < 0`。
+   * EVIDENCE: 082 POC-1 原始输出 (2026-09-13) `position_side = SHORT` 的持仓 `qty` 均 < 0。
    */
   positionQty: Prisma.Decimal;
   firstSeenAt: Date;

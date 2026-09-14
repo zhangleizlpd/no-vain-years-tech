@@ -17,7 +17,7 @@ import { inBrokerScope } from './broker-scope.rules';
  *   复跑: pnpm nx test server src/optionsdesk/broker-scope.rules.spec.ts --skip-nx-cache
  */
 
-const ANCHORS: ReadonlySet<string> = new Set(['us:PDD', 'hk:00700', 'us:BRK.B']);
+const ANCHORS: ReadonlySet<string> = new Set(['us:ZQX', 'hk:00700', 'us:BRK.B']);
 const ACCOUNT_ID = 1n;
 
 describe('inBrokerScope — 范围判定单点 (state_branches 1–4)', () => {
@@ -26,7 +26,7 @@ describe('inBrokerScope — 范围判定单点 (state_branches 1–4)', () => {
       inBrokerScope({
         scope: 'anchored',
         anchoredTickers: ANCHORS,
-        underlyingTicker: 'us:PDD',
+        underlyingTicker: 'us:ZQX',
         accountId: ACCOUNT_ID,
       }),
     ).toBe(true);
@@ -37,7 +37,7 @@ describe('inBrokerScope — 范围判定单点 (state_branches 1–4)', () => {
       inBrokerScope({
         scope: 'anchored',
         anchoredTickers: ANCHORS,
-        underlyingTicker: 'us:BABA',
+        underlyingTicker: 'us:ZQY',
         accountId: ACCOUNT_ID,
       }),
     ).toBe(false);
@@ -48,7 +48,7 @@ describe('inBrokerScope — 范围判定单点 (state_branches 1–4)', () => {
       inBrokerScope({
         scope: 'full',
         anchoredTickers: ANCHORS,
-        underlyingTicker: 'us:BABA',
+        underlyingTicker: 'us:ZQY',
         accountId: ACCOUNT_ID,
       }),
     ).toBe(true);
@@ -98,7 +98,7 @@ describe('inBrokerScope — ticker 形态与锚一致', () => {
     const base = {
       scope: 'anchored',
       anchoredTickers: ANCHORS,
-      underlyingTicker: 'us:BABA',
+      underlyingTicker: 'us:ZQY',
     } as const;
     expect(inBrokerScope({ ...base, accountId: 1n })).toBe(
       inBrokerScope({ ...base, accountId: 2n }),

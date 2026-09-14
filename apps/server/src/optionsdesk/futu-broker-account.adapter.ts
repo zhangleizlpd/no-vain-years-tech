@@ -45,8 +45,8 @@ const FUTU_MARKET: Readonly<Record<BrokerMarket, string>> = { us: 'US', hk: 'HK'
 
 /**
  * 成交行币种按市场补。
- * EVIDENCE: 成交行没有 `currency` 列 —— 082 POC-1 ② (2026-09-13 维护者采集的原始输出, 计数记于
- * plan); 与 futu SDK `trade/trade_query.py` `parse_deal` 的行字典无该键一致 (futu-shim venv)。
+ * EVIDENCE: 成交行没有 `currency` 列 —— 082 POC-1 ② (2026-09-13 维护者采集的原始输出);
+ * 与 futu SDK `trade/trade_query.py` `parse_deal` 的行字典无该键一致 (futu-shim venv)。
  */
 const DEAL_CURRENCY_BY_MARKET: Readonly<Record<BrokerMarket, string>> = { us: 'USD', hk: 'HKD' };
 
@@ -97,7 +97,7 @@ function decimalOrNull(v: unknown): Prisma.Decimal | null {
  * 券商成交号 → 数字串。JSON number 只收安全整数: 超过 2^53 的号在 JSON 解析时已丢精度,
  * 收下它会让两笔不同成交撞同一个唯一键 ⇒ 宁可 null (必填处随即 throw) 也不落错号。
  * EVIDENCE: 成交号为纯数字 —— 2026-09-14 本修复实取港机 shim 全窗口 (2024-09-01..2026-09-14, US + HK)
- * 干跑: 成交行 `deal_id` 245/245 为 17–19 位数字串。
+ * 干跑: 全部成交行的 `deal_id` 均为 17–19 位数字串。
  */
 function dealIdOrNull(v: unknown): string | null {
   if (typeof v === 'number') return Number.isSafeInteger(v) ? String(v) : null;
@@ -112,8 +112,8 @@ const ORDER_ID_RE = /^[A-Za-z0-9]{1,64}$/;
  * 券商订单号 → 原样串 (只收串, 不收 JSON number)。不合形态 ⇒ null (订单行必填处随即 throw;
  * 成交行上可选, 为 null 即不关联)。
  * EVIDENCE: 订单号**不是纯数字** —— 18 位「大写字母 + 数字」、首字符为字母: 维护者 2026-09-14 港机只读探针
- * 订单 30/30、成交行 `order_id` 13/13; 082 POC-1 原始输出 (2026-09-13 维护者采集) 订单 393/393 非纯数字;
- * 2026-09-14 本修复同上全窗口干跑: 订单 397/397、成交行 245/245 的 `order_id` 匹配 `^[A-Za-z0-9]+$` 且长 18。
+ * 返回的全部订单与成交行 `order_id`; 082 POC-1 原始输出 (2026-09-13 维护者采集) 全部订单号非纯数字;
+ * 2026-09-14 本修复同上全窗口干跑: 全部订单与成交行的 `order_id` 均匹配 `^[A-Za-z0-9]+$` 且长 18。
  * 按纯数字校验时 prod 回填报「缺可用的 order_id」, 成交行上的订单号则被静默置 null。
  */
 function orderIdOrNull(v: unknown): string | null {
@@ -134,8 +134,8 @@ function required<T>(
 }
 
 /**
- * EVIDENCE: 空头持仓 `qty` 为负 —— 082 POC-1 (2026-09-13 维护者采集的原始输出: 空头持仓 17/17
- * 为负数)。数量**原样**保留符号与单位 (期权 = 张, plan D8), 不在此取绝对值或乘合约股数。
+ * EVIDENCE: 空头持仓 `qty` 为负 —— 082 POC-1 (2026-09-13 维护者采集的原始输出: 空头持仓
+ * 均为负数)。数量**原样**保留符号与单位 (期权 = 张, plan D8), 不在此取绝对值或乘合约股数。
  */
 function parsePosition(row: unknown, market: BrokerMarket, what: string): BrokerPositionRow {
   const r = asRecord(row);

@@ -16,7 +16,7 @@ import { FutuBrokerAccountAdapter, createBrokerAccountPort } from './futu-broker
  * 真端点契约不在本文件的证据范围内。
  *
  * 成交号用 19 位明显假号的**数字串** (2026-09-14 amend): 即修复后 shim 的输出形态。
- * EVIDENCE: 真号超安全整数 —— 082 POC-1 (2026-09-13 维护者采集的原始输出) 244/244 行 `deal_id` 为
+ * EVIDENCE: 真号超安全整数 —— 082 POC-1 (2026-09-13 维护者采集的原始输出) 全部成交行的 `deal_id` 均为
  * 17–19 位整数且 > 2^53−1; 2026-09-14 prod 首次回填因 shim 仍输出 JSON number 而报「缺可用的 deal_id」。
  * 旧 fixture 的 7 位小号覆盖不到这个尺寸, 故 T012 未发现。
  *
@@ -50,8 +50,8 @@ const FAKE_ACC_ID = 12340000;
 const WINDOW = { start: '2026-09-01', end: '2026-09-11' };
 
 const SHORT_PUT_POSITION = {
-  code: 'US.PEP260918P130000',
-  stock_name: 'PEP 260918 130.00P',
+  code: 'US.ZQY260918P130000',
+  stock_name: 'ZQY 260918 130.00P',
   position_market: 'US',
   qty: -2.0,
   can_sell_qty: 0.0,
@@ -69,8 +69,8 @@ const SHORT_PUT_POSITION = {
 
 function deal(extra: Record<string, unknown> = {}) {
   return {
-    code: 'US.PEP260918P130000',
-    stock_name: 'PEP 260918 130.00P',
+    code: 'US.ZQY260918P130000',
+    stock_name: 'ZQY 260918 130.00P',
     deal_market: 'US',
     deal_id: '1000000000000000001',
     order_id: 'FAKE00000000000002',
@@ -88,8 +88,8 @@ function deal(extra: Record<string, unknown> = {}) {
 
 /** 组合单: 合成 `code` 不被解析 (FR-007), 取值与断言无关。腿串形态照 POC-1 (`broker-code.rules.ts`)。 */
 const COMBO_ORDER = {
-  code: 'US.PEP-COMBO',
-  stock_name: 'PEP combo',
+  code: 'US.ZQY-COMBO',
+  stock_name: 'ZQY combo',
   order_market: 'US',
   trd_side: 'SELL',
   order_type: 'NORMAL',
@@ -103,8 +103,8 @@ const COMBO_ORDER = {
   dealt_avg_price: 0.95,
   currency: 'USD',
   combo_legs: [
-    'ComboLeg(code=US.PEP260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)',
-    'ComboLeg(code=US.PEP260918P130000, trd_side=SELL, qty_ratio=1.0, position_id=N/A)',
+    'ComboLeg(code=US.ZQY260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)',
+    'ComboLeg(code=US.ZQY260918P130000, trd_side=SELL, qty_ratio=1.0, position_id=N/A)',
   ],
   acc_id: FAKE_ACC_ID,
 };
@@ -187,7 +187,7 @@ describe('FutuBrokerAccountAdapter', () => {
   it('④ 组合单订单 ⇒ 解析出两个腿码, 更新时间毫秒保留', async () => {
     const shim = makeShim({ '/trade/orders': [COMBO_ORDER] });
     const [order] = await makeAdapter(shim.http).fetchOrders('us', WINDOW);
-    expect(order?.comboLegCodes).toEqual(['US.PEP260918P120000', 'US.PEP260918P130000']);
+    expect(order?.comboLegCodes).toEqual(['US.ZQY260918P120000', 'US.ZQY260918P130000']);
     expect(order?.vendorUpdatedAt.toISOString()).toBe('2026-09-11T13:40:01.502Z');
     expect(order?.status).toBe('FILLED_ALL');
   });

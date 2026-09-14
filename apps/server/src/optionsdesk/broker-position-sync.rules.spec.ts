@@ -31,7 +31,7 @@ function reportedRow(market: BrokerMarket, code: string, qty = 1) {
 
 describe('planPositionSync — 集合替换计划', () => {
   it('① 券商新报告、库里没有 ⇒ insert', () => {
-    const r = reportedRow('us', 'US.PDD260918P70000', -2);
+    const r = reportedRow('us', 'US.ZQX260918P70000', -2);
     expect(planPositionSync({ existing: [], reported: [r] })).toEqual({
       toInsert: [r],
       toUpdate: [],
@@ -40,8 +40,8 @@ describe('planPositionSync — 集合替换计划', () => {
   });
 
   it('🚨 ② 两边都有 ⇒ update, firstSeenAt 保留库内值 (不被本次覆盖)', () => {
-    const e = existingRow('us', 'US.PDD260918P70000');
-    const r = reportedRow('us', 'US.PDD260918P70000', -3);
+    const e = existingRow('us', 'US.ZQX260918P70000');
+    const r = reportedRow('us', 'US.ZQX260918P70000', -3);
     expect(planPositionSync({ existing: [e], reported: [r] })).toEqual({
       toInsert: [],
       toUpdate: [{ reported: r, firstSeenAt: OLD_SEEN }],
@@ -50,9 +50,9 @@ describe('planPositionSync — 集合替换计划', () => {
   });
 
   it('③ 券商不再报告 (平仓 / 到期作废) ⇒ delete (branch 10)', () => {
-    const kept = existingRow('us', 'US.PDD260918P70000');
-    const gone = existingRow('us', 'US.PEP260918P120000', OTHER_SEEN);
-    const r = reportedRow('us', 'US.PDD260918P70000');
+    const kept = existingRow('us', 'US.ZQX260918P70000');
+    const gone = existingRow('us', 'US.ZQY260918P120000', OTHER_SEEN);
+    const r = reportedRow('us', 'US.ZQX260918P70000');
     const plan = planPositionSync({ existing: [kept, gone], reported: [r] });
     expect(plan.toDelete).toEqual([gone]);
     expect(plan.toInsert).toEqual([]);
@@ -69,8 +69,8 @@ describe('planPositionSync — 集合替换计划', () => {
   });
 
   it('⑤ 指派形态: 期权消失 + 正股出现 ⇒ 1 delete + 1 insert', () => {
-    const option = existingRow('us', 'US.PDD260918P70000');
-    const stock = reportedRow('us', 'US.PDD', 100);
+    const option = existingRow('us', 'US.ZQX260918P70000');
+    const stock = reportedRow('us', 'US.ZQX', 100);
     expect(planPositionSync({ existing: [option], reported: [stock] })).toEqual({
       toInsert: [stock],
       toUpdate: [],
@@ -89,7 +89,7 @@ describe('planPositionSync — 集合替换计划', () => {
   });
 
   it('报告里同一 (market, code) 出现两次 ⇒ 抛 (不静默丢掉其中一行)', () => {
-    const r = reportedRow('us', 'US.PDD');
-    expect(() => planPositionSync({ existing: [], reported: [r, { ...r }] })).toThrow(/US\.PDD/);
+    const r = reportedRow('us', 'US.ZQX');
+    expect(() => planPositionSync({ existing: [], reported: [r, { ...r }] })).toThrow(/US\.ZQX/);
   });
 });

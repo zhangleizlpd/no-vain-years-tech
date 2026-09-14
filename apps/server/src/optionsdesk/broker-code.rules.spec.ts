@@ -17,12 +17,12 @@ import { parseBrokerCode, parseComboLegs } from './broker-code.rules';
  */
 
 describe('parseBrokerCode — 期权码', () => {
-  it('① 美股 `US.PDD260918P70000` ⇒ 词根 PDD / 2026-09-18 / P / 行权价 70.000', () => {
-    const parsed = parseBrokerCode('US.PDD260918P70000');
+  it('① 美股 `US.ZQX260918P70000` ⇒ 词根 ZQX / 2026-09-18 / P / 行权价 70.000', () => {
+    const parsed = parseBrokerCode('US.ZQX260918P70000');
     expect(parsed).toMatchObject({
       kind: 'option',
       market: 'us',
-      root: 'PDD',
+      root: 'ZQX',
       expiry: '2026-09-18',
       right: 'P',
     });
@@ -70,46 +70,46 @@ describe('parseBrokerCode — 正股码', () => {
     });
   });
 
-  it('普通美股 `US.BABA` ⇒ `us:BABA`', () => {
-    expect(parseBrokerCode('US.BABA')).toEqual({ kind: 'stock', market: 'us', ticker: 'us:BABA' });
+  it('普通美股 `US.ZQY` ⇒ `us:ZQY`', () => {
+    expect(parseBrokerCode('US.ZQY')).toEqual({ kind: 'stock', market: 'us', ticker: 'us:ZQY' });
   });
 });
 
 describe('parseBrokerCode — 判不出一律 null (调用方按未解析保留, FR-006)', () => {
-  it('🚨 ⑥ 合成组合码 `US.PEP260918P120/261120P120` ⇒ null (不按合成码归属, FR-007)', () => {
-    expect(parseBrokerCode('US.PEP260918P120/261120P120')).toBeNull();
+  it('🚨 ⑥ 合成组合码 `US.ZQY260918P120/261120P120` ⇒ null (不按合成码归属, FR-007)', () => {
+    expect(parseBrokerCode('US.ZQY260918P120/261120P120')).toBeNull();
   });
 
   it.each([
     ['空串', ''],
-    ['无前缀', 'PDD260918P70000'],
-    ['无前缀正股', 'BABA'],
+    ['无前缀', 'ZQX260918P70000'],
+    ['无前缀正股', 'ZQY'],
     ['未承担的市场前缀', 'SH.600519'],
-    ['前缀小写', 'us.BABA'],
+    ['前缀小写', 'us.ZQY'],
     ['只有前缀', 'US.'],
     ['港股位数不对', 'HK.700'],
   ])('⑧ %s (%s) ⇒ null', (_label, code) => {
     expect(parseBrokerCode(code)).toBeNull();
   });
 
-  it('🚨 形似期权但右侧不是 C/P ⇒ null, MUST NOT 退化成正股 `us:PDD260918X70000`', () => {
-    expect(parseBrokerCode('US.PDD260918X70000')).toBeNull();
+  it('🚨 形似期权但右侧不是 C/P ⇒ null, MUST NOT 退化成正股 `us:ZQX260918X70000`', () => {
+    expect(parseBrokerCode('US.ZQX260918X70000')).toBeNull();
   });
 });
 
 describe('parseComboLegs — 从组合单腿串里提取腿码 (FR-007)', () => {
   /** 形态照 082 POC-1 原始输出 (2026-09-13) 的 `combo_legs` 字段: 字符串数组, 每腿一条。 */
   const LEGS = [
-    'ComboLeg(code=US.PEP260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)',
-    'ComboLeg(code=US.PEP261120P120000, trd_side=SELL_SHORT, qty_ratio=1.0, position_id=N/A)',
+    'ComboLeg(code=US.ZQY260918P120000, trd_side=BUY, qty_ratio=1.0, position_id=N/A)',
+    'ComboLeg(code=US.ZQY261120P120000, trd_side=SELL_SHORT, qty_ratio=1.0, position_id=N/A)',
   ];
 
   it('⑦ 两腿数组 ⇒ 两个腿码, 保持顺序', () => {
-    expect(parseComboLegs(LEGS)).toEqual(['US.PEP260918P120000', 'US.PEP261120P120000']);
+    expect(parseComboLegs(LEGS)).toEqual(['US.ZQY260918P120000', 'US.ZQY261120P120000']);
   });
 
   it('⑦ 两腿拼成单串 ⇒ 同样两个腿码', () => {
-    expect(parseComboLegs(LEGS.join(', '))).toEqual(['US.PEP260918P120000', 'US.PEP261120P120000']);
+    expect(parseComboLegs(LEGS.join(', '))).toEqual(['US.ZQY260918P120000', 'US.ZQY261120P120000']);
   });
 
   it.each([
