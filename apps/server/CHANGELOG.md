@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.52.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.1...server-v0.52.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **optionsdesk:** 082 券商 adapter 订单号按字母数字形态校验 ([#425](https://github.com/zhangleizlpd/no-vain-years-tech/issues/425)) ([935d04c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/935d04cf83b833170faf41ebc697f1289aee322c))
+
 ## [0.52.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.0...server-v0.52.1) (2026-09-14)
 
 
