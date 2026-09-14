@@ -1788,20 +1788,26 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
   // 2026-09-14 prod hk:00939 形态 (FR-015 / FR-028): 回填时无财年档案 ⇒ 刊发事实落 D: 键, 富途事件是 T: 键,
   // 两边永远对不上; 后补档案后 T: 事件过公布日曾被成批判逾期、标红。
   it('⑥ 后补财年档案的标的: 过公布日 2 个交易日的 T: 键未刊发事件 (同日刊发事实在 D: 键) ⇒ 非 overdue、🚫 计失败、overdueUnjudged 计数; 同轮 P: 键对照已迁入 overdue', async () => {
-    const [control, ccb] = await Promise.all(['00688', '00939'].map((c) => instrument('hk', c)));
+    const [control, ccb, noProfileA, noProfileB] = await Promise.all(
+      ['00688', '00939', '02628', '03968'].map((c) => instrument('hk', c)),
+    );
     await seedProfile(control.id);
     const unaligned = 'T:futu_calendar:2026 Q2';
+    const unalignedObs = (instrumentId: bigint): EarningsDateSourceObservation => ({
+      ...obs(instrumentId, 'structured', '2026-09-01'),
+      periodKey: unaligned,
+      reportKind: null,
+      periodEnd: null,
+      periodText: '2026 Q2',
+    });
     const futu: Round = {
       current: {
         observations: [
           obs(control.id, 'structured', '2026-09-01'),
-          {
-            ...obs(ccb.id, 'structured', '2026-09-01'),
-            periodKey: unaligned,
-            reportKind: null,
-            periodEnd: null,
-            periodText: '2026 Q2',
-          },
+          // T033 (4a): 两只始终无档案的标的排在前面 —— 样例若不按有无档案排序, 首条会是它们; 1 : 2 不对称让两数互换可见。
+          unalignedObs(noProfileA.id),
+          unalignedObs(noProfileB.id),
+          unalignedObs(ccb.id),
         ],
       },
     };
@@ -1833,8 +1839,13 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
       expect.objectContaining({
         kind: 'notice',
         detail: expect.objectContaining({
-          overdueUnjudged: 1,
-          overdueUnjudgedSamples: [`hk:00939 ${unaligned}`],
+          overdueUnjudgedWithProfile: 1,
+          overdueUnjudgedWithoutProfile: 2,
+          overdueUnjudgedSamples: [
+            `hk:00939 ${unaligned}`,
+            `hk:02628 ${unaligned}`,
+            `hk:03968 ${unaligned}`,
+          ],
         }),
       }),
     ]);
@@ -2610,5 +2621,238 @@ describe('079 state_branches 直接覆盖补齐 #19 #20: 清单主表外代码�
       0,
     );
     expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+});
+
+// T030–T033 上线后误报修正 (spec Session（八）, FR-004 / FR-028 / FR-029 / FR-030): 各复刻一个 2026-09-14 prod
+// 形态 + 对照臂, 全部经维度执行, 断言落库的 `sync:hk_earnings_date` 运行记录。
+describe('079 T030 刊发判定放宽: fs 族标签 + 业绩标题 v3 (hk:09961 形态, 经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('fs,fs_full「第二季度及上半年業績公告」⇒ P: 刊发事实 + 事件 published; 同轮「中期業績報告」对照标的无刊发事实、迁入 overdue + partial', async () => {
+    const [xpeng, control] = await Promise.all(['09961', '00005'].map((c) => instrument('hk', c)));
+    for (const i of [xpeng, control]) await seedProfile(i.id);
+    await announce(xpeng.id, '2026-08-28', '2026 年第二季度及上半年業績公告', ['fs', 'fs_full']);
+    await announce(control.id, '2026-08-28', '2026年中期業績報告', ['fs', 'fs_full']);
+    const futu: Round = {
+      current: { observations: [xpeng, control].map((i) => obs(i.id, 'structured', '2026-08-28')) },
+    };
+
+    // 公布日 08-28 (周五) → 09-01 (周二) = 2 个交易日。
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-09-01');
+
+    // 先断言正向: 对照标的迁入 overdue 且计 1 次失败 —— 证明本轮逾期判定在跑, 下面的 published 不是空转。
+    expect((await eventOf(control.id)).status).toBe('overdue');
+    expect(
+      await prisma.earningsDateObservation.count({
+        where: { instrumentId: control.id, basis: 'filed' },
+      }),
+    ).toBe(0);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+
+    expect(
+      await prisma.earningsDateObservation.findFirstOrThrow({
+        where: { instrumentId: xpeng.id, source: 'hkex_announcement' },
+      }),
+    ).toMatchObject({ periodKey: INTERIM, basis: 'filed', filedDate: day('2026-08-28') });
+    expect(await eventOf(xpeng.id)).toMatchObject({
+      status: 'published',
+      announceDate: day('2026-08-28'),
+      announceBasis: 'filed',
+      overdueSince: null,
+    });
+    expect(runSteps(run, 'earnings_date_overdue')).toEqual([
+      expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:00005' }) }),
+    ]);
+  });
+});
+
+/** 上一轮落下的刊发事实观测 (T031 季度刊发判定只读 `filed` 口径观测, 与本轮公告窗口无关)。 */
+const seedFiling = (
+  instrumentId: bigint,
+  periodKey: string,
+  filedDate: string,
+  fields: { reportKind: string | null; periodEnd: string | null; periodText: string },
+) =>
+  prisma.earningsDateObservation.create({
+    data: {
+      source: 'hkex_announcement',
+      instrumentId,
+      periodKey,
+      market: 'hk',
+      reportKind: fields.reportKind,
+      periodEnd: fields.periodEnd === null ? null : day(fields.periodEnd),
+      periodText: fields.periodText,
+      basis: 'filed',
+      announceDate: day(filedDate),
+      filedDate: day(filedDate),
+      firstSeenAt: day(filedDate),
+      lastSeenAt: day(filedDate),
+    },
+  });
+
+describe('079 T031 非季报公司的第一 / 第三季不判逾期 (hk:01299 形态, 经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('既有 overdue 的 Q3 事件 (730 天内只有中期刊发) ⇒ 解除回 confirmed + releasedBy 流水 + non_quarterly 计数; 同轮对照 (D: 键、报告类型空的第一季度刊发) 迁入 overdue + partial', async () => {
+    const [aia, control] = await Promise.all(['01299', '00700'].map((c) => instrument('hk', c)));
+    for (const i of [aia, control]) await seedProfile(i.id);
+    const Q3 = 'P:2026-09-30';
+    const q3Observation = (instrumentId: bigint): EarningsDateSourceObservation => ({
+      ...obs(instrumentId, 'structured', '2026-10-15'),
+      periodKey: Q3,
+      reportKind: 'quarterly',
+      periodEnd: '2026-09-30',
+      periodText: '2026Q3',
+    });
+    await seedFiling(aia.id, INTERIM, '2026-08-20', {
+      reportKind: 'interim',
+      periodEnd: '2026-06-30',
+      periodText: '截至2026年6月30日止六個月之中期業績公告',
+    });
+    await seedFiling(control.id, 'D:hkex_announcement:2026-05-15', '2026-05-15', {
+      reportKind: null,
+      periodEnd: null,
+      periodText: '2026年第一季度業績公告',
+    });
+    // prod 形态: 上一轮已迁入 overdue 的 Q3 事件 (富途把非业绩事件列成财报日)。
+    await prisma.earningsDateEvent.create({
+      data: {
+        instrumentId: aia.id,
+        periodKey: Q3,
+        market: 'hk',
+        reportKind: 'quarterly',
+        periodEnd: day('2026-09-30'),
+        status: 'overdue',
+        announceDate: day('2026-10-15'),
+        announceBasis: 'structured',
+        confirmedDate: day('2026-09-01'),
+        confirmedBasis: 'first_seen',
+        sources: ['futu_calendar'],
+        overdueSince: at('2026-10-19'),
+      },
+    });
+    const futu: Round = {
+      current: { observations: [aia, control].map((i) => q3Observation(i.id)) },
+    };
+
+    // 公布日 10-15 (周四) → 10-20 (周二) = 3 个交易日。
+    const run = await dimensionRun(buildMerge(futu, { current: {} }), '2026-10-20');
+
+    // 先断言正向: 对照标的 (有季度刊发) 迁入 overdue 且计 1 次失败 —— 证明本轮逾期判定在跑。
+    expect((await eventOf(control.id, Q3)).status).toBe('overdue');
+    expect(runSteps(run, 'earnings_date_overdue')).toEqual([
+      expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:00700' }) }),
+    ]);
+    expect(run).toMatchObject({ status: 'partial', failed: 1 });
+
+    const released = await eventOf(aia.id, Q3);
+    expect(released).toMatchObject({ status: 'confirmed', overdueSince: null });
+    expect(released.logs).toEqual([
+      expect.objectContaining({
+        kind: 'status_changed',
+        fromStatus: 'overdue',
+        toStatus: 'confirmed',
+        detail: expect.objectContaining({ releasedBy: 'non_quarterly_reporter' }),
+      }),
+    ]);
+    expect(runSteps(run, 'earnings_date_non_quarterly')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_non_quarterly',
+        detail: { count: 1, released: 1, samples: [`hk:01299 ${Q3}`] },
+      },
+    ]);
+  });
+});
+
+describe('079 T032 无法对齐旧事件收尾: 迁已并入并指向 P: 事件 (hk:00939 形态, 经维度运行)', () => {
+  beforeAll(seedHolidayCalendar);
+  beforeEach(resetMergeTables);
+
+  it('补档案后富途同原文给 P: ⇒ 同一轮旧 T: 事件 superseded + 流水指向 P: 事件、不再计入 overdueUnjudged; 次轮观测再带入也不重算; 原文不同的对照 T: 事件照常计数', async () => {
+    const [ccb, control] = await Promise.all(['00939', '01398'].map((c) => instrument('hk', c)));
+    const T_CCB = 'T:futu_calendar:2026Q2';
+    const T_CONTROL = 'T:futu_calendar:2026 Q2';
+    const futuObs = (
+      instrumentId: bigint,
+      periodKey: string,
+      periodText: string,
+      shape: Pick<EarningsDateSourceObservation, 'reportKind' | 'periodEnd'> = {
+        reportKind: null,
+        periodEnd: null,
+      },
+    ): EarningsDateSourceObservation => ({
+      ...obs(instrumentId, 'structured', '2026-09-01'),
+      periodKey,
+      periodText,
+      ...shape,
+    });
+    const controlObs = futuObs(control.id, T_CONTROL, '2026 Q2');
+    const futu: Round = {
+      current: { observations: [futuObs(ccb.id, T_CCB, '2026Q2'), controlObs] },
+    };
+    const useCase = buildMerge(futu, { current: {} });
+
+    // 首轮无档案: 两只标的都落 T: 事件。
+    await dimensionRun(useCase, '2026-09-01');
+    expect((await eventOf(ccb.id, T_CCB)).status).toBe('confirmed');
+
+    // 补档案后富途对同一原文给 P: 键 (旧 T: 观测留在表里, 来源不再给)。
+    await seedProfile(ccb.id);
+    const interimObs = futuObs(ccb.id, INTERIM, '2026Q2', {
+      reportKind: 'interim',
+      periodEnd: '2026-06-30',
+    });
+    futu.current = { observations: [interimObs, controlObs] };
+    const run = await dimensionRun(useCase, '2026-09-03');
+
+    // 先断言正向: 对照 T: 事件 (原文不同) 过公布日照常计入 overdueUnjudged —— 证明计数面在跑。
+    expect((await eventOf(control.id, T_CONTROL)).status).toBe('confirmed');
+    expect(runSteps(run, 'earnings_date_unaligned')).toEqual([
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          overdueUnjudgedWithProfile: 0,
+          overdueUnjudgedWithoutProfile: 1,
+          overdueUnjudgedSamples: [`hk:01398 ${T_CONTROL}`],
+          superseded: 1,
+          supersededSamples: [`hk:00939 ${T_CCB}`],
+        }),
+      }),
+    ]);
+    const successor = await eventOf(ccb.id, INTERIM);
+    const old = await eventOf(ccb.id, T_CCB);
+    expect(old).toMatchObject({ status: 'superseded', overdueSince: null });
+    expect(old.logs.at(-1)).toMatchObject({
+      kind: 'status_changed',
+      fromStatus: 'confirmed',
+      toStatus: 'superseded',
+      detail: {
+        supersededBy: successor.id.toString(),
+        supersededByPeriodKey: INTERIM,
+        source: 'futu_calendar',
+        periodText: '2026Q2',
+      },
+    });
+
+    // 次轮来源又带入旧 T: 键观测 ⇒ 已并入事件不重算 (revision 不变)、不再计数。
+    futu.current = { observations: [interimObs, controlObs, futuObs(ccb.id, T_CCB, '2026Q2')] };
+    const again = await dimensionRun(useCase, '2026-09-04');
+    expect(await eventOf(ccb.id, T_CCB)).toMatchObject({
+      status: 'superseded',
+      revision: old.revision,
+    });
+    expect(runSteps(again, 'earnings_date_unaligned')).toEqual([
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          overdueUnjudgedWithProfile: 0,
+          overdueUnjudgedWithoutProfile: 1,
+          overdueUnjudgedSamples: [`hk:01398 ${T_CONTROL}`],
+          superseded: 0,
+        }),
+      }),
+    ]);
   });
 });

@@ -10,11 +10,13 @@ import {
   judgeNoticeUndated,
   mergeEarningsDateEvent,
   noticeUndatedPeriodKey,
+  selectAlignedSuccessor,
   selectAnnounceDate,
   selectPendingNotice,
   type EarningsDateCandidate,
   type EarningsDateMergeInput,
   type EarningsDateMergeObservation,
+  type EarningsFilingFact,
   type ExistingEarningsDateEvent,
   type ListingPresence,
   type NoticeUndatedInput,
@@ -86,7 +88,8 @@ function input(overrides: Partial<EarningsDateMergeInput>): EarningsDateMergeInp
     previousFilingDate: null,
     existing: null,
     runAt: RUN_AT,
-    hasFiscalProfile: true,
+    fiscalYearEndMonth: 12,
+    filings: [],
     elapsedTradingDays: null,
     ...overrides,
   };
@@ -650,7 +653,7 @@ describe('逾期未刊发: 解除 / 财年档案 / 判定范围 (FR-019a / FR-02
 
   it('🚨 无财年档案: 满 2 个交易日仍不迁入 overdue, 只报无法判定', () => {
     const r = mergeEarningsDateEvent(
-      pastEvent({ elapsedTradingDays: elapsed('2026-09-11', 2), hasFiscalProfile: false }),
+      pastEvent({ elapsedTradingDays: elapsed('2026-09-11', 2), fiscalYearEndMonth: null }),
     );
     expect(r.event.status).toBe('confirmed');
     expect(r.fiscalProfileMissing).toBe(true);
@@ -663,7 +666,7 @@ describe('逾期未刊发: 解除 / 财年档案 / 判定范围 (FR-019a / FR-02
         periodKey: 'T:futu_calendar:2026Q2',
         observations: [structured('2026-08-01', '2026-06-01')],
         capabilities: US_CAPS,
-        hasFiscalProfile: false,
+        fiscalYearEndMonth: null,
         elapsedTradingDays: null,
       }),
     );
@@ -703,6 +706,15 @@ describe('逾期未刊发: 只判期末日对齐键 (FR-015 / FR-028; 2026-09-14
         periodKey: 'P:2025-09-30',
         elapsedTradingDays: elapsed('2026-09-11', 2),
         existing: existingConfirmedPast,
+        // 第三财季: 无季度刊发会命中 FR-029 (非季报公司不判); 给一份季报, 保持本臂「对齐键照常判逾期」的原意。
+        filings: [
+          {
+            filedDate: '2025-08-10',
+            periodEnd: '2025-06-30',
+            reportKind: 'quarterly',
+            periodText: null,
+          },
+        ],
       }),
     );
     expect(r.event).toMatchObject({ status: 'overdue', overdueSince: RUN_AT });
@@ -716,7 +728,7 @@ describe('逾期未刊发: 只判期末日对齐键 (FR-015 / FR-028; 2026-09-14
       pastEvent({
         periodKey: key,
         elapsedTradingDays: elapsed('2026-09-11', 2),
-        hasFiscalProfile: false,
+        fiscalYearEndMonth: null,
       }),
     );
     expect(noProfile.event.status).toBe('confirmed');
@@ -745,6 +757,216 @@ describe('逾期未刊发: 只判期末日对齐键 (FR-015 / FR-028; 2026-09-14
     expect(r.event).toMatchObject({ status: 'overdue', overdueSince });
     expect(r.findings).toEqual([]);
     expect(r.overdueUnaligned).toBe(true);
+  });
+});
+
+// 1b 用例共用 (FR-029): hk:01299 形态 —— 12 月结年, 第三季 P:2025-09-30 由富途记为 2025-10-31, 业务日 2025-11-04
+// 满 2 个交易日; 730 天内只有年度与中期刊发 (无任何季度业绩)。
+const Q3_2025 = 'P:2025-09-30';
+const filing = (
+  filedDate: string,
+  fields: Partial<EarningsFilingFact> = {},
+): EarningsFilingFact => ({
+  filedDate,
+  periodEnd: null,
+  reportKind: null,
+  periodText: null,
+  ...fields,
+});
+const ANNUAL_AND_INTERIM_ONLY: readonly EarningsFilingFact[] = [
+  filing('2025-03-14', {
+    periodEnd: '2024-12-31',
+    reportKind: 'annual',
+    periodText: '截至2024年12月31日止年度之業績公告',
+  }),
+  filing('2025-08-22', {
+    periodEnd: '2025-06-30',
+    reportKind: 'interim',
+    periodText: '截至2025年6月30日止六個月之中期業績公告',
+  }),
+];
+const q3Event = (overrides: Partial<EarningsDateMergeInput>) =>
+  input({
+    periodKey: Q3_2025,
+    observations: [structured('2025-10-31', '2025-10-01')],
+    filings: ANNUAL_AND_INTERIM_ONLY,
+    elapsedTradingDays: elapsed('2025-10-31', 2, '2025-11-04'),
+    ...overrides,
+  });
+const existingQ3 = existingEvent({
+  announceDate: '2025-10-31',
+  announceBasis: 'structured',
+  confirmedDate: '2025-10-01',
+  confirmedBasis: 'first_seen',
+});
+const existingQ3Overdue = existingEvent({ ...existingQ3, status: 'overdue', overdueSince });
+
+describe('逾期未刊发: 非季报公司的第一 / 第三季不判 (FR-029; spec Session（八）1b, 2026-09-14 prod hk:01299)', () => {
+  it('🚨 12 月结年第三季、730 天内只有年度与中期刊发 ⇒ 不迁入 overdue、0 条 finding、只计数', () => {
+    const r = mergeEarningsDateEvent(q3Event({ existing: existingQ3 }));
+    expect(r.event).toMatchObject({ status: 'confirmed', overdueSince: null });
+    expect(r.findings).toEqual([]);
+    expect(r.logs).toEqual([]);
+    expect(r).toMatchObject({
+      nonQuarterlyReporter: { released: false },
+      overdueUnaligned: false,
+      fiscalProfileMissing: false,
+    });
+  });
+
+  it('🚨 既有 overdue ⇒ 解除回 confirmed、清逾期起算时刻、status_changed 流水带 releasedBy, 🚫 计失败', () => {
+    const r = mergeEarningsDateEvent(q3Event({ existing: existingQ3Overdue }));
+    expect(r.event).toMatchObject({ status: 'confirmed', overdueSince: null });
+    expect(r.findings).toEqual([]);
+    expect(r.nonQuarterlyReporter).toEqual({ released: true });
+    expect(r.logs).toEqual([
+      {
+        kind: 'status_changed',
+        fromStatus: 'overdue',
+        toStatus: 'confirmed',
+        detail: {
+          announceDate: '2025-10-31',
+          announceBasis: 'structured',
+          releasedBy: 'non_quarterly_reporter',
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ['报告类型为季度', filing('2025-05-15', { periodEnd: '2025-03-31', reportKind: 'quarterly' })],
+    ['报告类型空、期末日为第一财季 (P: 键)', filing('2025-05-15', { periodEnd: '2025-03-31' })],
+    [
+      '报告类型空、无期末日 (D: 键) 标题「第一季度業績公告」',
+      filing('2025-05-15', { periodText: '2025年第一季度業績公告' }),
+    ],
+  ])('对照: 730 天内有季度刊发 (%s) ⇒ 照常迁入 overdue + 计失败 finding', (_label, quarterly) => {
+    const r = mergeEarningsDateEvent(
+      q3Event({ existing: existingQ3, filings: [...ANNUAL_AND_INTERIM_ONLY, quarterly] }),
+    );
+    expect(r.event.status).toBe('overdue');
+    expect(r.findings.filter((f) => f.countsAsFailure)).toHaveLength(1);
+    expect(r.nonQuarterlyReporter).toBeNull();
+  });
+
+  it.each([
+    ['中期', 'P:2025-06-30'],
+    ['年度', 'P:2025-12-31'],
+  ])('只限第一 / 第三季: 非季报公司的%s期末 (%s) ⇒ 照常迁入 overdue', (_label, periodKey) => {
+    const r = mergeEarningsDateEvent(q3Event({ periodKey, existing: existingQ3 }));
+    expect(r.event.status).toBe('overdue');
+    expect(r.nonQuarterlyReporter).toBeNull();
+  });
+
+  it('财季按财年档案换算: 3 月结年公司 P:2025-12-31 = 第三财季 ⇒ 不判; P:2025-09-30 = 中期 ⇒ 迁入', () => {
+    const march: Partial<EarningsDateMergeInput> = {
+      fiscalYearEndMonth: 3,
+      existing: existingQ3,
+      filings: [
+        filing('2025-06-20', { periodEnd: '2025-03-31', reportKind: 'annual' }),
+        filing('2024-11-28', { periodEnd: '2024-09-30', reportKind: 'interim' }),
+      ],
+    };
+    const q3 = mergeEarningsDateEvent(q3Event({ ...march, periodKey: 'P:2025-12-31' }));
+    expect(q3.event.status).toBe('confirmed');
+    expect(q3.nonQuarterlyReporter).toEqual({ released: false });
+    const interim = mergeEarningsDateEvent(q3Event({ ...march, periodKey: 'P:2025-09-30' }));
+    expect(interim.event.status).toBe('overdue');
+  });
+
+  it.each([
+    ['第 730 天 (2023-11-01) 的季度刊发 ⇒ 算', '2023-11-01', 'overdue'],
+    ['第 731 天 (2023-10-31) ⇒ 不算', '2023-10-31', 'confirmed'],
+    ['公布日当天 (2025-10-31) ⇒ 不算 (「之前」)', '2025-10-31', 'confirmed'],
+  ])('730 天窗口边界: %s', (_label, filedDate, status) => {
+    const quarterly = filing(filedDate, { periodEnd: '2023-09-30', reportKind: 'quarterly' });
+    const r = mergeEarningsDateEvent(
+      q3Event({ existing: existingQ3, filings: [...ANNUAL_AND_INTERIM_ONLY, quarterly] }),
+    );
+    expect(r.event.status).toBe(status);
+  });
+
+  it('判定顺序: 无财年档案先报财年未知; 日历不可判时既有逾期不解除; 非对齐键先报无法对齐; 未到期不计数', () => {
+    const noProfile = mergeEarningsDateEvent(q3Event({ fiscalYearEndMonth: null }));
+    expect(noProfile).toMatchObject({ fiscalProfileMissing: true, nonQuarterlyReporter: null });
+
+    const unknown = mergeEarningsDateEvent(
+      q3Event({
+        existing: existingQ3Overdue,
+        elapsedTradingDays: elapsed('2025-10-31', null, '2025-11-04'),
+      }),
+    );
+    expect(unknown.event).toMatchObject({ status: 'overdue', overdueSince });
+    expect(unknown.nonQuarterlyReporter).toBeNull();
+
+    const unaligned = mergeEarningsDateEvent(q3Event({ periodKey: 'T:futu_calendar:2025Q3' }));
+    expect(unaligned).toMatchObject({ overdueUnaligned: true, nonQuarterlyReporter: null });
+
+    const notDue = mergeEarningsDateEvent(
+      q3Event({ elapsedTradingDays: elapsed('2025-10-31', 1, '2025-11-04') }),
+    );
+    expect(notDue).toMatchObject({ nonQuarterlyReporter: null, findings: [] });
+  });
+});
+
+describe('selectAlignedSuccessor — 无法对齐旧事件的接手键 (FR-030; spec Session（八）3a, 2026-09-14 prod hk:00939)', () => {
+  const T_KEY = 'T:futu_calendar:2024Q3';
+  const keyObs = (source: string, periodKey: string, periodText: string | null) => ({
+    source,
+    periodKey,
+    periodText,
+  });
+  const confirmedT = { periodKey: T_KEY, status: 'confirmed' as const };
+
+  it('🚨 同来源同原文已有 P: 键观测 ⇒ 该 P: 键 (带配对来源与原文留痕)', () => {
+    expect(
+      selectAlignedSuccessor(confirmedT, [
+        keyObs(FUTU, T_KEY, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+        keyObs(ANN, 'P:2024-06-30', '截至2024年6月30日止六個月之中期業績公告'),
+      ]),
+    ).toEqual({ periodKey: 'P:2024-09-30', source: FUTU, periodText: '2024Q3' });
+  });
+
+  it('既有 overdue 的旧事件同样收尾; D: 键同样适用', () => {
+    const d = 'D:futu_calendar:2024-10-30';
+    expect(
+      selectAlignedSuccessor({ periodKey: d, status: 'overdue' }, [
+        keyObs(FUTU, d, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+      ]),
+    ).toMatchObject({ periodKey: 'P:2024-09-30' });
+  });
+
+  it.each([
+    ['来源不同', [keyObs(FUTU, T_KEY, '2024Q3'), keyObs(BOARD, 'P:2024-09-30', '2024Q3')]],
+    ['原文不同', [keyObs(FUTU, T_KEY, '2024Q3'), keyObs(FUTU, 'P:2024-09-30', '2024 Q3')]],
+    ['原文为空', [keyObs(FUTU, T_KEY, null), keyObs(FUTU, 'P:2024-09-30', null)]],
+    [
+      '🚫 同原文对应两个 P: 键 (财年档案改过, 不猜)',
+      [
+        keyObs(FUTU, T_KEY, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+        keyObs(FUTU, 'P:2024-06-30', '2024Q3'),
+      ],
+    ],
+    ['无任何 P: 键观测', [keyObs(FUTU, T_KEY, '2024Q3')]],
+  ])('%s ⇒ null', (_label, observations) => {
+    expect(selectAlignedSuccessor(confirmedT, observations)).toBeNull();
+  });
+
+  it.each([
+    ['已刊发', { periodKey: T_KEY, status: 'published' as const }],
+    ['已并入', { periodKey: T_KEY, status: 'superseded' as const }],
+    ['占位事件', { periodKey: 'D:notice_undated:2024-10-02', status: 'notified_undated' as const }],
+    ['本身是 P: 键', { periodKey: 'P:2024-09-30', status: 'confirmed' as const }],
+  ])('%s ⇒ null', (_label, event) => {
+    expect(
+      selectAlignedSuccessor(event, [
+        keyObs(FUTU, event.periodKey, '2024Q3'),
+        keyObs(FUTU, 'P:2024-09-30', '2024Q3'),
+      ]),
+    ).toBeNull();
   });
 });
 

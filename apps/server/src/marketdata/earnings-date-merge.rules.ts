@@ -47,6 +47,11 @@
  * - 🚨 **逾期只判期末日对齐键 (`P:`) 的事件** (FR-015 / FR-028)：`T:` / `D:` 键永远等不到同键的刊发事实 ⇒
  *   不迁入、不计失败、只计数 —— 后补财年档案的标的，其历史未对齐事件会被成批误判逾期 (2026-09-14 prod
  *   `hk:00939` 8 条实证)。已通知日期未知是标的级判定，🚫 受此限。
+ * - 🚨 **非季报公司的第一 / 第三季不判逾期** (FR-029，spec Session（八）1b)：期末日按财年档案为第一 / 第三财季、
+ *   且公布日前 {@link QUARTERLY_FILING_LOOKBACK_DAYS} 天内无季度业绩刊发事实 ⇒ 不迁入、只计数；既有逾期**解除**回原状态
+ *   (稳定结论，区别于日历不可判 / 键无法对齐时的「保持不变」)。EVIDENCE: 2026-09-14 prod `hk:01299` —— 富途把
+ *   「第三季新業務摘要」(`types=all`，非业绩公告) 列成 Q3 财报日，产生 2 条逾期误报 (本机 evidence
+ *   `t026-investigation/report.md` A1)。
  * - 🚨 `overdue` / `notified_undated` 的 finding **只在迁入那一轮**产出 (`countsAsFailure`)：停留也产出 ⇒
  *   延期刊发的公司让日报连日标红、新故障被淹没 (spec Session（六）)。
  * - 清单行提前消失 (上一轮在、本轮页面解析成功而不在、日期晚于页首日期、同期无新日期) ⇒ 留痕 +
@@ -65,11 +70,12 @@ import type {
   EarningsDateSourceObservation,
   EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
-import { datePeriodKey, isAlignedPeriodKey } from './earnings-period.rules.js';
+import { datePeriodKey, fiscalQuarterOf, isAlignedPeriodKey } from './earnings-period.rules.js';
 
 /**
  * `superseded` (已并入) = 「已通知、日期未知」占位事件被给出日期的事件接手后的终态 (FR-017，spec
- * Session（七）第 2 问)：🚫 删除占位事件 —— 流水随事件级联删除 (FR-013)。
+ * Session（七）第 2 问)：🚫 删除占位事件 —— 流水随事件级联删除 (FR-013)。上线后另用于报告期无法对齐的旧事件被
+ * 同来源同原文报告期的 `P:` 事件接手 (FR-030，{@link selectAlignedSuccessor})。
  */
 export type EarningsDateEventStatus =
   | 'confirmed'
@@ -95,6 +101,51 @@ export function isNoticeUndatedPlaceholder(periodKey: string): boolean {
   return periodKey.startsWith(NOTICE_UNDATED_PERIOD_KEY_PREFIX);
 }
 
+/** FR-030 判据输入：同一标的某条观测的来源、报告期键与原文报告期。 */
+export interface EarningsKeyObservation {
+  readonly source: string;
+  readonly periodKey: string;
+  readonly periodText: string | null;
+}
+
+/** 接手旧非对齐事件的 `P:` 键，及据以配对的来源与原文报告期 (流水留痕)。 */
+export interface AlignedSuccessor {
+  readonly periodKey: string;
+  readonly source: string;
+  readonly periodText: string;
+}
+
+/**
+ * 无法对齐旧事件的接手键 (FR-030，spec Session（八）3a)：未刊发的 `T:` / `D:` 键事件 (占位事件除外)，同一标的有
+ * **同一来源、同一原文报告期** (非空) 的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 该键；否则 null。对应多个 `P:` 键
+ * (如财年档案改过) ⇒ 🚫 猜 (FR-015)；事件已刊发 / 已并入 ⇒ null。
+ * EVIDENCE: 2026-09-14 prod `hk:00939` 8 条 `T:futu_calendar:2024Q3…2026Q2` —— 补财年档案前落 `T:`，补后富途同原文另起
+ * `P:`，旧事件永不收尾、每轮重复计数 (本机 evidence `t026-investigation/report.md` C6)。
+ * 复杂度 O(n)，n = 该标的观测数。
+ */
+export function selectAlignedSuccessor(
+  event: { readonly periodKey: string; readonly status: EarningsDateEventStatus },
+  observations: readonly EarningsKeyObservation[],
+): AlignedSuccessor | null {
+  if (isAlignedPeriodKey(event.periodKey) || isNoticeUndatedPlaceholder(event.periodKey))
+    return null;
+  if (event.status === 'published' || event.status === 'superseded') return null;
+  const pairKey = (source: string, text: string): string => JSON.stringify([source, text]);
+  const own = new Set(
+    observations.flatMap((o) => {
+      const text = o.periodText?.trim() ?? '';
+      return o.periodKey === event.periodKey && text !== '' ? [pairKey(o.source, text)] : [];
+    }),
+  );
+  const matches = observations.flatMap((o) => {
+    const text = o.periodText?.trim() ?? '';
+    return isAlignedPeriodKey(o.periodKey) && text !== '' && own.has(pairKey(o.source, text))
+      ? [{ periodKey: o.periodKey, source: o.source, periodText: text }]
+      : [];
+  });
+  return new Set(matches.map((m) => m.periodKey)).size === 1 ? matches[0] : null;
+}
+
 /** 确认日期口径：`announced` = 会前通知刊发日；`first_seen` = 来源首次观测当地日期。 */
 export type EarningsConfirmedBasis = 'announced' | 'first_seen';
 
@@ -107,6 +158,29 @@ export const NOTICE_MATCH_WINDOW_DAYS = 120;
 
 /** 逾期未刊发 (FR-019a) 与已通知日期未知 (FR-017) 的判定门槛：满 2 个**交易日**。 */
 export const STATUS_DUE_TRADING_DAYS = 2;
+
+/** 非季报公司判定的回看天数 (FR-029)：事件公布日之前这么多天内无季度业绩刊发事实 ⇒ 非季报公司。 */
+export const QUARTERLY_FILING_LOOKBACK_DAYS = 730;
+
+/**
+ * 原文带季度写法 ⇒ 季度业绩刊发 (FR-029 第三路)：兜住报告类型为空、期末日换算不出的 `D:` 键季报。
+ * 宁宽勿窄 —— 误认成季报公司只会照常判逾期 (响亮)；「第二季度及上半年」这类写法只有季报公司才会用。
+ */
+const QUARTERLY_FILING_TITLE =
+  /季度|第[一三]季|首季|首三季|前三季|三個月|九個月|三个月|九个月|quarter|\bQ[1-4]\b/i;
+
+/** 既有逾期因非季报公司判定解除时，`status_changed` 流水 `detail.releasedBy` 的值。 */
+export const NON_QUARTERLY_RELEASE = 'non_quarterly_reporter';
+
+/** 该标的的一条刊发事实 (`filed` 口径观测)，供 FR-029 判「公布日前 730 天内有无季度业绩刊发」。 */
+export interface EarningsFilingFact {
+  /** 刊发日 `YYYY-MM-DD` (交易所当地日期)。 */
+  readonly filedDate: string;
+  readonly periodEnd: string | null;
+  readonly reportKind: string | null;
+  /** 来源原文报告期 (公告来源为标题)。 */
+  readonly periodText: string | null;
+}
 
 /** 某来源本轮的日期变更 (用例 upsert 时判定)；非本轮变更 ⇒ null。 */
 export interface ObservationDateChange {
@@ -185,8 +259,10 @@ export interface EarningsDateMergeInput {
   readonly existing: ExistingEarningsDateEvent | null;
   /** 本轮运行时刻 —— 迁入 `overdue` 时写 `overdueSince`。 */
   readonly runAt: Date;
-  /** 该标的是否有财年档案 (FR-028)。 */
-  readonly hasFiscalProfile: boolean;
+  /** 该标的财年档案的财年结束月；无档案 null (FR-028)。FR-029 按它换算事件期末日的财季。 */
+  readonly fiscalYearEndMonth: number | null;
+  /** 该标的刊发事实 (含本事件之外)；FR-029 只取公布日前 {@link QUARTERLY_FILING_LOOKBACK_DAYS} 天内的。 */
+  readonly filings: readonly EarningsFilingFact[];
   /** 自公布日起算；公布日为 null 或市场无刊发事实来源时可为 null。 */
   readonly elapsedTradingDays: ElapsedTradingDays | null;
 }
@@ -264,6 +340,11 @@ export interface EarningsDateMergeResult {
    * 的 `overdueUnjudged` (🚫 计失败、🚫 逐事件 finding)。
    */
   readonly overdueUnaligned: boolean;
+  /**
+   * 公布日已过满门槛、因非季报公司的第一 / 第三季未判逾期 (FR-029) ⇒ 计入每轮一条 `earnings_date_non_quarterly`
+   * (🚫 计失败、🚫 逐事件 finding)；`released` = 既有 `overdue` 本轮据此解除。非此情形 null。
+   */
+  readonly nonQuarterlyReporter: { readonly released: boolean } | null;
   /** 仅迁入 `published` 那一轮非空。 */
   readonly deviations: readonly EarningsDateDeviation[];
   /** 仅迁入 `published` 且有不晚于刊发日的会议日时非 null。 */
@@ -455,8 +536,11 @@ function advanceConfirmation(existing: Confirmation, computed: Confirmation | nu
 // ─── 状态判定 ─────────────────────────────────────────────────────────────
 
 type ElapsedVerdict = 'unjudged' | 'not_due' | 'fiscal_unknown' | 'due';
-/** 逾期专用：`unaligned` = 到期但键非期末日对齐 (FR-015)，永不迁入 `overdue`。 */
-type OverdueVerdict = ElapsedVerdict | 'unaligned';
+/**
+ * 逾期专用：`unaligned` = 到期但键非期末日对齐 (FR-015)，永不迁入 `overdue`；`non_quarterly` = 到期但属非季报公司的
+ * 第一 / 第三季 (FR-029)，不迁入且解除既有逾期。
+ */
+type OverdueVerdict = ElapsedVerdict | 'unaligned' | 'non_quarterly';
 
 function marketHasPublicationFact(
   capabilities: ReadonlyMap<string, EarningsDateSourceCapabilities | null>,
@@ -511,17 +595,53 @@ function judgeOverdue(
   ) {
     return { status: base, verdict: null };
   }
-  const elapsed = judgeElapsed(input.elapsedTradingDays, selection.date, input.hasFiscalProfile);
-  // 判定顺序：日历不可判 / 未到期 → 键形态 → 财年档案。日历不可判照报 unjudged (与键无关)；非对齐键
-  // 有无档案都等不到同键刊发事实 ⇒ 记 unaligned、🚫 报财年未知 (补档案也不会让它可判)。
-  const verdict =
+  const elapsed = judgeElapsed(
+    input.elapsedTradingDays,
+    selection.date,
+    input.fiscalYearEndMonth !== null,
+  );
+  // 🚨 判定顺序 (FR-028 / FR-029)：日历不可判 → 未到期 → 键无法对齐 → 无财年档案 → 非季报公司的第一 / 第三季 → 逾期。
+  // 日历不可判照报 unjudged (与键无关)；非对齐键有无档案都等不到同键刊发事实 ⇒ 记 unaligned、🚫 报财年未知
+  // (补档案也不会让它可判)；非季报判定要按档案换算财季 ⇒ 排在财年档案之后。
+  const verdict: OverdueVerdict =
     (elapsed === 'due' || elapsed === 'fiscal_unknown') && !isAlignedPeriodKey(input.periodKey)
       ? 'unaligned'
-      : elapsed;
-  // 日历不可判 / 非对齐键 ⇒ 不判：既有逾期不凭空解除，也不凭空迁入。
+      : elapsed === 'due' && isNonQuarterlyReporterQuarter(input, selection.date)
+        ? 'non_quarterly'
+        : elapsed;
+  // 日历不可判 / 非对齐键 ⇒ 本轮判不了：既有逾期不凭空解除，也不凭空迁入。
+  // 非季报是判出来的稳定结论 (不是判不了) ⇒ 不迁入，既有逾期解除回原状态 (spec Session（八）1b)。
   const stays =
     (verdict === 'unjudged' || verdict === 'unaligned') && input.existing?.status === 'overdue';
   return { status: verdict === 'due' || stays ? 'overdue' : base, verdict };
+}
+
+/**
+ * FR-029：事件期末日按财年档案为第一 / 第三财季，且该标的在 `[公布日 − 730 天, 公布日)` 内无季度业绩刊发事实。
+ * 财年结束月未知 / 非 `P:` 键 ⇒ false (照常判)。复杂度 O(f)，f = 刊发事实条数。
+ */
+function isNonQuarterlyReporterQuarter(
+  input: EarningsDateMergeInput,
+  announceDate: string,
+): boolean {
+  const fiscalYearEndMonth = input.fiscalYearEndMonth;
+  if (fiscalYearEndMonth === null || !isAlignedPeriodKey(input.periodKey)) return false;
+  const quarter = fiscalQuarterOf(input.periodKey.slice('P:'.length), fiscalYearEndMonth);
+  if (quarter !== 1 && quarter !== 3) return false;
+  const to = dayNumber(announceDate);
+  const from = to - QUARTERLY_FILING_LOOKBACK_DAYS;
+  return !input.filings.some((f) => {
+    const filed = dayNumber(f.filedDate);
+    return filed >= from && filed < to && isQuarterlyFiling(f, fiscalYearEndMonth);
+  });
+}
+
+/** 季度业绩刊发：报告类型为季度，或期末日为第一 / 第三财季，或原文带季度写法 —— 任一即算 (FR-029)。 */
+function isQuarterlyFiling(f: EarningsFilingFact, fiscalYearEndMonth: number): boolean {
+  if (f.reportKind === 'quarterly') return true;
+  const quarter = f.periodEnd === null ? null : fiscalQuarterOf(f.periodEnd, fiscalYearEndMonth);
+  if (quarter === 1 || quarter === 3) return true;
+  return f.periodText !== null && QUARTERLY_FILING_TITLE.test(f.periodText);
 }
 
 interface ListingDrop {
@@ -622,6 +742,7 @@ function eventLogs(
   event: EarningsDateEventFields,
   selection: EarningsDateSelection,
   drops: readonly ListingDrop[],
+  verdict: OverdueVerdict | null,
 ): EarningsDateEventLogEntry[] {
   const logs: EarningsDateEventLogEntry[] = [];
   const log = (kind: EarningsDateEventLogKind, detail: Record<string, unknown>) =>
@@ -645,6 +766,9 @@ function eventLogs(
       ...(event.status === 'conflict' ? { candidates: selection.candidates } : {}),
       ...(prior.status === 'conflict'
         ? { resolvedCandidates: prior.conflictCandidates ?? [] }
+        : {}),
+      ...(prior.status === 'overdue' && verdict === 'non_quarterly'
+        ? { releasedBy: NON_QUARTERLY_RELEASE }
         : {}),
     });
   }
@@ -747,10 +871,12 @@ export function mergeEarningsDateEvent(input: EarningsDateMergeInput): EarningsD
   const filedDate = entered(prior.status, status, 'published') ? selection.date : null;
   return {
     event,
-    logs: eventLogs(input, prior, event, selection, drops),
+    logs: eventLogs(input, prior, event, selection, drops, verdict),
     findings: eventFindings(input, prior, event, verdict, drops),
     fiscalProfileMissing: verdict === 'fiscal_unknown',
     overdueUnaligned: verdict === 'unaligned',
+    nonQuarterlyReporter:
+      verdict === 'non_quarterly' ? { released: prior.status === 'overdue' } : null,
     deviations: filedDate === null ? [] : deviationsOf(input, filedDate),
     meetingLagUpdate: filedDate === null ? null : meetingLagUpdateOf(input.observations, filedDate),
   };

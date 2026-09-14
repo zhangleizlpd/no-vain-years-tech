@@ -4,7 +4,7 @@
  * 输入是 `marketdata.announcement` 的一行 (`linkText` 标题 + `types` 分类标签)，两个判定：
  *
  * 1. {@link classifyNoticeTitle} —— 会前通知信号：只看标题，🚫 读正文。
- * 2. {@link isResultsPublication} —— 业绩刊发事实：只认 `types` 含 `fs_main`。
+ * 2. {@link isResultsPublication} —— 业绩刊发事实：`types` 含 `fs_main`，或含 `fs` 族标签且标题命中业绩标题规则 v3。
  *
  * ## 为什么排除词只查「剥掉强写法之后」的余下文本
  *
@@ -20,6 +20,13 @@
  * EVIDENCE: A+H 公司季报另以 `all` 类「海外監管公告」刊发，锚表港股两年 22 份同日均有 `fs_main` 行
  * (plan §D6 / spec.md 取证)；按标题认 `all` 会把「…業績公告日期」「盈利公布及審議會否派發股息」这类
  * **通知**认成刊发 (poc8 PoC 实撞，`poc8.mjs` 注释)。
+ *
+ * ## 只有 `fs` 族标签时按标题认 (spec Session（八）2a，FR-004)
+ *
+ * EVIDENCE: `hk:09961` 2025-08-28「2025 年第二季度及上半年業績公告」、`hk:09999` 2025-08-14「…財務業績公告、
+ * 第二季度股息公告及中期報告」`types` 均为 `fs,fs_full`、无 `fs_main`；港股「只有 `fs`、无任何 `fs_*` 子标签」的公告
+ * 2026-08 为 284 条 (此前每月 0–4 条)。主 agent 2026-09-14 prod 只读，本机 evidence `t026-investigation/report.md` B4。
+ * 只认 `fs_main` ⇒ 这些真实刊发被漏掉、事后误报逾期并标红。放宽只到 `fs` 族，`all` 类仍 🚫 (见上节)。
  *
  * 复杂度 O(n)，n = 标题长度 (常数条正则各扫一遍)。
  */
@@ -39,6 +46,25 @@ const NOTICE_LOOKALIKE = /董事|委員會|決議|名單|委任|職權範圍|工
 
 const RESULTS_ANNOUNCEMENT_TYPE = 'fs_main';
 
+/** `fs` 族标签：`fs` 本身或 `fs_` 前缀子标签 (`fs_full` / `fs_main_cl` …)。 */
+const isResultsFamilyType = (type: string): boolean => type === 'fs' || type.startsWith('fs_');
+
+/*
+ * 业绩标题规则 v3 (spec Session（八）2a)：三条正则逐字取自本机 evidence `t026-investigation/q5_replay.ts` 策略
+ * `E_anyfs_body_overrides_report` (`INC` / `HARD_EXC` / `SOFT_EXC` + `BODY`)。
+ * EVIDENCE: 锚标的 344 条公告回放 (`report.md` B5)：比现口径新增刊发 2 条 (`hk:09961` / `hk:09999`，均 `P:2025-06-30`)、
+ * 新误对齐 0、既有最早刊发日变化 0；v1 (不排「報告」) 抽 20 误判 11，全是「中期業績報告」。
+ */
+/** 正向：业绩公告 / 业绩公布本体，或年度 · 中期 · 全年 · 末期 · 季度业绩等写法 (繁简英)。 */
+const RESULTS_TITLE =
+  /業績公告|業績公佈|業績公布|业绩公告|业绩公布|年度業績|中期業績|全年業績|末期業績|季度業績|年度业绩|中期业绩|全年业绩|末期业绩|季度业绩|止[^，,；;]{0,20}業績|results announcement|(annual|interim|quarterly|quarter|half-year|final) results/i;
+/** 硬排除：通函 / 通告 / 日期通知 / 董事会会议 / 延迟 —— 命中即不是刊发本身。 */
+const RESULTS_TITLE_HARD_EXCLUSION =
+  /通函|通告|日期|董事會會議|董事会会议|延遲|延迟|延期|circular|board meeting|delay/i;
+/** 软排除「報告 / 年報 / report」：只在标题**不含**业绩公告本体时生效 —— 合刊「…業績公告…及中期報告」放行。 */
+const RESULTS_TITLE_REPORT_EXCLUSION = /報告|报告|年報|年报|report/i;
+const RESULTS_TITLE_BODY = /業績公告|業績公佈|業績公布|业绩公告|业绩公布|results announcement/i;
+
 /** 補充 / 更正 类只在**不含**业绩公告本体时排除 (FR-004：`hk:09992` 2026-08-20 真实刊发标题带「補充公告」)。 */
 const SUPPLEMENT_OR_CORRECTION = /補充|更正/;
 const RESULTS_ANNOUNCEMENT_BODY = /業績公告|業績公佈/;
@@ -57,8 +83,21 @@ export function classifyNoticeTitle(title: string, types: readonly string[]): No
   return NOTICE_LOOKALIKE.test(title) ? 'lookalike' : 'other';
 }
 
-/** 业绩刊发事实判定：`types` 含 `fs_main`，且不是「不含业绩公告本体的補充 / 更正」。 */
+/** 标题命中业绩标题规则 v3：正向命中、无硬排除、「報告」类只在有业绩公告本体时放行。 */
+function matchesResultsTitle(title: string): boolean {
+  return (
+    RESULTS_TITLE.test(title) &&
+    !RESULTS_TITLE_HARD_EXCLUSION.test(title) &&
+    (!RESULTS_TITLE_REPORT_EXCLUSION.test(title) || RESULTS_TITLE_BODY.test(title))
+  );
+}
+
+/**
+ * 业绩刊发事实判定 (FR-004)：`types` 含 `fs_main`，或含 `fs` 族标签且标题命中业绩标题规则 v3；
+ * 两路共用「不含业绩公告本体的補充 / 更正」窄排除。
+ */
 export function isResultsPublication(title: string, types: readonly string[]): boolean {
-  if (!types.includes(RESULTS_ANNOUNCEMENT_TYPE)) return false;
+  const byMainType = types.includes(RESULTS_ANNOUNCEMENT_TYPE);
+  if (!byMainType && !(types.some(isResultsFamilyType) && matchesResultsTitle(title))) return false;
   return !SUPPLEMENT_OR_CORRECTION.test(title) || RESULTS_ANNOUNCEMENT_BODY.test(title);
 }

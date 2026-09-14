@@ -88,3 +88,57 @@ describe('isResultsPublication — 业绩刊发事实 (FR-004, plan §D6)', () =
     expect(isResultsPublication(title, ALL)).toBe(false);
   });
 });
+
+// spec Session（八）2a (FR-004 修订): types 无 fs_main、只有 fs 族标签时, 标题命中业绩标题规则 v3 才算刊发。
+describe('isResultsPublication — fs 族标签 + 业绩标题规则 v3 (FR-004, spec Session（八）2a)', () => {
+  const FS_FULL = ['fs', 'fs_full'];
+
+  it.each([
+    ['🚨 hk:09961 季度 + 上半年', '2025 年第二季度及上半年業績公告', FS_FULL],
+    [
+      '🚨 hk:09999 业绩公告 + 中期报告合刊 (本体覆盖「報告」排除)',
+      '截至2025年6月30日止三個月及六個月之財務業績公告、第二季度股息公告及中期報告',
+      FS_FULL,
+    ],
+    ['只有 fs、无任何子标签', '截至2026年6月30日止六個月的中期業績公告', ['fs']],
+    ['只有 fs_ 子标签', '2025年全年業績公告', ['fs_full']],
+    ['年度業績', '2025年度業績', ['fs']],
+    ['简体', '2025年中期业绩公告', ['fs']],
+    ['英文', 'Interim Results Announcement for the Six Months Ended 30 June 2025', FS_FULL],
+    [
+      '业绩公告本体 + 補充 (窄排除两路共用)',
+      '截至2025年6月30日止六個月的中期業績公告之補充公告',
+      ['fs'],
+    ],
+  ])('%s「%s」⇒ 刊发', (_label, title, types) => {
+    expect(isResultsPublication(title, types)).toBe(true);
+  });
+
+  it('🚨 hk:01188 形态「澄清公佈…中期業績公佈」⇒ 钉为刊发 (标题含业绩公告本体; 同期只留最早一份, 澄清晚于本体不改公布日)', () => {
+    expect(isResultsPublication('澄清公佈 - 截至2025年6月30日止六個月之中期業績公佈', ['fs'])).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['🚨 hk:00005 业绩报告 (无本体, 「報告」排除)', '2025年中期業績報告', FS_FULL],
+    ['英文 report (无本体)', 'Interim Results Report 2025', FS_FULL],
+    ['日期 (通知)', '2025年中期業績公告日期', ['fs']],
+    ['董事會會議', '董事會會議 - 審批2025年中期業績', ['fs']],
+    ['通函', '有關2025年度業績之通函', ['fs']],
+    ['通告', '股東週年大會通告 - 省覽2025年度業績', ['fs']],
+    ['延遲', '延遲刊發2025年度業績公告', ['fs']],
+    ['英文 board meeting', 'Date of Board Meeting to Approve Interim Results', ['fs']],
+    ['补充 (无本体)', '2025年中期業績之補充資料', ['fs']],
+    ['标题不像业绩', '翌日披露報表', ['fs']],
+  ])('%s「%s」⇒ 非刊发', (_label, title, types) => {
+    expect(isResultsPublication(title, types)).toBe(false);
+  });
+
+  it.each([['all'], ['mr'], ['srp'], ['m_a_v']])(
+    '🚫 族标签之外 (%s) 即使标题命中 v3 ⇒ 非刊发',
+    (type) => {
+      expect(isResultsPublication('2025 年第二季度及上半年業績公告', [type])).toBe(false);
+    },
+  );
+});
