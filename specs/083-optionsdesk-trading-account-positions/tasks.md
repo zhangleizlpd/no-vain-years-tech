@@ -94,7 +94,7 @@ updated_at: '2026-09-15'
 
 - [ ] T010 [Contract] **OpenAPI 导出 + api-client 重生成**（FR-008; plan Constitution §V; US1/US2/US3/US4）：依次跑 `pnpm nx run server:export-openapi` → `pnpm nx affected -t generate`（两步分别跑，🚫 只跑第二步）；核对生成的 4 个 hook 与响应类型可被 mobile import → verify: `git diff --stat apps/server/openapi.json packages/api-client/src/generated/` 含 4 个新端点；`grep -n 'broker-positions\|broker-orders\|broker-backfill-runs' apps/server/openapi.json` 各有命中；`pnpm nx run mobile:typecheck` 绿；nullable 标量字段在生成类型里是 `string | null` 而非 `{ [key: string]: unknown } | null`
 
-- [ ] T011 [P] [Docs] **ADR-0043 复审记录：#1 fired · mitigated**（plan Gate 0.4）：`docs/adr/0043-server-flat-module-paradigm.md` 追加复审记录：optionsdesk use case 20 → 24 越过 #1；缓解 = 不建子目录、按 `broker` 名词段分组（现状：锚与许愿单 14 / 雷达·链报告·腿·详情·温度计 5 / 券商镜像 5，列出查询命令 `rg -l broker apps/server/src/optionsdesk/*.usecase.ts`）；否决的三个替代与理由；**下次复审线 = optionsdesk use case 达 30 个**（维护者 2026-09-15 定）；frontmatter `sunset_trigger` #1 行尾补状态注记 → verify: `pnpm tsx scripts/check-adr-frontmatters.ts` 绿；`npx prettier --check docs/adr/0043-server-flat-module-paradigm.md` 绿；`pnpm tsx scripts/checks/check-identifier-boundary.ts` exit 0
+- [X] T011 [P] [Docs] **ADR-0043 复审记录：#1 fired · mitigated**（plan Gate 0.4）：`docs/adr/0043-server-flat-module-paradigm.md` 追加复审记录：optionsdesk use case 20 → 24 越过 #1；缓解 = 不建子目录、按 `broker` 名词段分组（现状：锚与许愿单 14 / 雷达·链报告·腿·详情·温度计 5 / 券商镜像 5，列出查询命令 `rg -l broker apps/server/src/optionsdesk/*.usecase.ts`）；否决的三个替代与理由；**下次复审线 = optionsdesk use case 达 30 个**（维护者 2026-09-15 定）；frontmatter `sunset_trigger` #1 行尾补状态注记 → verify: `pnpm tsx scripts/check-adr-frontmatters.ts` 绿；`npx prettier --check docs/adr/0043-server-flat-module-paradigm.md` 绿；`pnpm tsx scripts/checks/check-identifier-boundary.ts` exit 0
 
 ### Mobile 持仓列表（US1）
 
