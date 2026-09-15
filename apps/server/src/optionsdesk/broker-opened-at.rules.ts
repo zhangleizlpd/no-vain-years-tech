@@ -43,8 +43,8 @@ export interface OpenedAtResult {
   source: 'derived' | 'fallback';
 }
 
-/** 买入类记正、卖出类记负。 */
-const SIDE_SIGN: Readonly<Record<BrokerTradeSide, 1 | -1>> = {
+/** 买入类记正、卖出类记负。`broker-lots.rules.ts` 复用 (083 D10 同口径)。 */
+export const SIDE_SIGN: Readonly<Record<BrokerTradeSide, 1 | -1>> = {
   BUY: 1,
   BUY_BACK: 1,
   SELL: -1,
@@ -59,7 +59,8 @@ function compareDealIds(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function compareDeals(a: OpenedAtDeal, b: OpenedAtDeal): number {
+/** 成交全序 `(tradedAt, dealId)` 升序。`broker-lots.rules.ts` 复用 (083 D10 同排序键)。 */
+export function compareDeals(a: OpenedAtDeal, b: OpenedAtDeal): number {
   return a.tradedAt.getTime() - b.tradedAt.getTime() || compareDealIds(a.dealId, b.dealId);
 }
 
