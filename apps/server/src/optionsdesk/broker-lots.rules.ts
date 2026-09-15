@@ -203,7 +203,7 @@ function deductFifo(lots: WorkingLot[], qty: Prisma.Decimal): void {
  * 乘数 = 开仓订单 `amount ÷ (qty × price)` 取整 (plan V0b: 由持仓市值反推存在非整数, 不可用;
  * 🚫 读 `option_contract`)。价格缺失 / 为 0、数量为 0、金额缺失 ⇒ null。
  */
-function resolveMultiplier(order: LotOrder): Prisma.Decimal | null {
+export function resolveMultiplier(order: LotOrder): Prisma.Decimal | null {
   if (order.amount === null || order.price === null || order.price.isZero() || order.qty.isZero()) {
     return null;
   }

@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsIn } from 'class-validator';
 import type { Prisma } from '../generated/prisma/client';
 import type { BrokerMarket } from './broker-code.rules';
+import type { BrokerOrderDetail } from './get-broker-order.usecase';
 import type { BrokerPositionDetail } from './get-broker-position.usecase';
 import type {
   BrokerPositionGroupView,
@@ -373,6 +374,128 @@ export function toBrokerPositionDetailResponse(
               unrealizedPl: decimalString(lot.unrealizedPl),
             })),
           },
+  };
+}
+
+export class BrokerOrderDetailResponse {
+  @ApiProperty({ description: '订单行 id (数字串)', example: '88' })
+  id!: string;
+
+  @ApiProperty({ description: '市场 (标时区用)', enum: BROKER_MARKETS, example: 'us' })
+  market!: BrokerMarket;
+
+  @ApiProperty({ description: '交易方向 (券商枚举原样)', example: 'SELL_SHORT' })
+  side!: string;
+
+  @ApiProperty({ description: '订单状态 (券商枚举原样)', example: 'FILLED_ALL' })
+  status!: string;
+
+  @ApiProperty({
+    description: '订单类型 (券商枚举原样)',
+    type: 'string',
+    nullable: true,
+    example: 'NORMAL',
+  })
+  orderType!: string | null;
+
+  @ApiProperty({ description: '券商原始代码 (组合单为合成码)', example: 'US.ZQY261016P30000' })
+  code!: string;
+
+  @ApiProperty({ description: '正股名 (取不到回落券商名 / 正股代码)', example: '示例' })
+  name!: string;
+
+  @ApiProperty({
+    description: '期权字段 (正股 / 组合单为 null)',
+    type: BrokerPositionOptionResponse,
+    nullable: true,
+  })
+  option!: BrokerPositionOptionResponse | null;
+
+  @ApiProperty({
+    description: '组合单各腿券商代码 (非组合单为空数组)',
+    type: [String],
+    example: ['US.ZQY261016P25000', 'US.ZQY261016P30000'],
+  })
+  comboLegCodes!: string[];
+
+  @ApiProperty({ description: '订单数量', example: '2' })
+  qty!: string;
+
+  @ApiProperty({ description: '订单价格', type: 'string', nullable: true, example: '3.2' })
+  price!: string | null;
+
+  @ApiProperty({
+    description: '订单金额 (券商原值; 缺失 ⇒ null)',
+    type: 'string',
+    nullable: true,
+    example: '3200',
+  })
+  amount!: string | null;
+
+  @ApiProperty({
+    description: '成交数量; 未成交 (0 / 缺失) ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '2',
+  })
+  dealtQty!: string | null;
+
+  @ApiProperty({
+    description: '成交均价; 未成交 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '3.1',
+  })
+  dealtAvgPrice!: string | null;
+
+  @ApiProperty({
+    description:
+      '成交金额 = 成交数量 × 成交均价 × 乘数 (乘数 = 订单金额 ÷ (数量 × 价格) 取整); 价格为 0 ⇒ 0; ' +
+      '未成交或乘数推不出 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '3100',
+  })
+  dealtAmount!: string | null;
+
+  @ApiProperty({ description: '币种', type: 'string', nullable: true, example: 'USD' })
+  currency!: string | null;
+
+  @ApiProperty({
+    description: '下单时间, 交易所当地 YYYY-MM-DD HH:mm:ss (时区按 market); 券商未给 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '2026-09-01 09:30:00',
+  })
+  createdAtLocal!: string | null;
+}
+
+export function toBrokerOrderDetailResponse(detail: BrokerOrderDetail): BrokerOrderDetailResponse {
+  return {
+    id: detail.id.toString(),
+    market: detail.market,
+    side: detail.side,
+    status: detail.status,
+    orderType: detail.orderType,
+    code: detail.code,
+    name: detail.name,
+    option:
+      detail.option === null
+        ? null
+        : {
+            expiry: detail.option.expiry,
+            right: detail.option.right,
+            strike: detail.option.strike.toFixed(),
+          },
+    comboLegCodes: detail.comboLegCodes,
+    qty: detail.qty.toFixed(),
+    price: decimalString(detail.price),
+    amount: decimalString(detail.amount),
+    dealtQty: decimalString(detail.dealtQty),
+    dealtAvgPrice: decimalString(detail.dealtAvgPrice),
+    dealtAmount: decimalString(detail.dealtAmount),
+    currency: detail.currency,
+    createdAtLocal: detail.createdAtLocal,
   };
 }
 

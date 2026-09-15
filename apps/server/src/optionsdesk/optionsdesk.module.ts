@@ -39,6 +39,7 @@ import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subsc
 import { BrokerAccountController } from './broker-account.controller.js';
 import { ListBrokerPositionsUseCase } from './list-broker-positions.usecase.js';
 import { GetBrokerPositionUseCase } from './get-broker-position.usecase.js';
+import { GetBrokerOrderUseCase } from './get-broker-order.usecase.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -137,6 +138,8 @@ import { GetBrokerPositionUseCase } from './get-broker-position.usecase.js';
     BrokerHistoryBackfillSubscriber,
     // 083 T005 交易账户页持仓列表读端 (plan D1–D8): 只读, 账号隔离下沉进每条 broker_* 查询。
     ListBrokerPositionsUseCase,
+    // 083 T008 订单详情读端 (plan D11): 成交金额乘数与批次同源; 同上只读、账号隔离在查询条件里。
+    GetBrokerOrderUseCase,
     // 083 T007 持仓详情读端 (plan D9 / D10): 汇总 + 订单列表 + FIFO 批次; 同上只读、账号隔离在查询条件里。
     GetBrokerPositionUseCase,
   ],

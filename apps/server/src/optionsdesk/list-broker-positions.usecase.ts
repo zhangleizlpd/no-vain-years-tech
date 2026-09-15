@@ -159,7 +159,7 @@ export function toBrokerPositionRow(
  */
 export async function resolveUnderlyingNames(
   prisma: PrismaService,
-  positions: readonly BrokerPositionRecord[],
+  positions: readonly Pick<BrokerPositionRecord, 'underlyingTicker' | 'code' | 'raw'>[],
 ): Promise<Map<string, string>> {
   const tickers = new Set<string>();
   const rawNames = new Map<string, string>();

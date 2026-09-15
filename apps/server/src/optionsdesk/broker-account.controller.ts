@@ -17,22 +17,27 @@ import { OPTIONSDESK_READ_BUCKET } from '../security/throttler-skip-buckets';
 import { skipExcept } from './optionsdesk.controller';
 import { ListBrokerPositionsUseCase } from './list-broker-positions.usecase';
 import { BROKER_POSITION_NOT_FOUND, GetBrokerPositionUseCase } from './get-broker-position.usecase';
+import { BROKER_ORDER_NOT_FOUND, GetBrokerOrderUseCase } from './get-broker-order.usecase';
 import {
+  BrokerOrderDetailResponse,
   BrokerPositionDetailResponse,
   BrokerPositionListResponse,
   BrokerPositionsQuery,
+  toBrokerOrderDetailResponse,
   toBrokerPositionDetailResponse,
   toBrokerPositionListResponse,
 } from './broker-account.dto';
 
-/** `broker_position.id` 为 int8; 超出即不可能存在。 */
+/** `broker_position.id` / `broker_order.id` 为 int8; 超出即不可能存在。 */
 const INT8_MAX = BigInt('9223372036854775807');
 
-/** 持仓 id 路径段 → BigInt; 非数字 / 超出 int8 折叠为同一个 404 (与不存在不可区分)。 */
-function parseBrokerPositionId(raw: string): bigint {
+/**
+ * 行 id 路径段 → BigInt; 非数字 / 超出 int8 折叠为该资源同一个 404 (`notFound`, 与不存在不可区分)。
+ */
+function parseBrokerRowId(raw: string, notFound: string): bigint {
   const id = /^\d{1,19}$/.test(raw) ? BigInt(raw) : null;
   if (id === null || id > INT8_MAX) {
-    throw new NotFoundException(BROKER_POSITION_NOT_FOUND);
+    throw new NotFoundException(notFound);
   }
   return id;
 }
@@ -42,6 +47,7 @@ function parseBrokerPositionId(raw: string): bigint {
  *
  * GET /api/v1/optionsdesk/broker-positions?market=us|hk   持仓列表
  * GET /api/v1/optionsdesk/broker-positions/:id            持仓详情 (汇总 + 订单 + 批次)
+ * GET /api/v1/optionsdesk/broker-orders/:id               订单详情
  *
  * 🚨 **只读** (FR-019): 本 controller 无任何写端点 —— 下单 / 改单 / 撤单 / 平仓入口一律不存在。
  *
@@ -60,6 +66,7 @@ export class BrokerAccountController {
   constructor(
     private readonly listBrokerPositions: ListBrokerPositionsUseCase,
     private readonly getBrokerPosition: GetBrokerPositionUseCase,
+    private readonly getBrokerOrder: GetBrokerOrderUseCase,
   ) {}
 
   @Get('broker-positions')
@@ -123,7 +130,46 @@ export class BrokerAccountController {
     @Param('id') id: string,
   ): Promise<BrokerPositionDetailResponse> {
     return toBrokerPositionDetailResponse(
-      await this.getBrokerPosition.execute(req.user.accountId, parseBrokerPositionId(id)),
+      await this.getBrokerPosition.execute(
+        req.user.accountId,
+        parseBrokerRowId(id, BROKER_POSITION_NOT_FOUND),
+      ),
+    );
+  }
+
+  @Get('broker-orders/:id')
+  @HttpCode(200)
+  @SkipThrottle(skipExcept(OPTIONSDESK_READ_BUCKET))
+  @Throttle({ 'optionsdesk-read-account': { limit: 120, ttl: 60_000 } })
+  @ApiParam({ name: 'id', description: '订单行 id (数字串)', example: '88' })
+  @ApiOperation({
+    summary: 'One broker order (read-only)',
+    description:
+      'Order fields as synced from the broker for the CURRENT account. dealtAmount = dealtQty × ' +
+      'dealtAvgPrice × multiplier, where the multiplier is derived from this order ' +
+      '(amount ÷ (qty × price), rounded; same basis as position lots). An unfilled order ' +
+      '(dealtQty 0 or missing) has all three dealt fields null; a zero-price order has ' +
+      'dealtAmount 0. A missing order, one owned by another account, one whose underlying is ' +
+      'unresolved, and one outside the anchor set all return the identical 404 ' +
+      '(detail BROKER_ORDER_NOT_FOUND).',
+  })
+  @ApiResponse({ status: 200, description: 'Order detail', type: BrokerOrderDetailResponse })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthenticated / account not ACTIVE',
+    type: ProblemDetailResponse,
+  })
+  @ApiResponse({ status: 404, description: 'Order not found', type: ProblemDetailResponse })
+  @ApiResponse({ status: 429, description: 'Rate limit (120/60s)', type: ProblemDetailResponse })
+  async order(
+    @Req() req: { user: AuthenticatedUser },
+    @Param('id') id: string,
+  ): Promise<BrokerOrderDetailResponse> {
+    return toBrokerOrderDetailResponse(
+      await this.getBrokerOrder.execute(
+        req.user.accountId,
+        parseBrokerRowId(id, BROKER_ORDER_NOT_FOUND),
+      ),
     );
   }
 }
