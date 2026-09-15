@@ -1,5 +1,6 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
 import type {
+  BrokerBackfillRunResponseStatus,
   BrokerPositionOptionResponseRight,
   BrokerPositionRowResponseKind,
   BrokerPositionRowResponseMarket,
@@ -1541,6 +1542,19 @@ export const OPTIONSDESK_COPY = {
       },
       /** 组合单各腿（FR-017）。 */
       legsTitle: '组合腿',
+    },
+    /** 冷启动结局页「券商历史 · 状态 · 时刻」行（083 T020，FR-018 / plan D16）。 */
+    brokerBackfill: {
+      prefix: '券商历史',
+      /** 最近一条补齐记录的状态标（FR-018 逐字）；`Record` 穷举 SDK 值域。 */
+      status: {
+        pending: '待执行',
+        running: '执行中',
+        succeeded: '成功',
+        failed: '失败',
+      } satisfies Record<BrokerBackfillRunResponseStatus, string>,
+      /** 该标的无补齐记录（FR-018 逐字）。 */
+      none: '未触发',
     },
   },
 } as const;

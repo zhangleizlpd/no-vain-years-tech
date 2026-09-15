@@ -6,6 +6,7 @@
 //    重排** + 按 `market` 拼时区标签；🚫 任何时区换算（plan §D13，Guardrail 8）。
 // 📌 文案全部取 `OPTIONSDESK_COPY.tradingAccountPositions`（独立段，🚫 081 `tradingAccount` 段）。
 import type {
+  BrokerBackfillRunResponse,
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
   BrokerPositionOptionResponseRight,
@@ -143,6 +144,48 @@ export function localDateTimeParts(local: string): LocalDateTimeParts | null {
 /** 按市场出时区标签：`（美东）` / `（香港）`。O(1)。 */
 export function marketTzLabel(market: BrokerPositionRowResponseMarket): string {
   return COPY.tzLabel[market];
+}
+
+/** canonical ticker 前缀 → 市场；非 `us:` / `hk:` ⇒ null（补齐接口只收这两种，server `^(us|hk):` 校验）。O(1)。 */
+function tickerMarket(ticker: string): BrokerPositionRowResponseMarket | null {
+  if (ticker.startsWith('us:')) return 'us';
+  if (ticker.startsWith('hk:')) return 'hk';
+  return null;
+}
+
+/**
+ * 冷启动结局 → 补齐状态请求的 `tickers`：去重、只留 `us:` / `hk:` 前缀（混进一个非法形态会让整次请求 400）。
+ * 结局条数受冷启动页 `MAX_TRACKED_ANCHORS = 50` 约束 ⇒ 不超过接口的 50 上限。O(n)。
+ */
+export function backfillQueryTickers(runs: readonly { ticker: string }[]): string[] {
+  return [...new Set(runs.map((run) => run.ticker))].filter(
+    (ticker) => tickerMarket(ticker) !== null,
+  );
+}
+
+/** 补齐记录按 ticker 建索引（FR-018「按 ticker 合并」；记录只带 ticker，🚫 按 anchorId）。O(n)。 */
+export function indexBackfillRunsByTicker<T extends { ticker: string }>(
+  runs: readonly T[],
+): ReadonlyMap<string, T> {
+  return new Map(runs.map((run) => [run.ticker, run]));
+}
+
+/**
+ * 冷启动页「券商历史 · 状态 · 时刻」一行（FR-018，plan D16）。无记录 ⇒「券商历史 · 未触发」；
+ * 时刻 = `atLocal` 重排为 `MM-DD HH:mm` + 按 ticker 前缀市场的时区标签（🚫 换算）；缺失或形态不合法 ⇒ 不拼时刻。O(1)。
+ */
+export function brokerBackfillLine(
+  ticker: string,
+  run: Pick<BrokerBackfillRunResponse, 'status' | 'atLocal'> | undefined,
+): string {
+  const copy = COPY.brokerBackfill;
+  if (run === undefined) return `${copy.prefix} · ${copy.none}`;
+  const head = `${copy.prefix} · ${copy.status[run.status]}`;
+  const parts = run.atLocal === null ? null : localDateTimeParts(run.atLocal);
+  const market = tickerMarket(ticker);
+  return parts === null || market === null
+    ? head
+    : `${head} · ${parts.mdHm}${marketTzLabel(market)}`;
 }
 
 /** 数值串 → 有限数；null / 空串 / 不可解析（如 `N/A`）⇒ null。 */

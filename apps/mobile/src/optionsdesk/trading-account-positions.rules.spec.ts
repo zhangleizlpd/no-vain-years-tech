@@ -13,9 +13,12 @@ import { describe, expect, it } from 'vitest';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
+  backfillQueryTickers,
+  brokerBackfillLine,
   displayCode,
   expiryYymmdd,
   formatPlRatio,
+  indexBackfillRunsByTicker,
   isDetailNotFound,
   localDateTimeParts,
   marketTzLabel,
@@ -369,5 +372,48 @@ describe('unsignedQty（批次剩余 / 原始数量不带符号）', () => {
     expect(unsignedQty('-1')).toBe('1');
     expect(unsignedQty('-2.0')).toBe('2.0');
     expect(unsignedQty('3')).toBe('3');
+  });
+});
+
+// ── T020：冷启动页券商历史行（FR-018） ─────────────────────────────────────────
+
+describe('brokerBackfillLine / indexBackfillRunsByTicker / backfillQueryTickers（FR-018，plan D16）', () => {
+  it('四种状态文案穷举；时刻按 ticker 前缀市场拼时区标签，只重排不换算', () => {
+    expect(
+      brokerBackfillLine('us:ZQX', { status: 'succeeded', atLocal: '2026-09-14 16:05:12' }),
+    ).toBe('券商历史 · 成功 · 09-14 16:05（美东）');
+    expect(
+      brokerBackfillLine('hk:08801', { status: 'failed', atLocal: '2026-09-14 09:05:12' }),
+    ).toBe('券商历史 · 失败 · 09-14 09:05（香港）');
+    expect(
+      brokerBackfillLine('us:ZQY', { status: 'running', atLocal: '2026-09-15 09:30:00' }),
+    ).toBe('券商历史 · 执行中 · 09-15 09:30（美东）');
+    expect(brokerBackfillLine('us:ZQY', { status: 'pending', atLocal: null })).toBe(
+      '券商历史 · 待执行',
+    );
+  });
+
+  it('无记录 ⇒「券商历史 · 未触发」；时刻串形态不合法 ⇒ 不拼时刻（🚫 猜时区）', () => {
+    expect(brokerBackfillLine('us:ZQX', undefined)).toBe('券商历史 · 未触发');
+    expect(
+      brokerBackfillLine('us:ZQX', { status: 'succeeded', atLocal: '2026-09-14T16:05:12Z' }),
+    ).toBe('券商历史 · 成功');
+  });
+
+  it('按 ticker 建索引；请求 tickers 去重且只留 us / hk 前缀', () => {
+    const index = indexBackfillRunsByTicker([
+      { ticker: 'us:ZQX', status: 'succeeded' },
+      { ticker: 'hk:08801', status: 'failed' },
+    ]);
+    expect(index.get('hk:08801')?.status).toBe('failed');
+    expect(index.get('us:ZQY')).toBeUndefined();
+    expect(
+      backfillQueryTickers([
+        { ticker: 'us:ZQX' },
+        { ticker: 'hk:08801' },
+        { ticker: 'us:ZQX' },
+        { ticker: 'ZQR' },
+      ]),
+    ).toEqual(['us:ZQX', 'hk:08801']);
   });
 });

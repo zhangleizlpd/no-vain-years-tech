@@ -120,7 +120,7 @@ updated_at: '2026-09-15'
 
 ### Mobile 冷启动页（US4）
 
-- [ ] T020 [Mobile] **冷启动结局页券商历史状态行**（FR-018; plan D16; state_branches 41, 42, 47; US4）：`anchor-cold-start-screen.tsx` 拿到冷启动结局后以其 ticker 列表调生成的 `list-broker-backfill-runs` hook；`RunRow` 下加一行「券商历史 · 状态标 · 时刻」，按 ticker 合并；无记录 ⇒「未触发」；该请求失败 ⇒ 只隐藏这一行、原结局照常；文案进 `tradingAccountPositions` 段（状态 `Record` 穷举） → verify: T014 的 e2e 续臂（深链进冷启动结局页，mock 既有冷启动端点 + 本片端点）先红 → 绿，臂：① 成功记录 ⇒「券商历史 · 成功」+ 时刻（branch 41；US4-AS1）② 无记录 ⇒「券商历史 · 未触发」（42；US4-AS2）③ 本片端点 500 ⇒ 券商历史行不出现、冷启动结局照常（47）④ 请求的 `tickers` 参数 = 冷启动结局的 ticker 集合；定向变异：按 `anchorId` 而非 ticker 合并 → ① 红（留档）
+- [X] T020 [Mobile] **冷启动结局页券商历史状态行**（FR-018; plan D16; state_branches 41, 42, 47; US4）：`anchor-cold-start-screen.tsx` 拿到冷启动结局后以其 ticker 列表调生成的 `list-broker-backfill-runs` hook；`RunRow` 下加一行「券商历史 · 状态标 · 时刻」，按 ticker 合并；无记录 ⇒「未触发」；该请求失败 ⇒ 只隐藏这一行、原结局照常；文案进 `tradingAccountPositions` 段（状态 `Record` 穷举） → verify: T014 的 e2e 续臂（深链进冷启动结局页，mock 既有冷启动端点 + 本片端点）先红 → 绿，臂：① 成功记录 ⇒「券商历史 · 成功」+ 时刻（branch 41；US4-AS1）② 无记录 ⇒「券商历史 · 未触发」（42；US4-AS2）③ 本片端点 500 ⇒ 券商历史行不出现、冷启动结局照常（47）④ 请求的 `tickers` 参数 = 冷启动结局的 ticker 集合；定向变异：按 `anchorId` 而非 ticker 合并 → ① 红（留档）
 
 ### E2E · 冒烟 · 治理
 

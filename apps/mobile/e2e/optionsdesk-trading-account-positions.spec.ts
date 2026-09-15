@@ -1,5 +1,8 @@
 import { expect, test, type Locator, type Page, type Route } from './_support/fixtures';
 import type {
+  AnchorColdStartRunResponse,
+  AnchorSubmissionReviewResponse,
+  BrokerBackfillRunResponse,
   BrokerLotResponse,
   BrokerOrderDetailResponse,
   BrokerPositionDetailResponse,
@@ -57,6 +60,10 @@ import { mockJson } from './_support/api-mock';
 //   T026（维护者 2026-09-15 impl 期裁决）
 //        ① 列表已显示且 `stale=true`、重读 500 ⇒ 陈旧条与刷新失败提示同时可见，陈旧条在上（sb 48）
 //        ② 「尚未同步」卡下拉、响应变为有数据 ⇒ 出列表；「暂无交易账户」「暂无持仓」卡下拉 ⇒ 列表端点命中 +1（sb 49）
+//   T020（深链进冷启动结局页；mock 待审箱 CONSUMED + 冷启动结局 + 补齐状态端点）
+//        ① 成功记录 ⇒「券商历史 · 成功」+ 时刻（sb 41 / US4-AS1）  ② 无记录 ⇒「券商历史 · 未触发」（sb 42 / US4-AS2）
+//        ③ 补齐状态端点 500 ⇒ 券商历史行不出现、冷启动结局照常（sb 47）
+//        ④ 请求的 `tickers` 参数 = 冷启动结局的 ticker 集合
 //
 // ── 重读触发在 web 上怎么验 ─────────────────────────────────────────────────────
 //   · 下拉：RN Web 的 `RefreshControl` 无手势 ⇒ `pullToRefresh` 沿 fiber 直调其 `onRefresh`。
@@ -1757,4 +1764,226 @@ test('083 T019⑦ 列表 → 期权行 →「本合约订单」项（恰 2 次�
   await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
   await expect(page).toHaveURL(/\/optionsdesk\/trading-account-order\/ord-h4$/);
   await expect(inOrder(page, 'side')).toHaveText('买回');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T020 —— 冷启动结局页券商历史状态行（深链进冷启动结局页）
+// ════════════════════════════════════════════════════════════════════════════
+
+const COLD_START_DEEP_LINK = '/optionsdesk/anchor-cold-start';
+const SUBMISSIONS_RE = /\/api\/v1\/optionsdesk\/anchor-submissions(\?|$)/;
+const COLD_START_RE = /\/api\/v1\/marketdata\/anchor-cold-start(\?|$)/;
+const BACKFILL_RUNS_RE = /\/api\/v1\/optionsdesk\/broker-backfill-runs(\?|$)/;
+
+/** 冷启动结局（canonical）。🚨 `anchorId` 与 ticker 刻意不同形 ⇒ 按 anchorId 合并必然一条都对不上。 */
+const COLD_START_RUNS: AnchorColdStartRunResponse[] = [
+  {
+    anchorId: '9001',
+    ticker: 'us:ZQX',
+    outcome: 'backfilled',
+    reason: null,
+    targetSession: '2026-09-14',
+    lastRunAt: '2026-09-15T01:00:00.000Z',
+    needsAttention: false,
+  },
+  {
+    anchorId: '9002',
+    ticker: 'us:ZQY',
+    outcome: 'no_option_chain',
+    reason: null,
+    targetSession: '2026-09-14',
+    lastRunAt: '2026-09-15T01:01:00.000Z',
+    needsAttention: false,
+  },
+  {
+    anchorId: '9003',
+    ticker: 'hk:08801',
+    outcome: 'backfilled',
+    reason: null,
+    targetSession: '2026-09-15',
+    lastRunAt: '2026-09-15T01:02:00.000Z',
+    needsAttention: false,
+  },
+];
+
+/** 待审箱 CONSUMED 行：每只新锚一条，`consumedAnchorId` 指向对应锚（冷启动页由它得出「本批新锚」）。 */
+function consumedSubmission(
+  run: AnchorColdStartRunResponse,
+  index: number,
+): AnchorSubmissionReviewResponse {
+  return {
+    id: String(100 + index),
+    submitter: 'e2e-083',
+    ticker: run.ticker,
+    instrumentName: null,
+    market: run.ticker.startsWith('hk:') ? 'hk' : 'us',
+    v: '1.0000',
+    asof: '2026-09-12',
+    method: 'dcf',
+    confidence: '6.00',
+    note: null,
+    reviewNote: null,
+    status: 'CONSUMED',
+    consumedAnchorId: run.anchorId,
+    disposition: 'create',
+    asofFlag: 'OK',
+    asofSuggested: null,
+    asofNeedsAck: false,
+    createdAt: '2026-09-14T02:00:00.000Z',
+    updatedAt: '2026-09-14T02:00:00.000Z',
+  };
+}
+
+/** 补齐记录（canonical）：ZQX 成功、08801 执行中、ZQY 无记录。 */
+const BACKFILL_RUNS: BrokerBackfillRunResponse[] = [
+  {
+    ticker: 'us:ZQX',
+    status: 'succeeded',
+    at: '2026-09-14T20:05:12.000Z',
+    atLocal: '2026-09-14 16:05:12',
+  },
+  {
+    ticker: 'hk:08801',
+    status: 'running',
+    at: '2026-09-15T01:00:00.000Z',
+    atLocal: '2026-09-15 09:00:00',
+  },
+];
+
+interface BackfillRunsServer {
+  /** false ⇒ 补齐状态端点 500。 */
+  healthy: boolean;
+  runs: BrokerBackfillRunResponse[];
+}
+
+async function fulfillJson(route: Route, status: number, body: unknown): Promise<void> {
+  await route.fulfill({
+    status,
+    contentType: 'application/json',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * 冷启动页三个端点的 mock，均为 `(请求参数, canonical 状态) → 响应` 纯函数：
+ * 待审箱按 `status` 过滤；冷启动结局按 `anchorIds` 过滤；补齐状态按 `tickers` 请求顺序、无记录不出现（同 server）。
+ */
+async function installColdStartMocks(page: Page, backfill: BackfillRunsServer): Promise<void> {
+  const submissions = COLD_START_RUNS.map(consumedSubmission);
+  const preflightOrGet = async (
+    route: Route,
+    onGet: (params: URLSearchParams) => Promise<void>,
+  ) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') {
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    }
+    if (req.method() !== 'GET') return void (await route.fallback());
+    await onGet(new URL(req.url()).searchParams);
+  };
+
+  await page.route(SUBMISSIONS_RE, (route) =>
+    preflightOrGet(route, async (params) => {
+      const status = params.get('status');
+      const items = submissions.filter((s) => status === null || s.status === status);
+      await fulfillJson(route, 200, { items, total: items.length, truncated: false });
+    }),
+  );
+  await page.route(COLD_START_RE, (route) =>
+    preflightOrGet(route, async (params) => {
+      const ids = (params.get('anchorIds') ?? '').split(',');
+      await fulfillJson(route, 200, {
+        items: COLD_START_RUNS.filter((run) => ids.includes(run.anchorId)),
+      });
+    }),
+  );
+  await page.route(BACKFILL_RUNS_RE, (route) =>
+    preflightOrGet(route, async (params) => {
+      if (!backfill.healthy) {
+        return void (await fulfillJson(route, 500, {
+          status: 500,
+          title: 'Internal Server Error',
+        }));
+      }
+      const byTicker = new Map(backfill.runs.map((run) => [run.ticker, run]));
+      const tickers = (params.get('tickers') ?? '').split(',');
+      await fulfillJson(
+        route,
+        200,
+        tickers.flatMap((ticker) => byTicker.get(ticker) ?? []),
+      );
+    }),
+  );
+}
+
+async function gotoColdStart(page: Page): Promise<void> {
+  await page.goto(COLD_START_DEEP_LINK);
+  await expect(page.getByTestId('optionsdesk-cold-start-list')).toBeVisible({ timeout: 90_000 });
+}
+
+/** 券商历史行，限定在该 ticker 的结局行内（按 ticker 合并：行挂错位置也算红）。 */
+function backfillLine(page: Page, ticker: string): Locator {
+  return page
+    .getByTestId(`optionsdesk-cold-start-row-${ticker}`)
+    .getByTestId(`optionsdesk-cold-start-broker-backfill-${ticker}`);
+}
+
+test('083 T020① 有成功记录 ⇒「券商历史 · 成功」+ 时刻；执行中同样带状态与时刻（sb 41 / US4-AS1）', async ({
+  page,
+}) => {
+  await installColdStartMocks(page, { healthy: true, runs: BACKFILL_RUNS });
+  await gotoColdStart(page);
+
+  await expect(backfillLine(page, 'us:ZQX')).toHaveText('券商历史 · 成功 · 09-14 16:05（美东）', {
+    timeout: 30_000,
+  });
+  await expect(backfillLine(page, 'hk:08801')).toHaveText(
+    '券商历史 · 执行中 · 09-15 09:00（香港）',
+  );
+});
+
+test('083 T020② 无补齐记录 ⇒「券商历史 · 未触发」（sb 42 / US4-AS2）', async ({ page }) => {
+  await installColdStartMocks(page, { healthy: true, runs: BACKFILL_RUNS });
+  await gotoColdStart(page);
+
+  await expect(backfillLine(page, 'us:ZQY')).toHaveText('券商历史 · 未触发', { timeout: 30_000 });
+  await expect(page.getByTestId('optionsdesk-cold-start-outcome-us:ZQY')).toHaveText(
+    'no_option_chain',
+  );
+});
+
+test('083 T020③ 补齐状态端点 500 ⇒ 券商历史行不出现、冷启动结局照常（sb 47）', async ({ page }) => {
+  const log = observeRequests(page);
+  await installColdStartMocks(page, { healthy: false, runs: BACKFILL_RUNS });
+  await gotoColdStart(page);
+
+  // 全局 query `retry: 1`（`src/core/api/query-client.ts`）⇒ 第 2 次 500 之后该请求进入失败态。
+  await expect
+    .poll(() => log.hits(BACKFILL_RUNS_RE), { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(2);
+  for (const run of COLD_START_RUNS) {
+    await expect(page.getByTestId(`optionsdesk-cold-start-outcome-${run.ticker}`)).toHaveText(
+      run.outcome,
+    );
+  }
+  await expect(page.getByTestId('optionsdesk-cold-start-list').getByText(/券商历史/)).toHaveCount(
+    0,
+  );
+  await expect(page.getByTestId('optionsdesk-cold-start-retry')).toHaveCount(0);
+});
+
+test('083 T020④ 补齐状态请求的 tickers 参数 = 冷启动结局的 ticker 集合', async ({ page }) => {
+  const log = observeRequests(page);
+  await installColdStartMocks(page, { healthy: true, runs: BACKFILL_RUNS });
+  await gotoColdStart(page);
+
+  await expect(backfillLine(page, 'us:ZQX')).toBeVisible({ timeout: 30_000 });
+  const urls = log.apiUrls.filter((url) => BACKFILL_RUNS_RE.test(url));
+  expect(urls.length).toBeGreaterThan(0);
+  const expected = COLD_START_RUNS.map((run) => run.ticker).sort();
+  for (const url of urls) {
+    const tickers = (new URL(url).searchParams.get('tickers') ?? '').split(',').sort();
+    expect(tickers).toEqual(expected);
+  }
 });
