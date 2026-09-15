@@ -124,7 +124,7 @@ updated_at: '2026-09-15'
 
 ### E2E · 冒烟 · 治理
 
-- [ ] T021 [P] [Mobile-E2E] **markets-OFF 深链门控**（FR-001; plan D15）：`e2e/markets-feature-gate.spec.ts` 的 `GATED_DEEPLINKS` 加 `/optionsdesk/trading-account-position/1` 与 `/optionsdesk/trading-account-order/1`（期望重定向 `/profile`，note 注明 083 挂在 optionsdesk 栈下、门控靠继承）；同步文件头注释里的深链条数 / 栈内路由条数 → verify: `pnpm nx run mobile:e2e-public` 全绿；变异留档：临时把 `GATED_DEEPLINKS` 过滤到这两条并去掉 `_layout.tsx` 的 `MarketsRouteGuard` 包裹 ⇒ 两条红，恢复后绿（081 T007 实测：不过滤会首败在更早的条目，看不到新条目的红）
+- [X] T021 [P] [Mobile-E2E] **markets-OFF 深链门控**（FR-001; plan D15）：`e2e/markets-feature-gate.spec.ts` 的 `GATED_DEEPLINKS` 加 `/optionsdesk/trading-account-position/1` 与 `/optionsdesk/trading-account-order/1`（期望重定向 `/profile`，note 注明 083 挂在 optionsdesk 栈下、门控靠继承）；同步文件头注释里的深链条数 / 栈内路由条数 → verify: `pnpm nx run mobile:e2e-public` 全绿；变异留档：临时把 `GATED_DEEPLINKS` 过滤到这两条并去掉 `_layout.tsx` 的 `MarketsRouteGuard` 包裹 ⇒ 两条红，恢复后绿（081 T007 实测：不过滤会首败在更早的条目，看不到新条目的红）
 
 - [ ] T022 [Contract-Smoke] **契约冒烟：交易账户读接口**（FR-001, FR-002; plan Gate 0.1; state_branches 1, 39; US1）：新建 `e2e/contract-smoke/optionsdesk-trading-account.contract.ts`（结构照 `optionsdesk.contract.ts` GOLDEN SAMPLE 头注释），用生成的 `@nvy/api-client` 打 testcontainers 真 server：① 无连接账号请求列表 ⇒ `hasConnection=false`、`groups=[]` ② 请求不存在的持仓 id 与订单 id ⇒ 404 且错误体形态与既有 not-found 一致 ③ `list-broker-backfill-runs` 请求一个 ticker ⇒ 空数组；若冒烟装置已有 DB 种数入口，追加一条种入持仓后的列表读取（没有则在文件头注明「装置无种数入口，有持仓路径由 server IT 覆盖」）；在 `run.ts` 登记 → verify: `pnpm nx run mobile:contract-smoke` 本条绿；变异留档：临时把生成 client 的列表路径改错一个字符 ⇒ 本条红（证明真的打到 server）
 
