@@ -1,7 +1,13 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
-import type { MarchAuditEvidenceResponse, OptionsdeskControllerRadarMarket } from '@nvy/api-client';
+import type {
+  BrokerPositionOptionResponseRight,
+  BrokerPositionRowResponseMarket,
+  MarchAuditEvidenceResponse,
+  OptionsdeskControllerRadarMarket,
+} from '@nvy/api-client';
 
 import type { TradingAccountSegment } from './trading-account.rules';
+import type { PositionsView } from './trading-account-positions.rules';
 
 export const OPTIONSDESK_COPY = {
   /** 雷达屏题头（= 期权台 tab 落地屏）。 */
@@ -1361,6 +1367,52 @@ export const OPTIONSDESK_COPY = {
         body: '上线后在这里按市场查看持仓与交易的统计报表。',
       },
     } satisfies Record<TradingAccountSegment, { title: string; body: string }>,
+  },
+
+  /**
+   * 交易账户页 · 持仓分段（083 T013，plan §D14 / §D17）。视图判定与行展示规则在
+   * `trading-account-positions.rules.ts`。
+   *
+   * 🚨 **独立段**，🚫 MUST NOT 追加进上面 081 的 `tradingAccount` 段 —— 那段「不含 暂无 / 空仓 /
+   *    无数据」的不变量对订单 / 报表占位仍然有效（`trading-account.rules.spec.ts` 臂 ⑤，analyze H7），
+   *    本段的「暂无交易账户 / 暂无持仓」放进去必红。
+   * 📌 订单状态 / 方向 / 类型映射与详情屏文案由后续 task（T017–T020）追加到本段。
+   */
+  tradingAccountPositions: {
+    /** 四种非列表状态的卡片标题（FR-010 逐字）。 */
+    states: {
+      error: '持仓加载失败',
+      'no-connection': '暂无交易账户',
+      'never-synced': '尚未同步',
+      empty: '暂无持仓',
+    } satisfies Record<Exclude<PositionsView, 'list'>, string>,
+    retry: '重试',
+    /** 同步时刻行；入参为已拼好时区标签的交易所当地时间。 */
+    syncedAt: (time: string) => `同步于 ${time}`,
+    /**
+     * 陈旧提示。🚨 中性措辞：接口只给按时间判定的 `stale`，不区分「同步失败」与「未到点」，
+     * 🚫 写成「最近一次同步未成功」（plan D17 据此改写 mockup 帧 2）。
+     */
+    stale: (time: string) => `数据可能已过时 · 最近成功同步于 ${time}`,
+    /** 已显示数据时重读失败，替换同步时刻行（FR-023 逐字）。 */
+    refetchFailed: '刷新失败，显示的是上次加载的数据',
+    /** 判定不出正股的持仓条数提示（FR-011）。 */
+    unresolved: (count: number) => `未归类 ${count} 条`,
+    /** 到期日早于交易所今天、尚未被同步移除的期权（FR-021 逐字）。 */
+    expired: '已到期 · 待同步',
+    /** 期权名称后缀：美股 Call / Put，港股 购 / 沽（FR-007）。 */
+    optionRight: {
+      us: { C: 'Call', P: 'Put' },
+      hk: { C: '购', P: '沽' },
+    } satisfies Record<
+      BrokerPositionRowResponseMarket,
+      Record<BrokerPositionOptionResponseRight, string>
+    >,
+    /** 交易所当地时间后的时区标签（按响应 `market`，不做换算）。 */
+    tzLabel: {
+      us: '（美东）',
+      hk: '（香港）',
+    } satisfies Record<BrokerPositionRowResponseMarket, string>,
   },
 } as const;
 
