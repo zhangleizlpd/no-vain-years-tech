@@ -8,7 +8,11 @@ import type {
 } from '@nvy/api-client';
 
 import type { TradingAccountSegment } from './trading-account.rules';
-import type { PositionsView } from './trading-account-positions.rules';
+import type {
+  BrokerOrderStatus,
+  BrokerTradeSide,
+  PositionsView,
+} from './trading-account-positions.rules';
 
 export const OPTIONSDESK_COPY = {
   /** 雷达屏题头（= 期权台 tab 落地屏）。 */
@@ -1464,6 +1468,69 @@ export const OPTIONSDESK_COPY = {
         option: '本合约订单',
       } satisfies Record<BrokerPositionRowResponseKind, string>,
       ordersEmpty: '暂无订单',
+    },
+    /**
+     * 订单状态文案（083 T018，plan D11）。含义取自 SDK 源码行尾注释的简短版；`FILLED_ALL → 全部成交`
+     * 与维护者 App 截图一致。值域外的值由 `orderStatusText` 原样返回。
+     */
+    orderStatusLabel: {
+      'N/A': '未知',
+      UNSUBMITTED: '未提交',
+      WAITING_SUBMIT: '等待提交',
+      SUBMITTING: '提交中',
+      SUBMIT_FAILED: '提交失败',
+      TIMEOUT: '处理超时',
+      SUBMITTED: '已提交',
+      FILLED_PART: '部分成交',
+      FILLED_ALL: '全部成交',
+      CANCELLING_PART: '部分撤单中',
+      CANCELLING_ALL: '撤单中',
+      CANCELLED_PART: '部分成交已撤单',
+      CANCELLED_ALL: '已撤单',
+      FAILED: '下单失败',
+      DISABLED: '已失效',
+      DELETED: '已删除',
+      FILL_CANCELLED: '成交已撤销',
+    } satisfies Record<BrokerOrderStatus, string>,
+    /** 交易方向文案（083 T018）；`SELL_SHORT → 卖空` 与维护者 App 截图一致。 */
+    tradeSideLabel: {
+      'N/A': '未知',
+      BUY: '买入',
+      SELL: '卖出',
+      SELL_SHORT: '卖空',
+      BUY_BACK: '买回',
+    } satisfies Record<BrokerTradeSide, string>,
+    /**
+     * 订单类型：只映射维护者截图核过的 `NORMAL → 限价单`，其余原样显示枚举名（plan D11 / V3）。
+     * 🚫 为未验证的类型编文案。
+     */
+    orderTypeLabel: (orderType: string): string => (orderType === 'NORMAL' ? '限价单' : orderType),
+    /** 订单详情屏（083 T018，plan D11 / D15）。 */
+    orderDetail: {
+      title: '订单详情',
+      /** 非数据视图的卡片标题（FR-020 逐字）。 */
+      states: {
+        'not-found': '订单不存在',
+        error: '加载失败',
+      },
+      stateBody: {
+        'not-found': '这张订单不在本账号已同步的数据里，或其正股已不在锚集中。',
+        error: '暂时连不上服务端，请稍后重试。',
+      },
+      /** 九个字段标签（FR-017 逐项）。 */
+      fields: {
+        side: '交易方向',
+        status: '订单状态',
+        name: '名称代码',
+        qtyPrice: '订单数量 / 价格',
+        amount: '订单金额',
+        dealtQtyPrice: '成交数量 / 均价',
+        dealtAmount: '成交金额',
+        createdAt: '下单时间',
+        orderType: '订单类型',
+      },
+      /** 组合单各腿（FR-017）。 */
+      legsTitle: '组合腿',
     },
   },
 } as const;

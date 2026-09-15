@@ -20,6 +20,8 @@ import {
   localDateTimeParts,
   marketTzLabel,
   optionDisplayName,
+  orderKind,
+  orderStatusText,
   plColorClass,
   refetchFailed,
   resolveDetailView,
@@ -27,6 +29,7 @@ import {
   showConnectionLabel,
   showGroupHeader,
   showUnresolvedHint,
+  tradeSideText,
   trimStrike,
 } from './trading-account-positions.rules';
 
@@ -288,5 +291,72 @@ describe('displayCode（正股行第二行代码）', () => {
 
   it('无前缀 ⇒ 原样', () => {
     expect(displayCode('ZQY')).toBe('ZQY');
+  });
+});
+
+// ── T018：订单枚举文案（plan D11，Guardrail 16） ────────────────────────────────
+
+/**
+ * SDK 值域逐字再列一遍（futu `constant.py` `OrderStatus` / `TrdSide`），与 rules 里的 union 类型相互独立 ——
+ * 类型漏值编译红只防「文案表比类型少」，这张表防「类型本身就漏了值」。
+ */
+const SDK_ORDER_STATUSES = [
+  'N/A',
+  'UNSUBMITTED',
+  'WAITING_SUBMIT',
+  'SUBMITTING',
+  'SUBMIT_FAILED',
+  'TIMEOUT',
+  'SUBMITTED',
+  'FILLED_PART',
+  'FILLED_ALL',
+  'CANCELLING_PART',
+  'CANCELLING_ALL',
+  'CANCELLED_PART',
+  'CANCELLED_ALL',
+  'FAILED',
+  'DISABLED',
+  'DELETED',
+  'FILL_CANCELLED',
+];
+const SDK_TRADE_SIDES = ['N/A', 'BUY', 'SELL', 'SELL_SHORT', 'BUY_BACK'];
+
+describe('订单状态 / 交易方向 / 订单类型文案（FR-017，plan D11）', () => {
+  it('① 状态 17 值、方向 5 值全部有非空中文文案，且文案表恰为 SDK 值域', () => {
+    expect(SDK_ORDER_STATUSES).toHaveLength(17);
+    expect(SDK_TRADE_SIDES).toHaveLength(5);
+    for (const status of SDK_ORDER_STATUSES) {
+      expect(orderStatusText(status), status).not.toBe('');
+      expect(orderStatusText(status), status).not.toBe(status);
+    }
+    for (const side of SDK_TRADE_SIDES) {
+      expect(tradeSideText(side), side).not.toBe('');
+      expect(tradeSideText(side), side).not.toBe(side);
+    }
+    expect(Object.keys(COPY.orderStatusLabel).sort()).toEqual([...SDK_ORDER_STATUSES].sort());
+    expect(Object.keys(COPY.tradeSideLabel).sort()).toEqual([...SDK_TRADE_SIDES].sort());
+  });
+
+  it('维护者 App 截图定死的两条：SELL_SHORT → 卖空、FILLED_ALL → 全部成交', () => {
+    expect(tradeSideText('SELL_SHORT')).toBe('卖空');
+    expect(orderStatusText('FILLED_ALL')).toBe('全部成交');
+  });
+
+  it('值域外的值原样返回枚举名（含原型链上的键名），🚫 编文案', () => {
+    expect(orderStatusText('SOME_NEW_STATUS')).toBe('SOME_NEW_STATUS');
+    expect(tradeSideText('SOME_NEW_SIDE')).toBe('SOME_NEW_SIDE');
+    expect(orderStatusText('toString')).toBe('toString');
+  });
+
+  it("② orderTypeLabel 只映射 NORMAL：('NORMAL') ⇒ 限价单、('MARKET') ⇒ MARKET", () => {
+    expect(COPY.orderTypeLabel('NORMAL')).toBe('限价单');
+    expect(COPY.orderTypeLabel('MARKET')).toBe('MARKET');
+  });
+
+  it('orderKind：期权 / 组合单 ⇒ option（张），正股 ⇒ stock（股）', () => {
+    const option = { expiry: '2026-10-16', right: 'C', strike: '55.000' };
+    expect(orderKind({ option, comboLegCodes: [] })).toBe('option');
+    expect(orderKind({ option: null, comboLegCodes: ['US.ZQY261016C55000'] })).toBe('option');
+    expect(orderKind({ option: null, comboLegCodes: [] })).toBe('stock');
   });
 });

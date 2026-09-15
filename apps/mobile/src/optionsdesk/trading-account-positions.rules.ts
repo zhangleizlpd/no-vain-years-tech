@@ -9,6 +9,7 @@ import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
   BrokerPositionOptionResponseRight,
+  BrokerPositionRowResponseKind,
   BrokerPositionRowResponseMarket,
 } from '@nvy/api-client';
 
@@ -211,4 +212,59 @@ export function positionDisplayName(position: PositionIdentity): string {
 export function positionCodeLine(position: PositionIdentity): string {
   if (position.option === null) return displayCode(position.code);
   return `${expiryYymmdd(position.option.expiry)} ${trimStrike(position.option.strike)}`;
+}
+
+// ── T018：订单枚举文案（plan D11，Guardrail 16） ────────────────────────────────
+
+/**
+ * 券商订单状态值域。生成类型是 `string`，这里用字面量 union 让文案 `Record` 穷举（漏值编译红）。
+ * EVIDENCE: 订单状态恰为这 17 值 —— futu OpenAPI Python SDK 公开源码 `futu/common/constant.py`
+ * `class OrderStatus`（本机 futu-shim venv 内核，2026-09-15）
+ */
+export type BrokerOrderStatus =
+  | 'N/A'
+  | 'UNSUBMITTED'
+  | 'WAITING_SUBMIT'
+  | 'SUBMITTING'
+  | 'SUBMIT_FAILED'
+  | 'TIMEOUT'
+  | 'SUBMITTED'
+  | 'FILLED_PART'
+  | 'FILLED_ALL'
+  | 'CANCELLING_PART'
+  | 'CANCELLING_ALL'
+  | 'CANCELLED_PART'
+  | 'CANCELLED_ALL'
+  | 'FAILED'
+  | 'DISABLED'
+  | 'DELETED'
+  | 'FILL_CANCELLED';
+
+/**
+ * 券商交易方向值域。
+ * EVIDENCE: 交易方向恰为这 5 值 —— 同上 SDK 源码 `class TrdSide`
+ */
+export type BrokerTradeSide = 'N/A' | 'BUY' | 'SELL' | 'SELL_SHORT' | 'BUY_BACK';
+
+/** 按枚举值查文案；值域外 ⇒ 原样返回（只认自有键，`toString` 之类原型链键名同样原样）。O(1)。 */
+function labelOf<K extends string>(labels: Readonly<Record<K, string>>, value: string): string {
+  return Object.prototype.hasOwnProperty.call(labels, value) ? labels[value as K] : value;
+}
+
+/** 订单状态文案；值域外（SDK 日后新增）⇒ 原样返回枚举名，🚫 编文案。O(1)。 */
+export function orderStatusText(status: string): string {
+  return labelOf(COPY.orderStatusLabel, status);
+}
+
+/** 交易方向文案；值域外 ⇒ 原样返回枚举名。O(1)。 */
+export function tradeSideText(side: string): string {
+  return labelOf(COPY.tradeSideLabel, side);
+}
+
+/** 订单数量单位按品种：期权或组合单 ⇒ `option`（张），否则 `stock`（股）；响应无 `kind` 字段。O(1)。 */
+export function orderKind(order: {
+  option: object | null;
+  comboLegCodes: readonly string[];
+}): BrokerPositionRowResponseKind {
+  return order.option !== null || order.comboLegCodes.length > 0 ? 'option' : 'stock';
 }

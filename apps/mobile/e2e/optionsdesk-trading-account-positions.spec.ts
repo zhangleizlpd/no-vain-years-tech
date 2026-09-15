@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page, type Route } from './_support/fixtures';
 import type {
+  BrokerOrderDetailResponse,
   BrokerPositionDetailResponse,
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
@@ -39,6 +40,13 @@ import { mockJson } from './_support/api-mock';
 //        ⑥ 已显示后重读 500 ⇒ 汇总保留 + 顶部刷新失败提示（sb 43 / FR-023）
 //        ⑦ 详情下拉 ⇒ 详情端点命中 +1（sb 14 下钻面）  ⑧ 深链进详情后 header 返回 ⇒ 交易账户页
 //        ⑨ 开仓时间时区标签按响应 `market`  ⑩ 详情返回列表（未卸载，只靠聚焦）⇒ 列表端点命中 +1（sb 14 聚焦面）
+//   T018 ③ 列表 → 正股行 → 订单（恰 2 次点击）⇒ 订单详情九个字段（sb 37 / US2-AS5 / SC-004）
+//        ④ 未成交订单 ⇒ 成交数量 / 均价 / 金额显示「—」（sb 38 / US3-AS4）  ⑤ 组合单 ⇒ 两个腿码（sb 31 / US2-AS6）
+//        ⑥ 首次即 404 ⇒「订单不存在」（sb 45）  ⑦ 首次 500 ⇒「加载失败 + 重试」（sb 46）
+//        ⑧ 页面无「撤单 / 改单 / 平仓」字样、无按钮（FR-019）  ⑨ 下单时间时区标签按响应 `market`
+//        ⑩ 下拉 ⇒ 订单详情端点命中 +1（sb 14 下钻面）  ⑪ 已显示后重读 500 ⇒ 字段保留 + 刷新失败提示（sb 43）
+//        ⑫ 已显示后重读 404 ⇒「订单不存在」替换旧数据（sb 45 / FR-020）
+//        （①② 为文案映射纯逻辑，在 vitest `trading-account-positions.rules.spec.ts`）
 //
 // ── 重读触发在 web 上怎么验 ─────────────────────────────────────────────────────
 //   · 下拉：RN Web 的 `RefreshControl` 无手势 ⇒ `pullToRefresh` 沿 fiber 直调其 `onRefresh`。
@@ -901,20 +909,35 @@ const HK_STOCK_DETAIL: BrokerPositionDetailResponse = {
   lots: null,
 };
 
-interface PositionDetailServer {
+/** 按 id 读的详情端点背后的服务端状态（持仓 / 订单共用）。 */
+interface ByIdServer<T> {
   /** false ⇒ 详情端点 500（服务端故障）。 */
   healthy: boolean;
-  /** 仍存在的持仓；删掉 = 被同步移除 ⇒ 404。 */
-  byId: Map<string, BrokerPositionDetailResponse>;
+  /** 仍存在的记录；删掉 = 被同步移除 ⇒ 404。 */
+  byId: Map<string, T>;
 }
+
+type PositionDetailServer = ByIdServer<BrokerPositionDetailResponse>;
 
 function newDetailServer(...details: BrokerPositionDetailResponse[]): PositionDetailServer {
   return { healthy: true, byId: new Map(details.map((d) => [d.id, d])) };
 }
 
-/** 详情端点 mock：`(id, server) → 响应` 纯函数；不存在 ⇒ 404 ProblemDetail（错误码在 `detail`）。 */
 async function installPositionDetailMock(page: Page, server: PositionDetailServer): Promise<void> {
-  await page.route(POSITION_DETAIL_RE, async (route: Route) => {
+  await installByIdMock(page, POSITION_DETAIL_RE, server, 'BROKER_POSITION_NOT_FOUND');
+}
+
+/**
+ * 详情端点 mock：`(id, server) → 响应` 纯函数；不存在 ⇒ 404 ProblemDetail（错误码在 `detail`）。
+ * `re` 的第 1 个捕获组 = 路径里的 id。
+ */
+async function installByIdMock<T>(
+  page: Page,
+  re: RegExp,
+  server: ByIdServer<T>,
+  notFoundCode: string,
+): Promise<void> {
+  await page.route(re, async (route: Route) => {
     const req = route.request();
     if (req.method() === 'OPTIONS') {
       return void (await route.fulfill({ status: 204, headers: CORS }));
@@ -928,7 +951,7 @@ async function installPositionDetailMock(page: Page, server: PositionDetailServe
         body: JSON.stringify({ type: 'about:blank', title: 'Internal Server Error', status: 500 }),
       }));
     }
-    const id = decodeURIComponent(POSITION_DETAIL_RE.exec(new URL(req.url()).pathname)?.[1] ?? '');
+    const id = decodeURIComponent(re.exec(new URL(req.url()).pathname)?.[1] ?? '');
     const detail = server.byId.get(id);
     if (detail === undefined) {
       return void (await route.fulfill({
@@ -939,7 +962,7 @@ async function installPositionDetailMock(page: Page, server: PositionDetailServe
           type: 'about:blank',
           title: 'Not Found',
           status: 404,
-          detail: 'BROKER_POSITION_NOT_FOUND',
+          detail: notFoundCode,
         }),
       }));
     }
@@ -998,20 +1021,20 @@ test('083 T017① 点正股行 ⇒ 持仓详情显示汇总（全精度）与订
   for (const { id } of ZQY_STOCK_DETAIL.orders) {
     await expect(inDetail(page, `order-${id}`)).toBeVisible();
   }
-  await expect(inDetail(page, 'order-ord-3-summary')).toHaveText('SELL 50 股 @ 49.10');
+  await expect(inDetail(page, 'order-ord-3-summary')).toHaveText('卖出 50 股 @ 49.10');
   await expect(inDetail(page, 'order-ord-3-time')).toHaveText('08-20 13:30（美东）');
 });
 
-// 📌 状态 / 方向此处先显示券商原枚举；中文映射归 T018（届时本臂断言随之改为中文）。
+// 📌 状态 / 方向为 T018 的中文映射（`orderStatusText` / `tradeSideText`）。
 test('083 T017② 已撤单订单照常列出、状态标可见（sb 36 / US3-AS3）', async ({ page }) => {
   await installPositionsMock(page, newServer(US_GROUPED));
   await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
   await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
 
-  await expect(inDetail(page, 'order-ord-3-status')).toHaveText('CANCELLED_ALL', {
+  await expect(inDetail(page, 'order-ord-3-status')).toHaveText('已撤单', {
     timeout: 30_000,
   });
-  await expect(inDetail(page, 'order-ord-4-status')).toHaveText('FILLED_ALL');
+  await expect(inDetail(page, 'order-ord-4-status')).toHaveText('全部成交');
 });
 
 test('083 T017③ 详情端点首次 500 ⇒「加载失败 + 重试」；恢复后点重试 ⇒ 汇总（sb 46）', async ({
@@ -1147,4 +1170,298 @@ test('083 T017⑩ 从持仓详情返回交易账户页（列表屏未卸载，�
   await expect(detailRoot(page)).toHaveCount(0, { timeout: 30_000 });
   await expect(positionRow(page, ZQY_STOCK.id)).toBeVisible();
   await expect.poll(() => log.hits(POSITIONS_RE, 'us'), { timeout: 30_000 }).toBe(before + 1);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T018 —— 订单详情屏：九个字段 + 组合腿 + 加载 / 404 / 重读
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 只认订单详情端点 `/broker-orders/:id`。 */
+const ORDER_DETAIL_RE = /\/api\/v1\/optionsdesk\/broker-orders\/([^/?]+)(\?|$)/;
+const ORDER_SCREEN = 'optionsdesk-trading-account-order-screen';
+const ORDER = 'optionsdesk-trading-account-order';
+
+/** 「ZQY 示例」正股全部成交买单（= `ZQY_STOCK_DETAIL` 订单段里的 `ord-4`）。 */
+const ZQY_FILLED_ORDER: BrokerOrderDetailResponse = {
+  id: 'ord-4',
+  market: 'us',
+  side: 'BUY',
+  status: 'FILLED_ALL',
+  orderType: 'NORMAL',
+  code: 'US.ZQY',
+  name: 'ZQY 示例',
+  option: null,
+  comboLegCodes: [],
+  qty: '100',
+  price: '45.00',
+  amount: '4500.00',
+  dealtQty: '100',
+  dealtAvgPrice: '45.00',
+  dealtAmount: '4500.00',
+  currency: 'USD',
+  createdAtLocal: '2026-09-11 16:52:07',
+};
+
+/** 未成交即撤销（= `ord-3`）⇒ 成交三字段 null。 */
+const ZQY_CANCELLED_ORDER: BrokerOrderDetailResponse = {
+  ...ZQY_FILLED_ORDER,
+  id: 'ord-3',
+  side: 'SELL',
+  status: 'CANCELLED_ALL',
+  qty: '50',
+  price: '49.10',
+  amount: '2455.00',
+  dealtQty: null,
+  dealtAvgPrice: null,
+  dealtAmount: null,
+  createdAtLocal: '2026-08-20 13:30:00',
+};
+
+/** 组合单：`option` 为 null、两条腿（未知订单类型 ⇒ 原样显示枚举名）。 */
+const ZQY_COMBO_ORDER: BrokerOrderDetailResponse = {
+  ...ZQY_FILLED_ORDER,
+  id: 'ord-combo',
+  side: 'SELL',
+  orderType: 'MARKET',
+  code: 'US.ZQY-COMBO',
+  comboLegCodes: ['US.ZQY261016C55000', 'US.ZQY261016C60000'],
+  qty: '1',
+  price: '0.85',
+  amount: '85.00',
+  dealtQty: '1',
+  dealtAvgPrice: '0.85',
+  dealtAmount: '85.00',
+};
+
+/** 港股卖空认沽（交易账户页默认美股 ⇒ 香港时区标签只能来自响应 `market`）。 */
+const HK_SHORT_PUT_ORDER: BrokerOrderDetailResponse = {
+  id: 'ord-h3',
+  market: 'hk',
+  side: 'SELL_SHORT',
+  status: 'FILLED_ALL',
+  orderType: 'NORMAL',
+  code: 'HK.08801261029P7250',
+  name: '示例汽车',
+  option: { expiry: '2026-10-29', right: 'P', strike: '7.250' },
+  comboLegCodes: [],
+  qty: '2',
+  price: '0.099',
+  amount: '990.00',
+  dealtQty: '2',
+  dealtAvgPrice: '0.099',
+  dealtAmount: '990.00',
+  currency: 'HKD',
+  createdAtLocal: '2026-09-08 14:05:12',
+};
+
+function newOrderServer(
+  ...orders: BrokerOrderDetailResponse[]
+): ByIdServer<BrokerOrderDetailResponse> {
+  return { healthy: true, byId: new Map(orders.map((o) => [o.id, o])) };
+}
+
+async function installOrderDetailMock(
+  page: Page,
+  server: ByIdServer<BrokerOrderDetailResponse>,
+): Promise<void> {
+  await installByIdMock(page, ORDER_DETAIL_RE, server, 'BROKER_ORDER_NOT_FOUND');
+}
+
+function orderRoot(page: Page): Locator {
+  return page.getByTestId(ORDER_SCREEN);
+}
+
+function inOrder(page: Page, suffix: string): Locator {
+  return orderRoot(page).getByTestId(`${ORDER}-${suffix}`);
+}
+
+/** 深链进订单详情（首发吃 Metro 冷打包 ⇒ 长超时锚在订单详情屏根）。 */
+async function gotoOrderDetail(page: Page, id: string): Promise<void> {
+  await page.goto(`/optionsdesk/trading-account-order/${id}`);
+  await expect(orderRoot(page)).toBeVisible({ timeout: 90_000 });
+}
+
+/**
+ * 从当前页起依次点击（每步先等可见，步间不做任何导航）；返回点击次数 = SC-004「≤ 2 次点击」的计数面。
+ * locator 是惰性的 ⇒ 可以在导航前一次列出整条路径。
+ */
+async function tapThrough(steps: Locator[]): Promise<number> {
+  for (const step of steps) {
+    await expect(step).toBeVisible({ timeout: 30_000 });
+    await step.tap();
+  }
+  return steps.length;
+}
+
+const ORDER_FIELD_LABELS = [
+  '交易方向',
+  '订单状态',
+  '名称代码',
+  '订单数量 / 价格',
+  '订单金额',
+  '成交数量 / 均价',
+  '成交金额',
+  '下单时间',
+  '订单类型',
+];
+
+test('083 T018③ 列表 → 正股行 → 订单（恰 2 次点击）⇒ 订单详情九个字段（sb 37 / US2-AS5 / SC-004）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
+  await installOrderDetailMock(page, newOrderServer(ZQY_FILLED_ORDER));
+  await gotoTradingAccount(page);
+
+  const taps = await tapThrough([positionRow(page, ZQY_STOCK.id), inDetail(page, 'order-ord-4')]);
+
+  expect(taps).toBe(2);
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account-order\/ord-4$/);
+  for (const label of ORDER_FIELD_LABELS) {
+    await expect(orderRoot(page).getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(inOrder(page, 'side')).toHaveText('买入');
+  await expect(inOrder(page, 'status')).toHaveText('全部成交');
+  await expect(inOrder(page, 'name')).toHaveText('ZQY 示例');
+  await expect(inOrder(page, 'name-sub')).toHaveText('ZQY');
+  await expect(inOrder(page, 'qty-price')).toHaveText('100 股 / 45.00');
+  await expect(inOrder(page, 'amount')).toHaveText('4,500.00 USD');
+  await expect(inOrder(page, 'dealt-qty-price')).toHaveText('100 股 / 45.00');
+  await expect(inOrder(page, 'dealt-amount')).toHaveText('4,500.00');
+  await expect(inOrder(page, 'created-at')).toHaveText('2026/09/11');
+  await expect(inOrder(page, 'created-at-sub')).toHaveText('16:52:07（美东）');
+  await expect(inOrder(page, 'order-type')).toHaveText('限价单');
+  await expect(inOrder(page, 'legs')).toHaveCount(0);
+});
+
+test('083 T018④ 未成交即撤销的订单 ⇒ 成交数量 / 均价 / 金额显示「—」（sb 38 / US3-AS4）', async ({
+  page,
+}) => {
+  await installOrderDetailMock(page, newOrderServer(ZQY_CANCELLED_ORDER));
+  await gotoOrderDetail(page, ZQY_CANCELLED_ORDER.id);
+
+  await expect(inOrder(page, 'dealt-qty-price')).toHaveText('— / —', { timeout: 30_000 });
+  await expect(inOrder(page, 'dealt-amount')).toHaveText('—');
+  // 对照：订单本身的数量 / 价格照常显示（排除「整张卡都是 —」的恒真）。
+  await expect(inOrder(page, 'qty-price')).toHaveText('50 股 / 49.10');
+  await expect(inOrder(page, 'status')).toHaveText('已撤单');
+  await expect(inOrder(page, 'side')).toHaveText('卖出');
+});
+
+test('083 T018⑤ 组合单 ⇒ 两个腿码可见、数量单位为张、未知订单类型原样显示（sb 31 / US2-AS6）', async ({
+  page,
+}) => {
+  await installOrderDetailMock(page, newOrderServer(ZQY_COMBO_ORDER));
+  await gotoOrderDetail(page, ZQY_COMBO_ORDER.id);
+
+  await expect(inOrder(page, 'legs')).toBeVisible({ timeout: 30_000 });
+  await expect(inOrder(page, 'leg-0')).toHaveText('ZQY261016C55000');
+  await expect(inOrder(page, 'leg-1')).toHaveText('ZQY261016C60000');
+  await expect(inOrder(page, 'qty-price')).toHaveText('1 张 / 0.85');
+  await expect(inOrder(page, 'order-type')).toHaveText('MARKET');
+});
+
+test('083 T018⑥ 首次即 404 ⇒「订单不存在」，不是错误态（sb 45）', async ({ page }) => {
+  await installOrderDetailMock(page, newOrderServer());
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+
+  await expect(inOrder(page, 'not-found')).toBeVisible({ timeout: 30_000 });
+  await expect(orderRoot(page).getByText('订单不存在', { exact: true })).toBeVisible();
+  await expect(inOrder(page, 'error')).toHaveCount(0);
+  await expect(inOrder(page, 'fields')).toHaveCount(0);
+});
+
+test('083 T018⑦ 首次 500 ⇒「加载失败 + 重试」；恢复后点重试 ⇒ 字段（sb 46）', async ({ page }) => {
+  const server = newOrderServer(ZQY_FILLED_ORDER);
+  server.healthy = false;
+  await installOrderDetailMock(page, server);
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+
+  await expect(inOrder(page, 'error')).toBeVisible({ timeout: 30_000 });
+  await expect(orderRoot(page).getByText('加载失败', { exact: true })).toBeVisible();
+  await expect(inOrder(page, 'fields')).toHaveCount(0);
+
+  server.healthy = true;
+  await inOrder(page, 'retry').tap();
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+  await expect(inOrder(page, 'error')).toHaveCount(0);
+});
+
+test('083 T018⑧ 订单详情无「撤单 / 改单 / 平仓」字样、无任何按钮（FR-019）', async ({ page }) => {
+  await installOrderDetailMock(page, newOrderServer(ZQY_FILLED_ORDER));
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+
+  // 对照：屏内文本可被查到（排除「根节点下什么都没有」的恒真）。
+  await expect(orderRoot(page).getByText('全部成交', { exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(orderRoot(page).getByText(/撤单|改单|平仓/)).toHaveCount(0);
+  await expect(orderRoot(page).getByRole('button')).toHaveCount(0);
+});
+
+test('083 T018⑨ 下单时间的时区标签由响应 market 决定（美股 ⇒ 美东、港股 ⇒ 香港）', async ({
+  page,
+}) => {
+  await installOrderDetailMock(page, newOrderServer(ZQY_FILLED_ORDER, HK_SHORT_PUT_ORDER));
+
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+  await expect(inOrder(page, 'created-at-sub')).toHaveText('16:52:07（美东）', { timeout: 30_000 });
+
+  await gotoOrderDetail(page, HK_SHORT_PUT_ORDER.id);
+  await expect(inOrder(page, 'created-at-sub')).toHaveText('14:05:12（香港）', { timeout: 30_000 });
+  await expect(inOrder(page, 'created-at')).toHaveText('2026/09/08');
+  await expect(inOrder(page, 'side')).toHaveText('卖空');
+  await expect(inOrder(page, 'name')).toHaveText('示例汽车 沽');
+  await expect(inOrder(page, 'name-sub')).toHaveText('261029 7.25');
+  await expect(inOrder(page, 'amount')).toHaveText('990.00 HKD');
+});
+
+test('083 T018⑩ 订单详情下拉 ⇒ 订单详情端点命中 +1（sb 14 下钻面）', async ({ page }) => {
+  const log = observeRequests(page);
+  await installOrderDetailMock(page, newOrderServer(ZQY_FILLED_ORDER));
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+  const before = log.hits(ORDER_DETAIL_RE);
+
+  await pullToRefresh(inOrder(page, 'refresh'));
+
+  await expect.poll(() => log.hits(ORDER_DETAIL_RE), { timeout: 30_000 }).toBe(before + 1);
+  await expect(inOrder(page, 'fields')).toBeVisible();
+});
+
+test('083 T018⑪ 订单详情已显示后下拉、响应 500 ⇒ 字段仍可见 + 顶部刷新失败提示（sb 43 / FR-023）', async ({
+  page,
+}) => {
+  const server = newOrderServer(ZQY_FILLED_ORDER);
+  await installOrderDetailMock(page, server);
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+
+  server.healthy = false;
+  await pullToRefresh(inOrder(page, 'refresh'));
+
+  await expect(inOrder(page, 'refetch-failed')).toHaveText('刷新失败，显示的是上次加载的数据', {
+    timeout: 30_000,
+  });
+  await expect(inOrder(page, 'fields')).toBeVisible();
+  await expect(inOrder(page, 'error')).toHaveCount(0);
+  await expect(inOrder(page, 'not-found')).toHaveCount(0);
+});
+
+test('083 T018⑫ 订单详情已显示后下拉、响应 404 ⇒「订单不存在」替换旧数据（sb 45 / FR-020）', async ({
+  page,
+}) => {
+  const server = newOrderServer(ZQY_FILLED_ORDER);
+  await installOrderDetailMock(page, server);
+  await gotoOrderDetail(page, ZQY_FILLED_ORDER.id);
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+
+  // 服务端状态事件：订单的正股被移出锚集（服务端对此与「不存在」同一 404）。
+  server.byId.delete(ZQY_FILLED_ORDER.id);
+  await pullToRefresh(inOrder(page, 'refresh'));
+
+  await expect(inOrder(page, 'not-found')).toBeVisible({ timeout: 30_000 });
+  await expect(inOrder(page, 'fields')).toHaveCount(0);
+  await expect(inOrder(page, 'refetch-failed')).toHaveCount(0);
 });

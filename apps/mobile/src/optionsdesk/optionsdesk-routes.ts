@@ -94,3 +94,13 @@ export const OPTIONSDESK_TRADING_ACCOUNT_ROUTE = '/(app)/optionsdesk/trading-acc
 export function optionsdeskTradingAccountPositionRoute(id: string) {
   return `/(app)/optionsdesk/trading-account-position/${id}` as const;
 }
+
+// ── 083 T018：订单详情（FR-017 / plan D11 / D15） ───────────────────────────
+//
+// 🚨 同样长在 `/(app)/optionsdesk/` 下 —— 继承 `_layout` 那道 `MarketsRouteGuard`。
+//    `id` 是订单行数字串、不含冒号 ⇒ **无需转义**。
+
+/** 订单详情（持仓详情订单项 / 批次点击、深链进入）。 */
+export function optionsdeskTradingAccountOrderRoute(id: string) {
+  return `/(app)/optionsdesk/trading-account-order/${id}` as const;
+}

@@ -22,6 +22,7 @@ import {
   OPTIONSDESK_UNDERLYING_PATHNAME,
   optionsdeskAnchorEditRoute,
   optionsdeskChainReportRoute,
+  optionsdeskTradingAccountOrderRoute,
   optionsdeskTradingAccountPositionRoute,
   optionsdeskUnderlyingRoute,
 } from './optionsdesk-routes';
@@ -45,6 +46,7 @@ const ALL_ROUTES = [
   OPTIONSDESK_ANCHOR_COLD_START_ROUTE,
   OPTIONSDESK_TRADING_ACCOUNT_ROUTE,
   optionsdeskTradingAccountPositionRoute('7'),
+  optionsdeskTradingAccountOrderRoute('9'),
 ];
 
 describe('046 T023 —— 两个新屏的路由常量', () => {
@@ -134,6 +136,20 @@ describe('083 T017 —— 持仓详情的路由常量', () => {
   it('🚨 不长在 (tabs) 下、id 不做转义', () => {
     expect(optionsdeskTradingAccountPositionRoute('7')).not.toContain('(tabs)');
     expect(optionsdeskTradingAccountPositionRoute('7')).not.toContain('%');
+  });
+});
+
+describe('083 T018 —— 订单详情的路由常量', () => {
+  it('订单详情挂在期权台二级页栈下（⇒ 继承 _layout 的 route-stack 门）', () => {
+    expect(optionsdeskTradingAccountOrderRoute('9')).toBe(
+      '/(app)/optionsdesk/trading-account-order/9',
+    );
+  });
+
+  // id 是数字串、不含冒号 ⇒ 不转义；push 屏而非 tab ⇒ 不长在 (tabs) 下。
+  it('🚨 不长在 (tabs) 下、id 不做转义', () => {
+    expect(optionsdeskTradingAccountOrderRoute('9')).not.toContain('(tabs)');
+    expect(optionsdeskTradingAccountOrderRoute('9')).not.toContain('%');
   });
 });
 

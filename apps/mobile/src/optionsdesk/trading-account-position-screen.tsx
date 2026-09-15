@@ -5,9 +5,10 @@
 // 📌 重读三触发点同持仓分段（T016）：聚焦 / 回前台 hook + `RefreshControl`，依赖只放稳定的 `refetch`。
 // 📌 时间只做字符串重排 + 按**响应 `market`** 拼时区标签（深链进入时没有交易账户页的市场选择，Guardrail 8）；
 //    🚫 时区换算。金额全精度 `formatFullAmount`（万缩写只用于主列表，FR-022）。
-// 📌 「持仓批次」段归 T019；订单项点击进订单详情与方向 / 状态中文映射归 T018 —— 此处先显示券商原枚举。
+// 📌 订单项点击进订单详情（T018，SC-004）；方向 / 状态走 `tradeSideText` / `orderStatusText` 中文映射。
+// 📌 「持仓批次」段归 T019。
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import type {
   BrokerPositionDetailResponse,
   BrokerPositionOrderItemResponse,
@@ -16,16 +17,19 @@ import type {
 import { formatFullAmount } from '~/format/compact-amount';
 import { SafeAreaView, Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { optionsdeskTradingAccountOrderRoute } from './optionsdesk-routes';
+import { DetailStateCard } from './trading-account-detail-state-card';
 import {
   formatPlRatio,
   localDateTimeParts,
   marketTzLabel,
+  orderStatusText,
   plColorClass,
   positionCodeLine,
   positionDisplayName,
   refetchFailed,
   resolveDetailView,
-  type DetailView,
+  tradeSideText,
 } from './trading-account-positions.rules';
 import { useRefetchOnFocus, useRefetchOnForeground } from './use-refetch-on-foreground';
 import {
@@ -69,9 +73,18 @@ function DetailContent({ position }: { position: UseTradingAccountPositionResult
       </View>
     );
   }
-  if (view === 'not-found') return <StateCard view="not-found" />;
+  if (view === 'not-found') {
+    return <DetailStateCard testIdPrefix={TEST_ID} view="not-found" copy={DETAIL_COPY} />;
+  }
   if (view === 'error' || data === undefined) {
-    return <StateCard view="error" onRetry={position.refetch} />;
+    return (
+      <DetailStateCard
+        testIdPrefix={TEST_ID}
+        view="error"
+        copy={DETAIL_COPY}
+        onRetry={position.refetch}
+      />
+    );
   }
   return (
     <ScrollView
@@ -95,38 +108,6 @@ function DetailContent({ position }: { position: UseTradingAccountPositionResult
       <SummaryCard data={data} />
       <OrdersSection data={data} />
     </ScrollView>
-  );
-}
-
-interface StateCardProps {
-  view: Extract<DetailView, 'not-found' | 'error'>;
-  /** 只有「无已显示数据时加载失败」传入 ⇒ 渲染重试按钮。 */
-  onRetry?: () => void;
-}
-
-function StateCard({ view, onRetry }: StateCardProps) {
-  return (
-    <View className="px-md py-lg">
-      <View className="rounded-md border border-line bg-surface" testID={`${TEST_ID}-${view}`}>
-        <View className="items-center gap-2.5 px-lg py-xl">
-          <Text className="text-lg font-semibold text-ink">{DETAIL_COPY.states[view]}</Text>
-          <Text className="max-w-[280px] text-center text-sm text-ink-muted">
-            {DETAIL_COPY.stateBody[view]}
-          </Text>
-          {onRetry ? (
-            <Pressable
-              onPress={onRetry}
-              accessibilityRole="button"
-              accessibilityLabel={COPY.retry}
-              testID={`${TEST_ID}-retry`}
-              className="rounded-full bg-brand-500 px-lg py-sm"
-            >
-              <Text className="text-sm font-semibold text-white">{COPY.retry}</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-    </View>
   );
 }
 
@@ -234,27 +215,39 @@ interface OrderRowProps {
   tz: string;
 }
 
-/** 订单项：下单时间（交易所当地 + 时区）· 方向 数量 @ 价格 · 状态标（已撤单 / 失败照常列出，FR-016）。 */
+/**
+ * 订单项：下单时间（交易所当地 + 时区）· 方向 数量 @ 价格 · 状态标（已撤单 / 失败照常列出，FR-016）。
+ * 点击 ⇒ 订单详情（T018；持仓列表起第 2 次点击，SC-004）。
+ */
 function OrderRow({ order, unit, tz }: OrderRowProps) {
+  const router = useRouter();
   const id = `${TEST_ID}-order-${order.id}`;
   const time = order.createdAtLocal === null ? null : localDateTimeParts(order.createdAtLocal);
+  const summary = `${tradeSideText(order.side)} ${order.qty} ${unit} @ ${order.price ?? NO_VALUE}`;
   return (
-    <View className="border-b border-line-soft px-md py-2.5" testID={id}>
+    <Pressable
+      onPress={() => router.push(optionsdeskTradingAccountOrderRoute(order.id))}
+      accessibilityRole="button"
+      accessibilityLabel={summary}
+      className="border-b border-line-soft px-md py-2.5"
+      testID={id}
+    >
       <View className="flex-row items-center gap-sm">
         <View className="flex-1 gap-0.5">
           <Text className="font-mono text-xs text-ink-muted" testID={`${id}-time`}>
             {time === null ? NO_VALUE : `${time.mdHm}${tz}`}
           </Text>
           <Text className="font-mono text-sm text-ink" testID={`${id}-summary`}>
-            {`${order.side} ${order.qty} ${unit} @ ${order.price ?? NO_VALUE}`}
+            {summary}
           </Text>
         </View>
         <View className="rounded-sm bg-surface-alt px-1.5">
           <Text className="text-xs text-ink-muted" testID={`${id}-status`}>
-            {order.status}
+            {orderStatusText(order.status)}
           </Text>
         </View>
+        <Text className="text-base text-ink-muted">›</Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
