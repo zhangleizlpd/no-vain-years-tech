@@ -1,10 +1,10 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { TerminusModule } from '@nestjs/terminus';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PrismaService } from '../security/prisma.service.js';
 import { REDIS_CLIENT } from '../security/redis.token.js';
-import { HealthController } from './health.controller.js';
+import { HealthController, READY_CHECK_TIMEOUT_MS } from './health.controller.js';
 
 interface FakeRedis {
   ping: () => Promise<string>;
@@ -82,6 +82,40 @@ describe('HealthController', () => {
       controller = mod.get(HealthController);
 
       await expect(controller.ready()).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    describe('when a dependency never answers', () => {
+      afterEach(() => vi.useRealTimers());
+
+      it('returns 503 once READY_CHECK_TIMEOUT_MS elapses while prisma hangs', async () => {
+        const mod = await buildModule(
+          { $queryRaw: vi.fn(() => new Promise(() => {})) },
+          { ping: vi.fn().mockResolvedValue('PONG') },
+        );
+        controller = mod.get(HealthController);
+        vi.useFakeTimers();
+
+        const outcome = expect(controller.ready()).rejects.toBeInstanceOf(
+          ServiceUnavailableException,
+        );
+        await vi.advanceTimersByTimeAsync(READY_CHECK_TIMEOUT_MS);
+        await outcome;
+      });
+
+      it('returns 503 once READY_CHECK_TIMEOUT_MS elapses while redis ping hangs', async () => {
+        const mod = await buildModule(
+          { $queryRaw: vi.fn().mockResolvedValue([{ '?column?': 1 }]) },
+          { ping: vi.fn(() => new Promise<string>(() => {})) },
+        );
+        controller = mod.get(HealthController);
+        vi.useFakeTimers();
+
+        const outcome = expect(controller.ready()).rejects.toBeInstanceOf(
+          ServiceUnavailableException,
+        );
+        await vi.advanceTimersByTimeAsync(READY_CHECK_TIMEOUT_MS);
+        await outcome;
+      });
     });
   });
 });

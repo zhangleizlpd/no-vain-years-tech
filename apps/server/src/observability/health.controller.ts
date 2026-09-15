@@ -10,6 +10,12 @@ import { PrismaService } from '../security/prisma.service.js';
 import { REDIS_CLIENT } from '../security/redis.token.js';
 
 /**
+ * Upper bound per dependency check in /healthz/ready: an unreachable dependency
+ * (e.g. a blackholed host) reports down instead of hanging the probe.
+ */
+export const READY_CHECK_TIMEOUT_MS = 3_000;
+
+/**
  * Liveness vs Readiness split (per gap-audit A1):
  *  - /healthz/live   only proves the Node process is alive. K8s liveness
  *                    probe maps here: failure → pod restart.
@@ -41,7 +47,7 @@ export class HealthController {
   private async checkPrisma(): Promise<HealthIndicatorResult> {
     const session = this.indicators.check('prisma');
     try {
-      await this.prisma.$queryRaw`SELECT 1`;
+      await withTimeout(this.prisma.$queryRaw`SELECT 1`, 'prisma');
       return session.up();
     } catch (e) {
       return session.down({ error: (e as Error).message });
@@ -51,7 +57,7 @@ export class HealthController {
   private async checkRedis(): Promise<HealthIndicatorResult> {
     const session = this.indicators.check('redis');
     try {
-      const pong = await this.redis.ping();
+      const pong = await withTimeout(this.redis.ping(), 'redis');
       if (pong !== 'PONG') {
         return session.down({ error: `unexpected ping response: ${pong}` });
       }
@@ -59,5 +65,26 @@ export class HealthController {
     } catch (e) {
       return session.down({ error: (e as Error).message });
     }
+  }
+}
+
+/**
+ * Rejects once READY_CHECK_TIMEOUT_MS elapses. `work` keeps running on its own;
+ * the timer is cleared either way so each probe leaks nothing.
+ */
+async function withTimeout<T>(work: PromiseLike<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${what} check timed out after ${READY_CHECK_TIMEOUT_MS}ms`)),
+          READY_CHECK_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
