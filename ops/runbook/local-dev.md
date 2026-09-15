@@ -15,17 +15,16 @@ collision). For production deploy see [`prod-deploy-rollback.md`](./prod-deploy-
 > (`no-vain-years-mono/`) unless noted. Ports used: 5433 (PG), 6380 (Redis),
 > 3000 (server), 8081 (Expo web).
 >
-> **⚠️ In a per-feature git worktree the ports + env differ — this whole runbook
-> assumes the mono root.** A worktree (`feat-open`, see
-> [`.claude/skills/mono-worktree/SKILL.md`](../../.claude/skills/mono-worktree/SKILL.md))
-> isolates **server PORT (3001+) / Metro (8082+) / Redis db (1+)** via its root
-> `.envrc`; PG `mbw_poc` stays shared. Three things bite if you follow the
-> mono-root steps verbatim:
+> **⚠️ This runbook assumes the mono root.** Worktrees come in two kinds; PG `mbw_poc` is shared by all:
 >
-> 1. **Don't create `apps/server/.env`.** The worktree `.envrc` already `source`s
->    the **main repo's** `apps/server/.env` (real secrets) and then overrides
->    `PORT` / `EXPO_METRO_PORT` / `REDIS_URL`. A local copy is redundant and only
->    breeds "which .env has the real tokens" confusion. Skip Prereq 3.
+> | Kind                                                                                          | Created by                                                           | `apps/server/.env`                                                    | PORT / Metro / Redis db  | Use for                                                  |
+> | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------- |
+> | `feat-open` (sibling dir, [mono-worktree skill](../../.claude/skills/mono-worktree/SKILL.md)) | human                                                                | none — root `.envrc` sources the main repo's `.env`; never create one | own (3001+ / 8082+ / 1+) | parallel running services                                |
+> | Claude Code (`.claude/worktrees/*`)                                                           | `claude --worktree`, `EnterWorktree`, subagent `isolation: worktree` | copied from the main repo at creation (`.worktreeinclude`)            | same as main repo        | edits, tests, `export-openapi`; no long-running services |
+>
+> In a `feat-open` worktree the mono-root steps differ in three places:
+>
+> 1. **No `apps/server/.env`** — skip Prereq 3.
 > 2. **`nx serve server` is fine as-is** — direnv injects `PORT=3001`, the server
 >    reads it automatically. (Confirm with the running log's `running on:` line,
 >    not a hard-coded `:3000`.)

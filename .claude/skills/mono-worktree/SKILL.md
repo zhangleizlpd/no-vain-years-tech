@@ -14,6 +14,15 @@ solo dev 在 mono 仓需要**并行**多个 feature（如同时跑两个 SDD 分
 
 **不用的场景**：单 feature 串行开发 — main cwd 直接干就行，多此一举。
 
+**两类 worktree 分工**：
+
+| 类型        | 创建方                                                                                         | `apps/server/.env`                           | PORT / Metro / Redis db | 用途                                            |
+| ----------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------- | ----------------------- | ----------------------------------------------- |
+| `feat-open` | 人手（兄弟目录）                                                                               | 无，由根 `.envrc` source 主仓 `.env`；不许建 | 独占                    | 并行起服务调试                                  |
+| Claude Code | `claude --worktree` / `EnterWorktree` / 子 agent `isolation: worktree`（`.claude/worktrees/`） | 创建时按 `.worktreeinclude` 从主仓复制       | 与主仓相同              | 改代码、跑测试 / `export-openapi`；不起常驻服务 |
+
+agent 建 worktree 一律走 Claude Code 原生方式，不调 `feat-open`。
+
 ## 2. 4 个命令
 
 | 命令                   | 作用                                                                                                                                      |

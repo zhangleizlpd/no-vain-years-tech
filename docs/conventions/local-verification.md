@@ -118,15 +118,10 @@ pnpm tsx scripts/checks/check-commit-msg-parseable.ts --range origin/main..HEAD
 server config 项只落了出生地 `*.config.ts`，漏了 env 清单四处（规则 SoT 见
 [`.claude/rules/config-env-sync.md`](../../.claude/rules/config-env-sync.md)）。
 
-### `export-openapi` 的静默失败（最阴的一条）
+### `export-openapi` / `api-client:generate` 的失败形态
 
-target 是 `node dist/main.js & until curl -sf …/docs-json > openapi.json; do sleep 0.5; done`。**boot 失败时**：
-
-1. `curl` 永远拿不到东西 → `until` 循环**无限空转**（不报错、不超时）；
-2. `> openapi.json` 的重定向**已经先把文件截成 0 字节**；
-3. 输出通常被 pipe 给 `tail` → **失败信息完全不可见**。
-
-⇒ 现象是「命令挂住 + `openapi.json` 变空」，没有任何一行写着「boot 失败」。任何 boot 失败都会走到这里（mock 已烘进 target env；如今更可能的诱因是新 config factory 的 Zod 必填项）。
+- `server:export-openapi`（`apps/server/scripts/export-openapi.sh`）：端口占用 / boot 失败 / 超时 / 内容非法 ⇒ exit 1，`openapi.json` 保持原样。boot 失败看上方日志的 ZodError；worktree 内先确认 `apps/server/.env` 存在（两类 worktree 见 [local-dev](../../ops/runbook/local-dev.md)）。
+- `api-client:generate`：`openapi.json` 缺失 / 为空 / 不是 OpenAPI 文档 ⇒ 配置加载时报错，`src/generated/` 不动。
 
 ## 3. 会骗你的失败：先排除这几类再怀疑代码
 
