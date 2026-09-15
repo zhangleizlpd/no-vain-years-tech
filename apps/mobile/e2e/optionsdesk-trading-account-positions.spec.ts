@@ -26,6 +26,10 @@ import { mockJson } from './_support/api-mock';
 //        ⑤ `expired=true` 行 ⇒「已到期 · 待同步」可见（sb 23 / US1-AS9）
 //        ⑥ `brokerCount=1` ⇒ 无连接标签；`=2` 且同合约两行 ⇒ 各显示自己的连接名称（sb 20, 21）
 //        ⑦ 行 `marketValue='37560'` ⇒ 主列表显示 `3.76万`（FR-022）
+//   T016 ① 下拉重读 ⇒ 列表端点命中 +1、同步时刻更新、无非本片端点请求（sb 14 下拉面 / US1-AS8）
+//        ② 切后台再回前台（`visibilitychange`）⇒ 列表端点命中 +1（sb 14 回前台面）
+//        ③ 列表已显示、重读 500 ⇒ 行仍可见 + 刷新失败提示；恢复后重读 ⇒ 提示消失（sb 43 / US1-AS10）
+//        ④ 聚焦面不在此验（「进雷达再返回」是重新挂载，测不出聚焦）⇒ 由 T017⑩ 进持仓详情再返回验
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
 //   mock `/me` + refresh（App 级登录态前置）+ 本片列表端点 `GET /optionsdesk/broker-positions`；
@@ -673,4 +677,157 @@ test('083 T015⑦ 行 marketValue=37560 ⇒ 主列表显示 3.76万（FR-022）'
 
   await expect(positionRow(page, ZQR_CALL.id)).toBeVisible({ timeout: 30_000 });
   await expect(rowPart(page, ZQR_CALL.id, 'market-value')).toHaveText('3.76万');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T016 —— 重读触发（下拉 / 回前台）+ 重读失败保留数据
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 下一次成功同步后的服务端状态（同步时刻前移一天）。 */
+const RESYNCED_AT_LOCAL = '2026-09-15 09:05:12';
+const RESYNCED_LABEL = '09-15 09:05（美东）';
+
+interface RequestLog {
+  /** 某端点（按正则 + market）的 GET 命中次数。 */
+  hits: (re: RegExp, market?: Market) => number;
+  /** 全部 `/api/` 请求的 URL（按发出顺序），用于「没有请求任何非本片端点」。 */
+  apiUrls: string[];
+}
+
+/** 旁路观测请求（只计数，不参与 mock 应答 —— 应答仍是 `(参数, 服务端状态) → 响应` 纯函数）。 */
+function observeRequests(page: Page): RequestLog {
+  const gets: string[] = [];
+  const apiUrls: string[] = [];
+  page.on('request', (req) => {
+    if (!req.url().includes('/api/')) return;
+    apiUrls.push(req.url());
+    if (req.method() === 'GET') gets.push(req.url());
+  });
+  return {
+    apiUrls,
+    hits: (re, market) =>
+      gets.filter(
+        (url) =>
+          re.test(url) &&
+          (market === undefined || new URL(url).searchParams.get('market') === market),
+      ).length,
+  };
+}
+
+interface FiberLike {
+  memoizedProps?: { onRefresh?: unknown } | null;
+  return?: FiberLike | null;
+}
+
+/**
+ * 下拉重读。🚨 RN Web 的 `RefreshControl` 渲染成普通 View、丢弃 `onRefresh`，**没有下拉手势**
+ * ⇒ 从它的 DOM 节点沿 React fiber 向上找到 `RefreshControl` 元素、直调其 `onRefresh`（= 真机下拉松手）。
+ * 没接 `onRefresh` ⇒ 找不到 ⇒ 抛错（定向变异「去掉 onRefresh」的红就落在这里）。
+ * 找 fiber 限 4 层：`div` → View → RefreshControl，防越级命中无关祖先。
+ */
+async function pullToRefresh(refreshControl: Locator): Promise<void> {
+  await refreshControl.evaluate((el) => {
+    const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+    let fiber: FiberLike | null | undefined = key
+      ? (el as unknown as Record<string, FiberLike>)[key]
+      : undefined;
+    for (let depth = 0; fiber && depth < 4; depth += 1, fiber = fiber.return) {
+      const onRefresh = fiber.memoizedProps?.onRefresh;
+      if (typeof onRefresh === 'function') {
+        (onRefresh as () => void)();
+        return;
+      }
+    }
+    throw new Error('RefreshControl 上没有 onRefresh');
+  });
+}
+
+/**
+ * App 切后台再回前台：react-native-web 的 `AppState` 由 `visibilitychange` + `document.visibilityState`
+ * 驱动（`hidden` ⇒ background，`visible` ⇒ active）⇒ 覆写 `visibilityState` 后派发两次事件。
+ */
+async function backgroundThenForeground(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    for (const state of ['hidden', 'visible'] as const) {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+  });
+}
+
+test('083 T016① 下拉重读 ⇒ 列表端点命中 +1、同步时刻更新，且没有请求任何非本片端点（sb 14 / US1-AS8）', async ({
+  page,
+}) => {
+  const log = observeRequests(page);
+  const server = newServer(US_GROUPED);
+  await installPositionsMock(page, server);
+  await gotoTradingAccount(page);
+
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${SYNCED_LABEL.us}`, {
+    timeout: 30_000,
+  });
+  const before = log.hits(POSITIONS_RE, 'us');
+  const apiMark = log.apiUrls.length;
+
+  // 服务端状态事件：又同步成功了一次。
+  server.byMarket.us = { ...US_GROUPED, syncedAtLocal: RESYNCED_AT_LOCAL };
+  await pullToRefresh(inPositions(page, 'refresh'));
+
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${RESYNCED_LABEL}`, {
+    timeout: 30_000,
+  });
+  expect(log.hits(POSITIONS_RE, 'us')).toBe(before + 1);
+  const others = log.apiUrls.slice(apiMark).filter((url) => !POSITIONS_RE.test(url));
+  expect(others, `下拉触发了非本片端点:\n${others.join('\n')}`).toEqual([]);
+});
+
+test('083 T016② App 切后台再回前台 ⇒ 列表端点命中 +1（sb 14 回前台面）', async ({ page }) => {
+  const log = observeRequests(page);
+  const server = newServer(US_GROUPED);
+  await installPositionsMock(page, server);
+  await gotoTradingAccount(page);
+
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${SYNCED_LABEL.us}`, {
+    timeout: 30_000,
+  });
+  const before = log.hits(POSITIONS_RE, 'us');
+
+  server.byMarket.us = { ...US_GROUPED, syncedAtLocal: RESYNCED_AT_LOCAL };
+  await backgroundThenForeground(page);
+
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${RESYNCED_LABEL}`, {
+    timeout: 30_000,
+  });
+  expect(log.hits(POSITIONS_RE, 'us')).toBe(before + 1);
+});
+
+test('083 T016③ 列表已显示、下拉重读 500 ⇒ 行仍可见 + 刷新失败提示；恢复后下拉 ⇒ 提示消失、数据更新（sb 43 / US1-AS10）', async ({
+  page,
+}) => {
+  const server = newServer(US_GROUPED);
+  await installPositionsMock(page, server);
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible({ timeout: 30_000 });
+
+  server.healthy = false;
+  await pullToRefresh(inPositions(page, 'refresh'));
+
+  await expect(inPositions(page, 'refetch-failed')).toHaveText('刷新失败，显示的是上次加载的数据', {
+    timeout: 30_000,
+  });
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
+  await expect(groupHeader(page, 'us:ZQY')).toBeVisible();
+  await expect(inPositions(page, 'synced-at')).toHaveCount(0);
+  await expect(inPositions(page, 'error')).toHaveCount(0);
+
+  server.healthy = true;
+  server.byMarket.us = { ...US_GROUPED, syncedAtLocal: RESYNCED_AT_LOCAL };
+  await pullToRefresh(inPositions(page, 'refresh'));
+
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${RESYNCED_LABEL}`, {
+    timeout: 30_000,
+  });
+  await expect(inPositions(page, 'refetch-failed')).toHaveCount(0);
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
 });

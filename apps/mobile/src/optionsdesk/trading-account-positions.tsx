@@ -10,8 +10,17 @@
 //    ⇒ 再进全部展开。🚫 放 `trading-account-store`（进程内，离开再进仍折叠）。
 // 📌 主列表金额（市值 / 组市值 / 持仓盈亏 / 组盈亏）走 `formatCompactAmount`；数量 / 价格 / 比例不缩写（FR-022）。
 // 📌 时间只做字符串重排 + 按所选市场拼时区标签（服务端已换算，Guardrail 8）；🚫 时区换算。
+// 📌 重读（T016）：聚焦 / 回前台 / 下拉三个触发点共用 hook 的稳定 `refetch`；已显示数据时重读失败 ⇒
+//    同步时刻行换成刷新失败提示（`refetchFailed`），下次成功自然恢复。
 import { useCallback, useMemo, useState } from 'react';
-import { Pressable, SectionList, Text, View, type SectionListData } from 'react-native';
+import {
+  Pressable,
+  RefreshControl,
+  SectionList,
+  Text,
+  View,
+  type SectionListData,
+} from 'react-native';
 import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
@@ -30,6 +39,7 @@ import {
   marketTzLabel,
   optionDisplayName,
   plColorClass,
+  refetchFailed,
   resolvePositionsView,
   showConnectionLabel,
   showGroupHeader,
@@ -37,6 +47,7 @@ import {
   trimStrike,
   type PositionsView,
 } from './trading-account-positions.rules';
+import { useRefetchOnFocus, useRefetchOnForeground } from './use-refetch-on-foreground';
 import {
   useTradingAccountPositions,
   type UseTradingAccountPositionsResult,
@@ -68,7 +79,9 @@ type ToggleGroup = (ticker: string) => void;
 
 export function TradingAccountPositions({ market }: { market: RadarMarket }) {
   const positions = useTradingAccountPositions(market);
-  // 键 = `underlyingTicker`（含市场前缀，跨市场不撞）。O(1) 查询 / 切换。
+  useRefetchOnFocus(positions.refetch);
+  useRefetchOnForeground(positions.refetch);
+  // 键 =`underlyingTicker`（含市场前缀，跨市场不撞）。O(1) 查询 / 切换。
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const toggleGroup = useCallback<ToggleGroup>((ticker) => {
     setCollapsed((prev) => {
@@ -114,19 +127,26 @@ function PositionsBody({ market, positions, collapsed, onToggleGroup }: Position
   }
 
   const view = resolvePositionsView({ hasData: true, isError: positions.isError, data });
+  const failed = refetchFailed({ hasData: true, isError: positions.isError });
   if (view === 'list') {
     return (
       <View className="flex-1" testID={`${TEST_ID}-list`}>
-        <PositionsMeta market={market} data={data} />
+        <PositionsMeta market={market} data={data} refetchFailed={failed} />
         <ColumnHeader />
-        <PositionsSectionList data={data} collapsed={collapsed} onToggleGroup={onToggleGroup} />
+        <PositionsSectionList
+          data={data}
+          collapsed={collapsed}
+          onToggleGroup={onToggleGroup}
+          isRefetching={positions.isRefetching}
+          onRefresh={positions.refetch}
+        />
       </View>
     );
   }
   if (view === 'empty') {
     return (
       <View>
-        <PositionsMeta market={market} data={data} />
+        <PositionsMeta market={market} data={data} refetchFailed={failed} />
         <StateCard view="empty" />
       </View>
     );
@@ -175,14 +195,25 @@ function syncedTimeLabel(local: string | null, market: RadarMarket): string {
 interface PositionsMetaProps {
   market: RadarMarket;
   data: BrokerPositionListResponse;
+  /** 已显示数据时最近一次重读失败（FR-023）。 */
+  refetchFailed: boolean;
 }
 
-/** 同步时刻行（陈旧时换成陈旧条，FR-008 / FR-009）+ 未归类提示（FR-011）；空态与列表共用。 */
-function PositionsMeta({ market, data }: PositionsMetaProps) {
+/**
+ * 同步时刻行（陈旧时换成陈旧条，FR-008 / FR-009；重读失败时换成刷新失败提示，FR-023）+ 未归类提示（FR-011）；
+ * 空态与列表共用。
+ */
+function PositionsMeta({ market, data, refetchFailed: failed }: PositionsMetaProps) {
   const time = syncedTimeLabel(data.syncedAtLocal, market);
   return (
     <View>
-      {data.stale ? (
+      {failed ? (
+        <View className="bg-warn-soft px-md py-sm">
+          <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-refetch-failed`}>
+            {COPY.refetchFailed}
+          </Text>
+        </View>
+      ) : data.stale ? (
         <View className="bg-warn-soft px-md py-sm">
           <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-stale`}>
             {COPY.stale(time)}
@@ -231,10 +262,19 @@ interface PositionsSectionListProps {
   data: BrokerPositionListResponse;
   collapsed: ReadonlySet<string>;
   onToggleGroup: ToggleGroup;
+  isRefetching: boolean;
+  /** 下拉重读（FR-008）；引用稳定的 `refetch`。 */
+  onRefresh: () => void;
 }
 
 /** 组顺序 / 组内行序由服务端排好（FR-006），这里原样渲染。sections 构造 O(g)。 */
-function PositionsSectionList({ data, collapsed, onToggleGroup }: PositionsSectionListProps) {
+function PositionsSectionList({
+  data,
+  collapsed,
+  onToggleGroup,
+  isRefetching,
+  onRefresh,
+}: PositionsSectionListProps) {
   const showConnection = showConnectionLabel(data.brokerCount);
   const sections = useMemo<SectionListData<BrokerPositionRowResponse, PositionSection>[]>(
     () =>
@@ -256,6 +296,13 @@ function PositionsSectionList({ data, collapsed, onToggleGroup }: PositionsSecti
     <SectionList<BrokerPositionRowResponse, PositionSection>
       testID={`${TEST_ID}-section-list`}
       sections={sections}
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefetching}
+          onRefresh={onRefresh}
+          testID={`${TEST_ID}-refresh`}
+        />
+      }
       keyExtractor={(row) => row.id}
       renderSectionHeader={({ section }) =>
         section.hasHeader ? (
