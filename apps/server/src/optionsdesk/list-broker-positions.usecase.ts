@@ -1,8 +1,18 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
+import {
+  exchangeCalendarDate,
+  exchangeClock,
+  exchangeLocalDateTime,
+} from '../marketdata/session-clock';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+} from '../marketdata/trading-calendar.port';
 import { PrismaService } from '../security/prisma.service';
 import { parseAnchorTicker } from './anchor.rules';
 import { parseBrokerCode, type BrokerMarket } from './broker-code.rules';
+import { isStale, resolveJudgementSlot } from './broker-freshness.rules';
 import {
   buildPositionGroups,
   type DisplayedPositionRow,
@@ -177,10 +187,18 @@ export async function resolveUnderlyingNames(
 
 @Injectable()
 export class ListBrokerPositionsUseCase {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ListBrokerPositionsUseCase.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 —— 陈旧判定要「今天」的三态与
+    // 上一交易日 (plan D7); 自己直查 trading_day 会绕过覆盖声明那一维, 漂了只让陈旧悄悄错一天。零写。
+    @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+  ) {}
 
   /**
-   * 复杂度: 固定 4 次查询 (连接 / 锚 / 持仓 / 名称) + 展示规则 O(n log n), n = 该账号该市场持仓行数。
+   * 复杂度: 至多 7 次查询 (连接 / 同步记录 / 日历 ≤ 2 / 锚 / 持仓 / 名称) + 展示规则 O(n log n),
+   * n = 该账号该市场持仓行数。
    */
   async execute(
     accountId: bigint,
@@ -191,16 +209,30 @@ export class ListBrokerPositionsUseCase {
       where: { accountId },
       select: { id: true, brokerCode: true, label: true },
     });
+    if (connections.length === 0) {
+      return {
+        hasConnection: false,
+        brokerCount: 0,
+        syncedAt: null,
+        syncedAtLocal: null,
+        stale: false,
+        unresolvedCount: 0,
+        groups: [],
+      };
+    }
+
+    // 🚨 同步失败不清空 (branch 5): 只取成功记录; 持仓照常读, 与最近一次是否失败无关。
+    const syncedAt = await this.lastSucceededSyncAt(accountId, market);
     const empty: BrokerPositionList = {
-      hasConnection: connections.length > 0,
+      hasConnection: true,
       brokerCount: connections.length,
-      syncedAt: null,
-      syncedAtLocal: null,
-      stale: false,
+      syncedAt,
+      syncedAtLocal: syncedAt === null ? null : exchangeLocalDateTime(market, syncedAt),
+      // 从未成功 ⇒ mobile 显示「尚未同步」, 陈旧无意义 ⇒ 不判、不调日历。
+      stale: syncedAt === null ? false : await this.resolveStale(market, syncedAt, now),
       unresolvedCount: 0,
       groups: [],
     };
-    if (connections.length === 0) return empty;
 
     // 锚集 = 锚表全部行 (含 excluded; 锚全局, plan D2), 每请求读一次。
     const anchors = await this.prisma.anchor.findMany({
@@ -249,6 +281,56 @@ export class ListBrokerPositionsUseCase {
         underlyingName: names.get(g.underlyingTicker) ?? g.underlyingTicker,
       })),
     };
+  }
+
+  /**
+   * 该账号该市场最近一次**成功**同步的 `finishedAt` (plan D7): 「对账 ∧ `market=m`」或
+   * 「补齐 ∧ (`target='*'` ∨ `target` 以 `m:` 开头)」。
+   *
+   * 🚨 🚫 只按 `market` 列筛: 补齐记录不写 `market` (执行时从 `target` 推市场, plan V5) ——
+   * 只有补齐、还没有对账的市场会被误判「尚未同步」。单次索引查询 O(1) 往返。
+   */
+  private async lastSucceededSyncAt(accountId: bigint, market: BrokerMarket): Promise<Date | null> {
+    const run = await this.prisma.brokerSyncRun.findFirst({
+      where: {
+        accountId,
+        status: 'succeeded',
+        finishedAt: { not: null },
+        OR: [
+          { kind: 'reconcile', market },
+          { kind: 'backfill', OR: [{ target: '*' }, { target: { startsWith: `${market}:` } }] },
+        ],
+      },
+      orderBy: { finishedAt: 'desc' },
+      select: { finishedAt: true },
+    });
+    return run?.finishedAt ?? null;
+  }
+
+  /**
+   * 陈旧判定 (plan D7): 判定时点 = 最近一个已过宽限的对账时点。上一交易日**只在需要时**取;
+   * 端口返回 `null` ⇒ 不可判定 ⇒ 不标陈旧 + warn (🚫 回落日历日: 端口契约「null = 不可判定,
+   * 调用方 MUST NOT 猜」)。日志不含账号。≤ 2 次端口调用。
+   */
+  private async resolveStale(market: BrokerMarket, syncedAt: Date, now: Date): Promise<boolean> {
+    const nowLocal = exchangeClock(market, now);
+    const todayStatus = await this.calendar.classify(market, exchangeCalendarDate(market, now));
+    const slot = resolveJudgementSlot({ market, nowLocal, todayStatus });
+    const judgementDate =
+      slot === 'today'
+        ? nowLocal.date
+        : await this.calendar.previousTradingDay(market, nowLocal.date);
+    const { stale, undeterminable } = isStale({
+      market,
+      judgementDate,
+      lastSyncLocal: exchangeClock(market, syncedAt),
+    });
+    if (undeterminable) {
+      this.logger.warn(
+        `交易日历无法判定 ${market} 在 ${nowLocal.date} 之前的上一交易日, 本次不标陈旧 (083 FR-009)`,
+      );
+    }
+    return stale;
   }
 }
 

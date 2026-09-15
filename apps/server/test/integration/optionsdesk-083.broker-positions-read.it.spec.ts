@@ -1,11 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { ValidationPipe } from '@nestjs/common';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { narrowTestModule } from '../_support/narrow-boot';
 import type { Prisma } from '../../src/generated/prisma/client';
 import { MARKETDATA_WORKER_DISABLED } from '../../src/marketdata/marketdata-sync.queue';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingDayStatus,
+} from '../../src/marketdata/trading-calendar.port';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { PrismaService } from '../../src/security/prisma.service';
 import { JwtTokenService } from '../../src/security/jwt-token.service';
@@ -14,6 +18,9 @@ import { REDIS_CLIENT } from '../../src/security/redis.token';
 // 083 T005 —— 券商持仓列表读端 (上): 端点骨架 + 列表主体
 // (FR-001 / FR-002 / FR-003 / FR-005 / FR-007 / FR-011 / FR-012 / FR-021; plan D1 / D2 / D3 / D6 / D8;
 // state_branches 1, 8, 9, 16, 20, 21, 23)。
+// 083 T006 —— 同一读端 (下): 同步时刻 + 陈旧 + 空态口径 (FR-008 / FR-009 / FR-010; plan D7;
+// state_branches 2, 3, 5, 6, 7, 44)。同步记录的「成功 / 失败 / 只有补齐」必须是库里真有的行 ——
+// 取值是一条带 `OR` 的真 SQL, mock 下它恒等于 mock 返回值。
 //
 // ## 为什么**必须**要真 PG + 真 HTTP
 //
@@ -35,12 +42,39 @@ const US_PUT_LIVE = 'US.ZQY271217P30000';
 /** 2026-01-16 到期 ⇒ 已到期 (尚未被同步移除)。 */
 const US_PUT_EXPIRED = 'US.ZQY260116P30000';
 
-describe('083 T005 券商持仓列表读端 (共享 PG + 收窄 boot + 真 HTTP)', () => {
+/**
+ * 交易日历端口 test double (plan Testing Invariants 允许的唯一替身): 固定「今天」的三态与上一交易日,
+ * 并计数 —— 陈旧判定与跑测墙钟解耦。
+ */
+class FakeTradingCalendar {
+  todayStatus: TradingDayStatus = 'trading';
+  previous: string | null = '2026-09-09';
+  previousCalls: { market: string; date: string }[] = [];
+
+  reset() {
+    this.todayStatus = 'trading';
+    this.previous = '2026-09-09';
+    this.previousCalls = [];
+  }
+  async classify(): Promise<TradingDayStatus> {
+    return this.todayStatus;
+  }
+  async previousTradingDay(market: string, date: string): Promise<string | null> {
+    this.previousCalls.push({ market, date });
+    return this.previous;
+  }
+  async lastClosedSession(): Promise<string | null> {
+    return null;
+  }
+}
+
+describe('083 T005 / T006 券商持仓列表读端 (共享 PG + 收窄 boot + 真 HTTP)', () => {
   let app: NestFastifyApplication;
   let moduleRef: TestingModule;
   let prisma: PrismaService;
   let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
   let jwt: JwtTokenService;
+  const calendar = new FakeTradingCalendar();
   const prevWorkerDisabled = process.env[MARKETDATA_WORKER_DISABLED];
 
   beforeAll(async () => {
@@ -59,6 +93,9 @@ describe('083 T005 券商持仓列表读端 (共享 PG + 收窄 boot + 真 HTTP)
     moduleRef = await Test.createTestingModule({ imports: narrowTestModule([OptionsdeskModule]) })
       .overrideProvider(REDIS_CLIENT)
       .useValue({ call: () => undefined, quit: () => undefined, on: () => undefined })
+      // T006: 陈旧判定的「今天三态 / 上一交易日」由 test double 固定 (mock 档默认绑的 adapter 随墙钟漂)。
+      .overrideProvider(TRADING_CALENDAR_PORT)
+      .useValue(calendar)
       .compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
     app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
@@ -371,5 +408,178 @@ describe('083 T005 券商持仓列表读端 (共享 PG + 收窄 boot + 真 HTTP)
       url: '/api/v1/optionsdesk/broker-positions?market=us',
     });
     expect(anon.statusCode).toBe(401);
+  });
+
+  describe('T006 同步时刻 + 陈旧 + 空态口径', () => {
+    let tradingDay = 0;
+
+    beforeEach(() => {
+      calendar.reset();
+      tradingDay = 0;
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    /** 固定请求时刻 (只 fake `Date`; token 在 `list` 内签发, 与 fake 时钟同源)。 */
+    const at = (iso: string) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(iso));
+    };
+
+    const seedRun = (
+      accountId: bigint,
+      connectionId: bigint,
+      over: Partial<Prisma.BrokerSyncRunUncheckedCreateInput> &
+        Pick<Prisma.BrokerSyncRunUncheckedCreateInput, 'kind' | 'status' | 'target'>,
+    ) =>
+      prisma.brokerSyncRun.create({
+        data: {
+          accountId,
+          connectionId,
+          market: null,
+          // 对账部分唯一索引按 (连接, 市场, 交易日): 每条给不同交易日, 与本读端无关的冲突不进来。
+          tradingDate:
+            over.kind === 'reconcile' ? new Date(Date.UTC(2026, 6, 1 + tradingDay++)) : null,
+          ...over,
+        },
+      });
+
+    const reconciled = (accountId: bigint, conn: bigint, finishedAt: string, market = 'us') =>
+      seedRun(accountId, conn, {
+        kind: 'reconcile',
+        status: 'succeeded',
+        market,
+        target: '*',
+        finishedAt: new Date(finishedAt),
+      });
+
+    it('① 有连接无成功记录 ⇒ syncedAt=null、stale=false; 他人的成功记录不算 (branch 2)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await seedRun(accountA, conn, {
+        kind: 'reconcile',
+        status: 'running',
+        market: 'us',
+        target: '*',
+      });
+      await seedRun(accountA, conn, {
+        kind: 'reconcile',
+        status: 'failed',
+        market: 'us',
+        target: '*',
+        finishedAt: new Date('2026-09-09T13:15:00Z'),
+      });
+      const connB = await connect(accountB, '另一人的账户');
+      await reconciled(accountB, connB, '2026-09-09T13:15:00Z');
+
+      expect(await list(accountA)).toMatchObject({
+        hasConnection: true,
+        syncedAt: null,
+        syncedAtLocal: null,
+        stale: false,
+      });
+      // 管道自证: B 自己的成功记录确实取得到。
+      expect((await list(accountB)).syncedAt).toBe('2026-09-09T13:15:00.000Z');
+    });
+
+    it('② 有成功对账、锚标的持仓为 0 但有 2 条未归类 ⇒ groups=[]、syncedAt 非空、unresolvedCount=2 (branch 3)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await reconciled(accountA, conn, '2026-09-09T13:15:00Z');
+      await seedPosition(accountA, conn, 'US.ZQRW', { underlyingTicker: null });
+      await seedPosition(accountA, conn, 'US.ZQRV', { underlyingTicker: null });
+
+      const body = await list(accountA);
+      expect(body.groups).toEqual([]);
+      expect(body.syncedAt).toBe('2026-09-09T13:15:00.000Z');
+      expect(body.unresolvedCount).toBe(2);
+    });
+
+    it('③ 🚨 先一条成功对账、再一条失败对账 ⇒ syncedAt = 成功那条 finishedAt, 持仓照常返回 (branch 5)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await reconciled(accountA, conn, '2026-09-09T13:15:00Z');
+      await seedRun(accountA, conn, {
+        kind: 'reconcile',
+        status: 'failed',
+        market: 'us',
+        target: '*',
+        finishedAt: new Date('2026-09-10T13:40:00Z'),
+      });
+      await seedPosition(accountA, conn, US_STOCK, { underlyingTicker: 'us:ZQX' });
+
+      const body = await list(accountA);
+      expect(body.syncedAt).toBe('2026-09-09T13:15:00.000Z');
+      expect(allRows(body).map((r) => r.code)).toEqual([US_STOCK]);
+    });
+
+    it("④ 🚨 只有一条 target='us:ZQX' 的成功补齐 (market 为空) ⇒ 美股 syncedAt 有值、港股为 null; 再有 target='*' 补齐 ⇒ 港股也有值 (V5)", async () => {
+      const conn = await connect(accountA, '主账户');
+      await seedRun(accountA, conn, {
+        kind: 'backfill',
+        status: 'succeeded',
+        target: 'us:ZQX',
+        finishedAt: new Date('2026-09-09T13:15:00Z'),
+      });
+
+      expect((await list(accountA)).syncedAt).toBe('2026-09-09T13:15:00.000Z');
+      expect((await list(accountA, 'hk')).syncedAt).toBeNull();
+
+      await seedRun(accountA, conn, {
+        kind: 'backfill',
+        status: 'succeeded',
+        target: '*',
+        finishedAt: new Date('2026-09-09T02:00:00Z'),
+      });
+      expect((await list(accountA, 'hk')).syncedAt).toBe('2026-09-09T02:00:00.000Z');
+      // 更早的 '*' 不覆盖美股更晚的单票补齐 (取最大值)。
+      expect((await list(accountA)).syncedAt).toBe('2026-09-09T13:15:00.000Z');
+    });
+
+    // 美股对账时点 09:10 ET; 2026-09-10 为 EDT (UTC-4) ⇒ 时点 = 13:10Z。
+
+    it('⑤ 固定 now: 今天时点 + 60 分钟且今天未成功 ⇒ stale=true; + 59 分钟、昨天已成功 ⇒ false (branch 6, 7)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await reconciled(accountA, conn, '2026-09-09T13:15:00Z');
+
+      at('2026-09-10T14:10:00Z');
+      expect((await list(accountA)).stale).toBe(true);
+      // 判定时点在今天 ⇒ 不需要上一交易日, 不调端口。
+      expect(calendar.previousCalls).toEqual([]);
+
+      at('2026-09-10T14:09:00Z');
+      expect((await list(accountA)).stale).toBe(false);
+      expect(calendar.previousCalls).toEqual([{ market: 'us', date: '2026-09-10' }]);
+    });
+
+    it('⑥ 🚨 最近成功在前天、今天时点 + 10 分钟 (宽限内) ⇒ stale=true (Edge「昨天对账没有成功」)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await reconciled(accountA, conn, '2026-09-08T13:15:00Z');
+
+      at('2026-09-10T13:20:00Z');
+      expect((await list(accountA)).stale).toBe(true);
+    });
+
+    it('⑦ 日历 previousTradingDay 返回 null ⇒ stale=false 且一条不含账号的 warn (branch 44)', async () => {
+      const conn = await connect(accountA, '主账户');
+      // 按「前一个日历日 09-09」猜会得出陈旧的输入: 最近成功在 09-08。
+      await reconciled(accountA, conn, '2026-09-08T13:15:00Z');
+      calendar.previous = null;
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      at('2026-09-10T13:20:00Z');
+      expect((await list(accountA)).stale).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(warn.mock.calls[0])).not.toContain(accountA.toString());
+    });
+
+    it('⑧ syncedAtLocal 为交易所当地时间串 (美东 / 香港)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await reconciled(accountA, conn, '2026-09-09T13:15:30Z', 'us');
+      await reconciled(accountA, conn, '2026-09-09T01:05:00Z', 'hk');
+
+      expect((await list(accountA)).syncedAtLocal).toBe('2026-09-09 09:15:30');
+      expect((await list(accountA, 'hk')).syncedAtLocal).toBe('2026-09-09 09:05:00');
+    });
   });
 });
