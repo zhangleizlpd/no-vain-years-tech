@@ -128,6 +128,23 @@ target 是 `node dist/main.js & until curl -sf …/docs-json > openapi.json; do 
 
 ⇒ 现象是「命令挂住 + `openapi.json` 变空」，没有任何一行写着「boot 失败」。任何 boot 失败都会走到这里（mock 已烘进 target env；如今更可能的诱因是新 config factory 的 Zod 必填项）。
 
+**worktree 里的典型诱因：没有 `apps/server/.env`。** 它被 gitignore，`git worktree add` 出来的目录里没有；`@nestjs/config` 只在 cwd = `apps/server` 时读它（见 [test-environment-matrix](test-environment-matrix.md)），缺了就死在 `auth.config.ts` 的 `jwtSecret` / `smsCodeHmacSecret`。`feat-open` 写的 `.envrc` 会 source 主仓的 `.env`，但只在 direnv 生效的 shell 里有用。⇒ 在 worktree 跑 export-openapi 前，先确认 `apps/server/.env` 存在或当前 shell 已加载 `.envrc`。
+
+**0 字节的 `openapi.json` 还会往下游炸：清空 `packages/api-client/src/generated/`。**
+
+1. `orval.config.ts` 设了 `clean: true`，而 orval **先清输出目录、后解析输入**（EVIDENCE: orval 8.11.0 `generateSpec`，clean 在 `importSpecs` 之前）⇒ 输入解析失败时生成目录已经空了；
+2. 不手动跑 generate 也会中：`typecheck` 的 `dependsOn: ["^build"]` → `api-client:build` → `generate`（该 target 不缓存，每次真跑）⇒ 下一次 `nx affected -t typecheck …` 或 `nx run mobile:typecheck` 就触发；
+3. 现象是 `api-client:generate` 失败 + `git status` 里整个生成目录都是 `D`，读起来像「谁把 api-client 删了」。
+
+🟢 2026-09-15 实证（对照：同一 orval 配置换成有效 spec ⇒ 生成物完整回来）。复跑与恢复：
+
+```bash
+: > apps/server/openapi.json
+pnpm exec nx run mobile:typecheck                                          # 期望 api-client:generate 失败，日志先出现 "Cleaning output folder"
+git status --porcelain packages/api-client/src/generated                   # 期望整片 D
+git checkout -- apps/server/openapi.json packages/api-client/src/generated # 恢复（两者都入仓）
+```
+
 ## 3. 会骗你的失败：先排除这几类再怀疑代码
 
 | 现象                                                                                                                     | 等级        | 真因                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | 处置                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
