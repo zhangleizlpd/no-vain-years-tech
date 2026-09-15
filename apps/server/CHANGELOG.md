@@ -2,6 +2,14 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.52.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.2...server-v0.52.3) (2026-09-15)
+
+
+### Bug Fixes
+
+* **core:** 一次性 CLI 进程不再注册定时任务 ([#439](https://github.com/zhangleizlpd/no-vain-years-tech/issues/439)) ([4be6a0b](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4be6a0b97b2ea93fd546388d5e69ce4c5a582a3b))
+* **observability:** ready 探针每项依赖检查加 3s 超时 并订正本地导出依赖 Redis 而非 DB ([#437](https://github.com/zhangleizlpd/no-vain-years-tech/issues/437)) ([1b39d5b](https://github.com/zhangleizlpd/no-vain-years-tech/commit/1b39d5b9838e6627bdc3e1d9df1d80a86adb386c))
+
 ## [0.52.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.1...server-v0.52.2) (2026-09-14)
 
 
