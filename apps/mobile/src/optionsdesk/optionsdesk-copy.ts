@@ -1468,6 +1468,16 @@ export const OPTIONSDESK_COPY = {
         option: '本合约订单',
       } satisfies Record<BrokerPositionRowResponseKind, string>,
       ordersEmpty: '暂无订单',
+      /** 持仓批次段（083 T019，FR-013 / FR-015；mockup 帧 4 / 5）。 */
+      lotsTitle: '持仓批次',
+      lotsCount: (count: number) => `${count} 个 · 先开先平`,
+      /** 批次行第二行；数量已去符号、单位随品种。 */
+      lotQty: (remaining: string, original: string, unit: string, cost: string) =>
+        `剩余 ${remaining} / ${original} ${unit} · 成本 ${cost}`,
+      lotsUnrestorable: {
+        title: '批次无法还原',
+        body: '已同步的成交推算出的剩余张数与券商持仓对不上（可能早于可回溯范围，或有转仓），这里只显示合约汇总。',
+      },
     },
     /**
      * 订单状态文案（083 T018，plan D11）。含义取自 SDK 源码行尾注释的简短版；`FILLED_ALL → 全部成交`

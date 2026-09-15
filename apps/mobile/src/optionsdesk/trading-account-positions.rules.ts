@@ -268,3 +268,11 @@ export function orderKind(order: {
 }): BrokerPositionRowResponseKind {
   return order.option !== null || order.comboLegCodes.length > 0 ? 'option' : 'stock';
 }
+
+/**
+ * 批次「剩余 / 原始」数量去掉负号（空头批次带符号为负；方向已由汇总的持仓数量体现，mockup 帧 4）。
+ * 纯字符串处理，🚫 转 Number。O(1)。
+ */
+export function unsignedQty(qty: string): string {
+  return qty.startsWith('-') ? qty.slice(1) : qty;
+}

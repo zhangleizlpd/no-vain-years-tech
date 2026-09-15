@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page, type Route } from './_support/fixtures';
 import type {
+  BrokerLotResponse,
   BrokerOrderDetailResponse,
   BrokerPositionDetailResponse,
   BrokerPositionGroupResponse,
@@ -47,6 +48,12 @@ import { mockJson } from './_support/api-mock';
 //        ⑩ 下拉 ⇒ 订单详情端点命中 +1（sb 14 下钻面）  ⑪ 已显示后重读 500 ⇒ 字段保留 + 刷新失败提示（sb 43）
 //        ⑫ 已显示后重读 404 ⇒「订单不存在」替换旧数据（sb 45 / FR-020）
 //        （①② 为文案映射纯逻辑，在 vitest `trading-account-positions.rules.spec.ts`）
+//   T019 ① 点期权行 ⇒ 汇总 → 2 个批次 → 本合约订单（sb 25 / US2-AS1 / US2-AS7）
+//        ② 被买回扣减的批次「剩余 1 / 2」（sb 27 / US2-AS2）  ③ 只 2 个批次 ⇒ 无第三行；正股无批次段（sb 28）
+//        ④ `restorable=false` ⇒「批次无法还原」、批次行不渲染、订单照常（sb 30 / US2-AS4）
+//        ⑤ `orderDbId=null` 的批次无 `›`、点击不跳转（sb 32）
+//        ⑥ 列表 → 期权行 → 批次（恰 2 次点击）⇒ 订单详情（sb 33 / SC-004）
+//        ⑦ 列表 → 期权行 →「本合约订单」项（恰 2 次点击）⇒ 订单详情（SC-004 第三条路径）
 //
 // ── 重读触发在 web 上怎么验 ─────────────────────────────────────────────────────
 //   · 下拉：RN Web 的 `RefreshControl` 无手势 ⇒ `pullToRefresh` 沿 fiber 直调其 `onRefresh`。
@@ -893,12 +900,18 @@ const ZQY_STOCK_DETAIL: BrokerPositionDetailResponse = {
   lots: null,
 };
 
-/** 「ZQR 示例 Call」期权持仓详情（批次段归 T019，这里只给形态合法的批次）。 */
+/**
+ * 「ZQR 示例 Call」期权持仓详情：批次无法还原（批次剩余合计 2 ≠ 持仓 1）。
+ * 🚨 `lots` 刻意**非空**：服务端 `restorable=false` 时照常返回批次，空数组会让「不渲染批次」恒真（T019④）。
+ */
 const ZQR_CALL_DETAIL: BrokerPositionDetailResponse = {
   ...ZQR_CALL,
   openedAtLocal: '2026-08-20 10:15:00',
   orders: [order('ord-9', 'BUY', '1', '2.60', 'FILLED_ALL', '2026-08-20 10:15:00')],
-  lots: { restorable: false, lots: [] },
+  lots: {
+    restorable: false,
+    lots: [lot('2026-08-20 10:15:00', 'ord-9', '2', '2', '2.60', '75120', '-100.00')],
+  },
 };
 
 /** 港股正股持仓详情（交易账户页默认市场是美股 ⇒ 时区标签只能来自响应 `market`）。 */
@@ -1464,4 +1477,191 @@ test('083 T018⑫ 订单详情已显示后下拉、响应 404 ⇒「订单不存
   await expect(inOrder(page, 'not-found')).toBeVisible({ timeout: 30_000 });
   await expect(inOrder(page, 'fields')).toHaveCount(0);
   await expect(inOrder(page, 'refetch-failed')).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T019 —— 持仓详情批次段 + 批次 / 本合约订单进入订单详情
+// ════════════════════════════════════════════════════════════════════════════
+
+function lot(
+  openedAtLocal: string,
+  orderDbId: string | null,
+  originalQty: string,
+  remainingQty: string,
+  cost: string,
+  marketValue: string | null,
+  unrealizedPl: string | null,
+): BrokerLotResponse {
+  return { openedAtLocal, orderDbId, originalQty, remainingQty, cost, marketValue, unrealizedPl };
+}
+
+/**
+ * 「示例汽车 沽」空头认沽详情（持仓 -3 张）：2 个批次按开仓时间正序 —— 最早批次被买回 1 张后剩 1 / 2，
+ * 第二批次 2 / 2（合计 -3 = 持仓 ⇒ 可还原）；4 张本合约订单（含 1 张已撤单），下单时间降序。
+ */
+const HK_SHORT_PUT_DETAIL: BrokerPositionDetailResponse = {
+  ...HK_SHORT_PUT_ROW,
+  openedAtLocal: '2026-09-01 10:32:00',
+  orders: [
+    order('ord-h4', 'BUY_BACK', '1', '0.070', 'FILLED_ALL', '2026-09-10 11:20:00'),
+    order('ord-h3', 'SELL_SHORT', '2', '0.099', 'FILLED_ALL', '2026-09-08 14:05:12'),
+    order('ord-h2', 'SELL_SHORT', '1', '0.105', 'CANCELLED_ALL', '2026-09-04 09:41:03'),
+    order('ord-h1', 'SELL_SHORT', '2', '0.090', 'FILLED_ALL', '2026-09-01 10:32:00'),
+  ],
+  lots: {
+    restorable: true,
+    lots: [
+      lot('2026-09-01 10:32:00', 'ord-h1', '-2', '-1', '0.090', '-580.00', '-130.00'),
+      lot('2026-09-08 14:05:12', 'ord-h3', '-2', '-2', '0.099', '-1160.00', '-170.00'),
+    ],
+  },
+};
+
+/** 同一持仓，但最早批次的开仓成交缺订单号 ⇒ `orderDbId=null`（不可进订单详情）。 */
+const HK_SHORT_PUT_DETAIL_NO_ORDER_ID: BrokerPositionDetailResponse = {
+  ...HK_SHORT_PUT_DETAIL,
+  lots: {
+    restorable: true,
+    lots: [
+      lot('2026-09-01 10:32:00', null, '-2', '-1', '0.090', '-580.00', '-130.00'),
+      lot('2026-09-08 14:05:12', 'ord-h3', '-2', '-2', '0.099', '-1160.00', '-170.00'),
+    ],
+  },
+};
+
+/** 本合约订单里的买回单（= `HK_SHORT_PUT_DETAIL` 订单段的 `ord-h4`）。 */
+const HK_BUY_BACK_ORDER: BrokerOrderDetailResponse = {
+  ...HK_SHORT_PUT_ORDER,
+  id: 'ord-h4',
+  side: 'BUY_BACK',
+  qty: '1',
+  price: '0.070',
+  amount: '350.00',
+  dealtQty: '1',
+  dealtAvgPrice: '0.070',
+  dealtAmount: '350.00',
+  createdAtLocal: '2026-09-10 11:20:00',
+};
+
+const HK_TAB = 'optionsdesk-trading-account-market-tab-hk';
+
+test('083 T019① 点期权合约行 ⇒ 汇总 → 2 个批次（开仓时间正序）→ 本合约订单（sb 25 / US2-AS1 / US2-AS7）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED, HK_SHORT_PUT));
+  await installPositionDetailMock(page, newDetailServer(HK_SHORT_PUT_DETAIL));
+  await gotoTradingAccount(page);
+  await page.getByTestId(HK_TAB).tap();
+  await expect(positionRow(page, HK_SHORT_PUT_ROW.id)).toBeVisible({ timeout: 30_000 });
+  await positionRow(page, HK_SHORT_PUT_ROW.id).tap();
+
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await expect(inDetail(page, 'name')).toHaveText('示例汽车 沽');
+  await expect(inDetail(page, 'lots-title')).toHaveText('持仓批次');
+  await expect(inDetail(page, 'lots-count')).toHaveText('2 个 · 先开先平');
+  await expect(inDetail(page, 'lot-0-time')).toHaveText('09-01 10:32（香港）');
+  await expect(inDetail(page, 'lot-1-time')).toHaveText('09-08 14:05（香港）');
+  await expect(inDetail(page, 'lot-0-market-value')).toHaveText('-580.00');
+  await expect(inDetail(page, 'lot-0-pl')).toHaveText('-130.00');
+  await expect(inDetail(page, 'orders-title')).toHaveText('本合约订单');
+  for (const { id } of HK_SHORT_PUT_DETAIL.orders) {
+    await expect(inDetail(page, `order-${id}`)).toBeVisible();
+  }
+
+  // 段序：汇总 → 批次 → 订单（FR-013）。
+  const top = async (suffix: string) =>
+    (await inDetail(page, suffix).boundingBox())?.y ?? Number.NaN;
+  expect(await top('lots')).toBeGreaterThan(await top('summary'));
+  expect(await top('orders-title')).toBeGreaterThan(await top('lots'));
+});
+
+test('083 T019②③ 被买回扣减的批次「剩余 1 / 2」、只 2 个批次无第三行；正股无批次段（sb 27, 28 / US2-AS2）', async ({
+  page,
+}) => {
+  await installPositionDetailMock(page, newDetailServer(HK_SHORT_PUT_DETAIL, ZQY_STOCK_DETAIL));
+  await gotoPositionDetail(page, HK_SHORT_PUT_DETAIL.id);
+
+  await expect(inDetail(page, 'lot-0-qty')).toHaveText('剩余 1 / 2 张 · 成本 0.090', {
+    timeout: 30_000,
+  });
+  await expect(inDetail(page, 'lot-1-qty')).toHaveText('剩余 2 / 2 张 · 成本 0.099');
+  await expect(inDetail(page, 'lot-2')).toHaveCount(0);
+
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await expect(inDetail(page, 'lots')).toHaveCount(0);
+  await expect(inDetail(page, 'lots-unrestorable')).toHaveCount(0);
+});
+
+test('083 T019④ restorable=false ⇒「批次无法还原」、批次行不渲染、本合约订单照常（sb 30 / US2-AS4）', async ({
+  page,
+}) => {
+  await installPositionDetailMock(page, newDetailServer(ZQR_CALL_DETAIL));
+  await gotoPositionDetail(page, ZQR_CALL_DETAIL.id);
+
+  await expect(inDetail(page, 'lots-unrestorable')).toBeVisible({ timeout: 30_000 });
+  await expect(detailRoot(page).getByText('批次无法还原', { exact: true })).toBeVisible();
+  await expect(inDetail(page, 'lot-0')).toHaveCount(0);
+  await expect(inDetail(page, 'orders-title')).toHaveText('本合约订单');
+  await expect(inDetail(page, 'order-ord-9')).toBeVisible();
+});
+
+test('083 T019⑤ orderDbId=null 的批次无 ›、点击不跳转；有订单号的批次可进（sb 32）', async ({
+  page,
+}) => {
+  await installPositionDetailMock(page, newDetailServer(HK_SHORT_PUT_DETAIL_NO_ORDER_ID));
+  await installOrderDetailMock(page, newOrderServer(HK_SHORT_PUT_ORDER));
+  await gotoPositionDetail(page, HK_SHORT_PUT_DETAIL_NO_ORDER_ID.id);
+
+  await expect(inDetail(page, 'lot-0')).toBeVisible({ timeout: 30_000 });
+  await expect(inDetail(page, 'lot-0-chevron')).toHaveCount(0);
+  await expect(inDetail(page, 'lot-0')).not.toHaveAttribute('role', 'button');
+  await expect(inDetail(page, 'lot-1-chevron')).toBeVisible();
+
+  await inDetail(page, 'lot-0').tap();
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account-position\/hk-08801-put$/);
+  await expect(orderRoot(page)).toHaveCount(0);
+
+  // 对照：同屏有订单号的批次点击确实会跳（排除「整段都不可点」的恒真）。
+  await inDetail(page, 'lot-1').tap();
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account-order\/ord-h3$/);
+});
+
+test('083 T019⑥ 列表 → 期权行 → 批次（恰 2 次点击）⇒ 订单详情（sb 33 / SC-004）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED, HK_SHORT_PUT));
+  await installPositionDetailMock(page, newDetailServer(HK_SHORT_PUT_DETAIL));
+  await installOrderDetailMock(page, newOrderServer(HK_SHORT_PUT_ORDER));
+  await gotoTradingAccount(page);
+  // 选港股页签是列表本身的状态（不是下钻点击）；计数从港股持仓列表起。
+  await page.getByTestId(HK_TAB).tap();
+
+  const taps = await tapThrough([positionRow(page, HK_SHORT_PUT_ROW.id), inDetail(page, 'lot-1')]);
+
+  expect(taps).toBe(2);
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account-order\/ord-h3$/);
+  await expect(inOrder(page, 'side')).toHaveText('卖空');
+});
+
+test('083 T019⑦ 列表 → 期权行 →「本合约订单」项（恰 2 次点击）⇒ 订单详情（SC-004 第三条路径）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED, HK_SHORT_PUT));
+  await installPositionDetailMock(page, newDetailServer(HK_SHORT_PUT_DETAIL));
+  await installOrderDetailMock(page, newOrderServer(HK_BUY_BACK_ORDER));
+  await gotoTradingAccount(page);
+  await page.getByTestId(HK_TAB).tap();
+
+  const taps = await tapThrough([
+    positionRow(page, HK_SHORT_PUT_ROW.id),
+    inDetail(page, 'order-ord-h4'),
+  ]);
+
+  expect(taps).toBe(2);
+  await expect(inOrder(page, 'fields')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account-order\/ord-h4$/);
+  await expect(inOrder(page, 'side')).toHaveText('买回');
 });

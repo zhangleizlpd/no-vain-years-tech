@@ -31,6 +31,7 @@ import {
   showUnresolvedHint,
   tradeSideText,
   trimStrike,
+  unsignedQty,
 } from './trading-account-positions.rules';
 
 const COPY = OPTIONSDESK_COPY.tradingAccountPositions;
@@ -358,5 +359,15 @@ describe('订单状态 / 交易方向 / 订单类型文案（FR-017，plan D11�
     expect(orderKind({ option, comboLegCodes: [] })).toBe('option');
     expect(orderKind({ option: null, comboLegCodes: ['US.ZQY261016C55000'] })).toBe('option');
     expect(orderKind({ option: null, comboLegCodes: [] })).toBe('stock');
+  });
+});
+
+// ── T019：持仓批次行（FR-013） ───────────────────────────────────────────────
+
+describe('unsignedQty（批次剩余 / 原始数量不带符号）', () => {
+  it('空头批次去掉负号；多头原样；不转 Number（尾零保留）', () => {
+    expect(unsignedQty('-1')).toBe('1');
+    expect(unsignedQty('-2.0')).toBe('2.0');
+    expect(unsignedQty('3')).toBe('3');
   });
 });
