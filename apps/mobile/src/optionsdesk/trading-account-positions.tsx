@@ -1,22 +1,40 @@
-// 083 T014 — 交易账户页 · 持仓分段（plan §D14）：首次加载 / 四种非列表状态卡 / 列表外壳。
+// 083 T014 / T015 — 交易账户页 · 持仓分段（plan §D14）：首次加载 / 四种非列表状态卡 / 分组列表。
 //
-// 列表外壳自上而下：同步时刻行（陈旧时换成陈旧条）→ 未归类提示 → 列头；分组列表由 T015 在本文件补。
+// 列表自上而下：同步时刻行（陈旧时换成陈旧条）→ 未归类提示 → 列头 → `SectionList`（每组一个 section；
+// ≥ 2 行出组头、可折叠，单行组平铺）。
 //
 // 🚨 视图判定全走 `resolvePositionsView`（T013）。它的入参**没有「首次加载中」**——
 //    `isPending` 必须在调它之前自己分支（类型上排除，漏判编译不过）。
 // 🚨 已有数据时重读失败 🚫 换错误卡（FR-023，Guardrail 10）：`data` 在就按数据出视图。
+// 🚨 折叠状态 = **组件内** `useState`（FR-004）：进详情再返回本屏未卸载 ⇒ 保留；离开交易账户页卸载即丢
+//    ⇒ 再进全部展开。🚫 放 `trading-account-store`（进程内，离开再进仍折叠）。
+// 📌 主列表金额（市值 / 组市值 / 持仓盈亏 / 组盈亏）走 `formatCompactAmount`；数量 / 价格 / 比例不缩写（FR-022）。
 // 📌 时间只做字符串重排 + 按所选市场拼时区标签（服务端已换算，Guardrail 8）；🚫 时区换算。
-import { Pressable, Text, View } from 'react-native';
-import type { BrokerPositionListResponse } from '@nvy/api-client';
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, SectionList, Text, View, type SectionListData } from 'react-native';
+import type {
+  BrokerPositionGroupResponse,
+  BrokerPositionListResponse,
+  BrokerPositionRowResponse,
+} from '@nvy/api-client';
 
+import { formatCompactAmount } from '~/format/compact-amount';
 import { Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import type { RadarMarket } from './radar.rules';
 import {
+  displayCode,
+  expiryYymmdd,
+  formatPlRatio,
   localDateTimeParts,
   marketTzLabel,
+  optionDisplayName,
+  plColorClass,
   resolvePositionsView,
+  showConnectionLabel,
+  showGroupHeader,
   showUnresolvedHint,
+  trimStrike,
   type PositionsView,
 } from './trading-account-positions.rules';
 import {
@@ -26,6 +44,7 @@ import {
 
 const COPY = OPTIONSDESK_COPY.tradingAccountPositions;
 const TEST_ID = 'optionsdesk-trading-account-positions';
+const NO_VALUE = '--';
 
 /** 列宽（mockup 帧 1：名称弹性 · 市值/数量 88 · 现价/成本 62 · 持仓盈亏 76）；列头与行共用。 */
 const COL = {
@@ -36,11 +55,38 @@ const COL = {
 } as const;
 const COLUMNS = ['name', 'marketValue', 'price', 'unrealizedPl'] as const;
 
+/** 组头折叠标（几何符号，非 emoji）。 */
+const CARET = { expanded: '▾', collapsed: '▸' } as const;
+
+/** 行底色与缩进：组内行浅底 + 缩进（mockup `.row.ing`），单行组平铺。 */
+const ROW_TONE = {
+  indented: 'bg-surface-alt pl-8 pr-md',
+  flat: 'bg-surface px-md',
+} as const;
+
+type ToggleGroup = (ticker: string) => void;
+
 export function TradingAccountPositions({ market }: { market: RadarMarket }) {
   const positions = useTradingAccountPositions(market);
+  // 键 = `underlyingTicker`（含市场前缀，跨市场不撞）。O(1) 查询 / 切换。
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleGroup = useCallback<ToggleGroup>((ticker) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(ticker)) next.delete(ticker);
+      else next.add(ticker);
+      return next;
+    });
+  }, []);
+
   return (
     <View className="flex-1" testID={TEST_ID}>
-      <PositionsBody market={market} positions={positions} />
+      <PositionsBody
+        market={market}
+        positions={positions}
+        collapsed={collapsed}
+        onToggleGroup={toggleGroup}
+      />
     </View>
   );
 }
@@ -48,9 +94,11 @@ export function TradingAccountPositions({ market }: { market: RadarMarket }) {
 interface PositionsBodyProps {
   market: RadarMarket;
   positions: UseTradingAccountPositionsResult;
+  collapsed: ReadonlySet<string>;
+  onToggleGroup: ToggleGroup;
 }
 
-function PositionsBody({ market, positions }: PositionsBodyProps) {
+function PositionsBody({ market, positions, collapsed, onToggleGroup }: PositionsBodyProps) {
   if (positions.isPending) {
     return (
       <View className="items-center py-xl" testID={`${TEST_ID}-loading`}>
@@ -71,6 +119,7 @@ function PositionsBody({ market, positions }: PositionsBodyProps) {
       <View className="flex-1" testID={`${TEST_ID}-list`}>
         <PositionsMeta market={market} data={data} />
         <ColumnHeader />
+        <PositionsSectionList data={data} collapsed={collapsed} onToggleGroup={onToggleGroup} />
       </View>
     );
   }
@@ -120,7 +169,7 @@ function StateCard({ view, onRetry }: StateCardProps) {
 /** `MM-DD HH:mm（时区）`；时间串缺失或形态不合法 ⇒ `--`（🚫 猜时区）。O(1)。 */
 function syncedTimeLabel(local: string | null, market: RadarMarket): string {
   const parts = local === null ? null : localDateTimeParts(local);
-  return parts === null ? '--' : `${parts.mdHm}${marketTzLabel(market)}`;
+  return parts === null ? NO_VALUE : `${parts.mdHm}${marketTzLabel(market)}`;
 }
 
 interface PositionsMetaProps {
@@ -166,6 +215,197 @@ function ColumnHeader() {
             <Text className="text-xs text-ink-muted">{COPY.columns[column]}</Text>
           </View>
         ))}
+      </View>
+    </View>
+  );
+}
+
+interface PositionSection {
+  key: string;
+  group: BrokerPositionGroupResponse;
+  /** 组头可见（≥ 2 行，FR-004）；单行组无组头、行不缩进、不可折叠。 */
+  hasHeader: boolean;
+}
+
+interface PositionsSectionListProps {
+  data: BrokerPositionListResponse;
+  collapsed: ReadonlySet<string>;
+  onToggleGroup: ToggleGroup;
+}
+
+/** 组顺序 / 组内行序由服务端排好（FR-006），这里原样渲染。sections 构造 O(g)。 */
+function PositionsSectionList({ data, collapsed, onToggleGroup }: PositionsSectionListProps) {
+  const showConnection = showConnectionLabel(data.brokerCount);
+  const sections = useMemo<SectionListData<BrokerPositionRowResponse, PositionSection>[]>(
+    () =>
+      data.groups.map((group) => {
+        const hasHeader = showGroupHeader(group);
+        const isCollapsed = hasHeader && collapsed.has(group.underlyingTicker);
+        // 折叠 ⇒ data = []，只留组头。
+        return {
+          key: group.underlyingTicker,
+          group,
+          hasHeader,
+          data: isCollapsed ? [] : group.rows,
+        };
+      }),
+    [data.groups, collapsed],
+  );
+
+  return (
+    <SectionList<BrokerPositionRowResponse, PositionSection>
+      testID={`${TEST_ID}-section-list`}
+      sections={sections}
+      keyExtractor={(row) => row.id}
+      renderSectionHeader={({ section }) =>
+        section.hasHeader ? (
+          <GroupHeader
+            group={section.group}
+            collapsed={section.data.length === 0}
+            onToggle={onToggleGroup}
+          />
+        ) : null
+      }
+      renderItem={({ item, section }) => (
+        <PositionRow row={item} indented={section.hasHeader} showConnection={showConnection} />
+      )}
+      stickySectionHeadersEnabled={false}
+      className="flex-1"
+    />
+  );
+}
+
+interface GroupHeaderProps {
+  group: BrokerPositionGroupResponse;
+  collapsed: boolean;
+  onToggle: ToggleGroup;
+}
+
+/** 组头：折叠标 + 名称(行数) · 组市值 · 正股现价 · 组持仓盈亏（FR-004 / FR-005）。 */
+function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps) {
+  const id = `${TEST_ID}-group-${group.underlyingTicker}`;
+  const title = `${group.underlyingName}(${group.rows.length})`;
+  return (
+    <Pressable
+      onPress={() => onToggle(group.underlyingTicker)}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ expanded: !collapsed }}
+      testID={id}
+      className="border-b border-line-soft bg-surface-alt px-md"
+    >
+      <View className="flex-row items-center gap-1 py-2.5">
+        <View className={`${COL.name} flex-row items-center gap-1.5`}>
+          <Text className="text-xs text-ink-muted">
+            {collapsed ? CARET.collapsed : CARET.expanded}
+          </Text>
+          <Text className="text-sm font-semibold text-ink" testID={`${id}-title`}>
+            {title}
+          </Text>
+        </View>
+        <View className={COL.marketValue}>
+          <Text className="font-mono text-sm font-semibold text-ink" testID={`${id}-market-value`}>
+            {formatCompactAmount(group.groupMarketValue)}
+          </Text>
+        </View>
+        <View className={COL.price}>
+          <Text className="font-mono text-sm font-semibold text-ink" testID={`${id}-price`}>
+            {group.underlyingPrice ?? NO_VALUE}
+          </Text>
+        </View>
+        <View className={COL.unrealizedPl}>
+          <Text
+            className={`font-mono text-sm font-semibold ${plColorClass(group.groupUnrealizedPl)}`}
+            testID={`${id}-pl`}
+          >
+            {formatCompactAmount(group.groupUnrealizedPl, { signed: true })}
+          </Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+/** 行名称：正股 = 名称；期权 = 正股名 + Call / Put · 购 / 沽（FR-007）。 */
+function rowName(row: BrokerPositionRowResponse): string {
+  if (row.option === null) return row.name;
+  return optionDisplayName({
+    market: row.market,
+    underlyingName: row.name,
+    right: row.option.right,
+  });
+}
+
+/** 行第二行：正股 = 代码；期权 = 到期日 6 位 + 行权价去尾零（FR-007）。 */
+function rowSubline(row: BrokerPositionRowResponse): string {
+  if (row.option === null) return displayCode(row.code);
+  return `${expiryYymmdd(row.option.expiry)} ${trimStrike(row.option.strike)}`;
+}
+
+interface PositionRowProps {
+  row: BrokerPositionRowResponse;
+  indented: boolean;
+  showConnection: boolean;
+}
+
+/** 行：名称代码 · 市值 / 数量 · 现价 / 成本 · 持仓盈亏金额 / 比例（FR-007 / FR-012 / FR-021）。 */
+function PositionRow({ row, indented, showConnection }: PositionRowProps) {
+  const id = `${TEST_ID}-row-${row.id}`;
+  return (
+    <View className="border-b border-line-soft" testID={id}>
+      <View className={indented ? ROW_TONE.indented : ROW_TONE.flat}>
+        <View className="flex-row items-start gap-1 py-2.5">
+          <View className={`${COL.name} gap-0.5`}>
+            <Text className="text-sm font-medium text-ink" testID={`${id}-name`}>
+              {rowName(row)}
+            </Text>
+            <Text className="font-mono text-xs text-ink-muted" testID={`${id}-sub`}>
+              {rowSubline(row)}
+            </Text>
+            {showConnection ? (
+              <Text className="text-xs text-ink-muted" testID={`${id}-connection`}>
+                {row.connectionLabel}
+              </Text>
+            ) : null}
+            {row.expired ? (
+              <View className="self-start rounded-sm bg-warn-soft px-1">
+                <Text className="text-xs text-ink" testID={`${id}-expired`}>
+                  {COPY.expired}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+          <View className={`${COL.marketValue} gap-0.5`}>
+            <Text className="font-mono text-sm text-ink" testID={`${id}-market-value`}>
+              {formatCompactAmount(row.marketValue)}
+            </Text>
+            <Text className="font-mono text-xs text-ink-muted" testID={`${id}-qty`}>
+              {row.qty}
+            </Text>
+          </View>
+          <View className={`${COL.price} gap-0.5`}>
+            <Text className="font-mono text-sm text-ink" testID={`${id}-price`}>
+              {row.currentPrice ?? NO_VALUE}
+            </Text>
+            <Text className="font-mono text-xs text-ink-muted" testID={`${id}-cost`}>
+              {row.averageCost ?? NO_VALUE}
+            </Text>
+          </View>
+          <View className={`${COL.unrealizedPl} gap-0.5`}>
+            <Text
+              className={`font-mono text-sm ${plColorClass(row.unrealizedPl)}`}
+              testID={`${id}-pl`}
+            >
+              {formatCompactAmount(row.unrealizedPl, { signed: true })}
+            </Text>
+            <Text
+              className={`font-mono text-xs ${plColorClass(row.unrealizedPlRatio)}`}
+              testID={`${id}-pl-ratio`}
+            >
+              {formatPlRatio(row.unrealizedPlRatio)}
+            </Text>
+          </View>
+        </View>
       </View>
     </View>
   );

@@ -13,10 +13,13 @@ import { describe, expect, it } from 'vitest';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import {
+  displayCode,
   expiryYymmdd,
+  formatPlRatio,
   localDateTimeParts,
   marketTzLabel,
   optionDisplayName,
+  plColorClass,
   refetchFailed,
   resolvePositionsView,
   showConnectionLabel,
@@ -201,5 +204,46 @@ describe('tradingAccountPositions 文案段（plan D17）', () => {
     expect(COPY.unresolved(2)).toBe('未归类 2 条');
     expect(COPY.expired).toBe('已到期 · 待同步');
     expect(COPY.syncedAt('09-08 14:05（美东）')).toBe('同步于 09-08 14:05（美东）');
+  });
+});
+
+// ── T015：主列表行展示 ─────────────────────────────────────────────────────────
+
+describe('plColorClass（持仓盈亏涨跌色，plan D14）', () => {
+  it('正 ⇒ up、负 ⇒ down、0 ⇒ flat', () => {
+    expect(plColorClass('420.00')).toBe('text-quote-up');
+    expect(plColorClass('-50')).toBe('text-quote-down');
+    expect(plColorClass('0')).toBe('text-quote-flat');
+    expect(plColorClass('0.00')).toBe('text-quote-flat');
+  });
+
+  it('null / 非法 ⇒ 中性灰（不猜方向）', () => {
+    expect(plColorClass(null)).toBe('text-ink-subtle');
+    expect(plColorClass('N/A')).toBe('text-ink-subtle');
+  });
+});
+
+describe('formatPlRatio（持仓盈亏比例，不缩写）', () => {
+  it('响应值即百分数：带符号两位小数 + %', () => {
+    expect(formatPlRatio('4.56')).toBe('+4.56%');
+    expect(formatPlRatio('-20.833')).toBe('-20.83%');
+    expect(formatPlRatio('40')).toBe('+40.00%');
+    expect(formatPlRatio('0')).toBe('0.00%');
+  });
+
+  it('null / 非法 ⇒ --', () => {
+    expect(formatPlRatio(null)).toBe('--');
+    expect(formatPlRatio('abc')).toBe('--');
+  });
+});
+
+describe('displayCode（正股行第二行代码）', () => {
+  it('去掉券商市场前缀', () => {
+    expect(displayCode('US.ZQY')).toBe('ZQY');
+    expect(displayCode('HK.08801')).toBe('08801');
+  });
+
+  it('无前缀 ⇒ 原样', () => {
+    expect(displayCode('ZQY')).toBe('ZQY');
   });
 });

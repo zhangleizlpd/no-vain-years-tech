@@ -115,3 +115,47 @@ export function localDateTimeParts(local: string): LocalDateTimeParts | null {
 export function marketTzLabel(market: BrokerPositionRowResponseMarket): string {
   return COPY.tzLabel[market];
 }
+
+/** 数值串 → 有限数；null / 空串 / 不可解析（如 `N/A`）⇒ null。 */
+function parseFinite(value: string | null): number | null {
+  if (value === null || value.trim() === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+export type PlColorClass =
+  | 'text-quote-up'
+  | 'text-quote-down'
+  | 'text-quote-flat'
+  | 'text-ink-subtle';
+
+/**
+ * 持仓盈亏（金额 / 比例 / 组盈亏）涨跌色：正 ⇒ up、负 ⇒ down、0 ⇒ flat；null / 非法 ⇒ 中性灰。O(1)。
+ * 📌 映射体例同 `portfolio/use-quote-merge.ts` `quoteColorClass`（跨 feature 不可 import，此处独立一份）。
+ */
+export function plColorClass(value: string | null): PlColorClass {
+  const n = parseFinite(value);
+  if (n === null) return 'text-ink-subtle';
+  if (n > 0) return 'text-quote-up';
+  if (n < 0) return 'text-quote-down';
+  return 'text-quote-flat';
+}
+
+/**
+ * 持仓盈亏比例：带符号两位小数 + `%`；null / 非法 ⇒ `--`。O(1)。
+ * 📌 响应值即百分数（`40` = 40%，DTO `unrealizedPlRatio` 注明「券商原值不换算」、示例 `40`），🚫 再乘 100。
+ * 比例不缩写（FR-022）；舍入后为零不带符号。
+ */
+export function formatPlRatio(value: string | null): string {
+  const n = parseFinite(value);
+  if (n === null) return '--';
+  const digits = Math.abs(n).toFixed(2);
+  const sign = Number(digits) === 0 ? '' : n < 0 ? '-' : '+';
+  return `${sign}${digits}%`;
+}
+
+/** 正股行第二行代码：去掉券商市场前缀（`US.ZQY` ⇒ `ZQY`）；无前缀 ⇒ 原样。O(n)。 */
+export function displayCode(code: string): string {
+  const dot = code.indexOf('.');
+  return dot < 0 ? code : code.slice(dot + 1);
+}

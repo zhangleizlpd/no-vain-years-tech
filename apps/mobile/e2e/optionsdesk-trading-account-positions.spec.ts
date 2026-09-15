@@ -1,5 +1,10 @@
 import { expect, test, type Locator, type Page, type Route } from './_support/fixtures';
-import type { BrokerPositionListResponse, BrokerPositionRowResponse } from '@nvy/api-client';
+import type {
+  BrokerPositionGroupResponse,
+  BrokerPositionListResponse,
+  BrokerPositionRowResponse,
+  RadarResponse,
+} from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
 
@@ -13,6 +18,14 @@ import { mockJson } from './_support/api-mock';
 //        ⑤ `stale=true` ⇒ 陈旧条与列表外壳同时可见（sb 5 / US1-AS6）
 //        ⑥ `unresolvedCount` 2 / 0 ⇒ 未归类提示可见 / 不可见（sb 10 / US1-AS5）
 //        ⑦ 订单 / 报表分段仍为 081「建设中」占位
+//   T015 ① 3 行组 ⇒ 组头「ZQY 示例(3)」、组市值 / 组盈亏万缩写、组头现价 = 正股行现价（sb 12 / US1-AS1）
+//        ② 单行组 ⇒ 无组头直接出行（sb 11 / US1-AS2）
+//        ③ 点组头折叠 / 再点展开；折叠后返回雷达再进入 ⇒ 全部展开（sb 13 / US1-AS7）
+//          ③b「折叠后进持仓详情再返回 ⇒ 仍折叠」依赖持仓详情路由 ⇒ `test.fixme`，T017 落路由后解除
+//        ④ 港股空头认沽 ⇒「示例汽车 沽」、第二行 `261029 7.25`、数量与市值为负（sb 22 / US1-AS3）
+//        ⑤ `expired=true` 行 ⇒「已到期 · 待同步」可见（sb 23 / US1-AS9）
+//        ⑥ `brokerCount=1` ⇒ 无连接标签；`=2` 且同合约两行 ⇒ 各显示自己的连接名称（sb 20, 21）
+//        ⑦ 行 `marketValue='37560'` ⇒ 主列表显示 `3.76万`（FR-022）
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
 //   mock `/me` + refresh（App 级登录态前置）+ 本片列表端点 `GET /optionsdesk/broker-positions`；
@@ -346,4 +359,318 @@ test('083 T014⑦ 订单 / 报表分段仍为 081「建设中」占位，不渲�
   await page.getByTestId('optionsdesk-trading-account-segment-reports').tap();
   await expect(screen.getByText('报表 · 建设中', { exact: true })).toBeVisible();
   await expect(positionsRoot(page)).toHaveCount(0);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T015 —— 分组列表：组头 / 折叠 / 行 / 万缩写 / 已到期标 / 连接标签
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 美股「ZQY 示例」3 行组：正股 + 已到期认沽 + 认购（组内顺序 = 服务端已排好的顺序）。 */
+const ZQY_STOCK: BrokerPositionRowResponse = {
+  ...stockRow('us'),
+  id: 'us-zqy-stock',
+  qty: '5000',
+  marketValue: '241000.00',
+  currentPrice: '48.20',
+  averageCost: '46.10',
+  unrealizedPl: '10500.00',
+  unrealizedPlRatio: '4.56',
+};
+const ZQY_PUT_EXPIRED: BrokerPositionRowResponse = {
+  ...stockRow('us'),
+  id: 'us-zqy-put',
+  kind: 'option',
+  code: 'US.ZQY260911P45000',
+  option: { expiry: '2026-09-11', right: 'P', strike: '45.000' },
+  qty: '-1',
+  marketValue: '-1.00',
+  currentPrice: '0.01',
+  averageCost: '1.35',
+  unrealizedPl: '134.00',
+  unrealizedPlRatio: '99.26',
+  expired: true,
+};
+const ZQY_CALL: BrokerPositionRowResponse = {
+  ...stockRow('us'),
+  id: 'us-zqy-call',
+  kind: 'option',
+  code: 'US.ZQY261016C55000',
+  option: { expiry: '2026-10-16', right: 'C', strike: '55.000' },
+  qty: '-2',
+  marketValue: '-170.00',
+  currentPrice: '0.85',
+  averageCost: '1.20',
+  unrealizedPl: '70.00',
+  unrealizedPlRatio: '29.17',
+};
+const ZQY_ROW_IDS = [ZQY_STOCK.id, ZQY_PUT_EXPIRED.id, ZQY_CALL.id] as const;
+
+const ZQY_GROUP: BrokerPositionGroupResponse = {
+  underlyingTicker: 'us:ZQY',
+  underlyingName: 'ZQY 示例',
+  underlyingPrice: '48.20',
+  groupMarketValue: '240829.00',
+  groupUnrealizedPl: '10704.00',
+  rows: [ZQY_STOCK, ZQY_PUT_EXPIRED, ZQY_CALL],
+};
+
+/** 美股「ZQR 示例 Call」单行组（市值 37560 ⇒ `3.76万`）。 */
+const ZQR_CALL: BrokerPositionRowResponse = {
+  ...stockRow('us'),
+  id: 'us-zqr-call',
+  kind: 'option',
+  code: 'US.ZQR261120C30000',
+  name: 'ZQR 示例',
+  option: { expiry: '2026-11-20', right: 'C', strike: '30.000' },
+  qty: '1',
+  marketValue: '37560',
+  currentPrice: '2.10',
+  averageCost: '2.60',
+  unrealizedPl: '-50.00',
+  unrealizedPlRatio: '-19.23',
+};
+const ZQR_GROUP: BrokerPositionGroupResponse = {
+  underlyingTicker: 'us:ZQR',
+  underlyingName: 'ZQR 示例',
+  underlyingPrice: '30.50',
+  groupMarketValue: '37560',
+  groupUnrealizedPl: '-50.00',
+  rows: [ZQR_CALL],
+};
+
+const US_GROUPED = listResponse('us', { groups: [ZQY_GROUP, ZQR_GROUP] });
+
+/** 港股「示例汽车 沽」空头认沽单行组。 */
+const HK_SHORT_PUT_ROW: BrokerPositionRowResponse = {
+  ...stockRow('hk'),
+  id: 'hk-08801-put',
+  kind: 'option',
+  code: 'HK.08801261029P7250',
+  option: { expiry: '2026-10-29', right: 'P', strike: '7.250' },
+  qty: '-3',
+  marketValue: '-1740.00',
+  currentPrice: '0.116',
+  averageCost: '0.096',
+  unrealizedPl: '-300.00',
+  unrealizedPlRatio: '-20.83',
+};
+const HK_SHORT_PUT = listResponse('hk', {
+  groups: [
+    {
+      underlyingTicker: 'hk:08801',
+      underlyingName: '示例汽车',
+      underlyingPrice: '7.920',
+      groupMarketValue: '-1740.00',
+      groupUnrealizedPl: '-300.00',
+      rows: [HK_SHORT_PUT_ROW],
+    },
+  ],
+});
+
+/** 两个券商连接同时持有同一合约 ⇒ 两行，各带自己的连接名称。 */
+const TWO_CONNECTIONS = listResponse('us', {
+  brokerCount: 2,
+  groups: [
+    {
+      ...ZQR_GROUP,
+      groupMarketValue: '75120',
+      groupUnrealizedPl: '-100.00',
+      rows: [
+        { ...ZQR_CALL, id: 'us-zqr-call-a', connectionLabel: '示例连接 A' },
+        { ...ZQR_CALL, id: 'us-zqr-call-b', connectionLabel: '示例连接 B' },
+      ],
+    },
+  ],
+});
+
+function groupHeader(page: Page, ticker: string): Locator {
+  return inPositions(page, `group-${ticker}`);
+}
+
+function groupPart(page: Page, ticker: string, part: string): Locator {
+  return inPositions(page, `group-${ticker}-${part}`);
+}
+
+function positionRow(page: Page, id: string): Locator {
+  return inPositions(page, `row-${id}`);
+}
+
+function rowPart(page: Page, id: string, part: string): Locator {
+  return inPositions(page, `row-${id}-${part}`);
+}
+
+const RADAR_TRADING_ACCOUNT_BUTTON = 'optionsdesk-radar-trading-account-button';
+
+/**
+ * 雷达首屏最小 mock（照 081 `optionsdesk-trading-account.spec.ts` 同名函数）：canonical 锚集合为空
+ * ⇒ 恒判 `zero_anchors`。只为「返回雷达再进入」臂提供雷达首屏，非本片被测对象。
+ */
+async function installRadarMock(page: Page): Promise<void> {
+  await page.route(/\/api\/v1\/optionsdesk\/radar/, async (route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') {
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    }
+    if (req.method() !== 'GET') return void (await route.fallback());
+    const body: RadarResponse = {
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+      emptyState: 'zero_anchors',
+      emptyStateMessage: '还没有锚 —— 先去锚管理建第一个锚',
+      marketCounts: [],
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+  });
+}
+
+/** 进期权台 tab 雷达（首发吃 Metro 冷打包 ⇒ 长超时锚在 tab bar）。 */
+async function gotoRadar(page: Page): Promise<void> {
+  await page.goto('/');
+  await expect(page.getByRole('tab', { name: '期权台' })).toBeVisible({ timeout: 90_000 });
+  await page.getByRole('tab', { name: '期权台' }).tap();
+  await expect(page.getByTestId(RADAR_TRADING_ACCOUNT_BUTTON)).toBeVisible({ timeout: 30_000 });
+}
+
+/** navigator header 返回箭头（a11y 名 `<上屏标题>, back`，角色在 link / button 间变 ⇒ 取并）。 */
+function headerBackLocator(page: Page): Locator {
+  return page
+    .getByRole('button', { name: /back/i })
+    .or(page.getByRole('link', { name: /back/i }))
+    .first();
+}
+
+test('083 T015① 3 行组 ⇒ 组头「ZQY 示例(3)」、组市值 / 组盈亏万缩写、组头现价 = 正股行现价（sb 12 / US1-AS1）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoTradingAccount(page);
+
+  await expect(groupHeader(page, 'us:ZQY')).toBeVisible({ timeout: 30_000 });
+  await expect(groupPart(page, 'us:ZQY', 'title')).toHaveText('ZQY 示例(3)');
+  await expect(groupPart(page, 'us:ZQY', 'market-value')).toHaveText('24.08万');
+  await expect(groupPart(page, 'us:ZQY', 'pl')).toHaveText('+1.07万');
+  await expect(groupPart(page, 'us:ZQY', 'price')).toHaveText('48.20');
+});
+
+test('083 T015② 单行组 ⇒ 无组头，直接出行（sb 11 / US1-AS2）', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible({ timeout: 30_000 });
+  await expect(rowPart(page, ZQR_CALL.id, 'name')).toHaveText('ZQR 示例 Call');
+  await expect(rowPart(page, ZQR_CALL.id, 'sub')).toHaveText('261120 30');
+  await expect(groupHeader(page, 'us:ZQR')).toHaveCount(0);
+  // 对照：同一响应里的 3 行组有组头（排除「组头整体没渲染」的恒真）。
+  await expect(groupHeader(page, 'us:ZQY')).toBeVisible();
+});
+
+test('083 T015③ 点组头折叠 / 再点展开；折叠后返回雷达再进入 ⇒ 全部展开（sb 13 / US1-AS7）', async ({
+  page,
+}) => {
+  await installRadarMock(page);
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoRadar(page);
+  await page.getByTestId(RADAR_TRADING_ACCOUNT_BUTTON).tap();
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+
+  const header = groupHeader(page, 'us:ZQY');
+  await expect(header).toBeVisible({ timeout: 30_000 });
+  for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toBeVisible();
+
+  // 点组头 ⇒ 只留组头，组内行隐藏；其他组不受影响。
+  await header.tap();
+  for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toHaveCount(0);
+  await expect(header).toBeVisible();
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
+
+  // 再点 ⇒ 展开。
+  await header.tap();
+  for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toBeVisible();
+
+  // 折叠后离开交易账户页（header 返回雷达，本屏卸载）→ 再进入 ⇒ 全部展开（FR-004）。
+  await header.tap();
+  await expect(positionRow(page, ZQY_STOCK.id)).toHaveCount(0);
+  await headerBackLocator(page).tap();
+  await expect(page).toHaveURL(/\/optionsdesk\/?$/, { timeout: 30_000 });
+  await expect(page.getByTestId(SCREEN)).toHaveCount(0);
+
+  await page.getByTestId(RADAR_TRADING_ACCOUNT_BUTTON).tap();
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+  await expect(groupHeader(page, 'us:ZQY')).toBeVisible({ timeout: 30_000 });
+  for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toBeVisible();
+});
+
+// 🚨 依赖持仓详情路由（T017 才建）：T017 落路由后解除 fixme 并补全「进详情 → header 返回」两步，
+//    🚫 删掉本臂或为此提前建路由。
+test.fixme('083 T015③b 折叠后进持仓详情再返回 ⇒ 仍折叠（sb 13 / US1-AS7；T017 落路由后解除）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoTradingAccount(page);
+
+  await groupHeader(page, 'us:ZQY').tap();
+  await expect(positionRow(page, ZQY_STOCK.id)).toHaveCount(0);
+  // T017：点单行组的行进入持仓详情 → header 返回交易账户页（列表屏未卸载）。
+  for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toHaveCount(0);
+});
+
+test('083 T015④ 港股空头认沽 ⇒「示例汽车 沽」、第二行 261029 7.25、数量与市值为负（sb 22 / US1-AS3）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED, HK_SHORT_PUT));
+  await gotoTradingAccount(page);
+  await page.getByTestId('optionsdesk-trading-account-market-tab-hk').tap();
+
+  const id = HK_SHORT_PUT_ROW.id;
+  await expect(positionRow(page, id)).toBeVisible({ timeout: 30_000 });
+  await expect(rowPart(page, id, 'name')).toHaveText('示例汽车 沽');
+  await expect(rowPart(page, id, 'sub')).toHaveText('261029 7.25');
+  await expect(rowPart(page, id, 'qty')).toHaveText('-3');
+  await expect(rowPart(page, id, 'market-value')).toHaveText('-1,740.00');
+});
+
+test('083 T015⑤ expired=true 行 ⇒「已到期 · 待同步」可见，未到期行无此标（sb 23 / US1-AS9）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQY_PUT_EXPIRED.id)).toBeVisible({ timeout: 30_000 });
+  await expect(rowPart(page, ZQY_PUT_EXPIRED.id, 'expired')).toHaveText('已到期 · 待同步');
+  await expect(rowPart(page, ZQY_CALL.id, 'expired')).toHaveCount(0);
+});
+
+test('083 T015⑥a brokerCount=1 ⇒ 行上无连接标签（sb 20）', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible({ timeout: 30_000 });
+  await expect(rowPart(page, ZQR_CALL.id, 'connection')).toHaveCount(0);
+  await expect(positionsRoot(page).getByText('示例连接')).toHaveCount(0);
+});
+
+test('083 T015⑥b brokerCount=2 且同合约两行 ⇒ 两行各显示自己的连接名称（sb 20, 21）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(TWO_CONNECTIONS));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, 'us-zqr-call-a')).toBeVisible({ timeout: 30_000 });
+  await expect(positionRow(page, 'us-zqr-call-b')).toBeVisible();
+  await expect(rowPart(page, 'us-zqr-call-a', 'connection')).toHaveText('示例连接 A');
+  await expect(rowPart(page, 'us-zqr-call-b', 'connection')).toHaveText('示例连接 B');
+});
+
+test('083 T015⑦ 行 marketValue=37560 ⇒ 主列表显示 3.76万（FR-022）', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible({ timeout: 30_000 });
+  await expect(rowPart(page, ZQR_CALL.id, 'market-value')).toHaveText('3.76万');
 });
