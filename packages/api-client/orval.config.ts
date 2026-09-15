@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'orval';
 
 /**
@@ -20,10 +21,26 @@ import { defineConfig } from 'orval';
  * register x-trace-id request header + ProblemDetail response interceptor.
  * For PR-5b the generated code uses the default axios instance.
  */
+const input = process.env['OPENAPI_INPUT'] ?? '../../apps/server/openapi.json';
+
+// `clean: true` wipes src/generated BEFORE orval parses the input, so reject a
+// missing / empty / non-OpenAPI local file here, while the config loads.
+if (!/^https?:\/\//.test(input)) {
+  let spec: { openapi?: unknown } | null = null;
+  try {
+    spec = JSON.parse(readFileSync(input, 'utf8')) as { openapi?: unknown } | null;
+  } catch {
+    throw new Error(`OpenAPI input is missing or not valid JSON: ${input}`);
+  }
+  if (typeof spec?.openapi !== 'string') {
+    throw new Error(`OpenAPI input has no "openapi" version field: ${input}`);
+  }
+}
+
 export default defineConfig({
   api: {
     input: {
-      target: process.env['OPENAPI_INPUT'] ?? '../../apps/server/openapi.json',
+      target: input,
     },
     output: {
       mode: 'tags-split',

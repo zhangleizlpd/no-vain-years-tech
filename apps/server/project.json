@@ -144,7 +144,7 @@
       "dependsOn": ["build"],
       "outputs": ["{workspaceRoot}/apps/server/openapi.json"],
       "options": {
-        "command": "PORT=3099 node dist/main.js & until curl -sf http://localhost:3099/docs-json > openapi.json 2>/dev/null; do sleep 0.5; done && lsof -tnP -i:3099 | xargs kill -9 2>/dev/null || true",
+        "command": "bash scripts/export-openapi.sh",
         "cwd": "apps/server",
         "env": {
           "MARKETDATA_PROVIDER": "mock"
