@@ -2,7 +2,10 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupIsolatedStores } from '../_support/isolated-db';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
+import { SchedulerRegistry } from '@nestjs/schedule';
 import { AppModule } from '../../src/app/app.module';
+import { SCHEDULER_DISABLED } from '../../src/app/schedule-options';
+import { MARKETDATA_WORKER_DISABLED } from '../../src/marketdata/marketdata-sync.queue';
 import { MockMarketDataAdapter } from '../../src/marketdata/mock-market-data.adapter';
 import { MockCollectionRefusedError } from '../../src/marketdata/refusing-collection.adapter';
 import { LocalInstrumentSearchAdapter } from '../../src/marketdata/local-instrument-search.adapter';
@@ -117,6 +120,30 @@ describe('015 marketdata module boot (Testcontainers PG + Redis + Fastify)', () 
     await app?.close();
     await stores.drop();
   });
+
+  it('服务端 boot: AppModule 注册定时任务', () => {
+    expect(moduleRef.get(SchedulerRegistry).getCronJobs().size).toBeGreaterThan(0);
+  });
+
+  // CLI 形态 (`*.cli.ts`: 两个 sentinel 置位后 createApplicationContext(AppModule)): 同一个 AppModule
+  // 不注册任何定时任务, 否则 CLI 进程里 @Cron 与服务端进程重复触发。对照上一条服务端 boot。
+  it('CLI 形态: 置位 SCHEDULER_DISABLED ⇒ AppModule 零定时任务', async () => {
+    const prevScheduler = process.env[SCHEDULER_DISABLED];
+    const prevWorker = process.env[MARKETDATA_WORKER_DISABLED];
+    process.env[SCHEDULER_DISABLED] = '1';
+    process.env[MARKETDATA_WORKER_DISABLED] = '1';
+    const cliRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    try {
+      await cliRef.init();
+      expect(cliRef.get(SchedulerRegistry).getCronJobs().size).toBe(0);
+    } finally {
+      await cliRef.close();
+      if (prevScheduler === undefined) delete process.env[SCHEDULER_DISABLED];
+      else process.env[SCHEDULER_DISABLED] = prevScheduler;
+      if (prevWorker === undefined) delete process.env[MARKETDATA_WORKER_DISABLED];
+      else process.env[MARKETDATA_WORKER_DISABLED] = prevWorker;
+    }
+  }, 120_000);
 
   it('零 env: 读取口解析 Mock 单例, SEARCH 解析本地 pg_trgm adapter', () => {
     for (const port of READ_PORTS) {

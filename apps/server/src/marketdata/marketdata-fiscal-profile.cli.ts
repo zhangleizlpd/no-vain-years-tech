@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app/app.module.js';
+import { SCHEDULER_DISABLED } from '../app/schedule-options.js';
 import { PrismaService } from '../security/prisma.service.js';
 import { MARKETDATA_WORKER_DISABLED } from './marketdata-sync.queue.js';
 
@@ -98,6 +99,7 @@ export async function executeFiscalProfileSet(
 export async function runFiscalProfileCli(argv: string[]): Promise<number> {
   const args = parseFiscalProfileArgs(argv); // 先解析 fail-fast，坏参不必启动 DI。
   process.env[MARKETDATA_WORKER_DISABLED] = '1';
+  process.env[SCHEDULER_DISABLED] = '1';
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],
   });

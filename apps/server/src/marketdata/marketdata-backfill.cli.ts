@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { QueueEvents } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { AppModule } from '../app/app.module.js';
+import { SCHEDULER_DISABLED } from '../app/schedule-options.js';
 import { marketdataSyncConfig, type MarketdataSyncConfig } from '../config/marketdata.config.js';
 import { PrismaService } from '../security/prisma.service.js';
 import { anchorFactorsForInstrument } from './anchor-factors.js';
@@ -480,6 +481,7 @@ async function estimateRequests(
 export async function runBackfill(argv: string[]): Promise<number> {
   // D6 (clarify Q2): createApplicationContext 前置 sentinel → worker OnModuleInit no-op。
   process.env[MARKETDATA_WORKER_DISABLED] = '1';
+  process.env[SCHEDULER_DISABLED] = '1';
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],
   });
