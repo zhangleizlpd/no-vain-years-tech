@@ -49,6 +49,34 @@ export function refetchFailed(input: { hasData: boolean; isError: boolean }): bo
   return input.hasData && input.isError;
 }
 
+/** 详情屏（持仓 / 订单共用）的视图。 */
+export type DetailView = 'loading' | 'not-found' | 'error' | 'ready';
+
+/**
+ * 详情请求失败是否为「记录不存在」（FR-020）。O(1)。
+ * 判 HTTP 404（同 `underlying-detail.rules.ts` `isNoAnchorError` 体例）：不存在 / 不属于本账号 / 正股未归类 /
+ * 不在锚集四种情况服务端响应逐字节相同（错误码在 ProblemDetail `detail`，没有 `code`），状态码即足够，订单详情共用。
+ */
+export function isDetailNotFound(error: unknown): boolean {
+  const e = error as { isAxiosError?: boolean; response?: { status?: number } } | null | undefined;
+  return e?.isAxiosError === true && e.response?.status === 404;
+}
+
+/**
+ * 详情屏视图，优先级：不存在 → 已有数据 → 首次加载中 → 加载失败。O(1)。
+ * 🚨 404 **优先于**已显示的旧数据（FR-020）；其余失败有数据时保留数据，顶部提示走 `refetchFailed`（FR-023）。
+ */
+export function resolveDetailView(input: {
+  isPending: boolean;
+  hasData: boolean;
+  isError: boolean;
+  notFound: boolean;
+}): DetailView {
+  if (input.isError && input.notFound) return 'not-found';
+  if (input.hasData) return 'ready';
+  return input.isPending ? 'loading' : 'error';
+}
+
 /** 组内 ≥ 2 行才出组头；单行组直接平铺（FR-004）。O(1)。 */
 export function showGroupHeader(group: Pick<BrokerPositionGroupResponse, 'rows'>): boolean {
   return group.rows.length >= 2;
@@ -143,7 +171,8 @@ export function plColorClass(value: string | null): PlColorClass {
 
 /**
  * 持仓盈亏比例：带符号两位小数 + `%`；null / 非法 ⇒ `--`。O(1)。
- * 📌 响应值即百分数（`40` = 40%，DTO `unrealizedPlRatio` 注明「券商原值不换算」、示例 `40`），🚫 再乘 100。
+ * 🚫 再乘 100 —— EVIDENCE: pl_ratio_avg_cost 为百分数值（非小数）—— 维护者 082 POC 私有持仓样本逐行复核，
+ * 与 (现价 − 平均成本) ÷ 平均成本 的比值均约为 100 倍；主 agent 2026-09-15 核；证据 docs/private/evidence/broker-account-poc/
  * 比例不缩写（FR-022）；舍入后为零不带符号。
  */
 export function formatPlRatio(value: string | null): string {
@@ -158,4 +187,28 @@ export function formatPlRatio(value: string | null): string {
 export function displayCode(code: string): string {
   const dot = code.indexOf('.');
   return dot < 0 ? code : code.slice(dot + 1);
+}
+
+/** 持仓身份字段（列表行与详情响应同形；详情屏与列表行共用下面两个拼接）。 */
+interface PositionIdentity {
+  market: BrokerPositionRowResponseMarket;
+  code: string;
+  name: string;
+  option: { expiry: string; right: BrokerPositionOptionResponseRight; strike: string } | null;
+}
+
+/** 名称：正股 = 名称；期权 = 正股名 + Call / Put · 购 / 沽（FR-007）。O(1)。 */
+export function positionDisplayName(position: PositionIdentity): string {
+  if (position.option === null) return position.name;
+  return optionDisplayName({
+    market: position.market,
+    underlyingName: position.name,
+    right: position.option.right,
+  });
+}
+
+/** 代码行：正股 = 去前缀代码；期权 = 到期日 6 位 + 行权价去尾零（FR-007）。O(n)。 */
+export function positionCodeLine(position: PositionIdentity): string {
+  if (position.option === null) return displayCode(position.code);
+  return `${expiryYymmdd(position.option.expiry)} ${trimStrike(position.option.strike)}`;
 }

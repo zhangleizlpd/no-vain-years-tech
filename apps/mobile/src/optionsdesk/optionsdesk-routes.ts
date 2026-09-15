@@ -84,3 +84,13 @@ export const OPTIONSDESK_ANCHOR_COLD_START_ROUTE = '/(app)/optionsdesk/anchor-co
  * 同栈，继承同一道 MarketsRouteGuard（plan §D2，不另登记 `MARKETS_SURFACES`）。
  */
 export const OPTIONSDESK_TRADING_ACCOUNT_ROUTE = '/(app)/optionsdesk/trading-account' as const;
+
+// ── 083 T017：持仓详情（FR-013 / FR-016 / plan D15） ────────────────────────
+//
+// 🚨 同样长在 `/(app)/optionsdesk/` 下 —— 继承 `_layout` 那道 `MarketsRouteGuard`。
+//    `id` 是持仓行数字串、不含冒号 ⇒ **无需转义**（同 `anchor-submission/[id]` 那条）。
+
+/** 持仓详情（交易账户页持仓行点击 / 深链进入）。 */
+export function optionsdeskTradingAccountPositionRoute(id: string) {
+  return `/(app)/optionsdesk/trading-account-position/${id}` as const;
+}

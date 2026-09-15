@@ -16,11 +16,13 @@ import {
   displayCode,
   expiryYymmdd,
   formatPlRatio,
+  isDetailNotFound,
   localDateTimeParts,
   marketTzLabel,
   optionDisplayName,
   plColorClass,
   refetchFailed,
+  resolveDetailView,
   resolvePositionsView,
   showConnectionLabel,
   showGroupHeader,
@@ -204,6 +206,47 @@ describe('tradingAccountPositions 文案段（plan D17）', () => {
     expect(COPY.unresolved(2)).toBe('未归类 2 条');
     expect(COPY.expired).toBe('已到期 · 待同步');
     expect(COPY.syncedAt('09-08 14:05（美东）')).toBe('同步于 09-08 14:05（美东）');
+  });
+});
+
+// ── T017：详情屏视图（持仓 / 订单共用） ───────────────────────────────────────
+
+describe('isDetailNotFound / resolveDetailView（FR-020 / FR-023）', () => {
+  const axios404 = {
+    isAxiosError: true,
+    response: { status: 404, data: { status: 404, detail: 'BROKER_POSITION_NOT_FOUND' } },
+  };
+  const axios500 = { isAxiosError: true, response: { status: 500 } };
+
+  it('HTTP 404 的 axios 错误 ⇒ 不存在；500 / 非 axios 错误 / null ⇒ 否', () => {
+    expect(isDetailNotFound(axios404)).toBe(true);
+    expect(isDetailNotFound(axios500)).toBe(false);
+    expect(isDetailNotFound(new Error('network'))).toBe(false);
+    expect(isDetailNotFound(null)).toBe(false);
+  });
+
+  it('🚨 已有数据且重读 404 ⇒ not-found（优先于已显示的旧数据）', () => {
+    expect(
+      resolveDetailView({ isPending: false, hasData: true, isError: true, notFound: true }),
+    ).toBe('not-found');
+  });
+
+  it('🚨 已有数据且重读 500 ⇒ 仍 ready（顶部提示另由 refetchFailed 出，🚫 错误卡）', () => {
+    expect(
+      resolveDetailView({ isPending: false, hasData: true, isError: true, notFound: false }),
+    ).toBe('ready');
+  });
+
+  it('无数据：首次加载中 ⇒ loading；失败 ⇒ error；首次即 404 ⇒ not-found', () => {
+    expect(
+      resolveDetailView({ isPending: true, hasData: false, isError: false, notFound: false }),
+    ).toBe('loading');
+    expect(
+      resolveDetailView({ isPending: false, hasData: false, isError: true, notFound: false }),
+    ).toBe('error');
+    expect(
+      resolveDetailView({ isPending: false, hasData: false, isError: true, notFound: true }),
+    ).toBe('not-found');
   });
 });
 

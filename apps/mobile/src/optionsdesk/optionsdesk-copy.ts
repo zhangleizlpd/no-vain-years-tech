@@ -1,6 +1,7 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
 import type {
   BrokerPositionOptionResponseRight,
+  BrokerPositionRowResponseKind,
   BrokerPositionRowResponseMarket,
   MarchAuditEvidenceResponse,
   OptionsdeskControllerRadarMarket,
@@ -1427,6 +1428,43 @@ export const OPTIONSDESK_COPY = {
       us: '（美东）',
       hk: '（香港）',
     } satisfies Record<BrokerPositionRowResponseMarket, string>,
+    /** 持仓详情屏（083 T017，plan D15）。 */
+    positionDetail: {
+      title: '持仓详情',
+      /** 非数据视图的卡片标题（FR-020 逐字）。 */
+      states: {
+        'not-found': '持仓已不存在',
+        error: '加载失败',
+      },
+      stateBody: {
+        'not-found': '这笔持仓在最近一次同步中已被移除（平仓、到期或被指派）。',
+        error: '暂时连不上服务端，请稍后重试。',
+      },
+      fields: {
+        qty: '持仓数量',
+        currentPrice: '现价',
+        averageCost: '平均成本',
+        unrealizedPl: '持仓盈亏',
+        openedAt: '开仓时间',
+      },
+      /** 市值标签带币种；缺币种不猜。 */
+      marketValueLabel: (currency: string | null) =>
+        currency === null ? '市值' : `市值（${currency}）`,
+      qtyUnit: {
+        stock: '股',
+        option: '张',
+      } satisfies Record<BrokerPositionRowResponseKind, string>,
+      marketName: {
+        us: '美股',
+        hk: '港股',
+      } satisfies Record<BrokerPositionRowResponseMarket, string>,
+      /** 正股「订单」、期权「本合约订单」（FR-013 / FR-016）。 */
+      ordersTitle: {
+        stock: '订单',
+        option: '本合约订单',
+      } satisfies Record<BrokerPositionRowResponseKind, string>,
+      ordersEmpty: '暂无订单',
+    },
   },
 } as const;
 

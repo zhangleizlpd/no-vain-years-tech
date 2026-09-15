@@ -1,7 +1,9 @@
 import { expect, test, type Locator, type Page, type Route } from './_support/fixtures';
 import type {
+  BrokerPositionDetailResponse,
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
+  BrokerPositionOrderItemResponse,
   BrokerPositionRowResponse,
   RadarResponse,
 } from '@nvy/api-client';
@@ -21,7 +23,7 @@ import { mockJson } from './_support/api-mock';
 //   T015 ① 3 行组 ⇒ 组头「ZQY 示例(3)」、组市值 / 组盈亏万缩写、组头现价 = 正股行现价（sb 12 / US1-AS1）
 //        ② 单行组 ⇒ 无组头直接出行（sb 11 / US1-AS2）
 //        ③ 点组头折叠 / 再点展开；折叠后返回雷达再进入 ⇒ 全部展开（sb 13 / US1-AS7）
-//          ③b「折叠后进持仓详情再返回 ⇒ 仍折叠」依赖持仓详情路由 ⇒ `test.fixme`，T017 落路由后解除
+//          ③b 折叠后点行进持仓详情、header 返回 ⇒ 仍折叠（T017 落路由后解除 fixme）
 //        ④ 港股空头认沽 ⇒「示例汽车 沽」、第二行 `261029 7.25`、数量与市值为负（sb 22 / US1-AS3）
 //        ⑤ `expired=true` 行 ⇒「已到期 · 待同步」可见（sb 23 / US1-AS9）
 //        ⑥ `brokerCount=1` ⇒ 无连接标签；`=2` 且同合约两行 ⇒ 各显示自己的连接名称（sb 20, 21）
@@ -30,6 +32,18 @@ import { mockJson } from './_support/api-mock';
 //        ② 切后台再回前台（`visibilitychange`）⇒ 列表端点命中 +1（sb 14 回前台面）
 //        ③ 列表已显示、重读 500 ⇒ 行仍可见 + 刷新失败提示；恢复后重读 ⇒ 提示消失（sb 43 / US1-AS10）
 //        ④ 聚焦面不在此验（「进雷达再返回」是重新挂载，测不出聚焦）⇒ 由 T017⑩ 进持仓详情再返回验
+//   T017 ① 点正股行 ⇒ 持仓详情汇总（全精度）+ 订单列表（sb 34 / US3-AS1）
+//        ② 已撤单订单状态标可见（sb 36；状态中文映射归 T018）
+//        ③ 详情首次 500 ⇒「加载失败 + 重试」（sb 46）  ④ 首次即 404 ⇒「持仓已不存在」（sb 40）
+//        ⑤ 已显示后重读 404 ⇒「持仓已不存在」替换旧数据（sb 40 / FR-020）
+//        ⑥ 已显示后重读 500 ⇒ 汇总保留 + 顶部刷新失败提示（sb 43 / FR-023）
+//        ⑦ 详情下拉 ⇒ 详情端点命中 +1（sb 14 下钻面）  ⑧ 深链进详情后 header 返回 ⇒ 交易账户页
+//        ⑨ 开仓时间时区标签按响应 `market`  ⑩ 详情返回列表（未卸载，只靠聚焦）⇒ 列表端点命中 +1（sb 14 聚焦面）
+//
+// ── 重读触发在 web 上怎么验 ─────────────────────────────────────────────────────
+//   · 下拉：RN Web 的 `RefreshControl` 无手势 ⇒ `pullToRefresh` 沿 fiber 直调其 `onRefresh`。
+//   · 回前台：react-native-web 的 `AppState` 由 `visibilitychange` 驱动 ⇒ 覆写 `visibilityState` 后派发事件。
+//   · 叠屏：详情 push 在交易账户页上时两屏 header 返回都在 DOM ⇒ `visibleHeaderBack` 只取可见的。
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
 //   mock `/me` + refresh（App 级登录态前置）+ 本片列表端点 `GET /optionsdesk/broker-positions`；
@@ -610,17 +624,23 @@ test('083 T015③ 点组头折叠 / 再点展开；折叠后返回雷达再进�
   for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toBeVisible();
 });
 
-// 🚨 依赖持仓详情路由（T017 才建）：T017 落路由后解除 fixme 并补全「进详情 → header 返回」两步，
-//    🚫 删掉本臂或为此提前建路由。
-test.fixme('083 T015③b 折叠后进持仓详情再返回 ⇒ 仍折叠（sb 13 / US1-AS7；T017 落路由后解除）', async ({
-  page,
-}) => {
+test('083 T015③b 折叠后进持仓详情再返回 ⇒ 仍折叠（sb 13 / US1-AS7）', async ({ page }) => {
   await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQR_CALL_DETAIL));
   await gotoTradingAccount(page);
 
+  await expect(groupHeader(page, 'us:ZQY')).toBeVisible({ timeout: 30_000 });
   await groupHeader(page, 'us:ZQY').tap();
-  await expect(positionRow(page, ZQY_STOCK.id)).toHaveCount(0);
-  // T017：点单行组的行进入持仓详情 → header 返回交易账户页（列表屏未卸载）。
+  for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toHaveCount(0);
+
+  // 点单行组的行进入持仓详情 → header 返回交易账户页（列表屏未卸载 ⇒ 折叠状态还在）。
+  await positionRow(page, ZQR_CALL.id).tap();
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await visibleHeaderBack(page).tap();
+  await expect(detailRoot(page)).toHaveCount(0, { timeout: 30_000 });
+
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
+  await expect(groupHeader(page, 'us:ZQY')).toBeVisible();
   for (const id of ZQY_ROW_IDS) await expect(positionRow(page, id)).toHaveCount(0);
 });
 
@@ -830,4 +850,301 @@ test('083 T016③ 列表已显示、下拉重读 500 ⇒ 行仍可见 + 刷新�
   });
   await expect(inPositions(page, 'refetch-failed')).toHaveCount(0);
   await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// T017 —— 持仓详情屏：路由 + 汇总 + 订单段 + 加载 / 404 / 重读
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 只认详情端点 `/broker-positions/:id`（与列表端点 `POSITIONS_RE` 互斥）。 */
+const POSITION_DETAIL_RE = /\/api\/v1\/optionsdesk\/broker-positions\/([^/?]+)(\?|$)/;
+const DETAIL_SCREEN = 'optionsdesk-trading-account-position-screen';
+const DETAIL = 'optionsdesk-trading-account-position';
+
+function order(
+  id: string,
+  side: string,
+  qty: string,
+  price: string | null,
+  status: string,
+  createdAtLocal: string | null,
+): BrokerPositionOrderItemResponse {
+  return { id, side, qty, price, status, createdAtLocal };
+}
+
+/** 「ZQY 示例」正股持仓详情：4 张订单（含 1 张已撤单），下单时间降序（服务端已排好）。 */
+const ZQY_STOCK_DETAIL: BrokerPositionDetailResponse = {
+  ...ZQY_STOCK,
+  openedAtLocal: '2026-07-02 10:05:00',
+  orders: [
+    order('ord-4', 'BUY', '100', '45.00', 'FILLED_ALL', '2026-09-11 16:52:00'),
+    order('ord-3', 'SELL', '50', '49.10', 'CANCELLED_ALL', '2026-08-20 13:30:00'),
+    order('ord-2', 'BUY', '50', '47.00', 'FILLED_ALL', '2026-07-15 09:48:00'),
+    order('ord-1', 'BUY', '50', '44.90', 'FILLED_ALL', '2026-07-02 10:05:00'),
+  ],
+  lots: null,
+};
+
+/** 「ZQR 示例 Call」期权持仓详情（批次段归 T019，这里只给形态合法的批次）。 */
+const ZQR_CALL_DETAIL: BrokerPositionDetailResponse = {
+  ...ZQR_CALL,
+  openedAtLocal: '2026-08-20 10:15:00',
+  orders: [order('ord-9', 'BUY', '1', '2.60', 'FILLED_ALL', '2026-08-20 10:15:00')],
+  lots: { restorable: false, lots: [] },
+};
+
+/** 港股正股持仓详情（交易账户页默认市场是美股 ⇒ 时区标签只能来自响应 `market`）。 */
+const HK_STOCK_DETAIL: BrokerPositionDetailResponse = {
+  ...stockRow('hk'),
+  openedAtLocal: '2026-09-01 10:32:00',
+  orders: [],
+  lots: null,
+};
+
+interface PositionDetailServer {
+  /** false ⇒ 详情端点 500（服务端故障）。 */
+  healthy: boolean;
+  /** 仍存在的持仓；删掉 = 被同步移除 ⇒ 404。 */
+  byId: Map<string, BrokerPositionDetailResponse>;
+}
+
+function newDetailServer(...details: BrokerPositionDetailResponse[]): PositionDetailServer {
+  return { healthy: true, byId: new Map(details.map((d) => [d.id, d])) };
+}
+
+/** 详情端点 mock：`(id, server) → 响应` 纯函数；不存在 ⇒ 404 ProblemDetail（错误码在 `detail`）。 */
+async function installPositionDetailMock(page: Page, server: PositionDetailServer): Promise<void> {
+  await page.route(POSITION_DETAIL_RE, async (route: Route) => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') {
+      return void (await route.fulfill({ status: 204, headers: CORS }));
+    }
+    if (req.method() !== 'GET') return void (await route.fallback());
+    if (!server.healthy) {
+      return void (await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ type: 'about:blank', title: 'Internal Server Error', status: 500 }),
+      }));
+    }
+    const id = decodeURIComponent(POSITION_DETAIL_RE.exec(new URL(req.url()).pathname)?.[1] ?? '');
+    const detail = server.byId.get(id);
+    if (detail === undefined) {
+      return void (await route.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          type: 'about:blank',
+          title: 'Not Found',
+          status: 404,
+          detail: 'BROKER_POSITION_NOT_FOUND',
+        }),
+      }));
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(detail),
+    });
+  });
+}
+
+function detailRoot(page: Page): Locator {
+  return page.getByTestId(DETAIL_SCREEN);
+}
+
+function inDetail(page: Page, suffix: string): Locator {
+  return detailRoot(page).getByTestId(`${DETAIL}-${suffix}`);
+}
+
+/** 深链进持仓详情（首发吃 Metro 冷打包 ⇒ 长超时锚在详情屏根）。 */
+async function gotoPositionDetail(page: Page, id: string): Promise<void> {
+  await page.goto(`/optionsdesk/trading-account-position/${id}`);
+  await expect(detailRoot(page)).toBeVisible({ timeout: 90_000 });
+}
+
+/** 叠屏时下层屏的 header 返回也在 DOM ⇒ 只取可见的那一个（🚫 `page.goBack`）。 */
+function visibleHeaderBack(page: Page): Locator {
+  return page
+    .getByRole('button', { name: /back/i })
+    .or(page.getByRole('link', { name: /back/i }))
+    .filter({ visible: true })
+    .first();
+}
+
+test('083 T017① 点正股行 ⇒ 持仓详情显示汇总（全精度）与订单列表（sb 34 / US3-AS1）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQY_STOCK.id)).toBeVisible({ timeout: 30_000 });
+  await positionRow(page, ZQY_STOCK.id).tap();
+
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account-position\/us-zqy-stock$/);
+  await expect(inDetail(page, 'name')).toHaveText('ZQY 示例');
+  await expect(inDetail(page, 'code-line')).toHaveText('ZQY · 美股');
+  await expect(inDetail(page, 'qty')).toHaveText('5000 股');
+  await expect(inDetail(page, 'market-value')).toHaveText('241,000.00');
+  await expect(inDetail(page, 'price')).toHaveText('48.20');
+  await expect(inDetail(page, 'cost')).toHaveText('46.10');
+  await expect(inDetail(page, 'pl')).toHaveText('+10,500.00 / +4.56%');
+  await expect(inDetail(page, 'orders-title')).toHaveText('订单');
+  for (const { id } of ZQY_STOCK_DETAIL.orders) {
+    await expect(inDetail(page, `order-${id}`)).toBeVisible();
+  }
+  await expect(inDetail(page, 'order-ord-3-summary')).toHaveText('SELL 50 股 @ 49.10');
+  await expect(inDetail(page, 'order-ord-3-time')).toHaveText('08-20 13:30（美东）');
+});
+
+// 📌 状态 / 方向此处先显示券商原枚举；中文映射归 T018（届时本臂断言随之改为中文）。
+test('083 T017② 已撤单订单照常列出、状态标可见（sb 36 / US3-AS3）', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+
+  await expect(inDetail(page, 'order-ord-3-status')).toHaveText('CANCELLED_ALL', {
+    timeout: 30_000,
+  });
+  await expect(inDetail(page, 'order-ord-4-status')).toHaveText('FILLED_ALL');
+});
+
+test('083 T017③ 详情端点首次 500 ⇒「加载失败 + 重试」；恢复后点重试 ⇒ 汇总（sb 46）', async ({
+  page,
+}) => {
+  const server = newDetailServer(ZQY_STOCK_DETAIL);
+  server.healthy = false;
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, server);
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+
+  await expect(inDetail(page, 'error')).toBeVisible({ timeout: 30_000 });
+  await expect(detailRoot(page).getByText('加载失败', { exact: true })).toBeVisible();
+  await expect(inDetail(page, 'summary')).toHaveCount(0);
+
+  server.healthy = true;
+  await inDetail(page, 'retry').tap();
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await expect(inDetail(page, 'error')).toHaveCount(0);
+});
+
+test('083 T017④ 首次即 404 ⇒「持仓已不存在」，不是错误态（sb 40）', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer());
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+
+  await expect(inDetail(page, 'not-found')).toBeVisible({ timeout: 30_000 });
+  await expect(detailRoot(page).getByText('持仓已不存在', { exact: true })).toBeVisible();
+  await expect(inDetail(page, 'error')).toHaveCount(0);
+  await expect(inDetail(page, 'summary')).toHaveCount(0);
+});
+
+test('083 T017⑤ 详情已显示后下拉、响应 404 ⇒「持仓已不存在」替换旧数据（sb 40 / FR-020）', async ({
+  page,
+}) => {
+  const server = newDetailServer(ZQY_STOCK_DETAIL);
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, server);
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+
+  // 服务端状态事件：该持仓在最近一次同步中被移除。
+  server.byId.delete(ZQY_STOCK_DETAIL.id);
+  await pullToRefresh(inDetail(page, 'refresh'));
+
+  await expect(inDetail(page, 'not-found')).toBeVisible({ timeout: 30_000 });
+  await expect(inDetail(page, 'summary')).toHaveCount(0);
+  await expect(inDetail(page, 'refetch-failed')).toHaveCount(0);
+});
+
+test('083 T017⑥ 详情已显示后下拉、响应 500 ⇒ 汇总仍可见 + 顶部刷新失败提示（sb 43 / FR-023）', async ({
+  page,
+}) => {
+  const server = newDetailServer(ZQY_STOCK_DETAIL);
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, server);
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+
+  server.healthy = false;
+  await pullToRefresh(inDetail(page, 'refresh'));
+
+  await expect(inDetail(page, 'refetch-failed')).toHaveText('刷新失败，显示的是上次加载的数据', {
+    timeout: 30_000,
+  });
+  await expect(inDetail(page, 'summary')).toBeVisible();
+  await expect(inDetail(page, 'error')).toHaveCount(0);
+  await expect(inDetail(page, 'not-found')).toHaveCount(0);
+});
+
+test('083 T017⑦ 详情页下拉 ⇒ 详情端点命中 +1（sb 14 下钻面）', async ({ page }) => {
+  const log = observeRequests(page);
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  const before = log.hits(POSITION_DETAIL_RE);
+
+  await pullToRefresh(inDetail(page, 'refresh'));
+
+  await expect.poll(() => log.hits(POSITION_DETAIL_RE), { timeout: 30_000 }).toBe(before + 1);
+  await expect(inDetail(page, 'summary')).toBeVisible();
+});
+
+test('083 T017⑧ 深链进入详情后 header 返回 ⇒ 落到交易账户页', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+
+  await visibleHeaderBack(page).tap();
+
+  await expect(page).toHaveURL(/\/optionsdesk\/trading-account\/?$/, { timeout: 30_000 });
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+  await expect(detailRoot(page)).toHaveCount(0);
+});
+
+test('083 T017⑨ 开仓时间的时区标签由响应 market 决定（美股 ⇒ 美东、港股 ⇒ 香港）', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL, HK_STOCK_DETAIL));
+
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'opened-at-label')).toHaveText('开仓时间（美东）', {
+    timeout: 30_000,
+  });
+  await expect(inDetail(page, 'opened-at')).toHaveText('07-02 10:05');
+
+  // 交易账户页默认市场是美股 ⇒ 港股标签只可能来自详情响应的 `market`。
+  await gotoPositionDetail(page, HK_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'opened-at-label')).toHaveText('开仓时间（香港）', {
+    timeout: 30_000,
+  });
+  await expect(inDetail(page, 'orders-empty')).toBeVisible();
+});
+
+test('083 T017⑩ 从持仓详情返回交易账户页（列表屏未卸载，只靠聚焦）⇒ 列表端点命中 +1（sb 14 聚焦面）', async ({
+  page,
+}) => {
+  const log = observeRequests(page);
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_STOCK_DETAIL));
+  await gotoTradingAccount(page);
+
+  await expect(positionRow(page, ZQY_STOCK.id)).toBeVisible({ timeout: 30_000 });
+  await positionRow(page, ZQY_STOCK.id).tap();
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  const before = log.hits(POSITIONS_RE, 'us');
+
+  await visibleHeaderBack(page).tap();
+
+  await expect(detailRoot(page)).toHaveCount(0, { timeout: 30_000 });
+  await expect(positionRow(page, ZQY_STOCK.id)).toBeVisible();
+  await expect.poll(() => log.hits(POSITIONS_RE, 'us'), { timeout: 30_000 }).toBe(before + 1);
 });

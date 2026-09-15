@@ -21,6 +21,7 @@ import {
   View,
   type SectionListData,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
@@ -30,21 +31,20 @@ import type {
 import { formatCompactAmount } from '~/format/compact-amount';
 import { Spinner } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import { optionsdeskTradingAccountPositionRoute } from './optionsdesk-routes';
 import type { RadarMarket } from './radar.rules';
 import {
-  displayCode,
-  expiryYymmdd,
   formatPlRatio,
   localDateTimeParts,
   marketTzLabel,
-  optionDisplayName,
   plColorClass,
+  positionCodeLine,
+  positionDisplayName,
   refetchFailed,
   resolvePositionsView,
   showConnectionLabel,
   showGroupHeader,
   showUnresolvedHint,
-  trimStrike,
   type PositionsView,
 } from './trading-account-positions.rules';
 import { useRefetchOnFocus, useRefetchOnForeground } from './use-refetch-on-foreground';
@@ -373,41 +373,36 @@ function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps) {
   );
 }
 
-/** 行名称：正股 = 名称；期权 = 正股名 + Call / Put · 购 / 沽（FR-007）。 */
-function rowName(row: BrokerPositionRowResponse): string {
-  if (row.option === null) return row.name;
-  return optionDisplayName({
-    market: row.market,
-    underlyingName: row.name,
-    right: row.option.right,
-  });
-}
-
-/** 行第二行：正股 = 代码；期权 = 到期日 6 位 + 行权价去尾零（FR-007）。 */
-function rowSubline(row: BrokerPositionRowResponse): string {
-  if (row.option === null) return displayCode(row.code);
-  return `${expiryYymmdd(row.option.expiry)} ${trimStrike(row.option.strike)}`;
-}
-
 interface PositionRowProps {
   row: BrokerPositionRowResponse;
   indented: boolean;
   showConnection: boolean;
 }
 
-/** 行：名称代码 · 市值 / 数量 · 现价 / 成本 · 持仓盈亏金额 / 比例（FR-007 / FR-012 / FR-021）。 */
+/**
+ * 行：名称代码 · 市值 / 数量 · 现价 / 成本 · 持仓盈亏金额 / 比例（FR-007 / FR-012 / FR-021）。
+ * 点击 ⇒ 持仓详情（T017，plan D15）；本屏不卸载 ⇒ 返回后折叠状态仍在。
+ */
 function PositionRow({ row, indented, showConnection }: PositionRowProps) {
+  const router = useRouter();
   const id = `${TEST_ID}-row-${row.id}`;
+  const name = positionDisplayName(row);
   return (
-    <View className="border-b border-line-soft" testID={id}>
+    <Pressable
+      onPress={() => router.push(optionsdeskTradingAccountPositionRoute(row.id))}
+      accessibilityRole="button"
+      accessibilityLabel={name}
+      className="border-b border-line-soft"
+      testID={id}
+    >
       <View className={indented ? ROW_TONE.indented : ROW_TONE.flat}>
         <View className="flex-row items-start gap-1 py-2.5">
           <View className={`${COL.name} gap-0.5`}>
             <Text className="text-sm font-medium text-ink" testID={`${id}-name`}>
-              {rowName(row)}
+              {name}
             </Text>
             <Text className="font-mono text-xs text-ink-muted" testID={`${id}-sub`}>
-              {rowSubline(row)}
+              {positionCodeLine(row)}
             </Text>
             {showConnection ? (
               <Text className="text-xs text-ink-muted" testID={`${id}-connection`}>
@@ -454,6 +449,6 @@ function PositionRow({ row, indented, showConnection }: PositionRowProps) {
           </View>
         </View>
       </View>
-    </View>
+    </Pressable>
   );
 }
