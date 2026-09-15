@@ -1386,7 +1386,21 @@ export const OPTIONSDESK_COPY = {
       'never-synced': '尚未同步',
       empty: '暂无持仓',
     } satisfies Record<Exclude<PositionsView, 'list'>, string>,
+    /** 四种非列表状态卡的正文（mockup 帧 3a–3d，去掉市场名以便两市场共用）。 */
+    stateBody: {
+      error: '暂时连不上服务端，请稍后重试。',
+      'no-connection': '当前账号没有连接券商账户，这里不会显示持仓。',
+      'never-synced': '已连接券商账户，持仓还没有成功同步过。首次同步成功后会显示在这里。',
+      empty: '最近一次同步显示，没有属于锚标的的持仓。',
+    } satisfies Record<Exclude<PositionsView, 'list'>, string>,
     retry: '重试',
+    /** 列表列头（mockup 帧 1）。 */
+    columns: {
+      name: '名称 / 代码',
+      marketValue: '市值 / 数量',
+      price: '现价 / 成本',
+      unrealizedPl: '持仓盈亏',
+    },
     /** 同步时刻行；入参为已拼好时区标签的交易所当地时间。 */
     syncedAt: (time: string) => `同步于 ${time}`,
     /**

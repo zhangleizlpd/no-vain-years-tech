@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from './_support/fixtures';
-import type { RadarResponse } from '@nvy/api-client';
+import type { BrokerPositionListResponse, RadarResponse } from '@nvy/api-client';
 
 import { mockJson } from './_support/api-mock';
 
@@ -9,7 +9,7 @@ import { mockJson } from './_support/api-mock';
 //   T003 ① 深链进入 ⇒ 标题 + 美股页签选中（sb 3；同时是 `testIdPrefix` 的 RED）
 //        ② 深链进入后 header 返回 ⇒ 回期权台 tab（sb 10）
 //        ③ 切港股 ⇒ 港股选中、无错误文案（sb 11 前半）
-//   T004 ① 默认「持仓」段选中 + 占位标题（sb 3）
+//   T004 ① 默认「持仓」段选中 + 持仓分段（083 起接数据面，不再是占位）（sb 3）
 //        ② 选「订单」后切港股 ⇒ 分段不被弹回（sb 6 / Edge）
 //        ③ 选港股后切「报表」⇒ 市场不被弹回（sb 7 / Edge）
 //        ④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字眼与错误文案（sb 8 / sb 11 后半）
@@ -20,11 +20,15 @@ import { mockJson } from './_support/api-mock';
 //        ③ 雷达停美股 → 进页切港股 → 返回 ⇒ 雷达美股页签仍为选中样式（sb 9 / SC-004）
 //
 // ── hermetic 边界 ────────────────────────────────────────────────────────────
-//   🚨 **只 mock `/me` + refresh**（App 级登录态前置，不属本页依赖）；其余 `/api/**` 一律走
+//   🚨 **只 mock `/me` + refresh**（App 级登录态前置，不属本页依赖）+ 083 持仓列表端点（见下）；其余 `/api/**` 一律走
 //      `_support/fixtures` 的默认 abort ⇒ 「服务端不可达」是本文件每条 test 的**常态**，
 //      FR-008「本页零请求、零错误态」由此天然被每条断言覆盖。
 //   📌 从雷达进入的臂另装 `installRadarMock`（只 `GET /optionsdesk/radar`，雷达首屏渲染前置，
 //      同样不属本页依赖）；本页自身仍零请求。
+//   📌 083 T014 起**持仓分段接数据面**（083 plan §D14；081 FR-008 对持仓分段失效）：`beforeEach`
+//      另 mock 083 列表端点恒答「无券商连接」；持仓分段的占位断言改为「083 持仓分段根节点可见」，
+//      「无空数据字眼」只对订单 / 报表断言（持仓分段合法显示「暂无交易账户」，083 FR-010）。
+//      零请求 / 零错误态仍由订单 / 报表分段承担。
 //
 // ── 选中态断言：样式自比较 ─────────────────────────────────────────────────────
 //   `react-native-web` 丢弃 `accessibilityState` ⇒ 无 `aria-selected` 可断（正向必红、反向恒真）。
@@ -62,8 +66,21 @@ const seedAuthStore = `
   );
 `;
 
+const POSITIONS_URL = '**/api/v1/optionsdesk/broker-positions?market=*';
+const NO_BROKER_CONNECTION: BrokerPositionListResponse = {
+  hasConnection: false,
+  brokerCount: 0,
+  syncedAt: null,
+  syncedAtLocal: null,
+  stale: false,
+  unresolvedCount: 0,
+  groups: [],
+};
+
 const DEEP_LINK = '/optionsdesk/trading-account';
 const SCREEN = 'optionsdesk-trading-account-screen';
+/** 083 持仓分段根节点（持仓分段自 083 T014 起不再是占位）。 */
+const POSITIONS_ROOT = 'optionsdesk-trading-account-positions';
 const MARKETS = ['us', 'hk'] as const;
 
 /** 错误态的通用字眼（本页 FR-008 不该出现任何一个）。 */
@@ -90,6 +107,8 @@ test.beforeEach(async ({ page }) => {
     accessToken: SEED_ACCESS_TOKEN,
     refreshToken: SEED_REFRESH_TOKEN,
   });
+  // 083 T014：持仓分段列表端点恒答「无券商连接」（= 081 世界里账号没连券商）。
+  await mockJson(page, POSITIONS_URL, 200, NO_BROKER_CONNECTION, 'GET');
 });
 
 test.setTimeout(120_000);
@@ -223,10 +242,17 @@ function marketTabId(market: (typeof MARKETS)[number]): string {
   return `optionsdesk-trading-account-market-tab-${market}`;
 }
 
-/** 本屏内恰呈该分段的占位标题，另两段的标题不出现（收窄到屏根，防雷达 tab 屏 DOM 双命中）。 */
+/**
+ * 本屏内恰呈该分段的占位标题（持仓分段 = 083 持仓分段根节点），另两段的标题不出现
+ * （收窄到屏根，防雷达 tab 屏 DOM 双命中）。
+ */
 async function expectPlaceholderOf(page: Page, segment: Segment): Promise<void> {
   const screen = page.getByTestId(SCREEN);
-  await expect(screen.getByText(PLACEHOLDER_TITLE[segment], { exact: true })).toBeVisible();
+  if (segment === 'positions') {
+    await expect(screen.getByTestId(POSITIONS_ROOT)).toBeVisible();
+  } else {
+    await expect(screen.getByText(PLACEHOLDER_TITLE[segment], { exact: true })).toBeVisible();
+  }
   for (const other of SEGMENTS) {
     if (other !== segment) {
       await expect(screen.getByText(PLACEHOLDER_TITLE[other], { exact: true })).toHaveCount(0);
@@ -244,7 +270,7 @@ async function expectSelection(
   await expectExactlyOneSelected(page, segmentIds(), segmentId(segment));
 }
 
-test('081 T004① 默认「持仓」段为选中样式 + 标题「持仓 · 建设中」（sb 3 / FR-003）', async ({
+test('081 T004① 默认「持仓」段为选中样式 + 渲染 083 持仓分段（sb 3 / FR-003）', async ({
   page,
 }) => {
   await gotoTradingAccount(page);
@@ -296,7 +322,10 @@ test('081 T004④ 2 市场 × 3 分段遍历 ⇒ 标题正确、无空数据字�
 
       await expectSelection(page, market, segment);
       await expectPlaceholderOf(page, segment);
-      await expect(screen.getByText(EMPTY_DATA_TEXT_RE)).toHaveCount(0);
+      // 083 T014：持仓分段合法显示「暂无交易账户」（083 FR-010），空数据字眼只对占位分段断言。
+      if (segment !== 'positions') {
+        await expect(screen.getByText(EMPTY_DATA_TEXT_RE)).toHaveCount(0);
+      }
       await expectNoErrorText(page);
     }
   }
