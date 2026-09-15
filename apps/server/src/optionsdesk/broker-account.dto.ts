@@ -1,7 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, Matches } from 'class-validator';
 import type { Prisma } from '../generated/prisma/client';
 import type { BrokerMarket } from './broker-code.rules';
+import type { BrokerBackfillRunView } from './list-broker-backfill-runs.usecase';
 import type { BrokerOrderDetail } from './get-broker-order.usecase';
 import type { BrokerPositionDetail } from './get-broker-position.usecase';
 import type {
@@ -496,6 +498,72 @@ export function toBrokerOrderDetailResponse(detail: BrokerOrderDetail): BrokerOr
     dealtAmount: decimalString(detail.dealtAmount),
     currency: detail.currency,
     createdAtLocal: detail.createdAtLocal,
+  };
+}
+
+/** 单次请求 ticker 上限 (plan D12)。 */
+const BACKFILL_RUN_TICKERS_MAX = 50;
+
+/** 补齐记录状态值域 = 082 写入方所写的全部值 (subscriber 插 pending; 同步 use case 写 running / succeeded / failed)。 */
+const BACKFILL_RUN_STATUSES = ['pending', 'running', 'succeeded', 'failed'] as const;
+
+/** GET /api/v1/optionsdesk/broker-backfill-runs 查询参数。 */
+export class BrokerBackfillRunsQuery {
+  @ApiProperty({
+    description: `正股 canonical ticker, 逗号分隔, 1–${BACKFILL_RUN_TICKERS_MAX} 个, 每个以 us: 或 hk: 开头`,
+    type: 'string',
+    example: 'us:ZQX,hk:08801',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string'
+      ? value
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : value,
+  )
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(BACKFILL_RUN_TICKERS_MAX)
+  @Matches(/^(us|hk):/, { each: true })
+  tickers!: string[];
+}
+
+export class BrokerBackfillRunResponse {
+  @ApiProperty({ description: '正股 canonical ticker (与请求同形)', example: 'us:ZQX' })
+  ticker!: string;
+
+  @ApiProperty({
+    description: '该账号该 ticker 最新一条补齐记录的状态',
+    enum: BACKFILL_RUN_STATUSES,
+    example: 'succeeded',
+  })
+  status!: string;
+
+  @ApiProperty({
+    description:
+      '状态对应时刻 (ISO 8601 UTC): succeeded / failed = 结束时刻; running = 开始时刻; pending = 下次尝试时刻; 缺失 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '2026-09-10T13:15:00.000Z',
+  })
+  at!: string | null;
+
+  @ApiProperty({
+    description: '同上, 交易所当地时间串 YYYY-MM-DD HH:mm:ss (市场取 ticker 前缀)',
+    type: 'string',
+    nullable: true,
+    example: '2026-09-10 09:15:00',
+  })
+  atLocal!: string | null;
+}
+
+export function toBrokerBackfillRunResponse(run: BrokerBackfillRunView): BrokerBackfillRunResponse {
+  return {
+    ticker: run.ticker,
+    status: run.status,
+    at: run.at === null ? null : run.at.toISOString(),
+    atLocal: run.atLocal,
   };
 }
 

@@ -18,11 +18,15 @@ import { skipExcept } from './optionsdesk.controller';
 import { ListBrokerPositionsUseCase } from './list-broker-positions.usecase';
 import { BROKER_POSITION_NOT_FOUND, GetBrokerPositionUseCase } from './get-broker-position.usecase';
 import { BROKER_ORDER_NOT_FOUND, GetBrokerOrderUseCase } from './get-broker-order.usecase';
+import { ListBrokerBackfillRunsUseCase } from './list-broker-backfill-runs.usecase';
 import {
+  BrokerBackfillRunResponse,
+  BrokerBackfillRunsQuery,
   BrokerOrderDetailResponse,
   BrokerPositionDetailResponse,
   BrokerPositionListResponse,
   BrokerPositionsQuery,
+  toBrokerBackfillRunResponse,
   toBrokerOrderDetailResponse,
   toBrokerPositionDetailResponse,
   toBrokerPositionListResponse,
@@ -48,6 +52,7 @@ function parseBrokerRowId(raw: string, notFound: string): bigint {
  * GET /api/v1/optionsdesk/broker-positions?market=us|hk   持仓列表
  * GET /api/v1/optionsdesk/broker-positions/:id            持仓详情 (汇总 + 订单 + 批次)
  * GET /api/v1/optionsdesk/broker-orders/:id               订单详情
+ * GET /api/v1/optionsdesk/broker-backfill-runs?tickers=   新锚券商历史补齐状态
  *
  * 🚨 **只读** (FR-019): 本 controller 无任何写端点 —— 下单 / 改单 / 撤单 / 平仓入口一律不存在。
  *
@@ -67,6 +72,7 @@ export class BrokerAccountController {
     private readonly listBrokerPositions: ListBrokerPositionsUseCase,
     private readonly getBrokerPosition: GetBrokerPositionUseCase,
     private readonly getBrokerOrder: GetBrokerOrderUseCase,
+    private readonly listBrokerBackfillRuns: ListBrokerBackfillRunsUseCase,
   ) {}
 
   @Get('broker-positions')
@@ -171,5 +177,42 @@ export class BrokerAccountController {
         parseBrokerRowId(id, BROKER_ORDER_NOT_FOUND),
       ),
     );
+  }
+
+  @Get('broker-backfill-runs')
+  @HttpCode(200)
+  @SkipThrottle(skipExcept(OPTIONSDESK_READ_BUCKET))
+  @Throttle({ 'optionsdesk-read-account': { limit: 120, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Latest broker history backfill run per requested ticker (read-only)',
+    description:
+      'For each requested ticker, the newest (by creation time) backfill run of the CURRENT ' +
+      'account whose target is that ticker: status + the matching instant (succeeded / failed → ' +
+      'finished, running → started, pending → next attempt) and its exchange-local string. ' +
+      'Tickers without any run are omitted (client shows "not triggered"). Output follows ' +
+      'request order, duplicates collapsed.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Backfill runs (only tickers that have one)',
+    type: [BrokerBackfillRunResponse],
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'tickers missing, more than 50, or not prefixed us: / hk:',
+    type: ProblemDetailResponse,
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthenticated / account not ACTIVE',
+    type: ProblemDetailResponse,
+  })
+  @ApiResponse({ status: 429, description: 'Rate limit (120/60s)', type: ProblemDetailResponse })
+  async backfillRuns(
+    @Req() req: { user: AuthenticatedUser },
+    @Query() query: BrokerBackfillRunsQuery,
+  ): Promise<BrokerBackfillRunResponse[]> {
+    const runs = await this.listBrokerBackfillRuns.execute(req.user.accountId, query.tickers);
+    return runs.map(toBrokerBackfillRunResponse);
   }
 }
