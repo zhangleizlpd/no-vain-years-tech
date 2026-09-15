@@ -54,6 +54,9 @@ import { mockJson } from './_support/api-mock';
 //        ⑤ `orderDbId=null` 的批次无 `›`、点击不跳转（sb 32）
 //        ⑥ 列表 → 期权行 → 批次（恰 2 次点击）⇒ 订单详情（sb 33 / SC-004）
 //        ⑦ 列表 → 期权行 →「本合约订单」项（恰 2 次点击）⇒ 订单详情（SC-004 第三条路径）
+//   T026（维护者 2026-09-15 impl 期裁决）
+//        ① 列表已显示且 `stale=true`、重读 500 ⇒ 陈旧条与刷新失败提示同时可见，陈旧条在上（sb 48）
+//        ② 「尚未同步」卡下拉、响应变为有数据 ⇒ 出列表；「暂无交易账户」「暂无持仓」卡下拉 ⇒ 列表端点命中 +1（sb 49）
 //
 // ── 重读触发在 web 上怎么验 ─────────────────────────────────────────────────────
 //   · 下拉：RN Web 的 `RefreshControl` 无手势 ⇒ `pullToRefresh` 沿 fiber 直调其 `onRefresh`。
@@ -866,6 +869,96 @@ test('083 T016③ 列表已显示、下拉重读 500 ⇒ 行仍可见 + 刷新�
   await expect(inPositions(page, 'refetch-failed')).toHaveCount(0);
   await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// T026 —— 维护者 2026-09-15 impl 期裁决：陈旧与刷新失败并存 + 状态卡下拉重读
+// ════════════════════════════════════════════════════════════════════════════
+
+const STALE_TEXT = `数据可能已过时 · 最近成功同步于 ${SYNCED_LABEL.us}`;
+const REFETCH_FAILED_TEXT = '刷新失败，显示的是上次加载的数据';
+
+test('083 T026① 列表已显示且 stale=true、下拉重读 500 ⇒ 陈旧条与刷新失败提示同时可见、陈旧条在上（sb 48 / FR-023）', async ({
+  page,
+}) => {
+  const server = newServer({ ...US_GROUPED, stale: true });
+  await installPositionsMock(page, server);
+  await gotoTradingAccount(page);
+
+  await expect(inPositions(page, 'stale')).toHaveText(STALE_TEXT, { timeout: 30_000 });
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
+
+  server.healthy = false;
+  await pullToRefresh(inPositions(page, 'refresh'));
+
+  await expect(inPositions(page, 'refetch-failed')).toHaveText(REFETCH_FAILED_TEXT, {
+    timeout: 30_000,
+  });
+  await expect(inPositions(page, 'stale')).toHaveText(STALE_TEXT);
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible();
+  await expect(inPositions(page, 'synced-at')).toHaveCount(0);
+  await expect(inPositions(page, 'error')).toHaveCount(0);
+
+  const staleBox = await inPositions(page, 'stale').boundingBox();
+  const failedBox = await inPositions(page, 'refetch-failed').boundingBox();
+  expect(staleBox?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(
+    failedBox?.y ?? Number.NEGATIVE_INFINITY,
+  );
+});
+
+test('083 T026②a「尚未同步」卡下拉、服务端已完成首次同步 ⇒ 出列表、列表端点命中 +1、无非本片端点请求（sb 49）', async ({
+  page,
+}) => {
+  const log = observeRequests(page);
+  const server = newServer(listResponse('us', { syncedAt: null, syncedAtLocal: null, groups: [] }));
+  await installPositionsMock(page, server);
+  await gotoTradingAccount(page);
+
+  await expect(inPositions(page, 'never-synced')).toBeVisible({ timeout: 30_000 });
+  await expect(inPositions(page, 'state-refresh')).toBeVisible();
+  const before = log.hits(POSITIONS_RE, 'us');
+  const apiMark = log.apiUrls.length;
+
+  // 服务端状态事件：首次同步成功。
+  server.byMarket.us = US_GROUPED;
+  await pullToRefresh(inPositions(page, 'state-refresh'));
+
+  await expect(positionRow(page, ZQR_CALL.id)).toBeVisible({ timeout: 30_000 });
+  await expect(inPositions(page, 'never-synced')).toHaveCount(0);
+  expect(log.hits(POSITIONS_RE, 'us')).toBe(before + 1);
+  const others = log.apiUrls.slice(apiMark).filter((url) => !POSITIONS_RE.test(url));
+  expect(others, `下拉触发了非本片端点:\n${others.join('\n')}`).toEqual([]);
+});
+
+const STATE_CARDS_PULL: {
+  title: string;
+  view: 'no-connection' | 'empty';
+  response: BrokerPositionListResponse;
+}[] = [
+  { title: '暂无交易账户', view: 'no-connection', response: NO_CONNECTION },
+  { title: '暂无持仓', view: 'empty', response: listResponse('us', { groups: [] }) },
+];
+
+for (const card of STATE_CARDS_PULL) {
+  test(`083 T026②b「${card.title}」卡下拉 ⇒ 列表端点命中 +1、卡仍在、无非本片端点请求（sb 49）`, async ({
+    page,
+  }) => {
+    const log = observeRequests(page);
+    await installPositionsMock(page, newServer(card.response));
+    await gotoTradingAccount(page);
+
+    await expect(inPositions(page, card.view)).toBeVisible({ timeout: 30_000 });
+    await expect(inPositions(page, 'state-refresh')).toBeVisible();
+    const before = log.hits(POSITIONS_RE, 'us');
+    const apiMark = log.apiUrls.length;
+
+    await pullToRefresh(inPositions(page, 'state-refresh'));
+
+    await expect.poll(() => log.hits(POSITIONS_RE, 'us'), { timeout: 30_000 }).toBe(before + 1);
+    await expect(inPositions(page, card.view)).toBeVisible();
+    const others = log.apiUrls.slice(apiMark).filter((url) => !POSITIONS_RE.test(url));
+    expect(others, `下拉触发了非本片端点:\n${others.join('\n')}`).toEqual([]);
+  });
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // T017 —— 持仓详情屏：路由 + 汇总 + 订单段 + 加载 / 404 / 重读

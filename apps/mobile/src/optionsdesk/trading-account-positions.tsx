@@ -1,7 +1,9 @@
 // 083 T014 / T015 — 交易账户页 · 持仓分段（plan §D14）：首次加载 / 四种非列表状态卡 / 分组列表。
 //
-// 列表自上而下：同步时刻行（陈旧时换成陈旧条）→ 未归类提示 → 列头 → `SectionList`（每组一个 section；
-// ≥ 2 行出组头、可折叠，单行组平铺）。
+// 列表自上而下：陈旧条（`stale` 时）→ 同步时刻行（陈旧时不出；重读失败时换成刷新失败提示）→ 未归类提示
+// → 列头 → `SectionList`（每组一个 section；≥ 2 行出组头、可折叠，单行组平铺）。
+// 📌 维护者 2026-09-15 impl 期裁决（T026）：陈旧与刷新失败同时成立 ⇒ 两条并存、陈旧条在上；
+//    「暂无交易账户 / 尚未同步 / 暂无持仓」三张状态卡可下拉重读，「加载失败」卡仍是重试按钮。
 //
 // 🚨 视图判定全走 `resolvePositionsView`（T013）。它的入参**没有「首次加载中」**——
 //    `isPending` 必须在调它之前自己分支（类型上排除，漏判编译不过）。
@@ -12,10 +14,11 @@
 // 📌 时间只做字符串重排 + 按所选市场拼时区标签（服务端已换算，Guardrail 8）；🚫 时区换算。
 // 📌 重读（T016）：聚焦 / 回前台 / 下拉三个触发点共用 hook 的稳定 `refetch`；已显示数据时重读失败 ⇒
 //    同步时刻行换成刷新失败提示（`refetchFailed`），下次成功自然恢复。
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import {
   Pressable,
   RefreshControl,
+  ScrollView,
   SectionList,
   Text,
   View,
@@ -145,13 +148,45 @@ function PositionsBody({ market, positions, collapsed, onToggleGroup }: Position
   }
   if (view === 'empty') {
     return (
-      <View>
+      <StateRefreshScroll isRefetching={positions.isRefetching} onRefresh={positions.refetch}>
         <PositionsMeta market={market} data={data} refetchFailed={failed} />
         <StateCard view="empty" />
-      </View>
+      </StateRefreshScroll>
     );
   }
-  return <StateCard view={view} />;
+  return (
+    <StateRefreshScroll isRefetching={positions.isRefetching} onRefresh={positions.refetch}>
+      <StateCard view={view} />
+    </StateRefreshScroll>
+  );
+}
+
+interface StateRefreshScrollProps {
+  isRefetching: boolean;
+  /** 下拉重读（FR-008）；引用稳定的 `refetch`。 */
+  onRefresh: () => void;
+  children: ReactNode;
+}
+
+/**
+ * 「暂无交易账户 / 尚未同步 / 暂无持仓」的可下拉容器（维护者 2026-09-15 impl 期裁决，T026）。
+ * 「加载失败」卡不走这里：无已加载数据时保持重试按钮。
+ */
+function StateRefreshScroll({ isRefetching, onRefresh, children }: StateRefreshScrollProps) {
+  return (
+    <ScrollView
+      className="flex-1"
+      refreshControl={
+        <RefreshControl
+          refreshing={isRefetching}
+          onRefresh={onRefresh}
+          testID={`${TEST_ID}-state-refresh`}
+        />
+      }
+    >
+      {children}
+    </ScrollView>
+  );
 }
 
 interface StateCardProps {
@@ -207,19 +242,20 @@ function PositionsMeta({ market, data, refetchFailed: failed }: PositionsMetaPro
   const time = syncedTimeLabel(data.syncedAtLocal, market);
   return (
     <View>
+      {data.stale ? (
+        <View className="bg-warn-soft px-md py-sm">
+          <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-stale`}>
+            {COPY.stale(time)}
+          </Text>
+        </View>
+      ) : null}
       {failed ? (
         <View className="bg-warn-soft px-md py-sm">
           <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-refetch-failed`}>
             {COPY.refetchFailed}
           </Text>
         </View>
-      ) : data.stale ? (
-        <View className="bg-warn-soft px-md py-sm">
-          <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-stale`}>
-            {COPY.stale(time)}
-          </Text>
-        </View>
-      ) : (
+      ) : data.stale ? null : (
         <View className="bg-surface px-md py-sm">
           <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-synced-at`}>
             {COPY.syncedAt(time)}
