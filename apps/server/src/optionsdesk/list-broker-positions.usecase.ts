@@ -81,14 +81,14 @@ export type BrokerPositionRecord = Prisma.BrokerPositionGetPayload<object>;
 /** futu SDK 缺值哨兵 (同 `futu-broker-account.adapter.ts` 的 `VENDOR_NA`)。 */
 const VENDOR_NA = 'N/A';
 
-function rawRecord(raw: Prisma.JsonValue): Record<string, unknown> {
+export function rawRecord(raw: Prisma.JsonValue): Record<string, unknown> {
   return raw !== null && typeof raw === 'object' && !Array.isArray(raw)
     ? (raw as Record<string, unknown>)
     : {};
 }
 
 /** vendor 数值字段 → Decimal; 缺失 / 空串 / `N/A` / 不可解析 ⇒ `null` (不猜成 0)。O(1)。 */
-function rawDecimal(value: unknown): Prisma.Decimal | null {
+export function rawDecimal(value: unknown): Prisma.Decimal | null {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? new Prisma.Decimal(value) : null;
   }

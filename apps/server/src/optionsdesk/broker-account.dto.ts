@@ -2,6 +2,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsIn } from 'class-validator';
 import type { Prisma } from '../generated/prisma/client';
 import type { BrokerMarket } from './broker-code.rules';
+import type { BrokerPositionDetail } from './get-broker-position.usecase';
 import type {
   BrokerPositionGroupView,
   BrokerPositionList,
@@ -237,6 +238,141 @@ function toBrokerPositionGroupResponse(
     groupMarketValue: decimalString(group.groupMarketValue),
     groupUnrealizedPl: decimalString(group.groupUnrealizedPl),
     rows: group.rows.map(toBrokerPositionRowResponse),
+  };
+}
+
+export class BrokerPositionOrderItemResponse {
+  @ApiProperty({ description: '订单行 id (数字串, 进订单详情用)', example: '88' })
+  id!: string;
+
+  @ApiProperty({ description: '交易方向 (券商枚举原样)', example: 'SELL_SHORT' })
+  side!: string;
+
+  @ApiProperty({ description: '订单数量', example: '2' })
+  qty!: string;
+
+  @ApiProperty({ description: '订单价格', type: 'string', nullable: true, example: '3.2' })
+  price!: string | null;
+
+  @ApiProperty({ description: '订单状态 (券商枚举原样)', example: 'FILLED_ALL' })
+  status!: string;
+
+  @ApiProperty({
+    description: '下单时间, 交易所当地 YYYY-MM-DD HH:mm:ss; 券商未给 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '2026-09-01 09:30:00',
+  })
+  createdAtLocal!: string | null;
+}
+
+export class BrokerLotResponse {
+  @ApiProperty({
+    description: '批次开仓时间, 交易所当地 YYYY-MM-DD HH:mm:ss',
+    example: '2026-09-01 10:00:00',
+  })
+  openedAtLocal!: string;
+
+  @ApiProperty({
+    description: '开仓订单行 id (数字串); 成交缺订单号或订单行查不到 ⇒ null (不可进入订单详情)',
+    type: 'string',
+    nullable: true,
+    example: '88',
+  })
+  orderDbId!: string | null;
+
+  @ApiProperty({ description: '批次开仓成交数量合计 (带符号, 空头为负)', example: '-2' })
+  originalQty!: string;
+
+  @ApiProperty({ description: '先开先平扣减后的剩余数量 (带符号, 恒 ≠ 0)', example: '-1' })
+  remainingQty!: string;
+
+  @ApiProperty({ description: '批次成本 (开仓成交数量加权均价)', example: '3.2' })
+  cost!: string;
+
+  @ApiProperty({
+    description: '批次市值 = 持仓市值 × 剩余 ÷ 持仓数量; 持仓市值缺失 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '-150',
+  })
+  marketValue!: string | null;
+
+  @ApiProperty({
+    description: '批次持仓盈亏 = (现价 − 成本) × 剩余 × 乘数; 现价或开仓订单缺失 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '170',
+  })
+  unrealizedPl!: string | null;
+}
+
+export class BrokerLotsResponse {
+  @ApiProperty({
+    description: '批次剩余合计 = 券商持仓数量; false ⇒ 客户端显示「批次无法还原」且不渲染批次',
+    example: true,
+  })
+  restorable!: boolean;
+
+  @ApiProperty({
+    description: '剩余 ≠ 0 的批次, 按开仓时间升序 (restorable=false 时照常返回)',
+    type: [BrokerLotResponse],
+  })
+  lots!: BrokerLotResponse[];
+}
+
+export class BrokerPositionDetailResponse extends BrokerPositionRowResponse {
+  @ApiProperty({
+    description: '开仓时间, 交易所当地 YYYY-MM-DD HH:mm:ss (时区按 market)',
+    example: '2026-09-01 10:00:00',
+  })
+  openedAtLocal!: string;
+
+  @ApiProperty({
+    description:
+      '本持仓代码在该连接的订单 (含组合单腿); 开仓时间来源 derived ⇒ 只含最后更新时间不早于开仓时间的订单, ' +
+      'fallback ⇒ 全部; 下单时间降序, 缺失排末',
+    type: [BrokerPositionOrderItemResponse],
+  })
+  orders!: BrokerPositionOrderItemResponse[];
+
+  @ApiProperty({
+    description: '持仓批次 (期权才有; 正股为 null)',
+    type: BrokerLotsResponse,
+    nullable: true,
+  })
+  lots!: BrokerLotsResponse | null;
+}
+
+export function toBrokerPositionDetailResponse(
+  detail: BrokerPositionDetail,
+): BrokerPositionDetailResponse {
+  return {
+    ...toBrokerPositionRowResponse(detail.row),
+    openedAtLocal: detail.openedAtLocal,
+    orders: detail.orders.map((o) => ({
+      id: o.id.toString(),
+      side: o.side,
+      qty: o.qty.toFixed(),
+      price: decimalString(o.price),
+      status: o.status,
+      createdAtLocal: o.createdAtLocal,
+    })),
+    lots:
+      detail.lots === null
+        ? null
+        : {
+            restorable: detail.lots.restorable,
+            lots: detail.lots.lots.map((lot) => ({
+              openedAtLocal: lot.openedAtLocal,
+              orderDbId: lot.orderDbId === null ? null : lot.orderDbId.toString(),
+              originalQty: lot.originalQty.toFixed(),
+              remainingQty: lot.remainingQty.toFixed(),
+              cost: lot.cost.toFixed(),
+              marketValue: decimalString(lot.marketValue),
+              unrealizedPl: decimalString(lot.unrealizedPl),
+            })),
+          },
   };
 }
 

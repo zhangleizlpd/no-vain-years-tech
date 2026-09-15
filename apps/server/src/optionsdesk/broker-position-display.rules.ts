@@ -114,9 +114,9 @@ export function buildPositionGroups<R extends PositionDisplayRow>({
 
 /**
  * 到期判定只用 `daysToExpiry` (交易所今天为基准) —— 🚫 北京日期: 北京凌晨 = 美东前一天,
- * 按北京日期会把「今天到期、仍可交易」的美股合约提前标成已到期。
+ * 按北京日期会把「今天到期、仍可交易」的美股合约提前标成已到期。导出给持仓详情读端 (与列表同口径)。
  */
-function isExpired(row: PositionDisplayRow, now: Date): boolean {
+export function isExpired(row: PositionDisplayRow, now: Date): boolean {
   if (row.option === null) return false;
   return daysToExpiry({ expiry: row.option.expiry, now, exchange: row.market }) < 0;
 }
