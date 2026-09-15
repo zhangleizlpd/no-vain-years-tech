@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app/app.module.js';
+import { SCHEDULER_DISABLED } from '../app/schedule-options.js';
 import { EvaluateAlertsUseCase } from './evaluate-alerts.usecase.js';
 import { DispatchPushDeliveriesUseCase } from './dispatch-push-deliveries.usecase.js';
 import { ALERT_WORKER_DISABLED } from './alert-eval.processor.js';
@@ -25,6 +26,7 @@ import { ALERT_WORKER_DISABLED } from './alert-eval.processor.js';
 export async function runAlertEval(): Promise<number> {
   process.env[ALERT_WORKER_DISABLED] = '1';
   process.env['MARKETDATA_WORKER_DISABLED'] = '1';
+  process.env[SCHEDULER_DISABLED] = '1';
   const logger = new Logger('alert-eval');
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],

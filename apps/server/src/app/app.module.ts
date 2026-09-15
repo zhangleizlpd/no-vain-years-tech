@@ -16,6 +16,7 @@ import { HealthModule } from '../observability/health.module.js';
 import { MetricsModule } from '../observability/metrics.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
+import { scheduleModuleOptions } from './schedule-options.js';
 
 /**
  * Root NestJS module.
@@ -42,8 +43,10 @@ import { AppService } from './app.service.js';
 @Module({
   imports: [
     // mono's first scheduler (per plan D4): account-anonymization daily cron.
-    // forRoot() once at the root; @Cron handlers live in account/ schedulers.
-    ScheduleModule.forRoot(),
+    // Registered once at the root; @Cron handlers live in account/ schedulers.
+    // forRootAsync (not forRoot): CLI processes set SCHEDULER_DISABLED after importing
+    // AppModule, so options must be read at DI time — see ./schedule-options.ts.
+    ScheduleModule.forRootAsync({ useFactory: scheduleModuleOptions }),
     AuthModule,
     PortfolioModule,
     MarketdataModule,

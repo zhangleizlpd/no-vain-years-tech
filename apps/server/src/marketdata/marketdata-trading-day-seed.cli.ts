@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app/app.module.js';
+import { SCHEDULER_DISABLED } from '../app/schedule-options.js';
 import { MARKETDATA_WORKER_DISABLED } from './marketdata-sync.queue.js';
 import { CALENDAR_MARKETS, TradingCalendarSyncService } from './trading-calendar-sync.service.js';
 import { userToday } from './session-clock.js';
@@ -74,6 +75,7 @@ export async function runSeed(argv: string[]): Promise<number> {
   const logger = new Logger('marketdata-trading-day-seed');
   // D6 (同 backfill CLI): createApplicationContext 前置 sentinel → worker OnModuleInit no-op。
   process.env[MARKETDATA_WORKER_DISABLED] = '1';
+  process.env[SCHEDULER_DISABLED] = '1';
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['error', 'warn', 'log'],
   });
