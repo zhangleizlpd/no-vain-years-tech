@@ -6,6 +6,13 @@
 定向变异留档（2026-09-16，逐条临时改坏 `trade_events.py` → 跑本文件 → 还原 → 全绿）：
   a. `read` 去掉 `dropped` 判定（恒 `False`）  → ③ test_wrapped_buffer_reports_dropped_for_an_evicted_cursor 红
   b. `_epoch` 改为固定常量                       → ⑤ test_each_instance_gets_its_own_epoch 红
+  c.（T013）`read` 里 `last_event_at` 改取**读取时刻** `datetime.now(timezone.utc)`
+     → 6 条红：本文件 test_empty_buffer_reads_clean / test_last_event_at_is_none_before_any_event
+     / test_last_event_at_does_not_move_when_nothing_new_arrives，加 test_app.py 的 3 条路由臂。
+     ⚠️ test_last_event_at_advances_with_each_new_event 与
+     test_last_event_at_survives_the_row_that_carried_it_being_evicted **仍绿，且这是对的**：
+     读取时刻同样会前进、同样非 None，这两条臂的观察面根本盖不到这个错误 —— 真正把关的
+     是「不随读取移动」那一条。🚫 不为了把红铺宽而往夹具里塞诱饵。
 复跑：services/futu-shim/venv/bin/python -m pytest -q services/futu-shim/tests/test_trade_events.py
 
 🚨 fixture 一律合成值：事件行只用 `US.FAKE` 这类明显假代码与小序号，与任何真实成交无关。
@@ -13,7 +20,9 @@
 
 import json
 import threading
+import time
 from contextlib import contextmanager
+from datetime import datetime
 
 import pandas as pd
 import pytest
@@ -127,6 +136,7 @@ def test_empty_buffer_reads_clean():
         "rows": [],
         "next_seq": 0,
         "dropped": False,
+        "last_event_at": None,
     }
 
 
@@ -207,6 +217,68 @@ def test_capacity_comes_from_env_when_not_passed(monkeypatch):
 def test_capacity_falls_back_to_the_default_on_a_blank_env(monkeypatch, raw):
     monkeypatch.setenv("FUTU_TRADE_EVENT_BUFFER_SIZE", raw)
     assert config.trade_event_buffer_size() == 2000
+
+
+# ── T013 订阅健康：最近一次事件到达时刻（FR-014） ──────────────────────────────
+#
+# 判据取「最近一次事件**到达**时刻」而不是 SDK 私有标记 `__is_acc_sub_push` —— 维护者
+# 2026-09-13 POC-3 实测该标记恒为假，与「同一次会话确实收到了订单与成交推送」的事实
+# 矛盾（原始记录见 `docs/private/evidence/broker-account-poc/`）。
+#
+# 定向变异留档见文件头。
+
+
+def test_last_event_at_is_none_before_any_event():
+    """从没收到过推送 ⇒ `None`。这个取值与「字段缺失」必须可区分（server 侧对缺失是 throw）。"""
+    assert TradeEventBuffer(maxlen=10).read()["last_event_at"] is None
+
+
+def test_last_event_at_is_stamped_on_append_in_utc():
+    buffer = TradeEventBuffer(maxlen=10)
+    before = datetime.now().astimezone()
+
+    buffer.append(_row(0))
+
+    stamped = datetime.fromisoformat(buffer.read()["last_event_at"])
+    assert stamped.tzinfo is not None, "必须带时区 —— 它是一个绝对时刻，裸串会被下游按本地时区读错"
+    assert stamped.utcoffset().total_seconds() == 0, "统一以 UTC 写出"
+    assert before <= stamped <= datetime.now().astimezone()
+
+
+def test_last_event_at_does_not_move_when_nothing_new_arrives():
+    """🚨 本条是整组的要害：它是**事件到达时刻**，不是读取时刻。
+
+    若实现成「每次 read 取 now」，通道哑了也永远显示刚刚有事件 —— FR-014 要判的
+    「多久没事件了」就此判不出来，且不报错。
+    """
+    buffer = TradeEventBuffer(maxlen=10)
+    buffer.append(_row(0))
+
+    first = buffer.read()["last_event_at"]
+    time.sleep(0.01)
+    second = buffer.read(after_seq=1)["last_event_at"]
+
+    assert first == second
+
+
+def test_last_event_at_advances_with_each_new_event():
+    buffer = TradeEventBuffer(maxlen=10)
+    buffer.append(_row(0))
+    earlier = buffer.read()["last_event_at"]
+    time.sleep(0.01)
+
+    buffer.append(_row(1))
+
+    assert buffer.read()["last_event_at"] > earlier
+
+
+def test_last_event_at_survives_the_row_that_carried_it_being_evicted():
+    """绕回把行挤掉了，但「最近何时收到过推送」仍然成立 —— 它不是从 `rows` 算出来的。"""
+    buffer = TradeEventBuffer(maxlen=2)
+    for n in range(5):
+        buffer.append(_row(n))
+
+    assert buffer.read(after_seq=0)["last_event_at"] is not None
 
 
 # ── T002 推送行映射 + handler 挂载 ────────────────────────────────────────────

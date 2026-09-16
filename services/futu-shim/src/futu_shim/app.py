@@ -1000,7 +1000,14 @@ def create_app(
         """本进程缓冲里的订单 / 成交推送事件，按 `(epoch, after_seq)` 游标增量取（084 D1）。
 
         参数：`epoch`（上次拿到的代次，首拉可不传）· `after_seq`（上次的游标，默认 0）。
-        响应在标准信封上多三个字段：`epoch` / `next_seq` / `dropped`。
+        响应在标准信封上多四个字段：`epoch` / `next_seq` / `dropped` / `last_event_at`。
+
+        🚨 **`last_event_at` 是订阅健康判据（084 FR-014），不是 `as_of` 的副本**：前者是最近
+        一条推送**到达**的时刻（没收到过 ⇒ `null`），后者是本次**响应**的时刻。拿 `as_of`
+        判健康等于「只要 shim 还活着通道就算健在」—— 而 FR-014 要判的恰是「通道哑了多久」。
+        判据取它而不取 SDK 那个「账户已订阅推送」的私有布尔标记：维护者 2026-09-13 POC-3
+        实测该标记恒为假，与同一次会话确实收到推送的事实矛盾。符号名与「全仓零命中」守卫都在
+        server 侧 084 push-consume IT 的 T013 段 —— 刻意不在此写出，否则守卫扫的就是这行注释。
 
         🚨 **非阻塞、立即返回**（FR-004）。没有新事件就回空 `rows`，🚫 长轮询 —— 挂起会占住
         waitress 仅有的 4 个工作线程，与行情面抢同一批线程，而行情面的可用性是上游已验收的
@@ -1026,6 +1033,7 @@ def create_app(
             epoch=result["epoch"],
             next_seq=result["next_seq"],
             dropped=result["dropped"],
+            last_event_at=result["last_event_at"],
         )
 
     return app

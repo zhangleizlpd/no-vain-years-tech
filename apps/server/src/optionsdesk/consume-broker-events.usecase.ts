@@ -62,6 +62,12 @@ export type ConsumeBrokerEventsOutcome =
       touchedMarkets: readonly BrokerMarket[];
       /** 本拍去抖到期、真的刷了持仓的市场 (FR-008)。 */
       refreshedMarkets: readonly BrokerMarket[];
+      /**
+       * 事件源报出的最近一次事件到达时刻 (FR-014 订阅健康判据之一, 另一半是缺口补偿留痕)。
+       * 事件源从没收到过推送 ⇒ `null`。**与本拍有没有行无关**: 没有新事件的那些拍照样报同一个
+       * 值 —— 判「通道是不是哑了」要的正是这个不随响应时刻走的时刻。
+       */
+      lastEventAt: Date | null;
     } & ConsumeBrokerEventsCounts)
   | {
       ok: false;
@@ -128,6 +134,8 @@ export class ConsumeBrokerEventsUseCase {
         cursor: input.cursor,
         touchedMarkets: [],
         refreshedMarkets: [],
+        // mock 档整拍没打过事件源 ⇒ 无从知道它最近何时收到推送, 🚫 拿 `now` 冒充。
+        lastEventAt: null,
         ...ZERO,
       };
     }
@@ -167,10 +175,12 @@ export class ConsumeBrokerEventsUseCase {
       );
     }
     // 🚫 日志任何一行不带 accountId / 券商账户号 / 成交号 / 订单号 (FR-019, SC-008): 只用连接行 ID 与条数定位。
+    // `lastEventAt` 是 FR-014 的订阅健康判据 —— 它进这一行, 排障时才不必另开一条查询路径。
     this.logger.log(
       `推送事件消费 connection=${input.connectionId} accepted=${accepted.length}` +
         ` deals+${written.dealsInserted} orders+${written.ordersInserted} orders~${written.ordersUpdated}` +
-        ` refreshed=${refreshedMarkets.join(',')} gap=${gapDetected} elapsedMs=${Date.now() - startedMs}`,
+        ` refreshed=${refreshedMarkets.join(',')} gap=${gapDetected}` +
+        ` lastEventAt=${batch.lastEventAt?.toISOString() ?? 'none'} elapsedMs=${Date.now() - startedMs}`,
     );
     return {
       ok: true,
@@ -178,6 +188,7 @@ export class ConsumeBrokerEventsUseCase {
       gapDetected,
       cursor: nextCursor,
       refreshedMarkets,
+      lastEventAt: batch.lastEventAt,
       ...written,
     };
   }

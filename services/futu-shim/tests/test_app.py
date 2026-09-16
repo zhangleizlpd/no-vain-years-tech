@@ -1850,6 +1850,43 @@ def test_trade_events_returns_immediately_when_there_is_nothing_new():
     assert elapsed < 0.1, f"无事件时耗了 {elapsed:.3f}s —— 端点在等事件（长轮询）"
 
 
+# T013 订阅健康：最近一次事件到达时刻随事件响应带出（FR-014）
+def test_trade_events_carries_the_last_event_arrival_time():
+    buffer = TradeEventBuffer(maxlen=10)
+    buffer.append(_event(0))
+    client, _ = build_events(buffer)
+
+    resp = client.get("/trade/events", headers=AUTH)
+
+    assert resp.json["last_event_at"] == buffer.read()["last_event_at"]
+    assert resp.json["last_event_at"] is not None
+
+
+def test_trade_events_reports_no_arrival_time_before_any_push():
+    """`None` = 本进程从没收到过推送。与「字段缺失」必须可区分 —— server 对缺失是 throw。"""
+    buffer = TradeEventBuffer(maxlen=10)
+    client, _ = build_events(buffer)
+
+    assert client.get("/trade/events", headers=AUTH).json["last_event_at"] is None
+
+
+def test_last_event_at_is_stable_across_requests_while_no_push_arrives():
+    """🚨 健康判据要的是**事件到达时刻**，不是 `as_of` 那个**响应时刻**。
+
+    响应时刻每拍都在变，拿它判健康等于「只要 shim 还活着就算通道健在」，把 FR-014
+    要测的东西测没了。两次请求之间没有新推送 ⇒ 这个值必须一字不差。
+    """
+    buffer = TradeEventBuffer(maxlen=10)
+    buffer.append(_event(0))
+    client, _ = build_events(buffer)
+
+    first = client.get("/trade/events", headers=AUTH).json["last_event_at"]
+    second = client.get("/trade/events", headers=AUTH).json["last_event_at"]
+
+    assert first is not None
+    assert first == second
+
+
 # ⑥ 字面量注册（部署探针的判据来源）
 def test_trade_events_is_registered_as_a_literal_route():
     """部署探针按字面量 `@app.get("…")` grep 源码（`remote-deploy.sh` ②）⇒ 动态注册它看不见。"""

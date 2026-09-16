@@ -124,7 +124,13 @@ const LIVE_CONFIG: MarketdataConfig = {
   futuShimToken: 'it-084-fake-shim-token',
 };
 
-const EMPTY_BATCH: BrokerEventBatch = { epoch: 'e1', rows: [], nextSeq: 0, dropped: false };
+const EMPTY_BATCH: BrokerEventBatch = {
+  epoch: 'e1',
+  rows: [],
+  nextSeq: 0,
+  dropped: false,
+  lastEventAt: null,
+};
 
 /**
  * 券商 port 的 test double: 事件批逐次回放 (耗尽后重复最后一批), 历史成交按市场预置。
@@ -231,6 +237,8 @@ const batchOf = (rows: BrokerEvent[], over: Partial<BrokerEventBatch> = {}): Bro
   rows,
   nextSeq: rows.length === 0 ? 0 : (rows[rows.length - 1] as BrokerEvent).seq,
   dropped: false,
+  // 本文件测的是断档处置, 订阅健康 (FR-014) 的臂在 push-consume IT。
+  lastEventAt: null,
   ...over,
 });
 

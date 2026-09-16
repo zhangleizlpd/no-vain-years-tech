@@ -84,6 +84,27 @@ for (const key of Object.keys(process.env)) {
  *   **T008 ① 一条红** —— `AssertionError: expected false to be true`, 其余 15 条绿。
  *   范围与 tasks.md 预期一致 (不像 a / c 那样宽出一条)。
  * - 已还原; 还原后本文件 16/16 复绿。
+ *
+ * ## T013 定向变异留档 (2026-09-16)
+ *
+ * - 基线: 本文件 20/20 绿 (T006 8 + T007 4 + T013 4 + T008 4)。
+ * - f. 在 `write()` 里多打一行带 `account=${accountId}` 的日志: **T013-④ 一条红**, 其余 19 条
+ *   绿。范围与 tasks.md 预期一致。已还原 (与备份 `diff -q` 一致), 还原后 20/20 复绿。
+ * - ⚠️ **T013 的 ① ② ③ 在 stub 阶段就是绿的**: 券商 port 的 test double 直接供 `lastEventAt`,
+ *   服务端只是透传, 这三条臂**单独不构成证据**。真正的把关力在 **shim 侧** ——
+ *   `services/futu-shim/tests/test_trade_events.py` 变异 c (`last_event_at` 改取读取时刻)
+ *   让「不随读取移动」那条红。记在这里, 免得后来者以为这三条臂自带保护力 (同本文件 ③ / ⑦ 的处境)。
+ *
+ * ## 🚨 `__is_acc_sub_push` 零命中守卫 (FR-014)
+ *
+ * `grep -rn '__is_acc_sub_push' apps/server/src services/futu-shim/src` **必须零命中**
+ * (2026-09-16 实跑 exit=1)。该符号是券商 SDK 的私有「账户已订阅推送」标记, 维护者 2026-09-13
+ * POC-3 实测**恒为假**, 与「同一次会话确实收到了订单与成交推送」的事实矛盾 (原始记录见
+ * `docs/private/evidence/broker-account-poc/`) ⇒ FR-014 明令健康判据不依赖它。
+ *
+ * ⚠️ **正因为守卫扫的是 `src`**, `broker-account.port.ts` / `futu-broker-account.adapter.ts` /
+ * `futu_shim/app.py` 那三处注释**刻意不写出这个符号**(写出来守卫扫到的就是自己那行注释,
+ * 守卫随即失去意义)。符号名只留在本文件与 commit message 里 —— 将来谁真的去**用**它, 守卫照样红。
  */
 
 /** 明显假值 (Guardrail 9): 连接所属账号 ID 与账户号一律合成。 */
@@ -106,7 +127,21 @@ const LIVE_CONFIG: MarketdataConfig = {
   futuShimToken: 'it-084-fake-shim-token',
 };
 
-const EMPTY_BATCH: BrokerEventBatch = { epoch: 'e1', rows: [], nextSeq: 0, dropped: false };
+const EMPTY_BATCH: BrokerEventBatch = {
+  epoch: 'e1',
+  rows: [],
+  nextSeq: 0,
+  dropped: false,
+  lastEventAt: null,
+};
+
+/**
+ * 事件源报出的「最近一次事件到达时刻」(084 FR-014)。
+ *
+ * 🚨 夹具里是个**定值**, 且与本批有没有行无关 —— 这正是被测的性质: 事件源每拍都报同一个值,
+ * 直到真的又收到一条推送。实现若拿响应时刻 / `now` 顶替, T013-② 会红。
+ */
+const LAST_EVENT_AT = new Date('2026-09-16T14:30:55.400Z');
 
 /**
  * 券商 port 的 test double: 逐次回放预置事件批 (耗尽后重复最后一批), 并**逐方法计数** ——
@@ -225,6 +260,7 @@ const batchOf = (rows: BrokerEvent[], over: Partial<BrokerEventBatch> = {}): Bro
   rows,
   nextSeq: rows.length === 0 ? 0 : (rows[rows.length - 1] as BrokerEvent).seq,
   dropped: false,
+  lastEventAt: LAST_EVENT_AT,
   ...over,
 });
 
@@ -570,6 +606,101 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
 
       expect(positionCalls()).toBe(0);
       expect(await prisma.brokerSyncRun.count()).toBe(0);
+    });
+  });
+
+  /**
+   * T013 订阅健康判据 (FR-014 / FR-018; plan D8 / D10; state_branches 9)。
+   *
+   * 判据 = 「最近一次事件到达时刻」+ 缺口补偿留痕。🚨 **MUST NOT 用 SDK 私有标记
+   * `__is_acc_sub_push`** —— 维护者 2026-09-13 POC-3 实测该标记**恒为假**, 与「同一次会话
+   * 确实收到了订单与成交推送」的事实矛盾 (原始记录见 `docs/private/evidence/broker-account-poc/`)。
+   * 全仓零命中由 `grep -rn '__is_acc_sub_push' apps/server/src services/futu-shim/src` 守着。
+   *
+   * 阈值 (多久没事件算异常) 本片**不定** —— 见 spec clarify 覆盖率表的 Outstanding 项;
+   * 本片不主动通知, 阈值只影响排障展示。
+   */
+  describe('T013 订阅健康判据: 最近事件到达时刻', () => {
+    /** 按级别捕获本用例经 NestJS `Logger` 写出的行 (④ 要扫的是**全部**日志, 三个级别都得在)。 */
+    const captureLogs = () => {
+      const info: string[] = [];
+      const warn: string[] = [];
+      const error: string[] = [];
+      vi.spyOn(Logger.prototype, 'log').mockImplementation((m) => void info.push(String(m)));
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation((m) => void warn.push(String(m)));
+      vi.spyOn(Logger.prototype, 'error').mockImplementation((m) => void error.push(String(m)));
+      return { info, warn, error, all: () => [...info, ...warn, ...error] };
+    };
+
+    it('① 消费成功 ⇒ 带出最近事件时刻, 并写一行 info (条数 / 写入 / 是否补偿 / 耗时)', async () => {
+      port.batches = [batchOf([dealEvent(1, 'dl-1', ANCHORED)])];
+      const logs = captureLogs();
+
+      const outcome = await run();
+
+      expect(outcome).toMatchObject({ ok: true, lastEventAt: LAST_EVENT_AT });
+      const line = logs.info.find((l) => l.startsWith('推送事件消费'));
+      expect(line).toBeDefined();
+      expect(line).toContain('accepted=1');
+      expect(line).toContain('deals+1');
+      expect(line).toContain('gap=false');
+      expect(line).toContain(`lastEventAt=${LAST_EVENT_AT.toISOString()}`);
+      expect(line).toMatch(/elapsedMs=\d+/);
+    });
+
+    it('② 🚨 长时间无事件 ⇒ 该时刻保持不变、不产生任何记录 (branch 9)', async () => {
+      port.batches = [
+        batchOf([dealEvent(1, 'dl-1', ANCHORED)]),
+        batchOf([], { nextSeq: 1 }),
+        batchOf([], { nextSeq: 1 }),
+      ];
+
+      const first = await run();
+      const idle1 = await run({ epoch: 'e1', lastSeq: 1 });
+      const idle2 = await run({ epoch: 'e1', lastSeq: 1 });
+
+      // 🚨 断言三拍报的是**同一个**时刻: 拿响应时刻 / `now` 顶替的实现会让这三个值各不相同,
+      // 于是「通道哑了多久」永远算不出来, 且不报错。
+      expect(first).toMatchObject({ ok: true, lastEventAt: LAST_EVENT_AT });
+      expect(idle1).toMatchObject({ ok: true, lastEventAt: LAST_EVENT_AT });
+      expect(idle2).toMatchObject({ ok: true, lastEventAt: LAST_EVENT_AT });
+      expect(await prisma.brokerSyncRun.count()).toBe(0);
+    });
+
+    it('③ 触发缺口补偿 ⇒ 出现 warn 级留痕 (FR-018: 补偿留痕是健康判据的另一半)', async () => {
+      port.batches = [
+        batchOf([dealEvent(1, 'dl-1', ANCHORED)]),
+        batchOf([dealEvent(5, 'dl-5', ANCHORED)], { nextSeq: 5 }),
+      ];
+      const logs = captureLogs();
+
+      await run();
+      const outcome = await run({ epoch: 'e1', lastSeq: 1 });
+
+      expect(outcome).toMatchObject({ ok: true, gapDetected: true });
+      expect(logs.warn.some((l) => l.startsWith('推送事件断档'))).toBe(true);
+      expect(logs.info.some((l) => l.includes('gap=true'))).toBe(true);
+    });
+
+    it('④ 🚨 本用例写出的每一行日志都不含券商账户号 (FR-019 / SC-008)', async () => {
+      port.batches = [
+        batchOf([dealEvent(1, 'dl-1', ANCHORED), orderEvent(2, 'or-1', ANCHORED)]),
+        batchOf([dealEvent(9, 'dl-9', ANCHORED)], { nextSeq: 9 }),
+      ];
+      const logs = captureLogs();
+
+      await run();
+      await run({ epoch: 'e1', lastSeq: 2 });
+      port.failure = new BrokerInfrastructureError('trade/events', 'ECONNRESET');
+      await run({ epoch: 'e1', lastSeq: 9 });
+
+      // 🚨 先证明三个级别**都真的写出过东西** —— 否则「不含账户号」是个空断言。
+      expect(logs.info.length).toBeGreaterThan(0);
+      expect(logs.warn.length).toBeGreaterThan(0);
+      expect(logs.error.length).toBeGreaterThan(0);
+      for (const line of logs.all()) {
+        expect(line).not.toContain(String(ACCOUNT_ID));
+      }
     });
   });
 

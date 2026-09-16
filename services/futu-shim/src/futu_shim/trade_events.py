@@ -27,6 +27,7 @@ from __future__ import annotations
 import threading
 import uuid
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 
 from . import config
@@ -48,6 +49,10 @@ class TradeEventBuffer:
         # Minted per instance, i.e. per process: a restart MUST change it (FR-003).
         self._epoch = uuid.uuid4().hex
         self._last_seq = 0
+        # When the newest push *arrived* (FR-014). `None` until one does — which is a
+        # different claim from "the field is missing", so the server treats a missing
+        # field as a contract break rather than folding it into this value.
+        self._last_event_at: str | None = None
 
     @property
     def epoch(self) -> str:
@@ -62,17 +67,23 @@ class TradeEventBuffer:
         will later see. `seq` is assigned here and nowhere else — a `seq` key in the
         incoming row is overwritten rather than trusted.
 
+        This is also the **only** place the arrival clock moves (FR-014). Stamping it
+        here rather than in `read` is the whole point: a timestamp taken at read time
+        would march forward while the channel sat silent, so "nothing has arrived for
+        an hour" — the one thing the health check exists to notice — would never show.
+
         Complexity O(1) (deque append; eviction of the oldest row is O(1) too).
         """
         with self._lock:
             self._last_seq += 1
+            self._last_event_at = datetime.now(timezone.utc).isoformat()
             self._rows.append({**row, "seq": self._last_seq})
             return self._last_seq
 
     def read(self, after_seq: int = 0) -> dict[str, Any]:
         """Every retained row with `seq > after_seq`, plus the cursor to send back.
 
-        Returns `{epoch, rows, next_seq, dropped}`:
+        Returns `{epoch, rows, next_seq, dropped, last_event_at}`:
 
         - `next_seq` — what the consumer passes as `after_seq` next time: the last
           returned row's `seq`, or `after_seq` unchanged when nothing is new.
@@ -82,6 +93,12 @@ class TradeEventBuffer:
           all makes the lost events simply never appear, with nothing raising.
           🚨 Wrapping is not by itself a gap: a cursor that is still inside the
           buffer reads `dropped=False` even though older rows were evicted long ago.
+        - `last_event_at` — UTC ISO-8601 of the newest push's **arrival**, or `None`
+          if this process has never received one (FR-014). It is deliberately
+          independent of `rows`: an idle poll returns no rows and the same
+          `last_event_at` as the poll before it. It also outlives the row that set it,
+          so a wrap does not reset it. 🚫 Do not let callers read the envelope's
+          `as_of` in its place — that is the *response* time and always looks fresh.
 
         Non-blocking by construction — no waiting, no long-polling. Hanging here
         would hold one of waitress's four worker threads hostage and starve the
@@ -98,4 +115,5 @@ class TradeEventBuffer:
                 "rows": rows,
                 "next_seq": rows[-1]["seq"] if rows else cursor,
                 "dropped": oldest is not None and cursor + 1 < oldest,
+                "last_event_at": self._last_event_at,
             }

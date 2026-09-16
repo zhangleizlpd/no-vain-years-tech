@@ -127,12 +127,27 @@ export interface BrokerEventQuery {
   afterSeq: number;
 }
 
-/** 一次事件读取的结果; 字段与 `broker-event-cursor.rules.ts` 的判定入参对齐。 */
+/** 一次事件读取的结果; 前四个字段与 `broker-event-cursor.rules.ts` 的判定入参对齐。 */
 export interface BrokerEventBatch {
   epoch: string;
   rows: BrokerEvent[];
   nextSeq: number;
   dropped: boolean;
+  /**
+   * 事件源记下的**最近一次事件到达时刻**; 该代次还没收到过任何推送 ⇒ `null` (084 FR-014)。
+   *
+   * 🚨 **这是订阅健康的判据之一**, 与本批有没有行无关 —— 事件源每次都报同一个值, 直到真的
+   * 又收到一条推送。🚫 拿信封的 `as_of` 顶替: 那是**响应时刻**, 每拍都在变, 用它判健康等于
+   * 「只要 shim 还活着就算通道健在」, 恰好把要测的东西测没了。
+   *
+   * 🚫 **MUST NOT 改用 SDK 那个「账户已订阅推送」的私有布尔标记** (符号名与「全仓零命中」
+   * 守卫都在 `test/integration/optionsdesk-084.push-consume.it.spec.ts` 的 T013 段 —— 刻意不在
+   * 本文件写出那个符号, 否则守卫扫的就是这行注释) —— 维护者 2026-09-13 POC-3 实测
+   * 该标记**恒为假**, 与「同一次会话确实收到了订单与成交推送」的事实矛盾 (原始记录见
+   * `docs/private/evidence/broker-account-poc/`)。FR-014 因此明令健康判据不依赖第三方组件的
+   * 内部状态标记。阈值 (多久没事件算异常) 本片**不定**, 见 spec clarify 覆盖率表的 Outstanding 项。
+   */
+  lastEventAt: Date | null;
 }
 
 export interface BrokerAccountPort {

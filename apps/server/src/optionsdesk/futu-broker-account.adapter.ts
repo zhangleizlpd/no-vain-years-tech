@@ -218,11 +218,34 @@ function parseOrder(row: unknown, market: BrokerMarket, what: string): BrokerOrd
 
 // ── 推送事件的规范化 (084 T005; plan D2) ────────────────────────────────────
 
-/** `/trade/events` 在统一信封 (`as_of` / `count` / `rows`) 之外多带的三个字段。 */
+/** `/trade/events` 在统一信封 (`as_of` / `count` / `rows`) 之外多带的四个字段。 */
 interface TradeEventsEnvelope extends ShimEnvelope {
   epoch?: unknown;
   next_seq?: unknown;
   dropped?: unknown;
+  last_event_at?: unknown;
+}
+
+/**
+ * 最近一次事件到达时刻 (084 FR-014)。`null` = 该代次从没收到过推送。
+ *
+ * 🚨 **不经 `vendorTimeToDate`**: 那是给券商那些**无时区**时间串按所属市场解释用的; 本字段由
+ * shim 自己以 UTC 带偏移量写出 (`datetime.now(timezone.utc).isoformat()`), 是一个绝对时刻、
+ * 不属于任何市场的交易日轴, 再按市场解释一次只会把它平移几个小时。
+ *
+ * 🚨 **字段缺失 throw, 🚫 按 `null` 兜底**: `null` 的含义是「从没收到过推送」= 通道可能已死,
+ * 而缺失只说明 shim 是旧版本 —— 把后者读成前者, 会让一条健在的通道显示为长期静默, 正是 D8
+ * 要避开的「标记与事实不符」那类错误 (SDK 那个私有订阅标记就是这么骗人的, 见
+ * `broker-account.port.ts` 的 {@link BrokerEventBatch.lastEventAt} 注释)。
+ */
+function parseLastEventAt(v: unknown, what: string): Date | null {
+  if (v === null) return null;
+  const s = strOrNull(v);
+  const at = s === null ? null : new Date(s);
+  if (at === null || Number.isNaN(at.getTime())) {
+    throw new Error(`[futu] ${what} 响应缺可用的 last_event_at (契约变更?)`);
+  }
+  return at;
 }
 
 /** 事件行的市场: 取 `trd_market`。🚫 `order_market` —— 那是历史订单查询的列名 (FR-015)。 */
@@ -405,6 +428,7 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
       rows: rows.map((row) => parseEvent(row, what)),
       nextSeq: res.next_seq,
       dropped: res.dropped,
+      lastEventAt: parseLastEventAt(res.last_event_at, what),
     };
   }
 
