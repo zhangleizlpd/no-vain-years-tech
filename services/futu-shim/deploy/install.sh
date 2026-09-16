@@ -99,6 +99,7 @@ ensure_env_kv() {
 }
 ensure_env_kv FUTU_OPEND_IDLE_STOP_S 0
 ensure_env_kv FUTU_TRADE_CALL_TIMEOUT_S 10
+ensure_env_kv FUTU_TRADE_EVENT_BUFFER_SIZE 2000
 
 echo "==> sudoers (narrow: three verbs, one unit)"
 SUDOERS=/etc/sudoers.d/futu-shim

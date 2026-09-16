@@ -2374,7 +2374,7 @@ model BrokerContractRef {
 }
 
 // 同步记录: 一次补齐或对账的执行留痕 (FR-017)。按 E14 **不写** marketdata `sync_run`。
-//   kind   ∈ 'backfill' | 'reconcile' (p2b 追加 'push_gap')
+//   kind   ∈ 'backfill' | 'reconcile' | 'push' (084 推送刷新) | 'gapfill' (084 缺口补偿)
 //   status ∈ 'pending' | 'running' | 'succeeded' | 'failed'
 //   market: 对账必填; 补齐可空 (空 = 目标标的所属市场或全部市场)
 //   target: 单只标的 canonical ticker 或 '*'
@@ -2384,6 +2384,14 @@ model BrokerContractRef {
 //   同连接同市场同交易日至多一条 running|succeeded 的对账; 插 running 撞冲突 (P2002) ⇒ 本拍跳过。
 //   ⚠️ 同 `uk_anchor_submission_pending_ticker_asof`: 生成的客户端把它建模成**全表**复合唯一,
 //   谓词在类型里消失 ⇒ MUST NOT 用 `upsert` 命中它。
+// 🚨 084 缺口补偿的防重入索引 `uk_broker_sync_run_gapfill_active` 谓词**与上面那条有两处不同**,
+//   两处都不是笔误:
+//   ① 只含 `running`, 🚫 照抄上面把 `succeeded` 也纳入 —— 断档一天可能合法发生多次, 纳入会让
+//     当天第二次断档**再也补不回来**, 且是静默的 (插不进去 = 本拍跳过, 与「已有执行中」同形)。
+//   ② 只罩 `kind='gapfill'`, 🚫 连 `push` 一起罩 —— `push` 是每 5 秒一次的持仓刷新, 罩住它会让
+//     刷新与补偿互相阻塞, 表现同样是**持仓静默不刷新、不报错**。
+//   客户端侧的 `name` 另起 (`gapfillActive`): 与上面那条字段三元组相同, 不改名会撞同一个
+//   复合唯一入参名。用法同上 —— `create` + 捕获 P2002, MUST NOT `upsert`。
 // 🚨 `(connection_id, source_event_id)` 唯一 = 订阅方幂等键 (D10)。**必须带 connection_id**:
 //   只按事件 ID 唯一会把第二个连接的记录当成重复静默丢弃。source_event_id 可空 (对账 / 手工
 //   插的补齐), PG 唯一约束对 NULL 互不冲突 —— 这里正是要的语义, 不用哨兵值。
@@ -2411,6 +2419,7 @@ model BrokerSyncRun {
 
   @@unique([connectionId, sourceEventId], map: "uk_broker_sync_run_connection_source_event")
   @@unique([connectionId, market, tradingDate], map: "uk_broker_sync_run_reconcile_active", where: raw("(((kind)::text = 'reconcile'::text) AND ((status)::text = ANY (ARRAY[('running'::character varying)::text, ('succeeded'::character varying)::text])))"))
+  @@unique([connectionId, market, tradingDate], name: "gapfillActive", map: "uk_broker_sync_run_gapfill_active", where: raw("(((kind)::text = 'gapfill'::text) AND ((status)::text = 'running'::text))"))
   @@index([accountId, market], map: "ix_broker_sync_run_account_market")
   @@map("broker_sync_run")
   @@schema("optionsdesk")

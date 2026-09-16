@@ -10,15 +10,34 @@ import { PrismaService } from '../security/prisma.service';
 import { parseAnchorTicker } from './anchor.rules';
 import type { BrokerTradeWindow } from './broker-account.port';
 import type { BrokerMarket } from './broker-code.rules';
+import type { BrokerEventCursor } from './broker-event-cursor.rules';
 import {
   decideBackfillAfterInfraFailure,
+  decideGapfill,
   decideReconcile,
+  type GapfillInput,
   type ReconcileInput,
 } from './broker-sync-slot.rules';
+import { ConsumeBrokerEventsUseCase } from './consume-broker-events.usecase';
 import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase';
 
 /** 心跳 cron job 名 (`SchedulerRegistry.getCronJob` 的键)。 */
 export const BROKER_ACCOUNT_HEARTBEAT = 'broker-account-heartbeat';
+
+/** 推送事件心跳 cron job 名 (084 T008; 同上, `SchedulerRegistry` 的键)。 */
+export const BROKER_EVENT_HEARTBEAT = 'broker-event-heartbeat';
+
+/**
+ * 推送事件的拉取间隔 (秒)。
+ *
+ * 📌 **出处**: SC-001 要求订单状态变化 ≤ 5 秒进库, 而「进库」的上界就是本间隔 —— 事件在
+ * 下一拍被拉走并写入, 2 秒把余下约 3 秒留给 shim 缓冲与写库。持仓刷新的上界在此之上再加
+ * 去抖窗口 (`PUSH_REFRESH_DEBOUNCE_MS` 5 秒, FR-008 ⇒ 2 + 5 = 7 秒)。
+ *
+ * 🚫 **做成配置项**: 它与 SC-001 / FR-004 的验收口径强耦合, 配置化会让「改一个数就破坏验收
+ * 口径」成为可能 (照 `broker-sync-slot.rules.ts` `RECONCILE_SLOT_MINUTES` 的先例, 常量旁注出处)。
+ */
+export const PUSH_EVENT_POLL_SECONDS = 2;
 
 /** `running` 超过这么久仍未结束 = 执行中进程重启 / 崩溃留下的卡死记录 (plan D9 步骤 1)。 */
 const STUCK_RUNNING_MS = 15 * 60 * 1000;
@@ -59,14 +78,26 @@ type DueBackfill = {
  * 单实例部署, 不加分布式锁 (同 `sync-anchor-intraday.scheduler.ts` 先例)。
  *
  * mock 档起手即 `skipped-mock`, 零 port 调用 (FR-018; 模块层拒绝壳是兜底)。
+ *
+ * 084 T008 —— 本类还带**第二拍**: 每 `PUSH_EVENT_POLL_SECONDS` 秒的推送事件心跳
+ * (`runEvents`), 与上面那拍互不相干 (各自 `@Cron`、各自 `waitForCompletion`、各自的
+ * 连接循环), 合在一个类里只是因为两者的触发对象都是「每个券商连接」。
  */
 @Injectable()
 export class BrokerAccountScheduler {
   private readonly logger = new Logger(BrokerAccountScheduler.name);
 
+  /**
+   * 推送事件游标: `connectionId` → 上一拍算出的游标 (plan D4 —— **只存进程内存**, 🚫 建表
+   * 持久化)。重启后按 `null` 起手, 由 `decideCursor` 的代次 (`epoch`) 比对天然覆盖重启场景:
+   * 事件源也重启过 ⇒ 代次变了 ⇒ 判断档并从新代次重建; 没变 ⇒ 照旧序号续拉。
+   */
+  private readonly eventCursors = new Map<string, BrokerEventCursor | null>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly syncBrokerAccount: SyncBrokerAccountUseCase,
+    private readonly consumeBrokerEvents: ConsumeBrokerEventsUseCase,
     @Inject(marketdataConfig.KEY) private readonly marketdata: MarketdataConfig,
     // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 —— 开盘前对账「本交易日」的
     // 三态判定 (non-trading 跳过 / unknown 照跑)。零写。
@@ -113,24 +144,207 @@ export class BrokerAccountScheduler {
     }
   }
 
-  /** 步骤 ①: 卡死的补齐记录置回 `pending` (本拍步骤 ② 即可再认领); 卡死的对账记录置 `failed`。 */
+  /**
+   * 084 T008 推送事件心跳 (FR-004 / FR-016; plan D3)。
+   *
+   * 🚨 **`waitForCompletion: true` 与上面那拍同理, 但后果不同**: cron 4.4.0 默认不等上一拍的
+   * Promise, 漏了 ⇒ 上一拍还在写库时下一拍已带**同一个游标**再拉一次, 两拍消费同一批事件
+   * (幂等写让它不脏数据, 但会白打两倍的 port 调用与库写)。2 秒一拍比 60 秒一拍更容易撞上。
+   */
+  @Cron(`*/${PUSH_EVENT_POLL_SECONDS} * * * * *`, {
+    name: BROKER_EVENT_HEARTBEAT,
+    timeZone: 'Asia/Shanghai',
+    waitForCompletion: true,
+  })
+  async handleEventCron(): Promise<void> {
+    await this.runEvents();
+  }
+
+  /**
+   * 推送事件一拍。IT 直调本方法 (固定 `now`)。结果三态复用 `BrokerAccountHeartbeatOutcome`
+   * (同样的 skipped-mock / failed / ticked 三分)。
+   *
+   * **任何路径都不上抛**, 连接间互不连坐 —— 同 `run()` 的理由 (scheduler 抛 = 进程级
+   * unhandledRejection)。`failedConnections` 把「抛出来的」与「use case 回传 `ok:false` 的」
+   * 一并计入: 后者同样是这一拍没消费成功, 不计入会让排障看到一拍全绿而库里没数。
+   *
+   * mock 档起手即返回, 零 port 调用 (FR-016; use case 里那道是第二层, 这里省掉连接查询)。
+   */
+  async runEvents(now: Date = new Date()): Promise<BrokerAccountHeartbeatOutcome> {
+    if (this.marketdata.kind === 'mock') return { status: 'skipped-mock' };
+
+    try {
+      const connections: Connection[] = await this.prisma.brokerConnection.findMany({
+        select: { id: true, accountId: true },
+        orderBy: { id: 'asc' },
+      });
+      let failedConnections = 0;
+      for (const connection of connections) {
+        const key = connection.id.toString();
+        try {
+          const outcome = await this.consumeBrokerEvents.execute({
+            connectionId: connection.id,
+            cursor: this.eventCursors.get(key) ?? null,
+            now,
+          });
+          // 🚨 失败分支回传的是**未前移**的游标 (FR-017): 照样存回, 下一拍原样重放这批。
+          this.eventCursors.set(key, outcome.cursor);
+          if (!outcome.ok) failedConnections++;
+          // 084 T010: 断档即发起当日缺口补偿。失败分支不带 `gapDetected` (这一拍压根没判出
+          // 结果) ⇒ 按「本拍没有新断档」处理; 已留痕的失败补偿仍由下面的重试规则重新发起。
+          await this.runGapfills(connection, outcome.ok && outcome.gapDetected, now);
+        } catch (e) {
+          failedConnections++;
+          this.logger.error(`推送事件心跳: 连接 ${connection.id} 本拍失败: ${errorMessage(e)}`);
+        }
+      }
+      return { status: 'ticked', connections: connections.length, failedConnections };
+    } catch (e) {
+      const reason = errorMessage(e);
+      this.logger.error(`推送事件心跳失败: ${reason}`);
+      return { status: 'failed', reason };
+    }
+  }
+
+  /**
+   * 084 T010 缺口补偿 (FR-009 / FR-010 / FR-018 / FR-022; plan D5)。
+   *
+   * 🚨 **断档是批级布尔、不含市场** —— 事件源那头是一个进程级环形缓冲 + 一个全局 `seq`
+   * 计数器 (`services/futu-shim/src/futu_shim/trade_events.py`), 丢掉的那段序号里可能是任何
+   * 市场的事件 ⇒ 无从判断「断的是哪个市场」, 只能对该连接 scope 内**每个市场各补一次**。
+   * 🚫 只补某一个市场: 猜错的那次, 缺失的成交永远不会出现, 且不报错。
+   *
+   * 市场间各自 try/catch, 一个市场出错不影响另一个 (同 {@link reconcile})。
+   */
+  private async runGapfills(
+    connection: Connection,
+    gapDetected: boolean,
+    now: Date,
+  ): Promise<void> {
+    for (const market of ALL_MARKETS) {
+      try {
+        await this.gapfillMarket(connection, market, gapDetected, now);
+      } catch (e) {
+        this.logger.error(
+          `缺口补偿: 连接 ${connection.id} 市场 ${market} 本拍失败: ${errorMessage(e)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * 一个连接 × 一个市场的当日缺口补偿: 对该市场**当日**做一次窗口受限的对账, 走
+   * `SyncBrokerAccountUseCase` 的第四个 mode —— 🚫 另写一份, 否则「过滤口径 / 幂等写 /
+   * 持仓刷新」三处各自漂移 (plan D5, 同 082 D1 的理由)。结局由 use case 回写。
+   *
+   * 🚨 插 `running` 记录用 `create` 并捕获 `P2002` (部分唯一索引在 Prisma 客户端里被当成全表
+   * 唯一), 🚫 `upsert` —— 同日可以有多条已完成的补偿, upsert 会把它们改写掉。
+   *
+   * ⚠️ **每拍都查一次当日补偿记录, 哪怕本拍没断档**: 失败后的重试不能指望「又断了一次」——
+   * 卡死回收把补偿置 `failed` 之后根本不会再有断档 (FR-011)。查询按
+   * `(connection_id, market, trading_date)` 收窄到当日几行, 2 秒一拍的代价可以忽略。
+   */
+  private async gapfillMarket(
+    connection: Connection,
+    market: BrokerMarket,
+    gapDetected: boolean,
+    now: Date,
+  ): Promise<void> {
+    const today = exchangeClock(market, now).date;
+    const tradingDate = dateColumn(today);
+    const todays = await this.prisma.brokerSyncRun.findMany({
+      where: {
+        connectionId: connection.id,
+        kind: 'gapfill',
+        market,
+        tradingDate,
+        status: { in: ['succeeded', 'failed'] },
+      },
+      select: { status: true, finishedAt: true },
+    });
+    const decision = decideGapfill({
+      gapDetected,
+      todaysRuns: tallyGapfillRuns(todays),
+      now,
+    });
+    if (decision.action === 'skip') return;
+
+    let runId: bigint;
+    try {
+      ({ id: runId } = await this.prisma.brokerSyncRun.create({
+        data: {
+          accountId: connection.accountId,
+          connectionId: connection.id,
+          kind: 'gapfill',
+          status: 'running',
+          market,
+          target: '*',
+          tradingDate,
+          windowStart: tradingDate,
+          windowEnd: tradingDate,
+          startedAt: now,
+        },
+        select: { id: true },
+      }));
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+      this.logger.log(
+        `缺口补偿 ${market} ${today} 连接 ${connection.id} 已有执行中的补偿, 本拍跳过`,
+      );
+      return;
+    }
+
+    await this.syncBrokerAccount.execute({
+      connectionId: connection.id,
+      markets: [market],
+      target: '*',
+      window: { start: today, end: today },
+      mode: 'gapfill',
+      runId,
+      now,
+    });
+  }
+
+  /**
+   * 步骤 ①: 卡死记录回收 —— 补齐置回 `pending` (本拍步骤 ② 即可再认领); 对账、缺口补偿、
+   * 推送刷新置 `failed`。
+   *
+   * 🚨 **四个 `kind` 一个都不能少** (SC-007: 停留在执行中状态超过回收阈值的记录数为 0)。
+   * 新 kind 不加分支就**没有任何路径**清理它, 表现是那条记录永久停在 `running` 且不报错 ——
+   * 084 T011 补上 `gapfill` 与 `push` 正是为此。
+   *
+   * `gapfill` 与 `push` 写法相同、**语义不同**: 前者计入当日失败次数, 由 `decideGapfill` 的
+   * 重试规则按间隔重新发起 (取 `reconcile` 那侧语义); 后者只求置成终态 —— 推送刷新没有独立
+   * 重试规则, 下一拍去抖到期自然会再刷一次, 故它**不该占补偿的重试预算** (两者按 `kind`
+   * 分别统计, 天然隔离)。
+   */
   private async reclaimStuckRuns(connectionId: bigint, now: Date): Promise<void> {
     const stuck = {
       connectionId,
       status: 'running',
       startedAt: { lt: new Date(now.getTime() - STUCK_RUNNING_MS) },
     };
+    const interrupted = { status: 'failed', error: RUN_INTERRUPTED_ERROR, finishedAt: now };
     const backfills = await this.prisma.brokerSyncRun.updateMany({
       where: { ...stuck, kind: 'backfill' },
       data: { status: 'pending' },
     });
     const reconciles = await this.prisma.brokerSyncRun.updateMany({
       where: { ...stuck, kind: 'reconcile' },
-      data: { status: 'failed', error: RUN_INTERRUPTED_ERROR, finishedAt: now },
+      data: interrupted,
     });
-    if (backfills.count + reconciles.count > 0) {
+    const gapfills = await this.prisma.brokerSyncRun.updateMany({
+      where: { ...stuck, kind: 'gapfill' },
+      data: interrupted,
+    });
+    const pushes = await this.prisma.brokerSyncRun.updateMany({
+      where: { ...stuck, kind: 'push' },
+      data: interrupted,
+    });
+    if (backfills.count + reconciles.count + gapfills.count + pushes.count > 0) {
       this.logger.warn(
-        `连接 ${connectionId} 回收卡死记录: 补齐 ${backfills.count} 条置回 pending, 对账 ${reconciles.count} 条置 failed`,
+        `连接 ${connectionId} 回收卡死记录: 补齐 ${backfills.count} 条置回 pending, ` +
+          `对账 ${reconciles.count} / 补偿 ${gapfills.count} / 推送刷新 ${pushes.count} 条置 failed`,
       );
     }
   }
@@ -343,6 +557,32 @@ function tallyTodaysRuns(
     }
   }
   return { succeeded, failed, lastFailedAt };
+}
+
+/**
+ * 当日已结束的**缺口补偿**记录 → 判定输入。与 {@link tallyTodaysRuns} 的差别只在多取一个
+ * 「最近成功时刻」—— 补偿判定要区分「失败之后又成功过」与「失败还挂着」, 而对账判定只需要
+ * 知道当日成功过没有。复杂度 O(n)。
+ */
+function tallyGapfillRuns(
+  runs: readonly { status: string; finishedAt: Date | null }[],
+): GapfillInput['todaysRuns'] {
+  let failed = 0;
+  let lastFailedAt: Date | null = null;
+  let lastSucceededAt: Date | null = null;
+  for (const { status, finishedAt } of runs) {
+    if (status === 'succeeded') {
+      if (finishedAt !== null && (lastSucceededAt === null || finishedAt > lastSucceededAt)) {
+        lastSucceededAt = finishedAt;
+      }
+      continue;
+    }
+    failed++;
+    if (finishedAt !== null && (lastFailedAt === null || finishedAt > lastFailedAt)) {
+      lastFailedAt = finishedAt;
+    }
+  }
+  return { failed, lastFailedAt, lastSucceededAt };
 }
 
 /**

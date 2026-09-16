@@ -581,5 +581,38 @@ describe('083 T005 / T006 券商持仓列表读端 (共享 PG + 收窄 boot + �
       expect((await list(accountA)).syncedAtLocal).toBe('2026-09-09 09:15:30');
       expect((await list(accountA, 'hk')).syncedAtLocal).toBe('2026-09-09 09:05:00');
     });
+
+    // 084 T007 (FR-012 / FR-013): 上面 ①–⑧ 的夹具**全是**对账 / 补齐 —— 给
+    // `lastSucceededSyncAt` 加一支 `push` 的 OR **不会让它们任何一条红**, 不新增下面两条臂,
+    // FR-012 就是零覆盖。
+    const pushed = (accountId: bigint, conn: bigint, finishedAt: string, market = 'us') =>
+      seedRun(accountId, conn, {
+        kind: 'push',
+        status: 'succeeded',
+        market,
+        target: '*',
+        finishedAt: new Date(finishedAt),
+      });
+
+    it('⑨ 🚨 只有一条推送刷新成功记录 (无对账、无补齐) ⇒ syncedAt 取它 (branch 8)', async () => {
+      const conn = await connect(accountA, '主账户');
+      await pushed(accountA, conn, '2026-09-10T13:42:00Z');
+
+      expect((await list(accountA)).syncedAt).toBe('2026-09-10T13:42:00.000Z');
+      // 管道自证: 同一条记录不进港股 ⇒ 上面那条不是「没按市场筛」蒙对的。
+      expect((await list(accountA, 'hk')).syncedAt).toBeNull();
+    });
+
+    it('⑩ 🚨 对账停在前天 (单独看会判陈旧) + 今天一条推送刷新 ⇒ syncedAt 取推送且未标陈旧', async () => {
+      const conn = await connect(accountA, '主账户');
+      await reconciled(accountA, conn, '2026-09-08T13:15:00Z');
+      await pushed(accountA, conn, '2026-09-10T13:42:00Z');
+
+      at('2026-09-10T14:10:00Z');
+      const body = await list(accountA);
+      // 只认对账与补齐的实现在这里两条断言同时红 (syncedAt 取成 09-08, 且 stale=true)。
+      expect(body.syncedAt).toBe('2026-09-10T13:42:00.000Z');
+      expect(body.stale).toBe(false);
+    });
   });
 });

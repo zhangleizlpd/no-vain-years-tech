@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import date
@@ -17,6 +18,7 @@ from futu_shim.app import GZIP_MIN_BYTES, create_app
 from futu_shim.opend import OpenDUnavailable
 from futu_shim.ratelimit import RateGate
 from futu_shim.trade import TradeSupervisor
+from futu_shim.trade_events import TradeEventBuffer
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -313,6 +315,8 @@ def test_deploy_probe_pattern_sees_every_registered_route():
         "/trade/positions",
         "/trade/deals",
         "/trade/orders",
+        # 084 推送事件读取面：读进程内存、不打券商，但鉴权与其余交易路由同档
+        "/trade/events",
     ],
 )
 def test_data_routes_reject_missing_or_wrong_token(path):
@@ -336,7 +340,13 @@ def test_data_routes_reject_missing_or_wrong_token(path):
 # 🚨 账户号一律明显假值（10 位 9000001xxx；卡号 8000000000 / 7000000000）。选中户用 10 位而非
 # 4 位，是为了让「响应只含末 4 位、不含完整账户号」这条断言有得可红 —— 4 位 id 的末 4 位就是它自己。
 
-TRADE_ROUTES = {"/trade/accounts", "/trade/positions", "/trade/deals", "/trade/orders"}
+TRADE_ROUTES = {
+    "/trade/accounts",
+    "/trade/positions",
+    "/trade/deals",
+    "/trade/orders",
+    "/trade/events",
+}
 SELECTED_ACC_ID = 9000001001
 OTHER_ACC_ID = 9000001011
 EXCHANGE_TODAY = date(2026, 9, 14)
@@ -381,6 +391,7 @@ class FakeTradeCtx:
         }
         self._hang = hang
         self.calls: dict[str, list[dict]] = defaultdict(list)
+        self.handlers: list = []
 
     def get_acc_list(self):
         return RET_OK, pd.DataFrame(self._accounts)
@@ -405,6 +416,11 @@ class FakeTradeCtx:
 
     def order_list_query(self, **kwargs):
         return self._answer("order_list_query", kwargs)
+
+    def set_handler(self, handler):
+        """推送 handler 的挂载点（084 T002）；真 context 上由 `OpenContextBase.set_handler` 收。"""
+        self.handlers.append(handler)
+        return RET_OK
 
     def close(self):
         pass
@@ -1726,3 +1742,162 @@ def test_option_chain_empty_filter_params_stay_unfiltered():
 
     assert client.get("/option-chain?code=US.PEP&vol_min=&delta_max=", headers=AUTH).status_code == 200
     assert ctx.chain_calls[0]["data_filter"] is None
+
+
+# ── 084 推送事件读取面（T003）────────────────────────────────────────────────
+#
+# 定向变异留档（2026-09-16，临时改坏 `app.py` → 跑 → 还原 → 全绿）：
+#   a. 路由改为 `app.add_url_rule(...)` 动态注册（非字面量 `@app.get`）
+#        → ⑥ test_trade_events_is_registered_as_a_literal_route
+#          与 test_deploy_probe_pattern_sees_every_registered_route 红
+#   b. 无事件时先 `time.sleep(1)` 再返回（长轮询的最小形态）
+#        → ⑤ test_trade_events_returns_immediately_when_there_is_nothing_new 红
+# 复跑：services/futu-shim/venv/bin/python -m pytest -q services/futu-shim/tests/test_app.py -k events
+#
+# 🚨 事件夹具一律合成值（`US.FAKE` / `fake-*`），不含任何真实成交、订单或账户号。
+
+
+def build_events(buffer, trade_ctx=None):
+    """装一个带指定事件缓冲的 app —— 路由读的是 `TradeSupervisor.events`。"""
+    supervisor = FakeSupervisor(FakeCtx())
+    trade = TradeSupervisor(
+        supervisor,
+        timeout_s=5.0,
+        ctx_factory=lambda: trade_ctx if trade_ctx is not None else FakeTradeCtx(),
+        event_buffer=buffer,
+    )
+    app = create_app(supervisor, None, trade)
+    app.config.update(TESTING=True)
+    return app.test_client(), supervisor
+
+
+def _event(n):
+    return {"event_type": "order", "code": "US.FAKE", "order_id": f"fake-{n}"}
+
+
+# ② 代次相符 + 游标 ⇒ 只回其后的行
+def test_trade_events_returns_only_rows_after_the_cursor():
+    buffer = TradeEventBuffer(maxlen=10)
+    for n in range(3):
+        buffer.append(_event(n))
+    client, supervisor = build_events(buffer)
+
+    resp = client.get(f"/trade/events?epoch={buffer.epoch}&after_seq=1", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json["epoch"] == buffer.epoch
+    assert [row["order_id"] for row in resp.json["rows"]] == ["fake-1", "fake-2"]
+    assert resp.json["next_seq"] == 3
+    assert resp.json["dropped"] is False
+    assert supervisor.sessions == 0, "读的是进程内存，不该碰 OpenD"
+
+
+def test_trade_events_without_a_cursor_returns_the_whole_buffer():
+    """首拉（server 侧还没有游标）：不带参数就该把缓冲里有的都给出去。"""
+    buffer = TradeEventBuffer(maxlen=10)
+    for n in range(2):
+        buffer.append(_event(n))
+    client, _ = build_events(buffer)
+
+    resp = client.get("/trade/events", headers=AUTH)
+
+    assert [row["seq"] for row in resp.json["rows"]] == [1, 2]
+    assert resp.json["epoch"] == buffer.epoch
+
+
+# ③ 代次不符 ⇒ 回全量 + 新代次
+def test_trade_events_replays_everything_when_the_epoch_does_not_match():
+    """shim 进程重启后序号回到起点 —— 按旧序号续拉会把全部新事件静默漏掉（branch 6 的 shim 半）。"""
+    buffer = TradeEventBuffer(maxlen=10)
+    for n in range(3):
+        buffer.append(_event(n))
+    client, _ = build_events(buffer)
+
+    resp = client.get("/trade/events?epoch=stale-epoch&after_seq=2", headers=AUTH)
+
+    assert resp.json["epoch"] == buffer.epoch
+    assert resp.json["epoch"] != "stale-epoch"
+    assert [row["seq"] for row in resp.json["rows"]] == [1, 2, 3]
+    assert resp.json["next_seq"] == 3
+
+
+# ④ 绕回
+def test_trade_events_reports_dropped_when_the_buffer_wrapped():
+    buffer = TradeEventBuffer(maxlen=2)
+    for n in range(4):
+        buffer.append(_event(n))
+    client, _ = build_events(buffer)
+
+    resp = client.get(f"/trade/events?epoch={buffer.epoch}&after_seq=1", headers=AUTH)
+
+    assert resp.json["dropped"] is True
+    assert [row["seq"] for row in resp.json["rows"]] == [3, 4]
+
+
+# ⑤ 立即返回
+def test_trade_events_returns_immediately_when_there_is_nothing_new():
+    """🚨 非阻塞：挂起会占住 waitress 仅有的 4 个工作线程、与行情面抢资源（FR-004）。"""
+    buffer = TradeEventBuffer(maxlen=10)
+    client, _ = build_events(buffer)
+
+    started = time.perf_counter()
+    resp = client.get(f"/trade/events?epoch={buffer.epoch}&after_seq=0", headers=AUTH)
+    elapsed = time.perf_counter() - started
+
+    assert resp.status_code == 200
+    assert resp.json["rows"] == []
+    assert resp.json["next_seq"] == 0
+    assert elapsed < 0.1, f"无事件时耗了 {elapsed:.3f}s —— 端点在等事件（长轮询）"
+
+
+# T013 订阅健康：最近一次事件到达时刻随事件响应带出（FR-014）
+def test_trade_events_carries_the_last_event_arrival_time():
+    buffer = TradeEventBuffer(maxlen=10)
+    buffer.append(_event(0))
+    client, _ = build_events(buffer)
+
+    resp = client.get("/trade/events", headers=AUTH)
+
+    assert resp.json["last_event_at"] == buffer.read()["last_event_at"]
+    assert resp.json["last_event_at"] is not None
+
+
+def test_trade_events_reports_no_arrival_time_before_any_push():
+    """`None` = 本进程从没收到过推送。与「字段缺失」必须可区分 —— server 对缺失是 throw。"""
+    buffer = TradeEventBuffer(maxlen=10)
+    client, _ = build_events(buffer)
+
+    assert client.get("/trade/events", headers=AUTH).json["last_event_at"] is None
+
+
+def test_last_event_at_is_stable_across_requests_while_no_push_arrives():
+    """🚨 健康判据要的是**事件到达时刻**，不是 `as_of` 那个**响应时刻**。
+
+    响应时刻每拍都在变，拿它判健康等于「只要 shim 还活着就算通道健在」，把 FR-014
+    要测的东西测没了。两次请求之间没有新推送 ⇒ 这个值必须一字不差。
+    """
+    buffer = TradeEventBuffer(maxlen=10)
+    buffer.append(_event(0))
+    client, _ = build_events(buffer)
+
+    first = client.get("/trade/events", headers=AUTH).json["last_event_at"]
+    second = client.get("/trade/events", headers=AUTH).json["last_event_at"]
+
+    assert first is not None
+    assert first == second
+
+
+# ⑥ 字面量注册（部署探针的判据来源）
+def test_trade_events_is_registered_as_a_literal_route():
+    """部署探针按字面量 `@app.get("…")` grep 源码（`remote-deploy.sh` ②）⇒ 动态注册它看不见。"""
+    assert "/trade/events" in registered_routes()
+    assert '@app.get("/trade/events")' in APP_SOURCE.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("cursor", ["abc", "-1", "1.5"])
+def test_trade_events_rejects_a_junk_cursor(cursor):
+    """校验先于取数：坏游标是永久错误，400 说一次，别让调用方按 transient 反复重试。"""
+    buffer = TradeEventBuffer(maxlen=10)
+    client, _ = build_events(buffer)
+
+    assert client.get(f"/trade/events?after_seq={cursor}", headers=AUTH).status_code == 400

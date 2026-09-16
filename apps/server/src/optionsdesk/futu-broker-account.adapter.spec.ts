@@ -337,3 +337,269 @@ describe('FutuBrokerAccountAdapter', () => {
     expect(shim.request).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 084 T005 推送事件行规范化 (plan D2; FR-006 / FR-015 / FR-020 / FR-021)。
+ *
+ * 仿真行的**键集照 futu SDK 源码**的推送列表 (`futu/trade/trade_response_handler.py`:
+ * `TradeOrderHandlerBase` 的 `col_list` / `TradeDealHandlerBase` 的 `col_list`, futu-shim venv):
+ * 订单推送带 `currency` / `updated_time` / `combo_legs`, 成交推送三者皆无 —— **两类字段集不同**,
+ * 故分别映射、靠 `event_type` 分流 (branch 13)。`seq` / `event_type` 由 shim 的事件缓冲盖上。
+ *
+ * 🚨 反例臂的形状决定这组测试有没有用 (plan「本片额外的反例臂」):
+ *   - **腿必须喂结构化对象数组**。喂文本数组的话, 走 `parseComboLegs` 的错误实现同样绿 ——
+ *     它对对象元素做 `filter(typeof === 'string')`, 静默返回 `[]` (`broker-code.rules.ts:99-107`)。
+ *   - **成交号必须喂超出安全整数范围的尺寸**。小整数下「转串」与「原样透传」两种实现都绿。
+ *
+ * 定向变异 (out-of-test sabotage, testing.md §7.1; 2026-09-16 实跑, 还原后 `cmp` 与备份逐字节相同):
+ *   a. 市场改读 `order_market` (`eventMarket` 里 `r.trd_market` → `r.order_market`)
+ *      → 9 failed | 19 passed —— ① 在其中。⚠️ **不是只有 ① 红**: 市场是每条事件臂的共同前置,
+ *      而真实推送行**不带** `order_market` ⇒ `eventMarket` 当场 throw, 整组事件臂一起红。这是
+ *      真实夹具形状下的必然结果, 不是断言不精确 —— 要做到「只红一条」得往夹具里塞一个券商根本
+ *      不发的诱饵列, 那种精确是演出来的。
+ *   b. 空腿改为正常返回 (`legsPending` 恒 `false`)
+ *      → 1 failed | 27 passed —— 只有 ④ 红; ④b 仍绿 (它守的正是反方向: 普通单腿单不该被标)。
+ *   复跑: pnpm nx test server src/optionsdesk/futu-broker-account.adapter.spec.ts --skip-nx-cache
+ */
+describe('FutuBrokerAccountAdapter — 推送事件行规范化 (084 T005)', () => {
+  /**
+   * 19 位合成成交号。沿用本文件既有夹具的形态 (同文件 `deal()` 的 `deal_id`)。
+   * 它 > 2^53−1 这一点由用例内断言现场证明, 不靠肉眼数位数。
+   */
+  const HUGE_DEAL_ID = '1000000000000000001';
+
+  /** 订单推送行 (列集照 SDK `TradeOrderHandlerBase.col_list`)。默认是一张**组合单**。 */
+  function orderEvent(extra: Record<string, unknown> = {}) {
+    return {
+      event_type: 'order',
+      seq: 11,
+      trd_env: 'REAL',
+      code: 'US.ZQY-COMBO',
+      stock_name: 'ZQY combo',
+      // 🚨 推送的市场列是 `trd_market`; 历史订单查询是 `order_market` (FR-015 / branch 13)。
+      trd_market: 'US',
+      trd_side: 'SELL',
+      order_type: 'NORMAL',
+      order_status: 'SUBMITTED',
+      order_id: 'FAKE00000000000003',
+      qty: 1.0,
+      price: 0.95,
+      dealt_qty: 0.0,
+      dealt_avg_price: 0.0,
+      create_time: '2026-09-11 09:40:00.120',
+      updated_time: '2026-09-11 09:40:01.502',
+      currency: 'USD',
+      // 🚨 结构化**对象**数组 —— shim 已从 `ComboLeg` 展开 (FR-020), 不是文本。
+      combo_legs: [
+        { code: 'US.ZQY260918P120000', trd_side: 'BUY', qty_ratio: 1.0, position_id: null },
+        { code: 'US.ZQY260918P130000', trd_side: 'SELL', qty_ratio: 1.0, position_id: null },
+      ],
+      ...extra,
+    };
+  }
+
+  /** 成交推送行 (列集照 SDK `TradeDealHandlerBase.col_list`: 无 `currency`、无 `combo_legs`)。 */
+  function dealEvent(extra: Record<string, unknown> = {}) {
+    return {
+      event_type: 'deal',
+      seq: 12,
+      trd_env: 'REAL',
+      code: 'US.ZQY260918P130000',
+      stock_name: 'ZQY 260918 130.00P',
+      trd_market: 'US',
+      deal_id: HUGE_DEAL_ID,
+      order_id: 'FAKE00000000000002',
+      qty: 2.0,
+      price: 1.85,
+      trd_side: 'SELL_SHORT',
+      create_time: '2026-09-11 09:31:08.950',
+      counter_broker_id: 'N/A',
+      counter_broker_name: 'N/A',
+      status: 'OK',
+      ...extra,
+    };
+  }
+
+  /**
+   * 事件源报出的「最近一次事件到达时刻」(084 FR-014)。⚠️ 它是**事件到达**时刻, 与信封的
+   * `as_of` (响应时刻) 不是一回事 —— 夹具里刻意取两个不同的值, 免得取错字段也能绿。
+   */
+  const LAST_EVENT_AT_ISO = '2026-09-11T13:59:58.250000+00:00';
+
+  /**
+   * `/trade/events` 的信封比 rows 型端点多 `epoch` / `next_seq` / `dropped` / `last_event_at`
+   * 四个字段。🚨 **四个都得在**: adapter 对其中任一缺失都 throw, 少一个就是整批事件拿不到。
+   */
+  function makeEventsShim(rows: unknown[], extra: Record<string, unknown> = {}) {
+    // 返回型刻意标成松的 `Record<string, unknown>`: 下面「缺字段 ⇒ 抛」那条臂要喂一个**故意
+    // 少一个键**的信封, 而由实现推断出的字面量类型会让它在 typecheck 期就被拒 (那条臂就写不出来)。
+    const request = vi.fn(
+      async (_req: VendorRequest): Promise<Record<string, unknown>> => ({
+        as_of: '2026-09-11T14:00:00+00:00',
+        count: rows.length,
+        rows,
+        epoch: 'aaaa0000epoch',
+        next_seq: 12,
+        dropped: false,
+        last_event_at: LAST_EVENT_AT_ISO,
+        ...extra,
+      }),
+    );
+    return { http: { request } as unknown as VendorHttpClient, request };
+  }
+
+  it('① 订单事件 ⇒ 规范化出订单字段, 市场取自 `trd_market` (branch 13)', async () => {
+    const shim = makeEventsShim([orderEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    const [event] = batch.rows;
+    expect(event?.kind).toBe('order');
+    if (event?.kind !== 'order') throw new Error('分流错: 订单事件应归 order');
+    expect(event.order.market).toBe('us');
+    expect(event.order.orderId).toBe('FAKE00000000000003');
+    expect(event.order.status).toBe('SUBMITTED');
+    expect(event.order.qty.toString()).toBe('1');
+    expect(event.order.currency).toBe('USD');
+    expect(event.seq).toBe(11);
+  });
+
+  it('② 成交事件 ⇒ 成交字段, `dealId` 逐位不变且长度不变 (branch 16 / FR-021)', async () => {
+    // 🚨 先证明这个号确实超出安全整数: 否则「转串」与「原样透传」两种实现都绿, 本臂白写。
+    expect(Number(HUGE_DEAL_ID)).toBeGreaterThan(Number.MAX_SAFE_INTEGER);
+    expect(String(Number(HUGE_DEAL_ID))).not.toBe(HUGE_DEAL_ID);
+
+    const shim = makeEventsShim([dealEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    const [event] = batch.rows;
+    if (event?.kind !== 'deal') throw new Error('分流错: 成交事件应归 deal');
+    expect(event.deal.dealId).toBe(HUGE_DEAL_ID);
+    expect(event.deal.dealId).toHaveLength(HUGE_DEAL_ID.length);
+    expect(event.deal.market).toBe('us');
+    expect(event.deal.side).toBe('SELL_SHORT');
+    // 成交推送无 currency 列 ⇒ 按市场补 (与订单事件字段集不同的直接证据)。
+    expect(event.deal.currency).toBe('USD');
+  });
+
+  it('③ 腿为结构化数组 ⇒ 解出各腿代码与方向 (branch 14 / FR-020)', async () => {
+    const shim = makeEventsShim([orderEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    const [event] = batch.rows;
+    if (event?.kind !== 'order') throw new Error('分流错');
+    expect(event.order.comboLegs).toEqual([
+      { code: 'US.ZQY260918P120000', side: 'BUY' },
+      { code: 'US.ZQY260918P130000', side: 'SELL' },
+    ]);
+    expect(event.order.comboLegCodes).toEqual(['US.ZQY260918P120000', 'US.ZQY260918P130000']);
+    expect(event.order.legsPending).toBe(false);
+  });
+
+  it('④ 组合单腿为空 ⇒ 标记待回查, 🚫 当作「无腿」正常返回 (branch 15 / FR-020)', async () => {
+    const shim = makeEventsShim([orderEvent({ combo_legs: [] })]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    const [event] = batch.rows;
+    if (event?.kind !== 'order') throw new Error('分流错');
+    expect(event.order.legsPending).toBe(true);
+    expect(event.order.comboLegs).toEqual([]);
+  });
+
+  it('④b 普通单腿单腿列表本来就空 ⇒ **不**标待回查 (否则每一单都触发回查)', async () => {
+    const shim = makeEventsShim([orderEvent({ code: 'US.ZQY260918P130000', combo_legs: [] })]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    const [event] = batch.rows;
+    if (event?.kind !== 'order') throw new Error('分流错');
+    expect(event.order.legsPending).toBe(false);
+  });
+
+  it('⑤ 事件行含 acc_id ⇒ 不进入规范化结果 (含 raw) (FR-019)', async () => {
+    const shim = makeEventsShim([
+      orderEvent({ acc_id: FAKE_ACC_ID }),
+      dealEvent({ acc_id: FAKE_ACC_ID }),
+    ]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    expect(batch.rows).toHaveLength(2);
+    expect(JSON.stringify(batch)).not.toContain(String(FAKE_ACC_ID));
+    for (const event of batch.rows) {
+      const raw = event.kind === 'order' ? event.order.raw : event.deal.raw;
+      expect(raw).not.toHaveProperty('acc_id');
+    }
+  });
+
+  it('⑥ 事件时间带毫秒 ⇒ 按市场交易所时区解析且毫秒保留', async () => {
+    const shim = makeEventsShim([orderEvent(), dealEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    const [order, deal] = batch.rows;
+    if (order?.kind !== 'order' || deal?.kind !== 'deal') throw new Error('分流错');
+    // 2026-09-11 美东夏令时 UTC-4
+    expect(order.order.vendorUpdatedAt.toISOString()).toBe('2026-09-11T13:40:01.502Z');
+    expect(order.order.vendorCreatedAt?.toISOString()).toBe('2026-09-11T13:40:00.120Z');
+    expect(deal.deal.tradedAt.toISOString()).toBe('2026-09-11T13:31:08.950Z');
+
+    const hk = makeEventsShim([
+      dealEvent({ code: 'HK.00700', trd_market: 'HK', create_time: '2026-09-11 10:05:00.007' }),
+    ]);
+    const [hkEvent] = (await makeAdapter(hk.http).fetchEvents(null)).rows;
+    if (hkEvent?.kind !== 'deal') throw new Error('分流错');
+    // 香港 UTC+8
+    expect(hkEvent.deal.tradedAt.toISOString()).toBe('2026-09-11T02:05:00.007Z');
+    expect(hkEvent.deal.currency).toBe('HKD');
+  });
+
+  it('两类事件靠 `event_type` 分流, 不靠字段集猜; 未知取值 ⇒ 抛', async () => {
+    const shim = makeEventsShim([orderEvent(), dealEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    expect(batch.rows.map((e) => e.kind)).toEqual(['order', 'deal']);
+
+    const bad = makeEventsShim([orderEvent({ event_type: 'position' })]);
+    await expect(makeAdapter(bad.http).fetchEvents(null)).rejects.toThrow('event_type');
+  });
+
+  it('信封的 epoch / next_seq / dropped 原样带出 (游标判定的入参)', async () => {
+    const shim = makeEventsShim([dealEvent()], {
+      epoch: 'bbbb1111epoch',
+      next_seq: 42,
+      dropped: true,
+    });
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    expect(batch.epoch).toBe('bbbb1111epoch');
+    expect(batch.nextSeq).toBe(42);
+    expect(batch.dropped).toBe(true);
+  });
+
+  it('信封的 last_event_at: 有值 ⇒ Date、null ⇒ null、缺字段 ⇒ 抛 (FR-014)', async () => {
+    const shim = makeEventsShim([dealEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    // 🚨 取的是事件**到达**时刻, 不是信封的 `as_of` (那是响应时刻, 14:00:00)。
+    expect(batch.lastEventAt?.toISOString()).toBe('2026-09-11T13:59:58.250Z');
+
+    // 事件源从没收到过推送 ⇒ null。
+    const never = makeEventsShim([], { last_event_at: null });
+    expect((await makeAdapter(never.http).fetchEvents(null)).lastEventAt).toBeNull();
+
+    // 🚨 缺字段 MUST 抛, 🚫 按 null 兜底 —— null 的含义是「从没收到过推送」(通道可能已死),
+    // 而缺失只说明 shim 是旧版本; 混为一谈会让一条健在的通道显示为长期静默 (D8)。
+    const stale = makeEventsShim([]);
+    stale.request.mockResolvedValueOnce({
+      as_of: '2026-09-11T14:00:00+00:00',
+      count: 0,
+      rows: [],
+      epoch: 'aaaa0000epoch',
+      next_seq: 12,
+      dropped: false,
+    });
+    await expect(makeAdapter(stale.http).fetchEvents(null)).rejects.toThrow('last_event_at');
+  });
+
+  it('游标入参 ⇒ epoch / after_seq 进 query; 首次消费 (null) ⇒ 不带参数', async () => {
+    const withCursor = makeEventsShim([]);
+    await makeAdapter(withCursor.http).fetchEvents({ epoch: 'aaaa0000epoch', afterSeq: 7 });
+    const url = new URL(withCursor.request.mock.calls[0]?.[0].url ?? '');
+    expect(url.pathname).toBe('/trade/events');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      epoch: 'aaaa0000epoch',
+      after_seq: '7',
+    });
+
+    const first = makeEventsShim([]);
+    await makeAdapter(first.http).fetchEvents(null);
+    expect(new URL(first.request.mock.calls[0]?.[0].url ?? '').search).toBe('');
+  });
+});

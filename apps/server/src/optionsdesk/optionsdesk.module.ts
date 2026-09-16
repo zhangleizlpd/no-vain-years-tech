@@ -34,6 +34,7 @@ import { marketdataConfig } from '../config/marketdata.config';
 import { BROKER_ACCOUNT_PORT } from './broker-account.port.js';
 import { createBrokerAccountPort } from './futu-broker-account.adapter.js';
 import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase.js';
+import { ConsumeBrokerEventsUseCase } from './consume-broker-events.usecase.js';
 import { BrokerAccountScheduler } from './broker-account.scheduler.js';
 import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subscriber.js';
 import { BrokerAccountController } from './broker-account.controller.js';
@@ -133,6 +134,9 @@ import { ListBrokerBackfillRunsUseCase } from './list-broker-backfill-runs.useca
     // 082 T014 券商账户同步 use case (plan D1): 新建锚补齐与开盘前对账共用的唯一入口 ——
     // 两份实现会在过滤口径 / 幂等写 / 持仓刷新三处各自漂移 (ADR-0043 #1: optionsdesk use case 数 → 20)。
     SyncBrokerAccountUseCase,
+    // 084 T006 券商推送事件消费 use case (plan D3): 拉事件 → 锚过滤 → 幂等写。写路径与
+    // `SyncBrokerAccountUseCase` 同源 (复用它的 `writeDeals` / `writeOrders`), 🚫 另起一份幂等写。
+    ConsumeBrokerEventsUseCase,
     // 082 T016 它的触发器 (plan D9): 每分钟一拍 —— 回收卡死记录 → 认领补齐 → 开盘前对账。mock 档起手即 return。
     BrokerAccountScheduler,
     // 082 T018 新建锚 → 待执行补齐记录 (plan D10): 与 marketdata 冷启动订阅方挂同一事件, 只插记录不执行。

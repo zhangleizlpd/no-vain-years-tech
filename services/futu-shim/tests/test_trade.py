@@ -69,6 +69,7 @@ class FakeTradeCtx:
         self.closed = threading.Event()
         self.acc_list_calls = 0
         self.position_calls: list[dict] = []
+        self.handlers: list = []
 
     def get_acc_list(self):
         self.acc_list_calls += 1
@@ -83,6 +84,11 @@ class FakeTradeCtx:
         if self._ret != RET_OK:
             return self._ret, Err.ConnectionClosed.text
         return RET_OK, pd.DataFrame(self._positions)
+
+    def set_handler(self, handler):
+        """推送 handler 的挂载点（084 T002）；真 context 上由 `OpenContextBase.set_handler` 收。"""
+        self.handlers.append(handler)
+        return RET_OK
 
     def close(self):
         self.closed.set()
