@@ -36,6 +36,11 @@ import { createBrokerAccountPort } from './futu-broker-account.adapter.js';
 import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase.js';
 import { BrokerAccountScheduler } from './broker-account.scheduler.js';
 import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subscriber.js';
+import { BrokerAccountController } from './broker-account.controller.js';
+import { ListBrokerPositionsUseCase } from './list-broker-positions.usecase.js';
+import { GetBrokerPositionUseCase } from './get-broker-position.usecase.js';
+import { GetBrokerOrderUseCase } from './get-broker-order.usecase.js';
+import { ListBrokerBackfillRunsUseCase } from './list-broker-backfill-runs.usecase.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -63,7 +68,13 @@ import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subsc
   // 059 guest 面**另起一个 controller**: 上面那个是类级 JwtAuthGuard, 类级 guard 摘不掉。
   // 072 审批面**另起第三个 controller**: 类级 AdminOnlyGuard 是构造上的保证,
   // 挂在上面那个共享 controller 上逐方法加 guard 则是会被未来某个 PR 悄悄漏掉的纪律。
-  controllers: [OptionsdeskController, OptionsdeskGuestController, AnchorSubmissionController],
+  // 083 交易账户页读接口**另起第四个 controller** (plan D1): 按 082 表名 `broker` 名词段分组, 鉴权同上面第一个。
+  controllers: [
+    OptionsdeskController,
+    OptionsdeskGuestController,
+    AnchorSubmissionController,
+    BrokerAccountController,
+  ],
   providers: [
     // 072 待审箱审阅面
     ListAnchorSubmissionsUseCase,
@@ -126,6 +137,14 @@ import { BrokerHistoryBackfillSubscriber } from './broker-history-backfill.subsc
     BrokerAccountScheduler,
     // 082 T018 新建锚 → 待执行补齐记录 (plan D10): 与 marketdata 冷启动订阅方挂同一事件, 只插记录不执行。
     BrokerHistoryBackfillSubscriber,
+    // 083 T005 交易账户页持仓列表读端 (plan D1–D8): 只读, 账号隔离下沉进每条 broker_* 查询。
+    ListBrokerPositionsUseCase,
+    // 083 T008 订单详情读端 (plan D11): 成交金额乘数与批次同源; 同上只读、账号隔离在查询条件里。
+    GetBrokerOrderUseCase,
+    // 083 T009 新锚券商历史补齐状态读端 (plan D12): 每个 ticker 取最新一条补齐记录; 只读。
+    ListBrokerBackfillRunsUseCase,
+    // 083 T007 持仓详情读端 (plan D9 / D10): 汇总 + 订单列表 + FIFO 批次; 同上只读、账号隔离在查询条件里。
+    GetBrokerPositionUseCase,
   ],
 })
 export class OptionsdeskModule {}

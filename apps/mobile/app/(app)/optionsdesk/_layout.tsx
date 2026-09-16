@@ -44,6 +44,16 @@ export default function OptionsdeskLayout() {
           name="trading-account"
           options={{ headerLeft: makeHeaderBackOrParent('/(app)/(tabs)/optionsdesk') }}
         />
+        {/* 083 持仓详情：title 由屏内 Stack.Screen 设；深链无上一页时返回落交易账户页（plan D15）。 */}
+        <Stack.Screen
+          name="trading-account-position/[id]"
+          options={{ headerLeft: makeHeaderBackOrParent('/(app)/optionsdesk/trading-account') }}
+        />
+        {/* 083 订单详情：title 由屏内 Stack.Screen 设；深链无上一页时返回落交易账户页（plan D15）。 */}
+        <Stack.Screen
+          name="trading-account-order/[id]"
+          options={{ headerLeft: makeHeaderBackOrParent('/(app)/optionsdesk/trading-account') }}
+        />
       </Stack>
     </MarketsRouteGuard>
   );

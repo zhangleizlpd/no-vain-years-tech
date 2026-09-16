@@ -3,7 +3,7 @@ adr_id: ADR-0043
 status: Accepted
 applies_to: [apps/server]
 sunset_trigger: |
-  - 单个 bounded context use case 数 > 20（扁平单层开始失焦，需内部再分组）
+  - 单个 bounded context use case 数 > 20（扁平单层开始失焦，需内部再分组） ✅ **FIRED 2026-09-15（083 optionsdesk）· mitigated** —— 按 `broker` 名词段文件名分组、不建子目录；optionsdesk 下次复审线 = use case 达 30 个（详见 §复审记录 2026-09-15）
   - 团队规模 > 1（多人协作下贫血 + 约定护城河风险升高，需重引编译期隔离）
   - 引入第 2 个非 Prisma 持久化（贫血 POJO 类型来源不再单一）
 ---
@@ -105,6 +105,32 @@ export const isAnonymized = (a: Account): boolean => a.status === 'ANONYMIZED';
 - 贫血失去编译期不变量封装 → 由纯函数 helper + 单测补偿；不变量集中在 `*.rules.ts` 不散落。
 - 数据护城河已由 R-6 AST 探针（`scripts/checks/check-server-moat.ts`）机器强制；R2「调 UseCase 不碰表」从 CR 引导转 CI 硬卡（跨 ctx 写禁、读需 `CROSS-CONTEXT-READ` 逃生口）。
 - 扁平在单 context use case 暴增时会失焦 → sunset trigger 兜底。
+
+## 复审记录
+
+### 2026-09-15 — `sunset_trigger` #1（单个 bounded context use case 数 > 20）：fired · mitigated
+
+trigger 原文 = 「单个 bounded context use case 数 > 20（扁平单层开始失焦，需内部再分组）」。触发源 = [083-optionsdesk-trading-account-positions](../../specs/083-optionsdesk-trading-account-positions/spec.md)（plan Gate 0.4，维护者 2026-09-15 plan 审批确认）；上一次登记见 [ADR-0062](0062-optionsdesk-bounded-context.md) §复审记录 2026-09-14（当时 20 个，`accepted-as-is`、已到阈值）。
+
+**判定：命中。** optionsdesk 在 083 之前 20 个 use case（锚与许愿单 14 / 雷达·链报告·腿·详情·温度计 5 / 券商同步 1）；083 新增 4 个只读 use case（`list-broker-positions` / `get-broker-position` / `get-broker-order` / `list-broker-backfill-runs`），本片合入后 24 个，越过 > 20。现状计数以查询为准，不在此硬编码：
+
+```bash
+ls apps/server/src/optionsdesk/*.usecase.ts | wc -l
+```
+
+**缓解 = 文件名分组，不建子目录（§1 扁平规则不动）。** 083 的 4 个 use case 全部以 `broker` 为名词段，与 082 的 `sync-broker-account.usecase.ts` 及 `broker-*.rules.ts` 同组。本片合入后的分组 = 锚与许愿单 14 / 雷达·链报告·腿·详情·温度计 5 / 券商镜像 5；券商镜像组一条命令列出：
+
+```bash
+rg -l broker apps/server/src/optionsdesk/*.usecase.ts
+```
+
+**否决的替代**：
+
+1. 建 `optionsdesk/broker/` 子目录 —— 直接违反本 ADR §1 扁平规则，需先 amend 本 ADR。
+2. 把 4 个读接口并进一个 use case 规避计数 —— 为指标改结构，读接口之间无共享流程。
+3. 现在把券商镜像拆成独立 ctx —— [ADR-0062](0062-optionsdesk-bounded-context.md) 的拆出条件（范围开关打开且出现期权台以外的读取方，或接入第二家券商）均未满足。
+
+**下次复审线 = optionsdesk use case 达 30 个**（维护者 2026-09-15 定），届时重评文件名分组是否仍够用。本复审线只针对 optionsdesk，其它 ctx 仍按原 trigger（> 20）判；ADR-0062 的拆出条件由该 ADR 自己的 `sunset_trigger` 管，不并入本复审线。
 
 ## References
 

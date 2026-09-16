@@ -43,6 +43,12 @@ import type {
   AnchorSubmissionReviewListResponse,
   ApproveAnchorSubmissionRequest,
   ApproveAnchorSubmissionResponse,
+  BrokerAccountControllerBackfillRunsParams,
+  BrokerAccountControllerPositionsParams,
+  BrokerBackfillRunResponse,
+  BrokerOrderDetailResponse,
+  BrokerPositionDetailResponse,
+  BrokerPositionListResponse,
   ChainReportResponse,
   CreateAnchorRequest,
   LegTableResponse,
@@ -1660,3 +1666,371 @@ export const useAnchorSubmissionControllerReject = <TError = AxiosError<ProblemD
       > => {
       return useMutation(getAnchorSubmissionControllerRejectMutationOptions(options), queryClient);
     }
+    /**
+ * Reads the positions already synced from the broker for the CURRENT account only — no broker call is made. Only underlyings present in the anchor table (excluded anchors included) are shown; positions whose underlying could not be resolved are only counted (unresolvedCount). Groups are ordered by |group market value| desc (null last), then ticker. P&L fields use the average-cost basis; a missing vendor value is null, never 0. The four non-list client states derive from hasConnection / syncedAt / groups.length.
+ * @summary Broker positions of one market, grouped by underlying (read-only)
+ */
+export const brokerAccountControllerPositions = (
+    params: BrokerAccountControllerPositionsParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<BrokerPositionListResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/broker-positions`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getBrokerAccountControllerPositionsQueryKey = (params?: BrokerAccountControllerPositionsParams,) => {
+    return [
+    `/api/v1/optionsdesk/broker-positions`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getBrokerAccountControllerPositionsQueryOptions = <TData = Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError = AxiosError<ProblemDetailResponse>>(params: BrokerAccountControllerPositionsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getBrokerAccountControllerPositionsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof brokerAccountControllerPositions>>> = ({ signal }) => brokerAccountControllerPositions(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type BrokerAccountControllerPositionsQueryResult = NonNullable<Awaited<ReturnType<typeof brokerAccountControllerPositions>>>
+export type BrokerAccountControllerPositionsQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useBrokerAccountControllerPositions<TData = Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerPositionsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerPositions>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerPositions>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerPositions<TData = Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerPositionsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerPositions>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerPositions>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerPositions<TData = Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerPositionsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Broker positions of one market, grouped by underlying (read-only)
+ */
+
+export function useBrokerAccountControllerPositions<TData = Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerPositionsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPositions>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getBrokerAccountControllerPositionsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * Summary carries the same fields as a list row plus openedAtLocal. Orders are this position's code on the same connection (combo orders included via their leg codes); when openedAtSource is derived only orders last UPDATED at or after openedAt are included, fallback includes all; ordered by vendor creation time desc (null last), then order id. Options carry FIFO lots of the current holding cycle (restorable=false still returns the lots); stocks have lots=null. A missing position, one owned by another account, one whose underlying is unresolved, and one outside the anchor set all return the identical 404 (detail BROKER_POSITION_NOT_FOUND).
+ * @summary One broker position: summary + orders + lots (read-only)
+ */
+export const brokerAccountControllerPosition = (
+    id: string, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<BrokerPositionDetailResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/broker-positions/${id}`,options
+    );
+  }
+
+
+
+
+export const getBrokerAccountControllerPositionQueryKey = (id: string,) => {
+    return [
+    `/api/v1/optionsdesk/broker-positions/${id}`
+    ] as const;
+    }
+
+
+export const getBrokerAccountControllerPositionQueryOptions = <TData = Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError = AxiosError<ProblemDetailResponse>>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getBrokerAccountControllerPositionQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof brokerAccountControllerPosition>>> = ({ signal }) => brokerAccountControllerPosition(id, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type BrokerAccountControllerPositionQueryResult = NonNullable<Awaited<ReturnType<typeof brokerAccountControllerPosition>>>
+export type BrokerAccountControllerPositionQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useBrokerAccountControllerPosition<TData = Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerPosition>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerPosition>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerPosition<TData = Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerPosition>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerPosition>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerPosition<TData = Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary One broker position: summary + orders + lots (read-only)
+ */
+
+export function useBrokerAccountControllerPosition<TData = Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerPosition>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getBrokerAccountControllerPositionQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * Order fields as synced from the broker for the CURRENT account. dealtAmount = dealtQty × dealtAvgPrice × multiplier, where the multiplier is derived from this order (amount ÷ (qty × price), rounded; same basis as position lots). An unfilled order (dealtQty 0 or missing) has all three dealt fields null; a zero-price order has dealtAmount 0. A missing order, one owned by another account, one whose underlying is unresolved, and one outside the anchor set all return the identical 404 (detail BROKER_ORDER_NOT_FOUND).
+ * @summary One broker order (read-only)
+ */
+export const brokerAccountControllerOrder = (
+    id: string, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<BrokerOrderDetailResponse>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/broker-orders/${id}`,options
+    );
+  }
+
+
+
+
+export const getBrokerAccountControllerOrderQueryKey = (id: string,) => {
+    return [
+    `/api/v1/optionsdesk/broker-orders/${id}`
+    ] as const;
+    }
+
+
+export const getBrokerAccountControllerOrderQueryOptions = <TData = Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError = AxiosError<ProblemDetailResponse>>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getBrokerAccountControllerOrderQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof brokerAccountControllerOrder>>> = ({ signal }) => brokerAccountControllerOrder(id, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type BrokerAccountControllerOrderQueryResult = NonNullable<Awaited<ReturnType<typeof brokerAccountControllerOrder>>>
+export type BrokerAccountControllerOrderQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useBrokerAccountControllerOrder<TData = Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerOrder>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerOrder>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerOrder<TData = Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerOrder>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerOrder>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerOrder<TData = Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary One broker order (read-only)
+ */
+
+export function useBrokerAccountControllerOrder<TData = Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError = AxiosError<ProblemDetailResponse>>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerOrder>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getBrokerAccountControllerOrderQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+/**
+ * For each requested ticker, the newest (by creation time) backfill run of the CURRENT account whose target is that ticker: status + the matching instant (succeeded / failed → finished, running → started, pending → next attempt) and its exchange-local string. Tickers without any run are omitted (client shows "not triggered"). Output follows request order, duplicates collapsed.
+ * @summary Latest broker history backfill run per requested ticker (read-only)
+ */
+export const brokerAccountControllerBackfillRuns = (
+    params: BrokerAccountControllerBackfillRunsParams, options?: AxiosRequestConfig
+ ): Promise<AxiosResponse<BrokerBackfillRunResponse[]>> => {
+
+
+    return axios.get(
+      `/api/v1/optionsdesk/broker-backfill-runs`,{
+    ...options,
+        params: {...params, ...options?.params},}
+    );
+  }
+
+
+
+
+export const getBrokerAccountControllerBackfillRunsQueryKey = (params?: BrokerAccountControllerBackfillRunsParams,) => {
+    return [
+    `/api/v1/optionsdesk/broker-backfill-runs`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getBrokerAccountControllerBackfillRunsQueryOptions = <TData = Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError = AxiosError<ProblemDetailResponse>>(params: BrokerAccountControllerBackfillRunsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError, TData>>, axios?: AxiosRequestConfig}
+) => {
+
+const {query: queryOptions, axios: axiosOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getBrokerAccountControllerBackfillRunsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>> = ({ signal }) => brokerAccountControllerBackfillRuns(params, { signal, ...axiosOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type BrokerAccountControllerBackfillRunsQueryResult = NonNullable<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>>
+export type BrokerAccountControllerBackfillRunsQueryError = AxiosError<ProblemDetailResponse>
+
+
+export function useBrokerAccountControllerBackfillRuns<TData = Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerBackfillRunsParams, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerBackfillRuns<TData = Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerBackfillRunsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>,
+          TError,
+          Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>
+        > , 'initialData'
+      >, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useBrokerAccountControllerBackfillRuns<TData = Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerBackfillRunsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * @summary Latest broker history backfill run per requested ticker (read-only)
+ */
+
+export function useBrokerAccountControllerBackfillRuns<TData = Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError = AxiosError<ProblemDetailResponse>>(
+ params: BrokerAccountControllerBackfillRunsParams, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof brokerAccountControllerBackfillRuns>>, TError, TData>>, axios?: AxiosRequestConfig}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getBrokerAccountControllerBackfillRunsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+

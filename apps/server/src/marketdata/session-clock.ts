@@ -161,6 +161,34 @@ export function exchangeClock(market: string, now: Date): { date: string; minute
 }
 
 /**
+ * 交易所当地的**时间串** `YYYY-MM-DD HH:mm:ss` —— 083 optionsdesk 展示用 (同步时刻 / 开仓时间 /
+ * 下单时间, plan D13)。
+ *
+ * 🚨 **optionsdesk 展示用交易所当地时间串的唯一产出点, 禁在调用点另写时区换算**: 裸
+ * `Intl.DateTimeFormat({ timeZone })` 被 `check-time-semantics` Rule B 拦; mobile 只做字符串重排
+ * 并按 `market` 拼时区标签, 不做换算。与 {@link exchangeClock} 同一先例 (薄包装同一张时区表)。
+ *
+ * `hourCycle:'h23'` 而非 `hour12:false` —— 后者在部分实现下把午夜给成 `24` (同 `timeInTimeZone`)。
+ * ⚠️ 只答「当地墙钟读数」, 不判交易日、不含时段表。复杂度 O(1)。
+ *
+ * @throws `instant` 为 Invalid Date (`Intl` 抛 `RangeError`)。
+ */
+export function exchangeLocalDateTime(market: string, instant: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: exchangeTimeZone(market),
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(instant);
+  const pick = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`;
+}
+
+/**
  * 一个 `marketScope` 的**共同**日历日。
  *
  * ⚠️ **scope 内各市场必须落在同一业务日** —— 否则没有单一「今天」可言, 直接抛。这同时把

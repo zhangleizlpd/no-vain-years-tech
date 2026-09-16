@@ -1,9 +1,10 @@
 // 081 T003 / T004 — 交易账户页骨架（plan §D1 / §D7 / §D8 / §D9 / §D10）。
 //
-// 自上而下：市场页签（复用雷达 `RadarMarketTabs`）→ 胶囊分段 → 下沉底上的「建设中」占位卡。
+// 自上而下：市场页签（复用雷达 `RadarMarketTabs`）→ 胶囊分段 → 持仓分段（083）/ 下沉底上的「建设中」占位卡。
 //
-// 🚨 **FR-008 零数据面**：本屏 MUST NOT import `@nvy/api-client`，也没有 loading / error 分支
-//    —— 「服务端不可达时骨架照常完整」靠的是结构上根本不发请求，不是靠兜住失败。
+// 🚨 **订单 / 报表分段零数据面**（081 FR-008）：这两段不发请求、没有 loading / error 分支 ——
+//    「服务端不可达时骨架照常完整」靠的是结构上根本不发请求，不是靠兜住失败。
+//    持仓分段自 083 起接数据面（`TradingAccountPositions`，083 plan §D14）。
 // 🚨 选择状态走 `useTradingAccountStore`（进程内），🚫 不用组件 `useState`：push 屏返回即卸载，
 //    `useState` 会让 FR-004「同次使用内记住」失效（plan §D5）。
 // 📌 `actionableMarkets={[]}`：本页没有「可动锚」信号，市场页签不渲小圆点（FR-002）。
@@ -14,12 +15,16 @@ import { Stack } from 'expo-router';
 import { SafeAreaView } from '~/ui';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { RadarMarketTabs } from './radar-market-tabs';
+import { TradingAccountPositions } from './trading-account-positions';
 import { TradingAccountSegments } from './trading-account-segments';
 import { useTradingAccountStore } from './trading-account-store';
 import type { TradingAccountSegment } from './trading-account.rules';
 
 const COPY = OPTIONSDESK_COPY.tradingAccount;
 const NO_ACTIONABLE_MARKETS: readonly string[] = [];
+
+/** 仍为「建设中」占位的分段。 */
+type PlaceholderSegment = Exclude<TradingAccountSegment, 'positions'>;
 
 export function TradingAccountScreen() {
   const market = useTradingAccountStore((s) => s.market);
@@ -38,15 +43,19 @@ export function TradingAccountScreen() {
           testIdPrefix="optionsdesk-trading-account-market"
         />
         <TradingAccountSegments segment={segment} onSelect={selectSegment} />
-        <View className="px-md py-lg">
-          <PlaceholderCard segment={segment} />
-        </View>
+        {segment === 'positions' ? (
+          <TradingAccountPositions market={market} />
+        ) : (
+          <View className="px-md py-lg">
+            <PlaceholderCard segment={segment} />
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
 }
 
-function PlaceholderCard({ segment }: { segment: TradingAccountSegment }) {
+function PlaceholderCard({ segment }: { segment: PlaceholderSegment }) {
   const { title, body } = COPY.placeholder[segment];
   return (
     <View className="rounded-md border border-line bg-surface">
@@ -63,14 +72,13 @@ function PlaceholderCard({ segment }: { segment: TradingAccountSegment }) {
   );
 }
 
-/** 列表类分段 = 三条横线（长短次序区分持仓 / 订单）；报表 = 三根高低柱（mockup 2b / 3 / 4）。 */
-const LINE_WIDTHS: Record<Exclude<TradingAccountSegment, 'reports'>, readonly string[]> = {
-  positions: ['w-[22px]', 'w-[22px]', 'w-3.5'],
+/** 订单 = 三条横线；报表 = 三根高低柱（mockup 2b / 3 / 4）。 */
+const LINE_WIDTHS: Record<Exclude<PlaceholderSegment, 'reports'>, readonly string[]> = {
   orders: ['w-3.5', 'w-[22px]', 'w-[22px]'],
 };
 const BAR_HEIGHTS: readonly string[] = ['h-4', 'h-[22px]', 'h-2.5'];
 
-function PlaceholderGlyph({ segment }: { segment: TradingAccountSegment }) {
+function PlaceholderGlyph({ segment }: { segment: PlaceholderSegment }) {
   if (segment === 'reports') {
     return (
       <View className="flex-row items-end gap-1">

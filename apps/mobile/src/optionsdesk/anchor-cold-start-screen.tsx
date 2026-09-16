@@ -3,6 +3,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import {
   useAnchorSubmissionControllerList,
+  useBrokerAccountControllerBackfillRuns,
   useMarketdataControllerAnchorColdStart,
   type AnchorColdStartRunResponse,
 } from '@nvy/api-client';
@@ -14,6 +15,11 @@ import {
   groupColdStartRuns,
 } from './anchor-cold-start.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
+import {
+  backfillQueryTickers,
+  brokerBackfillLine,
+  indexBackfillRunsByTicker,
+} from './trading-account-positions.rules';
 
 const COPY = OPTIONSDESK_COPY.anchorSubmission;
 
@@ -28,6 +34,9 @@ const MAX_TRACKED_ANCHORS = 50;
  *
  * 🚨 **十档全显、五档置顶**，且分档只认服务端的 `needsAttention`（判据与那十个值同处一点）。
  * 🚨 **缺席 = 排队中，不是失败**：查不到的 anchorId 不出现在结局里，且这有语义。
+ *
+ * 083 T020 — 每只新锚行下加「券商历史 · 状态 · 时刻」（083 FR-018 / plan D16）：以结局的 ticker 集合请求补齐状态，
+ * **按 ticker 合并**；无记录 ⇒「未触发」；该请求失败 ⇒ 只隐藏这一行，结局照常（不并入本屏的加载 / 失败态）。
  */
 export function AnchorColdStartScreen() {
   const consumed = useAnchorSubmissionControllerList({ status: 'CONSUMED' });
@@ -48,6 +57,24 @@ export function AnchorColdStartScreen() {
   );
   const progress = useMemo(() => coldStartProgress(anchorIds, items), [anchorIds, items]);
   const { attention, done } = useMemo(() => groupColdStartRuns(items), [items]);
+
+  // 结局 ≤ MAX_TRACKED_ANCHORS(50) 条 ⇒ tickers 不超过补齐状态接口的 50 上限。
+  const backfillTickers = useMemo(() => backfillQueryTickers(items), [items]);
+  const backfill = useBrokerAccountControllerBackfillRuns(
+    { tickers: backfillTickers.join(',') },
+    // 结局未就绪 / 无 ticker 时不发请求（空 tickers 是 400）。
+    { query: { enabled: backfillTickers.length > 0 } },
+  );
+  // 未就绪或失败 ⇒ null ⇒ 各行不渲染券商历史行（FR-018：失败只隐藏这一行）。
+  const backfillByTicker = useMemo(
+    () =>
+      backfill.isError || backfill.data === undefined
+        ? null
+        : indexBackfillRunsByTicker(backfill.data.data),
+    [backfill.isError, backfill.data],
+  );
+  const backfillLineOf = (ticker: string): string | null =>
+    backfillByTicker === null ? null : brokerBackfillLine(ticker, backfillByTicker.get(ticker));
 
   const loading = consumed.isPending || (anchorIds.length > 0 && runs.isPending);
   const failed = consumed.isError || runs.isError;
@@ -111,7 +138,12 @@ export function AnchorColdStartScreen() {
                 </Text>
                 <Text className="text-xs text-ink-muted">{COPY.coldStartAttentionHint}</Text>
                 {attention.map((r) => (
-                  <RunRow key={r.anchorId} run={r} attention />
+                  <RunRow
+                    key={r.anchorId}
+                    run={r}
+                    attention
+                    backfillLine={backfillLineOf(r.ticker)}
+                  />
                 ))}
               </View>
             ) : null}
@@ -125,7 +157,7 @@ export function AnchorColdStartScreen() {
                   {COPY.coldStartDoneGroup(done.length)}
                 </Text>
                 {done.map((r) => (
-                  <RunRow key={r.anchorId} run={r} />
+                  <RunRow key={r.anchorId} run={r} backfillLine={backfillLineOf(r.ticker)} />
                 ))}
               </View>
             ) : null}
@@ -147,8 +179,15 @@ export function AnchorColdStartScreen() {
   );
 }
 
+interface RunRowProps {
+  run: AnchorColdStartRunResponse;
+  attention?: boolean;
+  /** 「券商历史 · 状态 · 时刻」（083 T020）；null ⇒ 补齐状态未就绪或请求失败，不渲染。 */
+  backfillLine: string | null;
+}
+
 /** 一行结局。`outcome` **原样呈现**（十档两两互异、禁折叠），reason 作自由文本补充。 */
-function RunRow({ run, attention }: { run: AnchorColdStartRunResponse; attention?: boolean }) {
+function RunRow({ run, attention, backfillLine }: RunRowProps) {
   return (
     <View
       className={`gap-xs rounded-md border p-md ${
@@ -173,6 +212,14 @@ function RunRow({ run, attention }: { run: AnchorColdStartRunResponse; attention
           ? COPY.coldStartSessionPrefix(run.targetSession)
           : COPY.coldStartNoSession}
       </Text>
+      {backfillLine === null ? null : (
+        <Text
+          className="text-xs text-ink-muted"
+          testID={`optionsdesk-cold-start-broker-backfill-${run.ticker}`}
+        >
+          {backfillLine}
+        </Text>
+      )}
     </View>
   );
 }

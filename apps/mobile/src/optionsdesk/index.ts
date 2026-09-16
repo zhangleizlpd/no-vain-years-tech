@@ -27,6 +27,10 @@ export { ThermometerScreen } from './thermometer-screen';
 export { VixGauge, type VixGaugeProps } from './vix-gauge';
 // 081 T003 — 交易账户页骨架（市场页签 + 分段占位；零数据面）。
 export { TradingAccountScreen } from './trading-account-screen';
+// 083 T017 — 持仓详情屏（交易账户页持仓行点击 / 深链进入）。
+export { TradingAccountPositionScreen } from './trading-account-position-screen';
+// 083 T018 — 订单详情屏（持仓详情订单项 / 批次点击、深链进入）。
+export { TradingAccountOrderScreen } from './trading-account-order-screen';
 export {
   useUnderlyingDetail,
   UNDERLYING_DETAIL_QUERY_KEY,

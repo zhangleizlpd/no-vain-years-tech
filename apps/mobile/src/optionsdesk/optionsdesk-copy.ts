@@ -1,7 +1,19 @@
 // 045 期权台文案单源（mockup 帧 ①~⑩ 逐字）。T024 在此追加雷达五态文案。
-import type { MarchAuditEvidenceResponse, OptionsdeskControllerRadarMarket } from '@nvy/api-client';
+import type {
+  BrokerBackfillRunResponseStatus,
+  BrokerPositionOptionResponseRight,
+  BrokerPositionRowResponseKind,
+  BrokerPositionRowResponseMarket,
+  MarchAuditEvidenceResponse,
+  OptionsdeskControllerRadarMarket,
+} from '@nvy/api-client';
 
 import type { TradingAccountSegment } from './trading-account.rules';
+import type {
+  BrokerOrderStatus,
+  BrokerTradeSide,
+  PositionsView,
+} from './trading-account-positions.rules';
 
 export const OPTIONSDESK_COPY = {
   /** 雷达屏题头（= 期权台 tab 落地屏）。 */
@@ -1361,6 +1373,189 @@ export const OPTIONSDESK_COPY = {
         body: '上线后在这里按市场查看持仓与交易的统计报表。',
       },
     } satisfies Record<TradingAccountSegment, { title: string; body: string }>,
+  },
+
+  /**
+   * 交易账户页 · 持仓分段（083 T013，plan §D14 / §D17）。视图判定与行展示规则在
+   * `trading-account-positions.rules.ts`。
+   *
+   * 🚨 **独立段**，🚫 MUST NOT 追加进上面 081 的 `tradingAccount` 段 —— 那段「不含 暂无 / 空仓 /
+   *    无数据」的不变量对订单 / 报表占位仍然有效（`trading-account.rules.spec.ts` 臂 ⑤，analyze H7），
+   *    本段的「暂无交易账户 / 暂无持仓」放进去必红。
+   * 📌 订单状态 / 方向 / 类型映射与详情屏文案由后续 task（T017–T020）追加到本段。
+   */
+  tradingAccountPositions: {
+    /** 四种非列表状态的卡片标题（FR-010 逐字）。 */
+    states: {
+      error: '持仓加载失败',
+      'no-connection': '暂无交易账户',
+      'never-synced': '尚未同步',
+      empty: '暂无持仓',
+    } satisfies Record<Exclude<PositionsView, 'list'>, string>,
+    /** 四种非列表状态卡的正文（mockup 帧 3a–3d，去掉市场名以便两市场共用）。 */
+    stateBody: {
+      error: '暂时连不上服务端，请稍后重试。',
+      'no-connection': '当前账号没有连接券商账户，这里不会显示持仓。',
+      'never-synced': '已连接券商账户，持仓还没有成功同步过。首次同步成功后会显示在这里。',
+      empty: '最近一次同步显示，没有属于锚标的的持仓。',
+    } satisfies Record<Exclude<PositionsView, 'list'>, string>,
+    retry: '重试',
+    /** 列表列头（mockup 帧 1）。 */
+    columns: {
+      name: '名称 / 代码',
+      marketValue: '市值 / 数量',
+      price: '现价 / 成本',
+      unrealizedPl: '持仓盈亏',
+    },
+    /** 同步时刻行；入参为已拼好时区标签的交易所当地时间。 */
+    syncedAt: (time: string) => `同步于 ${time}`,
+    /**
+     * 陈旧提示。🚨 中性措辞：接口只给按时间判定的 `stale`，不区分「同步失败」与「未到点」，
+     * 🚫 写成「最近一次同步未成功」（plan D17 据此改写 mockup 帧 2）。
+     */
+    stale: (time: string) => `数据可能已过时 · 最近成功同步于 ${time}`,
+    /** 已显示数据时重读失败，替换同步时刻行（FR-023 逐字）。 */
+    refetchFailed: '刷新失败，显示的是上次加载的数据',
+    /** 判定不出正股的持仓条数提示（FR-011）。 */
+    unresolved: (count: number) => `未归类 ${count} 条`,
+    /** 到期日早于交易所今天、尚未被同步移除的期权（FR-021 逐字）。 */
+    expired: '已到期 · 待同步',
+    /** 期权名称后缀：美股 Call / Put，港股 购 / 沽（FR-007）。 */
+    optionRight: {
+      us: { C: 'Call', P: 'Put' },
+      hk: { C: '购', P: '沽' },
+    } satisfies Record<
+      BrokerPositionRowResponseMarket,
+      Record<BrokerPositionOptionResponseRight, string>
+    >,
+    /** 交易所当地时间后的时区标签（按响应 `market`，不做换算）。 */
+    tzLabel: {
+      us: '（美东）',
+      hk: '（香港）',
+    } satisfies Record<BrokerPositionRowResponseMarket, string>,
+    /** 持仓详情屏（083 T017，plan D15）。 */
+    positionDetail: {
+      title: '持仓详情',
+      /** 非数据视图的卡片标题（FR-020 逐字）。 */
+      states: {
+        'not-found': '持仓已不存在',
+        error: '加载失败',
+      },
+      stateBody: {
+        'not-found': '这笔持仓在最近一次同步中已被移除（平仓、到期或被指派）。',
+        error: '暂时连不上服务端，请稍后重试。',
+      },
+      fields: {
+        qty: '持仓数量',
+        currentPrice: '现价',
+        averageCost: '平均成本',
+        unrealizedPl: '持仓盈亏',
+        openedAt: '开仓时间',
+      },
+      /** 市值标签带币种；缺币种不猜。 */
+      marketValueLabel: (currency: string | null) =>
+        currency === null ? '市值' : `市值（${currency}）`,
+      qtyUnit: {
+        stock: '股',
+        option: '张',
+      } satisfies Record<BrokerPositionRowResponseKind, string>,
+      marketName: {
+        us: '美股',
+        hk: '港股',
+      } satisfies Record<BrokerPositionRowResponseMarket, string>,
+      /** 正股「订单」、期权「本合约订单」（FR-013 / FR-016）。 */
+      ordersTitle: {
+        stock: '订单',
+        option: '本合约订单',
+      } satisfies Record<BrokerPositionRowResponseKind, string>,
+      ordersEmpty: '暂无订单',
+      /** 持仓批次段（083 T019，FR-013 / FR-015；mockup 帧 4 / 5）。 */
+      lotsTitle: '持仓批次',
+      lotsCount: (count: number) => `${count} 个 · 先开先平`,
+      /** 批次行第二行；数量已去符号、单位随品种。 */
+      lotQty: (remaining: string, original: string, unit: string, cost: string) =>
+        `剩余 ${remaining} / ${original} ${unit} · 成本 ${cost}`,
+      lotsUnrestorable: {
+        title: '批次无法还原',
+        body: '已同步的成交推算出的剩余张数与券商持仓对不上（可能早于可回溯范围，或有转仓），这里只显示合约汇总。',
+      },
+    },
+    /**
+     * 订单状态文案（083 T018，plan D11）。含义取自 SDK 源码行尾注释的简短版；`FILLED_ALL → 全部成交`
+     * 与维护者 App 截图一致。值域外的值由 `orderStatusText` 原样返回。
+     */
+    orderStatusLabel: {
+      'N/A': '未知',
+      UNSUBMITTED: '未提交',
+      WAITING_SUBMIT: '等待提交',
+      SUBMITTING: '提交中',
+      SUBMIT_FAILED: '提交失败',
+      TIMEOUT: '处理超时',
+      SUBMITTED: '已提交',
+      FILLED_PART: '部分成交',
+      FILLED_ALL: '全部成交',
+      CANCELLING_PART: '部分撤单中',
+      CANCELLING_ALL: '撤单中',
+      CANCELLED_PART: '部分成交已撤单',
+      CANCELLED_ALL: '已撤单',
+      FAILED: '下单失败',
+      DISABLED: '已失效',
+      DELETED: '已删除',
+      FILL_CANCELLED: '成交已撤销',
+    } satisfies Record<BrokerOrderStatus, string>,
+    /** 交易方向文案（083 T018）；`SELL_SHORT → 卖空` 与维护者 App 截图一致。 */
+    tradeSideLabel: {
+      'N/A': '未知',
+      BUY: '买入',
+      SELL: '卖出',
+      SELL_SHORT: '卖空',
+      BUY_BACK: '买回',
+    } satisfies Record<BrokerTradeSide, string>,
+    /**
+     * 订单类型：只映射维护者截图核过的 `NORMAL → 限价单`，其余原样显示枚举名（plan D11 / V3）。
+     * 🚫 为未验证的类型编文案。
+     */
+    orderTypeLabel: (orderType: string): string => (orderType === 'NORMAL' ? '限价单' : orderType),
+    /** 订单详情屏（083 T018，plan D11 / D15）。 */
+    orderDetail: {
+      title: '订单详情',
+      /** 非数据视图的卡片标题（FR-020 逐字）。 */
+      states: {
+        'not-found': '订单不存在',
+        error: '加载失败',
+      },
+      stateBody: {
+        'not-found': '这张订单不在本账号已同步的数据里，或其正股已不在锚集中。',
+        error: '暂时连不上服务端，请稍后重试。',
+      },
+      /** 九个字段标签（FR-017 逐项）。 */
+      fields: {
+        side: '交易方向',
+        status: '订单状态',
+        name: '名称代码',
+        qtyPrice: '订单数量 / 价格',
+        amount: '订单金额',
+        dealtQtyPrice: '成交数量 / 均价',
+        dealtAmount: '成交金额',
+        createdAt: '下单时间',
+        orderType: '订单类型',
+      },
+      /** 组合单各腿（FR-017）。 */
+      legsTitle: '组合腿',
+    },
+    /** 冷启动结局页「券商历史 · 状态 · 时刻」行（083 T020，FR-018 / plan D16）。 */
+    brokerBackfill: {
+      prefix: '券商历史',
+      /** 最近一条补齐记录的状态标（FR-018 逐字）；`Record` 穷举 SDK 值域。 */
+      status: {
+        pending: '待执行',
+        running: '执行中',
+        succeeded: '成功',
+        failed: '失败',
+      } satisfies Record<BrokerBackfillRunResponseStatus, string>,
+      /** 该标的无补齐记录（FR-018 逐字）。 */
+      none: '未触发',
+    },
   },
 } as const;
 
