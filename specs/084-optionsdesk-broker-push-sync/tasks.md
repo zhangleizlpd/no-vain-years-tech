@@ -82,6 +82,8 @@ updated_at: '2026-09-16'
 
 - [X] T008 [Server] **2 秒心跳接入调度器**（FR-004, FR-016; plan D3; state_branches 12; US1）：`broker-account.scheduler.ts` 增一个 `@Cron` 秒级表达式（每 2 秒）+ `waitForCompletion: true`（🚨 漏了会两拍并发，cron 4.4.0 默认不等上一拍），调 `consume-broker-events`；`mock` 档整拍跳过；全路径不上抛，连接间互不连坐。游标存进程内存（🚫 建表持久化，`epoch` 比对天然覆盖重启场景） → verify: `pnpm nx test server test/integration/optionsdesk-084.push-consume.it.spec.ts --skip-nx-cache` 先红 → 绿，臂：① 经 `SchedulerRegistry` 断言新 job 存在且 `waitForCompletion === true` ② `mock` ⇒ 零 port 调用（branch 12）③ 连接 A 抛错不影响连接 B ④ 直调两次 `run()` ⇒ 不重复消费同一批事件；定向变异：去掉 `waitForCompletion` → ① 红（留档）
 
+- [X] T018 [Server-IT] **组合单空腿的按订单号回查补全**（FR-020; plan D2; state_branches 15; US1）：⚠️ **impl 期（2026-09-16）按 FR-020 与 Edge Case 补入的 task** —— 起片时 spec 两处都写了「腿解析出空结果时 MUST 按订单号回查补全**并留痕**」，而 tasks 只落了**留痕**半边（T005-④ 标 `legsPending` + T006 的 warn），**回查补全半边全仓无 task**；维护者定本片补上、不 defer。对 `legsPending` 为真的订单行（判据 = 腿为空 ∧ 合成码 `parseBrokerCode` 判不出单一合约）复用既有 `fetchOrders(market, 当日窗口)` 回查 → 用查询路径的 `parseComboLegs`（文本腿）解出腿码 → **定向补写** `comboLegCodes` 与随之判出的标的归属。🚨 **补写 MUST NOT 走 `vendorUpdatedAt < incoming` 守卫**：回查拿到的与推送写入的是同一订单状态、时间戳**相等** ⇒ 走守卫就永远补不上；🚫 指望「下次开盘前对账自然补上」—— 对账走同一个 `writeOrders`、被同一个守卫挡着。🚨 **必须带节流**：回查打的是券商查询配额（每账户 10 次 / 30 秒，与推送刷新、每日对账、缺口补偿**共用**）⇒ 去抖 `ORDER_LEGS_RECHECK_DEBOUNCE_MS` + 单拍上限 `ORDER_LEGS_RECHECK_MAX_PER_TICK`，🚫 每条 pending 行各发一次回查（回查量会与订单量同阶）；常量旁注明出处（同 `PUSH_REFRESH_DEBOUNCE_MS` 的写法） → verify: `pnpm nx test server test/integration/optionsdesk-084.push-consume.it.spec.ts --skip-nx-cache` 先红 → 绿，臂：① 腿空的**组合单** ⇒ 回查后腿码与标的归属补齐，且**只打一次** `fetchOrders` ② 🚨 **普通单腿单**（腿空但合成码可解析）⇒ **不触发回查** ③ 回查失败 ⇒ 留痕、既有行**一行不动**、去抖窗口内不重打、过窗后补上 ④ 单拍上限生效：pending 超上限时本拍只补上限条，其余留下一拍（不丢弃）；定向变异：a. 补写改走 `vendorUpdatedAt` 守卫 → ①③④ 红、21 条绿（时间戳相等改不动）· b. ⚠️ **impl 期订正**：起片写的「去掉『合成码不可解析』判据」改的是 **adapter**（`futu-broker-account.adapter.ts` 的 `legsPending`），而本 IT 用 port test double 喂**已规范化**的行、`legsPending` 由夹具直接给 ⇒ 那个变异**够不到本 IT**，它对应的是 T005 的 adapter spec 臂 ④b。IT 层的等价变异是 **b2. 登记改按「腿为空」而非按 `legsPending`** → ② 红、23 条绿（留档）
+
 ### US2：断档与重启后的自愈
 
 - [X] T009 [Server] **迁移：缺口补偿防重入的部分唯一索引**（FR-022; plan D5; state_branches 19, 20; US2）：`schema.prisma` 的 `BrokerSyncRun` 增一条部分唯一索引，谓词**只锁 `kind='gapfill'` ∧ 执行中状态**（🚫 照抄上游 `:2413` 把 `succeeded` 也纳入）；写法照同文件 `where: raw(...)` 先例。`kind` 是 `VarChar(16)`，第三、第四个取值（`push` 推送刷新 / `gapfill` 缺口补偿）**不需要改列**。⚠️ **084 impl 期决策订正**：`kind` 本片加的是**两个**取值而非一个，故本索引谓词**只罩 `gapfill`** —— 若一并罩住每 5 秒一次的推送刷新（`push`），刷新与补偿会互相阻塞，失效表现是**持仓静默不刷新、不报错**。`pnpm db:migrate "add broker push gap reentry index"` → verify: `grep -n 'WHERE' apps/server/prisma/migrations/<新目录>/migration.sql` 命中且谓词**不含** `succeeded`；`pnpm nx run server:typecheck` 绿；迁移目录名过 `migration-naming-check`；`pnpm tsx scripts/checks/check-server-moat.ts` exit 0（本片零新表，`MODEL_OWNERSHIP` 无需改，确认它仍绿）。🔗 **本条谓词的「能红」证明在 T010 定向变异 a**（谓词纳入已完成状态 ⇒ T010-④ 红）—— 迁移属「最终状态」形态，反例构造不出来，🚫 为它单造一个永不会红的断言（`testing.md` §7.1）
@@ -112,6 +114,7 @@ updated_at: '2026-09-16'
 T001 → T002 → T003
 T004 [P]  T005 [P]
 T004 + T005 → T006 → T007 → T008
+T006 → T018
 T009 → T010 → T011
 T010 → T012
 T006 + T010 → T013
@@ -124,6 +127,7 @@ T014 [P]
 - **T006 → T007**：去抖刷新依赖消费路径已能写入。
 - **T009 → T010**：防重入索引必须先在库里，臂 ③④ 才测得出。
 - **T010 → T012**：`kind` 隔离的回归断言需要补偿路径已存在。
+- **T006 → T018**：回查补全挂在消费路径上，需消费已能写入订单并标出 `legsPending`（T005-④ 定的判据）。T018 是 **impl 期按 FR-020 与 Edge Case 补入**的 task，不在起片清单里。
 
 ## state_branches 覆盖预检（analyze 期逐条 grep 的基准）
 
@@ -145,7 +149,7 @@ T014 [P]
 | 12 | 无连接 / 开发环境 ⇒ 不拉不报错 | T006-⑥ + T008-② |
 | 13 | 推送与历史查询市场字段名不同 ⇒ 分别映射 | T002-⑤ + T005-① |
 | 14 | 组合单各腿可解析 ⇒ 按腿归属 | T002-① + T005-③ |
-| 15 | 组合单腿解析空 ⇒ 回查补全、不静默写入 | T005-④ |
+| 15 | 组合单腿解析空 ⇒ 回查补全、不静默写入 | T005-④（不静默写入半）+ T018-①②③④（回查补全半，impl 期补入） |
 | 16 | 成交号超安全整数 ⇒ 不丢精度 | T002-③ + T005-② |
 | 17 | 补偿失败 ∧ 次数未用尽 ⇒ 按间隔重试 | T010-⑤ |
 | 18 | 补偿失败 ∧ 次数用尽 ⇒ 留痕放弃 | T010-⑥ |
@@ -178,7 +182,7 @@ T014 [P]
 | FR-017 拉取失败不动既有数据 | T006-⑤ |
 | FR-018 补偿留痕字段齐全 | T010-⑧ + T013-③ |
 | FR-019 账户号不出现 | T002-④ + T005-⑤ + T013-④ + T015（仓内扫描） |
-| FR-020 腿结构化展开、空腿回落 | T002-①② + T005-③④ |
+| FR-020 腿结构化展开、空腿回落 | T002-①② + T005-③④（展开与留痕半）+ T018-①②③④（回查补全半，impl 期补入） |
 | FR-021 成交号精度承载 | T002-③ + T005-② |
 | FR-022 并发只挡执行中 | T009 + T010-③④ |
 

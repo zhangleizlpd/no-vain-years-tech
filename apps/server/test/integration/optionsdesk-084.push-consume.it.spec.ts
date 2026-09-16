@@ -19,14 +19,20 @@ import {
   type BrokerEventBatch,
   type BrokerEventQuery,
   type BrokerOrderEventRow,
+  type BrokerOrderRow,
   type BrokerPositionRow,
+  type BrokerTradeWindow,
 } from '../../src/optionsdesk/broker-account.port';
 import {
   BROKER_EVENT_HEARTBEAT,
   BrokerAccountScheduler,
 } from '../../src/optionsdesk/broker-account.scheduler';
 import type { BrokerMarket } from '../../src/optionsdesk/broker-code.rules';
-import { ConsumeBrokerEventsUseCase } from '../../src/optionsdesk/consume-broker-events.usecase';
+import {
+  ConsumeBrokerEventsUseCase,
+  ORDER_LEGS_RECHECK_DEBOUNCE_MS,
+  ORDER_LEGS_RECHECK_MAX_PER_TICK,
+} from '../../src/optionsdesk/consume-broker-events.usecase';
 
 process.env.AUTH_JWT_SECRET ??= 'optionsdesk-084-it-jwt-secret-min-32-bytes';
 process.env.SMS_CODE_HMAC_SECRET ??= 'optionsdesk-084-it-hmac-secret-min-32-bytes';
@@ -105,6 +111,22 @@ for (const key of Object.keys(process.env)) {
  * ⚠️ **正因为守卫扫的是 `src`**, `broker-account.port.ts` / `futu-broker-account.adapter.ts` /
  * `futu_shim/app.py` 那三处注释**刻意不写出这个符号**(写出来守卫扫到的就是自己那行注释,
  * 守卫随即失去意义)。符号名只留在本文件与 commit message 里 —— 将来谁真的去**用**它, 守卫照样红。
+ *
+ * ## T018 定向变异留档 (2026-09-16)
+ *
+ * - 基线: 本文件 24/24 绿 (T006 8 + T007 4 + T018 4 + T013 4 + T008 4)。
+ * - a. **回查补写改走 `vendorUpdatedAt` 守卫** (`recheckLegs` 的 `updateMany` 加回
+ *   `vendorUpdatedAt: { lt: order.vendorUpdatedAt }`): **① ③ ④ 三条红, 21 条绿**。回查行与推送
+ *   行的时间戳**相等**, 守卫一挂上就永远补不动 —— 正是 FR-020 要钉的形态。
+ * - b. ⚠️ **起片时 tasks.md 写的那个变异够不到本文件**: 「去掉『合成码不可解析』判据」改的是
+ *   **adapter** (`futu-broker-account.adapter.ts` 的 `legsPending`), 而本 IT 用 port test double
+ *   喂**已规范化**的行、`legsPending` 由夹具直接给 ⇒ adapter 压根不在本 IT 的路径上。实跑确认:
+ *   该变异下本文件 **24/24 全绿, 一条都不红**。它对应的是 **T005 的 adapter spec 臂 ④b** ——
+ *   在那里跑同一个变异: **1 failed | 28 passed**, 恰好只有 ④b 红。
+ * - b2. **本 IT 层的等价变异** = 登记改按「腿为空」而非按 `legsPending`
+ *   (`orderRows.filter((o) => o.row.comboLegCodes.length === 0)`): **② 一条红, 23 条绿** ——
+ *   普通单腿单的腿列表本来就空, 于是**每一张**都被送去回查, 回查量与订单量同阶。
+ * - 变异均已还原 (与备份 `diff -q` 一致), 还原后 24/24 复绿。
  */
 
 /** 明显假值 (Guardrail 9): 连接所属账号 ID 与账户号一律合成。 */
@@ -153,6 +175,11 @@ class FakeEventPort implements BrokerAccountPort {
   failure: Error | null = null;
   calls: string[] = [];
   queries: (BrokerEventQuery | null)[] = [];
+  /** T018 空腿回查的查询路径结果 (文本腿形态), 按市场预置。 */
+  ordersByMarket: Partial<Record<BrokerMarket, BrokerOrderRow[]>> = {};
+  fetchOrdersFailure: Error | null = null;
+  /** 期权码 → 正股 canonical ticker; 未登记 ⇒ `null` (券商不认)。 */
+  stockOwners = new Map<string, string | null>();
   /** 非 null ⇒ `fetchEvents` 等到这么多个调用都到齐后同时放行 (并发臂把两个写方对齐到写入前)。 */
   barrier: { size: number; waiting: (() => void)[] } | null = null;
 
@@ -163,6 +190,9 @@ class FakeEventPort implements BrokerAccountPort {
     this.calls = [];
     this.queries = [];
     this.barrier = null;
+    this.ordersByMarket = {};
+    this.fetchOrdersFailure = null;
+    this.stockOwners = new Map();
   }
 
   async getAccountSummary() {
@@ -177,13 +207,15 @@ class FakeEventPort implements BrokerAccountPort {
     this.calls.push('fetchDeals');
     return [];
   }
-  async fetchOrders() {
-    this.calls.push('fetchOrders');
-    return [];
+  async fetchOrders(market: BrokerMarket, window: BrokerTradeWindow) {
+    // 🚨 带上市场与窗口: T018 要断言「一拍只回查一次」, 只记方法名分不出打了几次、打的哪天。
+    this.calls.push(`fetchOrders:${market}:${window.start}..${window.end}`);
+    if (this.fetchOrdersFailure !== null) throw this.fetchOrdersFailure;
+    return this.ordersByMarket[market] ?? [];
   }
   async fetchStockOwners(_market: BrokerMarket, codes: readonly string[]) {
     this.calls.push('fetchStockOwners');
-    return new Map(codes.map((code) => [code, null]));
+    return new Map(codes.map((code) => [code, this.stockOwners.get(code) ?? null]));
   }
   async fetchEvents(query: BrokerEventQuery | null): Promise<BrokerEventBatch> {
     this.calls.push('fetchEvents');
@@ -620,6 +652,156 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
    * 阈值 (多久没事件算异常) 本片**不定** —— 见 spec clarify 覆盖率表的 Outstanding 项;
    * 本片不主动通知, 阈值只影响排障展示。
    */
+  /**
+   * T018 组合单空腿的**按订单号回查补全** (FR-020; plan D2; state_branches 15)。
+   *
+   * ⚠️ **impl 期 (2026-09-16) 补入的 task**: spec 的 Edge Case 与 FR-020 都写了「腿解析出空
+   * 结果时 MUST 按订单号回查补全**并留痕**」, 起片时的 tasks 只落了**留痕**半边 (T005-④ 标
+   * `legsPending` + T006 的 warn), 回查补全半边全仓无 task。
+   *
+   * 🚨 **补写不能走 `vendorUpdatedAt < incoming` 守卫**: 回查拿到的与推送写进去的是**同一个
+   * 订单状态**, 时间戳相等 ⇒ 走守卫就永远改不动, 而且 🚫 指望「下次开盘前对账自然补上」——
+   * 对账走的是同一个 `writeOrders`、被同一个守卫挡着。
+   */
+  describe('T018 组合单空腿的按订单号回查补全', () => {
+    const T0 = new Date('2026-09-16T14:31:00Z');
+    const plus = (ms: number) => new Date(T0.getTime() + ms);
+    const tick = (
+      now: Date,
+      cursor: Parameters<ConsumeBrokerEventsUseCase['execute']>[0]['cursor'] = null,
+    ) => consume.execute({ connectionId: conn, cursor, now });
+    const orderCalls = () => port.calls.filter((c) => c.startsWith('fetchOrders'));
+    const legsOf = async () =>
+      (await prisma.brokerOrder.findMany({ orderBy: { orderId: 'asc' } })).map(
+        (o) => o.comboLegCodes,
+      );
+
+    /** 券商合成码: 带分隔符 ⇒ `parseBrokerCode` 判不出单一合约, 正是 `legsPending` 的另一半判据。 */
+    const COMBO_CODE = 'US.ZQP-COMBO';
+    /** 两条腿同属正股 ZQP ⇒ 补全后组合单的标的归属判得出来。 */
+    const LEG_CALL = 'US.ZQP260918C120000';
+    const LEG_PUT = 'US.ZQP260918P100000';
+
+    /** 推送来的组合单: 腿为空且合成码不可解析 ⇒ `legsPending`。 */
+    const comboOrderEvent = (seq: number, orderId: string): BrokerEvent =>
+      orderEvent(seq, orderId, COMBO_CODE, { comboLegs: [], legsPending: true });
+
+    /** 回查 (查询路径) 拿到的同一张单: 腿是**文本**形态, 经 `parseComboLegs` 已解出腿码。 */
+    const queryOrder = (orderId: string): BrokerOrderRow => ({
+      market: 'us',
+      orderId,
+      code: COMBO_CODE,
+      comboLegCodes: [LEG_CALL, LEG_PUT],
+      side: 'SELL_SHORT',
+      orderType: 'NORMAL',
+      qty: new Prisma.Decimal(1),
+      price: new Prisma.Decimal('2.5'),
+      status: 'SUBMITTED',
+      currency: 'USD',
+      vendorCreatedAt: new Date('2026-09-16T14:00:00.000Z'),
+      // 🚨 与推送那条**同一个**时间戳 —— 补写若走守卫就永远补不上 (定向变异 a 把它改回去)。
+      vendorUpdatedAt: new Date('2026-09-16T14:00:08.950Z'),
+      raw: { order_id: orderId },
+    });
+
+    const seedOwners = () => {
+      port.stockOwners = new Map([
+        [LEG_CALL, 'us:ZQP'],
+        [LEG_PUT, 'us:ZQP'],
+      ]);
+    };
+
+    it('① 腿空的组合单 ⇒ 回查补全腿码与标的归属, 且只打一次 fetchOrders (FR-020)', async () => {
+      seedOwners();
+      port.ordersByMarket = { us: [queryOrder('orcombo')] };
+      port.batches = [batchOf([comboOrderEvent(1, 'orcombo')])];
+
+      const outcome = await tick(T0);
+
+      expect(outcome).toMatchObject({ ok: true, ordersInserted: 1, legsBackfilled: 1 });
+      const row = await prisma.brokerOrder.findFirstOrThrow({});
+      expect(row.comboLegCodes).toEqual([LEG_CALL, LEG_PUT]);
+      // 归属补上才是 FR-020 的目的 —— 只补腿码的话组合单仍挂在一个判不出的标的上。
+      expect(row.underlyingTicker).toBe('us:ZQP');
+      // 🚨 时间戳没变过: 证明这次补写确实**绕开**了 `vendorUpdatedAt` 守卫。
+      expect(row.vendorUpdatedAt.toISOString()).toBe('2026-09-16T14:00:08.950Z');
+      // 🚨 断言调用次数, 不是「腿补上了」—— 后者对「每条 pending 行各打一次」的实现同样绿。
+      expect(orderCalls()).toHaveLength(1);
+    });
+
+    it('② 🚨 普通单腿单 (腿空但合成码可解析) ⇒ 不触发回查', async () => {
+      port.ordersByMarket = { us: [queryOrder('or1')] };
+      port.batches = [batchOf([orderEvent(1, 'or1', ANCHORED)]), batchOf([], { nextSeq: 1 })];
+
+      await tick(T0);
+      await tick(plus(6_000), { epoch: 'e1', lastSeq: 1 });
+
+      // 单腿单的腿列表本来就空 —— 只按「腿为空」判 pending 会把**每一张**普通单都送去回查,
+      // 回查量与订单量同阶, 券商配额当场打满 (而限频的表现是持仓静默不刷新)。
+      expect(orderCalls()).toEqual([]);
+      expect(await legsOf()).toEqual([[]]);
+    });
+
+    it('③ 回查失败 ⇒ 留痕、既有行一行不动、去抖窗口内不重打、过窗后补上', async () => {
+      seedOwners();
+      port.ordersByMarket = { us: [queryOrder('orcombo')] };
+      port.fetchOrdersFailure = new BrokerInfrastructureError('trade/orders', 'ECONNRESET');
+      port.batches = [batchOf([comboOrderEvent(1, 'orcombo')]), batchOf([], { nextSeq: 1 })];
+      const errors: string[] = [];
+      vi.spyOn(Logger.prototype, 'error').mockImplementation((m) => void errors.push(String(m)));
+
+      const first = await tick(T0);
+
+      expect(first).toMatchObject({ ok: true, legsBackfilled: 0 });
+      expect(await legsOf()).toEqual([[]]);
+      expect(orderCalls()).toHaveLength(1);
+      expect(errors.some((l) => l.includes('回查'))).toBe(true);
+      // 🚫 日志不带订单号 / 账户号 (FR-019)。
+      for (const line of errors) expect(line).not.toContain(String(ACCOUNT_ID));
+
+      // 去抖窗口内不重打 —— 一张永远补不上的单会把券商配额耗光。
+      await tick(plus(2_000), { epoch: 'e1', lastSeq: 1 });
+      expect(orderCalls()).toHaveLength(1);
+
+      port.fetchOrdersFailure = null;
+      const retried = await tick(plus(ORDER_LEGS_RECHECK_DEBOUNCE_MS + 1_000), {
+        epoch: 'e1',
+        lastSeq: 1,
+      });
+
+      expect(retried).toMatchObject({ ok: true, legsBackfilled: 1 });
+      expect(await legsOf()).toEqual([[LEG_CALL, LEG_PUT]]);
+    });
+
+    it('④ 单拍上限生效: pending 超上限时本拍只补上限条, 其余留到下一拍', async () => {
+      seedOwners();
+      const ids = Array.from(
+        { length: ORDER_LEGS_RECHECK_MAX_PER_TICK + 1 },
+        (_, i) => `orc${String(i).padStart(2, '0')}`,
+      );
+      port.ordersByMarket = { us: ids.map((id) => queryOrder(id)) };
+      port.batches = [
+        batchOf(ids.map((id, i) => comboOrderEvent(i + 1, id))),
+        batchOf([], { nextSeq: ids.length }),
+      ];
+      const filled = async () => (await legsOf()).filter((legs) => legs.length > 0).length;
+
+      const first = await tick(T0);
+
+      expect(first).toMatchObject({ ok: true, legsBackfilled: ORDER_LEGS_RECHECK_MAX_PER_TICK });
+      expect(await filled()).toBe(ORDER_LEGS_RECHECK_MAX_PER_TICK);
+
+      // 🚨 剩下那张没有被丢弃: 上限只推迟、不放弃 (放弃的话它的归属永久缺失且无人察觉)。
+      const second = await tick(plus(ORDER_LEGS_RECHECK_DEBOUNCE_MS + 1_000), {
+        epoch: 'e1',
+        lastSeq: ids.length,
+      });
+
+      expect(second).toMatchObject({ ok: true, legsBackfilled: 1 });
+      expect(await filled()).toBe(ids.length);
+    });
+  });
+
   describe('T013 订阅健康判据: 最近事件到达时刻', () => {
     /** 按级别捕获本用例经 NestJS `Logger` 写出的行 (④ 要扫的是**全部**日志, 三个级别都得在)。 */
     const captureLogs = () => {

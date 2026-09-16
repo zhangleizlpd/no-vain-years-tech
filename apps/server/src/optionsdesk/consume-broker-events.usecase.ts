@@ -11,6 +11,7 @@ import {
   type BrokerEvent,
   type BrokerEventBatch,
   type BrokerOrderEventRow,
+  type BrokerOrderRow,
 } from './broker-account.port';
 import type { BrokerMarket } from './broker-code.rules';
 import { decideCursor, type BrokerEventCursor } from './broker-event-cursor.rules';
@@ -34,6 +35,34 @@ import {
  * 口径」成为可能 (照 `broker-sync-slot.rules.ts` `RECONCILE_SLOT_MINUTES` 的先例, 常量旁注出处)。
  */
 export const PUSH_REFRESH_DEBOUNCE_MS = 5_000;
+
+/**
+ * 空腿组合单「按订单号回查」的去抖窗口: 同一 (连接 × 市场) 两次回查至少隔这么久 (FR-020)。
+ *
+ * 📌 **出处**: 回查打的是 `fetchOrders`, 与推送刷新、开盘前对账、缺口补偿**共用**券商那份
+ * 查询配额 (每账户 10 次 / 30 秒; spec `## Clarifications` Session 2026-09-16 第 4 问)。
+ *
+ * 🚨 **刻意比 {@link PUSH_REFRESH_DEBOUNCE_MS} 长得多 —— 它该给刷新让配额**: 持仓刷新扛着
+ * SC-001 / FR-008 的时延口径 (2 + 5 = 7 秒), 5 秒窗口下 30 秒内最多 6 次; 而回查**没有任何
+ * 时延要求** —— 一张组合单的腿晚半分钟补齐无人可见。两者都取 5 秒的话最坏 6 + 6 = 12 次 /
+ * 30 秒, **超过券商那 10 次**; 取 30 秒 ⇒ 回查最多 1 次, 合计最坏 7 次, 留约 30% 余量
+ * (与 clarify 第 4 问给刷新留 40% 余量是同一套算法)。
+ *
+ * 🚨 **没有它会把配额耗光**: 待回查的订单一直待着直到补上 (或进程重启) ⇒ 一张**永远补不上**
+ * 的组合单 (券商当日窗口里查不到它) 会让每 2 秒一拍都打一次券商。而限频的表现是**持仓静默
+ * 不刷新、不报错** —— 比少补一张腿难排查得多。
+ */
+export const ORDER_LEGS_RECHECK_DEBOUNCE_MS = 30_000;
+
+/**
+ * 一拍最多回查补全多少张组合单 (FR-020); 超出的留到下一拍。
+ *
+ * 🚨 **与去抖挡的不是同一件事**: 去抖挡「多久打一次券商」, 本上限挡「一拍里回写多少行」——
+ * 推送那拍 2 秒一次且带 `waitForCompletion: true`, 一拍必须在下一拍到来前跑完。取 10 与券商
+ * 那 10 次 / 30 秒同量级: 人手下单的账户一拍内积压 10 张以上待回查组合单已属异常, 真出现也
+ * 只是多花几拍补完, 不丢数据 (待回查集合不因本上限而丢弃任何一张)。
+ */
+export const ORDER_LEGS_RECHECK_MAX_PER_TICK = 10;
 
 export interface ConsumeBrokerEventsInput {
   connectionId: bigint;
@@ -63,6 +92,11 @@ export type ConsumeBrokerEventsOutcome =
       /** 本拍去抖到期、真的刷了持仓的市场 (FR-008)。 */
       refreshedMarkets: readonly BrokerMarket[];
       /**
+       * 本拍按订单号回查、真的补全了腿的组合单张数 (FR-020)。受
+       * {@link ORDER_LEGS_RECHECK_MAX_PER_TICK} 与 {@link ORDER_LEGS_RECHECK_DEBOUNCE_MS} 节流。
+       */
+      legsBackfilled: number;
+      /**
        * 事件源报出的最近一次事件到达时刻 (FR-014 订阅健康判据之一, 另一半是缺口补偿留痕)。
        * 事件源从没收到过推送 ⇒ `null`。**与本拍有没有行无关**: 没有新事件的那些拍照样报同一个
        * 值 —— 判「通道是不是哑了」要的正是这个不随响应时刻走的时刻。
@@ -87,7 +121,8 @@ const ZERO: ConsumeBrokerEventsCounts = {
 };
 
 /**
- * 084 T006 / T007 券商推送事件消费 use case (plan D3; FR-004 ~ FR-008 / FR-016 / FR-017)。
+ * 084 T006 / T007 / T018 券商推送事件消费 use case
+ * (plan D3 / D2; FR-004 ~ FR-008 / FR-016 / FR-017 / FR-020)。
  *
  * 一拍 = 拉事件 (**事务外**) → 游标与断档判定 → 按市场判正股 → 锚过滤 → 幂等写成交与订单 →
  * 按市场登记「待刷新」→ 去抖到期则刷该市场持仓与开仓时间。
@@ -103,6 +138,11 @@ const ZERO: ConsumeBrokerEventsCounts = {
  * 持仓刷新走它的 `mode: 'push'` (持仓替换与开仓时间推算是同一条路径) —— 🚫 先查后写、🚫 另写一份。
  *
  * 🚨 **游标只存进程内存** (plan D4): 由调用方 (调度器) 持有并逐拍回传, 🚫 建表持久化。
+ *
+ * 🚨 **空腿组合单按订单号回查补全** (FR-020, T018): 腿为空**且**合成码判不出单一合约的订单
+ * 先照常写入并留痕, 再按订单号回查当日订单、补上腿码与标的归属。补写**绕开**
+ * `vendorUpdatedAt` 守卫 —— 回查拿到的与推送写进去的是同一个订单状态、时间戳相等, 走守卫
+ * 就永远补不上 (🚫 也别指望开盘前对账兜底: 它走同一个 `writeOrders`、被同一个守卫挡着)。
  */
 @Injectable()
 export class ConsumeBrokerEventsUseCase {
@@ -113,6 +153,18 @@ export class ConsumeBrokerEventsUseCase {
    * 进程重启后最坏是少刷一次, 下一条事件即重新登记, 🚫 为它建表。
    */
   private readonly pendingRefresh = new Map<string, Date>();
+
+  /**
+   * 「待回查腿」登记: `${connectionId}:${market}` → 待补全的订单号集合 (FR-020)。
+   *
+   * 同样只存进程内存 (同 {@link pendingRefresh} 与游标)。🚫 为它建表 —— 进程重启后本地游标为
+   * `null`, 首拍从缓冲最旧一条重放, 同一张组合单会**再次**以 `legsPending` 到达并重新登记;
+   * 建表只是多一张表和一处一致性要维护。
+   */
+  private readonly pendingLegs = new Map<string, Set<string>>();
+
+  /** 同键下次允许回查的时刻 (去抖, {@link ORDER_LEGS_RECHECK_DEBOUNCE_MS})。 */
+  private readonly legsRecheckAt = new Map<string, Date>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -136,6 +188,7 @@ export class ConsumeBrokerEventsUseCase {
         refreshedMarkets: [],
         // mock 档整拍没打过事件源 ⇒ 无从知道它最近何时收到推送, 🚫 拿 `now` 冒充。
         lastEventAt: null,
+        legsBackfilled: 0,
         ...ZERO,
       };
     }
@@ -165,6 +218,9 @@ export class ConsumeBrokerEventsUseCase {
     }
 
     this.registerRefresh(input.connectionId, written.touchedMarkets, now);
+    // 🚨 **无论本拍有没有事件都要过一遍**: 待回查的单是之前某一拍登记的, 且回查失败要靠之后的
+    // 拍重试 —— 只在「本拍有新的 pending」时才回查, 失败那张就再也没有人来补 (FR-020)。
+    const legsBackfilled = await this.flushPendingLegs(input.connectionId, now);
     // 🚨 **无论本拍有没有事件都要过一遍**: 去抖窗口是上一拍开的, 到期那一拍往往正好没有新事件。
     const refreshedMarkets = await this.flushDueRefreshes(input.connectionId, now);
 
@@ -189,6 +245,7 @@ export class ConsumeBrokerEventsUseCase {
       cursor: nextCursor,
       refreshedMarkets,
       lastEventAt: batch.lastEventAt,
+      legsBackfilled,
       ...written,
     };
   }
@@ -235,13 +292,18 @@ export class ConsumeBrokerEventsUseCase {
         .map((row) => ({ row, underlyingTicker: underlyingOfOrder(row, resolved) }))
         .filter((o) => keep(o.underlyingTicker));
 
-      const pendingLegs = orderRows.filter((o) => o.row.legsPending).length;
-      if (pendingLegs > 0) {
+      const pending = orderRows.filter((o) => o.row.legsPending).map((o) => o.row.orderId);
+      if (pending.length > 0) {
         // FR-020 留痕半: 腿为空且合成码不可解析 ⇒ 该组合单的标的归属缺失, MUST NOT 静默写入了事。
         // 🚫 日志带订单号 (见上面那条日志的同一理由)。
         this.logger.warn(
-          `推送订单 ${pendingLegs} 张腿列表为空且合成码不可解析 connection=${connectionId} market=${market}, 待按订单号回查补全`,
+          `推送订单 ${pending.length} 张腿列表为空且合成码不可解析 connection=${connectionId} market=${market}, 已登记按订单号回查补全`,
         );
+        // 回查补全半 (T018): 登记下来, 由 `flushPendingLegs` 按去抖与单拍上限逐拍消化。
+        const key = refreshKey(connectionId, market);
+        const set = this.pendingLegs.get(key) ?? new Set<string>();
+        for (const orderId of pending) set.add(orderId);
+        this.pendingLegs.set(key, set);
       }
 
       counts.dealsInserted += await this.sync.writeDeals(connectionId, accountId, dealRows);
@@ -266,6 +328,90 @@ export class ConsumeBrokerEventsUseCase {
         this.pendingRefresh.set(key, new Date(now.getTime() + PUSH_REFRESH_DEBOUNCE_MS));
       }
     }
+  }
+
+  /**
+   * 按订单号回查补全空腿的组合单 (FR-020, T018); 返回本拍真的补上的张数。
+   *
+   * 一个市场**一次** `fetchOrders`, 🚫 每条 pending 行各发一次 —— 回查与推送刷新、开盘前对账、
+   * 缺口补偿共用券商那 10 次 / 30 秒的查询配额, 逐条打会让回查量与**订单量同阶**, 当场打满。
+   * 节流两道见 {@link ORDER_LEGS_RECHECK_DEBOUNCE_MS} 与 {@link ORDER_LEGS_RECHECK_MAX_PER_TICK}。
+   *
+   * 一个市场失败不连坐另一个; 失败的订单号**留在登记里**, 下一个到期的拍重试。
+   * 复杂度 O(登记数) 扫描 + 每个到期市场 1 次券商查询 + 至多单拍上限条定向 UPDATE。
+   */
+  private async flushPendingLegs(connectionId: bigint, now: Date): Promise<number> {
+    let backfilled = 0;
+    for (const [key, orderIds] of this.pendingLegs) {
+      const market = marketOfKey(key, connectionId);
+      if (market === null || orderIds.size === 0) continue;
+      const dueAt = this.legsRecheckAt.get(key);
+      if (dueAt !== undefined && dueAt.getTime() > now.getTime()) continue;
+      // 先开下一个去抖窗口: 成功与否都不该让下一拍 (2 秒后) 立刻再打一次券商。
+      this.legsRecheckAt.set(key, new Date(now.getTime() + ORDER_LEGS_RECHECK_DEBOUNCE_MS));
+      try {
+        backfilled += await this.recheckLegs(connectionId, market, orderIds, now);
+      } catch (e) {
+        // 🚫 日志带订单号 / 账户号 (FR-019)。既有行一行不动, 登记原样留着等下一拍。
+        this.logger.error(
+          `推送订单腿回查失败 connection=${connectionId} market=${market} 待补 ${orderIds.size} 张: ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    return backfilled;
+  }
+
+  /**
+   * 一个市场的一次回查: 拉当日订单 → 按订单号取腿 → 判正股 → 定向补写两列。
+   *
+   * 🚨 **补写 MUST NOT 带 `vendorUpdatedAt < incoming` 条件**: 回查拿到的与推送写进去的是同一
+   * 个订单状态、时间戳**相等**, 带上守卫就永远改不动 (FR-020 / Guardrail)。作为交换, 这里
+   * **只写腿与归属两列** —— 其余列的新旧仍归 `writeOrders` 那条守卫管, 不从这条路径绕过去。
+   *
+   * 复杂度 O(当日订单数 + 单拍上限)。
+   */
+  private async recheckLegs(
+    connectionId: bigint,
+    market: BrokerMarket,
+    orderIds: Set<string>,
+    now: Date,
+  ): Promise<number> {
+    // 🚨 单拍上限只**推迟**、不放弃: 没轮到的留在登记里下一拍再补, 丢弃会让它的归属永久缺失。
+    const wanted = [...orderIds].sort().slice(0, ORDER_LEGS_RECHECK_MAX_PER_TICK);
+    const today = exchangeClock(market, now).date;
+    const orders = await this.port.fetchOrders(market, { start: today, end: today });
+
+    const byOrderId = new Map<string, BrokerOrderRow>();
+    // 腿仍为空的回查结果不算命中: 记下「补过了」会让这张单再也不被重试。
+    for (const order of orders) {
+      if (order.comboLegCodes.length > 0) byOrderId.set(order.orderId, order);
+    }
+    const hits = wanted
+      .map((orderId) => byOrderId.get(orderId))
+      .filter((order): order is BrokerOrderRow => order !== undefined);
+    if (hits.length === 0) return 0;
+
+    const resolver = createBrokerUnderlyingResolver(
+      { prisma: this.prisma, port: this.port },
+      { market, now },
+    );
+    const resolved = await resolver.resolve(hits.flatMap((order) => order.comboLegCodes));
+
+    let backfilled = 0;
+    for (const order of hits) {
+      const { count } = await this.prisma.brokerOrder.updateMany({
+        // 🚨 条件里**没有** `vendorUpdatedAt` —— 见方法注释。
+        where: { connectionId, orderId: order.orderId },
+        data: {
+          comboLegCodes: order.comboLegCodes,
+          underlyingTicker: underlyingOfOrder(order, resolved),
+        },
+      });
+      if (count > 0) backfilled++;
+      orderIds.delete(order.orderId);
+    }
+    return backfilled;
   }
 
   /**
