@@ -26,8 +26,14 @@ export interface PositionDisplayRow {
   underlyingTicker: string | null;
   /** 连接的人读标签 (🚫 用 `brokerCode` —— 同券商两个连接会完全相同)。 */
   connectionLabel: string;
-  /** 期权才有 (`expiry` 为交易所当地 `YYYY-MM-DD`); 正股 ⇒ `null`。 */
-  option: { expiry: string } | null;
+  /**
+   * 期权才有 (`expiry` 为交易所当地 `YYYY-MM-DD`); 正股 ⇒ `null`。
+   *
+   * `right` / `strike` 供组内排序用 (港股「沽 / 购」与美股 Put / Call 共用同一 `right`,
+   * 展示文案由 mobile 按 market 取)。🚫 **拿 `code` 的字典序替代 `strike` 排序**: 代码里的
+   * 行权价是定宽零填充, 仅在宽度不变时字典序才等于数值序 —— 跨数位 (如 900 → 1000) 即静默错位。
+   */
+  option: { expiry: string; right: 'C' | 'P'; strike: Prisma.Decimal } | null;
   marketValue: Prisma.Decimal | null;
   unrealizedPl: Prisma.Decimal | null;
   currentPrice: Prisma.Decimal | null;
@@ -68,7 +74,11 @@ export interface PositionGroupsResult<R extends PositionDisplayRow> {
  *
  * - 过滤: `underlyingTicker === null` ⇒ 计入 `unresolvedCount`; ∉ 锚集 ⇒ 丢弃。
  * - 分组键 `underlyingTicker`; 多连接各自成行, 不合并。
- * - 组内: 正股段在前、期权段在后; 段内 `openedAt` 升序 (null 段尾) → `code` → `connectionLabel` → `id`。
+ * - 组内: 正股段在前、期权段在后。正股段 `openedAt` 升序 (null 段尾); 期权段**已到期沉底** →
+ *   沽 (`P`) 先于购 (`C`) → 到期日升序 (临到期的在前) → 行权价升序。两段共同兜底
+ *   `code` → `connectionLabel` → `id`。
+ *   🚨 期权段**不再**按 `openedAt` 排 —— 维护者按「先看要被指派的沽、先看快到期的」管理持仓,
+ *   开仓先后与这个优先级无关。已到期的按到期日本应顶到最前, 故需显式沉底 (FR-021 仍展示它们)。
  * - 跨组: `|groupMarketValue|` 降序 (null 排末, 0 按 0 排) → ticker 升序。
  * - 每行附 `expired`: 期权 `daysToExpiry < 0` (基准 = 该行市场的交易所今天, 到期日当天不算); 正股恒 false。
  *
@@ -141,11 +151,36 @@ function compareOpenedAt(a: Date | null, b: Date | null): number {
   return a.getTime() - b.getTime();
 }
 
-function compareRowsInGroup(a: PositionDisplayRow, b: PositionDisplayRow): number {
+/**
+ * 沽 (`P`) 先于购 (`C`)。港股「沽 / 购」与美股 Put / Call 共用同一 `right`, 差异只在 mobile
+ * 展示层按 market 取文案 (`trading-account-positions.rules.ts` `optionDisplayName`), 故此处无需分市场。
+ */
+const RIGHT_ORDER: Record<'C' | 'P', number> = { P: 0, C: 1 };
+
+function compareRowsInGroup(
+  a: DisplayedPositionRow<PositionDisplayRow>,
+  b: DisplayedPositionRow<PositionDisplayRow>,
+): number {
   const segment = (a.option === null ? 0 : 1) - (b.option === null ? 0 : 1);
   if (segment !== 0) return segment;
+
+  if (a.option !== null && b.option !== null) {
+    // 已到期沉底: 按到期日升序它们本会顶到最前 (到期日最早), 而它们是待清算的死合约。
+    const byExpired = Number(a.expired) - Number(b.expired);
+    if (byExpired !== 0) return byExpired;
+    const byRight = RIGHT_ORDER[a.option.right] - RIGHT_ORDER[b.option.right];
+    if (byRight !== 0) return byRight;
+    // `expiry` 是定宽 `YYYY-MM-DD`, 字典序即时间序 (与 `strike` 不同, 那个必须按数值比)。
+    const byExpiry = compareStrings(a.option.expiry, b.option.expiry);
+    if (byExpiry !== 0) return byExpiry;
+    const byStrike = a.option.strike.comparedTo(b.option.strike);
+    if (byStrike !== 0) return byStrike;
+  } else {
+    const byOpenedAt = compareOpenedAt(a.openedAt, b.openedAt);
+    if (byOpenedAt !== 0) return byOpenedAt;
+  }
+
   return (
-    compareOpenedAt(a.openedAt, b.openedAt) ||
     compareStrings(a.code, b.code) ||
     compareStrings(a.connectionLabel, b.connectionLabel) ||
     (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)

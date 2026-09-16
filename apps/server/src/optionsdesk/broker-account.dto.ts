@@ -156,7 +156,8 @@ export class BrokerPositionGroupResponse {
   groupUnrealizedPl!: string | null;
 
   @ApiProperty({
-    description: '组内行: 正股段在前、期权段在后, 段内开仓时间升序',
+    description:
+      '组内行: 正股段在前、期权段在后; 期权段已到期沉底, 段内沽(P) 先于购(C)、到期日近的在前、行权价升序',
     type: [BrokerPositionRowResponse],
   })
   rows!: BrokerPositionRowResponse[];
