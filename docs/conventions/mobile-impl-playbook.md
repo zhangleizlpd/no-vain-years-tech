@@ -148,6 +148,24 @@ useAnimatedReaction(观测 shared value) → 计数落 useSharedValue → useAni
 - **顺带**：`react-native-web` 不认 `accessibilityState`（故 web e2e 只能靠样式自比较断选中态），但 **Android 原生认** —— dump 里 `selected="true"` 可直接断，真机侧不必绕。
 - **实证锚**：049（#20）的「表头与全部可见行同列左缘 ≤1px」—— 13 个位移载体的 x1 全等于 254，差点被当成完美对齐；改看 x2、并先证明它随位移从 700 变到 270，才拿到有鉴别力的 Δ=0px。
 
+### 11.3 真机验收可由 agent 全自动跑：截屏 → 读图 → 换算坐标 → 输入
+
+`[Gate]` 类真机 task（窄屏不溢出 / 折叠保留 / 下拉与回前台重读 / 下钻链路可点）**不必默认派给人**。Android 侧闭环：
+
+```text
+adb shell am start -a android.intent.action.VIEW -d "nvy:///<路由>"   # 摆到确定起点，别靠点击导航
+adb exec-out screencap -p > shot.png → 读图 → 按缩放比换算坐标 → adb shell input tap/swipe/keyevent
+```
+
+- **坐标为什么不再是「盲点」**：每次输入前的那张截图**就是**坐标来源，且每步之后再截一张验证落点 —— 错了当场看见。危险的是凭记忆 / 猜测点（曾误进 name-edit 改数据），不是 `input tap` 本身。
+- 🚨 **坐标基准取 `Override size` 不取 `Physical size`**：`adb shell wm size` 两个都报，开了分辨率 override 的机器按物理值换算全错（本机读数归属见 § 11.2 同族的设备 specifics）。读图工具给的「显示尺寸 → 原图尺寸」缩放比要一并乘回去。
+- **各类判据的驱动方式**：下拉重读 = `input swipe`（RN Web 的 `RefreshControl` 丢 `onRefresh`，真机原生手势有效）；回前台 = `input keyevent 3` 再用 `monkey -c LAUNCHER` 拉回（🚫 `force-stop`，那是冷启不是回前台）；返回 = `input keyevent 4`（比点 header 坐标稳，且避开叠屏时两个返回键同时在 DOM/树里）。
+- 🚨 **「是否重新请求」UI 上看不出来** —— 判据落**服务端日志计数**：操作前后各 `grep -c '<端点 URL>'` 一次，断言 +1。只看列表有没有变化会把「没请求」判成通过。
+- **边界（与 § 11.1 互补）**：本节验的是**静态 UI 与导航链路**；**手势正确性仍不能**用 `input swipe` 验（理由见 § 11.1「驱动方式的边界」）。人工仍必要的是主观判断（视觉舒适度、文案语感）与**性能计时**。
+- **真机 gate 别写成「dev client 连 prod」**：跨端 feature 的新端点在 PR 合并发版前 prod 上并不存在，照那样写 **PR 前根本执行不了**。写法改为「连本地 server + 一次性合成数据」，把依赖真实数据与 prod 环境的判据（逐行比对、耗时）单列到上线后的 `[Ops]` task。合成数据用一次性 SQL 种子种进本地 dev 库、跑完清理，**脚本不入仓**（同 § 11.1 探针「验完删除不入仓」）。
+- 🚨 **截图含真实或合成持仓画面，只留本机**：不入库、不贴 PR / issue（per [`information-boundary.md`](information-boundary.md)）；结论写定性表述。
+- **实证锚**：083（#442）T023 —— 六项里五项由 agent 全自动跑完（含折叠后进详情再返回仍折叠、下拉与回前台各命中 +1、期权行 → 批次 → 订单详情两次点击到达），「列表可见 ≤ 2 秒」因本地计时不代表 prod 单列到上线后验收。
+
 ## 12. 样式 / 层级 / hook 依赖陷阱（单侧中招家族）
 
 > 与 § 7–§ 9「真机才暴露」互补：本节 12.1 **只 web 中招**（native 全好），12.2 / 12.4 **真机才现形**（web e2e 全绿）。共同铁律：修法都不是「把 class 改成 inline 字面量」—— design token 不能丢。
