@@ -8,6 +8,7 @@
 // 📌 订单项点击进订单详情（T018，SC-004）；方向 / 状态走 `tradeSideText` / `orderStatusText` 中文映射。
 // 📌 期权持仓在汇总与订单段之间出「持仓批次」段（T019，FR-013）；`restorable=false` ⇒「批次无法还原」且
 //    🚫 渲染批次（FR-015）；`orderDbId` 为 null 的批次不可点、无 `›`（FR-014）；正股 `lots=null` 不出此段。
+import { useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import type {
@@ -23,9 +24,12 @@ import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { optionsdeskTradingAccountOrderRoute } from './optionsdesk-routes';
 import { DetailStateCard } from './trading-account-detail-state-card';
 import {
+  filterOrdersByTab,
   formatPlRatio,
   localDateTimeParts,
   marketTzLabel,
+  ORDER_STATUS_TABS,
+  type OrderStatusTab,
   orderStatusText,
   plColorClass,
   positionCodeLine,
@@ -161,7 +165,7 @@ function SummaryCard({ data }: { data: BrokerPositionDetailResponse }) {
     {
       key: 'opened-at',
       label: `${DETAIL_COPY.fields.openedAt}${marketTzLabel(data.market)}`,
-      value: opened === null ? NO_VALUE : opened.mdHm,
+      value: opened === null ? NO_VALUE : opened.ymdHm,
       tone: 'text-ink',
     },
   ];
@@ -175,6 +179,19 @@ function SummaryCard({ data }: { data: BrokerPositionDetailResponse }) {
         <Text className="font-mono text-xs text-ink-muted" testID={`${TEST_ID}-code-line`}>
           {`${positionCodeLine(data)} · ${DETAIL_COPY.marketName[data.market]}`}
         </Text>
+        {/* FR-021 的「持仓详情」半：标与主列表行同文案，另加 badge 塞不下的成因说明。 */}
+        {data.expired ? (
+          <View className="gap-0.5 pt-0.5">
+            <View className="self-start rounded-sm bg-warn-soft px-1">
+              <Text className="text-xs text-ink" testID={`${TEST_ID}-expired`}>
+                {COPY.expired}
+              </Text>
+            </View>
+            <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-expired-note`}>
+              {DETAIL_COPY.expiredNote}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <View className="flex-row flex-wrap">
         {fields.map((field) => (
@@ -269,7 +286,7 @@ function LotRow({ lot, index, unit, tz }: LotRowProps) {
   const router = useRouter();
   const id = `${TEST_ID}-lot-${index}`;
   const opened = localDateTimeParts(lot.openedAtLocal);
-  const time = opened === null ? NO_VALUE : `${opened.mdHm}${tz}`;
+  const time = opened === null ? NO_VALUE : `${opened.ymdHm}${tz}`;
   const { orderDbId } = lot;
   const body = (
     <View className="flex-row items-center gap-sm">
@@ -326,8 +343,8 @@ function LotRow({ lot, index, unit, tz }: LotRowProps) {
 
 /** 订单段：正股「订单」/ 期权「本合约订单」；顺序 = 服务端已排好的下单时间倒序（FR-016）。O(n)。 */
 function OrdersSection({ data }: { data: BrokerPositionDetailResponse }) {
-  const unit = DETAIL_COPY.qtyUnit[data.kind];
-  const tz = marketTzLabel(data.market);
+  const [tab, setTab] = useState<OrderStatusTab>('all');
+  const shown = filterOrdersByTab(data.orders, tab);
   return (
     <View className="bg-surface">
       <View className="border-b border-line-soft px-md py-sm">
@@ -335,14 +352,86 @@ function OrdersSection({ data }: { data: BrokerPositionDetailResponse }) {
           {DETAIL_COPY.ordersTitle[data.kind]}
         </Text>
       </View>
-      {data.orders.length === 0 ? (
-        <Text className="px-md py-md text-sm text-ink-muted" testID={`${TEST_ID}-orders-empty`}>
-          {DETAIL_COPY.ordersEmpty}
-        </Text>
-      ) : (
-        data.orders.map((item) => <OrderRow key={item.id} order={item} unit={unit} tz={tz} />)
-      )}
+      {/* 一张订单都没有时不出页签 —— 四个都空的页签比没有更糟。 */}
+      {data.orders.length > 0 ? <OrderTabs tab={tab} onSelect={setTab} /> : null}
+      <OrdersBody data={data} shown={shown} />
     </View>
+  );
+}
+
+/**
+ * 订单状态页签。视觉体例照同目录 `radar-market-tabs.tsx`（等分格 + 选中 `surface-sunken` 底 +
+ * 底部 3px×28 短横条）。
+ *
+ * 🚨 选中态**双重编码**（底色 + 横条）刻意保留：`react-native-web` 不认 `accessibilityState`，
+ *    e2e 只能靠样式自比较断选中态，两条独立通道让那条断言删一半就会红。
+ * 📌 **不上提 `~/ui`**：仓内已登记「统一这几家等分 Tab」是独立重构，本片不新增 consumer。
+ */
+function OrderTabs({
+  tab,
+  onSelect,
+}: {
+  tab: OrderStatusTab;
+  onSelect: (next: OrderStatusTab) => void;
+}) {
+  return (
+    <View className="flex-row items-center border-b border-line" testID={`${TEST_ID}-order-tabs`}>
+      {ORDER_STATUS_TABS.map((key) => {
+        const on = key === tab;
+        return (
+          <Pressable
+            key={key}
+            onPress={() => onSelect(key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: on }}
+            accessibilityLabel={DETAIL_COPY.orderTabs[key]}
+            testID={`${TEST_ID}-order-tab-${key}`}
+            className={`flex-1 items-center py-sm ${on ? 'bg-surface-sunken' : ''}`}
+          >
+            <Text className={on ? 'text-xs font-semibold text-ink' : 'text-xs text-ink-muted'}>
+              {DETAIL_COPY.orderTabs[key]}
+            </Text>
+            <View className={`mt-[3px] h-[3px] w-7 ${on ? 'bg-brand-500' : ''}`} />
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** 订单列表体：🚨「一张都没有」与「本档筛空」用不同文案与 testID —— 混用会让人以为数据丢了。 */
+function OrdersBody({
+  data,
+  shown,
+}: {
+  data: BrokerPositionDetailResponse;
+  shown: readonly BrokerPositionOrderItemResponse[];
+}) {
+  const unit = DETAIL_COPY.qtyUnit[data.kind];
+  const tz = marketTzLabel(data.market);
+  if (data.orders.length === 0) {
+    return (
+      <Text className="px-md py-md text-sm text-ink-muted" testID={`${TEST_ID}-orders-empty`}>
+        {DETAIL_COPY.ordersEmpty}
+      </Text>
+    );
+  }
+  if (shown.length === 0) {
+    return (
+      <Text
+        className="px-md py-md text-sm text-ink-muted"
+        testID={`${TEST_ID}-orders-empty-filtered`}
+      >
+        {DETAIL_COPY.ordersEmptyFiltered}
+      </Text>
+    );
+  }
+  return (
+    <>
+      {shown.map((item) => (
+        <OrderRow key={item.id} order={item} unit={unit} tz={tz} />
+      ))}
+    </>
   );
 }
 
@@ -372,7 +461,7 @@ function OrderRow({ order, unit, tz }: OrderRowProps) {
       <View className="flex-row items-center gap-sm">
         <View className="flex-1 gap-0.5">
           <Text className="font-mono text-xs text-ink-muted" testID={`${id}-time`}>
-            {time === null ? NO_VALUE : `${time.mdHm}${tz}`}
+            {time === null ? NO_VALUE : `${time.ymdHm}${tz}`}
           </Text>
           <Text className="font-mono text-sm text-ink" testID={`${id}-summary`}>
             {summary}

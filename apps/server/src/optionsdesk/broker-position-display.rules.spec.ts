@@ -19,6 +19,16 @@ interface TestRow extends PositionDisplayRow {
 const D = (v: string) => new Prisma.Decimal(v);
 const str = (d: Prisma.Decimal | null) => (d === null ? null : d.toString());
 
+type OptionShape = NonNullable<PositionDisplayRow['option']>;
+
+/** 期权字段构造; 排序键 `right` / `strike` 带默认值, 用例只覆写自己关心的那个。 */
+const optionOf = (over: Partial<OptionShape> = {}): OptionShape => ({
+  expiry: '2026-10-16',
+  right: 'C',
+  strike: D('100'),
+  ...over,
+});
+
 let nextId = 1n;
 function row(over: Partial<TestRow>): TestRow {
   const id = nextId;
@@ -93,21 +103,29 @@ describe('buildPositionGroups — 分组与组值 (plan D4)', () => {
   it('⑤ 组值 = 非空者带符号求和; 部分 null 只和非空; 全 null ⇒ null (branch 12)', () => {
     const full = build([
       row({ marketValue: D('1000'), unrealizedPl: D('99.5') }),
-      row({ option: { expiry: '2026-10-16' }, marketValue: D('-350.5'), unrealizedPl: D('-20') }),
-      row({ option: { expiry: '2026-11-20' }, marketValue: D('250'), unrealizedPl: D('7.25') }),
+      row({ option: optionOf(), marketValue: D('-350.5'), unrealizedPl: D('-20') }),
+      row({
+        option: optionOf({ expiry: '2026-11-20' }),
+        marketValue: D('250'),
+        unrealizedPl: D('7.25'),
+      }),
     ]);
     expect(str(full.groups[0]!.groupMarketValue)).toBe('899.5');
     expect(str(full.groups[0]!.groupUnrealizedPl)).toBe('86.75');
 
     const partial = build([
       row({ marketValue: D('1000'), unrealizedPl: null }),
-      row({ option: { expiry: '2026-10-16' }, marketValue: null, unrealizedPl: D('-20') }),
-      row({ option: { expiry: '2026-11-20' }, marketValue: D('-400'), unrealizedPl: null }),
+      row({ option: optionOf(), marketValue: null, unrealizedPl: D('-20') }),
+      row({
+        option: optionOf({ expiry: '2026-11-20' }),
+        marketValue: D('-400'),
+        unrealizedPl: null,
+      }),
     ]);
     expect(str(partial.groups[0]!.groupMarketValue)).toBe('600');
     expect(str(partial.groups[0]!.groupUnrealizedPl)).toBe('-20');
 
-    const allNull = build([row({}), row({ option: { expiry: '2026-10-16' } })]);
+    const allNull = build([row({}), row({ option: optionOf() })]);
     expect(allNull.groups[0]!.groupMarketValue).toBeNull();
     expect(allNull.groups[0]!.groupUnrealizedPl).toBeNull();
   });
@@ -118,14 +136,14 @@ describe('buildPositionGroups — 分组与组值 (plan D4)', () => {
       row({
         underlyingTicker: 'us:ZQY',
         code,
-        option: { expiry: '2026-10-16' },
+        option: optionOf(),
         connectionLabel: 'acct-a',
         qty: '-2',
       }),
       row({
         underlyingTicker: 'us:ZQY',
         code,
-        option: { expiry: '2026-10-16' },
+        option: optionOf(),
         connectionLabel: 'acct-b',
         qty: '-3',
       }),
@@ -146,7 +164,7 @@ describe('buildPositionGroups — 组头正股现价 (plan D5)', () => {
         row({
           underlyingTicker: 'us:ZQY',
           code: 'US.ZQY',
-          option: { expiry: '2026-10-16' },
+          option: optionOf(),
           currentPrice: D('3'),
         }),
         row({
@@ -170,7 +188,7 @@ describe('buildPositionGroups — 组头正股现价 (plan D5)', () => {
   it('⑦ 无正股、锚现价非空 ⇒ 取锚现价 (branch 16)', () => {
     const spots = new Map([['us:ZQY', D('150')]]);
     const result = build(
-      [row({ underlyingTicker: 'us:ZQY', option: { expiry: '2026-10-16' }, currentPrice: D('3') })],
+      [row({ underlyingTicker: 'us:ZQY', option: optionOf(), currentPrice: D('3') })],
       { anchorSpots: spots },
     );
     expect(str(result.groups[0]!.underlyingPrice)).toBe('150');
@@ -178,7 +196,7 @@ describe('buildPositionGroups — 组头正股现价 (plan D5)', () => {
 
   it('⑧ 无正股、锚现价 null 或缺键 ⇒ null (branch 17)', () => {
     const optionOnly = [
-      row({ underlyingTicker: 'us:ZQY', option: { expiry: '2026-10-16' }, currentPrice: D('3') }),
+      row({ underlyingTicker: 'us:ZQY', option: optionOf(), currentPrice: D('3') }),
     ];
     expect(
       build(optionOnly, { anchorSpots: new Map([['us:ZQY', null]]) }).groups[0]!.underlyingPrice,
@@ -188,44 +206,86 @@ describe('buildPositionGroups — 组头正股现价 (plan D5)', () => {
 });
 
 describe('buildPositionGroups — 全序排序 (plan D4)', () => {
-  it('⑨ 组内: 正股段在前、期权段按 openedAt 升序、null 段尾 → code → connectionLabel → id; 输入打乱两次结果逐项相同 (branch 18)', () => {
+  it('⑨ 组内: 正股段在前; 期权段 已到期沉底 → 沽(P) 先于购(C) → 到期日近的在前 → 行权价升序 → code → connectionLabel → id; 开仓时间不再参与期权段排序; 输入打乱三次结果逐项相同 (branch 18)', () => {
     const t = (iso: string) => new Date(iso);
-    const opt = { expiry: '2026-10-16' };
-    const call = 'US.ZQY261016C100000';
-    const put = 'US.ZQY261016P090000';
     const base = { underlyingTicker: 'us:ZQY' };
+    // 🚨 openedAt 刻意与期望序**完全相反** (越靠后的期望位置开仓越早) —— 旧实现按开仓时间升序,
+    // 会把 callNov70 排到期权段最前。它是本用例对「开仓时间已不参与期权段排序」的反例臂。
     const rows = {
-      stockEarly: row({ ...base, code: 'US.ZQY', openedAt: t('2026-03-01T14:00:00Z') }),
-      stockNull: row({ ...base, code: 'US.ZQY', connectionLabel: 'acct-b' }),
-      // 期权开仓早于正股 —— 段优先于开仓时间。
-      optJan: row({ ...base, code: put, option: opt, openedAt: t('2026-01-05T14:00:00Z') }),
-      optFebCallA: row({ ...base, code: call, option: opt, openedAt: t('2026-02-02T14:00:00Z') }),
-      optFebCallB1: row({
+      stockA: row({ ...base, code: 'US.ZQY', connectionLabel: 'acct-a' }),
+      stockB: row({ ...base, code: 'US.ZQY', connectionLabel: 'acct-b' }),
+      putOct90: row({
         ...base,
-        code: call,
-        option: opt,
-        connectionLabel: 'acct-b',
-        openedAt: t('2026-02-02T14:00:00Z'),
+        code: 'US.ZQY261016P090000',
+        option: optionOf({ expiry: '2026-10-16', right: 'P', strike: D('90') }),
+        openedAt: t('2026-06-01T14:00:00Z'),
       }),
-      optFebCallB2: row({
+      putOct100: row({
         ...base,
-        code: call,
-        option: opt,
-        connectionLabel: 'acct-b',
-        openedAt: t('2026-02-02T14:00:00Z'),
+        code: 'US.ZQY261016P100000',
+        option: optionOf({ expiry: '2026-10-16', right: 'P', strike: D('100') }),
+        openedAt: t('2026-05-01T14:00:00Z'),
       }),
-      optFebPut: row({ ...base, code: put, option: opt, openedAt: t('2026-02-02T14:00:00Z') }),
-      optNull: row({ ...base, code: call, option: opt }),
+      // 🚨 200 / 1000 这一对是 `strike` 键的**专用反例臂**: 代码里的行权价定宽零填充在跨数位时
+      // 宽度会变 ('200000' 6 位 vs '1000000' 7 位), 字典序给出 1000 → 200, 数值序给出 200 → 1000。
+      // 去掉 strike 比较、退回 `code` 兜底时这两行会互换 ⇒ 本用例才真能钉住 strike 键。
+      putOct200: row({
+        ...base,
+        code: 'US.ZQY261016P200000',
+        option: optionOf({ expiry: '2026-10-16', right: 'P', strike: D('200') }),
+        openedAt: t('2026-05-15T14:00:00Z'),
+      }),
+      putOct1000: row({
+        ...base,
+        code: 'US.ZQY261016P1000000',
+        option: optionOf({ expiry: '2026-10-16', right: 'P', strike: D('1000') }),
+        openedAt: t('2026-05-10T14:00:00Z'),
+      }),
+      putNov80: row({
+        ...base,
+        code: 'US.ZQY261120P080000',
+        option: optionOf({ expiry: '2026-11-20', right: 'P', strike: D('80') }),
+        openedAt: t('2026-04-01T14:00:00Z'),
+      }),
+      callOct85: row({
+        ...base,
+        code: 'US.ZQY261016C085000',
+        option: optionOf({ expiry: '2026-10-16', right: 'C', strike: D('85') }),
+        openedAt: t('2026-03-01T14:00:00Z'),
+      }),
+      callNov70: row({
+        ...base,
+        code: 'US.ZQY261120C070000',
+        option: optionOf({ expiry: '2026-11-20', right: 'C', strike: D('70') }),
+        openedAt: t('2026-02-01T14:00:00Z'),
+      }),
+      // 到期日 < 交易所今天 (NOW = 2026-09-15T02:00Z = EDT 09-14) ⇒ expired: 沽购一律沉底,
+      // 段内仍按 沽→购 排 —— 否则「临到期在前」会把死合约顶到最显眼的首位。
+      expiredPut: row({
+        ...base,
+        code: 'US.ZQY260911P095000',
+        option: optionOf({ expiry: '2026-09-11', right: 'P', strike: D('95') }),
+        openedAt: t('2026-01-05T14:00:00Z'),
+      }),
+      expiredCall: row({
+        ...base,
+        code: 'US.ZQY260911C060000',
+        option: optionOf({ expiry: '2026-09-11', right: 'C', strike: D('60') }),
+        openedAt: t('2026-01-01T14:00:00Z'),
+      }),
     };
     const expected = [
-      rows.stockEarly,
-      rows.stockNull,
-      rows.optJan,
-      rows.optFebCallA,
-      rows.optFebCallB1,
-      rows.optFebCallB2,
-      rows.optFebPut,
-      rows.optNull,
+      rows.stockA,
+      rows.stockB,
+      rows.putOct90,
+      rows.putOct100,
+      rows.putOct200,
+      rows.putOct1000,
+      rows.putNov80,
+      rows.callOct85,
+      rows.callNov70,
+      rows.expiredPut,
+      rows.expiredCall,
     ].map((r) => r.id);
 
     const list = Object.values(rows);
@@ -251,7 +311,7 @@ describe('buildPositionGroups — 全序排序 (plan D4)', () => {
     const result = build([
       row({ underlyingTicker: 'hk:08801', market: 'hk', code: 'HK.08801' }),
       row({ underlyingTicker: 'us:ZQX', marketValue: D('250') }),
-      row({ underlyingTicker: 'us:ZQX', option: { expiry: '2026-10-16' }, marketValue: D('-250') }),
+      row({ underlyingTicker: 'us:ZQX', option: optionOf(), marketValue: D('-250') }),
       row({ underlyingTicker: 'us:ZQY', marketValue: D('5') }),
     ]);
     expect(str(result.groups.find((g) => g.underlyingTicker === 'us:ZQX')!.groupMarketValue)).toBe(
@@ -267,8 +327,8 @@ describe('buildPositionGroups — 到期判定 (plan D6; FR-021)', () => {
     const now = new Date('2026-09-11T19:00:00Z');
     const result = build(
       [
-        row({ code: 'US.ZQX260911C050000', option: { expiry: '2026-09-11' } }),
-        row({ code: 'US.ZQX260910C050000', option: { expiry: '2026-09-10' } }),
+        row({ code: 'US.ZQX260911C050000', option: optionOf({ expiry: '2026-09-11' }) }),
+        row({ code: 'US.ZQX260910C050000', option: optionOf({ expiry: '2026-09-10' }) }),
         row({ code: 'US.ZQX' }),
       ],
       { now },
