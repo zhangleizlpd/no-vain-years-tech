@@ -2,9 +2,9 @@
 feature_id: 083-optionsdesk-trading-account-positions
 modules: [optionsdesk]
 owners: ['@zhangleizlpd']
-status: tasks-ready
+status: implementing
 created_at: '2026-09-15'
-updated_at: '2026-09-15'
+updated_at: '2026-09-16'
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
 
