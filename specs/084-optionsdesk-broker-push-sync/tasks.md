@@ -102,7 +102,7 @@ updated_at: '2026-09-16'
 
 - [X] T014 [P] [Docs] **补上游 082 的 SC-004 类型限定**（plan D11）：`specs/082-optionsdesk-broker-pull-sync/spec.md` 的 SC-004 只写「每个市场恰有 1 条成功的对账记录」，未限定记录类型（其跟踪 issue 限定了）。本片引入第三种类型后该措辞产生歧义 ⇒ 补上「开盘前对账类型」的限定，并在该行注明是 084 引入第三类型后的措辞澄清、**不改变其已上线的行为** → verify: `pnpm tsx scripts/check-spec-frontmatters.ts` 绿；`npx prettier --check specs/082-optionsdesk-broker-pull-sync/spec.md` 绿；`pnpm tsx scripts/checks/check-identifier-boundary.ts` exit 0
 
-- [ ] T015 [Gate] **覆盖收口 + 全量门 + 启动冒烟 + 私有数据扫描 + PR**（SC-003, SC-004, SC-007, SC-008）：逐条核对下方五张覆盖预检表（**实时 grep，不抄表内数字**）。私有数据扫描：对 `git ls-files` 与 `git ls-files --others --exclude-standard` 逐文件比对仓外私有清单，**只打印命中计数**，真值不写入任何文件 / 命令行 / 日志；两臂对照（scratchpad 临时文件 ⇒ 计数 1，仓库 ⇒ 计数 0）。spec `status → implementing`、`updated_at` bump → verify: `git fetch origin && pnpm exec nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` exit 0（输出落文件后 grep `Successfully ran target` / `Failed tasks` 判定，🚫 `| tail`）；`services/futu-shim/venv/bin/python -m pytest -q` 全绿；治理脚本全扫 `scripts/checks/*.ts` 全 0（含 `check-test-size` / `check-identifier-boundary` / `check-server-moat` / `check-time-semantics` / `check-env-sync`）；扫描两臂结果为 1 / 0；`gh-bot pr create --repo zhangleizlpd/no-vain-years-tech --body-file` 按 `pr-creation-protocol.md`。🚨 **PR body 标「建议人工合并」、不接 auto-merge**：含迁移，且 shim 合入 main 即自动部署到交易主机
+- [X] T015 [Gate] **覆盖收口 + 全量门 + 启动冒烟 + 私有数据扫描 + PR**（SC-003, SC-004, SC-007, SC-008）：逐条核对下方五张覆盖预检表（**实时 grep，不抄表内数字**）。私有数据扫描：对 `git ls-files` 与 `git ls-files --others --exclude-standard` 逐文件比对仓外私有清单，**只打印命中计数**，真值不写入任何文件 / 命令行 / 日志；两臂对照（scratchpad 临时文件 ⇒ 计数 1，仓库 ⇒ 计数 0）。spec `status → implementing`、`updated_at` bump → verify: `git fetch origin && pnpm exec nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` exit 0（输出落文件后 grep `Successfully ran target` / `Failed tasks` 判定，🚫 `| tail`）；`services/futu-shim/venv/bin/python -m pytest -q` 全绿；治理脚本全扫 `scripts/checks/*.ts` 全 0（含 `check-test-size` / `check-identifier-boundary` / `check-server-moat` / `check-time-semantics` / `check-env-sync`）；扫描两臂结果为 1 / 0；`gh-bot pr create --repo zhangleizlpd/no-vain-years-tech --body-file` 按 `pr-creation-protocol.md`。🚨 **PR body 标「建议人工合并」、不接 auto-merge**：含迁移，且 shim 合入 main 即自动部署到交易主机
 
 - [ ] T016 [Ops] **上线：shim 部署自检 + server 发版 + 首轮验收**（SC-001, SC-002, SC-005, SC-006; plan D1）：前置 = PR 合并、shim 自动部署完成、server 发版上线。步骤：① 港机 `/healthz.version` = 合并 SHA 且 `routes` 含 `/trade/events`；对该端点真打一次，判据 = 立即返回且结构合法 ② SC-001：维护者在券商 App 挂一张远离市价的单再撤，核两次订单状态变化各自进入库内的耗时均 ≤ 5 秒 ③ SC-005：紧接着查该市场持仓，同步时刻等于本次刷新时刻且未提示陈旧 ④ SC-002：重启 shim，核出现补偿留痕且当日数据自愈、无人工介入 ⑤ SC-006，口径同 POC-7：**休市时段**按同一采样脚本采 1 小时，行情延迟中位变化 < 10%；**盘中与批处理时段只判零新增错误**，🚫 拿盘中延迟比休市基线 → verify: ①–⑤ 观测值回填本行（定性 + 一句观测，🚫 真实代码 / 数量 / 金额）；观测明细记维护者私有子 plan；任一不达标即停，不进入 T017
 
@@ -136,7 +136,7 @@ T014 [P]
 | # | branch（摘要） | 落点 |
 |---|---|---|
 | 1 | 事件属锚标的 ⇒ 写入并刷新 | T006-① |
-| 2 | 事件不属锚标的 ⇒ 不写不刷 | T006-② |
+| 2 | 事件不属锚标的 ⇒ 不写不刷 | T006-②（不写半）+ T007-⑦（不刷半，impl 期补入） |
 | 3 | 同一事件重复投递 ⇒ 结果一致 | T006-③ |
 | 4 | 较旧订单状态晚到 ⇒ 不覆盖 | T006-④ |
 | 5 | 序号断档 ⇒ 当日补偿并留痕 | T004-② + T010-① |
@@ -196,7 +196,7 @@ T014 [P]
 | SC-004 对账仍每市场每日恰 1 条 | T012-②（机制面）+ T017（上线后观察，真数面） |
 | SC-005 刷新后时刻正确且未标陈旧 | T007-②④（机制面）+ T016-③（真数面） |
 | SC-006 行情延迟中位变化 < 10% | T016-⑤（真数面；机制面无法自动化，见下方「蓄意零覆盖」） |
-| SC-007 停留执行中的记录数为 0 | T011-①③ |
+| SC-007 停留执行中的记录数为 0 | T011-①③⑤（⑤ = `push` 分支，impl 期按 SC-007 字面「记录数为 0」补入） |
 | SC-008 账户号出现次数为 0 | T015（仓内扫描两臂）+ T013-④（日志面） |
 
 ## Edge Case 覆盖预检
@@ -204,7 +204,7 @@ T014 [P]
 | Edge Case（摘要） | 落点 |
 |---|---|
 | 休市挂单无中间状态 ⇒ 两次状态各自入库 | T016-②（真数面；POC-3 已实测该形态） |
-| 组合单按腿归属、空腿回落不静默写入 | T002-①② + T005-③④ |
+| 组合单按腿归属、空腿回落不静默写入 | T002-①② + T005-③④（归属与留痕半）+ T018-①②③④（回查补全半，impl 期补入） |
 | 成交号超安全整数 ⇒ 不丢精度 | T002-③ + T005-② |
 | 缓冲绕回 ⇒ 表现为断档、不静默跳过 | T001-③ + T004-③ |
 | 同秒多笔成交 ⇒ 去抖合并 | T007-① |
@@ -218,7 +218,7 @@ T014 [P]
 |---|---|
 | US1-AS1 成交数秒内进库、持仓随之刷新 | T006-① + T007-① + T016-② |
 | US1-AS2 两次状态变化保留较新 | T006-④ |
-| US1-AS3 非锚标的不写不刷 | T006-② |
+| US1-AS3 非锚标的不写不刷 | T006-②（不写半）+ T007-⑦（不刷半，impl 期补入） |
 | US1-AS4 刷新后时刻正确、未误标陈旧 | T007-②④ |
 | US1-AS5 通道静默 ⇒ 保持上次结果、不产生多余记录 | T006-⑦ + T007-⑥ + T013-② |
 | US2-AS1 断档 ⇒ 补偿并留痕、数据一致 | T010-① |
