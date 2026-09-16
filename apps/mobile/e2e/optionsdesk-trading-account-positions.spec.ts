@@ -1025,6 +1025,24 @@ const ZQY_PUT_EXPIRED_DETAIL: BrokerPositionDetailResponse = {
   lots: null,
 };
 
+/**
+ * 订单状态页签用（2026-09-16）：一张 fixture 覆盖四档 + 一张在途单。
+ * 🚨 在途单 `ord-t5` 是关键夹具 —— 它只应出现在「全部」，四档里任何一档出现它都是归档错了。
+ */
+const ZQY_ORDER_TABS_DETAIL: BrokerPositionDetailResponse = {
+  ...ZQY_STOCK,
+  id: 'us-zqy-order-tabs',
+  openedAtLocal: '2026-07-02 10:05:00',
+  orders: [
+    order('ord-t1', 'BUY', '100', '45.00', 'FILLED_ALL', '2026-09-11 16:52:00'),
+    order('ord-t2', 'BUY', '50', '46.00', 'FILLED_PART', '2026-09-10 10:00:00'),
+    order('ord-t3', 'SELL', '50', '49.10', 'CANCELLED_ALL', '2026-08-20 13:30:00'),
+    order('ord-t4', 'BUY', '10', '4.40', 'FAILED', '2026-08-19 09:15:00'),
+    order('ord-t5', 'BUY', '20', '44.00', 'SUBMITTED', '2026-08-18 09:15:00'),
+  ],
+  lots: null,
+};
+
 /** 港股正股持仓详情（交易账户页默认市场是美股 ⇒ 时区标签只能来自响应 `market`）。 */
 const HK_STOCK_DETAIL: BrokerPositionDetailResponse = {
   ...stockRow('hk'),
@@ -1159,6 +1177,36 @@ test('083 T017② 已撤单订单照常列出、状态标可见（sb 36 / US3-AS
     timeout: 30_000,
   });
   await expect(inDetail(page, 'order-ord-4-status')).toHaveText('全部成交');
+});
+
+test('083 订单状态页签 四档各只留本档；在途单只在「全部」出现', async ({ page }) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_ORDER_TABS_DETAIL));
+  await gotoPositionDetail(page, ZQY_ORDER_TABS_DETAIL.id);
+
+  const tab = (k: string): Locator => inDetail(page, `order-tab-${k}`);
+  const row = (id: string): Locator => inDetail(page, `order-${id}`);
+  const ALL = ['ord-t1', 'ord-t2', 'ord-t3', 'ord-t4', 'ord-t5'];
+
+  await expect(row('ord-t1')).toBeVisible({ timeout: 30_000 });
+  for (const id of ALL) await expect(row(id)).toBeVisible();
+
+  await tab('filled').tap();
+  await expect(row('ord-t1')).toBeVisible();
+  await expect(row('ord-t2')).toBeVisible();
+  for (const id of ['ord-t3', 'ord-t4', 'ord-t5']) await expect(row(id)).toHaveCount(0);
+
+  await tab('cancelled').tap();
+  await expect(row('ord-t3')).toBeVisible();
+  for (const id of ['ord-t1', 'ord-t2', 'ord-t4', 'ord-t5']) await expect(row(id)).toHaveCount(0);
+
+  await tab('failed').tap();
+  await expect(row('ord-t4')).toBeVisible();
+  for (const id of ['ord-t1', 'ord-t2', 'ord-t3', 'ord-t5']) await expect(row(id)).toHaveCount(0);
+
+  // 🚨 回到「全部」在途单必须回来 —— 否则「只在全部出现」可能只是它压根没渲染过。
+  await tab('all').tap();
+  for (const id of ALL) await expect(row(id)).toBeVisible();
 });
 
 // 📌 FR-021 写的是「主列表行**与持仓详情**标」，但详情屏那一半自 083 起从未实装（2026-09-16 补）。

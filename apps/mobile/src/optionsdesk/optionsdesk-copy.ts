@@ -12,6 +12,7 @@ import type { TradingAccountSegment } from './trading-account.rules';
 import type {
   BrokerOrderStatus,
   BrokerTradeSide,
+  OrderStatusTab,
   PositionsView,
 } from './trading-account-positions.rules';
 
@@ -1485,6 +1486,19 @@ export const OPTIONSDESK_COPY = {
         option: '本合约订单',
       } satisfies Record<BrokerPositionRowResponseKind, string>,
       ordersEmpty: '暂无订单',
+      /**
+       * 订单状态筛选页签（2026-09-16）。17 个券商状态归四档，🚫 给「在途」单开一档 ——
+       * 持仓详情看的是历史，在途单寿命极短且多数时候为空，空页签比没有更糟。
+       * 在途 / 未提交 / N/A 只在「全部」里出现。
+       */
+      orderTabs: {
+        all: '全部',
+        filled: '成交',
+        cancelled: '撤单',
+        failed: '失败',
+      } satisfies Record<OrderStatusTab, string>,
+      /** 某一档筛掉后为空（与「一张订单都没有」区分开，否则用户以为数据丢了）。 */
+      ordersEmptyFiltered: '该状态下暂无订单',
       /** 持仓批次段（083 T019，FR-013 / FR-015；mockup 帧 4 / 5）。 */
       lotsTitle: '持仓批次',
       lotsCount: (count: number) => `${count} 个 · 先开先平`,

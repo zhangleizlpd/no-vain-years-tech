@@ -316,6 +316,58 @@ export function tradeSideText(side: string): string {
   return labelOf(COPY.tradeSideLabel, side);
 }
 
+/** 订单状态筛选页签值域；顺序即渲染顺序。 */
+export const ORDER_STATUS_TABS = ['all', 'filled', 'cancelled', 'failed'] as const;
+export type OrderStatusTab = (typeof ORDER_STATUS_TABS)[number];
+
+/** 归档结果；`other` = 在途 / 未提交 / 未知，只在「全部」里出现（无自己的页签）。 */
+export type OrderStatusBucket = 'filled' | 'cancelled' | 'failed' | 'other';
+
+/**
+ * 17 个券商状态 → 四档。`Record` 穷举：SDK 日后加值而这里没归档 ⇒ 编译红。
+ *
+ * 🚨 `CANCELLING_*`（撤单中）归「撤单」而非「在途」：它已经在撤了，用户找它时想的是「我撤掉的那笔」。
+ * 🚨 `DISABLED` / `DELETED` 归「失败」而非单列：都是「没成交且不是我主动撤的」，与 `FAILED` 同一语义组。
+ */
+const ORDER_STATUS_BUCKET: Record<BrokerOrderStatus, OrderStatusBucket> = {
+  FILLED_ALL: 'filled',
+  FILLED_PART: 'filled',
+  CANCELLED_ALL: 'cancelled',
+  CANCELLED_PART: 'cancelled',
+  CANCELLING_ALL: 'cancelled',
+  CANCELLING_PART: 'cancelled',
+  FILL_CANCELLED: 'cancelled',
+  FAILED: 'failed',
+  SUBMIT_FAILED: 'failed',
+  TIMEOUT: 'failed',
+  DISABLED: 'failed',
+  DELETED: 'failed',
+  'N/A': 'other',
+  UNSUBMITTED: 'other',
+  WAITING_SUBMIT: 'other',
+  SUBMITTING: 'other',
+  SUBMITTED: 'other',
+};
+
+/**
+ * 状态 → 档。值域外（生成类型是 `string`，SDK 日后新增）⇒ `other`，即只在「全部」里出现，
+ * 🚫 猜它属于哪一档 —— 猜错会让一笔订单从它该在的页签里消失且不报错。O(1)。
+ */
+export function orderStatusBucket(status: string): OrderStatusBucket {
+  return Object.prototype.hasOwnProperty.call(ORDER_STATUS_BUCKET, status)
+    ? ORDER_STATUS_BUCKET[status as BrokerOrderStatus]
+    : 'other';
+}
+
+/** 按页签筛订单；`all` 原样返回（不复制）。顺序沿用服务端已排好的下单时间倒序。O(n)。 */
+export function filterOrdersByTab<T extends { status: string }>(
+  orders: readonly T[],
+  tab: OrderStatusTab,
+): readonly T[] {
+  if (tab === 'all') return orders;
+  return orders.filter((o) => orderStatusBucket(o.status) === tab);
+}
+
 /** 订单数量单位按品种：期权或组合单 ⇒ `option`（张），否则 `stock`（股）；响应无 `kind` 字段。O(1)。 */
 export function orderKind(order: {
   option: object | null;
