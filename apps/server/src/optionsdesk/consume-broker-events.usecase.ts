@@ -1,0 +1,245 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { marketdataConfig, type MarketdataConfig } from '../config/marketdata.config';
+import { optionsdeskConfig, type OptionsdeskConfig } from '../config/optionsdesk.config';
+import { PrismaService } from '../security/prisma.service';
+import {
+  BROKER_ACCOUNT_PORT,
+  BrokerInfrastructureError,
+  type BrokerAccountPort,
+  type BrokerDealRow,
+  type BrokerEvent,
+  type BrokerEventBatch,
+  type BrokerOrderEventRow,
+} from './broker-account.port';
+import type { BrokerMarket } from './broker-code.rules';
+import { decideCursor, type BrokerEventCursor } from './broker-event-cursor.rules';
+import { inBrokerScope } from './broker-scope.rules';
+import { createBrokerUnderlyingResolver, underlyingOfOrder } from './resolve-broker-underlying';
+import { isTransientDbError } from './transient-db-error.rules';
+import {
+  SyncBrokerAccountUseCase,
+  type BrokerSyncFailureKind,
+} from './sync-broker-account.usecase';
+
+export interface ConsumeBrokerEventsInput {
+  connectionId: bigint;
+  /** 进程内游标 (plan D4: 🚫 建表持久化); 首拍 / 消费进程重启后传 `null`。 */
+  cursor: BrokerEventCursor | null;
+  now?: Date;
+}
+
+export interface ConsumeBrokerEventsCounts {
+  /** 本拍从事件源接受的事件条数 (**锚过滤前**)。 */
+  accepted: number;
+  dealsInserted: number;
+  ordersInserted: number;
+  ordersUpdated: number;
+}
+
+export type ConsumeBrokerEventsOutcome =
+  | ({
+      ok: true;
+      /** `MARKETDATA_PROVIDER=mock` ⇒ 整拍跳过、零 port 调用 (FR-016)。 */
+      skipped: boolean;
+      /** 需发起当日缺口补偿 (FR-009); 由调度器消费, 本用例只判不发起。 */
+      gapDetected: boolean;
+      cursor: BrokerEventCursor | null;
+      /** 本拍有写入的市场 (T007 去抖刷持仓的登记面)。 */
+      touchedMarkets: readonly BrokerMarket[];
+    } & ConsumeBrokerEventsCounts)
+  | {
+      ok: false;
+      failureKind: BrokerSyncFailureKind;
+      error: string;
+      /** 🚨 失败时**不前移**: 幂等写让重放无副作用, 前移则这批事件永不回来 (FR-017)。 */
+      cursor: BrokerEventCursor | null;
+    };
+
+type MarketBucket = { deals: BrokerDealRow[]; orders: BrokerOrderEventRow[] };
+
+const ZERO: ConsumeBrokerEventsCounts = {
+  accepted: 0,
+  dealsInserted: 0,
+  ordersInserted: 0,
+  ordersUpdated: 0,
+};
+
+/**
+ * 084 T006 券商推送事件消费 use case (plan D3; FR-004 / FR-005 / FR-006 / FR-007 / FR-016 / FR-017)。
+ *
+ * 一拍 = 拉事件 (**事务外**) → 游标与断档判定 → 按市场判正股 → 锚过滤 → 幂等写成交与订单。
+ *
+ * 🚨 **split-tx**: 经 port 拉事件的 HTTP 在事务外完成, 拿到事件后才开短事务写 —— 🚫 事务内持锁
+ * 等 HTTP (`server-impl-playbook.md` § 并发 / 事务)。
+ *
+ * 🚨 **锚过滤走 `broker-scope.rules.ts` 单点** (FR-005): 🚫 在本文件另写一份判定 —— 两份会在
+ * 「excluded 的锚算不算」「未解析保不保留」两处漂移, 而漂移的表现是成交被**静默**丢掉。
+ *
+ * 🚨 **幂等写复用 `SyncBrokerAccountUseCase` 的两个写方法**: 成交 `createMany({ skipDuplicates })`;
+ * 订单先 `createMany({ skipDuplicates })` 再带 `vendorUpdatedAt < incoming` 条件 `updateMany` ——
+ * 🚫 先查后写 (推送与开盘前对账可能并发写同一连接, 先查后写撞唯一约束抛 `P2002`)。
+ *
+ * 🚨 **游标只存进程内存** (plan D4): 由调用方 (调度器) 持有并逐拍回传, 🚫 建表持久化。
+ */
+@Injectable()
+export class ConsumeBrokerEventsUseCase {
+  private readonly logger = new Logger(ConsumeBrokerEventsUseCase.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sync: SyncBrokerAccountUseCase,
+    @Inject(BROKER_ACCOUNT_PORT) private readonly port: BrokerAccountPort,
+    @Inject(marketdataConfig.KEY) private readonly marketdata: MarketdataConfig,
+    @Inject(optionsdeskConfig.KEY) private readonly config: OptionsdeskConfig,
+  ) {}
+
+  async execute(input: ConsumeBrokerEventsInput): Promise<ConsumeBrokerEventsOutcome> {
+    const now = input.now ?? new Date();
+    const startedMs = Date.now();
+    // mock 档整拍跳过, 零 port 调用 (FR-016; 模块层拒绝壳是兜底, 不是第一道)。
+    if (this.marketdata.kind === 'mock') {
+      return {
+        ok: true,
+        skipped: true,
+        gapDetected: false,
+        cursor: input.cursor,
+        touchedMarkets: [],
+        ...ZERO,
+      };
+    }
+
+    let batch: BrokerEventBatch;
+    try {
+      batch = await this.port.fetchEvents(
+        input.cursor === null
+          ? null
+          : { epoch: input.cursor.epoch, afterSeq: input.cursor.lastSeq },
+      );
+    } catch (err) {
+      return this.failed(err, input, '事件拉取');
+    }
+
+    const { accepted, gapDetected, nextCursor } = decideCursor({
+      local: input.cursor,
+      response: batch,
+    });
+
+    let written: ConsumeBrokerEventsCounts & { touchedMarkets: BrokerMarket[] };
+    try {
+      written = await this.write(input.connectionId, accepted, now);
+    } catch (err) {
+      // 🚨 游标不前移: 本批事件下一拍照常重放, 幂等写保证结果一致 (FR-017)。
+      return this.failed(err, input, '事件写入');
+    }
+
+    if (gapDetected) {
+      // FR-009 / FR-014: 补偿留痕是判断推送通道是否健在的依据之一 ⇒ 告警级。
+      this.logger.warn(
+        `推送事件断档 connection=${input.connectionId} epoch=${batch.epoch} dropped=${batch.dropped}, 需当日缺口补偿`,
+      );
+    }
+    // 🚫 日志任何一行不带 accountId / 券商账户号 / 成交号 / 订单号 (FR-019, SC-008): 只用连接行 ID 与条数定位。
+    this.logger.log(
+      `推送事件消费 connection=${input.connectionId} accepted=${accepted.length}` +
+        ` deals+${written.dealsInserted} orders+${written.ordersInserted} orders~${written.ordersUpdated}` +
+        ` gap=${gapDetected} elapsedMs=${Date.now() - startedMs}`,
+    );
+    return { ok: true, skipped: false, gapDetected, cursor: nextCursor, ...written };
+  }
+
+  /**
+   * 判正股 → 锚过滤 → 幂等写。按市场分桶后每个市场一个 resolver (它按市场缓存词根映射)。
+   *
+   * 复杂度 O(E) 分桶 + 每市场 1 次 resolver 批量判定 + 2 组幂等写; E = 本批事件数。
+   */
+  private async write(
+    connectionId: bigint,
+    events: readonly BrokerEvent[],
+    now: Date,
+  ): Promise<ConsumeBrokerEventsCounts & { touchedMarkets: BrokerMarket[] }> {
+    const counts = { ...ZERO, accepted: events.length, touchedMarkets: [] as BrokerMarket[] };
+    if (events.length === 0) return counts;
+
+    const { accountId } = await this.prisma.brokerConnection.findUniqueOrThrow({
+      where: { id: connectionId },
+      select: { accountId: true },
+    });
+    // 锚表**全部**行, 含 excluded (082 plan D6 / U8: 不参与交易 ≠ 不看它的成交)。
+    const anchors = await this.prisma.anchor.findMany({ select: { ticker: true } });
+    const anchoredTickers = new Set(anchors.map((a) => a.ticker));
+
+    for (const [market, bucket] of bucketByMarket(events)) {
+      const resolver = createBrokerUnderlyingResolver(
+        { prisma: this.prisma, port: this.port },
+        { market, now },
+      );
+      const resolved = await resolver.resolve([
+        ...bucket.deals.map((d) => d.code),
+        ...bucket.orders.flatMap((o) => [o.code, ...o.comboLegCodes]),
+      ]);
+      const keep = (underlyingTicker: string | null) =>
+        inBrokerScope({
+          scope: this.config.brokerSyncScope,
+          anchoredTickers,
+          underlyingTicker,
+          accountId,
+        });
+
+      const dealRows = bucket.deals
+        .map((row) => ({ row, underlyingTicker: resolved.get(row.code) ?? null }))
+        .filter((d) => keep(d.underlyingTicker));
+      const orderRows = bucket.orders
+        .map((row) => ({ row, underlyingTicker: underlyingOfOrder(row, resolved) }))
+        .filter((o) => keep(o.underlyingTicker));
+
+      const pendingLegs = orderRows.filter((o) => o.row.legsPending).length;
+      if (pendingLegs > 0) {
+        // FR-020 留痕半: 腿为空且合成码不可解析 ⇒ 该组合单的标的归属缺失, MUST NOT 静默写入了事。
+        // 🚫 日志带订单号 (见上面那条日志的同一理由)。
+        this.logger.warn(
+          `推送订单 ${pendingLegs} 张腿列表为空且合成码不可解析 connection=${connectionId} market=${market}, 待按订单号回查补全`,
+        );
+      }
+
+      counts.dealsInserted += await this.sync.writeDeals(connectionId, accountId, dealRows);
+      const orderCounts = await this.sync.writeOrders(connectionId, accountId, orderRows);
+      counts.ordersInserted += orderCounts.inserted;
+      counts.ordersUpdated += orderCounts.updated;
+      if (dealRows.length > 0 || orderRows.length > 0) counts.touchedMarkets.push(market);
+    }
+    return counts;
+  }
+
+  /**
+   * 失败结局。判别口径沿用 082: `instanceof BrokerInfrastructureError` 或可重试 DB 异常 =
+   * 基础设施 (下一拍重试); 其余 (含 adapter 的坏行 / 契约变更 throw) = 数据类。
+   */
+  private failed(
+    err: unknown,
+    input: ConsumeBrokerEventsInput,
+    what: string,
+  ): ConsumeBrokerEventsOutcome {
+    const failureKind: BrokerSyncFailureKind =
+      err instanceof BrokerInfrastructureError || isTransientDbError(err)
+        ? 'infrastructure'
+        : 'data';
+    const error = err instanceof Error ? err.message : String(err);
+    this.logger.error(
+      `推送${what}失败 connection=${input.connectionId} failure=${failureKind}: ${error}`,
+    );
+    return { ok: false, failureKind, error, cursor: input.cursor };
+  }
+}
+
+/** 事件按市场分桶, 顺序保留 (订单守卫靠 `vendorUpdatedAt` 判新旧, 不靠顺序)。复杂度 O(E)。 */
+function bucketByMarket(events: readonly BrokerEvent[]): Map<BrokerMarket, MarketBucket> {
+  const byMarket = new Map<BrokerMarket, MarketBucket>();
+  for (const event of events) {
+    const market = event.kind === 'deal' ? event.deal.market : event.order.market;
+    const bucket = byMarket.get(market) ?? { deals: [], orders: [] };
+    if (event.kind === 'deal') bucket.deals.push(event.deal);
+    else bucket.orders.push(event.order);
+    byMarket.set(market, bucket);
+  }
+  return byMarket;
+}

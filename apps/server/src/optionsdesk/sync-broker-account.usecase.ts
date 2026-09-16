@@ -430,8 +430,13 @@ export class SyncBrokerAccountUseCase {
     }
   }
 
-  /** 成交不可变 ⇒ 一条 `createMany({ skipDuplicates })`, 返回插入数。复杂度 O(n log n) (排序)。 */
-  private async writeDeals(
+  /**
+   * 成交不可变 ⇒ 一条 `createMany({ skipDuplicates })`, 返回插入数。复杂度 O(n log n) (排序)。
+   *
+   * 🚨 **public 是给 084 推送消费复用的** (`consume-broker-events.usecase.ts`): 推送与查询两路
+   * 写同一份数据、同一套唯一键, 各写一份幂等写会在「唯一键 / 去重口径 / 账号归属」三处各自漂移。
+   */
+  async writeDeals(
     connectionId: bigint,
     accountId: bigint,
     rows: { row: BrokerDealRow; underlyingTicker: string | null }[],
@@ -469,8 +474,10 @@ export class SyncBrokerAccountUseCase {
    *
    * 按 `orderId` 升序写: 并发事务取行锁顺序一致, 不成环 (无死锁)。批内同单多版本只留最新。
    * 复杂度 O(n log n) 排序 + O(n) 条 UPDATE, 每 {@link ORDER_WRITE_CHUNK} 行一个短事务。
+   *
+   * 🚨 **public 同 {@link writeDeals}**: 084 推送消费复用这一份两步原子写, 🚫 另起一份。
    */
-  private async writeOrders(
+  async writeOrders(
     connectionId: bigint,
     accountId: bigint,
     rows: { row: BrokerOrderRow; underlyingTicker: string | null }[],
