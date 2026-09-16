@@ -126,8 +126,15 @@ export interface LocalDateTimeParts {
   ymd: string;
   /** `14:05:12` */
   hms: string;
-  /** `09-08 14:05` */
+  /** `09-08 14:05` —— 近实时场景用（同步于 / 券商历史），年份在那里是噪声。 */
   mdHm: string;
+  /**
+   * `26-09-08 14:05` —— **会跨年**的历史时点用（订单行 / 开仓时间 / 持仓批次行）。
+   *
+   * 🚨 两位年是 `slice`，🚫 引入「今年是哪年」的时间基准去判要不要显示年份：那需要先定「今天」
+   * 跟谁走（交易所 / 用户所在地），而基准差一天**不报错**，只让某些行悄悄少个年份。
+   */
+  ymdHm: string;
 }
 
 /**
@@ -138,7 +145,12 @@ export function localDateTimeParts(local: string): LocalDateTimeParts | null {
   const m = LOCAL_DATE_TIME.exec(local);
   if (!m) return null;
   const [, y, mo, d, h, mi, s] = m;
-  return { ymd: `${y}/${mo}/${d}`, hms: `${h}:${mi}:${s}`, mdHm: `${mo}-${d} ${h}:${mi}` };
+  return {
+    ymd: `${y}/${mo}/${d}`,
+    hms: `${h}:${mi}:${s}`,
+    mdHm: `${mo}-${d} ${h}:${mi}`,
+    ymdHm: `${y!.slice(2)}-${mo}-${d} ${h}:${mi}`,
+  };
 }
 
 /** 按市场出时区标签：`（美东）` / `（香港）`。O(1)。 */

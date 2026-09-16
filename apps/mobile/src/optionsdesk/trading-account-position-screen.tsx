@@ -161,7 +161,7 @@ function SummaryCard({ data }: { data: BrokerPositionDetailResponse }) {
     {
       key: 'opened-at',
       label: `${DETAIL_COPY.fields.openedAt}${marketTzLabel(data.market)}`,
-      value: opened === null ? NO_VALUE : opened.mdHm,
+      value: opened === null ? NO_VALUE : opened.ymdHm,
       tone: 'text-ink',
     },
   ];
@@ -282,7 +282,7 @@ function LotRow({ lot, index, unit, tz }: LotRowProps) {
   const router = useRouter();
   const id = `${TEST_ID}-lot-${index}`;
   const opened = localDateTimeParts(lot.openedAtLocal);
-  const time = opened === null ? NO_VALUE : `${opened.mdHm}${tz}`;
+  const time = opened === null ? NO_VALUE : `${opened.ymdHm}${tz}`;
   const { orderDbId } = lot;
   const body = (
     <View className="flex-row items-center gap-sm">
@@ -385,7 +385,7 @@ function OrderRow({ order, unit, tz }: OrderRowProps) {
       <View className="flex-row items-center gap-sm">
         <View className="flex-1 gap-0.5">
           <Text className="font-mono text-xs text-ink-muted" testID={`${id}-time`}>
-            {time === null ? NO_VALUE : `${time.mdHm}${tz}`}
+            {time === null ? NO_VALUE : `${time.ymdHm}${tz}`}
           </Text>
           <Text className="font-mono text-sm text-ink" testID={`${id}-summary`}>
             {summary}

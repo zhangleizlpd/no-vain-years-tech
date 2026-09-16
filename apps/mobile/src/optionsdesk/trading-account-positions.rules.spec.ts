@@ -184,6 +184,7 @@ describe('交易所当地时间串（只重排，不换算时区；FR-017）', (
       ymd: '2026/09/08',
       hms: '14:05:12',
       mdHm: '09-08 14:05',
+      ymdHm: '26-09-08 14:05',
     });
     expect(marketTzLabel('us')).toBe('（美东）');
     expect(marketTzLabel('hk')).toBe('（香港）');

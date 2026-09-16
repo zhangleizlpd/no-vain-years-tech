@@ -1146,7 +1146,7 @@ test('083 T017① 点正股行 ⇒ 持仓详情显示汇总（全精度）与订
     await expect(inDetail(page, `order-${id}`)).toBeVisible();
   }
   await expect(inDetail(page, 'order-ord-3-summary')).toHaveText('卖出 50 股 @ 49.10');
-  await expect(inDetail(page, 'order-ord-3-time')).toHaveText('08-20 13:30（美东）');
+  await expect(inDetail(page, 'order-ord-3-time')).toHaveText('26-08-20 13:30（美东）');
 });
 
 // 📌 状态 / 方向为 T018 的中文映射（`orderStatusText` / `tradeSideText`）。
@@ -1285,7 +1285,7 @@ test('083 T017⑨ 开仓时间的时区标签由响应 market 决定（美股 �
   await expect(inDetail(page, 'opened-at-label')).toHaveText('开仓时间（美东）', {
     timeout: 30_000,
   });
-  await expect(inDetail(page, 'opened-at')).toHaveText('07-02 10:05');
+  await expect(inDetail(page, 'opened-at')).toHaveText('26-07-02 10:05');
 
   // 交易账户页默认市场是美股 ⇒ 港股标签只可能来自详情响应的 `market`。
   await gotoPositionDetail(page, HK_STOCK_DETAIL.id);
@@ -1689,8 +1689,8 @@ test('083 T019① 点期权合约行 ⇒ 汇总 → 2 个批次（开仓时间�
   await expect(inDetail(page, 'name')).toHaveText('示例汽车 沽');
   await expect(inDetail(page, 'lots-title')).toHaveText('持仓批次');
   await expect(inDetail(page, 'lots-count')).toHaveText('2 个 · 先开先平');
-  await expect(inDetail(page, 'lot-0-time')).toHaveText('09-01 10:32（香港）');
-  await expect(inDetail(page, 'lot-1-time')).toHaveText('09-08 14:05（香港）');
+  await expect(inDetail(page, 'lot-0-time')).toHaveText('26-09-01 10:32（香港）');
+  await expect(inDetail(page, 'lot-1-time')).toHaveText('26-09-08 14:05（香港）');
   await expect(inDetail(page, 'lot-0-market-value')).toHaveText('-580.00');
   await expect(inDetail(page, 'lot-0-pl')).toHaveText('-130.00');
   await expect(inDetail(page, 'orders-title')).toHaveText('本合约订单');
