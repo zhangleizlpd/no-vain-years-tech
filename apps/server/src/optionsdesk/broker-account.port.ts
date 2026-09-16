@@ -89,6 +89,52 @@ export interface BrokerTradeWindow {
   end: string;
 }
 
+/**
+ * 组合单的一条腿, 已由事件源从券商的 `ComboLeg` **对象**展开成结构化字段 (084 FR-020)。
+ *
+ * 🚫 与 {@link BrokerOrderRow.comboLegCodes} 的文本腿码**不是一回事**: 那是历史查询路径上从
+ * repr 串里正则抠出来的形态。推送路径的腿从一开始就是结构化的, 不经那条文本通路。
+ */
+export interface BrokerComboLeg {
+  code: string;
+  /** 券商原值 (`BUY` / `SELL` …); 券商未给 ⇒ `null` (组合单腿方向不收窄, 同 {@link BrokerOrderRow.side})。 */
+  side: string | null;
+}
+
+/**
+ * 订单推送事件的规范化行。比历史查询的订单行多两样: 结构化的腿, 与「腿缺失待回查」标记。
+ */
+export interface BrokerOrderEventRow extends BrokerOrderRow {
+  comboLegs: BrokerComboLeg[];
+  /**
+   * 该单是组合单但腿列表为空 ⇒ MUST 按订单号回查补全并留痕 (084 FR-020)。
+   * 🚫 当作「无腿」正常写入 —— 组合单的标的归属会就此永久缺失, 且无人察觉。
+   */
+  legsPending: boolean;
+}
+
+/**
+ * 一条推送事件。**`kind` 由事件源显式给出** (shim 的 `event_type`), 🚫 靠「哪些字段恰好在」猜 ——
+ * 订单事件与成交事件的字段集不同 (084 branch 13), 猜字段集会在券商加列那天静默错分。
+ */
+export type BrokerEvent =
+  | { kind: 'order'; seq: number; order: BrokerOrderEventRow }
+  | { kind: 'deal'; seq: number; deal: BrokerDealRow };
+
+/** 事件读取游标。首次消费 ⇒ 传 `null`, 从缓冲最旧一条起。 */
+export interface BrokerEventQuery {
+  epoch: string;
+  afterSeq: number;
+}
+
+/** 一次事件读取的结果; 字段与 `broker-event-cursor.rules.ts` 的判定入参对齐。 */
+export interface BrokerEventBatch {
+  epoch: string;
+  rows: BrokerEvent[];
+  nextSeq: number;
+  dropped: boolean;
+}
+
 export interface BrokerAccountPort {
   getAccountSummary(): Promise<BrokerAccountSummary>;
   fetchPositions(market: BrokerMarket): Promise<BrokerPositionRow[]>;
@@ -102,6 +148,13 @@ export interface BrokerAccountPort {
     market: BrokerMarket,
     codes: readonly string[],
   ): Promise<Map<string, string | null>>;
+  /**
+   * 读推送事件缓冲 (084 FR-004)。`query` 为 `null` ⇒ 从缓冲最旧一条起。
+   *
+   * 🚨 **非阻塞**: 没有新事件时立即返回空批, MUST NOT 长轮询 —— 挂起会占住事件源仅有的几个
+   * 工作线程, 与行情面抢资源。
+   */
+  fetchEvents(query: BrokerEventQuery | null): Promise<BrokerEventBatch>;
 }
 
 /**

@@ -88,6 +88,11 @@ class FakeBrokerPort implements BrokerAccountPort {
     this.calls++;
     return [];
   }
+  /** 084: 本 IT 只走 082 的查询路径; 推送事件读取不该被调用到。 */
+  fetchEvents(): never {
+    throw new Error('FakeBrokerPort.fetchEvents: 本 IT 不走推送路径');
+  }
+
   async fetchStockOwners(_market: BrokerMarket, codes: readonly string[]) {
     this.calls++;
     return new Map(codes.map((code) => [code, null]));

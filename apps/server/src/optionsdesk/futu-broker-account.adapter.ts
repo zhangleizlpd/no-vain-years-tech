@@ -15,7 +15,12 @@ import {
   BrokerInfrastructureError,
   type BrokerAccountPort,
   type BrokerAccountSummary,
+  type BrokerComboLeg,
   type BrokerDealRow,
+  type BrokerEvent,
+  type BrokerEventBatch,
+  type BrokerEventQuery,
+  type BrokerOrderEventRow,
   type BrokerOrderRow,
   type BrokerPositionRow,
   type BrokerRawRow,
@@ -42,6 +47,12 @@ import { FUTU_SHIM_TRADE_PROFILE } from './futu-shim-trade.constraint-profile';
  */
 
 const FUTU_MARKET: Readonly<Record<BrokerMarket, string>> = { us: 'US', hk: 'HK' };
+
+/**
+ * 事件行的市场列取值 → canonical。推送行的市场列名是 `trd_market`, 历史订单查询是
+ * `order_market` (084 FR-015 / branch 13) —— 取错字段会让整条数据归错市场, **且不报错**。
+ */
+const MARKET_BY_FUTU: Readonly<Record<string, BrokerMarket>> = { US: 'us', HK: 'hk' };
 
 /**
  * 成交行币种按市场补。
@@ -175,13 +186,19 @@ function parseDeal(row: unknown, market: BrokerMarket, what: string): BrokerDeal
   };
 }
 
-function parseOrder(row: unknown, market: BrokerMarket, what: string): BrokerOrderRow {
-  const r = asRecord(row);
+/**
+ * 订单行里**两路共用**的字段。腿单独留给各自的调用方: 查询路径拿到的是文本腿码, 推送路径
+ * 拿到的是结构化腿 —— 差别只此一处, 其余字段两路同名同义 (084 D2)。
+ */
+function parseOrderFields(
+  r: Record<string, unknown>,
+  market: BrokerMarket,
+  what: string,
+): Omit<BrokerOrderRow, 'comboLegCodes'> {
   return {
     market,
     orderId: required(orderIdOrNull(r.order_id), 'order_id', what, r),
     code: required(strOrNull(r.code), 'code', what, r),
-    comboLegCodes: parseComboLegs(r.combo_legs),
     side: required(textOrNull(r.trd_side), 'trd_side', what, r),
     orderType: strOrNull(r.order_type),
     qty: required(decimalOrNull(r.qty), 'qty', what, r),
@@ -192,6 +209,87 @@ function parseOrder(row: unknown, market: BrokerMarket, what: string): BrokerOrd
     vendorUpdatedAt: required(vendorTimeToDate(r.updated_time, market), 'updated_time', what, r),
     raw: withoutAccountId(r),
   };
+}
+
+function parseOrder(row: unknown, market: BrokerMarket, what: string): BrokerOrderRow {
+  const r = asRecord(row);
+  return { ...parseOrderFields(r, market, what), comboLegCodes: parseComboLegs(r.combo_legs) };
+}
+
+// ── 推送事件的规范化 (084 T005; plan D2) ────────────────────────────────────
+
+/** `/trade/events` 在统一信封 (`as_of` / `count` / `rows`) 之外多带的三个字段。 */
+interface TradeEventsEnvelope extends ShimEnvelope {
+  epoch?: unknown;
+  next_seq?: unknown;
+  dropped?: unknown;
+}
+
+/** 事件行的市场: 取 `trd_market`。🚫 `order_market` —— 那是历史订单查询的列名 (FR-015)。 */
+function eventMarket(r: Record<string, unknown>, what: string): BrokerMarket {
+  const raw = strOrNull(r.trd_market);
+  const market = raw === null ? undefined : MARKET_BY_FUTU[raw];
+  if (market === undefined) {
+    throw new Error(
+      `[futu] ${what} 事件行市场不在已知值域: ${String(r.trd_market)} code=${String(r.code)}`,
+    );
+  }
+  return market;
+}
+
+/**
+ * 事件行的组合单腿 → 结构化腿 (FR-020)。
+ *
+ * 🚨 **MUST NOT 经 `parseComboLegs`** (`broker-code.rules.ts:99-107`): 那是给**历史查询路径的
+ * 文本**腿用的, 对数组入参先 `filter(typeof === 'string')` ⇒ 喂对象**静默返回 `[]`**, 组合单的
+ * 标的归属就此消失且不报错。推送路径的腿由 shim 从 `ComboLeg` 对象展开成结构化 dict, 直接读。
+ *
+ * 腿缺 `code` ⇒ throw (同本文件「坏行 throw、不跳过」的纪律): 静默丢一条腿会让组合单只按剩下
+ * 那条腿归属, 比整单报错更难发现。复杂度 O(腿数)。
+ */
+function eventComboLegs(raw: unknown, what: string): BrokerComboLeg[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((leg) => {
+    const r = asRecord(leg);
+    const code = strOrNull(r.code);
+    if (code === null) {
+      throw new Error(`[futu] ${what} 组合单腿缺可用的 code (契约变更?)`);
+    }
+    return { code, side: textOrNull(r.trd_side) };
+  });
+}
+
+function parseOrderEvent(r: Record<string, unknown>, what: string): BrokerOrderEventRow {
+  const market = eventMarket(r, what);
+  const comboLegs = eventComboLegs(r.combo_legs, what);
+  const fields = parseOrderFields(r, market, what);
+  return {
+    ...fields,
+    comboLegCodes: comboLegs.map((leg) => leg.code),
+    comboLegs,
+    // 🚨 只有**判不出单一合约**的码才是组合单的合成码 (`parseBrokerCode` 对 `US.ZQY-COMBO` 这类
+    // 带分隔符的合成码返回 null)。不加这一半的话, 普通单腿单的空腿列表会让**每一单**都被标成
+    // 待回查, 回查量与订单量同阶 —— 那不是 FR-020 要的。
+    legsPending: comboLegs.length === 0 && parseBrokerCode(fields.code) === null,
+  };
+}
+
+/**
+ * 一条事件行 → port 事件。**靠事件源显式给的 `event_type` 分流**, 🚫 靠「哪些字段恰好在」猜:
+ * 订单与成交的字段集不同 (branch 13), 猜字段集会在券商加列那天静默错分。复杂度 O(列数)。
+ */
+function parseEvent(row: unknown, what: string): BrokerEvent {
+  const r = asRecord(row);
+  const seq = r.seq;
+  if (typeof seq !== 'number' || !Number.isSafeInteger(seq)) {
+    throw new Error(`[futu] ${what} 事件行缺可用的 seq (契约变更?)`);
+  }
+  const eventType = strOrNull(r.event_type);
+  if (eventType === 'order') return { kind: 'order', seq, order: parseOrderEvent(r, what) };
+  if (eventType === 'deal') {
+    return { kind: 'deal', seq, deal: parseDeal(r, eventMarket(r, what), what) };
+  }
+  throw new Error(`[futu] ${what} 事件行 event_type 不在已知值域: ${String(r.event_type)}`);
 }
 
 export class FutuBrokerAccountAdapter implements BrokerAccountPort {
@@ -271,6 +369,45 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
     return owners;
   }
 
+  /**
+   * 读推送事件缓冲 (084 FR-004)。shim 立即返回当前缓冲内容, **不挂起**。
+   *
+   * 走 {@link fetchEnvelope} 而非 `fetchRows`: 本端点的信封比 rows 型端点多 `epoch` /
+   * `next_seq` / `dropped`, 而这三个字段是断档判定 (`broker-event-cursor.rules.ts`) 的**全部**
+   * 依据 —— 丢掉任一个都判不出缓冲绕回。复杂度 O(rows × 列数)。
+   */
+  async fetchEvents(query: BrokerEventQuery | null): Promise<BrokerEventBatch> {
+    const what = 'trade/events';
+    const params = new URLSearchParams();
+    if (query !== null) {
+      params.set('epoch', query.epoch);
+      params.set('after_seq', String(query.afterSeq));
+    }
+    const search = params.toString();
+    const res = await this.fetchEnvelope<TradeEventsEnvelope>(
+      search === '' ? '/trade/events' : `/trade/events?${search}`,
+      what,
+    );
+    const rows = parseShimRows(res, what);
+    const epoch = strOrNull(res.epoch);
+    if (epoch === null) {
+      throw new Error(`[futu] ${what} 响应缺可用的 epoch (契约变更?)`);
+    }
+    if (typeof res.next_seq !== 'number' || !Number.isSafeInteger(res.next_seq)) {
+      throw new Error(`[futu] ${what} 响应缺可用的 next_seq (契约变更?)`);
+    }
+    // 🚨 缺 `dropped` 不按 false 兜底: 那会把「缓冲已绕回」读成一切正常, 丢掉的成交永不出现。
+    if (typeof res.dropped !== 'boolean') {
+      throw new Error(`[futu] ${what} 响应缺可用的 dropped (契约变更?)`);
+    }
+    return {
+      epoch,
+      rows: rows.map((row) => parseEvent(row, what)),
+      nextSeq: res.next_seq,
+      dropped: res.dropped,
+    };
+  }
+
   private windowParams(market: BrokerMarket, window: BrokerTradeWindow): string {
     return new URLSearchParams({
       market: FUTU_MARKET[market],
@@ -280,13 +417,16 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
   }
 
   /**
-   * 打一次 shim + 失败语义映射 (判别口径见 `BrokerInfrastructureError` 注释); 信封校验委托
-   * `parseShimRows` (shim 信封三道闸的单点, 🚫 不另抄一份)。
+   * 打一次 shim + 失败语义映射 (判别口径见 `BrokerInfrastructureError` 注释)。
+   * 🚨 信封校验**不在这里**: 留给调用方按端点形状各自做 (rows 型走 `parseShimRows`,
+   * 事件端点另取三个字段), 与原先「映射归映射、校验归 `parseShimRows`」的分工一致。
    */
-  private async fetchRows(path: string, what: string): Promise<unknown[]> {
-    let res: ShimEnvelope | undefined;
+  private async fetchEnvelope<T extends ShimEnvelope = ShimEnvelope>(
+    path: string,
+    what: string,
+  ): Promise<T> {
     try {
-      res = await this.http.request<ShimEnvelope>({
+      return await this.http.request<T>({
         url: `${this.baseUrl}${path}`,
         method: 'GET',
         headers: { Authorization: `Bearer ${this.token}` },
@@ -304,7 +444,11 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
       // 其余 4xx (400 参数 / 401 鉴权) = 确定性错误, 原样上抛, 按数据类处理、不重试。
       throw err;
     }
-    return parseShimRows(res, what);
+  }
+
+  /** 信封校验委托 `parseShimRows` (shim 信封三道闸的单点, 🚫 不另抄一份)。 */
+  private async fetchRows(path: string, what: string): Promise<unknown[]> {
+    return parseShimRows(await this.fetchEnvelope(path, what), what);
   }
 }
 
