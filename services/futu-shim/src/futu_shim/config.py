@@ -106,6 +106,21 @@ def trade_call_timeout_s() -> float:
     return float(_env("FUTU_TRADE_CALL_TIMEOUT_S", "10") or "10")
 
 
+def trade_event_buffer_size() -> int:
+    """Rows kept in the push-event ring buffer (`trade_events.TradeEventBuffer`).
+
+    Default 2000. The bound that matters is not memory (a row is one or two KB, so
+    2000 rows is a few MB) but **how long a consumer may be away without losing
+    events**: the server reads every 2 s, so the buffer only has to cover an
+    ordinary server restart / redeploy window. 2000 rows is far more than a manually
+    traded account produces in such a window, which is the point — a wrap should
+    mean something actually went wrong, not that we deployed again. Sizing it too
+    small makes every routine deploy emit a gap-compensation trace and drowns the
+    signal FR-014 reads to judge the push channel's health.
+    """
+    return int(_env("FUTU_TRADE_EVENT_BUFFER_SIZE", "2000") or "2000")
+
+
 def systemctl_cmd() -> list[str]:
     """Command prefix used to control the OpenD unit.
 
