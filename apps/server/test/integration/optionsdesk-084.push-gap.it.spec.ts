@@ -5,6 +5,11 @@ import { narrowTestModule } from '../_support/narrow-boot';
 import { Prisma } from '../../src/generated/prisma/client';
 import { marketdataConfig, type MarketdataConfig } from '../../src/config/marketdata.config';
 import { MARKETDATA_WORKER_DISABLED } from '../../src/marketdata/marketdata-sync.queue';
+import {
+  TRADING_CALENDAR_PORT,
+  type TradingCalendarPort,
+  type TradingDayStatus,
+} from '../../src/marketdata/trading-calendar.port';
 import { OptionsdeskModule } from '../../src/optionsdesk/optionsdesk.module';
 import { PrismaService } from '../../src/security/prisma.service';
 import { REDIS_CLIENT } from '../../src/security/redis.token';
@@ -79,6 +84,22 @@ for (const key of Object.keys(process.env)) {
  * - 加上两条分支后本文件 13/13 绿。`reclaimStuckRuns` 与 `runEvents` 是与 082 共用的路径 ⇒
  *   连 `optionsdesk-082.{reconcile,backfill}-scheduler.it.spec.ts` 与 084 push-consume 一起跑,
  *   四个文件 52/52 绿。
+ *
+ * ## T012 定向变异留档 (2026-09-16, 同一条命令; 本 task **零生产代码改动**)
+ *
+ * - 基线: 本文件 17/17 绿 (T010 8 条 + T011 5 条 + T012 4 条)。
+ * - ⚠️ **一个变异盖不住这四条臂, 需要两个** —— tasks.md 起片时只写了「把补偿改写成对账类型」,
+ *   但 T012 的 ① ② ④ **不经过补偿的写入路径** (夹具直接 `seedRun('gapfill', …)`), 那个变异
+ *   碰不到它们。照实分两个记:
+ * - m1. **对账判定把补偿计入**: `broker-account.scheduler.ts` `reconcileMarket` 的
+ *   `scope` 去掉 `kind: 'reconcile'` (即当日统计与「上次成功交易日」都不再按类型过滤)。
+ *   **① ② ④ 三条红**, 其余 14 条绿 —— 正是 FR-010 要钉的那个形态: 当日已有成功的补偿 ⇒
+ *   对账判 `already-succeeded` ⇒ **一条都不起, 且全程不报错**。
+ * - m2. **补偿写成对账类型**: `gapfillMarket` 建记录处 `kind: 'gapfill'` → `'reconcile'`。
+ *   **11 条红** (T010 全 8 条 + T011 的 ② ⑤ + T012 的 ③), 6 条绿。比 T010 留档的「8 条全红」
+ *   多出的 3 条是 T011-② / T011-⑤ / T012-③ —— 同一个原因: 每条臂的观察面都是「`kind='gapfill'`
+ *   的记录」, 补偿一旦记成对账类型这个集合整体为空。🚫 为把红收窄而往夹具塞诱饵列。
+ * - 两处变异均已还原 (`git status` 对该文件为空), 还原后 17/17 复绿。
  */
 
 /** 明显假值 (Guardrail 9): 连接所属账号 ID 一律合成。 */
@@ -154,6 +175,38 @@ class FakeGapPort implements BrokerAccountPort {
   }
 }
 
+/**
+ * 交易日历 test double (形制照 `optionsdesk-082.reconcile-scheduler.it.spec.ts`): `byMarket`
+ * 钉死的市场按钉值, 其余按日期串的星期判 (周六日非交易日)。
+ *
+ * T012 之前本文件不替换日历 port —— 真 adapter 对空日历表回 `unknown`, 而 `decideReconcile`
+ * 对 `unknown` 是**放行**的, 于是对账照跑、臂也绿, 但绿的理由是「日历没覆盖」而不是「这天是
+ * 交易日」。T012 要断言的恰是对账在**正常交易日**照常发起 ⇒ 把这一步钉死。
+ */
+class FakeCalendar implements TradingCalendarPort {
+  byMarket: Partial<Record<BrokerMarket, TradingDayStatus>> = {};
+
+  reset() {
+    this.byMarket = {};
+  }
+
+  async classify(market: string, date: string): Promise<TradingDayStatus> {
+    const fixed = this.byMarket[market as BrokerMarket];
+    if (fixed !== undefined) return fixed;
+    const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+    return weekday === 0 || weekday === 6 ? 'non-trading' : 'trading';
+  }
+  async lastClosedSession() {
+    return null;
+  }
+  async previousTradingDay() {
+    return null;
+  }
+  async countTradingDays() {
+    return null;
+  }
+}
+
 const historyDeal = (dealId: string, market: BrokerMarket = 'us'): BrokerDealRow => ({
   market,
   dealId,
@@ -191,6 +244,7 @@ describe('084 推送断档处置 IT (Testcontainers PG)', () => {
   let scheduler: BrokerAccountScheduler;
   let conn: bigint;
   const port = new FakeGapPort();
+  const calendar = new FakeCalendar();
   const prevWorkerDisabled = process.env[MARKETDATA_WORKER_DISABLED];
 
   const runsOf = (kind: string, market?: BrokerMarket) =>
@@ -230,6 +284,8 @@ describe('084 推送断档处置 IT (Testcontainers PG)', () => {
       .useValue(port)
       .overrideProvider(marketdataConfig.KEY)
       .useValue(LIVE_CONFIG)
+      .overrideProvider(TRADING_CALENDAR_PORT)
+      .useValue(calendar)
       .compile();
     prisma = moduleRef.get(PrismaService);
     scheduler = moduleRef.get(BrokerAccountScheduler);
@@ -248,6 +304,7 @@ describe('084 推送断档处置 IT (Testcontainers PG)', () => {
 
   beforeEach(async () => {
     port.reset();
+    calendar.reset();
     await prisma.brokerSyncRun.deleteMany({});
     await prisma.brokerPosition.deleteMany({});
     await prisma.brokerDeal.deleteMany({});
@@ -500,6 +557,91 @@ describe('084 推送断档处置 IT (Testcontainers PG)', () => {
       // 表现是断档不被补偿且不报错。
       await tickThenGap([dealEvent(5, 'dl-after')]);
       expect((await runsOf('gapfill', 'us')).map((r) => r.status)).toEqual(['succeeded']);
+    });
+  });
+
+  /**
+   * T012 `kind` 隔离回归 (FR-010; plan D5; state_branches 10)。
+   *
+   * 🚨 **本 describe 不配任何生产代码改动** —— 隔离在起片前就已成立 (开盘前对账的两处 scope
+   * `broker-account.scheduler.ts` `reconcileMarket` 与索引谓词 `uk_broker_sync_run_reconcile_active`
+   * 都带 `kind='reconcile'` 过滤)。这里补的是**回归断言**: 挡住后续某次改动悄悄把补偿记成
+   * 对账类型 —— 那种失效的表现是**开盘前对账被静默跳过**, 不报错、不留痕, 直到 SC-004 的
+   * 上线后观察 (累计 5 个交易日) 才看得出来。
+   *
+   * `NOW` 在两个市场都已过对账时点 (美股 ET 10:31 > 09:10 · 港股当地 22:31 > 09:05) ⇒
+   * `scheduler.run(NOW)` 这一拍两个市场都会真的发起对账。
+   */
+  describe('T012 kind 隔离: 开盘前对账不受缺口补偿影响', () => {
+    /** 当日每个市场各一条**成功**的缺口补偿 —— 断档是批级的, 补偿逐市场 fan-out (T010 ①)。 */
+    const seedTodaysGapfills = async (status = 'succeeded') => {
+      for (const market of ['us', 'hk'] as const) {
+        await seedRun('gapfill', status, {
+          market,
+          startedAt: new Date(NOW.getTime() - 60 * MINUTE),
+          finishedAt: new Date(NOW.getTime() - 59 * MINUTE),
+          filled: 0,
+        });
+      }
+    };
+
+    it('① 🚨 当日已有成功的缺口补偿 ⇒ 开盘前对账时点到来时照常发起 (branch 10; FR-010)', async () => {
+      await seedTodaysGapfills();
+
+      await scheduler.run(NOW);
+
+      // 🚨 补偿被误记成对账类型的实现在这里红: 那两条 succeeded 会让 `decideReconcile` 判
+      // `already-succeeded`, 当日对账**一条都不起**, 而全程没有任何错误。
+      expect((await runsOf('reconcile')).map((r) => [r.market, r.status])).toEqual([
+        ['us', 'succeeded'],
+        ['hk', 'succeeded'],
+      ]);
+    });
+
+    it('② 当日补偿 + 对账各一条 ⇒ 按对账类型统计当日仍恰 1 条 (SC-004 的机制面)', async () => {
+      await seedTodaysGapfills();
+
+      await scheduler.run(NOW);
+      // 🚨 再跑一拍: 防重入与「当日已成功」都必须按对账类型算, 第二拍不许多出第二条。
+      await scheduler.run(new Date(NOW.getTime() + MINUTE));
+
+      for (const market of ['us', 'hk'] as const) {
+        const reconciles = await prisma.brokerSyncRun.count({
+          where: { kind: 'reconcile', market, status: 'succeeded', tradingDate: day(TRADING_DATE) },
+        });
+        expect([market, reconciles]).toEqual([market, 1]);
+      }
+      // 补偿那两条原样留着、互不计入。
+      expect(await runsOf('gapfill')).toHaveLength(2);
+    });
+
+    it('③ 补偿记录不撞对账的部分唯一索引 (同一 connection × market × 交易日可以并存)', async () => {
+      // 先让对账真的跑完 ⇒ 库里有一条 succeeded 的 reconcile 占住 `uk_broker_sync_run_reconcile_active`。
+      await scheduler.run(NOW);
+      expect((await runsOf('reconcile', 'us')).map((r) => r.status)).toEqual(['succeeded']);
+
+      // 同一 (connection, market, tradingDate) 上再插补偿: 谓词带 kind 过滤 ⇒ 插得进。
+      await tickThenGap([dealEvent(5, 'dl-after')]);
+
+      expect((await runsOf('gapfill', 'us')).map((r) => r.status)).toEqual(['succeeded']);
+      expect((await runsOf('reconcile', 'us')).map((r) => r.status)).toEqual(['succeeded']);
+    });
+
+    it('④ 🚨 对账的「上次成功交易日」判定不把补偿计入 (窗口起点不被补偿拉长)', async () => {
+      // 一条**更早交易日**的成功补偿。若它被当成「上次成功的对账」, 对账窗口起点会被拉到那天。
+      await seedRun('gapfill', 'succeeded', {
+        market: 'us',
+        tradingDate: day('2026-08-01'),
+        finishedAt: day('2026-08-01'),
+        filled: 0,
+      });
+
+      await scheduler.run(NOW);
+
+      const [reconcile] = await runsOf('reconcile', 'us');
+      // 回看下限 = 交易所当地今天往前 7 个自然日 (`RECONCILE_MIN_LOOKBACK_DAYS`)。
+      expect(reconcile?.windowStart?.toISOString().slice(0, 10)).toBe('2026-09-09');
+      expect(reconcile?.status).toBe('succeeded');
     });
   });
 });
