@@ -175,6 +175,19 @@ function SummaryCard({ data }: { data: BrokerPositionDetailResponse }) {
         <Text className="font-mono text-xs text-ink-muted" testID={`${TEST_ID}-code-line`}>
           {`${positionCodeLine(data)} · ${DETAIL_COPY.marketName[data.market]}`}
         </Text>
+        {/* FR-021 的「持仓详情」半：标与主列表行同文案，另加 badge 塞不下的成因说明。 */}
+        {data.expired ? (
+          <View className="gap-0.5 pt-0.5">
+            <View className="self-start rounded-sm bg-warn-soft px-1">
+              <Text className="text-xs text-ink" testID={`${TEST_ID}-expired`}>
+                {COPY.expired}
+              </Text>
+            </View>
+            <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-expired-note`}>
+              {DETAIL_COPY.expiredNote}
+            </Text>
+          </View>
+        ) : null}
       </View>
       <View className="flex-row flex-wrap">
         {fields.map((field) => (

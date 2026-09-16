@@ -211,7 +211,9 @@ describe('tradingAccountPositions 文案段（plan D17）', () => {
     expect(COPY.stale('x')).not.toMatch(/失败|未成功/);
     expect(COPY.refetchFailed).toBe('刷新失败，显示的是上次加载的数据');
     expect(COPY.unresolved(2)).toBe('未归类 2 条');
-    expect(COPY.expired).toBe('已到期 · 待同步');
+    expect(COPY.expired).toBe('已到期 · 待清算');
+    // 🚫 回退成「待同步」: 那把成因指向本仓同步管道 (见 optionsdesk-copy 该字段注释)。
+    expect(COPY.expired).not.toMatch(/待同步/);
     expect(COPY.syncedAt('09-08 14:05（美东）')).toBe('同步于 09-08 14:05（美东）');
   });
 });

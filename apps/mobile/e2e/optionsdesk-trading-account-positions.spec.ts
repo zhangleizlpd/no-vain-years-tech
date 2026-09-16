@@ -30,7 +30,7 @@ import { mockJson } from './_support/api-mock';
 //        ③ 点组头折叠 / 再点展开；折叠后返回雷达再进入 ⇒ 全部展开（sb 13 / US1-AS7）
 //          ③b 折叠后点行进持仓详情、header 返回 ⇒ 仍折叠（T017 落路由后解除 fixme）
 //        ④ 港股空头认沽 ⇒「示例汽车 沽」、第二行 `261029 7.25`、数量与市值为负（sb 22 / US1-AS3）
-//        ⑤ `expired=true` 行 ⇒「已到期 · 待同步」可见（sb 23 / US1-AS9）
+//        ⑤ `expired=true` 行 ⇒「已到期 · 待清算」可见（sb 23 / US1-AS9）
 //        ⑥ `brokerCount=1` ⇒ 无连接标签；`=2` 且同合约两行 ⇒ 各显示自己的连接名称（sb 20, 21）
 //        ⑦ 行 `marketValue='37560'` ⇒ 主列表显示 `3.76万`（FR-022）
 //   T016 ① 下拉重读 ⇒ 列表端点命中 +1、同步时刻更新、无非本片端点请求（sb 14 下拉面 / US1-AS8）
@@ -684,14 +684,14 @@ test('083 T015④ 港股空头认沽 ⇒「示例汽车 沽」、第二行 26102
   await expect(rowPart(page, id, 'market-value')).toHaveText('-1,740.00');
 });
 
-test('083 T015⑤ expired=true 行 ⇒「已到期 · 待同步」可见，未到期行无此标（sb 23 / US1-AS9）', async ({
+test('083 T015⑤ expired=true 行 ⇒「已到期 · 待清算」可见，未到期行无此标（sb 23 / US1-AS9）', async ({
   page,
 }) => {
   await installPositionsMock(page, newServer(US_GROUPED));
   await gotoTradingAccount(page);
 
   await expect(positionRow(page, ZQY_PUT_EXPIRED.id)).toBeVisible({ timeout: 30_000 });
-  await expect(rowPart(page, ZQY_PUT_EXPIRED.id, 'expired')).toHaveText('已到期 · 待同步');
+  await expect(rowPart(page, ZQY_PUT_EXPIRED.id, 'expired')).toHaveText('已到期 · 待清算');
   await expect(rowPart(page, ZQY_CALL.id, 'expired')).toHaveCount(0);
 });
 
@@ -1014,6 +1014,17 @@ const ZQR_CALL_DETAIL: BrokerPositionDetailResponse = {
   },
 };
 
+/**
+ * 已到期期权的持仓详情（FR-021 的「持仓详情」半，2026-09-16 amend 才实装）。
+ * `expired: true` 由 `ZQY_PUT_EXPIRED` 带入；`lots: null` —— 本用例只验到期标，不牵批次段。
+ */
+const ZQY_PUT_EXPIRED_DETAIL: BrokerPositionDetailResponse = {
+  ...ZQY_PUT_EXPIRED,
+  openedAtLocal: '2026-08-05 09:40:00',
+  orders: [order('ord-21', 'SELL_SHORT', '1', '1.35', 'FILLED_ALL', '2026-08-05 09:40:00')],
+  lots: null,
+};
+
 /** 港股正股持仓详情（交易账户页默认市场是美股 ⇒ 时区标签只能来自响应 `market`）。 */
 const HK_STOCK_DETAIL: BrokerPositionDetailResponse = {
   ...stockRow('hk'),
@@ -1148,6 +1159,25 @@ test('083 T017② 已撤单订单照常列出、状态标可见（sb 36 / US3-AS
     timeout: 30_000,
   });
   await expect(inDetail(page, 'order-ord-4-status')).toHaveText('全部成交');
+});
+
+// 📌 FR-021 写的是「主列表行**与持仓详情**标」，但详情屏那一半自 083 起从未实装（2026-09-16 补）。
+test('083 FR-021 详情半 已到期期权详情 ⇒ 汇总卡出「已到期 · 待清算」；未到期持仓无此标', async ({
+  page,
+}) => {
+  await installPositionsMock(page, newServer(US_GROUPED));
+  await installPositionDetailMock(page, newDetailServer(ZQY_PUT_EXPIRED_DETAIL, ZQY_STOCK_DETAIL));
+
+  await gotoPositionDetail(page, ZQY_PUT_EXPIRED_DETAIL.id);
+  await expect(inDetail(page, 'expired')).toHaveText('已到期 · 待清算', { timeout: 30_000 });
+  await expect(inDetail(page, 'expired-note')).toHaveText(
+    '合约已到期，结算完成后券商会移除该持仓。',
+  );
+
+  // 🚨 反臂: 没有它, 一个无条件渲染的标会让上一条恒真。
+  await gotoPositionDetail(page, ZQY_STOCK_DETAIL.id);
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await expect(inDetail(page, 'expired')).toHaveCount(0);
 });
 
 test('083 T017③ 详情端点首次 500 ⇒「加载失败 + 重试」；恢复后点重试 ⇒ 汇总（sb 46）', async ({
