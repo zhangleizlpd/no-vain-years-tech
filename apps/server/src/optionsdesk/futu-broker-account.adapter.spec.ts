@@ -420,17 +420,31 @@ describe('FutuBrokerAccountAdapter — 推送事件行规范化 (084 T005)', () 
     };
   }
 
-  /** `/trade/events` 的信封比 rows 型端点多 `epoch` / `next_seq` / `dropped` 三个字段。 */
+  /**
+   * 事件源报出的「最近一次事件到达时刻」(084 FR-014)。⚠️ 它是**事件到达**时刻, 与信封的
+   * `as_of` (响应时刻) 不是一回事 —— 夹具里刻意取两个不同的值, 免得取错字段也能绿。
+   */
+  const LAST_EVENT_AT_ISO = '2026-09-11T13:59:58.250000+00:00';
+
+  /**
+   * `/trade/events` 的信封比 rows 型端点多 `epoch` / `next_seq` / `dropped` / `last_event_at`
+   * 四个字段。🚨 **四个都得在**: adapter 对其中任一缺失都 throw, 少一个就是整批事件拿不到。
+   */
   function makeEventsShim(rows: unknown[], extra: Record<string, unknown> = {}) {
-    const request = vi.fn(async (_req: VendorRequest) => ({
-      as_of: '2026-09-11T14:00:00+00:00',
-      count: rows.length,
-      rows,
-      epoch: 'aaaa0000epoch',
-      next_seq: 12,
-      dropped: false,
-      ...extra,
-    }));
+    // 返回型刻意标成松的 `Record<string, unknown>`: 下面「缺字段 ⇒ 抛」那条臂要喂一个**故意
+    // 少一个键**的信封, 而由实现推断出的字面量类型会让它在 typecheck 期就被拒 (那条臂就写不出来)。
+    const request = vi.fn(
+      async (_req: VendorRequest): Promise<Record<string, unknown>> => ({
+        as_of: '2026-09-11T14:00:00+00:00',
+        count: rows.length,
+        rows,
+        epoch: 'aaaa0000epoch',
+        next_seq: 12,
+        dropped: false,
+        last_event_at: LAST_EVENT_AT_ISO,
+        ...extra,
+      }),
+    );
     return { http: { request } as unknown as VendorHttpClient, request };
   }
 
@@ -548,6 +562,30 @@ describe('FutuBrokerAccountAdapter — 推送事件行规范化 (084 T005)', () 
     expect(batch.epoch).toBe('bbbb1111epoch');
     expect(batch.nextSeq).toBe(42);
     expect(batch.dropped).toBe(true);
+  });
+
+  it('信封的 last_event_at: 有值 ⇒ Date、null ⇒ null、缺字段 ⇒ 抛 (FR-014)', async () => {
+    const shim = makeEventsShim([dealEvent()]);
+    const batch = await makeAdapter(shim.http).fetchEvents(null);
+    // 🚨 取的是事件**到达**时刻, 不是信封的 `as_of` (那是响应时刻, 14:00:00)。
+    expect(batch.lastEventAt?.toISOString()).toBe('2026-09-11T13:59:58.250Z');
+
+    // 事件源从没收到过推送 ⇒ null。
+    const never = makeEventsShim([], { last_event_at: null });
+    expect((await makeAdapter(never.http).fetchEvents(null)).lastEventAt).toBeNull();
+
+    // 🚨 缺字段 MUST 抛, 🚫 按 null 兜底 —— null 的含义是「从没收到过推送」(通道可能已死),
+    // 而缺失只说明 shim 是旧版本; 混为一谈会让一条健在的通道显示为长期静默 (D8)。
+    const stale = makeEventsShim([]);
+    stale.request.mockResolvedValueOnce({
+      as_of: '2026-09-11T14:00:00+00:00',
+      count: 0,
+      rows: [],
+      epoch: 'aaaa0000epoch',
+      next_seq: 12,
+      dropped: false,
+    });
+    await expect(makeAdapter(stale.http).fetchEvents(null)).rejects.toThrow('last_event_at');
   });
 
   it('游标入参 ⇒ epoch / after_seq 进 query; 首次消费 (null) ⇒ 不带参数', async () => {
