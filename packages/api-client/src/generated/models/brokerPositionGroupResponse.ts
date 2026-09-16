@@ -18,6 +18,6 @@ export interface BrokerPositionGroupResponse {
   groupMarketValue: string | null;
   /** 组持仓盈亏 (非空者带符号求和; 全空 ⇒ null) */
   groupUnrealizedPl: string | null;
-  /** 组内行: 正股段在前、期权段在后, 段内开仓时间升序 */
+  /** 组内行: 正股段在前、期权段在后; 期权段已到期沉底, 段内沽(P) 先于购(C)、到期日近的在前、行权价升序 */
   rows: BrokerPositionRowResponse[];
 }

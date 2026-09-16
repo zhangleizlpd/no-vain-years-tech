@@ -20,7 +20,11 @@ import {
   formatPlRatio,
   indexBackfillRunsByTicker,
   isDetailNotFound,
+  filterOrdersByTab,
   localDateTimeParts,
+  orderStatusBucket,
+  ORDER_STATUS_TABS,
+  type BrokerOrderStatus,
   marketTzLabel,
   optionDisplayName,
   orderKind,
@@ -184,6 +188,7 @@ describe('交易所当地时间串（只重排，不换算时区；FR-017）', (
       ymd: '2026/09/08',
       hms: '14:05:12',
       mdHm: '09-08 14:05',
+      ymdHm: '26-09-08 14:05',
     });
     expect(marketTzLabel('us')).toBe('（美东）');
     expect(marketTzLabel('hk')).toBe('（香港）');
@@ -211,8 +216,80 @@ describe('tradingAccountPositions 文案段（plan D17）', () => {
     expect(COPY.stale('x')).not.toMatch(/失败|未成功/);
     expect(COPY.refetchFailed).toBe('刷新失败，显示的是上次加载的数据');
     expect(COPY.unresolved(2)).toBe('未归类 2 条');
-    expect(COPY.expired).toBe('已到期 · 待同步');
+    expect(COPY.expired).toBe('已到期 · 待清算');
+    // 🚫 回退成「待同步」: 那把成因指向本仓同步管道 (见 optionsdesk-copy 该字段注释)。
+    expect(COPY.expired).not.toMatch(/待同步/);
     expect(COPY.syncedAt('09-08 14:05（美东）')).toBe('同步于 09-08 14:05（美东）');
+  });
+});
+
+describe('订单状态分档与筛选（2026-09-16）', () => {
+  /** 17 个值逐一归档 —— 少一个这里就漏测，故显式列全而非遍历 Record 的键。 */
+  const EXPECTED: Record<BrokerOrderStatus, string> = {
+    FILLED_ALL: 'filled',
+    FILLED_PART: 'filled',
+    CANCELLED_ALL: 'cancelled',
+    CANCELLED_PART: 'cancelled',
+    CANCELLING_ALL: 'cancelled',
+    CANCELLING_PART: 'cancelled',
+    FILL_CANCELLED: 'cancelled',
+    FAILED: 'failed',
+    SUBMIT_FAILED: 'failed',
+    TIMEOUT: 'failed',
+    DISABLED: 'failed',
+    DELETED: 'failed',
+    'N/A': 'other',
+    UNSUBMITTED: 'other',
+    WAITING_SUBMIT: 'other',
+    SUBMITTING: 'other',
+    SUBMITTED: 'other',
+  };
+
+  it('17 个券商状态各自归档', () => {
+    for (const [status, bucket] of Object.entries(EXPECTED)) {
+      expect(`${status}=${orderStatusBucket(status)}`).toBe(`${status}=${bucket}`);
+    }
+    expect(Object.keys(EXPECTED)).toHaveLength(17);
+  });
+
+  it('值域外状态 ⇒ other（只在「全部」出现），🚫 猜档', () => {
+    expect(orderStatusBucket('SOME_NEW_SDK_STATUS')).toBe('other');
+    // 原型链键名不得被当成命中（同 labelOf 的 hasOwnProperty 纪律）。
+    expect(orderStatusBucket('toString')).toBe('other');
+  });
+
+  it('页签四档、顺序固定', () => {
+    expect([...ORDER_STATUS_TABS]).toEqual(['all', 'filled', 'cancelled', 'failed']);
+  });
+
+  it('筛选：all 全留；各档只留本档；在途单只在 all 出现', () => {
+    const orders = [
+      { id: 'a', status: 'FILLED_ALL' },
+      { id: 'b', status: 'CANCELLED_ALL' },
+      { id: 'c', status: 'FAILED' },
+      { id: 'd', status: 'SUBMITTED' },
+      { id: 'e', status: 'FILLED_PART' },
+    ];
+    const ids = (tab: (typeof ORDER_STATUS_TABS)[number]) =>
+      filterOrdersByTab(orders, tab).map((o) => o.id);
+
+    expect(ids('all')).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(ids('filled')).toEqual(['a', 'e']);
+    expect(ids('cancelled')).toEqual(['b']);
+    expect(ids('failed')).toEqual(['c']);
+    // 🚨 在途单 'd' 不属于任何非 all 档 —— 这条钉住「不给在途单开页签」的决定。
+    expect(ids('filled')).not.toContain('d');
+    expect(ids('cancelled')).not.toContain('d');
+    expect(ids('failed')).not.toContain('d');
+  });
+
+  it('筛选保持服务端已排好的顺序（🚫 重排）', () => {
+    const orders = [
+      { id: 'newest', status: 'FILLED_ALL' },
+      { id: 'mid', status: 'CANCELLED_ALL' },
+      { id: 'oldest', status: 'FILLED_PART' },
+    ];
+    expect(filterOrdersByTab(orders, 'filled').map((o) => o.id)).toEqual(['newest', 'oldest']);
   });
 });
 

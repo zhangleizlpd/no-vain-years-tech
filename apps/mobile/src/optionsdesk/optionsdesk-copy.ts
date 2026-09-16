@@ -12,6 +12,7 @@ import type { TradingAccountSegment } from './trading-account.rules';
 import type {
   BrokerOrderStatus,
   BrokerTradeSide,
+  OrderStatusTab,
   PositionsView,
 } from './trading-account-positions.rules';
 
@@ -1418,8 +1419,15 @@ export const OPTIONSDESK_COPY = {
     refetchFailed: '刷新失败，显示的是上次加载的数据',
     /** 判定不出正股的持仓条数提示（FR-011）。 */
     unresolved: (count: number) => `未归类 ${count} 条`,
-    /** 到期日早于交易所今天、尚未被同步移除的期权（FR-021 逐字）。 */
-    expired: '已到期 · 待同步',
+    /**
+     * 到期日早于交易所今天、尚未被同步移除的期权（FR-021；2026-09-16 措辞 amend）。
+     *
+     * 🚨 🚫 回改成「待同步」：那把成因指向本仓的同步管道，会引导用户去下拉刷新，而刷新多少次
+     * 都不会让它消失 —— 真实成因是**上游清算尚未走完**（富途官方「行权、交收及结算」：义务方
+     * 须在「行使后的第二个交易日」交收；OCC 侧行权 / 指派隔夜处理）。「待清算」对三种结局
+     * （长仓价外作废 / 长仓价内自动行权 / 空头被指派）都成立，故不按长短仓分流措辞。
+     */
+    expired: '已到期 · 待清算',
     /** 期权名称后缀：美股 Call / Put，港股 购 / 沽（FR-007）。 */
     optionRight: {
       us: { C: 'Call', P: 'Put' },
@@ -1436,6 +1444,15 @@ export const OPTIONSDESK_COPY = {
     /** 持仓详情屏（083 T017，plan D15）。 */
     positionDetail: {
       title: '持仓详情',
+      /**
+       * 已到期期权在详情屏的补充说明（badge 塞不下的那半句）。
+       *
+       * EVIDENCE: 到期后持仓要等上游清算走完才会被券商移除 —— 富途「行权、交收及结算」
+       * (futuhk.com/cn/support/topic2_513)：义务方「须在指定的交收时间内（行使后的第二个
+       * 交易日）交付正股或支付正股价」；本仓持仓表是券商镜像（按券商回报集合 diff 删行）。
+       * 🚫 写成「稍后重试 / 下拉刷新」：刷新不会让它消失。
+       */
+      expiredNote: '合约已到期，结算完成后券商会移除该持仓。',
       /** 非数据视图的卡片标题（FR-020 逐字）。 */
       states: {
         'not-found': '持仓已不存在',
@@ -1469,6 +1486,19 @@ export const OPTIONSDESK_COPY = {
         option: '本合约订单',
       } satisfies Record<BrokerPositionRowResponseKind, string>,
       ordersEmpty: '暂无订单',
+      /**
+       * 订单状态筛选页签（2026-09-16）。17 个券商状态归四档，🚫 给「在途」单开一档 ——
+       * 持仓详情看的是历史，在途单寿命极短且多数时候为空，空页签比没有更糟。
+       * 在途 / 未提交 / N/A 只在「全部」里出现。
+       */
+      orderTabs: {
+        all: '全部',
+        filled: '成交',
+        cancelled: '撤单',
+        failed: '失败',
+      } satisfies Record<OrderStatusTab, string>,
+      /** 某一档筛掉后为空（与「一张订单都没有」区分开，否则用户以为数据丢了）。 */
+      ordersEmptyFiltered: '该状态下暂无订单',
       /** 持仓批次段（083 T019，FR-013 / FR-015；mockup 帧 4 / 5）。 */
       lotsTitle: '持仓批次',
       lotsCount: (count: number) => `${count} 个 · 先开先平`,
