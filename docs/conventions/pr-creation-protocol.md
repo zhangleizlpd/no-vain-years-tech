@@ -10,6 +10,11 @@
 3. **必须完整保留 `### 🚨 部署与存活前置确认 (Deployment & Smoke Gates)` section 与下方所有 checkbox**。CI 用正则 `/### 🚨 部署与存活前置确认[\s\S]*?(?=\n###?\s|$)/` 严格 match 此 section,缺失 → 红;含未勾项 → 红。
 4. **本地已按 [local-verification.md § 2 命令矩阵](local-verification.md#2-命令矩阵) 的「PR 门」行跑通全量门（含 `--skip-nx-cache`，那里是命令串的唯一权威）拿到 exit 0** 才可把对应 `- [ ]` 改为 `- [x]`。未跑通 → 不勾、不 push、不创建 PR。
 5. **docs-only / config-only PR** 三项 checkbox vacuously 满足时(`nx affected` empty graph / 无 Guard/Interceptor/Filter/Pipe/Repository 改动 / 无 `state_branches` 引入),可全勾,并在 section 上方加 HTML 注释 `<!-- docs-only / config-only: <理由> -->` 留痕。
+6. **纯 SDD 文档 PR**（本 PR 引入了 `state_branches`,但**不含其实现**——spec / plan / tasks 先合、implement 另起 PR）:第 5 条的 vacuous 前提**不成立**。第三项「状态机闭环」字面为假,勾上等于在 hard gate 上声明一件尚未发生的事。**改写该条,不要勾它**——把它从 `- [ ]` 形态改成引用块说明行,写明「本 PR 不含实现 / 各分支的测试落点已在 `tasks.md` 覆盖预检表逐条映射 / 覆盖本身随 implement PR 落地并在那里勾选」。第 ① ② 项仍按第 5 条照常勾（对零代码改动是真 vacuous）。
+   - **为什么这样可行**:CI 的判据是「`### 🚨 部署与存活前置确认` 段内不存在字面 `- [ ]`」(`.github/workflows/pr-validation.yml` 的 `Enforce PR Checkboxes`,live fetch 当前 body)。改成说明行同样绿,且**不声明任何虚假事实**——比「勾上再写注释辩解」诚实。
+   - 🚫 **反向不成立**:**MUST NOT** 用同一手法改写第 ① ② 项。它们对含代码的 PR 是真判据,改写即绕过物理验证与 mock 门;本条豁免**只**针对「测试尚不存在是由 PR 边界决定、而非未做」这一种情形。
+   - **形态先例**:该 gate 本就有按 PR 类型豁免的设计——release-please 的 Release PR 靠 `autorelease: pending*` label 整段跳过(同文件 `Enforce PR Checkboxes` 内)。本条是第二种类型豁免,不是新开逃生门。
+   - 历史锚:2026-09-16 084 首次撞上此形态(SDD 产物先合、implement 另起 PR)。在那之前,仓内出现过的 docs-only PR 都是「impl 完成后的文档收口 / 状态订正」——其 `state_branches` 在当时早已有测试覆盖,第 5 条够用,故本条无需存在。
 
 ## 标准实现
 
