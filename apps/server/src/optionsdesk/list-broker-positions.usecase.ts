@@ -299,6 +299,10 @@ export class ListBrokerPositionsUseCase {
         OR: [
           { kind: 'reconcile', market },
           { kind: 'backfill', OR: [{ target: '*' }, { target: { startsWith: `${market}:` } }] },
+          // 084 FR-012: 推送刷新 (`push`) 与缺口补偿 (`gapfill`) 都按市场记录 ⇒ 与对账同形按
+          // `market` 取。🚨 只认对账与补齐会让推送刚刷新完的持仓仍显示为旧时刻, 并因此被误标陈旧。
+          // `gapfill` 记录由 084 T010 才开始产生, 这里**一次写全**, 免得 T010 再回来改读端。
+          { kind: { in: ['push', 'gapfill'] }, market },
         ],
       },
       orderBy: { finishedAt: 'desc' },

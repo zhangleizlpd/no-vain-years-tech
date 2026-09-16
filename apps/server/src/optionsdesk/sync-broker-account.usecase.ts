@@ -32,7 +32,14 @@ const ORDER_WRITE_CHUNK = 200;
 /** = `broker_sync_run.error` 列 VarChar(512) (PG 按字符计)。 */
 const RUN_ERROR_MAX_CHARS = 512;
 
-export type BrokerSyncMode = 'backfill' | 'reconcile';
+/**
+ * 同步模式, 与 `broker_sync_run.kind` 的取值一一对应。
+ *
+ * 🚨 `'push'` (084 T007 推送刷新) 与将来的 `'gapfill'` (缺口补偿) **是两个取值, 不是一个**:
+ * 合用一个取值会让缺口补偿的「只含执行中状态」防重入索引把盘中每 5 秒一次的推送刷新一并锁住,
+ * 刷新与补偿互相阻塞 —— 而这类失效的表现是**持仓静默不刷新、不报错** (维护者 2026-09-16 定)。
+ */
+export type BrokerSyncMode = 'backfill' | 'reconcile' | 'push';
 
 export interface SyncBrokerAccountInput {
   connectionId: bigint;
@@ -197,7 +204,9 @@ export class SyncBrokerAccountUseCase {
 
     const fetched: FetchedMarket[] = [];
     for (const market of input.markets) {
-      fetched.push(await this.fetchMarket(market, resolveWindow(input.window, market, now)));
+      fetched.push(
+        await this.fetchMarket(market, resolveWindow(input.window, market, now), input.mode),
+      );
     }
 
     const prepared: PreparedMarket[] = [];
@@ -246,12 +255,17 @@ export class SyncBrokerAccountUseCase {
   private async fetchMarket(
     market: BrokerMarket,
     window: BrokerTradeWindow,
+    mode: BrokerSyncMode,
   ): Promise<FetchedMarket> {
     const deals: BrokerDealRow[] = [];
     const orders: BrokerOrderRow[] = [];
-    for (const segment of splitTradeWindow(window)) {
-      deals.push(...(await this.port.fetchDeals(market, segment)));
-      orders.push(...(await this.port.fetchOrders(market, segment)));
+    // 084 T007: 推送刷新**只刷持仓与开仓时间** (FR-008) —— 该市场的成交 / 订单已由推送事件
+    // 逐条写入, 再按窗口拉一遍既拿不到新数据, 又白占券商历史查询的限频配额 (与对账、缺口补偿共用)。
+    if (mode !== 'push') {
+      for (const segment of splitTradeWindow(window)) {
+        deals.push(...(await this.port.fetchDeals(market, segment)));
+        orders.push(...(await this.port.fetchOrders(market, segment)));
+      }
     }
     // 🚨 失败必须抛到 execute —— 吞掉当空数组 = 「确实空仓」, 会清掉该市场全部持仓 (branch 8 vs 9)。
     const positions = await this.port.fetchPositions(market);

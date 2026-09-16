@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { marketdataConfig, type MarketdataConfig } from '../config/marketdata.config';
 import { optionsdeskConfig, type OptionsdeskConfig } from '../config/optionsdesk.config';
+import { exchangeClock } from '../marketdata/session-clock';
 import { PrismaService } from '../security/prisma.service';
 import {
   BROKER_ACCOUNT_PORT,
@@ -20,6 +21,19 @@ import {
   SyncBrokerAccountUseCase,
   type BrokerSyncFailureKind,
 } from './sync-broker-account.usecase';
+
+/**
+ * 持仓刷新的去抖窗口 (FR-008)。
+ *
+ * 📌 **出处**: 受券商持仓查询限频约束 —— 每账户 10 次 / 30 秒, 且该配额与开盘前对账、缺口补偿
+ * **共用** (spec `## Clarifications` Session 2026-09-16 第 4 问)。5 秒 ⇒ 30 秒内最多 6 次, 留约
+ * 40% 余量; **3 秒恰好打满上限**, 与对账并发即触发限频 —— 而限频的表现是**持仓静默不刷新、
+ * 不报错**, 比慢两秒难排查得多。
+ *
+ * 🚫 **做成配置项**: 它与 SC-001 / FR-008 的验收口径强耦合, 配置化会让「改一个数就破坏验收
+ * 口径」成为可能 (照 `broker-sync-slot.rules.ts` `RECONCILE_SLOT_MINUTES` 的先例, 常量旁注出处)。
+ */
+export const PUSH_REFRESH_DEBOUNCE_MS = 5_000;
 
 export interface ConsumeBrokerEventsInput {
   connectionId: bigint;
@@ -44,8 +58,10 @@ export type ConsumeBrokerEventsOutcome =
       /** 需发起当日缺口补偿 (FR-009); 由调度器消费, 本用例只判不发起。 */
       gapDetected: boolean;
       cursor: BrokerEventCursor | null;
-      /** 本拍有写入的市场 (T007 去抖刷持仓的登记面)。 */
+      /** 本拍有写入的市场 (去抖登记面)。 */
       touchedMarkets: readonly BrokerMarket[];
+      /** 本拍去抖到期、真的刷了持仓的市场 (FR-008)。 */
+      refreshedMarkets: readonly BrokerMarket[];
     } & ConsumeBrokerEventsCounts)
   | {
       ok: false;
@@ -65,9 +81,10 @@ const ZERO: ConsumeBrokerEventsCounts = {
 };
 
 /**
- * 084 T006 券商推送事件消费 use case (plan D3; FR-004 / FR-005 / FR-006 / FR-007 / FR-016 / FR-017)。
+ * 084 T006 / T007 券商推送事件消费 use case (plan D3; FR-004 ~ FR-008 / FR-016 / FR-017)。
  *
- * 一拍 = 拉事件 (**事务外**) → 游标与断档判定 → 按市场判正股 → 锚过滤 → 幂等写成交与订单。
+ * 一拍 = 拉事件 (**事务外**) → 游标与断档判定 → 按市场判正股 → 锚过滤 → 幂等写成交与订单 →
+ * 按市场登记「待刷新」→ 去抖到期则刷该市场持仓与开仓时间。
  *
  * 🚨 **split-tx**: 经 port 拉事件的 HTTP 在事务外完成, 拿到事件后才开短事务写 —— 🚫 事务内持锁
  * 等 HTTP (`server-impl-playbook.md` § 并发 / 事务)。
@@ -75,15 +92,21 @@ const ZERO: ConsumeBrokerEventsCounts = {
  * 🚨 **锚过滤走 `broker-scope.rules.ts` 单点** (FR-005): 🚫 在本文件另写一份判定 —— 两份会在
  * 「excluded 的锚算不算」「未解析保不保留」两处漂移, 而漂移的表现是成交被**静默**丢掉。
  *
- * 🚨 **幂等写复用 `SyncBrokerAccountUseCase` 的两个写方法**: 成交 `createMany({ skipDuplicates })`;
- * 订单先 `createMany({ skipDuplicates })` 再带 `vendorUpdatedAt < incoming` 条件 `updateMany` ——
- * 🚫 先查后写 (推送与开盘前对账可能并发写同一连接, 先查后写撞唯一约束抛 `P2002`)。
+ * 🚨 **幂等写与持仓替换都复用 `SyncBrokerAccountUseCase`**: 成交 `createMany({ skipDuplicates })`;
+ * 订单先 `createMany({ skipDuplicates })` 再带 `vendorUpdatedAt < incoming` 条件 `updateMany`;
+ * 持仓刷新走它的 `mode: 'push'` (持仓替换与开仓时间推算是同一条路径) —— 🚫 先查后写、🚫 另写一份。
  *
  * 🚨 **游标只存进程内存** (plan D4): 由调用方 (调度器) 持有并逐拍回传, 🚫 建表持久化。
  */
 @Injectable()
 export class ConsumeBrokerEventsUseCase {
   private readonly logger = new Logger(ConsumeBrokerEventsUseCase.name);
+
+  /**
+   * 「待刷新」登记: `${connectionId}:${market}` → 本窗口的到期时刻。同样只存进程内存 ——
+   * 进程重启后最坏是少刷一次, 下一条事件即重新登记, 🚫 为它建表。
+   */
+  private readonly pendingRefresh = new Map<string, Date>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -104,6 +127,7 @@ export class ConsumeBrokerEventsUseCase {
         gapDetected: false,
         cursor: input.cursor,
         touchedMarkets: [],
+        refreshedMarkets: [],
         ...ZERO,
       };
     }
@@ -132,6 +156,10 @@ export class ConsumeBrokerEventsUseCase {
       return this.failed(err, input, '事件写入');
     }
 
+    this.registerRefresh(input.connectionId, written.touchedMarkets, now);
+    // 🚨 **无论本拍有没有事件都要过一遍**: 去抖窗口是上一拍开的, 到期那一拍往往正好没有新事件。
+    const refreshedMarkets = await this.flushDueRefreshes(input.connectionId, now);
+
     if (gapDetected) {
       // FR-009 / FR-014: 补偿留痕是判断推送通道是否健在的依据之一 ⇒ 告警级。
       this.logger.warn(
@@ -142,9 +170,16 @@ export class ConsumeBrokerEventsUseCase {
     this.logger.log(
       `推送事件消费 connection=${input.connectionId} accepted=${accepted.length}` +
         ` deals+${written.dealsInserted} orders+${written.ordersInserted} orders~${written.ordersUpdated}` +
-        ` gap=${gapDetected} elapsedMs=${Date.now() - startedMs}`,
+        ` refreshed=${refreshedMarkets.join(',')} gap=${gapDetected} elapsedMs=${Date.now() - startedMs}`,
     );
-    return { ok: true, skipped: false, gapDetected, cursor: nextCursor, ...written };
+    return {
+      ok: true,
+      skipped: false,
+      gapDetected,
+      cursor: nextCursor,
+      refreshedMarkets,
+      ...written,
+    };
   }
 
   /**
@@ -160,10 +195,7 @@ export class ConsumeBrokerEventsUseCase {
     const counts = { ...ZERO, accepted: events.length, touchedMarkets: [] as BrokerMarket[] };
     if (events.length === 0) return counts;
 
-    const { accountId } = await this.prisma.brokerConnection.findUniqueOrThrow({
-      where: { id: connectionId },
-      select: { accountId: true },
-    });
+    const accountId = await this.accountIdOf(connectionId);
     // 锚表**全部**行, 含 excluded (082 plan D6 / U8: 不参与交易 ≠ 不看它的成交)。
     const anchors = await this.prisma.anchor.findMany({ select: { ticker: true } });
     const anchoredTickers = new Set(anchors.map((a) => a.ticker));
@@ -211,6 +243,93 @@ export class ConsumeBrokerEventsUseCase {
   }
 
   /**
+   * 登记「待刷新」。复杂度 O(市场数)。
+   *
+   * 🚨 **已在窗口内的不延长到期时刻** —— 合并, 不是「每来一条就往后推」: 重置式去抖在连续成交
+   * 流下会让刷新**永远不发生**, 而 FR-008 的上界是拉取 2 秒 + 去抖 5 秒 = 7 秒。
+   */
+  private registerRefresh(connectionId: bigint, markets: readonly BrokerMarket[], now: Date): void {
+    for (const market of markets) {
+      const key = refreshKey(connectionId, market);
+      if (!this.pendingRefresh.has(key)) {
+        this.pendingRefresh.set(key, new Date(now.getTime() + PUSH_REFRESH_DEBOUNCE_MS));
+      }
+    }
+  }
+
+  /**
+   * 刷新本连接所有已到期的市场, 返回真的刷成功的市场。一个市场失败不连坐另一个。
+   * 复杂度 O(登记数) 扫描 + 每个到期市场一次持仓刷新。
+   */
+  private async flushDueRefreshes(connectionId: bigint, now: Date): Promise<BrokerMarket[]> {
+    const due: BrokerMarket[] = [];
+    for (const [key, dueAt] of this.pendingRefresh) {
+      const market = marketOfKey(key, connectionId);
+      if (market !== null && dueAt.getTime() <= now.getTime()) due.push(market);
+    }
+
+    const refreshed: BrokerMarket[] = [];
+    for (const market of due) {
+      // 先摘登记再刷: 刷新途中到达的事件重新开一个新窗口, 不会被本次「顺带」吞掉。
+      this.pendingRefresh.delete(refreshKey(connectionId, market));
+      try {
+        if (await this.refreshPositions(connectionId, market, now)) refreshed.push(market);
+      } catch (e) {
+        this.logger.error(
+          `推送刷新持仓失败 connection=${connectionId} market=${market}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    return refreshed;
+  }
+
+  /**
+   * 刷一个市场的持仓与开仓时间, 并留下一条 `kind='push'` 的同步记录 (FR-012 / FR-018)。
+   *
+   * 记录**先建成 `running` 再交给 use case 回写结局** —— 这是 082 T015 定的同步记录契约。
+   * `window` 对 `push` 不参与拉取 (成交 / 订单已由推送写入, `fetchMarket` 对该 mode 整段跳过),
+   * 这里给交易所当地今天, 只为记录可读。
+   */
+  private async refreshPositions(
+    connectionId: bigint,
+    market: BrokerMarket,
+    now: Date,
+  ): Promise<boolean> {
+    const accountId = await this.accountIdOf(connectionId);
+    const today = exchangeClock(market, now).date;
+    const { id: runId } = await this.prisma.brokerSyncRun.create({
+      data: {
+        accountId,
+        connectionId,
+        kind: 'push',
+        status: 'running',
+        market,
+        target: '*',
+        startedAt: now,
+      },
+      select: { id: true },
+    });
+    const outcome = await this.sync.execute({
+      connectionId,
+      markets: [market],
+      target: '*',
+      window: { start: today, end: today },
+      mode: 'push',
+      runId,
+      now,
+    });
+    return outcome.ok;
+  }
+
+  private async accountIdOf(connectionId: bigint): Promise<bigint> {
+    const { accountId } = await this.prisma.brokerConnection.findUniqueOrThrow({
+      where: { id: connectionId },
+      select: { accountId: true },
+    });
+    return accountId;
+  }
+
+  /**
    * 失败结局。判别口径沿用 082: `instanceof BrokerInfrastructureError` 或可重试 DB 异常 =
    * 基础设施 (下一拍重试); 其余 (含 adapter 的坏行 / 契约变更 throw) = 数据类。
    */
@@ -229,6 +348,17 @@ export class ConsumeBrokerEventsUseCase {
     );
     return { ok: false, failureKind, error, cursor: input.cursor };
   }
+}
+
+function refreshKey(connectionId: bigint, market: BrokerMarket): string {
+  return `${connectionId}:${market}`;
+}
+
+/** 登记键 → 本连接的市场; 不属本连接 ⇒ `null`。 */
+function marketOfKey(key: string, connectionId: bigint): BrokerMarket | null {
+  const prefix = `${connectionId}:`;
+  if (!key.startsWith(prefix)) return null;
+  return key.slice(prefix.length) as BrokerMarket;
 }
 
 /** 事件按市场分桶, 顺序保留 (订单守卫靠 `vendorUpdatedAt` 判新旧, 不靠顺序)。复杂度 O(E)。 */

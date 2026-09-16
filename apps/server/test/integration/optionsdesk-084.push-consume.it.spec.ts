@@ -59,6 +59,17 @@ for (const key of Object.keys(process.env)) {
  *
  * ⚠️ **③ / ⑦ 在 stub 阶段就是绿的** (stub 不写任何行 ⇒「没变化」恒真): 它们单独不构成证据,
  * 真正的把关力来自上面变异 a —— 记在这里, 免得后来者以为这两条臂自带保护力。
+ *
+ * ## T007 定向变异留档 (2026-09-16)
+ *
+ * - 基线: 本文件 12/12 绿, `optionsdesk-083.broker-positions-read.it.spec.ts` 20/20 绿。
+ * - c. 去抖窗口改 0 (= 去掉去抖、逐条刷): **T007 ① 与 ② 两条红** —— ①「只刷一次」实得 3 次;
+ *   ② 刷新时刻变成首拍而非窗口到期时刻。⚠️ 比 tasks.md 预期的「① 红」**宽一条**, 同因:
+ *   两条臂都依赖「只刷一次、且在窗口到期那一刻刷」。
+ * - d. 读端 `lastSucceededSyncAt` 去掉第三支 `OR`: **083 的 ⑨ ⑩ 两条红, 而既有 18 条全绿** ——
+ *   正是 plan §「本片额外的反例臂」所说「给 `lastSucceededSyncAt` 加一支 OR 不会让既有夹具红」,
+ *   故 FR-012 非新增这两条臂不可。
+ * - 两处变异均已还原 (还原后 grep 残留计数 0)。
  */
 
 /** 明显假值 (Guardrail 9): 连接所属账号 ID 与账户号一律合成。 */
@@ -449,5 +460,94 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
     const orders = await prisma.brokerOrder.findMany({});
     expect(orders).toHaveLength(1);
     expect((orders[0] as (typeof orders)[number]).status).toBe('FILLED_ALL');
+  });
+
+  describe('T007 去抖刷持仓 (5 秒窗口合并为一次)', () => {
+    const T0 = new Date('2026-09-16T14:31:00Z');
+    const plus = (ms: number) => new Date(T0.getTime() + ms);
+    const tick = (
+      now: Date,
+      cursor: Parameters<ConsumeBrokerEventsUseCase['execute']>[0]['cursor'] = null,
+    ) => consume.execute({ connectionId: conn, cursor, now });
+    const positionCalls = () => port.calls.filter((c) => c === 'fetchPositions').length;
+
+    const positionRow = (code: string): BrokerPositionRow => ({
+      market: 'us',
+      code,
+      qty: new Prisma.Decimal(-1),
+      marketValue: new Prisma.Decimal('-250'),
+      costPrice: null,
+      averageCost: null,
+      currentPrice: new Prisma.Decimal('2.5'),
+      currency: 'USD',
+      raw: { code },
+    });
+
+    it('① 🚨 窗口内多条同市场事件 ⇒ 持仓查询只发生一次 (branch 21)', async () => {
+      // 🚨 断言的是**调用次数**, 不是「持仓被刷新了」—— 后者对「逐条刷」的实现同样绿。
+      port.positions = [positionRow(ANCHORED)];
+      port.batches = [
+        batchOf([dealEvent(1, 'dl-1', ANCHORED)]),
+        batchOf([dealEvent(2, 'dl-2', ANCHORED)], { nextSeq: 2 }),
+        batchOf([dealEvent(3, 'dl-3', ANCHORED)], { nextSeq: 3 }),
+        batchOf([], { nextSeq: 3 }),
+      ];
+
+      await tick(T0);
+      await tick(plus(2_000), { epoch: 'e1', lastSeq: 1 });
+      await tick(plus(4_000), { epoch: 'e1', lastSeq: 2 });
+      // 窗口未到期 ⇒ 一次都还没刷 (三条事件各刷一次的实现在这里就红了)。
+      expect(positionCalls()).toBe(0);
+
+      await tick(plus(6_000), { epoch: 'e1', lastSeq: 3 });
+      expect(positionCalls()).toBe(1);
+      expect(await prisma.brokerDeal.count()).toBe(3);
+    });
+
+    it('② 刷新成功 ⇒ 持仓 syncedAt = 本次刷新时刻, 留下一条 kind=push 的成功记录 (branch 8)', async () => {
+      port.positions = [positionRow(ANCHORED)];
+      port.batches = [batchOf([dealEvent(1, 'dl-1', ANCHORED)]), batchOf([], { nextSeq: 1 })];
+
+      await tick(T0);
+      const refreshAt = plus(6_000);
+      const outcome = await tick(refreshAt, { epoch: 'e1', lastSeq: 1 });
+
+      expect(outcome).toMatchObject({ ok: true, refreshedMarkets: ['us'] });
+      const position = await prisma.brokerPosition.findFirstOrThrow({});
+      expect(position.syncedAt.toISOString()).toBe(refreshAt.toISOString());
+      expect(position.code).toBe(ANCHORED);
+      const runs = await prisma.brokerSyncRun.findMany({});
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        kind: 'push',
+        status: 'succeeded',
+        market: 'us',
+        target: '*',
+      });
+    });
+
+    it('⑥ 无事件 ⇒ 不刷持仓、不产生推送记录 (branch 9 的刷新半)', async () => {
+      port.positions = [positionRow(ANCHORED)];
+      port.batches = [batchOf([], { nextSeq: 0 })];
+
+      await tick(T0);
+      await tick(plus(6_000));
+      await tick(plus(12_000));
+
+      expect(positionCalls()).toBe(0);
+      expect(await prisma.brokerSyncRun.count()).toBe(0);
+      expect(await prisma.brokerPosition.count()).toBe(0);
+    });
+
+    it('⑦ 不属锚标的的事件 ⇒ 不登记待刷新, 窗口过后也不刷 (branch 2 的刷新半)', async () => {
+      port.positions = [positionRow(ANCHORED)];
+      port.batches = [batchOf([dealEvent(1, 'dl-out', UNANCHORED)]), batchOf([], { nextSeq: 1 })];
+
+      await tick(T0);
+      await tick(plus(6_000), { epoch: 'e1', lastSeq: 1 });
+
+      expect(positionCalls()).toBe(0);
+      expect(await prisma.brokerSyncRun.count()).toBe(0);
+    });
   });
 });
