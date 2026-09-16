@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.53.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.3...server-v0.53.0) (2026-09-16)
+
+
+### Features
+
+* **optionsdesk:** 083 交易账户页持仓展示与下钻 ([#442](https://github.com/zhangleizlpd/no-vain-years-tech/issues/442)) ([eecc265](https://github.com/zhangleizlpd/no-vain-years-tech/commit/eecc2653168df016df278ffd0b2aa6d4c43d9227))
+
 ## [0.52.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.2...server-v0.52.3) (2026-09-15)
 
 
