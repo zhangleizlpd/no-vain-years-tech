@@ -10,15 +10,32 @@ import { PrismaService } from '../security/prisma.service';
 import { parseAnchorTicker } from './anchor.rules';
 import type { BrokerTradeWindow } from './broker-account.port';
 import type { BrokerMarket } from './broker-code.rules';
+import type { BrokerEventCursor } from './broker-event-cursor.rules';
 import {
   decideBackfillAfterInfraFailure,
   decideReconcile,
   type ReconcileInput,
 } from './broker-sync-slot.rules';
+import { ConsumeBrokerEventsUseCase } from './consume-broker-events.usecase';
 import { SyncBrokerAccountUseCase } from './sync-broker-account.usecase';
 
 /** 心跳 cron job 名 (`SchedulerRegistry.getCronJob` 的键)。 */
 export const BROKER_ACCOUNT_HEARTBEAT = 'broker-account-heartbeat';
+
+/** 推送事件心跳 cron job 名 (084 T008; 同上, `SchedulerRegistry` 的键)。 */
+export const BROKER_EVENT_HEARTBEAT = 'broker-event-heartbeat';
+
+/**
+ * 推送事件的拉取间隔 (秒)。
+ *
+ * 📌 **出处**: SC-001 要求订单状态变化 ≤ 5 秒进库, 而「进库」的上界就是本间隔 —— 事件在
+ * 下一拍被拉走并写入, 2 秒把余下约 3 秒留给 shim 缓冲与写库。持仓刷新的上界在此之上再加
+ * 去抖窗口 (`PUSH_REFRESH_DEBOUNCE_MS` 5 秒, FR-008 ⇒ 2 + 5 = 7 秒)。
+ *
+ * 🚫 **做成配置项**: 它与 SC-001 / FR-004 的验收口径强耦合, 配置化会让「改一个数就破坏验收
+ * 口径」成为可能 (照 `broker-sync-slot.rules.ts` `RECONCILE_SLOT_MINUTES` 的先例, 常量旁注出处)。
+ */
+export const PUSH_EVENT_POLL_SECONDS = 2;
 
 /** `running` 超过这么久仍未结束 = 执行中进程重启 / 崩溃留下的卡死记录 (plan D9 步骤 1)。 */
 const STUCK_RUNNING_MS = 15 * 60 * 1000;
@@ -59,14 +76,26 @@ type DueBackfill = {
  * 单实例部署, 不加分布式锁 (同 `sync-anchor-intraday.scheduler.ts` 先例)。
  *
  * mock 档起手即 `skipped-mock`, 零 port 调用 (FR-018; 模块层拒绝壳是兜底)。
+ *
+ * 084 T008 —— 本类还带**第二拍**: 每 `PUSH_EVENT_POLL_SECONDS` 秒的推送事件心跳
+ * (`runEvents`), 与上面那拍互不相干 (各自 `@Cron`、各自 `waitForCompletion`、各自的
+ * 连接循环), 合在一个类里只是因为两者的触发对象都是「每个券商连接」。
  */
 @Injectable()
 export class BrokerAccountScheduler {
   private readonly logger = new Logger(BrokerAccountScheduler.name);
 
+  /**
+   * 推送事件游标: `connectionId` → 上一拍算出的游标 (plan D4 —— **只存进程内存**, 🚫 建表
+   * 持久化)。重启后按 `null` 起手, 由 `decideCursor` 的代次 (`epoch`) 比对天然覆盖重启场景:
+   * 事件源也重启过 ⇒ 代次变了 ⇒ 判断档并从新代次重建; 没变 ⇒ 照旧序号续拉。
+   */
+  private readonly eventCursors = new Map<string, BrokerEventCursor | null>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly syncBrokerAccount: SyncBrokerAccountUseCase,
+    private readonly consumeBrokerEvents: ConsumeBrokerEventsUseCase,
     @Inject(marketdataConfig.KEY) private readonly marketdata: MarketdataConfig,
     // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 —— 开盘前对账「本交易日」的
     // 三态判定 (non-trading 跳过 / unknown 照跑)。零写。
@@ -109,6 +138,66 @@ export class BrokerAccountScheduler {
     } catch (e) {
       const reason = errorMessage(e);
       this.logger.error(`券商心跳失败: ${reason}`);
+      return { status: 'failed', reason };
+    }
+  }
+
+  /**
+   * 084 T008 推送事件心跳 (FR-004 / FR-016; plan D3)。
+   *
+   * 🚨 **`waitForCompletion: true` 与上面那拍同理, 但后果不同**: cron 4.4.0 默认不等上一拍的
+   * Promise, 漏了 ⇒ 上一拍还在写库时下一拍已带**同一个游标**再拉一次, 两拍消费同一批事件
+   * (幂等写让它不脏数据, 但会白打两倍的 port 调用与库写)。2 秒一拍比 60 秒一拍更容易撞上。
+   */
+  @Cron(`*/${PUSH_EVENT_POLL_SECONDS} * * * * *`, {
+    name: BROKER_EVENT_HEARTBEAT,
+    timeZone: 'Asia/Shanghai',
+    waitForCompletion: true,
+  })
+  async handleEventCron(): Promise<void> {
+    await this.runEvents();
+  }
+
+  /**
+   * 推送事件一拍。IT 直调本方法 (固定 `now`)。结果三态复用 `BrokerAccountHeartbeatOutcome`
+   * (同样的 skipped-mock / failed / ticked 三分)。
+   *
+   * **任何路径都不上抛**, 连接间互不连坐 —— 同 `run()` 的理由 (scheduler 抛 = 进程级
+   * unhandledRejection)。`failedConnections` 把「抛出来的」与「use case 回传 `ok:false` 的」
+   * 一并计入: 后者同样是这一拍没消费成功, 不计入会让排障看到一拍全绿而库里没数。
+   *
+   * mock 档起手即返回, 零 port 调用 (FR-016; use case 里那道是第二层, 这里省掉连接查询)。
+   */
+  async runEvents(now: Date = new Date()): Promise<BrokerAccountHeartbeatOutcome> {
+    if (this.marketdata.kind === 'mock') return { status: 'skipped-mock' };
+
+    try {
+      const connections = await this.prisma.brokerConnection.findMany({
+        select: { id: true },
+        orderBy: { id: 'asc' },
+      });
+      let failedConnections = 0;
+      for (const { id } of connections) {
+        const key = id.toString();
+        try {
+          const outcome = await this.consumeBrokerEvents.execute({
+            connectionId: id,
+            cursor: this.eventCursors.get(key) ?? null,
+            now,
+          });
+          // 🚨 失败分支回传的是**未前移**的游标 (FR-017): 照样存回, 下一拍原样重放这批。
+          this.eventCursors.set(key, outcome.cursor);
+          if (!outcome.ok) failedConnections++;
+          // T010 在此消费 `outcome.gapDetected` 发起当日缺口补偿; 本 task 只接拉取与消费。
+        } catch (e) {
+          failedConnections++;
+          this.logger.error(`推送事件心跳: 连接 ${id} 本拍失败: ${errorMessage(e)}`);
+        }
+      }
+      return { status: 'ticked', connections: connections.length, failedConnections };
+    } catch (e) {
+      const reason = errorMessage(e);
+      this.logger.error(`推送事件心跳失败: ${reason}`);
       return { status: 'failed', reason };
     }
   }

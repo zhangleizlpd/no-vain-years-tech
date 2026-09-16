@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { ScheduleModule, SchedulerRegistry } from '@nestjs/schedule';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { setupIsolatedDb } from '../_support/isolated-db';
 import { narrowTestModule } from '../_support/narrow-boot';
@@ -19,6 +21,10 @@ import {
   type BrokerOrderEventRow,
   type BrokerPositionRow,
 } from '../../src/optionsdesk/broker-account.port';
+import {
+  BROKER_EVENT_HEARTBEAT,
+  BrokerAccountScheduler,
+} from '../../src/optionsdesk/broker-account.scheduler';
 import type { BrokerMarket } from '../../src/optionsdesk/broker-code.rules';
 import { ConsumeBrokerEventsUseCase } from '../../src/optionsdesk/consume-broker-events.usecase';
 
@@ -70,6 +76,14 @@ for (const key of Object.keys(process.env)) {
  *   正是 plan §「本片额外的反例臂」所说「给 `lastSucceededSyncAt` 加一支 OR 不会让既有夹具红」,
  *   故 FR-012 非新增这两条臂不可。
  * - 两处变异均已还原 (还原后 grep 残留计数 0)。
+ *
+ * ## T008 定向变异留档 (2026-09-16)
+ *
+ * - 基线: 本文件 16/16 绿 (T006 8 条 + T007 4 条 + T008 4 条)。
+ * - e. 新 `@Cron` 去掉 `waitForCompletion: true` (**只动推送那拍**, 082 那拍不动):
+ *   **T008 ① 一条红** —— `AssertionError: expected false to be true`, 其余 15 条绿。
+ *   范围与 tasks.md 预期一致 (不像 a / c 那样宽出一条)。
+ * - 已还原; 还原后本文件 16/16 复绿。
  */
 
 /** 明显假值 (Guardrail 9): 连接所属账号 ID 与账户号一律合成。 */
@@ -221,6 +235,8 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
   let prisma: PrismaService;
   let consume: ConsumeBrokerEventsUseCase;
   let consumeMock: ConsumeBrokerEventsUseCase;
+  let scheduler: BrokerAccountScheduler;
+  let schedulerMock: BrokerAccountScheduler;
   let conn: bigint;
   const port = new FakeEventPort();
   const prevWorkerDisabled = process.env[MARKETDATA_WORKER_DISABLED];
@@ -253,6 +269,8 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
     prisma = live.get(PrismaService);
     consume = live.get(ConsumeBrokerEventsUseCase);
     consumeMock = mock.get(ConsumeBrokerEventsUseCase);
+    scheduler = live.get(BrokerAccountScheduler);
+    schedulerMock = mock.get(BrokerAccountScheduler);
   }, 180_000);
 
   afterAll(async () => {
@@ -261,6 +279,10 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
     await db?.drop();
     if (prevWorkerDisabled === undefined) delete process.env[MARKETDATA_WORKER_DISABLED];
     else process.env[MARKETDATA_WORKER_DISABLED] = prevWorkerDisabled;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   beforeEach(async () => {
@@ -549,5 +571,82 @@ describe('084 T006 推送事件消费 IT (Testcontainers PG)', () => {
       expect(positionCalls()).toBe(0);
       expect(await prisma.brokerSyncRun.count()).toBe(0);
     });
+  });
+
+  describe('T008 2 秒心跳接入调度器', () => {
+    it('② mock 档 ⇒ 整拍跳过, port 调用数 0 (branch 12; FR-016)', async () => {
+      port.batches = [batchOf([dealEvent(1, 'dl-1', ANCHORED)])];
+
+      const outcome = await schedulerMock.runEvents(NOW);
+
+      expect(outcome).toEqual({ status: 'skipped-mock' });
+      expect(port.calls).toEqual([]);
+      expect(await prisma.brokerDeal.count()).toBe(0);
+    });
+
+    it('③ 连接 A 抛错 ⇒ 本拍不上抛, 连接 B 照常消费', async () => {
+      const connB = (
+        await prisma.brokerConnection.create({
+          data: { accountId: ACCOUNT_ID, brokerCode: 'futu', label: 'it-b', phoneLast4: '0000' },
+        })
+      ).id;
+      port.batches = [batchOf([dealEvent(1, 'dl-b', ANCHORED)])];
+      // 🚨 抛错必须从 use case 抛出来: port 失败会被 use case 收成 `ok:false` 返回值,
+      // 那条路径验的是「失败留痕」而不是这条「不连坐」。
+      const execute = consume.execute.bind(consume);
+      vi.spyOn(consume, 'execute').mockImplementation((input) =>
+        input.connectionId === conn ? Promise.reject(new Error('db down')) : execute(input),
+      );
+      vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+      const outcome = await scheduler.runEvents(NOW);
+
+      expect(outcome).toEqual({ status: 'ticked', connections: 2, failedConnections: 1 });
+      const deals = await prisma.brokerDeal.findMany({});
+      expect(deals.map((d) => [d.connectionId, d.dealId])).toEqual([[connB, 'dl-b']]);
+    });
+
+    it('④ 直调两次 runEvents ⇒ 游标前移, 不重复消费同一批事件', async () => {
+      port.batches = [batchOf([dealEvent(1, 'dl-1', ANCHORED)]), batchOf([], { nextSeq: 1 })];
+
+      await scheduler.runEvents(NOW);
+      await scheduler.runEvents(NOW);
+
+      // 🚨 断言的是**第二拍带着前移后的游标去拉** —— 只断言「库里 1 条」的话, 游标压根没存
+      // 住、第二拍从头重拉的实现也会绿 (幂等写把重复消费吸收掉了)。
+      expect(port.queries).toEqual([null, { epoch: 'e1', afterSeq: 1 }]);
+      expect(await prisma.brokerDeal.count()).toBe(1);
+    });
+  });
+});
+
+/**
+ * T008 臂 ①: 心跳注册面。另起只含 `ScheduleModule.forRoot()` + 本调度器的最小模块 ——
+ * 主模块的收窄 boot 蓄意不注册 `ScheduleModule` (`narrow-boot.ts`), 拿不到 `SchedulerRegistry`。
+ * 形制照 082 同名 describe。
+ */
+describe('084 T008 推送事件心跳: cron 注册 (无 DB)', () => {
+  let moduleRef: TestingModule;
+
+  beforeAll(async () => {
+    moduleRef = await Test.createTestingModule({
+      imports: [ScheduleModule.forRoot()],
+      providers: [BrokerAccountScheduler],
+    })
+      .useMocker(() => ({ kind: 'mock' }))
+      .compile();
+    // init 才挂载 cron (orchestrator 的 onApplicationBootstrap), 挂载即 start ⇒ 立刻 stop。
+    // 🚨 本拍 2 秒一次 (082 那拍 60 秒): 不 stop 的话测试期**真会触发**。
+    await moduleRef.init();
+    for (const job of moduleRef.get(SchedulerRegistry).getCronJobs().values()) void job.stop();
+  });
+
+  afterAll(async () => {
+    await moduleRef?.close();
+  });
+
+  it('① SchedulerRegistry 中的推送事件 job 存在且 waitForCompletion === true', () => {
+    const job = moduleRef.get(SchedulerRegistry).getCronJob(BROKER_EVENT_HEARTBEAT);
+    expect(job.waitForCompletion).toBe(true);
   });
 });
