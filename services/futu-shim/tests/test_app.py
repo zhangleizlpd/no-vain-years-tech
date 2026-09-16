@@ -381,6 +381,7 @@ class FakeTradeCtx:
         }
         self._hang = hang
         self.calls: dict[str, list[dict]] = defaultdict(list)
+        self.handlers: list = []
 
     def get_acc_list(self):
         return RET_OK, pd.DataFrame(self._accounts)
@@ -405,6 +406,11 @@ class FakeTradeCtx:
 
     def order_list_query(self, **kwargs):
         return self._answer("order_list_query", kwargs)
+
+    def set_handler(self, handler):
+        """推送 handler 的挂载点（084 T002）；真 context 上由 `OpenContextBase.set_handler` 收。"""
+        self.handlers.append(handler)
+        return RET_OK
 
     def close(self):
         pass

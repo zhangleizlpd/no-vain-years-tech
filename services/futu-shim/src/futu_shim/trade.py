@@ -1,8 +1,17 @@
 """Read-only trade-query surface: the long-lived `OpenSecTradeContext` (082 D2).
 
 🚨 **Read-only, structurally.** This module queries accounts / positions / deals /
-orders and nothing else; `tests/test_readonly_guard.py` fails the build if any
-order-placing or unlocking call name appears under `src/`.
+orders and, since 084, *receives* the broker's order / deal pushes — and nothing
+else; `tests/test_readonly_guard.py` fails the build if any order-placing or
+unlocking call name appears under `src/`. Subscribing takes no trade unlock
+(084 FR-002): the handlers are mounted on the same long-lived context the queries
+use, and they only read what arrives.
+
+**The push path re-does the query path's cleanup, deliberately** (084 D2). Pushes
+arrive on the SDK's receive thread and never pass through `call()`, so neither
+`_strip_account_ids` nor `_ids_as_digit_strings` applies to them; each is rebuilt
+in `push_frame_to_events`. Both routes must emit the same shape for the same
+column, otherwise the server has to parse per origin.
 
 🚨 **`acc_id` never leaves this process.** It is needed in memory to address the
 queries, and nowhere else: every row handed back is stripped of the `acc_id` key
@@ -31,11 +40,20 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from futu import RET_OK, OpenSecTradeContext, TrdAccStatus, TrdEnv, TrdMarket
+from futu import (
+    RET_OK,
+    OpenSecTradeContext,
+    TradeDealHandlerBase,
+    TradeOrderHandlerBase,
+    TrdAccStatus,
+    TrdEnv,
+    TrdMarket,
+)
 from futu.common.err import Err
 
 from . import config, mappers
 from .opend import OpenDSupervisor, OpenDUnavailable
+from .trade_events import TradeEventBuffer
 
 log = logging.getLogger(__name__)
 
@@ -118,6 +136,140 @@ def _ids_as_digit_strings(records: list[dict[str, Any]]) -> list[dict[str, Any]]
     return records
 
 
+# ── 推送事件的映射（084 D2）──────────────────────────────────────────────────
+
+
+def _push_cell(key: str, value: Any) -> Any:
+    """One push cell -> JSON-safe, with the id-width rule re-applied.
+
+    `mappers.clean_value` covers the numpy / NaN side; the digit-string rule is
+    repeated here because the push path never reaches `_ids_as_digit_strings`.
+    Small ints (qty-like) and floats keep their type — see that function for why
+    a rounded id is worse than a missing one.
+    """
+    cleaned = mappers.clean_value(value)
+    if isinstance(cleaned, int) and not isinstance(cleaned, bool):
+        if key in _ID_FIELDS or abs(cleaned) > _MAX_SAFE_INTEGER:
+            return str(cleaned)
+    return cleaned
+
+
+def _leg_to_fields(leg: Any) -> dict[str, Any]:
+    """One combo leg -> a structured dict of `code` / `trd_side` / `qty_ratio` / `position_id`.
+
+    EVIDENCE: the four attributes are the vendor's documented leg fields —— 官方
+    ComboLeg 字段表 `openapi.futunn.com/futu-api-doc/trade/place-combo-order.html`
+    （2026-09-16 核对）；SDK 侧对应 `futu.common.constant.ComboLeg`（`:367`），推送帧里
+    的腿正是 `OrderListQuery.ParseComboLegs`（`futu/trade/trade_query.py:394-403`）
+    构造的该对象列表。
+
+    🚫 **Never `mappers.clean_value` for the leg list.** Its last line is
+    `return str(value)` (`mappers.py:52`), which flattens the whole list into a repr
+    string; the server's leg parser only accepts text elements and answers an object
+    with an empty list, so a combo order's underlying attribution would vanish with
+    nothing raising (084 FR-020).
+    """
+    code = getattr(leg, "code", None)
+    return {
+        # 兜底（形态未观测到，仅防丢数据）：腿若不是对象而是裸代码文本，至少保住代码。
+        "code": code if code is not None else (leg if isinstance(leg, str) else None),
+        "trd_side": _push_cell("trd_side", getattr(leg, "trd_side", None)),
+        "qty_ratio": _push_cell("qty_ratio", getattr(leg, "qty_ratio", None)),
+        "position_id": _push_cell("position_id", getattr(leg, "position_id", None)),
+    }
+
+
+def _expand_combo_legs(value: Any) -> list[dict[str, Any]]:
+    """The `combo_legs` cell -> structured legs. Absent / NaN / non-sequence -> `[]`."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [_leg_to_fields(leg) for leg in value]
+
+
+def push_frame_to_events(frame: Any, *, event_type: str) -> list[dict[str, Any]]:
+    """An SDK push frame (a one-row DataFrame) -> rows fit for the event buffer.
+
+    `event_type` (`"order"` / `"deal"`) is carried explicitly because the two push
+    kinds have **different column sets** (the SDK's own lists live in
+    `futu/trade/trade_response_handler.py:16-22` and `:37-41`); the consumer routes
+    on it instead of guessing from which fields happen to be present.
+
+    Three things this does that the query path does elsewhere:
+
+    1. **`acc_id` dropped unconditionally** (FR-019). 维护者 2026-09-13 采集的推送样本
+       （2026-09-16 分析）里没有这个字段 —— 剔除仍无条件做，因为把正确性押在 vendor
+       现在不发某字段上，是在赌对方的实现细节。
+    2. **`combo_legs` expanded** into structured legs (FR-020), see `_leg_to_fields`.
+    3. **`deal_id` always a digit string**, and so is any int cell with
+       `abs > 2**53 - 1` (FR-021). ⚠️ EVIDENCE: 券商官方接口文档把成交号声明为字符串，
+       **与实拉样本不符** —— 样本里它是 17–19 位 int（维护者 2026-09-13 082 POC-1 原始
+       输出），082 首次上线失败正源于按文档类型写实现 ⇒ 依据取实拉样本，不取文档声明。
+
+    Market columns keep their own vendor names: a push carries `trd_market`, a
+    history order query carries `order_market` (FR-015). 🚫 No renaming here —— the
+    shim translates, it does not interpret (see `mappers`); the server maps both onto
+    one market value.
+
+    Complexity O(rows × columns).
+    """
+    if frame is None or len(frame) == 0:
+        return []
+    events: list[dict[str, Any]] = []
+    for record in frame.to_dict(orient="records"):
+        record.pop("acc_id", None)
+        has_legs = "combo_legs" in record
+        legs = record.pop("combo_legs", None)
+        event = {str(key): _push_cell(str(key), value) for key, value in record.items()}
+        if has_legs:
+            event["combo_legs"] = _expand_combo_legs(legs)
+        event["event_type"] = event_type
+        events.append(event)
+    return events
+
+
+class _TradePushHandler:
+    """Shared half of both push handlers: map the frame, append it, never raise.
+
+    🚨 **Never raises.** The callback runs on the SDK's own receive thread, where an
+    exception has no caller to reach and no visible exit — one malformed frame would
+    stop the push channel with nothing saying so. A rejected or unmappable frame is
+    logged and dropped instead, and the resulting sequence gap is what the server
+    turns into gap compensation.
+
+    🚨 Log lines carry neither the account id nor any order / deal detail (084 D10).
+    """
+
+    _EVENT_TYPE = ""
+
+    def __init__(self, buffer: TradeEventBuffer) -> None:
+        super().__init__()
+        self._buffer = buffer
+
+    def on_recv_rsp(self, rsp_pb: Any) -> tuple[int, Any]:
+        ret, data = super().on_recv_rsp(rsp_pb)  # type: ignore[misc]
+        if ret != RET_OK:
+            log.warning("%s push frame rejected by the SDK", self._EVENT_TYPE)
+            return ret, data
+        try:
+            for row in push_frame_to_events(data, event_type=self._EVENT_TYPE):
+                self._buffer.append(row)
+        except Exception as exc:  # noqa: BLE001 - a callback thread has nowhere to raise to
+            log.warning("%s push mapping failed: %s", self._EVENT_TYPE, type(exc).__name__)
+        return ret, data
+
+
+class TradeOrderPushHandler(_TradePushHandler, TradeOrderHandlerBase):
+    """Order pushes -> event buffer. Read-only: subscribing needs no trade unlock (FR-002)."""
+
+    _EVENT_TYPE = "order"
+
+
+class TradeDealPushHandler(_TradePushHandler, TradeDealHandlerBase):
+    """Deal pushes -> event buffer. Read-only: subscribing needs no trade unlock (FR-002)."""
+
+    _EVENT_TYPE = "deal"
+
+
 def select_account(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     """The unique `REAL ∧ ACTIVE ∧ trdmarket_auth ∩ {HK, US} ≠ ∅` account.
 
@@ -149,6 +301,7 @@ class TradeSupervisor:
         timeout_s: float | None = None,
         max_concurrency: int = 2,
         ctx_factory: Callable[[], Any] = _default_ctx_factory,
+        event_buffer: TradeEventBuffer | None = None,
     ) -> None:
         self._opend = opend_supervisor
         self._timeout_s = config.trade_call_timeout_s() if timeout_s is None else timeout_s
@@ -158,8 +311,19 @@ class TradeSupervisor:
         self._ctx: Any = None
         self._account: dict[str, Any] | None = None
         self._known_acc_ids: set[str] = set()
+        self._events = TradeEventBuffer() if event_buffer is None else event_buffer
 
     # ---- public API ----------------------------------------------------
+
+    @property
+    def events(self) -> TradeEventBuffer:
+        """The push-event ring buffer `GET /trade/events` serves from (084 D1).
+
+        Owned by the supervisor, not by the context: a context rebuild must not take
+        buffered events with it, or the consumer's cursor would point past the end
+        and the loss would be invisible.
+        """
+        return self._events
 
     def call(self, fn: Callable[..., tuple[int, Any]], **kwargs: Any) -> list[dict[str, Any]]:
         """Run `fn(ctx, **kwargs)` under the deadline and the cap; rows minus `acc_id`,
@@ -254,6 +418,7 @@ class TradeSupervisor:
         # Built outside the lock: construction connects, and a hang here must not
         # also wedge every later caller on the lock (they are bounded, the lock is not).
         ctx = self._ctx_factory()
+        self._attach_push_handlers(ctx)
         with self._lock:
             if self._ctx is None:
                 self._ctx = ctx
@@ -261,6 +426,24 @@ class TradeSupervisor:
             winner = self._ctx
         self._close_async(ctx)
         return winner
+
+    def _attach_push_handlers(self, ctx: Any) -> None:
+        """Mount both push handlers on a freshly built context (084 D1).
+
+        Called on **every** build, so a rebuilt context is re-subscribed. Missing that
+        is the silent failure mode of this feature: after the first timeout or
+        disconnect the buffer would simply stop growing, with nothing raising and
+        every query route still answering normally.
+
+        A handler the SDK refuses is logged, not raised: the context is still usable
+        for the query routes, and losing pushes shows up downstream as a sequence gap.
+        """
+        for handler in (
+            TradeOrderPushHandler(self._events),
+            TradeDealPushHandler(self._events),
+        ):
+            if ctx.set_handler(handler) != RET_OK:
+                log.warning("trade context refused %s", type(handler).__name__)
 
     def _discard_ctx(self, ctx: Any, reason: str) -> None:
         """Drop `ctx` if it is still the current one — never a fresh replacement.
