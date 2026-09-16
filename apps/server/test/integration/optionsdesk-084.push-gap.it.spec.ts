@@ -26,8 +26,9 @@ for (const key of Object.keys(process.env)) {
 }
 
 /**
- * 084 T010 —— 推送断档的**当日缺口补偿**的真 PG IT
- * (FR-009 / FR-010 / FR-018 / FR-022; plan D5; state_branches 5, 6, 10, 17, 18, 19, 20)。
+ * 084 T010 / T011 —— 推送断档的**当日缺口补偿**与**卡死回收**的真 PG IT
+ * (FR-009 / FR-010 / FR-011 / FR-018 / FR-022; plan D5 / D6;
+ * state_branches 5, 6, 7, 10, 17, 18, 19, 20)。
  *
  * ## 为什么必须要真 PG
  *
@@ -39,6 +40,8 @@ for (const key of Object.keys(process.env)) {
  *    照抄上游谓词 (把 `succeeded` 也纳入) 的实现在 fake 里与正确实现无法区分。
  * ③ 「补偿真的把当日缺失的成交补回来了」要看 `createMany({ skipDuplicates })` 的
  *    ON CONFLICT DO NOTHING 与唯一键 `(connection_id, deal_id)` 的组合结果。
+ * ④ 卡死回收是条件 `updateMany` (`status='running' ∧ startedAt < 阈值` ∧ `kind` 过滤),
+ *    「哪些行被改了、哪些原样不动」是 SQL 谓词的结果, 不是应用层判断。
  *
  * ⇒ PG 从 `test/_support/isolated-db.ts` 的 `setupIsolatedDb()` 取 (共享 PG 模板克隆, 禁自起容器)。
  * 装配 = `OptionsdeskModule` 真 DI (plan Testing Invariants), **只替换** `BROKER_ACCOUNT_PORT`
@@ -63,6 +66,19 @@ for (const key of Object.keys(process.env)) {
  *   一条而往夹具里塞券商根本不发的诱饵列。
  * - 两处变异均已还原, 还原后 8/8 复绿。
  * - 判定纯函数 `decideGapfill` 自己的变异留档在 `src/optionsdesk/broker-sync-slot.rules.spec.ts` 头。
+ *
+ * ## T011 定向变异留档 (2026-09-16, 同一条命令)
+ *
+ * - 变异 = **回到「没有新回收分支」的状态**, 即本 task 写完测试、未动实现时的 RED 基线
+ *   (`reclaimStuckRuns` 当时只有 `backfill` / `reconcile` 两条)。
+ * - 结果 **3 failed | 10 passed (13)**: T011 的 ① ② ⑤ 红, ③ ④ 与 T010 的 8 条绿。
+ *   ① 与 ⑤ 的失败信息都是 `expected 'running' to be 'failed'` —— **记录永久停在执行中**,
+ *   正是 FR-011 / SC-007 要钉的那个形态。
+ * - ② 跟着红是对的、不是夹具噪声: 回收不发生 ⇒ 记录仍是 `running` ⇒ 当日失败次数为 0 ⇒
+ *   重试规则没有任何东西可据以重新发起。
+ * - 加上两条分支后本文件 13/13 绿。`reclaimStuckRuns` 与 `runEvents` 是与 082 共用的路径 ⇒
+ *   连 `optionsdesk-082.{reconcile,backfill}-scheduler.it.spec.ts` 与 084 push-consume 一起跑,
+ *   四个文件 52/52 绿。
  */
 
 /** 明显假值 (Guardrail 9): 连接所属账号 ID 一律合成。 */
@@ -403,6 +419,87 @@ describe('084 推送断档处置 IT (Testcontainers PG)', () => {
       expect(bad).toMatchObject({ kind: 'gapfill', status: 'failed', market: 'us' });
       expect(bad?.error).toContain('历史成交查询失败');
       expect(bad?.finishedAt).not.toBeNull();
+    });
+  });
+
+  /**
+   * T011 卡死回收补两条分支 (FR-011 / SC-007; plan D6; state_branches 7)。
+   *
+   * 🚨 **覆盖的是 `gapfill` 与 `push` 两个新 kind, 不是一个**: 依据 SC-007 的字面 ——
+   * 「停留在执行中状态超过回收阈值的同步记录数为 0」。推送刷新 (T007) 同样会建一条
+   * `kind='push'` 的执行中记录, 崩在刷新途中就永远停在 `running`、无任何回收路径。
+   * 两者的**语义不同**: `gapfill` 置 `failed` 并计入当日失败次数 (由重试规则重新发起),
+   * `push` 置 `failed` 即可 —— 它没有独立重试规则, 下一拍推送刷新自然会再来。
+   */
+  describe('T011 卡死回收: gapfill + push 两条分支', () => {
+    const stuckAt = new Date(NOW.getTime() - 20 * MINUTE);
+
+    it('① 🚨 超时的执行中补偿 ⇒ 被回收为终态 (branch 7; FR-011)', async () => {
+      const { id } = await seedRun('gapfill', 'running', { startedAt: stuckAt });
+
+      await scheduler.run(NOW);
+
+      const row = await prisma.brokerSyncRun.findUniqueOrThrow({ where: { id } });
+      expect(row.status).toBe('failed');
+      expect(row.error).not.toBeNull();
+      expect(row.finishedAt?.toISOString()).toBe(NOW.toISOString());
+    });
+
+    it('② 回收后计入当日失败次数, 重试规则据此重新发起', async () => {
+      await seedRun('gapfill', 'running', { startedAt: stuckAt });
+      await scheduler.run(NOW);
+
+      // 🚨 后续两拍都**不断档** —— 进程重启后游标为 null, 首拍按「首次消费」接受、不判断档,
+      // 所以被回收的补偿若不靠重试规则自己重发, 就再也没有任何东西会发起它。
+      await scheduler.runEvents(new Date(NOW.getTime() + 14 * MINUTE));
+      expect(await runsOf('gapfill', 'us')).toHaveLength(1);
+
+      await scheduler.runEvents(new Date(NOW.getTime() + 16 * MINUTE));
+      expect((await runsOf('gapfill', 'us')).map((r) => r.status)).toEqual(['failed', 'succeeded']);
+    });
+
+    it('③ 未超时的执行中补偿 ⇒ 不被回收', async () => {
+      const { id } = await seedRun('gapfill', 'running', {
+        startedAt: new Date(NOW.getTime() - 10 * MINUTE),
+      });
+
+      await scheduler.run(NOW);
+
+      expect((await prisma.brokerSyncRun.findUniqueOrThrow({ where: { id } })).status).toBe(
+        'running',
+      );
+    });
+
+    it('④ 既有 backfill / reconcile 回收行为不变 (回归)', async () => {
+      const backfill = await seedRun('backfill', 'running', {
+        startedAt: stuckAt,
+        market: null,
+        tradingDate: null,
+      });
+      const reconcile = await seedRun('reconcile', 'running', { startedAt: stuckAt });
+
+      await scheduler.run(NOW);
+
+      const back = await prisma.brokerSyncRun.findUniqueOrThrow({ where: { id: backfill.id } });
+      expect(back.status).toBe('pending');
+      const rec = await prisma.brokerSyncRun.findUniqueOrThrow({ where: { id: reconcile.id } });
+      expect(rec.status).toBe('failed');
+      expect(rec.error).not.toBeNull();
+    });
+
+    it('⑤ 🚨 超时的执行中推送刷新 ⇒ 回收为 failed, 且不占补偿的重试预算 (SC-007)', async () => {
+      const { id } = await seedRun('push', 'running', { startedAt: stuckAt, tradingDate: null });
+
+      await scheduler.run(NOW);
+
+      const row = await prisma.brokerSyncRun.findUniqueOrThrow({ where: { id } });
+      expect(row.status).toBe('failed');
+      expect(row.finishedAt?.toISOString()).toBe(NOW.toISOString());
+
+      // 🚨 被回收的推送刷新若被当成「补偿失败」, 它那 15 分钟的重试间隔会把本次断档整个挡掉,
+      // 表现是断档不被补偿且不报错。
+      await tickThenGap([dealEvent(5, 'dl-after')]);
+      expect((await runsOf('gapfill', 'us')).map((r) => r.status)).toEqual(['succeeded']);
     });
   });
 });

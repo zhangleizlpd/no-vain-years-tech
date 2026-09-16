@@ -305,24 +305,46 @@ export class BrokerAccountScheduler {
     });
   }
 
-  /** 步骤 ①: 卡死的补齐记录置回 `pending` (本拍步骤 ② 即可再认领); 卡死的对账记录置 `failed`。 */
+  /**
+   * 步骤 ①: 卡死记录回收 —— 补齐置回 `pending` (本拍步骤 ② 即可再认领); 对账、缺口补偿、
+   * 推送刷新置 `failed`。
+   *
+   * 🚨 **四个 `kind` 一个都不能少** (SC-007: 停留在执行中状态超过回收阈值的记录数为 0)。
+   * 新 kind 不加分支就**没有任何路径**清理它, 表现是那条记录永久停在 `running` 且不报错 ——
+   * 084 T011 补上 `gapfill` 与 `push` 正是为此。
+   *
+   * `gapfill` 与 `push` 写法相同、**语义不同**: 前者计入当日失败次数, 由 `decideGapfill` 的
+   * 重试规则按间隔重新发起 (取 `reconcile` 那侧语义); 后者只求置成终态 —— 推送刷新没有独立
+   * 重试规则, 下一拍去抖到期自然会再刷一次, 故它**不该占补偿的重试预算** (两者按 `kind`
+   * 分别统计, 天然隔离)。
+   */
   private async reclaimStuckRuns(connectionId: bigint, now: Date): Promise<void> {
     const stuck = {
       connectionId,
       status: 'running',
       startedAt: { lt: new Date(now.getTime() - STUCK_RUNNING_MS) },
     };
+    const interrupted = { status: 'failed', error: RUN_INTERRUPTED_ERROR, finishedAt: now };
     const backfills = await this.prisma.brokerSyncRun.updateMany({
       where: { ...stuck, kind: 'backfill' },
       data: { status: 'pending' },
     });
     const reconciles = await this.prisma.brokerSyncRun.updateMany({
       where: { ...stuck, kind: 'reconcile' },
-      data: { status: 'failed', error: RUN_INTERRUPTED_ERROR, finishedAt: now },
+      data: interrupted,
     });
-    if (backfills.count + reconciles.count > 0) {
+    const gapfills = await this.prisma.brokerSyncRun.updateMany({
+      where: { ...stuck, kind: 'gapfill' },
+      data: interrupted,
+    });
+    const pushes = await this.prisma.brokerSyncRun.updateMany({
+      where: { ...stuck, kind: 'push' },
+      data: interrupted,
+    });
+    if (backfills.count + reconciles.count + gapfills.count + pushes.count > 0) {
       this.logger.warn(
-        `连接 ${connectionId} 回收卡死记录: 补齐 ${backfills.count} 条置回 pending, 对账 ${reconciles.count} 条置 failed`,
+        `连接 ${connectionId} 回收卡死记录: 补齐 ${backfills.count} 条置回 pending, ` +
+          `对账 ${reconciles.count} / 补偿 ${gapfills.count} / 推送刷新 ${pushes.count} 条置 failed`,
       );
     }
   }
