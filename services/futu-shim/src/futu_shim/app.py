@@ -205,8 +205,14 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _envelope(rows: list[dict[str, Any]]):
-    return jsonify({"as_of": _now_iso(), "count": len(rows), "rows": rows})
+def _envelope(rows: list[dict[str, Any]], **extra: Any):
+    """The uniform envelope; `extra` adds route-specific **top-level** fields.
+
+    Only `/trade/events` passes `extra` today: its cursor fields describe the batch,
+    not any single row, so they belong beside `rows` rather than inside them.
+    `as_of` / `count` / `rows` stay the invariant core every route answers with.
+    """
+    return jsonify({"as_of": _now_iso(), "count": len(rows), "rows": rows, **extra})
 
 
 def _unwrap(ret: int, content: Any, what: str) -> Any:
@@ -301,6 +307,22 @@ def _optional_date(raw: str | None, param: str) -> date | None:
         return datetime.strptime(raw.strip(), DATE_FORMAT).date()
     except ValueError:
         raise ValueError(f"query param `{param}` must be YYYY-MM-DD, got {raw!r}") from None
+
+
+def _optional_seq(raw: str | None, param: str) -> int | None:
+    """Parse an optional non-negative integer cursor, or raise -> 400.
+
+    A malformed cursor is a **permanent** error, so it must fail as a 400 said once:
+    the server's transport treats 5xx / 429 as transient and retries, and a retried
+    bad cursor would read as a flaky endpoint forever. Same reasoning as the
+    window-too-wide 400s above.
+    """
+    if raw is None or not raw.strip():
+        return None
+    candidate = raw.strip()
+    if not candidate.isdigit():
+        raise ValueError(f"query param `{param}` must be a non-negative integer, got {raw!r}")
+    return int(candidate)
 
 
 def _exchange_today(market: str) -> date:
@@ -972,6 +994,39 @@ def create_app(
             today=("trade_order_today", lambda ctx, **kw: ctx.order_list_query(**kw)),
         )
         return _envelope(rows)
+
+    @app.get("/trade/events")
+    def trade_events():
+        """本进程缓冲里的订单 / 成交推送事件，按 `(epoch, after_seq)` 游标增量取（084 D1）。
+
+        参数：`epoch`（上次拿到的代次，首拉可不传）· `after_seq`（上次的游标，默认 0）。
+        响应在标准信封上多三个字段：`epoch` / `next_seq` / `dropped`。
+
+        🚨 **非阻塞、立即返回**（FR-004）。没有新事件就回空 `rows`，🚫 长轮询 —— 挂起会占住
+        waitress 仅有的 4 个工作线程，与行情面抢同一批线程，而行情面的可用性是上游已验收的
+        底线。拉取节奏由 server 侧每 2 秒一拍负责，不靠这里挂着等。
+
+        🚨 **`epoch` 与当前不符 ⇒ 回缓冲内的全部行，并报出当前 `epoch`**，🚫 按旧序号续拉：
+        代次不符只发生在本进程重启之后（序号已回到起点），此时旧序号比新序号大，续拉会把
+        重启后的全部事件静默漏掉。「这算不算断档、要不要补偿」由 server 侧的游标规则判，
+        shim 只诚实报代次 —— 判据留一处，不在两侧各判一次。
+
+        🚨 **不登记券商限频 capability**：本端点读的是进程内存，一发都不打到券商。登记会让它
+        与真正打券商的调用共用那份配额，把额度消耗在不消耗对方资源的调用上（而限频的表现是
+        持仓静默不刷新）。鉴权仍与其余交易路由同档（Bearer，`before_request` 钩子）。
+        """
+        after_seq = _optional_seq(request.args.get("after_seq"), "after_seq")
+        events = trade_supervisor.events
+        epoch = (request.args.get("epoch") or "").strip() or None
+        if epoch is not None and epoch != events.epoch:
+            after_seq = 0
+        result = events.read(after_seq=after_seq or 0)
+        return _envelope(
+            result["rows"],
+            epoch=result["epoch"],
+            next_seq=result["next_seq"],
+            dropped=result["dropped"],
+        )
 
     return app
 
