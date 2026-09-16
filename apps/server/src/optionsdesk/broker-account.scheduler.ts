@@ -13,7 +13,9 @@ import type { BrokerMarket } from './broker-code.rules';
 import type { BrokerEventCursor } from './broker-event-cursor.rules';
 import {
   decideBackfillAfterInfraFailure,
+  decideGapfill,
   decideReconcile,
+  type GapfillInput,
   type ReconcileInput,
 } from './broker-sync-slot.rules';
 import { ConsumeBrokerEventsUseCase } from './consume-broker-events.usecase';
@@ -172,26 +174,28 @@ export class BrokerAccountScheduler {
     if (this.marketdata.kind === 'mock') return { status: 'skipped-mock' };
 
     try {
-      const connections = await this.prisma.brokerConnection.findMany({
-        select: { id: true },
+      const connections: Connection[] = await this.prisma.brokerConnection.findMany({
+        select: { id: true, accountId: true },
         orderBy: { id: 'asc' },
       });
       let failedConnections = 0;
-      for (const { id } of connections) {
-        const key = id.toString();
+      for (const connection of connections) {
+        const key = connection.id.toString();
         try {
           const outcome = await this.consumeBrokerEvents.execute({
-            connectionId: id,
+            connectionId: connection.id,
             cursor: this.eventCursors.get(key) ?? null,
             now,
           });
           // 🚨 失败分支回传的是**未前移**的游标 (FR-017): 照样存回, 下一拍原样重放这批。
           this.eventCursors.set(key, outcome.cursor);
           if (!outcome.ok) failedConnections++;
-          // T010 在此消费 `outcome.gapDetected` 发起当日缺口补偿; 本 task 只接拉取与消费。
+          // 084 T010: 断档即发起当日缺口补偿。失败分支不带 `gapDetected` (这一拍压根没判出
+          // 结果) ⇒ 按「本拍没有新断档」处理; 已留痕的失败补偿仍由下面的重试规则重新发起。
+          await this.runGapfills(connection, outcome.ok && outcome.gapDetected, now);
         } catch (e) {
           failedConnections++;
-          this.logger.error(`推送事件心跳: 连接 ${id} 本拍失败: ${errorMessage(e)}`);
+          this.logger.error(`推送事件心跳: 连接 ${connection.id} 本拍失败: ${errorMessage(e)}`);
         }
       }
       return { status: 'ticked', connections: connections.length, failedConnections };
@@ -200,6 +204,105 @@ export class BrokerAccountScheduler {
       this.logger.error(`推送事件心跳失败: ${reason}`);
       return { status: 'failed', reason };
     }
+  }
+
+  /**
+   * 084 T010 缺口补偿 (FR-009 / FR-010 / FR-018 / FR-022; plan D5)。
+   *
+   * 🚨 **断档是批级布尔、不含市场** —— 事件源那头是一个进程级环形缓冲 + 一个全局 `seq`
+   * 计数器 (`services/futu-shim/src/futu_shim/trade_events.py`), 丢掉的那段序号里可能是任何
+   * 市场的事件 ⇒ 无从判断「断的是哪个市场」, 只能对该连接 scope 内**每个市场各补一次**。
+   * 🚫 只补某一个市场: 猜错的那次, 缺失的成交永远不会出现, 且不报错。
+   *
+   * 市场间各自 try/catch, 一个市场出错不影响另一个 (同 {@link reconcile})。
+   */
+  private async runGapfills(
+    connection: Connection,
+    gapDetected: boolean,
+    now: Date,
+  ): Promise<void> {
+    for (const market of ALL_MARKETS) {
+      try {
+        await this.gapfillMarket(connection, market, gapDetected, now);
+      } catch (e) {
+        this.logger.error(
+          `缺口补偿: 连接 ${connection.id} 市场 ${market} 本拍失败: ${errorMessage(e)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * 一个连接 × 一个市场的当日缺口补偿: 对该市场**当日**做一次窗口受限的对账, 走
+   * `SyncBrokerAccountUseCase` 的第四个 mode —— 🚫 另写一份, 否则「过滤口径 / 幂等写 /
+   * 持仓刷新」三处各自漂移 (plan D5, 同 082 D1 的理由)。结局由 use case 回写。
+   *
+   * 🚨 插 `running` 记录用 `create` 并捕获 `P2002` (部分唯一索引在 Prisma 客户端里被当成全表
+   * 唯一), 🚫 `upsert` —— 同日可以有多条已完成的补偿, upsert 会把它们改写掉。
+   *
+   * ⚠️ **每拍都查一次当日补偿记录, 哪怕本拍没断档**: 失败后的重试不能指望「又断了一次」——
+   * 卡死回收把补偿置 `failed` 之后根本不会再有断档 (FR-011)。查询按
+   * `(connection_id, market, trading_date)` 收窄到当日几行, 2 秒一拍的代价可以忽略。
+   */
+  private async gapfillMarket(
+    connection: Connection,
+    market: BrokerMarket,
+    gapDetected: boolean,
+    now: Date,
+  ): Promise<void> {
+    const today = exchangeClock(market, now).date;
+    const tradingDate = dateColumn(today);
+    const todays = await this.prisma.brokerSyncRun.findMany({
+      where: {
+        connectionId: connection.id,
+        kind: 'gapfill',
+        market,
+        tradingDate,
+        status: { in: ['succeeded', 'failed'] },
+      },
+      select: { status: true, finishedAt: true },
+    });
+    const decision = decideGapfill({
+      gapDetected,
+      todaysRuns: tallyGapfillRuns(todays),
+      now,
+    });
+    if (decision.action === 'skip') return;
+
+    let runId: bigint;
+    try {
+      ({ id: runId } = await this.prisma.brokerSyncRun.create({
+        data: {
+          accountId: connection.accountId,
+          connectionId: connection.id,
+          kind: 'gapfill',
+          status: 'running',
+          market,
+          target: '*',
+          tradingDate,
+          windowStart: tradingDate,
+          windowEnd: tradingDate,
+          startedAt: now,
+        },
+        select: { id: true },
+      }));
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+      this.logger.log(
+        `缺口补偿 ${market} ${today} 连接 ${connection.id} 已有执行中的补偿, 本拍跳过`,
+      );
+      return;
+    }
+
+    await this.syncBrokerAccount.execute({
+      connectionId: connection.id,
+      markets: [market],
+      target: '*',
+      window: { start: today, end: today },
+      mode: 'gapfill',
+      runId,
+      now,
+    });
   }
 
   /** 步骤 ①: 卡死的补齐记录置回 `pending` (本拍步骤 ② 即可再认领); 卡死的对账记录置 `failed`。 */
@@ -432,6 +535,32 @@ function tallyTodaysRuns(
     }
   }
   return { succeeded, failed, lastFailedAt };
+}
+
+/**
+ * 当日已结束的**缺口补偿**记录 → 判定输入。与 {@link tallyTodaysRuns} 的差别只在多取一个
+ * 「最近成功时刻」—— 补偿判定要区分「失败之后又成功过」与「失败还挂着」, 而对账判定只需要
+ * 知道当日成功过没有。复杂度 O(n)。
+ */
+function tallyGapfillRuns(
+  runs: readonly { status: string; finishedAt: Date | null }[],
+): GapfillInput['todaysRuns'] {
+  let failed = 0;
+  let lastFailedAt: Date | null = null;
+  let lastSucceededAt: Date | null = null;
+  for (const { status, finishedAt } of runs) {
+    if (status === 'succeeded') {
+      if (finishedAt !== null && (lastSucceededAt === null || finishedAt > lastSucceededAt)) {
+        lastSucceededAt = finishedAt;
+      }
+      continue;
+    }
+    failed++;
+    if (finishedAt !== null && (lastFailedAt === null || finishedAt > lastFailedAt)) {
+      lastFailedAt = finishedAt;
+    }
+  }
+  return { failed, lastFailedAt, lastSucceededAt };
 }
 
 /**

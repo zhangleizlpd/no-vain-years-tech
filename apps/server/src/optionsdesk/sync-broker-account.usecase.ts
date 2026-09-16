@@ -35,11 +35,11 @@ const RUN_ERROR_MAX_CHARS = 512;
 /**
  * 同步模式, 与 `broker_sync_run.kind` 的取值一一对应。
  *
- * 🚨 `'push'` (084 T007 推送刷新) 与将来的 `'gapfill'` (缺口补偿) **是两个取值, 不是一个**:
+ * 🚨 `'push'` (084 T007 推送刷新) 与 `'gapfill'` (084 T010 缺口补偿) **是两个取值, 不是一个**:
  * 合用一个取值会让缺口补偿的「只含执行中状态」防重入索引把盘中每 5 秒一次的推送刷新一并锁住,
  * 刷新与补偿互相阻塞 —— 而这类失效的表现是**持仓静默不刷新、不报错** (维护者 2026-09-16 定)。
  */
-export type BrokerSyncMode = 'backfill' | 'reconcile' | 'push';
+export type BrokerSyncMode = 'backfill' | 'reconcile' | 'push' | 'gapfill';
 
 export interface SyncBrokerAccountInput {
   connectionId: bigint;
@@ -171,7 +171,9 @@ export class SyncBrokerAccountUseCase {
       input.runId,
       now,
       startedMs,
-      input.mode === 'reconcile'
+      // 对账与缺口补偿都是「把窗口内数据补齐到与券商一致」⇒ 结局记**补回条数** (084 FR-018);
+      // 补齐与推送刷新记写入条数。
+      input.mode === 'reconcile' || input.mode === 'gapfill'
         ? { status: 'succeeded', filled }
         : { status: 'succeeded', written: filled + result.ordersUpdated },
     );

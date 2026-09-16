@@ -26,7 +26,7 @@ export const RECONCILE_SLOT_MINUTES: Readonly<Record<BrokerMarket, number>> = { 
 /** 同一交易日对账至多尝试次数 = 首次 + 最多 3 次重试 (spec Clarifications 第 1 条)。 */
 export const RECONCILE_MAX_ATTEMPTS = 4;
 
-/** 对账重试 / 补齐重试间隔 (spec Clarifications 第 1 / 5 条)。 */
+/** 对账 / 补齐 / 缺口补偿重试间隔 (spec Clarifications 第 1 / 5 条; 084 clarify 第 2 条)。 */
 export const RETRY_SPACING_MS = 15 * 60 * 1000;
 
 /** 补齐基础设施故障重试上限, 自首次尝试起算 (spec Clarifications 第 5 条)。 */
@@ -116,6 +116,48 @@ export function decideBackfillAfterInfraFailure({
     return { status: 'failed' };
   }
   return { status: 'pending', nextAttemptAt: new Date(now.getTime() + RETRY_SPACING_MS) };
+}
+
+export type GapfillSkipReason = 'no-gap' | 'attempts-exhausted' | 'retry-spacing';
+
+export type GapfillDecision = { action: 'skip'; reason: GapfillSkipReason } | { action: 'run' };
+
+export interface GapfillInput {
+  /** 本拍消费判出断档 (084 FR-009) —— 一个**新**的补偿需求。 */
+  gapDetected: boolean;
+  /** 该市场本交易日已结束的**缺口补偿**记录; 卡死回收置 failed 的也计入 `failed`。 */
+  todaysRuns: { failed: number; lastFailedAt: Date | null; lastSucceededAt: Date | null };
+  now: Date;
+}
+
+/**
+ * 本拍该不该发起当日缺口补偿 (084 FR-009 / FR-022; plan D5)。判据按序短路:
+ * 当日次数用尽 → 没有未了结的补偿需求 → 距上次失败不足间隔。复杂度 O(1)。
+ *
+ * 重试规则本身沿用开盘前对账 ({@link RECONCILE_MAX_ATTEMPTS} 次、间隔
+ * {@link RETRY_SPACING_MS}), 但与 {@link decideReconcile} 有**两处蓄意不同**:
+ *
+ * 1. 🚨 **「当日已成功过」不阻挡** —— 断档在一个交易日内可能合法地发生多次; 照抄对账那条
+ *    `already-succeeded` 会让当天第二次断档**再也补不回来, 且不报错** (FR-022)。
+ * 2. **触发源是事件不是时点** —— 本拍没断档时, 只有「上一次补偿失败且尚未被之后的成功覆盖」
+ *    才继续重发。少了这一条, 失败后的重试就只能指望「又断了一次」, 而卡死回收把补偿置
+ *    `failed` 之后根本不会再有断档 (FR-011 与本条配套)。
+ */
+export function decideGapfill({ gapDetected, todaysRuns, now }: GapfillInput): GapfillDecision {
+  if (todaysRuns.failed >= RECONCILE_MAX_ATTEMPTS) {
+    return { action: 'skip', reason: 'attempts-exhausted' };
+  }
+  const outstanding =
+    todaysRuns.lastFailedAt !== null &&
+    (todaysRuns.lastSucceededAt === null || todaysRuns.lastSucceededAt < todaysRuns.lastFailedAt);
+  if (!gapDetected && !outstanding) return { action: 'skip', reason: 'no-gap' };
+  if (
+    todaysRuns.lastFailedAt !== null &&
+    now.getTime() - todaysRuns.lastFailedAt.getTime() < RETRY_SPACING_MS
+  ) {
+    return { action: 'skip', reason: 'retry-spacing' };
+  }
+  return { action: 'run' };
 }
 
 /**

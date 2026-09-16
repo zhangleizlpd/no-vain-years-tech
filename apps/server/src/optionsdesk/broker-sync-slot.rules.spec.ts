@@ -5,7 +5,9 @@ import {
   RECONCILE_SLOT_MINUTES,
   RETRY_SPACING_MS,
   decideBackfillAfterInfraFailure,
+  decideGapfill,
   decideReconcile,
+  type GapfillInput,
   type ReconcileInput,
 } from './broker-sync-slot.rules';
 
@@ -164,5 +166,77 @@ describe('decideBackfillAfterInfraFailure — 24 h 上限 (branch 17, 18)', () =
     expect(decideBackfillAfterInfraFailure({ firstAttemptedAt, now: NOW })).toEqual({
       status: 'failed',
     });
+  });
+});
+
+/**
+ * 084 T010 缺口补偿判定 (FR-009 / FR-022; 084 state_branches 17, 18, 20)。
+ *
+ * 定向变异 (out-of-test sabotage, testing.md §7.1):
+ *   d. 改坏: `decideGapfill` 的次数判据 `>= RECONCILE_MAX_ATTEMPTS` 改 `>`
+ *      → (2026-09-16 实跑) 1 failed | 20 passed —— 只有 ⑰ 红, 还原后 21/21 绿
+ *   复跑: pnpm nx test server src/optionsdesk/broker-sync-slot.rules.spec.ts --skip-nx-cache
+ */
+describe('decideGapfill — 断档补偿该不该发起 (084 branch 17, 18, 20)', () => {
+  const todays = (over: Partial<GapfillInput['todaysRuns']> = {}): GapfillInput['todaysRuns'] => ({
+    failed: 0,
+    lastFailedAt: null,
+    lastSucceededAt: null,
+    ...over,
+  });
+
+  it('⑫ 本拍断档、当日尚无补偿 ⇒ run', () => {
+    expect(decideGapfill({ gapDetected: true, todaysRuns: todays(), now: NOW })).toEqual({
+      action: 'run',
+    });
+  });
+
+  it('🚨 ⑬ 当日已成功补偿过, 再次断档 ⇒ 照常 run (对账的 already-succeeded 不适用)', () => {
+    const decision = decideGapfill({
+      gapDetected: true,
+      todaysRuns: todays({ lastSucceededAt: new Date(NOW.getTime() - 60 * MIN) }),
+      now: NOW,
+    });
+    expect(decision).toEqual({ action: 'run' });
+  });
+
+  it('⑭ 本拍未断档、也没有未了结的失败 ⇒ skip', () => {
+    expect(decideGapfill({ gapDetected: false, todaysRuns: todays(), now: NOW })).toEqual({
+      action: 'skip',
+      reason: 'no-gap',
+    });
+  });
+
+  it('🚨 ⑮ 上次失败仍未了结 ⇒ 未满间隔 skip, 满间隔即使本拍没断档也重发', () => {
+    const at = (minutesAgo: number) =>
+      decideGapfill({
+        gapDetected: false,
+        todaysRuns: todays({ failed: 1, lastFailedAt: new Date(NOW.getTime() - minutesAgo * MIN) }),
+        now: NOW,
+      });
+    expect(at(14)).toEqual({ action: 'skip', reason: 'retry-spacing' });
+    expect(at(15)).toEqual({ action: 'run' });
+  });
+
+  it('⑯ 失败之后已经成功过 ⇒ 不再重发', () => {
+    const decision = decideGapfill({
+      gapDetected: false,
+      todaysRuns: todays({
+        failed: 1,
+        lastFailedAt: new Date(NOW.getTime() - 60 * MIN),
+        lastSucceededAt: new Date(NOW.getTime() - 30 * MIN),
+      }),
+      now: NOW,
+    });
+    expect(decision).toEqual({ action: 'skip', reason: 'no-gap' });
+  });
+
+  it('🚨 ⑰ 当日失败已满 4 次 ⇒ 留痕放弃, 再断档也不发起', () => {
+    const decision = decideGapfill({
+      gapDetected: true,
+      todaysRuns: todays({ failed: RECONCILE_MAX_ATTEMPTS, lastFailedAt: new Date(0) }),
+      now: NOW,
+    });
+    expect(decision).toEqual({ action: 'skip', reason: 'attempts-exhausted' });
   });
 });
