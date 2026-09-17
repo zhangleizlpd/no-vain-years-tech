@@ -22,14 +22,14 @@ Frontmatter fields:
 
 This plan is PROSE-ONLY. The data model lives in schema.prisma (SoT); the API
 surface lives in @nestjs/swagger decorators → OpenAPI (code-first SoT, per
-docs/conventions/api-contract.md). Do NOT mirror either into this file — capture
+docs/conventions/api-contract.md). Do not mirror either into this file — capture
 DESIGN INTENT + decisions in prose under Architecture Notes instead.
 -->
 
 ## Summary *(mandatory)*
 
 [1-2 sentences. Extract from spec.md: primary requirement + 1-line technical
-approach. Do NOT restate full FR list — spec.md already carries them.]
+approach. Do not restate full FR list — spec.md already carries them.]
 
 ## Dependencies & Defensive Additions *(Cargo-cult 防火墙)*
 
@@ -72,13 +72,13 @@ box explicitly; an empty box blocks the next phase.
 4 gate checklists added in mono-orchestrator-ready 0.2.1 (post-A-002 retro).
 Each gate is a hard YES/NO question + space for "evidence link / N/A reason".
 Plan cannot advance to status: tasks-ready until all 4 gates resolved.
-LLM filling /speckit-plan MUST check each box explicitly — empty `[ ]` blocks
+Check each box explicitly when filling /speckit-plan — an empty `[ ]` blocks
 the next phase.
 -->
 
 ### Gate 0.1 — Integration Smoke Gate
 
-- [ ] **Server**: real-boot smoke (PG + Redis up via Testcontainers or equiv) covers each new endpoint at least once. unit + module tests are NOT sufficient.
+- [ ] **Server**: real-boot smoke (PG + Redis up via Testcontainers or equiv) covers each new endpoint at least once. unit + module tests are not sufficient.
 - [ ] **Mobile / Web**: golden-path flow walked in a real Expo simulator / Web browser session for each new user story (P1).
 - [ ] **Evidence**: <link to smoke commit / screenshot / log paste; or "N/A — explain"></evidence>
 
@@ -133,40 +133,44 @@ DESIGN INTENT belongs (prose, not a mirror table) — entities, ownership,
 append-only semantics, masking points, endpoint purpose, etc.
 -->
 
-### 🚨 Testing Invariants (AI 绝对禁令 — 严禁违背)
+### Testing Invariants（三条硬约束；第一条由 lefthook `no-bad-mocks` 机器守）
 
 <!--
 Per ADR-0040 multi-layer test gate strategy. These three invariants are the
 hard rules for any NestJS lifecycle test (Guard / Interceptor / Filter /
-Pipe). 违背任一条 → P3 阶段 lefthook anti-mock 正则会拦 commit.
-These bullets are injected verbatim into the implementing sub-agent prompt; do
-not soften the language — the LLM defaults to mock everything if not
-explicitly forbidden.
+Pipe); 违背第一条 → lefthook no-bad-mocks 正则拦 commit。
+These bullets are injected verbatim into the implementing sub-agent prompt.
+写法是陈述句 + 机器闸指针，不用 🚨 / NEVER / 绝对禁止：Claude 4.5+ 对强调语会
+overtrigger（Anthropic prompting best practices「dial back any aggressive
+language」），而且标记一多，真红线就成了墙纸（mono .claude/rules/sdd-authoring.md
+§ 反模式「规范性动词 / 强调标记当强调号用」）。
 -->
 
-- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，**绝对禁止** `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。这些组件依赖 NestJS DI lifecycle 顺序 (Guards→Interceptors→Pipes→Filters)，mock 隔离 = 抹掉 PR-79 类 cascade bug 的唯一信号。
-- **MANDATORY INTEGRATION**: 必须用 `Test.createTestingModule({ imports: [<TheModule>] }).compile()` 装一个微型 DI 容器，让被测组件在真实 lifecycle 中触发。`createTestingModule` 之外的"测试" 视同未测试。
-- **EXHAUSTIVE BRANCHING**: spec.md `state_branches` 列出的每条分支，**必须**在 integration test 文件中有对应 `it()` 块。100% 路径覆盖 — 不允许漏 cold-boot / 路由根 `/` 等非 happy-path 状态（PR #79 实证 4 层 cascade 始于一个未列状态分支）。
+- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，不写 `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。这些组件依赖 NestJS DI lifecycle 顺序 (Guards→Interceptors→Pipes→Filters)，mock 隔离 = 抹掉 PR-79 类 cascade bug 的唯一信号。
+- **MANDATORY INTEGRATION**: 用 `Test.createTestingModule({ imports: [<TheModule>] }).compile()` 装一个微型 DI 容器，让被测组件在真实 lifecycle 中触发。`createTestingModule` 之外的"测试" 视同未测试。
+- **EXHAUSTIVE BRANCHING**: spec.md `state_branches` 列出的每条分支，在 integration test 文件中都有对应 `it()` 块。100% 路径覆盖，含 cold-boot / 路由根 `/` 等非 happy-path 状态（PR #79 实证 4 层 cascade 始于一个未列状态分支）。
 
 ### General Architecture Notes
 
-> ⚠️ **CRITICAL ARCHITECTURE PARADIGM (ADR-0043 — ENFORCED)**
-> The implementer LLM MUST strictly follow the "Flat + Anemic + Moat" paradigm:
-> - **Flat Module**: ALL files live flatly in `apps/server/src/<module>/`. NEVER generate `domain/`, `application/`, `infrastructure/`, or `web/` subdirectories.
-> - **Anemic Data & Zero-Class**: Data equals raw Prisma rows (snake_case handled by `@map` in schema.prisma). NEVER generate Domain Classes or Entity Mappers.
-> - **No Repositories**: NEVER create Repository interfaces/adapters for your own tables. Inject `PrismaService` directly into UseCases. Put business invariants in pure functions (`*.rules.ts`).
-> - **The Moat**: NEVER write `tx.<otherTable>.*`. Cross-context access MUST go through the target module's UseCase (use the Two-step Inspect+Commit saga only when caller validation must sit between read and write).
+> **Architecture paradigm (ADR-0043) — Flat + Anemic + Moat.** Bounded-context edges are enforced by eslint-plugin-boundaries and table ownership by `check-server-moat.ts`; the bullets below say what those gates expect.
+> - **Flat Module**: all files live flatly in `apps/server/src/<module>/`; no `domain/`, `application/`, `infrastructure/` or `web/` subdirectories.
+> - **Anemic Data & Zero-Class**: data equals raw Prisma rows (snake_case handled by `@map` in schema.prisma); no Domain Classes or Entity Mappers.
+> - **No Repositories**: no Repository interfaces/adapters for your own tables. Inject `PrismaService` directly into UseCases. Put business invariants in pure functions (`*.rules.ts`).
+> - **The Moat**: no `tx.<otherTable>.*`. Cross-context access goes through the target module's UseCase (use the Two-step Inspect+Commit saga only when caller validation must sit between read and write).
 
-### 🚨 Impl Guardrails（并发 / 安全 / 前端 — 详版见 mono conventions）
+### Impl Guardrails（并发 / 安全 / 前端 — 详版见 mono conventions）
 
 <!--
 Injected into the implementing sub-agent brief. 详版 + 实证锚见
-docs/conventions/{server,mobile}-impl-playbook.md（单源）。保持 fierce —
-LLM 默认走简单路径，机制不显式禁就踩。仅留本 feature 适用的条目。
+docs/conventions/{server,mobile}-impl-playbook.md（单源）。仅留本 feature 适用的条目。
+标记预算：整份 plan 的 🚫 / 🚨 / ⚠️ 与 MUST / NEVER / CRITICAL 一族大写词合计 ≤ 10。
+一个标记只给同时满足三条的条目 —— ① 实施者默认会做错 ② 没有机器闸（eslint / check
+脚本 / 类型 / lefthook）当场拦 ③ 有实证（PoC / 事故 / 行号）；其余陈述句，能被机器闸
+拦的写「由 X 拦」。mono 的 posttooluse-steering-density.sh 写完即数，超线提醒。
 -->
 
-- **并发/事务**：单行状态转换用 conditional UPDATE **affected-count**（`updateMany where {id,<前置>}` → count===1 won / 0 lost，READ COMMITTED）；**NEVER** 单行 `FOR UPDATE` / Serializable（偏索引 SSI 假冲突）。并发 insert 确需 Serializable 时 catch **P2002 + P2034 双形态**。outbox 事件 `publish(tx,…)` 与状态写**同 tx**。scheduler 逐行独立 tx。外部 I/O **split-tx**（禁 tx 内持锁等 HTTP）。→ `../../docs/conventions/server-impl-playbook.md`
-- **安全**：失败分支**字节级一致折叠** + dummy-hash constant-time pad（反枚举）；码/token 比较 **HMAC constant-time**，**NEVER bcrypt** 新代码；PII **AES-GCM** + 唯一 hash 防占位 + 终态才解密+掩码。
+- **并发/事务**：单行状态转换用 conditional UPDATE **affected-count**（`updateMany where {id,<前置>}` → count===1 won / 0 lost，READ COMMITTED）；不用单行 `FOR UPDATE` / Serializable（偏索引 SSI 假冲突）。并发 insert 确需 Serializable 时 catch **P2002 + P2034 双形态**。outbox 事件 `publish(tx,…)` 与状态写**同 tx**。scheduler 逐行独立 tx。外部 I/O **split-tx**（不在 tx 内持锁等 HTTP）。→ `../../docs/conventions/server-impl-playbook.md`
+- **安全**：失败分支**字节级一致折叠** + dummy-hash constant-time pad（反枚举）；码/token 比较 **HMAC constant-time**，新代码不用 bcrypt；PII **AES-GCM** + 唯一 hash 防占位 + 终态才解密+掩码。
 - **前端（mobile）**：表单 **RHF + zodResolver** 4 铁律（Controller≠register / 表单态≠副作用态 / isSubmitting 单源 / 错误+a11y）；port 走 **Strangler-Fig**（复用 `~/theme`+`~/ui`、Orval 函数式 hook 非 class、axios 不删）；mockup 走 Claude Design 2 段模板。→ `../../docs/conventions/mobile-impl-playbook.md`
 
 (Write any feature-specific architecture notes here — data model design intent, API surface purpose, reuse decisions, schema state, masking points, etc.)

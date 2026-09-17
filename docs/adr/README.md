@@ -12,7 +12,7 @@
 
 ## 新立 ADR 模板
 
-走 `adr-governance` preset（来自 `michael-speckit-presets`，上游仓已不可达） 装的 template:
+走 `adr-governance` preset（来自 `michael-speckit-presets`，仓 `zhangleizlpd/michael-speckit-presets`） 装的 template:
 
 - 模板路径: `.specify/presets/adr-governance/templates/adr-template.md`
 - 校验脚本: `scripts/check-adr-frontmatters.ts` (lefthook pre-commit 自动跑;手动 `pnpm tsx scripts/check-adr-frontmatters.ts`)

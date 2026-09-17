@@ -264,12 +264,15 @@ jobs:
         #   它值得 PR 门守的理由与上面几条同构, 且更极端: 判据错法**双向都不报错** —— 判宽了
         #   每条管道 grep 都刷提醒 (人会整体忽略它), 判窄了取证搜索照旧静默漏掉 docs/private。
         #   大小写是承重的 (grep -R 跟随 symlink、-r 不跟随), 一个字母之差行为相反。
+        # 后加: posttooluse-steering-density.test.sh —— SDD 产物强调标记预算提醒的对照表。计数错法
+        #   同样双向不报错: 多数了逐 task 刷屏成墙纸, 少数了 079 那种一份 35 个 🚫 照旧静默。
         run: |
           node --test scripts/sdd-run/*.test.mjs
           bash scripts/hooks/pretooluse-local-verify-guard.test.sh scripts/hooks/pretooluse-local-verify-guard.sh
           bash scripts/hooks/pretooluse-convention-rubric.test.sh scripts/hooks/pretooluse-convention-rubric.sh
           bash scripts/hooks/pretooluse-private-data-guard.test.sh scripts/hooks/pretooluse-private-data-guard.sh
           bash scripts/hooks/pretooluse-private-search-guard.test.sh scripts/hooks/pretooluse-private-search-guard.sh
+          bash scripts/hooks/posttooluse-steering-density.test.sh scripts/hooks/posttooluse-steering-density.sh
           bash scripts/checks/check-identifier-boundary.test.sh scripts/checks/check-identifier-boundary.ts
           bash scripts/jobs/marketdata-dev-sync/sync.test.sh scripts/jobs/marketdata-dev-sync/sync.sh
 

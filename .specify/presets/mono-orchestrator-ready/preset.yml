@@ -1,5 +1,5 @@
 id: mono-orchestrator-ready
-version: 0.7.1
+version: 0.7.2
 description: |
   mono-repo spec-kit 治理 + impl 支持。把 spec / plan / tasks 三大 template
   升级到 prose-only + 治理 frontmatter + impl guardrails 形态:
@@ -7,8 +7,8 @@ description: |
     - spec.md: 上游 prose-only (US heading / `- **FR**:` / `- **SC**:`)
       + YAML frontmatter (跨文档级治理元数据)
     - plan.md: prose-only — Summary / Constitution Check / Phase 0 Research
-      Gates / Architecture Notes (含 🚨 Testing Invariants + ADR-0043 范式
-      banner + 🚨 Impl Guardrails)。数据模型真相源 = schema.prisma;API 真相源
+      Gates / Architecture Notes (含 Testing Invariants + ADR-0043 范式
+      banner + Impl Guardrails)。数据模型真相源 = schema.prisma;API 真相源
       = OpenAPI code-first (api-contract.md);plan 只写 prose 设计意图,不镜像 (0.7.0)
     - tasks.md: 人读 `- [ ] T<N> [title] (FR/US trace)` 清单 + impl guardrails
       指引注释。无 per-task 机器 marker (0.7.0)
@@ -125,6 +125,21 @@ description: |
   指「数据模型住 plan.md orchestrator_config」「FR/SC trace 走 task-meta.trace_*」
   即失真。改指 schema.prisma (数据) / OpenAPI (API) / task 标题 prose trace。其余
   orchestrator 运行时泛指 (parsers/spec.ts 等) 不动,归 orchestrator 退役专门 PR。
+
+  0.7.2 增量 (强调标记降噪 — 模板不再定 fierce 音区):
+    - plan-template: 🚨 Testing Invariants / ⚠️ CRITICAL ADR-0043 banner / 🚨 Impl
+      Guardrails 三段去 emoji 段头与 NEVER / MUST / 绝对禁止 措辞, 改陈述句 + 机器闸
+      指针 (lefthook no-bad-mocks / eslint-plugin-boundaries / check-server-moat);
+      注释里的「do not soften the language」「保持 fierce」删, 换成标记预算 (≤ 10)
+      + 三问判据 (默认会做错 / 无机器闸 / 有实证)。Gate 注释里的 Do NOT / MUST / NOT
+      大写一并转小写陈述。依据: Anthropic 对 Claude 4.5+ 的 prompting 指引「dial back
+      any aggressive language」(模型对强调语会 overtrigger); mono 2026-09-17 普查
+      plan.md 每百行标记 001–016 在 1–6、044 起 18–37, 作者顺着模板音区往下写是源头。
+    - tasks-template: Impl Guardrails 指引注释的 § 引用同步去 🚨。
+    - spec-template + 本文件: 回流 mono 内直改 vendored 副本的两处 drift (mono #249:
+      friction catalog 注释改指 docs/improvements/2026-05/05-21-ai-friction-catalog-v1.md
+      且 notes 写现象 + 缓解 ADR 链接; 0.7.0 条目的 plan 路径改 docs/private/plans)。
+      不回流则本次 install 会静默擦掉。
 
   仅适用于 monorepo (nx workspaces)。
 

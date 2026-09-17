@@ -42,7 +42,7 @@ Status semantics (per implement-task-closure rule):
   broken — roll back impl. Do not skip; do not split.
   -->
 
-<!-- 📋 Impl Guardrails (per plan § 🚨 Impl Guardrails): spec.md state_branches 的每条
+<!-- 📋 Impl Guardrails (per plan § Impl Guardrails): spec.md state_branches 的每条
      **并发/竞态** 与 **反枚举** 分支 → 各配一个独立 integration test task
      (exhaustive，per EXHAUSTIVE BRANCHING + docs/conventions/server-impl-playbook.md)。 -->
 
