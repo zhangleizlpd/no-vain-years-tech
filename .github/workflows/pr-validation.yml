@@ -260,11 +260,16 @@ jobs:
         # 后加: 私有业务数据两道闸的对照表 —— pretooluse-private-data-guard.test.sh (写入时刻 hook) 与
         #   check-identifier-boundary.test.sh (L2 私有清单的 CLI 三种模式端到端)。两者都只用合成值 +
         #   临时清单, CI 无 ~/.nvy 也照跑。它们的错法同样不报错: 漏判 = 真值静默进公开仓。
+        # 后加: pretooluse-private-search-guard.test.sh —— docs/private 搜索盲区提醒的对照表。
+        #   它值得 PR 门守的理由与上面几条同构, 且更极端: 判据错法**双向都不报错** —— 判宽了
+        #   每条管道 grep 都刷提醒 (人会整体忽略它), 判窄了取证搜索照旧静默漏掉 docs/private。
+        #   大小写是承重的 (grep -R 跟随 symlink、-r 不跟随), 一个字母之差行为相反。
         run: |
           node --test scripts/sdd-run/*.test.mjs
           bash scripts/hooks/pretooluse-local-verify-guard.test.sh scripts/hooks/pretooluse-local-verify-guard.sh
           bash scripts/hooks/pretooluse-convention-rubric.test.sh scripts/hooks/pretooluse-convention-rubric.sh
           bash scripts/hooks/pretooluse-private-data-guard.test.sh scripts/hooks/pretooluse-private-data-guard.sh
+          bash scripts/hooks/pretooluse-private-search-guard.test.sh scripts/hooks/pretooluse-private-search-guard.sh
           bash scripts/checks/check-identifier-boundary.test.sh scripts/checks/check-identifier-boundary.ts
           bash scripts/jobs/marketdata-dev-sync/sync.test.sh scripts/jobs/marketdata-dev-sync/sync.sh
 
