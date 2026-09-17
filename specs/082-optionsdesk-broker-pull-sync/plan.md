@@ -60,7 +60,7 @@ context7_verified: []
 |---|---|---|---|
 | ADR-0062 | #4「期权台从锚 + 雷达扩到下单 / **持仓联动** → 与 portfolio 的边界（谁持有仓位事实）重审」 | **fired · mitigated** | 本片让 optionsdesk 持有券商持仓镜像。结论 = optionsdesk 持有「期权台范围内的券商镜像」（`broker_` 前缀 + port 隔离 vendor），**不扩** portfolio `BrokerAccount`；拆出条件（范围开关打开且出现期权台外读取方，或接入第二家券商）入复审记录。**复审记录随本片 PR 提交**（tasks `[Docs]`） |
 | ADR-0062 | #3「出现第二个消费锚表的 ctx」 | accepted-as-is（未触发） | 读锚表的是 optionsdesk 自己（范围判定），不是新 ctx |
-| ADR-0043 | #1「单个 bounded context use case 数 > 20」 | accepted-as-is（**未触发，已到阈值**） | optionsdesk 现 **19** 个；本片只加 **1** 个（D1 合并补齐与对账）⇒ 20。⚠️ **p3 加读接口必然越线** —— p3 plan 必须在 Gate 0.4 做该 trigger 的复审（内部分组 or 券商镜像拆出评估），此处先登记 |
+| ADR-0043 | #1「单个 bounded context use case 数 > 20」 | accepted-as-is（**未触发，已到阈值**） | optionsdesk 现 **19** 个；本片只加 **1** 个（D1 合并补齐与对账）⇒ 20。**p3 加读接口必然越线** —— p3 plan 必须在 Gate 0.4 做该 trigger 的复审（内部分组 or 券商镜像拆出评估），此处先登记 |
 | ADR-0047 | #3「出现第 2 个同类『外部数据访问』子系统」 | accepted-as-is（未触发） | 券商 adapter 复用 `VendorHttpClient` + 约束档机制，没有另起并列子系统 |
 | ADR-0058 | 准入规则「integrations/ 只收 ≥2 ctx 复用的 vendor 适配器」 | accepted-as-is | 券商 adapter 单消费者（optionsdesk）⇒ 留 ctx 内，不进 `integrations/` |
 
@@ -68,35 +68,35 @@ context7_verified: []
 
 ## Architecture Notes *(mandatory)*
 
-### 🚨 Testing Invariants (AI 绝对禁令 — 严禁违背)
+### Testing Invariants（三条硬约束；第一条由 lefthook `no-bad-mocks` 机器守）
 
-- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，**绝对禁止** `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片不新增此类组件，条款保留防顺手加。）
-- **MANDATORY INTEGRATION**: 落库行为必须用 `Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()` + `setupIsolatedDb`（`apps/server/test/_support/isolated-db.ts`）装配；**只替换券商 port**（test double），`PrismaService` / outbox registry / 规则函数一律真实。
-- **EXHAUSTIVE BRANCHING**: spec 的 **32 条** `state_branches` 每条**必须**有对应 `it()`。纯判定分支（范围 / 代码解析 / 开仓时间 / 对账时点 / DST）落 Small `*.rules.spec.ts`；**凡涉及落库结果**的分支（写入 / 不写入 / 清空 / 移除 / 幂等 / 订单守卫 / 失败不动 / 补齐与对账状态流转 / 订阅方）**必须**在 Medium IT 里再有一条 `it()`，不许只在 Small 层证明。
+- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，不写 `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片不新增此类组件，条款保留防顺手加。）
+- **MANDATORY INTEGRATION**: 落库行为用 `Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()` + `setupIsolatedDb`（`apps/server/test/_support/isolated-db.ts`）装配；**只替换券商 port**（test double），`PrismaService` / outbox registry / 规则函数一律真实。
+- **EXHAUSTIVE BRANCHING**: spec 的 **32 条** `state_branches` 每条都有对应 `it()`。纯判定分支（范围 / 代码解析 / 开仓时间 / 对账时点 / DST）落 Small `*.rules.spec.ts`；**凡涉及落库结果**的分支（写入 / 不写入 / 清空 / 移除 / 幂等 / 订单守卫 / 失败不动 / 补齐与对账状态流转 / 订阅方）都要在 Medium IT 里再有一条 `it()`，不许只在 Small 层证明。
 
 **本片额外的反例臂（都是「不写就永远不会红」的形态）：**
 
-- 🚨 **开仓时间 = 持仓起点，不是 FIFO**：构造「D1 开 2、D2 加 1、D3 平 1」断言 = D1；再构造「清仓后重开」断言落在重开那笔。只测单笔开仓的用例对两种实现都绿。
-- 🚨 **幂等要打重放，不是跑一次**：同一补齐连跑两次断言行数与内容逐条相同；同一 `sourceEventId` 投递两次断言只产生 1 条待执行记录（outbox 某订阅方抛错时**全部订阅方重投**，`security/outbox/outbox-subscriber.registry.ts:26-31`）；**两个连接**下同一事件断言各得 1 条（唯一键只按事件 ID 时第二个连接会被静默挡掉，D10）。
-- 🚨 **重试上限要两侧夹逼**：`first_attempted_at` 距今 23h59m 的基础设施失败断言回 `pending`，24h00m 断言 `failed`；只测一侧对「永不设上限」和「立即失败」两种错误实现总有一个是绿的。
-- 🚨 **防重入要用并发直调证明**：两个 `run()` 同时进入美股 09:10 ET ⇒ 对账记录恰 1 条。只靠 `waitForCompletion` 的实现在测试直调下会插出两条 —— 这正是数据层部分唯一索引要挡的（D9）。
-- 🚨 **对账补缺的反例用输入构造**：先写满 → 删 1 条成交 → 对账断言补回 = 1 → 再跑断言 = 0（in-test 对照臂，`testing.md` §7.1 第一形态）。
-- 🚨 **订单守卫必须喂同秒不同毫秒**：两次更新 `updated_time` 同秒、毫秒不同，先喂新的再喂旧的，断言库内是新的 —— D4 的毫秒修复不做这一条就会退化成相等而不自知。
-- 🚨 **失败不清空要用「先有数据」起步**：空库上断言「失败后没数据」对错误实现同样绿。
-- 🚨 **只读守卫要证明能红**：shim AST 守卫做一次 sabotage 臂（临时在 `src/` 插一行 `ctx.place_order`）→ 红 → 还原 → 绿，结果写进测试文件头。
+- **开仓时间 = 持仓起点，不是 FIFO**：构造「D1 开 2、D2 加 1、D3 平 1」断言 = D1；再构造「清仓后重开」断言落在重开那笔。只测单笔开仓的用例对两种实现都绿。
+- **幂等要打重放，不是跑一次**：同一补齐连跑两次断言行数与内容逐条相同；同一 `sourceEventId` 投递两次断言只产生 1 条待执行记录（outbox 某订阅方抛错时**全部订阅方重投**，`security/outbox/outbox-subscriber.registry.ts:26-31`）；**两个连接**下同一事件断言各得 1 条（唯一键只按事件 ID 时第二个连接会被静默挡掉，D10）。
+- **重试上限要两侧夹逼**：`first_attempted_at` 距今 23h59m 的基础设施失败断言回 `pending`，24h00m 断言 `failed`；只测一侧对「永不设上限」和「立即失败」两种错误实现总有一个是绿的。
+- **防重入要用并发直调证明**：两个 `run()` 同时进入美股 09:10 ET ⇒ 对账记录恰 1 条。只靠 `waitForCompletion` 的实现在测试直调下会插出两条 —— 这正是数据层部分唯一索引要挡的（D9）。
+- **对账补缺的反例用输入构造**：先写满 → 删 1 条成交 → 对账断言补回 = 1 → 再跑断言 = 0（in-test 对照臂，`testing.md` §7.1 第一形态）。
+- **订单守卫必须喂同秒不同毫秒**：两次更新 `updated_time` 同秒、毫秒不同，先喂新的再喂旧的，断言库内是新的 —— D4 的毫秒修复不做这一条就会退化成相等而不自知。
+- **失败不清空要用「先有数据」起步**：空库上断言「失败后没数据」对错误实现同样绿。
+- **只读守卫要证明能红**：shim AST 守卫做一次 sabotage 臂（临时在 `src/` 插一行 `ctx.place_order`）→ 红 → 还原 → 绿，结果写进测试文件头。
 
 ### General Architecture Notes
 
-> ⚠️ **CRITICAL ARCHITECTURE PARADIGM (ADR-0043 — ENFORCED)**
-> - **Flat Module**: ALL files live flatly in `apps/server/src/optionsdesk/`. NEVER generate `domain/`, `application/`, `infrastructure/`, or `web/` subdirectories.
-> - **Anemic Data & Zero-Class**: Data equals raw Prisma rows. NEVER generate Domain Classes or Entity Mappers.
-> - **No Repositories**: NEVER create Repository interfaces/adapters for your own tables. Inject `PrismaService` directly. Business invariants go in `*.rules.ts`.
-> - **The Moat**: NEVER write `tx.<otherTable>.*`. 本片跨 ctx 只有**只读** `optionContract` / `instrument`（`// CROSS-CONTEXT-READ:` 挂在 prisma 调用正上方，先例 `optionsdesk/leg-retrieval.adapter.ts:254`）。
+> **Architecture paradigm (ADR-0043) — Flat + Anemic + Moat.** Bounded-context edges are enforced by eslint-plugin-boundaries and table ownership by `check-server-moat.ts`; the bullets below say what those gates expect.
+> - **Flat Module**: all files live flatly in `apps/server/src/optionsdesk/`; no `domain/`, `application/`, `infrastructure/` or `web/` subdirectories.
+> - **Anemic Data & Zero-Class**: data equals raw Prisma rows; no Domain Classes or Entity Mappers.
+> - **No Repositories**: no Repository interfaces/adapters for your own tables. Inject `PrismaService` directly. Business invariants go in `*.rules.ts`.
+> - **The Moat**: no `tx.<otherTable>.*`. 本片跨 ctx 只有**只读** `optionContract` / `instrument`（`// CROSS-CONTEXT-READ:` 挂在 prisma 调用正上方，先例 `optionsdesk/leg-retrieval.adapter.ts:254`）。
 
-### 🚨 Impl Guardrails（仅留本 feature 适用条目）
+### Impl Guardrails（仅留本 feature 适用条目）
 
-- **并发 / 事务**：待执行记录的认领用 conditional UPDATE **affected-count**（`updateMany where {id, status:'pending'}` → count===1 才执行）；**NEVER** `FOR UPDATE` / Serializable。券商 HTTP **在事务外**完成（split-tx，P6），拉回后再开短事务写；持仓整体替换在**一个**事务内完成。调度器按 connection × market 各自 try/catch，互不连坐（P5）。→ `docs/conventions/server-impl-playbook.md`
-- **账号标识**：富途 `acc_id` **只存在于港机 shim 进程内存**；shim 响应、shim 日志、server 库 / 日志 / fixture MUST NOT 出现。shim 映射层**无条件剔除** `acc_id` 键（防 SDK 某列带出）。
+- **并发 / 事务**：待执行记录的认领用 conditional UPDATE **affected-count**（`updateMany where {id, status:'pending'}` → count===1 才执行）；不用 `FOR UPDATE` / Serializable。券商 HTTP **在事务外**完成（split-tx，P6），拉回后再开短事务写；持仓整体替换在**一个**事务内完成。调度器按 connection × market 各自 try/catch，互不连坐（P5）。→ `docs/conventions/server-impl-playbook.md`
+- **账号标识**：富途 `acc_id` **只存在于港机 shim 进程内存**；shim 响应、shim 日志、server 库 / 日志 / fixture 都不出现（T001-④ / T002-⑨ / T015-⑪ 断言）。shim 映射层**无条件剔除** `acc_id` 键（防 SDK 某列带出）。
 
 ---
 
@@ -124,7 +124,7 @@ context7_verified: []
 
   `/trade/accounts` 只回 `{trdmarket_auth, matched}`，不回账户号的任何片段（连接尾号不从 shim 取，见 D7；2026-09-14 amend）。`start/end` 跨度 > 90 天 ⇒ `400`（富途历史窗上限，E4）。
 - **限频**：`ratelimit.py` `LIMITS` 登记上表 capability。持仓 / 历史成交 / 历史订单 = `(10, 30)`，`EVIDENCE` 指富途文档 get-position-list · get-history-order-fill-list · get-history-order-list；当日成交 / 当日订单与账户列表**先查文档再登记**，查不到按兜底 `(10, 30)` 并写 `ASSUMED`（`ratelimit.py:72-80` 先例纪律）。同步 `test_ratelimit.py:83` 的实测对照表。
-- **超时与并发上限**（POC-7「不阻塞」设计的实现面）：交易 SDK 调用经「daemon 线程 + `join(timeout)`」包装（照 `opend.py:307-330` 健康探测），env `FUTU_TRADE_CALL_TIMEOUT_S` 默认 10；超时 ⇒ 丢弃交易 context + `503 {"error":"trade_timeout"}`。交易路由共用一个**并发上限 2** 的 semaphore ⇒ waitress 4 线程里恒至少留 2 条给行情面（`app.py:812` `threads=4` 写死）。🚨 **非阻塞获取**，拿不到立即 `503 {"error":"trade_busy"}`（server 侧 `VendorHttpClient` 按 5xx 退避重试）—— 阻塞等待时排队的请求仍占着 waitress 线程，等于没限。
+- **超时与并发上限**（POC-7「不阻塞」设计的实现面）：交易 SDK 调用经「daemon 线程 + `join(timeout)`」包装（照 `opend.py:307-330` 健康探测），env `FUTU_TRADE_CALL_TIMEOUT_S` 默认 10；超时 ⇒ 丢弃交易 context + `503 {"error":"trade_timeout"}`。交易路由共用一个**并发上限 2** 的 semaphore ⇒ waitress 4 线程里恒至少留 2 条给行情面（`app.py:812` `threads=4` 写死）。**非阻塞获取**（T001 臂 ⑥ 断言不等待），拿不到立即 `503 {"error":"trade_busy"}`（server 侧 `VendorHttpClient` 按 5xx 退避重试）—— 阻塞等待时排队的请求仍占着 waitress 线程，等于没限。
 - **只读 AST 守卫**：`tests/test_readonly_guard.py` 解析 `src/**/*.py`，出现 `unlock_trade` / `place_order` / `modify_order` / `place_combo_order` / `cancel_all_order` 的 `Attribute` / `Name` 即红（master §5-1）。
 - **测试形态**照既有：不 mock `futu` 模块，经 `create_app(supervisor, gate, trade=…)` 注入 `FakeTradeCtx`（`test_app.py:20-218` 先例）；新路由加进 401 参数化清单（`:273-309`）与部署探针对照（`:255-270`）。
 - **部署**：合入 main 后 `deploy-futu-shim.yml` 自动部署，早于 server 发版 ⇒ server 上线时端点已在。`/healthz` 的 `trd_logined` 字段已有，不改巡检脚本。
@@ -138,7 +138,7 @@ context7_verified: []
 #### D4 — 时间：复用单一实现，补毫秒
 
 - **成交 / 订单时间解析**复用 `vendorTimeToDate(v, market)`（`marketdata/futu-option-snapshot.adapter.ts:170`，注释明令「别再抄第二份」）。
-- 🚨 **其正则 `NAIVE_DATETIME_RE`（`:86`）只匹配到秒且无尾锚** ⇒ 富途交易时间 `YYYY-MM-DD HH:MM:SS.fff`（POC-1 原始输出（维护者 2026-09-13 采集）：成交时间与订单 `updated_time` 全部带毫秒）会被**静默截掉毫秒**。后果：指派的期权平仓与正股成交同秒（F2）无法排序；订单守卫同秒更新判为相等。⇒ 正则加可选毫秒组 `(?:\.(\d{1,3}))?` 并计入 `Date.UTC`。不带毫秒的串结果不变（行情快照 adapter 零影响），在该 adapter 既有 spec 补「带 / 不带毫秒」两例。
+- **其正则 `NAIVE_DATETIME_RE`（`:86`）只匹配到秒且无尾锚** ⇒ 富途交易时间 `YYYY-MM-DD HH:MM:SS.fff`（POC-1 原始输出（维护者 2026-09-13 采集）：成交时间与订单 `updated_time` 全部带毫秒）会被**静默截掉毫秒**。后果：指派的期权平仓与正股成交同秒（F2）无法排序；订单守卫同秒更新判为相等。⇒ 正则加可选毫秒组 `(?:\.(\d{1,3}))?` 并计入 `Date.UTC`。不带毫秒的串结果不变（行情快照 adapter 零影响），在该 adapter 既有 spec 补「带 / 不带毫秒」两例。
 - **交易所当地时刻**：`session-clock.ts` 导出新函数 `exchangeClock(market, now) → { date, minutesOfDay }`，薄包装文件内既有私有 `timeInTimeZone(now, exchangeTimeZone(market))`（`:97`）。`session-clock.ts` 在 `check-time-semantics` 的 `TABLE_FILES`（`:62`）内，合规；optionsdesk 不得 import 的是 `market-session.rules.ts` 的 `marketNow`。
 - **轴归属**（`cross-timezone-date-semantics.md` §1）：心跳 cron = processing time，`@Cron('0 * * * * *', { timeZone: 'Asia/Shanghai', waitForCompletion: true })`（时区为仓内唯一允许的字面量；`waitForCompletion` 见 D9）；对账是否到点 = 按交易所当地 `minutesOfDay` 判 ⇒ **夏令时切换不需要任何特殊代码**；「本交易日」= `exchangeCalendarDate` + `TradingCalendarPort.classify`（`non-trading` 跳过、`unknown` 照跑并 warn，照 `sync-anchor-intraday.ts:275-291`）。成交时间存 `Timestamptz` 绝对时刻，不存日期串。
 
@@ -159,7 +159,7 @@ context7_verified: []
 - **连接**：一行 = 一个账号 × 一家券商 × 一个证券户；存券商码、人读标签、所属账号手机号后四位 `phone_last4`（上线建连接时由维护者手填；代码不读 `account` 表的手机号，也不从券商取 —— 富途三个账户号字段的末 4 位互不相同；2026-09-14 amend）。调度器与订阅方**遍历连接行**取 `account_id`，代码中不存在「管理员 ID」常量（master §12-A3）。
 - **持仓**：唯一 `(connection_id, market, code)`；数量 / 市值 / 两个成本字段（`cost_price` 摊薄、`average_cost`，F4 留给 p3 选）/ 现价用 `Decimal`；`first_seen_at` 仅在插入时写；`opened_at` + `opened_at_source`（`derived` / `fallback`）；`synced_at`；原始行 `raw Json`。
 - **成交**：唯一 `(connection_id, deal_id)`；成交视为不可变 ⇒ `createMany({ skipDuplicates })`，返回的插入数即对账「补回条数」。
-- **订单**：唯一 `(connection_id, order_id)`；`vendor_updated_at` 毫秒精度；写入 = 先 `createMany({ skipDuplicates })` 插入，再对全部入参执行 `updateMany where vendor_updated_at < incoming`（FR-013）—— 两步都是原子写；🚫 先查后写（补齐与对账并发写同一连接时撞唯一约束抛 `P2002`，会被误判为基础设施失败进入重试）。
+- **订单**：唯一 `(connection_id, order_id)`；`vendor_updated_at` 毫秒精度；写入 = 先 `createMany({ skipDuplicates })` 插入，再对全部入参执行 `updateMany where vendor_updated_at < incoming`（FR-013）—— 两步都是原子写；不先查后写（补齐与对账并发写同一连接时撞唯一约束抛 `P2002`，会被误判为基础设施失败进入重试）。
 - **合约归属参考**：主键 `(market, code)`，**无** `account_id`（master §12-A2）；记来源（`root_map` / `stock_owner`）。
 - **同步记录**：`kind`（`backfill` / `reconcile`；p2b 追加 `push_gap`）、`status`（`pending` / `running` / `succeeded` / `failed`）、`market`（对账必填；补齐可空，空 = 目标标的所属市场或全部市场）、`target`、窗口起止、`trading_date`（对账：交易所当地日期）、`attempt`、`first_attempted_at`、`next_attempt_at`、写入 / 补回条数、`error`、`source_event_id`（与 `connection_id` 组成**唯一键**，订阅方幂等键）。另加**部分唯一索引** `(connection_id, market, trading_date) WHERE kind='reconcile' AND status IN ('running','succeeded')`（D9 防重入第二层；写法先例 `schema.prisma:2058` 的 `where: raw(...)`，`partialIndexes` 预览特性已开 `:4`）。按 E14 **不写** marketdata `sync_run`。
 - 共同约定照 portfolio 先例：`account_id BigInt` 不建 FK（`schema.prisma:182-183`），带 `account_id` 的表加 `(account_id, market)` 索引；时间列 `Timestamptz(6)`；索引命名 `uk_` / `ix_` + 表 + 列。
@@ -173,7 +173,7 @@ context7_verified: []
 
 #### D9 — 调度器与执行状态机
 
-`broker-account.scheduler.ts`，每分钟一拍，全路径不上抛。🚨 **防重入两层**：① `waitForCompletion: true` —— cron 4.4.0 在该选项为假（默认）时每拍照常触发、不等上一拍的 Promise（`node_modules/.pnpm/cron@4.4.0/node_modules/cron/dist/job.js:121-133`），而补齐一次约 74 s > 心跳 60 s，不设就会两拍并发、各插一条对账记录，直接违反 SC-004；`@nestjs/schedule` 6.1.3 原样透传装饰器选项（`scheduler.orchestrator.js:56-60`）。② 数据层部分唯一索引（D7）：对账插 `running` 撞冲突 ⇒ 本拍跳过 —— 进程内选项挡不住测试直调与未来多实例。补齐记录的认领另由 conditional UPDATE 防重复执行。单实例部署，不加分布式锁（照 `sync-anchor-intraday.scheduler.ts:24-26` 先例）。每拍对每个连接依次：
+`broker-account.scheduler.ts`，每分钟一拍，全路径不上抛。**防重入两层**：① `waitForCompletion: true` —— cron 4.4.0 在该选项为假（默认）时每拍照常触发、不等上一拍的 Promise（`node_modules/.pnpm/cron@4.4.0/node_modules/cron/dist/job.js:121-133`），而补齐一次约 74 s > 心跳 60 s，不设就会两拍并发、各插一条对账记录，直接违反 SC-004；`@nestjs/schedule` 6.1.3 原样透传装饰器选项（`scheduler.orchestrator.js:56-60`）。② 数据层部分唯一索引（D7）：对账插 `running` 撞冲突 ⇒ 本拍跳过 —— 进程内选项挡不住测试直调与未来多实例。补齐记录的认领另由 conditional UPDATE 防重复执行。单实例部署，不加分布式锁（照 `sync-anchor-intraday.scheduler.ts:24-26` 先例）。每拍对每个连接依次：
 
 1. **回收卡死**：`running` 且 `started_at` 早于 15 分钟前（进程在执行中重启的情形）⇒ 补齐记录置回 `pending`；对账记录置为 `failed`（`error` 注明「执行中断」，计入当日失败次数，由步骤 3 按重试规则重新发起）。
 2. **补齐**：认领 `pending ∧ next_attempt_at ≤ now` 的 `backfill` 记录并执行。结果：成功 ⇒ `succeeded`；基础设施故障（网络 / 5xx / 超时 / 429 用尽 / DB 连接 / 超时 / 连接数耗尽 / 事务写冲突）⇒ 首次失败时写 `first_attempted_at`；距其未满 24 h ⇒ 回 `pending`、`next_attempt_at += 15 min`、`attempt++`；**已满 24 h ⇒ `failed`**（`error` 注明「基础设施重试耗尽」，`logger.error`）；数据无法处理（shim `409` / 解析异常）⇒ 立即 `failed`，不重试。上限口径参照 NServiceBus recoverability「有上限的延迟重试，耗尽进 error queue」（spec Clarifications 第 5 条）。
@@ -192,7 +192,7 @@ context7_verified: []
 - 载荷 `{ anchorId, ticker }`（`create-anchor.usecase.ts:315-320`）；`ticker` 缺失 / 非法 ⇒ `logger.error` + return（毒丸不抛）。
 - 对每个连接插一条 `pending` 补齐记录（`target = ticker`，`source_event_id = delivery.sourceEventId`），唯一键 **`(connection_id, source_event_id)`** —— 只按事件 ID 唯一会让第二个连接的记录被当成重复静默丢弃（Microsoft Learn Idempotent Consumer：多消费方共用去重存储时须以「消费方 + 消息」组合为键）。写入用「冲突即忽略」的原子插入（`createMany({ skipDuplicates })`），**不**先查后写、不靠捕获 `P2002`。DB 故障 ⇒ **抛**（交 relay 重投）。
 - **只插记录，绝不在 relay 线程执行补齐**（relay 每 10 秒一批 100 条，`outbox-event-cron.publisher.ts:28-38`，长任务会拖住全部事件）。
-- ⚠️ 本订阅方一旦抛错，同事件的冷启动订阅方也会被重投（registry 顺序投递、整条事件不标 published）⇒ 冷启动订阅方的幂等性**已核实**：它蓄意不用 `sourceEventId`，重复投递由 job 起手复判「该标的在目标交易日的数据在不在」吸收（`marketdata/anchor-cold-start.subscriber.ts:32-37`），本订阅方抛错引起的重投不会让冷启动重复采集；本片不改它，IT 里断言「本订阅方重投不产生第二条记录」。
+- 本订阅方一旦抛错，同事件的冷启动订阅方也会被重投（registry 顺序投递、整条事件不标 published）⇒ 冷启动订阅方的幂等性**已核实**：它蓄意不用 `sourceEventId`，重复投递由 job 起手复判「该标的在目标交易日的数据在不在」吸收（`marketdata/anchor-cold-start.subscriber.ts:32-37`），本订阅方抛错引起的重投不会让冷启动重复采集；本片不改它，IT 里断言「本订阅方重投不产生第二条记录」。
 - 📌 **平台层已知差距，本片不修**：业内做法是每个订阅方独立副本、独立追踪完成状态（NServiceBus 每 endpoint 一条队列；Microsoft Learn「each consumer … needs to independently track processing completion」），而仓内 registry 是一条事件、一个 `publishedAt`，且 relay 无重试上限、无死信（`outbox-event-cron.publisher.ts:53-60`）。改它是 `security/outbox` 全仓的事；本片按业内底线应对 = 本订阅方自身幂等 + 只做一次 DB 插入（抛错面仅 DB 故障）。
 
 #### D11 — 配置
