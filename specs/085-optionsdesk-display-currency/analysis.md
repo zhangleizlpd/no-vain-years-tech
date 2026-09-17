@@ -19,7 +19,7 @@
 | Assumptions（8 条） | ✅ | 人工逐条：单一市场前提 / 券商币种可空 / 参考汇率非结算 / 只改展示口径 / 同层状态 / 三字母代码 / web_compat / 明确不在范围 |
 | plan D0–D9 决策（10） | ✅ | 脚本：plan 定义的 D 编号 vs tasks 引用的 `plan Dx` **双向差集为空** |
 | plan 反例臂（10 条） | ✅ | 脚本：10 个标志词在 tasks 中命中数**全部 ≥ 1**，零遗漏 |
-| task 粒度（Constitution §III） | ✅ | 脚本：每 task 独立验收臂计数（阈值 12，照 082 K1 判据）⇒ F2 |
+| task 粒度（Constitution §III） | ✅ | 脚本：每 task 独立验收臂计数（阈值 12，照 082 K1 判据）⇒ F2；修复后复验 T011 24 → 11、T015 = 9 |
 | 术语一致性 | ✅ | 脚本：9 个关键术语在三份产物中的出现次数比对 |
 | 模糊形容词 / 占位符 / FR 近重复 | ✅ | 脚本：词表扫描（零命中）+ FR/SC 首句签名粗筛（零重复） |
 | 文件清单一致性 | ✅ | 脚本：plan「新增 / 触碰文件清单」vs tasks 引用文件求差集 ⇒ F1 |
@@ -29,9 +29,9 @@
 
 | ID | Category | Severity | Location(s) | Summary | Recommendation |
 |----|----------|----------|-------------|---------|----------------|
-| F1 | Inconsistency | LOW | plan.md「新增 / 触碰文件清单」· tasks.md T004 | tasks 新建 `refusing-fx-rate.adapter.ts`，plan 文件清单未登记该文件。plan 正文（`optionsdesk.module.ts` 条目）只写「mock 档绑**调用即抛**的拒绝壳，照 `refusing-collection.adapter.ts` 立意」，未给文件名 | 认可 tasks 的命名（D0「按 `fx` 名词段分组、不建子目录」的合法延伸）。**不必回改 plan** —— 文件名本就是 tasks 期细化点；已在 tasks Path Conventions 显式登记并标注「跨 ctx 不可 import，另落一份」 |
-| F2 | Constitution §III | MEDIUM | tasks.md T001 / T005 / T006 / T011 | 四个 task 的独立验收臂超 082 K1 阈值 12：**T011=24**、T006=19、T005=15、T001=13 | 臂多源于「每条 `state_branch` 都要断言」而非工作量大（本片零 schema / 零写路径 / 零新 use case）。T005（折算核心）与 T006（读端点 IT）**不建议拆** —— 「折算前后组顺序相同」「两次响应逐字节相同」这类断言依赖同一夹具，拆开会让共同前提重复搭建。**T011 建议拆两片**：T011a 币种状态三臂 + 选择器交互（branch 3/4/5/16/17），T011b 降级与汇率行呈现（branch 8/11/13/18/19/20/21）。维护者裁决 |
-| F3 | Inconsistency | LOW | plan.md frontmatter | plan `status: drafted`，而 spec 已 `tasks-ready`、tasks `not-started`。仓内 081–083 的 plan 用 `approved` 标「已过 plan → tasks gate」 | 不阻塞（084 同形态且已 impl 完）。若要三产物 status 语义同步，implement 起步时把 plan 推到 `approved`。**本片不改**，留作维护者裁决 |
+| F1 | Inconsistency | LOW | plan.md「新增 / 触碰文件清单」· tasks.md T004 | tasks 新建 `refusing-fx-rate.adapter.ts`，plan 文件清单未登记该文件。plan 正文（`optionsdesk.module.ts` 条目）只写「mock 档绑**调用即抛**的拒绝壳，照 `refusing-collection.adapter.ts` 立意」，未给文件名 | **已修（2026-09-17）**：plan「新增 / 触碰文件清单」的 server 新增段补入 `refusing-fx-rate.adapter.ts`，并注明立意来源与「跨 ctx 不可 import 故另落一份」的理由 |
+| F2 | Constitution §III | MEDIUM | tasks.md T001 / T005 / T006 / T011 | 四个 task 的独立验收臂超 082 K1 阈值 12：**T011=24**、T006=19、T005=15、T001=13 | **部分已修（2026-09-17）**：**T011 拆出 T015**（24 → T011=11 + T015=9，双双入阈值）—— T015 单列 FR-005 / SC-005 的四条状态臂（跨屏保持 / 离开复原 / 两页签独立 / 详情页不受影响），失败定位成本最高的那组因此独立。**T006=19 / T005=15 / T001=13 保留不拆**：臂多源于「每条 `state_branch` 都要断言」而非工作量大（本片零 schema / 零写路径 / 零新 use case），且「折算前后组顺序相同」「两次响应逐字节相同」这类断言依赖同一夹具，拆开会让共同前提重复搭建 |
+| F3 | Inconsistency | LOW | plan.md frontmatter | plan `status: drafted`，而 spec 已 `tasks-ready`、tasks `not-started`。仓内 081–083 的 plan 用 `approved` 标「已过 plan → tasks gate」 | **已修（2026-09-17）**：plan `status` 推到 `approved`，与 spec `tasks-ready` / tasks `not-started` 三方语义对齐（照 081–083 体例） |
 
 ## 已排除的假阳性（我自己探针的误报）
 
@@ -93,7 +93,7 @@
 ## Metrics
 
 - **Total Requirements**：FR 13 + SC 7 = **20**（辅助层：`state_branches` 21 · Edge Case 8 · AS 16 · US 3）
-- **Total Tasks**：**14**（T001–T014）
+- **Total Tasks**：**15**（T001–T015；T015 为 F2 修复时从 T011 拆出，按 084 T018 / 083 T026 的「追加编号、不重排」体例，位置在 T011 之后）
 - **Coverage %**：FR **13/13 = 100%** · SC **7/7 = 100%** · `state_branches` **21/21 = 100%** · Edge Case **8/8** · AS **16/16**
 - **plan 决策覆盖**：D0–D9 **10/10**，双向差集为空
 - **plan 反例臂覆盖**：**10/10**
@@ -103,9 +103,17 @@
 
 ## Next Actions
 
-**无 CRITICAL / HIGH，可进 `/speckit-implement`。** 两项可选裁决：
-
-1. **F2（MEDIUM）**：是否把 **T011 拆成 T011a / T011b**（24 臂 → 约 12 + 12）。拆则更贴 Constitution §III，但会让三臂状态断言与降级呈现断言分居两个 task。**建议拆**，因为 e2e task 失败时 24 臂的定位成本最高。
-2. **F3 / F1（LOW）**：plan `status: drafted → approved`、plan 文件清单补 `refusing-fx-rate.adapter.ts`。两者都**不阻塞 implement**，可留到 implement 首个 commit 顺带，或永不改。
+**无 CRITICAL / HIGH，可进 `/speckit-implement`。** 三条 finding 已于 2026-09-17 全部处置（见下方修复记录）。
 
 MVP 路径不变：**T001 → T007**（server 侧折算链与契约完整，US1 在 IT 层可独立验收，SC-006 逐字节比对在此闭环）。
+
+## 修复记录（2026-09-17，维护者批准「都修」）
+
+| Finding | 处置 | 落点 | 复验 |
+|---|---|---|---|
+| F1 LOW | 已修 | `plan.md` 文件清单 server 新增段补 `refusing-fx-rate.adapter.ts` + 立意注记 | `rg refusing-fx-rate plan.md` 命中；`git diff --stat plan.md` 仅 2 处改动，无夹带 |
+| F2 MEDIUM | **部分修** | `tasks.md` T011 拆出 **T015**（四条状态臂），覆盖表 / 依赖与并行 / Implementation Strategy / Clear 批次同步 | 臂数 T011 24 → **11**、T015 **9**；**越界与悬空臂号扫描零命中**；覆盖表引用含 T015 共 13 处；五层条数不变（21 / 13 / 7 / 16）。⚠️ T006=19 / T005=15 / T001=13 **蓄意保留**，理由见 F2 行 |
+| F3 LOW | 已修 | `plan.md` frontmatter `status: drafted → approved` | `rg '^status:' plan.md` ⇒ `approved` |
+
+> 拆分采用「追加编号、不重排」：重排 T012–T014 会让本报告与覆盖表中所有既有引用集体失效，而 084 的 T018、083 的 T026 都是同一体例。
+> 拆分后 T011 的臂由 ⑤–⑪ 顺移为 ④–⑨，覆盖表 40+ 处引用按「组合串先于单串、单串从小到大」的次序整体重编号，避免新生成的编号被后续规则二次改写。

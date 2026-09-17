@@ -1,7 +1,7 @@
 ---
 feature_id: 085-optionsdesk-display-currency
 spec_ref: ./spec.md
-status: drafted
+status: approved
 created_at: '2026-09-17'
 updated_at: '2026-09-17'
 adr_refs: ['0040', '0043', '0047', '0054', '0058', '0062', '0066']
@@ -254,7 +254,7 @@ vendor 时间戳**可以**留在日志 / 响应里作证据（`EVIDENCE:` 体例
 
 ### 新增 / 触碰文件清单（tasks 拆分的物料面）
 
-- **server 新增**：`optionsdesk/fx-rate.port.ts` · `fx-rate.rules.ts` · `tencent-fx.adapter.ts` · `sina-fx.adapter.ts` · `fx-rate-fallback-chain.adapter.ts` · `fx-rate-cache.adapter.ts` · `display-currency.rules.ts`（+ 对应 `.spec.ts`）· `apps/server/test/integration/optionsdesk-085.display-currency.it.spec.ts`
+- **server 新增**：`optionsdesk/fx-rate.port.ts` · `fx-rate.rules.ts` · `tencent-fx.adapter.ts` · `sina-fx.adapter.ts` · `fx-rate-fallback-chain.adapter.ts` · `fx-rate-cache.adapter.ts` · `refusing-fx-rate.adapter.ts`（mock 档绑的拒绝壳；立意照 `marketdata/refusing-collection.adapter.ts`，跨 ctx 不可 import 故另落一份）· `display-currency.rules.ts`（+ 对应 `.spec.ts`）· `apps/server/test/integration/optionsdesk-085.display-currency.it.spec.ts`
 - **server 触碰**：`optionsdesk/list-broker-positions.usecase.ts`（可选入参 + 折算 + 响应带汇率信息）· `broker-account.controller.ts`（query）· `broker-account.dto.ts`（DTO + 装饰器，**nullable 标量必显式 `type`**）· `optionsdesk.module.ts`（FX port 装配，按 `marketdataConfig.kind` 绑定：`mock` 档绑**调用即抛**的拒绝壳，照 `refusing-collection.adapter.ts` 立意 —— 本地 dev 不得真打腾讯）· `config/marketdata.config.ts`（两个带 `.default()` 的 baseUrl）· `scripts/checks/check-env-sync.ts`（`ALLOWLIST` 登记两个可选 key）· `apps/server/openapi.json` + `packages/api-client/src/generated/`（regen）
 - **mobile 新增**：`src/optionsdesk/display-currency.rules.ts`（+ spec）· `currency-selector.tsx`
 - **mobile 触碰**：`trading-account-screen.tsx`（D7 状态）· `trading-account-positions.tsx`（选择器 + 汇率行 + 降级标）· `use-trading-account-positions.ts`（query key 加币种）· `trading-account-positions.rules.ts`（标记判定）· `optionsdesk-copy.ts`（D9）· `e2e/optionsdesk-trading-account-positions.spec.ts` · `e2e/contract-smoke/optionsdesk-trading-account.contract.ts`
