@@ -28,7 +28,7 @@ import { useRouter } from 'expo-router';
 import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
-  BrokerPositionRowResponse,
+  BrokerPositionListRowResponse,
 } from '@nvy/api-client';
 
 import { formatCompactAmount } from '~/format/compact-amount';
@@ -312,7 +312,7 @@ function PositionsSectionList({
   onRefresh,
 }: PositionsSectionListProps) {
   const showConnection = showConnectionLabel(data.brokerCount);
-  const sections = useMemo<SectionListData<BrokerPositionRowResponse, PositionSection>[]>(
+  const sections = useMemo<SectionListData<BrokerPositionListRowResponse, PositionSection>[]>(
     () =>
       data.groups.map((group) => {
         const hasHeader = showGroupHeader(group);
@@ -329,7 +329,7 @@ function PositionsSectionList({
   );
 
   return (
-    <SectionList<BrokerPositionRowResponse, PositionSection>
+    <SectionList<BrokerPositionListRowResponse, PositionSection>
       testID={`${TEST_ID}-section-list`}
       sections={sections}
       refreshControl={
@@ -410,7 +410,7 @@ function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps) {
 }
 
 interface PositionRowProps {
-  row: BrokerPositionRowResponse;
+  row: BrokerPositionListRowResponse;
   indented: boolean;
   showConnection: boolean;
 }

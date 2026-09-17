@@ -10,8 +10,8 @@ import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
   BrokerPositionOptionResponseRight,
-  BrokerPositionRowResponseKind,
-  BrokerPositionRowResponseMarket,
+  BrokerPositionListRowResponseKind,
+  BrokerPositionListRowResponseMarket,
 } from '@nvy/api-client';
 
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
@@ -96,7 +96,7 @@ export function showUnresolvedHint(count: number): boolean {
 
 /** 期权名称 = 正股名 + 美股 `Call` / `Put`、港股 `购` / `沽`（FR-007）。O(1)。 */
 export function optionDisplayName(input: {
-  market: BrokerPositionRowResponseMarket;
+  market: BrokerPositionListRowResponseMarket;
   underlyingName: string;
   right: BrokerPositionOptionResponseRight;
 }): string {
@@ -154,12 +154,12 @@ export function localDateTimeParts(local: string): LocalDateTimeParts | null {
 }
 
 /** 按市场出时区标签：`（美东）` / `（香港）`。O(1)。 */
-export function marketTzLabel(market: BrokerPositionRowResponseMarket): string {
+export function marketTzLabel(market: BrokerPositionListRowResponseMarket): string {
   return COPY.tzLabel[market];
 }
 
 /** canonical ticker 前缀 → 市场；非 `us:` / `hk:` ⇒ null（补齐接口只收这两种，server `^(us|hk):` 校验）。O(1)。 */
-function tickerMarket(ticker: string): BrokerPositionRowResponseMarket | null {
+function tickerMarket(ticker: string): BrokerPositionListRowResponseMarket | null {
   if (ticker.startsWith('us:')) return 'us';
   if (ticker.startsWith('hk:')) return 'hk';
   return null;
@@ -247,7 +247,7 @@ export function displayCode(code: string): string {
 
 /** 持仓身份字段（列表行与详情响应同形；详情屏与列表行共用下面两个拼接）。 */
 interface PositionIdentity {
-  market: BrokerPositionRowResponseMarket;
+  market: BrokerPositionListRowResponseMarket;
   code: string;
   name: string;
   option: { expiry: string; right: BrokerPositionOptionResponseRight; strike: string } | null;
@@ -372,7 +372,7 @@ export function filterOrdersByTab<T extends { status: string }>(
 export function orderKind(order: {
   option: object | null;
   comboLegCodes: readonly string[];
-}): BrokerPositionRowResponseKind {
+}): BrokerPositionListRowResponseKind {
   return order.option !== null || order.comboLegCodes.length > 0 ? 'option' : 'stock';
 }
 

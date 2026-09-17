@@ -9,7 +9,7 @@ import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
   BrokerPositionOrderItemResponse,
-  BrokerPositionRowResponse,
+  BrokerPositionListRowResponse,
   RadarResponse,
 } from '@nvy/api-client';
 
@@ -167,7 +167,7 @@ const SYNCED_AT_UTC: Record<Market, string> = {
   hk: '2026-09-14T01:05:12.000Z',
 };
 
-function stockRow(market: Market): BrokerPositionRowResponse {
+function stockRow(market: Market): BrokerPositionListRowResponse {
   const code = market === 'us' ? 'US.ZQY' : 'HK.08801';
   return {
     id: `${market}-1`,
@@ -188,6 +188,12 @@ function stockRow(market: Market): BrokerPositionRowResponse {
     openedAt: '2026-09-01T14:00:00.000Z',
     openedAtSource: 'derived',
     expired: false,
+    // 085 展示币种元信息 (契约新增)。缺省档 = 该市场原币种 ⇒ 直出、未折算、未降级。
+    displayCurrency: market === 'us' ? 'USD' : 'HKD',
+    converted: false,
+    degraded: false,
+    originalMarketValue: null,
+    originalUnrealizedPl: null,
   };
 }
 
@@ -204,6 +210,8 @@ function listResponse(
     syncedAtLocal: SYNCED_AT_LOCAL[market],
     stale: false,
     unresolvedCount: 0,
+    displayCurrency: market === 'us' ? 'USD' : 'HKD',
+    fxRate: null,
     groups: [
       {
         underlyingTicker: market === 'us' ? 'us:ZQY' : 'hk:08801',
@@ -211,6 +219,7 @@ function listResponse(
         underlyingPrice: row.currentPrice,
         groupMarketValue: row.marketValue,
         groupUnrealizedPl: row.unrealizedPl,
+        aggregateComplete: true,
         rows: [row],
       },
     ],
@@ -225,6 +234,9 @@ const NO_CONNECTION: BrokerPositionListResponse = {
   syncedAtLocal: null,
   stale: false,
   unresolvedCount: 0,
+  // 无连接 ⇒ 整屏无金额, 服务端不取汇率 (fxRate 恒 null); 本常量的默认用处是 hk 槽位。
+  displayCurrency: 'HKD',
+  fxRate: null,
   groups: [],
 };
 
@@ -409,7 +421,7 @@ test('083 T014⑦ 订单 / 报表分段仍为 081「建设中」占位，不渲�
 // ════════════════════════════════════════════════════════════════════════════
 
 /** 美股「ZQY 示例」3 行组：正股 + 已到期认沽 + 认购（组内顺序 = 服务端已排好的顺序）。 */
-const ZQY_STOCK: BrokerPositionRowResponse = {
+const ZQY_STOCK: BrokerPositionListRowResponse = {
   ...stockRow('us'),
   id: 'us-zqy-stock',
   qty: '5000',
@@ -419,7 +431,7 @@ const ZQY_STOCK: BrokerPositionRowResponse = {
   unrealizedPl: '10500.00',
   unrealizedPlRatio: '4.56',
 };
-const ZQY_PUT_EXPIRED: BrokerPositionRowResponse = {
+const ZQY_PUT_EXPIRED: BrokerPositionListRowResponse = {
   ...stockRow('us'),
   id: 'us-zqy-put',
   kind: 'option',
@@ -433,7 +445,7 @@ const ZQY_PUT_EXPIRED: BrokerPositionRowResponse = {
   unrealizedPlRatio: '99.26',
   expired: true,
 };
-const ZQY_CALL: BrokerPositionRowResponse = {
+const ZQY_CALL: BrokerPositionListRowResponse = {
   ...stockRow('us'),
   id: 'us-zqy-call',
   kind: 'option',
@@ -454,11 +466,12 @@ const ZQY_GROUP: BrokerPositionGroupResponse = {
   underlyingPrice: '48.20',
   groupMarketValue: '240829.00',
   groupUnrealizedPl: '10704.00',
+  aggregateComplete: true,
   rows: [ZQY_STOCK, ZQY_PUT_EXPIRED, ZQY_CALL],
 };
 
 /** 美股「ZQR 示例 Call」单行组（市值 37560 ⇒ `3.76万`）。 */
-const ZQR_CALL: BrokerPositionRowResponse = {
+const ZQR_CALL: BrokerPositionListRowResponse = {
   ...stockRow('us'),
   id: 'us-zqr-call',
   kind: 'option',
@@ -478,13 +491,14 @@ const ZQR_GROUP: BrokerPositionGroupResponse = {
   underlyingPrice: '30.50',
   groupMarketValue: '37560',
   groupUnrealizedPl: '-50.00',
+  aggregateComplete: true,
   rows: [ZQR_CALL],
 };
 
 const US_GROUPED = listResponse('us', { groups: [ZQY_GROUP, ZQR_GROUP] });
 
 /** 港股「示例汽车 沽」空头认沽单行组。 */
-const HK_SHORT_PUT_ROW: BrokerPositionRowResponse = {
+const HK_SHORT_PUT_ROW: BrokerPositionListRowResponse = {
   ...stockRow('hk'),
   id: 'hk-08801-put',
   kind: 'option',
@@ -505,6 +519,7 @@ const HK_SHORT_PUT = listResponse('hk', {
       underlyingPrice: '7.920',
       groupMarketValue: '-1740.00',
       groupUnrealizedPl: '-300.00',
+      aggregateComplete: true,
       rows: [HK_SHORT_PUT_ROW],
     },
   ],

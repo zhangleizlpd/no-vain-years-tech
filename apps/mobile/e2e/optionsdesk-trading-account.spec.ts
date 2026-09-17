@@ -74,6 +74,9 @@ const NO_BROKER_CONNECTION: BrokerPositionListResponse = {
   syncedAtLocal: null,
   stale: false,
   unresolvedCount: 0,
+  // 085 契约新增; 无连接 ⇒ 整屏无金额, 服务端不取汇率。
+  displayCurrency: 'USD',
+  fxRate: null,
   groups: [],
 };
 

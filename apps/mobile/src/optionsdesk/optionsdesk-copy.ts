@@ -2,8 +2,8 @@
 import type {
   BrokerBackfillRunResponseStatus,
   BrokerPositionOptionResponseRight,
-  BrokerPositionRowResponseKind,
-  BrokerPositionRowResponseMarket,
+  BrokerPositionListRowResponseKind,
+  BrokerPositionListRowResponseMarket,
   MarchAuditEvidenceResponse,
   OptionsdeskControllerRadarMarket,
 } from '@nvy/api-client';
@@ -1433,14 +1433,14 @@ export const OPTIONSDESK_COPY = {
       us: { C: 'Call', P: 'Put' },
       hk: { C: '购', P: '沽' },
     } satisfies Record<
-      BrokerPositionRowResponseMarket,
+      BrokerPositionListRowResponseMarket,
       Record<BrokerPositionOptionResponseRight, string>
     >,
     /** 交易所当地时间后的时区标签（按响应 `market`，不做换算）。 */
     tzLabel: {
       us: '（美东）',
       hk: '（香港）',
-    } satisfies Record<BrokerPositionRowResponseMarket, string>,
+    } satisfies Record<BrokerPositionListRowResponseMarket, string>,
     /** 持仓详情屏（083 T017，plan D15）。 */
     positionDetail: {
       title: '持仓详情',
@@ -1475,16 +1475,16 @@ export const OPTIONSDESK_COPY = {
       qtyUnit: {
         stock: '股',
         option: '张',
-      } satisfies Record<BrokerPositionRowResponseKind, string>,
+      } satisfies Record<BrokerPositionListRowResponseKind, string>,
       marketName: {
         us: '美股',
         hk: '港股',
-      } satisfies Record<BrokerPositionRowResponseMarket, string>,
+      } satisfies Record<BrokerPositionListRowResponseMarket, string>,
       /** 正股「订单」、期权「本合约订单」（FR-013 / FR-016）。 */
       ordersTitle: {
         stock: '订单',
         option: '本合约订单',
-      } satisfies Record<BrokerPositionRowResponseKind, string>,
+      } satisfies Record<BrokerPositionListRowResponseKind, string>,
       ordersEmpty: '暂无订单',
       /**
        * 订单状态筛选页签（2026-09-16）。17 个券商状态归四档，🚫 给「在途」单开一档 ——

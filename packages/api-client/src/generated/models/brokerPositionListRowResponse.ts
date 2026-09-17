@@ -5,22 +5,23 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
+import type { BrokerPositionListRowResponseDisplayCurrency } from './brokerPositionListRowResponseDisplayCurrency';
+import type { BrokerPositionListRowResponseKind } from './brokerPositionListRowResponseKind';
+import type { BrokerPositionListRowResponseMarket } from './brokerPositionListRowResponseMarket';
+import type { BrokerPositionListRowResponseOpenedAtSource } from './brokerPositionListRowResponseOpenedAtSource';
 import type { BrokerPositionOptionResponse } from './brokerPositionOptionResponse';
-import type { BrokerPositionRowResponseKind } from './brokerPositionRowResponseKind';
-import type { BrokerPositionRowResponseMarket } from './brokerPositionRowResponseMarket';
-import type { BrokerPositionRowResponseOpenedAtSource } from './brokerPositionRowResponseOpenedAtSource';
 
-export interface BrokerPositionRowResponse {
+export interface BrokerPositionListRowResponse {
   /** 持仓行 id (数字串) */
   id: string;
   /** 市场 (标时区用) */
-  market: BrokerPositionRowResponseMarket;
+  market: BrokerPositionListRowResponseMarket;
   /** 券商码 */
   brokerCode: string;
   /** 券商连接的人读标签 (多连接时区分行) */
   connectionLabel: string;
   /** 正股 / 期权 */
-  kind: BrokerPositionRowResponseKind;
+  kind: BrokerPositionListRowResponseKind;
   /** 券商原始代码 */
   code: string;
   /** 正股名 (期权行同为正股名; 取不到回落券商名 / 正股代码) */
@@ -44,7 +45,17 @@ export interface BrokerPositionRowResponse {
   /** 开仓时间 (ISO 8601 UTC) */
   openedAt: string;
   /** 开仓时间来源: derived = 由成交推算; fallback = 首次发现时刻 */
-  openedAtSource: BrokerPositionRowResponseOpenedAtSource;
+  openedAtSource: BrokerPositionListRowResponseOpenedAtSource;
   /** 期权到期日早于该市场交易所今天 (尚未被同步移除); 正股恒 false */
   expired: boolean;
+  /** 该行金额类字段的呈现币种; 券商未回报币种或不在三档内 ⇒ null (客户端走「币种未知」文案, 不回落任何币种) */
+  displayCurrency: BrokerPositionListRowResponseDisplayCurrency;
+  /** 金额类是否真的乘过汇率 (展示币种 = 原币种的直出路径恒 false) */
+  converted: boolean;
+  /** 降级行 (所需汇率不可用, 或券商未回报币种): marketValue / unrealizedPl 为 null 且不进组聚合, 原币种金额见 originalMarketValue / originalUnrealizedPl */
+  degraded: boolean;
+  /** 降级行的原币种市值 (币种见 displayCurrency); 未降级 ⇒ null */
+  originalMarketValue: string | null;
+  /** 降级行的原币种持仓盈亏; 未降级 ⇒ null */
+  originalUnrealizedPl: string | null;
 }
