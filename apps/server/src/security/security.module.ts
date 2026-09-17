@@ -88,8 +88,10 @@ class RedisLifecycle implements OnApplicationShutdown {
  *                        + auth repositories)
  *   - REDIS_CLIENT       ioredis singleton with module lifecycle hook
  *   - ClsModule          AsyncLocalStorage trace_id (per ADR-0036) —
- *                        interceptor-mode for Fastify compat, idGenerator
- *                        honors inbound x-trace-id header for cross-service
+ *                        middleware-mode + useEnterWith for Fastify compat
+ *                        (interceptor-mode only covered the controller phase,
+ *                        see ClsModule.forRoot below), idGenerator honors
+ *                        inbound x-trace-id header for cross-service
  *                        propagation
  *   - APP_FILTER ProblemDetailFilter (RFC 9457 + business extension fields
  *                        per ADR-0038; injects traceId from ClsService)
