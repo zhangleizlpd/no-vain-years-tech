@@ -1,4 +1,5 @@
 import type { Prisma } from '../generated/prisma/client';
+import type { BrokerMarket } from './broker-code.rules';
 import { FX_CURRENCIES, type FxCurrency, type FxPair, type FxRate } from './fx-rate.port';
 import { invertRate } from './fx-rate.rules';
 
@@ -120,6 +121,22 @@ export function parseDisplayCurrency(raw: string | null): FxCurrency | null {
   if (raw === null) return null;
   const upper = raw.trim().toUpperCase();
   return FX_CURRENCIES.find((c) => c === upper) ?? null;
+}
+
+/** 市场 → 该市场的原币种。持仓列表恒按单一市场页签呈现 ⇒ 同屏各行必然同币种。 */
+const MARKET_NATIVE_CURRENCY: Record<BrokerMarket, FxCurrency> = { us: 'USD', hk: 'HKD' };
+
+/**
+ * 该市场的原币种 = **缺省展示档** (FR-011)。
+ *
+ * 🚨 **🚫 缺省恒 `USD`**: hk 页签首屏会把港币金额乘上 HKD→USD 再显示 —— 与上线前的数字不同,
+ * 而屏幕上一切正常。缺省 = 原币种是「老客户端逐字节不变」的**机械**保障 (SC-006): 缺省档下
+ * {@link convertRows} 每行都走直出路径, 调用方连汇率都不必去取。
+ *
+ * mobile 侧另有同表的一份 (T008) —— 两处都只是一张两行的表, 为共享它发一个跨端包不划算。
+ */
+export function defaultCurrencyForMarket(market: BrokerMarket): FxCurrency {
+  return MARKET_NATIVE_CURRENCY[market];
 }
 
 /**
