@@ -61,27 +61,26 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 ## Architecture Notes *(mandatory)*
 
-### 🚨 Testing Invariants (AI 绝对禁令 — 严禁违背)
+### Testing Invariants（三条硬约束；第一条由 lefthook `no-bad-mocks` 机器守）
 
-- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，**绝对禁止** `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片纯 mobile，不新增任何 NestJS lifecycle 组件。）
-- **MANDATORY INTEGRATION**: 必须用 `Test.createTestingModule({ imports: [<TheModule>] }).compile()` 装一个微型 DI 容器，让被测组件在真实 lifecycle 中触发。（本片无 server 面；mobile 侧对应「真交互」的层是 Playwright hermetic e2e。）
-- **EXHAUSTIVE BRANCHING**: spec.md `state_branches` 列出的每条分支，**必须**有对应断言落点。本片 11 条分支全部为客户端分支 ⇒ 落 vitest（纯逻辑）或 Playwright（交互 / 渲染），映射见下方「测试映射」表，analyze 期逐条 grep 对账。🚨 mobile 测试分层：vitest **只测纯逻辑**，**禁**组件 render 测（`docs/conventions/testing.md` 不变量 4）。
+- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，不写 `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片纯 mobile，不新增任何 NestJS lifecycle 组件。）
+- **MANDATORY INTEGRATION**: 用 `Test.createTestingModule({ imports: [<TheModule>] }).compile()` 装一个微型 DI 容器，让被测组件在真实 lifecycle 中触发。（本片无 server 面；mobile 侧对应「真交互」的层是 Playwright hermetic e2e。）
+- **EXHAUSTIVE BRANCHING**: spec.md `state_branches` 列出的每条分支，都有对应断言落点。本片 11 条分支全部为客户端分支 ⇒ 落 vitest（纯逻辑）或 Playwright（交互 / 渲染），映射见下方「测试映射」表，analyze 期逐条 grep 对账。mobile 测试分层：vitest **只测纯逻辑**，不做组件 render 测（`docs/conventions/testing.md` 不变量 4）。
 
 ### General Architecture Notes
 
-> ⚠️ **CRITICAL ARCHITECTURE PARADIGM (ADR-0043 — ENFORCED)**
-> The implementer LLM MUST strictly follow the "Flat + Anemic + Moat" paradigm:
-> - **Flat Module**: ALL files live flatly in `apps/server/src/<module>/`. NEVER generate `domain/`, `application/`, `infrastructure/`, or `web/` subdirectories.
-> - **Anemic Data & Zero-Class**: Data equals raw Prisma rows (snake_case handled by `@map` in schema.prisma). NEVER generate Domain Classes or Entity Mappers.
-> - **No Repositories**: NEVER create Repository interfaces/adapters for your own tables. Inject `PrismaService` directly into UseCases. Put business invariants in pure functions (`*.rules.ts`).
-> - **The Moat**: NEVER write `tx.<otherTable>.*`. Cross-context access MUST go through the target module's UseCase (use the Two-step Inspect+Commit saga only when caller validation must sit between read and write).
+> **Architecture paradigm (ADR-0043) — Flat + Anemic + Moat.** Bounded-context edges are enforced by eslint-plugin-boundaries and table ownership by `check-server-moat.ts`; the bullets below say what those gates expect.
+> - **Flat Module**: all files live flatly in `apps/server/src/<module>/`; no `domain/`, `application/`, `infrastructure/` or `web/` subdirectories.
+> - **Anemic Data & Zero-Class**: data equals raw Prisma rows (snake_case handled by `@map` in schema.prisma); no Domain Classes or Entity Mappers.
+> - **No Repositories**: no Repository interfaces/adapters for your own tables. Inject `PrismaService` directly into UseCases. Put business invariants in pure functions (`*.rules.ts`).
+> - **The Moat**: no `tx.<otherTable>.*`. Cross-context access goes through the target module's UseCase (use the Two-step Inspect+Commit saga only when caller validation must sit between read and write).
 >
 > （本片**不触碰 server**；上述范式照模板保留，mobile 侧对应纪律 = 文件平铺 `apps/mobile/src/optionsdesk/`、纯函数下沉 `*.rules.ts`、跨 feature 零 import。）
 
-### 🚨 Impl Guardrails（并发 / 安全 / 前端 — 详版见 mono conventions）
+### Impl Guardrails（并发 / 安全 / 前端 — 详版见 mono conventions）
 
 - **并发/事务**：N/A —— 无服务端、无写路径。**不要**为本页发明任何请求、缓存或持久化。
-- **安全**：无新数据面、无 PII；本页 MUST NOT import 任何 `@nvy/api-client` hook（FR-008 的结构性保证）。
+- **安全**：无新数据面、无 PII；本页不 import 任何 `@nvy/api-client` hook（FR-008 的结构性保证，T003 e2e 在 `/api/**` 全 abort 下断言）。
 - **前端（mobile）**：无表单；复用 `~/theme` token（className 禁字面量、单元素 ≤4 原子）；返回兜底用 `~/ui` 的 `makeHeaderBackOrParent`；react-native-web 丢弃 `accessibilityState` ⇒ 选中态**双通道编码**（底色 + 字重 / 短横条），e2e 以样式自比较断选中态（同 `radar-market-tabs.tsx:6-7` 体例）。→ `../../docs/conventions/mobile-impl-playbook.md`
 
 ### Feature-specific decisions（D 系列，implementer 必须遵守）
@@ -91,8 +90,8 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
   - `optionsdesk-routes.ts` 新增 `OPTIONSDESK_TRADING_ACCOUNT_ROUTE = '/(app)/optionsdesk/trading-account' as const`（JSDoc 注明入口 = 雷达题头钱包图标）；`optionsdesk-routes.spec.ts` 的 `ALL_ROUTES` 表加入该常量并加一个 describe 块（该 spec 头注释要求新路由必须入表）。
 - **D2 · markets 门控**：期权台 stack 已整体在 `MarketsRouteGuard` 内（`_layout.tsx:12`），`MARKETS_SURFACES` 已有 `route-stack` 一条覆盖（`markets-gate.tsx:59-63`；`optionsdesk-routes.ts:5-6,25` 明写同 stack 新路由无需单列）⇒ **不新增** `MARKETS_SURFACES` 条目（master plan §8 写的「登记 MARKETS_SURFACES」据此订正）。真正的强制点是 `e2e/markets-feature-gate.spec.ts` 的 `GATED_DEEPLINKS` 表（该文件头注释：stack 新路由**必须**入表）⇒ 加一条 `/optionsdesk/trading-account` 深链，并同步该文件头注释里的计数（现写「面数 8 但深链 14 条」「栈内七条路由」，`markets-feature-gate.spec.ts:17` 起）—— 计数不改不会红，但下一个读者会被旧数误导。
 - **D3 · 雷达题头入口**：`radar-screen.tsx` 题头右排在 🔍 之后追加第 4 个 40×40 `Pressable`（`testID="optionsdesk-radar-trading-account-button"`，`accessibilityLabel` 取 copy），`onPress` → `router.push(OPTIONSDESK_TRADING_ACCOUNT_ROUTE)`。图标 `WalletGlyph` 屏内一次性 SVG（圆角矩形 + 小圆点，21×21 / viewBox 24 / `stroke={colors.ink.muted}` / `strokeWidth 1.7`，完全照本屏 `GearGlyph` 体例，**不**抽 `~/ui`，同 `radar-screen.tsx:373` 注释纪律）。次序 ⚙ 🌡 🔍 钱包（mockup 1a）。
-- **D4 · 🚨 雷达题头布局修正（mockup 实测缺陷，不修即违反 FR-001）**：现题头左右两侧均为 `flex-1`（`radar-screen.tsx:84,88`），右侧 4 个 40px 热区（160px）超出等分半边 ⇒ 入口组向左溢出、遮挡标题（mockup 首版渲染实测 `titleHit=1`）。修法 = **右侧入口组改为按内容宽度**（去掉 `flex-1` 与 `justify-end`，保留 `flex-row`），左侧保持 `flex-1`；代价是标题离开正中（mockup 实测左移约 29px），**维护者已按 1a 接受**。**禁**缩小热区（SC-006）、**禁**把某个既有入口挪进抽屉（超出本片范围）。验收 = Playwright 在 360×800 视口量标题与 4 个按钮的 boundingBox 两两不相交且每个宽 ≥40 + 真机窄屏截图（Gate 0.1）。
-- **D5 · 选择记忆 = 进程内 zustand store**：新建 `trading-account-store.ts`（`create()`，**不挂 `persist`**，先例 `ideation/annotate-send-store.ts`），状态 `{ market, segment }` + `selectMarket` / `selectSegment`。理由：push 屏返回即卸载，`useState`（雷达 `use-radar.ts:70-73` 的做法）只在不卸载的 tab 屏成立，照搬会让 FR-004「同次使用内记住」失效。模块级 store 天然满足「进程存活期间记住、重启回默认」，网页刷新视同重启（spec Assumptions）。**与雷达互相独立（FR-006）是结构性的**：本 store 与 `useRadar` 的 `useState` 是两份状态，本片 MUST NOT 读写 `useRadar`。
+- **D4 · 雷达题头布局修正（mockup 实测缺陷，不修即违反 FR-001；由 T005 e2e 的 boundingBox 断言拦）**：现题头左右两侧均为 `flex-1`（`radar-screen.tsx:84,88`），右侧 4 个 40px 热区（160px）超出等分半边 ⇒ 入口组向左溢出、遮挡标题（mockup 首版渲染实测 `titleHit=1`）。修法 = **右侧入口组改为按内容宽度**（去掉 `flex-1` 与 `justify-end`，保留 `flex-row`），左侧保持 `flex-1`；代价是标题离开正中（mockup 实测左移约 29px），**维护者已按 1a 接受**。**禁**缩小热区（SC-006）、**禁**把某个既有入口挪进抽屉（超出本片范围）。验收 = Playwright 在 360×800 视口量标题与 4 个按钮的 boundingBox 两两不相交且每个宽 ≥40 + 真机窄屏截图（Gate 0.1）。
+- **D5 · 选择记忆 = 进程内 zustand store**：新建 `trading-account-store.ts`（`create()`，**不挂 `persist`**，先例 `ideation/annotate-send-store.ts`），状态 `{ market, segment }` + `selectMarket` / `selectSegment`。理由：push 屏返回即卸载，`useState`（雷达 `use-radar.ts:70-73` 的做法）只在不卸载的 tab 屏成立，照搬会让 FR-004「同次使用内记住」失效。模块级 store 天然满足「进程存活期间记住、重启回默认」，网页刷新视同重启（spec Assumptions）。**与雷达互相独立（FR-006）是结构性的**：本 store 与 `useRadar` 的 `useState` 是两份状态，本片不读写 `useRadar`（T006 e2e 臂 ③ 断言雷达选择不受影响）。
 - **D6 · 值域与默认值单点**：新建 `trading-account.rules.ts`：`TRADING_ACCOUNT_SEGMENTS = ['positions', 'orders', 'reports'] as const`（显示顺序即 FR-003 顺序）、`type TradingAccountSegment`、`DEFAULT_TRADING_ACCOUNT_SELECTION = { market: RADAR_MARKETS[0], segment: 'positions' }`。市场值域**复用** `radar.rules.ts` 的 `RADAR_MARKETS` / `RadarMarket`（契约派生、双向编译期校验，`radar.rules.ts:28,52`）—— **禁**手写 `['us','hk']`。store 初值取 `DEFAULT_TRADING_ACCOUNT_SELECTION`。
 - **D7 · 一级市场页签 = 复用 `RadarMarketTabs`**：给 `radar-market-tabs.tsx` 加可选 prop `testIdPrefix`（默认 `'optionsdesk-radar-market'`），把容器 / 页签 / 圆点三处 testID 改为由前缀拼出 —— **默认值下 radar 的三个 testID 逐字不变**（`optionsdesk-radar-market-tabs` / `-tab-${m}` / `-dot-${m}`），既有 radar e2e 零改动。交易账户页传 `testIdPrefix="optionsdesk-trading-account-market"`、`actionableMarkets={[]}`（本页无「可动」信号，FR-002 无圆点）。视觉以现实装为准（代码是真相源；mockup 画的 14px 字号不追）。
 - **D8 · 二级胶囊分段 = 本地新建**：`trading-account-segments.tsx`（mockup 2b）：外层下沉底 `rounded-full` 轨道 + 三等分段；选中段 = `bg-surface` + `shadow-card` + `font-semibold text-ink`，未选 = 透明底 + `text-ink-muted`（底色 + 字重双通道）；每段 `accessibilityRole="tab"`、`testID="optionsdesk-trading-account-segment-${segment}"`。className 超 4 原子时拆嵌套 View，不写 inline style。**不上提 `~/ui`**（仓内已登记「统一等分 Tab 是独立重构」，`radar-market-tabs.tsx:8-9`）。
