@@ -54,6 +54,7 @@ export const PREFIX_TO_MODULE: Readonly<Record<string, string>> = {
   mockupList: 'ideation',
   optionsdesk: 'optionsdesk',
   anchorSubmission: 'optionsdesk',
+  brokerAccount: 'optionsdesk', // 083 交易账户页读端; 与上方 portfolio 的 `brokerAccounts` 只差一个 s
 };
 
 export interface ContractSpec {
