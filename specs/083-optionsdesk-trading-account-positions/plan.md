@@ -70,41 +70,41 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 ## Architecture Notes *(mandatory)*
 
-### 🚨 Testing Invariants (AI 绝对禁令 — 严禁违背)
+### Testing Invariants（三条硬约束；第一条由 lefthook `no-bad-mocks` 机器守）
 
-- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，**绝对禁止** `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片不新增此类组件；账号隔离依赖既有 `JwtAuthGuard`，只能经 HTTP 注入证明。）
-- **MANDATORY INTEGRATION**: 读接口 IT 必须用 `Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()` + `setupIsolatedDb`（`apps/server/test/_support/isolated-db.ts`）装配并经 HTTP 注入调用 controller（带真 JWT），直接 prisma 种 `broker_*` / `anchor` 行；**不 mock** `PrismaService` / 交易日历 port 以外的任何东西（日历 port 可按既有 IT 体例注入 test double 固定交易日）。
-- **EXHAUSTIVE BRANCHING**: spec 的 **47 条** `state_branches` 每条**必须**有对应断言落点（下方测试映射表，analyze 期逐条 grep 对账）。纯判定分支落 Small `*.rules.spec.ts`；**凡涉及读库结果**的分支（账号隔离 / 未归类计数 / 同步时刻取值 / 404 / 订单过滤 / 补齐状态）**必须**在 Medium IT 再有一条 `it()`。🚨 mobile vitest **只测纯逻辑**，禁组件 render 测（`docs/conventions/testing.md` 不变量 4）。
+- **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，不写 `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片不新增此类组件；账号隔离依赖既有 `JwtAuthGuard`，只能经 HTTP 注入证明。）
+- **MANDATORY INTEGRATION**: 读接口 IT 用 `Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()` + `setupIsolatedDb`（`apps/server/test/_support/isolated-db.ts`）装配并经 HTTP 注入调用 controller（带真 JWT），直接 prisma 种 `broker_*` / `anchor` 行；**不 mock** `PrismaService` / 交易日历 port 以外的任何东西（日历 port 可按既有 IT 体例注入 test double 固定交易日）。
+- **EXHAUSTIVE BRANCHING**: spec 的 **47 条** `state_branches` 每条都有对应断言落点（下方测试映射表，analyze 期逐条 grep 对账）。纯判定分支落 Small `*.rules.spec.ts`；**凡涉及读库结果**的分支（账号隔离 / 未归类计数 / 同步时刻取值 / 404 / 订单过滤 / 补齐状态）都要在 Medium IT 再有一条 `it()`。mobile vitest **只测纯逻辑**，不做组件 render 测（`docs/conventions/testing.md` 不变量 4）。
 
 **本片额外的反例臂（都是「不写就永远不会红」的形态）：**
 
-- 🚨 **FIFO 要能区分 LIFO**：构造「A 开 2 张 @ 高价、B 开 1 张 @ 低价、买回 1 张」，断言 A 剩 1 / B 剩 1 且 A 成本不变。只测单批次或整批平仓的用例对 FIFO / LIFO 两种实现都绿。
-- 🚨 **订单过滤要喂「开仓单下单早于开仓时间」**：开仓订单 `vendorCreatedAt` 早于 `openedAt`、`vendorUpdatedAt` 晚于它，断言该订单**在**列表里。plan 前验证 V2 已证实真实数据里开仓单全部是这个形态，按下单时间过滤会把它们全滤掉而不报错。
-- 🚨 **到期判定要跨北京日界**：美股期权到期日 = 美东今天、但北京时间已是次日的时刻，断言**不**标已到期；到期日 = 美东昨天断言标。只用北京白天时刻测，对「按北京日期判」的错误实现同样绿。
-- 🚨 **陈旧宽限要两侧夹逼**：昨天时点已成功同步、今天尚未成功，当前 = 今天时点 + 59 分钟 → 不陈旧（判定时点仍是昨天）；+ 60 分钟 → 陈旧（判定时点切到今天）。再加「今天非交易日 → 以上一交易日时点为准」一例。
-- 🚨 **账号隔离要用「存在的他人 id」**：以账号 B 请求账号 A 的持仓 id / 订单 id，断言与请求不存在的 id **响应完全相同**（状态码与响应体）。只测不存在 id 对「先查后比账号」的实现同样绿。
-- 🚨 **同步时刻要喂「只有补齐、没有对账」**：某市场只有一条 `target='us:XXX'` 的成功补齐记录（`market` 列为空，V5），断言美股 `syncedAt` = 其 `finishedAt`、港股仍为 null。只按 `market` 列筛的实现会让美股误判「尚未同步」。
-- 🚨 **失败不清空要用「先成功后失败」**：先一条成功对账、再一条失败对账，断言 `syncedAt` 取成功那条、列表照常。
-- 🚨 **万缩写边界**：`9999.99` → `9,999.99`、`10000` → `1.00万`、`-10000` → `-1.00万`、`99999999` → `10000.00万` 与 `100000000` → `1.00亿` 各一例。
-- 🚨 **陈旧要覆盖「昨天也没成功」**：最近成功同步在前天、今天刚过对账时点 10 分钟（仍在宽限内）⇒ **陈旧**。只按「今天时点 + 宽限」判的实现会判不陈旧（analyze H5）。
-- 🚨 **日历不可判定不许猜**：`previousTradingDay` 返回 null ⇒ `stale=false` 且有 warn 日志；另喂一个「按前一日历日猜会得出陈旧」的输入，断言仍不陈旧（analyze H6）。
-- 🚨 **重读失败不许吞掉已显示数据**：列表先成功加载，再让下一次请求失败，断言列表行仍在且出现「刷新失败」提示；再让详情重读返回 404，断言「持仓已不存在」替换了旧数据（analyze H1）。
+- **FIFO 要能区分 LIFO**：构造「A 开 2 张 @ 高价、B 开 1 张 @ 低价、买回 1 张」，断言 A 剩 1 / B 剩 1 且 A 成本不变。只测单批次或整批平仓的用例对 FIFO / LIFO 两种实现都绿。
+- **订单过滤要喂「开仓单下单早于开仓时间」**：开仓订单 `vendorCreatedAt` 早于 `openedAt`、`vendorUpdatedAt` 晚于它，断言该订单**在**列表里。plan 前验证 V2 已证实真实数据里开仓单全部是这个形态，按下单时间过滤会把它们全滤掉而不报错。
+- **到期判定要跨北京日界**：美股期权到期日 = 美东今天、但北京时间已是次日的时刻，断言**不**标已到期；到期日 = 美东昨天断言标。只用北京白天时刻测，对「按北京日期判」的错误实现同样绿。
+- **陈旧宽限要两侧夹逼**：昨天时点已成功同步、今天尚未成功，当前 = 今天时点 + 59 分钟 → 不陈旧（判定时点仍是昨天）；+ 60 分钟 → 陈旧（判定时点切到今天）。再加「今天非交易日 → 以上一交易日时点为准」一例。
+- **账号隔离要用「存在的他人 id」**：以账号 B 请求账号 A 的持仓 id / 订单 id，断言与请求不存在的 id **响应完全相同**（状态码与响应体）。只测不存在 id 对「先查后比账号」的实现同样绿。
+- **同步时刻要喂「只有补齐、没有对账」**：某市场只有一条 `target='us:XXX'` 的成功补齐记录（`market` 列为空，V5），断言美股 `syncedAt` = 其 `finishedAt`、港股仍为 null。只按 `market` 列筛的实现会让美股误判「尚未同步」。
+- **失败不清空要用「先成功后失败」**：先一条成功对账、再一条失败对账，断言 `syncedAt` 取成功那条、列表照常。
+- **万缩写边界**：`9999.99` → `9,999.99`、`10000` → `1.00万`、`-10000` → `-1.00万`、`99999999` → `10000.00万` 与 `100000000` → `1.00亿` 各一例。
+- **陈旧要覆盖「昨天也没成功」**：最近成功同步在前天、今天刚过对账时点 10 分钟（仍在宽限内）⇒ **陈旧**。只按「今天时点 + 宽限」判的实现会判不陈旧（analyze H5）。
+- **日历不可判定不许猜**：`previousTradingDay` 返回 null ⇒ `stale=false` 且有 warn 日志；另喂一个「按前一日历日猜会得出陈旧」的输入，断言仍不陈旧（analyze H6）。
+- **重读失败不许吞掉已显示数据**：列表先成功加载，再让下一次请求失败，断言列表行仍在且出现「刷新失败」提示；再让详情重读返回 404，断言「持仓已不存在」替换了旧数据（analyze H1）。
 
 ### General Architecture Notes
 
-> ⚠️ **CRITICAL ARCHITECTURE PARADIGM (ADR-0043 — ENFORCED)**
-> - **Flat Module**: ALL files live flatly in `apps/server/src/optionsdesk/`. NEVER generate `domain/`, `application/`, `infrastructure/`, or `web/` subdirectories —— 包括「为了分组」而建的 `broker/`（Gate 0.4）。
-> - **Anemic Data & Zero-Class**: Data equals raw Prisma rows. NEVER generate Domain Classes or Entity Mappers.
-> - **No Repositories**: NEVER create Repository interfaces/adapters for your own tables. Inject `PrismaService` directly. Business invariants go in `*.rules.ts`.
-> - **The Moat**: NEVER write `tx.<otherTable>.*`. 本片只读自有 `broker_*` / `anchor` 表；正股名称走既有 `resolveInstrumentNames`（`optionsdesk/instrument-name.ts:39-62`，内部已挂 `CROSS-CONTEXT-READ`）；**不**读 `option_contract`（乘数改从订单推，D10）。
+> **Architecture paradigm (ADR-0043) — Flat + Anemic + Moat.** Bounded-context edges are enforced by eslint-plugin-boundaries and table ownership by `check-server-moat.ts`; the bullets below say what those gates expect.
+> - **Flat Module**: all files live flatly in `apps/server/src/optionsdesk/`; no `domain/`, `application/`, `infrastructure/` or `web/` subdirectories —— 包括「为了分组」而建的 `broker/`（Gate 0.4）。
+> - **Anemic Data & Zero-Class**: data equals raw Prisma rows; no Domain Classes or Entity Mappers.
+> - **No Repositories**: no Repository interfaces/adapters for your own tables. Inject `PrismaService` directly. Business invariants go in `*.rules.ts`.
+> - **The Moat**: no `tx.<otherTable>.*`. 本片只读自有 `broker_*` / `anchor` 表；正股名称走既有 `resolveInstrumentNames`（`optionsdesk/instrument-name.ts:39-62`，内部已挂 `CROSS-CONTEXT-READ`）；**不**读 `option_contract`（乘数改从订单推，D10）。
 
-### 🚨 Impl Guardrails（仅留本 feature 适用条目）
+### Impl Guardrails（仅留本 feature 适用条目）
 
-1. **只读**：本片零写路径、零事务；🚫 任何下单 / 改单 / 撤单 / 平仓入口（FR-019）。
-2. **账号隔离在查询条件里**：所有 `broker_*` 查询 `where` 带 `accountId: req.user.accountId`（`@Req() req: { user: AuthenticatedUser }`，先例 `alert/alerts.controller.ts:15,139,168`；`AuthenticatedUser` 从 `account/jwt-auth.guard.ts:6` import —— `auth/jwt-access.guard.ts:4` 另有同名类型，不是 optionsdesk 所用 guard 的）；按 id 读一律 `findFirst({ where: { id, accountId } })`，🚫 `findUnique` 后在代码里比账号（两条路径的响应会不一样，泄露 id 存在性）。
+1. **只读**：本片零写路径、零事务；不留任何下单 / 改单 / 撤单 / 平仓入口（FR-019）。
+2. **账号隔离在查询条件里**：所有 `broker_*` 查询 `where` 带 `accountId: req.user.accountId`（`@Req() req: { user: AuthenticatedUser }`，先例 `alert/alerts.controller.ts:15,139,168`；`AuthenticatedUser` 从 `account/jwt-auth.guard.ts:6` import —— `auth/jwt-access.guard.ts:4` 另有同名类型，不是 optionsdesk 所用 guard 的）；按 id 读一律 `findFirst({ where: { id, accountId } })`，不用 `findUnique` 后在代码里比账号（两条路径的响应会不一样，泄露 id 存在性）。
 3. **BigInt / Decimal 出边界一律 string**；nullable 标量 `@ApiProperty` 显式 `type`（`scripts/checks/check-api-property-nullable.ts` 强制，否则 orval 生成 `{[k]: unknown} | null`）。
-4. **时间只在服务端换算**：交易所当地时间串只经 D13 的 `exchangeLocalDateTime`；🚫 optionsdesk 裸 `Intl.DateTimeFormat`（`check-time-semantics` Rule B）；🚫 mobile 做任何时区换算。
-5. **fixture 只用合成值**：代号 `ZQX` / `ZQY` / `ZQR`（082 已核不撞 instrument 表）、港股 `088xx`；🚫 真实账户 / 持仓 / 成交 / 订单数据（`check-identifier-boundary.ts` L2 私有清单会拦）。🚨 服务端 `apps/server/src/optionsdesk/**`（**含 spec**）的数字字面量避开 `0.8` / `0.6` / `1.2` 子串（`check-optionsdesk-rule-constants.ts` #1，082 T012 实撞）。
+4. **时间只在服务端换算**：交易所当地时间串只经 D13 的 `exchangeLocalDateTime`；不在 optionsdesk 裸用 `Intl.DateTimeFormat`（`check-time-semantics` Rule B）；🚫 mobile 做任何时区换算。
+5. **fixture 只用合成值**：代号 `ZQX` / `ZQY` / `ZQR`（082 已核不撞 instrument 表）、港股 `088xx`；不用真实账户 / 持仓 / 成交 / 订单数据（`check-identifier-boundary.ts` L2 私有清单会拦）。服务端 `apps/server/src/optionsdesk/**`（**含 spec**）的数字字面量避开 `0.8` / `0.6` / `1.2` 子串（`check-optionsdesk-rule-constants.ts` #1，082 T012 实撞）。
 6. **API 同步链两步分别跑**：`nx run server:export-openapi` → `nx affected -t generate`；漏第一步会静默拿陈旧 json（`docs/conventions/api-contract.md:56-63`）。
 7. **mobile hook 依赖**：`useFocusEffect` / `AppState` 回调只依赖 `refetch`（引用稳定），🚫 整个 `useQuery` 结果对象进依赖（自激请求风暴，`.claude/rules/mobile-impl-playbook.md`）。
 
@@ -153,12 +153,12 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 #### D2 — 账号与连接
 
-- 账号 = `req.user.accountId`；连接 = 该账号的全部 `broker_connection` 行。`hasConnection = 连接数 > 0`，`brokerCount = 连接数`（FR-012：> 1 才显示连接标签，由 mobile 判）。每行带 `connectionLabel` = 该连接的人读标签（082 连接行的 `label` 列），同一券商的多个连接靠它区分（维护者 2026-09-15 analyze Q2）；🚫 用 `brokerCode` 当标签（同券商两行会完全相同）。
+- 账号 = `req.user.accountId`；连接 = 该账号的全部 `broker_connection` 行。`hasConnection = 连接数 > 0`，`brokerCount = 连接数`（FR-012：> 1 才显示连接标签，由 mobile 判）。每行带 `connectionLabel` = 该连接的人读标签（082 连接行的 `label` 列），同一券商的多个连接靠它区分（维护者 2026-09-15 analyze Q2）；不用 `brokerCode` 当标签（同券商两行会完全相同）。
 - 锚集 = `anchor` 表全部行的 ticker（含 `excluded`；锚全局，master §12-A4），每次请求读一次。
 
 #### D3 — 列表过滤（`broker-position-display.rules.ts`）
 
-对该账号该市场的全部持仓：`underlyingTicker` 为 null ⇒ 计入 `unresolvedCount`、不进列表；非 null 且 ∈ 锚集 ⇒ 进列表；非 null 且 ∉ 锚集 ⇒ 丢弃（FR-001 / FR-011）。🚨 **不复用** `broker-scope.rules.ts` 的 `inBrokerScope` —— 它对未解析行恒返回 true（同步侧「不丢弃」语义，`broker-scope.rules.ts:32-41`），展示侧的语义相反；且展示恒按「只锚标的」，与 `BROKER_SYNC_SCOPE` 无关。
+对该账号该市场的全部持仓：`underlyingTicker` 为 null ⇒ 计入 `unresolvedCount`、不进列表；非 null 且 ∈ 锚集 ⇒ 进列表；非 null 且 ∉ 锚集 ⇒ 丢弃（FR-001 / FR-011）。**不复用** `broker-scope.rules.ts` 的 `inBrokerScope`（T001 变异 b 钉住） —— 它对未解析行恒返回 true（同步侧「不丢弃」语义，`broker-scope.rules.ts:32-41`），展示侧的语义相反；且展示恒按「只锚标的」，与 `BROKER_SYNC_SCOPE` 无关。
 
 #### D4 — 分组、组值与排序（同一规则文件，全序）
 
@@ -184,9 +184,9 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 - **最近成功同步时刻**（V5）= 该账号成功（`succeeded`）同步记录中，满足「`kind='reconcile'` ∧ `market=m`」或「`kind='backfill'` ∧（`target='*'` ∨ `target` 以 `m:` 开头）」者的 `finishedAt` 最大值；无 ⇒ null（→ mobile「尚未同步」）。
 - **陈旧**（纯函数，入参全部预先算好）：输入 `{ slotMinutes, nowLocal: exchangeClock(m, now), todayStatus, previousTradingDate, lastSyncLocal: exchangeClock(m, syncedAt) }`。
   - **判定时点** = 最近一个**已过宽限**的对账时点：今天不是 `non-trading` 且 `nowLocal.minutesOfDay ≥ slotMinutes + 60` ⇒ 今天的时点；否则 ⇒ 上一交易日的时点（`TradingCalendarPort.previousTradingDay(m, today)`，只在需要时才调）。`unknown` 按交易日处理（同 082）。
-  - 陈旧 ⇔ `lastSyncLocal` 早于（判定时点日, `slotMinutes`）。🚨 旧写法「只看今天时点 + 宽限」会漏掉「昨天对账也没成功、今天仍在宽限内」—— 数据已旧两天却不提示（analyze H5）。
-  - 🚨 `previousTradingDay` 返回 null ⇒ **不可判定**：纯函数返回 `{ stale: false, undeterminable: true }`，use case 记 `logger.warn`、不标陈旧；🚫 回落日历日（端口契约 `trading-calendar.port.ts:52-69`「null = 不可判定，调用方 MUST NOT 猜」；维护者 2026-09-15 analyze Q1）。
-  - `slotMinutes` **复用** `broker-sync-slot.rules.ts` 的 `RECONCILE_SLOT_MINUTES`（`:24`），🚫 另写一份；宽限 60 分钟为本文件常量（spec Assumptions：覆盖 082 同日 3 次 × 15 分钟重试）。
+  - 陈旧 ⇔ `lastSyncLocal` 早于（判定时点日, `slotMinutes`）。旧写法「只看今天时点 + 宽限」会漏掉「昨天对账也没成功、今天仍在宽限内」—— 数据已旧两天却不提示（analyze H5）。
+  - `previousTradingDay` 返回 null ⇒ **不可判定**：纯函数返回 `{ stale: false, undeterminable: true }`，use case 记 `logger.warn`、不标陈旧；不回落日历日（端口契约 `trading-calendar.port.ts:52-69`「null = 不可判定，调用方 MUST NOT 猜」；维护者 2026-09-15 analyze Q1）。
+  - `slotMinutes` **复用** `broker-sync-slot.rules.ts` 的 `RECONCILE_SLOT_MINUTES`（`:24`），不另写一份；宽限 60 分钟为本文件常量（spec Assumptions：覆盖 082 同日 3 次 × 15 分钟重试）。
 - 列表响应另带 `syncedAtLocal`（D13）供展示。
 
 #### D8 — 列表响应（设计意图，字段 SoT = swagger 装饰器）
@@ -197,7 +197,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 1. `findFirst({ id, accountId })`；不存在，或正股未解析 / 不在锚集 ⇒ 404（FR-020 由 mobile 映射为「持仓已不存在」）。V4 保证 id 在持有期间稳定，不会被每日同步误伤。
 2. 汇总 = D8 行字段（含 `market` —— FR-017 标时区用，深链进入时 mobile 只能从这里拿；analyze H4）+ `openedAtLocal`。
-3. **订单列表**（FR-013 / FR-016，正股与期权共用）：该连接下 `code = 持仓代码` 或 `comboLegCodes` 含持仓代码的订单；`openedAtSource = 'derived'` ⇒ 只取 `vendorUpdatedAt ≥ openedAt`，`fallback` ⇒ 全部。🚨 **按 `vendorUpdatedAt` 不按 `vendorCreatedAt`**（V2：开仓订单全部早于开仓时间下单，按下单时间过滤会滤掉全部开仓单且不报错）。排序：`vendorCreatedAt` 降序，null 排末 → `orderId`。项字段：`id` · `side` · `qty` · `price` · `status` · `createdAtLocal`。
+3. **订单列表**（FR-013 / FR-016，正股与期权共用）：该连接下 `code = 持仓代码` 或 `comboLegCodes` 含持仓代码的订单；`openedAtSource = 'derived'` ⇒ 只取 `vendorUpdatedAt ≥ openedAt`，`fallback` ⇒ 全部。**按 `vendorUpdatedAt` 不按 `vendorCreatedAt`**（V2：开仓订单全部早于开仓时间下单，按下单时间过滤会滤掉全部开仓单且不报错）。排序：`vendorCreatedAt` 降序，null 排末 → `orderId`。项字段：`id` · `side` · `qty` · `price` · `status` · `createdAtLocal`。
 4. 期权 ⇒ 附 D10 批次；正股 ⇒ `lots = null`。
 
 #### D10 — 持仓批次（`broker-lots.rules.ts`）
@@ -217,7 +217,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 - 字段：`market`（FR-017 标时区用）· `side` · `status` · `orderType` · 名称代码（同 D6）· `comboLegCodes` · `qty` · `price` · `amount`（`raw.amount`）· `dealtQty`（`raw.dealt_qty`）· `dealtAvgPrice`（`raw.dealt_avg_price`）· `dealtAmount` · `currency` · `createdAtLocal`。
 - `dealtAmount = dealtQty × dealtAvgPrice × 乘数`，乘数同 D10（取本订单）；`dealtQty` 为 0 或缺失 ⇒ 三个成交字段全部 null（mobile 显示「—」，FR-017）；价格为 0 的订单（到期作废类系统单）成交金额 = 0。
 - **枚举文案在 mobile**（`Record<Enum, string>` 穷举，漏值编译红）：订单状态 17 值与交易方向 5 值按 SDK 常量穷举（V9）；订单类型只映射 `NORMAL → 限价单`（V3，维护者截图为证），其余原样显示枚举名 —— 🚫 为未验证的类型编造文案。
-- ⚠️ mockup 帧 6 的「系统单」标签**不实现**：指派产生的正股系统单与普通单无可区分字段（V3 / V9 取证时核过），属 mockup 与实现的有意偏离。
+- mockup 帧 6 的「系统单」标签**不实现**：指派产生的正股系统单与普通单无可区分字段（V3 / V9 取证时核过），属 mockup 与实现的有意偏离。
 
 #### D12 — 新锚券商历史补齐状态（`list-broker-backfill-runs`）
 
@@ -230,8 +230,8 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 #### D14 — mobile 持仓列表
 
 - **屏**：`trading-account-screen.tsx` 持仓分段改渲染 `TradingAccountPositions`；订单 / 报表分段仍为 081 占位。该文件头注释「MUST NOT import `@nvy/api-client`」（081 FR-008）对持仓分段失效，改写为「订单 / 报表分段零数据面」—— 081 spec 为冻结记录，不回改。
-- **数据**：`use-trading-account-positions.ts` 包生成 hook（照 `use-underlying-detail.ts` 体例：query key 常量、`refetch`）；`useFocusEffect` 聚焦重读 + 新建 `use-refetch-on-foreground.ts`（`AppState` 由非 `active` 变 `active` 时调 `refetch`）+ `RefreshControl` 下拉重读；三者只重读本系统数据，不触发券商同步（FR-008）。🚫 改 react-query 全局 `focusManager`（影响全 App 查询）。
-- **视图状态**（`trading-account-positions.rules.ts`，纯函数）：**无已加载数据**且请求失败 → 加载失败 + 重试；`!hasConnection` → 暂无交易账户；`syncedAt === null` → 尚未同步；`groups.length === 0` → 暂无持仓（`unresolvedCount > 0` 时仍显示未归类提示）；否则列表（FR-010）。**已有数据时重读失败** → 保持当前视图 + `refetchFailed`，同步时刻行换成「刷新失败，显示的是上次加载的数据」，下次重读成功恢复（FR-023；维护者 2026-09-15 analyze Q3）；🚫 用错误卡替换已显示数据。另含：组头可见（`rows.length ≥ 2`）、券商标可见（`brokerCount > 1`）、未归类提示可见（`unresolvedCount > 0`）、期权名称拼接、到期日 6 位、行权价去尾零。
+- **数据**：`use-trading-account-positions.ts` 包生成 hook（照 `use-underlying-detail.ts` 体例：query key 常量、`refetch`）；`useFocusEffect` 聚焦重读 + 新建 `use-refetch-on-foreground.ts`（`AppState` 由非 `active` 变 `active` 时调 `refetch`）+ `RefreshControl` 下拉重读；三者只重读本系统数据，不触发券商同步（FR-008）。不改 react-query 全局 `focusManager`（影响全 App 查询）。
+- **视图状态**（`trading-account-positions.rules.ts`，纯函数）：**无已加载数据**且请求失败 → 加载失败 + 重试；`!hasConnection` → 暂无交易账户；`syncedAt === null` → 尚未同步；`groups.length === 0` → 暂无持仓（`unresolvedCount > 0` 时仍显示未归类提示）；否则列表（FR-010）。**已有数据时重读失败** → 保持当前视图 + `refetchFailed`，同步时刻行换成「刷新失败，显示的是上次加载的数据」，下次重读成功恢复（FR-023；维护者 2026-09-15 analyze Q3）；不用错误卡替换已显示数据。另含：组头可见（`rows.length ≥ 2`）、券商标可见（`brokerCount > 1`）、未归类提示可见（`unresolvedCount > 0`）、期权名称拼接、到期日 6 位、行权价去尾零。
 - **列表**：`SectionList`，每个组一个 section；折叠状态 = 组件内 `useState<Set<string>>`（屏卸载即丢，满足「离开再进恢复全部展开」FR-004），折叠时该 section `data = []` 只留组头。单行组不渲染组头、直接渲染行。
 - **数字**（维护者 mockup 裁决，FR-022）：新建 `apps/mobile/src/format/compact-amount.ts`：`|n| < 1万` → 千分位 2 位小数；`1万 ≤ |n| < 1亿` → `x.xx万`；`≥ 1亿` → `x.xx亿`；保号；null / 非法 → `--`。**只用于主列表的市值、组市值、持仓盈亏金额、组持仓盈亏**；数量、价格、比例不缩写；详情页全精度。📌 `portfolio/stock-detail.helpers.ts:107-115` 已有一份含「万亿」档的同类函数（预存在，optionsdesk 不能跨 feature import，本片不重构它）。
 - 涨跌色：盈亏金额与比例用 `text-quote-up` / `text-quote-down`（`use-quote-merge.ts:37-48` 体例），0 用 `text-quote-flat`。
@@ -250,7 +250,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 #### D17 — 文案与 testID
 
-`optionsdesk-copy.ts` **新建独立段** `tradingAccountPositions`（🚫 追加进 081 的 `tradingAccount` 段 —— 081 测试 `trading-account.rules.spec.ts:46-50` 断言该段全部字符串不含「暂无 / 空仓 / 无数据」，那是 081 占位仍然有效的不变量，本片的「暂无交易账户 / 暂无持仓」放进去会让它红；analyze H7），内容：四种非列表状态、刷新失败提示、连接标签、陈旧提示（中性措辞「数据可能已过时 · 最近成功同步于 …」—— 接口只给时间判定的 `stale`，不区分「失败」与「未到点」，mockup 帧 2 的「最近一次同步未成功」据此改写）、未归类提示、已到期标、批次无法还原、持仓已不存在、订单不存在、订单状态 / 方向 / 类型映射（`Record` 穷举）、冷启动券商历史状态。testID 照 `docs/conventions/mobile-testid.md` 体例 `optionsdesk-trading-account-<element>[-state]`。
+`optionsdesk-copy.ts` **新建独立段** `tradingAccountPositions`（不追加进 081 的 `tradingAccount` 段 —— 081 测试 `trading-account.rules.spec.ts:46-50` 断言该段全部字符串不含「暂无 / 空仓 / 无数据」，那是 081 占位仍然有效的不变量，本片的「暂无交易账户 / 暂无持仓」放进去会让它红；analyze H7），内容：四种非列表状态、刷新失败提示、连接标签、陈旧提示（中性措辞「数据可能已过时 · 最近成功同步于 …」—— 接口只给时间判定的 `stale`，不区分「失败」与「未到点」，mockup 帧 2 的「最近一次同步未成功」据此改写）、未归类提示、已到期标、批次无法还原、持仓已不存在、订单不存在、订单状态 / 方向 / 类型映射（`Record` 穷举）、冷启动券商历史状态。testID 照 `docs/conventions/mobile-testid.md` 体例 `optionsdesk-trading-account-<element>[-state]`。
 
 ### 测试映射（`state_branches` 47 条 → 落点；analyze 期逐条 grep 对账）
 
