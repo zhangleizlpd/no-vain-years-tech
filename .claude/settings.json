@@ -73,6 +73,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/posttooluse-steering-density.sh\""
+          }
+        ]
+      }
     ]
   },
   "plansDirectory": "./docs/private/plans",

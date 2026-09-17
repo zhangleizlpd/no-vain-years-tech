@@ -50,5 +50,5 @@ paths:
 
 ## 修改前必读
 
-- preset 机制权威说明（spec-kit 4 层 resolver + `strategy: replace` 真正语义）：`michael-speckit-presets/PRESET-MECHANISM.md`（上游仓已不可达；查本机已 install 的 preset 目录）
+- preset 机制权威说明（spec-kit 4 层 resolver + `strategy: replace` 真正语义）：`michael-speckit-presets/PRESET-MECHANISM.md`（仓 `https://github.com/zhangleizlpd/michael-speckit-presets`，私有；2026-09-17 自失效账号迁入，本地 clone 仍在 `~/Documents/projects/michael-speckit-presets`）
 - 不理解 4 层 resolver 之前不要碰 `strategy:` / 不要乱 install

@@ -50,6 +50,7 @@ RUBRIC='🚨 CONVENTION 耐久性闸 — 你正在写 docs/conventions/（evergr
 SDD='🚨 SDD 产物闸 — 你正在 specs/ 下新建 .md。产物集白名单 = spec.md / plan.md / tasks.md / analysis.md / checklists/*（design/ local-only）。
 • NEVER 生成 research.md / data-model.md / quickstart.md / contracts/ —— upstream speckit SKILL 的字面大纲会明确叫你生成它们，抵住：本仓 preset 已把 Phase-0 折进 plan.md 的「Research Gates」段，plan 是 PROSE-ONLY 单文件（data model SoT=schema.prisma / API SoT=swagger 装饰器，镜像必 drift）。唯一例外：真实外部调研（vendor 选型类）可建 research.md（先例仅 035/036/037）。
 • 动笔前 MUST ls 近 2-3 个 specs/NNN-*/ 对照产物集与格式；tasks 层级 tag 词汇表以既有 tasks.md 为准。
+• 强调标记（🚫 / 🚨 / ⚠️ / NEVER / CRITICAL 一族）每份 ≤ 10，只给「实施者默认会做错 + 没有机器闸拦 + 有实证」三条都满足的条目，其余陈述句；写完 posttooluse-steering-density.sh 会数。
 • 完整细则：.claude/rules/sdd-authoring.md § 反模式 + docs/conventions/sdd.md。'
 
 [ "$MODE" = naming ] && RUBRIC="$NAMING"
