@@ -3,7 +3,7 @@ feature_id: 082-optionsdesk-broker-pull-sync
 spec_ref: ./spec.md
 status: approved
 created_at: '2026-09-14'
-updated_at: '2026-09-14'
+updated_at: '2026-09-17'
 adr_refs: ['0033', '0040', '0043', '0047', '0058', '0062', '0066']
 context7_verified: []
 ---
@@ -179,7 +179,7 @@ context7_verified: []
 2. **补齐**：认领 `pending ∧ next_attempt_at ≤ now` 的 `backfill` 记录并执行。结果：成功 ⇒ `succeeded`；基础设施故障（网络 / 5xx / 超时 / 429 用尽 / DB 连接 / 超时 / 连接数耗尽 / 事务写冲突）⇒ 首次失败时写 `first_attempted_at`；距其未满 24 h ⇒ 回 `pending`、`next_attempt_at += 15 min`、`attempt++`；**已满 24 h ⇒ `failed`**（`error` 注明「基础设施重试耗尽」，`logger.error`）；数据无法处理（shim `409` / 解析异常）⇒ 立即 `failed`，不重试。上限口径参照 NServiceBus recoverability「有上限的延迟重试，耗尽进 error queue」（spec Clarifications 第 5 条）。
    - **重新触发**（维护者手动，非系统能力）：把该记录 `status` 置回 `pending` 并清空 `first_attempted_at`，下一拍即被认领；语句随私有 runbook。
 3. **对账**：对每个市场调 `broker-sync-slot.rules.ts` 纯函数判定。输入 = 交易所当地 `{date, minutesOfDay}`、日历三态、该市场该交易日已有对账记录（成功数 / 失败数 / 最近失败时刻）、上次成功对账的交易日。输出 = `skip(reason)` 或 `run({ windowStart })`：
-   - 时点：美股 `09:10`、港股 `09:05`（交易所当地分钟数常量；**POC-6 结果出来后只改这两个常量**，常量旁注明来源与待复核）
+   - 时点：美股 `09:10`、港股 `08:40`（2026-09-17 amend，原港股 `09:05`，理由见 spec FR-010）（交易所当地分钟数常量；**POC-6 结果出来后只改这两个常量**，常量旁注明来源与待复核）
    - 已到点 ∧ 非 `non-trading` ∧ 本交易日无成功 ∧ 失败次数 ≤ 3 ∧ 距最近失败 ≥ 15 分钟 ⇒ `run`。**首次 + 最多 3 次重试 = 至多 4 次尝试**（clarify Q1）
    - 窗口起点 = min(上次成功对账的交易日, 今天 − 7 个自然日)（clarify Q2）；从未成功过 ⇒ 今天 − 7
    - 服务在时点停机、重启时仍在同一交易日 ⇒ 下一拍自然满足条件（无需额外「补跑」分支）

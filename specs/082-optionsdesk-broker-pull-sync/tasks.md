@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: in-progress
 created_at: '2026-09-14'
-updated_at: '2026-09-15'
+updated_at: '2026-09-17'
 ---
 
 # Tasks: 082-optionsdesk-broker-pull-sync（期权台券商账户同步底座 · 拉取式）
@@ -56,7 +56,7 @@ updated_at: '2026-09-15'
 8. **原子写，禁先查后写**：成交 `createMany({ skipDuplicates })`；订单先 `createMany({ skipDuplicates })` 再带 `vendorUpdatedAt < incoming` 条件 `updateMany`；订阅方 `createMany({ skipDuplicates })`，唯一键 `(connection_id, source_event_id)`；🚫 在 relay 线程执行补齐。
 9. **跨 ctx 只读** `optionContract` / `instrument`，`// CROSS-CONTEXT-READ:` 挂在 prisma 调用正上方；🚫 任何跨 ctx 写。
 10. **不写** marketdata `sync_run`（E14）。
-11. **对账时点是两个常量**（美股 `09:10` / 港股 `09:05` 交易所当地），常量旁注明「POC-6 待复核」；🚫 散落第二处。
+11. **对账时点是两个常量**（美股 `09:10` / 港股 `08:40` 交易所当地；2026-09-17 amend，原港股 `09:05`，见 spec FR-010），常量旁注明「POC-6 待复核」；🚫 散落第二处。
 12. **注释出处**（`docs/conventions/comment-provenance.md`）：关于富途行为的注释（时间无时区、限频值、选户字段值域、基金户权限形态）一律 `EVIDENCE:` 指向 POC 实测观测值或官方文档页；拿不出出处的**不写**。
 13. **新文件首跑带 `--skip-nx-cache`**（`implement-task-closure.md`）。
 
@@ -116,7 +116,7 @@ updated_at: '2026-09-15'
 
 - [ ] T022 [Ops] **上线后观察：新建锚补齐时效 + 累计 5 个交易日对账**（SC-002, SC-004, SC-007; state_branches 15, 20）：① 上线后第一只新建锚：记录建锚时刻到补齐记录 `succeeded` 且持仓可见的耗时，≤ 5 分钟（SC-002）② 累计 5 个交易日（不要求连续）：计入的每个交易日、每个市场恰有 1 条成功对账记录，重复次数为 0；出现重复（同一市场同一交易日成功对账 > 1 条）的交易日作废、不计入累计，继续观察直到累计满 5 个合格交易日，并排查防重入失效原因（不整条判失败）（SC-004；2026-09-14 amend：原「连续 5 个交易日」，维护者改为累计；同日维护者补回「重复次数为 0」，并明确重复只作废当日；2026-09-15 维护者定：上线当日港股那条是连接晚于开盘前时点建好后当天补跑的，不算开盘前对账，上线当日不计入累计）③ 期间若出现券商连接不可用，核对既有持仓 / 成交未被改动（SC-007）→ verify: 三项观测值回填本行；🚨 **开 task 时同步建 issue** 写明触发条件与兜底复查点（上线后第 10 个交易日仍未满足 ① 则主动建一只测试锚验）。**跟踪**：issue #427（2026-09-14 建）
 
-- [ ] T023 [Server] **按 POC-6 结果修正对账时点常量（条件触发）**（FR-010; plan D9; state_branches 20）：触发条件 = POC-6 美股（2026-09-19 / 09-21 快照）或港股（2026-09-29 / 09-30 快照）的结论为「开盘前那一拍尚未反映到期 / 指派」。只改 `RECONCILE_SLOT_MINUTES` 对应值与旁注出处，🚫 其余逻辑不动；结论为「已反映」则本 task 只在 p0-poc 表回填结论并勾选，不改代码 → verify: `pnpm nx test server apps/server/src/optionsdesk/broker-sync-slot.rules.spec.ts` 臂① 随新常量更新后绿；独立小 PR
+- [ ] T023 [Server] **按 POC-6 结果修正对账时点常量（条件触发）**（FR-010; plan D9; state_branches 20）：触发条件 = POC-6 美股（2026-09-19 / 09-21 快照）或港股（2026-09-29 / 09-30 快照）的结论为「开盘前那一拍尚未反映到期 / 指派」。只改 `RECONCILE_SLOT_MINUTES` 对应值与旁注出处，🚫 其余逻辑不动；结论为「已反映」则本 task 只在 p0-poc 表回填结论并勾选，不改代码。📌 2026-09-17：港股值已因价格口径另行改为 `520`（08:40，spec FR-010 amend），与 POC-6 无关；本 task 的触发条件与判据不变，港股 POC-6 的开盘前那一拍快照须对齐新时点 → verify: `pnpm nx test server apps/server/src/optionsdesk/broker-sync-slot.rules.spec.ts` 臂① 随新常量更新后绿；独立小 PR
 
 ## 依赖与并行
 
