@@ -238,7 +238,7 @@ cats=${summary#*$'\t'}
 [ -n "$count" ] && [ "$count" != 0 ] || count=1
 [ -n "$cats" ] && [ "$cats" != "$summary" ] || cats="未知"
 
-reason="🚫 私有数据闸：${surface} —— 命中 ${count} 个私有业务数据值（类别：${cats}），禁止写入公开仓位置 / 发布。
+reason="私有数据闸：${surface} —— 命中 ${count} 个私有业务数据值（类别：${cats}），不写入公开仓位置、不发布。
 请改用合成值或定性表述，真值只放 docs/private/。
 （本闸不回显值；清单 \$NVY_PRIVATE_VALUES_FILE 或 ~/.nvy/private-values.txt；判据 docs/conventions/information-boundary.md）"
 

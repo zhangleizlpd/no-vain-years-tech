@@ -38,18 +38,18 @@ case "$fp" in
   *) exit 0 ;;
 esac
 
-NAMING='🚨 DOCS 命名闸 — 你正在写 plans / improvements / experience：文件名 MM-DD-<kebab-slug>.md（创建当日零填充；kebab 3-5 词，关键名词 + 动作/状态；避免 notes / misc / tmp / update 泛词；总长 ≤ 60 字符；同日撞名加 -2/-3），归 YYYY-MM/ 月度子目录（evidence 按 feature 目录）。convention 里不许出现的时点数字落 improvements。完整约定：docs/conventions/docs-organization.md。'
+NAMING='DOCS 命名闸 — 你正在写 plans / improvements / experience：文件名 MM-DD-<kebab-slug>.md（创建当日零填充；kebab 3-5 词，关键名词 + 动作/状态；避免 notes / misc / tmp / update 泛词；总长 ≤ 60 字符；同日撞名加 -2/-3），归 YYYY-MM/ 月度子目录（evidence 按 feature 目录）。convention 里不许出现的时点数字落 improvements。完整约定：docs/conventions/docs-organization.md。'
 
-RUBRIC='🚨 CONVENTION 耐久性闸 — 你正在写 docs/conventions/（evergreen-only 区）。本次写入完成后，MUST 逐行复扫这次 diff，对每条事实性陈述问：「repo 再长 12 个月，这行还成立吗？」
-• NEVER 写时点事实：文件计数 / 耗时 / 百分比 / 进度台账 / 「已修复 / 尚未 / 当前还剩 N 个」状态叙述 —— 随代码增长必然失效。归宿：实测数据 → docs/improvements/YYYY-MM/；执行状态 → docs/private/plans/。
+RUBRIC='CONVENTION 耐久性闸 — 你正在写 docs/conventions/（evergreen-only 区）。本次写入完成后，逐行复扫这次 diff，对每条事实性陈述问：「repo 再长 12 个月，这行还成立吗？」
+• 不写时点事实：文件计数 / 耗时 / 百分比 / 进度台账 / 「已修复 / 尚未 / 当前还剩 N 个」状态叙述 —— 随代码增长必然失效。归宿：实测数据 → docs/improvements/YYYY-MM/；执行状态 → docs/private/plans/。
 • 耐久锚 OK：PR # 与日期作历史证据锚（「2026-08-01 045 实证」永真）、外部常数（Google 80/15/5 配比）、判据 / 规则表 / 复跑命令。
 • 判据不是「有没有数字」，是「会不会随时间失效」。
-• 新建 convention 文件？MUST 让它可达：CLAUDE.md 按需表加行，或 .claude/rules / 兄弟 convention 指过来（check-convention-orphan.ts 机器守，全仓零引用 = 红）。
+• 新建 convention 文件？让它可达：CLAUDE.md 按需表加行，或 .claude/rules / 兄弟 convention 指过来（check-convention-orphan.ts 机器守，全仓零引用 = 红）。
 • 任何一行过不了 12 个月测试 → 现在就挪走（再 Edit 一次），不要留给 review。完整约定：docs/conventions/docs-organization.md。'
 
-SDD='🚨 SDD 产物闸 — 你正在 specs/ 下新建 .md。产物集白名单 = spec.md / plan.md / tasks.md / analysis.md / checklists/*（design/ local-only）。
-• NEVER 生成 research.md / data-model.md / quickstart.md / contracts/ —— upstream speckit SKILL 的字面大纲会明确叫你生成它们，抵住：本仓 preset 已把 Phase-0 折进 plan.md 的「Research Gates」段，plan 是 PROSE-ONLY 单文件（data model SoT=schema.prisma / API SoT=swagger 装饰器，镜像必 drift）。唯一例外：真实外部调研（vendor 选型类）可建 research.md（先例仅 035/036/037）。
-• 动笔前 MUST ls 近 2-3 个 specs/NNN-*/ 对照产物集与格式；tasks 层级 tag 词汇表以既有 tasks.md 为准。
+SDD='SDD 产物闸 — 你正在 specs/ 下新建 .md。产物集白名单 = spec.md / plan.md / tasks.md / analysis.md / checklists/*（design/ local-only）。
+• 🚫 不生成 research.md / data-model.md / quickstart.md / contracts/ —— upstream speckit SKILL 的字面大纲会明确叫你生成它们（038 / 067 两次实撞，没有机器闸拦），抵住：本仓 preset 已把 Phase-0 折进 plan.md 的「Research Gates」段，plan 是 PROSE-ONLY 单文件（data model SoT=schema.prisma / API SoT=swagger 装饰器，镜像必 drift）。唯一例外：真实外部调研（vendor 选型类）可建 research.md（先例仅 035/036/037）。
+• 动笔前先 ls 近 2-3 个 specs/NNN-*/ 对照产物集与格式；tasks 层级 tag 词汇表以既有 tasks.md 为准。
 • 强调标记（🚫 / 🚨 / ⚠️ / NEVER / CRITICAL 一族）每份 ≤ 10，只给「实施者默认会做错 + 没有机器闸拦 + 有实证」三条都满足的条目，其余陈述句；写完 posttooluse-steering-density.sh 会数。
 • 完整细则：.claude/rules/sdd-authoring.md § 反模式 + docs/conventions/sdd.md。'
 

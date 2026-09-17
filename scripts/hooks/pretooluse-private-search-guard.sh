@@ -131,9 +131,9 @@ done <<<"$segs"
 
 [ "$hit" = 1 ] || exit 0
 
-CTX='🚨 docs/private 搜索盲区 — 你正在搜索 docs/，而 docs/private/（plans / evidence / runbook）对它**结构性不可见且静默**：该目录既被 .gitignore、本身又是 symlink ⇒ rg 默认零命中、rg --no-ignore 仍零命中、grep -r 也零命中，且一律 exit=1 不报错。「搜不到」会被当成「不存在」。
-• 找历史 PoC / plan / 取证记录时 MUST 显式点名：rg '\''<pat>'\'' docs/private/（指名即可，无需额外 flag）；或用 rg --no-ignore -L / grep -R 穿透 symlink。
-• 派子 agent 做取证时 MUST 把 docs/private/ 写进 brief —— 内建 Explore / Plan 不加载 CLAUDE.md 与 project rules，只有 brief 到得了它们。
+CTX='docs/private 搜索盲区 — 你正在搜索 docs/，而 docs/private/（plans / evidence / runbook）对它**结构性不可见且静默**：该目录既被 .gitignore、本身又是 symlink ⇒ rg 默认零命中、rg --no-ignore 仍零命中、grep -r 也零命中，且一律 exit=1 不报错。「搜不到」会被当成「不存在」。
+• 找历史 PoC / plan / 取证记录时显式点名：rg '\''<pat>'\'' docs/private/（指名即可，无需额外 flag）；或用 rg --no-ignore -L / grep -R 穿透 symlink。
+• 派子 agent 做取证时把 docs/private/ 写进 brief —— 内建 Explore / Plan 不加载 CLAUDE.md 与 project rules，只有 brief 到得了它们。
 • 判据：docs/conventions/information-boundary.md § 验证纪律。'
 
 "$JQ" -n --arg ctx "$CTX" \
