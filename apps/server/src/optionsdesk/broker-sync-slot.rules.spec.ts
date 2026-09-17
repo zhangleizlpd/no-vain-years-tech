@@ -42,8 +42,8 @@ function input(overrides: Partial<ReconcileInput> = {}): ReconcileInput {
 }
 
 describe('常量 (plan D9; spec Clarifications 第 1 / 5 条)', () => {
-  it('时点 = 交易所当地 09:10 / 09:05; 至多 4 次尝试; 间隔 15 min; 补齐上限 24 h', () => {
-    expect(RECONCILE_SLOT_MINUTES).toEqual({ us: 9 * 60 + 10, hk: 9 * 60 + 5 });
+  it('时点 = 交易所当地 09:10 / 08:40; 至多 4 次尝试; 间隔 15 min; 补齐上限 24 h', () => {
+    expect(RECONCILE_SLOT_MINUTES).toEqual({ us: 9 * 60 + 10, hk: 8 * 60 + 40 });
     expect(RECONCILE_MAX_ATTEMPTS).toBe(4);
     expect(RETRY_SPACING_MS).toBe(15 * MIN);
     expect(BACKFILL_RETRY_CAP_MS).toBe(24 * 60 * MIN);
@@ -59,11 +59,11 @@ describe('decideReconcile — 到点 / 日历 / 当日结果', () => {
     expect(decideReconcile(input()).action).toBe('run');
   });
 
-  it('① 港股按自己的时点: 544 分 ⇒ skip, 545 分 ⇒ run', () => {
+  it('① 港股按自己的时点: 519 分 ⇒ skip, 520 分 ⇒ run', () => {
     const hk = (minutesOfDay: number) =>
       decideReconcile(input({ market: 'hk', clock: { date: '2026-09-14', minutesOfDay } }));
-    expect(hk(544)).toEqual({ action: 'skip', reason: 'before-slot' });
-    expect(hk(545).action).toBe('run');
+    expect(hk(519)).toEqual({ action: 'skip', reason: 'before-slot' });
+    expect(hk(520).action).toBe('run');
   });
 
   it('② non-trading ⇒ skip (branch 21)', () => {

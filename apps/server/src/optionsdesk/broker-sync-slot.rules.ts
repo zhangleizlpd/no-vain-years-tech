@@ -18,10 +18,18 @@ import type { BrokerMarket } from './broker-code.rules';
 export type ExchangeClockReading = ReturnType<typeof exchangeClock>;
 
 /**
- * 对账时点, 交易所当地分钟数: 美股 09:10 (550)、港股 09:05 (545)。
+ * 对账时点, 交易所当地分钟数: 美股 09:10 (550)、港股 08:40 (520)。
+ *
+ * 两个市场同一判据: **券商持仓现价开始变动前 20 分钟** —— 持仓的价格类字段是对账时刻的券商快照,
+ * 时点落在变动之后, 存下的就是盘中价而非上一交易日价, 且不报错。首次与第 1 次重试 (+15 min) 在
+ * 变动前; 第 2 次重试起越界, 两个市场一致。
+ * - 港股 09:00 起变动。EVIDENCE: 开市前时段 9:00 a.m. – 9:30 a.m. —— https://www.hkex.com.hk/Services/Trading-hours-and-Severe-Weather-Arrangements/Trading-Hours/Securities-Market?sc_lang=en ;
+ *   EVIDENCE: 正股持仓现价在该时段随竞价变动、撮合后等于开盘价, 旧时点 09:05 因此存下了竞价价 ——
+ *   2026-09-17 prod 只读取样 (083 T025 第三轮), 明细 `docs/private/evidence/broker-account-poc/2026-09-17-position-nominal-price-by-session.md`
+ * - 美股 09:30 起变动。EVIDENCE: 持仓现价不跟随盘前 / 盘后 / 夜盘价 —— 同上取样。
  * 📌 **POC-6 待复核** (出处 master §4) —— 复核结果出来后**只改这两个值**; 全仓仅此一处定义。
  */
-export const RECONCILE_SLOT_MINUTES: Readonly<Record<BrokerMarket, number>> = { us: 550, hk: 545 };
+export const RECONCILE_SLOT_MINUTES: Readonly<Record<BrokerMarket, number>> = { us: 550, hk: 520 };
 
 /** 同一交易日对账至多尝试次数 = 首次 + 最多 3 次重试 (spec Clarifications 第 1 条)。 */
 export const RECONCILE_MAX_ATTEMPTS = 4;

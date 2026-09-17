@@ -38,6 +38,15 @@ describe('deriveSpecCoverage — 从 controller 前缀派生覆盖 module', () =
     expect(cov.unmappedPrefixes).toEqual([]);
   });
 
+  it('🚨 只差一个 s 的前缀分属不同 module —— brokerAccounts (portfolio) / brokerAccount (optionsdesk)', () => {
+    // 前者是 portfolio 的券商账户绑定, 后者是 083 交易账户页读端。漏映射单数形时 083 契约 spec
+    // 对 optionsdesk 的覆盖检测静默失效, 只剩一条 echo-only 警告。
+    const src = `brokerAccountsControllerList(); brokerAccountControllerPositions();`;
+    const cov = deriveSpecCoverage('x', src);
+    expect([...cov.modules].sort()).toEqual(['optionsdesk', 'portfolio']);
+    expect(cov.unmappedPrefixes).toEqual([]);
+  });
+
   it('未映射前缀 → 进 unmappedPrefixes (表过期信号)', () => {
     const src = `fooControllerBar(); marketdataControllerQuote();`;
     const cov = deriveSpecCoverage('x', src);

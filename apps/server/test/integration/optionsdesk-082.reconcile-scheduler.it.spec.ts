@@ -40,7 +40,7 @@ for (const key of Object.keys(process.env)) {
  *
  * 装配同 T016 IT: `OptionsdeskModule` 真 DI, 替换 `BROKER_ACCOUNT_PORT` / `marketdataConfig.KEY`
  * (live) / `TRADING_CALENDAR_PORT` (test double: 默认周末非交易日、其余交易日, 可按市场钉死)。
- * 🚨 美股时点那一刻港股当地已过 09:05 ⇒ 只看美股的臂把港股钉成 `non-trading`, 否则港股也执行。
+ * 🚨 美股时点那一刻港股当地已过 08:40 ⇒ 只看美股的臂把港股钉成 `non-trading`, 否则港股也执行。
  *
  * ## 定向变异留档 (2026-09-14, 类型合法形态, 均经 `pnpm nx test server <本文件>`: typecheck 过、vitest 红)
  *
@@ -417,14 +417,14 @@ describe('082 券商账户调度器 (下): 开盘前对账编排 / 数据层防�
     }
   });
 
-  it('⑩ 港股 09:05 HKT 触发港股对账、不触发美股 (前一分钟均不触发)', async () => {
+  it('⑩ 港股 08:40 HKT 触发港股对账、不触发美股 (前一分钟均不触发)', async () => {
     // 此刻美东是周日晚 ⇒ 日历 double 按星期判非交易日 (不钉死, 走默认规则)。
     const execute = vi.spyOn(useCase, 'execute');
 
-    await scheduler.run(new Date('2026-09-14T01:04:00Z'));
+    await scheduler.run(new Date('2026-09-14T00:39:00Z'));
     expect(execute).not.toHaveBeenCalled();
 
-    await scheduler.run(new Date('2026-09-14T01:05:00Z'));
+    await scheduler.run(new Date('2026-09-14T00:40:00Z'));
 
     expect(inputs(execute)).toMatchObject([
       { markets: ['hk'], window: { start: '2026-09-07', end: '2026-09-14' } },

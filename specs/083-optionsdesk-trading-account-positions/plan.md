@@ -3,7 +3,7 @@ feature_id: 083-optionsdesk-trading-account-positions
 spec_ref: ./spec.md
 status: approved
 created_at: '2026-09-15'
-updated_at: '2026-09-15'
+updated_at: '2026-09-17'
 adr_refs: ['0040', '0043', '0053', '0062', '0066']
 context7_verified: []
 ---
@@ -128,7 +128,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 | V8 | 移动端交易所时区显示 | 零先例（`~/format/as-of.ts` 按设备本地时区）；服务端 `session-clock.ts:97-112` 已有 `Intl` 时区换算 | D13 |
 | V9 | 订单枚举值域 | SDK 常量：订单状态 17 值、交易方向 5 值、订单类型 18 值（futu-shim venv `futu/common/constant.py`） | D11 |
 
-**未验证、不卡 plan**：开盘前同步时券商报告的现价是否等于上一交易日收盘价 —— 只影响 SC-001 的比对窗口（spec Assumptions），SC-001 验收时一并核。
+**未验证、不卡 plan**：开盘前同步时券商报告的现价是否等于上一交易日收盘价 —— 只影响 SC-001 的比对窗口（spec Assumptions），SC-001 验收时一并核。📌 2026-09-17 amend：已由 T025 第二、三轮核实 —— 美股与港股期权成立；港股正股在原对账时点 09:05 不成立（开市前时段内随竞价变动），且影响的不只是比对窗口 ⇒ 082 港股对账时点改为 08:40（082 FR-010 amend），结论见 spec Assumptions。
 
 ---
 
@@ -270,7 +270,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 - 行 14（回前台重读）：web 端以 `document.visibilitychange` 驱动 `AppState` 做 e2e 断言；若 react-native-web 的映射不触发，改为 Gate 0.1 真机人工核并在 tasks 注明（不是跳过）。
 - 契约冒烟的 happy path = 无连接账号请求列表（`hasConnection=false`）+ 请求不存在 id 得 404，验证 URL / 序列化 / 错误码对齐；若冒烟装置已有 DB 种数入口（implementer 先读 `optionsdesk.contract.ts` 头注释），追加一条有持仓的读取。
 
-**SC 落点**：SC-001 / SC-003（真实账户部分）/ SC-008 = 维护者对照富途 App 人工验收（SC-001 价格类字段在开盘前窗口比对，并顺带核「开盘前现价 = 昨收」）· SC-002 = display rules 固定数据集 · SC-003（构造样本）= lots rules · SC-004 = e2e 点击计数 · SC-005 = 真机计时（Gate 0.1）· SC-006 = IT 账号隔离臂 · SC-007 = IT「先成功后失败」+ freshness rules · SC-009 = backfill-runs IT · SC-010 = `check-identifier-boundary` 私有清单 + PR 前私有数据扫描。
+**SC 落点**：SC-001 / SC-003（真实账户部分）/ SC-008 = 维护者对照富途 App 人工验收（SC-001 价格类字段在「对账成功后至券商持仓现价开始变动前」窗口比对（2026-09-17 amend，原「开盘前窗口」，见 spec SC-001），并顺带核「开盘前现价 = 昨收」）· SC-002 = display rules 固定数据集 · SC-003（构造样本）= lots rules · SC-004 = e2e 点击计数 · SC-005 = 真机计时（Gate 0.1）· SC-006 = IT 账号隔离臂 · SC-007 = IT「先成功后失败」+ freshness rules · SC-009 = backfill-runs IT · SC-010 = `check-identifier-boundary` 私有清单 + PR 前私有数据扫描。
 
 ### 新增 / 触碰文件清单（tasks 拆分的物料面）
 
