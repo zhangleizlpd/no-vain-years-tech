@@ -43,7 +43,7 @@ updated_at: '2026-09-17'
 | 契约产物（regen） | `apps/server/openapi.json` + `packages/api-client/src/generated/` |
 | mobile 规则（新） | `apps/mobile/src/optionsdesk/display-currency.rules.ts`（+ spec） |
 | mobile 选择器（新） | `apps/mobile/src/optionsdesk/currency-selector.tsx` |
-| mobile 屏 / 列表（改） | `trading-account-screen.tsx`（D7 状态；分段条件渲染 `:46-52`）· `trading-account-positions.tsx`（`PositionsMeta` `:241` · `COL` 常量 `:64-69` · `CARET` `:73` · `.chip` 行级标 `:448-454`） |
+| mobile 屏 / 列表（改） | `trading-account-screen.tsx`（D7 状态；分段条件渲染 `:46-52`）· `trading-account-positions.tsx`（`PositionsMeta` `:241` · `COL` 常量 `:64-69` · `CARET` `:73` · 行级徽标 `:448-454` —— mockup 称 `.chip`，RN 侧无此名，实体是 `row.expired` 的 `self-start rounded-sm bg-warn-soft px-1`） |
 | mobile 数据 hook（改） | `use-trading-account-positions.ts`（query key 常量 `:16` 加币种维度） |
 | mobile 标记判定（改） | `trading-account-positions.rules.ts` |
 | mobile 文案（改） | `optionsdesk-copy.ts`（**083 既有 `tradingAccountPositions` 段内**新增；🚫 并入 081 的 `tradingAccount` 段，`trading-account.rules.spec.ts:46-50` 会当场红。`marketValueLabel` 体例 `:1472-1474`） |
@@ -91,7 +91,7 @@ updated_at: '2026-09-17'
 
 ### US3：汇率拿不到时不骗我（P2）
 
-- [ ] T010 [Mobile] **汇率行 + 降级行标 + 组「合计不完整」标 + 加载态**（FR-006, FR-007, FR-011, FR-013; plan D8; state_branches 8, 9, 11, 14, 15, 18, 19; US3）：`trading-account-positions.tsx` 接入：**汇率行**仅在展示币种 ≠ 当前市场原币种时出现（`showFxRateLine`，FR-007 / FR-011），显示汇率值 + `capturedAt`（按设备本地展示），措辞「参考汇率」；**加载中显示加载态，🚫 先渲染未折算数字再跳变**（mockup 帧 ④）；**陈旧照常显示 + 标注时刻**，🚫 因陈旧隐藏或清空（spec Edge Case）。**降级行**的币种标用行级 `.chip`（`:448-454` 既有形态）。🚨 **组级「合计不完整」挂 `.c-mv` 与 `.c-pl` 合计值下方、用 `.num2` 而非 `.chip`** —— 后者带 `align-self: flex-start`，塞进 `align-items: flex-end` 的列会左对齐而数字右对齐、参差不齐；**两列都要标**（FR-006 的「聚合值」是组市值与组持仓盈亏两个，只标一列会让人以为另一列完整）。⚠️ 组头那一行**挂不下**行级标注（390px 机身下名称列只剩约 120px，caret + 组名已占满）。🚫 改列宽或降字号（SC-007） → verify: T011 的 e2e 续臂先红 → 绿；`pnpm nx test mobile` 绿，臂（呈现面，逻辑断言）：① 币种 = 原币种 ⇒ 汇率行**不存在**（branch 14）② ≠ ⇒ 汇率行含汇率值与时刻、文案含「参考汇率」且**不含**「实时」/「结算」（branch 15）③ 降级行带原币种 `.chip` 标（branch 8, 9）④ 降级组两列**都**出现「合计不完整」（branch 11）⑤ 汇率加载中 ⇒ 加载态可见且**金额位为占位**，🚫 未折算数字（branch 18）⑥ `capturedAt` 远早于当前 ⇒ **照常显示折算值** + 标注时刻（branch 19）；定向变异：a. 只标 `.c-mv` 一列 → ④ 红 · b. 加载中先渲染未折算数字 → ⑤ 红 · c. 陈旧时清空金额 → ⑥ 红（留档）
+- [ ] T010 [Mobile] **汇率行 + 降级行标 + 组「合计不完整」标 + 加载态**（FR-006, FR-007, FR-011, FR-013; plan D8; state_branches 8, 9, 11, 14, 15, 18, 19; US3）：`trading-account-positions.tsx` 接入：**汇率行**仅在展示币种 ≠ 当前市场原币种时出现（`showFxRateLine`，FR-007 / FR-011），显示汇率值 + `capturedAt`（按设备本地展示），措辞「参考汇率」；**加载中显示加载态，🚫 先渲染未折算数字再跳变**（mockup 帧 ④）；**陈旧照常显示 + 标注时刻**，🚫 因陈旧隐藏或清空（spec Edge Case）。**降级行**的币种标用行级徽标（`:448-454` 的 `row.expired` 既有形态；mockup 称 `.chip`，RN 侧无此名，底色 `bg-warn-soft` 是警示语义，币种标需另定底色）。🚨 **组级「合计不完整」挂 `.c-mv` 与 `.c-pl` 合计值下方、用 `.num2` 而非 `.chip`** —— 后者带 `align-self: flex-start`，塞进 `align-items: flex-end` 的列会左对齐而数字右对齐、参差不齐；**两列都要标**（FR-006 的「聚合值」是组市值与组持仓盈亏两个，只标一列会让人以为另一列完整）。⚠️ 组头那一行**挂不下**行级标注（390px 机身下名称列只剩约 120px，caret + 组名已占满）。🚫 改列宽或降字号（SC-007） → verify: T011 的 e2e 续臂先红 → 绿；`pnpm nx test mobile` 绿，臂（呈现面，逻辑断言）：① 币种 = 原币种 ⇒ 汇率行**不存在**（branch 14）② ≠ ⇒ 汇率行含汇率值与时刻、文案含「参考汇率」且**不含**「实时」/「结算」（branch 15）③ 降级行带原币种徽标（branch 8, 9）④ 降级组两列**都**出现「合计不完整」（branch 11）⑤ 汇率加载中 ⇒ 加载态可见且**金额位为占位**，🚫 未折算数字（branch 18）⑥ `capturedAt` 远早于当前 ⇒ **照常显示折算值** + 标注时刻（branch 19）；定向变异：a. 只标 `.c-mv` 一列 → ④ 红 · b. 加载中先渲染未折算数字 → ⑤ 红 · c. 陈旧时清空金额 → ⑥ 红（留档）
 
 ### E2E · 契约 · 门
 
@@ -231,6 +231,7 @@ T011 + T015 → T013
 - **新浪 `idx3` 的更新频率**（plan「未能验证的事项」）：放 T002 的 `RUN_FX_VENDOR_IT` 门控块做长窗采样（≥ 30 分钟、跨在岸 CNY 开盘），**是消法不是本片验收门** —— 它只影响**备源**（腾讯全败时才用），且 D5 已把上屏时刻锁在我们自己的 `capturedAt`、不会拿 vendor 时间戳背书。若证实是死字段，则把新浪降为「仅在腾讯失败时提供一个明确标注更旧的值」或整条去掉备源（FR-006 的降级路径本就覆盖「取不到」）。
 - **腾讯 CNY 报价偏差是否稳定在 0.08% 量级**：只做过一次同刻对拍，不影响本片用途（看总量，维护者 2026-09-16 已定维持腾讯 + UI 标「参考汇率」）。⚠️ 将来用途升级到任何**结算 / 对账**前必须先补多轮对拍 —— 不在本片范围。
 - **`f11` 语义未定** ⇒ **不消费它**，无 task。
+- **FR-010 的「订单列表 / 详情页」不配独立断言**（第二轮 analyze F4，结构论证）：折算只发生在 `list-broker-positions.usecase.ts`，即 `broker-account.controller.ts:78` 的列表端点（`:102` 收 `@Query`）。两个详情端点走别的 use case 且都不收 query —— `broker-positions/:id`（`:109` → `getBrokerPosition.execute` `:139`）与 `broker-orders/:id`（`:146` → `getBrokerOrder.execute` `:175`）；mobile 侧也各走独立 query key（`use-trading-account-position.ts:32` / `use-trading-account-order.ts:29`），不复用列表缓存。⇒ 折算路径在结构上够不到任一详情屏，FR-010 自动成立。订单分段目前还是 `PlaceholderCard`（`trading-account-screen.tsx:46-52`），不渲染任何金额。T015-④ 作为持仓详情的防御臂保留，订单详情不另配臂。
 - **T004（config + 装配）与 T014（门）不出现在任何覆盖表落点** —— **故意的，不是漏挂**：T004 是接线与环境门控（两个 baseUrl、`ALLOWLIST` 登记、mock 档绑拒绝壳），T014 是全量门与 PR，两者都不承载 spec 层的 `state_branches` / FR / SC / AS，验收全在各自 `→ verify:` 内闭环。⇒ 下轮 analyze **不要**为它们补覆盖表行。
 
 ## Implementation Strategy
