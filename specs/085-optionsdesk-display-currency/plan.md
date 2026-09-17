@@ -63,11 +63,11 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 |---|---|---|---|
 | ADR-0054 | 「marketdata 长出实时行情同步面 → alert 自持 adapter 应收回」（#2，061 已判 `escalated-to-next-feature`） | **accepted-as-is** | 本片**不碰** alert 那条；但它使 optionsdesk 成为**第二个自持外部 IO adapter 的业务 ctx**，形态与 ADR-0054 立的判据同构（vendor 单消费者 ⇒ 留本 ctx）。⚠️ 本片**不**新增 marketdata 侧实时面，故 #2 的收编条件（futu 拿到 A 股权限 / 腾讯新浪包成 marketdata routed adapter）均未发生。**新增绊线**：portfolio 或任何第二个 ctx 需要汇率 ⇒ 回本节 + ADR-0058 重审「升 `integrations/` 还是升 marketdata port」 |
 | ADR-0058 | `integrations/` 准入「≥2 个 bounded context 复用」+ sunset「适配器 > ~7 个」 | **accepted-as-is，未命中** | FX 当前**单消费者**（optionsdesk 持仓列表）⇒ 按 Decision §1「单消费者 vendor 适配器留各自 ctx，不迁入」。同形先例：marketdata 自己的 5 个 vendor 客户端也都**不在** `integrations/`。现有 4 个适配器（llm / asr / codeindex / oss），未近 7 |
-| ADR-0043 | #1「单个 bounded context use case 数 > 20」（083 已 fired · mitigated，复审线 = **30**） | **accepted-as-is，未越线** | 本片**不新增 use case** —— 折算接在既有 `list-broker-positions.usecase.ts` 上（加一个可选入参）。`ls apps/server/src/optionsdesk/*.usecase.ts \| wc -l` → **24**（2026-09-17），与 083 复审时一致 |
+| ADR-0043 | #1「单个 bounded context use case 数 > 20」（083 已 fired · mitigated，复审线 = **30**） | **accepted-as-is，未越线** | 本片**不新增 use case** —— 折算接在既有 `list-broker-positions.usecase.ts` 上（加一个可选入参）。`ls apps/server/src/optionsdesk/*.usecase.ts \| wc -l` → **25**（2026-09-17 第二轮 analyze 复测；083 合入时 24，084 的 `consume-broker-events.usecase.ts` 合入后 +1），距复审线 30 余 5 |
 | ADR-0062 | 四条 trigger（实时 spot / 序列读搬进本 ctx / 第二个锚消费方 / 下单与持仓联动） | **accepted-as-is，一条未命中** | 本片零新跨 ctx 面：FX adapter 住 optionsdesk 自己，**不经 marketdata**、不读其表、不注其 port；`OptionsdeskModule.imports` 不变；`apps/server/eslint.config.mjs` 零改动 |
 | ADR-0066 | 时间语义（四条轴 + 「秒级陈旧不认 vendor 时间戳」） | **accepted-as-is** | 汇率的取数时刻用**我们自己的采集时刻**（ingestion time），vendor 时间戳只作证据不作判据 —— 这正是 `cross-timezone-date-semantics.md:114` 既有纪律的同一形态，PoC 独立撞到同一件事（见 D5） |
 
-- **Evidence**: use case 数 = `ls apps/server/src/optionsdesk/*.usecase.ts | wc -l` → 24（2026-09-17）；ADR-0043 复审线原文 `docs/adr/0043-server-flat-module-paradigm.md:6,133`；ADR-0058 准入 `docs/adr/0058-server-integrations-layer.md` Decision §1；ADR-0054 #2 状态 `docs/adr/0054-alert-self-hosted-external-io-adapter.md:90`。**不新起 ADR**：本片未引入新 ctx、未开新跨 ctx 边、未改任何 ADR 的决策面。
+- **Evidence**: use case 数 = `ls apps/server/src/optionsdesk/*.usecase.ts | wc -l` → 25（2026-09-17 第二轮 analyze 复测）；ADR-0043 复审线原文 `docs/adr/0043-server-flat-module-paradigm.md:6,133`；ADR-0058 准入 `docs/adr/0058-server-integrations-layer.md` Decision §1；ADR-0054 #2 状态 `docs/adr/0054-alert-self-hosted-external-io-adapter.md:90`。**不新起 ADR**：本片未引入新 ctx、未开新跨 ctx 边、未改任何 ADR 的决策面。
 
 ## Architecture Notes *(mandatory)*
 
@@ -75,7 +75,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 - **NO LIFECYCLE MOCKING**: 对 `Guard` / `Interceptor` / `Filter` / `Pipe` 子类，**绝对禁止** `new MyGuard()` / `jest.mock('./my.guard')` 这类隔离单元测试。（本片不新增此类组件；鉴权仍靠既有 `JwtAuthGuard`。）
 - **MANDATORY INTEGRATION**: 读端点 IT 必须用 `Test.createTestingModule({ imports: [OptionsdeskModule] }).compile()` + `setupIsolatedDb`（`apps/server/test/_support/isolated-db.ts`）装配并经 HTTP 注入调用 controller（带真 JWT），直接 prisma 种 `broker_*` / `anchor` 行；**FX port 是唯一允许的 test double**（它是外部 I/O），🚫 mock `PrismaService`。
-- **EXHAUSTIVE BRANCHING**: spec 的 **21 条** `state_branches`（`spec.md:18-39`）每条必须有对应断言落点（下方测试映射表，analyze 期逐条 grep 对账）。🚨 mobile vitest **只测纯逻辑**，禁组件 render 测（`docs/conventions/testing.md` 不变量 4）。
+- **EXHAUSTIVE BRANCHING**: spec 的 **21 条** `state_branches`（`spec.md:18-38`）每条必须有对应断言落点（下方测试映射表，analyze 期逐条 grep 对账）。🚨 mobile vitest **只测纯逻辑**，禁组件 render 测（`docs/conventions/testing.md` 不变量 4）。
 
 **本片的反例臂（都是「不写就永远不会红」的形态）：**
 
@@ -230,7 +230,7 @@ vendor 时间戳**可以**留在日志 / 响应里作证据（`EVIDENCE:` 体例
 
 - 位置：**并入「同步于 …」行右侧**（`trading-account-positions.tsx:241` 的 `PositionsMeta`，`margin-left: auto` 形态）。mockup 实测该行文本实占 156px / 余量 234px；「参考汇率」行余量仅 83px、列头行高 31px 均放不下。省掉一整条控件行（57px），列表可用高度 542 → 599px。
 - 形态：收起态显示当前币种 + `▾`（复用 083 的 `CARET` 几何符号，`:73`）；展开为右对齐浮层，三档带勾。mockup 新增 4 个类（`.cursel` / `.curmenu` / `.curopt` / `.tick`），取值全部来自既有 `--nvy-*` token，**0 新 token、0 新色**。
-- 不改列表既有列宽与字号（`COL` 常量 `:64-69`；SC-007 逐项比对）。降级行的币种标用行级 `.chip`（`:448-454` 既有形态）；**组级「合计不完整」挂 `.c-mv` 与 `.c-pl` 合计值下方、用 `.num2` 而非 `.chip`** —— 后者带 `align-self: flex-start`，塞进 `align-items: flex-end` 的列会左右参差。**两列都要标**（FR-006 的「聚合值」是两个，只标一列会让人以为另一列完整）。
+- 不改列表既有列宽与字号（`COL` 常量 `:64-69`；SC-007 逐项比对）。降级行的币种标用行级徽标（`trading-account-positions.tsx:448-454` 的 `row.expired` 既有形态，实体是 `self-start rounded-sm bg-warn-soft px-1`）；该处底色是警示语义的 `bg-warn-soft`，币种标复用其几何形态时需另定底色。本段的 `.chip` / `.c-mv` / `.num2` 均为 mockup 的 CSS 类名，RN 侧无同名物（第二轮 analyze F7）；**组级「合计不完整」挂 `.c-mv` 与 `.c-pl` 合计值下方、用 `.num2` 而非 `.chip`** —— 后者带 `align-self: flex-start`，塞进 `align-items: flex-end` 的列会左右参差。**两列都要标**（FR-006 的「聚合值」是两个，只标一列会让人以为另一列完整）。
 - 汇率行：仅在展示币种 ≠ 当前市场原币种时出现（FR-007 / FR-011）；加载中显示加载态，不先渲染未折算数字再跳变（mockup 帧 ④）。
 
 #### D9 — 文案
@@ -249,6 +249,8 @@ vendor 时间戳**可以**留在日志 / 响应里作证据（`EVIDENCE:` 体例
 | Mobile vitest | `display-currency.rules.spec.ts` · 文案穷举 spec | 18, 19, 20, 21, 22, 31, 32, 33, 34, 37 |
 | Mobile E2E | `e2e/optionsdesk-trading-account-positions.spec.ts` 扩臂 | 18, 19, 20, 21, 22, 31, 32, 33, 34, 35, 36, 37, 38 |
 | Contract Smoke | `e2e/contract-smoke/optionsdesk-trading-account.contract.ts` 加一条 | 18（带 `displayCurrency` 的请求打真 server） |
+
+> 本表按「层 × 文件」粗粒度登记覆盖意向，逐臂归属以 `tasks.md` 的五张覆盖预检表为准。两者在 branch 5 / 16 / 17 / 19 / 20 上不一致（本表把它们记在 Mobile vitest / Mobile E2E / Server Medium，而 tasks 的实际落点分别是 T015-② / T011+T013 / T011+T013 / T005-⑩+T010-⑥ / T006-⑩+T011-⑦）；tasks 覆盖表 21/21 自洽，以它为准（第二轮 analyze F6）。
 
 **SC 落点**：SC-001 / SC-003 = display-currency rules 固定数据集 + IT 降级臂 · SC-002 = rules「折算前后组顺序相同」断言（同屏同币种 ⇒ 等比例缩放）· SC-004 = e2e 切档后断言无二次跳变（react-query 每档独立 key）· SC-005 = e2e 三臂（D7）· **SC-006 = 逐字段比对**：同一夹具下不带 `displayCurrency` 与带「该市场原币种」两次响应**逐字节相同**（这是「上线前后一致」唯一可机器化的形态）· SC-007 = 列宽/字号常量未变 + e2e 样式断言。
 
