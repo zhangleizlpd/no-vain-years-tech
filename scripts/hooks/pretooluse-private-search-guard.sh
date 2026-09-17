@@ -13,7 +13,9 @@
 #
 # WHY A HOOK AND NOT A DOC（两条，都不是推断）:
 #   1. 内建 **Explore / Plan 子 agent 不加载 CLAUDE.md，也不加载 project rules**
-#      （官方 sub-agents 文档：“Explore and Plan skip your CLAUDE.md files…”）。而
+#      （官方 sub-agents 文档 https://code.claude.com/docs/en/sub-agents，2026-09-17 读到
+#      原文：“Explore and Plan skip your CLAUDE.md files and the parent session's git
+#      status to keep research fast and inexpensive.”）。而
 #      「派个 agent 去仓里扫一遍」正是 Explore 的活 ⇒ 写进 CLAUDE.md / .claude/rules/
 #      的护栏，恰好到不了最可能踩坑的那个执行者。
 #   2. PreToolUse hook **会在子 agent 自己的工具循环里触发**（2026-09-17 探针实测：
