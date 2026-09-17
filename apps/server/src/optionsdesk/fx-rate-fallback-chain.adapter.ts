@@ -1,5 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { MarketdataConfig } from '../config/marketdata.config';
+import { TENCENT_PROFILE } from '../marketdata/tencent.constraint-profile';
+import { VendorHttpClient } from '../marketdata/vendor-http-client';
+import { FxRateCacheAdapter } from './fx-rate-cache.adapter';
 import type { FxRate, FxRatePort } from './fx-rate.port';
+import { RefusingFxRateAdapter } from './refusing-fx-rate.adapter';
+import { SinaFxAdapter } from './sina-fx.adapter';
+import { SINA_FX_PROFILE } from './sina-fx.constraint-profile';
+import { TencentFxAdapter } from './tencent-fx.adapter';
 
 /** 错误 → 一行可读文本 (非 `Error` 也要能说出话)。 */
 function describeError(err: unknown): string {
@@ -40,4 +48,27 @@ export class FxRateFallbackChainAdapter implements FxRatePort {
     }
     throw new Error(`all fx rate sources failed: ${describeError(lastError)}`);
   }
+}
+
+/**
+ * 085 T004 `FX_RATE_PORT` 的装配工厂 —— 按 `marketdataConfig.kind` 绑定 (plan D3 / D4)。
+ *
+ * - `live` ⇒ **缓存装饰器包 FallbackChain**: 单格 TTL + single-flight 在**最外层**, 链在内层。
+ *   反过来 (每个节点各缓存一份) 会让 single-flight 形同虚设 —— 冷缓存下的并发仍然一源一发。
+ * - `mock` ⇒ **调用即抛**的拒绝壳: 本地 dev 与 IT 跑的都是 mock 档, MUST NOT 真打腾讯 / 新浪。
+ *
+ * 形态照 `futu-broker-account.adapter.ts` 的 `createBrokerAccountPort`: **绑定判断收在工厂里**,
+ * 调用处 (module 的 `useFactory`) 写不出分支。
+ *
+ * 两个 vendor **各自一个** `VendorHttpClient` 实例 (各持桶与熔断态, ADR-0047) —— 共用会让备源
+ * 的失败去推主源的熔断计数。
+ */
+export function createFxRatePort(cfg: MarketdataConfig): FxRatePort {
+  if (cfg.kind === 'mock') return new RefusingFxRateAdapter();
+  return new FxRateCacheAdapter(
+    new FxRateFallbackChainAdapter([
+      new TencentFxAdapter(new VendorHttpClient(TENCENT_PROFILE), cfg.tencentFxBaseUrl),
+      new SinaFxAdapter(new VendorHttpClient(SINA_FX_PROFILE), cfg.sinaFxBaseUrl),
+    ]),
+  );
 }

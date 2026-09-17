@@ -106,6 +106,9 @@ describe('marketdataConfig discriminated union', () => {
       eastmoneyClistBaseUrl: 'https://push2.eastmoney.com',
       // 044: 东财指数 kline 日历源已退役 (端点被定向下线 + robots Disallow) → 腾讯 ifzq 接替。
       tencentCalendarBaseUrl: 'https://web.ifzq.gtimg.cn',
+      // 085: FX 双源 baseUrl。腾讯 qt 域与上面日历的 ifzq 域是同 vendor 不同 host。
+      tencentFxBaseUrl: 'https://qt.gtimg.cn',
+      sinaFxBaseUrl: 'https://hq.sinajs.cn',
       // sellput-viz Phase 1 #5: 富途 shim (隧道虚 IP, 无 default)。
       futuShimUrl: SHIM_URL,
       futuShimToken: SHIM_TOKEN,
