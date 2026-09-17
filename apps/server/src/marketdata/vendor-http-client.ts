@@ -117,6 +117,13 @@ type FetchResponseLike = {
   json: () => Promise<unknown>;
   text?: () => Promise<string>;
   /**
+   * `arrayBuffer` **可选**同 {@link FetchResponseLike.text} 的先例: 真 `Response` 三个都有,
+   * 而仓内既有的假 fetch 只造了 `json` —— 设成必填会把几十个无关单测一起改红。缺
+   * `arrayBuffer` 的假 fetch 走 {@link VendorHttpClient.requestBytes} 时会拿到一条指名道姓
+   * 的错, 不是静默的空字节。
+   */
+  arrayBuffer?: () => Promise<ArrayBuffer>;
+  /**
    * `headers` **可选**同 {@link FetchResponseLike.text} 的先例, 且只收 `get` 这一个方法:
    * 真 `Response.headers` 满足它, 而仓内既有的假 fetch 一个都没造 header —— 设成必填会把
    * 几十个无关单测一起改红。要覆盖 429 的 `Retry-After` 路径, 造 `{ get: () => '29' }` 即可;
@@ -283,6 +290,27 @@ export class VendorHttpClient {
         return res.text();
       }),
     ) as Promise<string>;
+  }
+
+  /**
+   * 同 {@link request}, 但**按字节读 body** —— 给非 UTF-8 编码的 vendor 通路用 (085: 腾讯 /
+   * 新浪汇率端点返 GBK, 全仓第一个)。传输纪律 (限频 / 退避重试 / 熔断 / 超时 abort) 与 JSON
+   * 通路**完全同一条**: 分歧只在最后那一步怎么读 body, 故共用 `executeOnce`。
+   *
+   * 🚨 **GBK 用 {@link requestText} 读是静默错, 不止是「中文乱码」**: `res.text()` 按 UTF-8
+   * 解码, 而 GBK 的尾字节值域含 `0x7E` —— 那正是腾讯响应的字段分隔符 `~`。名称段里出现一个
+   * 这样的字, 解码后就多出一个分隔符、其后**全部字段位后移一格**, 于是「汇率位」读到的是另一
+   * 个字段, 而解析照样成功、数字照样像个汇率。字节原样交调用方, 由其按 vendor 的真实编码解。
+   */
+  async requestBytes(req: VendorRequest): Promise<Uint8Array> {
+    return this.policy.execute(() =>
+      this.executeOnce<Uint8Array>(req, async (res) => {
+        if (typeof res.arrayBuffer !== 'function') {
+          throw new Error(`[${this.profile.vendor}] fetch 响应无 arrayBuffer() (假 fetch 未实现?)`);
+        }
+        return new Uint8Array(await res.arrayBuffer());
+      }),
+    ) as Promise<Uint8Array>;
   }
 
   private async executeOnce<T>(
