@@ -307,7 +307,12 @@ function PositionsMeta({
 }: PositionsMetaProps) {
   const time = syncedTimeLabel(data.syncedAtLocal, market);
   return (
-    <View>
+    // 🚨 `z-10` 是币种选择器浮层能被点到的前提（085 T011 实撞）：浮层是本块内的 absolute 子节点，
+    //    而 `zIndex` 只在**同级**之间排序 —— 本块与 `PositionsSectionList` 是 `-list` 下的兄弟，
+    //    后者在 DOM 里更靠后（且自带 transform 形成层叠上下文）⇒ 不抬本块, 列表就盖在浮层上,
+    //    浮层看得见却点不到（Playwright 报 `subtree intercepts pointer events`）。
+    //    🚫 改挂浮层自己的 z-index：那一层的排序早被本块的层级决定了。
+    <View className="z-10">
       {data.stale ? (
         <View className="bg-warn-soft px-md py-sm">
           <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-stale`}>
