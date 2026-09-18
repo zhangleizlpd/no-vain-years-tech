@@ -2630,3 +2630,139 @@ test('085 T011⑨ 切档前后列宽与字号逐项不变（SC-007）', async ({
 
   expect(await rowMetrics(page, HK_AUTO_STOCK.id)).toEqual(before);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// 085 T015 —— 币种状态的生命周期：跨屏保持 / 离开复原 / 两页签独立
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 🚨 这四条臂是 FR-005 / SC-005 的**唯一**机器化落点：状态放错地方（挪进程内 store、或退成
+//    单格）在 vitest 和上面 T011 的单屏臂下**全都是绿的** —— 只有「离开再进入」「两页签互不
+//    干扰」这两个跨屏动作能把它逼红。缺任一条，错误实现就一路绿到真机。
+// 📌 形态照 083 既有双臂：T015③（返回雷达再进入 ⇒ 本屏**卸载**）与 T015③b（进详情再返回 ⇒
+//    本屏**未卸载**）。085 的屏级 `useState` 生命周期恰好等于 FR-005 要的语义。
+
+const US_TAB = 'optionsdesk-trading-account-market-tab-us';
+
+/** 港股正股持仓详情（详情页恒按**原币种**呈现，FR-010 ⇒ 这份夹具不随展示币种变）。 */
+const HK_AUTO_STOCK_DETAIL: BrokerPositionDetailResponse = {
+  ...HK_AUTO_STOCK,
+  openedAtLocal: '2026-09-01 10:32:00',
+  orders: [],
+  lots: null,
+};
+
+test('085 T015① 切档后进持仓详情再返回 ⇒ 仍为所选币种（列表屏未卸载）', async ({ page }) => {
+  const server = newServer(US_GROUPED, HK_HKD);
+  server.byCurrency = { 'hk:CNY': HK_CNY };
+  await installPositionsMock(page, server);
+  await installPositionDetailMock(page, newDetailServer(HK_AUTO_STOCK_DETAIL));
+  await gotoTradingAccount(page);
+  await gotoHkTab(page);
+  await pickCurrency(page, 'CNY');
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('3,800.00', {
+    timeout: 30_000,
+  });
+
+  await positionRow(page, HK_AUTO_STOCK.id).tap();
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+  await visibleHeaderBack(page).tap();
+  await expect(detailRoot(page)).toHaveCount(0, { timeout: 30_000 });
+
+  // 列表屏未卸载 ⇒ 屏级 `useState` 还在 ⇒ 币种与折算值原样。
+  await expect(currencyPart(page, 'current')).toHaveText('CNY');
+  await expect(inPositions(page, 'fx-rate')).toHaveText(fxRateText('HKD→CNY', HKD_CNY_RATE));
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('3,800.00');
+});
+
+test('085 T015② 切档后返回雷达再进入 ⇒ 复原为该市场原币种（本屏卸载；sb 5）', async ({ page }) => {
+  const server = newServer(US_GROUPED, HK_HKD);
+  server.byCurrency = { 'hk:CNY': HK_CNY };
+  await installRadarMock(page);
+  await installPositionsMock(page, server);
+  await gotoRadar(page);
+  await page.getByTestId(RADAR_TRADING_ACCOUNT_BUTTON).tap();
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+  await gotoHkTab(page);
+  await pickCurrency(page, 'CNY');
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('3,800.00', {
+    timeout: 30_000,
+  });
+
+  // 离开交易账户页（header 返回雷达 ⇒ 本屏卸载）→ 再进入。
+  await headerBackLocator(page).tap();
+  await expect(page).toHaveURL(/\/optionsdesk\/?$/, { timeout: 30_000 });
+  await expect(page.getByTestId(SCREEN)).toHaveCount(0);
+
+  await page.getByTestId(RADAR_TRADING_ACCOUNT_BUTTON).tap();
+  await expect(page.getByTestId(SCREEN)).toBeVisible({ timeout: 30_000 });
+
+  // 🚨 要害是这组对照：**市场页签仍是 hk**（081 的进程内 store 记住了它），而币种复原成 HKD。
+  //    两者同屏共存才说明「复原」是币种状态自己的生命周期，不是整屏状态被清空。
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${SYNCED_LABEL.hk}`, {
+    timeout: 30_000,
+  });
+  await expect(currencyPart(page, 'current')).toHaveText('HKD');
+  await expect(inPositions(page, 'fx-rate')).toHaveCount(0);
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('4,000.00');
+});
+
+test('085 T015③ 两个市场页签各记各的币种（sb 3, 4）', async ({ page }) => {
+  const server = newServer(US_GROUPED, HK_HKD);
+  server.byCurrency = { 'hk:CNY': HK_CNY };
+  await installPositionsMock(page, server);
+  await gotoTradingAccount(page);
+  await expect(currencyPart(page, 'current')).toHaveText('USD', { timeout: 30_000 });
+
+  await gotoHkTab(page);
+  await pickCurrency(page, 'CNY');
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('3,800.00', {
+    timeout: 30_000,
+  });
+
+  // 切到 us ⇒ 读 us 自己那一格；它从未被切过 ⇒ 仍是该市场原币种。
+  await page.getByTestId(US_TAB).tap();
+  await expect(inPositions(page, 'synced-at')).toHaveText(`同步于 ${SYNCED_LABEL.us}`, {
+    timeout: 30_000,
+  });
+  await expect(currencyPart(page, 'current')).toHaveText('USD');
+  await expect(inPositions(page, 'fx-rate')).toHaveCount(0);
+  await expect(groupPart(page, 'us:ZQY', 'market-value')).toHaveText('24.08万');
+
+  // 切回 hk ⇒ 仍是刚才选的 CNY（切页签只**读**另一格，不写任何格）。
+  await gotoHkTab(page);
+  await expect(currencyPart(page, 'current')).toHaveText('CNY');
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('3,800.00');
+});
+
+test('085 T015④ 进持仓详情 ⇒ 金额与价格仍为原币种、请求不带 displayCurrency（sb 21 / FR-010）', async ({
+  page,
+}) => {
+  const log = observeRequests(page);
+  const server = newServer(US_GROUPED, HK_HKD);
+  server.byCurrency = { 'hk:CNY': HK_CNY };
+  await installPositionsMock(page, server);
+  await installPositionDetailMock(page, newDetailServer(HK_AUTO_STOCK_DETAIL));
+  await gotoTradingAccount(page);
+  await gotoHkTab(page);
+  await pickCurrency(page, 'CNY');
+  await expect(rowPart(page, HK_AUTO_STOCK.id, 'market-value')).toHaveText('3,800.00', {
+    timeout: 30_000,
+  });
+
+  await positionRow(page, HK_AUTO_STOCK.id).tap();
+  await expect(inDetail(page, 'summary')).toBeVisible({ timeout: 30_000 });
+
+  // 呈现面：金额是 HKD 原值（🚫 列表上那个折算后的 3,800.00），标签自报币种，价格同样不折算。
+  await expect(inDetail(page, 'market-value')).toHaveText('4,000.00');
+  await expect(inDetail(page, 'market-value-label')).toHaveText('市值（HKD）');
+  await expect(inDetail(page, 'price')).toHaveText('7.920');
+  await expect(detailRoot(page).getByText('3,800.00')).toHaveCount(0);
+
+  // 🚨 机制面：详情端点**根本不接**展示币种。只留上面的呈现面断言是不够的 —— 详情 mock 本就
+  //    只回原值，客户端真把 `displayCurrency` 发出去了，屏上也照样是 4,000.00（假绿）。
+  const detailUrls = log.apiUrls.filter((url) => POSITION_DETAIL_RE.test(url));
+  expect(detailUrls.length, '详情端点应已被请求').toBeGreaterThan(0);
+  for (const url of detailUrls) {
+    expect(new URL(url).searchParams.get('displayCurrency'), `${url} 不该带展示币种`).toBeNull();
+  }
+});
