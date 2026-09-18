@@ -15,6 +15,7 @@
 //    （`e2e/optionsdesk-trading-account.spec.ts:69`）—— 掉个个儿那条 mock 直接不再命中。
 //    由 `use-trading-account-positions.spec.ts` 臂 ③ 钉住。
 import { useCallback } from 'react';
+import { keepPreviousData } from '@tanstack/react-query';
 import {
   getBrokerAccountControllerPositionsQueryKey,
   useBrokerAccountControllerPositions,
@@ -45,7 +46,14 @@ export function useTradingAccountPositions(
   market: BrokerAccountControllerPositionsMarket,
   displayCurrency: DisplayCurrency,
 ): UseTradingAccountPositionsResult {
-  const query = useBrokerAccountControllerPositions({ market, displayCurrency });
+  // 🚨 `placeholderData: keepPreviousData`：切档换 key 的那一拍，上一档的行留在屏上而不是整屏
+  //    塌成 spinner（mockup 帧 ④ 要的是「行还在、金额位占位」）。留下的数字属于**上一个币种**
+  //    ⇒ 呈现层据 `amountsPending` 把金额位换成占位，🚫 让未折算数字先上屏再跳变（branch 18）。
+  //    体例同本 feature 的 `use-leg-table.ts`（那里摘掉它会整块屏炸，理由另述）。
+  const query = useBrokerAccountControllerPositions(
+    { market, displayCurrency },
+    { query: { placeholderData: keepPreviousData } },
+  );
   const { refetch: refetchQuery } = query;
 
   const refetch = useCallback(() => {

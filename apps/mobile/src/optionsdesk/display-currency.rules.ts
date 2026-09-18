@@ -12,6 +12,7 @@
 //    🚫 自算汇率、🚫 自算折算值。
 // 📌 文案全部取 `OPTIONSDESK_COPY.tradingAccountPositions.displayCurrency`（083 既有段内新增，plan §D9）。
 import type {
+  BrokerFxRateResponse,
   BrokerPositionGroupResponse,
   BrokerPositionListResponseDisplayCurrency,
   BrokerPositionListRowResponse,
@@ -101,4 +102,92 @@ export function groupIncompleteLabel(
 ): { marketValue: string; unrealizedPl: string } | null {
   if (group.aggregateComplete) return null;
   return { marketValue: COPY.aggregateIncomplete, unrealizedPl: COPY.aggregateIncomplete };
+}
+
+// ── 085 T010：汇率行 / 降级行金额 / 切档取数期间的占位（plan §D8） ─────────────
+
+/**
+ * `capturedAt`（ISO UTC **绝对时刻**）→ 设备本地 `MM-DD HH:mm`；缺失或非法 ⇒ 空串。O(1)。
+ *
+ * 🚨 **本地墙钟，不是 UTC**：这是给人读的时刻，体例同 `~/format/as-of.ts` 的 `clockHm`
+ *    （那里也明写「本地时区，不是 UTC」）。
+ * 🚫 `Intl.DateTimeFormat` / `toLocaleString`：Hermes 上 Intl 支持不确定
+ *    （`~/format/compact-amount.ts` 文件头同一纪律）⇒ 手工补零。
+ */
+export function capturedAtLabel(iso: string | null): string {
+  if (iso === null) return '';
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** 参考汇率行的四态；`text` 恒在（`hidden` 时为空串），调用方按 `kind` 决定渲不渲染。 */
+export interface FxRateLineView {
+  kind: 'hidden' | 'loading' | 'unavailable' | 'ready';
+  text: string;
+}
+
+/**
+ * 参考汇率行（FR-007 / FR-011；branch 14 / 15 / 18 / 19）。O(1)。
+ *
+ * 🚨 四态**互不合并**，尤其这两个分水岭：
+ *    ① 展示币种 = 原币种 ⇒ `hidden`（此刻并未发生折算，标了反而暗示折算过）；
+ *    ② 全源失败（`available === false`）⇒ `unavailable`，**不是** `hidden`。
+ *    把 `fxRate` 是否 falsy 当判据会把 ② 并进 ①，于是整屏降级却一声不吭。
+ * 🚨 陈旧**不是**一态：取数时刻再早也照常 `ready` 并标注时刻（plan §D6 —— 在岸 CNY 盘前
+ *    会给数小时前的值，判成不可用会让盘前整屏退回原币种）。本文件不设陈旧阈值。
+ */
+export function fxRateLine(input: {
+  market: RadarMarket;
+  current: DisplayCurrency;
+  fxRate: BrokerFxRateResponse | null;
+  /** 在手数据仍是上一档 ⇒ 取数进行中（见 {@link amountsPending}）。 */
+  pending: boolean;
+}): FxRateLineView {
+  if (!showFxRateLine({ market: input.market, current: input.current })) {
+    return { kind: 'hidden', text: '' };
+  }
+  if (input.pending) return { kind: 'loading', text: COPY.fxRateLoading };
+  const fx = input.fxRate;
+  if (fx === null || !fx.available || fx.rate === null || fx.capturedAt === null) {
+    return { kind: 'unavailable', text: COPY.fxRateUnavailable };
+  }
+  return {
+    kind: 'ready',
+    text: COPY.fxRate(COPY.fxRatePair(fx.from, fx.to), fx.rate, capturedAtLabel(fx.capturedAt)),
+  };
+}
+
+/**
+ * 行上该显示的两个金额（FR-006）。O(1)。
+ *
+ * 🚨 **降级行必须读 `original*`**：server 已把 `marketValue` / `unrealizedPl` 置 `null`
+ *    （降级行不进组聚合），直接读那两个字段，降级行在屏上就是两个 `--`，而 FR-006 要的是
+ *    「以原币种显示其金额」。
+ */
+export function rowAmounts(
+  row: Pick<
+    BrokerPositionListRowResponse,
+    'degraded' | 'marketValue' | 'unrealizedPl' | 'originalMarketValue' | 'originalUnrealizedPl'
+  >,
+): { marketValue: string | null; unrealizedPl: string | null } {
+  if (row.degraded) {
+    return { marketValue: row.originalMarketValue, unrealizedPl: row.originalUnrealizedPl };
+  }
+  return { marketValue: row.marketValue, unrealizedPl: row.unrealizedPl };
+}
+
+/**
+ * 在手响应是否还是**上一档**的币种 ⇒ 金额位占位（branch 18）。O(1)。
+ *
+ * 🚨 切档那一拍 react-query 换 key，`placeholderData: keepPreviousData` 让上一档的行留在屏上
+ *    —— 那些数字是**上一个币种**的。判据取响应自报的 `displayCurrency` 与当前所选是否一致，
+ *    🚫 拿 `isFetching` 当判据：下拉重读同一档时它也为真，会把好好的金额全抹成 `--`。
+ */
+export function amountsPending(input: {
+  selected: DisplayCurrency;
+  responseCurrency: DisplayCurrency;
+}): boolean {
+  return input.selected !== input.responseCurrency;
 }

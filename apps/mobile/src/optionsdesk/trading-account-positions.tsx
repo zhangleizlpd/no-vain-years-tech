@@ -34,7 +34,14 @@ import type {
 import { formatCompactAmount } from '~/format/compact-amount';
 import { Spinner } from '~/ui';
 import { CurrencySelector } from './currency-selector';
-import type { DisplayCurrency } from './display-currency.rules';
+import {
+  amountsPending,
+  degradedRowLabel,
+  fxRateLine,
+  groupIncompleteLabel,
+  rowAmounts,
+  type DisplayCurrency,
+} from './display-currency.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { optionsdeskTradingAccountPositionRoute } from './optionsdesk-routes';
 import type { RadarMarket } from './radar.rules';
@@ -158,6 +165,11 @@ function PositionsBody({
 
   const view = resolvePositionsView({ hasData: true, isError: positions.isError, data });
   const failed = refetchFailed({ hasData: true, isError: positions.isError });
+  // 085：在手数据还是上一档的币种 ⇒ 金额位占位、汇率行显加载态（branch 18）。
+  const pending = amountsPending({
+    selected: displayCurrency,
+    responseCurrency: data.displayCurrency,
+  });
   if (view === 'list') {
     return (
       <View className="flex-1" testID={`${TEST_ID}-list`}>
@@ -167,6 +179,7 @@ function PositionsBody({
           refetchFailed={failed}
           displayCurrency={displayCurrency}
           onSelectCurrency={onSelectCurrency}
+          pending={pending}
         />
         <ColumnHeader />
         <PositionsSectionList
@@ -175,6 +188,7 @@ function PositionsBody({
           onToggleGroup={onToggleGroup}
           isRefetching={positions.isRefetching}
           onRefresh={positions.refetch}
+          pending={pending}
         />
       </View>
     );
@@ -188,6 +202,7 @@ function PositionsBody({
           refetchFailed={failed}
           displayCurrency={displayCurrency}
           onSelectCurrency={onSelectCurrency}
+          pending={pending}
         />
         <StateCard view="empty" />
       </StateRefreshScroll>
@@ -274,6 +289,8 @@ interface PositionsMetaProps {
   /** 085：币种选择器嵌在本块的同步时刻行右侧（plan §D8）。 */
   displayCurrency: DisplayCurrency;
   onSelectCurrency: (currency: DisplayCurrency) => void;
+  /** 085：在手数据仍是上一档 ⇒ 汇率行显加载态（branch 18）。 */
+  pending: boolean;
 }
 
 /**
@@ -286,6 +303,7 @@ function PositionsMeta({
   refetchFailed: failed,
   displayCurrency,
   onSelectCurrency,
+  pending,
 }: PositionsMetaProps) {
   const time = syncedTimeLabel(data.syncedAtLocal, market);
   return (
@@ -316,6 +334,12 @@ function PositionsMeta({
         )}
         <CurrencySelector current={displayCurrency} onSelect={onSelectCurrency} />
       </View>
+      <FxRateLine
+        market={market}
+        current={displayCurrency}
+        fxRate={data.fxRate}
+        pending={pending}
+      />
       {showUnresolvedHint(data.unresolvedCount) ? (
         <View className="bg-surface-alt px-md py-1.5">
           <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-unresolved`}>
@@ -323,6 +347,33 @@ function PositionsMeta({
           </Text>
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * 参考汇率行（FR-007 / FR-011）：展示币种 = 该市场原币种 ⇒ **整行不存在**（此刻并未折算）。
+ * 取数进行中显加载态；全源失败显「取不到」；陈旧**照常显示**并标注时刻（🚫 因陈旧隐藏或清空）。
+ * 四态判定全在 `fxRateLine`（vitest 覆盖），这里只渲染。
+ */
+function FxRateLine({
+  market,
+  current,
+  fxRate,
+  pending,
+}: {
+  market: RadarMarket;
+  current: DisplayCurrency;
+  fxRate: BrokerPositionListResponse['fxRate'];
+  pending: boolean;
+}) {
+  const line = fxRateLine({ market, current, fxRate, pending });
+  if (line.kind === 'hidden') return null;
+  return (
+    <View className="bg-surface px-md pb-sm">
+      <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-fx-rate`}>
+        {line.text}
+      </Text>
     </View>
   );
 }
@@ -355,6 +406,8 @@ interface PositionsSectionListProps {
   isRefetching: boolean;
   /** 下拉重读（FR-008）；引用稳定的 `refetch`。 */
   onRefresh: () => void;
+  /** 085：在手数据仍是上一档 ⇒ 金额位占位（branch 18）。 */
+  pending: boolean;
 }
 
 /** 组顺序 / 组内行序由服务端排好（FR-006），这里原样渲染。sections 构造 O(g)。 */
@@ -364,6 +417,7 @@ function PositionsSectionList({
   onToggleGroup,
   isRefetching,
   onRefresh,
+  pending,
 }: PositionsSectionListProps) {
   const showConnection = showConnectionLabel(data.brokerCount);
   const sections = useMemo<SectionListData<BrokerPositionListRowResponse, PositionSection>[]>(
@@ -400,11 +454,17 @@ function PositionsSectionList({
             group={section.group}
             collapsed={section.data.length === 0}
             onToggle={onToggleGroup}
+            pending={pending}
           />
         ) : null
       }
       renderItem={({ item, section }) => (
-        <PositionRow row={item} indented={section.hasHeader} showConnection={showConnection} />
+        <PositionRow
+          row={item}
+          indented={section.hasHeader}
+          showConnection={showConnection}
+          pending={pending}
+        />
       )}
       stickySectionHeadersEnabled={false}
       className="flex-1"
@@ -416,12 +476,21 @@ interface GroupHeaderProps {
   group: BrokerPositionGroupResponse;
   collapsed: boolean;
   onToggle: ToggleGroup;
+  /** 085：在手数据仍是上一档 ⇒ 两个聚合值占位（branch 18）。 */
+  pending: boolean;
 }
 
-/** 组头：折叠标 + 名称(行数) · 组市值 · 正股现价 · 组持仓盈亏（FR-004 / FR-005）。 */
-function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps) {
+/**
+ * 组头：折叠标 + 名称(行数) · 组市值 · 正股现价 · 组持仓盈亏（FR-004 / FR-005）。
+ *
+ * 🚨 085：组内只要有降级行，**组市值与组持仓盈亏两列各标一次「合计不完整」**（FR-006）——
+ *    只标一列会让人以为另一列是完整的。标注挂在**合计值下方**（同列的第二行，`text-xs`），
+ *    🚫 挂组头名称列：390px 机身下名称列只剩约 120px，caret + 组名已占满。
+ */
+function GroupHeader({ group, collapsed, onToggle, pending }: GroupHeaderProps) {
   const id = `${TEST_ID}-group-${group.underlyingTicker}`;
   const title = `${group.underlyingName}(${group.rows.length})`;
+  const incomplete = groupIncompleteLabel(group);
   return (
     <Pressable
       onPress={() => onToggle(group.underlyingTicker)}
@@ -442,8 +511,13 @@ function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps) {
         </View>
         <View className={COL.marketValue}>
           <Text className="font-mono text-sm font-semibold text-ink" testID={`${id}-market-value`}>
-            {formatCompactAmount(group.groupMarketValue)}
+            {pending ? NO_VALUE : formatCompactAmount(group.groupMarketValue)}
           </Text>
+          {incomplete !== null ? (
+            <Text className="text-xs text-ink-muted" testID={`${id}-market-value-incomplete`}>
+              {incomplete.marketValue}
+            </Text>
+          ) : null}
         </View>
         <View className={COL.price}>
           <Text className="font-mono text-sm font-semibold text-ink" testID={`${id}-price`}>
@@ -455,8 +529,13 @@ function GroupHeader({ group, collapsed, onToggle }: GroupHeaderProps) {
             className={`font-mono text-sm font-semibold ${plColorClass(group.groupUnrealizedPl)}`}
             testID={`${id}-pl`}
           >
-            {formatCompactAmount(group.groupUnrealizedPl, { signed: true })}
+            {pending ? NO_VALUE : formatCompactAmount(group.groupUnrealizedPl, { signed: true })}
           </Text>
+          {incomplete !== null ? (
+            <Text className="text-xs text-ink-muted" testID={`${id}-pl-incomplete`}>
+              {incomplete.unrealizedPl}
+            </Text>
+          ) : null}
         </View>
       </View>
     </Pressable>
@@ -467,16 +546,21 @@ interface PositionRowProps {
   row: BrokerPositionListRowResponse;
   indented: boolean;
   showConnection: boolean;
+  /** 085：在手数据仍是上一档 ⇒ 金额位占位（branch 18）。 */
+  pending: boolean;
 }
 
 /**
  * 行：名称代码 · 市值 / 数量 · 现价 / 成本 · 持仓盈亏金额 / 比例（FR-007 / FR-012 / FR-021）。
  * 点击 ⇒ 持仓详情（T017，plan D15）；本屏不卸载 ⇒ 返回后折叠状态仍在。
  */
-function PositionRow({ row, indented, showConnection }: PositionRowProps) {
+function PositionRow({ row, indented, showConnection, pending }: PositionRowProps) {
   const router = useRouter();
   const id = `${TEST_ID}-row-${row.id}`;
   const name = positionDisplayName(row);
+  // 085：降级行的两个金额取 `original*`（server 已把折算口径那两个置 null）；币种标见下。
+  const amounts = rowAmounts(row);
+  const currencyMark = degradedRowLabel(row);
   return (
     <Pressable
       onPress={() => router.push(optionsdeskTradingAccountPositionRoute(row.id))}
@@ -506,10 +590,23 @@ function PositionRow({ row, indented, showConnection }: PositionRowProps) {
                 </Text>
               </View>
             ) : null}
+            {/*
+              085 降级行的币种标（FR-006 / FR-013）：几何形态照上面 `row.expired` 那枚徽标，
+              🚨 但**另定底色** —— `bg-warn-soft` 是警示语义（到期待清算），而「按 HKD 显示 /
+              币种未知」只是口径说明，套警示底色会把两件事读成同一类。取 `MarketBadge` 那套中性
+              描边小块（`~/ui/MarketBadge.tsx`）。
+            */}
+            {currencyMark !== null ? (
+              <View className="self-start rounded-sm border border-line bg-surface-sunken px-1">
+                <Text className="text-xs text-ink-muted" testID={`${id}-currency`}>
+                  {currencyMark}
+                </Text>
+              </View>
+            ) : null}
           </View>
           <View className={`${COL.marketValue} gap-0.5`}>
             <Text className="font-mono text-sm text-ink" testID={`${id}-market-value`}>
-              {formatCompactAmount(row.marketValue)}
+              {pending ? NO_VALUE : formatCompactAmount(amounts.marketValue)}
             </Text>
             <Text className="font-mono text-xs text-ink-muted" testID={`${id}-qty`}>
               {row.qty}
@@ -525,16 +622,17 @@ function PositionRow({ row, indented, showConnection }: PositionRowProps) {
           </View>
           <View className={`${COL.unrealizedPl} gap-0.5`}>
             <Text
-              className={`font-mono text-sm ${plColorClass(row.unrealizedPl)}`}
+              className={`font-mono text-sm ${plColorClass(pending ? null : amounts.unrealizedPl)}`}
               testID={`${id}-pl`}
             >
-              {formatCompactAmount(row.unrealizedPl, { signed: true })}
+              {pending ? NO_VALUE : formatCompactAmount(amounts.unrealizedPl, { signed: true })}
             </Text>
             <Text
-              className={`font-mono text-xs ${plColorClass(row.unrealizedPlRatio)}`}
+              className={`font-mono text-xs ${plColorClass(pending ? null : row.unrealizedPlRatio)}`}
               testID={`${id}-pl-ratio`}
             >
-              {formatPlRatio(row.unrealizedPlRatio)}
+              {/* 比例虽是无量纲、折算不改，但与盈亏金额同列语义 ⇒ 占位时一并占位（mockup 帧 ④）。 */}
+              {pending ? NO_VALUE : formatPlRatio(row.unrealizedPlRatio)}
             </Text>
           </View>
         </View>
