@@ -8,6 +8,7 @@ import type {
   OptionsdeskControllerRadarMarket,
 } from '@nvy/api-client';
 
+import type { DisplayCurrency } from './display-currency.rules';
 import type { TradingAccountSegment } from './trading-account.rules';
 import type {
   BrokerOrderStatus,
@@ -1428,6 +1429,41 @@ export const OPTIONSDESK_COPY = {
      * （长仓价外作废 / 长仓价内自动行权 / 空头被指派）都成立，故不按长短仓分流措辞。
      */
     expired: '已到期 · 待清算',
+    /**
+     * 085 展示币种（T008，plan §D9）。**住本段**，🚫 并入 081 的 `tradingAccount` 段。
+     *
+     * 📌 币种一律**三字母代码**，🚫 货币符号（spec Clarifications 2026-09-16；体例同下方
+     *    `positionDetail.marketValueLabel` 的 `市值（USD）`）。
+     * 🚨 时刻措辞为「取数于」而非 mockup 帧 ② 的「行情更新于」：上屏的是**我们自己的采集时刻**
+     *    （`fxRate.capturedAt`，plan §D5），不是 vendor 自报时间戳 —— 写「行情更新于」等于替 vendor
+     *    声明它那一刻更新过行情，而实测 vendor 时间戳可一路推进而汇率值纹丝不动。
+     * 🚨 🚫 「实时」/「可用于结算」：这是参考汇率，与券商结汇 / 交收汇率无关（FR-007）。
+     */
+    displayCurrency: {
+      /** 收起态选择器的 a11y 名（FR-013：收起态即显示当前币种）。 */
+      selector: (current: string) => `展示币种 ${current}`,
+      /** 三档标签 = 三字母代码原样。`Record` 穷举：档位值域加档而这里没补，编译红。 */
+      option: {
+        USD: 'USD',
+        HKD: 'HKD',
+        CNY: 'CNY',
+      } satisfies Record<DisplayCurrency, string>,
+      /** 币对，如 `HKD→CNY`。 */
+      fxRatePair: (from: string, to: string) => `${from}→${to}`,
+      /** 参考汇率行（FR-007）；`time` 由调用方按设备本地格式化好再传进来。 */
+      fxRate: (pair: string, rate: string, time: string) =>
+        `参考汇率 ${pair} ${rate} · 取数于 ${time}`,
+      /** 汇率尚在取数（branch 18）：配合金额位占位，🚫 先渲染未折算数字再跳变。 */
+      fxRateLoading: '参考汇率加载中…',
+      /** 全源取不到（branch 8）：整屏退回原币种并标注。 */
+      fxRateUnavailable: '参考汇率取不到 · 金额按原币种显示',
+      /** 降级行：券商未回报币种 ⇒ 🚫 回落任何币种（US3-AS2）。 */
+      rowCurrencyUnknown: '币种未知',
+      /** 降级行：按该行原币种显示（FR-006 / FR-013）。 */
+      rowOriginalCurrency: (currency: string) => `按 ${currency} 显示`,
+      /** 组两个聚合值各标一次（FR-006）；只标一列会让人以为另一列完整。 */
+      aggregateIncomplete: '合计不完整',
+    },
     /** 期权名称后缀：美股 Call / Put，港股 购 / 沽（FR-007）。 */
     optionRight: {
       us: { C: 'Call', P: 'Put' },
