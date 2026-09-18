@@ -33,6 +33,8 @@ import type {
 
 import { formatCompactAmount } from '~/format/compact-amount';
 import { Spinner } from '~/ui';
+import { CurrencySelector } from './currency-selector';
+import type { DisplayCurrency } from './display-currency.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { optionsdeskTradingAccountPositionRoute } from './optionsdesk-routes';
 import type { RadarMarket } from './radar.rules';
@@ -80,8 +82,22 @@ const ROW_TONE = {
 
 type ToggleGroup = (ticker: string) => void;
 
-export function TradingAccountPositions({ market }: { market: RadarMarket }) {
-  const positions = useTradingAccountPositions(market);
+export interface TradingAccountPositionsProps {
+  market: RadarMarket;
+  /**
+   * 085：展示币种与切档回调都由**屏组件**持有（plan §D7）。🚫 把状态挪进本组件 ——
+   * 切分段 positions↔orders 会卸载它，切个分段币种就重置（违反 FR-005「本次停留内保持」）。
+   */
+  displayCurrency: DisplayCurrency;
+  onSelectCurrency: (currency: DisplayCurrency) => void;
+}
+
+export function TradingAccountPositions({
+  market,
+  displayCurrency,
+  onSelectCurrency,
+}: TradingAccountPositionsProps) {
+  const positions = useTradingAccountPositions(market, displayCurrency);
   useRefetchOnFocus(positions.refetch);
   useRefetchOnForeground(positions.refetch);
   // 键 =`underlyingTicker`（含市场前缀，跨市场不撞）。O(1) 查询 / 切换。
@@ -102,6 +118,8 @@ export function TradingAccountPositions({ market }: { market: RadarMarket }) {
         positions={positions}
         collapsed={collapsed}
         onToggleGroup={toggleGroup}
+        displayCurrency={displayCurrency}
+        onSelectCurrency={onSelectCurrency}
       />
     </View>
   );
@@ -112,9 +130,18 @@ interface PositionsBodyProps {
   positions: UseTradingAccountPositionsResult;
   collapsed: ReadonlySet<string>;
   onToggleGroup: ToggleGroup;
+  displayCurrency: DisplayCurrency;
+  onSelectCurrency: (currency: DisplayCurrency) => void;
 }
 
-function PositionsBody({ market, positions, collapsed, onToggleGroup }: PositionsBodyProps) {
+function PositionsBody({
+  market,
+  positions,
+  collapsed,
+  onToggleGroup,
+  displayCurrency,
+  onSelectCurrency,
+}: PositionsBodyProps) {
   if (positions.isPending) {
     return (
       <View className="items-center py-xl" testID={`${TEST_ID}-loading`}>
@@ -134,7 +161,13 @@ function PositionsBody({ market, positions, collapsed, onToggleGroup }: Position
   if (view === 'list') {
     return (
       <View className="flex-1" testID={`${TEST_ID}-list`}>
-        <PositionsMeta market={market} data={data} refetchFailed={failed} />
+        <PositionsMeta
+          market={market}
+          data={data}
+          refetchFailed={failed}
+          displayCurrency={displayCurrency}
+          onSelectCurrency={onSelectCurrency}
+        />
         <ColumnHeader />
         <PositionsSectionList
           data={data}
@@ -149,7 +182,13 @@ function PositionsBody({ market, positions, collapsed, onToggleGroup }: Position
   if (view === 'empty') {
     return (
       <StateRefreshScroll isRefetching={positions.isRefetching} onRefresh={positions.refetch}>
-        <PositionsMeta market={market} data={data} refetchFailed={failed} />
+        <PositionsMeta
+          market={market}
+          data={data}
+          refetchFailed={failed}
+          displayCurrency={displayCurrency}
+          onSelectCurrency={onSelectCurrency}
+        />
         <StateCard view="empty" />
       </StateRefreshScroll>
     );
@@ -232,13 +271,22 @@ interface PositionsMetaProps {
   data: BrokerPositionListResponse;
   /** 已显示数据时最近一次重读失败（FR-023）。 */
   refetchFailed: boolean;
+  /** 085：币种选择器嵌在本块的同步时刻行右侧（plan §D8）。 */
+  displayCurrency: DisplayCurrency;
+  onSelectCurrency: (currency: DisplayCurrency) => void;
 }
 
 /**
  * 同步时刻行（陈旧时换成陈旧条，FR-008 / FR-009；重读失败时换成刷新失败提示，FR-023）+ 未归类提示（FR-011）；
  * 空态与列表共用。
  */
-function PositionsMeta({ market, data, refetchFailed: failed }: PositionsMetaProps) {
+function PositionsMeta({
+  market,
+  data,
+  refetchFailed: failed,
+  displayCurrency,
+  onSelectCurrency,
+}: PositionsMetaProps) {
   const time = syncedTimeLabel(data.syncedAtLocal, market);
   return (
     <View>
@@ -249,19 +297,25 @@ function PositionsMeta({ market, data, refetchFailed: failed }: PositionsMetaPro
           </Text>
         </View>
       ) : null}
-      {failed ? (
-        <View className="bg-warn-soft px-md py-sm">
+      {/*
+        085：币种选择器**恒在这一行**（陈旧 / 刷新失败 / 空仓三态下都得能点，branch 20）⇒ 本行
+        无条件渲染，只有左侧文案按 083 原三分支走（三个 testID 与各自出现条件逐字未变）。
+        陈旧且未失败时左侧留空，只剩右侧选择器 —— 陈旧条已在上方说明了情况。
+      */}
+      <View
+        className={`flex-row items-center px-md py-sm ${failed ? 'bg-warn-soft' : 'bg-surface'}`}
+      >
+        {failed ? (
           <Text className="text-xs font-semibold text-ink" testID={`${TEST_ID}-refetch-failed`}>
             {COPY.refetchFailed}
           </Text>
-        </View>
-      ) : data.stale ? null : (
-        <View className="bg-surface px-md py-sm">
+        ) : data.stale ? null : (
           <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-synced-at`}>
             {COPY.syncedAt(time)}
           </Text>
-        </View>
-      )}
+        )}
+        <CurrencySelector current={displayCurrency} onSelect={onSelectCurrency} />
+      </View>
       {showUnresolvedHint(data.unresolvedCount) ? (
         <View className="bg-surface-alt px-md py-1.5">
           <Text className="text-xs text-ink-muted" testID={`${TEST_ID}-unresolved`}>
