@@ -169,6 +169,54 @@ export async function run(ctx: RealBackendCtx): Promise<void> {
     assert.equal(detail.status, 200, `position detail expected 200, got ${detail.status}`);
     assert.equal(detail.data.id, row.id);
     assert.equal(detail.data.connectionLabel, LABEL);
+
+    // ── ⑤ 085：带 `displayCurrency` 的请求（生成 client ↔ 真 server 的契约缝）──────────
+    // 🚨 冒烟装置恒钉 `MARKETDATA_PROVIDER=mock` ⇒ FX port 绑的是**拒绝壳**（一调即抛）⇒ 真
+    //    server 必然走降级态。故这里断言**降级形态合法**（字段齐 / 类型对 / available=false），
+    //    🚫 断言折算值 —— 那要真打腾讯 / 新浪，不是冒烟该干的事。
+    // 补的是 hermetic e2e（端点是 mock 的）与 server IT（不经生成 client）都盖不到的那条缝：
+    // 参数名 / 位置 / 序列化真的对得上，且真被 server 消费。
+    const converted = await brokerAccountControllerPositions(
+      { market: 'us', displayCurrency: 'CNY' },
+      cfg,
+    );
+    assert.equal(
+      converted.status,
+      200,
+      `displayCurrency 请求 expected 200, got ${converted.status}`,
+    );
+    assert.equal(converted.data.displayCurrency, 'CNY', '响应自报的本屏币种 = 请求所带的那个');
+
+    const fx = converted.data.fxRate;
+    assert.ok(fx !== null, '需要折算时 fxRate 必须在场（`null` 的含义是「不需要折算」）');
+    assert.equal(fx.from, 'USD', 'from = 该市场原币种');
+    assert.equal(fx.to, 'CNY', 'to = 本屏展示币种');
+    assert.equal(fx.available, false, 'mock 档的 FX 拒绝壳 ⇒ 全源失败');
+    assert.equal(fx.rate, null, '取不到 ⇒ rate 为 null');
+    assert.equal(fx.capturedAt, null, '取不到 ⇒ capturedAt 为 null');
+
+    const degradedGroup = converted.data.groups.find((g) => g.underlyingTicker === TICKER);
+    assert.ok(degradedGroup, '降级不改变「哪些组返回」');
+    assert.equal(degradedGroup.aggregateComplete, false, '含降级行的组 aggregateComplete=false');
+    assert.equal(degradedGroup.groupMarketValue, null, '不完整组的组市值置 null');
+    assert.equal(degradedGroup.groupUnrealizedPl, null, '不完整组的组盈亏置 null');
+
+    const [degradedRow] = degradedGroup.rows;
+    assert.ok(degradedRow, '组内仍是那一行');
+    assert.equal(degradedRow.degraded, true, '汇率不可用 ⇒ 该行降级');
+    assert.equal(degradedRow.converted, false, '降级行未被折算');
+    assert.equal(degradedRow.marketValue, null, '降级行的折算口径金额置 null');
+    assert.equal(degradedRow.unrealizedPl, null, '同上（两个金额一起置 null）');
+    assert.equal(degradedRow.displayCurrency, 'USD', '降级行标的是该行**原**币种');
+    assert.equal(
+      typeof degradedRow.originalMarketValue,
+      'string',
+      '原币种市值出边界为 string（Decimal 不经 Number）',
+    );
+    assert.equal(Number(degradedRow.originalMarketValue), 1234.5, '呈现值搬到 originalMarketValue');
+    assert.equal(Number(degradedRow.originalUnrealizedPl), 114.5, '同上，盈亏那一个');
+    // 价格类从不折算（FR-007）⇒ 与缺省档逐字相同。
+    assert.equal(degradedRow.currentPrice, row.currentPrice, '价格类不受展示币种影响');
   } finally {
     // ── cleanup：先删持仓再删连接，最后删锚（同 boot 内幂等）。
     await ctx.execSql(
