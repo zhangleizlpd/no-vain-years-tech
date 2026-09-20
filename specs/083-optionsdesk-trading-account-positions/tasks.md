@@ -2,9 +2,9 @@
 feature_id: 083-optionsdesk-trading-account-positions
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: not-started
+status: in-progress
 created_at: '2026-09-15'
-updated_at: '2026-09-17'
+updated_at: '2026-09-20'
 ---
 
 # Tasks: 083-optionsdesk-trading-account-positions（期权台交易账户页 · 持仓展示与下钻）
