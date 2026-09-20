@@ -2,6 +2,20 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.54.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.53.0...server-v0.54.0) (2026-09-20)
+
+
+### Features
+
+* **optionsdesk:** 084 券商持仓实时增量同步（推送式） ([#452](https://github.com/zhangleizlpd/no-vain-years-tech/issues/452)) ([a808ca4](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a808ca4b2b66b76f7edcc4a9a35ec1aa3a4e088a))
+* **optionsdesk:** 085 交易账户展示币种切换（USD / HKD / CNY 三档） ([#463](https://github.com/zhangleizlpd/no-vain-years-tech/issues/463)) ([4390f13](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4390f135320f37e45b06366cc693743f7e57608b))
+* **optionsdesk:** 持仓组内排序与订单状态筛选, 到期措辞与日期格式修正 ([#449](https://github.com/zhangleizlpd/no-vain-years-tech/issues/449)) ([f169e6e](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f169e6e77c84224824c51d1db80517ea4715dc97))
+
+
+### Bug Fixes
+
+* **optionsdesk:** 港股开盘前对账时点改为 08:40, 避开开市前竞价时段 ([#453](https://github.com/zhangleizlpd/no-vain-years-tech/issues/453)) ([13a3a88](https://github.com/zhangleizlpd/no-vain-years-tech/commit/13a3a88e1dba1a56f22c3811ecef63e8ae0692dc))
+
 ## [0.53.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.52.3...server-v0.53.0) (2026-09-16)
 
 
