@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.22.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.21.0...mobile-v0.22.0) (2026-09-20)
+
+
+### Features
+
+* **optionsdesk:** 083 交易账户页持仓展示与下钻 ([#442](https://github.com/zhangleizlpd/no-vain-years-tech/issues/442)) ([eecc265](https://github.com/zhangleizlpd/no-vain-years-tech/commit/eecc2653168df016df278ffd0b2aa6d4c43d9227))
+* **optionsdesk:** 085 交易账户展示币种切换（USD / HKD / CNY 三档） ([#463](https://github.com/zhangleizlpd/no-vain-years-tech/issues/463)) ([4390f13](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4390f135320f37e45b06366cc693743f7e57608b))
+* **optionsdesk:** 持仓组内排序与订单状态筛选, 到期措辞与日期格式修正 ([#449](https://github.com/zhangleizlpd/no-vain-years-tech/issues/449)) ([f169e6e](https://github.com/zhangleizlpd/no-vain-years-tech/commit/f169e6e77c84224824c51d1db80517ea4715dc97))
+
 ## [0.21.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.20.0...mobile-v0.21.0) (2026-09-15)
 
 
