@@ -2,7 +2,7 @@
 feature_id: 085-optionsdesk-display-currency
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: in-progress
+status: completed
 created_at: '2026-09-17'
 updated_at: '2026-09-20'
 ---
