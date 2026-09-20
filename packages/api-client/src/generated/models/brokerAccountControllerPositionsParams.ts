@@ -5,6 +5,7 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
+import type { BrokerAccountControllerPositionsDisplayCurrency } from './brokerAccountControllerPositionsDisplayCurrency';
 import type { BrokerAccountControllerPositionsMarket } from './brokerAccountControllerPositionsMarket';
 
 export type BrokerAccountControllerPositionsParams = {
@@ -12,4 +13,8 @@ export type BrokerAccountControllerPositionsParams = {
  * 市场
  */
 market: BrokerAccountControllerPositionsMarket;
+/**
+ * 展示币种; 省略 ⇒ 该市场原币种 (us ⇒ USD, hk ⇒ HKD), 响应与不带本参数时逐字节相同。只影响金额类字段的呈现, 不参与任何查询条件
+ */
+displayCurrency?: BrokerAccountControllerPositionsDisplayCurrency;
 };

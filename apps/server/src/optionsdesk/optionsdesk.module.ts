@@ -42,6 +42,8 @@ import { ListBrokerPositionsUseCase } from './list-broker-positions.usecase.js';
 import { GetBrokerPositionUseCase } from './get-broker-position.usecase.js';
 import { GetBrokerOrderUseCase } from './get-broker-order.usecase.js';
 import { ListBrokerBackfillRunsUseCase } from './list-broker-backfill-runs.usecase.js';
+import { FX_RATE_PORT } from './fx-rate.port.js';
+import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
 
 /**
  * optionsdesk bounded context (第 10 ctx; ADR-0062 — 045 期权台锚管理 + 击球区雷达)。
@@ -130,6 +132,16 @@ import { ListBrokerBackfillRunsUseCase } from './list-broker-backfill-runs.useca
       provide: BROKER_ACCOUNT_PORT,
       inject: [marketdataConfig.KEY],
       useFactory: createBrokerAccountPort,
+    },
+    // 085 T004 FX 取数 port (plan D3 / D4)。同上按 `marketdataConfig.kind` 绑定: live ⇒ 缓存
+    // 装饰器 (单格 + single-flight) 包 FallbackChain (腾讯主 + 新浪备); mock ⇒ 调用即抛的拒绝壳
+    // —— 本地 dev 与 IT 跑的都是 mock 档, MUST NOT 真打腾讯 / 新浪。绑定判断收在工厂里。
+    // 🚨 **不新增 module 边**: FX 住本 ctx, 不经 marketdata、不读其表、不注其 port
+    // (ADR-0062 四条 trigger 一条未命中) ⇒ 上面的 `imports` 段逐字不变。
+    {
+      provide: FX_RATE_PORT,
+      inject: [marketdataConfig.KEY],
+      useFactory: createFxRatePort,
     },
     // 082 T014 券商账户同步 use case (plan D1): 新建锚补齐与开盘前对账共用的唯一入口 ——
     // 两份实现会在过滤口径 / 幂等写 / 持仓刷新三处各自漂移 (ADR-0043 #1: optionsdesk use case 数 → 20)。

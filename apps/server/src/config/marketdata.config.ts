@@ -22,6 +22,13 @@ const MarketdataConfigSchema = z.discriminatedUnion('kind', [
     // 交易日历源 (044): 腾讯 ifzq 指数 kline 派生交易日。旧东财 push2his kline 源已退役
     // (端点被定向下线 + robots.txt `Disallow: /`, FR-007) → 其 eastmoneyKlineBaseUrl 一并清。
     tencentCalendarBaseUrl: z.string().url().default('https://web.ifzq.gtimg.cn'),
+    // FX 现汇主源 (085): 腾讯行情 qt 域。与上面日历的 ifzq 域是**同 vendor 不同 host** →
+    // 独立 baseUrl (同 eastmoney 的 searchapi / push2 那一对), 但共享 TENCENT_PROFILE ——
+    // 一个 vendor 一个桶 / 一套限频, 拆 host 不拆配额。
+    tencentFxBaseUrl: z.string().url().default('https://qt.gtimg.cn'),
+    // FX 现汇备源 (085): 新浪行情。另一个 vendor ⇒ 另一套 profile (必带 Referer, 否则 403;
+    // 见 optionsdesk/sina-fx.constraint-profile.ts), 故不与腾讯共享桶。
+    sinaFxBaseUrl: z.string().url().default('https://hq.sinajs.cn'),
     // 富途 shim (p3b §4.2, sellput-viz Phase 1): 港机上 OpenD 的 HTTP 薄壳, 经 B↔C
     // WireGuard 隧道访问 → **隧道虚 IP, 不是 localhost** (server 与 shim 从 day 1 不同机)。
     // 🚨 **无 `.default()` 是刻意的**: 它与 lixingerToken 同类 —— live 下缺失即 boot 抛,
@@ -65,6 +72,8 @@ export const marketdataConfig = registerAs('marketdata', (): MarketdataConfig =>
       eastmoneyBaseUrl: process.env.EASTMONEY_BASE_URL,
       eastmoneyClistBaseUrl: process.env.EASTMONEY_CLIST_BASE_URL,
       tencentCalendarBaseUrl: process.env.TENCENT_CALENDAR_BASE_URL,
+      tencentFxBaseUrl: process.env.TENCENT_FX_BASE_URL,
+      sinaFxBaseUrl: process.env.SINA_FX_BASE_URL,
       futuShimUrl: process.env.FUTU_SHIM_URL,
       futuShimToken: process.env.FUTU_SHIM_TOKEN,
     });

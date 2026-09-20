@@ -19,6 +19,15 @@ import {
   type PositionDisplayRow,
   type PositionGroup,
 } from './broker-position-display.rules';
+import {
+  convertRows,
+  defaultCurrencyForMarket,
+  finalizeConvertedGroups,
+  resolveDisplayRate,
+  type ConvertedRow,
+  type FinalizedGroup,
+} from './display-currency.rules';
+import { FX_RATE_PORT, type FxCurrency, type FxRate, type FxRatePort } from './fx-rate.port';
 import { resolveInstrumentNames } from './instrument-name';
 import { resolveAnchorSpot } from './intraday-spot.rules';
 
@@ -60,8 +69,24 @@ export interface BrokerPositionRow extends PositionDisplayRow {
   openedAtSource: string;
 }
 
-export interface BrokerPositionGroupView extends PositionGroup<BrokerPositionRow> {
+/** 列表行 = 持仓行 + 折算元信息。**详情读端的行不带后者** (折算只发生在列表, FR-010)。 */
+export type ConvertedBrokerPositionRow = ConvertedRow<BrokerPositionRow>;
+
+export type BrokerPositionGroupView = FinalizedGroup<PositionGroup<ConvertedBrokerPositionRow>> & {
   underlyingName: string;
+};
+
+/** 本屏实际消费的那一条参考汇率 (FR-007)。展示币种 = 该市场原币种 ⇒ 整个对象为 `null`。 */
+export interface DisplayFxRateView {
+  /** 折算的源币种 = 该市场原币种。 */
+  from: FxCurrency;
+  /** 折算的目标币种 = 本屏展示币种。 */
+  to: FxCurrency;
+  /** 取不到 ⇒ `null` (此时 {@link available} 为 false, 整屏走原币种)。 */
+  rate: Prisma.Decimal | null;
+  /** **我们采到它的时刻** (ingestion time; 🚫 vendor 自报时间戳, plan D5)。 */
+  capturedAt: Date | null;
+  available: boolean;
 }
 
 export interface BrokerPositionList {
@@ -73,6 +98,10 @@ export interface BrokerPositionList {
   syncedAtLocal: string | null;
   stale: boolean;
   unresolvedCount: number;
+  /** 本屏展示币种; 请求未指定 ⇒ 该市场原币种。 */
+  displayCurrency: FxCurrency;
+  /** 参考汇率; **无需折算 ⇒ `null`** (mobile 据此决定出不出参考汇率行, FR-007 / FR-011)。 */
+  fxRate: DisplayFxRateView | null;
   groups: BrokerPositionGroupView[];
 }
 
@@ -194,17 +223,27 @@ export class ListBrokerPositionsUseCase {
     // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 交易日历读端口 —— 陈旧判定要「今天」的三态与
     // 上一交易日 (plan D7); 自己直查 trading_day 会绕过覆盖声明那一维, 漂了只让陈旧悄悄错一天。零写。
     @Inject(TRADING_CALENDAR_PORT) private readonly calendar: TradingCalendarPort,
+    // 085 T006 FX 取数口 —— 住本 ctx (不经 marketdata, ADR-0062 四条 trigger 一条未命中), 故不是
+    // 跨 ctx 注入。展示币种 = 该市场原币种时**一次都不调用**它 (见 `loadDisplayRates`)。
+    @Inject(FX_RATE_PORT) private readonly fxRates: FxRatePort,
   ) {}
 
   /**
-   * 复杂度: 至多 7 次查询 (连接 / 同步记录 / 日历 ≤ 2 / 锚 / 持仓 / 名称) + 展示规则 O(n log n),
-   * n = 该账号该市场持仓行数。
+   * @param displayCurrency 展示币种; `null` ⇒ 该市场原币种 (FR-011 的缺省档)。
+   *
+   * 🚨 **它不进任何 `where`** (Guardrail 4): 只影响呈现。让它参与取数就等于给同一份持仓开了
+   * 第二条数据路径, 而账号隔离只守在第一条上。
+   *
+   * 复杂度: 至多 7 次查询 (连接 / 同步记录 / 日历 ≤ 2 / 锚 / 持仓 / 名称) + 至多 1 次 FX 取数
+   * (缺省档为 0) + 展示规则 O(n log n), n = 该账号该市场持仓行数。
    */
   async execute(
     accountId: bigint,
     market: BrokerMarket,
+    displayCurrency: FxCurrency | null = null,
     now: Date = new Date(),
   ): Promise<BrokerPositionList> {
+    const target = displayCurrency ?? defaultCurrencyForMarket(market);
     const connections = await this.prisma.brokerConnection.findMany({
       where: { accountId },
       select: { id: true, brokerCode: true, label: true },
@@ -217,12 +256,16 @@ export class ListBrokerPositionsUseCase {
         syncedAtLocal: null,
         stale: false,
         unresolvedCount: 0,
+        displayCurrency: target,
+        // 无连接 = 整屏一个金额都没有 ⇒ 不取汇率, 也没有「参考汇率」可标。
+        fxRate: null,
         groups: [],
       };
     }
 
     // 🚨 同步失败不清空 (branch 5): 只取成功记录; 持仓照常读, 与最近一次是否失败无关。
     const syncedAt = await this.lastSucceededSyncAt(accountId, market);
+    const { rates, fxRate } = await this.loadDisplayRates(market, target);
     const empty: BrokerPositionList = {
       hasConnection: true,
       brokerCount: connections.length,
@@ -231,6 +274,8 @@ export class ListBrokerPositionsUseCase {
       // 从未成功 ⇒ mobile 显示「尚未同步」, 陈旧无意义 ⇒ 不判、不调日历。
       stale: syncedAt === null ? false : await this.resolveStale(market, syncedAt, now),
       unresolvedCount: 0,
+      displayCurrency: target,
+      fxRate,
       groups: [],
     };
 
@@ -267,8 +312,11 @@ export class ListBrokerPositionsUseCase {
       ),
     );
 
+    // 🚨 **折算在分组聚合之前** (plan D2): 反过来会把降级行的原币种值混进 `signedSum`, 乘上
+    // 汇率后得到一个「看起来合理」的错数 —— 组市值照样算得出来, 屏幕上一切正常。
+    const converted = convertRows(rows, { target, rates });
     const { unresolvedCount, groups } = buildPositionGroups({
-      rows,
+      rows: converted,
       anchoredTickers,
       anchorSpots,
       now,
@@ -276,7 +324,9 @@ export class ListBrokerPositionsUseCase {
     return {
       ...empty,
       unresolvedCount,
-      groups: groups.map((g) => ({
+      // 分组**之后**收口: 含降级行的组把两个聚合值都置 null 并沉底。混合组的聚合值是非 null 的
+      // 部分和, `compareGroups` 的 null 排末分支盖不住它 (`display-currency.rules.ts` 同名函数)。
+      groups: finalizeConvertedGroups(groups).map((g) => ({
         ...g,
         underlyingName: names.get(g.underlyingTicker) ?? g.underlyingTicker,
       })),
@@ -336,6 +386,57 @@ export class ListBrokerPositionsUseCase {
     }
     return stale;
   }
+
+  /**
+   * 取本屏所需的参考汇率 (plan D5)。
+   *
+   * 🚨 **仅在展示币种 ≠ 该市场原币种时才打 FX port** —— 缺省视图 (老客户端与每次首屏) 因此
+   * 一次 vendor 往返都不发生, 且走的是与上线前逐字相同的代码路径 (SC-006)。代价: 缺省档下
+   * 原币种与该市场不符的行 (券商未回报 / 回报了第三种币种) 走降级, 而不是被折算 —— 单市场页签下
+   * 同屏各行必然同币种 (spec Assumptions), 这类行本就是异常数据, 降级标注比静默折算更可读。
+   *
+   * 🚨 **全源失败 ⇒ catch 成降级态**, 🚫 让端点 500: 汇率只是呈现口径, 取不到时正确的行为是整屏
+   * 退回原币种并标注 (FR-006 / branch 8); 500 会让一屏本来读得到的持仓整个消失。日志不含账号。
+   *
+   * 至多 1 次 port 调用。
+   */
+  private async loadDisplayRates(
+    market: BrokerMarket,
+    target: FxCurrency,
+  ): Promise<{ rates: readonly FxRate[]; fxRate: DisplayFxRateView | null }> {
+    const from = defaultCurrencyForMarket(market);
+    if (from === target) return { rates: [], fxRate: null };
+
+    let rates: readonly FxRate[] = [];
+    try {
+      rates = await this.fxRates.fetchRates();
+    } catch (err) {
+      this.logger.warn(
+        `${market} 展示币种 ${target} 汇率取数失败, 本屏降级为原币种 (085 FR-006): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+    // 这里的 `null` **只可能**是「汇率不可用」—— `resolveDisplayRate` 的另一条返 null 的分支
+    // (`from === target`, 意为「不需要折算」) 已被上面那行拦掉。两个含义混成一个 falsy 分支,
+    // 就会在不需要折算时也报「汇率不可用」。
+    const applied = resolveDisplayRate(rates, from, target);
+    return {
+      rates,
+      fxRate:
+        applied === null
+          ? { from, to: target, rate: null, capturedAt: null, available: false }
+          : {
+              from,
+              to: target,
+              rate: applied.rate,
+              capturedAt: applied.capturedAt,
+              available: true,
+            },
+    };
+  }
 }
 
 export type BrokerPositionListRow = DisplayedPositionRow<BrokerPositionRow>;
+
+/** 列表**组内**的行: 详情行的全部字段 + 折算元信息 (`degraded` / `original*` 等)。 */
+export type BrokerPositionListGroupRow = DisplayedPositionRow<ConvertedBrokerPositionRow>;

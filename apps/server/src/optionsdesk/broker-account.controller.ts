@@ -87,10 +87,21 @@ export class BrokerAccountController {
       'included) are shown; positions whose underlying could not be resolved are only counted ' +
       '(unresolvedCount). Groups are ordered by |group market value| desc (null last), then ' +
       'ticker. P&L fields use the average-cost basis; a missing vendor value is null, never 0. ' +
-      'The four non-list client states derive from hasConnection / syncedAt / groups.length.',
+      'The four non-list client states derive from hasConnection / syncedAt / groups.length. ' +
+      'displayCurrency (optional) converts AMOUNTS only (row / group market value and unrealised ' +
+      "P&L); prices are never converted. It defaults to the market's own currency (us USD, hk " +
+      'HKD), in which case nothing is converted and fxRate is null. A row whose rate is ' +
+      'unavailable — or whose broker currency is unknown — is degraded: its amounts become null ' +
+      'and the original-currency values move to originalMarketValue / originalUnrealizedPl; any ' +
+      'group holding one reports aggregateComplete false with null aggregates and sinks to the ' +
+      'bottom. If every FX source fails the endpoint still returns 200, with fxRate.available false.',
   })
   @ApiResponse({ status: 200, description: 'Position list', type: BrokerPositionListResponse })
-  @ApiResponse({ status: 400, description: 'market not in us|hk', type: ProblemDetailResponse })
+  @ApiResponse({
+    status: 400,
+    description: 'market not in us|hk, or displayCurrency not in USD|HKD|CNY',
+    type: ProblemDetailResponse,
+  })
   @ApiResponse({
     status: 401,
     description: 'Unauthenticated / account not ACTIVE',
@@ -102,7 +113,11 @@ export class BrokerAccountController {
     @Query() query: BrokerPositionsQuery,
   ): Promise<BrokerPositionListResponse> {
     return toBrokerPositionListResponse(
-      await this.listBrokerPositions.execute(req.user.accountId, query.market),
+      await this.listBrokerPositions.execute(
+        req.user.accountId,
+        query.market,
+        query.displayCurrency ?? null,
+      ),
     );
   }
 

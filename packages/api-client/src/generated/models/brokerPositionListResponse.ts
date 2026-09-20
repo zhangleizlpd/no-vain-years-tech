@@ -5,7 +5,9 @@
  * no-vain-years backend HTTP API. Generated from NestJS controllers; consumed by packages/api-client for cross-app TS types.
  * OpenAPI spec version: 1.0
  */
+import type { BrokerFxRateResponse } from './brokerFxRateResponse';
 import type { BrokerPositionGroupResponse } from './brokerPositionGroupResponse';
+import type { BrokerPositionListResponseDisplayCurrency } from './brokerPositionListResponseDisplayCurrency';
 
 export interface BrokerPositionListResponse {
   /** 账号是否有券商连接 */
@@ -20,6 +22,10 @@ export interface BrokerPositionListResponse {
   stale: boolean;
   /** 判定不出正股的持仓条数 (不展示明细) */
   unresolvedCount: number;
-  /** 按正股分组的持仓 (|组市值| 降序, 组市值为空排末, 并列按 ticker) */
+  /** 本屏展示币种 (请求未带 displayCurrency ⇒ 该市场原币种) */
+  displayCurrency: BrokerPositionListResponseDisplayCurrency;
+  /** 参考汇率信息; 展示币种 = 该市场原币种 (无需折算) ⇒ null —— 客户端据此决定出不出参考汇率行 */
+  fxRate: BrokerFxRateResponse | null;
+  /** 按正股分组的持仓 (|组市值| 降序, 组市值为空排末, 并列按 ticker; 含降级行的组一律沉底) */
   groups: BrokerPositionGroupResponse[];
 }

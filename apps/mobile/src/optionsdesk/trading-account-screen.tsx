@@ -7,12 +7,26 @@
 //    持仓分段自 083 起接数据面（`TradingAccountPositions`，083 plan §D14）。
 // 🚨 选择状态走 `useTradingAccountStore`（进程内），🚫 不用组件 `useState`：push 屏返回即卸载，
 //    `useState` 会让 FR-004「同次使用内记住」失效（plan §D5）。
+// 🚨 **085 的展示币种恰恰相反，蓄意用屏组件 `useState`**（085 plan §D7）：085 FR-005 要的是
+//    「离开交易账户页再进入即复原」——屏级 `useState` 的生命周期恰好等于这个语义（083 e2e 双臂
+//    实证：进详情再返回本屏未卸载 ⇒ 保留；返回雷达再进本屏卸载 ⇒ 复原）。放进上面那个 store
+//    会让「离开再进入」仍保留上次币种，直接违反 085 FR-005 / SC-005。两者方向不同不是笔误。
+// 🚨 币种状态**必须放这里、不能放 `TradingAccountPositions`**：下面 positions↔orders 是条件渲染，
+//    放列表组件里切个分段就重置。形状是**每市场一格**（`Record<RadarMarket, DisplayCurrency>`）⇒
+//    「两个页签各记各的」由形状本身保证（085 FR-005）。
 // 📌 `actionableMarkets={[]}`：本页没有「可动锚」信号，市场页签不渲小圆点（FR-002）。
 // 📌 占位只随分段变、与市场无关（plan §D9）；图形块纯 View 几何，不画 SVG、不用 emoji（plan §D9）。
+import { useCallback, useState } from 'react';
 import { Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 
 import { SafeAreaView } from '~/ui';
+import {
+  initialCurrencyState,
+  selectCurrency,
+  type DisplayCurrency,
+  type DisplayCurrencyByMarket,
+} from './display-currency.rules';
 import { OPTIONSDESK_COPY } from './optionsdesk-copy';
 import { RadarMarketTabs } from './radar-market-tabs';
 import { TradingAccountPositions } from './trading-account-positions';
@@ -31,6 +45,15 @@ export function TradingAccountScreen() {
   const segment = useTradingAccountStore((s) => s.segment);
   const selectMarket = useTradingAccountStore((s) => s.selectMarket);
   const selectSegment = useTradingAccountStore((s) => s.selectSegment);
+  // 085：每市场页签一格；切页签只**读**另一格（下面 `currencyByMarket[market]`），不写任何格。
+  const [currencyByMarket, setCurrencyByMarket] =
+    useState<DisplayCurrencyByMarket>(initialCurrencyState);
+  const onSelectCurrency = useCallback(
+    (currency: DisplayCurrency) => {
+      setCurrencyByMarket((prev) => selectCurrency(prev, market, currency));
+    },
+    [market],
+  );
 
   return (
     <SafeAreaView edges={['bottom']} style={{ flex: 1 }}>
@@ -44,7 +67,11 @@ export function TradingAccountScreen() {
         />
         <TradingAccountSegments segment={segment} onSelect={selectSegment} />
         {segment === 'positions' ? (
-          <TradingAccountPositions market={market} />
+          <TradingAccountPositions
+            market={market}
+            displayCurrency={currencyByMarket[market]}
+            onSelectCurrency={onSelectCurrency}
+          />
         ) : (
           <View className="px-md py-lg">
             <PlaceholderCard segment={segment} />

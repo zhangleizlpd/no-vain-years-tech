@@ -9,10 +9,10 @@
 /**
  * 市场 (标时区用)
  */
-export type BrokerPositionRowResponseMarket = typeof BrokerPositionRowResponseMarket[keyof typeof BrokerPositionRowResponseMarket];
+export type BrokerPositionListRowResponseMarket = typeof BrokerPositionListRowResponseMarket[keyof typeof BrokerPositionListRowResponseMarket];
 
 
-export const BrokerPositionRowResponseMarket = {
+export const BrokerPositionListRowResponseMarket = {
   us: 'us',
   hk: 'hk',
 } as const;

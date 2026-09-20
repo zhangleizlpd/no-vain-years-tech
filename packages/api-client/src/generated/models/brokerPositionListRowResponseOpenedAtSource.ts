@@ -9,10 +9,10 @@
 /**
  * 开仓时间来源: derived = 由成交推算; fallback = 首次发现时刻
  */
-export type BrokerPositionRowResponseOpenedAtSource = typeof BrokerPositionRowResponseOpenedAtSource[keyof typeof BrokerPositionRowResponseOpenedAtSource];
+export type BrokerPositionListRowResponseOpenedAtSource = typeof BrokerPositionListRowResponseOpenedAtSource[keyof typeof BrokerPositionListRowResponseOpenedAtSource];
 
 
-export const BrokerPositionRowResponseOpenedAtSource = {
+export const BrokerPositionListRowResponseOpenedAtSource = {
   derived: 'derived',
   fallback: 'fallback',
 } as const;

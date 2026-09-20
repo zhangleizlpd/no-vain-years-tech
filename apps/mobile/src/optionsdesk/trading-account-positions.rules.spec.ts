@@ -7,7 +7,7 @@
 import type {
   BrokerPositionGroupResponse,
   BrokerPositionListResponse,
-  BrokerPositionRowResponse,
+  BrokerPositionListRowResponse,
 } from '@nvy/api-client';
 import { describe, expect, it } from 'vitest';
 
@@ -43,7 +43,9 @@ import {
 
 const COPY = OPTIONSDESK_COPY.tradingAccountPositions;
 
-function row(overrides: Partial<BrokerPositionRowResponse> = {}): BrokerPositionRowResponse {
+function row(
+  overrides: Partial<BrokerPositionListRowResponse> = {},
+): BrokerPositionListRowResponse {
   return {
     id: '1',
     market: 'us',
@@ -63,6 +65,12 @@ function row(overrides: Partial<BrokerPositionRowResponse> = {}): BrokerPosition
     openedAt: '2026-09-01T14:00:00.000Z',
     openedAtSource: 'derived',
     expired: false,
+    // 085 展示币种元信息 (契约新增)。缺省档 = 该市场原币种 ⇒ 直出、未折算、未降级。
+    displayCurrency: 'USD',
+    converted: false,
+    degraded: false,
+    originalMarketValue: null,
+    originalUnrealizedPl: null,
     ...overrides,
   };
 }
@@ -74,6 +82,7 @@ function group(rowCount: number): BrokerPositionGroupResponse {
     underlyingPrice: '120',
     groupMarketValue: '12000',
     groupUnrealizedPl: '1000',
+    aggregateComplete: true,
     rows: Array.from({ length: rowCount }, (_, i) => row({ id: String(i + 1) })),
   };
 }
@@ -86,6 +95,8 @@ function list(overrides: Partial<BrokerPositionListResponse> = {}): BrokerPositi
     syncedAtLocal: '2026-09-08 14:05:12',
     stale: false,
     unresolvedCount: 0,
+    displayCurrency: 'USD',
+    fxRate: null,
     groups: [group(1)],
     ...overrides,
   };

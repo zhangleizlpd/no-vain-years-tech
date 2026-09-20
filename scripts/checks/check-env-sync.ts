@@ -110,6 +110,10 @@ const ALLOWLIST = new Set([
   'RUN_MARKETDATA_IT',
   // env-gated IT opt-in flag for real code-index connectivity (ideation-grounding.it.spec.ts; 034 T007).
   'RUN_CODEINDEX_IT',
+  // env-gated 真 FX vendor 探针的开关 (optionsdesk-085.fx.vendor.spec.ts; 085 T002)。腾讯 /
+  // 新浪汇率端点的字段校真 (22 字段 / f3 / idx3 / 反向三对 MISS)。vitest gate, 非 application
+  // config —— 两个 baseUrl 走 marketdata.config.ts 的 .default()。
+  'RUN_FX_VENDOR_IT',
   // env-gated IT opt-in flag + 样本路径 for real DashScope 一次性 ASR (ideation-asr-transcribe.it.spec.ts;
   // 035 一次性识别 Replan)。RUN_ASR_IT (旧 WS IT) 已随 WS 栈下线退役。
   'RUN_ASR_SYNC_IT',
@@ -154,6 +158,11 @@ const ALLOWLIST = new Set([
   'EASTMONEY_BASE_URL',
   'EASTMONEY_CLIST_BASE_URL',
   'TENCENT_CALENDAR_BASE_URL',
+  // 085 FX 双源 baseUrl (marketdata.config.ts live 分支)。两者都有 schema .default()
+  // (qt.gtimg.cn / hq.sinajs.cn) ⇒ 归属判定 2: 默认值的真相留在 .config.ts, 写进 .env.example
+  // 就有两个真相源。env 只用来覆盖 (env-gated 真 vendor 探针 / 将来换 host)。
+  'TENCENT_FX_BASE_URL',
+  'SINA_FX_BASE_URL',
   'MARKETDATA_TICK_ENABLED',
   // #210 vendor lane 灰度 flag; schema default 'false'。
   'MARKETDATA_FUTU_LANE_ENABLED',

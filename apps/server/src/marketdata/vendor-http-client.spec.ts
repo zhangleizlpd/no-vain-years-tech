@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EASTMONEY_PROFILE } from './eastmoney.constraint-profile.js';
 import { FUTU_SHIM_OPTION_CHAIN_PROFILE } from './futu-shim.constraint-profile.js';
 import { LIXINGER_PROFILE } from './lixinger.constraint-profile.js';
+import { TENCENT_PROFILE } from './tencent.constraint-profile.js';
 import {
   TransientVendorError,
   VendorHttpClient,
@@ -53,6 +54,33 @@ function makeFetchWithBody(statuses: number[], bodyText: string) {
       ok: status >= 200 && status < 300,
       json: async () => ({ ok: 1 }),
       text: async () => bodyText,
+    };
+  });
+  return { fetch, calls };
+}
+
+/**
+ * 同 {@link makeFetch}, 但**造了 `arrayBuffer()`** —— 给 {@link VendorHttpClient.requestBytes}
+ * 那条通路用 (085: GBK 响应)。第三个并存的形状, 立意同 {@link makeFetchWithBody}。
+ */
+function makeFetchWithBytes(statuses: number[], bytes: Uint8Array) {
+  const calls: FetchArgs[] = [];
+  let i = 0;
+  const fetch = vi.fn(async (url: string, init?: FetchArgs['init']) => {
+    calls.push({ url, init });
+    const status = statuses[Math.min(i, statuses.length - 1)];
+    i++;
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      json: async () => ({ ok: 1 }),
+      // 每次都新建一个 ArrayBuffer: 真 `Response.arrayBuffer()` 也是一次性的, 复用同一个
+      // buffer 会让「读了两次」这类错在测试里看不出来。
+      arrayBuffer: async () => {
+        const out = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(out).set(bytes);
+        return out;
+      },
     };
   });
   return { fetch, calls };
@@ -372,6 +400,62 @@ describe('VendorHttpClient', () => {
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(new Set(signals).size).toBe(3);
     expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+
+  // ── 085 T002: requestBytes (非 UTF-8 的 vendor 通路) ──────────────────────────────────
+  // 腾讯 / 新浪汇率端点返 GBK。按 UTF-8 读不是「中文乱码」这么轻 —— GBK 尾字节值域含 0x7E,
+  // 即腾讯的字段分隔符 `~`, 名称段出现一个就把其后全部字段位后移, 汇率位读到别的字段而解析
+  // 照样成功。故要一条**字节**通路, 解码交调用方。
+
+  /** GBK `0xB0 0x7E` = 「皛」; 按 UTF-8 读会变成 U+FFFD + 一个货真价实的 `~`。 */
+  const GBK_BYTES_WITH_TILDE = Uint8Array.from([0x76, 0x5f, 0xb0, 0x7e, 0x7e, 0x31]);
+
+  it('085: requestBytes 原样返回响应字节 (0x7E 这类字节必须逐字节过来, 不经任何解码)', async () => {
+    const { fetch, calls } = makeFetchWithBytes([200], GBK_BYTES_WITH_TILDE);
+    const client = new VendorHttpClient(TENCENT_PROFILE, { fetch });
+
+    const p = client.requestBytes({ url: 'https://qt.example/q=whUSDCNY' });
+    await vi.runAllTimersAsync();
+    const bytes = await p;
+
+    expect([...bytes]).toEqual([...GBK_BYTES_WITH_TILDE]);
+    // profile 的必需 header 照常注入 —— 这条通路不是「绕开 profile」的后门。
+    expect(calls[0].init?.headers).toMatchObject({ Referer: TENCENT_PROFILE.headers.Referer });
+  });
+
+  it('085 负控制: 假 fetch 没有 arrayBuffer() → 指名道姓的错, 不是静默空字节', async () => {
+    const { fetch } = makeFetch([200]); // 只造了 json(), 即仓内既有假 fetch 的形状
+    const client = new VendorHttpClient(TENCENT_PROFILE, { fetch });
+
+    const settled = client.requestBytes({ url: 'https://x' }).then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(String((await settled).err)).toBe(
+      `Error: [${TENCENT_PROFILE.vendor}] fetch 响应无 arrayBuffer() (假 fetch 未实现?)`,
+    );
+  });
+
+  it('085: 限频 / 退避重试语义与 JSON 通路同一条 (5xx 重试至成功, 4xx 立即抛)', async () => {
+    const { fetch, calls } = makeFetchWithBytes([503, 200], GBK_BYTES_WITH_TILDE);
+    const client = new VendorHttpClient(EASTMONEY_PROFILE, { fetch });
+
+    const p = client.requestBytes({ url: 'https://x' });
+    await vi.runAllTimersAsync();
+    expect([...(await p)]).toEqual([...GBK_BYTES_WITH_TILDE]);
+    expect(calls).toHaveLength(2); // 1 次 503 + 1 次重试成功
+
+    const permanent = makeFetchWithBytes([404], GBK_BYTES_WITH_TILDE);
+    const client2 = new VendorHttpClient(EASTMONEY_PROFILE, { fetch: permanent.fetch });
+    const settled = client2.requestBytes({ url: 'https://x' }).then(
+      () => ({ err: undefined }),
+      (e: unknown) => ({ err: e }),
+    );
+    await vi.runAllTimersAsync();
+    expect((await settled).err).toBeInstanceOf(VendorHttpError);
+    expect(permanent.calls).toHaveLength(1); // 永久错不重试
   });
 });
 

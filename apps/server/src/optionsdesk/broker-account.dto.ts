@@ -1,14 +1,16 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, Matches } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsOptional, Matches } from 'class-validator';
 import type { Prisma } from '../generated/prisma/client';
 import type { BrokerMarket } from './broker-code.rules';
+import { FX_CURRENCIES, type FxCurrency } from './fx-rate.port';
 import type { BrokerBackfillRunView } from './list-broker-backfill-runs.usecase';
 import type { BrokerOrderDetail } from './get-broker-order.usecase';
 import type { BrokerPositionDetail } from './get-broker-position.usecase';
 import type {
   BrokerPositionGroupView,
   BrokerPositionList,
+  BrokerPositionListGroupRow,
   BrokerPositionListRow,
 } from './list-broker-positions.usecase';
 
@@ -31,6 +33,17 @@ export class BrokerPositionsQuery {
   @ApiProperty({ description: '市场', enum: BROKER_MARKETS, example: 'us' })
   @IsIn(BROKER_MARKETS)
   market!: BrokerMarket;
+
+  @ApiPropertyOptional({
+    description:
+      '展示币种; 省略 ⇒ 该市场原币种 (us ⇒ USD, hk ⇒ HKD), 响应与不带本参数时逐字节相同。' +
+      '只影响金额类字段的呈现, 不参与任何查询条件',
+    enum: FX_CURRENCIES,
+    example: 'CNY',
+  })
+  @IsOptional()
+  @IsIn(FX_CURRENCIES)
+  displayCurrency?: FxCurrency;
 }
 
 export class BrokerPositionOptionResponse {
@@ -124,6 +137,54 @@ export class BrokerPositionRowResponse {
   expired!: boolean;
 }
 
+/**
+ * 列表行 = 详情行的全部字段 + 展示币种元信息。
+ *
+ * 🚨 **另起一个子类而不是往 {@link BrokerPositionRowResponse} 上加**: 后者是持仓详情响应的基类,
+ * 加上去等于把折算字段一并发给详情端点 —— 而详情页恒按原币种呈现 (FR-010), 那几个字段在那里
+ * 永远是缺省值, 只会让客户端以为详情也跟着展示币种走。
+ */
+export class BrokerPositionListRowResponse extends BrokerPositionRowResponse {
+  @ApiProperty({
+    description:
+      '该行金额类字段的呈现币种; 券商未回报币种或不在三档内 ⇒ null (客户端走「币种未知」文案, 不回落任何币种)',
+    type: 'string',
+    enum: FX_CURRENCIES,
+    nullable: true,
+    example: 'CNY',
+  })
+  displayCurrency!: FxCurrency | null;
+
+  @ApiProperty({
+    description: '金额类是否真的乘过汇率 (展示币种 = 原币种的直出路径恒 false)',
+    example: true,
+  })
+  converted!: boolean;
+
+  @ApiProperty({
+    description:
+      '降级行 (所需汇率不可用, 或券商未回报币种): marketValue / unrealizedPl 为 null 且不进组聚合, 原币种金额见 originalMarketValue / originalUnrealizedPl',
+    example: false,
+  })
+  degraded!: boolean;
+
+  @ApiProperty({
+    description: '降级行的原币种市值 (币种见 displayCurrency); 未降级 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '-300',
+  })
+  originalMarketValue!: string | null;
+
+  @ApiProperty({
+    description: '降级行的原币种持仓盈亏; 未降级 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '200',
+  })
+  originalUnrealizedPl!: string | null;
+}
+
 export class BrokerPositionGroupResponse {
   @ApiProperty({ description: '正股 canonical ticker', example: 'us:ZQY' })
   underlyingTicker!: string;
@@ -157,10 +218,53 @@ export class BrokerPositionGroupResponse {
 
   @ApiProperty({
     description:
-      '组内行: 正股段在前、期权段在后; 期权段已到期沉底, 段内沽(P) 先于购(C)、到期日近的在前、行权价升序',
-    type: [BrokerPositionRowResponse],
+      '两个聚合值是否完整; 组内只要有一行降级 ⇒ false 且两个聚合值均为 null (该组一并沉底)',
+    example: true,
   })
-  rows!: BrokerPositionRowResponse[];
+  aggregateComplete!: boolean;
+
+  @ApiProperty({
+    description:
+      '组内行: 正股段在前、期权段在后; 期权段已到期沉底, 段内沽(P) 先于购(C)、到期日近的在前、行权价升序',
+    type: [BrokerPositionListRowResponse],
+  })
+  rows!: BrokerPositionListRowResponse[];
+}
+
+/** 本屏实际消费的那一条参考汇率 (FR-007)。 */
+export class BrokerFxRateResponse {
+  @ApiProperty({ description: '折算的源币种 = 该市场原币种', enum: FX_CURRENCIES, example: 'HKD' })
+  from!: FxCurrency;
+
+  @ApiProperty({
+    description: '折算的目标币种 = 本屏展示币种',
+    enum: FX_CURRENCIES,
+    example: 'CNY',
+  })
+  to!: FxCurrency;
+
+  @ApiProperty({
+    description: '1 个 from 币兑多少 to 币 (参考汇率, 不用于结算); 取不到 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '0.95',
+  })
+  rate!: string | null;
+
+  @ApiProperty({
+    description:
+      '我们采到该汇率的时刻 (ISO 8601 UTC 绝对时刻, 非 vendor 自报时间戳), 由客户端按设备本地展示; 取不到 ⇒ null',
+    type: 'string',
+    nullable: true,
+    example: '2026-09-17T01:30:00.000Z',
+  })
+  capturedAt!: string | null;
+
+  @ApiProperty({
+    description: '汇率是否可用; false ⇒ 整屏退回原币种, rate 与 capturedAt 同为 null',
+    example: true,
+  })
+  available!: boolean;
 }
 
 export class BrokerPositionListResponse {
@@ -196,7 +300,23 @@ export class BrokerPositionListResponse {
   unresolvedCount!: number;
 
   @ApiProperty({
-    description: '按正股分组的持仓 (|组市值| 降序, 组市值为空排末, 并列按 ticker)',
+    description: '本屏展示币种 (请求未带 displayCurrency ⇒ 该市场原币种)',
+    enum: FX_CURRENCIES,
+    example: 'HKD',
+  })
+  displayCurrency!: FxCurrency;
+
+  @ApiProperty({
+    description:
+      '参考汇率信息; 展示币种 = 该市场原币种 (无需折算) ⇒ null —— 客户端据此决定出不出参考汇率行',
+    type: BrokerFxRateResponse,
+    nullable: true,
+  })
+  fxRate!: BrokerFxRateResponse | null;
+
+  @ApiProperty({
+    description:
+      '按正股分组的持仓 (|组市值| 降序, 组市值为空排末, 并列按 ticker; 含降级行的组一律沉底)',
     type: [BrokerPositionGroupResponse],
   })
   groups!: BrokerPositionGroupResponse[];
@@ -232,6 +352,19 @@ export function toBrokerPositionRowResponse(row: BrokerPositionListRow): BrokerP
   };
 }
 
+export function toBrokerPositionListRowResponse(
+  row: BrokerPositionListGroupRow,
+): BrokerPositionListRowResponse {
+  return {
+    ...toBrokerPositionRowResponse(row),
+    displayCurrency: row.displayCurrency,
+    converted: row.converted,
+    degraded: row.degraded,
+    originalMarketValue: decimalString(row.originalMarketValue),
+    originalUnrealizedPl: decimalString(row.originalUnrealizedPl),
+  };
+}
+
 function toBrokerPositionGroupResponse(
   group: BrokerPositionGroupView,
 ): BrokerPositionGroupResponse {
@@ -241,7 +374,8 @@ function toBrokerPositionGroupResponse(
     underlyingPrice: decimalString(group.underlyingPrice),
     groupMarketValue: decimalString(group.groupMarketValue),
     groupUnrealizedPl: decimalString(group.groupUnrealizedPl),
-    rows: group.rows.map(toBrokerPositionRowResponse),
+    aggregateComplete: group.aggregateComplete,
+    rows: group.rows.map(toBrokerPositionListRowResponse),
   };
 }
 
@@ -576,6 +710,20 @@ export function toBrokerPositionListResponse(list: BrokerPositionList): BrokerPo
     syncedAtLocal: list.syncedAtLocal,
     stale: list.stale,
     unresolvedCount: list.unresolvedCount,
+    displayCurrency: list.displayCurrency,
+    fxRate:
+      list.fxRate === null
+        ? null
+        : {
+            from: list.fxRate.from,
+            to: list.fxRate.to,
+            rate: decimalString(list.fxRate.rate),
+            // 绝对时刻出边界为 ISO UTC, 由 mobile 按设备本地展示 (ADR-0066 第二条轴);
+            // 🚫 在 server 侧拼当地时间串 —— 这个时刻不属于任何交易所。
+            capturedAt:
+              list.fxRate.capturedAt === null ? null : list.fxRate.capturedAt.toISOString(),
+            available: list.fxRate.available,
+          },
     groups: list.groups.map(toBrokerPositionGroupResponse),
   };
 }

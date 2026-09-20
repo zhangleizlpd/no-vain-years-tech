@@ -7,12 +7,13 @@
  */
 
 /**
- * 正股 / 期权
+ * 折算的目标币种 = 本屏展示币种
  */
-export type BrokerPositionRowResponseKind = typeof BrokerPositionRowResponseKind[keyof typeof BrokerPositionRowResponseKind];
+export type BrokerFxRateResponseTo = typeof BrokerFxRateResponseTo[keyof typeof BrokerFxRateResponseTo];
 
 
-export const BrokerPositionRowResponseKind = {
-  stock: 'stock',
-  option: 'option',
+export const BrokerFxRateResponseTo = {
+  USD: 'USD',
+  HKD: 'HKD',
+  CNY: 'CNY',
 } as const;
