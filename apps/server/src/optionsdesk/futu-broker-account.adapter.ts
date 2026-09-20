@@ -28,6 +28,7 @@ import {
 } from './broker-account.port';
 import { parseBrokerCode, parseComboLegs, type BrokerMarket } from './broker-code.rules';
 import type { BrokerTradeSide } from './broker-opened-at.rules';
+import { FUTU_SHIM_EVENTS_PROFILE } from './futu-shim-events.constraint-profile';
 import { FUTU_SHIM_TRADE_PROFILE } from './futu-shim-trade.constraint-profile';
 
 /**
@@ -319,7 +320,16 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
   constructor(
     // CROSS-CONTEXT-SYNC: 复用 marketdata 的 vendor 传输类 (限频 / 退避 / 熔断纪律, ADR-0047), 非业务
     // 调用; 实例由本 ctx 以自己的约束档自建, 与 marketdata 零共享状态 (plan D3)。
+    //
+    // 🚨 **两个实例不是冗余** (2026-09-20 拆, issue #469): 限频桶与熔断态都是 per-instance
+    // (`vendor-http-client.ts:253`)。交易查询面受券商 10 次/30 秒硬限, 而 `/trade/events` 读 shim
+    // 进程内存、一发不打券商 —— 合用一个实例会让 2 秒一拍的事件轮询吃光交易配额并自我排队。
+    // ⚠️ 这与 ADR-0062 §101「两个 token 必须解析到同一个 adapter 实例, 否则限频桶翻倍撞 429」
+    // **不矛盾**: 那条防的是把**同一份券商配额**拆成两个桶; 这里拆出去的那个桶根本不面向券商。
     private readonly http: VendorHttpClient,
+    // CROSS-CONTEXT-SYNC: 同上, 推送事件面**自己的**实例 (`FUTU_SHIM_EVENTS_PROFILE`), 与交易面
+    // 各持一套限频桶与熔断态。
+    private readonly eventsHttp: VendorHttpClient,
     private readonly baseUrl: string,
     private readonly token: string,
   ) {}
@@ -410,6 +420,8 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
     const res = await this.fetchEnvelope<TradeEventsEnvelope>(
       search === '' ? '/trade/events' : `/trade/events?${search}`,
       what,
+      // 🚨 走**事件面**的客户端, 不走 `this.http`: 见构造器旁注与 `FUTU_SHIM_EVENTS_PROFILE`。
+      this.eventsHttp,
     );
     const rows = parseShimRows(res, what);
     const epoch = strOrNull(res.epoch);
@@ -448,9 +460,11 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
   private async fetchEnvelope<T extends ShimEnvelope = ShimEnvelope>(
     path: string,
     what: string,
+    // 默认走交易面客户端; 只有 `/trade/events` 显式传事件面客户端 (两者的桶与熔断态分开)。
+    http: VendorHttpClient = this.http,
   ): Promise<T> {
     try {
-      return await this.http.request<T>({
+      return await http.request<T>({
         url: `${this.baseUrl}${path}`,
         method: 'GET',
         headers: { Authorization: `Bearer ${this.token}` },
@@ -481,7 +495,9 @@ export class FutuBrokerAccountAdapter implements BrokerAccountPort {
  *
  * `kind=mock` ⇒ 拒绝壳, 任一方法**一调即抛** `MockCollectionRefusedError` (FR-018; 复用 marketdata
  * 采集口的同一个壳, 054 纪律: 同步产出必然落库, dev 机上不许造出任何券商数据)。
- * `kind=live` ⇒ 自建 `VendorHttpClient` (marketdata 不导出其客户端实例, plan D3)。
+ * `kind=live` ⇒ 自建 `VendorHttpClient` (marketdata 不导出其客户端实例, plan D3)。**两个实例**:
+ * 交易查询面按券商硬限走 `FUTU_SHIM_TRADE_PROFILE`, 推送事件面走 `FUTU_SHIM_EVENTS_PROFILE`
+ * (不打券商, 见构造器旁注与 issue #469)。
  */
 export function createBrokerAccountPort(cfg: MarketdataConfig): BrokerAccountPort {
   if (cfg.kind === 'mock') {
@@ -491,6 +507,7 @@ export function createBrokerAccountPort(cfg: MarketdataConfig): BrokerAccountPor
   }
   return new FutuBrokerAccountAdapter(
     new VendorHttpClient(FUTU_SHIM_TRADE_PROFILE),
+    new VendorHttpClient(FUTU_SHIM_EVENTS_PROFILE),
     cfg.futuShimUrl,
     cfg.futuShimToken,
   );

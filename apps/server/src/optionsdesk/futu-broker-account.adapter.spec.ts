@@ -125,7 +125,12 @@ function makeThrowingShim(err: unknown) {
   return { http: { request } as unknown as VendorHttpClient, request };
 }
 
-const makeAdapter = (http: VendorHttpClient) => new FutuBrokerAccountAdapter(http, BASE, TOKEN);
+/**
+ * 默认两个面用同一个 test double —— 既有用例只关心规范化, 不关心走哪个客户端。
+ * 分流本身由「事件面与交易面各走各的客户端」那条用例单独钉。
+ */
+const makeAdapter = (http: VendorHttpClient, eventsHttp: VendorHttpClient = http) =>
+  new FutuBrokerAccountAdapter(http, eventsHttp, BASE, TOKEN);
 
 const LIVE_CONFIG = {
   kind: 'live',
@@ -284,6 +289,32 @@ describe('FutuBrokerAccountAdapter', () => {
     expect(() => refused.getAccountSummary()).toThrow(MockCollectionRefusedError);
 
     expect(createBrokerAccountPort(LIVE_CONFIG)).toBeInstanceOf(FutuBrokerAccountAdapter);
+  });
+
+  it('⑧ 事件面与交易面各走各的客户端 —— 限频桶与熔断态不互相污染 (issue #469)', async () => {
+    const trade = makeShim({ '/trade/positions': [] });
+    const eventsRequest = vi.fn(async (_req: VendorRequest) => ({
+      as_of: '2026-09-11T14:00:00+00:00',
+      count: 0,
+      rows: [],
+      epoch: 'aaaa0000epoch',
+      next_seq: 0,
+      dropped: false,
+      last_event_at: null,
+    }));
+    const events = { request: eventsRequest } as unknown as VendorHttpClient;
+    const adapter = makeAdapter(trade.http, events);
+
+    await adapter.fetchPositions('us');
+    expect(trade.request).toHaveBeenCalledTimes(1);
+    expect(eventsRequest).not.toHaveBeenCalled();
+
+    await adapter.fetchEvents(null);
+    // 🚨 事件拉取 MUST NOT 落到交易面客户端: 那正是 #469 —— 2 秒一拍吃光券商 10 次/30 秒的
+    // 配额, `VendorRateLimiter` 排队 10 秒且**无错误留痕**, 表现为持仓刷新被整体推迟。
+    expect(trade.request).toHaveBeenCalledTimes(1);
+    expect(eventsRequest).toHaveBeenCalledTimes(1);
+    expect(new URL(eventsRequest.mock.calls[0]![0].url).pathname).toBe('/trade/events');
   });
 
   it('基础设施类失败 (5xx / 429 用尽 / 熔断) ⇒ BrokerInfrastructureError; 其余 4xx 原样上抛', async () => {
