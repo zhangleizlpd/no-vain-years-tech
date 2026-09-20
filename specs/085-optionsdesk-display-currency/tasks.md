@@ -11,7 +11,7 @@ updated_at: '2026-09-20'
 
 **Spec**: [`spec.md`](./spec.md) ｜ **Plan**: [`plan.md`](./plan.md)
 
-**一句话**：optionsdesk 自持 FX 取数链（腾讯 `wh` 主 + 新浪 `fx_s` 备 → FallbackChain → 进程内单格缓存 + single-flight）→ `list-broker-positions` 在分组聚合**之前**逐行折算、降级行金额置 `null` ⇒ 复用 083 既有「市值无效排末」白拿降级组沉底 → mobile 屏级每页签一格状态 + 下拉式选择器。**零 schema 变更、零新依赖、零新 use case、零跨 ctx 面变化**；跨端单 PR。
+**一句话**：optionsdesk 自持 FX 取数链（腾讯 `wh` 单源 → FallbackChain → 进程内单格缓存 + single-flight）→ `list-broker-positions` 在分组聚合**之前**逐行折算、降级行金额置 `null` ⇒ 复用 083 既有「市值无效排末」白拿降级组沉底 → mobile 屏级每页签一格状态 + 下拉式选择器。**零 schema 变更、零新依赖、零新 use case、零跨 ctx 面变化**；跨端单 PR。
 
 ## Format
 
@@ -29,8 +29,7 @@ updated_at: '2026-09-20'
 |---|---|
 | FX port（新） | `apps/server/src/optionsdesk/fx-rate.port.ts`（ctx 内 port + DI token） |
 | FX 解析纯函数（新） | `apps/server/src/optionsdesk/fx-rate.rules.ts`（+ 同名 `.spec.ts`） |
-| FX 双源 adapter（新） | `tencent-fx.adapter.ts` · `sina-fx.adapter.ts` · `fx-rate-fallback-chain.adapter.ts`（+ `.spec.ts`） |
-| FX 备源 profile（新） | `sina-fx.constraint-profile.ts`（新浪自己一个桶 + `Referer`；腾讯复用 `marketdata/tencent.constraint-profile.ts`） |
+| FX adapter（新） | `tencent-fx.adapter.ts` · `fx-rate-fallback-chain.adapter.ts`（+ `.spec.ts`）；腾讯复用 `marketdata/tencent.constraint-profile.ts`。原新浪备源已于 #467 移除（见 `plan.md` §未能验证的事项 amend） |
 | FX 缓存装饰器（新） | `fx-rate-cache.adapter.ts`（+ `.spec.ts`） |
 | FX 拒绝壳（新） | `refusing-fx-rate.adapter.ts`（mock 档绑它；立意照 `marketdata/refusing-collection.adapter.ts`，**跨 ctx 不可 import**，另落一份） |
 | 折算规则（新） | `display-currency.rules.ts`（+ 同名 `.spec.ts`） |
@@ -231,11 +230,11 @@ T011 + T015 → T013
 - **零 `[Ops]` 上线后验收 task**：本片 7 条 SC **全部可机器化**（见 SC 表，落点全在 rules / IT / e2e / 真机门）。与 083 / 084 的差别在那两片的 SC 含「与券商 App 逐行比对真实持仓」这类只能人工的判据，本片是**纯呈现口径改造、零写路径、零真数依赖**。故意不配 Ops task。
 - **FR-004 的排序错位不配专门回归测试**：spec Assumptions 与 `checklists/requirements.md` 判据 1 已定 —— 持仓列表恒按单一市场页签呈现、服务端亦按单市场过滤（`list-broker-positions.usecase.ts` 的 `findMany({ where: { accountId, market } })`）⇒ 同屏各行必然同币种，折算是等比例缩放，「按原币种排序、按折算币种显示」的错位在本 feature 范围内**结构上不可能发生**。它由 T005-⑦ / T006-⑨ 的「折算前后顺序相同」连带钉住；保留 FR-004 是为将来出现跨市场汇总视图时有正确判据。
 - **「原币种」档不存在** ⇒ 无对应分支、无 task。单市场下「选 HKD」与「选原币种」显示结果逐字相同（spec Clarifications 已定三档）。
-- **新浪 `idx3` 的更新频率**（plan「未能验证的事项」）：放 T002 的 `RUN_FX_VENDOR_IT` 门控块做长窗采样（≥ 30 分钟、跨在岸 CNY 开盘），**是消法不是本片验收门** —— 它只影响**备源**（腾讯全败时才用），且 D5 已把上屏时刻锁在我们自己的 `capturedAt`、不会拿 vendor 时间戳背书。若证实是死字段，则把新浪降为「仅在腾讯失败时提供一个明确标注更旧的值」或整条去掉备源（FR-006 的降级路径本就覆盖「取不到」）。
+- **新浪 `idx3` 的更新频率**（plan「未能验证的事项」）：放 T002 的 `RUN_FX_VENDOR_IT` 门控块做长窗采样（≥ 30 分钟、跨在岸 CNY 开盘），**是消法不是本片验收门** —— 它只影响**备源**（腾讯全败时才用），且 D5 已把上屏时刻锁在我们自己的 `capturedAt`、不会拿 vendor 时间戳背书。若证实是死字段，则把新浪降为「仅在腾讯失败时提供一个明确标注更旧的值」或整条去掉备源（FR-006 的降级路径本就覆盖「取不到」）。**⇒ 2026-09-20 #467：备源已整条移除（原因是 prod 出口恒 403，不是 `idx3`；见 `plan.md` §未能验证的事项 amend），本条随之失效。**
 - **腾讯 CNY 报价偏差是否稳定在 0.08% 量级**：只做过一次同刻对拍，不影响本片用途（看总量，维护者 2026-09-16 已定维持腾讯 + UI 标「参考汇率」）。将来用途升级到任何**结算 / 对账**前必须先补多轮对拍 —— 不在本片范围。
 - **`f11` 语义未定** ⇒ **不消费它**，无 task。
 - **FR-010 的「订单列表 / 详情页」不配独立断言**（第二轮 analyze F4，结构论证）：折算只发生在 `list-broker-positions.usecase.ts`，即 `broker-account.controller.ts:78` 的列表端点（`:102` 收 `@Query`）。两个详情端点走别的 use case 且都不收 query —— `broker-positions/:id`（`:109` → `getBrokerPosition.execute` `:139`）与 `broker-orders/:id`（`:146` → `getBrokerOrder.execute` `:175`）；mobile 侧也各走独立 query key（`use-trading-account-position.ts:32` / `use-trading-account-order.ts:29`），不复用列表缓存。⇒ 折算路径在结构上够不到任一详情屏，FR-010 自动成立。订单分段目前还是 `PlaceholderCard`（`trading-account-screen.tsx:46-52`），不渲染任何金额。T015-④ 作为持仓详情的防御臂保留，订单详情不另配臂。
-- **T004（config + 装配）与 T014（门）不出现在任何覆盖表落点** —— **故意的，不是漏挂**：T004 是接线与环境门控（两个 baseUrl、`ALLOWLIST` 登记、mock 档绑拒绝壳），T014 是全量门与 PR，两者都不承载 spec 层的 `state_branches` / FR / SC / AS，验收全在各自 `→ verify:` 内闭环。⇒ 下轮 analyze **不要**为它们补覆盖表行。
+- **T004（config + 装配）与 T014（门）不出现在任何覆盖表落点** —— **故意的，不是漏挂**：T004 是接线与环境门控（FX baseUrl、`ALLOWLIST` 登记、mock 档绑拒绝壳），T014 是全量门与 PR，两者都不承载 spec 层的 `state_branches` / FR / SC / AS，验收全在各自 `→ verify:` 内闭环。⇒ 下轮 analyze **不要**为它们补覆盖表行。
 
 ## Implementation Strategy
 

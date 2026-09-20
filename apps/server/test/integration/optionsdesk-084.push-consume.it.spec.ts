@@ -146,7 +146,6 @@ const LIVE_CONFIG: MarketdataConfig = {
   eastmoneyClistBaseUrl: 'https://eastmoney-clist.invalid',
   tencentCalendarBaseUrl: 'https://tencent.invalid',
   tencentFxBaseUrl: 'https://tencent-fx.invalid',
-  sinaFxBaseUrl: 'https://sina-fx.invalid',
   futuShimUrl: 'https://futu-shim.invalid',
   futuShimToken: 'it-084-fake-shim-token',
 };

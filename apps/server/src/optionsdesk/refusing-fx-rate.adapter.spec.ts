@@ -21,7 +21,6 @@ const LIVE_CONFIG: MarketdataConfig = {
   eastmoneyClistBaseUrl: 'https://push2.eastmoney.com',
   tencentCalendarBaseUrl: 'https://web.ifzq.gtimg.cn',
   tencentFxBaseUrl: 'https://qt.gtimg.cn',
-  sinaFxBaseUrl: 'https://hq.sinajs.cn',
   // 🚨 末段刻意避开 `10.89` 一类写法: 它含子串 `0.8` ——
   // `check-optionsdesk-rule-constants.ts` 不变量 #1 扫本目录全部 `.ts`(含 spec), 当场红。
   futuShimUrl: 'http://10.77.0.3:8811',

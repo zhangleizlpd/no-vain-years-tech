@@ -158,11 +158,10 @@ const ALLOWLIST = new Set([
   'EASTMONEY_BASE_URL',
   'EASTMONEY_CLIST_BASE_URL',
   'TENCENT_CALENDAR_BASE_URL',
-  // 085 FX 双源 baseUrl (marketdata.config.ts live 分支)。两者都有 schema .default()
-  // (qt.gtimg.cn / hq.sinajs.cn) ⇒ 归属判定 2: 默认值的真相留在 .config.ts, 写进 .env.example
-  // 就有两个真相源。env 只用来覆盖 (env-gated 真 vendor 探针 / 将来换 host)。
+  // 085 FX baseUrl (marketdata.config.ts live 分支)。有 schema .default() (qt.gtimg.cn)
+  // ⇒ 归属判定 2: 默认值的真相留在 .config.ts, 写进 .env.example 就有两个真相源。
+  // env 只用来覆盖 (env-gated 真 vendor 探针 / 将来换 host)。
   'TENCENT_FX_BASE_URL',
-  'SINA_FX_BASE_URL',
   'MARKETDATA_TICK_ENABLED',
   // #210 vendor lane 灰度 flag; schema default 'false'。
   'MARKETDATA_FUTU_LANE_ENABLED',

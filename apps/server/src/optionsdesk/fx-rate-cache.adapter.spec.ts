@@ -149,7 +149,7 @@ describe('FxRateCacheAdapter · single-flight 与失败语义', () => {
 
   it('③b 失败之后恢复 ⇒ 下一发拿到真值 (降级态不被缓存粘住)', async () => {
     const clock = makeClock();
-    const failing = makeFailingInner('sina 403');
+    const failing = makeFailingInner('vendor 403');
     const healthy = makeInner(clock);
     let healed = false;
     const adapter = new FxRateCacheAdapter(
@@ -159,7 +159,7 @@ describe('FxRateCacheAdapter · single-flight 与失败语义', () => {
       clock.now,
     );
 
-    await expect(adapter.fetchRates()).rejects.toThrow(/sina 403/);
+    await expect(adapter.fetchRates()).rejects.toThrow(/vendor 403/);
     healed = true;
     const rates = await adapter.fetchRates();
 

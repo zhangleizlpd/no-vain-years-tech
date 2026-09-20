@@ -19,7 +19,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 ## Summary *(mandatory)*
 
-持仓列表页加展示币种切换（三档 USD / HKD / CNY，进入页面即当前市场原币种，本次停留内有效、离开该页复原）。server 侧 optionsdesk 自持汇率源（腾讯 `wh` 主 + 新浪 `fx_s` 备，FallbackChain + 进程内单格缓存），折算在既有分组聚合**之前**逐行做，降级行金额置 `null` ⇒ 复用 083 既有「市值无效排末」实现「降级组沉底」，**零新排序键**。**零 schema 变更、零新依赖、零新 use case、零跨 ctx 面变化**；跨端单 PR。
+持仓列表页加展示币种切换（三档 USD / HKD / CNY，进入页面即当前市场原币种，本次停留内有效、离开该页复原）。server 侧 optionsdesk 自持汇率源（腾讯 `wh` 单源，FallbackChain + 进程内单格缓存），折算在既有分组聚合**之前**逐行做，降级行金额置 `null` ⇒ 复用 083 既有「市值无效排末」实现「降级组沉底」，**零新排序键**。**零 schema 变更、零新依赖、零新 use case、零跨 ctx 面变化**；跨端单 PR。
 
 ## Dependencies & Defensive Additions *(Cargo-cult 防火墙)*
 
@@ -146,7 +146,7 @@ DESIGN INTENT + decisions in prose under Architecture Notes instead.
 
 #### D0 — 命名（按 `fx` 名词段分组，不建子目录）
 
-server：`fx-rate.port.ts`（ctx 内 port + token）· `fx-rate.rules.ts`（GBK 解码 + 两个源各自的解析纯函数 + 哨兵挡 + N 对校验）· `tencent-fx.adapter.ts`（主）· `sina-fx.adapter.ts`（备）· `fx-rate-fallback-chain.adapter.ts`（编排）· `fx-rate-cache.adapter.ts`（缓存装饰器）· `display-currency.rules.ts`（折算 + 降级判定）。`rg -l fx apps/server/src/optionsdesk/` 即可列出本组。
+server：`fx-rate.port.ts`（ctx 内 port + token）· `fx-rate.rules.ts`（GBK 解码 + 解析纯函数 + 哨兵挡 + N 对校验）· `tencent-fx.adapter.ts`（主）· `fx-rate-fallback-chain.adapter.ts`（编排）· `fx-rate-cache.adapter.ts`（缓存装饰器）· `display-currency.rules.ts`（折算 + 降级判定）。`rg -l fx apps/server/src/optionsdesk/` 即可列出本组。
 
 mobile：`display-currency.rules.ts`（档位值域 + 按市场求默认 + 降级/不完整标判定）· `currency-selector.tsx`。testID 沿 083 前缀 `optionsdesk-trading-account-`。
 
@@ -173,7 +173,7 @@ mobile：`display-currency.rules.ts`（档位值域 + 按市场求默认 + 降�
 
 #### D3 — FX 源与解析（`fx-rate.rules.ts` 纯函数）
 
-- 端点：主 `https://qt.gtimg.cn/q=wh<FROM><TO>`（GBK，`~` 分隔 22 字段，取 `f3`）；备 `https://hq.sinajs.cn/list=fx_s<from><to>`（小写，GBK，`,` 分隔，取 `idx3`，**必带 `Referer: https://finance.sina.com.cn`** —— 漏了 403，`alert/sina-realtime.adapter.ts:7` 已记同一事实）。
+- 端点：`https://qt.gtimg.cn/q=wh<FROM><TO>`（GBK，`~` 分隔 22 字段，取 `f3`）。原备源 `hq.sinajs.cn` 已于 #467 移除（prod 出口恒 403；判据见本文 §未能验证的事项的 2026-09-20 amend）。
 - **解析器不能复用 `alert/realtime-quote.rules.ts`**：股票是 88 字段、FX 是 22 字段，字段下标完全不同；且 alert 那个住在另一个 ctx，跨 ctx import 纯函数被 eslint `boundaries` 拦（ADR-0053）。**照写法另落一份**，两份并存是已知状态。
 - 三个币对固定：`USDCNY` / `HKDCNY` / `USDHKD`。反向（`CNY→USD` 等）**取倒数**（P3：反向币对全 MISS）。不做**链式交叉**（如 `USD→HKD` 用 `USDCNY ÷ HKDCNY` 算）—— 腾讯三角不闭合约 0.057% 且三对时间戳可差 2 分钟，交叉出的数字任何源都没直接给过。
 - 解析契约：**请求 N 对必须回 N 对，少一对即抛**（与 alert 的「部分命中不算失败」刻意相反）；哨兵 `v_pv_none_match="1"` 显式挡（不得当成一个 symbol）；`f3` / `idx3` 不可 Decimal 解析即抛。
@@ -245,7 +245,7 @@ vendor 时间戳**可以**留在日志 / 响应里作证据（`EVIDENCE:` 体例
 | Server Small | `display-currency.rules.spec.ts` | 23, 24, 25, 26, 27, 28, 29, 30 |
 | Server Small | `fx-rate-cache.adapter.spec.ts` | 35（加载态的前置：缓存未命中 / single-flight / 失败不入缓存） |
 | Server Medium | `apps/server/test/integration/optionsdesk-085.display-currency.it.spec.ts` | 18, 19, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 36, 37 |
-| Server Medium（env-gated `RUN_FX_VENDOR_IT`，默认 skip） | 同上文件内 `describe.skipIf` 块 | 真 vendor 字段校真（22 字段 / `f3` / 新浪 `idx3` / 反向 MISS） |
+| Server Medium（env-gated `RUN_FX_VENDOR_IT`，默认 skip） | 同上文件内 `describe.skipIf` 块 | 真 vendor 字段校真（22 字段 / `f3` / 反向 MISS） |
 | Mobile vitest | `display-currency.rules.spec.ts` · 文案穷举 spec | 18, 19, 20, 21, 22, 31, 32, 33, 34, 37 |
 | Mobile E2E | `e2e/optionsdesk-trading-account-positions.spec.ts` 扩臂 | 18, 19, 20, 21, 22, 31, 32, 33, 34, 35, 36, 37, 38 |
 | Contract Smoke | `e2e/contract-smoke/optionsdesk-trading-account.contract.ts` 加一条 | 18（带 `displayCurrency` 的请求打真 server） |
@@ -256,14 +256,15 @@ vendor 时间戳**可以**留在日志 / 响应里作证据（`EVIDENCE:` 体例
 
 ### 新增 / 触碰文件清单（tasks 拆分的物料面）
 
-- **server 新增**：`optionsdesk/fx-rate.port.ts` · `fx-rate.rules.ts` · `tencent-fx.adapter.ts` · `sina-fx.adapter.ts` · `fx-rate-fallback-chain.adapter.ts` · `fx-rate-cache.adapter.ts` · `refusing-fx-rate.adapter.ts`（mock 档绑的拒绝壳；立意照 `marketdata/refusing-collection.adapter.ts`，跨 ctx 不可 import 故另落一份）· `display-currency.rules.ts`（+ 对应 `.spec.ts`）· `apps/server/test/integration/optionsdesk-085.display-currency.it.spec.ts`
-- **server 触碰**：`optionsdesk/list-broker-positions.usecase.ts`（可选入参 + 折算 + 响应带汇率信息）· `broker-account.controller.ts`（query）· `broker-account.dto.ts`（DTO + 装饰器，**nullable 标量必显式 `type`**）· `optionsdesk.module.ts`（FX port 装配，按 `marketdataConfig.kind` 绑定：`mock` 档绑**调用即抛**的拒绝壳，照 `refusing-collection.adapter.ts` 立意 —— 本地 dev 不得真打腾讯）· `config/marketdata.config.ts`（两个带 `.default()` 的 baseUrl）· `scripts/checks/check-env-sync.ts`（`ALLOWLIST` 登记两个可选 key）· `apps/server/openapi.json` + `packages/api-client/src/generated/`（regen）
+- **server 新增**：`optionsdesk/fx-rate.port.ts` · `fx-rate.rules.ts` · `tencent-fx.adapter.ts` · `fx-rate-fallback-chain.adapter.ts` · `fx-rate-cache.adapter.ts` · `refusing-fx-rate.adapter.ts`（mock 档绑的拒绝壳；立意照 `marketdata/refusing-collection.adapter.ts`，跨 ctx 不可 import 故另落一份）· `display-currency.rules.ts`（+ 对应 `.spec.ts`）· `apps/server/test/integration/optionsdesk-085.display-currency.it.spec.ts`
+- **server 触碰**：`optionsdesk/list-broker-positions.usecase.ts`（可选入参 + 折算 + 响应带汇率信息）· `broker-account.controller.ts`（query）· `broker-account.dto.ts`（DTO + 装饰器，**nullable 标量必显式 `type`**）· `optionsdesk.module.ts`（FX port 装配，按 `marketdataConfig.kind` 绑定：`mock` 档绑**调用即抛**的拒绝壳，照 `refusing-collection.adapter.ts` 立意 —— 本地 dev 不得真打腾讯）· `config/marketdata.config.ts`（带 `.default()` 的 FX baseUrl）· `scripts/checks/check-env-sync.ts`（`ALLOWLIST` 登记该可选 key）· `apps/server/openapi.json` + `packages/api-client/src/generated/`（regen）
 - **mobile 新增**：`src/optionsdesk/display-currency.rules.ts`（+ spec）· `currency-selector.tsx`
 - **mobile 触碰**：`trading-account-screen.tsx`（D7 状态）· `trading-account-positions.tsx`（选择器 + 汇率行 + 降级标）· `use-trading-account-positions.ts`（query key 加币种）· `trading-account-positions.rules.ts`（标记判定）· `optionsdesk-copy.ts`（D9）· `e2e/optionsdesk-trading-account-positions.spec.ts` · `e2e/contract-smoke/optionsdesk-trading-account.contract.ts`
 
 ### 未能验证的事项（如实留档，不卡 plan）
 
 - **新浪 `idx3` 的更新频率**：本轮 60 秒 / 6 轮（10s 间隔）采样中 `idx3` 逐字不变，而同窗口腾讯 `whUSDHKD` 的 `f3` 动了一次、新浪自己的时间戳也在推进 ⇒ **无法区分「`idx3` 是稳定的即期价」与「`idx3` 是个不更新的死字段」**。它只影响**备源**（腾讯全败时才用），且 D5 已把上屏时刻锁在我们自己的采集时刻、不会拿 vendor 时间戳背书。**消法**：impl 期 `RUN_FX_VENDOR_IT` 块内做一次长窗（≥ 30 分钟、跨在岸 CNY 开盘）采样，断言 `idx3` 会跟着动；若证实是死字段，则把新浪降为「仅在腾讯失败时提供一个明确标注更旧的值」或整条去掉备源（FR-006 的降级路径本就覆盖「取不到」）。
+  > **2026-09-20 amend（#467）**：本绊线已触发并执行「整条去掉备源」，但**触发原因不是 `idx3`**，那条始终未被证实或证伪。真实原因是新浪 `hq.sinajs.cn` 从 **prod 出口恒 403**（三个阿里云出口的 FX 与股票两种路径全 `403`，同刻家宽出口全 `200`，主源 `qt.gtimg.cn` 在 prod 全 `200`）⇒ 备源在 prod 恒失败、链**本就已经**是腾讯单源。裁决时同步实测过替代备源：prod 可达的候选全是日更 + 离岸 / 中间价口径，顶上来会给出「看似正常实则昨天」的数字，比走 FR-006 显式降级更糟。⇒ `sina-fx.adapter.ts` / `sina-fx.constraint-profile.ts` / `parseSinaFx` / `sinaFxBaseUrl` 全部移除，`FxRateFallbackChainAdapter` **保留**（全败抛是 state_branch 8 的承重点，且将来接第二个源时不用重建）。
 - **腾讯 CNY 报价偏差是否稳定**在 0.08% 量级（只做过一次同刻对拍）。不影响本片用途（看总量），但若将来用于结算 / 对账须先补多轮对拍。
 - **`f11` 语义**（PoC 期 spread 从 `0.0029` 缩到 `0.0002`、又曾恰等于 `f6`/`f7`）⇒ **不消费它**。
 
@@ -273,6 +274,6 @@ vendor 时间戳**可以**留在日志 / 响应里作证据（`EVIDENCE:` 体例
 
 | 改动 | 为什么需要 | 更简单的替代为何不行 |
 |---|---|---|
-| `config/marketdata.config.ts` 加两个 FX baseUrl | 两个端点与已有 `tencentCalendarBaseUrl`（`web.ifzq.gtimg.cn`）**不同子域**，照 `eastmoneyClistBaseUrl`（`:20-21`「同 vendor 不同 host → 独立 baseUrl，共享 profile/限频」）先例；复用 `MARKETDATA_PROVIDER` 的 `kind` 门控使 mock 档能绑拒绝壳 | 新建 `optionsdesk.config.ts` = 为两个带默认值的 URL 多一个 config 注册单元与一套测试 boot 占位；硬编码 URL = env-gated 真 vendor IT 与将来迁移都没有覆盖点 |
+| `config/marketdata.config.ts` 加 FX baseUrl | 两个端点与已有 `tencentCalendarBaseUrl`（`web.ifzq.gtimg.cn`）**不同子域**，照 `eastmoneyClistBaseUrl`（`:20-21`「同 vendor 不同 host → 独立 baseUrl，共享 profile/限频」）先例；复用 `MARKETDATA_PROVIDER` 的 `kind` 门控使 mock 档能绑拒绝壳 | 新建 `optionsdesk.config.ts` = 为两个带默认值的 URL 多一个 config 注册单元与一套测试 boot 占位；硬编码 URL = env-gated 真 vendor IT 与将来迁移都没有覆盖点 |
 | FX 解析纯函数在 optionsdesk 另落一份（与 `alert/realtime-quote.rules.ts` 并存） | 股票 88 字段 vs FX 22 字段，字段下标完全不同；跨 ctx import 他 ctx 的 `*.rules.ts` 被 eslint `boundaries` 拦（ADR-0053，`optionsdesk` 的 `disallow` 含 `marketdata-rules`，同理不放行 alert） | 把两者上提共享包 = 触发 ADR-0053 的「升 `packages/`」重审，为一个 22 字段解析器做平台级改造，Senior Engineer Test 不过 |
 | FX adapter 留 optionsdesk、不进 `integrations/` | ADR-0058 准入要求 ≥2 ctx 复用，FX 当前单消费者；marketdata 自己的 5 个 vendor 客户端同样不在 `integrations/` | 现在就迁 = 为单消费者建跨 ctx 共享面，且要新开一条 `optionsdesk → integrations` 依赖边 |
