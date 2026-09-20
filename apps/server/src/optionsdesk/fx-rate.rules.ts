@@ -4,8 +4,8 @@ import type { FxPair } from './fx-rate.port';
 /**
  * 085 T001 FX 解析纯函数 (FR-002 / FR-006; plan D3; ADR-0043 §4 rules 无副作用)。
  *
- * 职责: 把腾讯 `wh` / 新浪 `fx_s` 两个汇率端点的 GBK 字节响应解析为币对 → 即期汇率。
- * 双源 adapter (T002) 各自请求原始字节 → 调本文件解码 + 解析 → 经 FallbackChain 收敛口径。
+ * 职责: 把腾讯 `wh` 汇率端点的 GBK 字节响应解析为币对 → 即期汇率。
+ * adapter (T002) 请求原始字节 → 调本文件解码 + 解析 → 经 FallbackChain 收敛口径。
  * 无 IO / 无 DI, 复杂度 O(响应长度)。
  *
  * ## 🚫 复用 `alert/realtime-quote.rules.ts`
@@ -66,32 +66,20 @@ export function decodeGbk(raw: Uint8Array): string {
 
 /** 腾讯 `v_<sym>="..."` 变量提取 (g 全局; payload 可空)。 */
 const TENCENT_VAR = /v_(\w+)="([^"]*)"/g;
-/** 新浪 `var hq_str_<sym>="..."` 变量提取。 */
-const SINA_VAR = /var hq_str_(\w+)="([^"]*)"/g;
 
 /** 全部币对无效时 vendor 返回的哨兵变量名 (`v_pv_none_match="1"`)。 */
 const TENCENT_SENTINEL_VAR = 'pv_none_match';
 /** 腾讯汇率符号前缀 (`whUSDCNY`)。 */
 const TENCENT_SYMBOL_PREFIX = 'wh';
-/** 新浪汇率符号前缀 (`fx_susdcny`, 小写)。 */
-const SINA_SYMBOL_PREFIX = 'fx_s';
 
 /** 腾讯即期汇率位。 */
 const TENCENT_RATE_INDEX = 3;
 /** 腾讯 vendor 刷新时刻位 (证据用)。 */
 const TENCENT_STAMP_INDEX = 5;
-/**
- * 新浪即期汇率位。
- * EVIDENCE: `fx_shkdcny` 的 `idx3` 与腾讯 `whHKDCNY` 的 `f3` 吻合到 4 位小数, 而 `idx8` 不吻合
- * 且会摆动 (plan 作者 2026-09-17 补测, plan §plan 前验证「本轮补测两条」)。
- * 🚫 `idx1` / `idx2` / `idx8` —— 买卖价一族。
- */
-const SINA_RATE_INDEX = 3;
 
 /** 字段数下限 = 消费到的最大下标 + 1。绑在**消费点**上而不是「22 字段」那个观测值: 后者只在
  *  vendor 一字不改时成立, 而多出字段并不影响我们读的两位 (22 字段本身由 T002 的真 vendor 块校)。 */
 const TENCENT_MIN_FIELDS = TENCENT_STAMP_INDEX + 1;
-const SINA_MIN_FIELDS = SINA_RATE_INDEX + 1;
 
 /** vendor 符号 (已去前缀) → 币对; 不是本片消费的三对之一 ⇒ `null`。 */
 function toFxPair(raw: string, requested: readonly FxPair[]): FxPair | null {
@@ -155,33 +143,6 @@ export function parseTencentFx(
     });
   }
   requireAllPairs(quotes, requestedPairs, '腾讯');
-  return quotes;
-}
-
-/**
- * 解析新浪汇率响应文本 → 币对 → 汇率 (取 `idx3`)。
- * @param text GBK 解码后的响应文本 (adapter 用 `parseSinaFx(decodeGbk(bytes), pairs)`)
- */
-export function parseSinaFx(text: string, requestedPairs: readonly FxPair[]): Map<FxPair, FxQuote> {
-  const quotes = new Map<FxPair, FxQuote>();
-  for (const match of text.matchAll(SINA_VAR)) {
-    const symbol = match[1];
-    if (!symbol.startsWith(SINA_SYMBOL_PREFIX)) continue;
-    const pair = toFxPair(symbol.slice(SINA_SYMBOL_PREFIX.length), requestedPairs);
-    if (pair === null) continue;
-    if (match[2] === '') continue; // 无效码 → 空 payload; 由 requireAllPairs 折成「少一对」
-    const fields = match[2].split(',');
-    if (fields.length < SINA_MIN_FIELDS) {
-      throw new FxParseError(`新浪 ${pair}: 字段数 ${fields.length} 不足 —— schema drift?`);
-    }
-    quotes.set(pair, {
-      rate: toRate(fields[SINA_RATE_INDEX], `新浪 ${pair}`),
-      // 新浪的时间戳字段位**未核实** (本片只核实了 idx3) ⇒ 不消费。D5 下它本就只是证据,
-      // 猜一个位置写进日志只会让下一个读者以为它被核过。
-      vendorStamp: null,
-    });
-  }
-  requireAllPairs(quotes, requestedPairs, '新浪');
   return quotes;
 }
 

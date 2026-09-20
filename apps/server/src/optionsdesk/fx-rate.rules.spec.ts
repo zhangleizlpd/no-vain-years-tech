@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '../generated/prisma/client';
 import { FX_PAIRS, type FxPair } from './fx-rate.port';
-import { decodeGbk, invertRate, parseSinaFx, parseTencentFx } from './fx-rate.rules';
+import { decodeGbk, invertRate, parseTencentFx } from './fx-rate.rules';
 
 /**
  * 085 T001 FX 解析纯函数 (FR-002 / FR-006; plan D3; state_branches 8, 9)。
@@ -44,24 +44,6 @@ function tencentLine(
   return `v_wh${pair}="${seg.join('~')}";`;
 }
 
-/**
- * 新浪 `fx_s<pair>` 响应一行 —— `,` 分隔, 只有 `idx3` 被消费。
- * `idx1` / `idx2` / `idx8` 给**互不相同的诱饵值**: 取错字段的实现必须在此当场红
- * (EVIDENCE: `idx8` 与腾讯 `f3` 不吻合且会摆动 —— plan 作者 2026-09-17 补测)。
- */
-function sinaLine(
-  pair: FxPair,
-  fields: { idx3: string; idx1?: string; idx2?: string; idx8?: string },
-): string {
-  const seg = new Array<string>(12).fill('0');
-  seg[0] = '20260917094811';
-  seg[1] = fields.idx1 ?? '5.5555';
-  seg[2] = fields.idx2 ?? '4.4444';
-  seg[3] = fields.idx3;
-  seg[8] = fields.idx8 ?? '3.3333';
-  return `var hq_str_fx_s${pair.toLowerCase()}="${seg.join(',')}";`;
-}
-
 /** vendor 中文名 —— 形态取自 plan §D3 字段位对照表的样本行 (`f1` 段)。 */
 const TENCENT_NAME: Record<FxPair, string> = {
   USDCNY: '美元人民币',
@@ -92,8 +74,6 @@ function gbkBytes(line: string, name: string, nameBytes: Uint8Array): Uint8Array
 const TENCENT_ALL_THREE = ALL_PAIRS.map((p) =>
   tencentLine(p, TENCENT_NAME[p], { f3: SYNTHETIC_RATE[p] }),
 ).join('\n');
-
-const SINA_ALL_THREE = ALL_PAIRS.map((p) => sinaLine(p, { idx3: SYNTHETIC_RATE[p] })).join('\n');
 
 describe('parseTencentFx —— 腾讯 wh 主源 (取 f3)', () => {
   it('① 三对齐全 ⇒ 解出 3 条, f3 值逐字正确 (🚫 f10 / f11)', () => {
@@ -146,31 +126,6 @@ describe('parseTencentFx —— 腾讯 wh 主源 (取 f3)', () => {
 
   it('④ 字段数不足 (schema drift) ⇒ 抛, 不静默跳过', () => {
     expect(() => parseTencentFx('v_whUSDCNY="310~x~USDCNY";', ['USDCNY'])).toThrow();
-  });
-});
-
-describe('parseSinaFx —— 新浪 fx_s 备源 (取 idx3)', () => {
-  it('⑤ 取 idx3; idx1 / idx2 / idx8 不被消费 (那三个是买卖价一族、会摆动)', () => {
-    const quotes = parseSinaFx(SINA_ALL_THREE, ALL_PAIRS);
-    expect(quotes.size).toBe(3);
-    for (const pair of ALL_PAIRS) {
-      expect(quotes.get(pair)?.rate.toFixed(4)).toBe(SYNTHETIC_RATE[pair]);
-    }
-    // 诱饵值一个都不许出现在结果里。
-    const parsed = [...quotes.values()].map((q) => q.rate.toFixed(4));
-    for (const decoy of ['5.5555', '4.4444', '3.3333']) {
-      expect(parsed).not.toContain(decoy);
-    }
-  });
-
-  it('② 少一对 ⇒ 抛 (解析契约对备源同样成立)', () => {
-    const partial = sinaLine('USDCNY', { idx3: SYNTHETIC_RATE.USDCNY });
-    expect(() => parseSinaFx(partial, ALL_PAIRS)).toThrow(/HKDCNY|USDHKD/);
-  });
-
-  it('④ 无效码 (空 payload) ⇒ 抛, 不当成解出 0 条', () => {
-    const empty = ALL_PAIRS.map((p) => `var hq_str_fx_s${p.toLowerCase()}="";`).join('\n');
-    expect(() => parseSinaFx(empty, ALL_PAIRS)).toThrow();
   });
 });
 

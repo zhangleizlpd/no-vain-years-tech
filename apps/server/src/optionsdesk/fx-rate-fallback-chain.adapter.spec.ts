@@ -72,8 +72,8 @@ describe('FxRateFallbackChainAdapter —— 主源命中即停 / 平移 / 全败
   it('③ 两源全败 ⇒ **抛**, 且 MUST NOT 解析成空数组 (branch 8 的前置)', async () => {
     vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     const chain = new FxRateFallbackChainAdapter([
-      failNode('tencent 502').node,
-      failNode('sina 403').node,
+      failNode('primary 502').node,
+      failNode('secondary 403').node,
     ]);
 
     const settled = await chain.fetchRates().then(
@@ -86,7 +86,7 @@ describe('FxRateFallbackChainAdapter —— 主源命中即停 / 平移 / 全败
     expect(settled.rates).toBeUndefined();
     expect(String(settled.err)).toContain('all fx rate sources failed');
     // 末一个节点的原话要能被带出去, 否则全败只剩一句说不出话的通用错。
-    expect(String(settled.err)).toContain('sina 403');
+    expect(String(settled.err)).toContain('secondary 403');
     vi.restoreAllMocks();
   });
 });
