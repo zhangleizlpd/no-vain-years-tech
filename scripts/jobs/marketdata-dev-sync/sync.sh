@@ -179,6 +179,20 @@ TABLE_POLICIES=(
   #    但 sync_run 里 `sync:earnings_event` **一条运行记录都没有** ⇒ 从未跑过。此处翻 full 是
   #    为了「prod 有数据的那天本地自动跟上」，不代表现在能拿到财报打标数据。
   "marketdata.earnings_event:full"           # 047 财报事件日历
+  # ── 079 港股财报日期层 5 张（#405 @2026-09-14 落 prod）──────────────────────────────
+  # 全 skip，判据与上面 039-043 那组同构，外加一条本片独有的：
+  # ① 全仓**零读口** —— 079 FR-022 明确不给 optionsdesk 任何读口（期权台读财报日期只读上面的
+  #    `earnings_event`），controller 零命中、mobile 零消费 ⇒ dev 空表不会让任何一屏答错；
+  # ② SAMPLE_CODES 现全为 A 股，而本片观测是港股 + 美股 ⇒ 即便 sample_only 也恒导 0 行；
+  # ③ `earnings_date_event_log` 只有 `event_id`（FK → earnings_date_event），连 sample_only 都不合法。
+  # 将来 079 片 2 起读口 / 本地要联调港股财报日历：往 SAMPLE_CODES 加港股样本股 + 把 observation /
+  # event / fiscal_profile / meeting_lag 改 sample_only、event_log 改 full 即点亮 —— ⚠️ 那时 event
+  # 必须排在 event_log **之前**（重灌顺序即注册顺序，父表先于子表），下面已按该序排好。
+  "marketdata.earnings_date_observation:skip"  # 079 多源观测（PIT）
+  "marketdata.earnings_date_event:skip"        # 079 合并后事件（父表，被 event_log FK 引用）
+  "marketdata.earnings_date_event_log:skip"    # 079 事件流水（append-only，FK → earnings_date_event）
+  "marketdata.earnings_fiscal_profile:skip"    # 079 财年档案（唯一 instrument_id）
+  "marketdata.earnings_meeting_lag:skip"       # 079 会议 → 刊发间隔
   # ── 业务参考数据（非标的级，但有真消费方）────────────────────────────────────────
   # 2026-08-15 由 skip 翻 full（issue #45 附带项）—— 它**不是**运维表，原先跟 sync_run /
   # sync_dimension 归在同一组是分类错了：那几张描述「同步这件事本身」，而交易日历是**业务
@@ -226,6 +240,24 @@ TABLE_POLICIES=(
   #    投递流程要看的正是刚投那条。
   # 将来出现审核队列 / 列表读路径（那时 dev 空表 = 屏永远空）再翻 full。
   "optionsdesk.anchor_submission:skip"       # 059 访客估值投递待审表（prod 131 行 @2026-08-22）
+  # ── optionsdesk：券商账户同步 6 张（082 #416 / 084 #452，@2026-09-14 起落 prod）────────
+  # 全 skip。与同组 anchor 两张的差别在于：搬过来**也点不亮屏**，而代价是真的。
+  # ① 账号隔离在查询条件里（083 Guardrail 2：每条 broker_* 查询的 where 都带 accountId），而
+  #    `account` schema **不在 SYNC_SCHEMAS** ⇒ 搬来的行挂的是 prod 的 account_id，本地账号是
+  #    各自独立创建的另一套 id。两种结局都不是想要的：本地无同 id 账号 ⇒ 行在库里但任何 dev
+  #    登录都查不到（白搬）；恰好撞上同 id ⇒ 把 prod 的真实持仓挂到一个不相干的 dev 账号名下。
+  # ② `broker_position` 是「当前持仓」不留快照，而本脚本截断→重灌 ⇒ 每天抹掉本地自造的测试
+  #    持仓 —— 与上面 anchor_submission 同构的真代价（本地联调 083 要看的正是自己造的那几行）。
+  # ③ 这组是**个人金融业务数据**（持仓 / 成交号 / 订单号），少搬一份就少一个落地面
+  #    （per docs/conventions/information-boundary.md；本注释亦刻意不记它们的 prod 行数）。
+  # 本地联调 083 交易账户页：本地自己造 broker_connection + 持仓行（account_id 填本地登录账号），
+  # 不要指望这条同步。将来 dev 有了跨库账号对齐方案再评估翻 full。
+  "optionsdesk.broker_connection:skip"       # 082 券商连接（account_id 级）
+  "optionsdesk.broker_position:skip"         # 082 当前持仓（无历史，重灌会抹掉本地自造）
+  "optionsdesk.broker_deal:skip"             # 082 成交流水
+  "optionsdesk.broker_order:skip"            # 082 订单最新态
+  "optionsdesk.broker_contract_ref:skip"     # 082 合约 → 正股解析缓存（无 account_id，但无持仓即无人读）
+  "optionsdesk.broker_sync_run:skip"         # 082/084 同步执行留痕（运维表，记的是「那台库」的运行史）
 )
 
 # ─── 工具函数 ─────────────────────────────────────────────────────────────────
