@@ -2,6 +2,15 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.54.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.0...server-v0.54.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **optionsdesk:** /trade/events 拆出独立限频画像 —— 事件轮询不再吃券商配额 ([#473](https://github.com/zhangleizlpd/no-vain-years-tech/issues/473)) ([32468a3](https://github.com/zhangleizlpd/no-vain-years-tech/commit/32468a3937c9111ae156470c0dfafe3187ef85e7)), closes [#469](https://github.com/zhangleizlpd/no-vain-years-tech/issues/469)
+* **optionsdesk:** 085 去掉 prod 出口恒 403 的 FX 备源新浪, 链收敛为腾讯单源 ([#470](https://github.com/zhangleizlpd/no-vain-years-tech/issues/470)) ([d9cf73e](https://github.com/zhangleizlpd/no-vain-years-tech/commit/d9cf73e06934e847ace1b73231074686aa7d1d18)), closes [#467](https://github.com/zhangleizlpd/no-vain-years-tech/issues/467)
+* **optionsdesk:** leg-retrieval 去掉会 drift 的写死行数估算, 改定性表述 ([#476](https://github.com/zhangleizlpd/no-vain-years-tech/issues/476)) ([17a9d8b](https://github.com/zhangleizlpd/no-vain-years-tech/commit/17a9d8b47e31469331b05918239451d0338f0b56))
+
 ## [0.54.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.53.0...server-v0.54.0) (2026-09-20)
 
 
