@@ -21,6 +21,7 @@ created_at: '2026-06-08'
 - 🚨 **跨 ctx 读交易日历**：intraday 交易时段 gate 读 `trading_day`（marketdata 表）= Q7-B 直查，`prisma.tradingDay.find*` 上方**必须** `// CROSS-CONTEXT-READ:` 注释（moat 探针拒）；跨 ctx 写永远禁
 - 🚨 **021/023 零回归（FR：021/023 既有断言全保留）**：EOD 引擎 / rules / IT / e2e 不改；intraday UC 与 EOD UC 共用 `evaluateAlertConditions` 纯函数但独立入口
 - 🚨 **双源口径一致前提（master 跨契约 / ADR-0047 §6）**：腾讯/新浪均为现价同口径（PoC 对拍一致），故双源热备可静默切换；新浪涨跌幅自算 `(现价-昨收)/昨收`、腾讯直给——口径收敛在 `realtime-quote.rules.ts` 纯函数
+  > **2026-09-21 amend（#482）**：备源新浪已移除，本前提随之**失效**（不再有第二个源要对口径）。下面 T006 / T007 / T012 的描述是当时做了什么的记录，不回改；当前架构以 plan §D2 的 amend 为准。
 - **三段式 PR（per plan §Phase 2）**：**PR-1 = Server 契约面**（T001–T005）→ **PR-2 = Server 实时引擎**（T006–T013）→ **PR-3 = Mobile**（T014–T018）
 
 ## Path Conventions

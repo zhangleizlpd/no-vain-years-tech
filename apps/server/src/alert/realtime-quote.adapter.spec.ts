@@ -3,14 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RealtimeQuotePort } from './realtime-quote.port.js';
 import type { RealtimeQuote } from './realtime-quote.rules.js';
 import { RealtimeQuoteFallbackChainAdapter } from './realtime-quote-fallback-chain.adapter.js';
-import { SINA_REFERER, SinaRealtimeAdapter } from './sina-realtime.adapter.js';
 import { TencentRealtimeAdapter } from './tencent-realtime.adapter.js';
 import type { RealtimeFetch } from './realtime-fetch.js';
 
 /**
- * 024 T007 双源 adapter + FallbackChain 红绿 (US1)。fetchBytes 注入式 stub → 验请求编排
- * (URL / header) + 解析接线 + schema-fail 抛 + 链路降级。GBK 正确性已 T006 证 (此处 ASCII 合成字节)。
- * 真实请求 (字段/批量/延迟/双源切换) 由 T012 env-gated IT 校真。
+ * 024 T007 腾讯 adapter + FallbackChain 红绿 (US1)。fetchBytes 注入式 stub → 验请求编排
+ * (URL) + 解析接线 + schema-fail 抛 + 链路降级。GBK 正确性已 T006 证 (此处 ASCII 合成字节)。
+ * 真实请求 (字段/批量/延迟) 由 T012 env-gated IT 校真。
+ *
+ * 链的多节点编排 (平移 / 全败抛) 仍用 stub 覆盖 —— 生产接线当前是腾讯单节点 (备源新浪已移除,
+ * 见 #482), 但多节点是链自身的契约, 将来接第二个源时这几条就是回归网。
  */
 
 const bytesOf = (s: string): Uint8Array => Uint8Array.from([...s].map((c) => c.charCodeAt(0)));
@@ -18,9 +20,6 @@ const bytesOf = (s: string): Uint8Array => Uint8Array.from([...s].map((c) => c.c
 // 腾讯最小合成报文 (ASCII 名占位; price idx3 / prevClose idx4 / changePct idx32 直给)
 const tencentBody = (sym: string, price: string, prevClose: string, pct: string): string =>
   `v_${sym}="51~NAME~000001~${price}~${prevClose}~${Array(27).fill('0').join('~')}~${pct}~";\n`;
-// 新浪最小合成报文 (name idx0 / open idx1 / prevClose idx2 / price idx3; pct 自算)
-const sinaBody = (sym: string, prevClose: string, price: string): string =>
-  `var hq_str_${sym}="NAME,0,${prevClose},${price},0,0,0,0,0,0";\n`;
 
 describe('TencentRealtimeAdapter', () => {
   it('构造 q= 批量 URL + 解析现价/昨收/直给涨跌幅', async () => {
@@ -45,7 +44,7 @@ describe('TencentRealtimeAdapter', () => {
     expect(fetchBytes).not.toHaveBeenCalled();
   });
 
-  it('200 但 0 解析 (schema drift) → 抛 (供 FallbackChain 切备)', async () => {
+  it('200 但 0 解析 (schema drift) → 抛 (供 FallbackChain 上抛熔断)', async () => {
     const fetchBytes = vi.fn<RealtimeFetch>().mockResolvedValue(bytesOf('garbage not a quote'));
     await expect(new TencentRealtimeAdapter(fetchBytes).fetchQuotes(['sz000001'])).rejects.toThrow(
       /schema drift/,
@@ -56,30 +55,6 @@ describe('TencentRealtimeAdapter', () => {
     const fetchBytes = vi.fn<RealtimeFetch>().mockRejectedValue(new Error('HTTP 500'));
     await expect(new TencentRealtimeAdapter(fetchBytes).fetchQuotes(['sz000001'])).rejects.toThrow(
       /HTTP 500/,
-    );
-  });
-});
-
-describe('SinaRealtimeAdapter', () => {
-  it('注入 Referer + 构造 list= URL + 自算涨跌幅', async () => {
-    const fetchBytes = vi
-      .fn<RealtimeFetch>()
-      .mockResolvedValue(bytesOf(sinaBody('sz000001', '10.98', '11.03')));
-    const quotes = await new SinaRealtimeAdapter(fetchBytes).fetchQuotes(['sz000001']);
-    expect(fetchBytes).toHaveBeenCalledWith('https://hq.sinajs.cn/list=sz000001', {
-      Referer: SINA_REFERER,
-    });
-    expect(quotes.get('sz000001')).toMatchObject({
-      price: 11.03,
-      prevClose: 10.98,
-      changePct: 0.46,
-    });
-  });
-
-  it('200 但 0 解析 → 抛', async () => {
-    const fetchBytes = vi.fn<RealtimeFetch>().mockResolvedValue(bytesOf('var hq_str_sz000001="";'));
-    await expect(new SinaRealtimeAdapter(fetchBytes).fetchQuotes(['sz000001'])).rejects.toThrow(
-      /schema drift/,
     );
   });
 });
@@ -114,9 +89,9 @@ describe('RealtimeQuoteFallbackChainAdapter', () => {
     expect(backup).toHaveBeenCalledTimes(1);
   });
 
-  it('双源均败 → 抛 (供 T008 熔断计数)', async () => {
+  it('全节点均败 → 抛 (供 T008 熔断计数)', async () => {
     const primary = vi.fn().mockRejectedValue(new Error('tencent down'));
-    const backup = vi.fn().mockRejectedValue(new Error('sina 403'));
+    const backup = vi.fn().mockRejectedValue(new Error('backup down'));
     const chain = new RealtimeQuoteFallbackChainAdapter([stub(primary), stub(backup)]);
     await expect(chain.fetchQuotes(['sz000001'])).rejects.toThrow(
       /all realtime quote sources failed/,
