@@ -65,8 +65,12 @@ RECENT_DAYS="${RECENT_DAYS:-20}"
 #     该读路径现在在 leg-retrieval.adapter.ts。）
 #   • 保守下界 = **2 个 session**：option-snapshot-coverage.check.ts 要「基线日 + 当日」两期。
 #     它的两个调用方（sync-option-oi-settle.usecase.ts / option-snapshot-remediation.ts）都在
-#     采集链路上，而 **dev 是否跑采集未验证** —— 2026-09-21 查本机 apps/server/.env 里没有
-#     MARKETDATA_PROVIDER 键，取不到实际值 ⇒ 按 2 期算，不赌它不跑。
+#     采集链路上，而 **dev 是否跑采集仍未验证** —— 2026-09-21 实测本机 `MARKETDATA_PROVIDER=mock`
+#     （值在 shell env 里，**不在** apps/server/.env 文件里；本机泄漏了 31/47 个 server env，
+#     清单见 scripts/local-verify-as-ci.sh --list），但 **mock provider 是否仍走采集链路没验**
+#     ⇒ 按 2 期算，不赌它不跑。
+#     📌 本行初稿写的是「查 .env 没有该键 ⇒ 取不到实际值」—— 结论对、理由错：只查了文件没查
+#        env。查 server 配置的实际取值时 .env 文件不是唯一来源，dev shell 常年带着几十个。
 #     7 自然日 ≈ **5–6 个交易日**。🚨 窗口锚点是 **prod 会话的 CURRENT_DATE**（见 where_for
 #     的 recent_sessions 分支），**不是「数据最大日」** —— 所以周一跑只覆盖 5 个交易日
 #     （2026-09-21 周一实测：09-14…09-18 共 5 期）。按窗口天数直接除 7 会高估一期，算余量
