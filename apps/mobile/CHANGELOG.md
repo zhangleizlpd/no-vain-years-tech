@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.22.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.22.0...mobile-v0.22.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **repo:** mobile:build 补上 ^build 依赖, 消除与 api-client codegen 的竞态 ([#479](https://github.com/zhangleizlpd/no-vain-years-tech/issues/479)) ([14688a0](https://github.com/zhangleizlpd/no-vain-years-tech/commit/14688a02d035db75ff554094d01c73bf7d21bfca))
+
 ## [0.22.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/mobile-v0.21.0...mobile-v0.22.0) (2026-09-20)
 
 
