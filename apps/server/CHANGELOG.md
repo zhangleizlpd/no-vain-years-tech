@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.54.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.1...server-v0.54.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **alert:** 移除 prod 出口恒超时的实时行情备源新浪, 链收敛为腾讯单源 ([#483](https://github.com/zhangleizlpd/no-vain-years-tech/issues/483)) ([fd2ec7a](https://github.com/zhangleizlpd/no-vain-years-tech/commit/fd2ec7a72851698a018b4cdb62423428a2123369)), closes [#482](https://github.com/zhangleizlpd/no-vain-years-tech/issues/482)
+
 ## [0.54.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.0...server-v0.54.1) (2026-09-21)
 
 
