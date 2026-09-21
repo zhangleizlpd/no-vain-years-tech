@@ -57,16 +57,29 @@ RECENT_DAYS="${RECENT_DAYS:-20}"
 # 🚨 刻意不复用上面的 RECENT_DAYS：那个的单位是**交易日**（先去 daily_bar 里取 distinct
 #    trade_date 的第 N 个当 cutoff），两者量纲不同；合成一个 env 之后「调 A 股近窗」会静默
 #    改掉期权链的体量，反过来也一样 —— 而这类耦合的错法不报错，只让数字悄悄变。
-# 取 30 天的依据（消费端实测下界 + 体量上界两头夹）：
-#   • 功能下界 = **2 个 session**：get-legs.usecase.ts 只取 sessionDate desc 的最近一期
-#     （findFirst + 该期 findMany）；option-snapshot-coverage.check.ts 要「基线日 + 当日」
-#     两期；server IT 走 testcontainers 自造 fixture，压根不吃 dev 库。30 自然日 ≈ 21 个
-#     交易日，对 2 的下界有一个数量级的余量（含长假）。
-#   • 体量上界 ≈ 21 × 7000 ≈ **14.7 万行**，与 daily_bar 现有约 16 万行同量级。
-OPTION_RECENT_DAYS="${OPTION_RECENT_DAYS:-30}"
+# 取 7 天的依据（消费端实测下界 + 体量实测两头夹；2026-09-21 由 30 天收窄）：
+#   • 功能下界（dev 侧）= **1 个 session**：真读路径是 leg-retrieval.adapter.ts 的两组
+#     「findFirst 定位最近一期 + findMany 取该期」（:446/:456 与 :794/:806），where 里只有
+#     `sessionDate` 等值谓词、**无任何范围谓词**；anchor-cold-start.usecase.ts 的
+#     snapshotPresent() 同样是单 session count。（原注释指向 get-legs.usecase.ts —— 已 stale，
+#     该读路径现在在 leg-retrieval.adapter.ts。）
+#   • 保守下界 = **2 个 session**：option-snapshot-coverage.check.ts 要「基线日 + 当日」两期。
+#     它的两个调用方（sync-option-oi-settle.usecase.ts / option-snapshot-remediation.ts）都在
+#     采集链路上，而 **dev 是否跑采集未验证** —— 2026-09-21 查本机 apps/server/.env 里没有
+#     MARKETDATA_PROVIDER 键，取不到实际值 ⇒ 按 2 期算，不赌它不跑。
+#     7 自然日 ≈ **5–6 个交易日**。🚨 窗口锚点是 **prod 会话的 CURRENT_DATE**（见 where_for
+#     的 recent_sessions 分支），**不是「数据最大日」** —— 所以周一跑只覆盖 5 个交易日
+#     （2026-09-21 周一实测：09-14…09-18 共 5 期）。按窗口天数直接除 7 会高估一期，算余量
+#     时要按 5 算：对 2 期的保守下界仍有 2.5 倍余量。server IT 走 testcontainers 自造
+#     fixture，压根不吃 dev 库。
+#   • 体量实测（2026-09-21，收窄前后各跑一轮实测）：收窄前 30 天窗 = 20 交易日 207.7 万行
+#     / 506 MB（表 361 + 索引 144），是库内第二大表 daily_bar（41 MB）的 12 倍；**收窄后
+#     5 期 58.7 万行 / 143 MB（-71.7%）**，同步总耗时 5分42秒 → 2分26秒（-57%）。收窄曲线
+#     是凹的：再砍到 3 天只多省约 11 个百分点 ⇒ 7 天是性价比拐点。
+OPTION_RECENT_DAYS="${OPTION_RECENT_DAYS:-7}"
 
-# 单表体量趋势闸（只 warn 不 fail，见 §2）。默认 30 万行 —— 依据写在 §2 触发点旁。
-ROW_WARN_THRESHOLD="${ROW_WARN_THRESHOLD:-300000}"
+# 单表体量趋势闸（只 warn 不 fail，见 §2）。默认 100 万行 —— 依据写在 §2 触发点旁。
+ROW_WARN_THRESHOLD="${ROW_WARN_THRESHOLD:-1000000}"
 
 # prod 主机（代号 `app`）的真实绑定不入库 —— 从仓外 fleet.env 解析
 # (per docs/conventions/information-boundary.md)。launchd 不继承交互 shell 的 env，
@@ -158,19 +171,21 @@ TABLE_POLICIES=(
   # 2026-08-10 由 skip 翻 full —— 起因是本地要跑 048 聚合视图，而它整片的输入就是这几张：
   # 没有 option_daily_snapshot 就一条腿都没有，三个聚合视图恒空，本地压根验不了。
   # 这三张都**切不出 A 股样本**（SAMPLE_CODES 现全为 A 股），别改成 sample_*。
-  # 🔻 体量实测（prod）：option_contract 7620 行（2026-08-10）；option_daily_snapshot 的
-  #    速率**随锚数线性增长**，实测约 580 行/标的/交易日 ——
-  #      07-29 ~ 08-06   7 个标的  ≈ 2,100 行/日
-  #      08-07          12 个标的    4,789 行
-  #      08-10          12 个标的    7,039 行   ← 稳态 ≈ 7,000 行/交易日
-  #    ⇒ 全量一年 252 个交易日约 **176 万行**（此处原注释按 2150 行/日估的 54 万，是只覆盖
-  #    7 个标的那阵子的量，低估 3.3 倍）；锚涨到 30 个就是 440 万行/年。要重算换算式：
-  #    `行/年 ≈ 锚数 × 580 × 252`。
+  # 🔻 体量实测：option_contract 14.5 万行（2026-09-21 同步日志；2026-08-10 时才 7620 行）；
+  #    option_daily_snapshot 的速率**随「有快照的标的数」线性增长** ——
+  #      08-10   12 个标的    7,039 行/交易日
+  #      08-24  110 个标的   91,024 行/交易日   ← 827 行/标的
+  #      09-18  136 个标的  120,231 行/交易日   ← 884 行/标的（2026-09-21 本地库实测）
+  #    ⇒ 换算式 `行/年 ≈ 标的数 × 850 × 252`；当前 136 个标的 ≈ **2900 万行/年**。
+  #    🚨 口径：这里数的是 option_contract.underlying_instrument_id 的 distinct 数
+  #       （09-18 = 136），**不等于** optionsdesk.anchor 的行数（同期 142）—— 别混用。
+  #    （旧注释「580 行/标的/交易日 ⇒ 一年 176 万行」是只有 12 个标的那阵子的量，已低估约
+  #     16 倍。同源 stale：leg-retrieval.adapter.ts:793 的「约 6.4M 行/年」，本 PR 未动它。）
   # 🚨 而本脚本是「截断 → 重灌」全量语义 ⇒ 全量搬会让同步**逐年变慢**。2026-08-11 按上面
   #    那条既定方向落地：不是改回 skip（那等于本地又没数据），而是按 session_date 收窄成
   #    近窗 —— 与 daily_bar 的 sample_or_recent 同形，只是窗口列换成 session_date、天数走
-  #    独立的 OPTION_RECENT_DAYS（默认 30 自然日 ≈ 21 交易日 ≈ 14.7 万行，与 daily_bar 现有
-  #    16 万行同量级；消费端功能下界只要 2 个 session，取值论证见顶部 OPTION_RECENT_DAYS）。
+  #    独立的 OPTION_RECENT_DAYS（2026-09-21 由 30 天收窄为 **7 天**，实测 5 期 58.7 万行
+  #    / 143 MB；消费端保守下界 2 个 session，取值论证见顶部 OPTION_RECENT_DAYS）。
   # 🚨 父表 option_contract **必须留 full**：近窗只裁快照，快照的 FK 指向合约；按窗口裁父表
   #    会让子表的 FK 断（重灌整事务回滚，表现为「同步全挂」而不是「少几行」）。
   "marketdata.option_contract:full"             # 047 期权合约静态属性（父表，被 option_daily_snapshot FK 引用）
@@ -541,10 +556,12 @@ for e in "${TABLE_POLICIES[@]}"; do
   printf '%s\t%s\n' "$t" "$exp_n" >>"$TMP_DIR/_expected.tsv"
   # 单表体量趋势闸（2026-08-11 加）：**只 warn 不 fail** —— 表大不是正确性问题，是「截断重灌
   # 的同步会越来越慢」的早期信号，硬失败等于本地天天没数据，代价方向反了。
-  # 阈值 30 万行的取法（两头夹）：现存最大表 daily_bar 实测约 17 万（全股近 20 交易日 + 样本股
-  # 全史），取其约 1.8 倍 ⇒ 日常零噪声、不会天天喊；而 option_daily_snapshot 在 30 天窗口下
-  # 约 24 个锚就触线（24 锚 × 21 交易日 × 580 行/锚/日 ≈ 29 万），**早于**「30 锚 ≈ 37 万行」
-  # 那个体量点，留出处置窗口（调小 OPTION_RECENT_DAYS，或给该表换增量语义）。
+  # 阈值 100 万行的取法（2026-09-21 随近窗 30→7 天一并重算）：收窄后 option_daily_snapshot
+  # 实测 58.7 万行（7 天窗，周一跑 = 5 个交易日），取其约 1.7 倍 ⇒ 日常零噪声，且标的数再涨
+  # 约 70% 才触线，留出处置窗口（继续调小 OPTION_RECENT_DAYS，或给该表换增量语义）。
+  # 🚨 旧的 30 万阈值到 2026-09 已**彻底失去信号作用**：标的数从 08-10 的 12 涨到 09-18 的
+  #    136、30 天窗涨到 207.7 万行 = 阈值的 6.9 倍 ⇒ 每轮必喊一条，等于一盏常亮的灯。
+  #    调高它不是「让它闭嘴」，是让它重新能区分「正常」与「该处置了」。
   case "$exp_n" in
     '' | *[!0-9]*) : ;; # 非数字（上面已判空，这里纯防御）→ 不判阈值
     *)

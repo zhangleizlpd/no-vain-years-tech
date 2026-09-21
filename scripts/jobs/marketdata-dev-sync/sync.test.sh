@@ -48,17 +48,17 @@ eq "sample_only → 仅样本股" \
   "WHERE instrument_id IN (11,22)" "$(where_out sample_only)"
 eq "sample_or_recent → 样本股全史 + 全股近窗（trade_date）" \
   "WHERE instrument_id IN (11,22) OR trade_date >= '2026-01-01'" "$(where_out sample_or_recent)"
-eq "recent_sessions → 默认 30 自然日（按 session_date）" \
-  "WHERE session_date >= CURRENT_DATE - INTERVAL '30 days'" "$(where_out recent_sessions)"
+eq "recent_sessions → 默认 7 自然日（按 session_date）" \
+  "WHERE session_date >= CURRENT_DATE - INTERVAL '7 days'" "$(where_out recent_sessions)"
 eq "recent_sessions 认 OPTION_RECENT_DAYS 覆盖" \
-  "WHERE session_date >= CURRENT_DATE - INTERVAL '7 days'" "$(where_out recent_sessions OPTION_RECENT_DAYS=7)"
+  "WHERE session_date >= CURRENT_DATE - INTERVAL '14 days'" "$(where_out recent_sessions OPTION_RECENT_DAYS=14)"
 
 # 承重回归：两个近窗**不许合流**。RECENT_DAYS 是交易日（daily_bar），OPTION_RECENT_DAYS 是
 # 自然日（期权快照）；哪天有人图省事复用同一个 env，下面两条会当场红。
 eq "改 RECENT_DAYS 不动期权窗口" \
-  "WHERE session_date >= CURRENT_DATE - INTERVAL '30 days'" "$(where_out recent_sessions RECENT_DAYS=999)"
+  "WHERE session_date >= CURRENT_DATE - INTERVAL '7 days'" "$(where_out recent_sessions RECENT_DAYS=999)"
 eq "改 OPTION_RECENT_DAYS 不动 daily_bar 窗口" \
-  "WHERE instrument_id IN (11,22) OR trade_date >= '2026-01-01'" "$(where_out sample_or_recent OPTION_RECENT_DAYS=7)"
+  "WHERE instrument_id IN (11,22) OR trade_date >= '2026-01-01'" "$(where_out sample_or_recent OPTION_RECENT_DAYS=14)"
 
 where_out 未知策略 >/dev/null 2>&1
 code=$?
