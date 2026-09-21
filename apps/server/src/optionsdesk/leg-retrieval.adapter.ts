@@ -790,7 +790,11 @@ export class PrismaLegRetrievalAdapter implements LegRetrievalPort {
 
     const contractIds = contracts.map((c) => c.id);
     // CROSS-CONTEXT-READ: marketdata.option_daily_snapshot 只读直查 (Q7-B) —— 先定位最近一期
-    // 交易日, 再整批取该期。两步而非一次拉全史: 本表是全库增长最快的表 (约 6.4M 行/年)。
+    // 交易日, 再整批取该期。两步而非一次拉全史: 本表是全库增长最快的表, 行数随「有快照的
+    // 标的数 × 交易日数」线性涨且无上限。
+    // 📌 刻意**不在此写死行数/年增量** —— 它随锚数每周变, 写死必 drift (此处原本写的
+    // 「约 6.4M 行/年」到 2026-09 已低估约 4 倍)。带日期的实测值与换算式只留一份, 在
+    // `scripts/jobs/marketdata-dev-sync/sync.sh` 的 TABLE_POLICIES 注释里。
     const latest = await this.prisma.optionDailySnapshot.findFirst({
       where: { contractId: { in: contractIds } },
       orderBy: { sessionDate: 'desc' },
