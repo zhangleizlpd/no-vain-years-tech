@@ -4,7 +4,7 @@ modules: [optionsdesk]
 owners: ['@zhangleizlpd']
 status: implementing
 created_at: '2026-09-16'
-updated_at: '2026-09-16'
+updated_at: '2026-09-21'
 migration_refs: ['20260916_2022_add_broker_push_gap_reentry_index']
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'
