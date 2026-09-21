@@ -74,6 +74,9 @@ context7_verified: []
 > **决策路径（catalog 7Q 复评）**：实时行情拉取是 IO adapter（非纯函数），无法走 023 D1 的「alert→marketdata `*.rules.ts` 纯函数 import」逃生口。三选——(a) 落 marketdata ctx 出 port，alert DI 注入 = 破坏 alert 叶子 ctx（ADR-0052），且 marketdata 现状纯 EOD 同步、无实时面，为单一消费者引入实时面是反向扩底座；(b) 新建 realtime bounded context = 单 feature 单消费者，过度（ADR-0032 sunset trigger 不满足）；(c) **alert ctx 自持实时行情 port + adapter**——镜像 021「alert 自持 queue/Redis 连接而不 import marketdata」的既定先例，复用 `VendorHttpClient` + `FallbackChainAdapter` 共享 infra 范式（ADR-0047，与 marketdata 的东财 adapter 同范式不同实例）。**取 (c)**。
 > **物理落点**：`apps/server/src/alert/realtime-quote.port.ts`（接口）+ `tencent-realtime.adapter.ts`（主）+ `sina-realtime.adapter.ts`（备）+ `realtime-quote.rules.ts`（GBK 解析 / `~`、逗号分隔字段对齐 / 涨跌幅口径收敛——腾讯直给 vs 新浪 `(现价-昨收)/昨收` 自算，纯函数）。双源经 `FallbackChainAdapter` 编排：腾讯 200 即返，失败/schema 校验不过 → 新浪（注入 `Referer`），均失败 → 抛供熔断计数。
 > **future seam**：若日后 marketdata 需实时面（如盘中行情展示），再抽 port 上提 marketdata + alert 反向 DI；本期单消费者不预先抽象。
+>
+> **2026-09-21 amend（#482）**：备源新浪已移除，链收敛为**腾讯单源**。理由同 085 的 #467——`hq.sinajs.cn` 对 prod 出口**先 hang 约 5.1 秒再返 403**（2026-09-21 在 app 宿主实测：带/不带 `Referer` 均 `ttfb=5.114~5.137s → 403`，而 DNS 2ms / TCP 38ms / TLS 80ms 三段正常；腾讯同刻 `ttfb=0.135~0.146s → 200`）。因 `REALTIME_FETCH_TIMEOUT_MS` 为 5000，adapter 只会抛 `TimeoutError`、**永远看不到那个 403** ⇒ 备源不提供任何兜底，只把每次失败拉长 5 秒并把根因伪装成超时。`sina-realtime.adapter.ts` / `parseSinaRealtimeQuotes` / `SINA_VAR` 移除；`RealtimeQuoteFallbackChainAdapter` **保留**（全败抛是 T008 熔断计数的承重点，且将来接第二个源时不用重建）。
+
 
 ### D3：双模求值 = `conditionDataNeed` 加 `'realtime'` 分支 + 求值纯函数零改（到价类）/ 小增（5min）
 

@@ -23,7 +23,6 @@ import { AlertEvalQueue, AlertEvalWorker } from './alert-eval.processor.js';
 import { IntradayEvalProcessor } from './intraday-eval.processor.js';
 import { REALTIME_QUOTE_PORT } from './realtime-quote.port.js';
 import { TencentRealtimeAdapter } from './tencent-realtime.adapter.js';
-import { SinaRealtimeAdapter } from './sina-realtime.adapter.js';
 import { RealtimeQuoteFallbackChainAdapter } from './realtime-quote-fallback-chain.adapter.js';
 import { PushDispatchQueue, PushDispatchWorker } from './push-dispatch.processor.js';
 import { AlertsController } from './alerts.controller.js';
@@ -80,14 +79,11 @@ import { PushBindingController } from './push-binding.controller.js';
       inject: [jpushConfig.KEY],
     },
     {
-      // 024 实时行情 port (plan D2): 腾讯主 → 新浪备 FallbackChain (alert ctx 自持外部 IO,
+      // 024 实时行情 port (plan D2): 腾讯单源 FallbackChain (alert ctx 自持外部 IO,
       // 不 import marketdata)。adapter 用 realtime-fetch.ts 默认轻量 fetch (无 DI 依赖)。
+      // 链保留单节点: 全败抛是 T008 熔断计数的承重点, 且将来接第二个源时不用重建 (#482)。
       provide: REALTIME_QUOTE_PORT,
-      useFactory: () =>
-        new RealtimeQuoteFallbackChainAdapter([
-          new TencentRealtimeAdapter(),
-          new SinaRealtimeAdapter(),
-        ]),
+      useFactory: () => new RealtimeQuoteFallbackChainAdapter([new TencentRealtimeAdapter()]),
     },
   ],
 })
