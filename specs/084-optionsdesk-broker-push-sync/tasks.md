@@ -4,7 +4,7 @@ spec_ref: ./spec.md
 plan_ref: ./plan.md
 status: in-progress
 created_at: '2026-09-16'
-updated_at: '2026-09-20'
+updated_at: '2026-09-21'
 ---
 
 # Tasks: 084-optionsdesk-broker-push-sync（券商持仓实时增量同步 · 推送式）
@@ -105,6 +105,9 @@ updated_at: '2026-09-20'
 - [X] T015 [Gate] **覆盖收口 + 全量门 + 启动冒烟 + 私有数据扫描 + PR**（SC-003, SC-004, SC-007, SC-008）：逐条核对下方五张覆盖预检表（**实时 grep，不抄表内数字**）。私有数据扫描：对 `git ls-files` 与 `git ls-files --others --exclude-standard` 逐文件比对仓外私有清单，**只打印命中计数**，真值不写入任何文件 / 命令行 / 日志；两臂对照（scratchpad 临时文件 ⇒ 计数 1，仓库 ⇒ 计数 0）。spec `status → implementing`、`updated_at` bump → verify: `git fetch origin && pnpm exec nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` exit 0（输出落文件后 grep `Successfully ran target` / `Failed tasks` 判定，不接 `| tail`，hook 会拦）；`services/futu-shim/venv/bin/python -m pytest -q` 全绿；治理脚本全扫 `scripts/checks/*.ts` 全 0（含 `check-test-size` / `check-identifier-boundary` / `check-server-moat` / `check-time-semantics` / `check-env-sync`）；扫描两臂结果为 1 / 0；`gh-bot pr create --repo zhangleizlpd/no-vain-years-tech --body-file` 按 `pr-creation-protocol.md`。🚨 **PR body 标「建议人工合并」、不接 auto-merge**：含迁移，且 shim 合入 main 即自动部署到交易主机
 
 - [ ] T016 [Ops] **上线：shim 部署自检 + server 发版 + 首轮验收**（SC-001, SC-002, SC-005, SC-006; plan D1）：前置 = PR 合并、shim 自动部署完成、server 发版上线。步骤：① 港机 `/healthz.version` = 合并 SHA 且 `routes` 含 `/trade/events`；对该端点真打一次，判据 = 立即返回且结构合法 ② SC-001：维护者在券商 App 挂一张远离市价的单再撤，核两次订单状态变化各自进入库内的耗时均 ≤ 5 秒 ③ SC-005：紧接着查该市场持仓，同步时刻等于本次刷新时刻且未提示陈旧 ④ SC-002：重启 shim，核出现补偿留痕且当日数据自愈、无人工介入 ⑤ SC-006，口径同 POC-7：**休市时段**按同一采样脚本采 1 小时，行情延迟中位变化 < 10%；**盘中与批处理时段只判零新增错误**，不拿盘中延迟比休市基线 → verify: ①–⑤ 观测值回填本行（定性 + 一句观测，不写真实代码 / 数量 / 金额）；观测明细记维护者私有子 plan；任一不达标即停，不进入 T017
+  - **上线首轮观测（2026-09-20 起，prod + 港机只读；2026-09-21 回填。T016 仍不勾，缺口见末条）**：① **shim 部署自检 ✅（半项未验证）** —— 港机 `/healthz` 的 `version` 等于 084 impl 合入 main 的提交、`routes` 含事件端点，2026-09-21 复核仍一致；「对该端点真打一次」这半项**未找到留档，判为未验证**（事件消费链路在 prod 持续工作只能间接佐证，不顶判据）。② **SC-001 ✅** —— 维护者在券商 App 挂一张远离市价的单再撤，两次订单状态变化各自进入库内的耗时均为秒级、显著低于 5 秒门槛，余量充足（观测值见 issue #469）。③ **SC-005 ✅（带保留）** —— 持仓刷新正确落库、同步时刻随本次刷新推进且未提示陈旧；但**触发时刻被系统性推迟**，实测远高于设计的去抖时长，根因见下条。④ **SC-002 ✅** —— 重启 shim 后数秒内检出缺口并自动完成补偿，当日数据自愈、无人工介入。⑤ **SC-006 休市臂 ✅** —— 上线当日按 POC-7 同一采样脚本在休市时段采满 1 小时，行情延迟中位相对 POC-7「无交易 context」基线**下降约 1%**（门槛 < 10%），窗口内非 200 响应为零、journal 新增错误计数为零。
+  - **已定位但未修完的一项（不影响上述判据，但拖慢 ③）**：事件轮询端点被挂在券商查询的限频桶上，而它只读 shim 进程内存、一发都不打券商 ⇒ 轮询被限频器系统性排队。根因已由离线实验四项判据全中坐实（issue #469；私有 plan `docs/private/plans/2026-09/09-20-084-event-channel-poll-vs-push.md`），修复 #473 已合入 main 但**未进 `server-v0.54.0`**；含该修复的 `server-v0.54.1` 已于 2026-09-21 发布、部署中。
+  - **T016 不勾的原因 —— ⑤ 的盘中臂仍欠着**：SC-006 口径要求「盘中与批处理时段只判零新增错误」，该臂须在交易日、且在含 #473 的版本部署后采一次（与 #469 的修后复采一次还两笔账）。⚠️ **顺序偏差如实留痕**：T017（issue #465）的累计 5 个交易日计数已于 2026-09-21 起算 —— 维护者判定已达标的 ①–④ 与 ⑤ 休市臂足以放行，未等 ⑤ 盘中臂采齐。
 
 - [ ] T017 [Ops] **上线后观察：开盘前对账未被污染**（SC-004; state_branches 10）：推送上线后累计 5 个交易日，每个市场每个交易日仍恰有 1 条成功的**开盘前对账**记录，且无一个交易日的对账因当日发生过缺口补偿而未发起。统计 SQL **按开盘前对账类型过滤**（本片引入第三种类型后不过滤即误判）→ verify: 观测值回填本行；**开 task 时同步建 issue** 写明触发条件与兜底复查点；与上游 T022（issue #427）**同期进行、判据独立**，两者都按类型过滤故互不干扰。**跟踪**：issue #465（2026-09-20 建）
 

@@ -2,9 +2,9 @@
 feature_id: 083-optionsdesk-trading-account-positions
 spec_ref: ./spec.md
 plan_ref: ./plan.md
-status: in-progress
+status: completed
 created_at: '2026-09-15'
-updated_at: '2026-09-20'
+updated_at: '2026-09-21'
 ---
 
 # Tasks: 083-optionsdesk-trading-account-positions（期权台交易账户页 · 持仓展示与下钻）
@@ -132,10 +132,11 @@ updated_at: '2026-09-20'
 
 - [X] T024 [Gate] **覆盖收口 + 全量门 + 私有数据扫描 + PR**（SC-002, SC-003, SC-004, SC-006, SC-007, SC-009, SC-010）：逐条核对下方五张覆盖预检表（实时 grep，不抄表内数字）；spec `status → implementing`、`updated_at` bump → verify: `git fetch origin && pnpm nx affected -t lint typecheck test build runtime-smoke --base=origin/main --skip-nx-cache` 按终态串判定通过（`local-verification.md` §2）；`scripts/checks/*.ts` 治理脚本全扫 0（含 `check-server-moat` / `check-test-size` / `check-time-semantics` / `check-identifier-boundary` / `check-api-property-nullable` / `check-optionsdesk-rule-constants` / `check-spec-frontmatters`）+ `check-commit-msg-parseable.ts --range origin/main..HEAD`；私有数据扫描：`git diff origin/main...HEAD` 与 PR 正文对仓外私有清单（`ops/bin/gen-private-values.sh` 产出）逐值子串比对，命中 0；`gh-bot pr create` 按 `docs/conventions/pr-creation-protocol.md`（`--repo` 显式、body 按模板、3 个 hard-gate checkbox 真跑绿才勾）；无不可逆变更 ⇒ 按 `git-workflow.md` 默认接 auto-merge
 
-- [ ] T025 [Ops] **上线后验收：对照富途 App**（SC-001, SC-003, SC-005, SC-008; plan SC 落点）：前置 = PR 合并、server 发版上线。① SC-001：数量与成本任意时段逐行比对（App 成本口径切平均成本）；现价 / 市值 / 持仓盈亏在「该市场当日对账成功后至券商持仓现价开始变动前」窗口比对（美股 09:30 前、港股 09:00 前；2026-09-17 amend，原「至开盘前」，见 spec SC-001），**顺带核「开盘前现价 = 上一交易日收盘价」**（不成立 ⇒ 修 spec Assumptions 与 SC-001 窗口，不改代码）② SC-003：真实账户中 `restorable=true` 的期权持仓，批次剩余合计与持仓数量一致 ③ SC-008：抽核订单详情（至少 1 张已撤单、1 张被指派产生的系统订单、1 张组合单；账户里没有的类型注明「无样本」）逐字段与 App「交易详情」一致 ④ SC-005 prod 面复核一次 → verify: 四项结论写本行（定性 + 一句观测，不写真实代码 / 数量 / 金额）；观测明细记维护者私有 p3 子 plan；spec `status → implemented`、tasks `status → completed`
+- [X] T025 [Ops] **上线后验收：对照富途 App**（SC-001, SC-003, SC-005, SC-008; plan SC 落点）：前置 = PR 合并、server 发版上线。① SC-001：数量与成本任意时段逐行比对（App 成本口径切平均成本）；现价 / 市值 / 持仓盈亏在「该市场当日对账成功后至券商持仓现价开始变动前」窗口比对（美股 09:30 前、港股 09:00 前；2026-09-17 amend，原「至开盘前」，见 spec SC-001），**顺带核「开盘前现价 = 上一交易日收盘价」**（不成立 ⇒ 修 spec Assumptions 与 SC-001 窗口，不改代码）② SC-003：真实账户中 `restorable=true` 的期权持仓，批次剩余合计与持仓数量一致 ③ SC-008：抽核订单详情（至少 1 张已撤单、1 张被指派产生的系统订单、1 张组合单；账户里没有的类型注明「无样本」）逐字段与 App「交易详情」一致 ④ SC-005 prod 面复核一次 → verify: 四项结论写本行（定性 + 一句观测，不写真实代码 / 数量 / 金额）；观测明细记维护者私有 p3 子 plan；spec `status → implemented`、tasks `status → completed`
   - **第一轮结论（2026-09-16，prod 只读；不受时段限制的三项已闭合）**：① SC-001 **数量与成本**：两个市场全部持仓行经维护者对照 App 确认一致，且比对行数与库内持仓总行数吻合、无漏比；**价格类待第二轮**（当日对账未到点 / 另一市场已开盘，均不在可比窗口）② SC-003：两个市场各取一只期权持仓，批次剩余合计与券商报告持仓数量一致、先开先平标注正确 ③ SC-008：已撤单（成交三字段显示「—」）与被指派产生的系统订单各一张逐字段一致；**指派单核到两条不同来路**（每日对账同步 / 新锚触发历史补齐），两条都归类与展示正确；组合单账户内**无样本** ④ SC-005：prod 面深链进页后约 1 秒列表已完整渲染，优于 2 秒门槛
   - **第二轮结论（2026-09-16，prod 只读，美股盘前窗口）**：① SC-001 **价格类（美股）闭合** —— 在「该市场当日对账成功后至开盘前」窗口内完成比对（当晚对账成功，比对于开盘前完成，全程在窗口内），现价 / 市值 / 持仓盈亏经维护者对照 App **逐行确认一致**，App 成本口径已切至平均成本；覆盖该市场全部持仓行，正股与期权空头两类均含。**顺带核的「开盘前现价 = 上一交易日收盘价」成立** —— 以该市场正股行对照上一交易日收盘价逐行一致 ⇒ **无需修 spec Assumptions 与 SC-001 窗口口径，不改代码**。**港股价格类待第三轮**，其窗口在次日开盘前。
   - **第三轮（2026-09-17，prod 只读，港股）· 未闭合**：港股当日对账在原时点 09:05 首次即成功，但取样发现该时刻已在港交所开市前时段内 —— **正股持仓现价随竞价变动**（同一行在 09:05、09:15、竞价撮合后三次取值各不相同，撮合后等于开盘价）⇒「开盘前现价 = 上一交易日收盘价」对港股正股**不成立**；港股期权持仓现价 = 上一交易日最后成交价，成立。维护者定：港股对账时点改 08:40，两个市场统一为「券商持仓现价开始变动前 20 分钟」（082 FR-010 amend；本 spec SC-001 窗口与 Assumptions 同步 amend）。顺带核实：港股库内持仓与券商侧持仓的差集全部属于非锚标的，同步范围过滤正确。明细见私有证据 `docs/private/evidence/broker-account-poc/2026-09-17-position-nominal-price-by-session.md`。**港股价格类待改时点发版后**，在首个港股交易日「08:40 对账成功后至 09:00」窗口比对，并顺带核「09:00 前持仓现价 = 上一交易日价格」。
+  - **第四轮结论（2026-09-21，prod 只读，港股新时点首个交易日）· 港股价格类 ✅ 闭合**：改时点后的首个港股交易日，该市场对账在 08:40 拍点后数毫秒起跑、首次即成功，全部持仓行的同步时刻均为该时刻、无残留旧行，解析与币种列无空值。在「08:40 对账成功后至 09:00」窗口内比对持仓现价：正股逐行等于上一交易日收盘价，期权腿逐行等于上一交易日最后成交价；多数期权腿的最后成交价与另一个对照口径取值不同，因而**同时排除了「取到开市前竞价价」与「差一个交易日」两种错法**。⇒「开盘前现价 = 上一交易日价格」对港股成立，09-17 第三轮留下的「09:00 前无样本」**已闭合**，无需再改 spec Assumptions 与 SC-001 窗口口径，不改代码。📌 **取证口径说明**：本轮以 marketdata 侧独立行情数据（日线收盘价 / 期权日快照最后成交价）逐行对照，**不是对照富途 App 目视**；维护者 2026-09-21 判定该口径已强于 App 目视（独立数据源 + 能排除两种错法），港股的市值 / 持仓盈亏两列随现价口径成立、不再单独对 App。明细见私有证据 `docs/private/evidence/broker-account-poc/2026-09-21-first-session-at-0840-slot.md`。
   - **顺带 prod 实证（非本 task 验收项，记录备查）**：FR-016「按最后更新时间过滤」在真实数据上成立（两个市场各见一例开仓单下单早于开仓时间、仍正确列出）；跨市场时区标注、两地期权名称口径、陈旧提示三项与 FR 一致；plan D11「指派单与普通单无可区分字段」经 vendor 原始字段复核仍成立；FR-018 冷启动页券商历史行在 prod 同屏验到「有记录 ⇒ 状态 + 时刻」与「无记录 ⇒ 未触发」两个分支
 
 ## 依赖与并行
