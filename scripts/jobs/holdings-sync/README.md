@@ -1,8 +1,8 @@
 # holdings-sync — 自有持仓本机同步工具
 
 同花顺投资账本（tzzb.10jqka.com.cn）持仓导出 → 服务端导入（025 FR-012）。**自包含、可拷到
-任意 Mac 跑**（不依赖 mono-repo workspace；用 Node 22 原生 `fetch` + `playwright-core` 驱动
-系统 Chrome）。仅支持 **macOS 笔记本**。
+任意 Mac 跑**（不依赖 mono-repo workspace；用 Node 22 原生 `fetch` + `WebSocket` 直驱
+系统 Chrome 的 CDP，零浏览器自动化依赖）。仅支持 **macOS 笔记本**。
 
 ## 能力分级（由浅入深）
 
@@ -17,7 +17,7 @@
 - macOS + Google Chrome（`/Applications/Google Chrome.app`）
 - Node >= 22（原生 `fetch`/`FormData`/`Blob`）
 - 依赖：在**工具目录内**装一次 → `cd scripts/jobs/holdings-sync && pnpm install`
-  （仅 `playwright-core` + `tsx`；在 mono-repo 内跑则复用根 hoisted 依赖，可跳过）
+  （仅 `tsx`；在 mono-repo 内跑则复用根 hoisted 依赖，可跳过）
 - 目标 server 可达（dev `http://127.0.0.1:3000`；prod `https://api.shintongtech.com`）
 
 > 新 Mac 上跑：clone 仓（或只拷 `scripts/jobs/holdings-sync/` 目录）→ 目录内 `pnpm install` →
@@ -79,9 +79,11 @@ pnpm holdings:uninstall
 
 ## 工作机制（速记）
 
-- **拉取**：`connectOverCDP(127.0.0.1:18800)` attach 常驻 Chrome → 点「数据导出」→ **监听
-  浏览器原生下载事件** `page.on('download')` → `saveAs` 落盘 `<账户名>_YYYYMMDD.xlsx`（导出当前
-  Chrome 停留的账户，持久 profile 记忆上次选择）。整链失败重试 ×3。
+- **拉取**：自写最小 CDP 客户端 attach 127.0.0.1:18800 → `DOM.performSearch` 定位「数据导出」
+  → `Input.dispatchMouseEvent` 点击 → `Browser.setDownloadBehavior` 落到暂存目录 → 轮询收件后搬成
+  `<账户名>_YYYYMMDD.xlsx`（导出当前 Chrome 停留的账户，持久 profile 记忆上次选择）。整链失败重试 ×3。
+  > 🚨 **MUST NOT 发送任何 `Runtime.*`**：tzzb 引了 `disable-devtool@0.3.9`，其 `Performance(6)`
+  > 探测器会因 console 被远端消费而封页。理由与实测见 `fetch-tzzb.ts` 顶部 EVIDENCE。
   > ⚠️ 早期「捕获 `/excel/` 请求参数 + 自拼 note 轮询/download URL + base64 回传」方案已废：
   > 多账户 fund_key 差异 + 按 tab 分批触发的 race 会抓到残缺文件（实测丢「持仓数据」sheet）。
   > 原生下载拿到的是与网页手动导出逐字节同源的完整 3-sheet 文件。
