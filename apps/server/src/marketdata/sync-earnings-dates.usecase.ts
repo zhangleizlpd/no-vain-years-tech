@@ -1521,7 +1521,7 @@ export class SyncEarningsDatesUseCase {
       const symbol = ctx.symbols.get(instrumentId) ?? `${ctx.market}:#${instrumentId}`;
       if (written) acc.eventsWritten += 1;
       for (const finding of result.findings) acc.findings.push({ instrumentId, symbol, finding });
-      if (result.neverListedUndated) acc.neverListedUndated.push(symbol);
+      if (result.gemUndated) acc.neverListedUndated.push(symbol);
       if (result.fiscalProfileMissing) acc.fiscalUnknown.push(symbol);
     }
   }
@@ -1569,12 +1569,13 @@ export class SyncEarningsDatesUseCase {
         .sort()
         .pop() ?? null;
     const noticeSignals = ctx.signalsByInstrument.get(instrumentId) ?? [];
-    const pending = selectPendingNotice(noticeSignals, latestFilingDate);
+    const pending = selectPendingNotice(noticeSignals, latestFilingDate, []);
     const result = judgeNoticeUndated({
       noticeSignals,
       latestFilingDate,
       unpublishedEventDates,
-      everListed,
+      boardCovered: everListed,
+      meetings: [],
       hasFiscalProfile: ctx.fiscalProfiles.has(instrumentId),
       capabilities: ctx.capabilities,
       elapsedTradingDays:

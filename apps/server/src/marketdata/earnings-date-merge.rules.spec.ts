@@ -6,6 +6,8 @@ import type {
 import {
   NOTICE_MATCH_WINDOW_DAYS,
   STATUS_DUE_TRADING_DAYS,
+  classifyNoticeMeeting,
+  isGemCode,
   isNoticeUndatedPlaceholder,
   judgeNoticeUndated,
   mergeEarningsDateEvent,
@@ -19,6 +21,7 @@ import {
   type EarningsFilingFact,
   type ExistingEarningsDateEvent,
   type ListingPresence,
+  type NoticeMeetingCandidate,
   type NoticeUndatedInput,
 } from './earnings-date-merge.rules.js';
 
@@ -1047,7 +1050,8 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     noticeSignals: [notice('2026-09-01')],
     latestFilingDate: '2026-08-20',
     unpublishedEventDates: [],
-    everListed: true,
+    boardCovered: true,
+    meetings: [],
     hasFiscalProfile: true,
     capabilities: HK_CAPS,
     elapsedTradingDays: elapsed('2026-09-01', 2),
@@ -1055,10 +1059,10 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     ...overrides,
   });
 
-  it('满 2 个交易日仍无任何日期、曾在清单 ⇒ 迁入 notified_undated + 计入失败的 finding', () => {
+  it('满 2 个交易日仍无任何日期、主板 ⇒ 迁入 notified_undated + 计入失败的 finding', () => {
     const r = judgeNoticeUndated(undatedInput({}));
     expect(r.status).toBe('notified_undated');
-    expect(r.neverListedUndated).toBe(false);
+    expect(r.gemUndated).toBe(false);
     expect(r.findings).toEqual([
       {
         kind: 'notice',
@@ -1082,10 +1086,10 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     ]);
   });
 
-  it('🚨 从未在清单 (创业板形态) ⇒ 只计数: 不迁入、0 条 finding', () => {
-    const r = judgeNoticeUndated(undatedInput({ everListed: false }));
+  it('🚨 创业板 (清单不覆盖) ⇒ 只计数: 不迁入、0 条 finding', () => {
+    const r = judgeNoticeUndated(undatedInput({ boardCovered: false }));
     expect(r.status).toBeNull();
-    expect(r.neverListedUndated).toBe(true);
+    expect(r.gemUndated).toBe(true);
     expect(r.findings).toEqual([]);
   });
 
@@ -1110,7 +1114,7 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
     );
     expect(r.status).toBeNull();
     expect(r.findings).toEqual([]);
-    expect(r.neverListedUndated).toBe(false);
+    expect(r.gemUndated).toBe(false);
   });
 
   it('只过 1 个交易日 ⇒ 不判', () => {
@@ -1176,8 +1180,9 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
       status: null,
       logs: [],
       findings: [],
-      neverListedUndated: false,
+      gemUndated: false,
       fiscalProfileMissing: false,
+      nonResultsNotices: [],
     });
   });
 
@@ -1196,7 +1201,107 @@ describe('已通知日期未知 (FR-017 / FR-028)', () => {
 
   it('待判通知 = 晚于最近一次刊发的通知中最早者', () => {
     const signals = ['2026-09-05', '2026-09-01', '2026-08-10'].map(notice);
-    expect(selectPendingNotice(signals, '2026-08-20')?.noticeDate).toBe('2026-09-01');
-    expect(selectPendingNotice(signals, null)?.noticeDate).toBe('2026-08-10');
+    expect(selectPendingNotice(signals, '2026-08-20', [])?.noticeDate).toBe('2026-09-01');
+    expect(selectPendingNotice(signals, null, [])?.noticeDate).toBe('2026-08-10');
+  });
+});
+
+describe('会前通知覆盖判定与目的消歧 (FR-017 / FR-023; spec Session（九）)', () => {
+  const results = (meetingDate: string): NoticeMeetingCandidate => ({ meetingDate, results: true });
+  const dividend = (meetingDate: string, purpose = '特別股息'): NoticeMeetingCandidate => ({
+    meetingDate,
+    results: false,
+    purpose,
+  });
+
+  it.each(['08000', '08551', '08999', '8001'])('%s ⇒ 创业板', (code) => {
+    expect(isGemCode(code)).toBe(true);
+  });
+
+  it.each([
+    ['80388', '主板人民币柜台 (以 8 开头)'],
+    ['82318', '主板人民币柜台 (以 8 开头)'],
+    ['00700', '主板'],
+    ['09988', '主板'],
+    ['07999', '创业板下界外'],
+    ['09000', '创业板上界外'],
+    ['AAPL', '非数字'],
+  ])('%s (%s) ⇒ 非创业板', (code) => {
+    expect(isGemCode(code)).toBe(false);
+  });
+
+  it.each([
+    ['窗口内只有纯股息行', [dividend('2026-09-15')], 'non_results'],
+    ['窗口内只有业绩行', [results('2026-09-15')], 'results'],
+    ['窗口内无会议', [], 'unpaired'],
+    ['会议在窗口外', [dividend('2026-11-15'), results('2026-08-01')], 'unpaired'],
+    [
+      '02402 形态: 同会议日一条业绩行 + 两条股息行',
+      [
+        dividend('2026-09-15', '中期股息'),
+        results('2026-09-15'),
+        dividend('2026-09-15', '特別股息'),
+      ],
+      'results',
+    ],
+  ] as const)('%s ⇒ %s', (_label, meetings, kind) => {
+    expect(classifyNoticeMeeting('2026-09-01', meetings)).toBe(kind);
+  });
+
+  it.each([
+    ['0 天 (会议日 = 通知日)', '2026-09-01', 'non_results'],
+    ['30 天', '2026-10-01', 'non_results'],
+    ['31 天', '2026-10-02', 'unpaired'],
+    ['早于通知日 1 天', '2026-08-31', 'unpaired'],
+  ] as const)('窗口边界 %s ⇒ %s', (_label, meetingDate, kind) => {
+    expect(classifyNoticeMeeting('2026-09-01', [dividend(meetingDate)])).toBe(kind);
+  });
+
+  // 通知 2026-09-01 只配到股息会 (09-10)；通知 2026-09-20 配到业绩会 (10-05)；最近一次刊发 2026-08-20。
+  const meetings = [dividend('2026-09-10'), results('2026-10-05')];
+  const signals = [notice('2026-09-01'), notice('2026-09-20')];
+
+  it('🚨 股息通知在前、业绩通知在后 ⇒ 待判通知选中后者', () => {
+    expect(selectPendingNotice(signals, '2026-08-20', meetings)?.noticeDate).toBe('2026-09-20');
+  });
+
+  it('只有股息通知 ⇒ 无待判通知、被剔除的通知带出最早纯股息行', () => {
+    const r = judgeNoticeUndated({
+      noticeSignals: [notice('2026-09-01')],
+      latestFilingDate: '2026-08-20',
+      unpublishedEventDates: [],
+      boardCovered: true,
+      meetings: [dividend('2026-09-12', '中期股息'), dividend('2026-09-10')],
+      hasFiscalProfile: true,
+      capabilities: HK_CAPS,
+      elapsedTradingDays: null,
+      existingStatus: null,
+    });
+    expect(r.pendingNotice).toBeNull();
+    expect(r.status).toBeNull();
+    expect(r.findings).toEqual([]);
+    expect(r.nonResultsNotices).toEqual([
+      {
+        notice: notice('2026-09-01'),
+        meeting: { meetingDate: '2026-09-10', results: false, purpose: '特別股息' },
+      },
+    ]);
+  });
+
+  it('股息通知 + 其后业绩通知满 2 个交易日无日期 ⇒ 按业绩通知迁入, 股息通知仍计入剔除', () => {
+    const r = judgeNoticeUndated({
+      noticeSignals: signals,
+      latestFilingDate: '2026-08-20',
+      unpublishedEventDates: [],
+      boardCovered: true,
+      meetings,
+      hasFiscalProfile: true,
+      capabilities: HK_CAPS,
+      elapsedTradingDays: elapsed('2026-09-20', 2, '2026-09-23'),
+      existingStatus: null,
+    });
+    expect(r.pendingNotice?.noticeDate).toBe('2026-09-20');
+    expect(r.status).toBe('notified_undated');
+    expect(r.nonResultsNotices.map((n) => n.notice.noticeDate)).toEqual(['2026-09-01']);
   });
 });
