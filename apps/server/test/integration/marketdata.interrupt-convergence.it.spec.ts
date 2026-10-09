@@ -65,6 +65,7 @@ import type { MarketdataSyncConfig } from '../../src/config/marketdata.config';
  * `MarketdataSyncWorker.onModuleInit()` 里的两件事被本文件**复刻**而非**执行**:
  * ① `new Worker` 的 options 选择 ② `QueueEvents('failed')` → `onJobFailed` 的挂钩。
  * 原因是前者把 30s 硬编码在里面、后者依赖前者。⇒ 这两行接线若被改坏, 本文件照样绿。
+ * (#491 起例外: 「订阅起点」那一例**执行**真 `onModuleInit`, ② 的挂钩在那一例里被真跑。)
  *
  * ## 反例臂(一次性, 复跑命令)
  *
@@ -355,4 +356,121 @@ describe('#137 打断收敛全链 (真 Redis stalled 接管)', () => {
       await shutdownAll();
     }
   }, 120_000);
+
+  /** 进程 1 开出 running 行后「猝死」, 并等到它的 job 已进 stalled 集且 lock 过期。 */
+  async function orphanRunningJob(): Promise<string> {
+    const p1 = spawnProcess({ executor: () => new Promise<never>(() => undefined) });
+    await p1.bull.waitUntilReady();
+    const job = await p1.queue.enqueueDimensionJob(PAYLOAD, { retryMax: 1, lane: 'default' });
+    const jobId = job.id as string;
+    await waitFor(
+      '进程1 开出 running 行',
+      async () =>
+        (await prisma.syncRun.count({ where: { bullJobId: jobId, status: 'running' } })) === 1,
+    );
+    // 等 job 被登记进 stalled 集 —— 否则下一个进程的首次检查只会登记、不会判 stalled, 测的就
+    // 不是「重启即 failed」那条时序了。🚫 别换回 sleep 一个 STALL_MS: 检查脚本先查
+    // `stalled-check` 键 (TTL = stalledInterval) 存在即跳过, 实际周期会漂到约两倍。
+    // EVIDENCE: bullmq 5.78.0 `scripts/moveStalledJobsToWait-*.js` 开头 `EXISTS stalledCheckKey`。
+    await waitFor(
+      'job 登记进 stalled 集',
+      async () => (await p1.life.client.sismember(p1.queue.queue.keys.stalled, jobId)) === 1,
+    );
+    p1.life.onApplicationShutdown();
+    await new Promise((r) => setTimeout(r, LOCK_MS + 500));
+    return jobId;
+  }
+
+  it('#491 对账兜底: failed 事件漏收 (无人订阅) ⇒ reconcileOrphanedRuns 仍收成 interrupted', async () => {
+    try {
+      const jobId = await orphanRunningJob();
+      // 进程 2 **不**挂 failed 事件 = 事件漏收的极端形态。
+      const p2 = spawnProcess({
+        executor: () => new Promise<never>(() => undefined),
+        maxStalledCount: 0,
+      });
+      await waitFor(
+        'job 进 failed',
+        async () => (await p2.queue.queue.getJobState(jobId)) === 'failed',
+      );
+      expect(await prisma.syncRun.count({ where: { bullJobId: jobId, status: 'running' } })).toBe(
+        1,
+      );
+
+      const life = new QueueRedisLifecycle(stores.redisUrl);
+      openLifecycles.push(life);
+      const reconciler = new MarketdataSyncWorker(
+        life.client,
+        buildRegistry(),
+        new MarketdataSyncQueue(life.client, CFG),
+        coldStartUnused(),
+        CFG,
+        new SyncRunRecorder(prisma),
+      );
+      await reconciler.reconcileOrphanedRuns();
+
+      const rows = await prisma.syncRun.findMany({ where: { bullJobId: jobId } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe('interrupted');
+      expect(JSON.stringify(rows[0]?.findings)).toContain('对账兜底');
+    } finally {
+      await shutdownAll();
+    }
+  }, 120_000);
+
+  /**
+   * #491 订阅起点: **执行**真 `onModuleInit` (非复刻), 验重启后数百毫秒内发出的 `failed`
+   * 必被 QueueEvents 收到。竞态是概率性的 (维护者本地实测 `'$'` 起点约 18% 漏收), 故跑
+   * ROUNDS 轮: 若起点修复失效, 全轮侥幸全收的概率 ≈ 0.85^20 ≈ 4% —— 有区分度但非绝对。
+   *
+   * 反例臂 2026-10-09 逐轮探针实跑 (每轮记「job 是否进 failed / 流里有无该事件 / 是否收到」,
+   * 不断言): 去掉 `lastEventId` ⇒ 20 轮 3 漏收, 3 轮均为「流里有、没收到」= 真漏收;
+   * 修复版 20 轮 0 漏收。改动本例或订阅起点逻辑后请重跑这一对臂。
+   * ⚠️ 只看「10 s 内没收到」分不清两类失败: 偶有一轮首次 stalled 检查没判中 (lock 晚过期),
+   * job 要到下一个 30 s 周期才 failed (同一探针里修复版有一轮 30011 ms) —— 故下面两步分开等。
+   */
+  it('#491 订阅起点: 真 onModuleInit 重启后, 首次 stalled 检查发出的 failed 每轮都被收到', async () => {
+    const ROUNDS = 20;
+    try {
+      for (let round = 0; round < ROUNDS; round++) {
+        await prisma.syncRun.deleteMany();
+        const life = new QueueRedisLifecycle(stores.redisUrl);
+        openLifecycles.push(life);
+        // 上一轮真 worker 用生产默认 stalledInterval (30 s) 写下的检查节流键会让本轮进程 1 的
+        // stalled 检查全被跳过 30 s —— 清掉它, 每轮约 6 s 而非 30 s。
+        const queue = new MarketdataSyncQueue(life.client, CFG);
+        await life.client.del(queue.queue.keys['stalled-check']);
+        const jobId = await orphanRunningJob();
+
+        const nest = new MarketdataSyncWorker(
+          life.client,
+          buildRegistry(),
+          queue,
+          coldStartUnused(),
+          CFG,
+          new SyncRunRecorder(prisma),
+        );
+        const received = vi.spyOn(nest, 'onJobFailed');
+        await nest.onModuleInit();
+        try {
+          // 两步分开等, 失败时才分得清是谁的锅: ① job 没 failed = 搭建时序 (如负载下 lock 晚过期,
+          // 首次检查没判中, 要等下一个 30 s 周期) ② failed 了却没收到 = 被测的订阅起点漏了。
+          await waitFor(
+            `第 ${round} 轮 job 进 failed (搭建)`,
+            async () => (await queue.queue.getJobState(jobId)) === 'failed',
+            45_000,
+          );
+          await waitFor(
+            `第 ${round} 轮 failed 事件送达 (被测)`,
+            async () => received.mock.calls.some(([id]) => id === jobId),
+            5_000,
+          );
+        } finally {
+          await nest.onModuleDestroy();
+        }
+      }
+    } finally {
+      await shutdownAll();
+    }
+  }, 600_000);
 });

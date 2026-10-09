@@ -62,7 +62,7 @@ function buildQueue(opts: { futuLaneEnabled?: boolean } = {}) {
     queues,
     cfg: { ...CFG, futuLaneEnabled: opts.futuLaneEnabled === true },
   });
-  return { instance, add: def.add, getJob: def.getJob, futuAdd: futu.add };
+  return { instance, add: def.add, getJob: def.getJob, futuAdd: futu.add, futuGetJob: futu.getJob };
 }
 
 function build(
@@ -71,9 +71,16 @@ function build(
     budgetExhausted?: boolean;
     convergeThrows?: boolean;
     convergedRows?: number;
+    futuLaneEnabled?: boolean;
+    runningRuns?: { bullJobId: string; syncType: string }[];
   } = {},
 ) {
-  const { instance: syncQueue, add, getJob } = buildQueue();
+  const {
+    instance: syncQueue,
+    add,
+    getJob,
+    futuGetJob,
+  } = buildQueue({ futuLaneEnabled: overrides.futuLaneEnabled === true });
 
   // #137: 收敛与执行的**先后**是本机制的正确性依据 (收敛必须早于新行 INSERT), 而两个 spy
   // 各自的 mock.calls 看不出跨 spy 的顺序 ⇒ 记一条共同时间线。
@@ -99,7 +106,8 @@ function build(
     if (overrides.convergeThrows === true) throw new Error('DB down');
     return overrides.convergedRows ?? 0;
   });
-  const runRecorder = { convergeInterrupted } as unknown as SyncRunRecorder;
+  const listRunningWithJob = vi.fn(async () => overrides.runningRuns ?? []);
+  const runRecorder = { convergeInterrupted, listRunningWithJob } as unknown as SyncRunRecorder;
 
   const run = vi.fn(
     async (_input: unknown): Promise<ColdStartResult> =>
@@ -128,8 +136,10 @@ function build(
     recordRetryExhausted,
     add,
     getJob,
+    futuGetJob,
     warn,
     convergeInterrupted,
+    listRunningWithJob,
     order,
   };
 }
@@ -385,6 +395,85 @@ describe('MarketdataSyncWorker — 打断收敛 (#137)', () => {
     const { worker, warn } = build({ convergeThrows: true });
 
     await expect(worker.onJobFailed('dim-1', 'boom')).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MarketdataSyncWorker — 对账兜底 (#491)', () => {
+  const RUN = { bullJobId: '7', syncType: 'sync:us_equity_bar' };
+  const bullJob = (name: string, state: string) => ({ name, getState: async () => state });
+
+  it.each(['completed', 'failed', 'unknown'])(
+    'job 已终结 (%s) 而行仍 running ⇒ 收敛, reason 是对账那一条',
+    async (state) => {
+      const { worker, convergeInterrupted, getJob } = build({ runningRuns: [RUN] });
+      getJob.mockResolvedValue(bullJob(RUN.syncType, state));
+
+      await worker.reconcileOrphanedRuns();
+
+      expect(convergeInterrupted).toHaveBeenCalledExactlyOnceWith(
+        '7',
+        INTERRUPT_REASON.ORPHAN_RECONCILED,
+      );
+    },
+  );
+
+  it('所有 lane 都查无此 job (被 removeOn* 挤掉) ⇒ 收敛', async () => {
+    const { worker, convergeInterrupted } = build({ runningRuns: [RUN] });
+
+    await worker.reconcileOrphanedRuns();
+
+    expect(convergeInterrupted).toHaveBeenCalledExactlyOnceWith(
+      '7',
+      INTERRUPT_REASON.ORPHAN_RECONCILED,
+    );
+  });
+
+  it.each(['active', 'waiting', 'delayed', 'prioritized'])(
+    'job 仍可能跑 (%s) ⇒ **不动** (在跑的归自己收, 将重跑的归触发点 A)',
+    async (state) => {
+      const { worker, convergeInterrupted, getJob } = build({ runningRuns: [RUN] });
+      getJob.mockResolvedValue(bullJob(RUN.syncType, state));
+
+      await worker.reconcileOrphanedRuns();
+
+      expect(convergeInterrupted).not.toHaveBeenCalled();
+    },
+  );
+
+  it('同 id 不同名的 job 不认领: default lane 撞号, 真身在 futu lane 且仍在跑 ⇒ 不动', async () => {
+    const { worker, convergeInterrupted, getJob, futuGetJob } = build({
+      futuLaneEnabled: true,
+      runningRuns: [RUN],
+    });
+    // 撞号的那个已终结 —— 若按 id 单键认领, 这里就会误收一条活着的行。
+    getJob.mockResolvedValue(bullJob('sync:hk_option_chain', 'completed'));
+    futuGetJob.mockResolvedValue(bullJob(RUN.syncType, 'active'));
+
+    await worker.reconcileOrphanedRuns();
+
+    expect(convergeInterrupted).not.toHaveBeenCalled();
+  });
+
+  it('只有撞号的异名 job ⇒ 视同查无此 job, 收敛', async () => {
+    const { worker, convergeInterrupted, getJob } = build({ runningRuns: [RUN] });
+    getJob.mockResolvedValue(bullJob('sync:hk_option_chain', 'active'));
+
+    await worker.reconcileOrphanedRuns();
+
+    expect(convergeInterrupted).toHaveBeenCalledExactlyOnceWith(
+      '7',
+      INTERRUPT_REASON.ORPHAN_RECONCILED,
+    );
+  });
+
+  it('Redis 查询失败 ⇒ 降级 WARN 不抛, 且不收敛 (查不到 ≠ 查无此 job)', async () => {
+    const { worker, convergeInterrupted, getJob, warn } = build({ runningRuns: [RUN] });
+    getJob.mockRejectedValue(new Error('redis down'));
+
+    await expect(worker.reconcileOrphanedRuns()).resolves.toBeUndefined();
+
+    expect(convergeInterrupted).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(1);
   });
 });

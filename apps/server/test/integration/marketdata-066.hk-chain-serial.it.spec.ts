@@ -178,7 +178,7 @@ describe('066 T11 港股与美股链发现串行 (Testcontainers Redis, 真 work
       queue.enqueueDimensionJob(payloadOf('option_contract'), { retryMax: 3, lane: 'default' }),
       queue.enqueueDimensionJob(payloadOf('hk_option_contract'), { retryMax: 3, lane: 'default' }),
     ]);
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       await Promise.all([
         usJob.waitUntilFinished(events, 30_000),

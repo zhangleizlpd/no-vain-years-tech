@@ -20,5 +20,9 @@ import type { SyncRunRecorder } from '../../src/marketdata/sync-run.recorder';
  * `new SyncRunRecorder(prisma)`（先例见 `marketdata.backfill-cli.it.spec.ts`）。
  */
 export function syncRunRecorderNoop(): SyncRunRecorder {
-  return { convergeInterrupted: async (): Promise<number> => 0 } as unknown as SyncRunRecorder;
+  // `listRunningWithJob` 同理 (#491 对账兜底, onModuleInit 起手就调): 返空 = 无 running 行。
+  return {
+    convergeInterrupted: async (): Promise<number> => 0,
+    listRunningWithJob: async (): Promise<[]> => [],
+  } as unknown as SyncRunRecorder;
 }

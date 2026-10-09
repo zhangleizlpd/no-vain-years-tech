@@ -216,7 +216,7 @@ describe('019 T019 整夜端到端 (退化态等价 + 画像混合态)', () => {
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       await run(events);
     } finally {

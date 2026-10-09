@@ -79,6 +79,16 @@ const WORKER_LOCK_DURATION_MS = 600_000;
 const WORKER_MAX_STALLED_COUNT = 0;
 
 /**
+ * #491 对账兜底的周期 (启动时另跑一次)。
+ *
+ * 业内同类「事件为主 + 低频全量兜底」: Sidekiq Pro super_fetch 孤儿全量扫描每小时一次 (Reliability
+ * wiki), K8s 系控制器 resync 默认 10 h。本兜底只补「进程活着但 QueueEvents 断连期间漏的事件」
+ * —— 重启场景由启动那一轮 + 订阅起点 (`eventStreamTail`) 覆盖; 漏收代价只是审计表多挂一行
+ * running ⇒ 取 1 h。
+ */
+const ORPHAN_RECONCILE_INTERVAL_MS = 3_600_000;
+
+/**
  * 维度 worker (017 T009, ADR-0049 执行层): 裸 `new Worker` 消费 `marketdata-sync` queue,
  * 按 job.name (`sync:<dim>`) 路由 `DimensionExecutorRegistry` per-dim 路径 (自管
  * `sync:<dim>` SyncRun + bullJobId)。失败隔离: 单维度 job 失败只影响自身 attempts,
@@ -100,6 +110,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
   /** 每条 active lane 一个 Worker + 一个 QueueEvents (#210)。 */
   private readonly workers: Worker<MarketdataSyncJobPayload>[] = [];
   private readonly events: QueueEvents[] = [];
+  private reconcileTimer?: NodeJS.Timeout;
 
   constructor(
     @Inject(MARKETDATA_QUEUE_REDIS) private readonly connection: Redis,
@@ -115,7 +126,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
     return this.workers.length > 0;
   }
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
     if (process.env[MARKETDATA_WORKER_DISABLED]) {
       this.logger.log(`${MARKETDATA_WORKER_DISABLED} 置位 — worker 不启动 (CLI 入队进程, D6)`);
       return;
@@ -125,6 +136,8 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
     //    一件件来); 拆的是**lane 之间**, 不是 lane 内部。别顺手把它调大。
     for (const lane of this.syncQueue.activeLanes()) {
       const queueName = queueNameForLane(lane);
+      // #491: 订阅起点必须在 Worker 构造**之前**取 —— 理由见 eventStreamTail。
+      const lastEventId = await this.eventStreamTail(lane);
       this.workers.push(
         new Worker<MarketdataSyncJobPayload>(queueName, (job) => this.process(job, lane), {
           connection: this.connection,
@@ -134,7 +147,10 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
           maxStalledCount: WORKER_MAX_STALLED_COUNT,
         }),
       );
-      const events = new QueueEvents(queueName, { connection: this.connection });
+      const events = new QueueEvents(queueName, {
+        connection: this.connection,
+        ...(lastEventId !== undefined ? { lastEventId } : {}),
+      });
       // retry 耗尽硬失败 (与 executor 内业务降级告警分工两道)。
       events.on('failed', ({ jobId, failedReason }) => {
         void this.onJobFailed(jobId, failedReason, lane);
@@ -142,6 +158,74 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
       this.events.push(events);
       this.logger.log(`marketdata-sync worker 启动: lane=${lane} queue=${queueName}`);
     }
+    // #491 对账兜底: 启动一轮 (收上一个进程生命周期里漏掉的) + 周期一轮 (收断连期间漏掉的)。
+    void this.reconcileOrphanedRuns();
+    this.reconcileTimer = setInterval(() => {
+      void this.reconcileOrphanedRuns();
+    }, ORPHAN_RECONCILE_INTERVAL_MS);
+    this.reconcileTimer.unref();
+  }
+
+  /**
+   * 某 lane 事件流当前的末尾 id, 作 `QueueEvents` 的订阅起点 (#491)。
+   *
+   * 不传时 bullmq 从 `'$'` 读 = 只收**首次 XREAD 之后**的事件; 而 Worker 构造后立刻跑一次
+   * stalled 检查, 上个进程被杀时在跑的 job 会在数百毫秒内 `failed` —— 与 QueueEvents 首次
+   * XREAD 之间无先后保证, 漏了触发点 B 就永远等不到 (本地两臂 30 轮: `'$'` 漏 11/60, 从固定
+   * 起点读漏 0/60, 维护者 2026-10-09 实测, 见 #491)。在 Worker 构造前取末尾 id ⇒ Worker 发出的
+   * 每条事件都排在起点之后, 必被收到; 又不会把历史 `failed` 重放一遍刷 ERROR。
+   * EVIDENCE: bullmq 5.78.0 `classes/queue-events.js` `consumeEvents` (`opts.lastEventId || '$'`);
+   *           `classes/worker.js` `startStalledCheckTimer` (先跑一次 `moveStalledJobsToWait`)。
+   *
+   * 流为空 ⇒ `'0-0'` (从头读, 本就没有历史)。取失败 ⇒ WARN + 返 undefined 退回 `'$'` —— 起点
+   * 只缩小窗口, 不值得为它把启动带崩; 漏掉的由对账兜底收。
+   */
+  private async eventStreamTail(lane: QueueLane): Promise<string | undefined> {
+    const key = this.syncQueue.queueFor(lane).keys.events;
+    try {
+      const [last] = await this.connection.xrevrange(key, '+', '-', 'COUNT', 1);
+      return last?.[0] ?? '0-0';
+    } catch (err) {
+      this.logger.warn(`事件流末尾 id 读取失败 (key=${key}), 退回 '$' 订阅: ${String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * #491 对账兜底: 把「job 已终结或已不在队列、行却仍 `running`」的 `sync_run` 收成 interrupted。
+   *
+   * 触发点 B 依赖 `failed` 事件送达, 而事件流不补投 (重启早于订阅 / 断连期间) ⇒ 漏一次就永久
+   * running。本方法不看事件, 直接看 job 终态 —— 判据仍是确定性的, 不引入时间阈值:
+   *   · job 在 `completed` / `failed` ⇒ 不会再有 attempt, 行不可能还有人收尾;
+   *   · 所有 active lane 都查无此 job (被 removeOn* 挤掉) ⇒ 同上, 无从接管;
+   *   · 其余状态 (active / wait / delayed / …) ⇒ **不动**: 正在跑的那一行归它自己收,
+   *     将要被重跑的归触发点 A 收。
+   *
+   * 📌 job 用 (id, name) 双键认领: 各 lane 的 jobId 各自从 1 自增, 同一个 id 在两条 lane 上
+   * 可以都存在; `sync_run.sync_type` 与维度 job 名同为 `sync:<dim>`, 名字对不上的不是它。
+   *
+   * 🚨 不抛 —— 挂在 setInterval / 启动 fire-and-forget 上。失败 WARN, 下一轮再来。
+   */
+  async reconcileOrphanedRuns(): Promise<void> {
+    try {
+      for (const { bullJobId, syncType } of await this.runRecorder.listRunningWithJob()) {
+        if (await this.jobMayStillRun(bullJobId, syncType)) continue;
+        await this.convergeInterruptedRuns(bullJobId, INTERRUPT_REASON.ORPHAN_RECONCILED);
+      }
+    } catch (err) {
+      this.logger.warn(`sync_run 对账兜底失败: ${String(err)}`);
+    }
+  }
+
+  private async jobMayStillRun(jobId: string, name: string): Promise<boolean> {
+    for (const lane of this.syncQueue.activeLanes()) {
+      const job = await this.syncQueue.queueFor(lane).getJob(jobId);
+      if (job === undefined || job.name !== name) continue;
+      const state = await job.getState();
+      // 'unknown' = getJob 之后刚被移除, 与查无此 job 同论。
+      return state !== 'completed' && state !== 'failed' && state !== 'unknown';
+    }
+    return false;
   }
 
   /**
@@ -324,6 +408,7 @@ export class MarketdataSyncWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    clearInterval(this.reconcileTimer);
     for (const worker of this.workers) {
       await closeWithTimeout('marketdata-sync worker', () => worker.close());
     }

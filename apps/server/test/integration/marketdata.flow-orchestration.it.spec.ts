@@ -131,7 +131,7 @@ describe('017 T016 flow orchestration end-to-end (tick → flow → worker)', ()
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       await run(events, worker);
     } finally {
