@@ -653,7 +653,7 @@ interface MergeReport {
  * `overdue` / `notified_undated` 的那一轮 —— 每条 `stats.failed += 1`，kind 仍为 `notice`
  * (`failure` 是续跑 / 重试的来源)。停留在该状态的事件规则不产出 finding ⇒ 不再计；🚫 按「本轮扫描到
  * 该状态」计 —— 延期刊发的公司会让日报连日标红、淹没新故障。冲突 / 未对齐 / 清单行消失 / 日历不可判 /
- * 财年未知 / 财年待补与矛盾 / 从未在清单的未知日期通知 / 清单扫描计数 🚫 计失败。
+ * 财年未知 / 财年待补与矛盾 / 创业板的未知日期通知 / 非业绩会议通知 / 清单扫描计数 🚫 计失败。
  *
  * notice 的标的代码放 `detail.symbol` (`SyncRunFinding` 的 notice 无 `symbol` 字段)。
  * 复杂度 O(findings + 新插入观测数 + 来源数)。

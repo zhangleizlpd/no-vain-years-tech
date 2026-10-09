@@ -947,21 +947,6 @@ describe('079 T014 合并用例 ⑤⑥: 美股增量入口 + 已通知日期未�
       await announce(inst.id, '2026-03-17', '截至2025年12月31日止年度之業績公告', ['fs_main']);
       await announce(inst.id, '2026-03-17', '截至2025年12月31日止年度的末期股息', ['dividend']);
       await announce(inst.id, '2026-09-01', NOTICE_TITLE, ['all']);
-      // 曾在清单: 上一期 (年度) 的清单观测。
-      await prisma.earningsDateObservation.create({
-        data: {
-          source: 'hkex_board_meeting_list',
-          instrumentId: inst.id,
-          periodKey: 'P:2025-12-31',
-          market: 'hk',
-          reportKind: 'annual',
-          periodEnd: day('2025-12-31'),
-          basis: 'meeting',
-          meetingDate: day('2026-03-15'),
-          firstSeenAt: day('2026-03-10'),
-          lastSeenAt: day('2026-03-10'),
-        },
-      });
       const futu: Round = { current: {} };
       const useCase = buildMerge(futu, { current: {} });
 
@@ -1085,27 +1070,13 @@ describe('079 T015 迁入标红计数 ①②: overdue / notified_undated 只在�
   });
 
   it('② 主板标的迁入 notified_undated ⇒ 同形; 创业板的同形通知只计数', async () => {
-    const [listed, neverListed] = await Promise.all(
+    const [board, gem] = await Promise.all(
       ['02382', '08083'].map((code) => instrument('hk', code)),
     );
-    for (const i of [listed, neverListed]) {
+    for (const i of [board, gem]) {
       await seedProfile(i.id);
       await announce(i.id, '2026-09-01', NOTICE_TITLE, ['all']);
     }
-    await prisma.earningsDateObservation.create({
-      data: {
-        source: 'hkex_board_meeting_list',
-        instrumentId: listed.id,
-        periodKey: 'P:2025-12-31',
-        market: 'hk',
-        reportKind: 'annual',
-        periodEnd: day('2025-12-31'),
-        basis: 'meeting',
-        meetingDate: day('2026-03-15'),
-        firstSeenAt: day('2026-03-10'),
-        lastSeenAt: day('2026-03-10'),
-      },
-    });
     const useCase = buildMerge({ current: {} }, { current: {} });
 
     const entered = await recordedRun(useCase, '2026-09-03');
@@ -1124,7 +1095,7 @@ describe('079 T015 迁入标红计数 ①②: overdue / notified_undated 只在�
     expect(entered.status).toBe('partial');
 
     const stayed = await recordedRun(useCase, '2026-09-04');
-    expect((await eventOf(listed.id, 'D:notice_undated:2026-09-01')).status).toBe(
+    expect((await eventOf(board.id, 'D:notice_undated:2026-09-01')).status).toBe(
       'notified_undated',
     );
     expect(stayed.stats.failed).toBe(0);
@@ -1717,8 +1688,8 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
   });
 
   it('④ 通知 2 个交易日后仍无日期: 创业板代码 ⇒ 只计数 success; 主板 ⇒ notified_undated + partial', async () => {
-    const [gem, listed] = await Promise.all(['08217', '02269'].map((c) => instrument('hk', c)));
-    for (const i of [gem, listed]) await seedProfile(i.id);
+    const [gem, board] = await Promise.all(['08217', '02269'].map((c) => instrument('hk', c)));
+    for (const i of [gem, board]) await seedProfile(i.id);
     const useCase = buildMerge({ current: {} }, { current: {} });
 
     // 创业板代码、无任何清单观测: 09-01 通知 → 09-03 满 2 个交易日。
@@ -1735,30 +1706,15 @@ describe('079 T018 场景 IT ② ③④⑤: 清单行提前消失 / 已通知日
     ]);
     expect(await prisma.earningsDateEvent.count({ where: { instrumentId: gem.id } })).toBe(0);
 
-    // 曾在清单: 上一期 (年度) 的清单观测。
-    await prisma.earningsDateObservation.create({
-      data: {
-        source: 'hkex_board_meeting_list',
-        instrumentId: listed.id,
-        periodKey: 'P:2025-12-31',
-        market: 'hk',
-        reportKind: 'annual',
-        periodEnd: day('2025-12-31'),
-        basis: 'meeting',
-        meetingDate: day('2026-03-15'),
-        firstSeenAt: day('2026-03-10'),
-        lastSeenAt: day('2026-03-10'),
-      },
-    });
-    await announce(listed.id, '2026-09-01', NOTICE_TITLE, ['all']);
-    const listedRound = await dimensionRun(useCase, '2026-09-03');
-    expect(await eventOf(listed.id, 'D:notice_undated:2026-09-01')).toMatchObject({
+    await announce(board.id, '2026-09-01', NOTICE_TITLE, ['all']);
+    const boardRound = await dimensionRun(useCase, '2026-09-03');
+    expect(await eventOf(board.id, 'D:notice_undated:2026-09-01')).toMatchObject({
       status: 'notified_undated',
     });
-    expect(runSteps(listedRound, 'earnings_notice_undated')).toContainEqual(
+    expect(runSteps(boardRound, 'earnings_notice_undated')).toContainEqual(
       expect.objectContaining({ detail: expect.objectContaining({ symbol: 'hk:02269' }) }),
     );
-    expect(listedRound).toMatchObject({ status: 'partial', failed: 1 });
+    expect(boardRound).toMatchObject({ status: 'partial', failed: 1 });
   });
 
   it('⑤ 无财年档案的港股标的过公布日 2 个交易日 ⇒ 非 overdue + fiscal_unknown 计数; 同轮有档案的对照标的已迁入 overdue', async () => {
