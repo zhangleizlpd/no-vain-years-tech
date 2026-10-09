@@ -695,6 +695,7 @@ async function resetMergeTables(): Promise<void> {
   await prisma.earningsDateEvent.deleteMany();
   await prisma.earningsDateObservation.deleteMany();
   await prisma.earningsMeetingLag.deleteMany();
+  await prisma.earningsNonresultsMeeting.deleteMany();
 }
 
 /** 按轮脚本化的假来源：`round.current` 由用例在两轮之间改写。 */
@@ -2620,7 +2621,34 @@ describe('079 state_branches 直接覆盖补齐 #19 #20: 清单主表外代码�
     expect(await prisma.earningsDateEvent.count({ where: { instrumentId: dividendOnly.id } })).toBe(
       0,
     );
+    // spec Session（九）/ FR-006: 纯股息行留存为非业绩会议 (供会前通知消歧), 而非只计数丢弃。
+    expect(
+      await prisma.earningsNonresultsMeeting.findMany({
+        where: { instrumentId: dividendOnly.id },
+        select: { purpose: true, evidence: true },
+      }),
+    ).toEqual([
+      { purpose: '特別中期股息', evidence: expect.stringContaining('页首日期=2026-09-10') },
+    ]);
     expect(run).toMatchObject({ status: 'success', failed: 0 });
+  });
+
+  it('#20 纯股息行重跑: 同一行不重复写, 最近观测时刻前移、首次观测时刻不变', async () => {
+    for (const code of new Set(parseBoardMeetingList(PAGE_2026).rows.map((r) => r.code))) {
+      await instrument('hk', code);
+    }
+    const dividendOnly = await instrument('hk', '02877');
+    await dimensionRun(buildWithPage(PAGE_2026), '2026-09-11');
+    const [first] = await prisma.earningsNonresultsMeeting.findMany({
+      where: { instrumentId: dividendOnly.id },
+    });
+    await dimensionRun(buildWithPage(PAGE_2026), '2026-09-14');
+    const rows = await prisma.earningsNonresultsMeeting.findMany({
+      where: { instrumentId: dividendOnly.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].firstSeenAt).toEqual(first.firstSeenAt);
+    expect(rows[0].lastSeenAt.getTime()).toBeGreaterThan(first.lastSeenAt.getTime());
   });
 });
 

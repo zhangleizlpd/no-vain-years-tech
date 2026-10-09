@@ -37,6 +37,7 @@ import {
   type EarningsDateSourceCapabilities,
   type EarningsDateSourceName,
   type EarningsDateSourceObservation,
+  type EarningsNonResultsMeeting,
   type EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
 import { isAlignedPeriodKey } from './earnings-period.rules.js';
@@ -816,6 +817,7 @@ export class SyncEarningsDatesUseCase {
         stats,
       );
       inserted.push(...keys);
+      await this.recordNonResultsMeetings(result.nonResultsMeetings ?? [], request.now, stats);
     }
     const merge = await this.mergeHk(outcome, listings, request.now);
     addWritten(stats, merge.eventsWritten);
@@ -1038,6 +1040,39 @@ export class SyncEarningsDatesUseCase {
       addWritten(stats, 1);
     }
     return insertedKeys;
+  }
+
+  /**
+   * 清单纯股息行 upsert (spec Session（九）/ FR-006)：新行首次 = 最近观测时刻 = 本轮；既有行只前移
+   * 最近观测时刻、🚫 覆盖首次观测时刻与凭据。清单每页纯股息行个位数 ⇒ 逐行 upsert，O(行数) 次写。
+   */
+  private async recordNonResultsMeetings(
+    meetings: readonly EarningsNonResultsMeeting[],
+    now: Date,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    for (const m of meetings) {
+      const meetingDate = new Date(`${m.meetingDate}T00:00:00Z`);
+      await this.prisma.earningsNonresultsMeeting.upsert({
+        where: {
+          instrumentId_meetingDate_purpose: {
+            instrumentId: m.instrumentId,
+            meetingDate,
+            purpose: m.purpose,
+          },
+        },
+        create: {
+          instrumentId: m.instrumentId,
+          meetingDate,
+          purpose: m.purpose,
+          evidence: m.evidence,
+          firstSeenAt: now,
+          lastSeenAt: now,
+        },
+        update: { lastSeenAt: now },
+      });
+      addWritten(stats, 1);
+    }
   }
 
   /** 列表型来源的本轮 / 上一轮在清单集合。O(列表型来源数) 次读。 */

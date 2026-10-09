@@ -6,6 +6,7 @@ import type {
   EarningsDateSource,
   EarningsDateSourceCapabilities,
   EarningsDateSourceObservation,
+  EarningsNonResultsMeeting,
 } from './earnings-date-source.port.js';
 import { datePeriodKey } from './earnings-period.rules.js';
 import {
@@ -84,7 +85,7 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
     });
     const page = parseBoardMeetingList(html);
 
-    const instrumentIds = await this.loadInstrumentIds(page.rows);
+    const instrumentIds = await this.loadInstrumentIds([...page.rows, ...page.nonResultsRows]);
     const evidence = `${HKEX_BOARD_MEETING_LIST_URL} 页首日期=${page.pageDate}`;
     const byKey = new Map<string, EarningsDateSourceObservation>();
     let skippedUnknownInstruments = 0;
@@ -100,6 +101,21 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
       if (!byKey.has(key)) byKey.set(key, observation);
     }
     const observations = [...byKey.values()];
+    // 纯股息行 (spec Session（九）): 同一主表映射; 🚫 进 observations / listedPeriodKeys —— 前者会被合并层
+    // 当成一期财报, 后者会触发清单行提前消失判定。查不到主表的代码直接跳过、🚫 计入
+    // skippedUnknownInstruments: 它们已计入 counts.dividendOnlyRows (非静默丢弃), 再计会改变该指标
+    // 「业绩行跳过数」的既有口径。
+    const nonResultsMeetings: EarningsNonResultsMeeting[] = [];
+    for (const row of page.nonResultsRows) {
+      const instrumentId = instrumentIds.get(row.code);
+      if (instrumentId === undefined) continue;
+      nonResultsMeetings.push({
+        instrumentId,
+        meetingDate: row.meetingDate,
+        purpose: row.purpose,
+        evidence,
+      });
+    }
 
     return {
       observations,
@@ -111,11 +127,14 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
         periodKey,
       })),
       boardListScan: { pageDate: page.pageDate, counts: page.counts },
+      nonResultsMeetings,
     };
   }
 
   /** 代码 → 主表 id (`hk` + 5 位代码)；查不到的 (人民币柜台 `8xxxx` 等) 不在 Map 里。 */
-  private async loadInstrumentIds(rows: readonly BoardListRow[]): Promise<Map<string, bigint>> {
+  private async loadInstrumentIds(
+    rows: readonly Pick<BoardListRow, 'code'>[],
+  ): Promise<Map<string, bigint>> {
     if (rows.length === 0) return new Map();
     const instruments = await this.prisma.instrument.findMany({
       where: { market: HKEX_MARKET, code: { in: [...new Set(rows.map((r) => r.code))] } },

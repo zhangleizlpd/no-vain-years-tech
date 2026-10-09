@@ -84,6 +84,19 @@ export interface BoardListRow extends BoardListPeriodResolution {
   readonly periodText: string;
 }
 
+/**
+ * 纯股息行 (目的不含业绩 / 收益资料, spec Session（九）/ FR-006): 不作财报事件, 留存为非业绩会议,
+ * 供会前通知消歧 —— 只计数丢弃会让股息会的通知被当成业绩会前通知。
+ */
+export interface BoardListNonResultsRow {
+  /** 会议日期 (香港当地日期 `YYYY-MM-DD`)。 */
+  readonly meetingDate: string;
+  readonly stockName: string;
+  /** 补零到 5 位的代码。 */
+  readonly code: string;
+  readonly purpose: string;
+}
+
 export interface BoardListCounts {
   /** 首格形如 `DD/MM/YYYY` 的行数 = `resultRows + dividendOnlyRows` (0 行静默丢弃)。 */
   readonly dataRows: number;
@@ -99,6 +112,8 @@ export interface BoardListPage {
   /** 页首日期 (香港当地日期 `YYYY-MM-DD`)，陈旧判定的凭据。 */
   readonly pageDate: string;
   readonly rows: readonly BoardListRow[];
+  /** 纯股息行 (条数 = `counts.dividendOnlyRows`)。 */
+  readonly nonResultsRows: readonly BoardListNonResultsRow[];
   readonly counts: BoardListCounts;
 }
 
@@ -163,6 +178,7 @@ export function parseBoardMeetingList(html: string): BoardListPage {
   if (headerIndex < 0) throw new BoardListParseError('header_missing', null);
 
   const rows: BoardListRow[] = [];
+  const nonResultsRows: BoardListNonResultsRow[] = [];
   let dataRows = 0;
   let dividendOnlyRows = 0;
   let firstMalformedRow: string | null = null;
@@ -182,6 +198,8 @@ export function parseBoardMeetingList(html: string): BoardListPage {
     }
     if (!isBoardListResultsPurpose(parsed.purpose)) {
       dividendOnlyRows += 1;
+      const { meetingDate, stockName, code, purpose } = parsed;
+      nonResultsRows.push({ meetingDate, stockName, code, purpose });
       continue;
     }
     rows.push({
@@ -198,6 +216,7 @@ export function parseBoardMeetingList(html: string): BoardListPage {
   return {
     pageDate,
     rows,
+    nonResultsRows,
     counts: {
       dataRows,
       resultRows: rows.length,

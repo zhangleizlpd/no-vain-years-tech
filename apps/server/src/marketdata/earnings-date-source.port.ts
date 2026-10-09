@@ -127,6 +127,20 @@ export interface EarningsDateCollectResult {
   readonly listedPeriodKeys?: readonly EarningsListedPeriodKey[];
   /** 清单来源 (079 T012): 每轮扫描统计 (`earnings_board_list_scan`, T015)。其余来源不给。 */
   readonly boardListScan?: { readonly pageDate: string; readonly counts: BoardListCounts };
+  /**
+   * 清单来源 (spec Session（九）/ FR-006): 本轮纯股息行 (已映射到主表)。用例写
+   * `earnings_nonresults_meeting`、🚫 进观测与合并 —— 只供会前通知消歧。其余来源不给。
+   */
+  readonly nonResultsMeetings?: readonly EarningsNonResultsMeeting[];
+}
+
+export interface EarningsNonResultsMeeting {
+  readonly instrumentId: bigint;
+  /** 会议日期 (香港当地日期 `YYYY-MM-DD`)。 */
+  readonly meetingDate: string;
+  /** 清单「目的」列原文。 */
+  readonly purpose: string;
+  readonly evidence: string;
 }
 
 /** 清单陈旧判定的值域 (见 {@link EarningsDateCollectResult.stale})。 */

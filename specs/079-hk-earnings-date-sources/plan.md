@@ -271,7 +271,7 @@ context7_verified: []
 **D14 · 会前通知覆盖判定与目的消歧（FR-006 / FR-017 / FR-023；spec Session（九））**
 
 - **为什么不把纯股息行做成 `meeting` 观测**：合并层按 `(标的, period_key)` 从观测生成事件（D8），纯股息行没有报告期，落成观测就会多出一期「财报」；清单行提前消失（FR-016）也按观测判。⇒ 走 D3 新表 6，与观测完全隔离。
-- **解析**（`hkex-board-meeting-list.rules.ts`）：`parseBoardMeetingList` 现对非业绩目的只 `dividendOnlyRows += 1`。改为同时产出 `nonResultsRows: { code, meetingDate, purpose }[]`；计数与结构不变量（`resultRows + dividendOnlyRows === dataRows`）不变。source 层按与业绩行相同的主表映射（查不到的代码同样跳过计数），经来源结果新增可选字段 `nonResultsMeetings` 交给用例写表（同轮写，`last_seen_at` 刷新）。
+- **解析**（`hkex-board-meeting-list.rules.ts`）：`parseBoardMeetingList` 现对非业绩目的只 `dividendOnlyRows += 1`。改为同时产出 `nonResultsRows: { code, meetingDate, purpose }[]`；计数与结构不变量（`resultRows + dividendOnlyRows === dataRows`）不变。source 层按与业绩行相同的主表映射（查不到的代码直接跳过、🚫 计入 `skippedUnknownInstruments` —— 已计入 `dividendOnlyRows`，再计会改变该指标「业绩行跳过数」的既有口径，impl 期 T035 定），经来源结果新增可选字段 `nonResultsMeetings` 交给用例写表（同轮写，`last_seen_at` 刷新）。
 - **创业板判定**（纯函数，`earnings-date-merge.rules.ts`）：`isGemCode(code)` = 五位补零后在 `08000`–`08999`。EVIDENCE: 港交所《Stock Code Allocation Plan》Updated 12 March 2026 —— `08000–08550` / `08601–08999` GEM Securities、`08551–08600` GEM Temporary Counter；`80000–89999` 为人民币产品（含主板人民币柜台），🚫 按「以 8 开头」判。
 - **配对**（纯函数）：`classifyNoticeMeeting(noticeDate, meetings)` → `'results' | 'non_results' | 'unpaired'`。`meetings` = 该标的会议日落在 `[noticeDate, noticeDate + 30 天]` 的清单记录：业绩行（`basis = 'meeting'` 观测的会议日）+ 纯股息行（新表）。任一业绩行 ⇒ `results`（同一会议拆多行按此消解）；只有纯股息行 ⇒ `non_results`；都无 ⇒ `unpaired`。复杂度 O(该标的会议数)。
 - **判定改动**（`judgeNoticeUndated` / `selectPendingNotice` / `scanNoticeUndated`）：
