@@ -16,19 +16,29 @@
  * 5-10/60s)全体用户共用**同一个 key**, 既拦不住单个攻击者, 又是全站自伤天花板(总量打满即
  * 所有人一起被挡)。per-phone 与 `me:<accountId>` 两类桶不受影响, 那是主护栏。
  *
- * ## 为什么是 1 而不是 true
+ * ## 为什么按地址信任 nginx, 而不是按跳数 (`1`) 或 `true`
  *
- * `trustProxy: 1` = 只信最靠近本进程的**一跳**。nginx 侧配的是
- * `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`, 它把真实 socket 地址**追加**
- * 在客户端自带值之后 ⇒ 候选序列 = `[nginx 地址, ...XFF 反向]`; 信 1 跳 → `req.ip` 取到 nginx
- * 追加的那一项 = 真实客户端地址, 客户端伪造的条目恒落在更靠前的下标、**永远选不中**。
- * 换成 `true` 则整条 XFF 都被信任 ⇒ 客户端可自报任意 IP 绕开 per-IP 限流, 比现状更糟。
+ * nginx 侧配的是 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`, 它把真实 socket
+ * 地址**追加**在客户端自带值之后 ⇒ 候选序列 = `[socket 地址, ...XFF 反向]`。proxy-addr 从 socket
+ * 起逐项走, 遇到第一个**不受信**的地址即停: socket = nginx 的私网地址(受信) → 下一项 = nginx
+ * 追加的真实客户端公网地址(不受信) → `req.ip` 取它; 客户端伪造的条目恒落在更靠前的下标、**永远
+ * 选不中**。换成 `true` 则整条 XFF 都被信任 ⇒ 客户端可自报任意 IP 绕开 per-IP 限流。
  *
- * 🚨 **这个数字与拓扑绑定**: 若将来在 nginx 前再加一层(CDN / SLB), 必须同步加到 2, 否则
- * `req.ip` 会变成那一层的地址。识别判据 = `ops/host/nginx/conf.d/` 出现 `set_real_ip_from` /
- * `real_ip_header`, 或域名证书不再由 nginx 自持。反向失效是安全的: 若 nginx 停止下发 XFF,
- * `req.ip` 退回 socket 地址(= 改前行为), 降级不报错。
+ * 原先写的是 `trustProxy: 1`(只信一跳), 对公网客户端效果与此相同。fastify 5.12 起数字形式改为
+ * **一律不信任**(EVIDENCE: fastify@5.12.5 `lib/request.js` `getTrustProxyFn` 对 number 返回恒
+ * false, `docs/Reference/Server.md#trustproxy` 注明「Hop-count-only trust is disabled」), 继续写
+ * `1` 会让 `req.ip` 退回 nginx 地址 —— 即上面 2026-08-15 那场事故的形态。
+ *
+ * `uniquelocal` = proxy-addr 内置的私网段(10/8、172.16/12、192.168/16、fc00::/7), 覆盖 compose
+ * 默认网桥(该网段由 docker 分配、compose 未钉死, 故不写具体 CIDR, 免得网络重建后静默失效);
+ * `loopback` 覆盖本机直连与 `app.inject`。残余面: 来自私网的请求可自报 XFF —— app 不发布公网
+ * 端口, 能从私网直达它的只有本机与机队内部服务。
+ *
+ * 🚨 **这个取值与拓扑绑定**: 若将来在 nginx 前再加一层**公网**地址的代理(CDN / SLB), 必须把那层
+ * 的地址段加进来, 否则 `req.ip` 会变成那一层的地址。识别判据 = `ops/host/nginx/conf.d/` 出现
+ * `set_real_ip_from` / `real_ip_header`, 或域名证书不再由 nginx 自持。反向失效是安全的: 若 nginx
+ * 停止下发 XFF, `req.ip` 退回 socket 地址(= 改前行为), 降级不报错。
  *
  * 行为契约由 `http-adapter.options.spec.ts` 钉住(含伪造 XFF 的决定性负例)。
  */
-export const HTTP_ADAPTER_OPTIONS = { trustProxy: 1 };
+export const HTTP_ADAPTER_OPTIONS = { trustProxy: 'loopback, uniquelocal' };
