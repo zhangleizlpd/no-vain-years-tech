@@ -328,7 +328,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const jobA = await queue.enqueueDimensionJob(
         {
@@ -387,7 +387,7 @@ describe('038 T019 US3 保守多夜回填 pacing (Testcontainers PG+Redis, test-
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const run = () =>
         executeBackfill(

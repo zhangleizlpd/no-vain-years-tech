@@ -381,7 +381,7 @@ describe('040 T011 US 回填 pacing + 续跑 + 无回归 (Testcontainers PG+Redi
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const run = () =>
         executeBackfill(

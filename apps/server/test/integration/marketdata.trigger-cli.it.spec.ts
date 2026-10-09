@@ -111,7 +111,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const code = await executeTrigger(
         buildDeps(queue, events),
@@ -145,7 +145,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     await prisma.syncDimension.update({
       where: { dimensionKey: 'profile' },
       data: { retryMax: 1 }, // 不 retry — 否则 60s 指数退避拖慢 IT (attempts 语义 worker IT 已断)。
@@ -182,7 +182,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const code = await executeTrigger(
         buildDeps(queue, events),
@@ -253,7 +253,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const code = await executeTrigger(
         buildDeps(queue, events),
@@ -295,7 +295,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       // 自动 job (tick 形态直入队) 与 CLI trigger 并发提交 → 同 queue 串行消费。
       const autoJob = await queue.enqueueDimensionJob(
@@ -330,7 +330,7 @@ describe('017 T017+T019 trigger CLI (退出码三态 + cascade + 互斥 + sentin
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
     try {
-      worker.onModuleInit();
+      await worker.onModuleInit();
       expect(worker.running).toBe(false); // sentinel → onModuleInit no-op。
 
       const code = await executeTrigger(

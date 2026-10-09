@@ -116,7 +116,7 @@ export interface SyncRunStats {
 export type SyncRunStatus = 'success' | 'partial' | 'failed' | 'skipped' | 'interrupted';
 
 /**
- * `interrupted` 行落进 `findings` 的判据文本 —— **两个触发点各有各的一句**, 因为它们
+ * `interrupted` 行落进 `findings` 的判据文本 —— **每个触发点各有各的一句**, 因为它们
  * 回答的是不同的问题:「这一轮还会不会被重跑」。查表的人只看这一列就能分辨, 不必回溯队列。
  * (以 `{kind:'interrupt'}` 落 findings, 非失败语义 —— 同 {@link SyncRunRecorder.recordSkippedWithReason}。)
  */
@@ -126,6 +126,12 @@ export const INTERRUPT_REASON = {
     'interrupted: 上一 attempt 未收尾 (进程被替换 / 崩溃), 同 job 已由新 attempt 接管重跑',
   /** job 重试耗尽 (含 stalled 次数超限) ⇒ **不会再有接管者**, 这一轮的活是真的没做。 */
   RETRIES_EXHAUSTED: 'interrupted: attempt 未收尾且 job 重试已耗尽 — 不会再重跑',
+  /**
+   * 对账兜底 (#491): job 已终结或已不在队列, 行却仍 running ⇒ 上面那条的 `failed` 事件没送达
+   * (重启时早于 QueueEvents 订阅 / 断连期间)。同样**不会再有接管者**, 文案单列是为了让查表的人
+   * 看得出「事件出口漏了一次」—— 它频繁出现本身就是信号。
+   */
+  ORPHAN_RECONCILED: 'interrupted: attempt 未收尾且 job 已终结或已不在队列 (对账兜底) — 不会再重跑',
 } as const;
 
 /**
@@ -245,6 +251,22 @@ export class SyncRunRecorder {
       },
     });
     return count;
+  }
+
+  /**
+   * 仍挂 `running` 且带 `bull_job_id` 的行 (#491 对账兜底的输入)。不带 `bull_job_id` 的
+   * running 行 (补救链 `option-snapshot-remediation`) 没有 job 可对, 不在此列。
+   *
+   * 📌 `status` 无索引 ⇒ 全表扫; 调用频率是启动一次 + 每小时一次, 表量级下可忽略。
+   */
+  async listRunningWithJob(): Promise<{ bullJobId: string; syncType: string }[]> {
+    const rows = await this.prisma.syncRun.findMany({
+      where: { status: 'running', bullJobId: { not: null } },
+      select: { bullJobId: true, syncType: true },
+    });
+    return rows.flatMap((r) =>
+      r.bullJobId === null ? [] : [{ bullJobId: r.bullJobId, syncType: r.syncType }],
+    );
   }
 
   /**

@@ -100,7 +100,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const job = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
@@ -136,7 +136,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
       new SyncRunRecorder(prisma),
     );
     try {
-      worker.onModuleInit();
+      await worker.onModuleInit();
       expect(worker.running).toBe(false);
 
       await queue.enqueueDimensionJob(
@@ -165,7 +165,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       // 先种 universe (3 标的: 600519 有 bar / 000001 / 430047 无)。
       const uJob = await queue.enqueueDimensionJob(
@@ -229,7 +229,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     // 删 eod_bar 维度行 → A job loadDimension 顶层 throw (确定性失败注入)。
     await prisma.syncDimension.delete({ where: { dimensionKey: 'eod_bar' } });
     try {
@@ -278,7 +278,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     const errorSpy = vi.spyOn(Logger.prototype, 'error');
     await prisma.syncDimension.delete({ where: { dimensionKey: 'eod_bar' } });
     try {
@@ -333,7 +333,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       // 先种 universe (mock 3 标的), 再 seed 自选 600519。
       const uJob = await queue.enqueueDimensionJob(
@@ -384,7 +384,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const job = await queue.enqueueDimensionJob(
         { dimensionKey: 'universe', mode: 'delta', asOf: AS_OF, triggeredBy: 'cli' },
@@ -412,7 +412,7 @@ describe('017 T009 marketdata-sync worker (enqueue → route → per-dim 落库)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       // 绕过 helper 直接 add 错名 job (attempts=1 不重试, 快速到终态)。
       const job = await queue.queue.add(

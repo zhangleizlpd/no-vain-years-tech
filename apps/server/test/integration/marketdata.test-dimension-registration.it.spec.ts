@@ -125,7 +125,7 @@ describe('019 T006 SC-S05 测试维度注册演练 (tick→flow→worker 全链)
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       // ③ tick 全链: claim won (eod_bar + test_dimension) → 派生序 (priority 6 > 4 →
       // eod 在前) 组嵌套链 → 入队。

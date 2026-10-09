@@ -272,7 +272,7 @@ describe('038 T006 Phase 1 平台市场缝隙 seam (Testcontainers PG+Redis, moc
       CFG,
       new SyncRunRecorder(prisma),
     );
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const code = await executeBackfill(
         buildDeps(queue, events),

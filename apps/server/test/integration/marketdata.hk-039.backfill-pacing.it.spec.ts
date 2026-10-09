@@ -365,7 +365,7 @@ describe('039 T018 US4 回填 pacing + 续跑 + 无回归 (Testcontainers PG+Red
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const run = () =>
         executeBackfill(

@@ -219,7 +219,7 @@ describe('018 T007 tier night e2e (tick flow → tier-ordered consume → budget
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       await run(events);
     } finally {

@@ -256,7 +256,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const code = await executeBackfill(
         buildDeps(queue, events),
@@ -329,7 +329,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
     );
     const events = new QueueEvents(MARKETDATA_SYNC_QUEUE, { connection: lifecycle.client });
     await events.waitUntilReady();
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       // 预 seed universe (单维度 backfill 的运维前提: 标的已在库)。
       const seed = await executeBackfill(
@@ -487,7 +487,7 @@ describe('017 T018 backfill CLI 迁入队 (executeBackfill)', () => {
     // 钉住业务日, 否则回填窗随真实日期漂移 (清单页首日 / 730 天窗端点每天变)。定时器保持真实, bullmq 不受影响。
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(NOW_HK);
-    worker.onModuleInit();
+    await worker.onModuleInit();
     try {
       const code = await executeBackfill(
         buildDeps(queue, events),
