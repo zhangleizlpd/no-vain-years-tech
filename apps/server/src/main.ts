@@ -29,8 +29,8 @@ function flattenValidationErrors(errors: ValidationError[], parentPath = ''): In
 }
 
 async function bootstrap() {
-  // trustProxy 跳数走 HTTP_ADAPTER_OPTIONS（prod 恒在 nginx 之后；理由 + 取证 + 「为什么是 1
-  // 不是 true」全在该常量的文档注释，行为契约由 http-adapter.options.spec.ts 钉住）。
+  // trustProxy 走 HTTP_ADAPTER_OPTIONS（prod 恒在 nginx 之后；理由 + 取证 + 「为什么按地址信任
+  // nginx 而不是跳数 / true」全在该常量的文档注释，行为契约由 http-adapter.options.spec.ts 钉住）。
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
     new FastifyAdapter(HTTP_ADAPTER_OPTIONS),

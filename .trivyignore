@@ -27,3 +27,12 @@ GHSA-f88m-g3jw-g9cj
 # 移除条件: minimatch/glob 上游把 brace-expansion 升到 5.0.8+ 后删本行。
 # 复审: 2026-10-24
 CVE-2026-14257
+
+# image-size DoS via crafted image buffer (CVE-2025-71329 / CVE-2025-71330, HIGH)。
+# 修复仅在 2.0.3 (major)；受影响实例 image-size@1.2.1 只经 metro 0.83 / 0.84 (Expo 打包器) 引入。
+# 2.x 默认导出只收 Uint8Array, 而 metro `src/Assets.js` 对非 zip 资源传的是文件路径 ⇒ 强升即打包期报错。
+# metro 只在构建期读本仓自有图片资源 (非不可信输入), 不进 server / app 运行时 → 该 DoS 在本用法下不可利用。
+# 移除条件: metro 升到依赖 image-size ^2 的版本后删本两行。
+# 复审: 2027-01-09
+CVE-2025-71329
+CVE-2025-71330

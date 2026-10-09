@@ -19,7 +19,7 @@ class IpProbeController {
   }
 }
 
-describe('security/http-adapter.options — trustProxy 跳数契约', () => {
+describe('security/http-adapter.options — trustProxy 信任契约', () => {
   let app: NestFastifyApplication;
 
   beforeAll(async () => {
@@ -37,8 +37,8 @@ describe('security/http-adapter.options — trustProxy 跳数契约', () => {
     await app?.close();
   });
 
-  const probe = (headers: Record<string, string> = {}) =>
-    app.inject({ method: 'GET', url: '/ip-probe', headers });
+  const probe = (headers: Record<string, string> = {}, remoteAddress?: string) =>
+    app.inject({ method: 'GET', url: '/ip-probe', headers, remoteAddress });
 
   it('单条 XFF (无客户端伪造): req.ip = nginx 追加的真实客户端地址', async () => {
     const res = await probe({ 'x-forwarded-for': '203.0.113.7' });
@@ -59,6 +59,18 @@ describe('security/http-adapter.options — trustProxy 跳数契约', () => {
       'x-forwarded-for': '198.51.100.1, 198.51.100.2, 198.51.100.3, 203.0.113.7',
     });
     expect(res.json().ip).toBe('203.0.113.7');
+  });
+
+  it('伪造项是私网地址也选不中: 走到 nginx 追加的公网真实地址即停', async () => {
+    const res = await probe({ 'x-forwarded-for': '10.0.0.5, 203.0.113.7' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ip).toBe('203.0.113.7');
+  });
+
+  it('对端本身是公网地址 (非 nginx): 其 XFF 一概不信, 取 socket 地址 (决定性负例)', async () => {
+    const res = await probe({ 'x-forwarded-for': '198.51.100.99' }, '203.0.113.50');
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ip).toBe('203.0.113.50');
   });
 
   it('无 XFF (nginx 未下发 / 直连) → 退回 socket 地址, 安全降级不报错', async () => {
