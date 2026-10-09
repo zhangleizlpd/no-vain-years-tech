@@ -405,6 +405,7 @@ model Instrument {
   earningsMeetingLags      EarningsMeetingLag[]
   // 079 财年档案 (FR-026): 每只标的至多一行, 没有行 = 财年未知。
   earningsFiscalProfile    EarningsFiscalProfile?
+  earningsNonresultsMeetings EarningsNonresultsMeeting[]
 
   @@unique([market, code], map: "uk_instrument_market_code")
   @@map("instrument")
@@ -1420,6 +1421,27 @@ model EarningsMeetingLag {
 // 🚨 `source` ('annual_title' | 'dividend_title' | 'board_list' | 'futu_pairing' | 'manual') 与
 //   `fiscal_year_end_month` (1–12) **无 DB 侧 enum/CHECK** —— 同上 4 表的取舍, 值域单一来源在
 //   `earnings-fiscal-profile.rules.ts` (`FiscalProfileSource`), 加值零 migration。
+// 079 清单纯股息行留存 (FR-006 / FR-017, spec Session（九）, plan §D3 第 6 项 / §D14): 港交所
+// 「董事會會議通知」清单里目的只含股息的行。只供会前通知消歧读取 —— 🚫 进入合并层、🚫 生成事件;
+// 做成 earnings_date_observation 会被合并层当成一期财报。
+model EarningsNonresultsMeeting {
+  id           BigInt   @id @default(autoincrement())
+  instrumentId BigInt   @map("instrument_id")
+  meetingDate  DateTime @map("meeting_date") @db.Date
+  // 清单「目的」列原文 (如「特別股息」「末期股息」); 同一会议可有多条纯股息行。
+  purpose      String   @db.VarChar(64)
+  // 凭据: 首次见到该行的清单页首日期。
+  evidence     String   @db.VarChar(128)
+  firstSeenAt  DateTime @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt   DateTime @map("last_seen_at") @db.Timestamptz(6)
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, meetingDate, purpose], map: "uk_earnings_nonresults_meeting_instrument_date_purpose")
+  @@map("earnings_nonresults_meeting")
+  @@schema("marketdata")
+}
+
 model EarningsFiscalProfile {
   id                 BigInt   @id @default(autoincrement())
   instrumentId       BigInt   @unique(map: "uk_earnings_fiscal_profile_instrument") @map("instrument_id")

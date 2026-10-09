@@ -16,12 +16,15 @@ const MONO_ROOT = resolve(SERVER_DIR, '../..');
 // 纯数据层形态验证 —— 写侧行为 (观测 upsert / 合并 / 流水) 归 T013 / T014。
 // 079 T028 (FR-026, plan §D3 第 5 项): migration ③ 财年档案表 `earnings_fiscal_profile` 同形加臂
 // (唯一键 instrument_id + MODEL_OWNERSHIP 登记); 写侧行为归 T029。
+// 079 T034 (FR-006, spec Session（九）, plan §D3 第 6 项): migration ④ 清单纯股息行表
+// `earnings_nonresults_meeting` 同形加臂 (唯一键 instrument_id + meeting_date + purpose); 写侧归 T035。
 const TABLES = [
   'earnings_date_event',
   'earnings_date_event_log',
   'earnings_date_observation',
   'earnings_fiscal_profile',
   'earnings_meeting_lag',
+  'earnings_nonresults_meeting',
 ] as const;
 
 const ACCESSORS = [
@@ -30,6 +33,7 @@ const ACCESSORS = [
   'earningsDateEventLog',
   'earningsMeetingLag',
   'earningsFiscalProfile',
+  'earningsNonresultsMeeting',
 ] as const;
 
 describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrate deploy)', () => {
@@ -81,7 +85,7 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
     expect(err?.code).toBe('P2002');
   };
 
-  it('079 各表落 marketdata schema (T008 四表 + T028 财年档案)', async () => {
+  it('079 各表落 marketdata schema (T008 四表 + T028 财年档案 + T034 纯股息会议)', async () => {
     const rows = await prisma.$queryRawUnsafe<{ table_name: string }[]>(
       `SELECT table_name FROM information_schema.tables
         WHERE table_schema = 'marketdata' AND table_name LIKE 'earnings\\_%'
@@ -95,6 +99,7 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
       'earnings_event',
       'earnings_fiscal_profile',
       'earnings_meeting_lag',
+      'earnings_nonresults_meeting',
     ]);
   });
 
@@ -116,6 +121,7 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
       earnings_date_observation: ['(id)', '(source, instrument_id, period_key)'],
       earnings_fiscal_profile: ['(id)', '(instrument_id)'],
       earnings_meeting_lag: ['(id)', '(instrument_id, report_kind)'],
+      earnings_nonresults_meeting: ['(id)', '(instrument_id, meeting_date, purpose)'],
     });
   });
 
@@ -234,6 +240,30 @@ describe('079 marketdata 财报日期层 schema expand (Testcontainers PG migrat
     );
     expect(checks).toEqual([]);
     expect(await prisma.earningsFiscalProfile.count({ where: { instrumentId } })).toBe(1);
+  });
+
+  it('纯股息会议唯一键 (instrument_id, meeting_date, purpose): 同会议同目的撞唯一, 同会议异目的可并存', async () => {
+    const insert = (purpose: string) =>
+      prisma.$executeRawUnsafe(
+        `INSERT INTO marketdata.earnings_nonresults_meeting
+           (instrument_id, meeting_date, purpose, evidence, first_seen_at, last_seen_at)
+         VALUES ($1, DATE '2026-09-29', $2, '清单页首日期 2026-09-18', now(), now())`,
+        instrumentId,
+        purpose,
+      );
+    await insert('特別股息');
+    // `02402` 2024-04-26 形态: 同一会议同时列「末期股息」与「特別股息」两条纯股息行。
+    await insert('末期股息');
+    const err = await insert('特別股息').then(
+      () => null,
+      (e: unknown) => String(e),
+    );
+    expect(err).toMatch(/uk_earnings_nonresults_meeting_instrument_date_purpose/);
+    const [{ n }] = await prisma.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT count(*) AS n FROM marketdata.earnings_nonresults_meeting WHERE instrument_id = $1`,
+      instrumentId,
+    );
+    expect(Number(n)).toBe(2);
   });
 
   it('MODEL_OWNERSHIP 登记 079 各 model 归 marketdata + check-server-moat 0 违规', () => {

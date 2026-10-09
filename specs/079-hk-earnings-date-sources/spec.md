@@ -10,6 +10,7 @@ migration_refs:
     '20260913_2220_create_earnings_date_layer',
     '20260913_2321_create_earnings_fiscal_profile',
     '20260914_1030_seed_hk_earnings_date_dimension',
+    '20261009_1835_create_earnings_nonresults_meeting',
   ]
 spec_kit_version: '>=0.8.5,<0.10.0'
 orchestrator_compat: '>=0.2.0'

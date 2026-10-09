@@ -131,6 +131,9 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 079 财年档案 (T028, FR-026) 归 marketdata: 反推用例 + 人工补录 CLI 独占读写 (R1 自有表, intra
   // FK→instrument)。跨 ctx 面 = 0, 理由同上 4 表 (期权台不得经它读到港股财报期)。
   earningsFiscalProfile: 'marketdata',
+  // 079 纯股息会议 (T034, FR-006 / spec Session（九）) 归 marketdata: 清单来源写、会前通知消歧读
+  // (R1 自有表, intra FK→instrument)。跨 ctx 面 = 0, 理由同上。
+  earningsNonresultsMeeting: 'marketdata',
   // 同步配置/审计 3 表 (016): 同步管线 + scheduler + backfill CLI 独占读写 (R1 自有表,
   // intra 叶子无跨 ctx)。未登记则 marketdata 同步代码读自己的新表即 moat-unmapped 硬拒。
   syncDimension: 'marketdata',
