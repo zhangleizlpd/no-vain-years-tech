@@ -404,6 +404,64 @@ describe('079 T011 来源 B 交易所公告 (Testcontainers PG)', () => {
     expect(result.unalignedPublications).toBe(1);
   });
 
+  // FR-031 (spec Session（十）第 1 问)：刊发日 = 同标的同文件编号最早的行日期, 不论标签; 编号日期不当刊发日。
+  describe('T041 刊发日取同一文件编号最早的行', () => {
+    const HKEX = 'https://www1.hkexnews.hk/listedco/listconews/sehk';
+    const ANNUAL_2024 = '截至2024年12月31日止年度業績公告';
+    const announceAt = (instrumentId: bigint, date: string, url: string, types: string[]) =>
+      prisma.announcement.create({
+        data: {
+          instrumentId,
+          date: day(date),
+          linkUrl: url,
+          linkText: ANNUAL_2024,
+          linkType: 'PDF',
+          types,
+        },
+      });
+
+    it('hk:02333 形态: 03-28 首挂 {all} + 03-31 改标题重挂 {fs,fs_main} 同编号 ⇒ 刊发日 03-28, 凭据取首挂链接', async () => {
+      const inst = await instrument('hk', '02333');
+      await announceAt(inst.id, '2025-03-28', `${HKEX}/2025/0328/2025032804889_c.pdf`, ['all']);
+      await announceAt(inst.id, '2025-03-31', `${HKEX}/2025/0331/2025032804889_c.pdf`, [
+        'fs',
+        'fs_main',
+      ]);
+
+      const result = await source().collect({
+        market: 'hk',
+        businessDate: '2025-04-02',
+        now: NOW,
+        mode: 'daily',
+      });
+
+      expect(
+        result.observations.map((o) => [o.periodKey, o.announceDate, o.filedDate, o.evidence]),
+      ).toEqual([
+        ['P:2024-12-31', '2025-03-28', '2025-03-28', `${HKEX}/2025/0328/2025032804889_c.pdf`],
+      ]);
+    });
+
+    it('hk:00059 形态: 编号日期 09-21、唯一一行 09-22 (次日开市前刊发) ⇒ 刊发日 09-22, 🚫 取编号日期', async () => {
+      const inst = await instrument('hk', '00059');
+      await announceAt(inst.id, '2026-09-22', `${HKEX}/2026/0922/2026092101560_c.pdf`, [
+        'fs',
+        'fs_main',
+      ]);
+
+      const result = await source().collect({
+        market: 'hk',
+        businessDate: '2026-09-23',
+        now: NOW,
+        mode: 'daily',
+      });
+
+      expect(result.observations.map((o) => [o.periodKey, o.filedDate])).toEqual([
+        ['P:2024-12-31', '2026-09-22'],
+      ]);
+    });
+  });
+
   it('回填 730 天: 日常窗外的刊发事实与通知信号只在 backfill 下被收', async () => {
     const inst = await instrument('hk', '02015');
     await announce(inst.id, '2025-08-26', '截至2025年6月30日止六個月之中期業績公告', ['fs_main']);

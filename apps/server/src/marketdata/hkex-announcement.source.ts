@@ -89,6 +89,33 @@ interface AnnouncementRow {
   readonly types: string[];
 }
 
+/** 刊发行的首次挂出：同一文件编号最早那一行的日期与链接 (FR-031)。 */
+interface FirstListing {
+  readonly row: AnnouncementRow;
+  readonly date: string;
+  readonly linkUrl: string;
+}
+
+/** 披露易文件名 `<YYYYMMDD><序号>[_c].<扩展名>`；旧式 `sehkYYMMDD…` 与目录页不匹配。 */
+const HKEX_FILE_NAME = /\/((\d{4})(\d{2})(\d{2})\d+)(?:_[a-z]+)?\.[a-z]+$/i;
+
+/**
+ * 公告链接 → 港交所文件编号与编号日期；解析不出 ⇒ null。
+ *
+ * 编号只作「同一份文件」的身份标识 (FR-031)：发行人改标题补挂类别时披露易换路径日期、编号不变
+ * (`hk:02333` 2025032804889：03-28 首挂、03-31 重挂，两次 PDF 相同)，理杏仁按挂出各存一行。
+ * 编号日期是提交日、🚫 当刊发日：次日开市前才挂出的文件编号早一天 (`hk:00059` 编号 0921、披露易
+ * 2026-09-22 08:14 刊发)。EVIDENCE: spec Session（十）第 1 问，2026-10-16 披露易标题检索。
+ */
+export function parseHkexFileNumber(linkUrl: string): { fileNumber: string; date: string } | null {
+  const m = HKEX_FILE_NAME.exec(linkUrl);
+  if (m === null) return null;
+  const date = `${m[2]}-${m[3]}-${m[4]}`;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return null;
+  return { fileNumber: m[1], date };
+}
+
 export class HkexAnnouncementSource implements EarningsDateSource {
   readonly name = HKEX_ANNOUNCEMENT_SOURCE;
 
@@ -169,11 +196,45 @@ export class HkexAnnouncementSource implements EarningsDateSource {
   }
 
   /**
+   * 刊发行 → 首次挂出 (FR-031)：行日期晚于文件编号日期时，查同标的、同编号、日期在 [编号日期, 行日期)
+   * 的行 (不论标签)，取最早；否则就是本行。结果按首次挂出日期稳定排序。
+   * 复杂度：O(需查的行数) 次读，只有行日期晚于编号日期的行要查 (prod 港股 `fs` 族全量 503 行)。
+   */
+  private async toFirstListings(publications: readonly AnnouncementRow[]): Promise<FirstListing[]> {
+    const listings: FirstListing[] = [];
+    for (const row of publications) {
+      const date = isoDate(row.date);
+      const file = parseHkexFileNumber(row.linkUrl);
+      if (file === null || file.date >= date) {
+        listings.push({ row, date, linkUrl: row.linkUrl });
+        continue;
+      }
+      const earlier = await this.prisma.announcement.findFirst({
+        where: {
+          instrumentId: row.instrumentId,
+          date: { gte: new Date(`${file.date}T00:00:00Z`), lt: row.date },
+          linkUrl: { contains: `/${file.fileNumber}` },
+        },
+        select: { date: true, linkUrl: true },
+        orderBy: [{ date: 'asc' }, { id: 'asc' }],
+      });
+      listings.push(
+        earlier === null
+          ? { row, date, linkUrl: row.linkUrl }
+          : { row, date: isoDate(earlier.date), linkUrl: earlier.linkUrl },
+      );
+    }
+    // Array.prototype.sort 稳定 ⇒ 同日保持原 `date asc, id asc` 顺序。
+    return listings.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  }
+
+  /**
    * 业绩刊发事实 → `filed` 观测。标题带期末日 ⇒ `P:`；不带时按财年档案与刊发时限换算，无档案 /
-   * 超时限 ⇒ `D:<来源>:<公告日>` 并计数 (FR-027，🚫 代入 12 月)。
+   * 超时限 ⇒ `D:<来源>:<公告日>` 并计数 (FR-027，🚫 代入 12 月)。公布日 = 首次挂出日 (FR-031)。
    *
    * 同一 `(标的, period_key)` 多份刊发 (本体 + 補充) 只留**最早**一份：公布日是第一次刊发那天，
-   * 补充公告晚几天再出，覆盖进来会把公布日静默推后。
+   * 补充公告晚几天再出，覆盖进来会把公布日静默推后。只在本轮读到的行里成立 —— 跨轮由观测写入的
+   * 只前移约束兜底 (FR-031)。
    *
    * 入参 = 已按 `isResultsPublication` 筛过、按 `date asc, id asc` 排好的刊发行。
    */
@@ -185,9 +246,8 @@ export class HkexAnnouncementSource implements EarningsDateSource {
     const byKey = new Map<string, EarningsDateSourceObservation>();
     let unalignedPublications = 0;
 
-    for (const row of publications) {
+    for (const { row, date: announceDate, linkUrl } of await this.toFirstListings(publications)) {
       const title = row.linkText ?? '';
-      const announceDate = isoDate(row.date);
       const period = resolveAnnouncementPeriod(title, {
         announceDate,
         fiscalYearEndMonth: fiscalYearEndMonths.get(row.instrumentId) ?? null,
@@ -211,7 +271,7 @@ export class HkexAnnouncementSource implements EarningsDateSource {
         meetingDate: null,
         publicationTime: null,
         filedDate: announceDate,
-        evidence: row.linkUrl,
+        evidence: linkUrl,
       });
     }
     return { observations: [...byKey.values()], unalignedPublications };
