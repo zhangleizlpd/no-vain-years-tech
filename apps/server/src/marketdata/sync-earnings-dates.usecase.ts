@@ -42,7 +42,7 @@ import {
   type EarningsNonResultsMeeting,
   type EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
-import { isAlignedPeriodKey } from './earnings-period.rules.js';
+import { isAlignedPeriodKey, realignObservationKey } from './earnings-period.rules.js';
 import { exchangeCalendarDate } from './session-clock.js';
 import {
   SyncEarningsFiscalProfileUseCase,
@@ -107,6 +107,9 @@ export const HK_EARNINGS_DATE_MARKET = 'hk';
 
 /** 单次 `createMany` 的行数配额 (同 `sync-earnings-event.usecase.ts` 的 `EARNINGS_ROW_CHUNK`)。 */
 const OBSERVATION_ROW_CHUNK = 500;
+
+/** 档案后到时可按档案重算报告期键的来源 (FR-030)：清单期间的换算不读财年档案，重算结果不变。 */
+const REALIGNABLE_SOURCES: EarningsDateSourceName[] = ['futu_calendar', 'hkex_announcement'];
 
 const toDateOnly = (s: string | null): Date | null =>
   s === null ? null : new Date(`${s}T00:00:00Z`);
@@ -263,6 +266,22 @@ function storedBearingDate(row: StoredObservation): string | null {
     meetingDate: isoDate(row.meetingDate),
     filedDate: isoDate(row.filedDate),
   });
+}
+
+/** 刊发事实的本轮刊发日晚于库内值 (FR-031 只前移)。 */
+function filedLater(
+  storedBasis: string,
+  nextBasis: string,
+  previous: string | null,
+  next: string | null,
+): boolean {
+  return (
+    storedBasis === 'filed' &&
+    nextBasis === 'filed' &&
+    previous !== null &&
+    next !== null &&
+    next > previous
+  );
 }
 
 function sameColumns(row: StoredObservation, next: ObservationColumns): boolean {
@@ -832,7 +851,8 @@ export class SyncEarningsDatesUseCase {
       inserted.push(...keys);
       await this.recordNonResultsMeetings(result.nonResultsMeetings ?? [], request.now, stats);
     }
-    const merge = await this.mergeHk(outcome, listings, request.now);
+    const realigned = await this.realignObservations(outcome.market, stats);
+    const merge = await this.mergeHk(outcome, listings, request.now, realigned);
     addWritten(stats, merge.eventsWritten);
     reportMergeFindings(stats, { outcome, fiscalProfiles, merge, inserted });
     return { ...outcome, fiscalProfiles, merge };
@@ -1021,13 +1041,7 @@ export class SyncEarningsDatesUseCase {
       }
       const previous = storedBearingDate(row);
       const next = bearingDate(o);
-      if (
-        row.basis === 'filed' &&
-        o.basis === 'filed' &&
-        previous !== null &&
-        next !== null &&
-        next > previous
-      ) {
+      if (filedLater(row.basis, o.basis, previous, next)) {
         touchOnly.push(row.id);
         keptEarlier.push(`${o.instrumentId} ${o.periodKey} ${previous}<${next}`);
         continue;
@@ -1078,6 +1092,92 @@ export class SyncEarningsDatesUseCase {
       });
     }
     return insertedKeys;
+  }
+
+  /**
+   * 档案后到的重键 (FR-030，spec Session（十）)：有财年档案标的的富途 / 公告非 `P:` 观测按档案重算键
+   * ({@link realignObservationKey})，得 `P:` 且同来源该键尚无观测的补写一行；原观测保留 (FR-030 靠它配对)，
+   * 首次 / 最近观测时刻沿用原行 —— 确认日期取首次观测，用本轮时刻会把过去事件的确认日改成今天。
+   * 同一来源多条旧观测重算到同一键 ⇒ 取日期最早的一条。每轮汇总一条 `earnings_date_realigned` (只计数)。
+   *
+   * 返回补写行的键，并入本轮重算集合。复杂度：2 次读 + O(补写 / 500) 次 createMany；读量 = 有档案标的在
+   * 两来源的全部观测 (档案只覆盖港股锚)。
+   */
+  private async realignObservations(
+    market: string,
+    stats: SyncRunStats,
+  ): Promise<EarningsDateEventKey[]> {
+    const profiles = await this.prisma.earningsFiscalProfile.findMany({
+      where: { instrument: { market } },
+      select: { instrumentId: true, fiscalYearEndMonth: true },
+    });
+    if (profiles.length === 0) return [];
+    const fiscalYearEndMonths = new Map(
+      profiles.map((p) => [p.instrumentId, p.fiscalYearEndMonth]),
+    );
+    const rows = await this.prisma.earningsDateObservation.findMany({
+      where: {
+        market,
+        instrumentId: { in: [...fiscalYearEndMonths.keys()] },
+        source: { in: REALIGNABLE_SOURCES },
+      },
+      orderBy: [{ announceDate: 'asc' }, { id: 'asc' }],
+    });
+    const taken = new Set(rows.map((r) => `${r.source} ${r.instrumentId} ${r.periodKey}`));
+    const inserts: Prisma.EarningsDateObservationCreateManyInput[] = [];
+    const keys: EarningsDateEventKey[] = [];
+    const samples: string[] = [];
+    for (const row of rows) {
+      const fiscalYearEndMonth = fiscalYearEndMonths.get(row.instrumentId);
+      if (isAlignedPeriodKey(row.periodKey) || fiscalYearEndMonth === undefined) continue;
+      const resolved = realignObservationKey(
+        {
+          source: row.source,
+          periodText: row.periodText,
+          announceDate: isoDate(row.announceDate),
+          filedDate: isoDate(row.filedDate),
+        },
+        fiscalYearEndMonth,
+      );
+      if (resolved === null) continue;
+      const key = `${row.source} ${row.instrumentId} ${resolved.periodKey}`;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      inserts.push({
+        source: row.source,
+        instrumentId: row.instrumentId,
+        periodKey: resolved.periodKey,
+        market: row.market,
+        reportKind: resolved.reportKind,
+        periodEnd: toDateOnly(resolved.periodEnd),
+        periodText: row.periodText,
+        basis: row.basis,
+        announceDate: row.announceDate,
+        meetingDate: row.meetingDate,
+        publicationTime: row.publicationTime,
+        filedDate: row.filedDate,
+        evidence: row.evidence,
+        firstSeenAt: row.firstSeenAt,
+        lastSeenAt: row.lastSeenAt,
+      });
+      keys.push({ instrumentId: row.instrumentId, periodKey: resolved.periodKey });
+      samples.push(`${row.instrumentId} ${row.periodKey}→${resolved.periodKey}`);
+    }
+    for (let i = 0; i < inserts.length; i += OBSERVATION_ROW_CHUNK) {
+      const { count } = await this.prisma.earningsDateObservation.createMany({
+        data: inserts.slice(i, i + OBSERVATION_ROW_CHUNK),
+        skipDuplicates: true,
+      });
+      addWritten(stats, count);
+    }
+    if (inserts.length > 0) {
+      stats.findings.push({
+        kind: 'notice',
+        step: 'earnings_date_realigned',
+        detail: { count: inserts.length, samples: samples.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT) },
+      });
+    }
+    return keys;
   }
 
   /**
@@ -1146,9 +1246,11 @@ export class SyncEarningsDatesUseCase {
     outcome: EarningsDatesCollectOutcome,
     listings: ReadonlyMap<string, ListingRound>,
     now: Date,
+    realigned: readonly EarningsDateEventKey[],
   ): Promise<EarningsDatesMergeSummary> {
     const { market } = outcome;
     const set = mergeKeySet();
+    realigned.forEach(set.add);
     const signalsByInstrument = new Map<bigint, EarningsNoticeSignal[]>();
     for (const { result } of outcome.collected) {
       result.observations.forEach(set.add);
@@ -1443,13 +1545,13 @@ export class SyncEarningsDatesUseCase {
   }
 
   /**
-   * FR-030 候选：本市场未刊发的非对齐事件 (占位除外) 中，被同来源同原文报告期唯一 `P:` 键接手者 (判据在
-   * {@link selectAlignedSuccessor})。2 次读；复杂度 O(E + O)，E = 未刊发事件数、O = 其标的带原文的观测数。
+   * FR-030 候选：本市场未并入的非对齐事件 (占位除外，含已刊发) 中，被同来源同原文报告期唯一 `P:` 键接手者 (判据在
+   * {@link selectAlignedSuccessor})。2 次读；复杂度 O(E + O)，E = 未并入事件数、O = 其标的带原文的观测数。
    */
   private async planUnalignedSupersede(market: string): Promise<UnalignedSupersede[]> {
     const events = (
       await this.prisma.earningsDateEvent.findMany({
-        where: { market, status: { notIn: ['published', 'superseded'] } },
+        where: { market, status: { not: 'superseded' } },
         select: { instrumentId: true, periodKey: true, status: true },
       })
     ).filter((e) => !isAlignedPeriodKey(e.periodKey) && !isNoticeUndatedPlaceholder(e.periodKey));
@@ -1517,7 +1619,7 @@ export class SyncEarningsDatesUseCase {
       }),
     ]);
     if (event === null || target === null) return false;
-    if (event.status === 'published' || event.status === 'superseded') return false;
+    if (event.status === 'superseded') return false;
     const log: EarningsDateEventLogEntry = {
       kind: 'status_changed',
       fromStatus: event.status as EarningsDateEventStatus,

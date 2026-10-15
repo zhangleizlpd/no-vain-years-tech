@@ -958,8 +958,17 @@ describe('selectAlignedSuccessor — 无法对齐旧事件的接手键 (FR-030; 
     expect(selectAlignedSuccessor(confirmedT, observations)).toBeNull();
   });
 
+  it('🚨 已刊发的 D: 事件同样收尾 (spec Session（十）, prod hk:00939 6 条)', () => {
+    const d = 'D:hkex_announcement:2025-03-28';
+    expect(
+      selectAlignedSuccessor({ periodKey: d, status: 'published' }, [
+        keyObs(ANN, d, '2024年度業績公告'),
+        keyObs(ANN, 'P:2024-12-31', '2024年度業績公告'),
+      ]),
+    ).toEqual({ periodKey: 'P:2024-12-31', source: ANN, periodText: '2024年度業績公告' });
+  });
+
   it.each([
-    ['已刊发', { periodKey: T_KEY, status: 'published' as const }],
     ['已并入', { periodKey: T_KEY, status: 'superseded' as const }],
     ['占位事件', { periodKey: 'D:notice_undated:2024-10-02', status: 'notified_undated' as const }],
     ['本身是 P: 键', { periodKey: 'P:2024-09-30', status: 'confirmed' as const }],

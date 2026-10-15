@@ -549,3 +549,49 @@ export function resolveFutuPeriod(
     return { periodKey: textPeriodKey(source, text), periodEnd: null, reportKind };
   return { periodKey: alignedPeriodKey(periodEnd), periodEnd, reportKind };
 }
+
+// ─── 档案后到的重键 (FR-030，spec Session（十）) ─────────────────────────────
+
+/** 重键读的已落库观测字段：来源、原文报告期与本行日期。 */
+export interface StoredKeyObservation {
+  readonly source: string;
+  readonly periodText: string | null;
+  readonly announceDate: string | null;
+  readonly filedDate: string | null;
+}
+
+/**
+ * 非 `P:` 观测按财年档案重算报告期键：富途按原文 `YYYYQn`、交易所公告按标题 (原样存于 `period_text`)
+ * 与刊发日，规则同各来源落键时 ({@link resolveFutuPeriod} / {@link resolveAnnouncementPeriod})；
+ * 其余来源或换算不出 `P:` ⇒ null。键只在写入时算一次，档案晚于回填落地的标的不重算就永远对不齐。
+ */
+export function realignObservationKey(
+  observation: StoredKeyObservation,
+  fiscalYearEndMonth: number,
+): PeriodResolution | null {
+  const { source, periodText, announceDate, filedDate } = observation;
+  if (source === 'futu_calendar' && announceDate !== null) {
+    const resolved = resolveFutuPeriod(source, {
+      market: 'hk',
+      periodText,
+      earningsDate: announceDate,
+      fiscalYearEndMonth,
+    });
+    return resolved.periodEnd === null ? null : resolved;
+  }
+  const filed = filedDate ?? announceDate;
+  if (source === 'hkex_announcement' && periodText !== null && filed !== null) {
+    const period = resolveAnnouncementPeriod(periodText, {
+      announceDate: filed,
+      fiscalYearEndMonth,
+    });
+    return period === null
+      ? null
+      : {
+          periodKey: alignedPeriodKey(period.periodEnd),
+          periodEnd: period.periodEnd,
+          reportKind: period.reportKind,
+        };
+  }
+  return null;
+}

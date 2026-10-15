@@ -116,9 +116,10 @@ export interface AlignedSuccessor {
 }
 
 /**
- * 无法对齐旧事件的接手键 (FR-030，spec Session（八）3a)：未刊发的 `T:` / `D:` 键事件 (占位事件除外)，同一标的有
- * **同一来源、同一原文报告期** (非空) 的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 该键；否则 null。对应多个 `P:` 键
- * (如财年档案改过) ⇒ 🚫 猜 (FR-015)；事件已刊发 / 已并入 ⇒ null。
+ * 无法对齐旧事件的接手键 (FR-030，spec Session（八）3a / Session（十）)：`T:` / `D:` 键事件 (占位事件除外，含已刊发)，
+ * 同一标的有**同一来源、同一原文报告期** (非空) 的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 该键；否则 null。对应多个
+ * `P:` 键 (如财年档案改过) ⇒ 🚫 猜 (FR-015)；事件已并入 ⇒ null。已刊发的也收尾：档案早于回填的标的已有 `P:`
+ * 观测，其已刊发 `D:` 事件不收尾就永远停着 (prod `hk:00939` 6 条，2026-10-16)。
  * EVIDENCE: 2026-09-14 prod `hk:00939` 8 条 `T:futu_calendar:2024Q3…2026Q2` —— 补财年档案前落 `T:`，补后富途同原文另起
  * `P:`，旧事件永不收尾、每轮重复计数 (本机 evidence `t026-investigation/report.md` C6)。
  * 复杂度 O(n)，n = 该标的观测数。
@@ -129,7 +130,7 @@ export function selectAlignedSuccessor(
 ): AlignedSuccessor | null {
   if (isAlignedPeriodKey(event.periodKey) || isNoticeUndatedPlaceholder(event.periodKey))
     return null;
-  if (event.status === 'published' || event.status === 'superseded') return null;
+  if (event.status === 'superseded') return null;
   const pairKey = (source: string, text: string): string => JSON.stringify([source, text]);
   const own = new Set(
     observations.flatMap((o) => {

@@ -7,6 +7,7 @@ import {
   isAlignedPeriodKey,
   parseAnnouncementTitlePeriod,
   parseDayMonthYear,
+  realignObservationKey,
   resolveAnnouncementPeriod,
   resolveBoardListPeriod,
   resolveFutuPeriod,
@@ -463,5 +464,37 @@ describe('fiscalQuarterOf — 期末日按财年档案换算财季 (FR-029, spec
     ['财年结束月越界', '2025-09-30', 13],
   ])('%s (%s, 财年结束月 %i) ⇒ null', (_label, periodEnd, fiscalYearEndMonth) => {
     expect(fiscalQuarterOf(periodEnd, fiscalYearEndMonth)).toBeNull();
+  });
+});
+
+// FR-030 (spec Session（十）第 3 问)：档案后到的标的, 非 P: 观测用自存的原文与日期按档案重算键。
+describe('realignObservationKey — 非对齐观测按财年档案重算报告期键', () => {
+  const ANN = 'hkex_announcement';
+  const stored = (source: string, periodText: string | null, date: string) => ({
+    source,
+    periodText,
+    announceDate: date,
+    filedDate: source === ANN ? date : null,
+  });
+
+  it.each([
+    ['富途 YYYYQn (hk:02333)', stored(FUTU, '2024Q3', '2024-10-25'), 'P:2024-09-30', 'quarterly'],
+    ['公告标题不带期末日', stored(ANN, '2024年度業績公告', '2025-03-28'), 'P:2024-12-31', 'annual'],
+    [
+      '公告标题错字仍按年份 + 类型 (hk:02333 「2024等年」)',
+      stored(ANN, '截至2024等年12 月31日止年度業績公告', '2025-03-31'),
+      'P:2024-12-31',
+      'annual',
+    ],
+  ])('%s ⇒ %s', (_label, observation, periodKey, reportKind) => {
+    expect(realignObservationKey(observation, 12)).toMatchObject({ periodKey, reportKind });
+  });
+
+  it.each([
+    ['富途原文缺失', stored(FUTU, 'N/A', '2024-10-25')],
+    ['公告认不出类型', stored(ANN, '2025年業務更新', '2025-03-28')],
+    ['清单来源不重算', stored(BOARD, '2024年第一季', '2024-04-20')],
+  ])('%s ⇒ null', (_label, observation) => {
+    expect(realignObservationKey(observation, 12)).toBeNull();
   });
 });

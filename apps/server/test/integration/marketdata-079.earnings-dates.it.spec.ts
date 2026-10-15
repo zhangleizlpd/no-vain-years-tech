@@ -3065,3 +3065,104 @@ describe('079 T042 观测刊发日只前移不推后', () => {
     expect(steps(stats, 'earnings_date_filed_later_kept')).toEqual([]);
   });
 });
+
+// T043 非对齐观测按档案重键 + FR-030 收尾已刊发事件 (spec Session（十）第 3 问)。为什么必须真 PG: 重键写的是
+// 观测表唯一键下的补写行, 收尾读回观测配对后改事件状态与流水 —— 都是落库语义。
+describe('079 T043 档案后到: 非对齐观测重键 + 已刊发非对齐事件收尾', () => {
+  const INTERIM_NO_END = '二零二六年中期業績公告';
+  const T_FUTU = 'T:futu_calendar:2026Q2';
+  const D_ANN = 'D:hkex_announcement:2026-08-25';
+  const futuT = (instrumentId: bigint): EarningsDateSourceObservation => ({
+    instrumentId,
+    periodKey: T_FUTU,
+    reportKind: 'interim',
+    periodEnd: null,
+    periodText: '2026Q2',
+    basis: 'structured',
+    announceDate: '2026-08-25',
+    meetingDate: null,
+    publicationTime: null,
+    filedDate: null,
+    evidence: null,
+  });
+  const statusOf = async (instrumentId: bigint) =>
+    (
+      await prisma.earningsDateEvent.findMany({
+        where: { instrumentId },
+        select: { periodKey: true, status: true, announceDate: true },
+        orderBy: { periodKey: 'asc' },
+      })
+    ).map((e) => [e.periodKey, e.status, e.announceDate?.toISOString().slice(0, 10) ?? null]);
+
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('① hk:02333 形态: 无档案时落 T:/D:, 档案后到且来源不再采到该期 ⇒ 补写 P: 观测, 旧事件 superseded 指向已刊发的 P: 事件', async () => {
+    const inst = await instrument('hk', '02333');
+    const futu: Round = { current: { observations: [futuT(inst.id)] } };
+    const useCase = buildMerge(futu, { current: {} });
+    await announce(inst.id, '2026-08-25', INTERIM_NO_END, ['fs', 'fs_main']);
+    await recordedRun(useCase, '2026-08-26');
+    expect(await statusOf(inst.id)).toEqual([
+      [D_ANN, 'published', '2026-08-25'],
+      [T_FUTU, expect.any(String), '2026-08-25'],
+    ]);
+
+    await seedProfile(inst.id);
+    futu.current = {};
+    const { stats } = await recordedRun(useCase, '2026-09-08');
+
+    expect(await statusOf(inst.id)).toEqual([
+      [D_ANN, 'superseded', '2026-08-25'],
+      [INTERIM, 'published', '2026-08-25'],
+      [T_FUTU, 'superseded', '2026-08-25'],
+    ]);
+    const successor = await eventOf(inst.id);
+    for (const key of [D_ANN, T_FUTU]) {
+      const old = await eventOf(inst.id, key);
+      expect(old.logs.at(-1)).toMatchObject({
+        kind: 'status_changed',
+        toStatus: 'superseded',
+        detail: expect.objectContaining({
+          supersededBy: successor.id.toString(),
+          supersededByPeriodKey: INTERIM,
+        }),
+      });
+    }
+    const copies = await prisma.earningsDateObservation.findMany({
+      where: { instrumentId: inst.id, periodKey: INTERIM },
+      select: { source: true, firstSeenAt: true, filedDate: true },
+      orderBy: { source: 'asc' },
+    });
+    expect(copies).toEqual([
+      { source: 'futu_calendar', firstSeenAt: at('2026-08-26'), filedDate: null },
+      { source: 'hkex_announcement', firstSeenAt: at('2026-08-26'), filedDate: day('2026-08-25') },
+    ]);
+    expect(steps(stats, 'earnings_date_realigned')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_realigned',
+        detail: {
+          count: 2,
+          samples: [`${inst.id} ${T_FUTU}→${INTERIM}`, `${inst.id} ${D_ANN}→${INTERIM}`],
+        },
+      },
+    ]);
+  });
+
+  it('② hk:00939 形态: 档案后到时刊发仍在窗内 (来源自产 P: 观测), 已刊发的 D: 事件 ⇒ superseded', async () => {
+    const inst = await instrument('hk', '00939');
+    const useCase = buildMerge({ current: {} }, { current: {} });
+    await announce(inst.id, '2026-08-25', INTERIM_NO_END, ['fs', 'fs_main']);
+    await recordedRun(useCase, '2026-08-26');
+    await seedProfile(inst.id);
+
+    const { stats } = await recordedRun(useCase, '2026-08-27');
+
+    expect(await statusOf(inst.id)).toEqual([
+      [D_ANN, 'superseded', '2026-08-25'],
+      [INTERIM, 'published', '2026-08-25'],
+    ]);
+    expect(steps(stats, 'earnings_date_realigned')).toEqual([]);
+  });
+});
