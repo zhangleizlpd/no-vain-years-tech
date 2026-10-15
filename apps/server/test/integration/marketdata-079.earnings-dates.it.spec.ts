@@ -2991,3 +2991,77 @@ describe('079 T037 会前通知覆盖判定与目的消歧 (spec Session（九�
     expect(round).toMatchObject({ status: 'partial', failed: 1 });
   });
 });
+
+// T042 观测刊发日只前移不推后 (FR-031, spec Session（十）第 2 问)。为什么必须真 PG: 守卫在观测 upsert 的
+// 读后写路径上, 「事件不改期、无 date_rescheduled 流水」是合并读回落库观测的结果。
+describe('079 T042 观测刊发日只前移不推后', () => {
+  const INTERIM_TITLE = '截至2026年6月30日止六個月之中期業績公告';
+  let seq = 0;
+  const filing = (instrumentId: bigint, date: string) =>
+    prisma.announcement.create({
+      data: {
+        instrumentId,
+        date: day(date),
+        linkUrl: `https://example.test/t042/${++seq}.pdf`,
+        linkText: INTERIM_TITLE,
+        linkType: 'PDF',
+        types: ['fs', 'fs_main'],
+      },
+    });
+  const filedObservation = (instrumentId: bigint) =>
+    prisma.earningsDateObservation.findFirstOrThrow({
+      where: { instrumentId, source: 'hkex_announcement', periodKey: INTERIM },
+    });
+
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it('① 已刊发 08-20, 原刊发滑出窗口后窗内只有同期 09-10 的再刊 ⇒ 观测与事件仍为 08-20、无改期流水, 计数 1', async () => {
+    const inst = await instrument('hk', '00573');
+    const useCase = buildMerge({ current: {} }, { current: {} });
+    await filing(inst.id, '2026-08-20');
+    await recordedRun(useCase, '2026-08-21');
+    await filing(inst.id, '2026-09-10');
+
+    const { stats } = await recordedRun(useCase, '2026-09-11');
+
+    expect(await filedObservation(inst.id)).toMatchObject({
+      filedDate: day('2026-08-20'),
+      prevDate: null,
+      lastSeenAt: at('2026-09-11'),
+    });
+    const event = await eventOf(inst.id);
+    expect(event).toMatchObject({ status: 'published', announceDate: day('2026-08-20') });
+    expect(event.logs.filter((l) => l.kind === 'date_rescheduled')).toEqual([]);
+    expect(steps(stats, 'earnings_date_filed_later_kept')).toEqual([
+      {
+        kind: 'notice',
+        step: 'earnings_date_filed_later_kept',
+        detail: {
+          source: 'hkex_announcement',
+          count: 1,
+          samples: [`${inst.id} ${INTERIM} 2026-08-20<2026-09-10`],
+        },
+      },
+    ]);
+  });
+
+  it('② 库内 08-21, 后补进更早的 08-20 同期刊发 ⇒ 前移、事件改期留痕, 无计数', async () => {
+    const inst = await instrument('hk', '02333');
+    const useCase = buildMerge({ current: {} }, { current: {} });
+    await filing(inst.id, '2026-08-21');
+    await recordedRun(useCase, '2026-08-22');
+    await filing(inst.id, '2026-08-20');
+
+    const { stats } = await recordedRun(useCase, '2026-08-24');
+
+    expect(await filedObservation(inst.id)).toMatchObject({
+      filedDate: day('2026-08-20'),
+      prevDate: day('2026-08-21'),
+    });
+    const event = await eventOf(inst.id);
+    expect(event.announceDate).toEqual(day('2026-08-20'));
+    expect(event.logs.filter((l) => l.kind === 'date_rescheduled')).toHaveLength(1);
+    expect(steps(stats, 'earnings_date_filed_later_kept')).toEqual([]);
+  });
+});

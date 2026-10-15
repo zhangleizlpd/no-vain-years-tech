@@ -954,6 +954,8 @@ export class SyncEarningsDatesUseCase {
   /**
    * 观测 upsert (FR-013 / FR-020a)：新行落首次 = 最近观测时刻 = 本轮；既有行最近观测时刻 = 本轮，
    * 承重日期变了 ⇒ 旧值进 `prev_date`、本轮进 `date_changed_at`；🚫 覆盖 `first_seen_at`。
+   * 刊发事实 (`filed`) 只前移 (FR-031)：本轮刊发日晚于库内值 ⇒ 库内整行不动、只刷最近观测时刻，每轮汇总一条
+   * `earnings_date_filed_later_kept` (只计数) —— 原刊发滑出读取窗口后，后到又被判成刊发的行会把日期推后。
    *
    * 不包事务：逐行写幂等，中途 DB 失败上抛 ⇒ 整轮重跑收敛 (回填一轮可达数千行，单事务会撞超时)。
    * 并发两轮同时插同一新行 ⇒ `skipDuplicates` 先写者胜，内容同源同轮等价。
@@ -996,6 +998,7 @@ export class SyncEarningsDatesUseCase {
     const inserts: Prisma.EarningsDateObservationCreateManyInput[] = [];
     const insertedKeys: EarningsDateEventKey[] = [];
     const touchOnly: bigint[] = [];
+    const keptEarlier: string[] = [];
     const updates: { id: bigint; data: Prisma.EarningsDateObservationUpdateInput }[] = [];
     for (const o of observations) {
       const columns = observationColumns(market, o);
@@ -1018,6 +1021,17 @@ export class SyncEarningsDatesUseCase {
       }
       const previous = storedBearingDate(row);
       const next = bearingDate(o);
+      if (
+        row.basis === 'filed' &&
+        o.basis === 'filed' &&
+        previous !== null &&
+        next !== null &&
+        next > previous
+      ) {
+        touchOnly.push(row.id);
+        keptEarlier.push(`${o.instrumentId} ${o.periodKey} ${previous}<${next}`);
+        continue;
+      }
       const rescheduled = previous !== null && next !== null && previous !== next;
       updates.push({
         id: row.id,
@@ -1051,6 +1065,17 @@ export class SyncEarningsDatesUseCase {
     for (const { id, data } of updates) {
       await this.prisma.earningsDateObservation.update({ where: { id }, data });
       addWritten(stats, 1);
+    }
+    if (keptEarlier.length > 0) {
+      stats.findings.push({
+        kind: 'notice',
+        step: 'earnings_date_filed_later_kept',
+        detail: {
+          source,
+          count: keptEarlier.length,
+          samples: keptEarlier.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+        },
+      });
     }
     return insertedKeys;
   }
