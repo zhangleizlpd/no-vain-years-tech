@@ -338,6 +338,12 @@ export const PUBLICATION_DEADLINE_MONTHS: Readonly<Record<EarningsReportKind, nu
   quarterly: 3,
 };
 
+/**
+ * 只有一个候选期末日时的刊发窗口 (月)。上面的时限只为两个候选消歧 (FR-027)；单候选仍按它过滤会把延迟刊发的
+ * 真实业绩落 `D:`，同期冲突一直不解 (`hk:09961` 2026-09-16 中期业绩期末后 78 天，spec Session（十）)。
+ */
+export const SINGLE_CANDIDATE_WINDOW_MONTHS = 12;
+
 /** 标题不带期末日时的报告部分；季度需区分第一 / 第三季才定得出期末月。 */
 type TitleReportPart = 'annual' | 'interim' | 'q1' | 'q3';
 
@@ -359,8 +365,8 @@ const PART_KIND: Readonly<Record<TitleReportPart, EarningsReportKind>> = {
 /** 🚨 与 {@link kindFromTitleRemainder} 同序：先认中期再认年度 (FR-027)。 */
 function titleReportPart(title: string): TitleReportPart | null {
   if (/半年度|中期|上半年|半年/.test(title)) return 'interim';
-  if (/第一季|首季|一季度|第1季/.test(title)) return 'q1';
-  if (/第三季|首三季|前三季|首3季|三季度/.test(title)) return 'q3';
+  if (/第一季|首季|一季度|第\s*1\s*季/.test(title)) return 'q1';
+  if (/第三季|首三季|前三季|首3季|三季度|第\s*3\s*季/.test(title)) return 'q3';
   if (/全年|年度|年業績|末期/.test(title)) return 'annual';
   return null;
 }
@@ -396,8 +402,9 @@ function monthEndFromAbsolute(absMonth: number): string | null {
 /**
  * 刊发事实标题 → 期末日与类型 (FR-027)。标题带显式期末日 ⇒ 同 {@link parseAnnouncementTitlePeriod}；
  * 否则候选期末日 = 标题年份 + 报告类型 + 财年结束月 (单个年份在非 12 月结年时按两种命名习惯各得一个候选)，
- * 只取「刊发日 − 期末日 ∈ (0, 时限]」({@link PUBLICATION_DEADLINE_MONTHS}) 的唯一者。
- * 两个候选相隔 12 个月而时限 < 12 个月 ⇒ 至多一个落窗。
+ * 两个候选时只取「刊发日 − 期末日 ∈ (0, 时限]」({@link PUBLICATION_DEADLINE_MONTHS}) 的唯一者 ——
+ * 两个候选相隔 12 个月而时限 < 12 个月 ⇒ 至多一个落窗；只有一个候选时窗口为
+ * {@link SINGLE_CANDIDATE_WINDOW_MONTHS}。
  *
  * 无唯一候选 / 认不出类型或年份 / 🚫 财年结束月未知 (null，🚫 代入 12) ⇒ null，由调用方落 `D:` 键并计数。
  * 财年结束月 MUST 来自财年档案 (`earnings-fiscal-profile.rules.ts`)，🚫 换算时现推。
@@ -417,19 +424,23 @@ export function resolveAnnouncementPeriod(
   if (part === null || year === null) return null;
 
   const endYears = year.isEndYear || fy === 12 ? [year.year] : [year.year, year.year + 1];
-  const inWindow = candidatesInWindow(part, endYears, fy, input.announceDate);
+  const windowMonths =
+    endYears.length === 1
+      ? SINGLE_CANDIDATE_WINDOW_MONTHS
+      : PUBLICATION_DEADLINE_MONTHS[PART_KIND[part]];
+  const inWindow = candidatesInWindow(part, endYears, fy, input.announceDate, windowMonths);
   if (inWindow.length !== 1) return null;
   return { periodEnd: inWindow[0], reportKind: PART_KIND[part] };
 }
 
-/** 各财年结束年的候选期末日中，刊发日落在 (期末日, 期末日 + 时限] 内的那些 (去重)。 */
+/** 各财年结束年的候选期末日中，刊发日落在 (期末日, 期末日 + 窗口月数] 内的那些 (去重)。 */
 function candidatesInWindow(
   part: TitleReportPart,
   endYears: readonly number[],
   fiscalYearEndMonth: number,
   announceDate: string,
+  deadline: number,
 ): string[] {
-  const deadline = PUBLICATION_DEADLINE_MONTHS[PART_KIND[part]];
   const inWindow = new Set<string>();
   for (const endYear of endYears) {
     const absMonth = endYear * 12 + (fiscalYearEndMonth - 1) + PART_MONTH_OFFSET[part];

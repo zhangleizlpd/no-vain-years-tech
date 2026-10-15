@@ -245,6 +245,38 @@ describe('resolveAnnouncementPeriod — 标题不带期末日: 年份 + 类型 +
     ],
     ['3 月结年 第三季', '2025年第三季度業績公告', '2026-02-10', 3, '2025-12-31', 'quarterly'],
     ['跨年写法只取财年结束年', '2024/25年度中期業績公告', '2024-11-20', 3, '2024-09-30', 'interim'],
+    [
+      '🚨 单候选超中期时限仍取 (hk:09961 2026-09-16, Session（十）)',
+      '2026年第二季度及上半年業績公告',
+      '2026-09-16',
+      12,
+      '2026-06-30',
+      'interim',
+    ],
+    [
+      '🚨 单候选期末后 6 个月的延期年度业绩',
+      '2024年度業績公告',
+      '2025-06-30',
+      12,
+      '2024-12-31',
+      'annual',
+    ],
+    [
+      '🚨 阿拉伯数字第 3 季 (hk:02333)',
+      '2024年第3季度報告',
+      '2024-10-25',
+      12,
+      '2024-09-30',
+      'quarterly',
+    ],
+    [
+      '阿拉伯数字第 1 季带空白',
+      '2025年第 1 季度業績公告',
+      '2025-04-25',
+      12,
+      '2025-03-31',
+      'quarterly',
+    ],
   ])('%s: %s @%s 财年 %i 月结 ⇒ %s', (_label, title, date, fy, end, kind) => {
     expect(
       resolveAnnouncementPeriod(title, { announceDate: date, fiscalYearEndMonth: fy }),
@@ -254,10 +286,19 @@ describe('resolveAnnouncementPeriod — 标题不带期末日: 年份 + 类型 +
     });
   });
 
-  it('期末后 6 个月的延期年度业绩 ⇒ null (超时限, 调用方落 D:)', () => {
+  it('两个候选都不在刊发时限内 ⇒ null (3 月结年, 期末后 9 个月的年度业绩)', () => {
     expect(
       resolveAnnouncementPeriod('2024年度業績公告', {
-        announceDate: '2025-06-30',
+        announceDate: '2025-12-30',
+        fiscalYearEndMonth: 3,
+      }),
+    ).toBeNull();
+  });
+
+  it('单候选期末后超过 12 个月 ⇒ null', () => {
+    expect(
+      resolveAnnouncementPeriod('2024年度業績公告', {
+        announceDate: '2026-01-02',
         fiscalYearEndMonth: 12,
       }),
     ).toBeNull();
