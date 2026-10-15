@@ -65,9 +65,14 @@ const RESULTS_TITLE_HARD_EXCLUSION =
 const RESULTS_TITLE_REPORT_EXCLUSION = /報告|报告|年報|年报|report/i;
 const RESULTS_TITLE_BODY = /業績公告|業績公佈|業績公布|业绩公告|业绩公布|results announcement/i;
 
-/** 補充 / 更正 类只在**不含**业绩公告本体时排除 (FR-004：`hk:09992` 2026-08-20 真实刊发标题带「補充公告」)。 */
-const SUPPLEMENT_OR_CORRECTION = /補充|更正/;
+/** 補充 / 更正 / 澄清 类只在**不含**业绩公告本体时排除 (FR-004：`hk:09992` 2026-08-20 真实刊发标题带「補充公告」)。 */
+const SUPPLEMENT_OR_CORRECTION = /補充|更正|澄清/;
 const RESULTS_ANNOUNCEMENT_BODY = /業績公告|業績公佈/;
+/**
+ * 补充 / 澄清 / 更正**直接修饰**业绩公告本体 ⇒ 对已刊发业绩的补充，不论标签一律排除 (spec Session（十）)。
+ * `hk:09992`「…業績公告及授出獎勵之補充公告」補充修饰的是授出奖励，不命中。
+ */
+const RESULTS_BODY_AMENDMENT = /業績(?:公告|公佈)\s*[的之]?\s*(?:補充|澄清|更正)/;
 
 export type NoticeTitleClass = 'notice' | 'lookalike' | 'other';
 
@@ -94,10 +99,11 @@ function matchesResultsTitle(title: string): boolean {
 
 /**
  * 业绩刊发事实判定 (FR-004)：`types` 含 `fs_main`，或含 `fs` 族标签且标题命中业绩标题规则 v3；
- * 两路共用「不含业绩公告本体的補充 / 更正」窄排除。
+ * 两路共用「不含业绩公告本体的補充 / 更正 / 澄清」窄排除与「业绩公告本体的补充」排除。
  */
 export function isResultsPublication(title: string, types: readonly string[]): boolean {
   const byMainType = types.includes(RESULTS_ANNOUNCEMENT_TYPE);
   if (!byMainType && !(types.some(isResultsFamilyType) && matchesResultsTitle(title))) return false;
+  if (RESULTS_BODY_AMENDMENT.test(title)) return false;
   return !SUPPLEMENT_OR_CORRECTION.test(title) || RESULTS_ANNOUNCEMENT_BODY.test(title);
 }

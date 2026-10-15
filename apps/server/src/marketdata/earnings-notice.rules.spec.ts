@@ -63,15 +63,24 @@ describe('isResultsPublication — 业绩刊发事实 (FR-004, plan §D6)', () =
     ).toBe(true);
   });
 
-  it('「業績公佈」本体 + 補充 ⇒ 刊发', () => {
-    expect(
-      isResultsPublication('截至2025年6月30日止六個月的中期業績公佈之補充公佈', ['fs_main']),
-    ).toBe(true);
+  // spec Session（十）：補充 / 澄清 / 更正直接修饰业绩公告本体 ⇒ 是对已刊发业绩的补充，🚫 新刊发 ——
+  // 原口径钉为刊发、靠「同期只留最早一份」兜底，而那条只在单轮窗口内成立 (`08239` 2026-10-09 把 03-30 推后)。
+  it.each([
+    ['🚨 hk:08239 形态 + fs_main', '截至二零二五年十二月三十一日止年度全年業績公佈的補充公佈'],
+    ['「業績公佈之補充公佈」', '截至2025年6月30日止六個月的中期業績公佈之補充公佈'],
+    ['「業績公告之澄清公告」', '截至2025年12月31日止年度業績公告之澄清公告'],
+    ['「業績公告的更正」', '2025年度業績公告的更正公告'],
+  ])('%s「%s」⇒ 非刊发 (本体补充, 标签不论)', (_label, title) => {
+    expect(isResultsPublication(title, ['fs', 'fs_main', 'fs_s_a_m'])).toBe(false);
   });
 
   it.each([
     ['年报补充', '有關截至2025年12月31日止年度之年報之補充公佈'],
     ['更正', '有關2025年度報告的更正公告'],
+    [
+      '🚨 hk:00573 澄清 (Session（十）：标签翻转时带 fs_main)',
+      '澄清公告有關截至二零二五年十二月三十一日止年度之年度報告及截至二零二六年六月三十日止六個月之中期報告',
+    ],
   ])('%s「%s」(不含業績公告本体) ⇒ 非刊发', (_label, title) => {
     expect(isResultsPublication(title, ['fs_main'])).toBe(false);
   });
@@ -105,11 +114,6 @@ describe('isResultsPublication — fs 族标签 + 业绩标题规则 v3 (FR-004,
     ['年度業績', '2025年度業績', ['fs']],
     ['简体', '2025年中期业绩公告', ['fs']],
     ['英文', 'Interim Results Announcement for the Six Months Ended 30 June 2025', FS_FULL],
-    [
-      '业绩公告本体 + 補充 (窄排除两路共用)',
-      '截至2025年6月30日止六個月的中期業績公告之補充公告',
-      ['fs'],
-    ],
   ])('%s「%s」⇒ 刊发', (_label, title, types) => {
     expect(isResultsPublication(title, types)).toBe(true);
   });
@@ -130,6 +134,11 @@ describe('isResultsPublication — fs 族标签 + 业绩标题规则 v3 (FR-004,
     ['延遲', '延遲刊發2025年度業績公告', ['fs']],
     ['英文 board meeting', 'Date of Board Meeting to Approve Interim Results', ['fs']],
     ['补充 (无本体)', '2025年中期業績之補充資料', ['fs']],
+    [
+      '业绩公告本体的補充 (Session（十）)',
+      '截至2025年6月30日止六個月的中期業績公告之補充公告',
+      ['fs'],
+    ],
     ['标题不像业绩', '翌日披露報表', ['fs']],
   ])('%s「%s」⇒ 非刊发', (_label, title, types) => {
     expect(isResultsPublication(title, types)).toBe(false);
