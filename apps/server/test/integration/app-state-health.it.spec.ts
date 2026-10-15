@@ -158,6 +158,22 @@ describe('#209 app-state-health 谓词 (Testcontainers PG)', () => {
     expect(summary).not.toContain('⚠整体停摆');
   });
 
+  it('🚨 判据①按市场: **某一市场**全部锚掉队、别的市场新鲜 → exit 1 (市场停摆)', async () => {
+    // 2026-10-06 起的真实形态: 一只改名的美股代码让 us 整批取价 502 十天, hk 照常新鲜 ⇒
+    // 全局 AND 恒假、本谓词全程绿。按市场取 AND 才看得见; 市场内单只掉队仍容忍 (上一条)。
+    await seedCalendar('us');
+    await seedCalendar('hk');
+    await seedAnchor('us:AAA', 'us', 9);
+    await seedAnchor('us:BBB', 'us', 9);
+    await seedAnchor('hk:00700', 'hk', 0);
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('anchor_close=1/3');
+    expect(summary).toContain('⚠市场停摆:us');
+    expect(summary).not.toContain('⚠整体停摆');
+  });
+
   it('excluded 锚不参与判定 (它本就不该有新报价)', async () => {
     await seedCalendar('us');
     await seedAnchor('us:AAA', 'us', 0);

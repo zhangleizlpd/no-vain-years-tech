@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -144,6 +145,15 @@ OPTION_CHAIN_MAX_SPAN_DAYS = 30
 # 真缺口无法区分。分批是调用方的事。
 SNAPSHOT_MAX_CODES = 400
 
+# `get_market_snapshot` 遇到不认识的代码时**整批失败**，只报请求顺序里第一个，且不带市场
+# 前缀。EVIDENCE: 2026-10-16 prod 探针 `US.PSKY,US.ZZZQX,US.PDD` →「未知股票 PSKY」、
+# `US.ZZZQX,US.PSKY` →「未知股票 ZZZQX」、`HK.99999,HK.00700` →「未知股票 99999」。
+# ⇒ 一只改名 / 退市的代码会拖垮同批全部代码（PSKY→SKYD 那次：112 只美股锚整批 502 十天）。
+# 本 shim 逐只剥掉再重发；每发都过限频闸，所以设上限 —— 超过它多半是系统性错（市场前缀错
+# 之类），原样 502 让它响亮，而不是一个请求把 snapshot 桶吃空。
+SNAPSHOT_UNKNOWN_PEEL_MAX = 5
+_UNKNOWN_CODE = re.compile(r"未知股票\s+(\S+)\s*$")
+
 # `get_earnings_calendar` 的 `begin_date` / `end_date` 间隔上限（自然日，**端点差**）。
 #
 # 🚨 **6，不是官方原文那个 7。** 原文「与 beginDate 间隔不超过 7 天」的「间隔」二字比期权链那句
@@ -208,8 +218,8 @@ def _now_iso() -> str:
 def _envelope(rows: list[dict[str, Any]], **extra: Any):
     """The uniform envelope; `extra` adds route-specific **top-level** fields.
 
-    Only `/trade/events` passes `extra` today: its cursor fields describe the batch,
-    not any single row, so they belong beside `rows` rather than inside them.
+    `/trade/events` passes its cursor fields and `/option-snapshot` its `unknown_codes`:
+    both describe the batch, not any single row, so they belong beside `rows`.
     `as_of` / `count` / `rows` stay the invariant core every route answers with.
     """
     return jsonify({"as_of": _now_iso(), "count": len(rows), "rows": rows, **extra})
@@ -219,6 +229,18 @@ def _unwrap(ret: int, content: Any, what: str) -> Any:
     if ret != RET_OK:
         raise VendorError(f"{what}: {content}")
     return content
+
+
+def _unknown_requested_code(content: Any, codes: list[str]) -> str | None:
+    """「未知股票 X」→ 请求里那只 `<MKT>.X`；不是这类错、或同名跨市场无法唯一定位 ⇒ None。
+
+    vendor 报的码不带市场前缀，`US.ABC` 与 `HK.ABC` 同批时猜哪只都可能剔掉好码，所以不猜。
+    """
+    match = _UNKNOWN_CODE.search(str(content))
+    if match is None:
+        return None
+    hits = [c for c in codes if c.split(".", 1)[-1] == match.group(1)]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _require_enum(raw: str | None, holder: type, param: str) -> str:
@@ -796,11 +818,29 @@ def create_app(
                 f"rather than silently dropping the tail"
             )
 
+        unknown: list[str] = []
         with opend.session() as ctx:
-            rate_gate.check("snapshot")
-            ret, content = ctx.get_market_snapshot(codes)
-            frame = _unwrap(ret, content, f"get_market_snapshot({len(codes)} codes)")
-        return _envelope(mappers.mark_greeks_completeness(mappers.dataframe_to_records(frame)))
+            # 最多 1 + PEEL_MAX 发, 每剥一只码重发一次 —— O(k) 次外呼, k = 坏码数。
+            for _ in range(SNAPSHOT_UNKNOWN_PEEL_MAX + 1):
+                rate_gate.check("snapshot")
+                ret, content = ctx.get_market_snapshot(codes)
+                if ret == RET_OK:
+                    break
+                bad = _unknown_requested_code(content, codes)
+                if bad is None:
+                    _unwrap(ret, content, f"get_market_snapshot({len(codes)} codes)")
+                log.warning("snapshot: vendor 不认识 %s, 剔除后重发", bad)
+                unknown.append(bad)
+                codes = [c for c in codes if c != bad]
+                if not codes:
+                    return jsonify({"error": "unknown_codes", "codes": unknown}), 422
+            else:
+                _unwrap(ret, content, f"get_market_snapshot({len(codes)} codes)")
+            frame = content
+        return _envelope(
+            mappers.mark_greeks_completeness(mappers.dataframe_to_records(frame)),
+            unknown_codes=unknown,
+        )
 
     @app.get("/earnings-calendar")
     def earnings_calendar():
