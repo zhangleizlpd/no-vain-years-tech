@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { describe, it, expect, vi } from 'vitest';
 import { FutuRealtimeQuoteAdapter } from './futu-realtime-quote.adapter.js';
 import { REALTIME_QUOTE_MAX_SYMBOLS } from './realtime-quote.port.js';
@@ -150,6 +151,28 @@ describe('FutuRealtimeQuoteAdapter', () => {
 
       expect(quotes.size).toBe(1);
       expect(quotes.has('us:AAPL')).toBe(false);
+    });
+
+    it('🚨 信封 unknown_codes 非空 → warn 点名坏码 (改名 / 退市, shim 已剔除), 其余照常返回', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const { http } = makeShim([stockRow('US.PDD')], { unknown_codes: ['US.PSKY'] });
+      const quotes = await makeAdapter(http).fetchQuotes(['us:PSKY', 'us:PDD']);
+
+      expect([...quotes.keys()]).toEqual(['us:PDD']);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('us:PSKY');
+      warn.mockRestore();
+    });
+
+    it('unknown_codes 为空 / 缺省 (旧版 shim) → 不 warn', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      await makeAdapter(makeShim([stockRow('US.PDD')], { unknown_codes: [] }).http).fetchQuotes([
+        'us:PDD',
+      ]);
+      await makeAdapter(makeShim([stockRow('US.PDD')]).http).fetchQuotes(['us:PDD']);
+
+      expect(warn).not.toHaveBeenCalled();
+      warn.mockRestore();
     });
 
     it('行在但 last_price 缺失 → 同样省略 (不落 0 冒充一个真价)', async () => {

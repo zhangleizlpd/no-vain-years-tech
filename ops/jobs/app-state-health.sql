@@ -29,6 +29,7 @@
 --
 -- ═══ 判据(任一成立即不健康 → exit 1) ═══
 --   ① 锚收盘价**整体**停摆: **全部** active 锚的 `last_close_date` 都早于 expected_day
+--   ①' 锚收盘价**某市场**停摆: 该市场 active 锚全部早于 expected_day(市场内仍是 AND 语义)
 --   ② 锚工作集为空: active 锚数为 0(「空工作集」也是要抓的签名之一)
 --   ③ 日历缺失: **任一** active 锚的市场算不出 expected_day(`trading_day` 未填充到位) → 判不健康
 --
@@ -41,6 +42,7 @@
 -- 🚨 ① 取 **AND 语义**(全部掉队才红), 与 table-health 的 cn/hk 哨兵同一取舍: 单只停牌/退市/
 --    新建锚不该判成整条投影停摆。**代价写在明处: 单只锚长期掉队本谓词看不见** —— summary 里
 --    报 `fresh/total` 让它可见但不判红。要抓单只, 得先想清楚停牌怎么排除, 别顺手把 AND 改 OR。
+--    ①' 的已知代价: 某市场**只有一只**锚时, 它停牌即该市场停摆 → 红(装机时 us 111 / hk 30, 不触发)。
 --
 -- 🚨 ④ 的阈值 15 分钟不是拍的: `OutboxEventCronPublisher` 是 `@Cron EVERY_10_SECONDS` ⇒
 --    15 分钟 = 90 倍余量。一条事件超期 = relay 真的停了(进程死 / 订阅方持续抛), 不是排队。
@@ -84,6 +86,12 @@ anchor_probe AS (
   LEFT JOIN deadline d ON d.market = a.market
   WHERE NOT a.excluded
 ),
+-- ①' 按市场取 AND: 某市场有 active 锚且一只都不新鲜 ⇒ 该市场停摆。全局 AND 看不见「一个市场
+-- 停、另一个照常」(2026-10-06 起 us 整批 502 十天、hk 新鲜, 本谓词全程绿)。
+market_verdict AS (
+  SELECT string_agg(market, ',' ORDER BY market) AS stalled_markets
+  FROM (SELECT market FROM anchor_probe GROUP BY market HAVING NOT bool_or(is_fresh)) s
+),
 anchor_verdict AS (
   SELECT count(*)                              AS total,
          count(*) FILTER (WHERE is_fresh)      AS fresh,
@@ -103,6 +111,7 @@ outbox_verdict AS (
 )
 SELECT
   CASE WHEN (SELECT empty_workset OR all_stale OR calendar_missing FROM anchor_verdict)
+         OR (SELECT stalled_markets IS NOT NULL FROM market_verdict)
          OR (SELECT stuck > 0 FROM outbox_verdict)
        THEN 1 ELSE 0 END AS exit_code,
   'anchor_close=' || (SELECT fresh || '/' || total FROM anchor_verdict)
@@ -112,6 +121,8 @@ SELECT
   || CASE WHEN (SELECT calendar_missing FROM anchor_verdict) THEN '⚠日历缺失'
           WHEN (SELECT empty_workset FROM anchor_verdict) THEN '⚠空工作集'
           WHEN (SELECT all_stale FROM anchor_verdict) THEN '⚠整体停摆'
+          WHEN (SELECT stalled_markets IS NOT NULL FROM market_verdict)
+            THEN '⚠市场停摆:' || (SELECT stalled_markets FROM market_verdict)
           ELSE '' END
   || ' | outbox_stuck=' || (SELECT stuck FROM outbox_verdict)
   || coalesce(' (最老 ' || (SELECT oldest_cst::text FROM outbox_verdict) || ')', '')

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { vendorTimeToDate } from './futu-option-snapshot.adapter.js';
 import { parseCanonicalSymbol } from './marketdata.rules.js';
 import {
@@ -83,6 +83,8 @@ function asRecord(row: unknown): Record<string, unknown> {
 
 @Injectable()
 export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
+  private readonly logger = new Logger(FutuRealtimeQuoteAdapter.name);
+
   constructor(
     private readonly http: VendorHttpClient,
     private readonly baseUrl: string,
@@ -114,7 +116,16 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
 
     const params = new URLSearchParams({ codes: [...codeToRef.keys()].join(',') });
     const what = `realtime-quote ${symbols.length} symbols`;
-    const { asOf, rows } = await this.fetchEnvelope(`/option-snapshot?${params.toString()}`, what);
+    const { asOf, rows, unknownCodes } = await this.fetchEnvelope(
+      `/option-snapshot?${params.toString()}`,
+      what,
+    );
+    // shim 已把 vendor 不认识的代码 (改名 / 退市) 剔掉重发, 这里只负责让它在 app 日志里点名 ——
+    // 否则那只锚只是安静地不再更新。PSKY→SKYD 那次就是一只坏码让整批停了十天才被发现。
+    const unknownSymbols = unknownCodes.map((c) => codeToRef.get(c)?.symbol ?? c);
+    if (unknownSymbols.length > 0) {
+      this.logger.warn(`[futu] ${what}: vendor 不认识 ${unknownSymbols.join(',')} (改名 / 退市?)`);
+    }
 
     const quotes = new Map<string, RealtimeQuote>();
     for (const row of rows) {
@@ -166,13 +177,18 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
   private async fetchEnvelope(
     path: string,
     what: string,
-  ): Promise<{ asOf: Date; rows: unknown[] }> {
-    const res = await this.http.request<ShimEnvelope>({
+  ): Promise<{ asOf: Date; rows: unknown[]; unknownCodes: string[] }> {
+    const res = await this.http.request<ShimEnvelope & { unknown_codes?: unknown }>({
       url: `${this.baseUrl}${path}`,
       method: 'GET',
       headers: { Authorization: `Bearer ${this.token}` },
     });
 
-    return parseShimEnvelope(res, what);
+    // 缺省 = 旧版 shim (还不剥坏码), 按空处理。
+    const raw = res?.unknown_codes;
+    const unknownCodes = Array.isArray(raw)
+      ? raw.filter((c): c is string => typeof c === 'string')
+      : [];
+    return { ...parseShimEnvelope(res, what), unknownCodes };
   }
 }

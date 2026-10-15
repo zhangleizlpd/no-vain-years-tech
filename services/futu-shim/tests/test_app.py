@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from futu import RET_OK
+from futu import RET_ERROR, RET_OK
 
 from futu_shim import app as app_module
 from futu_shim.app import GZIP_MIN_BYTES, create_app
@@ -41,6 +41,7 @@ class FakeCtx:
         snapshot=None,
         earnings=None,
         global_state=None,
+        snapshot_unknown=(),
     ):
         self._basicinfo = basicinfo if basicinfo is not None else pd.DataFrame()
         self._trading_days = trading_days if trading_days is not None else []
@@ -53,6 +54,7 @@ class FakeCtx:
         self._expirations = expirations if expirations is not None else pd.DataFrame()
         self._chain = chain if chain is not None else pd.DataFrame()
         self._snapshot = snapshot if snapshot is not None else pd.DataFrame()
+        self._snapshot_unknown = set(snapshot_unknown)
         self._earnings = earnings if earnings is not None else pd.DataFrame()
         self._global_state = global_state if global_state is not None else {}
         self.global_state_calls = 0
@@ -162,6 +164,11 @@ class FakeCtx:
         self.snapshot_calls.append(list(code_list))
         if self._ret != RET_OK:
             return self._ret, "vendor said no"
+        # 照 prod 实测形态 (2026-10-16 探针): 整批失败, 只报请求顺序里**第一个**未知代码,
+        # 且不带市场前缀 (`US.ZZZQX,US.PSKY` → 「未知股票 ZZZQX」)。
+        for code in code_list:
+            if code in self._snapshot_unknown:
+                return RET_ERROR, f"未知股票 {code.split('.', 1)[1]}"
         return RET_OK, self._snapshot
 
     def get_earnings_calendar(
@@ -1339,6 +1346,84 @@ def test_option_snapshot_is_metered_on_its_own_official_limit_not_the_fallback()
     assert refused.status_code == 429
     assert refused.json["capability"] == "snapshot"
     assert int(refused.headers["Retry-After"]) >= 1
+
+
+def _pdd_row():
+    return {"code": "US.PDD", "last_price": 82.42, "option_valid": False}
+
+
+def test_option_snapshot_drops_an_unknown_code_and_returns_the_rest_of_the_batch():
+    """🚨 一只改名 / 退市的代码 MUST NOT 拖垮整批 (2026-10-06 PSKY→SKYD 事故:
+    112 只美股锚整批 502 十天, 下游熔断常开)。剔除后重发, 坏码经 `unknown_codes` 显形。"""
+    ctx = FakeCtx(snapshot=pd.DataFrame([_pdd_row()]), snapshot_unknown={"US.PSKY"})
+    client, _ = build(ctx)
+    resp = client.get("/option-snapshot?codes=US.PSKY,US.PDD", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert [row["code"] for row in resp.json["rows"]] == ["US.PDD"]
+    assert resp.json["unknown_codes"] == ["US.PSKY"]
+    assert ctx.snapshot_calls == [["US.PSKY", "US.PDD"], ["US.PDD"]]
+
+
+def test_option_snapshot_peels_unknown_codes_one_vendor_error_at_a_time():
+    """vendor 每次只报第一个未知代码 ⇒ 多只坏码要逐只剥, 不能指望一次拿全。"""
+    ctx = FakeCtx(
+        snapshot=pd.DataFrame([_pdd_row()]), snapshot_unknown={"US.ZZZQX", "US.PSKY"}
+    )
+    client, _ = build(ctx)
+    resp = client.get("/option-snapshot?codes=US.ZZZQX,US.PSKY,US.PDD", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert resp.json["unknown_codes"] == ["US.ZZZQX", "US.PSKY"]
+    assert len(ctx.snapshot_calls) == 3
+
+
+def test_option_snapshot_healthy_batch_reports_an_empty_unknown_list():
+    ctx = FakeCtx(snapshot=pd.DataFrame([_pdd_row()]))
+    client, _ = build(ctx)
+    resp = client.get("/option-snapshot?codes=US.PDD", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json["unknown_codes"] == []
+
+
+def test_option_snapshot_all_codes_unknown_is_a_permanent_422_not_a_502():
+    """🚨 422 而不是 502: 下游把 5xx 计进熔断、按瞬时故障重试; 「代码不存在」重试一万次
+    也不会变好, 且会把共用同一个 HTTP client 的其它采集一起熔断。"""
+    ctx = FakeCtx(snapshot_unknown={"US.PSKY"})
+    client, _ = build(ctx)
+    resp = client.get("/option-snapshot?codes=US.PSKY", headers=AUTH)
+
+    assert resp.status_code == 422
+    assert resp.json == {"error": "unknown_codes", "codes": ["US.PSKY"]}
+    assert len(ctx.snapshot_calls) == 1
+
+
+def test_option_snapshot_ambiguous_unknown_suffix_stays_a_502():
+    """vendor 报的码不带市场前缀; 两个市场同名时猜哪只都可能剔掉好码 ⇒ 不猜, 原样 502。"""
+    ctx = FakeCtx(snapshot_unknown={"US.ABC"})
+    client, _ = build(ctx)
+    resp = client.get("/option-snapshot?codes=US.ABC,HK.ABC", headers=AUTH)
+    assert resp.status_code == 502
+    assert len(ctx.snapshot_calls) == 1
+
+
+def test_option_snapshot_other_vendor_errors_stay_502():
+    ctx = FakeCtx(ret=RET_ERROR)
+    client, _ = build(ctx)
+    assert client.get("/option-snapshot?codes=US.PDD", headers=AUTH).status_code == 502
+    assert len(ctx.snapshot_calls) == 1
+
+
+def test_option_snapshot_gives_up_peeling_after_the_retry_cap():
+    """剥码有上限: 一批里坏码多到这个程度是系统性问题 (市场前缀错等), 不是个别改名 ——
+    原样 502 让它响亮, 也免得一个请求吃掉整个 snapshot 限频桶。"""
+    bad = [f"US.BAD{i}" for i in range(app_module.SNAPSHOT_UNKNOWN_PEEL_MAX + 1)]
+    ctx = FakeCtx(snapshot=pd.DataFrame([_pdd_row()]), snapshot_unknown=set(bad))
+    client, _ = build(ctx)
+    resp = client.get(f"/option-snapshot?codes={','.join([*bad, 'US.PDD'])}", headers=AUTH)
+
+    assert resp.status_code == 502
+    assert len(ctx.snapshot_calls) == app_module.SNAPSHOT_UNKNOWN_PEEL_MAX + 1
 
 
 def _earnings_row(security, day, pub_type="BEFORE_MARKET", **extra):
