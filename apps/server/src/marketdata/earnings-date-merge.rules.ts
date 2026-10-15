@@ -116,9 +116,10 @@ export interface AlignedSuccessor {
 }
 
 /**
- * 无法对齐旧事件的接手键 (FR-030，spec Session（八）3a)：未刊发的 `T:` / `D:` 键事件 (占位事件除外)，同一标的有
- * **同一来源、同一原文报告期** (非空) 的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 该键；否则 null。对应多个 `P:` 键
- * (如财年档案改过) ⇒ 🚫 猜 (FR-015)；事件已刊发 / 已并入 ⇒ null。
+ * 无法对齐旧事件的接手键 (FR-030，spec Session（八）3a / Session（十）)：`T:` / `D:` 键事件 (占位事件除外，含已刊发)，
+ * 同一标的有**同一来源、同一原文报告期** (非空) 的 `P:` 键观测、且只对应一个 `P:` 键 ⇒ 该键；否则 null。对应多个
+ * `P:` 键 (如财年档案改过) ⇒ 🚫 猜 (FR-015)；事件已并入 ⇒ null。已刊发的也收尾：档案早于回填的标的已有 `P:`
+ * 观测，其已刊发 `D:` 事件不收尾就永远停着 (prod `hk:00939` 6 条，2026-10-16)。
  * EVIDENCE: 2026-09-14 prod `hk:00939` 8 条 `T:futu_calendar:2024Q3…2026Q2` —— 补财年档案前落 `T:`，补后富途同原文另起
  * `P:`，旧事件永不收尾、每轮重复计数 (本机 evidence `t026-investigation/report.md` C6)。
  * 复杂度 O(n)，n = 该标的观测数。
@@ -129,7 +130,7 @@ export function selectAlignedSuccessor(
 ): AlignedSuccessor | null {
   if (isAlignedPeriodKey(event.periodKey) || isNoticeUndatedPlaceholder(event.periodKey))
     return null;
-  if (event.status === 'published' || event.status === 'superseded') return null;
+  if (event.status === 'superseded') return null;
   const pairKey = (source: string, text: string): string => JSON.stringify([source, text]);
   const own = new Set(
     observations.flatMap((o) => {
@@ -893,8 +894,10 @@ export interface NoticeUndatedInput {
    * 刊发日的才算「日期已由那个事件给出」(见 {@link hasDatedEventForNotice})。
    */
   readonly unpublishedEventDates: readonly string[];
-  /** 该标的是否曾有清单观测 (清单不覆盖的板块从未出现，FR-017)。 */
-  readonly everListed: boolean;
+  /** 清单覆盖该标的所在板块 = 非创业板 ({@link isGemCode}，FR-017)。 */
+  readonly boardCovered: boolean;
+  /** 该标的的清单会议 (业绩行 + 纯股息行)，供 {@link classifyNoticeMeeting} 配对。 */
+  readonly meetings: readonly NoticeMeetingCandidate[];
   readonly hasFiscalProfile: boolean;
   readonly capabilities: ReadonlyMap<string, EarningsDateSourceCapabilities | null>;
   /** 自 {@link selectPendingNotice} 选出的通知刊发日起算；无待判通知时可为 null。 */
@@ -912,19 +915,102 @@ export interface NoticeUndatedResult {
   readonly status: 'notified_undated' | 'superseded' | null;
   readonly logs: readonly EarningsDateEventLogEntry[];
   readonly findings: readonly EarningsDateFinding[];
-  /** 从未在清单出现的标的满足条件 ⇒ 只计数 (🚫 计失败、🚫 迁入)。 */
-  readonly neverListedUndated: boolean;
+  /** 创业板标的 (清单不覆盖) 满足条件 ⇒ 只计数 (🚫 计失败、🚫 迁入)。 */
+  readonly gemUndated: boolean;
   /** 本该判定、因无财年档案未判 ⇒ 计入 `earnings_date_fiscal_unknown`。 */
   readonly fiscalProfileMissing: boolean;
+  /** 晚于最近一次刊发、只配到纯股息行而被剔除的通知 ⇒ 计入 `earnings_notice_non_results`。 */
+  readonly nonResultsNotices: readonly NonResultsNotice[];
 }
 
-/** 待判的会前通知 = 晚于该标的最近一次刊发事实的通知中最早者；无 ⇒ null。 */
+/**
+ * 创业板代码 = 五位补零后落在 `08000`–`08999`；非纯数字 ⇒ false。
+ * EVIDENCE: 港交所《Stock Code Allocation Plan》Updated 12 March 2026 —— `08000–08550` / `08601–08999`
+ * GEM Securities、`08551–08600` GEM Temporary Counter；`80000–89999` 为人民币产品 (含主板人民币柜台)
+ * ⇒ 🚫 按「以 8 开头」判。
+ */
+export function isGemCode(code: string): boolean {
+  if (!/^\d{1,5}$/.test(code)) return false;
+  const n = Number(code);
+  return n >= 8000 && n <= 8999;
+}
+
+/** 通知 ↔ 清单会议配对窗口：会议日 ∈ `[通知刊发日, 通知刊发日 + 30 天]` (spec Session（九）)。 */
+export const NOTICE_MEETING_PAIR_WINDOW_DAYS = 30;
+
+/** 清单会议：业绩行 (`meeting` 观测的会议日) 或纯股息行 (`earnings_nonresults_meeting`)。 */
+export type NoticeMeetingCandidate =
+  | { readonly meetingDate: string; readonly results: true }
+  | { readonly meetingDate: string; readonly results: false; readonly purpose: string };
+
+export type NoticeMeetingKind = 'results' | 'non_results' | 'unpaired';
+
+export interface NonResultsNotice {
+  readonly notice: EarningsNoticeSignal;
+  /** 窗口内最早的纯股息行。 */
+  readonly meeting: Extract<NoticeMeetingCandidate, { results: false }>;
+}
+
+function pairedMeetings(
+  noticeDate: string,
+  meetings: readonly NoticeMeetingCandidate[],
+): NoticeMeetingCandidate[] {
+  const from = dayNumber(noticeDate);
+  return meetings.filter((m) => {
+    const d = dayNumber(m.meetingDate);
+    return d >= from && d <= from + NOTICE_MEETING_PAIR_WINDOW_DAYS;
+  });
+}
+
+/**
+ * 通知配对三分：窗口内任一业绩行 ⇒ `results` (同一会议拆成业绩行与股息行时按此消解)；只有纯股息行
+ * ⇒ `non_results`；都无 ⇒ `unpaired` (按业绩会通知判)。复杂度 O(该标的会议数)。
+ */
+export function classifyNoticeMeeting(
+  noticeDate: string,
+  meetings: readonly NoticeMeetingCandidate[],
+): NoticeMeetingKind {
+  const paired = pairedMeetings(noticeDate, meetings);
+  if (paired.length === 0) return 'unpaired';
+  return paired.some((m) => m.results) ? 'results' : 'non_results';
+}
+
+function nonResultsNoticesOf(
+  signals: readonly EarningsNoticeSignal[],
+  latestFilingDate: string | null,
+  meetings: readonly NoticeMeetingCandidate[],
+): NonResultsNotice[] {
+  return afterLatestFiling(signals, latestFilingDate).flatMap((notice) => {
+    const paired = pairedMeetings(notice.noticeDate, meetings);
+    if (paired.length === 0 || paired.some((m) => m.results)) return [];
+    const [meeting] = paired
+      .filter((m): m is NonResultsNotice['meeting'] => !m.results)
+      .sort((a, b) => a.meetingDate.localeCompare(b.meetingDate));
+    return meeting === undefined ? [] : [{ notice, meeting }];
+  });
+}
+
+function afterLatestFiling(
+  signals: readonly EarningsNoticeSignal[],
+  latestFilingDate: string | null,
+): EarningsNoticeSignal[] {
+  return signals.filter(
+    (s) => latestFilingDate === null || dayNumber(s.noticeDate) > dayNumber(latestFilingDate),
+  );
+}
+
+/**
+ * 待判的会前通知 = 晚于该标的最近一次刊发事实、且不是 `non_results` 的通知中最早者；无 ⇒ null。
+ * 🚨 先剔除 `non_results`：股息会后通常无业绩刊发、最近刊发日不前移 ⇒ 不剔除则这份通知永远排在
+ * 最前，其后的业绩会通知轮不到判定。
+ */
 export function selectPendingNotice(
   signals: readonly EarningsNoticeSignal[],
   latestFilingDate: string | null,
+  meetings: readonly NoticeMeetingCandidate[],
 ): EarningsNoticeSignal | null {
-  const pending = signals.filter(
-    (s) => latestFilingDate === null || dayNumber(s.noticeDate) > dayNumber(latestFilingDate),
+  const pending = afterLatestFiling(signals, latestFilingDate).filter(
+    (s) => classifyNoticeMeeting(s.noticeDate, meetings) !== 'non_results',
   );
   return pending.sort((a, b) => a.noticeDate.localeCompare(b.noticeDate))[0] ?? null;
 }
@@ -995,7 +1081,11 @@ function undatedFindings(
 }
 
 export function judgeNoticeUndated(input: NoticeUndatedInput): NoticeUndatedResult {
-  const pendingNotice = selectPendingNotice(input.noticeSignals, input.latestFilingDate);
+  const pendingNotice = selectPendingNotice(
+    input.noticeSignals,
+    input.latestFilingDate,
+    input.meetings,
+  );
   const wasUndated = input.existingStatus === 'notified_undated';
   // 无待判通知 ⇒ 无未知日期态 (公司不为该类报告发通知，Edge 15)；已有公布日不早于通知的未刊发事件 ⇒
   // 日期已由那个事件给出，其确认日期经 120 天窗口取到该通知刊发日。
@@ -1005,10 +1095,9 @@ export function judgeNoticeUndated(input: NoticeUndatedInput): NoticeUndatedResu
     !marketHasPublicationFact(input.capabilities)
       ? null
       : judgeElapsed(input.elapsedTradingDays, pendingNotice.noticeDate, input.hasFiscalProfile);
-  // 🚨 从未在清单的标的 (清单不覆盖的板块) 只计数 (FR-017)。
-  const neverListedUndated = verdict === 'due' && !input.everListed;
-  const undated =
-    (verdict === 'due' && !neverListedUndated) || (verdict === 'unjudged' && wasUndated);
+  // 🚨 清单不覆盖的板块 (创业板) 只计数 (FR-017)。
+  const gemUndated = verdict === 'due' && !input.boardCovered;
+  const undated = (verdict === 'due' && !gemUndated) || (verdict === 'unjudged' && wasUndated);
   const status: NoticeUndatedResult['status'] = undated
     ? 'notified_undated'
     : wasUndated
@@ -1020,7 +1109,12 @@ export function judgeNoticeUndated(input: NoticeUndatedInput): NoticeUndatedResu
     status,
     logs: undatedLogs(input, pendingNotice, status),
     findings: undatedFindings(input, pendingNotice, status, verdict),
-    neverListedUndated,
+    gemUndated,
     fiscalProfileMissing: verdict === 'fiscal_unknown',
+    nonResultsNotices: nonResultsNoticesOf(
+      input.noticeSignals,
+      input.latestFilingDate,
+      input.meetings,
+    ),
   };
 }

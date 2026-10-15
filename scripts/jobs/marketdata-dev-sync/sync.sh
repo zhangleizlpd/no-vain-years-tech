@@ -212,6 +212,7 @@ TABLE_POLICIES=(
   "marketdata.earnings_date_event_log:skip"    # 079 事件流水（append-only，FK → earnings_date_event）
   "marketdata.earnings_fiscal_profile:skip"    # 079 财年档案（唯一 instrument_id）
   "marketdata.earnings_meeting_lag:skip"       # 079 会议 → 刊发间隔
+  "marketdata.earnings_nonresults_meeting:skip" # 079 清单纯股息行（会前通知消歧，Session（九））
   # ── 业务参考数据（非标的级，但有真消费方）────────────────────────────────────────
   # 2026-08-15 由 skip 翻 full（issue #45 附带项）—— 它**不是**运维表，原先跟 sync_run /
   # sync_dimension 归在同一组是分类错了：那几张描述「同步这件事本身」，而交易日历是**业务

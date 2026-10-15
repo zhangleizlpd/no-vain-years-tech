@@ -70,6 +70,13 @@ describe('parseBoardMeetingList — 当日页 (页首 10/09/2026)', () => {
     expect(page.rows.some((r) => r.purpose === '特別中期股息')).toBe(false);
   });
 
+  it('纯股息行另入 nonResultsRows (spec Session（九）/ FR-006): 条数 = dividendOnlyRows, 字段取原文', () => {
+    expect(page.nonResultsRows).toHaveLength(page.counts.dividendOnlyRows);
+    expect(page.nonResultsRows).toEqual([
+      expect.objectContaining({ code: '02877', purpose: '特別中期股息' }),
+    ]);
+  });
+
   it('同页同日同代码多行各自成行 (清晰醫療 15/09 三期)', () => {
     const rows = page.rows.filter((r) => r.code === '01406' && r.meetingDate === '2026-09-15');
     expect(rows.map((r) => r.periodKey)).toEqual(['P:2025-03-31', 'P:2025-09-30', 'P:2026-03-31']);
@@ -89,6 +96,19 @@ describe('parseBoardMeetingList — 2024-04-24 快照 (多期多行 / 人民币�
       nonStandardMonthRows: 0,
     });
     expect(page.rows).toHaveLength(page.counts.resultRows);
+    expect(page.nonResultsRows).toHaveLength(page.counts.dividendOnlyRows);
+  });
+
+  it('同一会议拆成业绩行与纯股息行 (02402 26/04/2024): 业绩行进 rows, 两条纯股息行进 nonResultsRows', () => {
+    expect(
+      page.rows.filter((r) => r.code === '02402' && r.meetingDate === '2024-04-26'),
+    ).toHaveLength(1);
+    expect(
+      page.nonResultsRows
+        .filter((r) => r.code === '02402' && r.meetingDate === '2024-04-26')
+        .map((r) => r.purpose)
+        .sort(),
+    ).toEqual(['末期股息', '特別股息']);
   });
 
   it('「季度收益資料」计为业绩行', () => {

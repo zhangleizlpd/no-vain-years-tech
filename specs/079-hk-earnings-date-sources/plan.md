@@ -3,7 +3,7 @@ feature_id: 079-hk-earnings-date-sources
 spec_ref: ./spec.md
 status: drafted
 created_at: '2026-09-13'
-updated_at: '2026-09-14'
+updated_at: '2026-10-09'
 adr_refs: ['0035', '0043', '0047', '0058', '0062', '0066', '0067']
 context7_verified: []
 ---
@@ -101,6 +101,8 @@ context7_verified: []
 4. **`earnings_meeting_lag`**（会议 → 刊发间隔）：唯一键 `(instrument_id, report_kind)`；最近一次间隔天数、来源期末日、观测时刻（FR-010）。
 5. **`earnings_fiscal_profile`**（财年档案，FR-026，spec Session（七）追加）：唯一键 `instrument_id`；财年结束月（1–12）、得出来源（`annual_title` / `dividend_title` / `board_list` / `futu_pairing` / `manual`）、凭据、确定时刻、更新时刻。没有行 = 未知。migration ① 已落地，本表走独立 expand-only migration ③ `<yyyymmdd_hhmm>_create_earnings_fiscal_profile`（只含表）。
 
+6. **`earnings_nonresults_meeting`**（清单纯股息行留存，spec Session（九）/ FR-006 追加）：唯一键 `(instrument_id, meeting_date, purpose)`；会议日、目的原文、凭据（清单页首日期）、首次 / 最近观测时刻。**只供 D14 会前通知消歧读取，🚫 进入合并层、🚫 生成事件**。独立 expand-only migration ④ `<yyyymmdd_hhmm>_create_earnings_nonresults_meeting`；`scripts/jobs/marketdata-dev-sync/sync.sh` 表清单同 commit 登记（同 `earnings_fiscal_profile` 的处理）。
+
 - **会前通知信号不单独建表**：由来源 B 每轮从 `marketdata.announcement` 按标题在 120 天窗口内现算（本 ctx 表、有 `(instrument_id, date)` 索引 `schema.prisma:915`），合并时按标的与日期窗口匹配（D8）。
 - **`period_key` 三种形态，列非空**（`.claude/rules/migration-rules.md:96-98`）：`P:<期末日>`（可跨来源对齐）/ `T:<来源>:<原文报告期>`（来源内稳定）/ `D:<来源>:<日期>`（兜底）。只有 `P:` 参与跨来源合并（FR-015）。
 - 🚫 **MUST NOT 复用 `earnings_event`**（D1 / FR-021）。
@@ -163,6 +165,7 @@ context7_verified: []
   - **冲突**（FR-014）：精确口径间任何不一致；或近似口径差 ≥ 2 天且不可解释 ⇒ `conflict`。近似差 1 天 ⇒ 优先级取值、写流水。
   - **确认**（FR-011 / FR-012 / FR-021）：有「仅已公告」来源观测 ⇒ `confirmed`；只有 `unconfirmed` 来源 ⇒ `unconfirmed`，🚫 永不升级。确认日期 = 对应会前通知信号的刊发日（`announced`）：同标的、刊发日 ∈ `[事件日期 − 120 天, 事件日期]` 且晚于该标的上一次刊发事实的信号中**最早**的一个；无对应信号 ⇒ 给出日期的来源首次观测的交易所当地日期（`first_seen`）。🚨 **确认日期只前移不回退**：既有口径为 `announced` 时，本轮算不出对应信号 ⇒ 保留既有值（FR-012）；既有为 `first_seen`、本轮找到更早的通知 ⇒ 前移并改口径。
   - **已通知日期未知**（FR-017）：会前通知信号刊发后满 2 个交易日、该标的无「公布日 ≥ 该通知刊发日」的未刊发事件（冲突事件取候选日期中最晚者；impl 期 F1 修正——按字面「任一未刊发事件带日期」，长期逾期的旧事件会让该标的此后永远判不成已通知日期未知）：该标的曾有清单观测 ⇒ `notified_undated` + finding；否则只计数。之后任一来源给出日期即转确认，确认日期取该信号刊发日。🚨 **占位事件（impl 期 T014 定，spec Session（七）第 2 问）**：会前通知不带报告期 ⇒ 迁入时建占位事件，键 `D:notice_undated:<通知刊发日>`（🚫 用 `D:hkex_announcement:<日期>`——与公告来源给无期末日刊发生成的兜底键同形，通知与刊发同日即撞键）；该标的有非 published 事件拿到日期、`selectPendingNotice` 不再返回这份通知时，占位事件迁为 `superseded`，流水 detail 指向接手事件 id；🚫 删除（流水级联删除，`schema.prisma` `EarningsDateEventLog` 外键）。占位事件与 `superseded` 事件 🚫 进入逐事件合并与逾期扫描——零观测、保留 `confirmedDate` 的占位事件进合并会被静默算成 `confirmed`。
+    - 🚨 **spec Session（九）修订**（2026-10-09）：「该标的曾有清单观测」判据作废 —— 清单无历史，上线数月内几乎所有主板标的都会被判不覆盖；改为 `!isGemCode(code)`，并先与清单行配对剔除股息会通知，见 D14。
   - **刊发覆盖**（FR-019）：出现 `filed` ⇒ `published`，回填各来源各口径偏差；有会议日时更新 `earnings_meeting_lag`。
   - **逾期**（FR-019a）：非 `published` 且公布日之后满 2 个交易日 ⇒ `overdue`。交易日数用 `trading_day` 三态计数（`trading-day.rules.ts:91` 判据）；区间含 `unknown` ⇒ 不判，发 `unjudged`。`TradingCalendarPort`（`trading-calendar.port.ts:23-70`）新增「区间交易日数」方法，写法照 `previousTradingDay` 覆盖闸（`db-trading-calendar.adapter.ts:102-121`）。
     - 🚨 **判定顺序**（FR-028 / FR-029，写在 `judgeOverdue` 注释）：日历不可判 → 未到期 → 键无法对齐（`T:` / `D:`）→ 无财年档案 → 非季报公司的第一 / 第三季 → 逾期。前两个「判不了」的分支让既有逾期保持不变；非季报分支是稳定结论，让既有逾期解除回原状态（`status_changed` 流水 `detail.releasedBy = 'non_quarterly_reporter'`、清 `overdueSince`、🚫 计失败）。
@@ -191,6 +194,7 @@ context7_verified: []
 | `earnings_date_source` | failure（计入 `stats.failed`） | 某来源 `collect` 抛错（含来源名；清单含 HTTP 状态码 / 跳转目标 / 首个不合法行） |
 | `earnings_date_calendar_unknown` | unjudged | 逾期 / 陈旧判定区间日历不可判 |
 | `earnings_date_unaligned` | notice | 新增 `T:` / `D:` 键港股观测数 > 0；或公布日已过、因键无法对齐未判逾期的事件数 > 0（按标的有无财年档案分列 `overdueUnjudgedWithProfile` / `overdueUnjudgedWithoutProfile`，`overdueUnjudgedSamples` 先取有档案的、合计至多 20 个 `<代码> <period_key>`，spec Session（八）4a）；或本轮迁 `superseded` 的旧事件数 > 0（`superseded` + 至多 20 个样例，3a）。🚫 计失败 |
+| `earnings_notice_non_results` | notice | 每轮一条（spec Session（九）/ D14）：本轮因只配到纯股息行而剔除的会前通知数（`count`）+ 至多 20 个 `<代码> <通知日>→<会议日> <目的>` 样例；🚫 计失败 |
 | `earnings_date_non_quarterly` | notice | 每轮一条：公布日已过、因非季报公司的第一 / 第三季未判逾期的事件数（`count`）、其中本轮由既有逾期解除的数（`released`）+ 至多 20 个 `<代码> <period_key>` 样例（spec Session（八）1b，🚫 计失败） |
 | `earnings_notice_undated` | notice（计入 `stats.failed`，仅新进入那一轮） | 新进入 `notified_undated`（含公告链接）；另计从未在清单出现标的的未知日期通知数（该计数不计失败） |
 | `earnings_board_list_scan` | notice | 每轮：页首日期、数据行、业绩行、纯股息行、跳过代码、`T:` 键数、本轮会前通知信号数 |
@@ -225,7 +229,7 @@ context7_verified: []
 | 8 | 近似 ≥ 2 天不可解释 → 冲突 | merge spec（`hk:00960` 形态） |
 | 9 | 冲突解除留痕 | 079 IT（两轮） |
 | 10 | 确认时刻 = 对应通知刊发日（120 天窗口）/ 首次观测；已取刊发日不回退 | merge spec（窗口边界、多通知取最早、上一次刊发之前的通知不算、既有 `announced` 本轮无信号 ⇒ 保留）+ 079 IT（通知第 1 天、富途日期第 30 天出现并改期一次 ⇒ 确认日仍 = 通知刊发日） |
-| 11 | 已通知日期未知：曾在清单 → 告警 + 迁入那一轮计入运行失败；从未在清单 → 计数 | merge spec（迁入产出 finding、停留不产出）+ 079 IT（迁入轮 `partial`、次轮 `success`；创业板形态 `success`） |
+| 11 | 已通知日期未知：主板（未配到清单行）→ 告警 + 迁入那一轮计入运行失败；创业板（代码段）→ 计数（spec Session（九）改判据，原「曾在清单」） | merge spec（迁入产出 finding、停留不产出；`isGemCode` 含五位 `8xxxx` 人民币柜台非创业板臂）+ 079 IT（主板标的**无任何清单观测**仍迁入 `partial`、次轮 `success`；`08xxx` 形态 `success`） |
 | 12 | 带「董事」字样但非通知写法 → 不作信号 | `earnings-notice.rules.spec.ts` |
 | 13 | 刊发覆盖 + 偏差统计 + 间隔更新 | merge spec + 079 IT |
 | 14 | 满 2 个交易日未刊发 → 逾期 + 迁入那一轮计入运行失败；刊发后解除 | 079 IT（种 `trading_day`，含假日与 `unknown` 臂；迁入轮 `partial`、次轮仍逾期 `success`） |
@@ -234,7 +238,7 @@ context7_verified: []
 | 17 | 来源失败隔离 | 079 IT |
 | 18 | 报告期无法对齐 → 独立事件并计数 | `earnings-period.rules.spec.ts` + 079 IT |
 | 19 | 不在主表（含人民币柜台）→ 跳过计数 | `hkex-board-meeting-list.rules.spec.ts` + 079 IT |
-| 20 | 纯股息行 → 不作事件、计数 | board list rules spec |
+| 20 | 纯股息行 → 不作事件、计数（spec Session（九）：并留存为非业绩会议） | board list rules spec（`nonResultsRows` 与 `dividendOnlyRows` 计数一致；fixture `ebmn_c-wayback-20240424125921.htm` 含「特別股息」行）+ 079 IT（写入 `earnings_nonresults_meeting`、零 `earnings_date_observation` / 零事件） |
 | 21 | 清单取数失败 / 地址跳转 / 结构异常 → 来源失败 + 计入运行失败 + 零写入 | board list rules spec（三类结构变异 fixture）+ `vendor-http-client.spec.ts`（`redirect: 'manual'` 透传；3xx → `VendorHttpError` 且不重试）+ 079 IT（假 fetch 分别返 404 / 301 / 变异页：失败 finding 存在 且 `sync_run.status = partial` 且 `failed ≥ 1` 且 清单观测 0 条 且 其余来源观测 > 0） |
 | 22 | 清单陈旧 → 计入运行失败、观测照用；日历不可判 → 无法判定、不标红 | 079 IT（页首日期落后 3 个交易日：`partial` + stale finding + 该页行照常入库；区间含 `unknown`：`success` + `earnings_date_calendar_unknown`） |
 | 23 | 美股进层 `unconfirmed`；现役逐字节不变 | `sync-earnings-event.usecase.spec.ts`（记录器抛错时 `stats` / findings / 调用数不变）+ `optionsdesk-047.earnings-pit.it.spec.ts` 加臂（`earnings_event` 行与 `sync_run` 与基线逐字节相同；**先断言新表美股事件数 > 0**，再断言全部 `unconfirmed`） |
@@ -243,6 +247,9 @@ context7_verified: []
 | 26 | 无财年档案 → 逾期与已通知日期未知记无法判定、不标红 | merge spec + 079 IT（无档案标的过公布日 2 个交易日：非 `overdue`、`earnings_date_fiscal_unknown` 计数 > 0；同轮有档案的对照标的已迁入 `overdue`） |
 | 27 | 冷启动 / 每日运行反推财年，矛盾或推不出 → 不写、待补 | `earnings-fiscal-profile.rules.spec.ts` + 079 IT（一致 ⇒ 写入；矛盾 ⇒ 无行 + pending；冷启动内反推抛错 ⇒ 冷启动结局不变） |
 | 28 | 年度标题显式期末日与档案矛盾 → 告警、不覆盖 | 079 IT |
+| 33 | 通知只配到纯股息行 → 非业绩会议、不进入已通知日期未知、计数（spec Session（九）） | merge spec（`classifyNoticeMeeting` 三分 + 同一会议业绩行与股息行并存 ⇒ `results`；`selectPendingNotice` 剔除 `non_results` 后取到其后的业绩通知）+ 079 IT（通知 + 纯股息行 ⇒ 无占位事件、`earnings_notice_non_results` 计数、`success`；股息通知在前、业绩通知在后 ⇒ 后者照常判定） |
+
+> 📌 2026-10-09 核：`state_branches` 第 29–32 条（spec Session（八）追加）本表无对应行，为既有漂移，覆盖见 tasks T030–T033；本次只登记不补。
 
 其余测试面：
 
@@ -260,6 +267,18 @@ context7_verified: []
   3. 人工补录 CLI `marketdata-fiscal-profile.cli.ts --set <ticker>=<月>`（写 `source = 'manual'`，幂等）；prod 执行属写操作，命令先呈维护者确认。
 - 锚集合沿用 marketdata 已有的只读锚 ticker 口径（`loadAnchoredInstruments`，`check-server-moat.ts` 登记的「marketdata 读 anchor 的 ticker 集合」边），🚫 新增跨 ctx 写。
 - **判定范围**（FR-028）：D8 的逾期与已通知日期未知扫描只扫 `market = 'hk'`（美股无刊发事实来源，扫到会全部判逾期），且只对有档案的标的迁入状态；无档案的计入每轮一条 `earnings_date_fiscal_unknown`。
+
+**D14 · 会前通知覆盖判定与目的消歧（FR-006 / FR-017 / FR-023；spec Session（九））**
+
+- **为什么不把纯股息行做成 `meeting` 观测**：合并层按 `(标的, period_key)` 从观测生成事件（D8），纯股息行没有报告期，落成观测就会多出一期「财报」；清单行提前消失（FR-016）也按观测判。⇒ 走 D3 新表 6，与观测完全隔离。
+- **解析**（`hkex-board-meeting-list.rules.ts`）：`parseBoardMeetingList` 现对非业绩目的只 `dividendOnlyRows += 1`。改为同时产出 `nonResultsRows: { code, meetingDate, purpose }[]`；计数与结构不变量（`resultRows + dividendOnlyRows === dataRows`）不变。source 层按与业绩行相同的主表映射（查不到的代码直接跳过、🚫 计入 `skippedUnknownInstruments` —— 已计入 `dividendOnlyRows`，再计会改变该指标「业绩行跳过数」的既有口径，impl 期 T035 定），经来源结果新增可选字段 `nonResultsMeetings` 交给用例写表（同轮写，`last_seen_at` 刷新）。
+- **创业板判定**（纯函数，`earnings-date-merge.rules.ts`）：`isGemCode(code)` = 五位补零后在 `08000`–`08999`。EVIDENCE: 港交所《Stock Code Allocation Plan》Updated 12 March 2026 —— `08000–08550` / `08601–08999` GEM Securities、`08551–08600` GEM Temporary Counter；`80000–89999` 为人民币产品（含主板人民币柜台），🚫 按「以 8 开头」判。
+- **配对**（纯函数）：`classifyNoticeMeeting(noticeDate, meetings)` → `'results' | 'non_results' | 'unpaired'`。`meetings` = 该标的会议日落在 `[noticeDate, noticeDate + 30 天]` 的清单记录：业绩行（`basis = 'meeting'` 观测的会议日）+ 纯股息行（新表）。任一业绩行 ⇒ `results`（同一会议拆多行按此消解）；只有纯股息行 ⇒ `non_results`；都无 ⇒ `unpaired`。复杂度 O(该标的会议数)。
+- **判定改动**（`judgeNoticeUndated` / `selectPendingNotice` / `scanNoticeUndated`）：
+  1. 🚨 `selectPendingNotice` 先剔除 `non_results` 通知 —— 不剔除则一份股息会通知会一直排在最前、其后的业绩会通知永远轮不到判定（股息会后通常无业绩刊发，`latestFilingDate` 不前移）。
+  2. 输入 `everListed` → `boardCovered = !isGemCode(code)`；删掉 `scanNoticeUndated` 里按 `basis = 'meeting'` 现查「曾在清单」的那次读取。`neverListedUndated` 随之改名 `gemUndated`，发现项 `earnings_notice_undated` 的 detail 键 `neverListed` → `gem`（读侧仅本用例，`ops/jobs` 与日报脚本无引用，2026-10-09 grep）。
+  3. 被剔除的 `non_results` 通知每轮汇总一条 `notice` 发现项 `earnings_notice_non_results`：`{ count, samples: ['<代码> <通知日>→<会议日> <目的>'] }`，至多 20 个样例；🚫 计失败。
+- **存量**：prod 全市场 `notified_undated` / `D:notice_undated:` 事件 0 条，`earnings_fiscal_profile` 共 30 行（= 30 只港股锚，FR-028 ⇒ 判定实际只覆盖锚）（2026-10-09 只读查）；清单无历史 ⇒ 无需回填；新表随上线后的每日清单自然积累，配对窗口 30 天内的通知在上线后第一轮即可配到当天页面上的纯股息行。
 
 ### 🚨 Impl Guardrails（并发 / 安全 / 前端）
 

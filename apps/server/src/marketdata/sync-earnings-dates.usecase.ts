@@ -4,6 +4,7 @@ import { PrismaService } from '../security/prisma.service.js';
 import { EarningsCalendarBudgetExhaustedError } from './earnings-calendar.port.js';
 import {
   hasDatedEventForNotice,
+  isGemCode,
   isNoticeUndatedPlaceholder,
   judgeNoticeUndated,
   mergeEarningsDateEvent,
@@ -26,6 +27,7 @@ import {
   type EarningsFilingFact,
   type ExistingEarningsDateEvent,
   type ListingPresence,
+  type NoticeMeetingCandidate,
   type NoticeUndatedResult,
 } from './earnings-date-merge.rules.js';
 import {
@@ -37,9 +39,10 @@ import {
   type EarningsDateSourceCapabilities,
   type EarningsDateSourceName,
   type EarningsDateSourceObservation,
+  type EarningsNonResultsMeeting,
   type EarningsNoticeSignal,
 } from './earnings-date-source.port.js';
-import { isAlignedPeriodKey } from './earnings-period.rules.js';
+import { isAlignedPeriodKey, realignObservationKey } from './earnings-period.rules.js';
 import { exchangeCalendarDate } from './session-clock.js';
 import {
   SyncEarningsFiscalProfileUseCase,
@@ -105,6 +108,9 @@ export const HK_EARNINGS_DATE_MARKET = 'hk';
 /** 单次 `createMany` 的行数配额 (同 `sync-earnings-event.usecase.ts` 的 `EARNINGS_ROW_CHUNK`)。 */
 const OBSERVATION_ROW_CHUNK = 500;
 
+/** 档案后到时可按档案重算报告期键的来源 (FR-030)：清单期间的换算不读财年档案，重算结果不变。 */
+const REALIGNABLE_SOURCES: EarningsDateSourceName[] = ['futu_calendar', 'hkex_announcement'];
+
 const toDateOnly = (s: string | null): Date | null =>
   s === null ? null : new Date(`${s}T00:00:00Z`);
 const isoDate = (d: Date | null): string | null =>
@@ -155,8 +161,10 @@ export interface EarningsDatesMergeSummary {
   readonly findings: readonly EarningsDateMergeFinding[];
   /** 因无财年档案未判定逾期 / 已通知日期未知：每个未判定的事件 (或标的) 一条代码 (FR-028)。 */
   readonly fiscalUnknown: readonly string[];
-  /** 从未在清单出现、满足已通知日期未知条件的标的代码 (FR-017：只计数)。 */
-  readonly neverListedUndated: readonly string[];
+  /** 创业板 (清单不覆盖)、满足已通知日期未知条件的标的代码 (FR-017：只计数)。 */
+  readonly gemUndated: readonly string[];
+  /** 只配到纯股息行而剔除的会前通知：每份一条 `<代码> <通知日>→<会议日> <目的>` (spec Session（九）：只计数)。 */
+  readonly nonResultsNotices: readonly string[];
   /**
    * 公布日已过、因报告期无法对齐 (`T:` / `D:` 键) 未判逾期的事件：每个一条 `<symbol> <periodKey>` (只计数)，
    * 按标的有无财年档案分列 (FR-028，spec Session（八）4a)。
@@ -258,6 +266,22 @@ function storedBearingDate(row: StoredObservation): string | null {
     meetingDate: isoDate(row.meetingDate),
     filedDate: isoDate(row.filedDate),
   });
+}
+
+/** 刊发事实的本轮刊发日晚于库内值 (FR-031 只前移)。 */
+function filedLater(
+  storedBasis: string,
+  nextBasis: string,
+  previous: string | null,
+  next: string | null,
+): boolean {
+  return (
+    storedBasis === 'filed' &&
+    nextBasis === 'filed' &&
+    previous !== null &&
+    next !== null &&
+    next > previous
+  );
 }
 
 function sameColumns(row: StoredObservation, next: ObservationColumns): boolean {
@@ -364,7 +388,8 @@ interface MergeAccumulator {
   eventsWritten: number;
   findings: EarningsDateMergeFinding[];
   fiscalUnknown: string[];
-  neverListedUndated: string[];
+  gemUndated: string[];
+  nonResultsNotices: string[];
   overdueUnalignedWithProfile: string[];
   overdueUnalignedWithoutProfile: string[];
   nonQuarterlyReporter: string[];
@@ -376,7 +401,8 @@ const emptyAccumulator = (): MergeAccumulator => ({
   eventsWritten: 0,
   findings: [],
   fiscalUnknown: [],
-  neverListedUndated: [],
+  gemUndated: [],
+  nonResultsNotices: [],
   overdueUnalignedWithProfile: [],
   overdueUnalignedWithoutProfile: [],
   nonQuarterlyReporter: [],
@@ -646,7 +672,7 @@ interface MergeReport {
  * `overdue` / `notified_undated` 的那一轮 —— 每条 `stats.failed += 1`，kind 仍为 `notice`
  * (`failure` 是续跑 / 重试的来源)。停留在该状态的事件规则不产出 finding ⇒ 不再计；🚫 按「本轮扫描到
  * 该状态」计 —— 延期刊发的公司会让日报连日标红、淹没新故障。冲突 / 未对齐 / 清单行消失 / 日历不可判 /
- * 财年未知 / 财年待补与矛盾 / 从未在清单的未知日期通知 / 清单扫描计数 🚫 计失败。
+ * 财年未知 / 财年待补与矛盾 / 创业板的未知日期通知 / 非业绩会议通知 / 清单扫描计数 🚫 计失败。
  *
  * notice 的标的代码放 `detail.symbol` (`SyncRunFinding` 的 notice 无 `symbol` 字段)。
  * 复杂度 O(findings + 新插入观测数 + 来源数)。
@@ -685,11 +711,18 @@ function reportMergeFindings(
       samples: [...new Set(merge.fiscalUnknown)].slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
     });
   }
-  if (merge.neverListedUndated.length > 0) {
-    // 从未出现在清单的标的 (清单不覆盖的板块)：只计数 (FR-017)。
+  if (merge.gemUndated.length > 0) {
+    // 创业板标的 (清单不覆盖的板块)：只计数 (FR-017)。
     notice('earnings_notice_undated', {
-      neverListed: merge.neverListedUndated.length,
-      symbols: merge.neverListedUndated,
+      gem: merge.gemUndated.length,
+      symbols: merge.gemUndated,
+    });
+  }
+  if (merge.nonResultsNotices.length > 0) {
+    // 只配到纯股息行的会前通知 = 非业绩会议：每轮一条、只计数 (spec Session（九）)。
+    notice('earnings_notice_non_results', {
+      count: merge.nonResultsNotices.length,
+      samples: merge.nonResultsNotices.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
     });
   }
   for (const { ticker, pending, detail } of fiscalProfiles.pending) {
@@ -816,8 +849,10 @@ export class SyncEarningsDatesUseCase {
         stats,
       );
       inserted.push(...keys);
+      await this.recordNonResultsMeetings(result.nonResultsMeetings ?? [], request.now, stats);
     }
-    const merge = await this.mergeHk(outcome, listings, request.now);
+    const realigned = await this.realignObservations(outcome.market, stats);
+    const merge = await this.mergeHk(outcome, listings, request.now, realigned);
     addWritten(stats, merge.eventsWritten);
     reportMergeFindings(stats, { outcome, fiscalProfiles, merge, inserted });
     return { ...outcome, fiscalProfiles, merge };
@@ -939,6 +974,8 @@ export class SyncEarningsDatesUseCase {
   /**
    * 观测 upsert (FR-013 / FR-020a)：新行落首次 = 最近观测时刻 = 本轮；既有行最近观测时刻 = 本轮，
    * 承重日期变了 ⇒ 旧值进 `prev_date`、本轮进 `date_changed_at`；🚫 覆盖 `first_seen_at`。
+   * 刊发事实 (`filed`) 只前移 (FR-031)：本轮刊发日晚于库内值 ⇒ 库内整行不动、只刷最近观测时刻，每轮汇总一条
+   * `earnings_date_filed_later_kept` (只计数) —— 原刊发滑出读取窗口后，后到又被判成刊发的行会把日期推后。
    *
    * 不包事务：逐行写幂等，中途 DB 失败上抛 ⇒ 整轮重跑收敛 (回填一轮可达数千行，单事务会撞超时)。
    * 并发两轮同时插同一新行 ⇒ `skipDuplicates` 先写者胜，内容同源同轮等价。
@@ -981,6 +1018,7 @@ export class SyncEarningsDatesUseCase {
     const inserts: Prisma.EarningsDateObservationCreateManyInput[] = [];
     const insertedKeys: EarningsDateEventKey[] = [];
     const touchOnly: bigint[] = [];
+    const keptEarlier: string[] = [];
     const updates: { id: bigint; data: Prisma.EarningsDateObservationUpdateInput }[] = [];
     for (const o of observations) {
       const columns = observationColumns(market, o);
@@ -1003,6 +1041,11 @@ export class SyncEarningsDatesUseCase {
       }
       const previous = storedBearingDate(row);
       const next = bearingDate(o);
+      if (filedLater(row.basis, o.basis, previous, next)) {
+        touchOnly.push(row.id);
+        keptEarlier.push(`${o.instrumentId} ${o.periodKey} ${previous}<${next}`);
+        continue;
+      }
       const rescheduled = previous !== null && next !== null && previous !== next;
       updates.push({
         id: row.id,
@@ -1037,7 +1080,137 @@ export class SyncEarningsDatesUseCase {
       await this.prisma.earningsDateObservation.update({ where: { id }, data });
       addWritten(stats, 1);
     }
+    if (keptEarlier.length > 0) {
+      stats.findings.push({
+        kind: 'notice',
+        step: 'earnings_date_filed_later_kept',
+        detail: {
+          source,
+          count: keptEarlier.length,
+          samples: keptEarlier.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT),
+        },
+      });
+    }
     return insertedKeys;
+  }
+
+  /**
+   * 档案后到的重键 (FR-030，spec Session（十）)：有财年档案标的的富途 / 公告非 `P:` 观测按档案重算键
+   * ({@link realignObservationKey})，得 `P:` 且同来源该键尚无观测的补写一行；原观测保留 (FR-030 靠它配对)，
+   * 首次 / 最近观测时刻沿用原行 —— 确认日期取首次观测，用本轮时刻会把过去事件的确认日改成今天。
+   * 同一来源多条旧观测重算到同一键 ⇒ 取日期最早的一条。每轮汇总一条 `earnings_date_realigned` (只计数)。
+   *
+   * 返回补写行的键，并入本轮重算集合。复杂度：2 次读 + O(补写 / 500) 次 createMany；读量 = 有档案标的在
+   * 两来源的全部观测 (档案只覆盖港股锚)。
+   */
+  private async realignObservations(
+    market: string,
+    stats: SyncRunStats,
+  ): Promise<EarningsDateEventKey[]> {
+    const profiles = await this.prisma.earningsFiscalProfile.findMany({
+      where: { instrument: { market } },
+      select: { instrumentId: true, fiscalYearEndMonth: true },
+    });
+    if (profiles.length === 0) return [];
+    const fiscalYearEndMonths = new Map(
+      profiles.map((p) => [p.instrumentId, p.fiscalYearEndMonth]),
+    );
+    const rows = await this.prisma.earningsDateObservation.findMany({
+      where: {
+        market,
+        instrumentId: { in: [...fiscalYearEndMonths.keys()] },
+        source: { in: REALIGNABLE_SOURCES },
+      },
+      orderBy: [{ announceDate: 'asc' }, { id: 'asc' }],
+    });
+    const taken = new Set(rows.map((r) => `${r.source} ${r.instrumentId} ${r.periodKey}`));
+    const inserts: Prisma.EarningsDateObservationCreateManyInput[] = [];
+    const keys: EarningsDateEventKey[] = [];
+    const samples: string[] = [];
+    for (const row of rows) {
+      const fiscalYearEndMonth = fiscalYearEndMonths.get(row.instrumentId);
+      if (isAlignedPeriodKey(row.periodKey) || fiscalYearEndMonth === undefined) continue;
+      const resolved = realignObservationKey(
+        {
+          source: row.source,
+          periodText: row.periodText,
+          announceDate: isoDate(row.announceDate),
+          filedDate: isoDate(row.filedDate),
+        },
+        fiscalYearEndMonth,
+      );
+      if (resolved === null) continue;
+      const key = `${row.source} ${row.instrumentId} ${resolved.periodKey}`;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      inserts.push({
+        source: row.source,
+        instrumentId: row.instrumentId,
+        periodKey: resolved.periodKey,
+        market: row.market,
+        reportKind: resolved.reportKind,
+        periodEnd: toDateOnly(resolved.periodEnd),
+        periodText: row.periodText,
+        basis: row.basis,
+        announceDate: row.announceDate,
+        meetingDate: row.meetingDate,
+        publicationTime: row.publicationTime,
+        filedDate: row.filedDate,
+        evidence: row.evidence,
+        firstSeenAt: row.firstSeenAt,
+        lastSeenAt: row.lastSeenAt,
+      });
+      keys.push({ instrumentId: row.instrumentId, periodKey: resolved.periodKey });
+      samples.push(`${row.instrumentId} ${row.periodKey}→${resolved.periodKey}`);
+    }
+    for (let i = 0; i < inserts.length; i += OBSERVATION_ROW_CHUNK) {
+      const { count } = await this.prisma.earningsDateObservation.createMany({
+        data: inserts.slice(i, i + OBSERVATION_ROW_CHUNK),
+        skipDuplicates: true,
+      });
+      addWritten(stats, count);
+    }
+    if (inserts.length > 0) {
+      stats.findings.push({
+        kind: 'notice',
+        step: 'earnings_date_realigned',
+        detail: { count: inserts.length, samples: samples.slice(0, EARNINGS_FINDING_SAMPLE_LIMIT) },
+      });
+    }
+    return keys;
+  }
+
+  /**
+   * 清单纯股息行 upsert (spec Session（九）/ FR-006)：新行首次 = 最近观测时刻 = 本轮；既有行只前移
+   * 最近观测时刻、🚫 覆盖首次观测时刻与凭据。清单每页纯股息行个位数 ⇒ 逐行 upsert，O(行数) 次写。
+   */
+  private async recordNonResultsMeetings(
+    meetings: readonly EarningsNonResultsMeeting[],
+    now: Date,
+    stats: SyncRunStats,
+  ): Promise<void> {
+    for (const m of meetings) {
+      const meetingDate = new Date(`${m.meetingDate}T00:00:00Z`);
+      await this.prisma.earningsNonresultsMeeting.upsert({
+        where: {
+          instrumentId_meetingDate_purpose: {
+            instrumentId: m.instrumentId,
+            meetingDate,
+            purpose: m.purpose,
+          },
+        },
+        create: {
+          instrumentId: m.instrumentId,
+          meetingDate,
+          purpose: m.purpose,
+          evidence: m.evidence,
+          firstSeenAt: now,
+          lastSeenAt: now,
+        },
+        update: { lastSeenAt: now },
+      });
+      addWritten(stats, 1);
+    }
   }
 
   /** 列表型来源的本轮 / 上一轮在清单集合。O(列表型来源数) 次读。 */
@@ -1073,9 +1246,11 @@ export class SyncEarningsDatesUseCase {
     outcome: EarningsDatesCollectOutcome,
     listings: ReadonlyMap<string, ListingRound>,
     now: Date,
+    realigned: readonly EarningsDateEventKey[],
   ): Promise<EarningsDatesMergeSummary> {
     const { market } = outcome;
     const set = mergeKeySet();
+    realigned.forEach(set.add);
     const signalsByInstrument = new Map<bigint, EarningsNoticeSignal[]>();
     for (const { result } of outcome.collected) {
       result.observations.forEach(set.add);
@@ -1370,13 +1545,13 @@ export class SyncEarningsDatesUseCase {
   }
 
   /**
-   * FR-030 候选：本市场未刊发的非对齐事件 (占位除外) 中，被同来源同原文报告期唯一 `P:` 键接手者 (判据在
-   * {@link selectAlignedSuccessor})。2 次读；复杂度 O(E + O)，E = 未刊发事件数、O = 其标的带原文的观测数。
+   * FR-030 候选：本市场未并入的非对齐事件 (占位除外，含已刊发) 中，被同来源同原文报告期唯一 `P:` 键接手者 (判据在
+   * {@link selectAlignedSuccessor})。2 次读；复杂度 O(E + O)，E = 未并入事件数、O = 其标的带原文的观测数。
    */
   private async planUnalignedSupersede(market: string): Promise<UnalignedSupersede[]> {
     const events = (
       await this.prisma.earningsDateEvent.findMany({
-        where: { market, status: { notIn: ['published', 'superseded'] } },
+        where: { market, status: { not: 'superseded' } },
         select: { instrumentId: true, periodKey: true, status: true },
       })
     ).filter((e) => !isAlignedPeriodKey(e.periodKey) && !isNoticeUndatedPlaceholder(e.periodKey));
@@ -1444,7 +1619,7 @@ export class SyncEarningsDatesUseCase {
       }),
     ]);
     if (event === null || target === null) return false;
-    if (event.status === 'published' || event.status === 'superseded') return false;
+    if (event.status === 'superseded') return false;
     const log: EarningsDateEventLogEntry = {
       kind: 'status_changed',
       fromStatus: event.status as EarningsDateEventStatus,
@@ -1471,31 +1646,81 @@ export class SyncEarningsDatesUseCase {
   private async scanNoticeUndated(ctx: MergeContext, acc: MergeAccumulator): Promise<void> {
     const instrumentIds = [...ctx.signalsByInstrument.keys()];
     if (instrumentIds.length === 0) return;
-    // 「曾出现在清单」= 曾有 `meeting` 口径观测 (只有清单给会议日)：按口径判，🚫 来源名分支 (FR-001)。
-    const listedRows = await this.prisma.earningsDateObservation.findMany({
-      where: { instrumentId: { in: instrumentIds }, basis: 'meeting' },
-      select: { instrumentId: true },
-      distinct: ['instrumentId'],
-    });
-    const everListed = new Set(listedRows.map((r) => r.instrumentId));
+    const meetings = await this.readNoticeMeetings(ctx, instrumentIds);
     for (const instrumentId of instrumentIds) {
+      const symbol = ctx.symbols.get(instrumentId) ?? `${ctx.market}:#${instrumentId}`;
+      // 清单覆盖 = 非创业板 (spec Session（九）)；代码未知 ⇒ 按覆盖判 (宁可告警、🚫 静默只计数)。
+      const boardCovered = !isGemCode(symbol.slice(ctx.market.length + 1));
       const { written, result } = await this.withRaceRetry(
         `${instrumentId} ${NOTICE_UNDATED_PERIOD_KEY_PREFIX}`,
-        () => this.judgeUndated(ctx, instrumentId, everListed.has(instrumentId)),
+        () => this.judgeUndated(ctx, instrumentId, boardCovered, meetings.get(instrumentId) ?? []),
       );
-      const symbol = ctx.symbols.get(instrumentId) ?? `${ctx.market}:#${instrumentId}`;
       if (written) acc.eventsWritten += 1;
       for (const finding of result.findings) acc.findings.push({ instrumentId, symbol, finding });
-      if (result.neverListedUndated) acc.neverListedUndated.push(symbol);
+      if (result.gemUndated) acc.gemUndated.push(symbol);
       if (result.fiscalProfileMissing) acc.fiscalUnknown.push(symbol);
+      for (const { notice, meeting } of result.nonResultsNotices) {
+        acc.nonResultsNotices.push(
+          `${symbol} ${notice.noticeDate}→${meeting.meetingDate} ${meeting.purpose}`,
+        );
+      }
     }
+  }
+
+  /**
+   * 有信号标的的清单会议：业绩行 = `meeting` 口径观测的会议日 (按口径判，🚫 来源名分支，FR-001)；
+   * 纯股息行 = `earnings_nonresults_meeting`。只读不早于最早通知刊发日的会议 (更早的配不上任何通知)。
+   * 2 次读，O(会议行数)。
+   */
+  private async readNoticeMeetings(
+    ctx: MergeContext,
+    instrumentIds: readonly bigint[],
+  ): Promise<Map<bigint, NoticeMeetingCandidate[]>> {
+    const earliestNotice = [...ctx.signalsByInstrument.values()]
+      .flat()
+      .map((s) => s.noticeDate)
+      .sort()[0];
+    if (earliestNotice === undefined) return new Map();
+    const from = new Date(`${earliestNotice}T00:00:00Z`);
+    const [resultRows, nonResultsRows] = await Promise.all([
+      this.prisma.earningsDateObservation.findMany({
+        where: {
+          instrumentId: { in: [...instrumentIds] },
+          basis: 'meeting',
+          meetingDate: { gte: from },
+        },
+        select: { instrumentId: true, meetingDate: true },
+        distinct: ['instrumentId', 'meetingDate'],
+      }),
+      this.prisma.earningsNonresultsMeeting.findMany({
+        where: { instrumentId: { in: [...instrumentIds] }, meetingDate: { gte: from } },
+        select: { instrumentId: true, meetingDate: true, purpose: true },
+      }),
+    ]);
+    const byInstrument = new Map<bigint, NoticeMeetingCandidate[]>();
+    const push = (instrumentId: bigint, m: NoticeMeetingCandidate): void => {
+      byInstrument.set(instrumentId, [...(byInstrument.get(instrumentId) ?? []), m]);
+    };
+    for (const r of resultRows) {
+      const meetingDate = isoDate(r.meetingDate);
+      if (meetingDate !== null) push(r.instrumentId, { meetingDate, results: true });
+    }
+    for (const r of nonResultsRows) {
+      push(r.instrumentId, {
+        meetingDate: r.meetingDate.toISOString().slice(0, 10),
+        results: false,
+        purpose: r.purpose,
+      });
+    }
+    return byInstrument;
   }
 
   /** 单标的一次尝试：迁入 ⇒ 建占位事件；迁出 ⇒ 占位事件 `superseded` + 流水指向接手事件。 */
   private async judgeUndated(
     ctx: MergeContext,
     instrumentId: bigint,
-    everListed: boolean,
+    boardCovered: boolean,
+    meetings: readonly NoticeMeetingCandidate[],
   ): Promise<{ written: boolean; result: NoticeUndatedResult }> {
     const events: UndatedScanEvent[] = await this.prisma.earningsDateEvent.findMany({
       where: { instrumentId },
@@ -1534,12 +1759,13 @@ export class SyncEarningsDatesUseCase {
         .sort()
         .pop() ?? null;
     const noticeSignals = ctx.signalsByInstrument.get(instrumentId) ?? [];
-    const pending = selectPendingNotice(noticeSignals, latestFilingDate);
+    const pending = selectPendingNotice(noticeSignals, latestFilingDate, meetings);
     const result = judgeNoticeUndated({
       noticeSignals,
       latestFilingDate,
       unpublishedEventDates,
-      everListed,
+      boardCovered,
+      meetings,
       hasFiscalProfile: ctx.fiscalProfiles.has(instrumentId),
       capabilities: ctx.capabilities,
       elapsedTradingDays:
