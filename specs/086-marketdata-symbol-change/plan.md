@@ -132,9 +132,9 @@ context7_verified: []
   4. **采集范围**，按顺序三件事：
      - **先同步补齐新码标的行**（分支 16）：调 marketdata 新增的 `EnsureInstrumentUseCase`（`ensure-instrument.usecase.ts`），复用 `seedInstrumentCreateData`（`sync-universe.usecase.ts`，冷启动 `anchor-cold-start.usecase.ts:413` 的 upsert 用的是同一份 seed）。已存在 ⇒ 跳过。今天唯一会建标的行的地方是冷启动那处 upsert，`ensure-latest-eod-bar.usecase.ts` 不建行，所以要新增这个 use case。
      - 再调 `AnchorDrivenSyncGate.recalcSafely()` 立即重算（不等下一轮 fact 维度）。us 由锚驱动，旧码自动关闸、新码开闸。
-     - hk / cn 不受锚驱动（`anchor-driven-sync-gate.ts:18`；`sync-universe.usecase.ts:164` 默认全量采集），旧码会留在采集范围里。它对同批采集有没有害**未验证**，由一个取证 task 先定：有害 ⇒ 本步追加「把旧码写入 `sync_blacklist`」（撤销时删除）；无害 ⇒ 只在报告里写明。
+     - hk / cn 不受锚驱动（`anchor-driven-sync-gate.ts:18`；`sync-universe.usecase.ts:164` 默认全量采集），旧码会留在采集范围里。已定结论：**无害**（2026-10-16 prod POC，见 tasks T013）—— 理杏仁批量接口对未知 / 旧码静默略过、同批照常返回。本步对 hk / cn 不写 `needSync`、不写 `sync_blacklist`（后者只挡 universe 新建，对已存在行本就无效），只在报告里写明「该市场采集范围不随锚变化」。
   5. **验证**（只读）：旧码不再出现在锚表；新码锚存在并处于复核逾期；新码标的行存在、`need_sync`（仅 us）为真；对新码调 `GetInstrumentBarsUseCase`，报告首末日期和**缺口数**（按交易日历比对）。收盘价要等下一个取价周期，报告写「待下一拍」，不阻塞命令。
-- 撤销（FR-015、分支 18）：逆序执行 —— 迁锚回旧码并恢复原 `next_review`（从 `anchor_change` 的 before 值取）→ 撤销登记 → 重算采集闸（若第 4 步写过 `sync_blacklist`，一并删除）。补齐的新码标的行不删：标的行是全市场清单的一部分，universe 同步本来也会建它。驳回的待审提交**不复原**（驳回零副作用，`anchor-submission.controller.ts` 注释原文），在报告里写明。
+- 撤销（FR-015、分支 18）：逆序执行 —— 迁锚回旧码并恢复原 `next_review`（从 `anchor_change` 的 before 值取）→ 撤销登记 → 重算采集闸（第 4 步不写 `sync_blacklist`，无需删除；2026-10-16 prod POC，见 tasks T013）。补齐的新码标的行不删：标的行是全市场清单的一部分，universe 同步本来也会建它。驳回的待审提交**不复原**（驳回零副作用，`anchor-submission.controller.ts` 注释原文），在报告里写明。
 - 报告：每步一行，`ok` / `skipped(原因)` / `failed(原因)` / `conflict(原因)`；失败即停，退出码非零。
 - 预览模式（默认，FR-012、分支 12）：五步都只做「读状态 + 推算将要做什么」，零写入；由 IT 断言预览前后全表行数与 `updated_at` 不变。
 
