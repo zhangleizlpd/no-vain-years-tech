@@ -11,6 +11,7 @@ import {
   REALTIME_QUOTE_PORT,
   RealtimeQuoteMarketUnsupportedError,
   type RealtimeQuote,
+  type RealtimeQuoteBatch,
   type RealtimeQuotePort,
 } from '../../src/marketdata/realtime-quote.port';
 import {
@@ -162,7 +163,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
     failWith: null,
     registeredMarkets: ['us'],
     quotes: new Map<string, RealtimeQuote>(),
-    async fetchQuotes(symbols: readonly string[]): Promise<Map<string, RealtimeQuote>> {
+    async fetchQuotes(symbols: readonly string[]): Promise<RealtimeQuoteBatch> {
       realtimeQuotePort.calls += 1;
       for (const symbol of symbols) {
         const market = symbol.slice(0, symbol.indexOf(':'));
@@ -179,7 +180,7 @@ describe('061 锚盘中价投影 + 雷达裁决 IT (Testcontainers PG + Redis, �
         const quote = realtimeQuotePort.quotes.get(symbol);
         if (quote !== undefined) out.set(symbol, quote);
       }
-      return out;
+      return { quotes: out, unknownSymbols: [] };
     },
   };
 

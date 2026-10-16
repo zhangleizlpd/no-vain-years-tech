@@ -4,7 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import {
   REALTIME_QUOTE_MAX_SYMBOLS,
   RealtimeQuoteMarketUnsupportedError,
-  type RealtimeQuote,
+  type RealtimeQuoteBatch,
   type RealtimeQuotePort,
 } from '../marketdata/realtime-quote.port';
 import type { MarketSession, MarketStatePort } from '../marketdata/market-state.port';
@@ -50,10 +50,13 @@ function buildPrismaMock(anchors: { id: bigint; ticker: string }[]): PrismaMock 
   return { prisma, anchorFindMany, anchorUpdateMany, anchorChangeCreate };
 }
 
-function quoteMapOf(symbols: readonly string[], price = '123.4500'): Map<string, RealtimeQuote> {
-  return new Map(
-    symbols.map((s) => [s, { price, capturedAt: CAPTURED_AT, vendorUpdateTime: VENDOR_AT }]),
-  );
+function quoteBatchOf(symbols: readonly string[], price = '123.4500'): RealtimeQuoteBatch {
+  return {
+    quotes: new Map(
+      symbols.map((s) => [s, { price, capturedAt: CAPTURED_AT, vendorUpdateTime: VENDOR_AT }]),
+    ),
+    unknownSymbols: [],
+  };
 }
 
 interface Harness {
@@ -70,7 +73,7 @@ function build(
   sessions: { market: string; session: MarketSession }[] = [{ market: 'us', session: 'regular' }],
 ): Harness {
   const m = buildPrismaMock(anchors);
-  const fetchQuotes = vi.fn((symbols: readonly string[]) => Promise.resolve(quoteMapOf(symbols)));
+  const fetchQuotes = vi.fn((symbols: readonly string[]) => Promise.resolve(quoteBatchOf(symbols)));
   const getMarketSessions = vi.fn().mockResolvedValue(sessions);
   const classify = vi.fn().mockResolvedValue('trading' satisfies TradingDayStatus);
   const useCase = new SyncAnchorIntradayUseCase(
@@ -253,7 +256,7 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
     fetchQuotes.mockImplementation((symbols: readonly string[]) =>
       symbols[0]?.startsWith('cn:')
         ? Promise.reject(new RealtimeQuoteMarketUnsupportedError('cn', ['us', 'hk']))
-        : Promise.resolve(quoteMapOf(symbols)),
+        : Promise.resolve(quoteBatchOf(symbols)),
     );
 
     const report = await useCase.execute(NOW);
@@ -291,7 +294,9 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
     const { useCase, m, fetchQuotes } = build(anchors);
     fetchQuotes
       .mockImplementationOnce(() => Promise.reject(new Error('shim 504')))
-      .mockImplementationOnce((symbols: readonly string[]) => Promise.resolve(quoteMapOf(symbols)));
+      .mockImplementationOnce((symbols: readonly string[]) =>
+        Promise.resolve(quoteBatchOf(symbols)),
+      );
 
     const report = await useCase.execute(NOW);
 
@@ -306,7 +311,7 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
 
   it('响应缺某标的 → 该锚两列不变 (既不写 null 也不写 0, state_branch 7)', async () => {
     const { useCase, m, fetchQuotes } = build([anchorRow(7n, 'us:AOS'), anchorRow(9n, 'us:CPB')]);
-    fetchQuotes.mockImplementation(() => Promise.resolve(quoteMapOf(['us:AOS'])));
+    fetchQuotes.mockImplementation(() => Promise.resolve(quoteBatchOf(['us:AOS'])));
 
     const report = await useCase.execute(NOW);
 
@@ -322,7 +327,7 @@ describe('SyncAnchorIntradayUseCase — 盘中价投影 tick (FR-004/005/011/017
     (m.prisma as unknown as { $transaction: Fn }).$transaction = transaction;
     const useCase = new SyncAnchorIntradayUseCase(
       m.prisma,
-      { fetchQuotes: vi.fn((s: readonly string[]) => Promise.resolve(quoteMapOf(s))) },
+      { fetchQuotes: vi.fn((s: readonly string[]) => Promise.resolve(quoteBatchOf(s))) },
       { getMarketSessions: vi.fn().mockResolvedValue([{ market: 'us', session: 'regular' }]) },
       {
         classify: vi.fn().mockResolvedValue('trading' satisfies TradingDayStatus),

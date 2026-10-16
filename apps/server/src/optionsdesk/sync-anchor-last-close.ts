@@ -290,7 +290,7 @@ export class SyncAnchorLastCloseUseCase {
     )) {
       batches += 1;
       try {
-        for (const [symbol, quote] of await this.realtimeQuote.fetchQuotes(batch)) {
+        for (const [symbol, quote] of (await this.realtimeQuote.fetchQuotes(batch)).quotes) {
           quotes.set(symbol, quote);
         }
       } catch (e) {

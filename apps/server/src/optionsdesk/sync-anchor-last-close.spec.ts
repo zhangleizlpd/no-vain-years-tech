@@ -54,14 +54,15 @@ function build(
   } as unknown as PrismaService;
 
   const fetchQuotes = vi.fn((symbols: readonly string[]) =>
-    Promise.resolve(
-      new Map<string, RealtimeQuote>(
+    Promise.resolve({
+      quotes: new Map<string, RealtimeQuote>(
         symbols.map((s) => [
           s,
           { price: '45.6700', capturedAt: CAPTURED_AT, vendorUpdateTime: null },
         ]),
       ),
-    ),
+      unknownSymbols: [],
+    }),
   );
   const lastClosedSession = vi.fn((market: string) => Promise.resolve(sessions[market] ?? null));
 
@@ -175,11 +176,12 @@ describe('SyncAnchorLastCloseUseCase — 写入语义', () => {
       { id: 2n, ticker: 'hk:06117', lastCloseDate: day('2026-08-28') },
     ]);
     // 停牌: adapter 侧 0 哨兵已归一为 null ⇒ 到这里就是「行不在 Map 里」。
-    h.fetchQuotes.mockResolvedValueOnce(
-      new Map<string, RealtimeQuote>([
+    h.fetchQuotes.mockResolvedValueOnce({
+      quotes: new Map<string, RealtimeQuote>([
         ['hk:00700', { price: '45.6700', capturedAt: CAPTURED_AT, vendorUpdateTime: null }],
       ]),
-    );
+      unknownSymbols: [],
+    });
 
     const report = await h.useCase.execute(NOW);
 
