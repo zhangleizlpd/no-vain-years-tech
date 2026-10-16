@@ -1,6 +1,6 @@
 ---
 adr_id: ADR-0046
-status: Proposed
+status: Accepted
 applies_to: [apps/server]
 sunset_trigger: |
   - 出现「跨行聚合不变性」无法塌缩成单行的场景(聚合跨多 owner / 跨 ctx,单行反规范化破护城河) → § Decision 优先级重审
@@ -11,7 +11,7 @@ sunset_trigger: |
 
 # ADR-0046: 跨行聚合不变性的并发强制 — 单行塌缩 + conditional UPDATE(优先) / FOR UPDATE 锁组(fallback)
 
-- Status: Proposed (2026-06-02) — 翻 Accepted 待 011 单行重构 ship
+- Status: Accepted (2026-06-02，011 单行重构 ship —— 迁移 `20260602_0930_replace_market_preference_single_row`；原 Proposed 2026-06-02，翻 Accepted 条件「011 单行重构 ship」已满足)
 - Deciders: @zhangleizlpd
 - Tags: concurrency / data-layer / portfolio
 

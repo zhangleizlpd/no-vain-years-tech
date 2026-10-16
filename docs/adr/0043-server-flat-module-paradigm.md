@@ -135,6 +135,7 @@ rg -l broker apps/server/src/optionsdesk/*.usecase.ts
 ## References
 
 - [ADR-0032](0032-backend-bounded-context.md) bounded context 拆分 + hexagonal 永久退役
+- [ADR-0020](0020-module-boundary-nestjs.md) —— **Supersedes ADR-0020**(与 ADR-0032 共同,见 0020 Status)
 - [ADR-0033](0033-outbox-cross-context-comm.md) Outbox 跨 ctx async
 - [ADR-0019](0019-orm-prisma.md) ORM Prisma（repository 边界被本 ADR amend）
 - [ADR-0041](0041-server-common-directory-policy.md) `src/common/` 禁用 + security 平台基座

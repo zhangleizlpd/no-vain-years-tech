@@ -106,7 +106,7 @@ loadADRsFor(taskScope: string): ADR[] {
 ## Consequences
 
 - **现有 7 ADR 必须 backfill 4 字段**(PR-1 C1 完成)
-- **新 ADR 模板** (`.specify/templates/adr-template.md`) 强制 4 字段
+- **新 ADR 模板** (`.specify/presets/adr-governance/templates/adr-template.md`) 强制 4 字段
 - **lefthook 拒非法 frontmatter**:`adr_id` 不匹配文件名 / `status` 非枚举 / `applies_to` 空 / `sunset_trigger` < 10 字符 都拒
 - **orchestrator filter 可用后**:LLM agent 上下文窗口节省 (per task 加载 ~30% ADR 而非全部)
 

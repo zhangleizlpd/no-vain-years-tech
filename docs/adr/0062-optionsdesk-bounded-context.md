@@ -218,3 +218,4 @@ trigger 原文 = 「期权台从『锚 + 雷达』扩到**下单 / 持仓联动 
 - [server-bounded-context-catalog](../conventions/server-bounded-context-catalog.md)（7Q 决策树 + 3 传播规则）
 - Q7-B 直查先例：018 tiering 直查 holdings（[ADR-0048](0048-marketdata-portfolio-cross-layer-dependency.md) § 复审记录）/ 021 alert 评估直查 `daily_bar`（[ADR-0052](0052-alert-bounded-context.md) §3）
 - 降级纪律先例：`apps/server/src/marketdata/sync-tier-recalc.ts`（跨 ctx 读失败只 warn 不上抛）
+- [ADR-0069](0069-anchor-submission-review-surface.md) 锚待审箱审阅面（补充本 ADR 的 Consequences，不 supersede）

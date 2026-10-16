@@ -17,6 +17,8 @@ sunset_trigger: |
 - Tags: optionsdesk / retrieval / ranking / architecture
 - Relates: [ADR-0043](0043-server-flat-module-paradigm.md)（扁平 / 贫血 / 护城河 / 零-class；本 ADR 在其 §4 Port 三分法上追加第四类）· [ADR-0062](0062-optionsdesk-bounded-context.md)（optionsdesk bounded context）· [ADR-0032](0032-backend-bounded-context.md)（module 边界）· [ADR-0053](0053-cross-context-pure-rules-import.md)（跨 ctx 纯函数 import 禁令，本 ADR 不触发）
 
+> ⚠️ **Amended-in-part by [ADR-0068](0068-realtime-narrow-recall-two-stage.md)（2026-08-29）**：实时档召回形态与精排层职责（「排序」扩为「排序 + 选档」）由 ADR-0068 逐条修订，修订清单见其 § 7。
+
 ## Context
 
 选约表要从一条期权链里挑出「值得看的那几张」。这条路径在 `050` 已经被做成召回 + 打标 + 精排三段，但**层与层的边界只活在代码里，没有被显式定义**。由此产生三个必须一次性定掉的问题：

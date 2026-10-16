@@ -15,7 +15,7 @@ Claude Design 不提供 project 分组 / 命名空间，故三层 taxonomy 由**
    feature(NNN) ── mockup「<NNN>-<screen>.dc.html」首行 @dsCard group=<NNN>
 ```
 
-## 4 条规则
+## 规则
 
 1. **context 名 SoT** = [`business-naming.md`](business-naming.md)（前端 feature 目录 = module 名；业务 ctx 清单靠 `ls apps/server/src/` + eslint `boundaries/elements` 派生，不另造词表）。**禁造平行 context 词表**。多 module → 主 module；`cross-cutting` → 共享 `nvy/_cross-cutting`。
 2. **registry 按名解析**：projectId 是**缓存**，运行时必按 `nvy/<context>` 名重解析刷新；**列表里查不到 ≠ 已删除**（两个 `list_projects` 口径不同），裁决用 `get_project`，确认缺失才 `create_project` 后回写 —— 细节与历史教训见 [runbook §1](../../ops/runbook/claude-design.md)。

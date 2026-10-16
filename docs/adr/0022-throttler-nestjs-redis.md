@@ -23,17 +23,17 @@ W3 阶段(2026-05-17 ~ 18) US1 A1/A2 task 实装 `/sms-codes` 限流:
 
 - `apps/server/package.json`: `@nestjs/throttler@^6.5.0` + `@nest-lab/throttler-storage-redis@^1.2.0`(pnpm-lock 6.5.0 / 1.2.0 ship)
 - `apps/server/src/auth/auth.module.ts`:`ThrottlerModule.forRootAsync` 配 5 throttler(W3 起 SMS 3 条 + 后续 account `/me` 2 条)+ Redis storage
-- `apps/server/src/auth/web/sms-phone-throttler.guard.ts`:`extends ThrottlerGuard` override `getTracker` → `sms:<phone>` key
-- `apps/server/src/auth/web/account-sms-code.rate-limit.it.spec.ts`:Testcontainers Redis IT 实证 60s 1x rule
+- `apps/server/src/auth/sms-phone-throttler.guard.ts`:`extends ThrottlerGuard` override `getTracker` → `sms:<phone>` key
+- `apps/server/src/auth/account-sms-code.rate-limit.it.spec.ts`:Testcontainers Redis IT 实证 60s 1x rule
 
 [spec FR-S07](../../specs/001-phone-sms-auth/spec.md) 限流规则 4 条:
 
-| #   | 规则                                  | 实装层                                                                                                                                                                |
-| --- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `sms:<phone>` 60s 1 次                | ThrottlerModule default throttler + `SmsPhoneThrottlerGuard.getTracker`                                                                                               |
-| 2   | `sms:<phone>` 24h 10 次               | ThrottlerModule named `sms-phone-24h` + 同 guard tracker                                                                                                              |
-| 3   | `sms:<ip>` 24h 50 次                  | ThrottlerModule named `sms-ip-24h` + per-throttler `getTracker`(req.ip)                                                                                               |
-| 4   | `auth:<phone>` 24h 5 次失败后锁 30min | **不**走 throttler(职责"重复失败" ≠ "请求频率");由 `AuthFailureLockService`(`apps/server/src/auth/infrastructure/auth-failure-lock.service.ts`)独立 Redis bucket 实现 |
+| #   | 规则                                  | 实装层                                                                                                                                                 |
+| --- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `sms:<phone>` 60s 1 次                | ThrottlerModule default throttler + `SmsPhoneThrottlerGuard.getTracker`                                                                                |
+| 2   | `sms:<phone>` 24h 10 次               | ThrottlerModule named `sms-phone-24h` + 同 guard tracker                                                                                               |
+| 3   | `sms:<ip>` 24h 50 次                  | ThrottlerModule named `sms-ip-24h` + per-throttler `getTracker`(req.ip)                                                                                |
+| 4   | `auth:<phone>` 24h 5 次失败后锁 30min | **不**走 throttler(职责"重复失败" ≠ "请求频率");由 `AuthFailureLockService`(`apps/server/src/auth/auth-failure-lock.service.ts`)独立 Redis bucket 实现 |
 
 W3 ship 时直接落 code 未先立 ADR(deferred per [Plan 1](../private/plans/2026-05/05-18-plan1-backend-stack-poc.md) § G.1 + ADR-0018 § 57 占位);Plan 2 Phase 0 § 2.2.2 task backfill。
 
@@ -79,10 +79,10 @@ mono 限流栈固化为:
 - **实装锚点**(W3 ship,2026-05-18):
   - `apps/server/package.json` § 12 + § 19:`@nest-lab/throttler-storage-redis@^1.2.0` + `@nestjs/throttler@^6.5.0`
   - `apps/server/src/auth/auth.module.ts`:`ThrottlerModule.forRootAsync` 5 throttler config(SMS 3 + account `/me` 2)+ `new ThrottlerStorageRedisService(cfg.url)`
-  - `apps/server/src/auth/web/sms-phone-throttler.guard.ts`:`SmsPhoneThrottlerGuard extends ThrottlerGuard`
-  - `apps/server/src/auth/web/account-sms-code.controller.ts` § 24:`@UseGuards(SmsPhoneThrottlerGuard)`
+  - `apps/server/src/auth/sms-phone-throttler.guard.ts`:`SmsPhoneThrottlerGuard extends ThrottlerGuard`
+  - `apps/server/src/auth/account-sms-code.controller.ts` § 24:`@UseGuards(SmsPhoneThrottlerGuard)`
 - **IT 覆盖**(W3 ship):
-  - `apps/server/src/auth/web/account-sms-code.rate-limit.it.spec.ts`:Testcontainers Redis,验 60s 1 次 rule + 429 + `Retry-After` header
+  - `apps/server/src/auth/account-sms-code.rate-limit.it.spec.ts`:Testcontainers Redis,验 60s 1 次 rule + 429 + `Retry-After` header
 - **deferred 验证**:
   - FR-S07 #2 (phone 24h 10x) + #3 (ip 24h 50x) 完整 e2e IT — Plan 2 SC-S04 落
   - FR-S07 #4 (auth:<phone> 5x lock 30min) — 独立 `AuthFailureLockService`,不在本 ADR 范围,IT 由 `phone-sms-auth.usecase.spec.ts` 覆盖

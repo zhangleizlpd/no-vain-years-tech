@@ -27,7 +27,7 @@ Plan 1 W1.4 起 Prisma db pull / migrate 走通,但实际使用暴露 4 类失�
 
 ### 1. migration 命名 — timestamp-hybrid
 
-格式:`<yyyymmddhhmm>_<verb>_<obj>`
+格式:`<yyyymmdd>_<hhmm>_<verb>_<obj>`
 
 ```text
 20260520_1430_add_phone_to_account

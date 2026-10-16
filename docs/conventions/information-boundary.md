@@ -28,7 +28,7 @@
 - **alias 本身就是一种代号。** 有识别性的是 alias → IP 的**映射**，不是 alias。把它划进仓外层，等于既拿不到安全收益，又逼所有 shell 与 systemd unit 去 env 化一个本来可读的名字。
 - **仓路径是文件系统路径，不是标识符。** systemd `WorkingDirectory=` 必须字面量、env 化不了；且没有访问权时知道目录名什么也不是。
 
-**移动构建服务（Expo / EAS）的 `projectId` 留公开** —— 它是公开 API 可查的项目标识，不授予任何权限（构建 / 推送都要另外的 access token），`app.json` 直接 tracked；env 化它得改 `app.config.ts` + build 期 env，代价换零收益。初版划进仓外层是划错（2026-08-27 降级）。
+**移动构建服务（Expo / EAS）的 `projectId` 留公开** —— 它是公开 API 可查的项目标识，不授予任何权限（构建 / 推送都要另外的 access token），`app.json` 直接 tracked；env 化它得新增 `app.config.ts`（现仅 `app.json`）+ build 期 env，代价换零收益。初版划进仓外层是划错（2026-08-27 降级）。
 
 一般化的判据：**先问「泄漏它是否降低攻击成本」，再问「它能不能被 env 化」。** 两个答案都是「否」时，把它塞进仓外层只会制造假阳性 —— 而假阳性的代价是整层守门失去可信度，比漏一个低价值信息严重得多。机器侧对应 `NON_IDENTIFIER_KEY`（`scripts/checks/check-identifier-boundary.ts`）。
 

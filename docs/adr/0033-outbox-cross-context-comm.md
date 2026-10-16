@@ -100,7 +100,7 @@ caller 显式传 tx client → publish 与业务写共享 tx,无 CLS / new-in-tx
 - `outbox_event` table schema **不**改 — envelope 写入现有 `payload` jsonb 列 (per 决策点 1);现有 row 不 backfill (per 决策点 2)
 - Worker module 跑独立 process / 同进程?— 起步同进程 (低成本),性能瓶颈触发再拆
 - `OutboxEventPrismaPublisher` 实装注入 `ClsService` (`@Optional()` 让 race spec 等无 DI 上下文测试可 0-arg 构造); spec 双路径覆盖 (CLS provides trace_id / fallback `out-of-request-<uuid>`)
-- US2 e2e (`apps/server/test/integration/accounts.us2.e2e.spec.ts`) 验 inbound `x-trace-id` header → outbox row `payload.metadata.trace_id` 串通 + response header echo
+- US2 e2e (`apps/server/test/integration/accounts.us2.it.spec.ts`) 验 inbound `x-trace-id` header → outbox row `payload.metadata.trace_id` 串通 + response header echo
 
 ## Open Questions
 

@@ -4,9 +4,9 @@
 
 两套并行，根据改动类型选其一：
 
-**A. SDD feature 分支** — spec-kit 自动产出（per [ADR-0024](../adr/0024-spec-feature-first-layout.md)）
+**A. SDD feature 分支** — spec-kit 编号约定（per [ADR-0024](../adr/0024-spec-feature-first-layout.md)）
 
-`NNN-<feature-slug>`（3 位 sequential + kebab-case slug），由 `/speckit-specify` 自动创建，与 `specs/NNN-<feature-slug>/` 同名（branch ↔ dir ↔ PR 三位一体）。
+`NNN-<feature-slug>`（3 位 sequential + kebab-case slug），手动 `git switch -c NNN-<slug>`（或 mono-worktree 的 `feat-open`）后再跑 `/speckit-specify`，与 `specs/NNN-<feature-slug>/` 同名（branch ↔ dir ↔ PR 三位一体）。
 
 示例：`001-phone-sms-auth` / `002-account-profile`
 
