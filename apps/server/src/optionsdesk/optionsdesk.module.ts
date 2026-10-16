@@ -6,6 +6,24 @@ import { CreateAnchorUseCase } from './create-anchor.usecase.js';
 import { UpdateAnchorUseCase } from './update-anchor.usecase.js';
 import { DeleteAnchorUseCase } from './delete-anchor.usecase.js';
 import { ReviewAnchorUseCase } from './review-anchor.usecase.js';
+import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase.js';
+import {
+  CANDIDATE_CONFIRM_STEP,
+  REMEDIATION_REVERT_STEPS,
+  REMEDIATION_STEPS,
+  type RemediationStep,
+  RemediateSymbolChangeUseCase,
+} from './remediate-symbol-change.usecase.js';
+import {
+  CollectionScopeStep,
+  ConfirmSymbolCandidateStep,
+  MigrateAnchorStep,
+  RegisterSymbolChangeStep,
+  RejectOldCodeSubmissionsStep,
+  revertStepsOf,
+  VerifyRemediationStep,
+} from './remediate-symbol-change.steps.js';
+import { ResolveSymbolCandidateUseCase } from './resolve-symbol-candidate.usecase.js';
 import { SetPositionBucketUseCase } from './set-position-bucket.usecase.js';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase.js';
 import { ListAnchorsUseCase } from './list-anchors.usecase.js';
@@ -87,6 +105,46 @@ import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
     UpdateAnchorUseCase,
     DeleteAnchorUseCase,
     ReviewAnchorUseCase,
+    // 086 迁锚 (修正命令编排的第 2 步)。
+    MigrateAnchorTickerUseCase,
+    // 086 修正命令编排 (T010 骨架 + T011 五个真步骤)。数组顺序即执行顺序 (plan D5)。
+    RegisterSymbolChangeStep,
+    MigrateAnchorStep,
+    RejectOldCodeSubmissionsStep,
+    CollectionScopeStep,
+    VerifyRemediationStep,
+    {
+      provide: REMEDIATION_STEPS,
+      useFactory: (...steps: RemediationStep[]) => steps,
+      inject: [
+        RegisterSymbolChangeStep,
+        MigrateAnchorStep,
+        RejectOldCodeSubmissionsStep,
+        CollectionScopeStep,
+        VerifyRemediationStep,
+      ],
+    },
+    // 086 T012 撤销编排: 顺序由 revertStepsOf 钉死 (迁锚回 → 撤销登记 → 重算采集闸)。
+    {
+      provide: REMEDIATION_REVERT_STEPS,
+      useFactory: (
+        register: RegisterSymbolChangeStep,
+        migrate: MigrateAnchorStep,
+        reject: RejectOldCodeSubmissionsStep,
+        scope: CollectionScopeStep,
+      ) => revertStepsOf({ register, migrate, reject, scope }),
+      inject: [
+        RegisterSymbolChangeStep,
+        MigrateAnchorStep,
+        RejectOldCodeSubmissionsStep,
+        CollectionScopeStep,
+      ],
+    },
+    // 086 T019 候选处置 + 编排里的「确认候选」步骤 (只在 apply --from-candidate 时插到登记之后)。
+    ResolveSymbolCandidateUseCase,
+    ConfirmSymbolCandidateStep,
+    { provide: CANDIDATE_CONFIRM_STEP, useExisting: ConfirmSymbolCandidateStep },
+    RemediateSymbolChangeUseCase,
     // 047 T028 水位手选写端 —— 意图矩阵第三个输入的降级录入路径 (本片无数据面, FR-017)。
     SetPositionBucketUseCase,
     ListAnchorsUseCase,

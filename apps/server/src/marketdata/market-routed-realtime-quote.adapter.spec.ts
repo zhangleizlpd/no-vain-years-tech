@@ -25,12 +25,12 @@ const BASE = 'http://10.89.0.1:8811';
 const TOKEN = 'test-shim-token';
 
 /** 只记录调用、不真发请求的假 port（路由层验的是「转给谁」，不是 vendor 解析）。 */
-function fakeRoute(quotes: Record<string, RealtimeQuote> = {}) {
+function fakeRoute(quotes: Record<string, RealtimeQuote> = {}, unknownSymbols: string[] = []) {
   const seen: string[][] = [];
   const port: RealtimeQuotePort = {
     fetchQuotes: vi.fn(async (symbols: readonly string[]) => {
       seen.push([...symbols]);
-      return new Map(Object.entries(quotes));
+      return { quotes: new Map(Object.entries(quotes)), unknownSymbols: [...unknownSymbols] };
     }),
   };
   return { port, seen };
@@ -45,12 +45,25 @@ const QUOTE: RealtimeQuote = {
 describe('MarketRoutedRealtimeQuoteAdapter', () => {
   it('已登记市场 → 转给该路由, 结果原样合并', async () => {
     const us = fakeRoute({ 'us:PEP': QUOTE });
-    const quotes = await new MarketRoutedRealtimeQuoteAdapter({ us: us.port }).fetchQuotes([
+    const { quotes } = await new MarketRoutedRealtimeQuoteAdapter({ us: us.port }).fetchQuotes([
       'us:PEP',
     ]);
 
     expect(us.seen).toEqual([['us:PEP']]);
     expect(quotes.get('us:PEP')).toEqual(QUOTE);
+  });
+
+  it('🚨 086 T016: 各市场路由的 unknownSymbols **全部合并**带出, 报价照常合并', async () => {
+    const us = fakeRoute({ 'us:PEP': QUOTE }, ['us:AAA']);
+    const hk = fakeRoute({ 'hk:00700': QUOTE }, ['hk:00001']);
+    const { quotes, unknownSymbols } = await new MarketRoutedRealtimeQuoteAdapter({
+      us: us.port,
+      hk: hk.port,
+    }).fetchQuotes(['us:PEP', 'us:AAA', 'hk:00700', 'hk:00001']);
+
+    expect([...quotes.keys()].sort()).toEqual(['hk:00700', 'us:PEP']);
+    // 丢掉任一市场的未知代码 = 那个市场的改名永远不会进候选表, 且不会有任何报错。
+    expect([...unknownSymbols].sort()).toEqual(['hk:00001', 'us:AAA']);
   });
 
   describe('🚨 无默认路由 = 刻意 fail-closed (state_branch 14 / Guardrail 16)', () => {
@@ -168,12 +181,12 @@ describe('marketdata.module 接线', () => {
       const { http, request } = fakeHttp();
       const port = providerFor(REALTIME_QUOTE_PORT).useFactory(LIVE_CFG, http) as RealtimeQuotePort;
 
-      expect((await port.fetchQuotes(['us:PEP'])).get('us:PEP')?.price).toBe('148.21');
+      expect((await port.fetchQuotes(['us:PEP'])).quotes.get('us:PEP')?.price).toBe('148.21');
       expect(request).toHaveBeenCalledTimes(1);
 
       // 🚨 hk 槽是 066 T10 的另一半 (适配器前缀是第一半): 缺它的时候港股锚每 30 秒落一次
       // `unsupported-market`、恒为收盘档 —— 且那是**配置事实**, 不计熔断 ⇒ 一条告警都不会有。
-      expect((await port.fetchQuotes(['hk:00700'])).get('hk:00700')?.price).toBe('148.21');
+      expect((await port.fetchQuotes(['hk:00700'])).quotes.get('hk:00700')?.price).toBe('148.21');
       expect(request).toHaveBeenCalledTimes(2);
 
       await expect(port.fetchQuotes(['cn:600519'])).rejects.toBeInstanceOf(

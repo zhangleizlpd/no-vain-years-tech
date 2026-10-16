@@ -54,6 +54,7 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
     );
     // anchor_submission 是 059 加的待审收件箱（同 schema，不新建 namespace）。
     // broker_* 六表是 082 加的期权台范围券商镜像（ADR-0062 复审 2026-09-14）。
+    // symbol_change_candidate 是 086 加的疑似改名候选。
     expect(rows.map((r) => r.table_name)).toEqual([
       'anchor',
       'anchor_change',
@@ -64,6 +65,7 @@ describe('045 optionsdesk schema expand (Testcontainers PG migrate deploy)', () 
       'broker_order',
       'broker_position',
       'broker_sync_run',
+      'symbol_change_candidate',
     ]);
   });
 

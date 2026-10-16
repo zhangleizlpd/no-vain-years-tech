@@ -103,6 +103,18 @@ export interface RealtimeQuote {
   vendorUpdateTime: Date | null;
 }
 
+/**
+ * {@link RealtimeQuotePort.fetchQuotes} 的一批结果 (086 T016, plan D7)。
+ *
+ * `unknownSymbols` = vendor **明确说不认识**的入参 (canonical `market:code` 原样; 改名 / 退市),
+ * 与「认识但这一刻没价」(停牌 / 无成交, 静默省略、不进此列) 是两件事。前者是疑似改名的信号源
+ * (optionsdesk 候选表), 后者只是保留旧值。旧版 vendor 不报这个信号时恒为空数组。
+ */
+export interface RealtimeQuoteBatch {
+  quotes: Map<string, RealtimeQuote>;
+  unknownSymbols: string[];
+}
+
 export interface RealtimeQuotePort {
   /**
    * 批量取实时报价。键 = canonical `market:code` (**原样回传入参的那个串**, vendor 方言不外泄)。
@@ -111,8 +123,9 @@ export interface RealtimeQuotePort {
    *   成交价都归此列。上游据此**保留旧值**, MUST NOT 写 null 或 0 (spec `state_branch` 7)。
    * - **源故障 / 一条都没采到 → 抛** (供上游 failstreak 熔断计数, spec `state_branch` 4 / 9)。
    * - 入参为空 / 超 {@link REALTIME_QUOTE_MAX_SYMBOLS} → **前置拒绝、零外呼**。
+   * - vendor 明确不认识的代码 → 不进 `quotes`, 进 `unknownSymbols` (086 T016), 其余照常返回。
    *
    * @param symbols canonical `market:code` 列表; 切批由调用方按 {@link REALTIME_QUOTE_MAX_SYMBOLS} 做
    */
-  fetchQuotes(symbols: readonly string[]): Promise<Map<string, RealtimeQuote>>;
+  fetchQuotes(symbols: readonly string[]): Promise<RealtimeQuoteBatch>;
 }

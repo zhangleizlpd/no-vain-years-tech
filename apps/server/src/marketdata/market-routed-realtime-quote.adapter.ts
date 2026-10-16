@@ -3,6 +3,7 @@ import { parseCanonicalSymbol } from './marketdata.rules.js';
 import {
   RealtimeQuoteMarketUnsupportedError,
   type RealtimeQuote,
+  type RealtimeQuoteBatch,
   type RealtimeQuotePort,
 } from './realtime-quote.port.js';
 
@@ -38,7 +39,7 @@ export class MarketRoutedRealtimeQuoteAdapter implements RealtimeQuotePort {
   constructor(private readonly routes: Readonly<Record<string, RealtimeQuotePort>>) {}
 
   /** 复杂度 O(symbol 数) 分组 + 被选实现自身的开销 (每个已登记市场至多 1 次委派)。 */
-  async fetchQuotes(symbols: readonly string[]): Promise<Map<string, RealtimeQuote>> {
+  async fetchQuotes(symbols: readonly string[]): Promise<RealtimeQuoteBatch> {
     if (symbols.length === 0) {
       throw new Error('[realtime-quote] 入参 symbols 为空; 工作集为空时不该调用本端口');
     }
@@ -60,12 +61,15 @@ export class MarketRoutedRealtimeQuoteAdapter implements RealtimeQuotePort {
     }
 
     const quotes = new Map<string, RealtimeQuote>();
+    const unknownSymbols: string[] = [];
     // 顺序委派而非并发: 今天只有一个已登记市场, 而将来多市场同源时并发只会让同一个 shim
     // 令牌桶在同一瞬间被打两下, 收益为零。
     for (const [market, group] of byMarket) {
       const batch = await this.routes[market].fetchQuotes(group);
-      for (const [symbol, quote] of batch) quotes.set(symbol, quote);
+      for (const [symbol, quote] of batch.quotes) quotes.set(symbol, quote);
+      // 086 T016: 各市场的未知代码一并带出 —— 漏合并任一市场, 该市场的改名就永远不会进候选表。
+      unknownSymbols.push(...batch.unknownSymbols);
     }
-    return quotes;
+    return { quotes, unknownSymbols };
   }
 }

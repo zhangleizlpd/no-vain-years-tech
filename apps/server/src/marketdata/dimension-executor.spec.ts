@@ -4039,6 +4039,8 @@ describe('046 T010 IVP 双算对表 → 采集侧告警 (三档 + 窗口不足�
         anchor: { findMany: vi.fn(async () => [{ ticker: 'us:PEP' }]) },
         tradingDay: tradingDayFake(),
         underlyingIvHistory: { findMany: histFindMany, createMany: histCreateMany },
+        // 086 T006: 对表窗口先读代码变更登记 (此处无登记 ⇒ 单段, 查询与改动前一致)。
+        symbolChange: { findMany: vi.fn(async () => []) },
         $transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) =>
           fn({ underlyingIvDaily: { upsert: ivUpsert } }),
         ),
@@ -4995,6 +4997,8 @@ describe('#138 族一: 逐行 upsert 的维度必须上报 written (空转报 0,
         tradingDay: tradingDayFake(),
         // IVP 双算对表的窗口查询 (空窗 ⇒ verdict skipped ⇒ 静默, 不干扰计数)。
         underlyingIvHistory: { findMany: vi.fn(async () => []) },
+        // 086 T006: 对表窗口先读代码变更登记 (此处无登记 ⇒ 单段, 查询与改动前一致)。
+        symbolChange: { findMany: vi.fn(async () => []) },
         $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
           fn({
             fundamentalSnapshot: { upsert: upsert.fundamentalSnapshot },

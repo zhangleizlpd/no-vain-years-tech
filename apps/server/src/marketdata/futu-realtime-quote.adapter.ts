@@ -4,6 +4,7 @@ import { parseCanonicalSymbol } from './marketdata.rules.js';
 import {
   REALTIME_QUOTE_MAX_SYMBOLS,
   type RealtimeQuote,
+  type RealtimeQuoteBatch,
   type RealtimeQuotePort,
 } from './realtime-quote.port.js';
 import { tradedPriceOrNull } from './vendor-absence.rules.js';
@@ -92,7 +93,7 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
   ) {}
 
   /** 复杂度：**1 个 HTTP 请求**（切批在调用方）+ 解析 O(行数)。 */
-  async fetchQuotes(symbols: readonly string[]): Promise<Map<string, RealtimeQuote>> {
+  async fetchQuotes(symbols: readonly string[]): Promise<RealtimeQuoteBatch> {
     if (symbols.length === 0) {
       // 空批 = 调用方逻辑错 (工作集为空时本就不该调用), 永久性, 重试无意义。
       throw new Error('[futu] realtime-quote 入参 symbols 为空; 工作集为空时不该调用本端口');
@@ -120,8 +121,9 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
       `/option-snapshot?${params.toString()}`,
       what,
     );
-    // shim 已把 vendor 不认识的代码 (改名 / 退市) 剔掉重发, 这里只负责让它在 app 日志里点名 ——
-    // 否则那只锚只是安静地不再更新。PSKY→SKYD 那次就是一只坏码让整批停了十天才被发现。
+    // shim 已把 vendor 不认识的代码 (改名 / 退市) 剔掉重发, 这里让它在 app 日志里点名, 并作为
+    // 返回值带出 (086 T016, 供 optionsdesk 生成疑似改名候选) —— 否则那只锚只是安静地不再更新。
+    // PSKY→SKYD 那次就是一只坏码让整批停了十天才被发现。
     const unknownSymbols = unknownCodes.map((c) => codeToRef.get(c)?.symbol ?? c);
     if (unknownSymbols.length > 0) {
       this.logger.warn(`[futu] ${what}: vendor 不认识 ${unknownSymbols.join(',')} (改名 / 退市?)`);
@@ -152,7 +154,7 @@ export class FutuRealtimeQuoteAdapter implements RealtimeQuotePort {
       // failstreak 熔断计数 (spec `state_branch` 9)。
       throw new Error(`[futu] ${what} 一条可用报价都没有 (源故障 / 契约变更?)`);
     }
-    return quotes;
+    return { quotes, unknownSymbols };
   }
 
   /**

@@ -114,6 +114,7 @@ describe('061 anchor 盘中价两列 schema expand (Testcontainers PG migrate de
     // 钉死整张 schema 的表集: 将来有人加 `anchor_intraday_history` 这类表当场撞红。
     // 盘中价的历史归 marketdata.daily_bar —— 每 30 秒一行的序列会把这张表灌成行情噪声库。
     // broker_* 六表（082）是券商持仓 / 成交 / 订单镜像与同步记录，不是行情序列，不违背本断言。
+    // symbol_change_candidate（086）是疑似改名待处置项，不是行情序列，不违背本断言。
     expect(rows.map((r) => r.table_name)).toEqual([
       'anchor',
       'anchor_change',
@@ -124,6 +125,7 @@ describe('061 anchor 盘中价两列 schema expand (Testcontainers PG migrate de
       'broker_order',
       'broker_position',
       'broker_sync_run',
+      'symbol_change_candidate',
     ]);
   });
 });

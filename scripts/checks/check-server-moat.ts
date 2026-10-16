@@ -146,6 +146,9 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 单行 upsert, R1 自有表)。落 marketdata 而非 optionsdesk 是因为**写它的人在这边** ——
   // optionsdesk 只负责建锚时 publish 一条 outbox 事件, 全程不碰本表 (反向也无人读)。
   anchorColdStartRun: 'marketdata',
+  // 086 代码变更登记 (plan D1): 登记 / 撤销 use case 独占写 (R1 自有表, 无 FK)。optionsdesk
+  // 修正编排只经 marketdata 导出的 use case 调用, 不直查本表。
+  symbolChange: 'marketdata',
   // alert 4 表归 alert (021, 第 6 bounded context; ADR-0052 调度自治预警引擎): CRUD/
   // 评估/消息 UC 独占读写 (R1 自有表)。跨 ctx 面 = alert 评估读 marketdata 的
   // dailyBar/instrument (Q7-B 只读直查, CROSS-CONTEXT-READ 注释强制); 反向无人读 alert。
@@ -223,6 +226,9 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   brokerOrder: 'optionsdesk',
   brokerContractRef: 'optionsdesk',
   brokerSyncRun: 'optionsdesk',
+  // 086 疑似改名候选 (plan D8): 锚收盘价同步产生、候选处置 use case 翻状态 (R1 自有表, 无 FK)。
+  // 跨 ctx 面 = 产生时读 marketdata.instrument 的 name / code 求新码建议 (须 CROSS-CONTEXT-READ)。
+  symbolChangeCandidate: 'optionsdesk',
   // researchReport 归 research (057, 第 11 bounded context; ADR-0065 研报库)。投递 UC 独占
   // 读写 (R1 自有表)。**跨 ctx 面 = 0**: symbol 存归一后的 `market:code` 裸字符串, 不建到
   // marketdata.instrument 的外键、不做存在性校验 —— 校验会拒绝合法新标的, 且会引入本可
@@ -255,6 +261,8 @@ const WRITE_ALLOWLIST: Record<string, readonly string[]> = {
     'optionsdesk/update-anchor.usecase.ts',
     'optionsdesk/delete-anchor.usecase.ts',
     'optionsdesk/import-anchor-from-model.usecase.ts',
+    // 086 迁锚: 代码变更后把锚挪到新码名下 (改 ticker + next_review + 清价格列), 不碰估值事实。
+    'optionsdesk/migrate-anchor-ticker.usecase.ts',
     'optionsdesk/review-anchor.usecase.ts',
     'optionsdesk/set-position-bucket.usecase.ts',
     'optionsdesk/sync-anchor-last-close.ts',

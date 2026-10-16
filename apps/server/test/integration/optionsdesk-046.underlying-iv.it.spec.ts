@@ -495,4 +495,45 @@ describe('046 T011 标的级 IV 采集 (Testcontainers PG, 真锚闸 + 记账 IV
       error.mockRestore();
     }
   });
+
+  // ── ⑥ 086 T006: 对表窗口按代码变更 lineage 拼接 (FR-004; plan D4) ──
+  it('⑥ 086 T006 改名后旧段 200 条 + 新段 60 条 ⇒ 对表可算 (不再 insufficient_window); 无登记 ⇒ 仍不可算', async () => {
+    const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    try {
+      // 合成代码 XOLD → XNEW, 生效日 = D1 往前 60 天; 新码自有 60 天、旧码在生效日前有 200 天。
+      const effective = dayOf(new Date(Date.parse(`${D1.us}T00:00:00Z`) - 60 * 86_400_000));
+      const oldId = await seedInstrument('XOLD', false);
+      const newId = await seedInstrument('XNEW', false);
+      await seedAnchor('us:XNEW');
+      await prisma.underlyingIvHistory.createMany({ data: historyRows(newId, 60, D1.us) });
+      await prisma.underlyingIvHistory.createMany({ data: historyRows(oldId, 200, effective) });
+      const xcheckLogs = () =>
+        log.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('IVP 双算对表'));
+
+      // 无登记: 新码只有 60 条 ⇒ 不可算 ⇒ 批级摘要不出 (computable = 0 时静默, 改动前行为)。
+      await buildRegistry(port).execute('underlying_iv_daily', deltaInput(D1));
+      expect(xcheckLogs()).toEqual([]);
+
+      await prisma.symbolChange.create({
+        data: {
+          market: 'us',
+          oldCode: 'XOLD',
+          newCode: 'XNEW',
+          effectiveDate: dateOf(effective),
+          eventType: 'rename',
+          source: 'manual',
+          evidence: 'https://example.invalid/notice',
+          registeredBy: 'it',
+        },
+      });
+      log.mockClear();
+      await buildRegistry(port).execute('underlying_iv_daily', deltaInput(D1));
+      const msgs = xcheckLogs();
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toContain('"computable":1');
+    } finally {
+      log.mockRestore();
+      await prisma.symbolChange.deleteMany();
+    }
+  });
 });

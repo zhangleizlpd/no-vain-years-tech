@@ -8,6 +8,7 @@ import { marketDateFor } from '../../src/marketdata/trading-day-gate';
 import {
   REALTIME_QUOTE_PORT,
   type RealtimeQuote,
+  type RealtimeQuoteBatch,
   type RealtimeQuotePort,
 } from '../../src/marketdata/realtime-quote.port';
 import {
@@ -116,14 +117,14 @@ describe('062 T008 optionsdesk 盘中交易日闸三态 (Testcontainers PG + Red
   const realtimeQuotePort: RealtimeQuoteFake = {
     calls: 0,
     quotes: new Map<string, RealtimeQuote>(),
-    async fetchQuotes(symbols: readonly string[]): Promise<Map<string, RealtimeQuote>> {
+    async fetchQuotes(symbols: readonly string[]): Promise<RealtimeQuoteBatch> {
       realtimeQuotePort.calls += 1;
       const out = new Map<string, RealtimeQuote>();
       for (const symbol of symbols) {
         const quote = realtimeQuotePort.quotes.get(symbol);
         if (quote !== undefined) out.set(symbol, quote);
       }
-      return out;
+      return { quotes: out, unknownSymbols: [] };
     },
   };
 

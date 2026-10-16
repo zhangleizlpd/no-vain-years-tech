@@ -60,6 +60,7 @@ describe('#209 app-state-health 谓词 (Testcontainers PG)', () => {
     await prisma.anchor.deleteMany({});
     await prisma.outboxEvent.deleteMany({});
     await prisma.tradingDay.deleteMany({});
+    await prisma.symbolChangeCandidate.deleteMany({});
   });
 
   async function runPredicate(): Promise<{ exitCode: number; summary: string }> {
@@ -114,6 +115,24 @@ describe('#209 app-state-health 谓词 (Testcontainers PG)', () => {
         payload: {},
         createdAt: created,
         ...(published ? { publishedAt: created } : {}),
+      },
+    });
+  }
+
+  async function seedCandidate(
+    ticker: string,
+    status: 'PENDING' | 'CONFIRMED' | 'DISMISSED',
+  ): Promise<void> {
+    const now = new Date();
+    await prisma.symbolChangeCandidate.create({
+      data: {
+        ticker,
+        signal: 'vendor_unknown',
+        suggestions: [],
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status,
+        ...(status === 'PENDING' ? {} : { resolvedAt: now }),
       },
     });
   }
@@ -228,6 +247,32 @@ describe('#209 app-state-health 谓词 (Testcontainers PG)', () => {
     expect(exitCode).toBe(1);
     expect(summary).toContain('⚠relay 停摆');
     expect(summary).toContain('outbox_stuck=1');
+  });
+
+  it('🚨 判据⑤ (086 T020): 存在 PENDING 疑似改名候选 → exit 1, summary 列出 ticker', async () => {
+    // 锚与 outbox 全健康, 只有候选能让它红。候选由 sync-anchor-last-close 在 vendor 报「未知代码」
+    // 时写入 —— 不处置(确认 / 否决)就每 4h 推一次, 这正是告警面要的「有人该看」信号。
+    await seedCalendar('us');
+    await seedAnchor('us:AAA', 'us', 0);
+    await seedCandidate('us:OLDB', 'PENDING');
+    await seedCandidate('us:OLDA', 'PENDING');
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(1);
+    expect(summary).toContain('symbol_candidates=2⚠疑似改名:us:OLDA,us:OLDB');
+  });
+
+  it('🚨 判据⑤: 只有 DISMISSED / CONFIRMED 候选 ⇒ **不判红** (已处置的不再告警)', async () => {
+    // 变异「去掉 status='PENDING' 过滤」时本条翻红 —— 已处置候选若继续告警, 维护者无从消警。
+    await seedCalendar('us');
+    await seedAnchor('us:AAA', 'us', 0);
+    await seedCandidate('us:GONE', 'DISMISSED');
+    await seedCandidate('us:RENAMED', 'CONFIRMED');
+
+    const { exitCode, summary } = await runPredicate();
+    expect(exitCode).toBe(0);
+    expect(summary).toContain('symbol_candidates=0');
+    expect(summary).not.toContain('⚠');
   });
 
   it('契约: summary 单行、无 tab/换行 (bash 单次 read 解析的前提)', async () => {

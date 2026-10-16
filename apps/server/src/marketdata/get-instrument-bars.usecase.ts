@@ -12,6 +12,12 @@ import { freshnessTier } from './freshness-tier.js';
 import type { Adjust, BarPeriod, EodBarPoint } from './marketdata.types.js';
 import type { DailyBarListResponse } from './daily-bar-list.response.js';
 import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calendar.port.js';
+import {
+  resolveLineageInstruments,
+  segmentDateRange,
+  type LineageInstrumentSegment,
+} from './symbol-lineage-instruments.js';
+import type { LineageSegment } from './symbol-lineage.rules.js';
 
 export interface GetInstrumentBarsQuery {
   symbol: string;
@@ -22,6 +28,21 @@ export interface GetInstrumentBarsQuery {
 }
 
 const dateOnly = (d: Date): string => d.toISOString().slice(0, 10);
+const dbDate = (d: string): Date => new Date(`${d}T00:00:00Z`);
+
+/** lineage 段区间 ∩ 查询窗 → `trade_date` 过滤; 两侧都不设界 ⇒ `undefined` (与改动前同形)。 */
+function segmentTradeDateFilter(
+  seg: LineageSegment,
+  query: GetInstrumentBarsQuery,
+): { gte?: Date; lte?: Date; lt?: Date } | undefined {
+  const from = seg.from !== null && !(query.from && query.from > seg.from) ? seg.from : query.from;
+  const filter = {
+    ...(from ? { gte: dbDate(from) } : {}),
+    ...(query.to ? { lte: dbDate(query.to) } : {}),
+    ...(seg.toExclusive !== null ? { lt: dbDate(seg.toExclusive) } : {}),
+  };
+  return Object.keys(filter).length > 0 ? filter : undefined;
+}
 
 /**
  * K线序列 use case (015 T008, US3 — intra query, ADR-0043 直注 PrismaService)。
@@ -44,28 +65,13 @@ export class GetInstrumentBarsUseCase {
     const parsed = parseCanonicalSymbol(query.symbol);
     if (!parsed) throw new InstrumentNotFoundException(query.symbol);
 
-    const instrument = await this.prisma.instrument.findUnique({
-      where: { market_code: { market: parsed.market, code: parsed.code } },
-      select: { id: true },
-    });
-    if (!instrument) throw new InstrumentNotFoundException(query.symbol);
+    // 086 T005 (plan D3): 按代码变更登记读时拼接 —— 每段只取 `[from, toExclusive)` ∩ 查询窗的
+    // none 行, 段间按日期升序首尾相接; 标的表里没有的段已在 resolveLineageInstruments 跳过。
+    // 无登记 ⇒ 单段无界, 下列查询与改动前逐条一致 (FR-007, IT ② 基线钉住)。
+    const segments = await resolveLineageInstruments(this.prisma, parsed.market, parsed.code);
+    if (segments.length === 0) throw new InstrumentNotFoundException(query.symbol);
 
-    const tradeDate =
-      query.from || query.to
-        ? {
-            ...(query.from ? { gte: new Date(`${query.from}T00:00:00Z`) } : {}),
-            ...(query.to ? { lte: new Date(`${query.to}T00:00:00Z`) } : {}),
-          }
-        : undefined;
-
-    const rows = await this.prisma.dailyBar.findMany({
-      where: {
-        instrumentId: instrument.id,
-        adjust: 'none', // 020: 单口径事实表 — forward/backward 由 none 读时换算 (FR-A01/A03)。
-        ...(tradeDate ? { tradeDate } : {}),
-      },
-      orderBy: { tradeDate: 'asc' },
-    });
+    const rows = await this.loadSegmentRows(segments, query);
 
     let bars: AdjustableBarRow[] = rows.map((r) => ({
       tradeDate: dateOnly(r.tradeDate),
@@ -80,10 +86,7 @@ export class GetInstrumentBarsUseCase {
       turnoverRate: r.turnoverRate,
     }));
     if (query.adjust !== 'none') {
-      const versions = await this.prisma.adjustmentFactor.findMany({
-        where: { instrumentId: instrument.id },
-        select: { exDate: true, factorBackward: true },
-      });
+      const versions = await this.loadSegmentFactors(segments);
       bars = deriveAdjustedBars(
         bars,
         versions.map((v) => ({ exDate: dateOnly(v.exDate), factorJump: v.factorBackward })),
@@ -124,5 +127,42 @@ export class GetInstrumentBarsUseCase {
         await this.calendar.lastClosedSession(parsed.market, new Date()),
       ),
     };
+  }
+
+  /** 每段只取 `[from, toExclusive)` ∩ 查询窗的 none 行; 段按日期升序且互不重叠 ⇒ 直接首尾相接即升序。 */
+  private async loadSegmentRows(
+    segments: LineageInstrumentSegment[],
+    query: GetInstrumentBarsQuery,
+  ) {
+    const rows = [];
+    for (const seg of segments) {
+      const tradeDate = segmentTradeDateFilter(seg, query);
+      rows.push(
+        ...(await this.prisma.dailyBar.findMany({
+          where: {
+            instrumentId: seg.instrumentId,
+            adjust: 'none', // 020: 单口径事实表 — forward/backward 由 none 读时换算 (FR-A01/A03)。
+            ...(tradeDate ? { tradeDate } : {}),
+          },
+          orderBy: { tradeDate: 'asc' },
+        })),
+      );
+    }
+    return rows;
+  }
+
+  /** 因子只取 exDate 落在本段区间内的版本, 各段合并 (改名不改股本, plan D3)。 */
+  private async loadSegmentFactors(segments: LineageInstrumentSegment[]) {
+    const versions = [];
+    for (const seg of segments) {
+      const exDate = segmentDateRange(seg);
+      versions.push(
+        ...(await this.prisma.adjustmentFactor.findMany({
+          where: { instrumentId: seg.instrumentId, ...(exDate ? { exDate } : {}) },
+          select: { exDate: true, factorBackward: true },
+        })),
+      );
+    }
+    return versions;
   }
 }

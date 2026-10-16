@@ -104,7 +104,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
   describe('字段映射', () => {
     it('键 = 入参的 canonical symbol 原样, 价恒 string (Decimal-safe), 时刻 = 信封 as_of', async () => {
       const { http } = makeShim([stockRow('US.PEP')]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP']);
 
       expect([...quotes.keys()]).toEqual(['us:PEP']);
       expect(quotes.get('us:PEP')).toEqual({
@@ -118,13 +118,13 @@ describe('FutuRealtimeQuoteAdapter', () => {
     it('🚨 采集墙钟取信封 as_of, **不取行内 update_time** (后者是最后成交时刻, 盘中滞后 p95 292 s)', async () => {
       // update_time 换成一个明显不同的时刻: 若实现改读它, 这条立刻红。
       const { http } = makeShim([stockRow('US.PEP', { update_time: '2026-08-17 09:31:00' })]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP']);
       expect(quotes.get('us:PEP')?.capturedAt).toEqual(new Date(AS_OF));
     });
 
     it('🚨 两个时间戳**并存且不互相顶替** (063 Phase 3.4): as_of 是判据, update_time 是证据', async () => {
       const { http } = makeShim([stockRow('US.PEP', { update_time: '2026-08-17 09:31:00' })]);
-      const quote = await makeAdapter(http).fetchQuotes(['us:PEP']);
+      const { quotes: quote } = await makeAdapter(http).fetchQuotes(['us:PEP']);
 
       // 判据侧: 采集墙钟, 一格不动。
       expect(quote.get('us:PEP')?.capturedAt).toEqual(new Date(AS_OF));
@@ -138,7 +138,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
         stockRow('US.PEP', { update_time: undefined }),
         stockRow('US.AAPL', { update_time: 'not-a-time' }),
       ]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
 
       expect(quotes.get('us:PEP')?.vendorUpdateTime).toBeNull();
       expect(quotes.get('us:AAPL')?.vendorUpdateTime).toBeNull();
@@ -147,37 +147,41 @@ describe('FutuRealtimeQuoteAdapter', () => {
 
     it('缺某标的 → **省略不抛** (停牌 / 刚摘牌; 上游据此保留旧值)', async () => {
       const { http } = makeShim([stockRow('US.PEP')]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
 
       expect(quotes.size).toBe(1);
       expect(quotes.has('us:AAPL')).toBe(false);
     });
 
-    it('🚨 信封 unknown_codes 非空 → warn 点名坏码 (改名 / 退市, shim 已剔除), 其余照常返回', async () => {
+    it('🚨 信封 unknown_codes 非空 → 坏码以 canonical 形态带出 unknownSymbols + warn 点名, 其余照常返回', async () => {
       const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
       const { http } = makeShim([stockRow('US.PDD')], { unknown_codes: ['US.PSKY'] });
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PSKY', 'us:PDD']);
+      const { quotes, unknownSymbols } = await makeAdapter(http).fetchQuotes(['us:PSKY', 'us:PDD']);
 
       expect([...quotes.keys()]).toEqual(['us:PDD']);
+      // 086 T016: 带出的是**入参那个 canonical 串**, 不是 vendor 方言 —— 下游候选表按它查锚。
+      expect(unknownSymbols).toEqual(['us:PSKY']);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toContain('us:PSKY');
       warn.mockRestore();
     });
 
-    it('unknown_codes 为空 / 缺省 (旧版 shim) → 不 warn', async () => {
+    it('unknown_codes 为空 / 缺省 (旧版 shim) → 不 warn, unknownSymbols 为空数组', async () => {
       const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-      await makeAdapter(makeShim([stockRow('US.PDD')], { unknown_codes: [] }).http).fetchQuotes([
-        'us:PDD',
-      ]);
-      await makeAdapter(makeShim([stockRow('US.PDD')]).http).fetchQuotes(['us:PDD']);
+      const empty = await makeAdapter(
+        makeShim([stockRow('US.PDD')], { unknown_codes: [] }).http,
+      ).fetchQuotes(['us:PDD']);
+      const legacy = await makeAdapter(makeShim([stockRow('US.PDD')]).http).fetchQuotes(['us:PDD']);
 
+      expect(empty.unknownSymbols).toEqual([]);
+      expect(legacy.unknownSymbols).toEqual([]);
       expect(warn).not.toHaveBeenCalled();
       warn.mockRestore();
     });
 
     it('行在但 last_price 缺失 → 同样省略 (不落 0 冒充一个真价)', async () => {
       const { http } = makeShim([stockRow('US.PEP'), stockRow('US.AAPL', { last_price: null })]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
 
       expect(quotes.has('us:AAPL')).toBe(false);
       expect(quotes.get('us:PEP')?.price).toBe('148.21');
@@ -188,7 +192,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
       // 富途从不产生带外缺失, 它用 `0` 表达「没有」(官方 py-futu-api#258 确认)。
       // 没有本条, 一只停牌 / 无成交的正股会被当成「现价 0 元」发布进锚的盘中价。
       const { http } = makeShim([stockRow('US.PEP'), stockRow('US.AAPL', { last_price: 0 })]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP', 'us:AAPL']);
 
       expect(quotes.has('us:AAPL')).toBe(false);
       expect(quotes.get('us:PEP')?.price).toBe('148.21');
@@ -196,7 +200,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
 
     it('负控制: 极小价原样发布 (0.01 是真价, MUST NOT 因为「看着像 0」被吃掉)', async () => {
       const { http } = makeShim([stockRow('US.PEP', { last_price: 0.01 })]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP']);
 
       expect(quotes.get('us:PEP')?.price).toBe('0.01');
     });
@@ -209,7 +213,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
 
     it('响应里的多余行 (未请求的 code) → 忽略, 不混进结果', async () => {
       const { http } = makeShim([stockRow('US.PEP'), stockRow('US.MSFT')]);
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP']);
       expect([...quotes.keys()]).toEqual(['us:PEP']);
     });
   });
@@ -226,7 +230,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
       });
       const { http } = makeShim([spyRow]);
 
-      const quotes = await makeAdapter(http).fetchQuotes(['us:PEP']);
+      const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP']);
 
       expect(quotes.get('us:PEP')?.price).toBe('148.21');
       // 正向: 确实读了它该读的两列 (否则本断言会因「什么都没读」而假绿)。
@@ -288,7 +292,7 @@ describe('FutuRealtimeQuoteAdapter', () => {
 describe('066 T10 FutuRealtimeQuoteAdapter — 港股 (hk) 实时报价', () => {
   it('hk symbol → `HK.` 前缀; 结果键原样回传 canonical (state_branches 16 的适配器半)', async () => {
     const { http, calls } = makeShim([stockRow('HK.00700', { last_price: 457 })]);
-    const quotes = await makeAdapter(http).fetchQuotes(['hk:00700']);
+    const { quotes } = await makeAdapter(http).fetchQuotes(['hk:00700']);
 
     expect(new URL(calls[0].url).searchParams.get('codes')).toBe('HK.00700');
     expect(quotes.get('hk:00700')?.price).toBe('457');
@@ -296,7 +300,7 @@ describe('066 T10 FutuRealtimeQuoteAdapter — 港股 (hk) 实时报价', () => 
 
   it('混批 us + hk → 一发两前缀 (同一个 shim 端点, 不为每个市场各打一发)', async () => {
     const { http, calls } = makeShim([stockRow('US.PEP'), stockRow('HK.00700')]);
-    const quotes = await makeAdapter(http).fetchQuotes(['us:PEP', 'hk:00700']);
+    const { quotes } = await makeAdapter(http).fetchQuotes(['us:PEP', 'hk:00700']);
 
     expect(calls).toHaveLength(1);
     expect(new URL(calls[0].url).searchParams.get('codes')).toBe('US.PEP,HK.00700');
@@ -306,7 +310,7 @@ describe('066 T10 FutuRealtimeQuoteAdapter — 港股 (hk) 实时报价', () => 
   it('🚨 hk 行的 update_time 按**港股当地**解析 (066 T17 的联动: 两个 adapter 共用一份解析)', async () => {
     // vendor 给的 15:59:12 是港股当地 ⇒ 07:59:12Z (港股恒 UTC+8 无 DST); 按美东读会偏 12 小时。
     const { http } = makeShim([stockRow('HK.00700')]);
-    const quotes = await makeAdapter(http).fetchQuotes(['hk:00700']);
+    const { quotes } = await makeAdapter(http).fetchQuotes(['hk:00700']);
 
     expect(quotes.get('hk:00700')?.vendorUpdateTime).toEqual(new Date('2026-08-17T07:59:12Z'));
   });
