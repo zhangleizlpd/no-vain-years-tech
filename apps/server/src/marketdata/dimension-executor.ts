@@ -74,6 +74,12 @@ import {
 import { SyncProfileUseCase } from './sync-profile.usecase.js';
 import { SyncTierRecalc } from './sync-tier-recalc.js';
 import { AnchorDrivenSyncGate } from './anchor-driven-sync-gate.js';
+import { parseCanonicalSymbol } from './marketdata.rules.js';
+import {
+  resolveLineageInstruments,
+  segmentDateRange,
+  type LineageInstrumentSegment,
+} from './symbol-lineage-instruments.js';
 import { SyncUniverseUseCase } from './sync-universe.usecase.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import type { OptionChainPort } from './option-chain.port.js';
@@ -3337,17 +3343,7 @@ export class DimensionExecutorRegistry {
     const verdicts: IvpDivergenceVerdict[] = [];
     for (const { instrumentId, snapshot } of matched) {
       try {
-        const rows = await this.prisma.underlyingIvHistory.findMany({
-          // 🚨 `lt` 而**不是** `lte` —— MUST 排除当日行 (#211)。当日行的 `iv` 恒等于 `current`,
-          // 严格 `<` 不计它却仍占分母 ⇒ 每只标的凭空多出 1/252 = 0.3968pp 的系统性偏差。
-          // prod 实证: 08-03 (增量上线前唯一一天当日行在窗口内) 自算 220/252 而 vendor
-          // 221/252, 差**恰好一格**。增量上线前两者等价 (表里压根没有当日行), 上线后不再
-          // 等价 —— 故这一格与 `appendIvHistoryIncrement` 必须同一次改, 拆开就是修一个引一个。
-          where: { instrumentId, date: { lt: date } },
-          select: { iv: true },
-          orderBy: { date: 'desc' },
-          take: IVP_MIN_WINDOW_TRADING_DAYS,
-        });
+        const rows = await this.loadIvWindowAcrossLineage(instrumentId, snapshot.symbol, date);
         const self = computeIvPercentile(
           rows.map((r) => r.iv),
           toDecimalOrNull(snapshot.iv),
@@ -3386,6 +3382,54 @@ export class DimensionExecutorRegistry {
       return;
     }
     this.logger.log(`IVP 双算对表: ${detail}`);
+  }
+
+  /**
+   * 对表窗口 (086 T006, plan D4): 按代码变更 lineage 从末段往前逐段取 `underlying_iv_history`,
+   * 拼接后取最近 {@link IVP_MIN_WINDOW_TRADING_DAYS} 条。改名后新码自身样本不足一年时, 旧码段
+   * 补齐窗口, 交叉核对不再因 `insufficient_window` 失效 (只影响核对日志, 上屏值不变)。
+   * 无登记 ⇒ 单段无界, 查询与改动前一致。每段一次查询, 段数 = 链长 + 1。
+   */
+  private async loadIvWindowAcrossLineage(
+    instrumentId: bigint,
+    symbol: string,
+    date: Date,
+  ): Promise<{ iv: Prisma.Decimal | null }[]> {
+    const parsed = parseCanonicalSymbol(symbol);
+    const resolved = parsed
+      ? await resolveLineageInstruments(this.prisma, parsed.market, parsed.code)
+      : [];
+    const segments: LineageInstrumentSegment[] =
+      resolved.length > 0
+        ? resolved
+        : [{ code: symbol, from: null, toExclusive: null, instrumentId }];
+    const rows: { iv: Prisma.Decimal | null }[] = [];
+    for (const seg of [...segments].reverse()) {
+      const take = IVP_MIN_WINDOW_TRADING_DAYS - rows.length;
+      if (take <= 0) break;
+      const range = segmentDateRange(seg);
+      rows.push(
+        ...(await this.prisma.underlyingIvHistory.findMany({
+          // 🚨 `lt` 而**不是** `lte` —— MUST 排除当日行 (#211)。当日行的 `iv` 恒等于 `current`,
+          // 严格 `<` 不计它却仍占分母 ⇒ 每只标的凭空多出 1/252 = 0.3968pp 的系统性偏差。
+          // prod 实证: 08-03 (增量上线前唯一一天当日行在窗口内) 自算 220/252 而 vendor
+          // 221/252, 差**恰好一格**。增量上线前两者等价 (表里压根没有当日行), 上线后不再
+          // 等价 —— 故这一格与 `appendIvHistoryIncrement` 必须同一次改, 拆开就是修一个引一个。
+          // 段上界早于归属日时取段上界 (旧码段止于生效日)。
+          where: {
+            instrumentId: seg.instrumentId,
+            date: {
+              lt: range?.lt && range.lt < date ? range.lt : date,
+              ...(range?.gte ? { gte: range.gte } : {}),
+            },
+          },
+          select: { iv: true },
+          orderBy: { date: 'desc' },
+          take,
+        })),
+      );
+    }
+    return rows;
   }
 
   /**

@@ -72,7 +72,7 @@ updated_at: '2026-10-16'
 
 - [X] T005 [Server] [US1] **日线读时拼接**（FR-003, FR-004, FR-006, FR-007; plan D3; state_branches 1, 2, 3, 8; SC-003, SC-004）：`get-instrument-bars.usecase.ts:47` 起改为 lineage → 每段解析 instrument（不存在则跳过该段）→ 段区间 ∩ 查询窗 → 分段取 `daily_bar` 并按日期拼接；`:83` 的因子改为取所有段 instrument 的、`exDate` 落在本段区间内的版本，合并后交 `deriveAdjustedBars`。`freshnessTier` / `asOf` 逻辑不动 → verify: 新建 `apps/server/test/integration/marketdata-086.bars-splice.it.spec.ts`（`setupIsolatedDb`），先红 → 绿，臂：① 登记后查新码 ⇒ 旧段 + 新段连续、无重复（branch 1、2）② 无登记 ⇒ 与改动前实现结果**深等**（branch 3；同 fixture 跑两遍对比）③ 撤销后 ⇒ 与 ② 深等（branch 8；SC-004 即时生效）④ 生效日落在周末 ⇒ 前一个交易日属旧段、下一个交易日属新段 ⑤ `adjust=forward` 时跨段因子正确应用 ⑥ T003 / T004 的臂；定向变异：a. 拼接时不切段（整段取旧码）→ ① 出现重复日红 · b. 跳过 lineage 直接走原路径 → ① 红（留档）
 
-- [ ] T006 [P] [Server] [US1] **IV 交叉核对读时拼接**（FR-004; plan D4）：`dimension-executor.ts:3340` 的 `underlyingIvHistory.findMany({instrumentId})` 改为按 lineage 分段取、拼接后取最近 252 条（`underlying-iv.rules.ts:50`）。只影响核对日志，上屏值不变（spec Q3 amend）→ verify: 实施时 `rg -n 'crossCheckIvPercentile' apps/server/src apps/server/test` 定位既有用例所在 spec，在该文件加臂：改名后旧段 200 条 + 新段 60 条 ⇒ 不再报 `insufficient_window`；无登记 ⇒ 行为不变；定向变异：只取新段 → 第一臂红（留档）
+- [X] T006 [P] [Server] [US1] **IV 交叉核对读时拼接**（FR-004; plan D4）：`dimension-executor.ts:3340` 的 `underlyingIvHistory.findMany({instrumentId})` 改为按 lineage 分段取、拼接后取最近 252 条（`underlying-iv.rules.ts:50`）。只影响核对日志，上屏值不变（spec Q3 amend）→ verify: 实施时 `rg -n 'crossCheckIvPercentile' apps/server/src apps/server/test` 定位既有用例所在 spec，在该文件加臂：改名后旧段 200 条 + 新段 60 条 ⇒ 不再报 `insufficient_window`；无登记 ⇒ 行为不变；定向变异：只取新段 → 第一臂红（留档）
 
 ### US2（P1）：代码回收不被误拼
 
