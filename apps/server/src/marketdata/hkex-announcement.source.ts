@@ -24,7 +24,7 @@ import {
  * 两类产出，**窗口各自独立**：
  *
  * 1. **刊发事实** (`filed` 观测，全部港股)：日常 `[业务日 − 7, 业务日]` (与现役公告 7 天回看一致)。
- *    公布日 = 公告日期 —— `announcement.date` 落库时已是 `+08:00` 当地日期
+ *    公布日 = 同一文件编号最早的公告日期 (FR-031，{@link parseHkexFileNumber}) —— `announcement.date` 落库时已是 `+08:00` 当地日期
  *    (`lixinger-announcement.adapter.ts` 文件头：`date` 为 `+08:00`，slice 取日期)。
  * 2. 🚨 **会前通知信号**：**单独**按 `[业务日 − NOTICE_MATCH_WINDOW_DAYS, 业务日]` 现算
  *    (排序铁律 4 / analyze I1)。只按 7 天现算时，事件重算找不到 8–120 天前的通知，确认日期静默
