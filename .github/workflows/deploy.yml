@@ -238,6 +238,13 @@ jobs:
           # Login to Aliyun ACR (intranet pull, ~5s for 180MB).
           echo "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" \
               -u "$ACR_USERNAME" --password-stdin
+          # 任何退出路径都登出（成功 / B2 exit 2 / 健康检查失败 exit 1 / set -e 中途失败）。
+          # 此前只在成功尾部 logout ⇒ 失败分支把凭据留在主机上，而 ACR 的 `latest` 此刻恰是
+          # 刚失败的新版（build-image 每次都推）：期间有人手动 `compose up` 漏 export MBW_VERSION
+          # ⇒ 拉到坏版本、静默盖掉刚回滚好的 app。成功路径下凭据不在盘上，同一误操作在拉取时
+          # 鉴权失败、大声报错不动 app（2026-10-16 prod `up --dry-run` 对照实测）。
+          # trap 在 EXIT 才触发 ⇒ 下面的自动回滚（可能要重拉旧镜像）仍在登录态内完成。
+          trap 'docker logout "$ACR_REGISTRY" >/dev/null 2>&1 || true' EXIT
 
           # Pull new image + recreate app container only (postgres / redis / nginx untouched).
           docker compose -f docker-compose.tight.yml --env-file .env.production pull app
@@ -282,8 +289,8 @@ jobs:
             # Auto-rollback to the last verified-healthy tag to restore uptime — the
             # broken new container would otherwise stay up with the old one already
             # force-recreated away. Still exit 1 so the deploy is marked failed.
-            # docker login session from above is still active (logout only on success),
-            # so rollback can re-pull the old image if it isn't cached.
+            # docker login session from above is still active (the EXIT trap logs out only
+            # after this branch exits), so rollback can re-pull the old image if it isn't cached.
             if [ -f .last-good-tag ]; then
               echo "::warning::Auto-rolling back to last-good $(cat .last-good-tag)..."
               bash ops/bin/rollback-prod.sh || echo "::error::Auto-rollback also failed — manual intervention needed."
