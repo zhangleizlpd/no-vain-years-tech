@@ -13,7 +13,7 @@ import { resolveSnapshotAttribution } from './snapshot-session-attribution.rules
 import { emptyStats } from './sync-run.recorder.js';
 import { SyncOptionContractUseCase } from './sync-option-contract.usecase.js';
 import { SyncOptionSnapshotUseCase } from './sync-option-snapshot.usecase.js';
-import { seedInstrumentCreateData } from './sync-universe.usecase.js';
+import { EnsureInstrumentUseCase } from './ensure-instrument.usecase.js';
 import {
   FISCAL_PROFILE_MARKET,
   SyncEarningsFiscalProfileUseCase,
@@ -89,6 +89,9 @@ export class AnchorColdStartUseCase {
    */
   private readonly attribution: SnapshotSessionAttributionLookup;
 
+  /** 兜底 seed 的唯一实现 (086 T023): 与代码变更修正编排共用, 含并发 P2002 折叠。 */
+  private readonly ensureInstrument: EnsureInstrumentUseCase;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly gate: AnchorDrivenSyncGate,
@@ -105,6 +108,7 @@ export class AnchorColdStartUseCase {
     ),
   ) {
     this.attribution = new SnapshotSessionAttributionLookup(prisma, calendar);
+    this.ensureInstrument = new EnsureInstrumentUseCase(prisma);
   }
 
   /**
@@ -402,24 +406,19 @@ export class AnchorColdStartUseCase {
    * 永远没有日线且零告警**。分工订正为: **create 路径定默认值, 闸只负责被闸市场的重算**。
    *
    * 空 `update` 是纯兜底: 已有行的 name / syncTier / needSync 一个都不许被 seed 冲掉。
+   *
+   * 086 T023: 实现委托 {@link EnsureInstrumentUseCase} (同一 create payload、同一读快路径)。
+   * 此前就地 `upsert` 在并发下 (多只锚同时为同一新码冷启动 / 冷启动撞上代码变更修正编排补行)
+   * 后到的一路抛 P2002, 整次冷启动随之失败; 委托后 P2002 折叠为「已存在」并重读 id。
    */
   private async seedInstrument(market: string, code: string): Promise<bigint> {
-    const existing = await this.prisma.instrument.findUnique({
-      where: { market_code: { market, code } },
-      select: { id: true },
-    });
-    if (existing !== null) return existing.id;
-
-    const seeded = await this.prisma.instrument.upsert({
-      where: { market_code: { market, code } },
-      create: seedInstrumentCreateData(market, code),
-      update: {},
-      select: { id: true },
-    });
-    this.logger.warn(
-      `[anchor-cold-start] 兜底 seed 标的行 (有锚但 Instrument 缺行, universe 未轮到?): ${market}:${code}`,
-    );
-    return seeded.id;
+    const { status, id } = await this.ensureInstrument.execute(market, code);
+    if (status === 'created') {
+      this.logger.warn(
+        `[anchor-cold-start] 兜底 seed 标的行 (有锚但 Instrument 缺行, universe 未轮到?): ${market}:${code}`,
+      );
+    }
+    return id;
   }
 
   /**

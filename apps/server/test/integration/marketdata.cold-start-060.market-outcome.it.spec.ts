@@ -520,6 +520,23 @@ describe('060 T011 冷启动市场参数化 / 失败重试 / 结局可区分 (Te
     expect(inst.needSync).toBe(true);
   });
 
+  it('🚨 086 T023 兜底 seed 并发 (多只锚同时为同一新码冷启动) ⇒ 全部成功、同一 id、只一行', async () => {
+    // 直打私有 `seedInstrument`: 走 `run()` 的话并发臂会先撞上运行记录 upsert 等别的竞争面,
+    // 红了也说不清是哪一处。空 `update` 的 upsert 并发时后到的一路抛 P2002 (T004 EVIDENCE)。
+    const seed = (
+      coldStart as unknown as { seedInstrument(market: string, code: string): Promise<bigint> }
+    ).seedInstrument.bind(coldStart);
+    expect(await prisma.instrument.count()).toBe(0);
+
+    // 竞争窗口只在「各路 findUnique 都读空」之后才打开, 单轮未必撞上 ⇒ 多轮 × 多路提高复现率。
+    for (let round = 0; round < 10; round++) {
+      const code = `RACE${round}`;
+      const ids = await Promise.all(Array.from({ length: 8 }, () => seed('us', code)));
+      expect(new Set(ids.map(String)).size).toBe(1);
+      expect(await prisma.instrument.count({ where: { market: 'us', code } })).toBe(1);
+    }
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   // 顺延 / 重试 / 失败 (FR-018 / FR-019a / FR-019b)
   // ───────────────────────────────────────────────────────────────────────────
