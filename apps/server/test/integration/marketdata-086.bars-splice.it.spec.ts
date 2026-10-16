@@ -4,12 +4,15 @@ import { PrismaService } from '../../src/security/prisma.service';
 import { RegisterSymbolChangeUseCase } from '../../src/marketdata/register-symbol-change.usecase';
 import { RevokeSymbolChangeUseCase } from '../../src/marketdata/revoke-symbol-change.usecase';
 import { SYMBOL_CHANGE_SOURCE } from '../../src/marketdata/symbol-lineage.rules';
+import { EnsureInstrumentUseCase } from '../../src/marketdata/ensure-instrument.usecase';
+import { seedInstrumentCreateData } from '../../src/marketdata/sync-universe.usecase';
 
 // 086 marketdata 代码变更 IT —— 登记 / 撤销 (T003)、标的行补齐 (T004)、日线读时拼接 (T005 起)。
 //
 // 为什么必须真 PG: 登记的并发守门人是**部分唯一索引** `uk_symbol_change_active`
 // (`WHERE revoked_at IS NULL`, 迁移手写, Prisma schema 表达不了), P2002 折叠与「撤销后同参数
-// 可重登」都只有真库才成立; 撤销是 conditional UPDATE + affected-count, 同理。
+// 可重登」都只有真库才成立; 撤销是 conditional UPDATE + affected-count, 同理。标的行补齐的
+// 「并发两路只得一行」靠 `uk_instrument_market_code` + upsert, 也只有真库能证。
 //
 // 装配 = 直接 new usecase + 真 PrismaService (体例同 optionsdesk-045.anchor.it.spec.ts): use case
 // 是贫血 class、无 lifecycle 语义, 验证面是落库口径。代码一律合成值。
@@ -18,6 +21,7 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
   let prisma: PrismaService;
   let register: RegisterSymbolChangeUseCase;
   let revoke: RevokeSymbolChangeUseCase;
+  let ensureInstrument: EnsureInstrumentUseCase;
 
   /** us 交易所当地 2026-10-16 白天 (UTC 16:00 = 美东 12:00)。 */
   const NOW = new Date('2026-10-16T16:00:00Z');
@@ -35,6 +39,7 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
     await prisma.$connect();
     register = new RegisterSymbolChangeUseCase(prisma);
     revoke = new RevokeSymbolChangeUseCase(prisma);
+    ensureInstrument = new EnsureInstrumentUseCase(prisma);
   }, 180_000);
 
   afterAll(async () => {
@@ -137,6 +142,43 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
       expect(await revoke.execute({ ...key, oldCode: 'NOPE' }, NOW)).toEqual({
         status: 'not_found',
       });
+    });
+  });
+
+  describe('T004 同步补齐标的行 (FR-011; state_branches 16)', () => {
+    it('① 不存在 ⇒ 建行, 字段与 seedInstrumentCreateData 一致', async () => {
+      const res = await ensureInstrument.execute('us', 'NEWA');
+      expect(res.status).toBe('created');
+      const row = await prisma.instrument.findUniqueOrThrow({
+        where: { market_code: { market: 'us', code: 'NEWA' } },
+      });
+      expect(row.id).toBe(res.id);
+      expect(row).toMatchObject(seedInstrumentCreateData('us', 'NEWA'));
+    });
+
+    it('② 已存在 ⇒ existed 且零写入 (name / needSync / updatedAt 不变)', async () => {
+      const pre = await prisma.instrument.create({
+        data: {
+          ...seedInstrumentCreateData('us', 'OLDB'),
+          name: 'Synthetic B Inc',
+          needSync: true,
+        },
+      });
+      const res = await ensureInstrument.execute('us', 'OLDB');
+      expect(res).toEqual({ status: 'existed', id: pre.id });
+      const after = await prisma.instrument.findUniqueOrThrow({ where: { id: pre.id } });
+      expect(after).toEqual(pre);
+    });
+
+    it('③ 并发两路补齐同一码 ⇒ 都不抛, 库里一行', async () => {
+      const results = await Promise.all([
+        ensureInstrument.execute('us', 'RACEC'),
+        ensureInstrument.execute('us', 'RACEC'),
+      ]);
+      // 不断言两路各自的 status: 空 update 的 upsert 是「先读后写」, 后到的一路可能在 upsert 内部
+      // 读到行而返回 created —— 那是 Prisma 的读写时序, 不是本 use case 的契约。
+      expect(results[0].id).toBe(results[1].id);
+      expect(await prisma.instrument.count({ where: { market: 'us', code: 'RACEC' } })).toBe(1);
     });
   });
 });

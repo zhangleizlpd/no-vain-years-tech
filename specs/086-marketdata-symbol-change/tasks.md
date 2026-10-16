@@ -66,7 +66,7 @@ updated_at: '2026-10-16'
 
 - [X] T003 [Server] **登记 / 撤销 use case + marketdata exports**（FR-001, FR-002, FR-003, FR-009; plan D1, D5）：`register-symbol-change.usecase.ts`（读未撤销登记 → `validateRegistration` → 插入；P2002 折叠为「已存在」供编排判跳过）、`revoke-symbol-change.usecase.ts`（conditional UPDATE `revoked_at IS NULL` → 写撤销人 / 理由；已撤销 ⇒ 返回「已撤销」）、`list` 只读方法（含已撤销，FR-009）。`marketdata.module.ts` exports 加这两个 use case + `AnchorDrivenSyncGate` + `GetInstrumentBarsUseCase` → verify: 臂并入 T005 的 IT 文件（登记 → 读 → 撤销 → 重登记同参数成功）；`pnpm nx run server:typecheck` 绿；boot 冒烟留给 T021 的 `runtime-smoke`
 
-- [ ] T004 [P] [Server] **`EnsureInstrumentUseCase`：同步补齐标的行**（FR-011; plan D5 第 4 步; state_branches 16）：新建 `marketdata/ensure-instrument.usecase.ts`，`execute(market, code)`：已存在 ⇒ 返回 `existed`；不存在 ⇒ 用 `seedInstrumentCreateData`（`sync-universe.usecase.ts`）`upsert`，返回 `created`。加进 marketdata exports → verify: T005 的 IT 文件加臂：① 不存在 ⇒ 建行且字段与 `seedInstrumentCreateData` 一致 ② 存在 ⇒ 零写入 ③ 并发两次 ⇒ 一行（upsert 天然幂等）；定向变异：改用 `create` → ③ 红（P2002，留档）
+- [X] T004 [P] [Server] **`EnsureInstrumentUseCase`：同步补齐标的行**（FR-011; plan D5 第 4 步; state_branches 16）：新建 `marketdata/ensure-instrument.usecase.ts`，`execute(market, code)`：已存在 ⇒ 返回 `existed`；不存在 ⇒ 用 `seedInstrumentCreateData`（`sync-universe.usecase.ts`）`upsert`，返回 `created`。加进 marketdata exports → verify: T005 的 IT 文件加臂：① 不存在 ⇒ 建行且字段与 `seedInstrumentCreateData` 一致 ② 存在 ⇒ 零写入 ③ 并发两次 ⇒ 一行（upsert 天然幂等）；定向变异：改用 `create` → ③ 红（P2002，留档）
 
 ### US1（P1）：登记改名后新码名下看到完整历史
 
