@@ -8,7 +8,7 @@ paths:
 
 ## 单源真理
 
-migration **命名** (`<yyyymmddhhmm>_<verb>_<obj>`) + **prisma generate hard gate** (lefthook `prisma-generate-gate`) + **3 层 seed idempotent UPSERT** + **spec ↔ migration 关联 `migration_refs` frontmatter** 见 [ADR-0035](../../docs/adr/0035-data-layer-governance.md)。本 rule 仅 surface 路径触发的硬 invariant + expand-migrate-contract 三步法。
+migration **命名** (`<yyyymmdd>_<hhmm>_<verb>_<obj>`，lefthook `migration-naming-check` 正则为准) + **prisma generate hard gate** (lefthook `prisma-generate-gate`) + **3 层 seed idempotent UPSERT** + **spec ↔ migration 关联 `migration_refs` frontmatter** 见 [ADR-0035](../../docs/adr/0035-data-layer-governance.md)。本 rule 仅 surface 路径触发的硬 invariant + expand-migrate-contract 三步法。
 
 > 历史 migration `0_init` / `1_add_outbox_event` / `2_drop_legacy_modulith_flyway_tables` 是 ADR-0035 ship 前的 retrofit immutable，per lefthook `migration-naming-check` 仅校验新增。
 

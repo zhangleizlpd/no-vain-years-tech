@@ -3,7 +3,7 @@
  * check-api-property-nullable.ts — ts-morph AST 探针: nullable 标量 DTO 字段的
  * `@ApiProperty` 必须显式写 `type:`，否则 orval 误生成 `{ [k]: unknown } | null`。
  *
- * 坑 (per memory reference_nullable_apiproperty_needs_type_string_else_orval_objectmap):
+ * 坑:
  *   字段类型为 `string | null` (或 `number | null` / `boolean | null`) 的 `@ApiProperty`,
  *   若漏写 `type: 'string'`，`@nestjs/swagger` 反射对 `T | null` 联合推不出标量 →
  *   openapi.json 该 schema 退化为无 type → orval 生成 `{ [k]: unknown } | null`。

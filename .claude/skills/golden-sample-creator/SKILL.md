@@ -1,6 +1,6 @@
 ---
 name: 'golden-sample-creator'
-description: '把一个刚解决的问题 / 范例代码沉淀为 golden sample，一次性落入仓内三层最佳实践体系（golden-sample-registry 索引 + impl-playbook HOW 纪律 + .claude/rules path-trigger + 代码 // GOLDEN SAMPLE banner），让后续所有 SDD impl（/sdd-auto-impl 派单 step 0 读 registry 注入子 agent brief）都能参考借鉴。触发：用户提"把这个沉淀成 golden sample / 这个可以当模板 / 这段当样板 / 落入最佳实践 / promote 样板 / 加个 golden sample / golden-sample-creator"，或解决一个有代表性问题后想把范式固化时。'
+description: '把一个刚解决的问题 / 范例代码沉淀为 golden sample，一次性落入仓内三层最佳实践体系 + 代码 banner（golden-sample-registry 索引 + impl-playbook HOW 纪律 + .claude/rules path-trigger；外加代码 // GOLDEN SAMPLE banner），让后续所有 SDD impl（/sdd-auto-impl 派单 § 1.b step 0 ② 读 registry 注入子 agent brief）都能参考借鉴。触发：用户提"把这个沉淀成 golden sample / 这个可以当模板 / 这段当样板 / 落入最佳实践 / promote 样板 / 加个 golden sample / golden-sample-creator"，或解决一个有代表性问题后想把范式固化时。'
 argument-hint: '[范例文件路径]（可选；省略则问 / 从最近改动推断）'
 user-invocable: true
 disable-model-invocation: false
@@ -8,11 +8,11 @@ disable-model-invocation: false
 
 # golden-sample-creator — 把解决方案沉淀为 golden sample
 
-把「我刚解决了 X，这个值得当模板」从**易错的手工多处编辑**，变成**有 checklist + verify 门兜底**的流程。锁定 golden-sample 三层体系，不做泛化最佳实践。
+把「我刚解决了 X，这个值得当模板」从**易错的手工多处编辑**，变成**有 checklist + verify 门兜底**的流程。锁定 golden-sample 三层体系 + 代码 banner，不做泛化最佳实践。
 
-> **为什么沉淀进 registry 就能惠及未来**：`golden-sample-registry.md` 不是死文档——`/sdd-auto-impl` 派单时（command step 0）**读它**，把"golden 参考（样板路径 + 一句学什么）"塞进干净上下文子 agent 的 brief。往 registry 正确落一条 = 自动惠及所有未来 SDD impl。这是本 skill 存在的全部意义。
+> **为什么沉淀进 registry 就能惠及未来**：`golden-sample-registry.md` 不是死文档——`/sdd-auto-impl` 派单时（command § 1.b step 0 ②）**读它**，把"golden 参考（样板路径 + 一句学什么）"塞进干净上下文子 agent 的 brief。往 registry 正确落一条 = 自动惠及所有未来 SDD impl。这是本 skill 存在的全部意义。
 
-## 三层体系 cheat-sheet（先认清哪层放哪）
+## 三层体系 + 代码 banner cheat-sheet（先认清哪层放哪）
 
 | 层               | 文件                                                  | 装什么                                                           | 何时要                                       |
 | ---------------- | ----------------------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------- |
@@ -27,11 +27,12 @@ disable-model-invocation: false
 
 ### 1. Intake（缺啥问啥，别瞎猜）
 
-确认四件事，缺则问用户：
+确认以下各项，缺则问用户：
 
 - **解决了什么问题**（一句话，将来当"学什么"的种子）。
 - **范例文件**（`$ARGUMENTS` 或从最近 commit / git diff 推断；让用户点头确认这就是要立的样板）。
 - **平台**：mobile 还是 server（决定进哪个 playbook / rule）。
+- **进哪张表**：registry 的 task-kind 表（`## task kind → 样板`）还是测试样板表（`## 测试样板`，横切、按 size × 形态分行）。
 - **先 Read 目标文件真身**：动手设计 registry 行/段前，**实际 Read** 三层目标文件当前内容（registry / 目标 playbook / 目标 rule），别凭记忆或注入 context 设计（可能 stale → 行风格/§编号对不上）。`rg` 在**目标工作树**跑（带 `git status` 自检路径）。
 - **新行 or 扩展**：先 `rg` registry 看有没有沾边的现有行。判据见 step 2（同主题新实例 → 扩展，别新开行）。
 
@@ -51,7 +52,7 @@ disable-model-invocation: false
 
 ### 3. Apply（按定的层写入）
 
-- **registry 行**（必）：`| <task kind> | <样板路径> | <学什么>；纪律 → <playbook §X> | <不适用/边界> |`。`学什么` 写"照抄什么结构/范式"，不写业务。§锚用**节号** `§ N`（匹配 registry 既有风格，**非 slug**）。
+- **registry 行**（必）：`| <task kind> | <样板路径> | <学什么>；纪律 → <playbook §X> | <不适用/边界> |`。`学什么` 写"照抄什么结构/范式"，不写业务。§锚 mobile 用节号 `§ N`、server 用小节 ID `§ PN` 等（如 `§ P1` / `§ S2`；匹配 registry 既有风格，**非 slug**）。
 - **playbook §**（按需）：在对应 playbook 加节或扩节。含 `实证锚`。
   - 🚨 **反面教训只在有实证时写**（e2e 红 / 实测数据 / git 史），且写明实证来源。没跑过别下"这样做会坏"的结论（本 skill 诞生就因一次把 flaky 误判成"turn 失效破 e2e"的假反面教训）。
   - 🚨 **用户主动递来的反面教训**：写入前**必须独立核验其前提**（`rg` / `git log` / 相关 PR body 三查），证伪即拒——别因"用户这么说"就照写（污染会经 /sdd-auto-impl brief 扩散）。
@@ -73,6 +74,7 @@ disable-model-invocation: false
 3. §锚解析：registry 行里写的每个 `§ X`，在目标 playbook 用 `rg "^#{1,3}.*X"` 验真实存在（**别过度承诺"已注 §锚"——没注就别在分工说明里声称注了**）。
 4. 无重复表：确认没往 playbook 新增一张镜像 registry 的聚合样板表。
 5. banner 在：`rg "GOLDEN SAMPLE" <样板文件>` 命中。
+6. registry ↔ banner 双向一致：`pnpm tsx scripts/checks/check-golden-sample-registry.ts` → exit 0。
 
 ### 6. 反模式 checklist（提交前自查，全是本仓真实踩过的坑）
 
@@ -91,4 +93,4 @@ disable-model-invocation: false
 
 - 三层体系活实例：本 skill 的设计源自 `golden-sample-registry.md` 收敛 + §8 React Query 缓存失效纪律的沉淀（2026-06-25）。
 - 建 / 改 `.claude/` 规矩 → [`docs/conventions/claude-config-layout.md`](../../../docs/conventions/claude-config-layout.md)（团队共享、进 git）。
-- /sdd-auto-impl 读 registry 的集成点 → `.claude/commands/sdd-auto-impl.md` step 0「golden 参考」。
+- /sdd-auto-impl 读 registry 的集成点 → `.claude/commands/sdd-auto-impl.md` § 1.b step 0 ②「golden 参考」。

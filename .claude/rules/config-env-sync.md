@@ -8,7 +8,6 @@ paths:
   - 'apps/server/vitest.config.ts'
   - 'scripts/ci/server-boot-smoke.ts'
   - 'apps/mobile/e2e/_support/real-backend-harness.ts'
-  - 'secrets.enc.env'
   - '.sops.yaml'
 ---
 
@@ -56,7 +55,7 @@ dev compose（`docker-compose.dev.yml`）只起 PG+Redis，**不起 app** → �
 
 ## 🔑 第一步先判 secret vs 非-secret（决定真值落哪）
 
-**在动上面 9 位置之前先问：这个 key 是 secret 吗？** 名含 `_KEY` / `_SECRET` / `_TOKEN` / `_PASSWORD` / `HMAC`（= `.sops.yaml` `encrypted_regex`，`check-env-sync` 的 `SECRET_KEY_RE`；外加特例 `CODE_INDEX_URL`——WireGuard 隧道端点与其 token 同作一个 SOPS 单元）→ **是 secret**：
+**在动上面 9 位置之前先问：这个 key 是 secret 吗？** 名含 `_KEY` / `_SECRET` / `_TOKEN` / `_PASSWORD` / `HMAC`（= `.sops.yaml` `encrypted_regex`，`check-env-sync` 的 `SECRET_KEY_RE`；外加字面特例 `CODE_INDEX_URL` / `FUTU_SHIM_URL`——隧道端点与其 token 同作一个 SOPS 单元）→ **是 secret**：
 
 - **真值 → `secrets.enc.env`**（位置 #8，**仓外**），经 `sops edit ~/.nvy/secrets.enc.env`（加密成 `ENC[...]`）。🚨 **禁**把真值写进明文 `.env.production`（CI Check F sentinel 拦：tracked 明文 `.env.production` 里 secret-命名 key 带值 = 红；gitleaks 是第二层）。取代「secret 真值进服务器手填 `.env.production`」的旧做法。
 - dev `#2 .env.example` 仍放 **空占位 `KEY=""` 或 dev-only 假值**（本地 boot 用，**非**真值；dev example 不受 sentinel 约束）。

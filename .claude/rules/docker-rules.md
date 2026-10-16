@@ -9,7 +9,7 @@ paths:
 
 ## 单源真理
 
-部署拓扑（SWAS 单实例 + 同机 PG/Redis docker compose + ACR 镜像 + A-Tight v2 继承）见 [ADR-0026](../../docs/adr/0026-backend-deployment-topology.md)；secrets 注入（`.env.production` volume mount）见 [ADR-0037](../../docs/adr/0037-security-credentials-governance.md)。活的真相在 `apps/server/Dockerfile` + `docker-compose.{dev,tight}.yml` 本身（含 inline rationale）。本 rule 仅 surface 改 Docker 产物时的硬 invariant，不重复部署决策 / 不镜像当前配置值。
+部署拓扑（SWAS 单实例 + 同机 PG/Redis docker compose + ACR 镜像 + A-Tight v2 继承）见 [ADR-0026](../../docs/adr/0026-backend-deployment-topology.md)；配置注入（非密值 `.env.production` 经 compose `--env-file`；secret 走仓外 `secrets.enc.env` + `sops exec-env`，见 [`config-env-sync.md`](config-env-sync.md) / [`secrets-sops.md`](../../ops/runbook/secrets-sops.md)）及凭证治理见 [ADR-0037](../../docs/adr/0037-security-credentials-governance.md)。活的真相在 `apps/server/Dockerfile` + `docker-compose.{dev,tight}.yml` 本身（含 inline rationale）。本 rule 仅 surface 改 Docker 产物时的硬 invariant，不重复部署决策 / 不镜像当前配置值。
 
 ## 硬性 invariant
 
@@ -26,14 +26,14 @@ paths:
 ### 2. docker-compose
 
 - 必须 `name:` 字段（避免不同目录 / dev vs tight 的 compose project 撞名）
-- image 版本显式 pin；app 镜像 tag 由 `.env.production` 的 `${MBW_VERSION}` 注入，不裸 `:latest`
+- image 版本显式 pin；app 镜像 tag 由 `${MBW_VERSION}` 注入（compose 写作 `${MBW_VERSION:-latest}`，未注入时兜底回落 `:latest`；deploy 显式 export）
 - 每个服务必须 `healthcheck`（让 `depends_on: condition: service_healthy` 生效）
 - named volume 加项目前缀
 - 文件按角色拆：`docker-compose.dev.yml`（本机开发）/ `.tight.yml`（单节点生产）—— **禁单一 compose 混 dev/prod**
 
 ### 3. 安全
 
-- secrets **不 bake 进镜像** —— 走 `.env.production` volume mount（per ADR-0037）
+- secrets **不 bake 进镜像** —— 走 `secrets.enc.env` + `sops exec-env` 运行时注入（per ADR-0037；`.env.production` 只放非密值）
 - CI 跑 Trivy fs scan + image scan（HIGH+ 阻塞合并，见 `.github/workflows/ci.yml`）；`ignore-unfixed` 不阻塞修不了的上游 vendor 漏洞
 - `.dockerignore` 必须排除：构建产物（`node_modules` / `dist` / `.nx` / `.swc` / coverage）+ `.env*` secrets + `.git` + `docs` / `specs` / `.github` / `.claude` / `.specify`
 

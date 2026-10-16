@@ -19,7 +19,7 @@ dev DB = `docker-compose.dev.yml` 的 `mbw-poc-postgres` 容器，PG 端口 5433
 
 ```bash
 docker exec mbw-poc-postgres psql -U mbw -d mbw_poc -c \
-  "SELECT id, account_id, title, status, created_at, updated_at FROM ideation.idea_session ORDER BY updated_at DESC LIMIT 20;"
+  "SELECT id, account_id, title, status, repo, created_at, updated_at FROM ideation.idea_session ORDER BY updated_at DESC LIMIT 20;"
 ```
 
 `status` 取值：`open`（澄清中）/ `converged`（已生成 brief）/ `handed-off`（已交接，对应 UI「已交接」）等。
@@ -50,7 +50,7 @@ PY
 
 > ⚠️ psql 终端输出会被截断——**用上面 json + python 打印**，别用裸 `-c "SELECT ... content"`（长内容会被切，看不全后半段对话）。
 
-### A.3 拉最终产出 brief（15 段全量）
+### A.3 拉最终产出 brief（全段，段清单以 `brief.schema.ts` 为准）
 
 ```bash
 docker exec mbw-poc-postgres psql -U mbw -d mbw_poc -At \

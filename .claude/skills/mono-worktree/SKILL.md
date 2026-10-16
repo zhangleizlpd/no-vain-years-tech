@@ -25,12 +25,12 @@ agent 建 worktree 一律走 Claude Code 原生方式，不调 `feat-open`。
 
 ## 2. 4 个命令
 
-| 命令                   | 作用                                                                                                                                      |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `feat-open <branch>`   | 开 worktree（自动 branch attach/create）+ 分配 PORT/Metro/Redis db + 写 `.envrc`（PG 指共享 `mbw_poc`）+ `pnpm install --frozen-lockfile` |
-| `feat-close <branch>`  | 删 worktree + 删本地分支（PG 共享 `mbw_poc`，**绝不 drop**）                                                                              |
-| `feat-claude <branch>` | `cd` 进 worktree + `export CC_NS=<suffix>` + 启 `claude`（独立 memory pool）                                                              |
-| `feat-list`            | 列所有 worktree + 容器目录磁盘占用 + 遗留 `mbw_*` per-feature DB（旧版残留，可手工清）                                                    |
+| 命令                   | 作用                                                                                                                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `feat-open <branch>`   | 开 worktree（自动 branch attach/create）+ 分配 PORT/Metro/Redis db + 写 `.envrc`（PG 指共享 `mbw_poc`）+ `pnpm install --frozen-lockfile` + 链接主仓 `docs/{private,experience,explore}`（symlink，同 inode） |
+| `feat-close <branch>`  | 删 worktree + 删本地分支（PG 共享 `mbw_poc`，**绝不 drop**）                                                                                                                                                  |
+| `feat-claude <branch>` | `cd` 进 worktree + `export CC_NS=<suffix>` + 启 `claude`（`CC_NS` 仅隔离 last-session-notes；auto-memory 与 claude-mem 跨 worktree 共享）                                                                     |
+| `feat-list`            | 列所有 worktree + 容器目录磁盘占用 + 遗留 `mbw_*` per-feature DB（旧版残留，可手工清）                                                                                                                        |
 
 ## 3. Branch 命名（两套并行，per `docs/conventions/git-workflow.md`）
 
@@ -65,13 +65,13 @@ export EXPO_METRO_PORT=8082                  # Metro，8082 起递增
 ### 开 feature
 
 ```bash
-# SDD: 先跑 spec-kit specify 自动建 NNN-<slug> 分支
-/speckit-specify "pkm link graph"
-# → 自动 git checkout -b 003-pkm-link-graph
-
-# 然后开 worktree（attach 已存在分支）
+# SDD: 先建 NNN-<slug> 分支，再跑 /speckit-specify（当前无 before_specify git hook，specify 不会自动建分支）
+# 开 worktree：feat-open 自动 create 分支（已存在则 attach）
 feat-open 003-pkm-link-graph
 # → ✅ 输出含 server PORT / Metro PORT / DB 名 / 启动命令提示
+
+# 进 worktree 后（不开 worktree 时改为在主仓 git switch -c 003-pkm-link-graph）再跑
+/speckit-specify "pkm link graph"
 ```
 
 ### 在 worktree 内开发
@@ -85,7 +85,7 @@ nx serve server
 # 启 mobile（Metro PORT 需手带 --port，Expo 不读 env）
 nx serve mobile -- --port $EXPO_METRO_PORT
 
-# 启独立 Claude session（独立 memory pool，不污染主仓）
+# 启 Claude session（CC_NS 仅隔离 last-session-notes；auto-memory 与 claude-mem 跨 worktree 共享）
 export CC_NS=003-pkm-link-graph
 claude
 ```
@@ -119,7 +119,7 @@ feat-close 003-pkm-link-graph
 
 - `commit-commands:clean_gone` 清理 [gone] 分支时**附带**清 git worktree 元数据；PG 已共享 `mbw_poc` 无 per-feature DB 可残留，Redis db 随 `.envrc` 删除自然释放。建议先 `feat-close` 再 `clean_gone`
 - `speckit-implement` 在 worktree 内跑没问题；tasks.md `[X]` flip + commit 走副 worktree git 即可
-- `claude-mem` (env-gated `CLAUDE_MEM_ENABLE=1`) 在 worktree 内独立 pool 工作（用户已选独立 pool 方向，不桥接主仓）
+- `claude-mem` (env-gated `CLAUDE_MEM_ENABLE=1`) 在 worktree 内与主仓共用同一观察 db（`~/.claude-mem/claude-mem.db`，single db，跨 worktree 共享；`CC_NS` 不隔离它）
 
 ## 9. 文件位置
 
