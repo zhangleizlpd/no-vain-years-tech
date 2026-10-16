@@ -2,7 +2,7 @@
 feature_id: 086-marketdata-symbol-change
 modules: [marketdata, optionsdesk]
 owners: ['@zhangleizlpd']
-status: implementing
+status: implemented
 created_at: '2026-10-16'
 updated_at: '2026-10-16'
 spec_kit_version: '>=0.8.5,<0.10.0'
