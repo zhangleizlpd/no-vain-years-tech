@@ -130,6 +130,25 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
       expect(await prisma.symbolChange.count({ where: { newCode: 'ZZZ' } })).toBe(0);
     });
 
+    it('旧码 = 新码 / 分拆 / 退市 ⇒ rejected 且零写入 (branch 10、11)', async () => {
+      const same = await register.execute(
+        { ...base, oldCode: 'SMA', newCode: 'SMA', effectiveDate: '2026-05-01' },
+        NOW,
+      );
+      expect(same).toMatchObject({ status: 'rejected', reason: 'same_code' });
+
+      for (const eventType of ['split', 'delisting']) {
+        const res = await register.execute(
+          { ...base, oldCode: 'SPA', newCode: 'SPB', effectiveDate: '2026-05-01', eventType },
+          NOW,
+        );
+        expect(res).toMatchObject({ status: 'rejected', reason: 'unsupported_event_type' });
+      }
+      expect(await prisma.symbolChange.count({ where: { oldCode: { in: ['SMA', 'SPA'] } } })).toBe(
+        0,
+      );
+    });
+
     it('重复撤销 ⇒ already_revoked; 从未登记 ⇒ not_found', async () => {
       await register.execute(
         { ...base, oldCode: 'JJJ', newCode: 'KKK', effectiveDate: '2026-04-01' },
@@ -375,7 +394,8 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
       `);
     });
 
-    it('① 登记后查新码 ⇒ 旧段 + 新段连续、无重复日 (branch 1、2)', async () => {
+    // XBB 在生效日前自有 06-30 (55), 序列里该日须取 XAA 的 15 (branch 7)。
+    it('① 登记后查新码 ⇒ 旧段 + 新段连续、无重复日 (branch 1、2、7)', async () => {
       const reg = await register.execute(
         { ...base, oldCode: 'XAA', newCode: 'XBB', effectiveDate: '2026-07-04' },
         NOW,
@@ -524,6 +544,62 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
         b.filter((x) => x.source === RECYCLER).length +
         a.filter((x) => x.source !== RECYCLER).length;
       expect(crossed).toBe(0);
+    });
+  });
+
+  // 链式 CHA → CHB @ 08-03 → CHC @ 08-10。volume 标来源: 2001 = CHA 段 · 2002 = CHB 段 · 2003 = CHC 段;
+  // 每码在自己段外各多一天 (CHA 08-04 / CHB 08-11), 段切错时会被拼进来。
+  describe('链式改名端到端 (FR-003; state_branches 6)', () => {
+    let bars: GetInstrumentBarsUseCase;
+
+    beforeAll(async () => {
+      bars = new GetInstrumentBarsUseCase(prisma, {
+        lastClosedSession: async () => '2026-08-11',
+      } as unknown as TradingCalendarPort);
+      const [cha, chb, chc] = await Promise.all(
+        ['CHA', 'CHB', 'CHC'].map((code) =>
+          prisma.instrument.create({ data: seedInstrumentCreateData('us', code) }),
+        ),
+      );
+      const row = (instrumentId: bigint, tradeDate: string, volume: string) => ({
+        instrumentId,
+        tradeDate: new Date(`${tradeDate}T00:00:00Z`),
+        adjust: 'none',
+        open: '10',
+        high: '10',
+        low: '10',
+        close: '10',
+        volume,
+      });
+      await prisma.dailyBar.createMany({
+        data: [
+          row(cha.id, '2026-07-31', '2001'),
+          row(cha.id, '2026-08-04', '2001'),
+          row(chb.id, '2026-08-03', '2002'),
+          row(chb.id, '2026-08-07', '2002'),
+          row(chb.id, '2026-08-11', '2002'),
+          row(chc.id, '2026-08-10', '2003'),
+          row(chc.id, '2026-08-11', '2003'),
+        ],
+      });
+      for (const [oldCode, newCode, effectiveDate] of [
+        ['CHA', 'CHB', '2026-08-03'],
+        ['CHB', 'CHC', '2026-08-10'],
+      ]) {
+        const reg = await register.execute({ ...base, oldCode, newCode, effectiveDate }, NOW);
+        expect(reg.status).toBe('registered');
+      }
+    });
+
+    it('查 CHC ⇒ 回溯到 CHA 段, 三段按生效日切分、无段外日 (branch 6)', async () => {
+      const items = (await bars.execute({ symbol: 'us:CHC', adjust: 'none', period: 'day' })).items;
+      expect(items.map((i) => [i.tradeDate, i.volume])).toEqual([
+        ['2026-07-31', '2001'],
+        ['2026-08-03', '2002'],
+        ['2026-08-07', '2002'],
+        ['2026-08-10', '2003'],
+        ['2026-08-11', '2003'],
+      ]);
     });
   });
 });
