@@ -2,6 +2,16 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.54.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.2...server-v0.54.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **marketdata:** 079 会前通知按代码段与股息会消歧 + T026 收口修复刊发日与报告期键 ([#496](https://github.com/zhangleizlpd/no-vain-years-tech/issues/496)) ([d8b538c](https://github.com/zhangleizlpd/no-vain-years-tech/commit/d8b538ca408f58c1cb867b4afae8c2599ee9687c))
+* **marketdata:** 一只未知代码不再拖垮整批 snapshot —— shim 剥码重发 + 按市场判锚停摆 ([#495](https://github.com/zhangleizlpd/no-vain-years-tech/issues/495)) ([ead4ff3](https://github.com/zhangleizlpd/no-vain-years-tech/commit/ead4ff3394b8eb759ee545b375db61a80e571a79))
+* **marketdata:** 重启后 stalled job 的 failed 事件漏收致 sync_run 永久 running —— 订阅起点 + 对账兜底 ([#492](https://github.com/zhangleizlpd/no-vain-years-tech/issues/492)) ([a0bce3f](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a0bce3f0a3f485c60e88f4777a187108460ce3e2)), closes [#491](https://github.com/zhangleizlpd/no-vain-years-tech/issues/491)
+* **repo:** 修 Trivy 新增 29 条 HIGH/CRITICAL 依赖 CVE, fastify 5.12 下 trustProxy 改按地址信任 nginx ([#488](https://github.com/zhangleizlpd/no-vain-years-tech/issues/488)) ([3199271](https://github.com/zhangleizlpd/no-vain-years-tech/commit/3199271d78d1414c20248ec2317993d5bf9e9e61))
+
 ## [0.54.2](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.1...server-v0.54.2) (2026-09-21)
 
 
