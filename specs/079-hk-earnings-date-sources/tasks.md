@@ -174,7 +174,7 @@ updated_at: '2026-10-09'
 
 - [X] T045 [Server] **清单期间按财年档案换算**（`FR-006`; spec Session（十一））：`earnings-period.rules.ts` 新增纯函数，输入清单行期间原文、报告类型、会议日与财年结束月：「YYYY年第N季」⇒ 日历季度末；期间空白 + 报告类型 ⇒ 会议日之前该类型的财季末候选中、会议日落在刊发时限内的唯一者；期末日须是该公司财季末（`fiscalQuarterOf` 非 null）；其余 ⇒ null。→ verify: period rules spec：「2026年第三季」/ 12 / 10-27 ⇒ `P:2026-09-30`；「2024年第一季」/ 12 / 04-30 ⇒ `P:2024-03-31`；同文 / 1 月结 ⇒ null；同文 / 会议日超时限 ⇒ null；空白 + 季度 / 12 / 04-26 ⇒ `2024-03-31`；空白 + 中期 / 12 / 08-20 ⇒ `06-30`；空白 + 类型未知 ⇒ null。
 
-- [ ] T046 [Server-IT] **清单来源读档案落键 + FR-030 空白期间按会议日配对**（`FR-006`, `FR-030`; spec Session（十一））：前置 = T045。`hkex-board-meeting-list.source.ts` 读本页标的的财年档案，非 `P:` 行按 T045 换算得 `P:` 则落 `P:`（原文照存）；`selectAlignedSuccessor` 对原文为空的清单观测以会议日配对（`planUnalignedSupersede` 读会议日）。→ verify: merge rules spec 加空白期间同会议日 / 不同会议日两臂；079 IT 复刻 `00005`：无档案一轮落 `T:` 事件，补档案后下一轮 ⇒ 落 `P:` 观测、`T:` 事件 superseded 指向 `P:` 事件、本轮无 `earnings_board_list_dropped` 发现；空白期间形态同；定向变异：来源不读档案 ⇒ 臂红；去掉会议日配对 ⇒ 空白臂红。
+- [X] T046 [Server-IT] **清单来源读档案落键 + FR-030 空白期间按会议日配对**（`FR-006`, `FR-030`; spec Session（十一））：前置 = T045。`hkex-board-meeting-list.source.ts` 读本页标的的财年档案，非 `P:` 行按 T045 换算得 `P:` 则落 `P:`（原文照存）；`selectAlignedSuccessor` 对原文为空的清单观测以会议日配对（`planUnalignedSupersede` 读会议日）。→ verify: merge rules spec 加空白期间同会议日 / 不同会议日两臂；079 IT 复刻 `00005`：无档案一轮落 `T:` 事件，补档案后下一轮 ⇒ 落 `P:` 观测、`T:` 事件 superseded 指向 `P:` 事件、本轮无 `earnings_board_list_dropped` 发现；空白期间形态同；定向变异：来源不读档案 ⇒ 臂红；去掉会议日配对 ⇒ 空白臂红。
 
 - [ ] T047 [Ops] **部署后复核**（`FR-006`, `FR-030`）：前置 = T045–T046 随 server 发版部署（宜在 2026-10-27 前）。无需回填，次一轮日跑即收敛。→ verify: prod 只读：`hk:00005 T:hkex_board_meeting_list:2026年第三季` 为 superseded、`P:2026-09-30` 的来源含清单；有档案标的的清单非 `P:` 观测对应事件全部已并入。
 

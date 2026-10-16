@@ -3166,3 +3166,116 @@ describe('079 T043 档案后到: 非对齐观测重键 + 已刊发非对齐事�
     expect(steps(stats, 'earnings_date_realigned')).toEqual([]);
   });
 });
+
+// T046 清单来源读档案落键 + FR-030 空白期间按会议日配对 (FR-006 / FR-030, spec Session（十一）)。为什么必须真 PG +
+// 真清单来源: 落键在来源里读档案表, 收尾是合并读回观测配对后改事件; 清单行提前消失判定读落库的最近观测时刻。
+describe('079 T046 清单年第N季 / 空白期间按财年档案落键', () => {
+  const FIXTURE = readFileSync(
+    join(
+      __dirname,
+      '../../src/marketdata/__fixtures__/hkex-board-meeting-list/ebmn_c-2026-09-13.htm',
+    ),
+    'utf8',
+  );
+  const FIRST_DATA_ROW = FIXTURE.indexOf('<tr><td width=75');
+  const TABLE_END = FIXTURE.indexOf('</table>', FIRST_DATA_ROW);
+  const cell = (text: string) =>
+    `<td><font face='monospace' style='font-size: 12'>${text}</font></td>`;
+  /** 合成页面: fixture 头尾 + 给定数据行; 页首日期 `YYYY-MM-DD`。 */
+  const boardPage = (pageDate: string, rows: [string, string, string, string][]) => {
+    const dmy = (d: string) => d.split('-').reverse().join('/');
+    const body = rows
+      .map(
+        ([meeting, code, purpose, period]) =>
+          `<tr>${cell(dmy(meeting))}${cell('')}${cell(code)}${cell(`&nbsp;${Number(code)}`)}${cell(purpose)}${cell(period)}</tr>`,
+      )
+      .join('\n');
+    return (FIXTURE.slice(0, FIRST_DATA_ROW) + body + FIXTURE.slice(TABLE_END)).replace(
+      '日期 : 10/09/2026',
+      `日期 : ${dmy(pageDate)}`,
+    );
+  };
+  const page = { current: '' };
+  const buildWithBoardList = () => {
+    const fetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({}),
+      text: async () => page.current,
+      headers: { get: () => null },
+    });
+    const http = new VendorHttpClient(HKEXNEWS_PROFILE, {
+      fetch: fetch as unknown as VendorHttpClientDeps['fetch'],
+      sleep: async () => undefined,
+    });
+    const calendar = new DbTradingCalendarAdapter(prisma);
+    return new SyncEarningsDatesUseCase(
+      prisma,
+      assembleEarningsDateSources([...EARNINGS_DATE_SOURCE_NAMES], {
+        futu_calendar: scripted(hkOnly, { current: {} }),
+        hkex_announcement: new HkexAnnouncementSource(prisma),
+        hkex_board_meeting_list: new HkexBoardMeetingListSource(http, prisma, calendar),
+      }),
+      fiscal,
+      calendar,
+    );
+  };
+  const statusOf = async (instrumentId: bigint) =>
+    (
+      await prisma.earningsDateEvent.findMany({
+        where: { instrumentId },
+        select: { periodKey: true, status: true },
+        orderBy: { periodKey: 'asc' },
+      })
+    ).map((e) => [e.periodKey, e.status]);
+
+  beforeAll(seedHkTradingDays);
+  beforeEach(resetMergeTables);
+
+  it.each([
+    [
+      '① hk:00005 形态「2026年第二季」',
+      '00005',
+      '業績',
+      '2026年第二季',
+      'T:hkex_board_meeting_list:2026年第二季',
+    ],
+    [
+      '② hk:00386 形态 空白期间 + 中期業績',
+      '00386',
+      '中期業績',
+      '',
+      'D:hkex_board_meeting_list:2026-08-25',
+    ],
+  ])(
+    '%s: 无档案先落非 P: 键; 补档案后下一轮 ⇒ 落 P:2026-06-30, 旧事件 superseded 指向 P: 事件, 无清单行提前消失',
+    async (_label, code, purpose, period, oldKey) => {
+      const inst = await instrument('hk', code);
+      const useCase = buildWithBoardList();
+      page.current = boardPage('2026-08-20', [['2026-08-25', code, purpose, period]]);
+      await recordedRun(useCase, '2026-08-20');
+      expect(await statusOf(inst.id)).toEqual([[oldKey, 'confirmed']]);
+
+      await seedProfile(inst.id);
+      page.current = boardPage('2026-08-21', [['2026-08-25', code, purpose, period]]);
+      const { stats } = await recordedRun(useCase, '2026-08-21');
+
+      expect(await statusOf(inst.id)).toEqual(
+        [
+          [oldKey, 'superseded'],
+          [INTERIM, 'confirmed'],
+        ].sort(),
+      );
+      const successor = await eventOf(inst.id);
+      expect(successor).toMatchObject({
+        announceBasis: 'meeting',
+        announceDate: day('2026-08-25'),
+      });
+      expect((await eventOf(inst.id, oldKey)).logs.at(-1)).toMatchObject({
+        toStatus: 'superseded',
+        detail: expect.objectContaining({ supersededBy: successor.id.toString() }),
+      });
+      expect(steps(stats, 'earnings_board_list_dropped')).toEqual([]);
+    },
+  );
+});

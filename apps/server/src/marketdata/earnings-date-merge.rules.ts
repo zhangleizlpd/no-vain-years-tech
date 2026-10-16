@@ -106,6 +106,15 @@ export interface EarningsKeyObservation {
   readonly source: string;
   readonly periodKey: string;
   readonly periodText: string | null;
+  /** 会议日 (`YYYY-MM-DD`)：原文为空时代替原文配对 (清单空白期间行，spec Session（十一))。 */
+  readonly meetingDate?: string | null;
+}
+
+/** 配对用原文：原文非空取原文，否则有会议日取「会议日 <日期>」，都没有 ⇒ 空串 (不参与配对)。 */
+function pairText(o: EarningsKeyObservation): string {
+  const text = o.periodText?.trim() ?? '';
+  if (text !== '') return text;
+  return o.meetingDate ? `会议日 ${o.meetingDate}` : '';
 }
 
 /** 接手旧非对齐事件的 `P:` 键，及据以配对的来源与原文报告期 (流水留痕)。 */
@@ -134,12 +143,12 @@ export function selectAlignedSuccessor(
   const pairKey = (source: string, text: string): string => JSON.stringify([source, text]);
   const own = new Set(
     observations.flatMap((o) => {
-      const text = o.periodText?.trim() ?? '';
+      const text = pairText(o);
       return o.periodKey === event.periodKey && text !== '' ? [pairKey(o.source, text)] : [];
     }),
   );
   const matches = observations.flatMap((o) => {
-    const text = o.periodText?.trim() ?? '';
+    const text = pairText(o);
     return isAlignedPeriodKey(o.periodKey) && text !== '' && own.has(pairKey(o.source, text))
       ? [{ periodKey: o.periodKey, source: o.source, periodText: text }]
       : [];

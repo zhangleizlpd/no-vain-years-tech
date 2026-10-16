@@ -8,7 +8,7 @@ import type {
   EarningsDateSourceObservation,
   EarningsNonResultsMeeting,
 } from './earnings-date-source.port.js';
-import { datePeriodKey } from './earnings-period.rules.js';
+import { datePeriodKey, resolveBoardListPeriodWithProfile } from './earnings-period.rules.js';
 import {
   HKEX_BOARD_MEETING_LIST_SOURCE,
   parseBoardMeetingList,
@@ -86,6 +86,7 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
     const page = parseBoardMeetingList(html);
 
     const instrumentIds = await this.loadInstrumentIds([...page.rows, ...page.nonResultsRows]);
+    const fiscalYearEndMonths = await this.loadFiscalYearEndMonths([...instrumentIds.values()]);
     const evidence = `${HKEX_BOARD_MEETING_LIST_URL} 页首日期=${page.pageDate}`;
     const byKey = new Map<string, EarningsDateSourceObservation>();
     let skippedUnknownInstruments = 0;
@@ -95,7 +96,12 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
         skippedUnknownInstruments += 1;
         continue;
       }
-      const observation = toObservation(row, instrumentId, evidence);
+      const observation = toObservation(
+        row,
+        instrumentId,
+        evidence,
+        fiscalYearEndMonths.get(instrumentId) ?? null,
+      );
       const key = `${instrumentId} ${observation.periodKey}`;
       // 同页同标的同期多行 ⇒ 取页面顺序第一行 (唯一键 (source, instrument_id, period_key) 只容一行)。
       if (!byKey.has(key)) byKey.set(key, observation);
@@ -143,6 +149,18 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
     return new Map(instruments.map((i) => [i.code, i.id]));
   }
 
+  /** 本页标的的财年结束月 (FR-006，spec Session（十一）)：无档案的标的不在结果里。1 次读。 */
+  private async loadFiscalYearEndMonths(
+    instrumentIds: readonly bigint[],
+  ): Promise<Map<bigint, number>> {
+    if (instrumentIds.length === 0) return new Map();
+    const profiles = await this.prisma.earningsFiscalProfile.findMany({
+      where: { instrumentId: { in: [...instrumentIds] } },
+      select: { instrumentId: true, fiscalYearEndMonth: true },
+    });
+    return new Map(profiles.map((p) => [p.instrumentId, p.fiscalYearEndMonth]));
+  }
+
   /** `(页首日期, 业务日]` 交易日数 > 阈值 ⇒ 陈旧；日历不可判 (null) ⇒ `'unknown'`。 */
   private async judgeStaleness(
     pageDate: string,
@@ -156,20 +174,32 @@ export class HkexBoardMeetingListSource implements EarningsDateSource {
 /**
  * 清单业绩行 → `meeting` 口径观测。🚨 期间空白 ⇒ `D:<来源>:<会议日>` 键：同一标的多次空白期间若都落
  * 解析层给的 `T:<来源>:` (原文为空串)，会在唯一键上互相覆盖、只剩最后一次会议。
+ * 解析层未得期末日、标的有财年档案时按档案换算 (「YYYY年第N季」/ 期间空白，spec Session（十一）)。
  */
 function toObservation(
   row: BoardListRow,
   instrumentId: bigint,
   evidence: string,
+  fiscalYearEndMonth: number | null,
 ): EarningsDateSourceObservation {
   const blankPeriod = row.periodText.trim() === '';
+  const byProfile =
+    row.periodEnd === null && fiscalYearEndMonth !== null
+      ? resolveBoardListPeriodWithProfile({
+          periodText: row.periodText,
+          reportKind: row.reportKind,
+          meetingDate: row.meetingDate,
+          fiscalYearEndMonth,
+        })
+      : null;
+  const fallbackKey = blankPeriod
+    ? datePeriodKey(HKEX_BOARD_MEETING_LIST_SOURCE, row.meetingDate)
+    : row.periodKey;
   return {
     instrumentId,
-    periodKey: blankPeriod
-      ? datePeriodKey(HKEX_BOARD_MEETING_LIST_SOURCE, row.meetingDate)
-      : row.periodKey,
-    reportKind: row.reportKind,
-    periodEnd: row.periodEnd,
+    periodKey: byProfile?.periodKey ?? fallbackKey,
+    reportKind: byProfile?.reportKind ?? row.reportKind,
+    periodEnd: byProfile?.periodEnd ?? row.periodEnd,
     periodText: blankPeriod ? null : row.periodText,
     basis: 'meeting',
     announceDate: null,

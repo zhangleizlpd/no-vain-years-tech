@@ -287,11 +287,20 @@ export function resolveBoardListPeriodWithProfile(input: {
     return end === null ? null : aligned(end);
   }
   if (text !== '' || input.reportKind === null) return null;
+  return uniqueCandidateBefore(meeting.year, input.reportKind, aligned);
+}
+
+/** 会议所在年与前一年的各月末中，按 `aligned` 落键且类型相符的唯一者；0 或多个 ⇒ null。O(24)。 */
+function uniqueCandidateBefore(
+  meetingYear: number,
+  kind: EarningsReportKind,
+  aligned: (end: string) => PeriodResolution | null,
+): PeriodResolution | null {
   const candidates: PeriodResolution[] = [];
-  for (let abs = (meeting.year - 1) * 12; abs < meeting.year * 12 + 12; abs += 1) {
+  for (let abs = (meetingYear - 1) * 12; abs < meetingYear * 12 + 12; abs += 1) {
     const end = monthEndFromAbsolute(abs);
     const resolved = end === null ? null : aligned(end);
-    if (resolved !== null && resolved.reportKind === input.reportKind) candidates.push(resolved);
+    if (resolved !== null && resolved.reportKind === kind) candidates.push(resolved);
   }
   return candidates.length === 1 ? candidates[0] : null;
 }
