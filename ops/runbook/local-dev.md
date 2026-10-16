@@ -102,11 +102,11 @@ First bundle is slow (Metro compiles the dep graph). Ready when it logs
 > `expo start --web` (no env) launches with markets hidden. Use the commands
 > above, not raw `expo start`.
 
-| Target                       | API connectivity        | Notes                                                                                                                                                                                     |
-| ---------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Expo Web                     | `localhost:3000` direct | zero extra config                                                                                                                                                                         |
-| iOS simulator                | `localhost:3000` direct | shares the Mac network; dev client needs full Xcode — see [§ iOS Simulator](#ios-simulator--dev-client-on-the-same-local-server)                                                          |
-| physical device (dev client) | **needs LAN IP**        | jpush native dep ⇒ **no Expo Go**; both Metro (8081) and API (3000) must use the Mac LAN IP. Full procedure in [§ Real device](#real-device-mate50--dev-client-on-the-same-local-server). |
+| Target                       | API connectivity        | Notes                                                                                                                                                                                                                                          |
+| ---------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Expo Web                     | `localhost:3000` direct | zero extra config                                                                                                                                                                                                                              |
+| iOS simulator                | `localhost:3000` direct | shares the Mac network; dev client needs full Xcode — see [§ iOS Simulator](#ios-simulator--dev-client-on-the-same-local-server)                                                                                                               |
+| physical device (dev client) | **USB `adb reverse`**   | jpush native dep ⇒ **no Expo Go**; reverse both Metro (8081) and API (3000) over USB, app uses `localhost`; Mac LAN IP only as a no-USB fallback. Full procedure in [§ Real device](#real-device-mate50--dev-client-on-the-same-local-server). |
 
 ## Real device (Mate50) — dev client on the same local server
 
@@ -130,19 +130,30 @@ farm is an alternative anyway); install Android Studio + SDK + AVD only when you
 hit one of those. (Android-only call — the iOS Simulator stays the only way to see
 iOS without an iOS device.)
 
-### Two connections — both must use the Mac LAN IP
+### Two connections — both tunnelled over USB (`adb reverse`)
 
-A real device is not the Mac, so `localhost` resolves to the **phone**. Both
-links have to point at the Mac's LAN IP (find it: `ipconfig getifaddr en0`):
+A real device is not the Mac, so `localhost` resolves to the **phone**. The
+default fix is a USB reverse tunnel per port: `adb reverse tcp:<port> tcp:<port>`
+maps the phone's `localhost:<port>` back to the Mac, so the app uses `localhost`
+for both links and never depends on Wi-Fi or the Mac's IP:
 
-| Link                | What                                                                     | Default pitfall                     | Fix                                                                                     |
-| ------------------- | ------------------------------------------------------------------------ | ----------------------------------- | --------------------------------------------------------------------------------------- |
-| ① Metro (JS bundle) | dev-client APK ships no JS; pulls the bundle from Metro (8081) at launch | phone can't reach `localhost:8081`  | same Wi-Fi ⇒ connects to `<mac-lan-ip>:8081` (auto-discovered, or scan QR / `--tunnel`) |
-| ② API (backend)     | app HTTP calls hit the server (3000)                                     | `localhost:3000` = the phone itself | set `EXPO_PUBLIC_API_BASE_URL=http://<mac-lan-ip>:3000`                                 |
+| Link                | What                                                                     | Default pitfall                     | Fix                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| ① Metro (JS bundle) | dev-client APK ships no JS; pulls the bundle from Metro (8081) at launch | phone can't reach `localhost:8081`  | `adb reverse tcp:8081 tcp:8081`; connect the dev client to `http://localhost:8081`                             |
+| ② API (backend)     | app HTTP calls hit the server (3000)                                     | `localhost:3000` = the phone itself | `adb reverse tcp:3000 tcp:3000` + start Metro with `EXPO_PUBLIC_API_BASE_URL=http://localhost:3000` (explicit) |
 
-Prereqs (verified once): phone on the **same Wi-Fi subnet** as the Mac; server
-listens on `0.0.0.0` (`apps/server/src/main.ts`, already does); macOS Application
-Firewall off or allowing `node` (else it blocks inbound from the phone).
+Ports are the main worktree's; a `feat-open` worktree uses its own `$PORT` /
+`$EXPO_METRO_PORT` (e.g. 3001 / 8082) for **both** the reverse and the env value.
+Set the API base explicitly even on 3000: the `setup.ts` fallback is hard-coded
+`http://localhost:3000`, wrong for any worktree on another port.
+
+**Mac LAN IP is the no-USB fallback only** (the **LAN-IP fallback** paragraph in
+[§ Drive a check hands-free](#drive-a-check-hands-free--the-wrong-apk-trap)). `EXPO_PUBLIC_*`
+is inlined at bundle time, so a LAN IP becomes a dead value in the bundle: the Mac's
+IP drifting (network change / DHCP) or router AP isolation breaks it **silently**.
+The executable bring-up (port derivation, stale-Metro check, teardown) is the
+[`run-local-env` skill](../../.claude/skills/run-local-env/SKILL.md); this section is
+the reference behind it.
 
 ### Get & install the dev client (the only EAS step)
 
@@ -242,27 +253,37 @@ the APK with `grep -ri <pkg> apps/mobile/android/app/build/generated/autolinking
 
 ### Daily loop — hot reload, no EAS
 
-After the APK is installed, **everyday development never touches EAS**. Start
-Metro from the mono root with the API base pointed at the Mac LAN IP:
+After the APK is installed, **everyday development never touches EAS**. Reverse
+both ports over USB, then start Metro from the mono root with the API base at
+`localhost` (substitute your worktree's ports if not 3000 / 8081):
 
 ```bash
-EXPO_PUBLIC_API_BASE_URL=http://<mac-lan-ip>:3000 \
-  pnpm -C apps/mobile exec expo start --dev-client
+adb reverse tcp:8081 tcp:8081 && adb reverse tcp:3000 tcp:3000
+adb reverse --list   # both entries present
+EXPO_PUBLIC_API_BASE_URL=http://localhost:3000 EXPO_PUBLIC_FEATURE_MARKETS=true \
+  pnpm -C apps/mobile exec expo start --dev-client --port 8081
 ```
+
+> An already-running Metro from an earlier session may still carry a stale LAN-IP
+> base — `adb reverse` can't help then, the bundle uses its inlined value. Check
+> `ps eww -p <metro-pid>` for `EXPO_PUBLIC_API_BASE_URL`; if it isn't
+> `http://localhost:<server-port>`, kill it and restart with `--clear`. The
+> `run-local-env` skill does this check (and also passes
+> `EXPO_PUBLIC_OSS_PUBLIC_BASE_URL`) for you.
 
 Open the installed dev-client app on the Mate50 → it connects to Metro → edit
 JS/TS and save → **Fast Refresh** pushes the new bundle in milliseconds (state
 preserved). Press `r` in the terminal (or shake the phone) for a full reload.
 
 > **Scriptable launch + connect** (no tapping): cold-launch first, _then_ fire
-> the connect deep link at the Mac LAN IP — a cold start swallows the first deep
-> link (same gotcha as the iOS sim):
+> the connect deep link at `localhost` (via the reverse tunnel) — a cold start
+> swallows the first deep link (same gotcha as the iOS sim):
 >
 > ```bash
 > adb shell monkey -p com.shintongtech.novainyears -c android.intent.category.LAUNCHER 1
 > sleep 5   # let it cold-start
 > adb shell am start -a android.intent.action.VIEW \
->   -d "nvy://expo-development-client/?url=http%3A%2F%2F<mac-lan-ip>%3A8081"
+>   -d "nvy://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
 > ```
 >
 > After **re-installing a new APK**, `monkey`/launcher only foregrounds the
@@ -300,12 +321,14 @@ you have before debugging anything:
 Fix = install the `development`-profile APK (above). `adb install -r` over a
 standalone works only if same keystore, else `adb uninstall` first.
 
-**USB tunnel instead of LAN IP** — if the phone can't reach the Mac over Wi-Fi
-(different subnet / firewall), skip the LAN-IP env and tunnel over USB:
-`adb reverse tcp:8081 tcp:8081 && adb reverse tcp:3000 tcp:3000`, then start Metro
-with **no** `EXPO_PUBLIC_API_BASE_URL` (the bundle falls back to `localhost:3000`,
-which the reverse maps to the Mac). The dev-client launcher then lists
-`http://localhost:8081` with a green dot (= reachable) — tap it to load the bundle.
+**LAN-IP fallback (no USB)** — only when the phone can't be cabled. Replace the
+`adb reverse` pair and every `localhost` (Metro env, connect deep link) with the
+Mac's LAN IP (`ipconfig getifaddr en0`): `EXPO_PUBLIC_API_BASE_URL=http://<mac-lan-ip>:3000`
+and `url=http%3A%2F%2F<mac-lan-ip>%3A8081`. Prereqs: phone on the **same Wi-Fi
+subnet** as the Mac with no router AP isolation; server listens on `0.0.0.0`
+(`apps/server/src/main.ts`, already does); macOS Application Firewall off or
+allowing `node`. The IP is baked into the bundle — when the Mac's IP changes,
+restart Metro with `--clear`. Prefer USB whenever possible.
 
 **Drive the UI from the terminal** (agent / no hands) — `monkey` + the connect deep
 link only get you _to_ Metro; to tap precisely, read the live view tree instead of
@@ -417,16 +440,17 @@ xcrun simctl openurl booted "nvy://expo-development-client/?url=http%3A%2F%2Floc
 ```
 
 Start Metro the same way as the Mate50 path. **One Metro (8081) serves Web +
-Mate50 + iOS Simulator at once** — the iOS sim, being on the Mac, also reaches the
-Mate50's `EXPO_PUBLIC_API_BASE_URL=http://<mac-lan-ip>:3000` fine (the Mac can hit
-its own LAN IP), so no separate Metro is needed. Edit JS/TS → Fast Refresh.
+Mate50 + iOS Simulator at once** — the sim, being on the Mac, resolves the
+Mate50's `EXPO_PUBLIC_API_BASE_URL=http://localhost:3000` to the Mac directly (and
+would also reach a LAN-IP fallback value), so no separate Metro is needed. Edit
+JS/TS → Fast Refresh.
 
-| Gotcha                               | Note                                                                                                                              |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| full Xcode mandatory                 | simulator runtime is part of Xcode; CLT-only can't run a sim                                                                      |
-| EAS iOS sim artifact                 | a `.tar.gz` wrapping the `.app` — `tar -xzf` it; verify `gzip -t` (truncated download → `truncated gzip input`)                   |
-| cold-launch swallows first deep link | same as Android — `simctl launch` first, then `simctl openurl` the dev-client URL (re-fire once if Metro shows no `iOS Bundling`) |
-| API base                             | sim shares the Mac, so `localhost:3000` works; if Metro carries the Mate50 LAN-IP env, the sim uses that too — both fine          |
+| Gotcha                               | Note                                                                                                                                          |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| full Xcode mandatory                 | simulator runtime is part of Xcode; CLT-only can't run a sim                                                                                  |
+| EAS iOS sim artifact                 | a `.tar.gz` wrapping the `.app` — `tar -xzf` it; verify `gzip -t` (truncated download → `truncated gzip input`)                               |
+| cold-launch swallows first deep link | same as Android — `simctl launch` first, then `simctl openurl` the dev-client URL (re-fire once if Metro shows no `iOS Bundling`)             |
+| API base                             | sim shares the Mac, so `localhost:3000` works; it uses whatever Metro carries for the Mate50 (`localhost` or the LAN-IP fallback) — both fine |
 
 ## Manual test — getting the login SMS code
 
@@ -483,10 +507,36 @@ Restart the server (`nx serve server` reloads `.env`) and grounding hits the rea
 Stopping interactive dev (server + expo/Metro, incl. the one the Mate50 connects to)
 is independent from tearing down the shared dev DB — keep them separate:
 
+Stop **only this worktree's** server + Metro: find the listener on this worktree's
+derived ports (main 3000 / 8081, `feat-open` worktree 3001+ / 8082+ via `.envrc`)
+and kill its whole **process group**, which also takes out the `nx serve` /
+`node --watch` parent that would otherwise respawn the server. Never match by
+process name (`pkill -f "nx serve"` kills other worktrees' servers too), never
+`adb reverse --remove-all` (drops other worktrees' mappings), and leave the shared
+`:7700` code-index tunnel alone. Same block as the
+[`run-local-env` skill](../../.claude/skills/run-local-env/SKILL.md) `teardown` mode:
+
 ```bash
-# stop server + expo: Ctrl-C their terminals, or kill by port:
-lsof -tnP -iTCP:3000 -sTCP:LISTEN | xargs -r kill -9
-lsof -tnP -iTCP:8081 -sTCP:LISTEN | xargs -r kill -9
+[ -f .envrc ] && { set -a; source ./.envrc; set +a; }
+SERVER_PORT=${PORT:-3000}; METRO_PORT=${EXPO_METRO_PORT:-8081}
+
+# listener on this worktree's port → kill its process group (negative PGID)
+for P in "$SERVER_PORT" "$METRO_PORT"; do
+  LPID=$(lsof -ti "tcp:$P" -sTCP:LISTEN 2>/dev/null | head -1)
+  [ -z "$LPID" ] && continue
+  PGID=$(ps -o pgid= -p "$LPID" 2>/dev/null | tr -d ' ')
+  if [ -n "$PGID" ]; then kill -TERM "-$PGID" 2>/dev/null; else kill -TERM "$LPID" 2>/dev/null; fi
+done
+
+# remove only this worktree's two reverse mappings
+adb reverse --remove "tcp:$SERVER_PORT" 2>/dev/null
+adb reverse --remove "tcp:$METRO_PORT" 2>/dev/null
+
+# verify both ports are free (a respawn shows up here)
+sleep 1
+for P in "$SERVER_PORT" "$METRO_PORT"; do
+  lsof -ti "tcp:$P" -sTCP:LISTEN >/dev/null 2>&1 && echo ":$P still listening — rerun" || echo ":$P freed"
+done
 ```
 
 > **⚠️ Don't reflexively `compose down` the dev DB at "收工".** The `mbw-poc-postgres`
@@ -506,15 +556,12 @@ docker compose -f docker-compose.dev.yml down -v    # ...or drop the PG volume t
 `down` (no `-v`) preserves the `mbw-poc-pgdata` volume, so schema + seeded data
 survive across restarts.
 
-> **`nx serve` respawns port 3000.** Killing only the `:3000` PID leaves the
-> `node --watch dist/main.js` parent (under `npm exec nx serve` / its launching
-> shell) alive — `--watch` sees the port free up and restarts the server. To stop
-> it for good, kill the whole tree, not just the listener:
->
-> ```bash
-> pkill -f "nx serve"; pkill -f "node --watch dist/main.js"
-> # then confirm: lsof -tnP -iTCP:3000 -sTCP:LISTEN  → empty
-> ```
+> **`nx serve` respawns the server port.** Killing only the listener PID leaves
+> the `node --watch dist/main.js` parent (under `npm exec nx serve` / its launching
+> shell) alive — `--watch` sees the port free up and restarts the server. That is
+> why the teardown block above kills the listener's **process group**, not the PID.
+> If a port is still listening after it, rerun the block; if it persists,
+> `kill -KILL` that listener.
 
 ## Claude Code plan 落点（主 / 副 worktree 汇到同一目录）
 
@@ -533,17 +580,17 @@ survive across restarts.
 
 ## Troubleshooting
 
-| Symptom                                                                                        | Cause / fix                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| server 404 on `/api/healthz/...`                                                               | health is **not** under `/api`; use `/healthz/live`.                                                                                                                                                                                          |
-| port 3000/8081/5433/6380 already in use                                                        | a prior run is still up; kill by port (see Teardown) or `docker compose ... ps`.                                                                                                                                                              |
-| mobile can't reach API on a real device                                                        | `localhost` ≠ the Mac; set `EXPO_PUBLIC_API_BASE_URL` to the Mac LAN IP.                                                                                                                                                                      |
-| `prisma migrate status` can't find schema                                                      | run via `pnpm -C apps/server` (cwd must be `apps/server`).                                                                                                                                                                                    |
-| login never receives a code                                                                    | confirm `SMS_GATEWAY="mock"`; read the code from the server log, not a phone.                                                                                                                                                                 |
-| dev client can't find / connect to Metro                                                       | phone + Mac must share a Wi-Fi subnet; macOS firewall must allow `node`; else use `npx expo start --dev-client --tunnel`.                                                                                                                     |
-| changed `EXPO_PUBLIC_API_BASE_URL` but app still hits the old address                          | it's inlined at bundle time — Ctrl-C and restart Metro with the new value (hot reload alone won't pick it up).                                                                                                                                |
-| changed JS but device doesn't update                                                           | confirm the dev-client app is connected to **this** Metro; press `r` to force reload; native changes need a rebuilt APK (see table above).                                                                                                    |
-| app crashes on launch: `'<pkg>' doesn't seem to be linked` / `Cannot find native module '<X>'` | the installed dev-client APK predates a native dep in the JS Metro serves; JS hot reload can't deliver native code. Install a `development` build from a commit that includes the dep (rebuild if none) — see the profile/commit table above. |
-| `adb install` → `INSTALL_PARSE_FAILED_NOT_APK`                                                 | truncated download (CN proxy dropped the ~220 MB stream); re-fetch with a `curl -C -` resume loop until `unzip -t` passes, then re-install.                                                                                                   |
-| installed a new APK but app still crashes / runs old JS                                        | `monkey`/launcher only foregrounds the existing process; `adb shell am force-stop com.shintongtech.novainyears`, then cold-launch + re-fire the connect deep link.                                                                            |
-| `adb: no devices/emulators found` after the phone sat idle                                     | screen-lock dropped the USB authorization; replug + unlock + tap **Allow**; if still missing, `adb kill-server && adb start-server`.                                                                                                          |
+| Symptom                                                                                        | Cause / fix                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server 404 on `/api/healthz/...`                                                               | health is **not** under `/api`; use `/healthz/live`.                                                                                                                                                                                            |
+| port 3000/8081/5433/6380 already in use                                                        | a prior run is still up; kill by port (see Teardown) or `docker compose ... ps`.                                                                                                                                                                |
+| mobile can't reach API on a real device                                                        | `localhost` ≠ the Mac unless reversed: `adb reverse tcp:<server-port> tcp:<server-port>` (check `adb reverse --list`) and confirm the running Metro carries `EXPO_PUBLIC_API_BASE_URL=http://localhost:<server-port>`; LAN IP only without USB. |
+| `prisma migrate status` can't find schema                                                      | run via `pnpm -C apps/server` (cwd must be `apps/server`).                                                                                                                                                                                      |
+| login never receives a code                                                                    | confirm `SMS_GATEWAY="mock"`; read the code from the server log, not a phone.                                                                                                                                                                   |
+| dev client can't find / connect to Metro                                                       | `adb reverse tcp:<metro-port> tcp:<metro-port>` and connect to `http://localhost:<metro-port>`; on the no-USB fallback, phone + Mac must share a Wi-Fi subnet and the macOS firewall must allow `node`.                                         |
+| changed `EXPO_PUBLIC_API_BASE_URL` but app still hits the old address                          | it's inlined at bundle time — Ctrl-C and restart Metro with the new value (hot reload alone won't pick it up).                                                                                                                                  |
+| changed JS but device doesn't update                                                           | confirm the dev-client app is connected to **this** Metro; press `r` to force reload; native changes need a rebuilt APK (see table above).                                                                                                      |
+| app crashes on launch: `'<pkg>' doesn't seem to be linked` / `Cannot find native module '<X>'` | the installed dev-client APK predates a native dep in the JS Metro serves; JS hot reload can't deliver native code. Install a `development` build from a commit that includes the dep (rebuild if none) — see the profile/commit table above.   |
+| `adb install` → `INSTALL_PARSE_FAILED_NOT_APK`                                                 | truncated download (CN proxy dropped the ~220 MB stream); re-fetch with a `curl -C -` resume loop until `unzip -t` passes, then re-install.                                                                                                     |
+| installed a new APK but app still crashes / runs old JS                                        | `monkey`/launcher only foregrounds the existing process; `adb shell am force-stop com.shintongtech.novainyears`, then cold-launch + re-fire the connect deep link.                                                                              |
+| `adb: no devices/emulators found` after the phone sat idle                                     | screen-lock dropped the USB authorization; replug + unlock + tap **Allow**; if still missing, `adb kill-server && adb start-server`.                                                                                                            |
