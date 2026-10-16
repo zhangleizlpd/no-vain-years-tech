@@ -9,8 +9,16 @@ import { ReviewAnchorUseCase } from './review-anchor.usecase.js';
 import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase.js';
 import {
   REMEDIATION_STEPS,
+  type RemediationStep,
   RemediateSymbolChangeUseCase,
 } from './remediate-symbol-change.usecase.js';
+import {
+  CollectionScopeStep,
+  MigrateAnchorStep,
+  RegisterSymbolChangeStep,
+  RejectOldCodeSubmissionsStep,
+  VerifyRemediationStep,
+} from './remediate-symbol-change.steps.js';
 import { SetPositionBucketUseCase } from './set-position-bucket.usecase.js';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase.js';
 import { ListAnchorsUseCase } from './list-anchors.usecase.js';
@@ -94,8 +102,23 @@ import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
     ReviewAnchorUseCase,
     // 086 迁锚 (修正命令编排的第 2 步)。
     MigrateAnchorTickerUseCase,
-    // 086 修正命令编排骨架 (T010)。五个真步骤由 T011 接入 REMEDIATION_STEPS (此前为空数组)。
-    { provide: REMEDIATION_STEPS, useValue: [] },
+    // 086 修正命令编排 (T010 骨架 + T011 五个真步骤)。数组顺序即执行顺序 (plan D5)。
+    RegisterSymbolChangeStep,
+    MigrateAnchorStep,
+    RejectOldCodeSubmissionsStep,
+    CollectionScopeStep,
+    VerifyRemediationStep,
+    {
+      provide: REMEDIATION_STEPS,
+      useFactory: (...steps: RemediationStep[]) => steps,
+      inject: [
+        RegisterSymbolChangeStep,
+        MigrateAnchorStep,
+        RejectOldCodeSubmissionsStep,
+        CollectionScopeStep,
+        VerifyRemediationStep,
+      ],
+    },
     RemediateSymbolChangeUseCase,
     // 047 T028 水位手选写端 —— 意图矩阵第三个输入的降级录入路径 (本片无数据面, FR-017)。
     SetPositionBucketUseCase,

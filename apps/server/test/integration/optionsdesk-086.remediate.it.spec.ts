@@ -15,6 +15,21 @@ import {
   type RemediateSymbolChangeInput,
   type RemediationStep,
 } from '../../src/optionsdesk/remediate-symbol-change.usecase';
+import {
+  CollectionScopeStep,
+  MigrateAnchorStep,
+  RegisterSymbolChangeStep,
+  RejectOldCodeSubmissionsStep,
+  VerifyRemediationStep,
+} from '../../src/optionsdesk/remediate-symbol-change.steps';
+import { RejectAnchorSubmissionsUseCase } from '../../src/optionsdesk/reject-anchor-submissions.usecase';
+import { RegisterSymbolChangeUseCase } from '../../src/marketdata/register-symbol-change.usecase';
+import { EnsureInstrumentUseCase } from '../../src/marketdata/ensure-instrument.usecase';
+import { AnchorDrivenSyncGate } from '../../src/marketdata/anchor-driven-sync-gate';
+import { GetInstrumentBarsUseCase } from '../../src/marketdata/get-instrument-bars.usecase';
+import { seedInstrumentCreateData } from '../../src/marketdata/sync-universe.usecase';
+import { SYMBOL_CHANGE_SOURCE } from '../../src/marketdata/symbol-lineage.rules';
+import type { TradingCalendarPort } from '../../src/marketdata/trading-calendar.port';
 
 // 086 US3 / US5 修正命令 IT (Testcontainers PG)。T009 = 迁锚 use case 臂 ①–⑥;
 // T011 / T012 的编排臂追加在本文件。装配体例同 optionsdesk-045.anchor.it.spec.ts: 直接 new
@@ -396,6 +411,220 @@ describe('086 迁锚 use case IT (Testcontainers PG)', () => {
         ]);
       }
       expect(applyCalls).toEqual([]);
+    });
+  });
+
+  // T011 五个真步骤: 与生产 `REMEDIATION_STEPS` 工厂同序装配, 全部真 use case + 真 PG。
+  // 🚨 冷启动在本文件里**从不执行**: 迁锚发的 `optionsdesk.anchor-created` 只落 `outbox_event`
+  // 表, 本 IT 不起 relay / BullMQ worker, 无人消费 ⇒ ② 观察到的新码标的行只可能来自第 4 步的
+  // EnsureInstrument (branch 16「不依赖冷启动是否已跑」), 不需要再换冷启动桩。
+  describe('T011 五个真步骤', () => {
+    const MARKET = 'us';
+    const EFFECTIVE = '2026-10-05';
+    const input = (mode: RemediateSymbolChangeInput['mode']): RemediateSymbolChangeInput => ({
+      market: MARKET,
+      oldCode: 'AAA',
+      newCode: 'BBB',
+      effectiveDate: EFFECTIVE,
+      evidence: 'https://example.invalid/notice',
+      operator: 'it',
+      mode,
+    });
+
+    /** 周一至周五即交易日的日历 (只为 ④ 的缺口数; 其余方法沿用默认替身)。 */
+    const weekdayCalendar = (): TradingCalendarPort => ({
+      ...stubTradingCalendar(),
+      async countTradingDays(_m: string, fromExclusive: string, toInclusive: string) {
+        let n = 0;
+        const d = new Date(`${fromExclusive}T00:00:00Z`);
+        const end = new Date(`${toInclusive}T00:00:00Z`);
+        for (d.setUTCDate(d.getUTCDate() + 1); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+          const wd = d.getUTCDay();
+          if (wd !== 0 && wd !== 6) n += 1;
+        }
+        return n;
+      },
+    });
+
+    const orchestrator = () =>
+      new RemediateSymbolChangeUseCase([
+        new RegisterSymbolChangeStep(new RegisterSymbolChangeUseCase(prisma)),
+        new MigrateAnchorStep(prisma, migrate),
+        new RejectOldCodeSubmissionsStep(prisma, new RejectAnchorSubmissionsUseCase(prisma)),
+        new CollectionScopeStep(
+          prisma,
+          new EnsureInstrumentUseCase(prisma),
+          new AnchorDrivenSyncGate(prisma),
+        ),
+        new VerifyRemediationStep(
+          prisma,
+          new GetInstrumentBarsUseCase(prisma, weekdayCalendar()),
+          weekdayCalendar(),
+        ),
+      ]);
+
+    const seedSubmission = (ticker: string, status = 'PENDING') =>
+      prisma.anchorSubmission.create({
+        data: {
+          submitter: 'guest-it',
+          ticker,
+          v: '50',
+          asof: new Date('2026-09-30T00:00:00Z'),
+          method: 'dcf',
+          confidence: '7',
+          status,
+        },
+      });
+
+    const bar = (instrumentId: bigint, tradeDate: string) => ({
+      instrumentId,
+      tradeDate: new Date(`${tradeDate}T00:00:00Z`),
+      adjust: 'none',
+      open: '10',
+      high: '10',
+      low: '10',
+      close: '10',
+    });
+
+    beforeEach(async () => {
+      await prisma.$executeRawUnsafe(
+        'TRUNCATE optionsdesk.anchor_submission, marketdata.symbol_change, marketdata.instrument RESTART IDENTITY CASCADE',
+      );
+      // 旧码标的行在采 (us 有锚 ⇒ need_sync=true); 新码 BBB 不在标的表。
+      await prisma.instrument.create({
+        data: { ...seedInstrumentCreateData(MARKET, 'AAA'), needSync: true },
+      });
+    });
+
+    it('① apply ⇒ 五步 ok (branch 13), 登记 / 锚 / 采集闸落地', async () => {
+      await seedAnchor(OLD);
+
+      const report = await orchestrator().execute(input('apply'));
+
+      expect(report.map((r) => [r.step, r.status])).toEqual([
+        ['register', 'ok'],
+        ['migrate-anchor', 'ok'],
+        ['reject-submissions', 'skipped'],
+        ['collection-scope', 'ok'],
+        ['verify', 'ok'],
+      ]);
+      const reg = await prisma.symbolChange.findMany();
+      expect(reg).toHaveLength(1);
+      expect(reg[0]).toMatchObject({
+        market: MARKET,
+        oldCode: 'AAA',
+        newCode: 'BBB',
+        source: SYMBOL_CHANGE_SOURCE.MANUAL,
+        registeredBy: 'it',
+        revokedAt: null,
+      });
+      expect(await prisma.anchor.findUnique({ where: { ticker: OLD } })).toBeNull();
+      expect(await prisma.anchor.findUnique({ where: { ticker: NEW } })).not.toBeNull();
+      const gate = await prisma.instrument.findMany({
+        where: { market: MARKET },
+        select: { code: true, needSync: true },
+        orderBy: { code: 'asc' },
+      });
+      expect(gate).toEqual([
+        { code: 'AAA', needSync: false },
+        { code: 'BBB', needSync: true },
+      ]);
+
+      // 再跑一次: 前四步 skipped, 验证每次都重验。
+      const again = await orchestrator().execute(input('apply'));
+      expect(again.map((r) => r.status)).toEqual([
+        'skipped',
+        'skipped',
+        'skipped',
+        'skipped',
+        'ok',
+      ]);
+    });
+
+    it('② 新码不在标的表 ⇒ 第 4 步结束时标的行已在且 need_sync 为真, 不依赖冷启动 (branch 16)', async () => {
+      await seedAnchor(OLD);
+      expect(
+        await prisma.instrument.findUnique({
+          where: { market_code: { market: MARKET, code: 'BBB' } },
+        }),
+      ).toBeNull();
+
+      const report = await orchestrator().execute(input('apply'));
+
+      const scope = report.find((r) => r.step === 'collection-scope')!;
+      expect(scope.status).toBe('ok');
+      expect(scope.detail).toContain('created');
+      const row = await prisma.instrument.findUnique({
+        where: { market_code: { market: MARKET, code: 'BBB' } },
+      });
+      expect(row?.needSync).toBe(true);
+      // 冷启动事件确已发出但无人消费 —— 标的行不是它建的。
+      expect(await outboxRows()).toHaveLength(1);
+    });
+
+    it('③ 旧码有 PENDING 提交 ⇒ 被驳回且理由含新码; 非 PENDING 不动', async () => {
+      await seedAnchor(OLD);
+      const pending = await seedSubmission(OLD);
+      const approved = await seedSubmission(OLD, 'APPROVED');
+
+      const report = await orchestrator().execute(input('apply'));
+
+      expect(report.find((r) => r.step === 'reject-submissions')).toMatchObject({
+        status: 'ok',
+        detail: '已驳回 1 条',
+      });
+      const after = await prisma.anchorSubmission.findUniqueOrThrow({ where: { id: pending.id } });
+      expect(after.status).toBe('REJECTED');
+      expect(after.reviewNote).toContain(NEW);
+      const untouched = await prisma.anchorSubmission.findUniqueOrThrow({
+        where: { id: approved.id },
+      });
+      expect(untouched.status).toBe('APPROVED');
+      expect(untouched.reviewNote).toBeNull();
+    });
+
+    it('④ 第 5 步报告含新码 lineage 日线首末日期与按交易日历的缺口数', async () => {
+      await seedAnchor(OLD);
+      const aaa = await prisma.instrument.findUniqueOrThrow({
+        where: { market_code: { market: MARKET, code: 'AAA' } },
+      });
+      const bbb = await prisma.instrument.create({ data: seedInstrumentCreateData(MARKET, 'BBB') });
+      // 旧段 09-29..10-02 (二~五), 新段自 10-05 (一) 起, 缺 10-06 ⇒ 交易日 7 个、实有 6 根。
+      await prisma.dailyBar.createMany({
+        data: [
+          bar(aaa.id, '2026-09-29'),
+          bar(aaa.id, '2026-09-30'),
+          bar(aaa.id, '2026-10-01'),
+          bar(aaa.id, '2026-10-02'),
+          bar(bbb.id, '2026-10-05'),
+          bar(bbb.id, '2026-10-07'),
+        ],
+      });
+
+      const report = await orchestrator().execute(input('apply'));
+
+      const verify = report.find((r) => r.step === 'verify')!;
+      expect(verify.status).toBe('ok');
+      expect(verify.detail).toContain('日线 2026-09-29 ~ 2026-10-07 共 6 根, 缺口 1');
+      expect(verify.detail).toContain('新码锚复核逾期=是');
+      expect(verify.detail).toContain('收盘价待下一拍');
+    });
+
+    it('新码已有锚 ⇒ 第 2 步 conflict 停, 后续不跑 (登记已写, 续跑靠人处置冲突)', async () => {
+      await seedAnchor(OLD);
+      await seedAnchor(NEW);
+
+      const report = await orchestrator().execute(input('apply'));
+
+      expect(report.map((r) => [r.step, r.status])).toEqual([
+        ['register', 'ok'],
+        ['migrate-anchor', 'conflict'],
+      ]);
+      expect(
+        await prisma.instrument.findUnique({
+          where: { market_code: { market: MARKET, code: 'BBB' } },
+        }),
+      ).toBeNull();
     });
   });
 });
