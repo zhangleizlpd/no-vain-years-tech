@@ -50,6 +50,35 @@ describe('parseSymbolChangeArgs', () => {
     expect(parseSymbolChangeArgs(['list', 'hk'])).toEqual({ kind: 'list', market: 'hk' });
   });
 
+  it('candidates [--all] / dismiss <id> --note (T019)', () => {
+    expect(parseSymbolChangeArgs(['candidates'])).toEqual({ kind: 'candidates', all: false });
+    expect(parseSymbolChangeArgs(['candidates', '--all'])).toEqual({
+      kind: 'candidates',
+      all: true,
+    });
+    expect(parseSymbolChangeArgs(['dismiss', '12', '--note', '非改名'])).toEqual({
+      kind: 'dismiss',
+      candidateId: 12n,
+      note: '非改名',
+    });
+  });
+
+  it('apply --from-candidate: 不带 --confirm ⇒ preview; --new 可选 (缺省由候选建议补)', () => {
+    const argv = ['apply', '--from-candidate', '7', '--effective', '2026-09-15', '--evidence', 'x'];
+    expect(parseSymbolChangeArgs(argv)).toEqual({
+      kind: 'from-candidate',
+      candidateId: 7n,
+      effectiveDate: '2026-09-15',
+      evidence: 'x',
+      operator: DEFAULT_OPERATOR,
+      mode: 'preview',
+    });
+    expect(parseSymbolChangeArgs([...argv, '--new', 'SKYD', '--confirm'])).toMatchObject({
+      newCode: 'SKYD',
+      mode: 'apply',
+    });
+  });
+
   it('无参数 / --help / -h ⇒ help', () => {
     expect(parseSymbolChangeArgs([])).toEqual({ kind: 'help' });
     expect(parseSymbolChangeArgs(['--help'])).toEqual({ kind: 'help' });
@@ -67,6 +96,15 @@ describe('parseSymbolChangeArgs', () => {
     ['新旧码相同', ['apply', 'us', 'PSKY', 'PSKY', '2026-09-15', '--evidence', 'x']],
     ['未知旗标', ['apply', ...BASE, '--force']],
     ['list 非法市场', ['list', 'jp']],
+    ['dismiss 缺 --note', ['dismiss', '12']],
+    ['dismiss id 非正整数', ['dismiss', 'abc', '--note', 'x']],
+    ['from-candidate 缺 --effective', ['apply', '--from-candidate', '7', '--evidence', 'x']],
+    [
+      'from-candidate 带位置参数',
+      ['apply', 'us', '--from-candidate', '7', '--effective', '2026-09-15', '--evidence', 'x'],
+    ],
+    ['revert 不接 --from-candidate', ['revert', ...BASE, '--from-candidate', '7']],
+    ['candidates 不接 --note', ['candidates', '--note', 'x']],
   ])('非法输入 (%s) ⇒ throw', (_label, argv) => {
     expect(() => parseSymbolChangeArgs(argv)).toThrow();
   });

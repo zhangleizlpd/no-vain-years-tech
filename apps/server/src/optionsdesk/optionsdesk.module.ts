@@ -8,6 +8,7 @@ import { DeleteAnchorUseCase } from './delete-anchor.usecase.js';
 import { ReviewAnchorUseCase } from './review-anchor.usecase.js';
 import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase.js';
 import {
+  CANDIDATE_CONFIRM_STEP,
   REMEDIATION_REVERT_STEPS,
   REMEDIATION_STEPS,
   type RemediationStep,
@@ -15,12 +16,14 @@ import {
 } from './remediate-symbol-change.usecase.js';
 import {
   CollectionScopeStep,
+  ConfirmSymbolCandidateStep,
   MigrateAnchorStep,
   RegisterSymbolChangeStep,
   RejectOldCodeSubmissionsStep,
   revertStepsOf,
   VerifyRemediationStep,
 } from './remediate-symbol-change.steps.js';
+import { ResolveSymbolCandidateUseCase } from './resolve-symbol-candidate.usecase.js';
 import { SetPositionBucketUseCase } from './set-position-bucket.usecase.js';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase.js';
 import { ListAnchorsUseCase } from './list-anchors.usecase.js';
@@ -137,6 +140,10 @@ import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
         CollectionScopeStep,
       ],
     },
+    // 086 T019 候选处置 + 编排里的「确认候选」步骤 (只在 apply --from-candidate 时插到登记之后)。
+    ResolveSymbolCandidateUseCase,
+    ConfirmSymbolCandidateStep,
+    { provide: CANDIDATE_CONFIRM_STEP, useExisting: ConfirmSymbolCandidateStep },
     RemediateSymbolChangeUseCase,
     // 047 T028 水位手选写端 —— 意图矩阵第三个输入的降级录入路径 (本片无数据面, FR-017)。
     SetPositionBucketUseCase,

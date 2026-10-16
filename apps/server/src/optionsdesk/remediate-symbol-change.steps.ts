@@ -13,6 +13,7 @@ import type { AnchorSubmissionStatus } from './anchor-import.rules';
 import { shanghaiDateOnly } from './create-anchor.usecase';
 import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase';
 import { RejectAnchorSubmissionsUseCase } from './reject-anchor-submissions.usecase';
+import { ResolveSymbolCandidateUseCase } from './resolve-symbol-candidate.usecase';
 import type {
   RemediationContext,
   RemediationStep,
@@ -20,6 +21,7 @@ import type {
   StepInspection,
 } from './remediate-symbol-change.usecase';
 import { isAnchorOverdue } from './review-anchor.usecase';
+import { CANDIDATE_STATUS } from './symbol-candidate.rules';
 
 /**
  * 086 修正命令的五个真步骤 (T011, FR-011 / FR-014; plan D5)。顺序由 `optionsdesk.module.ts` 的
@@ -114,6 +116,63 @@ export class RegisterSymbolChangeStep implements RemediationStep {
     );
     if (r.status === 'rejected') return { status: 'failed', detail: `${r.reason}: ${r.message}` };
     return { status: 'ok', detail: `${r.status} (id=${r.id})` };
+  }
+}
+
+/**
+ * 确认候选 (T019, branch 23): 仅 `apply --from-candidate` 时由编排插在登记之后。
+ * 写入 = PENDING → CONFIRMED + 记登记 id。
+ *
+ * 取舍: plan D8 原写「与登记同 tx」—— 登记 use case 在 marketdata、自己开 tx, 跨 ctx 合 tx 要改它的
+ * 签名。改为登记成功后紧接一次 conditional update: 两次写之间失败 ⇒ 登记已在、候选仍 PENDING,
+ * 重跑同一命令时登记步 `done` 跳过、本步再翻 —— 续跑可收敛, 不会出现「候选已确认但登记不在」。
+ */
+@Injectable()
+export class ConfirmSymbolCandidateStep implements RemediationStep {
+  readonly name = 'confirm-candidate';
+
+  constructor(
+    private readonly candidates: ResolveSymbolCandidateUseCase,
+    // CROSS-CONTEXT-SYNC: optionsdesk → marketdata 读回刚写入的登记 id (登记表归 marketdata)。
+    private readonly register: RegisterSymbolChangeUseCase,
+  ) {}
+
+  async inspect(ctx: RemediationContext): Promise<StepInspection> {
+    const id = ctx.candidateId;
+    if (id === undefined) return { state: 'done', detail: '无候选' };
+    const c = await this.candidates.get(id);
+    if (c === null) return { state: 'conflict', detail: `候选 #${id} 不存在` };
+    if (c.ticker !== ctx.oldTicker) {
+      return { state: 'conflict', detail: `候选 #${id} 是 ${c.ticker}, 不是 ${ctx.oldTicker}` };
+    }
+    if (c.status === CANDIDATE_STATUS.CONFIRMED) {
+      return { state: 'done', detail: `候选 #${id} 已确认 (登记 id=${String(c.symbolChangeId)})` };
+    }
+    if (c.status !== CANDIDATE_STATUS.PENDING) {
+      return { state: 'conflict', detail: `候选 #${id} 已是 ${c.status}` };
+    }
+    return { state: 'pending', detail: `将把候选 #${id} 翻 CONFIRMED 并记登记 id` };
+  }
+
+  async apply(ctx: RemediationContext): Promise<StepApplyOutcome> {
+    const id = ctx.candidateId;
+    if (id === undefined) return { status: 'ok', detail: '无候选' };
+    const reg = (await this.register.list(ctx.market)).find(
+      (r) =>
+        r.revokedAt === null &&
+        r.oldCode === ctx.oldCode &&
+        r.newCode === ctx.newCode &&
+        r.effectiveDate === ctx.effectiveDate,
+    );
+    if (reg === undefined) return { status: 'failed', detail: '找不到刚写入的未撤销登记' };
+    const r = await this.candidates.confirm(id, reg.id, ctx.now);
+    if (r.status === 'confirmed' || r.status === 'already_confirmed') {
+      return { status: 'ok', detail: `候选 #${id} → CONFIRMED (登记 id=${reg.id})` };
+    }
+    return {
+      status: 'conflict',
+      detail: r.status === 'not_found' ? `候选 #${id} 不存在` : `候选 #${id} 已是 ${r.current}`,
+    };
   }
 }
 

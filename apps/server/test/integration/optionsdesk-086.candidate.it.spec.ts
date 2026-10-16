@@ -11,6 +11,14 @@ import type {
 } from '../../src/marketdata/realtime-quote.port';
 import { CreateAnchorUseCase } from '../../src/optionsdesk/create-anchor.usecase';
 import { SyncAnchorLastCloseUseCase } from '../../src/optionsdesk/sync-anchor-last-close';
+import { RegisterSymbolChangeUseCase } from '../../src/marketdata/register-symbol-change.usecase';
+import { RevokeSymbolChangeUseCase } from '../../src/marketdata/revoke-symbol-change.usecase';
+import { ResolveSymbolCandidateUseCase } from '../../src/optionsdesk/resolve-symbol-candidate.usecase';
+import { RemediateSymbolChangeUseCase } from '../../src/optionsdesk/remediate-symbol-change.usecase';
+import {
+  ConfirmSymbolCandidateStep,
+  RegisterSymbolChangeStep,
+} from '../../src/optionsdesk/remediate-symbol-change.steps';
 import {
   CANDIDATE_SIGNAL_VENDOR_UNKNOWN,
   CANDIDATE_STATUS,
@@ -24,6 +32,8 @@ import {
 // 装配 = 直接 new use case + 真 PrismaService (体例同 optionsdesk-045.anchor.it.spec.ts);
 // 报价源与交易日历用替身 (只验「拿到 unknownSymbols 之后」这一段)。
 // 公司名取自公开行情事件 (PARA → PSKY → SKYD), 代码与价一律合成。
+// T019 追加 ⑤–⑧: 候选处置 (from-candidate 预览 / 写入翻 CONFIRMED, 代码失效拒绝, dismiss)。
+// 编排只装「登记」一步 + 确认候选步骤 —— 其余四步与候选无关, 由 optionsdesk-086.remediate IT 覆盖。
 describe('086 疑似改名候选产生 IT (Testcontainers PG)', () => {
   let db: Awaited<ReturnType<typeof setupIsolatedDb>>;
   let prisma: PrismaService;
@@ -107,7 +117,7 @@ describe('086 疑似改名候选产生 IT (Testcontainers PG)', () => {
 
   beforeEach(async () => {
     await prisma.$executeRawUnsafe(
-      'TRUNCATE optionsdesk.anchor, optionsdesk.anchor_change, optionsdesk.symbol_change_candidate RESTART IDENTITY',
+      'TRUNCATE optionsdesk.anchor, optionsdesk.anchor_change, optionsdesk.symbol_change_candidate, marketdata.symbol_change RESTART IDENTITY',
     );
     unknown = [];
   });
@@ -191,6 +201,131 @@ describe('086 疑似改名候选产生 IT (Testcontainers PG)', () => {
       status: CANDIDATE_STATUS.PENDING,
       firstSeenAt: NOW,
       lastSeenAt: LATER,
+    });
+  });
+  describe('候选处置 (T019, FR-019; branch 22 / 23 / 24)', () => {
+    /** 合成生效日: 早于 NOW 的 us 交易所当地今天 (08-31), 登记规则不拒。 */
+    const EFFECTIVE = '2026-08-28';
+    let resolve: ResolveSymbolCandidateUseCase;
+    let remediate: RemediateSymbolChangeUseCase;
+
+    beforeAll(() => {
+      resolve = new ResolveSymbolCandidateUseCase(prisma);
+      const registerUc = new RegisterSymbolChangeUseCase(prisma);
+      remediate = new RemediateSymbolChangeUseCase(
+        [new RegisterSymbolChangeStep(registerUc, new RevokeSymbolChangeUseCase(prisma))],
+        [],
+        new ConfirmSymbolCandidateStep(resolve, registerUc),
+      );
+    });
+
+    const seedCandidate = async (ticker: string, suggestions: CodeSuggestion[]) =>
+      (
+        await prisma.symbolChangeCandidate.create({
+          data: {
+            ticker,
+            signal: CANDIDATE_SIGNAL_VENDOR_UNKNOWN,
+            suggestions: suggestions as unknown as object[],
+            firstSeenAt: NOW,
+            lastSeenAt: NOW,
+            status: CANDIDATE_STATUS.PENDING,
+          },
+        })
+      ).id;
+
+    /** CLI `apply --from-candidate` 的 use case 侧等价: targetOf → execute(candidateId)。 */
+    const fromCandidate = async (id: bigint, mode: 'preview' | 'apply', newCode?: string) => {
+      const target = await resolve.targetOf(id, newCode);
+      if (target.status === 'rejected') return target;
+      return remediate.execute({
+        market: target.market,
+        oldCode: target.oldCode,
+        newCode: target.newCode,
+        effectiveDate: EFFECTIVE,
+        evidence: 'https://example.test/notice',
+        operator: 'it',
+        mode,
+        candidateId: id,
+        now: NOW,
+      });
+    };
+
+    it('⑤ from-candidate 预览零写入; --confirm 后候选 CONFIRMED 且记登记 id (branch 23)', async () => {
+      const id = await seedCandidate('us:AAA', [{ code: 'BBB', name: 'Skydance', score: 1 }]);
+
+      const preview = await fromCandidate(id, 'preview');
+      expect(preview).toEqual([
+        expect.objectContaining({ step: 'register', status: 'ok' }),
+        expect.objectContaining({ step: 'confirm-candidate', status: 'ok' }),
+      ]);
+      expect(await prisma.symbolChange.count()).toBe(0);
+      expect((await resolve.get(id))?.status).toBe(CANDIDATE_STATUS.PENDING);
+
+      const applied = await fromCandidate(id, 'apply');
+      expect(applied).toEqual([
+        expect.objectContaining({ step: 'register', status: 'ok' }),
+        expect.objectContaining({ step: 'confirm-candidate', status: 'ok' }),
+      ]);
+      const reg = await prisma.symbolChange.findFirstOrThrow();
+      expect(reg).toMatchObject({ market: 'us', oldCode: 'AAA', newCode: 'BBB' });
+      expect(await resolve.get(id)).toMatchObject({
+        status: CANDIDATE_STATUS.CONFIRMED,
+        symbolChangeId: reg.id,
+        resolvedAt: NOW,
+      });
+
+      // 重跑: 登记 done ⇒ skipped, 候选已确认 ⇒ skipped; 但候选已非 PENDING ⇒ targetOf 先拒。
+      expect(await fromCandidate(id, 'apply')).toMatchObject({ reason: 'not_pending' });
+    });
+
+    it('⑥ 「代码失效」候选 (无建议) 不带 --new ⇒ 拒绝且零写入; 显式 --new 则放行 (branch 22)', async () => {
+      const id = await seedCandidate('us:EEE', []);
+
+      expect(await fromCandidate(id, 'apply')).toMatchObject({
+        status: 'rejected',
+        reason: 'no_suggestion',
+      });
+      expect(await prisma.symbolChange.count()).toBe(0);
+      expect((await resolve.get(id))?.status).toBe(CANDIDATE_STATUS.PENDING);
+
+      const preview = await fromCandidate(id, 'preview', 'FFF');
+      expect(preview).toEqual([
+        expect.objectContaining({
+          step: 'register',
+          status: 'ok',
+          detail: expect.stringContaining('FFF'),
+        }),
+        expect.objectContaining({ step: 'confirm-candidate', status: 'ok' }),
+      ]);
+    });
+
+    it('⑦ dismiss ⇒ DISMISSED 带备注; 再次 dismiss ⇒ not_pending 不改写 (branch 24 的处置半)', async () => {
+      const id = await seedCandidate('us:AAA', [{ code: 'BBB', name: 'Skydance', score: 1 }]);
+
+      expect(await resolve.dismiss(id, '合成: 非改名', NOW)).toEqual({ status: 'dismissed' });
+      expect(await resolve.get(id)).toMatchObject({
+        status: CANDIDATE_STATUS.DISMISSED,
+        resolutionNote: '合成: 非改名',
+        resolvedAt: NOW,
+      });
+
+      expect(await resolve.dismiss(id, '再来一次', LATER)).toEqual({
+        status: 'not_pending',
+        current: CANDIDATE_STATUS.DISMISSED,
+      });
+      expect((await resolve.get(id))?.resolutionNote).toBe('合成: 非改名');
+      expect(await resolve.dismiss(999n, 'x')).toEqual({ status: 'not_found' });
+      // 已否决的候选不能再走 from-candidate。
+      expect(await fromCandidate(id, 'preview')).toMatchObject({ reason: 'not_pending' });
+    });
+
+    it('⑧ candidates 默认只列 PENDING', async () => {
+      const pending = await seedCandidate('us:AAA', []);
+      const dismissed = await seedCandidate('us:EEE', []);
+      await resolve.dismiss(dismissed, 'x', NOW);
+
+      expect((await resolve.list()).map((c) => c.id)).toEqual([pending]);
+      expect((await resolve.list('all')).map((c) => c.id)).toEqual([pending, dismissed]);
     });
   });
 });

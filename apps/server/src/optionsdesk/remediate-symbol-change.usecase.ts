@@ -18,6 +18,11 @@ export interface RemediateSymbolChangeInput {
   direction?: RemediationDirection;
   /** 时钟注入点 (默认 `new Date()`), 透传给需要「今天」的步骤 (如迁锚的 `next_review`)。 */
   now?: Date;
+  /**
+   * 来自疑似改名候选 (`apply --from-candidate`, T019)。仅正向编排有效: 在登记步骤之后插入
+   * 「确认候选」步骤 (PENDING → CONFIRMED + 记登记 id); 预览同样只 inspect、零写入。
+   */
+  candidateId?: bigint;
 }
 
 export type RemediationMode = 'preview' | 'apply';
@@ -37,6 +42,7 @@ export interface RemediationContext {
   /** `market:newCode` */
   readonly newTicker: string;
   readonly now: Date;
+  readonly candidateId?: bigint;
 }
 
 /**
@@ -84,6 +90,12 @@ export const REMEDIATION_STEPS = Symbol('REMEDIATION_STEPS');
  */
 export const REMEDIATION_REVERT_STEPS = Symbol('REMEDIATION_REVERT_STEPS');
 
+/** 「确认候选」步骤的 DI token (T019)。只在入参带 `candidateId` 时插到登记步骤之后。 */
+export const CANDIDATE_CONFIRM_STEP = Symbol('CANDIDATE_CONFIRM_STEP');
+
+/** 确认候选步骤插在该名字的步骤之后 (登记成功才有登记 id 可记)。 */
+const CANDIDATE_CONFIRM_AFTER = 'register';
+
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
@@ -103,6 +115,9 @@ export class RemediateSymbolChangeUseCase {
     @Optional()
     @Inject(REMEDIATION_REVERT_STEPS)
     private readonly revertSteps: readonly RemediationStep[] = [],
+    @Optional()
+    @Inject(CANDIDATE_CONFIRM_STEP)
+    private readonly candidateConfirmStep?: RemediationStep,
   ) {}
 
   async execute(input: RemediateSymbolChangeInput): Promise<RemediationStepReport[]> {
@@ -116,16 +131,30 @@ export class RemediateSymbolChangeUseCase {
       oldTicker: `${input.market}:${input.oldCode}`,
       newTicker: `${input.market}:${input.newCode}`,
       now: input.now ?? new Date(),
+      candidateId: input.candidateId,
     };
 
     const report: RemediationStepReport[] = [];
-    const steps = input.direction === 'revert' ? this.revertSteps : this.steps;
+    const steps = input.direction === 'revert' ? this.revertSteps : this.forwardSteps(ctx);
     for (const step of steps) {
       const line = await this.runStep(step, ctx, input.mode);
       report.push(line);
       if (line.status === 'failed' || line.status === 'conflict') break;
     }
     return report;
+  }
+
+  /**
+   * 正向步骤; 带 `candidateId` 时把确认候选步骤插到登记之后。
+   * 🚨 带了 candidateId 却没装配确认步骤 / 找不到登记步骤 ⇒ 抛错, 不静默丢掉「翻 CONFIRMED」。
+   */
+  private forwardSteps(ctx: RemediationContext): readonly RemediationStep[] {
+    if (ctx.candidateId === undefined) return this.steps;
+    const at = this.steps.findIndex((s) => s.name === CANDIDATE_CONFIRM_AFTER);
+    if (this.candidateConfirmStep === undefined || at < 0) {
+      throw new Error('candidateId 已给出, 但编排未装配确认候选步骤或缺少登记步骤');
+    }
+    return [...this.steps.slice(0, at + 1), this.candidateConfirmStep, ...this.steps.slice(at + 1)];
   }
 
   private async runStep(
