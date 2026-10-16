@@ -96,3 +96,9 @@ provider-agnostic port，复用 ADR-0047 vendor adapter「port 先行 / 实现�
 - 叶子 ctx + JWT 平台基座复用先例：[ADR-0052](0052-alert-bounded-context.md) § 1
 - vendor adapter port 范式形：[ADR-0047](0047-marketdata-pluggable-data-access.md)
 - DeepSeek OpenAI 兼容接入文档（`baseURL` 切换）
+
+### 2026-10-16 — 第二个 SSE 端点触发 sunset trigger：headers / abort / lazy hijack 抽成 `security/sse-stream.ts`
+
+[ADR-0057](0057-ideation-bounded-context.md) 的 ideation clarify-stream（`POST /ideation/sessions/{id}/turns`）成为仓内第二个 `reply.hijack()` 流式端点，与 chat-stream 逐字复制了 `pickCorsHeaders` + lazy hijack + 断连 abort 三段。按 front matter 第 2 条 sunset trigger 收敛为 `apps/server/src/security/sse-stream.ts`（`openLazySseStream` + `pickCorsHeaders`；平台基座归 `security/`，per [ADR-0041](0041-server-common-directory-policy.md)），两个 controller 改为调用它。
+
+**只收协议层，不收业务层**：帧格式（各 ctx `*sse.rules.ts`）与 split-tx 落库（各 ctx use case）是业务语义，仍留 ctx 内。唯一的行为差异：成功但零帧的退化路径，原先未 hijack 即裸写 `[DONE]`，现在 `end()` 先写 SSE 头再写末帧。本 ADR §1-§3 决策正文不动，status 保持 Accepted。

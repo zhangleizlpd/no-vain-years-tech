@@ -376,4 +376,29 @@ describe('032 ideation clarify-turn SSE (Testcontainers PG + Redis + Fastify)', 
     // user turn 紧随 system 之后。
     expect(provider.lastMessages[1]).toMatchObject({ role: 'user', content: '想给行情页加点东西' });
   });
+
+  // ── ⑩ SSE 响应携带 Access-Control-Allow-Origin (server-sse-hijack-cors rule) ─────
+  //
+  // hijack 后裸 writeHead 不带 @fastify/cors 的头 → web 端流被 CORS 拦读; 真机 native
+  // fetch 不走 CORS 故不暴露。security/sse-stream 在 hijack 前并入 cors 头, 本测带 Origin
+  // 断言回显 (chat-streaming.it.spec ⑨ 同款)。
+  it('⑩ SSE 响应携带 Access-Control-Allow-Origin (hijack 不丢跨域头, web 端可读流)', async () => {
+    const { id, token } = await activeToken();
+    const sid = await seedSession(id);
+    provider.setFake({ script: [{ ask: { question: '你想达成什么?' } }] });
+    const origin = 'http://localhost:8081';
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/ideation/sessions/${sid.toString()}/turns`,
+      headers: { ...sendJson(token), origin },
+      payload: { content: '想给行情页加点东西' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    // 默认 corsAllowedOrigins='*' + credentials:true → @fastify/cors 回显具体 Origin (非裸 '*')。
+    expect(res.headers['access-control-allow-origin']).toBe(origin);
+    expect(String(res.headers['vary'])).toContain('Origin');
+  });
 });
