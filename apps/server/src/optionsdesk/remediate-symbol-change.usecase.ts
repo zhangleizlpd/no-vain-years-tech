@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 /** 修正命令的入参 (CLI 透传)。`market` + code 由编排拼成 canonical `market:code` ticker。 */
 export interface RemediateSymbolChangeInput {
@@ -11,11 +11,18 @@ export interface RemediateSymbolChangeInput {
   operator: string;
   /** 默认预览 (FR-012): 只调各步 `inspect`, 零写入。 */
   mode: RemediationMode;
+  /**
+   * 缺省 `remediate`。`revert` = 撤销编排 (FR-015, T012): 跑 `REMEDIATION_REVERT_STEPS`,
+   * 同样受 `mode` 约束 (默认预览、apply 才写), 同样幂等 (已撤销 ⇒ skipped)。
+   */
+  direction?: RemediationDirection;
   /** 时钟注入点 (默认 `new Date()`), 透传给需要「今天」的步骤 (如迁锚的 `next_review`)。 */
   now?: Date;
 }
 
 export type RemediationMode = 'preview' | 'apply';
+
+export type RemediationDirection = 'remediate' | 'revert';
 
 /** 每步拿到的只读上下文: 入参 + 派生的 canonical ticker。 */
 export interface RemediationContext {
@@ -71,6 +78,12 @@ export interface RemediationStepReport {
 /** 步骤数组的 DI token。生产装配在 `optionsdesk.module.ts`; 测试直接 `new` 并传桩步骤。 */
 export const REMEDIATION_STEPS = Symbol('REMEDIATION_STEPS');
 
+/**
+ * 撤销步骤数组的 DI token (T012)。与 {@link REMEDIATION_STEPS} 同一接口 —— 撤销步骤的 `inspect`
+ * 判「已撤销 ⇒ done」, `apply` 做逆操作; 顺序由 `revertStepsOf` 钉死, 不是正向数组简单倒序。
+ */
+export const REMEDIATION_REVERT_STEPS = Symbol('REMEDIATION_REVERT_STEPS');
+
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
@@ -85,7 +98,12 @@ const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : S
  */
 @Injectable()
 export class RemediateSymbolChangeUseCase {
-  constructor(@Inject(REMEDIATION_STEPS) private readonly steps: readonly RemediationStep[]) {}
+  constructor(
+    @Inject(REMEDIATION_STEPS) private readonly steps: readonly RemediationStep[],
+    @Optional()
+    @Inject(REMEDIATION_REVERT_STEPS)
+    private readonly revertSteps: readonly RemediationStep[] = [],
+  ) {}
 
   async execute(input: RemediateSymbolChangeInput): Promise<RemediationStepReport[]> {
     const ctx: RemediationContext = {
@@ -101,7 +119,8 @@ export class RemediateSymbolChangeUseCase {
     };
 
     const report: RemediationStepReport[] = [];
-    for (const step of this.steps) {
+    const steps = input.direction === 'revert' ? this.revertSteps : this.steps;
+    for (const step of steps) {
       const line = await this.runStep(step, ctx, input.mode);
       report.push(line);
       if (line.status === 'failed' || line.status === 'conflict') break;

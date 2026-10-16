@@ -8,6 +8,7 @@ import { DeleteAnchorUseCase } from './delete-anchor.usecase.js';
 import { ReviewAnchorUseCase } from './review-anchor.usecase.js';
 import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase.js';
 import {
+  REMEDIATION_REVERT_STEPS,
   REMEDIATION_STEPS,
   type RemediationStep,
   RemediateSymbolChangeUseCase,
@@ -17,6 +18,7 @@ import {
   MigrateAnchorStep,
   RegisterSymbolChangeStep,
   RejectOldCodeSubmissionsStep,
+  revertStepsOf,
   VerifyRemediationStep,
 } from './remediate-symbol-change.steps.js';
 import { SetPositionBucketUseCase } from './set-position-bucket.usecase.js';
@@ -117,6 +119,22 @@ import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
         RejectOldCodeSubmissionsStep,
         CollectionScopeStep,
         VerifyRemediationStep,
+      ],
+    },
+    // 086 T012 撤销编排: 顺序由 revertStepsOf 钉死 (迁锚回 → 撤销登记 → 重算采集闸)。
+    {
+      provide: REMEDIATION_REVERT_STEPS,
+      useFactory: (
+        register: RegisterSymbolChangeStep,
+        migrate: MigrateAnchorStep,
+        reject: RejectOldCodeSubmissionsStep,
+        scope: CollectionScopeStep,
+      ) => revertStepsOf({ register, migrate, reject, scope }),
+      inject: [
+        RegisterSymbolChangeStep,
+        MigrateAnchorStep,
+        RejectOldCodeSubmissionsStep,
+        CollectionScopeStep,
       ],
     },
     RemediateSymbolChangeUseCase,

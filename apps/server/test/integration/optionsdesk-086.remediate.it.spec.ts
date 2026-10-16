@@ -20,8 +20,10 @@ import {
   MigrateAnchorStep,
   RegisterSymbolChangeStep,
   RejectOldCodeSubmissionsStep,
+  revertStepsOf,
   VerifyRemediationStep,
 } from '../../src/optionsdesk/remediate-symbol-change.steps';
+import { RevokeSymbolChangeUseCase } from '../../src/marketdata/revoke-symbol-change.usecase';
 import { RejectAnchorSubmissionsUseCase } from '../../src/optionsdesk/reject-anchor-submissions.usecase';
 import { RegisterSymbolChangeUseCase } from '../../src/marketdata/register-symbol-change.usecase';
 import { EnsureInstrumentUseCase } from '../../src/marketdata/ensure-instrument.usecase';
@@ -446,22 +448,31 @@ describe('086 迁锚 use case IT (Testcontainers PG)', () => {
       },
     });
 
-    const orchestrator = () =>
-      new RemediateSymbolChangeUseCase([
-        new RegisterSymbolChangeStep(new RegisterSymbolChangeUseCase(prisma)),
-        new MigrateAnchorStep(prisma, migrate),
-        new RejectOldCodeSubmissionsStep(prisma, new RejectAnchorSubmissionsUseCase(prisma)),
-        new CollectionScopeStep(
-          prisma,
-          new EnsureInstrumentUseCase(prisma),
-          new AnchorDrivenSyncGate(prisma),
-        ),
-        new VerifyRemediationStep(
-          prisma,
-          new GetInstrumentBarsUseCase(prisma, weekdayCalendar()),
-          weekdayCalendar(),
-        ),
-      ]);
+    const orchestrator = () => {
+      const register = new RegisterSymbolChangeStep(
+        new RegisterSymbolChangeUseCase(prisma),
+        new RevokeSymbolChangeUseCase(prisma),
+      );
+      const migrateStep = new MigrateAnchorStep(prisma, migrate);
+      const reject = new RejectOldCodeSubmissionsStep(
+        prisma,
+        new RejectAnchorSubmissionsUseCase(prisma),
+      );
+      const scope = new CollectionScopeStep(
+        prisma,
+        new EnsureInstrumentUseCase(prisma),
+        new AnchorDrivenSyncGate(prisma),
+      );
+      const verify = new VerifyRemediationStep(
+        prisma,
+        new GetInstrumentBarsUseCase(prisma, weekdayCalendar()),
+        weekdayCalendar(),
+      );
+      return new RemediateSymbolChangeUseCase(
+        [register, migrateStep, reject, scope, verify],
+        revertStepsOf({ register, migrate: migrateStep, reject, scope }),
+      );
+    };
 
     const seedSubmission = (ticker: string, status = 'PENDING') =>
       prisma.anchorSubmission.create({
@@ -625,6 +636,81 @@ describe('086 迁锚 use case IT (Testcontainers PG)', () => {
           where: { market_code: { market: MARKET, code: 'BBB' } },
         }),
       ).toBeNull();
+    });
+
+    // T012 撤销编排: 逆序 = 迁锚回 → 撤销登记 → 重算采集闸, 末行「驳回不复原」。
+    describe('T012 撤销编排', () => {
+      const revert = (mode: RemediateSymbolChangeInput['mode']): RemediateSymbolChangeInput => ({
+        ...input(mode),
+        evidence: '登记有误, 撤销',
+        direction: 'revert',
+      });
+      const gateState = () =>
+        prisma.instrument.findMany({
+          where: { market: MARKET },
+          select: { code: true, needSync: true },
+          orderBy: { code: 'asc' },
+        });
+
+      it('① apply 后 revert ⇒ 登记已撤销、锚回旧码且 next_review 复原、采集闸复原 (branch 18)', async () => {
+        const anchorId = await seedAnchor(OLD);
+        const submission = await seedSubmission(OLD);
+        await orchestrator().execute(input('apply'));
+
+        const preview = await orchestrator().execute(revert('preview'));
+        expect(preview.map((r) => [r.step, r.status])).toEqual([
+          ['revert-migrate-anchor', 'ok'],
+          ['revoke-registration', 'ok'],
+          ['recalc-sync-gate', 'ok'],
+          ['restore-submissions', 'skipped'],
+        ]);
+        expect(await prisma.anchor.findUnique({ where: { ticker: NEW } })).not.toBeNull();
+
+        const report = await orchestrator().execute(revert('apply'));
+
+        expect(report.map((r) => [r.step, r.status])).toEqual([
+          ['revert-migrate-anchor', 'ok'],
+          ['revoke-registration', 'ok'],
+          ['recalc-sync-gate', 'ok'],
+          ['restore-submissions', 'skipped'],
+        ]);
+        expect(report[2]!.detail).toContain('补齐的新码标的行不删');
+        expect(report[3]!.detail).toContain('不复原');
+
+        const reg = await prisma.symbolChange.findFirstOrThrow();
+        expect(reg.revokedAt).not.toBeNull();
+        expect(reg).toMatchObject({ revokedBy: 'it', revokeReason: '登记有误, 撤销' });
+        const anchor = await prisma.anchor.findUniqueOrThrow({ where: { ticker: OLD } });
+        expect(anchor.id).toBe(anchorId);
+        expect(anchor.nextReview).toEqual(ORIGINAL_NEXT_REVIEW);
+        expect(await prisma.anchor.findUnique({ where: { ticker: NEW } })).toBeNull();
+        // 旧码重新开闸、新码关闸; 新码标的行保留。
+        expect(await gateState()).toEqual([
+          { code: 'AAA', needSync: true },
+          { code: 'BBB', needSync: false },
+        ]);
+        // 驳回不复原。
+        const sub = await prisma.anchorSubmission.findUniqueOrThrow({
+          where: { id: submission.id },
+        });
+        expect(sub.status).toBe('REJECTED');
+      });
+
+      it('② revert 两次 ⇒ 第二次全 skipped、零写入', async () => {
+        await seedAnchor(OLD);
+        await orchestrator().execute(input('apply'));
+        await orchestrator().execute(revert('apply'));
+        const changesBefore = await prisma.anchorChange.count();
+        const regBefore = await prisma.symbolChange.findMany();
+        const gateBefore = await gateState();
+
+        const second = await orchestrator().execute(revert('apply'));
+
+        expect(second.map((r) => r.status)).toEqual(['skipped', 'skipped', 'skipped', 'skipped']);
+        expect(await prisma.anchorChange.count()).toBe(changesBefore);
+        expect(await prisma.symbolChange.findMany()).toEqual(regBefore);
+        expect(await gateState()).toEqual(gateBefore);
+      });
     });
   });
 });
