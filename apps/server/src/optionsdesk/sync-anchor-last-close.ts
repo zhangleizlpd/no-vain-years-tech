@@ -15,6 +15,11 @@ import {
 } from '../marketdata/trading-calendar.port';
 import { parseAnchorTicker } from './anchor.rules';
 import { dateOnlyOf, utcMidnight } from './date-only';
+import {
+  CANDIDATE_SIGNAL_VENDOR_UNKNOWN,
+  CANDIDATE_STATUS,
+  suggestNewCodes,
+} from './symbol-candidate.rules';
 
 /**
  * ADR-0070 — 锚 `last_close` / `last_close_date` 的**收盘后同源写手**。
@@ -61,6 +66,12 @@ import { dateOnlyOf, utcMidnight } from './date-only';
  *
  * 🚨 **split-tx**: 外呼取整批、**全程在 tx 外**, NEVER 在 tx 内等 HTTP。落库逐锚独立幂等覆盖,
  * 单锚失败不回滚同批其余。
+ *
+ * ## 086 疑似改名候选 (plan D8)
+ *
+ * 报价源报「不认识」的锚 ticker (`unknownSymbols`) 在本拍末尾 upsert 进
+ * `optionsdesk.symbol_change_candidate`。只放这里、不放盘中 tick: 本片一天真外呼数次,
+ * 盘中 30 秒一拍只会多写。候选记录失败只 warn, MUST NOT 影响收盘价写入与本拍报告。
  */
 
 /** 一个 market 在本拍的处置。**五态互斥**, 供单测断言与排障。 */
@@ -240,6 +251,11 @@ export class SyncAnchorLastCloseUseCase {
 
       const written = await this.writeGroup(work, fetched.quotes, target);
       report.updated += written.updated;
+      if (fetched.unknownSymbols.length > 0) {
+        await this.recordCandidates(market, fetched.unknownSymbols, now).catch((e: unknown) =>
+          this.logger.warn(`市场 ${market} 疑似改名候选记录失败: ${describe(e)}`),
+        );
+      }
       markets.push({
         market,
         status: 'collected',
@@ -277,11 +293,13 @@ export class SyncAnchorLastCloseUseCase {
     work: readonly AnchorLastCloseRef[],
   ): Promise<{
     quotes: Map<string, RealtimeQuote>;
+    unknownSymbols: string[];
     batches: number;
     failedBatches: number;
     unsupportedBy: RealtimeQuoteMarketUnsupportedError | null;
   }> {
     const quotes = new Map<string, RealtimeQuote>();
+    const unknownSymbols: string[] = [];
     let batches = 0;
     let failedBatches = 0;
     for (const batch of chunk(
@@ -290,16 +308,16 @@ export class SyncAnchorLastCloseUseCase {
     )) {
       batches += 1;
       try {
-        for (const [symbol, quote] of (await this.realtimeQuote.fetchQuotes(batch)).quotes) {
-          quotes.set(symbol, quote);
-        }
+        const fetched = await this.realtimeQuote.fetchQuotes(batch);
+        for (const [symbol, quote] of fetched.quotes) quotes.set(symbol, quote);
+        unknownSymbols.push(...fetched.unknownSymbols);
       } catch (e) {
         if (e instanceof RealtimeQuoteMarketUnsupportedError) {
           this.logger.log(
             `市场 ${market} 未登记实时源, 本组收盘价不更新 (配置事实, 不计源故障; ` +
               `已登记: ${e.registeredMarkets.join('/') || '无'})`,
           );
-          return { quotes, batches, failedBatches, unsupportedBy: e };
+          return { quotes, unknownSymbols, batches, failedBatches, unsupportedBy: e };
         }
         failedBatches += 1;
         this.logger.warn(
@@ -307,7 +325,75 @@ export class SyncAnchorLastCloseUseCase {
         );
       }
     }
-    return { quotes, batches, failedBatches, unsupportedBy: null };
+    return { quotes, unknownSymbols, batches, failedBatches, unsupportedBy: null };
+  }
+
+  /**
+   * 把本市场被报未知的 ticker 记成疑似改名候选 (086 T018, plan D8)。三种既有状态的处置:
+   * - 已有 PENDING ⇒ 只刷新 `last_seen_at` (建议不重算, 首次观测时刻不动);
+   * - 已有 DISMISSED ⇒ 不再生成 (人工判过「不是改名」, 分支 24);
+   * - 其余 (无行 / 只有 CONFIRMED) ⇒ 新建 PENDING, 建议由 {@link suggestNewCodes} 给出,
+   *   空数组即「代码失效」。
+   *
+   * 🚨 `create` + 吞 P2002, MUST NOT `upsert`: 部分唯一索引的谓词在生成的客户端类型里消失
+   * (schema 注释)。并发两拍同时新建时, 输的那一拍撞索引即视为「已有 PENDING」。
+   *
+   * 复杂度: 2 次候选查询 + 至多 1 次同市场标的全量读 (仅在需新建时) + O(N·L) 打分 / 每个新 ticker。
+   */
+  private async recordCandidates(
+    market: string,
+    tickers: readonly string[],
+    now: Date,
+  ): Promise<void> {
+    const existing = await this.prisma.symbolChangeCandidate.findMany({
+      where: {
+        ticker: { in: [...tickers] },
+        status: { in: [CANDIDATE_STATUS.PENDING, CANDIDATE_STATUS.DISMISSED] },
+      },
+      select: { ticker: true },
+    });
+    const handled = new Set(existing.map((r) => r.ticker));
+    await this.prisma.symbolChangeCandidate.updateMany({
+      where: { ticker: { in: [...tickers] }, status: CANDIDATE_STATUS.PENDING },
+      data: { lastSeenAt: now },
+    });
+
+    const fresh = tickers.filter((t) => !handled.has(t));
+    if (fresh.length === 0) return;
+
+    // CROSS-CONTEXT-READ: marketdata.instrument 只读直查 (catalog Q7-B) —— 同市场标的的
+    // name / code 供新码建议打分, 旧码自身的 name 即打分基准。零写、零注入对方 use case。
+    const instruments = await this.prisma.instrument.findMany({
+      where: { market },
+      select: { code: true, name: true },
+    });
+    for (const ticker of fresh) {
+      const oldCode = parseAnchorTicker(ticker)?.code ?? '';
+      const oldName = instruments.find((i) => i.code === oldCode)?.name ?? '';
+      const suggestions = suggestNewCodes(
+        oldName,
+        instruments.filter((i) => i.code !== oldCode),
+      );
+      try {
+        await this.prisma.symbolChangeCandidate.create({
+          data: {
+            ticker,
+            signal: CANDIDATE_SIGNAL_VENDOR_UNKNOWN,
+            suggestions: suggestions as unknown as Prisma.InputJsonValue,
+            firstSeenAt: now,
+            lastSeenAt: now,
+            status: CANDIDATE_STATUS.PENDING,
+          },
+        });
+        this.logger.warn(
+          `疑似改名候选: ${ticker} 被行情源报未知, 新码建议 ` +
+            `${suggestions.map((x) => x.code).join('/') || '无 (代码失效)'}`,
+        );
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') continue;
+        throw e;
+      }
+    }
   }
 
   /**
