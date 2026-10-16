@@ -6,6 +6,7 @@ import { CreateAnchorUseCase } from './create-anchor.usecase.js';
 import { UpdateAnchorUseCase } from './update-anchor.usecase.js';
 import { DeleteAnchorUseCase } from './delete-anchor.usecase.js';
 import { ReviewAnchorUseCase } from './review-anchor.usecase.js';
+import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase.js';
 import { SetPositionBucketUseCase } from './set-position-bucket.usecase.js';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase.js';
 import { ListAnchorsUseCase } from './list-anchors.usecase.js';
@@ -87,6 +88,8 @@ import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
     UpdateAnchorUseCase,
     DeleteAnchorUseCase,
     ReviewAnchorUseCase,
+    // 086 迁锚 (修正命令编排的第 2 步)。
+    MigrateAnchorTickerUseCase,
     // 047 T028 水位手选写端 —— 意图矩阵第三个输入的降级录入路径 (本片无数据面, FR-017)。
     SetPositionBucketUseCase,
     ListAnchorsUseCase,

@@ -258,6 +258,8 @@ const WRITE_ALLOWLIST: Record<string, readonly string[]> = {
     'optionsdesk/update-anchor.usecase.ts',
     'optionsdesk/delete-anchor.usecase.ts',
     'optionsdesk/import-anchor-from-model.usecase.ts',
+    // 086 迁锚: 代码变更后把锚挪到新码名下 (改 ticker + next_review + 清价格列), 不碰估值事实。
+    'optionsdesk/migrate-anchor-ticker.usecase.ts',
     'optionsdesk/review-anchor.usecase.ts',
     'optionsdesk/set-position-bucket.usecase.ts',
     'optionsdesk/sync-anchor-last-close.ts',
