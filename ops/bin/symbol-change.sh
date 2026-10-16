@@ -7,6 +7,9 @@
 #   symbol-change.sh apply  <market> <old> <new> <YYYY-MM-DD> --evidence <text> [--operator x] [--confirm]
 #   symbol-change.sh revert <market> <old> <new> <YYYY-MM-DD> --evidence <text> [--operator x] [--confirm]
 #   symbol-change.sh list [market]
+#   symbol-change.sh candidates [--all]
+#   symbol-change.sh dismiss <candidateId> --note <text>
+#   symbol-change.sh apply --from-candidate <candidateId> [--new <newCode>] --effective <YYYY-MM-DD> --evidence <text> [--operator x] [--confirm]
 #
 # 🚨 不带 --confirm 时 CLI 只预览 (零写入) 并打印复述表; 核对无误后加 --confirm 重跑才写。
 #

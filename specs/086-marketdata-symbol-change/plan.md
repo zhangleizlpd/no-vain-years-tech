@@ -140,7 +140,7 @@ context7_verified: []
 
 #### D6 — ops 包装脚本（`ops/bin/symbol-change.sh`）
 
-- 子命令：`apply <market> <old> <new> <effective> --evidence <text>`、`revoke …`、`candidates`、`dismiss <id> --note <text>`。
+- 子命令：`apply <market> <old> <new> <effective> --evidence <text>`、`revert …`、`list [market]`、`candidates [--all]`、`dismiss <id> --note <text>`、`apply --from-candidate <id> [--new <code>] --effective <date> --evidence <text>`（与 `symbol-change.cli.ts` 的 `SYMBOL_CHANGE_USAGE` 一致）。
 - 不带 `--confirm` 时只跑预览并打印复述表，带 `--confirm` 才写（同 `anchor-approve.sh:294-334`）。
 - 执行面：ssh 到 app 主机 → `sops exec-env … docker compose … run --rm -T --no-deps --entrypoint node app dist/optionsdesk/symbol-change.cli.js …`（与部署 B2 闸同形，`ops/runbook/prod-deploy-rollback.md:12`）。**CLI 在容器内直连 DB，不走 HTTP、不需要 JWT** ⇒ FR-016 满足，也不用再碰签名密钥。
 - 主机与凭据路径从 `~/.nvy/fleet.env` 取，不写进脚本（`check-identifier-boundary.ts` 拦）。
