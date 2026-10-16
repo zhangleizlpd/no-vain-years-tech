@@ -15,7 +15,7 @@
 # 本脚本不再持有第二份 —— 阈值有两份就会漂。
 #
 # 零行判定（防周末/节假日「假停摆」误报）：非交易日 tick 全 marketScope 休市 → 短路不组 flow
-# → **零 sync_run 行**（sync-tick-driver.ts:178-182 仅 log 不落行）。故窗口零行时再查 S1 的
+# → **零 sync_run 行**（`sync-tick-driver.ts` 的 `tick()` → `tradingDayGate` 全剔除即短路，仅 log 不落行）。故窗口零行时再查 S1 的
 # `trading_day` 表判「昨日是否交易日」区分真停摆 vs 正常非交易日：
 #   · trading_day 近 30 日零行（表未 populate）→ 无法判定，保守告警  → exit 1
 #   · **日历不健康（心跳陈旧 / 降级）→ 🔴 无法判定停摆**            → exit 1   ← 044 新增

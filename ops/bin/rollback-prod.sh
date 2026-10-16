@@ -6,7 +6,7 @@
 #   ops/bin/rollback-prod.sh            # → .last-good-tag (last deploy that passed healthcheck)
 #   ops/bin/rollback-prod.sh v0.3.1     # → an explicit ACR tag you pick
 #
-# Mechanism = deploy-in-reverse: re-pin MBW_VERSION in .env.production + recreate
+# Mechanism = deploy-in-reverse: export MBW_VERSION (tracked files untouched) + recreate
 # the app container only. postgres / redis / nginx are untouched.
 #
 # ⚠️ Image-only rollback. Safe ONLY if the release being undone used backward-

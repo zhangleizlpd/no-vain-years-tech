@@ -2,7 +2,7 @@ name: Nightly Perf
 
 # Per ADR-0039 § 5 / § 6 — perf IT runs nightly on main, soft warning only.
 # Fast PR checks (CI workflow) keep <10min; latency-sensitive specs gated by
-# RUN_PERF_IT env (per memory `feedback_env_gated_perf_it_pattern`).
+# RUN_PERF_IT env (see docs/conventions/test-environment-matrix.md).
 #
 # Soft signal: failure opens a GitHub issue tagged `perf` linking to the run.
 # Does NOT block merges (separate from required status checks).

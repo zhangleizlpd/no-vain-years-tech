@@ -16,7 +16,7 @@ Wants=network-online.target
 Type=oneshot
 # 公共飞书配置（NVY_ALERT_*）+ 心跳目录（NVY_HEARTBEAT_DIR）—— 全机共享，wrapper 用。
 EnvironmentFile=-/etc/nvy-alert.env
-# 任务调参（SYNC_REPORT_WINDOW_HOURS / SYNC_REPORT_PG_CONTAINER / _USER / _DB）—— 可选，'-' = 缺则不报错。
+# 任务调参（SYNC_REPORT_PG_CONTAINER / _USER / _DB）—— 可选，'-' = 缺则不报错。
 # ⚠️ 本文件同时被 marketdata-calendar-health.service source（共用同一个 PG 的连接参数，两份必漂移）。
 EnvironmentFile=-/etc/marketdata-sync-report.env
 # 🚨 这里原本有一行 `Environment=CALENDAR_HEALTH_PREDICATE_SQL=…/marketdata-calendar-health/…`：

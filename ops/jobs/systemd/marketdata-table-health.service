@@ -1,5 +1,5 @@
 # marketdata-table-health（77）：每 4h 只读探各维度**数据年龄**（docker exec psql），陈旧 / 掉队 → 飞书 🔴。
-# 判据全在 marketdata-table-health.sql（server IT 真测，含 13 条注入故障的变异用例）；.sh 零逻辑、零飞书 I/O。
+# 判据全在 marketdata-table-health.sql（server IT 真测，含注入故障的变异用例）；.sh 零逻辑、零飞书 I/O。
 #
 # 与 marketdata-calendar-health 的分工（别混）：
 #   · calendar-health = 交易日历**填充心跳**还新鲜吗（判 liveness，数据源 = calendar_sync_health）

@@ -4,7 +4,7 @@
 #
 # 背景：L2 静态离线日历（apps/server/src/marketdata/static-calendar.data.ts）是官方 HKEX
 # 年历离线抽出、**入仓 + 人工年更**的常量表（无稳定接口、每年格式微调 ⇒ 不能自动生成，见
-# ops/runbook/scheduled-tasks.md#静态交易日历年更）。它只覆盖到某一年 12-31；跨年后 L2 对
+# ops/runbook/scheduled-tasks.md#年度人工任务人工执行--覆盖感知提醒兜底）。它只覆盖到某一年 12-31；跨年后 L2 对
 # 次年请求会 throw（设计如此，禁返空）。若忘记年更、且主源(腾讯)同时失效 → 日历填充全链失败。
 #
 # 本脚本把「人有没有按时更新次年日历」变成可观测：读 committed data 文件里的
@@ -38,7 +38,7 @@ _mm="${TODAY#*-}"; _mm="${_mm%%-*}"
 month=$((10#${_mm}))            # 强制十进制：避免 08/09 被当八进制炸（bash 数值坑）
 next_year=$((this_year + 1))
 
-RUNBOOK='ops/runbook/scheduled-tasks.md#静态交易日历年更'
+RUNBOOK='ops/runbook/scheduled-tasks.md#年度人工任务人工执行--覆盖感知提醒兜底'
 
 if [ ! -f "$DATA_FILE" ]; then
   echo "🔴 静态日历年更提醒：数据文件不存在 ($DATA_FILE) —— 无法判定次年覆盖，请人工核（checkout 路径 / 是否已部署 ?）。"

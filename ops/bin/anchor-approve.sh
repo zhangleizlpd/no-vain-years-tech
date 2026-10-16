@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 按市场审批 optionsdesk.anchor_submission 待审箱 —— 三动词 plan / apply / watch。
+# 按市场审批 optionsdesk.anchor_submission 待审箱 —— 四动词 plan / apply / watch / fix-asof。
 #
 # 🔻 **072 起降级为 break-glass**: 日常审批走 App 的「我的 · 审批」栏 (5 个 admin-only 端点,
 #    ADR-0069)。本脚本保留给「App 不可达 / 要批量灌几十条 / 要在 ledger 里留一份离线痕迹」
