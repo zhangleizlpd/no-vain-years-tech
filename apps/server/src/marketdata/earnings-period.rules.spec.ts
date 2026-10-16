@@ -9,6 +9,7 @@ import {
   parseDayMonthYear,
   realignObservationKey,
   resolveAnnouncementPeriod,
+  resolveBoardListPeriodWithProfile,
   resolveBoardListPeriod,
   resolveFutuPeriod,
   textPeriodKey,
@@ -496,5 +497,56 @@ describe('realignObservationKey — 非对齐观测按财年档案重算报告�
     ['清单来源不重算', stored(BOARD, '2024年第一季', '2024-04-20')],
   ])('%s ⇒ null', (_label, observation) => {
     expect(realignObservationKey(observation, 12)).toBeNull();
+  });
+});
+
+// FR-006 (spec Session（十一）)：清单「YYYY年第N季」= 日历季度; 空白期间按报告类型 + 会议日取财季末; 须有财年档案。
+describe('resolveBoardListPeriodWithProfile — 清单期间按财年档案换算', () => {
+  const row = (
+    periodText: string | null,
+    reportKind: 'quarterly' | 'interim' | 'annual' | null,
+    meetingDate: string,
+    fiscalYearEndMonth: number,
+  ) => ({ periodText, reportKind, meetingDate, fiscalYearEndMonth });
+
+  it.each([
+    [
+      '🚨 hk:00005 2026年第三季',
+      row('2026年第三季', 'quarterly', '2026-10-27', 12),
+      'P:2026-09-30',
+      'quarterly',
+    ],
+    [
+      '2024年第一季 (hk:02388)',
+      row('2024年第一季', 'quarterly', '2024-04-29', 12),
+      'P:2024-03-31',
+      'quarterly',
+    ],
+    [
+      '3 月结年: 日历第三季 = 财年中期',
+      row('2026年第三季', 'quarterly', '2026-11-20', 3),
+      'P:2026-09-30',
+      'interim',
+    ],
+    [
+      '空白 + 季度 (hk:03311 2024-04-26 第一季業績)',
+      row(null, 'quarterly', '2024-04-26', 12),
+      'P:2024-03-31',
+      'quarterly',
+    ],
+    ['空白 + 中期', row('', 'interim', '2026-08-20', 12), 'P:2026-06-30', 'interim'],
+    ['空白 + 年度 (跨年)', row(null, 'annual', '2026-03-20', 12), 'P:2025-12-31', 'annual'],
+  ])('%s ⇒ %s', (_label, input, periodKey, reportKind) => {
+    expect(resolveBoardListPeriodWithProfile(input)).toMatchObject({ periodKey, reportKind });
+  });
+
+  it.each([
+    ['1 月结年: 日历季末不是财季末', row('2026年第三季', 'quarterly', '2026-10-27', 1)],
+    ['会议日超出刊发时限', row('2026年第三季', 'quarterly', '2027-01-05', 12)],
+    ['会议日早于期末日', row('2026年第三季', 'quarterly', '2026-09-15', 12)],
+    ['空白 + 类型未知', row(null, null, '2026-10-29', 12)],
+    ['其他写法', row('截至2026年9月30日', 'quarterly', '2026-10-29', 12)],
+  ])('%s ⇒ null', (_label, input) => {
+    expect(resolveBoardListPeriodWithProfile(input)).toBeNull();
   });
 });
