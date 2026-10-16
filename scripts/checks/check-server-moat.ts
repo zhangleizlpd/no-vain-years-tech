@@ -146,6 +146,9 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   // 单行 upsert, R1 自有表)。落 marketdata 而非 optionsdesk 是因为**写它的人在这边** ——
   // optionsdesk 只负责建锚时 publish 一条 outbox 事件, 全程不碰本表 (反向也无人读)。
   anchorColdStartRun: 'marketdata',
+  // 086 代码变更登记 (plan D1): 登记 / 撤销 use case 独占写 (R1 自有表, 无 FK)。optionsdesk
+  // 修正编排只经 marketdata 导出的 use case 调用, 不直查本表。
+  symbolChange: 'marketdata',
   // alert 4 表归 alert (021, 第 6 bounded context; ADR-0052 调度自治预警引擎): CRUD/
   // 评估/消息 UC 独占读写 (R1 自有表)。跨 ctx 面 = alert 评估读 marketdata 的
   // dailyBar/instrument (Q7-B 只读直查, CROSS-CONTEXT-READ 注释强制); 反向无人读 alert。

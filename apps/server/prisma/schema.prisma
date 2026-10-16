@@ -1704,6 +1704,37 @@ model AnchorColdStartRun {
   @@schema("marketdata")
 }
 
+// 086 代码变更登记 (plan D1): 一行 = 一次「旧码 → 新码」的存续延续 (v1 只有 rename)。读时拼接的
+// 唯一事实来源 (symbol-lineage.rules.ts 按它算 lineage), 不搬动 daily_bar 等事实表 (FR-006)。
+//
+// - effective_date 是**交易所当地日历日**, 与 daily_bar.trade_date 同一条轴 (ADR-0066); 不存 UTC
+//   时刻、不做时区换算。
+// - 登记的是**代码不是行**: 不与 instrument 建 FK (新码登记时可以还不在标的表, D5 第 4 步补齐)。
+// - 唯一性 = 部分唯一索引 `(market, old_code, effective_date) WHERE revoked_at IS NULL`, 由
+//   migration.sql 手写 (Prisma schema 表达不了带谓词的唯一索引)。撤销后允许同参数重新登记 (FR-003)。
+// - 撤销只写 revoked_* 三列不删行 (FR-003 / FR-009 留痕)。
+// - event_type / source 是贫血字符串无枚举表; 值域权威在 symbol-lineage.rules.ts。
+model SymbolChange {
+  id            BigInt    @id @default(autoincrement())
+  market        String    @db.VarChar(8)
+  oldCode       String    @map("old_code") @db.VarChar(16)
+  newCode       String    @map("new_code") @db.VarChar(16)
+  effectiveDate DateTime  @map("effective_date") @db.Date
+  eventType     String    @map("event_type") @db.VarChar(16)
+  // manual = 维护者直接登记; candidate = 由疑似改名候选确认而来。
+  source        String    @db.VarChar(16)
+  // 证据 (公告 URL / 观测记录), 系统不解析。
+  evidence      String    @db.Text
+  registeredBy  String    @map("registered_by") @db.VarChar(64)
+  registeredAt  DateTime  @default(now()) @map("registered_at") @db.Timestamptz(6)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamptz(6)
+  revokedBy     String?   @map("revoked_by") @db.VarChar(64)
+  revokeReason  String?   @map("revoke_reason") @db.Text
+
+  @@map("symbol_change")
+  @@schema("marketdata")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // alert (021, 第 6 bounded context; ADR-0052 调度自治 EOD 预警引擎)。范式 =
 // ADR-0043 贫血 row + @map snake_case。4 表自持 (moat owner=alert); accountId 仅
