@@ -97,7 +97,7 @@ updated_at: '2026-10-16'
 
 - [X] T014 [Server] [US5] **CLI `symbol-change.cli.ts`**（FR-009, FR-011, FR-012; plan D5, D6）：照 `marketdata-trigger.cli.ts:329-366` 的形态（worker / scheduler 哨兵 env、`createApplicationContext(AppModule)`、`finally app.close()`、`process.argv[1]?.includes(...)` 入口守卫）。子命令：`apply` / `revert`（默认 preview，`--confirm` 才 apply）、`list`（全部登记含已撤销，FR-009）、`candidates` / `dismiss`（T019 接）。参数解析抽成纯函数 `parseSymbolChangeArgs` → verify: `optionsdesk/symbol-change.cli.spec.ts`（Small，只测参数解析与「无 `--confirm` ⇒ mode=preview」）先红 → 绿；`pnpm nx run server:build` 后 `node dist/.../symbol-change.cli.js --help` 本地可跑
 
-- [ ] T015 [Ops] [US5] **ops 包装脚本 `ops/bin/symbol-change.sh`**（FR-012, FR-016; plan D6）：从 `~/.nvy/fleet.env` 取 app 主机；ssh → `sops exec-env … docker compose … run --rm -T --no-deps --entrypoint node app dist/optionsdesk/symbol-change.cli.js "$@"`；不带 `--confirm` 时只打印复述表并提示「确认后加 `--confirm` 重跑」。脚本内零判断逻辑，判断全在 CLI → verify: `bash -n` 通过；`pnpm tsx scripts/checks/check-identifier-boundary.ts` 与 `check-repo-layout.ts` 绿；prod 只读预览留给 T022
+- [X] T015 [Ops] [US5] **ops 包装脚本 `ops/bin/symbol-change.sh`**（FR-012, FR-016; plan D6）：从 `~/.nvy/fleet.env` 取 app 主机；ssh → `sops exec-env … docker compose … run --rm -T --no-deps --entrypoint node app dist/optionsdesk/symbol-change.cli.js "$@"`；不带 `--confirm` 时只打印复述表并提示「确认后加 `--confirm` 重跑」。脚本内零判断逻辑，判断全在 CLI → verify: `bash -n` 通过；`pnpm tsx scripts/checks/check-identifier-boundary.ts` 与 `check-repo-layout.ts` 绿；prod 只读预览留给 T022
 
 ### US4（P3）：改名被及时发现
 
