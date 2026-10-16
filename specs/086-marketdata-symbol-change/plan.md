@@ -12,7 +12,7 @@ context7_verified: []
 
 ## Summary _(mandatory)_
 
-新增「代码变更登记」（marketdata 自持），日线的读取入口按登记做**读时拼接**，按生效日区间切段，防止被回收的代码误拼；optionsdesk 侧新增「迁锚」与「疑似改名候选」；再用一个 server CLI 把登记、迁锚、驳回待审提交、纠正采集范围、验证五步串成一条命令，ops 包装脚本负责预览和复述闸。技术路径：两张新表、两条迁移；marketdata 新增 2 个 use case 和 1 个纯函数规则文件；optionsdesk 新增 3 个 use case 和 1 个 CLI；改动 1 个端口的返回形态；**零新依赖、零 HTTP endpoint、零 OpenAPI 变更、零 mobile 改动**。
+新增「代码变更登记」（marketdata 自持），日线的读取入口按登记做**读时拼接**，按生效日区间切段，防止被回收的代码误拼；optionsdesk 侧新增「迁锚」与「疑似改名候选」；再用一个 server CLI 把登记、迁锚、驳回待审提交、纠正采集范围、验证五步串成一条命令，ops 包装脚本负责预览和复述闸。技术路径：两张新表、两条迁移；marketdata 新增 3 个 use case 和 1 个纯函数规则文件；optionsdesk 新增 3 个 use case 和 1 个 CLI；改动 1 个端口的返回形态；**零新依赖、零 HTTP endpoint、零 OpenAPI 变更、零 mobile 改动**。
 
 ## Dependencies & Defensive Additions _(Cargo-cult 防火墙)_
 
@@ -60,7 +60,7 @@ context7_verified: []
 | ADR | sunset trigger / 判据 | Classification | 说明 |
 | --- | --- | --- | --- |
 | ADR-0043 | optionsdesk 复审线 = use case 达 30 个（§复审记录 2026-09-15） | accepted-as-is | 当前 25 个，本片 +3（迁锚 / 修正编排 / 候选处置）= 28，未达线 |
-| ADR-0043 | 其它 ctx「use case 数 > 20」 | accepted-as-is（逼近） | marketdata 当前 17 个，+2（登记 / 撤销）= 19。下一片再加就会触线，记在这里 |
+| ADR-0043 | 其它 ctx「use case 数 > 20」 | accepted-as-is（逼近） | marketdata 当前 17 个，+3（登记 / 撤销 / 确保标的行）= 20，等于线、未越线（判据是「> 20」）。下一片 marketdata 再加 use case 就会触发复审，记在这里 |
 | ADR-0062 | #2「历史价格序列的读搬进 optionsdesk」 | accepted-as-is（未触发） | 拼接落在 marketdata 的 bars use case，optionsdesk 不读序列 |
 | ADR-0062 | #3「出现第二个消费锚表的 ctx」 | accepted-as-is（未触发） | 候选表归 optionsdesk；marketdata 仍只有采集闸那一条反向读 |
 | ADR-0053 | #2「第二个 ctx import 他 ctx 的 `*.rules.ts`」 | accepted-as-is（未触发） | optionsdesk 不 import `symbol-lineage.rules.ts`，只经 use case 调用 |
@@ -120,18 +120,21 @@ context7_verified: []
 #### D5 — 修正命令：CLI 编排（optionsdesk）
 
 - 位置：`optionsdesk/symbol-change.cli.ts` + `optionsdesk/remediate-symbol-change.usecase.ts`。编排必须放在 optionsdesk：marketdata 不能 import optionsdesk，反方向已有先例（`create-anchor.usecase.ts:245` 注入 `EnsureLatestEodBarUseCase`）。
-- 注入（各带 `// CROSS-CONTEXT-SYNC:`）：marketdata 的 `RegisterSymbolChangeUseCase` / `RevokeSymbolChangeUseCase`（D1 / D2 新增）、`AnchorDrivenSyncGate`、`GetInstrumentBarsUseCase`（验证用）。后两者今天只在 providers（`marketdata.module.ts:702`）、不在 `exports`（`:892` 起），本片加进 exports；漏了的话，optionsdesk 注入时 boot 才会炸（同文件 `:879` 注释）。
+- 注入（各带 `// CROSS-CONTEXT-SYNC:`）：marketdata 的 `RegisterSymbolChangeUseCase` / `RevokeSymbolChangeUseCase`（D1 / D2 新增）、`EnsureInstrumentUseCase`（D5 第 4 步新增）、`AnchorDrivenSyncGate`、`GetInstrumentBarsUseCase`（验证用）。后两者今天只在 providers（`marketdata.module.ts:702`）、不在 `exports`（`:892` 起），本片加进 exports；漏了的话，optionsdesk 注入时 boot 才会炸（同文件 `:879` 注释）。
 - 五步，每步先读状态判「已完成 ⇒ 跳过」，满足幂等可续跑（FR-013、分支 14、15）：
   1. **登记**：已有同参数未撤销登记 ⇒ 跳过。
   2. **迁锚**：新 use case `migrate-anchor-ticker.usecase.ts`（进 `WRITE_ALLOWLIST.anchor`）。旧码无锚 ⇒ 跳过；新码已有锚 ⇒ 报冲突并**停在这一步**（分支 17）。迁移在同一个 tx 内做四件事：
-     - conditional UPDATE：`ticker` 改新码，`last_close` / `intraday_*` 清空（那是旧码的价，旧码已经取不到价），`next_review` 设为交易所当地「昨天」以进入复核逾期（FR-017，复用 `isAnchorOverdue`，`review-anchor.usecase.ts:69`）；
+     - conditional UPDATE：`ticker` 改新码，`last_close` / `intraday_*` 清空（那是旧码的价，旧码已经取不到价），`next_review` 设为**上海日的昨天**以进入复核逾期（FR-017，复用 `isAnchorOverdue`，`review-anchor.usecase.ts:69`）。取上海日是为了与逾期判定同轴：锚列表的 `today` 是 `shanghaiDateOnly(new Date())`（`list-anchors.usecase.ts:110`，`:83` 注释写明 `today` 跟用户所在地走），取交易所当地日只是碰巧对、不是同轴；
      - 写 `anchor_change`，`changedFields: ['ticker', 'nextReview']`（`ticker` 本就是追踪字段，`anchor-history.ts:35` 的 `ANCHOR_TRACKED_FIELD_KINDS.ticker`）；
-     - 发布 `optionsdesk.anchor-created` 事件（`create-anchor.usecase.ts:236,317` 同名同形），让 marketdata 冷启动为新码补数、补齐标的行（分支 16）。
+     - 发布 `optionsdesk.anchor-created` 事件（`create-anchor.usecase.ts:236,317` 同名同形），让 marketdata 冷启动为新码**补历史数据**。标的行不靠它补：冷启动经 outbox 异步执行，第 4 步立即重算采集闸时标的行可能还不存在（analyze F1）。
      - 这个事件有两个订阅者：冷启动 `anchor-cold-start.subscriber.ts:15`、券商历史回补 `broker-history-backfill.subscriber.ts:44`。**首个 task 先核对两者对「同一 ticker 二次投递」幂等**，不幂等就改发专用事件，不复用。
   3. **驳回待审提交**：读 `anchor_submission` 里旧码的 PENDING 行 → 交给既有 `RejectAnchorSubmissionsUseCase`（`reject-anchor-submissions.usecase.ts:30`），驳回理由写「代码已改为 <新码>」。
-  4. **采集范围**：调 `AnchorDrivenSyncGate.recalcSafely()` 立即重算（不等下一轮 fact 维度）。us 由锚驱动，旧码自动关闸、新码开闸；hk / cn 不受锚驱动（`anchor-driven-sync-gate.ts:18`），只在报告里写明「该市场采集范围不随锚变化」。
-  5. **验证**（只读）：旧码不再出现在锚表；新码锚存在并处于复核逾期；新码 `need_sync`（仅 us）为真；对新码调 `GetInstrumentBarsUseCase`，报告首末日期和**缺口数**（按交易日历比对）。收盘价要等下一个取价周期，报告写「待下一拍」，不阻塞命令。
-- 撤销（FR-015、分支 18）：逆序执行 —— 迁锚回旧码并恢复原 `next_review`（从 `anchor_change` 的 before 值取）→ 撤销登记 → 重算采集闸。驳回的待审提交**不复原**（驳回零副作用，`anchor-submission.controller.ts` 注释原文），在报告里写明。
+  4. **采集范围**，按顺序三件事：
+     - **先同步补齐新码标的行**（分支 16）：调 marketdata 新增的 `EnsureInstrumentUseCase`（`ensure-instrument.usecase.ts`），复用 `seedInstrumentCreateData`（`sync-universe.usecase.ts`，冷启动 `anchor-cold-start.usecase.ts:413` 的 upsert 用的是同一份 seed）。已存在 ⇒ 跳过。今天唯一会建标的行的地方是冷启动那处 upsert，`ensure-latest-eod-bar.usecase.ts` 不建行，所以要新增这个 use case。
+     - 再调 `AnchorDrivenSyncGate.recalcSafely()` 立即重算（不等下一轮 fact 维度）。us 由锚驱动，旧码自动关闸、新码开闸。
+     - hk / cn 不受锚驱动（`anchor-driven-sync-gate.ts:18`；`sync-universe.usecase.ts:164` 默认全量采集），旧码会留在采集范围里。它对同批采集有没有害**未验证**，由一个取证 task 先定：有害 ⇒ 本步追加「把旧码写入 `sync_blacklist`」（撤销时删除）；无害 ⇒ 只在报告里写明。
+  5. **验证**（只读）：旧码不再出现在锚表；新码锚存在并处于复核逾期；新码标的行存在、`need_sync`（仅 us）为真；对新码调 `GetInstrumentBarsUseCase`，报告首末日期和**缺口数**（按交易日历比对）。收盘价要等下一个取价周期，报告写「待下一拍」，不阻塞命令。
+- 撤销（FR-015、分支 18）：逆序执行 —— 迁锚回旧码并恢复原 `next_review`（从 `anchor_change` 的 before 值取）→ 撤销登记 → 重算采集闸（若第 4 步写过 `sync_blacklist`，一并删除）。补齐的新码标的行不删：标的行是全市场清单的一部分，universe 同步本来也会建它。驳回的待审提交**不复原**（驳回零副作用，`anchor-submission.controller.ts` 注释原文），在报告里写明。
 - 报告：每步一行，`ok` / `skipped(原因)` / `failed(原因)` / `conflict(原因)`；失败即停，退出码非零。
 - 预览模式（默认，FR-012、分支 12）：五步都只做「读状态 + 推算将要做什么」，零写入；由 IT 断言预览前后全表行数与 `updated_at` 不变。
 
@@ -188,7 +191,7 @@ context7_verified: []
 
 ### 新增 / 触碰文件清单（tasks 拆分的物料面）
 
-- **marketdata 新增**：`symbol-lineage.rules.ts`（+ spec）、`register-symbol-change.usecase.ts`、`revoke-symbol-change.usecase.ts`
+- **marketdata 新增**：`symbol-lineage.rules.ts`（+ spec）、`register-symbol-change.usecase.ts`、`revoke-symbol-change.usecase.ts`、`ensure-instrument.usecase.ts`
 - **marketdata 触碰**：`get-instrument-bars.usecase.ts`（D3）、`dimension-executor.ts`（D4，单点）、`realtime-quote.port.ts` + `futu-realtime-quote.adapter.ts` + `market-routed-realtime-quote.adapter.ts`（D7）、`marketdata.module.ts`（export）
 - **optionsdesk 新增**：`migrate-anchor-ticker.usecase.ts`、`remediate-symbol-change.usecase.ts`、`resolve-symbol-candidate.usecase.ts`、`symbol-candidate.rules.ts`（+ spec）、`symbol-change.cli.ts`
 - **optionsdesk 触碰**：`sync-anchor-last-close.ts`（D7 消费 + D8 产生候选）、`sync-anchor-intraday.ts`（D7 消费）、`optionsdesk.module.ts`
