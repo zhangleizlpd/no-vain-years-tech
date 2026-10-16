@@ -1,7 +1,7 @@
 ---
 feature_id: 086-marketdata-symbol-change
 spec_ref: ./spec.md
-status: drafted
+status: approved
 created_at: '2026-10-16'
 updated_at: '2026-10-16'
 adr_refs: ['0040', '0043', '0053', '0062', '0066']
