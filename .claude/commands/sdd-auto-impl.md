@@ -18,8 +18,6 @@ allowed-tools: Agent, Bash, Read, Edit, Write, Monitor, Glob, Grep
 
 > 🚨 为什么单 PR：monorepo 单 PR 里 api-client regen 的 client 就在同一棵树，mobile 直接 import，**原子 merge 零类型 drift 窗口**。代价 = feature 整体 revert（已接受）。**本命令不实现跨 PR 接力 / Monitor 等 merge 重建分支**——那段已随单 PR 决策删除。
 >
-> ⚠️ 与 Constitution §V「cross-end 两段式」冲突——adopt 本命令需同步 amend §V 为「cross-end 默认单 PR」。
->
 > 🚨 **CRITICAL — 整个机制的命门**：**NEVER** 让主 agent 自己读 impl 文件、跑测试、写实现。impl 的一切（读码 / 写测试 / 调试 / typecheck）**必须**派给子 agent。主 agent 一旦自己下场，上下文就膨胀，机制失效。主 agent 只做：解析 → 派单 → 收摘要 → 判 stop signal → 收尾。
 
 ---
@@ -78,16 +76,16 @@ git switch main && git pull --ff-only && git switch -c NNN-slug   # 已存在则
 ### c. 全 task 绿 → 开 PR + auto-merge
 
 1. `git push -u origin NNN-slug`。
-2. `gh pr create --repo <owner/repo>` —— `<owner/repo>` 取自 `git remote get-url origin`，🚫 不从本文抄（见铁律 5）：
+2. `gh-bot pr create --repo <owner/repo>`（agent 的 PR 动作一律走 `gh-bot` machine account，per `docs/conventions/git-workflow.md` § 身份归属）—— `<owner/repo>` 取自 `git remote get-url origin`，🚫 不从本文抄（见铁律 5）：
    - 🚨 body **必走仓库模板** `.github/pull_request_template.md`（CI 严格 regex 扫部署 gate 3-checkbox，缺/未勾全红——见 `docs/conventions/pr-creation-protocol.md`）。
    - title 走 Conventional Commits（`feat(<scope>): NNN <feature 一句话>`）。
-3. **接 auto-merge**（per git-workflow 默认）：`gh pr merge <num> --repo ... --auto --squash --delete-branch`。
+3. **接 auto-merge**（per git-workflow 默认）：`gh-bot pr merge <num> --repo ... --auto --squash --delete-branch`。
    - 🚨 **auto-merge 启用后 NEVER 再 push 新 commit**（race window 孤儿化新 commit）。要补改 → 等终态后新分支。
    - **例外不接 auto-merge**（per git-workflow）：跑中撞过不可逆/高风险 op、user 明示自己 review、PR draft → 停下 flag，不接 auto-merge。
 
 ### d. Monitor CI 到终态 → 报告
 
-1. **Monitor 工具**轮询 `gh pr checks <num> --repo ...`（regex：`skipping` 不算 fail，per memory `feedback_monitor_skipping_not_failure`）直到终态。
+1. **Monitor 工具**轮询 `gh-bot pr checks <num> --repo ...`（regex：`skipping` 不算 fail，per memory `feedback_monitor_skipping_not_failure`）直到终态。
 2. 分流：
    - **merged**（auto-merge 落地）→ § 3 终报告。
    - **CI 失败** → **停**，报告失败 job + 日志摘要，问 user 怎么修（可能要派子 agent 修，但先等 user 定向；🚨 auto-merge 已启用，修法走新分支，别在原 PR 再 push）。
@@ -227,7 +225,7 @@ PR ship（或撞 stop 终止）后给 user：
 
 1. **fixture** = `specs/000-autoimpl-selftest/`（throwaway feature，所有 task 只写 `specs/000-autoimpl-selftest/sandbox/` 下文件，零碰真实 app 代码）。
 2. **隔离**：临时 git worktree 跑（`git worktree add /tmp/autoimpl-selftest-wt -b autoimpl-selftest-throwaway`），结束 `git worktree remove --force` 丢弃——junk 永不进真实树 / main。
-3. **真跑**（验证机制）：tasks 解析 → 子 agent brief → 子 agent 干净上下文实现 sandbox task → 结构化结果解析 → stop-signal 协议 → **薄 JSONL 审计 append（§ 1.b step 5）+ max-retry 断路器计数**（写到 `specs/000-autoimpl-selftest/.sdd-run/`，随 sandbox 一并丢弃）。
+3. **真跑**（验证机制）：tasks 解析 → 子 agent brief → 子 agent 干净上下文实现 sandbox task → 结构化结果解析 → stop-signal 协议 → **薄 JSONL 审计 append（§ 1.b step 6）+ max-retry 断路器计数**（写到 `specs/000-autoimpl-selftest/.sdd-run/`，随 sandbox 一并丢弃）。
 4. **模拟**（不触 GitHub）：`git push` / `gh pr create` / `gh pr merge` / Monitor → 打印「WOULD run: ...」+ 直接当 merged 收尾。
 5. **产出**：一份 § 5 报告，标注哪些真跑、哪些模拟。真实 GitHub/Monitor 腿在**第一个真 feature**（你在旁看着那次）验收。
 

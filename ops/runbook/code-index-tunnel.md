@@ -4,9 +4,9 @@
 >
 > ✅ **已上线（2026-06-25 live 实证）**：62（`mbw-indexer`）`wg0` 隧道活跃（peer=77 `mbw-staging`，handshake 持续 + 双向流量）；77 app `CODE_INDEX_PROVIDER=http` / `CODE_INDEX_URL=http://10.88.0.1:7700`；77→隧道 `/healthz` 返 `{"ok":true}` 端到端通。本文档以下为**首次 bring-up 手册 + 运维 SoT**（rollback / token 轮换 / 排障仍用）；安全组与 bring-up 步骤为历史执行记录，勿当「待办」误读。
 >
-> 🔴 **77 上不止这一条隧道**（2026-07-31 起）：本文的 `wg0` = `10.88.0.0/24`（62↔77）；另有 **`wg1` = `10.89.0.0/24`（B↔C，77↔港机 `mbw-futu-hk`）**，见 [`futu-opend-hk.md` §二](./futu-opend-hk.md)。**动 77 的 WireGuard 配置前先确认改的是哪一条** —— 接口名与网段刻意错开，别混。
+> 🔴 **77 上不止这一条隧道**（2026-07-31 起）：本文的 `wg0` = `10.88.0.0/24`（62↔77）；另有 **`wg1` = `10.89.0.0/24`（B↔C，77↔港机 `mbw-futu-hk`）**，见 `docs/private/runbook/futu-opend-hk.md` §二（local-only；公开侧只剩 stub [`futu-opend-hk.md`](./futu-opend-hk.md)）。**动 77 的 WireGuard 配置前先确认改的是哪一条** —— 接口名与网段刻意错开，别混。
 >
-> **目的**：把 77 上的 mono ideation server 经**加密隧道**接到 62 上的 code-index `/search` + `/repos`，兑现 034 接地检索的真检索（[spec](../../specs/034-ideation-grounding-retrieval/spec.md) / [plan §7](../../specs/034-ideation-grounding-retrieval/plan.md)）。关闭 [`code-index-deploy.md` §待办 phase E](./code-index-deploy.md) 的网络暴露 TODO。
+> **目的**：把 77 上的 mono ideation server 经**加密隧道**接到 62 上的 code-index `/search` + `/repos`，兑现 034 接地检索的真检索（[spec](../../specs/034-ideation-grounding-retrieval/spec.md) / [plan §7](../../specs/034-ideation-grounding-retrieval/plan.md)）。关闭 [`code-index-deploy.md` §phase E — 网络暴露](./code-index-deploy.md) 的网络暴露 TODO。
 >
 > **决策**（S2 plan §E / 2026-06-23 确认）：**WireGuard 点对点隧道**（跨账号两机最稳，无证书/域名负担）。service token 明文严禁裸公网——隧道加密承载。备选自签 TLS 反代已弃（管证书 + 安全组放公网 IP，更重）。
 
@@ -109,7 +109,7 @@ curl -fsS http://10.88.0.1:7700/healthz  # {"ok":true}（无 token 的 healthz�
 ```bash
 # 1) 读 62 现有 token（已签发、服务在用，勿改）
 ssh mbw-indexer 'set -a; . /etc/code-index.env; set +a; echo "$CODE_INDEX_SERVICE_TOKEN"'
-# 2) 把该值写进 77 的 /home/admin/.env.production（见 C），与 62 严格一致
+# 2) 把该值写进 dev 机密文 ~/.nvy/secrets.enc.env（sops edit，见 C），与 62 严格一致
 ```
 
 > 若 62 竟无 token（不应发生，服务 fail-closed 会拒启）→ 按 [`code-index-deploy.md` §B](./code-index-deploy.md) 生成 `openssl rand -hex 32` 后**两端同步**并重启 `code-index-query.service`。
@@ -119,26 +119,28 @@ ssh mbw-indexer 'set -a; . /etc/code-index.env; set +a; echo "$CODE_INDEX_SERVIC
 > 🚨 **两个激活前置（缺一则隧道通但 app 接地仍是 fake，2026-06-23 实证）**：
 >
 > 1. **镜像须含接地代码**：grounding 集成（#557）必须在 77 运行的镜像里。`server-v0.11.0`(2026-06-22) **预** dates #557 → 该镜像无 codeindex，填 env 全 inert。**先确认 `server-vX.Y.Z ≥ 含 #557 的 release`**（`git merge-base --is-ancestor <#557-sha> <tag>`）。
-> 2. **77 的 `docker-compose.tight.yml` 须含 `CODE_INDEX_*` environment 映射**（#557 加，`:155-157`）。deploy.yml 默认 `skip_git_fetch=true` → 77 compose 停在旧 commit、**无映射** → 容器拿不到 CODE_INDEX env → app config 静默默认 `fake`（同 `MARKETDATA_PROVIDER` 静默吞陷阱）。**激活接地的 deploy 必须 `skip_git_fetch=false`** 拉新 compose。
+> 2. **77 的 `docker-compose.tight.yml` 须含 `CODE_INDEX_*` environment 映射**（#557 加，`CODE_INDEX_PROVIDER` / `CODE_INDEX_URL` / `CODE_INDEX_SERVICE_TOKEN` 三个 key）。deploy.yml 若传 `skip_git_fetch=true`（现默认 `false`）→ 77 compose 停在旧 commit、**无映射** → 容器拿不到 CODE_INDEX env → app config 静默默认 `fake`（同 `MARKETDATA_PROVIDER` 静默吞陷阱）。**激活接地的 deploy 必须 `skip_git_fetch=false`** 拉新 compose。
 >
-> ⇒ **推荐路径**：直接走 `deploy.yml`（`workflow_dispatch`，tag=含 #557 的 release，**`skip_git_fetch=false`**）一把到位——它同时拉新 compose（映射）+ pull 新镜像（代码）+ 保留 `.env.production`（下面的 CODE_INDEX 值）。下面手动步骤仅用于隧道/排障期单独验证。
+> ⇒ **推荐路径**：直接走 `deploy.yml`（`workflow_dispatch`，tag=含 #557 的 release，**`skip_git_fetch=false`**）一把到位——它同时拉新 compose（映射）+ pull 新镜像（代码）+ 由 `sops exec-env` 注入 `/etc/nvy/secrets.enc.env` 里的 CODE_INDEX 值（见下）。下面手动步骤仅用于隧道/排障期单独验证。
 
-在 77 `/home/admin/no-vain-years-mono/.env.production` 填（`.env.production` 为 git 树外，deploy `git reset --hard` 不动它；`.env.production.example:134-136` 同款）：
+`.env.production` 已 tracked（仓公开），**只放非密的 `CODE_INDEX_PROVIDER=http`**（已在仓内，随 deploy `git reset --hard` 到位）；`CODE_INDEX_URL` 与 `CODE_INDEX_SERVICE_TOKEN` 属同一 SOPS 单元（`.sops.yaml` `encrypted_regex`），🚨 **禁止写进 `.env.production`** —— 在 dev 机 `sops edit ~/.nvy/secrets.enc.env` 填，再按 [`secrets-sops.md`](secrets-sops.md) §3.3 scp 到 77 `/etc/nvy/secrets.enc.env`：
 
 ```ini
+# .env.production（tracked，非密）
 CODE_INDEX_PROVIDER=http
+# ~/.nvy/secrets.enc.env（sops edit；密文 untracked）
 CODE_INDEX_URL=http://10.88.0.1:7700
 CODE_INDEX_SERVICE_TOKEN=<B 步从 62 读到的同值>
 ```
 
-手动重部署（仅当不走 deploy.yml）。🚨 **必须 `sops exec-env` 包裹**——77 已 post-SOPS-cutover，真 DB 密码等 secret 在 `secrets.enc.env`（age key `~/.config/sops/age/keys.txt`），`.env.production` 里的 DB_PASSWORD 是占位值；**裸 `--env-file` recreate 会用占位密码 → `P1000 Authentication failed` → app 崩溃 loop**（2026-06-23 实证打崩 ~3min）：
+手动重部署（仅当不走 deploy.yml）。🚨 **必须 `sops exec-env` 包裹**——77 已 post-SOPS-cutover，真 DB 密码等 secret 只在 `/etc/nvy/secrets.enc.env`（age key `~/.config/sops/age/keys.txt`），`.env.production` 已不含任何 secret（无 `DB_PASSWORD`）；**裸 `--env-file` recreate 拿不到 DB 密码 → `P1000 Authentication failed` → app 崩溃 loop**（2026-06-23 实证打崩 ~3min）：
 
 ```bash
 # 77
 cd /home/admin/no-vain-years-mono
 # ✅ 正确（sops 注入真 secret，compose ${VAR} 插值优先读 shell env 赢 --env-file）
-sops exec-env secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d --force-recreate app"
-# ❌ 禁：docker compose ... --env-file .env.production up -d --force-recreate app（裸跑 → 占位 DB 密码 → P1000）
+sops exec-env /etc/nvy/secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d --force-recreate app"
+# ❌ 禁：docker compose ... --env-file .env.production up -d --force-recreate app（裸跑 → 缺 DB 密码 → P1000）
 
 # verify（ps/logs 只读, 不必 sops 包裹; "DB_PASSWORD not set" warning 无害）：
 docker compose -f docker-compose.tight.yml --env-file .env.production ps app          # Up (healthy)
@@ -150,18 +152,17 @@ docker exec nvy-tight-app-1 printenv CODE_INDEX_PROVIDER                        
 
 ```bash
 # D.1 隧道内直打 code-index（在 77 宿主）
-set -a; . /home/admin/.env.production; set +a
-curl -fsS -H "Authorization: Bearer $CODE_INDEX_SERVICE_TOKEN" \
-  http://10.88.0.1:7700/repos | head -c 400            # verify：200 {repos:[{repo:"mono",...}]}
-curl -fsS -H "Authorization: Bearer $CODE_INDEX_SERVICE_TOKEN" \
-  -X POST http://10.88.0.1:7700/search \
-  -d '{"repo":"mono","query":"登录 use case"}' | head -c 400   # verify：命中 results
+# token 只在密文里 → sops exec-env 在内存注入（单引号防宿主 shell 提前展开 $CODE_INDEX_SERVICE_TOKEN）
+export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
+sops exec-env /etc/nvy/secrets.enc.env 'curl -fsS -H "Authorization: Bearer $CODE_INDEX_SERVICE_TOKEN" http://10.88.0.1:7700/repos' | head -c 400   # verify：200 {repos:[{repo:"mono",...}]}
+printf '%s' '{"repo":"mono","query":"登录 use case"}' > /tmp/ci-q.json
+sops exec-env /etc/nvy/secrets.enc.env 'curl -fsS -H "Authorization: Bearer $CODE_INDEX_SERVICE_TOKEN" -X POST -d @/tmp/ci-q.json http://10.88.0.1:7700/search' | head -c 400   # verify：命中 results
 
 # D.2 env-gated 真后端 IT（本地，打真隧道；默认 skip，per 034 T007）
 #     需本机能经隧道/跳板到 10.88.0.1:7700，或在 77 宿主跑
-RUN_CODEINDEX_IT=1 CODE_INDEX_URL=http://10.88.0.1:7700 \
-  CODE_INDEX_SERVICE_TOKEN=$CODE_INDEX_SERVICE_TOKEN \
-  nx test server ideation-grounding   # verify：真 /search+/repos 命中 + 命名空间隔离 绿
+#     token 从 dev 机密文注入（不落 shell 变量 / 历史）
+sops exec-env ~/.nvy/secrets.enc.env \
+  'RUN_CODEINDEX_IT=1 CODE_INDEX_URL=http://10.88.0.1:7700 pnpm nx test server ideation-grounding'   # verify：真 /search+/repos 命中 + 命名空间隔离 绿
 
 # D.3 真 app 接地一轮（最终 dogfood，SC-005）
 #     在 mobile 选 mono → 提问需查代码的需求 → 见来源折叠引用真实文件
@@ -171,13 +172,13 @@ verify（降级反例，确认 FR-008 真生效）：临时 `systemctl stop wg-q
 
 ## Rollback / teardown
 
-- **回退接地**（保留隧道）：77 `.env.production` 注释三行 / 设 `CODE_INDEX_PROVIDER=fake` → `up -d --force-recreate app`。ideation 退回 fake provider（catalog 空、检索返空 + 降级气泡），会话仍可用。
+- **回退接地**（保留隧道）：tracked `.env.production` 改 `CODE_INDEX_PROVIDER=fake`（PR → deploy）；应急可在 77 上 `export CODE_INDEX_PROVIDER=fake` 后 sops 包裹 `up -d --force-recreate app`（shell env 优先于 `--env-file`，下次 deploy 即回到仓内值）。ideation 退回 fake provider（catalog 空、检索返空 + 降级气泡），会话仍可用。
 - **拆隧道**：两机 `systemctl disable --now wg-quick@wg0` + 删 `/etc/wireguard/wg0.*` + 撤两条安全组 UDP 51820 规则。
-- **token 轮换**（泄露时）：生成新 `openssl rand -hex 32` → 同步 62 `/etc/code-index.env`（重启 `code-index-query.service`）+ 77 `.env.production`（`up -d --force-recreate app`），两端必须同步切换（fail-closed，过渡期会 401）。
+- **token 轮换**（泄露时）：生成新 `openssl rand -hex 32` → 同步 62 `/etc/code-index.env`（重启 `code-index-query.service`）+ dev 机 `sops edit ~/.nvy/secrets.enc.env` 改 `CODE_INDEX_SERVICE_TOKEN` → [`secrets-sops.md`](secrets-sops.md) §3.3 scp 到 77 → sops 包裹 `up -d --force-recreate app`，两端必须同步切换（fail-closed，过渡期会 401）。
 
 ## 已知坑
 
-- **漏映射静默吞**：compose 漏 `CODE_INDEX_*` 映射 → 容器读不到 → `http` 被静默吞成 `fake`（同 `MARKETDATA_PROVIDER` 陷阱）。本仓 `docker-compose.tight.yml:155-157` 已映射，勿删。
+- **漏映射静默吞**：compose 漏 `CODE_INDEX_*` 映射 → 容器读不到 → `http` 被静默吞成 `fake`（同 `MARKETDATA_PROVIDER` 陷阱）。本仓 `docker-compose.tight.yml` app `environment:` 块已映射 `CODE_INDEX_PROVIDER` / `CODE_INDEX_URL` / `CODE_INDEX_SERVICE_TOKEN`，勿删。
 - **token 不入日志**：`Authorization: Bearer` 注入，code-index `auth.ts` 用 `timingSafeEqual` 常量时间比对，永不打 token、不下发客户端。
 - **隧道挂 ≠ 业务挂**：隧道断 → code-index 端口不可达（throw）→ ideation UC catch → 降级 `notice` 气泡 + 视作空命中续问（FR-008 / ADR-0060），**会话不中断**。这是设计韧性，非 bug。
 - **62 不跑冷建**（ADR-0060 ≤1 模型）：隧道只承载查询，索引构建仍在 62 本机 cron，与隧道无关。

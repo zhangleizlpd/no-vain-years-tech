@@ -25,12 +25,12 @@ paths:
 
 ## 强制层（双层兜底）
 
-- prompt-time 软提醒：`task-closure` preset 通过 `after_implement` hook 触发 `/speckit-tasks-verify` slash command，扫近 2h commit 报告 `[X]` 状态与 impl 是否 drift（per `michael-speckit-presets` —— 本地已装的 spec-kit preset 库；上游仓已不可达，权威副本是本机 install 出来的模板）。**注**：preset 的 `tasks-template` 注入的「4 步」是上文 6 步的精简版（本 6 步把 typecheck/lint 显式拆出）——**同一协议、不同表述**，勿因步数差困惑。
-- commit-time 硬拦：mono 仓 lefthook `tasks-md-drift` 拒「commit 含 impl 代码但 tasks.md 未 staged」；`--no-verify` 仅限格式化 / typo / 紧急 hotfix 出口
+- prompt-time 软提醒：`task-closure` preset 通过 `after_implement` hook 触发 `/speckit-tasks-verify` slash command，扫近 2h commit 报告 `[X]` 状态与 impl 是否 drift（per `michael-speckit-presets` spec-kit preset 库，仓位置见 [`preset-modification.md`](preset-modification.md)）。**注**：preset 的 `tasks-template` 注入的「4 步」是上文 6 步的精简版（本 6 步把 typecheck/lint 显式拆出）——**同一协议、不同表述**，勿因步数差困惑。
+- commit-time 硬拦：mono 仓 lefthook `tasks-md-drift` 仅在 `NNN-*` feature 分支、且本 feature tasks.md 仍有 pending `- [ ] T<N>` 时，拒「commit 含 impl 代码但 tasks.md 未 staged」；`--no-verify` 仅限格式化 / typo / 紧急 hotfix 出口
 
 **常见反模式**：写完 impl 喊 /commit、事后再开 PR 改 tasks.md → 应 impl PR 内**同 commit** stage tasks.md `[X]`。
 
-**`✅` 标记兼容**：早期部分 tasks.md 用 `✅` emoji 标完成；新 use case 一律走 `[X]`。lefthook `tasks-md-drift` 两种 marker 都识别。
+**`✅` 标记兼容**：早期部分 tasks.md 用 `✅` emoji 标完成；新 use case 一律走 `[X]`。lefthook `tasks-md-drift` 只认 pending `- [ ] T<N>`，不识别完成 marker。
 
 ## Clear 检查点批次（context 防膨胀）
 

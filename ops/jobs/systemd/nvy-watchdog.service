@@ -1,5 +1,6 @@
-# nvy-watchdog（77）：no-show 看门狗，每日查本机每日任务（cert-expiry）过去 ~25h 有没有写过心跳
-# （nvy-run-reported 每跑必写 ~/.nvy/heartbeats/<task>.beat），没写 → 推飞书告警（任务根本没跑）。
+# nvy-watchdog（77）：no-show 看门狗，每日查本机各任务（清单见下方 ExecStart）在各自窗口内有没有写过心跳
+# （nvy-run-reported 每跑必写 $NVY_HEARTBEAT_DIR/<task>.beat，prod = /var/lib/nvy/heartbeats，经 /etc/nvy-alert.env 注入），
+# 没写 → 推飞书告警（任务根本没跑）。
 # 补 in-job report 的盲区（timer 被禁 / 脚本被删）。Driven by the .timer。
 # Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等；enable 由人定）
 #   🚨 本任务是 ops/jobs/ 里唯一**没有同名 .sh** 的：可执行是共享件 ops/lib/nvy-watchdog.sh
@@ -17,7 +18,7 @@ Type=oneshot
 EnvironmentFile=-/etc/nvy-alert.env
 # 任务清单 <task>:<max-age-sec>；90000s≈25h（日任务留 1h 余量）。日任务 = cert-expiry /
 # marketdata-sync-report / marketdata-snapshot-integrity / backup-pg。
-# 每 4h 的探针族（calendar-health / table-health / futu-shim-health）→ 43200s≈12h
+# 每 4h 的探针族（calendar-health / table-health / futu-shim-health / app-state-health）→ 43200s≈12h
 #（≈3 次连续 no-show 才报，不用日任务的 25h）。
 # 🚨 它们 --on-success silent（健康不推）→ 「探针根本没跑」在飞书上与「一切正常」长得一模一样，
 #    这一行是唯一能区分二者的东西，别顺手删（044 T014）。

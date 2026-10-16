@@ -82,12 +82,11 @@ ops/bin/anchor-approve.sh fix-asof <market> [--confirm]     # 修**已有锚自�
 - `update` / `noop` = 刷新既有锚 / 值没变没写。二者**不发建锚事件**，`watch` 不该期待它们出行。
 - 打出 `⚠ 人工位被冲` 的行 **必须原样转述给用户** —— 那是他手动调过的判断被这次覆盖了。
 
-`watch` 收敛后按 outcome 分桶。八种 outcome **两两互异不许折叠**（值域权威在
+`watch` 收敛后按 outcome 分桶。各 outcome **两两互异不许折叠**（值域权威在
 `apps/server/src/marketdata/anchor-cold-start.rules.ts` 的 `COLD_START_OUTCOME`）：
 
-- `backfilled` / `already_present` / `intraday_skipped` / `market_not_enabled` = 正常收敛
-- `retry_exhausted` / `backfill_incomplete` / `calendar_missing` / `session_unregistered` /
-  `ticker_unresolved` = **做了但没成 / 判不了**，脚本会单列出来。期权 EOD **无跨日补救** ⇒
+- `backfilled` / `already_present` / `intraday_skipped` / `market_not_enabled` / `no_option_chain` = 正常收敛
+- 落在同文件 `COLD_START_NEEDS_ATTENTION` 里的 = **做了但没成 / 判不了**，脚本会单列出来。期权 EOD **无跨日补救** ⇒
   这些是永久缺口，如实报给用户，别当噪声吞掉。
 
 `watch` 超时退出不等于失败 —— 队列串行，再跑一次 `watch` 即可。

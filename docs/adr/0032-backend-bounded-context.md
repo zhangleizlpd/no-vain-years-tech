@@ -146,7 +146,7 @@ auth → security
 ## References
 
 - memory `project_plan_pivot_nestjs_mono` (Plan 1 NestJS module 边界设计起源)
-- [ADR-0020](0020-module-boundary-nestjs.md) (现有 ESLint boundaries 机制)
+- [ADR-0020](0020-module-boundary-nestjs.md) (现有 ESLint boundaries 机制) —— **Supersedes ADR-0020**(与 [ADR-0043](0043-server-flat-module-paradigm.md) 共同,见 0020 Status)
 - [ADR-0033](0033-outbox-cross-context-comm.md) (cross-context async 路径)
 - [ADR-0034](0034-auth-account-operation-catalog.md) (LLM decision tree 写在哪)
 - [AI Friction Catalog · F-006 Indirect-Spec-Module-Mapping](../improvements/2026-05/05-21-ai-friction-catalog-v1.md#f-006--indirect-spec-module-mapping) — 物理拆 security/account/auth 缓解 LLM 错向放置

@@ -45,7 +45,7 @@ paths:
 
 ## 例外
 
-- `.specify/presets/.registry` / `.specify/presets/.install.log` / `.specify/presets/.cache/` — install.sh 维护的状态文件，由 install 自己管，**不属于** vendored content。`install.sh` 跑时自动更新
+- `.specify/presets/.registry` / `.specify/presets/.install.log`（若存在）/ `.specify/presets/.cache/` — install.sh 维护的状态文件，由 install 自己管，**不属于** vendored content。`install.sh` 跑时自动更新
 - mono 自己的 `scripts/ci/server-boot-smoke.ts` 等不在 `.specify/presets/<id>/` 下的脚本可以直接改
 
 ## 修改前必读

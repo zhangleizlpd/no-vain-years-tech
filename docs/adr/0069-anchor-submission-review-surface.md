@@ -11,6 +11,8 @@ sunset_trigger: |
 
 # ADR-0069：锚待审箱的审阅面 —— 用探针换回 FR-012 的结构性保证
 
+- Status: Accepted (2026-09-01)
+
 ## Context
 
 059 建 `optionsdesk.anchor_submission` 时做了一个**刻意**的决定：**零审阅面**。不做审核 UI、

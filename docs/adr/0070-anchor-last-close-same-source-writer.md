@@ -11,6 +11,8 @@ sunset_trigger: |
 
 # ADR-0070：锚收盘价换同源写手 —— 收盘后直查 vendor，去掉 daily_bar 每小时投影
 
+- Status: Accepted (2026-09-01)
+
 ## Context
 
 锚表的 `last_close` / `last_close_date` 自 045 起是 `marketdata.daily_bar` 的**单向投影**，

@@ -3,7 +3,8 @@ Description=Futu shim / OpenD liveness probe timer (every 4h)
 Documentation=file:///home/admin/no-vain-years-mono/ops/runbook/futu-opend-hk.md
 
 [Timer]
-# 每 4h，**错开** 77 上已有的两个探针（calendar-health 00/4、table-health 02/6）—— 三者都
+# 每 4h，**错开** 77 上其它 4h 探针（calendar-health 00/4、table-health 02/4、app-state-health 03/4，
+# 以各自 .timer 的 OnCalendar 为准）—— 都是
 # oneshot 且都要网络，撞同一分钟没好处。
 #
 # 频率论证：OpenD 的消费侧是每日 09:05 那次 marketdata 同步，4h 粒度绰绰有余（21:00 / 01:00 /

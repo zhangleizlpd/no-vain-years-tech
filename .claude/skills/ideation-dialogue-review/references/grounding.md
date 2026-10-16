@@ -10,6 +10,8 @@
 | `apps/server/src/ideation/brief.schema.ts`          | `T1_SEGMENT_KEYS` / `T2_SEGMENT_KEYS` / `T3_SEGMENT_KEYS` 当前清单 + 各段必填/optional                                                                                                                     |
 | `apps/server/src/ideation/brief-gate.rules.ts`      | `isConverged` 收敛判据（当前：只查 T1 五段齐，T2/T3 不参与）                                                                                                                                               |
 | `apps/server/src/ideation/suggestion-gate.rules.ts` | `shouldOfferChips` 两道闸 + `normalizeSuggestion`（chips 数量/逃生/推荐规则）                                                                                                                              |
+| `apps/server/src/ideation/ideation-tools.ts`        | `interviewToolsFor(repo)` 条件注册（已选仓才给检索工具）+ 工具定义                                                                                                                                         |
+| `apps/server/src/ideation/clarify-turn.usecase.ts`  | 步1 接地编排：检索回灌 / `sources` 帧 / 降级 `grounding_degraded`（判 T2 接地是否有据）                                                                                                                    |
 
 查 prompt_config 覆盖：
 
@@ -36,7 +38,7 @@ docker exec mbw-poc-postgres psql -U mbw -d mbw_poc -c \
 
 1. **(铁律 8) T1 五段如实归纳**，依据对话已澄清内容。
 2. **(铁律 9) 不臆造对话未出现的需求**；某 T1 段没聊到宁可留空（系统据此提示补充），不编。
-3. **(铁律 10) T2/T3**：聊到才填、没聊到省略——但**接地段(T2)在索引服务未接通期被推测填上不算违规**（见 SKILL.md §3）。
+3. **(铁律 10) T2/T3**：聊到才填、没聊到省略——**接地段(T2)在未选仓（`idea_session.repo` 为空）或接地降级（`grounding_degraded`）时被推测填上不算违规**；已选仓且有 sources 时按 sources 核对（见 SKILL.md §3）。
 
 ## schema 分层（评 brief 合规性的结构基准）
 

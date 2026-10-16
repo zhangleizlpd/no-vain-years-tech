@@ -33,6 +33,6 @@ model: inherit
 
 - **有据，不凭感觉**：每条扣分/优点必须挂证据（轮次号 / brief 段名 / 人设原文行）。这是本 skill 的核心价值——区别于"读完凭印象点评"。
 - **源码是真相**：人设/schema/门规则**每次都重读源码**（`references/grounding.md` 给路径），因为它们可被 `prompt_config` 表覆盖、也会随版本改。skill 内的摘要只是导航，不作评判依据。
-- **接地段(T2)不算缺陷**：代码库索引服务（S2/S3）未接通期，brief 的 T2 接地段（`data_model_sketch`/`api_contract_sketch`/`affected_surface`/`constraints_guardrails`）被模型推测填上是**预期行为**，不扣分，只标注「待接地校验」。收敛门本来就不查 T2。
+- **接地段(T2)按接地条件判**：034 接地已上线（`clarify-turn.usecase.ts` 步1 经 code-index 检索，`sources` 帧回传命中）。① `idea_session.repo` 为空（未选仓、不注册检索工具），或出现 `grounding_degraded` 降级 → brief 的 T2 接地段（`data_model_sketch`/`api_contract_sketch`/`affected_surface`/`constraints_guardrails`）被模型推测填上是**预期行为**，不扣分，只标注「待接地校验」；② 已选仓且有 sources 命中 → T2 按 sources 核对，与命中不符 / 无据臆造要扣。收敛门本来就不查 T2。
 - **区分"未澄清"与"已澄清"**：对话末轮悬空（助手问了、用户没答就点生成）的问题，若被 brief 当成已确认需求写进 T1，要 flag——它应进 `open_questions`。
 - **rubric 可刷新**：`references/rubric.md` 顶部标了固化日期 + 来源；业内框架演进时用 `optimization-loop` 或 `tech-compare` 重研究后更新该文件，不在评判时临时联网（保证跨 session 可比）。

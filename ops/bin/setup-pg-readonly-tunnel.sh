@@ -7,16 +7,12 @@
 # migration lands (e.g. portfolio / marketdata schema first appears) auto-
 # extends coverage — no edit needed.
 #
-# Access path — B2 zero-downtime SSH tunnel (does NOT recreate the pg
-# container; forwards a local port straight to the container bridge IP):
-#   local$ ssh -fN mbw-staging          # ~/.ssh/config: LocalForward 15432 -> <pg-ip>:5432
+# Access path — SSH tunnel to the host-loopback port that docker-compose.tight.yml
+# publishes for postgres (`127.0.0.1:5432`, host-only; see the postgres `ports` comment):
+#   local$ ssh -fN mbw-staging          # ~/.ssh/config: LocalForward 15432 127.0.0.1:5432
 #   GUI   -> host=127.0.0.1 port=15432 db=mbw user=<ROLE_NAME>
 #   stop  -> pkill -f "ssh -fN mbw-staging"
-# Container IP can change if postgres is recreated; re-check & update the
-# LocalForward line with:
-#   docker compose -f docker-compose.tight.yml --env-file .env.production \
-#     ps -q postgres | xargs docker inspect \
-#     -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
+# Fixed loopback target ⇒ survives postgres / docker restarts (no container-IP lookup).
 #
 # Runs on the production ECS host. The pg container's local socket is trust-auth,
 # so psql -U <super> needs no password:

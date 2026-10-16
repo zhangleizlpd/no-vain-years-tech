@@ -10,7 +10,7 @@
 #
 # 观测：本脚本**零飞书 I/O**，只管干活 + 打 stdout + 给退出码。告警由 unit 套的
 #   `nvy-run-reported backup-pg` 提供（退出码驱动飞书 + 写心跳供 nvy-watchdog 查 no-show），
-#   与其余 7 个任务同构。—— 这正是 #892 的修复：改造前它走 `/etc/cron.d/`，**失败零信号**，
+#   与其余套 wrapper 的任务同构。—— 这正是 #892 的修复：改造前它走 `/etc/cron.d/`，**失败零信号**，
 #   OSS 上传自 2026-07-13 起失败、07-29 起连续全败，潜伏三周直到上机巡检才撞见（#887）。
 #
 # 保留：本地最新 `RETENTION_COPIES` 份（默认 3）。**不是「深度」需求** —— 维护者判定只会出现
@@ -18,7 +18,8 @@
 #   是坏的**（截断 / dump 当时 PG 异常）。想改成 1 或 2 就是下面一个常量。
 #
 # Prereqs (one-time on the node):
-#   1. .env.production at the repo root with DB_USERNAME / DB_PASSWORD
+#   1. .env.production at the repo root with DB_USERNAME (no DB_PASSWORD needed:
+#      pg_dump runs inside the postgres container via `compose exec`)
 #      (single-node — same env file as the app).
 #   2. BACKUP_DIR (default /home/admin/backup) writable by the admin user.
 #   3. /etc/nvy-fleet.env with NVY_ACR_REPO —— 反直觉但必需，理由见下方 compose 调用处。

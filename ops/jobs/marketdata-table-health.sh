@@ -6,8 +6,8 @@
 #
 # 仓内无 bash 测试框架 → 本脚本无法 RED-first，直接撞宪法 §II（NON-NEGOTIABLE）。沿用 044
 # 探针的裁决 = **把 bash 压到零逻辑**：所有判断下沉到 `marketdata-table-health.sql`（同目录兄弟），
-# 该谓词在 Testcontainers IT 里被真测（`apps/server/test/integration/marketdata.table-health.it.spec.ts`：
-# 17 条用例，其中 13 条是**注入故障要求翻红**的变异用例）。本脚本只剩三步：
+# 该谓词在 Testcontainers IT 里被真测（`apps/server/test/integration/marketdata.table-health.it.spec.ts`，
+# 含**注入故障要求翻红**的变异用例，用例清单以该文件为准）。本脚本只剩三步：
 # **跑谓词 → 打印 summary → exit 谓词给的码**。
 #
 #   ⇒ 🚨 **本文件里不得出现任何 if / 阈值 / 比较 / 哨兵清单 / 「几天算陈旧」**。
@@ -25,8 +25,8 @@
 # 通路同 marketdata-calendar-health 只读取证：docker exec -i <pg> psql（纯 SELECT，无写路径）。
 #
 # 退出码：0 = 健康（谓词给的，非本脚本判的）/ **非零 = 需要人看**，两类合流且有意不区分：
-#   · 1        = 谓词判不健康（哨兵陈旧 / us 掉队 / 空工作集 / 日历缺失 / 047 期权到期阶梯截断 /
-#                期权快照掉队 / 财报视野塌陷 / 磁盘水位不足 90 天扩容窗）
+#   · 1        = 谓词判不健康（判据编号清单见 `marketdata-table-health.sql` 文件头「判据」段，
+#                此处不复述 —— 复述必 drift）
 #   · 任意非零 = 探针自身故障（psql 连不上 / 谓词 SQL 报错 / 谓词文件缺失；均由 `set -e` 非零终止，
 #                psql/docker 的 stderr 直接进 journal 供定位）
 # **探针故障也必须告警**：探不动 ≠ 健康。沉默被读成正常正是 044 事故的病灶形状。

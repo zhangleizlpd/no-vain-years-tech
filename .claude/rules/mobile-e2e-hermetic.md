@@ -10,7 +10,7 @@ seed-authed e2e（`addInitScript` 注 `nvy-auth` 假 session）必须把后端�
 
 1. **GET /me 必拦（CI 硬强制）**：`mockJson(page, ME_URL, …, 'GET')` 或 raw `page.route(ME_URL, …)`。seed session 无 accessToken，boot 时 AuthGate `useMe` 必发 `GET /accounts/me`；不拦 → 真后端 401 → clearSession 跳 `/login` → 假绿。由 lefthook + `pr-validation.yml` 的 `check-e2e-seed-auth-mock` 强制；唯一豁免 = 真后端 smoke 标 `e2e-seed-auth-mock-check: real-backend-exempt`。
 
-2. **refresh-token 端点必 mock（本规则约束，CI 不强制）**：任何会触发 **authed 业务 401** 的 spec —— 401 命中 003-tokens refresh 拦截器的 retry-once；不 mock refresh 端点 → refresh 失败 → clearSession 误登出跳 `/login`（per memory `reference_authed_business_401_triggers_refresh_interceptor`）。该触发条件非静态可判（取决于 spec 是否打到 authed 业务 401），故无 CI gate，写 e2e 时自查。public 流不触发，无需。
+2. **refresh-token 端点必 mock（本规则约束，CI 不强制）**：任何会触发 **authed 业务 401** 的 spec —— 401 命中 003-tokens refresh 拦截器的 retry-once；不 mock refresh 端点 → refresh 失败 → clearSession 误登出跳 `/login`。该触发条件非静态可判（取决于 spec 是否打到 authed 业务 401），故无 CI gate，写 e2e 时自查。public 流不触发，无需。
 
 ## Mock 是契约镜像，不是调用序
 

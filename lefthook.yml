@@ -133,7 +133,7 @@ pre-commit:
     migration-naming-check:
       tags: data
       # Per ADR-0035 § 1 — new migration directories under apps/server/prisma/migrations/
-      # MUST match `<yyyymmddhhmm>_<verb_obj>` (12-digit timestamp + underscore + slug).
+      # MUST match `<yyyymmdd>_<hhmm>_<verb_obj>` (8-digit date + 4-digit time + slug).
       # Existing historical names (0_init, 1_add_outbox_event, ...) are immutable;
       # check only --diff-filter=A new additions, mirroring docs-organization-drift.
       # Use `pnpm db:migrate "<verb obj>"` wrapper to auto-prepend timestamp.
@@ -161,7 +161,7 @@ pre-commit:
         echo "Invalid directories:"
         printf "$invalid" | sed 's/^/  - /'
         echo ""
-        echo "约束: <yyyymmddhhmm>_<verb_obj>  (e.g. 20260520_1430_add_phone_to_account)"
+        echo "约束: <yyyymmdd>_<hhmm>_<verb_obj>  (e.g. 20260520_1430_add_phone_to_account)"
         echo "wrapper: pnpm db:migrate \"add phone to account\"  (auto-prepends timestamp)"
         echo ""
         echo "Historical names (0_init / 1_add_outbox_event / ...) 是 immutable 不追溯."

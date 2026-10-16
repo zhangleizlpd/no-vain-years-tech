@@ -29,7 +29,7 @@ age12zyxzvrn6e7zlyqv68dzr77xkvwjednurr7prs7mmqza4sn0vdkszlh46a
 
 加密的 key 集 = `.sops.yaml` `encrypted_regex` 匹配的 key 名（当前 = 名含
 `_KEY|_SECRET|_TOKEN|_PASSWORD|HMAC` 的后缀者，**加** `.sops.yaml` 里字面特例化的 key——
-当前 `CODE_INDEX_URL`，WireGuard 隧道端点与其 token 同作一个 SOPS 单元）。**别在此硬编
+如 `CODE_INDEX_URL` / `FUTU_SHIM_URL`，隧道端点与其 token 同作一个 SOPS 单元；全集见 `encrypted_regex`）。**别在此硬编
 枚举/计数**——会随 feature 漂；`.sops.yaml` 是 SoT，实时清单（不解密，CI 同款）：
 
 ```bash
@@ -84,7 +84,7 @@ sops -d ~/.nvy/secrets.enc.env | grep '^DEEPSEEK_API_KEY='
 
 ### 3.2 加一个全新 key
 
-> 完整 boot-path（哪些 key 算 secret、9+1 位置、CI Check A–F）见 path-rule
+> 完整 boot-path（哪些 key 算 secret、9+1 位置、CI 各 Check —— 以 `scripts/checks/check-env-sync.ts` 为准）见 path-rule
 > [`.claude/rules/config-env-sync.md`](../../.claude/rules/config-env-sync.md)（触 env/config/`secrets.enc.env`/`.sops.yaml` 自动加载）。本节只管 secret 在 SOPS 里的增改。
 
 1. `sops edit ~/.nvy/secrets.enc.env` 加 `NEW_API_KEY=...`
@@ -155,7 +155,7 @@ sops exec-env "$NVY_SECRETS_ENC" "docker compose ... up -d --force-recreate app"
 
 > 📌 **历史记录（cutover 已完成）**：本节是 SOPS cutover 一次性过程的留痕。下方「禁 `skip=false`」
 > 是 cutover 当时的约束（本地 drift 未和解）；现 drift 已和解 + SSH-443 稳，default 已切
-> `skip=false` 全 git 驱动（见 §3.3）。本节不回改，仅作冻结记录。
+> `skip=false` 全 git 驱动（见 [`prod-deploy-rollback.md`](prod-deploy-rollback.md)「部署流程」步 1）。本节不回改，仅作冻结记录。
 >
 > 前置：age 私钥已三处备份（§2）+ `secrets.enc.env` 已合入 main。
 
@@ -169,7 +169,7 @@ sops exec-env "$NVY_SECRETS_ENC" "docker compose ... up -d --force-recreate app"
 2. PR 合入 main（新 `deploy.yml` 生效）后，`workflow_dispatch` deploy **当前 tag**，
    `skip_git_fetch=true`（默认，不 reset）→ 新 `deploy.yml` 检测 prod 上 sops+`secrets.enc.env` →
    走 SOPS 路径 recreate（**此时明文仍在 `.env.production`，安全网**）→ verify：deploy 绿，日志见 `🔐 prod secrets via SOPS` + 健康
-3. 健康确认后，删 prod `.env.production` 里的**明文密钥行**（§1 的 13 个；非密钥行保留）→
+3. 健康确认后，删 prod `.env.production` 里的**明文密钥行**（§1 的密钥集；非密钥行保留）→
    `cp .env.production .env.production.bak-pre-sops-$(date +%s)` 先备份
 4. 再 recreate 一次（密钥此时**只**来自 SOPS）仍健康 → verify：
    `ops/bin/rollback-prod.sh v<current>` 跑通 + 公网 smoke 绿
@@ -179,11 +179,11 @@ fallback 老路。明文行验证 §5.4 通过后才删。
 
 ## 6. 轮换 / 应急
 
-- **轮换某密钥值**：见 §3.1（`sops edit` 改值 → commit/PR）+ §3.3（scp 到 prod）。
+- **轮换某密钥值**：见 §3.1（`sops edit ~/.nvy/secrets.enc.env` 改值）→ §3.3（scp 到 prod；密文 untracked，不走 commit/PR）。
 - **轮换 age 密钥对**（私钥疑似泄露）：`age-keygen` 新对 → `.sops.yaml` 换公钥 →
-  `sops updatekeys secrets.enc.env` 重新封装 → 新私钥铺 dev/prod/离线 → 旧私钥作废。
+  `sops updatekeys ~/.nvy/secrets.enc.env` 重新封装 → 新私钥铺 dev/prod/离线 → 旧私钥作废。
 - **私钥丢失**（三处全丢）：`secrets.enc.env` 不可解 —— 从各 vendor 控制台/密码管理器重置
-  全部 13 个密钥，重建 `secrets.enc.env`。这就是为什么**离线备份必须有**。
+  全部密钥（清单见 §1 的 key 名 grep），重建 `secrets.enc.env`。这就是为什么**离线备份必须有**。
 
 ## 7. CI 防护
 

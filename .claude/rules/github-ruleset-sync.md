@@ -1,7 +1,6 @@
 ---
 paths:
   - '.github/workflows/*.yml'
-  - '.github/workflows/*.yaml'
   - '.github/CODEOWNERS'
 ---
 

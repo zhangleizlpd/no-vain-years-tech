@@ -14,7 +14,7 @@ sunset_trigger: |
 - Deciders: project owner
 - Tags: frontend / deployment / cross-cutting
 
-> **Note (2026-05-24，host 维持 Pages)**：曾短暂 amend 到 **Cloudflare Workers Static Assets**（动因：CF 2026-02 官方推「新站从 Workers 起步」+ 合并后 dashboard 默认走 Workers），**当日回退**。原因：Workers 的 **Custom Domain / Route 硬要求域名是本账号 active CF zone**（dashboard "Connect domain" 搜 `app.xiaocaishen.me` 返回 "No zones found"），而 `xiaocaishen.me` 的 NS 在**阿里云万网**（`dns9.hichina.com`，外部 DNS）。**Pages 支持外部 DNS 的自定义子域**（dashboard 注册 `app.xiaocaishen.me` → 阿里云加 CNAME `app → <project>.pages.dev` → CF 签 TLS；老 meta 即此形态），Workers 不支持（除非把整域 NS 迁入 CF，牵动 `api` A 记录 / MX / 已 ICP 备案的国内解析，风险大、不值当）。**结论：除非将来 `xiaocaishen.me` 整域迁入 CF，否则不要再 pivot 到 Workers。** 详见 memory `reference_cf_workers_custom_domain_requires_cf_zone`。
+> **Note (2026-05-24，host 维持 Pages)**：曾短暂 amend 到 **Cloudflare Workers Static Assets**（动因：CF 2026-02 官方推「新站从 Workers 起步」+ 合并后 dashboard 默认走 Workers），**当日回退**。原因：Workers 的 **Custom Domain / Route 硬要求域名是本账号 active CF zone**（dashboard "Connect domain" 搜 `app.xiaocaishen.me` 返回 "No zones found"），而 `xiaocaishen.me` 的 NS 在**阿里云万网**（`dns9.hichina.com`，外部 DNS）。**Pages 支持外部 DNS 的自定义子域**（dashboard 注册 `app.xiaocaishen.me` → 阿里云加 CNAME `app → <project>.pages.dev` → CF 签 TLS；老 meta 即此形态），Workers 不支持（除非把整域 NS 迁入 CF，牵动 `api` A 记录 / MX / 已 ICP 备案的国内解析，风险大、不值当）。**结论：除非将来 `xiaocaishen.me` 整域迁入 CF，否则不要再 pivot 到 Workers。**
 
 ## Context
 

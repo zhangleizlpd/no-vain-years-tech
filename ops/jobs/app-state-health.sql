@@ -19,7 +19,7 @@
 -- `catch → logger.error → return null`, **不落 `sync_run`**(不在 marketdata 同步框架内) ⇒
 -- 纯真空: 日志没有接收端, 数据侧也没人看。
 --
--- ═══ 🚨 为什么只覆盖两条, 而不是把那 6 个 schema 都做一遍 ═══
+-- ═══ 🚨 为什么只覆盖 optionsdesk / outbox 两个面, 而不是把那 6 个 schema 都做一遍 ═══
 --
 -- 2026-08-27 prod 实况: `alert.push_delivery` **0 行**、`alert.alert` **0 条**;
 -- `account.account` **5 个**(维护者测试号); `ideation.idea_session` 6; `research.research_report` 27。
@@ -52,7 +52,7 @@
 --    15 分钟 = 90 倍余量。一条事件超期 = relay 真的停了(进程死 / 订阅方持续抛), 不是排队。
 --
 -- 🚨 **装机时序**(同 table-health 记的那条): 加新判据前先确认 prod 当下满足它, 否则装机即假红、
---    每 4h 推一条。本批两条的上线前实测: active 锚 109 只、`last_close_date` 最新 2026-08-26、
+--    每 4h 推一条。首批判据(锚收盘价 / outbox)的上线前实测: active 锚 109 只、`last_close_date` 最新 2026-08-26、
 --    `no_close = 0`; outbox 105 行、未派发 **0**。
 
 WITH today AS (

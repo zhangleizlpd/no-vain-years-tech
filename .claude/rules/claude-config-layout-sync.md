@@ -9,7 +9,7 @@ paths:
 
 ### 1. `.claude/` 默认 git 团队共享，唯一例外 `settings.local.json`
 
-新增 / 改 `.claude/` 下任何文件（`settings.json` / `commands/` / `skills/` / `rules/` / 项目级 prompt 资料）**默认进 git 团队共享** —— clone 本仓即完整生效。唯一不进 git 的是个人覆盖 `settings.local.json`（单一真相源在 `.gitignore`）。
+新增 / 改 `.claude/` 下任何文件（`settings.json` / `commands/` / `skills/` / `rules/` / 项目级 prompt 资料）**默认进 git 团队共享** —— clone 本仓即完整生效。配置类文件里唯一不进 git 的是个人覆盖 `settings.local.json`（`worktrees/` 等运行时产物另由 ignore 兜；单一真相源在 `.gitignore`）。
 
 → 个人 / 机密配置放 `settings.local.json`，不要塞进团队共享文件。
 

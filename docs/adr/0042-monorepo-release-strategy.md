@@ -172,6 +172,8 @@ PR-2 (#111) ship 后 first workflow run 起的 mobile Release PR (#112,已 close
 
 **修复**(PR #114): manifest mobile `0.0.0` → `0.0.1` + `apps/mobile/package.json` `version` `0.0.0` → `0.0.1` 同步;close mobile Release PR-112 + 删 orphan branch `release-please--branches--main--components--mobile` 让 re-trigger 从干净状态开始。
 
+> ⚠️ **本段陈述已由 [ADR-0044](0044-mobile-binary-deployment.md) §4 supersede**:EAS Build 引入后 `app.json` `version` 成为二进制 display 版本的实时消费者,已一次性 reconcile 至 `0.0.1`(ongoing writer 仍是 release-please)。
+
 **`apps/mobile/app.json` `expo.version` 仍 `0.0.0`(未手动 bump)— 设计内,非遗漏**:release-please `expo` type 以 `.release-please-manifest.json`(`0.0.1`)为版本 source-of-truth,`app.json` 是**写入目标**而非读取源 —— 下次 mobile 发版(首个 `feat` 触 `apps/mobile/**`)bump 到 `0.1.0` 时由 expo updater **自动 reconcile** 覆盖(per § Decision 4 expo type 原生同步 `expo.version`)。故 **不手动 bump**:手改 `app.json` 既无必要(下次发版即覆盖),又会让 `apps/mobile/**` 进 nx affected + 与 release-please 抢写版本号。
 
 **Plan §G 偏差**:本 ADR + [05-22-release-please-mono-bootstrap.md](../private/plans/2026-05/05-22-release-please-mono-bootstrap.md) §G 原写 "mobile: `0.0.0`(同 package.json)" — package.json 是 `0.0.0` 没错,但作为 release-please manifest 输入是雷。Plan 不追溯改;ADR + [`versioning.md`](../conventions/versioning.md) 起步版本表已是 SSOT,以本 ADR 为准。

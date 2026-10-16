@@ -69,7 +69,7 @@
 | 0043 | Server 模块内构范式 — 扁平 + 贫血数据 + 纯函数 Helper + 跨界                            | apps/server                                      | Accepted   |
 | 0044 | Mobile Binary 部署 — EAS 云构建 + Android APK + iOS 两阶段                              | apps/mobile                                      | Accepted   |
 | 0045 | 对象存储 + 图片上传 — Aliyun OSS + client 直传 + public-read                            | apps/server, apps/mobile                         | Accepted   |
-| 0046 | 跨行聚合不变性并发 — 单行塌缩+conditional UPDATE / FOR UPDATE                           | apps/server                                      | Proposed   |
+| 0046 | 跨行聚合不变性并发 — 单行塌缩+conditional UPDATE / FOR UPDATE                           | apps/server                                      | Accepted   |
 | 0047 | Marketdata 可插拔数据访问层 — schema+port 先行 / 多 vendor / 约束档 / fallback          | apps/server                                      | Accepted   |
 | 0048 | Marketdata↔Portfolio 跨层依赖方向 — 单向无环 + 反向走 Q7                                | apps/server, apps/mobile                         | Accepted   |
 | 0049 | Marketdata 调度体系 — PG 调度真相层 + 裸 BullMQ 执行层（类 Quartz 混合）                | apps/server, infrastructure                      | Accepted   |
@@ -84,7 +84,7 @@
 | 0058 | Server integrations/ 层 — 跨 ctx 共享外部 vendor I/O 适配器家(LLM 首位)refine ADR-0041  | apps/server                                      | Accepted   |
 | 0059 | Ideation 仓库接地 — 双路(本地 agentic grep / 云端中心化 pgvector RAG)+ tree-sitter 索引 | apps/server, apps/mobile, infrastructure         | Accepted   |
 | 0060 | Ideation 索引服务运行时 — 单机按需自托管单模型(bge-m3 embedder)+ vector-only            | apps/server, infrastructure                      | Accepted   |
-| 0061 | Ideation 语音输入 — 听写式 + DashScope Qwen3-ASR(可换 port)+ server WS 代理实时流式     | apps/server, apps/mobile                         | Accepted   |
+| 0061 | Ideation 语音输入 — 听写式 + DashScope Qwen3-ASR + HTTP 一次性识别(2026-06-24 amend)    | apps/server, apps/mobile                         | Accepted   |
 | 0062 | Optionsdesk 第 10 Bounded Context — 期权台锚管理 + 击球区雷达 + 跨 ctx 双向仅 Q7-B 只读 | apps/server                                      | Accepted   |
 | 0063 | Mobile 冻结列表格横向同步 — 单 Pan 驱动共享值,弃 `scrollTo` 广播                        | apps/mobile                                      | Accepted   |
 | 0064 | Optionsdesk 选约检索五层架构 — 召回/粗排/特征加工/精排/表达,可插拔精排,不设重排层       | apps/server, apps/mobile                         | Accepted   |

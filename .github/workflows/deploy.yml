@@ -211,7 +211,7 @@ jobs:
             echo "::error::密文缺失：$NVY_SECRETS_ENC"
             echo "恢复（在 dev 机上跑，密文只在那里和本机有）："
             echo "  scp ~/.nvy/secrets.enc.env \"\$NVY_APP_SSH\":/tmp/s.enc.env"
-            echo "  ssh \"\$NVY_APP_SSH\" 'sudo install -D -m 600 -o root -g root /tmp/s.enc.env /etc/nvy/secrets.enc.env && rm -f /tmp/s.enc.env'"
+            echo "  ssh \"\$NVY_APP_SSH\" 'sudo install -D -m 640 -o root -g admin /tmp/s.enc.env /etc/nvy/secrets.enc.env && rm -f /tmp/s.enc.env'"
             exit 1
           fi
           export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"

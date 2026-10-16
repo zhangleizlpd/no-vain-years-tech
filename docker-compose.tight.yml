@@ -251,7 +251,7 @@ services:
       # code-index grounding client (per apps/server/src/config/codeindex.config.ts; 034)。
       # discriminated union: 'fake' (default) | 'http'. :-fake 兜底永不空串 → 镜像 IQS 范式;
       # prod 默认 fake 安全启动 (无 url/token 不崩)。翻真检索 (services/code-index, 62↔77 经
-      # WireGuard 隧道) 只需填 .env.production 的 CODE_INDEX_PROVIDER=http + url/token (无需改 compose)。
+      # WireGuard 隧道) 只需 .env.production 的 CODE_INDEX_PROVIDER=http + secrets.enc.env 的 url/token (无需改 compose)。
       # 漏映射则容器读不到 → http 模式被静默吞成 fake (同 MARKETDATA_PROVIDER 静默陷阱)。
       CODE_INDEX_PROVIDER: ${CODE_INDEX_PROVIDER:-fake}
       CODE_INDEX_URL: ${CODE_INDEX_URL:-}

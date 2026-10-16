@@ -9,7 +9,7 @@
 1. **`git reset --hard origin/main`（默认，全 git 驱动）** 拉全套编排——`docker-compose.tight.yml` / `.env.production`（已 tracked，per PR #571）/ nginx 一次性原子同步。**密文不在其中**（2026-08-08 起不入库，常驻主机 `/etc/nvy/secrets.enc.env`，见 [`secrets-sops.md`](secrets-sops.md) §3.3）。host `origin` 走 SSH-over-`ssh.github.com:443`（见下「§ 77 SSH-to-GitHub」）+ 3×5s 重试。首次 git 驱动会把 77 上**未 tracked** 的旧 `.env.production` 备份成 `.env.production.bak-pre-track-*` 再让 reset 接管。仅 `skip_git_fetch=true`（纯镜像 hotfix + GFW 抖）才跳过 reset，直接用磁盘上现有的 compose/.env.production；密文不受该开关影响。
 2. `export MBW_VERSION=<tag>`（**不** `sed .env.production`）——compose 读 shell env 优先于 `--env-file`，tag 即生效且 tracked 文件保持 pristine（无 working-tree drift，下次 reset 干净）。
 3. `docker login` ACR → `docker compose pull app`。
-4. **Pre-deploy config 闸（B2）**：`docker compose run --rm --no-deps --entrypoint node app dist/config/validate-config.js` —— 用**新镜像自己**的 Zod validator 校验**容器真实 env**（compose `run` 会拼出 `DATABASE_URL`/`REDIS_URL` + 应用 `:-default`）。任一 config 非法 → 打印缺失/非法 key 全清单 → `exit 2`，**不 recreate**（活容器不动）。
+4. **Pre-deploy config 闸（B2）**：`sops exec-env /etc/nvy/secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production run --rm -T --no-deps --entrypoint node app dist/config/validate-config.js" </dev/null`（`-T` + `</dev/null` 必须：脚本经 SSH heredoc 喂给 `bash -s`，不断开 stdin 的 `run` 会吞掉余下脚本、闸通过时静默不 recreate；以 `.github/workflows/deploy.yml` 为准）—— 用**新镜像自己**的 Zod validator 校验**容器真实 env**（compose `run` 会拼出 `DATABASE_URL`/`REDIS_URL` + 应用 `:-default`）。任一 config 非法 → 打印缺失/非法 key 全清单 → `exit 2`，**不 recreate**（活容器不动）。
 5. `docker compose up -d --force-recreate app`。
 6. 等 120s healthcheck（`/healthz/live`）。
    - **healthy** → 公网 smoke（`https://api.shintongtech.com/healthz/live`）→ 把本次 tag 写入 `.last-good-tag`（回滚基线）。
@@ -39,7 +39,7 @@
 
 > 「容器只读到 compose `environment:` 块里显式映射的变量」+「新配置项的 9 连 boot-path」见 [`.claude/rules/config-env-sync.md`](../../.claude/rules/config-env-sync.md)。**新增 config key 时**：非密真值进 committed `.env.production`（随全 git 驱动 deploy 自动到 prod）；secret 进**仓外**密文（`sops edit ~/.nvy/secrets.enc.env`）并**手动 scp** 到 prod `/etc/nvy/`（§3.3）—— 这一步不自动，漏了会被 B2 闸拦下。
 
-**密钥值**的注入：deploy + rollback 已接 `sops exec-env`（守卫式，prod 没 sops/`secrets.enc.env` 时 fallback 明文老路）—— 私钥纳管 / cutover / 新增密钥流程见 [`secrets-sops.md`](secrets-sops.md)（cutover 未执行前仍是明文 `.env.production` 老路）。
+**密钥值**的注入：deploy + rollback 已接 `sops exec-env`（**fail-closed**：prod 没 sops 或缺 `/etc/nvy/secrets.enc.env` 即硬失败并打印恢复命令，**不再**回落明文 `.env.production`）—— 私钥纳管 / 新增密钥流程见 [`secrets-sops.md`](secrets-sops.md)。
 
 ## 非-app 服务（postgres / redis / nginx）的 compose 改动不随 deploy 生效
 
@@ -49,10 +49,10 @@
 cd /home/admin/no-vain-years-mono
 git pull --ff-only origin main          # 或等下次 deploy 的 reset --hard 带过来
 export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
-sops exec-env secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d postgres"
+sops exec-env /etc/nvy/secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d postgres"
 ```
 
-⚠️ **必须 `sops exec-env` 包裹**（prod 已 SOPS cutover，`DB_PASSWORD` / `REDIS_PASSWORD` 只在 `secrets.enc.env`）—— 漏包裹则 `${DB_PASSWORD}` 以空串重建（现有 named volume 下 PG 口令不变、无数据损坏，但容器 env 脏）。重建 postgres / redis 会让 app 瞬断该依赖几秒（Prisma / bullmq 自动重连），**低峰期做**。
+⚠️ **必须 `sops exec-env` 包裹**（prod 已 SOPS cutover，`DB_PASSWORD` / `REDIS_PASSWORD` 只在 `/etc/nvy/secrets.enc.env`）—— 漏包裹则 `${DB_PASSWORD}` 以空串重建（现有 named volume 下 PG 口令不变、无数据损坏，但容器 env 脏）。重建 postgres / redis 会让 app 瞬断该依赖几秒（Prisma / bullmq 自动重连），**低峰期做**。
 
 **admin 连 prod PG（TablePlus 等）**：PG 已发布 host loopback `127.0.0.1:5432`（仅本机可达、非公网；rationale 见 `docker-compose.tight.yml` postgres `ports` 内联注释，PR #684）。SSH 隧道（`"$NVY_APP_SSH"`，真值见 `~/.nvy/fleet.env`）→ DB Host 填 `127.0.0.1` / User `mbw` / DB `mbw` / 密码 = `DB_PASSWORD`（scram：`127.0.0.1/32 trust` 只对容器内 loopback 生效，隧道来自 docker 网关命中 `host all all all scram-sha-256`）。此前隧道指容器内网 IP（`172.18.0.x`），整栈重启 Docker 重排 → 连接静默失效，故改用固定 loopback。
 
@@ -130,7 +130,7 @@ ops/bin/rollback-prod.sh v0.3.1
 
 77（live prod）直连 `github.com` HTTPS 有间歇 GnuTLS RST（分钟级窗口），曾迫使 `skip_git_fetch=true` 默认 + 密钥手动 scp。改走 **SSH over `ssh.github.com:443`** + 只读 deploy key（与 62 code-index 同法，见 [`code-index-deploy.md`](code-index-deploy.md) §网络坑）后，`git fetch` 稳定 → `deploy.yml` 已切**默认 `skip_git_fetch=false` 全 git 驱动**（每次部署 `git reset --hard origin/main` 拉全编排，含 `.env.production`；密文已出仓，见「部署流程」步 1）。
 
-**一次性 host 设置**（`admin@77`，checkout = `/home/admin/no-vain-years-mono`；72 是 `root`，77 是 `admin`，路径/key 落 `/home/admin/.ssh/`）：
+**一次性 host 设置**（`admin@77`，checkout = `/home/admin/no-vain-years-mono`；62 是 `root`，77 是 `admin`，路径/key 落 `/home/admin/.ssh/`）：
 
 ```bash
 # 1. 只读 deploy key（git fetch 用，非 push）
@@ -164,7 +164,7 @@ git fetch origin main           # 应秒回、无 3×5s 重试
 >
 > ⚠️ **deploy key 唯一性**：同一 SSH key 不能同时作多个 repo 的 deploy key，但**同一 repo 可挂多个 deploy key** —— 77 用独立新 key，与 62 `code_index_deploy` 并存于本仓 Deploy Keys，互不冲突。
 > ⚠️ 此设置**与 `APP_SSH_KEY` 无关**：`APP_SSH_KEY`（GitHub secret）是 **GH runner → SSH 进 77** 的钥匙；本节是 **77 → SSH 拉 GitHub** 的钥匙，两条独立链路。
-> 设置前 `deploy.yml` 的 secrets 拉取仍可工作（HTTPS，flaky，失败回退磁盘副本）；设置后才稳。故 `deploy.yml` 改动可先合、host 设置后补。
+> 设置前 `deploy.yml` 的 `git fetch` 仍可工作（HTTPS，flaky，3× 重试仍失败即中止部署；密文常驻 `/etc/nvy/`、不经 git）；设置后才稳。故 `deploy.yml` 改动可先合、host 设置后补。
 
 ## 首次启用注意
 

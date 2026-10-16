@@ -98,7 +98,7 @@ pnpm -C apps/server exec prisma generate   # verify: "Generated Prisma Client �
 
 ### 3. code-index SSH 隧道(接地 grounding 真检索)
 
-server 现走 `CODE_INDEX_PROVIDER=http` → `localhost:7700`(62 的查询 API,公网拦死,prod 走 WireGuard;本机用 SSH -L 等价物,见 runbook § Optional code-index)。**幂等**:已在听就别重起。
+若 `.env` 里 `CODE_INDEX_PROVIDER=http` 才需隧道 → `localhost:7700`(62 的查询 API,公网拦死,prod 走 WireGuard;本机用 SSH -L 等价物,见 runbook § Optional code-index);是 `fake`(`.env.example` 默认)就跳过 Step 3。**幂等**:已在听就别重起。
 
 ```bash
 # 3a. 隧道(已 LISTEN 则跳过);否则 run_in_background 跑:
@@ -112,9 +112,9 @@ curl -fsS localhost:7700/healthz   # {"ok":true}（healthz 无需 token）
 
 ### 4. server(后端)
 
-`ASR_PROVIDER=dashscope` 作**命令前缀覆盖** —— @nestjs/config 不覆盖已存在的 process.env,故前缀稳赢 .env 里的 `fake`。
+`ASR_PROVIDER=dashscope` 作**命令前缀覆盖** —— @nestjs/config 不覆盖已存在的 process.env,故前缀稳赢 .env 里的值。
 
-> 🚨 **preflight(2026-06-24 实验实证必加)**:`asr.config.ts` Zod **fail-closed** —— `ASR_PROVIDER=dashscope` 但 `DASHSCOPE_API_KEY` **空** → server boot 直接崩(cryptic Nest DI 堆栈 `DASHSCOPE_API_KEY required when ASR_PROVIDER=dashscope`)。主仓 .env 里这个 key **默认空**(只有 CODE_INDEX token 是实的)。所以启 server 前先判 key:
+> 🚨 **preflight(2026-06-24 实验实证必加)**:`asr.config.ts` Zod **fail-closed** —— `ASR_PROVIDER=dashscope` 但 `DASHSCOPE_API_KEY` **空** → server boot 直接崩(cryptic Nest DI 堆栈 `DASHSCOPE_API_KEY required when ASR_PROVIDER=dashscope`)。本机 .env 里这个 key 是否有值以 preflight 判定为准(`.env.example` 默认空)。所以启 server 前先判 key:
 
 ```bash
 [ -f .envrc ] && { set -a; source ./.envrc; set +a; }
@@ -132,7 +132,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:$SERVER_PORT/healthz/l
 curl -s http://localhost:$SERVER_PORT/healthz/ready >/dev/null && echo ok
 ```
 
-> ASR 由上面 preflight 自动选(key 空→fake、key 在→dashscope);要强制 fake 就把 `ASR=fake` 写死。`MARKETDATA_PROVIDER` 继承 shell(通常 live → 真行情);要 mock 行情则前缀 `MARKETDATA_PROVIDER=mock`。
+> ASR 由上面 preflight 自动选(key 空→fake、key 在→dashscope);要强制 fake 就把 `ASR=fake` 写死。`MARKETDATA_PROVIDER` 继承 `.env`(dev 默认 mock);要真行情则前缀 `MARKETDATA_PROVIDER=live` 并配 key。
 
 ### 5. mobile — 真机 Mate50 dev-client(`$ARGUMENTS` 含 `backend-only` 则跳过本步)
 
@@ -204,7 +204,7 @@ adb shell am start -a android.intent.action.VIEW \
 | 登录验证码     | `SMS_GATEWAY=mock` → 不发真短信,看 server log `[MOCK SMS] sent <code>`                                                               |
 | 接地 grounding | 真检索经 SSH 隧道 :7700(隧道在 = 真引用;断 = 降级气泡)                                                                               |
 | 语音 ASR       | `DASHSCOPE_API_KEY` 非空=dashscope 真转写(北京区 WS;耗真 API);空=自动 fake(确定性,不验真转写)                                        |
-| 行情           | 继承 shell `MARKETDATA_PROVIDER`(通常 live)                                                                                          |
+| 行情           | 继承 `.env` `MARKETDATA_PROVIDER`(dev 默认 mock;要真行情前缀 `MARKETDATA_PROVIDER=live` 并配 key)                                    |
 | 设计稿/灵感图  | `EXPO_PUBLIC_OSS_PUBLIC_BASE_URL` = 备案展示域(= server `OSS_PUBLIC_BASE_URL`);空则 mockup/图 origin 白名单空 → 渲染折叠「暂无」空态 |
 
 然后一句话告诉 user:打开 Mate50 dev-client → 连上即可手动点验。
@@ -238,7 +238,7 @@ for P in "$SERVER_PORT" "$METRO_PORT"; do
 done
 ```
 
-> **code-index SSH 隧道(:7700)是跨 worktree 共享单隧道**(不变量 #3 幂等),本 teardown **默认不动它** —— 关掉会断掉其他 worktree 仍在跑的 server 的接地。确认本机已无任何 worktree server 在用、要彻底清时才单独:`pkill -f "ssh -N -L 7700"`。
+> **code-index SSH 隧道(:7700)是跨 worktree 共享单隧道**(见 Step 3 幂等),本 teardown **默认不动它** —— 关掉会断掉其他 worktree 仍在跑的 server 的接地。确认本机已无任何 worktree server 在用、要彻底清时才单独:`pkill -f "ssh -N -L 7700"`。
 
 <!-- -->
 
@@ -251,7 +251,7 @@ done
 3. ❌ 真机默认用 Mac LAN IP —— IP 漂移/AP 隔离会**无声挂掉**(2026-06-25 三连坑);默认 `adb reverse` 两个端口 + `localhost`,LAN IP 仅无 USB 时 fallback。
 4. ❌ `compose down` 共享 PG —— 砸掉 marketdata sync。
 5. ❌ 前台 `&` 跑 server/Metro/隧道 —— 用 run_in_background,否则随 Bash 调用结束被收。
-6. ❌ 看到 `ASR_PROVIDER=fake` 在 .env 就以为没法真转写 —— 命令前缀覆盖(@nestjs/config 不覆盖已存在 process.env)。
+6. ❌ 看到 .env 里 `ASR_PROVIDER` 非 dashscope 就以为没法真转写 —— 命令前缀覆盖(@nestjs/config 不覆盖已存在 process.env);能否真转写以 preflight 判定为准。
 7. ❌ teardown 用 `pkill -f "nx serve"` / `adb reverse --remove-all` / 杀 :7700 —— 全是**跨 worktree 误伤**:进程名 grep 会连别的 worktree 的 server 一起杀、`--remove-all` 撤掉别人映射、:7700 是共享隧道。只按**本 worktree 派生端口**锚定 + 杀进程组,7700 默认不动。
 8. ❌ 每次「准备 mate50」都重建 APK —— 245MB 构建是浪费。Step 0 **默认复用已装 dev-client**,只在未装 / 非 dev-client / 本会话刚动过原生层(native dep·app.json 插件·SDK·RN bump)时才建;纯 JS/TS 改动走热重载。
 9. ❌ 见 Metro 端口已在听就当「已起好」直接复用 —— 跨会话残留的旧 Metro 可能带 **stale LAN-IP** base URL(`adb reverse` 救不了,app 走 bundle 内联死值)→ 真机无声「网络异常」。Step 5 必须 `ps eww` 核对在跑 Metro 的 `EXPO_PUBLIC_API_BASE_URL`==`localhost:$SERVER_PORT`,不符则杀掉 `--clear` 重起(2026-06-26 实证)。

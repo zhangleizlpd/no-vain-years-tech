@@ -2,7 +2,7 @@
 # 进入 Q4（10 月起）→ 飞书催更（升级到 12 月 🔴 / 跨年 🔴🔴）。判据 = 读 committed
 # static-calendar.data.ts 的 STATIC_CALENDAR_COVERAGE.to（77 checkout 由 deploy 的 git reset 同步）。
 # reminder.sh 零飞书 I/O（照 cert-expiry 先例：standalone probe 允许 bash 阈值判断）。
-# 背景 / 年更步骤：ops/runbook/scheduled-tasks.md#静态交易日历年更。
+# 背景 / 年更步骤：ops/runbook/scheduled-tasks.md#年度人工任务人工执行--覆盖感知提醒兜底。
 #
 # Install: 仓根跑 `sudo bash ops/jobs/install.sh`（幂等，一次装齐全部任务；enable 由人定）
 # 手动触发验证：systemctl start static-calendar-annual-reminder.service
