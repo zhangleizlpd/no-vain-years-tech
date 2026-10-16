@@ -76,7 +76,7 @@ updated_at: '2026-10-16'
 
 ### US2（P1）：代码回收不被误拼
 
-- [ ] T007 [Server-IT] [US2] **回收场景端到端**（FR-005; plan D2, D3; state_branches 4, 5; SC-002）：在 T005 的 IT 文件追加回收 fixture：A → B @ D 已登记，A 在 D 之后另有一家公司的 bar → verify: 臂：① 查 B ⇒ 序列里没有任何一天来自「A 在 D 之后」② 查 A ⇒ 只有 D 之后的 bar；SC-002 判据 = 两个序列的交叉日数为 0；定向变异：去掉 T002 的回收下界 → ② 红（留档）
+- [X] T007 [Server-IT] [US2] **回收场景端到端**（FR-005; plan D2, D3; state_branches 4, 5; SC-002）：在 T005 的 IT 文件追加回收 fixture：A → B @ D 已登记，A 在 D 之后另有一家公司的 bar → verify: 臂：① 查 B ⇒ 序列里没有任何一天来自「A 在 D 之后」② 查 A ⇒ 只有 D 之后的 bar；SC-002 判据 = 两个序列的交叉日数为 0；定向变异：去掉 T002 的回收下界 → ② 红（留档）
 
 ### US3（P2）：估值锚随改名延续
 

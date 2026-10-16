@@ -448,4 +448,82 @@ describe('086 marketdata 代码变更 IT (Testcontainers PG)', () => {
       expect(await runProbes()).toEqual(baseline);
     });
   });
+
+  // 回收 fixture (PARA 类): RCA → RCB @ 2026-08-03 (周一) 已登记, 之后 RCA 被另一家公司回收。
+  // 每行用 volume 标来源 —— 1001 = RCA 改名前那家 · 1002 = 回收 RCA 的那家 · 1003 = RCB;
+  // 回收方蓄意多一天 08-06 (RCB 没有), 被误拼进 RCB 时会多出一个日子。
+  describe('T007 回收场景端到端 (FR-005; state_branches 4、5; SC-002)', () => {
+    const OLD_CO = '1001';
+    const RECYCLER = '1002';
+    const NEW_CO = '1003';
+    let bars: GetInstrumentBarsUseCase;
+
+    const series = async (symbol: string) =>
+      (await bars.execute({ symbol, adjust: 'none', period: 'day' })).items.map((i) => ({
+        tradeDate: i.tradeDate,
+        source: i.volume,
+      }));
+
+    beforeAll(async () => {
+      bars = new GetInstrumentBarsUseCase(prisma, {
+        lastClosedSession: async () => '2026-08-06',
+      } as unknown as TradingCalendarPort);
+      const rca = await prisma.instrument.create({ data: seedInstrumentCreateData('us', 'RCA') });
+      const rcb = await prisma.instrument.create({ data: seedInstrumentCreateData('us', 'RCB') });
+      const row = (instrumentId: bigint, tradeDate: string, volume: string) => ({
+        instrumentId,
+        tradeDate: new Date(`${tradeDate}T00:00:00Z`),
+        adjust: 'none',
+        open: '10',
+        high: '10',
+        low: '10',
+        close: '10',
+        volume,
+      });
+      await prisma.dailyBar.createMany({
+        data: [
+          row(rca.id, '2026-07-30', OLD_CO),
+          row(rca.id, '2026-07-31', OLD_CO),
+          row(rca.id, '2026-08-04', RECYCLER),
+          row(rca.id, '2026-08-05', RECYCLER),
+          row(rca.id, '2026-08-06', RECYCLER),
+          row(rcb.id, '2026-08-03', NEW_CO),
+          row(rcb.id, '2026-08-04', NEW_CO),
+          row(rcb.id, '2026-08-05', NEW_CO),
+        ],
+      });
+      const reg = await register.execute(
+        { ...base, oldCode: 'RCA', newCode: 'RCB', effectiveDate: '2026-08-03' },
+        NOW,
+      );
+      expect(reg.status).toBe('registered');
+    });
+
+    it('① 查新码 ⇒ 序列里没有任何一天来自「RCA 在生效日之后」(branch 4)', async () => {
+      expect(await series('us:RCB')).toEqual([
+        { tradeDate: '2026-07-30', source: OLD_CO },
+        { tradeDate: '2026-07-31', source: OLD_CO },
+        { tradeDate: '2026-08-03', source: NEW_CO },
+        { tradeDate: '2026-08-04', source: NEW_CO },
+        { tradeDate: '2026-08-05', source: NEW_CO },
+      ]);
+    });
+
+    it('② 查被回收的旧码 ⇒ 只有生效日之后的 bar (branch 5)', async () => {
+      expect(await series('us:RCA')).toEqual([
+        { tradeDate: '2026-08-04', source: RECYCLER },
+        { tradeDate: '2026-08-05', source: RECYCLER },
+        { tradeDate: '2026-08-06', source: RECYCLER },
+      ]);
+    });
+
+    it('SC-002 判据: 两个序列的交叉日数 = 0 (各自序列里不出现另一方的任何一天)', async () => {
+      const b = await series('us:RCB');
+      const a = await series('us:RCA');
+      const crossed =
+        b.filter((x) => x.source === RECYCLER).length +
+        a.filter((x) => x.source !== RECYCLER).length;
+      expect(crossed).toBe(0);
+    });
+  });
 });
