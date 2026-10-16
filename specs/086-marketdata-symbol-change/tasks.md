@@ -109,7 +109,7 @@ updated_at: '2026-10-16'
 
 - [X] T019 [Server] [US4] **候选处置 + CLI 子命令**（FR-019; plan D8; state_branches 22, 23, 24）：新建 `resolve-symbol-candidate.usecase.ts`（`dismiss(id, note)` → DISMISSED）；确认不在此处写，由编排在 apply 写入时同 tx 把候选翻 CONFIRMED 并记登记 id（T011 的编排加一个可选 `candidateId` 入参）；T014 的 CLI 接上 `candidates` / `dismiss` / `apply --from-candidate <id>`（无新码建议且未显式传 `--new` ⇒ 拒绝）→ verify: 同 IT 文件追加：① `apply --from-candidate` ⇒ 进入 preview，`--confirm` 后候选 CONFIRMED 且记登记 id（branch 23）② 「代码失效」候选不带 `--new` ⇒ 拒绝（branch 22 的确认半）③ dismiss ⇒ DISMISSED 且带备注（branch 24 的处置半）；定向变异：去掉「无建议 ⇒ 拒绝」→ ② 红（留档）
 
-- [ ] T020 [P] [Ops] [US4] **候选告警：`app-state-health` 新判据**（FR-018; plan D9）：前置 = PR #495 已合并。`app-state-health.sql` 加判据：存在 PENDING 候选 ⇒ exit 1，summary 追加 `symbol_candidates=<n>⚠疑似改名:<tickers>`；`.sh` 不动（零逻辑胶水）→ verify: `app-state-health.it.spec.ts` 加臂：有 PENDING ⇒ exit 1 且 summary 含 ticker；只有 DISMISSED / CONFIRMED ⇒ 不判红；先红 → 绿；装机前在 prod 只读跑一次，确认当前判绿（同 #495 的做法）
+- [X] T020 [P] [Ops] [US4] **候选告警：`app-state-health` 新判据**（FR-018; plan D9）：前置 = PR #495 已合并。`app-state-health.sql` 加判据：存在 PENDING 候选 ⇒ exit 1，summary 追加 `symbol_candidates=<n>⚠疑似改名:<tickers>`；`.sh` 不动（零逻辑胶水）→ verify: `app-state-health.it.spec.ts` 加臂：有 PENDING ⇒ exit 1 且 summary 含 ticker；只有 DISMISSED / CONFIRMED ⇒ 不判红；先红 → 绿；装机前在 prod 只读跑一次，确认当前判绿（同 #495 的做法）
 
 ### Gate · Ops
 

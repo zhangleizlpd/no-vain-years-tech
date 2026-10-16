@@ -38,6 +38,10 @@
 --    hk 没有)时 `bool_and` 为假、① 也不触发(us 锚新鲜) ⇒ 那些 hk 锚被静默当成陈旧、无人告警。
 --    正是 ③ 本该堵的洞。这个缺陷由变异测试抓出(「让 ③ 永不触发」跑出 8/8 全绿 = 它没被测到)。
 --   ④ outbox 卡住: 存在 `published_at IS NULL` 且已超期的事件
+--   ⑤ 疑似改名候选待处置(086 T020): `optionsdesk.symbol_change_candidate` 存在 `status = 'PENDING'`
+--      的行。候选由 sync-anchor-last-close 在 vendor 报「未知代码」时写入; 只认 PENDING ——
+--      DISMISSED / CONFIRMED 已处置, 再告警维护者就无从消警。消警 = `symbol-change.sh dismiss`
+--      或 `apply --from-candidate … --confirm`。
 --
 -- 🚨 ① 取 **AND 语义**(全部掉队才红), 与 table-health 的 cn/hk 哨兵同一取舍: 单只停牌/退市/
 --    新建锚不该判成整条投影停摆。**代价写在明处: 单只锚长期掉队本谓词看不见** —— summary 里
@@ -108,11 +112,18 @@ outbox_verdict AS (
   FROM public.outbox_event
   WHERE published_at IS NULL
     AND created_at < now() - interval '15 minutes'
+),
+candidate_verdict AS (
+  SELECT count(*) AS pending,
+         string_agg(ticker, ',' ORDER BY ticker) AS tickers
+  FROM optionsdesk.symbol_change_candidate
+  WHERE status = 'PENDING'
 )
 SELECT
   CASE WHEN (SELECT empty_workset OR all_stale OR calendar_missing FROM anchor_verdict)
          OR (SELECT stalled_markets IS NOT NULL FROM market_verdict)
          OR (SELECT stuck > 0 FROM outbox_verdict)
+         OR (SELECT pending > 0 FROM candidate_verdict)
        THEN 1 ELSE 0 END AS exit_code,
   'anchor_close=' || (SELECT fresh || '/' || total FROM anchor_verdict)
   || coalesce('@' || (SELECT expected_day::text FROM anchor_verdict), '@日历缺失')
@@ -127,4 +138,6 @@ SELECT
   || ' | outbox_stuck=' || (SELECT stuck FROM outbox_verdict)
   || coalesce(' (最老 ' || (SELECT oldest_cst::text FROM outbox_verdict) || ')', '')
   || CASE WHEN (SELECT stuck > 0 FROM outbox_verdict) THEN '⚠relay 停摆' ELSE '' END
+  || ' | symbol_candidates=' || (SELECT pending FROM candidate_verdict)
+  || coalesce('⚠疑似改名:' || (SELECT tickers FROM candidate_verdict), '')
   AS summary;
