@@ -1710,8 +1710,10 @@ model AnchorColdStartRun {
 // - effective_date 是**交易所当地日历日**, 与 daily_bar.trade_date 同一条轴 (ADR-0066); 不存 UTC
 //   时刻、不做时区换算。
 // - 登记的是**代码不是行**: 不与 instrument 建 FK (新码登记时可以还不在标的表, D5 第 4 步补齐)。
-// - 唯一性 = 部分唯一索引 `(market, old_code, effective_date) WHERE revoked_at IS NULL`, 由
-//   migration.sql 手写 (Prisma schema 表达不了带谓词的唯一索引)。撤销后允许同参数重新登记 (FR-003)。
+// - 唯一性 = 部分唯一索引 `(market, old_code, effective_date) WHERE revoked_at IS NULL`, 撤销后
+//   允许同参数重新登记 (FR-003)。🚨 必须在下方 `@@unique(..., where: raw(...))` 声明 (partialIndexes
+//   preview): 只在 migration.sql 手写而 schema 不声明时, 下一次 `migrate dev` 会把它当漂移生成
+//   `DROP INDEX` (086 T017 生成迁移时实际撞到)。⚠️ 客户端把它建模成全表唯一, MUST NOT `upsert` 命中它。
 // - 撤销只写 revoked_* 三列不删行 (FR-003 / FR-009 留痕)。
 // - event_type / source 是贫血字符串无枚举表; 值域权威在 symbol-lineage.rules.ts。
 model SymbolChange {
@@ -1731,6 +1733,7 @@ model SymbolChange {
   revokedBy     String?   @map("revoked_by") @db.VarChar(64)
   revokeReason  String?   @map("revoke_reason") @db.Text
 
+  @@unique([market, oldCode, effectiveDate], map: "uk_symbol_change_active", where: raw("(revoked_at IS NULL)"))
   @@map("symbol_change")
   @@schema("marketdata")
 }
@@ -2283,6 +2286,36 @@ model AnchorSubmission {
 
   @@unique([ticker, asof], map: "uk_anchor_submission_pending_ticker_asof", where: raw("((status)::text = 'PENDING'::text)"))
   @@map("anchor_submission")
+  @@schema("optionsdesk")
+}
+
+// 086 疑似改名候选 (plan D8): 一行 = 「某锚 ticker 被行情源报为未知代码」这一信号的待人工处置项。
+// 由 `sync-anchor-last-close.ts` 每拍 upsert, 人工确认 (→ 登记 symbol_change) 或驳回。
+//
+// - ticker 是旧码的 canonical `market:code` (与 anchor.ticker 同宽); 不与 anchor 建 FK。
+// - signal 值域 v1 仅 'vendor_unknown'; status 三态 'PENDING' | 'CONFIRMED' | 'DISMISSED'。
+//   贫血字符串无枚举表, 值域权威在 `symbol-candidate.rules.ts`。
+// - suggestions = 新码建议 JSON 数组 (至多 3 个, `suggestNewCodes` 产出); **空数组 = 「代码失效」**
+//   (同市场标的名称无任何交集), CLI 拒绝以这种候选不带 --new 执行 apply (分支 22)。
+// - 部分唯一 `(ticker) WHERE status = 'PENDING'`: 同一 ticker 至多一条待处置。
+//   ⚠️ 同 `uk_anchor_submission_pending_ticker_asof`: 生成的客户端把它建模成全表唯一,
+//   谓词在类型里消失 ⇒ MUST NOT 用 `upsert` 命中它。
+// - DISMISSED 行永久保留, 是「同一 ticker 不再生成」的依据 (分支 24)。
+// - symbol_change_id = 确认后落成的登记 (marketdata.symbol_change.id), 逻辑引用无 FK。
+model SymbolChangeCandidate {
+  id             BigInt    @id @default(autoincrement())
+  ticker         String    @db.VarChar(32)
+  signal         String    @db.VarChar(16)
+  suggestions    Json
+  firstSeenAt    DateTime  @map("first_seen_at") @db.Timestamptz(6)
+  lastSeenAt     DateTime  @map("last_seen_at") @db.Timestamptz(6)
+  status         String    @db.VarChar(16)
+  resolvedAt     DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolutionNote String?   @map("resolution_note") @db.Text
+  symbolChangeId BigInt?   @map("symbol_change_id")
+
+  @@unique([ticker], map: "uk_symbol_change_candidate_pending_ticker", where: raw("((status)::text = 'PENDING'::text)"))
+  @@map("symbol_change_candidate")
   @@schema("optionsdesk")
 }
 

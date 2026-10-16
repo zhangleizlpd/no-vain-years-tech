@@ -226,6 +226,9 @@ const MODEL_OWNERSHIP: Record<string, string> = {
   brokerOrder: 'optionsdesk',
   brokerContractRef: 'optionsdesk',
   brokerSyncRun: 'optionsdesk',
+  // 086 疑似改名候选 (plan D8): 锚收盘价同步产生、候选处置 use case 翻状态 (R1 自有表, 无 FK)。
+  // 跨 ctx 面 = 产生时读 marketdata.instrument 的 name / code 求新码建议 (须 CROSS-CONTEXT-READ)。
+  symbolChangeCandidate: 'optionsdesk',
   // researchReport 归 research (057, 第 11 bounded context; ADR-0065 研报库)。投递 UC 独占
   // 读写 (R1 自有表)。**跨 ctx 面 = 0**: symbol 存归一后的 `market:code` 裸字符串, 不建到
   // marketdata.instrument 的外键、不做存在性校验 —— 校验会拒绝合法新标的, 且会引入本可
