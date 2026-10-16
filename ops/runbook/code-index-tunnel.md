@@ -138,6 +138,8 @@ CODE_INDEX_SERVICE_TOKEN=<B 步从 62 读到的同值>
 ```bash
 # 77
 cd /home/admin/no-vain-years-mono
+# 钉住运行中镜像，否则插值缺 NVY_ACR_REPO / 解析成 :latest（prod-deploy-rollback.md「非-app 服务」🚨）
+export MBW_APP_IMAGE="$(docker inspect -f '{{.Config.Image}}' nvy-tight-app-1)"
 # ✅ 正确（sops 注入真 secret，compose ${VAR} 插值优先读 shell env 赢 --env-file）
 sops exec-env /etc/nvy/secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d --force-recreate app"
 # ❌ 禁：docker compose ... --env-file .env.production up -d --force-recreate app（裸跑 → 缺 DB 密码 → P1000）
@@ -172,9 +174,9 @@ verify（降级反例，确认 FR-008 真生效）：临时 `systemctl stop wg-q
 
 ## Rollback / teardown
 
-- **回退接地**（保留隧道）：tracked `.env.production` 改 `CODE_INDEX_PROVIDER=fake`（PR → deploy）；应急可在 77 上 `export CODE_INDEX_PROVIDER=fake` 后 sops 包裹 `up -d --force-recreate app`（shell env 优先于 `--env-file`，下次 deploy 即回到仓内值）。ideation 退回 fake provider（catalog 空、检索返空 + 降级气泡），会话仍可用。
+- **回退接地**（保留隧道）：tracked `.env.production` 改 `CODE_INDEX_PROVIDER=fake`（PR → deploy）；应急可在 77 上 `export CODE_INDEX_PROVIDER=fake` 后钉 `MBW_APP_IMAGE` 再 sops 包裹 `up -d --force-recreate app`（同上方命令块；shell env 优先于 `--env-file`，下次 deploy 即回到仓内值）。ideation 退回 fake provider（catalog 空、检索返空 + 降级气泡），会话仍可用。
 - **拆隧道**：两机 `systemctl disable --now wg-quick@wg0` + 删 `/etc/wireguard/wg0.*` + 撤两条安全组 UDP 51820 规则。
-- **token 轮换**（泄露时）：生成新 `openssl rand -hex 32` → 同步 62 `/etc/code-index.env`（重启 `code-index-query.service`）+ dev 机 `sops edit ~/.nvy/secrets.enc.env` 改 `CODE_INDEX_SERVICE_TOKEN` → [`secrets-sops.md`](secrets-sops.md) §3.3 scp 到 77 → sops 包裹 `up -d --force-recreate app`，两端必须同步切换（fail-closed，过渡期会 401）。
+- **token 轮换**（泄露时）：生成新 `openssl rand -hex 32` → 同步 62 `/etc/code-index.env`（重启 `code-index-query.service`）+ dev 机 `sops edit ~/.nvy/secrets.enc.env` 改 `CODE_INDEX_SERVICE_TOKEN` → [`secrets-sops.md`](secrets-sops.md) §3.3 scp 到 77 → 钉 `MBW_APP_IMAGE` 后 sops 包裹 `up -d --force-recreate app`（同上方命令块），两端必须同步切换（fail-closed，过渡期会 401）。
 
 ## 已知坑
 

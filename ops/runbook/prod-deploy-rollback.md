@@ -49,8 +49,16 @@
 cd /home/admin/no-vain-years-mono
 git pull --ff-only origin main          # 或等下次 deploy 的 reset --hard 带过来
 export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
-sops exec-env /etc/nvy/secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d postgres"
+# 钉住运行中的 app 镜像（见下方 🚨）
+export MBW_APP_IMAGE="$(docker inspect -f '{{.Config.Image}}' nvy-tight-app-1)"
+sops exec-env /etc/nvy/secrets.enc.env "docker compose -f docker-compose.tight.yml --env-file .env.production up -d --no-deps postgres"
 ```
+
+🚨 **手动跑 compose 一律先钉 `MBW_APP_IMAGE` 为运行中镜像，重建非 app 服务一律带 `--no-deps`**（2026-10-16 prod `up --dry-run` 对照实测）：
+
+- 不钉 → compose 先在插值阶段报 `required variable NVY_ACR_REPO is missing`（`NVY_ACR_REPO` 只在 deploy / 主机 fleet 文件里），连 `up -d postgres` 都起不来；补了 `NVY_ACR_REPO` 而没 export `MBW_VERSION` → app 镜像解析为 `:latest`（`.env.production` 写死的兜底）。
+- nginx `depends_on` app ⇒ `up -d nginx`（不带 `--no-deps`）会连带收敛 app；镜像串与运行中不同即**重建 app**。主机平时没有 ACR 凭据（deploy 退出即 logout）⇒ 拉 `:latest` 鉴权失败、大声报错；但凭据在盘上时会**静默换成 ACR `latest`**（= 最近一次构建，回滚后就不是运行中版本）。
+- 钉 `MBW_APP_IMAGE`（与 `ops/bin/symbol-change.sh` 同一范式）一行同时绕过上面两条：它给定时 compose 不再求值 `NVY_ACR_REPO` / `MBW_VERSION`。
 
 ⚠️ **必须 `sops exec-env` 包裹**（prod 已 SOPS cutover，`DB_PASSWORD` / `REDIS_PASSWORD` 只在 `/etc/nvy/secrets.enc.env`）—— 漏包裹则 `${DB_PASSWORD}` 以空串重建（现有 named volume 下 PG 口令不变、无数据损坏，但容器 env 脏）。重建 postgres / redis 会让 app 瞬断该依赖几秒（Prisma / bullmq 自动重连），**低峰期做**。
 
