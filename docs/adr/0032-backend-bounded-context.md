@@ -78,7 +78,7 @@ src/account/
 
 - phone-sms-auth use case (编排 security + account)
 - SMS code domain (SmsCodeRepository / verify)
-- refresh-token use case（per [ADR-0037](0037-security-credentials-governance.md)）— **未实装**（0037 Proposed，future）
+- refresh-token use case（per [ADR-0037](0037-security-credentials-governance.md)）— 已由 [003-tokens](../../specs/003-tokens/spec.md) 实装：`apps/server/src/auth/refresh-token.usecase.ts`
 - **依赖** security + account (编排,组合两者)
 
 ```text
@@ -91,7 +91,7 @@ src/auth/
   application/ports/*.port.ts            # sms-gateway / sms-code.repository / timing-defense / retry-executor / outbox-publisher
   infrastructure/*                       # aliyun-sms.gateway / sms-code.redis.repository / outbox-event.prisma.publisher / ...
   web/account-phone-sms-auth.controller.ts / account-sms-code.controller.ts
-  # refresh-token.usecase.ts — 未实装(future,per ADR-0037 Proposed)
+  # refresh-token.usecase.ts — 已由 003-tokens 实装(现为扁平的 src/auth/refresh-token.usecase.ts,per ADR-0037)
 ```
 
 ### 依赖方向(强制 ESLint boundaries)

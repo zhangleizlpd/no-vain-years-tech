@@ -79,7 +79,7 @@ JWT 相关 (`jwt-token.service.ts` + `security.module.ts` 本体) 不计入 suns
 ### 联动 ADR amend
 
 - [ADR-0032](0032-backend-bounded-context.md) References 段补 ADR-0041 cross-link(后续 PR 一并改;本 ADR ship 时**不**改 ADR-0032 以保 PR 边界 clean)
-- 后续 [ADR-0036](0036-observability-logging-governance.md) 落地 LoggerModule / [ADR-0037](0037-security-credentials-governance.md) 落地 token-revocation / refresh-token rotation 时,新增类落 `security/` 即可,不需要再评估 src/common/ 与否
+- 后续 [ADR-0036](0036-observability-logging-governance.md) 落地 LoggerModule / [ADR-0037](0037-security-credentials-governance.md) 落地 token-revocation / refresh-token rotation 时,新增类落 `security/` 即可,不需要再评估 src/common/ 与否(后者已按此由 003-tokens 落为 `security/refresh-token.service.ts`)
 
 ### 下游 PR / 工作流影响
 

@@ -33,4 +33,4 @@
 
 - `refresh_token` 等**需持久化**的凭证只走 [`expo-secure-store`](https://docs.expo.dev/versions/latest/sdk/securestore/)（`apps/mobile/src/auth/store.ts` persist 策略 / `auth/device-store.ts`）；`access_token` **仅内存不落盘**，冷启动由 refresh 重新派生
 - **禁**写进 MMKV / AsyncStorage（明文 / 未加密）
-- 后端 token issue / verify / rotation 设计见 [ADR-0037 JWT HS256 双 token + Redis jti 白名单](../adr/0037-security-credentials-governance.md)
+- 后端 token issue / verify / rotation 设计见 [ADR-0037 §3 / §5（HS256 access + PG 存储的单次使用 refresh token）](../adr/0037-security-credentials-governance.md)
