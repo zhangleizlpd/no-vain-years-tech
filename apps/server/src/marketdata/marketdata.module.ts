@@ -119,6 +119,8 @@ import {
 import { TradingCalendarSyncService } from './trading-calendar-sync.service.js';
 import { EOD_BAR_PORT, type EodBarPort } from './eod-bar.port.js';
 import { EnsureLatestEodBarUseCase } from './ensure-latest-eod-bar.usecase.js';
+import { RegisterSymbolChangeUseCase } from './register-symbol-change.usecase.js';
+import { RevokeSymbolChangeUseCase } from './revoke-symbol-change.usecase.js';
 import { UNDERLYING_IV_PORT, type UnderlyingIvPort } from './underlying-iv.port.js';
 import { US_INDEX_PORT, type UsIndexPort } from './us-index.port.js';
 import { FUNDAMENTAL_PORT, type FundamentalPort } from './fundamental.port.js';
@@ -863,6 +865,9 @@ function collectionPort<T extends object>(
     }),
     // 建锚同步取价的窄入口 (2026-08-18)。见该文件头注: 它是**旁路**, 不推水位、不走预算核算。
     EnsureLatestEodBarUseCase,
+    // 086 代码变更登记 / 撤销 (plan D1)。
+    RegisterSymbolChangeUseCase,
+    RevokeSymbolChangeUseCase,
   ],
   // 🚨 **本模块首次向外 export** (061 T005) —— `optionsdesk` 的盘中投影 tick 要跨 ctx 注入这
   // 两个 token (plan D1: 强一致同步读, ADR-0062 sunset trigger 自己规定的升格方向)。
@@ -896,6 +901,12 @@ function collectionPort<T extends object>(
     OPTION_SNAPSHOT_READ_PORT,
     OPTION_CHAIN_DISCOVERY_PORT,
     EnsureLatestEodBarUseCase,
+    // 086 (plan D5): optionsdesk 的代码变更修正编排要注入这四个 —— 登记 / 撤销、采集闸重算、
+    // 验证一步读新码的拼接日线。后两者此前只在 providers; 漏 export 的后果同上, boot 才炸。
+    RegisterSymbolChangeUseCase,
+    RevokeSymbolChangeUseCase,
+    AnchorDrivenSyncGate,
+    GetInstrumentBarsUseCase,
   ],
 })
 export class MarketdataModule {}
