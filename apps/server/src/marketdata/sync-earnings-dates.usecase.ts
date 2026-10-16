@@ -25,6 +25,7 @@ import {
   type EarningsDateMergeResult,
   type EarningsDateSelection,
   type EarningsFilingFact,
+  type EarningsKeyObservation,
   type ExistingEarningsDateEvent,
   type ListingPresence,
   type NoticeMeetingCandidate,
@@ -1559,14 +1560,20 @@ export class SyncEarningsDatesUseCase {
     const rows = await this.prisma.earningsDateObservation.findMany({
       where: {
         instrumentId: { in: [...new Set(events.map((e) => e.instrumentId))] },
-        periodText: { not: null },
+        OR: [{ periodText: { not: null } }, { meetingDate: { not: null } }],
       },
-      select: { instrumentId: true, source: true, periodKey: true, periodText: true },
+      select: {
+        instrumentId: true,
+        source: true,
+        periodKey: true,
+        periodText: true,
+        meetingDate: true,
+      },
     });
-    const byInstrument = new Map<bigint, typeof rows>();
+    const byInstrument = new Map<bigint, EarningsKeyObservation[]>();
     for (const row of rows) {
       const list = byInstrument.get(row.instrumentId) ?? [];
-      list.push(row);
+      list.push({ ...row, meetingDate: isoDate(row.meetingDate) });
       byInstrument.set(row.instrumentId, list);
     }
     return events.flatMap((e) => {

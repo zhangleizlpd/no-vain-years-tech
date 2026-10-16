@@ -65,7 +65,10 @@ function harness(opts: {
   );
   const source = new HkexBoardMeetingListSource(
     http,
-    { instrument: { findMany } } as unknown as PrismaService,
+    {
+      instrument: { findMany },
+      earningsFiscalProfile: { findMany: async () => [] },
+    } as unknown as PrismaService,
     { countTradingDays } as unknown as TradingCalendarPort,
   );
   return { source, fetch, findMany, countTradingDays };

@@ -229,6 +229,82 @@ export function resolveBoardListPeriod(
   return unaligned(null);
 }
 
+/** 清单「YYYY年第N季」—— 日历季度 (spec Session（十一）)。 */
+const BOARD_CALENDAR_QUARTER_PARTS = /^(\d{4})年第([一二三四])季$/;
+
+/** 财季 → 报告类型 (第 2 / 4 财季即中期 / 年度)。 */
+const FISCAL_QUARTER_KIND: Readonly<Record<1 | 2 | 3 | 4, EarningsReportKind>> = {
+  1: 'quarterly',
+  2: 'interim',
+  3: 'quarterly',
+  4: 'annual',
+};
+
+/** 期末日 `end` 之后 (左开) 到刊发时限 (含) 内是否含 `date`。 */
+function withinDeadline(end: string, kind: EarningsReportKind, date: string): boolean {
+  const e = parseIsoDate(end);
+  if (e === null) return false;
+  const lastDay = monthEndFromAbsolute(
+    e.year * 12 + (e.month - 1) + PUBLICATION_DEADLINE_MONTHS[kind],
+  );
+  return lastDay !== null && end < date && date <= lastDay;
+}
+
+/**
+ * 有财年档案时清单行的报告期 (FR-006，spec Session（十一）)；换算不出 ⇒ null，调用方保留 {@link resolveBoardListPeriod}
+ * 的 `T:` / `D:` 键。只处理两种写法：
+ *
+ * - 「YYYY年第N季」⇒ 日历季度末 (YYYY 年 3N 月末)。EVIDENCE: 本机清单快照 7 行该写法 (2024-04 / 2025-10，`00688` /
+ *   `02388` / `00005` / `00830` / `00081`)，会议日均为该公司「YYYY年第N季度」业绩刊发当日 (2026-10-16 prod 公告表比对)；
+ *   港交所对该写法的定义未查到。
+ * - 期间空白 ⇒ 会议日之前、按报告类型 (季度 = 第 1 / 3 财季) 的财季末中，会议日落在刊发时限内的唯一者。
+ *
+ * 期末日须是该公司财季末，会议日须落在期末日后的刊发时限 ({@link PUBLICATION_DEADLINE_MONTHS}) 内。
+ * 复杂度 O(1)。
+ */
+export function resolveBoardListPeriodWithProfile(input: {
+  readonly periodText: string | null;
+  readonly reportKind: EarningsReportKind | null;
+  readonly meetingDate: string;
+  readonly fiscalYearEndMonth: number;
+}): PeriodResolution | null {
+  const { meetingDate, fiscalYearEndMonth: fy } = input;
+  const meeting = parseIsoDate(meetingDate);
+  if (meeting === null || !Number.isInteger(fy) || fy < 1 || fy > 12) return null;
+  const text = input.periodText?.trim() ?? '';
+  const aligned = (end: string): PeriodResolution | null => {
+    const quarter = fiscalQuarterOf(end, fy);
+    if (quarter === null) return null;
+    const kind = FISCAL_QUARTER_KIND[quarter];
+    return withinDeadline(end, kind, meetingDate)
+      ? { periodKey: alignedPeriodKey(end), periodEnd: end, reportKind: kind }
+      : null;
+  };
+
+  const m = BOARD_CALENDAR_QUARTER_PARTS.exec(text);
+  if (m !== null) {
+    const end = monthEndIso(Number(m[1]), CN_DIGITS[m[2]] * 3);
+    return end === null ? null : aligned(end);
+  }
+  if (text !== '' || input.reportKind === null) return null;
+  return uniqueCandidateBefore(meeting.year, input.reportKind, aligned);
+}
+
+/** 会议所在年与前一年的各月末中，按 `aligned` 落键且类型相符的唯一者；0 或多个 ⇒ null。O(24)。 */
+function uniqueCandidateBefore(
+  meetingYear: number,
+  kind: EarningsReportKind,
+  aligned: (end: string) => PeriodResolution | null,
+): PeriodResolution | null {
+  const candidates: PeriodResolution[] = [];
+  for (let abs = (meetingYear - 1) * 12; abs < meetingYear * 12 + 12; abs += 1) {
+    const end = monthEndFromAbsolute(abs);
+    const resolved = end === null ? null : aligned(end);
+    if (resolved !== null && resolved.reportKind === kind) candidates.push(resolved);
+  }
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 // ─── ② 交易所业绩公告标题 ─────────────────────────────────────────────────
 
 const CN_DIGITS: Readonly<Record<string, number>> = {

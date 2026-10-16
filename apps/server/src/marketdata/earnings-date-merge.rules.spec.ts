@@ -968,6 +968,23 @@ describe('selectAlignedSuccessor — 无法对齐旧事件的接手键 (FR-030; 
     ).toEqual({ periodKey: 'P:2024-12-31', source: ANN, periodText: '2024年度業績公告' });
   });
 
+  it('清单空白期间行: 原文为空、同来源同会议日 ⇒ 配上 (spec Session（十一）, hk:00386 形态)', () => {
+    const d = 'D:hkex_board_meeting_list:2026-10-29';
+    const blank = (periodKey: string, meetingDate: string) => ({
+      source: BOARD,
+      periodKey,
+      periodText: null,
+      meetingDate,
+    });
+    const event = { periodKey: d, status: 'confirmed' as const };
+    expect(
+      selectAlignedSuccessor(event, [blank(d, '2026-10-29'), blank('P:2026-09-30', '2026-10-29')]),
+    ).toEqual({ periodKey: 'P:2026-09-30', source: BOARD, periodText: '会议日 2026-10-29' });
+    expect(
+      selectAlignedSuccessor(event, [blank(d, '2026-10-29'), blank('P:2026-09-30', '2026-10-30')]),
+    ).toBeNull();
+  });
+
   it.each([
     ['已并入', { periodKey: T_KEY, status: 'superseded' as const }],
     ['占位事件', { periodKey: 'D:notice_undated:2024-10-02', status: 'notified_undated' as const }],
