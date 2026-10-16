@@ -7,6 +7,10 @@ import { UpdateAnchorUseCase } from './update-anchor.usecase.js';
 import { DeleteAnchorUseCase } from './delete-anchor.usecase.js';
 import { ReviewAnchorUseCase } from './review-anchor.usecase.js';
 import { MigrateAnchorTickerUseCase } from './migrate-anchor-ticker.usecase.js';
+import {
+  REMEDIATION_STEPS,
+  RemediateSymbolChangeUseCase,
+} from './remediate-symbol-change.usecase.js';
 import { SetPositionBucketUseCase } from './set-position-bucket.usecase.js';
 import { GetAnchorAtUseCase } from './get-anchor-at.usecase.js';
 import { ListAnchorsUseCase } from './list-anchors.usecase.js';
@@ -90,6 +94,9 @@ import { createFxRatePort } from './fx-rate-fallback-chain.adapter.js';
     ReviewAnchorUseCase,
     // 086 迁锚 (修正命令编排的第 2 步)。
     MigrateAnchorTickerUseCase,
+    // 086 修正命令编排骨架 (T010)。五个真步骤由 T011 接入 REMEDIATION_STEPS (此前为空数组)。
+    { provide: REMEDIATION_STEPS, useValue: [] },
+    RemediateSymbolChangeUseCase,
     // 047 T028 水位手选写端 —— 意图矩阵第三个输入的降级录入路径 (本片无数据面, FR-017)。
     SetPositionBucketUseCase,
     ListAnchorsUseCase,

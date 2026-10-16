@@ -10,6 +10,11 @@ import { CreateAnchorUseCase, shanghaiDateOnly } from '../../src/optionsdesk/cre
 import { ReviewAnchorUseCase, isAnchorOverdue } from '../../src/optionsdesk/review-anchor.usecase';
 import { MigrateAnchorTickerUseCase } from '../../src/optionsdesk/migrate-anchor-ticker.usecase';
 import { ANCHOR_CREATED_EVENT } from '../../src/marketdata/anchor-cold-start.subscriber';
+import {
+  RemediateSymbolChangeUseCase,
+  type RemediateSymbolChangeInput,
+  type RemediationStep,
+} from '../../src/optionsdesk/remediate-symbol-change.usecase';
 
 // 086 US3 / US5 修正命令 IT (Testcontainers PG)。T009 = 迁锚 use case 臂 ①–⑥;
 // T011 / T012 的编排臂追加在本文件。装配体例同 optionsdesk-045.anchor.it.spec.ts: 直接 new
@@ -222,6 +227,175 @@ describe('086 迁锚 use case IT (Testcontainers PG)', () => {
       const row = await prisma.anchor.findUniqueOrThrow({ where: { ticker: NEW } });
       expect(row.nextReview).toEqual(expected);
       expect(isAnchorOverdue(row.nextReview, shanghaiDateOnly(now))).toBe(true);
+    });
+  });
+
+  // T010 编排骨架: 桩步骤只在本测试里注入 (生产 REMEDIATION_STEPS 由 T011 接入真步骤)。
+  // 桩 1 = 真迁锚 use case (写 anchor / anchor_change / outbox); 桩 2 / 3 = 各写一条标记 outbox 行,
+  // 桩 2 可切换成「apply 抛错」。inspect 全部只读库, 与真步骤同形: 已完成的事实从库里读, 不靠内存。
+  describe('T010 修正编排骨架', () => {
+    const STUB_EVENT = 'test.remediate-stub';
+    const input = (mode: RemediateSymbolChangeInput['mode']): RemediateSymbolChangeInput => ({
+      market: 'us',
+      oldCode: 'AAA',
+      newCode: 'BBB',
+      effectiveDate: '2026-10-15',
+      evidence: 'https://example.invalid/notice',
+      operator: 'it',
+      mode,
+    });
+
+    const applyCalls: string[] = [];
+    let step2Fails = false;
+
+    const migrateStep: RemediationStep = {
+      name: 'migrate-anchor',
+      inspect: async (ctx) => {
+        const old = await prisma.anchor.findUnique({ where: { ticker: ctx.oldTicker } });
+        if (old === null) return { state: 'done', detail: '旧码无锚' };
+        const occupant = await prisma.anchor.findUnique({ where: { ticker: ctx.newTicker } });
+        if (occupant !== null) return { state: 'conflict', detail: '新码已有锚' };
+        return { state: 'pending', detail: `锚 ${ctx.oldTicker} → ${ctx.newTicker}` };
+      },
+      apply: async (ctx) => {
+        applyCalls.push('migrate-anchor');
+        const r = await migrate.execute({ oldTicker: ctx.oldTicker, newTicker: ctx.newTicker });
+        return r.kind === 'migrated'
+          ? { status: 'ok', detail: 'migrated' }
+          : { status: 'conflict', detail: r.kind };
+      },
+    };
+
+    const markerStep = (name: string, opts: { failWhen?: () => boolean } = {}): RemediationStep => {
+      const publisher = new OutboxEventPrismaPublisher();
+      const findMarker = (ctx: { newTicker: string }) =>
+        prisma.outboxEvent.findMany({ where: { eventType: STUB_EVENT } }).then((rows) =>
+          rows.find((r) => {
+            const data = (r.payload as { data: Record<string, unknown> }).data;
+            return data.step === name && data.ticker === ctx.newTicker;
+          }),
+        );
+      return {
+        name,
+        inspect: async (ctx) =>
+          (await findMarker(ctx))
+            ? { state: 'done', detail: '标记已在' }
+            : { state: 'pending', detail: `将写标记 ${name}` },
+        apply: async (ctx) => {
+          applyCalls.push(name);
+          if (opts.failWhen?.()) throw new Error(`${name} boom`);
+          await prisma.$transaction((tx) =>
+            publisher.publish(tx, STUB_EVENT, { step: name, ticker: ctx.newTicker }, 'optionsdesk'),
+          );
+          return { status: 'ok', detail: '标记已写' };
+        },
+      };
+    };
+
+    const orchestrator = () =>
+      new RemediateSymbolChangeUseCase([
+        migrateStep,
+        markerStep('marker-2', { failWhen: () => step2Fails }),
+        markerStep('marker-3'),
+      ]);
+
+    /** 相关表全行快照 (行数 + updated_at 等所有列一并比对)。 */
+    const SNAPSHOT_TABLES = [
+      'optionsdesk.anchor',
+      'optionsdesk.anchor_change',
+      'optionsdesk.anchor_submission',
+      'public.outbox_event',
+      'marketdata.symbol_change',
+      'marketdata.instrument',
+    ];
+    const snapshot = async () => {
+      const out: Record<string, string[]> = {};
+      for (const t of SNAPSHOT_TABLES) {
+        const rows = await prisma.$queryRawUnsafe<{ j: string }[]>(
+          `SELECT row_to_json(t)::text AS j FROM ${t} t ORDER BY 1`,
+        );
+        out[t] = rows.map((r) => r.j);
+      }
+      return out;
+    };
+
+    beforeEach(() => {
+      applyCalls.length = 0;
+      step2Fails = false;
+    });
+
+    it('① preview ⇒ 只调 inspect、报告「将要做」, 相关表行数与 updated_at 不变 (branch 12)', async () => {
+      await seedAnchor(OLD);
+      const before = await snapshot();
+      expect(before['optionsdesk.anchor']).toHaveLength(1);
+
+      const report = await orchestrator().execute(input('preview'));
+
+      expect(report).toEqual([
+        { step: 'migrate-anchor', status: 'ok', detail: `锚 ${OLD} → ${NEW}` },
+        { step: 'marker-2', status: 'ok', detail: '将写标记 marker-2' },
+        { step: 'marker-3', status: 'ok', detail: '将写标记 marker-3' },
+      ]);
+      expect(applyCalls).toEqual([]);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it('② 步骤 2 失败 ⇒ 停在 2、3 不跑; 修复后重跑 ⇒ 1 skipped、2 起继续 (branch 14)', async () => {
+      await seedAnchor(OLD);
+      step2Fails = true;
+
+      const first = await orchestrator().execute(input('apply'));
+
+      expect(first).toEqual([
+        { step: 'migrate-anchor', status: 'ok', detail: 'migrated' },
+        { step: 'marker-2', status: 'failed', detail: 'marker-2 boom' },
+      ]);
+      expect(applyCalls).toEqual(['migrate-anchor', 'marker-2']);
+      expect(await prisma.outboxEvent.count({ where: { eventType: STUB_EVENT } })).toBe(0);
+
+      step2Fails = false;
+      applyCalls.length = 0;
+      const second = await orchestrator().execute(input('apply'));
+
+      expect(second.map((r) => [r.step, r.status])).toEqual([
+        ['migrate-anchor', 'skipped'],
+        ['marker-2', 'ok'],
+        ['marker-3', 'ok'],
+      ]);
+      expect(applyCalls).toEqual(['marker-2', 'marker-3']);
+      expect(await prisma.anchor.findUnique({ where: { ticker: NEW } })).not.toBeNull();
+    });
+
+    it('③ 连跑两次 ⇒ 第二次全 skipped、零写入 (branch 15, SC-007)', async () => {
+      await seedAnchor(OLD);
+
+      const first = await orchestrator().execute(input('apply'));
+      expect(first.map((r) => r.status)).toEqual(['ok', 'ok', 'ok']);
+      const afterFirst = await snapshot();
+      applyCalls.length = 0;
+
+      const second = await orchestrator().execute(input('apply'));
+
+      expect(second.map((r) => [r.step, r.status])).toEqual([
+        ['migrate-anchor', 'skipped'],
+        ['marker-2', 'skipped'],
+        ['marker-3', 'skipped'],
+      ]);
+      expect(applyCalls).toEqual([]);
+      expect(await snapshot()).toEqual(afterFirst);
+    });
+
+    it('inspect 判冲突 ⇒ conflict 并停, 后续不跑 (preview 同样停)', async () => {
+      await seedAnchor(OLD);
+      await seedAnchor(NEW);
+
+      for (const mode of ['preview', 'apply'] as const) {
+        const report = await orchestrator().execute(input(mode));
+        expect(report).toEqual([
+          { step: 'migrate-anchor', status: 'conflict', detail: '新码已有锚' },
+        ]);
+      }
+      expect(applyCalls).toEqual([]);
     });
   });
 });
