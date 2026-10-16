@@ -176,7 +176,7 @@ updated_at: '2026-10-09'
 
 - [X] T046 [Server-IT] **清单来源读档案落键 + FR-030 空白期间按会议日配对**（`FR-006`, `FR-030`; spec Session（十一））：前置 = T045。`hkex-board-meeting-list.source.ts` 读本页标的的财年档案，非 `P:` 行按 T045 换算得 `P:` 则落 `P:`（原文照存）；`selectAlignedSuccessor` 对原文为空的清单观测以会议日配对（`planUnalignedSupersede` 读会议日）。→ verify: merge rules spec 加空白期间同会议日 / 不同会议日两臂；079 IT 复刻 `00005`：无档案一轮落 `T:` 事件，补档案后下一轮 ⇒ 落 `P:` 观测、`T:` 事件 superseded 指向 `P:` 事件、本轮无 `earnings_board_list_dropped` 发现；空白期间形态同；定向变异：来源不读档案 ⇒ 臂红；去掉会议日配对 ⇒ 空白臂红。
 
-- [ ] T047 [Ops] **部署后复核**（`FR-006`, `FR-030`）：前置 = T045–T046 随 server 发版部署（宜在 2026-10-27 前）。无需回填，次一轮日跑即收敛。→ verify: prod 只读：`hk:00005 T:hkex_board_meeting_list:2026年第三季` 为 superseded、`P:2026-09-30` 的来源含清单；有档案标的的清单非 `P:` 观测对应事件全部已并入。
+- [X] T047 [Ops] **部署后复核**（`FR-006`, `FR-030`）：前置 = T045–T046 随 server 发版部署（宜在 2026-10-27 前）。无需回填，次一轮日跑即收敛。→ verify: prod 只读：`hk:00005 T:hkex_board_meeting_list:2026年第三季` 为 superseded、`P:2026-09-30` 的来源含清单；有档案标的的清单非 `P:` 观测对应事件全部已并入。 2026-10-16 server v0.54.4 部署后手动触发一轮 `hk_earnings_date` 日跑（09:29 HKT，`failed` 0、无 `earnings_board_list_dropped`）。复核：`hk:00005 T:hkex_board_meeting_list:2026年第三季` 为 superseded，流水指向 `P:2026-09-30`；`P:2026-09-30` 来源为富途 + 清单；有档案标的的清单非 `P:` 事件仅此 1 条且已并入。
 
 ---
 
