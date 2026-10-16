@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.55.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.4...server-v0.55.0) (2026-10-16)
+
+
+### Features
+
+* **marketdata:** 086 标的代码变更登记 —— 改名后历史接续 + 一条命令修正 + 疑似改名发现 ([#503](https://github.com/zhangleizlpd/no-vain-years-tech/issues/503)) ([4b71f42](https://github.com/zhangleizlpd/no-vain-years-tech/commit/4b71f422a4490de8c6b6f7371c9f811a4f38b394))
+
 ## [0.54.4](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.3...server-v0.54.4) (2026-10-16)
 
 
