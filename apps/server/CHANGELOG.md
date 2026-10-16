@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.55.1](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.55.0...server-v0.55.1) (2026-10-16)
+
+
+### Code Refactoring
+
+* **core:** 抽 server 级 SSE 流式 helper，收敛 chat 与 ideation 的 hijack/CORS/abort 复制 ([#508](https://github.com/zhangleizlpd/no-vain-years-tech/issues/508)) ([a4210d2](https://github.com/zhangleizlpd/no-vain-years-tech/commit/a4210d234a470f436100581b154dcd7296e18cf3))
+
 ## [0.55.0](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.4...server-v0.55.0) (2026-10-16)
 
 
