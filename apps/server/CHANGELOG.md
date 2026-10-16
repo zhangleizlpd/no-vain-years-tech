@@ -2,6 +2,13 @@
 
 <!-- release-please 在 `# Changelog` 之后 prepend 新版本条目；下面这段说明会一直沉在末尾。 -->
 
+## [0.54.4](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.3...server-v0.54.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* **marketdata:** 079 清单年第N季与空白期间按财年档案落键（T045–T046） ([#498](https://github.com/zhangleizlpd/no-vain-years-tech/issues/498)) ([11df396](https://github.com/zhangleizlpd/no-vain-years-tech/commit/11df39632a906b275375f98efa8b4348b71c5234))
+
 ## [0.54.3](https://github.com/zhangleizlpd/no-vain-years-tech/compare/server-v0.54.2...server-v0.54.3) (2026-10-15)
 
 
