@@ -94,8 +94,9 @@ import { TRADING_CALENDAR_PORT, type TradingCalendarPort } from './trading-calen
  * 4. 已通知日期未知 (标的级)：迁入 ⇒ 建占位事件 `D:notice_undated:<通知刊发日>`；迁出 ⇒ 占位事件
  *    `superseded`，流水 `detail.supersededBy` 指向接手事件 id。🚫 删除 (流水级联删除，FR-013 / FR-017)。
  *    提供会前通知信号的来源本轮失败 ⇒ 整段不判 (取不到信号 ≠ 通知已被用掉)。
- * 5. 无法对齐旧事件收尾 (FR-030)：同来源同原文报告期已有 `P:` 键的旧 `T:` / `D:` 事件合并前移出重算集合、接手键并入，
- *    合并后迁 `superseded`，流水 `detail.supersededBy` 指向接手事件 id。已并入事件 🚫 再进逐事件合并与两类扫描。
+ * 5. 无法对齐旧事件收尾 (FR-030)：同来源同原文报告期已有 `P:` 键的旧 `T:` / `D:` 事件 (含已刊发；清单空白期间行以会议日配对)
+ *    合并前移出重算集合、接手键并入，合并后迁 `superseded`，流水 `detail.supersededBy` 指向接手事件 id。已并入事件 🚫 再进
+ *    逐事件合并与两类扫描。档案后到的标的先由 {@link SyncEarningsDatesUseCase.realignObservations} 补写 `P:` 观测供配对。
  *
  * findings 不在本段写进 `stats`：本段只把规则产出带上标的代码汇总进 {@link EarningsDatesMergeSummary}。
  */
