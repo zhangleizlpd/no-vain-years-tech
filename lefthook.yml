@@ -96,10 +96,8 @@ pre-commit:
       # Per ADR-0037 § 1 — staged-only scan with shared .gitleaks.toml ruleset.
       # `protect --staged` reads the git index directly (not {staged_files}),
       # avoiding the lefthook template quote-stripping pitfall.
-      # ⚠️ CI **不是**全史扫（此处旧注释曾声称是，2026-08-08 修正）：ci.yml 用
-      # gitleaks-action@v2，push / pull_request 事件下只扫该事件的 commit 区间；
-      # 全史 detect 仅在 workflow_dispatch / schedule 事件下发生，两者都未接线。
-      # 要全史扫得手动跑：gitleaks detect --log-opts="--all" --redact
+      # CI 侧（ci.yml gitleaks job）不用 gitleaks-action，钉死与本机同版本的二进制，
+      # `gitleaks detect` 不带 --log-opts ⇒ 每次 push / PR 都扫全部历史。
       # Emergency exit: git commit --no-verify.
       run: gitleaks protect --staged --no-banner --config .gitleaks.toml
 

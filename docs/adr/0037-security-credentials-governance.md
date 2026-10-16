@@ -9,7 +9,7 @@ sunset_trigger: |
   - 切 WebAuthn / passkey 取代 SMS code (per [ADR-0023](0023-sms-code-storage-hmac.md) sunset)
 ---
 
-# ADR-0037: Security and Credentials Governance — gitleaks + env-sync + JWT HS256 双 token + secrets volumes
+# ADR-0037: Security and Credentials Governance — gitleaks + env-sync + JWT HS256 access + 不透明 refresh 轮换
 
 - Status: Accepted (2026-10-16) — 转 Accepted 前在 Proposed 期按实装**原地修订** §1 / §3 / §5 / §6（per [ADR-0031](0031-adr-governance.md) § ADR 修订策略：`Proposed` 可自由 in-place 改）；§4 已被 SOPS 取代（见 §4 引用块）。改了什么见文末「修订记录」
 - Deciders: project owner
