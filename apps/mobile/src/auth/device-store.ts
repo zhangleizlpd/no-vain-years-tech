@@ -4,7 +4,7 @@
 // (native) or navigator.userAgent (web). Consumed by the axios interceptor
 // (apps/mobile/src/core/api/setup.ts) to inject x-device-id / x-device-name /
 // x-device-type on every API call — feeds server-side device-bound flows
-// (异地登录提醒 / 设备列表 / refresh-token jti 白名单 per ADR-0037).
+// (异地登录提醒 / 设备列表 / refresh_token 行的 device 元数据 per ADR-0037 §3).
 //
 // id is synthesized lazily via `getOrInitId()` so the very first cold-start
 // API call still carries x-device-id (don't wait on async expo-device probe).

@@ -60,7 +60,7 @@
 | 0034 | Auth/Account Operation Catalog (3 传播规则 + LLM decision tree)                         | apps/server                                      | Accepted   |
 | 0035 | Data Layer Governance (migrate + naming + seed + types regen)                           | apps/server                                      | Accepted   |
 | 0036 | Observability and Logging Governance                                                    | apps/server, apps/mobile                         | Accepted   |
-| 0037 | Security and Credentials Governance                                                     | apps/server, apps/mobile, security               | Proposed   |
+| 0037 | Security and Credentials Governance                                                     | apps/server, apps/mobile, security               | Accepted   |
 | 0038 | Full-Stack Error Handling and UX Contract                                               | apps/server, apps/mobile, packages/api-client    | Accepted   |
 | 0039 | Performance and Latency Governance                                                      | mono-wide                                        | Accepted   |
 | 0040 | Multi-layer Test Gate (机制 / 策略 / 门禁 三段渐进)                                     | mono-wide                                        | Accepted   |

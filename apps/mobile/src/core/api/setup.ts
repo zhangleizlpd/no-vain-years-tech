@@ -15,7 +15,7 @@
  *         packages/auth/src/store.ts.loadProfile used to do
  *     - x-device-id / x-device-name / x-device-type from useDeviceStore
  *       → server-side device-bound flows (异地登录提醒 / 设备列表 /
- *         refresh jti 白名单 per ADR-0037). id always present (synth
+ *         refresh_token 行的 device 元数据 per ADR-0037 §3). id always present (synth
  *         lazily); name/type present once hydrate() resolves.
  *
  *   response:
