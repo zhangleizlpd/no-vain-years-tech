@@ -21,6 +21,7 @@ import {
 import { JwtAuthGuard, type AuthenticatedUser } from '../account/jwt-auth.guard';
 import { AccountIdThrottlerGuard } from '../account/account-id-throttler.guard';
 import { ProblemDetailResponse } from '../security/problem-detail.response';
+import { openLazySseStream } from '../security/sse-stream';
 import {
   DEFAULT_BUCKET,
   SMS_CODE_BUCKETS,
@@ -82,23 +83,6 @@ function skipExcept(own: Record<string, boolean>): Record<string, boolean> {
   const skip: Record<string, boolean> = { ...EXISTING_BUCKETS, ...IDEATION_ALL_BUCKETS };
   for (const key of Object.keys(own)) delete skip[key];
   return skip;
-}
-
-/**
- * 从 Fastify reply 已有 header 里挑出 `@fastify/cors` 写的跨域 header (`access-control-*` + `vary`)。
- * SSE 走 reply.hijack() 裸写, 必须手动带 (否则 web build 流式响应缺 `Access-Control-Allow-Origin`
- * 被浏览器拦)。allowlist 判定仍由 plugin 负责, 不在此重复策略 (server-sse-hijack-cors rule)。
- */
-function pickCorsHeaders(
-  headers: Record<string, number | string | string[] | undefined>,
-): Record<string, number | string | string[]> {
-  const picked: Record<string, number | string | string[]> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    if (value === undefined) continue;
-    const lower = key.toLowerCase();
-    if (lower.startsWith('access-control-') || lower === 'vary') picked[key] = value;
-  }
-  return picked;
 }
 
 /** session id 路径段数字串 → BigInt; 非法折叠 404 (反枚举, 与 session.controller 同款)。 */
@@ -176,30 +160,9 @@ export class ClarifyStreamController {
   ): Promise<void> {
     const sessionId = parseSessionId(id);
 
-    // 客户端断连 / 主动停止 → abort 上游。reply.raw 'close' 在 end() 后也会触发, 用 finished
-    // 哨兵区分: 正常结束 (end 已调) 不视作 stop。
-    const controller = new AbortController();
-    let finished = false;
-    reply.raw.on('close', () => {
-      if (!finished) controller.abort();
-    });
-
-    // lazy hijack: 首帧 (或写 error 帧) 时才 hijack + 写 SSE headers, 让前置校验异常
-    // (404/400) 在 hijack 前抛出 → Nest 过滤器正常 JSON 响应。
-    let hijacked = false;
-    const ensureHijacked = () => {
-      if (hijacked) return;
-      hijacked = true;
-      const corsHeaders = pickCorsHeaders(reply.getHeaders());
-      reply.hijack();
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        ...corsHeaders,
-      });
-    };
+    // lazy hijack + 断连 abort + SSE/CORS headers 由 openLazySseStream 收口 (security/sse-stream):
+    // 首帧 (或写 error 帧) 时才 hijack, 让前置校验异常 (404/400) 走 Nest 过滤器正常 JSON 响应。
+    const stream = openLazySseStream(reply);
 
     let outcome;
     try {
@@ -210,54 +173,39 @@ export class ClarifyStreamController {
           content: body.content,
           attachmentKeys: body.attachmentKeys,
           annotationText: body.annotationText,
-          signal: controller.signal,
+          signal: stream.signal,
         },
         {
           onToken: (token) => {
-            ensureHijacked();
-            reply.raw.write(toSseTokenFrame(token));
+            stream.write(toSseTokenFrame(token));
           },
           onSuggestion: (suggestion) => {
-            ensureHijacked();
-            reply.raw.write(toSseSuggestionFrame(suggestion));
+            stream.write(toSseSuggestionFrame(suggestion));
           },
           // 接地检索发起指示 (034 FR-013): 「正在检索代码…」。
           onToolStart: () => {
-            ensureHijacked();
-            reply.raw.write(toSseToolStartFrame());
+            stream.write(toSseToolStartFrame());
           },
           // 接地命中来源回流 (034 FR-002, ≤5; UC 仅在有命中时调, 0 命中/降级不调)。
           onSources: (sources) => {
-            ensureHijacked();
-            reply.raw.write(toSseSourcesFrame(sources));
+            stream.write(toSseSourcesFrame(sources));
           },
           // 接地降级系统气泡 (034 FR-008): 端口不可达 → grounding_degraded; 不阻断整轮。
           onNotice: () => {
-            ensureHijacked();
-            reply.raw.write(toSseNoticeFrame(GROUNDING_DEGRADED_NOTICE));
+            stream.write(toSseNoticeFrame(GROUNDING_DEGRADED_NOTICE));
           },
         },
       );
     } catch (err) {
       // 前置校验 (scope 404 / 空输入 400) 在首帧前抛 → 未 hijack → 交回 Nest 过滤器。
-      if (!hijacked) throw err;
+      if (!stream.started) throw err;
       // 已 hijack 后的意外异常 → 兜底 error 帧 + 收尾 (避免裸悬挂连接)。
       const message = err instanceof Error ? err.message : 'IDEATION_CLARIFY_STREAM_ERROR';
-      reply.raw.write(toSseErrorFrame(message));
-      finished = true;
-      reply.raw.end();
+      stream.end(toSseErrorFrame(message));
       return;
     }
 
-    // provider 失败但无帧流出 (errorAfter=0): 仍需 hijack 才能回错误帧给客户端。
-    if (outcome.kind === 'error') ensureHijacked();
-
-    finished = true;
-    if (outcome.kind === 'error') {
-      reply.raw.write(toSseErrorFrame(outcome.message));
-    } else {
-      reply.raw.write(IDEATION_SSE_DONE);
-    }
-    reply.raw.end();
+    // provider 失败但无帧流出 (errorAfter=0): end() 同样先 hijack 才回错误帧给客户端。
+    stream.end(outcome.kind === 'error' ? toSseErrorFrame(outcome.message) : IDEATION_SSE_DONE);
   }
 }
